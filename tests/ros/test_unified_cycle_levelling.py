@@ -49,7 +49,7 @@ from geometry_msgs.msg import Point, Pose, Quaternion
 from std_msgs.msg import Float64MultiArray, String
 
 from jugglebot_interfaces.msg import MotorStateSingle, RobotState
-from jugglebot_interfaces.srv import GoToPose, PlanCycle, SetTrajectoryLimits
+from jugglebot_interfaces.srv import GoToPose, InstallSegment, SetTrajectoryLimits
 
 import jugglebot.hardware_config as hw
 from jugglebot.motion import levelling
@@ -59,6 +59,13 @@ from jugglebot.motion.ik_solver import rotvec_to_rot_matrix
 from jugglebot.motion.trajectory import cup_realize as cr
 from jugglebot.motion.trajectory import feasibility as feas
 from jugglebot.trajectory_node import TrajectoryNode
+
+# `trajectory/install_segment` request builders + splice recipe — canonical
+# since R4 (2026-09-24), this file's own consumer of `test_install_segment.py`
+# (see that module's docstring: T-I1 / the hold-reentrancy pin / the node-boot
+# executor pin were moved there for the identical reason).
+from tests.ros.test_install_segment import _catch_req, _refresh as _is_refresh
+from tests.ros.test_install_segment import _throw_req
 
 
 # ── The measured operating point ─────────────────────────────────────────────
@@ -190,26 +197,14 @@ def _prepare(node, x=0.0, y=0.0, z=170.0):
     return node
 
 
-def _launch_req(period_s=0.6, chain=False):
-    req = PlanCycle.Request()
-    req.mode = req.MODE_NEW
-    req.kind = req.KIND_LAUNCH
-    req.period_s = period_s
-    req.throw_site_mm = [0.0, 0.0, _THROW_CUP_Z_MM]
-    req.throw_target_mm = [0.0, 0.0, _THROW_CUP_Z_MM]
-    req.flight_s = _FLIGHT_S
-    req.catch_site_mm = [0.0, 0.0, 830.0]
-    req.catch_vel_mm_s = [0.0, 0.0, -2500.0]
-    req.catch_frac = 0.0
-    req.settle_site_mm = [0.0, 0.0, _REST_CUP_Z_MM]
-    req.banking_enabled = True
-    req.lead_s = 0.0
-    if chain:
-        req.chain = True
-        req.chain_kind = req.KIND_LANDING
-        req.chain_period_s = 1.0
-        req.chain_catch_frac = _FLIGHT_S / 1.0
-    return req
+# `_launch_req`/`PlanCycle` (the FSM ring's `trajectory/plan_cycle` request
+# builder) was REMOVED here at R4 (2026-09-24): `_svc_plan_cycle` and
+# `PlanCycle.srv` are both retired (unit U6b cluster B — the FSM deletion).
+# The tests below that used to drive `_svc_plan_cycle` now drive
+# `trajectory/install_segment` instead, using the request builders
+# (`_throw_req` / `_catch_req`) and splice recipe (`_frozen_perf` / `_refresh`)
+# from `tests/ros/test_install_segment.py` — that file's fixtures are the
+# canonical ones now; see its module docstring.
 
 
 def _physical(pose6, correction):
@@ -347,8 +342,21 @@ def test_a_launch_from_the_levelled_prepare_pose_releases_gravity_level():
 
     After: the physical aim at release is level to better than 0.03 mrad, and
     the ballistic drift ``4*h*sin(theta)`` goes 23.3 mm -> 0.000 mm at this apex.
+
+    Ported at R4 (2026-09-24): `trajectory/plan_cycle` is retired with the FSM
+    ring; this drives the identical claim through `trajectory/install_segment`
+    (a THROW segment — LAUNCH + SETTLE, `_svc_install_segment`'s fresh-origin
+    branch, seeded by the SAME `_cycle_start_state`/E8 call `plan_cycle` used —
+    `kind` only changes the rest/moving predicate, never the correction build,
+    which depends on the seed pose alone). Every segment is now rest-terminal
+    (`motion/skills/INVARIANTS.md` row I-PLAN-7), so the release is a MID-plan
+    instant rather than the plan's last knot — sampled at its own instant
+    (`plan.state_at`, C2-exact at a knot boundary) via `resp.t_event_mono`
+    (`ThrowTerminal.t_release_s` IS `t_event_s` for a THROW — see
+    `_segment_terminal_from_request`), instead of `plan.pose[-1]`.
     """
     node = _prepare(_node())
+    node._ros_to_perf_offset = 0.0
     correction = levelling.correction_from_offset(*_OFFSET)
     seed_pose, _, _ = node._current_state()
     # The seed really is the levelled prepare pose: tilted in the PLAN frame by
@@ -356,22 +364,26 @@ def test_a_launch_from_the_levelled_prepare_pose_releases_gravity_level():
     assert np.allclose(seed_pose[3:5], [-_OFFSET[0], -_OFFSET[1]], atol=1e-9)
     assert np.allclose(_physical(seed_pose, correction), 0.0, atol=1e-9)
 
-    resp = node._svc_plan_cycle(_launch_req(), PlanCycle.Response())
+    at = time.perf_counter()
+    resp = node._svc_install_segment(
+        _throw_req(at + 0.6, site_z=_THROW_CUP_Z_MM, flight_s=_FLIGHT_S),
+        InstallSegment.Response())
     assert resp.accepted is True, resp.message
     assert resp.code == feas.OK
-    plan, meta, _t0 = node._cycle
+    plan, meta, t0 = node._cycle
 
     # Knot 0 is the machine, exactly — the install-continuity claim.
     assert np.array_equal(plan.pose[0][3:5], np.asarray(seed_pose)[3:5])
     # The release is LEVEL AGAINST GRAVITY...
-    aim_mrad, axis = _aim_mrad(plan.pose[-1], correction)
+    release_pose = np.asarray(plan.state_at(resp.t_event_mono - t0)[0])
+    aim_mrad, axis = _aim_mrad(release_pose, correction)
     assert aim_mrad < 0.03
     # ...which means the COMMANDED attitude there is the correction itself.
-    assert np.allclose(plan.pose[-1][3:5], [-_OFFSET[0], -_OFFSET[1]],
+    assert np.allclose(release_pose[3:5], [-_OFFSET[0], -_OFFSET[1]],
                        atol=1e-9)
-    # No physical tilt step across the window at all.
+    # No physical tilt step from the seed to the release.
     step_deg = float(np.degrees(np.linalg.norm(
-        _physical(plan.pose[-1], correction)
+        _physical(release_pose, correction)
         - _physical(plan.pose[0], correction))))
     assert step_deg < 2e-3
     # And the ballistic consequence, which is what the cup rim cares about.
@@ -387,8 +399,11 @@ def test_the_same_launch_UNFRAMED_reproduces_the_bag(monkeypatch):
     errors would cancel — which is exactly why the defect survived four months
     of level-machine testing.  The seed stays the levelled prepare pose; only
     the planner's knowledge of the frame is removed.
+
+    Ported at R4 (2026-09-24) — see the previous test's port note.
     """
     node = _prepare(_node())
+    node._ros_to_perf_offset = 0.0
     correction = levelling.correction_from_offset(*_OFFSET)
     real = TrajectoryNode._cycle_start_state
 
@@ -400,44 +415,76 @@ def test_the_same_launch_UNFRAMED_reproduces_the_bag(monkeypatch):
         return dataclasses.replace(state, levelling_correction=None), code, err
 
     monkeypatch.setattr(TrajectoryNode, '_cycle_start_state', _unframed)
-    resp = node._svc_plan_cycle(_launch_req(), PlanCycle.Response())
+    at = time.perf_counter()
+    resp = node._svc_install_segment(
+        _throw_req(at + 0.6, site_z=_THROW_CUP_Z_MM, flight_s=_FLIGHT_S),
+        InstallSegment.Response())
     assert resp.accepted is True, resp.message
-    plan, _meta, _t0 = node._cycle
+    plan, _meta, t0 = node._cycle
 
-    assert np.allclose(plan.pose[-1][3:5], 0.0, atol=1e-9)   # mechanical zero
-    aim_mrad, axis = _aim_mrad(plan.pose[-1], correction)
+    release_pose = np.asarray(plan.state_at(resp.t_event_mono - t0)[0])
+    assert np.allclose(release_pose[3:5], 0.0, atol=1e-9)   # mechanical zero
+    aim_mrad, axis = _aim_mrad(release_pose, correction)
     assert aim_mrad == pytest.approx(11.663, abs=1e-3)
     assert axis[1] < 0.0, 'the bag threw in -y; so must the reproduction'
     step_deg = float(np.degrees(np.linalg.norm(
-        _physical(plan.pose[-1], correction)
+        _physical(release_pose, correction)
         - _physical(plan.pose[0], correction))))
     assert step_deg == pytest.approx(0.6682, abs=1e-3)
 
 
 def test_the_chained_install_plans_both_windows_in_ONE_frame():
-    """The SHIPPED install is LAUNCH+LANDING in one call — one frame, one seam.
+    """A chained install is LAUNCH then LANDING — one frame, one seam.
 
-    `release_state_from_meta` carries the frame off `meta_a`, so the chained
-    window is planned in the frame the launch was BUILT in rather than in
-    whatever the node holds a solve later.  Without that the two halves would
-    disagree by the whole correction at their shared knot and
-    `unified_cycle._joined_correction` (or `_seam_check` behind it) would refuse
-    the install outright.
+    `executor._rest_seed` carries the frame off the head record's own meta, so
+    the spliced window is planned in the frame the THROW was BUILT in rather
+    than in whatever the node holds a solve later. Without that the two halves
+    would disagree by the whole correction at their shared knot and
+    `unified_cycle._seam_check` would refuse the install outright.
+
+    Ported at R4 (2026-09-24): the FSM ring's ONE-call `plan_cycle(chain=True)`
+    is retired; "a chain" is now TWO real `trajectory/install_segment` calls —
+    a fresh THROW, then a CATCH spliced onto it while it is still streaming
+    (the exact recipe `test_install_segment.py::
+    test_a_catch_requested_while_a_throw_streams_splices_head_bit_identical`
+    proves structurally) — which is precisely what I-LEVEL-2 ("every window of
+    a chain in ONE frame") now means: `splice_at` produces `uc.SPLICED`, not
+    the retired ring's `uc.JOINED`.
     """
     node = _prepare(_node())
+    node._ros_to_perf_offset = 0.0
     correction = levelling.correction_from_offset(*_OFFSET)
-    resp = node._svc_plan_cycle(_launch_req(chain=True), PlanCycle.Response())
-    assert resp.accepted is True, resp.message
-    plan, meta, _t0 = node._cycle
-    assert meta.kind == uc.JOINED
-    assert meta.levelling_correction is not None
-    assert np.allclose(meta.levelling_correction, correction, atol=1e-15)
+
+    at = time.perf_counter()
+    resp1 = node._svc_install_segment(
+        _throw_req(at + 0.6, site_z=_THROW_CUP_Z_MM, flight_s=_FLIGHT_S),
+        InstallSegment.Response())
+    assert resp1.accepted is True, resp1.message
+    plan1, meta1, _t0_1 = node._cycle
+    assert meta1.levelling_correction is not None
+    assert np.allclose(meta1.levelling_correction, correction, atol=1e-15)
+
+    # Re-anchor the origin 0.2 s into the past (the proven splice recipe) and
+    # splice a CATCH onto the still-running THROW record.
+    origin = at - 0.2
+    node._cycle = (plan1, meta1, origin)
+    node._plan_t0 = origin
+    _is_refresh(node)
+    resp2 = node._svc_install_segment(_catch_req(at + 0.7),
+                                      InstallSegment.Response())
+    assert resp2.accepted is True, resp2.message
+    assert resp2.splice_k > 0
+    plan2, meta2, _t0_2 = node._cycle
+    assert meta2.kind == uc.SPLICED
+    # The SAME frame the head was built in — carried, not re-read.
+    assert meta2.levelling_correction is meta1.levelling_correction
+    assert np.allclose(meta2.levelling_correction, correction, atol=1e-15)
     # Rest-terminal, and that rest is level AGAINST GRAVITY.
-    assert np.allclose(_physical(plan.pose[-1], correction), 0.0, atol=3e-5)
+    assert np.allclose(_physical(plan2.pose[-1], correction), 0.0, atol=3e-5)
     # Every knot's commanded attitude sits within the tilt the machine can hold;
     # the ceiling is checked on the GRAVITY aim, so the plan frame may exceed it
     # by the correction — see levelling_frame.md s "Consequences at the machine".
-    worst = float(np.max(np.hypot(plan.pose[:, 3], plan.pose[:, 4])))
+    worst = float(np.max(np.hypot(plan2.pose[:, 3], plan2.pose[:, 4])))
     assert worst <= math.radians(12.0) + float(np.hypot(*_OFFSET)) + 1e-9
 
 
@@ -449,13 +496,25 @@ def test_the_frame_is_recorded_on_the_installed_meta_not_re_read():
     already streaming.  The plan carries its own frame instead, so a
     `/gravity_offset` arriving mid-cycle changes the NEXT install and nothing
     else.
+
+    Ported at R4 (2026-09-24): `replan_tail` (which this test used to drive
+    directly, motion-only) is DELETED with the rest of the FSM ring — see
+    `unified_cycle.py`'s R4 notes. "A catch-side re-plan of an installed cycle"
+    is now exactly a splice: a second `trajectory/install_segment` CATCH call
+    onto the still-running THROW record, going through the SAME carry
+    (`executor._rest_seed`, which reads `record.meta.levelling_correction`,
+    never the node) that `replan_tail` used to.
     """
     node = _prepare(_node())
+    node._ros_to_perf_offset = 0.0
     built = levelling.correction_from_offset(*_OFFSET)
-    assert node._svc_plan_cycle(_launch_req(chain=True),
-                                PlanCycle.Response()).accepted is True
-    _plan, meta, _t0 = node._cycle
-    assert np.allclose(meta.levelling_correction, built, atol=1e-15)
+    at = time.perf_counter()
+    resp1 = node._svc_install_segment(
+        _throw_req(at + 0.6, site_z=_THROW_CUP_Z_MM, flight_s=_FLIGHT_S),
+        InstallSegment.Response())
+    assert resp1.accepted is True, resp1.message
+    plan1, meta1, _t0_1 = node._cycle
+    assert np.allclose(meta1.levelling_correction, built, atol=1e-15)
 
     # A new offset lands mid-cycle. The node's stored correction moves...
     node._on_gravity_offset(Float64MultiArray(data=[0.05, -0.02]))
@@ -463,21 +522,21 @@ def test_the_frame_is_recorded_on_the_installed_meta_not_re_read():
     # ...and the INSTALLED plan's frame does not.
     plan_after, meta_after, _t0 = node._cycle
     assert np.allclose(meta_after.levelling_correction, built, atol=1e-15)
-    # A catch-side re-plan of that installed cycle keeps the plan's own frame
-    # too — `replan_tail` reads `meta.levelling_correction`, never the node.
-    # `t_now` sits after the launch's release and its detach cone — a splice
-    # inside those knots is refused for a reason that has nothing to do with
-    # frames (`REPLAN_WINDOW`), so the fixture lands past them.
-    t_now, lead = 0.70, 0.10
-    spliced, meta2 = uc.replan_tail(
-        plan_after, meta_after, t_now,
-        np.asarray(meta_after.catches[0].site_mm, dtype=float)
-        + np.array([12.0, 6.0, 0.0]),
-        np.asarray(meta_after.catches[0].vel_mm_s, dtype=float),
-        node._limits, node._geom, lead_s=lead)
-    assert meta2.levelling_correction is meta_after.levelling_correction
-    k_s = uc.splice_knot(meta_after, t_now, lead)
-    assert np.array_equal(spliced.pose[:k_s], plan_after.pose[:k_s])
+
+    # A catch-side re-plan (a splice onto the still-running record) keeps the
+    # plan's OWN frame too.
+    origin = at - 0.2
+    node._cycle = (plan1, meta1, origin)
+    node._plan_t0 = origin
+    _is_refresh(node)
+    resp2 = node._svc_install_segment(_catch_req(at + 0.7),
+                                      InstallSegment.Response())
+    assert resp2.accepted is True, resp2.message
+    assert resp2.splice_k > 0
+    plan2, meta2, _t0_2 = node._cycle
+    assert meta2.levelling_correction is meta1.levelling_correction
+    k_s = resp2.splice_k
+    assert np.array_equal(plan2.pose[:k_s + 1], plan_after.pose[:k_s + 1])
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -492,10 +551,17 @@ def test_the_legacy_ingest_still_corrects_after_a_cycle_has_been_planned():
     ends at ``R_gravity @ R_request`` — the same assertion
     `test_levelling_frame.py::test_E3_go_to_pose_identity_lands_corrected_in_the_plan`
     makes, re-made here on a node that has just flown a unified cycle.
+
+    Ported at R4 (2026-09-24): `trajectory/plan_cycle` -> `trajectory/
+    install_segment` (a THROW segment) — see the first test's port note.
     """
     node = _prepare(_node())
-    assert node._svc_plan_cycle(_launch_req(),
-                                PlanCycle.Response()).accepted is True
+    node._ros_to_perf_offset = 0.0
+    at = time.perf_counter()
+    resp = node._svc_install_segment(
+        _throw_req(at + 0.6, site_z=_THROW_CUP_Z_MM, flight_s=_FLIGHT_S),
+        InstallSegment.Response())
+    assert resp.accepted is True, resp.message
 
     node._plan_t0 = time.perf_counter() - 10.0
     node._on_robot_state(_robot_state())

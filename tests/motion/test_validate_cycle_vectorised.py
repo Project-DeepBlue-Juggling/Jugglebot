@@ -570,13 +570,22 @@ def accepted(limits, geom):
     # A chained ring: LAUNCH + STEADY joined at the shared release knot.
     joined, _ = uc.extend(launch_plan, launch_meta, steady_plan, steady_meta,
                           limits, geom)
-    # A catch-side re-aim spliced into the committed STEADY head.
-    spliced, _ = uc.replan_tail(steady_plan, steady_meta, 0.0,
-                                CATCH_MM + np.array([15.0, 8.0, 0.0]),
-                                CATCH_V_MM_S, limits, geom, lead_s=0.10)
+    # A catch-side re-aim spliced into the committed STEADY head. Built on
+    # `splice_at` directly (the retired `replan_tail`'s catch-side re-plan used
+    # `splice_at` under the hood too — see the FSM deletion, R4, 2026-09-24).
+    k_s = uc.splice_knot(steady_meta, 0.0, 0.10)
+    seed = uc.state_at_knot(steady_plan, steady_meta, k_s)
+    tail_period = (int(steady_plan.n_knots) - 1 - k_s) * float(steady_plan.dt)
+    seg_plan, seg_meta = uc.plan_landing(
+        _goals(period_s=tail_period, catch_frac=None, catch_t_s=0.6,
+              catch_site_mm=CATCH_MM + np.array([15.0, 8.0, 0.0]),
+              catch_vel_mm_s=CATCH_V_MM_S),
+        seed, limits, geom)
+    spliced, _ = uc.splice_at(steady_plan, steady_meta, k_s, seg_plan, seg_meta,
+                              limits, geom)
     return [('launch-0.6', launch_plan), ('steady-1.4', steady_plan),
             ('landing-1.0', landing_plan), ('settle-0.6', settle_plan),
-            ('extend-chain', joined), ('replan-tail-splice', spliced),
+            ('extend-chain', joined), ('splice-at-tail', spliced),
             ('hand-wiggle', _hand_wiggle())]
 
 

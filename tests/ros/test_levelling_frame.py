@@ -60,9 +60,8 @@ import pytest
 
 from geometry_msgs.msg import Point, Pose, Quaternion, Vector3
 from std_msgs.msg import Float64MultiArray, String
-from std_srvs.srv import SetBool, Trigger
+from std_srvs.srv import Trigger
 from jugglebot_interfaces.msg import (
-    DynamicTargetCommand,
     MotorStateSingle,
     PlatformPoseCommand,
     RobotState,
@@ -131,23 +130,25 @@ _POSE_BEARING_ARGS = {
     'planner.build_follow': (('target_pose', 'target_pose', 1),),
     'planner.build_timed': (('target_pose', 'target_pose', 1),
                             ('neutral_pose', 'neutral_pose', None)),
-    # `receive_tilt` is orientation-bearing and EXTERNAL, and unlike every other
-    # row here it must reach the planner UNCORRECTED — it is the gravity-referenced
-    # receive tilt C-CATCH-1 aims the through-seat along
-    # (`ros_ws/docs/catch_arrival_contract.md`). Keying on its source text is what
-    # makes "pass the corrected tilt instead" — a one-token edit that silently
-    # restores the 2026-07-25 defect — fail here.
-    'planner.build_catch': (('catch_pose', 'catch_pose', 1),
-                            ('neutral_pose', 'neutral_pose', None),
-                            ('receive_tilt', 'receive_tilt', None)),
+    # `planner.build_catch` and `self._plan_and_install_catch` were REMOVED from
+    # this dict at R4 (2026-09-24, the FSM deletion): `_plan_and_install_catch`
+    # and its caller `_on_dynamic_target` no longer exist on `TrajectoryNode`, so
+    # the live-package AST scan (`_walk_package`, production code only) never
+    # produces a `planner.build_catch` call again — `build_catch` has NO live
+    # production caller (see `motion/skills/INVARIANTS.md` row I-PLAN-7) and is
+    # retained ONLY as this contract's direct test vehicle (see the behavioural
+    # half below, e.g. `_positioned_then_catch`). A row here with no matching
+    # scan hit is exactly the "missing" failure `test_planner_entry_manifest_is_
+    # exhaustive` exists to catch, so keeping a dead key would defeat the guard
+    # it is meant to serve. The general principle it illustrated — pose-bearing
+    # arguments, PLURAL, per call node — still lives in `build_timed`'s E4+E6 row
+    # below, which is still live.
     'planner.build_return_to_neutral': (('neutral_pose', 'neutral_pose', 1),),
     'planner.build_hold': (),
     'planner.build_graceful_stop': (),
     'self._follower.follow': (('target_pose', 'target_pose', 1),),
     'self._plan_and_install_timed': (('target_pose', None, 0),
                                      ('neutral_pose', 'neutral', None)),
-    'self._plan_and_install_catch': (('catch_pose', None, 0),
-                                     ('receive_tilt', 'receive_tilt', None)),
 }
 
 # Every planner entry in the live ROS package, with its C-LEVEL-1 classification.
@@ -157,23 +158,16 @@ _POSE_BEARING_ARGS = {
 # the comparison is a multiset, so losing or gaining a call fires.
 _PLANNER_MANIFEST = (
     # file, enclosing scope, callee, pose args, class, note
-    ('motion/trajectory/catch_reach.py', 'catch_reach_verdict',
-     'planner.build_catch',
-     (('catch_pose', 'catch_pose'), ('receive_tilt', '(rx, ry)')), 'D',
-     'D9 — the PRE-THROW reach feasibility probe (2026-08-29). The plan it '
-     'builds is measured and DISCARDED, never installed, so nothing here is a '
-     'command. Both arguments are CONSTRUCTED in the same function rather than '
-     'ingested: `receive_tilt` is tilt_to_receive() of the derived arrival '
-     'velocity — the gravity-referenced quantity C-CATCH-1 requires UNCORRECTED '
-     'anyway — and `catch_pose` is that same tilt plus the swing-compensated '
-     'centroid, whose POSITION half the correction never touches by rule (§ "If '
-     'you are adding a new pose surface" step 4). What DOES differ from the '
-     'commanded path is that trajectory_node corrects the catch pose ROTATION '
-     'at its own E2 ingest; the delta is the levelling residual, sub-degree, '
-     'i.e. ~1 mm of cup lever against a hundreds-of-mm leg-stroke verdict. '
-     'Correcting here is also not possible: the offset lives in trajectory_node '
-     'and this module is pure motion/. Adding a correction here would be the '
-     'DOUBLE-apply, not the fix'),
+    #
+    # The D9 row for `motion/trajectory/catch_reach.py::catch_reach_verdict`
+    # (the pre-throw reach feasibility probe, 2026-08-29) was removed at R4
+    # (2026-09-24, census_fsm_deletion.md Cluster A): `catch_reach.py`'s only
+    # production caller, `reload_coordinator_node.py` (the FSM's Tier-8b
+    # pre-throw gate), was deleted in the same commit, so the module lost its
+    # production `planner.build_catch` entry. Its needed body was ported back
+    # into `tools/probes/displaced_reach_frontier.py` (its only remaining
+    # caller) as a measurement, not a command, so it carries no C-LEVEL-1
+    # classification any more — this manifest only tracks LIVE package entries.
     ('motion/trajectory/follower.py', 'TargetFollower.follow',
      'planner.build_follow', (('target_pose', 'chase.pose'),), 'D',
      'D8 — the chased pose, derived from the already-corrected E1 target'),
@@ -195,17 +189,14 @@ _PLANNER_MANIFEST = (
      'E1 — already corrected in _on_platform_pose; the follower must not re-correct'),
     ('trajectory_node.py', 'TrajectoryNode._install_graceful_stop',
      'planner.build_graceful_stop', (), 'D', 'D5 — mode-exit / arm-latch-edge stop'),
-    ('trajectory_node.py', 'TrajectoryNode._on_dynamic_target',
-     'self._plan_and_install_catch',
-     (('catch_pose', 'target'), ('receive_tilt', 'receive_tilt')), 'E',
-     'E2 — corrected in _catch_target_from_msg. The receive_tilt beside it is the '
-     'SAME wire message, deliberately UNCORRECTED (C-CATCH-1): one message, two '
-     'quantities, only one of which is a command'),
-    ('trajectory_node.py', 'TrajectoryNode._plan_and_install_catch',
-     'planner.build_catch',
-     (('catch_pose', 'catch_pose'), ('receive_tilt', 'receive_tilt')), 'E',
-     'E2 continued. NOTE: adding hold_after=False + neutral_pose here would create '
-     'a SEVENTH external ingest — this row is what makes that visible'),
+    # E2 (`_on_dynamic_target` -> `self._plan_and_install_catch` -> `planner.
+    # build_catch`) was REMOVED here at R4 (2026-09-24, the FSM deletion):
+    # `_on_dynamic_target`, `_plan_and_install_catch`, `_catch_target_from_msg`
+    # and `_svc_arm_catch` were all deleted from `TrajectoryNode` (the skill
+    # stack's `_svc_install_segment` is the node's only cycle-install path now —
+    # see its docstring). `planner.build_catch` has no live production caller
+    # left (`motion/skills/INVARIANTS.md` row I-PLAN-7) and is exercised only as
+    # this contract's direct test vehicle below.
     ('trajectory_node.py', 'TrajectoryNode._plan_and_install_timed',
      'planner.build_timed',
      (('target_pose', 'target'), ('neutral_pose', 'neutral')), 'E',
@@ -255,10 +246,9 @@ _PLANNER_MANIFEST = (
 _LEVELLING_MANIFEST = (
     ('trajectory_node.py', 'TrajectoryNode.__init__',
      'levelling.identity_correction', 'store'),
-    ('trajectory_node.py', 'TrajectoryNode._catch_target_from_msg',
-     'levelling.correction_for_pose', 'build:E2'),
-    ('trajectory_node.py', 'TrajectoryNode._catch_target_from_msg',
-     'levelling.correct_pose', 'apply:E2'),
+    # E2 (`_catch_target_from_msg` -> `correction_for_pose`/`correct_pose`) was
+    # REMOVED here at R4 (2026-09-24) along with the method itself — see the
+    # matching note in `_PLANNER_MANIFEST`.
     ('trajectory_node.py', 'TrajectoryNode._corrected_neutral_pose',
      'levelling.correction_for_pose', 'build:E5+E6'),
     ('trajectory_node.py', 'TrajectoryNode._corrected_neutral_pose',
@@ -769,33 +759,6 @@ def _timed_req(x=0.0, y=0.0, z=178.0, lead_s=2.5, hold_after=True):
     return req
 
 
-def _dynamic_target(node, x=0.0, y=0.0, z=170.0, lead_s=1.2, tilt=None):
-    import time as _time
-    msg = DynamicTargetCommand()
-    msg.target_pos = Point(x=x, y=y, z=z)
-    msg.target_vel = Vector3()
-    if tilt is None:
-        msg.target_quat = Quaternion()      # identity orientation on the wire
-    else:
-        # A genuine gravity-referenced receive tilt on the wire, as
-        # `compute_catch_orientation` produces for a non-vertical arrival.
-        w, xq, yq, zq = _rotvec_to_quat(np.array([tilt[0], tilt[1], 0.0]))
-        msg.target_quat = Quaternion(w=w, x=xq, y=yq, z=zq)
-    msg.arrival_time = _time.perf_counter() + lead_s
-    return msg
-
-
-def _rotvec_to_quat(rotvec):
-    """(w, x, y, z) from a rotation vector — the wire's orientation encoding."""
-    theta = float(np.linalg.norm(rotvec))
-    if theta < 1e-12:
-        return 1.0, 0.0, 0.0, 0.0
-    axis = np.asarray(rotvec, dtype=float) / theta
-    s = float(np.sin(theta / 2.0))
-    return (float(np.cos(theta / 2.0)),
-            float(axis[0] * s), float(axis[1] * s), float(axis[2] * s))
-
-
 def _platform_pose(x=0.0, y=0.0, z=170.0, publisher='SPACEMOUSE'):
     from geometry_msgs.msg import PoseStamped
     msg = PlatformPoseCommand()
@@ -806,15 +769,33 @@ def _platform_pose(x=0.0, y=0.0, z=170.0, publisher='SPACEMOUSE'):
     return msg
 
 
-def _arm(node, want: bool):
-    req = SetBool.Request()
-    req.data = want
-    return node._svc_arm_catch(req, SetBool.Response())
-
-
 def _plan_end_rotvec(node):
     plan = node._active_plan
     return np.asarray(plan.state_at(plan.total_duration)[0])[3:6]
+
+
+def _corrected_catch_target(node, x=0.0, y=0.0, z=170.0, tilt=None):
+    """Test-local reconstruction of the deleted ``_catch_target_from_msg``
+    (R4, 2026-09-24 — the FSM deletion retired ``_on_dynamic_target`` /
+    ``_catch_target_from_msg`` / ``_svc_arm_catch`` along with the rest of the
+    catch-reach node plumbing; ``planner.build_catch`` has no live production
+    caller left and is KEPT as this contract's direct test vehicle, see
+    ``motion/skills/INVARIANTS.md`` row I-PLAN-7).
+
+    Returns ``(corrected_catch_pose, uncorrected_receive_tilt)`` — the same two
+    quantities the deleted method handed to ``build_catch``: the CORRECTED pose
+    (C-LEVEL-1 E2 — where the legs are commanded) and the RAW wire tilt
+    (C-CATCH-1 — what the ball is physically doing, deliberately uncorrected).
+    ``tilt`` is the gravity-referenced receive tilt on the (former) wire
+    message; ``None`` means an identity orientation, matching
+    ``_dynamic_target``'s old default.
+    """
+    seat = np.zeros(2) if tilt is None else np.asarray(tilt, dtype=float)
+    raw = np.array([x, y, z, seat[0], seat[1], 0.0])
+    correction = levelling.correction_for_pose(
+        node._gravity_offset, node._active_tilt_map(), raw)
+    target = levelling.correct_pose(raw, correction)
+    return target, seat
 
 
 # ── E rows: the correction reaches the installed PLAN ────────────
@@ -871,12 +852,19 @@ def test_E1_platform_pose_target_is_corrected():
 
 
 def test_E2_catch_target_is_corrected_in_the_plan():
+    """Ported at R4 (2026-09-24): the deleted `_on_dynamic_target` used to
+    install this through `_svc_arm_catch` + `_plan_and_install_catch`. Both are
+    gone, so this drives the same claim onto `planner.build_catch` directly —
+    the retained C-LEVEL-1 test vehicle (see `_corrected_catch_target`)."""
+    from jugglebot.motion.trajectory import planner as _planner
     node = _node()
-    _arm(node, True)
-    node._on_dynamic_target(_dynamic_target(node, z=172.0))
-    assert node._active_plan.kind == 'move'
-    reach_end = np.asarray(node._active_plan.state_at(
-        node._active_plan.segments[0].duration)[0])
+    target, seat = _corrected_catch_target(node, z=172.0)
+    state0 = (np.asarray(node._current_state()[0], dtype=float),
+             np.zeros(6), np.zeros(6))
+    plan, _report = _planner.build_catch(
+        state0, target, 1.2, node._limits, node._geom,
+        settle_hold_s=node._catch_settle_hold_s, receive_tilt=seat)
+    reach_end = np.asarray(plan.state_at(plan.segments[0].duration)[0])
     assert np.allclose(reach_end[3:6], _expected_rotvec(), atol=1e-9)
 
 
@@ -960,7 +948,18 @@ def counted(monkeypatch):
     ('timed_target_return', 2),  # E4 + E6 — ONE surface, TWO external poses
     ('go_home', 1),             # E5
     ('platform_pose', 1),       # E1
-    ('dynamic_target', 1),      # E2
+    # 'dynamic_target' (E2) was REMOVED at R4 (2026-09-24): `_on_dynamic_target`
+    # / `_svc_arm_catch` no longer exist, so this per-SURFACE "exactly N applies"
+    # model has no live row to drive it onto any more — E2's replacement, the
+    # skill stack's CATCH segment, does not fit this model at all: its
+    # `receive_tilt` pin is corrected by `unified_cycle._tilts_to_plan`, which
+    # calls `levelling.correct_pose` ONCE PER KNOT of the cycle's tilt series,
+    # not once per external pose, so a fixed `rows` count here would be
+    # meaningless. The still-live claim this row protected — one correction
+    # LOOKUP per window, built at the seed and carried through it (E8 /
+    # I-LEVEL-2) — is driven by `tests/ros/test_unified_cycle_levelling.py`
+    # and `tests/motion/test_skills_executor.py::
+    # test_the_spliced_meta_keeps_the_HEADS_levelling_frame`, not here.
 ])
 def test_external_surface_applies_the_correction_exactly_once_per_row(
         surface, rows, counted):
@@ -988,17 +987,17 @@ def test_external_surface_applies_the_correction_exactly_once_per_row(
                                  Trigger.Response()).success is True
     elif surface == 'platform_pose':
         node._on_platform_pose(_platform_pose())
-    elif surface == 'dynamic_target':
-        _arm(node, True)
-        counted.count = 0                   # arm_catch itself must apply nothing
-        node._on_dynamic_target(_dynamic_target(node, z=172.0))
     assert counted.count == rows
 
 
 @pytest.mark.parametrize('surface', ['hold', 'reseed_from_measured', 'seed',
-                                     'arm_catch', 'graceful_stop'])
+                                     'graceful_stop'])
 def test_derived_surface_applies_the_correction_exactly_zero_times(
         surface, counted):
+    """'arm_catch' was REMOVED at R4 (2026-09-24): `_svc_arm_catch` no longer
+    exists — the arm/disarm catch latch was deleted with the rest of the FSM
+    catch-reach plumbing, so there is no surviving surface to assert 'applies
+    nothing' about."""
     node = _node()
     counted.count = 0
     if surface == 'hold':
@@ -1007,8 +1006,6 @@ def test_derived_surface_applies_the_correction_exactly_zero_times(
         node._svc_reseed_from_measured(Trigger.Request(), Trigger.Response())
     elif surface == 'seed':
         node._seed_hold_from(_ACTIVATE_REV)
-    elif surface == 'arm_catch':
-        _arm(node, True)
     elif surface == 'graceful_stop':
         node._install_graceful_stop('test')
     assert counted.count == 0
@@ -1017,16 +1014,26 @@ def test_derived_surface_applies_the_correction_exactly_zero_times(
 # ── The regression this whole plan exists to fix ────────────────
 
 
-def _positioned_then_catch(node):
-    """`go_to_pose(identity)` → run it out → `catch/dynamic_target(identity)` at
-    the same xyz. Returns (held rotvec before the catch, installed catch plan)."""
+def _positioned_then_catch(node, tilt=None):
+    """`go_to_pose(identity)` → run it out → a `build_catch` reach at the same
+    xyz, fed the CORRECTED target the deleted `_catch_target_from_msg` used to
+    build (see `_corrected_catch_target`). Returns (held rotvec before the
+    catch, the built catch plan). `planner.build_catch` is called DIRECTLY —
+    ported at R4 (2026-09-24): the node no longer has a
+    `catch/dynamic_target` ingest to drive this through."""
+    from jugglebot.motion.trajectory import planner as _planner
     assert node._svc_go_to_pose(_go_to_pose_req(z=170.0, duration_s=1.0),
                                 GoToPose.Response()).accepted is True
     node._plan_t0 = node._plan_t0 - (node._active_plan.total_duration + 0.05)
     held = np.asarray(node._current_state()[0])[3:6].copy()
-    _arm(node, True)
-    node._on_dynamic_target(_dynamic_target(node, x=0.0, y=0.0, z=170.0))
-    return held, node._active_plan
+    target, seat = _corrected_catch_target(node, x=0.0, y=0.0, z=170.0,
+                                           tilt=tilt)
+    state0 = (np.asarray(node._current_state()[0], dtype=float),
+             np.zeros(6), np.zeros(6))
+    plan, _report = _planner.build_catch(
+        state0, target, 1.2, node._limits, node._geom,
+        settle_hold_s=node._catch_settle_hold_s, receive_tilt=seat)
+    return held, plan
 
 
 def test_positioning_and_catch_land_in_the_same_frame():
@@ -1268,13 +1275,7 @@ def test_catch_through_seat_aims_off_the_gravity_referenced_receive_tilt(
     _set_seat_rate(monkeypatch)
     wire_tilt = np.array([0.03, -0.12])          # 1.72° / −6.88°, gravity frame
     node2 = _node()
-    assert node2._svc_go_to_pose(_go_to_pose_req(z=170.0, duration_s=1.0),
-                                 GoToPose.Response()).accepted is True
-    node2._plan_t0 = node2._plan_t0 - (node2._active_plan.total_duration + 0.05)
-    _arm(node2, True)
-    node2._on_dynamic_target(
-        _dynamic_target(node2, z=170.0, lead_s=1.2, tilt=wire_tilt))
-    tilted = node2._active_plan
+    _held2, tilted = _positioned_then_catch(node2, tilt=wire_tilt)
     assert len(tilted.segments) == 3, 'a real receive tilt must still be seated'
     reach_end = np.asarray(tilted.state_at(tilted.segments[0].duration)[0])[3:5]
     seat = np.asarray(tilted.final_pose)[3:5] - reach_end
@@ -1328,38 +1329,36 @@ def test_in_flight_plan_keeps_its_frame_when_a_new_offset_arrives():
                        atol=1e-12)
 
 
-def test_correction_never_moves_the_catch_reach_envelope():
-    """Both sides of the envelope test are position-only, so a pure tilt
-    correction cannot move the margin. Verified rather than argued, because the
-    swing-compensated pre-tilt POSITION that Tier 8b ships is computed
-    request-side and passes through `correct_pose` untouched."""
-    node = _node()
-    _arm(node, True)
-    centre = np.asarray(node._catch_envelope_center, dtype=float)
-    assert np.allclose(centre, [0.0, 0.0, hw.JB_OP_DEFAULT_ACTIVE_Z_MM], atol=1e-9)
-
-    msg = _dynamic_target(node, x=25.0, y=-12.0, z=175.0)
-    target, _twist, _seat = node._catch_target_from_msg(msg)
-    assert np.array_equal(target[:3], [25.0, -12.0, 175.0])
-    node_off = _node(offset=None)
-    target_uncorrected, _, _ = node_off._catch_target_from_msg(msg)
-    assert np.array_equal(target[:3], target_uncorrected[:3])
+# `test_correction_never_moves_the_catch_reach_envelope` was DELETED at R4
+# (2026-09-24), not ported. Its claim was about the catch-reach-envelope latch
+# (`_catch_envelope_center`, set by the deleted `_svc_arm_catch`) staying
+# position-only under a tilt correction. That mechanism is not merely moved —
+# it is RETIRED outright: `_catch_envelope_center` is now written only to
+# `None` (its one remaining writer, `_on_control_mode`'s reset), no method
+# still sets it to a real centre, and `motion/trajectory/catch_reach.py` (the
+# module that used to own the envelope check) was deleted the same day with
+# its needed body ported to `tools/probes/displaced_reach_frontier.py` as a
+# measurement, not a command (see `motion/skills/INVARIANTS.md` rows C-REACH-1
+# / I-CATCH-1, both RETIRE@R4). There is no live enforcement point left to
+# re-drive this claim onto; `levelling.correct_pose`'s own docstring still
+# states the general position-untouched fact this test used to exercise.
 
 
 def test_the_receive_tilt_leaves_the_ingest_UNCORRECTED():
     """C-LEVEL-1 and C-CATCH-1 pull the same wire message two different ways.
 
-    `catch/dynamic_target` carries ONE orientation, and `_catch_target_from_msg`
-    has to hand over two things from it: the **corrected** pose (where the legs are
-    commanded — C-LEVEL-1 E2) and the **uncorrected** receive tilt (what the ball
-    is physically doing — C-CATCH-1's seat direction). Correcting the second is a
-    one-token slip that restores the 2026-07-25 defect in full, and it is invisible
-    to every other test in this file: the corrected pose would still be right.
+    Ported at R4 (2026-09-24): `catch/dynamic_target` / `_catch_target_from_msg`
+    are gone, so this is driven through `_corrected_catch_target` — the
+    test-local port of what that method used to hand over: the **corrected**
+    pose (where the legs are commanded — C-LEVEL-1 E2) and the **uncorrected**
+    receive tilt (what the ball is physically doing — C-CATCH-1's seat
+    direction). Correcting the second is a one-token slip that restores the
+    2026-07-25 defect in full, and it is invisible to every other test in this
+    file: the corrected pose would still be right.
     """
     node = _node()
     wire = np.array([0.03, -0.12])                # gravity-referenced receive tilt
-    msg = _dynamic_target(node, z=172.0, tilt=wire)
-    target, _twist, seat = node._catch_target_from_msg(msg)
+    target, seat = _corrected_catch_target(node, z=172.0, tilt=wire)
 
     assert np.allclose(seat, wire, atol=1e-12), (
         'the receive tilt must be the WIRE orientation, uncorrected')
@@ -1373,5 +1372,5 @@ def test_the_receive_tilt_leaves_the_ingest_UNCORRECTED():
     # With no correction loaded they coincide, which is why `sim/` (no levelling
     # concept at all) is correct to let `build_catch` fall back to the catch pose.
     node_off = _node(offset=None)
-    target_off, _t, seat_off = node_off._catch_target_from_msg(msg)
+    target_off, seat_off = _corrected_catch_target(node_off, z=172.0, tilt=wire)
     assert np.allclose(target_off[3:5], seat_off, atol=1e-12)

@@ -3,7 +3,10 @@
 WHY THIS IS A PER-COMMIT GATE AND NOT A NIGHTLY CHARACTERISATION
 ----------------------------------------------------------------
 The owner's rule for the unified path is **≤ 50 ms per cycle**, and planning runs
-off the emitter thread, inside `trajectory_node`'s `PlanCycle` service (the
+off the emitter thread, inside `trajectory_node`'s `install_segment` service (the
+skill stack's one install path — the FSM-era `PlanCycle` service this budget
+originally measured was retired at R4, 2026-09-24; the call shape and the
+budget are unchanged, see `logbook/` for the FSM-deletion entry) (the
 determinism rule: no solve and no blocking I/O in the 40 Hz loop).  A budget that is only measured
 nightly cannot fail the commit that breaks it, and by the time the nightly reports
 it the cause is a day of commits back.  So this file is ``serial`` — it measures

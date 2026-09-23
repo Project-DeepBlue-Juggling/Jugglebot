@@ -82,11 +82,10 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
 
 from std_msgs.msg import Float64MultiArray, String
-from std_srvs.srv import SetBool, Trigger
+from std_srvs.srv import Trigger
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
 from geometry_msgs.msg import Point, Pose, Quaternion
 from jugglebot_interfaces.msg import (
-    DynamicTargetCommand,
     PlatformPoseCommand,
     RobotState,
     TargetFeedback,
@@ -95,7 +94,6 @@ from jugglebot_interfaces.msg import (
 from jugglebot_interfaces.srv import (
     GoToPose,
     InstallSegment,
-    PlanCycle,
     SetTrajectoryLimits,
     TimedTarget,
 )
@@ -365,7 +363,8 @@ _STOP_RETRY_ITERS = 6
 # must agree on the SAME phase — t_k = G + k·dt — or a frame's stamped knot
 # time and a fresh plan's origin land at different sub-knot offsets, which is
 # exactly the off-knot sampling the C2FF probe measured as 299-679 rev/s² hand
-# accel steps (see the `_CYCLE_KINDS` comment block below). G is fixed at 0:
+# accel steps (see the "Unified 7-DoF cycle" C2FF comment block below). G is
+# fixed at 0:
 # grid nodes are exact integer multiples of `dt` in `perf_counter()` time, a
 # pure function of `dt` and the current instant with no cross-thread state to
 # share — the emitter loop snaps its OWN first deadline onto this grid (see
@@ -801,15 +800,6 @@ class TrajectoryNode(Node):
         # catches and must not be re-aimed from under itself — see
         # `_on_dynamic_target`). None whenever there is no active cycle.
         self._cycle_owner = None
-        # Absolute (perf) instant by which a RELEASE-TERMINAL cycle plan must have
-        # been superseded, or None when the active plan is rest-terminal (or there
-        # is none). Past it the emitter's u1/v1 come from the terminal HOLD, so the
-        # final 25 ms segment — the release stroke — is commanded to a stop, and NO
-        # firmware guard fires on that. The node does not fix it (the orchestrator
-        # owns the chain); it publishes it and it ALARMS, because this is the class
-        # of failure that otherwise leaves no trace at all.
-        self._cycle_supersede_deadline = None
-        self._cycle_deadline_alarmed = False
         # Catch-side replans spent on the CURRENT INSTALLED WINDOW. Reset by a
         # NEW install and by an EXTEND — i.e. by the two operations that give the
         # cycle a fresh terminal release to re-aim toward — and by nothing else.
@@ -854,17 +844,6 @@ class TrajectoryNode(Node):
         # Gravity-levelling correction (verbatim port from mpc_bridge_node).
         self.create_subscription(Float64MultiArray, 'gravity_offset',
                                  self._on_gravity_offset, 10)
-        # Catch coordinator's timed catch target (latch-gated; Phase 5).
-        self.create_subscription(DynamicTargetCommand, 'catch/dynamic_target',
-                                 self._on_dynamic_target, 10)
-        # Declared reach-envelope centre (contract C-REACH-1,
-        # ros_ws/docs/catch_reach_envelope.md). The arming coordinator publishes
-        # the NOMINATED catch point here BEFORE calling trajectory/arm_catch; the
-        # next arm_catch call consumes it (see _svc_arm_catch). STOW-frame
-        # platform position, mm — the same 3-vector convention as
-        # DynamicTargetCommand.target_pos and as the commanded pose it replaces.
-        self.create_subscription(Point, 'catch/reach_center',
-                                 self._on_reach_center, 10)
         # FIX 1 — Teensy guard state. The bridge publishes /link_status (a
         # DiagnosticStatus) at 10 Hz carrying the guard 'fault_state' KeyValue; we
         # watch it so a latched E-STOP freezes command advancement instead of letting
@@ -880,11 +859,11 @@ class TrajectoryNode(Node):
         # one); see `_install`'s `require_epoch` and `bump_epoch`.
         #
         # SCOPE — every service whose handler PLANS and then installs carries the
-        # guard, not just plan_cycle: `go_home`, `go_to_pose`, `timed_target` and
-        # `_plan_and_install_catch` were all serialized behind the hold before the
+        # guard, not just install_segment: `go_home`, `go_to_pose` and
+        # `timed_target` were all serialized behind the hold before the
         # reentrant group existed, and each now takes hundreds of ms during which
         # a hold can land. A move installed over a hold undoes the operator's
-        # cancel exactly as a cycle would. Each captures the epoch at handler
+        # cancel exactly as a segment would. Each captures the epoch at handler
         # entry and refuses through its own existing failure path.
         self._install_epoch = 0
         # ── `trajectory/hold` runs on its OWN reentrant group ────────────────
@@ -918,23 +897,16 @@ class TrajectoryNode(Node):
                             self._svc_set_limits)
         self.create_service(TimedTarget, 'trajectory/timed_target',
                             self._svc_timed_target)
-        # Unified 7-DoF cycle planning (plan Phase 4). The SOLVE runs inside this
-        # callback — ~250 ms budgeted — because only this node holds the live
-        # commanded state the window must start from. See PlanCycle.srv's header
-        # for the full root-cause note; the emitter is a separate thread and never
-        # stalls, but the executor does, exactly as go_to_pose already does.
-        self.create_service(PlanCycle, 'trajectory/plan_cycle',
-                            self._svc_plan_cycle)
         # ONE skill segment, installed at a fresh origin or spliced into the
-        # streaming plan (skill-stack R2, Unit D2 — InstallSegment.srv). PlanCycle
-        # stays for the FSM until R4 (owner decision, 2026-09-12); this is the
-        # skill stack's own install path and does not touch it.
+        # streaming plan (skill-stack R2, Unit D2 — InstallSegment.srv). The
+        # SOLVE runs inside this callback — ~250 ms budgeted — because only this
+        # node holds the live commanded state the window must start from; the
+        # emitter is a separate thread and never stalls, but the executor does,
+        # exactly as go_to_pose already does. `trajectory/plan_cycle` (the FSM
+        # ring's own version of this call) was retired at R4, 2026-09-24 — see
+        # `logbook/` for the FSM-deletion entry.
         self.create_service(InstallSegment, 'trajectory/install_segment',
                             self._svc_install_segment)
-        # Catch-armed latch (reload-action-catch-latch plan, Phase 1). SetBool:
-        # data=True arms, data=False disarms. The RELOAD action drives it for the
-        # catch flight window instead of a persistent control mode.
-        self.create_service(SetBool, 'trajectory/arm_catch', self._svc_arm_catch)
         # FIX 3 — one-call guard recovery support. The bridge's /recover calls this
         # FIRST (before CLEAR_ERRORS) so the commanded u0 collapses onto the frozen
         # encoder and the subsequent clear cannot re-latch MAX_DEVIATION.
@@ -1463,13 +1435,6 @@ class TrajectoryNode(Node):
     # Subscriptions
     # ═══════════════════════════════════════════════════════════
 
-    def _reset_catch_reach_freeze(self) -> None:
-        """Release any committed catch-reach freeze window (``_catch_arrival_perf``
-        → None). The single named enforcement point for "a fresh catch session (or an
-        abort) must not inherit a stale freeze", called from the catch-armed latch
-        edges and a fresh telemetry seed."""
-        self._catch_arrival_perf = None
-
     def _install_graceful_stop(self, context: str) -> None:
         """Install a graceful decel-to-rest from the LIVE commanded state — a C2
         duration-stretched stop that decelerates IN PLACE (never runs on to the old
@@ -1507,7 +1472,7 @@ class TrajectoryNode(Node):
         # emitter-silence (leaving the stream set) logic in the branches below.
         if self._catch_armed:
             self._catch_armed = False
-            self._reset_catch_reach_freeze()
+            self._catch_arrival_perf = None
             self._catch_envelope_center = None
             self.get_logger().info(
                 f"catch latch force-disarmed on mode change "
@@ -1693,7 +1658,7 @@ class TrajectoryNode(Node):
         self._pending_stop = False   # fresh at-rest seed supersedes any pending stop
         self._escalation_stop = False       # A3: a reseed clears the escalation latch
         self._escalate_stop_fail_count = 0
-        self._reset_catch_reach_freeze()  # a fresh seed releases any frozen catch reach
+        self._catch_arrival_perf = None  # a fresh seed releases any frozen catch reach
         self.get_logger().info(
             f"seeded hold at pose x={pose[0]:.1f} y={pose[1]:.1f} "
             f"z={pose[2]:.1f} mm (from measured telemetry)")
@@ -1979,32 +1944,6 @@ class TrajectoryNode(Node):
         return ("Teensy guard latched (E-STOP) — command advancement is frozen at "
                 "the measured hold; recover with /recover (or /clear_errors) before "
                 "commanding motion")
-
-    def _on_reach_center(self, msg) -> None:
-        """``catch/reach_center``: the arming coordinator DECLARES where this
-        catch is nominated to happen (contract C-REACH-1).
-
-        Stored as *pending* only — it becomes the live envelope centre when the
-        next ``trajectory/arm_catch`` raise consumes it, never on arrival. That
-        ordering is deliberate: a declaration that lands while a catch is
-        already armed must not move the envelope out from under an in-flight
-        ball, which is the one way this channel could create motion the operator
-        never asked for.
-
-        Non-finite components are dropped loudly rather than stored: a NaN
-        centre would make every ``excursion > envelope`` comparison False and
-        silently disable the gate for the whole catch — the exact opposite of
-        fail-closed. Dropping leaves the co-located default in place, which
-        rejects the displaced reach loudly instead.
-        """
-        p = (float(msg.x), float(msg.y), float(msg.z))
-        if not all(math.isfinite(v) for v in p):
-            self.get_logger().error(
-                f"catch/reach_center {p} is non-finite — DISCARDED; the arm "
-                f"raise will fall back to the commanded pose (a declared NaN "
-                f"centre would disable the envelope gate entirely)")
-            return
-        self._pending_reach_center = np.array(p, dtype=float)
 
     # ═══════════════════════════════════════════════════════════
     # SpaceMouse / GUI follower (Phase 3)
@@ -2527,10 +2466,11 @@ class TrajectoryNode(Node):
 
         Only the CyclePlan-carrying (hand-track) install paths call this — see
         ``_svc_install_segment``'s fresh-origin branch. Every other install
-        (holds, go_to_pose, the follower, guard descents, the FSM
-        ``PlanCycle`` path) keeps its un-snapped ``t0`` unchanged: the C2 gate
-        this exists for is a HAND fact, and snapping every install would ripple
-        into timing paths this spec never touched.
+        (holds, go_to_pose, the follower, guard descents — and, before the R4
+        FSM deletion (2026-09-24), the retired ``trajectory/plan_cycle`` path)
+        keeps its un-snapped ``t0`` unchanged: the C2 gate this exists for is a
+        HAND fact, and snapping every install would ripple into timing paths
+        this spec never touched.
         """
         return _ceil_to_grid(float(t), float(self._limits.knot_dt_s))
 
@@ -2656,15 +2596,13 @@ class TrajectoryNode(Node):
             # A non-cycle install SUPERSEDES the unified cycle, so the record dies
             # with it. Without this a hold, a graceful stop or a guard descent would
             # leave `_cycle` describing a plan the emitter has stopped playing, and
-            # the next EXTEND would chain a window onto a release that is never going
-            # to happen. `_svc_plan_cycle` re-installs the record immediately after
-            # its own `_install` returns — the same "clear here, the informed caller
-            # writes after" discipline `_last_peak_*` above uses.
+            # the next splice would chain a segment onto a release that is never
+            # going to happen. `_svc_install_segment` re-installs the record
+            # immediately after its own `_install` returns — the same "clear here,
+            # the informed caller writes after" discipline `_last_peak_*` above uses.
             if not isinstance(plan, CyclePlan):
                 self._cycle = None
                 self._cycle_owner = None
-                self._cycle_supersede_deadline = None
-                self._cycle_deadline_alarmed = False
                 # A segment warm start seeded from a plan that just got
                 # superseded (a hold, a graceful stop, a legacy move) describes
                 # a solve that will never happen — see the attribute's comment.
@@ -3362,538 +3300,6 @@ class TrajectoryNode(Node):
         self._publish_target_feedback(True, feas.OK, '', arrival_perf, source)
         return True, feas.OK, 'timed target accepted', float(lead), 0.0
 
-    def _plan_and_install_catch(self, catch_pose, arrival_perf, *, receive_tilt,
-                                source):
-        """Build the tilt-through-seat catch plan to ``catch_pose`` arriving at
-        ``arrival_perf`` and install it (supersede-safe). Returns the same
-        ``(accepted, code, message, planned_s, min_s)`` tuple as
-        ``_plan_and_install_timed`` and always publishes ``trajectory/target_feedback``.
-
-        The difference from ``_plan_and_install_timed`` is the planner: ``build_catch``
-        assembles reach → tilt-through-seat decay → literal quiescent hold (rather than
-        a bare reach-to-rest). ``catch_pose`` is where the legs must be commanded (the
-        C-LEVEL-1-corrected pose); ``receive_tilt`` is the GRAVITY-REFERENCED receive
-        tilt the through-seat must aim along, and the two are different vectors
-        whenever a levelling correction is loaded — hence two arguments, per C-CATCH-1
-        (``ros_ws/docs/catch_arrival_contract.md``). ``build_catch`` forces
-        translational arrival velocity to zero (velocity matching is the hand's job).
-        Same fast ``validate_follow`` gate and same install-continuity guard, so the
-        C2-supersede and pump-acceptance guarantees carry over unchanged.
-        ``hold_after=True``: the plan holds the settled catch pose (the mode-exit →
-        STANDBY path owns the return to neutral, exactly as the Phase-5 catch reach
-        did).
-        """
-        # A hold can now land DURING this solve (it is on a reentrant group), and
-        # a move installed over it would undo the operator's cancel. Same guard as
-        # the cycle path: capture the epoch at entry, refuse at the install.
-        with self._plan_lock:
-            epoch0 = self._install_epoch
-        seed_mono = time.perf_counter()
-        lead = arrival_perf - seed_mono
-        try:
-            plan, report = planner.build_catch(
-                self._current_state(), catch_pose, lead,
-                self._limits, self._geom,
-                settle_hold_s=self._catch_settle_hold_s,
-                receive_tilt=receive_tilt,
-                hold_after=True)
-        except TrajectoryInfeasible as e:
-            self._last_rejection = str(e)
-            self.get_logger().error(f"{source} catch target rejected: {e}")
-            self._publish_target_feedback(False, e.code, str(e), arrival_perf, source)
-            return False, e.code, str(e), 0.0, float(e.min_duration_s)
-        if not self._install_continuity_ok(plan):
-            msg = ('commanded state moved during planning (%s) — retry'
-                   % (self._continuity_detail,))
-            self._last_rejection = msg
-            self.get_logger().error(msg)
-            self._publish_target_feedback(
-                False, feas.STALE_STATE, msg, arrival_perf, source)
-            return False, feas.STALE_STATE, msg, 0.0, 0.0
-        if not self._install(plan, t0=seed_mono, require_epoch=epoch0):
-            msg = ('a trajectory/hold landed while this catch was planning — '
-                   'the hold keeps the wire')
-            self._last_rejection = msg
-            self._publish_target_feedback(
-                False, _SUPERSEDED_BY_HOLD, msg, arrival_perf, source)
-            return False, _SUPERSEDED_BY_HOLD, msg, 0.0, 0.0
-        # Predicted leg peaks for trajectory/diagnostics (same as _plan_and_install_timed;
-        # the install resets only the realized peaks).
-        self._last_peak_vel_mmps = report.peak_leg_vel_mmps
-        self._last_peak_acc_mmps2 = report.peak_leg_acc_mmps2
-        self._last_peak_jerk_mmps3 = report.peak_leg_jerk_mmps3
-        self.get_logger().debug(
-            f"{source} catch install latency "
-            f"{(time.perf_counter() - seed_mono) * 1e3:.1f} ms")
-        self._publish_target_feedback(True, feas.OK, '', arrival_perf, source)
-        return True, feas.OK, 'catch target accepted', float(lead), 0.0
-
-    def _catch_target_from_msg(self, msg):
-        """DynamicTargetCommand → (target pose_6dof, arrival twist, receive tilt) in
-        the trajectory convention. The wire pose is ALREADY STOW-relative (0 = stow,
-        ~170 = active — the coordinator subtracts GEOM_INITIAL_HEIGHT from the world
-        intercept), i.e. the same frame as the trajectory pose, so it maps through
-        VERBATIM. Hardware-verified 2026-07-23; the former "+ active_z" lift here was
-        a double-count that drove every catch reach out of stroke. The orientation
-        carries the gravity-levelling correction (C-LEVEL-1 ingest E2).
-
-        The third return is the **gravity-referenced receive tilt** — the wire
-        orientation's ``(rx, ry)`` BEFORE the correction. The coordinator computes it
-        from the ball's arrival velocity against gravity (``compute_catch_orientation``
-        → ``tilt_to_receive``), so it is gravity-referenced by construction, and it is
-        deliberately NOT corrected: C-CATCH-1 (``ros_ws/docs/catch_arrival_contract.md``)
-        needs the physical seat direction, while the corrected pose is where the legs
-        must be commanded. Passing the corrected tilt here instead would aim a
-        gravity-level catch's through-seat along the correction — the 2026-07-25
-        defect, in one line."""
-        q = msg.target_quat
-        rot = quat_to_rot_matrix(float(q.w), float(q.x), float(q.y), float(q.z))
-        rotvec = rot_matrix_to_rotvec(rot)
-        # C-LEVEL-2: keyed on the catch point's OWN x/y — a displaced catch is
-        # exactly the case the residual map exists for.
-        intent = np.array([
-            float(msg.target_pos.x),
-            float(msg.target_pos.y),
-            float(msg.target_pos.z),
-            rotvec[0], rotvec[1], rotvec[2]])
-        try:
-            correction = levelling.correction_for_pose(
-                self._gravity_offset, self._active_tilt_map(), intent)
-        except tilt_map.TiltMapError as exc:
-            correction = self._tilt_map_degraded('E2 catch/dynamic_target', exc)
-        target = levelling.correct_pose(intent, correction)
-        # Linear arrival velocity only (angular arrival rate = 0). Velocity is
-        # frame-offset-invariant, so no z adjustment — and C-LEVEL-1's last clause
-        # forbids rotating it: the correction is a bias on the commanded ROTATION,
-        # not a re-expression of the platform frame.
-        twist = np.array([float(msg.target_vel.x), float(msg.target_vel.y),
-                          float(msg.target_vel.z), 0.0, 0.0, 0.0])
-        receive_tilt = np.array([rotvec[0], rotvec[1]])
-        return target, twist, receive_tilt
-
-    def _on_dynamic_target(self, msg) -> None:
-        """``catch/dynamic_target``: a timed catch target.
-
-        Fires only when the catch-armed latch is raised (the reload-action trigger —
-        the node stays in TRAJECTORY throughout). Outside the latch, a dynamic_target
-        is ignored.
-
-        ``arrival_time`` is ALREADY perf-domain (the coordinator converted
-        landing_time → perf), so no clock crossing here — the single crossing is the
-        ROS-time ``timed_target`` service. Each update supersedes the prior via a C2
-        replan through ``build_catch`` (fast gate) — EXCEPT inside the reach-freeze
-        window (within ``catch_reach_freeze_s`` of the committed arrival), where late
-        target jitter is ignored so the platform holds its committed reach into the
-        catch (a parked, non-jittering rim seats the ball; the reload design). An
-        operator abort lowers the latch, which clears the freeze via
-        _reset_catch_reach_freeze.
-
-        **The gate ladder is SHARED with the unified cycle's replan.** Both
-        consumers of this topic answer the same two questions before they plan —
-        *is this target inside the committed reach-freeze* and *is it inside the
-        armed reach envelope* — and both must answer them BEFORE the plan call,
-        not after: `replan_tail` costs a full ~180 ms solve on the node's
-        single-threaded executor, so a target that was always going to be refused
-        would stall ingest for a fifth of a second to say so. Sharing the ladder
-        also keeps the two feedback vocabularies identical, which
-        catch_coordinator's feasibility blacklist depends on (it blacklists on
-        `WORKSPACE` and neither accepts nor blacklists on `_FROZEN`).
-        """
-        # ONE snapshot under the lock, carried to `_replan_cycle_from_target`
-        # rather than re-read there: `trajectory/hold` runs concurrently now and
-        # clears `self._cycle` under this lock, so a second read could unpack None
-        # (see `_plan_cycle_extend` for what an uncaught TypeError costs here).
-        with self._plan_lock:
-            cycle = self._cycle
-            # Read UNDER THE SAME LOCK as the record it describes: an install
-            # landing between two separate reads could otherwise pair a
-            # segment plan with a stale `_OWNER_CYCLE` and let one update
-            # through (harmless — it would just be refused by the planner as
-            # before — but a same-lock read costs nothing and the pair is then
-            # always consistent).
-            owner = self._cycle_owner
-        unified = cycle is not None
-        # ── The unified cycle owns this interval (plan Phase 4) ──
-        # A landing update while a CyclePlan is installed is EXACTLY the replan
-        # trigger the plan names: "on a tracker landing update, only the catch-side
-        # tail of the committed cycle re-plans" (owner, 2026-08-29). Routing it
-        # through `build_catch` instead would install a 6-channel reach over a
-        # 7-channel plan — dropping the hand track mid-flight with a ball in the
-        # air, which is the one thing the unified path exists to stop happening.
-        # Deliberately NOT gated on `_catch_armed`: under unified nothing arms a
-        # reactive catch, so the latch is down by design and gating on it would
-        # silence every replan.
-        if not unified and not self._catch_armed:
-            return
-        source = 'cycle' if unified else 'catch'
-        arrival_perf = float(msg.arrival_time)
-        # ── The SKILL STACK owns this interval: refuse before any solve ──
-        # See `_SEGMENT_OWNED`. Placed ahead of the reach-freeze and
-        # reach-envelope ladder below because none of those questions apply: the
-        # update is not being judged, it is being declined. The feedback still
-        # goes out on `trajectory/target_feedback` so the coordinator's
-        # accept/reject correlation keeps working, and the log line is a
-        # THROTTLED warn — one per 5 s — because at 100 Hz a per-update line is
-        # the whole log.
-        if unified and owner == _OWNER_SEGMENT:
-            self._publish_target_feedback(
-                False, _SEGMENT_OWNED,
-                'the active plan was installed by trajectory/install_segment — '
-                'the skill stack aims its own catches and is not re-aimed from '
-                'catch/dynamic_target', arrival_perf, source)
-            self.get_logger().warn(
-                'catch/dynamic_target ignored: the skill stack owns the active '
-                'plan (install_segment). Nothing is wrong — the executor aims '
-                'its catches from the commanded landing.',
-                throttle_duration_sec=5.0)
-            return
-        if self._guard_frozen:                       # FIX 1 — refuse while latched
-            self._publish_target_feedback(
-                False, _GUARD_LATCHED, self._guard_frozen_msg(),
-                arrival_perf, source)
-            return
-        if not (self._seeded and self._robot_state_fresh()):
-            self._publish_target_feedback(
-                False, feas.STALE_STATE,
-                'not seeded / telemetry stale', arrival_perf, source)
-            return
-        # Reach-freeze window management. `_catch_arrival_perf` is the committed
-        # arrival; the freeze runs from `arrival − reach_freeze` and holds through the
-        # quiescent settle (`arrival + settle_hold`).
-        if self._catch_arrival_perf is not None:
-            now = time.perf_counter()
-            if now > self._catch_arrival_perf + self._catch_settle_hold_s:
-                # Committed arrival + settle has fully passed — release the freeze so
-                # THIS (and every later) target supersedes as a new reach. Without this
-                # the freeze latched forever and every post-catch target was silently
-                # dropped (breaks repeated catches).
-                self._catch_arrival_perf = None
-            elif now >= self._catch_arrival_perf - self._catch_reach_freeze_s:
-                # Genuinely frozen: hold the committed reach and IGNORE this late
-                # target — but report FROZEN (a service-level code, NOT a feasibility
-                # reject) so the coordinator neither accepts nor blacklists it, rather
-                # than dropping it silently.
-                self._publish_target_feedback(
-                    False, _FROZEN,
-                    'within reach-freeze window — holding committed catch reach',
-                    arrival_perf, source)
-                return
-        target, _twist, receive_tilt = self._catch_target_from_msg(msg)
-        # Reach-envelope gate (the envelope build_catch documents as the caller's
-        # responsibility): reject any target farther than the envelope (3D) from the
-        # centre captured at the arm-latch raise — the coordinator's DECLARED
-        # nominated catch point when it declared one, else the pose held at that
-        # raise (contract C-REACH-1). WORKSPACE is deliberate — it is a
-        # position-unreachable-by-policy reject, so the coordinator's feasibility
-        # blacklist counts it (a drifting landing estimate blacklists out instead of
-        # dragging the platform sideways all flight).
-        if self._catch_envelope_center is not None:
-            excursion = float(np.linalg.norm(
-                target[:3] - self._catch_envelope_center))
-            if excursion > self._catch_reach_envelope_mm:
-                c = self._catch_envelope_center
-                reason = (
-                    f"catch target {excursion:.0f} mm from the armed catch "
-                    f"centre ({c[0]:.0f}, {c[1]:.0f}, {c[2]:.0f}) exceeds the "
-                    f"{self._catch_reach_envelope_mm:.0f} mm reach envelope")
-                self._last_rejection = reason
-                self.get_logger().error(f"catch target rejected: {reason}")
-                self._publish_target_feedback(
-                    False, feas.WORKSPACE, reason, arrival_perf, source)
-                return
-        if unified:
-            self._replan_cycle_from_target(msg, cycle)
-            return
-        # Phase 7: build the tilt-through-seat catch (reach → through-seat decay →
-        # quiescent hold) rather than the Phase-5 reach-only build_timed.
-        # ``build_catch`` carries a small residual rate through the seat so the rim is
-        # not parked at contact; it aims that rate along ``receive_tilt`` (the
-        # UNCORRECTED wire orientation — the gravity-referenced physical seat), NOT
-        # along ``target[3:5]``, which carries the levelling correction and would
-        # therefore ramp a gravity-level catch off level at contact (C-CATCH-1).
-        # ``_twist`` (the coordinator's target_vel — always zero for a stationary
-        # catch) is unused: build_catch forces translational arrival velocity to zero
-        # by design.
-        accepted, _code, _msg, _pl, _mn = self._plan_and_install_catch(
-            target, arrival_perf, receive_tilt=receive_tilt, source='catch')
-        if accepted:
-            self._catch_arrival_perf = arrival_perf
-
-    def _replan_cycle_from_target(self, msg, cycle) -> None:
-        """A tracker landing update, routed to the cycle's bounded catch-side replan.
-
-        **What a ``DynamicTargetCommand`` can and cannot say about a cycle's catch.**
-        The message carries a STOW-relative PLATFORM pose and a zero arrival twist
-        (``build_catch`` forces translational arrival velocity to zero — velocity
-        matching is the hand's job on the legacy path). A ``CycleGoals`` catch is a
-        CUP-OPENING site with a GLOBAL z plus the BALL's arrival velocity. Two of
-        those four quantities are simply not on this wire:
-
-        * the cup-opening HEIGHT is not derivable from a platform centroid z without
-          the slider position the plan is about to choose, and
-        * the ball's arrival VELOCITY is not carried at all (the field that looks
-          like it is always zero here).
-
-        So the update moves the catch site **in xy and in nothing else**, and the
-        committed z and arrival velocity are carried across from the plan's own
-        catch mark. That is the honest reading of a landing revision — the tracker is
-        telling us WHERE on the catch plane the ball will arrive, not that it has
-        changed its mind about the plane or the speed — and it keeps the replan
-        strictly inside the envelope ``replan_tail`` was measured on. Widening it
-        needs a wider message, not a guess made here.
-
-        **The xy that moves is the CUP's, and the wire carries the CENTROID's.**
-        ``catch_coordinator._compute_catch_command`` publishes the platform
-        centroid it wants, having already subtracted the cup-vs-centroid offset
-        from the ball's predicted landing::
-
-            centroid = landing − HAND_CATCH_OFFSET_MM · platform_z(quat)
-
-        (``build_catch`` then consumes that centroid VERBATIM, which is what pins
-        the frame). ``CycleGoals.catch_site_mm`` is a CUP-OPENING site, so copying
-        ``target_pos.x/y`` straight into it hands the planner a point that is the
-        offset short of where the ball is going, in the direction the receive tilt
-        leans — a SYSTEMATIC bias of ``64.78·sin θ`` mm: 13.5 mm at the 12° tilt
-        ceiling, and it is largest exactly when the ball is arriving fastest
-        sideways. Adding the offset back recovers the landing point the
-        coordinator started from, which is precisely the cup site the cycle should
-        catch at.
-
-        The offset used is the coordinator's OWN — ``hw.HAND_CATCH_OFFSET_MM``
-        against the wire quaternion's cup axis — and not the planner's
-        height-aware ``cup_lever_arm_mm(cup_z)`` (17.8 mm at the 830 mm catch cup
-        height), because the quantity wanted here is *where the ball will land*,
-        not *where this platform pose would put the cup*. Inverting the
-        coordinator's own compensation is exact; substituting a different lever
-        would land the cup 4.3 mm from the ball while looking more principled. The
-        planner then re-applies its own height-aware compensation when it realises
-        the site, which is where that lever belongs.
-
-        **WHICH catch is re-aimed, and why it is chosen by TIME.** A chained plan
-        carries one catch per window and only one of them is live. The obvious
-        readings both fail on a ring: ``meta.catches[0]`` is permanently the
-        FIRST catch (``extend`` pins it there), so from the second chained window
-        onward it names a touch-down that happened a beat ago; and "the first
-        catch still ahead of now" names a real catch but not necessarily THIS
-        ball's — after cycle k's touch-down the tracker keeps seeing ball k, now
-        moving with the cup and so clearing the coordinator's 5 mm movement gate,
-        and one late update for it would be re-aimed onto cycle k+1's catch,
-        dragging the cup for the NEXT ball to wherever the LAST one ended up.
-        So the update has to say which touch-down it means, and ``arrival_time``
-        already does — it is the tracker's live predicted landing for this ball,
-        in the perf domain. The mark NEAREST that instant is selected, within
-        ``_CYCLE_CATCH_MATCH_S`` (that constant carries the derivation), and the
-        update is refused ``NO_LIVE_CATCH`` when nothing matches or when what
-        matches is already inside the committed head.
-
-        Refusals are quiet on the wire but loud in the log and always reported on
-        ``trajectory/target_feedback``, so the coordinator's existing accept/reject
-        correlation keeps working unchanged; the last good plan keeps streaming.
-        """
-        arrival_perf = float(msg.arrival_time)
-        if self._guard_frozen:                       # FIX 1 — refuse while latched
-            self._publish_target_feedback(
-                False, _GUARD_LATCHED, self._guard_frozen_msg(),
-                arrival_perf, 'cycle')
-            return
-        # `cycle` is the caller's LOCK-HELD snapshot — see `_on_dynamic_target`.
-        plan, meta, t0 = cycle
-        if not meta.catches or not meta.releases:
-            self._publish_target_feedback(
-                False, _NO_CYCLE,
-                'active cycle has no catch to re-aim', arrival_perf, 'cycle')
-            return
-        mark, why = self._live_catch_mark(meta, t0, arrival_perf)
-        if mark is None:
-            self._publish_target_feedback(
-                False, _NO_LIVE_CATCH, why, arrival_perf, 'cycle')
-            return
-        site = np.asarray(mark.site_mm, dtype=float).copy()
-        # centroid → cup: undo `_compute_catch_command`'s own offset (docstring).
-        # The cup axis is the wire quaternion applied to +z — the same rotation,
-        # read the same way, that the coordinator used to subtract the offset, so
-        # the two cancel to float precision. xy only: z stays the committed cup
-        # height, which no centroid can tell us anything about.
-        q = msg.target_quat
-        cup_axis = quat_to_rot_matrix(
-            float(q.w), float(q.x), float(q.y), float(q.z)) @ np.array(
-                [0.0, 0.0, 1.0])
-        site[0] = float(msg.target_pos.x) + hw.HAND_CATCH_OFFSET_MM * cup_axis[0]
-        site[1] = float(msg.target_pos.y) + hw.HAND_CATCH_OFFSET_MM * cup_axis[1]
-        req = PlanCycle.Request()
-        req.mode = req.MODE_REPLAN
-        # The kind and the banking flag are stated rather than left at the IDL
-        # defaults (KIND_LAUNCH / banking off). `replan_tail` reads neither — it
-        # re-solves the catch-side tail of the plan already installed and inherits
-        # both from it — but a request that SAYS "an unbanked launch" while asking
-        # for a banked landing's tail is a request the next reader has to know to
-        # disbelieve, and the banking-off warning above was firing on every single
-        # landing update because of it.
-        req.kind = req.KIND_LANDING
-        req.banking_enabled = True
-        req.catch_site_mm = [float(v) for v in site]
-        req.catch_vel_mm_s = [float(v) for v in mark.vel_mm_s]
-        # The catch INSTANT is nominated — unchanged in time (the landing moved in
-        # space, not when it happens), but stated, because on a chain the planner
-        # cannot otherwise know WHICH of the plan's catches this is. It travels as
-        # a fraction of the whole plan's duration, which is the only spelling
-        # `PlanCycle.srv` has for a catch time; `_plan_cycle_replan` multiplies it
-        # back out against the same `period_s`, so the round trip is exact to a
-        # float ulp. `catch_frac = 0.0` — the old spelling of "keep the committed
-        # instant" — is unreachable here now: every catch this can select sits at
-        # a strictly positive time on the plan clock.
-        req.period_s = float(plan.total_duration)
-        req.catch_frac = float(mark.t_s) / float(plan.total_duration)
-        req.lead_s = _CYCLE_REPLAN_LEAD_S
-        resp = self._svc_plan_cycle(req, PlanCycle.Response())
-        self._publish_target_feedback(
-            bool(resp.accepted), str(resp.code), str(resp.message),
-            arrival_perf, 'cycle')
-
-    def _live_catch_mark(self, meta, t0, arrival_perf):
-        """The catch mark a landing update at ``arrival_perf`` is re-aiming.
-
-        ``(mark, '')`` when one is selected, ``(None, why)`` when none is. See
-        :meth:`_replan_cycle_from_target`'s docstring for the argument and
-        :data:`_CYCLE_CATCH_MATCH_S` for the band's derivation.
-
-        Deterministic: the only clock read is ``tau_now``, which is the same
-        quantity ``_plan_cycle_replan`` computes a moment later to place the
-        splice, so the "already spent" test here and ``replan_tail``'s own
-        ``k_s >= catch_k`` bound answer the same question at the same instant —
-        this one just answers it before paying for the call.
-        """
-        tau_now = time.perf_counter() - float(t0)
-        arrival_tau = float(arrival_perf) - float(t0)
-        # ── Two candidates is a REFUSAL, not a nearest-wins coin flip ──────────
-        # The band is sized to stay under half the shortest flyable beat, so on
-        # every shape the planner can build there is at most one candidate and
-        # this never fires. But "never fires on today's shapes" is not the same
-        # claim as "cannot fire", and the failure it would otherwise become is
-        # silent and physical: a tie broken by float noise re-aims one of two real
-        # catches, and the wrong one drags the cup away from a ball in flight. A
-        # shorter beat (the ring's whole point is to shorten it) walks straight
-        # into it. So ambiguity is named and refused, and the operator gets both
-        # candidates rather than a coin flip.
-        near = [m for m in meta.catches
-                if abs(float(m.t_s) - arrival_tau) <= _CYCLE_CATCH_MATCH_S]
-        if len(near) > 1:
-            return None, (
-                'AMBIGUOUS: landing update predicts touch-down at tau=%.3f s, '
-                'which is within the %.2f s match band of %d catches (%s) — '
-                'refusing rather than picking the nearest, because a tie broken '
-                'by float noise re-aims the wrong one; the beat is shorter than '
-                'twice the match band'
-                % (arrival_tau, _CYCLE_CATCH_MATCH_S, len(near),
-                   ', '.join('%.3f s' % float(m.t_s) for m in near)))
-        mark = min(meta.catches, key=lambda m: abs(float(m.t_s) - arrival_tau))
-        gap = abs(float(mark.t_s) - arrival_tau)
-        if gap > _CYCLE_CATCH_MATCH_S:
-            return None, (
-                'landing update predicts touch-down at tau=%.3f s, %.3f s from '
-                'the nearest catch this plan makes (%.3f s) — beyond the '
-                '%.2f s match band, so it is about some other ball'
-                % (arrival_tau, gap, float(mark.t_s), _CYCLE_CATCH_MATCH_S))
-        if float(mark.t_s) <= tau_now + _CYCLE_REPLAN_LEAD_S:
-            return None, (
-                'the catch this update names (tau=%.3f s) is inside the '
-                'committed head at tau_now=%.3f s + lead %.3f s — nothing is '
-                'left to re-aim'
-                % (float(mark.t_s), tau_now, _CYCLE_REPLAN_LEAD_S))
-        return mark, ''
-
-    def _svc_arm_catch(self, request, response):
-        """``trajectory/arm_catch`` (SetBool): raise/lower the catch-armed latch.
-
-        The latch is the reactive-catch TRIGGER (reload-action-catch-latch plan).
-        While armed, ``catch/dynamic_target`` installs a ``build_catch`` reach — the
-        RELOAD action raises it for the flight window (it is the sole catch trigger).
-        The node stays in TRAJECTORY throughout (already streaming +
-        motion-capable), so the latch is NOT added to any mode set; only the
-        freeze-reset + graceful-stop bookkeeping is keyed off the arm/disarm EDGES here.
-
-        On BOTH edges the same freeze-reset + mid-move graceful-stop bookkeeping runs,
-        so the arm/disarm seams produce no command discontinuity:
-          - the committed catch-reach freeze window is released (``_reset_catch_reach_
-            freeze`` — a fresh catch session, or an abort, must not inherit a stale
-            freeze); and
-          - if a move is in flight ACROSS the edge, a graceful decel-to-rest is
-            installed from the LIVE commanded state (``_install_graceful_stop``): arming
-            mid-move → the catch begins from a clean, non-jittering state (the first
-            catch reach then supersedes via a C2 replan); the documented abort =
-            disarming mid-reach → the reach is silenced, never run on to the catch
-            target. The stop is C2 off the live state, so no command discontinuity at
-            the seam.
-
-        Idempotent: a set-to-current-value call is a no-op (no edge, no bookkeeping),
-        mirroring ``_on_control_mode``'s same-mode early return.
-
-        **Any call of any kind consumes the pending ``catch/reach_center``
-        declaration** (contract C-REACH-1), taken before the idempotent early
-        return. A declaration is scoped to exactly one arm raise: leaving one
-        pending would let goal N's centre silently arm goal N+1's catch, which
-        is the failure this contract exists to prevent, one goal later. Clearing
-        on the no-op and lower paths too means the only surviving pending
-        declaration is one whose raise has not happened yet — and every toss
-        teardown (RECENTER / STAY / SAFE_ABORT / the early-exit safing) calls
-        arm_catch(False), so the sequence cannot leak one.
-        """
-        want = bool(request.data)
-        # Read-and-clear FIRST: see the docstring. `pending` is used only on the
-        # raise edge below; on every other path it is simply discarded.
-        pending = self._pending_reach_center
-        self._pending_reach_center = None
-        if want == self._catch_armed:
-            response.success = True
-            response.message = (
-                f"catch latch already {'armed' if want else 'disarmed'}")
-            return response
-        # Snapshot the in-flight state BEFORE flipping the latch (mirrors
-        # _on_control_mode snapshotting move_in_flight before the _current_mode write):
-        # a graceful stop must sample the state at the transition. _active_move_in_flight
-        # locks itself; _install_graceful_stop's _current_state/_install lock themselves.
-        move_in_flight = self._active_move_in_flight()
-        # Reach-envelope center: captured at the RAISE edge, cleared at the lower edge.
-        # Every catch target this session is bounded to the envelope around it.
-        # Captured BEFORE the latch flips so no ordering ever exposes an
-        # armed-with-no-center window (in which _on_dynamic_target would skip the
-        # envelope gate); under the current single-threaded spin the callbacks
-        # serialize anyway — this is defence-in-depth, not a live race.
-        #
-        # C-REACH-1: a DECLARED centre (catch/reach_center, published before this
-        # call) wins; otherwise the commanded position at this edge — the catch
-        # session's starting pose, normally the active hold. The fallback is the
-        # co-located default and is byte-identical to the pre-2026-07-29 behaviour,
-        # which is why the RELOAD path (which declares nothing, and whose catch IS
-        # the held pose) is unchanged by this contract.
-        centre_src = 'commanded pose'
-        if want:
-            if pending is not None:
-                self._catch_envelope_center = np.asarray(
-                    pending, dtype=float).copy()
-                centre_src = 'declared catch/reach_center'
-            else:
-                self._catch_envelope_center = np.asarray(
-                    self._current_state()[0][:3], dtype=float).copy()
-        else:
-            self._catch_envelope_center = None
-        self._catch_armed = want
-        self._reset_catch_reach_freeze()
-        if move_in_flight:
-            self._install_graceful_stop(
-                f"catch latch {'armed' if want else 'disarmed'}")
-        response.success = True
-        response.message = f"catch latch {'armed' if want else 'disarmed'}"
-        if want:
-            c = self._catch_envelope_center
-            self.get_logger().info(
-                f"{response.message}; reach envelope "
-                f"{self._catch_reach_envelope_mm:.0f} mm about "
-                f"({c[0]:.1f}, {c[1]:.1f}, {c[2]:.1f}) [{centre_src}]")
-        else:
-            self.get_logger().info(response.message)
-        return response
-
     def _svc_timed_target(self, request, response):
         """``trajectory/timed_target``: reach a pose at a velocity ``lead_time_s``
         seconds after service receipt (a RELATIVE lead — the absolute arrival is
@@ -4026,52 +3432,6 @@ class TrajectoryNode(Node):
     # (``t_origin_us``, scheduled play) now agrees with the plan's clock
     # instead of playing whatever phase UDP arrival happened to land on.
 
-    #: Wire ``kind`` code → the window kind ``unified_cycle`` names. Mirrors the
-    #: KIND_* constants in PlanCycle.srv; a mismatch is caught by the srv's own
-    #: constants being compared against these in the integration test.
-    _CYCLE_KINDS = (uc.LAUNCH, uc.STEADY, uc.LANDING, uc.SETTLE)
-
-    @staticmethod
-    def _release_terminal(meta) -> bool:
-        """Does this plan END at a release?
-
-        The predicate ``replan_tail`` branches on to pick the tail's own terminal
-        (the throw it holds fixed, or the rest it settles at), named here because
-        it also answers the SAFETY question: a release-terminal plan streamed to
-        its end commands a hard STOP at the
-        throw. ``CyclePlan.state_at`` / ``hand_at`` return the terminal hold with
-        ZERO twist past the end, and the emitter reads the u1/v1 knot at
-        ``tau + dt`` — so the frame at ``duration - dt`` carries
-        ``hand_next_vel_rps = 0`` and ``vel_next_mm_s = 0``, and that v1 is what
-        the firmware's Hermite uses for the FINAL 25 ms segment, i.e. the release
-        stroke itself.
-
-        Measured on a 0.6 s LAUNCH: true terminal hand velocity 93.011 rev/s
-        against an emitted 0.0 — 0.3445 rev = 10.90 mm of slider error inside the
-        release segment, plus a 93 rev/s velocity-feedforward step. Both sit well
-        inside ``MAX_LEAD_HAND_REV`` (2.0) and ``MAX_DEVIATION_HAND_REV`` (2.5), so
-        NO firmware guard fires: the throw is simply wrong, silently. That is why
-        the deadline below is published and alarmed rather than merely documented.
-
-        Delegates to ``unified_cycle.is_release_terminal`` — the canonical export,
-        and the same predicate ``replan_tail`` branches on. A second spelling of a
-        safety predicate is exactly the thing that drifts.
-        """
-        return bool(uc.is_release_terminal(meta))
-
-    @staticmethod
-    def _supersede_deadline_s(meta) -> float:
-        """Plan-clock instant by which a release-terminal plan must be superseded.
-
-        Delegates to ``unified_cycle.latest_supersede_time_s`` — the canonical
-        export (``duration - dt``: the last knot whose ``tau + dt`` sample the
-        emitter still reads from real trajectory rather than from the terminal
-        hold). Called only for a release-terminal plan, which is the branch that
-        export returns a finite number for (it answers ``math.inf`` for a
-        rest-terminal one, which has no deadline to miss).
-        """
-        return float(uc.latest_supersede_time_s(meta))
-
     def _commanded_hand_state(self, *, at_mono=None):
         """``(rev, rev_s)`` — the hand state the machine is being COMMANDED to, or
         ``(None, 0.0)`` when nothing is known.
@@ -4203,7 +3563,7 @@ class TrajectoryNode(Node):
         cup = getattr(meta, 'cup_plan', None)
         if cup is None:
             return None, ('the active cycle carries no cup track (kind %r) — only '
-                          'a plan built by plan_cycle/extend/replan_tail does'
+                          'a plan built by plan_cycle/extend/splice_at does'
                           % (getattr(meta, 'kind', '?'),))
         # `t0` is the ACTIVE PLAN's origin rather than the record's third element,
         # because that is the clock `_current_state` samples the pose on: reading
@@ -4540,216 +3900,6 @@ class TrajectoryNode(Node):
             cup_accel_mm_s2=cup_accel,
             levelling_correction=correction), '', ''
 
-    @staticmethod
-    def _cycle_goals_from_request(request) -> uc.CycleGoals:
-        """``PlanCycle.Request`` → :class:`unified_cycle.CycleGoals`, verbatim.
-
-        No unit conversion and no frame change: the srv carries the goal in exactly
-        the frame ``CycleGoals`` documents (cup opening, mm, xy platform-frame, z
-        GLOBAL). One conversion point, and it is the caller's — a second one here
-        would be a place for the two to drift.
-        """
-        return uc.CycleGoals(
-            period_s=float(request.period_s),
-            throw_site_mm=np.asarray(request.throw_site_mm, dtype=float),
-            throw_target_mm=np.asarray(request.throw_target_mm, dtype=float),
-            flight_s=float(request.flight_s),
-            catch_site_mm=np.asarray(request.catch_site_mm, dtype=float),
-            catch_vel_mm_s=np.asarray(request.catch_vel_mm_s, dtype=float),
-            catch_frac=float(request.catch_frac),
-            settle_site_mm=np.asarray(request.settle_site_mm, dtype=float),
-            banking_enabled=bool(request.banking_enabled))
-
-    def _reject_cycle(self, response, code: str, message: str, t_wall: float):
-        """Fill ``response`` with a refusal. The ACTIVE PLAN IS UNTOUCHED.
-
-        That is the whole contract of a refusal on this path: ``replan_tail`` and
-        ``extend`` either return a re-validated plan or raise, so there is no partial
-        state to unwind, and the caller's correct response is to hold the last good
-        plan — which is what it is already streaming.
-        """
-        response.accepted = False
-        response.code = str(code)
-        response.message = str(message)
-        response.plan_wall_ms = (time.perf_counter() - t_wall) * 1e3
-        self._cycle_plan_wall_ms = response.plan_wall_ms
-        self._last_rejection = str(message)
-        # REPLAN_WINDOW is the one refusal a REACTIVE caller can hit repeatedly
-        # through no fault of its own: `catch/dynamic_target` arrives at the
-        # tracker's 100 Hz and a plan whose carried release sits ahead of every
-        # splice the re-aim can take refuses every one of them. The plan is
-        # fine and the last good one keeps streaming, so that is a WARN, and
-        # THROTTLED (one per 5 s) because at 100 Hz a per-update line buries
-        # every other line in the log — 160 of them in the two 2026-09-16
-        # attempts. Every other code stays an ERROR: those are a caller asking
-        # for something the machine cannot do, and each one is worth a line.
-        # Matched on the CODE, not loosely on the message text: a
-        # `CycleInfeasible` reaches here as code `REJECTED_CYCLE_INFEASIBLE`
-        # with the planner's own code inside `exc.outcome()`, so that one
-        # wrapper is unwrapped by prefix — and nothing else that merely
-        # MENTIONS the string in prose gets demoted with it.
-        demote = (str(code) == uc.REPLAN_WINDOW
-                 or (str(code) == uc.OUTCOME_CODE
-                     and str(message).startswith(
-                         '%s(%s:' % (uc.OUTCOME_CODE, uc.REPLAN_WINDOW))))
-        if demote:
-            self.get_logger().warn('plan_cycle refused: %s' % (message,),
-                                   throttle_duration_sec=5.0)
-        else:
-            self.get_logger().error('plan_cycle refused: %s' % (message,))
-        return response
-
-    def _cycle_replan_budget_left(self) -> int:
-        """Replans still available on the CURRENTLY INSTALLED window.
-
-        The budget is per INSTALL, not per session: ``_plan_cycle_new`` and
-        ``_plan_cycle_extend`` both zero the counter, so every window the
-        coordinator installs starts with a full budget and nothing else hands one
-        back. Two per installed window.
-
-        It is deliberately NOT a comparison against the release instant. A landing
-        update revises where a ball ALREADY IN THE AIR will come down, so it
-        arrives after the release it belongs to by construction — an epoch compare
-        against that release therefore fired on the first replan of every window
-        and the bound never bound at all.
-        """
-        return _MAX_CYCLE_REPLANS - int(self._cycle_replans)
-
-    def _svc_plan_cycle(self, request, response):
-        """``trajectory/plan_cycle``: plan ONE unified window and install it.
-
-        Guards are ``_svc_timed_target``'s, in the same order and for the same
-        reasons (guard latch → mode → seeded → telemetry fresh). Three modes:
-
-        * **NEW** — plan from the live commanded state at a FRESH origin. Over a
-          MOVING machine the cup acceleration knot 0 opens on is SAMPLED from the
-          running cycle's own cup track; with no track to sample it refuses
-          :data:`_IN_MOTION` rather than letting the free-fall default stand in
-          (see :meth:`_cycle_start_state` for what that default costs).
-        * **EXTEND** — chain onto the active cycle's terminal release and re-install
-          at the SAME origin. The joined head is bit-identical to what is already
-          streaming (``unified_cycle.extend`` drops the duplicate knot and keeps
-          ``plan_a`` bit for bit), so the swap moves no knot the emitter has sent.
-        * **REPLAN** — re-solve the catch-side tail against a new landing, spliced at
-          the first knot past ``now + lead_s``, re-installed at the SAME origin.
-
-        EXTEND and REPLAN are ONE mechanism seen twice: *re-install a plan with the
-        same origin whose head is bit-identical up to now + lead* (owner, 2026-09-04).
-        The continuity guard still runs on both — the head being bit-identical is a
-        property of the planner, and this node's job is to check it rather than to
-        trust it.
-
-        **The refusal contract: a refusal HOLDS THE LAST GOOD PLAN.** Every
-        ``CycleInfeasible`` is loud and carries the layer that said so; nothing here
-        ever installs an ungated plan, and ``replan_tail``'s envelope being narrower
-        than the splice rule (measured: LIMIT_JERK at knot 12, LIMIT_ACC at knot 20
-        of the 1.4 s reference cycle) means mid-window refusals are EXPECTED, not
-        exceptional. The cost of one is a lost re-aim; the cost of relaxing the gate
-        would be a bad plan on seven channels.
-        """
-        # C2FF (2026-09-14): this FSM path installs at an UN-snapped t0, so a
-        # hand track it carries is sampled OFF the knot grid -- the 299-679
-        # rev/s^2 frame-boundary acceleration steps the phase lock removed, and
-        # with hand torque feedforward armed a torque step each frame. It is
-        # superseded (deleted at R4, tag fsm-final); say so loudly, once.
-        if not getattr(self, '_plan_cycle_c2_warned', False):
-            self._plan_cycle_c2_warned = True
-            self.get_logger().warn(
-                'trajectory/plan_cycle is the superseded FSM install path: its '
-                'hand track is NOT knot-aligned (not C2). Keep the bridge '
-                'hand_torque_ff_gain at 0 while using it; the skill stack '
-                '(install_segment) is the C2 path.')
-
-        t_wall = time.perf_counter()
-        # The install epoch AS THIS REQUEST BEGINS. `trajectory/hold` runs on a
-        # reentrant group and can land at any point during the solve below; if it
-        # does, this plan describes a cycle the operator has already cancelled and
-        # the install is refused SUPERSEDED_BY_HOLD. Captured here, checked under
-        # `_plan_lock` at the install — see `_install`'s `require_epoch`.
-        with self._plan_lock:
-            epoch0 = self._install_epoch
-        response.accepted = False
-        response.code = ''
-        response.message = ''
-        response.t0_mono = 0.0
-        response.t_release_mono = 0.0
-        response.t_catch_mono = 0.0
-        response.release_vel_mm_s = [0.0, 0.0, 0.0]
-        response.stroke_clear_s = 0.0
-        response.arm_lead_s = 0.0
-        response.duration_s = 0.0
-        response.plan_wall_ms = 0.0
-        response.replans_used = 0
-        response.hand_peak_rev = 0.0
-        response.hand_peak_vel_rps = 0.0
-
-        if self._guard_frozen:                       # FIX 1 — refuse while latched
-            return self._reject_cycle(response, _GUARD_LATCHED,
-                                      self._guard_frozen_msg(), t_wall)
-        if self._current_mode != _MOVE_MODE:
-            return self._reject_cycle(
-                response, feas.WRONG_MODE,
-                "plan_cycle requires %s mode (current mode '%s')"
-                % (_MOVE_MODE, self._current_mode), t_wall)
-        if not self._seeded:
-            return self._reject_cycle(
-                response, feas.STALE_STATE,
-                'not streaming/seeded — cannot plan a cycle', t_wall)
-        if not self._robot_state_fresh():
-            return self._reject_cycle(
-                response, feas.STALE_STATE,
-                'robot_state telemetry stale — cannot plan a cycle', t_wall)
-        try:
-            kind = self._CYCLE_KINDS[int(request.kind)]
-        except (IndexError, ValueError, TypeError):
-            return self._reject_cycle(
-                response, feas.UNREACHABLE,
-                'unknown window kind %r (expected 0..%d)'
-                % (request.kind, len(self._CYCLE_KINDS) - 1), t_wall)
-        mode = int(request.mode)
-        goals = self._cycle_goals_from_request(request)
-        if mode != request.MODE_REPLAN and not goals.banking_enabled:
-            # MODE_REPLAN is excluded because it does not carry a banking DECISION:
-            # `replan_tail` re-solves the catch-side tail of the plan that is
-            # already installed and inherits that plan's banking, so the request's
-            # `banking_enabled` is inert for it. Warning on it would fire on every
-            # tracker landing update of every cycle and train the operator to
-            # ignore the line that matters.
-            #
-            # Not a refusal — `validate_cycle` is the gate and it will say so — but
-            # the operator gets told WHY it is about to: zero banking cannot plan a
-            # steady cycle at session limits (measured LIMIT_VEL 529 mm/s against a
-            # 250 cap), so a banking-off request is nearly always a mistake rather
-            # than an experiment.
-            self.get_logger().warning(
-                'plan_cycle asked for banking OFF — the tilt schedule will not '
-                'absorb the cup acceleration and the gate is likely to refuse '
-                'LIMIT_VEL; banking off is a Phase-0 A/B arm, not an operating '
-                'point')
-        try:
-            if mode == request.MODE_NEW:
-                return self._plan_cycle_new(request, response, kind, goals,
-                                            t_wall, epoch0)
-            if mode == request.MODE_EXTEND:
-                return self._plan_cycle_extend(request, response, kind, goals,
-                                               t_wall, epoch0)
-            if mode == request.MODE_REPLAN:
-                return self._plan_cycle_replan(request, response, t_wall,
-                                               epoch0)
-        except uc.CycleInfeasible as exc:
-            return self._reject_cycle(response, uc.OUTCOME_CODE, exc.outcome(),
-                                      t_wall)
-        except (ValueError, TrajectoryInfeasible) as exc:
-            # A malformed goal (a half-specified kind, a non-finite site) or the
-            # feasibility layer's own refusal reaching us as its native exception.
-            # Loud and non-fatal: the callback must never take the executor down.
-            return self._reject_cycle(response, feas.UNREACHABLE, str(exc),
-                                      t_wall)
-        return self._reject_cycle(
-            response, feas.UNREACHABLE,
-            'unknown plan_cycle mode %r (expected 0..2)' % (request.mode,),
-            t_wall)
-
     def _hold_superseded(self, epoch0) -> bool:
         """True when a ``trajectory/hold`` has landed since ``epoch0`` was taken.
 
@@ -4767,354 +3917,6 @@ class TrajectoryNode(Node):
         """
         with self._plan_lock:
             return self._install_epoch != epoch0
-
-    def _plan_cycle_new(self, request, response, kind, goals, t_wall, epoch0):
-        """MODE_NEW — plan from the live commanded state, install at a fresh origin."""
-        seed_mono = time.perf_counter()
-        # The CODE comes from the seed, not from here: a stale/unknown state is
-        # STALE_STATE as it always was, but "the machine is moving and I have no
-        # honest cup acceleration for it" is IN_MOTION — a different mistake with
-        # a different remedy, and the operator reads the code before the message.
-        state, code, err = self._cycle_start_state(kind)
-        if state is None:
-            return self._reject_cycle(
-                response, code, '%s — cannot seed a cycle' % (err,), t_wall)
-        plan, meta = uc.plan_cycle(kind, goals, state, self._limits, self._geom)
-        if bool(getattr(request, 'chain', False)):
-            # ── The CHAINED install (the cliff fix) ──────────────────────────
-            # A plan that ends at a release commands a hard STOP at the throw if
-            # it is streamed to its end (see `_release_terminal`). Chaining the
-            # next window into the SAME install makes the very FIRST installed
-            # plan rest-terminal, which removes that class rather than racing it:
-            # there is then no window in which a correctly planned launch is one
-            # late service call away from a stopped throw. It costs a second solve
-            # inside this callback, which is the honest price and is what
-            # `plan_wall_ms` reports.
-            try:
-                chain_kind = self._CYCLE_KINDS[int(request.chain_kind)]
-            except (IndexError, ValueError, TypeError):
-                return self._reject_cycle(
-                    response, feas.UNREACHABLE,
-                    'unknown chain_kind %r' % (request.chain_kind,), t_wall)
-            if chain_kind == uc.LAUNCH:
-                return self._reject_cycle(
-                    response, feas.UNREACHABLE,
-                    'chain_kind LAUNCH is refused: a launch starts from REST, and '
-                    'the state a chain starts from is post-release by construction',
-                    t_wall)
-            chain_goals = dataclasses.replace(
-                goals, period_s=float(request.chain_period_s),
-                catch_frac=float(request.chain_catch_frac), catch_t_s=None)
-            plan_b, meta_b = uc.plan_cycle(
-                chain_kind, chain_goals,
-                uc.release_state_from_meta(meta, plan),
-                self._limits, self._geom)
-            plan, meta = uc.extend(plan, meta, plan_b, meta_b,
-                                   self._limits, self._geom)
-        if self._hold_superseded(epoch0):
-            return self._reject_cycle(
-                response, _SUPERSEDED_BY_HOLD,
-                'a trajectory/hold landed while this MODE_NEW was solving — the cycle '
-                'it plans was cancelled; the hold keeps the wire', t_wall)
-        if not self._install_continuity_ok(plan, 0.0):
-            return self._reject_cycle(
-                response, feas.STALE_STATE,
-                'commanded state moved during planning (%s) — retry'
-                % (self._continuity_detail,), t_wall)
-        # ── THE ORIGIN IS THE INSTALL INSTANT, NOT THE SEED ──────────────────
-        # `_plan_and_install_timed` / `_plan_and_install_catch` anchor at
-        # `seed_mono` because their plans encode an ABSOLUTE arrival: the plan's
-        # clock has to line up with the instant the ball gets there, and the few
-        # ms of solve are exactly the offset that keeps it lined up.
-        #
-        # A cycle window has NO absolute event in it. Its release is defined as
-        # "period_s after the window starts", so anchoring at the seed would throw
-        # away the whole solve time: the emitter's first sample would land at
-        # tau = solve_cost — jumping into the MIDDLE of the launch, past a
-        # stretch of trajectory that was never executed — and the guard above
-        # would not see it, because it checks tau = 0 while the emitter samples
-        # somewhere else. At the ~180-250 ms this solve costs against a 0.6 s
-        # window that is a third of the launch skipped, as a step, on seven
-        # channels.
-        #
-        # Anchoring at the install instant makes tau = 0 the first sample, which
-        # is exactly the point the continuity guard just checked. The state the
-        # plan was built from is `solve_cost` old — and that is what the guard is
-        # FOR: a machine that moved during the solve is refused, not absorbed.
-        install_mono = time.perf_counter()
-        if not self._install(plan, t0=install_mono, require_epoch=epoch0,
-                             cycle=(plan, meta, install_mono),
-                             cycle_owner=_OWNER_CYCLE,
-                             reset_replans=True):
-            return self._reject_cycle(
-                response, _SUPERSEDED_BY_HOLD,
-                'a trajectory/hold landed while this MODE_NEW was solving — the '
-                'cycle it plans was cancelled; the hold keeps the wire', t_wall)
-        return self._accept_cycle(response, plan, meta, install_mono, t_wall)
-
-    def _plan_cycle_extend(self, request, response, kind, goals, t_wall, epoch0):
-        """MODE_EXTEND — chain a window onto the active cycle's terminal release.
-
-        **The replan budget is PER WINDOW, and on a chain that means per BEAT.**
-        Every EXTEND zeroes `_cycle_replans`, so a steady ring — one EXTEND per
-        cycle — gets `_MAX_CYCLE_REPLANS` fresh catch-side replans every beat
-        rather than two for the whole session. That is deliberate and it is the
-        only reading that keeps the policy meaning what it says: the budget
-        bounds how many times ONE ball's landing may be chased, and each extend
-        brings a NEW window carrying a NEW catch for a NEW ball. A session-wide
-        budget would spend itself on the first two balls and then fly every
-        remaining catch blind to the tracker; a time-based reset was tried and
-        removed (`test_the_replan_budget_is_restored_by_AN_INSTALL_and_never_by_
-        the_clock`) because every landing update arrives after the release, so
-        the counter reset on every call and the bound never bound at all.
-
-        The reset is safe precisely because an EXTEND cannot move a committed
-        knot: `unified_cycle.extend` keeps the head bit-identical and
-        `_install_continuity_ok` re-checks it at the LIVE plan time, so the two
-        replans the new budget buys can only ever touch the window this call just
-        added.
-        """
-        # ONE snapshot under the lock. `trajectory/hold` can now run concurrently
-        # and sets `self._cycle = None` under that same lock, so a check-then-
-        # unpack could unpack None — a TypeError that `_svc_plan_cycle`'s except
-        # ladder does not catch, so Foxy's MultiThreadedExecutor re-raises,
-        # `executor.spin()` unwinds into `main()`'s finally, the emitter thread
-        # stops and the Teensy setpoint watchdog E-STOPs the machine.
-        with self._plan_lock:
-            cycle = self._cycle
-        if cycle is None:
-            return self._reject_cycle(
-                response, _NO_CYCLE,
-                'no active cycle to extend — plan a NEW window first', t_wall)
-        plan_a, meta_a, t0 = cycle
-        state = uc.release_state_from_meta(meta_a, plan_a)
-        plan_b, meta_b = uc.plan_cycle(kind, goals, state, self._limits,
-                                       self._geom)
-        joined, meta = uc.extend(plan_a, meta_a, plan_b, meta_b, self._limits,
-                                 self._geom)
-        # SAME origin, so the comparison is taken at the CURRENT plan time — not at
-        # 0.0, which is the start of a window the emitter left seconds ago. The head
-        # is bit-identical by construction; the guard runs anyway, because "the
-        # planner promises it" is not the same evidence as "we checked".
-        if self._hold_superseded(epoch0):
-            return self._reject_cycle(
-                response, _SUPERSEDED_BY_HOLD,
-                'a trajectory/hold landed while this MODE_EXTEND was solving — the cycle '
-                'it plans was cancelled; the hold keeps the wire', t_wall)
-        tau_now = time.perf_counter() - t0
-        if not self._install_continuity_ok(joined, tau_now):
-            return self._reject_cycle(
-                response, feas.STALE_STATE,
-                'extended plan is not continuous at the live plan time '
-                '(tau=%.3f s, %s) — holding the last good plan'
-                % (tau_now, self._continuity_detail), t_wall)
-        # The record and the budget reset travel WITH the install, inside its own
-        # lock block: on the next line instead, a hold landing in between would
-        # clear `_cycle` and then be overwritten with a plan that is not active.
-        # A new terminal release ⇒ a new throw window ⇒ a fresh replan budget,
-        # PER WINDOW and therefore per BEAT on a chain — see the docstring.
-        if not self._install(joined, t0=t0, require_epoch=epoch0,
-                             cycle_owner=_OWNER_CYCLE,
-                             cycle=(joined, meta, t0), reset_replans=True):
-            return self._reject_cycle(
-                response, _SUPERSEDED_BY_HOLD,
-                'a trajectory/hold landed while this MODE_EXTEND was solving — the '
-                'cycle it plans was cancelled; the hold keeps the wire', t_wall)
-        return self._accept_cycle(response, joined, meta, t0, t_wall)
-
-    def _plan_cycle_replan(self, request, response, t_wall, epoch0):
-        """MODE_REPLAN — re-solve the catch-side tail against a new landing."""
-        # ONE snapshot under the lock. `trajectory/hold` can now run concurrently
-        # and sets `self._cycle = None` under that same lock, so a check-then-
-        # unpack could unpack None — a TypeError that `_svc_plan_cycle`'s except
-        # ladder does not catch, so Foxy's MultiThreadedExecutor re-raises,
-        # `executor.spin()` unwinds into `main()`'s finally, the emitter thread
-        # stops and the Teensy setpoint watchdog E-STOPs the machine.
-        with self._plan_lock:
-            cycle = self._cycle
-        if cycle is None:
-            return self._reject_cycle(
-                response, _NO_CYCLE,
-                'no active cycle to replan — plan a NEW window first', t_wall)
-        if self._cycle_replan_budget_left() <= 0:
-            return self._reject_cycle(
-                response, _REPLAN_BUDGET,
-                'catch-side replan budget spent (%d of %d on this throw window) '
-                '— holding the committed plan'
-                % (self._cycle_replans, _MAX_CYCLE_REPLANS), t_wall)
-        plan, meta, t0 = cycle
-        t_now_s = time.perf_counter() - t0
-        # WHICH catch, and WHEN, both travel on `catch_frac` — a fraction of the
-        # WHOLE plan's clock (`replan_tail` re-bases the goal's own field, which on
-        # a spliced plan describes the tail rather than the plan).
-        #
-        # `_replan_cycle_from_target` now ALWAYS states it, even when the instant
-        # has not moved, because on a chained plan the instant is the only thing
-        # that says which of several catches this update is about: unnominated,
-        # `replan_tail` falls back to `meta.catches[0]`, which `extend` pins to
-        # the FIRST catch forever and which is a beat in the past from the second
-        # chained window onward.
-        #
-        # 0.0 is still accepted and still means "keep the committed catch
-        # instant" — it is the honest reading for a single-window plan, where
-        # there is exactly one catch and no ambiguity to resolve.
-        frac = float(request.catch_frac)
-        new_catch_t_s = (frac * float(request.period_s)) if frac > 0.0 else None
-        spliced, meta2 = uc.replan_tail(
-            plan, meta, t_now_s,
-            np.asarray(request.catch_site_mm, dtype=float),
-            np.asarray(request.catch_vel_mm_s, dtype=float),
-            self._limits, self._geom,
-            lead_s=float(request.lead_s), new_catch_t_s=new_catch_t_s)
-        if self._hold_superseded(epoch0):
-            return self._reject_cycle(
-                response, _SUPERSEDED_BY_HOLD,
-                'a trajectory/hold landed while this MODE_REPLAN was solving — the cycle '
-                'it plans was cancelled; the hold keeps the wire', t_wall)
-        if not self._install_continuity_ok(spliced, t_now_s):
-            return self._reject_cycle(
-                response, feas.STALE_STATE,
-                'spliced plan is not continuous at the live plan time '
-                '(tau=%.3f s, %s) — holding the last good plan'
-                % (t_now_s, self._continuity_detail), t_wall)
-        if not self._install(spliced, t0=t0, require_epoch=epoch0,
-                             cycle_owner=_OWNER_CYCLE,
-                             cycle=(spliced, meta2, t0)):
-            return self._reject_cycle(
-                response, _SUPERSEDED_BY_HOLD,
-                'a trajectory/hold landed while this MODE_REPLAN was solving — the '
-                'cycle it plans was cancelled; the hold keeps the wire', t_wall)
-        self._cycle_replans += 1
-        return self._accept_cycle(response, spliced, meta2, t0, t_wall)
-
-    def _accept_cycle(self, response, plan, meta, t0, t_wall):
-        """Fill ``response`` from an INSTALLED plan + its meta."""
-        response.accepted = True
-        response.code = feas.OK
-        response.t0_mono = float(t0)
-        # The first release STILL AHEAD of now — the throw this response is
-        # announcing. On a fresh LAUNCH+LANDING install that is `releases[0]` and
-        # nothing changes; on an EXTEND it is not, and that difference is the whole
-        # reason this is a search rather than an index.
-        #
-        # An EXTEND joins a NEW window onto the ACTIVE plan and re-installs at the
-        # SAME origin, so the joined meta carries every release the plan has ever
-        # had — including the one the ball already left on, seconds in the past.
-        # Reporting `releases[0]` there hands the caller a SPENT instant: the
-        # coordinator's chained branch compares it against the cycle's schedule and
-        # refuses `CHAIN_SKEW` on every cycle (`t_release_mono > now` fails by a
-        # whole beat), and `_expected_landing_perf` cuts the ball sensor's arrival
-        # window around a throw that has already happened.
-        #
-        # `releases[-1]` is the fallback rather than 0.0: a plan whose releases have
-        # ALL passed is a rest-terminal plan being sampled after its last throw, and
-        # the honest answer to "when does this plan throw" is then its final release,
-        # not "never".
-        tau_now = time.perf_counter() - float(t0)
-        first = None
-        for mark in (meta.releases or ()):
-            if float(mark.t_s) > tau_now:
-                first = mark
-                break
-        if first is None and meta.releases:
-            first = meta.releases[-1]
-        response.t_release_mono = (float(t0) + float(first.t_s)
-                                   if first is not None else 0.0)
-        # The catch side gets the SAME search, for the same reason and against the
-        # same defect. `meta.t_catch_s` / `meta.arm_lead_s` read `catches[0]`, and
-        # `extend` pins that to the FIRST catch on the joined clock permanently —
-        # so on a chain both fields report a touch-down seconds in the past. The
-        # consumers are the coordinator's cycle log line and
-        # `tests/hardware/unified_cycle_bench.py`, and `arm_lead_s` is what
-        # `catch_coordinator` takes its stroke-busy window from under unified: a
-        # spent instant there sizes the window around a catch that has happened.
-        # `catches[-1]` is the fallback rather than 0.0, mirroring the release: a
-        # plan whose catches have all passed still made them.
-        c_first = None
-        for mark in (meta.catches or ()):
-            if float(mark.t_s) > tau_now:
-                c_first = mark
-                break
-        if c_first is None and meta.catches:
-            c_first = meta.catches[-1]
-        response.t_catch_mono = (float(t0) + float(c_first.t_s)
-                                 if c_first is not None else 0.0)
-        rel_v = first.vel_mm_s if first is not None else None
-        response.release_vel_mm_s = ([float(v) for v in rel_v]
-                                     if rel_v is not None else [0.0, 0.0, 0.0])
-        t_rel = meta.t_release_s
-        terminal = self._release_terminal(meta)
-        response.release_terminal = bool(terminal)
-        response.supersede_deadline_mono = (
-            float(t0) + self._supersede_deadline_s(meta) if terminal else 0.0)
-        # stroke_clear_s / arm_lead_s are facts read off the PLAN itself (R1,
-        # 2026-09-11: no reactive-arm timing model behind them any more —
-        # hand_stroke.py and the device it modelled are deleted). `None` means
-        # the plan carries no such instant (a window that ENDS at its release
-        # has its deceleration in the NEXT window), and 0.0 is the wire's
-        # spelling of that.
-        sc = meta.releases[-1].stroke_clear_s if meta.releases else None
-        response.stroke_clear_s = float(sc) if sc is not None else 0.0
-        al = c_first.arm_lead_s if c_first is not None else None
-        response.arm_lead_s = float(al) if al is not None else 0.0
-        response.duration_s = float(plan.total_duration)
-        response.replans_used = int(self._cycle_replans)
-        # ── The hand peaks are read off the PLAN ARRAYS, never off the report ──
-        # They are whole-plan quantities by construction here, and that is now
-        # load-bearing rather than incidental: `unified_cycle`'s EXTEND and REPLAN
-        # gates run over a BOUNDED knot range (the seam and the new window), so on
-        # a re-plan `meta.report`'s `peak_*` describe that range alone —
-        # `CycleMeta.report_range_knots` says which. Sourcing these from the report
-        # would quietly turn a whole-plan number into a range one the first time a
-        # ring re-plans, and `tests/hardware/unified_cycle_bench.py` reads them.
-        #
-        # For the same reason this path deliberately does NOT write
-        # `_last_peak_vel/acc/jerk` from `meta.report`: `_install` cleared them and
-        # a cycle install leaves them at 0.0, which `_install`'s own docstring
-        # calls the honest answer for an install carrying no whole-plan
-        # prediction. A range-limited peak published on `trajectory/status`
-        # alongside the legacy paths' whole-plan ones would be read as comparable
-        # and is not.
-        response.hand_peak_rev = float(np.max(plan.hand_rev))
-        response.hand_peak_vel_rps = float(np.max(np.abs(plan.hand_vel_rps)))
-        response.plan_wall_ms = (time.perf_counter() - t_wall) * 1e3
-        self._cycle_plan_wall_ms = response.plan_wall_ms
-        # Arm (or clear) the supersede alarm for whatever is now installed. Every
-        # accepted install passes through here, so a plan that RESOLVES the cliff —
-        # a chain, an extend, a splice ending at rest — disarms it in the same
-        # breath that installed it.
-        self._cycle_supersede_deadline = (response.supersede_deadline_mono
-                                          if terminal else None)
-        self._cycle_deadline_alarmed = False
-        # ── Solve attribution (2026-09-06) ────────────────────────────────
-        # A slow solve must attribute itself from its own log line. Five of
-        # these took 1.4-2.2 s on hardware against ~200 ms nominal and every
-        # hypothesis had to be tested by re-running the whole thing offline,
-        # because `plan %.1f ms` says only THAT it was slow. The per-stage split
-        # says WHERE, and the shape is a DISCRIMINATOR (measured 2026-09-06):
-        # healthy, `val` is ~89 % of the solve and `qp` ~6 %; under BLAS-pool
-        # starvation the gate inflates ~3x but the cold QP inflates ~200x
-        # (10 -> 2256 ms), so `qp` comparable to or larger than `val` means
-        # thread-pool starvation — check the `blas threads:` line and load1.
-        # The 1-minute load average says whether the box was
-        # busy, which is the other half: the bag carries NO host-CPU channel at
-        # all, so without this the answer is unrecoverable after the fact.
-        # `max_emit_gap_ms` (the other half of the story) already rides
-        # /trajectory/status.
-        response.message = (
-            '%s cycle installed: %.3f s, %d knots, release +%.3f s, plan %.1f ms'
-            % (meta.kind, plan.total_duration, plan.n_knots,
-               float(t_rel) if t_rel is not None else float('nan'),
-               response.plan_wall_ms))
-        split = uc.format_stage_wall_ms(getattr(meta, 'stage_wall_s', None))
-        if split:
-            response.message += ' [' + split + ']'
-        try:
-            response.message += ' load1=%.2f' % (os.getloadavg()[0],)
-        except (OSError, AttributeError):  # pragma: no cover - non-Linux
-            pass
-        self.get_logger().info(response.message + self._wire_state_suffix())
-        return response
 
     # ═══════════════════════════════════════════════════════════
     # trajectory/install_segment (skill-stack R2, Unit D2)
@@ -5191,19 +3993,19 @@ class TrajectoryNode(Node):
 
     def _svc_install_segment(self, request, response):
         """``trajectory/install_segment``: install ONE rest-terminal skill
-        segment — the ONE install path of the skill stack (plan § 2.1/§ 2.4).
+        segment — the ONE install path of the skill stack (plan § 2.1/§ 2.4),
+        and — since the FSM deletion (R4, 2026-09-24, which retired
+        ``trajectory/plan_cycle`` / ``_svc_plan_cycle`` / ``PlanCycle.srv``
+        outright) — the node's ONLY cycle-install path.
 
-        Guards are ``_svc_plan_cycle``'s, in the same order and for the same
-        reasons (guard latch -> mode -> seeded -> telemetry fresh). The actual
+        Guards are in the same order and for the same reasons the retired ring
+        used (guard latch -> mode -> seeded -> telemetry fresh). The actual
         planning and splice-vs-fresh-origin decision live in
         ``jugglebot.motion.skills.executor.install_segment`` — pure Python, no
         ROS — which this handler feeds the one thing only a live node has: the
         commanded state (``record`` off ``self._cycle``, or a freshly seeded
         rest via ``_cycle_start_state`` when nothing is streaming or the
         previous segment has ended).
-
-        ``PlanCycle`` is UNTOUCHED (owner decision, 2026-09-12): it stays for the
-        FSM until R4; this is the skill stack's own path.
         """
         with self._plan_lock:
             epoch0 = self._install_epoch
@@ -5377,45 +4179,6 @@ class TrajectoryNode(Node):
     # Status + diagnostics (5 Hz)
     # ═══════════════════════════════════════════════════════════
 
-    def _check_supersede_deadline(self, is_cycle: bool) -> float:
-        """Seconds until the active cycle plan MUST have been superseded, and the
-        ALARM when that instant passes with it still installed.
-
-        The node does not fix this and must not try to: the orchestrator owns the
-        chain, and inventing a rescue plan here would put a second motion authority
-        on the wire. What the node owns is the alarm — and it is the whole point,
-        because this failure is otherwise INVISIBLE. Past the deadline the emitter's
-        u1/v1 come from the plan's terminal HOLD, so the final 25 ms segment (the
-        release stroke itself) is commanded to a stop; the resulting error is well
-        inside ``MAX_LEAD_HAND_REV`` and ``MAX_DEVIATION_HAND_REV``, so no firmware
-        guard fires, nothing latches, and the only symptom is a throw that went
-        somewhere else.
-
-        Returns 0.0 when there is nothing to watch (no cycle, or a rest-terminal
-        one, which is cliff-safe); a positive remaining time before the deadline; a
-        NEGATIVE one after it. Logged ONCE per install (``_cycle_deadline_alarmed``)
-        — this runs on the 5 Hz status timer and a per-tick line would bury itself.
-        """
-        deadline = self._cycle_supersede_deadline
-        if deadline is None or not is_cycle:
-            return 0.0
-        remaining = float(deadline) - time.perf_counter()
-        if remaining <= 0.0 and not self._cycle_deadline_alarmed:
-            self._cycle_deadline_alarmed = True
-            self._last_rejection = (
-                'cycle supersede deadline PASSED %.3f s ago with a '
-                'release-terminal plan still installed' % (-remaining,))
-            self.get_logger().error(
-                'UNIFIED CYCLE CLIFF: the active plan ENDS AT A RELEASE and its '
-                'supersede deadline passed %.3f s ago with nothing installed after '
-                'it. From that instant the emitter samples u1/v1 from the terminal '
-                'HOLD, so the final 25 ms segment — the release stroke — is being '
-                'commanded to a STOP (measured on a 0.6 s launch: 93.011 rev/s of '
-                'true terminal hand velocity emitted as 0.0, 10.90 mm of slider '
-                'error). NO firmware guard fires on that, so this line is the only '
-                'trace. The orchestrator owed an EXTEND before the deadline.')
-        return remaining
-
     def _publish_status(self):
         with self._plan_lock:
             plan = self._active_plan
@@ -5478,7 +4241,14 @@ class TrajectoryNode(Node):
                                    if is_cycle else 0.0)
         msg.cycle_hand_peak_vel_rps = (float(np.max(np.abs(plan.hand_vel_rps)))
                                        if is_cycle else 0.0)
-        msg.cycle_supersede_deadline_s = self._check_supersede_deadline(is_cycle)
+        # The FSM-era supersede-cliff alarm (`_check_supersede_deadline`) was
+        # retired at R4, 2026-09-24: it watched `trajectory/plan_cycle`'s ring for
+        # a release-terminal plan streamed past its deadline, and every segment
+        # `install_segment` installs is rest-terminal by construction (plan § 0),
+        # so the cliff it guarded against cannot occur on the segment path. The
+        # field stays on the wire (retired, not removed) for schema stability;
+        # it always reads 0.0 now.
+        msg.cycle_supersede_deadline_s = 0.0
         self.status_pub.publish(msg)
 
         # Live COMMANDED platform position (see the publisher's comment in

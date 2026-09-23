@@ -1,16 +1,25 @@
 """``trajectory/install_segment`` — the skill stack's ONE install path (R2, Unit D2).
 
-Mirrors ``test_unified_cycle_integration.py``'s service tests in shape (a real
-``TrajectoryNode``, ROS mocked by ``tests/ros/conftest.py``) but drives the new
-service directly. The planning/splice-vs-fresh-origin logic itself is
+Drives the service directly against a real ``TrajectoryNode`` (ROS mocked by
+``tests/ros/conftest.py``). The planning/splice-vs-fresh-origin logic itself is
 ``jugglebot.motion.skills.executor.install_segment`` (pure Python) and is
 covered by ``tests/motion/test_skills_executor.py`` (Unit B) — what this file
 pins is the ROS SHELL: guard ladder, epoch/hold interaction, the ROS-clock
 crossing, and that a refusal never touches the active plan.
+
+T-I1 (the real :5557 wire seam), the hold-reentrancy wiring pin and the
+node-boot MultiThreadedExecutor pin below were ported from the deleted
+``test_unified_cycle_integration.py`` / ``test_trajectory_hold_preempts_solve.py``
+at the FSM deletion (R4, 2026-09-24, unit U6b cluster B) — re-driven through
+``trajectory/install_segment`` instead of the retired ``trajectory/plan_cycle``.
+The fixtures below (``_cycle_node``, ``_frozen_perf``, ``_refresh``,
+``_robot_state``) were moved here from ``test_unified_cycle_integration.py`` for
+the same reason: this file is now their only consumer.
 """
 
 from __future__ import annotations
 
+import contextlib
 import time
 
 import numpy as np
@@ -18,16 +27,114 @@ import pytest
 
 from std_srvs.srv import Trigger
 
+from jugglebot_interfaces.msg import MotorStateSingle, RobotState
 from jugglebot_interfaces.srv import InstallSegment
 import jugglebot.hardware_config as hw
 from jugglebot import trajectory_node as tn
 from jugglebot.motion import unified_cycle as uc
 from jugglebot.motion.skills import executor as sk_exec
+from jugglebot.motion.trajectory import cup_realize as cr
 from jugglebot.motion.trajectory import feasibility as feas
 from jugglebot.motion.trajectory.cycle_plan import CyclePlan
 
-from tests.ros.test_unified_cycle_integration import _cycle_node, _frozen_perf, _refresh
 from tests.ros.test_trajectory_node import _link_status
+
+
+# ── Geometry the LAUNCH is planned at ─────────────────────────────────────────
+# `sim/cycle_gate.py`'s Phase-1 point, in the frame `CycleGoals` uses. The rest
+# cup sits at 750 mm — INSIDE the QP's slider-reachable box (0.6896…0.9846 m),
+# which the hand's homed 0.0 rev is NOT (679.6 mm, 10 mm below the floor). So the
+# fixtures below seed a real hand position rather than the default zero; a test
+# that forgot to would refuse with a cup-box error and read as a planner fault.
+_REST_CUP_Z_MM = 750.0
+
+
+def _hand_rev_for_cup_z(cup_z_mm: float) -> float:
+    """The slider rev whose LEVEL realisation puts the cup opening at ``cup_z_mm``.
+
+    Built from the level relation ``cup_z = CUP_Z_BASE_MM + slider_mm`` rather
+    than by inverting the forward map, so the fixture does not depend on the map
+    the tests exercise.
+    """
+    cfg = cr.RealizeConfig()
+    slider_mm = float(cup_z_mm) - cfg.cup_z_base_mm
+    return (slider_mm - cfg.slider_rev_zero_mm) / 1000.0 * cr.HAND_REV_PER_M
+
+
+_REST_HAND_REV = _hand_rev_for_cup_z(_REST_CUP_Z_MM)
+
+# Session limits a unified sitting raises to at start (plan Phase 1, owner
+# decision 1) — the ones `sim/cycle_gate.py` and `tests/motion/test_unified_cycle`
+# both run at.
+_SESSION_VEL = 250.0
+_SESSION_ACC = 3000.0
+_SESSION_JERK = 150000.0
+
+
+def _robot_state(hand_rev=_REST_HAND_REV, is_homed=True):
+    """A SEVEN-axis robot_state: six legs at the ACTIVE pose plus the hand."""
+    from tests.ros.test_trajectory_node import _ACTIVATE_REV
+    rs = RobotState()
+    rs.motor_states = [MotorStateSingle(pos_estimate=float(_ACTIVATE_REV[i]))
+                       for i in range(6)]
+    rs.motor_states.append(MotorStateSingle(pos_estimate=float(hand_rev)))
+    rs.is_homed = bool(is_homed)
+    return rs
+
+
+def _cycle_node(**kw):
+    """A seeded, TRAJECTORY-mode node at session limits, emitter NOT started."""
+    from jugglebot_interfaces.srv import SetTrajectoryLimits
+    node = tn.TrajectoryNode(start_emitter=False, **kw)
+    node._on_robot_state(_robot_state())
+    from std_msgs.msg import String
+    node._on_control_mode(String(data='TRAJECTORY'))
+    req = SetTrajectoryLimits.Request()
+    req.leg_vel_limit_mmps = _SESSION_VEL
+    req.leg_acc_limit_mmps2 = _SESSION_ACC
+    req.leg_jerk_limit_mmps3 = _SESSION_JERK
+    node._svc_set_limits(req, SetTrajectoryLimits.Response())
+    return node
+
+
+def _refresh(node):
+    """Re-stamp the robot_state freshness window.
+
+    NOT a fudge: on the real graph ``robot_state`` arrives at 100 Hz, so it is
+    never more than 10 ms old at a service entry. Here a single solve+gate is
+    enough to walk past the node's 0.5 s staleness bound, and back-to-back
+    planning calls in one test would then refuse STALE_STATE for a reason that
+    exists only in the harness. Re-stamping between calls reproduces the live
+    graph rather than relaxing the guard.
+    """
+    node._on_robot_state(_robot_state())
+    return node
+
+
+@contextlib.contextmanager
+def _frozen_perf():
+    """Freeze ``time.perf_counter()`` at entry — for the NODE and for this module.
+
+    Not a convenience. An assertion here samples a plan at a ``tau`` captured on
+    one line and compares it against ``_current_state()``, which captures its
+    own ``perf_counter()`` on the next (any preemption between them reads as
+    drift). Freezing makes both exact instead of approximately true.
+
+    ``trajectory_node`` does ``import time`` and calls ``time.perf_counter()``
+    through the module, and this file imported the same module object, so setting
+    the attribute reaches both. That is process-wide for the duration, which is
+    safe here and nowhere near safe in general: these nodes are built with
+    ``start_emitter=False`` so no 40 Hz thread is reading the clock, ROS is
+    mocked so no timer is either, and pytest runs one test at a time per xdist
+    worker. Restore is in a ``finally``.
+    """
+    real = time.perf_counter
+    at = real()
+    time.perf_counter = lambda: at
+    try:
+        yield at
+    finally:
+        time.perf_counter = real
 
 
 def _throw_req(t_event_s, site_z=860.0, flight_s=0.6, ball_id=0):
@@ -422,7 +529,6 @@ def _reconcile_node(*, commanded_hand_rev, measured_hand_rev):
     behind. The measured side is a real `robot_state` message, so the node's
     own freshness gate is satisfied the way the live graph satisfies it.
     """
-    from tests.ros.test_unified_cycle_integration import _robot_state
     node = _perf_node()
     node._on_robot_state(_robot_state(hand_rev=float(measured_hand_rev)))
     node._last_hand_rev = float(commanded_hand_rev)
@@ -561,3 +667,165 @@ def test_a_nonzero_hold_tilt_rad_round_trips_onto_the_catch_terminal():
     req.hold_tilt_rad = [0.01, -0.20943951023931956]
     terminal = node._segment_terminal_from_request('CATCH', req, 10.0)
     assert terminal.hold_tilt == pytest.approx((0.01, -0.20943951023931956))
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# T-I1 — the real :5557 seam, end to end (ported from the deleted
+# test_unified_cycle_integration.py at the FSM deletion, R4 unit U6b cluster B,
+# 2026-09-24 — re-driven through install_segment instead of the retired
+# trajectory/plan_cycle; same fixtures, same asserts)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def test_TI1_seven_channel_frames_reach_the_wire_and_the_flags_fall():
+    """T-I1: trajectory_node -> real :5557 -> teensy_bridge_node -> loopback UDP.
+
+    Every hop is production code: the real ``MpcCommandPub`` (ephemeral port),
+    the real ``_MpcCommandSetpointSource`` decoder, the real ``SetpointPump``,
+    the real v6 ``Setpoint`` encoding, and a real UDP socket. What is pinned:
+
+    * while a ``CyclePlan`` is installed (here, via ``install_segment``), every
+      frame carries ``HAS_HAND`` AND ``HAS_V1`` — the seven-channel path is
+      genuinely live, not merely encodable;
+    * the hand lane (index 6) carries the PLAN's commanded rev, not a zero;
+    * and the flags CLEAR on the falling edge when a legacy (non-cycle) plan
+      supersedes it via a hold. That edge is what FW 17's hand-lane decay is
+      written against, and a path that never produced it would leave the decay
+      untested from this side.
+    """
+    import zmq
+    from teensy_link import MsgType
+    from teensy_link.protocol import Setpoint
+    from jugglebot.motion.ipc import MpcCommandPub
+    from jugglebot.teensy_bridge_node import _MpcCommandSetpointSource
+    from teensy_link.setpoint_pump import (
+        FLAG_HAS_HAND, FLAG_HAS_SCHED, FLAG_HAS_V1)
+    from tests.ros._bridge_harness import _build_paired_node, _teardown
+
+    pub = MpcCommandPub(addr='tcp://127.0.0.1:0')
+    addr = pub._pub.getsockopt_string(zmq.LAST_ENDPOINT)
+    traj = _perf_node(command_pub_factory=lambda: pub)
+    traj._pub = pub                       # emitter thread not started; wire by hand
+    teensy, client, bridge = _build_paired_node()
+    src = _MpcCommandSetpointSource(addr=addr)
+    try:
+        at = time.perf_counter()
+        resp = traj._svc_install_segment(_throw_req(at + 0.6),
+                                         InstallSegment.Response())
+        assert resp.accepted is True, resp.message
+        plan, _meta, t0 = traj._cycle
+        bridge._start_setpoint_output(src)
+        time.sleep(0.15)                  # PUB/SUB slow-joiner
+
+        # Drive the emitter across the whole 0.6 s window on the PLAN's clock.
+        n_knots = 24
+        for k in range(n_knots):
+            traj._emit_once(t0 + k * hw.JB_TRAJ_KNOT_DT_S)
+            time.sleep(0.01)
+        got = teensy.wait_for(int(MsgType.SETPOINT), count=8, timeout=3.0)
+        assert got, 'no v6 Setpoint frames reached the loopback sink'
+        cycle_frames = [Setpoint.unpack(m.payload) for m in got]
+        for sp in cycle_frames:
+            assert sp.flags & FLAG_HAS_HAND, 'HAS_HAND clear while a cycle streams'
+            assert sp.flags & FLAG_HAS_V1, 'HAS_V1 clear while a cycle streams'
+        # The hand lane carries the plan, not a placeholder: it MOVES across the
+        # throw, and it moves in the direction the throw strokes.
+        hand_lane = [sp.u0[6] for sp in cycle_frames]
+        assert max(hand_lane) - min(hand_lane) > 0.5
+        assert hand_lane[-1] > hand_lane[0]
+
+        # ── The falling edge ──
+        n_before = len(teensy.received(int(MsgType.SETPOINT)))
+        traj._svc_hold(Trigger.Request(), Trigger.Response())
+        assert not isinstance(traj._active_plan, CyclePlan)
+        for k in range(8):
+            traj._emit_once(time.perf_counter())
+            time.sleep(0.01)
+        legacy = teensy.wait_for(int(MsgType.SETPOINT), count=n_before + 3,
+                                 timeout=3.0)
+        assert legacy and len(legacy) > n_before
+        for m in legacy[n_before:]:
+            sp = Setpoint.unpack(m.payload)
+            assert not (sp.flags & FLAG_HAS_HAND), 'HAS_HAND stuck after the cycle'
+            assert sp.u0[6] == pytest.approx(0.0)
+            # C2FF decision 2 (2026-09-14): the LEGS stay on the stamped clock
+            # across the falling edge — the hold still carries exact v1/v2 and
+            # the knot stamp, so a hand-off never flips them to arrival phase.
+            assert sp.flags & FLAG_HAS_V1, 'legs lost exact v1 at the hand-off'
+            assert sp.flags & FLAG_HAS_SCHED, 'legs fell back to arrival phase'
+    finally:
+        try:
+            src.close()
+        except Exception:      # noqa: BLE001 — teardown must not mask a failure
+            pass
+        _teardown(teensy, client, bridge)
+        traj.on_shutdown()
+        pub.close()
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Hold/executor wiring pins (ported from the deleted
+# test_trajectory_hold_preempts_solve.py at the FSM deletion, R4 U6b cluster B,
+# 2026-09-24 — the behavioural hold-preempts-solve claim was already covered
+# above by test_a_hold_landed_during_the_solve_supersedes_the_install; these two
+# pin the WIRING that claim depends on (only the hold service is reentrant, and
+# trajectory_node.main() actually runs a MultiThreadedExecutor) — general node
+# facts, not specific to the retired trajectory/plan_cycle service.
+# ═════════════════════════════════════════════════════════════════════════════
+
+def test_only_the_hold_service_is_reentrant():
+    """The hold is on its OWN reentrant group; everything else keeps its group.
+
+    The narrowness is the safety argument. Moving every service to a reentrant
+    group would let ``install_segment`` interleave with the timers and
+    subscriptions it shares state with, and nothing here is written for that.
+    Only the hold needs to run during a solve, so only the hold moves — and
+    this test fails if a later refactor widens it.
+    """
+    from rclpy.callback_groups import ReentrantCallbackGroup
+    node = _cycle_node()
+    services = node._services
+    hold = services['trajectory/hold']
+    assert isinstance(hold.callback_group, ReentrantCallbackGroup)
+    # Everything else stays on the node default (recorded as None by the mock),
+    # i.e. mutually exclusive with the timers and subscriptions.
+    for name, svc in services.items():
+        if name == 'trajectory/hold':
+            continue
+        assert svc.callback_group is None, name
+    # Named explicitly, because this is the pair whose serialisation the shared
+    # state depends on: install_segment must NOT be reentrant.
+    assert services['trajectory/install_segment'].callback_group is None
+
+
+def test_main_runs_a_multi_threaded_executor_not_plain_spin(monkeypatch):
+    """A reentrant group is inert under ``rclpy.spin`` — the executor must match.
+
+    This is the half a refactor is most likely to undo, because ``spin`` looks
+    like the simpler call and the callback group keeps compiling. Under plain
+    ``spin`` the hold queues behind the solve exactly as before and the
+    supersede cliff is back, silently.
+    """
+    import rclpy
+    from rclpy.executors import MultiThreadedExecutor
+
+    built = {}
+
+    class _Spy(MultiThreadedExecutor):
+        def __init__(self, *a, **kw):
+            super().__init__(*a, **kw)
+            built['threads'] = kw.get('num_threads')
+
+        def spin(self):
+            built['spun'] = True
+
+    monkeypatch.setattr('jugglebot.trajectory_node.MultiThreadedExecutor', _Spy)
+    monkeypatch.setattr(rclpy, 'init', lambda *a, **k: None)
+    monkeypatch.setattr(rclpy, 'shutdown', lambda *a, **k: None)
+    monkeypatch.setattr(rclpy, 'spin',
+                        lambda *a, **k: pytest.fail('plain spin is back'),
+                        raising=False)
+
+    tn.main()
+    assert built.get('spun') is True
+    # At least two: one thread to run the serialized group, one free for the hold.
+    assert built.get('threads', 0) >= 2

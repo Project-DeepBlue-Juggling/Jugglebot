@@ -846,19 +846,22 @@ def test_catch_target_carries_the_residual_and_the_receive_tilt_does_not(
     offset AND the residual) and the gravity-referenced receive tilt (which must
     carry NEITHER — it is what the ball is physically doing, and the map is a
     property of the machine's geometry, not of the ball's arrival).
-    """
-    from jugglebot_interfaces.msg import DynamicTargetCommand
-    import time as _time
 
+    Ported at R4 (2026-09-24): `catch/dynamic_target` / `_catch_target_from_msg`
+    were deleted with the rest of the FSM catch-reach node plumbing (see
+    `tests/ros/test_levelling_frame.py::_corrected_catch_target` for the same
+    port). The composition is reconstructed HERE, in the test, exactly as the
+    deleted method built it: `correction_for_pose` at the wire x/y, applied to
+    the wire pose; the receive tilt is passed through untouched.
+    """
     node, _ = _mapped_node(monkeypatch, tmp_path)
     wire = np.array([0.03, -0.12])
-    msg = DynamicTargetCommand()
-    msg.target_pos = Point(x=150.0, y=-150.0, z=172.0)
-    msg.target_vel = Vector3()
-    msg.target_quat = _quat((wire[0], wire[1], 0.0))
-    msg.arrival_time = _time.perf_counter() + 1.2
+    raw = np.array([150.0, -150.0, 172.0, wire[0], wire[1], 0.0])
+    correction = levelling.correction_for_pose(
+        node._gravity_offset, node._active_tilt_map(), raw)
+    target = levelling.correct_pose(raw, correction)
+    receive_tilt = wire
 
-    target, _twist, receive_tilt = node._catch_target_from_msg(msg)
     assert np.allclose(receive_tilt, wire, atol=1e-12), (
         'the receive tilt is the WIRE orientation — no offset, no residual')
     assert np.allclose(
@@ -1033,18 +1036,25 @@ def test_degrade_path_leaves_the_map_installed(monkeypatch, tmp_path):
 def test_every_ingest_survives_a_non_finite_pose(monkeypatch, tmp_path):
     """The degrade path is per-site, so assert it per site.
 
-    Each of the four ingest converters wraps its own `correction_for_pose` call
-    (that per-site shape is what makes dropping the map at one of six ingests a
-    structural-manifest failure in `test_levelling_frame.py`), which means the
-    `except` is duplicated four times and a missing one is a crash in a ROS
-    callback rather than a test failure. E5/E6 reads the built-in neutral, which
-    is finite by construction, so only three are reachable — the fourth is
-    covered structurally.
+    Each ingest converter wraps its own `correction_for_pose` call (that
+    per-site shape is what makes dropping the map at one of the enumerated
+    ingests a structural-manifest failure in `test_levelling_frame.py`), which
+    means the `except` is duplicated once per converter and a missing one is a
+    crash in a ROS callback rather than a test failure. E5/E6 reads the
+    built-in neutral, which is finite by construction, so it is covered
+    structurally rather than behaviourally here.
+
+    E2 (`catch/dynamic_target` / `_catch_target_from_msg`) was REMOVED at R4
+    (2026-09-24) along with the rest of the FSM catch-reach node plumbing — see
+    `test_levelling_frame.py`'s R4 notes. There is no live ingest left that
+    feeds an EXTERNAL, possibly non-finite target position into
+    `correction_for_pose`: the skill stack's only remaining `correction_for_pose`
+    call site for a cycle (`_cycle_start_state`, row E8) is built from the
+    machine's OWN commanded seed pose, never from an externally supplied
+    target, so this degrade path has no E2-shaped surface to re-drive.
     """
     from geometry_msgs.msg import PoseStamped
-    from jugglebot_interfaces.msg import (DynamicTargetCommand,
-                                          PlatformPoseCommand)
-    import time as _time
+    from jugglebot_interfaces.msg import PlatformPoseCommand
 
     node, _ = _mapped_node(monkeypatch, tmp_path, mode='SPACEMOUSE')
 
@@ -1061,15 +1071,6 @@ def test_every_ingest_survives_a_non_finite_pose(monkeypatch, tmp_path):
     node._on_platform_pose(msg)
     target, _stamp = node._follower_target
     assert np.allclose(target[3:6], _expected_rotvec(0.0, 0.0), atol=1e-15)
-
-    # E2
-    dyn = DynamicTargetCommand()
-    dyn.target_pos = Point(x=float('nan'), y=0.0, z=170.0)
-    dyn.target_vel = Vector3()
-    dyn.target_quat = Quaternion()
-    dyn.arrival_time = _time.perf_counter() + 1.2
-    catch_target, _twist, _seat = node._catch_target_from_msg(dyn)
-    assert np.allclose(catch_target[3:6], _expected_rotvec(0.0, 0.0), atol=1e-15)
 
     # E5/E6 — finite by construction, and still map-corrected.
     neutral = node._corrected_neutral_pose()

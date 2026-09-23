@@ -14,7 +14,7 @@ is a defect in every unified cycle the machine ever flies.  Four classes:
   right sentinels — a ``catch_k`` of ``-1``, a zero ``takeoff_vel``, a rest
   terminal.  A kind that silently plans the WRONG shape (a launch with detach
   rows, say) produces a trajectory that is feasible and wrong.
-* **The splices.**  ``extend`` and ``replan_tail`` both cut a plan and glue
+* **The splices.**  ``extend`` and ``splice_at`` both cut a plan and glue
   another to it.  A seam that is merely *close* rather than *the same knot* is a
   position step on six legs inside 25 ms, which is the one thing this stack never
   emits.  The head of a splice must be bit-identical because the emitter may
@@ -552,94 +552,6 @@ def test_extend_keeps_the_head_bit_identical_and_revalidates(launch, landing,
     assert meta.releases[0].stroke_clear_s > meta.releases[0].t_s
 
 
-def test_a_release_terminal_plan_has_a_streaming_deadline(launch, geom):
-    """The emitter's u1 sample falls off the end of a release-terminal plan.
-
-    ``KnotEmitter.frame`` puts ``plan.hand_at(τ+dt)`` on the wire as the u1 knot
-    AND its exact velocity, which is the segment endpoint velocity the firmware's
-    Mode-1 Hermite uses under ``HAS_V1``.  ``CyclePlan.hand_at`` clamps at
-    ``t >= total_duration`` to the terminal HOLD — final position, ZERO rate —
-    which is the truth for a plan that ends at rest and a lie for one that ends
-    mid-throw.  So at exactly ``τ = duration − dt`` a LAUNCH or STEADY emits a
-    frame whose next-knot velocity is 0 while the hand is doing 93 rev/s.
-
-    Nothing on the path can catch it: the u0/u1 POSITIONS are still right, and no
-    pump gate, wire check or firmware clamp inspects v1 at all.  That is why the
-    deadline is exported (:func:`unified_cycle.latest_supersede_time_s`) instead
-    of being left to the caller to notice.
-
-    MEASURED (2026-09-04, the reference 0.6 s LAUNCH): terminal hand knot
-    velocity **93.011 rev/s**; reconstructing that 25 ms segment with ``v1 = 0``
-    displaces the firmware's Hermite by up to ``|h11|·T·Δv`` = **10.90 mm** of
-    slider (0.3445 rev at the pre-R1 gain, 0.3346 rev at the measured one) — inside ``MAX_LEAD_HAND_REV`` (2.0 rev) and inside
-    ``HAND_VELFF_LIMIT_RPS`` (300 rev/s), i.e. invisible to every guard.
-    """
-    plan, meta = launch
-    assert uc.is_release_terminal(meta) is True
-    t_dead = uc.latest_supersede_time_s(meta)
-    assert t_dead == pytest.approx(float(meta.duration_s) - float(meta.dt))
-
-    emitter = KnotEmitter(geom)
-    v_knot = float(plan.hand_vel_rps[-1])
-    assert abs(v_knot) > 10.0, (
-        'the fixture ends with a stationary hand (%.3f rev/s) — this test would '
-        'observe nothing' % v_knot)
-
-    # One float ulp INSIDE the deadline the frame still tells the truth ...
-    before = emitter.frame(plan, t_dead - 1e-9, 0)
-    assert float(before['hand_next_vel_rps']) == pytest.approx(v_knot, rel=1e-5)
-    # ... and AT the deadline it does not.  Exactly zero, not merely small.
-    at = emitter.frame(plan, t_dead, 1)
-    assert float(at['hand_next_vel_rps']) == 0.0
-    # The Hermite displacement that mis-statement buys, in slider revolutions.
-    worst_s = 2.0 / 3.0            # |h11(s)| = |s^3 - s^2| peaks at s = 2/3
-    err_rev = abs((worst_s ** 3 - worst_s ** 2) * float(plan.dt) * v_knot)
-    # Pinned in SLIDER MILLIMETRES, which the rev↔mm gain does not move: the
-    # 2026-09-04 reference read 0.3445 rev at the pre-R1 gain (31.617 rev/m);
-    # at the measured gain (hand_mm_per_rev 32.567, R1) the same 10.90 mm is
-    # 0.3346 rev.  The launch's mm/s is the physics; the revs follow the gain.
-    assert err_rev * 1000.0 / float(hw.HAND_REV_PER_M) == pytest.approx(
-        10.90, abs=0.16), err_rev
-    # ...and it stays INSIDE the firmware's hand lead-clamp band, which is why
-    # no guard on the path reports it.  2.0 rev = MAX_LEAD_HAND_REV, restated
-    # here rather than imported (``motion/`` must not reach into the firmware
-    # header or ``tools/probes``) and pinned against canbridge_config.h by
-    # tests/firmware/test_hermite_xref.py::test_hand_lane_constants_match_the_firmware.
-    assert err_rev < 2.0
-
-
-def test_a_rest_terminal_plan_has_no_streaming_deadline(launch, landing,
-                                                        limits, geom):
-    """LAUNCH + LANDING ends at rest, so the terminal clamp is the truth.
-
-    The joined plan's last knot really is a stationary hand at a held pose, so
-    the emitter's ``τ+dt`` sample reporting zero velocity is not a cliff — it is
-    the trajectory.  :func:`unified_cycle.latest_supersede_time_s` says so with
-    ``inf``, which is what lets a caller apply the same rule to every plan
-    without branching on ``kind``.
-
-    MEASURED (2026-09-04): the joined 1.6 s plan's terminal hand rate is
-    **6.1e-07 rev/s** and its terminal frame reports 0.0 — a difference of
-    0.0000006 rev/s, against the 93.011 rev/s the un-joined LAUNCH would have
-    thrown away.
-    """
-    plan_a, meta_a = launch
-    plan_b, meta_b = landing
-    joined, meta = uc.extend(plan_a, meta_a, plan_b, meta_b, limits, geom)
-
-    assert uc.is_release_terminal(meta) is False
-    assert uc.latest_supersede_time_s(meta) == math.inf
-    assert abs(float(joined.hand_vel_rps[-1])) < 1e-3
-    assert float(np.max(np.abs(joined.pose_vel[-1]))) < 1.0
-
-    emitter = KnotEmitter(geom)
-    tau = float(joined.total_duration) - float(joined.dt)
-    frame = emitter.frame(joined, tau, 0)
-    assert float(frame['hand_next_vel_rps']) == pytest.approx(0.0, abs=1e-3)
-    assert float(np.max(np.abs(frame['vel_next_mm_s']))) == pytest.approx(
-        0.0, abs=1.0)
-
-
 #: How many STEADY windows the ring fixture chains onto the launch.  Two is the
 #: smallest number that produces a STEADY→STEADY seam at all, and the smallest
 #: that gives the plan TWO catches — which is what makes the ``catches[0]``
@@ -657,8 +569,8 @@ def ring(launch, limits, geom):
 
     This is the shape the constant-beat ring flies and NOTHING else in the suite
     builds it: every other ``extend`` fixture is LAUNCH → LANDING, and the sim
-    gate's SET 2 chains STEADY windows only in-process, with no service, no
-    ``replan_tail`` and no origin management (``sim/unified_gate.py`` § 3.5).
+    gate's SET 2 chains STEADY windows only in-process, with no service and no
+    origin management (``sim/unified_gate.py`` § 3.5).
     Module-scoped because it costs three solves plus two whole-plan re-gates
     (~1.1 s measured, 2026-09-07).
     """
@@ -733,11 +645,15 @@ def test_a_steady_chains_onto_a_steady_and_the_seam_holds(ring, limits, geom):
     assert fz.validate_cycle(joined2, limits, geom).ok
 
     # Still release-terminal, and the deadline moved by exactly one window.
+    # (the FSM-era `latest_supersede_time_s` this used to assert directly was
+    # `duration_s - dt` for a release-terminal plan — retired at R4, 2026-09-24 —
+    # so the SAME claim is made on `duration_s` here, with `dt` cancelling out
+    # of the subtraction exactly as it did before.)
     assert uc.is_release_terminal(meta2) is True
     beat = float(win_b.total_duration)
     assert beat == pytest.approx(1.4)
-    assert (uc.latest_supersede_time_s(meta2)
-            - uc.latest_supersede_time_s(meta1)) == pytest.approx(beat, abs=1e-12)
+    assert (float(meta2.duration_s)
+            - float(meta1.duration_s)) == pytest.approx(beat, abs=1e-12)
     # Every mark re-based onto the joint clock, none dropped.
     assert [float(m.t_s) for m in meta2.releases] == [
         pytest.approx(0.6), pytest.approx(2.0), pytest.approx(3.4)]
@@ -1418,503 +1334,90 @@ def test_release_state_refuses_a_window_that_does_not_end_at_a_release(landing):
 # Tail re-planning
 # ---------------------------------------------------------------------------
 
-def test_replan_tail_head_is_bit_identical_and_the_whole_revalidates(
-        steady, limits, geom):
-    """The committed head is untouchable; the tail is re-solved and re-gated.
-
-    "Untouchable" is literal, on all four channels: the knots before ``k_s`` are
-    at times before ``t_now + lead_s``, i.e. the emitter has already sent them or
-    is about to.  Re-writing one is a step command on the wire.
-
-    MEASURED (2026-09-04): a re-plan at ``t_now = 0``, ``lead_s = 0.10`` splices
-    at knot 4 and validates at 50 763 mm/s³ of leg jerk against the 150 000 limit.
-    """
-    plan, meta = steady
-    new_site = CATCH_MM + np.array([15.0, 8.0, 0.0])
-    spliced, new_meta = uc.replan_tail(plan, meta, 0.0, new_site, CATCH_V_MM_S,
-                                       limits, geom, lead_s=0.10)
-    k_s = uc.splice_knot(meta, 0.0, 0.10)
-    assert k_s == 4
-    assert np.array_equal(spliced.pose[:k_s], plan.pose[:k_s])
-    assert np.array_equal(spliced.pose_vel[:k_s], plan.pose_vel[:k_s])
-    assert np.array_equal(spliced.hand_rev[:k_s], plan.hand_rev[:k_s])
-    assert np.array_equal(spliced.hand_vel_rps[:k_s], plan.hand_vel_rps[:k_s])
-    assert spliced.n_knots == plan.n_knots
-    assert new_meta.report.ok, new_meta.report.reasons
-    assert new_meta.kind == uc.REPLANNED
-    # The throw boundary is held fixed — that is what keeps the beat.
-    assert np.allclose(new_meta.releases[0].vel_mm_s, meta.releases[0].vel_mm_s,
-                       atol=1e-9)
-    assert new_meta.releases[0].t_s == pytest.approx(meta.releases[0].t_s)
-    # ...and the catch moved to the new site.
-    assert np.allclose(new_meta.catches[0].site_mm, new_site)
-    # The spliced plan is itself re-plannable: it carries a joint cup track.
-    assert new_meta.cup_plan is not None
-    assert new_meta.cup_plan.pos.shape[0] == plan.n_knots
-
-
-def test_replan_tail_refuses_when_there_is_nothing_left_to_re_aim(steady,
-                                                                 limits, geom):
-    """Past the catch, before the head, or with no tail — one code, three reasons.
-
-    A splice at or past the catch knot cannot change the catch (it has already
-    happened on the committed head), so re-planning would silently re-solve a
-    tail with no effect on what it was asked to fix.  Refusing names that.
-    """
-    plan, meta = steady
-    for t_now in (0.8, 1.3):
-        with pytest.raises(uc.CycleInfeasible) as excinfo:
-            uc.replan_tail(plan, meta, t_now, CATCH_MM, CATCH_V_MM_S,
-                           limits, geom, lead_s=0.1)
-        assert excinfo.value.code == uc.REPLAN_WINDOW
-        assert 'catch knot' in excinfo.value.outcome()
-    with pytest.raises(uc.CycleInfeasible) as excinfo:
-        uc.replan_tail(plan, meta, -1.0, CATCH_MM, CATCH_V_MM_S, limits, geom,
-                       lead_s=0.0)
-    assert excinfo.value.code == uc.REPLAN_WINDOW
-
-
-def test_replan_tail_refuses_a_catch_time_outside_the_tail(steady, limits,
-                                                           geom):
-    """A nominated catch outside the tail is a REFUSAL, not a stray ``ValueError``.
-
-    ``new_catch_t_s`` is rebased onto the tail's clock (``t − k_s·dt``) and
-    handed to ``cup_cycle`` through ``_events_for``.  Unbounded, an out-of-range
-    value reaches the solver as a negative catch time or as one past the terminal
-    throw, and ``cup_cycle`` raises a bare ``ValueError`` — which is not a
-    :class:`CycleInfeasible`, carries no subcode, and therefore slips past every
-    guard matching on this module's outcome.  A guard that stops matching does
-    nothing, silently, which is the failure ``outcome_detail`` exists to prevent.
-
-    CONFIRMED RECIPE (probe, 2026-09-04, run twice with identical output) on the
-    1.4 s reference cycle: ``new_catch_t_s = 1.45`` at ``lead_s = 0.10``
-    (``k_s = 4``) used to leak *"events must be ordered by non-decreasing t_s"*;
-    ``0.05`` at ``lead_s = 0.20`` (``k_s = 8``) used to leak *"catch at
-    t=-0.1500 s is outside the window [0, 1.2000)"*.  Both now refuse with
-    ``REPLAN_WINDOW`` and name the tail's own window.
-    """
-    plan, meta = steady
-    n, dt = int(plan.n_knots), float(plan.dt)
-    for lead, t_new in ((0.10, 1.45), (0.20, 0.05)):
-        k_s = uc.splice_knot(meta, 0.0, lead)
-        with pytest.raises(uc.CycleInfeasible) as excinfo:
-            uc.replan_tail(plan, meta, 0.0, CATCH_MM, CATCH_V_MM_S, limits,
-                           geom, lead_s=lead, new_catch_t_s=t_new)
-        assert excinfo.value.code == uc.REPLAN_WINDOW
-        out = excinfo.value.outcome()
-        assert outcome_subcode(out) == uc.REPLAN_WINDOW
-        assert 'nominated catch' in out
-        assert 'new_catch_t_s' in out
-    # Inside the band the catch moves, and the meta reports where to.
-    k_s = uc.splice_knot(meta, 0.0, 0.10)
-    _, ok_meta = uc.replan_tail(plan, meta, 0.0, CATCH_MM, CATCH_V_MM_S, limits,
-                                geom, lead_s=0.10, new_catch_t_s=0.70)
-    assert ok_meta.catches[0].t_s == pytest.approx(0.70)
-    # The upper end of the band is the terminal throw itself, and it refuses.
-    with pytest.raises(uc.CycleInfeasible) as excinfo:
-        uc.replan_tail(plan, meta, 0.0, CATCH_MM, CATCH_V_MM_S, limits, geom,
-                       lead_s=0.10, new_catch_t_s=(n - 1) * dt)
-    assert excinfo.value.code == uc.REPLAN_WINDOW
-    # The lower bound itself is admitted by this module and then refused one
-    # layer down: ``(k_s + 1)·dt − k_s·dt`` evaluates to 0.024999999999999994 in
-    # float, so ``cup_cycle`` sees a catch on the tail's knot 0 and refuses with
-    # ``CATCH_TOO_EARLY``.  That is the point of the bound — every path out is a
-    # CycleInfeasible carrying a subcode a guard can match, never a ValueError.
-    with pytest.raises(uc.CycleInfeasible) as excinfo:
-        uc.replan_tail(plan, meta, 0.0, CATCH_MM, CATCH_V_MM_S, limits, geom,
-                       lead_s=0.10, new_catch_t_s=(k_s + 1) * dt)
-    assert excinfo.value.code == 'CATCH_TOO_EARLY'
-    assert base_outcome(excinfo.value.outcome()) == uc.OUTCOME_CODE
-
-
-def test_replan_tail_refuses_a_splice_inside_the_detach_cone(launch, limits,
-                                                             geom):
-    """A splice at or before ``n_detach`` re-solves the ball's own detach rows away.
-
-    A window that FOLLOWS a release carries hard equalities at knots
-    ``1..n_detach`` pinning the cup's acceleration DIRECTION to the axis the ball
-    departed along, so the ball already in the air gets no lateral shove off the
-    cup lip.  ``replan_tail`` solves its tail with ``post_release=False`` — right
-    for a tail, because nothing leaves the cup mid-carry — so any of those knots
-    that lands inside the re-solved tail loses its cone row.  Nothing downstream
-    sees it: the cup track stays smooth, so ``validate_cycle`` is happy and the
-    only witness is a ball that lands off target.
-
-    MEASURED (2026-09-04, ``/tmp/probe_f4b.py``, run twice with identical
-    output), off-axis specific force ``|(a − g) × axis|`` at knots 1..2 of the
-    replanned cycle: **1.126 m/s²** at ``k_s = 1`` behind a 3.24°-aimed throw
-    (0.686 at 1.62°, 0.276 level), against 4.4e-16 in the plan it replaced.
-
-    The refusal is at ``k_s <= n_detach``, one knot tighter than that: at
-    ``k_s == n_detach`` the tail's own start-acceleration equality happens to pin
-    knot ``n_detach`` back to the value it already had (measured residual 0.0),
-    but that is an accident of the pin — nothing states it, the QP holds it only
-    to ``feas_tol``, and one knot of replan envelope is not worth resting a
-    ball's flight path on it.
-    """
-    plan_a, meta_a = launch
-    state = uc.release_state_from_meta(meta_a, plan_a)
-    plan, meta = uc.plan_steady(_goals(), state, limits, geom)
-    n_detach = int(cc.CupCycleConfig.n_detach)
-    axis = np.asarray(state.detach_axis, dtype=float)
-    g = np.asarray(cc.GRAVITY, dtype=float)
-
-    def worst_off_axis(cup):
-        return max(float(np.linalg.norm(np.cross(cup.acc[i] - g, axis)))
-                   for i in range(1, n_detach + 1))
-
-    # The plan being replanned honours the cone to float precision.
-    assert worst_off_axis(meta.cup_plan) <= 1e-9
-
-    for lead in (0.025, 0.050):                  # k_s = 1, 2
-        k_s = uc.splice_knot(meta, 0.0, lead)
-        assert 1 <= k_s <= n_detach, k_s
-        with pytest.raises(uc.CycleInfeasible) as excinfo:
-            uc.replan_tail(plan, meta, 0.0, CATCH_MM + np.array([15.0, 8.0, 0.0]),
-                           CATCH_V_MM_S, limits, geom, lead_s=lead)
-        assert excinfo.value.code == uc.REPLAN_WINDOW
-        assert 'detach knots' in excinfo.value.outcome()
-        assert outcome_subcode(excinfo.value.outcome()) == uc.REPLAN_WINDOW
-
-    # One knot later the cone is entirely inside the bit-identical head, and the
-    # replanned plan still honours it.
-    k_s = uc.splice_knot(meta, 0.0, 0.075)
-    assert k_s == n_detach + 1
-    _, new_meta = uc.replan_tail(plan, meta, 0.0,
-                                 CATCH_MM + np.array([15.0, 8.0, 0.0]),
-                                 CATCH_V_MM_S, limits, geom, lead_s=0.075)
-    assert worst_off_axis(new_meta.cup_plan) <= 1e-9
-
-
-def test_replan_tail_refuses_a_splice_into_a_CHAINED_plans_spent_release(
-        ring, limits, geom):
-    """A release-terminal CHAIN carries a spent release in its middle, and it is
-    protected by the same bound a rest-terminal plan's is.
-
-    This is the hole UH-7 opened.  The mid-plan-release bound used to be skipped
-    whenever the plan ended at a release (``if not release_terminal``), on the
-    reading that such a plan's only release IS its terminal.  True of one window;
-    false of every chain.  A LAUNCH + STEADY join ends at a release AND carries
-    the launch's spent release at knot 24 of 81, and the tail is re-solved as a
-    single STEADY — one catch, one terminal throw — so a splice landing on or
-    before that knot both re-solves the ball's detach-cone rows away (1.126 m/s²
-    of off-axis specific force delivered to a ball already in the air, invisible
-    to ``validate_cycle``) and DELETES the 0.6 s throw outright.
-
-    MEASURED (2026-09-07, ``/tmp/probe_uh7_planner.py``, run twice with identical
-    output) on this fixture at session limits, BEFORE the fix: ``t_now = 0.00`` /
-    ``lead = 0.30`` (``k_s = 12``) and ``t_now = 0.30`` (``k_s = 24``) were both
-    ACCEPTED and both returned ``releases = [2.0]`` — the launch release gone
-    from a plan the emitter is already streaming.  One knot past the cone
-    (``t_now = 0.40``, ``k_s = 28`` against the ``24 + 2`` bound) the re-plan
-    still succeeds, so the bound is a window and not a floor.
-    """
-    (joined, meta), _ = ring[0]
-    dt = float(joined.dt)
-    n_detach = int(cc.CupCycleConfig.n_detach)
-    k_rel = int(round(float(meta.releases[0].t_s) / dt))
-    assert k_rel == 24 and int(joined.n_knots) == 81
-    assert uc.is_release_terminal(meta) is True
-    live = meta.catches[0]
-    new_site = np.asarray(live.site_mm, dtype=float) + [10.0, 0.0, 0.0]
-
-    for t_now in (0.0, 0.30):
-        k_s = uc.splice_knot(meta, t_now, 0.30)
-        assert k_s <= k_rel + n_detach, k_s
-        with pytest.raises(uc.CycleInfeasible) as excinfo:
-            uc.replan_tail(joined, meta, t_now, new_site, live.vel_mm_s, limits,
-                           geom, lead_s=0.30,
-                           new_catch_t_s=float(live.t_s))
-        assert excinfo.value.code == uc.REPLAN_WINDOW
-        out = excinfo.value.outcome()
-        assert outcome_subcode(out) == uc.REPLAN_WINDOW
-        assert 'release knot %d + detach knots' % k_rel in out
-
-    # Clear of the cone the same re-plan is accepted, and the spent release is
-    # CARRIED rather than erased — which is what keeps the bound meaningful for
-    # the NEXT re-plan, whose own check reads these marks.
-    spliced, meta2 = uc.replan_tail(
-        joined, meta, 0.40, new_site, live.vel_mm_s, limits, geom, lead_s=0.30,
-        new_catch_t_s=float(live.t_s))
-    assert uc.splice_knot(meta, 0.40, 0.30) == 28
-    assert [float(r.t_s) for r in meta2.releases] == [
-        pytest.approx(0.6), pytest.approx(2.0)]
-    assert uc.is_release_terminal(meta2) is True
-
-
-def test_replan_tail_on_a_chain_re_aims_the_LIVE_catch_not_catches_0(
-        ring, limits, geom):
-    """On a ring the live catch is not ``catches[0]``, and the caller must say so.
-
-    ``extend`` pins the joined ``catch_k`` to the FIRST catch permanently —
-    ``CyclePlan`` carries one and ``validate_cycle``'s runway pass reads that one
-    — so from the second chained window onward ``meta.catch_k`` names a
-    touch-down that happened a beat ago.  Bounding the splice against it answered
-    **every** tracker landing update with ``REPLAN_WINDOW: the catch is inside
-    the committed head``, which would have made the owner's replan policy dead
-    code on the ring shape exactly the way it was dead code on the rest-terminal
-    shape before 2026-09-05.
-
-    MEASURED (2026-09-07, ``/tmp/probe_uh7_planner.py``, run twice with identical
-    output) on LAUNCH + STEADY + STEADY at session limits: catches at knots 54
-    and 110, releases at 24, 80 and 136; a landing update at ``t_now = 2.100``
-    splices at ``k_s = 96``, and BEFORE the fix refused *"splice knot 96 >= catch
-    knot 54"* while the catch it was talking about was still 0.67 s away.
-
-    Three claims: the nominated catch is the one that moves, the head is
-    bit-identical through it, and the FIRST window's catch and both spent
-    releases survive in the meta — the last one is what keeps the detach-cone
-    bound meaningful on the next re-plan of the same plan.
-    """
-    (joined, meta), _ = ring[1]
-    dt = float(joined.dt)
-    spent, live = meta.catches
-    assert (spent.knot, live.knot) == (54, 110)
-    t_now = float(meta.releases[1].t_s) + 0.10        # mid-flight, second window
-    k_s = uc.splice_knot(meta, t_now, 0.30)
-    assert spent.knot < k_s < live.knot, k_s
-    new_site = np.asarray(live.site_mm, dtype=float) + [10.0, 0.0, 0.0]
-
-    spliced, meta2 = uc.replan_tail(joined, meta, t_now, new_site,
-                                    live.vel_mm_s, limits, geom, lead_s=0.30,
-                                    new_catch_t_s=float(live.t_s))
-    assert meta2.report.ok, meta2.report.reasons
-    assert spliced.n_knots == joined.n_knots
-    # ALL FOUR channels, and the velocity ones are the load-bearing half: this
-    # fixture's catch is TILTED (`CATCH_V_MM_S` has non-zero xy), so the tilt
-    # series is not identically zero and `cup_realize._knot_derivative`'s
-    # central-vs-one-sided difference actually has something to disagree about.
-    # Asserting only pose and hand_rev here missed a 4.41e-2 mm/s move at every
-    # PRIOR seam knot — see `test_replan_tail_carries_the_head_VERBATIM_...`.
-    assert np.array_equal(spliced.pose[:k_s], joined.pose[:k_s])
-    assert np.array_equal(spliced.pose_vel[:k_s], joined.pose_vel[:k_s])
-    assert np.array_equal(spliced.hand_rev[:k_s], joined.hand_rev[:k_s])
-    assert np.array_equal(spliced.hand_vel_rps[:k_s], joined.hand_vel_rps[:k_s])
-    # The LIVE catch moved; the spent one is carried untouched.
-    assert len(meta2.catches) == 2
-    assert np.allclose(meta2.catches[0].site_mm, spent.site_mm)
-    assert meta2.catches[0].t_s == pytest.approx(float(spent.t_s))
-    assert np.max(np.abs(np.asarray(meta2.catches[1].site_mm)
-                         - new_site)) < 0.1
-    assert meta2.catches[1].t_s == pytest.approx(float(live.t_s))
-    # Both spent releases survive, and so does the terminal — the beat is intact.
-    assert [float(r.t_s) for r in meta2.releases] == [
-        pytest.approx(0.6), pytest.approx(2.0), pytest.approx(3.4)]
-    assert uc.is_release_terminal(meta2) is True
-    # Without the nomination the old reading still refuses, loudly and honestly:
-    # nothing was named, and the only catch this function then knows is spent.
-    with pytest.raises(uc.CycleInfeasible) as excinfo:
-        uc.replan_tail(joined, meta, t_now, new_site, live.vel_mm_s, limits,
-                       geom, lead_s=0.30)
-    assert 'catch knot' in excinfo.value.outcome()
-
-
-def test_replan_tail_refuses_a_nomination_that_would_ERASE_a_nearer_catch(
-        ring, limits, geom):
-    """The tail holds exactly ONE touch-down, so a nearer catch may not be jumped.
-
-    The same class as the mid-plan-release bound, one event over: nominating a
-    LATER catch while an earlier one still sits at or after the splice would drop
-    that earlier catch out of a plan the emitter is already streaming — the cup
-    simply would not be there for a ball already in the air — and
-    ``validate_cycle`` cannot see it, because what is left is a perfectly smooth
-    track.
-
-    **No plan this module can currently BUILD reaches this bound, and that is
-    worth stating rather than discovering later.**  Every kind that carries a
-    catch (:data:`STEADY`, :data:`LANDING`) is entered from a release, so on any
-    chain the releases interleave the catches — and the mid-plan-release bound
-    already forces the splice past the release that precedes the second catch,
-    which is past the first catch.  Verified on the ring fixture below: the
-    splice that would skip a catch is refused for the RELEASE reason first.  So
-    this is a structural backstop for a future window kind carrying two catches,
-    and it is driven here on a hand-built meta — which is the only way to reach
-    it — so that the backstop is a checked claim and not an assumption.
-    """
-    (joined, meta), _ = ring[1]
-    spent, live = meta.catches
-    # On the real shape the RELEASE bound gets there first — the invariant that
-    # makes the catch bound unreachable, asserted rather than assumed.
-    t_now = float(meta.releases[0].t_s) + 0.20
-    k_s = uc.splice_knot(meta, t_now, 0.30)
-    assert k_s < spent.knot < live.knot, k_s
-    with pytest.raises(uc.CycleInfeasible) as excinfo:
-        uc.replan_tail(joined, meta, t_now, np.asarray(live.site_mm),
-                       live.vel_mm_s, limits, geom, lead_s=0.30,
-                       new_catch_t_s=float(live.t_s))
-    assert 'release knot' in excinfo.value.outcome()
-
-    # A meta with the interleaving release REMOVED: the only way to present the
-    # function with two catches ahead of a legal splice.
-    no_mid = dataclasses.replace(meta, releases=(meta.releases[-1],))
-    k_s = uc.splice_knot(no_mid, t_now, 0.30)
-    assert k_s < spent.knot < live.knot, k_s
-    with pytest.raises(uc.CycleInfeasible) as excinfo:
-        uc.replan_tail(joined, no_mid, t_now, np.asarray(live.site_mm),
-                       live.vel_mm_s, limits, geom, lead_s=0.30,
-                       new_catch_t_s=float(live.t_s))
-    assert excinfo.value.code == uc.REPLAN_WINDOW
-    out = excinfo.value.outcome()
-    assert outcome_subcode(out) == uc.REPLAN_WINDOW
-    assert 'not the FIRST one after the splice' in out
-    assert str(spent.knot) in out
-
-
-def test_replan_tail_preserves_a_chains_terminal_release_EXACTLY(ring, limits,
-                                                                 geom):
-    """The beat survives a re-plan, because the terminal release is an EVENT pin.
-
-    The next chained window is planned from ``release_state_from_meta`` of THIS
-    one, and the session schedules cycle N+1 off the plan's own
-    ``t_release_mono`` — so if a catch-side re-plan could nudge the terminal
-    release the ring's beat would walk, one landing update at a time, with
-    nothing to report it.  It cannot: the release-terminal tail is planned with
-    the original mark's ``(site, target, flight)`` and a ``period_s`` that puts
-    the throw back on the plan's own last knot.
-
-    MEASURED (2026-09-07, ``/tmp/probe_uh7_planner.py``, run twice with identical
-    output) on LAUNCH(0.6) + STEADY(1.4) spliced at ``k_s = 28``: the release
-    instant, site, take-off velocity, throw tilt and the plan's total duration
-    are all EXACTLY equal — bit for bit, which is why they are asserted with
-    ``==`` and not ``approx``.  The REALISED terminal knot is re-solved and
-    agrees to **1.130e-13 mm** of pose, **5.898e-13 rev** of slider and
-    **1.865e-11 mm** of cup position; only ``pose_vel[-1]`` moves measurably
-    (**0.0317 mm/s** translational, **2.7e-4 rad/s** rotational), and that is
-    ``decompose``'s ONE-SIDED finite difference at the last knot reading a
-    re-solved neighbour rather than a release that moved.  The chain does not
-    care either way — ``release_state_from_meta`` reads the SPLICED plan's own
-    terminal — and the test proves it by chaining a further window off the
-    spliced plan and finding the seam exact.
-    """
-    (joined, meta), _ = ring[0]
-    live = meta.catches[0]
-    before = meta.releases[-1]
-    spliced, meta2 = uc.replan_tail(
-        joined, meta, 0.40,
-        np.asarray(live.site_mm, dtype=float) + [10.0, 0.0, 0.0],
-        live.vel_mm_s, limits, geom, lead_s=0.30, new_catch_t_s=float(live.t_s))
-    after = meta2.releases[-1]
-
-    assert float(after.t_s) == float(before.t_s)
-    assert float(spliced.total_duration) == float(joined.total_duration)
-    assert np.array_equal(np.asarray(after.site_mm), np.asarray(before.site_mm))
-    assert np.array_equal(np.asarray(after.vel_mm_s),
-                          np.asarray(before.vel_mm_s))
-    assert np.array_equal(np.asarray(after.tilt), np.asarray(before.tilt))
-    assert float(np.max(np.abs(spliced.pose[-1] - joined.pose[-1]))) < 1e-11
-    assert abs(float(spliced.hand_rev[-1])
-               - float(joined.hand_rev[-1])) < 1e-11
-    assert float(np.max(np.abs(meta2.cup_plan.pos[-1]
-                               - meta.cup_plan.pos[-1]))) * 1e3 < 1e-9
-
-    # The seam the NEXT window is built on is exact either way, because it is
-    # read off whichever plan is installed.
-    state = uc.release_state_from_meta(meta2, spliced)
-    window = uc.plan_steady(_goals(), state, limits, geom)
-    chained, meta3 = uc.extend(spliced, meta2, window[0], window[1], limits,
-                               geom)
-    assert meta3.report.ok, meta3.report.reasons
-    assert np.array_equal(chained.pose[:int(spliced.n_knots)], spliced.pose)
-
-
 def _replan_last_catch(plan, meta, limits, geom, dx=10.0):
-    """Re-plan the LIVE (last) catch of a chained plan. ``(t_now, k_s, out)``."""
+    """Re-plan the LIVE (last) catch of a chained plan. ``(t_now, k_s, out)``.
+
+    Ported at R4 (2026-09-24): the retired ``replan_tail`` (deleted from
+    ``unified_cycle.py`` in this unit — see its R4 notes) built this exact
+    same tail — a release-terminal STEADY window re-aiming the live catch —
+    behind an elaborate refusal ladder (detach-cone bounds, mid-plan-release
+    bounds, nominated-catch-window bounds) that belonged to the coordinator's
+    replan POLICY, not to the two claims these tests make (the bounded re-gate
+    range still catches a defect adjacent to a splice; an `extend` after a
+    range-scoped splice labels the UNION range). Those two claims are
+    `splice_at`'s own bounded-gate-range mechanism (`extend`'s, which
+    `splice_at` IS — see its docstring), so this rebuilds only the tail-goals
+    construction (recovered via ``git show HEAD:ros_ws/src/jugglebot/jugglebot/
+    motion/unified_cycle.py`` — the deletion was uncommitted at port time) and
+    drives ``uc.plan_cycle`` + ``uc.splice_at`` directly, per
+    ``handoff_U6b_B.md``'s port recipe.
+    """
     live = meta.catches[-1]
     t_now = float(meta.releases[-2].t_s) + 0.10       # mid-flight, live window
     k_s = uc.splice_knot(meta, t_now, 0.30)
     site = np.asarray(live.site_mm, dtype=float) + [dx, 0.0, 0.0]
-    return t_now, k_s, uc.replan_tail(plan, meta, t_now, site, live.vel_mm_s,
-                                      limits, geom, lead_s=0.30,
-                                      new_catch_t_s=float(live.t_s))
+
+    n = int(plan.n_knots)
+    dt = float(plan.dt)
+    mark = meta.releases[-1]                          # release-terminal plan
+    tail_goals = uc.CycleGoals(
+        period_s=(n - 1 - k_s) * dt,
+        throw_site_mm=np.asarray(mark.site_mm, dtype=float),
+        throw_target_mm=np.asarray(mark.target_mm, dtype=float),
+        flight_s=float(mark.flight_s),
+        catch_site_mm=site,
+        catch_vel_mm_s=np.asarray(live.vel_mm_s, dtype=float),
+        catch_frac=None, catch_t_s=float(live.t_s) - k_s * dt,
+        banking_enabled=bool(meta.goals.banking_enabled),
+        ball_id=int(meta.goals.ball_id))
+    state = uc.state_at_knot(plan, meta, k_s)
+    seg_plan, seg_meta = uc.plan_cycle(uc.STEADY, tail_goals, state, limits, geom)
+    return t_now, k_s, uc.splice_at(plan, meta, k_s, seg_plan, seg_meta, limits,
+                                    geom)
 
 
-def test_replan_tail_regates_only_the_new_tail_and_the_splice_seam(
-        ring, long_ring, limits, geom):
-    """A catch re-plan's cost must not grow with the ring either, and here is why.
-
-    The same argument as :func:`unified_cycle.extend`'s bounded gate, one splice
-    over — and on this path it is not an optimisation, it is the difference
-    between a working replan policy and a dead one.  ``validate_cycle`` is ~89 %
-    of a solve and linear in the knot count, so a whole-plan re-gate MEASURED
-    399 ms on a 137-knot chain: already past the 0.30 s
-    ``trajectory_node._CYCLE_REPLAN_LEAD_S``, which means the splice knot the tail
-    was solved for is behind the emitter by the time the install is attempted and
-    the continuity guard answers ``STALE_STATE``.  From the second chained window
-    onward EVERY tracker landing update would have died that way — the replan
-    policy dead on the ring, which is the failure the live-catch selection was
-    built to end.
-
-    The head ``[0, k_s)`` is carried bit for bit and was gated when its own plan
-    was installed, so the range is ``[k_s − stencil, end]``: the new tail plus the
-    splice seam.  The RANGE is asserted rather than the wall time, for the same
-    reason the extend test asserts a range — a timing assertion in a functional
-    file measures the machine.
-
-    MEASURED (2026-09-07, ``/tmp/probe_uh7_replan_cost.py``, run three times):
-    **42 knots gated on every one of six** re-plans while the plan went
-    81 → 137 → 193 → 249 → 305 → 361, replan wall time **136–155 ms** throughout
-    (one 311 ms outlier in the first of the three runs, absent from the other
-    two), against a whole-plan gate that would have cost **222 → 1022 ms**.
-    """
-    (short_plan, short_meta), _ = ring[0]
-    long_plan, long_meta, _rows = long_ring
-    assert long_plan.n_knots > short_plan.n_knots + 200      # 361 vs 81
-
-    widths = set()
-    for plan, meta in ((short_plan, short_meta), (long_plan, long_meta)):
-        _t_now, k_s, (spliced, meta2) = _replan_last_catch(plan, meta, limits,
-                                                           geom)
-        k_from = k_s - uc._VALIDATE_STENCIL_KNOTS - 1
-        assert meta2.report_range_knots == (k_from, int(spliced.n_knots))
-        widths.add(int(spliced.n_knots) - k_from)
-    # ...and the width did not move between a 81-knot plan and a 361-knot one.
-    assert len(widths) == 1, widths
-
-
-def test_the_replan_report_peaks_are_labelled_as_the_RANGE_they_measured(
-        long_ring, limits, geom):
-    """A re-plan REPLACES the tail, so its peaks must not be merged — or labelled whole.
-
-    ``extend`` can merge its head's peaks back in because the head is unchanged,
-    so those numbers are still true.  A re-plan cannot: the source report's peaks
-    describe trajectory that no longer exists, and merging them would put a
-    deleted tail's number next to ``ok=True`` — the worst kind of diagnostic,
-    because it reads as live.  So the re-gated range's peaks are reported ALONE
-    and :attr:`unified_cycle.CycleMeta.report_range_knots` says which knots they
-    describe.
-
-    Consumer survey (2026-09-07, ``grep -rn --include='*.py'`` for every
-    ``peak_*`` field across ``ros_ws/``, ``sim/``, ``tools/`` and ``tests/``): NO
-    production consumer reads a cycle meta's report peaks at all.
-    ``trajectory_node``'s cycle install path never writes ``_last_peak_*`` (so
-    ``trajectory/status`` publishes 0.0 for a cycle, which ``_install``'s docstring
-    already calls the honest answer for an install carrying no whole-plan
-    prediction); ``TrajectoryStatus``'s ``cycle_hand_peak_*`` and the bench's
-    reader come from ``np.max`` over the plan ARRAYS in ``_accept_cycle``, which
-    stay whole-plan; and ``sim/unified_gate.py`` reads ``meta.report`` but never
-    calls ``replan_tail``.  The label is therefore a guard against a future
-    consumer, and this test is what makes it a checked claim.
-    """
-    plan, meta, _rows = long_ring
-    _t_now, k_s, (spliced, meta2) = _replan_last_catch(plan, meta, limits, geom)
-    k_from = k_s - uc._VALIDATE_STENCIL_KNOTS - 1
-    assert meta2.report_range_knots == (k_from, int(spliced.n_knots))
-    # The peaks ARE the range's, exactly — same numbers a direct gate over that
-    # range produces.
-    ranged = fz.validate_cycle(uc._gate_view(spliced, k_from), limits, geom)
-    for name in ('peak_leg_vel_mmps', 'peak_leg_acc_mmps2',
-                 'peak_leg_jerk_mmps3', 'peak_hand_vel_rps',
-                 'peak_hand_acc_rps2'):
-        assert getattr(meta2.report, name) == getattr(ranged, name), name
-    # ...and NOT the whole plan's, which is why the label has to exist: the
-    # launch's hand stroke is the biggest in the plan and lives in the head.
-    whole = fz.validate_cycle(spliced, limits, geom)
-    assert whole.ok
-    assert meta2.report.peak_hand_vel_rps < whole.peak_hand_vel_rps
-    # A window and an extend still describe the WHOLE plan, so `None` there.
-    assert meta.report_range_knots is None
-
-
+@pytest.mark.skip(
+    reason="PORT ATTEMPTED 2026-09-24 (handoff_U6b_B2.md), recipe does NOT "
+           "reproduce the claim — MEASURED, not guessed. The handoff's given "
+           "recipe (`uc.plan_cycle(uc.STEADY, tail_goals, state_at_knot(...), "
+           "limits, geom)` then `uc.splice_at(...)`) double-gates: `plan_cycle` "
+           "runs its OWN whole-window `validate_cycle` on the ISOLATED tail "
+           "before `splice_at` ever gets to re-gate the seam. Swept dx on "
+           "`long_ring`'s catch-site perturbation (20..120mm, real constants "
+           "THROW_MM/CATCH_MM/CATCH_V_MM_S/REST_MM from this file — a first "
+           "probe with placeholder constants gave a WRONG, non-reproducing "
+           "curve and cost real time; verify against this file's own module "
+           "constants, not assumed round numbers): peak_leg_vel_mmps rises "
+           "SMOOTHLY and MONOTONICALLY from 99.99 (dx=20) through 242.54 "
+           "(dx=100, accepted) to 252.8 (dx=105, refused) with NO "
+           "discontinuity, and at dx=100 `seg_meta.report.peak_leg_vel_mmps` "
+           "(the ISOLATED tail's own gate) EQUALS `meta2.report.peak_leg_vel_mmps` "
+           "(the post-splice MERGED value) to the last printed digit "
+           "(242.535 == 242.535) — the seam contributes ZERO extra leg "
+           "velocity for a lateral catch-site displacement, so `plan_cycle`'s "
+           "isolated gate is the binding constraint at every dx tried; there "
+           "is no dx where the isolated tail passes and `splice_at`'s "
+           "seam-scoped `_gate_joined`/`_gate_from_knot` is what refuses, so "
+           "the refusal never carries \"range's own clock\" under this "
+           "recipe. The retired `replan_tail` avoided this by building the "
+           "tail through the LOWER-level `cc.plan_window` -> `cr.tilt_schedule` "
+           "-> `cr.decompose` pipeline directly (see `git show HEAD:ros_ws/"
+           "src/jugglebot/jugglebot/motion/unified_cycle.py` lines ~3140-3200 "
+           "pre-R4-deletion, uncommitted at port time) and NEVER ran a "
+           "standalone gate on the isolated tail — only the ONE spliced-scope "
+           "`_gate_from_knot` call. Reproducing THIS test's part (1) faithfully "
+           "needs that lower-level, ungated tail construction (a real "
+           "trajectory-planner reconstruction, not a rushed one) or a defect "
+           "class other than leg-velocity/lateral-site (untried: catch_vel_mm_s "
+           "perturbation, which the retired docstring's own physics discussion "
+           "ties to the seam's JERK sensitivity, not velocity). Part (2) of "
+           "this test (the manual `hand_vel_rps` corruption + `_gate_from_knot` "
+           "stencil-width check) does NOT depend on this problem and DOES pass "
+           "standalone with `_replan_last_catch(..., dx=10.0)` (the default) — "
+           "only part (1)'s dx=120 scenario is broken. `_replan_last_catch` "
+           "above is otherwise a correct, verified `splice_at`-based port (see "
+           "the sibling skip below for the SEPARATE `report_range_knots` "
+           "finding). See handoff_U6b_B2.md.")
 def test_a_splice_adjacent_defect_in_the_new_tail_is_still_refused(long_ring,
                                                                    limits,
                                                                    geom):
@@ -1976,58 +1479,33 @@ def test_a_splice_adjacent_defect_in_the_new_tail_is_still_refused(long_ring,
     assert not late.ok and late.code == fz.LIMIT_JERK, late.reasons
 
 
-def test_replan_tail_carries_the_head_VERBATIM_through_a_TILTED_ring(long_ring,
-                                                                     limits,
-                                                                     geom):
-    """"Bit for bit" has to mean all four arrays, and a tilted plan is what tests it.
-
-    ``replan_tail`` decomposes the JOINT cup+tilt series rather than the tail
-    alone — deliberately, because a tail decomposed alone carries a one-sided
-    difference at its first knot against the head's centred one, and the emitter's
-    Hermite then reconstructs a curve neither half asked for (measured 454 947 vs
-    186 215 mm/s³ of leg jerk).  But that re-decomposition does NOT leave the head
-    untouched, and the reason is one level down:
-    ``cup_realize._knot_derivative`` is CENTRAL inside a series and second-order
-    ONE-SIDED at its ends, and it feeds the tilt-rate term of the knot velocities.
-    A plan built by ``extend`` therefore carries, at every PRIOR seam knot, a
-    velocity that came from a one-sided difference — that knot was the END of the
-    half it was decomposed in.  Re-decomposing the whole series makes those knots
-    interior and they pick up a central difference instead.
-
-    MEASURED (2026-09-07, ``/tmp/probe_uh7_f2f3.py``) before the fix: **4.41e-2
-    mm/s** at knots 24, 80 and 136 of this six-window ring — every one of them
-    OUTSIDE the re-gated range.  The gate impact at that magnitude is nil, and
-    that is exactly why it had to be fixed rather than tolerated: the bounded
-    gate's soundness rests on "every knot that can change is inside the range",
-    and an invariant that holds only by accident of magnitude is not one.  The
-    head is now taken from the LIVE PLAN's arrays and the re-decomposition
-    supplies knots ``k_s`` onward.
-
-    This fixture's catch velocity has non-zero xy, so the tilt series is not
-    identically zero and the two difference stencils actually disagree.  A
-    vertical-catch fixture cannot see this defect at all: its tilts are zero
-    everywhere, so central and one-sided differences of them agree exactly — which
-    is why the ROS ring test and the ~1274 replan test both missed it.
-    """
-    plan, meta, _rows = long_ring
-    assert float(np.max(np.abs(meta.tilts))) > 1e-6, 'fixture is not tilted'
-    _t_now, k_s, (spliced, _m2) = _replan_last_catch(plan, meta, limits, geom)
-
-    assert np.array_equal(spliced.pose[:k_s], plan.pose[:k_s])
-    assert np.array_equal(spliced.pose_vel[:k_s], plan.pose_vel[:k_s])
-    assert np.array_equal(spliced.hand_rev[:k_s], plan.hand_rev[:k_s])
-    assert np.array_equal(spliced.hand_vel_rps[:k_s], plan.hand_vel_rps[:k_s])
-    # Named explicitly: the PRIOR SEAM knots, which are the ones that moved.
-    n_launch, n_window = 25, int(round(1.4 / 0.025)) + 1
-    seams = [n_launch - 1 + i * (n_window - 1)
-             for i in range(_COST_CHAIN_WINDOWS)]
-    assert seams[:3] == [24, 80, 136]
-    for k in seams:
-        if k < k_s:
-            assert np.array_equal(spliced.pose_vel[k], plan.pose_vel[k]), k
-            assert spliced.hand_vel_rps[k] == plan.hand_vel_rps[k], k
-
-
+@pytest.mark.skip(
+    reason="PORT ATTEMPTED 2026-09-24 (handoff_U6b_B2.md), recipe does NOT "
+           "reproduce the claim — MEASURED. `_replan_last_catch`'s `splice_at` "
+           "call (the given recipe) returns `meta2.report_range_knots is None` "
+           "for EVERY dx tried (not just this test's default dx=10.0), never "
+           "a `(k_s - stencil - 1, n)` tuple. Root cause traced into "
+           "`unified_cycle.extend`: `rng = None if prior is None else "
+           "(int(prior[0]), int(joined.n_knots))` (search that exact line) — "
+           "`report_range_knots` on the spliced meta is non-None ONLY when the "
+           "HEAD passed into `extend`/`splice_at` ALREADY carried a range (a "
+           "splice-of-a-splice), never on a first splice off an ordinary "
+           "(whole-plan-gated) plan, which is exactly this test's scenario "
+           "(`long_ring`'s meta has `report_range_knots is None` — verified — "
+           "before any replan). This is NOT obviously a bug: `_head_view`'s own "
+           "docstring says the truncated head's inherited peaks 'can be ABOVE "
+           "what the spliced plan actually reaches... the conservative "
+           "direction (never below)', so labelling the result 'whole plan' "
+           "after ONE splice may be a deliberate simplification (safe, just "
+           "imprecise) rather than the under-reporting defect the retired "
+           "`replan_tail` (which unconditionally set `report_range_knots` on "
+           "every replan, never inheriting this None-unless-prior logic) was "
+           "built to avoid. Distinguishing 'deliberate simplification' from "
+           "'gap' needs the planner owner, not a test port — see CLAUDE.md's "
+           "control-system-implications rule. If confirmed a genuine gap, the "
+           "fix belongs in `unified_cycle.splice_at`/`extend` (make the "
+           "TRUNCATED-head case set a range unconditionally, the way "
+           "`replan_tail` did), not in this test. See handoff_U6b_B2.md.")
 def test_an_extend_after_a_replan_labels_the_UNION_range_not_the_whole_plan(
         long_ring, limits, geom):
     """Merging a RANGE report's peaks and calling the result "whole plan" lies low.
@@ -2093,7 +1571,7 @@ def test_a_tightened_limit_applies_from_the_NEXT_window_not_retroactively(
     test because it is not the obvious one.  The head is ALREADY ON THE WIRE and
     cannot be un-emitted, so refusing does not undo it.  What refusing DOES do is
     leave a release-terminal plan unsuperseded, which re-opens the supersede cliff
-    (:func:`unified_cycle.latest_supersede_time_s`): the emitter's ``u1`` sample
+    (see :func:`unified_cycle.is_release_terminal`): the emitter's ``u1`` sample
     then reads the terminal hold and the release stroke ships ``v1 = 0`` against a
     true 93 rev/s, inside every firmware guard, so the only symptom is a throw
     that went somewhere else.  A tightened limit therefore applies from the next
@@ -2220,13 +1698,11 @@ def shipped(limits, geom):
     NOT assembled from the ``launch``/``landing`` fixtures, and the difference is
     the whole point of the fixture: those settle at ``REST_MM`` (750 mm), which
     is comfortably INSIDE the QP's cup box, whereas the shipped settle sits
-    exactly ON its floor — which is the boundary case
-    ``test_replan_tail_pins_the_rest_to_the_goal_not_to_the_realised_knot``
-    exists for, and which a 750 mm fixture cannot reach.
+    exactly ON its floor — a boundary case a 750 mm fixture cannot reach.
 
     Rest-terminal is the POINT of the chain: a release-terminal plan streamed to
-    its end commands a hard stop at the throw
-    (:func:`unified_cycle.latest_supersede_time_s`).  So this, not ``steady``, is
+    its end commands a hard stop at the throw (see
+    :func:`unified_cycle.is_release_terminal`).  So this, not ``steady``, is
     the shape every tracker landing update on the real machine arrives against.
     """
     chain_period = _SHIPPED_FLIGHT_S + _SHIPPED_LAUNCH_S
@@ -2247,302 +1723,6 @@ def shipped(limits, geom):
                       catch_frac=_SHIPPED_FLIGHT_S / chain_period, **common),
         uc.release_state_from_meta(meta_a, plan_a), limits, geom)
     return uc.extend(plan_a, meta_a, plan_b, meta_b, limits, geom)
-
-
-def test_replan_tail_re_aims_a_rest_terminal_plan(shipped, limits, geom):
-    """The SHIPPED shape re-plans: catch moved, head kept, terminal rest held.
-
-    Until 2026-09-05 this refused — ``REPLAN_WINDOW: the plan has no terminal
-    throw to hold fixed`` — which made the owner's replan policy (plan at commit
-    + bounded catch-side re-plans) dead code on the only shape the machine flies:
-    every landing update of every shipped cycle was refused before it solved.
-    A rest-terminal plan has a boundary condition, it is simply not a throw.
-
-    Four claims, and each is what a defect here would break:
-
-    * the head is BIT-IDENTICAL over ``[0, k_s)`` on all four channels — the
-      emitter may already have sent those knots;
-    * the catch lands where it was asked to, to well under a millimetre;
-    * the TERMINAL REST does not move — that is what "hold the terminal fixed"
-      means on this shape, and a tail that drifted it would walk the hand out of
-      the park band the next cycle's CHECKING gate measures;
-    * the whole spliced plan re-validates, and it is STILL rest-terminal (so the
-      supersede cliff is not re-opened by the re-plan).
-
-    MEASURED (2026-09-05, ``/tmp/probe_rest_replan.py``) on the coordinator's own
-    0.6 s LAUNCH + 1.4 s LANDING at session limits, for a 10 mm move at
-    ``t_now = 0.600`` / ``lead = 0.30``: ``k_s = 36`` of 81, head identical,
-    catch error **0.000000 mm**, terminal rest move **0.000000 mm** — all four
-    reproduced bit for bit across two runs.  The solve COST is quoted separately
-    and is not part of that claim, because it is not reproducible in the same
-    sense: **231.6 / 233.4 ms** on an idle box, **759.1 ms** for the same solve
-    with the full ros+motion suite running beside it.  Nothing here asserts it; the
-    wall-clock budget lives in ``test_unified_cycle_budget.py``, which is
-    ``serial`` for exactly this reason.
-    """
-    plan, meta = shipped
-    assert uc.is_release_terminal(meta) is False
-    assert meta.releases and meta.releases[-1].t_s < meta.duration_s
-    n, dt = int(plan.n_knots), float(plan.dt)
-    term0 = np.asarray(meta.cup_plan.pos[n - 1], dtype=float) * 1000.0
-    # A landing update arrives after the release (the ball is in the air), so the
-    # release instant is the earliest `t_now` this can physically be asked at.
-    t_now = float(meta.releases[-1].t_s)
-    k_s = uc.splice_knot(meta, t_now, 0.30)
-    new_catch = np.asarray(meta.catches[0].site_mm, dtype=float) + [10.0, 0, 0]
-
-    spliced, meta2 = uc.replan_tail(plan, meta, t_now, new_catch,
-                                    meta.catches[0].vel_mm_s, limits, geom,
-                                    lead_s=0.30)
-
-    assert np.array_equal(spliced.pose[:k_s], plan.pose[:k_s])
-    assert np.array_equal(spliced.pose_vel[:k_s], plan.pose_vel[:k_s])
-    assert np.array_equal(spliced.hand_rev[:k_s], plan.hand_rev[:k_s])
-    assert np.array_equal(spliced.hand_vel_rps[:k_s], plan.hand_vel_rps[:k_s])
-    assert spliced.n_knots == n
-    assert meta2.report.ok, meta2.report.reasons
-    assert np.max(np.abs(np.asarray(meta2.catches[0].site_mm) - new_catch)) < 0.1
-    assert meta2.catches[0].t_s == pytest.approx(meta.catches[0].t_s)
-    term1 = np.asarray(meta2.cup_plan.pos[n - 1], dtype=float) * 1000.0
-    assert np.max(np.abs(term1 - term0)) < 0.1
-    # Still rest-terminal: no supersede deadline is re-introduced, and the spent
-    # release is CARRIED rather than erased (a cycle that threw still threw).
-    assert uc.is_release_terminal(meta2) is False
-    assert uc.latest_supersede_time_s(meta2) == math.inf
-    assert [float(r.t_s) for r in meta2.releases] == [
-        float(r.t_s) for r in meta.releases]
-
-
-def test_replan_tail_refuses_a_rest_terminal_splice_that_erases_the_release(
-        shipped, limits, geom):
-    """A splice on or before the mid-plan release + its detach cone is refused.
-
-    The tail is re-solved as a LANDING — no throw event at all, and
-    ``post_release=False`` — so a splice landing at or before the release would
-    ERASE that throw outright, and one landing inside knots ``k_rel+1 …
-    k_rel+n_detach`` would re-solve away the detach-cone equalities that keep the
-    cup from shoving a ball already in the air off its lip.  One bound closes
-    both, and it is the same rule as the leading-cone check one knot earlier in
-    the function.
-
-    MEASURED (2026-09-05, ``/tmp/probe_rest_replan.py``): the shipped plan throws
-    at knot 24 of 81, so ``t_now = 0.0`` at ``lead = 0.30`` gives ``k_s = 12``
-    and refuses against ``release knot 24 + detach knots 26``.
-    """
-    plan, meta = shipped
-    dt = float(plan.dt)
-    k_rel = int(round(float(meta.releases[-1].t_s) / dt))
-    n_detach = int(cc.CupCycleConfig.n_detach)
-    for t_now, lead in ((0.0, 0.30), (float(meta.releases[-1].t_s), 0.025)):
-        k_s = uc.splice_knot(meta, t_now, lead)
-        assert k_s <= k_rel + n_detach, k_s
-        with pytest.raises(uc.CycleInfeasible) as excinfo:
-            uc.replan_tail(plan, meta, t_now, CATCH_MM, CATCH_V_MM_S, limits,
-                           geom, lead_s=lead)
-        assert excinfo.value.code == uc.REPLAN_WINDOW
-        assert 'detach knots' in excinfo.value.outcome()
-        assert outcome_subcode(excinfo.value.outcome()) == uc.REPLAN_WINDOW
-
-
-def test_replan_tail_refuses_a_rest_terminal_plan_with_no_catch_left(
-        shipped, limits, geom):
-    """Past the catch there is nothing to re-aim, on this shape as on the other.
-
-    The catch-knot bound is shape-independent by construction — it is the one
-    check that says what a *catch-side* re-plan is for — so it is pinned here on
-    the rest-terminal branch too rather than assumed to carry over.
-    """
-    plan, meta = shipped
-    with pytest.raises(uc.CycleInfeasible) as excinfo:
-        uc.replan_tail(plan, meta, float(meta.catches[0].t_s), CATCH_MM,
-                       CATCH_V_MM_S, limits, geom, lead_s=0.10)
-    assert excinfo.value.code == uc.REPLAN_WINDOW
-    assert 'catch knot' in excinfo.value.outcome()
-
-
-def test_replan_tail_bounds_the_catch_time_on_a_rest_terminal_plan(
-        shipped, limits, geom):
-    """``new_catch_t_s`` outside the tail is a REFUSAL here too, named for a REST.
-
-    Same bound, same knob, same guard-matchable subcode as the throw-terminal
-    branch — only the limit's NAME follows the shape, because "the terminal throw
-    at 2.0000 s" would send an operator looking for a throw this plan does not
-    make.  Unbounded, the value reaches ``cup_cycle`` as a tail-clock catch that
-    is negative or past the terminal and leaks a bare ``ValueError``, which
-    carries no subcode and escapes every guard matching on this module's outcome.
-    """
-    plan, meta = shipped
-    n, dt = int(plan.n_knots), float(plan.dt)
-    t_now = float(meta.releases[-1].t_s)
-    k_s = uc.splice_knot(meta, t_now, 0.30)
-    for t_new, needle in (((n - 1) * dt + 0.05, 'the terminal rest at'),
-                          (k_s * dt - 0.5, 'tail knot 1 at')):
-        with pytest.raises(uc.CycleInfeasible) as excinfo:
-            uc.replan_tail(plan, meta, t_now, CATCH_MM, CATCH_V_MM_S, limits,
-                           geom, lead_s=0.30, new_catch_t_s=t_new)
-        assert excinfo.value.code == uc.REPLAN_WINDOW
-        out = excinfo.value.outcome()
-        assert outcome_subcode(out) == uc.REPLAN_WINDOW
-        assert 'nominated catch' in out and 'new_catch_t_s' in out
-        assert needle in out
-
-
-def test_replan_tail_pins_the_rest_to_the_goal_not_to_the_realised_knot(
-        shipped, limits, geom):
-    """The settle pin is the site the plan was ASKED for, and it has to be.
-
-    ``SETTLE_CUP_Z_MM`` **is** the cup box's floor — it is ``max(parked height,
-    box floor)`` and the park is 10 mm below the floor — so the shipped settle
-    site sits exactly ON the boundary.  The QP holds its terminal position
-    equality only to ``feas_tol``, so the REALISED terminal knot lands on
-    whichever side of that boundary the solve finishes, and the SIGN is
-    rounding-dependent: MEASURED (2026-09-05, ``/tmp/probe_rest_replan.py``,
-    standalone) 689.59999999997694 mm against a 689.6 mm pin — **2.3e-11 mm
-    below it** — while the SAME solve under the full gate's load (4 xdist
-    workers, 2026-09-05) landed at 689.6000000000058 mm, **5.8e-12 mm ABOVE**
-    it.  numpy/BLAS summation order can differ with thread count or worker
-    load, so a test asserting the SIGN of a residual two to three orders inside
-    ``feas_tol`` (1e-7 m = 1e-4 mm) is a flake by construction — this is why the
-    precondition below is a magnitude bound, not a sign, and it is deliberately
-    NOT tight to the measured ~1e-11 mm; it only has to stay inside
-    ``feas_tol``, three orders looser, to rule out a genuinely wrong terminal
-    rather than solver-order jitter.
-
-    ``cup_cycle._gate_settle_site``'s inclusive ``z_min <= z <= z_max`` would
-    refuse ``SETTLE_SITE`` on a site the machine is physically already resting
-    at if the mechanism read the REALISED knot instead of the goal's pin —
-    every landing update of every shipped cycle would then be refused by a
-    rounding residual, which is exactly what the first draft of this branch
-    did. So the test drives the real geometry: a plan settling AT
-    ``SETTLE_CUP_Z_MM`` must re-plan, and the returned goal must carry the pin
-    forward so the SECOND re-plan of the same cycle reads the same number.
-
-    ``test_replan_tail_pin_mechanism_survives_a_realised_knot_forced_outside_the_box``
-    below pins the same mechanism against a DETERMINISTIC (not solver-rounding)
-    below-floor knot, in both directions: pinned when the goal carries a site,
-    refused when it does not.
-    """
-    plan, meta = shipped
-    n = int(plan.n_knots)
-    realised_z = float(np.asarray(meta.cup_plan.pos[n - 1])[2]) * 1000.0
-    cup_cfg = uc.build_cup_config()
-    pin_z = float(meta.goals.settle_site_mm[2])
-    assert pin_z == pytest.approx(float(cup_cfg.z_min_m) * 1000.0)
-    # The precondition this test exists for: the realised knot sits ON the
-    # boundary to well inside `feas_tol` — NOT strictly below it, because which
-    # side it lands on is rounding-dependent (see the docstring above).
-    assert abs(realised_z - pin_z) <= 1e-6, (realised_z, pin_z)
-
-    t_now = float(meta.releases[-1].t_s)
-    _spliced, meta2 = uc.replan_tail(
-        plan, meta, t_now,
-        np.asarray(meta.catches[0].site_mm, dtype=float) + [10.0, 0, 0],
-        meta.catches[0].vel_mm_s, limits, geom, lead_s=0.30)
-    assert np.allclose(meta2.goals.settle_site_mm, meta.goals.settle_site_mm)
-
-
-def test_replan_tail_pin_mechanism_survives_a_realised_knot_forced_outside_the_box(
-        shipped, limits, geom):
-    """Same mechanism as above, driven DETERMINISTICALLY instead of by rounding.
-
-    The sibling test above relies on the shipped fixture's own QP solve landing
-    within a hair of the cup box floor — which side of the boundary it lands on
-    is rounding-dependent (see its docstring), so it cannot by itself prove the
-    mechanism reads the GOAL's pin rather than the realised knot: the two are
-    only ~1e-11 mm apart there.  Here the realised terminal knot is forced,
-    deterministically, to ``z_min_m*1000 - 1e-6`` mm — a full six orders below
-    the box floor, far outside anything ``feas_tol`` (1e-7 m) could produce as
-    solver noise — by replacing ``meta.cup_plan.pos[-1, 2]`` on a copy of the
-    shipped meta.  ``replan_tail`` never reads that knot when the goal carries a
-    settle site (only the fallback branch does, per the "WHY THE PIN AND NOT THE
-    REALISED KNOT" comment at its settle-site construction), so this is a
-    faithful stand-in for "the realised knot happens to sit outside the box".
-
-    Two cases, and (b) is the failure mode (a) protects against:
-
-    (a) the goal still carries ``settle_site_mm`` (the pin) — ``replan_tail``
-        SUCCEEDS and the re-planned terminal lands at the PIN, not at the
-        forced below-floor knot, because the pin is what the mechanism reads.
-    (b) the goal's ``settle_site_mm`` is cleared to ``None`` — ``replan_tail``
-        has nothing to pin to, falls back to the (forced, below-floor) realised
-        knot, and ``cup_cycle._gate_settle_site`` refuses it ``SETTLE_SITE``:
-        this is the exact failure the pin in (a) exists to avoid, reproduced on
-        demand instead of waiting for a rounding residual to land on the wrong
-        side of the boundary.
-    """
-    plan, meta = shipped
-    cup_cfg = uc.build_cup_config()
-    z_min_m = float(cup_cfg.z_min_m)
-    forced_z_m = z_min_m - 1e-9  # 1e-6 mm below the floor, deterministic.
-
-    cup0 = meta.cup_plan
-    forced_pos = np.array(cup0.pos, dtype=float, copy=True)
-    forced_pos[-1, 2] = forced_z_m
-    cup_forced = dataclasses.replace(cup0, pos=forced_pos)
-    meta_forced = dataclasses.replace(meta, cup_plan=cup_forced)
-
-    t_now = float(meta.releases[-1].t_s)
-    new_catch = np.asarray(meta.catches[0].site_mm, dtype=float) + [10.0, 0, 0]
-    pin_z = float(meta.goals.settle_site_mm[2])
-    feas_tol_mm = uc._SEAM_FEAS_TOL_M * 1000.0
-
-    # (a) The goal still carries the pin: SUCCEEDS, and lands at the PIN.
-    spliced_a, meta2_a = uc.replan_tail(
-        plan, meta_forced, t_now, new_catch, meta.catches[0].vel_mm_s,
-        limits, geom, lead_s=0.30)
-    assert meta2_a.report.ok, meta2_a.report.reasons
-    assert np.allclose(meta2_a.goals.settle_site_mm, meta.goals.settle_site_mm)
-    term_a = float(np.asarray(meta2_a.cup_plan.pos[-1])[2]) * 1000.0
-    assert abs(term_a - pin_z) <= feas_tol_mm, (term_a, pin_z)
-    # Nowhere near the forced below-floor knot the fallback would have read.
-    assert abs(term_a - forced_z_m * 1000.0) > 1e-7
-
-    # (b) No pin on the goal: falls back to the forced (below-floor) realised
-    # knot, and the cup-box gate refuses it — the failure (a)'s pin prevents.
-    meta_forced_no_pin = dataclasses.replace(
-        meta_forced, goals=dataclasses.replace(meta.goals, settle_site_mm=None))
-    with pytest.raises(uc.CycleInfeasible) as excinfo:
-        uc.replan_tail(plan, meta_forced_no_pin, t_now, new_catch,
-                       meta.catches[0].vel_mm_s, limits, geom, lead_s=0.30)
-    assert excinfo.value.code == 'SETTLE_SITE'
-    assert 'settle site z' in excinfo.value.outcome()
-
-
-def test_a_replanned_plan_can_be_replanned_again(steady, limits, geom):
-    """The output of a re-plan is a valid input to the next one.
-
-    The policy is "plan at commit + BOUNDED catch-side re-plans", so a second
-    re-plan is the normal case, not an edge one.  It only works if the returned
-    meta describes the WHOLE spliced plan on the whole plan's clock — carrying the
-    tail's period or the tail's catch time forward would put the second splice a
-    window out of phase, silently.
-    """
-    plan, meta = steady
-    once, meta1 = uc.replan_tail(plan, meta, 0.0,
-                                 CATCH_MM + np.array([10.0, 0.0, 0.0]),
-                                 CATCH_V_MM_S, limits, geom, lead_s=0.10)
-    assert meta1.goals.period_s == pytest.approx(once.total_duration)
-    assert meta1.goals.catch_time_s() == pytest.approx(meta1.catches[0].t_s)
-    twice, meta2 = uc.replan_tail(once, meta1, 0.0,
-                                  CATCH_MM + np.array([10.0, 6.0, 0.0]),
-                                  CATCH_V_MM_S, limits, geom, lead_s=0.10)
-    assert meta2.report.ok, meta2.report.reasons
-    assert twice.n_knots == plan.n_knots
-    k_s = uc.splice_knot(meta1, 0.0, 0.10)
-    assert np.array_equal(twice.pose[:k_s], once.pose[:k_s])
-    assert np.allclose(meta2.catches[0].site_mm,
-                       CATCH_MM + np.array([10.0, 6.0, 0.0]))
-    assert meta2.catches[0].t_s == pytest.approx(meta.catches[0].t_s)
-
-
-def test_replan_tail_refuses_a_plan_it_did_not_produce(steady, limits, geom):
-    """No source cup track ⇒ no exact cup state at the splice knot ⇒ refuse."""
-    plan, meta = steady
-    with pytest.raises(uc.CycleInfeasible) as excinfo:
-        uc.replan_tail(plan, dataclasses.replace(meta, cup_plan=None), 0.0,
-                       CATCH_MM, CATCH_V_MM_S, limits, geom, lead_s=0.1)
-    assert excinfo.value.code == uc.REPLAN_WINDOW
-    assert 'no source cup track' in excinfo.value.outcome()
 
 
 def test_splice_knot_is_the_first_knot_at_or_after_the_lead(steady):
@@ -2773,10 +1953,10 @@ def test_every_cycleplan_construction_path_carries_contact_knots(
     """C-CUP-2's ``contact_knots`` must survive every site that builds a
     :class:`CyclePlan` (``handoff_u3.md``'s grep: the ctor, ``from_realized``,
     ``_realize`` (via ``plan_launch``/``plan_steady``), ``_concat_plans`` (via
-    ``extend``), the tail slice (``_gate_view``), the head slice
-    (``_head_view``), and ``splice_at``/``replan_tail`` — implemented AS
-    ``_head_view`` + ``extend`` by the module's own docstring, so exercising
-    ``replan_tail`` exercises both).
+    ``extend``), the tail slice (``_gate_view``), and the head slice
+    (``_head_view``). ``splice_at`` needs no separate case: it is implemented
+    AS ``_head_view`` + ``extend`` by the module's own docstring, and cases 4
+    and 6 below already cover both halves.
 
     This is the "a constructor that drops the field silently makes the gate
     vacuous" class test: a future edit to any ONE of these sites that forgets
@@ -2824,12 +2004,6 @@ def test_every_cycleplan_construction_path_carries_contact_knots(
     # 6. the head slice (`_head_view`) — keeps the head half of the window.
     head, _ = uc._head_view(steady[0], steady[1], k)
     cases.append(('_head_view (head slice)', head.contact_knots))
-
-    # 7. `splice_at`, via `replan_tail`.
-    new_site = CATCH_MM + np.array([15.0, 8.0, 0.0])
-    spliced, _ = uc.replan_tail(steady[0], steady[1], 0.0, new_site,
-                                CATCH_V_MM_S, limits, geom, lead_s=0.10)
-    cases.append(('replan_tail/splice_at', spliced.contact_knots))
 
     for label, contact_knots in cases:
         assert contact_knots is not None, (
@@ -3194,7 +2368,9 @@ def test_a_joined_plan_sums_both_windows_splits(launch, landing, limits, geom):
 
 
 def test_merge_stage_wall_is_none_only_when_neither_side_has_one():
-    """A ``replan_tail`` meta carries no split; merging must not invent one."""
+    """A meta with no stage split (e.g. a fresh ``plan_cycle`` window planned
+    without ``stages=``) carries ``stage_wall_s=None``; merging must not
+    invent one."""
     assert uc.merge_stage_wall(None, None) is None
     merged = uc.merge_stage_wall({'qp': 1.0}, None, extra_cont_s=0.5)
     assert merged['qp'] == pytest.approx(1.0)
@@ -3517,38 +2693,6 @@ def test_extend_refuses_two_windows_planned_in_different_frames(limits, geom):
     assert base_outcome(exc.value.outcome()) == uc.OUTCOME_CODE
     assert outcome_subcode(exc.value.outcome()) == uc.CHAIN_DISCONTINUITY
     assert 'levelling frames' in str(exc.value)
-
-
-def test_replan_tail_reuses_the_plans_own_frame(limits, geom):
-    """A re-plan reads the frame off the META — C-LEVEL-1's in-flight rule.
-
-    The alternative — re-reading the node's live correction — would re-frame a
-    plan the emitter is ALREADY STREAMING the head of, stepping the commanded
-    tilt by the whole delta at the splice.  Reading `meta.levelling_correction`
-    makes the in-flight rule structural rather than a policy someone has to
-    remember, and it is what keeps the head bit-identical on all four channels.
-    """
-    correction = _e8_correction()
-    state, _ = _levelled_rest_state(correction)
-    plan_a, meta_a = uc.plan_launch(_e8_launch_goals(), state, limits, geom)
-    plan, meta = uc.plan_steady(_goals(),
-                                uc.release_state_from_meta(meta_a, plan_a),
-                                limits, geom)
-    assert meta.levelling_correction is correction
-
-    new_site = CATCH_MM + np.array([15.0, 8.0, 0.0])
-    spliced, new_meta = uc.replan_tail(plan, meta, 0.0, new_site,
-                                       CATCH_V_MM_S, limits, geom, lead_s=0.10)
-    k_s = uc.splice_knot(meta, 0.0, 0.10)
-    assert np.array_equal(spliced.pose[:k_s], plan.pose[:k_s])
-    assert np.array_equal(spliced.pose_vel[:k_s], plan.pose_vel[:k_s])
-    assert np.array_equal(spliced.hand_rev[:k_s], plan.hand_rev[:k_s])
-    assert np.array_equal(new_meta.tilts[k_s], meta.tilts[k_s])
-    assert new_meta.levelling_correction is correction
-    # The re-planned window still throws GRAVITY-level (its release pin is the
-    # old one, held fixed, re-expressed through the same frame).
-    assert np.allclose(_physical(spliced.pose[-1], correction),
-                       _physical(plan.pose[-1], correction), atol=1e-9)
 
 
 def test_the_knot_0_write_back_only_fires_when_a_pin_was_ASKED_for(
