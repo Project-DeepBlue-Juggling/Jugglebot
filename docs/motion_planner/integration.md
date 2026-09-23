@@ -104,25 +104,28 @@ The MPC bridge forwards target poses from ROS2 input sources to the MPC process 
 | ROS2 Topic | Message Type | ZMQ Topic | Behaviour |
 |---|---|---|---|
 | `platform_pose_topic` | `PlatformPoseCommand` | `mpctgt` | Forward pose to MPC. **Gated:** only forwards if `msg.publisher` matches the current active mode |
-| `catch/dynamic_target` | `DynamicTargetCommand` | `mpctgt` | Forward catch target to MPC. **Gated:** only forwards when mode is CATCH |
 | `control_mode_topic` | `String` | `mpcmode` | Forward mode transitions (enable/disable) |
 | `gravity_offset` | `Float64MultiArray` | — | Stored as correction rotation matrix; composed into every outgoing target orientation |
 
 ### Mode Gating
+
+(A fourth mode, `CATCH` — active publisher `catch_coordinator`, forwarding
+`catch/dynamic_target` — existed historically here; `catch_coordinator_node.py`
+and the `catch/dynamic_target` topic are both deleted with the FSM at R4,
+2026-09-24, under `fsm-final`.)
 
 | Mode String | Active Publisher | Action |
 |---|---|---|
 | `SPACEMOUSE` | spacemouse | Forward platform_pose_topic, send `mpcmode:spacemouse` |
 | `SHELL` | shell | Forward platform_pose_topic, send `mpcmode:shell` |
 | `GUI` | gui | Forward platform_pose_topic, send `mpcmode:gui` |
-| `CATCH` | catch_coordinator | Forward catch/dynamic_target, send `mpcmode:catch` |
 | `LEVELLING` | — | Send `mpcmode:disabled` |
 | `ERROR` | — | Send `mpcmode:disabled` |
 | empty/None | — | Send `mpcmode:disabled` |
 
 ### Catch Target Feedback
 
-When the MPC receives a catch target (via `:5558`), it sends accept/reject feedback to the catch coordinator via a dedicated ZMQ channel on `:5559` (`TargetFeedbackPub` → `TargetFeedbackSub`). This tells the coordinator whether the solver was able to plan a trajectory to the requested catch position and timing. (Dormant MPC stack only: since Phase 5 the catch coordinator consumes the `trajectory/target_feedback` ROS topic from `trajectory_node`'s feasibility gate instead of this `:5559` channel.)
+When the MPC receives a catch target (via `:5558`), it sends accept/reject feedback to the catch coordinator via a dedicated ZMQ channel on `:5559` (`TargetFeedbackPub` → `TargetFeedbackSub`). This tells the coordinator whether the solver was able to plan a trajectory to the requested catch position and timing. (Dormant MPC stack only: since Phase 5 the catch coordinator consumed the `trajectory/target_feedback` ROS topic from `trajectory_node`'s feasibility gate instead of this `:5559` channel — and the catch coordinator itself is deleted with the FSM at R4, 2026-09-24, under `fsm-final`.)
 
 ### Gravity Correction
 

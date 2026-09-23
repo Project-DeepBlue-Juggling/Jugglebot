@@ -1,5 +1,28 @@
 # The Catch Arrival Contract — C-CATCH-1
 
+> **AMENDED at R4 (2026-09-24, U6b Cluster C) — narrowed scope, still
+> normative.** `planner.build_catch` (and `_catch_arrival_rate` below) is
+> RETAINED past R4, but only as `tests/ros/test_levelling_frame.py`'s test
+> vehicle for the C-LEVEL-1 levelling-frame contract (`motion/skills/
+> INVARIANTS.md` § 9, "Retained past R4"; an R6 review item). No live
+> production path calls `build_catch` any more — the FSM coordinators that
+> did (`toss_sequencer.py`, `reload_coordinator_node.py`) are deleted under
+> `fsm-final`.
+>
+> On the skill path, the concern this document exists to bound — a planner
+> inventing arrival motion nobody asked for — is closed differently, at a
+> different layer, for a different reason: a CATCH segment's terminal IS the
+> tracker's landing (requested motion, unbounded by construction, so there is
+> no planner-invented departure to bound), its receive tilt is the cup QP's,
+> boxed by `max_tilt_deg` (`cup_realize.tilt_schedule` → `TILT_PIN`), and the
+> cup itself is protected on touchdown by the cup-contact contract (C-CUP-2,
+> `motion/trajectory/feasibility.py::_cup_contact_floor_check`,
+> `plans/active/cup-contact-contract.md`). The schedule's own lateral site is
+> protected separately by C-CATCH-2's lateral authority clamp
+> (`motion/skills/executor.py::SkillExecutor._clamp_lateral_to_schedule`).
+> The rest of this document describes the legacy mechanism `build_catch`
+> still implements, kept alive for the reason above.
+
 **Normative.** This document specifies what a catch plan's *arrival boundary
 conditions* may contain, and — the load-bearing half — where they may come from.
 It is the written third of the repo's contract pattern (normative statement + one

@@ -64,11 +64,12 @@ from sim.juggle_planner.juggle_planner import (
 from sim.juggle_noise import BallisticEstimator, JuggleNoise, NoiseConfig
 from sim.juggle_tilt import cup_axis, realize_tilted, tilt_to_throw, MAX_TILT_DEG
 from sim.plant.mujoco_plant import MuJoCoPlant
-# Viewer + offscreen-recording plumbing is shared with the two-ball runner (it
-# needs only mujoco + ffmpeg, no CasADi). Importing juggle_online adds no heavy
-# deps here — it pulls the same juggle_planner / juggle_tilt / plant modules this
-# file already imports. See sim/juggle_online.py for the VideoRecorder rationale.
-from sim.juggle_online import (
+# Viewer + offscreen-recording plumbing, shared verbatim across every sim demo
+# runner. Moved to sim/viz/recording.py at R4 (2026-09-24, U6b Cluster C) when
+# sim/juggle_online.py (the FSM-era "online juggling" demo it used to live
+# beside) was deleted with the FSM under `fsm-final` — see that module's
+# docstring for the VideoRecorder rationale.
+from sim.viz.recording import (
     VideoRecorder, build_record_camera,
     _KEY_SPACE, _KEY_C, _KEY_LEFT_BRACKET, _KEY_RIGHT_BRACKET,
     _KEY_RIGHT_ARROW, _KEY_LEFT_ARROW,
@@ -103,9 +104,11 @@ class SingleThrowConfig:
     noise: NoiseConfig = dataclasses.field(default_factory=NoiseConfig)
     seed: int = 0
     settle_ticks: int = 70         # platform warm-up at the dip before spawn
-    # ---- viewer / offscreen recording (mirror sim/juggle_online.py; PURELY
-    # additive — the headless run_single_throw() never reads these, so it stays
-    # byte-identical. Only the module-level run()/main() below use them.) --------
+    # ---- viewer / offscreen recording (pattern historically shared with
+    # sim/juggle_online.py, deleted with the FSM at R4 2026-09-24; PURELY
+    # additive — the headless run_single_throw() never reads these, so it
+    # stays byte-identical. Only the module-level run()/main() below use
+    # them.) --------------------------------------------------------------
     headless: bool = True          # if False, launch the MuJoCo passive viewer
     realtime_rate: float = 0.0     # wall-clock pacing: 0 = free-run, 1.0 = real-time
     record_path: "str | None" = None
@@ -178,7 +181,7 @@ class SingleThrowRunner:
                                  mujoco.mjtObj.mjOBJ_SITE, self.site_id, res, 0)
         return res[3:6].copy()
 
-    # ---- viewer controls (mirrors sim/juggle_online.py) ----
+    # ---- viewer controls (pattern historically shared with sim/juggle_online.py, deleted with the FSM at R4 2026-09-24; its recording/key constants now live in sim/viz/recording.py) ----
     def key_callback(self, keycode: int) -> None:
         """SPACE pause/resume · RIGHT step one tick (paused) · ``[`` slower /
         ``]`` faster · ``C`` print current free-camera angle as --cam-* flags."""
@@ -472,7 +475,7 @@ def main(argv: "list[str] | None" = None) -> int:
                    help="Landing / measure height (mm, cup-world). Default 700.")
     p.add_argument('--flight-s', type=float, default=0.60,
                    help="Cadence: time of flight in seconds. Default 0.60.")
-    # ---- recording (mirrors sim/juggle_online.py) ----
+    # ---- recording (pattern historically shared with sim/juggle_online.py, deleted with the FSM at R4 2026-09-24; its recording/key constants now live in sim/viz/recording.py) ----
     p.add_argument('--record', default=None, metavar='PATH',
                    help="Render offscreen from a fixed camera and write an H.264 "
                         "mp4 to PATH (needs ffmpeg on PATH). Independent of --viewer.")

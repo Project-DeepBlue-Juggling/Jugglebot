@@ -34,7 +34,7 @@
 ### `balls`
 
 - **publishers:** `ball_tracker_node`
-- **subscribers:** `catch_coordinator_node`, `reload_coordinator_node`, `skill_node`
+- **subscribers:** `skill_node`
 - **type:** `jugglebot_interfaces.msg.BallStateArray`
 
 ### `bb/axis_estimates`
@@ -52,7 +52,7 @@
 ### `bb/heartbeat`
 
 - **publishers:** `teensy_bridge_node`
-- **subscribers:** `ball_butler_node`, `mocap_node`, `reload_coordinator_node`
+- **subscribers:** `ball_butler_node`, `mocap_node`
 - **type:** `jugglebot_interfaces.msg.BallButlerHeartbeat`
 
 ### `bb/markers`
@@ -70,7 +70,7 @@
 ### `bb/throw_outcome`
 
 - **publishers:** `ball_butler_node`
-- **subscribers:** `reload_coordinator_node`
+- **subscribers:** _none_
 - **type:** `std_msgs.msg.String`
 
 ### `cache_diag`
@@ -78,93 +78,6 @@
 - **publishers:** `teensy_bridge_node`
 - **subscribers:** _none_
 - **type:** `diagnostic_msgs.msg.DiagnosticStatus`
-
-### `catch/armed`
-
-- **publishers:** `reload_coordinator_node`
-- **subscribers:** `catch_coordinator_node`
-- **type:** `std_msgs.msg.Bool`
-- **contract:**
-  - HAND-OWNERSHIP LATCH (1/6). Mirror of the trajectory/arm_catch latch on
-    trajectory_node; while raised, catch/dynamic_target may actuate the
-    platform and catch_coordinator_node may actuate the hand
-    (ros_ws/docs/control_modes.md, ros_ws/docs/safety.md).
-
-### `catch/dynamic_target`
-
-- **publishers:** `catch_coordinator_node`, `reload_coordinator_node`
-- **subscribers:** `trajectory_node`
-- **type:** `jugglebot_interfaces.msg.DynamicTargetCommand`
-- **contract:**
-  - MULTI-PUBLISHER by design: catch_coordinator_node (reactive catch) and
-    reload_coordinator_node (tier-8b deferred A->B reach) publish the same
-    wire and trajectory_node consumes either identically. Installs are gated
-    by the catch-armed latch and bounded by the declared reach envelope
-    (ros_ws/docs/catch_reach_envelope.md, contract C-REACH-1;
-    orientation/arrival semantics in ros_ws/docs/catch_arrival_contract.md).
-
-### `catch/pretilt_hold`
-
-- **publishers:** `reload_coordinator_node`
-- **subscribers:** `catch_coordinator_node`
-- **type:** `std_msgs.msg.Bool`
-- **contract:**
-  - HAND-OWNERSHIP LATCH (4/6). Raised on the same tick as prime_hold and
-    released with it; suppresses the pre-tilt while the toss owns the platform
-    pose (ros_ws/docs/levelling_frame.md).
-
-### `catch/prime_dispatched`
-
-- **publishers:** `reload_coordinator_node`
-- **subscribers:** `catch_coordinator_node`
-- **type:** `std_msgs.msg.Bool`
-- **contract:**
-  - HAND-OWNERSHIP LATCH (3/6). Announces every reload-side prime dispatch so
-    catch_coordinator_node holds its anti-stutter in-flight window instead of
-    restarting a live ascent (ros_ws/docs/hand_command_continuity.md).
-
-### `catch/prime_hold`
-
-- **publishers:** `reload_coordinator_node`
-- **subscribers:** `catch_coordinator_node`
-- **type:** `std_msgs.msg.Bool`
-- **contract:**
-  - HAND-OWNERSHIP LATCH (2/6). Raised at PREPARE, BEFORE catch/armed rises,
-    and released LAST at terminal: while True the reload/toss owns the hand
-    and catch_coordinator_node must not prime it
-    (ros_ws/docs/hand_command_continuity.md,
-    ros_ws/docs/ball_possession_contract.md).
-
-### `catch/reach_center`
-
-- **publishers:** `reload_coordinator_node`
-- **subscribers:** `trajectory_node`
-- **type:** `geometry_msgs.msg.Point`
-- **contract:**
-  - NOT a hand latch - platform-side. Declares the reach-envelope centre
-    (contract C-REACH-1) one tick before trajectory/arm_catch, so every
-    catch/dynamic_target installed under the latch is bounded relative to a
-    centre the consumer already holds (ros_ws/docs/catch_reach_envelope.md).
-
-### `catch/unified_mode`
-
-- **publishers:** `reload_coordinator_node`
-- **subscribers:** `catch_coordinator_node`
-- **type:** `std_msgs.msg.Bool`
-- **contract:**
-  - HAND-OWNERSHIP LATCH (6/6). Session-scoped declaration; while raised the
-    cycle plan owns the hand and catch_coordinator_node must not arm a
-    reactive stroke — TRANSIENT_LOCAL depth 1 on both ends.
-
-### `catch/vel_scale`
-
-- **publishers:** `reload_coordinator_node`
-- **subscribers:** `catch_coordinator_node`
-- **type:** `std_msgs.msg.Float64`
-- **contract:**
-  - HAND-OWNERSHIP LATCH (5/6). Catch-speed knob relayed at PREPARE, before
-    catch/armed rises, so catch_coordinator_node holds the value before any
-    arm (ros_ws/docs/hand_command_continuity.md).
 
 ### `clock_diag`
 
@@ -193,7 +106,7 @@
 ### `control_mode_topic`
 
 - **publishers:** `orchestrator_node`
-- **subscribers:** `reload_coordinator_node`, `spacemouse_handler`, `trajectory_node`
+- **subscribers:** `spacemouse_handler`, `trajectory_node`
 - **type:** `std_msgs.msg.String`
 - **name source:** `param:control_mode_topic`
 
@@ -206,7 +119,7 @@
 ### `hand_telemetry`
 
 - **publishers:** `teensy_bridge_node`
-- **subscribers:** `reload_coordinator_node`, `skill_node`
+- **subscribers:** `skill_node`
 - **type:** `jugglebot_interfaces.msg.HandTelemetryMessage`
 
 ### `leg_cmd_executed`
@@ -278,7 +191,7 @@
 ### `rigid_body_poses`
 
 - **publishers:** `mocap_node`
-- **subscribers:** `ball_butler_node`, `reload_coordinator_node`, `skill_node`
+- **subscribers:** `ball_butler_node`, `skill_node`
 - **type:** `jugglebot_interfaces.msg.RigidBodyPoses`
 
 ### `ring_diag`
@@ -307,25 +220,25 @@
 
 ### `throw_announcements`
 
-- **publishers:** `ball_butler_node`, `reload_coordinator_node`, `skill_node`
-- **subscribers:** `ball_tracker_node`, `catch_coordinator_node`, `catch_correlation_node`, `reload_coordinator_node`, `skill_node`
+- **publishers:** `ball_butler_node`, `skill_node`
+- **subscribers:** `ball_tracker_node`, `catch_correlation_node`, `skill_node`
 - **type:** `jugglebot_interfaces.msg.ThrowAnnouncement`
 - **contract:**
   - MULTI-PUBLISHER by design: ball_butler_node announces a real BB throw and
-    reload_coordinator_node publishes the toss self-announcement (thrower_name
-    = target_id = this robot) so the correlation -> catch path closes
-    unchanged (ros_ws/docs/ball_possession_contract.md).
+    skill_node publishes the toss self-announcement (thrower_name = target_id
+    = this robot) so the correlation -> catch path closes unchanged
+    (ros_ws/docs/ball_possession_contract.md).
 
 ### `trajectory/commanded_pose`
 
 - **publishers:** `trajectory_node`
-- **subscribers:** `reload_coordinator_node`
+- **subscribers:** _none_
 - **type:** `geometry_msgs.msg.Pose`
 
 ### `trajectory/commanded_position`
 
 - **publishers:** `trajectory_node`
-- **subscribers:** `reload_coordinator_node`, `skill_node`
+- **subscribers:** `skill_node`
 - **type:** `geometry_msgs.msg.Point`
 
 ### `trajectory/diagnostics`
@@ -337,13 +250,13 @@
 ### `trajectory/status`
 
 - **publishers:** `trajectory_node`
-- **subscribers:** `reload_coordinator_node`, `skill_node`
+- **subscribers:** `skill_node`
 - **type:** `jugglebot_interfaces.msg.TrajectoryStatus`
 
 ### `trajectory/target_feedback`
 
 - **publishers:** `trajectory_node`
-- **subscribers:** `catch_coordinator_node`, `reload_coordinator_node`
+- **subscribers:** _none_
 - **type:** `jugglebot_interfaces.msg.TargetFeedback`
 
 ### `udp_diag`
@@ -381,7 +294,7 @@
 ### `bb/reload`
 
 - **servers:** `teensy_bridge_node`
-- **clients:** `reload_coordinator_node`, `skill_node`
+- **clients:** `skill_node`
 - **type:** `std_srvs.srv.Trigger`
 
 ### `bb/reset`
@@ -399,7 +312,7 @@
 ### `bb/throw_at_target`
 
 - **servers:** `ball_butler_node`
-- **clients:** `reload_coordinator_node`, `skill_node`
+- **clients:** `skill_node`
 - **type:** `jugglebot_interfaces.srv.BallButlerThrow`
 
 ### `clear_errors`
@@ -429,7 +342,7 @@
 ### `get_platform_tilt`
 
 - **servers:** `teensy_bridge_node`
-- **clients:** `orchestrator_node`, `reload_coordinator_node`
+- **clients:** `orchestrator_node`
 - **type:** `jugglebot_interfaces.srv.GetTiltReadingService`
 
 ### `home`
@@ -477,7 +390,7 @@
 ### `set_hand_gains`
 
 - **servers:** `teensy_bridge_node`
-- **clients:** `catch_coordinator_node`, `reload_coordinator_node`
+- **clients:** _none_
 - **type:** `jugglebot_interfaces.srv.SetHandGains`
 
 ### `set_hand_state`
@@ -498,34 +411,22 @@
 - **clients:** _none_
 - **type:** `std_srvs.srv.Trigger`
 
-### `smooth_move_hand`
-
-- **servers:** _none_
-- **clients:** `catch_coordinator_node`, `reload_coordinator_node`
-- **type:** `jugglebot_interfaces.srv.SetFloat`
-
-### `trajectory/arm_catch`
-
-- **servers:** `trajectory_node`
-- **clients:** `reload_coordinator_node`
-- **type:** `std_srvs.srv.SetBool`
-
 ### `trajectory/go_home`
 
 - **servers:** `trajectory_node`
-- **clients:** `reload_coordinator_node`
+- **clients:** _none_
 - **type:** `std_srvs.srv.Trigger`
 
 ### `trajectory/go_to_pose`
 
 - **servers:** `trajectory_node`
-- **clients:** `reload_coordinator_node`, `skill_node`
+- **clients:** `skill_node`
 - **type:** `jugglebot_interfaces.srv.GoToPose`
 
 ### `trajectory/hold`
 
 - **servers:** `trajectory_node`
-- **clients:** `reload_coordinator_node`, `skill_node`
+- **clients:** `skill_node`
 - **type:** `std_srvs.srv.Trigger`
 
 ### `trajectory/install_segment`
@@ -533,12 +434,6 @@
 - **servers:** `trajectory_node`
 - **clients:** `skill_node`
 - **type:** `jugglebot_interfaces.srv.InstallSegment`
-
-### `trajectory/plan_cycle`
-
-- **servers:** `trajectory_node`
-- **clients:** `reload_coordinator_node`
-- **type:** `jugglebot_interfaces.srv.PlanCycle`
 
 ### `trajectory/reload_tilt_map`
 
@@ -584,24 +479,6 @@
 - **clients:** `orchestrator_node`
 - **type:** `jugglebot_interfaces.action.Juggle`
 
-### `jugglebot/reload`
-
-- **servers:** `reload_coordinator_node`
-- **clients:** _none_
-- **type:** `jugglebot_interfaces.action.Reload`
-
-### `jugglebot/toss`
-
-- **servers:** `reload_coordinator_node`
-- **clients:** _none_
-- **type:** `jugglebot_interfaces.action.Toss`
-
-### `jugglebot/toss_continuous`
-
-- **servers:** `reload_coordinator_node`
-- **clients:** _none_
-- **type:** `jugglebot_interfaces.action.TossContinuous`
-
 ## Unmatched endpoints
 
 Wires with a producer but no in-repo Python consumer (or the
@@ -616,6 +493,7 @@ broken wire cannot hide among them.
 - `bb/odrive_diag` — topic with no subscribers
 - `bb/reset` — service with no clients
 - `bb/start_accuracy_calibration` — service with no clients
+- `bb/throw_outcome` — topic with no subscribers
 - `cache_diag` — topic with no subscribers
 - `clear_errors` — service with no clients
 - `clock_diag` — topic with no subscribers
@@ -626,9 +504,6 @@ broken wire cannot hide among them.
 - `home` — service with no clients
 - `jugglebot/juggle_request` — service with no clients
 - `jugglebot/juggle_stop` — service with no clients
-- `jugglebot/reload` — action with no clients
-- `jugglebot/toss` — action with no clients
-- `jugglebot/toss_continuous` — action with no clients
 - `leg_cmd_executed` — topic with no subscribers
 - `leg_setpoint_echo` — topic with no subscribers
 - `leg_torques_diagnostic` — topic with no subscribers
@@ -640,13 +515,16 @@ broken wire cannot hide among them.
 - `reboot_odrives` — service with no clients
 - `recover` — service with no clients
 - `ring_diag` — topic with no subscribers
+- `set_hand_gains` — service with no clients
 - `set_hand_state` — service with no clients
 - `set_motor_vel_curr_limits` — topic with no publishers
 - `skills/check` — service with no clients
-- `smooth_move_hand` — service with no servers
+- `trajectory/commanded_pose` — topic with no subscribers
 - `trajectory/diagnostics` — topic with no subscribers
+- `trajectory/go_home` — service with no clients
 - `trajectory/reload_tilt_map` — service with no clients
 - `trajectory/set_limits` — service with no clients
+- `trajectory/target_feedback` — topic with no subscribers
 - `trajectory/timed_target` — service with no clients
 - `udp_diag` — topic with no subscribers
 

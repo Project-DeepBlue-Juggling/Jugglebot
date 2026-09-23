@@ -9,8 +9,11 @@ regenerated.
 
 It also pins the *honesty* properties the map depends on: every name is either
 resolved or explicitly marked ``UNRESOLVED(...)``, the "Python-node graph only"
-banner is present, and the hand-ownership latch / multi-publisher wires still
-carry their contract notes.
+banner is present, and the multi-publisher wires still carry their contract
+notes. (The hand-ownership-latch annotation set was retired at R4,
+2026-09-24, U6b Cluster C — its six ``catch/*`` wires died with
+``catch_coordinator_node.py`` / ``reload_coordinator_node.py`` under
+``fsm-final``.)
 
 The generator is pure ``ast`` — it never imports rclpy — so this file is safe
 under the mocked-ROS conftest.
@@ -27,7 +30,6 @@ import textwrap
 import pytest
 
 from tools.gen_choreography_map import (
-    HAND_OWNERSHIP_LATCH_TOPICS,
     MULTI_PUBLISHER_TOPICS,
     NOT_LAUNCHED_NODES,
     _CONTRACT_NOTES,
@@ -134,7 +136,7 @@ def test_parameter_derived_names_are_tagged():
 # ---------------------------------------------------------------------------
 
 def test_multi_publisher_topics_are_annotated():
-    """The two by-design multi-publisher topics really have >1 publisher, and say so."""
+    """The by-design multi-publisher topic(s) really have >1 publisher, and say so."""
     text = _committed_text()
     publishers = {}
     for endpoint in _scan():
@@ -146,16 +148,6 @@ def test_multi_publisher_topics_are_annotated():
             name + ' no longer has multiple publishers — update the contract note')
         assert name in _CONTRACT_NOTES
         assert 'MULTI-PUBLISHER by design' in _CONTRACT_NOTES[name]
-        assert '### `' + name + '`' in text
-
-
-def test_hand_ownership_latch_topics_are_annotated():
-    text = _committed_text()
-    assert len(HAND_OWNERSHIP_LATCH_TOPICS) == 6
-    for index, name in enumerate(HAND_OWNERSHIP_LATCH_TOPICS, start=1):
-        note = _CONTRACT_NOTES.get(name)
-        assert note is not None, name + ' lost its contract note'
-        assert 'HAND-OWNERSHIP LATCH (%d/6)' % index in note
         assert '### `' + name + '`' in text
 
 

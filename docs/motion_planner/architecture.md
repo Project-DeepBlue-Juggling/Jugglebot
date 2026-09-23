@@ -49,7 +49,6 @@ Process 1: ROS2 Nodes
 |  can_node.py                  mocap_interface.py      |
 |  motion_bridge_node.py  ←--→  ZMQ :5555/:5556        |
 |  mpc_bridge_node.py     ←--→  ZMQ :5558              |
-|  catch_coordinator_node.py                            |
 |  ball_tracker_node.py                                 |
 +-------------------------------------------------------+
 
@@ -84,14 +83,14 @@ Process 3: Motor Guard (500 Hz)
 
 ### Target → MPC → Motors
 
-All input modes (spacemouse, GUI, shell, catch coordinator) route through the MPC:
+All input modes (spacemouse, GUI, shell) route through the MPC. (A fourth mode,
+`catch_coordinator` → `catch/dynamic_target`, existed historically here; that
+node is deleted with the FSM at R4, 2026-09-24, under `fsm-final`.)
 
 ```
 spacemouse_handler ──┐
 GUI (rosbridge)    ──┼──► platform_pose_topic ──► mpc_bridge_node ──► ZMQ :5558
 shell commands     ──┘                                                    │
-catch_coordinator ────► catch/dynamic_target ──► mpc_bridge_node ──► ZMQ :5558
-                                                                          │
                                                                           ▼
                                                                     ZmqTargetSource
                                                                           │
@@ -158,7 +157,7 @@ MPC Bridge → MPC Process:
 MPC Process → Catch Coordinator:
   PUB ──tcp://localhost:5559──────► SUB   (target accept/reject feedback)
 ```
-(Dormant MPC stack only: since Phase 5 the catch coordinator consumes the `trajectory/target_feedback` ROS topic from `trajectory_node`'s feasibility gate instead of this `:5559` channel.)
+(Dormant MPC stack only: since Phase 5 the catch coordinator consumed the `trajectory/target_feedback` ROS topic from `trajectory_node`'s feasibility gate instead of this `:5559` channel — and the catch coordinator itself is deleted with the FSM at R4, 2026-09-24, under `fsm-final`.)
 
 Messages are serialized with msgpack (compact binary, faster than JSON).
 

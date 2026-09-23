@@ -143,21 +143,17 @@ def test_realize_level_reduces_to_simple_slider():
     assert slider == pytest.approx(800.0 - CUP_Z_BASE_MM)
 
 
-def test_juggle_online_realize_level_unchanged_and_delegates_to_tilted():
-    """``juggle_online.realize`` (Rung 2a unified it onto ``realize_tilted``) is
-    byte-for-byte the old level form at zero tilt, and matches ``realize_tilted``
-    under tilt — the single realisation for the level runner and the tilt throw."""
-    from sim.juggle_online import realize, Z_ACTIVE_MM as ZA, CUP_Z_BASE_MM as CB
-    cup = np.array([0.05, -0.02, 0.80])
-    pose, slider = realize(cup)                          # level (default)
-    np.testing.assert_allclose(pose, [50.0, -20.0, ZA, 0.0, 0.0, 0.0])
-    assert slider == pytest.approx(800.0 - CB)
-    # under tilt it delegates to realize_tilted exactly
-    rx, ry = tilt_to_throw(np.array([0.2, 0.0, 2.7]))
-    p1, s1 = realize(cup, rx, ry)
-    p2, s2 = realize_tilted(cup[:2], float(cup[2]), rx, ry)
-    np.testing.assert_array_equal(p1, p2)
-    assert s1 == s2
+# test_juggle_online_realize_level_unchanged_and_delegates_to_tilted was
+# DELETED at R4 (2026-09-24, U6b Cluster C): it pinned `sim.juggle_online
+# .realize`, a one-line wrapper (`return realize_tilted(cup_m[:2],
+# float(cup_m[2]), rx, ry)`) around the function this file already tests
+# directly. `juggle_online.py` (the FSM-era "online juggling" demo it lived
+# in) is deleted with the FSM under `fsm-final` — no live sim demo ever called
+# the wrapper (`juggle_bb_catch.py`/`juggle_throw.py`/`juggle_selfcatch.py`/
+# `juggle_catch.py` all call `realize_tilted` directly, confirmed by grep).
+# The physical claim this test pinned — the level case reduces to the simple
+# slider form — is already covered directly, on the surviving function, by
+# `test_realize_level_reduces_to_simple_slider` above.
 
 
 def test_realize_slider_clamped_to_stroke():

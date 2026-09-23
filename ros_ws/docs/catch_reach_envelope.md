@@ -1,6 +1,29 @@
 # The Catch Reach Envelope Contract — C-REACH-1
 
-**Normative.** This document specifies what `trajectory_node`'s catch reach
+> **RETIRED at R4 (2026-09-24, U6b Cluster C).** The mechanism this document
+> specifies — `trajectory_node`'s `_on_reach_center` / `_svc_arm_catch` /
+> `_on_dynamic_target`, the catch-armed latch, and `catch_coordinator_node.py`
+> / `reload_coordinator_node.py`, its only two callers — is deleted with the
+> FSM under `fsm-final`. Kept below **as historical record only**: the
+> 2026-07-25 excursion it was written to prevent, and the design reasoning,
+> remain useful context for the two mechanisms that do this job on the skill
+> path today:
+>
+> - **The offline admissible box** (`motion/skills/admissible.py`, swept by
+>   `tools/admissible_sweep.py` at the LIVE session limits into
+>   `config/generated/admissible_box.yaml`) — replaces the closed-form quintic
+>   reach frontier this doc's § "requested displacement" section describes
+>   (was I-CATCH-3).
+> - **The lateral authority clamp** (`motion/skills/executor.py::
+>   SkillExecutor._clamp_lateral_to_schedule`, contract C-CATCH-2 in
+>   `motion/skills/INVARIANTS.md`) — replaces the "unrequested excursion"
+>   bound this doc's § 1 normative statement describes (was C-REACH-1 /
+>   I-CATCH-1 / I-CATCH-2), enforced once at the single place a `Landing`
+>   becomes a `CatchTerminal` rather than at a `catch/reach_center` latch.
+>
+> See `motion/skills/INVARIANTS.md` §§ 7 for the current, normative rows.
+
+**Normative [RETIRED — see the header above].** This document specifies what `trajectory_node`'s catch reach
 envelope bounds, and — the load-bearing half — what it must **not** be used to
 bound. It is the written third of the repo's contract pattern (normative
 statement + one enforcement point + a test that fails without it); the other two

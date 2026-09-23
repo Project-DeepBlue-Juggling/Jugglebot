@@ -91,7 +91,9 @@ from sim.juggle_catch import CONTROL_DT, SingleCatchConfig, SingleCatchRunner
 from sim.juggle_noise import JuggleNoise
 from sim.juggle_tilt import realize_tilted
 # Reuse the viewer / recording plumbing verbatim (do NOT re-implement it).
-from sim.juggle_online import (
+# Moved to sim/viz/recording.py at R4 (2026-09-24, U6b Cluster C) when
+# sim/juggle_online.py was deleted with the FSM under `fsm-final`.
+from sim.viz.recording import (
     VideoRecorder, build_record_camera,
     _KEY_SPACE, _KEY_C, _KEY_LEFT_BRACKET, _KEY_RIGHT_BRACKET,
     _KEY_RIGHT_ARROW, _KEY_LEFT_ARROW,
@@ -171,7 +173,7 @@ class BBCatchConfig:
     vx_mms: "float | None" = None
     vy_mms: "float | None" = None
     vz_mms: "float | None" = None
-    # ---- offscreen recording (mirrors sim/juggle_online.py) ----
+    # ---- offscreen recording (pattern historically shared with sim/juggle_online.py, deleted with the FSM at R4 2026-09-24; its recording/key constants now live in sim/viz/recording.py) ----
     record_path: "str | None" = None
     record_size: "tuple[int, int]" = (1280, 720)
     record_fps: int = 40
@@ -208,7 +210,7 @@ class BBCatchTool:
         self._preset_pos = self.launch_pos_mm.copy()
         self._preset_vel = self.vel_mms.copy()
 
-        # Viewer / wall-clock pacing state (mirrors sim/juggle_online.py).
+        # Viewer / wall-clock pacing state (pattern historically shared with sim/juggle_online.py, deleted with the FSM at R4 2026-09-24; its recording/key constants now live in sim/viz/recording.py).
         self.viewer = None
         self._recorder = None
         self._realtime_rate = float(cfg.realtime_rate)
@@ -233,8 +235,9 @@ class BBCatchTool:
     def _tick_boundary(self) -> None:
         """After every control tick: capture a frame (if recording), keep the viewer
         responsive, honour pause / single-step, and pace to ``realtime_rate``. No-op
-        when headless, not recording, and free-running. Copied from
-        sim/juggle_online.py::OnlineJuggleRunner._tick_boundary."""
+        when headless, not recording, and free-running. Historically copied from
+        ``sim/juggle_online.py::OnlineJuggleRunner._tick_boundary`` (that module
+        deleted with the FSM at R4, 2026-09-24)."""
         if self._recorder is not None:
             self._recorder.capture()
         v = self.viewer
@@ -526,7 +529,7 @@ def main(argv: "list[str] | None" = None) -> int:
                    help="Aim the preset at this landing x (mm) instead of 0")
     p.add_argument('--landing-y-mm', type=float, default=None,
                    help="Aim the preset at this landing y (mm) instead of 0")
-    # ---- recording (mirrors sim/juggle_online.py) ----
+    # ---- recording (pattern historically shared with sim/juggle_online.py, deleted with the FSM at R4 2026-09-24; its recording/key constants now live in sim/viz/recording.py) ----
     p.add_argument('--record', default=None, metavar='PATH',
                    help="Render offscreen from a fixed camera and write an H.264 mp4 "
                         "(needs ffmpeg on PATH). Captures throw frames.")

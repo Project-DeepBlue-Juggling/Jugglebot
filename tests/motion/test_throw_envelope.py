@@ -570,18 +570,15 @@ def test_the_shipped_working_point_is_now_admitted():
             * 1000.0) == pytest.approx(26.1, abs=0.3)
 
 
-def test_the_default_toss_is_admitted():
-    """The shipped default (``toss_flight_time_default_s``) must be inside the
-    envelope, or every zero-height goal is refused and the machine is bricked.
-
-    Deliberately an assertion about the CONFIG default, not about 0.80: if an
-    operator retunes the default, this is where the two meet.
-    """
-    t = hw.JB_OP_TOSS_FLIGHT_TIME_DEFAULT_S
-    verdict = te.evaluate(t, te.vertical_release_speed_mps(t))
-    assert verdict.ok, (
-        f'the shipped default toss ({t} s) is REFUSED by the envelope: '
-        f'{verdict.message}')
+# test_the_default_toss_is_admitted was RETIRED at R4 (2026-09-24, U6b Cluster
+# C): it pinned ``hw.JB_OP_TOSS_FLIGHT_TIME_DEFAULT_S`` (the zero-flight-time
+# fallback for a ``Toss`` goal's ``flight_time_s`` field) inside this envelope.
+# ``Toss.action`` (and the config key that fed it, ``toss_flight_time_default_s``)
+# is deleted with the FSM under `fsm-final` — the skill stack has no flat
+# default flight time to admit; every segment's flight time is derived
+# per-schedule/per-site geometry (`motion/skills/schedule.py`), which this
+# envelope already gates through `motion/skills/admissible.py`'s offline sweep
+# (C-HAND-3, INVARIANTS.md). No live goal reads this config concept any more.
 
 
 def test_the_band_does_not_touch_its_own_search_bracket():

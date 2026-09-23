@@ -70,76 +70,32 @@ _SECTIONS = (
 #: One-line contract notes for the wires whose semantics are NOT inferable from
 #: the graph.  Source doc is named in each note so the reader can go deeper.
 #: Keyed by resolved endpoint name.
+#: R4 (2026-09-24, U6b Cluster C): the eight `catch/*` wires this table used
+#: to annotate (`catch/dynamic_target`, `catch/armed`, `catch/prime_hold`,
+#: `catch/prime_dispatched`, `catch/pretilt_hold`, `catch/vel_scale`,
+#: `catch/unified_mode`, `catch/reach_center`) and the `HAND_OWNERSHIP_LATCH_TOPICS`
+#: tuple that pinned six of them are deleted with the FSM under `fsm-final` —
+#: `catch_coordinator_node.py` and `reload_coordinator_node.py`, their only
+#: publishers/subscribers, are gone, so none of those names appear in the
+#: scanned graph any more (`tests/ros/test_choreography_map.py::
+#: test_annotated_topics_all_exist_in_the_graph` would fail on a stale entry).
+#: The reach-envelope / hand-ownership contracts they described are retired
+#: at R4 too — see `ros_ws/docs/catch_reach_envelope.md` and
+#: `motion/skills/INVARIANTS.md` (C-REACH-1, I-CATCH-1/2/3): the reach
+#: envelope's job is now the offline admissible box (`motion/skills/
+#: admissible.py`) + the lateral authority clamp (`executor.py::
+#: SkillExecutor._clamp_lateral_to_schedule`), neither of which is a wire.
 _CONTRACT_NOTES = {
-    'catch/dynamic_target': (
-        'MULTI-PUBLISHER by design: catch_coordinator_node (reactive catch) and '
-        'reload_coordinator_node (tier-8b deferred A->B reach) publish the same '
-        'wire and trajectory_node consumes either identically. Installs are '
-        'gated by the catch-armed latch and bounded by the declared reach '
-        'envelope (ros_ws/docs/catch_reach_envelope.md, contract C-REACH-1; '
-        'orientation/arrival semantics in ros_ws/docs/catch_arrival_contract.md).'
-    ),
     'throw_announcements': (
         'MULTI-PUBLISHER by design: ball_butler_node announces a real BB throw '
-        'and reload_coordinator_node publishes the toss self-announcement '
+        'and skill_node publishes the toss self-announcement '
         '(thrower_name = target_id = this robot) so the correlation -> catch '
         'path closes unchanged (ros_ws/docs/ball_possession_contract.md).'
     ),
-    'catch/armed': (
-        'HAND-OWNERSHIP LATCH (1/6). Mirror of the trajectory/arm_catch latch on '
-        'trajectory_node; while raised, catch/dynamic_target may actuate the '
-        'platform and catch_coordinator_node may actuate the hand '
-        '(ros_ws/docs/control_modes.md, ros_ws/docs/safety.md).'
-    ),
-    'catch/prime_hold': (
-        'HAND-OWNERSHIP LATCH (2/6). Raised at PREPARE, BEFORE catch/armed rises, '
-        'and released LAST at terminal: while True the reload/toss owns the hand '
-        'and catch_coordinator_node must not prime it '
-        '(ros_ws/docs/hand_command_continuity.md, ros_ws/docs/ball_possession_contract.md).'
-    ),
-    'catch/prime_dispatched': (
-        'HAND-OWNERSHIP LATCH (3/6). Announces every reload-side prime dispatch so '
-        'catch_coordinator_node holds its anti-stutter in-flight window instead of '
-        'restarting a live ascent (ros_ws/docs/hand_command_continuity.md).'
-    ),
-    'catch/pretilt_hold': (
-        'HAND-OWNERSHIP LATCH (4/6). Raised on the same tick as prime_hold and '
-        'released with it; suppresses the pre-tilt while the toss owns the '
-        'platform pose (ros_ws/docs/levelling_frame.md).'
-    ),
-    'catch/vel_scale': (
-        'HAND-OWNERSHIP LATCH (5/6). Catch-speed knob relayed at PREPARE, before '
-        'catch/armed rises, so catch_coordinator_node holds the value before any '
-        'arm (ros_ws/docs/hand_command_continuity.md).'
-    ),
-    'catch/unified_mode': (
-        'HAND-OWNERSHIP LATCH (6/6). Session-scoped declaration; while raised '
-        'the cycle plan owns the hand and catch_coordinator_node must not arm '
-        'a reactive stroke — TRANSIENT_LOCAL depth 1 on both ends.'
-    ),
-    'catch/reach_center': (
-        'NOT a hand latch - platform-side. Declares the reach-envelope centre '
-        '(contract C-REACH-1) one tick before trajectory/arm_catch, so every '
-        'catch/dynamic_target installed under the latch is bounded relative to a '
-        'centre the consumer already holds (ros_ws/docs/catch_reach_envelope.md).'
-    ),
 }
-
-#: The six catch/* wires that gate hand ownership between reload_coordinator_node
-#: and catch_coordinator_node.  Named here (not just in the notes) so the drift
-#: test can assert the annotation set has not silently shrunk.
-HAND_OWNERSHIP_LATCH_TOPICS = (
-    'catch/armed',
-    'catch/prime_hold',
-    'catch/prime_dispatched',
-    'catch/pretilt_hold',
-    'catch/vel_scale',
-    'catch/unified_mode',
-)
 
 #: Topics deliberately written by more than one node.
 MULTI_PUBLISHER_TOPICS = (
-    'catch/dynamic_target',
     'throw_announcements',
 )
 
