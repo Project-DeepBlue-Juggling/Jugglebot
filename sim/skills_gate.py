@@ -76,7 +76,15 @@ second gate file -- a self-toss run and a columns run differ only in their
 schedule, limits and the R3-only learner/box/observer wiring, which is a
 few hundred lines of genuinely new orchestration (cheap-reset attempts,
 per-throw error scoring, the monotone-decay verdict) with nowhere smaller to
-land than beside the loop it drives.
+land than beside the loop it drives. **R4 (Unit U7a)** generalises that SAME
+learner run to a hop (``SelfTossGateConfig.pattern='hop'``, two sites
+P1<->P2, :func:`_sites_for`) rather than adding a THIRD copy: the site
+tuple and the ``pattern`` key are now parameters of
+``run_self_toss_attempt``/``run_self_toss_seed``/``run_learn`` instead of a
+single site hardcoded in each, which is a net SMALLER footprint than one
+more near-duplicate run_*_seed method would have been (~35 net new lines
+for the generalisation + the shared ``_wall_ms_stats`` percentile helper,
+against several hundred for a parallel hop-only copy of the loop).
 """
 
 from __future__ import annotations
@@ -380,6 +388,13 @@ def _make_installer(ictx: _InstallCtx, seg_cfg, limits, geom):
 #: a second site definition.
 _SELF_TOSS_SEPARATION_MM = 100.0
 
+#: The R4 hop operating point's separation -- P1/P2 = (+-125, 0) mm, matching
+#: the 'hop' boxes swept into ``config/generated/admissible_box.yaml`` (site
+#: pair ``(P1, P2)``/``(P2, P1)``, ``release_site_xy_mm``/``target_site_xy_mm``
+#: stamped at exactly +-125.0 mm -- ``admissible.select`` refuses on a
+#: mismatch, so this constant and the sweep's must agree to the mm).
+_HOP_SEPARATION_MM = 250.0
+
 #: The band a throw's landing error must enter within
 #: :data:`SelfTossGateConfig.band_entry_throws` (plan § 4 R3): 20 mm lateral,
 #: 42 mm of APEX error.
@@ -477,16 +492,34 @@ def _make_observations(observer):
 
 @dataclasses.dataclass
 class SelfTossGateConfig:
-    """The R3 sim-validation operating point (plan § 4 R3) — a SEPARATE
-    config from :class:`SkillsGateConfig`: this run's limits (150 000 mm/s³
-    leg jerk, matching ``config/generated/admissible_box.yaml``'s (P1, P1)
-    sweep) differ from the columns gate's own R2 point (200 000), and its
-    noise model adds the measured plant bias on top of the R2 knobs — reusing
-    one dataclass would force one gate to carry a field the other never
-    sets."""
+    """The R3/R4 sim-validation operating point (plan § 4 R3, R4 Unit U7a) —
+    a SEPARATE config from :class:`SkillsGateConfig`: this run's limits
+    (150 000 mm/s³ leg jerk, matching ``config/generated/admissible_box.yaml``'s
+    (P1, P1)/(P1, P2)/(P2, P1) sweeps) differ from the columns gate's own R2
+    point (200 000), and its noise model adds the measured plant bias on top
+    of the R2 knobs — reusing one dataclass would force one gate to carry a
+    field the other never sets.
+
+    ``pattern``/``separation_mm`` together pick :func:`_sites_for`'s site
+    tuple: ``'self_toss'`` (the R3 default) is the single site P1 at
+    ``_SELF_TOSS_SEPARATION_MM``; ``'hop'`` (R4) is the two sites P1/P2 at
+    ``_HOP_SEPARATION_MM``, alternating release/target every throw
+    (``schedule.OneBallPattern``). Both run through the SAME
+    :meth:`SkillsGate.run_self_toss_attempt`/``run_self_toss_seed``/
+    :func:`run_learn` — a hop is not a third copy of the loop, only a wider
+    site tuple and a different ``pattern``/box lookup key
+    (``executor.SkillExecutor._command_u`` reads ``self.schedule.pattern``,
+    which ``schedule.compile_one_ball`` sets from the sites tuple's length)."""
 
     apex_m: float = 0.9
     dwell_s: float = 0.30
+    #: 'self_toss' (1 site, P1) or 'hop' (2 sites, P1<->P2) -- see the class
+    #: docstring. Validated by :func:`_sites_for`.
+    pattern: str = 'self_toss'
+    #: ``sites.columns_sites(separation_mm)`` -- the R3 default is
+    #: ``_SELF_TOSS_SEPARATION_MM`` (100 mm); a hop run sets this to
+    #: ``_HOP_SEPARATION_MM`` (250 mm) to match the swept 'hop' boxes.
+    separation_mm: float = _SELF_TOSS_SEPARATION_MM
     leg_vel_mmps: float = 300.0
     leg_acc_mmps2: float = 5000.0
     leg_jerk_mmps3: float = 150000.0
@@ -513,6 +546,25 @@ class SelfTossGateConfig:
     max_attempts: int = 60
     admissible_box_path: str = None
     report_path: str = None
+
+
+def _sites_for(cfg: 'SelfTossGateConfig') -> tuple:
+    """``cfg.pattern``'s site tuple -- ``('self_toss',)`` slices out just P1
+    (the R3 single-site operating point, unchanged); ``'hop'`` (R4) keeps
+    both P1 and P2, so ``schedule.OneBallPattern`` alternates release/target
+    between them.  Both slice the SAME ``sites.columns_sites(cfg.separation_mm)``
+    pair -- a hop's P1/P2 are the columns sites at the hop's own (wider)
+    separation, not a second site definition (mirrors
+    ``schedule.py``'s own ``columns_sites`` reuse for ``compile_columns``).
+    Raises on any other ``pattern`` -- there is no site tuple to fall back to
+    (plan § 0: no fallback modes)."""
+    s0, s1 = sites.columns_sites(cfg.separation_mm)
+    if cfg.pattern == 'hop':
+        return (s0, s1)
+    if cfg.pattern == 'self_toss':
+        return (s0,)
+    raise ValueError("cfg.pattern must be 'self_toss' or 'hop', got %r"
+                     % (cfg.pattern,))
 
 
 def _load_admissible_boxes(path: str = None) -> list:
@@ -579,6 +631,31 @@ def _monotone_verdict(errs, band_entry_throws: int, target_throws: int,
     mad = float(np.median(np.abs(span - np.median(span))))
     s = 1.4826 * mad
     return bool(float(np.median(late)) <= float(np.median(early)) + k * s)
+
+
+def _wall_ms_stats(wall_s) -> dict:
+    """``{'min', 'p50', 'p95', 'max', 'n'}`` (ms) over an iterable of
+    per-install wall-clock seconds -- the sim-side twin of the Jetson's
+    < 50 ms install gate.  ONE definition shared by the columns gate
+    (``SkillsGate.run``) and every ``SelfTossGateConfig`` run
+    (``run_self_toss_seed``, self-toss and R4 hop alike) rather than each
+    computing its own percentile (plan § 0: "no second copy of any constant
+    or timing")."""
+    ms = sorted(float(w) * 1000.0 for w in wall_s)
+
+    def _pctl(p):
+        if not ms:
+            return float('nan')
+        k = min(len(ms) - 1, int(round(p * (len(ms) - 1))))
+        return float(ms[k])
+
+    return {
+        'min': _pctl(0.0),
+        'p50': (float(statistics.median(ms)) if ms else float('nan')),
+        'p95': _pctl(0.95),
+        'max': _pctl(1.0),
+        'n': len(ms),
+    }
 
 
 # ---------------------------------------------------------------------------
@@ -938,13 +1015,16 @@ class SkillsGate:
     # ``run_learn`` below is the only constructor, and it never shares an
     # instance with ``run`` / ``run_trial``.
 
-    def run_self_toss_attempt(self, *, site, n_throws: int, memory: mem.Memory,
-                              learner_cfg: lr.LearnerConfig, boxes: list,
-                              noise: JuggleNoise, throws_out: list
+    def run_self_toss_attempt(self, *, pattern_sites, n_throws: int,
+                              memory: mem.Memory, learner_cfg: lr.LearnerConfig,
+                              boxes: list, noise: JuggleNoise,
+                              throws_out: list
                               ) -> Tuple[str, dict, '_InstallCtx']:
-        """One self-toss attempt, cold from the ACTIVATE park (owner decision
-        6, "resets are cheap"): reset + spawn, ``schedule.compile_one_ball``,
-        stream it through the one chain (:meth:`_stream_chain`) with the R3
+        """One self-toss (``pattern_sites`` = ``(P1,)``) or hop
+        (``pattern_sites`` = ``(P1, P2)``, R4) attempt, cold from the
+        ACTIVATE park (owner decision 6, "resets are cheap"): reset + spawn
+        at ``pattern_sites[0]``, ``schedule.compile_one_ball``, stream it
+        through the one chain (:meth:`_stream_chain`) with the R3
         learner/box/observer/observations wired in.  ``throws_out`` accumulates
         every finalised :class:`~jugglebot.motion.skills.memory.Experience`
         this attempt produces (in schedule order); the memory itself is
@@ -957,7 +1037,7 @@ class SkillsGate:
         cfg: SelfTossGateConfig = self.cfg
         plant = self.plant
         geom = self.geom
-        park = _activate_park_state(self.rcfg, site)
+        park = _activate_park_state(self.rcfg, pattern_sites[0])
         pose0 = np.asarray(park.pose, dtype=float)
         plant.reset(pose0)
         plant.command(plant.pose_to_extensions(pose0))
@@ -969,7 +1049,7 @@ class SkillsGate:
         plant.ball_manager.ball(0).spawn_in_hand()
         t0_abs_s = float(plant.data.time)
 
-        pattern = sk.OneBallPattern(sites=(site,), apex_m=cfg.apex_m,
+        pattern = sk.OneBallPattern(sites=tuple(pattern_sites), apex_m=cfg.apex_m,
                                     dwell_s=cfg.dwell_s, n_throws=n_throws)
         sched = sk.compile_one_ball(pattern, t0_abs_s)
 
@@ -1003,20 +1083,27 @@ class SkillsGate:
         return str(executor.end_code), loop, ictx
 
     def run_self_toss_seed(self, seed: int, policy: str = 'A') -> dict:
-        """One seed's whole R3 learner run: repeated cheap-reset attempts,
+        """One seed's whole R3/R4 learner run: repeated cheap-reset attempts,
         collecting throws until ``cfg.target_throws`` releases have been
-        observed (plan § 4 R3 / owner decision 2026-09-13).
+        observed (plan § 4 R3 / owner decision 2026-09-13; R4 Unit U7a
+        generalises this to ``cfg.pattern``'s site tuple, :func:`_sites_for`
+        -- self-toss's single site is unchanged, a hop alternates P1/P2).
 
         Policy **A**: single-throw attempts (``n_throws=1``, THROW -> CATCH ->
         REST) until the memory holds ``learner_cfg.k_min`` rows, then chained.
         Policy **B**: chained from the very first throw.  Both retain the
         memory across every reset -- only the plant and the executor are cold
-        each attempt.
+        each attempt.  Unchanged by ``pattern``: the memory's ``x`` carries
+        the release site's xy (``executor._command_u``), so P1 and P2 rows
+        sit ``>=`` 125 mm apart in ``x``-space against a 10 mm kernel
+        bandwidth (``learner.LearnerConfig.h_x``) -- a hop's two sites learn
+        two effectively separate corrections from the one shared memory file,
+        no per-site bookkeeping needed here.
         """
         if policy not in ('A', 'B'):
             raise ValueError("policy must be 'A' or 'B', got %r" % (policy,))
         cfg: SelfTossGateConfig = self.cfg
-        site = sites.columns_sites(_SELF_TOSS_SEPARATION_MM)[0]
+        pattern_sites = _sites_for(cfg)
         boxes = _load_admissible_boxes(cfg.admissible_box_path)
         noise = JuggleNoise(cfg.noise, seed=seed)
         tmp_dir = tempfile.mkdtemp(prefix='skills_gate_learn_seed%d_' % seed)
@@ -1030,6 +1117,7 @@ class SkillsGate:
         makes_total = 0
         installs_total = installs_accepted = 0
         end_codes = []
+        plan_wall_s_all: list = []
         t_wall0 = time.time()
 
         while len(throws) < cfg.target_throws and attempts < cfg.max_attempts:
@@ -1040,7 +1128,7 @@ class SkillsGate:
                 n_throws = max(1, remaining)
             attempts += 1
             end_code, loop, ictx = self.run_self_toss_attempt(
-                site=site, n_throws=n_throws, memory=memory,
+                pattern_sites=pattern_sites, n_throws=n_throws, memory=memory,
                 learner_cfg=cfg.learner_cfg, boxes=boxes, noise=noise,
                 throws_out=throws)
             end_codes.append(end_code)
@@ -1050,6 +1138,7 @@ class SkillsGate:
             makes_total += loop['makes']
             installs_total += ictx.installs_total
             installs_accepted += ictx.installs_accepted
+            plan_wall_s_all.extend(ictx.plan_wall_s)
 
         rows = []
         for i, exp in enumerate(throws):
@@ -1080,11 +1169,13 @@ class SkillsGate:
             cfg.target_throws)
 
         return dict(
-            seed=seed, policy=policy, throws=rows,
+            seed=seed, policy=policy, pattern=cfg.pattern,
+            separation_mm=cfg.separation_mm, throws=rows,
             n_throws_collected=len(rows), attempts=attempts,
             end_codes=end_codes, refusals=refusals, drops=drops_total,
             makes=makes_total, installs_total=installs_total,
             installs_accepted=installs_accepted,
+            plan_wall_ms=_wall_ms_stats(plan_wall_s_all),
             throws_to_band_xy=throws_to_band_xy,
             throws_to_band_apex=throws_to_band_apex,
             entered_band=entered_band,
@@ -1309,14 +1400,7 @@ class SkillsGate:
         results = [self.run_trial(s) for s in self.cfg.seeds]
         wall_s = time.time() - t0
 
-        all_wall_ms = [w * 1000.0 for r in results for w in r.plan_wall_s]
-        all_wall_ms.sort()
-
-        def _pctl(vals, p):
-            if not vals:
-                return float('nan')
-            k = min(len(vals) - 1, int(round(p * (len(vals) - 1))))
-            return float(vals[k])
+        all_wall_s = [w for r in results for w in r.plan_wall_s]
 
         report = {
             'gate': 'skills',
@@ -1327,13 +1411,7 @@ class SkillsGate:
             'separation_mm': self.cfg.separation_mm,
             'dwell_s': self.cfg.dwell_s,
             'wall_s': wall_s,
-            'plan_wall_ms': {
-                'min': _pctl(all_wall_ms, 0.0),
-                'p50': (float(statistics.median(all_wall_ms)) if all_wall_ms
-                        else float('nan')),
-                'max': _pctl(all_wall_ms, 1.0),
-                'n': len(all_wall_ms),
-            },
+            'plan_wall_ms': _wall_ms_stats(all_wall_s),
             'thresholds': {
                 'mirror_tol_leg_rev': MIRROR_TOL_LEG_REV,
                 'mirror_tol_hand_rev': MIRROR_TOL_HAND_REV,
@@ -1379,10 +1457,11 @@ def run_gate(cfg: SkillsGateConfig = None, viewer_speed: float = None) -> dict:
 
 def run_learn(cfg: SelfTossGateConfig = None, seeds=(0, 1, 2, 3, 4),
              policy: str = 'A') -> dict:
-    """The R3 sim-validation run (plan § 4 R3 "Sim validation"): one
-    ``SkillsGate`` built for the self-toss operating point, one seed at a
-    time, writing the report JSON the brief this rung was built from asks
-    for. Never shares the gate instance with :func:`run_gate` (columns)."""
+    """The R3/R4 sim-validation run (plan § 4 R3 "Sim validation"; R4 Unit
+    U7a generalises it to ``cfg.pattern='hop'``): one ``SkillsGate`` built
+    for ``cfg``'s operating point, one seed at a time, writing the report
+    JSON the brief this rung was built from asks for. Never shares the gate
+    instance with :func:`run_gate` (columns)."""
     cfg = SelfTossGateConfig() if cfg is None else cfg
     gate = SkillsGate(cfg)
     t0 = time.time()
@@ -1391,10 +1470,12 @@ def run_learn(cfg: SelfTossGateConfig = None, seeds=(0, 1, 2, 3, 4),
     report = {
         'gate': 'skills_learn',
         'policy': policy,
+        'pattern': cfg.pattern,
         'passed': bool(seed_results and all(r['passed'] for r in seed_results)),
         'seeds': list(seeds),
         'apex_m': cfg.apex_m,
         'dwell_s': cfg.dwell_s,
+        'separation_mm': cfg.separation_mm,
         'xy_band_mm': cfg.xy_band_mm,
         'apex_band_mm': cfg.apex_band_mm,
         'band_entry_throws': cfg.band_entry_throws,
@@ -1478,20 +1559,27 @@ def _print_reload_table(rep: dict) -> None:
 
 
 def _print_learn_table(rep: dict) -> None:
-    print('[skills_gate_learn] policy %s  apex %.2f m  dwell %.2f s  band '
-          '%.0f mm xy / %.0f mm apex  entry<=%d throws  window<=%d throws'
-          % (rep['policy'], rep['apex_m'], rep['dwell_s'], rep['xy_band_mm'],
-             rep['apex_band_mm'], rep['band_entry_throws'],
+    print('[skills_gate_learn] pattern %s  policy %s  apex %.2f m  dwell '
+          '%.2f s  separation %.0f mm  band %.0f mm xy / %.0f mm apex  '
+          'entry<=%d throws  window<=%d throws'
+          % (rep.get('pattern', 'self_toss'), rep['policy'], rep['apex_m'],
+             rep['dwell_s'], rep.get('separation_mm', float('nan')),
+             rep['xy_band_mm'], rep['apex_band_mm'], rep['band_entry_throws'],
              rep['target_throws']))
-    print('[skills_gate_learn] %-6s %-8s %-10s %-10s %-9s %-9s %-9s %-6s %-6s'
+    print('[skills_gate_learn] %-6s %-8s %-10s %-10s %-9s %-9s %-9s %-6s %-6s '
+          '%-9s'
           % ('seed', 'verdict', 'band_xy', 'band_apex', 'mono_xy', 'mono_apex',
-             'attempts', 'drops', 'makes'))
+             'attempts', 'drops', 'makes', 'plan_p50'))
     for r in rep['seed_results']:
         verdict = 'PASS' if r['passed'] else 'FAIL'
-        print('[skills_gate_learn] %-6d %-8s %-10s %-10s %-9s %-9s %-9d %-6d %-6d'
+        pw = r.get('plan_wall_ms')
+        p50 = pw['p50'] if pw else float('nan')
+        print('[skills_gate_learn] %-6d %-8s %-10s %-10s %-9s %-9s %-9d %-6d '
+              '%-6d %-9.2f'
               % (r['seed'], verdict, r['throws_to_band_xy'],
                  r['throws_to_band_apex'], r['monotone_xy'],
-                 r['monotone_apex'], r['attempts'], r['drops'], r['makes']))
+                 r['monotone_apex'], r['attempts'], r['drops'], r['makes'],
+                 p50))
     print('[skills_gate_learn] %s  (wall %.1f s over %d seed(s))'
           % ('PASS' if rep['passed'] else 'FAIL', rep['wall_s'],
              len(rep['seeds'])))
@@ -1527,7 +1615,8 @@ def main(argv=None) -> int:
     p.add_argument('--viewer-speed', type=float, default=1.0)
     p.add_argument('--report', default=None)
     p.add_argument('--separation-mm', type=float, default=None,
-                   help='site separation (default: the operating point, 100 mm)')
+                   help='site separation (default: the operating point -- '
+                        '100 mm columns/self_toss, 250 mm --learn --pattern hop)')
     p.add_argument('--throw-noise-frac', type=float, default=None,
                    help='per-component release-velocity scatter as a fraction of '
                         'the release speed (default 0.0: an exact release; the '
@@ -1541,8 +1630,11 @@ def main(argv=None) -> int:
                         'loop from the commanded throw state), or '
                         'schedule_hand')
     p.add_argument('--learn', action='store_true',
-                   help='run the R3 sim-validation learner run (plan § 4 R3) '
-                        'instead of the columns gate')
+                   help='run the R3/R4 sim-validation learner run (plan § 4 '
+                        'R3; R4 Unit U7a) instead of the columns gate')
+    p.add_argument('--pattern', choices=('self_toss', 'hop'), default='self_toss',
+                   help='--learn only: self_toss (R3, 1 site, P1) or hop '
+                        '(R4, 2 sites, P1<->P2, Unit U7a)')
     p.add_argument('--policy', choices=('A', 'B'), default='A',
                    help='--learn only: A = single-throw attempts until '
                         'k_min rows then chained (the gated policy); B = '
@@ -1563,8 +1655,14 @@ def main(argv=None) -> int:
         return 0 if rep['passed'] else 1
 
     if args.learn:
+        default_sep = (_HOP_SEPARATION_MM if args.pattern == 'hop'
+                      else _SELF_TOSS_SEPARATION_MM)
+        separation_mm = (float(args.separation_mm)
+                         if args.separation_mm is not None else default_sep)
         lcfg = SelfTossGateConfig(report_path=args.report,
-                                  catch_aim_source=args.catch_aim_source)
+                                  catch_aim_source=args.catch_aim_source,
+                                  pattern=args.pattern,
+                                  separation_mm=separation_mm)
         if args.seeds is not None:
             seeds = tuple(args.seeds)
         else:

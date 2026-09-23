@@ -349,3 +349,65 @@ def test_a_small_self_toss_learner_run_enters_the_xy_band():
     assert res['throws_to_band_xy'] is not None
     assert res['throws_to_band_xy'] <= cfg.band_entry_throws
     assert res['throws'][-1]['err_xy_mm'] <= cfg.xy_band_mm
+
+
+# ── R4: the hop learner run (Unit U7a, plan R4 / prompt) ────────────────────
+#
+# ``SelfTossGateConfig(pattern='hop', ...)`` generalises the R3 self-toss
+# harness above to the hop's two-site tuple (P1<->P2, 250 mm separation) --
+# SAME small-run shape (one seed, a handful of throws), exercising the
+# identical learner/Memory/AdmissibleBox/observer chain, now through the
+# 'hop' boxes (config/generated/admissible_box.yaml, site pairs (P1,P2)/
+# (P2,P1)) instead of the self-toss (P1,P1) one.  The full 5-seed x
+# 25-throw sweep runs manually (``python sim/skills_gate.py --learn
+# --pattern hop``), same split as the self-toss smoke test above.
+
+def _small_hop_run():
+    cfg = SelfTossGateConfig(pattern='hop', separation_mm=250.0,
+                             target_throws=5, band_entry_throws=5,
+                             max_attempts=15)
+    return cfg, SkillsGate(cfg).run_self_toss_seed(0, policy='A')
+
+
+def test_a_small_hop_learner_run_catches_every_throw_with_zero_drops():
+    """The U7a gate criterion itself (plan R4 / prompt: "0 drops") holds from
+    a cold memory, through the hop's wider site tuple and its own swept
+    boxes -- the same 5-throw smoke shape the self-toss run above uses,
+    generalised rather than duplicated (:func:`_sites_for`,
+    ``run_self_toss_attempt``/``run_self_toss_seed`` take the pattern's site
+    tuple, not a single hardcoded site)."""
+    cfg, res = _small_hop_run()
+    assert res['pattern'] == 'hop'
+    assert res['separation_mm'] == pytest.approx(250.0)
+    assert res['n_throws_collected'] == 5
+    assert res['drops'] == 0
+    assert res['makes'] == 5
+    assert all(t['caught'] for t in res['throws'])
+    assert res['plan_wall_ms']['n'] > 0
+
+
+def test_a_small_hop_learner_run_is_apex_clipped_not_converged():
+    """UNLIKE self-toss, a hop does NOT enter the R3 apex band (42 mm)
+    within the 5-throw entry criterion -- MEASURED (seed 0, 2026-09-24, this
+    test): the swept 'hop' box's apex CLIP range is only [0.85, 0.90] m
+    (``config/generated/admissible_box.yaml``), far narrower than the
+    matching self_toss box's [0.576, 0.900] m. Both patterns' releases carry
+    the SAME measured +11% speed bias (``LAUNCH_SPEED_BIAS_FRAC``, applied by
+    ``_measured_release_bias`` to every release alike) and self-toss corrects
+    it by commanding ~0.73 m -- a hop cannot reach that low, so it clips at
+    0.85 m and the observed apex stays ~1.0-1.1 m against a 0.9 m target (the
+    ratio matches the bias's own uniform speed scaling squared, ~1.11**2 =
+    1.232, applied to the hop's horizontal release-velocity component the
+    same as the vertical one -- ``_measured_release_bias``'s own docstring
+    notes it was characterised on "a pure vertical self-toss").  This is a
+    box-sweep / release-bias-model finding for the R4 owner decision, NOT a
+    defect in this gate to fix by widening a limit or a box (brief: "do NOT
+    widen a limit or a box") -- this test pins the CURRENT (unconverged)
+    shape so a future box re-sweep or bias-model change is a visible,
+    deliberate diff here, not a silent one."""
+    cfg, res = _small_hop_run()
+    assert res['entered_band'] is False
+    assert res['throws_to_band_apex'] is None
+    # every commanded apex clipped at (or essentially at) the box's floor
+    assert all(t['u'][2] <= 0.90 + 1e-9 for t in res['throws'])
+    assert min(t['u'][2] for t in res['throws']) == pytest.approx(0.85, abs=1e-6)
