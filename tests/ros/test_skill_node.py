@@ -408,7 +408,7 @@ def test_the_learner_lateral_authority_parameter_defaults_to_twenty():
     """Owner 2026-09-16 pinned this at 0.0 (the learner corrects flight only)
     until the planner's small-lateral-offset banking defect was fixed; owner
     2026-09-21 lifted the pin to 40 mm once the cup-contact contract landed
-    amplitude-aware banking (`plans/active/cup-contact-contract.md` § 6);
+    amplitude-aware banking (`plans/archived/cup-contact-contract.md` § 6);
     owner 2026-09-23 set 20 mm after the first unpinned sitting — 40 mm
     dropped balls on the 25-throw chains at 0.9 m, 20 mm was stable at both
     apexes. The box still admits +/-40 mm; this is the executor's clamp."""
@@ -1135,7 +1135,7 @@ def test_check_reports_frame_check_ok_when_within_limit_with_authority():
 
 def test_default_parameters_refuse_every_start_path_with_no_frame_data():
     """`learner_lateral_authority_mm` defaults to 40.0 since 2026-09-21
-    (`plans/active/cup-contact-contract.md` § 6, the unpinning) — a session
+    (`plans/archived/cup-contact-contract.md` § 6, the unpinning) — a session
     that never saw a mocap `Platform` sample must now be refused
     REJECTED_FRAME_OFFSET on EVERY default-parameter start path, not just
     under an explicit `:=40`. This is the production fail-closed face of the

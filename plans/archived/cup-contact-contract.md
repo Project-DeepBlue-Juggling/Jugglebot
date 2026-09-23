@@ -1,9 +1,11 @@
 ---
 title: Cup-contact contract — banking defined only under seating force, the cup never falls away from a ball, lateral aim unpinned
 created: 2026-09-18
-status: active
+status: completed
+completed: 2026-09-23
+archived: 2026-09-23
 owner: harrison
-last_updated: 2026-09-20
+last_updated: 2026-09-23
 related_plan: two-ball-skill-stack.md
 related_logbook:
   - 2026-09-16-banking-saturates-on-small-lateral-offsets.md   # the root cause: tilt_to_receive has no solution in the dive, clamps to 12°, azimuth is scale-free
@@ -20,18 +22,43 @@ related_code:
 
 # Cup-contact contract
 
-> **Status 2026-09-23: FIRST SITTING FLOWN 2026-09-22 (Block A, pinned) — τ = 0.125 s
-> HOLDS: 87/87 caught, seat median +0.089/+0.079 s, hop and late-seat rates no worse than the
-> 09-18 control (`logbook/2026-09-23-cup-contact-first-sitting.md`). Block B did NOT fly:
-> the § 1 frame check refused it at (−1.56, −8.53) mm, which is a height × levelling-tilt
-> lever arm (stable to 0.03 mm), not an alignment error. § 1 is therefore amended: the
-> measured offset is now SUBTRACTED from every tracker landing (`skill_node._on_balls`),
-> the check's limit is a 25 mm sanity bound plus a 2 mm Platform-body stability gate, and
-> Block B flies after the runsheet § 9 z-sweep. Two hand latches that sitting were traced
-> and the recovery park fixed (it had never once succeeded — the firmware rejects ACTIVATE
-> under an armed stream; the recovery now disarms first).** § 6 is decided, τ moved
-> 0.060 → 0.125 s on a measurement (§ 7), `contact_knots` is a tuple of ranges (a chained
-> plan has two windows). Design owner-approved 2026-09-18.
+> **Status 2026-09-23 (evening): CLOSED OUT — both § 5 criteria met on hardware.** Block A
+> 2026-09-22: τ = 0.125 s holds (87/87 caught, seat median +0.089/+0.079 s, hop and late-seat
+> rates no worse than the 09-18 control). Block B 2026-09-23: the lateral learner pulled the
+> median y miss through zero at 0.6 and 0.9 m; 40 mm authority dropped balls on the 0.9 m
+> 25-throw chains, 20 mm was stable → launch default 20 mm (§ 6 amended). The § 1 frame check
+> refused the first Block B on a (−1.56, −8.53) mm offset that the § 9 z-sweep proved to be a
+> 0.77° lever arm between the QTM frame and the base plane; the measured offset is now
+> subtracted from every tracker landing (§ 1 amended) and the base should be shimmed level.
+> Carried out of this plan into R4's § 0: authority 20 mm, τ = 0.125 s, the frame subtraction,
+> and three watch items — the hand recovery park's unresolved upper-stop push (2026-09-23), the
+> stale-hand-encoder latches at throw onset (leg-bus frame drops), and re-sends seeded inside
+> the contact window (`CUP_CONTACT_ACC`). Entries: `2026-09-20-cup-contact-contract-implemented`,
+> `2026-09-21-two-sided-knot-sampling`, `2026-09-23-cup-contact-first-sitting`,
+> `2026-09-23-block-b-lateral-learner-and-hand-endstop-push`. § 6 is decided, τ moved 0.060 →
+> 0.125 s on a measurement (§ 7), `contact_knots` is a tuple of ranges. Design owner-approved
+> 2026-09-18.
+
+
+## Archival note (2026-09-23)
+
+Shipped: the three normative clauses (C-CUP-1 banking only under seating force, C-CUP-2 the
+`CUP_CONTACT_ACC` dive floor over a τ = 0.125 s contact window, C-CUP-3 jerk-aware widening),
+their gates and tests, the two-sided knot sampling, the session-start frame check with the
+mocap-to-schedule subtraction, and lateral authority unpinned to a 20 mm launch default.
+Flown: Block A 2026-09-22 (τ holds, 87/87), the § 9 z-sweep and Block B 2026-09-23 (the lateral
+learner works). Closed because both § 5 criteria were met on hardware (owner, 2026-09-23).
+Residue re-homed to `plans/active/two-ball-skill-stack.md` § 0 ("Carried in from"): the
+frame-offset lever arm and the base-shim remedy, the hand recovery park's unresolved upper-stop
+push, the stale-encoder latches, contact-window re-sends, the `LIMIT_JERK` re-send rate, the
+seam tilt-rate pin and the QP/gate wall-clock bar. Entries: 2026-09-20, 2026-09-21,
+2026-09-23 ×2 (see the status block). Runsheet `tests/hardware/session_cup_contact.md` kept
+as the flown record. **Two path references were deliberately NOT swept:** the comments
+in `motion/trajectory/feasibility.py` and `motion/skills/segments.py` still say
+`plans/active/cup-contact-contract.md`, because `admissible.gate_hash()` hashes those two
+files' full text and a comment edit would demand the 29-minute box re-sweep (the first
+archival attempt did exactly that and failed 18 start-path tests on a stale-box refusal).
+Re-point them in the next commit that re-sweeps the box for a real reason.
 
 ## 0. Why — the one root cause behind four symptoms
 

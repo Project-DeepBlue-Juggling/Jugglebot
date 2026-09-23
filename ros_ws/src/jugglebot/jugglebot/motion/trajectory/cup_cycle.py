@@ -713,7 +713,7 @@ def _seed_relaxed_z_box(state0: CupState, z_min: float, z_max: float):
 # ---------------------------------------------------------------------------
 #: The dive floor, in g: over the contact window the cup's vertical acceleration
 #: satisfies ``a_cup,z >= -CONTACT_ACC_FLOOR_G * g`` (world z up).  ONE definition
-#: (``plans/active/cup-contact-contract.md`` clause C-CUP-2); never re-typed as a
+#: (``plans/archived/cup-contact-contract.md`` clause C-CUP-2); never re-typed as a
 #: literal anywhere, and ``feasibility.CUP_CONTACT_ACC`` reads the same constant.
 CONTACT_ACC_FLOOR_G = float(hw.JB_TRAJ_CUP_CONTACT_ACC_FLOOR_G)
 

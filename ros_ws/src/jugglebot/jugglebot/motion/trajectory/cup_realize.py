@@ -158,7 +158,7 @@ TILT_ACCEL_LIMIT_DEFAULT_RAD_S2 = (
 #: fraction as the acceleration cap above — one map, two limits.
 #:
 #: **Why the schedule needs a third-difference bound at all** (C-CUP-3,
-#: ``plans/active/cup-contact-contract.md`` § 2).  ``_accel_bounded_schedule``
+#: ``plans/archived/cup-contact-contract.md`` § 2).  ``_accel_bounded_schedule``
 #: measured only the SECOND difference before it returned, but the refusal the
 #: machine issues is ``LIMIT_JERK`` — a THIRD difference.  Exiting on one and
 #: being judged on the other makes the widen loop's branch a coin flip decided by

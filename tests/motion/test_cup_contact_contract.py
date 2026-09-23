@@ -1,4 +1,4 @@
-"""Cup-contact contract (``plans/active/cup-contact-contract.md`` § 2/§ 4) —
+"""Cup-contact contract (``plans/archived/cup-contact-contract.md`` § 2/§ 4) —
 tests 1, 2, 3 of the plan's test list, written FIRST and RED until the U2
 production change lands (repo empirical-probe / TDD convention). Test 4 (the
 sim xfail flip) is a later unit; test 5 lives in ``test_skills_executor.py``.

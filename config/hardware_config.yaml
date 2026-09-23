@@ -1232,7 +1232,7 @@ trajectory_op:
   stream_hand_torque_bias_clamp_nm: 0.05       # {N m}
   stream_hand_torque_bias_rate_nm_per_s: 0.5   # {N m/s}
   stream_hand_torque_fade_per_s: 50.0          # {1/s}
-  # CUP-CONTACT CONTRACT (plans/active/cup-contact-contract.md § 2, 2026-09-18).
+  # CUP-CONTACT CONTRACT (plans/archived/cup-contact-contract.md § 2, 2026-09-18).
   # One definition each; all three are in units of g or seconds, so they do not
   # move with the session leg limits. "Seating force" below is the component of the
   # apparent gravity that presses a ball INTO the cup, s = g + a_cup,z (world z up,

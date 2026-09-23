@@ -535,7 +535,7 @@ def test_runway_adds_a_real_row_to_the_program():
 
 
 # ---------------------------------------------------------------------------
-# C-CUP-2: the dive floor (plans/active/cup-contact-contract.md)
+# C-CUP-2: the dive floor (plans/archived/cup-contact-contract.md)
 # ---------------------------------------------------------------------------
 
 def test_contact_floor_binds_and_holds_at_the_slack():

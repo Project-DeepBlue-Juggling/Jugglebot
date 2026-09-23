@@ -282,7 +282,7 @@ def test_the_default_tilt_accel_cap_is_derived_from_the_leg_budget():
     assert 3.0 < cr.TILT_ACCEL_LIMIT_DEFAULT_RAD_S2 < 8.0
 
 
-# ── C-CUP-1 / C-CUP-3 (plans/active/cup-contact-contract.md § 2) ─────────────
+# ── C-CUP-1 / C-CUP-3 (plans/archived/cup-contact-contract.md § 2) ─────────────
 
 def _plan_with_acc(acc: np.ndarray, dt: float = 0.025, catch_k=None) -> _CupPlan:
     """A fixture plan whose ACCELERATION is exactly what the test dictates.

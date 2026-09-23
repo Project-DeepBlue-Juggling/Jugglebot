@@ -1310,7 +1310,7 @@ def test_resend_still_fires_on_a_timing_only_move(sites):
     assert np.allclose(inst.calls[-1][1].landing_mm[:2], sched_xy[:2])
 
 
-# U1 test 5 (``plans/active/cup-contact-contract.md`` § 4): ONE knob,
+# U1 test 5 (``plans/archived/cup-contact-contract.md`` § 4): ONE knob,
 # ``lateral_authority_m``, bounds BOTH the tracker-aimed catch's lateral
 # clamp (``_clamp_lateral_to_schedule``, exercised above by
 # ``test_lateral_authority_widens_the_clamp`` at 20 mm) and the learner's

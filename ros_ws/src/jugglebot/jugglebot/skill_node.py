@@ -142,7 +142,7 @@ _TRAJ_STATUS_STALE_S = 1.0
 _HAND_STATE_STALE_S = 0.5
 
 #: The session-start mocap-Platform-vs-commanded-position frame check (plan
-#: `plans/active/cup-contact-contract.md` § 1, 2026-09-18): on 2026-09-18 the
+#: `plans/archived/cup-contact-contract.md` § 1, 2026-09-18): on 2026-09-18 the
 #: mocap `Platform` body sat +30 mm in y of the commanded platform position
 #: with `Base` aligned to 1 mm -- re-aligning QTM to the base moved the
 #: reported platform between +30 and -50 mm, i.e. a small base-alignment
@@ -504,7 +504,7 @@ class SkillNode(Node):
         # only) until the planner's small-lateral-offset banking defect was
         # fixed; owner 2026-09-21 lifted the pin once the cup-contact
         # contract landed banking that is amplitude-aware rather than a
-        # scale-free 12 degree clamp (plans/active/cup-contact-contract.md
+        # scale-free 12 degree clamp (plans/archived/cup-contact-contract.md
         # § 6): the box admits +/-40 mm at 0.9 m, and the session-start
         # mocap-vs-commanded frame check (`_frame_check_error`) is what now
         # guards a live authority against an unverified mocap frame. mm per

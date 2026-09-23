@@ -1204,7 +1204,7 @@ class SkillExecutor:
         until the planner carried banking that could afford the move; owner
         2026-09-21 lifted the pin to 40.0 mm once the cup-contact contract's
         amplitude-aware banking landed
-        (``plans/active/cup-contact-contract.md`` § 6). This method's clamp
+        (``plans/archived/cup-contact-contract.md`` § 6). This method's clamp
         logic and its ``0.0``/``None`` special cases are unchanged; only the
         node's default input to it moved.
 
