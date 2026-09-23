@@ -10,6 +10,7 @@ import { ODRIVE_STATE, BB_STATE_NAMES, LEG_STROKE_MM, MM_TO_REV,
          CC_OFFSET_DISPLAY_LIMIT_MS, CC_OFFSET_HISTORY_LEN } from './geometry-config.js';
 import { callService } from './ros-bridge.js';
 import { onWorkspaceStatus } from './jog-panel.js';
+import { initBBAim, isBBAimEditing, bbAimOnDisconnect } from './bb-aim.js';
 
 // ---- Motor grid ----
 
@@ -541,6 +542,9 @@ export function initBBPanel() {
     // Wire up calibrate button
     const btn = document.getElementById('bb-calibrate-btn');
     btn.addEventListener('click', onBBCalibrateClick);
+
+    // Yaw / Pitch readouts double as manual-aim inputs (bb-aim.js).
+    initBBAim();
 }
 
 // Map BB state codes to CSS badge classes (matches orchestrator state colours)
@@ -592,8 +596,9 @@ export function updateBBPanel(hb) {
     const yaw = document.getElementById('bb-yaw');
     const pitch = document.getElementById('bb-pitch');
     const hand = document.getElementById('bb-hand');
-    if (yaw) yaw.textContent = hb.yaw_deg.toFixed(1) + '\u00b0';
-    if (pitch) pitch.textContent = hb.pitch_deg.toFixed(1) + '\u00b0';
+    // Don't overwrite a readout the operator is typing an aim into.
+    if (yaw && !isBBAimEditing('yaw')) yaw.textContent = hb.yaw_deg.toFixed(1) + '\u00b0';
+    if (pitch && !isBBAimEditing('pitch')) pitch.textContent = hb.pitch_deg.toFixed(1) + '\u00b0';
     if (hand) hand.textContent = hb.hand_pos_mm.toFixed(0) + ' mm';
 
     // Swap button between Calibrate (IDLE) and RESET (ERROR)
@@ -683,6 +688,9 @@ export function setBBDisconnected() {
     // resetting lastBBState makes the stale value unusable either way.
     bbConnected = false;
     lastBBState = -1;
+    // Ends any manual-aim hold and closes an open aim input (before the
+    // readouts are blanked below, so the input can't survive the blanking).
+    bbAimOnDisconnect();
 
     const badge = document.getElementById('bb-state-badge');
     if (badge) {

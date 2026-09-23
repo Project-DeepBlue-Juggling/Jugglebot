@@ -947,6 +947,13 @@ def generate_gui_js(hw_cfg: dict, proto_cfg: dict) -> str:
         "",
         "// Ball Butler trajectory",
         f"export const BB_HAND_STROKE_MM = {bb_hand_stroke_mm};",
+        "",
+        "// Ball Butler manual-aim range (the BB panel's editable Yaw/Pitch).",
+        "// Yaw = the yaw axis's default soft limits; pitch is {deg from horizontal}.",
+        f"export const BB_YAW_LIM_MIN_DEG = {hw_cfg['ball_butler_yaw']['lim_min_deg']};",
+        f"export const BB_YAW_LIM_MAX_DEG = {hw_cfg['ball_butler_yaw']['lim_max_deg']};",
+        f"export const BB_PITCH_DEG_MIN = {hw_cfg['ball_butler_pitch']['deg_min']};",
+        f"export const BB_PITCH_DEG_MAX = {hw_cfg['ball_butler_pitch']['deg_max']};",
     ]
 
     # Hardware models (hardware_config.yaml -> hardware_models).  Emitted as an

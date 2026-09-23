@@ -55,6 +55,7 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "srv/SendBallButlerCommand.srv"
   "srv/SetHandGains.srv"
   "srv/BallButlerThrow.srv"
+  "srv/BallButlerAim.srv"
   "srv/GoToPose.srv"
   "srv/SetTrajectoryLimits.srv"
   "srv/TimedTarget.srv"

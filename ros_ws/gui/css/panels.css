@@ -456,6 +456,72 @@
 .bb-ball-dot.has-ball  { background: var(--accent-green); box-shadow: 0 0 4px var(--accent-green); }
 .bb-ball-dot.no-ball   { background: var(--accent-red); }
 
+/* ---- BB manual aim (bb-aim.js): Yaw / Pitch readouts double as inputs ---- */
+.bb-readout .value.bb-editable {
+    cursor: pointer;
+    border-bottom: 1px dashed var(--text-muted);
+}
+
+.bb-readout .value.bb-editable:hover {
+    color: var(--accent-blue);
+    border-bottom-color: var(--accent-blue);
+}
+
+.bb-aim-input {
+    width: 5.5em;
+    font-family: var(--font-mono);
+    font-size: var(--font-size-base);
+    font-weight: 600;
+    text-align: center;
+    color: var(--text-primary);
+    background: var(--bg-primary);
+    border: 1px solid var(--accent-blue);
+    border-radius: var(--border-radius-sm);
+}
+
+.bb-aim-input.invalid {
+    border-color: var(--accent-red);
+}
+
+.bb-aim-row {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: var(--gap-xs);
+    margin-top: var(--gap-xs);
+    min-height: 1.4em;
+}
+
+.bb-aim-status {
+    font-size: var(--font-size-sm);
+    color: var(--text-muted);
+}
+
+.bb-aim-status.error {
+    color: var(--accent-red);
+}
+
+.bb-aim-release {
+    padding: 2px 10px;
+    border: 1px solid var(--accent-amber);
+    border-radius: var(--border-radius-sm);
+    background: transparent;
+    color: var(--accent-amber);
+    font-family: var(--font-sans);
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    cursor: pointer;
+}
+
+.bb-aim-release:hover {
+    background: var(--accent-amber);
+    color: #000;
+}
+
+.bb-aim-release[hidden] {
+    display: none;
+}
+
 /* ---- BB Calibration status indicator ---- */
 .bb-calib-indicator {
     display: inline-flex;

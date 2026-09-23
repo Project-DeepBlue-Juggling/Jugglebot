@@ -167,7 +167,7 @@
 ### `orchestrator_state`
 
 - **publishers:** `orchestrator_node`
-- **subscribers:** _none_
+- **subscribers:** `ball_butler_node`
 - **type:** `std_msgs.msg.String`
 
 ### `platform_pose_topic`
@@ -278,6 +278,12 @@
 - **servers:** `teensy_bridge_node`
 - **clients:** `orchestrator_node`
 - **type:** `jugglebot_interfaces.srv.ActivateOrDeactivate`
+
+### `bb/aim`
+
+- **servers:** `ball_butler_node`
+- **clients:** _none_
+- **type:** `jugglebot_interfaces.srv.BallButlerAim`
 
 ### `bb/calibrate`
 
@@ -487,6 +493,7 @@ recordings and externally driven services — listed so a genuinely
 broken wire cannot hide among them.
 
 - `activate` — service with no clients
+- `bb/aim` — service with no clients
 - `bb/axis_estimates` — topic with no subscribers
 - `bb/cancel_accuracy_calibration` — service with no clients
 - `bb/markers` — topic with no subscribers
@@ -508,7 +515,6 @@ broken wire cannot hide among them.
 - `leg_setpoint_echo` — topic with no subscribers
 - `leg_torques_diagnostic` — topic with no subscribers
 - `orchestrator_command` — topic with no publishers
-- `orchestrator_state` — topic with no subscribers
 - `park_hand` — service with no clients
 - `profile` — topic with no subscribers
 - `qtm_clock_offset_sec` — topic with no subscribers

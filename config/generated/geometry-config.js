@@ -92,6 +92,13 @@ export const BB_PITCH_Z_OFFSET_MM = 17.5;
 // Ball Butler trajectory
 export const BB_HAND_STROKE_MM = 280.0;
 
+// Ball Butler manual-aim range (the BB panel's editable Yaw/Pitch).
+// Yaw = the yaw axis's default soft limits; pitch is {deg from horizontal}.
+export const BB_YAW_LIM_MIN_DEG = 0.0;
+export const BB_YAW_LIM_MAX_DEG = 120.0;
+export const BB_PITCH_DEG_MIN = 12.0;
+export const BB_PITCH_DEG_MAX = 90.0;
+
 // ---- Hardware models (hardware_config.yaml -> hardware_models) ----
 // INFORMATIONAL ONLY.  The physical board on each node; nothing
 // verifies these and nothing gates on them.  See the YAML section's
