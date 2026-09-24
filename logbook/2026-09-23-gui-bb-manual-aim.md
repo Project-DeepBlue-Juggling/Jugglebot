@@ -81,4 +81,4 @@ jugglebot` (new `.srv`) and a relaunch. The build was done on 2026-09-23.
   - ACTIVATE, BB THROWING, disconnect, and a node refusal each ending the hold
   - an open input closing when the gate drops
 - The full gate triple is in the commit message.
-- **Not yet flown on hardware.** At the first try, watch that pitch holds past 5 s and returns to rest within about 5 s of Release.
+- (2026-09-24, owner, on the robot after a relaunch of the `skill-stack` build plus a GUI hard-refresh) **Works as specified.** The fields are editable in IDLE and the owner reported "it's working quite well". The feature first landed on `mvp-trajectory-bringup`, which is not the live branch, so it was cherry-picked onto `skill-stack` before this test.
