@@ -183,7 +183,9 @@ regression check, not a new gate.
 throw, not a chain; **then chained**. Watch, every throw:
 
 - **The box** (re-swept 2026-09-27 under the kinematic-calibration geometry,
-  gate hash `a905116c2177` — read `skills/check`, it prints the live bands):
+  gate hash `7f76f68d4943` after `043158e` (bounds unchanged from `3059cc1`; the bridge
+  now runs FW 24 with the stroke clamp generated from the calibrated geometry — a launch
+  against any other bridge FW shows the SKEW advisory) — read `skills/check`, it prints the live bands):
   P1→P2 `x` in **−20…+2 mm**, P2→P1 `x` in **−0.5…+20 mm**, `y` in **±20 mm**,
   apex **0.85–0.95 m**. The x bound TOWARD the far site is essentially zero,
   so the lateral learner has no authority in the hop's own direction — **record

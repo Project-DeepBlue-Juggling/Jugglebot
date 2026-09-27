@@ -1113,7 +1113,7 @@ the rung's tests passing or a handoff file in the scratchpad.
   flight-fraction ladder for the hop) — a plant more than ~5 % fast in apex
   plateaus out of band (the sim's +11 % model does); **re-swept 2026-09-27 under the
   kinematic-calibration geometry** (`plans/active/kinematic-calibration.md`, gate hash
-  `a905116c2177`): the apex band opened to 0.85–0.95 but the x bound TOWARD the
+  `7f76f68d4943` after the 2026-09-27 FW 24 stroke-clamp commit `043158e`; bounds unchanged from `3059cc1`): the apex band opened to 0.85–0.95 but the x bound TOWARD the
   far site collapsed — P1→P2 x [−20, +2] mm, P2→P1 x [−0.5, +20] mm (y ±20 kept) — so
   the learner has essentially no lateral authority in the hop's own direction; the
   sitting's measured hop ratio and lateral bias at K = 0.7 decide whether the hop
