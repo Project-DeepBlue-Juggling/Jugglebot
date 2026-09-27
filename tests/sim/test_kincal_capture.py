@@ -331,3 +331,154 @@ def test_csv_header_is_the_fit_contract_plus_extras():
         + ['rev_%d' % i for i in range(6)]
     assert all(c in kc.CSV_COLS for c in fit_cols)
     assert len(set(kc.CSV_COLS)) == len(kc.CSV_COLS)
+
+
+# ── 2026-09-27 sitting: levelling allowance, stalls, planning refusals ──────
+
+def test_reach_allows_for_the_node_levelling_correction():
+    """z250_23 of the pre-fix seed-1 sweep: leg 1 at 272.4 mm nominal passed a
+    5 mm margin, then the node's ~0.8 deg C-LEVEL-1 tilt put it at 275.2 mm and
+    go_to_pose refused it WORKSPACE."""
+    pose = np.array([20.9316, 76.4709, 250.0, -0.147246, -0.060055, 0.0])
+    assert kc.Reach(level_allowance_deg=0.0).ok(pose)[0]
+    assert not REACH.ok(pose)[0]
+
+
+def test_every_sweep_pose_survives_a_levelling_correction_in_any_direction():
+    rng = np.random.default_rng(0)
+    for t in REC:
+        R = kf._exp(np.asarray(t.rv))
+        for psi in rng.uniform(0.0, 2.0 * math.pi, 4):
+            a = math.radians(kc.LEVEL_ALLOWANCE_DEG)
+            Rg = kf._exp(np.array([a * math.cos(psi), a * math.sin(psi), 0.0]))
+            p = t.pose6.copy()
+            p[3:] = Rotation.from_matrix(Rg @ R).as_rotvec()
+            e = kc.Reach(level_allowance_deg=0.0).extensions(p)[0]
+            assert np.all(e >= 0.0) and np.all(e <= REACH.stroke), t.pose_id
+
+
+def test_tracking_check_passes_a_followed_dwell_and_catches_a_stall():
+    t, prev = REC[30], REC[29]
+    assert kc.tracking_problems(t, _exact_dwell(t), REACH) == []
+    stalled = _exact_dwell(prev)     # legs still where the previous pose left them
+    assert 'did not follow' in kc.tracking_problems(t, stalled, REACH)[0]
+
+
+class _FakeRos:
+    """Stands in for ``_Ros``: every move arrives exactly, except the FIRST
+    request of each pose id in ``refuse`` (answered with ``code``; a group's vias
+    share an id) and, from ``stall_at`` on, a platform frozen where it was."""
+
+    def __init__(self, refuse=(), code='WORKSPACE', stall_at=None):
+        self.refuse, self.code, self.stall_at = set(refuse), code, stall_at
+        self.link_kv = {'mpc_active': '1', 'fault_state': 'NONE',
+                        'bridge_link': 'UP'}
+        self.hand_rev, self.uptime_ms = 0.0, 1
+        self.at, self.stalled, self.requested = kc.centre_target(), False, []
+
+    def preflight(self):
+        return []
+
+    def go(self, t, duration_s):
+        self.requested.append(t.pose_id)
+        if t.pose_id in self.refuse:
+            self.refuse.discard(t.pose_id)
+            raise kc.MoveRefused('go_to_pose refused %s: %s x' % (t.pose_id,
+                                                                  self.code),
+                                 self.code)
+        if t.pose_id == self.stall_at:
+            self.stalled = True
+        if not self.stalled:
+            self.at = t
+        return 1.0
+
+    def wait_arrival(self, planned_s, settle_s):
+        pass
+
+    def sample(self, window_s, z_shift_mm):
+        return _exact_dwell(self.at)
+
+
+def _run(monkeypatch, tmp_path, steps, fake):
+    import types
+    rclpy = types.SimpleNamespace(init=lambda: None, shutdown=lambda: None,
+                                  create_node=lambda name: types.SimpleNamespace(
+                                      destroy_node=lambda: None))
+    monkeypatch.setitem(sys.modules, 'rclpy', rclpy)
+    monkeypatch.setattr(kc, '_Ros', lambda node, timeout_s: fake)
+    args = types.SimpleNamespace(mode='sweep', seed=1, timeout_s=1.0,
+                                 settle_s=0.0, window_s=0.0)
+    stem = str(tmp_path / 'cap')
+    rc = kc.run_capture(steps, args, REACH, stem)
+    import json
+    with open(stem + '_meta.json') as fh:
+        meta = json.load(fh)
+    cap = kf.read_capture(stem + '.csv') if meta.get('rows') else None
+    return rc, meta, cap
+
+
+def _repeat_slice():
+    """The main poses up to and including the first repeat group's four dwells."""
+    i = next(j for j, s in enumerate(STEPS) if s.target.repeat_group)
+    return STEPS[:i + 7]      # via, A, via, B, via, A, via, B
+
+
+def test_a_refused_pose_is_skipped_and_the_capture_goes_on(monkeypatch, tmp_path):
+    steps = STEPS[:12]
+    bad = steps[4].target.pose_id
+    rc, meta, cap = _run(monkeypatch, tmp_path, steps, _FakeRos(refuse={bad}))
+    assert rc == 0 and meta['abort_reason'] is None
+    assert [s['pose_id'] for s in meta['skipped']] == [bad]
+    assert len(cap.pose_id) == 11 and bad not in list(cap.pose_id)
+
+
+def test_a_refused_via_skips_its_dwell_only(monkeypatch, tmp_path):
+    steps = _repeat_slice()
+    i_via = next(j for j, s in enumerate(steps) if not s.target.record)
+    fake = _FakeRos(refuse={steps[i_via].target.pose_id})
+    rc, meta, cap = _run(monkeypatch, tmp_path, steps, fake)
+    assert rc == 0
+    orphan = steps[i_via + 1].target
+    assert meta['skipped'] == [{'pose_id': orphan.pose_id, 'phase': '',
+                                'repeat_group': orphan.repeat_group,
+                                'problems': ['its via was refused']}]
+    # The other three repeat dwells of the group were still recorded.
+    assert int(np.sum(cap.repeat_group == orphan.repeat_group)) == 3
+
+
+def test_a_non_planning_refusal_still_aborts(monkeypatch, tmp_path):
+    steps = STEPS[:6]
+    fake = _FakeRos(refuse={steps[2].target.pose_id}, code='STALE_STATE')
+    rc, meta, _ = _run(monkeypatch, tmp_path, steps, fake)
+    assert rc == 1 and 'STALE_STATE' in meta['abort_reason']
+
+
+def test_too_many_refusals_abort(monkeypatch, tmp_path):
+    steps = STEPS[:kc.MAX_REFUSALS + 3]
+    fake = _FakeRos(refuse={s.target.pose_id for s in steps})
+    rc, meta, _ = _run(monkeypatch, tmp_path, steps, fake)
+    assert rc == 1 and 'planning refusals' in meta['abort_reason']
+
+
+def test_a_stalled_platform_aborts_before_recording_it(monkeypatch, tmp_path):
+    """The 2026-09-27 run 1 shape: the legs stop mid-sweep with no fault yet;
+    mocap and encoders agree with each other, so only the command disagrees."""
+    steps = STEPS[:10]
+    stall = steps[5].target.pose_id
+    rc, meta, cap = _run(monkeypatch, tmp_path, steps, _FakeRos(stall_at=stall))
+    assert rc == 1 and 'did not follow' in meta['abort_reason']
+    assert len(cap.pose_id) == 5 and stall not in list(cap.pose_id)
+
+
+@pytest.mark.parametrize('kv,baseline,fires', [
+    ({'sched_refused': '50'}, 50, False),       # steady: history, not this move
+    ({'sched_refused': '55'}, 50, True),        # the 2026-09-27 13:12:20.6 shape
+    ({'sched_refused': '55'}, None, False),     # bridge never published it
+    ({}, 50, False),                            # key absent from this message
+    ({'sched_refused': 'x'}, 50, False),
+])
+def test_sched_refused_names_the_latched_hold(kv, baseline, fires):
+    why = kc.sched_refused_problem(kv, baseline)
+    assert (why is not None) == fires
+    if fires:
+        assert 'REFUSED' in why and '50 -> 55' in why

@@ -127,6 +127,20 @@ TILT_MIN_DEG = 6.0
 TILT_MAX_DEG = 10.0
 BOX_MM = 300.0                 # the owner's ±300 mm x/y region
 STROKE_MARGIN_MM = 5.0
+#: The node tilts every go_to_pose target by the C-LEVEL-1 levelling correction
+#: (plus any applied tilt-map residual) at ingest; the plan's build_move sees the
+#: corrected pose, not ours. Reach is therefore checked with the pose tilted by
+#: this much in LEVEL_RING directions as well. The 2026-09-27 sitting refused
+#: z250_23 with leg 1 at 275.2 mm, 272.4 mm nominal, under a ~0.8 deg correction.
+LEVEL_ALLOWANCE_DEG = 1.5
+LEVEL_RING = 8
+#: A dwell whose encoders are this far from the config IK of the command is a
+#: platform that did not follow (good dwells read <= 0.055 rev; the 2026-09-27
+#: stall read 0.33-0.78 rev for 15 s before the guard tripped).
+TRACK_REV_TOL = 0.15
+#: Planning refusals (WORKSPACE/UNREACHABLE) skip the pose; this many abort.
+MAX_REFUSALS = 10
+SKIPPABLE_CODES = ('WORKSPACE', 'UNREACHABLE')
 FILL = 0.9
 EDGE_EXPONENT = 0.4            # r = fill·r_max·u^0.4: weighted toward the edge
 N_HOLDOUT = 10
@@ -205,12 +219,18 @@ class Reach:
     """Stroke-margin reach under the config geometry — the same IK the
     emitter ships (``tests/sim/test_kincal_fit.py`` pins the equality)."""
 
-    def __init__(self, margin_mm: float = STROKE_MARGIN_MM):
+    def __init__(self, margin_mm: float = STROKE_MARGIN_MM,
+                 level_allowance_deg: float = LEVEL_ALLOWANCE_DEG):
         hw = kf._load_hw()
         self.g = kf.nominal_geometry()
         self.h0 = float(hw.GEOM_INITIAL_HEIGHT_MM)
         self.stroke = float(hw.GEOM_LEG_STROKE_MM)
         self.margin = float(margin_mm)
+        a = math.radians(level_allowance_deg)
+        self.ring = [np.eye(3)] + ([kf._exp(np.array(
+            [a * math.cos(2 * math.pi * j / LEVEL_RING),
+             a * math.sin(2 * math.pi * j / LEVEL_RING), 0.0]))
+            for j in range(LEVEL_RING)] if a > 0.0 else [])
 
     def extensions(self, pose6s: np.ndarray) -> np.ndarray:
         p = np.atleast_2d(np.asarray(pose6s, dtype=float))
@@ -219,8 +239,17 @@ class Reach:
         return kf.leg_lengths(c, R, self.g.base, self.g.plat) - self.g.L0
 
     def ok(self, pose6s: np.ndarray) -> np.ndarray:
-        e = self.extensions(pose6s)
-        return np.all((e >= self.margin) & (e <= self.stroke - self.margin), axis=1)
+        """Inside the stroke margin at the pose AND at the pose pre-tilted by
+        every ring correction (the node's ``R_gravity @ R_request``)."""
+        p = np.atleast_2d(np.asarray(pose6s, dtype=float))
+        R = np.array([kf._exp(rv) for rv in p[:, 3:6]])
+        c = p[:, :3] + np.array([0.0, 0.0, self.h0])
+        good = np.ones(len(p), dtype=bool)
+        for Rg in self.ring:
+            e = kf.leg_lengths(c, Rg[None] @ R, self.g.base, self.g.plat) - self.g.L0
+            good &= np.all((e >= self.margin) & (e <= self.stroke - self.margin),
+                           axis=1)
+        return good
 
     def revs(self, pose6: np.ndarray) -> np.ndarray:
         return self.extensions(pose6)[0] * self.g.k
@@ -558,6 +587,19 @@ def frame_problems(t: Target, d: Dwell, reach: Reach, *,
     return probs
 
 
+def tracking_problems(t: Target, d: Dwell, reach: Reach,
+                      rev_tol: float = TRACK_REV_TOL) -> List[str]:
+    """Did the legs actually reach the command? Checked on EVERY dwell: a
+    stalled platform is self-consistent (mocap and encoders agree), so neither
+    the stillness gate nor the fit would notice it."""
+    dr = d.rev - reach.revs(t.pose6)
+    if np.max(np.abs(dr)) <= rev_tol:
+        return []
+    return ['encoders are %s rev from the config IK of %s (tolerance %.2f): the '
+            'platform did not follow the command' % (np.round(dr, 3).tolist(),
+                                                     t.pose_id, rev_tol)]
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # CSV
 # ═════════════════════════════════════════════════════════════════════════════
@@ -636,6 +678,37 @@ def move_finished(plan_kind: Optional[str], remaining_s: Optional[float]) -> boo
     return plan_kind != 'move' or (remaining_s is not None and remaining_s <= 1e-6)
 
 
+def sched_refused_problem(link_kv: Optional[Dict[str, str]],
+                          baseline: Optional[int]) -> Optional[str]:
+    """The can-bridge scheduler's latched hold, named at the moment it starts.
+
+    A stream gap long enough to exhaust the knot cover makes the firmware stop
+    and hold (``leg_interp.cpp`` ``sched_advance``). A resumed stream that does
+    not join the stopped curve is then REFUSED at stream rate, and the legs keep
+    holding (``sched_apply``, ``s_sched_refused``). Nothing else escalates until
+    the deviation trips the guard: 15 s on 2026-09-27. ``baseline`` is the
+    counter when the current move was accepted; ``None`` when the bridge does
+    not publish the key."""
+    if baseline is None:
+        return None
+    try:
+        now = int((link_kv or {}).get('sched_refused', ''))
+    except ValueError:
+        return None
+    if now <= baseline:
+        return None
+    return ('can-bridge scheduler REFUSED the streamed lane (sched_refused %d -> %d): '
+            'a stream gap stopped it and it is holding, not following. Deactivate, '
+            're-home and re-run' % (baseline, now))
+
+
+def _counter(link_kv: Optional[Dict[str, str]], key: str) -> Optional[int]:
+    try:
+        return int((link_kv or {})[key])
+    except (KeyError, ValueError):
+        return None
+
+
 def preflight_problems(*, link_kv: Optional[Dict[str, str]], status_mode: Optional[str],
                        robot_state_age_s: Optional[float],
                        leg_errors: Sequence[int], hand_rev: Optional[float],
@@ -681,6 +754,14 @@ class CaptureAbort(RuntimeError):
     pass
 
 
+class MoveRefused(CaptureAbort):
+    """go_to_pose said no; the platform holds where it was."""
+
+    def __init__(self, msg: str, code: str):
+        super().__init__(msg)
+        self.code = code
+
+
 class _Ros:
     """rclpy client: one service, four subscriptions. Nothing here arms, changes
     mode, sets limits or commands the hand."""
@@ -697,6 +778,7 @@ class _Ros:
         self.status = None
         self.status_t = None
         self.link_kv: Dict[str, str] = {}
+        self.sched_refused0: Optional[int] = None
         self.uptime_ms = ''
         self.rs_t = None
         self.leg_errors = [0] * N_LEGS
@@ -784,6 +866,9 @@ class _Ros:
         bad = [i for i, e in enumerate(self.leg_errors) if e]
         if bad:
             raise CaptureAbort('ODrive errors on axes %s' % bad)
+        why = sched_refused_problem(self.link_kv, self.sched_refused0)
+        if why:
+            raise CaptureAbort(why)
 
     def go(self, t: Target, duration_s: float) -> float:
         """Request the move; return the planned duration. Raises on refusal."""
@@ -804,6 +889,7 @@ class _Ros:
             if res is None:
                 raise CaptureAbort('go_to_pose did not answer in %.1f s' % self.timeout_s)
             if res.accepted:
+                self.sched_refused0 = _counter(self.link_kv, 'sched_refused')
                 if response_reports_disarmed(res.message):
                     raise CaptureAbort('go_to_pose accepted on a DISARMED wire: %s'
                                        % res.message)
@@ -811,8 +897,8 @@ class _Ros:
             if res.code == 'TOO_FAST' and attempt == 0 and res.min_duration_s > 0:
                 duration_s = 1.2 * float(res.min_duration_s)
                 continue
-            raise CaptureAbort('go_to_pose refused %s: %s %s'
-                               % (t.pose_id, res.code, res.message))
+            raise MoveRefused('go_to_pose refused %s: %s %s'
+                              % (t.pose_id, res.code, res.message), str(res.code))
         raise CaptureAbort('unreachable')
 
     def wait_arrival(self, planned_s: float, settle_s: float) -> None:
@@ -903,6 +989,8 @@ def run_capture(steps: List[Step], args, reach: Reach, out_stem: str) -> int:
         n_rec = sum(1 for s in steps if s.kind == 'move' and s.target.record)
         k = 0
         framed = False
+        refusals = 0
+        orphan = False     # a via was refused: its dwell (the next step) is skipped
         t0 = time.monotonic()
         for s in steps:
             if s.kind == 'rehome':
@@ -912,13 +1000,45 @@ def run_capture(steps: List[Step], args, reach: Reach, out_stem: str) -> int:
                 _operator_rehome(ros)
                 continue
             t = s.target
-            planned = ros.go(t, move_duration_s(cur, t))
+            if t.record and orphan:
+                # Without its via this dwell is not approached from its side.
+                orphan = False
+                k += 1
+                meta['skipped'].append({'pose_id': t.pose_id, 'phase': t.phase,
+                                        'repeat_group': t.repeat_group,
+                                        'problems': ['its via was refused']})
+                print('[%3d/%d] %-10s SKIPPED: its via was refused'
+                      % (k, n_rec, t.pose_id))
+                continue
+            try:
+                planned = ros.go(t, move_duration_s(cur, t))
+            except MoveRefused as e:
+                if e.code not in SKIPPABLE_CODES:
+                    raise
+                refusals += 1
+                if refusals > MAX_REFUSALS:
+                    raise CaptureAbort('%d planning refusals — the sequence does '
+                                       'not fit this robot; last: %s' % (refusals, e))
+                if t.record:
+                    k += 1
+                    meta['skipped'].append({'pose_id': t.pose_id, 'phase': t.phase,
+                                            'repeat_group': t.repeat_group,
+                                            'problems': [str(e)]})
+                    print('[%3d/%d] %-10s SKIPPED: %s' % (k, n_rec, t.pose_id, e))
+                else:
+                    orphan = True
+                    print('           %-10s via REFUSED: %s' % (t.pose_id, e))
+                continue      # the platform holds at cur; the next move plans from it
             cur = t
             ros.wait_arrival(planned, args.settle_s if t.record else 0.3)
             if not t.record:
                 continue
             d = ros.sample(args.window_s, reach.h0)
             k += 1
+            tp = tracking_problems(t, d, reach)
+            if tp:
+                raise CaptureAbort(tp[0] + ' — nothing recorded at this pose; '
+                                   'check the launch log for a stall or guard fault')
             if d.problems:
                 meta['skipped'].append({'pose_id': t.pose_id, 'phase': t.phase,
                                         'repeat_group': t.repeat_group,
