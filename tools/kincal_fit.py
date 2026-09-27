@@ -111,7 +111,20 @@ PRIOR_SD = {'base': 5.0, 'plat': 5.0, 'L0': 10.0,
 #: Gauge rows are constraints, not observations.
 GAUGE_WEIGHT = 1.0e3
 
+# ── Held at CAD, never fitted (owner, 2026-09-27) ────────────────────────────
+#: The base-joint heights. Along each leg, a base node's z trades almost exactly
+#: with that leg's L0 (the first real sweep, 2026-09-27: L0 +8..+11 mm against
+#: base z -4..-10 mm, both unidentifiable). The owner judged the machined base
+#: far closer to CAD than the hand-built legs, so the heights are held and L0
+#: carries the difference.
+HELD_PARAMS = tuple('base[%d].z' % i for i in range(6))
+
 # ── Identifiability freeze thresholds (§ 2, owner Q16) ───────────────────────
+#: Compared with the posterior sd at ``sigma_mm``, scaled down by a reduced
+#: chi-square below 1 but never up by one above it: identifiability is a
+#: property of the sweep's Jacobian and the noise, not of the misfit. Judging on the re-scaled sd made a misfit (chi² 27) inflate every
+#: sd ~5x and freeze 22 parameters, all six L0 included, which then worsened
+#: the misfit (2026-09-27).
 FREEZE_SD = {'base': 1.0, 'plat': 1.0, 'L0': 1.0,
              'k_rel': 0.002,                 # 0.2 % = 0.56 mm over the stroke
              'reg': math.radians(0.1)}
@@ -358,9 +371,13 @@ def _freeze_sd(prior: KinGeom) -> np.ndarray:
 
 
 def free_mask(groups: Sequence[str]) -> np.ndarray:
+    """The parameters of ``groups``, minus :data:`HELD_PARAMS`."""
     m = np.zeros(N_PARAMS, dtype=bool)
     for g in groups:
         m[_SLICES[g]] = True
+    names = param_names()
+    for n in HELD_PARAMS:
+        m[names.index(n)] = False
     return m
 
 
@@ -509,10 +526,13 @@ def fit(cap: Capture, *, start: Optional[KinGeom] = None,
 
     frozen: List[Tuple[str, float]] = []
     if freeze:
-        over = free & (sd > _freeze_sd(prior))
+        # sd at sigma_mm, re-scaled DOWN by a quieter-than-assumed fit but never
+        # UP by a misfit (the FREEZE_SD comment).
+        formal = sd / math.sqrt(max(chi2, 1e-12)) * math.sqrt(min(chi2, 1.0))
+        over = free & (formal > _freeze_sd(prior))
         if over.any():
             names = param_names()
-            frozen = [(names[i], float(sd[i])) for i in np.flatnonzero(over)]
+            frozen = [(names[i], float(formal[i])) for i in np.flatnonzero(over)]
             free = free & ~over
             held = start.to_vector()
             held[over] = prior.to_vector()[over]
@@ -742,11 +762,13 @@ def render_report(a: dict, capture_path: str) -> str:
                                    s['reduced_chi2'], s['sigma_mm'],
                                    s['message'])]
     if a['frozen']:
-        L += ['- **frozen at prior** (posterior sd over the § 2 threshold): '
+        L += ['- **frozen at prior** (formal posterior sd over the § 2 threshold): '
               + ', '.join('`%s` (sd %.3g)' % (f['param'], f['sd'])
                           for f in a['frozen'])]
     else:
         L += ['- nothing frozen']
+    L += ['- held at CAD by decision, never fitted: '
+          + ', '.join('`%s`' % n for n in HELD_PARAMS)]
 
     def pose_line(label, st):
         if not st.get('n'):

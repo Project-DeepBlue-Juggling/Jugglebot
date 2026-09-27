@@ -41,11 +41,16 @@ def _skew(p):
     return np.array([[0.0, -p[2], p[1]], [p[2], 0.0, -p[0]], [-p[1], p[0], 0.0]])
 
 
+#: Truth base-node z error as a fraction of ``node_sd`` (0.2 mm at 1.2 mm).
+BASE_Z_FRAC = 1.0 / 6.0
+
+
 def _perturbed(rng, node_sd=1.2, L0_sd=3.0, k_rel=0.005, reg_deg=0.3):
     """A truth geometry inside the fit's gauge (the platform pattern's rigid
     motion projected out, as the fit's constraints require)."""
     t = NOM.copy()
-    t.base = t.base + rng.normal(0.0, node_sd, (6, 3))
+    # Base-joint heights near CAD (owner, 2026-09-27): the fit holds them.
+    t.base = t.base + rng.normal(0.0, node_sd, (6, 3)) * [1.0, 1.0, BASE_Z_FRAC]
     d = rng.normal(0.0, node_sd, (6, 3)).ravel()
     A = np.vstack([np.hstack([np.eye(3), -_skew(p)]) for p in NOM.plat])
     coef, *_ = np.linalg.lstsq(A, d, rcond=None)
@@ -194,9 +199,11 @@ def test_platform_pattern_stays_in_gauge(recovery):
 
 
 def test_noise_free_fit_is_exact():
-    """Pins the model algebra: no noise, no freezing -> zero pose error."""
+    """Pins the model algebra: no noise, no freezing, held parameters true ->
+    zero pose error."""
     rng = np.random.default_rng(5)
     truth = _perturbed(rng)
+    truth.base[:, 2] = NOM.base[:, 2]     # the held parameters, exactly at CAD
     cap = _capture(rng, truth, _poses(rng, truth, per=12), mocap_sd=0.0,
                    rev_sd=0.0)
     # A tiny sigma so the data outweighs the CAD prior's (deliberate) pull.
@@ -360,3 +367,26 @@ def test_cli_writes_report_and_a_reloadable_geometry(tmp_path):
                     str(out / 'proposed_geometry.yaml'),
                     '--out-dir', str(out2)]) == 0
     assert 'offsets-only' in (out2 / 'report.md').read_text()
+
+
+def test_base_heights_are_held_and_a_misfit_does_not_freeze():
+    """2026-09-27, the first real sweep: a model misfit (chi² 27) re-scaled
+    every posterior sd ~5x and froze 22 parameters, all six L0 included, which
+    then worsened the misfit. On a sweep dense enough to pin L0 at sigma, an
+    unmodelled per-row leg error far above sigma must leave L0 free, although
+    the chi-square re-scaled sd (the old rule) is over the threshold. The base
+    heights are held by decision, never fitted."""
+    rng = np.random.default_rng(11)
+    truth = _perturbed(rng)
+    cap = _capture(rng, truth, _poses(rng, truth, per=40, tilt_deg=9.0))
+    cap.rev = cap.rev + rng.normal(0.0, 1.5 * float(np.mean(NOM.k)), cap.rev.shape)
+    res = kf.fit(cap)
+    assert res.reduced_chi2 > 4.0
+    names = kf.param_names()
+    L0 = [names.index('L0[%d]' % i) for i in range(6)]
+    assert not ({n for n, _ in res.frozen} & {names[i] for i in L0}), res.frozen
+    assert np.all(res.sd[L0] > kf.FREEZE_SD['L0'])     # the old rule froze them
+    for n in kf.HELD_PARAMS:
+        i = names.index(n)
+        assert not res.free[i]
+        assert res.geom.to_vector()[i] == NOM.to_vector()[i]

@@ -174,8 +174,20 @@ exact, and the capture design has to allow for two weak directions:
    the tool adds it back and stores the capture in the Base frame, because step 5
    changes that constant.
 3. **Sitting:** the full sweep, the two-direction repeats and the re-home repeat.
+   **Done 2026-09-27** (third attempt): `temp/logs/kincal_sweep_20260927_143217.csv`,
+   166 rows, 19 poses skipped by the stillness gate.
 4. **Fit** plus the report: the § 3 and § 4 verdicts, and § 8's criteria on the hold-out
    set. The tool proposes a geometry YAML. **It never writes `hardware_config.yaml`.**
+   **Run 2026-09-27; owner verdict pending.**
+   - § 3 DIRECTIONAL: 3 of 10 groups at 1.2–1.5 mm, within-direction ≤ 0.8 mm.
+   - § 4 PASS: 0.73 mm.
+   - § 8 hold-out 1.08 mm RMS (**FAIL**, ≤ 1) and 1.77 mm max (pass), against
+     12.3 mm under the config geometry. Attitude 0.20° (**FAIL**, ≤ 0.1).
+   - Nodes up to 6.4 mm from CAD (**FAIL**, ≤ 5). Every node sits 1–6 mm radially
+     inward.
+
+   The numbers are in the logbook
+   (`2026-09-23-kinematic-calibration-design-and-fit-tool.md`, § 2026-09-27).
 5. **Apply** by a deliberate commit: geometry → `python config/generate_config.py` → box
    re-sweep (§ 7) → `colcon build`. No firmware flash: the firmware headers carry the
    geometry constants but no firmware code reads them (checked 2026-09-23).
@@ -223,7 +235,7 @@ exact, and the capture design has to allow for two weak directions:
 | Q11/Q12 | Sweep extent | ±300 mm x/y, z 100–250, clipped to reachable; up to 30 min |
 | Q14 | Zero-attitude convention | The leg-joint pattern; registration fitted; tilt map recaptured after the geometry lands |
 | Q15 | Pass criteria | § 8 |
-| Q16 | Parameter set | Full set with a CAD prior, freeze-and-refit what the data cannot pin down |
+| Q16 | Parameter set | Full set with a CAD prior, freeze-and-refit what the data cannot pin down. **Amended 2026-09-27 (owner):** the six base-joint heights are held at CAD, never fitted. Each is near-degenerate with its leg's L0, and the machined base is far closer to CAD than the hand-built legs. The freeze now reads the posterior sd at the assumed noise, scaled down by a quiet fit but never up by a misfit. |
 | Q17/Q20 | Homing repeatability | Unmeasured; two-part calibration (§ 4) |
 | Q18 | Plumb bob | Deferred. Only needed if the ball-flight fit's 0.38° z-vs-gravity bias still shows in landings after this plan |
 | Q19 | Plan placement | This file; a prerequisite for z authority, not an R4 blocker |

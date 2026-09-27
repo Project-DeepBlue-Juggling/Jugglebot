@@ -84,3 +84,54 @@ the owner. The capture now tilts every pose (plan § 5.1).
   All of them are refused with "PRE-R4 admissible box file … Regenerate", pending R4's
   own box re-sweep. None touches a file in this entry. `test_kincal_fit.py`,
   `test_plans_index.py` and `test_logbook_front_matter.py` all passed within that run.
+
+## 2026-09-27: the first real sweep, and two changes to the fit
+
+**Changes (owner-agreed).** The six base-joint heights are held at CAD
+(`HELD_PARAMS`). Each is near-degenerate with its leg's L0, and the owner judges
+the machined base far closer to CAD than the hand-built legs. The freeze decision
+now reads the posterior sd at `sigma_mm`. A quiet fit (χ² < 1) can scale that sd
+down, but a misfit can no longer scale it up.
+
+**Why the freeze rule changed.** On the preview capture (97 rows,
+`kincal_sweep_20260927_131410`), the old rule scaled sd by √χ², with χ² = 27. That
+froze 22 parameters, all six L0 included, and freezing them made the misfit worse:
+hold-out 4.4 mm RMS. With nothing frozen, the same rows fit to 0.37 mm per leg.
+Identifiability is a property of the sweep and the noise, not of the misfit. An
+unconditional "sd at σ" rule was tried first and rejected: the synthetic sweep is
+quieter than σ (χ² 0.13), and that rule froze its L0 values, which are well pinned.
+
+**Results on `kincal_sweep_20260927_143217`** (166 rows: 148 fit, 10 hold-out,
+8 post-home). Report: `temp/reports/kincal/kincal_sweep_20260927_143217/report.md`.
+- Leg residual 0.376 mm RMS, χ² 1.64. Only `reg.x` and `reg.y` froze.
+- Hold-out position: **1.076 mm RMS** and 1.773 mm max, against 12.27 mm and
+  17.74 mm under the config geometry. Fit rows: 0.93 mm RMS, so the fit is not
+  overfitted.
+- Hold-out attitude: max **0.198°**. Its mean is about 0.003°, so this is not a
+  constant offset that `level` would absorb.
+- § 3 **DIRECTIONAL**. R02, R03 and R06 have an overall spread of 1.2–1.5 mm, with
+  the within-direction spread ≤ 0.8 mm; the other groups are STATIC. Mocap attitude
+  repeats to 0.03–0.13° within a group.
+- § 4 **PASS**: 0.73 mm; per-leg ΔL0 up to 0.51 mm.
+- § 8: position max passes. Position RMS fails narrowly (1.08 against ≤ 1). Attitude
+  fails (0.20° against ≤ 0.1°). Node plausibility fails (6.4 mm against ≤ 5).
+- Fitted L0: legs 4 and 5 are +7.1 and +4.5 mm; the others are within ±2.7 mm, all
+  with sd about 0.7 mm.
+- Fitted k: five legs are 0.7–1.3 % low and leg 2 is 0.5 % high, with sd about 0.07 %.
+- **Every node shifts radially inward.** Base: −3.5 to −6.1 mm, mean −4.1 mm (about
+  −1.0 % of the 410 mm radius). Platform: −0.6 to −3.7 mm, mean −2.0 mm (about
+  −0.9 %). A mocap scale error cannot produce this, because it would move k in the
+  opposite direction from the nodes. Whether the joint centres really sit inboard of
+  the CAD nodes is for the owner to judge.
+- STOW under the fitted geometry is (−3.6, −7.7, 578.2) mm and tilts 0.88° about x.
+  For comparison, the inclinometer's levelling offset read at that sitting's cold
+  start was (0.0140, 0.0010) rad, which is 0.80° about x.
+
+**Reading.** The residual sits at the machine's own repeatability. Directional
+spread is up to 1.5 mm and attitude repeats only to 0.13°. The criteria below that
+floor (1 mm RMS, 0.1°) cannot be met by any static geometry, whatever the fit. The
+decision to apply is the owner's, and so is the § 3 consequence (a fixed final
+approach direction).
+
+- `pytest tests/sim/test_kincal_fit.py tests/sim/test_kincal_capture.py -q`
+  (2026-09-27): **61 passed in 17.54 s**.

@@ -246,7 +246,8 @@ def test_frame_check_catches_each_frame_error(fault, needle):
 def _perturbed(rng):
     t = kf.nominal_geometry().copy()
     nom = kf.nominal_geometry()
-    t.base = t.base + rng.normal(0.0, 1.2, (6, 3))
+    # Base-joint heights near CAD (owner, 2026-09-27): the fit holds them.
+    t.base = t.base + rng.normal(0.0, 1.2, (6, 3)) * [1.0, 1.0, 0.2 / 1.2]
     d = rng.normal(0.0, 1.2, (6, 3)).ravel()
     sk = lambda p: np.array([[0, -p[2], p[1]], [p[2], 0, -p[0]], [-p[1], p[0], 0]])
     A = np.vstack([np.hstack([np.eye(3), -sk(p)]) for p in nom.plat])
