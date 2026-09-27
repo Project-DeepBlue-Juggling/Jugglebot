@@ -2,8 +2,8 @@
 
 `plans/active/kinematic-calibration.md` § 6 steps 5–7. The IK geometry changed
 on 2026-09-27 (logbook `2026-09-23-kinematic-calibration-design-and-fit-tool.md`
-§ "2026-09-27: applied"). **Nothing physical changed and no firmware was
-flashed.** This sitting re-levels the machine under the new geometry, recaptures
+§ "2026-09-27: applied"). **Nothing physical changed; the only firmware flash is the
+can-bridge stroke-clamp regeneration (FW 24, item 6 below).** This sitting re-levels the machine under the new geometry, recaptures
 the tilt map, and runs the flying frame check that is the plan's § 8 acceptance
 test. The R3/R4 sheets (`session_skills_r3.md`, `session_skills_r4.md`) stay the
 reference for everything this one does not restate (QTM preconditions, the
@@ -26,12 +26,11 @@ launch rows, the guard/`/recover` flow).
    in the colcon install tree would still load** (row 4 below).
 5. The admissible boxes were re-swept under the new IK and the gate hash now
    covers the geometry file, so a box swept under the old IK refuses at accept.
-6. ⚠ NOT changed: the can-bridge firmware's per-leg stroke clamp
-   (`canbridge_config.h` `STROKE_MIN/MAX_REV`, captured from motor_guard under the
-   old `mm_to_rev`). It is ~0.7 % (about 2 mm at the top of stroke) from what the
-   fitted scales give — physically the same bound it always was. Re-deriving it
-   is a firmware edit + flash the owner schedules separately; nothing in this
-   sitting depends on it.
+6. The can-bridge runs **FW 24** (flashed 2026-09-27, identity read back): its
+   per-leg stroke clamp `STROKE_MIN/MAX_REV` is now generated from the YAML
+   (`leg_hard_margin_mm` × the fitted `mm_to_rev`) instead of the 2026-06-01
+   hand-captured table. No wire change (protocol 9). Expect the boot banner /
+   GUI identity to show FW 24; a 23 means the wrong board or a failed flash.
 
 ---
 

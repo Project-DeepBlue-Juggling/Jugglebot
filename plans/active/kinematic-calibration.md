@@ -204,9 +204,10 @@ exact, and the capture design has to allow for two weak directions:
    (574.3 + 170) in the planner's lever arithmetic and `CUP_Z_BASE_MM = 659.6`
    (744.3 − 84.7) in `cup_realize` and the sim — each 3.9 mm short under the new
    height; both now derive from the config (logbook § "What the full suite found").
-   ⚠ OPEN: the can-bridge firmware's `STROKE_MIN/MAX_REV` backstop was captured
-   from motor_guard under the old `mm_to_rev` (~0.7 % off now; test xfailed) —
-   re-deriving it is a firmware edit + flash for the owner to schedule.
+   The can-bridge firmware's `STROKE_MIN/MAX_REV` backstop (hand-captured under the
+   old `mm_to_rev`, ~0.7 % off) is now GENERATED from the YAML
+   (`leg_hard_margin_mm`) into `hardware_config.h`; can-bridge **FW 24 flashed
+   2026-09-27**, identity read back, no wire change.
    1. Edit `config/hardware_config.yaml` `jugglebot_geometry` from
       `temp/reports/kincal/kincal_sweep_20260927_143217/proposed_geometry.yaml`:
       - `base_nodes_mm`: x/y fitted, z held at 0

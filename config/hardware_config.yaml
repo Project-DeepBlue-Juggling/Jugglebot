@@ -353,6 +353,13 @@ jugglebot_geometry:
   plat_small_angle_deg: 8.6024446    # Lambda1 on main sketch — angle between close platform nodes {deg}
   plat_x_axis_offset_deg: 154.3012223  # Lambda0 on main sketch — offset from x-axis for platform nodes {deg} (measured in Onshape)
   leg_stroke_mm: 280.0               # Total stroke of each linear actuator leg {mm}
+  # Hard stroke margin at BOTH ends {mm}: the leg-path clamp is [margin, stroke - margin]
+  # in mm, i.e. [margin, stroke - margin] x mm_to_rev[i] in rev per leg. ONE source for
+  # motor_guard's WorkspaceLimits (workspace.LEG_HARD_MARGIN_MM reads this) and the
+  # can-bridge firmware's STROKE_MIN/MAX_REV backstop (generated into hardware_config.h
+  # since 2026-09-27; until then a table hand-captured on 2026-06-01, which the
+  # kinematic calibration's new mm_to_rev silently left ~0.7 % stale).
+  leg_hard_margin_mm: 5.0
 
   # Arm / catching structure (mounted on top of platform)
   arm_radius_mm: 70.0                # Radius of opening where the ball comes in {mm}. Approximate.

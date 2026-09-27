@@ -304,15 +304,25 @@ the cup velocity vertical at release — the ball rolling in the cup, the docume
 pose-chaos, so `test_juggle_throw`'s bound is 30 mm (still deep inside the catch's
 60–80 mm reach).
 
-⚠ **OPEN — firmware stroke backstop.** `tests/firmware/test_hermite_xref.py::
-test_firmware_stroke_bounds_match_motor_guard` is now `xfail(strict=True)`:
-`Teensy_code_canbridge/canbridge_config.h` `STROKE_MIN/MAX_REV` were captured
-2026-06-01 from motor_guard under the old `mm_to_rev`, so the firmware's per-leg rev
-bounds now sit ~0.7 % (about 2 mm at the top of stroke) from what the calibrated
-scales give. Physically nothing changed — the bounds were always this far from the
-true stroke in mm — but bringing the firmware in line is a firmware edit + flash
-(the plan's "no firmware flash" held only for the generated header, which the
-firmware does not read). Owner's call; not scheduled here.
+**Firmware stroke backstop — brought in line the same day (owner's ask, can-bridge
+FW 24 flashed 2026-09-27).** `Teensy_code_canbridge/canbridge_config.h` `STROKE_MIN/MAX_REV`
+had been captured from motor_guard on 2026-06-01 under the old `mm_to_rev`, so after the
+calibration the firmware's per-leg rev clamp sat ~0.7 % (about 2 mm at the top of stroke)
+from motor_guard's — physically the bound it always was, but two layers disagreeing about
+one stop. Rather than re-paste six numbers (the firmware's own `TODO: hoist into codegen`),
+the bounds are now GENERATED: `jugglebot_geometry.leg_hard_margin_mm` (5.0) is a YAML key,
+`workspace.LEG_HARD_MARGIN_MM` reads it, and `generate_config.py` emits
+`Geometry::STROKE_MIN_REV / STROKE_MAX_REV` = `[margin, stroke − margin] × mm_to_rev[i]`
+into `hardware_config.h` (and `LEG_STROKE_MIN/MAX_REV` into the Python module);
+`canbridge_config.h` only binds to them (`static constexpr const float (&…)[NUM_LEGS]` —
+`static` because a namespace-scope constexpr reference has external linkage and the first
+build failed with multiple definitions across TUs). `tests/firmware/test_hermite_xref.py`
+pins generated == running guard AND that the firmware binds rather than carries a table.
+No wire change (PROTOCOL_VERSION stays 9). Flash: `pio run -e teensy41 -t upload`
+(HalfKay found, programmed); boot identity read off the UDP stream: `BridgeIdentity(
+fw_version=24, protocol_version=9)`. Adding two arrays to the generated
+`hardware_config.py` moved the box gate hash again (by design: the hash is the file's
+text), so the boxes were swept a fourth time — see the table above for the final pair.
 
 `test_the_qp_and_the_gate_stay_within_an_order_of_magnitude` failed once at 16.8×
 while two sweeps had the CPU; it is a wall-clock ratio and passed on the re-run.
@@ -333,6 +343,13 @@ tests/sim/test_logbook_search.py tests/sim/test_plans_index.py -q` (2026-09-27):
 **109 passed in 0.77 s**. `colcon build --packages-select jugglebot` done in this
 worktree; the stale `share/jugglebot/config/tilt_calibration.yaml` removed by hand
 (colcon does not remove a file the source tree stopped installing).
+
+**Verification (firmware commit).** `./run_tests.sh --full` (2026-09-27, after the
+stroke-clamp codegen, FW 24 and the host expectation bump): **5472 passed + 6 serial,
+8 skipped, 1 xfailed in 293 s, RESULT: PASS** (the xfail count fell from 2 to 1 — the
+firmware stroke-bound test is live again). The host's `EXPECTED_BRIDGE_FW_VERSION`
+(`teensy_link/rpc_args.py`) is 24; `tests/firmware/test_bridge_fw_version_xref.py` pins
+it to the firmware source.
 
 **Next sitting** (`tests/hardware/session_kincal_apply.md`): `level` FIRST — the
 persisted inclinometer offset (0.80° about x) was measured against the old IK and

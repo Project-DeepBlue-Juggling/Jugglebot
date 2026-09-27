@@ -14,6 +14,7 @@ from dataclasses import dataclass
 import numpy as np
 from numpy.linalg import norm
 
+from jugglebot import hardware_config as hw
 from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.ik_solver import (
     compute_jacobian,
@@ -33,7 +34,10 @@ ILL_CONDITION_THRESHOLD = 100.0
 # Leg extension soft/hard margins (mm from physical endpoints).
 # Soft limit triggers speed degradation; hard limit triggers trajectory abort.
 LEG_SOFT_MARGIN_MM = 15.0   # soft limit = [margin, stroke - margin]
-LEG_HARD_MARGIN_MM = 5.0    # hard limit = [margin, stroke - margin]
+# hard limit = [margin, stroke - margin]. From hardware_config.yaml
+# jugglebot_geometry.leg_hard_margin_mm (5.0) since 2026-09-27, the same source the
+# can-bridge firmware's STROKE_MIN/MAX_REV backstop is generated from.
+LEG_HARD_MARGIN_MM = float(hw.GEOM_LEG_HARD_MARGIN_MM)
 
 # Condition number thresholds (relative to reference pose).
 # With normalized Jacobian, reference cond is ~3-8 (not the raw ~450).

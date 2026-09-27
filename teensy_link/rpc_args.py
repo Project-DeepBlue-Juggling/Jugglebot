@@ -705,7 +705,9 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 #: bumps 8 -> 9 alongside this and a board on 22 is in TOTAL LINK DARKNESS
 #: against this host tree until the lockstep flash, loud and fail-closed by
 #: design (decode_frame hard-rejects on version).
-EXPECTED_BRIDGE_FW_VERSION = 23
+# 23 -> 24 (2026-09-27): STROKE_MIN/MAX_REV bind to the GENERATED Geometry arrays
+# (kinematic calibration mm_to_rev). No wire change; PROTOCOL_VERSION stays 9.
+EXPECTED_BRIDGE_FW_VERSION = 24
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

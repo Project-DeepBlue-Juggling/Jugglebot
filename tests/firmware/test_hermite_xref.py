@@ -227,28 +227,29 @@ def test_pump_hand_lane_rides_the_xref_knots_without_touching_the_guard():
 
 def _parse_float_array(header_text, name):
     m = re.search(rf"{name}\[\w+\]\s*=\s*\{{([^}}]*)\}}", header_text)
-    assert m, f"{name} not found in canbridge_config.h"
+    assert m, f"{name} not found in the header"
     return [float(x.strip().rstrip("f")) for x in m.group(1).split(",") if x.strip()]
 
 
-@pytest.mark.xfail(
-    strict=True,
-    reason="canbridge_config.h STROKE_MIN/MAX_REV were captured 2026-06-01 "
-           "from motor_guard under the pre-calibration mm_to_rev; the "
-           "2026-09-27 kinematic calibration moved mm_to_rev by -1.3..+0.5% "
-           "so the firmware backstop now sits ~0.7% (about 2 mm at the top "
-           "of stroke) from motor_guard's; re-deriving them is a firmware "
-           "edit + flash the owner must schedule "
-           "(plans/active/kinematic-calibration.md § 6 step 5 follow-up)")
 def test_firmware_stroke_bounds_match_motor_guard():
     """canbridge_config.h STROKE_{MIN,MAX}_REV == live MotorGuard bounds."""
     from jugglebot.motion.geometry import StewartGeometry
     import jugglebot.motion.motor_guard as mg
     guard = mg.MotorGuard(geom=StewartGeometry(), ipc=xref._DummyIPC())
 
-    text = open(_CANBRIDGE_CFG).read()
+    # Since 2026-09-27 (FW 24) the bounds are GENERATED into the canbridge copy of
+    # hardware_config.h (Geometry::STROKE_MIN/MAX_REV, from leg_hard_margin_mm,
+    # leg_stroke_mm and mm_to_rev) and canbridge_config.h only BINDS to them; both
+    # halves are asserted so a return to a hand-typed table would fail here.
+    text = open(_CANBRIDGE_HW).read()
     fw_min = _parse_float_array(text, "STROKE_MIN_REV")
     fw_max = _parse_float_array(text, "STROKE_MAX_REV")
+    cfg_text = open(_CANBRIDGE_CFG).read()
+    for name in ("STROKE_MIN_REV", "STROKE_MAX_REV"):
+        assert re.search(rf"\(&{name}\)\[NUM_LEGS\]\s*=\s*Geometry::{name};", cfg_text), \
+            f"canbridge_config.h must bind {name} to Geometry::{name}, not carry a table"
+        assert not re.search(rf"float {name}\[NUM_LEGS\]\s*=", cfg_text), \
+            f"canbridge_config.h carries a hand-typed {name} table again"
     assert len(fw_min) == 6 and len(fw_max) == 6
     # Header rounds to 6 decimals; allow that tolerance.
     assert np.allclose(fw_min, np.array(guard._stroke_min_rev), atol=1e-6), \

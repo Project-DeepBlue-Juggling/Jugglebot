@@ -601,6 +601,18 @@ def compute_derived(cfg: dict) -> dict:
         activate_revs.append(ext_mm * mm_to_rev[i])
     derived["ACTIVATE_POSITION_REVS"] = activate_revs
 
+    # Per-leg stroke clamp bounds (rev) = [margin, stroke - margin] mm x mm_to_rev[i].
+    # motor_guard computes the same product at runtime (WorkspaceLimits.from_geometry
+    # x geom.mm_to_rev); the can-bridge firmware's STROKE_MIN/MAX_REV backstop reads
+    # THESE from hardware_config.h, so the two cannot drift (tests/firmware/
+    # test_hermite_xref.py pins firmware == guard). Hoisted 2026-09-27 from a table
+    # hand-captured in canbridge_config.h on 2026-06-01.
+    margin = float(geom["leg_hard_margin_mm"])
+    stroke = float(geom["leg_stroke_mm"])
+    derived["LEG_STROKE_MIN_REV"] = [round(margin * m, 9) for m in geom["mm_to_rev"]]
+    derived["LEG_STROKE_MAX_REV"] = [round((stroke - margin) * m, 9)
+                                     for m in geom["mm_to_rev"]]
+
     # Hand rev/m — MEASURED (jugglebot_geometry.hand_mm_per_rev), replacing the
     # retired teensy_trajectory.linear_gain_factor / hand_spool_radius_m fudge
     # pair (R1, 2026-09-11; plans/archived/hand-geometry-correction.md).
@@ -726,6 +738,11 @@ def generate_hw_python(cfg: dict) -> str:
     lines.append(f"GRAVITY_MMPS2 = {derived['GRAVITY_MMPS2']}")
     lines.append(f"INIT_LEG_LENGTHS_WITH_OFFSET_MM = {derived['INIT_LEG_LENGTHS_WITH_OFFSET_MM']}")
     lines.append(f"JB_OP_ACTIVATE_POSITION_REVS = {derived['ACTIVATE_POSITION_REVS']}")
+    lines.append("# Per-leg stroke clamp bounds (rev): [leg_hard_margin_mm, leg_stroke_mm - margin]")
+    lines.append("# x mm_to_rev[i]. The can-bridge STROKE_MIN/MAX_REV backstop reads the same")
+    lines.append("# arrays from hardware_config.h; motor_guard recomputes them at runtime.")
+    lines.append(f"LEG_STROKE_MIN_REV = {derived['LEG_STROKE_MIN_REV']}")
+    lines.append(f"LEG_STROKE_MAX_REV = {derived['LEG_STROKE_MAX_REV']}")
     lines.append("# Measured hand rev/m — jugglebot_geometry.hand_mm_per_rev, inverted.")
     lines.append(f"HAND_REV_PER_M = {derived['HAND_REV_PER_M']!r}")
     lines.append("# jugglebot_homing.hand_abs_pos_rev - hand_settle_band_rev.")
@@ -821,6 +838,17 @@ def generate_hw_cpp(cfg: dict) -> str:
     formatted = ", ".join(f"{v}f" for v in activate_revs)
     lines.append(f"  constexpr float ACTIVATE_POSITION_REVS[{len(activate_revs)}] = "
                  f"{{{formatted}}};")
+    lines.append("}")
+    # SECOND EXCEPTION (2026-09-27): Geometry::STROKE_MIN_REV / STROKE_MAX_REV. The
+    # can-bridge leg-path clamp (leg_interp.cpp) is the firmware backstop of
+    # motor_guard's per-leg [margin, stroke - margin] x mm_to_rev bounds. It was a
+    # hand-captured table in canbridge_config.h until the kinematic calibration
+    # changed mm_to_rev under it; emitted here so the two are one number.
+    lines.append("namespace Geometry {")
+    for name in ("LEG_STROKE_MIN_REV", "LEG_STROKE_MAX_REV"):
+        arr = derived[name]
+        formatted = ", ".join(f"{v}f" for v in arr)
+        lines.append(f"  constexpr float {name[4:]}[{len(arr)}] = {{{formatted}}};")
     lines.append("}")
     lines.append("")
 

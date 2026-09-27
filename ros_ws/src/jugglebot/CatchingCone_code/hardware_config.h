@@ -61,6 +61,7 @@ namespace Geometry {
   constexpr float PLAT_SMALL_ANGLE_DEG = 8.6024446f;
   constexpr float PLAT_X_AXIS_OFFSET_DEG = 154.3012223f;
   constexpr float LEG_STROKE_MM = 280.0f;
+  constexpr float LEG_HARD_MARGIN_MM = 5.0f;
   constexpr float ARM_RADIUS_MM = 70.0f;
   constexpr float ARM_HEIGHT_FROM_PLATFORM_MM = 210.25f;
   constexpr float HAND_STROKE_MM = 344.75f;
@@ -555,4 +556,8 @@ namespace CatchingCone {
 
 namespace JBOp {
   constexpr float ACTIVATE_POSITION_REVS[6] = {2.2140794335568446f, 2.2611745528837117f, 2.212353278101592f, 2.1940921031812683f, 2.1087374470499727f, 2.1206451142088563f};
+}
+namespace Geometry {
+  constexpr float STROKE_MIN_REV[6] = {0.070411415f, 0.070399535f, 0.07079697f, 0.07040887f, 0.07044442f, 0.07068269f};
+  constexpr float STROKE_MAX_REV[6] = {3.872627825f, 3.871974425f, 3.89383335f, 3.87248785f, 3.8744431f, 3.88754795f};
 }
