@@ -182,11 +182,16 @@ regression check, not a new gate.
 **Singles first** (`num_cycles: 1`, repeated) so a bad first hop is one
 throw, not a chain; **then chained**. Watch, every throw:
 
-- **The box**: `x` in **−20…+6 mm**, `y` in **±20 mm**, apex **0.850–0.900
-  m** (0.95 refused — swept, not a typo). A plant more than ~5 % fast in
-  apex will plateau against the 0.90 m ceiling with no headroom to correct
-  down (U7a finding) — **record the measured apex ratio (physical apex /
-  commanded 0.9 m) every throw**; that ratio is the decision input for
+- **The box** (re-swept 2026-09-27 under the kinematic-calibration geometry,
+  gate hash `a905116c2177` — read `skills/check`, it prints the live bands):
+  P1→P2 `x` in **−20…+2 mm**, P2→P1 `x` in **−0.5…+20 mm**, `y` in **±20 mm**,
+  apex **0.85–0.95 m**. The x bound TOWARD the far site is essentially zero,
+  so the lateral learner has no authority in the hop's own direction — **record
+  the landing's x miss relative to the target site every throw** (the
+  `OUTCOME` line's `y=(x, y)`): a consistent overshoot toward the far site is
+  a finding for the sweep grid (2 mm steps stop at ±10 mm, then 20), not
+  something the learner can correct. Also **record the measured apex ratio
+  (physical apex / commanded 0.9 m) every throw**; it is the decision input for
   whether the box needs widening before the next sitting, not this
   sitting's problem to fix.
 - **Re-aims inside ~0.5 s of touch-down**: expect `LIMIT_JERK` refusals on

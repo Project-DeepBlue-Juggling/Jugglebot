@@ -1088,7 +1088,7 @@ the rung's tests passing or a handoff file in the scratchpad.
   hop schedule (one site bit-identical to the retired `compile_self_toss`);
   boxes keyed by pattern + (release, target) site with site-xy stamps, the gate
   hash over six planner files (carried item (d) closed), the 250 mm hop swept
-  (x −20…+6 mm toward P2, y ±20, apex 0.850–0.900; a determinism pair 2026-09-23 /
+  (x −20…+6 mm toward P2, y ±20, apex 0.850–0.900 at the R4 geometry; a determinism pair 2026-09-23 /
   09-24 with every box and all 16 471 row verdicts identical); the held-axis
   receive catch and attitude-bearing REST in the planner (leg velocity 3.1 mm/s
   across 18–40° arrivals against `LIMIT_VEL` at 620–800 for every earlier
@@ -1109,10 +1109,16 @@ the rung's tests passing or a handoff file in the scratchpad.
   columns jerk creep and (c) the columns opening REST move to R5 with the
   two-ball start (owner, D6); (b) closed by the cup-contact contract's
   amplitude-aware banking (2026-09-21). **Carried to the first sitting / R5:**
-  (1) the hop box admits apex 0.85–0.90 m only (the sweep grid has no
+  (1) the hop box: at the R4 geometry it admitted apex 0.85–0.90 m only (no
   flight-fraction ladder for the hop) — a plant more than ~5 % fast in apex
-  plateaus out of band (the sim's +11 % model does); the sitting's measured
-  hop ratio at K = 0.7 decides whether to widen it; (2) at 250 mm a tracker
+  plateaus out of band (the sim's +11 % model does); **re-swept 2026-09-27 under the
+  kinematic-calibration geometry** (`plans/active/kinematic-calibration.md`, gate hash
+  `a905116c2177`): the apex band opened to 0.85–0.95 but the x bound TOWARD the
+  far site collapsed — P1→P2 x [−20, +2] mm, P2→P1 x [−0.5, +20] mm (y ±20 kept) — so
+  the learner has essentially no lateral authority in the hop's own direction; the
+  sitting's measured hop ratio and lateral bias at K = 0.7 decide whether the hop
+  sweep needs a finer grid at the +x edge (2 mm steps stop at ±10, then 20) or a
+  different separation; (2) at 250 mm a tracker
   re-send inside ~0.5 s of touch-down refuses `LIMIT_JERK` at 2.3–3.6× the
   limit (the TAIL, not the seam; within 25 % of the cap at a 0.70 s lead), so
   late re-aims are refused and non-fatal — the lever is an earlier re-send;
