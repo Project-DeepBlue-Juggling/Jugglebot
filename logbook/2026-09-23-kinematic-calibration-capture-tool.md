@@ -72,3 +72,21 @@ That is 185 dwells in 18.8 min. `--check` is the per-session homing check: 8 pos
   (2026-09-23): the ROS layer imported and subscribed, and all six preflight problems
   were reported together. **Not yet rehearsed against a live stack**; that comes before
   the sitting, on the loaded Jetson.
+
+## 2026-09-27: two fixes from the first attempt at the robot
+
+The rehearsal passed, then the capture aborted after the first move each time with
+`no hold 5 s after the planned end (plan_kind=move)`. `trajectory/status` never
+reports a finished move as `hold`. The finished plan stays `move`, and
+`plan_time_remaining_s` falls to 0; that pair is the node's own in-flight test
+(`trajectory_node._active_move_in_flight`). The tool now takes a move as finished when
+a status published after the planned end reports it done (`move_finished`). A test
+fails if the node's in-flight test ever changes. Separately, one attempt's preflight
+judged `/link_status` and `/robot_state` missing after a fixed 1 s listen. It now
+listens until every stream has arrived, up to the timeout. The rehearsal could not
+see either problem: the first needs a move, and the second is discovery timing.
+
+- `pytest tests/sim/test_kincal_capture.py -q` (2026-09-27): **29 passed in 3.03 s**.
+- Gate `./run_tests.sh` (2026-09-27 13:06, log
+  `temp/logs/kincal_arrivalfix_gate_1306.log`): **5408 passed, 8 skipped in
+  377.94 s**; serial tail 3 passed.

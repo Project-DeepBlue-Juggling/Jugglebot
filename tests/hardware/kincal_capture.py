@@ -622,6 +622,20 @@ def write_plan(path: str, steps: Sequence[Step]) -> None:
 # Live preflight (pure verdict over cached state)
 # ═════════════════════════════════════════════════════════════════════════════
 
+def move_finished(plan_kind: Optional[str], remaining_s: Optional[float]) -> bool:
+    """Has the node's active move reached its terminal hold?
+
+    ``trajectory/status`` keeps ``plan_kind == 'move'`` after a move ends (the
+    finished plan IS the hold at its end pose) and reports it through
+    ``plan_time_remaining_s`` reaching 0. That is the node's own in-flight test
+    (``trajectory_node._active_move_in_flight``). Waiting for ``'hold'``
+    aborted the first sitting (2026-09-27) after every move.
+    """
+    if plan_kind is None:
+        return False
+    return plan_kind != 'move' or (remaining_s is not None and remaining_s <= 1e-6)
+
+
 def preflight_problems(*, link_kv: Optional[Dict[str, str]], status_mode: Optional[str],
                        robot_state_age_s: Optional[float],
                        leg_errors: Sequence[int], hand_rev: Optional[float],
@@ -681,6 +695,7 @@ class _Ros:
         self._GoToPose = GoToPose
         self.cli_go = node.create_client(GoToPose, '/trajectory/go_to_pose')
         self.status = None
+        self.status_t = None
         self.link_kv: Dict[str, str] = {}
         self.uptime_ms = ''
         self.rs_t = None
@@ -699,6 +714,7 @@ class _Ros:
 
     def _on_status(self, msg):
         self.status = msg
+        self.status_t = time.monotonic()
 
     def _on_link(self, msg):
         self.link_kv = {v.key: v.value for v in msg.values}
@@ -744,7 +760,15 @@ class _Ros:
 
     def preflight(self) -> List[str]:
         svc = self.cli_go.wait_for_service(timeout_sec=self.timeout_s)
+        # Discovery on a loaded Jetson can take seconds: listen until every
+        # stream has arrived (or the timeout), then judge — never after a
+        # fixed 1 s (2026-09-27: /link_status and /robot_state "missing").
+        end = time.monotonic() + self.timeout_s
         self.spin(1.0)
+        while time.monotonic() < end and not (
+                self.link_kv and self.status is not None and self.rs_t is not None
+                and self.plat_t is not None):
+            self.spin(0.2)
         return preflight_problems(
             link_kv=self.link_kv,
             status_mode=getattr(self.status, 'mode', None),
@@ -792,17 +816,25 @@ class _Ros:
         raise CaptureAbort('unreachable')
 
     def wait_arrival(self, planned_s: float, settle_s: float) -> None:
-        """Sleep through the move with the wire watched, then until the node
-        reports a hold, then the settle."""
+        """Sleep through the move with the wire watched, then until a fresh
+        status reports it finished (:func:`move_finished`), then the settle."""
         end = time.monotonic() + planned_s
         while time.monotonic() < end:
             self.spin(min(0.2, end - time.monotonic()))
             self.wire_check()
+        # A status published AFTER the planned end must report the move done
+        # (5 Hz topic, so allow a few periods of scheduling slack).
         deadline = time.monotonic() + 5.0
-        while getattr(self.status, 'plan_kind', 'hold') != 'hold':
+        while not (self.status_t is not None and self.status_t > end
+                   and move_finished(getattr(self.status, 'plan_kind', None),
+                                     getattr(self.status, 'plan_time_remaining_s',
+                                             None))):
             if time.monotonic() > deadline:
-                raise CaptureAbort('no hold 5 s after the planned end (plan_kind=%s)'
-                                   % getattr(self.status, 'plan_kind', None))
+                raise CaptureAbort(
+                    'move not finished 5 s after its planned end (plan_kind=%s, '
+                    'remaining %s s)' % (getattr(self.status, 'plan_kind', None),
+                                         getattr(self.status, 'plan_time_remaining_s',
+                                                 None)))
             self.spin(0.1)
         self.spin(settle_s)
         self.wire_check()

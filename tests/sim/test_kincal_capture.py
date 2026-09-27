@@ -158,6 +158,28 @@ def test_preflight_passes_a_ready_stack():
         service_ok=True) == []
 
 
+@pytest.mark.parametrize('kind,remaining,done', [
+    ('move', 1.2, False),     # in flight
+    ('move', 0.0, True),      # a finished move stays 'move' (2026-09-27 sitting)
+    ('hold', 0.0, True),
+    ('none', 0.0, True),
+    (None, None, False),      # no status yet
+])
+def test_move_finished_matches_the_node(kind, remaining, done):
+    """``trajectory/status`` never flips a finished move to 'hold'; the node's
+    own in-flight test is kind == 'move' AND time remaining > 0."""
+    assert kc.move_finished(kind, remaining) is done
+
+
+def test_node_in_flight_test_is_what_move_finished_mirrors():
+    src = open(os.path.join(_REPO_ROOT, 'ros_ws', 'src', 'jugglebot', 'jugglebot',
+                            'trajectory_node.py'), encoding='utf-8').read()
+    i = src.index('def _active_move_in_flight')
+    body = src[i:i + 900]
+    assert "plan.kind != 'move'" in body
+    assert '(plan.total_duration - (time.perf_counter() - t0)) > 0.0' in body
+
+
 # ── Dwell reduction ─────────────────────────────────────────────────────────
 
 def test_reduce_dwell_means_and_quaternion_sign():
