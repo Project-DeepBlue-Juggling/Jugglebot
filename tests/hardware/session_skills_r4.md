@@ -145,6 +145,7 @@ actually uses:
 
 | # | Step | Expect |
 |---|---|---|
+| 8b | **`level` FIRST, before any skill dispatch** (2026-09-27: the kinematic-calibration commit changed `jugglebot_geometry` in `hardware_config.yaml`, so the persisted inclinometer offset is STALE under the new geometry — `tests/hardware/session_kincal_apply.md` rung A; also confirm no stale `tilt_calibration.yaml` copy remains under `ros_ws/install/.../share`) | `level` completes and `trajectory/status.gravity_correction_loaded` reads fresh; a skill dispatched before this pre-levels against the OLD offset. |
 | 9 | `ros2 action list \| grep jugglebot/juggle` ; `ros2 service list \| grep -E 'skills/check\|jugglebot/juggle_stop'` | All three present. Missing = the launch sourced the wrong install (R2 sheet row 1's note). |
 | 10 | `ros2 param set /skill_node apex_m 0.9` ; `dwell_s 0.30` ; `plant_id r4-$(date +%Y%m%d)` | A FRESH `plant_id` — same memory contract as R3 (append-only within the sitting). `apex_m` 0.9 already matches the node default; set it anyway so the record is explicit. |
 | 11 | `ros2 service call /trajectory/set_limits jugglebot_interfaces/srv/SetTrajectoryLimits "{leg_vel_limit_mmps: 300.0, leg_acc_limit_mmps2: 5000.0, leg_jerk_limit_mmps3: 150000.0}"` | `applied_*` echoes 300/5000/150000 — mandatory, the launch default is 1000/5000/30000. |
