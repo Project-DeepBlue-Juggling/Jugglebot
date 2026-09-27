@@ -557,8 +557,8 @@ class TestProcessRequests:
         between dispatch and the sweep just as easily as the stream can."""
         from jugglebot import mocap_status as mocap_st
         self._dispatch_calibrate(orch)
-        self._refuse(orch, f'{mocap_st.CODE_BB_MARKERS_NOT_VISIBLE}: 1/5 '
-                           'visible (need >= 3 incl. Marker 3, seen=no) '
+        self._refuse(orch, f'{mocap_st.CODE_BB_MARKERS_NOT_VISIBLE}: 1/7 '
+                           'visible (need >= 3 incl. yaw-anchor Marker 4, seen=no) '
                            '— calibration refused')
         assert orch.ctx.operation_result is True
         assert orch.ctx.bb_calibration_skipped is True

@@ -46,7 +46,10 @@ from jugglebot.protocol_config import (
 )
 import jugglebot.hardware_config as hw
 from jugglebot import mocap_status as mocap_st
-from .bb_calibration import run_calibration, CalibrationResult, MIN_ARC_DEG
+from .bb_calibration import (
+    run_calibration, CalibrationResult, MIN_ARC_DEG,
+    BB_MARKER_COUNT, BB_YAW_ANCHOR_INDEX,
+)
 
 
 #: Cadence of the ``mocap/status`` publisher and of the calibration health
@@ -62,13 +65,10 @@ MOCAP_STATUS_PERIOD_S = 0.2
 #: accumulating markers into a dict nothing would ever finalize.
 CALIBRATION_TIMEOUT_S = 60.0
 
-#: BB carries five fiducials; ``mocap_interface.ball_butler_markers`` is a fixed
-#: (5, 4) array with NaN rows for the ones QTM cannot see this frame.
-BB_MARKER_COUNT = 5
-
-#: Index of "Marker 3" — the one ``bb_calibration.run_calibration`` hard-requires
-#: for the yaw offset. Zero-based, so Marker 3 is index 2.
-BB_MARKER3_INDEX = 2
+# BB_MARKER_COUNT (``mocap_interface.ball_butler_markers`` is a fixed
+# (BB_MARKER_COUNT, 4) array with NaN rows for the ones QTM cannot see this
+# frame) and BB_YAW_ANCHOR_INDEX (the marker ``run_calibration`` hard-requires
+# for the yaw offset) are single-sourced from bb_calibration.
 
 
 class MocapNode(Node):
@@ -166,9 +166,9 @@ class MocapNode(Node):
             self.pub_clock_offset.publish(msg)
 
     def _bb_marker_visibility(self) -> tuple[int, bool]:
-        """(count of BB fiducials QTM currently resolves, Marker-3 visible).
+        """(count of BB fiducials QTM currently resolves, yaw-anchor visible).
 
-        ``MocapInterface.ball_butler_markers`` is a persistent (5, 4) array
+        ``MocapInterface.ball_butler_markers`` is a persistent (7, 4) array
         rewritten every packet — visible markers get positions, the rest get
         NaN rows — and ``get_ball_butler_markers_base_frame()`` hands back a
         copy taken under ``data_lock``. So this is a snapshot read with no I/O.
@@ -183,7 +183,7 @@ class MocapNode(Node):
             return 0, False
         visible = ~np.isnan(markers[:, :3]).any(axis=1)
         count = int(np.count_nonzero(visible))
-        marker3 = bool(visible[BB_MARKER3_INDEX]) if visible.shape[0] > BB_MARKER3_INDEX else False
+        marker3 = bool(visible[BB_YAW_ANCHOR_INDEX]) if visible.shape[0] > BB_YAW_ANCHOR_INDEX else False
         return count, marker3
 
     def _publish_mocap_status(self):

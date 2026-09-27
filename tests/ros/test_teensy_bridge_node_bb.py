@@ -320,14 +320,14 @@ def test_bb_calibrate_refuses_when_too_few_bb_markers_visible():
         res, dispatched = _calibrate_with_no_rpc_allowed(teensy, node)
         assert res.success is False
         assert res.message.startswith('BB_MARKERS_NOT_VISIBLE:')
-        assert '1/5' in res.message
+        assert '1/7' in res.message
         assert dispatched is False
     finally:
         _teardown(teensy, client, node)
 
 
 def test_bb_calibrate_refuses_when_marker3_not_visible():
-    """Four markers visible but not Marker 3 (index 2): run_calibration hard-
+    """Four markers visible but not the yaw anchor (QTM 4, index 3): run_calibration hard-
     requires it for the yaw offset, so the sweep would complete and then fail."""
     teensy, client, node = _node()
     try:

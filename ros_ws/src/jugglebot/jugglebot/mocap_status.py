@@ -26,6 +26,8 @@ from __future__ import annotations
 
 from typing import Any, Iterable, Optional, Tuple
 
+from jugglebot.bb_calibration import BB_MARKER_COUNT, BB_YAW_ANCHOR_INDEX
+
 #: Topic the status is published on — documentation and test reference ONLY.
 #: The three call sites (mocap_node's create_publisher, the bridge's and the
 #: orchestrator's create_subscription) spell the string out as a LITERAL on
@@ -41,6 +43,9 @@ MOCAP_STATUS_TOPIC = 'mocap/status'
 #: rather than a silently-missing key that reads as "not ready" forever.
 KEY_QTM_RECEIVING = 'qtm_receiving'
 KEY_BB_MARKERS_VISIBLE = 'bb_markers_visible'
+#: Historical name: since the 2026-09-27 relabelling this flag reports the
+#: yaw-ANCHOR marker (``bb_calibration.BB_YAW_ANCHOR_INDEX``, QTM 4), not QTM 3.
+#: The key string is kept so recorded bags and consumers stay readable.
 KEY_MARKER3_VISIBLE = 'marker3_visible'
 KEY_ALIGNED = 'aligned'
 KEY_QTM_SYNCED = 'qtm_synced'
@@ -109,7 +114,8 @@ def evaluate(kv: Optional[dict], age_s: float) -> Tuple[bool, str, str]:
     marker3 = kv.get(KEY_MARKER3_VISIBLE, '0') == '1'
     if visible < MIN_BB_MARKERS_VISIBLE or not marker3:
         return (False, CODE_BB_MARKERS_NOT_VISIBLE,
-                f'{visible}/5 visible (need >= {MIN_BB_MARKERS_VISIBLE} '
-                f'incl. Marker 3, seen={"yes" if marker3 else "no"})')
+                f'{visible}/{BB_MARKER_COUNT} visible (need >= '
+                f'{MIN_BB_MARKERS_VISIBLE} incl. yaw-anchor Marker '
+                f'{BB_YAW_ANCHOR_INDEX + 1}, seen={"yes" if marker3 else "no"})')
 
     return (True, '', '')

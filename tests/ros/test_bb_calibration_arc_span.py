@@ -61,6 +61,7 @@ import numpy as np
 import pytest
 
 from jugglebot.bb_calibration import (
+    BB_YAW_ANCHOR_INDEX,
     MIN_ARC_DEG,
     MIN_MARKER_ARC_DEG,
     MIN_MARKER_RADIUS_MM,
@@ -140,7 +141,7 @@ def _yaw_readings(data, span_deg, offset_rad=-0.053, origin=BB_POS,
     never moved would report, so it is not a simplification of the real signal
     but an instance of the failure case.
     """
-    m3_end = np.array(data[2])[-1]
+    m3_end = np.array(data[BB_YAW_ANCHOR_INDEX])[-1]
     angle = math.atan2(m3_end[1] - origin[1], m3_end[0] - origin[0])
     end_deg = math.degrees(angle - offset_rad)
     sweep = list(np.linspace(end_deg - span_deg, end_deg, n_sweep))
@@ -494,7 +495,7 @@ def test_yaw_offset_uncertainty_survives_the_atan2_branch_cut():
     high'. The deviations are wrapped now.
     """
     data = _sweep_dataset(180.0, noise_mm=0.1)
-    m3_end = np.array(data[2])[-1]
+    m3_end = np.array(data[BB_YAW_ANCHOR_INDEX])[-1]
     on_cut = abs(abs(math.atan2(m3_end[1] - BB_POS[1],
                                 m3_end[0] - BB_POS[0])) - math.pi)
     assert on_cut < 0.05, 'precondition: the hold pose sits on the branch cut'

@@ -1,8 +1,8 @@
 """
 Ball Butler calibration: determine BB global position and yaw offset from mocap markers.
 
-During BB's CALIBRATING state, 5 mocap markers trace circular arcs as the yaw motor
-sweeps.  After the sweep completes, this module:
+During BB's CALIBRATING state, the 7 BB mocap markers (:data:`BB_MARKER_COUNT`)
+trace circular arcs as the yaw motor sweeps.  After the sweep completes, this module:
 
 0. Refuses outright if the sweep never happened (``MIN_ARC_DEG``) — point count
    alone cannot tell a truncated sweep from a completed one. The primary test is
@@ -11,9 +11,11 @@ sweeps.  After the sweep completes, this module:
    :data:`MIN_ARC_DEG` and :data:`MIN_MARKER_ARC_DEG`.
 1. Fits a 3D circle to each marker trajectory (plane fit via SVD + algebraic circle fit).
 2. Extracts the common rotation axis (weighted average of circle normals/centers).
-3. Intersects the axis with the horizontal plane at the average marker Z height
-   (offset by the pitch-axis vertical offset) to get the BB global position.
-4. Compares Marker 3's global angle with the reported yaw to compute yaw_offset_rad.
+3. Intersects the axis with the horizontal plane at the average Z height of the
+   CO-PLANAR markers only (:data:`BB_PLANE_MARKER_INDICES`, QTM 3–7), offset by
+   the pitch-axis vertical offset, to get the BB global position.
+4. Compares the yaw-anchor marker's global angle (:data:`BB_YAW_ANCHOR_INDEX`,
+   QTM 4) with the reported yaw to compute yaw_offset_rad.
 
 All functions are pure Python + numpy — no ROS2 dependency.
 
@@ -28,6 +30,29 @@ import numpy as np
 from dataclasses import dataclass, field
 from typing import Optional
 
+
+#: Number of BB fiducials, labelled ``Ball Butler - 1`` .. ``Ball Butler - 7`` in
+#: QTM. Every array/dict that carries BB markers is indexed ZERO-based, so QTM
+#: label ``N`` is index ``N - 1`` throughout. Was 5 until 2026-09-27, when two
+#: markers were added (QTM 1 and 2) to keep the constellation tracked through
+#: the calibration sweep; the original five were relabelled 3–7.
+BB_MARKER_COUNT = 7
+
+#: Zero-based indices of the markers that lie on ONE plane (QTM 3–7). Only these
+#: set the Z height of BB's x/y plane. QTM 1 and 2 sit at a different height, so
+#: folding them into the Z average would shift the plane — and with it the
+#: axis/plane intersection that IS the reported BB position (by the axis tilt ×
+#: the Z error laterally, and the full Z error vertically). They still feed the
+#: rotation-axis fit, where a marker's height does not matter.
+BB_PLANE_MARKER_INDICES = (2, 3, 4, 5, 6)
+
+#: Zero-based index of the marker whose global angle anchors the yaw offset —
+#: QTM ``Ball Butler - 4`` since the 2026-09-27 relabelling (owner). It must be
+#: the same PHYSICAL marker from one calibration to the next that the yaw-zero
+#: convention was set against: anchoring on a different marker shifts
+#: yaw_offset_rad by the angle between the two, and every throw is misaimed by
+#: that much with no error raised.
+BB_YAW_ANCHOR_INDEX = 3
 
 #: Minimum yaw arc (degrees) the sweep must actually cover before a fit is
 #: allowed to produce a BB pose.
@@ -434,7 +459,7 @@ def find_axis_plane_intersection(
 # ---------------------------------------------------------------------------
 
 def calculate_yaw_offset(
-    marker3_positions: np.ndarray,
+    anchor_positions: np.ndarray,
     yaw_readings_deg: list[float],
     axis_point: np.ndarray,
 ) -> tuple[float, float]:
@@ -445,16 +470,16 @@ def calculate_yaw_offset(
     Returns (yaw_offset_rad, combined_std_deg).
     Raises ValueError on insufficient data.
     """
-    if len(marker3_positions) < 50:
-        raise ValueError(f'Insufficient Marker 3 data: {len(marker3_positions)} points')
+    if len(anchor_positions) < 50:
+        raise ValueError(f'Insufficient yaw-anchor marker data: {len(anchor_positions)} points')
     if len(yaw_readings_deg) < MIN_YAW_READINGS:
         raise ValueError(f'Insufficient yaw readings: {len(yaw_readings_deg)}')
 
     # Last ~1 s of marker data (200 Hz → 200 pts)
-    recent_m3 = marker3_positions[-min(200, len(marker3_positions)):]
+    recent_m3 = anchor_positions[-min(200, len(anchor_positions)):]
     recent_yaw = yaw_readings_deg[-min(10, len(yaw_readings_deg)):]
 
-    # Marker 3 angle in global frame (circular mean)
+    # Yaw-anchor marker angle in global frame (circular mean)
     angles = [math.atan2(p[1] - axis_point[1], p[0] - axis_point[0]) for p in recent_m3]
     sin_sum = sum(math.sin(a) for a in angles)
     cos_sum = sum(math.cos(a) for a in angles)
@@ -517,6 +542,8 @@ def run_calibration(
     min_arc_deg: float = MIN_ARC_DEG,
     min_radius_mm: float = MIN_MARKER_RADIUS_MM,
     min_marker_arc_deg: float = MIN_MARKER_ARC_DEG,
+    plane_marker_indices: tuple = BB_PLANE_MARKER_INDICES,
+    yaw_anchor_index: int = BB_YAW_ANCHOR_INDEX,
 ) -> CalibrationResult:
     """Execute the full calibration pipeline.
 
@@ -540,6 +567,11 @@ def run_calibration(
                            :func:`find_rotation_axis`. Separate from
                            ``min_arc_deg`` and deliberately lower: a marker
                            occluded during a legal sweep fits a short arc.
+        plane_marker_indices: zero-based indices whose Z sets BB's x/y plane
+                           (:data:`BB_PLANE_MARKER_INDICES`). All markers,
+                           these or not, feed the axis fit.
+        yaw_anchor_index:  zero-based index of the yaw-offset anchor marker
+                           (:data:`BB_YAW_ANCHOR_INDEX`).
 
     Returns:
         CalibrationResult on success.
@@ -547,20 +579,30 @@ def run_calibration(
     Raises:
         ValueError on any calibration failure.
     """
-    # Convert lists → numpy arrays, collect Z values
+    # Convert lists → numpy arrays. Every marker feeds the axis fit; only the
+    # co-planar ones feed the Z plane (see BB_PLANE_MARKER_INDICES).
     marker_trajectories: dict[int, np.ndarray] = {}
-    all_z: list[float] = []
+    plane_z: list[float] = []
 
     for idx, positions in calibration_data.items():
         if positions:
             arr = np.array(positions)
             marker_trajectories[idx] = arr
-            all_z.extend(arr[:, 2].tolist())
+            if idx in plane_marker_indices:
+                plane_z.extend(arr[:, 2].tolist())
 
-    if not all_z:
+    if not marker_trajectories:
         raise ValueError('No valid marker positions recorded')
+    if not plane_z:
+        # Fail CLOSED rather than fall back to the off-plane markers: their
+        # height is not the plane's, so the fallback would hand back a
+        # plausible, wrong BB position.
+        raise ValueError(
+            'No co-planar marker positions recorded (QTM '
+            + ', '.join(str(i + 1) for i in sorted(plane_marker_indices))
+            + ') — cannot place the BB x/y plane')
 
-    avg_z = float(np.mean(all_z)) + pitch_z_offset_mm
+    avg_z = float(np.mean(plane_z)) + pitch_z_offset_mm
 
     # ── PRIMARY sweep-completeness gate: BB's own yaw series ────────────────
     # Before any geometry. The marker-derived span is measured around a fitted
@@ -594,13 +636,15 @@ def run_calibration(
 
     tilt_deg = float(np.degrees(np.arccos(min(abs(axis_dir[2]), 1.0))))
 
-    # Yaw offset (uses Marker 3 = index 2)
-    marker3_idx = 2
-    if marker3_idx not in marker_trajectories or len(marker_trajectories[marker3_idx]) < min_points:
-        raise ValueError('Insufficient Marker 3 data for yaw offset calculation')
+    # Yaw offset, anchored on one physical marker (BB_YAW_ANCHOR_INDEX)
+    if (yaw_anchor_index not in marker_trajectories
+            or len(marker_trajectories[yaw_anchor_index]) < min_points):
+        raise ValueError(
+            f'Insufficient yaw-anchor Marker {yaw_anchor_index + 1} data for '
+            'yaw offset calculation')
 
     yaw_offset_rad, yaw_std_deg = calculate_yaw_offset(
-        marker_trajectories[marker3_idx],
+        marker_trajectories[yaw_anchor_index],
         yaw_readings_deg,
         intersection,
     )

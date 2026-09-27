@@ -9,6 +9,7 @@ from typing import Optional, Dict
 import xml.etree.ElementTree as ET
 from geometry_msgs.msg import PoseStamped # To convert the rigid body pose(s) to a ROS2 message
 import jugglebot.hardware_config as hw
+from jugglebot.bb_calibration import BB_MARKER_COUNT
 
 class MocapInterface:
     """
@@ -36,7 +37,7 @@ class MocapInterface:
         self.ready_to_publish = False # eg. if we haven't received geometry data yet
 
         # Initialize data to be stored
-        self.ball_butler_markers = np.full((5, 4), np.nan)    # (x, y, z, residual)
+        self.ball_butler_markers = np.full((BB_MARKER_COUNT, 4), np.nan)    # (x, y, z, residual)
         self.all_markers = np.empty((0, 4))  # (x, y, z, residual)
         self.labelled_markers: list = []  # list of (label, x, y, z, residual)
         self.body_poses: Dict[str, PoseStamped] = {} # Pose for every rigid body discovered in QTM
@@ -198,7 +199,7 @@ class MocapInterface:
         with self.data_lock:
             self.all_markers = np.empty((0, 4))
             self.labelled_markers = []
-            self.ball_butler_markers = np.full((5, 4), np.nan)
+            self.ball_butler_markers = np.full((BB_MARKER_COUNT, 4), np.nan)
             self.body_poses = {}
         self.is_aligned = False
         self._params_need_refresh = False
@@ -355,7 +356,7 @@ class MocapInterface:
 
                 # Always store Ball Butler marker positions (negligible cost,
                 # needed for calibration and useful for always-on visualisation)
-                for i in range(1, 6):
+                for i in range(1, BB_MARKER_COUNT + 1):
                     marker_name = f"Ball Butler - {i}"
                     if marker_name in self.marker_dict:
                         marker_idx = self.marker_dict[marker_name]

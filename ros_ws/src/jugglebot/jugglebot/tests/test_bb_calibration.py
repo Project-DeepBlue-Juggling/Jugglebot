@@ -1,7 +1,7 @@
 """Phase 4 verification tests for Ball Butler calibration pipeline.
 
 Tests:
-  1. Perfect circle recovery — 5 markers on exact circles, axis + position recovered
+  1. Perfect circle recovery — 7 markers on exact circles, axis + position recovered
   2. Noisy data — Gaussian noise on marker positions, results within tolerance
   3. Yaw offset recovery — synthetic yaw readings, offset recovered correctly
   4. Insufficient markers — fewer than min_points raises ValueError
@@ -54,6 +54,9 @@ import sys
 import numpy as np
 
 from jugglebot.bb_calibration import (
+    BB_MARKER_COUNT,
+    BB_PLANE_MARKER_INDICES,
+    BB_YAW_ANCHOR_INDEX,
     MIN_ARC_DEG,
     MIN_MARKER_RADIUS_MM,
     angular_span_deg,
@@ -115,7 +118,7 @@ def generate_calibration_dataset(
     noise_std: float = 0.0,
     rng: np.random.Generator | None = None,
 ) -> dict[int, list[np.ndarray]]:
-    """Generate a full 5-marker calibration dataset.
+    """Generate a full calibration dataset, one marker per entry of *marker_radii*.
 
     Each marker sits on a circle centered on the rotation axis at a different
     radius and Z offset from the BB position.
@@ -131,7 +134,7 @@ def generate_calibration_dataset(
     axis = axis_direction / np.linalg.norm(axis_direction)
     data: dict[int, list[np.ndarray]] = {}
 
-    for i in range(5):
+    for i in range(len(marker_radii)):
         if i < len(marker_radii):
             r = marker_radii[i]
             z_off = marker_z_offsets[i] if i < len(marker_z_offsets) else 0.0
@@ -199,8 +202,12 @@ def run_tests():
     TRUE_AXIS = np.array([0.0, 0.0, 1.0])  # vertical
     TRUE_YAW_OFFSET = -0.053  # rad
     PITCH_Z_OFFSET = 17.5  # mm
-    RADII = [80.0, 95.0, 110.0, 90.0, 75.0]
-    Z_OFFSETS = [-30.0, -15.0, 0.0, 15.0, 30.0]
+    # The real constellation (2026-09-27): QTM 1-2 (indices 0-1) sit OFF the
+    # plane that QTM 3-7 (indices 2-6) share, so they carry distinct Z offsets
+    # and the co-planar five carry one common offset.
+    RADII = [100.0, 105.0, 80.0, 95.0, 110.0, 90.0, 75.0]
+    Z_OFFSETS = [60.0, 45.0, 0.0, 0.0, 0.0, 0.0, 0.0]
+    assert len(RADII) == BB_MARKER_COUNT
 
     rng = np.random.default_rng(12345)
 
@@ -214,10 +221,10 @@ def run_tests():
 
     # The calibration pipeline uses average marker Z + pitch_z_offset as
     # the intersection plane.  We need yaw readings that are consistent.
-    # Marker 3 (index 2) has angle from axis = atan2(dy, dx) relative to
+    # The yaw-anchor marker (BB_YAW_ANCHOR_INDEX) has angle from axis = atan2(dy, dx) relative to
     # the intersection point.  The yaw readings should be such that
     # offset = marker_angle - yaw_reading.
-    marker3_pts = np.array(data[2])
+    marker3_pts = np.array(data[BB_YAW_ANCHOR_INDEX])
     # Compute what angle marker 3 has at the end of the sweep
     m3_end = marker3_pts[-1]
     marker3_angle = math.atan2(
@@ -276,7 +283,7 @@ def run_tests():
             TRUE_POS, TRUE_AXIS, RADII, Z_OFFSETS,
             n_sweep=200, noise_std=0.0, rng=np.random.default_rng(42),
         )
-        m3_pts = np.array(test_data[2])
+        m3_pts = np.array(test_data[BB_YAW_ANCHOR_INDEX])
         m3_last = m3_pts[-1]
         m3_angle = math.atan2(m3_last[1] - TRUE_POS[1], m3_last[0] - TRUE_POS[0])
         test_yaw_deg = math.degrees(m3_angle - test_offset)
@@ -290,7 +297,7 @@ def run_tests():
     # ==================================================================
     print('\nTest 4: Insufficient markers — all below min_points')
     # ==================================================================
-    sparse_data = {i: [np.array([0.0, 0.0, 0.0])] * 10 for i in range(5)}
+    sparse_data = {i: [np.array([0.0, 0.0, 0.0])] * 10 for i in range(BB_MARKER_COUNT)}
     try:
         run_calibration(sparse_data, sweep_yaw_readings(0.0),
                         pitch_z_offset_mm=PITCH_Z_OFFSET, min_points=50)
@@ -306,8 +313,8 @@ def run_tests():
         TRUE_POS, TRUE_AXIS, RADII, Z_OFFSETS,
         n_sweep=200, noise_std=0.0, rng=np.random.default_rng(42),
     )
-    # Zero out 4 of 5 markers
-    for i in [0, 1, 3, 4]:
+    # Zero out all markers but one
+    for i in [0, 1, 3, 4, 5, 6]:
         one_marker_data[i] = []
     try:
         run_calibration(one_marker_data, sweep_yaw_readings(0.0),
@@ -319,7 +326,7 @@ def run_tests():
     # ==================================================================
     print('\nTest 6: Empty data')
     # ==================================================================
-    empty_data: dict[int, list[np.ndarray]] = {i: [] for i in range(5)}
+    empty_data: dict[int, list[np.ndarray]] = {i: [] for i in range(BB_MARKER_COUNT)}
     try:
         run_calibration(empty_data, sweep_yaw_readings(0.0),
                         pitch_z_offset_mm=PITCH_Z_OFFSET)
@@ -364,9 +371,12 @@ def run_tests():
     )
 
     # Construct yaw readings for tilted case
-    m3_tilted = np.array(tilted_data[2])
+    m3_tilted = np.array(tilted_data[BB_YAW_ANCHOR_INDEX])
     # Use the intersection point for angle calculation (same as calibration does)
-    avg_z = np.mean([p[2] for pts in tilted_data.values() for p in pts]) + PITCH_Z_OFFSET
+    # Only the CO-PLANAR markers set the plane — the off-plane QTM 1-2 would
+    # shift it by their height and, through the 5 deg tilt, move the XY.
+    avg_z = np.mean([p[2] for i in BB_PLANE_MARKER_INDICES
+                     for p in tilted_data[i]]) + PITCH_Z_OFFSET
     intersection = find_axis_plane_intersection(tilted_pos, tilted_axis, avg_z)
     m3_last_tilted = m3_tilted[-1]
     m3_angle_tilted = math.atan2(
@@ -391,7 +401,7 @@ def run_tests():
           f'error = {tilted_xy_err:.4f} mm')
 
     # ==================================================================
-    print('\nTest 9: Partial marker visibility (2 of 5 markers missing)')
+    print('\nTest 9: Partial marker visibility (2 of 7 markers missing)')
     # ==================================================================
     partial_data = generate_calibration_dataset(
         TRUE_POS, TRUE_AXIS, RADII, Z_OFFSETS,
@@ -402,7 +412,7 @@ def run_tests():
     partial_data[4] = []
 
     # Reconstruct yaw readings for partial data
-    m3_partial = np.array(partial_data[2])
+    m3_partial = np.array(partial_data[BB_YAW_ANCHOR_INDEX])
     m3_last_p = m3_partial[-1]
     m3_angle_p = math.atan2(m3_last_p[1] - TRUE_POS[1], m3_last_p[0] - TRUE_POS[0])
     partial_yaw_deg = math.degrees(m3_angle_p - TRUE_YAW_OFFSET)
@@ -425,7 +435,7 @@ def run_tests():
             TRUE_POS, TRUE_AXIS, RADII, Z_OFFSETS,
             n_sweep=200, noise_std=0.0, rng=np.random.default_rng(42),
         )
-        m3_wrap = np.array(wrap_data[2])
+        m3_wrap = np.array(wrap_data[BB_YAW_ANCHOR_INDEX])
         m3_last_w = m3_wrap[-1]
         m3_angle_w = math.atan2(m3_last_w[1] - TRUE_POS[1], m3_last_w[0] - TRUE_POS[0])
         wrap_yaw_deg = math.degrees(m3_angle_w - boundary_offset)
@@ -525,8 +535,8 @@ def run_tests():
     # noiseless fixtures were the reason the defect shipped.
 
     def _m3_end_yaw(dataset):
-        """The yaw reading consistent with Marker 3's final global angle."""
-        m3 = np.array(dataset[2])[-1]
+        """The yaw reading consistent with the yaw anchor's final global angle."""
+        m3 = np.array(dataset[BB_YAW_ANCHOR_INDEX])[-1]
         return math.degrees(
             math.atan2(m3[1] - TRUE_POS[1], m3[0] - TRUE_POS[0]) - TRUE_YAW_OFFSET)
 
@@ -716,7 +726,7 @@ def run_tests():
         n_sweep=200, sweep_range=(0.0, math.pi / 2), noise_std=0.1,
         rng=np.random.default_rng(42),
     )
-    m3_cut = np.array(cut_data[2])[-1]
+    m3_cut = np.array(cut_data[BB_YAW_ANCHOR_INDEX])[-1]
     on_cut = abs(abs(math.atan2(m3_cut[1] - TRUE_POS[1],
                                 m3_cut[0] - TRUE_POS[0])) - math.pi)
     check('Precondition: the hold pose sits on the ±π branch cut',

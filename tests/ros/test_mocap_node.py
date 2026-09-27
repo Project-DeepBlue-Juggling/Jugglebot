@@ -89,8 +89,8 @@ def _last_calibration(node):
 
 
 def _markers_with_visible(indices):
-    """(5, 4) BB marker array with only *indices* resolved (rest NaN rows)."""
-    arr = np.full((5, 4), np.nan)
+    """(7, 4) BB marker array with only *indices* resolved (rest NaN rows)."""
+    arr = np.full((7, 4), np.nan)
     for i in indices:
         arr[i] = [100.0 + i, 200.0, 300.0, 0.5]
     return arr
@@ -115,7 +115,7 @@ def test_status_healthy_snapshot_is_ready_by_the_shared_predicate():
     publishes when all is well must be what mocap_status.evaluate() calls
     ready. A field renamed on one side and not the other would pass a
     key-by-key test and still leave every consumer refusing forever."""
-    node = _make_node(_fake_iface(markers=_markers_with_visible(range(5))))
+    node = _make_node(_fake_iface(markers=_markers_with_visible(range(7))))
     node._publish_mocap_status()
     kv = _kv(node.pub_mocap_status.published[0])
     ready, code, detail = ms.evaluate(kv, age_s=0.0)
@@ -138,24 +138,26 @@ def test_status_level_ok_when_receiving(node):
 
 
 def test_status_counts_only_non_nan_markers():
-    node = _make_node(_fake_iface(markers=_markers_with_visible([0, 2, 4])))
+    node = _make_node(_fake_iface(markers=_markers_with_visible([0, 3, 6])))
     node._publish_mocap_status()
     kv = _kv(node.pub_mocap_status.published[0])
     assert kv[ms.KEY_BB_MARKERS_VISIBLE] == '3'
-    assert kv[ms.KEY_MARKER3_VISIBLE] == '1'   # index 2 IS Marker 3
+    assert kv[ms.KEY_MARKER3_VISIBLE] == '1'   # index 3 IS the yaw anchor (QTM 4)
 
 
-def test_status_marker3_false_when_index_2_is_nan():
-    node = _make_node(_fake_iface(markers=_markers_with_visible([0, 1, 3, 4])))
+def test_status_anchor_false_when_index_3_is_nan():
+    """The flag tracks the yaw ANCHOR (QTM 4, index 3), not the old
+    Marker 3: index 2 visible and index 3 missing must read '0'."""
+    node = _make_node(_fake_iface(markers=_markers_with_visible([0, 1, 2, 4, 5, 6])))
     node._publish_mocap_status()
     kv = _kv(node.pub_mocap_status.published[0])
-    assert kv[ms.KEY_BB_MARKERS_VISIBLE] == '4'
+    assert kv[ms.KEY_BB_MARKERS_VISIBLE] == '6'
     assert kv[ms.KEY_MARKER3_VISIBLE] == '0'
 
 
 def test_status_handles_empty_marker_array():
     """MocapInterface returns ``np.empty((0, 4))`` when it has nothing; the
-    count must be 0 and Marker 3 absent, not an IndexError."""
+    count must be 0 and the yaw anchor absent, not an IndexError."""
     node = _make_node(_fake_iface(markers=np.empty((0, 4))))
     node._publish_mocap_status()
     kv = _kv(node.pub_mocap_status.published[0])

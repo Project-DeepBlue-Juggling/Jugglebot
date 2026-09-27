@@ -56,7 +56,7 @@ def test_healthy_status_is_ready():
 
 
 def test_exactly_the_minimum_markers_is_ready():
-    """The floor is inclusive: 3 visible incl. Marker 3 passes, 2 does not."""
+    """The floor is inclusive: 3 visible incl. the yaw anchor passes, 2 does not."""
     ready, _, _ = ms.evaluate(_kv(visible=str(ms.MIN_BB_MARKERS_VISIBLE)), age_s=0.1)
     assert ready is True
 
@@ -111,11 +111,11 @@ def test_too_few_markers_is_not_visible():
     ready, code, detail = ms.evaluate(_kv(visible='2'), age_s=0.1)
     assert ready is False
     assert code == ms.CODE_BB_MARKERS_NOT_VISIBLE
-    assert '2/5' in detail
+    assert '2/7' in detail
 
 
 def test_marker3_missing_is_not_visible_even_with_enough_markers():
-    """run_calibration hard-requires Marker 3 (index 2) for the yaw offset, so
+    """run_calibration hard-requires the yaw anchor (QTM 4, index 3) for the yaw offset, so
     4 visible markers WITHOUT it is still a refusal — a sweep would run to
     completion and then fail in the solver."""
     ready, code, detail = ms.evaluate(_kv(visible='4', marker3='0'), age_s=0.1)
