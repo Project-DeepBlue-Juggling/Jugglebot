@@ -106,7 +106,7 @@ Spread is measured on the mocap position at arrival.
 | Verdict | Condition | Consequence |
 |---|---|---|
 | STATIC | overall spread ≤ 1 mm | The parametric fit is the whole remedy |
-| DIRECTIONAL | spread > 1 mm, within-direction ≤ 1 mm | Backlash: handled in path planning (for example, a final approach from a fixed direction) |
+| DIRECTIONAL | spread > 1 mm, within-direction ≤ 1 mm | Backlash: handled in path planning (for example, a final approach from a fixed direction). **Measured 2026-09-27: 3 of 10 groups, 1.2–1.5 mm. Owner: record it, do not act until flying shows that it matters.** |
 | RANDOM | within-direction spread > 1 mm | A slow mocap-trim outer loop becomes justified; the owner's controller design is reopened |
 
 ## 4. Homing — two-part calibration (owner, Q17 + Q20)
@@ -178,7 +178,8 @@ exact, and the capture design has to allow for two weak directions:
    166 rows, 19 poses skipped by the stillness gate.
 4. **Fit** plus the report: the § 3 and § 4 verdicts, and § 8's criteria on the hold-out
    set. The tool proposes a geometry YAML. **It never writes `hardware_config.yaml`.**
-   **Run 2026-09-27; owner verdict pending.**
+   **Run 2026-09-27; owner ACCEPTED it for apply despite the narrow § 8 misses** (§ 8
+   note).
    - § 3 DIRECTIONAL: 3 of 10 groups at 1.2–1.5 mm, within-direction ≤ 0.8 mm.
    - § 4 PASS: 0.73 mm.
    - § 8 hold-out 1.08 mm RMS (**FAIL**, ≤ 1) and 1.77 mm max (pass), against
@@ -188,12 +189,48 @@ exact, and the capture design has to allow for two weak directions:
 
    The numbers are in the logbook
    (`2026-09-23-kinematic-calibration-design-and-fit-tool.md`, § 2026-09-27).
-5. **Apply** by a deliberate commit: geometry → `python config/generate_config.py` → box
-   re-sweep (§ 7) → `colcon build`. No firmware flash: the firmware headers carry the
-   geometry constants but no firmware code reads them (checked 2026-09-23).
-   `init_leg_lengths_mm` stops being "derived at STOW" and becomes the fitted `L0_i`, and
-   `initial_height_mm` becomes the FK of all-zero revolutions. That comment block
-   changes with it.
+5. **Apply** by a deliberate commit. No firmware flash: the firmware headers carry the
+   geometry constants but no firmware code reads them (checked 2026-09-23). **Owner
+   approved this procedure on 2026-09-27, to run in a fresh session:**
+   1. Edit `config/hardware_config.yaml` `jugglebot_geometry` from
+      `temp/reports/kincal/kincal_sweep_20260927_143217/proposed_geometry.yaml`:
+      - `base_nodes_mm`: x/y fitted, z held at 0
+      - `init_plat_nodes_mm`: the fitted z values are ±2.9 mm; grep for any consumer
+        that assumes platform z = 0
+      - `init_leg_lengths_mm`: the fitted `L0_i`
+      - `mm_to_rev`: fitted
+      - `initial_height_mm`: 574.3 → **578.2**, the FK z of all-zero revolutions. That
+        STOW pose is also (−3.6, −7.7) mm off-axis and tilted 0.88° about x.
+
+      Rewrite the "DERIVED from geometry … at STOW" comment block. `reg.z` (−0.28°,
+      the mocap Platform body's yaw against the joint pattern) matters only for mocap
+      comparisons: record it in the comment and do not apply it.
+   2. **Retire `config/tilt_calibration.yaml`** (`git rm`) in the same commit. It was
+      captured against the old geometry, so keeping it would correct that part twice.
+      It applies whenever ANY levelling offset is loaded, including the persisted one
+      pushed at boot (`trajectory_node._active_tilt_map`). An absent file is the
+      documented C-LEVEL-1 fallback.
+   3. `python config/generate_config.py`. Grep every consumer of the geometry and of
+      574.3: the sim hard-codes it in `sim/hand/planner.py`, `sim/input/scripted.py`
+      and `sim/input/toss_loop.py`; `tests/sim/test_model.py:204` asserts it;
+      `ros_ws/gui/js/geometry-config.js` holds it. Then run `./run_tests.sh --full`
+      (the change reaches `sim/`).
+   4. Box re-sweep (§ 7): **message the R4 session (`jugglebot-skills-24`) first.**
+      Ask whether it folds this into its own re-sweep or has this session run
+      `python tools/admissible_sweep.py --site-pairs all --single-apex 0.5 0.6 0.7 0.8
+      0.9` twice (~34 min each) and diff the two runs.
+   5. `colcon build`, then commit and push. Then write a runsheet for the next sitting:
+      home → activate → **`level` FIRST**, before anything else (see below) → the
+      tilt-map recapture (step 6) → the flying acceptance check (step 7).
+
+   **Why `level` must come first.** The inclinometer offset is measured with the
+   platform commanded level, so it has been absorbing the old IK's tilt error: 0.80°
+   about x, persisted on the Platform Teensy, against a fitted STOW tilt of 0.88°. It
+   is re-pushed at every boot and re-measured only by `level`
+   (`orchestrator_node.py:453–462`, `:684–691`). Under the new geometry the stale
+   offset tilts every commanded pose by ~0.8° until someone re-levels. The persisted
+   offset records nothing about which geometry it was measured under. Binding it to a
+   geometry fingerprint would need a Platform Teensy change: noted, not scheduled.
 6. **Recapture the tilt map.** The current map was measured against the current geometry,
    so part of it is the same error the fit removes; keeping it would correct that part
    twice. It should come back much smaller.
@@ -219,6 +256,24 @@ exact, and the capture design has to allow for two weak directions:
 - § 3 and § 4 verdicts recorded.
 - On the next flying sitting, the session-start frame check reads **≤ 1–2 mm at every z**.
   Then the landing subtraction is retired.
+
+**2026-09-27 (owner): the first sweep is accepted despite missing three criteria
+narrowly.**
+
+| Criterion | Measured | Limit |
+|---|---|---|
+| Hold-out position RMS | 1.08 mm | ≤ 1 mm |
+| Hold-out attitude | 0.20° | ≤ 0.1° |
+| Nodes from CAD | 6.4 mm | ≤ 5 mm |
+
+- **RMS and attitude sit at or below the machine's repeatability.** Direction-dependent
+  spread reaches 1.5 mm, and mocap attitude repeats only to 0.13°. No static geometry can
+  meet those two limits.
+- **The node miss is a uniform shift, not scatter.** Every node sits about 1 % radially
+  inward. The owner confirms this is plausible: the ball-joint centres are inboard of the
+  CAD attachment points on FDM-printed parts. The owner also confirms the ~0.75 %-low leg
+  scales: the spools are FDM-printed, and the string diameter was only roughly measured.
+- **The flying frame check above remains the acceptance test.**
 
 ## 9. Decision record (grilling session, 2026-09-23)
 
