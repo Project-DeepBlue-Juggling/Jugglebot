@@ -447,3 +447,36 @@
 
 .chart-delta-pill-value.positive { color: var(--accent-green); }
 .chart-delta-pill-value.negative { color: var(--accent-red); }
+
+/* ---- Event-marker hover tooltip (telemetry-charts.js) ----
+   Fixed-position at the cursor; one element for the whole page.  No pointer
+   events, so it never steals the hover from the chart underneath. */
+#chart-event-tooltip {
+    position: fixed;
+    z-index: 1000;
+    display: none;
+    pointer-events: none;
+    max-width: 360px;
+    padding: 4px 8px;
+    background: var(--bg-overlay);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.35);
+}
+
+.chart-event-tooltip-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    line-height: 1.5;
+}
+
+.chart-event-tooltip-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}

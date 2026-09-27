@@ -25,7 +25,7 @@ import { setStewartHighlight } from './stewart-model.js';
 import { setBallButlerHighlight } from './ball-butler-model.js';
 import {
     getEventsInRange, subscribeEvents, subscribeHighlight,
-    getHighlightedEventId, EVENT_COLORS,
+    getHighlightedEventId, setChartHoveredEvents, EVENT_COLORS,
 } from './event-store.js';
 import {
     MM_TO_REV, HAND_MM_PER_REV, BB_HAND_MM_PER_REV,
@@ -737,6 +737,27 @@ export function clearChartGridHidden() {
     setChartGridHidden(false);
 }
 
+// ---- Hide/show event-log markers on the charts ----
+
+/** localStorage key for the event-marker toggle.  Hides only the chart
+ *  marker lines (and so their hover tooltips); the Event Log panel and the
+ *  event store keep running, so re-showing restores every marker. */
+const EVENT_MARKERS_HIDDEN_KEY = 'jugglebot-chart-event-markers-hidden';
+
+let eventMarkersHidden = false;
+
+function setEventMarkersHidden(hidden) {
+    eventMarkersHidden = hidden;
+    const btn = document.getElementById('chart-event-markers-btn');
+    if (btn) {
+        btn.textContent = hidden ? 'Show event logs' : 'Hide event logs';
+        btn.classList.toggle('active', hidden);
+    }
+    try { localStorage.setItem(EVENT_MARKERS_HIDDEN_KEY, hidden ? 'true' : 'false'); } catch { /* ignore */ }
+    if (hidden) clearMarkerHover();
+    redrawAllOverlays();
+}
+
 function initChartGridToggle() {
     const rightGroup = document.getElementById('chart-right-group');
     const visToggles = document.getElementById('chart-visibility-toggles');
@@ -756,11 +777,23 @@ function initChartGridToggle() {
     const divider = document.createElement('span');
     divider.className = 'chart-toolbar-divider';
 
-    // Insert [hide][show-all][divider] immediately before the visibility pills
-    // so the buttons sit adjacent to them, separated by the vertical rule.
+    const markersBtn = document.createElement('button');
+    markersBtn.id = 'chart-event-markers-btn';
+    markersBtn.className = 'signal-toggle';
+    markersBtn.title = 'Hide/show the event-log marker lines on every chart (the Event Log panel is unaffected)';
+
+    // Insert [hide][show-all][event-logs][divider] immediately before the
+    // visibility pills so the buttons sit adjacent to them, separated by the
+    // vertical rule.
     rightGroup.insertBefore(btn, visToggles);
     rightGroup.insertBefore(showAllBtn, visToggles);
+    rightGroup.insertBefore(markersBtn, visToggles);
     rightGroup.insertBefore(divider, visToggles);
+
+    markersBtn.addEventListener('click', () => setEventMarkersHidden(!eventMarkersHidden));
+    let markersHidden = false;
+    try { markersHidden = localStorage.getItem(EVENT_MARKERS_HIDDEN_KEY) === 'true'; } catch { /* ignore */ }
+    setEventMarkersHidden(markersHidden);
 
     showAllBtn.addEventListener('click', () => {
         // Un-isolate as well as un-hide: this is the "put everything back"
@@ -1166,6 +1199,8 @@ function buildAllCharts() {
     // Invalidate callout records — they'll be rebuilt alongside each chart.
     chartCallouts.length = 0;
     chartDeltaCallouts.length = 0;
+    // The hovered chart is about to be destroyed, and mouseleave won't fire.
+    clearMarkerHover();
 
     for (let i = 0; i < MOTOR_COUNT; i++) {
         const cell = document.getElementById(`chart-${i}`);
@@ -1565,6 +1600,121 @@ function attachMouseControls(u) {
         }
         handleDeltaCursorClick(u, ev.clientX, ev.clientY);
     });
+
+    // --- Hover: event-marker tooltip at the cursor (this chart only) ----
+    over.addEventListener('mousemove', (ev) => {
+        const prevIds = markerHover && markerHover.u === u ? markerHover.ids : [];
+        markerHover = { u, clientX: ev.clientX, clientY: ev.clientY, ids: prevIds };
+        const ids = applyMarkerHover();
+        // Repaint so the hovered marker thickens (or un-thickens).
+        if (!sameIds(ids, prevIds)) u.redraw(false, false);
+    });
+    over.addEventListener('mouseleave', clearMarkerHover);
+}
+
+// ---- Event-marker hover tooltip ----------------------------------------
+
+/** Half-width of the hover band around a marker line, CSS px. */
+const MARKER_HOVER_TOL_PX = 5;
+
+/** The chart the cursor is over plus the last cursor position, so the draw
+ *  hook can re-hit-test while live data scrolls markers under a still
+ *  cursor.  `ids` = the events currently hovered.  Null when not hovering. */
+let markerHover = null;  // { u, clientX, clientY, ids: number[] }
+
+/** Lazily-created tooltip element (one for the whole page). */
+let markerTooltipEl = null;
+
+function sameIds(a, b) {
+    return a.length === b.length && a.every((id, i) => id === b[i]);
+}
+
+/** Events whose marker line lies within the hover band of the cursor on `u`,
+ *  in time order.  Empty when markers are hidden. */
+function hitTestMarkers(u, clientX) {
+    if (eventMarkersHidden) return [];
+    const xMin = u.scales.x.min;
+    const xMax = u.scales.x.max;
+    if (xMin == null || xMax == null) return [];
+    const px = clientX - u.over.getBoundingClientRect().left;
+    const hits = [];
+    for (const ev of getEventsInRange(xMin, xMax)) {
+        // valToPos without `canvas` = CSS px from the plot-area left edge,
+        // the same frame as `px`.
+        if (Math.abs(u.valToPos(ev.t, 'x') - px) <= MARKER_HOVER_TOL_PX) hits.push(ev);
+    }
+    return hits;
+}
+
+/** Re-hit-test the current hover, refresh the tooltip, and publish the hovered
+ *  IDs to the Event Log.  No chart redraw — safe to call from the draw hook.
+ *  Returns the hovered IDs. */
+function applyMarkerHover() {
+    if (!markerHover) return [];
+    const { u, clientX, clientY } = markerHover;
+    const hits = hitTestMarkers(u, clientX);
+    const ids = hits.map(ev => ev.id);
+    const unchanged = sameIds(ids, markerHover.ids);
+    markerHover.ids = ids;
+    setChartHoveredEvents(ids);
+
+    // The chart cell's native title tooltip would pop up over ours after a
+    // stationary second — park it while a marker is hovered.
+    const cell = u.root.parentElement;
+    if (cell) {
+        if (hits.length && cell.title) {
+            cell.dataset.parkedTitle = cell.title;
+            cell.title = '';
+        } else if (!hits.length && cell.dataset.parkedTitle !== undefined) {
+            cell.title = cell.dataset.parkedTitle;
+            delete cell.dataset.parkedTitle;
+        }
+    }
+
+    if (!hits.length) {
+        if (markerTooltipEl) markerTooltipEl.style.display = 'none';
+        return ids;
+    }
+    if (!markerTooltipEl) {
+        markerTooltipEl = document.createElement('div');
+        markerTooltipEl.id = 'chart-event-tooltip';
+        document.body.appendChild(markerTooltipEl);
+    }
+    // The draw hook calls this every live frame — rebuild only on change.
+    const visible = markerTooltipEl.style.display === 'block';
+    if (!unchanged || !visible) markerTooltipEl.replaceChildren(...hits.map((ev) => {
+        const row = document.createElement('div');
+        row.className = 'chart-event-tooltip-row';
+        const dot = document.createElement('span');
+        dot.className = 'chart-event-tooltip-dot';
+        dot.style.background = EVENT_COLORS[ev.type] || '#94a3b8';
+        const label = document.createElement('span');
+        label.textContent = ev.label;
+        row.append(dot, label);
+        return row;
+    }));
+    markerTooltipEl.style.display = 'block';
+    // Below-right of the cursor, flipped to the other side at a viewport edge.
+    const OFFSET = 12;
+    const { offsetWidth: w, offsetHeight: h } = markerTooltipEl;
+    let x = clientX + OFFSET;
+    let y = clientY + OFFSET;
+    if (x + w > window.innerWidth - 4) x = Math.max(4, clientX - OFFSET - w);
+    if (y + h > window.innerHeight - 4) y = Math.max(4, clientY - OFFSET - h);
+    markerTooltipEl.style.left = `${x}px`;
+    markerTooltipEl.style.top = `${y}px`;
+    return ids;
+}
+
+/** Drop any marker hover: hide the tooltip, clear the Event Log tint, restore
+ *  the cell title, and repaint the chart that was hovered. */
+function clearMarkerHover() {
+    if (!markerHover) return;
+    const { u } = markerHover;
+    markerHover.clientX = -Infinity;  // hit-test finds nothing → full teardown
+    applyMarkerHover();
+    markerHover = null;
+    u.redraw(false, false);
 }
 
 // ---- Canvas overlays: event markers + delta-cursor bookmarks ------------
@@ -1635,13 +1785,18 @@ function drawChartOverlays(u) {
     // ---- Event markers ----
     // One pass: un-highlighted events drawn faint, the highlighted one drawn
     // thicker + fully opaque on top so it pops against a marker forest.
-    const evs = getEventsInRange(xMin, xMax);
+    // Hidden by the toolbar's "Hide event logs" toggle → no markers, no tag.
+    const evs = eventMarkersHidden ? [] : getEventsInRange(xMin, xMax);
     const hlId = getHighlightedEventId();
     let hlEvent = null;
+    // A chart-marker hover lives on this chart only.  Re-hit-test here so the
+    // tooltip follows markers that live data scrolls under a still cursor.
+    const hoverIds = markerHover && markerHover.u === u ? applyMarkerHover() : [];
     ctx.lineWidth = 1 * devicePixelRatio;
     ctx.globalAlpha = 0.55;
     for (const ev of evs) {
         if (ev.id === hlId) { hlEvent = ev; continue; }
+        if (hoverIds.includes(ev.id)) continue;
         const xPx = u.valToPos(ev.t, 'x', true);
         ctx.strokeStyle = EVENT_COLORS[ev.type] || '#94a3b8';
         ctx.beginPath();
@@ -1650,6 +1805,19 @@ function drawChartOverlays(u) {
         ctx.stroke();
     }
     ctx.globalAlpha = 1;
+
+    // Hovered markers: opaque and thicker, but no label tag — the label is
+    // in the cursor tooltip.
+    ctx.lineWidth = 2 * devicePixelRatio;
+    for (const ev of evs) {
+        if (ev.id === hlId || !hoverIds.includes(ev.id)) continue;
+        const xPx = u.valToPos(ev.t, 'x', true);
+        ctx.strokeStyle = EVENT_COLORS[ev.type] || '#94a3b8';
+        ctx.beginPath();
+        ctx.moveTo(xPx, top);
+        ctx.lineTo(xPx, top + height);
+        ctx.stroke();
+    }
 
     if (hlEvent) {
         const xPx = u.valToPos(hlEvent.t, 'x', true);

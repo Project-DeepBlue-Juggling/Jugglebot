@@ -9,7 +9,8 @@
  */
 
 import {
-    subscribeEvents, getRecentEvents, setHighlightedEvent, EVENT_COLORS,
+    subscribeEvents, getRecentEvents, setHighlightedEvent, subscribeChartHover,
+    EVENT_COLORS,
 } from './event-store.js';
 
 /** How many entries to render.  Older events stay in the event-store (for
@@ -22,6 +23,10 @@ let emptyEl = null;
 /** Event types the user has hidden from the list via legend-dot click.
  *  Does NOT affect chart markers — only filters the visible log. */
 const hiddenTypes = new Set();
+
+/** IDs whose chart marker is under the cursor — tinted in the list.  Kept
+ *  here so a re-render (new event arriving mid-hover) re-applies the tint. */
+let chartHoveredIds = [];
 
 /** Format a seconds-since-epoch timestamp as HH:MM:SS.mmm (local). */
 function formatTime(t) {
@@ -60,6 +65,7 @@ function renderList() {
         row.className = 'history-entry';
         row.title = ev.detail || ev.label;
         row.dataset.eventId = String(ev.id);
+        row.style.setProperty('--row-color', EVENT_COLORS[ev.type] || '#94a3b8');
 
         const dot = document.createElement('span');
         dot.className = 'history-dot';
@@ -83,6 +89,30 @@ function renderList() {
 
         listEl.appendChild(row);
     }
+    applyChartHoverTint(false);
+}
+
+/**
+ * Tint the rows whose chart marker is hovered, and (when `scroll`) scroll the
+ * list so the first of them is visible.  Scrolls only .history-body — never
+ * the sidebar or page, which scrollIntoView would also move.  Rows that are
+ * filtered out or older than the visible limit simply aren't found.
+ */
+function applyChartHoverTint(scroll) {
+    if (!listEl) return;
+    let first = null;
+    for (const row of listEl.children) {
+        const on = chartHoveredIds.includes(Number(row.dataset.eventId));
+        row.classList.toggle('chart-hovered', on);
+        if (on && !first) first = row;
+    }
+    const body = listEl.parentElement;
+    const panel = document.getElementById('panel-history');
+    if (!scroll || !first || !body || panel?.classList.contains('collapsed')) return;
+    const r = first.getBoundingClientRect();
+    const b = body.getBoundingClientRect();
+    if (r.top < b.top) body.scrollTop += r.top - b.top;
+    else if (r.bottom > b.bottom) body.scrollTop += r.bottom - b.bottom;
 }
 
 /**
@@ -128,6 +158,11 @@ export function initCommandHistory() {
             pending = false;
             renderList();
         });
+    });
+
+    subscribeChartHover((ids) => {
+        chartHoveredIds = ids;
+        applyChartHoverTint(true);
     });
 
     renderList();

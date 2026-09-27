@@ -1473,3 +1473,10 @@
     background: var(--accent-amber);
     color: #000;
 }
+
+/* Event Log row whose marker is hovered on a chart (command-history.js).
+   --row-color is the event-type colour, set per row. */
+.history-entry.chart-hovered {
+    background: var(--bg-card-hover);
+    box-shadow: inset 3px 0 0 var(--row-color), inset 0 0 0 1px var(--row-color);
+}

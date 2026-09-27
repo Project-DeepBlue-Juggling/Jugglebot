@@ -138,3 +138,35 @@ export function subscribeHighlight(cb) {
     highlightListeners.add(cb);
     return () => highlightListeners.delete(cb);
 }
+
+// ---- Chart hover ----
+//
+// Deliberately a separate channel from the highlight above.  The highlight
+// (history-row hover) paints a label tag on EVERY chart; a chart-marker
+// hover shows its label only in a tooltip at the cursor, so it must not
+// light up the other charts.  Its only consumer is the Event Log, which
+// tints the matching rows.
+
+/** IDs of the events whose chart markers are under the cursor (usually one;
+ *  several when markers overlap within the hover tolerance). */
+let chartHoveredIds = [];
+
+/** @type {Set<(ids: number[]) => void>} */
+const chartHoverListeners = new Set();
+
+/** Set the chart-hovered event IDs (empty array clears). */
+export function setChartHoveredEvents(ids) {
+    const next = ids || [];
+    if (next.length === chartHoveredIds.length
+        && next.every((id, i) => id === chartHoveredIds[i])) return;
+    chartHoveredIds = next;
+    for (const cb of chartHoverListeners) {
+        try { cb(next); } catch { /* ignore */ }
+    }
+}
+
+/** Subscribe to chart-hover changes.  Returns an unsubscribe fn. */
+export function subscribeChartHover(cb) {
+    chartHoverListeners.add(cb);
+    return () => chartHoverListeners.delete(cb);
+}
