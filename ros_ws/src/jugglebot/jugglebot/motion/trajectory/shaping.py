@@ -66,6 +66,7 @@ import math
 
 import numpy as np
 
+from jugglebot import hardware_config as hw
 from jugglebot.motion.trajectory.plan import TrajectoryPlan
 from jugglebot.motion.trajectory.segment import POSE_DIM, QuinticSegment
 
@@ -73,12 +74,24 @@ from jugglebot.motion.trajectory.segment import POSE_DIM, QuinticSegment
 # World z (mm) of the tilt rotation centre — the point the cup opening swings ABOUT
 # under a platform tilt (measured constant across the slider range in the Rung-0
 # characterisation). The lever arm is cup_z − this, so it SCALES with cup height.
-CUP_TILT_CENTER_Z_MM = 744.3
+#
+# It is the platform centroid at the ACTIVE pose: STOW height + the STOW→ACTIVE
+# lift. Until 2026-09-27 it was the literal 744.3 (= 574.3 + 170.0); the kinematic
+# calibration moved the STOW height to 578.2 (plans/active/kinematic-calibration.md
+# § 6 step 5), and the literal would have left every lever 3.9 mm short — the sim's
+# cup opening landed exactly that far above its target. Deriving it from the
+# generated config also puts it under the admissible-box gate hash
+# (motion/skills/admissible.py gates hardware_config.py), so a future height change
+# forces a box re-sweep instead of silently mis-levering the swept boxes.
+CUP_TILT_CENTER_Z_MM = float(hw.GEOM_INITIAL_HEIGHT_MM) + float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM)
 # Nominal world cup height (mm) at the lean operating point. juggle_tilt's Rung-0:
 # at the 180 mm slider the cup rides ~840 mm, giving arm ≈ +95 mm and reproducing
 # the reported 1.66 mm/deg. The lean shaper uses this fixed nominal arm; the
 # per-pose height-aware arm is the Phase-6 tilt_geometry.py port's job.
-LEAN_CUP_Z_MM = 839.4
+# The cup rides a FIXED distance above the centroid, so this is expressed as the
+# characterised +95.1 mm arm on top of the tilt centre (839.4 − 744.3 until
+# 2026-09-27); the lean shaper's arm is therefore unchanged by the calibration.
+LEAN_CUP_Z_MM = CUP_TILT_CENTER_Z_MM + 95.1
 # Rung-0's reported single-axis lever (mm lateral cup shift per degree of tilt),
 # POSITIVE. Kept as the cross-check the geometry test pins the ported arm against;
 # the shaper itself uses the height-derived arm, not this constant.

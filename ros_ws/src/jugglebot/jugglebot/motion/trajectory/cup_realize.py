@@ -63,11 +63,15 @@ HAND_REV_PER_M = float(hw.HAND_REV_PER_M)
 #: World z (mm) of the cup opening at zero slider with the platform centroid at
 #: :data:`hw.JB_OP_DEFAULT_ACTIVE_Z_MM`: ``cup_z_world = CUP_Z_BASE_MM + slider_mm``
 #: at level.  Mirrors ``sim/juggle_tilt.py``'s constant of the same name (and
-#: ``sim/juggle_online.py``'s), which is the parity source — the value is a
-#: measured morphology offset, not a derived one, so it is pinned here and
-#: cross-checked by the parity test rather than recomputed.  When z FLOATS the
+#: ``sim/gate_common.py``'s), which is the parity source.  The MEASURED morphology
+#: quantity is the cup's fixed 84.7 mm below the platform centroid at slider 0;
+#: the world value rides on the ACTIVE-pose centroid
+#: (:data:`tilt_geometry.CUP_TILT_CENTER_Z_MM` = STOW height + lift), so it is
+#: written that way rather than as the literal 659.6 it was until 2026-09-27 —
+#: the kinematic calibration moved the STOW height 574.3 → 578.2 and the literal
+#: would have set every slider 3.9 mm low for a given cup z.  When z FLOATS the
 #: base moves with the platform: ``base(z) = CUP_Z_BASE_MM + (z − active_z)``.
-CUP_Z_BASE_MM = 659.6
+CUP_Z_BASE_MM = float(tilt_geometry.CUP_TILT_CENTER_Z_MM) - 84.7
 
 #: Gravity vector (m/s², world) for the banking field.  From the generated config
 #: so a change to ``GRAVITY_MPS2`` ripples here instead of drifting.

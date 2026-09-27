@@ -143,9 +143,15 @@ def generate_mjcf(config, mesh_dir=None):
     leg_lengths = np.linalg.norm(leg_vecs, axis=1)  # (6,)
     leg_dirs = leg_vecs / leg_lengths[:, None]  # (6, 3) unit vectors
 
-    # Geometric home leg length (from node positions).
-    # After STOW-zero refactor, init_leg_lengths_mm IS the geometric home
-    # length, so slide=0 corresponds exactly to STOW (IK ext = 0).
+    # Geometric home leg length (from node positions): slide=0 is the LEVEL
+    # pose at initial_height_mm. Until 2026-09-27 init_leg_lengths_mm was
+    # this same number by construction (slide 0 == IK ext 0 == STOW). The
+    # kinematic calibration fits init_leg_lengths_mm per leg (L0_i, the length
+    # at motor zero), so the two now differ by -5..+6 mm: the sim's home stays
+    # the level pose, and MuJoCoPlant / tests/sim/test_model.py carry the
+    # (L0_i - geometric) offset in their slide <-> extension conversion. The
+    # machine's real 0-rev pose (tilted 0.88 deg, 3.6/7.7 mm off-axis) is not
+    # modelled here; on hardware the pre-level absorbs it.
     home_slide = leg_lengths  # (6,) geometric home lengths
 
     # ---- Platform dynamics (convert to SI) ----
@@ -674,7 +680,8 @@ def main():
 
     print(f"\nGeometric home leg lengths (mm): {leg_lens}")
     print(f"Config init_leg_lengths (mm):    {np.array(geom['init_leg_lengths_mm'])}")
-    print(f"Difference (should be ~0):       {leg_lens - np.array(geom['init_leg_lengths_mm'])}")
+    print(f"Difference (L0_i - geometric; ~0 before the 2026-09-27 calibration, -5..+6 mm since): "
+          f"{np.array(geom['init_leg_lengths_mm']) - leg_lens}")
     print(f"Platform height: {height} mm")
     print(f"Leg stroke: {geom['leg_stroke_mm']} mm")
     print(f"Slide range per leg: [{leg_lens[0]:.3f}, {leg_lens[0] + geom['leg_stroke_mm']:.3f}] mm")

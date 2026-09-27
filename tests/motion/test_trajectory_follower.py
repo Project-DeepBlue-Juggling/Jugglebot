@@ -313,11 +313,20 @@ def test_graceful_stop_energy_start_fallback_recovers_workspace(geom, limits):
     that tick. Empirically confirmed 2026-07-09: seed x=238 mm moving +40 mm/s, a 1.2 s
     explicit start raises WORKSPACE but the fallback recovers.
 
+    Re-pinned 2026-09-27 for the kinematic calibration: at x=238 the fitted
+    geometry now puts leg 1 at 275.1 mm on the FALLBACK path too (over the
+    275 mm stroke gate), so the fallback no longer recovers. Probed
+    2026-09-27 (leg-1 peak extension on the fallback stop, per x): x=237 ->
+    274.66 mm (0.34 mm spare), x=236 -> 274.08 mm (0.92 mm spare), x=235 ->
+    273.51 mm (1.49 mm spare). x=235 is the largest seed that keeps the raw
+    1.2 s stretch failing WORKSPACE (exercising the fallback path, the test's
+    intent) while the fallback recovers with >=1 mm of stroke to spare.
+
     Uses an EXPLICIT ``start_duration_s`` so the test is deterministic (the default
     energy start is exercised throughout the follower fuzz/sweep); the point is the
     fallback path, which the default energy start reaches the same way when its
     UNDER-estimate still overshoots a very tight margin."""
-    p = np.array([238.0, 0.0, 170.0, 0.0, 0.0, 0.0])
+    p = np.array([235.0, 0.0, 170.0, 0.0, 0.0, 0.0])
     v = np.array([40.0, 0.0, 0.0, 0.0, 0.0, 0.0])
     z = np.zeros(6)
     # The raw stretch from the large start (no fallback) fails WORKSPACE...

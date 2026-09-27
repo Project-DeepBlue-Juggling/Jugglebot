@@ -54,7 +54,7 @@ namespace Dynamics {
 // ==========================================================================
 
 namespace Geometry {
-  constexpr float INITIAL_HEIGHT_MM = 574.3f;
+  constexpr float INITIAL_HEIGHT_MM = 578.2f;
   constexpr float BASE_RADIUS_MM = 410.0f;
   constexpr float PLAT_RADIUS_MM = 219.075f;
   constexpr float BASE_SMALL_ANGLE_DEG = 20.0f;
@@ -68,23 +68,23 @@ namespace Geometry {
   constexpr float HAND_AXIS_BOTTOM_OFFSET_MM = -129.0f;
   constexpr float BALL_JOINT_OFFSET_MM = 0.0f;
   constexpr float BASE_NODES_MM[6][3] = {
-    {-385.274f, -140.228f, 0.0f},
-    {-314.078f, -263.543f, 0.0f},
-    {314.078f, -263.543f, 0.0f},
-    {385.274f, -140.228f, 0.0f},
-    {71.196f, 403.771f, 0.0f},
-    {-71.196f, 403.771f, 0.0f},
+    {-383.0629f, -134.5122f, 0.0f},
+    {-308.5251f, -264.2557f, 0.0f},
+    {309.575f, -262.8407f, 0.0f},
+    {380.1995f, -136.2713f, 0.0f},
+    {69.9891f, 400.4458f, 0.0f},
+    {-73.4966f, 399.7973f, 0.0f},
   };
   constexpr float INIT_PLAT_NODES_MM[6][3] = {
-    {-197.405f, 95.0f, 0.0f},
-    {-16.431f, -218.458f, 0.0f},
-    {16.431f, -218.458f, 0.0f},
-    {197.405f, 95.0f, 0.0f},
-    {180.975f, 123.458f, 0.0f},
-    {-180.975f, 123.458f, 0.0f},
+    {-196.2139f, 96.1055f, 1.8415f},
+    {-14.3596f, -217.2241f, 2.6074f},
+    {17.1245f, -216.223f, -2.8562f},
+    {194.333f, 92.9224f, 1.1477f},
+    {178.7853f, 121.4363f, -0.7438f},
+    {-179.6693f, 122.983f, -1.9966f},
   };
-  constexpr float INIT_LEG_LENGTHS_MM[6] = {648.419f, 648.419f, 648.419f, 648.419f, 648.419f, 648.419f};
-  constexpr float MM_TO_REV[6] = {0.01418332f, 0.01419076f, 0.01408956f, 0.01418684f, 0.01426801f, 0.01424951f};
+  constexpr float INIT_LEG_LENGTHS_MM[6] = {649.4101f, 647.1523f, 645.7748f, 649.5451f, 655.5427f, 652.9319f};
+  constexpr float MM_TO_REV[6] = {0.014082283f, 0.014079907f, 0.014159394f, 0.014081774f, 0.014088884f, 0.014136538f};
   constexpr float LEG_MOTOR_MAX_POSITION_REVS = 4.2f;
   constexpr float HAND_MOTOR_HARD_STOP_REVS = 10.701f;
   constexpr float HAND_CLIP_MARGIN_REV = 0.2f;
@@ -554,5 +554,5 @@ namespace CatchingCone {
 // ==========================================================================
 
 namespace JBOp {
-  constexpr float ACTIVATE_POSITION_REVS[6] = {2.190709451408076f, 2.1918534899593114f, 2.1762225037976197f, 2.1912531391531846f, 2.2037889152266708f, 2.200931467346294f};
+  constexpr float ACTIVATE_POSITION_REVS[6] = {2.2140794335568446f, 2.2611745528837117f, 2.212353278101592f, 2.1940921031812683f, 2.1087374470499727f, 2.1206451142088563f};
 }

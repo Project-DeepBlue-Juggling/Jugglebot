@@ -139,7 +139,8 @@ _GATE_TREE_FILES = ('segments.py', 'unified_cycle.py',
                     os.path.join('trajectory', 'feasibility.py'),
                     os.path.join('trajectory', 'cup_cycle.py'),
                     os.path.join('trajectory', 'cup_realize.py'),
-                    os.path.join('trajectory', 'tilt_geometry.py'))
+                    os.path.join('trajectory', 'tilt_geometry.py'),
+                    'hardware_config.py')
 
 
 def _write_gate_tree(root, contents='x'):
@@ -149,13 +150,24 @@ def _write_gate_tree(root, contents='x'):
             handle.write(contents)
 
 
+def test_gate_tree_mirrors_the_live_gated_file_list():
+    """The tmp-tree list above IS the live `_GATED_FILES` list, flattened --
+    a file added to one and not the other would leave the parametrised test
+    below silently not covering it."""
+    live = {os.path.join(*parts) for parts in ab._GATED_FILES}
+    assert live == set(_GATE_TREE_FILES)
+
+
 @pytest.mark.parametrize('which', _GATE_TREE_FILES)
-def test_gate_hash_changes_when_any_of_the_six_gated_files_change(tmp_path, which):
+def test_gate_hash_changes_when_any_of_the_gated_files_change(tmp_path, which):
     """R4 widened the gate from {feasibility, segments}.py alone to all six
     files that shape the real solve (cup_cycle.py / cup_realize.py /
     unified_cycle.py / tilt_geometry.py too) -- an edit to ANY of them must
     change the hash, or a box swept against a stale one of the four newly
-    added files goes undetected (plan R4 carried item (d))."""
+    added files goes undetected (plan R4 carried item (d)). The kinematic
+    calibration (2026-09-27) added the generated `hardware_config.py`, the IK
+    geometry: a geometry change must force the re-sweep, not rely on it being
+    remembered (plans/active/kinematic-calibration.md § 7)."""
     root = str(tmp_path)
     _write_gate_tree(root)
     before = ab.gate_hash(root=root)

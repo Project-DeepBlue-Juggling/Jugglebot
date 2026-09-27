@@ -57,23 +57,23 @@
     <geom name="floor" type="plane" size="1.0 1.0 0.01" material="grid_mat" pos="0 0 -0.082"/>
     <light directional="true" diffuse="0.8 0.8 0.8" pos="0 0 2" dir="0 0 -1"/>
     <geom name="base_visual" type="mesh" mesh="base_mesh" pos="0 0 -0.082" material="base_mat" contype="0" conaffinity="0"/>
-    <site name="base_site_0" pos="-0.385274 -0.140228 0.000000" size="0.015" rgba="0.9 0.2 0.2 1"/>
-    <site name="base_site_1" pos="-0.314078 -0.263543 0.000000" size="0.015" rgba="0.9 0.2 0.2 1"/>
-    <site name="base_site_2" pos="0.314078 -0.263543 0.000000" size="0.015" rgba="0.9 0.2 0.2 1"/>
-    <site name="base_site_3" pos="0.385274 -0.140228 0.000000" size="0.015" rgba="0.9 0.2 0.2 1"/>
-    <site name="base_site_4" pos="0.071196 0.403771 0.000000" size="0.015" rgba="0.9 0.2 0.2 1"/>
-    <site name="base_site_5" pos="-0.071196 0.403771 0.000000" size="0.015" rgba="0.9 0.2 0.2 1"/>
-    <body name="platform" pos="0 0 0.574300">
+    <site name="base_site_0" pos="-0.383063 -0.134512 0.000000" size="0.015" rgba="0.9 0.2 0.2 1"/>
+    <site name="base_site_1" pos="-0.308525 -0.264256 0.000000" size="0.015" rgba="0.9 0.2 0.2 1"/>
+    <site name="base_site_2" pos="0.309575 -0.262841 0.000000" size="0.015" rgba="0.9 0.2 0.2 1"/>
+    <site name="base_site_3" pos="0.380200 -0.136271 0.000000" size="0.015" rgba="0.9 0.2 0.2 1"/>
+    <site name="base_site_4" pos="0.069989 0.400446 0.000000" size="0.015" rgba="0.9 0.2 0.2 1"/>
+    <site name="base_site_5" pos="-0.073497 0.399797 0.000000" size="0.015" rgba="0.9 0.2 0.2 1"/>
+    <body name="platform" pos="0 0 0.578200">
       <freejoint name="platform_joint"/>
       <inertial pos="-0.009680 -0.068640 0.052730" mass="1.2" fullinertia="0.016349800 0.014987903 0.009298383 -0.000402572 0.000191094 0.000979411"/>
       <geom name="platform_visual" type="mesh" mesh="platform_mesh" pos="0 0 0" material="platform_mat" contype="0" conaffinity="0"/>
       <site name="platform_origin" pos="0 0 0" size="0.005" rgba="1 1 1 0"/>
-      <site name="plat_site_0" pos="-0.197405 0.095000 0.000000" size="0.012" rgba="0.2 0.8 0.2 1"/>
-      <site name="plat_site_1" pos="-0.016431 -0.218458 0.000000" size="0.012" rgba="0.2 0.8 0.2 1"/>
-      <site name="plat_site_2" pos="0.016431 -0.218458 0.000000" size="0.012" rgba="0.2 0.8 0.2 1"/>
-      <site name="plat_site_3" pos="0.197405 0.095000 0.000000" size="0.012" rgba="0.2 0.8 0.2 1"/>
-      <site name="plat_site_4" pos="0.180975 0.123458 0.000000" size="0.012" rgba="0.2 0.8 0.2 1"/>
-      <site name="plat_site_5" pos="-0.180975 0.123458 0.000000" size="0.012" rgba="0.2 0.8 0.2 1"/>
+      <site name="plat_site_0" pos="-0.196214 0.096106 0.001841" size="0.012" rgba="0.2 0.8 0.2 1"/>
+      <site name="plat_site_1" pos="-0.014360 -0.217224 0.002607" size="0.012" rgba="0.2 0.8 0.2 1"/>
+      <site name="plat_site_2" pos="0.017125 -0.216223 -0.002856" size="0.012" rgba="0.2 0.8 0.2 1"/>
+      <site name="plat_site_3" pos="0.194333 0.092922 0.001148" size="0.012" rgba="0.2 0.8 0.2 1"/>
+      <site name="plat_site_4" pos="0.178785 0.121436 -0.000744" size="0.012" rgba="0.2 0.8 0.2 1"/>
+      <site name="plat_site_5" pos="-0.179669 0.122983 -0.001997" size="0.012" rgba="0.2 0.8 0.2 1"/>
       <body name="hand" pos="0 0 -0.129000">
         <inertial pos="0 0 0.055" mass="0.281" diaginertia="0.000200 0.000200 0.000050"/>
         <joint name="hand_slide" type="slide" axis="0 0 1" limited="true" range="0 0.344750" damping="50" armature="0.001"/>
@@ -89,72 +89,72 @@
         <site name="hand_opening" pos="0 0 0.0444" size="0.010" rgba="1.0 0.8 0.0 1"/>
       </body>
     </body>
-    <body name="leg_0_base" pos="-0.385274 -0.140228 0.000000" quat="0.971003 -0.186803 0.149193 0.000000">
-      <inertial pos="0 0 0.226947" mass="1.39" diaginertia="0.048841 0.048841 0.000278"/>
+    <body name="leg_0_base" pos="-0.383063 -0.134512 0.000000" quat="0.972168 -0.182037 0.147488 0.000000">
+      <inertial pos="0 0 0.228050" mass="1.39" diaginertia="0.049315 0.049315 0.000278"/>
       <joint name="leg_0_hinge_x" type="hinge" axis="1 0 0" limited="false" class="leg"/>
       <joint name="leg_0_hinge_y" type="hinge" axis="0 1 0" limited="false" class="leg"/>
       <geom name="leg_0_outer_visual" type="mesh" mesh="leg_outer_mesh" pos="0 0 -0.064" material="leg_mat" contype="0" conaffinity="0"/>
-      <body name="leg_0" pos="0 0 0.648419">
+      <body name="leg_0" pos="0 0 0.651571">
         <inertial pos="0 0 0" mass="0.1" diaginertia="0.000756 0.000756 0.000011"/>
         <joint name="leg_0_slide" type="slide" axis="0 0 1" limited="true" range="-0.005000 0.285000" class="leg"/>
         <geom name="leg_0_inner_visual" type="mesh" mesh="leg_inner_mesh" pos="0 0 -0.70447" material="leg_mat" contype="0" conaffinity="0"/>
         <site name="leg_0_tip" pos="0 0 0" size="0.010" rgba="0.9 0.9 0.2 1"/>
       </body>
     </body>
-    <body name="leg_1_base" pos="-0.314078 -0.263543 0.000000" quat="0.971003 -0.035804 0.236372 0.000000">
-      <inertial pos="0 0 0.226947" mass="1.39" diaginertia="0.048841 0.048841 0.000278"/>
+    <body name="leg_1_base" pos="-0.308525 -0.264256 0.000000" quat="0.972056 -0.037061 0.231805 0.000000">
+      <inertial pos="0 0 0.228462" mass="1.39" diaginertia="0.049494 0.049494 0.000278"/>
       <joint name="leg_1_hinge_x" type="hinge" axis="1 0 0" limited="false" class="leg"/>
       <joint name="leg_1_hinge_y" type="hinge" axis="0 1 0" limited="false" class="leg"/>
       <geom name="leg_1_outer_visual" type="mesh" mesh="leg_outer_mesh" pos="0 0 -0.064" material="leg_mat" contype="0" conaffinity="0"/>
-      <body name="leg_1" pos="0 0 0.648419">
+      <body name="leg_1" pos="0 0 0.652750">
         <inertial pos="0 0 0" mass="0.1" diaginertia="0.000756 0.000756 0.000011"/>
         <joint name="leg_1_slide" type="slide" axis="0 0 1" limited="true" range="-0.005000 0.285000" class="leg"/>
         <geom name="leg_1_inner_visual" type="mesh" mesh="leg_inner_mesh" pos="0 0 -0.70447" material="leg_mat" contype="0" conaffinity="0"/>
         <site name="leg_1_tip" pos="0 0 0" size="0.010" rgba="0.9 0.9 0.2 1"/>
       </body>
     </body>
-    <body name="leg_2_base" pos="0.314078 -0.263543 0.000000" quat="0.971003 -0.035804 -0.236372 0.000000">
-      <inertial pos="0 0 0.226947" mass="1.39" diaginertia="0.048841 0.048841 0.000278"/>
+    <body name="leg_2_base" pos="0.309575 -0.262841 0.000000" quat="0.971887 -0.037063 -0.232511 0.000000">
+      <inertial pos="0 0 0.226480" mass="1.39" diaginertia="0.048641 0.048641 0.000278"/>
       <joint name="leg_2_hinge_x" type="hinge" axis="1 0 0" limited="false" class="leg"/>
       <joint name="leg_2_hinge_y" type="hinge" axis="0 1 0" limited="false" class="leg"/>
       <geom name="leg_2_outer_visual" type="mesh" mesh="leg_outer_mesh" pos="0 0 -0.064" material="leg_mat" contype="0" conaffinity="0"/>
-      <body name="leg_2" pos="0 0 0.648419">
+      <body name="leg_2" pos="0 0 0.647087">
         <inertial pos="0 0 0" mass="0.1" diaginertia="0.000756 0.000756 0.000011"/>
         <joint name="leg_2_slide" type="slide" axis="0 0 1" limited="true" range="-0.005000 0.285000" class="leg"/>
         <geom name="leg_2_inner_visual" type="mesh" mesh="leg_inner_mesh" pos="0 0 -0.70447" material="leg_mat" contype="0" conaffinity="0"/>
         <site name="leg_2_tip" pos="0 0 0" size="0.010" rgba="0.9 0.9 0.2 1"/>
       </body>
     </body>
-    <body name="leg_3_base" pos="0.385274 -0.140228 0.000000" quat="0.971003 -0.186803 -0.149193 0.000000">
-      <inertial pos="0 0 0.226947" mass="1.39" diaginertia="0.048841 0.048841 0.000278"/>
+    <body name="leg_3_base" pos="0.380200 -0.136271 0.000000" quat="0.972387 -0.181262 -0.146996 0.000000">
+      <inertial pos="0 0 0.227559" mass="1.39" diaginertia="0.049104 0.049104 0.000278"/>
       <joint name="leg_3_hinge_x" type="hinge" axis="1 0 0" limited="false" class="leg"/>
       <joint name="leg_3_hinge_y" type="hinge" axis="0 1 0" limited="false" class="leg"/>
       <geom name="leg_3_outer_visual" type="mesh" mesh="leg_outer_mesh" pos="0 0 -0.064" material="leg_mat" contype="0" conaffinity="0"/>
-      <body name="leg_3" pos="0 0 0.648419">
+      <body name="leg_3" pos="0 0 0.650169">
         <inertial pos="0 0 0" mass="0.1" diaginertia="0.000756 0.000756 0.000011"/>
         <joint name="leg_3_slide" type="slide" axis="0 0 1" limited="true" range="-0.005000 0.285000" class="leg"/>
         <geom name="leg_3_inner_visual" type="mesh" mesh="leg_inner_mesh" pos="0 0 -0.70447" material="leg_mat" contype="0" conaffinity="0"/>
         <site name="leg_3_tip" pos="0 0 0" size="0.010" rgba="0.9 0.9 0.2 1"/>
       </body>
     </body>
-    <body name="leg_4_base" pos="0.071196 0.403771 0.000000" quat="0.971003 0.222606 0.087179 -0.000000">
-      <inertial pos="0 0 0.226947" mass="1.39" diaginertia="0.048841 0.048841 0.000278"/>
+    <body name="leg_4_base" pos="0.069989 0.400446 0.000000" quat="0.971525 0.220746 0.086077 -0.000000">
+      <inertial pos="0 0 0.227672" mass="1.39" diaginertia="0.049153 0.049153 0.000278"/>
       <joint name="leg_4_hinge_x" type="hinge" axis="1 0 0" limited="false" class="leg"/>
       <joint name="leg_4_hinge_y" type="hinge" axis="0 1 0" limited="false" class="leg"/>
       <geom name="leg_4_outer_visual" type="mesh" mesh="leg_outer_mesh" pos="0 0 -0.064" material="leg_mat" contype="0" conaffinity="0"/>
-      <body name="leg_4" pos="0 0 0.648419">
+      <body name="leg_4" pos="0 0 0.650491">
         <inertial pos="0 0 0" mass="0.1" diaginertia="0.000756 0.000756 0.000011"/>
         <joint name="leg_4_slide" type="slide" axis="0 0 1" limited="true" range="-0.005000 0.285000" class="leg"/>
         <geom name="leg_4_inner_visual" type="mesh" mesh="leg_inner_mesh" pos="0 0 -0.70447" material="leg_mat" contype="0" conaffinity="0"/>
         <site name="leg_4_tip" pos="0 0 0" size="0.010" rgba="0.9 0.9 0.2 1"/>
       </body>
     </body>
-    <body name="leg_5_base" pos="-0.071196 0.403771 0.000000" quat="0.971003 0.222606 -0.087179 0.000000">
-      <inertial pos="0 0 0.226947" mass="1.39" diaginertia="0.048841 0.048841 0.000278"/>
+    <body name="leg_5_base" pos="-0.073497 0.399797 0.000000" quat="0.971905 0.219764 -0.084291 0.000000">
+      <inertial pos="0 0 0.226801" mass="1.39" diaginertia="0.048778 0.048778 0.000278"/>
       <joint name="leg_5_hinge_x" type="hinge" axis="1 0 0" limited="false" class="leg"/>
       <joint name="leg_5_hinge_y" type="hinge" axis="0 1 0" limited="false" class="leg"/>
       <geom name="leg_5_outer_visual" type="mesh" mesh="leg_outer_mesh" pos="0 0 -0.064" material="leg_mat" contype="0" conaffinity="0"/>
-      <body name="leg_5" pos="0 0 0.648419">
+      <body name="leg_5" pos="0 0 0.648004">
         <inertial pos="0 0 0" mass="0.1" diaginertia="0.000756 0.000756 0.000011"/>
         <joint name="leg_5_slide" type="slide" axis="0 0 1" limited="true" range="-0.005000 0.285000" class="leg"/>
         <geom name="leg_5_inner_visual" type="mesh" mesh="leg_inner_mesh" pos="0 0 -0.70447" material="leg_mat" contype="0" conaffinity="0"/>
@@ -182,12 +182,12 @@
     <exclude body1="ball" body2="ball2"/>
   </contact>
   <equality>
-    <connect body1="platform" body2="leg_0" anchor="-0.197405 0.095000 0.000000" solref="0.005 1" solimp="0.99 0.99 0.001"/>
-    <connect body1="platform" body2="leg_1" anchor="-0.016431 -0.218458 0.000000" solref="0.005 1" solimp="0.99 0.99 0.001"/>
-    <connect body1="platform" body2="leg_2" anchor="0.016431 -0.218458 0.000000" solref="0.005 1" solimp="0.99 0.99 0.001"/>
-    <connect body1="platform" body2="leg_3" anchor="0.197405 0.095000 0.000000" solref="0.005 1" solimp="0.99 0.99 0.001"/>
-    <connect body1="platform" body2="leg_4" anchor="0.180975 0.123458 0.000000" solref="0.005 1" solimp="0.99 0.99 0.001"/>
-    <connect body1="platform" body2="leg_5" anchor="-0.180975 0.123458 0.000000" solref="0.005 1" solimp="0.99 0.99 0.001"/>
+    <connect body1="platform" body2="leg_0" anchor="-0.196214 0.096106 0.001841" solref="0.005 1" solimp="0.99 0.99 0.001"/>
+    <connect body1="platform" body2="leg_1" anchor="-0.014360 -0.217224 0.002607" solref="0.005 1" solimp="0.99 0.99 0.001"/>
+    <connect body1="platform" body2="leg_2" anchor="0.017125 -0.216223 -0.002856" solref="0.005 1" solimp="0.99 0.99 0.001"/>
+    <connect body1="platform" body2="leg_3" anchor="0.194333 0.092922 0.001148" solref="0.005 1" solimp="0.99 0.99 0.001"/>
+    <connect body1="platform" body2="leg_4" anchor="0.178785 0.121436 -0.000744" solref="0.005 1" solimp="0.99 0.99 0.001"/>
+    <connect body1="platform" body2="leg_5" anchor="-0.179669 0.122983 -0.001997" solref="0.005 1" solimp="0.99 0.99 0.001"/>
   </equality>
   <actuator>
     <position name="act_0" joint="leg_0_slide" kp="200000" kv="600" ctrlrange="-0.005000 0.285000" ctrllimited="true"/>
@@ -199,7 +199,7 @@
     <position name="act_hand" joint="hand_slide" kp="100000" kv="350" ctrlrange="0 0.344750" ctrllimited="true"/>
   </actuator>
   <keyframe>
-    <key name="home" qpos="0.000000 0.000000 0.574300 1.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 5.000000 1.000000 0.000000 0.000000 0.000000 0.000000 0.000000 6.000000 1.000000 0.000000 0.000000 0.000000"/>
+    <key name="home" qpos="0.000000 0.000000 0.578200 1.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 0.000000 5.000000 1.000000 0.000000 0.000000 0.000000 0.000000 0.000000 6.000000 1.000000 0.000000 0.000000 0.000000"/>
   </keyframe>
   <sensor>
     <jointpos name="slide_pos_0" joint="leg_0_slide"/>

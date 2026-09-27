@@ -12,6 +12,8 @@ geometry fails loudly.
 from __future__ import annotations
 
 import numpy as np
+
+from jugglebot import hardware_config as hw
 import pytest
 
 from jugglebot.motion.trajectory import tilt_geometry as tg
@@ -134,7 +136,12 @@ def test_throw_velocity_unit_agnostic():
 
 def test_lever_arm_reference_values():
     """The re-exported cup lever arm matches the Jugglebot-bb Rung-0 reference."""
-    assert tg.CUP_TILT_CENTER_Z_MM == 744.3
+    # 744.3 until the 2026-09-27 kinematic calibration moved the STOW height to
+    # 578.2 (plans/active/kinematic-calibration.md § 6 step 5): the centre is the
+    # ACTIVE-pose centroid, STOW height + lift, so it follows the config.
+    assert tg.CUP_TILT_CENTER_Z_MM == pytest.approx(
+        float(hw.GEOM_INITIAL_HEIGHT_MM) + float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM))
+    assert tg.CUP_TILT_CENTER_Z_MM == pytest.approx(748.2)
     assert tg.LEVER_ARM_MM_PER_DEG == 1.66
     # Derivation cross-check: at the Rung-0 operating cup height the arm is ~95.1 mm
     # above the tilt centre, and arm·sin(1°) reproduces the reported 1.66 mm/deg.

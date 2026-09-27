@@ -24,6 +24,7 @@ from jugglebot.motion.trajectory import (
 from jugglebot.motion.trajectory import planner
 
 from teensy_link.setpoint_pump import SetpointPump
+from tests.motion._cad_geometry import CAD_MM_TO_REV, cad_geometry
 
 NEUTRAL = np.array([0.0, 0.0, 170.0, 0.0, 0.0, 0.0])
 
@@ -145,8 +146,14 @@ def _emitter_fixture():
         return _json.load(f)
 
 
-def _fixture_plan(case_name: str):
-    """Recreate the exact plan a fixture case's recipe names."""
+def _fixture_plan(case_name: str, geom=None):
+    """Recreate the exact plan a fixture case's recipe names.
+
+    ``geom`` defaults to the live ``StewartGeometry()``; the byte-capture test
+    below passes ``cad_geometry()`` since the capture's bytes encode the CAD
+    geometry (see that test's docstring)."""
+    if geom is None:
+        geom = StewartGeometry()
     if case_name == 'hold_neutral':
         return HoldPlan(np.array([0.0, 0.0, 170.0, 0.0, 0.0, 0.0]))
     if case_name == 'move_return_to_neutral':
@@ -155,7 +162,7 @@ def _fixture_plan(case_name: str):
         limits = TrajectoryLimits.from_config(hw)
         return planner.build_return_to_neutral(
             state0, np.array([0.0, 0.0, 170.0, 0.0, 0.0, 0.0]), 2.0,
-            limits, StewartGeometry())
+            limits, geom)
     raise AssertionError(f'unknown fixture case {case_name!r}')
 
 
@@ -175,12 +182,25 @@ def test_legacy_frames_byte_identical_to_v5_capture():
     against THIS checkout's generated config (gravity FF shipped ON) — it is
     READ-ONLY ground truth; if config/geometry changes, the capture script's
     provenance notes govern, not a regeneration.
+
+    Re-pinned 2026-09-27 for the kinematic calibration in SCOPE only, not
+    bytes: the byte capture encodes revs at ``mm x mm_to_rev`` under the
+    CAD geometry at the 2aaaae1 checkout (never regenerate it — see
+    ``tests/motion/_cad_geometry.py``), so this test alone builds the emitter
+    and the fixture plan with ``cad_geometry()`` instead of the live
+    ``StewartGeometry()``. Every other test in this file keeps the live
+    geometry. The fixture JSON's ``environment`` block does not record
+    ``mm_to_rev`` (only python/numpy/msgpack versions), so there is nothing
+    to cross-check there.
     """
     fx = _emitter_fixture()
     assert fx['captured_at_commit'].startswith('2aaaae1')
+    assert 'mm_to_rev' not in fx.get('environment', {})
+    geom = cad_geometry()
+    assert np.allclose(geom.mm_to_rev, CAD_MM_TO_REV)
     for case in fx['cases']:
-        plan = _fixture_plan(case['case'])
-        emit = KnotEmitter(_geom())
+        plan = _fixture_plan(case['case'], geom=geom)
+        emit = KnotEmitter(geom)
         for fr in case['frames']:
             frame = emit.frame(plan, float(fr['tau']), int(fr['seq']))
             assert 'vel_next_mm_s' in frame and 'vel_next2_mm_s' in frame

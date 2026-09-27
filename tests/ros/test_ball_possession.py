@@ -92,12 +92,16 @@ def test_every_real_self_toss_catch_is_confirmed(ball_id, x, y, z):
 def test_the_z_bound_that_broke_it_would_still_reject_all_seventeen():
     """Pins WHY the fix is a deletion, not a re-tune: no z bound survives this data.
 
-    The tightest plane drop over the 17 real catches is 305 mm — twice the 150 mm
+    The tightest plane drop over the 17 real catches is 309 mm — twice the 150 mm
     bound that shipped, and 2.0x any bound that would also reject the corrupt
-    tracks. A future 'let's just loosen z a bit' edit has to face this number."""
+    tracks. A future 'let's just loosen z a bit' edit has to face this number.
+
+    Re-pinned 2026-09-27 for the kinematic calibration: CATCH_POINT's z rides
+    on hw.GEOM_INITIAL_HEIGHT_MM (574.3 → 578.2 mm), so every drop grows by
+    the same +3.9 mm (305.03 → 308.9266, 1007.14 → 1011.0352)."""
     drops = [abs(z - CATCH_POINT[2]) for _i, _x, _y, z in fx.SELF_TOSS_CAUGHT]
-    assert min(drops) == pytest.approx(305.03, abs=0.5)
-    assert max(drops) == pytest.approx(1007.14, abs=0.5)
+    assert min(drops) == pytest.approx(308.9266, abs=0.5)
+    assert max(drops) == pytest.approx(1011.0352, abs=0.5)
     assert min(drops) > 150.0 * 2.0                 # the shipped bound, doubled
 
 

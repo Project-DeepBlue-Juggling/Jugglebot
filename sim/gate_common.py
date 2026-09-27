@@ -17,12 +17,17 @@ import time
 
 import numpy as np
 
+from jugglebot import hardware_config as _hw
+
 # ── Sim/cup geometry constants (measured against sim/model/jugglebot.xml) ──────
 # cup_opening_world_z = CUP_Z_BASE_MM + hand_pos_mm + (platform_z_stow − Z_ACTIVE).
 # Probed 2026-07-08: neutral (z=170) + hand=0 → 659.6 mm; +1 mm hand → +1 mm cup;
 # +1 mm platform z → +1 mm cup (see the reload-gate logbook Design section).
-CUP_Z_BASE_MM = 659.6
+# 659.6 was 84.7 mm below the 744.3 mm centroid of the model probed; the centroid
+# follows config/hardware_config.yaml's STOW height (578.2 since the 2026-09-27
+# kinematic calibration), the 84.7 mm does not.
 Z_ACTIVE_MM = 170.0                       # STOW-relative neutral platform z
+CUP_Z_BASE_MM = float(_hw.GEOM_INITIAL_HEIGHT_MM) + Z_ACTIVE_MM - 84.7
 KNOT_DT_S = 0.025
 NEUTRAL_POSE = np.array([0.0, 0.0, Z_ACTIVE_MM, 0.0, 0.0, 0.0])
 

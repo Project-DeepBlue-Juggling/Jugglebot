@@ -190,19 +190,33 @@ class TestDerivedConstants:
             assert js_val[i] == pytest.approx(expected[i], abs=0.01), \
                 f'leg_with_offset[{i}]'
 
+    # The nodes are FITTED since the kinematic calibration was applied on
+    # 2026-09-27 (plans/active/kinematic-calibration.md § 6 step 5): every one
+    # sits 1-6 mm radially INWARD of the CAD circle that base_radius_mm /
+    # plat_radius_mm describe (the fit's node-plausibility bound is 5 mm from
+    # CAD; the accepted sweep reached 6.4). The radius keys stay as CAD
+    # nominals -- the Jacobian normaliser and the GUI/MuJoCo ring radius -- so
+    # these two tests no longer assert "on the circle" (abs 0.5 mm, which the
+    # calibrated nodes cannot meet) but "near the circle": a transcription slip
+    # in the YAML (a dropped digit, a swapped row) still moves a node by tens
+    # of mm and fails here, while the calibration's inward shift does not.
+    _NODE_RADIUS_TOL_MM = 10.0
+
     def test_base_node_radius(self, yaml_config):
-        """Base nodes should lie on a circle of base_radius_mm."""
+        """Base nodes lie NEAR a circle of base_radius_mm (see the note above)."""
         radius = yaml_config['jugglebot_geometry']['base_radius_mm']
         for i, node in enumerate(yaml_config['jugglebot_geometry']['base_nodes_mm']):
             r = (node[0]**2 + node[1]**2)**0.5
-            assert r == pytest.approx(radius, abs=0.5), f'base node {i} radius'
+            assert r == pytest.approx(radius, abs=self._NODE_RADIUS_TOL_MM), \
+                f'base node {i} radius'
 
     def test_plat_node_radius(self, yaml_config):
-        """Platform nodes should lie on a circle of plat_radius_mm."""
+        """Platform nodes lie NEAR a circle of plat_radius_mm (see the note above)."""
         radius = yaml_config['jugglebot_geometry']['plat_radius_mm']
         for i, node in enumerate(yaml_config['jugglebot_geometry']['init_plat_nodes_mm']):
             r = (node[0]**2 + node[1]**2)**0.5
-            assert r == pytest.approx(radius, abs=0.5), f'plat node {i} radius'
+            assert r == pytest.approx(radius, abs=self._NODE_RADIUS_TOL_MM), \
+                f'plat node {i} radius'
 
 
 # ---- File structure validation ----

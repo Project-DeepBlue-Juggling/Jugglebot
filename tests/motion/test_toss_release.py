@@ -6,9 +6,16 @@ launch solution against its idealised g·T/2 limit, the announced-landing fields
 and the 9806-vs-9810 gravity-source guard — a drifted constant or a re-added
 active-z lift anywhere in the toss math fails loudly here.
 
-Worked constants: initial_height = 574.3, HAND_THROW_OFFSET_MM = 58.044
+Worked constants: initial_height = 578.2, HAND_THROW_OFFSET_MM = 58.044
 (= −129.0 + 187.044), HAND_CATCH_OFFSET_MM = 64.78, Δz = 6.736 mm,
 g = 9806.0 mm/s².
+
+Values re-pinned 2026-09-27 for the kinematic calibration
+(plans/active/kinematic-calibration.md § 6 step 5): initial_height moved
+574.3 → 578.2 mm, so every quantity derived from it (STOW→global centre,
+release/catch planes) shifts by +3.9 mm. The tilt/swing-compensation angles
+and magnitudes are unaffected — they depend only on the Δz between the
+release and catch planes, which the shared +3.9 mm shift does not change.
 """
 
 from __future__ import annotations
@@ -32,29 +39,38 @@ G = bb.GRAVITY_MMS2
 # ── STOW→global conversion (the ONE conversion point) ──
 
 def test_stow_to_global_active_center():
-    """ACTIVE center: (0, 0, 170) → (0, 0, 744.3) — one addition of 574.3 to z."""
+    """ACTIVE center: (0, 0, 170) → (0, 0, 748.2) — one addition of 578.2 to z.
+
+    Re-pinned 2026-09-27 for the kinematic calibration (initial_height 574.3
+    → 578.2 mm; was 744.3)."""
     assert np.allclose(tr.stow_to_global_mm((0.0, 0.0, 170.0)),
-                       (0.0, 0.0, 744.3), atol=1e-9)
+                       (0.0, 0.0, 748.2), atol=1e-9)
 
 
 @pytest.mark.parametrize('stow, want', [
-    ((25.0, -40.0, 140.0), (25.0, -40.0, 714.3)),
-    ((60.0, -60.0, 140.0), (60.0, -60.0, 714.3)),
+    ((25.0, -40.0, 140.0), (25.0, -40.0, 718.2)),
+    ((60.0, -60.0, 140.0), (60.0, -60.0, 718.2)),
 ])
 def test_stow_to_global_general_xyz(stow, want):
-    """General (x, y, z): x/y pass through untouched, z gains exactly 574.3."""
+    """General (x, y, z): x/y pass through untouched, z gains exactly 578.2.
+
+    Re-pinned 2026-09-27 for the kinematic calibration (was 714.3)."""
     assert np.allclose(tr.stow_to_global_mm(stow), want, atol=1e-9)
 
 
 def test_conversion_parity_with_reload_catch_point():
     """The new general conversion + cup offset reproduces the hardware-verified
     reload catch point (toss_release.compute_catch_point_mm) at the ACTIVE
-    center — pins both frames' values for one worked example (809.08 mm), the
-    plan's mandated regression against the z double-add."""
+    center — pins both frames' values for one worked example (812.98 mm), the
+    plan's mandated regression against the z double-add.
+
+    Re-pinned 2026-09-27 for the kinematic calibration: initial_height 574.3
+    → 578.2 mm shifts the catch point 809.08 → 812.98 mm."""
     cup = tr.stow_to_global_mm((0.0, 0.0, 170.0)) + np.array([0.0, 0.0, 64.78])
-    ref = compute_catch_point_mm(574.3, 170.0, landing_z_offset_mm=64.78)
+    ref = compute_catch_point_mm(hw.GEOM_INITIAL_HEIGHT_MM, 170.0,
+                                 landing_z_offset_mm=64.78)
     assert np.allclose(cup, ref, atol=1e-9)
-    assert cup[2] == pytest.approx(809.08, abs=1e-9)
+    assert cup[2] == pytest.approx(812.98, abs=1e-9)
 
 
 def test_hand_throw_offset_pin():
@@ -70,11 +86,16 @@ def test_hand_throw_offset_pin():
 # ── release-state worked examples (full solution) ──
 
 def test_release_state_worked_example_center():
-    """Plan sanity example: (0, 0, 170) at T = 0.8 s — release plane 802.344 mm,
-    launch (0, 0, 3930.82) mm/s (FULL solution), event_vel 3.931 m/s."""
+    """Plan sanity example: (0, 0, 170) at T = 0.8 s — release plane 806.244 mm,
+    launch (0, 0, 3930.82) mm/s (FULL solution), event_vel 3.931 m/s.
+
+    Re-pinned 2026-09-27 for the kinematic calibration: initial_height 574.3
+    → 578.2 mm shifts the release plane 802.344 → 806.244 mm and the catch
+    point 809.08 → 812.98 mm; the launch velocity (a function of Δz between
+    the two planes, not their absolute height) is unchanged."""
     rs = tr.compute_release_state((0.0, 0.0, 170.0), 0.8)
-    assert np.allclose(rs.release_pos_global_mm, (0.0, 0.0, 802.344), atol=1e-9)
-    assert np.allclose(rs.catch_point_global_mm, (0.0, 0.0, 809.08), atol=1e-9)
+    assert np.allclose(rs.release_pos_global_mm, (0.0, 0.0, 806.244), atol=1e-9)
+    assert np.allclose(rs.catch_point_global_mm, (0.0, 0.0, 812.98), atol=1e-9)
     assert rs.launch_vel_mms[0] == 0.0 and rs.launch_vel_mms[1] == 0.0
     assert rs.launch_vel_mms[2] == pytest.approx(3930.82, abs=1e-6)
     assert rs.event_vel_mps == pytest.approx(3.93082, abs=1e-6)
@@ -115,10 +136,14 @@ def test_flight_time_from_height_roundtrip():
 
 def test_release_state_offcenter_colocated():
     """Off-center (60, −60, 170) at T = 0.6 s: x/y ride through to both planes,
-    launch is purely vertical (co-located throw/catch ⇒ zero horizontal)."""
+    launch is purely vertical (co-located throw/catch ⇒ zero horizontal).
+
+    Re-pinned 2026-09-27 for the kinematic calibration (release plane 802.344
+    → 806.244 mm, catch point 809.08 → 812.98 mm; see
+    test_release_state_worked_example_center)."""
     rs = tr.compute_release_state((60.0, -60.0, 170.0), 0.6)
-    assert np.allclose(rs.release_pos_global_mm, (60.0, -60.0, 802.344), atol=1e-9)
-    assert np.allclose(rs.catch_point_global_mm, (60.0, -60.0, 809.08), atol=1e-9)
+    assert np.allclose(rs.release_pos_global_mm, (60.0, -60.0, 806.244), atol=1e-9)
+    assert np.allclose(rs.catch_point_global_mm, (60.0, -60.0, 812.98), atol=1e-9)
     assert rs.launch_vel_mms[0] == 0.0 and rs.launch_vel_mms[1] == 0.0
     assert rs.launch_vel_mms[2] == pytest.approx(2953.03, abs=0.01)
     assert rs.event_vel_mps == pytest.approx(2.953, abs=1e-3)
@@ -150,12 +175,16 @@ def test_ballistic_roundtrip_lands_in_cup():
 
 def test_announcement_fields_worked_examples():
     """Landing velocity is the ballistic arrival: (0, 0, −3913.98) mm/s for
-    example A (3930.82 − 9806·0.8) and (0, 0, −2930.57) for example B."""
+    example A (3930.82 − 9806·0.8) and (0, 0, −2930.57) for example B.
+
+    Re-pinned 2026-09-27 for the kinematic calibration (landing position
+    809.08 → 812.98 mm; the landing velocity, a function of Δz, is
+    unchanged — see test_release_state_worked_example_center)."""
     rs_a = tr.compute_release_state((0.0, 0.0, 170.0), 0.8)
     f_a = tr.build_announcement_fields(rs_a, 10.0)
     assert np.allclose(f_a['initial_position'], rs_a.release_pos_global_mm)
     assert np.allclose(f_a['initial_velocity'], rs_a.launch_vel_mms)
-    assert np.allclose(f_a['landing_position'], (0.0, 0.0, 809.08), atol=1e-9)
+    assert np.allclose(f_a['landing_position'], (0.0, 0.0, 812.98), atol=1e-9)
     assert f_a['landing_velocity'][2] == pytest.approx(-3913.98, abs=1e-6)
     rs_b = tr.compute_release_state((60.0, -60.0, 170.0), 0.6)
     f_b = tr.build_announcement_fields(rs_b, 10.0)
@@ -177,17 +206,24 @@ def test_tilted_release_worked_example_displaced():
     """Phase-4 spec worked example: B = (100, 0, 170), A = (0, 0), T = 0.8 s.
     Level inverse gives v_x = d/T = 125 mm/s exactly; the tilted release sits
     at nominal A xy (swing-compensated) and arm·(1−cos θ) ≈ 0.029 mm BELOW the
-    802.344 level plane, so v_z rides 0.037 mm/s above the 8a 3930.82. Aim
-    θ ≈ 1.82° from vertical, +x displacement ⇒ ry > 0, rx == 0."""
+    806.244 level plane, so v_z rides 0.037 mm/s above the 8a 3930.82. Aim
+    θ ≈ 1.82° from vertical, +x displacement ⇒ ry > 0, rx == 0.
+
+    Re-pinned 2026-09-27 for the kinematic calibration: initial_height 574.3
+    → 578.2 mm shifts the level release plane 802.344 → 806.244 mm, so this
+    example's tilted release plane moves 802.31467 → 806.21467 mm (verified
+    by running; the tilt angle, launch velocity and event_vel — all functions
+    of Δz between planes, not absolute height — are unchanged) and the catch
+    point 809.08 → 812.98 mm."""
     rs = tr.compute_release_state_tilted((100.0, 0.0, 170.0), 0.8,
                                          throw_site_xy_mm=(0.0, 0.0))
-    assert np.allclose(rs.release_pos_global_mm, (0.0, 0.0, 802.31467),
+    assert np.allclose(rs.release_pos_global_mm, (0.0, 0.0, 806.21467),
                        atol=1e-4)
     assert rs.launch_vel_mms[0] == pytest.approx(125.0, abs=1e-9)
     assert rs.launch_vel_mms[1] == 0.0
     assert rs.launch_vel_mms[2] == pytest.approx(3930.857, abs=1e-3)
     assert rs.event_vel_mps == pytest.approx(3.93284, abs=1e-5)
-    assert np.allclose(rs.catch_point_global_mm, (100.0, 0.0, 809.08),
+    assert np.allclose(rs.catch_point_global_mm, (100.0, 0.0, 812.98),
                        atol=1e-9)
     assert rs.tilt_ry > 0.0 and rs.tilt_rx == 0.0
     assert np.degrees(np.hypot(rs.tilt_rx, rs.tilt_ry)) == pytest.approx(
@@ -200,7 +236,12 @@ def test_tilted_pretilt_pose_swing_compensation_magnitude():
     """The commanded centroid pulls back by arm·sin θ = 58.044·sin 1.8214° ≈
     1.845 mm along −x, so the TILTED release point lands exactly AT A = (0, 0)
     — the throw-side lever-arm compensation pin (release-plane arm ≈ +58 mm
-    against the fixed 744.3 mm world tilt centre, the catch-side convention)."""
+    against the fixed 748.2 mm world tilt centre, the catch-side convention).
+
+    Value re-pinned 2026-09-27 for the kinematic calibration in wording only
+    (744.3 → 748.2 mm world tilt centre) — the swing-compensation magnitude
+    itself (arm·sin θ) does not depend on the tilt centre's absolute height,
+    so pose[0] is unchanged (verified by running)."""
     rs = tr.compute_release_state_tilted((100.0, 0.0, 170.0), 0.8,
                                          throw_site_xy_mm=(0.0, 0.0))
     pose = rs.pretilt_pose_stow
@@ -288,11 +329,14 @@ def test_tilted_announcement_landing_is_B():
     """The Tier-8b announcement's landing IS B's cup point (global) and the
     initial/landing velocities carry the conserved lateral component — what
     the correlation → catch loop keys on at the displaced site.
-    build_announcement_fields itself is unchanged (inheritance rides through)."""
+    build_announcement_fields itself is unchanged (inheritance rides through).
+
+    Re-pinned 2026-09-27 for the kinematic calibration (landing position
+    809.08 → 812.98 mm; see test_release_state_worked_example_center)."""
     rs = tr.compute_release_state_tilted((100.0, 0.0, 170.0), 0.8,
                                          throw_site_xy_mm=(0.0, 0.0))
     f = tr.build_announcement_fields(rs, 100.0)
-    assert np.allclose(f['landing_position'], (100.0, 0.0, 809.08), atol=1e-9)
+    assert np.allclose(f['landing_position'], (100.0, 0.0, 812.98), atol=1e-9)
     assert np.allclose(f['initial_position'], rs.release_pos_global_mm)
     assert f['initial_velocity'][0] == pytest.approx(125.0, abs=1e-9)
     assert f['landing_velocity'][0] == pytest.approx(125.0, abs=1e-9)

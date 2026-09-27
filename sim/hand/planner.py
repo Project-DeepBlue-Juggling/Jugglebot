@@ -19,6 +19,8 @@ from dataclasses import dataclass
 
 import numpy as np
 
+from jugglebot import hardware_config as hw
+
 from sim.hand.ballistics import (
     compute_launch_velocity,
     compute_arrival_velocity,
@@ -47,7 +49,7 @@ logger = logging.getLogger(__name__)
 _x5_m = _TOTAL_STROKE_M - (_TOTAL_STROKE_M - CATCH_VEL_HOLD_PCT * _TOTAL_STROKE_M) * INERTIA_RATIO / (1.0 + INERTIA_RATIO)
 _HAND_CATCH_X5_MM = STROKE_MARGIN_M * 1000.0 + _x5_m * 1000.0
 
-_PLATFORM_HEIGHT_MM = 574.3
+_PLATFORM_HEIGHT_MM = float(hw.GEOM_INITIAL_HEIGHT_MM)   # STOW height, config-owned (fitted 2026-09-27)
 _SETTLE_MARGIN_S = 0.1
 
 
@@ -69,7 +71,7 @@ class ThrowCatchPlanner:
     Parameters
     ----------
     platform_height_mm : float
-        Home position Z (574.3 mm).
+        Home position Z (hardware_config GEOM_INITIAL_HEIGHT_MM).
     """
 
     def __init__(self, platform_height_mm: float = _PLATFORM_HEIGHT_MM):

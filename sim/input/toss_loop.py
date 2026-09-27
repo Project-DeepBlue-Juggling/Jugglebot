@@ -32,6 +32,8 @@ from enum import Enum, auto
 
 import numpy as np
 
+from jugglebot import hardware_config as hw
+
 from sim.hand.ballistics import compute_hand_offset_mm
 from sim.hand.coordinator import DynamicTarget, BallRelease
 from sim.hand.planner import ThrowCatchPlanner, ThrowCatchPlan, _HAND_CATCH_X5_MM
@@ -46,7 +48,7 @@ from controller.target import ReferenceEvent
 
 logger = logging.getLogger(__name__)
 
-_PLATFORM_HEIGHT_MM = 574.3
+_PLATFORM_HEIGHT_MM = float(hw.GEOM_INITIAL_HEIGHT_MM)   # STOW height, config-owned (fitted 2026-09-27)
 _INITIAL_APPROACH_S = 0.5   # seconds before first throw for hand prep
 _DROP_RESPAWN_DELAY = 0.5   # seconds after drop before respawning
 _DROP_TIMEOUT_MARGIN = 0.3  # extra seconds past catch-seq end before declaring drop

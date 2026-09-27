@@ -33,7 +33,8 @@ robot to the wrong place, so they are stated once, here:
   platform frame, z GLOBAL.**  That is exactly ``1000 ×`` the SI vectors
   ``sim/cycle_gate.py`` hands ``plan_window`` (its ``THROW_CUP_Z_M = 0.86`` is
   0.86 m above the floor), and it is the frame ``cup_realize`` already works in:
-  :data:`cup_realize.CUP_Z_BASE_MM` = 659.6 mm is the GLOBAL height of the cup
+  :data:`cup_realize.CUP_Z_BASE_MM` (663.5 mm since the 2026-09-27 calibration;
+  659.6 before) is the GLOBAL height of the cup
   opening at zero slider.  The xy half needs no conversion at all —
   ``toss_release.stow_to_global_mm`` adds ``GEOM_INITIAL_HEIGHT_MM`` to z and
   leaves x and y alone — so "stow-relative xy" and "global xy" are the same

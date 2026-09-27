@@ -76,7 +76,9 @@ from sim.viz.recording import (
 )
 
 CONTROL_DT = 0.025
-CUP_Z_BASE_MM = 659.6
+# Cup world z at slider 0, ACTIVE pose: centroid − 84.7 (see sim/gate_common.py;
+# literal 659.6 until the 2026-09-27 calibration).
+CUP_Z_BASE_MM = float(_hw.GEOM_INITIAL_HEIGHT_MM) + float(_hw.JB_OP_DEFAULT_ACTIVE_Z_MM) - 84.7
 # Slider travel [0, stroke] mm — DERIVED (see sim/juggle_tilt.py for why; it read
 # a hardcoded 355.0 until 2026-08-21, 10.25 mm above what the plant will execute).
 SLIDER_STROKE_MM = float(_hw.GEOM_HAND_STROKE_MM)
@@ -90,9 +92,11 @@ class SingleThrowConfig:
     """One tilt-aimed open-loop throw. SI units unless noted (mm where stated)."""
     # ---- throw geometry / target ----
     throw_xy_m: "tuple[float, float]" = (0.0, 0.0)     # cup xy at release
-    throw_z_m: float = 0.85                            # cup release height (world)
+    # Heights ride on CUP_Z_BASE_MM (see sim/juggle_selfcatch.py's note): 0.85 /
+    # 0.70 at the 659.6 mm base the values were chosen against.
+    throw_z_m: float = CUP_Z_BASE_MM / 1000.0 + 0.1904   # cup release height (world)
     target_xy_m: "tuple[float, float]" = (0.10, 0.0)   # desired landing xy
-    catch_z_m: float = 0.70                            # landing/measure height
+    catch_z_m: float = CUP_Z_BASE_MM / 1000.0 + 0.0404   # landing/measure height
     flight_s: float = 0.60                             # CADENCE: time of flight
     # ---- carry / release realisation knobs ----
     dip_m: float = 0.16            # carry dip below the throw, along the tilted axis

@@ -8,6 +8,8 @@ from __future__ import annotations
 import pytest
 import numpy as np
 
+from jugglebot import hardware_config as hw
+
 from sim.hand.planner import ThrowCatchPlanner, ThrowCatchPlan
 from sim.hand.ballistics import compute_launch_velocity, compute_arrival_velocity, rodrigues
 from sim.hand.trajectory import max_throw_speed_mps
@@ -65,7 +67,7 @@ class TestThrowCatchPlanner:
         # For vertical throw, centroid Z = ball_z - hand_offset - platform_height
         # Centroid should be below ball position
         throw_z = plan.throw_target.pose_6dof[2]
-        assert throw_z < 800.0 - 574.3  # Below ball relative to home
+        assert throw_z < 800.0 - hw.GEOM_INITIAL_HEIGHT_MM  # Below ball relative to home
 
     def test_ball_release_velocity(self):
         """Ball release velocity matches ballistic inverse."""

@@ -295,7 +295,9 @@ def test_sweep_feeds_a_fit_that_passes(tmp_path):
     a = kf.analyse(cap)
     assert a['pass'], a['criteria']
     assert a['pose_holdout']['pos_rms_mm'] < 0.3
-    assert a['pose_holdout_reference']['pos_rms_mm'] > 3.0
+    # Re-pinned 2026-09-27 for the kinematic calibration: measured 2.858 mm
+    # under the fitted nominal geometry (was > 3.0 under the CAD nominal).
+    assert a['pose_holdout_reference']['pos_rms_mm'] > 2.0
     assert a['repeat']['verdict'] == 'STATIC'
     assert a['rehome']['verdict'] == 'PASS'
 
@@ -339,8 +341,16 @@ def test_csv_header_is_the_fit_contract_plus_extras():
 def test_reach_allows_for_the_node_levelling_correction():
     """z250_23 of the pre-fix seed-1 sweep: leg 1 at 272.4 mm nominal passed a
     5 mm margin, then the node's ~0.8 deg C-LEVEL-1 tilt put it at 275.2 mm and
-    go_to_pose refused it WORKSPACE."""
-    pose = np.array([20.9316, 76.4709, 250.0, -0.147246, -0.060055, 0.0])
+    go_to_pose refused it WORKSPACE.
+
+    Re-pinned 2026-09-27 for the kinematic calibration: the fitted geometry
+    moved this pose's nominal leg-1 extension enough that z=250 no longer
+    passes the level-0 reach check at all (the story's pre-tilt margin no
+    longer exists to demonstrate), so the pinned pose's z is probed down to
+    245 — the shipped LEVEL_ALLOWANCE_DEG tilt still refuses it. Probed
+    2026-09-27: at z=245, level-0 leg max is 274.0 mm (ok), and the default
+    allowance's tilt still refuses (`kc.Reach().ok(pose)[0]` is False)."""
+    pose = np.array([20.9316, 76.4709, 245.0, -0.147246, -0.060055, 0.0])
     assert kc.Reach(level_allowance_deg=0.0).ok(pose)[0]
     assert not REACH.ok(pose)[0]
 

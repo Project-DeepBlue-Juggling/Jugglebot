@@ -208,10 +208,16 @@ class AdmissibleBox:
 #: this from ``{feasibility, segments}.py`` alone: ``cup_cycle.py`` /
 #: ``cup_realize.py`` / ``unified_cycle.py`` / ``tilt_geometry.py`` all shape
 #: the SAME solve and a stale box against an edit to any of them would go
-#: undetected (plan R4 carried item (d)). Each entry is the path components
+#: undetected (plan R4 carried item (d)). The kinematic calibration
+#: (2026-09-27) added the generated ``hardware_config.py``: the IK geometry
+#: (nodes, leg zero lengths, mm_to_rev, initial height) is as much an input to
+#: the solve as any planner file, and without it the geometry commit would
+#: have left every committed box "valid" while swept under the old IK -- the
+#: re-sweep would be remembered, not forced. Each entry is the path components
 #: relative to the ``motion/`` directory -- except ``segments.py``, which
 #: (like the live import ``skills.segments``) lives one level down, in
-#: ``motion/skills/`` alongside this module.
+#: ``motion/skills/`` alongside this module, and ``hardware_config.py``, the
+#: generated constants module one level UP, in the package root.
 _GATED_FILES = (
     ('trajectory', 'feasibility.py'),
     ('segments.py',),
@@ -219,33 +225,38 @@ _GATED_FILES = (
     ('trajectory', 'cup_realize.py'),
     ('unified_cycle.py',),
     ('trajectory', 'tilt_geometry.py'),
+    ('hardware_config.py',),
 )
 
 
 def gate_hash(root: str = None) -> str:
-    """sha256 of the six :data:`_GATED_FILES`' TEXT, in order, first 12 hex
+    """sha256 of the seven :data:`_GATED_FILES`' TEXT, in order, first 12 hex
     chars.
 
     Deliberately NOT the commit hash: a working-tree edit to any gated file
     (the common case while iterating on a sweep) must invalidate a box that
     was swept against the old gate, and a git hash only changes at commit.
 
-    ``root`` (test-only) maps EVERY one of the six paths directly under it
+    ``root`` (test-only) maps EVERY one of the seven paths directly under it
     (``root/trajectory/feasibility.py``, ``root/segments.py``,
-    ``root/unified_cycle.py``, ...) -- a flat tmp tree, not a repo layout --
-    rather than replicating the live tree's ``motion/`` vs ``motion/skills/``
-    split. Left ``None``, each path resolves against the live tree: this
-    module's own directory (``motion/skills``) for ``segments.py``, its
-    parent (``motion/``) for the rest.
+    ``root/unified_cycle.py``, ``root/hardware_config.py``, ...) -- a flat
+    tmp tree, not a repo layout -- rather than replicating the live tree's
+    ``motion/`` vs ``motion/skills/`` vs package-root split. Left ``None``,
+    each path resolves against the live tree: this module's own directory
+    (``motion/skills``) for ``segments.py``, the package root
+    (``jugglebot/``) for ``hardware_config.py``, and ``motion/`` for the rest.
     """
     here = os.path.dirname(os.path.abspath(__file__))
     motion_dir = os.path.join(here, os.pardir)
+    package_dir = os.path.join(motion_dir, os.pardir)
     digest = hashlib.sha256()
     for parts in _GATED_FILES:
         if root is not None:
             path = os.path.join(root, *parts)
         elif parts == ('segments.py',):
             path = os.path.join(here, *parts)
+        elif parts == ('hardware_config.py',):
+            path = os.path.join(package_dir, *parts)
         else:
             path = os.path.join(motion_dir, *parts)
         with open(path, 'rb') as handle:

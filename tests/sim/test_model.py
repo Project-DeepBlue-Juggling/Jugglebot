@@ -14,6 +14,8 @@ Acceptance criteria:
 
 import os
 import numpy as np
+
+from jugglebot import hardware_config as hw
 import pytest
 
 import mujoco
@@ -78,7 +80,7 @@ def _get_platform_pose_from_mujoco(model, data):
     quat = _get_sensor_data(model, data, 'platform_quat')
 
     # Convert to mm and compute offset from home
-    initial_height_m = 0.5743  # from hardware_config
+    initial_height_m = float(hw.GEOM_INITIAL_HEIGHT_MM) / 1000.0  # from hardware_config
     pos_offset_mm = np.array([
         pos_m[0] * 1000.0,
         pos_m[1] * 1000.0,
@@ -119,8 +121,10 @@ def _extensions_mm_to_slide_m(extensions_mm, geom):
     """Convert IK extensions (mm) to MuJoCo slide joint values (m).
 
     The IK defines: extension = absolute_leg_length - init_leg_lengths_mm.
-    After STOW-zero refactor, init_leg_lengths_mm IS the geometric home
-    length, so slide ≈ extension / 1000 (small rounding differences only).
+    Since the 2026-09-27 kinematic calibration, init_leg_lengths_mm is the
+    per-leg fitted L0 and differs from the geometric home length by -5..+6 mm,
+    so slide and extension are NOT approximately equal; the conversion below
+    carries the full offset (as sim/plant/mujoco_plant.py does).
 
     MuJoCo slide = 0 means legs at geometric home length (computed from nodes).
     So:  slide = (absolute_leg_length - geom_home) / 1000
@@ -201,8 +205,8 @@ class TestHomePosition:
         """Platform Z at home matches initial_height_mm."""
         pos_m = _get_sensor_data(model, data, 'platform_pos')
         height_mm = pos_m[2] * 1000.0
-        assert abs(height_mm - 574.3) < 0.1, \
-            f"Home height {height_mm:.2f} mm, expected 574.3 mm"
+        assert abs(height_mm - hw.GEOM_INITIAL_HEIGHT_MM) < 0.1, \
+            f"Home height {height_mm:.2f} mm, expected {hw.GEOM_INITIAL_HEIGHT_MM} mm"
 
     def test_home_orientation(self, model, data):
         """Platform orientation at home is identity (no tilt)."""
@@ -225,9 +229,19 @@ class TestFKValidation:
     # All poses must have sufficient z (or small xy) to keep all leg extensions
     # positive (STOW-relative).  At STOW height (z=0), large xy translations
     # compress some legs below the hard stop (~-7mm).
+    #
+    # Since the kinematic calibration was applied (2026-09-27,
+    # plans/active/kinematic-calibration.md § 6 step 5) the LEVEL pose at zero
+    # lift is itself unreachable: the machine's real 0-rev pose is tilted
+    # 0.88 deg and 3.6/7.7 mm off-axis, so levelling it at initial_height_mm
+    # asks legs 5 and 6 for -5.1 / -4.9 mm. The old 'home' case (0, 0, 0) was
+    # therefore replaced by a 10 mm lift, the smallest round lift with every
+    # leg positive (>= +3.8 mm). The sim's OWN home (slide 0, level -- see
+    # TestHomePosition) is unaffected: MuJoCo's slide range has a margin below
+    # zero that the hardware does not.
     TEST_POSES = [
         # Pure translations
-        ([0, 0, 0, 0, 0, 0], 'home'),
+        ([0, 0, 10, 0, 0, 0], 'stow+10mm'),
         ([0, 0, 50, 0, 0, 0], 'z+50mm'),
         ([0, 0, 100, 0, 0, 0], 'z+100mm'),
         ([50, 0, 50, 0, 0, 0], 'x+50_z+50'),

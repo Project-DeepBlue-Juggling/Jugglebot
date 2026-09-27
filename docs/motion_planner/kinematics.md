@@ -32,7 +32,7 @@ geom = StewartGeometry()
 |---|---|---|
 | `base_nodes` | 6×3 array | Base attachment points (mm), in the base frame |
 | `plat_nodes` | 6×3 array | Platform attachment points (mm), in the platform body frame |
-| `init_height_mm` | 574.3 | Initial height: distance from base to platform centre (mm) |
+| `init_height_mm` | 578.2 | Initial height: distance from base to platform centre at 0 rev (mm); fitted 2026-09-27, was 574.3 |
 | `leg_stroke_mm` | 280 | Total available leg extension range (mm) |
 | `spool_radius_mm` | ~11.4 per leg | String spool radius, derived from `mm_to_rev` conversion |
 | `ball_joint_offset_mm` | offset | Ball joint offset applied to initial leg lengths |

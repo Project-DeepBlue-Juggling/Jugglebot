@@ -3,7 +3,7 @@ title: Kinematic calibration — fit the Stewart geometry to a mocap pose sweep
 created: 2026-09-23
 status: active
 owner: Harrison
-last_updated: 2026-09-23
+last_updated: 2026-09-27
 related_plan: two-ball-skill-stack.md
 related_config:
   - config/hardware_config.yaml → jugglebot_geometry.{base_nodes_mm, init_plat_nodes_mm, initial_height_mm, init_leg_lengths_mm, mm_to_rev} (written only at § 6 step 5, by a deliberate commit)
@@ -191,7 +191,22 @@ exact, and the capture design has to allow for two weak directions:
    (`2026-09-23-kinematic-calibration-design-and-fit-tool.md`, § 2026-09-27).
 5. **Apply** by a deliberate commit. No firmware flash: the firmware headers carry the
    geometry constants but no firmware code reads them (checked 2026-09-23). **Owner
-   approved this procedure on 2026-09-27, to run in a fresh session:**
+   approved this procedure on 2026-09-27, to run in a fresh session. Done 2026-09-27**
+   (logbook `2026-09-23-kinematic-calibration-design-and-fit-tool.md` § "2026-09-27:
+   applied"; runsheet `tests/hardware/session_kincal_apply.md`). Three things the
+   procedure below did not anticipate: the MuJoCo model `sim/model/jugglebot.xml` is a
+   committed generated artifact and was regenerated; the level pose at zero lift is
+   now unreachable through the IK (legs 5/6 at −5 mm), so a sim test pose moved to a
+   10 mm lift; and the admissible-box gate hash now covers the generated
+   `hardware_config.py` (R4 session's ask), so a geometry change forces a re-sweep
+   instead of relying on § 7 being remembered. And the class the "grep for 574.3"
+   instruction could not see: DERIVED literals — `CUP_TILT_CENTER_Z_MM = 744.3`
+   (574.3 + 170) in the planner's lever arithmetic and `CUP_Z_BASE_MM = 659.6`
+   (744.3 − 84.7) in `cup_realize` and the sim — each 3.9 mm short under the new
+   height; both now derive from the config (logbook § "What the full suite found").
+   ⚠ OPEN: the can-bridge firmware's `STROKE_MIN/MAX_REV` backstop was captured
+   from motor_guard under the old `mm_to_rev` (~0.7 % off now; test xfailed) —
+   re-deriving it is a firmware edit + flash for the owner to schedule.
    1. Edit `config/hardware_config.yaml` `jugglebot_geometry` from
       `temp/reports/kincal/kincal_sweep_20260927_143217/proposed_geometry.yaml`:
       - `base_nodes_mm`: x/y fitted, z held at 0

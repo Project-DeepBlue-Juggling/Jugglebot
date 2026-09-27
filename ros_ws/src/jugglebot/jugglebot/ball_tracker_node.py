@@ -38,7 +38,8 @@ class BallTrackerNode(Node):
         # node and every skill terminal aimed at a CATCH agree on the same
         # number by construction. Was the hand-computed
         # `GEOM_INITIAL_HEIGHT_MM + JB_OP_DEFAULT_ACTIVE_Z_MM +
-        # HAND_CATCH_OFFSET_MM` (809.08 mm) until this change — the FSM's own
+        # HAND_CATCH_OFFSET_MM` (809.08 mm at the time; 812.98 mm since the
+        # 2026-09-27 kinematic calibration) until this change — the FSM's own
         # catch plane moves with it (accepted by the owner; R4 re-points the
         # coordinator's copies at this same definition, plan § "Key
         # architectural boundaries").

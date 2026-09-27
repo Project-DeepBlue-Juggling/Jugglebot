@@ -30,6 +30,8 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 
+from jugglebot import hardware_config as hw
+
 if TYPE_CHECKING:
     Waypoints = list[tuple[np.ndarray, float]]
 
@@ -310,7 +312,7 @@ _x5_m = _TS - (_TS - _CVH * _TS) * _IR / (1.0 + _IR)
 _HAND_CATCH_X5_PHYSICAL_MM = _SM * 1000.0 + _x5_m * 1000.0
 _HAND_CATCH_OFFSET_MM = _compute_hand_offset_mm(_HAND_CATCH_X5_PHYSICAL_MM)
 
-_PLATFORM_HEIGHT_MM = 574.3
+_PLATFORM_HEIGHT_MM = float(hw.GEOM_INITIAL_HEIGHT_MM)   # STOW height, config-owned (fitted 2026-09-27)
 
 
 def _rodrigues(rv: np.ndarray) -> np.ndarray:
@@ -379,7 +381,7 @@ def _compute_catch_target(
     spawn_pos_mm: np.ndarray,
     spawn_vel_mms: np.ndarray,
     spawn_time: float,
-    platform_height_mm: float = 574.3,
+    platform_height_mm: float = _PLATFORM_HEIGHT_MM,
     hand_catch_offset_mm: float = 64.78,
     active_z_offset_mm: float = 0.0,
 ) -> tuple[DynamicTarget, BallSpawn]:
@@ -672,7 +674,7 @@ def make_TC2():
     """
     from sim.hand.planner import ThrowCatchPlanner
     planner = ThrowCatchPlanner()
-    ball_z = 574.3 + 255.0   # halfway between original 170mm and 340mm offsets
+    ball_z = _PLATFORM_HEIGHT_MM + 255.0   # halfway between original 170mm and 340mm offsets
     flight_time = 1.15        # high arc, gentle tilts, plenty of transit time
     plan = planner.plan(
         throw_pos_mm=np.array([-200.0, 0.0, ball_z]),

@@ -335,10 +335,17 @@ friction_ff:
 #    here as optimised values determined experimentally.
 # ============================================================
 jugglebot_geometry:
-  # Platform height: distance from base plane (bottom joint of legs) to platform
-  # in its lowest position. Found experimentally by echoing /rigid_body_poses after homing.
-  # NOTE: The old value of 565.0 mm is stale and appears in several catch nodes.
-  initial_height_mm: 574.3
+  # Platform height: distance from base plane (bottom joint of legs) to the
+  # platform centre at STOW (all six legs at 0 rev). FITTED 2026-09-27 by the
+  # kinematic calibration (plans/active/kinematic-calibration.md § 6 step 5):
+  # this is the forward-kinematics z of all-zero revolutions under the fitted
+  # geometry below. The fitted STOW pose is also (-3.6, -7.7) mm off-axis and
+  # tilted 0.88 deg about x -- the IK's "STOW" (0, 0, 0 at this height, level)
+  # and the motors' zero are therefore no longer the same pose; see the
+  # init_leg_lengths_mm comment. Previous value 574.3 (echoed from
+  # /rigid_body_poses after homing, pre-2026). The still-older 565.0 mm is
+  # stale and appears only in archived catch nodes.
+  initial_height_mm: 578.2
 
   base_radius_mm: 410.0              # Radius of base {mm}
   plat_radius_mm: 219.075            # Radius of platform {mm}
@@ -375,43 +382,95 @@ jugglebot_geometry:
   # Previous value: 25.50 mm (12.50 mm ball joint radius + 13 mm measurement gap)
   ball_joint_offset_mm: 0.0
 
-  # Pre-computed base node positions in the base frame {mm}.
-  # Calculated from base_radius and base_small_angle via build_platform().
+  # ---------------------------------------------------------------------------
+  # FITTED GEOMETRY (kinematic calibration, applied 2026-09-27).
+  #
+  # base_nodes_mm, init_plat_nodes_mm, init_leg_lengths_mm and mm_to_rev below
+  # are the parametric fit of tools/kincal_fit.py to the 166-row mocap sweep
+  # temp/logs/kincal_sweep_20260927_143217.csv (plans/active/
+  # kinematic-calibration.md § 6 steps 3-5; numbers and verdicts in
+  # logbook/2026-09-23-kinematic-calibration-design-and-fit-tool.md). Hold-out
+  # position residual 1.08 mm RMS / 1.77 mm max against 12.3 / 17.7 mm under the
+  # CAD geometry they replace. The owner accepted the fit on 2026-09-27.
+  #
+  # They are NO LONGER the build_platform() circle construction from
+  # base_radius_mm / plat_radius_mm and the angles above: every node sits 1-6 mm
+  # radially INWARD of its CAD position (ball-joint centres inboard of the CAD
+  # attachment points on FDM-printed parts -- owner, 2026-09-27). The radius and
+  # angle keys stay as CAD nominals: plat_radius_mm is the Jacobian normaliser
+  # and the GUI/MuJoCo ring radius, not a node generator.
+  # ⚠ `python config/compute_geometry.py --update` would REVERT this calibration
+  # to the CAD circles. Do not run it with --update.
+  #
+  # Base-node z is held at 0 (CAD) by decision: a misfit there is not
+  # identifiable from the sweep. Platform-node z IS fitted (±2.9 mm) -- nothing
+  # in the IK/FK assumes it is zero, and the MuJoCo model reads the 3-vector.
+  #
+  # The mocap Platform body's yaw against the joint pattern fitted at
+  # reg.z = -0.28 deg (mocap_registration_rotvec_rad = [0, 0, -0.0049184]). It
+  # matters only when comparing mocap poses against commanded ones and is
+  # deliberately NOT applied anywhere in the IK.
+  # ---------------------------------------------------------------------------
+
+  # Base node positions in the base frame {mm}. FITTED x/y, z held at 0.
+  # CAD (build_platform) values they replace, for reference:
+  #   [-385.274, -140.228, 0], [-314.078, -263.543, 0], [314.078, -263.543, 0],
+  #   [385.274, -140.228, 0], [71.196, 403.771, 0], [-71.196, 403.771, 0]
   base_nodes_mm:
-    - [-385.274, -140.228, 0.0]
-    - [-314.078, -263.543, 0.0]
-    - [314.078, -263.543, 0.0]
-    - [385.274, -140.228, 0.0]
-    - [71.196, 403.771, 0.0]
-    - [-71.196, 403.771, 0.0]
+    - [-383.0629, -134.5122, 0.0]
+    - [-308.5251, -264.2557, 0.0]
+    - [309.575, -262.8407, 0.0]
+    - [380.1995, -136.2713, 0.0]
+    - [69.9891, 400.4458, 0.0]
+    - [-73.4966, 399.7973, 0.0]
 
-  # Pre-computed platform node positions in the platform frame {mm}.
-  # Calculated from plat_radius, plat_small_angle, and plat_x_axis_offset via build_platform().
+  # Platform node positions in the platform frame {mm}. FITTED, z included.
+  # CAD (build_platform) values they replace, for reference:
+  #   [-197.405, 95.000, 0], [-16.431, -218.458, 0], [16.431, -218.458, 0],
+  #   [197.405, 95.000, 0], [180.975, 123.458, 0], [-180.975, 123.458, 0]
   init_plat_nodes_mm:
-    - [-197.405, 95.000, 0.0]
-    - [-16.431, -218.458, 0.0]
-    - [16.431, -218.458, 0.0]
-    - [197.405, 95.000, 0.0]
-    - [180.975, 123.458, 0.0]
-    - [-180.975, 123.458, 0.0]
+    - [-196.2139, 96.1055, 1.8415]
+    - [-14.3596, -217.2241, 2.6074]
+    - [17.1245, -216.223, -2.8562]
+    - [194.333, 92.9224, 1.1477]
+    - [178.7853, 121.4363, -0.7438]
+    - [-179.6693, 122.983, -1.9966]
 
-  # Initial leg lengths {mm} — joint-centre-to-joint-centre distance at STOW.
+  # Leg lengths at motor zero {mm} -- joint-centre-to-joint-centre distance with
+  # the leg at 0 rev. FITTED per leg (L0_i, sd ~0.7 mm).
   #
-  # DERIVED from geometry: the Euclidean distance from each base_node to its
-  # corresponding plat_node when the platform is at initial_height_mm (STOW).
-  # This makes pose_to_leg_lengths() return 0 at STOW by construction, so
-  # IK extension = 0 = STOW = motor 0. No ball_joint_offset or per-leg
-  # calibration needed — per-leg differences are handled by the LEVELLING command.
+  # pose_to_leg_lengths() returns |plat_node_world - base_node| - this value, so
+  # 0 rev is, by construction, the pose the sweep measured at 0 rev. Under the
+  # CAD geometry this array was the single derived constant 648.419 that made
+  # "IK extension 0 = STOW = motor 0" hold by definition, with the machine's
+  # real (0, 0, 0-rev) pose absorbed by the LEVELLING offset. The fit makes the
+  # machine's real zero explicit instead: the IK's nominal STOW (centred,
+  # level, at initial_height_mm) is now a slightly DIFFERENT pose from all-zero
+  # revolutions -- (-3.6, -7.7) mm and 0.88 deg about x apart -- so commanding
+  # the nominal STOW asks legs 5 and 6 for -5.1 / -4.9 mm (-0.07 rev) and legs
+  # 1-4 for +0.6..+5.6 mm (IK check 2026-09-27; the fitted STOW pose itself
+  # returns all six within +-0.7 mm, which is the transcription check). From a
+  # 50 mm lift up every leg is positive (>= 39.7 mm at 50; >= 149.7 at the
+  # 170 mm ACTIVE lift). Motion never commands STOW through the IK (homing puts
+  # the motors at 0 directly; planned poses sit at or above the session floor
+  # lift), so this only matters to a pose sent within ~6 mm of STOW.
   #
-  # Previous values (measured experimentally, Livestream #51 @ ~28min, to ball
-  # joint surface — did NOT include ball joint offset):
+  # The inclinometer's persisted levelling offset was measured against the OLD
+  # IK and absorbed its ~0.80 deg tilt error: `level` FIRST at the next sitting
+  # (plans/active/kinematic-calibration.md § 6 step 5, "Why level must come
+  # first").
+  #
+  # Previous: [648.419] x 6 (derived from the CAD nodes at 574.3 mm). Older still
+  # (Livestream #51, to the ball-joint surface, no joint offset):
   #   [621.389, 618.160, 622.074, 620.653, 620.652, 620.091]
-  init_leg_lengths_mm: [648.419, 648.419, 648.419, 648.419, 648.419, 648.419]
+  init_leg_lengths_mm: [649.4101, 647.1523, 645.7748, 649.5451, 655.5427, 652.9319]
 
-  # Per-leg mm-to-revolutions conversion factors, found experimentally.
-  # Each leg has a slightly different mechanical ratio.
-  # Source: sp_ik.py line 228
-  mm_to_rev: [0.01418332, 0.01419076, 0.01408956, 0.01418684, 0.01426801, 0.01424951]
+  # Per-leg mm-to-revolutions conversion factors. FITTED 2026-09-27 (sd ~0.07 %):
+  # five legs came out 0.7-1.3 % LOWER than the previous values and leg 3 0.5 %
+  # higher -- FDM-printed spools and a roughly measured string diameter (owner).
+  # Previous (sp_ik.py line 228, measured experimentally):
+  #   [0.01418332, 0.01419076, 0.01408956, 0.01418684, 0.01426801, 0.01424951]
+  mm_to_rev: [0.014082283, 0.014079907, 0.014159394, 0.014081774, 0.014088884, 0.014136538]
 
   # Motor position limits (in revolutions, pre-inversion).
   # leg value includes headroom above the stroke-derived limit (~4.0 rev).

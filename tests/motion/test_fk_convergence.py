@@ -78,6 +78,7 @@ from jugglebot.motion.ik_solver import (
     rotvec_to_rot_matrix,
 )
 from jugglebot.motion.workspace import check_leg_extensions
+from tests.motion._cad_geometry import cad_geometry
 
 # --- the two hardware fixtures (leg extensions, mm) ------------------------
 FIX_SEED = np.array([155.09416589436165, 155.01513731044534, 154.52316200811464,
@@ -106,7 +107,22 @@ HISTORICAL = dict(rtol=0.0, stall_ceiling_mm=0.0)
 
 @pytest.fixture(scope='module')
 def geom():
-    return StewartGeometry()
+    """The CAD (pre-calibration) geometry, frozen — NOT the live machine.
+
+    Re-pinned 2026-09-27 for the kinematic calibration
+    (plans/active/kinematic-calibration.md § 6 step 5): this whole module is
+    a characterisation of the (solver x geometry) pair — recorded hardware
+    extension vectors, the FIX_SEED/FIX_ECHO fixtures, the empirically found
+    Newton-iteration recipes and the UNSATISFIABLE 'all legs at zero absolute
+    length' = -648.419 = the CAD L0. Moving the live geometry out from under
+    it would silently re-characterise every number above without changing a
+    single assertion, so it takes tests.motion._cad_geometry.cad_geometry()
+    instead of StewartGeometry(). Live-geometry coverage (the shipped solver
+    still converges on the machine's actual geometry) is added below:
+    test_workspace_sweep_never_raises_at_the_default_on_live_geometry and
+    test_low_extension_end_is_covered_and_converges_on_live_geometry.
+    """
+    return cad_geometry()
 
 
 def _sweep_poses():
@@ -266,6 +282,59 @@ def test_low_extension_end_is_covered_and_converges(geom):
     assert scale > 600.0, f'scale collapsed near stow: {scale:.3f} mm'
     pos, rot, _ = leg_lengths_to_pose(ext, geom)
     assert _residual(ext, pos, rot, geom) <= 1e-8
+    assert norm(pos - np.array([0.0, 0.0, 6.0])) <= 1e-8
+
+
+# ---------------------------------------------------------------------------
+# Live-geometry coda (added 2026-09-27 for the kinematic calibration)
+#
+# The module above is a characterisation of (solver x CAD geometry) — see the
+# `geom` fixture's docstring — so it does not, by itself, prove the shipped
+# solver converges on the MACHINE's actual (fitted) geometry. These two tests
+# repeat the sweep-coverage and near-stow checks on a live StewartGeometry()
+# at the shipped defaults, independent of the `geom` fixture.
+# ---------------------------------------------------------------------------
+
+def test_workspace_sweep_never_raises_at_the_default_on_live_geometry():
+    """Live-geometry sibling of ``test_workspace_sweep_never_raises_at_the_default``:
+    same envelope sweep, same acceptance bars, but on ``StewartGeometry()`` at
+    the shipped defaults rather than the CAD-frozen fixture — so this is the
+    test that would fail if the fitted calibration geometry ever broke FK
+    convergence somewhere in the reachable envelope."""
+    live_geom = StewartGeometry()
+    keep = []
+    for pos, rot in _sweep_poses():
+        ext = pose_to_leg_lengths(pos, rot, live_geom)
+        if check_leg_extensions(ext, live_geom)[0]:
+            keep.append((pos, rot, ext))
+    assert len(keep) >= 250, 'grid degenerated — the sweep must stay broad'
+    worst_res = 0.0
+    for pos, rot, ext in keep:
+        recovered_pos, recovered_rot, _ = leg_lengths_to_pose(ext, live_geom)
+        worst_res = max(worst_res,
+                        _residual(ext, recovered_pos, recovered_rot, live_geom))
+    assert worst_res <= 1e-8, f'worst accepted residual {worst_res:.3e} mm'
+
+
+def test_low_extension_end_is_covered_and_converges_on_live_geometry():
+    """Live-geometry sibling of ``test_low_extension_end_is_covered_and_converges``.
+
+    Under the fitted calibration the level pose at (0, 0, 6) is no longer
+    near-zero extension: the fitted ``init_leg_lengths_mm`` (L0) is a per-leg
+    fit, not the geometric leg length at that pose, so the extensions carry
+    the same per-leg home offset pinned in
+    ``tests/sim/test_plant.py::TestPlantActivePose::test_active_extensions``
+    (``geometric_home_length - L0``, ~[+2.16 .. -5.05] mm). At (0, 0, 6) that
+    puts max |ext| at ~10.94 mm (measured 2026-09-27) rather than the CAD
+    fixture's near-zero figure — still comfortably 'near stow' against the
+    ~650-930 mm leg-length scale, which is what this test actually guards."""
+    live_geom = StewartGeometry()
+    ext = pose_to_leg_lengths(np.array([0.0, 0.0, 6.0]), np.eye(3), live_geom)
+    assert float(np.max(np.abs(ext))) < 12.0, 'not actually near stow'
+    scale = iks._residual_scale_mm(ext, live_geom)
+    assert scale > 600.0, f'scale collapsed near stow: {scale:.3f} mm'
+    pos, rot, _ = leg_lengths_to_pose(ext, live_geom)
+    assert _residual(ext, pos, rot, live_geom) <= 1e-8
     assert norm(pos - np.array([0.0, 0.0, 6.0])) <= 1e-8
 
 

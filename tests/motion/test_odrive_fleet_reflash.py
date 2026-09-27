@@ -341,11 +341,15 @@ def test_travel_rejects_an_unknown_node(tool):
 
 
 def test_describe_calibration_motion_names_the_motion_and_the_numbers(tool):
+    # Re-pinned 2026-09-27 for the kinematic calibration: leg-0 mm_to_rev
+    # 0.014082283 (was 0.01418332 CAD) puts 8 rev of spool travel at
+    # 8 / 0.014082283 = 568.09 mm, formatted "568" (was "564"); confirmed
+    # from the rendered blob below.
     lines = tool.describe_calibration_motion(8.0, 2.0, [0, 1])
     blob = '\n'.join(lines)
     assert 'MOVES THE MOTOR' in blob
     assert 'node 0' in blob and 'node 1' in blob
-    assert '564' in blob  # 8 rev of leg-0 spool travel, mm
+    assert '568' in blob  # 8 rev of leg-0 spool travel, mm
 
 
 # ---------------------------------------------------------------------------

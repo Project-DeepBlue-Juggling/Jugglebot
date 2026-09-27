@@ -217,7 +217,8 @@ def _tilted_release_pos(a_xy, cup_z_world_mm: float, rx: float, ry: float
     :func:`compute_release_state_tilted`), so the tilted release xy sits
     exactly AT nominal A; what remains is the vertical cross-coupling — the
     release point rides ``arm·(1 − cos θ)`` BELOW the level release plane
-    (``arm = cup_z − 744.3``, the fixed world tilt centre — the same
+    (``arm = cup_z − (initial_height + active_z)``, 748.2 mm since the
+    2026-09-27 calibration — the fixed world tilt centre, the same
     convention as the catch side's ``_toss_catch_pose`` / CCN swing math).
     """
     axis = tilt_geometry.cup_axis(rx, ry)
@@ -471,9 +472,9 @@ def build_announcement_fields(release: ReleaseState, throw_time_s: float
     (``toss_release_latency_ms`` config slot, reserved at 0.0). Catch timing
     stays tracker-driven, so announced-time error is tolerated (±0.75 s arm
     window). Known bounded approximation: the tracker predicts crossings at
-    its FIXED plane z = 809.08 mm; a nominated catch z off ACTIVE shifts the
-    true cup plane by up to ±30 mm ⇒ timing skew Δt = Δz/|vz_land| ≈ 8 ms at
-    3.9 m/s — negligible vs the window.
+    its FIXED plane z = 809.08 mm (812.98 mm since 2026-09-27); a nominated
+    catch z off ACTIVE shifts the true cup plane by up to ±30 mm ⇒ timing
+    skew Δt = Δz/|vz_land| ≈ 8 ms at 3.9 m/s — negligible vs the window.
     """
     return dict(
         initial_position=release.release_pos_global_mm,

@@ -7,6 +7,8 @@ import math
 import numpy as np
 import pytest
 
+from jugglebot import hardware_config as hw
+
 from sim.ball_butler.sim import (
     BallButlerSim, BallButlerConfig,
     _yaw_solve, _solve_throw, _GRAVITY_MMS2,
@@ -30,7 +32,7 @@ _BB_YAW_OFFSET = math.atan2(
 )
 
 # Jugglebot catch height (platform_height + active_z + hand_catch_offset)
-_CATCH_Z = 783.5
+_CATCH_Z = float(hw.GEOM_INITIAL_HEIGHT_MM) + 80.0 + 129.2   # was the literal 783.5 (574.3-based) until the 2026-09-27 calibration
 
 
 def _make_bb(**overrides) -> BallButlerSim:

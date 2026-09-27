@@ -35,12 +35,23 @@ def lateral_x():
 
 
 def test_column_toss_separates_and_lands_accurately(column):
-    """The column toss separates cleanly and lands within ~15 mm of the target —
-    deep inside the catch's ~60-80 mm reliable reach (Rung 1)."""
+    """The column toss separates cleanly and lands within ~30 mm of the target —
+    deep inside the catch's ~60-80 mm reliable reach (Rung 1).
+
+    Re-pinned 2026-09-27 (kinematic calibration, plans/active/
+    kinematic-calibration.md § 6 step 5): the bound was 15 mm on a measured
+    8.3 mm; the calibration moved the cup base 3.9 mm and this sample moved to
+    22.7 mm (−4.3, −22.3). Probed before re-pinning: the platform is level and
+    still through the whole contact window (< 0.01 deg, < 0.5 mm/s lateral, ten
+    ticks after `begin_physics_throw`) and the cup velocity at release is
+    vertical to 0.4 mm/s — the lateral kick is the ball rolling in the cup
+    during the throw, the pose-sensitive contact behaviour
+    `test_juggle_selfcatch_nightly.py::test_oscillation_throw_is_pose_sensitive`
+    documents, not a geometry error. Still well inside the catch's reach."""
     assert column.separated
-    assert column.error_mm < 15.0          # measured 8.3 mm
+    assert column.error_mm < 30.0          # measured 8.3 mm (CAD), 22.7 mm (fitted)
     assert column.tilt_deg < 0.5           # essentially level
-    assert column.reach_mm < 15.0          # the reach the self-catch would face
+    assert column.reach_mm < 30.0          # the reach the self-catch would face
 
 
 def test_lateral_throw_separates_and_lands_within_catch_reach(lateral_x):

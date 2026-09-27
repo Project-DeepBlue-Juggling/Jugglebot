@@ -12,7 +12,7 @@ export const CAN_BITS_PER_FRAME_APPROX = 111;
 
 // ---- Stewart platform geometry (hardware_config.yaml -> jugglebot_geometry) ----
 
-export const INITIAL_HEIGHT_MM = 574.3;
+export const INITIAL_HEIGHT_MM = 578.2;
 export const BASE_RADIUS_MM = 410.0;
 export const PLAT_RADIUS_MM = 219.075;
 export const LEG_STROKE_MM = 280.0;
@@ -26,32 +26,32 @@ export const HAND_RADIUS_MM = 35.0;
 
 // Base node positions in the base frame (mm)
 export const BASE_NODES_MM = [
-    [-385.274, -140.228, 0.0],
-    [-314.078, -263.543, 0.0],
-    [314.078, -263.543, 0.0],
-    [385.274, -140.228, 0.0],
-    [71.196, 403.771, 0.0],
-    [-71.196, 403.771, 0.0],
+    [-383.0629, -134.5122, 0.0],
+    [-308.5251, -264.2557, 0.0],
+    [309.575, -262.8407, 0.0],
+    [380.1995, -136.2713, 0.0],
+    [69.9891, 400.4458, 0.0],
+    [-73.4966, 399.7973, 0.0],
 ];
 
 // Initial platform node positions in the platform frame (mm)
 export const INIT_PLAT_NODES_MM = [
-    [-197.405, 95.0, 0.0],
-    [-16.431, -218.458, 0.0],
-    [16.431, -218.458, 0.0],
-    [197.405, 95.0, 0.0],
-    [180.975, 123.458, 0.0],
-    [-180.975, 123.458, 0.0],
+    [-196.2139, 96.1055, 1.8415],
+    [-14.3596, -217.2241, 2.6074],
+    [17.1245, -216.223, -2.8562],
+    [194.333, 92.9224, 1.1477],
+    [178.7853, 121.4363, -0.7438],
+    [-179.6693, 122.983, -1.9966],
 ];
 
 // Initial leg lengths (mm) — geometry-derived joint-centre-to-joint-centre at STOW
-export const INIT_LEG_LENGTHS_MM = [648.419, 648.419, 648.419, 648.419, 648.419, 648.419];
+export const INIT_LEG_LENGTHS_MM = [649.4101, 647.1523, 645.7748, 649.5451, 655.5427, 652.9319];
 
 // Init leg lengths WITH ball joint offset added (legacy: offset=0, so equals INIT_LEG_LENGTHS_MM)
-export const INIT_LEG_LENGTHS_WITH_OFFSET_MM = [648.419, 648.419, 648.419, 648.419, 648.419, 648.419];
+export const INIT_LEG_LENGTHS_WITH_OFFSET_MM = [649.4101, 647.1523, 645.7748, 649.5451, 655.5427, 652.9319];
 
 // Per-leg mm-to-revolutions conversion factors
-export const MM_TO_REV = [0.01418332, 0.01419076, 0.01408956, 0.01418684, 0.01426801, 0.01424951];
+export const MM_TO_REV = [0.014082283, 0.014079907, 0.014159394, 0.014081774, 0.014088884, 0.014136538];
 
 // Motor position limits
 export const LEG_MOTOR_MAX_POS_REVS = 4.2;

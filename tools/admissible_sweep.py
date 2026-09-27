@@ -57,7 +57,18 @@ Usage (venv)::
 
 Deterministic (``tests/motion/test_unified_cycle.py::
 test_planning_is_deterministic``); run twice and diff the YAML before quoting
-a row. "Must finish in well under 5 minutes" is FALSE since the grid
+a row. Two operational rules learned 2026-09-27 (kinematic-calibration apply):
+
+* **Pin BLAS to one thread** (``OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1``),
+  as the live nodes do. Two default-threaded sweeps side by side thrashed the
+  6-core Jetson (load average 18, ~0.2 cells/s each); pinned, two run side by
+  side at ~19 cells/s each, ~32 min for ``--site-pairs all --single-apex 0.5
+  0.6 0.7 0.8 0.9``.
+* **Do not edit ANY gated file while a sweep runs** — not even a docstring.
+  Every box records ``admissible.gate_hash()`` at its own write time, and the
+  final write refuses a file whose boxes carry a mix (``ValueError: all boxes
+  written to one file must share swept_at/gate_hash/limits``), so a comment
+  edit to ``unified_cycle.py`` 20 minutes into a run discards the run. "Must finish in well under 5 minutes" is FALSE since the grid
 densified 2026-09-21 (see the offset comment above): 2 985 -> 17 169 grid
 cells (5.75x) measured 1745.0 s / 1710.7 s (29.08 / 28.51 min) across the two
 determinism-check runs on 2026-09-21 -- the script still reports its own wall

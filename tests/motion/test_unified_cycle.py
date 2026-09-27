@@ -2150,12 +2150,15 @@ def test_build_cup_config_boxes_the_slider_reachable_band():
     disagreeing about where the same physical stop is.
     """
     cfg = uc.build_cup_config()
-    assert cfg.z_min_m == pytest.approx(0.690, abs=0.001)
+    # 0.690 / 0.6796 until the 2026-09-27 kinematic calibration moved the cup base
+    # (cup_realize.CUP_Z_BASE_MM 659.6 -> 663.5, the STOW height 574.3 -> 578.2):
+    # the whole band rides on the platform centroid, so both numbers are +3.9 mm.
+    assert cfg.z_min_m == pytest.approx(0.6935, abs=0.001)
     # 0.985 at the pre-R1 gain; at the measured gain the catch-prime knot
     # (9.9594 rev) sits 324.3 mm above hand zero, not 315.0, so the box top
     # rises with it: the band is the operating stroke in TRUE millimetres.
     assert cfg.z_max_m == pytest.approx(
-        0.6796 + float(hw.JB_OP_HAND_CATCH_PRIME_REV) / float(hw.HAND_REV_PER_M)
+        0.6835 + float(hw.JB_OP_HAND_CATCH_PRIME_REV) / float(hw.HAND_REV_PER_M)
         - 0.010, abs=1e-4)
     assert cfg.catch_runway_z_floor_m == pytest.approx(uc._CUP_Z_BOTTOM_M)
     assert cfg.catch_runway_z_floor_m == pytest.approx(
@@ -2610,7 +2613,10 @@ def test_the_lever_arm_residual_is_unchanged_by_the_fix(limits, geom):
     — so the fix is strictly non-regressive here and strictly better on aim.
 
     MEASURED (2026-09-06, ``/tmp/probe_level.py``): 1.349379 mm at the 860 mm
-    release (arm = 115.7 mm), identical to 1e-9 mm across the fix.  Closing it
+    release (arm = 115.7 mm), identical to 1e-9 mm across the fix. Re-pinned
+    2026-09-27 for the kinematic calibration: the tilt centre moved 744.3 → 748.2
+    (plans/active/kinematic-calibration.md § 6 step 5), so the arm at the 860 mm
+    release is 111.8 mm and the residual scales with it to 1.303894 mm.  Closing it
     needs a ``cup_realize`` change (gravity tilt for the geometry, plan tilt for
     the pose channel) and is argued in ``levelling_frame.md`` s E8.
     """
@@ -2630,7 +2636,7 @@ def test_the_lever_arm_residual_is_unchanged_by_the_fix(limits, geom):
     goal_xy = np.asarray(THROW_MM[:2], dtype=float)
     err_before = float(np.linalg.norm(cup_opening_xy(before, meta_b) - goal_xy))
     err_after = float(np.linalg.norm(cup_opening_xy(after, meta_a) - goal_xy))
-    assert err_before == pytest.approx(1.349379, abs=1e-5)
+    assert err_before == pytest.approx(1.303894, abs=1e-5)
     assert err_after == pytest.approx(err_before, abs=1e-9)
     arm = tg.cup_lever_arm_mm(float(meta_a.cup_plan.pos[-1, 2]) * 1000.0)
     assert err_after == pytest.approx(abs(arm) * float(np.hypot(*_E8_OFFSET)),

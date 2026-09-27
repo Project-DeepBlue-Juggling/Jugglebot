@@ -203,7 +203,7 @@ The MPC process has its own lifecycle managed by the `mpc_bridge_node`:
 ### Frames
 
 - **Base frame:** Origin at the geometric centre of the base. Z-axis points up. This is the world frame.
-- **Platform frame:** Body-fixed to the platform. At the active pose, it is aligned with the base frame, with the platform centre at height `init_height_mm` (574.3 mm) above the base.
+- **Platform frame:** Body-fixed to the platform. At the active pose, it is aligned with the base frame, with the platform centre at height `init_height_mm` (578.2 mm, fitted 2026-09-27) above the base.
 
 ### Pose Representation
 

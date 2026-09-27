@@ -56,7 +56,8 @@ from jugglebot.motion.trajectory.tilt_geometry import tilt_to_throw  # noqa: F40
 
 # ---- Realisation constants (mirror sim.juggle_online; see module docstring) --
 Z_ACTIVE_MM = 170.0          # platform centroid height for the juggle pattern
-CUP_Z_BASE_MM = 659.6        # cup_z_world = CUP_Z_BASE_MM + slider_mm at level
+# CUP_Z_BASE_MM (cup_z_world = CUP_Z_BASE_MM + slider_mm at level) is defined
+# below CUP_TILT_CENTER_Z_MM, which it rides on.
 # Slider travel [0, stroke] mm — DERIVED, never a literal.  It read a hardcoded
 # 355.0 until 2026-08-21; `jugglebot_geometry.hand_stroke_mm` moved to 344.75 on
 # 2026-08-18 (operator-measured travel between hard stops) and
@@ -79,7 +80,18 @@ MAX_TILT_DEG = 12.0
 # Rung 0 reported); at a low slider (cup < 744 mm) the cup sits BELOW the centre
 # and swings the OTHER way. realize_tilted therefore computes the arm from the
 # target cup z, which is why this is the load-bearing constant, not a mm/deg.
-CUP_TILT_CENTER_Z_MM = 744.3
+# It is the platform centroid at the ACTIVE pose (STOW height + lift), duplicated
+# from motion/trajectory/shaping.py rather than imported (Phase-4 scope limit,
+# pinned by tests/sim/test_juggle_tilt.py's units trap). Literal 744.3 until
+# 2026-09-27; the kinematic calibration moved the STOW height 574.3 -> 578.2 and
+# the literal left every sim lever 3.9 mm short (the cup opening settled exactly
+# 3.9 mm above its target in test_realize_tilted_lands_opening_on_target).
+CUP_TILT_CENTER_Z_MM = float(_hw.GEOM_INITIAL_HEIGHT_MM) + float(_hw.JB_OP_DEFAULT_ACTIVE_Z_MM)
+# cup_z_world = CUP_Z_BASE_MM + slider_mm at level: the cup rides a FIXED 84.7 mm
+# below the platform centroid at slider 0, so it is expressed on top of the tilt
+# centre. It was the literal 659.6 (= 744.3 − 84.7) until the 2026-09-27
+# calibration moved the centroid to 748.2 — the same 3.9 mm the tilt centre moved.
+CUP_Z_BASE_MM = CUP_TILT_CENTER_Z_MM - 84.7
 # Rung 0's reported single-axis lever arm AT THE 180 mm operating slider (mm
 # lateral cup shift per degree). Exposed for the probe/tests as the Rung 0
 # cross-check; realize_tilted uses the exact height-aware rigid-rotation form

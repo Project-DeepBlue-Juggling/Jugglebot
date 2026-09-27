@@ -14,6 +14,7 @@ import tempfile
 import numpy as np
 import pytest
 
+from jugglebot.motion.geometry import StewartGeometry
 from sim.plant.mujoco_plant import MuJoCoPlant
 from sim.plant.interface import PlantState
 from sim.viz.telemetry import TelemetryLogger, StepRecord, record_from_arrays
@@ -48,11 +49,21 @@ class TestPlantActivePose:
         assert state.time == pytest.approx(0.0, abs=0.01)
 
     def test_active_extensions(self, plant):
+        # Re-pinned 2026-09-27 for the kinematic calibration: the fitted
+        # init_leg_lengths_mm (L0) is a per-leg fit, no longer the geometric
+        # active length, so IK extensions at the plant's reset pose (slide=0)
+        # are the per-leg offset geometric_home_length - L0, not ~0. Computed
+        # here from StewartGeometry() (nodes + init_height -> norms, minus
+        # init_leg_lengths_mm) rather than pinned so it tracks the fitted
+        # geometry; see sim/model/generate_mjcf.py's home_slide comment for
+        # where MuJoCoPlant carries this offset in its slide<->extension
+        # conversion.
+        g = StewartGeometry()
+        plat_world = g.plat_nodes + np.array([0.0, 0.0, g.init_height_mm])
+        home_offset_mm = (np.linalg.norm(plat_world - g.base_nodes, axis=1)
+                          - g.init_leg_lengths_mm)
         state = plant.get_state()
-        # STOW-relative convention: extensions = 0 at STOW (motor = 0 rev).
-        # init_leg_lengths_mm is now the geometric active length, so IK
-        # extensions at active pose (slide=0) are 0 by construction.
-        assert np.all(np.abs(state.leg_extensions_mm) < 0.01)
+        assert np.allclose(state.leg_extensions_mm, home_offset_mm, atol=0.01)
 
 
 class TestPlantCommand:

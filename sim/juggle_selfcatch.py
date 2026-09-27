@@ -114,7 +114,9 @@ from sim.viz.recording import (
 )
 
 CONTROL_DT = 0.025
-CUP_Z_BASE_MM = 659.6
+# Cup world z at slider 0, ACTIVE pose: centroid − 84.7 (see sim/gate_common.py;
+# literal 659.6 until the 2026-09-27 calibration).
+CUP_Z_BASE_MM = float(_hw.GEOM_INITIAL_HEIGHT_MM) + float(_hw.JB_OP_DEFAULT_ACTIVE_Z_MM) - 84.7
 # Slider travel [0, stroke] mm — DERIVED (see sim/juggle_tilt.py for why; it read
 # a hardcoded 355.0 until 2026-08-21, 10.25 mm above what the plant will execute).
 SLIDER_STROKE_MM = float(_hw.GEOM_HAND_STROKE_MM)
@@ -168,9 +170,14 @@ class SelfCatchConfig:
     """One single-ball tilt-aimed self-catch run. SI units unless noted (mm)."""
     n_cycles: int = 12                 # how many throw->catch cycles to attempt
     # ---- column geometry (throw and catch co-located = a stationary column) ----
-    throw_z_m: float = 0.85            # cup release height (mid slider range)
-    throw_target_z_m: float = 0.70     # ballistic aim height (sets take-off speed)
-    catch_z_m: float = 0.84            # cup catch height (Rung 1)
+    # Cup heights are SLIDER positions in disguise (they were chosen against the
+    # 659.6 mm cup base: 0.85 = "mid slider range"), so they ride on CUP_Z_BASE_MM
+    # -- the 2026-09-27 calibration moved the base 3.9 mm and a fixed world
+    # height would have moved every seat/contact 3.9 mm down the slider and
+    # re-rolled the characterised chaos in tests/sim/test_juggle_selfcatch_nightly.
+    throw_z_m: float = CUP_Z_BASE_MM / 1000.0 + 0.1904   # cup release height (mid slider range; 0.85 at the old base)
+    throw_target_z_m: float = CUP_Z_BASE_MM / 1000.0 + 0.0404   # ballistic aim height (0.70 at the old base)
+    catch_z_m: float = CUP_Z_BASE_MM / 1000.0 + 0.1804   # cup catch height (Rung 1; 0.84 at the old base)
     flight_s: float = 0.60             # nominal time of flight
     stationary: bool = True            # True: reposition to a FIXED origin each
                                        # cycle (stationary column). False: throw a

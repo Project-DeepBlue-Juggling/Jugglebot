@@ -7,16 +7,22 @@ lengths from the parametric inputs in hardware_config.yaml.
 
 The node positions stored in hardware_config.yaml were originally computed
 by this algorithm (via robot_geometry.py's build_platform() method).
-If the physical platform dimensions ever change, re-run this script to
-regenerate the node positions.
+
+⚠ SINCE 2026-09-27 THE STORED NODES ARE FITTED, NOT COMPUTED. The kinematic
+calibration (plans/active/kinematic-calibration.md, tools/kincal_fit.py)
+replaced them with a parametric fit to a mocap sweep; every node sits 1-6 mm
+radially inward of this script's CAD circles. The verify mode therefore
+REPORTS A MISMATCH BY DESIGN -- that difference is the calibration -- and
+`--update` would REVERT the calibration to CAD. Do not run `--update` unless
+the geometry is being deliberately reset to CAD ahead of a fresh sweep.
 
 Usage:
-    python config/compute_geometry.py               # verify stored values
-    python config/compute_geometry.py --update      # update hardware_config.yaml
+    python config/compute_geometry.py               # show CAD-vs-fitted difference
+    python config/compute_geometry.py --update      # ⚠ REVERTS the calibration
 
 The --update flag replaces the base_nodes_mm and init_plat_nodes_mm arrays
-in hardware_config.yaml with freshly computed values. It does NOT update
-init_leg_lengths_mm (those are measured experimentally, not computed).
+in hardware_config.yaml with freshly computed CAD values. It does NOT update
+init_leg_lengths_mm or mm_to_rev (those are fitted per leg, not computed).
 
 Stewart platform node placement using paired-angle convention:
     - Base: 6 nodes placed on a circle of radius base_radius_mm, positioned

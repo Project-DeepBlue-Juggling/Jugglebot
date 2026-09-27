@@ -11,6 +11,7 @@ import pytest
 import mujoco
 
 from jugglebot import hardware_config as hw
+from jugglebot.motion.geometry import StewartGeometry
 from sim.plant.mujoco_plant import MuJoCoPlant
 
 
@@ -149,9 +150,24 @@ class TestHandBackcompat:
     """Existing PlantState fields still work as before."""
 
     def test_leg_extensions_unchanged(self, plant):
-        """Leg extensions at home are still ~0."""
+        """Leg extensions at home equal the per-leg geometric-home offset.
+
+        Re-pinned 2026-09-27 for the kinematic calibration: the sim's home is
+        the level pose at ``initial_height_mm`` (slide = 0), but the fitted
+        ``init_leg_lengths_mm`` (L0) no longer equals the geometric leg length
+        at that pose, so home is no longer ~0 extension. The offset is
+        ``geometric_home_length - L0`` (nodes + init_height -> norms, minus
+        init_leg_lengths_mm), computed here from ``StewartGeometry()`` rather
+        than pinned as a literal so it tracks the fitted geometry. See
+        ``sim/model/generate_mjcf.py``'s ``home_slide`` comment for where
+        ``MuJoCoPlant`` carries this offset in its slide<->extension
+        conversion."""
+        g = StewartGeometry()
+        plat_world = g.plat_nodes + np.array([0.0, 0.0, g.init_height_mm])
+        home_offset_mm = (np.linalg.norm(plat_world - g.base_nodes, axis=1)
+                          - g.init_leg_lengths_mm)
         state = plant.get_state()
-        assert np.allclose(state.leg_extensions_mm, 0, atol=0.5)
+        assert np.allclose(state.leg_extensions_mm, home_offset_mm, atol=0.5)
 
     def test_platform_pos_unchanged(self, plant):
         """Platform pos at home is still ~0."""
