@@ -155,8 +155,9 @@
     cursor: pointer;
 }
 
-/* Wheel-zoomed off the dropdown preset — dropdown value no longer matches
-   actual liveWindowSec.  Italic + dim indicates "press R to snap back". */
+/* The visible span is off every preset (wheel/box-zoom, pan) — the dropdown
+   shows the real span in a transient entry.  Italic + dim says "not a preset;
+   pick one or press R to snap back". */
 #chart-window-select.off-preset {
     font-style: italic;
     opacity: 0.6;

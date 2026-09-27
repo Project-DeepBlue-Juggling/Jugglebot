@@ -572,16 +572,78 @@ export function setChartArmedStates(armed) {
     }
 }
 
-/** Italicize / grey the window-size select when liveWindowSec no longer
- *  matches the dropdown value — signals "wheel-zoomed; press R to snap
- *  back".  Pure cosmetic; doesn't mutate liveWindowSec. */
+/** Value of the transient dropdown entry that shows an off-preset span. */
+const CUSTOM_WINDOW_VALUE = 'custom';
+
+/** The x span actually on screen: the frozen range in manual view, else the
+ *  live (possibly wheel-widened) window. */
+function visibleSpanSec() {
+    if (viewMode === 'manual' && manualXRange) return manualXRange.max - manualXRange.min;
+    return liveWindowSec;
+}
+
+/** Preset window lengths (s), ascending, read from the dropdown's options. */
+function windowPresets(select) {
+    return Array.from(select.options)
+        .filter(o => o.value !== CUSTOM_WINDOW_VALUE)
+        .map(o => parseInt(o.value, 10));
+}
+
+/** The preset `span` sits on, or null.  Tolerance absorbs float drift from
+ *  the wheel-zoom factor round trip. */
+function matchingPreset(presets, span) {
+    return presets.find(p => Math.abs(span - p) <= 0.01) ?? null;
+}
+
+/** "0.25s" / "4.3s" / "87s" / "2m 13s".  `presets` guards against a label
+ *  that would read like a preset it isn't (60.4 s → "60.4s", not "60s"). */
+function formatSpan(span, presets) {
+    if (span < 1) return `${span.toFixed(2)}s`;
+    if (span < 10) return `${span.toFixed(1)}s`;
+    const total = Math.round(span);
+    if (total < 60) {
+        return presets.includes(total) ? `${span.toFixed(1)}s` : `${total}s`;
+    }
+    const m = Math.floor(total / 60);
+    const s = total % 60;
+    return s === 0 ? `${m}m` : `${m}m ${s}s`;
+}
+
+/**
+ * Make the window dropdown show the span actually on screen.  On a preset →
+ * that preset is selected.  Off every preset (wheel-zoom, box-zoom, pan) → a
+ * disabled "custom" entry carrying the real span is inserted in sorted
+ * position and selected, styled italic/dim.  Because the dropdown then no
+ * longer sits on the old preset, picking that preset again is a real
+ * `change` — the fix for "zoom out, re-pick 60s, nothing happens".
+ * Display-only; never mutates the window state.
+ */
 function syncWindowSelectState() {
     const select = document.getElementById('chart-window-select');
     if (!select) return;
-    const current = parseInt(select.value, 10);
-    const offPreset = !Number.isFinite(current) ||
-        Math.abs(liveWindowSec - current) > 0.01;
-    select.classList.toggle('off-preset', offPreset);
+    const presets = windowPresets(select);
+    const span = visibleSpanSec();
+    const preset = matchingPreset(presets, span);
+    let custom = select.querySelector(`option[value="${CUSTOM_WINDOW_VALUE}"]`);
+
+    if (preset !== null) {
+        custom?.remove();
+        select.value = String(preset);
+    } else {
+        if (!custom) {
+            custom = document.createElement('option');
+            custom.value = CUSTOM_WINDOW_VALUE;
+            custom.disabled = true;
+        }
+        custom.textContent = formatSpan(span, presets);
+        const before = Array.from(select.options)
+            .find(o => o !== custom && parseInt(o.value, 10) > span) || null;
+        if (custom.nextSibling !== before || custom.parentNode !== select) {
+            select.insertBefore(custom, before);
+        }
+        select.value = CUSTOM_WINDOW_VALUE;
+    }
+    select.classList.toggle('off-preset', preset === null);
 }
 
 function syncVisibilityButtonStates() {
@@ -835,14 +897,25 @@ function initTimeWindowSelector() {
     select.value = currentWindowSec.toString();
 
     select.addEventListener('change', () => {
-        currentWindowSec = parseInt(select.value, 10);
-        liveWindowSec = currentWindowSec;
+        const v = parseInt(select.value, 10);
+        if (!Number.isFinite(v)) return;  // the disabled custom entry
+        currentWindowSec = v;
+        liveWindowSec = v;
         saveTimeWindow();
-        // Changing the window width is an explicit redefinition of the
-        // visible slice — drop manual pan/zoom so the new width actually
-        // takes effect.
-        viewMode = 'live';
-        manualXRange = null;
+        if (paused) {
+            // Paused (plain pause, or a zoomed/panned look at history):
+            // resize around what's on screen — keep its right edge, change
+            // only the width, stay paused.  R / Resume returns to live.
+            const right = viewMode === 'manual' && manualXRange
+                ? manualXRange.max : pausedWindowEnd;
+            manualXRange = clampXRange(right - v, right);
+            viewMode = 'manual';
+        } else {
+            // Live: an explicit redefinition of the visible slice — drop any
+            // wheel-widening so the new width actually takes effect.
+            viewMode = 'live';
+            manualXRange = null;
+        }
         syncWindowSelectState();
         rebuildAllCharts();
     });
@@ -896,6 +969,8 @@ function resumeCharts() {
     applyPauseButtonUI();
     viewMode = 'live';
     manualXRange = null;
+    // A manual range may have been on screen; the live width is what shows now.
+    syncWindowSelectState();
     clearDeltaBookmarks();
     if (!pendingRepaint) {
         pendingRepaint = true;
@@ -1454,6 +1529,7 @@ function setXRangeAllCharts(min, max, fromSelection = false) {
     // Historical view — freeze it.
     manualXRange = clamped;
     viewMode = 'manual';
+    syncWindowSelectState();
     for (let i = 0; i < MOTOR_COUNT; i++) {
         const c = charts[i];
         if (!c) continue;
@@ -2162,23 +2238,27 @@ function togglePauseShortcut() {
 }
 
 /**
- * Step through the window-size dropdown by `dir` positions (±1).  Done
- * through the <select> + change event so we reuse the existing persistence
- * and viewMode-reset behaviour.
+ * Step to the next preset window size in direction `dir` (±1).  From a
+ * preset that is the neighbouring preset; from an off-preset span it is the
+ * nearest preset on that side (so `[` after zooming out to 87 s lands on
+ * 60s).  Clamped at the ends; at an end, an off-preset span still snaps to
+ * the end preset.  Done through the <select> + change event so persistence
+ * and the live/paused resize behaviour live in one place.
  */
 function cycleWindowSize(dir) {
     const select = document.getElementById('chart-window-select');
     if (!select) return;
-    const options = Array.from(select.options).map(o => o.value);
-    let idx = options.indexOf(select.value);
-    if (idx < 0) idx = 0;
-    idx = Math.max(0, Math.min(options.length - 1, idx + dir));
-    // Force the change-dispatch when liveWindowSec is off-preset, even if
-    // the next preset matches the displayed value — otherwise the user
-    // presses [/] expecting snap-back and gets nothing.
-    const offPreset = Math.abs(liveWindowSec - parseInt(select.value, 10)) > 0.01;
-    if (options[idx] === select.value && !offPreset) return;
-    select.value = options[idx];
+    const presets = windowPresets(select);
+    const span = visibleSpanSec();
+    const onPreset = matchingPreset(presets, span);
+    let target;
+    if (dir > 0) {
+        target = presets.find(p => p > span + 0.01) ?? presets[presets.length - 1];
+    } else {
+        target = [...presets].reverse().find(p => p < span - 0.01) ?? presets[0];
+    }
+    if (onPreset === target) return;  // already at the end preset
+    select.value = String(target);
     select.dispatchEvent(new Event('change'));
 }
 
