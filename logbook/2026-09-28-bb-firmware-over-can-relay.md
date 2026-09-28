@@ -2,7 +2,7 @@
 title: "Ball Butler firmware over CAN — the Platform's flash contract relayed on CAN1 (can-bridge FW 21) and a --target bb host verb"
 type: feature
 date: 2026-09-28
-status: in-progress
+status: resolved
 phase: "can-bridge FW 21 / BallButler FW 1"
 files_changed:
   - config/protocol_config.yaml
@@ -52,8 +52,8 @@ to BB's own ids **0x7D6/0x7D7**, BB's replies routed into the existing Platform 
 ring (uplinked as `PLATFORM_FRAME`s, told apart by `can_id`), and a `--target bb`
 profile on `tools/teensy_link_bridge.py --fw-update`. The receiver and its safety
 park live in the BallButler repo (`ball_butler_main/FwUpdate.{h,cpp}`, BallButler
-logbook `2026-09-28-bb-firmware-update-over-can`). **Can-bridge FW 20 → 21 and BB FW 1,
-BUILT, NOT FLASHED.** Unlike the Platform, BB's USB port works, so a failed CAN flash
+logbook `2026-09-28-bb-firmware-update-over-can`). **Flown 2026-09-28: can-bridge FW 21 (USB), BB FW 1 (USB), then BB FW 2 over CAN,
+1 → 2 on INFO.** Unlike the Platform, BB's USB port works, so a failed CAN flash
 is recoverable over USB.
 
 ## Motivation
@@ -162,3 +162,32 @@ receiver is a port instead, and the xref test holds the two to one table.
   `--verify-only` (BB reboots ~60 s after VERIFY, by design) → a real CAN flash of
   FW 2. Park behaviour (pitch raise, IDLE confirmation) is the part only hardware
   can prove.
+
+## Addendum 2026-09-28 — flown: bridge FW 21, BB FW 1 (USB), BB FW 2 over CAN
+
+- **Bridge FW 21** (`pio run -e teensy41 -t upload`, only the bridge on USB, ROS down):
+  SUCCESS 10.1 s, 274432 B, md5 `5c8d3c18ceb7c2269b4ace5d82e53a01`; the
+  `BRIDGE_IDENTITY` uplink then read `fw_version=21, protocol_version=6`. Log
+  `temp/logs/bridge_fw21_flash_20260928.log`.
+- **BB FW 1 over USB** (BallButler `pio run -e teensy40 -t upload`, the wrapper's
+  serial-targeted reboot with the bridge also attached): SUCCESS 15.3 s, md5
+  `6486f04122296877ed1011c8faefdd3a`. `BB_FW_INFO` through the bridge → **1**, the
+  first proof of the whole CAN1 round trip.
+- **`--verify-only`** (11:30): one PARKING poll (pitch 89.9°), BEGIN OK after
+  0.26 s, DATA 163840 B in 61.0 s with **0 rewinds / 0 retries**, VERIFY OK crc32
+  `0x7AE1BDEB`. BB's console showed the park, BEGIN (staging `0x60028000..0x601F0000`,
+  1824 KB free), VERIFY, and at +60 s "session idle 60 s — aborted — rebooting". BB
+  came back IDLE, hand homed, ball in hand. Logs `temp/logs/bb_verify_only_*20260928.log`.
+- **First CAN flash** (11:34, BallButler `pio run -e teensy40_can -t upload`, FW 1 → 2,
+  no code change): BEGIN OK after one PARKING poll, DATA in 61.0 s, **0 rewinds**,
+  VERIFY OK crc32 `0x25386A01`, COMMIT OK, then **`Ball Butler FW version: 1 -> 2`**
+  3.6 s later; `[SUCCESS] Took 75.84 seconds`. BB's console: `[boot] ballbutler-main
+  v2`, homing successful, BOOT → IDLE. Log `temp/logs/bb_fw2_canflash_20260928.log`.
+- **Unexplained, instrument-side:** during the CAN flash BB's USB console delivered
+  nothing between the port opening and the reboot, though the rehearsal's console
+  logged every `[fwupd]` line. The receipts do not depend on it (INFO over CAN, the
+  boot banner), and the transfer timing was identical to the rehearsal, so BB's loop
+  did not block on Serial.
+- Not exercised: the park's pitch-raise branch (pitch was already stowed both times).
+  That branch is BB's; see its entry.
+

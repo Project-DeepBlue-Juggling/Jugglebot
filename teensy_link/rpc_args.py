@@ -501,7 +501,9 @@ FW_OP_INFO = 0x05
 #: (``ball_butler_main/FwUpdate.h`` FW_VERSION, in the BallButler repo).
 #: 1 (2026-09-28) = the first image carrying the firmware-over-CAN receiver;
 #: it goes in over USB, and every later image can arrive over CAN.
-BB_FW_VERSION_EXPECTED = 1
+#: 2 (2026-09-28) = no code change: the first image flashed OVER CAN; the
+#: version bump is the receipt (INFO 1 -> 2).
+BB_FW_VERSION_EXPECTED = 2
 
 
 def decode_platform_fw_reply(data: bytes):
