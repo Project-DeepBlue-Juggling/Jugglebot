@@ -1,0 +1,15 @@
+# Plain-language refusal messages
+
+Type: task
+Mode: AFK
+Status: open
+Blocked by: none
+
+## Question
+
+The owner finds the refusals cryptic. Rewrite them in plain operator language: say what happened, why it matters physically, and what to do. Keep the machine-readable code prefix, and keep the numbers.
+
+1. `CATCH_AXIS` (unified_cycle): currently "held-axis catch: the seed's position is (5.681, -0.370) mm off the axis line through the touch-down ... kappa·(z − site_z)". It should read along the lines of: "the platform isn't lined up for this catch — its resting position is 5.7 mm to the side of the line the cup must travel along to meet the ball (allowed: 0.1 mm)".
+2. The admissible-box refusal (`skill_node.py:2317`, `executor.py:1291`) lists only the apex bands. When the refusal is really the site positions (a non-default `separation_mm`; the boxes were swept for ±125 mm), it must say so. This is the owner-reported 0.95 m hop refusal at sitting 3.
+
+Sweep the other `REJECTED_CYCLE_INFEASIBLE` reasons for the same jargon, but only rewrite the ones an operator actually sees. Tests that match message text must be updated, and a test must pin the separation case.
