@@ -142,3 +142,21 @@ TEST_CASE("drain_cap_hits stays 0 at <= 1 frame per service() call") {
   CHECK(CanBridge::udp_link_stats().drain_cap_hits - cap0 == 0u);
   CHECK(netlockprobe::violations() == 0);
 }
+
+TEST_CASE("the RPC socket's receive queue is deepened (FW 22); the stream socket keeps the default") {
+  // QNEthernet's default queue is ONE packet and a full queue overwrites the
+  // oldest, so only the last RPC request of a 1 ms task_net tick survived. The
+  // RPC socket now queues RPC_RX_QUEUE_CAPACITY (<= the drain budget, so no added
+  // latency — static_assert in udp_link.cpp); the setpoint/heartbeat stream
+  // socket is deliberately untouched.
+  netlockprobe::reset();
+  CanBridge::udp_link_init();
+  EthernetUDP* rpc = _registry()[JbUdp::PORT_RPC];
+  EthernetUDP* stream = _registry()[JbUdp::PORT_STREAM];
+  REQUIRE(rpc != nullptr);
+  REQUIRE(stream != nullptr);
+  CHECK(rpc->receive_queue_capacity() == CanBridge::RPC_RX_QUEUE_CAPACITY);
+  CHECK(CanBridge::RPC_RX_QUEUE_CAPACITY >= 4);   // the fw-update pipeline depth
+  CHECK(CanBridge::RPC_RX_QUEUE_CAPACITY <= CanBridge::UDP_RX_DRAIN_BUDGET);
+  CHECK(stream->receive_queue_capacity() == 1);
+}

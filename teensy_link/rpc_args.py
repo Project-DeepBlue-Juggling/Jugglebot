@@ -505,7 +505,9 @@ FW_OP_INFO = 0x05
 #: version bump is the receipt (INFO 1 -> 2).
 #: 3 (2026-09-28) = no code change: the receipt for the faster transfer (host
 #: sector pause 0.5 -> 0.12 s; INFO 2 -> 3).
-BB_FW_VERSION_EXPECTED = 3
+#: 4 (2026-09-28) = no code change: receipt for the pipelined CAN transfer
+#: (can-bridge FW 22 RPC queue 8, host DATA depth 4).
+BB_FW_VERSION_EXPECTED = 4
 
 
 def decode_platform_fw_reply(data: bytes):
@@ -740,7 +742,12 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 #: uplinked as PLATFORM_FRAMEs. NO WIRE CHANGE to any existing frame —
 #: PROTOCOL_VERSION stays 6 — so an FW 20 board answers the new methods
 #: ERR_UNKNOWN_METHOD and is otherwise wire-identical.
-EXPECTED_BRIDGE_FW_VERSION = 21
+#: 22 (2026-09-28) = the RPC socket's receive queue 1 -> 8 (udp_link.cpp
+#: RPC_RX_QUEUE_CAPACITY): the QNEthernet default overwrote all but the last
+#: RPC request landing in one 1 ms task_net tick. NO WIRE CHANGE; what an FW 21
+#: board lacks is burst tolerance — a pipelined firmware-update DATA window
+#: (depth > 1) loses frames against it.
+EXPECTED_BRIDGE_FW_VERSION = 22
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

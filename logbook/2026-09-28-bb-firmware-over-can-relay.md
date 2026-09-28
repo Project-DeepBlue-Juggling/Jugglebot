@@ -22,6 +22,9 @@ files_changed:
   - ros_ws/src/jugglebot/Teensy_code_canbridge/can_buses.cpp
   - ros_ws/src/jugglebot/Teensy_code_canbridge/rpc.cpp
   - ros_ws/src/jugglebot/Teensy_code_canbridge/canbridge_config.h
+  - ros_ws/src/jugglebot/Teensy_code_canbridge/udp_link.cpp (FW 22: RPC socket receive queue 1 -> 8)
+  - tests/firmware/native/test_udp_link.cpp
+  - tests/firmware/native/hal_shims/QNEthernet.h
   - ros_ws/src/jugglebot/jugglebot/protocol_config.py
   - teensy_link/rpc_args.py
   - tools/teensy_link_bridge.py
@@ -271,4 +274,54 @@ the depth-1 fallback: **36/36 each**, 10.5–11.0 s.
   0.12 s ≈ 21 s. A larger ACK window would be a wire-contract change.
 - The Platform profile stays at 0.5 s / depth 1 until a Platform flash adopts BB's
   values deliberately.
+
+## Addendum 2026-09-28 (afternoon) — can-bridge FW 22 unlocks pipelined DATA: BB flash 75.8 s → 36.2 s
+
+The first follow-up above, done. **Side-effect review first** (owner's question): on a
+full queue QNEthernet `recvFunc` OVERWRITES the oldest queued packet with the newest,
+so with the default one-packet queue only the last RPC request of a 1 ms task_net tick
+survived. That is also a latent bug beyond flashing: two callers in the same millisecond
+silently lost one request, and a non-idempotent RPC (never retried) surfaced as an
+`RpcTimeout`. Deepening the queue to **8**, not the 4 first discussed, so a depth-4
+window leaves headroom for any other caller:
+- no added latency: `drain_socket` already pops up to `UDP_RX_DRAIN_BUDGET = 8` per
+  tick, so a ≤ 8 queue empties in the tick it fills. Pinned by a `static_assert`.
+- a few KB of heap at most (retained per-packet vectors);
+- only the RPC socket changes; the setpoint/heartbeat stream socket keeps the default;
+- a queued request is at most one tick old, so the duplicate-dispatch exposure is
+  unchanged (only idempotent RPCs are ever retried).
+
+**Bridge FW 22** (`udp_link.cpp` `RPC_RX_QUEUE_CAPACITY = 8`,
+`s_rpc.setReceiveQueueCapacity(...)` before `begin()`), USB-flashed with only the bridge
+on USB: SUCCESS 10.58 s, 276480 B, md5 `9ea40eea234988253fbec2e3742eb574`,
+`BRIDGE_IDENTITY fw_version=22`. `EXPECTED_BRIDGE_FW_VERSION` 22. A native test asserts
+the RPC socket's queue depth and that the stream socket keeps 1; a mutant that drops the
+call fails it. The `QNEthernet.h` shim records the depth.
+
+**Burst probe** (`temp/logs/2026-09-28-rpc-burst-probe-fw22.log`, 20 trials each, NOPs
+back to back via `send_nowait`): 4 → **80/80**, 8 → **160/160**, 12 → 226/240 (over
+the 8-deep queue, as expected). Against FW 21: 4 back-to-back got 2.
+
+**Host:** `_FW_PIPELINE_DEPTH = 4` for BB, gated by `_effective_target()` on the bridge's
+BRIDGE_IDENTITY: FW ≥ `_FW_PIPELINE_MIN_BRIDGE_FW` (22) pipelines; an older or unheard
+bridge falls back to depth 1 with a warning. The Platform stays at depth 1 / 0.5 s. The
+tests pin both profiles and the fallback.
+
+**Hardware (BB):**
+
+| Run | DATA | Total | Rewinds / retries / missing acks | Outcome |
+|---|---|---|---|---|
+| FW 2 flash (morning, depth 1, pause 0.5 s) | 61.0 s | 75.84 s | 0 / 0 / 0 | 1 → 2 |
+| FW 3 flash (depth 1, pause 0.12 s) | 45.8 s | 56.25 s | 0 / 0 / 0 | 2 → 3 |
+| `--verify-only`, depth 4 (12:47) | **25.3 s** | – | 0 / 0 / 0 | VERIFY OK `0x1070D8A7`; INFO 3 after the idle reboot |
+| **FW 4 CAN flash, depth 4** (14:34) | **25.3 s** | **36.22 s** | 0 / 0 / 0 | VERIFY OK `0x9A8BC5D5`, COMMIT OK, **`Ball Butler FW version: 3 -> 4`** |
+
+Of the 36.2 s: ≈ 5 s pio build, 25.3 s DATA, ≈ 5 s post-COMMIT reboot wait + version
+read. Logs `temp/logs/bb_verify_only_pipelined_fw22_20260928.log`,
+`temp/logs/bb_fw4_canflash_pipelined_20260928.log`. BB's USB was not attached (the
+owner confirmed it could be plugged in for recovery); COMMIT/VERIFY/copy code unchanged.
+
+**Remaining:** the Platform profile is still 0.5 s / depth 1 by deliberate choice; adopt
+BB's values at a Platform sitting with `--verify-only` first. Further speed would need a
+larger ACK window (a wire-contract change) or more bytes per frame; not worth it at ~25 s.
 

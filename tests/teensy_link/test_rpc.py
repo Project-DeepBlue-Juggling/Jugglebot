@@ -638,9 +638,9 @@ def test_bb_fw_update_end_to_end_over_the_loopback_link(fake_teensy_and_client, 
 # The bridge services RPCs in a 1 kHz task, so a synchronous DATA RPC per frame
 # costs ~1 ms (61 s for BB's 163840 B image). A pipelined sender was built and
 # FAILED on hardware: the bridge's RPC socket queues ONE packet, so requests
-# sharing a tick are dropped. Both profiles therefore run depth 1; the tests
-# below hold the dormant depth-4 mechanism correct (against a sim with no such
-# queue limit) for the day a bridge FW raises that capacity. The board's window
+# sharing a tick are dropped. Can-bridge FW 22 raised that queue to 8, so BB now
+# runs depth 4 (gated on bridge FW >= 22; the Platform stays at depth 1). The
+# tests below hold the pipelined mechanism correct against a sim. The board's window
 # ACK / BAD_SEQ stays the only delivery proof, and every refusal still surfaces.
 
 def test_send_nowait_collects_result_and_refusal_later(fake_teensy_and_client):
@@ -743,19 +743,32 @@ def _bb_session(fake_teensy_and_client, monkeypatch, image, sim_kwargs=None, **t
 _IMG = bytes((i * 37 + 11) & 0xFF for i in range(9001))   # 1801 frames, crosses two sectors
 
 
-def test_fw_profiles_bb_reduced_pause_both_synchronous():
-    """BB flies the reduced sector pause (0.12 s, flown 2026-09-28: DATA 61.0 ->
-    45.9 s, 0 rewinds); the Platform keeps the 0.5 s it flew with. BOTH stay
-    synchronous (depth 1): the current bridge's RPC socket holds one packet, so
-    a pipelined window loses frames (hardware, 2026-09-28). Raising the depth
-    needs a bridge FW that raises s_rpc's receive-queue capacity first."""
+def test_fw_profiles_bb_pipelined_on_bridge_fw22_platform_as_flown():
+    """BB flies the reduced sector pause (0.12 s) and, since can-bridge FW 22
+    deepened the RPC socket's receive queue to 8, a pipelined DATA window of
+    depth 4. The Platform keeps exactly what it flew with: 0.5 s, depth 1."""
     import tools.teensy_link_bridge as tlb
     bb, plat = tlb._FW_TARGETS["bb"], tlb._FW_TARGETS["platform"]
-    assert tlb._FW_PIPELINE_DEPTH == 1
-    assert bb.data_pipeline_depth == 1 and plat.data_pipeline_depth == 1
+    assert tlb._FW_PIPELINE_DEPTH == 4
+    assert tlb._FW_PIPELINE_MIN_BRIDGE_FW == 22
+    assert bb.data_pipeline_depth == 4 and plat.data_pipeline_depth == 1
     assert bb.sector_pause_s == tlb._FW_SECTOR_FLUSH_PAUSE_S
     assert 0.1 <= bb.sector_pause_s <= 0.15             # > typical ~52 ms flush, < flown 0.5 s
     assert plat.sector_pause_s == 0.5                   # the Platform stays as flown
+
+
+def test_pipelining_falls_back_to_synchronous_against_an_older_or_unheard_bridge():
+    """Depth > 1 against a bridge whose RPC socket holds ONE packet loses frames
+    (hardware, 2026-09-28, FW 21), so the tool drops to depth 1 unless the bridge
+    reports FW >= 22 — never a pipelined window at a bridge that cannot queue it."""
+    import tools.teensy_link_bridge as tlb
+    bb, plat = tlb._FW_TARGETS["bb"], tlb._FW_TARGETS["platform"]
+    assert tlb._effective_target(bb, 22).data_pipeline_depth == 4
+    assert tlb._effective_target(bb, 23).data_pipeline_depth == 4
+    assert tlb._effective_target(bb, 21).data_pipeline_depth == 1
+    assert tlb._effective_target(bb, None).data_pipeline_depth == 1
+    assert tlb._effective_target(bb, 21).sector_pause_s == bb.sector_pause_s
+    assert tlb._effective_target(plat, 22) is plat      # depth 1 is never raised
 
 
 def test_bb_pipelined_session_bounds_in_flight_and_recovers_a_lost_frame(

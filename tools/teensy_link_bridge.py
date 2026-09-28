@@ -35,6 +35,7 @@ import struct
 import sys
 import threading
 import time
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Tuple
@@ -187,7 +188,16 @@ _FW_SECTOR_FLUSH_PAUSE_S = 0.12
 #: higher one overtakes it (a BAD_SEQ rewind, not corruption); 4 dlc-8 frames
 #: are ~0.52 ms of 1 Mbps wire, on the wire before the next tick loads more.
 #: Depth 1 is the synchronous rpc.call() path, exactly as flown.
-_FW_PIPELINE_DEPTH = 1
+#:
+#: FIXED in can-bridge FW 22 (2026-09-28): udp_link.cpp sets the RPC socket's
+#: queue to RPC_RX_QUEUE_CAPACITY = 8 (<= its 8-frame per-tick drain budget, so
+#: no added latency). Probe against FW 22: bursts of 4 and 8 back-to-back NOPs
+#: answered 80/80 and 160/160 (20 trials each). BB now pipelines at depth 4;
+#: against a bridge older than _FW_PIPELINE_MIN_BRIDGE_FW (or one whose
+#: BRIDGE_IDENTITY is not heard) the tool falls back to depth 1, as flown.
+#: The Platform stays at depth 1 until a Platform flash decides otherwise.
+_FW_PIPELINE_DEPTH = 4
+_FW_PIPELINE_MIN_BRIDGE_FW = 22
 #: Pipelined DATA: how long to wait for an in-flight frame's bridge ack before
 #: counting it missing. A missing ack is NOT fatal (the board's window reply is
 #: the delivery proof, and a frame that never reached CAN is a BAD_SEQ rewind);
@@ -262,7 +272,7 @@ _FW_TARGETS = {
                       "finish its throw / reload / calibration first",
         abort_note="Ball Butler reboots (and re-homes) after its 60 s session timeout",
         version_wait_s=15.0,   # BB's setup() waits for Serial + its ODrives before its loop runs
-        data_pipeline_depth=_FW_PIPELINE_DEPTH,   # 1: see _FW_PIPELINE_DEPTH
+        data_pipeline_depth=_FW_PIPELINE_DEPTH,   # 4, gated on bridge FW >= 22
         sector_pause_s=_FW_SECTOR_FLUSH_PAUSE_S,
     ),
 }
@@ -692,6 +702,39 @@ def _read_fw_version(target: _FwTarget, rpc: RpcClient, waiter: PlatformFrameWai
     return _read_platform_fw_version(rpc, waiter, timeout)
 
 
+def _await_bridge_fw_version(client: TeensyLinkClient, timeout: float) -> Optional[int]:
+    """The can-bridge's FW_VERSION from its 1 Hz BRIDGE_IDENTITY uplink, or None
+    if none arrived within ``timeout``."""
+    box = {}
+    ev = threading.Event()
+
+    def _on_id(msg_type, seq, payload, addr):
+        box["fw"] = int(p.BridgeIdentity.unpack(payload).fw_version)
+        ev.set()
+
+    unsubscribe = client.subscribe(int(MsgType.BRIDGE_IDENTITY), _on_id)
+    try:
+        ev.wait(timeout)
+        return box.get("fw")
+    finally:
+        unsubscribe()
+
+
+def _effective_target(target: _FwTarget, bridge_fw: Optional[int]) -> _FwTarget:
+    """Pipelined DATA (depth > 1) needs a bridge whose RPC socket queues a burst
+    (FW >= _FW_PIPELINE_MIN_BRIDGE_FW). Against an older or unheard bridge, fall
+    back to the synchronous depth-1 path — slower, never less safe: VERIFY gates
+    COMMIT either way."""
+    if target.data_pipeline_depth <= 1:
+        return target
+    if bridge_fw is not None and bridge_fw >= _FW_PIPELINE_MIN_BRIDGE_FW:
+        return target
+    logging.warning("fw-update: can-bridge FW %s < %d — DATA runs synchronous (depth 1), "
+                    "not pipelined", bridge_fw if bridge_fw is not None else "unknown",
+                    _FW_PIPELINE_MIN_BRIDGE_FW)
+    return dataclasses.replace(target, data_pipeline_depth=1)
+
+
 def run_fw_update(teensy_ip: str, hex_path, dry_run: bool, verbose: bool,
                   bind_host: str = "0.0.0.0", verify_only: bool = False,
                   target: str = "platform") -> int:
@@ -722,6 +765,9 @@ def run_fw_update(teensy_ip: str, hex_path, dry_run: bool, verbose: bool,
                 "stow the legs / disarm before flashing the %s", tgt.label
             )
             return 1
+
+        if tgt.data_pipeline_depth > 1:
+            tgt = _effective_target(tgt, _await_bridge_fw_version(client, timeout=2.5))
 
         rpc = RpcClient(client, default_timeout=0.5, default_retries=1)
         waiter = PlatformFrameWaiter(client)

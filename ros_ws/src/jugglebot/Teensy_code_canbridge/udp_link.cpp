@@ -62,10 +62,25 @@ static uint8_t s_tx_buf[JbUdp::MAX_FRAME];
 // backlog is drained on the next service() tick, not dropped.
 static constexpr uint8_t UDP_RX_DRAIN_BUDGET = 8;
 
+// RPC socket receive queue (FW 22, 2026-09-28). QNEthernet's EthernetUDP
+// defaults to a queue of ONE packet and, when full, OVERWRITES the oldest with
+// the newest — so of the RPC requests landing in one 1 kHz task_net tick only
+// the last survived. Harmless for one synchronous caller, silently lossy for two
+// callers in the same millisecond (a non-idempotent RPC is never retried, so it
+// surfaced as an RpcTimeout), and fatal to the pipelined firmware-update DATA
+// path (4 back-to-back NOPs got 2 acks). A queue no deeper than the drain budget
+// empties in the SAME tick it is filled, so this adds no latency; the cost is at
+// most that many retained frame buffers of heap. The stream socket (setpoints,
+// heartbeats) keeps the library default — unchanged behaviour on the hot path.
+static constexpr size_t RPC_RX_QUEUE_CAPACITY = 8;
+static_assert(RPC_RX_QUEUE_CAPACITY <= UDP_RX_DRAIN_BUDGET,
+              "a queued RPC must be drained in the tick it arrives (no added latency)");
+
 void udp_link_init() {
   if (!s_net_mtx) s_net_mtx = xSemaphoreCreateRecursiveMutex();
   NetLock lk;
   s_stream.begin(JbUdp::PORT_STREAM);
+  s_rpc.setReceiveQueueCapacity(RPC_RX_QUEUE_CAPACITY);
   s_rpc.begin(JbUdp::PORT_RPC);
 }
 
