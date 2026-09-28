@@ -71,6 +71,25 @@ to the robot:
 
 ## What changed since R3 / cup-contact (read once, applies everywhere below)
 
+- **Since sitting 2 (2026-09-28 21:41, `logbook/2026-09-28-skill-stack-r4-sitting-2-analysis.md`),
+  landed 2026-09-28:**
+  - **The hop's THROW plans again under a real level offset.** Sitting 2's three hops all refused
+    `HAND_LIMIT_ACC 4969.7 > 3500` at the THROW install. Not the hand's cogging jitter: the number
+    was identical to 0.1 across three seeds. The 50 ms post-release hold held the platform-tilt
+    axis, which the level correction (-3.9, +5.8 mrad) rotates off the launch velocity ACROSS the
+    hop, and the planner answered the one-knot sideways demand by collapsing the hand's stroke.
+    The hold now keeps the cup on its own launch line. The sim gates never apply a level
+    correction, which is why they passed; the regression test now does.
+  - **Reload skips `bb/reload` when Ball Butler already holds a ball** (owner, 2026-09-28), and
+    after a `bb/reload` waits for BB to leave IDLE before it trusts an IDLE heartbeat.
+  - **Prove `ball_butler_node` is listening before the reload block** (§ 6 step 27): in sitting 2
+    it was alive and answered nothing all session, which is both the reload timeouts and the GUI
+    yaw/pitch freeze. Not reproduced offline; the step says what to capture if it recurs.
+  - **The GUI's BB yaw/pitch fields no longer freeze the tab.** rosbridge now runs each service
+    call on its own thread, and the aim module keeps one call in flight with a 3 s timeout. An
+    unanswered aim now reads `bb/aim failed: bb/aim timed out after 3 s` within 3 s. Refresh the
+    browser tab after the launch so it loads the new GUI files.
+  - **The admissible box is re-swept** (the planner file is in its gate hash), `bf095653d422`.
 - **Since sitting 1 (2026-09-27 22:37, `logbook/2026-09-28-skill-stack-r4-sitting-1-analysis.md`),
   landed 2026-09-28 — read that entry's Diagnosis once:**
   - **The learner memory is COLD.** The pre-calibration rows are quarantined
@@ -91,9 +110,12 @@ to the robot:
     Translation is held (hop residual 2.75 mm/s over the 2 held knots from the banking slew, was 68);
     the ATTITUDE is not (§ 9 item 7). By eye on the hop: the platform pauses at the
     release pose for a beat before it moves to the far site.
-  - **Reload sequencing**: `bb/reload` → skill_node waits for BB's heartbeat IDLE +
-    ball in hand → `bb/throw_at_target` (BB's own ~1.1 s ball check refused every
-    throw sent 5 ms after the reload on 09-27). The announcement wait is armed
+  - **Reload sequencing** (revised after sitting 2, 2026-09-28): if BB's heartbeat
+    already reads IDLE + ball in hand, `bb/reload` is NOT sent (its ~1 s ball check is
+    for an empty hand) and `bb/throw_at_target` fires on the next tick; only an empty
+    hand gets `bb/reload`, after which skill_node waits (up to 10 s) for BB to leave
+    IDLE and come back IDLE with a ball. Sitting 2 fired the throw on the IDLE from
+    BEFORE the check began, ~20 ms after the reload. The announcement wait is armed
     before the throw call; a Teensy rejection on `bb/throw_outcome` ends the attempt
     the same tick (`REJECTED_BB(<token>)`); a BB refusal after the bridge REST is
     live ENDS the attempt instead of leaving it "in progress"; a firmware
@@ -222,7 +244,7 @@ plant is near-identity in y).
 throw, not a chain; **then chained**. Watch, every throw:
 
 - **The box** (re-swept 2026-09-27 under the kinematic-calibration geometry,
-  gate hash `7f76f68d4943` (superseded 2026-09-28 by **`3fda47b2ad5b`**: the 50 ms post-release hold re-swept the boxes twice, bit-identical; the hop's x bound AWAY from the far site halved — P1→P2 x [−10, +2] mm was [−20, +2], P2→P1 x [−1, +10] was [−0.5, +20]; y ±20 mm, apex 0.85–0.95 m, and every self-toss/columns box unchanged) after `043158e` (bounds unchanged from `3059cc1`; the bridge
+  gate hash `7f76f68d4943` (superseded 2026-09-28 by **`3fda47b2ad5b`**: the 50 ms post-release hold re-swept the boxes twice, bit-identical; the hop's x bound AWAY from the far site halved — P1→P2 x [−10, +2] mm was [−20, +2], P2→P1 x [−1, +10] was [−0.5, +20]; y ±20 mm, apex 0.85–0.95 m, and every self-toss/columns box unchanged; superseded again 2026-09-28 evening by **`bf095653d422`**: the hold now keeps the launch line, two sweeps bit-identical, only P2→P1 x moved to [−0.5, +10]) after `043158e` (bounds unchanged from `3059cc1`; the bridge
   now runs FW 24 with the stroke clamp generated from the calibrated geometry — a launch
   against any other bridge FW shows the SKEW advisory) — read `skills/check`, it prints the live bands):
   P1→P2 `x` in **−20…+2 mm**, P2→P1 `x` in **−0.5…+20 mm**, `y` in **±20 mm**,
@@ -262,8 +284,8 @@ Fly `self_toss` first (one site, the simplest reload target), then `hop`.
 | # | Step | Expect |
 |---|---|---|
 | 26 | `ros2 param set /skill_node separation_mm 250.0` (needed for the hop half below — see § "what changed": the GUI never overrides this per click) ; confirm `n_throws` reads the value you want after the reload's own catch (launch default 4) | `Set parameter successful`. |
-| 27 | Confirm Ball Butler is loaded and ready to throw at this robot (its own bring-up, out of scope here): `ros2 topic echo /bb/heartbeat --once` must read `state: 1` (IDLE), `ball_in_hand: true`, `connected: true`. Since 2026-09-28 skill_node waits for exactly that heartbeat after `bb/reload` before it asks for the throw (BB's RELOAD command runs a ~1.1 s ball check in CHECKING_BALL, state 6, during which its firmware refuses every throw — the 2026-09-27 sitting's five `THROW_REJECTED_BAD_STATE`). | `state: 1`, `ball_in_hand: true`. A heartbeat stuck in 6 or 4 → wait; in 127 (ERROR) → BB reset first. |
-| 28 | GUI: pattern = **Self-toss**, check **Reload first**, hold-to-confirm **Start**. Operator keeps a hand on the E-stop. | GUI status line moves `Dispatching self_toss (reload)…` → the reload round trip (`bb/reload` → `reload requested: bb/reload OK -- awaiting Ball Butler IDLE with a ball` → BB's CHECKING_BALL dip and return → `bb/throw_at_target` fired from the tick with a delay derived from the bridge REST's own settle) → BB announces at dispatch and throws ~2.7 s later (a Teensy rejection now ends the attempt within one tick as `REJECTED_BB(<token>)`, no 4.6 s wait) → **PRE-TILT REST** (watch it settle, ≥ 1.0 s) → **held-tilt CATCH** → **DECAY REST** → the pattern's own throws (`n_throws`). |
+| 27 | Confirm Ball Butler is loaded and ready to throw at this robot (its own bring-up, out of scope here): `ros2 topic echo /bb/heartbeat --once` must read `state: 1` (IDLE), `ball_in_hand: true`, `connected: true`. With that heartbeat skill_node skips `bb/reload` entirely (BB's RELOAD command runs a ~1 s ball check in CHECKING_BALL, state 6, that a loaded hand does not need). **Then prove `ball_butler_node` is listening** (sitting 2's whole reload block failed on a node that was alive but answered nothing, the GUI yaw/pitch fields included): after the BB calibration, `grep "BB calibration received" <launch log>` must show one line, and `ros2 service call /bb/aim jugglebot_interfaces/srv/BallButlerAim "{yaw_deg: 0.0, pitch_deg: 45.0}"` must answer within a second (a refusal message is fine; silence is not). | `state: 1`, `ball_in_hand: true`, the calibration line, an answer. Silence → relaunch; before relaunching, if you can, capture `sudo ~/Desktop/PDJ_venv/venv/bin/py-spy dump --pid $(pgrep -f lib/jugglebot/ball_butler_node)` to `temp/logs/`. A heartbeat stuck in 6 or 4 → wait; in 127 (ERROR) → BB reset first. |
+| 28 | GUI: pattern = **Self-toss**, check **Reload first**, hold-to-confirm **Start**. Operator keeps a hand on the E-stop. | GUI status line moves `Dispatching self_toss (reload)…` → the reload round trip (`reload: Ball Butler already holds a ball -- bb/reload skipped` → `bb/throw_at_target` fired from the next tick with a delay derived from the bridge REST's own settle) → BB announces at dispatch and throws ~2.7 s later (a Teensy rejection now ends the attempt within one tick as `REJECTED_BB(<token>)`, no 4.6 s wait) → **PRE-TILT REST** (watch it settle, ≥ 1.0 s) → **held-tilt CATCH** → **DECAY REST** → the pattern's own throws (`n_throws`). |
 | 29 | Watch, on the catch: the `OUTCOME ball 0: ... seat=` line, the hand sensor (EMPTY→HELD once, not HELD→EMPTY→HELD), and by eye whether the ball settles or rattles — same signals `session_cup_contact.md` § 4 defines (+0.05…+0.15 s good, > ~0.20 s or no seat = a rebound). The 12° ceiling means the platform visibly tilts to meet the ball — that tilt IS the plan, not a fault. | Smooth seat, `caught=True`. |
 | 30 | If the catch does not seat, or a guard latches: **do not re-dispatch by hand.** GUI **Stop** (immediate, no hold), let the rest tail settle, capture the bag, work § 7/§ 8. | |
 | 31 | Once self_toss + reload lands clean at least once: GUI pattern = **Hop**, **Reload first** checked, hold-to-confirm **Start**. | Same PRE-TILT REST / CATCH / DECAY REST sequence, then the hop's own `n_throws` alternating between P1/P2 — reload always targets P1 (§ "what changed"), so the first post-catch throw goes P1→P2. |
@@ -289,9 +311,10 @@ changed for R4:
 | `SUPERSEDED_BY_HOLD` | A `trajectory/hold` landed while this segment's solve was running (e.g. a Stop/cancel raced an in-flight install) — the segment it planned was cancelled; the hold already has the wire. Not an error, just a race the operator's own Stop usually caused. |
 | `columns refused: reload is not available for columns until R5` | Exactly what it says — not reachable this sitting since columns is not flown, but if you see it, you dispatched the wrong pattern. |
 | `REJECTED_BB(<message>)` | Ball Butler's OWN refusal, surfaced verbatim: `bb/reload`'s `success=False` message, `bb/throw_at_target`'s, or — new 2026-09-28 — the Teensy's terminal `CMD_RESULT` token relayed on `bb/throw_outcome` (`THROW_REJECTED_BAD_STATE`, `THROW_REJECTED_NO_BALL`, `THROW_REJECTED_CANT_MAKE_LEAD`, `ABORTED_NOT_SETTLED`, …) which ends the attempt the SAME tick, whether the throw was still awaited or its announcement had already compiled the reload schedule. Read BB's code, this is its diagnostic, not skill_node's. |
-| `ABORTED_BB_NOT_READY(<state>, ball_in_hand=<bool>)` | New 2026-09-28: after `bb/reload` Ball Butler's firmware runs its ball check (CHECKING_BALL, ~1.1 s) and refuses a throw in that state, so skill_node now waits for BB's heartbeat to read IDLE + ball in hand + connected before `bb/throw_at_target` — this code means it never did within `RELOAD_BB_READY_TIMEOUT_S` (3.0 s). The state named is what the heartbeat last said (BOOT/IDLE/TRACKING/THROWING/RELOADING/CALIBRATING/CHECKING_BALL/ERROR); `ball_in_hand=False` means BB has no ball — load it. |
+| `ABORTED_BB_NOT_READY(<state>, ball_in_hand=<bool>)` | New 2026-09-28: skill_node waits for a fresh BB heartbeat reading IDLE + ball in hand + connected before `bb/throw_at_target` (after a `bb/reload`, only an IDLE that follows BB leaving IDLE counts) — this code means it never did within `RELOAD_BB_READY_TIMEOUT_S` (3.0 s, ball already in hand) or `RELOAD_BB_FETCH_TIMEOUT_S` (10.0 s after a `bb/reload`; a ceiling, BB's own fetch time has never been recorded). The state named is what the heartbeat last said (BOOT/IDLE/TRACKING/THROWING/RELOADING/CALIBRATING/CHECKING_BALL/ERROR); `ball_in_hand=False` means BB has no ball — load it. |
 | `ORIGIN_TOO_LATE` | New 2026-09-28: a fresh-origin THROW/CATCH whose solve took longer than the wire lead (75 ms) — its first knot would already be stale at the wire and the firmware's scheduled lane refuses a block discontinuous with the held lane (on 2026-09-27 that refusal integrated into a hand `MAX_DEVIATION` E-stop). A fresh REST in the same situation is not refused but REBASED (log line `fresh origin REBASED +<n> s`): same motion, later. Either on the console = the Jetson was slow (load, a long window); check `uptime` before re-flying. |
 | `reload refused: bb/reload unavailable` / `... did not answer in <n> s` | Ball Butler's service is down or not responding — a BB bring-up problem, not this robot's. |
+| `ABORTED_BB_THROW_TIMEOUT` (`bb/throw_at_target did not answer in 2.0 s -- ball_butler_node itself answered nothing`) | Sitting 2 (2026-09-28 21:41), all three reloads: `ball_butler_node` was alive but processed no callback all session (no calibration line, the GUI's `bb/aim` timed out at 50 s). Not a Ball Butler firmware refusal, which answers `REJECTED_BB`. Run the step-27 listening check; relaunch; capture the py-spy dump if it recurs. |
 | `ABORTED_NO_ANNOUNCEMENT` | Ball Butler accepted the throw request but no `ThrowAnnouncement` arrived within the deadline (`throw_delay_s + predicted_tof_s + 1.0 s`) — BB's own countdown cannot be aborted (the ball may still come); the platform is already resting under the aim point, the safest place to wait. If the ball does land late, it is uncaught this attempt — re-dispatch reload once BB confirms it threw. |
 | `reload bridge schedule refused: ...` / `the reload CATCH window (...) ` | The announced landing leaves no room for the opening REST + pre-tilt + catch window ahead of it — BB's `throw_delay_s` was too short for this robot's own homing/pre-tilt time. A BB-side timing tune, not a code bug. |
 | `hop refused: no admissible box covers site pair(s) ... at apex ...` | No swept box (or none within band) for the hop pair/apex requested — the ONLY place a stale/missing hop box surfaces (§ "what changed" — `skills/check` does not catch this). |
@@ -372,7 +395,17 @@ Reload: 0/5 threw (`THROW_REJECTED_BAD_STATE` ×5, `ABORTED_NO_ANNOUNCEMENT` ×5
 `MAX_DEVIATION` latch on a reload REST the firmware refused on all 80 frames. Full analysis and
 the four fixes: `logbook/2026-09-28-skill-stack-r4-sitting-1-analysis.md`.
 
-### Sitting 2 — *(fill in)*
+### Sitting 2 — 2026-09-28 21:41 (one launch, bag `~/Desktop/rosbags/2026-09-28_21-41-10`)
+
+NOT MET. Self-toss from a cold memory: 34 caught / 2 not over the session's singles and chains,
+stable to `num_cycles: 5`; the one `num_cycles: 10` ended `ABORTED_NO_RELEASE` after ~5 throws.
+Almost every catch re-aimed by the full 20 mm lateral authority (§ 9 watch item). Hop: 3/3
+refused at the THROW install, `HAND_LIMIT_ACC 4969.7` (the hold's axis under the level
+correction, fixed). Reload: 3/3 `ABORTED_BB_THROW_TIMEOUT` (`ball_butler_node` deaf all session;
+the throw would also have raced BB's ball check, fixed). Analysis:
+`logbook/2026-09-28-skill-stack-r4-sitting-2-analysis.md`.
+
+### Sitting 3 — *(fill in)*
 
 ### Pre-power (§ 1)
 

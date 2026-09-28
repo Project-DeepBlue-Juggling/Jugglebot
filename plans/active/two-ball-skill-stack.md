@@ -1122,7 +1122,7 @@ the rung's tests passing or a handoff file in the scratchpad.
   flight-fraction ladder for the hop) — a plant more than ~5 % fast in apex
   plateaus out of band (the sim's +11 % model does); **re-swept 2026-09-27 under the
   kinematic-calibration geometry** (`plans/active/kinematic-calibration.md`, gate hash
-  `7f76f68d4943` (superseded 2026-09-28 by **`3fda47b2ad5b`**: the 50 ms post-release hold re-swept the boxes twice, bit-identical; the hop's x bound AWAY from the far site halved — P1→P2 x [−10, +2] mm was [−20, +2], P2→P1 x [−1, +10] was [−0.5, +20]; y ±20 mm, apex 0.85–0.95 m, and every self-toss/columns box unchanged) after the 2026-09-27 FW 24 stroke-clamp commit `043158e`; bounds unchanged from `3059cc1`): the apex band opened to 0.85–0.95 but the x bound TOWARD the
+  `7f76f68d4943` (superseded 2026-09-28 by **`3fda47b2ad5b`**: the 50 ms post-release hold re-swept the boxes twice, bit-identical; the hop's x bound AWAY from the far site halved — P1→P2 x [−10, +2] mm was [−20, +2], P2→P1 x [−1, +10] was [−0.5, +20]; y ±20 mm, apex 0.85–0.95 m, and every self-toss/columns box unchanged; superseded again 2026-09-28 evening by **`bf095653d422`**: the hold now keeps the launch line, two sweeps bit-identical, only P2→P1 x moved to [−0.5, +10]) after the 2026-09-27 FW 24 stroke-clamp commit `043158e`; bounds unchanged from `3059cc1`): the apex band opened to 0.85–0.95 but the x bound TOWARD the
   far site collapsed — P1→P2 x [−20, +2] mm, P2→P1 x [−0.5, +20] mm (y ±20 kept) — so
   the learner has essentially no lateral authority in the hop's own direction; the
   sitting's measured hop ratio and lateral bias at K = 0.7 decide whether the hop
@@ -1179,6 +1179,14 @@ the rung's tests passing or a handoff file in the scratchpad.
   makes / 0 drops ×2 bit-identical; box swept ×2 bit-identical, gate hash `3fda47b2ad5b`. Every
   other triple: the logbook entry's Verification section. **Hardware gate still OUTSTANDING**; runsheet
   `tests/hardware/session_skills_r4.md` § "what changed" carries the sitting-2 watch list.
+- **Sitting 2 (2026-09-28 21:41).** Self-toss from a cold memory held (34 caught / 2, stable to
+  five cycles). The hop THROW refused `HAND_LIMIT_ACC` 3/3: the post-release hold held the
+  plan-frame tilt axis, which the level correction rotates off the launch velocity across the
+  hop; the hold now keeps the cup on its own launch line (no correction ⇒ unchanged). The reload
+  met a `ball_butler_node` that answered nothing all session (carried: the runsheet checks it before
+  the reload block); behind it the reload now skips `bb/reload` on a ball already in hand and waits
+  for BB to leave IDLE after one. Box re-swept ×2 bit-identical, gate hash `bf095653d422`. Entry
+  `logbook/2026-09-28-skill-stack-r4-sitting-2-analysis.md`. **Hardware gate still OUTSTANDING.**
 
 ### R5 — Two-ball columns
 
