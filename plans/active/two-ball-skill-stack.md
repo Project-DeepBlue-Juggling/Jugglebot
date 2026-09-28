@@ -150,7 +150,16 @@ own diff against it before reporting. A finding against a value is a defect.
     (`logbook/2026-09-20-cup-contact-contract-implemented.md` Discussion, "Why the seam
     tilt-RATE pin was NOT built"); (6) `test_the_qp_and_the_gate_stay_within_an_order_of_magnitude`
     exceeds its 10× wall-clock bar in ~2 of 10 quiet-box runs — a re-derived bar or a
-    median-of-N is an owner call (same entry, Diagnosis #4).
+    median-of-N is an owner call (same entry, Diagnosis #4). **Added 2026-09-28 (sitting 1):** (7) the
+    post-release hold (50 ms) is TRANSLATION-only — pinning the attitude over it refuses on the
+    250 mm hop at this operating point (`LIMIT_ACC` 5538–21 711 > 5000 for every span; a
+    flat-then-slew tilt schedule by construction, or a longer tail, is the owner call); residual
+    centroid speed over the held knots: hop 2.75 mm/s at the shipped 2 knots (13.36 at the rejected 3-knot cut), was 68; (8) the ball separates 20–40 ms after the
+    planned release on every throw (free flight extrapolated to t_rel sits 48–172 mm below the
+    release point) — a characterisation item the learner absorbs vertically and the hold covers
+    laterally; (9) the carried item (1) hand recovery park stays open, and the hop box's x-collapse
+    toward the far site (+2 mm) means the hop's residual lateral error is the planner's to remove,
+    not the learner's.
 
 ## 1. Context
 
@@ -576,7 +585,7 @@ The **Status** column is the one source of truth for where each rung stands;
 | R1 | One hand master | can-bridge FW 21 (lane follows `HAS_HAND`, guard boots ARMED, ACTIVATE parks the hand at 0 rev), Platform FW 7 (no stroke engine), PROTOCOL_VERSION 7, `hand_mm_per_rev` measured key, lockstep runbook `tests/hardware/session_skill_stack_r1_flash.md` (completed) | `Trajectory.h`, `hand_source`, `hand_ops`, `HAND_TRAJ_CMD`/`HAND_SOURCE_SET`, `SetHandTrajCmd.srv`, `hand_stroke.py` twin, the legacy kind-0 toss device (its FSM branch refused at accept until R4) | bench ladder re-passes on the FW 21 / Platform 7 pair; a streamed self-toss caught with no latch step | ✅ **DONE 2026-09-11** (`1e2c0c9`, `c52dc27`) — flashed, sat, one streamed self-toss caught with no latch step; a levelling-frame tilt snap found + fixed (`_unified_prelevel`); multi-throw chaining + live guard cold-trip → R2 (`logbook/2026-09-11-skill-stack-r1-sitting-prelevel.md`, `…-one-hand-master.md`) |
 | R2 | Skills, schedule, stream (sim) | `motion/skills/{sites,schedule,segments,executor,admissible}.py`, `unified_cycle.state_at_knot`/`splice_at`, `InstallSegment.srv` + `trajectory/install_segment`, `skill_node.py`, vectorised `validate_cycle`, `tools/admissible_sweep.py`, `sim/skills_gate.py`, `hand_stream_bench --trip-guard` | `sim/cycle_gate.py`, `sim/unified_gate.py` (+ their tests); the per-sample `validate_cycle` loop. **`PlanCycle` and the ring policy stay for the FSM until R4** (owner, 2026-09-12 — see the R2 section) | 20 columns cycles in sim at the owner's operating point (0.9 m / 100 mm — re-sized at R2), no drops, five seeds; plan < 50 ms on the loaded Jetson | ✅ **DONE** — sim gate MET 2026-09-12 (20/20 × 5 seeds, 0 drops); **hardware gate MET 2026-09-13** on the third no-motion sitting (rows 15/16 PASS all five gates, worst solve 47.9 / 49.0 ms, handoff margin 73–74 ms; non-gating row 17 failed G1/G3 under two extra busy cores) — `4d49e04`, `40371fe` (`logbook/2026-09-12-skill-stack-r2-skills-schedule-stream.md`, `…/2026-09-13-skill-stack-r2-gate-sittings.md`) |
 | R3 | Learner + single site | `learner.py`, `memory.py`, outcome capture | ILC/trim/cal/record stack, `toss_ilc_enabled` | in-band within 5 throws from cold, sim and hardware; 10 consecutive catches | ✅ **DONE 2026-09-23** — hardware gate met under the cup-contact contract: 26/26 (2026-09-18 16:16), 87/87 (2026-09-22, Block A) and 78/80 with the lateral learner live (2026-09-23, Block B); the learner in band within five throws at both apexes; see the § 0 carry-ins. History: 🟡 **SIM MET, HARDWARE OUTSTANDING (2026-09-13)** — landed: the learner + memory, the single-site chained schedule, outcome capture, the precondition ladder (pre-level, floor lift) and a working `skill_node` shell. **Sim criterion MET 2026-09-13**: policies A and B, seeds 0–4, in-band by throw 3 (A) / 5 (B), monotone, 0 drops, repeat runs bit-identical. ⚠ **Sim criterion RE-OPENED 2026-09-14 in xy only**: the dense apex-scoped re-sweep's (P1, P1) 0.9 m box admits x 0…+40 mm, y 0 (the old ±40 × ±30 mm box claimed offsets the chained catch fails at 90 % margin at 0.77/0.81 s flights, item (k)); on it policies A and B, seeds 0–4, land flight in band by throw 3 / 5 with 0 drops but never enter the xy band (the sim's +8.5 mrad aim error is +y) — restoring xy authority needs item (k) resolved. **Item (k) CLOSED 2026-09-21** (cup-contact contract box re-sweep + `sim/skills_gate.py`'s `_FIT_MIN_SAMPLES=12` fix mirroring the robot's `flight_fit` admission rule): the xy-band xfail is now a plain passing test, 25/25 makes across seeds 0–4. **Sitting 1 (2026-09-13 evening) did not reach the gate**: 5/5 single throws caught but untracked (a plain THROW never announced — fixed), 2–3/5 chained, two hand-axis `MAX_DEVIATION` latches (an ended attempt's plan kept throwing; an opening REST from an un-parked hand), the BB reload retired at R1 — five Jetson-side fixes landed 2026-09-14; ⚠ **the plant throws ~25 % fast (apex 1.38 m for 0.9 m) and the learner's box cannot reach it — owner decision on the hand acceleration ceiling before sitting 2** (`logbook/2026-09-14-skill-stack-r3-first-powered-sitting.md`). Outstanding: sitting 2, `tests/hardware/session_skills_r3.md`. `logbook/2026-09-13-skill-stack-r3-learner-single-site.md`. commits `b403964` (learner + memory), `c737ec9` (planner blend floor), `baab782` (skill path + learning-stack deletion). **apex ladder CLOSED 2026-09-16 (K=0.7 adopted; hand 1.05–1.22× (mean up to 1.13×) → 1.00–1.03×; ball apex 1.25× → 1.08×), entry `logbook/2026-09-16-apex-ladder-k07-ab-result.md`; `tests/hardware/session_skills_r3_apex_ladder.md` §6** ⚠ **Sittings 2026-09-17 (37 throws, 35 caught, gate NOT claimed): every catch mistimed because the tracker's Kalman landing ran +0.05..+0.13 s late and the learner converged onto it (true flight 30–90 ms short of the aim, hand late, HELD/EMPTY/HELD gaps, 10 `caught=False` for 2 drops) — FIXED: ballistic batch-fit landing (`tracking/flight_fit.py`, last-in-flight bias −5 ms), `CAUGHT_WINDOW_S` 0.70; guard chain (SETPOINT_STALE off a 64 ms Jetson hiccup at a displacement gate; MAX_DEVIATION ×2 from the un-parked hand on the recovery slew) — FIXED: rate-bound step gate, `/recover` parks the hand; `temp/learn/jugglebot` quarantined, NEXT sitting cold. `logbook/2026-09-17-late-catches-are-a-late-tracker.md`** **2026-09-18, for the next sitting: the learner's command and outcome are now the same physical quantity at a fixed horizon — a landing xy plus an APEX, all three off the converged fit (§ 0 item 5, § 2.5) — and the catch is aimed from that fit with the schedule as its prior (§ 2.7). Both changes remove the SAME bias in two places: the release-instant slip the 09-17 sitting measured at 0.019–0.137 s. The line to watch in the OUTCOME log is `seat=` — the contact phase, +0.104 s on every smooth catch and +0.015 s on the bouncers.** |
-| R4 | Two sites, one ball, BB reset | one-ball HOP schedule (`OneBallPattern`/`compile_one_ball`), the reload as REST → held-axis CATCH → REST → pattern anchored on the BB announcement (`compile_reload`, `CatchEvent.axis`, `CycleGoals.hold_tilt`/`rest_tilt`), boxes keyed by pattern + (release, target) site with xy stamps and the 250 mm hop swept, `Juggle.action` + the GUI relay, the splice seam-velocity fix, fresh-origin RESTs | FSM stack (tag `fsm-final` = 1e7f2d9): coordinators, sequencers, `catch_reach`, the ring half of `trajectory_node`/`unified_cycle`, `PlanCycle`, the Toss/TossContinuous/Reload actions, the old sim gates, 14 config keys | 10 consecutive alternating catches; BB reload → catch → throw chain | 🟡 **SOFTWARE DONE 2026-09-24, HARDWARE OUTSTANDING** — sim gate MET (hop 25/25 makes × 5 seeds, 0 drops, bit-identical ×2; reload trial 5/5 seeds under the live tracker aim); FSM deleted 2026-09-24 under `fsm-final`; runsheet `tests/hardware/session_skills_r4.md`; ⚠ hop box apex 0.85–0.90 m only, 250 mm re-aims refuse inside ~0.5 s of touch-down (see the R4 Outcome). Entries `logbook/2026-09-23-skill-stack-r4-hop-reload-planner.md`, `logbook/2026-09-24-skill-stack-r4-fsm-deletion.md` |
+| R4 | Two sites, one ball, BB reset | one-ball HOP schedule (`OneBallPattern`/`compile_one_ball`), the reload as REST → held-axis CATCH → REST → pattern anchored on the BB announcement (`compile_reload`, `CatchEvent.axis`, `CycleGoals.hold_tilt`/`rest_tilt`), boxes keyed by pattern + (release, target) site with xy stamps and the 250 mm hop swept, `Juggle.action` + the GUI relay, the splice seam-velocity fix, fresh-origin RESTs | FSM stack (tag `fsm-final` = 1e7f2d9): coordinators, sequencers, `catch_reach`, the ring half of `trajectory_node`/`unified_cycle`, `PlanCycle`, the Toss/TossContinuous/Reload actions, the old sim gates, 14 config keys | 10 consecutive alternating catches; BB reload → catch → throw chain | 🟡 **SOFTWARE DONE 2026-09-24, HARDWARE OUTSTANDING; sitting 1 2026-09-27 NOT MET on all three rungs (stale memory, throw-after-moving-catch, hop late release, reload sequencing) — four fixes landed 2026-09-28, see the R4 Outcome's sitting-1 bullet and `logbook/2026-09-28-skill-stack-r4-sitting-1-analysis.md`** — sim gate MET (hop 25/25 makes × 5 seeds, 0 drops, bit-identical ×2; reload trial 5/5 seeds under the live tracker aim); FSM deleted 2026-09-24 under `fsm-final`; runsheet `tests/hardware/session_skills_r4.md`; ⚠ hop box apex 0.85–0.90 m only, 250 mm re-aims refuse inside ~0.5 s of touch-down (see the R4 Outcome). Entries `logbook/2026-09-23-skill-stack-r4-hop-reload-planner.md`, `logbook/2026-09-24-skill-stack-r4-fsm-deletion.md` |
 | R5 | Two-ball columns | Start/Stop phases, limits ramp as sized at R2 | — | five consecutive cycles, then 30 catches; learning curve logged | ⬜ **NOT STARTED** |
 | R6 | Close-out | docs, memory, archival | whatever R5 left dead | plan archived `completed` | ⬜ **NOT STARTED** |
 
@@ -1113,7 +1122,7 @@ the rung's tests passing or a handoff file in the scratchpad.
   flight-fraction ladder for the hop) — a plant more than ~5 % fast in apex
   plateaus out of band (the sim's +11 % model does); **re-swept 2026-09-27 under the
   kinematic-calibration geometry** (`plans/active/kinematic-calibration.md`, gate hash
-  `7f76f68d4943` after the 2026-09-27 FW 24 stroke-clamp commit `043158e`; bounds unchanged from `3059cc1`): the apex band opened to 0.85–0.95 but the x bound TOWARD the
+  `7f76f68d4943` (superseded 2026-09-28 by **`3fda47b2ad5b`**: the 50 ms post-release hold re-swept the boxes twice, bit-identical; the hop's x bound AWAY from the far site halved — P1→P2 x [−10, +2] mm was [−20, +2], P2→P1 x [−1, +10] was [−0.5, +20]; y ±20 mm, apex 0.85–0.95 m, and every self-toss/columns box unchanged) after the 2026-09-27 FW 24 stroke-clamp commit `043158e`; bounds unchanged from `3059cc1`): the apex band opened to 0.85–0.95 but the x bound TOWARD the
   far site collapsed — P1→P2 x [−20, +2] mm, P2→P1 x [−0.5, +20] mm (y ±20 kept) — so
   the learner has essentially no lateral authority in the hop's own direction; the
   sitting's measured hop ratio and lateral bias at K = 0.7 decide whether the hop
@@ -1132,6 +1141,44 @@ the rung's tests passing or a handoff file in the scratchpad.
   2026-09-24: **PASS — 5416 passed, 8 skipped, 1 xfailed in 274.47 s (parallel), serial 6 passed in 18.67 s** (`temp/logs/r4_gate_full_20260924_*.log`; the per-commit gate on the same tree: 5378 passed, 8 skipped in 204.22 s — down from the 6361 baseline by the deleted FSM tests, up by this phase's new ones). **Hardware gate outstanding:**
   `tests/hardware/session_skills_r4.md`. **R5 is NOT cleared until the R4
   sitting.**
+
+- **Sitting 1 (2026-09-27) and its follow-ups (2026-09-28).** The first R4 sitting under
+  the calibrated geometry was NOT MET on all three rungs, and `logbook/2026-09-28-skill-stack-
+  r4-sitting-1-analysis.md` reads four mechanisms off one bag: (1) the learner memory was learned
+  against the old geometry (its converged +20 mm y command now lands +20 mm) — quarantined, cold
+  restart; (2) every throw after a laterally re-aimed catch missed 30–110 mm because the plan
+  dragged the platform back to the site during the dwell with the ball on the descending hand
+  (R3 never saw it: lateral authority was 0); (3) the hop overshot 100 mm on the right tilt: the
+  ball separates 20–40 ms after the planned release and the plan re-accelerated the centroid
+  toward the far site the instant the release knot passed — at the root, the detach cone buys its
+  axial specific force by translating the platform (686 mm/s² at 4°); (4) the reload never threw —
+  BB's RELOAD command runs a ~1.1 s ball check that refuses the throw sent 5 ms later, the
+  announcement was dropped as "no reload awaiting", the outcome relay was unconsumed, and a REST
+  the solve outran (381 ms, origin t_now) was refused by the firmware's scheduled lane on all 80
+  frames and integrated into a hand `MAX_DEVIATION` with no host END. **Owner decisions
+  (2026-09-28, asked before code):** redesign before the next sitting — a catch's carried throw
+  RELEASES FROM WHERE THE BALL WAS CAUGHT and re-centres in flight (not re-pin the authority);
+  a post-release platform hold in the planner (sized 50 ms — 75 ms refused the R2 columns schedule `LIMIT_VEL` 303.6 > 300); fix every reload defect now; retrain cold.
+  **Landed:** `executor._catch_terminal` releases at the clamped landing xy, the release offset
+  fills the memory's reserved `x[2:4]` (seat offset) and its fly-back is pre-compensated by the
+  learner's own apex ratio (`_offset_flyback_mm`, closed form: a launch-speed scale s multiplies
+  apex and lateral reach alike by s²); `unified_cycle.POST_RELEASE_HOLD_S` / `CycleGoals.
+  hold_platform_knots` / the hold rows in `cup_cycle` pin the cup velocity to the frozen stroke
+  line over 2 knots (50 ms) on every window built off a release (hop residual over the held knots 68 → 2.75 mm/s at 2 knots, 13.36 at the rejected 3-knot cut; the
+  ATTITUDE half refuses at this operating point — carried, § 0 item (7)); skill_node sequences the
+  reload on BB's IDLE heartbeat, arms the announcement before the throw, consumes
+  `bb/throw_outcome`, ends the attempt on any refusal past the bridge executor, and watches
+  `sched_refused` independently of the one-skill bridge executor (root cause of the silent
+  latch); `install_segment` rebases a late fresh REST and refuses a late fresh THROW/CATCH
+  `ORIGIN_TOO_LATE`; `trajectory_node` seeds a resting hand's velocity at 0. The sim gate had its
+  own defect exposed by the redesign (a re-send did not supersede its pending release; the ball
+  flew with the first dispatch's takeoff from the re-aimed cup) — fixed with a test. Gates:
+  2026-09-28 `./run_tests.sh` → PASS 5477 passed, 8 skipped in 218.28 s, serial 3 in 8.72 s;
+  2026-09-28 `./run_tests.sh --full` → PASS 5515 passed, 8 skipped, 1 xfailed in 278.17 s, serial 6
+  in 19.95 s; `sim/skills_gate.py --learn` self_toss seeds 0–4 PASS ×2 bit-identical, hop 25
+  makes / 0 drops ×2 bit-identical; box swept ×2 bit-identical, gate hash `3fda47b2ad5b`. Every
+  other triple: the logbook entry's Verification section. **Hardware gate still OUTSTANDING**; runsheet
+  `tests/hardware/session_skills_r4.md` § "what changed" carries the sitting-2 watch list.
 
 ### R5 — Two-ball columns
 
