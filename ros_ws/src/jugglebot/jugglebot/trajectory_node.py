@@ -3466,6 +3466,19 @@ class TrajectoryNode(Node):
         and (3) both lag it — (3) by the whole launch — and a continuity check
         against a lagging reference refuses a plan whose head is bit-identical to
         what is on the wire.
+
+        **Sources (2) and (3) report velocity 0.0, always — never
+        ``_latest_hand_vel_rps``.** Both describe a hand NOTHING is moving: the
+        streamed lane is the only hand master (plan § 0), so with no
+        hand-bearing plan installed the hand is at rest by definition, and the
+        telemetry's own ``vel_estimate`` on a stationary axis is noise, not a
+        seed. MEASURED (2026-09-27 R4 sitting-1 fact 6, bag
+        ``2026-09-27_22-37-26``): a parked hand's ``vel_estimate`` read
+        ``-0.0435`` rev/s, seeding a fresh REST whose plan dipped below the
+        parked start at ``t = 0.006 s`` and refused ``HAND_STROKE`` — a REST
+        the machine could plan cleanly from a truthful zero. Source (1) is
+        unaffected: the active plan's own ``hand_at(tau)`` is exact at every
+        instant it describes, moving or not.
         """
         with self._plan_lock:
             plan, t0 = self._active_plan, self._plan_t0
@@ -3474,12 +3487,13 @@ class TrajectoryNode(Node):
             now = time.perf_counter() if at_mono is None else float(at_mono)
             rev, vel = hand_at(now - t0)
             return float(rev), float(vel)
-        vel = (float(self._latest_hand_vel_rps)
-               if self._latest_hand_vel_rps is not None else 0.0)
+        # Sources (2) and (3): nothing is moving the hand, so it IS at rest —
+        # `_latest_hand_vel_rps` here is telemetry noise on a stationary axis,
+        # not a seed (2026-09-27 fact 6; see the docstring).
         if self._last_hand_rev is not None:
-            return float(self._last_hand_rev), vel
+            return float(self._last_hand_rev), 0.0
         if self._latest_hand_rev is not None:
-            return float(self._latest_hand_rev), vel
+            return float(self._latest_hand_rev), 0.0
         return None, 0.0
 
     def _cycle_hand_reference(self):

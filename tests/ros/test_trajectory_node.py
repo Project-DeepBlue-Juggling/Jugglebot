@@ -2135,6 +2135,55 @@ def test_hand_prior_clears_on_handless_frame():
     assert node._last_hand_rev is None                 # gap cleared the prior
 
 
+# ── `_commanded_hand_state` sources (2)/(3) report REST, not telemetry noise
+# (R4 sitting-1 follow-up, unit C-exec, 2026-09-28) ─────────────────────────
+#
+# Sources 2 (`_last_hand_rev`, the last rev the emitter actually put on the
+# wire with no active plan) and 3 (the measured axis-6 position) both describe
+# a hand NOTHING is moving — the streamed lane is the only hand master, so
+# with no hand-bearing plan installed the hand is at rest by definition, and
+# pairing either with the telemetry's own `vel_estimate` seeds a fresh window
+# with noise dressed up as a boundary condition. Fact 6 (2026-09-27 sitting,
+# bag `2026-09-27_22-37-26`): a parked hand's `vel_estimate` read -0.0435
+# rev/s and made a fresh REST dive below the parked start at t = 0.006 s ->
+# `HAND_STROKE` — a REST the machine could plan cleanly from a truthful zero.
+
+def test_commanded_hand_state_from_the_measured_axis_ignores_telemetry_noise():
+    node = _node()
+    node._on_robot_state(_robot_state())    # source (3): no plan, no _last_hand_rev
+    assert node._last_hand_rev is None
+    node._latest_hand_vel_rps = -0.0435     # telemetry noise on a hand at rest
+    rev, vel = node._commanded_hand_state()
+    assert rev == pytest.approx(0.0)        # this file's `_robot_state` hand rev
+    assert vel == 0.0
+
+
+def test_commanded_hand_state_from_the_last_emitted_rev_ignores_telemetry_noise():
+    node = _node()
+    node._on_robot_state(_robot_state())
+    node._last_hand_rev = 1.2345            # source (2): last rev the emitter sent
+    node._latest_hand_vel_rps = -0.0435
+    rev, vel = node._commanded_hand_state()
+    assert rev == pytest.approx(1.2345)
+    assert vel == 0.0
+
+
+def test_commanded_hand_state_from_the_active_plan_is_unaffected():
+    """Source (1) is exact at every instant it describes, moving or not — the
+    fix touches sources (2)/(3) only, never a hand-carrying plan's own
+    ``hand_at``."""
+    node = _node()
+    node._on_robot_state(_robot_state())
+    node._on_control_mode(String(data='STANDBY'))
+    with node._plan_lock:
+        node._active_plan = _HandHoldPlan(node._last_pose.copy(),
+                                          lambda t: (2.0, 0.75))
+        node._plan_t0 = time.perf_counter()
+    rev, vel = node._commanded_hand_state(at_mono=node._plan_t0)
+    assert rev == pytest.approx(2.0)
+    assert vel == pytest.approx(0.75)
+
+
 # ── Planner warm-up (one-shot at node start) ──────────────────
 #
 # `_warm_planner_once` exists so the FIRST `trajectory/plan_cycle` of a process

@@ -37,7 +37,7 @@ from jugglebot.motion.trajectory import cup_realize as cr
 from jugglebot.motion.trajectory import feasibility as feas
 from jugglebot.motion.trajectory.cycle_plan import CyclePlan
 
-from tests.ros.test_trajectory_node import _link_status
+from tests.ros.test_trajectory_node import _HandHoldPlan, _link_status
 
 
 # ── Geometry the LAUNCH is planned at ─────────────────────────────────────────
@@ -588,9 +588,26 @@ def test_a_moving_machine_is_never_reconciled():
     With a moving hand and no live cup track a SETTLE is refused `_IN_MOTION`
     before any seed is built, and the refusal names the hand rate: proof the
     reconciliation never got the chance to quietly rewrite the seed. The WARN
-    is asserted absent for the same reason."""
+    is asserted absent for the same reason.
+
+    The motion is seeded through an ACTIVE PLAN (source 1), not
+    ``_latest_hand_vel_rps`` (source 2/3's telemetry rate) — 2026-09-28 (unit
+    C-exec, R4 sitting-1 fact 6): sources (2)/(3) now report velocity 0.0
+    UNCONDITIONALLY (``_commanded_hand_state``'s docstring), because with no
+    hand-bearing plan installed the streamed lane — the one hand master — is
+    not moving the hand, so a nonzero ``vel_estimate`` there is encoder noise
+    on a stationary axis, not evidence of motion (a noisy -0.0435 rev/s seeded
+    a fresh REST that dove below the parked start and refused
+    ``HAND_STROKE``). Source (1) is unaffected by that fix and is this test's
+    OWN stated reasoning ("source (1) is exact at every instant"), so this is
+    the mechanism that actually needs pinning here.
+    """
     node = _reconcile_node(commanded_hand_rev=0.5639, measured_hand_rev=0.0001)
-    node._latest_hand_vel_rps = 5.0        # source (2)/(3)'s rate
+    with node._plan_lock:
+        # source (1): really moving — legs held still, hand rate 5.0 rev/s.
+        node._active_plan = _HandHoldPlan(node._last_pose.copy(),
+                                          lambda tau: (0.5639, 5.0))
+        node._plan_t0 = time.perf_counter()
     lines = []
     node.get_logger().warning = lambda m: lines.append(str(m))
     state, code, err = node._cycle_start_state(uc.SETTLE)
@@ -710,9 +727,20 @@ def test_TI1_seven_channel_frames_reach_the_wire_and_the_flags_fall():
     teensy, client, bridge = _build_paired_node()
     src = _MpcCommandSetpointSource(addr=addr)
     try:
-        at = time.perf_counter()
-        resp = traj._svc_install_segment(_throw_req(at + 0.6),
-                                         InstallSegment.Response())
+        # Frozen for the install call ONLY (restored before the real ZMQ/
+        # thread dance below needs a live clock): 2026-09-28 (unit C-exec)
+        # gave `install_segment`'s fresh branch a genuine wall-clock lateness
+        # check (`ORIGIN_TOO_LATE` / REBASE — see its docstring), so an
+        # UNFROZEN `time.perf_counter()` here measures this shared box's
+        # actual CPU contention across the solve, not the solve itself —
+        # MEASURED flaky (2026-09-28: failed with "the solve took 1.430 s"
+        # under a parallel session's load, passed clean moments later at
+        # lower load). Every other planning call in this file already
+        # freezes the clock for exactly this reason; this one predates the
+        # lateness check and never needed to.
+        with _frozen_perf() as at:
+            resp = traj._svc_install_segment(_throw_req(at + 0.6),
+                                             InstallSegment.Response())
         assert resp.accepted is True, resp.message
         plan, _meta, t0 = traj._cycle
         bridge._start_setpoint_output(src)

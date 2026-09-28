@@ -28,12 +28,14 @@ from rclpy.callback_groups import (MutuallyExclusiveCallbackGroup,
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node as _MockNodeClass
 
+from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
 from geometry_msgs.msg import Point, Vector3
-from jugglebot_interfaces.msg import (BallStateArray, HandTelemetryMessage,
-                                      RigidBodyPose, RigidBodyPoses,
-                                      ThrowAnnouncement, TrajectoryStatus)
+from jugglebot_interfaces.msg import (BallButlerHeartbeat, BallStateArray,
+                                      HandTelemetryMessage, RigidBodyPose,
+                                      RigidBodyPoses, ThrowAnnouncement,
+                                      TrajectoryStatus)
 from jugglebot_interfaces.action import Juggle
 from jugglebot_interfaces.srv import BallButlerThrow, InstallSegment
 
@@ -2148,10 +2150,36 @@ def _bb_announcement(*, target_id, landing_mm, landing_vel_mm_s,
     return ann
 
 
+def _bb_ready(node, *, state=None, ball_in_hand=True, connected=True):
+    """Drive `node`'s cached Ball Butler state to "ready" (C1, 2026-09-28):
+    `state=None` defaults to `BallButlerStates.IDLE` -- the state
+    `_maybe_fire_reload_throw` fires on. Goes through `_on_bb_heartbeat`
+    itself (not the raw fields) so a test exercises the same subscription
+    path the real `bb/heartbeat` topic drives."""
+    if state is None:
+        state = sn.proto.BallButlerStates.IDLE
+    node._on_bb_heartbeat(BallButlerHeartbeat(
+        state=int(state), ball_in_hand=bool(ball_in_hand),
+        connected=bool(connected)))
+
+
 def _start_reload(node, tmp_path, **reload_kw):
     """Drive `node` through the full R4 reload start path (a `reload=True`
     Juggle goal, the shared refusal chain wired ready, both BB clients
-    succeeding by default) and return the goal-accept result."""
+    succeeding by default) and return the goal-accept result.
+
+    C1 (2026-09-28): `bb/throw_at_target` no longer fires inline inside the
+    goal accept -- `_start_pattern` only gets as far as arming
+    `await_bb_idle`. Every EXISTING caller of this helper was written
+    against the pre-C1 shape (both BB clients already called by the time it
+    returns), so once the goal is accepted into that phase this drives Ball
+    Butler to ready and lets `_maybe_fire_reload_throw` fire the throw
+    request itself, reaching the SAME post-condition
+    (`bb/throw_at_target` asked, `_reload_ctx` in `await_announcement` on
+    success) the old synchronous code produced. A test that is ABOUT the
+    `await_bb_idle` wait itself (C1's own tests) calls `_start_pattern`
+    directly instead, so it can inspect the phase before this helper would
+    advance it."""
     node._params['plant_id'] = 'test_reload_' + str(id(node))
     # `_run_one_ball` wires `observer=`/`observations=` on the
     # executor it builds (self-toss AND reload alike) -- unlike columns,
@@ -2163,7 +2191,12 @@ def _start_reload(node, tmp_path, **reload_kw):
     _reload_ready(node, **reload_kw)
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        return node._start_pattern(_self_toss_goal(reload=True))
+        resp = node._start_pattern(_self_toss_goal(reload=True))
+    if (resp.success and node._reload_ctx is not None
+            and node._reload_ctx.phase == 'await_bb_idle'):
+        _bb_ready(node)
+        node._maybe_fire_reload_throw()
+    return resp
 
 
 def _finish_bridge(node):
@@ -2188,6 +2221,14 @@ def test_reload_installs_the_bridge_rest_then_calls_bb_reload_and_throw(tmp_path
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_self_toss_goal(reload=True))
     assert resp.success is True, resp.message
+    # C1 (2026-09-28): bb/reload is asked BEFORE bb/throw_at_target, but the
+    # throw is NOT asked inline any more -- `_start_pattern` only arms
+    # `await_bb_idle` (the 2026-09-27 sitting measured BB's own
+    # CHECKING_BALL cycle racing an inline throw request on every attempt).
+    assert len(reload_client.calls) == 1
+    assert throw_client.calls == []
+    assert node._reload_ctx is not None
+    assert node._reload_ctx.phase == 'await_bb_idle'
     # The bridge REST is a fresh, single-skill schedule -- installed through
     # the SAME `trajectory/install_segment` client every other schedule uses,
     # once ticked at its own dispatch instant (the mock clock always reads
@@ -2199,9 +2240,12 @@ def test_reload_installs_the_bridge_rest_then_calls_bb_reload_and_throw(tmp_path
     assert len(_client.calls) == 1
     req = _client.calls[0]
     assert req.kind == InstallSegment.Request.KIND_REST
-    # bb/reload asked BEFORE bb/throw_at_target (brief step 1b's order).
-    assert len(reload_client.calls) == 1
+    # Ball Butler reports ready (IDLE, ball in hand, connected) -- the tick
+    # fires the throw request.
+    _bb_ready(node)
+    node._maybe_fire_reload_throw()
     assert len(throw_client.calls) == 1
+    assert node._reload_ctx.phase == 'await_announcement'
     throw_req = throw_client.calls[0]
     assert throw_req.use_target_point is True
     assert throw_req.target_name == node._robot_name
@@ -2248,23 +2292,48 @@ def test_reload_while_running_is_refused_even_after_the_bridge_finishes(tmp_path
 
 def test_a_bb_reload_refusal_surfaces_verbatim(tmp_path):
     """INVARIANTS.md `REJECTED_BB(<message>)`: an external thrower's OWN
-    refusal surfaces verbatim, not laundered into a generic abort."""
+    refusal surfaces verbatim, not laundered into a generic abort.
+
+    C4 (2026-09-28, the 2026-09-27 field bug): by the time `bb/reload`
+    answers, the bridge REST `SkillExecutor` already exists and is already
+    ticking toward `trajectory/install_segment` on the 40 Hz timer -- a
+    REJECT here would leave that live and untracked (the orchestrator's
+    "an attempt is already in progress?" while the REST streamed on). The
+    goal is ACCEPTED instead and the attempt ends through `_goal_end_code`,
+    the same path every other in-flight reload refusal takes."""
     node, _client = _node_with_client()
     resp = _start_reload(node, tmp_path, reload_ok=False,
                          reload_message='Reload failed: ERR_BUS_DOWN')
-    assert resp.success is False
-    assert resp.message == 'REJECTED_BB(Reload failed: ERR_BUS_DOWN)'
+    assert resp.success is True, resp.message
+    assert 'REJECTED_BB(Reload failed: ERR_BUS_DOWN)' in resp.message
     assert node._bb_throw_cli.calls == []     # never asked to throw
     assert node._reload_ctx is None
+    # `_end_attempt` marks the (still undispatched) bridge executor rather
+    # than setting `_goal_end_code` directly -- `_on_tick`'s own capture
+    # line carries it through, exactly like an operator STOP does.
+    assert node._executor is not None
+    assert node._executor.attempt_ended is True
+    assert node._executor.end_code == 'REJECTED_BB(Reload failed: ERR_BUS_DOWN)'
+    node._on_tick()
+    assert node._executor is None
+    assert node._goal_end_code == 'REJECTED_BB(Reload failed: ERR_BUS_DOWN)'
 
 
 def test_a_bb_throw_at_target_refusal_surfaces_verbatim(tmp_path):
+    """C1/C4: the throw request now fires from the tick once BB reports
+    ready, well after the goal is accepted (`_start_reload` returns success
+    once `bb/reload` is OK) -- its refusal ends the attempt through
+    `_goal_end_code`, not the goal-accept response."""
     node, _client = _node_with_client()
     resp = _start_reload(node, tmp_path, throw_ok=False,
                          throw_message='no solution within BB limits')
-    assert resp.success is False
-    assert resp.message == 'REJECTED_BB(no solution within BB limits)'
+    assert resp.success is True, resp.message
     assert node._reload_ctx is None
+    assert node._executor is not None
+    assert node._executor.end_code == 'REJECTED_BB(no solution within BB limits)'
+    node._on_tick()
+    assert node._executor is None
+    assert node._goal_end_code == 'REJECTED_BB(no solution within BB limits)'
 
 
 def test_reload_carries_hold_tilt_on_the_catch_after_the_announcement(tmp_path):
@@ -2346,6 +2415,332 @@ def test_stop_during_a_reload_wait_clears_the_context():
     assert resp.success is True
     assert node._reload_ctx is None
     assert 'cannot be aborted' in resp.message
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# R4 reload C1 (2026-09-28): sequencing on Ball Butler's OWN heartbeat state
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _reload_armed_await_bb_idle(node, tmp_path):
+    """Drive `node` to the `await_bb_idle` phase WITHOUT advancing past it
+    (unlike the `_start_reload` helper, which auto-drives to
+    `await_announcement` for every OTHER test's sake) -- for the C1 tests
+    that are about this phase itself."""
+    node._params['plant_id'] = 'test_c1_' + str(id(node))
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    _prelevel_ready(node)
+    reload_client, throw_client = _reload_ready(node)
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_self_toss_goal(reload=True))
+    assert resp.success is True, resp.message
+    assert node._reload_ctx is not None
+    assert node._reload_ctx.phase == 'await_bb_idle'
+    return throw_client
+
+
+def test_c1_bb_stuck_in_checking_ball_never_fires_the_throw(tmp_path):
+    """The 2026-09-27 22:37 sitting's own failure mode, held open: BB's
+    `requestCheckBall()` cycle (its OWN side effect of `bb/reload`) has BB
+    in CHECKING_BALL, not IDLE -- no throw call, `_reload_ctx` stays
+    `await_bb_idle`."""
+    node, _client = _node_with_client(response=_response())
+    throw_client = _reload_armed_await_bb_idle(node, tmp_path)
+    _bb_ready(node, state=sn.proto.BallButlerStates.CHECKING_BALL)
+    node._on_tick()
+    assert throw_client.calls == []
+    assert node._reload_ctx is not None
+    assert node._reload_ctx.phase == 'await_bb_idle'
+
+
+def test_c1_bb_ready_fires_exactly_one_throw_with_the_derived_delay(tmp_path):
+    """IDLE + ball in hand + connected -> exactly one `bb/throw_at_target`
+    call, `delay_s` derived from the bridge's own settle instant (not
+    `pattern.floor_lift_s`, the pre-C1 proxy)."""
+    node, _client = _node_with_client(response=_response())
+    throw_client = _reload_armed_await_bb_idle(node, tmp_path)
+    bridge_end_abs = node._reload_ctx.bridge.skills[-1].t_abs_s
+    _bb_ready(node)
+    node._on_tick()
+    assert len(throw_client.calls) == 1
+    assert node._reload_ctx.phase == 'await_announcement'
+    req = throw_client.calls[0]
+    now = node.get_clock().now().nanoseconds / 1e9
+    expected = max(bridge_end_abs - now + sn.PRETILT_S + sn.LEAD_S,
+                   sn._BB_THROW_DELAY_FLOOR_S)
+    assert req.throw_delay_s == pytest.approx(expected)
+    # A second tick must not fire a second throw.
+    node._on_tick()
+    assert len(throw_client.calls) == 1
+
+
+def test_c1_deadline_ends_aborted_bb_not_ready_naming_the_state(tmp_path):
+    """A deadline with no ready heartbeat ends the attempt
+    `ABORTED_BB_NOT_READY(<state>, ball_in_hand=<bool>)` -- one physical
+    fact, not a generic abort."""
+    node, _client = _node_with_client(response=_response())
+    _reload_armed_await_bb_idle(node, tmp_path)
+    _bb_ready(node, state=sn.proto.BallButlerStates.CHECKING_BALL,
+             ball_in_hand=False)
+    node._reload_ctx.deadline_mono = time.perf_counter() - 1.0
+    # `_check_reload_timeout` (called first, inside THIS `_on_tick`) marks
+    # the still-live bridge executor ended, and the SAME call's own tick_lock
+    # block retires it (unlike ending an attempt from `_start_reload`,
+    # which runs OUTSIDE any `_on_tick` and needs a SEPARATE later tick to
+    # propagate) -- one call does both here.
+    node._on_tick()
+    assert node._reload_ctx is None
+    assert node._executor is None
+    assert node._goal_end_code == (
+        'ABORTED_BB_NOT_READY(CHECKING_BALL, ball_in_hand=False)')
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# R4 reload C2 (2026-09-28): armed BEFORE the bb/throw_at_target call
+# ═════════════════════════════════════════════════════════════════════════════
+
+class _RacingThrowClient(_RecordingClient):
+    """A `bb/throw_at_target` client whose call is overtaken: while the
+    (blocking) call is in flight, the firmware's `sched_refused` moves and the
+    concurrent tick's `_check_reload_lane_refused` ends the attempt -- the
+    field's own ordering (2026-09-27 22:46: the REST refused on the wire while
+    skill_node was still inside a BB service call)."""
+
+    def __init__(self, node, **kw):
+        super().__init__(**kw)
+        self._node = node
+
+    def call_async(self, req):
+        fut = super().call_async(req)
+        self._node._on_link_status(_link_status(9))
+        self._node._check_reload_lane_refused()
+        return fut
+
+
+def test_c1_a_throw_call_overtaken_by_a_lane_refusal_does_not_overwrite_the_end_code(tmp_path):
+    """`_fire_reload_throw` blocks in `wait_for_service`/`_wait_future` without
+    `_reload_lock`; `_check_reload_lane_refused` runs on every tick and can end
+    the attempt `HAND_LANE_REFUSED` (force_hold) in that window. When the stale
+    call then returns a failure it must NOT call `_end_attempt` again: with the
+    bridge executor already retired, that second call overwrites
+    `_goal_end_code` and the Juggle result loses the E-stop-preventing reason
+    (2026-09-28 audit finding). The hold stays armed either way; this pins
+    the diagnosability."""
+    node, _client = _node_with_client(response=_response())
+    node._on_link_status(_link_status(4))
+    _reload_armed_await_bb_idle(node, tmp_path)
+    # The field precondition (C5b): the one-skill bridge executor dispatches
+    # and RETIRES before BB is ready -- so nothing is left to re-capture
+    # `_goal_end_code` from an executor afterwards.
+    _finish_bridge(node)
+    assert node._executor is None
+    assert node._reload_ctx is not None and node._reload_ctx.phase == 'await_bb_idle'
+    node._bb_throw_cli = _RacingThrowClient(
+        node, response=_bb_throw_response(success=False, message='BAD_STATE',
+                                          predicted_tof_s=0.7, throw_delay_s=3.0),
+        ready=True)
+    hold = _hold_client()
+    node._hold_cli = hold
+    _bb_ready(node)
+    node._on_tick()
+    assert node._reload_ctx is None
+    assert node._goal_end_code == ex.HAND_LANE_REFUSED, node._goal_end_code
+    assert len(hold.calls) == 1
+
+
+def test_c2_announcement_delivered_while_the_throw_call_is_in_flight(tmp_path):
+    """An announcement delivered from INSIDE the mocked service's own
+    `call_async` (simulating the pre-C2b field bug, where ball_butler_node
+    published synchronously inside its OWN service handler, before its
+    response to US even returned) is compiled, not dropped as "no reload
+    awaiting one"."""
+    node, _client = _node_with_client(response=_response())
+    throw_client = _reload_armed_await_bb_idle(node, tmp_path)
+    ann_holder = {}
+    orig_call_async = throw_client.call_async
+
+    def _call_async_with_announcement(request):
+        node._on_announcement(ann_holder['ann'])
+        return orig_call_async(request)
+    throw_client.call_async = _call_async_with_announcement
+    ann_holder['ann'] = _bb_announcement(
+        target_id=node._robot_name, landing_mm=(-50.0, 0.0, sn.CATCH_CUP_Z_MM),
+        landing_vel_mm_s=(1200.0, 0.0, -2500.0), throw_time_s=2.0,
+        landing_time_s=2.7)
+
+    _bb_ready(node)
+    node._maybe_fire_reload_throw()
+
+    assert node._reload_ctx is None
+    assert node._executor is not None
+    kinds = [s.kind for s in node._executor.schedule.skills]
+    assert kinds[:2] == ['REST', 'CATCH']
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# R4 reload C3 (2026-09-28): bb/throw_outcome ends a rejected throw same-tick
+# ═════════════════════════════════════════════════════════════════════════════
+
+def test_c3_throw_rejected_bad_state_ends_the_attempt_same_tick(tmp_path):
+    """A `THROW_REJECTED_BAD_STATE` outcome arriving during `await_announcement`
+    ends the attempt immediately with `REJECTED_BB(THROW_REJECTED_BAD_STATE)`
+    -- no waiting out `RELOAD_ANNOUNCE_TIMEOUT_S` for an announcement a
+    rejected throw will never produce (the 2026-09-27 sitting waited the
+    full 4.6 s for exactly this)."""
+    node, _client = _node_with_client(response=_response())
+    resp = _start_reload(node, tmp_path)
+    assert resp.success is True, resp.message
+    assert node._reload_ctx is not None
+    assert node._reload_ctx.phase == 'await_announcement'
+
+    node._on_bb_throw_outcome(
+        String(data='THROW_REJECTED_BAD_STATE (axis=n/a, detail1=0)'))
+
+    assert node._reload_ctx is None
+    assert node._executor is not None
+    assert node._executor.end_code == 'REJECTED_BB(THROW_REJECTED_BAD_STATE)'
+    node._on_tick()
+    assert node._goal_end_code == 'REJECTED_BB(THROW_REJECTED_BAD_STATE)'
+
+
+def test_c3_an_ok_outcome_is_ignored():
+    node, _client = _node_with_client()
+    node._reload_ctx = SimpleNamespace(
+        phase='await_announcement', pattern=None, boxes=None, memory=None,
+        deadline_mono=time.perf_counter() + 10.0)
+    node._on_bb_throw_outcome(String(data='OK (axis=n/a, detail1=0)'))
+    assert node._reload_ctx is not None
+
+
+def test_c3_an_outcome_outside_a_reload_wait_is_ignored():
+    """`bb/throw_outcome` is a node-wide topic (calibration throws share
+    it) -- a rejection with no reload `await_announcement` in progress must
+    not touch anything."""
+    node, _client = _node_with_client()
+    node._on_bb_throw_outcome(
+        String(data='THROW_REJECTED_BAD_STATE (axis=n/a, detail1=0)'))
+    assert node._reload_ctx is None
+    assert node._goal_end_code == ''
+
+def test_c3_a_rejection_after_the_announcement_compiled_the_schedule_ends_it(tmp_path):
+    """Ball Butler announces at DISPATCH (its Teensy's single CMD_RESULT is
+    terminal -- `OK` only once the ball has left, so an announcement gated on
+    it would come after the flight began), so a reload schedule can already be
+    compiled and waiting at the receive attitude when the firmware refuses or
+    aborts the throw (2026-09-27: every rejected throw was announced first and
+    `THROW_REJECTED_BAD_STATE` 20 ms later). The outcome relay must end THAT
+    attempt too, not only an `await_announcement` wait -- through the rest
+    tail, since the ball is not coming."""
+    node, _client = _node_with_client(response=_response())
+    resp = _start_reload(node, tmp_path)
+    assert resp.success is True, resp.message
+    _finish_bridge(node)
+    ann = _bb_announcement(
+        target_id=node._robot_name, landing_mm=(-50.0, 0.0, sn.CATCH_CUP_Z_MM),
+        landing_vel_mm_s=(1200.0, 0.0, -2500.0),
+        throw_time_s=2.0, landing_time_s=2.7)
+    node._on_announcement(ann)
+    assert node._reload_ctx is None
+    assert node._executor is not None and not node._executor.attempt_ended
+    assert node._reload_throw_inflight is True
+
+    node._on_bb_throw_outcome(String(data='OK (axis=n/a, detail1=0)'))
+    assert not node._executor.attempt_ended
+
+    node._on_bb_throw_outcome(
+        String(data='THROW_ABORTED_NOT_SETTLED (axis=1, detail1=120)'))
+    assert node._executor.attempt_ended is True
+    assert node._executor.end_code == 'REJECTED_BB(THROW_ABORTED_NOT_SETTLED)'
+    assert node._reload_throw_inflight is False
+    # And nothing lingers for the NEXT attempt: a later outcome is ignored.
+    node._on_bb_throw_outcome(
+        String(data='THROW_REJECTED_BAD_STATE (axis=n/a, detail1=0)'))
+    assert node._executor.end_code == 'REJECTED_BB(THROW_ABORTED_NOT_SETTLED)'
+
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# R4 reload C4 (2026-09-28): a refusal after the bridge executor exists ends
+# the attempt via _goal_end_code, and never blocks the NEXT goal
+# ═════════════════════════════════════════════════════════════════════════════
+
+def test_c4_after_a_bb_refusal_ends_the_next_goal_is_not_refused(tmp_path):
+    """C4's whole point: the 2026-09-27 field bug left the orchestrator
+    believing "an attempt is already in progress?" while the REST streamed
+    on with nothing tracking it. Once `_on_tick` retires the ended
+    executor, a fresh goal must start cleanly."""
+    node, _client = _node_with_client()
+    resp = _start_reload(node, tmp_path, reload_ok=False,
+                         reload_message='BB calibration not yet received.')
+    assert resp.success is True, resp.message
+    node._on_tick()          # retires the ended bridge executor
+    assert node._executor is None
+    assert node._reload_ctx is None
+    resp2 = node._start_pattern(_self_toss_goal())
+    assert resp2.success is True, resp2.message
+    assert 'already running' not in resp2.message
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# R4 reload C5b (2026-09-28): a refused hand lane during a reload wait, after
+# the one-skill bridge executor has already retired itself
+# ═════════════════════════════════════════════════════════════════════════════
+
+def test_c5b_lane_refused_during_a_reload_wait_ends_and_holds_even_after_the_bridge_retires(tmp_path):
+    """Root cause of the 2026-09-27 22:37 sitting's guard latch: the bridge
+    (`compile_reload_wait`) is a ONE-skill schedule, so `SkillExecutor.done`
+    is true (and `_on_tick` nulls `self._executor`) the SAME tick it
+    dispatches -- long before the REST has physically settled (measured:
+    6.42 s of hand-homing in the field). With no executor left,
+    `hand_lane_refused` was never read again for the rest of that move, and
+    the field guard latched with NO `HAND_LANE_REFUSED` END ever logged.
+    `_check_reload_lane_refused` is the fix: it watches `_reload_ctx`
+    directly, independent of `self._executor`."""
+    node, _client = _node_with_client(response=_response())
+    node._on_link_status(_link_status(0))
+    resp = _start_reload(node, tmp_path)
+    assert resp.success is True, resp.message
+    assert node._reload_ctx is not None
+    # Dispatch the bridge REST and let `_on_tick` retire it -- the SAME
+    # gap the field hit (`_finish_bridge`'s own established idiom).
+    _finish_bridge(node)
+    assert node._executor is None
+    assert node._reload_ctx is not None      # still awaiting the announcement
+    hold = _hold_client()
+    node._hold_cli = hold
+
+    node._on_link_status(_link_status(2))
+    node._on_tick()
+
+    assert node._reload_ctx is None
+    assert len(hold.calls) == 1
+    assert node._executor is None
+    assert node._goal_end_code == ex.HAND_LANE_REFUSED
+
+
+def test_c5b_lane_refused_before_the_bridge_ever_dispatches_holds_only_once(tmp_path):
+    """A refusal caught while the bridge executor is STILL alive (never
+    ticked yet) exercises a SECOND path to the same hold:
+    `_check_reload_lane_refused` (via `_end_attempt`, `force_hold=True`)
+    marks the executor `attempt_ended` and fires the hold, then `_on_tick`'s
+    OWN inline `HAND_LANE_REFUSED` branch (later in the SAME tick, once it
+    finds `self._executor.attempt_ended` already true) must not fire a
+    SECOND one -- `_end_attempt` sets `_hold_forced_code` for exactly this
+    reason."""
+    node, _client = _node_with_client(response=_response())
+    node._on_link_status(_link_status(0))
+    resp = _start_reload(node, tmp_path)
+    assert resp.success is True, resp.message
+    assert node._executor is not None        # never ticked -- still alive
+    hold = _hold_client()
+    node._hold_cli = hold
+
+    node._on_link_status(_link_status(2))
+    node._on_tick()
+
+    assert len(hold.calls) == 1
+    assert node._executor is None
+    assert node._goal_end_code == ex.HAND_LANE_REFUSED
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -2501,3 +2896,4 @@ def test_check_reports_the_hop_boxes_at_the_node_separation(tmp_path):
         resp2 = node._svc_check(Trigger.Request(), Trigger.Response())
     assert resp2.success is False
     assert 'hop box REFUSED' in resp2.message
+

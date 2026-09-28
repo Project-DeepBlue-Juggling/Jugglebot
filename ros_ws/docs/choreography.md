@@ -52,7 +52,7 @@
 ### `bb/heartbeat`
 
 - **publishers:** `teensy_bridge_node`
-- **subscribers:** `ball_butler_node`, `mocap_node`
+- **subscribers:** `ball_butler_node`, `mocap_node`, `skill_node`
 - **type:** `jugglebot_interfaces.msg.BallButlerHeartbeat`
 
 ### `bb/markers`
@@ -70,7 +70,7 @@
 ### `bb/throw_outcome`
 
 - **publishers:** `ball_butler_node`
-- **subscribers:** _none_
+- **subscribers:** `skill_node`
 - **type:** `std_msgs.msg.String`
 
 ### `cache_diag`
@@ -500,7 +500,6 @@ broken wire cannot hide among them.
 - `bb/odrive_diag` — topic with no subscribers
 - `bb/reset` — service with no clients
 - `bb/start_accuracy_calibration` — service with no clients
-- `bb/throw_outcome` — topic with no subscribers
 - `cache_diag` — topic with no subscribers
 - `clear_errors` — service with no clients
 - `clock_diag` — topic with no subscribers
