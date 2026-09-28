@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Robot CAD verification</title>
+<style>body{margin:0;background:#0f172a;color:#e2e8f0;font:14px system-ui}#viewer{height:72vh}#results{white-space:pre-wrap;padding:12px}button{margin:6px;padding:8px}#state{padding:8px}</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>
+<div id="state">Synthetic preview only — no ROS connection or robot commands</div>
+<button id="idle">IDLE</button><button id="closed">CLOSED_LOOP</button><button id="fault">Fault</button><button id="unknown">Unknown</button><button id="motion">Pause motion</button>
+<div id="viewer"></div><pre id="results">Loading and checking CAD…</pre>
+<script>
+window.addEventListener('error', event => { document.getElementById('results').textContent='FAIL '+event.message; });
+window.addEventListener('unhandledrejection', event => { document.getElementById('results').textContent='FAIL '+event.reason; });
+setTimeout(()=>{const out=document.getElementById('results');if(out.textContent.startsWith('Loading'))out.textContent='Still loading - check the GUI server and Three.js CDN connection.';},15000);
+</script>
+<script type="module">
+import * as THREE from 'three';
+import {initViewer, scene, sceneGroups, renderer, camera, controls, registerPickables} from './js/viewer.js';
+import * as jb from './js/stewart-model.js';
+import * as bb from './js/ball-butler-model.js';
+import {setRobotAxisStates, updateRobotMaterials, setAxisFault} from './js/robot-meshes.js';
+import {poseToLegLengths, rotvecToRotMatrix} from './js/stewart-fk.js';
+import {INITIAL_HEIGHT_MM, BB_YAW_S_OFFSET_MM, BB_PITCH_D_OFFSET_MM, BB_PITCH_Z_OFFSET_MM} from './js/geometry-config.js';
+import {initMocapMarkers, updateMocapMarkers, updateRigidBodyAxes} from './js/mocap-markers.js';
+const output = document.querySelector('#results');
+const messages = [];
+function assert(ok, message) { if (!ok) throw new Error(message); messages.push(`PASS ${message}`); }
+const near = (a,b) => Math.abs(a-b)<1e-5;
+const world = obj => obj.getWorldPosition(new THREE.Vector3());
+let state = 8, fault = false, motion = true;
+for (const [id,value] of [['idle',1],['closed',8],['unknown',null]]) document.getElementById(id).onclick=()=>{state=value;fault=false;};
+document.getElementById('fault').onclick=()=>{fault=!fault;};
+document.getElementById('motion').onclick=()=>{motion=!motion;};
+try {
+ initViewer(document.getElementById('viewer'));
+ camera.position.set(1.5,1.15,1.8); controls.target.set(0,.4,.1);
+ jb.initStewartModel(); bb.initBallButlerModel(); initMocapMarkers();
+ registerPickables([...jb.getStewartPickables(),...bb.getBallButlerPickables()]);
+ const meshes=[];
+ scene.traverse(o=>{if(o.userData.ready)meshes.push(o);});
+ await Promise.all(meshes.map(o=>o.userData.ready));
+ assert(near(sceneGroups.Grid.position.y,-.082),'Grid at robot Z = -82 mm');
+ assert(meshes.length===19 && meshes.every(o=>o.geometry.getAttribute('position')?.count>0),'All 19 articulated mesh instances loaded');
+ const outer=meshes.filter(o=>o.name==='jb_outer'), inner=meshes.filter(o=>o.name==='jb_inner');
+ assert(outer.every(o=>o.geometry===outer[0].geometry) && inner.every(o=>o.geometry===inner[0].geometry),'Six legs share two GPU geometries');
+ const base=meshes.find(o=>o.name==='jb_base'); base.geometry.computeBoundingBox();
+ assert(near(base.geometry.boundingBox.min.y,-.082) || Math.abs(base.geometry.boundingBox.min.y+.082)<.003,'Jugglebot CAD scale and -82 mm base offset');
+ const innerBox=inner[0].geometry;innerBox.computeBoundingBox();
+ assert(innerBox.boundingBox.max.y<.02 && innerBox.boundingBox.min.y<-.4,'Inner-leg CAD anchored at upper joint, not translated in millimetres');
+ const pos=[15,-20,140],R=rotvecToRotMatrix([.08,-.10,.25]),nodes=poseToLegLengths(pos,R).platNodes;
+ jb.updateStewartPose(nodes,[pos[0],pos[1],pos[2]+INITIAL_HEIGHT_MM],200,R);
+ scene.updateMatrixWorld(true);
+ for(let i=0;i<6;i++) {
+  const tip=world(inner[i]);
+  assert(near(tip.x,nodes[i][0]*.001)&&near(tip.y,nodes[i][2]*.001)&&near(tip.z,-nodes[i][1]*.001),`Leg ${i} upper joint follows FK`);
+ }
+ assert(meshes.every(o=>o.scale.equals(new THREE.Vector3(1,1,1))),'Rigid CAD is never stretched');
+ const platform=meshes.find(o=>o.name==='jb_platform');
+ const axis=new THREE.Vector3(1,0,0).applyQuaternion(platform.parent.quaternion);
+ assert(near(axis.x,R[0][0])&&near(axis.y,R[2][0])&&near(axis.z,-R[1][0]),'Platform orientation preserves yaw and tilt');
+ const hand=meshes.find(o=>o.name==='jb_hand');
+ assert(near(hand.position.y,.2),'Jugglebot hand stroke in metres');
+ bb.updateBallButlerPose({x:0,y:0,z:0},{x:0,y:0,z:0,w:1});
+ for(const pitch of [0,45,90]) {
+  bb.updateBallButler(0,pitch,150);scene.updateMatrixWorld(true);
+  const h=world(meshes.find(o=>o.name==='bb_hand'));
+  assert(near(h.x,BB_YAW_S_OFFSET_MM*.001)&&near(h.y,(BB_PITCH_Z_OFFSET_MM+150*Math.sin(pitch*Math.PI/180))*.001)&&near(h.z,(BB_PITCH_D_OFFSET_MM-150*Math.cos(pitch*Math.PI/180))*.001),`BB hand travel at ${pitch} degrees`);
+ }
+ const motors=Array.from({length:9},()=>({current_state:1}));
+ setRobotAxisStates(motors,0);updateRobotMaterials(0);const idleA=outer[0].material.color.clone();
+ updateRobotMaterials(800);assert(!idleA.equals(outer[0].material.color),'IDLE brightness changes slowly');
+ assert(meshes.every(o=>o.material.opacity===1&&!o.material.transparent),'All CAD stays opaque');
+ setRobotAxisStates(motors.map(()=>({current_state:8})),0);updateRobotMaterials(0);const armed=outer[0].material.color.clone();
+ updateRobotMaterials(800);assert(armed.equals(outer[0].material.color),'CLOSED_LOOP remains steady');
+ setAxisFault(0,true);updateRobotMaterials(800);assert(outer[0].material.color.getHex()===0xef4444,'Fault overrides axis state');
+ setAxisFault(0,false);setRobotAxisStates([],0);updateRobotMaterials(0);const unknown=outer[0].material.color.clone();
+ updateRobotMaterials(800);assert(unknown.equals(outer[0].material.color),'Unknown state does not impersonate IDLE');
+ assert(!unknown.equals(armed),'Unknown state is dimmer than CLOSED_LOOP');
+ setAxisFault(0,true);setRobotAxisStates([],0);updateRobotMaterials(0);
+ assert(unknown.equals(outer[0].material.color),'Disconnect clears stale fault rendering immediately');
+ setAxisFault(0,false);
+ setRobotAxisStates(motors,0);updateRobotMaterials(2000);assert(unknown.equals(outer[0].material.color),'Stale telemetry stops breathing');
+ const bodies=['Base','Platform','BallButler'].map(name=>({name,pose:{position:{x:0,y:0,z:0},orientation:{x:0,y:0,z:0,w:1}}}));
+ bodies[1].pose.position.z=INITIAL_HEIGHT_MM;
+ bodies[2].pose.position.y=-650;
+ updateRigidBodyAxes(bodies);
+ updateMocapMarkers([{label:'Base 1',position:{x:0,y:0,z:60},residual:.5}]);
+ assert(sceneGroups['Mocap Markers'].children.length===4,'Base, Platform and BallButler triads plus marker retained');
+ assert(sceneGroups['Mocap Markers'].children.slice(0,3).every(g=>!g.children[0].material.depthTest),'All triads stay visible inside opaque CAD');
+ // Demo-only labels identify the synthetic rigid bodies; production receives real poses.
+ const labels=bodies.map(body=>{
+  const canvas=document.createElement('canvas');canvas.width=256;canvas.height=64;
+  const ctx=canvas.getContext('2d');ctx.font='bold 30px system-ui';ctx.textAlign='center';
+  ctx.fillStyle='#0f172a';ctx.fillRect(0,0,256,64);ctx.fillStyle='#ffffff';ctx.fillText(body.name,128,43);
+  const sprite=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(canvas),depthTest:false,depthWrite:false}));
+  sprite.scale.set(.16,.04,1);sprite.renderOrder=11;scene.add(sprite);return sprite;
+ });
+ bb.updateBallButlerPose({x:0,y:-650,z:0},{x:0,y:0,z:0,w:1});
+ const cadGroups=[sceneGroups.Platform,sceneGroups['Ball Butler']];
+ const baselineRoot=new URLSearchParams(location.search).get('baseline');
+ let oldJB,oldBB,oldGroups;
+ if(baselineRoot) {
+  oldJB=await import(baselineRoot+'/stewart-model.js');oldBB=await import(baselineRoot+'/ball-butler-model.js');
+  oldJB.initStewartModel();oldBB.initBallButlerModel();oldGroups=[sceneGroups.Platform,sceneGroups['Ball Butler']];
+  oldGroups.forEach(g=>g.visible=false);
+  oldBB.updateBallButlerPose({x:0,y:-650,z:0},{x:0,y:0,z:0,w:1});
+ }
+ let frame=0,last=performance.now(),samples=[],mode='cad',stats={},time=0;
+ function tick(now) {
+  if(motion)time+=.018;
+  const r=rotvecToRotMatrix([.05*Math.sin(time),.06*Math.cos(time),.1*Math.sin(time*.7)]);
+  const p=[15*Math.sin(time),20*Math.cos(time),130+80*Math.sin(time*.5)];
+  const n=poseToLegLengths(p,r).platNodes,c=[p[0],p[1],p[2]+INITIAL_HEIGHT_MM];
+  if(mode==='baseline') {oldJB.updateStewartPose(n,c,160+140*Math.sin(time));oldBB.updateBallButler(20*Math.sin(time),55+30*Math.sin(time*.8),140+130*Math.sin(time));}
+  else {jb.updateStewartPose(n,c,160+140*Math.sin(time),r);bb.updateBallButler(20*Math.sin(time),55+30*Math.sin(time*.8),140+130*Math.sin(time));}
+  Object.assign(bodies[1].pose.position,{x:c[0],y:c[1],z:c[2]});
+  const q=platform.parent.quaternion;
+  Object.assign(bodies[1].pose.orientation,{x:q.x,y:-q.z,z:q.y,w:q.w});
+  updateRigidBodyAxes(bodies);
+  bodies.forEach((body,i)=>{const p=body.pose.position;labels[i].position.set(p.x*.001,p.z*.001+.09,-p.y*.001);});
+  setRobotAxisStates(Array.from({length:9},()=>({current_state:state})),now);
+  for(let i=0;i<9;i++)setAxisFault(i,fault);
+  if(frame>60&&frame<=300)samples.push(now-last);
+  last=now;frame++;
+  if(frame===301) {
+   const sorted=[...samples].sort((a,b)=>a-b);
+   stats[mode]={median_ms:+sorted[Math.floor(sorted.length*.5)].toFixed(2),p95_ms:+sorted[Math.floor(sorted.length*.95)].toFixed(2),draw_calls:renderer.info.render.calls,triangles:renderer.info.render.triangles,geometries:renderer.info.memory.geometries};
+   output.textContent=messages.join('\n')+'\n'+JSON.stringify(stats,null,2);
+   if(mode==='cad'&&oldGroups) {mode='baseline';cadGroups.forEach(g=>g.visible=false);oldGroups.forEach(g=>g.visible=true);frame=0;samples=[];}
+   else if(mode==='baseline') {mode='done';oldGroups.forEach(g=>g.visible=false);cadGroups.forEach(g=>g.visible=true);}
+  }
+  requestAnimationFrame(tick);
+ }
+ output.textContent=messages.join('\n')+'\nMeasuring frame intervals…';requestAnimationFrame(tick);
+} catch(error) {output.textContent='FAIL '+error.stack;console.error(error);}
+</script></html>

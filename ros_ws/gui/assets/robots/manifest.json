@@ -1,0 +1,127 @@
+{
+  "generator": "tools/build_gui_meshes.py",
+  "tolerance_mm": 0.75,
+  "validation": "Bidirectional sampled surface distance; vertices, centroids, edge midpoints and extrema. Not a formal Hausdorff bound.",
+  "parts": {
+    "jb_base": {
+      "source": "jugglebot/Base.glb",
+      "sha256": "26ddd6f025096bd697dd709cd3228d9fa557db599c652277d87c42bc62890549",
+      "source_triangles": 3429388,
+      "triangles": 165617,
+      "sampled_max_error_mm": 0.741664,
+      "registration_offset_m": [
+        0,
+        0,
+        -0.082
+      ],
+      "unique_components": 458
+    },
+    "jb_platform": {
+      "source": "jugglebot/Platform.glb",
+      "sha256": "211a19463643bf92f00fbb3fcd945b61d61c14590931fcd643e27874e9d78d42",
+      "source_triangles": 3576679,
+      "triangles": 72990,
+      "sampled_max_error_mm": 0.733762,
+      "registration_offset_m": [
+        0,
+        0,
+        0
+      ],
+      "unique_components": 198
+    },
+    "jb_outer": {
+      "source": "jugglebot/Leg Outer.glb",
+      "sha256": "1810a9797fe567b20fb60a8a4a2577b6a45b85c105f5e37097ad319478d20dce",
+      "source_triangles": 696114,
+      "triangles": 19318,
+      "sampled_max_error_mm": 0.749852,
+      "registration_offset_m": [
+        0,
+        0,
+        -0.064
+      ],
+      "unique_components": 20
+    },
+    "jb_inner": {
+      "source": "jugglebot/Leg Inner.glb",
+      "sha256": "e6440fff80e1540180d895d7fe5c99a9f6953b566106f178864fbc34d50ded9d",
+      "source_triangles": 29484,
+      "triangles": 2100,
+      "sampled_max_error_mm": 0.664911,
+      "registration_offset_m": [
+        0,
+        0,
+        -0.70813
+      ],
+      "unique_components": 8
+    },
+    "jb_hand": {
+      "source": "jugglebot/Hand.glb",
+      "sha256": "36a23e11b15256c2bebac19e2be89761a8742cedde290a42d4e1e00c93a50427",
+      "source_triangles": 1538812,
+      "triangles": 21701,
+      "sampled_max_error_mm": 0.675767,
+      "registration_offset_m": [
+        0,
+        0,
+        0
+      ],
+      "unique_components": 6
+    },
+    "bb_base": {
+      "source": "ball-butler/Base.glb",
+      "sha256": "d27cb4e0f26d737e02e04b5e58b256065f2d5688ccc44d8f15000f09030f9842",
+      "source_triangles": 112008,
+      "triangles": 13671,
+      "sampled_max_error_mm": 0.480362,
+      "registration_offset_m": [
+        0,
+        0,
+        -0.069
+      ],
+      "unique_components": 5
+    },
+    "bb_yaw": {
+      "source": "ball-butler/Yaw Axis.glb",
+      "sha256": "0481d2f5a9ca42524fb8de1e42dcfa703f249c0e79d94ac88e37c8eaf0ea9d98",
+      "source_triangles": 407854,
+      "triangles": 12670,
+      "sampled_max_error_mm": 0.631818,
+      "registration_offset_m": [
+        0,
+        0,
+        -0.069
+      ],
+      "unique_components": 15
+    },
+    "bb_pitch": {
+      "source": "ball-butler/Pitch Axis.glb",
+      "sha256": "2da1bfefc1a4db4d195bf485e30dbc93fa6969308ef0286dc1d5ff8da770ec28",
+      "source_triangles": 860120,
+      "triangles": 25673,
+      "sampled_max_error_mm": 0.73029,
+      "registration_offset_m": [
+        0,
+        0.041,
+        -0.0865
+      ],
+      "unique_components": 43
+    },
+    "bb_hand": {
+      "source": "ball-butler/Hand.glb",
+      "sha256": "6d48c4e5ecb4e523855066dad080b0f9a5bcddcf6cba99f439bf81e6cb86a2ac",
+      "source_triangles": 1559262,
+      "triangles": 22007,
+      "sampled_max_error_mm": 0.622938,
+      "registration_offset_m": [
+        0.07015,
+        0,
+        0.211
+      ],
+      "unique_components": 6,
+      "registration_rotation_z_degrees": -90
+    }
+  },
+  "bytes": 19191820,
+  "scene_triangles": 462837
+}

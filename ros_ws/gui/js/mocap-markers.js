@@ -210,6 +210,9 @@ export function updateRigidBodyAxes(bodies) {
     while (axesPool.length < count) {
         const group = new THREE.Group();
         const axes = new THREE.AxesHelper(AXES_SIZE);
+        // Rigid-body origins can lie inside opaque CAD; retain readable triads.
+        axes.material.depthTest = false;
+        axes.renderOrder = 10;
         // Fixed child rotation: Three.js Y-up → robot Z-up so RGB = robot XYZ
         axes.quaternion.copy(FRAME_ROTATION);
         group.add(axes);

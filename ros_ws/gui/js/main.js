@@ -6,16 +6,17 @@
  */
 
 import * as ros from './ros-bridge.js';
+import { setRobotAxisStates } from './robot-meshes.js';
 import { initViewer, sceneGroups, registerPickables, onMeshPick } from './viewer.js';
 import {
     initStewartModel, updateStewartPose, setLegFault, setHandFault,
-    setLegArmed, setHandArmed, getStewartPickables,
+    getStewartPickables,
 } from './stewart-model.js';
 import { legLengthsToPose } from './stewart-fk.js';
 import { initMocapMarkers, updateMocapMarkers, updateRigidBodyAxes } from './mocap-markers.js';
 import {
     initBallButlerModel, updateBallButler, updateBallButlerPose,
-    setBBPitchFault, setBBHandFault, setBBPitchArmed, setBBHandArmed,
+    setBBPitchFault, setBBHandFault,
     getBallButlerPickables,
 } from './ball-butler-model.js';
 import {
@@ -246,6 +247,7 @@ function onConnectionStateChange(state) {
             text.textContent = 'Connecting...';
             break;
         case 'disconnected':
+            setRobotAxisStates([]);
             dot.className = 'status-dot disconnected';
             text.textContent = 'Disconnected';
             // Drop the freshness latch so we don't claim "Stale" against
@@ -468,20 +470,13 @@ function onRobotState(msg) {
     if (motors.length < 8) setBBPitchFault(false);
     if (motors.length < 9) setBBHandFault(false);
 
-    // Per-motor "armed" viz — a violet breathing pulse on the 3D part plus a
-    // violet chart pill/title while the axis is in CLOSED_LOOP.  A fault always
-    // wins over armed (handled inside the model modules).  An axis the bridge
-    // isn't publishing is NOT armed — same honest-silence discipline as the
-    // fault clears above, so a BB blackout disarms 7/8 rather than freezing.
+    // CAD: IDLE breathes, CLOSED_LOOP stays solid. Chart pills remain violet.
+    setRobotAxisStates(motors);
     const armed = [];
     for (let i = 0; i < 9; i++) {
         armed.push(i < motors.length &&
                    motors[i].current_state === ODRIVE_STATE.CLOSED_LOOP);
     }
-    for (let i = 0; i < 6; i++) setLegArmed(i, armed[i]);
-    setHandArmed(armed[6]);
-    setBBPitchArmed(armed[7]);
-    setBBHandArmed(armed[8]);
     setChartArmedStates(armed);
 
     // Feed telemetry charts
@@ -509,7 +504,7 @@ function onRobotState(msg) {
                 handExtMM = motors[6].pos_estimate * HAND_MM_PER_REV;
             }
 
-            updateStewartPose(result.platNodes, platCentre, handExtMM);
+            updateStewartPose(result.platNodes, platCentre, handExtMM, result.R);
         }
     }
 
@@ -788,6 +783,12 @@ function initSceneMenu() {
             label.appendChild(document.createTextNode(name));
             dropdown.appendChild(label);
         }
+        const legend = document.createElement('div');
+        legend.className = 'scene-menu-section';
+        legend.innerHTML = '<div class="scene-menu-heading">Axis status</div>' +
+            '<div>Breathing: IDLE</div><div>Steady bright: CLOSED_LOOP</div>' +
+            '<div>Red: fault</div><div>Dim: unknown / other state</div>';
+        dropdown.appendChild(legend);
         // Camera presets append below the scene-group toggles — run here
         // so they aren't wiped by the `dropdown.innerHTML = ''` above.
         initCameraPresets();

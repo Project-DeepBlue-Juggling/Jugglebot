@@ -8,6 +8,7 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
 import { INITIAL_HEIGHT_MM } from './geometry-config.js';
+import { updateRobotMaterials } from './robot-meshes.js';
 
 /** @type {THREE.Scene} */
 export let scene;
@@ -132,6 +133,7 @@ export function initViewer(container) {
     // Grid (on XZ plane in Three.js = XY ground plane in robot frame)
     const grid = new THREE.GridHelper(2, 20, 0x334155, 0x1e293b);
     grid.name = 'grid';
+    grid.position.y = -0.082; // robot global Z: underside of Jugglebot's base
     scene.add(grid);
     sceneGroups['Grid'] = grid;
 
@@ -175,7 +177,10 @@ export function initViewer(container) {
         ndc.x = ((ev.clientX - rect.left) / rect.width) * 2 - 1;
         ndc.y = -((ev.clientY - rect.top) / rect.height) * 2 + 1;
         raycaster.setFromCamera(ndc, camera);
-        const hits = raycaster.intersectObjects(pickableMeshes, false);
+        const hits = raycaster.intersectObjects(pickableMeshes.filter(mesh => {
+            for (let node = mesh; node; node = node.parent) if (!node.visible) return false;
+            return true;
+        }), false);
         if (hits.length === 0) return;
         const idx = hits[0].object.userData?.chartIdx;
         if (typeof idx !== 'number') return;
@@ -191,5 +196,6 @@ export function initViewer(container) {
 function animate() {
     requestAnimationFrame(animate);
     controls.update();
+    updateRobotMaterials(performance.now());
     renderer.render(scene, camera);
 }
