@@ -31,6 +31,7 @@ files_changed:
   - tests/firmware/test_bb_fw_update_xref.py (new)
   - tests/teensy_link/test_rpc.py
   - tests/teensy_link/test_rpc_args.py
+  - teensy_link/rpc.py (addendum: RpcClient.send_nowait / RpcCall)
 subsystem:
   - canbridge
   - config
@@ -190,4 +191,84 @@ receiver is a port instead, and the xref test holds the two to one table.
   did not block on Serial.
 - Not exercised: the park's pitch-raise branch (pitch was already stowed both times).
   That branch is BB's; see its entry.
+
+## Addendum 2026-09-28 — faster transfer: sector pause 0.5 → 0.12 s (BB); pipelining built, failed on hardware, parked at depth 1
+
+**Goal:** cut BB's 61 s DATA phase toward a 10–15 s flash via (1) pipelining each
+window's DATA RPCs instead of blocking on each one's ack, (2) a shorter post-sector
+pause. Host-only; no firmware, wire contract, BEGIN/VERIFY/COMMIT or copy change.
+Pre-registered fallback: any instability on BB `--verify-only` → ship only the
+reduced pause.
+
+**Measured first (the 1.25 ms/frame was inferred):** synchronous `NOP` round trip to
+the bridge, 2000 calls: median **0.998 ms**, p10 0.973, p90 1.029, p99 1.51 ms;
+`BB_FW_INFO` the same (0.999 ms median). The tight 1.0 ms is the bridge's 1 kHz
+`task_net` tick, not the network. Log `temp/logs/2026-09-28-rpc-rtt-probe.log`.
+
+**Pipelining (built, failed, parked).** `RpcClient.send_nowait()` → `RpcCall`
+(`teensy_link/rpc.py`; one send, no retry, result/refusal collected later; `call()`
+untouched), and a `_DataSender` in the tool that keeps up to N acks in flight, raises
+`RpcError` on any non-OK ack (ERR_REJECTED / BUS_DOWN / UNKNOWN_METHOD / TIMEOUT, as
+`call()` would), tolerates up to 2 missing acks per window attempt (the board's
+window reply is the delivery proof) and drains all acks before each sector pause
+(same timing reference as before). Depth chosen 4, not 8: the bridge's CAN TX
+mailboxes all carry id 0x7D6 and FlexCAN sends same-id mailboxes lowest-number first,
+so a frame loaded into a freed low mailbox overtakes an older one in a higher one
+(a BAD_SEQ rewind). 4 frames ≈ 0.52 ms of wire, cleared before the next tick.
+
+On BB `--verify-only` (12:09) it **failed cleanly**: the first pipelined window's acks
+never came, 3 missing → `RpcTimeout` abort, no VERIFY, no COMMIT (log
+`temp/logs/bb_verify_only_pipelined_20260928.log`). Probe: 4 back-to-back `NOP`s via
+`send_nowait` got **2** acks; 0.5 ms spacing 3; 2 ms spacing 4. **Root cause:**
+`udp_link.cpp` declares `static EthernetUDP s_rpc;`, and QNEthernet 0.35's default
+receive queue holds **one** packet (`EthernetUDP() : EthernetUDP(1)`), so of the
+requests landing in one tick, only one survives. The requests were lost, not the
+responses. So the bridge takes at most one RPC per ms whatever the host does. Beating
+that needs a **bridge firmware change** (`s_rpc.setReceiveQueueCapacity(>= depth)`),
+which was out of scope. It is not made; see Open follow-ups. `_FW_PIPELINE_DEPTH = 1`
+for both targets, so the synchronous `rpc.call()` path runs exactly as flown. The
+depth>1 mechanism stays, tested against a loopback sim, for a bridge that can take it.
+
+**Sector pause (shipped for BB).** Per-target `_FwTarget.sector_pause_s`: BB 0.12 s
+(`_FW_SECTOR_FLUSH_PAUSE_S`); the flush is a 4 KB erase (45 ms typ / 400 ms worst) +
+16 page writes + read-back ≈ 52 ms typical, so 0.12 s is >2× typical. A slow erase
+is recovered by the existing BAD_SEQ rewind / window retry. The **Platform keeps
+0.5 s** (`_FW_SECTOR_FLUSH_PAUSE_FLOWN_S`). It has no USB, so it adopts the BB value
+as a separate decision at a Platform flash.
+
+**Hardware (BB, 2026-09-28, bridge FW 21, ROS down, a concurrent session loading the
+Jetson):**
+
+| run | DATA | total | rewinds / retries / missing acks | result |
+|---|---|---|---|---|
+| before (FW 2 flash, 11:34) | 61.0 s | 75.84 s | 0 / – / – | `1 -> 2` |
+| pipelined depth 4 `--verify-only` (12:09) | aborted at 1.5 s | – | – / – / 3 | clean abort, no VERIFY |
+| depth 1, pause 0.12 `--verify-only` (12:10) | **45.9 s** | – | 0 / 0 / 0 | VERIFY OK `0x25386A01`; INFO over CAN answered 2 at 12:14, after BB's 60 s idle reboot (no BB console attached, so the reboot itself was not seen) |
+| **FW 3 CAN flash** (12:14, `pio run -e teensy40_can -t upload`) | **45.8 s** | **56.25 s** | 0 / 0 / 0 | VERIFY OK `0x1070D8A7`, COMMIT OK, **`Ball Butler FW version: 2 -> 3`** 5.1 s later |
+
+Logs: `temp/logs/bb_verify_only_pause012_20260928.log`,
+`temp/logs/bb_fw3_canflash_20260928.log`. `BB_FW_VERSION_EXPECTED` 2 → 3 (BallButler
+`FwUpdate.h` FW_VERSION 3, no code change, the receipt). The 10–15 s target was
+**not** reached: ~41 s of the 45.8 s is the one-RPC-per-tick floor (32768 frames ×
+~1.25 ms). BB's USB was not attached this sitting (only the bridge enumerated). The
+COMMIT/copy path was unchanged from the FW 2 flash, so that fallback's role was
+unchanged.
+
+**Tests:** `tests/teensy_link/test_rpc.py` +13 cases: `send_nowait` result/refusal
+collection and send-once/no-retry. At depth 4 against `_SimBbReceiver` (extended with
+injectable faults): bounded in-flight with a lost frame, depth 1 = the sync path, a
+wire reorder → rewind, a lost board window ACK → window retry, lost bridge acks
+tolerated, each of four bridge refusals surfacing with no VERIFY/COMMIT, a dead link
+→ `RpcTimeout`, a corrupted byte → VERIFY BAD_CRC and no COMMIT. Also pins that
+both profiles are depth 1 and that BB's pause is 0.1–0.15 s while the Platform's is
+0.5 s. `pytest tests/teensy_link/test_rpc.py -q`, 10× in a row on 2026-09-28 after
+the depth-1 fallback: **36/36 each**, 10.5–11.0 s.
+
+**Open follow-ups:**
+- To go faster, the bridge needs `s_rpc.setReceiveQueueCapacity(N)` (N ≥ 4), a
+  bridge FW bump + USB flash of the bridge, then flip `_FW_PIPELINE_DEPTH` to 4 and
+  rehearse on BB. Estimated DATA ≈ 2048 windows × (4 ms + ~4 ms reply tail) + 40 ×
+  0.12 s ≈ 21 s. A larger ACK window would be a wire-contract change.
+- The Platform profile stays at 0.5 s / depth 1 until a Platform flash adopts BB's
+  values deliberately.
 

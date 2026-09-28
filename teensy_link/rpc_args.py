@@ -503,7 +503,9 @@ FW_OP_INFO = 0x05
 #: it goes in over USB, and every later image can arrive over CAN.
 #: 2 (2026-09-28) = no code change: the first image flashed OVER CAN; the
 #: version bump is the receipt (INFO 1 -> 2).
-BB_FW_VERSION_EXPECTED = 2
+#: 3 (2026-09-28) = no code change: the receipt for the faster transfer (host
+#: sector pause 0.5 -> 0.12 s; INFO 2 -> 3).
+BB_FW_VERSION_EXPECTED = 3
 
 
 def decode_platform_fw_reply(data: bytes):

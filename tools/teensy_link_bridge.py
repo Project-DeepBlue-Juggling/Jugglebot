@@ -155,7 +155,46 @@ _FW_SECTOR_BYTES = 4096     # the receiver flushes a 4 KB sector when its buffer
 #: 2026-09-09 rehearsal lost frames 823..831 right after the first 4 KB, the
 #: ACK among them. Sending nothing during the flush is cheaper than the
 #: retry-and-rewind it costs; 30 sectors of pause per image.
-_FW_SECTOR_FLUSH_PAUSE_S = 0.5
+#:
+#: 0.5 s is the value both boards flew with (Platform FW 6, BB FW 2). The BB
+#: profile uses _FW_SECTOR_FLUSH_PAUSE_S below (2026-09-28 speed-up); the
+#: Platform keeps the flown 0.5 s until a Platform flash adopts the faster
+#: profile deliberately (it is a one-way board — see _FW_TARGETS).
+_FW_SECTOR_FLUSH_PAUSE_FLOWN_S = 0.5
+#: The reduced pause (2026-09-28). The flush is a 4 KB erase (45 ms typical,
+#: 400 ms worst for the Teensy 4.0's W25Q16JV) + 16 page writes (~0.4 ms
+#: typical each) + a read-back: ~52 ms typical. 0.12 s covers the typical
+#: flush with >2x margin; an erase slower than that loses the frames that
+#: arrive during its tail, and the BAD_SEQ rewind / window retry — the
+#: contract's designed recovery — resends them. The pause is timed from the
+#: bridge's ack of the sector-completing frame (all acks drained first), the
+#: same reference the 0.5 s pause had.
+_FW_SECTOR_FLUSH_PAUSE_S = 0.12
+#: DATA RPCs allowed in flight at once. MUST stay 1 on the current can-bridge.
+#: The bridge services its RPC socket in a 1 kHz task (task_net), so one
+#: synchronous DATA RPC per frame costs one tick — measured 2026-09-28: NOP
+#: round trip median 0.998 ms, p90 1.03 ms. Pipelining was built to beat that
+#: and FAILED on hardware the same day: the bridge's RPC socket is a QNEthernet
+#: EthernetUDP with the library's default receive queue of ONE packet
+#: (udp_link.cpp `static EthernetUDP s_rpc;`), so of the requests that land in
+#: one tick only one survives — 4 NOPs back to back got 2 acks, and the BB
+#: --verify-only run lost 3 of its first DATA frames and aborted cleanly
+#: before VERIFY. Depth > 1 needs a bridge FW that raises that capacity
+#: (s_rpc.setReceiveQueueCapacity(>= depth) — a firmware change, not made).
+#: Even then, keep depth <= 4: the bridge's CAN TX mailboxes all carry the same
+#: id (0x7D6 / 0x6F0) and FlexCAN sends same-id mailboxes LOWEST-NUMBER first,
+#: so a frame loaded into a freed low mailbox while an older frame waits in a
+#: higher one overtakes it (a BAD_SEQ rewind, not corruption); 4 dlc-8 frames
+#: are ~0.52 ms of 1 Mbps wire, on the wire before the next tick loads more.
+#: Depth 1 is the synchronous rpc.call() path, exactly as flown.
+_FW_PIPELINE_DEPTH = 1
+#: Pipelined DATA: how long to wait for an in-flight frame's bridge ack before
+#: counting it missing. A missing ack is NOT fatal (the board's window reply is
+#: the delivery proof, and a frame that never reached CAN is a BAD_SEQ rewind);
+#: more than _FW_MAX_MISSING_ACKS in one window attempt means the link is gone
+#: and aborts as RpcTimeout, as a synchronous call's exhausted retries did.
+_FW_ACK_TIMEOUT_S = 0.5
+_FW_MAX_MISSING_ACKS = 2
 #: BB answers BEGIN with PARKING until it is parked (pitch at or above its stow
 #: angle, both ODrives IDLE, yaw e-stopped). Re-send BEGIN this often, for at
 #: most this long; BB's own park timeout is shorter, so a stuck park normally
@@ -180,6 +219,8 @@ class _FwTarget:
     rejected_hint: str              # what ERR_REJECTED from the bridge means here
     abort_note: str                 # what the board does with an unfinished session
     version_wait_s: float           # after COMMIT: keep trying the version read this long
+    data_pipeline_depth: int        # DATA RPCs in flight; 1 = synchronous, as flown
+    sector_pause_s: float           # host pause after the frame that fills a sector
 
 
 _FW_TARGETS = {
@@ -198,6 +239,13 @@ _FW_TARGETS = {
                       "stow the legs / disarm before flashing",
         abort_note="the board discards the staged image after its 60 s session timeout",
         version_wait_s=2.0,
+        # As flown (Platform FW 6, 2026-09-09). The Platform has no USB, so the
+        # faster BB profile is not adopted here untested: it moves to the
+        # Platform as its own decision, at a Platform flash (a failed transfer
+        # there only ends without COMMIT, but it is the one board with no
+        # fallback). Its relay also rides the busier Jugglebot bus.
+        data_pipeline_depth=1,
+        sector_pause_s=_FW_SECTOR_FLUSH_PAUSE_FLOWN_S,
     ),
     "bb": _FwTarget(
         key="bb",
@@ -214,6 +262,8 @@ _FW_TARGETS = {
                       "finish its throw / reload / calibration first",
         abort_note="Ball Butler reboots (and re-homes) after its 60 s session timeout",
         version_wait_s=15.0,   # BB's setup() waits for Serial + its ODrives before its loop runs
+        data_pipeline_depth=_FW_PIPELINE_DEPTH,   # 1: see _FW_PIPELINE_DEPTH
+        sector_pause_s=_FW_SECTOR_FLUSH_PAUSE_S,
     ),
 }
 
@@ -370,15 +420,71 @@ def _wait_for_window_reply(waiter: PlatformFrameWaiter, reply_id: int,
         waiter.clear(reply_id)                      # stale — wait for the next one
 
 
+class _DataSender:
+    """Delivers DATA RPCs with up to ``depth`` bridge acks outstanding.
+
+    Depth 1 is the synchronous ``rpc.call()`` (its retry included) — the path
+    both boards flew. Depth > 1 sends through ``RpcClient.send_nowait`` and
+    collects acks oldest-first once ``depth`` are in flight: a non-OK ack (the
+    bridge refusing — ERR_REJECTED / ERR_BUS_DOWN / ERR_UNKNOWN_METHOD /
+    ERR_TIMEOUT) raises RpcError exactly as ``rpc.call()`` would; a MISSING ack
+    is counted and tolerated (the board's window reply decides delivery), up to
+    _FW_MAX_MISSING_ACKS per window attempt, past which RpcTimeout aborts.
+    Nothing here decides that a frame was delivered."""
+
+    def __init__(self, rpc: RpcClient, data_method: int, depth: int, stats: dict):
+        self._rpc, self._method, self._depth, self._stats = rpc, data_method, depth, stats
+        self._inflight = []
+        self._missing = 0
+
+    def send(self, args: bytes) -> None:
+        if self._depth <= 1:
+            self._rpc.call(self._method, args)
+            return
+        while len(self._inflight) >= self._depth:
+            self._collect_oldest()
+        self._inflight.append(self._rpc.send_nowait(self._method, args))
+
+    def drain(self) -> None:
+        """Collect every outstanding ack (the frames are then on the bridge's CAN)."""
+        while self._inflight:
+            self._collect_oldest()
+
+    def release(self) -> None:
+        for c in self._inflight:
+            c.release()
+        self._inflight = []
+
+    def _collect_oldest(self) -> None:
+        call = self._inflight.pop(0)
+        if not call.wait(_FW_ACK_TIMEOUT_S):
+            call.release()
+            self._missing += 1
+            self._stats["missing_acks"] = self._stats.get("missing_acks", 0) + 1
+            logging.warning("fw-update: DATA — no bridge ack for req_id %d within %.1f s "
+                            "(the board's window reply decides delivery)",
+                            call.req_id, _FW_ACK_TIMEOUT_S)
+            if self._missing > _FW_MAX_MISSING_ACKS:
+                raise RpcTimeout(self._method, 0, _FW_ACK_TIMEOUT_S)
+            return
+        call.result()                                   # raises RpcError on a refusal
+
+
 def _send_data_window(rpc: RpcClient, waiter: PlatformFrameWaiter, reply_id: int,
                       image: bytes, window_start_frame: int, total: int,
-                      data_method: int = int(p.RpcMethod.PLATFORM_FW_DATA)):
+                      data_method: int = int(p.RpcMethod.PLATFORM_FW_DATA),
+                      depth: int = 1,
+                      sector_pause_s: float = _FW_SECTOR_FLUSH_PAUSE_FLOWN_S,
+                      stats: Optional[dict] = None):
     """Send one DATA window (up to 16 frames) starting at
     ``window_start_frame`` (absolute, unwrapped), retrying the WHOLE window
     once if no reply arrives (the sector-flush-stall NAK burst the firmware's
     wire contract documents as the DESIGNED recovery path). Returns
     (new_frame_idx, reply_bytes) on success, or None after exhausting
-    retries — the caller aborts."""
+    retries — the caller aborts. ``depth`` > 1 pipelines the window's frames
+    (see _DataSender); the window stays stop-and-wait on the board's reply."""
+    if stats is None:
+        stats = {}
     total_frames = (total + _FW_DATA_CHUNK - 1) // _FW_DATA_CHUNK
     # The window ENDS on an ACK point (seq % 16 == 15, or the final frame) —
     # after a BAD_SEQ rewind that makes the first window a partial one. And the
@@ -390,16 +496,25 @@ def _send_data_window(rpc: RpcClient, waiter: PlatformFrameWaiter, reply_id: int
     for attempt in range(_FW_WINDOW_RETRIES + 1):
         frame_idx = window_start_frame
         waiter.clear(reply_id)
-        while frame_idx < window_end:
-            off = _offset_for_frame(frame_idx, total)
-            chunk = image[off: off + _FW_DATA_CHUNK]
-            rpc.call(data_method, rpc_args.encode_platform_fw_data(frame_idx & 0xFFFF, chunk))
-            frame_idx += 1
-            if (off + len(chunk)) % _FW_SECTOR_BYTES < len(chunk):
-                time.sleep(_FW_SECTOR_FLUSH_PAUSE_S)      # the board is flushing a sector
+        sender = _DataSender(rpc, data_method, depth, stats)
+        try:
+            while frame_idx < window_end:
+                off = _offset_for_frame(frame_idx, total)
+                chunk = image[off: off + _FW_DATA_CHUNK]
+                sender.send(rpc_args.encode_platform_fw_data(frame_idx & 0xFFFF, chunk))
+                frame_idx += 1
+                if (off + len(chunk)) % _FW_SECTOR_BYTES < len(chunk):
+                    # The board is flushing a sector. Time the pause from the
+                    # bridge's ack of this frame, as the synchronous path did.
+                    sender.drain()
+                    time.sleep(sector_pause_s)
+            sender.drain()
+        finally:
+            sender.release()
         reply = _wait_for_window_reply(waiter, reply_id, window_start_frame, window_end)
         if reply is not None:
             return frame_idx, reply
+        stats["retries"] = stats.get("retries", 0) + 1
         if attempt < _FW_WINDOW_RETRIES:
             logging.warning("fw-update: DATA window [frame %d..%d) — no ACK, retrying once",
                             window_start_frame, frame_idx)
@@ -455,16 +570,21 @@ def _run_fw_update_session(rpc: RpcClient, waiter: PlatformFrameWaiter,
 
     # DATA
     frame_idx = 0
+    stats = {}          # rewinds / retries / missing_acks, for the summary line
     t_start = time.monotonic()
     next_log = 0.0
     while _offset_for_frame(frame_idx, total) < total:
         outcome = _send_data_window(rpc, waiter, reply_id, image, frame_idx, total,
-                                    data_method=target.rpc_data)
+                                    data_method=target.rpc_data,
+                                    depth=target.data_pipeline_depth,
+                                    sector_pause_s=target.sector_pause_s,
+                                    stats=stats)
         if outcome is None:
             return 1
         frame_idx, reply = outcome
         _, status, reply_seq, _ = rpc_args.decode_platform_fw_reply(reply)
         if status == rpc_args.PLATFORM_FW_STATUS_BAD_SEQ:
+            stats["rewinds"] = stats.get("rewinds", 0) + 1
             frame_idx = rpc_args.platform_fw_rewind_frame(frame_idx, reply_seq)
             logging.warning("fw-update: BAD_SEQ — board expects seq=%d, rewinding to frame %d",
                             reply_seq, frame_idx)
@@ -478,7 +598,11 @@ def _run_fw_update_session(rpc: RpcClient, waiter: PlatformFrameWaiter,
             logging.info("fw-update: DATA %d/%d B (%.1f%%) elapsed=%.1fs",
                         sent, total, 100.0 * sent / total, now - t_start)
             next_log = now + 1.0
-    logging.info("fw-update: DATA complete")
+    logging.info("fw-update: DATA complete — %d B in %.1f s (pipeline depth %d, sector "
+                 "pause %.2f s): %d rewinds, %d window retries, %d missing acks",
+                 total, time.monotonic() - t_start, target.data_pipeline_depth,
+                 target.sector_pause_s, stats.get("rewinds", 0), stats.get("retries", 0),
+                 stats.get("missing_acks", 0))
 
     # VERIFY
     waiter.clear(reply_id)
