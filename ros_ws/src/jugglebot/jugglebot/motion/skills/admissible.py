@@ -54,7 +54,7 @@ import yaml
 __all__ = [
     'AdmissibleBox', 'AdmissibleError', 'LimitsMismatch',
     'MARGIN_FRAC', 'PATTERNS', 'clip', 'dump', 'load', 'check_limits',
-    'gate_hash', 'select',
+    'describe_miss', 'gate_hash', 'select',
 ]
 
 #: The skill patterns an admissible box may be swept for (R4,
@@ -321,6 +321,65 @@ def select(boxes: List[AdmissibleBox], pattern: str, site_pair: Tuple[str, str],
         if lo - tol <= float(apex_m) <= hi + tol:
             return box
     return None
+
+
+def describe_miss(boxes: List[AdmissibleBox], pattern: str,
+                  site_pair: Tuple[str, str], apex_m: float, *,
+                  release_site_xy_mm: Tuple[float, float],
+                  target_site_xy_mm: Tuple[float, float]) -> str:
+    """Plain-language reason :func:`select` returned ``None`` for these exact
+    arguments -- for an operator-facing refusal message, not for control flow.
+
+    A miss has two distinct physical causes and conflating them misleads the
+    operator (the owner-reported 0.95 m hop refusal at R4 sitting 3, plan
+    ``.scratch/r4-throw-precision/issues/04-plain-language-refusal-messages.md``):
+
+    1. A box for this ``(pattern, site_pair)`` DOES cover ``apex_m``, but it
+       was swept for different release/target site positions -- a non-default
+       ``separation_mm``. Reported first: this is the more surprising cause,
+       and a bands-only message hides it entirely because the apex band the
+       message names IS satisfied.
+    2. No box for this ``(pattern, site_pair)`` covers ``apex_m`` at all,
+       regardless of site xy -- reported with whatever bands were swept for
+       this pair (if any), so the operator knows what apex range to ask for.
+    """
+    xy_tol_mm = 1e-6
+    tol = 1e-9
+    apex = float(apex_m)
+    pair = tuple(site_pair)
+    rel_x, rel_y = float(release_site_xy_mm[0]), float(release_site_xy_mm[1])
+    tgt_x, tgt_y = float(target_site_xy_mm[0]), float(target_site_xy_mm[1])
+    same_pair = [b for b in boxes if b.pattern == pattern and b.site_pair == pair]
+    for box in same_pair:
+        lo, hi = box.apex_band_m
+        if not (lo - tol <= apex <= hi + tol):
+            continue
+        if (abs(box.release_site_xy_mm[0] - rel_x) <= xy_tol_mm
+                and abs(box.release_site_xy_mm[1] - rel_y) <= xy_tol_mm
+                and abs(box.target_site_xy_mm[0] - tgt_x) <= xy_tol_mm
+                and abs(box.target_site_xy_mm[1] - tgt_y) <= xy_tol_mm):
+            continue  # xy also matches -- select() would have returned it
+        swept_sep = math.hypot(
+            box.target_site_xy_mm[0] - box.release_site_xy_mm[0],
+            box.target_site_xy_mm[1] - box.release_site_xy_mm[1])
+        live_sep = math.hypot(tgt_x - rel_x, tgt_y - rel_y)
+        return (
+            'apex %.3f m IS covered by a swept box for this site pair, but '
+            'the box was swept with the release site at (%.1f, %.1f) mm and '
+            'the target site at (%.1f, %.1f) mm -- %.1f mm apart. This '
+            'request has them at (%.1f, %.1f) mm and (%.1f, %.1f) mm -- %.1f '
+            'mm apart. The box does not carry over to a different '
+            'separation_mm: re-sweep for this separation, or run the pattern '
+            'at the swept one (%.1f mm).'
+            % (apex, box.release_site_xy_mm[0], box.release_site_xy_mm[1],
+               box.target_site_xy_mm[0], box.target_site_xy_mm[1], swept_sep,
+               rel_x, rel_y, tgt_x, tgt_y, live_sep, swept_sep))
+    bands = sorted(b.apex_band_m for b in same_pair)
+    bands_str = (', '.join('%.3f-%.3f m' % (lo, hi) for lo, hi in bands)
+                if bands else 'none swept for this pair')
+    return ('apex %.3f m is outside the range this site pair was swept for '
+           '(swept bands: %s) -- re-sweep to cover this apex, or request an '
+           'apex inside the swept range' % (apex, bands_str))
 
 
 def _apex_bands_overlap(a: Tuple[float, float], b: Tuple[float, float]) -> bool:

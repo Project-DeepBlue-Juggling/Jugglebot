@@ -883,7 +883,8 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
               settle_site: Optional[np.ndarray] = None,
               holds_ball_at_start: bool = False,
               hold_axis: Optional[np.ndarray] = None,
-              hold_knots: int = 0) -> _Program:
+              hold_knots: int = 0,
+              pre_hold_knots: int = 0) -> _Program:
     """Transcribe one window into a dense convex QP.
 
     Decision variables are the cup's per-axis jerk over ``n_steps`` knots,
@@ -945,18 +946,18 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
         kappa = axis[:2] / axis[2]
         if throw is not None:
             raise CupCycleInfeasible(
-                "a window cannot hold the receive axis AND release: the throw "
-                "needs its own tilt at take-off, and a tilt that slews inside "
-                "the dwell breaks the held line (a plain throw from a 12° "
-                "tilted rest was measured LIMIT_JERK on 2026-09-23). Plan the "
-                "catch standalone and let the throw follow a level rest.",
+                "this catch can't also throw a ball in the same window: "
+                "releasing needs its own tilt at launch, and tilting mid-catch "
+                "would break the catch's fixed line. Plan the catch on its "
+                "own, and do the throw from a level rest.",
                 reason='CATCH_AXIS')
         if state0.post_release:
             raise CupCycleInfeasible(
-                "a held-axis catch opens from the PRE-TILT rest, not from a "
-                "release: the detach-cone rows pin the first knots' "
-                "acceleration DIRECTION, which the slaved lateral channel "
-                "cannot also satisfy.", reason='CATCH_AXIS')
+                "this catch can't start right after a throw: just after a "
+                "release the cup's direction of acceleration is still set by "
+                "the throw, which conflicts with holding this catch's fixed "
+                "tilt. Start the catch from a rest, not straight out of a "
+                "release.", reason='CATCH_AXIS')
         site = np.asarray(catch.site, dtype=float).reshape(3)
         dp, dv, da = _axis_offsets(state0.pos, state0.vel, state0.acc, site, kappa)
         tol_p, tol_v, tol_a = HELD_AXIS_SEED_TOL
@@ -965,14 +966,17 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
                 ('velocity', dv, tol_v, 'mm/s', 1e3),
                 ('acceleration', da, tol_a, 'mm/s^2', 1e3)):
             if float(np.max(np.abs(resid))) > tol:
+                mag = float(np.linalg.norm(resid))
                 raise CupCycleInfeasible(
-                    "held-axis catch: the seed's %s is (%.3f, %.3f) %s off the "
-                    "axis line through the touch-down, past the %.3f %s bound "
-                    "— the lateral channel is slaved to the stroke and carries "
-                    "that offset straight into the seat. Put the pre-tilt REST "
-                    "on the line (its xy is site_xy + kappa·(z − site_z))."
-                    % (label, scale * resid[0], scale * resid[1], unit,
-                       scale * tol, unit), reason='CATCH_AXIS')
+                    "the platform isn't lined up for this catch: its resting "
+                    "%s is %.1f %s off the line the cup has to travel along "
+                    "to meet the ball (allowed %.1f %s) — while holding this "
+                    "catch's fixed tilt the platform can't steer sideways, so "
+                    "this offset would carry straight through to where the "
+                    "ball lands in the cup. Move the platform's rest position "
+                    "onto that line before starting the catch."
+                    % (label, scale * mag, unit, scale * tol, unit),
+                    reason='CATCH_AXIS')
 
     if catch is not None:
         # ---- the catch, at the INTERPOLATED touch-down time ----------------
@@ -997,13 +1001,17 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
         # norm in the scaling below. So the floor is ``k_td >= 1`` there.
         if state0.post_release and k_td <= n_detach:
             raise CupCycleInfeasible(
-                "catch at t=%.3fs falls inside the %d-knot detach block — the "
-                "catch-position equality is rank-deficient against the detach "
-                "rows" % (catch_time_s, n_detach), reason='CATCH_TOO_EARLY')
+                "the catch at t=%.3fs comes too soon after the last throw: for "
+                "the first %d steps after a release the platform is still "
+                "finishing the throw, so there's no room left to also aim for "
+                "this touch-down. Delay the catch, or shorten the settle time."
+                % (catch_time_s, n_detach), reason='CATCH_TOO_EARLY')
         if not state0.post_release and k_td <= 0:
             raise CupCycleInfeasible(
-                "catch at t=%.3fs falls on the window's first knot — the "
-                "catch-position equality has no jerk support there"
+                "the catch at t=%.3fs lands right at the start of this window, "
+                "too early for the platform to steer toward it — the motion "
+                "needed to reach the touch-down hasn't had time to develop. "
+                "Delay the catch slightly, or start the window earlier."
                 % catch_time_s, reason='CATCH_TOO_EARLY')
 
         e_td = np.zeros(n)
@@ -1097,14 +1105,15 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
     if hold_knots > 0:
         if not state0.post_release:
             raise CupCycleInfeasible(
-                "a platform hold is the window AFTER a release: there is no "
-                "ball leaving this cup to hold still for (post_release is "
-                "False).", reason='HOLD_WINDOW')
+                "a platform hold only applies right after a release, and this "
+                "window doesn't follow a throw — there's no ball leaving the "
+                "cup for the platform to hold still for.", reason='HOLD_WINDOW')
         if catch is not None and k_td <= hold_knots:
             raise CupCycleInfeasible(
-                "catch at t=%.3fs falls inside the %d-knot platform hold — the "
-                "cup cannot both be on the frozen platform's stroke line and "
-                "dive to a touch-down somewhere off it."
+                "the catch at t=%.3fs comes too soon after the last throw: for "
+                "the first %d steps the platform stays still to let the ball "
+                "clear the cup, so it can't also move to meet this touch-down. "
+                "Delay the catch, or shorten the settle time."
                 % (float(catch.t_s), hold_knots), reason='CATCH_TOO_EARLY')
         if hold_axis is None:
             raise ValueError(
@@ -1126,6 +1135,79 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
                 "(SegmentConfig.post_release_hold_s)."
                 % (hold_knots, n - hold_knots, n), reason='HOLD_WINDOW')
 
+    # ---- the PRE-RELEASE PLATFORM HOLD ------------------------------------
+    # ``unified_cycle.CycleGoals.pre_release_hold_knots`` — see
+    # ``unified_cycle.PRE_RELEASE_HOLD_S`` for the measurement.  The mirror of
+    # the post-release hold: over knots ``n−N .. n−1`` the cup's lateral velocity
+    # is pinned onto the LAUNCH line, ``vel_xy[k] == kappa·vel_z[k]`` with
+    # ``kappa = v_takeoff_xy / v_takeoff_z``, so the lateral take-off velocity is
+    # reached by the stroke along the tilted cup and not by translating the
+    # platform.  The release triple at knot n already says ``vel_xy[n] ==
+    # kappa·vel_z[n]``, so the rows extend a line the window ends on; they do not
+    # contradict it.  The tilt is NOT pinned (see PRE_RELEASE_HOLD_S).
+    #
+    # ONE 40 Hz CYCLE AT THE HOLD BOUNDARY (knot n−N−1 → n−N, CLAUDE.md rule).
+    # The emitter streams knot positions and the Hermite-interpolated velocity
+    # feedforward between them; both come from ONE jerk-continuous QP solution,
+    # and the hold is equality rows on that same solution, not a mode switch.
+    # So across the boundary the cup's position, velocity and acceleration are
+    # continuous (they are integrals of the jerk variables), the platform's
+    # velocity feedforward arrives at ~0 because the QP spent the knots before
+    # n−N decelerating the lateral channel inside the same jerk boxes, and
+    # ``validate_cycle`` gates the realised legs on both sides of every knot
+    # (two-sided sampling) exactly as before.  What changes is only WHERE the
+    # lateral velocity comes from in the last 100 ms (the stroke through the
+    # tilt, ≤ 1 mm/s of platform, probe 2026-09-29); the release knot itself is
+    # unchanged (the same triple), so the next window's seed is unchanged.
+    pre_hold_knots = int(pre_hold_knots)
+    if pre_hold_knots < 0:
+        raise ValueError("pre_hold_knots must be >= 0, got %d" % pre_hold_knots)
+    if pre_hold_knots > 0:
+        if throw is None:
+            raise ValueError(
+                "pre_hold_knots > 0 needs a throw: the pre-release hold keeps "
+                "the cup on the launch line, and a window ending at rest has "
+                "none.")
+        # Rank: the release triple (9 rows) plus 2 rows per held knot must fit
+        # the 3·n jerk variables with at least one knot left free to steer, i.e.
+        # n >= N + 2 (the probe's guard; at N = 4 that is 9 + 8 = 17 <= 18).
+        if n < pre_hold_knots + 2:
+            raise CupCycleInfeasible(
+                "not enough time before this throw: the platform has to hold "
+                "still for the last %.0f ms before the ball leaves, and the "
+                "throw is only %.0f ms away — too short to also get the cup "
+                "there. Give the throw more lead time, or shorten the hold "
+                "(SegmentConfig.pre_release_hold_s)."
+                % (pre_hold_knots * dt * 1e3, n * dt * 1e3),
+                reason='HOLD_WINDOW')
+        # A catch (touch-down) must land BEFORE the hold starts: the catch-
+        # position equality steers the cup to a site the launch line need not
+        # pass through, and once the hold rows own a knot there is no lateral
+        # freedom left there to do it (the same rank argument the post-release
+        # hold makes for a catch inside its block).
+        if catch is not None and k_td >= n - pre_hold_knots:
+            raise CupCycleInfeasible(
+                "the catch comes too close to the next throw: the ball lands "
+                "%.0f ms before it is thrown again, but for the last %.0f ms "
+                "before a throw the platform holds still so the ball leaves "
+                "straight. Leave more time between the catch and the throw, "
+                "or shorten the hold (SegmentConfig.pre_release_hold_s)."
+                % ((n * dt - float(catch.t_s)) * 1e3, pre_hold_knots * dt * 1e3),
+                reason='HOLD_WINDOW')
+        # The post-release rows (hold, or the detach cone) own the first knots
+        # of a window that follows a release; the two blocks may not share a
+        # knot (different kappas at one knot would force vel == 0 there).
+        first_owned = (hold_knots if hold_knots > 0
+                       else n_detach if state0.post_release else 0)
+        if n - pre_hold_knots <= first_owned:
+            raise CupCycleInfeasible(
+                "this throw comes too soon after the last one: the platform "
+                "holds still for %.0f ms after a throw and for %.0f ms before "
+                "the next, and the %.0f ms between them is not enough for "
+                "both. Space the throws further apart, or shorten a hold."
+                % (first_owned * dt * 1e3, pre_hold_knots * dt * 1e3,
+                   n * dt * 1e3), reason='HOLD_WINDOW')
+
     # ---- hard equalities ---------------------------------------------------
     rows, rhs = [], []
     if throw is not None:
@@ -1136,6 +1218,25 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
             rows.append(_axis_row(n, a, Ap[n])); rhs.append(throw_pos[a] - cp[n, a])
             rows.append(_axis_row(n, a, Av[n])); rhs.append(v_takeoff[a] - cv[n, a])
             rows.append(_axis_row(n, a, Aa[n])); rhs.append(GRAVITY[a] - ca[n, a])
+        if pre_hold_knots > 0:
+            # THE LAUNCH LINE, held over the last N knots before the release
+            # (the pre-release block above says why and checks the rank).  Two
+            # rows per knot on the velocity maps — the post-release hold's rows
+            # with the launch slope in place of the seed's.
+            if not float(v_takeoff[2]) > 0.0:
+                raise CupCycleInfeasible(
+                    "this throw does not go upward (take-off vertical speed "
+                    "%.3f m/s), so there is no launch line for the platform "
+                    "to hold the cup on before it." % float(v_takeoff[2]),
+                    reason='HOLD_WINDOW')
+            pre_kappa = v_takeoff[:2] / float(v_takeoff[2])
+            for k in range(n - pre_hold_knots, n):
+                for a in range(2):
+                    row = np.zeros(nvar)
+                    row[a * n:(a + 1) * n] = Av[k]
+                    row[2 * n:3 * n] = -pre_kappa[a] * Av[k]
+                    rows.append(row)
+                    rhs.append(-(cv[k, a] - pre_kappa[a] * cv[k, 2]))
     else:
         # Terminal REST. The three rows per axis are the same three rows in the
         # same order — position, velocity, acceleration — so a caller reading
@@ -1156,10 +1257,10 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
             off = settle[:2] - want
             if float(np.max(np.abs(off))) > HELD_AXIS_SEED_TOL[0]:
                 raise CupCycleInfeasible(
-                    "held-axis catch: the settle site (%.1f, %.1f) mm is "
-                    "(%.3f, %.3f) mm off the axis line at rest z — the cup "
-                    "leaves the seat along the held axis and cannot also stop "
-                    "somewhere else. Settle at (%.1f, %.1f) mm."
+                    "the platform can't leave this catch cleanly: the planned "
+                    "rest position (%.1f, %.1f) mm is (%.3f, %.3f) mm off the "
+                    "line the cup has to travel along as it leaves this catch. "
+                    "Rest at (%.1f, %.1f) mm instead."
                     % (1e3 * settle[0], 1e3 * settle[1], 1e3 * off[0],
                        1e3 * off[1], 1e3 * want[0], 1e3 * want[1]),
                     reason='CATCH_AXIS')
@@ -1306,9 +1407,9 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
         headroom = float(catch_pos[2]) - floor_m
         if headroom < need_m - 1e-12:
             raise CupCycleInfeasible(
-                "catch runway: touch-down at z=%.4f m leaves %.1f mm above the "
-                "slider floor z=%.4f m, but %.1f mm is needed to decelerate "
-                "%.3f m/s at %.1f m/s^2 (incl. %.1f mm margin)"
+                "catch runway: touch-down at z=%.4f m leaves %.1f mm above "
+                "the hand's lowest position z=%.4f m, but %.1f mm is needed "
+                "to decelerate %.3f m/s at %.1f m/s^2 (incl. %.1f mm margin)"
                 % (catch_pos[2], headroom * 1e3, floor_m, need_m * 1e3,
                    abs(z_ratio * catch_vel[2]),
                    float(_cfg(cfg, 'catch_runway_decel_mps2')),
@@ -1383,11 +1484,12 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
         # numbers, rather than as a dual-unbounded step 200 iterations deep.
         if k0 == 0 and float(state0.acc[2]) < a_floor - 1e-9:
             raise CupCycleInfeasible(
-                "cup contact: the window opens holding a ball but its seed "
-                "acceleration is a_z=%.2f m/s^2, below the %.2f m/s^2 floor "
-                "(%.2f g) — the cup is already falling away from it at knot 0. "
-                "A post-release seed is the usual cause: the cup cannot hold "
-                "ball B while it is still falling away from ball A."
+                "the cup is already dropping away from the ball it's holding "
+                "at the start of this window: its vertical acceleration is "
+                "%.2f m/s^2, below the %.2f m/s^2 floor (%.2f g) the ball "
+                "needs to stay seated. This usually happens when a window "
+                "starts right after a throw, before the cup has caught up. "
+                "Start this window from a rest instead."
                 % (float(state0.acc[2]), a_floor, -CONTACT_ACC_FLOOR_G),
                 reason='CUP_CONTACT_ACC')
         ks = np.arange(max(k0, 1), k1 + 1)
@@ -1506,10 +1608,12 @@ def _solve_qp(prog: _Program, warm: Optional[SolverState], max_iter: int,
         z0 = np.linalg.solve(kkt, np.concatenate([-f, beq]))
     except np.linalg.LinAlgError as exc:
         raise CupCycleInfeasible(
-            "QP infeasible: the equality-constrained KKT system is singular "
-            "(%s) — the %d equality rows are rank-deficient for this cycle, so "
-            "there is no starting point to iterate from" % (exc, n_eq),
-            reason='SINGULAR')
+            "the trajectory solver found no consistent solution for this "
+            "combination of timing and site settings (solver detail: %s) — "
+            "the %d timing/position requirements for this cycle contradict "
+            "each other, so there's no valid starting trajectory. Retrying "
+            "won't help; check the settings that produced this cycle."
+            % (exc, n_eq), reason='SINGULAR')
     x = z0[:nvar]
     u = -z0[nvar:]                       # multipliers: Hx + f − N u = 0
 
@@ -1541,9 +1645,11 @@ def _solve_qp(prog: _Program, warm: Optional[SolverState], max_iter: int,
                 r = np.linalg.solve(m_mat, n_mat.T @ hn_p)
             except np.linalg.LinAlgError as exc:
                 raise CupCycleInfeasible(
-                    "QP infeasible: the working-set system NᵀH⁻¹N went singular "
-                    "(%s) while admitting inequality %d at working-set size %d "
-                    "— refused rather than solved through a degenerate set"
+                    "the trajectory solver found no consistent solution for "
+                    "this combination of timing and site settings (solver "
+                    "detail: %s) — it broke down part-way through, at limit "
+                    "%d with %d limits already locked in. Retrying won't "
+                    "help; check the settings that produced this cycle."
                     % (exc, p, len(active)), reason='SINGULAR')
             z_dir = hn_p - hn_mat @ r
             nz = float(n_p @ z_dir)
@@ -1588,7 +1694,8 @@ def plan_window(events: Sequence, state0: CupState,
                 warm_start: Optional[SolverState] = None,
                 holds_ball_at_start: bool = False,
                 hold_axis: Optional[np.ndarray] = None,
-                hold_knots: int = 0) -> CupCyclePlan:
+                hold_knots: int = 0,
+                pre_hold_knots: int = 0) -> CupCyclePlan:
     """Plan the cup over one horizon window from an ordered event timeline.
 
     Parameters
@@ -1636,6 +1743,12 @@ def plan_window(events: Sequence, state0: CupState,
         construction: a warm start biases only *which* violated constraint is
         admitted next, so it buys iterations and can never change the answer
         (see :func:`_solve_qp`).
+    pre_hold_knots
+        Knots before the release (``n−N .. n−1``) on which the cup's lateral
+        velocity is pinned onto the launch line, ``vel_xy == kappa·vel_z`` —
+        the pre-release platform hold (``unified_cycle.PRE_RELEASE_HOLD_S``).
+        ``0`` is the window as it was before the hold existed, bit for bit; it
+        must be 0 on a window with no throw.
 
     The four window kinds, and what each one is for
     ----------------------------------------------
@@ -1697,7 +1810,8 @@ def plan_window(events: Sequence, state0: CupState,
     prog = _assemble(state0, throw, catch, window_s, cfg,
                      settle_site=settle_site,
                      holds_ball_at_start=bool(holds_ball_at_start),
-                     hold_axis=hold_axis, hold_knots=int(hold_knots))
+                     hold_axis=hold_axis, hold_knots=int(hold_knots),
+                     pre_hold_knots=int(pre_hold_knots))
     dt = float(_cfg(cfg, 'dt'))
     n = prog.n_steps
     key = (n, dt, prog.C.shape[1])

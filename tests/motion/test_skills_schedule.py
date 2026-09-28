@@ -945,9 +945,31 @@ def test_compile_reload_catch_is_a_fresh_origin_from_the_pretilt_rest(site):
     landing_mm, landing_vel, t_land_abs, pattern, t0 = _reload_args(site)
     schedule = sc.compile_reload(landing_mm, landing_vel, t_land_abs, pattern, t0)
     pretilt, catch = schedule.skills[0], schedule.skills[1]
-    assert catch.t_abs_s - catch.window_s == pytest.approx(pretilt.t_abs_s)
     assert catch.dispatch_s() + catch.lead_s >= pretilt.t_abs_s - 1e-9
     assert catch.window_s >= sc.RELOAD_CATCH_WINDOW_S - 1e-9
+
+
+def test_compile_reload_catch_dispatches_only_once_the_pretilt_rest_has_ended(site):
+    """R4 sitting 3 (2026-09-28 23:55): both reload CATCHes were refused
+    ``CATCH_AXIS`` (seed 5.681 / 1.065 mm off the held-axis line, bound 0.1 mm)
+    and the hand sat parked at the bottom of its stroke for BB's ball.
+
+    The CATCH used to dispatch at ``pretilt_end - LEAD_S``: ``install_segment``'s
+    fresh test (``t_now + lead >= record.end_s``) already reads true there, but
+    the PRE-TILT REST still has LEAD_S (225 ms) of its tilt-and-translate slew to
+    run, and ``trajectory_node`` seeds a fresh install from the ACTIVE PLAN's
+    commanded state at ``t_now`` -- mid-slew, so off the line by construction
+    (reproduced through the real install chain, 2026-09-29, scratchpad
+    ``probe_t03.py``: 1.2 mm at ``record.end_s - LEAD_S``, on the line and
+    accepted at ``record.end_s``). The CATCH must dispatch no earlier than the
+    REST's own end, when the commanded state IS the on-line terminal."""
+    landing_mm, landing_vel, t_land_abs, pattern, t0 = _reload_args(site)
+    schedule = sc.compile_reload(landing_mm, landing_vel, t_land_abs, pattern, t0)
+    pretilt, catch = schedule.skills[0], schedule.skills[1]
+    assert catch.dispatch_s() >= pretilt.t_abs_s - 1e-9
+    # ... and not later than it either: the catch keeps its full window.
+    assert catch.dispatch_s() == pytest.approx(pretilt.t_abs_s)
+    assert catch.window_s == pytest.approx(sc.RELOAD_CATCH_WINDOW_S)
 
 
 def test_compile_reload_decay_rest_ends_level_at_the_plain_site(site):

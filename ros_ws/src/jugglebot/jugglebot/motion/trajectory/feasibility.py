@@ -370,9 +370,12 @@ def validate(plan, limits, geom, *, samples_per_segment: int = _VALIDATE_SAMPLES
                 # Near-singular: unrealisable no matter the timing.
                 return FeasibilityReport(
                     ok=False, code=UNREACHABLE,
-                    reasons=[f"Jacobian condition {cond:.1f} > "
-                             f"{wlimits.cond_hard:.1f} (near singularity) "
-                             f"at t={t:.3f}s"],
+                    reasons=[f"at t={t:.3f}s the platform is near a pose "
+                             f"where the legs lose control of some direction "
+                             f"(Jacobian condition {cond:.1f} > "
+                             f"{wlimits.cond_hard:.1f}): a small platform "
+                             f"move there needs an unrealistic leg speed. "
+                             f"Adjust the path to avoid that pose."],
                     peak_leg_ext_mm=peak_ext)
 
             leg_vel = twist_to_leg_velocities(twist, pos, rot, geom, J=J)
@@ -691,9 +694,12 @@ def _validate_shaped_batched(plan, limits, geom, samples_per_segment, *,
                 peak_leg_ext_mm=peak_ext)
         return FeasibilityReport(
             ok=False, code=UNREACHABLE,
-            reasons=[f"Jacobian condition {conds[first]:.1f} > "
-                     f"{wlimits.cond_hard:.1f} (near singularity) "
-                     f"at t={t_fail:.3f}s"],
+            reasons=[f"at t={t_fail:.3f}s the platform is near a pose where "
+                     f"the legs lose control of some direction (Jacobian "
+                     f"condition {conds[first]:.1f} > "
+                     f"{wlimits.cond_hard:.1f}): a small platform move there "
+                     f"needs an unrealistic leg speed. Adjust the path to "
+                     f"avoid that pose."],
             peak_leg_ext_mm=peak_ext)
 
     peak_ext = float(np.max(np.abs(ext)))
@@ -824,9 +830,12 @@ def validate_follow(plan, limits, geom, *,
         if worst > wlimits.cond_hard:
             return FeasibilityReport(
                 ok=False, code=UNREACHABLE,
-                reasons=[f"Jacobian condition {worst:.1f} > "
-                         f"{wlimits.cond_hard:.1f} (near singularity) on the "
-                         f"follower segment"],
+                reasons=[f"on the follower segment the platform is near a "
+                         f"pose where the legs lose control of some "
+                         f"direction (Jacobian condition {worst:.1f} > "
+                         f"{wlimits.cond_hard:.1f}): a small platform move "
+                         f"there needs an unrealistic leg speed. Adjust the "
+                         f"path to avoid that pose."],
                 peak_leg_ext_mm=peak_ext)
 
         # Leg vel/acc/jerk by finite differences of the sampled extensions.
@@ -865,9 +874,12 @@ def validate_follow(plan, limits, geom, *,
         if worst > wlimits.cond_hard:
             return FeasibilityReport(
                 ok=False, code=UNREACHABLE,
-                reasons=[f"Jacobian condition {worst:.1f} > "
-                         f"{wlimits.cond_hard:.1f} (near singularity) on the held "
-                         f"follower pose"],
+                reasons=[f"on the held follower pose the platform is near a "
+                         f"pose where the legs lose control of some "
+                         f"direction (Jacobian condition {worst:.1f} > "
+                         f"{wlimits.cond_hard:.1f}): a small platform move "
+                         f"there needs an unrealistic leg speed. Adjust the "
+                         f"path to avoid that pose."],
                 peak_leg_ext_mm=peak_ext)
 
     # Knot-step bound — sampled at the wire knot spacing, identical to validate().
@@ -1458,8 +1470,11 @@ def validate_cycle(cycle_plan, limits, geom, *,
                 ok=False, code=WORKSPACE,
                 reasons=reasons,
                 peak_leg_ext_mm=peak_ext, peak_hand_rev=peak_hand_rev)
-        reasons = ["Jacobian condition %.1f > %.1f (near singularity) "
-                   "at t=%.3fs" % (conds[first], wlimits.cond_hard, t_fail)]
+        reasons = ["at t=%.3fs the platform is near a pose where the legs "
+                   "lose control of some direction (Jacobian condition "
+                   "%.1f > %.1f): a small platform move there needs an "
+                   "unrealistic leg speed. Adjust the path to avoid that "
+                   "pose." % (t_fail, conds[first], wlimits.cond_hard)]
         if _early_contact_reason is not None:
             reasons.append(_early_contact_reason)
         return FeasibilityReport(

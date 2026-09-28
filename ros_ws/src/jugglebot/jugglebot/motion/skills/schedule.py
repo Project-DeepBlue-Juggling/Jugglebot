@@ -1153,7 +1153,16 @@ def compile_reload(landing_mm, landing_vel_mm_s, t_land_abs_s: float,
     pretilt_period = max(lift_s, PRETILT_S)
     _check_window('the opening REST (the floor lift + the pre-tilt attitude)',
                  pretilt_period)
-    pretilt_end_rel = t_land_rel - RELOAD_CATCH_WINDOW_S
+    # The PRE-TILT REST ends LEAD_S before the CATCH's own window opens, so the
+    # CATCH (window RELOAD_CATCH_WINDOW_S, dispatch = t_abs - window - LEAD_S)
+    # dispatches exactly AT the REST's end. Until 2026-09-29 the two abutted,
+    # so the CATCH dispatched LEAD_S (225 ms) before the REST ended: the fresh
+    # test already reads true there, but trajectory_node seeds a fresh install
+    # from the ACTIVE PLAN's commanded state at t_now -- still mid-slew, off
+    # the held-axis line -- and every sitting-3 reload CATCH was refused
+    # CATCH_AXIS (5.681 / 1.065 mm vs 0.1 mm) with the hand parked at the
+    # bottom of its stroke. The catch motion itself keeps the 0.725 s it ran.
+    pretilt_end_rel = t_land_rel - RELOAD_CATCH_WINDOW_S - LEAD_S
     pretilt_dispatch_rel = pretilt_end_rel - pretilt_period - LEAD_S
     if pretilt_dispatch_rel < t0_rel - 1e-9:
         raise ValueError(
@@ -1173,8 +1182,8 @@ def compile_reload(landing_mm, landing_vel_mm_s, t_land_abs_s: float,
                     rest_tilt=tilt, rest_site_mm=pretilt_site,
                     holds_ball=False)]
 
-    catch_window = t_land_rel - pretilt_end_rel
-    _check_window('the reload CATCH (pre-tilt REST end to touch-down)',
+    catch_window = t_land_rel - pretilt_end_rel - LEAD_S
+    _check_window('the reload CATCH (pre-tilt REST end + lead to touch-down)',
                  catch_window)
     skills.append(Skill(
         kind=CATCH, ball_id=0, site=site0, t_abs_s=t_land_rel,

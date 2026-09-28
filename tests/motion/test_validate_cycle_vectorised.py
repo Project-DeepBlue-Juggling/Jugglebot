@@ -266,8 +266,12 @@ def _validate_cycle_scalar(cycle_plan, limits, geom, *,
         if cond > wlimits.cond_hard:
             return FeasibilityReport(
                 ok=False, code=UNREACHABLE,
-                reasons=["Jacobian condition %.1f > %.1f (near singularity) "
-                         "at t=%.3fs" % (cond, wlimits.cond_hard, t)],
+                reasons=["at t=%.3fs the platform is near a pose where the "
+                         "legs lose control of some direction (Jacobian "
+                         "condition %.1f > %.1f): a small platform move "
+                         "there needs an unrealistic leg speed. Adjust the "
+                         "path to avoid that pose."
+                         % (t, cond, wlimits.cond_hard)],
                 peak_leg_ext_mm=peak_ext, peak_hand_rev=peak_hand_rev)
 
         leg_vel = twist_to_leg_velocities(twist, pos, rot, geom, J=J)

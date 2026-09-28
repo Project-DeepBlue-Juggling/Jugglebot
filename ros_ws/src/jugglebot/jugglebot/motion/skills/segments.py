@@ -79,6 +79,13 @@ def _hold_knots(cfg: 'SegmentConfig', seed: 'uc.CycleState') -> int:
     return uc.post_release_hold_knots(cfg.post_release_hold_s)
 
 
+def _pre_hold_knots(cfg: 'SegmentConfig') -> int:
+    """``cfg.pre_release_hold_s`` on the knot grid — the ONE place a segment
+    decides how long the platform holds still before a release, so a THROW and a
+    CATCH-with-throw (and a re-sent one) hold for the same length."""
+    return uc.pre_release_hold_knots(cfg.pre_release_hold_s)
+
+
 def _vec3(value, name: str) -> np.ndarray:
     arr = np.asarray(value, dtype=float).reshape(-1)
     if arr.shape != (3,):
@@ -218,6 +225,13 @@ class SegmentConfig:
     #: planned release; the tail used to be translating the platform by then).
     #: The value is defined there because the splice guard needs the same number.
     post_release_hold_s: float = uc.POST_RELEASE_HOLD_S
+    #: How long before every release the platform stops translating (the cup
+    #: rides the stroke along the launch line only) — see
+    #: :data:`~jugglebot.motion.unified_cycle.PRE_RELEASE_HOLD_S` for the R4
+    #: measurement (the hop's +x overshoot was the platform still moving at
+    #: +70..+100 mm/s when the ball left).  ``0`` turns it off, bit for bit
+    #: (``trajectory_node`` parameter ``pre_release_hold_s``, for the A/B).
+    pre_release_hold_s: float = uc.PRE_RELEASE_HOLD_S
 
 
 @dataclasses.dataclass(frozen=True)
@@ -311,7 +325,8 @@ def _plan_throw(seed, terminal: ThrowTerminal, cfg: SegmentConfig,
                             throw_site_mm=terminal.site_mm,
                             throw_target_mm=terminal.target_mm,
                             flight_s=terminal.flight_s,
-                            settle_site_mm=rest_mm)
+                            settle_site_mm=rest_mm,
+                            pre_release_hold_knots=_pre_hold_knots(cfg))
     plan_a, meta_a = uc.plan_launch(goals_a, seed, limits, geom,
                                     warm_start=warm_start)
     seed_b = uc.release_state_from_meta(meta_a, plan_a)
@@ -360,7 +375,8 @@ def _plan_catch_throw(seed, terminal: CatchTerminal, cfg: SegmentConfig,
                             catch_site_mm=terminal.landing_mm,
                             catch_vel_mm_s=terminal.landing_vel_mm_s,
                             catch_t_s=terminal.t_land_s,
-                            hold_platform_knots=_hold_knots(cfg, seed))
+                            hold_platform_knots=_hold_knots(cfg, seed),
+                            pre_release_hold_knots=_pre_hold_knots(cfg))
     plan_a, meta_a = uc.plan_steady(goals_a, seed, limits, geom,
                                     warm_start=warm_start)
     seed_b = uc.release_state_from_meta(meta_a, plan_a)

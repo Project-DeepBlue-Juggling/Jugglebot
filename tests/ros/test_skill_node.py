@@ -2951,6 +2951,38 @@ class TestJuggleAction:
         sites = {sk.site.name for sk in node._executor.schedule.skills}
         assert sites == {'P1', 'P2'}
 
+    def test_hop_refusal_names_the_separation_mismatch_not_just_the_apex(
+            self, tmp_path):
+        """R4 sitting 3 (owner-reported): a 0.95 m hop refused with "no
+        admissible box covers site pair(s) ... at apex 0.950 m" even though a
+        swept box DID cover that apex -- it was swept at the node's default
+        separation_mm=250 (release/target sites at +-125 mm) while the goal
+        asked for separation_mm=100 (+-50 mm). A bands-only message hides that
+        the apex band WAS satisfied and points the operator at the wrong
+        knob; the refusal must name the site-geometry mismatch instead
+        (`.scratch/r4-throw-precision/issues/04-plain-language-refusal-messages.md`)."""
+        node, _client = _node_with_client()
+        node._on_traj_status(_status())
+        _prelevel_ready(node)
+        node._params['plant_id'] = 'test_hop_sep_mismatch_' + str(id(node))
+        box_path = _good_box_path(tmp_path, hop=True)
+        with patch.object(sn, '_ADMISSIBLE_BOX_PATH', box_path), \
+             patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+            resp = node._start_pattern(
+                _hop_goal(separation_mm=100.0, apex_m=0.95))
+        assert resp.success is False
+        assert 'no admissible box covers' in resp.message
+        # the swept sites (+-125 mm) and the live sites (+-50 mm) must both
+        # be named, along with the swept (250 mm) and requested (100 mm)
+        # separations -- an operator changing separation_mm must be able to
+        # see that THAT is the mismatch, not the apex.
+        assert '125.0' in resp.message and '-125.0' in resp.message
+        assert '50.0' in resp.message and '-50.0' in resp.message
+        assert '250.0' in resp.message
+        assert '100.0' in resp.message
+        assert 'separation_mm' in resp.message
+        assert node._executor is None
+
 
 
 def test_the_separation_default_is_the_swept_hop_separation():

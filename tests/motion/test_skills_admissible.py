@@ -446,9 +446,24 @@ def sweep_mod():
 @pytest.fixture(scope='module')
 def tiny_sweep(sweep_mod):
     site0, site1 = st.columns_sites(100.0)
+    # Hold OFF: the columns pattern flies with `pre_release_hold_s:=0` (see
+    # test_the_default_pre_release_hold_empties_the_columns_cell below).
     boxes, rows = sweep_mod.sweep(
-        apexes_m=(0.85, 0.90), offsets_mm=(-10.0, 0.0), site_pairs=[(site0, site1)])
+        apexes_m=(0.85, 0.90), offsets_mm=(-10.0, 0.0), site_pairs=[(site0, site1)],
+        pre_release_hold_s=0.0)
     return boxes, rows
+
+
+def test_the_default_pre_release_hold_empties_the_columns_cell(sweep_mod):
+    """KNOWN INCOMPATIBILITY, pinned so a fix shows up as a test change
+    (2026-09-29): the default 100 ms pre-release hold does not fit the columns
+    cell's 0.3 s dwell THROW (measured: hold 0 -> OK, 0.05 -> MARGIN,
+    0.1 -> INFEASIBLE), so the committed box's columns boxes are EMPTY and
+    columns flies with ``pre_release_hold_s:=0``."""
+    site0, site1 = st.columns_sites(100.0)
+    boxes, _rows = sweep_mod.sweep(
+        apexes_m=(0.90,), offsets_mm=(0.0,), site_pairs=[(site0, site1)])
+    assert len(boxes) == 1 and boxes[0].empty
 
 
 def test_tiny_sweep_produces_one_box_inside_the_swept_grid(tiny_sweep):
@@ -690,3 +705,26 @@ def test_single_site_sweep_also_gates_the_launch_throw_from_rest(
         'the launch THROW from rest was never planned with a nonzero '
         'offset -- the (P1, P1) box is not gating the segment a cold-start '
         'attempt actually carries the learner command on (R3-h2)')
+
+
+def test_describe_miss_names_an_apex_outside_every_swept_band():
+    """``describe_miss``'s second branch (audit 2026-09-29): no box for the
+    pair covers the apex at all -- the message says so and lists what WAS
+    swept, and does not blame the site positions."""
+    msg = ab.describe_miss([_box()], 'hop', ('P1', 'P2'), 1.10,
+                           release_site_xy_mm=_DEFAULT_XY_MM,
+                           target_site_xy_mm=_DEFAULT_XY_MM)
+    assert 'outside the range' in msg
+    assert '0.850-0.950 m' in msg
+    assert 'separation_mm' not in msg
+
+
+def test_describe_miss_names_a_site_separation_mismatch():
+    """``describe_miss``'s first branch, called directly (the skill_node path
+    is pinned in ``tests/ros/test_skill_node.py``): the apex IS covered, the
+    sites are not the swept ones -- both separations are named."""
+    msg = ab.describe_miss([_box()], 'hop', ('P1', 'P2'), 0.90,
+                           release_site_xy_mm=(-50.0, 0.0),
+                           target_site_xy_mm=(50.0, 0.0))
+    assert 'IS covered' in msg and 'separation_mm' in msg
+    assert '100.0 mm apart' in msg

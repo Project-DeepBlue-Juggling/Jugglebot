@@ -279,7 +279,7 @@ def test_catch_inside_the_detach_block_is_refused(t_catch, runway):
     with pytest.raises(cc.CupCycleInfeasible) as excinfo:
         cc.plan_window(events, state0, cfg, period_s=period_s)
     assert excinfo.value.reason == 'CATCH_TOO_EARLY'
-    assert 'detach block' in str(excinfo.value)
+    assert 'still finishing the throw' in str(excinfo.value)
 
     # Same window, catch moved clear of the detach block: plans fine.
     ok_events, state0, cfg, period_s = _early_catch_window(0.77, runway)

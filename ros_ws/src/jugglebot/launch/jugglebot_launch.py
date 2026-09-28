@@ -245,6 +245,16 @@ def generate_launch_description():
                     'the temporal release-latency offset (BB_OP_THROW_RELEASE_LATENCY_MS).',
     )
 
+    # Pre-release platform hold (R4, 2026-09-29): seconds before every release
+    # that the platform stops translating. 0 turns it off for an A/B sitting.
+    pre_release_hold_s = LaunchConfiguration('pre_release_hold_s')
+    pre_release_hold_s_arg = DeclareLaunchArgument(
+        'pre_release_hold_s',
+        default_value='0.100',   # unified_cycle.PRE_RELEASE_HOLD_S
+        description='trajectory_node: seconds before each release the platform '
+                    'holds still (cup rides the launch line). 0 = off (A/B).',
+    )
+
     # can_node DELETED (SocketCAN decommission, 2026-07-06; see
     # logbook/2026-07-06-phase13-socketcan-decommission.md): its USB-CAN
     # path was dead in the three-bus topology — the bridge Teensy owns all CAN
@@ -394,6 +404,7 @@ def generate_launch_description():
         executable='trajectory_node',
         name='trajectory_node',
         output='screen',
+        parameters=[{'pre_release_hold_s': pre_release_hold_s}],
         # THE node the cap exists for: it owns BOTH the planner (plan_cycle) and
         # the 40 Hz emitter thread the can-bridge's 250 ms SETPOINT_STALE watchdog
         # watches, so an uncapped BLAS pool here starves the wire from inside the
@@ -700,6 +711,7 @@ def generate_launch_description():
         record_arg,
         friction_ff_enable_arg,
         apply_aim_correction_arg,
+        pre_release_hold_s_arg,
         teensy_ip_arg,
         enable_setpoint_output_arg,
         auto_arm_arg,

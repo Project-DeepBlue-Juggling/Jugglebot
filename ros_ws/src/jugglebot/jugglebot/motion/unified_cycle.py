@@ -258,6 +258,33 @@ _G_MM_S2 = ballistics_bc.G_VEC_MMS2
 #: inside the held block for the same reason it refuses one inside a detach cone.
 POST_RELEASE_HOLD_S = 0.050
 
+#: How long (s) BEFORE a release the platform stops translating — the cup rides
+#: the stroke along the launch line only, ``vel_xy == kappa·vel_z`` with
+#: ``kappa = v_takeoff_xy / v_takeoff_z``.  ``CycleGoals.pre_release_hold_knots``
+#: in seconds, and the default of ``segments.SegmentConfig.pre_release_hold_s``
+#: (the ``trajectory_node`` parameter ``pre_release_hold_s``; ``0`` turns it off).
+#:
+#: **Why (R4 sitting 1/2, 2026-09-27/28, issue 02 of .scratch/r4-throw-precision):**
+#: the QP ramps the cup's LATERAL velocity smoothly up to ``v_takeoff_xy`` over
+#: the last ~100 ms, independent of the stroke, and ``cup_realize.decompose``
+#: puts the difference on the platform — the hop's planned centroid vx was
+#: +106 / +95 / +34 mm/s at −75 / −50 / −25 ms and 0 at the knot.  The plant
+#: tracks that with 45 ms of delay plus a 30 ms lag, so at the instant the ball
+#: actually separates (+10..+20 ms) the real platform is still moving at
+#: +70..+100 mm/s, which the ball carries as overshoot.  With the hold the
+#: planned platform is ≤ 1 mm/s from −100 ms on, and it stays ≤ 1 mm/s at +15 ms
+#: under that delay model (probe ``probe_prehold.py``, 2026-09-29).
+#:
+#: **0.100 s = 4 knots ≥ 45 ms delay + 30 ms lag + 20 ms separation.**  N = 2..5
+#: were all accepted on the 0.85/0.9/0.95 m hops and the 0.9 m self-toss, and
+#: the hop's leg peaks FELL (jerk 129k → 107k, acc 1735 → 1488 at 0.9 m): the
+#: QP replaces the −97/+106 mm/s reversal with a gentle −45 mm/s backswing at
+#: −250 ms.  N = 5 raised that backswing for no gain.  The tilt is NOT pinned:
+#: a naive tilt pin refused LIMIT_ACC 15-23k mm/s², and the residual tilt rate
+#: (3.59 → 4.01° over the last 100 ms) is already absorbed by the centroid so
+#: the CUP carrier velocity is ~0.
+PRE_RELEASE_HOLD_S = 0.100
+
 _HAND_REST_EPS_RPS = 0.1
 
 #: Equality residual (m) the cup QP is allowed to leave on any hard row —
@@ -449,6 +476,13 @@ class CycleGoals:
     #: can reach, and it REPLACES the detach cone over those knots (see
     #: ``cup_cycle._assemble``'s hold block for why the two cannot both hold).
     hold_platform_knots: int = 0
+    #: How many knots BEFORE the release (``n−N .. n−1``) this window's cup
+    #: rides the launch line only — the pre-release hold
+    #: (:data:`PRE_RELEASE_HOLD_S`).  ``0`` (the default) is every plan built
+    #: before the hold existed, bit-for-bit.  A THROW-window field (LAUNCH /
+    #: STEADY); the catch a STEADY carries must touch down before the hold
+    #: starts.  See ``cup_cycle._assemble``'s pre-release block.
+    pre_release_hold_knots: int = 0
 
     def catch_time_s(self) -> float:
         """The catch instant on the window clock, from whichever form was given."""
@@ -764,6 +798,10 @@ class ReleaseMark:
     #: R1 deletes it).  ``None`` when the plan carries no knots after the release
     #: (the deceleration is in the next window); see :func:`plan_stroke_clear_s`.
     stroke_clear_s: Optional[float] = None
+    #: The pre-release hold this release was planned with (knots before it; see
+    #: :data:`PRE_RELEASE_HOLD_S`).  Carried so the splice guard protects
+    #: exactly the knots that hold, and none when it was planned at 0.
+    pre_hold_knots: int = 0
 
 
 @dataclasses.dataclass(frozen=True)
@@ -984,6 +1022,21 @@ def post_release_hold_knots(hold_s: Optional[float] = None, cup_cfg=None) -> int
     dt = float(cc.CupCycleConfig.dt if cup_cfg is None
                else getattr(cup_cfg, 'dt', cc.CupCycleConfig.dt))
     return int(round((POST_RELEASE_HOLD_S if hold_s is None else float(hold_s))
+                     / dt))
+
+
+def pre_release_hold_knots(hold_s: Optional[float] = None, cup_cfg=None) -> int:
+    """A pre-release hold length (s) on the knot grid.  ONE conversion.
+
+    ``hold_s=None`` is :data:`PRE_RELEASE_HOLD_S`, the default
+    ``segments.SegmentConfig.pre_release_hold_s`` carries.  The splice guard
+    does not call this: it reads the knots the release was actually PLANNED
+    with off :attr:`ReleaseMark.pre_hold_knots`, so an A/B at 0 is not refused
+    by a default it did not use.
+    """
+    dt = float(cc.CupCycleConfig.dt if cup_cfg is None
+               else getattr(cup_cfg, 'dt', cc.CupCycleConfig.dt))
+    return int(round((PRE_RELEASE_HOLD_S if hold_s is None else float(hold_s))
                      / dt))
 
 
@@ -1585,6 +1638,16 @@ def plan_cycle(kind: str, goals: CycleGoals, state: CycleState,
                 np.asarray(start, dtype=float).reshape(1, 2),
                 state.levelling_correction)[0]), dtype=float)
 
+    pre_hold_knots = int(goals.pre_release_hold_knots)
+    if pre_hold_knots < 0:
+        raise ValueError("pre_release_hold_knots must be >= 0, got %d"
+                         % pre_hold_knots)
+    if pre_hold_knots > 0 and not has_throw:
+        raise ValueError(
+            "pre_release_hold_knots is a THROW-window field: only a window that "
+            "ends in a release has a launch line to hold the cup on. Got kind "
+            "%r." % (kind,))
+
     events, settle_m = _events_for(kind, goals)
     state0 = state.to_cup_state(rcfg)
 
@@ -1599,7 +1662,8 @@ def plan_cycle(kind: str, goals: CycleGoals, state: CycleState,
                              settle_site=settle_m, warm_start=warm_start,
                              holds_ball_at_start=(kind == LAUNCH
                                                   or bool(goals.holds_ball)),
-                             hold_axis=hold_axis, hold_knots=hold_knots)
+                             hold_axis=hold_axis, hold_knots=hold_knots,
+                             pre_hold_knots=pre_hold_knots)
     except cc.CupCycleInfeasible as exc:
         raise CycleInfeasible(exc.reason, [str(exc)])
     finally:
@@ -1995,7 +2059,8 @@ def _meta_for(kind, plan, cup, goals, tilts, recv, throw_tilt, limits, geom, *,
             flight_s=float(goals.flight_s),
             target_mm=_vec3(goals.throw_target_mm, 'throw_target_mm'),
             tilt=np.asarray(throw_tilt, dtype=float),
-            stroke_clear_s=plan_stroke_clear_s(plan, t_rel)))
+            stroke_clear_s=plan_stroke_clear_s(plan, t_rel),
+            pre_hold_knots=int(goals.pre_release_hold_knots)))
     if int(cup.catch_k) >= 0:
         t_catch = goals.catch_time_s()
         catches.append(CatchMark(
@@ -2738,6 +2803,40 @@ def _refuse_splice_into_a_detach_cone(meta: CycleMeta, k_s: int, dt: float,
                                 'new window is solved with neither, so the '
                                 'splice has to land after them'
                                 % (k_rel, k_rel + 1, k_rel + n_detach)))])
+    # THE PRE-RELEASE HOLD of a release the splice would DISCARD (``k_rel >
+    # k_s``).  REFUSED rather than re-stated on the shorter window, for two
+    # reasons (2026-09-29):
+    #
+    # * It cannot be re-stated.  A window re-solved from ``k_s`` inside
+    #   ``[k_rel − N, k_rel)`` reaching the same release has ``n' = k_rel − k_s
+    #   <= N`` knots, and the release triple (9 rows) plus ``2·(n'−1)`` hold rows
+    #   exceed its ``3·n'`` jerk variables for every ``n' < 7`` — rank-deficient,
+    #   which ``cup_cycle._assemble`` refuses as ``HOLD_WINDOW`` anyway.  Dropping
+    #   the hold on that window instead would let the QP re-open the lateral
+    #   ramp the hold exists to remove, in the last 100 ms, under a ball about to
+    #   leave.
+    # * Refusing keeps the carried head continuous BY CONSTRUCTION: nothing is
+    #   joined, the installed plan (which already holds the cup on the launch
+    #   line through these knots) keeps streaming unchanged, and the 40 Hz
+    #   emitter never sees a seam.  A re-aim that late could not have moved this
+    #   release anyway.
+    #
+    # The length is the one the release was PLANNED with
+    # (``ReleaseMark.pre_hold_knots``), so a plan built with the hold off
+    # (``pre_release_hold_s:=0``) is spliced exactly as before the hold existed.
+    for m in meta.releases:
+        k_rel = int(round(float(m.t_s) / dt))
+        n_pre = int(getattr(m, 'pre_hold_knots', 0))
+        if n_pre > 0 and k_rel - n_pre <= k_s < k_rel:
+            raise CycleInfeasible(REPLAN_WINDOW, [
+                "too late to change this plan: the throw at %.3f s is %.0f ms "
+                "away, and for its last %.0f ms the platform is holding still "
+                "so the ball leaves straight — a new plan starting now would "
+                "have to move it. The plan already running is kept (splice "
+                "knot %d is inside the hold, knots %d..%d before the release "
+                "at knot %d)."
+                % (k_rel * dt, (k_rel - k_s) * dt * 1e3, n_pre * dt * 1e3,
+                   k_s, k_rel - n_pre, k_rel - 1, k_rel)])
 
 
 def _head_view(plan: CyclePlan, meta: CycleMeta,

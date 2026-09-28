@@ -503,8 +503,17 @@ def sweep(*, apexes_m: Sequence[float] = APEXES_M,
           center_flight_s: Optional[float] = None,
           launch_s: float = SINGLE_SITE_LAUNCH_S,
           site_pairs: Optional[List[Tuple['st.Site', 'st.Site']]] = None,
+          pre_release_hold_s: Optional[float] = None,
           log=print) -> Tuple[List['ab.AdmissibleBox'], List[Dict]]:
     """Run the grid; returns ``(boxes, rows)`` -- ``rows`` for the table.
+
+    ``pre_release_hold_s`` (None = the planner default,
+    ``unified_cycle.PRE_RELEASE_HOLD_S``) overrides the segment config's
+    pre-release platform hold. Only tests use it: since 2026-09-29 the default
+    100 ms hold does not fit the columns cell's 0.3 s dwell THROW (0 -> OK,
+    0.05 -> MARGIN, 0.1 -> INFEASIBLE), so the committed box has EMPTY columns
+    boxes and columns flies with ``pre_release_hold_s:=0``
+    (``.scratch/r4-throw-precision/map.md`` § Out of scope).
 
     ``site_pairs`` overrides the default both-directions pair built from
     ``sites.columns_sites(separation_mm)`` -- the small end-to-end test uses
@@ -535,6 +544,8 @@ def sweep(*, apexes_m: Sequence[float] = APEXES_M,
     geom = StewartGeometry()
     limits = _limits(leg_vel, leg_acc, leg_jerk, hand_acc)
     cfg = sg.SegmentConfig()
+    if pre_release_hold_s is not None:
+        cfg = dataclasses.replace(cfg, pre_release_hold_s=float(pre_release_hold_s))
     if site_pairs is None:
         site0, site1 = st.columns_sites(separation_mm)
         site_pairs = [(site0, site1), (site1, site0)]

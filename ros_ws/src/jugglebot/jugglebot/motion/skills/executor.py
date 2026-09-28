@@ -1281,18 +1281,16 @@ class SkillExecutor:
                              release_site_xy_mm=site.cup_mm[:2],
                              target_site_xy_mm=target.cup_mm[:2])
             if self.learner is not None and box is None:
-                bands = sorted(b.apex_band_m for b in self.boxes
-                              if b.pattern == self.schedule.pattern
-                              and b.site_pair == (site.name, target.name))
-                bands_str = (', '.join('%.3f-%.3f m' % (lo, hi)
-                                       for lo, hi in bands)
-                            if bands else 'none swept for this pattern/pair')
+                reason = adm.describe_miss(
+                    self.boxes, self.schedule.pattern,
+                    (site.name, target.name), apex,
+                    release_site_xy_mm=site.cup_mm[:2],
+                    target_site_xy_mm=target.cup_mm[:2])
                 raise _NoAdmissibleCommand(
-                    'no admissible box covers pattern %r site pair %r at '
-                    'apex %.3f m (bands swept for this pattern/pair: %s) — '
+                    'no admissible box covers pattern %r site pair %r: %s — '
                     'a learner command may not reach the platform unclipped'
-                    % (self.schedule.pattern, (site.name, target.name), apex,
-                       bands_str))
+                    % (self.schedule.pattern, (site.name, target.name),
+                       reason))
         if self.learner is None:
             u_dy, u_apex = dy, apex
         else:

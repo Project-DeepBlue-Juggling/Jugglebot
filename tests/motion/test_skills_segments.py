@@ -652,3 +652,206 @@ def test_the_hold_is_off_and_bit_identical_off_a_seed_that_followed_no_release(
     assert np.array_equal(np.asarray(held.plan.pose), np.asarray(off.plan.pose))
     assert np.array_equal(np.asarray(held.plan.hand_rev),
                           np.asarray(off.plan.hand_rev))
+
+
+# ---------------------------------------------------------------------------
+# The PRE-release platform hold (SegmentConfig.pre_release_hold_s, 2026-09-29)
+# ---------------------------------------------------------------------------
+
+#: Knots the pre-release hold covers, read from the production constant.
+PRE_K = uc.pre_release_hold_knots()
+#: The last 100 ms before a release, in knots — FIXED, not read from the
+#: constant, so forcing the constant to 0 makes the tests below fail rather
+#: than check an empty range.
+LAST_100MS_K = int(round(0.100 / DT))
+#: R4's launch limits (the runsheet's 300/5000/150000 + hand 3500) — tighter
+#: in jerk than this module's ``limits`` fixture, which predates them.
+R4_LIMITS = TrajectoryLimits.from_config(hw).with_session_limits(
+    leg_vel_mmps=300.0, leg_acc_mmps2=5000.0, leg_jerk_mmps3=150000.0,
+    hand_acc_rps2=3500.0)
+
+
+def _flight_s(apex_m):
+    return 2.0 * (2.0 * apex_m / (ballistics_bc.GRAVITY_MMS2 / 1000.0)) ** 0.5
+
+
+def _hop_throw(apex_m, cfg, geom, limits=R4_LIMITS):
+    seed = _rest_state(HOP_P1.rest_site_mm())
+    terminal = sg.ThrowTerminal(site_mm=HOP_P1.throw_site_mm(),
+                                target_mm=HOP_P2.catch_site_mm(),
+                                flight_s=_flight_s(apex_m), t_release_s=0.4)
+    return sg.plan_segment(sg.THROW, seed, terminal, cfg, limits, geom)
+
+
+def _carrier_xy_mm_s(plan, k):
+    """The platform's rigid-body velocity at the cup (hand velocity zeroed) —
+    what the ball rides laterally while it is still in the cup."""
+    pose = np.asarray(plan.pose)
+    v = np.asarray(uc.cup_velocity_from_platform(
+        pose[k], np.asarray(plan.pose_vel)[k], np.asarray(plan.hand_rev)[k],
+        0.0)).ravel()
+    return float(np.hypot(v[0], v[1]))
+
+
+def _off_launch_line_mm_s(plan, k_rel, n):
+    """Worst |cup velocity off the LAUNCH line| (mm/s) over knots
+    ``k_rel−n .. k_rel−1`` — the invariant the pre-hold rows state, with kappa
+    read off the cup at the release knot."""
+    v_rel = _cup_vel_at(plan, k_rel)
+    kappa = v_rel[:2] / v_rel[2]
+    return max(float(np.max(np.abs(_cup_vel_at(plan, k)[:2]
+                                    - kappa * _cup_vel_at(plan, k)[2])))
+               for k in range(k_rel - n, k_rel))
+
+
+@pytest.mark.parametrize('apex_m', [0.85, 0.9, 0.95])
+def test_a_hop_throw_holds_the_platform_still_for_the_last_100_ms(apex_m, geom):
+    """The 250 mm hop's platform no longer swings laterally into the release.
+
+    MEASURED 2026-09-29 (probe ``probe_prehold.py`` and this test, R4 limits):
+    without the hold the planned centroid vx at −75 / −50 ms was +105.7/+91.6
+    (0.85 m), +106.1/+95.2 (0.9 m), +105.4/+99.1 (0.95 m) mm/s — the QP ramping
+    the cup's lateral velocity to ``v_takeoff_xy`` independently of the stroke,
+    which the plant tracks 45 ms late and the ball carries out as +x overshoot.
+    With it the cup rides the launch line (off-line < 1e-6 mm/s in the QP) and
+    the platform carrier at the cup is ≤ 1.9 mm/s over the last 100 ms (the
+    residual is the reconstruction's finite-differenced tilt rate; it is
+    +0.6..+0.8 at the release knot with or without the hold).
+
+    FAIL-BEFORE (2026-09-29, ``PRE_RELEASE_HOLD_S`` forced to 0.0): the
+    carrier assertion fails at 98.8 / 99.5 / 99.1 mm/s (0.85 / 0.9 / 0.95 m).
+    """
+    seg = _hop_throw(apex_m, sg.SegmentConfig(), geom)
+    k_rel = int(round(float(seg.event_t_s) / DT))
+    worst = max(_carrier_xy_mm_s(seg.plan, k)
+                for k in range(k_rel - LAST_100MS_K, k_rel + 1))
+    assert worst <= 2.5, worst
+    assert _off_launch_line_mm_s(seg.plan, k_rel, LAST_100MS_K) < 1.0
+    assert PRE_K == LAST_100MS_K == 4
+    assert seg.meta.releases[0].pre_hold_knots == PRE_K
+
+    # ...and the swing it replaces, so the test cannot pass vacuously.
+    off = _hop_throw(apex_m, sg.SegmentConfig(pre_release_hold_s=0.0), geom)
+    vx = np.asarray(off.plan.pose_vel)[:, 0]
+    assert 85.0 <= vx[k_rel - 3] <= 115.0      # −75 ms
+    assert 85.0 <= vx[k_rel - 2] <= 115.0      # −50 ms
+
+
+@pytest.mark.parametrize('apex_m', [0.85, 0.9, 0.95])
+def test_a_held_hop_throw_is_inside_the_r4_limits(apex_m, geom):
+    """Peaks at R4's limits, and they FALL with the hold (the −97/+106 mm/s
+    reversal becomes a −45 mm/s backswing): 0.9 m leg jerk 129k → 107k,
+    acc 1735 → 1489 mm/s² (2026-09-29). plan_segment raises on any breach;
+    the asserts pin the margin."""
+    held = _hop_throw(apex_m, sg.SegmentConfig(), geom).meta.report
+    off = _hop_throw(apex_m, sg.SegmentConfig(pre_release_hold_s=0.0),
+                     geom).meta.report
+    assert held.peak_leg_vel_mmps <= 300.0
+    assert held.peak_leg_acc_mmps2 <= 5000.0
+    assert held.peak_leg_jerk_mmps3 <= 150000.0
+    assert held.peak_hand_acc_rps2 <= 3500.0
+    assert held.peak_leg_jerk_mmps3 <= off.peak_leg_jerk_mmps3
+    assert held.peak_leg_acc_mmps2 <= off.peak_leg_acc_mmps2
+
+
+def test_a_held_self_toss_and_its_catch_and_throw_are_inside_the_r4_limits(
+        geom):
+    """0.9 m self-toss: the THROW and the CATCH-and-throw (one STEADY window,
+    touch-down 0.30 s before the release, well before the hold) both plan at
+    R4's limits with the hold on, and the legs do not move for the THROW."""
+    tf = _flight_s(0.9)
+    cfg = sg.SegmentConfig()
+    throw = sg.plan_segment(
+        sg.THROW, _rest_state(REST_MM),
+        sg.ThrowTerminal(site_mm=THROW_SITE_MM, target_mm=THROW_SITE_MM,
+                         flight_s=tf, t_release_s=0.4), cfg, R4_LIMITS, geom)
+    assert throw.meta.releases[0].pre_hold_knots == PRE_K
+    rel_k = int(round(float(throw.event_t_s) / DT))
+    seed = uc.release_state_at_knot(throw.plan, throw.meta, rel_k)
+    v_arr = np.array([0.0, 0.0, -ballistics_bc.GRAVITY_MMS2 * (tf / 2.0)])
+    ct = sg.plan_segment(sg.CATCH, seed, sg.CatchTerminal(
+        landing_mm=THROW_SITE_MM, landing_vel_mm_s=v_arr, t_land_s=tf,
+        rest_site_mm=REST_MM,
+        then_throw=sg.ThrowAfterCatch(t_release_s=tf + 0.30,
+                                      site_mm=THROW_SITE_MM,
+                                      target_mm=THROW_SITE_MM, flight_s=tf)),
+        cfg, R4_LIMITS, geom)
+    for rep in (throw.meta.report, ct.meta.report):
+        assert rep.peak_leg_vel_mmps <= 300.0
+        assert rep.peak_leg_acc_mmps2 <= 5000.0
+        assert rep.peak_leg_jerk_mmps3 <= 150000.0
+        assert rep.peak_hand_acc_rps2 <= 3500.0
+    assert throw.meta.report.peak_leg_vel_mmps < 1.0
+    assert ct.meta.releases[-1].pre_hold_knots == PRE_K
+
+
+def test_the_pre_release_hold_at_zero_is_bit_identical_to_no_hold(geom, cfg):
+    """``pre_release_hold_s=0`` (the sitting's A/B arm) is the plan as it was
+    before the hold existed: the same LAUNCH + SETTLE chain built by hand from
+    goals that never mention the field."""
+    seg = _hop_throw(0.9, sg.SegmentConfig(pre_release_hold_s=0.0), geom)
+    seed = _rest_state(HOP_P1.rest_site_mm())
+    rest_mm = np.array([HOP_P1.throw_site_mm()[0], HOP_P1.throw_site_mm()[1],
+                        uc.SETTLE_CUP_Z_MM])
+    goals_a = uc.CycleGoals(period_s=0.4,
+                            throw_site_mm=HOP_P1.throw_site_mm(),
+                            throw_target_mm=HOP_P2.catch_site_mm(),
+                            flight_s=_flight_s(0.9), settle_site_mm=rest_mm)
+    plan_a, meta_a = uc.plan_launch(goals_a, seed, R4_LIMITS, geom)
+    seed_b = uc.release_state_from_meta(meta_a, plan_a)
+    goals_b = uc.CycleGoals(period_s=cfg.rest_tail_s, settle_site_mm=rest_mm,
+                            hold_platform_knots=sg._hold_knots(cfg, seed_b))
+    plan_b, meta_b = uc.plan_settle(goals_b, seed_b, R4_LIMITS, geom)
+    ref, ref_meta = uc.extend(plan_a, meta_a, plan_b, meta_b, R4_LIMITS, geom)
+    for name in ('pose', 'pose_vel', 'hand_rev', 'hand_vel_rps'):
+        assert np.array_equal(np.asarray(getattr(seg.plan, name)),
+                              np.asarray(getattr(ref, name))), name
+    assert seg.meta.releases[0].pre_hold_knots == 0
+
+
+def test_a_splice_inside_the_pre_release_hold_is_refused_and_keeps_the_plan(
+        geom):
+    """A re-plan landing in the last 100 ms before a release is REFUSED (the
+    installed plan, which already holds, keeps streaming): the shorter window
+    could not carry the hold (rank) and without it would re-open the lateral
+    ramp.  Before the hold, and on a plan built with the hold off, the guard
+    is silent — so the A/B arm splices exactly as before.
+
+    FAIL-BEFORE (2026-09-29, constant forced to 0.0): the splice at k_rel−4 is
+    not refused by the guard and reaches the seam check (CHAIN_DISCONTINUITY).
+    """
+    seg = _hop_throw(0.9, sg.SegmentConfig(), geom)
+    k_rel = int(round(float(seg.event_t_s) / DT))
+    n = int(seg.plan.n_knots)
+    for k_s in range(k_rel - LAST_100MS_K, k_rel):
+        with pytest.raises(uc.CycleInfeasible) as ei:
+            uc.splice_at(seg.plan, seg.meta, k_s, seg.plan, seg.meta,
+                         R4_LIMITS, geom)
+        assert ei.value.code == uc.REPLAN_WINDOW
+        assert 'too late to change this plan' in ei.value.outcome()
+    uc._refuse_splice_into_a_detach_cone(seg.meta, k_rel - LAST_100MS_K - 1,
+                                         DT, n)
+    off = _hop_throw(0.9, sg.SegmentConfig(pre_release_hold_s=0.0), geom)
+    uc._refuse_splice_into_a_detach_cone(off.meta, k_rel - 1, DT, n)
+
+
+def test_a_catch_inside_the_pre_release_hold_is_refused_in_plain_language(
+        catch_seed, catch_terminal, limits, geom):
+    """A touch-down in the last 100 ms before the carried throw cannot be
+    planned: once the hold rows own a knot there is no lateral freedom left
+    to steer the cup to the touch-down site.
+
+    FAIL-BEFORE (2026-09-29, constant forced to 0.0): the same terminal was
+    refused as ``UNVERIFIED: QP solution failed verification (equality residual
+    5.943e+01 ...)`` — infeasible either way, but not in words an operator can
+    act on.
+    """
+    term = dataclasses.replace(
+        catch_terminal,
+        then_throw=sg.ThrowAfterCatch(
+            t_release_s=catch_terminal.t_land_s + 0.05,
+            site_mm=THROW_SITE_MM, target_mm=CATCH_SITE_MM, flight_s=T_F))
+    with pytest.raises(uc.CycleInfeasible) as ei:
+        sg.plan_segment(sg.CATCH, catch_seed, term, sg.SegmentConfig(),
+                        limits, geom)
+    assert 'catch comes too close to the next throw' in ei.value.outcome()

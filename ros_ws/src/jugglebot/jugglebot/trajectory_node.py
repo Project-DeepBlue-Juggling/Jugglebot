@@ -77,6 +77,7 @@ import time
 import numpy as np
 
 import rclpy
+from rcl_interfaces.msg import SetParametersResult
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
 from rclpy.node import Node
@@ -828,7 +829,27 @@ class TrajectoryNode(Node):
         # SegmentConfig and the splice lead are node attributes built ONCE from
         # the skills defaults, mirroring `_limits`/`_geom` — a fresh copy per
         # call would be a second source for the same constant.
-        self._segment_cfg = sk_seg.SegmentConfig()
+        # ONE knob is a parameter: the pre-release platform hold (R4, 2026-09-29;
+        # unified_cycle.PRE_RELEASE_HOLD_S), so a sitting can A/B it with
+        # `pre_release_hold_s:=0` (off, bit-identical to the plan before it).
+        # float() because a launch override of `0` arrives as an int.
+        self.declare_parameter('pre_release_hold_s',
+                               float(sk_seg.SegmentConfig().pre_release_hold_s))
+        _pre_hold_s = float(self.get_parameter('pre_release_hold_s').value)
+        if not 0.0 <= _pre_hold_s <= 0.25:
+            raise ValueError(
+                'pre_release_hold_s must be in [0, 0.25] s, got %r' % _pre_hold_s)
+        self._segment_cfg = sk_seg.SegmentConfig(pre_release_hold_s=_pre_hold_s)
+        self.get_logger().info(
+            'segment config: pre_release_hold_s=%.3f s, post_release_hold_s='
+            '%.3f s' % (self._segment_cfg.pre_release_hold_s,
+                        self._segment_cfg.post_release_hold_s))
+        # Live, so a sitting A/Bs the hold between attempts without a relaunch
+        # (`ros2 param set /trajectory_node pre_release_hold_s 0.0`). Safe
+        # mid-chain: the swap only reaches the NEXT install_segment, and each
+        # release records the hold it was planned with (ReleaseMark), which is
+        # what the splice guard reads -- never this config.
+        self.add_on_set_parameters_callback(self._on_set_parameters)
         self._segment_lead_s = sk_exec.LEAD_S
         # The previous accepted Segment's QP working set — CARRIED, not cached
         # (owner decision, brief_D2_ros_shell.md § B): one attribute, overwritten
@@ -3607,6 +3628,32 @@ class TrajectoryNode(Node):
                        1000.0 * (t_rel + n_detach * dt - tau)))
         _pos, _vel, acc = cup.sample(tau)
         return np.asarray(acc, dtype=float) * 1000.0, ''
+
+    def _on_set_parameters(self, params):
+        """Validate + apply a live ``pre_release_hold_s`` (range [0, 0.25] s,
+        the same fence as startup); an invalid value is REFUSED and the old
+        one kept. Every other parameter passes through unchanged."""
+        for param in params:
+            if param.name != 'pre_release_hold_s':
+                continue
+            try:
+                hold_s = float(param.value)
+            except (TypeError, ValueError):
+                return SetParametersResult(
+                    successful=False,
+                    reason='pre_release_hold_s must be a number, got %r'
+                           % (param.value,))
+            if not 0.0 <= hold_s <= 0.25:
+                return SetParametersResult(
+                    successful=False,
+                    reason='pre_release_hold_s must be in [0, 0.25] s, got %r'
+                           % (hold_s,))
+            self._segment_cfg = dataclasses.replace(
+                self._segment_cfg, pre_release_hold_s=hold_s)
+            self.get_logger().info(
+                'pre_release_hold_s set to %.3f s (applies from the next '
+                'install)' % hold_s)
+        return SetParametersResult(successful=True)
 
     def _cycle_start_state(self, kind: str):
         """``(CycleState, '', '')`` a NEW window is planned FROM, else

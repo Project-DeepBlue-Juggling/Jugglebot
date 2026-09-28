@@ -1214,7 +1214,9 @@ class SkillsGate:
     #: `schedule.compile_reload` is built from (the synthetic announcement).
     #: Sized so `compile_reload`'s own window check clears with margin: an
     #: already-home hand needs PRE-TILT REST >= max(FLOOR_LIFT_S, PRETILT_S)
-    #: + RELOAD_CATCH_WINDOW_S + LEAD_S = 1.5 + 0.5 + ~0.225 =~ 2.2 s
+    #: + RELOAD_CATCH_WINDOW_S + 2·LEAD_S = 1.5 + 0.5 + 2·0.225 =~ 2.45 s
+    #: (two leads since 2026-09-29: the REST's own dispatch lead, and the
+    #: CATCH now dispatching only once that REST has ENDED)
     #: (`schedule` module constants), so the synthetic announcement arrives
     #: this many seconds before the ball does -- exactly mirroring BB's own
     #: announcement preceding its physical release by `throw_delay_s`.

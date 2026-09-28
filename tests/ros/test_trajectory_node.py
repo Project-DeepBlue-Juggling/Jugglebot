@@ -95,6 +95,53 @@ def test_starts_not_streaming_not_seeded():
     assert node._active_plan is None
 
 
+def test_the_pre_release_hold_is_a_parameter_defaulting_to_the_planner_constant():
+    """``pre_release_hold_s`` (R4, 2026-09-29) reaches the SegmentConfig every
+    install_segment plans with; the sitting's A/B arm is ``:=0``."""
+    from jugglebot.motion import unified_cycle as uc
+    node = _node()
+    assert node._params['pre_release_hold_s'] == uc.PRE_RELEASE_HOLD_S
+    assert node._segment_cfg.pre_release_hold_s == uc.PRE_RELEASE_HOLD_S
+
+
+def test_the_pre_release_hold_override_to_int_zero_turns_it_off(monkeypatch):
+    """A launch override ``pre_release_hold_s:=0`` arrives as an INT 0; the
+    node floats it, and the segments it plans carry no hold."""
+    orig = TrajectoryNode.declare_parameter
+
+    def _declare(self, name, default_value):
+        if name == 'pre_release_hold_s':
+            default_value = 0
+        return orig(self, name, default_value)
+
+    monkeypatch.setattr(TrajectoryNode, 'declare_parameter', _declare)
+    node = _node()
+    assert node._segment_cfg.pre_release_hold_s == 0.0
+    assert isinstance(node._segment_cfg.pre_release_hold_s, float)
+
+
+def test_the_pre_release_hold_can_be_set_live_between_attempts():
+    """The diagnostic sitting A/Bs the hold without a relaunch:
+    ``ros2 param set /trajectory_node pre_release_hold_s 0.0`` must reach the
+    SegmentConfig the NEXT install plans with (each release records the hold it
+    was planned with on its ReleaseMark, so a plan already streaming is
+    untouched), and an out-of-range value is REFUSED with the old one kept."""
+    from tests.ros.conftest import _MockParameter
+    from jugglebot.motion import unified_cycle as uc
+    node = _node()
+    res = node.set_parameters([_MockParameter(0, name='pre_release_hold_s')])
+    assert res[0].successful
+    assert node._segment_cfg.pre_release_hold_s == 0.0
+    assert isinstance(node._segment_cfg.pre_release_hold_s, float)
+    res = node.set_parameters([_MockParameter(0.5, name='pre_release_hold_s')])
+    assert not res[0].successful
+    assert node._segment_cfg.pre_release_hold_s == 0.0
+    res = node.set_parameters([_MockParameter(uc.PRE_RELEASE_HOLD_S,
+                                              name='pre_release_hold_s')])
+    assert res[0].successful
+    assert node._segment_cfg.pre_release_hold_s == uc.PRE_RELEASE_HOLD_S
+
+
 # ── Seeding + mode gating ─────────────────────────────────────
 
 def test_mode_then_telemetry_seeds_hold_at_measured_pose():

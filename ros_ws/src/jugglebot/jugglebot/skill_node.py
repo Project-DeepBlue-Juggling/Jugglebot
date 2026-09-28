@@ -2307,15 +2307,13 @@ class SkillNode(Node):
             if adm.select(boxes, kind, pair, apex_m,
                          release_site_xy_mm=release_xy,
                          target_site_xy_mm=target_xy) is None:
-                bands = sorted(b.apex_band_m for b in boxes
-                               if b.pattern == kind and b.site_pair == pair)
-                bands_str = (', '.join('%.3f-%.3f m' % (lo, hi)
-                                       for lo, hi in bands)
-                            if bands else 'none swept for this pair')
-                missing.append('%r (bands: %s)' % (pair, bands_str))
+                reason = adm.describe_miss(boxes, kind, pair, apex_m,
+                                           release_site_xy_mm=release_xy,
+                                           target_site_xy_mm=target_xy)
+                missing.append('%r: %s' % (pair, reason))
         if missing:
-            msg = ('%s refused: no admissible box covers site pair(s) %s at '
-                  'apex %.3f m' % (kind, '; '.join(missing), apex_m))
+            msg = ('%s refused: no admissible box covers site pair(s) -- %s'
+                  % (kind, '; '.join(missing)))
             self.get_logger().error(msg)
             return SimpleNamespace(success=False, message=msg)
 
