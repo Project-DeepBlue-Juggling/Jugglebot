@@ -263,6 +263,15 @@ inline bool is_platform_reply_id(uint32_t id) {
          id == PlatformCanId::FW_UPDATE_REPLY;
 }
 
+// True iff `id` is a Ball Butler relay-reply id on CAN1 (0x7D7 FW_UPDATE_REPLY,
+// the 2026-09-28 BB firmware-over-CAN seam). on_bb_rx pushes these into the SAME
+// relay ring as the Platform replies, so they reach the host as PLATFORM_FRAMEs;
+// the host tells the boards apart by can_id. Inline for the native harness, as
+// is_platform_reply_id above.
+inline bool is_bb_relay_reply_id(uint32_t id) {
+  return id == BallButlerCanId::FW_UPDATE_REPLY;
+}
+
 // ── Bus-partner presence predicate (the TX-gate contract, 2026-07-05) ─────────
 // True iff some partner frame has been seen on the bus within the presence window.
 // EVERY can_*_send() refuses to transmit when this is false: an un-ACKed frame on a

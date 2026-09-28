@@ -433,6 +433,8 @@ uint32_t can_cmd_result_fwd_drops() { return s_cmd_result_fwd_drops; }
 // (0x7D5) loud-channel frame is relayed verbatim to the host; BB pitch/hand ODrive
 // telemetry (nodes 7/8) decodes into bb_axes. Everything else is counted via
 // s_bb_rx and dropped.
+static inline void platform_ring_push(const CAN_message_t& msg, uint64_t now);   // relay ring, below
+
 static void on_bb_rx(const CAN_message_t& msg) {
   s_bb_rx++;
   // DUAL-USE split: the health stamp is an INTERVAL (→ micros64), but the
@@ -443,6 +445,10 @@ static void on_bb_rx(const CAN_message_t& msg) {
   atomic_write_u64(&s_bb_last_rx_us, now_mono);   // 64-bit monotonic; read as an interval by health_of
   if (msg.id == BallButlerCanId::HEARTBEAT)  { decode_bb_heartbeat(msg); return; }
   if (msg.id == BallButlerCanId::CMD_RESULT) { cmd_result_ring_push(msg, now); return; }
+  // BB firmware-over-CAN reply (0x7D7, 2026-09-28): verbatim into the relay ring,
+  // uplinked as a PLATFORM_FRAME. Second producer on that ring — safe, the push
+  // is IRQ-masked and all three buses are serviced from the one CAN RX task.
+  if (is_bb_relay_reply_id(msg.id))          { platform_ring_push(msg, now); return; }
   decode_bb_odrive(msg);   // BB pitch/hand ODrive telemetry (CAN1 nodes 7/8)
 }
 
@@ -501,8 +507,9 @@ bool can_cone_pop(ConeFrameRec& out) {
 uint32_t can_cone_fwd_drops() { return s_cone_fwd_drops; }
 
 // ── Platform-Teensy relay-reply uplink ring ─────────────────────────
-// SPSC mirror of the cone ring: producer is on_jugglebot_rx (task_can_rx), consumer
-// is platform_uplink_step() on task_telem. The Platform Teensy answers a relay read
+// Mirror of the cone ring: producers are on_jugglebot_rx and, since 2026-09-28,
+// on_bb_rx (BB's 0x7D7 FW-update replies) — both task_can_rx, and the push is
+// IRQ-masked either way; consumer is platform_uplink_step() on task_telem. The Platform Teensy answers a relay read
 // on the SAME arbitration id it was triggered on (0x6E0 RobotState, 0x7DE tilt) and
 // answers the 0x6F0 FW-update ops on 0x6F1 (2026-09-09), so
 // every CAN3 frame whose id is a Platform reply id is copied here verbatim and

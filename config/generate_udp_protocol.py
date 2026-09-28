@@ -275,6 +275,21 @@ ENUMS = {
         # in flight, fires ONE RxSdo OPCODE_READ for it on CAN3. The net task never
         # waits on CAN: the host polls until a reply newer than its trigger lands.
         ("GET_HAND_TORQUE_SCALE", 0x005B, "Hand ODrive can.input_torque_scale readback: return the cached SDO reply and trigger a fresh read"),
+        # ADDITIVE (2026-09-28, FW 25 on skill-stack (FW 21 on mvp-trajectory-bringup), ids 0x5C..0x60 after GET_HAND_TORQUE_SCALE — no PROTOCOL_VERSION bump, the
+        # PLATFORM_FW_* precedent above). Ball Butler firmware-over-CAN: the
+        # Platform's BEGIN/DATA/VERIFY/COMMIT contract re-used verbatim (same
+        # opcodes, statuses, frame layouts and arg structs) but relayed on CAN1
+        # to BallButlerCanId::FW_UPDATE_CMD 0x7D6; BB answers on 0x7D7, which
+        # on_bb_rx forwards verbatim as a PLATFORM_FRAME. BB_FW_INFO (op 0x05)
+        # is BB-only: a read of the running image's FW_VERSION, the receipt that
+        # a COMMIT landed. BEGIN is refused unless BB's heartbeat is fresh and
+        # its state is IDLE or ERROR; BB parks itself (pitch >= 80 deg, ODrives
+        # IDLE, yaw e-stopped) before it accepts the image.
+        ("BB_FW_BEGIN",  0x005C, "Ball Butler FW-over-CAN: declare image length (relay → CAN1 0x7D6 op 0x01)"),
+        ("BB_FW_DATA",   0x005D, "Ball Butler FW-over-CAN: one image chunk, 1..5 bytes (relay → CAN1 0x7D6 op 0x02)"),
+        ("BB_FW_VERIFY", 0x005E, "Ball Butler FW-over-CAN: CRC-32 over the staged image (relay → CAN1 0x7D6 op 0x03)"),
+        ("BB_FW_COMMIT", 0x005F, "Ball Butler FW-over-CAN: apply the staged image + reboot (relay → CAN1 0x7D6 op 0x04)"),
+        ("BB_FW_INFO",   0x0060, "Ball Butler FW-over-CAN: read the running FW_VERSION (relay → CAN1 0x7D6 op 0x05)"),
     ],
     "RpcStatus": [
         ("OK",            0x0000, "Success"),
@@ -1650,19 +1665,22 @@ RPC_ARGS = [
     # queue: ~25k RPCs for a 120 KB image, under a minute, and every chunk keeps
     # its own synchronous ack. `n` is validated 1..5 firmware-side (ERR_BAD_ARGS
     # out of range) so a malformed chunk never reaches CAN3.
-    RpcArg("ArgPlatformFwBegin", "PLATFORM_FW_BEGIN", [
+    RpcArg("ArgPlatformFwBegin", "PLATFORM_FW_BEGIN, BB_FW_BEGIN", [
         Field("image_len", "u32", 1, "Total image length in bytes"),
     ]),
-    RpcArg("ArgPlatformFwData", "PLATFORM_FW_DATA", [
+    RpcArg("ArgPlatformFwData", "PLATFORM_FW_DATA, BB_FW_DATA", [
         Field("seq",     "u16", 1, "Chunk sequence number (0-based)"),
         Field("n",       "u8",  1, "Valid payload bytes in this chunk, 1..5"),
         Field("payload", "u8",  5, "Image bytes; only payload[0..n) reach the CAN frame"),
     ]),
-    RpcArg("ArgPlatformFwVerify", "PLATFORM_FW_VERIFY", [
+    RpcArg("ArgPlatformFwVerify", "PLATFORM_FW_VERIFY, BB_FW_VERIFY", [
         Field("crc32", "u32", 1, "CRC-32 over the whole staged image"),
     ]),
     # PLATFORM_FW_COMMIT is payloadless — no Arg struct (caller sends b"", the
-    # NOP / BB_RELOAD pattern).
+    # NOP / BB_RELOAD pattern). The BB_FW_* methods (2026-09-28) share these
+    # three structs: the frame layout is identical, only the CAN id and bus
+    # differ, and those are the bridge's to choose. BB_FW_COMMIT and
+    # BB_FW_INFO are payloadless.
 ]
 
 # ───────────────────────────────────────────────────────────────────────────

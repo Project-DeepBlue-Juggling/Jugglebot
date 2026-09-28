@@ -233,6 +233,27 @@ def test_platform_fw_method_map_entries():
     assert RpcMethod.PLATFORM_FW_COMMIT not in ra.METHOD
 
 
+def test_bb_fw_methods_share_the_platform_arg_structs():
+    """BB firmware-over-CAN (2026-09-28) re-uses the Platform contract byte for
+    byte: the three arg-bearing BB_FW_* methods map to the SAME structs, and
+    COMMIT / INFO are payloadless."""
+    from teensy_link import RpcMethod
+    assert ra.METHOD[RpcMethod.BB_FW_BEGIN] is ArgPlatformFwBegin
+    assert ra.METHOD[RpcMethod.BB_FW_DATA] is ArgPlatformFwData
+    assert ra.METHOD[RpcMethod.BB_FW_VERIFY] is ArgPlatformFwVerify
+    assert RpcMethod.BB_FW_COMMIT not in ra.METHOD
+    assert RpcMethod.BB_FW_INFO not in ra.METHOD
+
+
+def test_fw_status_table_appends_the_bb_park_codes():
+    """8 PARKING / 9 PARK_FAILED were APPENDED for Ball Butler; 0..7 keep the
+    Platform receiver's numbering (never renumber, only append)."""
+    assert [ra.PLATFORM_FW_STATUS_NAMES[i] for i in range(10)] == [
+        "OK", "BUSY", "BAD_STATE", "BAD_SEQ", "TOO_BIG", "BAD_CRC",
+        "BAD_IDENTITY", "FLASH_ERR", "PARKING", "PARK_FAILED"]
+    assert ra.FW_OP_INFO == 0x05
+
+
 def test_method_arg_association_covers_all_commandable_methods():
     """NON-tautological: partition the WHOLE RpcMethod enum into
     payloadless vs arg-carrying and freeze it, rather than hand-copying
@@ -253,6 +274,7 @@ def test_method_arg_association_covers_all_commandable_methods():
         RpcMethod.GET_HAND_TORQUE_SCALE,
         RpcMethod.TILT_READ, RpcMethod.STATE_READ,
         RpcMethod.PLATFORM_FW_COMMIT,
+        RpcMethod.BB_FW_COMMIT, RpcMethod.BB_FW_INFO,
     }
     have = set(ra.METHOD.keys())
     missing = {m for m in RpcMethod if m not in payloadless and m not in have}

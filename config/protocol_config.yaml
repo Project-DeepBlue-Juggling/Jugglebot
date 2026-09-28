@@ -106,6 +106,13 @@ can_ids:
     RESET_CMD:        0x7D3
     CALIBRATE_LOC_CMD: 0x7D4
     CMD_RESULT:       0x7D5   # BB→host loud command-outcome channel (Phase 2)
+    # Over-CAN firmware update (2026-09-28): the Platform's 0x6F0/0x6F1 contract
+    # (same opcodes, statuses and frame layouts) on BB's own ids — deliberately NOT
+    # 0x6F0/0x6F1 on CAN1, so a bridge bus-role swap can never route a Platform
+    # flash to BB. The bridge's typed relay sends FW_UPDATE_CMD on CAN1; BB answers
+    # on FW_UPDATE_REPLY, which the bridge uplinks verbatim as a PLATFORM_FRAME.
+    FW_UPDATE_CMD:    0x7D6
+    FW_UPDATE_REPLY:  0x7D7
 
   # Catching Cone Teensy <-> Host
   catching_cone:

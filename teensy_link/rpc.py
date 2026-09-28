@@ -259,6 +259,39 @@ class RpcClient:
             with self._pending_lock:
                 self._pending.pop(key, None)
 
+    def send_nowait(self, method: int, args: bytes = b"") -> "RpcCall":
+        """Send an RPC ONCE and return immediately; collect the response later
+        through the returned :class:`RpcCall`.
+
+        For pipelined streams whose delivery is confirmed by something other than
+        this ack (the firmware-over-CAN DATA frames: the board's window ACK /
+        BAD_SEQ is the proof, the bridge's ack only says "handed to CAN"). There
+        is NO retry on this path — a lost request or response is the caller's to
+        handle — so it is safe for every method, NON_IDEMPOTENT_METHODS included.
+        :meth:`call` is unchanged. The caller MUST :meth:`RpcCall.release` every
+        call it makes (``result()`` does so), or its pending entry stays in the
+        correlation map.
+        """
+        req_id = self._next_req_id()
+        pending = _PendingRpc(int(method), req_id)
+        key = (pending.method, req_id)
+        with self._pending_lock:
+            self._pending[key] = pending
+        try:
+            packet = p.RpcRequest(
+                method=int(method), req_id=req_id, arg_len=len(args), pad=0
+            ).pack() + args
+            self._link.send_rpc(int(p.MsgType.RPC_REQUEST), packet)
+        except BaseException:
+            with self._pending_lock:
+                self._pending.pop(key, None)
+            raise
+        return RpcCall(self, pending)
+
+    def _release(self, pending: _PendingRpc) -> None:
+        with self._pending_lock:
+            self._pending.pop((pending.method, pending.req_id), None)
+
     def _on_response(self, msg_type: int, seq: int, payload: bytes, addr: Address) -> None:
         if len(payload) < p.RPC_RESPONSE_SIZE:
             logger.debug("RPC_RESPONSE too short (%d bytes)", len(payload))
@@ -277,6 +310,48 @@ class RpcClient:
         pending.response_status = int(head.status)
         pending.response_payload = result_blob
         pending.event.set()
+
+
+class RpcCall:
+    """One request sent by :meth:`RpcClient.send_nowait`, awaiting its response."""
+
+    __slots__ = ("_client", "_pending")
+
+    def __init__(self, client: RpcClient, pending: _PendingRpc):
+        self._client = client
+        self._pending = pending
+
+    @property
+    def method(self) -> int:
+        return self._pending.method
+
+    @property
+    def req_id(self) -> int:
+        return self._pending.req_id
+
+    def done(self) -> bool:
+        """True once the response has arrived."""
+        return self._pending.event.is_set()
+
+    def wait(self, timeout: float) -> bool:
+        """Block up to ``timeout`` for the response; True if it arrived."""
+        return self._pending.event.wait(timeout)
+
+    def result(self) -> bytes:
+        """Release the call and return its result blob. Raises :class:`RpcTimeout`
+        (retries=0, timeout=0) if no response has arrived, or :class:`RpcError`
+        for a non-OK status — the same outcomes :meth:`RpcClient.call` raises."""
+        self.release()
+        if not self._pending.event.is_set():
+            raise RpcTimeout(self._pending.method, 0, 0.0)
+        if self._pending.response_status != int(p.RpcStatus.OK):
+            raise RpcError(self._pending.method, self._pending.response_status)
+        return self._pending.response_payload
+
+    def release(self) -> None:
+        """Drop the correlation entry; a response arriving later is ignored as
+        stray. Idempotent."""
+        self._client._release(self._pending)
 
 
 class PlatformFrameWaiter:

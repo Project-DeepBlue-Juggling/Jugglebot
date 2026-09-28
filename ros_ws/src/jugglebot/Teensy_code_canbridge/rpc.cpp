@@ -225,6 +225,16 @@ static uint16_t send_bb_frame(const ODrive::CanFrame& f) {
              ? JbUdp::RpcStatus::OK : JbUdp::RpcStatus::ERR_TIMEOUT;
 }
 
+// Sample the BB firmware-update gate inputs (see platform_relay.h BbFwGate).
+// Single-byte volatile reads, atomic on Cortex-M7, as bb_present() above.
+static Relay::BbFwGate bb_fw_gate() {
+  Relay::BbFwGate g;
+  g.seen  = bb_state.heartbeat_seen;
+  g.fresh = bb_present();
+  g.state = bb_state.state;
+  return g;
+}
+
 template <typename Arg>
 static bool take(const uint8_t* args, uint16_t arg_len, Arg& out) {
   if (arg_len < sizeof(Arg)) return false;
@@ -484,6 +494,30 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
     }
     case RpcMethod::PLATFORM_FW_COMMIT:
       return Relay::platform_fw_commit(fault_mpc_active());
+
+    // ── Ball Butler firmware-over-CAN (2026-09-28, FW 21) ──────────────────
+    // ADDITIVE methods. The Platform contract above, relayed on CAN1 to BB's
+    // 0x7D6 (platform_relay.cpp); BB answers on 0x7D7, uplinked by on_bb_rx as a
+    // PLATFORM_FRAME. The gate inputs are sampled here and passed in so the
+    // relay TU stays bb_state-free for the native harness: BEGIN needs a fresh
+    // heartbeat and BB in IDLE/ERROR, the rest only a heartbeat seen since boot
+    // (a sector erase stalls BB's heartbeat — see platform_relay.h).
+    case RpcMethod::BB_FW_BEGIN: {
+      ArgPlatformFwBegin a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
+      return Relay::bb_fw_begin(a, bb_fw_gate());
+    }
+    case RpcMethod::BB_FW_DATA: {
+      ArgPlatformFwData a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
+      return Relay::bb_fw_data(a, bb_fw_gate());
+    }
+    case RpcMethod::BB_FW_VERIFY: {
+      ArgPlatformFwVerify a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
+      return Relay::bb_fw_verify(a, bb_fw_gate());
+    }
+    case RpcMethod::BB_FW_COMMIT:
+      return Relay::bb_fw_commit(bb_fw_gate());
+    case RpcMethod::BB_FW_INFO:
+      return Relay::bb_fw_info(bb_fw_gate());
 
     // ── Ball Butler (CAN1) — typed commands ──────────────────────────────
     // Each gated on BB presence to prevent the un-ACKed-TX bus-off failure

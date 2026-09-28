@@ -69,6 +69,9 @@ static uint16_t g_version_len = 8;            // version_fill_blob returned leng
 static bool    g_hand_ver_have = false;
 static uint8_t g_hand_ver_raw[8] = {0};
 static int      g_tilt_calls = 0, g_state_read_calls = 0, g_state_write_calls = 0;
+static int      g_bb_fw_calls = 0;            // Relay::bb_fw_* stub call count
+static uint16_t g_bb_fw_method = 0;           // which bb_fw_* stub ran (the RpcMethod it serves)
+static Relay::BbFwGate g_bb_fw_gate{};        // the gate rpc.cpp sampled + passed in
 
 static void drv_reset() {
   g_bus_transmittable = true;
@@ -81,6 +84,7 @@ static void drv_reset() {
   g_version_len = 8;
   g_tilt_calls = g_state_read_calls = g_state_write_calls = 0;
   g_hand_ver_have = false; memset(g_hand_ver_raw, 0, 8);
+  g_bb_fw_calls = 0; g_bb_fw_method = 0; g_bb_fw_gate = Relay::BbFwGate{};
 }
 
 // ── can_buses.h ──
@@ -113,6 +117,18 @@ uint16_t platform_fw_begin(const JbUdp::RpcArgs::ArgPlatformFwBegin&, bool) { re
 uint16_t platform_fw_data(const JbUdp::RpcArgs::ArgPlatformFwData&, bool) { return JbUdp::RpcStatus::OK; }
 uint16_t platform_fw_verify(const JbUdp::RpcArgs::ArgPlatformFwVerify&, bool) { return JbUdp::RpcStatus::OK; }
 uint16_t platform_fw_commit(bool) { return JbUdp::RpcStatus::OK; }
+// Ball Butler firmware-over-CAN (FW 21). Recording stubs: the frame layouts and
+// the gate DECISIONS are exercised in test_platform_relay.cpp; here the question
+// is only whether rpc.cpp routes each method and samples the gate from bb_state.
+static uint16_t bb_fw_stub(uint16_t method, const BbFwGate& g) {
+  g_bb_fw_calls++; g_bb_fw_method = method; g_bb_fw_gate = g;
+  return JbUdp::RpcStatus::OK;
+}
+uint16_t bb_fw_begin(const JbUdp::RpcArgs::ArgPlatformFwBegin&, const BbFwGate& g) { return bb_fw_stub(JbUdp::RpcMethod::BB_FW_BEGIN, g); }
+uint16_t bb_fw_data(const JbUdp::RpcArgs::ArgPlatformFwData&, const BbFwGate& g) { return bb_fw_stub(JbUdp::RpcMethod::BB_FW_DATA, g); }
+uint16_t bb_fw_verify(const JbUdp::RpcArgs::ArgPlatformFwVerify&, const BbFwGate& g) { return bb_fw_stub(JbUdp::RpcMethod::BB_FW_VERIFY, g); }
+uint16_t bb_fw_commit(const BbFwGate& g) { return bb_fw_stub(JbUdp::RpcMethod::BB_FW_COMMIT, g); }
+uint16_t bb_fw_info(const BbFwGate& g) { return bb_fw_stub(JbUdp::RpcMethod::BB_FW_INFO, g); }
 }  // namespace Relay
 
 // ── version_check.h ──
@@ -160,6 +176,9 @@ static void reset_all() { fake_reset(); drv_reset(); Rpc::hand_torque_scale_rese
 
 using namespace JbUdp;
 using JbUdp::RpcArgs::ArgAxisState;
+using JbUdp::RpcArgs::ArgPlatformFwBegin;
+using JbUdp::RpcArgs::ArgPlatformFwData;
+using JbUdp::RpcArgs::ArgPlatformFwVerify;
 using JbUdp::RpcArgs::ArgAxisOnly;
 using JbUdp::RpcArgs::ArgAbsPosition;
 using JbUdp::RpcArgs::ArgSdoRead;
@@ -375,6 +394,51 @@ TEST_CASE("BB_RELOAD with BB absent → ERR_BUS_DOWN (presence gate, no CAN1)") 
   bb_state.heartbeat_seen = false;    // BB not present
   CHECK(call_noarg(RpcMethod::BB_RELOAD) == RpcStatus::ERR_BUS_DOWN);
   CHECK(g_bb_sent == 0);
+}
+
+// ── Ball Butler firmware-over-CAN routing + gate sampling (FW 21) ─────────────
+
+TEST_CASE("BB_FW_*: each method routes to its relay op with the gate sampled from bb_state") {
+  reset_all();
+  bb_state.heartbeat_seen = true; bb_state.heartbeat_stale = false;
+  bb_state.state = BallButlerState::ERROR;
+  ArgPlatformFwBegin b{}; b.image_len = 1234;
+  CHECK(call(RpcMethod::BB_FW_BEGIN, b) == RpcStatus::OK);
+  CHECK(g_bb_fw_method == RpcMethod::BB_FW_BEGIN);
+  CHECK(g_bb_fw_gate.seen);
+  CHECK(g_bb_fw_gate.fresh);
+  CHECK(g_bb_fw_gate.state == BallButlerState::ERROR);
+
+  // A stale-but-seen heartbeat samples as seen && !fresh (the mid-transfer
+  // sector-erase stall the in-session ops must ride through).
+  bb_state.heartbeat_stale = true;
+  ArgPlatformFwData d{}; d.seq = 7; d.n = 5;
+  CHECK(call(RpcMethod::BB_FW_DATA, d) == RpcStatus::OK);
+  CHECK(g_bb_fw_method == RpcMethod::BB_FW_DATA);
+  CHECK(g_bb_fw_gate.seen);
+  CHECK_FALSE(g_bb_fw_gate.fresh);
+
+  ArgPlatformFwVerify v{}; v.crc32 = 0xDEADBEEF;
+  CHECK(call(RpcMethod::BB_FW_VERIFY, v) == RpcStatus::OK);
+  CHECK(g_bb_fw_method == RpcMethod::BB_FW_VERIFY);
+  CHECK(call_noarg(RpcMethod::BB_FW_COMMIT) == RpcStatus::OK);
+  CHECK(g_bb_fw_method == RpcMethod::BB_FW_COMMIT);
+  CHECK(call_noarg(RpcMethod::BB_FW_INFO) == RpcStatus::OK);
+  CHECK(g_bb_fw_method == RpcMethod::BB_FW_INFO);
+  CHECK(g_bb_fw_calls == 5);
+  CHECK(g_bb_sent == 0);   // the stubs own the CAN1 send; rpc.cpp adds none
+  bb_state.heartbeat_stale = false;          // leave bb_state as later cases expect it
+  bb_state.state = BallButlerState::BOOT;
+}
+
+TEST_CASE("BB_FW_* with a short arg → ERR_BAD_ARGS, relay never reached") {
+  reset_all();
+  const uint8_t oneb[1] = {0};
+  uint8_t result[64]; uint16_t res_len = 0;
+  CHECK(Rpc::dispatch(RpcMethod::BB_FW_BEGIN, oneb, 1, result, res_len) == RpcStatus::ERR_BAD_ARGS);
+  CHECK(Rpc::dispatch(RpcMethod::BB_FW_DATA, oneb, 1, result, res_len) == RpcStatus::ERR_BAD_ARGS);
+  CHECK(Rpc::dispatch(RpcMethod::BB_FW_VERIFY, oneb, 1, result, res_len) == RpcStatus::ERR_BAD_ARGS);
+  CHECK(g_bb_fw_calls == 0);
 }
 
 // ── GET_AXIS_VERSIONS result blob ─────────────────────────────────────────────

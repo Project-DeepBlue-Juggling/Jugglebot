@@ -66,6 +66,14 @@ inline std::map<uint16_t, EthernetUDP*>& _registry() {
 class EthernetUDP {
  public:
   // ―― firmware-facing API (each asserts NetLock coverage) ――
+  // Records the requested RX queue depth so a test can assert it (the real
+  // library's default is ONE packet; see udp_link.cpp RPC_RX_QUEUE_CAPACITY).
+  void setReceiveQueueCapacity(size_t capacity) {
+    netlockprobe::require_held();
+    rx_queue_capacity_ = capacity;
+  }
+  size_t receive_queue_capacity() const { return rx_queue_capacity_; }
+
   bool begin(uint16_t port) {
     netlockprobe::require_held();
     port_ = port;
@@ -120,6 +128,7 @@ class EthernetUDP {
 
  private:
   uint16_t port_ = 0;
+  size_t rx_queue_capacity_ = 1;   // the library default
   std::vector<std::vector<uint8_t>> pending_;
   std::vector<uint8_t> cur_;
   size_t next_ = 0;

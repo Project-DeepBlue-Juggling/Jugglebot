@@ -429,3 +429,480 @@ def test_read_hand_input_torque_scale_old_firmware_is_an_rpc_error(fake_teensy_a
             rpc.read_hand_input_torque_scale(timeout_s=0.1)
     finally:
         rpc.close()
+
+
+# ── Ball Butler firmware-over-CAN (2026-09-28): the BB-only host behaviour ───
+# The windowing / rewind / straggler logic above is target-agnostic and already
+# covered; what BB adds is BEGIN's PARKING poll, the BB_FW_INFO version read and
+# the per-target image checks.
+
+class _ScriptedWaiter:
+    """PlatformFrameWaiter stand-in: hands back scripted replies in order."""
+
+    def __init__(self, replies):
+        self.replies = list(replies)
+        self.cleared = 0
+
+    def clear(self, can_id):
+        self.cleared += 1
+
+    def wait(self, can_id, expected_dlc, timeout):
+        return self.replies.pop(0) if self.replies else None
+
+
+class _RecordingRpc:
+    def __init__(self):
+        self.calls = []
+
+    def call(self, method, payload=b"", **kw):
+        self.calls.append((method, payload))
+
+
+def _fw_reply(op, status, seq=0, detail=0):
+    return struct.pack('<BBHI', op, status, seq, detail & 0xFFFFFFFF)
+
+
+def test_bb_begin_re_sends_while_parking_then_proceeds(monkeypatch):
+    import tools.teensy_link_bridge as tlb
+    monkeypatch.setattr(tlb, "_FW_PARK_POLL_S", 0.0)
+    bb = tlb._FW_TARGETS["bb"]
+    parking = _fw_reply(0x01, rpc_args.PLATFORM_FW_STATUS_PARKING, detail=6512)
+    waiter = _ScriptedWaiter([parking, parking, _fw_reply(0x01, rpc_args.PLATFORM_FW_STATUS_OK)])
+    rpc = _RecordingRpc()
+    assert tlb._begin_session(rpc, waiter, bb, 163840) is True
+    assert [m for m, _ in rpc.calls] == [int(RpcMethod.BB_FW_BEGIN)] * 3
+    assert all(pl == rpc_args.encode_platform_fw_begin(163840) for _, pl in rpc.calls)
+
+
+def test_bb_begin_park_failed_and_refusals_stop_the_session(monkeypatch):
+    import tools.teensy_link_bridge as tlb
+    monkeypatch.setattr(tlb, "_FW_PARK_POLL_S", 0.0)
+    bb = tlb._FW_TARGETS["bb"]
+    failed = _fw_reply(0x01, rpc_args.PLATFORM_FW_STATUS_PARK_FAILED, detail=-2150)
+    assert tlb._begin_session(_RecordingRpc(), _ScriptedWaiter([failed]), bb, 100) is False
+    busy = _fw_reply(0x01, rpc_args.PLATFORM_FW_STATUS_BUSY)
+    rpc = _RecordingRpc()
+    assert tlb._begin_session(rpc, _ScriptedWaiter([busy]), bb, 100) is False
+    assert len(rpc.calls) == 1                        # a refusal is never re-polled
+    assert tlb._begin_session(_RecordingRpc(), _ScriptedWaiter([]), bb, 100) is False
+
+
+def test_bb_begin_gives_up_when_parking_never_ends(monkeypatch):
+    import tools.teensy_link_bridge as tlb
+    monkeypatch.setattr(tlb, "_FW_PARK_POLL_S", 0.0)
+    monkeypatch.setattr(tlb, "_FW_PARK_TIMEOUT_S", 0.0)
+    parking = _fw_reply(0x01, rpc_args.PLATFORM_FW_STATUS_PARKING)
+    assert tlb._begin_session(_RecordingRpc(), _ScriptedWaiter([parking] * 5),
+                              tlb._FW_TARGETS["bb"], 100) is False
+
+
+def test_park_detail_is_signed_centidegrees():
+    import tools.teensy_link_bridge as tlb
+    assert tlb._centideg(8123) == 81.23
+    assert tlb._centideg((-2150) & 0xFFFFFFFF) == -21.5
+
+
+def test_bb_fw_version_read_takes_the_info_reply_and_skips_stragglers():
+    import tools.teensy_link_bridge as tlb
+    straggler = _fw_reply(0x02, rpc_args.PLATFORM_FW_STATUS_OK, seq=15)
+    info = _fw_reply(rpc_args.FW_OP_INFO, rpc_args.PLATFORM_FW_STATUS_OK, detail=7)
+    rpc = _RecordingRpc()
+    assert tlb._read_bb_fw_version(rpc, _ScriptedWaiter([straggler, info])) == 7
+    assert rpc.calls == [(int(RpcMethod.BB_FW_INFO), b"")]
+    # An image that predates the receiver never answers → None ("unknown").
+    assert tlb._read_bb_fw_version(_RecordingRpc(), _ScriptedWaiter([])) is None
+
+
+def _write_hex(path, base, image):
+    """Minimal Intel HEX writer (type 04 + 16-byte type 00 records + EOF)."""
+    def rec(rtype, addr16, data):
+        raw = bytes([len(data), addr16 >> 8, addr16 & 0xFF, rtype]) + data
+        return ":" + (raw + bytes([(-sum(raw)) & 0xFF])).hex().upper()
+    lines, ext = [], None
+    for off in range(0, len(image), 16):
+        addr = base + off
+        if addr >> 16 != ext:
+            ext = addr >> 16
+            lines.append(rec(0x04, 0, bytes([ext >> 8, ext & 0xFF])))
+        lines.append(rec(0x00, addr & 0xFFFF, image[off:off + 16]))
+    lines.append(rec(0x01, 0, b""))
+    path.write_text("\n".join(lines) + "\n")
+
+
+def test_prepare_image_checks_the_target_marker_and_refuses_the_other_boards(tmp_path):
+    import binascii
+    import tools.teensy_link_bridge as tlb
+    bb, plat = tlb._FW_TARGETS["bb"], tlb._FW_TARGETS["platform"]
+    bb_img = b"\x00" * 64 + b"ballbutler-main" + b"\xff" * 49
+    h = tmp_path / "bb.hex"
+    _write_hex(h, 0x60000000, bb_img)
+    image, crc = tlb._prepare_image(h, bb)
+    assert image == bb_img and crc == binascii.crc32(bb_img) & 0xFFFFFFFF
+    with pytest.raises(ValueError, match="jugglebot-platform"):
+        tlb._prepare_image(h, plat)                    # no Platform marker
+    both = tmp_path / "both.hex"
+    _write_hex(both, 0x60000000, bb_img + b"jugglebot-platform")
+    with pytest.raises(ValueError, match="another board"):
+        tlb._prepare_image(both, bb)
+    with pytest.raises(ValueError, match="another board"):
+        tlb._prepare_image(both, plat)
+    t41 = tmp_path / "t41.hex"
+    _write_hex(t41, 0x60001000, bb_img)
+    with pytest.raises(ValueError, match="base address"):
+        tlb._prepare_image(t41, bb)
+
+
+class _SimBbReceiver:
+    """A Python model of BB's FwUpdate receiver behind the bridge's BB_FW_* RPCs:
+    PARKING for the first ``park_polls`` BEGINs, strictly in-order DATA with the
+    ACK-every-16th cadence and BAD_SEQ NAKs, one frame silently LOST mid-window
+    (what a sector flush does to the CAN FIFO), CRC VERIFY, COMMIT, and INFO.
+    Replies go out as PLATFORM_FRAMEs on 0x7D7, exactly as on_bb_rx uplinks them."""
+
+    def __init__(self, teensy, version, park_polls=2, drop_seq=37, *, refuse_seq=None,
+                 refuse_status=int(RpcStatus.ERR_BUS_DOWN), swap_seq=None,
+                 drop_reply_seq=None, drop_ack_seqs=(), corrupt_seq=None):
+        from config.generated import protocol_config as pc
+        self.teensy, self.version = teensy, version
+        self.reply_id = pc.CAN_ID_BB_FW_UPDATE_REPLY
+        self.parks_left, self.drop_seq, self.dropped = park_polls, drop_seq, False
+        self.image_len, self.staged, self.expect = 0, bytearray(), 0
+        self.begins, self.committed, self.verifies = 0, False, 0
+        # 2026-09-28 pipelining faults, each fired once: the BRIDGE refuses one
+        # DATA frame (non-OK sync ack, nothing reaches CAN); one frame overtakes
+        # its predecessor on the wire (the same-id mailbox reorder); the board's
+        # window ACK is lost; the bridge's sync ack is lost although the frame is
+        # delivered; one payload byte is flipped in transit (only VERIFY sees it).
+        self.refuse_seq, self.refuse_status, self.refused = refuse_seq, refuse_status, False
+        self.swap_seq, self.held = swap_seq, None
+        self.drop_reply_seq, self.reply_dropped = drop_reply_seq, False
+        self.drop_ack_seqs, self.acks_dropped = set(drop_ack_seqs), 0
+        self.corrupt_seq = corrupt_seq
+        self.data_frames = 0
+        ok = lambda: (int(RpcStatus.OK), b"")     # noqa: E731 — the bridge's sync ack
+        for method, fn in ((RpcMethod.BB_FW_BEGIN, self._begin),
+                           (RpcMethod.BB_FW_VERIFY, self._verify), (RpcMethod.BB_FW_COMMIT, self._commit),
+                           (RpcMethod.BB_FW_INFO, self._info)):
+            teensy.on_rpc(int(method), lambda req_id, args, fn=fn: (fn(args), ok())[1])
+        teensy.on_rpc(int(RpcMethod.BB_FW_DATA), lambda req_id, args: self._data_rpc(args))
+        orig = teensy._maybe_respond
+
+        def _maybe_respond(payload, addr):
+            req = p.RpcRequest.unpack(payload[: p.RPC_REQUEST_SIZE])
+            args = payload[p.RPC_REQUEST_SIZE: p.RPC_REQUEST_SIZE + req.arg_len]
+            if int(req.method) == int(RpcMethod.BB_FW_DATA):
+                (seq,) = struct.unpack('<H', args[:2])
+                if seq in self.drop_ack_seqs:
+                    self.drop_ack_seqs.discard(seq)
+                    self.acks_dropped += 1
+                    self._data_rpc(args)              # delivered; only the ack is lost
+                    return
+            orig(payload, addr)
+        teensy._maybe_respond = _maybe_respond
+
+    def _data_rpc(self, args):
+        (seq,) = struct.unpack('<H', args[:2])
+        if seq == self.refuse_seq and not self.refused:
+            self.refused = True
+            return self.refuse_status, b""            # the bridge refused: no CAN frame
+        if seq == self.swap_seq and self.held is None:
+            self.held = args                          # overtaken: arrives after the next one
+            return int(RpcStatus.OK), b""
+        self._data(args)
+        if self.held is not None and seq != self.swap_seq:
+            held, self.held, self.swap_seq = self.held, None, None
+            self._data(held)
+        return int(RpcStatus.OK), b""
+
+    def _reply(self, op, status, seq=0, detail=0):
+        data = struct.pack('<BBHI', op, status, seq & 0xFFFF, detail & 0xFFFFFFFF)
+        pf = p.PlatformFrame(t_bridge_us=0, can_id=self.reply_id, dlc=8, data=tuple(data))
+        self.teensy.send_to_jetson(int(p.MsgType.PLATFORM_FRAME), pf.pack())
+
+    def _begin(self, args):
+        self.begins += 1
+        if self.parks_left:
+            self.parks_left -= 1
+            self._reply(0x01, rpc_args.PLATFORM_FW_STATUS_PARKING, detail=6012)
+            return
+        (self.image_len,) = struct.unpack('<I', args[:4])
+        self.staged, self.expect = bytearray(), 0
+        self._reply(0x01, rpc_args.PLATFORM_FW_STATUS_OK)
+
+    def _data(self, args):
+        self.data_frames += 1
+        seq, n = struct.unpack('<HB', args[:3])
+        if seq == self.drop_seq and not self.dropped:
+            self.dropped = True                       # lost on the wire: no reply at all
+            return
+        if seq != (self.expect & 0xFFFF):
+            self._reply(0x02, rpc_args.PLATFORM_FW_STATUS_BAD_SEQ, self.expect, len(self.staged))
+            return
+        payload = bytearray(args[3:3 + n])
+        if seq == self.corrupt_seq:
+            payload[0] ^= 0x01
+        self.staged += payload
+        self.expect += 1
+        if seq % 16 == 15 or len(self.staged) == self.image_len:
+            if seq == self.drop_reply_seq and not self.reply_dropped:
+                self.reply_dropped = True             # the board's ACK lost on the way back
+                return
+            self._reply(0x02, rpc_args.PLATFORM_FW_STATUS_OK, seq, len(self.staged))
+
+    def _verify(self, args):
+        import binascii
+        self.verifies += 1
+        (want,) = struct.unpack('<I', args[:4])
+        got = binascii.crc32(bytes(self.staged)) & 0xFFFFFFFF
+        status = rpc_args.PLATFORM_FW_STATUS_OK if got == want else rpc_args.PLATFORM_FW_STATUS_BAD_CRC
+        self._reply(0x03, status, self.expect - 1, got)
+
+    def _commit(self, args):
+        self.committed = True
+        self.version += 1                             # "reboots" into the new image
+        self._reply(0x04, rpc_args.PLATFORM_FW_STATUS_OK)
+
+    def _info(self, args):
+        self._reply(rpc_args.FW_OP_INFO, rpc_args.PLATFORM_FW_STATUS_OK, detail=self.version)
+
+
+def test_bb_fw_update_end_to_end_over_the_loopback_link(fake_teensy_and_client, monkeypatch):
+    """The whole BB session through the REAL RpcClient + PlatformFrameWaiter on a
+    UDP loopback: INFO before, BEGIN through two PARKING polls, DATA with a lost
+    frame recovered by the BAD_SEQ rewind, VERIFY, COMMIT, INFO after."""
+    import binascii
+    import tools.teensy_link_bridge as tlb
+    from teensy_link.rpc import RpcClient
+    monkeypatch.setattr(tlb, "_FW_PARK_POLL_S", 0.0)
+    monkeypatch.setattr(tlb, "_FW_SECTOR_FLUSH_PAUSE_S", 0.0)
+    teensy, client = fake_teensy_and_client
+    sim = _SimBbReceiver(teensy, version=1)
+    image = bytes((i * 37 + 11) & 0xFF for i in range(3001))   # 601 frames, a 1-byte tail
+    crc = binascii.crc32(image) & 0xFFFFFFFF
+    bb = tlb._FW_TARGETS["bb"]
+    rpc = RpcClient(client, default_timeout=0.5, default_retries=1)
+    waiter = PlatformFrameWaiter(client)
+    try:
+        assert tlb._read_bb_fw_version(rpc, waiter) == 1
+        assert tlb._run_fw_update_session(rpc, waiter, bb.reply_id, image, crc,
+                                          commit=True, target=bb) == 0
+        assert sim.begins == 3                        # two PARKING polls, then OK
+        assert sim.dropped                            # the lost frame really happened ...
+        assert bytes(sim.staged) == image             # ... and the rewind recovered it
+        assert sim.committed
+        assert tlb._read_bb_fw_version(rpc, waiter) == 2
+    finally:
+        waiter.close()
+        rpc.close()
+
+
+# ── Pipelined DATA (2026-09-28): send_nowait + _DataSender ──────────────────
+# The bridge services RPCs in a 1 kHz task, so a synchronous DATA RPC per frame
+# costs ~1 ms (61 s for BB's 163840 B image). A pipelined sender was built and
+# FAILED on hardware: the bridge's RPC socket queues ONE packet, so requests
+# sharing a tick are dropped. Can-bridge FW 25 (skill-stack) raised that queue to 8, so BB now
+# runs depth 4 (gated on bridge FW >= 25 in skill-stack numbering; the Platform stays at depth 1). The
+# tests below hold the pipelined mechanism correct against a sim. The board's window
+# ACK / BAD_SEQ stays the only delivery proof, and every refusal still surfaces.
+
+def test_send_nowait_collects_result_and_refusal_later(fake_teensy_and_client):
+    teensy, client = fake_teensy_and_client
+    teensy.on_rpc(int(RpcMethod.NOP), lambda req_id, args: (int(RpcStatus.OK), args))
+    teensy.on_rpc(int(RpcMethod.SET_AXIS_STATE),
+                  lambda req_id, args: (int(RpcStatus.ERR_REJECTED), b""))
+    rpc = RpcClient(client, default_timeout=0.3)
+    try:
+        calls = [rpc.send_nowait(int(RpcMethod.NOP), bytes([i])) for i in range(6)]
+        assert len({c.req_id for c in calls}) == 6
+        for i, c in enumerate(calls):
+            assert c.wait(1.0)
+            assert c.result() == bytes([i])
+        refused = rpc.send_nowait(int(RpcMethod.SET_AXIS_STATE), b"\x00")
+        assert refused.wait(1.0)
+        with pytest.raises(RpcError) as exc:
+            refused.result()
+        assert exc.value.status == int(RpcStatus.ERR_REJECTED)
+        assert rpc._pending == {}                   # result() released every entry
+    finally:
+        rpc.close()
+
+
+def test_send_nowait_sends_once_and_times_out_without_retry():
+    """No response: result() raises RpcTimeout, release() clears the entry, and
+    the request went out exactly ONCE — so the path is safe for non-idempotent
+    methods too (it never re-dispatches)."""
+    from teensy_link import TeensyLinkClient
+    nowhere = TeensyLinkClient(teensy_addr=("127.0.0.1", 1), rpc_port=1,
+                               local_bind_stream=0, local_bind_rpc=0, bind_host="127.0.0.1")
+    nowhere.start()
+    sends = []
+    orig = nowhere.send_rpc
+    nowhere.send_rpc = lambda mt, payload: (sends.append(payload), orig(mt, payload))[1]
+    rpc = RpcClient(nowhere, default_timeout=0.05, default_retries=3)
+    try:
+        c = rpc.send_nowait(int(RpcMethod.BB_THROW), b"\x00" * 4)
+        assert not c.wait(0.1)
+        with pytest.raises(RpcTimeout):
+            c.result()
+        assert len(sends) == 1
+        assert rpc._pending == {}
+        c2 = rpc.send_nowait(int(RpcMethod.NOP))
+        c2.release()
+        c2.release()                                # idempotent
+        assert rpc._pending == {}
+    finally:
+        rpc.close()
+        nowhere.stop()
+
+
+class _DepthProbeRpc(RpcClient):
+    """RpcClient that records how many requests were outstanding at each send."""
+
+    def __init__(self, *a, **kw):
+        super().__init__(*a, **kw)
+        self.max_outstanding = 0
+        self.sync_calls = 0
+
+    def send_nowait(self, method, args=b""):
+        with self._pending_lock:
+            self.max_outstanding = max(self.max_outstanding, len(self._pending) + 1)
+        return super().send_nowait(method, args)
+
+    def call(self, method, args=b"", **kw):
+        if int(method) == int(RpcMethod.BB_FW_DATA):
+            self.sync_calls += 1
+        return super().call(method, args, **kw)
+
+
+def _bb_session(fake_teensy_and_client, monkeypatch, image, sim_kwargs=None, **target_kw):
+    import binascii
+    import dataclasses
+    import tools.teensy_link_bridge as tlb
+    monkeypatch.setattr(tlb, "_FW_PARK_POLL_S", 0.0)
+    # Short enough to keep the lost-ACK cases quick, long enough that a loaded
+    # xdist worker's loopback never fakes a missing ack or a window timeout.
+    monkeypatch.setattr(tlb, "_FW_REPLY_TIMEOUT_S", 0.5)
+    monkeypatch.setattr(tlb, "_FW_ACK_TIMEOUT_S", 0.25)
+    teensy, client = fake_teensy_and_client
+    sim = _SimBbReceiver(teensy, version=1, park_polls=0, **(sim_kwargs or {"drop_seq": None}))
+    target_kw.setdefault("data_pipeline_depth", 4)   # the mechanism under test
+    target = dataclasses.replace(tlb._FW_TARGETS["bb"], sector_pause_s=0.0, **target_kw)
+    rpc = _DepthProbeRpc(client, default_timeout=0.5, default_retries=1)
+    waiter = PlatformFrameWaiter(client)
+    crc = binascii.crc32(image) & 0xFFFFFFFF
+    try:
+        try:
+            rc = tlb._run_fw_update_session(rpc, waiter, target.reply_id, image, crc,
+                                            commit=True, target=target)
+        except RpcError as e:                        # RpcTimeout included
+            rc = e
+        return sim, rpc, rc
+    finally:
+        waiter.close()
+        rpc.close()
+
+
+_IMG = bytes((i * 37 + 11) & 0xFF for i in range(9001))   # 1801 frames, crosses two sectors
+
+
+def test_fw_profiles_bb_pipelined_on_bridge_fw25_platform_as_flown():
+    """BB flies the reduced sector pause (0.12 s) and, since can-bridge FW 25
+    (skill-stack numbering; FW 22 on mvp-trajectory-bringup)
+    deepened the RPC socket's receive queue to 8, a pipelined DATA window of
+    depth 4. The Platform keeps exactly what it flew with: 0.5 s, depth 1."""
+    import tools.teensy_link_bridge as tlb
+    bb, plat = tlb._FW_TARGETS["bb"], tlb._FW_TARGETS["platform"]
+    assert tlb._FW_PIPELINE_DEPTH == 4
+    assert tlb._FW_PIPELINE_MIN_BRIDGE_FW == 25
+    assert bb.data_pipeline_depth == 4 and plat.data_pipeline_depth == 1
+    assert bb.sector_pause_s == tlb._FW_SECTOR_FLUSH_PAUSE_S
+    assert 0.1 <= bb.sector_pause_s <= 0.15             # > typical ~52 ms flush, < flown 0.5 s
+    assert plat.sector_pause_s == 0.5                   # the Platform stays as flown
+
+
+def test_pipelining_falls_back_to_synchronous_against_an_older_or_unheard_bridge():
+    """Depth > 1 against a bridge whose RPC socket holds ONE packet loses frames
+    (hardware, 2026-09-28, FW 21), so the tool drops to depth 1 unless the bridge
+    reports FW >= 25 — never a pipelined window at a bridge that cannot queue it.
+    skill-stack's FW 22-24 predate the queue fix, so they must fall back too."""
+    import tools.teensy_link_bridge as tlb
+    bb, plat = tlb._FW_TARGETS["bb"], tlb._FW_TARGETS["platform"]
+    assert tlb._effective_target(bb, 25).data_pipeline_depth == 4
+    assert tlb._effective_target(bb, 26).data_pipeline_depth == 4
+    assert tlb._effective_target(bb, 24).data_pipeline_depth == 1
+    assert tlb._effective_target(bb, 22).data_pipeline_depth == 1
+    assert tlb._effective_target(bb, 21).data_pipeline_depth == 1
+    assert tlb._effective_target(bb, None).data_pipeline_depth == 1
+    assert tlb._effective_target(bb, 21).sector_pause_s == bb.sector_pause_s
+    assert tlb._effective_target(plat, 22) is plat      # depth 1 is never raised
+
+
+def test_bb_pipelined_session_bounds_in_flight_and_recovers_a_lost_frame(
+        fake_teensy_and_client, monkeypatch):
+    sim, rpc, rc = _bb_session(fake_teensy_and_client, monkeypatch, _IMG,
+                               {"drop_seq": 1234})
+    assert rc == 0
+    assert sim.dropped and bytes(sim.staged) == _IMG and sim.committed
+    assert rpc.sync_calls == 0                          # every DATA frame pipelined ...
+    assert 2 <= rpc.max_outstanding <= 4                # ... never more than depth in flight
+
+
+def test_bb_pipelined_depth_one_is_the_synchronous_path(fake_teensy_and_client, monkeypatch):
+    sim, rpc, rc = _bb_session(fake_teensy_and_client, monkeypatch, _IMG[:3001],
+                               {"drop_seq": 37}, data_pipeline_depth=1)
+    assert rc == 0 and bytes(sim.staged) == _IMG[:3001]
+    assert rpc.max_outstanding == 0 and rpc.sync_calls >= 601
+
+
+def test_bb_pipelined_reorder_is_a_rewind(fake_teensy_and_client, monkeypatch):
+    """A frame overtaken on the wire (the same-id mailbox reorder) is NAKed
+    BAD_SEQ and rewound — never staged out of order."""
+    sim, rpc, rc = _bb_session(fake_teensy_and_client, monkeypatch, _IMG,
+                               {"drop_seq": None, "swap_seq": 500})
+    assert rc == 0 and bytes(sim.staged) == _IMG and sim.committed
+
+
+def test_bb_pipelined_lost_window_ack_retries_the_window(fake_teensy_and_client, monkeypatch):
+    """The board took the whole window but its ACK was lost: the window times
+    out, is re-sent, and the board's BAD_SEQ naming the window END moves on."""
+    sim, rpc, rc = _bb_session(fake_teensy_and_client, monkeypatch, _IMG,
+                               {"drop_seq": None, "drop_reply_seq": 815})
+    assert rc == 0 and sim.reply_dropped
+    assert bytes(sim.staged) == _IMG and sim.committed
+
+
+def test_bb_pipelined_lost_bridge_ack_is_tolerated(fake_teensy_and_client, monkeypatch):
+    """A lost SYNC ack (frame delivered) is counted, not fatal: the board's
+    window reply is the delivery proof."""
+    sim, rpc, rc = _bb_session(fake_teensy_and_client, monkeypatch, _IMG,
+                               {"drop_seq": None, "drop_ack_seqs": (100, 900)})
+    assert rc == 0 and sim.acks_dropped == 2
+    assert bytes(sim.staged) == _IMG and sim.committed
+
+
+@pytest.mark.parametrize("status", [RpcStatus.ERR_BUS_DOWN, RpcStatus.ERR_REJECTED,
+                                    RpcStatus.ERR_UNKNOWN_METHOD, RpcStatus.ERR_TIMEOUT])
+def test_bb_pipelined_bridge_refusal_surfaces_and_never_commits(
+        fake_teensy_and_client, monkeypatch, status):
+    sim, rpc, rc = _bb_session(fake_teensy_and_client, monkeypatch, _IMG,
+                               {"drop_seq": None, "refuse_seq": 700, "refuse_status": int(status)})
+    assert isinstance(rc, RpcError) and rc.status == int(status)
+    assert sim.refused
+    assert sim.verifies == 0 and not sim.committed
+    assert rpc._pending == {}                           # the window's calls were released
+
+
+def test_bb_pipelined_dead_link_aborts_as_timeout(fake_teensy_and_client, monkeypatch):
+    """Every ack missing (the bridge gone mid-transfer) aborts as RpcTimeout
+    after _FW_MAX_MISSING_ACKS + 1, never reaching VERIFY or COMMIT."""
+    sim, rpc, rc = _bb_session(fake_teensy_and_client, monkeypatch, _IMG,
+                               {"drop_seq": None, "drop_ack_seqs": range(48, 1801)})
+    assert isinstance(rc, RpcTimeout)
+    assert sim.verifies == 0 and not sim.committed
+
+
+def test_bb_pipelined_corruption_fails_verify_and_never_commits(fake_teensy_and_client, monkeypatch):
+    sim, rpc, rc = _bb_session(fake_teensy_and_client, monkeypatch, _IMG,
+                               {"drop_seq": None, "corrupt_seq": 999})
+    assert rc == 1
+    assert sim.verifies == 1 and not sim.committed
