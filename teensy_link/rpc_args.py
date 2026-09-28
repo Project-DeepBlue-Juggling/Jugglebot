@@ -72,6 +72,8 @@ __all__ = [
     "PLATFORM_FW_STATUS_BAD_STATE", "PLATFORM_FW_STATUS_BAD_SEQ",
     "PLATFORM_FW_STATUS_TOO_BIG", "PLATFORM_FW_STATUS_BAD_CRC",
     "PLATFORM_FW_STATUS_BAD_IDENTITY", "PLATFORM_FW_STATUS_FLASH_ERR",
+    "PLATFORM_FW_STATUS_PARKING", "PLATFORM_FW_STATUS_PARK_FAILED",
+    "FW_OP_INFO", "BB_FW_VERSION_EXPECTED",
     # method association
     "METHOD",
 ]
@@ -472,6 +474,9 @@ PLATFORM_FW_STATUS_TOO_BIG = 4         # image_len > staging capacity, or DATA p
 PLATFORM_FW_STATUS_BAD_CRC = 5
 PLATFORM_FW_STATUS_BAD_IDENTITY = 6    # staged image is not a jugglebot-platform build
 PLATFORM_FW_STATUS_FLASH_ERR = 7       # staging write failed its read-back
+# Appended 2026-09-28 for the Ball Butler receiver (the Platform never sends them):
+PLATFORM_FW_STATUS_PARKING = 8         # BEGIN: BB is parking (pitch >= stow, axes IDLE) — re-send BEGIN
+PLATFORM_FW_STATUS_PARK_FAILED = 9     # BEGIN: BB could not park within its timeout; it reboots
 
 PLATFORM_FW_STATUS_NAMES = {
     PLATFORM_FW_STATUS_OK: "OK",
@@ -482,7 +487,21 @@ PLATFORM_FW_STATUS_NAMES = {
     PLATFORM_FW_STATUS_BAD_CRC: "BAD_CRC",
     PLATFORM_FW_STATUS_BAD_IDENTITY: "BAD_IDENTITY",
     PLATFORM_FW_STATUS_FLASH_ERR: "FLASH_ERR",
+    PLATFORM_FW_STATUS_PARKING: "PARKING",
+    PLATFORM_FW_STATUS_PARK_FAILED: "PARK_FAILED",
 }
+
+
+#: BB_FW_INFO (opcode 0x05, Ball Butler only): the reply's ``detail`` field is
+#: the running image's FW_VERSION — the receipt that a COMMIT landed, since BB
+#: has no other channel that carries it.
+FW_OP_INFO = 0x05
+
+#: The Ball Butler firmware version this host tree expects
+#: (``ball_butler_main/FwUpdate.h`` FW_VERSION, in the BallButler repo).
+#: 1 (2026-09-28) = the first image carrying the firmware-over-CAN receiver;
+#: it goes in over USB, and every later image can arrive over CAN.
+BB_FW_VERSION_EXPECTED = 1
 
 
 def decode_platform_fw_reply(data: bytes):
@@ -711,7 +730,13 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 #: unflashed. Deliberately NOT a widening of ResultAxisVersions: that blob is a
 #: fixed NUM_AXES*8 array, so growing it would be an incompatible change needing
 #: a lockstep flash to add two display rows.
-EXPECTED_BRIDGE_FW_VERSION = 20
+#: 21 (2026-09-28) = the BALL BUTLER firmware-over-CAN relay: five ADDITIVE
+#: RpcMethods (BB_FW_BEGIN/DATA/VERIFY/COMMIT/INFO) that the bridge turns into
+#: the Platform's frame layout on BB's CAN1 id 0x7D6, with BB's 0x7D7 replies
+#: uplinked as PLATFORM_FRAMEs. NO WIRE CHANGE to any existing frame —
+#: PROTOCOL_VERSION stays 6 — so an FW 20 board answers the new methods
+#: ERR_UNKNOWN_METHOD and is otherwise wire-identical.
+EXPECTED_BRIDGE_FW_VERSION = 21
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────
@@ -767,7 +792,11 @@ METHOD = {
     RpcMethod.PLATFORM_FW_BEGIN: ArgPlatformFwBegin,
     RpcMethod.PLATFORM_FW_DATA: ArgPlatformFwData,
     RpcMethod.PLATFORM_FW_VERIFY: ArgPlatformFwVerify,
+    RpcMethod.BB_FW_BEGIN: ArgPlatformFwBegin,     # BB shares the Platform arg structs
+    RpcMethod.BB_FW_DATA: ArgPlatformFwData,
+    RpcMethod.BB_FW_VERIFY: ArgPlatformFwVerify,
     # BB_RELOAD/RESET/CALIBRATE_LOC are payloadless — no entry (matches NOP).
     # TILT_READ/STATE_READ are payloadless too (reply arrives as a PLATFORM_FRAME).
     # PLATFORM_FW_COMMIT is payloadless too — no entry (matches NOP).
+    # BB_FW_COMMIT / BB_FW_INFO are payloadless too — no entry.
 }

@@ -367,3 +367,218 @@ def test_non_idempotent_methods_not_retried(monkeypatch):
             pass
     finally:
         nowhere.stop()
+
+
+# ── Ball Butler firmware-over-CAN (2026-09-28): the BB-only host behaviour ───
+# The windowing / rewind / straggler logic above is target-agnostic and already
+# covered; what BB adds is BEGIN's PARKING poll, the BB_FW_INFO version read and
+# the per-target image checks.
+
+class _ScriptedWaiter:
+    """PlatformFrameWaiter stand-in: hands back scripted replies in order."""
+
+    def __init__(self, replies):
+        self.replies = list(replies)
+        self.cleared = 0
+
+    def clear(self, can_id):
+        self.cleared += 1
+
+    def wait(self, can_id, expected_dlc, timeout):
+        return self.replies.pop(0) if self.replies else None
+
+
+class _RecordingRpc:
+    def __init__(self):
+        self.calls = []
+
+    def call(self, method, payload=b"", **kw):
+        self.calls.append((method, payload))
+
+
+def _fw_reply(op, status, seq=0, detail=0):
+    return struct.pack('<BBHI', op, status, seq, detail & 0xFFFFFFFF)
+
+
+def test_bb_begin_re_sends_while_parking_then_proceeds(monkeypatch):
+    import tools.teensy_link_bridge as tlb
+    monkeypatch.setattr(tlb, "_FW_PARK_POLL_S", 0.0)
+    bb = tlb._FW_TARGETS["bb"]
+    parking = _fw_reply(0x01, rpc_args.PLATFORM_FW_STATUS_PARKING, detail=6512)
+    waiter = _ScriptedWaiter([parking, parking, _fw_reply(0x01, rpc_args.PLATFORM_FW_STATUS_OK)])
+    rpc = _RecordingRpc()
+    assert tlb._begin_session(rpc, waiter, bb, 163840) is True
+    assert [m for m, _ in rpc.calls] == [int(RpcMethod.BB_FW_BEGIN)] * 3
+    assert all(pl == rpc_args.encode_platform_fw_begin(163840) for _, pl in rpc.calls)
+
+
+def test_bb_begin_park_failed_and_refusals_stop_the_session(monkeypatch):
+    import tools.teensy_link_bridge as tlb
+    monkeypatch.setattr(tlb, "_FW_PARK_POLL_S", 0.0)
+    bb = tlb._FW_TARGETS["bb"]
+    failed = _fw_reply(0x01, rpc_args.PLATFORM_FW_STATUS_PARK_FAILED, detail=-2150)
+    assert tlb._begin_session(_RecordingRpc(), _ScriptedWaiter([failed]), bb, 100) is False
+    busy = _fw_reply(0x01, rpc_args.PLATFORM_FW_STATUS_BUSY)
+    rpc = _RecordingRpc()
+    assert tlb._begin_session(rpc, _ScriptedWaiter([busy]), bb, 100) is False
+    assert len(rpc.calls) == 1                        # a refusal is never re-polled
+    assert tlb._begin_session(_RecordingRpc(), _ScriptedWaiter([]), bb, 100) is False
+
+
+def test_bb_begin_gives_up_when_parking_never_ends(monkeypatch):
+    import tools.teensy_link_bridge as tlb
+    monkeypatch.setattr(tlb, "_FW_PARK_POLL_S", 0.0)
+    monkeypatch.setattr(tlb, "_FW_PARK_TIMEOUT_S", 0.0)
+    parking = _fw_reply(0x01, rpc_args.PLATFORM_FW_STATUS_PARKING)
+    assert tlb._begin_session(_RecordingRpc(), _ScriptedWaiter([parking] * 5),
+                              tlb._FW_TARGETS["bb"], 100) is False
+
+
+def test_park_detail_is_signed_centidegrees():
+    import tools.teensy_link_bridge as tlb
+    assert tlb._centideg(8123) == 81.23
+    assert tlb._centideg((-2150) & 0xFFFFFFFF) == -21.5
+
+
+def test_bb_fw_version_read_takes_the_info_reply_and_skips_stragglers():
+    import tools.teensy_link_bridge as tlb
+    straggler = _fw_reply(0x02, rpc_args.PLATFORM_FW_STATUS_OK, seq=15)
+    info = _fw_reply(rpc_args.FW_OP_INFO, rpc_args.PLATFORM_FW_STATUS_OK, detail=7)
+    rpc = _RecordingRpc()
+    assert tlb._read_bb_fw_version(rpc, _ScriptedWaiter([straggler, info])) == 7
+    assert rpc.calls == [(int(RpcMethod.BB_FW_INFO), b"")]
+    # An image that predates the receiver never answers → None ("unknown").
+    assert tlb._read_bb_fw_version(_RecordingRpc(), _ScriptedWaiter([])) is None
+
+
+def _write_hex(path, base, image):
+    """Minimal Intel HEX writer (type 04 + 16-byte type 00 records + EOF)."""
+    def rec(rtype, addr16, data):
+        raw = bytes([len(data), addr16 >> 8, addr16 & 0xFF, rtype]) + data
+        return ":" + (raw + bytes([(-sum(raw)) & 0xFF])).hex().upper()
+    lines, ext = [], None
+    for off in range(0, len(image), 16):
+        addr = base + off
+        if addr >> 16 != ext:
+            ext = addr >> 16
+            lines.append(rec(0x04, 0, bytes([ext >> 8, ext & 0xFF])))
+        lines.append(rec(0x00, addr & 0xFFFF, image[off:off + 16]))
+    lines.append(rec(0x01, 0, b""))
+    path.write_text("\n".join(lines) + "\n")
+
+
+def test_prepare_image_checks_the_target_marker_and_refuses_the_other_boards(tmp_path):
+    import binascii
+    import tools.teensy_link_bridge as tlb
+    bb, plat = tlb._FW_TARGETS["bb"], tlb._FW_TARGETS["platform"]
+    bb_img = b"\x00" * 64 + b"ballbutler-main" + b"\xff" * 49
+    h = tmp_path / "bb.hex"
+    _write_hex(h, 0x60000000, bb_img)
+    image, crc = tlb._prepare_image(h, bb)
+    assert image == bb_img and crc == binascii.crc32(bb_img) & 0xFFFFFFFF
+    with pytest.raises(ValueError, match="jugglebot-platform"):
+        tlb._prepare_image(h, plat)                    # no Platform marker
+    both = tmp_path / "both.hex"
+    _write_hex(both, 0x60000000, bb_img + b"jugglebot-platform")
+    with pytest.raises(ValueError, match="another board"):
+        tlb._prepare_image(both, bb)
+    with pytest.raises(ValueError, match="another board"):
+        tlb._prepare_image(both, plat)
+    t41 = tmp_path / "t41.hex"
+    _write_hex(t41, 0x60001000, bb_img)
+    with pytest.raises(ValueError, match="base address"):
+        tlb._prepare_image(t41, bb)
+
+
+class _SimBbReceiver:
+    """A Python model of BB's FwUpdate receiver behind the bridge's BB_FW_* RPCs:
+    PARKING for the first ``park_polls`` BEGINs, strictly in-order DATA with the
+    ACK-every-16th cadence and BAD_SEQ NAKs, one frame silently LOST mid-window
+    (what a sector flush does to the CAN FIFO), CRC VERIFY, COMMIT, and INFO.
+    Replies go out as PLATFORM_FRAMEs on 0x7D7, exactly as on_bb_rx uplinks them."""
+
+    def __init__(self, teensy, version, park_polls=2, drop_seq=37):
+        from config.generated import protocol_config as pc
+        self.teensy, self.version = teensy, version
+        self.reply_id = pc.CAN_ID_BB_FW_UPDATE_REPLY
+        self.parks_left, self.drop_seq, self.dropped = park_polls, drop_seq, False
+        self.image_len, self.staged, self.expect = 0, bytearray(), 0
+        self.begins, self.committed = 0, False
+        ok = lambda: (int(RpcStatus.OK), b"")     # noqa: E731 — the bridge's sync ack
+        for method, fn in ((RpcMethod.BB_FW_BEGIN, self._begin), (RpcMethod.BB_FW_DATA, self._data),
+                           (RpcMethod.BB_FW_VERIFY, self._verify), (RpcMethod.BB_FW_COMMIT, self._commit),
+                           (RpcMethod.BB_FW_INFO, self._info)):
+            teensy.on_rpc(int(method), lambda req_id, args, fn=fn: (fn(args), ok())[1])
+
+    def _reply(self, op, status, seq=0, detail=0):
+        data = struct.pack('<BBHI', op, status, seq & 0xFFFF, detail & 0xFFFFFFFF)
+        pf = p.PlatformFrame(t_bridge_us=0, can_id=self.reply_id, dlc=8, data=tuple(data))
+        self.teensy.send_to_jetson(int(p.MsgType.PLATFORM_FRAME), pf.pack())
+
+    def _begin(self, args):
+        self.begins += 1
+        if self.parks_left:
+            self.parks_left -= 1
+            self._reply(0x01, rpc_args.PLATFORM_FW_STATUS_PARKING, detail=6012)
+            return
+        (self.image_len,) = struct.unpack('<I', args[:4])
+        self.staged, self.expect = bytearray(), 0
+        self._reply(0x01, rpc_args.PLATFORM_FW_STATUS_OK)
+
+    def _data(self, args):
+        seq, n = struct.unpack('<HB', args[:3])
+        if seq == self.drop_seq and not self.dropped:
+            self.dropped = True                       # lost on the wire: no reply at all
+            return
+        if seq != (self.expect & 0xFFFF):
+            self._reply(0x02, rpc_args.PLATFORM_FW_STATUS_BAD_SEQ, self.expect, len(self.staged))
+            return
+        self.staged += args[3:3 + n]
+        self.expect += 1
+        if seq % 16 == 15 or len(self.staged) == self.image_len:
+            self._reply(0x02, rpc_args.PLATFORM_FW_STATUS_OK, seq, len(self.staged))
+
+    def _verify(self, args):
+        import binascii
+        (want,) = struct.unpack('<I', args[:4])
+        got = binascii.crc32(bytes(self.staged)) & 0xFFFFFFFF
+        status = rpc_args.PLATFORM_FW_STATUS_OK if got == want else rpc_args.PLATFORM_FW_STATUS_BAD_CRC
+        self._reply(0x03, status, self.expect - 1, got)
+
+    def _commit(self, args):
+        self.committed = True
+        self.version += 1                             # "reboots" into the new image
+        self._reply(0x04, rpc_args.PLATFORM_FW_STATUS_OK)
+
+    def _info(self, args):
+        self._reply(rpc_args.FW_OP_INFO, rpc_args.PLATFORM_FW_STATUS_OK, detail=self.version)
+
+
+def test_bb_fw_update_end_to_end_over_the_loopback_link(fake_teensy_and_client, monkeypatch):
+    """The whole BB session through the REAL RpcClient + PlatformFrameWaiter on a
+    UDP loopback: INFO before, BEGIN through two PARKING polls, DATA with a lost
+    frame recovered by the BAD_SEQ rewind, VERIFY, COMMIT, INFO after."""
+    import binascii
+    import tools.teensy_link_bridge as tlb
+    from teensy_link.rpc import RpcClient
+    monkeypatch.setattr(tlb, "_FW_PARK_POLL_S", 0.0)
+    monkeypatch.setattr(tlb, "_FW_SECTOR_FLUSH_PAUSE_S", 0.0)
+    teensy, client = fake_teensy_and_client
+    sim = _SimBbReceiver(teensy, version=1)
+    image = bytes((i * 37 + 11) & 0xFF for i in range(3001))   # 601 frames, a 1-byte tail
+    crc = binascii.crc32(image) & 0xFFFFFFFF
+    bb = tlb._FW_TARGETS["bb"]
+    rpc = RpcClient(client, default_timeout=0.5, default_retries=1)
+    waiter = PlatformFrameWaiter(client)
+    try:
+        assert tlb._read_bb_fw_version(rpc, waiter) == 1
+        assert tlb._run_fw_update_session(rpc, waiter, bb.reply_id, image, crc,
+                                          commit=True, target=bb) == 0
+        assert sim.begins == 3                        # two PARKING polls, then OK
+        assert sim.dropped                            # the lost frame really happened ...
+        assert bytes(sim.staged) == image             # ... and the rewind recovered it
+        assert sim.committed
+        assert tlb._read_bb_fw_version(rpc, waiter) == 2
+    finally:
+        waiter.close()
+        rpc.close()

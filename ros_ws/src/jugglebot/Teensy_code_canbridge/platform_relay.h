@@ -81,5 +81,35 @@ uint16_t platform_fw_verify(const JbUdp::RpcArgs::ArgPlatformFwVerify& a, bool m
 // PLATFORM_FW_COMMIT → 0x6F0 dlc 8: [0x04][0 × 7]. No args.
 uint16_t platform_fw_commit(bool mpc_active_now);
 
+// ── Ball Butler firmware-over-CAN (2026-09-28, FW 21) ───────────────────────
+// The SAME contract as the Platform ops above — identical opcodes, frame layouts
+// and arg structs — relayed on CAN1 to BallButlerCanId::FW_UPDATE_CMD (0x7D6).
+// BB answers on 0x7D7, which on_bb_rx forwards verbatim through the platform
+// reply ring as a PLATFORM_FRAME (the host correlates by can_id). BB_FW_INFO
+// (op 0x05, dlc 8, payloadless) is BB-only: BB answers with its running
+// FW_VERSION, the receipt that a COMMIT landed.
+//
+// GATE (passed in from rpc.cpp, like mpc_active above, so this TU stays free of
+// bb_state for the native harness):
+//   • BEGIN needs a FRESH BB heartbeat (else ERR_BUS_DOWN — the never-command-
+//     an-absent-partner rule of send_bb_frame) and a BB state of IDLE or ERROR
+//     (else ERR_REJECTED): never open a session mid-throw/reload/calibrate. BB's
+//     own receiver re-checks this; the bridge gate is defence in depth.
+//   • DATA / VERIFY / COMMIT / INFO need only a heartbeat SEEN since boot (else
+//     ERR_BUS_DOWN). Not a fresh one: a 4 KB sector erase stalls BB's loop (and
+//     so its 100 Hz heartbeat) for up to ~400 ms, against a 500 ms stale
+//     threshold, and a mid-transfer ERR_BUS_DOWN would abort a healthy flash.
+struct BbFwGate {
+  bool    seen;    // bb_state.heartbeat_seen
+  bool    fresh;   // heartbeat_seen && !heartbeat_stale
+  uint8_t state;   // bb_state.state (BallButlerState::*)
+};
+
+uint16_t bb_fw_begin(const JbUdp::RpcArgs::ArgPlatformFwBegin& a, const BbFwGate& g);
+uint16_t bb_fw_data(const JbUdp::RpcArgs::ArgPlatformFwData& a, const BbFwGate& g);
+uint16_t bb_fw_verify(const JbUdp::RpcArgs::ArgPlatformFwVerify& a, const BbFwGate& g);
+uint16_t bb_fw_commit(const BbFwGate& g);
+uint16_t bb_fw_info(const BbFwGate& g);
+
 }  // namespace Relay
 }  // namespace CanBridge

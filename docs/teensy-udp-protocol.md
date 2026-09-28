@@ -124,6 +124,11 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `PLATFORM_FW_VERIFY` | 0x0058 | Platform FW-over-CAN: CRC-32 over the staged image (relay → 0x6F0 op 0x03) |
 | `PLATFORM_FW_COMMIT` | 0x0059 | Platform FW-over-CAN: apply the staged image + reboot (relay → 0x6F0 op 0x04) |
 | `GET_BB_AXIS_VERSIONS` | 0x005A | Pull cached raw Get_Version bytes + received bitmask for the Ball Butler ODrives (CAN1 axes 7-8) |
+| `BB_FW_BEGIN` | 0x005B | Ball Butler FW-over-CAN: declare image length (relay → CAN1 0x7D6 op 0x01) |
+| `BB_FW_DATA` | 0x005C | Ball Butler FW-over-CAN: one image chunk, 1..5 bytes (relay → CAN1 0x7D6 op 0x02) |
+| `BB_FW_VERIFY` | 0x005D | Ball Butler FW-over-CAN: CRC-32 over the staged image (relay → CAN1 0x7D6 op 0x03) |
+| `BB_FW_COMMIT` | 0x005E | Ball Butler FW-over-CAN: apply the staged image + reboot (relay → CAN1 0x7D6 op 0x04) |
+| `BB_FW_INFO` | 0x005F | Ball Butler FW-over-CAN: read the running FW_VERSION (relay → CAN1 0x7D6 op 0x05) |
 
 ### RpcStatus
 
@@ -746,7 +751,7 @@ wraps the generated Python. `AXIS_ALL = 0xFF` broadcasts to all legs.
 |-------|------|-------|
 | `source` | u8 | 0 = LEGACY_STROKE (Platform-Teensy stroke engine), 1 = STREAMED (bridge 500 Hz hand lane) |
 
-### ArgPlatformFwBegin (`PLATFORM_FW_BEGIN`)
+### ArgPlatformFwBegin (`PLATFORM_FW_BEGIN, BB_FW_BEGIN`)
 
 **4 bytes**. Python struct fmt: `<I`.
 
@@ -754,7 +759,7 @@ wraps the generated Python. `AXIS_ALL = 0xFF` broadcasts to all legs.
 |-------|------|-------|
 | `image_len` | u32 | Total image length in bytes |
 
-### ArgPlatformFwData (`PLATFORM_FW_DATA`)
+### ArgPlatformFwData (`PLATFORM_FW_DATA, BB_FW_DATA`)
 
 **8 bytes**. Python struct fmt: `<HBBBBBB`.
 
@@ -764,7 +769,7 @@ wraps the generated Python. `AXIS_ALL = 0xFF` broadcasts to all legs.
 | `n` | u8 | Valid payload bytes in this chunk, 1..5 |
 | `payload` | u8 | Image bytes; only payload[0..n) reach the CAN frame |
 
-### ArgPlatformFwVerify (`PLATFORM_FW_VERIFY`)
+### ArgPlatformFwVerify (`PLATFORM_FW_VERIFY, BB_FW_VERIFY`)
 
 **4 bytes**. Python struct fmt: `<I`.
 

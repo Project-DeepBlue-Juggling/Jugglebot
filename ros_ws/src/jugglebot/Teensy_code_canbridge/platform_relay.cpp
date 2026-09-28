@@ -14,7 +14,7 @@
 #include "udp_protocol.h"
 #include "protocol_config.h"   // PlatformCanId (STATE_UPDATE 0x6E0, TILT_READING 0x7DE)
 #include "odrive_protocol.h"   // ODrive::CanFrame
-#include "can_buses.h"         // can_jugglebot_tx / TxCls, jugglebot_commands_allowed
+#include "can_buses.h"         // can_jugglebot_tx / can_bb_tx / TxCls, jugglebot_commands_allowed
 
 namespace CanBridge {
 namespace Relay {
@@ -85,6 +85,7 @@ static constexpr uint8_t FW_OP_BEGIN  = 0x01;
 static constexpr uint8_t FW_OP_DATA   = 0x02;
 static constexpr uint8_t FW_OP_VERIFY = 0x03;
 static constexpr uint8_t FW_OP_COMMIT = 0x04;
+static constexpr uint8_t FW_OP_INFO   = 0x05;   // Ball Butler only (2026-09-28)
 
 // Max image bytes one FW_OP_DATA frame carries (8 - 1 opcode - 2 seq).
 static constexpr uint8_t FW_DATA_MAX_N = 5;
@@ -100,9 +101,10 @@ static uint16_t send_fw_update(const ODrive::CanFrame& f, bool mpc_active_now) {
 
 // Start an FW_UPDATE_CMD frame: opcode in byte 0, the rest zeroed so every
 // unused byte is deterministic on the wire (the receiver reads a fixed layout).
-static ODrive::CanFrame fw_cmd_frame(uint8_t opcode) {
+static ODrive::CanFrame fw_cmd_frame(uint8_t opcode,
+                                     uint32_t id = PlatformCanId::FW_UPDATE_CMD) {
   ODrive::CanFrame f;
-  f.id = PlatformCanId::FW_UPDATE_CMD;
+  f.id = id;
   f.len = 8;
   f.buf[0] = opcode;
   for (uint8_t i = 1; i < 8; ++i) f.buf[i] = 0;
@@ -148,6 +150,58 @@ uint16_t platform_fw_commit(bool mpc_active_now) {
   // Payloadless: opcode only, bytes 1-7 zero (dlc 8, so the receiver's frame
   // shape is uniform across BEGIN/VERIFY/COMMIT).
   return send_fw_update(fw_cmd_frame(FW_OP_COMMIT), mpc_active_now);
+}
+
+
+// ── Ball Butler firmware-over-CAN (2026-09-28) ──────────────────────────────
+// See platform_relay.h for the gate. The frames are the Platform's, byte for
+// byte, on BB's own id; only the bus (CAN1) and the gate differ.
+
+// Send one CAN1 frame. TxCls::RPC, as send_bb_frame (rpc.cpp) charges every
+// relayed BB command; only TxResult::FAILED (no bus partner) is ERR_TIMEOUT.
+static uint16_t send_bb_fw(const ODrive::CanFrame& f) {
+  return tx_reached_the_wire(can_bb_tx(f, TxCls::RPC))
+             ? JbUdp::RpcStatus::OK : JbUdp::RpcStatus::ERR_TIMEOUT;
+}
+
+// The in-session gate: a heartbeat seen since boot (see the header for why not
+// a fresh one).
+static uint16_t send_bb_fw_in_session(const ODrive::CanFrame& f, const BbFwGate& g) {
+  if (!g.seen) return JbUdp::RpcStatus::ERR_BUS_DOWN;
+  return send_bb_fw(f);
+}
+
+uint16_t bb_fw_begin(const JbUdp::RpcArgs::ArgPlatformFwBegin& a, const BbFwGate& g) {
+  if (!g.fresh) return JbUdp::RpcStatus::ERR_BUS_DOWN;
+  if (g.state != BallButlerState::IDLE && g.state != BallButlerState::ERROR)
+    return JbUdp::RpcStatus::ERR_REJECTED;
+  ODrive::CanFrame f = fw_cmd_frame(FW_OP_BEGIN, BallButlerCanId::FW_UPDATE_CMD);
+  put_u32_le(&f.buf[1], a.image_len);
+  return send_bb_fw(f);
+}
+
+uint16_t bb_fw_data(const JbUdp::RpcArgs::ArgPlatformFwData& a, const BbFwGate& g) {
+  if (a.n < 1 || a.n > FW_DATA_MAX_N) return JbUdp::RpcStatus::ERR_BAD_ARGS;
+  ODrive::CanFrame f = fw_cmd_frame(FW_OP_DATA, BallButlerCanId::FW_UPDATE_CMD);
+  f.len = (uint8_t)(3 + a.n);
+  f.buf[1] = (uint8_t)(a.seq & 0xFF);
+  f.buf[2] = (uint8_t)((a.seq >> 8) & 0xFF);
+  for (uint8_t i = 0; i < a.n; ++i) f.buf[3 + i] = a.payload[i];
+  return send_bb_fw_in_session(f, g);
+}
+
+uint16_t bb_fw_verify(const JbUdp::RpcArgs::ArgPlatformFwVerify& a, const BbFwGate& g) {
+  ODrive::CanFrame f = fw_cmd_frame(FW_OP_VERIFY, BallButlerCanId::FW_UPDATE_CMD);
+  put_u32_le(&f.buf[1], a.crc32);
+  return send_bb_fw_in_session(f, g);
+}
+
+uint16_t bb_fw_commit(const BbFwGate& g) {
+  return send_bb_fw_in_session(fw_cmd_frame(FW_OP_COMMIT, BallButlerCanId::FW_UPDATE_CMD), g);
+}
+
+uint16_t bb_fw_info(const BbFwGate& g) {
+  return send_bb_fw_in_session(fw_cmd_frame(FW_OP_INFO, BallButlerCanId::FW_UPDATE_CMD), g);
 }
 
 }  // namespace Relay

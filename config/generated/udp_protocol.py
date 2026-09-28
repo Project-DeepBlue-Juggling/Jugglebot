@@ -86,6 +86,11 @@ class RpcMethod(IntEnum):
     PLATFORM_FW_VERIFY = 88  # Platform FW-over-CAN: CRC-32 over the staged image (relay → 0x6F0 op 0x03)
     PLATFORM_FW_COMMIT = 89  # Platform FW-over-CAN: apply the staged image + reboot (relay → 0x6F0 op 0x04)
     GET_BB_AXIS_VERSIONS = 90  # Pull cached raw Get_Version bytes + received bitmask for the Ball Butler ODrives (CAN1 axes 7-8)
+    BB_FW_BEGIN = 91  # Ball Butler FW-over-CAN: declare image length (relay → CAN1 0x7D6 op 0x01)
+    BB_FW_DATA = 92  # Ball Butler FW-over-CAN: one image chunk, 1..5 bytes (relay → CAN1 0x7D6 op 0x02)
+    BB_FW_VERIFY = 93  # Ball Butler FW-over-CAN: CRC-32 over the staged image (relay → CAN1 0x7D6 op 0x03)
+    BB_FW_COMMIT = 94  # Ball Butler FW-over-CAN: apply the staged image + reboot (relay → CAN1 0x7D6 op 0x04)
+    BB_FW_INFO = 95  # Ball Butler FW-over-CAN: read the running FW_VERSION (relay → CAN1 0x7D6 op 0x05)
 
 class RpcStatus(IntEnum):
     OK = 0  # Success
@@ -1096,7 +1101,7 @@ class ArgHandSource:
         it = iter(vals)
         return cls(next(it))
 
-# ArgPlatformFwBegin (PLATFORM_FW_BEGIN)
+# ArgPlatformFwBegin (PLATFORM_FW_BEGIN, BB_FW_BEGIN)
 ARG_PLATFORM_FW_BEGIN_FMT = '<I'
 ARG_PLATFORM_FW_BEGIN_SIZE = 4
 _ARG_PLATFORM_FW_BEGIN_STRUCT = struct.Struct(ARG_PLATFORM_FW_BEGIN_FMT)
@@ -1115,7 +1120,7 @@ class ArgPlatformFwBegin:
         it = iter(vals)
         return cls(next(it))
 
-# ArgPlatformFwData (PLATFORM_FW_DATA)
+# ArgPlatformFwData (PLATFORM_FW_DATA, BB_FW_DATA)
 ARG_PLATFORM_FW_DATA_FMT = '<HBBBBBB'
 ARG_PLATFORM_FW_DATA_SIZE = 8
 _ARG_PLATFORM_FW_DATA_STRUCT = struct.Struct(ARG_PLATFORM_FW_DATA_FMT)
@@ -1136,7 +1141,7 @@ class ArgPlatformFwData:
         it = iter(vals)
         return cls(next(it), next(it), tuple(next(it) for _ in range(5)))
 
-# ArgPlatformFwVerify (PLATFORM_FW_VERIFY)
+# ArgPlatformFwVerify (PLATFORM_FW_VERIFY, BB_FW_VERIFY)
 ARG_PLATFORM_FW_VERIFY_FMT = '<I'
 ARG_PLATFORM_FW_VERIFY_SIZE = 4
 _ARG_PLATFORM_FW_VERIFY_STRUCT = struct.Struct(ARG_PLATFORM_FW_VERIFY_FMT)

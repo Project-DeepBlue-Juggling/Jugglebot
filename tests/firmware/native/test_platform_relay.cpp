@@ -30,6 +30,7 @@
 #include <cstdint>
 #include <cstring>
 #include <cmath>                 // NAN / INFINITY (state_write float validation)
+#include <vector>                // recorded CAN1 frames (BB firmware-over-CAN)
 
 #include "udp_protocol.h"
 #include "protocol_config.h"
@@ -41,6 +42,24 @@
 #include "platform_relay.cpp"   // the unit under test
 
 using namespace CanBridge;
+
+// ── Recording CAN1 (Ball Butler) TX — overrides fake_hal's WEAK inert default ─
+//  The BB firmware-over-CAN ops (FW 21) send on CAN1 through can_bb_tx; record
+//  them here so a case can assert id/dlc/bytes and that nothing leaked onto CAN3.
+namespace CanBridge {
+static std::vector<ODrive::CanFrame> g_bb_tx;
+TxResult can_bb_tx(const ODrive::CanFrame& f, uint8_t) {
+  g_bb_tx.push_back(f);
+  return TxResult::MAILBOX;
+}
+}  // namespace CanBridge
+
+static Relay::BbFwGate bb_gate(bool seen, bool fresh, uint8_t state) {
+  Relay::BbFwGate g; g.seen = seen; g.fresh = fresh; g.state = state; return g;
+}
+static uint32_t le_u32(const uint8_t* b) {
+  return (uint32_t)b[0] | ((uint32_t)b[1] << 8) | ((uint32_t)b[2] << 16) | ((uint32_t)b[3] << 24);
+}
 
 // Decode a recorded little-endian int16 from a frame buffer (pose field check).
 static int16_t le_i16(const uint8_t* b) {
@@ -305,4 +324,95 @@ TEST_CASE("gate policy: only CLEAR_ERRORS/REBOOT gate on bus-transmittable (SYNC
   CHECK_FALSE(method_gates_on_bus_transmittable(RpcMethod::HOME));
   CHECK_FALSE(method_gates_on_bus_transmittable(RpcMethod::ACTIVATE));
   CHECK_FALSE(method_gates_on_bus_transmittable(RpcMethod::DEACTIVATE));
+}
+
+// ── Ball Butler firmware-over-CAN (FW 21) ─────────────────────────────────────
+
+TEST_CASE("bb_fw ops emit the Platform frame layout on BB's CAN1 id, never on CAN3") {
+  fake_reset(); g_bb_tx.clear();
+  const Relay::BbFwGate ok = bb_gate(true, true, BallButlerState::IDLE);
+
+  JbUdp::RpcArgs::ArgPlatformFwBegin b{}; b.image_len = 0x0001E2F4;
+  CHECK(Relay::bb_fw_begin(b, ok) == JbUdp::RpcStatus::OK);
+  JbUdp::RpcArgs::ArgPlatformFwData d{}; d.seq = 0x1234; d.n = 3;
+  d.payload[0] = 0xAA; d.payload[1] = 0xBB; d.payload[2] = 0xCC; d.payload[3] = 0xDD;
+  CHECK(Relay::bb_fw_data(d, ok) == JbUdp::RpcStatus::OK);
+  JbUdp::RpcArgs::ArgPlatformFwVerify v{}; v.crc32 = 0xADBD39DB;
+  CHECK(Relay::bb_fw_verify(v, ok) == JbUdp::RpcStatus::OK);
+  CHECK(Relay::bb_fw_commit(ok) == JbUdp::RpcStatus::OK);
+  CHECK(Relay::bb_fw_info(ok) == JbUdp::RpcStatus::OK);
+
+  CHECK(fake_sent_count() == 0);                 // nothing on CAN3
+  REQUIRE(g_bb_tx.size() == 5);
+  for (const auto& f : g_bb_tx) CHECK(f.id == BallButlerCanId::FW_UPDATE_CMD);
+
+  CHECK(g_bb_tx[0].len == 8);                    // BEGIN [0x01][len u32][0,0,0]
+  CHECK(g_bb_tx[0].buf[0] == 0x01);
+  CHECK(le_u32(&g_bb_tx[0].buf[1]) == 0x0001E2F4u);
+  CHECK(g_bb_tx[0].buf[5] == 0); CHECK(g_bb_tx[0].buf[7] == 0);
+
+  CHECK(g_bb_tx[1].len == 3 + 3);                // DATA dlc 3+n, [0x02][seq u16][payload)
+  CHECK(g_bb_tx[1].buf[0] == 0x02);
+  CHECK(g_bb_tx[1].buf[1] == 0x34); CHECK(g_bb_tx[1].buf[2] == 0x12);
+  CHECK(g_bb_tx[1].buf[3] == 0xAA); CHECK(g_bb_tx[1].buf[5] == 0xCC);
+
+  CHECK(g_bb_tx[2].buf[0] == 0x03);              // VERIFY [0x03][crc32]
+  CHECK(le_u32(&g_bb_tx[2].buf[1]) == 0xADBD39DBu);
+  CHECK(g_bb_tx[3].buf[0] == 0x04); CHECK(g_bb_tx[3].len == 8);   // COMMIT
+  CHECK(g_bb_tx[4].buf[0] == 0x05); CHECK(g_bb_tx[4].len == 8);   // INFO (BB only)
+  for (uint8_t i = 1; i < 8; ++i) CHECK(g_bb_tx[4].buf[i] == 0);
+}
+
+TEST_CASE("bb_fw_begin needs a FRESH heartbeat and BB in IDLE or ERROR") {
+  fake_reset(); g_bb_tx.clear();
+  JbUdp::RpcArgs::ArgPlatformFwBegin b{}; b.image_len = 100;
+  CHECK(Relay::bb_fw_begin(b, bb_gate(false, false, BallButlerState::IDLE)) == JbUdp::RpcStatus::ERR_BUS_DOWN);
+  CHECK(Relay::bb_fw_begin(b, bb_gate(true,  false, BallButlerState::IDLE)) == JbUdp::RpcStatus::ERR_BUS_DOWN);
+  const uint8_t busy[] = { BallButlerState::BOOT, BallButlerState::TRACKING, BallButlerState::THROWING,
+                           BallButlerState::RELOADING, BallButlerState::CALIBRATING,
+                           BallButlerState::CHECKING_BALL };
+  for (uint8_t st : busy)
+    CHECK(Relay::bb_fw_begin(b, bb_gate(true, true, st)) == JbUdp::RpcStatus::ERR_REJECTED);
+  CHECK(g_bb_tx.empty());                        // every refusal is BEFORE the send
+  CHECK(Relay::bb_fw_begin(b, bb_gate(true, true, BallButlerState::IDLE))  == JbUdp::RpcStatus::OK);
+  CHECK(Relay::bb_fw_begin(b, bb_gate(true, true, BallButlerState::ERROR)) == JbUdp::RpcStatus::OK);
+  CHECK(g_bb_tx.size() == 2);
+}
+
+TEST_CASE("in-session bb_fw ops ride a stale heartbeat (sector-erase stall) but not a never-seen BB") {
+  fake_reset(); g_bb_tx.clear();
+  const Relay::BbFwGate stale = bb_gate(true, false, BallButlerState::IDLE);
+  const Relay::BbFwGate absent = bb_gate(false, false, BallButlerState::BOOT);
+  JbUdp::RpcArgs::ArgPlatformFwData d{}; d.seq = 0; d.n = 5;
+  JbUdp::RpcArgs::ArgPlatformFwVerify v{};
+  CHECK(Relay::bb_fw_data(d, stale) == JbUdp::RpcStatus::OK);
+  CHECK(Relay::bb_fw_verify(v, stale) == JbUdp::RpcStatus::OK);
+  CHECK(Relay::bb_fw_commit(stale) == JbUdp::RpcStatus::OK);
+  CHECK(Relay::bb_fw_info(stale) == JbUdp::RpcStatus::OK);
+  CHECK(g_bb_tx.size() == 4);
+  g_bb_tx.clear();
+  CHECK(Relay::bb_fw_data(d, absent) == JbUdp::RpcStatus::ERR_BUS_DOWN);
+  CHECK(Relay::bb_fw_verify(v, absent) == JbUdp::RpcStatus::ERR_BUS_DOWN);
+  CHECK(Relay::bb_fw_commit(absent) == JbUdp::RpcStatus::ERR_BUS_DOWN);
+  CHECK(Relay::bb_fw_info(absent) == JbUdp::RpcStatus::ERR_BUS_DOWN);
+  CHECK(g_bb_tx.empty());
+}
+
+TEST_CASE("bb_fw_data refuses n outside 1..5 before the gate and the wire") {
+  fake_reset(); g_bb_tx.clear();
+  JbUdp::RpcArgs::ArgPlatformFwData d{};
+  d.n = 0; CHECK(Relay::bb_fw_data(d, bb_gate(true, true, BallButlerState::IDLE)) == JbUdp::RpcStatus::ERR_BAD_ARGS);
+  d.n = 6; CHECK(Relay::bb_fw_data(d, bb_gate(true, true, BallButlerState::IDLE)) == JbUdp::RpcStatus::ERR_BAD_ARGS);
+  d.n = 6; CHECK(Relay::bb_fw_data(d, bb_gate(false, false, BallButlerState::BOOT)) == JbUdp::RpcStatus::ERR_BAD_ARGS);
+  CHECK(g_bb_tx.empty());
+}
+
+TEST_CASE("is_bb_relay_reply_id classifies exactly 0x7D7, disjoint from the Platform reply ids") {
+  CHECK(is_bb_relay_reply_id(BallButlerCanId::FW_UPDATE_REPLY));
+  CHECK_FALSE(is_bb_relay_reply_id(BallButlerCanId::FW_UPDATE_CMD));
+  CHECK_FALSE(is_bb_relay_reply_id(BallButlerCanId::HEARTBEAT));
+  CHECK_FALSE(is_bb_relay_reply_id(BallButlerCanId::CMD_RESULT));
+  CHECK_FALSE(is_bb_relay_reply_id(PlatformCanId::FW_UPDATE_REPLY));
+  CHECK_FALSE(is_platform_reply_id(BallButlerCanId::FW_UPDATE_REPLY));
+  CHECK_FALSE(is_bb_relay_reply_id(ODrive::arb_id(NodeId::BB_PITCH, ODriveCmd::heartbeat_message)));
 }

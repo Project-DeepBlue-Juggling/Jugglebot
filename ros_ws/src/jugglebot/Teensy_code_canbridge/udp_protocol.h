@@ -86,6 +86,11 @@ namespace RpcMethod {
   constexpr uint16_t PLATFORM_FW_VERIFY = 0x0058u;  // Platform FW-over-CAN: CRC-32 over the staged image (relay → 0x6F0 op 0x03)
   constexpr uint16_t PLATFORM_FW_COMMIT = 0x0059u;  // Platform FW-over-CAN: apply the staged image + reboot (relay → 0x6F0 op 0x04)
   constexpr uint16_t GET_BB_AXIS_VERSIONS = 0x005Au;  // Pull cached raw Get_Version bytes + received bitmask for the Ball Butler ODrives (CAN1 axes 7-8)
+  constexpr uint16_t BB_FW_BEGIN = 0x005Bu;  // Ball Butler FW-over-CAN: declare image length (relay → CAN1 0x7D6 op 0x01)
+  constexpr uint16_t BB_FW_DATA = 0x005Cu;  // Ball Butler FW-over-CAN: one image chunk, 1..5 bytes (relay → CAN1 0x7D6 op 0x02)
+  constexpr uint16_t BB_FW_VERIFY = 0x005Du;  // Ball Butler FW-over-CAN: CRC-32 over the staged image (relay → CAN1 0x7D6 op 0x03)
+  constexpr uint16_t BB_FW_COMMIT = 0x005Eu;  // Ball Butler FW-over-CAN: apply the staged image + reboot (relay → CAN1 0x7D6 op 0x04)
+  constexpr uint16_t BB_FW_INFO = 0x005Fu;  // Ball Butler FW-over-CAN: read the running FW_VERSION (relay → CAN1 0x7D6 op 0x05)
 }
 namespace RpcStatus {
   constexpr uint16_t OK = 0x0000u;  // Success
@@ -589,19 +594,19 @@ struct ArgHandSource {
   uint8_t source;  // 0 = LEGACY_STROKE (Platform-Teensy stroke engine), 1 = STREAMED (bridge 500 Hz hand lane)
 };
 static_assert(sizeof(ArgHandSource) == 1, "ArgHandSource size drift");
-// ArgPlatformFwBegin (PLATFORM_FW_BEGIN)
+// ArgPlatformFwBegin (PLATFORM_FW_BEGIN, BB_FW_BEGIN)
 struct ArgPlatformFwBegin {
   uint32_t image_len;  // Total image length in bytes
 };
 static_assert(sizeof(ArgPlatformFwBegin) == 4, "ArgPlatformFwBegin size drift");
-// ArgPlatformFwData (PLATFORM_FW_DATA)
+// ArgPlatformFwData (PLATFORM_FW_DATA, BB_FW_DATA)
 struct ArgPlatformFwData {
   uint16_t seq;  // Chunk sequence number (0-based)
   uint8_t n;  // Valid payload bytes in this chunk, 1..5
   uint8_t payload[5];  // Image bytes; only payload[0..n) reach the CAN frame
 };
 static_assert(sizeof(ArgPlatformFwData) == 8, "ArgPlatformFwData size drift");
-// ArgPlatformFwVerify (PLATFORM_FW_VERIFY)
+// ArgPlatformFwVerify (PLATFORM_FW_VERIFY, BB_FW_VERIFY)
 struct ArgPlatformFwVerify {
   uint32_t crc32;  // CRC-32 over the whole staged image
 };
