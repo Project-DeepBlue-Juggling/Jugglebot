@@ -12,6 +12,9 @@
  *   pitch.  The conversion happens once, at ingestion (onTelemetryData), using
  *   the per-chart table in axisUnitsFor(); every downstream consumer (axes,
  *   callouts, Δ pills, y-range padding, CSV export) inherits it for free.
+ *   The toolbar's units button (mm ↔ rev) swaps every chart to raw motor revs
+ *   and back; the cached history is re-expressed in place (setRawRevMode), so
+ *   the store is always in ONE unit — whichever the button shows.
  *
  * Hover UX:
  *   - Entering a chart cell highlights the matching element in the 3D scene
@@ -128,9 +131,9 @@ const CHART_TOOLTIPS = [
  * the engineering logbook.
  */
 const SIGNAL_TOOLTIPS = {
-    pos_measured:  'Encoder position in this chart\u2019s physical unit: mm of travel from home for the legs and both hands, absolute barrel angle (deg) for BB Pitch. Toggle to show/hide on every chart.',
+    pos_measured:  'Encoder position in this chart\u2019s physical unit: mm of travel from home for the legs and both hands, absolute barrel angle (deg) for BB Pitch — or raw motor revs on every chart when the units button reads "rev". Toggle to show/hide on every chart.',
     pos_commanded: 'Commanded position target (dashed), converted with the SAME per-axis factor as the measured trace — so the gap between the two is real tracking error, not a unit mismatch. Source: leg_setpoint_echo (accepted setpoints echoed by the Teensy bridge) for legs, hand_telemetry for the hand; the BB axes have no commanded source, so the trace is absent there.',
-    vel_measured:  'Axis velocity in this chart\u2019s physical unit (mm/s for the legs and both hands, deg/s for BB Pitch). Signed — follows the motor\u2019s own direction convention.',
+    vel_measured:  'Axis velocity in this chart\u2019s physical unit (mm/s for the legs and both hands, deg/s for BB Pitch; rev/s everywhere when the units button reads "rev"). Signed — follows the motor\u2019s own direction convention.',
     iq_setpoint:   'Commanded quadrature current (A) \u2014 proportional to commanded torque.',
     iq_measured:   'Measured quadrature current (A, dashed) \u2014 proportional to actual torque.',
     fet_temp:      'ODrive MOSFET temperature (\u00b0C).',
@@ -343,6 +346,10 @@ function loadSettings() {
         if ([5, 10, 30, 60].includes(v)) currentWindowSec = v;
     }
     liveWindowSec = currentWindowSec;
+
+    // Pos/vel unit (physical vs raw revs).  Stores are still empty here, so
+    // no history conversion is needed — ingestion just uses this mode.
+    loadUnitsSetting();
 
     // Chart visibility — default to all 9 visible if missing/invalid.
     try {
@@ -844,9 +851,21 @@ function initChartGridToggle() {
     markersBtn.className = 'signal-toggle';
     markersBtn.title = 'Hide/show the event-log marker lines on every chart (the Event Log panel is unaffected)';
 
-    // Insert [hide][show-all][event-logs][divider] immediately before the
-    // visibility pills so the buttons sit adjacent to them, separated by the
-    // vertical rule.
+    // Global pos/vel unit toggle — shows the CURRENT unit; click to swap.
+    const unitsBtn = document.createElement('button');
+    unitsBtn.id = 'chart-units-btn';
+    unitsBtn.className = 'signal-toggle';
+    unitsBtn.addEventListener('click', () => setRawRevMode(!rawRevMode));
+
+    const unitsDivider = document.createElement('span');
+    unitsDivider.className = 'chart-toolbar-divider';
+
+    // Insert [units][divider][hide][show-all][event-logs][divider]
+    // immediately before the visibility pills so the buttons sit adjacent to
+    // them, separated by the vertical rules.
+    rightGroup.insertBefore(unitsBtn, visToggles);
+    rightGroup.insertBefore(unitsDivider, visToggles);
+    applyUnitsButtonUI();
     rightGroup.insertBefore(btn, visToggles);
     rightGroup.insertBefore(showAllBtn, visToggles);
     rightGroup.insertBefore(markersBtn, visToggles);
@@ -2367,11 +2386,10 @@ function createCalloutRecord(signalList, chartIdx) {
         el.title = `${sig.label} \u2014 click to copy the value in ` +
                    `${unitFor(chartIdx, sig.scale) || 'chart units'} (full precision, no unit suffix)`;
 
-        // Click-to-copy: copies the displayed quantity as a bare number — the
-        // chart's physical unit (mm / mm-s / deg / deg-s), at full precision
-        // and with no unit suffix, so it pastes straight into a script or
-        // calculator.  NB this is NOT the motor-rev wire value any more:
-        // conversion happens at ingestion, so the store never holds revs.
+        // Click-to-copy: copies the displayed quantity as a bare number — in
+        // the chart's current unit (mm / mm-s / deg / deg-s, or rev / rev-s
+        // when the units toggle reads "rev"), at full precision and with no
+        // unit suffix, so it pastes straight into a script or calculator.
         // A brief .copied class flashes the pill green as confirmation.
         el.addEventListener('click', async (ev) => {
             ev.stopPropagation();
@@ -2501,7 +2519,8 @@ const CHART_UNITS = Object.freeze([
     makeUnitRecord('mm', BB_HAND_MM_PER_REV, 0, 'mm/s', BB_HAND_MM_PER_REV),
 ]);
 
-/** Identity fallback: raw motor revs, used only for an out-of-range index. */
+/** Identity map: raw motor revs — every chart while the units toggle reads
+ *  "rev", and the fallback for an out-of-range index. */
 const RAW_REV_UNITS = makeUnitRecord('rev', 1, 0, 'rev/s', 1);
 
 /**
@@ -2517,7 +2536,82 @@ const RAW_REV_UNITS = makeUnitRecord('rev', 1, 0, 'rev/s', 1);
  * commanded end up on different scales and fabricate a constant tracking error.
  */
 function axisUnitsFor(chartIdx) {
+    if (rawRevMode) return RAW_REV_UNITS;
     return CHART_UNITS[chartIdx] || RAW_REV_UNITS;
+}
+
+// ---- Global pos/vel unit toggle (physical ↔ motor revs) -----------------
+
+/** localStorage key for the unit toggle: 'rev' = raw motor revs, anything
+ *  else (incl. missing) = physical units (the default). */
+const UNITS_STORAGE_KEY = 'jugglebot-chart-units';
+
+/** True while position/velocity are plotted in raw motor revs (rev, rev/s) on
+ *  EVERY chart — BB pitch included, so the rev view is the uniform wire-unit
+ *  view the charts showed before the physical-unit conversion landed. */
+let rawRevMode = false;
+
+/** Stored columns whose values depend on the pos/vel unit.  Every other
+ *  column (current, temperature, voltage) is unit-independent. */
+const UNIT_DEPENDENT_COLUMNS = [
+    ['pos_measured',  'position'],
+    ['pos_commanded', 'position'],
+    ['vel_measured',  'velocity'],
+];
+
+/**
+ * Re-express the cached history of one store in a new unit, in place.
+ *
+ * The stores hold values converted at ingestion (see onTelemetryData), so a
+ * unit switch that only affected NEW samples would put a step discontinuity
+ * into every curve at the switch time.  Instead the existing samples go back
+ * through the inverse affine map to revs and forward through the new one —
+ * the same map ingestion applies, so old and new samples share one scale.
+ * NaN (absent commanded samples) stays NaN, preserving the nanGaps semantics.
+ */
+function convertStoreUnits(store, from, to) {
+    const n = store.length;
+    for (const [key, scale] of UNIT_DEPENDENT_COLUMNS) {
+        const col = store.columns[key];
+        const [fs, fo, ts, to_] = scale === 'position'
+            ? [from.posScale, from.posOffset, to.posScale, to.posOffset]
+            : [from.velScale, 0, to.velScale, 0];
+        if (fs === ts && fo === to_) continue;
+        for (let k = 0; k < n; k++) {
+            col[k] = ((col[k] - fo) / fs) * ts + to_;
+        }
+    }
+}
+
+function applyUnitsButtonUI() {
+    const btn = document.getElementById('chart-units-btn');
+    if (!btn) return;
+    btn.textContent = rawRevMode ? 'rev' : 'mm';
+    btn.title = rawRevMode
+        ? 'Position/velocity shown in raw motor revs (rev, rev/s) on every chart. Click for physical units (mm, mm/s; deg, deg/s on BB Pitch).'
+        : 'Position/velocity shown in physical units (mm, mm/s; deg, deg/s on BB Pitch). Click for raw motor revs (rev, rev/s).';
+}
+
+/** Switch every chart's pos/vel unit, converting the cached history so the
+ *  curves (live or paused) keep their shape across the switch. */
+function setRawRevMode(on) {
+    on = !!on;
+    if (on !== rawRevMode) {
+        const before = stores.map((_, i) => axisUnitsFor(i));
+        rawRevMode = on;
+        for (let i = 0; i < stores.length; i++) {
+            convertStoreUnits(stores[i], before[i], axisUnitsFor(i));
+        }
+        // Rebuild: axis labels, y-range pad floors, callout titles and Δ pills
+        // are all baked per build.  Also repaints (copying while paused).
+        rebuildAllCharts();
+    }
+    applyUnitsButtonUI();
+    try { localStorage.setItem(UNITS_STORAGE_KEY, rawRevMode ? 'rev' : 'mm'); } catch { /* ignore */ }
+}
+
+function loadUnitsSetting() {
+    try { rawRevMode = localStorage.getItem(UNITS_STORAGE_KEY) === 'rev'; } catch { /* ignore */ }
 }
 
 /** Display unit string for one (chart, scale-group) pair. */
