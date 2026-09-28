@@ -359,3 +359,10 @@ cherry-picked as one change. Differences from the original branch:
 Verification (2026-09-28): `pytest tests/firmware tests/teensy_link -q -n 4` →
 697 passed / 1 skipped in 213.65 s
 (`temp/logs/port_bbfw_scoped_20260928.log`); `pio run -e teensy41` SUCCESS.
+
+**Flown (2026-09-28 20:12):** `pio run -e teensy41 -t upload` SUCCESS
+(`temp/logs/bridge_fw25_flash_20260928.log`), with the launch down. On the skill-stack
+host: `decode_err=0` and BRIDGE_IDENTITY `fw_version=25`. With BB powered,
+`BB_FW_INFO` (0x60) through the relay returned **4**, and the heartbeat read
+`fault=NONE bus1=1 bus2=1`. The `ODRIVE_FATAL` seen before BB was powered was
+BB's bus being absent.
