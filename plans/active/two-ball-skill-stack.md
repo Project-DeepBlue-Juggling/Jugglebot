@@ -1187,6 +1187,14 @@ the rung's tests passing or a handoff file in the scratchpad.
   the reload block); behind it the reload now skips `bb/reload` on a ball already in hand and waits
   for BB to leave IDLE after one. Box re-swept ×2 bit-identical, gate hash `bf095653d422`. Entry
   `logbook/2026-09-28-skill-stack-r4-sitting-2-analysis.md`. **Hardware gate still OUTSTANDING.**
+- **Sitting 3 (2026-09-28 23:55), analysed through the wayfinder map
+  `.scratch/r4-throw-precision/map.md`.**
+  - **Hop +88/+110 mm long.** The tilt matches the plan; the platform is still sliding +x at about +100 mm/s at separation (the tail of the plan's own fast +x swing, with 25–50 ms of leg lag), and the ball inherits it. The **pre-release hold** (`PRE_RELEASE_HOLD_S` 0.100, live parameter `pre_release_hold_s`) fixes it offline. The owner contests the mechanism, and the diagnostic sitting's A/B decides.
+  - **Self-toss.** The spread is about 16 × 23 mm (1σ), release-side, and a still platform does not remove it.
+  - **Reload.** The CATCH was dispatched before the pre-tilt ended and was refused; the timing is fixed.
+  - **Refusals** are now in plain language.
+  - **Box.** Re-swept, gate hash `ad36fa53aab2`. ⚠ **Carried to R5: the box admits NO columns throw under the hold** (the 0.3 s dwell cell cannot fit 100 ms); the chained sim pattern still passes.
+  - Entry `logbook/2026-09-29-skill-stack-r4-sitting-3-analysis.md`; next sitting `tests/hardware/session_skills_r4_diag.md`. **Hardware gate still OUTSTANDING.**
 
 ### R5 — Two-ball columns
 
