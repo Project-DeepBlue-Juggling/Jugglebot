@@ -53,6 +53,13 @@ from jugglebot.motion.trajectory.cycle_plan import CyclePlan
 # ── Refusal codes this layer owns ────────────────────────────────────────────
 #: The solve finished so late that the splice knot is already behind the wire.
 SPLICE_TOO_LATE = 'SPLICE_TOO_LATE'
+#: A FRESH origin's solve ran long enough that knot 0 would already be stale
+#: by the time the block reaches the wire, AND the segment carries an
+#: absolute event (a THROW's release or a CATCH's touch-down) that cannot be
+#: silently slid later — see :func:`install_segment`'s fresh-origin lateness
+#: check (2026-09-28, R4 sitting-1 fact 5: a REST-kind segment in the same
+#: situation is REBASED instead, because a rest carries no event).
+ORIGIN_TOO_LATE = 'ORIGIN_TOO_LATE'
 #: The window from the splice knot to the skill's event is shorter than a plan.
 WINDOW_TOO_SHORT = 'WINDOW_TOO_SHORT'
 #: The tracker has no landing for the ball this CATCH is for.
@@ -615,21 +622,31 @@ class InstallResult:
 
 
 def _previous_release(schedule: Schedule, idx: int, ball_id: int):
-    """``(release_site, t_release_abs_s, y_d, target)`` of the last release of
-    ``ball_id`` strictly before ``schedule.skills[idx]`` -- a THROW or a
-    CATCH's ``then_throw`` -- or ``None`` when no such release is IN THIS
+    """``(release_site, t_release_abs_s, y_d, target, release_idx)`` of the last
+    release of ``ball_id`` strictly before ``schedule.skills[idx]`` -- a THROW
+    or a CATCH's ``then_throw`` -- or ``None`` when no such release is IN THIS
     SCHEDULE (columns' very first catch, of a ball thrown before ``t0`` --
     plan owner decision 2026-09-13, "at release, then refine": that catch
-    falls back to waiting for the tracker, unchanged)."""
+    falls back to waiting for the tracker, unchanged).
+
+    ``release_idx`` is the releasing skill's OWN index in
+    ``schedule.skills``. A THROW releases at its site, but a CATCH's carried
+    throw releases from where the ball was CAUGHT (2026-09-28,
+    :meth:`SkillExecutor._catch_terminal`), so the release POSITION is no
+    longer a property of the site alone: the index is the key the chosen
+    release is recorded under (:meth:`SkillExecutor._release_pos_mm`), and
+    every caller that needs the position asks there rather than assuming
+    ``release_site.throw_site_mm()``.
+    """
     for j in range(idx - 1, -1, -1):
         sk = schedule.skills[j]
         if sk.ball_id != ball_id:
             continue
         if sk.kind == THROW:
-            return sk.site, float(sk.t_abs_s), sk.y_d, sk.target
+            return sk.site, float(sk.t_abs_s), sk.y_d, sk.target, j
         if sk.kind == CATCH and sk.then_throw is not None:
             tt = sk.then_throw
-            return sk.site, float(tt.t_release_abs_s), tt.y_d, tt.target
+            return sk.site, float(tt.t_release_abs_s), tt.y_d, tt.target, j
     return None
 
 
@@ -791,12 +808,36 @@ def install_segment(record: Optional[PlanRecord],
     *Fresh origin* — there is no record, or the record's plan has ENDED by the
     time this install could reach the wire (``t_now + lead >= record.end_s``).
     The machine is then holding a terminal REST: a stopped platform over a
-    seated ball.  The segment is planned from that rest and installed with
-    ``t0 = t_now_s``, i.e. the solve time is NOT skipped over.  That is sound
-    for exactly one reason — the seed is at rest, so the plan's knot 0 IS where
-    the machine still is when the solve finishes, however long it took.  (A
-    moving seed has no such property, which is why the splice branch below
-    measures its own lateness.)
+    seated ball.  The segment is planned from that rest with ``t0 = t_now_s``
+    (the solve time is not skipped over), which is sound for exactly one
+    reason — the seed is at rest, so the plan's knot 0 IS where the machine
+    still is when the solve finishes, however long it took.  (A moving seed
+    has no such property, which is why the splice branch below measures its
+    own lateness.)
+
+    That soundness argument covers the SEED, not the ORIGIN TIMESTAMP the
+    plan carries onto the wire.  A fresh origin reserves no lead the way a
+    splice's ``k_s`` does, so once the solve (plus whatever transit follows)
+    outruns :data:`~jugglebot.motion.skills.schedule.WIRE_READ_KNOTS` knots of
+    margin, the block reaches the firmware's scheduled lane with knot 0
+    already behind it — 2026-09-28 R4 sitting-1 fact 5: a reload's opening
+    REST (6.6 s, hand 8.87 -> 0.31 rev) solved in 381 ms, the scheduled block
+    arrived ~0.4 s into its own profile, the firmware's resume check
+    (``SCHED_RESUME_TOL_POS_HAND_REV`` 0.05 rev against the HELD hand)
+    refused every frame, and the deviation guard E-STOPPED on a hand that
+    never received a command.  So AFTER the solve, this branch re-reads the
+    clock exactly as the splice branch does (:data:`ORIGIN_TOO_LATE` below)
+    and, if the origin has gone stale:
+
+    * kind ``REST`` — REBASED, not re-solved: ``t0`` moves to
+      ``t_inst + WIRE_READ_KNOTS·dt``.  A REST from rest is the same motion
+      later — it carries no absolute event, so sliding when it starts costs
+      nothing and the plan itself (built from the same at-rest seed) is
+      unchanged.
+    * kind ``THROW`` / ``CATCH`` — REFUSED :data:`ORIGIN_TOO_LATE`.  These
+      carry an absolute event (the release or the landing is a real instant
+      the rest of the schedule, the tracker and the ball's flight all agree
+      on), so the origin cannot be silently pushed later the way a REST's can.
 
     *Splice* — the previous segment is still streaming.  The new window opens at
     ``k_s = splice_knot(meta, τ, lead_s)``, the first knot at least ``lead_s``
@@ -804,7 +845,7 @@ def install_segment(record: Optional[PlanRecord],
     head is carried bit for bit, so whatever the emitter has already sent stays
     sent.
 
-    **Two refusals this function owns, one physical fact each.**
+    **Three refusals this function owns, one physical fact each.**
 
     * :data:`WINDOW_TOO_SHORT` — the splice knot is within
       ``MIN_WINDOW_KNOTS·dt`` of the event: the QP has fewer knots to reach the
@@ -826,6 +867,14 @@ def install_segment(record: Optional[PlanRecord],
       ``k_s`` must still be more than :data:`WIRE_READ_KNOTS` knots ahead of the
       install instant.  Without it a slow solve silently rewrites trajectory the
       Teensy is interpolating — a step command on six legs.
+
+    * :data:`ORIGIN_TOO_LATE` — the FRESH-origin twin of the refusal above:
+      the solve outran :data:`WIRE_READ_KNOTS` knots of margin on an
+      event-bearing (``THROW``/``CATCH``) segment planned from rest, so knot 0
+      would already be old at the wire and there is no later knot to move the
+      event to without moving the event itself.  A ``REST`` in the same
+      situation is REBASED instead (see *Fresh origin* above) rather than
+      refused, because it carries no event to protect.
 
     Every :class:`~jugglebot.motion.unified_cycle.CycleInfeasible` and every
     ``ValueError`` from a malformed terminal becomes a refusing
@@ -881,6 +930,56 @@ def install_segment(record: Optional[PlanRecord],
             cfg, limits, geom, warm_start=warm_start)
 
         if fresh:
+            # The seed is sound regardless of how long the solve took (see the
+            # docstring's *Fresh origin* section) — but the ORIGIN TIMESTAMP
+            # this plan carries onto the wire is not, because `t0` was fixed
+            # to `t_now_s` BEFORE the solve and a fresh origin reserves no
+            # lead the way a splice's `k_s` does. Re-read the clock the SAME
+            # way the splice branch below does (a callable evaluated once the
+            # segment exists, so a float still lets tests inject the
+            # lateness) and check whether the solve (plus whatever transit
+            # follows) has already spent the `WIRE_READ_KNOTS` margin that
+            # protects a splice.
+            t0_before_solve = t0
+            dt = float(seg.plan.dt)
+            t_inst = (t_now_s if t_install_s is None
+                      else float(t_install_s()) if callable(t_install_s)
+                      else float(t_install_s))
+            wire_margin_s = WIRE_READ_KNOTS * dt
+            solve_s = t_inst - t0_before_solve
+            if solve_s - wire_margin_s > 0.0:
+                # `t_inst + wire_margin_s` is how old the origin will be once
+                # the wire actually starts reading this block (the same
+                # worst-case margin `k_wire` budgets for a splice) — this is
+                # the number fact 5 measured as "the origin ~0.4 s in the
+                # past".
+                staleness_s = solve_s + wire_margin_s
+                if kind == REST:
+                    # REBASE, not re-solve: a REST from rest is the same
+                    # motion later — it carries no absolute event, so sliding
+                    # its origin forward by exactly the measured staleness
+                    # costs nothing and the plan already built (from the same
+                    # at-rest seed) is unchanged.
+                    t0 = t_inst + wire_margin_s
+                    new_record = PlanRecord(plan=seg.plan, meta=seg.meta,
+                                            t0_s=t0)
+                    return new_record, InstallResult(
+                        True, 'OK',
+                        'fresh origin REBASED +%.3f s: the solve outran the '
+                        'origin (%s over %.3f s from rest; solve %.3f s vs '
+                        'a %.3f s wire-read margin)'
+                        % (t0 - t0_before_solve, kind, seg.plan.total_duration,
+                           solve_s, wire_margin_s),
+                        float(seg.meta.plan_wall_s), splice_k=0, t0_s=t0,
+                        event_t_s=float(seg.event_t_s or 0.0),
+                        seeded_post_release=False), seg
+                return record, InstallResult(
+                    False, ORIGIN_TOO_LATE,
+                    'the solve took %.3f s, the first knot would be %.3f s '
+                    'old at the wire, and the firmware refuses a scheduled '
+                    'block discontinuous with the held lane'
+                    % (solve_s, staleness_s),
+                    float(seg.meta.plan_wall_s)), None
             new_record = PlanRecord(plan=seg.plan, meta=seg.meta, t0_s=t0)
             return new_record, InstallResult(
                 True, 'OK',
@@ -1078,6 +1177,13 @@ class SkillExecutor:
         #: OR the lateral clamp (:meth:`_clamp_lateral_to_schedule`, reason
         #: ``'AIM-LATERAL-CLAMPED'``) -- one shared once-per-(catch, reason) set.
         self._resend_notes = set()
+        #: ``catch idx -> the cup position that catch's CARRIED release was
+        #: planned from`` (:meth:`_catch_terminal`, latest call wins -- a
+        #: re-send re-derives it from the refined landing). Read by
+        #: :meth:`_release_pos_mm` so the schedule-derived priors for the NEXT
+        #: catch fly from the SAME release point the plan uses. A plain THROW
+        #: is never recorded here: it releases at its site.
+        self._carried_release_mm = {}
         #: Lines queued by :meth:`_clamp_lateral_to_schedule` (via
         #: :meth:`_catch_terminal`), drained by whichever caller fired it
         #: (dispatch, :meth:`_resend_live_catch`,
@@ -1102,19 +1208,43 @@ class SkillExecutor:
 
     # ── the R3 command: learner + admissible box, computed once per throw ──
 
-    def _command_u(self, idx: int, site, target, y_d
-                   ) -> Tuple[np.ndarray, float]:
+    def _command_u(self, idx: int, site, target, y_d,
+                   release_offset_m=None) -> Tuple[np.ndarray, float]:
         """The commanded ``u = (landing_xy_m, apex_m)`` for the ball this
         skill releases — computed ONCE (at ``idx``'s first dispatch) and
         cached, so a CATCH re-send's later calls return the SAME command
         (plan § 0: "the command never changes late in a transit").
 
-        ``x = (site xy in m, 0, 0)`` — the seat-offset half of the state is
-        unmeasured at R3 (plan § 0). No ``learner`` ⇒ ``u = y_d`` exactly (R2
-        behaviour). Raises :class:`_NoAdmissibleCommand` when the learner's
-        fit is non-finite, or no swept box covers ``(site.name, target.name)``
-        at the DESIRED apex — the caller converts that to a
-        :data:`NO_ADMISSIBLE_COMMAND` refusal before any solve is attempted.
+        ``x = (site xy in m, release offset xy in m)`` — ``memory.Experience``
+        has always defined the second half as "the seat-offset xy of the ball
+        just caught", and ``release_offset_m`` is now that quantity, measured:
+        a CATCH's carried throw releases from where the ball was CAUGHT
+        (:meth:`_catch_terminal`, 2026-09-28), so ``release_xy - site_xy`` is
+        exactly how far off its nominal site this release happens. A plain
+        THROW from rest passes ``None`` and keeps ``(0, 0)`` — it releases at
+        its site, so there is nothing to carry.
+
+        WHY it must be in ``x`` and not simply ignored: the release position
+        is PLANT STATE that a static ``u -> y`` map cannot represent. Measured
+        2026-09-28 (``sim/skills_gate.py --learn --pattern self_toss``, seeds
+        0-4): with the offset release and ``x[2:4]`` pinned at zero, ~23 % of
+        every offset came back as an opposite-sign landing error (the offset
+        is flown back as lateral velocity, and a launch 11 % fast over a
+        flight 11 % long delivers ~1.23x of it), and the learner chased its
+        own tail into a limit cycle on 2 of 5 seeds — the landing walking
+        50 mm off the site and back over ~12 throws. The learner's local
+        affine fit already has the term for it: its regressor is
+        ``Z = [delta_x; delta_u; 1]`` (``learner`` step 3), so a ``dy/dx``
+        slope is fitted from the same neighbours, and the state bandwidth
+        ``h_x = 0.01 m`` is shared with the site half — no new knob, no
+        ``LearnerConfig`` change, no memory-schema change (``x`` has been
+        4-wide since R3).
+
+        No ``learner`` ⇒ ``u = y_d`` exactly (R2 behaviour). Raises
+        :class:`_NoAdmissibleCommand` when the learner's fit is non-finite,
+        or no swept box covers ``(site.name, target.name)`` at the DESIRED
+        apex — the caller converts that to a :data:`NO_ADMISSIBLE_COMMAND`
+        refusal before any solve is attempted.
         """
         if idx in self._u_cache:
             _x, u_dy, u_apex = self._u_cache[idx]
@@ -1122,8 +1252,11 @@ class SkillExecutor:
         dy, apex = y_d
         dy = np.asarray(dy, dtype=float).reshape(2)
         apex = float(apex)
+        off = (np.zeros(2) if release_offset_m is None
+              else np.asarray(release_offset_m, dtype=float).reshape(2))
         x = np.array([float(site.cup_mm[0]) / 1000.0,
-                     float(site.cup_mm[1]) / 1000.0, 0.0, 0.0])
+                     float(site.cup_mm[1]) / 1000.0,
+                     float(off[0]), float(off[1])])
         # The box is looked up BEFORE the learner runs (finding 5, R3 audit,
         # 2026-09-13): a missing box means there is no admissible-region clip
         # to apply afterward, so a learner command would reach the platform
@@ -1289,12 +1422,61 @@ class SkillExecutor:
         """A CATCH's terminal, plus the throw it carries when the schedule
         folded one onto it (``schedule.ThenThrow``).
 
-        The carried release is the SCHEDULE's, not the tracker's: a re-send
-        re-solves the whole remaining window against a refined landing with the
-        release instant, site and target unchanged, because the pattern's beat
-        is what the other hand is already flying against. The carried throw's
-        command is :meth:`_command_u`'s, cached under THIS catch's ``idx`` — a
-        re-send calls this again and gets the SAME command back.
+        The carried release's INSTANT and TARGET are the SCHEDULE's, not the
+        tracker's: a re-send re-solves the whole remaining window against a
+        refined landing with both unchanged, because the pattern's beat is what
+        the other hand is already flying against. The carried throw's command
+        is :meth:`_command_u`'s, cached under THIS catch's ``idx`` — a re-send
+        calls this again and gets the SAME command back.
+
+        **The release POSITION is where the ball was CAUGHT, not the site**
+        (owner 2026-09-28). The physical rule: the platform does not translate
+        while it holds a ball between a catch and the release that follows it.
+        Measured — at the 2026-09-27 22:37 R4 sitting every throw that
+        followed a laterally re-aimed catch missed by +32..+114 mm in y and
+        the chains dropped. With the release pinned to the site, the plan
+        dragged the platform the 20 mm from the catch xy back to the site
+        DURING the 0.35 s dwell (peak ~100 mm/s lateral, ~1.2 deg bank) while
+        the ball rode the hand down, so the ball left a platform that was
+        level and stationary at release yet carried +85..+110 mm/s of
+        unplanned lateral velocity; the throws from a cup that had NOT moved
+        (the first of each chain) landed within 20 mm of the aim. So
+        ``ThrowAfterCatch.site_mm`` is the CLAMPED landing's xy at this site's
+        release z. ``target_mm``, ``flight_s`` and ``t_release_s`` are
+        unchanged: the pattern still names the SITE as the target, and the
+        ballistics from the offset release absorb the <= 20 mm shift as a
+        <= 25 mm/s lateral launch component (20 mm over a 0.86 s flight).
+        Re-centring on the nominal site belongs in the flight — the SETTLE
+        tail AFTER the ball has left — which is why ``rest_site_mm`` stays
+        ``skill.site.rest_site_mm()``. A re-send re-derives the release xy
+        from the refined landing (the same rule as ``rest_mm`` for the
+        held-axis catch below), and the position chosen is recorded under this
+        catch's ``idx`` (:attr:`_carried_release_mm`) so the priors built for
+        the NEXT catch fly from the release the plan actually uses
+        (:meth:`_release_pos_mm`).
+
+        **Measured cost, 2026-09-28** (``sim/skills_gate.py --learn --pattern
+        self_toss``, seeds 0-4): the release position is now a function of the
+        PREVIOUS landing, i.e. plant state the learner's static ``u -> y`` map
+        cannot see, and on 2 of the 5 seeds (0 and 3) the learner+plant pair
+        limit-cycled -- the landing walking up to 50 mm off the site and back
+        over ~12 throws, failing the monotone-decay rule, with band entry
+        unchanged (3 throws) and 25/25 caught, 0 drops. The coupling gain is
+        the plant's launch-speed bias: an offset release must fly the offset
+        back as lateral velocity, and a launch 11 % fast over a flight 11 %
+        long delivers ~1.23x of it. The fix is to stop hiding the offset from
+        the learner rather than to stop offsetting the release: it goes into
+        the state the learner is queried with and the state its row carries
+        (``x[2:4]``, :meth:`_command_u` / :meth:`_register_outcome`), which is
+        the slot ``memory.Experience`` always reserved for it.
+
+        **Admissible box:** the boxes in ``config/generated/admissible_box.
+        yaml`` were swept for releases AT the site, and this unit deliberately
+        does not touch them. The release offset is bounded by the same lateral
+        authority the landing is (:attr:`lateral_authority_m`, 20 mm at the
+        R4 launch default), and the online ``validate_cycle`` gate remains the
+        authority: a ``REJECTED_CYCLE_INFEASIBLE`` on a re-aimed carried throw
+        is the expected surface, not a box to widen.
 
         ``landing`` itself is clamped laterally first
         (:meth:`_clamp_lateral_to_schedule`) — the ONE place a landing becomes
@@ -1311,11 +1493,24 @@ class SkillExecutor:
         then_throw = None
         tt = skill.then_throw
         if tt is not None:
-            u_dy, u_apex = self._command_u(idx, skill.site, tt.target, tt.y_d)
+            # The release rides the CAUGHT xy (docstring above): only z is the
+            # site's, because the release height is the stroke's geometry, not
+            # the ball's arrival point. Recorded BEFORE the command is asked
+            # for, because how far this release sits off its site is half of
+            # the learner's state vector (:meth:`_command_u`'s ``x[2:4]``).
+            release_mm = np.array([float(landing.pos_mm[0]),
+                                   float(landing.pos_mm[1]),
+                                   float(skill.site.throw_site_mm()[2])])
+            self._carried_release_mm[idx] = release_mm
+            u_dy, u_apex = self._command_u(
+                idx, skill.site, tt.target, tt.y_d,
+                release_offset_m=self._release_offset_m(idx, skill.site))
             then_throw = ThrowAfterCatch(
                 t_release_s=float(tt.t_release_abs_s),
-                site_mm=skill.site.throw_site_mm(),
-                target_mm=self._commanded_target_mm(tt.target, (u_dy, u_apex)),
+                site_mm=release_mm,
+                target_mm=(self._commanded_target_mm(tt.target, (u_dy, u_apex))
+                           + self._offset_flyback_mm(idx, skill.site,
+                                                     tt.y_d, u_apex)),
                 flight_s=sch.flight_s(u_apex))
         if skill.rest_site_mm is not None:
             # HELD-AXIS CATCH (R4 reload): `skill.rest_site_mm` was computed
@@ -1351,6 +1546,93 @@ class SkillExecutor:
                   else skill.site.rest_site_mm())
         return RestTerminal(rest_site_mm=rest_mm, t_rest_s=float(skill.t_abs_s),
                             tilt=skill.rest_tilt, holds_ball=skill.holds_ball)
+
+    def _release_pos_mm(self, release_idx: int, release_site) -> np.ndarray:
+        """Where the ball released by ``schedule.skills[release_idx]`` actually
+        leaves the cup — the ONE place that question is answered, so every
+        ballistic prior built on a release uses the release the PLAN uses.
+
+        A plain THROW releases at its site. A CATCH's carried throw releases
+        from where the ball was caught (:meth:`_catch_terminal`, 2026-09-28),
+        so its position is read back from :attr:`_carried_release_mm`.
+
+        The recorded value is the one chosen at that catch's LATEST call —
+        its dispatch, or the last re-send that refined its landing. A prior
+        built between the dispatch and a later re-send therefore uses a
+        release that the re-send can still move, by at most the re-aim delta
+        (<= :attr:`lateral_authority_m`, 20 mm): a <= 25 mm/s launch-velocity
+        difference, far inside the tracker fit that supersedes this prior the
+        moment the ball is in the air (:meth:`_catch_aim`, rank 1 vs rank 2).
+        The site is the fallback when nothing is recorded — a release this
+        executor has not planned yet, which is what every caller assumed
+        before this unit.
+        """
+        recorded = self._carried_release_mm.get(release_idx)
+        if recorded is not None:
+            return np.asarray(recorded, dtype=float)
+        return np.asarray(release_site.throw_site_mm(), dtype=float)
+
+    def _offset_flyback_mm(self, idx: int, site, y_d, u_apex: float) -> np.ndarray:
+        """The aim shift (mm, z = 0) that makes a carried release's offset fly
+        back EXACTLY, so the learner never sees it.
+
+        A release ``r`` off its site must put ``-r`` of lateral displacement
+        into the flight for the ball to land where a release AT the site
+        would have. The planner realises that displacement as a lateral
+        launch component over the PLANNED flight; the plant then scales the
+        whole launch vector by some speed ratio ``s`` (the hand's stroke
+        overspeed; the launch lies along the cup axis with the platform
+        stationary at release, so axial == the whole vector), which
+        multiplies every ballistic displacement by ``s**2`` -- the apex AND
+        the lateral reach alike, because both go as v^2/g. ``s**2`` is
+        therefore already in hand: it is the ratio the learner commands to
+        land the apex, ``g = apex_desired / u_apex`` (1.0 while the memory
+        is cold). Aiming ``r * (1 - 1/g)`` toward the release side plans a
+        displacement of ``-r/g`` that the plant stretches to ``-r``: the
+        landing is ``site + g * u_dy``, free of ``r``, and the learner's
+        ``u -> y`` map is the same one a throw from rest teaches it.
+
+        WHY a closed form here and not the learner: without it the release
+        offset is plant state a static ``u -> y`` memory cannot represent --
+        each landing error is re-aimed into the next release (the catch
+        follows the ball), ~(g - 1) of it returns with the opposite sign,
+        and the memory, fitting ``y`` on ``u`` from rows the offset
+        contaminates, hunts: the 2026-09-28 sim gate walked the landing to
+        -50 mm and back over ~12 throws on seeds 0 and 3 (0 drops, 25
+        makes, but the pattern left the site) with or without the offset in
+        ``x[2:4]`` -- the affine fit's ``delta_x`` slope is not identifiable
+        from 25 throws at one site. The offset stays in ``x`` (honest state;
+        the schema slot was reserved for it), and this shift removes the
+        thing it would have had to learn.
+
+        ``g`` is clamped to [0.5, 2.0]: outside that band the apex command
+        is not a plant gain but a refusal in the making (the box clips it),
+        and a wild ``1/g`` must not steer the aim."""
+        r_mm = self._release_offset_m(idx, site) * 1000.0
+        if float(np.max(np.abs(r_mm))) == 0.0:
+            return np.zeros(3)
+        apex_d = float(y_d[1])
+        g = apex_d / float(u_apex) if float(u_apex) > 0.0 else 1.0
+        g = min(max(g, 0.5), 2.0)
+        k = 1.0 - 1.0 / g
+        return np.array([r_mm[0] * k, r_mm[1] * k, 0.0])
+
+    def _release_offset_m(self, idx: int, site) -> np.ndarray:
+        """How far the release planned for skill ``idx`` sits off ``site``,
+        in METRES — the learner state ``x[2:4]`` (``memory.Experience``'s
+        "seat-offset xy of the ball just caught", measured since 2026-09-28).
+
+        ``(0, 0)`` when nothing is recorded for ``idx``: a plain THROW, or a
+        catch whose terminal has not been built yet. One conversion, read by
+        both the learner QUERY (:meth:`_command_u`, at dispatch) and the row
+        that learns from it (:meth:`_register_outcome`), so the two can never
+        describe the same release differently.
+        """
+        recorded = self._carried_release_mm.get(idx)
+        if recorded is None:
+            return np.zeros(2)
+        return ((np.asarray(recorded, dtype=float)[:2]
+                 - np.asarray(site.cup_mm, dtype=float)[:2]) / 1000.0)
 
     def _predicted_landing(self, idx: int, skill: Skill) -> Optional[Landing]:
         """The PREDICTED landing for a catch-with-throw that must dispatch at
@@ -1388,11 +1670,11 @@ class SkillExecutor:
         prev = _previous_release(self.schedule, idx, skill.ball_id)
         if prev is None:
             return None
-        site, t_release_s, y_d, target = prev
+        site, t_release_s, y_d, target, release_idx = prev
         pos_mm = self._commanded_target_mm(target, y_d)
         flight_s = sch.flight_s(float(y_d[1]))
         launch_vel = ballistics_bc.launch_velocity(
-            site.throw_site_mm(), pos_mm, flight_s)
+            self._release_pos_mm(release_idx, site), pos_mm, flight_s)
         vel_mm_s = ballistics_bc.arrival_velocity(launch_vel, flight_s)
         return Landing(pos_mm=pos_mm, vel_mm_s=vel_mm_s,
                        t_land_abs_s=t_release_s + flight_s)
@@ -1549,10 +1831,10 @@ class SkillExecutor:
         prev = _previous_release(self.schedule, idx, skill.ball_id)
         if prev is None:
             return None
-        site, t_release_s, y_d, target = prev
+        site, t_release_s, y_d, target, release_idx = prev
         pos_mm = self._commanded_target_mm(target, y_d)
         flight_s = sch.flight_s(float(y_d[1]))
-        release_pos = site.throw_site_mm()
+        release_pos = self._release_pos_mm(release_idx, site)
         launch_vel = ballistics_bc.launch_velocity(
             release_pos, pos_mm, flight_s)
         rx, ry = tg.tilt_to_throw(launch_vel)
@@ -1789,9 +2071,20 @@ class SkillExecutor:
         released, if it released one and anyone is listening.
 
         Runs immediately after :meth:`_command_u` has cached ``idx``'s
-        command, so the pending row's ``x``/``u`` are exactly what commanded
-        the throw — never recomputed, never the tracker's or the schedule's
-        own numbers.
+        command, so the pending row's ``u`` is exactly what commanded the
+        throw — never recomputed, never the tracker's or the schedule's own
+        numbers.
+
+        ``x[2:4]`` (the release offset, 2026-09-28) is re-read from
+        :attr:`_carried_release_mm` rather than taken from the cached query
+        state, so the row carries the LATEST release this catch has planned.
+        The learner's QUERY used the offset known at the first dispatch; a
+        re-send re-derives the release from the refined landing and can move
+        it by at most the re-aim delta (<= :attr:`lateral_authority_m`,
+        20 mm at the R4 launch default), and the row should describe the
+        throw that actually flew, not the one first asked for. The two agree
+        exactly whenever this catch was never re-sent, and a re-send after
+        this registration is not chased — the row is written once.
         """
         if self.on_experience is None:
             return
@@ -1804,6 +2097,10 @@ class SkillExecutor:
             return
         x, u_dy, u_apex = self._u_cache[idx]
         u = np.array([u_dy[0], u_dy[1], u_apex])
+        # A COPY: the cache holds the state the learner was queried with and
+        # must keep saying so.
+        x = np.asarray(x, dtype=float).copy()
+        x[2:4] = self._release_offset_m(idx, skill.site)
         target_xy_mm = np.asarray(target.catch_site_mm(), dtype=float)[:2]
         self._pending_outcomes.append(_PendingOutcome(
             ball_id=skill.ball_id, x=x, u=u, t_release_s=t_release,

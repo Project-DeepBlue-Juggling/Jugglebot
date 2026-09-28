@@ -38,8 +38,9 @@ Operating point: the owner's R2 point (2026-09-12, ``brief_common.md``) — apex
 0.9 m (``flight_s`` 0.857 s), separation 100 mm, leg 300/5000/200000, hand acc
 3500 rev/s².  Solve budget: the module-scoped fixtures keep the policy tests
 free (they run against a fake installer); the real solves are the fixtures plus
-the eight installs of the end-to-end test — (date, command, result) 2026-09-12,
-``pytest tests/motion/test_skills_executor.py -q``, **19 passed in 0.98 s**.
+the end-to-end schedules' installs — (date, command, result) 2026-09-28,
+``pytest tests/motion/test_skills_executor.py -q -p no:cacheprovider``,
+**133 passed in 3.74 s** (re-measured after the fly-back pre-compensation tests landed).
 
 Unmarked and parallel-safe: pure Python, no filesystem, no ports, no clock
 measurement (every "now" below is a number this file chooses).
@@ -52,6 +53,7 @@ from __future__ import annotations
 import dataclasses
 
 import numpy as np
+from types import SimpleNamespace
 import pytest
 
 import jugglebot.hardware_config as hw
@@ -1506,6 +1508,8 @@ def test_a_catch_with_throw_computes_u_once_and_a_resend_reuses_it(sites):
     first_then_throw = inst.calls[-1][1].then_throw
     assert first_then_throw is not None
     first_target = first_then_throw.target_mm.copy()
+    first_shift = x._offset_flyback_mm(1, sch.skills[1].site,
+                                       sch.skills[1].then_throw.y_d, FLIGHT_S)
 
     box['landing'] = _fit_landing(pos_mm=land0.pos_mm + np.array([12.0, 0, 0]),
                                 vel_mm_s=LAND_VEL,
@@ -1513,7 +1517,15 @@ def test_a_catch_with_throw_computes_u_once_and_a_resend_reuses_it(sites):
     x.tick(t_catch + 0.05)
     assert len(learner.calls) == 2          # NOT recomputed on the re-send
     resent_then_throw = inst.calls[-1][1].then_throw
-    assert np.array_equal(resent_then_throw.target_mm, first_target)
+    # The COMMAND is reused; the AIM is allowed to move by exactly the fly-back
+    # pre-compensation of the re-derived release offset (`_offset_flyback_mm`,
+    # 2026-09-28): the re-send moved the release, so the shift that makes that
+    # offset fly back exactly moves with it. Everything else is identical.
+    shift = (x._offset_flyback_mm(1, sch.skills[1].site,
+                                  sch.skills[1].then_throw.y_d, FLIGHT_S)
+             - first_shift)
+    np.testing.assert_allclose(resent_then_throw.target_mm, first_target + shift,
+                               atol=1e-9)
 
 
 def test_a_catch_with_throw_dispatches_at_its_scheduled_instant_aimed_at_the_predicted_landing(
@@ -3599,11 +3611,11 @@ def test_hand_corrected_landing_reduces_to_the_old_formula_for_a_vertical_throw(
     r = 1.086
     got = x._hand_corrected_landing(catch_idx, catch_skill, r)
 
-    site, t_release_s, y_d, target = ex._previous_release(
+    site, t_release_s, y_d, target, release_idx = ex._previous_release(
         sch, catch_idx, catch_skill.ball_id)
     pos_mm = x._commanded_target_mm(target, y_d)
     flight_s = sc.flight_s(float(y_d[1]))
-    release_pos = site.throw_site_mm()
+    release_pos = x._release_pos_mm(release_idx, site)
     launch_vel = ballistics_bc.launch_velocity(release_pos, pos_mm, flight_s)
     assert abs(launch_vel[0]) < 1e-9 and abs(launch_vel[1]) < 1e-9  # vertical
     old_vel = launch_vel * r
@@ -3620,11 +3632,11 @@ def _hand_corrected_reference(x, sch, catch_idx, catch_skill, r):
     formula independently of ``_hand_corrected_landing`` itself (that would
     only prove the two copies agree with each other, not with the code)."""
     import jugglebot.motion.trajectory.tilt_geometry as tg
-    site, t_release_s, y_d, target = ex._previous_release(
+    site, t_release_s, y_d, target, release_idx = ex._previous_release(
         sch, catch_idx, catch_skill.ball_id)
     pos_mm = x._commanded_target_mm(target, y_d)
     flight_s = sc.flight_s(float(y_d[1]))
-    release_pos = site.throw_site_mm()
+    release_pos = x._release_pos_mm(release_idx, site)
     launch_vel = ballistics_bc.launch_velocity(release_pos, pos_mm, flight_s)
     rx, ry = tg.tilt_to_throw(launch_vel)
     axis = tg.cup_axis(rx, ry)
@@ -3907,3 +3919,445 @@ def test_a_tracker_fit_far_off_the_announced_landing_time_is_ignored_for_a_reloa
     _k, terminal2, _t2, _b2 = inst2.calls[1]
     assert terminal2.t_land_s == pytest.approx(prior.t_land_abs_s + 0.05), \
         'a fit inside the band refines the catch'
+
+
+# ---------------------------------------------------------------------------
+# A CATCH's carried throw releases from WHERE THE BALL WAS CAUGHT
+# (unit A, 2026-09-28) -- the real chain, because the claim is about the
+# PLANNED MOTION between the catch and the release, not about a dataclass.
+# ---------------------------------------------------------------------------
+
+def _carried_chain(sites_t, landing_offset_mm, limits, geom,
+                   authority_m=0.020, n_throws=2, t0=10.0):
+    """Install a ``compile_one_ball`` schedule through the REAL chain with
+    every tracker landing offset from its site by ``landing_offset_mm``;
+    return ``(schedule, executor, records)``.
+
+    Harness shape copied from the probe that measured the defect
+    (``probe_r4_planned_release_motion.py``, 2026-09-28): the real
+    :func:`ex.install_segment`, a fitted-landing tracker, the live
+    :data:`ex.AIM_TRACKER` aim and the R4 launch's 20 mm lateral authority, so
+    what the assertions read is the plan the robot would fly. The tracker
+    answers the earliest landing not yet in the past, which is enough for one
+    ball: a self-toss has exactly one flight open at a time.
+    """
+    sched = sc.compile_one_ball(
+        sc.OneBallPattern(sites=sites_t, apex_m=0.9, dwell_s=0.30,
+                          n_throws=n_throws), t0_abs_s=t0)
+    offset = np.asarray(landing_offset_mm, dtype=float)
+    landings, prev_site = {}, None
+    for i, sk in enumerate(sched.skills):
+        if sk.kind == sg.THROW:
+            prev_site = sk.site
+        if sk.kind == sg.CATCH:
+            v0 = ballistics_bc.launch_velocity(
+                prev_site.throw_site_mm(), sk.site.catch_site_mm(),
+                sched.flight_s)
+            landings[i] = _fit_landing(
+                pos_mm=np.asarray(sk.site.catch_site_mm(), dtype=float) + offset,
+                vel_mm_s=ballistics_bc.arrival_velocity(v0, sched.flight_s),
+                t_land_abs_s=float(sk.t_abs_s))
+            if sk.then_throw is not None:
+                prev_site = sk.site
+    clock = {'t': t0 - sc.FLOOR_LIFT_S - 1.0}
+
+    def tracker(ball_id):
+        for i in sorted(landings):
+            if landings[i].t_land_abs_s > clock['t'] - 0.05:
+                return landings[i]
+        return None
+
+    state = {'record': None}
+    records = []
+
+    def installer(kind, terminal, t_now_s, ball_id=0):
+        rec = state['record']
+        seed = (_rest_state(sites_t[0].rest_site_mm()) if rec is None else None)
+        new_rec, res, _seg = ex.install_segment(
+            rec, seed, kind, terminal, t_now_s, limits=limits, geom=geom)
+        assert res.accepted, '%s %s: %s' % (kind, res.code, res.message)
+        state['record'] = new_rec
+        records.append(new_rec)
+        return res
+
+    execu = ex.SkillExecutor(sched, installer, tracker=tracker,
+                             catch_aim_source=ex.AIM_TRACKER,
+                             lateral_authority_m=authority_m)
+    t_end = max(sk.t_abs_s for sk in sched.skills) + 0.5
+    t = clock['t']
+    while t < t_end and not execu.attempt_ended:
+        clock['t'] = t
+        execu.tick(t)
+        t += DT / 10.0
+    assert not execu.attempt_ended, execu.end_code
+    return sched, execu, records, landings
+
+
+def _carried_catch_idx(sched) -> int:
+    """The index of the first CATCH that carries a throw."""
+    for i, sk in enumerate(sched.skills):
+        if sk.kind == sg.CATCH and sk.then_throw is not None:
+            return i
+    raise AssertionError('no catch-with-throw in this schedule')
+
+
+def _release_view(sched, records, idx):
+    """``(record, catch_knot, release_knot)`` for the carried release of CATCH
+    ``idx``: the LAST installed record whose span covers that release, i.e.
+    the one a re-aim leaves streaming."""
+    sk = sched.skills[idx]
+    t_rel = float(sk.then_throw.t_release_abs_s)
+    covering = [r for r in records if r.t0_s <= t_rel < r.end_s]
+    assert covering, 'no record covers the carried release at %.3f' % t_rel
+    rec = covering[-1]
+    k_rel = int(round((t_rel - rec.t0_s) / DT))
+    k_land = int(round((float(sk.t_abs_s) - rec.t0_s) / DT))
+    return rec, k_land, k_rel
+
+
+def _cup_xy(record, k) -> np.ndarray:
+    plan = record.plan
+    return np.asarray(uc.cup_state_from_platform(
+        plan.pose[k], plan.hand_rev[k]), dtype=float)[:2]
+
+
+def _cup_vel(record, k) -> np.ndarray:
+    plan = record.plan
+    return np.asarray(uc.cup_velocity_from_platform(
+        plan.pose[k], plan.pose_vel[k], plan.hand_rev[k],
+        plan.hand_vel_rps[k]), dtype=float)
+
+
+@pytest.fixture(scope='module')
+def reaimed_self_toss(limits_r3, geom):
+    """A two-throw self-toss whose every landing is +20 mm in y -- the full
+    lateral authority, which is what the 2026-09-27 22:37 sitting's quarantined
+    memory actually commanded."""
+    return _carried_chain((si.columns_sites(SEPARATION_MM)[0],),
+                          (0.0, 20.0, 0.0), limits_r3, geom)
+
+
+def test_a_carried_release_happens_where_the_ball_was_caught(reaimed_self_toss):
+    """Unit A's invariant: the release of a throw carried out of a CATCH is at
+    the CAUGHT xy, not the site's.
+
+    Measured reason (2026-09-27 22:37 R4 sitting, bag
+    ``2026-09-27_22-37-26``): with the release pinned to the site, every throw
+    that followed a laterally re-aimed catch missed by +32..+114 mm in y and
+    the chains dropped, because the plan translated the platform the 20 mm
+    back to the site during the 0.35 s dwell with the ball riding the hand
+    down. Here the release is at the landing, so there is nothing to translate.
+    """
+    sched, execu, records, landings = reaimed_self_toss
+    idx = _carried_catch_idx(sched)
+    site = sched.skills[idx].site
+    landing_xy = np.asarray(landings[idx].pos_mm, dtype=float)[:2]
+    assert np.allclose(landing_xy, site.catch_site_mm()[:2] + [0.0, 20.0])
+
+    # Where the PLAN puts the cup when the ball leaves it -- asserted before
+    # the bookkeeping below so this test's fail-before is the geometry itself.
+    rec, _k_land, k_rel = _release_view(sched, records, idx)
+    assert np.allclose(_cup_xy(rec, k_rel), landing_xy, atol=0.05), \
+        'the cup must be AT the caught xy when the ball leaves it'
+    assert not np.allclose(_cup_xy(rec, k_rel), site.throw_site_mm()[:2],
+                           atol=1.0), 'and NOT back at the site'
+    # ... and the release position recorded for the priors is the same point.
+    assert np.allclose(execu._carried_release_mm[idx],
+                       np.append(landing_xy, site.throw_site_mm()[2]))
+
+
+def test_the_cup_does_not_translate_between_a_catch_and_its_carried_release(
+        reaimed_self_toss):
+    """The physical rule the release position exists to keep: the platform
+    does not translate while it holds a ball between a catch and the release
+    that follows it.
+
+    Pinned numbers, MEASURED 2026-09-28 (``probe_A_cupvel.py``, this schedule):
+    the cup wanders at most 1.27 mm from the caught xy across the 12 dwell
+    knots (a spline bulge between the touch-down state and the release state,
+    not a translation), and the platform centroid's lateral speed peaks at
+    7.09 mm/s -- that residual is the banking compensation of the 0.32 deg
+    release bank the offset release asks for, not a drag-back. Before this
+    unit, the SAME schedule through the SAME chain dragged the cup the full
+    20.00 mm back to the site at up to 102.5 mm/s, centroid 104.6 mm/s (the
+    fail-before run of this test, 2026-09-28) -- which is the ~100 mm/s the
+    bag measured in the field. The only lateral velocity left at release is
+    the intended
+    ballistic one: the throw still targets the SITE, so the launch carries
+    ``offset / flight`` = 23.3 mm/s of +y-to-site drift -- 20 mm absorbed as
+    <= 25 mm/s, the trade this unit accepts.
+    """
+    sched, _execu, records, landings = reaimed_self_toss
+    idx = _carried_catch_idx(sched)
+    landing_xy = np.asarray(landings[idx].pos_mm, dtype=float)[:2]
+    rec, k_land, k_rel = _release_view(sched, records, idx)
+    assert k_rel - k_land == 12, 'the 0.30 s dwell at 40 Hz'
+
+    wander = max(float(np.max(np.abs(_cup_xy(rec, k) - landing_xy)))
+                 for k in range(k_land, k_rel + 1))
+    assert wander < 2.0, 'cup wandered %.2f mm from the caught xy' % wander
+
+    lateral = np.abs(np.asarray(rec.plan.pose_vel)[k_land:k_rel + 1, :2])
+    assert float(np.max(lateral)) < 15.0, \
+        'centroid lateral speed peaked at %.1f mm/s' % float(np.max(lateral))
+
+    v_rel = _cup_vel(rec, k_rel)
+    assert v_rel[1] == pytest.approx(-20.0 / sched.flight_s, abs=0.2)
+    assert abs(v_rel[1]) < 25.0 and abs(v_rel[0]) < 1.0
+
+
+def test_the_next_catch_s_priors_fly_from_the_offset_release(reaimed_self_toss):
+    """Both schedule-derived priors for the NEXT catch of the same ball are
+    built from the release the plan USES, not from the site
+    (:meth:`ex.SkillExecutor._release_pos_mm`) -- otherwise the executor would
+    announce a vertical flight for a throw the planner banked.
+
+    MEASURED 2026-09-28: the commanded landing POSITION is unchanged (it is
+    the target the pattern names, by construction), the ballistic arrival
+    VELOCITY gains -23.34 mm/s in y (= -20 mm / 0.8569 s, zero for a release
+    at the site), and the hand-corrected prior -- which crosses the catch
+    PLANE rather than assuming the commanded point -- lands 3.56 mm on the
+    far side of the site at the measured r = 1.086 (0.00 mm before)."""
+    sched, execu, _records, landings = reaimed_self_toss
+    idx = _carried_catch_idx(sched)
+    nxt = [j for j in range(idx + 1, len(sched.skills))
+           if sched.skills[j].kind == sg.CATCH][0]
+    skill = sched.skills[nxt]
+
+    prior = execu._predicted_landing(nxt, skill)
+    assert np.allclose(prior.pos_mm, skill.site.catch_site_mm())
+    assert prior.vel_mm_s[1] == pytest.approx(-20.0 / sched.flight_s, abs=1e-6)
+    assert prior.vel_mm_s[1] == pytest.approx(-23.3405, abs=1e-3)
+
+    corrected = execu._hand_corrected_landing(nxt, skill, 1.086)
+    assert corrected.pos_mm[1] == pytest.approx(-3.5582, abs=1e-3)
+    assert corrected.pos_mm[0] == pytest.approx(
+        float(skill.site.catch_site_mm()[0]), abs=1e-6)
+
+
+def test_a_hop_catch_releases_from_the_caught_position_too(limits_r3, geom):
+    """The same rule across sites: a 250 mm hop's CATCH at P2, carrying the
+    throw back to P1, releases from the +15 mm x landing it caught -- the hop
+    shape whose 3/3 throws overshot the far site by +87..+104 mm at the
+    2026-09-27 sitting (a LATE release into a plan already re-accelerating,
+    unit B's half of that defect; this half stops the release point itself
+    from moving)."""
+    p1, p2 = si.columns_sites(250.0)
+    sched, execu, records, landings = _carried_chain(
+        (p1, p2), (15.0, 0.0, 0.0), limits_r3, geom)
+    idx = _carried_catch_idx(sched)
+    assert sched.skills[idx].site.name == 'P2'
+    assert sched.skills[idx].then_throw.target.name == 'P1'
+    landing_xy = np.asarray(landings[idx].pos_mm, dtype=float)[:2]
+    assert np.allclose(landing_xy, [140.0, 0.0])
+    rec, _k_land, k_rel = _release_view(sched, records, idx)
+    assert np.allclose(_cup_xy(rec, k_rel), landing_xy, atol=0.05)
+    assert np.allclose(execu._carried_release_mm[idx],
+                       np.append(landing_xy, p2.throw_site_mm()[2]))
+
+
+def test_a_landing_on_the_site_leaves_the_carried_release_bit_identical(
+        limits_r3, geom):
+    """Plan § 0's determinism clause: a catch that lands ON its site plans
+    EXACTLY what it planned before this unit. The release position is built
+    from the clamped landing, and a landing on the site clamps to the site's
+    own xy bit for bit -- so ``site_mm`` is ``throw_site_mm()`` by value
+    equality, not approximately, and the whole segment (which is what every
+    other pin in this file measures) is untouched."""
+    site = si.columns_sites(SEPARATION_MM)[0]
+    sched, execu, records, landings = _carried_chain(
+        (site,), (0.0, 0.0, 0.0), limits_r3, geom)
+    idx = _carried_catch_idx(sched)
+    assert (execu._carried_release_mm[idx].tolist()
+            == site.throw_site_mm().tolist())
+    rec, k_land, k_rel = _release_view(sched, records, idx)
+    assert np.allclose(_cup_xy(rec, k_rel), site.throw_site_mm()[:2],
+                       atol=1e-9)
+    # No lateral motion at all while the ball is held, and none commanded at
+    # release: the pre-unit plan for an un-re-aimed catch, unchanged.
+    assert float(np.max(np.abs(
+        np.asarray(rec.plan.pose_vel)[k_land:k_rel + 1, :2]))) == 0.0
+    assert float(np.max(np.abs(_cup_vel(rec, k_rel)[:2]))) == 0.0
+    nxt = [j for j in range(idx + 1, len(sched.skills))
+           if sched.skills[j].kind == sg.CATCH][0]
+    prior = execu._predicted_landing(nxt, sched.skills[nxt])
+    assert prior.vel_mm_s[0] == 0.0 and prior.vel_mm_s[1] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# The release offset IS the learner state x[2:4] (unit A follow-up, 2026-09-28)
+# ---------------------------------------------------------------------------
+
+def _offset_dispatch(landing_offset_mm, authority_m=0.020):
+    """Dispatch a two-throw self-toss against a FAKE installer with every
+    tracker landing offset by ``landing_offset_mm``; return
+    ``(schedule, executor, rows)`` with ``rows`` the Experience sink.
+
+    No solves: what is under test is the STATE the learner is queried with and
+    the state the row carries, both of which are executor policy."""
+    site = si.columns_sites(SEPARATION_MM)[0]
+    sched = sc.compile_one_ball(
+        sc.OneBallPattern(sites=(site,), apex_m=0.9, dwell_s=0.30,
+                          n_throws=2), t0_abs_s=T0_ABS)
+    offset = np.asarray(landing_offset_mm, dtype=float)
+    landings = {}
+    for i, sk in enumerate(sched.skills):
+        if sk.kind == sg.CATCH:
+            landings[i] = _fit_landing(
+                pos_mm=np.asarray(sk.site.catch_site_mm(), dtype=float) + offset,
+                vel_mm_s=LAND_VEL.copy(), t_land_abs_s=float(sk.t_abs_s))
+    rows = []
+    x = ex.SkillExecutor(
+        sched, _FakeInstaller(),
+        tracker=lambda ball_id: landings[min(landings)],
+        catch_aim_source=ex.AIM_TRACKER, lateral_authority_m=authority_m,
+        on_experience=rows.append)
+    for sk in sched.skills:
+        x.tick(sk.dispatch_s())
+    return sched, x, rows
+
+
+def test_the_learner_state_carries_the_release_offset_of_a_carried_throw():
+    """``x[2:4]`` is the release offset in metres — ``memory.Experience``'s
+    "seat-offset xy of the ball just caught", measured since 2026-09-28
+    instead of pinned at zero.
+
+    WHY: with it pinned, the release position was plant state the learner's
+    static ``u -> y`` map could not represent, and ~23 % of every offset came
+    back as an opposite-sign landing error (the offset is flown back as
+    lateral velocity; an 11 % fast launch over an 11 % longer flight delivers
+    ~1.23x of it). The learner's local affine fit has a ``delta_x`` slope term
+    for exactly this (``learner`` step 3, ``Z = [delta_x; delta_u; 1]``) and
+    ``h_x`` is shared with the site half, so no new knob is needed."""
+    sched, x, _rows = _offset_dispatch((0.0, 20.0, 0.0))
+    site = sched.skills[1].site
+    throw_idx = 1
+    catch_idx = _carried_catch_idx(sched)
+    assert sched.skills[throw_idx].kind == sg.THROW
+
+    x_throw = x._u_cache[throw_idx][0]
+    assert x_throw[2] == 0.0 and x_throw[3] == 0.0, \
+        'a THROW releases from rest AT its site: no offset to carry'
+    x_catch = x._u_cache[catch_idx][0]
+    assert np.allclose(x_catch[:2], np.asarray(site.cup_mm)[:2] / 1000.0)
+    assert x_catch[2] == pytest.approx(0.0, abs=1e-12)
+    assert x_catch[3] == pytest.approx(0.020, abs=1e-12), \
+        'the carried release is 20 mm off the site in +y'
+
+
+def test_the_experience_row_carries_the_LATEST_release_offset():
+    """The row learns from the throw that actually flew: ``x[2:4]`` is re-read
+    from ``_carried_release_mm`` at registration, not taken from the cached
+    query state, so a re-send that re-derives the release from a refined
+    landing is reflected. The QUERY keeps the first dispatch's offset (the
+    command may not change late in a transit), and the cache must keep saying
+    so — the two differ by at most the re-aim delta (<= 20 mm)."""
+    sched, x, _rows = _offset_dispatch((0.0, 20.0, 0.0))
+    catch_idx = _carried_catch_idx(sched)
+    skill = sched.skills[catch_idx]
+    pend = [p for p in x._pending_outcomes
+            if p.t_release_s == pytest.approx(
+                float(skill.then_throw.t_release_abs_s))]
+    assert len(pend) == 1
+    assert pend[0].x[3] == pytest.approx(0.020, abs=1e-12)
+
+    # What a re-send does: re-derive the terminal from a refined landing, then
+    # (as `_dispatch` does for a fresh dispatch) register the outcome.
+    moved = _fit_landing(
+        pos_mm=np.asarray(skill.site.catch_site_mm(), dtype=float)
+        + np.array([0.0, 8.0, 0.0]),
+        vel_mm_s=LAND_VEL.copy(), t_land_abs_s=float(skill.t_abs_s))
+    x._catch_terminal(catch_idx, skill, moved)
+    x._register_outcome(catch_idx, skill)
+    assert x._pending_outcomes[-1].x[3] == pytest.approx(0.008, abs=1e-12)
+    assert x._u_cache[catch_idx][0][3] == pytest.approx(0.020, abs=1e-12), \
+        'the cached QUERY state is what the learner was asked, unchanged'
+
+
+def test_a_landing_on_the_site_leaves_the_learner_state_bit_identical():
+    """Determinism (plan § 0): an un-re-aimed catch queries the learner with
+    EXACTLY the state it did before this unit — ``(site xy, 0, 0)`` by value
+    equality, so no memory row and no command can move for a pattern running
+    on its sites."""
+    sched, x, _rows = _offset_dispatch((0.0, 0.0, 0.0))
+    site = sched.skills[1].site
+    expected = [float(site.cup_mm[0]) / 1000.0,
+                float(site.cup_mm[1]) / 1000.0, 0.0, 0.0]
+    for idx in (1, _carried_catch_idx(sched)):
+        assert x._u_cache[idx][0].tolist() == expected
+    catch_idx = _carried_catch_idx(sched)
+    pend = [p for p in x._pending_outcomes
+            if p.t_release_s == pytest.approx(
+                float(sched.skills[catch_idx].then_throw.t_release_abs_s))]
+    assert pend[0].x.tolist() == expected
+
+
+# ---------------------------------------------------------------------------
+# The release offset flies back exactly: the aim pre-compensates it by the
+# learner's own apex ratio (main session, 2026-09-28, after unit A's gate rows)
+# ---------------------------------------------------------------------------
+
+def _offset_dispatch_with_apex_gain(landing_offset_mm, u_apex):
+    """As ``_offset_dispatch`` but with a fake learner that commands ``u_apex``
+    for every throw (a plant that throws ``apex_d / u_apex`` high)."""
+    site = si.columns_sites(SEPARATION_MM)[0]
+    sched = sc.compile_one_ball(
+        sc.OneBallPattern(sites=(site,), apex_m=0.9, dwell_s=0.30,
+                          n_throws=2), t0_abs_s=T0_ABS)
+    offset = np.asarray(landing_offset_mm, dtype=float)
+    landings = {}
+    for i, sk in enumerate(sched.skills):
+        if sk.kind == sg.CATCH:
+            landings[i] = _fit_landing(
+                pos_mm=np.asarray(sk.site.catch_site_mm(), dtype=float) + offset,
+                vel_mm_s=LAND_VEL.copy(), t_land_abs_s=float(sk.t_abs_s))
+    learner = SimpleNamespace(
+        command=lambda x, y_d: np.array([float(y_d[0]), float(y_d[1]),
+                                         float(u_apex)]))
+    x = ex.SkillExecutor(
+        sched, _FakeInstaller(),
+        tracker=lambda ball_id: landings[min(landings)],
+        catch_aim_source=ex.AIM_TRACKER, lateral_authority_m=0.020,
+        learner=learner)
+    for sk in sched.skills:
+        x.tick(sk.dispatch_s())
+    return sched, x
+
+
+def test_a_carried_release_offset_is_pre_compensated_by_the_apex_ratio():
+    """A plant the learner has measured at apex gain g = 0.9 / 0.75 = 1.2
+    stretches every ballistic displacement by 1.2, the offset's fly-back
+    included: to have a 20 mm release offset land ON the target the aim moves
+    20 * (1 - 1/1.2) = 3.333 mm toward the release side, so the planned -16.67
+    mm becomes the -20 mm the ball needs. Without it (unit A's first gate run)
+    ~(g - 1) of every offset returned as an opposite-sign landing error and the
+    learner hunted the pattern 50 mm off the site."""
+    sched, x = _offset_dispatch_with_apex_gain((0.0, 20.0, 0.0), u_apex=0.75)
+    catch_idx = _carried_catch_idx(sched)
+    tt = x._catch_terminal(catch_idx, sched.skills[catch_idx],
+                           x.tracker(0)).then_throw
+    target = np.asarray(sched.skills[catch_idx].then_throw.target.catch_site_mm(),
+                        dtype=float)
+    assert tt.site_mm[1] == pytest.approx(target[1] + 20.0)
+    assert tt.target_mm[0] == pytest.approx(target[0], abs=1e-9)
+    assert tt.target_mm[1] == pytest.approx(target[1] + 20.0 * (1.0 - 0.75 / 0.9),
+                                            abs=1e-9)
+    # The planned lateral displacement is -r/g, which the plant's g returns as -r.
+    planned = tt.target_mm[1] - tt.site_mm[1]
+    assert planned * (0.9 / 0.75) == pytest.approx(-20.0, abs=1e-9)
+
+
+def test_no_apex_gain_or_no_offset_leaves_the_carried_aim_untouched():
+    """Cold memory (u_apex == apex_d, g = 1) or a landing on the site: the
+    shift is exactly zero, so unit A's bit-identity pins still hold."""
+    sched, x = _offset_dispatch_with_apex_gain((0.0, 20.0, 0.0), u_apex=0.9)
+    catch_idx = _carried_catch_idx(sched)
+    tt = x._catch_terminal(catch_idx, sched.skills[catch_idx],
+                           x.tracker(0)).then_throw
+    target = np.asarray(sched.skills[catch_idx].then_throw.target.catch_site_mm(),
+                        dtype=float)
+    assert tt.target_mm.tolist() == target.tolist()
+    sched2, x2 = _offset_dispatch_with_apex_gain((0.0, 0.0, 0.0), u_apex=0.75)
+    tt2 = x2._catch_terminal(catch_idx, sched2.skills[catch_idx],
+                             x2.tracker(0)).then_throw
+    assert tt2.target_mm.tolist() == target.tolist()

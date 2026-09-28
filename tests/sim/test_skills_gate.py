@@ -411,3 +411,59 @@ def test_a_small_hop_learner_run_is_apex_clipped_not_converged():
     # every commanded apex clipped at (or essentially at) the box's floor
     assert all(t['u'][2] <= 0.90 + 1e-9 for t in res['throws'])
     assert min(t['u'][2] for t in res['throws']) == pytest.approx(0.85, abs=1e-6)
+
+
+# ---------------------------------------------------------------------------
+# A re-send SUPERSEDES its pending release (main session, 2026-09-28)
+# ---------------------------------------------------------------------------
+
+def test_a_resend_supersedes_its_own_pending_release(monkeypatch):
+    """The same (ball, release instant) is installed once at dispatch and up
+    to ``resend_max`` more times as the tracker refines the landing; only the
+    LAST terminal is what the machine does. Appending every acceptance kept
+    the FIRST dispatch's takeoff (planned for a release AT the site) at the
+    head of ``pending_releases`` and released the ball with it from the
+    re-aimed cup, while the re-sent takeoffs -- which carry the lateral
+    fly-back a release off the site needs since ``executor._catch_terminal``
+    releases from the caught position (2026-09-28) -- sat behind it unused.
+    Harmless while every release was at the site (identical takeoffs); it
+    walked the learner gate 50 mm off the site once the release moved."""
+    from types import SimpleNamespace
+    from jugglebot.motion.skills import executor as ex
+    from jugglebot.motion.skills.segments import (CATCH, CatchTerminal,
+                                                  ThrowAfterCatch)
+
+    calls = []
+
+    def fake_install(record, seed_rest, kind, terminal, t_now_s, **kw):
+        calls.append(kind)
+        tt = terminal.then_throw
+        seg = SimpleNamespace(
+            takeoff_vel_mm_s=np.asarray(tt.target_mm, dtype=float) * 0.0
+            + np.array([0.0, float(tt.target_mm[1] - tt.site_mm[1]), 4000.0]),
+            warm_start=None)
+        res = ex.InstallResult(True, 'OK', 'fake', 0.0, splice_k=0, t0_s=0.0)
+        return object(), res, seg
+
+    monkeypatch.setattr(sg.ex, 'install_segment', fake_install)
+    ictx = sg._InstallCtx(seed_rest=None)
+    installer = sg._make_installer(ictx, seg_cfg=None, limits=None, geom=None)
+    site = sites.columns_sites(100.0)[0]
+    land = np.asarray(site.catch_site_mm(), dtype=float)
+
+    def catch_terminal(release_xy):
+        rel = np.array([release_xy[0], release_xy[1], site.throw_site_mm()[2]])
+        return CatchTerminal(
+            landing_mm=land, landing_vel_mm_s=np.array([0.0, 0.0, -4000.0]),
+            t_land_s=1.0, rest_site_mm=site.rest_site_mm(),
+            then_throw=ThrowAfterCatch(t_release_s=1.3, site_mm=rel,
+                                       target_mm=land, flight_s=0.8))
+
+    installer(CATCH, catch_terminal((land[0], land[1])), 0.5, ball_id=0)
+    installer(CATCH, catch_terminal((land[0], land[1] + 20.0)), 0.7, ball_id=0)
+    assert calls == [CATCH, CATCH]
+    assert len(ictx.pending_releases) == 1, ictx.pending_releases
+    t_rel, ball, vel, rel_site, target = ictx.pending_releases[0]
+    assert ball == 0 and t_rel == pytest.approx(1.3)
+    assert rel_site[1] == pytest.approx(land[1] + 20.0)
+    assert vel[1] == pytest.approx(-20.0)      # the LAST takeoff, with its fly-back

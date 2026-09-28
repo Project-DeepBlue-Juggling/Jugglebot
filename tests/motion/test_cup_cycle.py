@@ -1514,3 +1514,134 @@ def test_a_malformed_held_axis_is_a_caller_bug_not_a_refusal():
     for bad in (np.array([0.0, 0.0, 2.0]), np.array([0.0, 0.0, -1.0])):
         with pytest.raises(ValueError):
             _held_axis_window(axis=bad)
+
+
+# ---------------------------------------------------------------------------
+# The post-release PLATFORM hold (`hold_axis` / `hold_knots`, 2026-09-28)
+# ---------------------------------------------------------------------------
+#
+# NOT the held RECEIVE axis above (``CatchEvent.axis`` slaves the lateral catch
+# channel to the stroke). This is ``unified_cycle.CycleGoals.hold_platform_knots``
+# — a caller-supplied axis for the knots RIGHT AFTER a release, stating
+# ``vel_xy[k] == hold_axis[:2] * vel_z[k]`` for ``k`` in ``1..hold_knots``: the
+# line a FROZEN platform's stroke can reach. It REPLACES the detach-cone
+# equalities over those knots (``_assemble``'s own comment block) rather than
+# joining them — the cone keeps the cup's specific force axial by translating
+# the platform, which on a tilted release is exactly the unplanned sideways
+# shove this hold exists to remove (2026-09-27 sitting, see
+# ``unified_cycle.POST_RELEASE_HOLD_S``).
+
+#: A REAL tilted release (not a fabricated axis on a level one — probed
+#: 2026-09-28: forcing a level release's cup onto an independently-chosen
+#: tilted line makes the QP infeasible, because knot 0 is already off the line
+#: the hold has no freedom to fix). Same recipe as
+#: ``test_detach_rows_are_present_only_when_the_window_follows_a_release``.
+_HOLD_TARGET = np.array([0.06, 0.0, 0.86])
+
+
+def _hold_release_state():
+    v = cc.takeoff_velocity(_W_THROW, _HOLD_TARGET, _W_FLIGHT_S)
+    axis = v / np.linalg.norm(v)
+    return cc.CupState(pos=_W_THROW, vel=v, acc=cc.GRAVITY, detach_axis=axis,
+                       post_release=True), axis
+
+
+def test_the_hold_pins_cup_velocity_on_the_frozen_stroke_line_exactly():
+    """``hold_knots`` knots after the release, ``vel_xy == hold_axis_xy * vel_z``
+    to the solver's own equality-residual floor — a hard QP row, not a soft
+    pull, unlike the detach-cone branch it replaces (whose lateral residual
+    GROWS with knot index because it only pins acceleration DIRECTION, not the
+    velocity line).
+
+    FAIL-BEFORE / PASS-AFTER: ``hold_knots`` is this layer's own on/off switch
+    (the same one ``segments._hold_knots`` flips one layer up), so toggling it
+    from 0 to the shipped value exercises the branch exactly as reverting
+    production code would. MEASURED (this probe, 2026-09-28): off-line residual
+    at knots 1..HK is 8.4 / 16.7 mm/s with the hold off, 2.1e-5 / 1.3e-4 mm/s
+    with it on — four to five orders tighter, not merely smaller.
+    """
+    cfg = _window_cfg()
+    state0, axis = _hold_release_state()
+    hk = uc_hold_knots()
+    off_plan = cc.plan_window([], state0, cfg, period_s=0.6, settle_site=_W_REST,
+                              hold_axis=axis, hold_knots=0)
+    held_plan = cc.plan_window([], state0, cfg, period_s=0.6, settle_site=_W_REST,
+                               hold_axis=axis, hold_knots=hk)
+    for k in range(1, hk + 1):
+        off_before = float(np.max(np.abs(
+            off_plan.vel[k, :2] - axis[:2] * off_plan.vel[k, 2])))
+        off_after = float(np.max(np.abs(
+            held_plan.vel[k, :2] - axis[:2] * held_plan.vel[k, 2])))
+        assert off_before > 1e-4, ('fail-before: knot %d is already on the '
+                                   'line without the hold' % k)
+        assert off_after < 1e-6, k
+
+
+def test_hold_knots_zero_assembles_the_program_it_always_did():
+    """``hold_knots=0`` (explicit) is bit-identical to the field being absent —
+    the pin against "the pre-B solve" this new field cannot have, because
+    ``hold_axis``/``hold_knots`` did not exist before it. Same pattern as
+    ``test_a_no_axis_catch_assembles_the_program_it_always_did`` above.
+    """
+    cfg = _window_cfg()
+    state0 = _release_state()
+    catch = cc.CatchEvent(0, _W_FLIGHT_S, _W_CATCH, _W_CATCH_VEL)
+    a = cc._assemble(state0, None, catch, 1.0, cfg, settle_site=_W_REST)
+    b = cc._assemble(state0, None, catch, 1.0, cfg, settle_site=_W_REST,
+                     hold_axis=None, hold_knots=0)
+    for name in ('H', 'f', 'Aeq', 'beq', 'C', 'bc'):
+        assert np.array_equal(getattr(a, name), getattr(b, name)), name
+    # ...and the full solved plan agrees too, not just the assembled program.
+    via_a = cc.plan_window([catch], state0, cfg, period_s=1.0, settle_site=_W_REST)
+    via_b = cc.plan_window([catch], state0, cfg, period_s=1.0, settle_site=_W_REST,
+                           hold_axis=None, hold_knots=0)
+    assert np.array_equal(via_a.pos, via_b.pos)
+    assert np.array_equal(via_a.jerk, via_b.jerk)
+
+
+def test_a_platform_hold_refuses_a_seed_that_followed_no_release():
+    """``hold_knots > 0`` off a ``post_release=False`` seed: there is no ball
+    leaving this cup to hold the platform still for — ``HOLD_WINDOW``."""
+    cfg = _window_cfg()
+    state0 = cc.CupState(_W_REST, np.zeros(3), np.zeros(3), None,
+                         post_release=False)
+    axis = np.array([np.sin(np.radians(6.0)), 0.0, np.cos(np.radians(6.0))])
+    with pytest.raises(cc.CupCycleInfeasible) as excinfo:
+        cc.plan_window([], state0, cfg, period_s=0.6, settle_site=_W_REST,
+                       hold_axis=axis, hold_knots=uc_hold_knots())
+    assert excinfo.value.reason == 'HOLD_WINDOW'
+
+
+def uc_hold_knots():
+    """``unified_cycle.post_release_hold_knots()`` at this module's own ``dt`` —
+    a local import so this file need not import ``unified_cycle`` at top level
+    for one number."""
+    from jugglebot.motion import unified_cycle as uc
+    return uc.post_release_hold_knots()
+
+
+def test_a_platform_hold_longer_than_the_tail_is_refused():
+    """A hold that would leave no room for the tail to reach rest is
+    ``HOLD_WINDOW``, not a silently-clamped hold. 3-knot window, 2-knot hold:
+    only 1 knot of tail is left."""
+    cfg = _window_cfg()
+    state0, axis = _hold_release_state()
+    hk = uc_hold_knots()
+    with pytest.raises(cc.CupCycleInfeasible) as excinfo:
+        cc.plan_window([], state0, cfg, period_s=hk * cfg.dt + cfg.dt,
+                       settle_site=_W_REST, hold_axis=axis, hold_knots=hk)
+    assert excinfo.value.reason == 'HOLD_WINDOW'
+
+
+def test_a_catch_inside_the_platform_hold_is_refused():
+    """A catch whose interpolated touch-down falls inside the hold cannot be
+    met: the cup cannot both be on the frozen platform's stroke line and dive
+    to a touch-down somewhere off it — ``CATCH_TOO_EARLY``."""
+    cfg = _window_cfg()
+    state0, axis = _hold_release_state()
+    hk = uc_hold_knots()
+    catch = cc.CatchEvent(0, 1.5 * cfg.dt, _W_CATCH, _W_CATCH_VEL)   # k_td == 1
+    with pytest.raises(cc.CupCycleInfeasible) as excinfo:
+        cc.plan_window([catch], state0, cfg, period_s=1.0, settle_site=_W_REST,
+                       hold_axis=axis, hold_knots=hk)
+    assert excinfo.value.reason == 'CATCH_TOO_EARLY'

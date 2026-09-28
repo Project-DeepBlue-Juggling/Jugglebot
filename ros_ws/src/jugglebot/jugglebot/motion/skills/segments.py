@@ -62,6 +62,23 @@ KINDS = (THROW, CATCH, REST)
 REST_TAIL_S = 0.30
 
 
+def _hold_knots(cfg: 'SegmentConfig', seed: 'uc.CycleState') -> int:
+    """``cfg.post_release_hold_s`` on the knot grid, or 0 off a non-release seed.
+
+    The ONE place a segment decides how long the platform holds still, so every
+    window this module builds off a release — the SETTLE tails a THROW and a
+    CATCH-with-throw carry, and the LANDING / STEADY / SETTLE a SPLICE seeds AT a
+    release knot (which is the window the 250 mm hop's post-release knots
+    actually come from: ``splice_at`` is allowed to cut exactly at ``k_rel``, so
+    the tail's hold never sees them) — holds for the same length.  ``0`` off a
+    seed that followed no release: there is no ball leaving, and the hold would
+    only forbid the cup from accelerating out of rest.
+    """
+    if not bool(seed.post_release):
+        return 0
+    return uc.post_release_hold_knots(cfg.post_release_hold_s)
+
+
 def _vec3(value, name: str) -> np.ndarray:
     arr = np.asarray(value, dtype=float).reshape(-1)
     if arr.shape != (3,):
@@ -191,9 +208,16 @@ class RestTerminal:
 
 @dataclasses.dataclass(frozen=True)
 class SegmentConfig:
-    """The one knob a segment build needs beyond the terminal itself."""
+    """The knobs a segment build needs beyond the terminal itself."""
 
     rest_tail_s: float = REST_TAIL_S
+    #: How long the platform holds still before the SETTLE tail starts translating
+    #: back toward ``rest_site_mm`` — see
+    #: :data:`~jugglebot.motion.unified_cycle.POST_RELEASE_HOLD_S` for the
+    #: 2026-09-27 measurement that sets it (the ball separates 20-40 ms after the
+    #: planned release; the tail used to be translating the platform by then).
+    #: The value is defined there because the splice guard needs the same number.
+    post_release_hold_s: float = uc.POST_RELEASE_HOLD_S
 
 
 @dataclasses.dataclass(frozen=True)
@@ -295,7 +319,8 @@ def _plan_throw(seed, terminal: ThrowTerminal, cfg: SegmentConfig,
     # (``CycleGoals.holds_ball`` defaults False).  The LAUNCH half carries one
     # from knot 0 to the knot before its release, set by kind in
     # ``unified_cycle.plan_cycle``.
-    goals_b = uc.CycleGoals(period_s=cfg.rest_tail_s, settle_site_mm=rest_mm)
+    goals_b = uc.CycleGoals(period_s=cfg.rest_tail_s, settle_site_mm=rest_mm,
+                            hold_platform_knots=_hold_knots(cfg, seed_b))
     plan_b, meta_b = uc.plan_settle(goals_b, seed_b, limits, geom)
     plan, meta = uc.extend(plan_a, meta_a, plan_b, meta_b, limits, geom)
     return Segment(kind=THROW, plan=plan, meta=meta, splice_k=0,
@@ -313,7 +338,8 @@ def _plan_catch(seed, terminal: CatchTerminal, cfg: SegmentConfig,
                           catch_vel_mm_s=terminal.landing_vel_mm_s,
                           catch_t_s=terminal.t_land_s,
                           settle_site_mm=terminal.rest_site_mm,
-                          hold_tilt=terminal.hold_tilt)
+                          hold_tilt=terminal.hold_tilt,
+                          hold_platform_knots=_hold_knots(cfg, seed))
     plan, meta = uc.plan_landing(goals, seed, limits, geom,
                                  warm_start=warm_start)
     return Segment(kind=CATCH, plan=plan, meta=meta, splice_k=0,
@@ -333,12 +359,14 @@ def _plan_catch_throw(seed, terminal: CatchTerminal, cfg: SegmentConfig,
                             flight_s=tt.flight_s,
                             catch_site_mm=terminal.landing_mm,
                             catch_vel_mm_s=terminal.landing_vel_mm_s,
-                            catch_t_s=terminal.t_land_s)
+                            catch_t_s=terminal.t_land_s,
+                            hold_platform_knots=_hold_knots(cfg, seed))
     plan_a, meta_a = uc.plan_steady(goals_a, seed, limits, geom,
                                     warm_start=warm_start)
     seed_b = uc.release_state_from_meta(meta_a, plan_a)
     goals_b = uc.CycleGoals(period_s=cfg.rest_tail_s,
-                            settle_site_mm=terminal.rest_site_mm)
+                            settle_site_mm=terminal.rest_site_mm,
+                            hold_platform_knots=_hold_knots(cfg, seed_b))
     plan_b, meta_b = uc.plan_settle(goals_b, seed_b, limits, geom)
     plan, meta = uc.extend(plan_a, meta_a, plan_b, meta_b, limits, geom)
     return Segment(kind=CATCH, plan=plan, meta=meta, splice_k=0,
@@ -359,7 +387,8 @@ def _plan_rest(seed, terminal: RestTerminal, cfg: SegmentConfig,
                           # (Not kinematic inference — `post_release` is the
                           # caller's own explicit statement about the ball.)
                           holds_ball=(bool(terminal.holds_ball)
-                                      and not bool(seed.post_release)))
+                                      and not bool(seed.post_release)),
+                          hold_platform_knots=_hold_knots(cfg, seed))
     plan, meta = uc.plan_settle(goals, seed, limits, geom,
                                 warm_start=warm_start)
     return Segment(kind=REST, plan=plan, meta=meta, splice_k=0,

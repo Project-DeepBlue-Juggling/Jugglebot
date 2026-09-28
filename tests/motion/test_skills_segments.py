@@ -25,6 +25,7 @@ from jugglebot.motion.trajectory import cup_realize as cr
 from jugglebot.motion.trajectory.limits import TrajectoryLimits
 from jugglebot.motion.skills import schedule as sc
 from jugglebot.motion.skills import segments as sg
+from jugglebot.motion.skills import sites as si
 
 #: The owner's R2 operating point (plan § 0, 2026-09-12): leg 300/5000/200000
 #: mm(/s, /s^2, /s^3), hand acc 3500 rev/s^2 -- the same limits the rest_tail_s
@@ -473,3 +474,146 @@ def test_the_decay_rest_returns_the_machine_to_level(bb_chain):
     _, _, _, dec = bb_chain
     assert np.allclose(dec.plan.pose[-1, 3:5], 0.0, atol=1e-12)
     assert dec.meta.report.peak_leg_vel_mmps < 100.0
+
+
+# ---------------------------------------------------------------------------
+# The post-release platform hold (SegmentConfig.post_release_hold_s, 2026-09-28)
+# ---------------------------------------------------------------------------
+
+#: A 250 mm hop: the shape whose release is TILTED, and the only one where the
+#: hold has anything to do — a vertical self-toss releases level, the detach cone
+#: reduces to ``acc_xy == 0`` there, and the centroid is already still.
+#: The production 250 mm column pair, exactly as the runsheet's hop uses it.
+HOP_P1, HOP_P2 = si.columns_sites(250.0)
+#: Knots the hold covers, read from the production constant (never re-derived).
+HOLD_K = uc.post_release_hold_knots()
+
+
+@pytest.fixture(scope='module')
+def hop_throw_segment(limits, geom, cfg):
+    """A THROW from rest aimed 250 mm away — release tilt 4.006 deg."""
+    seed = _rest_state(HOP_P1.rest_site_mm())
+    terminal = sg.ThrowTerminal(site_mm=HOP_P1.throw_site_mm(),
+                                target_mm=HOP_P2.catch_site_mm(),
+                                flight_s=T_F, t_release_s=0.4)
+    return sg.plan_segment(sg.THROW, seed, terminal, cfg, limits, geom)
+
+
+@pytest.fixture(scope='module')
+def hop_release_seed(hop_throw_segment):
+    """The state a SPLICE seeds the next skill with when it cuts AT the release
+    knot — which ``splice_at`` is allowed to do (``k_s == k_rel`` is
+    :func:`unified_cycle.extend`'s own chain), and which is where the 250 mm
+    hop's post-release knots actually come from in the field."""
+    k_rel = int(round(float(hop_throw_segment.event_t_s) / DT))
+    return uc.release_state_at_knot(hop_throw_segment.plan,
+                                    hop_throw_segment.meta, k_rel)
+
+
+def _hold_verdict(plan, k_rel, n=HOLD_K):
+    """(worst centroid speed mm/s, worst centroid displacement mm) over knots
+    ``k_rel+1 .. k_rel+n`` — the quantity ``tools/probes/planned_release_motion.py``
+    prints as its HOLD verdict."""
+    pose = np.asarray(plan.pose)
+    vel = np.asarray(plan.pose_vel)
+    ks = [k for k in range(k_rel + 1, k_rel + 1 + n) if k < len(pose)]
+    assert len(ks) == n
+    speed = max(float(np.hypot(vel[k][0], vel[k][1])) for k in ks)
+    disp = max(float(np.linalg.norm(pose[k][:3] - pose[k_rel][:3])) for k in ks)
+    return speed, disp
+
+
+def _off_stroke_line_mm_s(plan, k_rel, n=HOLD_K):
+    """Worst |cup velocity off the frozen platform's stroke line| (mm/s).
+
+    THE invariant the hold's QP rows state: with the platform still, the cup can
+    only move along ``(axis_xy, 1)`` — ``cup_realize.decompose``'s own centroid
+    slope — so ``v_xy == axis_xy · v_z`` at every held knot.
+    """
+    pose = np.asarray(plan.pose)
+    vel = np.asarray(plan.pose_vel)
+    hand = np.asarray(plan.hand_rev)
+    hvel = np.asarray(plan.hand_vel_rps)
+    kappa = np.asarray(cr.tilt_geometry.cup_axis(*pose[k_rel][3:5]))[:2]
+    worst = 0.0
+    for k in range(k_rel + 1, k_rel + 1 + n):
+        v = np.asarray(uc.cup_velocity_from_platform(
+            pose[k], vel[k], hand[k], hvel[k])).ravel()[:3]
+        worst = max(worst, float(np.max(np.abs(v[:2] - kappa * v[2]))))
+    return worst
+
+
+def test_a_tilted_throws_tail_holds_the_cup_on_the_frozen_stroke_line(
+        hop_throw_segment):
+    """The SETTLE tail of a 250 mm hop keeps the cup on the held line.
+
+    MEASURED 2026-09-28 (``tools/probes/planned_release_motion.py``, and the
+    fail-before run of this test, at the FIRST 3-knot/75 ms sizing -- the shipped hold is 2 knots, `HOLD_K` below): off-line cup velocity over the three held
+    knots was **17.1 / 34.3 / 51.4 mm/s** before the hold (0.0041 mm/s after) — the detach cone's
+    ``acc == g + lambda·axis``, whose lateral part is ``9810·sin 4.006 deg =
+    686 mm/s^2`` of centroid acceleration — and is **< 1e-6 mm/s** with it.
+    The centroid velocity over those knots falls 28.7 / 70.3 / 107.6 -> 11.1 /
+    35.9 / 57.3 mm/s; the residual is entirely the attitude slew through the
+    measured 224-261 mm cup lever, which this hold deliberately does NOT pin
+    (see ``unified_cycle._realize``'s "attitude half" block).
+    """
+    k_rel = int(round(float(hop_throw_segment.event_t_s) / DT))
+    # 0.0041 mm/s measured: the residual is the reconstruction, not the pin —
+    # cup_velocity_from_platform rebuilds the cup velocity from the REALISED pose
+    # with finite-differenced tilt rates, while the QP pinned the analytic one.
+    assert _off_stroke_line_mm_s(hop_throw_segment.plan, k_rel) < 0.05
+    speed, disp = _hold_verdict(hop_throw_segment.plan, k_rel)
+    assert speed < 60.0
+    assert disp < 2.0
+
+
+def test_a_post_release_landing_holds_the_platform_after_the_release(
+        hop_release_seed, cfg, limits, geom):
+    """The window the 250 mm hop's post-release knots really come from.
+
+    The CATCH at the far site is installed BEFORE the release and spliced in at
+    the release knot, so the hold has to live on the LANDING too — not only on
+    the THROW's tail.  MEASURED 2026-09-28 through the real install chain
+    (``tools/probes/planned_release_motion.py``): worst centroid speed over the
+    three held knots **68.10 -> 13.36 mm/s** (measured at the first 3-knot sizing; 2.75 mm/s at the shipped 2 knots), worst centroid displacement
+    **2.018 -> 0.342 mm**; the ball rode the 68 mm/s out of the cup as the
+    +85..+110 mm/s of unplanned lateral velocity that overshot the far site by
+    87-104 mm on 3/3 hops on 2026-09-27.
+    """
+    v_arrival = np.array([0.0, 0.0, -ballistics_bc.GRAVITY_MMS2 * (T_F / 2.0)])
+    landing_mm = np.asarray(HOP_P2.catch_site_mm(), dtype=float)
+    terminal = sg.CatchTerminal(
+        landing_mm=landing_mm, landing_vel_mm_s=v_arrival,
+        t_land_s=T_F,
+        rest_site_mm=np.array([landing_mm[0], landing_mm[1],
+                               uc.SETTLE_CUP_Z_MM]))
+    seg = sg.plan_segment(sg.CATCH, hop_release_seed, terminal, cfg, limits,
+                          geom)
+    assert _off_stroke_line_mm_s(seg.plan, 0) < 0.05
+    speed, disp = _hold_verdict(seg.plan, 0)
+    assert speed < 20.0
+    assert disp < 0.6
+    # still rest-terminal, and the gate passed (plan_segment raises otherwise)
+    assert float(np.max(np.abs(np.asarray(seg.plan.pose_vel)[-1]))) < 1e-6
+
+
+def test_the_hold_is_off_and_bit_identical_off_a_seed_that_followed_no_release(
+        limits, geom):
+    """A REST from a machine at rest is bit-for-bit what it was before the hold.
+
+    ``_hold_knots`` answers 0 off a seed with ``post_release=False``: there is no
+    ball leaving, and the rows would only forbid the cup from accelerating out of
+    rest at all (the same reason the detach cone is not assembled there).
+    """
+    seed = _rest_state(REST_MM)
+    assert sg._hold_knots(sg.SegmentConfig(), seed) == 0
+    terminal = sg.RestTerminal(rest_site_mm=np.array([0.0, 0.0, 700.0]),
+                               t_rest_s=0.5)
+    held = sg.plan_segment(sg.REST, seed, terminal, sg.SegmentConfig(), limits,
+                           geom)
+    off = sg.plan_segment(sg.REST, seed,
+                          terminal, sg.SegmentConfig(post_release_hold_s=0.0),
+                          limits, geom)
+    assert np.array_equal(np.asarray(held.plan.pose), np.asarray(off.plan.pose))
+    assert np.array_equal(np.asarray(held.plan.hand_rev),
+                          np.asarray(off.plan.hand_rev))

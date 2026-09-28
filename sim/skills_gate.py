@@ -354,19 +354,33 @@ def _make_installer(ictx: _InstallCtx, seg_cfg, limits, geom):
             ictx.warm_start = seg.warm_start
             ictx.installs_accepted += 1
             ictx.plan_wall_s.append(float(result.plan_wall_s))
-            if kind == THROW:
+            src = (terminal if kind == THROW
+                   else terminal.then_throw
+                   if kind == CATCH and terminal.then_throw is not None
+                   else None)
+            if src is not None:
+                # A re-send SUPERSEDES its own pending release: the same
+                # (ball, release instant) may be installed up to 1 +
+                # resend_max times, and only the LAST terminal is what the
+                # machine will do. Appending kept the FIRST dispatch's
+                # takeoff (planned for a release at the site) and released
+                # the ball with it from the re-aimed cup, while the re-sent
+                # takeoffs -- which carry the lateral fly-back a release off
+                # the site needs (executor._catch_terminal, 2026-09-28) --
+                # sat behind it unused (`held` already False). Harmless while
+                # every release was at the site (identical takeoffs); it
+                # walked the 2026-09-28 learner gate 50 mm off the site once
+                # the release followed the catch.
+                t_rel = float(src.t_release_s)
+                ictx.pending_releases = [
+                    pr for pr in ictx.pending_releases
+                    if not (pr[1] == ball_id and abs(pr[0] - t_rel) < 1e-9)]
                 ictx.pending_releases.append((
-                    float(terminal.t_release_s), ball_id,
+                    t_rel, ball_id,
                     np.asarray(seg.takeoff_vel_mm_s, dtype=float),
-                    np.asarray(terminal.site_mm, dtype=float),
-                    np.asarray(terminal.target_mm, dtype=float)))
-            elif kind == CATCH and terminal.then_throw is not None:
-                tt = terminal.then_throw
-                ictx.pending_releases.append((
-                    float(tt.t_release_s), ball_id,
-                    np.asarray(seg.takeoff_vel_mm_s, dtype=float),
-                    np.asarray(tt.site_mm, dtype=float),
-                    np.asarray(tt.target_mm, dtype=float)))
+                    np.asarray(src.site_mm, dtype=float),
+                    np.asarray(src.target_mm, dtype=float)))
+                ictx.pending_releases.sort(key=lambda pr: pr[0])
         return result
     return installer
 

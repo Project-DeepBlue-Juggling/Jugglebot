@@ -224,6 +224,40 @@ _G_MM_S2 = ballistics_bc.G_VEC_MMS2
 #: gain — two orders below the ~140 rev/s peaks the gate measures on a cycle, and
 #: below anything the machine resolves.  The twins are insensitive to it: see
 #: ``tests/motion/test_unified_cycle.py::test_timing_twins_are_insensitive_to_the_rest_band``.
+#: How long (s) the platform holds still after a release, before the SETTLE tail
+#: is allowed to translate it — ``CycleGoals.hold_platform_knots`` in seconds,
+#: and the default of ``segments.SegmentConfig.post_release_hold_s``.
+#:
+#: **0.050 s = 2 knots = 1.25x the worst ball-separation lag MEASURED on
+#: 2026-09-27** (bag ``2026-09-27_22-37-26``, probe
+#: ``tools/probes/release_motion_bag_probe.py``): on every throw of that sitting
+#: the ball's free flight, extrapolated back to the planned release, showed it
+#: separating 20-40 ms LATE (48-172 mm below the release point at 4.2-4.7 m/s),
+#: while the plan was already translating the platform (+16.9 mm/s at the first
+#: knot after the release, +32.8 at the second, +68.1 at the third on a 250 mm
+#: hop).  The ball rides that out of the cup: +85..+110 mm/s of unplanned lateral
+#: velocity in the field and 87-104 mm of overshoot on 3/3 hops.  The hold keeps
+#: the platform stationary at the instant the ball ACTUALLY leaves, not the
+#: instant the plan says it does.
+#:
+#: WHY 2 knots and not 3 (2x the lag, the first sizing, 2026-09-28): every
+#: knot held is a knot the next window loses for its return, and at 3 knots the
+#: R2 two-ball COLUMNS schedule at 100 mm refused ``LIMIT_VEL`` (peak leg
+#: velocity 303.6 > 300.0 mm/s) and the columns sim smoke run dropped a ball
+#: (3/4 makes); at 2 knots every existing schedule plans and the smoke run is
+#: 4/4 again, measured in-process with ``segments._hold_knots`` clamped to 0, 2
+#: and 3 (``tests/motion/test_skills_executor.py::test_a_six_throw_columns_
+#: schedule_installs_end_to_end`` and its ball-attribution twin,
+#: ``tests/sim/test_skills_gate.py::test_the_smoke_run_is_not_vacuous_and_never_drops``).
+#: 50 ms still ends after the latest separation seen (40 ms); the hop's
+#: post-release platform speed at +50 ms is the number sitting 2 watches.
+#:
+#: It lives here, not in ``segments``, because two consumers need the same
+#: number: the SETTLE goal that carries the hold and
+#: :func:`_refuse_splice_into_a_detach_cone`, which must refuse a splice landing
+#: inside the held block for the same reason it refuses one inside a detach cone.
+POST_RELEASE_HOLD_S = 0.050
+
 _HAND_REST_EPS_RPS = 0.1
 
 #: Equality residual (m) the cup QP is allowed to leave on any hard row —
@@ -403,6 +437,18 @@ class CycleGoals:
     #: level-terminal REST.  Banking is off, and the slew is the quintic
     #: smoothstep (``cup_realize._smooth_slew``), not a rate-limited ramp.
     rest_tilt: Optional[Tuple[float, float]] = None
+    #: How many knots after knot 0 this :data:`SETTLE` holds the platform's
+    #: TRANSLATION still at its seed pose — the post-release hold
+    #: (:data:`POST_RELEASE_HOLD_S`).  ``0`` (the default) is every window that
+    #: does not follow a release and every plan built before the hold existed,
+    #: bit-for-bit.  Translation only: see :func:`_realize`'s "attitude half"
+    #: block for the measurement that rules the tilt pin out at R4's limits.
+    #:
+    #: A SETTLE-only field, and only on a ``post_release`` seed: it is stated as
+    #: the cup's velocity being pinned onto the line the frozen platform's stroke
+    #: can reach, and it REPLACES the detach cone over those knots (see
+    #: ``cup_cycle._assemble``'s hold block for why the two cannot both hold).
+    hold_platform_knots: int = 0
 
     def catch_time_s(self) -> float:
         """The catch instant on the window clock, from whichever form was given."""
@@ -917,6 +963,35 @@ def detach_knots(cup_cfg=None) -> int:
     """
     return int(cc.CupCycleConfig.n_detach if cup_cfg is None
                else getattr(cup_cfg, 'n_detach', cc.CupCycleConfig.n_detach))
+
+
+def post_release_hold_knots(hold_s: Optional[float] = None, cup_cfg=None) -> int:
+    """A post-release hold length (s) on the knot grid.  ONE conversion.
+
+    ``hold_s=None`` is :data:`POST_RELEASE_HOLD_S`, the default
+    ``segments.SegmentConfig.post_release_hold_s`` carries.  Both consumers read
+    the answer through here — the SETTLE goal the two segment builders fill and
+    :func:`_refuse_splice_into_a_detach_cone` — so the hold cannot be one length
+    for the planner and another for the splice guard.
+    """
+    dt = float(cc.CupCycleConfig.dt if cup_cfg is None
+               else getattr(cup_cfg, 'dt', cc.CupCycleConfig.dt))
+    return int(round((POST_RELEASE_HOLD_S if hold_s is None else float(hold_s))
+                     / dt))
+
+
+def protected_release_knots(cup_cfg=None) -> int:
+    """Knots after a release that a re-plan may NOT cut into.
+
+    The larger of the detach cone and the platform hold, because the two are
+    alternative statements about the same ball (``cup_cycle._assemble``: the hold
+    REPLACES the cone over the knots it covers) and a splice that lands inside
+    either one re-solves those knots without it.
+    """
+    # Keyword on purpose: ``post_release_hold_knots``'s first positional is
+    # ``hold_s``, and a config landing there raised TypeError for any non-None
+    # cup_cfg (found by tests/motion/test_unified_cycle.py, 2026-09-28).
+    return max(detach_knots(cup_cfg), post_release_hold_knots(cup_cfg=cup_cfg))
 
 
 def release_state_at_knot(plan: CyclePlan, meta: CycleMeta, k: int,
@@ -1446,6 +1521,37 @@ def plan_cycle(kind: str, goals: CycleGoals, state: CycleState,
                                                   and goals.rest_tilt is None))
             if realize_cfg is None else realize_cfg)
 
+    hold_knots = int(goals.hold_platform_knots)
+    hold_axis = None
+    if hold_knots > 0:
+        if not post_release:
+            raise ValueError(
+                "hold_platform_knots is a post-release field: only a window that "
+                "FOLLOWS a release has a ball still leaving the cup to hold "
+                "still for. Got kind %r." % (kind,))
+        if not bool(state.post_release):
+            raise ValueError(
+                "hold_platform_knots needs a seed that followed a release "
+                "(state.post_release is False) — there is no ball on its way out "
+                "of this cup to hold the platform still for.")
+        # The held line is the cup axis in the frame ``cup_realize.decompose``
+        # reads for its lever arm — i.e. the PLAN frame, after the C-LEVEL-1
+        # shift below.  Taking it from the gravity-frame detach axis instead
+        # would mis-state the slope by the whole levelling correction
+        # (11.663 mrad x the 4166 mm/s release stroke = 49 mm/s of platform
+        # velocity, two thirds of the defect this hold exists to remove), so it
+        # is computed here from the same pin ``_realize`` hands the schedule.
+        start = _start_tilt_for(state)
+        if start is None:
+            raise CycleInfeasible(TILT_PIN, [
+                "a post-release platform hold needs the seed's detach axis to "
+                "know which line the frozen platform's stroke runs along, and "
+                "this seed carries none. Seed the tail with "
+                "release_state_from_meta."])
+        hold_axis = np.asarray(tg.cup_axis(*_tilts_to_plan(
+            np.asarray(start, dtype=float).reshape(1, 2),
+            state.levelling_correction)[0]), dtype=float)
+
     events, settle_m = _events_for(kind, goals)
     state0 = state.to_cup_state(rcfg)
 
@@ -1459,7 +1565,8 @@ def plan_cycle(kind: str, goals: CycleGoals, state: CycleState,
                              period_s=float(goals.period_s),
                              settle_site=settle_m, warm_start=warm_start,
                              holds_ball_at_start=(kind == LAUNCH
-                                                  or bool(goals.holds_ball)))
+                                                  or bool(goals.holds_ball)),
+                             hold_axis=hold_axis, hold_knots=hold_knots)
     except cc.CupCycleInfeasible as exc:
         raise CycleInfeasible(exc.reason, [str(exc)])
     finally:
@@ -1773,6 +1880,26 @@ def _realize(kind, cup, goals, state, limits, geom, rcfg, *, t_wall,
                                      rest_slew=rest_slew)
         except ValueError as exc:
             raise CycleInfeasible(TILT_PIN, [str(exc)])
+        # ⚠ THE ATTITUDE HALF OF THE PLATFORM HOLD IS *NOT* TAKEN — measured, not
+        # overlooked (2026-09-28).  ``hold_platform_knots`` freezes the platform's
+        # TRANSLATION only (``cup_cycle``'s hold rows put the cup on the line the
+        # frozen platform's stroke can reach).  The attitude keeps slewing, and
+        # ``decompose`` reads the tilt twice — into ``pose[3:5]`` and into the
+        # lever-arm shift — so on the 250 mm hop's own tail the banking schedule's
+        # 4.006° → 3.165° slew over the four knots after the release leaves
+        # +11.1 / +35.9 / +57.3 mm/s of centroid velocity at knots +1..+3 through
+        # the measured 224-261 mm arm, from +28.7 / +70.3 / +107.6 before the hold.
+        #
+        # Pinning the tilt flat over the hold as well was PROBED here and every
+        # span REFUSES at the R4 operating point (300 / 5000 / 150000 mm, hand
+        # 3500 rev/s²), because the tail then has 0.075 s less to reach level and
+        # the pin is a kink rather than a re-scaled slew:
+        # freeze 2 knots → LIMIT_JERK, 3 knots → LIMIT_ACC 5538, 4 → 12200,
+        # 5 → 21711 mm/s² against the 5000 bound
+        # (``tools/probes/planned_release_motion.py``, and the sweep in the
+        # 2026-09-28 unit-B handoff).  Closing it needs a longer tail or a tilt
+        # schedule that is FLAT-then-slew by construction rather than pinned after
+        # the fact — a plan-level decision, not a knob, so nothing is widened here.
         tilts = _tilts_to_plan(tilts, correction)
         if (start_tilt is not None and correction is not None
                 and not state.post_release):
@@ -2549,7 +2676,12 @@ def _refuse_splice_into_a_detach_cone(meta: CycleMeta, k_s: int, dt: float,
     :func:`_seam_check` is the authority).  Refusing that case would refuse every
     ordinary LAUNCH+LANDING join, which ``splice_at`` at ``k_s = n-1`` is.
     """
-    n_detach = detach_knots(cup_cfg)
+    # The bound is the PROTECTED block, not the cone alone: since 2026-09-28 a
+    # post-release tail freezes the platform for its first
+    # ``post_release_hold_knots`` knots INSTEAD of carrying the cone, and a splice
+    # landing inside that block re-solves it as ordinary motion — the same defect
+    # class, with the ball leaving into a platform that has started moving again.
+    n_detach = protected_release_knots(cup_cfg)
     if k_s <= n_detach:
         raise CycleInfeasible(REPLAN_WINDOW, [
             bound_msg('splice knot', k_s, '<=', n_detach, knob='lead_s',

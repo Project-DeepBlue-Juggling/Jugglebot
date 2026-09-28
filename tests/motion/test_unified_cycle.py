@@ -2887,3 +2887,174 @@ def test_the_attitude_fields_are_checked_per_kind(limits, geom):
                        flight_s=None, catch_frac=None, catch_t_s=0.6, **kw)
         with pytest.raises(ValueError):
             uc.plan_cycle(kind, goals, seed, limits, geom)
+
+
+# ---------------------------------------------------------------------------
+# The post-release PLATFORM hold (CycleGoals.hold_platform_knots, 2026-09-28)
+# ---------------------------------------------------------------------------
+#
+# ``cup_cycle``'s QP-level physics (the exact ``vel_xy == hold_axis_xy * vel_z``
+# equality, the ``HOLD_WINDOW``/``CATCH_TOO_EARLY`` refusals) is
+# ``test_cup_cycle.py``'s. This section covers what only exists ABOVE that
+# layer: the goal field, the two ValueErrors ``plan_cycle`` raises on a
+# caller-shape mismatch, the realised PLATFORM pose velocity (which the QP
+# layer has no concept of), ``protected_release_knots``, and ``splice_at``
+# refusing a splice into the held block.
+
+def test_hold_platform_knots_on_a_launch_is_refused(limits, geom):
+    """A LAUNCH has no ball leaving yet to hold the platform still for — this
+    is a caller-shape bug (``ValueError``), not a physical refusal."""
+    goals = _goals(period_s=0.6,
+                   hold_platform_knots=uc.post_release_hold_knots())
+    with pytest.raises(ValueError, match='post-release field'):
+        uc.plan_launch(goals, _rest_state(), limits, geom)
+
+
+def test_hold_platform_knots_needs_a_seed_that_actually_followed_a_release(
+        limits, geom):
+    """A SETTLE off a plain rest seed has no ball leaving the cup either —
+    same class of caller/state disagreement as
+    ``test_a_post_release_kind_from_a_rest_state_drops_the_detach_cone``, but
+    for the hold instead of the cone."""
+    goals = uc.CycleGoals(period_s=0.6, settle_site_mm=REST_MM,
+                          hold_platform_knots=uc.post_release_hold_knots())
+    with pytest.raises(ValueError, match='seed that followed a release'):
+        uc.plan_settle(goals, _rest_state(), limits, geom)
+
+
+def test_hold_platform_knots_zero_matches_the_field_being_absent(landing,
+                                                                  launch,
+                                                                  limits, geom):
+    """``hold_platform_knots=0`` (explicit) is bit-identical to the field being
+    absent entirely. The field is new, so "the pre-B solve" IS the default —
+    and ``landing`` (built with no such field at all) is the existing pinned
+    plan to check it against, reused rather than re-derived.
+    """
+    plan_a, meta_a = launch
+    state = uc.release_state_from_meta(meta_a, plan_a)
+    goals = _goals(period_s=1.0, catch_frac=None, catch_t_s=0.6,
+                   hold_platform_knots=0)
+    explicit_plan, _ = uc.plan_landing(goals, state, limits, geom)
+    ref_plan, _ = landing
+    assert np.array_equal(np.asarray(explicit_plan.pose),
+                          np.asarray(ref_plan.pose))
+    assert np.array_equal(np.asarray(explicit_plan.hand_rev),
+                          np.asarray(ref_plan.hand_rev))
+
+
+def test_hold_platform_knots_pins_the_cup_and_shrinks_the_realised_pose_velocity(
+        limits, geom):
+    """A real tilted release (throw target offset 150 mm from the site):
+    the hold pins the cup onto the frozen-platform stroke line at the QP layer
+    (asserted at the solver's own residual floor, like ``test_cup_cycle.py``'s
+    equivalent), and — the thing only this layer can see — the REALISED
+    platform pose velocity comes down with it. Not to bit-zero: the attitude
+    half of the hold is deliberately not taken (see ``_realize``'s "attitude
+    half" block), so what is left is the residual through the tilt lever, not
+    noise.
+
+    FAIL-BEFORE / PASS-AFTER: ``hold_platform_knots`` is the caller-facing
+    on/off switch (what ``segments._hold_knots`` sets one layer up); toggling
+    it 0 -> the shipped value exercises the same branch a production-code
+    revert would. MEASURED (this probe, 2026-09-28, LAUNCH 0,0,860 mm ->
+    target 150,0,860 mm, flight 0.6 s): off-line cup-velocity residual at
+    knots 1..HK falls from 21.5 / 42.0 mm/s to 2.1e-5 / 1.3e-4 mm/s; realised
+    ``pose_vel`` xy falls from 23.18 / 48.31 mm/s to 1.66 / 6.27 mm/s.
+    """
+    target = THROW_MM + np.array([150.0, 0.0, 0.0])
+    goals = uc.CycleGoals(period_s=0.6, throw_site_mm=THROW_MM,
+                          throw_target_mm=target, flight_s=0.6,
+                          settle_site_mm=REST_MM)
+    plan_a, meta_a = uc.plan_launch(goals, _rest_state(), limits, geom)
+    seed = uc.release_state_from_meta(meta_a, plan_a)
+    hk = uc.post_release_hold_knots()
+
+    def _settle(hold_knots):
+        sgoals = uc.CycleGoals(period_s=0.6, settle_site_mm=REST_MM,
+                               hold_platform_knots=hold_knots)
+        plan, _meta = uc.plan_cycle(uc.SETTLE, sgoals, seed, limits, geom)
+        return plan
+
+    off_plan = _settle(0)
+    held_plan = _settle(hk)
+    axis0 = tg.cup_axis(*np.asarray(held_plan.pose[0])[3:5])
+
+    def _cup_off_and_pose_vel(plan, k):
+        pose = np.asarray(plan.pose[k])
+        pv = np.asarray(plan.pose_vel[k])
+        hand = np.asarray(plan.hand_rev[k])
+        hvel = np.asarray(plan.hand_vel_rps[k])
+        v = uc.cup_velocity_from_platform(pose, pv, hand, hvel)
+        return float(np.max(np.abs(v[:2] - axis0[:2] * v[2]))), pv[:2]
+
+    for k in range(1, hk + 1):
+        off_before, pv_before = _cup_off_and_pose_vel(off_plan, k)
+        off_after, pv_after = _cup_off_and_pose_vel(held_plan, k)
+        assert off_before > 1.0, ('fail-before: knot %d already on the line '
+                                  'without the hold' % k)
+        assert off_after < 0.01, k
+        assert float(np.max(np.abs(pv_after))) < float(np.max(np.abs(pv_before)))
+        assert float(np.max(np.abs(pv_after))) < 10.0
+
+
+def test_protected_release_knots_is_the_max_of_detach_and_hold():
+    """``protected_release_knots(cup_cfg=None)`` — the only way every current
+    production call site invokes it (``_refuse_splice_into_a_detach_cone``
+    never passes a ``cup_cfg`` either) — is
+    ``max(detach_knots(), post_release_hold_knots())`` at the shipped
+    defaults. Both are 2 at the R4 operating point, so this cannot exercise
+    the ``max`` picking a SIDE; that is
+    :func:`test_protected_release_knots_max_picks_the_larger_side` below,
+    which is why this one is split out rather than folded in.
+    """
+    assert uc.detach_knots(None) == 2
+    assert uc.post_release_hold_knots() == 2
+    assert uc.protected_release_knots(None) == 2
+    assert uc.protected_release_knots() == max(uc.detach_knots(None),
+                                               uc.post_release_hold_knots())
+
+
+def test_protected_release_knots_max_picks_the_larger_side():
+    """``protected_release_knots`` picks whichever of the cone/hold is larger,
+    in both directions — needs a non-default ``cup_cfg`` to tell them apart at
+    all, which is exactly the argument the found bug above breaks.
+    """
+    fine_dt_cfg = cc.CupCycleConfig(dt=0.01)   # hold = round(0.05/0.01) = 5
+    assert uc.post_release_hold_knots(cup_cfg=fine_dt_cfg) == 5
+    assert uc.protected_release_knots(fine_dt_cfg) == 5      # hold dominates
+    big_detach_cfg = cc.CupCycleConfig(n_detach=10)
+    assert uc.protected_release_knots(big_detach_cfg) == 10  # cone dominates
+
+
+def test_splice_at_refuses_a_knot_inside_the_platform_hold_not_only_the_cone(
+        launch, landing, limits, geom, monkeypatch):
+    """``_refuse_splice_into_a_detach_cone`` bounds on ``protected_release_knots``
+    (the max), not ``detach_knots`` alone — demonstrated with the hold widened
+    past the cone, since the two are equal (2 == 2) at the shipped operating
+    point and would not otherwise tell the two bounds apart.
+
+    FAIL-BEFORE / PASS-AFTER (monkeypatch, no git state — reverts automatically):
+    with ``POST_RELEASE_HOLD_S`` widened to 0.075 s (3 knots at dt 0.025,
+    ``n_detach`` stays 2), knot ``k_rel + 3`` is past the 2-knot cone (the
+    pre-2026-09-28 bound would let a splice there through) but still inside the
+    3-knot hold. The shipped bound refuses it.
+    """
+    plan_a, meta_a = launch
+    seed_b = uc.release_state_from_meta(meta_a, plan_a)
+    tail_goals = uc.CycleGoals(period_s=0.3, settle_site_mm=REST_MM)
+    plan_b, meta_b = uc.plan_settle(tail_goals, seed_b, limits, geom)
+    head_plan, head_meta = uc.extend(plan_a, meta_a, plan_b, meta_b, limits,
+                                     geom)
+    k_rel = int(plan_a.n_knots) - 1
+
+    monkeypatch.setattr(uc, 'POST_RELEASE_HOLD_S', 0.075)
+    assert uc.post_release_hold_knots() == 3
+    assert uc.protected_release_knots() == 3
+    k_s = k_rel + 3
+    assert k_s > k_rel + uc.detach_knots()      # fail-before: past the cone alone
+
+    seg_plan, seg_meta = landing            # any valid segment — the bound
+    with pytest.raises(uc.CycleInfeasible) as excinfo:      # fires before the
+        uc.splice_at(head_plan, head_meta, k_s, seg_plan, seg_meta, limits,   # seam check
+                     geom)
+    assert excinfo.value.code == uc.REPLAN_WINDOW

@@ -881,7 +881,9 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
               catch: Optional[CatchEvent],
               period_s: float, cfg,
               settle_site: Optional[np.ndarray] = None,
-              holds_ball_at_start: bool = False) -> _Program:
+              holds_ball_at_start: bool = False,
+              hold_axis: Optional[np.ndarray] = None,
+              hold_knots: int = 0) -> _Program:
     """Transcribe one window into a dense convex QP.
 
     Decision variables are the cup's per-axis jerk over ``n_steps`` knots,
@@ -1070,6 +1072,60 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
             H[sl, sl] += 2.0 * coast_w * np.outer(Aa[i], Aa[i])
             f[sl] += 2.0 * coast_w * ca[i, 2] * Aa[i]
 
+    # ---- the POST-RELEASE PLATFORM HOLD -----------------------------------
+    # ``unified_cycle.CycleGoals.hold_platform_knots``.  MEASURED 2026-09-27
+    # 22:37 (bag 2026-09-27_22-37-26, probe tools/probes/planned_release_motion.py):
+    # the ball separates 20-40 ms AFTER the planned release on every throw, and
+    # over those knots the plan was translating the platform — +16.9 mm/s at the
+    # first knot after the release, +32.8 at the second, +68.1 at the third on a
+    # 250 mm hop — which the ball rides out of the cup as unplanned lateral
+    # velocity (+85..+110 mm/s in the field, 87-104 mm of overshoot on 3/3 hops).
+    # The hold says the platform does not move while the ball is still leaving:
+    # the cup's velocity is pinned onto the line the FROZEN platform's stroke can
+    # reach, ``vel_xy[k] == kappa·vel_z[k]`` with ``kappa = axis_xy`` — which is
+    # ``cup_realize.decompose``'s OWN centroid slope (``centroid_xy = cup_xy −
+    # (cup_z − CUP_TILT_CENTER_Z)·axis_xy``), so the realised pose velocity comes
+    # out at zero rather than merely small.
+    #
+    # VELOCITY and not position: there are only 3 jerk variables per knot, so 4
+    # rows per knot (both lateral positions AND both lateral velocities) is
+    # rank-deficient — and what the ball leaves with is the cup's VELOCITY.  The
+    # position then drifts by the intra-knot wiggle only (measured 0.02 mm over
+    # the 3-knot hold, against 2.02 mm before).
+    hold_knots = int(hold_knots)
+    hold_kappa = None
+    if hold_knots > 0:
+        if not state0.post_release:
+            raise CupCycleInfeasible(
+                "a platform hold is the window AFTER a release: there is no "
+                "ball leaving this cup to hold still for (post_release is "
+                "False).", reason='HOLD_WINDOW')
+        if catch is not None and k_td <= hold_knots:
+            raise CupCycleInfeasible(
+                "catch at t=%.3fs falls inside the %d-knot platform hold — the "
+                "cup cannot both be on the frozen platform's stroke line and "
+                "dive to a touch-down somewhere off it."
+                % (float(catch.t_s), hold_knots), reason='CATCH_TOO_EARLY')
+        if hold_axis is None:
+            raise ValueError(
+                "hold_knots > 0 needs hold_axis: the held line is the cup axis "
+                "the platform is frozen at, and only the caller's tilt schedule "
+                "knows it in the frame decompose will use.")
+        hold_kappa = np.asarray(hold_axis, dtype=float).reshape(3)[:2].copy()
+        if hold_knots < n_detach:
+            raise ValueError(
+                "hold_knots (%d) is shorter than the %d-knot detach cone it "
+                "replaces — the hold is the stronger statement about the same "
+                "ball, so it may not cover less of the separation."
+                % (hold_knots, n_detach))
+        if hold_knots > n - 2:
+            raise CupCycleInfeasible(
+                "a %d-knot platform hold leaves only %d knots of a %d-knot "
+                "tail to bring the cup back to rest at its site — lengthen the "
+                "tail (SegmentConfig.rest_tail_s) or shorten the hold "
+                "(SegmentConfig.post_release_hold_s)."
+                % (hold_knots, n - hold_knots, n), reason='HOLD_WINDOW')
+
     # ---- hard equalities ---------------------------------------------------
     rows, rhs = [], []
     if throw is not None:
@@ -1112,7 +1168,29 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
             rows.append(_axis_row(n, a, Av[n])); rhs.append(0.0 - cv[n, a])
             rows.append(_axis_row(n, a, Aa[n])); rhs.append(0.0 - ca[n, a])
 
-    if state0.post_release:
+    if hold_kappa is not None:
+        # THE HELD PLATFORM, stated once — and it REPLACES the detach cone below
+        # rather than joining it.  The two are competing answers to "don't shove
+        # the ball sideways on its way out": the cone keeps the cup's SPECIFIC
+        # FORCE axial (``acc == g + λ·axis``), which on a tilted cup it buys by
+        # translating the platform — ``pose_acc_xy = −acc_z·axis_xy = 9810·sin
+        # 4.006° = 686 mm/s²``, i.e. exactly the +17.2 / +34.3 mm/s measured at
+        # the first two knots after the 2026-09-27 hop's release.  The hold keeps
+        # the PLATFORM still instead and leaves the ball the lateral component of
+        # gravity down the tilted cup (0.686 m/s² for ~30 ms of contact, and the
+        # ball is on its way out).  They are also algebraically incompatible: a
+        # frozen platform accelerates the cup along its axis, and forcing
+        # ``acc − g ∥ axis`` there needs ``λ = g/(axis_z − 1) = −4004 m/s²``.  So
+        # the rows cannot both be written — 4 rows on the 3 jerk variables at knot
+        # 1 is rank-deficient, and ``np.linalg.solve`` on that KKT is meaningless.
+        for k in range(1, hold_knots + 1):
+            for a in range(2):
+                row = np.zeros(nvar)
+                row[a * n:(a + 1) * n] = Av[k]
+                row[2 * n:3 * n] = -hold_kappa[a] * Av[k]
+                rows.append(row)
+                rhs.append(-(cv[k, a] - hold_kappa[a] * cv[k, 2]))
+    elif state0.post_release:
         if _is_level(state0.detach_axis):
             for i in range(1, n_detach + 1):     # level: acc_xy == 0
                 for a in range(2):
@@ -1508,7 +1586,9 @@ def plan_window(events: Sequence, state0: CupState,
                 period_s: Optional[float] = None,
                 settle_site: Optional[np.ndarray] = None,
                 warm_start: Optional[SolverState] = None,
-                holds_ball_at_start: bool = False) -> CupCyclePlan:
+                holds_ball_at_start: bool = False,
+                hold_axis: Optional[np.ndarray] = None,
+                hold_knots: int = 0) -> CupCyclePlan:
     """Plan the cup over one horizon window from an ordered event timeline.
 
     Parameters
@@ -1616,7 +1696,8 @@ def plan_window(events: Sequence, state0: CupState,
 
     prog = _assemble(state0, throw, catch, window_s, cfg,
                      settle_site=settle_site,
-                     holds_ball_at_start=bool(holds_ball_at_start))
+                     holds_ball_at_start=bool(holds_ball_at_start),
+                     hold_axis=hold_axis, hold_knots=int(hold_knots))
     dt = float(_cfg(cfg, 'dt'))
     n = prog.n_steps
     key = (n, dt, prog.C.shape[1])
