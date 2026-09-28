@@ -326,6 +326,38 @@ export function callService(serviceName, serviceType, request = {}) {
 }
 
 /**
+ * Wrap `promise` so it rejects after `ms` if `promise` has not settled by
+ * then, independent of however long the server side takes.
+ *
+ * `callService()` above sets no client-side timeout of its own — several
+ * callers rely entirely on rosbridge's server-side bound instead
+ * (`rosbridge_websocket_lean.py::CALL_SERVICE_TIMEOUT_S`, 50 s). That bound
+ * protects rosbridge itself; since 2026-09-28 each call also runs on its own
+ * server thread (`rosbridge_websocket_lean.py` item 5), so one unanswered call
+ * no longer stalls the rest of the tab. A caller that wraps its
+ * `callService()` in `withTimeout()` still gives up locally in a few seconds,
+ * so its own UI recovers promptly instead of waiting out the 50 s bound —
+ * see `bb-aim.js` for the worked example.
+ * (Mirrors the identical local helper in `state-minimap.js`.)
+ *
+ * @param {Promise} promise
+ * @param {number} ms
+ * @param {string} label - named in the timeout's error message
+ * @returns {Promise}
+ */
+export function withTimeout(promise, ms, label) {
+    return new Promise((resolve, reject) => {
+        const t = setTimeout(
+            () => reject(new Error(`${label} timed out after ${ms / 1000} s`)),
+            ms);
+        promise.then(
+            (v) => { clearTimeout(t); resolve(v); },
+            (e) => { clearTimeout(t); reject(e); },
+        );
+    });
+}
+
+/**
  * Discover all active ROS2 topics via rosbridge.
  * @param {function} callback - Called with { topics: string[], types: string[] }
  */

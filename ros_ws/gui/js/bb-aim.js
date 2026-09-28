@@ -15,9 +15,32 @@
  * included), on BB leaving IDLE/TRACKING or disconnecting, and on any refused
  * or failed renewal.  ball_butler_node re-checks the same gate on every call;
  * this module's copy only decides what the operator is offered.
+ *
+ * bb/aim goes through `ros-bridge.js::callService`, which sets NO client-side
+ * timeout — a call that never gets a reply (ball_butler_node wedged, or just
+ * slow) would otherwise sit pending until rosbridge's own 50 s server-side
+ * bound (`rosbridge_websocket_lean.py::CALL_SERVICE_TIMEOUT_S`) gives up on
+ * our behalf. Until 2026-09-28 rosbridge also ran every service call on the
+ * tab's ONE queue thread, so an unanswered call stalled every other GUI action
+ * on the tab — the "whole GUI freezes" failure (2026-09-28 sitting). That half
+ * is fixed server-side (`rosbridge_websocket_lean.py` item 5: each call on its
+ * own thread); this module's half is not stacking renewals behind a call that
+ * has not answered, and telling the operator within a few seconds.  `AIM_TIMEOUT_MS` below gives up on OUR side
+ * in a few seconds instead — well under both BB's 5 s TRACKING-drop and
+ * rosbridge's 50 s bound — and `renewInFlight` guards both submit() and the
+ * renewal timer so at most one bb/aim call is ever considered in flight from
+ * this module.  Giving up locally cannot cancel the request already sitting
+ * in rosbridge's queue (no correlation id in the service contract to key a
+ * cancel on — see the service definition), so a late reply, if one ever
+ * arrives, is still discarded here (the `withTimeout` wrapper below settles
+ * exactly once, so a late real response after our timeout has already fired
+ * is inert to this module's state) — but the physical aim it carries is
+ * still whatever ball_butler_node eventually does with it; that residual is
+ * a ROS-side property of the shared connection, not something this module
+ * can close from here.
  */
 
-import { callService } from './ros-bridge.js';
+import { callService, withTimeout } from './ros-bridge.js';
 import { emitEvent, EVENT_TYPES } from './event-store.js';
 import { BB_YAW_LIM_MIN_DEG, BB_YAW_LIM_MAX_DEG,
          BB_PITCH_DEG_MIN, BB_PITCH_DEG_MAX } from './geometry-config.js';
@@ -26,6 +49,12 @@ const SERVICE = 'bb/aim';
 const SERVICE_TYPE = 'jugglebot_interfaces/srv/BallButlerAim';
 /** Well inside BB's 5 s TRACKING timeout, so one late renewal never drops the pose. */
 const RENEW_PERIOD_MS = 1000;
+/**
+ * Client-side bound on a single bb/aim call. Comfortably above a healthy
+ * round trip (tens of ms) but far below BB's 5 s TRACKING-drop and
+ * rosbridge's 50 s server-side bound — see this file's docstring.
+ */
+const AIM_TIMEOUT_MS = 3000;
 
 const BB_IDLE = 1;
 const BB_TRACKING = 2;
@@ -184,9 +213,18 @@ function submit(axis, input) {
 // ---- Service calls / hold lifecycle ----
 
 function sendAim(target, isNew) {
+    if (renewInFlight) {
+        // A previous call (submit or renewal) hasn't settled yet. Never
+        // stack a second one behind it — see this file's docstring on why
+        // that would extend, not shorten, how long the tab stays blocked.
+        if (isNew) setStatus('A previous aim request is still pending — try again shortly', true);
+        return Promise.resolve();
+    }
     renewInFlight = true;
-    return callService(SERVICE, SERVICE_TYPE,
-                       { yaw_deg: target.yaw, pitch_deg: target.pitch })
+    return withTimeout(
+        callService(SERVICE, SERVICE_TYPE,
+                    { yaw_deg: target.yaw, pitch_deg: target.pitch }),
+        AIM_TIMEOUT_MS, SERVICE)
         .then((res) => {
             renewInFlight = false;
             if (!res.success) {

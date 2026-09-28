@@ -2150,14 +2150,25 @@ def _bb_announcement(*, target_id, landing_mm, landing_vel_mm_s,
     return ann
 
 
-def _bb_ready(node, *, state=None, ball_in_hand=True, connected=True):
+def _bb_ready(node, *, state=None, ball_in_hand=True, connected=True,
+              after_check=True):
     """Drive `node`'s cached Ball Butler state to "ready" (C1, 2026-09-28):
     `state=None` defaults to `BallButlerStates.IDLE` -- the state
     `_maybe_fire_reload_throw` fires on. Goes through `_on_bb_heartbeat`
     itself (not the raw fields) so a test exercises the same subscription
-    path the real `bb/heartbeat` topic drives."""
+    path the real `bb/heartbeat` topic drives.
+
+    ``after_check`` (default) sends the CHECKING_BALL heartbeat Ball Butler
+    really publishes between a `bb/reload` and its return to IDLE (bag
+    2026-09-28_21-41-10: 1.0 s of CHECKING_BALL after every reload) before
+    the IDLE one -- a reload that sent `bb/reload` fires only on an IDLE
+    that FOLLOWS a non-IDLE state (the 2026-09-28 21:41 race fix)."""
     if state is None:
         state = sn.proto.BallButlerStates.IDLE
+    if after_check and int(state) == int(sn.proto.BallButlerStates.IDLE):
+        node._on_bb_heartbeat(BallButlerHeartbeat(
+            state=int(sn.proto.BallButlerStates.CHECKING_BALL),
+            ball_in_hand=bool(ball_in_hand), connected=bool(connected)))
     node._on_bb_heartbeat(BallButlerHeartbeat(
         state=int(state), ball_in_hand=bool(ball_in_hand),
         connected=bool(connected)))
@@ -2258,6 +2269,84 @@ def test_reload_installs_the_bridge_rest_then_calls_bb_reload_and_throw(tmp_path
     assert throw_req.throw_delay_s >= sn._BB_THROW_DELAY_FLOOR_S
     assert node._reload_ctx is not None
     assert prelevel_client.calls == [] or len(prelevel_client.calls) == 1
+
+
+def test_reload_with_a_ball_already_in_hand_skips_bb_reload(tmp_path):
+    """Owner, 2026-09-28 21:41 sitting: Ball Butler's RELOAD_CMD runs its ~1 s
+    ball check, which a ball already in hand does not need. A FRESH heartbeat
+    reporting IDLE + ball in hand + connected at goal time means `bb/reload`
+    is never sent and the throw fires on the next tick (no wait for a check
+    cycle that will not happen). Fail-before (2026-09-28, committed
+    skill_node): `len(reload_client.calls) == 1`."""
+    node, _client = _node_with_client(response=_response())
+    node._params['plant_id'] = 'test_reload_ball_in_hand'
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    _prelevel_ready(node)
+    reload_client, throw_client = _reload_ready(node)
+    _bb_ready(node, after_check=False)          # BB idle, ball in hand, fresh
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_self_toss_goal(reload=True))
+    assert resp.success is True, resp.message
+    assert reload_client.calls == []
+    assert 'bb/reload skipped' in resp.message
+    assert node._reload_ctx.reload_sent is False
+    node._maybe_fire_reload_throw()
+    assert len(throw_client.calls) == 1
+    assert node._reload_ctx.phase == 'await_announcement'
+
+
+def test_reload_does_not_fire_on_the_idle_from_before_the_ball_check(tmp_path):
+    """The 2026-09-28 21:41 race (bag 2026-09-28_21-41-10): after `bb/reload`
+    answered, the next heartbeat still reported the IDLE from BEFORE the check
+    began (CHECKING_BALL arrived 73-121 ms later), and the tick fired the throw
+    ~20 ms after the reload. After a `bb/reload`, only an IDLE that follows a
+    non-IDLE state counts. Fail-before (2026-09-28, committed skill_node):
+    the fetch-deadline assertion (3.0 s, no empty-hand wait existed); the
+    committed ready gate had no left-IDLE term, so it fired on the first IDLE."""
+    node, _client = _node_with_client(response=_response())
+    node._params['plant_id'] = 'test_reload_race'
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    _prelevel_ready(node)
+    reload_client, throw_client = _reload_ready(node)
+    _bb_ready(node, ball_in_hand=False, after_check=False)   # empty hand
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_self_toss_goal(reload=True))
+    assert resp.success is True, resp.message
+    assert len(reload_client.calls) == 1
+    assert node._reload_ctx.deadline_mono - time.perf_counter() > 5.0
+    _bb_ready(node, after_check=False)           # the stale pre-check IDLE
+    node._maybe_fire_reload_throw()
+    assert throw_client.calls == []
+    _bb_ready(node, state=sn.proto.BallButlerStates.CHECKING_BALL)
+    node._maybe_fire_reload_throw()
+    assert throw_client.calls == []
+    _bb_ready(node, after_check=False)           # IDLE after the check
+    node._maybe_fire_reload_throw()
+    assert len(throw_client.calls) == 1
+
+
+def test_a_stale_bb_heartbeat_is_not_evidence_of_a_ball(tmp_path):
+    """A heartbeat older than `_BB_HEARTBEAT_FRESH_S` neither skips `bb/reload`
+    nor fires the throw: the bridge publishes it at 10 Hz, so silence past
+    0.5 s means the state is unknown. Fail-before (2026-09-28, committed
+    skill_node): `AttributeError` -- no heartbeat age was kept at all."""
+    node, _client = _node_with_client(response=_response())
+    node._params['plant_id'] = 'test_reload_stale_hb'
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    _prelevel_ready(node)
+    reload_client, throw_client = _reload_ready(node)
+    _bb_ready(node, after_check=False)
+    node._bb_heartbeat_mono -= sn._BB_HEARTBEAT_FRESH_S + 0.1
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_self_toss_goal(reload=True))
+    assert resp.success is True, resp.message
+    assert len(reload_client.calls) == 1
+    node._reload_ctx.bb_left_idle = True
+    node._maybe_fire_reload_throw()
+    assert throw_client.calls == []
 
 
 def test_reload_aim_point_carries_the_mocap_frame_offset(tmp_path):

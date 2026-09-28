@@ -289,6 +289,23 @@ RELOAD_ANNOUNCE_TIMEOUT_S = 1.0
 #: ~2.7x that measurement, not a guess.
 RELOAD_BB_READY_TIMEOUT_S = 3.0
 
+#: R4 reload, 2026-09-28 21:41 sitting: `bb/reload` is sent ONLY when Ball
+#: Butler's own heartbeat says its hand is EMPTY (owner, 2026-09-28: the
+#: firmware's RELOAD_CMD runs `requestCheckBall()`, a ~1.0-1.1 s CHECKING_BALL
+#: cycle measured on every reload of both R4 sittings, and a ball already in
+#: hand needs no check -- BB can feed as soon as its axes are in position).
+#: When it IS sent, BB must physically fetch a ball, which no bag has ever
+#: recorded (every 2026-09 reload found the ball already in hand), so this
+#: wait is a ceiling, NOT a measurement -- it only lengthens how long the
+#: platform rests level under the aim point, the safe place to wait.
+RELOAD_BB_FETCH_TIMEOUT_S = 10.0
+
+#: A Ball Butler heartbeat older than this is not evidence of BB's state (the
+#: bridge publishes it at 10 Hz, measured 2026-09-28: 0.100 s median period),
+#: so neither the "ball already in hand, skip bb/reload" decision nor the
+#: "ready, fire" gate may read it.
+_BB_HEARTBEAT_FRESH_S = 0.5
+
 #: R4 reload C1: a fixed ceiling on Ball Butler's own predicted flight time,
 #: for the `await_announcement` deadline `_fire_reload_throw` arms BEFORE
 #: (not after, C2) the `bb/throw_at_target` round trip -- the real
@@ -638,6 +655,7 @@ class SkillNode(Node):
         self._bb_state = 0
         self._bb_ball_in_hand = False
         self._bb_connected = False
+        self._bb_heartbeat_mono = 0.0
 
         # The Juggle action's own bookkeeping (R4 U5). `_goal_done_event` is
         # set by `_on_tick` the instant nothing is left running for the goal
@@ -1069,6 +1087,25 @@ class SkillNode(Node):
         self._bb_state = int(getattr(msg, 'state', 0))
         self._bb_ball_in_hand = bool(getattr(msg, 'ball_in_hand', False))
         self._bb_connected = bool(getattr(msg, 'connected', False))
+        self._bb_heartbeat_mono = time.perf_counter()
+        # A reload that sent `bb/reload` must see BB LEAVE IDLE before an IDLE
+        # heartbeat counts as "ready": the 2026-09-28 21:41 sitting fired the
+        # throw ~20 ms after `bb/reload` answered, on a heartbeat still
+        # reporting the IDLE from BEFORE the ball check began (the check's
+        # first CHECKING_BALL heartbeat arrived 73-121 ms later, bag
+        # 2026-09-28_21-41-10). Plain attribute write on the live ctx; the
+        # tick reads it under `_reload_lock`.
+        with self._reload_lock:
+            ctx = self._reload_ctx
+            if (ctx is not None and ctx.phase == 'await_bb_idle'
+                    and self._bb_state != int(proto.BallButlerStates.IDLE)):
+                ctx.bb_left_idle = True
+
+    def _bb_heartbeat_fresh(self) -> bool:
+        """True when the cached Ball Butler heartbeat is recent enough to act on."""
+        return (self._bb_heartbeat_mono > 0.0
+                and time.perf_counter() - self._bb_heartbeat_mono
+                <= _BB_HEARTBEAT_FRESH_S)
 
     def _bb_state_name(self) -> str:
         """The cached `_bb_state` as a `BallButlerStates` member name, for
@@ -1645,7 +1682,9 @@ class SkillNode(Node):
             ctx = self._reload_ctx
             ready = (ctx is not None and ctx.phase == 'await_bb_idle'
                     and self._bb_state == int(proto.BallButlerStates.IDLE)
-                    and self._bb_ball_in_hand and self._bb_connected)
+                    and self._bb_ball_in_hand and self._bb_connected
+                    and self._bb_heartbeat_fresh()
+                    and (ctx.bb_left_idle or not ctx.reload_sent))
             if not ready:
                 return
             ctx.phase = 'firing'
@@ -1727,7 +1766,9 @@ class SkillNode(Node):
             self._end_attempt(
                 'ABORTED_BB_THROW_TIMEOUT',
                 'reload refused: bb/throw_at_target did not answer in '
-                '%.1f s' % (_SERVICE_WAIT_S,))
+                '%.1f s -- ball_butler_node itself answered nothing (a Ball '
+                'Butler firmware refusal would have answered REJECTED_BB)'
+                % (_SERVICE_WAIT_S,))
             return
         if not bool(throw_resp.success):
             # Same INVARIANTS.md row `_start_reload`'s bb/reload refusal
@@ -2457,54 +2498,76 @@ class SkillNode(Node):
         # From HERE ON (C4): the bridge REST is a committed physical fact.
         # A refusal below ACCEPTS the goal and ends the attempt through
         # `_end_attempt`, never rejects it.
-        if not self._reload_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
-            msg = 'reload refused: bb/reload unavailable'
-            self._end_attempt('ABORTED_BB_RELOAD_UNAVAILABLE', msg)
-            response.success = True
-            response.message = (
-                msg + ' -- the bridge REST already streaming is the safe '
-                'rest tail')
-            return response
-        reload_resp = self._wait_future(
-            self._reload_cli.call_async(Trigger.Request()))
-        if reload_resp is None:
-            msg = ('reload refused: bb/reload did not answer in %.1f s'
-                  % (_SERVICE_WAIT_S,))
-            self._end_attempt('ABORTED_BB_RELOAD_TIMEOUT', msg)
-            response.success = True
-            response.message = (
-                msg + ' -- the bridge REST already streaming is the safe '
-                'rest tail')
-            return response
-        if not bool(reload_resp.success):
-            # INVARIANTS.md `REJECTED_BB(<message>)`: an external thrower's
-            # OWN refusal surfaces verbatim, not laundered into a generic
-            # abort — `reload_resp.message` is BB's own diagnostic sentence
-            # (`teensy_bridge_node._svc_bb_reload`), unedited.
-            end_code = 'REJECTED_BB(%s)' % (reload_resp.message,)
-            self._end_attempt(end_code, end_code)
-            response.success = True
-            response.message = (
-                end_code + ' -- the bridge REST already streaming is the '
-                'safe rest tail')
-            return response
+        #
+        # `bb/reload` ONLY for an empty hand (2026-09-28 21:41 sitting, owner):
+        # Ball Butler's RELOAD_CMD runs its ~1 s ball check, and a ball already
+        # in hand needs none -- BB feeds as soon as its axes are in position.
+        # The decision reads a FRESH heartbeat only; a stale or absent one is
+        # not evidence of a ball, so it falls through to `bb/reload`.
+        ball_ready = (self._bb_heartbeat_fresh() and self._bb_connected
+                      and self._bb_ball_in_hand)
+        if ball_ready:
+            reload_sent = False
+            ready_timeout_s = RELOAD_BB_READY_TIMEOUT_S
+            head = ('reload: Ball Butler already holds a ball -- bb/reload '
+                    'skipped (its ball check is for an empty hand)')
+        else:
+            if not self._reload_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
+                msg = 'reload refused: bb/reload unavailable'
+                self._end_attempt('ABORTED_BB_RELOAD_UNAVAILABLE', msg)
+                response.success = True
+                response.message = (
+                    msg + ' -- the bridge REST already streaming is the safe '
+                    'rest tail')
+                return response
+            reload_resp = self._wait_future(
+                self._reload_cli.call_async(Trigger.Request()))
+            if reload_resp is None:
+                msg = ('reload refused: bb/reload did not answer in %.1f s'
+                      % (_SERVICE_WAIT_S,))
+                self._end_attempt('ABORTED_BB_RELOAD_TIMEOUT', msg)
+                response.success = True
+                response.message = (
+                    msg + ' -- the bridge REST already streaming is the safe '
+                    'rest tail')
+                return response
+            if not bool(reload_resp.success):
+                # INVARIANTS.md `REJECTED_BB(<message>)`: an external thrower's
+                # OWN refusal surfaces verbatim, not laundered into a generic
+                # abort — `reload_resp.message` is BB's own diagnostic sentence
+                # (`teensy_bridge_node._svc_bb_reload`), unedited.
+                end_code = 'REJECTED_BB(%s)' % (reload_resp.message,)
+                self._end_attempt(end_code, end_code)
+                response.success = True
+                response.message = (
+                    end_code + ' -- the bridge REST already streaming is the '
+                    'safe rest tail')
+                return response
+            reload_sent = True
+            ready_timeout_s = RELOAD_BB_FETCH_TIMEOUT_S
+            head = ('reload requested: Ball Butler reports %s -- bb/reload OK'
+                    % ('an EMPTY hand' if self._bb_heartbeat_fresh()
+                       else 'no fresh heartbeat'))
 
         # C1: do NOT ask bb/throw_at_target here — arm `await_bb_idle` and
         # let `_maybe_fire_reload_throw` (the tick) fire it once BB's own
         # heartbeat reports ready. `bridge`/`site` ride the ctx so
         # `_fire_reload_throw` can derive `delay_s` from the bridge's own
         # settle instant and the aim point from `site`, whenever it runs.
+        # `reload_sent` makes the gate also require `bb_left_idle` (set by
+        # `_on_bb_heartbeat`): after a `bb/reload` the IDLE that counts is
+        # the one AFTER BB's own reload/check cycle, never the one before it.
         with self._reload_lock:
             self._reload_throw_inflight = False
             self._reload_ctx = SimpleNamespace(
                 phase='await_bb_idle', pattern=pattern, boxes=boxes,
                 memory=memory, site=site, bridge=bridge,
-                deadline_mono=time.perf_counter() + RELOAD_BB_READY_TIMEOUT_S)
+                reload_sent=reload_sent, bb_left_idle=False,
+                deadline_mono=time.perf_counter() + ready_timeout_s)
         response.success = True
         response.message = (
-            'reload requested: bb/reload OK -- awaiting Ball Butler ready '
-            '(IDLE, ball in hand, connected) within %.1f s'
-            % (RELOAD_BB_READY_TIMEOUT_S,))
+            '%s -- awaiting Ball Butler ready (IDLE, ball in hand, connected) '
+            'within %.1f s' % (head, ready_timeout_s))
         self.get_logger().info(response.message)
         return response
 

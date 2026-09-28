@@ -51,6 +51,12 @@ ros_ws/gui/js/ros-bridge.js, not here):
    through this same guarded, reaper-backed `protocol.finish` attribute, it
    is covered for free, with no change to `IncomingQueue` itself.
 
+5. **One unanswered service call still stalled the whole tab for 50 s.** Item
+   3 bounded the wait but left it on the queue thread; every other message from
+   that tab waited behind it (2026-09-28 21:41 sitting: a deaf
+   `ball_butler_node` held the GUI for 50 s per `bb/aim`).
+   `run_service_calls_off_the_queue_thread` runs each call on its own thread.
+
 Both numbers, the bench methodology and the acceptance measurements for (1)
 and (2) are recorded in `logbook/2026-09-14-rosbridge-cpu-leak-and-spin.md`;
 (3) and (4) are recorded in
@@ -73,8 +79,9 @@ import sys
 import threading
 import traceback
 
-# Bound on how long a single `call_service` may block the connection's
-# IncomingQueue thread (see this module's docstring, item 3). Must be ABOVE
+# Bound on how long a single `call_service` may block its thread (see this
+# module's docstring, item 3; since item 5 that is the call's own worker
+# thread, not the connection's IncomingQueue thread). Must be ABOVE
 # the GUI's largest per-step client-side service timeout, so the GUI's own
 # `Promise.race` always times out first and the server-side bound only fires
 # as a backstop (e.g. a browser tab gone with the request still in flight).
@@ -254,6 +261,43 @@ def build_call_service(svc, schedule_destroy, timeout_sec=CALL_SERVICE_TIMEOUT_S
             schedule_destroy(client)
 
     return call_service
+
+
+def run_service_calls_off_the_queue_thread(call_service_module):
+    """Item 5 of this module's docstring: each ``call_service`` on its own thread.
+
+    Stock 1.3.1 ``CallService.call_service`` ends with
+    ``ServiceCaller(...).run()`` — "Run service caller in the same thread" —
+    i.e. ON the connection's one ``IncomingQueue`` thread, so while a call waits
+    for its reply every later message from that browser tab (any button, any
+    other service call, any publish) waits behind it. Item 3 bounded that wait
+    at :data:`CALL_SERVICE_TIMEOUT_S`; it did not remove it. MEASURED 2026-09-28
+    21:41 sitting: ``ball_butler_node`` answered nothing, and each GUI ``bb/aim``
+    held the tab for the full 50 s (three rosbridge ``TimeoutError`` lines) —
+    the owner's "the GUI freezes until I refresh".
+
+    ``ServiceCaller`` is a ``threading.Thread`` subclass whose docstring offers
+    exactly this choice ("Use start() to start in a separate thread or run() to
+    run in this thread"), so the patch swaps the module-global name the
+    capability looks up at call time for a shim whose ``run()`` calls the real
+    caller's ``start()``. The worker still goes through the patched
+    ``internal.services.call_service`` (item 1's client destroy, item 3's
+    bound). Replies reach the socket through ``RosbridgeWebSocket.send_message``,
+    which hands off via ``IOLoop.add_callback`` — thread-safe. Replies may now
+    complete out of order; every GUI caller correlates by id.
+    """
+    stock_caller = call_service_module.ServiceCaller
+
+    class _OffQueueServiceCaller:
+        def __init__(self, *args, **kwargs):
+            self._inner = stock_caller(*args, **kwargs)
+            self._inner.daemon = True
+
+        def run(self):
+            self._inner.start()
+
+    call_service_module.ServiceCaller = _OffQueueServiceCaller
+    return _OffQueueServiceCaller
 
 
 def _guard_protocol_finish(protocol, schedule):
@@ -494,6 +538,12 @@ def main(args=None):
     # before start_hook() starts the IOLoop that accepts connections, means
     # every connection for the life of this process goes through the
     # patched open()/on_close().
+    # Item 5: a service call no longer runs on (and blocks) the connection's
+    # IncomingQueue thread, so one unanswered call cannot stall every other
+    # message from that browser tab.
+    import rosbridge_library.capabilities.call_service as call_service_cap
+    run_service_calls_off_the_queue_thread(call_service_cap)
+
     protocol_reaper = ProtocolReaper(node)
     patch_rosbridge_websocket(
         RosbridgeWebSocket, Subscribe, node.get_logger(), protocol_reaper)

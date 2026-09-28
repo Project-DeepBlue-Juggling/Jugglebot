@@ -25,6 +25,7 @@ from pathlib import Path
 import pytest
 
 from jugglebot.rosbridge_websocket_lean import (
+    run_service_calls_off_the_queue_thread,
     CALL_SERVICE_TIMEOUT_S,
     ClientReaper,
     ProtocolReaper,
@@ -697,6 +698,64 @@ def test_spin_forever_ends_on_shutdown_exception_without_logging_an_error():
 
 _MODULE_NAME = 'jugglebot.rosbridge_websocket_lean'
 _FORBIDDEN_PREFIXES = ('rosbridge_library', 'tornado', 'ament_index_python')
+
+
+class _BlockingServiceCaller(threading.Thread):
+    """Stands in for stock ``ServiceCaller``: a Thread whose ``run`` is the
+    service call. This one never returns until released — an unanswered
+    service (2026-09-28 21:41: ``ball_butler_node`` answered nothing)."""
+
+    instances = []
+
+    def __init__(self, service, args, success, error, node_handle):
+        threading.Thread.__init__(self)
+        self.service = service
+        self.release = threading.Event()
+        self.entered = threading.Event()
+        self.ran_on = None
+        _BlockingServiceCaller.instances.append(self)
+
+    def run(self):
+        self.ran_on = threading.current_thread()
+        self.entered.set()
+        self.release.wait(5.0)
+
+
+def test_a_hung_service_call_does_not_block_the_calling_queue_thread():
+    """Item 5: ``CallService.call_service`` calls ``ServiceCaller(...).run()``;
+    after the patch that returns at once and the call runs on its own daemon
+    thread, so the tab's IncomingQueue thread is free for the next message.
+    Fail-before (stock ``.run()`` in the same thread): this ``run()`` would not
+    return until the service answered."""
+    _BlockingServiceCaller.instances = []
+    cap = types.SimpleNamespace(ServiceCaller=_BlockingServiceCaller)
+    run_service_calls_off_the_queue_thread(cap)
+    assert cap.ServiceCaller is not _BlockingServiceCaller
+
+    caller = cap.ServiceCaller('bb/aim', [], None, None, None)
+    done = threading.Event()
+    t = threading.Thread(target=lambda: (caller.run(), done.set()))
+    t.start()
+    assert done.wait(1.0), 'run() blocked the calling (queue) thread'
+    inner = _BlockingServiceCaller.instances[0]
+    assert inner.entered.wait(1.0)
+    assert inner.ran_on is not t and inner.daemon is True
+    inner.release.set()
+    inner.join(1.0)
+
+
+def test_two_calls_from_one_tab_run_concurrently():
+    """A second call is not queued behind a first one that never answers."""
+    _BlockingServiceCaller.instances = []
+    cap = types.SimpleNamespace(ServiceCaller=_BlockingServiceCaller)
+    run_service_calls_off_the_queue_thread(cap)
+    cap.ServiceCaller('bb/aim', [], None, None, None).run()
+    cap.ServiceCaller('rosapi/topics', [], None, None, None).run()
+    a, b = _BlockingServiceCaller.instances
+    assert a.entered.wait(1.0) and b.entered.wait(1.0)
+    for c in (a, b):
+        c.release.set()
+        c.join(1.0)
 
 
 def test_import_does_not_pull_in_rosbridge_tornado_or_ament():
