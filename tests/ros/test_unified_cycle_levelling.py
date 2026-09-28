@@ -65,6 +65,7 @@ from jugglebot.trajectory_node import TrajectoryNode
 # (see that module's docstring: T-I1 / the hold-reentrancy pin / the node-boot
 # executor pin were moved there for the identical reason).
 from tests.ros.test_install_segment import _catch_req, _refresh as _is_refresh
+from tests.ros.test_install_segment import _frozen_perf
 from tests.ros.test_install_segment import _throw_req
 
 
@@ -327,7 +328,20 @@ def test_a_degraded_map_lookup_degrades_the_cycle_to_offset_only(monkeypatch,
 # 2. The installed plan — the thing the bag measured
 # ═════════════════════════════════════════════════════════════════════════════
 
-def test_a_launch_from_the_levelled_prepare_pose_releases_gravity_level():
+@pytest.fixture
+def frozen_clock():
+    """``time.perf_counter()`` frozen for the whole test (``test_install_segment.
+    _frozen_perf``). Since 2026-09-28 a fresh-origin THROW/CATCH whose solve
+    outruns the 75 ms wire lead is refused ``ORIGIN_TOO_LATE`` against the REAL
+    clock, and these tests install from a fresh origin: under load (the
+    2026-09-28 evening box sweeps) their solves took 0.15-0.55 s and all five
+    refused. Freezing makes the install instant, which is what these frame
+    assertions are about."""
+    with _frozen_perf() as at:
+        yield at
+
+
+def test_a_launch_from_the_levelled_prepare_pose_releases_gravity_level(frozen_clock):
     """THE FIX, at the node: no tilt step at knot 0 and a level release.
 
     This is the bench observation, reproduced end to end through the real
@@ -391,7 +405,7 @@ def test_a_launch_from_the_levelled_prepare_pose_releases_gravity_level():
     assert drift_mm < 0.05
 
 
-def test_the_same_launch_UNFRAMED_reproduces_the_bag(monkeypatch):
+def test_the_same_launch_UNFRAMED_reproduces_the_bag(monkeypatch, frozen_clock):
     """The failing half: strip the frame from the seed and the bag comes back.
 
     Deliberately monkeypatched at the STATE rather than at the node's offset,
@@ -433,7 +447,7 @@ def test_the_same_launch_UNFRAMED_reproduces_the_bag(monkeypatch):
     assert step_deg == pytest.approx(0.6682, abs=1e-3)
 
 
-def test_the_chained_install_plans_both_windows_in_ONE_frame():
+def test_the_chained_install_plans_both_windows_in_ONE_frame(frozen_clock):
     """A chained install is LAUNCH then LANDING — one frame, one seam.
 
     `executor._rest_seed` carries the frame off the head record's own meta, so
@@ -488,7 +502,7 @@ def test_the_chained_install_plans_both_windows_in_ONE_frame():
     assert worst <= math.radians(12.0) + float(np.hypot(*_OFFSET)) + 1e-9
 
 
-def test_the_frame_is_recorded_on_the_installed_meta_not_re_read():
+def test_the_frame_is_recorded_on_the_installed_meta_not_re_read(frozen_clock):
     """C-LEVEL-1's in-flight rule: a re-level does not re-frame a live plan.
 
     Re-reading the node's live correction from a continuation would step the
@@ -543,7 +557,7 @@ def test_the_frame_is_recorded_on_the_installed_meta_not_re_read():
 # 3. The legacy path is untouched
 # ═════════════════════════════════════════════════════════════════════════════
 
-def test_the_legacy_ingest_still_corrects_after_a_cycle_has_been_planned():
+def test_the_legacy_ingest_still_corrects_after_a_cycle_has_been_planned(frozen_clock):
     """E3 keeps behaving exactly as C-LEVEL-1 says, cycle or no cycle.
 
     E8 adds a surface; it must not move one.  The `go_to_pose` ingest still

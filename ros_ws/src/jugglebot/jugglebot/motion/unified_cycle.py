@@ -965,6 +965,13 @@ def detach_knots(cup_cfg=None) -> int:
                else getattr(cup_cfg, 'n_detach', cc.CupCycleConfig.n_detach))
 
 
+#: Below this seed cup ``v_z`` (m/s) the post-release hold takes its line from
+#: the release tilt instead of the seed velocity: ``v_xy / v_z`` is ill-posed
+#: near zero.  Every real release leaves at 2.5 m/s or more (a 0.3 m apex), so
+#: the fallback is a guard, not a regime.
+_HOLD_MIN_STROKE_VZ_M_S = 0.5
+
+
 def post_release_hold_knots(hold_s: Optional[float] = None, cup_cfg=None) -> int:
     """A post-release hold length (s) on the knot grid.  ONE conversion.
 
@@ -1534,13 +1541,33 @@ def plan_cycle(kind: str, goals: CycleGoals, state: CycleState,
                 "hold_platform_knots needs a seed that followed a release "
                 "(state.post_release is False) — there is no ball on its way out "
                 "of this cup to hold the platform still for.")
-        # The held line is the cup axis in the frame ``cup_realize.decompose``
-        # reads for its lever arm — i.e. the PLAN frame, after the C-LEVEL-1
-        # shift below.  Taking it from the gravity-frame detach axis instead
-        # would mis-state the slope by the whole levelling correction
-        # (11.663 mrad x the 4166 mm/s release stroke = 49 mm/s of platform
-        # velocity, two thirds of the defect this hold exists to remove), so it
-        # is computed here from the same pin ``_realize`` hands the schedule.
+        # The held line is the line the cup is ALREADY travelling on at the
+        # release knot: ``kappa = v_xy / v_z`` of the seed's own cup velocity
+        # (the ballistic launch velocity the THROW's release equality pinned).
+        # That is the only choice consistent with knot 0 of this window.
+        #
+        # The first version (2026-09-28 morning) took the cup axis of the
+        # release tilt shifted into the PLAN frame by the levelling
+        # correction.  With no correction that axis IS the launch direction
+        # (the platform is stationary at the release knot), but a correction
+        # rotates it away from the launch velocity by the correction angle,
+        # and the hold rows then demand ``v_y == kappa_y·v_z`` one knot after
+        # a release whose ``v_y`` is 0.  A lateral velocity cannot jump, so
+        # the QP collapses ``v_z`` instead — the hand's post-release
+        # deceleration.  MEASURED 2026-09-28 21:41 sitting: every 250 mm hop
+        # THROW refused HAND_LIMIT_ACC 4969.7 > 3500 rev/s^2 under the
+        # sitting's own level offset (-3.86, +5.81) mrad; offline, the same
+        # plan is 2980 rev/s^2 with no correction, 5236 with that offset,
+        # 5229 with its across-the-hop (y) half alone and 2980 with an
+        # along-the-hop (x) offset of the same size
+        # (logbook 2026-09-28-skill-stack-r4-sitting-2-analysis.md).
+        #
+        # Under a correction the platform therefore translates during the
+        # hold at ``v_z·(kappa_launch - axis_plan_xy)`` — the same small
+        # velocity it already has at the release knot (24 mm/s at 5.8 mrad
+        # and 4.2 m/s), decaying with ``v_z``.  What the ball feels is the
+        # CUP's velocity, and that stays on the launch line, which is the
+        # hold's purpose.
         start = _start_tilt_for(state)
         if start is None:
             raise CycleInfeasible(TILT_PIN, [
@@ -1548,9 +1575,15 @@ def plan_cycle(kind: str, goals: CycleGoals, state: CycleState,
                 "know which line the frozen platform's stroke runs along, and "
                 "this seed carries none. Seed the tail with "
                 "release_state_from_meta."])
-        hold_axis = np.asarray(tg.cup_axis(*_tilts_to_plan(
-            np.asarray(start, dtype=float).reshape(1, 2),
-            state.levelling_correction)[0]), dtype=float)
+        seed_cup_vel = state.to_cup_state(rcfg).vel
+        if float(seed_cup_vel[2]) > _HOLD_MIN_STROKE_VZ_M_S:
+            hold_axis = np.array([float(seed_cup_vel[0]) / float(seed_cup_vel[2]),
+                                  float(seed_cup_vel[1]) / float(seed_cup_vel[2]),
+                                  1.0])
+        else:
+            hold_axis = np.asarray(tg.cup_axis(*_tilts_to_plan(
+                np.asarray(start, dtype=float).reshape(1, 2),
+                state.levelling_correction)[0]), dtype=float)
 
     events, settle_m = _events_for(kind, goals)
     state0 = state.to_cup_state(rcfg)

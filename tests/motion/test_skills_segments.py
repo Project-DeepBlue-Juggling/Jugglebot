@@ -523,22 +523,28 @@ def _hold_verdict(plan, k_rel, n=HOLD_K):
     return speed, disp
 
 
-def _off_stroke_line_mm_s(plan, k_rel, n=HOLD_K):
-    """Worst |cup velocity off the frozen platform's stroke line| (mm/s).
-
-    THE invariant the hold's QP rows state: with the platform still, the cup can
-    only move along ``(axis_xy, 1)`` — ``cup_realize.decompose``'s own centroid
-    slope — so ``v_xy == axis_xy · v_z`` at every held knot.
-    """
+def _cup_vel_at(plan, k):
     pose = np.asarray(plan.pose)
-    vel = np.asarray(plan.pose_vel)
-    hand = np.asarray(plan.hand_rev)
-    hvel = np.asarray(plan.hand_vel_rps)
-    kappa = np.asarray(cr.tilt_geometry.cup_axis(*pose[k_rel][3:5]))[:2]
+    return np.asarray(uc.cup_velocity_from_platform(
+        pose[k], np.asarray(plan.pose_vel)[k], np.asarray(plan.hand_rev)[k],
+        np.asarray(plan.hand_vel_rps)[k])).ravel()[:3]
+
+
+def _off_stroke_line_mm_s(plan, k_rel, n=HOLD_K):
+    """Worst |cup velocity off the held line| (mm/s) over the held knots.
+
+    THE invariant the hold's QP rows state: ``v_xy == kappa · v_z`` with
+    ``kappa = v_xy / v_z`` of the cup at the RELEASE knot — the launch line the
+    ball leaves on (2026-09-28 sitting-2 fix; the first version held the
+    platform-tilt axis, which a levelling correction rotates off the launch
+    line, see ``unified_cycle._realize``).  With no correction the two agree to
+    the sin/tan difference of the 4 deg release tilt (0.48 mm/s here).
+    """
+    v_rel = _cup_vel_at(plan, k_rel)
+    kappa = v_rel[:2] / v_rel[2]
     worst = 0.0
     for k in range(k_rel + 1, k_rel + 1 + n):
-        v = np.asarray(uc.cup_velocity_from_platform(
-            pose[k], vel[k], hand[k], hvel[k])).ravel()[:3]
+        v = _cup_vel_at(plan, k)
         worst = max(worst, float(np.max(np.abs(v[:2] - kappa * v[2]))))
     return worst
 
@@ -558,13 +564,42 @@ def test_a_tilted_throws_tail_holds_the_cup_on_the_frozen_stroke_line(
     (see ``unified_cycle._realize``'s "attitude half" block).
     """
     k_rel = int(round(float(hop_throw_segment.event_t_s) / DT))
-    # 0.0041 mm/s measured: the residual is the reconstruction, not the pin —
+    # The residual is the reconstruction, not the pin —
     # cup_velocity_from_platform rebuilds the cup velocity from the REALISED pose
     # with finite-differenced tilt rates, while the QP pinned the analytic one.
     assert _off_stroke_line_mm_s(hop_throw_segment.plan, k_rel) < 0.05
     speed, disp = _hold_verdict(hop_throw_segment.plan, k_rel)
     assert speed < 60.0
     assert disp < 2.0
+
+
+def test_a_hop_throw_under_a_cross_hop_level_correction_plans_inside_the_hand_limit(
+        limits, geom, cfg):
+    """A levelling correction across the hop must not break the post-release hold.
+
+    MEASURED 2026-09-28 21:41 sitting: all three 250 mm hop attempts refused
+    ``HAND_LIMIT_ACC: peak hand acceleration 4969.7 rev/s^2 > 3500.0`` at the
+    THROW install, under the sitting's level offset (-3.857, +5.809) mrad.  The
+    hold held the platform-TILT axis, which the correction rotates 5.8 mrad off
+    the launch velocity across the hop; one knot after a release with
+    ``v_y == 0`` the rows demanded ``v_y == 0.0058·v_z``, and the QP collapsed
+    ``v_z`` — the hand.  Fail-before (this test, 2026-09-28, the committed planner):
+    ``CycleInfeasible`` HAND_LIMIT_ACC 5235.7 rev/s^2 from the y half alone on
+    this test's own seed (the executor-driven probe, a spliced seed, read 5229.2).
+    Pass-after: 2995.9 rev/s^2, the no-correction plan's 2980.2 within 1 %.
+    """
+    from jugglebot.motion import levelling
+    base = _rest_state(HOP_P1.rest_site_mm())
+    corr = levelling.correction_from_offset(0.0, 0.005809100317737187)
+    seed = uc.CycleState.at_rest(base.pose, base.hand_rev,
+                                 levelling_correction=corr)
+    terminal = sg.ThrowTerminal(site_mm=HOP_P1.throw_site_mm(),
+                                target_mm=HOP_P2.catch_site_mm(),
+                                flight_s=T_F, t_release_s=0.4)
+    seg = sg.plan_segment(sg.THROW, seed, terminal, cfg, limits, geom)
+    assert seg.meta.report.peak_hand_acc_rps2 <= limits.hand_acc_limit_rps2
+    k_rel = int(round(float(seg.event_t_s) / DT))
+    assert _off_stroke_line_mm_s(seg.plan, k_rel) < 0.05
 
 
 def test_a_post_release_landing_holds_the_platform_after_the_release(

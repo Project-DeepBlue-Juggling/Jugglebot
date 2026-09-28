@@ -2960,6 +2960,9 @@ def test_hold_platform_knots_pins_the_cup_and_shrinks_the_realised_pose_velocity
     target 150,0,860 mm, flight 0.6 s): off-line cup-velocity residual at
     knots 1..HK falls from 21.5 / 42.0 mm/s to 2.1e-5 / 1.3e-4 mm/s; realised
     ``pose_vel`` xy falls from 23.18 / 48.31 mm/s to 1.66 / 6.27 mm/s.
+    Re-measured 2026-09-28 evening against the LAUNCH line the hold now keeps
+    (sitting-2 fix): residual 20.8 / 41.7 -> 3.3e-5 / 1.4e-4 mm/s, pose_vel xy
+    23.18 / 48.31 -> 2.35 / 6.64 mm/s.
     """
     target = THROW_MM + np.array([150.0, 0.0, 0.0])
     goals = uc.CycleGoals(period_s=0.6, throw_site_mm=THROW_MM,
@@ -2977,15 +2980,23 @@ def test_hold_platform_knots_pins_the_cup_and_shrinks_the_realised_pose_velocity
 
     off_plan = _settle(0)
     held_plan = _settle(hk)
-    axis0 = tg.cup_axis(*np.asarray(held_plan.pose[0])[3:5])
+    # The held line is the LAUNCH line (the seed cup velocity's v_xy / v_z),
+    # not the plan-frame tilt axis: 2026-09-28 sitting-2 fix, see
+    # ``unified_cycle._realize`` and ``test_skills_segments.py::
+    # test_a_hop_throw_under_a_cross_hop_level_correction_plans_inside_the_hand_limit``.
+    def _cup_vel(plan, k):
+        return np.asarray(uc.cup_velocity_from_platform(
+            np.asarray(plan.pose[k]), np.asarray(plan.pose_vel[k]),
+            np.asarray(plan.hand_rev[k]),
+            np.asarray(plan.hand_vel_rps[k]))).ravel()[:3]
+
+    v0 = _cup_vel(held_plan, 0)
+    kappa = v0[:2] / v0[2]
 
     def _cup_off_and_pose_vel(plan, k):
-        pose = np.asarray(plan.pose[k])
-        pv = np.asarray(plan.pose_vel[k])
-        hand = np.asarray(plan.hand_rev[k])
-        hvel = np.asarray(plan.hand_vel_rps[k])
-        v = uc.cup_velocity_from_platform(pose, pv, hand, hvel)
-        return float(np.max(np.abs(v[:2] - axis0[:2] * v[2]))), pv[:2]
+        v = _cup_vel(plan, k)
+        return (float(np.max(np.abs(v[:2] - kappa * v[2]))),
+                np.asarray(plan.pose_vel[k])[:2])
 
     for k in range(1, hk + 1):
         off_before, pv_before = _cup_off_and_pose_vel(off_plan, k)
