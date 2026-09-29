@@ -106,8 +106,9 @@ a few per goal, in the record only.
   stop-after-a-drop; only `logbook/INDEX.md` conflicted, `_on_tick` merged cleanly: its stop call
   stays outside the tick lock, reports drain every tick, the end line prints at retirement).
   The rebased tree was gated again with the same command, ending 23:22: **PASS, 5618 passed, 9 skipped
-  (+9 = that commit's tests); serial 3 passed** (`temp/logs/gate_console_phase2_rebased_20260929.log`
-  in the console worktree).
+  (+9 = that commit's tests); serial 3 passed** (`temp/logs/gate_console_phase2_rebased_20260929.log`;
+  the `console-phase2` worktree was removed 2026-09-30 and its gate logs moved to the
+  `Jugglebot-skills` worktree's `temp/logs`).
 
 ## Open Questions
 

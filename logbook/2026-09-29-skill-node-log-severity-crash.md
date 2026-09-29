@@ -57,9 +57,10 @@ tests also captured lines through substituted lambdas, which bypass the logger e
 
 ## Verification
 
-- Gate, `./run_tests.sh` in the console worktree (on `2bb2c030`), run 2026-09-29 23:49–23:53:
-  **PASS, 5622 passed, 9 skipped; serial 3 passed**
-  (`temp/logs/gate_log_severity_fix_20260929.log` in that worktree).
+- Gate, `./run_tests.sh` in the separate `console-phase2` worktree (on `2bb2c030`), run 2026-09-29
+  23:49–23:53: **PASS, 5622 passed, 9 skipped; serial 3 passed**
+  (`temp/logs/gate_log_severity_fix_20260929.log`; that worktree was removed 2026-09-30 and its
+  gate logs moved to the `Jugglebot-skills` worktree's `temp/logs`).
 
 ## Notes
 

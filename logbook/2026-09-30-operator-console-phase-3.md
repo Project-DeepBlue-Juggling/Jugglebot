@@ -112,7 +112,9 @@ the whole clean shutdown (`2026-09-29-skill-node-log-severity-crash` § Notes).
   - bridge: `tests/ros/test_teensy_bridge_node*.py` + `test_launch_console.py`, 493 passed.
   - perception: 15 files, 276 passed, 1 skipped.
   - trajectory/skill: 5 files, 336 passed.
-- Gate, `./run_tests.sh` in the console worktree, rebased onto `0cb47745`, 2026-09-30:
+- Gate, `./run_tests.sh` in the separate `console-phase2` worktree, rebased onto `0cb47745`,
+  2026-09-30 (that worktree was removed later that day; its gate logs moved to the
+  `Jugglebot-skills` worktree's `temp/logs`):
   - **Run 1 (ending 00:24): FAIL, 2 failed, 5665 passed, 9 skipped.** The failures were
     `test_teensy_bridge_node_udp_diag.py::test_udp_diag_counts_tx_by_type` (3 == 0 + 2) and
     `test_teensy_bridge_node_recover.py::test_recover_hand_park_is_a_noop_when_the_hand_is_already_parked`
@@ -121,14 +123,31 @@ the whole clean shutdown (`2026-09-29-skill-node-log-severity-crash` § Notes).
     `run_tests_r4b_pre_sweep_20260928_1239.log`, in the main worktree's `temp/logs`), before this change. Both files then passed
     3/3 scoped (42 passed each time).
   - **Run 2 (ending 00:29): PASS, 5667 passed, 9 skipped; serial 3 passed**
-    (`temp/logs/gate_console_phase3_run2_20260930.log` in the console worktree).
+    (`temp/logs/gate_console_phase3_run2_20260930.log`).
   - The co-failure in one run (an extra TX counted in one test, an unknown-method answer in the
     other) suggests the two tests' fake Teensies exchange packets under xdist. That is a test-
     isolation follow-up, not this change.
+- **On the robot, 2026-09-30 09:16–09:35.** There were four launches, two with `record:=true`,
+  and the owner confirmed the colour works over ssh. Ctrl-C printed no `Traceback`,
+  `Exception ignored` or `InvalidHandle` line in any of the four `launch.log`s (the 09:40
+  `~/.ros/log` dirs are the probe below, not the owner's). The owner's
+  23:35 launch the night before, which had no fix, printed 24.
+- **Why a record:=true Ctrl-C still showed nothing.** The owner reported no shutdown lines and
+  no bag line, again. Both launch logs show a clean shutdown, and both bags have
+  `metadata.yaml`. The two record runs were piped through a plain `| tee
+  temp/logs/launch_logging_test_*.log`, and both copies end BEFORE launch's own Ctrl-C line.
+  The two record:=false runs were not piped. Record was a confound for tee. A probe sent a real
+  Ctrl-C keystroke through a pseudo-terminal to a minimal launch with the console and bag
+  line armed. A bare launch printed `Ctrl-C: shutting down` and ended with `bag saved:`, and so
+  did the same launch through `| tee -i`. Through a plain `| tee`, nothing printed after `^C`.
+  A first attempt, as background jobs, proved nothing: a non-interactive shell starts a
+  background job with SIGINT ignored.
 
 ## Open Questions
 
-- The Ctrl-C traceback fix and every new line need one real launch and shutdown to confirm.
+- Those launches covered the startup, activate, go_home, deactivate and Ctrl-C lines. No
+  throw, Ball Butler, reload or levelling line has been seen live yet. The first throwing
+  sitting is the check.
 - A `/recover` or `/clear_errors` failure can still print two ERRORs: the inner cause and the
   outcome line.
 - A Stop prints `attempt stopped` straight away, then the end line when the rest tail
