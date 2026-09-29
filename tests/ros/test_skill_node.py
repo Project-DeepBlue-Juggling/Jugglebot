@@ -2476,6 +2476,180 @@ def test_an_announcement_not_from_ball_butler_is_ignored(tmp_path):
     assert node._executor is None
 
 
+def _announce_with_a_concurrent_step(node, step):
+    """Deliver a Ball Butler announcement to `node` and run ``step(node)``
+    INSIDE `_on_announcement`'s compile, the window between the handler
+    claiming the reload and installing the compiled schedule. On the robot
+    that window is a few ms of `compile_reload` on the subscription thread,
+    during which the 40 Hz tick (and the Juggle action's thread) keep
+    running on other threads. Returns what ``step`` returned."""
+    real_compile = sn.compile_reload
+    seen = {}
+
+    def compile_with_a_concurrent_step(*args, **kwargs):
+        seen['step'] = step(node)
+        return real_compile(*args, **kwargs)
+
+    ann = _bb_announcement(
+        target_id=node._robot_name, landing_mm=(-50.0, 0.0, sn.CATCH_CUP_Z_MM),
+        landing_vel_mm_s=(1200.0, 0.0, -2500.0),
+        throw_time_s=2.0, landing_time_s=2.7)
+    with patch.object(sn, 'compile_reload', compile_with_a_concurrent_step):
+        node._on_announcement(ann)
+    return seen['step']
+
+
+def test_the_juggle_goal_is_not_done_while_the_announced_reload_compiles(
+        tmp_path):
+    """R4 sitting 4 (2026-09-29 19:11): all three reload goals reported
+    "COMPLETED (0/0 caught)" to the GUI about 20 ms after the button, while
+    the reload went on to catch and throw four times each. `_on_announcement`
+    cleared `_reload_ctx` BEFORE compiling, so a tick in the compile window
+    saw no executor and no reload context and fired `_goal_done_event`."""
+    node, _client = _node_with_client(response=_response())
+    resp = _start_reload(node, tmp_path)
+    assert resp.success is True, resp.message
+    _finish_bridge(node)
+    assert node._executor is None
+    node._goal_done_event.clear()
+
+    def tick_mid_compile(n):
+        n._maybe_signal_goal_done()
+        return n._goal_done_event.is_set()
+
+    done_mid_compile = _announce_with_a_concurrent_step(node, tick_mid_compile)
+    assert done_mid_compile is False, (
+        'the goal was reported done while the reload schedule was compiling')
+    assert node._executor is not None
+    assert node._reload_ctx is None
+    node._maybe_signal_goal_done()
+    assert not node._goal_done_event.is_set()
+
+
+def test_a_stop_during_the_reload_compile_is_not_overwritten_by_the_swap(
+        tmp_path):
+    """The same window, the operator's side: a Stop that lands while the
+    announced schedule compiles must win. Before the fix the stop saw no
+    executor and no reload context ("no attempt was running"), and the swap
+    then installed the reload schedule anyway -- the robot went on to catch
+    and throw after the operator had pressed Stop."""
+    node, _client = _node_with_client(response=_response())
+    resp = _start_reload(node, tmp_path)
+    assert resp.success is True, resp.message
+    _finish_bridge(node)
+
+    stop = _announce_with_a_concurrent_step(node, lambda n: n._stop_attempt())
+    assert 'reload wait cancelled' in stop.message
+    assert node._executor is None, (
+        'the reload schedule was installed after the operator stopped')
+    assert node._reload_ctx is None
+
+
+def test_a_second_announcement_during_the_compile_is_ignored(tmp_path):
+    """Regression guard for the claim that replaced the pop-first shape: an
+    announcement delivered while the first one is still compiling must not
+    compile or install a second schedule."""
+    node, _client = _node_with_client(response=_response())
+    resp = _start_reload(node, tmp_path)
+    assert resp.success is True, resp.message
+    _finish_bridge(node)
+    calls = []
+    real_compile = sn.compile_reload
+
+    def counting_compile(*args, **kwargs):
+        calls.append(1)
+        return real_compile(*args, **kwargs)
+
+    def second_announcement(n):
+        with patch.object(sn, 'compile_reload', counting_compile):
+            n._on_announcement(_bb_announcement(
+                target_id=n._robot_name,
+                landing_mm=(-50.0, 0.0, sn.CATCH_CUP_Z_MM),
+                landing_vel_mm_s=(1200.0, 0.0, -2500.0),
+                throw_time_s=2.0, landing_time_s=2.7))
+        return n._executor
+
+    executor_mid_compile = _announce_with_a_concurrent_step(
+        node, second_announcement)
+    assert calls == []
+    assert executor_mid_compile is None
+    assert node._executor is not None
+    assert node._reload_ctx is None
+
+
+def test_an_unschedulable_announcement_ends_the_attempt_with_its_own_code(
+        tmp_path):
+    """The claim holds `_reload_ctx` through the compile, so a landing
+    `compile_reload` refuses must end the attempt itself -- not sit claimed
+    until the wait times out as ABORTED_NO_ANNOUNCEMENT (the announcement
+    did arrive), and not leave the Juggle goal to report COMPLETED."""
+    node, _client = _node_with_client(response=_response())
+    resp = _start_reload(node, tmp_path)
+    assert resp.success is True, resp.message
+    _finish_bridge(node)
+
+    def refuse(*_args, **_kwargs):
+        raise ValueError('the reload CATCH window is too short')
+
+    ann = _bb_announcement(
+        target_id=node._robot_name, landing_mm=(-50.0, 0.0, sn.CATCH_CUP_Z_MM),
+        landing_vel_mm_s=(1200.0, 0.0, -2500.0),
+        throw_time_s=2.0, landing_time_s=2.7)
+    with patch.object(sn, 'compile_reload', refuse):
+        node._on_announcement(ann)
+    assert node._executor is None
+    assert node._reload_ctx is None
+    assert node._goal_end_code == 'REJECTED_RELOAD_UNSCHEDULABLE'
+
+
+def test_the_reload_timeout_leaves_a_claimed_announcement_to_its_compile(
+        tmp_path):
+    """Phase-end audit, 2026-09-29: the claim keeps `_reload_ctx` set through
+    the compile, so `_check_reload_timeout` must not time it out there -- the
+    announcement DID arrive (ABORTED_NO_ANNOUNCEMENT would name the wrong
+    fact) and the compiled schedule would be dropped. Mirrors the `'firing'`
+    exclusion: `_on_announcement` alone resolves a claimed context."""
+    node, _client = _node_with_client(response=_response())
+    resp = _start_reload(node, tmp_path)
+    assert resp.success is True, resp.message
+    _finish_bridge(node)
+
+    def deadline_passes_mid_compile(n):
+        n._reload_ctx.deadline_mono = time.perf_counter() - 1.0
+        n._check_reload_timeout()
+        return n._reload_ctx
+
+    ctx_after_timeout_check = _announce_with_a_concurrent_step(
+        node, deadline_passes_mid_compile)
+    assert ctx_after_timeout_check is not None
+    assert node._executor is not None, (
+        'the timeout dropped a schedule compiled for an announced throw')
+    assert node._goal_end_code == ''
+
+
+def test_an_unexpected_error_in_the_compile_ends_the_attempt_by_name(tmp_path):
+    """The claim's backstop: with the timeout no longer able to clear a
+    claimed context, ANY error after the claim must end the attempt itself,
+    naming the error, or the attempt would sit claimed until a Stop."""
+    node, _client = _node_with_client(response=_response())
+    resp = _start_reload(node, tmp_path)
+    assert resp.success is True, resp.message
+    _finish_bridge(node)
+
+    def broken(*_args, **_kwargs):
+        raise RuntimeError('boom')
+
+    ann = _bb_announcement(
+        target_id=node._robot_name, landing_mm=(-50.0, 0.0, sn.CATCH_CUP_Z_MM),
+        landing_vel_mm_s=(1200.0, 0.0, -2500.0),
+        throw_time_s=2.0, landing_time_s=2.7)
+    with patch.object(sn, 'compile_reload', broken):
+        node._on_announcement(ann)
+    assert node._executor is None
+    assert node._reload_ctx is None
+    assert node._goal_end_code == 'ABORTED_RELOAD_ERROR(RuntimeError)'
+
+
 def test_the_reload_wait_times_out_aborted_no_announcement(tmp_path):
     node, _client = _node_with_client(response=_response())
     resp = _start_reload(node, tmp_path)

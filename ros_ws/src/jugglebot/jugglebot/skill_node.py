@@ -40,6 +40,7 @@ import math
 import os
 import threading
 import time
+import traceback
 from types import SimpleNamespace
 from typing import Dict, List, Tuple
 
@@ -1604,11 +1605,15 @@ class SkillNode(Node):
         code. Never fires during `firing` — `_maybe_fire_reload_throw`'s own
         blocking round trip is still using this SAME `ctx`, and yanking it
         out from under that call would leave a throw request answered by
-        nothing."""
+        nothing. Nor on a context an announcement has CLAIMED
+        (`ctx.announced`, 2026-09-29): the announcement did arrive, and
+        `_on_announcement` alone resolves the claim (installs the schedule,
+        or ends the attempt naming why)."""
         timed_out_phase = None
         with self._reload_lock:
             ctx = self._reload_ctx
             if (ctx is not None and ctx.phase != 'firing'
+                    and not getattr(ctx, 'announced', False)
                     and time.perf_counter() >= ctx.deadline_mono):
                 self._reload_ctx = None
                 timed_out_phase = ctx.phase
@@ -2561,6 +2566,7 @@ class SkillNode(Node):
                 phase='await_bb_idle', pattern=pattern, boxes=boxes,
                 memory=memory, site=site, bridge=bridge,
                 reload_sent=reload_sent, bb_left_idle=False,
+                announced=False,
                 deadline_mono=time.perf_counter() + ready_timeout_s)
         response.success = True
         response.message = (
@@ -2579,24 +2585,59 @@ class SkillNode(Node):
         one of THIS node's own self-toss announcements for a reload
         (`_maybe_announce` publishes those with `thrower_name ==
         self._robot_name`, never `'ball_butler'`), and on `target_id ==
-        self._robot_name` so an announcement not naming us is ignored. Pops
-        `_reload_ctx` before doing anything else — an announcement that
-        arrives with nothing awaiting it (already timed out, or we were
-        never reloading) has nothing to act on and is logged, not acted on.
+        self._robot_name` so an announcement not naming us is ignored.
+
+        CLAIMS `_reload_ctx` (`ctx.announced`) before doing anything else,
+        and clears it only in the same `_reload_lock` section that installs
+        the compiled executor. Until 2026-09-29 this popped the context
+        first and compiled after, and for those few ms the node read as idle
+        (no executor, no reload context): the tick's `_maybe_signal_goal_done`
+        ended the Juggle goal "COMPLETED (0/0 caught)" on every reload of the
+        R4 gate sitting, and a Stop landing in that window found "no attempt
+        was running" and was then overwritten by the swap. An announcement
+        that arrives with nothing awaiting it (already timed out, stopped,
+        already claimed by an earlier announcement, or none was requested)
+        is logged, not acted on.
         """
         if (str(msg.thrower_name) != 'ball_butler'
                 or str(msg.target_id) != self._robot_name):
             return
         with self._reload_lock:
             ctx = self._reload_ctx
-            self._reload_ctx = None
-        if ctx is None:
+            claimed = ctx is not None and not getattr(ctx, 'announced', False)
+            if claimed:
+                ctx.announced = True
+        if not claimed:
             self.get_logger().info(
                 'reload: a ball_butler announcement for us arrived with no '
-                'reload awaiting one (already timed out, or none was '
-                'requested) -- ignored')
+                'reload awaiting one (already timed out or stopped, already '
+                'announced, or none was requested) -- ignored')
             return
 
+        # The claim is resolved HERE and nowhere else (the timeout skips a
+        # claimed context): the schedule installs, or the attempt ends
+        # naming why. An unexpected error ends it too, never leaving the
+        # attempt claimed until a Stop.
+        try:
+            self._install_announced_reload(ctx, msg)
+        except Exception as exc:  # noqa: BLE001 -- see the comment above
+            self.get_logger().error(
+                'reload: unexpected error while compiling the announced '
+                'schedule:\n%s' % traceback.format_exc())
+            if self._still_current(ctx):
+                self._end_attempt(
+                    'ABORTED_RELOAD_ERROR(%s)' % type(exc).__name__,
+                    'reload: %r while compiling the announced schedule -- no '
+                    'reload schedule installed; the platform stays at rest '
+                    'under the aim point (the bridge REST is already '
+                    'streaming)' % (exc,))
+
+    def _install_announced_reload(self, ctx, msg: ThrowAnnouncement) -> None:
+        """Compile the reload schedule from BB's announcement and install it
+        for the context ``ctx`` that `_on_announcement` has claimed -- only
+        if the claim is still current at the install (see the swap below).
+        Every path out of here resolves the claim or leaves it to a Stop /
+        refused hand lane / BB refusal that already ended the attempt."""
         # THE JOIN: `_on_balls` subtracts the measured mocap-to-schedule
         # offset from a tracker LANDING to reach the schedule frame (see
         # that method's docstring) -- the announcement's landing is the
@@ -2620,11 +2661,16 @@ class SkillNode(Node):
             schedule = compile_reload(landing_mm, landing_vel_mm_s,
                                       t_land_abs_s, ctx.pattern, now)
         except ValueError as exc:
-            self.get_logger().error(
-                'reload: the announced landing could not be scheduled (%s) '
-                '-- no reload schedule installed; the platform stays at '
-                'rest under the aim point (the bridge REST is already '
-                'streaming)' % (exc,))
+            # The claim above holds `_reload_ctx`, so this attempt must be
+            # ended here, not left to time out as ABORTED_NO_ANNOUNCEMENT
+            # (the announcement DID arrive).
+            if self._still_current(ctx):
+                self._end_attempt(
+                    'REJECTED_RELOAD_UNSCHEDULABLE',
+                    'reload: the announced landing could not be scheduled '
+                    '(%s) -- no reload schedule installed; the platform stays '
+                    'at rest under the aim point (the bridge REST is already '
+                    'streaming)' % (exc,))
             return
 
         # Same FlightLatch rule `_maybe_announce` applies to our own
@@ -2644,35 +2690,50 @@ class SkillNode(Node):
         learner_cfg = lr.LearnerConfig()
         learner = SimpleNamespace(
             command=lambda x, y_d: ctx.memory.command(x, y_d, learner_cfg))
+        executor = SkillExecutor(
+            schedule, self._installer, tracker=self._tracker,
+            catch_aim_source=self._catch_aim_source(),
+            resend_max_per_catch=self._catch_resend_max(),
+            launch_ratio=self._launch_ratio,
+            learner=learner, boxes=ctx.boxes,
+            lateral_authority_m=float(self.get_parameter(
+                'learner_lateral_authority_mm').value) / 1000.0,
+            observer=self._ball_evidence, observations=self._observations,
+            on_experience=self._bind_on_experience(ctx.memory))
         # The SkillExecutor SWAP (brief step 1c): the bridge's own executor
         # is done by now in every ordinary case (its one REST dispatched
         # ticks ago) — this still takes `_tick_lock` first, same reason
         # `_stop_attempt` does (finding 12, R3 audit): a tick mid-dispatch on
-        # another thread must not read `_executor` half-swapped.
+        # another thread must not read `_executor` half-swapped. Installing
+        # the executor and clearing the claimed `_reload_ctx` happen in ONE
+        # `_reload_lock` section (the lock `_maybe_signal_goal_done` reads
+        # both under), and only if the claim is still current: a Stop, the
+        # timeout or a refused hand lane that ended the attempt during the
+        # compile wins, and the compiled schedule is dropped.
         got_lock = self._tick_lock.acquire(timeout=_STOP_LOCK_WAIT_S)
         if not got_lock:
             self.get_logger().warning(
                 'reload: could not acquire the tick lock within %.1f s -- '
                 'swapping the executor without it' % (_STOP_LOCK_WAIT_S,))
         try:
-            self._sched_refused_at_start = self._sched_refused
-            self._force_hold = False
-            self._hold_forced_code = ''
-            self._executor = SkillExecutor(
-                schedule, self._installer, tracker=self._tracker,
-                catch_aim_source=self._catch_aim_source(),
-                resend_max_per_catch=self._catch_resend_max(),
-                launch_ratio=self._launch_ratio,
-                learner=learner, boxes=ctx.boxes,
-                lateral_authority_m=float(self.get_parameter(
-                    'learner_lateral_authority_mm').value) / 1000.0,
-                observer=self._ball_evidence, observations=self._observations,
-                on_experience=self._bind_on_experience(ctx.memory))
+            with self._reload_lock:
+                installed = self._reload_ctx is ctx
+                if installed:
+                    self._sched_refused_at_start = self._sched_refused
+                    self._force_hold = False
+                    self._hold_forced_code = ''
+                    self._executor = executor
+                    self._reload_ctx = None
+                    self._reload_throw_inflight = True
         finally:
             if got_lock:
                 self._tick_lock.release()
-        with self._reload_lock:
-            self._reload_throw_inflight = True
+        if not installed:
+            self.get_logger().info(
+                'reload: the attempt ended (stop, timeout or a refused hand '
+                'lane) while the announced schedule was compiling -- not '
+                'installed')
+            return
         self.get_logger().info(
             'reload: ThrowAnnouncement received -- compiled the reload '
             'schedule (%d skills) and swapped the executor'

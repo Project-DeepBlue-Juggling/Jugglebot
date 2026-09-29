@@ -113,12 +113,23 @@ def _logging_node(monkeypatch):
     return teensy, client, node, rec
 
 
-def _send_identity(teensy, node, fw_version, protocol_version=5):
+def _send_identity(teensy, node, fw_version, protocol_version=5, rec=None):
+    """Send a BRIDGE_IDENTITY frame and wait until the node has stored it --
+    and, given ``rec``, until its BRIDGE_FW_CHECK line has been LOGGED too.
+    The RX thread stores the identity first and logs the verdict after
+    (`_on_bridge_identity` -> `_record_bridge_fw_version`), so a test that
+    reads the log as soon as the identity is visible races that thread: it
+    lost once under the 4-worker gate, 2026-09-29 (0 FAIL lines read)."""
     bi = BridgeIdentity(fw_version=fw_version, protocol_version=protocol_version)
     teensy.send_to_jetson(int(MsgType.BRIDGE_IDENTITY), bi.pack())
     assert _wait_until(
         lambda: node._latest_bridge_identity is not None
         and int(node._latest_bridge_identity.fw_version) == int(fw_version))
+    if rec is not None:
+        assert _wait_until(lambda: any(
+            'BRIDGE_FW_CHECK' in m
+            for m in _messages(rec.info) + _messages(rec.error))), (
+            'no BRIDGE_FW_CHECK line was logged')
     return bi
 
 
@@ -336,7 +347,7 @@ def test_the_fw_check_ok_line_names_the_host_half(monkeypatch):
     """
     teensy, client, node, rec = _logging_node(monkeypatch)
     try:
-        _send_identity(teensy, node, rpc_args.EXPECTED_BRIDGE_FW_VERSION)
+        _send_identity(teensy, node, rpc_args.EXPECTED_BRIDGE_FW_VERSION, rec=rec)
         ok = [m for m in _messages(rec.info) if 'BRIDGE_FW_CHECK: OK' in m]
         assert len(ok) == 1, _messages(rec.info)
         assert 'install_skew=0' in ok[0], ok[0]
@@ -351,7 +362,8 @@ def test_the_fw_check_fail_line_also_names_the_host_half(monkeypatch):
                         lambda *a, **k: (INSTALL_SKEW_UNKNOWN, 'no source tree'))
     teensy, client, node, rec = _logging_node(monkeypatch)
     try:
-        _send_identity(teensy, node, rpc_args.EXPECTED_BRIDGE_FW_VERSION - 1)
+        _send_identity(teensy, node, rpc_args.EXPECTED_BRIDGE_FW_VERSION - 1,
+                       rec=rec)
         errs = [m for m in _messages(rec.error) if 'BRIDGE_FW_CHECK: FAIL' in m]
         assert len(errs) == 1, _messages(rec.error)
         assert 'install_skew=unknown' in errs[0], errs[0]
@@ -367,7 +379,7 @@ def test_a_stale_install_is_called_out_on_an_otherwise_green_fw_line(monkeypatch
                         lambda *a, **k: (INSTALL_SKEW_STALE, 'running X DIFFERS'))
     teensy, client, node, rec = _logging_node(monkeypatch)
     try:
-        _send_identity(teensy, node, rpc_args.EXPECTED_BRIDGE_FW_VERSION)
+        _send_identity(teensy, node, rpc_args.EXPECTED_BRIDGE_FW_VERSION, rec=rec)
         ok = [m for m in _messages(rec.info) if 'BRIDGE_FW_CHECK: OK' in m]
         assert len(ok) == 1
         assert 'install_skew=1' in ok[0], ok[0]
