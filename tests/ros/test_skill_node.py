@@ -3405,3 +3405,33 @@ class TestOperatorLines:
             attempt_ended=False, end_code='', end_message='', end_kind='',
             schedule=SimpleNamespace(pattern='self_toss')))
         assert lines == []
+
+
+def test_the_mock_logger_enforces_rclpy_one_severity_per_call_site():
+    """The guard itself: one call site logging INFO then WARN raises, exactly
+    as Foxy's RcutilsLogger does -- the ValueError that killed skill_node on
+    2026-09-29."""
+    from tests.ros.conftest import MockLogger
+    logger = MockLogger()
+
+    def one_site(method):
+        method('x')
+
+    one_site(logger.info)
+    with pytest.raises(ValueError, match='severity cannot be changed'):
+        one_site(logger.warning)
+    logger.info('distinct call sites may differ')
+    logger.warning('distinct call sites may differ')
+
+
+def test_a_caught_then_a_missed_throw_then_a_failed_end_do_not_crash():
+    """THE 2026-09-29 CRASH, through the ENFORCING mock logger (no captured
+    lambdas): INFO, WARN, INFO throw lines, then INFO and ERROR end lines."""
+    node, _client = _node_with_client()
+    node._drain_reports(SimpleNamespace(reports=[
+        _throw_report(1, True), _throw_report(2, False),
+        _throw_report(3, True)]))
+    node._log_at('INFO', 'self_toss done: 2/3 caught')
+    node._log_at('ERROR', 'self_toss ENDED (X) · 2/3 caught')
+    node._log_at('WARN', 'w')
+    assert len(node._goal_reports) == 3

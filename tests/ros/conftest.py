@@ -27,6 +27,7 @@ Injection is two-tier:
 
 import os
 import struct
+import inspect
 import sys
 import types
 from dataclasses import dataclass, field
@@ -730,13 +731,35 @@ class Juggle:
 
 
 class MockLogger:
-    """Logger that accepts throttle_duration_sec kwarg like rclpy loggers."""
-    def info(self, msg, **kw): pass
-    def warning(self, msg, **kw): pass
-    def warn(self, msg, **kw): pass   # rclpy loggers expose both warn() and warning()
-    def error(self, msg, **kw): pass
-    def fatal(self, msg, **kw): pass
-    def debug(self, msg, **kw): pass
+    """Logger that accepts throttle_duration_sec kwarg like rclpy loggers --
+    and ENFORCES rclpy's per-call-site rule (Foxy
+    ``rclpy/impl/rcutils_logger.py``, ``RcutilsLogger.log``): a call site
+    (function, file, line, bytecode offset) keeps the severity and the
+    filter kwargs it first logged with, or the call raises ``ValueError``.
+    On the robot that ValueError is raised inside a timer callback and kills
+    the node: skill_node died mid-attempt on 2026-09-29 when one dispatching
+    call site logged a MISSED throw (WARN) after a CAUGHT one (INFO). The
+    mock used to accept anything, which is why no test saw it."""
+
+    def __init__(self):
+        self._sites = {}
+
+    def _log(self, severity, kw):
+        frame = inspect.currentframe().f_back.f_back   # the caller of info() etc.
+        site = (frame.f_code.co_name, frame.f_code.co_filename,
+                frame.f_lineno, frame.f_lasti)
+        first = self._sites.setdefault(site, (severity, frozenset(kw)))
+        if first[0] != severity:
+            raise ValueError('Logger severity cannot be changed between calls.')
+        if first[1] != frozenset(kw):
+            raise ValueError('Logger filters cannot be changed between calls.')
+
+    def info(self, msg, **kw): self._log('INFO', kw)
+    def warning(self, msg, **kw): self._log('WARN', kw)
+    def warn(self, msg, **kw): self._log('WARN', kw)   # rclpy exposes both warn() and warning()
+    def error(self, msg, **kw): self._log('ERROR', kw)
+    def fatal(self, msg, **kw): self._log('FATAL', kw)
+    def debug(self, msg, **kw): self._log('DEBUG', kw)
     def set_level(self, level): self.level = level
 
 

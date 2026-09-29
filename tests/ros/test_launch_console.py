@@ -173,7 +173,8 @@ def test_launch_lifecycle_lines():
     assert texts == [
         '%-12s WARN  Ctrl-C: shutting down' % 'launch',
         '%-12s exited cleanly' % 'skill',
-        '%-12s ERROR PROCESS DIED (killed by SIGINT)' % 'trajectory']
+        '%-12s WARN  exited during shutdown (killed by SIGINT)'
+        % 'trajectory']   # after the Ctrl-C line: a shutdown, not a crash
 
 
 # ── install ────────────────────────────────────────────────────────────────
@@ -330,3 +331,23 @@ def test_a_bag_that_did_not_close_is_a_warning(tmp_path):
 
 def test_no_bag_folder_is_an_error(tmp_path):
     assert lc.bag_summary(str(tmp_path / 'missing'))[0] == 'ERROR'
+
+
+def test_a_process_exiting_after_ctrl_c_is_a_shutdown_not_a_crash():
+    """Before Ctrl-C a death is red; after it, the same line is yellow
+    "exited during shutdown" -- `ros2 bag record` exits 2 on every Ctrl-C
+    (ros2cli returns SIGINT's number), which is not a fault."""
+    out = _screen([
+        "[ERROR] [skill_node-10]: process has died [pid 1, exit code 1, "
+        "cmd 'x']."
+        , '[WARNING] [launch]: user interrupted with ctrl-c (SIGINT)',
+        "[ERROR] [rosbag_record-12]: process has died [pid 2, exit code 2, "
+        "cmd 'ros2 bag record']."
+        , "[ERROR] [teensy_bridge_node-11]: process has died [pid 3, exit "
+        "code -15, cmd 'x']."])
+    texts = [o[len('00:00:00.000 '):] for o in out]
+    assert texts == [
+        '%-12s ERROR PROCESS DIED (exit code 1)' % 'skill',
+        '%-12s WARN  Ctrl-C: shutting down' % 'launch',
+        '%-12s WARN  exited during shutdown (exit code 2)' % 'rosbag',
+        '%-12s WARN  exited during shutdown (killed by SIGTERM)' % 'teensy']

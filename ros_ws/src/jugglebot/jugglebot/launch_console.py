@@ -184,14 +184,18 @@ def _clients(n: str) -> str:
     return '%s client%s' % (n, '' if n == '1' else 's')
 
 
+_DIED = 'PROCESS DIED'
+_CTRL_C = 'Ctrl-C: shutting down'
+
+
 def _died(match: 're.Match') -> str:
     code = int(match.group(1))
     if code < 0:
         try:
-            return 'PROCESS DIED (killed by %s)' % (signal.Signals(-code).name,)
+            return '%s (killed by %s)' % (_DIED, signal.Signals(-code).name)
         except ValueError:
             pass
-    return 'PROCESS DIED (exit code %d)' % (code,)
+    return '%s (exit code %d)' % (_DIED, code)
 
 
 RULES = (
@@ -199,7 +203,7 @@ RULES = (
     # and "Default logging verbosity ...", print before any launch file
     # loads — i.e. before `install` can run — so they stay stock.)
     _rule('launch', ('WARN',), r'^user interrupted with ctrl-c \(SIGINT\)$',
-          'Ctrl-C: shutting down'),
+          _CTRL_C),
     _rule('*process*', ('INFO',), r'^process started with pid \[\d+\]$', _HIDE),
     _rule('*process*', ('INFO',), r'^process has finished cleanly \[pid \d+\]$',
           'exited cleanly'),
@@ -272,6 +276,9 @@ class Console:
     def __init__(self, colour: bool = True) -> None:
         self.colour = colour
         self._name_colours = {}
+        #: Set once launch's own Ctrl-C line has passed: a process exiting
+        #: after it is the shutdown the operator asked for, not a crash.
+        self._shutting_down = False
 
     def filter(self, record: logging.LogRecord) -> bool:
         """``logging.Filterer`` protocol: False hides ``record``."""
@@ -300,8 +307,18 @@ class Console:
         text = apply_rules(line)
         if text is None:
             return None
-        return self.render_line(line.t, short_name(line.source),
-                                line.severity, text)
+        severity = line.severity
+        if line.lifecycle and text.startswith(_DIED):
+            if self._shutting_down:
+                # `ros2 bag record` exits 2 (ros2cli returns SIGINT's number
+                # on Ctrl-C) and a slow node gets SIGTERM: both are the
+                # shutdown the operator asked for. Yellow, not red.
+                severity = 'WARN'
+                text = 'exited during shutdown' + text[len(_DIED):]
+        elif line.source == 'launch' and text == _CTRL_C:
+            self._shutting_down = True
+        return self.render_line(line.t, short_name(line.source), severity,
+                                text)
 
     def render_line(self, t: float, name: str, severity: str,
                     text: str) -> str:

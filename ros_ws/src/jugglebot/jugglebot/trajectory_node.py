@@ -3122,15 +3122,17 @@ class TrajectoryNode(Node):
         # 320 refreshes across the 09-13..09-29 sittings stepped median 0.0,
         # p99 0.2, max 3.3 us, so 100 us is ~30x anything seen yet still only
         # 0.4 % of a 25 ms knot.
-        log = (self.get_logger().warning
-               if abs(step_us) >= _CLOCK_STEP_WARN_US
-               else self.get_logger().debug)
-        log(
-            f"clock offset refreshed: {step_us:+.1f} us step "
-            f"({prev:.6f} -> {self._ros_to_perf_offset:.6f} s) — every "
-            "knot_epoch_us stamp in the next "
-            f"{clock_offset.REFRESH_PERIOD_S:.0f} s carries this new offset "
-            "unchanged")
+        # One call site per severity: Foxy's rclpy raises ValueError if a call
+        # site's severity changes (skill_node._log_at's docstring).
+        msg = (f"clock offset refreshed: {step_us:+.1f} us step "
+               f"({prev:.6f} -> {self._ros_to_perf_offset:.6f} s) — every "
+               "knot_epoch_us stamp in the next "
+               f"{clock_offset.REFRESH_PERIOD_S:.0f} s carries this new offset "
+               "unchanged")
+        if abs(step_us) >= _CLOCK_STEP_WARN_US:
+            self.get_logger().warning(msg)
+        else:
+            self.get_logger().debug(msg)
 
     def _perf_to_epoch_us(self, t_perf: float) -> int:
         """``t_perf`` (a ``perf_counter()`` instant) as CLOCK_REALTIME µs.

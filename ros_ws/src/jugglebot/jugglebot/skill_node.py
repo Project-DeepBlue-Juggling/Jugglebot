@@ -1952,9 +1952,20 @@ class SkillNode(Node):
         return math.hypot(*self._mocap_to_schedule_mm)
 
     def _log_at(self, severity: str, text: str) -> None:
-        {'INFO': self.get_logger().info, 'WARN': self.get_logger().warning,
-         'ERROR': self.get_logger().error}.get(
-             severity, self.get_logger().info)(text)
+        """Log ``text`` at ``severity`` -- ONE CALL SITE PER SEVERITY, and it
+        must stay that way: Foxy's rclpy remembers the severity each call site
+        (file, line, bytecode offset) first logged at and raises ``ValueError:
+        Logger severity cannot be changed between calls`` if it changes. A
+        single dispatching call here killed skill_node mid-attempt on
+        2026-09-29 (the first MISSED throw, WARN, after a CAUGHT one, INFO).
+        tests/ros/conftest.py's MockLogger enforces the same rule."""
+        logger = self.get_logger()
+        if severity == 'ERROR':
+            logger.error(text)
+        elif severity == 'WARN':
+            logger.warning(text)
+        else:
+            logger.info(text)
 
     def _drain_reports(self, executor) -> None:
         """Log each newly finalised throw ONCE -- the operator's line for

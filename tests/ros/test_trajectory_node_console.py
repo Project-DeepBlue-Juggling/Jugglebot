@@ -32,3 +32,18 @@ def test_a_clock_offset_refresh_warns_only_on_a_real_step(monkeypatch,
         int(level == 'debug'), 0, int(level == 'warning')]
     (line,) = logs[level]
     assert line.startswith('clock offset refreshed: %+.1f us step' % step_us)
+
+
+def test_a_small_then_a_big_clock_step_do_not_crash_the_node(monkeypatch):
+    """One call site per severity (Foxy rclpy raises otherwise): DEBUG then
+    WARNING then DEBUG through the ENFORCING mock logger."""
+    from tests.ros.conftest import MockLogger
+    logger = MockLogger()
+    fake = SimpleNamespace(_ros_to_perf_offset=5.0, _clock_offset_history=[],
+                           _ros_clock_s=lambda: 0.0,
+                           get_logger=lambda: logger)
+    for step_us in (1.0, 500.0, 2.0):
+        monkeypatch.setattr(tn.clock_offset, 'refresh_offset',
+                            lambda history, ros, s=step_us:
+                            fake._ros_to_perf_offset + s * 1e-6)
+        tn.TrajectoryNode._refresh_clock_offset(fake)
