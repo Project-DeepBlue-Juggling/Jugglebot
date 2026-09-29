@@ -1459,7 +1459,8 @@ class SkillNode(Node):
             self.get_logger().error('install_segment call raised: %s' % (exc,))
             return None
 
-    def _maybe_hold_pending_event(self, end_code: str) -> None:
+    def _maybe_hold_pending_event(self, end_code: str, *,
+                                  executor=None) -> None:
         """``trajectory/hold`` once when the streaming plan still carries a
         future event (Unit A, R3 first sitting, 2026-09-13, L1): at
         1789304571.365 the executor ended ``ABORTED_NO_RELEASE``, but the
@@ -1476,6 +1477,10 @@ class SkillNode(Node):
         not only of dispatch) -- idempotent either way, because
         ``_pending_event_mono`` is cleared the moment a hold is attempted,
         so a later call with nothing left pending is a no-op.
+
+        A pending release is stopped with a REST first (`_stop_with_rest`,
+        2026-09-29), and the legacy hold below is its fallback. The forced
+        case below never tries a REST.
 
         TWO reasons to hold, one op. The second is ``_force_hold``, set by
         `_on_tick` on an ``executor.HAND_LANE_REFUSED`` END (2026-09-18):
@@ -1502,6 +1507,9 @@ class SkillNode(Node):
                 return
         why = ('the firmware is holding a REFUSED hand lane' if forced
                else '1 pending event(s) cancelled')
+        if not forced and self._stop_with_rest(
+                end_code, self._executor if executor is None else executor):
+            return
         if not self._hold_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
             self.get_logger().error(
                 'END %s: trajectory/hold unavailable -- %s'
@@ -1515,6 +1523,49 @@ class SkillNode(Node):
             return
         self.get_logger().info(
             'END %s: hold installed — %s' % (end_code, why))
+
+    def _stop_with_rest(self, end_code: str, executor) -> bool:
+        """Stop a pending release with a REST spliced into the running plan
+        (owner decision 2026-09-29) -- True once one is installed.
+
+        Tries `SkillExecutor.stop_terminals` in order: the REST that is at
+        rest just BEFORE the next release (the throw never runs), then the
+        one just after it (that throw runs, nothing after it does). Both
+        bring the platform AND the hand to rest, the hand at home, through
+        the same planner and install path every schedule REST uses.
+
+        Why not only the legacy `trajectory/hold`: it moves the platform
+        alone, back to the pose it held when the stop was asked for, in
+        `min_move_duration_s` (0.2 s), and drops the hand track. From
+        mid-swing that U-turn broke the leg jerk limit (157-158 k against
+        150 k) on all three attempt-ending drops of the R4 gate sitting
+        (2026-09-29), and the next empty throw then ran anyway. It stays the
+        fallback, which the caller runs when this returns False (no pending
+        release known to the executor, or every REST refused).
+
+        ``executor`` is passed in rather than read from ``self._executor``:
+        `_on_tick` calls this after releasing `_tick_lock`, by which time the
+        same tick may already have retired the executor."""
+        if executor is None:
+            return False
+        now = self.get_clock().now().nanoseconds / 1e9
+        for label, terminal in executor.stop_terminals(now):
+            res = self._installer(REST, terminal, now, ball_id=0)
+            if res.accepted:
+                self.get_logger().info(
+                    'END %s: stopped with a REST at (%.0f, %.0f) mm, at rest '
+                    '%s the next release%s'
+                    % (end_code, terminal.rest_site_mm[0],
+                       terminal.rest_site_mm[1],
+                       'BEFORE' if label == 'before' else 'just after',
+                       ' (that throw is cancelled)' if label == 'before'
+                       else ' (that throw runs, nothing after it)'))
+                return True
+            self.get_logger().warning(
+                'END %s: the stop REST %s the next release was refused '
+                '(%s: %s)' % (end_code, 'before' if label == 'before'
+                              else 'after', res.code, res.message))
+        return False
 
     # ── the tick ────────────────────────────────────────────────────────
 
@@ -1819,6 +1870,14 @@ class SkillNode(Node):
         self._maybe_fire_reload_throw()
         if not self._tick_lock.acquire(blocking=False):
             return
+        # The stop an ended attempt may need runs AFTER the lock is released
+        # (2026-09-29): it can be up to three blocking round trips
+        # (`_stop_with_rest`'s two RESTs, then the legacy hold), and holding
+        # `_tick_lock` through them would outlast the `_STOP_LOCK_WAIT_S` an
+        # operator Stop waits for -- the same reason `_stop_attempt` and
+        # `_end_attempt` call `_maybe_hold_pending_event` outside it.
+        stop_code = None
+        stop_executor = None
         try:
             if self._executor is not None:
                 now = self.get_clock().now().nanoseconds / 1e9
@@ -1837,7 +1896,8 @@ class SkillNode(Node):
                         self._hold_forced_code = ex.HAND_LANE_REFUSED
                         with self._pending_lock:
                             self._force_hold = True
-                    self._maybe_hold_pending_event(self._executor.end_code)
+                    stop_code = self._executor.end_code
+                    stop_executor = self._executor
                 if self._executor.done:
                     # Captured HERE (R4 U5) — `self._executor.end_code` is
                     # gone the instant the line below runs, and
@@ -1851,6 +1911,8 @@ class SkillNode(Node):
                         self._reload_throw_inflight = False
         finally:
             self._tick_lock.release()
+        if stop_code is not None:
+            self._maybe_hold_pending_event(stop_code, executor=stop_executor)
         self._maybe_signal_goal_done()
 
     def _maybe_signal_goal_done(self) -> None:

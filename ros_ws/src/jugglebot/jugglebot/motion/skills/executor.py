@@ -343,6 +343,54 @@ ABORTED_NO_RELEASE = 'ABORTED_NO_RELEASE'
 #: ``toss_sequencer.TOSS_RELEASE_GRACE_S`` (0.5 s) -- that module dies at R4.
 RELEASE_GRACE_S = 0.5
 
+#: A tracker landing is release evidence only when it comes from a CONVERGED
+#: fit (:attr:`Landing.from_fit`) whose touch-down lies within this of the
+#: throw's scheduled one (2026-09-29). At the R4 gate sitting a dropped ball
+#: bounced beside the cup, the tracker's unfitted estimate of it confirmed the
+#: EMPTY throw that followed, and the attempt ran on to two more empty throws.
+#: Measured on that sitting's bag (``/throw_announcements`` against
+#: ``/balls.landing_from_fit``, scratchpad ``probe_fit_latency.py``,
+#: 2026-09-29):
+#:
+#: * all 106 real releases had a converged fit before landing, and all 11
+#:   releases without one were empty throws after drops;
+#: * the fit arrives quickly: release -> first fit p50 0.176 s, p95 0.227 s,
+#:   max 0.406 s, inside :data:`RELEASE_GRACE_S`;
+#: * the quantity THIS tolerance gates: over those releases' 18 219 fit
+#:   samples, fitted touch-down minus scheduled is +0.027..+0.066 s (p50
+#:   +0.044 s; the plant throws a little high). So 0.2 s is 3x the worst real
+#:   case, and far from the next flight, a beat away.
+#:
+#: The time check keeps a bounce that flies a ballistic arc of its own from
+#: converging into evidence.
+RELEASE_FIT_TOL_S = 0.2
+
+#: The stop REST's first choice (:meth:`SkillExecutor.stop_terminals`) is at
+#: rest this long BEFORE the next pending release -- two knots, so the REST's
+#: own event precedes the release and ``_snap_to_release`` has nothing to snap
+#: the splice to: the throw never runs.
+#:
+#: It must also keep the splice clear of the release's PRE-RELEASE hold band
+#: (``unified_cycle`` refuses a splice in the last ``PRE_RELEASE_HOLD_S`` before
+#: a release). 'before' is offered only when ``LEAD_S + MIN_WINDOW_S`` plus this
+#: margin fit ahead of the release, and the splice lands at most ``LEAD_KNOTS +
+#: 1`` knots past now, so it clears the band when ``MIN_WINDOW_KNOTS`` plus
+#: this margin in knots is at least the hold's knots + 2. That is exactly 6 = 6
+#: at the defaults, pinned by
+#: ``test_the_before_stop_splice_clears_the_pre_release_hold_band``. A longer
+#: live ``pre_release_hold_s`` can refuse 'before' near that edge, and the stop
+#: then takes the 'after' REST.
+STOP_BEFORE_MARGIN_S = 0.05
+#: The stop REST's second choice: at rest this long AFTER the next pending
+#: release. Its splice snaps to that release and is seeded post-release (the
+#: cup is empty by then), so the throw runs but nothing after it does.
+#: Probe (2026-09-29, scratchpad ``probe_stop_rest.py``, the real planner at
+#: the R4 limits, a 250 mm hop and a self-toss chain, 7 releases per cell):
+#: this REST installed 7/7 at every instant tried, the 'before' one 7/7 when
+#: asked 0.50-0.60 s after the previous release (the hop refuses it at 0.45 s,
+#: still mid-traverse, and at 0.65 s, the window too short).
+STOP_AFTER_S = 0.6
+
 #: Seconds a tracker landing for an EXTERNALLY announced ball (a CATCH whose
 #: ``Skill.landing_prior`` is Ball Butler's own announcement, R4's reload) may
 #: disagree with the announced landing instant and still be trusted to aim or
@@ -2106,6 +2154,67 @@ class SkillExecutor:
             target_xy_mm=target_xy_mm,
             t_next_release_s=_next_release(self.schedule, idx, skill.ball_id)))
 
+    def stop_terminals(self, t_now_s: float
+                       ) -> List[Tuple[str, RestTerminal]]:
+        """The REST terminals that stop the machine short of the next
+        pending release, in the order to try them (owner decision
+        2026-09-29: always make the first throw after a catch, then stop
+        before the second empty one).
+
+        The pending release is the earliest one still ahead of ``t_now_s``
+        among this attempt's ACCEPTED installs (a THROW's release, or a
+        CATCH's carried one); the REST comes to rest, level, at the site of
+        the skill that carries it -- where the platform is already heading,
+        with the hand at home. Returns ``[]`` when no release is pending:
+        the streaming plan's own rest tail is then the stop.
+
+        * ``'before'`` -- at rest :data:`STOP_BEFORE_MARGIN_S` before that
+          release, so the throw never runs. ``holds_ball`` stays True, because
+          a ball may still be in the cup (an operator Stop mid-carry). It is
+          left out when its window cannot fit after the install's lead
+          (``LEAD_S + MIN_WINDOW_S``).
+        * ``'after'`` -- at rest :data:`STOP_AFTER_S` after it. The splice
+          snaps to the release and is seeded post-release, so the cup is
+          empty (``holds_ball`` False, as the post-release seed requires).
+
+        The caller installs these through the ordinary installer and falls
+        back to the legacy ``trajectory/hold`` only when both refuse. It is a
+        method on the executor because only the executor knows which skills
+        are on the machine and which release each carries.
+
+        The site is the skill's own ``site.rest_site_mm()``, level. Only a
+        THROW or a CATCH carrying a throw is ever chosen, and neither carries
+        a ``rest_site_mm`` override today: the R4 reload's held-axis CATCH,
+        the one skill that does, is a plain catch, and its pattern's first
+        release is the THROW after the DECAY REST, at a level site
+        (``schedule.compile_reload``).
+        """
+        accepted = {idx for idx, _sk, res in self.results if res.accepted}
+        pending = []
+        for idx in accepted:
+            sk = self.schedule.skills[idx]
+            if sk.kind == THROW:
+                t_rel = float(sk.t_abs_s)
+            elif sk.kind == CATCH and sk.then_throw is not None:
+                t_rel = float(sk.then_throw.t_release_abs_s)
+            else:
+                continue
+            if t_rel > float(t_now_s):
+                pending.append((t_rel, idx))
+        if not pending:
+            return []
+        t_rel, idx = min(pending)
+        rest_mm = self.schedule.skills[idx].site.rest_site_mm()
+        stops = []
+        t_before = t_rel - STOP_BEFORE_MARGIN_S
+        if t_before - (float(t_now_s) + LEAD_S) >= MIN_WINDOW_S:
+            stops.append(('before', RestTerminal(
+                rest_site_mm=rest_mm, t_rest_s=t_before, holds_ball=True)))
+        stops.append(('after', RestTerminal(
+            rest_site_mm=rest_mm, t_rest_s=t_rel + STOP_AFTER_S,
+            holds_ball=False)))
+        return stops
+
     def _advance_release_evidence(self, t_abs_s: float) -> List[str]:
         """Confirm every accepted release actually left the hand (PORT@R3,
         INVARIANTS.md § 8 ``ABORTED_NO_RELEASE``) -- called each tick from
@@ -2125,11 +2234,14 @@ class SkillExecutor:
           ``seated_seen`` is set -- i.e. EMPTY must follow a SEATED sample
           taken at or after the release;
         * tracker evidence (:attr:`tracker`) -- a landing confirms the
-          release only when sampled at or after ``t_release_s`` AND the
+          release only when sampled at or after ``t_release_s``, the
           landing's own ``t_land_abs_s`` is after ``t_release_s`` (a stale
           landing from the previous flight, still returned by a tracker
           whose correlation has not yet re-latched, must not confirm this
-          release).
+          release), it comes from a CONVERGED fit, and it lands within
+          :data:`RELEASE_FIT_TOL_S` of the scheduled touch-down (2026-09-29:
+          a bouncing dropped ball's unfitted estimate had confirmed an empty
+          throw).
 
         Confirmation is sticky (:attr:`_PendingOutcome.release_confirmed`),
         so one good sample stands even if a later tick goes blind again (the
@@ -2158,8 +2270,12 @@ class SkillExecutor:
                         and t_abs_s >= pend.t_release_s):
                     landing = self.tracker(pend.ball_id)
                     if (landing is not None
+                            and bool(getattr(landing, 'from_fit', False))
                             and float(landing.t_land_abs_s)
-                            > pend.t_release_s):
+                            > pend.t_release_s
+                            and abs(float(landing.t_land_abs_s)
+                                    - pend.t_land_scheduled_s)
+                            <= RELEASE_FIT_TOL_S):
                         pend.release_confirmed = True
             if (not pend.release_confirmed
                     and t_abs_s >= pend.t_release_s + RELEASE_GRACE_S):

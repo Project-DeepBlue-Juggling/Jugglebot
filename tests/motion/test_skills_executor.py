@@ -2780,6 +2780,162 @@ def test_a_missed_catch_before_a_carried_throw_is_not_a_release(sites):
     assert x.end_code == ex.ABORTED_NO_RELEASE
 
 
+def test_an_unfitted_tracker_landing_is_not_release_evidence(sites):
+    """R4 gate sitting (2026-09-29 19:22:24): a dropped ball bounced beside
+    the cup, the tracker produced a Kalman landing estimate for it, and the
+    EMPTY throw that followed was confirmed as released -- so the attempt ran
+    on to a second (and, with the hold refused, a third) empty throw. Only a
+    CONVERGED fit is release evidence from the tracker now. Measured on that
+    sitting's bag: all 106 real releases had a converged fit before landing
+    (p95 0.227 s, max 0.406 s after release); all 11 releases without one were
+    empty throws after drops."""
+    p1, _p2 = sites
+    t_land = ROS_T0 + FLIGHT_S
+    sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
+    bounce = ex.Landing(pos_mm=p1.catch_site_mm(), vel_mm_s=LAND_VEL,
+                        t_land_abs_s=t_land, from_fit=False)
+    x = ex.SkillExecutor(
+        sch, _FakeInstaller(), tracker=lambda b: bounce, observer=None,
+        observations=lambda t: _obs(), on_experience=lambda e: None)
+    x.tick(sch.skills[0].dispatch_s())
+    x.tick(ROS_T0 + 0.2)
+    x.tick(ROS_T0 + ex.RELEASE_GRACE_S + 0.01)
+    assert x.attempt_ended and x.end_code == ex.ABORTED_NO_RELEASE
+
+
+def test_a_fitted_landing_far_from_the_schedule_is_not_release_evidence(sites):
+    """A bounce off the rim can fly a ballistic arc of its own; its converged
+    fit lands nowhere near the throw's scheduled touch-down. A fit confirms
+    the release only within ``RELEASE_FIT_TOL_S`` of it."""
+    p1, _p2 = sites
+    sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
+    t_land_sched = ROS_T0 + sc.flight_s(APEX_M)
+    arc = _fit_landing(pos_mm=p1.catch_site_mm(), vel_mm_s=LAND_VEL,
+                       t_land_abs_s=t_land_sched - 0.5)
+    x = ex.SkillExecutor(
+        sch, _FakeInstaller(), tracker=lambda b: arc, observer=None,
+        observations=lambda t: _obs(), on_experience=lambda e: None)
+    x.tick(sch.skills[0].dispatch_s())
+    x.tick(ROS_T0 + 0.2)
+    x.tick(ROS_T0 + ex.RELEASE_GRACE_S + 0.01)
+    assert x.attempt_ended and x.end_code == ex.ABORTED_NO_RELEASE
+
+
+def test_the_stop_rests_come_before_then_after_the_next_pending_release(sites):
+    """``stop_terminals`` (2026-09-29, owner: always make the first throw after
+    a catch, then stop before the second empty one): the stop is a REST
+    spliced into the running plan, at the site of the skill carrying the next
+    pending release. First choice: at rest ``STOP_BEFORE_MARGIN_S`` BEFORE
+    that release, so ``_snap_to_release`` has nothing to snap to and the throw
+    never runs (the cup may still hold a ball: ``holds_ball``). Second: at
+    rest ``STOP_AFTER_S`` after it, which snaps to the release and is seeded
+    post-release (the cup is empty by then)."""
+    p1, p2 = sites
+    sch = _schedule_with_then_throw(sites)
+    throw, catch = sch.skills
+    t_rel_1 = float(catch.then_throw.t_release_abs_s)
+    land = _fit_landing(pos_mm=p2.catch_site_mm(), vel_mm_s=LAND_VEL,
+                        t_land_abs_s=catch.t_abs_s)
+    x = ex.SkillExecutor(sch, _FakeInstaller(), tracker=_tracker(land))
+
+    # Only the THROW dispatched: its own release is the pending one, at P1.
+    x.tick(throw.dispatch_s())
+    t_now = throw.dispatch_s() + 0.01
+    stops = x.stop_terminals(t_now)
+    assert [label for label, _t in stops] == ['before', 'after']
+    assert stops[0][1].t_rest_s == pytest.approx(
+        float(throw.t_abs_s) - ex.STOP_BEFORE_MARGIN_S)
+    np.testing.assert_allclose(stops[0][1].rest_site_mm, p1.rest_site_mm())
+
+    # The CATCH dispatched: its carried release is pending, at P2.
+    x.tick(catch.dispatch_s())
+    assert len(x.dispatched) == 2
+    t_now = catch.dispatch_s() + 0.01
+    stops = x.stop_terminals(t_now)
+    assert [label for label, _t in stops] == ['before', 'after']
+    before, after = stops[0][1], stops[1][1]
+    assert before.t_rest_s == pytest.approx(t_rel_1 - ex.STOP_BEFORE_MARGIN_S)
+    assert before.holds_ball is True
+    np.testing.assert_allclose(before.rest_site_mm, p2.rest_site_mm())
+    assert after.t_rest_s == pytest.approx(t_rel_1 + ex.STOP_AFTER_S)
+    assert after.holds_ball is False
+    np.testing.assert_allclose(after.rest_site_mm, p2.rest_site_mm())
+    assert before.tilt is None and after.tilt is None
+
+    # Too close to the release for a REST window to fit before it (the
+    # install's lead plus its minimum window): only the 'after' REST.
+    stops = x.stop_terminals(t_rel_1 - 0.2)
+    assert [label for label, _t in stops] == ['after']
+
+    # Past the last release nothing is pending: the plan's own rest tail is
+    # the stop, and there is nothing to install.
+    assert x.stop_terminals(t_rel_1 + 0.01) == []
+
+
+def test_the_before_stop_splice_clears_the_pre_release_hold_band():
+    """Phase-end audit, 2026-09-29: 'before' is offered only when ``LEAD_S +
+    MIN_WINDOW_S + STOP_BEFORE_MARGIN_S`` fit ahead of the release, and the
+    splice lands at most ``LEAD_KNOTS + 1`` knots past now (the first knot
+    at least ``LEAD_S`` ahead). The release knot is therefore at least
+    ``MIN_WINDOW_KNOTS + margin_knots`` knots past the splice, minus the one
+    knot of rounding, and it must clear the PRE-RELEASE hold band
+    ``[k_rel - n_pre, k_rel)`` that ``unified_cycle`` refuses to splice into.
+    The constants are independent, so this pins their relation (exactly
+    6 >= 6 at the defaults)."""
+    margin_knots = int(round(ex.STOP_BEFORE_MARGIN_S / DT))
+    n_pre = int(round(uc.PRE_RELEASE_HOLD_S / DT))
+    assert ex.MIN_WINDOW_KNOTS + margin_knots >= n_pre + 2
+
+
+def test_a_hop_stop_rest_installs_before_the_next_throw_on_the_real_planner(
+        limits_r3, geom):
+    """The stop REST on the REAL planner (2026-09-29, the scratchpad probe
+    this pins): a 250 mm hop chain through ``SkillExecutor`` ->
+    ``install_segment`` with schedule-aimed catches, stopped
+    ``RELEASE_GRACE_S`` after a release -- the instant an empty throw's
+    ``ABORTED_NO_RELEASE`` fires. The 'before' REST must install, and the
+    plan it leaves must carry no release after the stop's splice. Probe
+    (2026-09-29, 7 releases per cell, R4 limits 300/5000/150000/3500): the
+    'before' REST installed 7/7 when asked 0.50-0.60 s after the release
+    (0.45 s: CUP_CONTACT_ACC/LIMIT_JERK, the platform still mid-traverse;
+    0.65 s: LIMIT_JERK, the window too short) and the 'after' REST 7/7 at
+    every instant; plan 12-18 ms."""
+    p1, p2 = si.columns_sites(250.0)
+    sched = sc.compile_one_ball(
+        sc.OneBallPattern(sites=(p1, p2), apex_m=0.9, dwell_s=0.30, n_throws=3),
+        t0_abs_s=T0_ABS)
+    state = {'record': None}
+
+    def installer(kind, terminal, t_now_s, ball_id=0):
+        rec = state['record']
+        seed = _rest_state(p1.rest_site_mm()) if rec is None else None
+        new_rec, res, _seg = ex.install_segment(
+            rec, seed, kind, terminal, t_now_s, limits=limits_r3, geom=geom)
+        if res.accepted:
+            state['record'] = new_rec
+        return res
+
+    x = ex.SkillExecutor(sched, installer, catch_aim_source=ex.AIM_SCHEDULE)
+    # The second throw of the chain: a CATCH's carried release.
+    t_rel = float(next(sk.then_throw.t_release_abs_s for sk in sched.skills
+                       if sk.kind == sg.CATCH and sk.then_throw is not None))
+    t = sched.skills[0].dispatch_s() - DT
+    while t < t_rel + ex.RELEASE_GRACE_S:
+        x.tick(t)
+        t += DT / 5.0
+    assert not x.attempt_ended, x.end_code
+    rec = state['record']
+    stops = x.stop_terminals(t)
+    assert [label for label, _term in stops] == ['before', 'after']
+    new_rec, res, _seg = ex.install_segment(
+        rec, None, sg.REST, stops[0][1], t, limits=limits_r3, geom=geom)
+    assert res.accepted, '%s: %s' % (res.code, res.message)
+    t_splice = float(new_rec.t0_s) + res.splice_k * DT
+    later = [float(new_rec.t0_s) + float(m.t_s) for m in new_rec.meta.releases
+             if float(new_rec.t0_s) + float(m.t_s) > t_splice]
+    assert later == []
+
+
 def test_a_seat_edge_that_lags_past_the_release_still_confirms(sites):
     """Robot sensor lag: the SEATED->EMPTY edge for the carried throw's own
     release is read a little late. A SEATED sample taken AT OR AFTER the

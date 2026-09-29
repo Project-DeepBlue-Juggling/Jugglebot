@@ -1209,7 +1209,13 @@ the rung's tests passing or a handoff file in the scratchpad.
   1. **The box admits no columns throw under the 100 ms pre-release hold.** The first design question: a shorter hold for columns, or a longer dwell.
   2. **Re-sweep with each apex as its own band, plus a 0.80 m row.** At a 0.9 m target the learner commands ~0.82 m (the plant throws ~10 % high) and the box floors it at 0.85. The hop's ±10 mm lateral width is set by the 0.95 m flight alone (`HAND_LIMIT_ACC`); ±20 mm passes at 0.85 and 0.90 m. The learner's authority parameter (20 mm) was never the binding limit.
   3. **Fly two-site patterns with re-aim off (`catch_resend_max 0`, owner-agreed).** On the hop 0 of 80 attempted re-aims were accepted (51 `LIMIT_JERK`, 24 solver `INFEASIBLE` overall), yet 75/82 catches were made open-loop from the schedule. Self-toss re-aims work (24/31) and stay.
-  4. **Stop after a drop.** `trajectory/hold` (a platform-only return to the stop-request pose in 0.2 s, no hand track) was refused `LIMIT_JERK` 3/3 at 157–158 k. The first empty throw after a drop passed the release check on a bouncing ball's tracker estimate. Owner's rule: always make the first throw after a catch, then stop before the second empty throw. The proposed design is in the entry's Discussion: a spliced skill-stack REST plus a converged-fit release check. The owner confirms it, and where the hand stops.
+  4. **Stop after a drop: LANDED 2026-09-29, not yet flown** (`logbook/2026-09-29-skill-stack-stop-after-a-drop.md`).
+     - Only a converged fit whose touch-down is within 0.2 s of the scheduled one counts as tracker release evidence. Real fits sit +0.027..+0.066 s from it.
+     - On the gate bag every real release got a converged fit within 0.41 s, and all 11 releases without one were empty throws.
+     - A pending release is stopped by a REST spliced into the running plan: at rest just BEFORE the next release, else just after it, else the legacy hold. It rests at the destination site, level, hand at home.
+     - After a drop: the first throw still runs (owner's rule), then the machine stops before the second.
+     - The 'before' REST works 0.50–0.60 s after a release on the hop (probe 7/7).
+     - Columns' drop policy (a second ball still in flight) is an R5 decision.
   5. **Catch quality.** 55/99 catches seated > 0.15 s late: 41 % of those landing within 10 mm, 76 % beyond 30 mm. Aim buys part of it; the rest is the catch's touch-down speed match.
   6. **The reload hand could rise during the pre-tilt** (owner) rather than rushing up at the catch. This is the en-route catch fog item from the wayfinder map.
   7. **Self-toss precision is not yet at the wayfinder target.** The map aimed for ±10 mm (1σ) with re-aim off; sitting 4 flew re-aim on and landed 1σ 17.7 / 15.8 mm (24/24 caught). The diagnostic sheet's self-toss spread (Block B, including 0.6 m) and dwell A/B (Block C) fold into the first R5 sitting.

@@ -1461,6 +1461,120 @@ def test_stop_with_a_pending_event_holds():
     assert node._executor.end_code == 'STOPPED'
 
 
+def _ending_executor(node, stops, end_code='ABORTED_NO_RELEASE'):
+    """A MagicMock executor whose next tick ends the attempt `end_code`, and
+    whose `stop_terminals` offers `stops`."""
+    node._executor = MagicMock()
+    node._executor.done = False
+    node._executor.attempt_ended = False
+    node._executor.end_code = ''
+    node._executor.stop_terminals.return_value = list(stops)
+
+    def _fake_tick(now):
+        node._executor.attempt_ended = True
+        node._executor.end_code = end_code
+        return []
+    node._executor.tick.side_effect = _fake_tick
+
+
+def test_a_pending_release_is_stopped_with_a_rest_not_the_legacy_hold():
+    """2026-09-29 (owner): the stop after an empty throw is a REST spliced
+    into the running plan -- platform AND hand to rest, the hand at home --
+    not the legacy `trajectory/hold` (a platform-only return to the stop
+    pose in 0.2 s, refused LIMIT_JERK on all three drops of the R4 gate
+    sitting, after which the NEXT empty throw ran anyway)."""
+    from jugglebot.motion.skills.segments import RestTerminal
+
+    node, client = _node_with_client(
+        response=_response(t_event_mono=0.0, t_release_mono=0.0))
+    hold_client = _hold_client()
+    node._hold_cli = hold_client
+    node._pending_event_mono = time.perf_counter() + 5.0
+    before = RestTerminal(rest_site_mm=[125.0, 0.0, 750.0], t_rest_s=1234.5,
+                          holds_ball=True)
+    _ending_executor(node, [('before', before)])
+
+    node._on_tick()
+
+    assert len(client.calls) == 1
+    req = client.calls[0]
+    assert req.kind == InstallSegment.Request.KIND_REST
+    assert req.t_event_s == pytest.approx(1234.5)
+    assert list(req.rest_site_mm) == pytest.approx([125.0, 0.0, 750.0])
+    assert hold_client.calls == []
+    assert node._pending_event_mono <= 0.0
+
+
+def test_the_stop_after_an_ended_tick_runs_outside_the_tick_lock():
+    """Phase-end audit, 2026-09-29: the stop can now be up to THREE blocking
+    round trips (REST before, REST after, legacy hold), and `_on_tick` used to
+    run it holding `_tick_lock` -- past the `_STOP_LOCK_WAIT_S` budget a
+    concurrent operator Stop waits for. `_on_tick` now stops the machine AFTER
+    releasing the lock, as `_stop_attempt` and `_end_attempt` always did."""
+    from jugglebot.motion.skills.segments import RestTerminal
+
+    node, client = _node_with_client(
+        response=_response(t_event_mono=0.0, t_release_mono=0.0))
+    node._hold_cli = _hold_client()
+    node._pending_event_mono = time.perf_counter() + 5.0
+    _ending_executor(node, [('before', RestTerminal(
+        rest_site_mm=[125.0, 0.0, 750.0], t_rest_s=10.0))])
+    lock_held = []
+    real_call_async = client.call_async
+
+    def recording_call_async(request):
+        lock_held.append(node._tick_lock.locked())
+        return real_call_async(request)
+    client.call_async = recording_call_async
+
+    node._on_tick()
+
+    assert lock_held == [False]
+
+
+def test_a_refused_stop_rest_tries_the_next_then_the_legacy_hold():
+    from jugglebot.motion.skills.segments import RestTerminal
+
+    node, client = _node_with_client(
+        response=_response(accepted=False, code='LIMIT_JERK',
+                           message='REJECTED_CYCLE_INFEASIBLE(LIMIT_JERK)'))
+    hold_client = _hold_client()
+    node._hold_cli = hold_client
+    node._pending_event_mono = time.perf_counter() + 5.0
+    site = [125.0, 0.0, 750.0]
+    _ending_executor(node, [
+        ('before', RestTerminal(rest_site_mm=site, t_rest_s=10.0)),
+        ('after', RestTerminal(rest_site_mm=site, t_rest_s=11.0,
+                               holds_ball=False))])
+
+    node._on_tick()
+
+    assert [r.t_event_s for r in client.calls] == [
+        pytest.approx(10.0), pytest.approx(11.0)]
+    assert len(hold_client.calls) == 1
+
+
+def test_a_refused_hand_lane_holds_without_trying_a_rest():
+    """The forced hold (HAND_LANE_REFUSED) stays the HAND-LESS legacy hold:
+    the firmware is holding a refused hand lane, and a REST carries a hand
+    track that would keep walking the deviation the guard measures."""
+    from jugglebot.motion.skills.segments import RestTerminal
+
+    node, client = _node_with_client()
+    hold_client = _hold_client()
+    node._hold_cli = hold_client
+    node._force_hold = True
+    _ending_executor(node, [('before', RestTerminal(
+        rest_site_mm=[0.0, 0.0, 750.0], t_rest_s=10.0))],
+        end_code='HAND_LANE_REFUSED')
+    node._hold_forced_code = 'HAND_LANE_REFUSED'
+
+    node._on_tick()
+
+    assert client.calls == []
+    assert len(hold_client.calls) == 1
+
+
 def test_a_throw_install_updates_the_pending_event_and_a_rest_clears_it():
     """`_installer` (Unit A) tracks the SAME release instant `_maybe_announce`
     already computes — a THROW's `t_event_mono`; a subsequent accepted REST
