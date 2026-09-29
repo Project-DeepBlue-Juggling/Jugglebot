@@ -35,7 +35,7 @@ export function initStewartModel() {
     updateStewartPose(INIT_PLAT_NODES_MM.map(n => [n[0], n[1], n[2] + INITIAL_HEIGHT_MM]),
         [0, 0, INITIAL_HEIGHT_MM], 0, identity);
     scene.add(platformGroup);
-    sceneGroups['Platform'] = platformGroup;
+    sceneGroups['Jugglebot'] = platformGroup;
 }
 
 export function getStewartPickables() { return pickables; }

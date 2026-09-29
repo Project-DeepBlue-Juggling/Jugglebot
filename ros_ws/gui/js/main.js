@@ -13,7 +13,7 @@ import {
     getStewartPickables,
 } from './stewart-model.js';
 import { legLengthsToPose } from './stewart-fk.js';
-import { initMocapMarkers, updateMocapMarkers, updateRigidBodyAxes } from './mocap-markers.js';
+import { initMocapMarkers, updateMocapMarkers, updateRigidBodyAxes, triadGroups } from './mocap-markers.js';
 import {
     initBallButlerModel, updateBallButler, updateBallButlerPose,
     setBBPitchFault, setBBHandFault,
@@ -765,24 +765,35 @@ function initSceneMenu() {
         }
     });
 
+    function visibilityToggle(name, obj) {
+        const label = document.createElement('label');
+        label.className = 'scene-toggle';
+
+        const checkbox = document.createElement('input');
+        checkbox.type = 'checkbox';
+        checkbox.checked = obj.visible;
+        checkbox.addEventListener('change', () => {
+            obj.visible = checkbox.checked;
+        });
+
+        label.appendChild(checkbox);
+        label.appendChild(document.createTextNode(name));
+        return label;
+    }
+
     // Populate after a short delay to let groups register
     setTimeout(() => {
         dropdown.innerHTML = '';
         for (const [name, obj] of Object.entries(sceneGroups)) {
-            const label = document.createElement('label');
-            label.className = 'scene-toggle';
-
-            const checkbox = document.createElement('input');
-            checkbox.type = 'checkbox';
-            checkbox.checked = obj.visible;
-            checkbox.addEventListener('change', () => {
-                obj.visible = checkbox.checked;
-            });
-
-            label.appendChild(checkbox);
-            label.appendChild(document.createTextNode(name));
-            dropdown.appendChild(label);
+            dropdown.appendChild(visibilityToggle(name, obj));
         }
+        const triads = document.createElement('div');
+        triads.className = 'scene-menu-section';
+        triads.innerHTML = '<div class="scene-menu-heading">Triads</div>';
+        for (const [name, obj] of Object.entries(triadGroups)) {
+            triads.appendChild(visibilityToggle(name, obj));
+        }
+        dropdown.appendChild(triads);
         const legend = document.createElement('div');
         legend.className = 'scene-menu-section';
         legend.innerHTML = '<div class="scene-menu-heading">Axis status</div>' +

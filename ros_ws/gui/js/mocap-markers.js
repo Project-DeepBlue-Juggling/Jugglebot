@@ -9,6 +9,9 @@
  *   unlabelled   -> light grey (#d1d5db)
  *
  * Rigid body axes: small coordinate frames rendered from rigid_body_poses.
+ * The Base, Platform, Cone and Ball Butler triads each sit in their own
+ * toggle group (triadGroups, listed under "Triads" in the View menu); any
+ * other body's triad follows the Mocap Markers toggle.
  *
  * Uses object pools to avoid GC churn.
  */
@@ -17,7 +20,7 @@ import * as THREE from 'three';
 import { scene, sceneGroups, robotToThreeScaled } from './viewer.js';
 import { INITIAL_HEIGHT_MM } from './geometry-config.js';
 
-/** Three.js group containing all mocap objects (markers + axes) */
+/** Three.js group containing the marker spheres and unlisted bodies' triads */
 let markerGroup;
 
 // ---- Marker spheres ----
@@ -90,7 +93,19 @@ function labelToColour(label) {
 // ---- Rigid body axes ----
 
 const AXES_SIZE = 0.06; // 60mm axes
-const axesPool = []; // pool of THREE.Group (parent with position/orientation, child AxesHelper with frame rotation)
+/** Body name -> THREE.Group (parent with position/orientation, child AxesHelper with frame rotation) */
+const triads = new Map();
+
+/** rigid_body_poses name (mocap_interface replaces spaces/hyphens with '_') -> View-menu label */
+const TRIAD_BODIES = {
+    Base: 'Base',
+    Platform: 'Platform',
+    Catching_Cone: 'Cone',
+    Ball_Butler: 'Ball Butler',
+};
+
+/** View-menu label -> toggle group holding that body's triad */
+export const triadGroups = {};
 
 /** Quaternion that rotates Three.js frame (Y-up) to robot frame (Z-up) for AxesHelper display */
 const FRAME_ROTATION = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(1, 0, 0), -Math.PI / 2);
@@ -141,6 +156,13 @@ export function initMocapMarkers() {
     markerGroup.name = 'mocap-markers';
     scene.add(markerGroup);
     sceneGroups['Mocap Markers'] = markerGroup;
+
+    for (const label of Object.values(TRIAD_BODIES)) {
+        const group = new THREE.Group();
+        group.name = `triad-${label}`;
+        scene.add(group);
+        triadGroups[label] = group;
+    }
 }
 
 /**
@@ -204,26 +226,24 @@ export function updateMocapMarkers(markers) {
 export function updateRigidBodyAxes(bodies) {
     if (!markerGroup) return;
 
-    const count = bodies.length;
-
-    // Grow axes pool if needed
-    while (axesPool.length < count) {
-        const group = new THREE.Group();
-        const axes = new THREE.AxesHelper(AXES_SIZE);
-        // Rigid-body origins can lie inside opaque CAD; retain readable triads.
-        axes.material.depthTest = false;
-        axes.renderOrder = 10;
-        // Fixed child rotation: Three.js Y-up → robot Z-up so RGB = robot XYZ
-        axes.quaternion.copy(FRAME_ROTATION);
-        group.add(axes);
-        group.visible = false;
-        markerGroup.add(group);
-        axesPool.push(group);
-    }
-
-    for (let i = 0; i < count; i++) {
-        const body = bodies[i];
-        const group = axesPool[i];
+    const seen = new Set();
+    for (const body of bodies) {
+        const name = body.name || '';
+        let group = triads.get(name);
+        if (!group) {
+            group = new THREE.Group();
+            const axes = new THREE.AxesHelper(AXES_SIZE);
+            // Rigid-body origins can lie inside opaque CAD; retain readable triads.
+            axes.material.depthTest = false;
+            axes.renderOrder = 10;
+            // Fixed child rotation: Three.js Y-up → robot Z-up so RGB = robot XYZ
+            axes.quaternion.copy(FRAME_ROTATION);
+            group.add(axes);
+            group.visible = false;
+            (triadGroups[TRIAD_BODIES[name]] || markerGroup).add(group);
+            triads.set(name, group);
+        }
+        seen.add(group);
 
         const poseStamped = body.pose;
         const pose = poseStamped.pose || poseStamped;
@@ -245,8 +265,8 @@ export function updateRigidBodyAxes(bodies) {
         group.visible = true;
     }
 
-    // Hide unused axes
-    for (let i = count; i < axesPool.length; i++) {
-        axesPool[i].visible = false;
+    // Hide triads of bodies absent from this message
+    for (const group of triads.values()) {
+        if (!seen.has(group)) group.visible = false;
     }
 }
