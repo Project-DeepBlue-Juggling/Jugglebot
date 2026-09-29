@@ -5,7 +5,7 @@ from launch.actions import (
     ExecuteProcess,
     LogInfo,
 )
-from launch.conditions import IfCondition
+from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import LaunchConfiguration
 import glob
 import os
@@ -167,6 +167,29 @@ def _install_drift(repo):
     return drift, notes
 
 
+def _operator_console_actions():
+    """Install the operator console on launch's screen handler; never raises.
+
+    Local clock time instead of epoch nanoseconds, a short node name instead
+    of the ``[skill_node-10]`` process prefix, WARN/ERROR tags + colour, and
+    third-party chatter (rosbridge per-topic subscriptions, rosbag2's topic
+    list, launch's "process started" lines) off the screen. SCREEN ONLY:
+    launch.log, the per-process rcutils files and /rosout in the bag keep
+    every raw line. jugglebot/launch_console.py has the contract (it never
+    rewords jugglebot's own messages) and the escape hatch
+    (``JUGGLEBOT_CONSOLE=raw``).
+
+    Returns the actions to run: none when installed, one raw-output notice
+    when not — presentation must never cost a bring-up."""
+    try:
+        from jugglebot.launch_console import install
+        install()
+        return []
+    except Exception as exc:  # noqa: BLE001
+        return [LogInfo(msg='[console] operator console unavailable (%s: %s) — '
+                            'raw launch output.' % (type(exc).__name__, exc))]
+
+
 def _config_freshness_actions():
     """Return the launch actions that report config freshness. Never raises."""
     try:
@@ -207,6 +230,10 @@ def _config_freshness_actions():
 
 
 def generate_launch_description():
+    # First, so every line after it — the freshness banner included — is
+    # already on the operator console.
+    console_actions = _operator_console_actions()
+
     # ── Launch arguments ─────────────────────────────────────────
     record = LaunchConfiguration('record')
     record_arg = DeclareLaunchArgument(
@@ -403,7 +430,11 @@ def generate_launch_description():
         package='jugglebot',
         executable='trajectory_node',
         name='trajectory_node',
-        output='screen',
+        # 'both', not 'screen': 'screen' kept this node's lines OUT of
+        # ~/.ros/log/<run>/launch.log (it wrote only to the terminal), so the
+        # run's launch.log could not answer anything about the planner.
+        # 'both' = the screen (stdout too, as before) AND launch.log.
+        output='both',
         parameters=[{'pre_release_hold_s': pre_release_hold_s}],
         # THE node the cap exists for: it owns BOTH the planner (plan_cycle) and
         # the 40 Hz emitter thread the can-bridge's 250 ms SETPOINT_STALE watchdog
@@ -440,7 +471,7 @@ def generate_launch_description():
         package='jugglebot',
         executable='teensy_bridge_node',
         name='teensy_bridge_node',
-        output='screen',
+        output='both',   # see trajectory_node: launch.log gets it too
         parameters=[{
             'teensy_ip': teensy_ip,
             'enable_setpoint_output': enable_setpoint_output,
@@ -494,7 +525,10 @@ def generate_launch_description():
     # retry_startup_delay was a real override (2.0 → 5.0), preserved here.
     # output='log' captures rosbridge's client connect/disconnect lines in the
     # per-process launch log — they were absent before, which is why the
-    # transport drop could not be confirmed from logs.
+    # transport drop could not be confirmed from logs. On Foxy 'log' ALSO
+    # prints stderr (where rcutils writes) to the screen; the operator console
+    # (_operator_console_actions) cuts that down to one line per GUI
+    # connect/disconnect plus rosbridge's errors, and launch.log keeps it all.
     #
     # executable is jugglebot's OWN rosbridge_websocket_lean, not the stock
     # rosbridge_server one, since 2026-09-14: the stock executable leaks a
@@ -531,7 +565,16 @@ def generate_launch_description():
     timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     bag_dir = os.path.join(bags_dir, timestamp)
 
+    # The one line that says where this run's bag is (the runsheets say "note
+    # the bag folder it prints"; rosbag2 itself never prints it), and the one
+    # that says there is none.
+    rosbag_banner = LogInfo(msg='recording bag -> %s' % (bag_dir,),
+                            condition=IfCondition(record))
+    no_bag_banner = LogInfo(msg='NOT recording a bag (record:=false)',
+                            condition=UnlessCondition(record))
+
     rosbag_record = ExecuteProcess(
+        name='rosbag_record',
         cmd=[
             'ros2', 'bag', 'record',
             '/robot_state',
@@ -699,7 +742,9 @@ def generate_launch_description():
             '/jugglebot/juggle/_action/status',
             '-s', 'mcap', '-o', bag_dir,
         ],
-        output='screen',
+        # 'log': everything into launch.log; on the screen the operator
+        # console hides the per-topic "Subscribed to" list and keeps errors.
+        output='log',
         condition=IfCondition(record),
     )
 
@@ -707,6 +752,7 @@ def generate_launch_description():
     # The freshness banner goes FIRST so it is not buried under node startup
     # chatter (the whole point is that the operator sees it).
     return LaunchDescription([
+        *console_actions,
         *_config_freshness_actions(),
         record_arg,
         friction_ff_enable_arg,
@@ -729,5 +775,7 @@ def generate_launch_description():
         skill_node,
         teensy_bridge_node,
         # Recording (conditional)
+        rosbag_banner,
+        no_bag_banner,
         rosbag_record,
     ])

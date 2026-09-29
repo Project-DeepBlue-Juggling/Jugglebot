@@ -62,6 +62,13 @@ _JUGGLEBOT_REPO = resolve_repo_root(__file__)
 
 
 def generate_launch_description():
+    # The operator console, as jugglebot_launch.py installs it (see its
+    # _operator_console_actions): screen only, never fatal.
+    try:
+        from jugglebot.launch_console import install
+        install()
+    except Exception:  # noqa: BLE001 — presentation must never cost a bring-up
+        pass
     teensy_ip = LaunchConfiguration('teensy_ip')
     enable_setpoint_output = LaunchConfiguration('enable_setpoint_output')
 
@@ -84,7 +91,7 @@ def generate_launch_description():
             package='jugglebot',
             executable='teensy_bridge_node',
             name='teensy_bridge_node',
-            output='screen',
+            output='both',   # the screen AND launch.log
             parameters=[{
                 'teensy_ip': teensy_ip,
                 'enable_setpoint_output': enable_setpoint_output,
