@@ -80,6 +80,7 @@ import rclpy
 from rcl_interfaces.msg import SetParametersResult
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
+from rclpy.logging import LoggingSeverity
 from rclpy.node import Node
 
 from std_msgs.msg import Float64MultiArray, String
@@ -136,6 +137,10 @@ from jugglebot.motion.skills import segments as sk_seg
 # source) a go_to_pose is rejected WRONG_MODE — loudly, never silently — so the
 # operator can never drive a scripted move from a mode that isn't expecting one.
 _MOVE_MODE = 'TRAJECTORY'
+
+#: A clock-offset refresh step at or above this (us) is a WARN; below, DEBUG
+#: (`_refresh_clock_offset`).
+_CLOCK_STEP_WARN_US = 100.0
 
 # Service-level rejection codes (NOT feasibility-enum members — those describe a
 # *plan*; these describe the *node's acceptance state*). They live beside
@@ -482,6 +487,13 @@ class TrajectoryNode(Node):
     def __init__(self, *, geom: StewartGeometry | None = None,
                  command_pub_factory=None, start_emitter: bool = True):
         super().__init__('trajectory_node')
+        # Record everything, show little (operator console phase 2; see
+        # skill_node's __init__): per-install detail -- accepted/refused
+        # install_segment, the cycle seed, the 30 s clock-offset refresh --
+        # is logged at DEBUG, and this logger records DEBUG so launch.log, the
+        # per-process file and /rosout keep it while the launch console keeps
+        # it off the screen. Foxy has no per-logger --log-level, hence here.
+        self.get_logger().set_level(LoggingSeverity.DEBUG)
 
         self._geom = geom if geom is not None else StewartGeometry()
         self._mm_to_rev = np.asarray(self._geom.mm_to_rev, dtype=float)
@@ -2716,7 +2728,8 @@ class TrajectoryNode(Node):
                 self._current_state(), self._limits, self._geom)
         except TrajectoryInfeasible as e:
             self._last_rejection = str(e)
-            self.get_logger().error(f"hold rejected: {e}")
+            # skill_node, the only caller, logs the refusal as its END line.
+            self.get_logger().debug(f"hold rejected: {e}")
             response.success = False
             response.message = str(e)
             return response
@@ -3105,7 +3118,14 @@ class TrajectoryNode(Node):
         self._ros_to_perf_offset = clock_offset.refresh_offset(
             self._clock_offset_history, self._ros_clock_s)
         step_us = (self._ros_to_perf_offset - prev) * 1e6
-        self.get_logger().info(
+        # DEBUG (recorded, not shown) unless the step is big enough to matter:
+        # 320 refreshes across the 09-13..09-29 sittings stepped median 0.0,
+        # p99 0.2, max 3.3 us, so 100 us is ~30x anything seen yet still only
+        # 0.4 % of a 25 ms knot.
+        log = (self.get_logger().warning
+               if abs(step_us) >= _CLOCK_STEP_WARN_US
+               else self.get_logger().debug)
+        log(
             f"clock offset refreshed: {step_us:+.1f} us step "
             f"({prev:.6f} -> {self._ros_to_perf_offset:.6f} s) — every "
             "knot_epoch_us stamp in the next "
@@ -3875,7 +3895,7 @@ class TrajectoryNode(Node):
         # in the plan that comes out, and the sitting-one lesson is that a bench
         # reading needs its preconditions recorded next to it rather than
         # inferred afterwards.
-        self.get_logger().info(
+        self.get_logger().debug(
             'cycle seed for %s: %s (platform %.4f mm/s, %.5f rad/s, '
             'hand %.4f rev/s)'
             % (kind, 'AT REST' if at_rest else 'IN MOTION',
@@ -4009,7 +4029,10 @@ class TrajectoryNode(Node):
         response.plan_wall_ms = (time.perf_counter() - t_wall) * 1e3
         self._cycle_plan_wall_ms = response.plan_wall_ms
         self._last_rejection = str(message)
-        self.get_logger().error('install_segment refused: %s' % (message,))
+        # skill_node, the only caller, reports every refusal it gets -- as a
+        # refused re-aim on its throw line, or as the attempt's END line --
+        # so this is the record's copy, not a second screen line.
+        self.get_logger().debug('install_segment refused: %s' % (message,))
         return response
 
     def _segment_terminal_from_request(self, kind: str, request, t_event_perf: float,
@@ -4238,7 +4261,7 @@ class TrajectoryNode(Node):
         response.t_release_mono = float(t_release_mono)
         response.plan_wall_ms = (time.perf_counter() - t_wall) * 1e3
         self._cycle_plan_wall_ms = response.plan_wall_ms
-        self.get_logger().info(
+        self.get_logger().debug(
             'install_segment %s ball %d: splice_k=%d, plan %.1f ms, event tau '
             '%.3f s'
             % (kind, ball_id, response.splice_k, response.plan_wall_ms,

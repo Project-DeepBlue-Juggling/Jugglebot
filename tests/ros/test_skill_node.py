@@ -1797,7 +1797,7 @@ def test_the_sized_rest_is_logged_with_its_own_peaks():
     _hand_at(node, rev=9.6227)
     node._params['plant_id'] = 'test_opening_rest_log'
     lines = []
-    node.get_logger().info = lambda m: lines.append(m)
+    node.get_logger().debug = lambda m: lines.append(m)   # detail: DEBUG since console phase 2
 
     node._start_pattern(_self_toss_goal())
     homing = [ln for ln in lines if 'opening REST homes the hand' in ln]
@@ -2011,7 +2011,7 @@ def test_frame_check_with_zero_authority_starts_and_logs_the_offset():
         [_MockParameter(0.0, name='learner_lateral_authority_mm')])
     _frame_ready(node, plat_x=2.1, plat_y=31.1, cmd_x=0.0, cmd_y=0.0)
     lines = []
-    node.get_logger().info = lambda m: lines.append(m)
+    node.get_logger().debug = lambda m: lines.append(m)   # detail: DEBUG since console phase 2
     resp = node._start_pattern(_columns_goal())
     assert resp.success is True
     frame_lines = [ln for ln in lines if ln.startswith('frame check:')]
@@ -2113,7 +2113,7 @@ def test_the_2026_09_22_lever_arm_offset_is_adopted_not_refused():
         [_MockParameter(40.0, name='learner_lateral_authority_mm')])
     _frame_ready(node, plat_x=-1.56, plat_y=-8.53, cmd_x=0.0, cmd_y=0.0)
     lines = []
-    node.get_logger().info = lambda m: lines.append(m)
+    node.get_logger().debug = lambda m: lines.append(m)   # detail: DEBUG since console phase 2
     assert node._frame_check_error() == ''
     assert node._mocap_to_schedule_mm == pytest.approx((-1.56, -8.53))
     corr = [ln for ln in lines if ln.startswith('tracker landings are now corrected')]
@@ -3306,3 +3306,102 @@ def test_check_reports_the_hop_boxes_at_the_node_separation(tmp_path):
     assert resp2.success is False
     assert 'hop box REFUSED' in resp2.message
 
+
+
+# ── the operator's lines (console phase 2, `motion/skills/report.py`) ─────
+#
+# One start line, one line per throw, one end line; every detail line at
+# DEBUG (recorded, not shown); the Juggle result counted from ThrowReports.
+
+def _throw_report(n, caught):
+    from jugglebot.motion.skills.report import ThrowReport
+    return ThrowReport(throw_no=n, n_throws=2, ball_id=0, caught=caught,
+                       row=True, no_row_reason='', apex_m=0.9,
+                       landing_err_mm=(1.0, -2.0), release_err_s=0.01,
+                       arrival_err_s=None, seat_s=0.1)
+
+
+class TestOperatorLines:
+
+    def test_the_node_records_debug(self):
+        node, _client = _node_with_client()
+        assert node.get_logger().level == sn.LoggingSeverity.DEBUG
+
+    def test_an_accepted_goal_is_one_start_line(self):
+        node, _client = _node_with_client()
+        info = []
+        node.get_logger().info = info.append
+        assert node._juggle_goal(_columns_goal()) == sn.GoalResponse.ACCEPT
+        assert len(info) == 1 and info[0].startswith('columns started: '), info
+
+    def test_a_refused_goal_is_one_error_line(self):
+        node, _client = _node_with_client(frame=False)
+        node.set_parameters(
+            [_MockParameter(40.0, name='learner_lateral_authority_mm')])
+        errors = []
+        node.get_logger().error = errors.append
+        assert node._juggle_goal(_columns_goal()) == sn.GoalResponse.REJECT
+        assert len(errors) == 1 and 'REJECTED' in errors[0], errors
+
+    def test_each_throw_is_one_line_and_the_result_counts_reports(self):
+        from jugglebot.motion.skills import report as rp
+        node, _client = _node_with_client()
+        assert node._juggle_goal(_columns_goal()) == sn.GoalResponse.ACCEPT
+        info, warn = [], []
+        node.get_logger().info = info.append
+        node.get_logger().warning = warn.append
+        caught, missed = _throw_report(1, True), _throw_report(2, False)
+        node._executor.reports.extend([caught, missed])
+        node._stop_attempt()
+        node._on_tick()
+        assert node._executor is None
+        assert rp.throw_line(caught)[1] in info
+        assert warn == [rp.throw_line(missed)[1]]
+        ends = [ln for ln in info if ln.startswith('columns stopped by the '
+                                                   'operator: 1/2 caught')]
+        assert len(ends) == 1, info
+        result = node._juggle_execute(MagicMock(is_cancel_requested=False))
+        assert (result.throws, result.caught) == (2, 1)
+        assert result.per_throw == [rp.throw_line(caught)[1],
+                                    rp.throw_line(missed)[1]]
+
+    def test_ending_a_live_attempt_leaves_its_one_line_to_retirement(self):
+        node, _client = _node_with_client()
+        assert node._juggle_goal(_columns_goal()) == sn.GoalResponse.ACCEPT
+        errors = []
+        node.get_logger().error = errors.append
+        node._end_attempt('ABORTED_X', 'something broke')
+        assert errors == []
+        node._on_tick()
+        assert errors == ['columns ENDED (ABORTED_X): something broke · '
+                          '0/0 caught']
+
+    def test_ending_with_no_executor_logs_the_end_line_itself(self):
+        node, _client = _node_with_client()
+        node._attempt_label = 'self_toss (reload)'
+        errors = []
+        node.get_logger().error = errors.append
+        node._end_attempt('ABORTED_BB_NOT_READY',
+                          'Ball Butler never became ready')
+        assert errors == ['self_toss (reload) ENDED (ABORTED_BB_NOT_READY): '
+                          'Ball Butler never became ready · 0/0 caught']
+
+    def test_a_code_only_end_is_not_said_twice(self):
+        node, _client = _node_with_client()
+        node._attempt_label = 'hop (reload)'
+        errors = []
+        node.get_logger().error = errors.append
+        code = 'REJECTED_BB(BB calibration not yet received)'
+        node._end_attempt(code, code)
+        assert errors == ['hop (reload) ENDED (%s) · 0/0 caught' % (code,)]
+
+    def test_the_reload_bridge_rest_retiring_is_not_the_end(self):
+        node, _client = _node_with_client()
+        node._reload_ctx = SimpleNamespace(announced=False)
+        lines = []
+        node.get_logger().info = lines.append
+        node.get_logger().error = lines.append
+        node._log_attempt_end(SimpleNamespace(
+            attempt_ended=False, end_code='', end_message='', end_kind='',
+            schedule=SimpleNamespace(pattern='self_toss')))
+        assert lines == []

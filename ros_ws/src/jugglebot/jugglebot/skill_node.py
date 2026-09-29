@@ -51,6 +51,7 @@ from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import (MutuallyExclusiveCallbackGroup,
                                    ReentrantCallbackGroup)
 from rclpy.executors import MultiThreadedExecutor
+from rclpy.logging import LoggingSeverity
 from rclpy.node import Node
 
 from diagnostic_msgs.msg import DiagnosticStatus
@@ -70,6 +71,7 @@ from jugglebot.motion import blas_threads
 from jugglebot.motion.skills import admissible as adm
 from jugglebot.motion.skills import executor as ex
 from jugglebot.motion.skills import learner as lr
+from jugglebot.motion.skills import report as rp
 from jugglebot.motion.skills.executor import (InstallResult, Landing,
                                               Observations, SkillExecutor,
                                               precondition_refusals)
@@ -480,6 +482,16 @@ class SkillNode(Node):
 
     def __init__(self, robot_name: str = _DEFAULT_PLANT_ID):
         super().__init__('skill_node')
+        # RECORD EVERYTHING, SHOW LITTLE (operator console phase 2). Every
+        # per-dispatch detail line -- the executor's tick lines (dispatches,
+        # splices, catch aims, re-aim decisions, OUTCOME rows), memory rows,
+        # announcements -- is logged at DEBUG, and this logger is set to
+        # DEBUG so each still reaches launch.log, the per-process log file
+        # and /rosout in the bag. The launch console keeps DEBUG off the
+        # screen, where an attempt reads as one start line, one line per
+        # throw and one end line (motion/skills/report.py). Foxy has no
+        # per-logger --log-level, hence here.
+        self.get_logger().set_level(LoggingSeverity.DEBUG)
 
         self._robot_name = robot_name
         self._balls = {}  # ball_id (int) -> Landing, the tracker `SkillExecutor` reads
@@ -678,6 +690,10 @@ class SkillNode(Node):
         self._goal_done_event = threading.Event()
         self._goal_end_code = ''
         self._goal_outcome_lines = []
+        #: The attempt's ThrowReports (the result's counts) and its name on
+        #: the operator's lines (`_start_pattern`).
+        self._goal_reports = []
+        self._attempt_label = ''
 
         self.declare_parameter('apex_m', _DEFAULT_APEX_M)
         self.declare_parameter('separation_mm', _DEFAULT_SEPARATION_MM)
@@ -976,7 +992,7 @@ class SkillNode(Node):
         throws one ball at a time, and the release INSTANT is what selects
         the stroke."""
         r = self._hand_launch.ratio(t_release_abs_s)
-        self.get_logger().info(
+        self.get_logger().debug(
             'hand launch ratio for the release at %.3f (ball %d): %s'
             % (t_release_abs_s, ball_id, self._hand_launch.last_reason))
         return r
@@ -1440,7 +1456,7 @@ class SkillNode(Node):
                 now_s=float(now_ros.nanoseconds) * 1e-9,
                 in_flight_status=_BALL_STATUS_IN_FLIGHT)
         self._announce_pub.publish(ann)
-        self.get_logger().info(
+        self.get_logger().debug(
             'skill announced ball %d: release in %.3f s, |v| %.3f m/s'
             % (int(ball_id), delta_s, float(np.linalg.norm(vel)) / 1000.0))
 
@@ -1609,10 +1625,15 @@ class SkillNode(Node):
             self.get_logger().warning(
                 'END %s: could not acquire the tick lock within %.1f s -- '
                 'proceeding without it' % (end_code, _STOP_LOCK_WAIT_S))
+        executor_reports = False
         try:
             if self._executor is not None and not self._executor.attempt_ended:
                 self._executor.attempt_ended = True
                 self._executor.end_code = end_code
+                # Its retirement prints the attempt's end line
+                # (`_log_attempt_end`) -- with THIS reason.
+                self._executor.end_message = message
+                executor_reports = True
             else:
                 self._goal_end_code = end_code
             if force_hold:
@@ -1634,7 +1655,11 @@ class SkillNode(Node):
             if got_lock:
                 self._tick_lock.release()
         self._maybe_hold_pending_event(end_code)
-        self.get_logger().error('%s: %s' % (end_code, message))
+        if not executor_reports:
+            severity, text = rp.end_line(
+                self._attempt_label or 'attempt', end_code,
+                '' if message == end_code else message, self._goal_reports)
+            self._log_at(severity, text)
 
     def _check_reload_timeout(self) -> None:
         """R4 reload fail-closed (C1, 2026-09-28): once `_reload_ctx.
@@ -1832,10 +1857,13 @@ class SkillNode(Node):
             end_code = 'REJECTED_BB(%s)' % (throw_resp.message,)
             self._end_attempt(end_code, end_code)
             return
-        self.get_logger().info(
+        self.get_logger().debug(
             'reload: bb/throw_at_target OK (predicted_tof=%.3f s, '
             'delay=%.3f s) -- awaiting ThrowAnnouncement'
             % (throw_resp.predicted_tof_s, throw_resp.throw_delay_s))
+        self.get_logger().info(
+            'reload: Ball Butler throws in %.2f s (flight %.2f s)'
+            % (throw_resp.throw_delay_s, throw_resp.predicted_tof_s))
 
     def _on_tick(self):
         """Dispatch everything due, then retire a finished executor.
@@ -1882,12 +1910,12 @@ class SkillNode(Node):
             if self._executor is not None:
                 now = self.get_clock().now().nanoseconds / 1e9
                 for line in self._executor.tick(now):
-                    self.get_logger().info(line)
-                    # The Juggle goal result's `per_throw`/`throws`/`caught`
-                    # (R4 U5): every finalised release gets exactly one
-                    # OUTCOME line (`executor._finalise_outcome`).
-                    if 'OUTCOME' in line:
-                        self._goal_outcome_lines.append(line)
+                    self.get_logger().debug(line)
+                # The Juggle goal result's `per_throw`/`throws`/`caught`
+                # (R4 U5): every finalised release gets exactly one
+                # ThrowReport (`executor._finalise_outcome`), and its screen
+                # line is the operator's one line for that throw.
+                self._drain_reports(self._executor)
                 if self._executor.attempt_ended:
                     if (self._executor.end_code == ex.HAND_LANE_REFUSED
                             and not self._hold_forced_code):
@@ -1906,6 +1934,7 @@ class SkillNode(Node):
                     self._goal_end_code = (self._executor.end_code
                                            if self._executor.attempt_ended
                                            else '')
+                    self._log_attempt_end(self._executor)
                     self._executor = None
                     with self._reload_lock:
                         self._reload_throw_inflight = False
@@ -1914,6 +1943,46 @@ class SkillNode(Node):
         if stop_code is not None:
             self._maybe_hold_pending_event(stop_code, executor=stop_executor)
         self._maybe_signal_goal_done()
+
+    def _frame_offset_mm(self):
+        """The session's mocap-vs-commanded platform offset magnitude (mm),
+        or ``None`` when the frame check has not produced one."""
+        if self._mocap_to_schedule_mm is None:
+            return None
+        return math.hypot(*self._mocap_to_schedule_mm)
+
+    def _log_at(self, severity: str, text: str) -> None:
+        {'INFO': self.get_logger().info, 'WARN': self.get_logger().warning,
+         'ERROR': self.get_logger().error}.get(
+             severity, self.get_logger().info)(text)
+
+    def _drain_reports(self, executor) -> None:
+        """Log each newly finalised throw ONCE -- the operator's line for
+        it (`report.throw_line`: INFO, WARN for a miss) -- and keep it for
+        the Juggle result. Consumes `executor.reports`."""
+        reports = getattr(executor, 'reports', None)
+        if not isinstance(reports, list):
+            return
+        while reports:
+            report = reports.pop(0)
+            severity, text = rp.throw_line(report)
+            self._log_at(severity, text)
+            self._goal_reports.append(report)
+            self._goal_outcome_lines.append(text)
+
+    def _log_attempt_end(self, executor) -> None:
+        """The attempt's last line (`report.end_line`), as its executor
+        retires -- unless this is the reload's opening REST retiring while
+        the announcement is still awaited: that attempt is not over."""
+        with self._reload_lock:
+            if self._reload_ctx is not None:
+                return
+        severity, text = rp.end_line(
+            self._attempt_label or executor.schedule.pattern,
+            executor.end_code if executor.attempt_ended else '',
+            executor.end_message, self._goal_reports,
+            end_kind=executor.end_kind)
+        self._log_at(severity, text)
 
     def _maybe_signal_goal_done(self) -> None:
         """Set `_goal_done_event` the instant nothing is left running for the
@@ -2002,8 +2071,10 @@ class SkillNode(Node):
         # wait. Reset here, before anything moves, so a refusal below never
         # touches a previous goal's still-unread result.
         self._goal_outcome_lines = []
+        self._goal_reports = []
         self._goal_end_code = ''
         self._goal_done_event.clear()
+        self._attempt_label = pattern + (' (reload)' if reload else '')
 
         if pattern == 'columns':
             return self._run_columns(apex_m, separation_mm, dwell_s, n_throws)
@@ -2019,7 +2090,7 @@ class SkillNode(Node):
         home_err = self._hand_home_error()
         if home_err:
             msg = 'columns refused: %s' % (home_err,)
-            self.get_logger().error(msg)
+            self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
         # Session-start mocap-vs-commanded frame check (plan
         # `cup-contact-contract.md` § 1) — read-only, before t0 is read and
@@ -2027,7 +2098,7 @@ class SkillNode(Node):
         frame_err = self._frame_check_error()
         if frame_err:
             msg = 'columns refused: %s' % (frame_err,)
-            self.get_logger().error(msg)
+            self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
         t0 = self.get_clock().now().nanoseconds / 1e9 + _START_LEAD_S
         try:
@@ -2037,7 +2108,7 @@ class SkillNode(Node):
             schedule = compile_columns(pattern, t0)
         except ValueError as exc:
             msg = 'columns schedule refused: %s' % (exc,)
-            self.get_logger().error(msg)
+            self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
         # A new schedule reuses small ball ids: drop any flight latch an
         # earlier (possibly early-ended) attempt left for them, so a catch
@@ -2059,8 +2130,12 @@ class SkillNode(Node):
             launch_ratio=self._launch_ratio)
         msg = ('columns schedule compiled: %d skills, %d throws, t0=%.3f'
               % (len(schedule.skills), n_throws, t0))
-        self.get_logger().info(msg)
-        return SimpleNamespace(success=True, message=msg)
+        self.get_logger().debug(msg)
+        return SimpleNamespace(
+            success=True, message=msg,
+            start_line=rp.start_line(
+                self._attempt_label or 'columns', self._executor.n_throws,
+                apex_m, extra='separation %.0f mm' % (separation_mm,)))
 
     def _live_limits(self):
         """The session limits `admissible.check_limits` judges the loaded box
@@ -2137,7 +2212,7 @@ class SkillNode(Node):
                          % (_HAND_STATE_STALE_S,))
         period = floor_lift_s(rev)
         peak_v, peak_a = home_hand_bounds(rev, period)
-        self.get_logger().info(
+        self.get_logger().debug(
             'opening REST homes the hand: %+.4f → %+.4f rev over %.2f s '
             '(peak <= %.2f rev/s, %.2f rev/s²)'
             % (rev, REST_HAND_REV, period, peak_v, peak_a))
@@ -2205,14 +2280,14 @@ class SkillNode(Node):
         in place (a stale good number beats none) and says so."""
         result = self._frame_check()
         if result.evaluable:
-            self.get_logger().info('frame check: %s' % (result.detail,))
+            self.get_logger().debug('frame check: %s' % (result.detail,))
         else:
-            self.get_logger().info(
+            self.get_logger().debug(
                 'frame check: cannot evaluate — %s' % (result.detail,))
         if result.evaluable and result.within_limit:
             self._mocap_to_schedule_mm = (float(result.dx_mm),
                                           float(result.dy_mm))
-            self.get_logger().info(
+            self.get_logger().debug(
                 'tracker landings are now corrected by (x %+.1f, y %+.1f) mm '
                 '(mocap -> schedule frame): the OUTCOME lines, learner rows '
                 'and catch aims measure from the cup\'s real position'
@@ -2275,7 +2350,7 @@ class SkillNode(Node):
         if not bool(resp.accepted):
             return ('the pre-level move was refused: %s (%s)'
                     % (resp.code, resp.message))
-        self.get_logger().info(
+        self.get_logger().debug(
             'platform pre-levelled to gravity-level over %.2f s before the '
             'self-toss schedule (identity intent, E3-corrected)'
             % (float(resp.planned_duration_s),))
@@ -2308,7 +2383,7 @@ class SkillNode(Node):
         if _ADMISSIBLE_BOX_PATH is None:
             msg = ('cannot find the repo root from %r — the admissible box '
                   '/ memory paths cannot be resolved' % (__file__,))
-            self.get_logger().error(msg)
+            self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
 
         plant_id = str(self.get_parameter('plant_id').value)
@@ -2332,7 +2407,7 @@ class SkillNode(Node):
                     'site xy, so a box swept at the default site cannot be '
                     'applied here' % (site_x_mm, site_y_mm, _DEFAULT_SITE_X_MM,
                                       _DEFAULT_SITE_Y_MM))
-                self.get_logger().error(msg)
+                self.get_logger().debug(msg)
                 return SimpleNamespace(success=False, message=msg)
             sites = (Site(_DEFAULT_SITE_NAME,
                           np.array([site_x_mm, site_y_mm, CATCH_CUP_Z_MM])),)
@@ -2344,7 +2419,7 @@ class SkillNode(Node):
                                      dwell_s=dwell_s, n_throws=n_throws)
         except ValueError as exc:
             msg = '%s pattern refused: %s' % (kind, exc)
-            self.get_logger().error(msg)
+            self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
 
         try:
@@ -2352,7 +2427,7 @@ class SkillNode(Node):
             adm.check_limits(boxes, self._live_limits())
         except adm.AdmissibleError as exc:
             msg = 'admissible box refused: %s' % (exc,)
-            self.get_logger().error(msg)
+            self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
         # No box covers the requested apex -> refuse BEFORE any motion
         # (before `_prelevel`), rather than let `_command_u` discover this
@@ -2381,7 +2456,7 @@ class SkillNode(Node):
         if missing:
             msg = ('%s refused: no admissible box covers site pair(s) -- %s'
                   % (kind, '; '.join(missing)))
-            self.get_logger().error(msg)
+            self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
 
         # Finding 11, R3 audit (2026-09-13): built here, before `_prelevel`
@@ -2394,7 +2469,7 @@ class SkillNode(Node):
             memory = Memory(memory_path(_REPO_ROOT, plant_id))
         except (ValueError, OSError, csv.Error) as exc:
             msg = 'memory refused: %s' % (exc,)
-            self.get_logger().error(msg)
+            self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
 
         # The opening REST HOMES THE HAND, over a period sized to the hand's
@@ -2408,7 +2483,7 @@ class SkillNode(Node):
         lift_s, lift_err = self._opening_rest_period()
         if lift_err:
             msg = '%s refused: %s' % (kind, lift_err)
-            self.get_logger().error(msg)
+            self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
         pattern = dataclasses.replace(pattern, floor_lift_s=lift_s)
 
@@ -2418,13 +2493,13 @@ class SkillNode(Node):
         frame_err = self._frame_check_error()
         if frame_err:
             msg = '%s refused: %s' % (kind, frame_err)
-            self.get_logger().error(msg)
+            self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
 
         prelevel_err = self._prelevel()
         if prelevel_err:
             msg = '%s refused: %s' % (kind, prelevel_err)
-            self.get_logger().error(msg)
+            self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
 
         # R4 reload (owner decision D4, brief step 1): everything above is
@@ -2455,7 +2530,7 @@ class SkillNode(Node):
             schedule = compile_one_ball(pattern, t0)
         except ValueError as exc:
             msg = '%s schedule refused: %s' % (kind, exc)
-            self.get_logger().error(msg)
+            self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
 
         learner_cfg = lr.LearnerConfig()
@@ -2489,8 +2564,15 @@ class SkillNode(Node):
             '%s schedule compiled: %d skills, %d throws, plant_id=%r, '
             'memory rows=%d, t0=%.3f'
             % (kind, len(schedule.skills), n_throws, plant_id, len(memory), t0))
-        self.get_logger().info(msg)
-        return SimpleNamespace(success=True, message=msg)
+        self.get_logger().debug(msg)
+        return SimpleNamespace(
+            success=True, message=msg,
+            start_line=rp.start_line(
+                self._attempt_label or kind, self._executor.n_throws, apex_m,
+                memory_rows=len(memory),
+                frame_offset_mm=self._frame_offset_mm(),
+                extra=('(%s)' % ' -> '.join(st.name for st in sites)
+                       if len(sites) > 1 else '')))
 
     def _start_reload(self, response, *, site: Site, pattern: OneBallPattern,
                       boxes, memory: Memory):
@@ -2545,7 +2627,7 @@ class SkillNode(Node):
             # is correct here (nothing for `_end_attempt` to end).
             response.success = False
             response.message = 'reload bridge schedule refused: %s' % (exc,)
-            self.get_logger().error(response.message)
+            self.get_logger().debug(response.message)
             return response
 
         with self._correlation_lock:
@@ -2634,7 +2716,16 @@ class SkillNode(Node):
         response.message = (
             '%s -- awaiting Ball Butler ready (IDLE, ball in hand, connected) '
             'within %.1f s' % (head, ready_timeout_s))
-        self.get_logger().info(response.message)
+        self.get_logger().debug(response.message)
+        offset = self._frame_offset_mm()
+        response.start_line = (
+            '%s started: Ball Butler %s — waiting up to %.1f s for it to be '
+            'ready, then catching its throw · memory %d rows%s'
+            % (self._attempt_label or 'reload',
+               'is fetching a ball' if reload_sent else 'already holds a ball',
+               ready_timeout_s, len(memory),
+               '' if offset is None
+               else ' · mocap frame offset %.1f mm' % (offset,)))
         return response
 
     def _on_announcement(self, msg: ThrowAnnouncement) -> None:
@@ -2670,7 +2761,7 @@ class SkillNode(Node):
             if claimed:
                 ctx.announced = True
         if not claimed:
-            self.get_logger().info(
+            self.get_logger().warning(
                 'reload: a ball_butler announcement for us arrived with no '
                 'reload awaiting one (already timed out or stopped, already '
                 'announced, or none was requested) -- ignored')
@@ -2796,10 +2887,16 @@ class SkillNode(Node):
                 'lane) while the announced schedule was compiling -- not '
                 'installed')
             return
-        self.get_logger().info(
+        self.get_logger().debug(
             'reload: ThrowAnnouncement received -- compiled the reload '
             'schedule (%d skills) and swapped the executor'
             % (len(schedule.skills),))
+        n_after = sum(1 for sk in schedule.skills
+                      if sk.kind == THROW
+                      or (sk.kind == CATCH and sk.then_throw is not None))
+        self.get_logger().info(
+            'reload: Ball Butler\'s ball is in the air — catching it, then '
+            '%d throw%s' % (n_after, '' if n_after == 1 else 's'))
 
     def _bind_on_experience(self, memory: Memory):
         """``on_experience`` callable bound to ``memory`` (plan § 2.5 step 6):
@@ -2818,7 +2915,7 @@ class SkillNode(Node):
                     'memory row REFUSED (not appended): %s — u=%s y=%s'
                     % (exc, exp.u.tolist(), exp.y.tolist()))
                 return
-            self.get_logger().info(
+            self.get_logger().debug(
                 'memory row appended: x=%s u=%s y=%s caught=%s'
                 % (exp.x.tolist(), exp.u.tolist(), exp.y.tolist(), exp.caught))
         return _on_experience
@@ -2924,8 +3021,14 @@ class SkillNode(Node):
             self.get_logger().error('jugglebot/juggle REJECTED: %s'
                                     % (result.message,))
             return GoalResponse.REJECT
-        self.get_logger().info('jugglebot/juggle ACCEPTED: %s'
-                               % (result.message,))
+        start = getattr(result, 'start_line', '')
+        if start:
+            self.get_logger().debug('jugglebot/juggle ACCEPTED: %s'
+                                    % (result.message,))
+            self.get_logger().info(start)
+        else:
+            self.get_logger().info('jugglebot/juggle ACCEPTED: %s'
+                                   % (result.message,))
         return GoalResponse.ACCEPT
 
     def _juggle_cancel(self, goal_handle):
@@ -2964,17 +3067,16 @@ class SkillNode(Node):
             if not rclpy.ok():
                 break
             feedback.phase = 'RUNNING'
-            feedback.throw_index = len(self._goal_outcome_lines)
-            feedback.caught = sum(1 for line in self._goal_outcome_lines
-                                  if 'caught=True' in line)
+            feedback.throw_index, feedback.caught = rp.summarise(
+                self._goal_reports)
             goal_handle.publish_feedback(feedback)
         end_code = self._goal_end_code
         outcome = 'STOPPED' if end_code == 'STOPPED' else (end_code or 'COMPLETED')
         result.outcome = outcome
         result.success = bool(outcome == 'COMPLETED')
-        result.throws = len(self._goal_outcome_lines)
-        result.caught = sum(1 for line in self._goal_outcome_lines
-                            if 'caught=True' in line)
+        # From the ThrowReports, never by parsing log text; `per_throw` is
+        # each throw's operator line.
+        result.throws, result.caught = rp.summarise(self._goal_reports)
         result.per_throw = list(self._goal_outcome_lines)
         if cancelled:
             goal_handle.canceled()

@@ -737,6 +737,7 @@ class MockLogger:
     def error(self, msg, **kw): pass
     def fatal(self, msg, **kw): pass
     def debug(self, msg, **kw): pass
+    def set_level(self, level): self.level = level
 
 
 class MockTime:
@@ -1302,6 +1303,14 @@ class _MockMultiThreadedExecutor:
         pass
 
 
+class _MockLoggingSeverity:
+    """rclpy.logging.LoggingSeverity's values (rcutils' own numbers)."""
+    UNSET, DEBUG, INFO, WARN, ERROR, FATAL = 0, 10, 20, 30, 40, 50
+
+
+_create_mock_module('rclpy.logging', {
+    'LoggingSeverity': _MockLoggingSeverity,
+})
 _create_mock_module('rclpy.executors', {
     'MultiThreadedExecutor': _MockMultiThreadedExecutor,
 })

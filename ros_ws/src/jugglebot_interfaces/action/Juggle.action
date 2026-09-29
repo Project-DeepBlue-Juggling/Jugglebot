@@ -23,13 +23,15 @@ bool success                   # True iff the attempt reached its own COMPLETED 
 string outcome                 # COMPLETED | STOPPED | the executor's end_code
                                # (executor.py's ABORTED_*/REJECTED_* names) — one
                                # code, one sentence to the operator (plan § 0)
-int32 throws                   # number of released balls this attempt finalised an
-                               # OUTCOME row for (caught or not)
+int32 throws                   # number of released balls this attempt finalised
+                               # (caught or not; counted from the executor's
+                               # ThrowReports, motion/skills/report.py)
 int32 caught                   # of those, how many were caught
-string[] per_throw             # the executor's own OUTCOME lines, one per finalised
-                               # release, in the order they finalised
+string[] per_throw             # each finalised release's operator line
+                               # ("throw 3/5 CAUGHT  apex ..."), in the order they
+                               # finalised; the full OUTCOME rows stay in the log
 ---
 string phase                   # RUNNING while the attempt streams; the executor's
                                # own end_code the moment it ends (mirrors `outcome`)
-int32 throw_index              # number of OUTCOME rows finalised so far
+int32 throw_index              # number of releases finalised so far
 int32 caught                   # of those, how many were caught so far

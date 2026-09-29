@@ -4517,3 +4517,162 @@ def test_no_apex_gain_or_no_offset_leaves_the_carried_aim_untouched():
     tt2 = x2._catch_terminal(catch_idx, sched2.skills[catch_idx],
                              x2.tracker(0)).then_throw
     assert tt2.target_mm.tolist() == target.tolist()
+
+
+# ── operator throw reports (``jugglebot.motion.skills.report``) ──────────────
+#
+# One ThrowReport per finalised release, row or no row; the attempt's end
+# reason in words (``end_message`` / ``end_kind``). They feed the operator's
+# screen lines and the Juggle result's counts — never a learner row.
+
+def _commanded_arrival_vel(site):
+    """The arrival velocity of the flight the planner commands from
+    ``site``: release at its throw height, land on its catch plane FLIGHT_S
+    later — so a landing ``d`` seconds late with THIS velocity is the same
+    flight released ``d`` seconds late."""
+    g = 9806.0
+    z_rel, z_land = site.throw_site_mm()[2], site.catch_site_mm()[2]
+    v0 = (z_land - z_rel + 0.5 * g * FLIGHT_S ** 2) / FLIGHT_S
+    return np.array([0.0, 0.0, v0 - g * FLIGHT_S])
+
+def test_every_finalised_release_gets_one_throw_report(sites):
+    """Two THROWs, both caught, landing 10 ms late / 20 ms early on the
+    commanded flight's own arrival velocity — i.e. released that late/early,
+    so each release error IS that offset."""
+    p1, p2 = sites
+    t1, t2 = ROS_T0, ROS_T0 + 2.0
+    skills = (
+        Skill(kind=sg.THROW, ball_id=0, site=p1, t_abs_s=t1, window_s=LAUNCH_S,
+              y_d=(np.zeros(2), APEX_M), target=p1),
+        Skill(kind=sg.THROW, ball_id=1, site=p2, t_abs_s=t2, window_s=LAUNCH_S,
+              y_d=(np.zeros(2), APEX_M), target=p2),
+    )
+    sch = Schedule(pattern='self_toss', skills=skills, flight_s=FLIGHT_S,
+                   beat_s=FLIGHT_S, transit_s=FLIGHT_S, dwell_s=0.3,
+                   t0_abs_s=t1 - LAUNCH_S)
+    landings = {
+        0: _fit_landing(pos_mm=p1.catch_site_mm() + np.array([5.0, -3.0, 0.0]),
+                        vel_mm_s=_commanded_arrival_vel(p1),
+                        t_land_abs_s=t1 + FLIGHT_S + 0.01),
+        1: _fit_landing(pos_mm=p2.catch_site_mm() + np.array([-2.0, 1.0, 0.0]),
+                        vel_mm_s=_commanded_arrival_vel(p2),
+                        t_land_abs_s=t2 + FLIGHT_S - 0.02),
+    }
+    x = ex.SkillExecutor(sch, _FakeInstaller(),
+                         tracker=lambda b: landings.get(b),
+                         observer=lambda b, t: ex.CAUGHT_EVIDENCE,
+                         on_experience=lambda e: None)
+    assert x.n_throws == 2
+    t = sch.skills[0].dispatch_s() - 0.01
+    while t < t2 + FLIGHT_S + ex.CAUGHT_WINDOW_S + 1.0:
+        x.tick(t)
+        t += 0.01
+
+    assert [r.throw_no for r in x.reports] == [1, 2]
+    assert all(r.n_throws == 2 and r.row and r.caught is True
+               for r in x.reports)
+    r0, r1 = x.reports
+    assert r0.landing_err_mm == pytest.approx((5.0, -3.0))
+    assert r0.apex_m == pytest.approx(ex._observed_apex_m(landings[0]))
+    assert r0.release_err_s == pytest.approx(0.010, abs=1e-6)
+    assert r1.release_err_s == pytest.approx(-0.020, abs=1e-6)
+    assert r0.arrival_err_s is None            # no CATCH met these flights
+    assert r0.seat_s is not None and r0.seat_s < 0.0   # seated from the open
+
+
+def test_a_blind_flight_still_gets_a_report_naming_why_there_is_no_row(sites):
+    p1, _p2 = sites
+    sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
+    x = ex.SkillExecutor(sch, _FakeInstaller(), tracker=lambda b: None,
+                         on_experience=lambda e: None)
+    t = sch.skills[0].dispatch_s() - 0.01
+    while t < ROS_T0 + FLIGHT_S + ex.CAUGHT_WINDOW_S + 0.05:
+        x.tick(t)
+        t += 0.02
+    (r,) = x.reports
+    assert (r.row, r.no_row_reason) == (
+        False, 'no landing estimate was ever observed')
+    assert r.caught is None and r.apex_m is None      # no observer, no fit
+    assert r.release_err_s is None and r.landing_err_mm is None
+
+
+def _caught_catch_run(sites, second_fit_dt_s, verdicts=()):
+    """THROW -> CATCH -> REST; the fit first says ``t_land`` then, once the
+    catch is committed, ``t_land + second_fit_dt_s`` — returns the executor
+    after it is done."""
+    p1, _p2 = sites
+    sch = _schedule(sites)
+    t_land = sch.skills[1].t_abs_s
+    vel = _commanded_arrival_vel(p1)
+    box = {'landing': _fit_landing(pos_mm=p1.catch_site_mm(), vel_mm_s=vel,
+                                   t_land_abs_s=t_land)}
+    x = ex.SkillExecutor(sch, _FakeInstaller(verdicts),
+                         tracker=lambda b: box['landing'],
+                         observer=lambda b, t: ex.CAUGHT_EVIDENCE,
+                         on_experience=lambda e: None, lateral_authority_m=0.0)
+    x.tick(sch.skills[0].dispatch_s())
+    t_catch = sch.skills[1].dispatch_s()
+    x.tick(t_catch)
+    box['landing'] = _fit_landing(pos_mm=p1.catch_site_mm(), vel_mm_s=vel,
+                                  t_land_abs_s=t_land + second_fit_dt_s)
+    t = t_catch + 0.05
+    while t < t_land + ex.CAUGHT_WINDOW_S + 1.5:
+        x.tick(t)
+        t += 0.01
+    assert x.done
+    return x
+
+
+def test_arrival_is_measured_against_the_catch_s_final_aim(sites):
+    """The fit moves the landing 30 ms late after the catch is committed; the
+    re-aim follows it, so the ball arrives exactly when the catch was last
+    aimed (arrival 0) — one accepted re-aim."""
+    x = _caught_catch_run(sites, 0.030)
+    (r,) = x.reports
+    assert r.reaims == 1 and r.reaim_refused == ''
+    assert r.arrival_err_s == pytest.approx(0.0, abs=1e-6)
+    assert r.release_err_s == pytest.approx(0.030, abs=1e-6)
+
+
+def test_a_refused_re_aim_is_reported_and_arrival_is_against_the_standing_aim(
+        sites):
+    refusal = ex.InstallResult(
+        False, 'LIMIT_JERK', 'REJECTED_CYCLE_INFEASIBLE(LIMIT_JERK: peak leg '
+        'jerk 257921 mm/s³ > 150000)', 0.0)
+    ok = ex.InstallResult(True, 'OK', 'ok', 0.0, splice_k=0)
+    x = _caught_catch_run(sites, 0.030, verdicts=(ok, ok, refusal))
+    (r,) = x.reports
+    assert r.reaims == 0 and r.reaim_refused == 'LIMIT_JERK'
+    assert r.arrival_err_s == pytest.approx(0.030, abs=1e-6)
+    assert not x.attempt_ended                  # a refused RE-aim ends nothing
+
+
+def test_an_install_refusal_records_its_reason_and_skill_kind(sites):
+    message = ('REJECTED_CYCLE_INFEASIBLE(LIMIT_JERK: peak leg jerk 152393 '
+               'mm/s³ > 150000)')
+    ok = ex.InstallResult(True, 'OK', 'ok', 0.0, splice_k=0)
+    refusal = ex.InstallResult(False, 'LIMIT_JERK', message, 0.0)
+    sch = _schedule(sites)
+    x = ex.SkillExecutor(sch, _FakeInstaller((ok, refusal)),
+                         tracker=_tracker(_fit_landing(
+                             pos_mm=sites[0].catch_site_mm(),
+                             vel_mm_s=LAND_VEL,
+                             t_land_abs_s=sch.skills[1].t_abs_s)))
+    x.tick(sch.skills[0].dispatch_s())
+    x.tick(sch.skills[1].dispatch_s())
+    assert x.end_code == 'LIMIT_JERK'
+    assert (x.end_kind, x.end_message) == (sg.CATCH, message)
+
+
+def test_no_release_names_the_throw_that_never_left(sites):
+    p1, _p2 = sites
+    sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
+    x = ex.SkillExecutor(
+        sch, _FakeInstaller(), tracker=lambda b: None,
+        observer=lambda ball_id, t: bp.EVIDENCE_SEATED,   # never EMPTY
+        observations=lambda t: _obs(), on_experience=lambda e: None)
+    x.tick(sch.skills[0].dispatch_s())
+    x.tick(sch.skills[0].t_abs_s + ex.RELEASE_GRACE_S + 0.01)
+    assert x.end_code == ex.ABORTED_NO_RELEASE
+    assert x.end_message.startswith('throw 1/1 never left the hand')
+    assert x.reports == []            # dropped: nothing flew to report

@@ -4,6 +4,7 @@ from launch.actions import (
     DeclareLaunchArgument,
     ExecuteProcess,
     LogInfo,
+    OpaqueFunction,
 )
 from launch.conditions import IfCondition, UnlessCondition
 from launch.substitutions import LaunchConfiguration
@@ -188,6 +189,16 @@ def _operator_console_actions():
     except Exception as exc:  # noqa: BLE001
         return [LogInfo(msg='[console] operator console unavailable (%s: %s) — '
                             'raw launch output.' % (type(exc).__name__, exc))]
+
+
+def _bag_summary_at_exit(context, bag_dir):
+    """OpaqueFunction body: arm the end-of-session bag line. Never raises."""
+    try:
+        from jugglebot.launch_console import print_bag_summary_at_exit
+        print_bag_summary_at_exit(bag_dir)
+    except Exception:  # noqa: BLE001 — presentation must never cost a bring-up
+        pass
+    return []
 
 
 def _config_freshness_actions():
@@ -565,11 +576,18 @@ def generate_launch_description():
     timestamp = datetime.now().strftime('%Y-%m-%d_%H-%M-%S')
     bag_dir = os.path.join(bags_dir, timestamp)
 
-    # The one line that says where this run's bag is (the runsheets say "note
-    # the bag folder it prints"; rosbag2 itself never prints it), and the one
-    # that says there is none.
+    # Where this run's bag is (the runsheets say "note the bag folder it
+    # prints"; rosbag2 itself never prints it): one line as recording starts,
+    # and — the one to copy — the launch shell's very LAST line, printed after
+    # every process has exited and rosbag2 has closed the bag, with its size
+    # (launch_console.print_bag_summary_at_exit: an atexit hook, since launch
+    # has no event later than its own shutdown). Or one line saying there is
+    # no bag.
     rosbag_banner = LogInfo(msg='recording bag -> %s' % (bag_dir,),
                             condition=IfCondition(record))
+    rosbag_exit_line = OpaqueFunction(function=_bag_summary_at_exit,
+                                      args=[bag_dir],
+                                      condition=IfCondition(record))
     no_bag_banner = LogInfo(msg='NOT recording a bag (record:=false)',
                             condition=UnlessCondition(record))
 
@@ -776,6 +794,7 @@ def generate_launch_description():
         teensy_bridge_node,
         # Recording (conditional)
         rosbag_banner,
+        rosbag_exit_line,
         no_bag_banner,
         rosbag_record,
     ])

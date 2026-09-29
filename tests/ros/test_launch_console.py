@@ -252,11 +252,12 @@ _E2E = textwrap.dedent(r'''
     import launch.logging
     from launch import LaunchDescription, LaunchService
     from launch.actions import ExecuteProcess
-    from jugglebot.launch_console import install
+    from jugglebot.launch_console import install, print_bag_summary_at_exit
 
     launch.logging.launch_config.log_dir = sys.argv[1]
     install(launch.logging.launch_config.get_screen_handler(),
             environ={'NO_COLOR': ''})
+    print_bag_summary_at_exit(sys.argv[3], environ={'NO_COLOR': ''})
     emit = (
         "import sys\n"
         "for l in ['[INFO] [%(t)s] [skill_node]: skill_node ready',\n"
@@ -276,18 +277,22 @@ def test_end_to_end_through_a_real_launch_service(tmp_path):
     LaunchService, in a subprocess so launch's process-global logging
     setup (its logger class, the root level) never touches this worker."""
     pytest.importorskip('launch.logging')
+    bag = tmp_path / 'bag'
+    bag.mkdir()
+    (bag / 'metadata.yaml').write_text('x' * 10)
+    (bag / 'bag_0.mcap').write_text('x' * 2490)
     env = dict(os.environ)
     env['PYTHONPATH'] = os.pathsep.join(
         [os.path.dirname(os.path.dirname(lc.__file__))]
         + [p for p in env.get('PYTHONPATH', '').split(os.pathsep) if p])
     proc = subprocess.run([sys.executable, '-c', _E2E, str(tmp_path),
-                           '%.9f' % T], capture_output=True, text=True,
-                          env=env, timeout=60)
+                           '%.9f' % T, str(bag)], capture_output=True,
+                          text=True, env=env, timeout=60)
     assert proc.returncode == 0, proc.stderr
     screen = proc.stdout.splitlines()
     # Launch's own two opening lines (formatted here only because this
     # script installs before `run`; under `ros2 launch` they print stock).
-    assert len(screen) == 5, screen
+    assert len(screen) == 6, screen
     assert re.match(CLOCK + r' launch +All log files can be found below ',
                     screen[0])
     assert re.match(CLOCK + r' launch +Default logging verbosity', screen[1])
@@ -296,6 +301,9 @@ def test_end_to_end_through_a_real_launch_service(tmp_path):
         '%s %-12s WARN  careful' % (lc.clock(T), 'skill'),
     ]
     assert re.match(CLOCK + ' skill +exited cleanly$', screen[4])
+    # The bag line is LAST — after every process has exited.
+    assert re.match(CLOCK + ' launch +bag saved: %s \\(2\\.5 kB\\)$'
+                    % re.escape(str(bag)), screen[5]), screen[5]
     with open(os.path.join(str(tmp_path), 'launch.log')) as f:
         record = f.read()
     for raw in ('[skill_node-1] [INFO] [%.9f] [skill_node]: skill_node '
@@ -303,3 +311,22 @@ def test_end_to_end_through_a_real_launch_service(tmp_path):
                 '[skill_node-1] [DEBUG] [%.9f] [skill_node]: fine detail' % T,
                 'process started with pid'):
         assert raw in record
+
+
+# ── the end-of-session bag line ────────────────────────────────────────────
+
+def test_bag_summary_names_the_folder_and_its_size(tmp_path):
+    (tmp_path / 'metadata.yaml').write_text('m' * 100)
+    (tmp_path / 'b_0.mcap').write_text('x' * 1_234_400)
+    assert lc.bag_summary(str(tmp_path)) == (
+        'INFO', 'bag saved: %s (1.2 MB)' % (tmp_path,))
+
+
+def test_a_bag_that_did_not_close_is_a_warning(tmp_path):
+    (tmp_path / 'b_0.mcap').write_text('x' * 10)
+    severity, text = lc.bag_summary(str(tmp_path))
+    assert severity == 'WARN' and 'no metadata.yaml' in text
+
+
+def test_no_bag_folder_is_an_error(tmp_path):
+    assert lc.bag_summary(str(tmp_path / 'missing'))[0] == 'ERROR'

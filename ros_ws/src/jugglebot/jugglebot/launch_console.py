@@ -371,6 +371,69 @@ def install(handler=None, environ=None) -> bool:
     return True
 
 
+def bag_summary(bag_dir: str) -> Tuple[str, str]:
+    """``(severity, text)`` for the end-of-session bag line.
+
+    rosbag2 writes ``metadata.yaml`` only when it closes the bag, so its
+    absence after the recorder has exited means the bag did not close cleanly
+    (killed, or the disk filled) — worth a WARN beside the path."""
+    if not os.path.isdir(bag_dir):
+        return 'ERROR', 'NO bag was written (expected %s)' % (bag_dir,)
+    size = 0
+    for root, _dirs, files in os.walk(bag_dir):
+        for name in files:
+            try:
+                size += os.path.getsize(os.path.join(root, name))
+            except OSError:
+                pass
+    text = 'bag saved: %s (%s)' % (bag_dir, _human_size(size))
+    if not os.path.isfile(os.path.join(bag_dir, 'metadata.yaml')):
+        return 'WARN', text + ' — no metadata.yaml: it did not close cleanly'
+    return 'INFO', text
+
+
+def _human_size(n_bytes: int) -> str:
+    size = float(n_bytes)
+    for unit in ('B', 'kB', 'MB', 'GB'):
+        if size < 1000.0 or unit == 'GB':
+            return ('%d %s' if unit == 'B' else '%.1f %s') % (size, unit)
+        size /= 1000.0
+    return '%d B' % (n_bytes,)  # unreachable
+
+
+def print_bag_summary_at_exit(bag_dir: str, environ=None, stream=None) -> None:
+    """Print :func:`bag_summary` as the launch shell's LAST line.
+
+    Registered with ``atexit`` from the launch process, it runs after
+    ``LaunchService.run`` has returned — every node has exited and rosbag2
+    has closed the bag — which is as late as anything can print. Launch has
+    no later event: its shutdown events fire while processes are still
+    stopping."""
+    import atexit
+    import sys
+    import time
+
+    env = os.environ if environ is None else environ
+    raw = env.get('JUGGLEBOT_CONSOLE', '').lower() == 'raw'
+    colour = colour_wanted(env)
+
+    def _print() -> None:
+        severity, text = bag_summary(bag_dir)
+        out = sys.stdout if stream is None else stream
+        if raw:
+            line = '[%s] [launch]: %s' % (severity, text)
+        else:
+            line = Console(colour=colour).render_line(time.time(), 'launch',
+                                                      severity, text)
+        try:
+            out.write(line + '\n')
+            out.flush()
+        except (OSError, ValueError):
+            pass   # stdout already gone (a closed pipe): nothing to tell
+
+    atexit.register(_print)
+
+
 def render_lines(lines: List[str], colour: bool = False) -> List[str]:
     """Replay a tee'd launch-shell capture (what stock launch printed)
     through the console -- for previews and tests. A line with no stamp of

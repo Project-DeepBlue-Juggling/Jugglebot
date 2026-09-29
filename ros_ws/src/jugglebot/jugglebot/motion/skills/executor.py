@@ -35,6 +35,8 @@ from jugglebot.motion import unified_cycle as uc
 from jugglebot.motion.skills import admissible as adm
 from jugglebot.motion.skills import segments as sg
 from jugglebot.motion.skills import schedule as sch
+from jugglebot.motion.skills.report import ThrowReport, release_error_s
+from jugglebot.motion.skills.sites import RELEASE_CUP_Z_MM
 from jugglebot.motion.skills.memory import (APEX_RATIO_BAND, Experience,
                                             apex_in_band)
 from jugglebot.motion.skills.schedule import (HANDOFF_LEAD_KNOTS,
@@ -625,6 +627,21 @@ class _PendingOutcome:
     #: +0.02 s (met at the top, then the cup dived away) and +0.34 s (the
     #: bounce re-seating) on the ones that bounced twice.
     t_seat_s: Optional[float] = None
+    #: 1-based release order within the attempt (of
+    #: :attr:`SkillExecutor.n_throws`) — the operator's ``throw 3/5``.
+    throw_no: int = 0
+    #: The height (mm) the release is commanded at — the site's throw
+    #: height, which a carried throw's release keeps too
+    #: (:meth:`SkillExecutor._release_pos_mm`) — for the ``release`` timing.
+    release_z_mm: float = RELEASE_CUP_Z_MM
+    #: The CATCH that meets this flight: its latest aim (wall clock), its
+    #: schedule index, the re-aims it accepted, and the code of the re-aim it
+    #: had refused. For the operator's throw line only (:mod:`report`) —
+    #: none of them reaches the learner row.
+    t_catch_aim_s: Optional[float] = None
+    catch_idx: int = -1
+    reaims: int = 0
+    reaim_refused: str = ''
 
 
 @dataclasses.dataclass
@@ -1207,6 +1224,22 @@ class SkillExecutor:
         self.results = []                #: (index, Skill, InstallResult)
         self.attempt_ended = False
         self.end_code = ''
+        #: Why ``end_code`` was set, in the END line's words (without its
+        #: clock and code), and the kind of skill it ended at (``''`` when it
+        #: did not end at one) — for the operator's end line (:mod:`report`).
+        #: A caller that ends the attempt itself sets them too.
+        self.end_message = ''
+        self.end_kind = ''
+        #: Releases this schedule plans (THROWs, and CATCHes carrying a
+        #: ``then_throw``) and how many have registered an outcome so far.
+        self.n_throws = sum(
+            1 for sk in schedule.skills
+            if sk.kind == THROW
+            or (sk.kind == CATCH and sk.then_throw is not None))
+        self._n_registered = 0
+        #: One :class:`~jugglebot.motion.skills.report.ThrowReport` per
+        #: finalised release, in finalisation order — the caller reads it.
+        self.reports: List[ThrowReport] = []
         #: The CATCH currently committed, as ``(index, Landing, t_install_s)``.
         self._live_catch = None
         #: Per-skill-index command cache: ``idx -> (x, u_dy, u_apex)``. Keyed
@@ -1949,6 +1982,8 @@ class SkillExecutor:
             if obs is not None and not obs.in_trajectory_mode:
                 self.attempt_ended = True
                 self.end_code = ABORTED_MODE_CHANGED
+                self.end_message = ('left the streaming mode that owns the '
+                                    'platform mid-attempt')
                 lines.append(
                     '%.3f END %s: left the streaming mode that owns the '
                     'platform mid-attempt — the rest tail already streaming '
@@ -1962,6 +1997,8 @@ class SkillExecutor:
                 # the walk (see HAND_LANE_REFUSED).
                 self.attempt_ended = True
                 self.end_code = HAND_LANE_REFUSED
+                self.end_message = ('the firmware refused the streamed hand '
+                                    'lane and is holding the hand')
                 lines.append(
                     '%.3f END %s: the firmware refused the streamed hand lane '
                     '(sched_refused moved) and is HOLDING the hand — hold the '
@@ -2026,6 +2063,9 @@ class SkillExecutor:
                 self.dispatched.add(idx)
                 self.attempt_ended = True
                 self.end_code = codes[0]
+                self.end_message = ('the precondition ladder refused %s'
+                                    % (', '.join(codes),))
+                self.end_kind = skill.kind
                 return (['%.3f END %s at skill %d (%s): the precondition '
                         'ladder refused %s'
                         % (t_abs_s, codes[0], idx, skill.kind,
@@ -2062,6 +2102,11 @@ class SkillExecutor:
                     self.dispatched.add(idx)
                     self.attempt_ended = True
                     self.end_code = NO_LANDING
+                    self.end_message = ('nothing to aim the catch at: no '
+                                        'schedule prior and no tracker '
+                                        'landing for ball %d'
+                                        % (skill.ball_id,))
+                    self.end_kind = skill.kind
                     return (['%.3f END %s: no schedule prior and no '
                             'tracker landing for ball %d by the deadline '
                             '(%.3f s) — a catch cannot be aimed at a ball '
@@ -2077,6 +2122,8 @@ class SkillExecutor:
             self.dispatched.add(idx)
             self.attempt_ended = True
             self.end_code = NO_ADMISSIBLE_COMMAND
+            self.end_message = str(exc)
+            self.end_kind = skill.kind
             return (['%.3f END %s at skill %d (%s): %s'
                     % (t_abs_s, NO_ADMISSIBLE_COMMAND, idx, skill.kind, exc)],
                    False)
@@ -2090,6 +2137,8 @@ class SkillExecutor:
         if not res.accepted:
             self.attempt_ended = True
             self.end_code = res.code
+            self.end_message = str(res.message)
+            self.end_kind = skill.kind
             return (clamp_lines + ['%.3f END %s at skill %d (%s): %s'
                     % (t_abs_s, res.code, idx, skill.kind, res.message)],
                    False)
@@ -2097,6 +2146,8 @@ class SkillExecutor:
                 % (t_abs_s, skill.kind, idx, res.message)]
         if skill.kind == CATCH:
             self._live_catch = (idx, terminal, t_abs_s)
+            self._note_catch_aim(skill.ball_id, idx,
+                                 _event_abs_s(CATCH, terminal))
             lines.append(
                 '%.3f CATCH-AIM skill %d: source=%s landing=(%.1f, %.1f, '
                 '%.1f) mm t_land=%.3f%s'
@@ -2148,11 +2199,40 @@ class SkillExecutor:
         x = np.asarray(x, dtype=float).copy()
         x[2:4] = self._release_offset_m(idx, skill.site)
         target_xy_mm = np.asarray(target.catch_site_mm(), dtype=float)[:2]
+        self._n_registered += 1
         self._pending_outcomes.append(_PendingOutcome(
             ball_id=skill.ball_id, x=x, u=u, t_release_s=t_release,
             t_land_scheduled_s=t_release + sch.flight_s(u_apex),
             target_xy_mm=target_xy_mm,
-            t_next_release_s=_next_release(self.schedule, idx, skill.ball_id)))
+            t_next_release_s=_next_release(self.schedule, idx, skill.ball_id),
+            throw_no=self._n_registered,
+            release_z_mm=float(skill.site.throw_site_mm()[2])))
+
+    def _note_catch_aim(self, ball_id: int, catch_idx: int,
+                        t_land_abs_s: float, reaim: bool = False) -> None:
+        """Record a committed catch aim on the flight it meets — the
+        released, not-yet-finalised row of ``ball_id`` whose SCHEDULED landing
+        is nearest the aim (a carried throw's own new row lands a beat later,
+        so it is never the nearest). For the operator's ``arrival`` only
+        (:mod:`report`); no learner row reads it."""
+        rows = [pend for pend in self._pending_outcomes
+                if pend.ball_id == ball_id
+                and pend.t_release_s < float(t_land_abs_s)]
+        if not rows:
+            return
+        pend = min(rows, key=lambda p: abs(p.t_land_scheduled_s
+                                           - float(t_land_abs_s)))
+        pend.t_catch_aim_s = float(t_land_abs_s)
+        pend.catch_idx = int(catch_idx)
+        if reaim:
+            pend.reaims += 1
+
+    def _note_reaim_refused(self, catch_idx: int, code: str) -> None:
+        """Record a refused re-aim on the flight catch ``catch_idx`` meets
+        (see :meth:`_note_catch_aim`)."""
+        for pend in self._pending_outcomes:
+            if pend.catch_idx == int(catch_idx):
+                pend.reaim_refused = str(code)
 
     def stop_terminals(self, t_now_s: float
                        ) -> List[Tuple[str, RestTerminal]]:
@@ -2282,6 +2362,10 @@ class SkillExecutor:
                 if not self.attempt_ended:
                     self.attempt_ended = True
                     self.end_code = ABORTED_NO_RELEASE
+                    self.end_message = (
+                        'throw %d/%d never left the hand (no release '
+                        'evidence by +%.1f s)'
+                        % (pend.throw_no, self.n_throws, RELEASE_GRACE_S))
                     lines.append(
                         '%.3f END %s: no release evidence for ball %d by '
                         't_release + %.1f s -- no learner row'
@@ -2569,6 +2653,39 @@ class SkillExecutor:
         self._pending_outcomes = remaining
         return lines
 
+    def _report(self, pend: _PendingOutcome, *, row: bool,
+                no_row_reason: str = '',
+                apex_m: Optional[float] = None) -> None:
+        """Append ``pend``'s :class:`~jugglebot.motion.skills.report.
+        ThrowReport` to :attr:`reports` — every finalised release gets exactly
+        one, row or no row. Reads only what the row already holds."""
+        landing = pend.best_landing
+        landing_err = release_err = arrival_err = None
+        if landing is not None:
+            d = (np.asarray(landing.pos_mm, dtype=float)[:2]
+                 - np.asarray(pend.target_xy_mm, dtype=float))
+            landing_err = (float(d[0]), float(d[1]))
+            release_err = release_error_s(
+                float(landing.t_land_abs_s),
+                float(np.asarray(landing.pos_mm, dtype=float)[2]),
+                float(np.asarray(landing.vel_mm_s, dtype=float)[2]),
+                float(pend.release_z_mm), float(pend.t_release_s))
+            if pend.t_catch_aim_s is not None:
+                arrival_err = (float(landing.t_land_abs_s)
+                               - float(pend.t_catch_aim_s))
+        self.reports.append(ThrowReport(
+            throw_no=pend.throw_no, n_throws=self.n_throws,
+            ball_id=pend.ball_id,
+            caught=(bool(pend.caught_seen) if self.observer is not None
+                    else None),
+            row=bool(row), no_row_reason=no_row_reason,
+            apex_m=None if apex_m is None else float(apex_m),
+            landing_err_mm=landing_err, release_err_s=release_err,
+            arrival_err_s=arrival_err,
+            seat_s=(None if pend.t_seat_s is None
+                    else float(pend.t_seat_s) - float(pend.t_land_scheduled_s)),
+            reaims=pend.reaims, reaim_refused=pend.reaim_refused))
+
     def _finalise_outcome(self, pend: _PendingOutcome,
                           finalise_at: float) -> List[str]:
         """Build and hand off ``pend``'s :class:`~jugglebot.motion.skills.
@@ -2579,9 +2696,15 @@ class SkillExecutor:
             if pend.rejected_reason:
                 seen = ('' if pend.rejected_apex_m is None
                         else 'observed apex %.3f m ' % (pend.rejected_apex_m,))
+                self._report(pend, row=False,
+                             no_row_reason='%s (%d estimate(s) refused)'
+                             % (pend.rejected_reason, pend.n_rejected),
+                             apex_m=pend.rejected_apex_m)
                 return ['%.3f OUTCOME ball %d: no row: %s%s (%d estimate(s) '
                         'refused)' % (finalise_at, pend.ball_id, seen,
                                       pend.rejected_reason, pend.n_rejected)]
+            self._report(pend, row=False,
+                         no_row_reason='no landing estimate was ever observed')
             return ['%.3f OUTCOME ball %d: no landing estimate was ever '
                     'observed — no row' % (finalise_at, pend.ball_id)]
         apex_obs_m = _observed_apex_m(pend.best_landing)
@@ -2592,6 +2715,11 @@ class SkillExecutor:
         # `_consider_landing`, and the last line of defence before the row
         # reaches the learner's memory (which refuses it again on append).
         if not apex_in_band(u_apex, apex_obs_m):
+            self._report(pend, row=False, apex_m=apex_obs_m,
+                         no_row_reason='observed apex %.3f m outside '
+                         '[%.3f, %.3f] of commanded %.3f m'
+                         % (apex_obs_m, APEX_RATIO_BAND[0] * u_apex,
+                            APEX_RATIO_BAND[1] * u_apex, u_apex))
             return ['%.3f OUTCOME ball %d: no row: observed apex %.3f m '
                     'outside [%.3f, %.3f] of commanded %.3f m'
                     % (finalise_at, pend.ball_id, apex_obs_m,
@@ -2607,6 +2735,7 @@ class SkillExecutor:
         exp = Experience(x=pend.x, u=pend.u, y=y, t_abs_s=pend.t_release_s,
                          ball_id=pend.ball_id, caught=bool(caught))
         self.on_experience(exp)
+        self._report(pend, row=True, apex_m=apex_obs_m)
         phase = ('' if pend.t_seat_s is None
                  else ' seat=%+.3f s vs scheduled landing'
                  % (pend.t_seat_s - float(pend.t_land_scheduled_s)))
@@ -2699,11 +2828,14 @@ class SkillExecutor:
             # The committed catch stands — a refused re-aim is strictly
             # better than no catch, so the attempt continues.
             self._live_catch = (idx, terminal, t_abs_s)
+            self._note_reaim_refused(idx, res.code)
             return clamp_lines + [
                     '%.3f CATCH-AIM-HAND-REFUSED %s skill %d: r=%.3f, '
                     'Δt=%+.3f s — %s'
                     % (t_abs_s, res.code, idx, r, dt_s, res.message)]
         self._live_catch = (idx, new_terminal, t_abs_s)
+        self._note_catch_aim(skill.ball_id, idx,
+                             _event_abs_s(CATCH, new_terminal), reaim=True)
         return clamp_lines + ['%.3f CATCH-AIM skill %d: source=%s r=%.3f Δt=%+.3f s '
                 'landing=(%.1f, %.1f, %.1f) mm t_land=%.3f'
                 % (t_abs_s, idx, AIM_SCHEDULE_HAND, r, dt_s,
@@ -2811,12 +2943,15 @@ class SkillExecutor:
             # solve on the orchestrator thread. The next fitted estimate is
             # not asked again.
             self._live_catch = None
+            self._note_reaim_refused(idx, res.code)
             return clamp_lines + [
                     '%.3f RESEND-REFUSED %s at skill %d: the fit moved the '
                     'landing %.1f mm / %+.3f s — %s; no further re-aim for '
                     'this catch' % (t_abs_s, res.code, idx, moved_mm, moved_s,
                                     res.message)]
         self._live_catch = (idx, new_terminal, t_abs_s)
+        self._note_catch_aim(skill.ball_id, idx,
+                             _event_abs_s(CATCH, new_terminal), reaim=True)
         return clamp_lines + [
                 '%.3f RESEND skill %d: the fit moved the landing %.1f mm / '
                 '%+.3f s (re-aim %d of %d) — %s'
