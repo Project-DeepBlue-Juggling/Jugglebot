@@ -51,7 +51,7 @@ class CatchCorrelationNode(Node):
         self.result_pub = self.create_publisher(CatchTimingResult,
                                                 'cone/timing_result', 10)
 
-        self.get_logger().info('Catch correlation node started.')
+        self.get_logger().info('Catch correlation node up')
 
     def _on_throw(self, msg):
         """Buffer a throw announcement for later matching against catches."""

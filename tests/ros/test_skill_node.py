@@ -3435,3 +3435,44 @@ def test_a_caught_then_a_missed_throw_then_a_failed_end_do_not_crash():
     node._log_at('ERROR', 'self_toss ENDED (X) · 2/3 caught')
     node._log_at('WARN', 'w')
     assert len(node._goal_reports) == 3
+
+
+# ── phase 3: startup line, skills/check severity, quiet shutdown ────────────
+
+def _rec_logger(node):
+    from tests.ros.conftest import MockLogger
+    rec = MockLogger()
+    rec.lines = []
+    for name, sev in (('info', 'INFO'), ('warning', 'WARN'),
+                      ('error', 'ERROR'), ('debug', 'DEBUG')):
+        def make(name=name, sev=sev):
+            def f(msg, **kw):
+                rec.lines.append((sev, msg))
+            return f
+        setattr(rec, name, make())
+    node._logger = rec   # records only; site enforcement runs via the plain mock
+    return rec
+
+
+def test_skills_check_reports_ok_at_info_and_a_refusal_at_warning():
+    node, _ = _node_with_client()
+    node._svc_check(None, SimpleNamespace())     # through the enforcing mock
+    rec = _rec_logger(node)
+    resp = SimpleNamespace()
+    node._svc_check(None, resp)
+    (sev, line), = [(s, m) for s, m in rec.lines if m.startswith('skills/check:')]
+    assert sev == ('INFO' if resp.success else 'WARN')
+
+
+def test_startup_ready_line_carries_the_blas_count(monkeypatch):
+    from jugglebot.motion import blas_threads as bt
+    seen = []
+    monkeypatch.setattr(bt, 'read_blas_threads', lambda: (1, 'test'))
+    from tests.ros import conftest as cf
+    orig = cf.MockLogger.info
+    monkeypatch.setattr(cf.MockLogger, 'info',
+                        lambda self, m, **kw: (seen.append(m),
+                                               orig(self, m, **kw))[1])
+    sn.SkillNode()
+    assert 'skill_node ready · BLAS 1 thread' in seen
+    assert not any(m.startswith('blas threads:') for m in seen)

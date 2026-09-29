@@ -877,12 +877,15 @@ class SkillNode(Node):
         self.create_timer(1.0 / _TICK_HZ, self._on_tick,
                           callback_group=self._cbgroup)
 
-        # One INFO line at start-up (`blas threads: N (source)`, WARN if the
-        # pool is uncapped) — the runsheet's row 13 greps for it, and the
-        # launch file's `_planner_blas_env` cap is otherwise invisible here.
+        # The pool size is folded into the one "ready" line below (the full
+        # `blas threads: N (source)` line is DEBUG; a WARN follows if the pool
+        # is uncapped) — the launch file's `_planner_blas_env` cap is otherwise
+        # invisible here.
         self._blas_threads, self._blas_source = blas_threads.check_blas_threads(
             self.get_logger(), 'skill_node')
-        self.get_logger().info('skill_node ready')
+        self.get_logger().info(
+            'skill_node ready · %s'
+            % (blas_threads.format_blas_short(self._blas_threads),))
 
     # ── tracking ──────────────────────────────────────────────────────────
 
@@ -3237,7 +3240,10 @@ class SkillNode(Node):
             lines.append('site OK')
         response.success = ok
         response.message = '; '.join(lines)
-        self.get_logger().info(response.message)
+        if ok:
+            self.get_logger().info('skills/check: %s' % (response.message,))
+        else:
+            self.get_logger().warning('skills/check: %s' % (response.message,))
         return response
 
 
@@ -3277,8 +3283,16 @@ def main(args=None):
     except KeyboardInterrupt:
         pass
     finally:
+        # Foxy destroys the node before the action server is garbage-collected;
+        # ActionServer.__del__ then raises InvalidHandle at exit. Destroy it
+        # first (a second destroy is harmless).
+        try:
+            node._juggle_action.destroy()
+        except Exception:  # noqa: BLE001 — shutdown must stay quiet
+            pass
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

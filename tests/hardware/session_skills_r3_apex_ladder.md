@@ -172,8 +172,8 @@ ladder in both arms — changing them would change what is being measured.
 | # | Step | Expect |
 |---|---|---|
 | 10 | Load capture: `( while true; do echo "$(date +%H:%M:%S) $(cat /proc/loadavg)"; sleep 1; done ) \| tee temp/logs/loadavg_apex_ladder_$(date +%Y%m%d).txt` | One line a second. |
-| 11 | `ros2 launch jugglebot jugglebot_launch.py record:=true auto_arm:=true 2>&1 \| tee temp/logs/launch_apex_ladder_$(date +%Y%m%d_%H%M).log` | Note the bag folder it prints. |
-| 12 | `grep 'blas threads' temp/logs/launch_apex_ladder_*.log` | `blas threads: 1` for `trajectory_node` AND `skill_node`. |
+| 11 | `ros2 launch jugglebot jugglebot_launch.py record:=true auto_arm:=true 2>&1 \| tee -i temp/logs/launch_apex_ladder_$(date +%Y%m%d_%H%M).log` | Note the bag folder it prints. |
+| 12 | `grep 'BLAS' temp/logs/launch_apex_ladder_*.log` | `BLAS 1 thread` on the `trajectory up:` AND the `skill_node ready` line (an uncapped pool prints a WARN `blas threads: N ...` instead; since 2026-09-30 the 1-thread `blas threads` confirmation is DEBUG, in launch.log only, so grep `BLAS`). |
 | 13 | GUI (http://localhost:8081): start QTM streaming; **Home**, then **Activate**. | Hand parked at 0 rev. `/hand_telemetry` `pos_cmd` also reads 0.0 from here (the host writes the echo on a completed ACTIVATE since 2026-09-16 — the firmware's own echo uplink is event-driven off the streamed lane and the park does not touch it). A non-zero `pos_cmd` against a zero `pos_meas` is now a real disagreement worth reading, not the known artifact it was on 2026-09-16. |
 | 14 | `ros2 service call /trajectory/set_limits jugglebot_interfaces/srv/SetTrajectoryLimits "{leg_vel_limit_mmps: 300.0, leg_acc_limit_mmps2: 5000.0, leg_jerk_limit_mmps3: 150000.0}"` | `applied_*` echoes 300 / 5000 / 150000. |
 | 15 | `ros2 param set /skill_node site_x_mm -50.0`, `... site_y_mm 0.0`, `... dwell_s 0.30`, `... n_throws 1` | Set once for the whole ladder. `dwell_s` is raised again at step 17 for the no-motion check only, and restored to this value at step 23. |

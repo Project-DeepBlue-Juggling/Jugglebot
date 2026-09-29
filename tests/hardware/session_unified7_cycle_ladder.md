@@ -1,5 +1,13 @@
 # Unified cycle ladder — Phase 5 (UH-3 … UH-7)
 
+> **Log strings in this sheet predate the operator console (2026-09-30).** Several lines it
+> greps were reworded or moved to DEBUG (recorded in `~/.ros/log/<run>/launch.log`, not on the
+> screen): `seeded hold at pose` → `stream live: holding at`, `gravity correction set` →
+> `level correction updated`, `blas threads: 1` → `BLAS 1 thread` on the `trajectory up:` /
+> `skill_node ready` lines, `Gravity offset published` → DEBUG (screen: `levelled: …`). Read
+> `logbook/2026-09-30-operator-console-phase-3.md` before re-running any grep here; a missing
+> old string is NOT an abort.
+
 ## Before you start
 
 - First time the robot moves under the unified 7-DoF planner: platform and hand

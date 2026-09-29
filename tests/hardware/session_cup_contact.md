@@ -58,7 +58,7 @@ next session re-decides τ vs the two-tier approach floor (plan § 7) before any
 ## 2. Bring-up and the dress rehearsal (robot powered, NOT yet throwing)
 
 Run R3-sheet rows **11–20** unchanged (load capture, launch with `record:=true auto_arm:=true`
-teed to `temp/logs/launch_cupcontact_$(date +%Y%m%d_%H%M).log`, `blas threads: 1`, services
+teed to `temp/logs/launch_cupcontact_$(date +%Y%m%d_%H%M).log`, `BLAS 1 thread` on both up lines, services
 listed, GUI + QTM streaming, Home → Activate, site −50/0, `dwell_s 0.30`, a FRESH
 `plant_id` e.g. `cc-$(date +%Y%m%d)`, `set_limits` 300 / 5000 / 150000, ball seated). Then:
 

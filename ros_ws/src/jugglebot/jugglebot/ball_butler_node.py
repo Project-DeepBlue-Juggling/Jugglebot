@@ -34,6 +34,7 @@ from typing import Dict, Optional, Tuple
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
+from rclpy.logging import LoggingSeverity
 from rclpy.qos import (
     DurabilityPolicy,
     QoSProfile,
@@ -151,6 +152,9 @@ class BallButlerNode(Node):
 
     def __init__(self):
         super().__init__('ball_butler_node')
+        # Detail lines (calibration echo, throw-OK confirmations, paths) log at
+        # DEBUG; no .debug( call in this node fires at a sustained rate.
+        self.get_logger().set_level(LoggingSeverity.DEBUG)
 
         # Latest cache of rigid-body poses from mocap_node, keyed by name.
         # Stored as world-frame mm tuples (x, y, z).
@@ -298,10 +302,11 @@ class BallButlerNode(Node):
             self._svc_cancel_accuracy_calibration)
 
         self.get_logger().info(
-            'BallButler node ready (bb/throw_at_target, '
-            'bb/start_accuracy_calibration). '
-            f'Aim correction: {self._aim_correction_source}'
+            'Ball Butler node up (aim correction '
+            f'{"ON" if self._aim_correction_matrix is not None else "off"})'
         )
+        self.get_logger().debug(
+            f'Aim correction source: {self._aim_correction_source}')
 
     # ─────────────────────────────────────────────────────────────────
     # Subscription handlers
@@ -320,8 +325,11 @@ class BallButlerNode(Node):
             return
         self._bb_position_mm = (msg.position_mm.x, msg.position_mm.y, msg.position_mm.z)
         self._bb_yaw_offset_rad = float(msg.yaw_offset_rad)
-        self.get_logger().info(
-            f'BB calibration received: pos={self._bb_position_mm}, '
+        # mocap_node owns the operator-facing calibration line; this is the
+        # receiving side's confirmation, recorded only.
+        self.get_logger().debug(
+            f'BB calibration received: pos=({self._bb_position_mm[0]:.0f}, '
+            f'{self._bb_position_mm[1]:.0f}, {self._bb_position_mm[2]:.0f}) mm, '
             f'yaw_offset={math.degrees(self._bb_yaw_offset_rad):.2f}°')
 
     def _on_heartbeat(self, msg: BallButlerHeartbeat):
@@ -393,7 +401,7 @@ class BallButlerNode(Node):
             self._aim_correction_source = path + (' (inverted)' if invert else '')
             prov = data.get('provenance', {})
             warn = prov.get('warning')
-            self.get_logger().info(
+            self.get_logger().debug(
                 f'Aim correction loaded from {path}'
                 f'{" (INVERTED)" if invert else ""} '
                 f'(n_pairs={data.get("n_pairs", "?")}).')
@@ -513,11 +521,11 @@ class BallButlerNode(Node):
         try:
             goal_handle = future.result()
         except Exception as e:  # noqa: BLE001
-            self.get_logger().warn(f'bb/throw goal send failed: {e}')
+            self.get_logger().error(f'Throw NOT sent: bb/throw goal send failed ({e})')
             return
         if not goal_handle.accepted:
-            self.get_logger().warn(
-                f'bb/throw goal REJECTED for {target_id or "point"} '
+            self.get_logger().error(
+                f'Throw at {target_id or "point"} REFUSED by the bridge '
                 '(a throw is already outstanding?)')
             return
         goal_handle.get_result_async().add_done_callback(
@@ -533,7 +541,7 @@ class BallButlerNode(Node):
         try:
             result = future.result().result
         except Exception as e:  # noqa: BLE001
-            self.get_logger().warn(f'bb/throw result error: {e}')
+            self.get_logger().error(f'Throw result unknown: bb/throw result error ({e})')
             return
         tgt = target_id or 'point'
         try:
@@ -542,9 +550,11 @@ class BallButlerNode(Node):
             # Telemetry only — never let the relay break the result chain.
             self.get_logger().warn(f'bb/throw_outcome publish failed: {e}')
         if result.success:
-            self.get_logger().info(f'bb/throw OK for {tgt}: {result.message}')
+            # The dispatch line ("Throw at ...") is the operator line; a clean
+            # firmware outcome adds nothing, so it is recorded only.
+            self.get_logger().debug(f'bb/throw OK for {tgt}: {result.message}')
         else:
-            self.get_logger().warn(f'bb/throw NOT thrown for {tgt}: {result.message}')
+            self.get_logger().error(f'Throw at {tgt} NOT thrown: {result.message}')
 
     # ─────────────────────────────────────────────────────────────────
     # Manual aim: bb/aim (the GUI's editable Yaw/Pitch readouts)
@@ -552,6 +562,18 @@ class BallButlerNode(Node):
 
     def _svc_aim(self, req: BallButlerAim.Request,
                  res: BallButlerAim.Response) -> BallButlerAim.Response:
+        """bb/aim entry point: run the gate, and say so when it refuses.
+
+        Success stays silent (the GUI renews the aim at 1 Hz); a refusal is one
+        throttled WARN so a held-down refusal cannot flood the shell."""
+        res = self._aim_impl(req, res)
+        if not res.success:
+            self.get_logger().warning(
+                f'Aim refused: {res.message}', throttle_duration_sec=5.0)
+        return res
+
+    def _aim_impl(self, req: BallButlerAim.Request,
+                  res: BallButlerAim.Response) -> BallButlerAim.Response:
         """Send BB to (yaw_deg, pitch_deg) — a speed-0 bb/throw goal, i.e. TRACKING.
 
         Stateless: every call is gated afresh and the HOLD lives in the caller,
@@ -613,10 +635,10 @@ class BallButlerNode(Node):
         try:
             goal_handle = future.result()
         except Exception as e:  # noqa: BLE001
-            self.get_logger().warn(f'bb/aim goal send failed: {e}')
+            self.get_logger().error(f'Aim NOT sent: bb/aim goal send failed ({e})')
             return
         if not goal_handle.accepted:
-            self.get_logger().warn('bb/aim goal REJECTED by the bridge')
+            self.get_logger().error('Aim REFUSED by the bridge')
 
     # ─────────────────────────────────────────────────────────────────
     # Single-shot service: bb/throw_at_target
@@ -629,6 +651,7 @@ class BallButlerNode(Node):
             res.success = False
             res.message = ('BB calibration not yet received — calibrate from '
                            'the GUI first.')
+            self.get_logger().error(f'Throw refused: {res.message}')
             return res
 
         # Stage 2: resolve the aim point. Either a caller-supplied world-frame point
@@ -657,6 +680,7 @@ class BallButlerNode(Node):
                 res.message = (
                     f"Target '{req.target_name}' not in latest rigid_body_poses. "
                     f"Known: {', '.join(known)}.")
+                self.get_logger().error(f'Throw refused: {res.message}')
                 return res
             x_g, y_g, z_g = target
             target_id = req.target_name
@@ -667,6 +691,7 @@ class BallButlerNode(Node):
         if self._cal_active:
             res.success = False
             res.message = 'Accuracy calibration in progress — cancel it first'
+            self.get_logger().error(f'Throw refused: {res.message}')
             return res
 
         # Stages 3-5: world → BB local, aim correction, IK, send command. aim_only
@@ -680,6 +705,7 @@ class BallButlerNode(Node):
             throw=not req.aim_only,
         )
 
+        x_l = y_l = x_cmd = y_cmd = 0.0
         # Echo back the *commanded* (post-correction) BB-local position so
         # callers can see where the solver actually aimed.
         if sol is not None:
@@ -702,10 +728,29 @@ class BallButlerNode(Node):
         # by source line and raises on a flip (the teensy_bridge _set_mpc_active
         # crash, 2026-07-31) — a one-line conditional shares the cache key.
         if ok:
-            self.get_logger().info(msg)
+            self.get_logger().info(self._throw_summary(req, x_g, y_g, z_g, target_id,
+                                                       x_l, y_l, x_cmd, y_cmd,
+                                                       sol, delay_s))
+            self.get_logger().debug(msg)
         else:
-            self.get_logger().warning(msg)
+            if not all(math.isfinite(v) for v in (x_g, y_g, z_g)):
+                msg = f'target position is NaN (not visible to QTM?): {msg}'
+            self.get_logger().error(f'Throw refused: {msg}')
         return res
+
+    def _throw_summary(self, req, x_g, y_g, z_g, target_id,
+                       x_l, y_l, x_cmd, y_cmd, sol, delay_s) -> str:
+        """The ONE operator line for an accepted throw / aim (log text only)."""
+        name = target_id or f'({x_g:.0f}, {y_g:.0f}, {z_g:.0f}) mm'
+        dx, dy = x_cmd - x_l, y_cmd - y_l
+        corr = ''
+        if self._aim_correction_matrix is not None and (abs(dx) > 0.5 or abs(dy) > 0.5):
+            corr = f' · aim correction ({dx:+.0f}, {dy:+.0f}) mm'
+        if req.aim_only:
+            return (f'Aiming at {name}: yaw {math.degrees(sol.yaw_rad):.1f}°, '
+                    f'pitch {math.degrees(sol.pitch_rad):.1f}°{corr}')
+        return (f'Throw at {name}: in {delay_s:.1f} s · flight {sol.tof_s:.2f} s · '
+                f'{sol.speed_mps:.2f} m/s{corr}')
 
     def _publish_throw_announcement(self, target_name: str,
                                     target_global_mm: Tuple[float, float, float],
@@ -761,10 +806,12 @@ class BallButlerNode(Node):
         if self._cal_active:
             response.success = False
             response.message = 'Accuracy calibration already in progress'
+            self.get_logger().error(f'Accuracy calibration not started: {response.message}')
             return response
         if self._bb_position_mm is None:
             response.success = False
             response.message = 'BB calibration not yet received — calibrate first'
+            self.get_logger().error(f'Accuracy calibration not started: {response.message}')
             return response
 
         center = tuple(self.get_parameter('calib_grid_center_mm').value)
@@ -799,6 +846,7 @@ class BallButlerNode(Node):
                 f'All {len(targets)} grid targets unreachable — '
                 f'check geometry / limits / BB calibration'
             )
+            self.get_logger().error(f'Accuracy calibration not started: {response.message}')
             return response
 
         # Build randomised schedule (throws_per_cell × each reachable cell).
@@ -847,9 +895,10 @@ class BallButlerNode(Node):
 
         self.get_logger().info(
             f'Accuracy calibration starting: {len(schedule)} throws to '
-            f'{len(reachable)}/{len(targets)} reachable cells (seed={seed}). '
-            f'Metadata: {self._cal_session_path}'
+            f'{len(reachable)}/{len(targets)} reachable cells'
         )
+        self.get_logger().debug(
+            f'Accuracy calibration seed={seed}, metadata: {self._cal_session_path}')
         if skipped:
             self.get_logger().warning(
                 f'{len(skipped)} unreachable targets skipped (see session metadata)'
@@ -868,6 +917,7 @@ class BallButlerNode(Node):
         if not self._cal_active:
             response.success = False
             response.message = 'No accuracy calibration in progress'
+            self.get_logger().error(f'Cancel ignored: {response.message}')
             return response
         self._cal_cancelled = True
         completed = self._cal_idx
@@ -998,9 +1048,9 @@ class BallButlerNode(Node):
 
     def _complete_calibration(self) -> None:
         self.get_logger().info(
-            f'Accuracy calibration COMPLETE: {self._cal_idx} throws done. '
-            f'Metadata at {self._cal_session_path}'
+            f'Accuracy calibration COMPLETE: {self._cal_idx} throws done'
         )
+        self.get_logger().debug(f'Accuracy calibration metadata: {self._cal_session_path}')
         self._stop_calibration()
 
     def _stop_calibration(self) -> None:
@@ -1011,6 +1061,20 @@ class BallButlerNode(Node):
         self._cal_idx = 0
         self._cal_position_reached_t = None
         self._cal_reload_heartbeats = 0
+
+
+    def destroy_node(self):
+        # Foxy destroys the node before the ActionClient is garbage-collected,
+        # which prints "Exception ignored in ActionClient.__del__ ... InvalidHandle"
+        # at Ctrl-C. Destroy the client first; a second call is harmless.
+        action = getattr(self, '_throw_action', None)
+        if action is not None:
+            self._throw_action = None
+            try:
+                action.destroy()
+            except Exception:  # noqa: BLE001
+                pass
+        return super().destroy_node()
 
 
 def main(args=None):

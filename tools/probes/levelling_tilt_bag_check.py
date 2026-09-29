@@ -10,7 +10,8 @@ the session: every window where the commanded ``rx``/``ry`` sits still, with its
 start time, duration and value in degrees.
 
 Given the session's levelling offset (``--offset TILT_X TILT_Y``, radians, from
-the orchestrator's ``Gravity offset published: [...]`` log line) it turns that
+the orchestrator's ``levelled: ... -> gravity offset (x, y) rad`` screen line, or its
+DEBUG ``Gravity offset published: [...]`` line in launch.log) it turns that
 structure into a verdict on contract **C-LEVEL-1**
 (``ros_ws/docs/levelling_frame.md``):
 
@@ -486,7 +487,7 @@ def _print_row(row, tol_deg):
           f"({row['peak_above_park_deg']:+.4f} above park)")
     if row['verdict'] == 'STRUCTURE-ONLY':
         print("  VERDICT: STRUCTURE-ONLY — pass --offset TILT_X TILT_Y (rad, from "
-              "the orchestrator's 'Gravity offset published' line) to score it")
+              "the orchestrator's 'levelled:' line) to score it")
         return
     print(f"  expected park   rx {row['expected_park_rx_deg']:+.4f} "
           f"ry {row['expected_park_ry_deg']:+.4f} deg  "

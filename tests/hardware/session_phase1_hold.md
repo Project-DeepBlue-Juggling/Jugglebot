@@ -76,8 +76,9 @@ ros2 topic pub -t 3 -r 2 /orchestrator_command std_msgs/msg/String "data: 'activ
 > ⚠ **Do not use `--once`.** It publishes and exits before FastRTPS has matched the
 > orchestrator's subscription, so the command is frequently lost with no error (this
 > Foxy build has no `-w/--wait-matching-subscriptions`). Repeat-publish with
-> `-t 3 -r 2` and confirm `Command received: <cmd>` appears in the launch window —
-> `orchestrator_node._on_command` logs every command it accepts. Repeats are safe
+> `-t 3 -r 2` and confirm the command's transition line (`<cmd>: <from> -> <to>`, or
+> `mode: <from> -> <to>`) appears in the launch window — the orchestrator logs
+> every command it accepts as its transition, and a refused one as a WARN. Repeats are safe
 > (mode commands are idempotent; unrecognised ones are discarded). See runbook Sharp
 > Edge #5.
 

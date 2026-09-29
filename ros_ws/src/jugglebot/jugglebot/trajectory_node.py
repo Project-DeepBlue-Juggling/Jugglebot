@@ -852,7 +852,7 @@ class TrajectoryNode(Node):
             raise ValueError(
                 'pre_release_hold_s must be in [0, 0.25] s, got %r' % _pre_hold_s)
         self._segment_cfg = sk_seg.SegmentConfig(pre_release_hold_s=_pre_hold_s)
-        self.get_logger().info(
+        self.get_logger().debug(
             'segment config: pre_release_hold_s=%.3f s, post_release_hold_s='
             '%.3f s' % (self._segment_cfg.pre_release_hold_s,
                         self._segment_cfg.post_release_hold_s))
@@ -1070,9 +1070,13 @@ class TrajectoryNode(Node):
             self.get_logger(), 'trajectory_node')
 
         self.get_logger().info(
-            f"trajectory_node up — {1.0 / hw.JB_TRAJ_KNOT_DT_S:.0f} Hz hold "
-            "emitter on :5557 (mpccmd); "
-            f"stream modes={sorted(self._stream_modes)}, "
+            f"trajectory up: {1.0 / hw.JB_TRAJ_KNOT_DT_S:.0f} Hz stream on :5557"
+            f" · {blas_threads.format_blas_short(self._blas_threads)}"
+            f" · pre/post-release hold "
+            f"{self._segment_cfg.pre_release_hold_s:.3f}/"
+            f"{self._segment_cfg.post_release_hold_s:.3f} s")
+        self.get_logger().debug(
+            f"trajectory_node up: stream modes={sorted(self._stream_modes)}, "
             f"go_home={self._go_home_duration_s}s")
 
     # ═══════════════════════════════════════════════════════════
@@ -1169,8 +1173,8 @@ class TrajectoryNode(Node):
             return elapsed
         elapsed = time.perf_counter() - t0
         self.get_logger().info(
-            'planner warm-up %.0f ms — the first plan_cycle now solves at the '
-            'steady-state cost instead of the cold one' % (elapsed * 1e3,))
+            'planner warm-up done (%.0f ms) — first plan solves at full speed'
+            % (elapsed * 1e3,))
         return elapsed
 
     # ═══════════════════════════════════════════════════════════
@@ -1592,8 +1596,8 @@ class TrajectoryNode(Node):
             # NB "ENABLED" means "will emit once seeded" — the emitter itself is
             # gated on _streaming AND _seeded (a rejection above does not stop
             # this log; the 40 Hz frames start only after a successful seed).
-            self.get_logger().info(
-                f"streaming ENABLED (mode {mode})"
+            self.get_logger().debug(
+                f"streaming ENABLED (mode {mode or 'none'})"
                 + ("" if self._seeded else " — awaiting seed"))
         else:
             # Leaving the streaming set: stop publishing and require a fresh seed
@@ -1617,7 +1621,7 @@ class TrajectoryNode(Node):
             # is still latched, the next _on_link_status re-computes should_freeze as
             # False (streaming is off) and re-arms cleanly on the next stream entry.
             self._guard_frozen = False
-            self.get_logger().info(f"streaming DISABLED (mode {mode})")
+            self.get_logger().debug(f"streaming DISABLED (mode {mode or 'none'})")
 
     def _on_robot_state(self, msg) -> None:
         states = getattr(msg, 'motor_states', None)
@@ -1701,8 +1705,8 @@ class TrajectoryNode(Node):
         self._escalate_stop_fail_count = 0
         self._catch_arrival_perf = None  # a fresh seed releases any frozen catch reach
         self.get_logger().info(
-            f"seeded hold at pose x={pose[0]:.1f} y={pose[1]:.1f} "
-            f"z={pose[2]:.1f} mm (from measured telemetry)")
+            f"stream live: holding at x={pose[0]:.1f} y={pose[1]:.1f} "
+            f"z={pose[2]:.1f} mm (measured)")
         return True
 
     # ═══════════════════════════════════════════════════════════
@@ -1887,10 +1891,9 @@ class TrajectoryNode(Node):
             return False
         self._install(plan)
         self.get_logger().info(
-            f"guard descent installed — walking u0 down to measured "
-            f"(x={target[0]:.1f} y={target[1]:.1f} z={target[2]:.1f} mm) through the "
-            f"pump step gate over {plan.total_duration:.2f}s; terminal hold at "
-            "measured")
+            f"guard descent installed — easing the command down to the measured "
+            f"pose (x={target[0]:.1f} y={target[1]:.1f} z={target[2]:.1f} mm) "
+            f"over {plan.total_duration:.2f} s, then holding")
         return True
 
     def _on_link_status(self, msg) -> None:
@@ -2076,7 +2079,7 @@ class TrajectoryNode(Node):
             tilt_x, tilt_y)
         self._gravity_correction_loaded = True
         self.get_logger().info(
-            f"gravity correction set: tilt=[{tilt_x:.4f}, {tilt_y:.4f}] rad")
+            f"level correction updated: tilt x={tilt_x:.4f} y={tilt_y:.4f} rad")
 
     # ── C-LEVEL-2: tilt-map load / reload / degrade ─────────────
 
@@ -2152,7 +2155,9 @@ class TrajectoryNode(Node):
                            f"the variable. " + message)
                 self.get_logger().warning(message)
             else:
-                self.get_logger().info(message)
+                self.get_logger().info(
+                    "tilt map: none found — single gravity offset only")
+                self.get_logger().debug(message)
             return True, message
 
         try:
@@ -2184,7 +2189,9 @@ class TrajectoryNode(Node):
         self._tilt_map_loaded = True
         message = (f"tilt calibration loaded: version={loaded.version} "
                    f"grid={n_x}x{n_y} z_mm={loaded.z_mm} from {path}")
-        self.get_logger().info(message)
+        self.get_logger().info(
+            f"tilt map loaded: {loaded.version}, grid {n_x}x{n_y}")
+        self.get_logger().debug(message)
         # `z_mm` is provenance — deliberately EXCLUDED from the version hash and
         # never keyed on by the lookup — so a map captured at one height applies
         # silently at every other. The residual field is pose-dependent in three
@@ -2236,11 +2243,9 @@ class TrajectoryNode(Node):
                 self._tilt_map_dormant_logged = True
                 self.get_logger().warning(
                     f"tilt map [{self._tilt_map_version}] is loaded but DORMANT "
-                    f"— no /gravity_offset yet, and applying the map means "
-                    f"composing it onto a live level correction, which does "
-                    f"not exist. Commanded poses use the identity correction "
-                    f"(C-LEVEL-1 unlevelled) until `level` runs; the map then "
-                    f"applies with no reload.")
+                    f"— not levelled yet, so poses use the identity "
+                    f"correction until `level` runs (the map then applies "
+                    f"with no reload)")
             return None
         return self._tilt_map
 
@@ -2744,6 +2749,8 @@ class TrajectoryNode(Node):
         self._install(plan, bump_epoch=True)
         response.success = True
         response.message = 'holding at current pose' + self._wire_state_suffix()
+        # skill_node (the usual caller) reports its own END line; DEBUG here.
+        self.get_logger().debug("hold installed at the current pose")
         return response
 
     def _svc_go_home(self, request, response):
@@ -2769,16 +2776,19 @@ class TrajectoryNode(Node):
         if self._guard_frozen:                       # FIX 1 — refuse while latched
             response.success = False
             response.message = self._guard_frozen_msg()
+            self.get_logger().error(f"go_home refused: {response.message}")
             return response
         if self._current_mode in _FOLLOWER_MODES:
             response.success = False
             response.message = (
                 'in a follower mode the input stream would supersede this within '
                 'one tick — exit the mode (graceful stop) instead')
+            self.get_logger().error(f"go_home refused: {response.message}")
             return response
         if not self._seeded:
             response.success = False
             response.message = 'not streaming/seeded — cannot go home'
+            self.get_logger().error(f"go_home refused: {response.message}")
             return response
         try:
             plan = planner.build_return_to_neutral(
@@ -2800,6 +2810,9 @@ class TrajectoryNode(Node):
         response.message = (f'returning to neutral (0,0,{self._neutral_pose[2]:.0f}) '
                             f'over {self._go_home_duration_s:.2f}s'
                             + self._wire_state_suffix())
+        self.get_logger().info(
+            f"go_home: returning to neutral over "
+            f"{self._go_home_duration_s:.1f} s")
         return response
 
     # ═══════════════════════════════════════════════════════════
@@ -3029,6 +3042,9 @@ class TrajectoryNode(Node):
             f"move accepted: target (x={target[0]:.1f} y={target[1]:.1f} "
             f"z={target[2]:.1f} mm) over {plan.total_duration:.3f}s "
             f"(lean_gain={gain:.2f})" + self._wire_state_suffix())
+        self.get_logger().info(
+            f"go_to_pose: moving to x={target[0]:.1f} y={target[1]:.1f} "
+            f"z={target[2]:.1f} mm over {plan.total_duration:.2f} s")
         return response
 
     def _wire_state_suffix(self) -> str:
@@ -3079,7 +3095,13 @@ class TrajectoryNode(Node):
             f"(ceilings {new_limits.leg_vel_ceiling_mmps:.0f}/"
             f"{new_limits.leg_acc_ceiling_mmps2:.0f}/"
             f"{new_limits.leg_jerk_ceiling_mmps3:.0f})")
-        self.get_logger().info(response.message)
+        self.get_logger().info(
+            f"leg limits set: {new_limits.leg_vel_mmps:.0f} mm/s, "
+            f"{new_limits.leg_acc_mmps2:.0f} mm/s², "
+            f"{new_limits.leg_jerk_mmps3:.0f} mm/s³ (ceilings "
+            f"{new_limits.leg_vel_ceiling_mmps:.0f}/"
+            f"{new_limits.leg_acc_ceiling_mmps2:.0f}/"
+            f"{new_limits.leg_jerk_ceiling_mmps3:.0f})")
         return response
 
     # ═══════════════════════════════════════════════════════════
@@ -4482,7 +4504,8 @@ def main(args=None):
     finally:
         node.on_shutdown()
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():   # the SIGINT handler may already have shut the context
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':

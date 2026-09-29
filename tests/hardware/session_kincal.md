@@ -14,7 +14,7 @@ The tool is request-only; you own homing, activating and E-STOP.
 
 | # | Step | Expect |
 |---|---|---|
-| 3 | `ros2 launch jugglebot jugglebot_launch.py auto_arm:=true record:=true 2>&1 \| tee temp/logs/launch_kincal_$(date +%Y%m%d_%H%M).log`, with the GUI open | `mocap_node` logs "Mocap base aligned" |
+| 3 | `ros2 launch jugglebot jugglebot_launch.py auto_arm:=true record:=true 2>&1 \| tee -i temp/logs/launch_kincal_$(date +%Y%m%d_%H%M).log`, with the GUI open | `mocap_node` logs "Mocap base aligned" |
 | 4 | GUI: **Home**, then **Activate** | Hand parks at 0 rev; wire reads ARMED |
 | 5 | `ros2 topic pub --once /orchestrator_command std_msgs/String "data: trajectory"` | Mode TRAJECTORY. Do **not** call `set_limits`: the launch defaults are what the dry-run checked. |
 

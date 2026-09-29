@@ -67,8 +67,8 @@ must be sourced on top. Use `python3`, not the project venv.
 | # | Step | Expect |
 |---|---|---|
 | 5 | Load capture, in its own terminal, left running: `( while true; do echo "$(date +%H:%M:%S) $(cat /proc/loadavg)"; sleep 1; done ) \| tee temp/logs/loadavg_r2gate_$(date +%Y%m%d).txt` | One line a second. |
-| 6 | `ros2 launch jugglebot jugglebot_launch.py record:=true auto_arm:=false 2>&1 \| tee temp/logs/launch_r2gate_$(date +%Y%m%d_%H%M).log` | Note the bag folder it prints. |
-| 7 | `grep 'blas threads' temp/logs/launch_r2gate_*.log` | `blas threads: 1` for `trajectory_node` (and the other planner nodes). **Anything else: stop** — the E-STOP class of 2026-09-06 is back. |
+| 6 | `ros2 launch jugglebot jugglebot_launch.py record:=true auto_arm:=false 2>&1 \| tee -i temp/logs/launch_r2gate_$(date +%Y%m%d_%H%M).log` | Note the bag folder it prints. |
+| 7 | `grep 'BLAS' temp/logs/launch_r2gate_*.log` | `BLAS 1 thread` on the `trajectory up:` AND the `skill_node ready` line (an uncapped pool prints a WARN `blas threads: N ...` instead; since 2026-09-30 the 1-thread `blas threads` confirmation is DEBUG, in launch.log only, so grep `BLAS`). **Anything else: stop** — the E-STOP class of 2026-09-06 is back. |
 | 8 | `ros2 service list \| grep install_segment` | `/trajectory/install_segment`. Missing = the launch terminal sourced the main install (step 1's note). |
 | 9 | Open the GUI (http://localhost:8081) and leave it open. Start QTM streaming. | Both are part of the load being measured. |
 | 10 | GUI: **Home**, then **Activate**. **Do not press `level`.** | Robot at the active pose, hand parked at 0 rev. With `auto_arm:=false` the orchestrator skips arming. |
@@ -153,7 +153,7 @@ table and the verdict. The gates:
 |---|---|
 | Date, commit, bag | 2026-09-13 third sitting, `40371fe`, `~/Desktop/rosbags/2026-09-13_12-35-28` |
 | Rehearsal (row 4) max ms | 31.16 (12:21, after the fixes) |
-| `blas threads` (row 7) | blas threads: 1 (threadpoolctl:openblas) |
+| `BLAS` (row 7) | blas threads: 1 (threadpoolctl:openblas) — recorded as that line on 2026-09-13; since 2026-09-30 the screen shows `BLAS 1 thread` on the up lines |
 | Row 15 (A) — G1 max / G2 handoff max / unpinned max / G3 max / verdict | 47.93 / 50.8 / 0.0 / 28.5 ms / **PASS** |
 | Row 16 (B) — same, plus re-sends accepted / refused | 48.99 / 51.6 / 0.0 / 28.4 ms / **PASS**; re-sends 0 / 76 |
 | Row 17 (C, not gating) — same | 93.88 / 103.7 / 0.0 / 40.9 ms / G1, G3 FAIL; re-sends 0 / 67 |

@@ -195,7 +195,7 @@ to the robot:
 Run R3-sheet rows **11–16** unchanged: load capture teed to
 `temp/logs/loadavg_r4_$(date +%Y%m%d).txt`, launch with `record:=true
 auto_arm:=true` teed to `temp/logs/launch_r4_$(date +%Y%m%d_%H%M).log`,
-`blas threads: 1` for both `trajectory_node` and `skill_node`, GUI open +
+`BLAS 1 thread` on both the `trajectory up:` and `skill_node ready` lines, GUI open +
 QTM streaming, Home → Activate. Then, instead of R3's `skills/(start_self_
 toss|check|stop)` service check, confirm the action + services this sheet
 actually uses:
@@ -459,7 +459,7 @@ race fixed after the sitting. Analysis and the R5 carry list:
 
 ### Bag / boot-banner record
 
-| Rung | Time | Bag folder | `blas threads` line (both nodes) | Notes |
+| Rung | Time | Bag folder | `BLAS` on both up lines | Notes |
 |---|---|---|---|---|
 | Dress rehearsal | | | | |
 | Self-toss regression | | | | |

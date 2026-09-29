@@ -40,8 +40,8 @@ class _Log:
         self.info_lines = []
         self.warn_lines = []
 
-    def info(self, msg):
-        self.info_lines.append(str(msg))
+    def debug(self, msg):
+        self.info_lines.append(str(msg))    # the OK line is DEBUG now
 
     def warning(self, msg):
         self.warn_lines.append(str(msg))
@@ -51,7 +51,13 @@ def _reader(n, source='test'):
     return lambda: (n, source)
 
 
-# ── the INFO line ────────────────────────────────────────────────────────
+def test_short_form_for_the_node_up_line():
+    assert bt.format_blas_short(1) == 'BLAS 1 thread'
+    assert bt.format_blas_short(6) == 'BLAS 6 threads'
+    assert bt.format_blas_short(None) == 'BLAS threads unknown'
+
+
+# ── the (DEBUG) line ────────────────────────────────────────────────────────
 
 def test_one_info_line_names_the_count_and_its_source():
     log = _Log()
@@ -78,7 +84,7 @@ def test_an_uncapped_pool_warns_loudly(n):
     log = _Log()
     bt.check_blas_threads(log, 'trajectory_node', reader=_reader(n))
     assert len(log.warn_lines) == 1
-    assert len(log.info_lines) == 1, 'the INFO line is emitted either way'
+    assert len(log.info_lines) == 1, 'the DEBUG line is emitted either way'
 
 
 def test_the_warning_names_the_node_the_launch_file_and_the_entry():

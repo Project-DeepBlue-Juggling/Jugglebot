@@ -200,8 +200,8 @@ not a repeat of this one.
 | # | Step | Expect |
 |---|---|---|
 | 11 | Load capture, own terminal, left running: `( while true; do echo "$(date +%H:%M:%S) $(cat /proc/loadavg)"; sleep 1; done ) \| tee temp/logs/loadavg_r3_$(date +%Y%m%d).txt` | One line a second. |
-| 12 | `ros2 launch jugglebot jugglebot_launch.py record:=true auto_arm:=true 2>&1 \| tee temp/logs/launch_r3_$(date +%Y%m%d_%H%M).log` | **`auto_arm:=true` this time — R3 throws for real.** Note the bag folder it prints. |
-| 13 | `grep 'blas threads' temp/logs/launch_r3_*.log` | `blas threads: 1` for `trajectory_node` AND `skill_node`. Anything else: stop (the UH-3 E-STOP class). |
+| 12 | `ros2 launch jugglebot jugglebot_launch.py record:=true auto_arm:=true 2>&1 \| tee -i temp/logs/launch_r3_$(date +%Y%m%d_%H%M).log` (`tee -i`: a plain `tee` dies on Ctrl-C, so the shutdown lines and the final `bag saved:` line never reach the screen) | **`auto_arm:=true` this time — R3 throws for real.** Note the bag folder it prints. |
+| 13 | `grep 'BLAS' temp/logs/launch_r3_*.log` | `BLAS 1 thread` on the `trajectory up:` AND the `skill_node ready` line (an uncapped pool prints a WARN `blas threads: N ...` instead; since 2026-09-30 the 1-thread `blas threads` confirmation is DEBUG, in launch.log only, so grep `BLAS`). Anything else: stop (the UH-3 E-STOP class). |
 | 14 | `ros2 service list \| grep -E 'skills/(start_self_toss\|check\|stop)'` | All three listed. Missing = the launch sourced the main install (step 1's note in the R2 sheet applies here too). |
 | 15 | Open the GUI (http://localhost:8081); start QTM streaming (cone body disabled, reflectors masked — step 10). | Both part of the load being measured. |
 | 16 | GUI: **Home**, then **Activate**. | Robot at the active pose, hand parked at 0 rev. |
@@ -313,7 +313,7 @@ sending another self_toss goal (§ 3 note).
   2026-09-18.** `/clear_errors` (and `/recover`) now WAIT for the firmware's
   10 Hz fault task to actually release the latch and then PARK THE HAND on
   the profiled `ACTIVATE(axis 6)` path themselves. Expect two lines:
-  `Teensy guard fault cleared (fault_state=NONE)` and `hand park complete —
+  `Teensy guard fault cleared (fault_state=NONE)` and `hand park: <from> -> <to> rev` (was `hand park complete —`
   +9.6227 rev -> +0.0001 rev`. Until 2026-09-18 the park fired INSIDE that
   fault tick, was rejected `ERR_BUS_DOWN` ("fault_state=MAX_DEVIATION is
   currently latched"), reported `HAND NOT PARKED`, and escalated through the

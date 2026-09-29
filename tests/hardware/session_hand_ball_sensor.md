@@ -440,7 +440,7 @@ PYTHONUNBUFFERED=1 timeout 4 ros2 topic echo /link_status | grep -A1 -e 'key: od
 
 | Check | Expected | Notes |
 |---|---|---|
-| **1e** fw line | `Jugglebot firmware check PASSED — all axes match expected versions (fw 0:0.6.11-<u> 1:… 6:0.6.11-<u>)` | **On a partial bench rig this log line NEVER FIRES** — it is emitted only once every present Jugglebot axis has replied, and the sweep only queries axes that heartbeat. The `/link_status` `odrive_fw_versions` row is then the surface; absent axes render `?`, never a fabricated number |
+| **1e** fw line | `Jugglebot firmware check PASSED — all axes match expected versions` (the per-axis `fw 0:0.6.11-<u> …` list is DEBUG, in launch.log) | **On a partial bench rig this log line NEVER FIRES** — it is emitted only once every present Jugglebot axis has replied, and the sweep only queries axes that heartbeat. The `/link_status` `odrive_fw_versions` row is then the surface; absent axes render `?`, never a fabricated number |
 | **1f** axis 6 triple | `6:0.6.11-<u>` | The **triple** is what matters: `0.6.11` is what the endpoint table (726) is pinned to. Anything else ⇒ **ABORT** — `gpio_poll` will latch the MISMATCH park and never send an RxSdo, which is correct behaviour, not a bug to work around |
 | **1g** `fw_unreleased` | read `<u>` and **record it** | This is Get_Version's fourth byte, surfaced by Phase 0 specifically for this moment. The ODrive GUI reports the drive as `0.6.11-1`; the plan's expectation is that **the CAN frame does not carry the `-1`**, i.e. `<u>` reads `0`. Either value is fine for the endpoint id (0.6.11 and 0.6.11-1 share endpoint-tree CRC 55416) — **record what it actually says**, do not assume. `-?` means the byte was never surfaced (stale node) |
 | **1h** sensor row | `stale miss=0 raw=0x00000000` (or `held`/`empty` if the poll is already running) | **`unknown (never seen)` ⇒ no `HAND_SENSOR` frame has ever reached the Jetson.** On a v4-or-later bridge the 1 Hz keepalive starts within ~1 s of boot regardless of whether the poll is working, so this row is a **secondary confirmation that v4-or-later is running** |
@@ -632,7 +632,7 @@ ros2 topic pub -t 3 -r 2 /orchestrator_command std_msgs/msg/String "data: 'traje
 | Check | Expected | If not |
 |---|---|---|
 | **3a** homing | every leg finds its endstop; `is_homed` true; no guard latch | A stale guard latch at BOOT is auto-cleared once (loud, disarmed). A latch that **returns** after the clear is a live fault ⇒ **ABORT** |
-| **3b** activate | `Command received: activate` in the launch window; platform lifts to the ACTIVE pose; **zero motion at the arm edge** | Any visible jerk at arm ⇒ **ABORT** |
+| **3b** activate | `activate: IDLE -> ACTIVE` in the launch window; platform lifts to the ACTIVE pose; **zero motion at the arm edge** | Any visible jerk at arm ⇒ **ABORT** |
 | **3c** hold stream | probe reads `rate_hz ≈ 40`, `u0_mean ≈ 2.19 rev`, `max_step ≈ 0`, `pump_rej = 0` | `rate_hz 0` with :5557 bound usually means you used the `/activate` **service** instead of the topic (Sharp Edge #4) |
 | **3d** mode | `/control_mode_topic` reads `TRAJECTORY` **before** any move is commanded | A lost mode publish is silent and every step-4(b) move comes back `WRONG_MODE`. Re-publish and re-verify |
 | **3e** sensor still alive | `/link_status` `hand_ball_sensor` still reads `held`/`empty` (not `stale`) with the robot armed and holding | A row that goes `stale` **only** once armed is real news for step 4 — record it and say so before proceeding |

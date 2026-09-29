@@ -10,6 +10,7 @@ Publishes:
 """
 
 import rclpy
+from rclpy.logging import LoggingSeverity
 from rclpy.node import Node
 import numpy as np
 
@@ -31,6 +32,9 @@ from jugglebot.tracking.ball import Ball
 class BallTrackerNode(Node):
     def __init__(self):
         super().__init__('ball_tracker_node')
+        # Detail lines (per-throw announcements, config dump) log at DEBUG; no
+        # .debug( call here is per-frame.
+        self.get_logger().set_level(LoggingSeverity.DEBUG)
 
         # The catch plane the tracker predicts landings AT — the skill stack's
         # ONE definition (`motion.skills.sites.CATCH_CUP_Z_MM`, plan §
@@ -80,6 +84,8 @@ class BallTrackerNode(Node):
         self._mocap_had_stamps = False  # currently/ever in the stamped regime
 
         self.get_logger().info(
+            f"Ball tracker up (landing plane z={self._landing_z:.0f} mm)")
+        self.get_logger().debug(
             f"BallTrackerNode ready: landing_z={self._landing_z:.1f}mm, "
             f"dt={hw.TRACKING_MOCAP_DT_S*1000:.1f}ms, "
             f"announced_gate={hw.TRACKING_ANNOUNCED_GATE_MM:.0f}mm, "
@@ -138,7 +144,7 @@ class BallTrackerNode(Node):
         )
 
         delay = throw_time - current_time
-        self.get_logger().info(
+        self.get_logger().debug(
             f"Ball {ball_id} announced by '{msg.thrower_name}', "
             f"throw in {delay:.2f}s")
 
@@ -173,7 +179,7 @@ class BallTrackerNode(Node):
             current_time = stamp_ns * 1e-9
             if not self._mocap_stamp_announced:
                 self._mocap_stamp_announced = True
-                self.get_logger().info("mocap frames stamped at the source")
+                self.get_logger().debug("mocap frames stamped at the source")
             self._mocap_had_stamps = True
         else:
             current_time = self.get_clock().now().nanoseconds * 1e-9
@@ -250,7 +256,7 @@ class BallTrackerNode(Node):
         return msg
 
     def destroy_node(self):
-        self.get_logger().info("Shutting down BallTrackerNode.")
+        self.get_logger().debug("Shutting down BallTrackerNode.")
         super().destroy_node()
 
 

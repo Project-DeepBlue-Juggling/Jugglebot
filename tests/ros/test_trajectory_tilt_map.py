@@ -294,7 +294,9 @@ def test_loader_absent_file_logs_info_not_error(monkeypatch, tmp_path):
     assert ok is True
     assert rec.errors == []
     assert rec.warnings == []
-    assert any('no tilt calibration map found' in line for line in rec.infos)
+    # The screen line since operator console phase 3 (2026-09-30); the long
+    # 'no tilt calibration map found (tried: ...)' form is recorded at DEBUG.
+    assert any('tilt map: none found' in line for line in rec.infos)
     assert 'no tilt calibration map found' in message
     assert absent in message                 # the INFO names what it tried
 

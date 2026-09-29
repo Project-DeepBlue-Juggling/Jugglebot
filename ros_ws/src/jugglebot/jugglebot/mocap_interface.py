@@ -162,8 +162,8 @@ class MocapInterface:
             return
         self._qtm_outage_active = True
         self.logger.warning(
-            f"QTM unavailable at {self.host}:{self.port} ({reason}) — "
-            f"retrying in background; will connect automatically when QTM starts"
+            f"QTM unavailable at {self.host}:{self.port} ({reason}), "
+            f"retrying in background"
         )
 
     def _set_qtm_lib_quiet(self, quiet: bool):
@@ -186,7 +186,7 @@ class MocapInterface:
         # reconnect loop's connect() failures stay silent (no duplicate "QTM
         # unavailable" line); the "Connected to QTM." INFO clears it on
         # recovery.
-        self.logger.warning(f"QTM disconnected ({reason}) — reconnecting in background")
+        self.logger.warning(f"QTM disconnected ({reason}), reconnecting in background")
         self._qtm_outage_active = True
         self._set_qtm_lib_quiet(True)
         self.connection = None
@@ -277,7 +277,7 @@ class MocapInterface:
             self._params_need_refresh = False
 
             self.logger.info(
-                f"QTM parameters refreshed: {len(new_marker_dict)} markers, "
+                f"QTM setup refreshed: {len(new_marker_dict)} markers, "
                 f"{len(new_body_dict)} bodies"
             )
         except Exception as e:
@@ -337,7 +337,7 @@ class MocapInterface:
 
         if needs_refresh and not self._params_need_refresh:
             self._params_need_refresh = True
-            self.logger.info("QTM parameter mismatch detected — scheduling refresh")
+            self.logger.debug("QTM parameter mismatch detected — scheduling refresh")
             self.loop.create_task(self._refresh_parameters())
 
         # Check if we are ready to publish data
@@ -439,12 +439,15 @@ class MocapInterface:
                 aligned = bool(pos_dist <= self._align_pos_thresh_mm
                               and rot_angle_deg <= self._align_rot_thresh_deg)
                 if self.is_aligned and not aligned:
-                    self.logger.warning(
-                        f"Mocap base misaligned: pos={pos_dist:.2f} mm, "
-                        f"rot={rot_angle_deg:.2f}° (thresholds: "
-                        f"{self._align_pos_thresh_mm} mm, "
-                        f"{self._align_rot_thresh_deg}°)"
-                    )
+                    if np.isnan(pos_dist) or np.isnan(rot_angle_deg):
+                        misalign_detail = "Base body not visible to QTM"
+                    else:
+                        misalign_detail = (
+                            f"pos {pos_dist:.0f} mm, rot {rot_angle_deg:.1f}° "
+                            f"(limits {self._align_pos_thresh_mm:.0f} mm, "
+                            f"{self._align_rot_thresh_deg:.0f}°)"
+                        )
+                    self.logger.warning(f"Mocap base misaligned: {misalign_detail}")
                 elif not self.is_aligned and aligned:
                     self.logger.info("Mocap base aligned")
                 self.is_aligned = aligned
@@ -531,7 +534,7 @@ class MocapInterface:
                     # First sample (or after reset) — initialise directly
                     self._qtm_to_ros_offset_ns = measured_offset
                     self._qtm_sync_count = 1
-                    self.logger.info(
+                    self.logger.debug(
                         f"QTM clock sync initialised: offset = {measured_offset / 1e9:.6f} s"
                     )
                 else:

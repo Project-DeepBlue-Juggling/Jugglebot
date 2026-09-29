@@ -59,6 +59,7 @@ from rclpy.node import Node
 from rclpy.action import ActionServer, GoalResponse, CancelResponse
 from rclpy.callback_groups import ReentrantCallbackGroup
 from rclpy.executors import MultiThreadedExecutor
+from rclpy.logging import LoggingSeverity
 
 from jugglebot_interfaces.msg import (
     BallButlerHeartbeat,
@@ -1257,6 +1258,10 @@ class TeensyBridgeNode(Node):
                  setpoint_source=None, boot_state_read: bool = True,
                  stow_on_shutdown: bool = True):
         super().__init__('teensy_bridge_node')
+        # Record DEBUG detail in the node log (the launch shell filters it out of
+        # the screen). Safe here: this node has no per-frame / per-tick debug()
+        # call, and every debug() line is an event-level line.
+        self.get_logger().set_level(LoggingSeverity.DEBUG)
 
         # On a clean shutdown (Ctrl-C of the launch), profiled-stow the platform
         # before transport teardown — the Teensy-side analogue of can_node.on_shutdown's
@@ -1291,6 +1296,8 @@ class TeensyBridgeNode(Node):
                 'that the install is fresh.')
         else:
             self.get_logger().info(
+                'INSTALL_SKEW: OK — node build matches repo source')
+            self.get_logger().debug(
                 'INSTALL_SKEW: OK — ' + self._install_skew_detail)
 
         # ── Parameters ─────────────────────────────────────────
@@ -2112,10 +2119,12 @@ class TeensyBridgeNode(Node):
         if hw.DYNAMICS_TORQUE_FF_ENABLED:
             self.get_logger().warn(
                 'LEG TORQUE FEEDFORWARD IS ENABLED '
-                f'(clamp ±{hw.DYNAMICS_TORQUE_FF_MAX_NM} Nm true, wire scale '
-                f'{hw.ODRIVE_LEG_TORQUE_WIRE_SCALE:.6f}, ramp {_ff_ramp_frames} frames '
-                f'≈ {hw.DYNAMICS_TORQUE_FF_RAMP_S} s). '
-                'Set dynamics.torque_ff_enabled=false + regenerate + colcon build to disable.')
+                f'(clamp ±{hw.DYNAMICS_TORQUE_FF_MAX_NM} N·m)')
+            self.get_logger().debug(
+                f'leg torque FF detail: wire scale '
+                f'{hw.ODRIVE_LEG_TORQUE_WIRE_SCALE:.6f}, ramp {_ff_ramp_frames} '
+                f'frames ≈ {hw.DYNAMICS_TORQUE_FF_RAMP_S} s; disable with '
+                'dynamics.torque_ff_enabled=false + regenerate + colcon build')
         # ── leg_setpoint_echo stash (GUI observability) ────────
         # Written by _process_setpoint on the SETPOINT THREAD (the production
         # leg hot path) — the write is the absolute minimum under self._lock:
@@ -2212,7 +2221,7 @@ class TeensyBridgeNode(Node):
         self._reseed_client = self.create_client(
             Trigger, 'trajectory/reseed_from_measured',
             callback_group=self._recover_cbgroup)
-        self.create_service(Trigger, 'recover', self._svc_recover,
+        self.create_service(Trigger, 'recover', self._svc_recover_logged,
                             callback_group=self._recover_cbgroup)
         # clear_errors shares the /recover ReentrantCallbackGroup (F1, 2026-07-11).
         # WHY not the node-default MutuallyExclusiveCallbackGroup: the armed bare
@@ -2223,7 +2232,7 @@ class TeensyBridgeNode(Node):
         # escape hatch unreachable for the whole block. In the reentrant group the reseed
         # reply dispatches on another executor thread and the disarm/telemetry callbacks
         # keep running, so the operator can always disarm out.
-        self.create_service(Trigger, 'clear_errors', self._svc_clear_errors,
+        self.create_service(Trigger, 'clear_errors', self._svc_clear_errors_logged,
                             callback_group=self._recover_cbgroup)
         # 'odrive_command' is the ORCHESTRATOR's conduit for 'clear_errors'
         # (`_svc_odrive_command` -> `_svc_clear_errors`), so it runs the same
@@ -2244,7 +2253,7 @@ class TeensyBridgeNode(Node):
         # reason: the park blocks its executor thread for the up to ~4 s the
         # firmware TRAP_TRAJ takes, and the telemetry timers it observes the op
         # through must keep running underneath it.
-        self.create_service(Trigger, 'park_hand', self._svc_park_hand,
+        self.create_service(Trigger, 'park_hand', self._svc_park_hand_logged,
                             callback_group=self._recover_cbgroup)
         # Instance-level so tests can shorten the descent-convergence wait (a
         # never-converging descent otherwise blocks the test for the full timeout).
@@ -2264,15 +2273,17 @@ class TeensyBridgeNode(Node):
         peer = (self.get_parameter('teensy_ip').value
                 if client is None else 'injected')
         self.get_logger().info(
-            f"TeensyBridgeNode up — peer={peer} stream={p.PORT_STREAM} "
-            f"rpc={p.PORT_RPC}, DISARMED (mpc_active=0; arming is runtime-only "
-            f"via /set_setpoint_output — see ARMING_CONTRACT.md)")
+            f"TeensyBridgeNode up — peer={peer}, setpoint output DISARMED "
+            f"(arm via /set_setpoint_output)")
+        self.get_logger().debug(
+            f"TeensyBridgeNode ports: stream={p.PORT_STREAM} rpc={p.PORT_RPC}; "
+            f"mpc_active=0, see ARMING_CONTRACT.md")
         # Boot-time config identity, logged ONCE. Its own call site at a FIXED
         # severity: Foxy's rcutils logger caches severity per source line and
         # raises on a flip (971d12c). Pairs with jugglebot_launch.py's drift
         # banner — the launch says whether the INSTALLED copy is stale, this
         # says which file this process actually got.
-        self.get_logger().info("config identity — " + hardware_config_identity())
+        self.get_logger().debug("config identity — " + hardware_config_identity())
 
     # ═══════════════════════════════════════════════════════════
     # RX-thread frame callbacks — keep these short (stash + return)
@@ -2480,8 +2491,8 @@ class TeensyBridgeNode(Node):
         expected = rpc_args.EXPECTED_BRIDGE_FW_VERSION
         if version == expected:
             self.get_logger().info(
-                f'BRIDGE_FW_CHECK: OK — can-bridge Teensy reports v{version} '
-                f'(expected v{expected}){self._install_skew_note()}')
+                f'BRIDGE_FW_CHECK: OK — can-bridge v{version}'
+                f'{self._install_skew_note()}')
             return
         # Skew. ERROR level with one greppable token, and the older/newer
         # direction named because they fail differently: an older board is
@@ -2515,7 +2526,7 @@ class TeensyBridgeNode(Node):
         if self._install_skew == INSTALL_SKEW_UNKNOWN:
             return (' [install_skew=unknown — the node build could not be '
                     'checked against a repo source tree]')
-        return ' [install_skew=0 — node build matches the repo source]'
+        return ' [install_skew=0]'
 
     def _on_bb_estimates(self, msg_type, seq, payload, addr):
         # RX-thread callback: decode + queue every sample. The drain timer
@@ -3925,7 +3936,8 @@ class TeensyBridgeNode(Node):
         else:
             self.get_logger().info(
                 "Jugglebot firmware check PASSED — all axes match expected "
-                f"versions (fw {versions})")
+                "versions")
+            self.get_logger().debug(f"Jugglebot ODrive fw {versions}")
 
     def _odrive_fw_versions_str(self) -> str:
         """Per-axis ODrive firmware rendering, ``axis:major.minor.rev-unreleased``.
@@ -4024,7 +4036,8 @@ class TeensyBridgeNode(Node):
         else:
             self.get_logger().info(
                 "Ball Butler firmware check PASSED — both axes match expected "
-                f"versions (fw {versions})")
+                "versions")
+            self.get_logger().debug(f"Ball Butler ODrive fw {versions}")
 
     def _bb_odrive_fw_versions_str(self) -> str:
         """``/link_status`` rendering of the Ball Butler ODrive firmware.
@@ -4201,11 +4214,11 @@ class TeensyBridgeNode(Node):
         # killed the node mid-arm (STANDBY) on 2026-07-31, triggering the
         # safe-shutdown stow.
         if active:
-            self.get_logger().warning(
-                f"mpc_active set to {int(self._mpc_active)} — setpoint output ENABLED.")
+            # WARN on purpose: the leg path goes live here, and the yellow line is
+            # the operator's cue (DISARMED stays INFO; separate call sites).
+            self.get_logger().warning("setpoint output ARMED")
         else:
-            self.get_logger().info(
-                f"mpc_active set to {int(self._mpc_active)} — setpoint output disabled.")
+            self.get_logger().info("setpoint output DISARMED")
 
     def _start_setpoint_output(self, setpoint_source=None):
         """Bring up the setpoint source + ingest thread and set mpc_active=1.
@@ -4289,6 +4302,8 @@ class TeensyBridgeNode(Node):
             ok, msg = self._arm_setpoint_output()
             response.success = ok
             response.message = msg
+            if not ok:
+                self.get_logger().warning(f'setpoint output NOT armed: {msg}')
         else:
             self._stop_setpoint_output()
             response.success = True
@@ -5916,8 +5931,7 @@ class TeensyBridgeNode(Node):
             # storm cannot spam the log with good news.
             if previous != version:
                 self.get_logger().info(
-                    f'PLATFORM_FW_CHECK: OK — Platform Teensy reports v{version} '
-                    f'(expected v{expected})')
+                    f'PLATFORM_FW_CHECK: OK — Platform Teensy v{version}')
             return
         # Skew. ERROR level, one greppable token, and the un-versioned case named
         # explicitly because that is the un-flashed-board signature.
@@ -6005,7 +6019,7 @@ class TeensyBridgeNode(Node):
                 # encoder_search_complete = is_homed OR _encoder_search_done_session
                 # is monotonic-True once homed/searched, exactly as can_node's field.
                 self._encoder_search_done_session = True
-        self.get_logger().info(
+        self.get_logger().debug(
             f"cold-start state ({reason}): is_homed={int(state.is_homed)} "
             f"levelling={int(state.levelling_complete)} "
             f"pose=({state.pose_offset_tiltX:.4f},{state.pose_offset_tiltY:.4f})")
@@ -6252,7 +6266,8 @@ class TeensyBridgeNode(Node):
         # Belt-and-suspenders wall-clock bound; the state machine self-terminates
         # via its own per-axis timeout × (retries + 1) well inside this.
         hard_deadline = time.monotonic() + es.timeout_s * (es.max_retries + 1) + 5.0
-        self.get_logger().info(f"encoder search: starting on axes {axes}")
+        _t_search = time.monotonic()
+        self.get_logger().debug(f"encoder search: starting on axes {axes}")
         while True:
             now = time.monotonic()
             res = es.step(now, self._encoder_axis_status(axes))
@@ -6268,7 +6283,9 @@ class TeensyBridgeNode(Node):
             time.sleep(poll_dt)
         if es.done and not es.failed:
             msg = f"encoder search complete on axes {es.succeeded}"
-            self.get_logger().info(msg)
+            self.get_logger().info(
+                f"encoder search: {len(es.succeeded)} axes found index "
+                f"({time.monotonic() - _t_search:.1f} s)")
             return True, msg
         parts = [f"axis {a}: {r}" for a, r in es.failed.items()]
         msg = "encoder search FAILED — " + "; ".join(parts)
@@ -6329,7 +6346,8 @@ class TeensyBridgeNode(Node):
         # across ticks until the firmware accepts it (the principled form of the
         # post-TX delays can_node used). Bounded so a genuinely-stuck axis fails.
         _MAX_REJECT_RETRIES = 20   # × poll_dt ≈ 1 s; busy window is ~10-20 ms
-        self.get_logger().info(f"homing: starting on axes {axes} (sequential)")
+        _t_home = time.monotonic()
+        self.get_logger().debug(f"homing: starting on axes {axes} (sequential)")
         for axis in axes:
             is_hand = (axis == _HAND_AXIS)
             home_ref = abs(float(
@@ -6390,7 +6408,9 @@ class TeensyBridgeNode(Node):
             self.get_logger().error(msg)
             return False, msg
         msg = f"homing complete on axes {succeeded}"
-        self.get_logger().info(msg)
+        self.get_logger().info(
+            f"homing: {len(succeeded)} axes homed "
+            f"({time.monotonic() - _t_home:.1f} s)")
         return True, msg
 
     def _apply_hand_gains(self):
@@ -6434,7 +6454,7 @@ class TeensyBridgeNode(Node):
         ctrl = proto.ODRIVE_CONTROL_MODES['POSITION']
         inp = proto.ODRIVE_INPUT_MODES['PASSTHROUGH']
         failed = []
-        self.get_logger().info(f"configure: applying gains/limits/PASSTHROUGH on axes {axes}")
+        self.get_logger().debug(f"configure: applying gains/limits/PASSTHROUGH on axes {axes}")
         for axis in leg_axes:
             for name, (ok, m, _) in (
                 ("pos_gain",
@@ -6473,7 +6493,8 @@ class TeensyBridgeNode(Node):
             self.get_logger().error(msg)
             return False, msg
         msg = f"configure complete on axes {axes}"
-        self.get_logger().info(msg)
+        self.get_logger().info(
+            f"configure: gains and limits applied on {len(axes)} axes")
         return True, msg
 
     def _track_hb_stale_episodes(self, hb_stale_mask: int) -> None:
@@ -6536,9 +6557,15 @@ class TeensyBridgeNode(Node):
                     expect = int(round(100.0 * episode_ms * 1e-3))
                     enc_txt = (f'{got} encoder frames in the window vs ~{expect} '
                                f'nominal ({max(0, expect - got)} co-dropped)')
+                    enc_short = f'{got}/{expect} encoder frames'
                 else:
                     enc_txt = 'encoder census unavailable'
-                self.get_logger().warning(
+                    enc_short = 'encoder census unavailable'
+                self.get_logger().info(
+                    f'{_axis_label(i)} heartbeat gap {episode_ms:.0f} ms '
+                    f'({enc_short}) — episode '
+                    f'{self._hb_stale_episodes[i]}, diagnostic')
+                self.get_logger().debug(
                     f'{_axis_label(i)} heartbeat dropout episode ENDED: '
                     f'{episode_ms:.0f} ms stale (>500 ms threshold = 5 lost '
                     f'heartbeats at 10 Hz), {enc_txt}; episode '
@@ -6655,7 +6682,7 @@ class TeensyBridgeNode(Node):
                 f'lane would drag a parked hand back up at the recovery slew. '
                 f'Disarm first (the recovery path does; the operator dance is '
                 f'DEACTIVATE then ACTIVATE)')
-        self.get_logger().info(
+        self.get_logger().debug(
             f'hand park: ACTIVATE(axis {_HAND_AXIS}) TRAP_TRAJ from {pos:+.4f} rev '
             f'to the park at {target:+.4f} rev at '
             f'{float(hw.JB_OP_GENTLE_MOVE_VEL_LIMIT_RPS)} rev/s — a guard latch '
@@ -6684,7 +6711,7 @@ class TeensyBridgeNode(Node):
         landed = (float(telem.pos_rev[_HAND_AXIS]) if telem is not None
                   else float('nan'))
         self.get_logger().info(
-            f'hand park complete — {pos:+.4f} rev -> {landed:+.4f} rev')
+            f'hand park: {pos:+.2f} -> {landed:+.2f} rev')
         return True, f'hand parked ({pos:+.4f} -> {landed:+.4f} rev)'
 
     def _park_hand_disarmed(self, *, poll_dt=0.05):
@@ -6722,9 +6749,8 @@ class TeensyBridgeNode(Node):
         try:
             if was_armed:
                 self.get_logger().info(
-                    'recovery park: disarming the wire first — the firmware '
-                    'rejects ACTIVATE under an armed stream; the orchestrator '
-                    're-arms once the park completes')
+                    'recovery park: disarming the setpoint output first '
+                    '(the orchestrator re-arms afterwards)')
                 self._stop_setpoint_output()
                 if not self._wait_wire_disarmed():
                     return False, (
@@ -6836,8 +6862,9 @@ class TeensyBridgeNode(Node):
         if not ok:
             return False, f"ACTIVATE rejected: {msg}"
         mon = ActivateMonitor(axes, targets)
-        hard_deadline = time.monotonic() + mon.timeout_s + 5.0
-        self.get_logger().info(f"activate: TRAP_TRAJ move to active pose on axes {axes}")
+        _t_act = time.monotonic()
+        hard_deadline = _t_act + mon.timeout_s + 5.0
+        self.get_logger().debug(f"activate: TRAP_TRAJ move to active pose on axes {axes}")
         while True:
             now = time.monotonic()
             res = mon.step(now, self._activate_axis_status(axes))
@@ -6899,7 +6926,9 @@ class TeensyBridgeNode(Node):
                     'pos': float(hw.JB_OP_HAND_ACTIVATE_POSITION_REV),
                     'vel': 0.0, 'tor': 0.0}
         msg = f"activate complete on axes {mon.succeeded}"
-        self.get_logger().info(msg)
+        self.get_logger().info(
+            f"activate: platform at active pose, {len(mon.succeeded)} legs "
+            f"({time.monotonic() - _t_act:.1f} s)")
         return True, msg
 
     def _legs_already_stowed(self, axes):
@@ -7018,8 +7047,9 @@ class TeensyBridgeNode(Node):
             return False, f"DEACTIVATE rejected: {msg}"
         mon = (DeactivateMonitor(axes, timeout_s=float(timeout_s))
                if timeout_s is not None else DeactivateMonitor(axes))
-        hard_deadline = time.monotonic() + mon.timeout_s + 5.0
-        self.get_logger().info(
+        _t_deact = time.monotonic()
+        hard_deadline = _t_deact + mon.timeout_s + 5.0
+        self.get_logger().debug(
             f"deactivate: TRAP_TRAJ lower to STOW + IDLE on axes {axes}")
         while True:
             now = time.monotonic()
@@ -7047,7 +7077,9 @@ class TeensyBridgeNode(Node):
             self.get_logger().error(msg)
             return False, msg
         msg = f"deactivate complete on axes {mon.succeeded}"
-        self.get_logger().info(msg)
+        self.get_logger().info(
+            f"deactivate: platform stowed, {len(mon.succeeded)} legs "
+            f"({time.monotonic() - _t_deact:.1f} s)")
         return True, msg
 
     # ── ROS service handlers (existing-type subset) ───────────
@@ -7137,11 +7169,42 @@ class TeensyBridgeNode(Node):
             msg = f"{msg}; WARNING cold-start clear failed: {cs_msg}"
         return ok, msg
 
+    def _log_service_outcome(self, name, res, quiet_success=False):
+        """ONE outcome line for an operator-triggered service: INFO on success,
+        ERROR with the reason on failure. Logging only — ``res`` is returned
+        untouched. Each severity is its own literal call site (Foxy rclpy raises
+        if one call site ever logs at two severities)."""
+        text = str(res.message)
+        if len(text) > 200:
+            text = text[:197] + '...'
+        if res.success:
+            if quiet_success:
+                self.get_logger().debug(f'{name}: {text}')
+            else:
+                self.get_logger().info(f'{name}: {text}')
+        else:
+            self.get_logger().error(f'{name} FAILED: {text}')
+        return res
+
+    def _svc_recover_logged(self, req, res):
+        return self._log_service_outcome('recover', self._svc_recover(req, res))
+
+    def _svc_clear_errors_logged(self, req, res):
+        # Success is already announced by the guard-cleared edge line, so only a
+        # failure gets a line here.
+        return self._log_service_outcome(
+            'clear_errors', self._svc_clear_errors(req, res), quiet_success=True)
+
+    def _svc_park_hand_logged(self, req, res):
+        # _park_hand logs its own complete / failed / not-needed lines.
+        return self._log_service_outcome(
+            'park_hand', self._svc_park_hand(req, res), quiet_success=True)
+
     def _svc_reboot_odrives(self, req, res):
         ok, msg = self._reboot_odrives()
         res.success = ok
         res.message = msg
-        return res
+        return self._log_service_outcome('reboot_odrives', res)
 
     def _svc_encoder_search(self, req, res):
         # Jetson-side orchestration over SET_AXIS_STATE (the firmware
@@ -7270,14 +7333,14 @@ class TeensyBridgeNode(Node):
             if state not in proto.ODRIVE_STATES:
                 res.success = False
                 res.message = f"Unknown hand state '{state}'"
-                return res
+                return self._log_service_outcome('set_hand_state', res, quiet_success=True)
             ok, m, _ = self.teensy_set_axis_state(_HAND_AXIS, proto.ODRIVE_STATES[state])
             res.success = ok
             res.message = f"Hand state set to {state}" if ok else m
         except Exception as e:  # noqa: BLE001
             res.success = False
             res.message = str(e)
-        return res
+        return self._log_service_outcome('set_hand_state', res, quiet_success=True)
 
     def _on_set_parameters(self, params):
         """ROS2 param-set validation hook.
@@ -7342,7 +7405,7 @@ class TeensyBridgeNode(Node):
         except Exception as e:  # noqa: BLE001
             res.success = False
             res.message = str(e)
-        return res
+        return self._log_service_outcome('set_hand_gains', res, quiet_success=True)
 
     def _svc_odrive_command(self, req, res):
         cmd = req.command
@@ -7401,7 +7464,7 @@ class TeensyBridgeNode(Node):
             ok, msg = self._do_home()
             result.success = ok
             if ok:
-                self.get_logger().info(f"home_motors: {msg}")
+                self.get_logger().debug(f"home_motors: {msg}")
                 goal_handle.succeed()
             else:
                 self.get_logger().error(f"home_motors FAILED: {msg}")
@@ -7513,7 +7576,7 @@ class TeensyBridgeNode(Node):
             tilt_x, tilt_y = float(data[1]), float(data[2])
             ok, wmsg = self._write_level_state(levelling_complete, tilt_x, tilt_y)
             if ok:
-                self.get_logger().info(
+                self.get_logger().debug(
                     f"Level state persisted: complete={levelling_complete}, "
                     f"offset=[{tilt_x:.4f}, {tilt_y:.4f}] rad")
             else:
@@ -7804,7 +7867,7 @@ class TeensyBridgeNode(Node):
             result.message = self._bb_outcome_text(outcome, detail0, detail1)
             if int(outcome) == int(proto.BallButlerCommandOutcome.OK):
                 result.success = True
-                self.get_logger().info(f'bb/throw: {result.message}')
+                self.get_logger().debug(f'bb/throw: {result.message}')
                 goal_handle.succeed()
             else:
                 result.success = False
@@ -7821,14 +7884,14 @@ class TeensyBridgeNode(Node):
         ok, m, _ = self._call_rpc(RpcMethod.BB_RELOAD, b"")
         res.success = ok
         res.message = "Reload command sent." if ok else f"Reload failed: {m}"
-        return res
+        return self._log_service_outcome('bb/reload', res, quiet_success=True)
 
     def _svc_bb_reset(self, req, res):
         """bb/reset — BB_RESET RPC. ERR_BUS_DOWN surfaces as failure."""
         ok, m, _ = self._call_rpc(RpcMethod.BB_RESET, b"")
         res.success = ok
         res.message = "Reset command sent." if ok else f"Reset failed: {m}"
-        return res
+        return self._log_service_outcome('bb/reset', res, quiet_success=True)
 
     def _svc_bb_calibrate(self, req, res):
         """bb/calibrate — BB_CALIBRATE_LOC RPC, gated on BB presence and QTM.
@@ -8075,6 +8138,16 @@ def main(args=None):
     finally:
         node.on_shutdown()
         executor.shutdown()
+        # Foxy destroys the node before the action servers are garbage-collected,
+        # and ActionServer.__del__ then raises InvalidHandle at exit. Destroy
+        # them first; a double destroy is harmless.
+        for _name in ('_home_action', '_bb_throw_action'):
+            _srv = getattr(node, _name, None)
+            try:
+                if _srv is not None and hasattr(_srv, 'destroy'):
+                    _srv.destroy()
+            except Exception:  # noqa: BLE001
+                pass
         node.destroy_node()
         rclpy.shutdown()
 

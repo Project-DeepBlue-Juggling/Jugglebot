@@ -1257,3 +1257,204 @@ class TestFaultEntryCauseLogging:
         assert len(causes) == 1, self._warnings(orch)
         assert 'no robot_state.error[] strings' in causes[0]
         assert 'guard_latched=True' in causes[0]
+
+
+# ════════════════════════════════════════════════════════════════
+# Operator console phase 3 — one line per operator action
+# ════════════════════════════════════════════════════════════════
+
+
+class _Capture:
+    """Records (level, text) from orch's logger. Wrapping bypasses MockLogger's
+    call-site rule, so every test below that matters for it ALSO has a
+    real-logger run (``test_real_logger_*``)."""
+
+    def __init__(self, orch):
+        self.lines = []
+        for lvl in ('debug', 'info', 'warning', 'error'):
+            setattr(orch._logger, lvl,
+                    lambda m, _l=lvl, **k: self.lines.append((_l, str(m))))
+
+    def at(self, lvl):
+        return [m for l, m in self.lines if l == lvl]
+
+
+def _cmd(orch, name):
+    orch._on_command(MockString(data=name))
+
+
+def _to_idle(orch):
+    orch.sm.force_transition(RobotState.IDLE, orch.ctx)
+    orch._tick()
+
+
+class TestOperatorConsoleLines:
+    def test_activate_is_one_transition_line(self, orch):
+        _to_idle(orch)
+        cap = _Capture(orch)
+        _cmd(orch, 'activate')
+        orch._tick()
+        info = cap.at('info')
+        assert info == ['activate: IDLE -> ACTIVE'], cap.lines
+        assert not cap.at('warning')
+        assert not any('Command received' in m for _, m in cap.lines)
+        assert not any('Entering' in m for m in info)
+
+    def test_entering_is_debug_only(self, orch):
+        cap = _Capture(orch)
+        orch._tick()   # BOOT entry
+        assert ('debug', '[SM] Entering BOOT') in cap.lines
+        assert not cap.at('info')
+
+    def test_refused_command_is_one_warning_with_reason(self, orch):
+        _to_idle(orch)
+        cap = _Capture(orch)
+        _cmd(orch, 'deactivate')
+        assert len(cap.lines) == 1
+        lvl, text = cap.lines[0]
+        assert lvl == 'warning'
+        assert 'deactivate' in text and 'IDLE' in text and 'ACTIVE' in text
+
+    def test_unknown_command_warns(self, orch):
+        _to_idle(orch)
+        cap = _Capture(orch)
+        _cmd(orch, 'dance')
+        assert [l for l, _ in cap.lines] == ['warning']
+        assert 'not a known command' in cap.lines[0][1]
+
+    def test_command_during_homing_is_refused(self, orch):
+        orch.sm.force_transition(RobotState.HOMING, orch.ctx)
+        cap = _Capture(orch)
+        _cmd(orch, 'level')
+        assert [l for l, _ in cap.lines] == ['warning']
+        assert 'HOMING' in cap.lines[0][1]
+
+    def test_refused_command_is_still_enqueued(self, orch):
+        """Logging only: control flow (queueing) is unchanged."""
+        _to_idle(orch)
+        _cmd(orch, 'deactivate')
+        assert orch.ctx.consume_command() == 'deactivate'
+
+    def test_clear_errors_in_fault_is_one_info(self, orch):
+        orch.sm.force_transition(RobotState.FAULT, orch.ctx)
+        cap = _Capture(orch)
+        _cmd(orch, 'clear_errors')
+        assert [l for l, _ in cap.lines] == ['info']
+        assert cap.lines[0][1].startswith('clear_errors')
+
+    def test_mode_switch_in_active_is_one_line(self, orch):
+        orch.sm.force_transition(RobotState.ACTIVE, orch.ctx)
+        orch.ctx.control_mode = 'STANDBY'
+        for _ in range(3):
+            orch._tick()
+        # Skip activation waits: mark the handler armed.
+        h = orch.sm._handlers[RobotState.ACTIVE]
+        h._activated = h._armed = True
+        orch.ctx.operation_result = None
+        cap = _Capture(orch)
+        _cmd(orch, 'trajectory')
+        orch._tick()
+        assert cap.at('info') == ['mode: STANDBY -> TRAJECTORY'], cap.lines
+
+    def test_forced_fault_keeps_its_cause(self, orch):
+        _to_idle(orch)
+        cap = _Capture(orch)
+        orch._on_robot_state(_make_robot_state_msg(
+            errors=['boom'], has_fatal_odrive_error=True))
+        orch._tick()
+        assert 'IDLE -> FAULT (forced)' in cap.at('info')
+        assert any('FAULT cause' in m for m in cap.at('warning'))
+
+    def test_level_result_is_one_rounded_line(self, orch):
+        orch.ctx.tilt_reading = [0.0063123456789, 0.0084987654321]
+        orch.ctx.pose_offset_rad = [-0.004144304978755937, 0.0049]
+        cap = _Capture(orch)
+        orch._dispatch_request('level_send_correction')
+        orch._dispatch_request('level_persist_state')
+        orch._dispatch_request('level_mocap_check')
+        assert cap.at('warning') == []
+        assert cap.at('info') == [
+            'levelled: tilt (+0.0063, +0.0085) rad -> '
+            'gravity offset (-0.0041, +0.0049) rad, saved']
+        assert len(cap.at('debug')) == 2
+
+    def test_boot_gravity_push_is_rounded(self, orch):
+        orch.ctx.levelling_complete = True
+        orch.ctx.pose_offset_rad = [-0.003000000026077032, 0.0010000000474974513]
+        cap = _Capture(orch)
+        orch.sm.force_transition(RobotState.IDLE, orch.ctx)
+        orch._tick()
+        line = [m for m in cap.at('info') if 'gravity offset' in m]
+        assert line == ['Restored saved level: gravity offset '
+                        '(-0.0030, +0.0010) rad']
+
+    def test_juggle_relay_success_and_outcome_are_debug(self, orch):
+        orch._juggle_client._server_ready = True
+        cap = _Capture(orch)
+        orch._svc_juggle_request(_set_string_req('hop'), SetString.Response())
+        handle = MagicMock(accepted=False)
+        fut = MockFuture()
+        fut.set_result(handle)
+        orch._on_juggle_goal_response(fut)
+        assert not cap.at('info') and not cap.at('warning'), cap.lines
+        res = MagicMock(success=True, outcome='COMPLETED', caught=1, throws=1)
+        fut2 = MockFuture()
+        fut2.set_result(MagicMock(result=res))
+        orch._on_juggle_result(fut2)
+        assert not cap.at('info') and not cap.at('warning'), cap.lines
+
+    def test_juggle_not_ready_stays_warning(self, orch):
+        orch._juggle_client._server_ready = False
+        cap = _Capture(orch)
+        orch._svc_juggle_request(_set_string_req('hop'), SetString.Response())
+        assert [l for l, _ in cap.lines] == ['warning']
+
+    def test_juggle_stop_with_nothing_running_warns(self, orch):
+        cap = _Capture(orch)
+        res = orch._svc_juggle_stop(Trigger.Request(), Trigger.Response())
+        assert res.success is False
+        assert [l for l, _ in cap.lines] == ['warning']
+
+    def test_service_failure_names_the_operation(self, orch):
+        orch._current_req = 'clear_errors'
+        orch._pending_label = 'clear_errors'
+        fut = MockFuture()
+        fut.set_result(MagicMock(success=False, message='ERR_X'))
+        orch._pending_future = fut
+        cap = _Capture(orch)
+        orch._check_pending_operations()
+        assert cap.at('warning') == ['clear_errors failed: ERR_X']
+
+    def test_clear_errors_success_reports_done(self, orch):
+        orch._pending_label = 'clear_errors'
+        fut = MockFuture()
+        fut.set_result(MagicMock(success=True, message=''))
+        orch._pending_future = fut
+        cap = _Capture(orch)
+        orch._check_pending_operations()
+        assert cap.at('info') == ['clear_errors: done']
+
+    def test_real_logger_full_operator_flow_never_flips_severity(self, orch):
+        """Drive activate/deactivate/refusal/level/fault through the REAL mock
+        logger twice: any call site reused at two severities raises."""
+        for _ in range(2):
+            _to_idle(orch)
+            _cmd(orch, 'deactivate')          # refused (WARN)
+            _cmd(orch, 'level')
+            orch._tick()
+            orch.ctx.tilt_reading = [0.001, 0.002]
+            orch._dispatch_request('level_persist_state')
+            orch._dispatch_request('level_mocap_check')
+            orch._on_robot_state(_make_robot_state_msg(
+                errors=['x'], has_fatal_odrive_error=True))
+            orch._tick()
+            orch._on_robot_state(_make_robot_state_msg())
+            orch.sm.force_transition(RobotState.IDLE, orch.ctx)
+
+    def test_destroy_node_destroys_action_clients_once_safely(self, orch):
+        calls = []
+        orch._home_client.destroy = lambda: calls.append('home')
+        orch._juggle_client.destroy = lambda: (_ for _ in ()).throw(
+            RuntimeError('already destroyed'))
+        orch.destroy_node()        # a raising destroy must not propagate
+        assert calls == ['home']

@@ -250,8 +250,8 @@ auto-tracks whatever threshold the firmware trips at):
    ```bash
    ros2 topic pub -t 3 -r 2 /orchestrator_command std_msgs/msg/String "data: 'trajectory'"
    ```
-   Confirm `Command received: trajectory` in the launch window (`orchestrator_node`
-   logs every accepted command) **and** that `/control_mode_topic` reads `TRAJECTORY`,
+   Confirm `mode: STANDBY -> TRAJECTORY` in the launch window (`orchestrator_node`
+   logs every accepted command as its transition) **and** that `/control_mode_topic` reads `TRAJECTORY`,
    *before* `set_setpoint_output true`. Repeat publishes are safe: every mode command is
    idempotent and the handlers discard commands they don't recognise. The GUI's mode
    buttons (:8081) are immune — rosbridge holds a long-lived publisher. (On 2026-07-09

@@ -146,8 +146,8 @@ def test_stamped_then_zero_logs_the_fallback_transition_once():
     pos = _ballistic(CUP, TOSS_VEL, DT)
     for _ in range(3):
         node._on_mocap(_mocap_msg(pos, stamp_s=DT))
-    assert node._logger.info.call_count == 1
-    assert 'stamped at the source' in node._logger.info.call_args[0][0]
+    assert node._logger.debug.call_count == 1
+    assert 'stamped at the source' in node._logger.debug.call_args[0][0]
 
     for _ in range(3):
         node._on_mocap(_mocap_msg(pos, stamp_s=0.0))

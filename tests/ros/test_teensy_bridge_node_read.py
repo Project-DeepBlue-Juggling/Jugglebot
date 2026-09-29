@@ -683,9 +683,15 @@ def test_hb_stale_episode_warns_once_on_the_clearing_edge(bridge):
     node._logger = MagicMock()
     _send_hb_stale(teensy, node, 0)              # clearing edge
     node._publish_link_status()
-    warns = [m for m in _messages(node._logger.warning)
+    # Operator line: ONE short INFO (a diagnostic, not a fault); long form at DEBUG.
+    infos = [m for m in _messages(node._logger.info) if 'heartbeat gap' in m]
+    assert len(infos) == 1, _messages(node._logger.info)
+    assert not _messages(node._logger.warning)
+    assert 'leg 3' in infos[0] and 'episode 1' in infos[0]
+    assert re.search(r'25/10\d encoder frames', infos[0]), infos[0]
+    warns = [m for m in _messages(node._logger.debug)
              if 'dropout episode ENDED' in m]
-    assert len(warns) == 1, _messages(node._logger.warning)
+    assert len(warns) == 1, _messages(node._logger.debug)
     w = warns[0]
     assert 'leg 3' in w
     # The magnitude is IN THE TEXT (a few ms of real scheduling slop on top of
@@ -700,7 +706,8 @@ def test_hb_stale_episode_warns_once_on_the_clearing_edge(bridge):
     # And the next publish with the mask clear does NOT re-warn.
     node._logger = MagicMock()
     node._publish_link_status()
-    assert not any('dropout episode' in m for m in _messages(node._logger.warning))
+    assert not any('heartbeat gap' in m for m in _messages(node._logger.info))
+    assert not any('dropout episode' in m for m in _messages(node._logger.debug))
 
 
 def test_hb_stale_episode_warn_says_so_when_no_census_is_available(bridge):
@@ -715,8 +722,7 @@ def test_hb_stale_episode_warn_says_so_when_no_census_is_available(bridge):
     node._logger = MagicMock()
     _send_hb_stale(teensy, node, 0)
     node._publish_link_status()
-    warns = [m for m in _messages(node._logger.warning)
-             if 'dropout episode ENDED' in m]
+    warns = [m for m in _messages(node._logger.info) if 'heartbeat gap' in m]
     assert len(warns) == 1 and 'hand' in warns[0]
     assert 'encoder census unavailable' in warns[0]
 

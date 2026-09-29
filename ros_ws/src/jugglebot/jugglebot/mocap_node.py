@@ -22,6 +22,7 @@ import time
 
 import numpy as np
 import rclpy
+from rclpy.logging import LoggingSeverity
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, DurabilityPolicy
 
@@ -76,6 +77,10 @@ class MocapNode(Node):
         super().__init__('mocap_node')
 
         # ── Mocap interface (pure-Python, runs its own asyncio thread) ────
+        # Calibration/startup detail is logged at DEBUG (recorded, not shown by
+        # launch_console). No .debug( call in this node or MocapInterface sits on
+        # a per-frame path.
+        self.get_logger().set_level(LoggingSeverity.DEBUG)
         self.mocap = MocapInterface(logger=self.get_logger(), node=self)
 
         # Platform Z offset comes directly from hardware_config — no service needed.
@@ -151,7 +156,7 @@ class MocapNode(Node):
         self._calib_blocked = False
         self._calib_start_mono = 0.0
 
-        self.get_logger().info('MocapNode initialised')
+        self.get_logger().info('Mocap node up (QTM connects in the background)')
 
     # ──────────────────────────────────────────────────────────────────────
     #  Publishing
@@ -292,7 +297,7 @@ class MocapNode(Node):
         """Latch a collection window invalid and publish the named failure."""
         self._calib_invalid = code
         message = f'{code}: {detail}'
-        self.get_logger().error(f'Calibration invalidated — {message}')
+        self.get_logger().debug(f'Calibration invalidated — {message}')
         self._publish_calibration_failure(message)
 
     def _end_calibration(self, *, blocked: bool = False):
@@ -412,7 +417,7 @@ class MocapNode(Node):
         t.transform.translation.z = z_offset_mm
         t.transform.rotation.w = 1.0
         self.static_tf_broadcaster.sendTransform(t)
-        self.get_logger().info(
+        self.get_logger().debug(
             f'Broadcast static tf: world -> platform_start (z_offset={z_offset_mm:.1f} mm)'
         )
 
@@ -443,7 +448,7 @@ class MocapNode(Node):
             self._calib_start_mono = time.monotonic()
             self._calib_data = {i: [] for i in range(BB_MARKER_COUNT)}
             self._calib_yaw_readings = []
-            self.get_logger().info('BB calibration started — collecting marker data')
+            self.get_logger().info('BB calibration started, collecting marker data')
 
         # Detect calibration end (state transition away from CALIBRATING)
         if previous == BallButlerStates.CALIBRATING and msg.state != BallButlerStates.CALIBRATING:
@@ -456,10 +461,10 @@ class MocapNode(Node):
                         f'Calibration sweep ended but the window was already '
                         f'invalidated ({self._calib_invalid}) — solver skipped')
                 elif msg.state == BallButlerStates.ERROR:
-                    self.get_logger().warn('Calibration aborted: BB entered ERROR state')
+                    self.get_logger().debug('Calibration aborted: BB entered ERROR state')
                     self._publish_calibration_failure('BB entered ERROR state during calibration')
                 else:
-                    self.get_logger().info(
+                    self.get_logger().debug(
                         f'Calibration sweep complete (new state: {msg.state}). Processing...'
                     )
                     self._finalize_calibration()
@@ -488,7 +493,7 @@ class MocapNode(Node):
 
         for idx, pts in self._calib_data.items():
             if pts:
-                self.get_logger().info(f'Marker {idx + 1}: {len(pts)} valid samples')
+                self.get_logger().debug(f'Marker {idx + 1}: {len(pts)} valid samples')
 
         try:
             result: CalibrationResult = run_calibration(
@@ -497,40 +502,32 @@ class MocapNode(Node):
                 pitch_z_offset_mm=hw.BB_GEOM_PITCH_Z_OFFSET_MM,
             )
         except ValueError as e:
-            self.get_logger().error(f'Calibration failed: {e}')
+            self.get_logger().debug(f'Calibration solver rejected the sweep: {e}')
             self._publish_calibration_failure(str(e))
             return
 
-        # Log results
-        self.get_logger().info('=' * 50)
-        self.get_logger().info('BB CALIBRATION RESULTS')
-        self.get_logger().info('=' * 50)
+        # One operator line; the detail (axis direction, per-marker fits) is DEBUG.
+        # BB's own reported yaw span is encoder-derived, so unlike the per-marker
+        # arc_span it is not inflated by QTM marker noise (MIN_ARC_DEG was set
+        # from it, 2026-08-25).
         pos = result.bb_position_mm
         self.get_logger().info(
-            f'Position: X={pos[0]:.2f}, Y={pos[1]:.2f}, Z={pos[2]:.2f} mm'
+            f'BB calibrated: pos ({pos[0]:.0f}, {pos[1]:.0f}, {pos[2]:.0f}) mm '
+            f'· axis tilt {result.axis_tilt_deg:.2f}° '
+            f'· yaw offset {math.degrees(result.yaw_offset_rad):+.2f}° '
+            f'±{result.yaw_offset_std_deg:.2f}° '
+            f'· swept {result.yaw_span_deg:.0f}°'
         )
-        self.get_logger().info(
+        self.get_logger().debug(
             f'Axis direction: ({result.axis_direction[0]:.4f}, '
-            f'{result.axis_direction[1]:.4f}, {result.axis_direction[2]:.4f})'
+            f'{result.axis_direction[1]:.4f}, {result.axis_direction[2]:.4f}); '
+            f'yaw offset {result.yaw_offset_rad:.4f} rad; '
+            f'yaw span {result.yaw_span_deg:.1f}° (floor MIN_ARC_DEG={MIN_ARC_DEG:.1f}°)'
         )
-        self.get_logger().info(f'Axis tilt from vertical: {result.axis_tilt_deg:.2f}°')
-        self.get_logger().info(
-            f'Yaw offset: {math.degrees(result.yaw_offset_rad):.2f}° '
-            f'({result.yaw_offset_rad:.4f} rad)'
-        )
-        self.get_logger().info(f'Yaw uncertainty: ±{result.yaw_offset_std_deg:.2f}°')
-        # THE number MIN_ARC_DEG was set from — 118.8° on the first hardware
-        # calibrate, 2026-08-25 (plans/archived/operator-observability.md § 8
-        # item 4, RESOLVED). It is BB's own reported yaw span — encoder-derived,
-        # so unlike the per-marker arc_span below it is not inflated by QTM
-        # marker noise.
-        self.get_logger().info(
-            f'BB yaw span swept: {result.yaw_span_deg:.1f}° '
-            f'(floor MIN_ARC_DEG={MIN_ARC_DEG:.1f}°)')
 
         for idx, m in result.marker_metrics.items():
             if m.status == 'ok':
-                self.get_logger().info(
+                self.get_logger().debug(
                     f'Marker {idx + 1}: radius={m.radius_mm:.1f} mm, '
                     f'residual={m.fit_residual_mm:.3f} mm, '
                     f'axis_dev={m.distance_from_axis_mm:.3f} mm, '
@@ -538,8 +535,6 @@ class MocapNode(Node):
                 )
             else:
                 self.get_logger().warn(f'Marker {idx + 1}: {m.status} — {m.reason}')
-
-        self.get_logger().info('=' * 50)
 
         # Publish on latched topic
         self._publish_calibration_result(result)
@@ -555,21 +550,20 @@ class MocapNode(Node):
         msg.yaw_offset_std_deg = result.yaw_offset_std_deg
         msg.axis_tilt_deg = result.axis_tilt_deg
         self.pub_calibration.publish(msg)
-        self.get_logger().info('Published calibration result on bb/calibration_result')
+        self.get_logger().debug('Published calibration result on bb/calibration_result')
 
     def _publish_calibration_failure(self, reason: str):
         msg = BallButlerCalibrationResult()
         msg.success = False
         msg.message = reason
         self.pub_calibration.publish(msg)
-        self.get_logger().error(f'Published calibration failure: {reason}')
+        self.get_logger().error(f'BB calibration FAILED: {reason}')
 
     # ──────────────────────────────────────────────────────────────────────
     #  Lifecycle
     # ──────────────────────────────────────────────────────────────────────
 
     def on_shutdown(self):
-        self.get_logger().info('Shutting down MocapNode...')
         self.mocap.stop()
         self.destroy_node()
 
@@ -580,7 +574,7 @@ def main(args=None):
     try:
         rclpy.spin(node)
     except KeyboardInterrupt:
-        node.get_logger().info('Keyboard interrupt received. Shutting down.')
+        pass
     finally:
         node.on_shutdown()
         rclpy.shutdown()

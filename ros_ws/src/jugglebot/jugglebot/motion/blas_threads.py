@@ -121,6 +121,14 @@ def format_blas_line(num_threads: Optional[int], source: str) -> str:
     return 'blas threads: %s (%s)' % (shown, source)
 
 
+def format_blas_short(num_threads: Optional[int]) -> str:
+    """Compact form for a node's one-line "up" message: ``BLAS 1 thread``."""
+    if num_threads is None:
+        return 'BLAS threads unknown'
+    n = int(num_threads)
+    return 'BLAS %d thread%s' % (n, '' if n == 1 else 's')
+
+
 def format_blas_warning(num_threads: Optional[int], source: str,
                         node_name: str) -> str:
     """The loud line for an uncapped pool, naming the entry and the fix."""
@@ -145,17 +153,18 @@ def check_blas_threads(logger, node_name: str,
                        ) -> Tuple[Optional[int], str]:
     """Log the effective pool once at node start. Returns ``(n, source)``.
 
-    ``logger`` is anything with ``.info()`` / ``.warning()`` — an rclpy logger,
+    ``logger`` is anything with ``.debug()`` / ``.warning()`` — an rclpy logger,
     or a stand-in in a test. ``reader`` is injectable so a test can drive both
     branches without touching the process's real thread pool.
 
-    One INFO line always; an additional WARN when the pool is larger than one
-    thread **or** unknown. Unknown warns because the whole point is fail-closed
+    One DEBUG line always (the calling node folds the count into its own one-line
+    "up" message via :func:`format_blas_short`); a WARN when the pool is larger
+    than one thread **or** unknown. Unknown warns because the whole point is fail-closed
     reporting: a node that cannot prove it is capped should not read as capped.
     """
     read = reader or read_blas_threads
     num_threads, source = read()
-    logger.info(format_blas_line(num_threads, source))
+    logger.debug(format_blas_line(num_threads, source))
     if num_threads is None or int(num_threads) > 1:
         logger.warning(format_blas_warning(num_threads, source, node_name))
     return num_threads, source

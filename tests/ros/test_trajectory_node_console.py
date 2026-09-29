@@ -47,3 +47,71 @@ def test_a_small_then_a_big_clock_step_do_not_crash_the_node(monkeypatch):
                             lambda history, ros, s=step_us:
                             fake._ros_to_perf_offset + s * 1e-6)
         tn.TrajectoryNode._refresh_clock_offset(fake)
+
+
+# ── phase 3: startup, limits, go_home, stream lines ──────────────────────
+
+def _recording(node):
+    """Swap the node's ENFORCING mock logger for one that also records."""
+    from tests.ros.conftest import MockLogger
+
+    class Rec(MockLogger):
+        def __init__(self):
+            super().__init__()
+            self.lines = []
+
+        def _log(self, severity, kw):
+            super()._log(severity, kw)
+
+    rec = Rec()
+    for name, sev in (('info', 'INFO'), ('warning', 'WARN'),
+                      ('error', 'ERROR'), ('debug', 'DEBUG')):
+        def make(name=name, sev=sev):
+            def f(msg, **kw):
+                rec.lines.append((sev, msg))
+            return f
+        setattr(rec, name, make())
+    node._logger = rec   # records only; site enforcement runs via the plain mock
+    return rec
+
+
+def test_startup_is_one_up_line_and_at_most_one_tilt_line(monkeypatch):
+    monkeypatch.delenv('JUGGLEBOT_TILT_CAL', raising=False)
+    node = tn.TrajectoryNode(start_emitter=False)
+    # construction already logged through the default mock; re-run the two
+    # startup sites against a recording logger.
+    rec = _recording(node)
+    node._load_tilt_map()
+    tilt = [m for s, m in rec.lines if s in ('INFO', 'WARN')]
+    assert len(tilt) == 1 and tilt[0].startswith(('tilt map: none', 'tilt map loaded:'))
+    assert '/' not in tilt[0], 'no file paths on an OK line'
+
+
+def test_set_limits_logs_one_tidy_outcome_line():
+    node = tn.TrajectoryNode(start_emitter=False)
+    rec = _recording(node)
+    req = SimpleNamespace(leg_vel_limit_mmps=300.0, leg_acc_limit_mmps2=0.0,
+                          leg_jerk_limit_mmps3=0.0)
+    resp = SimpleNamespace()
+    node._svc_set_limits(req, resp)
+    assert resp.success is True
+    (sev, line), = rec.lines
+    assert sev == 'INFO' and line.startswith('leg limits set: 300 mm/s')
+
+
+def test_go_home_refusal_is_an_error_line_and_success_is_one_info_line():
+    node = tn.TrajectoryNode(start_emitter=False)
+    rec = _recording(node)
+    resp = SimpleNamespace()
+    node._svc_go_home(SimpleNamespace(), resp)      # not seeded
+    assert resp.success is False
+    assert rec.lines == [('ERROR', 'go_home refused: ' + resp.message)]
+
+
+def test_stream_on_off_is_debug_and_an_empty_mode_reads_none():
+    node = tn.TrajectoryNode(start_emitter=False)
+    rec = _recording(node)
+    node._on_control_mode(SimpleNamespace(data='STANDBY'))
+    node._on_control_mode(SimpleNamespace(data=''))
+    assert [m for s, m in rec.lines if s == 'INFO'] == []
+    assert ('DEBUG', 'streaming DISABLED (mode none)') in rec.lines

@@ -103,8 +103,7 @@ class SpaceMouseHandler(Node):
             self.get_logger().info("SpaceMouse connected.")
             return True
         self.get_logger().warning(
-            "SpaceMouse not connected — retrying in background; will "
-            "connect automatically when it is plugged in",
+            "SpaceMouse not connected, retrying in background",
             throttle_duration_sec=self._OUTAGE_WARN_THROTTLE_S,
         )
         return False
@@ -240,13 +239,13 @@ class SpaceMouseHandler(Node):
         again until SPACEMOUSE is selected.
         """
         if msg.data == 'SPACEMOUSE' and not self.spacemouse_enabled:
-            self.get_logger().info('Spacemouse enabled')
+            self.get_logger().info('SpaceMouse control on')
             self.spacemouse_enabled = True
             self._last_open_attempt = 0.0
             self.timer = self.create_timer(0.01, self.publish_pose)
 
         elif msg.data != 'SPACEMOUSE' and self.spacemouse_enabled:
-            self.get_logger().info('Spacemouse disabled')
+            self.get_logger().info('SpaceMouse control off')
             self.spacemouse_enabled = False
             self.destroy_timer(self.timer)
             self.timer = None
@@ -263,7 +262,6 @@ class SpaceMouseHandler(Node):
 
     def on_shutdown(self):
         """Handle node shutdown."""
-        self.get_logger().info("Shutting down SpacemouseHandler...")
         try:
             if self._is_open:
                 pyspacemouse.close()

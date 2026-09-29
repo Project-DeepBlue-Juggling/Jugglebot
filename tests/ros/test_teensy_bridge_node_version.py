@@ -222,7 +222,10 @@ def test_fw_versions_render_on_pass_log_and_link_status():
 
         expected = ('0:0.6.11-0 1:0.6.11-0 2:0.6.11-0 3:0.6.11-0 '
                     '4:0.6.11-0 5:0.6.11-0 6:0.6.11-1')
-        assert any(expected in m for m in _messages(node._logger.info))
+        # The INFO line is short (no per-axis versions); the versions ride DEBUG.
+        assert any('firmware check PASSED' in m and expected not in m
+                   for m in _messages(node._logger.info))
+        assert any(expected in m for m in _messages(node._logger.debug))
 
         node._publish_link_status()
         kv = {v.key: v.value for v in node.link_status_pub.published[-1].values}

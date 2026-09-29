@@ -69,11 +69,11 @@ re-dispatch around a refusal by hand.
 ## 2. Rung A — `level` FIRST
 
 Bring-up as the R4 sheet rows 11–16 (load capture, launch with
-`record:=true`, `blas threads: 1`, GUI up), then:
+`record:=true`, `BLAS 1 thread` on both up lines, GUI up), then:
 
 | # | Do | Expect |
 |---|---|---|
-| A1 | `grep -n "tilt calibration map" temp/logs/launch_kincal_*.log` | `no tilt calibration map found (tried: …)` from the trajectory node — offset-only levelling (C-LEVEL-1). A line reporting a loaded map and its `tilt_map_version` means row 4 was skipped — stop, fix, relaunch. |
+| A1 | `grep -n "tilt map" temp/logs/launch_kincal_*.log` | `tilt map: none found — single gravity offset only` from the trajectory node — offset-only levelling (C-LEVEL-1). A `tilt map loaded: <version>, grid …` line means row 4 was skipped — stop, fix, relaunch. (Before 2026-09-30 these read `no tilt calibration map found (tried: …)` / `tilt calibration loaded: …`; the long forms are now DEBUG, in launch.log.) |
 | A2 | Note the boot-pushed offset: `ros2 topic echo /robot_state --once \| grep -A3 pose_offset` (or the GUI state panel). | The OLD persisted value, about (0.0140, 0.0010) rad = 0.80° about x. Record it. |
 | A3 | GUI: **Home**, then **Activate**. **Do NOT move the platform anywhere else first.** | Robot at the active pose, hand parked at 0 rev. The platform may visibly sit ~0.8° off level here — that is the stale offset, expected. |
 | A4 | GUI: **Level** (publishes `level` on `orchestrator_command`). Hand near the E-stop for the settle. | LEVELLING → IDLE. Read the NEW `pose_offset_rad`. **Prediction (the fit's own claim): it shrinks from 0.80° to ≲ 0.2° about x** (the fit's hold-out attitude floor is 0.20°). If it stays ~0.8°, the geometry did not reach the node (row 3/4) or the sign of the modelled STOW tilt is wrong — stop and say so; do not proceed to rung B on a stale offset. |

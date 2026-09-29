@@ -19,6 +19,7 @@ import time
 import rclpy
 from rclpy.node import Node
 from rclpy.action import ActionClient
+from rclpy.logging import LoggingSeverity
 
 from jugglebot_interfaces.msg import RobotState as RobotStateMsg
 from jugglebot_interfaces.srv import (
@@ -45,14 +46,46 @@ from jugglebot.can import odrive
 # numeric default lived ONLY in the coordinator, never here or in the GUI).
 
 
+# ── Operator-command feedback (log-only; the handlers own the real logic) ──
+# Which commands each state's handler actually consumes (state_machine.py:
+# IdleHandler / ActiveHandler / FaultHandler; BOOT, HOMING and LEVELLING clear
+# their command queue every tick). Used ONLY to tell the operator, in one WARN
+# line, that a command was ignored and why — the command is still enqueued
+# exactly as before, so control flow is unchanged.
+_COMMANDS_ACCEPTED = {
+    RobotState.IDLE: ('activate', 'home', 'level'),
+    RobotState.ACTIVE: ('deactivate', 'standby', 'trajectory', 'spacemouse',
+                        'gui'),
+    RobotState.FAULT: ('clear_errors',),
+}
+# Commands whose success is a state transition: the transition line carries the
+# command name ("activate: IDLE -> ACTIVE") instead of a separate receipt line.
+_COMMAND_TARGET = {
+    'activate': 'ACTIVE', 'deactivate': 'IDLE', 'home': 'HOMING',
+    'level': 'LEVELLING',
+}
+
+
+def _fmt_xy(v):
+    """'(+0.0063, +0.0084)' — a rounded rad pair for one-line operator output."""
+    return f'({float(v[0]):+.4f}, {float(v[1]):+.4f})'
+
+
 class OrchestratorNode(Node):
     def __init__(self):
         super().__init__('orchestrator_node')
+        # The node logs its per-step detail at DEBUG (recorded to the log file,
+        # hidden from the launch shell by launch_console). No .debug() call here
+        # fires at a sustained rate.
+        self.get_logger().set_level(LoggingSeverity.DEBUG)
 
         # ── State machine ─────────────────────────────────────────
         self.ctx = Context()
-        self.sm = build_default_machine(
-            log_fn=lambda msg: self.get_logger().info(f'[SM] {msg}'))
+        self._last_cmd = None            # last accepted transition command
+        self._last_active_mode = None
+        self._current_req = None         # request being dispatched (log label)
+        self._pending_label = None       # label of the in-flight service call
+        self.sm = build_default_machine(log_fn=self._on_sm_log)
 
         # ── Arming contract (A2, see ARMING_CONTRACT.md) ──────────
         # auto_arm_setpoint_output=true (default): ActiveHandler arms the wire
@@ -201,9 +234,58 @@ class OrchestratorNode(Node):
                 self.ctx.pose_offset_rad = list(msg.pose_offset_rad[:2])
 
     def _on_command(self, msg):
-        """Queue a user command for the state machine."""
-        self.ctx.enqueue_command(msg.data)
-        self.get_logger().info(f'Command received: {msg.data}')
+        """Queue a user command for the state machine.
+
+        Operator feedback is ONE line per command: a refused command gets a WARN
+        here saying why; a command that changes state is reported by the
+        transition line (``activate: IDLE -> ACTIVE``, see ``_on_sm_log``);
+        ``clear_errors`` gets its own INFO; sub-mode switches are reported by
+        ``_tick`` when the handler applies them.
+        """
+        cmd = msg.data
+        state = self.sm.state
+        self.ctx.enqueue_command(cmd)
+        if cmd not in _COMMANDS_ACCEPTED.get(state, ()):
+            homes = [st.name for st, cmds in _COMMANDS_ACCEPTED.items()
+                     if cmd in cmds]
+            if homes:
+                self.get_logger().warning(
+                    f"'{cmd}' ignored: robot is {state.name} "
+                    f"('{cmd}' works from {' or '.join(homes)})")
+            else:
+                self.get_logger().warning(
+                    f"'{cmd}' ignored: not a known command "
+                    f"(robot is {state.name})")
+            return
+        if cmd in _COMMAND_TARGET:
+            self._last_cmd = cmd
+        elif cmd == 'clear_errors':
+            self.get_logger().info(
+                'clear_errors: clearing ODrive errors and the guard latch')
+
+    def _on_sm_log(self, msg):
+        """State-machine log sink: one operator line per transition.
+
+        'Entering X' is DEBUG (the transition line already said it). A
+        transition triggered by an operator command is prefixed with that
+        command; a forced one keeps its '(forced)' cause. LEVELLING -> IDLE is
+        DEBUG because the 'levelled: ...' result line already ends the sequence.
+        """
+        if msg.startswith('No handler registered'):
+            self.get_logger().warning(f'[SM] {msg}')
+            return
+        if ' -> ' not in msg:
+            self.get_logger().debug(f'[SM] {msg}')
+            return
+        target = msg.split(' -> ', 1)[1].split(' ', 1)[0]
+        cmd = self._last_cmd
+        self._last_cmd = None
+        if cmd is not None and _COMMAND_TARGET.get(cmd) == target:
+            msg = f'{cmd}: {msg}'
+        if msg == 'LEVELLING -> IDLE':
+            self.get_logger().debug(f'[SM] {msg}')
+        else:
+            self.get_logger().info(msg)
 
     # ═══════════════════════════════════════════════════════════════
     # Juggle relay (GUI → jugglebot/juggle action)
@@ -257,7 +339,8 @@ class OrchestratorNode(Node):
         res.success = True
         res.message = (
             f'Juggle dispatched (pattern={pattern!r}, reload={reload_}).')
-        self.get_logger().info(
+        # skill_node (the action server) prints the attempt's start line.
+        self.get_logger().debug(
             'Juggle requested via jugglebot/juggle_request — goal dispatched '
             f'(pattern={pattern!r}, reload={reload_}).')
         return res
@@ -272,11 +355,13 @@ class OrchestratorNode(Node):
         if handle is None:
             res.success = False
             res.message = 'no jugglebot/juggle goal is running'
+            self.get_logger().warning('Juggle stop ignored: no attempt is running.')
             return res
         handle.cancel_goal_async()
         res.success = True
         res.message = 'jugglebot/juggle cancel requested'
-        self.get_logger().info('Juggle stop requested via jugglebot/juggle_stop.')
+        # skill_node reports the STOPPED outcome; this is only the relay.
+        self.get_logger().debug('Juggle stop requested via jugglebot/juggle_stop.')
         return res
 
     def _on_juggle_goal_response(self, future):
@@ -289,7 +374,8 @@ class OrchestratorNode(Node):
             return
         if not goal_handle.accepted:
             self._juggle_goal_handle = None
-            self.get_logger().warning(
+            # skill_node logs the rejection and its reason (it owns the goal).
+            self.get_logger().debug(
                 'juggle goal REJECTED (an attempt is already in progress?).')
             return
         self._juggle_goal_handle = goal_handle
@@ -305,11 +391,11 @@ class OrchestratorNode(Node):
             self.get_logger().warning(f'juggle result error: {e}')
             return
         if result.success:
-            self.get_logger().info(
+            self.get_logger().debug(
                 f'Juggle OK: {result.outcome} '
                 f'({result.caught}/{result.throws} caught).')
         else:
-            self.get_logger().warning(
+            self.get_logger().debug(
                 f'Juggle ended: {result.outcome} '
                 f'({result.caught}/{result.throws} caught).')
 
@@ -397,6 +483,18 @@ class OrchestratorNode(Node):
         # 3. Run state machine
         self.sm.tick(self.ctx)
 
+        # 3-pre. Sub-mode switch (standby/trajectory/spacemouse/gui) applied by
+        # ActiveHandler this tick — the one line for that operator command.
+        # Not fired on ACTIVE entry (its on_enter resets to STANDBY).
+        if (self.sm.state == RobotState.ACTIVE
+                and self._last_sm_state == RobotState.ACTIVE
+                and self._last_active_mode is not None
+                and self.ctx.active_mode != self._last_active_mode):
+            self.get_logger().info(
+                f'mode: {self._last_active_mode.value} -> '
+                f'{self.ctx.active_mode.value}')
+        self._last_active_mode = self.ctx.active_mode
+
         # 3-pre-a. (F3/C4) Say WHY on entry to FAULT, once per visit.
         # The machine already logs '[SM] Entering FAULT', which tells an operator
         # nothing about the cause: ctx.errors — the robot_state.error[] strings
@@ -461,7 +559,8 @@ class OrchestratorNode(Node):
             self._gravity_offset_pub.publish(msg)
             self._startup_offset_sent = True
             self.get_logger().info(
-                f'Pushed persisted gravity offset: {self.ctx.pose_offset_rad}')
+                'Restored saved level: gravity offset '
+                f'{_fmt_xy(self.ctx.pose_offset_rad)} rad')
         self._last_sm_state = current
 
     # ═══════════════════════════════════════════════════════════════
@@ -492,7 +591,7 @@ class OrchestratorNode(Node):
                 if len(tilt) >= 2 and not (math.isnan(tilt[0]) or math.isnan(tilt[1])):
                     self.ctx.tilt_reading = tilt[:2]
                     self.ctx.operation_result = True
-                    self.get_logger().info(
+                    self.get_logger().debug(
                         f'Tilt reading: [{tilt[0]:.4f}, {tilt[1]:.4f}] rad')
                 else:
                     self.get_logger().warning('Tilt reading returned NaN (failed)')
@@ -539,7 +638,11 @@ class OrchestratorNode(Node):
                         # A genuine RPC failure still faults: the CAN write did
                         # not land, which is a real machine problem, not an
                         # optional subsystem being unavailable.
-                        self.get_logger().warning(f'Operation failed: {detail}')
+                        self.get_logger().warning(
+                            f'{self._pending_label or "operation"} failed: '
+                            f'{detail}')
+                    elif self._pending_label == 'clear_errors':
+                        self.get_logger().info('clear_errors: done')
             except Exception as e:
                 self.get_logger().error(f'Service call exception: {e}')
                 self.ctx.operation_result = False
@@ -595,6 +698,7 @@ class OrchestratorNode(Node):
 
     def _dispatch_request(self, req):
         """Handle a single operation request."""
+        self._current_req = req
         if req == 'encoder_search':
             self._start_service_call(
                 self._encoder_search_client, Trigger.Request())
@@ -679,7 +783,7 @@ class OrchestratorNode(Node):
             msg = Float64MultiArray(
                 data=list(self.ctx.pose_offset_rad))
             self._gravity_offset_pub.publish(msg)
-            self.get_logger().info(
+            self.get_logger().debug(
                 f'Gravity offset published: {self.ctx.pose_offset_rad}')
             self.ctx.operation_result = True
 
@@ -688,12 +792,15 @@ class OrchestratorNode(Node):
                 data=[1.0] + list(self.ctx.pose_offset_rad))
             self._level_state_pub.publish(msg)
             self.ctx.levelling_complete = True
+            # The one line that ends a level: raw tilt -> saved gravity offset.
             self.get_logger().info(
-                f'Level state persisted: offset={self.ctx.pose_offset_rad}')
+                f'levelled: tilt {_fmt_xy(self.ctx.tilt_reading)} rad -> '
+                f'gravity offset {_fmt_xy(self.ctx.pose_offset_rad)} rad, saved')
             self.ctx.operation_result = True
 
         elif req == 'level_mocap_check':
-            self.get_logger().warning(
+            # A TODO stub, not a state: nothing to tell the operator.
+            self.get_logger().debug(
                 'Mocap gravity alignment check not yet implemented')
             self.ctx.operation_result = True
 
@@ -745,6 +852,7 @@ class OrchestratorNode(Node):
         self.ctx.operation_pending = True
         self.ctx.operation_result = None
         self._pending_kind = kind
+        self._pending_label = self._current_req
         self._pending_future = client.call_async(request)
 
     def _fire_forget_service_call(self, client, request, label):
@@ -833,6 +941,26 @@ class OrchestratorNode(Node):
             'Orchestrator shutdown — profiled stow is owned by teensy_bridge_node')
 
 
+    def destroy_node(self):
+        """Destroy the action clients BEFORE the node handle.
+
+        Foxy destroys the node first and garbage-collects the ActionClients
+        later, whose ``__del__`` then raises ``InvalidHandle`` ("Exception
+        ignored in ... ActionClient.__del__") on every Ctrl-C. Explicit,
+        guarded destroy makes the later ``__del__`` a no-op.
+        """
+        for client in (getattr(self, '_home_client', None),
+                       getattr(self, '_juggle_client', None)):
+            destroy = getattr(client, 'destroy', None)
+            if destroy is None:
+                continue
+            try:
+                destroy()
+            except Exception:  # noqa: BLE001 — already destroyed is fine
+                pass
+        super().destroy_node()
+
+
 def main(args=None):
     rclpy.init(args=args)
     node = OrchestratorNode()
@@ -843,7 +971,8 @@ def main(args=None):
     finally:
         node.on_shutdown()
         node.destroy_node()
-        rclpy.shutdown()
+        if rclpy.ok():
+            rclpy.shutdown()
 
 
 if __name__ == '__main__':
