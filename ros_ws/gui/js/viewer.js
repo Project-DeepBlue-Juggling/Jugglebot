@@ -142,7 +142,7 @@ export function initViewer(container) {
     axes.name = 'axes';
     axes.rotation.x = -Math.PI / 2; // Rotate so Three.js Y-up → robot Z-up
     scene.add(axes);
-    sceneGroups['Axes'] = axes;
+    sceneGroups['Global Axes'] = axes;
 
     // Handle resize
     const resizeObserver = new ResizeObserver(() => {
