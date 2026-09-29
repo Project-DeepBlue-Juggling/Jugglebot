@@ -1,5 +1,12 @@
 # R4 diagnostic sitting: the hold A/B, the true self-toss spread, and the reload catch
 
+> **NOT FLOWN, superseded 2026-09-29.** The R4 gate sitting (`session_skills_r4.md` § 11,
+> sitting 4) flew the hold on throughout: the hop landed +12.6 / +2.3 mm against +88/+110 before,
+> with no other throw-side change, so Block A's question is answered and its A/B dropped. Block D
+> (reload) passed 3/3 there. Blocks B (self-toss spread, including the 0.6 m arm) and C (dwell
+> 0.3 vs 0.6 s) are still open and fold into R5's first sitting; this sheet stays as their
+> reference. `logbook/2026-09-29-skill-stack-r4-gate-met.md`.
+
 Wayfinder map `.scratch/r4-throw-precision/map.md`, ticket 05 (designed 2026-09-29 with the owner).
 Evidence and reasoning: `logbook/2026-09-29-skill-stack-r4-sitting-3-analysis.md`.
 

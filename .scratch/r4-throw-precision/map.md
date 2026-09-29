@@ -1,6 +1,11 @@
 # Map: R4 throw precision (self-toss, hop, reload catch)
 
 Label: wayfinder:map
+Status: **CLOSED 2026-09-29.** The R4 gate is MET (`logbook/2026-09-29-skill-stack-r4-gate-met.md`). Of the destination's three sub-criteria:
+- the hop overshoot is gone (+12.6 / +2.3 mm);
+- the reload hand moves to receive (3/3);
+- the self-toss ±10 mm (1σ) with re-aim off was **NOT met and not measured**. The sitting flew re-aim on, 1σ 17.7 / 15.8 mm, 24/24 caught.
+The self-toss spread, and the fog below, carry to R5 in `plans/active/two-ball-skill-stack.md` § R5 "Carried from R4".
 Charted: 2026-09-29, after R4 sitting 3 (2026-09-28 23:55; bag `~/Desktop/rosbags/2026-09-28_23-55-19`, log `temp/logs/skills_r4_20260928_2355.log`).
 
 ## Destination
@@ -29,7 +34,11 @@ The R4 hardware gate (`tests/hardware/session_skills_r4.md`) is MET on the robot
 - [Plain-language refusal messages](issues/04-plain-language-refusal-messages.md): CATCH_AXIS plus the separation-aware box refusal, then all gated planner refusals rewritten.
 - [Design the diagnostic sitting](issues/05-design-the-diagnostic-sitting.md): `tests/hardware/session_skills_r4_diag.md` covers the hop hold A/B, open-loop self-toss singles, a dwell 0.3/0.6 A/B on carried chains, and reload; lateral learning frozen, memory cold, no cup markers.
 
+- [Run the diagnostic sitting and analyse it](issues/06-run-the-diagnostic-sitting.md): superseded, not flown. The R4 gate sitting flew the hold on throughout, and the hop overshoot vanished with no other throw-side change, so the A/B is dropped. The reload passed 3/3. Blocks B–C fold into R5's first sitting.
+
 ## Not yet specified
+
+*(At closure, 2026-09-29, this fog went to the plan's R5 carry list, not to new tickets.)*
 
 - **The self-toss release-side residual (17/22 mm).** Is it the ball moving in the cup, sideways give in the hand carriage, or cup-lip contact? Offline ([result_release_side](evidence/result_release_side.md)): the ball is tracked in the cup at 152 Hz and drifts only 2–6 mm over the last 150 ms, so the kick is at separation. The lateral velocity σ is flat from 0.6 to 0.9 m (weak n), which leans toward a fixed-size kick. Diag sitting B2 decides. The fix shape (cup geometry, ball seating, stiffer carriage, a sharper separation) waits on the diagnostic sitting's instrumented block.
 - **No fallback on a refused CATCH.** The hand sits parked at the bottom of its stroke for an inbound ball. Should a refused catch fall back to a receive-height REST?

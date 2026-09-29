@@ -405,7 +405,23 @@ correction, fixed). Reload: 3/3 `ABORTED_BB_THROW_TIMEOUT` (`ball_butler_node` d
 the throw would also have raced BB's ball check, fixed). Analysis:
 `logbook/2026-09-28-skill-stack-r4-sitting-2-analysis.md`.
 
-### Sitting 3 — *(fill in)*
+### Sitting 3 — 2026-09-28 23:55 (one launch, bag `~/Desktop/rosbags/2026-09-28_23-55-19`)
+
+NOT MET. Self-toss steady (landing scatter ~16 × 23 mm 1σ, release-side). Hop +88/+110 mm long
+(the platform still sliding +x at separation; the pre-release hold landed after). Reload: the
+CATCH refused `CATCH_AXIS` (dispatched mid-pre-tilt; timing fixed), the hand stayed parked and
+the ball was still caught. Analysis: `logbook/2026-09-29-skill-stack-r4-sitting-3-analysis.md`.
+
+### Sitting 4 — 2026-09-29 19:11 (one launch, bag `~/Desktop/rosbags/2026-09-29_19-11-49`)
+
+**MET.** Hop 75/82 caught; the 30-throw attempt made 25 consecutive alternating catches (14 by
+the node's strict verdict, one slow seat logged `caught=False` on a ball the next throw launched
+normally), ending on a P2→P1 throw 60 mm long. Hop landing x +12.6 / +2.3 mm (P1→P2 / P2→P1).
+Self-toss 24/24. Reload 3/3 from the GUI button (one self_toss, two hop), each followed by 4
+catches, no refusal; owner: the hand could rise during the pre-tilt instead of rushing up at the
+catch. The GUI read every reload as `COMPLETED (0/0 caught)` at the button, a result-reporting
+race fixed after the sitting. Analysis and the R5 carry list:
+`logbook/2026-09-29-skill-stack-r4-gate-met.md`.
 
 ### Pre-power (§ 1)
 
