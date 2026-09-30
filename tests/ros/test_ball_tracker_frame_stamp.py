@@ -153,3 +153,33 @@ def test_stamped_then_zero_logs_the_fallback_transition_once():
         node._on_mocap(_mocap_msg(pos, stamp_s=0.0))
     assert node._logger.warning.call_count == 1
     assert 'fell back' in node._logger.warning.call_args[0][0]
+
+
+# ---------------------------------------------------------------------------
+# `detect_human_throws` as a declared, live-updatable node parameter (R5,
+# brief_S.md step 2, 2026-09-30) — the lob block's un-announced human throw
+# needs the runsheet to turn this on for a block without a relaunch.
+# ---------------------------------------------------------------------------
+
+def test_detect_human_throws_defaults_to_the_config_value():
+    """An un-set launch tracks exactly as before this parameter existed
+    (`hw.TRACKING_DETECT_HUMAN_THROWS`, False)."""
+    import jugglebot.hardware_config as hw
+    node = BallTrackerNode()
+    assert node.get_parameter('detect_human_throws').value is bool(
+        hw.TRACKING_DETECT_HUMAN_THROWS)
+    assert node._tracker.detect_human_throws is bool(
+        hw.TRACKING_DETECT_HUMAN_THROWS)
+
+
+def test_detect_human_throws_param_set_updates_the_tracker_live():
+    """`ros2 param set .../ball_tracker_node detect_human_throws true`
+    reaches `BallTracker.detect_human_throws` with no node restart -- the
+    lob block's own runsheet line."""
+    from tests.ros.conftest import _MockParameter
+    node = BallTrackerNode()
+    assert node._tracker.detect_human_throws is False
+    node.set_parameters([_MockParameter(True, name='detect_human_throws')])
+    assert node._tracker.detect_human_throws is True
+    node.set_parameters([_MockParameter(False, name='detect_human_throws')])
+    assert node._tracker.detect_human_throws is False

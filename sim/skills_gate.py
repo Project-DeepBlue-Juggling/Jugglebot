@@ -174,6 +174,59 @@ QUIET_TAIL_S = 0.5
 _WANT_FLAGS = (FLAG_HAS_U1 | FLAG_HAS_U2 | FLAG_HAS_HAND | FLAG_HAS_V1
                | FLAG_HAS_V2)
 
+#: How close (mm, xy) the platform's emitted cup opening must sit to the
+#: columns Stop's last ball's landing xy at the instant it lands (owner
+#: decision D2, 2026-09-30, R5 rescope, E1'): "the platform moves under the
+#: landing ... so it strikes the held ball and comes to rest on the
+#: platform". Both are the SAME site's xy by construction
+#: (``sites.Site.throw_site_mm``/``catch_site_mm``/``rest_site_mm`` all share
+#: one xy per site — only z differs by role), so this is a physical-chain
+#: sanity check (real MuJoCo plant position vs. the schedule's own aim), not
+#: a tight tolerance search: 25 mm is generous against the mm-scale mirror/
+#: IK-curvature residuals this gate already bounds (``MIRROR_TOL_LEG_REV``
+#: etc.) and the sub-mm xy noise the release model carries at R2/R5.
+FINAL_CUP_XY_TOL_MM = 25.0
+
+
+def _columns_final_removal(sched: 'sk.Schedule'):
+    """The columns Stop's own last-ball bookkeeping (owner decision D2,
+    ``schedule.compile_columns``'s cross-site shadow throw).
+
+    Scans ``sched.skills`` for the ONE skill whose ``then_throw`` carries
+    ``shadow_landing`` (set only for ``n_throws >= 2`` — see
+    ``compile_columns``'s docstring: the Stop throw is always folded into a
+    catch-with-throw, because every throw index that can be the Stop
+    (``n - 1 >= 1``) always has a same-ball catch exactly one dwell before it
+    to fold with — there is no standalone-THROW case to handle here).
+
+    Returns ``(t_land_final_s, ball_final, target_xy_mm)``:
+
+    * ``t_land_final_s`` — the wall-clock instant the shadow-landed ball
+      reaches the catch plane: the carried release instant plus the
+      schedule's OWN flight time (``sched.flight_s`` — the same number
+      every throw in this schedule uses, since a columns throw's duration is
+      the symmetric-height ballistic time and does not depend on which site
+      it is aimed at, only on the pattern's apex).
+    * ``ball_final`` — which MuJoCo ball index this is (the shadow throw's
+      own ``ball_id``).
+    * ``target_xy_mm`` — the xy (mm) it is aimed at: the OTHER site's
+      ``catch_site_mm()[:2]`` (the site the ball it strikes is already
+      resting at).
+
+    Read off the schedule's own skills rather than re-derived from
+    ``beta``/``n_throws`` arithmetic, so this stays correct however
+    ``compile_columns`` schedules the Stop (plan § 0: one place this fact is
+    computed). ``None`` when no skill carries the flag (``n_throws == 1``:
+    nothing is held yet, so there is no Stop to check)."""
+    for skill in sched.skills:
+        tt = skill.then_throw
+        if tt is not None and tt.shadow_landing:
+            t_land_final_s = float(tt.t_release_abs_s) + float(sched.flight_s)
+            target_xy_mm = np.asarray(tt.target.catch_site_mm(),
+                                      dtype=float)[:2].copy()
+            return t_land_final_s, int(skill.ball_id), target_xy_mm
+    return None
+
 
 # ---------------------------------------------------------------------------
 # Config + result records
@@ -223,6 +276,10 @@ class SkillsTrialResult:
     mirror_hand_worst_rev: float = float('nan')
     ticks: int = 0
     wall_s: float = float('nan')
+    #: D2/E1' Stop check: ``|emitted cup xy - last ball's landing xy|`` (mm)
+    #: at ``t_land_final`` — ``nan`` when there was no Stop to check
+    #: (``n_throws == 1``). See :data:`FINAL_CUP_XY_TOL_MM`.
+    final_cup_err_mm: float = float('nan')
 
     pump_clean: bool = False
     mirror_ok: bool = False
@@ -230,6 +287,9 @@ class SkillsTrialResult:
     all_installed: bool = False
     caught_all: bool = False
     no_drops: bool = False
+    #: D2/E1': True when ``final_cup_err_mm <= FINAL_CUP_XY_TOL_MM`` (or
+    #: vacuously True when there was no Stop to check).
+    final_cup_ok: bool = False
     passed: bool = False
 
     def to_dict(self) -> dict:
@@ -764,8 +824,20 @@ class SkillsGate:
                              dwell_s=cfg.dwell_s, n_throws=cfg.n_throws)
         sched = sk.compile_columns(pattern, t0_abs_s)
         scheduled_catches = sum(1 for s in sched.skills if s.kind == CATCH)
-        t_land_final = t0_abs_s + (cfg.n_throws - 1) * beta + t_f
-        ball_final = (cfg.n_throws - 1) % 2
+        # The Stop (D2, E1'): the last throw is aimed at the OTHER site and
+        # lands ON the ball already held there — read straight off the
+        # schedule's own skills (:func:`_columns_final_removal`), not
+        # re-derived arithmetic, so this stays correct however
+        # ``compile_columns`` schedules it. ``n_throws == 1`` has no Stop
+        # (nothing held yet) and falls back to the pre-E1' arithmetic — the
+        # only throw's own landing, at its own site.
+        shadow = _columns_final_removal(sched)
+        if shadow is not None:
+            t_land_final, ball_final, final_target_xy_mm = shadow
+        else:
+            t_land_final = t0_abs_s + (cfg.n_throws - 1) * beta + t_f
+            ball_final = (cfg.n_throws - 1) % 2
+            final_target_xy_mm = None
 
         # 3. Per-ball tracking / hold-bookkeeping state.
         ball_state = {
@@ -788,7 +860,8 @@ class SkillsGate:
         loop = self._stream_chain(
             plant=plant, geom=geom, rcfg=self.rcfg, noise=noise,
             executor=executor, ictx=ictx, ball_state=ball_state, t_end=t_end,
-            final_removal=(t_land_final, ball_final))
+            final_removal=(t_land_final, ball_final),
+            final_target_xy_mm=final_target_xy_mm)
 
         pump_clean = bool(loop['pump_rejects'] == 0
                           and loop['accepted'] == loop['emitted']
@@ -805,6 +878,13 @@ class SkillsGate:
         all_installed = bool(not executor.attempt_ended)
         caught_all = bool(loop['makes'] >= scheduled_catches > 0)
         no_drops = bool(loop['drops'] == 0)
+        # D2/E1': the platform must be sitting under the last ball when it
+        # lands on the one already held — ``None`` (n_throws == 1, nothing
+        # held) is vacuously OK, nothing to check.
+        final_cup_err_mm = float(loop.get('final_cup_err_mm', float('nan')))
+        final_cup_ok = bool(final_target_xy_mm is None
+                            or (not math.isnan(final_cup_err_mm)
+                                and final_cup_err_mm <= FINAL_CUP_XY_TOL_MM))
 
         res = SkillsTrialResult(
             seed=seed, scheduled_catches=scheduled_catches,
@@ -821,19 +901,21 @@ class SkillsGate:
             mirror_leg_worst_rev=loop['worst_leg'],
             mirror_hand_worst_rev=loop['worst_hand'],
             ticks=loop['ticks'], wall_s=loop['wall_s'],
+            final_cup_err_mm=final_cup_err_mm,
             pump_clean=pump_clean, mirror_ok=mirror_ok, flags_ok=flags_ok,
             all_installed=all_installed, caught_all=caught_all,
-            no_drops=no_drops)
+            no_drops=no_drops, final_cup_ok=final_cup_ok)
         res.passed = bool(pump_clean and mirror_ok and flags_ok
-                          and all_installed and caught_all and no_drops)
+                          and all_installed and caught_all and no_drops
+                          and final_cup_ok)
         return res
 
     # ── the one stream loop (shared with the R3 self-toss learner run) ─────
 
     def _stream_chain(self, *, plant, geom, rcfg, noise, executor, ictx,
                       ball_state, t_end, release_bias=None,
-                      final_removal=None, stop_check=None,
-                      pending_spawn=None):
+                      final_removal=None, final_target_xy_mm=None,
+                      stop_check=None, pending_spawn=None):
         """The emitter/pump/wire/mirror/executor.tick loop (module
         docstring) -- run by every caller against a live ``PlanRecord``
         (``ictx``) and the executor dispatching one ``Schedule``.
@@ -861,13 +943,24 @@ class SkillsGate:
         loop starts, the pre-R4 behaviour, unchanged).
         ``final_removal`` (``(t_land_final, ball_final)``) is the columns-
         only "remove the last unscheduled ball" step; ``None`` skips it.
+        ``final_target_xy_mm`` (mm, xy or ``None``), only meaningful with
+        ``final_removal`` set: the D2/E1' Stop check (module docstring's
+        columns Stop) -- at the removal instant, the PLANT's own emitted cup
+        xy (:func:`~jugglebot.motion.unified_cycle.cup_state_from_platform`
+        of the live ``PlantState``, not the plan's commanded knot: this is a
+        physical-chain sanity check on the real MuJoCo pose, mirror included)
+        is compared against it and the distance returned as
+        ``'final_cup_err_mm'``. ``None`` (every caller but
+        :meth:`run_trial` with ``n_throws >= 2``) skips the check —
+        ``'final_cup_err_mm'`` stays out of the returned dict.
         ``stop_check()``, when given, ends the loop as soon as it returns
         True (in addition to ``t_end``) -- the self-toss run's
         ``executor.done``, so a refused or dropped attempt does not stream
         out a whole ``t_end`` budget it no longer needs.
 
         Returns ``{'makes', 'drops', 'emitted', 'accepted', 'pump_rejects',
-        'flags_seen' (a set), 'worst_leg', 'worst_hand', 'ticks', 'wall_s'}``.
+        'flags_seen' (a set), 'worst_leg', 'worst_hand', 'ticks', 'wall_s',
+        'final_cup_err_mm' (only when ``final_target_xy_mm`` is given)}``.
         """
         emitter = KnotEmitter(geom)
         pump = stream_chain.make_pump()
@@ -883,6 +976,7 @@ class SkillsGate:
         makes = 0
         drops = 0
         removed_final = final_removal is None
+        final_cup_err_mm = float('nan')
         t_wall = time.time()
 
         while plant.data.time < t_end and (stop_check is None
@@ -1006,6 +1100,17 @@ class SkillsGate:
                     bstate['next_obs_t'] += OBS_PERIOD_S
 
             if not removed_final and t >= final_removal[0]:
+                if final_target_xy_mm is not None:
+                    st_f = plant.get_state()
+                    pose_f = np.concatenate(
+                        [st_f.platform_pos_mm, st_f.platform_rot])
+                    hand_rev_f = stream_chain.rev_of_slider_mm(
+                        float(st_f.hand_pos_mm), rcfg)
+                    cup_f = uc.cup_state_from_platform(pose_f, hand_rev_f,
+                                                       rcfg)
+                    final_cup_err_mm = float(np.linalg.norm(
+                        np.asarray(cup_f[:2], dtype=float)
+                        - np.asarray(final_target_xy_mm, dtype=float)))
                 plant.ball_manager.ball(final_removal[1]).reset()
                 ball_state[final_removal[1]]['airborne'] = False
                 ball_state[final_removal[1]]['expect_held'] = False
@@ -1016,11 +1121,14 @@ class SkillsGate:
             if self.viewer is not None:
                 self.viewer.sync()
 
-        return dict(makes=makes, drops=drops, emitted=emitted,
-                   accepted=accepted, pump_rejects=int(pump.frames_rejected),
-                   flags_seen=flags_seen, worst_leg=worst_leg,
-                   worst_hand=worst_hand, ticks=ticks,
-                   wall_s=time.time() - t_wall)
+        out = dict(makes=makes, drops=drops, emitted=emitted,
+                  accepted=accepted, pump_rejects=int(pump.frames_rejected),
+                  flags_seen=flags_seen, worst_leg=worst_leg,
+                  worst_hand=worst_hand, ticks=ticks,
+                  wall_s=time.time() - t_wall)
+        if final_target_xy_mm is not None:
+            out['final_cup_err_mm'] = final_cup_err_mm
+        return out
 
     # ── R3: the self-toss learner run (plan § 4 R3 "Sim validation") ───────
     #
@@ -1196,6 +1304,245 @@ class SkillsGate:
             monotone_xy=monotone_xy, monotone_apex=monotone_apex,
             passed=bool(entered_band and bool(monotone_xy)
                        and bool(monotone_apex)),
+            wall_s=time.time() - t_wall0)
+
+    # ── R5: the columns learner run (Unit G, plan § R5) ─────────────────────
+    #
+    # Both balls, one shared memory, the learner ON -- the SAME physical cold-
+    # reset setup :meth:`run_trial` uses each attempt ("spawn B as today":
+    # ball A seated at site 0, ball B already in flight toward site 1, t0
+    # chosen so the schedule's own "ball B released at t0-beta" premise is
+    # exact) but through :func:`compile_columns`'s LEARNER-COMMANDED throws
+    # rather than R2's identity prior. NOT built on ``run_self_toss_attempt``/
+    # ``_sites_for`` (the ONE-ball self-toss/hop generaliser): a columns
+    # attempt needs BOTH sites live at once (``sk.Pattern``, not
+    # ``sk.OneBallPattern``) and the Stop's cross-site shadow throw
+    # (``compile_columns`` only), which the one-ball loop has no shape for.
+
+    def run_columns_attempt(self, *, n_throws: int, memory: mem.Memory,
+                            learner_cfg: lr.LearnerConfig, noise: JuggleNoise,
+                            throws_out: list) -> Tuple[str, dict, '_InstallCtx']:
+        """One columns learner attempt, cold from a level rest at site 0 with
+        ball B already airborne toward site 1 (the SAME setup
+        :meth:`run_trial` steps 1-2 use). The learner (:class:`_MemoryLearner`)
+        replaces the identity prior; the box lookup is BYPASSED
+        (``boxes=None``): the committed 'columns' box entries are
+        EMPTY/NaN as swept for this rung (``config/generated/
+        admissible_box.yaml``, gate hash stale against a concurrent planner
+        sweep besides) -- with ``boxes=None`` the learner's raw command
+        reaches the planner unclipped (``executor._command_u``: the
+        box-refusal branch only runs when ``self.boxes is not None``), so a
+        genuinely bad command is caught by the PLANNER's own refusal, not
+        silently clipped into a box nobody swept. ``resend_max_per_catch=0``
+        for this two-site pattern (owner decision 2026-09-29): a catch
+        re-send releases from the RE-AIMED cup position
+        (``executor._catch_terminal``), and the fly-back that needs carries
+        a lateral offset the OTHER site's own throw was never sized for --
+        ``_make_installer``'s pending-release note on why appending (not
+        superseding) walked the learner gate 50 mm off-site once release
+        followed catch.
+
+        Every throw but the schedule's Stop (the cross-site shadow landing --
+        bypasses the learner entirely and produces no experience row, see
+        ``compile_columns``/``executor._finalise_outcome``) reaches
+        ``on_experience``; ``throws_out`` accumulates them in schedule
+        order, same contract as :meth:`run_self_toss_attempt`.
+
+        Returns ``(end_code, loop_stats, ictx)`` -- ``end_code`` is ``''``
+        for an attempt that ran its whole schedule with no refusal.
+        """
+        cfg: SelfTossGateConfig = self.cfg
+        plant = self.plant
+        geom = self.geom
+        site0, site1 = sites.columns_sites(cfg.separation_mm)
+
+        rest0 = self._rest_state(site0)
+        pose0 = np.asarray(rest0.pose, dtype=float)
+        plant.reset(pose0)
+        plant.command(plant.pose_to_extensions(pose0))
+        plant.command_hand(stream_chain.slider_mm_of_rev(
+            float(rest0.hand_rev), self.rcfg))
+        for _ in range(40):
+            plant.step(KNOT_DT_S)
+            if self.viewer is not None:
+                self.viewer.sync()
+        plant.ball_manager.ball(0).spawn_in_hand()
+
+        t_f = sk.flight_s(cfg.apex_m)
+        beta = sk.beat_s(t_f, cfg.dwell_s)
+        v0_mm_s = math.sqrt(2.0 * bal.GRAVITY_MMS2 * cfg.apex_m * 1000.0)
+        pos1 = site1.catch_site_mm()
+        pos1n, vel1n = noise.perturb_throw(
+            pos1, np.array([0.0, 0.0, v0_mm_s]), np.zeros(3))
+        t_spawn = float(plant.data.time)
+        plant.spawn_ball(pos1n, vel1n, ball=1)
+        t0_abs_s = t_spawn + beta
+
+        pattern = sk.Pattern(sites=(site0, site1), apex_m=cfg.apex_m,
+                             dwell_s=cfg.dwell_s, n_throws=n_throws)
+        sched = sk.compile_columns(pattern, t0_abs_s)
+
+        ball_state = {
+            0: dict(estimator=BallisticEstimator(bal.G_VEC_MMS2),
+                   airborne=False, next_obs_t=None, expect_held=True,
+                   lost_since=None, last_obs_t=None),
+            1: dict(estimator=BallisticEstimator(bal.G_VEC_MMS2),
+                   airborne=True, next_obs_t=t_spawn, expect_held=False,
+                   lost_since=None, last_obs_t=None),
+        }
+        tracker = _make_tracker(plant, ball_state)
+        ictx = _InstallCtx(rest0)
+        installer = _make_installer(ictx, self.seg_cfg, self.limits, geom)
+        learner = _MemoryLearner(memory, learner_cfg)
+        # ``_make_observer`` takes ``ball_id`` as an argument (unlike
+        # ``_make_observations``, which hardcodes ball 0) -- it is already
+        # correct for columns' two simultaneous balls without change. This
+        # is the ONLY thing that latches ``Experience.caught`` (``_advance_
+        # outcomes``: ``caught_seen`` never latches with ``observer=None``,
+        # which every experience row read as ``caught=False`` before this —
+        # probed 2026-09-30, this run, seed 0: makes=5/5, drops=0, every
+        # row still read ``caught=False`` without this wire).
+        observer = _make_observer(plant)
+        executor = ex.SkillExecutor(
+            sched, installer, tracker=tracker,
+            catch_aim_source=self.cfg.catch_aim_source,
+            learner=learner, boxes=None, resend_max_per_catch=0,
+            observer=observer,
+            on_experience=lambda exp: (
+                memory.append(exp), throws_out.append(exp)))
+
+        # A generous, bounded timeout -- the real exit is ``executor.done``
+        # (``stop_check``), matching ``run_self_toss_attempt``.
+        t_end = float(sched.skills[-1].t_abs_s) + 1.0
+        loop = self._stream_chain(
+            plant=plant, geom=geom, rcfg=self.rcfg, noise=noise,
+            executor=executor, ictx=ictx, ball_state=ball_state, t_end=t_end,
+            stop_check=lambda: executor.done)
+        return str(executor.end_code), loop, ictx
+
+    def run_columns_seed(self, seed: int) -> dict:
+        """One seed's whole R5 columns learner run (Unit G, plan § R5):
+        repeated cheap-reset attempts (:meth:`run_columns_attempt`),
+        collecting throws until ``cfg.target_throws`` experience rows have
+        been observed -- the same policy the R3/R4 ``run_self_toss_seed``
+        loop uses (owner decision 6, "resets are cheap"), generalised to
+        columns' two simultaneous balls. Every attempt is chained from the
+        first throw (there is no policy-A single-throw stage here: a
+        columns schedule needs ball B already in flight from the first
+        instant, so there is no "cold, one throw" shape to gate on
+        ``learner_cfg.k_min`` the way a single-ball self-toss has).
+
+        Each attempt's schedule carries the columns Stop (owner decision D2)
+        as its LAST throw, which produces no experience row (see
+        :meth:`run_columns_attempt`) -- so an attempt requesting ``remaining``
+        more rows asks for ``n_throws = remaining + 1`` (floored at 2, since
+        a Stop needs a ball already held to land on).
+
+        Reports the SAME apex/xy band-entry criterion
+        ``run_self_toss_seed`` does (:data:`XY_BAND_MM`/:data:`APEX_BAND_MM`,
+        ``_monotone_verdict``), PLUS the R5 gate's own shape (plan § R5:
+        "five consecutive cycles then 30 catches" -- sim's stand-in, per the
+        brief this rung was built from: run >= ``target_throws`` throws per
+        seed and report the longest run of consecutive ``caught=True``
+        experience rows, in collection order across every attempt (a cold
+        reset between attempts does not reset the streak: the metric is
+        "how many throws in a row did this seed's memory catch", not
+        "within one uninterrupted schedule").
+        """
+        cfg: SelfTossGateConfig = self.cfg
+        noise = JuggleNoise(cfg.noise, seed=seed)
+        tmp_dir = tempfile.mkdtemp(
+            prefix='skills_gate_columns_learn_seed%d_' % seed)
+        memory = mem.Memory(os.path.join(tmp_dir, 'memory.csv'))
+        assert len(memory) == 0, 'a fresh tmp path must be a cold memory'
+
+        throws: list = []
+        attempts_stats: list = []
+        attempts = 0
+        refusals = 0
+        drops_total = 0
+        makes_total = 0
+        installs_total = installs_accepted = 0
+        end_codes = []
+        plan_wall_s_all: list = []
+        t_wall0 = time.time()
+
+        while len(throws) < cfg.target_throws and attempts < cfg.max_attempts:
+            remaining = cfg.target_throws - len(throws)
+            n_throws = max(2, remaining + 1)
+            attempts += 1
+            throws_before = len(throws)
+            end_code, loop, ictx = self.run_columns_attempt(
+                n_throws=n_throws, memory=memory, learner_cfg=cfg.learner_cfg,
+                noise=noise, throws_out=throws)
+            end_codes.append(end_code)
+            if end_code:
+                refusals += 1
+            drops_total += loop['drops']
+            makes_total += loop['makes']
+            installs_total += ictx.installs_total
+            installs_accepted += ictx.installs_accepted
+            plan_wall_s_all.extend(ictx.plan_wall_s)
+            attempts_stats.append(dict(
+                attempt=attempts, n_throws=n_throws, end_code=end_code,
+                makes=loop['makes'], drops=loop['drops'],
+                throws_collected=len(throws) - throws_before))
+
+        rows = []
+        for i, exp in enumerate(throws):
+            err_xy_mm = float(1000.0 * np.linalg.norm(exp.y[:2]))
+            err_apex_mm = float(1000.0 * abs(float(exp.y[2]) - cfg.apex_m))
+            rows.append(dict(
+                throw=i + 1, u=exp.u.tolist(), y=exp.y.tolist(),
+                err_xy_mm=err_xy_mm, err_apex_mm=err_apex_mm,
+                caught=bool(exp.caught), t_abs_s=float(exp.t_abs_s)))
+
+        throws_to_band_xy = next(
+            (r['throw'] for r in rows if r['err_xy_mm'] <= cfg.xy_band_mm),
+            None)
+        throws_to_band_apex = next(
+            (r['throw'] for r in rows
+             if r['err_apex_mm'] <= cfg.apex_band_mm), None)
+        entered_band = bool(
+            throws_to_band_xy is not None
+            and throws_to_band_xy <= cfg.band_entry_throws
+            and throws_to_band_apex is not None
+            and throws_to_band_apex <= cfg.band_entry_throws)
+
+        monotone_xy = _monotone_verdict(
+            [r['err_xy_mm'] for r in rows], cfg.band_entry_throws,
+            cfg.target_throws)
+        monotone_apex = _monotone_verdict(
+            [r['err_apex_mm'] for r in rows], cfg.band_entry_throws,
+            cfg.target_throws)
+
+        longest_consecutive_catches = 0
+        _run = 0
+        for r in rows:
+            if r['caught']:
+                _run += 1
+                longest_consecutive_catches = max(longest_consecutive_catches,
+                                                  _run)
+            else:
+                _run = 0
+
+        return dict(
+            seed=seed, policy='columns', pattern=cfg.pattern,
+            separation_mm=cfg.separation_mm, apex_m=cfg.apex_m,
+            throws=rows, n_throws_collected=len(rows), attempts=attempts,
+            attempts_stats=attempts_stats, end_codes=end_codes,
+            refusals=refusals, drops=drops_total, makes=makes_total,
+            installs_total=installs_total,
+            installs_accepted=installs_accepted,
+            plan_wall_ms=_wall_ms_stats(plan_wall_s_all),
+            throws_to_band_xy=throws_to_band_xy,
+            throws_to_band_apex=throws_to_band_apex,
+            entered_band=entered_band,
+            monotone_xy=monotone_xy, monotone_apex=monotone_apex,
+            longest_consecutive_catches=longest_consecutive_catches,
+            passed=bool(drops_total == 0
+                       and longest_consecutive_catches >= min(
+                           30, cfg.target_throws)),
             wall_s=time.time() - t_wall0)
 
     # ── R4: the reload trial (Unit U3, brief step 5, owner decision D4) ────
@@ -1474,14 +1821,22 @@ def run_gate(cfg: SkillsGateConfig = None, viewer_speed: float = None) -> dict:
 def run_learn(cfg: SelfTossGateConfig = None, seeds=(0, 1, 2, 3, 4),
              policy: str = 'A') -> dict:
     """The R3/R4 sim-validation run (plan § 4 R3 "Sim validation"; R4 Unit
-    U7a generalises it to ``cfg.pattern='hop'``): one ``SkillsGate`` built
-    for ``cfg``'s operating point, one seed at a time, writing the report
-    JSON the brief this rung was built from asks for. Never shares the gate
-    instance with :func:`run_gate` (columns)."""
+    U7a generalises it to ``cfg.pattern='hop'``; R5 Unit G to
+    ``cfg.pattern='columns'``, :meth:`SkillsGate.run_columns_seed` -- both
+    balls, the columns Stop, no ``policy`` (columns has no policy-A
+    single-throw stage, see that method's docstring)): one ``SkillsGate``
+    built for ``cfg``'s operating point, one seed at a time, writing the
+    report JSON the brief this rung was built from asks for. Never shares
+    the gate instance with :func:`run_gate` (the R2 identity-prior columns
+    trial)."""
     cfg = SelfTossGateConfig() if cfg is None else cfg
     gate = SkillsGate(cfg)
     t0 = time.time()
-    seed_results = [gate.run_self_toss_seed(s, policy=policy) for s in seeds]
+    if cfg.pattern == 'columns':
+        seed_results = [gate.run_columns_seed(s) for s in seeds]
+    else:
+        seed_results = [gate.run_self_toss_seed(s, policy=policy)
+                        for s in seeds]
     wall_s = time.time() - t0
     report = {
         'gate': 'skills_learn',
@@ -1583,19 +1938,19 @@ def _print_learn_table(rep: dict) -> None:
              rep['xy_band_mm'], rep['apex_band_mm'], rep['band_entry_throws'],
              rep['target_throws']))
     print('[skills_gate_learn] %-6s %-8s %-10s %-10s %-9s %-9s %-9s %-6s %-6s '
-          '%-9s'
+          '%-9s %-9s'
           % ('seed', 'verdict', 'band_xy', 'band_apex', 'mono_xy', 'mono_apex',
-             'attempts', 'drops', 'makes', 'plan_p50'))
+             'attempts', 'drops', 'makes', 'plan_p50', 'longest'))
     for r in rep['seed_results']:
         verdict = 'PASS' if r['passed'] else 'FAIL'
         pw = r.get('plan_wall_ms')
         p50 = pw['p50'] if pw else float('nan')
         print('[skills_gate_learn] %-6d %-8s %-10s %-10s %-9s %-9s %-9d %-6d '
-              '%-6d %-9.2f'
+              '%-6d %-9.2f %-9s'
               % (r['seed'], verdict, r['throws_to_band_xy'],
                  r['throws_to_band_apex'], r['monotone_xy'],
                  r['monotone_apex'], r['attempts'], r['drops'], r['makes'],
-                 p50))
+                 p50, r.get('longest_consecutive_catches', '-')))
     print('[skills_gate_learn] %s  (wall %.1f s over %d seed(s))'
           % ('PASS' if rep['passed'] else 'FAIL', rep['wall_s'],
              len(rep['seeds'])))
@@ -1633,6 +1988,13 @@ def main(argv=None) -> int:
     p.add_argument('--separation-mm', type=float, default=None,
                    help='site separation (default: the operating point -- '
                         '100 mm columns/self_toss, 250 mm --learn --pattern hop)')
+    p.add_argument('--apex-m', type=float, default=None,
+                   help='pattern apex height, m above the catch plane '
+                        '(default: the operating point, 0.9 m)')
+    p.add_argument('--target-throws', type=int, default=None,
+                   help='--learn only: throws to collect per seed (default: '
+                        'the operating point, 25; R5 columns\' own gate '
+                        'criterion wants >= 30, plan § R5)')
     p.add_argument('--throw-noise-frac', type=float, default=None,
                    help='per-component release-velocity scatter as a fraction of '
                         'the release speed (default 0.0: an exact release; the '
@@ -1646,11 +2008,14 @@ def main(argv=None) -> int:
                         'loop from the commanded throw state), or '
                         'schedule_hand')
     p.add_argument('--learn', action='store_true',
-                   help='run the R3/R4 sim-validation learner run (plan § 4 '
-                        'R3; R4 Unit U7a) instead of the columns gate')
-    p.add_argument('--pattern', choices=('self_toss', 'hop'), default='self_toss',
-                   help='--learn only: self_toss (R3, 1 site, P1) or hop '
-                        '(R4, 2 sites, P1<->P2, Unit U7a)')
+                   help='run the R3/R4/R5 sim-validation learner run (plan '
+                        '§ 4 R3; R4 Unit U7a; R5 Unit G) instead of the R2 '
+                        'identity-prior columns gate')
+    p.add_argument('--pattern', choices=('self_toss', 'hop', 'columns'),
+                   default='self_toss',
+                   help='--learn only: self_toss (R3, 1 site, P1), hop '
+                        '(R4, 2 sites, P1<->P2, Unit U7a) or columns (R5, '
+                        'both sites + the Stop, Unit G, --policy ignored)')
     p.add_argument('--policy', choices=('A', 'B'), default='A',
                    help='--learn only: A = single-throw attempts until '
                         'k_min rows then chained (the gated policy); B = '
@@ -1679,6 +2044,10 @@ def main(argv=None) -> int:
                                   catch_aim_source=args.catch_aim_source,
                                   pattern=args.pattern,
                                   separation_mm=separation_mm)
+        if args.apex_m is not None:
+            lcfg.apex_m = float(args.apex_m)
+        if args.target_throws is not None:
+            lcfg.target_throws = int(args.target_throws)
         if args.seeds is not None:
             seeds = tuple(args.seeds)
         else:
@@ -1695,6 +2064,8 @@ def main(argv=None) -> int:
         cfg.n_throws = args.n_throws
     if args.separation_mm is not None:
         cfg.separation_mm = float(args.separation_mm)
+    if args.apex_m is not None:
+        cfg.apex_m = float(args.apex_m)
     if args.throw_noise_frac is not None:
         cfg.noise = NoiseConfig(bb_throw_noise_frac=float(args.throw_noise_frac),
                                 tracking_noise_mm=cfg.noise.tracking_noise_mm)

@@ -149,12 +149,18 @@ def _pattern(cols, n_throws=3, **kw):
 def test_compile_columns_orders_events_correctly_for_three_throws(cols):
     """The § 2.4 event table, FOLDED: the launch THROW from rest, then one
     CATCH per remaining throw carrying that throw, then the last (standalone)
-    CATCH, then a REST at its site.
+    CATCH, then a REST at the LAST CATCH's site (the closing-REST rule,
+    unchanged by the Stop redesign, E1', 2026-09-30 — the Stop now aims the
+    last THROW cross-site instead of moving the REST).
 
     Every event of the unfolded table is still there — the fold changes how
     many SEGMENTS they are planned as, not when anything happens.  The two
     folded catches carry releases at ``t0 + beta`` and ``t0 + 2*beta``, which
-    are exactly the THROW instants the unfolded table listed.
+    are exactly the THROW instants the unfolded table listed. The SECOND
+    carried release (``t0 + 2*beta``, i.e. throw ``i = 2 = n - 1``, the last
+    throw) targets P2 — the OTHER site from its own P1 — and is flagged
+    ``shadow_landing`` (D2, E1'); the first carried release (``i = 1``, an
+    ordinary self-toss) targets its own site P2 and is not flagged.
     """
     schedule = sc.compile_columns(_pattern(cols, n_throws=3), t0_abs_s=10.0)
     t_f = schedule.flight_s
@@ -166,36 +172,102 @@ def test_compile_columns_orders_events_correctly_for_three_throws(cols):
         (sc.CATCH, 'P2', 1, True),    # t0 + tau,  throws at t0 + beta
         (sc.CATCH, 'P1', 0, True),    # t0 + t_f,  throws at t0 + 2*beta
         (sc.CATCH, 'P2', 1, False),   # t0 + beta + t_f     (nothing follows)
-        (sc.REST, 'P2', 1, False),
+        (sc.REST, 'P2', 1, False),    # the LAST CATCH's site (closing REST)
     ]
     times = [s.t_abs_s for s in schedule.skills]
     assert times[:4] == pytest.approx(
         [10.0, 10.0 + tau, 10.0 + t_f, 10.0 + beta + t_f])
-    assert [s.then_throw.t_release_abs_s for s in schedule.skills
-            if s.then_throw is not None] == pytest.approx(
+    # The closing REST is two rest_tail_s past the last catch, plus margin.
+    assert times[4] == pytest.approx(
+        10.0 + beta + t_f + 2 * _pattern(cols).rest_tail_s
+        + sc.REST_FRESH_MARGIN_S)
+    carried = [s for s in schedule.skills if s.then_throw is not None]
+    assert [s.then_throw.t_release_abs_s for s in carried] == pytest.approx(
         [10.0 + beta, 10.0 + 2 * beta])
+    # The LAST throw's carried release (t0 + 2*beta) is the Stop: cross-site
+    # target, flagged; the earlier one is an ordinary self-toss.
+    assert carried[0].then_throw.target.name == 'P2'   # own site, self-toss
+    assert carried[0].then_throw.shadow_landing is False
+    assert carried[1].then_throw.target.name == 'P2'   # OTHER site (not P1)
+    assert carried[1].then_throw.shadow_landing is True
 
 
 def test_compile_columns_stop_rule_omits_the_last_throws_landing(cols):
     """``n_throws`` THROWs still happen; only ``n_throws - 1`` of their catches
-    are scheduled (the last throw's landing is R5's cone delivery).  After the
-    fold that is ``n_throws + 2`` skills: the launch THROW, ``n_throws - 1``
-    catch-with-throws, the last standalone CATCH, and the REST."""
+    are scheduled as ordinary CATCH skills. The last throw's landing is the
+    Stop (owner decision D2, 2026-09-30, R5 rescope, E1'): the throw itself is
+    aimed at the OTHER site instead of getting a matching CATCH — see
+    :func:`test_the_last_throw_is_cross_site_and_flagged_shadow_landing`.
+    The schedule shape is otherwise unchanged from before the Stop redesign:
+    after the fold that is ``n_throws + 2`` skills — the launch THROW,
+    ``n_throws - 1`` catch-with-throws, the last standalone CATCH (the held
+    ball), and the closing REST at that catch's site."""
     n = 4
     schedule = sc.compile_columns(_pattern(cols, n_throws=n), t0_abs_s=0.0)
     throws = [s for s in schedule.skills if s.kind == sc.THROW]
     catches = [s for s in schedule.skills if s.kind == sc.CATCH]
     carried = [s for s in catches if s.then_throw is not None]
+    rests = [s for s in schedule.skills if s.kind == sc.REST]
     assert len(schedule.skills) == n + 2
     assert len(throws) == 1                       # only the launch from rest
     assert len(carried) == n - 1                  # every other throw is carried
-    # 1 pre-existing catch + (n - 1) matching a throw = n.
+    # 1 pre-existing catch + (n - 1) matching a throw = n. None of the n
+    # throws this pattern releases gets an (n+1)th CATCH.
     assert len(catches) == n
-    assert len([s for s in schedule.skills if s.kind == sc.REST]) == 1
-    # Exactly one catch has no throw after it, and it is the last one.
+    assert len(rests) == 1
+    # Exactly one catch has no throw after it, and it is the last one -- the
+    # held ball, still a real catch (unaffected by the Stop rule).
     standalone = [s for s in catches if s.then_throw is None]
     assert len(standalone) == 1
     assert standalone[0].t_abs_s == max(c.t_abs_s for c in catches)
+    # The closing REST is chronologically LAST -- at the held ball's own
+    # site, two tails after its own catch.
+    assert rests[0].t_abs_s > standalone[0].t_abs_s
+    assert rests[0].site.name == standalone[0].site.name
+    # Exactly one carried release is the Stop (cross-site, flagged); the rest
+    # are ordinary same-site self-tosses.
+    stop = [s for s in carried if s.then_throw.shadow_landing]
+    assert len(stop) == 1
+    assert stop[0].then_throw.target.name != stop[0].site.name
+    for s in carried:
+        if s is not stop[0]:
+            assert s.then_throw.target.name == s.site.name
+    # Dispatch order is still monotone with this shape mixed in.
+    dispatches = [s.dispatch_s() for s in schedule.skills]
+    assert dispatches == sorted(dispatches)
+
+
+def test_the_last_throw_is_cross_site_and_flagged_shadow_landing(cols):
+    """The Stop (owner decision D2, 2026-09-30, R5 rescope, E1'): the last
+    throw's TARGET is the OTHER site — the one the second-to-last ball is
+    caught and held at — so it lands on the ball already resting there, and
+    it carries ``shadow_landing=True``. Replaces E's first design (a REST
+    that had to travel 100 mm in the ~0.228 s left after the previous catch's
+    tail — probed 2026-09-30, refused ``LIMIT_VEL`` at the 300 mm/s session
+    cap): aiming the throw that already exists needs no travel at all."""
+    n = 4
+    pattern = _pattern(cols, n_throws=n)
+    schedule = sc.compile_columns(pattern, t0_abs_s=20.0)
+    # The last throw (i = n-1 = 3, ball 3 % 2 = 1, own site P2) is folded away
+    # as a ``then_throw`` -- recover it by its release instant, the same way
+    # `test_a_folded_catch_dispatches_exactly_at_the_previous_release` does.
+    carried = [s for s in schedule.skills if s.then_throw is not None]
+    last_release_t = max(s.then_throw.t_release_abs_s for s in carried)
+    last = [s for s in carried
+           if s.then_throw.t_release_abs_s == last_release_t][0]
+    catches = [s for s in schedule.skills if s.kind == sc.CATCH]
+    last_catch = max(catches, key=lambda s: s.t_abs_s)
+
+    assert last.site.name == 'P2'                     # own (launch) site
+    assert last.then_throw.target.name == 'P1'         # the OTHER site
+    assert last.then_throw.target.name == last_catch.site.name  # held there
+    assert last.then_throw.shadow_landing is True
+    # The closing REST is unaffected: still the pre-E1 rule, at the last
+    # catch's own site.
+    rest = [s for s in schedule.skills if s.kind == sc.REST][0]
+    assert rest.site.name == last_catch.site.name
+    assert rest.holds_ball is True
+    assert rest.rest_tilt is None                      # level
 
 
 def test_a_folded_catch_dispatches_exactly_at_the_previous_release(cols):
@@ -241,19 +313,23 @@ def test_then_throw_rejects_a_malformed_command(cols):
 
 
 def test_compile_columns_rest_follows_the_chronologically_last_catch(cols):
+    """The closing REST follows the chronologically LAST CATCH (not
+    necessarily the arithmetically-last-indexed one), at ITS site, two
+    ``rest_tail_s`` after it plus the fresh-origin margin — unchanged by the
+    Stop redesign (D2, E1', 2026-09-30): the last THROW is now aimed
+    cross-site instead of moving the REST (see
+    :func:`test_the_last_throw_is_cross_site_and_flagged_shadow_landing`)."""
     schedule = sc.compile_columns(_pattern(cols, n_throws=3), t0_abs_s=10.0)
     catches = [s for s in schedule.skills if s.kind == sc.CATCH]
     rest = [s for s in schedule.skills if s.kind == sc.REST][0]
     last_catch = max(catches, key=lambda s: s.t_abs_s)
     assert rest.site.name == last_catch.site.name
-    # TWO tails: one is the last catch's own SETTLE runway, one is the REST's
-    # window.  With one, the REST would dispatch a lead BEFORE the touch-down
-    # and splice the catch away — the machine would stop reaching for a ball
-    # still in the air.
+    assert rest.ball_id == last_catch.ball_id
     assert rest.t_abs_s == pytest.approx(
-        last_catch.t_abs_s + 2.0 * _pattern(cols).rest_tail_s
-        + sc.REST_FRESH_MARGIN_S)
+        sc.closing_rest_t_abs(last_catch.t_abs_s,
+                              _pattern(cols).rest_tail_s))
     assert rest.dispatch_s() > last_catch.t_abs_s
+    assert rest.t_abs_s > last_catch.t_abs_s
 
 
 @pytest.mark.parametrize('compile_fn', ['columns', 'one_ball_hop', 'one_ball_self'])
@@ -320,19 +396,23 @@ def test_compile_columns_catch_window_is_the_transit(cols):
 
 def test_compile_columns_throw_y_d_is_the_identity_prior(cols):
     """The learner is off at R2: every columns throw — free-standing or carried
-    by a catch — holds the zero-offset, pattern-APEX command against its OWN
-    site's target."""
+    by a catch — holds the zero-offset, pattern-APEX command against its
+    target: its OWN site, except the Stop's last throw (D2, E1', 2026-09-30),
+    whose target is the OTHER site by design (:func:`test_the_last_throw_is_
+    cross_site_and_flagged_shadow_landing`)."""
     schedule = sc.compile_columns(_pattern(cols, n_throws=3), t0_abs_s=0.0)
     seen = 0
     for s in schedule.skills:
         if s.kind == sc.THROW:
-            target, y_d = s.target, s.y_d
+            target, y_d, shadow = s.target, s.y_d, s.shadow_landing
         elif s.then_throw is not None:
             target, y_d = s.then_throw.target, s.then_throw.y_d
+            shadow = s.then_throw.shadow_landing
         else:
             continue
         seen += 1
-        assert target is s.site
+        # Own site unless this is the Stop's cross-site last throw.
+        assert (target is s.site) != shadow
         landing_xy, apex = y_d
         np.testing.assert_array_equal(landing_xy, np.zeros(2))
         # The command is the pattern's APEX (2026-09-18); the schedule's
@@ -359,6 +439,70 @@ def test_compile_columns_rejects_a_window_below_the_four_knot_floor(cols):
     with pytest.raises(ValueError, match='knot floor'):
         sc.compile_columns(_pattern(cols, n_throws=2, dwell_s=0.05),
                            t0_abs_s=0.0)
+
+
+# ---------------------------------------------------------------------------
+# R5 (owner decision D1, 2026-09-30): the feed-triggered columns start --
+# ``compile_reload_wait(holds_ball=...)`` and ``compile_columns(feed=...)``.
+
+def test_compile_reload_wait_defaults_holds_ball_false(cols):
+    """Pre-R5 behaviour, unchanged: the reload bridge's cup is empty."""
+    schedule = sc.compile_reload_wait(cols[0], 1.5, 0.0)
+    assert schedule.skills[0].holds_ball is False
+
+
+def test_compile_reload_wait_holds_ball_true_for_the_columns_bridge(cols):
+    """R5's columns bridge reuses this exact shape with ``holds_ball=True``
+    (ball A is already seated -- an operator placed it, same as self-toss's
+    own opening REST)."""
+    schedule = sc.compile_reload_wait(cols[0], 1.5, 0.0, holds_ball=True)
+    assert schedule.skills[0].holds_ball is True
+
+
+def test_compile_columns_refuses_neither_t0_nor_feed(cols):
+    with pytest.raises(ValueError, match='exactly one'):
+        sc.compile_columns(_pattern(cols))
+
+
+def test_compile_columns_refuses_both_t0_and_feed(cols):
+    feed = sc.LandingPrior(pos_mm=cols[1].cup_mm, vel_mm_s=(0.0, 0.0, -2000.0),
+                           t_land_abs_s=1000.0)
+    with pytest.raises(ValueError, match='exactly one'):
+        sc.compile_columns(_pattern(cols), t0_abs_s=1.0, feed=feed)
+
+
+def test_compile_columns_feed_derives_t0_as_landing_minus_transit(cols):
+    """t0 = feed.t_land_abs_s - transit_s(pattern) (brief_S2.md item 1b) --
+    pinned against the module's OWN ``transit_s``/``flight_s``, not a
+    restated literal, so a change to the beat/transit arithmetic cannot
+    silently desync this arithmetic from it."""
+    pattern = _pattern(cols)
+    tau = sc.transit_s(sc.flight_s(pattern.apex_m), pattern.dwell_s)
+    t_land = 1_700_000_000.0 + tau + 5.0  # an arbitrary ROS-epoch-scale instant
+    feed = sc.LandingPrior(pos_mm=cols[1].cup_mm, vel_mm_s=(10.0, -5.0, -2500.0),
+                           t_land_abs_s=t_land)
+    schedule = sc.compile_columns(pattern, feed=feed)
+    assert schedule.t0_abs_s == pytest.approx(t_land - tau, abs=1e-6)
+
+
+def test_compile_columns_feed_lands_the_initial_catch_landing_prior(cols):
+    """The initial CATCH of ball 1 carries ``landing_prior=feed`` unchanged
+    (position/velocity/instant), and its ``t_abs_s`` is exactly
+    ``feed.t_land_abs_s`` -- ``executor._predicted_landing`` already honours
+    ``Skill.landing_prior`` unconditionally (R4's reload mechanism, reused
+    here without modification)."""
+    pattern = _pattern(cols)
+    tau = sc.transit_s(sc.flight_s(pattern.apex_m), pattern.dwell_s)
+    t_land = 1_700_000_042.0 + tau
+    pos = np.array([cols[1].cup_mm[0] + 3.0, cols[1].cup_mm[1] - 2.0, 830.0])
+    vel = np.array([10.0, -5.0, -2500.0])
+    feed = sc.LandingPrior(pos_mm=pos, vel_mm_s=vel, t_land_abs_s=t_land)
+    schedule = sc.compile_columns(pattern, feed=feed)
+    catches = [s for s in schedule.skills if s.kind == sc.CATCH]
+    first = min(catches, key=lambda s: s.t_abs_s)
+    assert first.landing_prior is feed
+    assert first.t_abs_s == pytest.approx(t_land, abs=1e-6)
+    assert first.ball_id == 1
 
 
 def test_schedule_due_returns_only_skills_whose_dispatch_has_passed(cols):
@@ -947,6 +1091,54 @@ def test_compile_reload_catch_is_a_fresh_origin_from_the_pretilt_rest(site):
     pretilt, catch = schedule.skills[0], schedule.skills[1]
     assert catch.dispatch_s() + catch.lead_s >= pretilt.t_abs_s - 1e-9
     assert catch.window_s >= sc.RELOAD_CATCH_WINDOW_S - 1e-9
+
+
+#: The 2026-09-16 sitting's own measured BB arrival at P2 (project memory
+#: `project_two_ball_skill_stack.md`; also carried into R5's owner-decision
+#: probe table, brief_S.md). Natural (unclamped) receive tilt magnitude for
+#: this vector is ~11.89 deg (just under the 12 deg ceiling) — probed
+#: 2026-09-30, `tg.tilt_to_receive(_R4_LOG_ARRIVAL_MM_S)` — so a 4 deg cap is
+#: a REAL clamp, not a no-op at this arrival.
+_R4_LOG_ARRIVAL_MM_S = np.array([1073.0, 436.0, -5507.0])
+
+
+def test_compile_reload_hold_tilt_is_capped_by_max_tilt_deg(site):
+    """The owner's 4 deg hold-cap experiment (R5, 2026-09-30): both the
+    PRE-TILT REST's ``rest_tilt`` and the CATCH's ``hold_tilt`` come from the
+    SAME clamped derivation, so a tight cap moves both together.
+
+    Probed 2026-09-30 (deterministic, `tg.tilt_to_receive` is a pure
+    trig clamp): at ``max_tilt_deg=4.0`` against the R4-log arrival above,
+    both magnitudes are exactly ``4.000`` deg (the natural ~11.89 deg is
+    well past the cap, so this exercises the clamp branch, not the
+    pass-through one)."""
+    landing_mm, _, t_land_abs, pattern, t0 = _reload_args(site)
+    schedule = sc.compile_reload(landing_mm, _R4_LOG_ARRIVAL_MM_S, t_land_abs,
+                                 pattern, t0, max_tilt_deg=4.0)
+    pretilt, catch = schedule.skills[0], schedule.skills[1]
+    pretilt_deg = float(np.degrees(np.hypot(*pretilt.rest_tilt)))
+    catch_deg = float(np.degrees(np.hypot(*catch.hold_tilt)))
+    assert pretilt_deg == pytest.approx(4.0, abs=1e-3)
+    assert catch_deg == pytest.approx(4.0, abs=1e-3)
+    assert pretilt.rest_tilt == pytest.approx(catch.hold_tilt)
+
+
+def test_compile_reload_max_tilt_deg_defaults_to_the_planner_ceiling(site):
+    """No cap named -> the pre-R5 behaviour, unchanged: the natural
+    (unclamped-by-this-knob) receive tilt at the planner's own 12 deg
+    ceiling, same as ``segments.receive_hold_tilt`` would give."""
+    landing_mm, landing_vel, t_land_abs, pattern, t0 = _reload_args(site)
+    schedule = sc.compile_reload(landing_mm, landing_vel, t_land_abs, pattern, t0)
+    tilt = sg.receive_hold_tilt(landing_vel)
+    assert schedule.skills[0].rest_tilt == pytest.approx(tilt)
+
+
+@pytest.mark.parametrize('bad', [0.0, -1.0, 12.0001, 30.0])
+def test_compile_reload_refuses_a_max_tilt_deg_outside_the_ceiling(site, bad):
+    landing_mm, landing_vel, t_land_abs, pattern, t0 = _reload_args(site)
+    with pytest.raises(ValueError, match='max_tilt_deg'):
+        sc.compile_reload(landing_mm, landing_vel, t_land_abs, pattern, t0,
+                          max_tilt_deg=bad)
 
 
 def test_compile_reload_catch_dispatches_only_once_the_pretilt_rest_has_ended(site):

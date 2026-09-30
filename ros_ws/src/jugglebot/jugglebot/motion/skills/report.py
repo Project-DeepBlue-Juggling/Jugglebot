@@ -175,12 +175,22 @@ def start_line(label: str, n_throws: int, apex_m: float, *,
 
 def end_line(label: str, end_code: str, end_message: str,
              reports: Sequence[ThrowReport],
-             end_kind: str = '') -> Tuple[str, str]:
+             end_kind: str = '',
+             shadow_landing_stop: bool = False) -> Tuple[str, str]:
     """``(severity, text)`` for the attempt's last line.
 
     INFO when it completed or the operator stopped it, ERROR when anything
     else ended it — with the reason in a few words (:func:`short_refusal`).
-    Always the catch count, and the spread of what flew."""
+    Always the catch count, and the spread of what flew.
+
+    ``shadow_landing_stop`` (owner decision D2, 2026-09-30): the columns
+    pattern's own end state — the schedule's last throw was aimed at the
+    ball already held at the OTHER site (:func:`~jugglebot.motion.skills.
+    schedule.compile_columns`'s docstring), so a CLEAN finish (``end_code``
+    empty — nothing refused, every skill dispatched) leaves the platform
+    holding both balls, not at an ordinary rest. Only meaningful when
+    ``end_code`` is empty: a D3 drop or any other refusal already has its
+    own, more specific, reason and takes priority."""
     thrown = len(reports)
     caught = sum(1 for r in reports if r.caught)
     tally = '%d/%d caught' % (caught, thrown)
@@ -196,6 +206,11 @@ def end_line(label: str, end_code: str, end_message: str,
     if releases:
         tally += ' · release %s..%s' % (_ms(min(releases)), _ms(max(releases)))
     if not end_code:
+        if shadow_landing_stop:
+            return ('INFO',
+                    '%s done (one ball held, the last ball rests on the '
+                    'platform — not resumable, cone delivery is a later '
+                    'rung): %s' % (label, tally))
         return 'INFO', '%s done: %s' % (label, tally)
     if end_code == 'STOPPED':
         return 'INFO', '%s stopped by the operator: %s' % (label, tally)

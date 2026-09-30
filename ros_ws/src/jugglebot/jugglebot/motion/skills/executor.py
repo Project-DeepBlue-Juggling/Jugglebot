@@ -340,6 +340,16 @@ HAND_LANE_REFUSED = 'HAND_LANE_REFUSED'
 #: ``now >= self._release_deadline`` -> ``self._abort('NO_RELEASE')``).
 ABORTED_NO_RELEASE = 'ABORTED_NO_RELEASE'
 
+#: The survivor drop policy (owner decision D3, 2026-09-30, R5 rescope): one
+#: ball's release was never confirmed (:data:`ABORTED_NO_RELEASE`'s own
+#: deadline) while ANOTHER ball still has a CATCH left in the schedule --
+#: rather than end the attempt on the dropped ball, keep catching the
+#: survivor: its next CATCH is dispatched WITHOUT the throw it would have
+#: carried, then a closing REST at its site
+#: (:meth:`SkillExecutor._advance_release_evidence`). This code names that
+#: this attempt's clean finish followed a drop, not a fault-free pattern.
+DROPPED_SURVIVOR_STOPPED = 'DROPPED_SURVIVOR_STOPPED'
+
 #: Seconds a throw's release evidence may lag ``t_release`` before the attempt
 #: aborts ``ABORTED_NO_RELEASE``. Restated, not imported, from
 #: ``toss_sequencer.TOSS_RELEASE_GRACE_S`` (0.5 s) -- that module dies at R4.
@@ -642,6 +652,18 @@ class _PendingOutcome:
     catch_idx: int = -1
     reaims: int = 0
     reaim_refused: str = ''
+    #: The columns Stop's cross-site last throw (owner decision D2,
+    #: 2026-09-30, R5 rescope, E1') — read straight off
+    #: :attr:`~jugglebot.motion.skills.schedule.Skill.shadow_landing` /
+    #: :attr:`~jugglebot.motion.skills.schedule.ThenThrow.shadow_landing` at
+    #: registration (:meth:`SkillExecutor._register_outcome`), never
+    #: inferred from schedule shape (plan § 0: one data structure, no second
+    #: copy of the same fact). This ball lands on the ball ALREADY held at
+    #: the other site, so the possession sensor reading SEATED throughout is
+    #: evidence about THAT ball, not this one — must not verdict this row
+    #: caught, and must not reach the learner's memory. See
+    #: :meth:`SkillExecutor._finalise_outcome`.
+    shadow_landing: bool = False
 
 
 @dataclasses.dataclass
@@ -1290,7 +1312,8 @@ class SkillExecutor:
     # ── the R3 command: learner + admissible box, computed once per throw ──
 
     def _command_u(self, idx: int, site, target, y_d,
-                   release_offset_m=None) -> Tuple[np.ndarray, float]:
+                   release_offset_m=None,
+                   shadow_landing: bool = False) -> Tuple[np.ndarray, float]:
         """The commanded ``u = (landing_xy_m, apex_m)`` for the ball this
         skill releases — computed ONCE (at ``idx``'s first dispatch) and
         cached, so a CATCH re-send's later calls return the SAME command
@@ -1326,6 +1349,14 @@ class SkillExecutor:
         or no swept box covers ``(site.name, target.name)`` at the DESIRED
         apex — the caller converts that to a :data:`NO_ADMISSIBLE_COMMAND`
         refusal before any solve is attempted.
+
+        ``shadow_landing`` (owner decision D2, 2026-09-30, R5 rescope, E1'):
+        the columns Stop's cross-site last throw bypasses the learner AND the
+        box entirely, ``u = y_d`` exactly, no clip — the ball lands on the
+        ball already held, so precision buys nothing, and the admissible box
+        is swept per pattern for SAME-site throws only (this one is not; a
+        lookup here would either miss and refuse, or hit a box that was never
+        measured for this segment shape).
         """
         if idx in self._u_cache:
             _x, u_dy, u_apex = self._u_cache[idx]
@@ -1338,6 +1369,10 @@ class SkillExecutor:
         x = np.array([float(site.cup_mm[0]) / 1000.0,
                      float(site.cup_mm[1]) / 1000.0,
                      float(off[0]), float(off[1])])
+        if shadow_landing:
+            u_dy, u_apex = dy, apex
+            self._u_cache[idx] = (x, u_dy, u_apex)
+            return u_dy, u_apex
         # The box is looked up BEFORE the learner runs (finding 5, R3 audit,
         # 2026-09-13): a missing box means there is no admissible-region clip
         # to apply afterward, so a learner command would reach the platform
@@ -1425,7 +1460,8 @@ class SkillExecutor:
         than commanded directly, so the learner and the planner cannot
         disagree about which of the two a number is (2026-09-18)."""
         u_dy, u_apex = self._command_u(idx, skill.site, skill.target,
-                                       skill.y_d)
+                                       skill.y_d,
+                                       shadow_landing=skill.shadow_landing)
         return ThrowTerminal(
             site_mm=skill.site.throw_site_mm(),
             target_mm=self._commanded_target_mm(skill.target, (u_dy, u_apex)),
@@ -1583,7 +1619,8 @@ class SkillExecutor:
             self._carried_release_mm[idx] = release_mm
             u_dy, u_apex = self._command_u(
                 idx, skill.site, tt.target, tt.y_d,
-                release_offset_m=self._release_offset_m(idx, skill.site))
+                release_offset_m=self._release_offset_m(idx, skill.site),
+                shadow_landing=tt.shadow_landing)
             then_throw = ThrowAfterCatch(
                 t_release_s=float(tt.t_release_abs_s),
                 site_mm=release_mm,
@@ -2187,9 +2224,11 @@ class SkillExecutor:
             return
         if skill.kind == THROW:
             target, t_release = skill.target, float(skill.t_abs_s)
+            shadow_landing = bool(skill.shadow_landing)
         elif skill.kind == CATCH and skill.then_throw is not None:
             target = skill.then_throw.target
             t_release = float(skill.then_throw.t_release_abs_s)
+            shadow_landing = bool(skill.then_throw.shadow_landing)
         else:
             return
         x, u_dy, u_apex = self._u_cache[idx]
@@ -2206,7 +2245,8 @@ class SkillExecutor:
             target_xy_mm=target_xy_mm,
             t_next_release_s=_next_release(self.schedule, idx, skill.ball_id),
             throw_no=self._n_registered,
-            release_z_mm=float(skill.site.throw_site_mm()[2])))
+            release_z_mm=float(skill.site.throw_site_mm()[2]),
+            shadow_landing=shadow_landing))
 
     def _note_catch_aim(self, ball_id: int, catch_idx: int,
                         t_land_abs_s: float, reaim: bool = False) -> None:
@@ -2295,6 +2335,48 @@ class SkillExecutor:
             holds_ball=False)))
         return stops
 
+    def _survivor_catch(self, dropped_ball_id: int
+                        ) -> Optional[Tuple[int, Skill]]:
+        """The nearest undispatched CATCH for a ball OTHER than
+        ``dropped_ball_id`` -- the D3 survivor policy's anchor (owner
+        decision, 2026-09-30, R5 rescope). ``None`` when no other ball has
+        one left (a one-ball schedule, or every other CATCH already
+        dispatched), in which case the caller falls back to
+        :data:`ABORTED_NO_RELEASE` unchanged."""
+        candidates = [(j, sk) for j, sk in enumerate(self.schedule.skills)
+                     if j not in self.dispatched and sk.kind == CATCH
+                     and sk.ball_id != dropped_ball_id]
+        if not candidates:
+            return None
+        return min(candidates, key=lambda pair: float(pair[1].t_abs_s))
+
+    def _install_survivor_tail(self, y_idx: int, y_skill: Skill) -> None:
+        """D3: cut the schedule to ``y_skill`` (its own carried throw
+        stripped -- nothing is thrown after a drop) plus one closing REST at
+        its site, the same fresh-origin margin every other closing REST uses
+        (:func:`~jugglebot.motion.skills.schedule.closing_rest_t_abs`).
+
+        Indices ``0 .. y_idx - 1`` are UNCHANGED objects: :attr:`dispatched`
+        and :attr:`results` are indexed by position, so anything already
+        dispatched must keep the exact index and plan it was installed
+        under. :func:`~jugglebot.motion.skills.schedule._assign_leads` runs
+        over the WHOLE new list rather than just the tail -- it is a pure
+        function of the ordered sequence up to each index, so the prefix's
+        leads come back identical to what they already were (this is
+        provable, not merely checked: its loop state at index ``k`` depends
+        only on skills ``0 .. k-1``, which the prefix does not change), and
+        only ``y_skill`` (now releasing nothing) and the new REST are
+        actually affected.
+        """
+        prefix = list(self.schedule.skills[:y_idx])
+        stripped = dataclasses.replace(y_skill, then_throw=None)
+        rest_t = sch.closing_rest_t_abs(float(y_skill.t_abs_s), sg.REST_TAIL_S)
+        rest = Skill(kind=REST, ball_id=y_skill.ball_id, site=y_skill.site,
+                    t_abs_s=rest_t, window_s=sg.REST_TAIL_S)
+        new_tail = sch._assign_leads(prefix + [stripped, rest])
+        self.schedule = dataclasses.replace(self.schedule,
+                                            skills=tuple(new_tail))
+
     def _advance_release_evidence(self, t_abs_s: float) -> List[str]:
         """Confirm every accepted release actually left the hand (PORT@R3,
         INVARIANTS.md § 8 ``ABORTED_NO_RELEASE``) -- called each tick from
@@ -2359,6 +2441,31 @@ class SkillExecutor:
                         pend.release_confirmed = True
             if (not pend.release_confirmed
                     and t_abs_s >= pend.t_release_s + RELEASE_GRACE_S):
+                survivor = self._survivor_catch(pend.ball_id)
+                if survivor is not None and not self.attempt_ended:
+                    # D3 (owner decision, 2026-09-30, R5 rescope): another
+                    # ball still has a CATCH coming -- keep catching it
+                    # instead of ending the attempt. Cut the schedule to
+                    # that catch (its own carried throw stripped -- nothing
+                    # is thrown after a drop) plus a closing REST at its
+                    # site. `end_code` is set here so the eventual clean
+                    # finish still names the drop; `attempt_ended` stays
+                    # False so `tick` keeps dispatching.
+                    self._install_survivor_tail(*survivor)
+                    self.end_code = DROPPED_SURVIVOR_STOPPED
+                    self.end_message = (
+                        'throw %d/%d never left the hand (no release '
+                        'evidence by +%.1f s) -- ball %d caught, no '
+                        'further throws'
+                        % (pend.throw_no, self.n_throws, RELEASE_GRACE_S,
+                           survivor[1].ball_id))
+                    lines.append(
+                        '%.3f DROP %s: no release evidence for ball %d by '
+                        't_release + %.1f s -- ball %d continues to its own '
+                        'catch, then rest'
+                        % (t_abs_s, DROPPED_SURVIVOR_STOPPED, pend.ball_id,
+                           RELEASE_GRACE_S, survivor[1].ball_id))
+                    continue
                 if not self.attempt_ended:
                     self.attempt_ended = True
                     self.end_code = ABORTED_NO_RELEASE
@@ -2673,11 +2780,16 @@ class SkillExecutor:
             if pend.t_catch_aim_s is not None:
                 arrival_err = (float(landing.t_land_abs_s)
                                - float(pend.t_catch_aim_s))
+        # `shadow_landing` overrides the possession latch here too, for the
+        # SAME reason `_finalise_outcome` overrides it on the learner's
+        # ``Experience`` -- the operator's throw line must not read CAUGHT
+        # off a sensor that is reading the PREVIOUS ball's possession.
+        caught = (False if pend.shadow_landing
+                 else (bool(pend.caught_seen) if self.observer is not None
+                       else None))
         self.reports.append(ThrowReport(
             throw_no=pend.throw_no, n_throws=self.n_throws,
-            ball_id=pend.ball_id,
-            caught=(bool(pend.caught_seen) if self.observer is not None
-                    else None),
+            ball_id=pend.ball_id, caught=caught,
             row=bool(row), no_row_reason=no_row_reason,
             apex_m=None if apex_m is None else float(apex_m),
             landing_err_mm=landing_err, release_err_s=release_err,
@@ -2731,17 +2843,33 @@ class SkillExecutor:
         # The LATCH, not a fresh sample: by ``finalise_at`` a chained catch has
         # often already re-thrown the ball, so the cup at this instant says
         # nothing about whether it was caught (see :meth:`_outcome_window`).
-        caught = bool(pend.caught_seen)
-        exp = Experience(x=pend.x, u=pend.u, y=y, t_abs_s=pend.t_release_s,
-                         ball_id=pend.ball_id, caught=bool(caught))
-        self.on_experience(exp)
+        #
+        # `shadow_landing` OVERRIDES the possession latch: this ball is the
+        # columns Stop's cross-site last throw (D2, E1', 2026-09-30) -- the
+        # cup already reads SEATED throughout from the PREVIOUS ball it is
+        # holding, which is evidence about that ball, not this one.
+        caught = False if pend.shadow_landing else bool(pend.caught_seen)
+        # NO memory row for a shadow-landed throw: `u = y_d` exactly
+        # (`_command_u`'s bypass) so there is nothing for the learner to fit
+        # against, and the command never came off a box this segment shape
+        # was swept for -- an Experience built from it would teach the
+        # memory a command/outcome pair from a throw it never chose. The
+        # operator's report still gets the real observed landing/apex below
+        # (`row=True`): only the memory row is skipped, not the account of
+        # what happened.
+        if not pend.shadow_landing:
+            exp = Experience(x=pend.x, u=pend.u, y=y, t_abs_s=pend.t_release_s,
+                             ball_id=pend.ball_id, caught=bool(caught))
+            self.on_experience(exp)
         self._report(pend, row=True, apex_m=apex_obs_m)
         phase = ('' if pend.t_seat_s is None
                  else ' seat=%+.3f s vs scheduled landing'
                  % (pend.t_seat_s - float(pend.t_land_scheduled_s)))
+        shadow = ' (landed on the held ball)' if pend.shadow_landing else ''
         return ['%.3f OUTCOME ball %d: y=(%.4f, %.4f) m apex=%.4f m '
-                'caught=%s%s'
-                % (finalise_at, pend.ball_id, y[0], y[1], y[2], caught, phase)]
+                'caught=%s%s%s'
+                % (finalise_at, pend.ball_id, y[0], y[1], y[2], caught, phase,
+                   shadow)]
 
     def _resend_hand_corrected_catch(self, t_abs_s: float) -> List[str]:
         """:data:`AIM_SCHEDULE_HAND`: re-aim the committed CATCH ONCE, from

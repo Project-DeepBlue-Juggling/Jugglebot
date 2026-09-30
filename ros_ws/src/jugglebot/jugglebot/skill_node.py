@@ -42,7 +42,7 @@ import threading
 import time
 import traceback
 from types import SimpleNamespace
-from typing import Dict, List, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -77,18 +77,23 @@ from jugglebot.motion.skills.executor import (InstallResult, Landing,
                                               precondition_refusals)
 from jugglebot.motion.skills.hand_launch import HandLaunchMonitor
 from jugglebot.motion.skills.memory import Memory, memory_path
-from jugglebot.motion.skills.schedule import (HOME_BAND_REV, LEAD_S,
-                                              OneBallPattern, Pattern,
-                                              PRETILT_S, compile_columns,
+from jugglebot.motion.skills.schedule import (LEAD_S,
+                                              LandingPrior, OneBallPattern,
+                                              Pattern, PRETILT_S,
+                                              compile_columns,
                                               compile_one_ball,
                                               compile_reload,
                                               compile_reload_wait,
-                                              floor_lift_s, home_hand_bounds)
+                                              flight_s, floor_lift_s,
+                                              home_hand_bounds,
+                                              schedule_has_shadow_landing,
+                                              transit_s)
 from jugglebot.motion.skills.segments import CATCH, REST, THROW
 from jugglebot.motion.skills.sites import (CATCH_CUP_Z_MM, REST_CUP_Z_MM,
                                            REST_HAND_REV, Site, columns_sites)
 from jugglebot.motion.tilt_map import find_repo_root
 from jugglebot.motion.trajectory import ballistics_bc
+from jugglebot.motion.trajectory import tilt_geometry as tg
 from jugglebot.ball_possession import (
     FlightLatch, advance_flight_latches, flight_in_progress)
 
@@ -302,6 +307,34 @@ RELOAD_BB_READY_TIMEOUT_S = 3.0
 #: wait is a ceiling, NOT a measurement -- it only lengthens how long the
 #: platform rests level under the aim point, the safe place to wait.
 RELOAD_BB_FETCH_TIMEOUT_S = 10.0
+
+#: R5 feed-triggered columns start (owner decision D1, 2026-09-30): the box
+#: an UN-ANNOUNCED tracker landing must fall inside, relative to the feed's
+#: aim site, to be accepted as ball B's arrival -- the transit catch's own
+#: reach, per unit B's admissible-box origin table (brief_S2.md,
+#: 2026-09-30 -- this unit reuses the number rather than re-deriving it,
+#: since re-sweeping the box is out of scope here): tighter on x (10 mm)
+#: than on y (20 mm), asymmetric because the catch-with-throw chain's own
+#: margin is asymmetric there (unlike `tools/admissible_sweep.OFFSETS_MM`'s
+#: symmetric +-20 mm grid, which is the box's SWEEP resolution, not this
+#: bound).
+COLUMNS_FEED_BOUND_X_MM = 10.0
+COLUMNS_FEED_BOUND_Y_MM = 20.0
+
+#: R5 feed-triggered columns start: how long `_run_columns`'s FEED WAIT
+#: keeps listening for an UN-ANNOUNCED tracker landing (`reload=False`, the
+#: interim human-lob sittings -- no Ball Butler round trip at all) before
+#: giving up. Ball Butler's own throw-delay floor (`_BB_THROW_DELAY_FLOOR_S`
+#: = 2.5 s, BB's pitch-settle floor) and its own ready/fetch ceiling
+#: (`RELOAD_BB_READY_TIMEOUT_S` + `RELOAD_BB_FETCH_TIMEOUT_S` = 13 s) both
+#: bound a MACHINE round trip; a human operator watching for the "feed
+#: armed" line, picking up a ball and throwing it is not a hardware-timed
+#: quantity, so this is a considered policy ceiling rather than a
+#: measurement -- set to roughly 2x BB's own worst-case round trip so a
+#: deliberate but unhurried throw is never cut off mid-wind-up, and finite
+#: so a forgotten feed still ends the attempt through the bridge's own safe
+#: rest tail rather than hanging forever.
+COLUMNS_TRACKER_FEED_DEADLINE_S = 30.0
 
 #: A Ball Butler heartbeat older than this is not evidence of BB's state (the
 #: bridge publishes it at 10 Hz, measured 2026-09-28: 0.100 s median period),
@@ -733,6 +766,13 @@ class SkillNode(Node):
         # re-aiming outright -- the A/B knob for a sitting: on 2026-09-18 16:16
         # 18 of 21 timing-only re-sends were refused LIMIT_JERK, each a solve.
         self.declare_parameter('catch_resend_max', 2)
+        # The R5 owner's held-catch tilt experiment (2026-09-30): the receive
+        # attitude `compile_reload` derives for the PRE-TILT REST and the
+        # held-axis CATCH is clamped here rather than at the planner's own
+        # 12 deg ceiling (`tilt_geometry.MAX_TILT_DEG`) -- a runsheet-tunable
+        # cap, default unchanged from the ceiling so an un-set launch flies
+        # exactly as before.
+        self.declare_parameter('hold_tilt_max_deg', float(tg.MAX_TILT_DEG))
 
         # ── the install client + tick timer share ONE reentrant group ──────
         # Fixed 2026-09-13 (found by reading, never exercised live): `main`
@@ -914,12 +954,115 @@ class SkillNode(Node):
                 t_land_abs_s=t_land,
                 from_fit=bool(b.landing_from_fit))
         self._advance_correlation()
+        # R5 (owner decision D1, 2026-09-30): the columns FEED WAIT's
+        # tracker path -- an UN-ANNOUNCED ball's own converged landing can
+        # resolve the wait, same as a Ball Butler announcement does
+        # (`_on_announcement`). Cheap to check on every idle tick (a dict
+        # read under `_reload_lock`) and a no-op whenever no columns feed is
+        # armed, so this runs unconditionally rather than threading a flag
+        # through every `/balls` publisher.
+        with self._reload_lock:
+            ctx = self._reload_ctx
+            waiting = (ctx is not None and ctx.kind == 'columns'
+                      and not getattr(ctx, 'announced', False))
+        if waiting:
+            for ball_id, landing in self._balls.items():
+                if self._maybe_resolve_columns_feed(ctx, ball_id, landing):
+                    break
 
     def _now_s(self) -> float:
         """Now, in ROS epoch seconds — the clock the announcements' own
         ``throw_time`` is on, and therefore the only clock a "has this release
         happened?" comparison may use (`_advance_correlation`, `_tracker`)."""
         return float(self.get_clock().now().nanoseconds) * 1e-9
+
+    def _maybe_resolve_columns_feed(self, ctx, ball_id: int,
+                                    landing: Landing) -> bool:
+        """R5 (owner decision D1, 2026-09-30): the columns FEED WAIT's
+        tracker path -- an UN-ANNOUNCED ball's own converged landing
+        resolves ``ctx`` exactly like `_on_announcement` resolves it for a
+        Ball Butler throw (claim first, install only if the claim is still
+        current), for the interim sittings with no Ball Butler round trip
+        at all (a human lob). Returns True once ``ctx`` is claimed (whether
+        or not the compile that follows succeeds) -- the caller's loop over
+        ``self._balls`` stops there, since only one ball can resolve one
+        feed.
+
+        Three physical facts gate acceptance, checked BEFORE the claim (a
+        candidate that fails one of these leaves the wait armed for the
+        NEXT ``/balls`` snapshot):
+
+        1. ``landing.from_fit`` — a Kalman PREDICTION, not the CAUGHT dead-
+           reckoning artefact `ball_possession`'s own module docstring
+           describes; an un-converged or CAUGHT-frozen landing is not
+           evidence of where a real ball is headed.
+        2. Descending (``vel_mm_s[2] < 0``) — a ball already past its apex,
+           not one still rising past the aim site's height on its way up.
+        3. Within :data:`COLUMNS_FEED_BOUND_X_MM` / :data:`
+           COLUMNS_FEED_BOUND_Y_MM` of ``ctx.aim_site`` — the transit
+           catch's own reach (see the constants' own docstring for the
+           provenance).
+
+        A candidate that passes those three but whose landing is too SOON
+        (less than ``transit_s + launch_s + LEAD_S`` + one tick away —
+        `compile_columns`'s own initial-CATCH window plus the schedule's
+        general dispatch lead plus one tick of scheduling margin, the same
+        margin `_run_one_ball`'s own t0 idiom leaves) cannot be scheduled at
+        all: the feed is logged ONCE (not resolved) and the wait continues,
+        in case a human throws again.
+        """
+        if not bool(landing.from_fit):
+            return False
+        if not float(landing.vel_mm_s[2]) < 0.0:
+            return False
+        aim = ctx.aim_site.cup_mm
+        dx_mm = abs(float(landing.pos_mm[0]) - float(aim[0]))
+        dy_mm = abs(float(landing.pos_mm[1]) - float(aim[1]))
+        if (dx_mm > COLUMNS_FEED_BOUND_X_MM
+                or dy_mm > COLUMNS_FEED_BOUND_Y_MM):
+            return False
+
+        now = self._now_s()
+        pattern = ctx.columns_pattern
+        tau = transit_s(flight_s(pattern.apex_m), pattern.dwell_s)
+        lead_needed_s = tau + float(pattern.launch_s) + LEAD_S + (1.0 / _TICK_HZ)
+        margin_s = (float(landing.t_land_abs_s) - now) - lead_needed_s
+        if margin_s < 0.0:
+            if not getattr(ctx, 'lead_deficit_logged', False):
+                self.get_logger().info(
+                    'columns feed: ball %d lands in %.3f s, %.3f s short of '
+                    'the %.3f s the transit catch needs (tau %.3f + launch '
+                    '%.3f + lead %.3f + one tick) -- still waiting'
+                    % (ball_id, float(landing.t_land_abs_s) - now, -margin_s,
+                       lead_needed_s, tau, float(pattern.launch_s), LEAD_S))
+                with self._reload_lock:
+                    if self._reload_ctx is ctx:
+                        ctx.lead_deficit_logged = True
+            return False
+
+        with self._reload_lock:
+            claimed = (self._reload_ctx is ctx
+                      and not getattr(ctx, 'announced', False))
+            if claimed:
+                ctx.announced = True
+        if not claimed:
+            return False
+        # The tracker id is ALREADY KNOWN here (it is literally how this
+        # ball was found), so the correlation is a direct fact, not a
+        # `FlightLatch` search over an unknown release -- unlike the
+        # announcement path (`_install_announced_reload`), which never
+        # learns the tracker id until `advance_flight_latches` finds it.
+        with self._correlation_lock:
+            self._correlation[1] = (FlightLatch(t_release_s=now,
+                                                announced_id=int(ball_id)),)
+        feed = LandingPrior(pos_mm=landing.pos_mm, vel_mm_s=landing.vel_mm_s,
+                            t_land_abs_s=landing.t_land_abs_s)
+        self.get_logger().debug(
+            'columns feed: un-announced ball %d accepted (dx %.1f mm, dy '
+            '%.1f mm of %s, margin %.3f s)'
+            % (ball_id, dx_mm, dy_mm, ctx.aim_site.name, margin_s))
+        self._install_columns_schedule(ctx, feed)
+        return True
 
     def _advance_correlation(self) -> None:
         """Refine every live schedule-ball-id -> tracker-id correlation
@@ -969,6 +1112,20 @@ class SkillNode(Node):
         if cap != raw:
             self.get_logger().warn('catch_resend_max %d outside 0..5 -- using %d'
                                    % (raw, cap))
+        return cap
+
+    def _hold_tilt_max_deg(self) -> float:
+        """`hold_tilt_max_deg`, clamped to ``(0, tilt_geometry.MAX_TILT_DEG]``
+        with a WARN outside it -- same shape as `_catch_resend_max`: a bound
+        on the held-catch attitude, not a policy, so an out-of-range launch
+        override is clamped rather than refused (this reads at reload-
+        announcement time, well after any attempt has been accepted)."""
+        raw = float(self.get_parameter('hold_tilt_max_deg').value)
+        cap = min(max(raw, 1e-6), float(tg.MAX_TILT_DEG))
+        if abs(cap - raw) > 1e-9:
+            self.get_logger().warn(
+                'hold_tilt_max_deg %.3f outside (0, %.1f] -- using %.3f'
+                % (raw, float(tg.MAX_TILT_DEG), cap))
         return cap
 
     def _catch_aim_source(self) -> str:
@@ -1673,7 +1830,7 @@ class SkillNode(Node):
         already streaming: the bridge REST's rest tail, holding level under
         the exact point BB was asked to aim at.
 
-        Two phases, two codes, read off the SAME field: `await_bb_idle`
+        Two BB phases, two codes, read off the SAME field: `await_bb_idle`
         (armed by `_start_reload`, waiting on BB's OWN heartbeat —
         `_maybe_fire_reload_throw`) times out `ABORTED_BB_NOT_READY`,
         naming BB's last-seen state and ball-in-hand bit — one physical
@@ -1681,13 +1838,18 @@ class SkillNode(Node):
         `THROW_REJECTED_BAD_STATE` x5 was exactly BB not being IDLE yet).
         `await_announcement` (armed once `bb/throw_at_target` is accepted)
         times out `ABORTED_NO_ANNOUNCEMENT`, unchanged from the pre-C1
-        code. Never fires during `firing` — `_maybe_fire_reload_throw`'s own
-        blocking round trip is still using this SAME `ctx`, and yanking it
-        out from under that call would leave a throw request answered by
-        nothing. Nor on a context an announcement has CLAIMED
-        (`ctx.announced`, 2026-09-29): the announcement did arrive, and
-        `_on_announcement` alone resolves the claim (installs the schedule,
-        or ends the attempt naming why)."""
+        code. A THIRD phase, `await_feed` (R5, owner decision D1,
+        2026-09-30 — `_run_columns`'s columns-only, no-Ball-Butler wait for
+        an un-announced tracker landing), times out
+        `ABORTED_NO_COLUMNS_FEED` — its own code, because nothing here was
+        ever asked of Ball Butler for this ctx to name. Never fires during
+        `firing` — `_maybe_fire_reload_throw`'s own blocking round trip is
+        still using this SAME `ctx`, and yanking it out from under that
+        call would leave a throw request answered by nothing. Nor on a
+        context an announcement/feed has CLAIMED (`ctx.announced`,
+        2026-09-29): it did arrive, and `_on_announcement` /
+        `_maybe_resolve_columns_feed` alone resolve the claim (install the
+        schedule, or end the attempt naming why)."""
         timed_out_phase = None
         with self._reload_lock:
             ctx = self._reload_ctx
@@ -1701,7 +1863,7 @@ class SkillNode(Node):
         # `_end_attempt` also clears `_reload_ctx` (already `None` here —
         # harmless, `with self._reload_lock: self._reload_ctx = None` twice
         # is idempotent) and captures `_goal_end_code` the same way for
-        # BOTH phases, so one call covers either.
+        # every phase, so one call covers all three.
         if timed_out_phase == 'await_bb_idle':
             self._end_attempt(
                 'ABORTED_BB_NOT_READY(%s, ball_in_hand=%s)'
@@ -1709,6 +1871,12 @@ class SkillNode(Node):
                 'Ball Butler never reported ready (IDLE, ball in hand, '
                 'connected) within the deadline -- the platform is at rest '
                 'under the aim point (the bridge REST\'s rest tail)')
+        elif timed_out_phase == 'await_feed':
+            self._end_attempt(
+                'ABORTED_NO_COLUMNS_FEED',
+                'no tracker landing resolved the columns feed within the '
+                'deadline -- the platform is at rest holding ball A (the '
+                'bridge REST\'s rest tail)')
         else:
             self._end_attempt(
                 'ABORTED_NO_ANNOUNCEMENT',
@@ -1803,10 +1971,16 @@ class SkillNode(Node):
         that stays correct regardless of how long that wait took."""
         now = self.get_clock().now().nanoseconds / 1e9
         bridge_end_abs = float(ctx.bridge.skills[-1].t_abs_s)
-        delay_s = max(bridge_end_abs - now + PRETILT_S + LEAD_S,
+        # `PRETILT_S` covers `compile_reload`'s own PRE-TILT REST, which
+        # runs AFTER the bridge and BEFORE the reload CATCH — a reload-only
+        # phase. Columns has no such phase (the bridge hands straight into
+        # the FEED WAIT; `compile_columns`'s initial CATCH is the very next
+        # thing), so it is not added there (R5, 2026-09-30).
+        pretilt_margin_s = PRETILT_S if ctx.kind == 'reload' else 0.0
+        delay_s = max(bridge_end_abs - now + pretilt_margin_s + LEAD_S,
                      _BB_THROW_DELAY_FLOOR_S)
         aim_x, aim_y, aim_z = _mocap_aim_point_mm(
-            ctx.site, CATCH_CUP_Z_MM, self._mocap_to_schedule_mm)
+            ctx.aim_site, CATCH_CUP_Z_MM, self._mocap_to_schedule_mm)
         req = BallButlerThrow.Request()
         req.use_target_point = True
         req.target_name = self._robot_name
@@ -1934,9 +2108,20 @@ class SkillNode(Node):
                     # gone the instant the line below runs, and
                     # `_juggle_execute` reads `_goal_end_code` only after
                     # `_goal_done_event` fires (`_maybe_signal_goal_done`).
-                    self._goal_end_code = (self._executor.end_code
-                                           if self._executor.attempt_ended
-                                           else '')
+                    #
+                    # READ `end_code` DIRECTLY, not gated on `attempt_ended`
+                    # (R5, D3 fix, 2026-09-30): every code setter used to
+                    # pair with `attempt_ended = True` in the same block, so
+                    # the two were interchangeable -- D3's
+                    # `DROPPED_SURVIVOR_STOPPED` is the one exception
+                    # (`attempt_ended` deliberately stays False so `tick`
+                    # keeps dispatching the survivor's tail), and the old
+                    # ternary silently laundered it back to '' here, so the
+                    # Juggle result never carried the drop. `end_code`
+                    # defaults to '' (`SkillExecutor.__init__`) and is set
+                    # ONLY on these named paths, so reading it straight is
+                    # equivalent for every pre-D3 path and correct for D3.
+                    self._goal_end_code = self._executor.end_code
                     self._log_attempt_end(self._executor)
                     self._executor = None
                     with self._reload_lock:
@@ -1987,15 +2172,25 @@ class SkillNode(Node):
     def _log_attempt_end(self, executor) -> None:
         """The attempt's last line (`report.end_line`), as its executor
         retires -- unless this is the reload's opening REST retiring while
-        the announcement is still awaited: that attempt is not over."""
+        the announcement is still awaited: that attempt is not over.
+
+        `end_code` is read directly (R5, D3 fix, 2026-09-30) -- see the
+        comment beside `_goal_end_code`'s own assignment in `_on_tick` for
+        why gating on `attempt_ended` silently dropped
+        `DROPPED_SURVIVOR_STOPPED`. `shadow_landing_stop` (D2) is only
+        asked when nothing else ended the attempt (`end_code` empty) --
+        `report.end_line`'s own docstring on the parameter."""
         with self._reload_lock:
             if self._reload_ctx is not None:
                 return
         severity, text = rp.end_line(
             self._attempt_label or executor.schedule.pattern,
-            executor.end_code if executor.attempt_ended else '',
+            executor.end_code,
             executor.end_message, self._goal_reports,
-            end_kind=executor.end_kind)
+            end_kind=executor.end_kind,
+            shadow_landing_stop=(not executor.end_code
+                                 and schedule_has_shadow_landing(
+                                     executor.schedule)))
         self._log_at(severity, text)
 
     def _maybe_signal_goal_done(self) -> None:
@@ -2060,11 +2255,10 @@ class SkillNode(Node):
                 message=('refused: pattern %r is not one of %s'
                          % (pattern, self._PATTERNS)))
         reload = bool(getattr(goal, 'reload', False))
-        if pattern == 'columns' and reload:
-            return SimpleNamespace(
-                success=False,
-                message=('columns refused: reload is not available for '
-                         'columns until R5 (owner decision D3, 2026-09-23)'))
+        # R5 (owner decision D3, 2026-09-30): the "columns until R5" refusal
+        # is LIFTED — `reload=True` on a columns goal now means "ball B
+        # comes from Ball Butler" (`_run_columns` routes it through
+        # `_start_reload`'s BB choreography, aim site P2).
         refused = self._refuse_if_running(SimpleNamespace(success=None,
                                                           message=None))
         if refused is not None:
@@ -2091,65 +2285,166 @@ class SkillNode(Node):
         self._attempt_label = pattern + (' (reload)' if reload else '')
 
         if pattern == 'columns':
-            return self._run_columns(apex_m, separation_mm, dwell_s, n_throws)
+            return self._run_columns(apex_m, separation_mm, dwell_s,
+                                     n_throws, reload)
         return self._run_one_ball(pattern, apex_m, separation_mm, dwell_s,
                                   n_throws, reload)
 
     def _run_columns(self, apex_m: float, separation_mm: float,
-                     dwell_s: float, n_throws: int) -> SimpleNamespace:
-        """The ``columns`` branch of :meth:`_start_pattern` — the R2 body of
-        the deleted columns-start Trigger service, unchanged."""
-        # Columns has no opening REST to home a displaced hand (R4) — refuse
-        # BEFORE t0 is read and before anything moves (`_hand_home_error`).
-        home_err = self._hand_home_error()
-        if home_err:
-            msg = 'columns refused: %s' % (home_err,)
+                     dwell_s: float, n_throws: int,
+                     reload: bool) -> SimpleNamespace:
+        """The ``columns`` branch of :meth:`_start_pattern` — R5's
+        feed-triggered two-phase start (owner decision D1, 2026-09-30),
+        replacing the R2-R4 body that refused outright (`_hand_home_error`,
+        deleted): an opening REST BRIDGE (`compile_reload_wait(...,
+        holds_ball=True)`, `_start_reload`'s own bridge shape) homes the
+        hand and lifts the cup onto site 0 (P1) holding ball A, then a FEED
+        WAIT for ball B's real arrival at site 1 (P2) — a Ball Butler
+        `ThrowAnnouncement` (``reload=True``, routed through
+        `_start_reload`'s own BB choreography, generalised by
+        ``kind='columns'``) or the tracker's own converged fit of an
+        un-announced landing (``reload=False``, `_maybe_resolve_columns_feed`
+        via `_on_balls` — armed either way, since a human backup lob is
+        always a valid feed regardless of whether Ball Butler was also
+        asked). On resolution, `_install_columns_schedule` compiles
+        ``compile_columns(pattern, feed=...)`` and swaps the executor.
+
+        No-motion refusal ladder, `_run_one_ball`'s own order (box/memory
+        before anything moves, then the hand-homing/frame checks): box +
+        BOTH columns boxes ((P1,P1) and (P2,P2) — `compile_columns` folds
+        each ball into its own same-site chain, so each needs its own swept
+        pair, `_run_one_ball`'s "refuse before any motion" rule applied
+        here for the identical reason) + memory, THEN the opening REST's
+        sizing (`_opening_rest_period`) and the frame check.
+        """
+        if _ADMISSIBLE_BOX_PATH is None:
+            msg = ('cannot find the repo root from %r -- the admissible box '
+                  '/ memory paths cannot be resolved' % (__file__,))
             self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
-        # Session-start mocap-vs-commanded frame check (plan
-        # `cup-contact-contract.md` § 1) — read-only, before t0 is read and
-        # before anything moves, beside `_hand_home_error` above.
+        plant_id = str(self.get_parameter('plant_id').value)
+        sites = columns_sites(separation_mm)
+        try:
+            pattern = Pattern(sites=sites, apex_m=apex_m, dwell_s=dwell_s,
+                             n_throws=n_throws)
+        except ValueError as exc:
+            msg = 'columns pattern refused: %s' % (exc,)
+            self.get_logger().debug(msg)
+            return SimpleNamespace(success=False, message=msg)
+
+        try:
+            boxes = adm.load(_ADMISSIBLE_BOX_PATH)
+            adm.check_limits(boxes, self._live_limits(), dwell_s=dwell_s)
+        except adm.AdmissibleError as exc:
+            msg = 'admissible box refused: %s' % (exc,)
+            self.get_logger().debug(msg)
+            return SimpleNamespace(success=False, message=msg)
+
+        missing = []
+        for site in sites:
+            xy = (float(site.cup_mm[0]), float(site.cup_mm[1]))
+            if adm.select(boxes, 'columns', (site.name, site.name), apex_m,
+                         release_site_xy_mm=xy, target_site_xy_mm=xy) is None:
+                reason = adm.describe_miss(
+                    boxes, 'columns', (site.name, site.name), apex_m,
+                    release_site_xy_mm=xy, target_site_xy_mm=xy)
+                missing.append('%r: %s' % ((site.name, site.name), reason))
+        if missing:
+            msg = ('columns refused: no admissible box covers site pair(s) '
+                  '-- %s' % ('; '.join(missing)))
+            self.get_logger().debug(msg)
+            return SimpleNamespace(success=False, message=msg)
+
+        try:
+            memory = Memory(memory_path(_REPO_ROOT, plant_id))
+        except (ValueError, OSError, csv.Error) as exc:
+            msg = 'memory refused: %s' % (exc,)
+            self.get_logger().debug(msg)
+            return SimpleNamespace(success=False, message=msg)
+
+        # The opening REST BRIDGE homes the hand — sized exactly like
+        # self-toss/hop's own opening REST (`_opening_rest_period`), read
+        # here (after every no-motion refusal, before anything moves), same
+        # placement as `_run_one_ball`.
+        lift_s, lift_err = self._opening_rest_period()
+        if lift_err:
+            msg = 'columns refused: %s' % (lift_err,)
+            self.get_logger().debug(msg)
+            return SimpleNamespace(success=False, message=msg)
+
         frame_err = self._frame_check_error()
         if frame_err:
             msg = 'columns refused: %s' % (frame_err,)
             self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
-        t0 = self.get_clock().now().nanoseconds / 1e9 + _START_LEAD_S
+
+        # A new attempt reuses small ball ids: drop any flight latch an
+        # earlier (possibly early-ended) attempt left for them (audit,
+        # 2026-09-16) — before the bridge is built, exactly like
+        # `_run_one_ball`/`_start_reload`.
+        with self._correlation_lock:
+            self._correlation.pop(0, None)
+            self._correlation.pop(1, None)
+
+        if reload:
+            # D3's lift (owner decision, 2026-09-30): `reload=True` on a
+            # columns goal means "ball B comes from Ball Butler" — the SAME
+            # bridge-then-BB-round-trip choreography `_start_reload` runs
+            # for the one-ball reload, generalised (`kind='columns'`) rather
+            # than duplicated: bridge holds at P1 WITH ball A
+            # (`holds_ball=True`), BB is asked to aim at P2
+            # (`aim_site=sites[1]`) instead of P1.
+            return self._start_reload(
+                SimpleNamespace(success=None, message=None), site=sites[0],
+                lift_s=lift_s, boxes=boxes, memory=memory, kind='columns',
+                aim_site=sites[1], columns_pattern=pattern, holds_ball=True)
+
+        # No Ball Butler round trip at all (the interim human-lob
+        # sittings): arm the bridge + FEED WAIT directly. Same t0 idiom as
+        # `_start_reload`'s own bridge compile (probe, then shift so the
+        # first dispatch lands at/after "now").
+        now = self.get_clock().now().nanoseconds / 1e9
         try:
-            sites = columns_sites(separation_mm)
-            pattern = Pattern(sites=sites, apex_m=apex_m, dwell_s=dwell_s,
-                             n_throws=n_throws)
-            schedule = compile_columns(pattern, t0)
+            probe = compile_reload_wait(sites[0], lift_s, now, holds_ball=True)
+            deficit = now - probe.skills[0].dispatch_s()
+            t0 = now + max(deficit, 0.0) + (1.0 / _TICK_HZ)
+            bridge = compile_reload_wait(sites[0], lift_s, t0, holds_ball=True)
         except ValueError as exc:
-            msg = 'columns schedule refused: %s' % (exc,)
+            msg = 'columns bridge schedule refused: %s' % (exc,)
             self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
-        # A new schedule reuses small ball ids: drop any flight latch an
-        # earlier (possibly early-ended) attempt left for them, so a catch
-        # with no in-schedule release can never read a previous attempt's
-        # flight (audit, 2026-09-16).
-        with self._correlation_lock:
-            for _bid in {sk.ball_id for sk in schedule.skills}:
-                self._correlation.pop(_bid, None)
-        # Latch the firmware's refused-lane counter as this attempt's BASELINE
-        # (`_hand_lane_refused`): a refusal an earlier attempt provoked is
-        # history, and only a bump from here on ends this one.
+
         self._sched_refused_at_start = self._sched_refused
         self._force_hold = False
         self._hold_forced_code = ''
         self._executor = SkillExecutor(
-            schedule, self._installer, tracker=self._tracker,
+            bridge, self._installer, tracker=self._tracker,
             catch_aim_source=self._catch_aim_source(),
             resend_max_per_catch=self._catch_resend_max(),
-            launch_ratio=self._launch_ratio)
-        msg = ('columns schedule compiled: %d skills, %d throws, t0=%.3f'
-              % (len(schedule.skills), n_throws, t0))
+            launch_ratio=self._launch_ratio,
+            observer=self._ball_evidence, observations=self._observations)
+        with self._reload_lock:
+            self._reload_throw_inflight = False
+            self._reload_ctx = SimpleNamespace(
+                kind='columns', phase='await_feed', pattern=None,
+                columns_pattern=pattern, boxes=boxes, memory=memory,
+                site=sites[0], aim_site=sites[1], bridge=bridge,
+                reload_sent=False, bb_left_idle=False, announced=False,
+                lead_deficit_logged=False,
+                deadline_mono=(time.perf_counter()
+                              + COLUMNS_TRACKER_FEED_DEADLINE_S))
+        msg = ('columns feed armed: waiting up to %.1f s for a tracker '
+              'landing near %s (reload=False, no Ball Butler round trip)'
+              % (COLUMNS_TRACKER_FEED_DEADLINE_S, sites[1].name))
         self.get_logger().debug(msg)
         return SimpleNamespace(
             success=True, message=msg,
-            start_line=rp.start_line(
-                self._attempt_label or 'columns', self._executor.n_throws,
-                apex_m, extra='separation %.0f mm' % (separation_mm,)))
+            start_line=(
+                '%s started: bridge REST holds ball A at %s -- waiting up '
+                'to %.1f s for ball B to land near %s · memory %d rows'
+                % (self._attempt_label or 'columns', sites[0].name,
+                   COLUMNS_TRACKER_FEED_DEADLINE_S, sites[1].name,
+                   len(memory))))
 
     def _live_limits(self):
         """The session limits `admissible.check_limits` judges the loaded box
@@ -2231,34 +2526,6 @@ class SkillNode(Node):
             '(peak <= %.2f rev/s, %.2f rev/s²)'
             % (rev, REST_HAND_REV, period, peak_v, peak_a))
         return (period, '')
-
-    def _hand_home_error(self) -> str:
-        """``''`` when the hand is within :data:`~jugglebot.motion.skills.
-        schedule.HOME_BAND_REV` of `REST_HAND_REV`, else why not — the
-        COLUMNS-only check.
-
-        `compile_columns` has no opening REST yet (carried to R4): its first
-        skill is a CATCH that splices onto the live plan, so there is no window
-        in the schedule that could home a displaced hand and nothing for
-        `_opening_rest_period` to size. Refusing pre-motion is therefore the
-        honest answer for this path — the alternative is streaming a catch
-        whose seed is 9 rev from the hand, which is the 2026-09-18 E-STOP.
-        Self-toss does not use this: it HOMES instead.
-        """
-        rev = self._live_hand_rev()
-        if rev is None:
-            return ('hand_telemetry is stale or absent (no sample in %.1f s) '
-                    '— the hand position cannot be checked'
-                    % (_HAND_STATE_STALE_S,))
-        if abs(rev - REST_HAND_REV) > HOME_BAND_REV:
-            return ('the hand is at %+.4f rev, %.3f rev from the schedule home '
-                    '(%+.4f rev, outside the %.2f rev band) and the columns '
-                    'schedule has no opening REST to home it (R4) — run a '
-                    'Juggle goal with pattern self_toss or hop, whose opening '
-                    'REST homes the hand, or DEACTIVATE → ACTIVATE and re-level'
-                    % (rev, abs(rev - REST_HAND_REV), REST_HAND_REV,
-                       HOME_BAND_REV))
-        return ''
 
     def _frame_check(self) -> FrameCheckResult:
         """Snapshot the two buffers and run the pure check
@@ -2438,7 +2705,7 @@ class SkillNode(Node):
 
         try:
             boxes = adm.load(_ADMISSIBLE_BOX_PATH)
-            adm.check_limits(boxes, self._live_limits())
+            adm.check_limits(boxes, self._live_limits(), dwell_s=dwell_s)
         except adm.AdmissibleError as exc:
             msg = 'admissible box refused: %s' % (exc,)
             self.get_logger().debug(msg)
@@ -2526,7 +2793,8 @@ class SkillNode(Node):
         if reload:
             return self._start_reload(
                 SimpleNamespace(success=None, message=None), site=sites[0],
-                pattern=pattern, boxes=boxes, memory=memory)
+                lift_s=float(pattern.floor_lift_s), pattern=pattern,
+                boxes=boxes, memory=memory)
 
         now = self.get_clock().now().nanoseconds / 1e9
         try:
@@ -2588,8 +2856,13 @@ class SkillNode(Node):
                 extra=('(%s)' % ' -> '.join(st.name for st in sites)
                        if len(sites) > 1 else '')))
 
-    def _start_reload(self, response, *, site: Site, pattern: OneBallPattern,
-                      boxes, memory: Memory):
+    def _start_reload(self, response, *, site: Site, lift_s: float,
+                      boxes, memory: Memory,
+                      pattern: Optional[OneBallPattern] = None,
+                      kind: str = 'reload',
+                      aim_site: Optional[Site] = None,
+                      columns_pattern: Optional[Pattern] = None,
+                      holds_ball: bool = False):
         """R4 reload start path (owner decision D4; C1/C4 rework,
         2026-09-28): installs the opening-REST-only bridge
         (`schedule.compile_reload_wait` — homes the hand, holds level at
@@ -2602,13 +2875,31 @@ class SkillNode(Node):
         ~1.1 s while the old code asked to throw 5 ms after `bb/reload`
         answered, drawing `THROW_REJECTED_BAD_STATE` on every attempt).
 
-        Called only from `_run_one_ball`, after every no-motion
-        refusal, the box/memory build and `_prelevel` — see that method's
-        R4 branch. ``site``/``pattern``/``boxes``/``memory`` are exactly
+        Called from `_run_one_ball`, after every no-motion refusal, the
+        box/memory build and `_prelevel` — see that method's R4 branch.
+        ``site``/``lift_s``/``pattern``/``boxes``/``memory`` are exactly
         what the ordinary self-toss path would compile with; the reload's
         own DECAY REST hands off into the SAME one-ball pattern
         (`schedule.compile_reload`'s docstring), so it needs the identical
         box/memory the tail throws will be judged and learned against.
+
+        R5 (owner decision D1, 2026-09-30): also called from
+        `_run_columns` with ``kind='columns'`` — the SAME bridge-then-BB-
+        round-trip choreography, generalised rather than duplicated (plan
+        § 0, one path per function): ``site`` is where the bridge REST
+        holds (P1, already holding ball A — ``holds_ball=True``),
+        ``aim_site`` is where Ball Butler is asked to throw (P2, ball B's
+        site — "the reload aims at P1 today; make the aim site a parameter
+        of that path"), and ``columns_pattern`` (a `schedule.Pattern`,
+        columns' own shape) rides the ctx in place of ``pattern`` — the two
+        are mutually exclusive, selected by ``kind``, because
+        `_install_announced_reload` compiles a different schedule
+        (`compile_reload` vs `compile_columns`) for each and must know
+        which one this ctx wants without guessing from which pattern
+        object is not ``None``. ``aim_site``/``holds_ball`` default to the
+        reload's own pre-R5 behaviour (``aim_site = site``,
+        ``holds_ball = False``) so this call is byte-for-byte unchanged
+        for `kind='reload'`.
 
         C4: once the bridge `SkillExecutor` below is constructed, the
         machine has a COMMITTED, already-ticking plan (the 40 Hz timer
@@ -2624,18 +2915,19 @@ class SkillNode(Node):
         enforcement point, not a second copy of "reject vs end" logic per
         call site.
         """
+        aim_site = site if aim_site is None else aim_site
         now = self.get_clock().now().nanoseconds / 1e9
-        lift_s = float(pattern.floor_lift_s)
+        lift_s = float(lift_s)
         try:
             # Same t0 idiom as the ordinary self-toss path just above (a
             # probe compile to read the bridge's own dispatch lead, then
             # shift so the real compile's first dispatch lands at/after
             # "now") — one schedule, two skills long, so restating it here
             # rather than threading a third compiler through that block.
-            probe = compile_reload_wait(site, lift_s, now)
+            probe = compile_reload_wait(site, lift_s, now, holds_ball=holds_ball)
             deficit = now - probe.skills[0].dispatch_s()
             t0 = now + max(deficit, 0.0) + (1.0 / _TICK_HZ)
-            bridge = compile_reload_wait(site, lift_s, t0)
+            bridge = compile_reload_wait(site, lift_s, t0, holds_ball=holds_ball)
         except ValueError as exc:
             # No motion has been committed yet -- an ordinary goal REJECT
             # is correct here (nothing for `_end_attempt` to end).
@@ -2646,6 +2938,7 @@ class SkillNode(Node):
 
         with self._correlation_lock:
             self._correlation.pop(0, None)
+            self._correlation.pop(1, None)
         self._sched_refused_at_start = self._sched_refused
         self._force_hold = False
         self._hold_forced_code = ''
@@ -2721,8 +3014,9 @@ class SkillNode(Node):
         with self._reload_lock:
             self._reload_throw_inflight = False
             self._reload_ctx = SimpleNamespace(
-                phase='await_bb_idle', pattern=pattern, boxes=boxes,
-                memory=memory, site=site, bridge=bridge,
+                kind=kind, phase='await_bb_idle', pattern=pattern,
+                columns_pattern=columns_pattern, boxes=boxes,
+                memory=memory, site=site, aim_site=aim_site, bridge=bridge,
                 reload_sent=reload_sent, bb_left_idle=False,
                 announced=False,
                 deadline_mono=time.perf_counter() + ready_timeout_s)
@@ -2823,10 +3117,37 @@ class SkillNode(Node):
                         + float(msg.landing_time.nanosec) * 1e-9)
         throw_time_s = (float(msg.throw_time.sec)
                        + float(msg.throw_time.nanosec) * 1e-9)
+
+        # R5 (owner decision D1, 2026-09-30): a columns feed arriving as a
+        # Ball Butler announcement compiles `compile_columns`, not
+        # `compile_reload` -- `_install_columns_schedule` is the shared
+        # compile-then-swap tail both feed sources (this one and
+        # `_maybe_resolve_columns_feed`'s tracker path) call once the
+        # correlation for ball B (schedule id 1, `compile_columns`'s own
+        # convention) is set. Same FlightLatch rule `_maybe_announce`
+        # applies to our own releases -- a fresh, unlatched latch, not
+        # appended to whatever an earlier attempt left (already dropped in
+        # `_run_columns`/`_start_reload`).
+        if ctx.kind == 'columns':
+            preexisting = tuple(sorted(int(b.id) for b in self._raw_balls
+                                       if int(b.status) == _BALL_STATUS_IN_FLIGHT))
+            with self._correlation_lock:
+                self._correlation[1] = advance_flight_latches(
+                    self._raw_balls, robot_name=self._robot_name,
+                    latches=(FlightLatch(t_release_s=throw_time_s,
+                                         preexisting=preexisting),),
+                    now_s=self._now_s(), in_flight_status=_BALL_STATUS_IN_FLIGHT)
+            feed = LandingPrior(pos_mm=landing_mm, vel_mm_s=landing_vel_mm_s,
+                                t_land_abs_s=t_land_abs_s)
+            self._install_columns_schedule(ctx, feed)
+            return
+
         now = self.get_clock().now().nanoseconds / 1e9
+        cap_deg = self._hold_tilt_max_deg()
         try:
             schedule = compile_reload(landing_mm, landing_vel_mm_s,
-                                      t_land_abs_s, ctx.pattern, now)
+                                      t_land_abs_s, ctx.pattern, now,
+                                      max_tilt_deg=cap_deg)
         except ValueError as exc:
             # The claim above holds `_reload_ctx`, so this attempt must be
             # ended here, not left to time out as ABORTED_NO_ANNOUNCEMENT
@@ -2901,16 +3222,116 @@ class SkillNode(Node):
                 'lane) while the announced schedule was compiling -- not '
                 'installed')
             return
+        hold_tilt = next((sk.hold_tilt for sk in schedule.skills
+                          if sk.kind == CATCH and sk.hold_tilt is not None),
+                         None)
+        hold_deg = (0.0 if hold_tilt is None
+                    else float(np.degrees(np.hypot(*hold_tilt))))
         self.get_logger().debug(
             'reload: ThrowAnnouncement received -- compiled the reload '
-            'schedule (%d skills) and swapped the executor'
-            % (len(schedule.skills),))
+            'schedule (%d skills) and swapped the executor -- hold tilt '
+            'capped at %.1f deg, resulting hold %.3f deg'
+            % (len(schedule.skills), cap_deg, hold_deg))
         n_after = sum(1 for sk in schedule.skills
                       if sk.kind == THROW
                       or (sk.kind == CATCH and sk.then_throw is not None))
         self.get_logger().info(
-            'reload: Ball Butler\'s ball is in the air — catching it, then '
-            '%d throw%s' % (n_after, '' if n_after == 1 else 's'))
+            'reload: Ball Butler\'s ball is in the air (hold tilt %.1f deg, '
+            'cap %.1f deg) — catching it, then %d throw%s'
+            % (hold_deg, cap_deg, n_after, '' if n_after == 1 else 's'))
+
+    def _install_columns_schedule(self, ctx, feed: LandingPrior) -> None:
+        """Compile ``compile_columns(ctx.columns_pattern, feed=feed)`` and
+        install it for ``ctx`` -- the columns counterpart of
+        `_install_announced_reload`'s reload compile-then-swap tail (R5,
+        owner decision D1, 2026-09-30), sharing its claim-then-swap shape
+        exactly (the 2026-09-29 race fix: the caller claims ``ctx`` BEFORE
+        this runs, and the swap below installs only if the claim is still
+        current -- a Stop, the deadline or a refused hand lane that ended
+        the attempt during the compile wins and the compiled schedule is
+        dropped, unchanged from the reload path).
+
+        Called from BOTH feed sources -- `_install_announced_reload`'s
+        columns branch (a Ball Butler announcement) and
+        `_maybe_resolve_columns_feed` (an un-announced tracker landing) --
+        once the caller has already set ``self._correlation[1]`` for ball B
+        by whichever means that source supports (see each caller): this
+        method does not touch correlation itself, because the two sources
+        resolve it differently (a fresh, unlatched `FlightLatch` search for
+        the announcement path vs. a KNOWN tracker id for the tracker path).
+        """
+        try:
+            schedule = compile_columns(ctx.columns_pattern, feed=feed)
+        except ValueError as exc:
+            # The claim already holds `_reload_ctx`, so this attempt must be
+            # ended here, not left to time out.
+            if self._still_current(ctx):
+                self._end_attempt(
+                    'REJECTED_COLUMNS_UNSCHEDULABLE',
+                    'columns feed: the observed landing could not be '
+                    'scheduled (%s) -- no columns schedule installed; the '
+                    'platform stays at rest holding ball A (the bridge REST '
+                    'is already streaming)' % (exc,))
+            return
+
+        learner_cfg = lr.LearnerConfig()
+        learner = SimpleNamespace(
+            command=lambda x, y_d: ctx.memory.command(x, y_d, learner_cfg))
+        executor = SkillExecutor(
+            schedule, self._installer, tracker=self._tracker,
+            catch_aim_source=self._catch_aim_source(),
+            resend_max_per_catch=self._catch_resend_max(),
+            launch_ratio=self._launch_ratio,
+            learner=learner, boxes=ctx.boxes,
+            lateral_authority_m=float(self.get_parameter(
+                'learner_lateral_authority_mm').value) / 1000.0,
+            observer=self._ball_evidence, observations=self._observations,
+            on_experience=self._bind_on_experience(ctx.memory))
+        # The SkillExecutor SWAP, `_install_announced_reload`'s shape
+        # exactly: `_tick_lock` first (a tick mid-dispatch on another
+        # thread must not read `_executor` half-swapped), then ONE
+        # `_reload_lock` section installs the executor and clears the
+        # claimed `_reload_ctx` together, only if the claim is still
+        # current.
+        got_lock = self._tick_lock.acquire(timeout=_STOP_LOCK_WAIT_S)
+        if not got_lock:
+            self.get_logger().warning(
+                'columns feed: could not acquire the tick lock within %.1f s '
+                '-- swapping the executor without it' % (_STOP_LOCK_WAIT_S,))
+        try:
+            with self._reload_lock:
+                installed = self._reload_ctx is ctx
+                if installed:
+                    self._sched_refused_at_start = self._sched_refused
+                    self._force_hold = False
+                    self._hold_forced_code = ''
+                    self._executor = executor
+                    self._reload_ctx = None
+                    self._reload_throw_inflight = True
+        finally:
+            if got_lock:
+                self._tick_lock.release()
+        if not installed:
+            self.get_logger().info(
+                'columns feed: the attempt ended (stop, timeout or a '
+                'refused hand lane) while the fed schedule was compiling -- '
+                'not installed')
+            return
+        n_after = sum(1 for sk in schedule.skills
+                      if sk.kind == THROW
+                      or (sk.kind == CATCH and sk.then_throw is not None))
+        now = self.get_clock().now().nanoseconds / 1e9
+        self.get_logger().debug(
+            'columns feed: compiled the fed schedule (%d skills) and '
+            'swapped the executor -- ball B landing (%.1f, %.1f, %.1f) mm '
+            'in %.3f s' % (len(schedule.skills), feed.pos_mm[0],
+                          feed.pos_mm[1], feed.pos_mm[2],
+                          float(feed.t_land_abs_s) - now))
+        self.get_logger().info(
+            'columns feed accepted: ball B lands in %.2f s -- catching it, '
+            'then %d throw%s'
+            % (float(feed.t_land_abs_s) - now, n_after,
+               '' if n_after == 1 else 's'))
 
     def _bind_on_experience(self, memory: Memory):
         """``on_experience`` callable bound to ``memory`` (plan § 2.5 step 6):
@@ -2991,6 +3412,19 @@ class SkillNode(Node):
                     message = (
                         'attempt already ended (end_code=%r) — stop is a '
                         'no-op' % self._executor.end_code)
+                # A stop is a stop of the WHOLE attempt, its feed/reload wait
+                # included (R5, 2026-09-30): a Stop that lands while the
+                # bridge REST's executor is still live used to leave
+                # `_reload_ctx` armed, so `_maybe_signal_goal_done` (which
+                # needs BOTH cleared) never fired and the Juggle goal hung
+                # until the wait's own deadline ended it with the wrong code
+                # (30 s / ABORTED_NO_COLUMNS_FEED for a columns feed wait,
+                # 4.6 s for a reload). Clear it here, under the same lock the
+                # readers take, exactly as the no-executor branch does.
+                with self._reload_lock:
+                    if self._reload_ctx is not None:
+                        self._reload_ctx = None
+                        message += ' (the feed/reload wait is cancelled too)'
             else:
                 # R4 reload (brief step 1): a reload wait leaves `_executor`
                 # `None` (the bridge REST's own executor is `done` well
@@ -3143,9 +3577,11 @@ class SkillNode(Node):
                self._hand_pos_cmd, floor_lift_s(self._hand_pos_meas)))
         # Session-start mocap-vs-commanded frame check (plan
         # `cup-contact-contract.md` § 1), same string and the same
-        # fail-closed semantics as the start paths (`_run_columns`'s
-        # `_hand_home_error`-adjacent check, `_run_one_ball`'s
-        # `_opening_rest_period`-adjacent one): a refusal the operator would
+        # fail-closed semantics as the start paths (`_run_columns` and
+        # `_run_one_ball` both gate on this beside their own
+        # `_opening_rest_period` check, R5 — columns gained an opening REST
+        # of its own and no longer has a separate `_hand_home_error`
+        # check): a refusal the operator would
         # meet at `start_*` must be reported by the dry-run path too (UH-3,
         # 2026-09-06 — "make gates report every refusal at once"), not
         # discovered only on the powered robot. `learner_lateral_authority_mm
@@ -3176,7 +3612,9 @@ class SkillNode(Node):
         else:
             try:
                 boxes = adm.load(_ADMISSIBLE_BOX_PATH)
-                adm.check_limits(boxes, self._live_limits())
+                adm.check_limits(boxes, self._live_limits(),
+                                 dwell_s=float(
+                                     self.get_parameter('dwell_s').value))
             except adm.AdmissibleError as exc:
                 ok = False
                 lines.append('box REFUSED: %s' % (exc,))

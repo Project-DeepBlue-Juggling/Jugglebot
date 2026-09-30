@@ -14,6 +14,8 @@ from rclpy.logging import LoggingSeverity
 from rclpy.node import Node
 import numpy as np
 
+from rcl_interfaces.msg import SetParametersResult
+
 from jugglebot_interfaces.msg import (
     MocapDataMulti,
     ThrowAnnouncement,
@@ -49,6 +51,19 @@ class BallTrackerNode(Node):
         # architectural boundaries").
         self._landing_z = float(sites.CATCH_CUP_Z_MM)
 
+        # R5 (brief_S.md step 2, 2026-09-30): a declared node parameter, not
+        # just the config default baked into the constructor -- the R5 lob
+        # block (an un-announced human throw feeding two-ball columns) needs
+        # the runsheet to turn this on for one block without a relaunch
+        # (`ros2 param set .../ball_tracker_node detect_human_throws true`),
+        # and off again after. Config default unchanged (`hw.
+        # TRACKING_DETECT_HUMAN_THROWS`, False) -- an un-set launch tracks
+        # exactly as before this parameter existed.
+        self.declare_parameter('detect_human_throws',
+                               bool(hw.TRACKING_DETECT_HUMAN_THROWS))
+        detect_human_throws = bool(
+            self.get_parameter('detect_human_throws').value)
+
         self._tracker = BallTracker(
             dt=hw.TRACKING_MOCAP_DT_S,
             landing_z=self._landing_z,
@@ -61,11 +76,17 @@ class BallTrackerNode(Node):
             announced_gate_mm=hw.TRACKING_ANNOUNCED_GATE_MM,
             excluded_label_prefixes=parse_label_prefixes(
                 hw.TRACKING_EXCLUDED_LABEL_PREFIXES),
-            detect_human_throws=hw.TRACKING_DETECT_HUMAN_THROWS,
+            detect_human_throws=detect_human_throws,
             flight_fit_min_samples=hw.TRACKING_FLIGHT_FIT_MIN_SAMPLES,
             flight_fit_residual_mm=hw.TRACKING_FLIGHT_FIT_RESIDUAL_MM,
             flight_fit_freeze_above_plane_mm=hw.TRACKING_FLIGHT_FIT_FREEZE_ABOVE_PLANE_MM,
         )
+        # Live-updatable (mirrors `teensy_bridge_node`'s
+        # `hand_torque_ff_gain` pattern, `_on_set_parameters`): the tracker's
+        # own flag is a plain mutable attribute (`BallTracker.
+        # detect_human_throws`), so a later `ros2 param set` takes effect on
+        # the next mocap frame with no node restart.
+        self.add_on_set_parameters_callback(self._on_set_parameters)
 
         # Subscribers
         self._mocap_sub = self.create_subscription(
@@ -84,7 +105,8 @@ class BallTrackerNode(Node):
         self._mocap_had_stamps = False  # currently/ever in the stamped regime
 
         self.get_logger().info(
-            f"Ball tracker up (landing plane z={self._landing_z:.0f} mm)")
+            f"Ball tracker up (landing plane z={self._landing_z:.0f} mm, "
+            f"detect_human_throws={detect_human_throws})")
         self.get_logger().debug(
             f"BallTrackerNode ready: landing_z={self._landing_z:.1f}mm, "
             f"dt={hw.TRACKING_MOCAP_DT_S*1000:.1f}ms, "
@@ -254,6 +276,27 @@ class BallTrackerNode(Node):
             msg.time_at_land.nanosec = int((ball.landing_time % 1) * 1e9)
 
         return msg
+
+    def _on_set_parameters(self, params):
+        """ROS2 param-set live-update hook (R5, mirrors
+        `teensy_bridge_node._on_set_parameters`'s pattern): only
+        ``detect_human_throws`` is handled here; every other declared
+        parameter on this node passes through unchanged. Pushes straight
+        into the tracker's own mutable flag (`BallTracker.
+        detect_human_throws`), so it takes effect on the very next mocap
+        frame -- no node restart needed for the runsheet to turn the lob
+        block on and off. One INFO line per change (operator-visible
+        event), never per frame.
+        """
+        for param in params:
+            if param.name != 'detect_human_throws':
+                continue
+            value = bool(param.value)
+            if value != self._tracker.detect_human_throws:
+                self.get_logger().info(
+                    f"detect_human_throws -> {value} (ros2 param set)")
+            self._tracker.detect_human_throws = value
+        return SetParametersResult(successful=True)
 
     def destroy_node(self):
         self.get_logger().debug("Shutting down BallTrackerNode.")

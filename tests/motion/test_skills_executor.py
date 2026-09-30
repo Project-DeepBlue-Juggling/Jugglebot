@@ -2253,6 +2253,77 @@ def test_no_observer_defaults_caught_to_false(sites):
     assert experiences[0].caught is False
 
 
+def test_a_shadow_landed_throw_is_never_read_caught(sites):
+    """The columns Stop's cross-site last throw (owner decision D2,
+    2026-09-30, R5 rescope, E1'): ``Skill.shadow_landing=True`` is the ONE
+    explicit flag the schedule sets (:func:`~jugglebot.motion.skills.
+    schedule.compile_columns`) -- read straight off the skill here, never
+    inferred from "what comes after it in the schedule" (plan § 0). A
+    possession sensor reading SEATED throughout (the ball ALREADY held from
+    the PREVIOUS catch) must not verdict this row caught, even though the
+    observer never once reads EMPTY, and the row must never reach the
+    learner's memory (``u = y_d`` exactly -- there is nothing for a fit to
+    learn against, and this segment shape was never box-swept). The ordinary
+    ``_single_throw_schedule`` (``shadow_landing`` defaults False) pins the
+    fix is scoped to the flag, not a blanket change to how SEATED evidence is
+    read."""
+    p1, p2 = sites
+    t_release = ROS_T0
+    t_land = t_release + FLIGHT_S
+
+    shadow_skills = (
+        Skill(kind=sg.THROW, ball_id=0, site=p1, t_abs_s=t_release,
+              window_s=LAUNCH_S, y_d=(np.zeros(2), APEX_M), target=p2,
+              shadow_landing=True),
+        Skill(kind=sg.REST, ball_id=0, site=p1, t_abs_s=t_land + sg.REST_TAIL_S,
+              window_s=sg.REST_TAIL_S),
+    )
+    shadow_sch = Schedule(pattern='columns', skills=shadow_skills,
+                          flight_s=FLIGHT_S, beat_s=0.578, transit_s=0.278,
+                          dwell_s=0.30, t0_abs_s=t_release - LAUNCH_S)
+    assert shadow_sch.skills[0].shadow_landing is True
+
+    ordinary_sch = _single_throw_schedule(p1, ball_id=0, t_release=t_release)
+    assert ordinary_sch.skills[0].shadow_landing is False
+
+    land = _fit_landing(pos_mm=p2.catch_site_mm(), vel_mm_s=LAND_VEL,
+                      t_land_abs_s=t_land)
+    ordinary_land = _fit_landing(pos_mm=p1.catch_site_mm(), vel_mm_s=LAND_VEL,
+                                 t_land_abs_s=t_land)
+
+    def run(sch, fit):
+        inst = _FakeInstaller()
+        experiences = []
+        x = ex.SkillExecutor(sch, inst, tracker=lambda b: fit,
+                             observer=lambda b, t: ex.CAUGHT_EVIDENCE,
+                             on_experience=experiences.append)
+        t = sch.skills[0].dispatch_s() - 0.01
+        t_end = t_land + ex.CAUGHT_WINDOW_S + 0.05
+        lines = []
+        while t < t_end:
+            lines.extend(x.tick(t))
+            t += 0.02
+        return experiences, lines
+
+    shadow_exp, shadow_lines = run(shadow_sch, land)
+    # NO memory row: `on_experience` must never be called for a shadow-landed
+    # throw (E2 adjudication, 2026-09-30) -- the pending row still finalises
+    # (the operator gets an OUTCOME line) but nothing is appended here.
+    assert shadow_exp == []
+    outcome = [ln for ln in shadow_lines if 'OUTCOME' in ln][0]
+    assert 'caught=False' in outcome
+    assert 'landed on the held ball' in outcome
+
+    # The SAME evidence (SEATED throughout), on the ordinary schedule
+    # (``shadow_landing=False``, the pre-Stop shape every earlier rung used),
+    # still reads caught=True AND still writes a memory row: the fix is
+    # scoped to the flag, not a blanket change.
+    ordinary_exp, ordinary_lines = run(ordinary_sch, ordinary_land)
+    assert ordinary_exp[0].caught is True
+    ordinary_outcome = [ln for ln in ordinary_lines if 'OUTCOME' in ln][0]
+    assert 'landed on the held ball' not in ordinary_outcome
+
+
 # ── one sensor, one row per tick (2026-09-16, the audit on the R2/R3 columns
 # operating point) ───────────────────────────────────────────────────────
 #
@@ -2669,6 +2740,75 @@ def test_no_release_evidence_aborts_and_produces_no_row(sites):
     assert ex.ABORTED_NO_RELEASE in lines[0]
     assert experiences == []
     assert x.done
+
+
+def test_a_drop_with_a_survivor_still_in_flight_keeps_catching_it(sites):
+    """D3, the survivor drop policy (owner decision, 2026-09-30, R5 rescope):
+    ball 0's release is never confirmed (the SAME deadline
+    ``test_no_release_evidence_aborts_and_produces_no_row`` hits), but ball 1
+    still has an undispatched CATCH -- so the attempt does NOT abort. The
+    schedule is cut to ball 1's catch (its carried throw stripped -- nothing
+    is thrown after a drop) plus a fresh closing REST at its site, and
+    ``end_code`` names the drop even though dispatch continues."""
+    p1, p2 = sites
+    t_throw0 = ROS_T0
+    t_land1 = t_throw0 + 2.0          # comfortably past ball 0's own deadline
+    # Ball 1's catch carries a THEN_THROW so stripping it is actually
+    # observable (it would otherwise already be ``None``).
+    tt = sc.ThenThrow(t_release_abs_s=t_land1 + 0.3,
+                      y_d=(np.zeros(2), APEX_M), target=p2)
+    skills = (
+        Skill(kind=sg.THROW, ball_id=0, site=p1, t_abs_s=t_throw0,
+              window_s=LAUNCH_S, y_d=(np.zeros(2), APEX_M), target=p1),
+        Skill(kind=sg.CATCH, ball_id=1, site=p2, t_abs_s=t_land1,
+              window_s=0.5, then_throw=tt),
+        Skill(kind=sg.REST, ball_id=1, site=p2,
+              t_abs_s=t_land1 + sg.REST_TAIL_S, window_s=sg.REST_TAIL_S),
+    )
+    sch = Schedule(pattern='columns', skills=skills, flight_s=FLIGHT_S,
+                   beat_s=0.578, transit_s=0.278, dwell_s=0.30,
+                   t0_abs_s=t_throw0)
+    # Ball 1's own CATCH must stay UNDISPATCHED through the deadline tick --
+    # confirmed below (its dispatch_s is far later than the grace window).
+    assert skills[1].dispatch_s() > t_throw0 + ex.RELEASE_GRACE_S + 0.05
+
+    inst = _FakeInstaller()
+    experiences = []
+    x = ex.SkillExecutor(
+        sch, inst, tracker=lambda b: None,
+        observer=lambda ball_id, t: bp.EVIDENCE_SEATED,   # never EMPTY
+        observations=lambda t: _obs(), on_experience=experiences.append)
+
+    t = skills[0].dispatch_s() - 0.01
+    t_end = t_throw0 + ex.RELEASE_GRACE_S + 0.05
+    lines = []
+    while t < t_end:
+        lines.extend(x.tick(t))
+        t += 0.02
+
+    assert experiences == []                          # dropped, no row
+    assert x.attempt_ended is False
+    assert x.end_code == ex.DROPPED_SURVIVOR_STOPPED
+    assert ex.DROPPED_SURVIVOR_STOPPED in ''.join(lines)
+    # The schedule was cut: the ORIGINAL REST (a different t_abs_s -- no
+    # fresh-origin margin) is gone, replaced with one at the standard
+    # closing-REST instant.
+    assert len(x.schedule.skills) == 3
+    # Prefix unchanged (`_assign_leads` rebuilds objects, so compare the
+    # fields that matter rather than identity): same site/time/window/lead.
+    new_throw = x.schedule.skills[0]
+    assert new_throw.kind == skills[0].kind
+    assert new_throw.t_abs_s == skills[0].t_abs_s
+    assert new_throw.window_s == skills[0].window_s
+    assert new_throw.lead_s == skills[0].lead_s
+    catch, rest = x.schedule.skills[1], x.schedule.skills[2]
+    assert catch.kind == sg.CATCH and catch.ball_id == 1
+    assert catch.then_throw is None                   # stripped
+    assert rest.kind == sg.REST and rest.ball_id == 1
+    assert rest.site.name == p2.name
+    assert rest.t_abs_s == pytest.approx(
+        sc.closing_rest_t_abs(t_land1, sg.REST_TAIL_S))
+    assert abs(rest.t_abs_s - skills[2].t_abs_s) > 0.1
 
 
 def test_a_release_with_evidence_produces_no_abort_possession_path(sites):

@@ -18,6 +18,8 @@ via ``python sim/skills_gate.py``.
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
@@ -128,6 +130,67 @@ def test_the_firmware_mirror_reconstructs_the_plan(smoke_report):
     assert t['mirror_hand_worst_rev'] <= MIRROR_TOL_HAND_REV
     assert t['mirror_leg_worst_rev'] <= MIRROR_TOL_LEG_REV
     assert t['mirror_ok'] is True
+
+
+def test_the_stop_lands_the_last_ball_under_the_platforms_own_cup(smoke_report):
+    """D2/E1' (owner decision 2026-09-30, R5 rescope): the last throw lands
+    ON the ball already held at the OTHER site, so the platform's own
+    emitted cup xy must be within :data:`sg.FINAL_CUP_XY_TOL_MM` of it at
+    ``t_land_final``.
+
+    Proved discriminating (not vacuous), 2026-09-30 (this probe, seed 0,
+    ``n_throws=4``): monkeypatching ``sg._columns_final_removal`` to target
+    the throw's own site instead of the OTHER one (the pre-E1' shape)
+    reports ``final_cup_err_mm=100.04`` (the 100 mm site separation) against
+    the correct run's ``0.04`` -- ``final_cup_ok``/``passed`` flip
+    False->True across the revert.
+    """
+    t = smoke_report['trials'][0]
+    assert not math.isnan(t['final_cup_err_mm']), (
+        'n_throws=4 >= 2 must carry a Stop -- a NaN here means no shadow '
+        'throw was found in the schedule')
+    assert t['final_cup_err_mm'] <= sg.FINAL_CUP_XY_TOL_MM
+    assert t['final_cup_ok'] is True
+
+
+def test_columns_final_removal_reads_the_stops_cross_site_target():
+    """:func:`sg._columns_final_removal` reads the Stop's landing instant/
+    ball/target straight off ``compile_columns``'s own schedule -- the SAME
+    timing the pre-E1' arithmetic computed (flight time does not depend on
+    which site a throw is aimed at, the symmetric-height assumption
+    ``schedule.flight_s`` itself makes), but the target is the OTHER site,
+    not the throw's own."""
+    site0, site1 = sites.columns_sites(100.0)
+    apex_m, dwell_s, n_throws = 0.9, 0.30, 4
+    t_f = sk.flight_s(apex_m)
+    beta = sk.beat_s(t_f, dwell_s)
+    pattern = sk.Pattern(sites=(site0, site1), apex_m=apex_m, dwell_s=dwell_s,
+                         n_throws=n_throws)
+    t0_abs_s = 10.0
+    sched = sk.compile_columns(pattern, t0_abs_s)
+
+    result = sg._columns_final_removal(sched)
+    assert result is not None
+    t_land_final, ball_final, target_xy_mm = result
+
+    expected_t_land = t0_abs_s + (n_throws - 1) * beta + t_f
+    assert t_land_final == pytest.approx(expected_t_land, abs=1e-6)
+    assert ball_final == (n_throws - 1) % 2
+    # The OTHER site's xy (site ball_final did NOT land at), not its own.
+    other_site = (site0, site1)[n_throws % 2]
+    own_site = (site0, site1)[(n_throws - 1) % 2]
+    assert np.allclose(target_xy_mm, other_site.catch_site_mm()[:2])
+    assert not np.allclose(target_xy_mm, own_site.catch_site_mm()[:2])
+
+
+def test_columns_final_removal_is_none_for_a_single_throw():
+    """``n_throws == 1``: nothing is held yet, so ``compile_columns`` never
+    sets ``shadow_landing`` and there is no Stop to check."""
+    site0, site1 = sites.columns_sites(100.0)
+    pattern = sk.Pattern(sites=(site0, site1), apex_m=0.9, dwell_s=0.30,
+                         n_throws=1)
+    sched = sk.compile_columns(pattern, 10.0)
+    assert sg._columns_final_removal(sched) is None
 
 
 def test_the_plan_wall_time_is_reported(smoke_report):
@@ -386,31 +449,90 @@ def test_a_small_hop_learner_run_catches_every_throw_with_zero_drops():
     assert res['plan_wall_ms']['n'] > 0
 
 
-def test_a_small_hop_learner_run_is_apex_clipped_not_converged():
-    """UNLIKE self-toss, a hop does NOT enter the R3 apex band (42 mm)
-    within the 5-throw entry criterion -- MEASURED (seed 0, 2026-09-24, this
-    test): the swept 'hop' box's apex CLIP range is only [0.85, 0.90] m
-    (``config/generated/admissible_box.yaml``), far narrower than the
-    matching self_toss box's [0.576, 0.900] m. Both patterns' releases carry
-    the SAME measured +11% speed bias (``LAUNCH_SPEED_BIAS_FRAC``, applied by
-    ``_measured_release_bias`` to every release alike) and self-toss corrects
-    it by commanding ~0.73 m -- a hop cannot reach that low, so it clips at
-    0.85 m and the observed apex stays ~1.0-1.1 m against a 0.9 m target (the
-    ratio matches the bias's own uniform speed scaling squared, ~1.11**2 =
-    1.232, applied to the hop's horizontal release-velocity component the
-    same as the vertical one -- ``_measured_release_bias``'s own docstring
-    notes it was characterised on "a pure vertical self-toss").  This is a
-    box-sweep / release-bias-model finding for the R4 owner decision, NOT a
-    defect in this gate to fix by widening a limit or a box (brief: "do NOT
-    widen a limit or a box") -- this test pins the CURRENT (unconverged)
-    shape so a future box re-sweep or bias-model change is a visible,
-    deliberate diff here, not a silent one."""
+def test_a_small_hop_learner_run_commands_below_the_old_apex_floor():
+    """The 0.85 m apex floor this test used to pin (2026-09-24: "a hop cannot
+    reach that low, so it clips at 0.85 m") was a SWEEP artefact, not the
+    plant: the per-apex ladder varied every cell's TIMING with the commanded
+    flight, so a command below the pattern apex shortened the transit and
+    refused on jerk. Since the R5 ladder fix (2026-09-30, `tools/
+    admissible_sweep.py` `pattern_flight_s`: the schedule's instants are the
+    PATTERN's, only the carried throw follows the command) the hop's 0.90 m
+    band admits commanded apexes down to ~0.73 m (`config/generated/
+    admissible_box.yaml`, swept at 300/5000/200000), so the same +11 % speed
+    bias self-toss corrects by commanding ~0.73 m is now correctable on the
+    hop too. This test pins the shape that changed: the learner's commanded
+    apex goes BELOW the old 0.85 floor and never leaves the box's own apex
+    bounds. Whether the small run enters the band within five throws is
+    reported, not asserted -- the 25-throw runs in `sim/skills_gate.py --learn
+    --pattern hop` are the convergence gate.  MEASURED (seed 0, 2026-09-30,
+    this test, box swept at 300/5000/200000): min commanded apex 0.8346 m
+    against the box's [0.729, 0.992] m, `entered_band` False in the small run
+    (the command is still descending at the fifth throw)."""
     cfg, res = _small_hop_run()
-    assert res['entered_band'] is False
-    assert res['throws_to_band_apex'] is None
-    # every commanded apex clipped at (or essentially at) the box's floor
-    assert all(t['u'][2] <= 0.90 + 1e-9 for t in res['throws'])
-    assert min(t['u'][2] for t in res['throws']) == pytest.approx(0.85, abs=1e-6)
+    from jugglebot.motion.skills import admissible as adm
+    boxes = sg._load_admissible_boxes()
+    box = adm.select(boxes, 'hop', ('P1', 'P2'), cfg.apex_m,
+                     release_site_xy_mm=(-125.0, 0.0), target_site_xy_mm=(125.0, 0.0))
+    assert box is not None and not box.empty
+    lo, hi = box.apex_m
+    commanded = [t['u'][2] for t in res['throws']]
+    assert min(commanded) < 0.85 - 1e-6, commanded
+    assert all(lo - 1e-9 <= u <= hi + 1e-9 for u in commanded), (commanded, lo, hi)
+    print('HOP-SMALL-RUN entered_band=%r throws_to_band_apex=%r min_u_apex=%.4f box=(%.3f, %.3f)'
+          % (res['entered_band'], res['throws_to_band_apex'], min(commanded), lo, hi))
+
+
+# ── R5: the columns learner run (Unit G, plan § R5) ─────────────────────────
+#
+# ``SelfTossGateConfig(pattern='columns', ...)`` -- the R3/R4 self-toss/hop
+# harness's own operating point (300/5000/150000, hand 3500) and band, driven
+# through ``SkillsGate.run_columns_attempt``/``run_columns_seed`` instead of
+# the one-ball ``run_self_toss_attempt``/``_seed``: both balls, one shared
+# memory, the columns Stop, ``boxes=None`` (the committed 'columns' box
+# entries are EMPTY/NaN, swept before this rung), ``resend_max_per_catch=0``
+# (owner decision 2026-09-29). SAME small-run shape as the self-toss/hop
+# smoke tests above -- one seed, a handful of throws -- the full 5-seed x
+# >=30-throw sweep runs manually (``python sim/skills_gate.py --learn
+# --pattern columns``).
+
+def _small_columns_run():
+    cfg = SelfTossGateConfig(pattern='columns', target_throws=5,
+                             band_entry_throws=5, max_attempts=5)
+    return cfg, SkillsGate(cfg).run_columns_seed(0)
+
+
+def test_a_small_columns_learner_run_produces_caught_experience_rows():
+    """From a cold memory, a handful of columns throws produce real
+    ``memory.Experience`` rows -- both balls, the learner ON, the Stop's own
+    cross-site last throw excluded (:meth:`SkillsGate.run_columns_attempt`'s
+    docstring: it bypasses the learner and produces no row).
+
+    MEASURED (seed 0, ``target_throws=5``, 2026-09-30, this test): 5 rows,
+    0 drops, the first 4 ``caught=True`` -- non-vacuous proof that
+    ``observer=_make_observer(plant)`` (added this rung: without it every
+    row read ``caught=False`` regardless of the physical capture, since
+    ``executor._advance_outcomes`` only latches ``caught_seen`` when an
+    observer is wired) is doing real work.
+    """
+    cfg, res = _small_columns_run()
+    assert res['pattern'] == 'columns'
+    assert res['n_throws_collected'] == 5
+    assert res['drops'] == 0
+    assert res['makes'] >= 5
+    # Not vacuous: at least one row genuinely caught (the observer wire
+    # this rung added is exercised, not silently inert).
+    assert any(t['caught'] for t in res['throws'])
+    assert res['longest_consecutive_catches'] >= 1
+    assert res['plan_wall_ms']['n'] > 0
+
+
+def test_a_small_columns_learner_run_enters_the_apex_band():
+    """The R3 apex band (42 mm) within the 5-throw entry criterion, matching
+    the self-toss/hop shape -- a columns throw is kinematically an ordinary
+    same-site self-toss for every ball but the Stop."""
+    cfg, res = _small_columns_run()
+    assert res['throws_to_band_apex'] is not None
+    assert res['throws_to_band_apex'] <= cfg.band_entry_throws
 
 
 # ---------------------------------------------------------------------------

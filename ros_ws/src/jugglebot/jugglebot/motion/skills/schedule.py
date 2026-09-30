@@ -21,6 +21,7 @@ from jugglebot.motion.skills import segments as sg
 from jugglebot.motion.skills.segments import CATCH, KINDS, REST, THROW
 from jugglebot.motion.skills.sites import REST_CUP_Z_MM, REST_HAND_REV, Site
 from jugglebot.motion.trajectory import ballistics_bc
+from jugglebot.motion.trajectory import tilt_geometry as tg
 
 #: SI gravity magnitude (m/s²) — the same number ``cup_cycle.GRAVITY`` /
 #: ``ballistics_bc.G_VEC_MMS2`` already carry (9806 mm/s²), read off
@@ -224,6 +225,15 @@ class ThenThrow:
     t_release_abs_s: float
     y_d: Tuple[np.ndarray, float]
     target: Site
+    #: The columns Stop's cross-site last throw (owner decision D2, 2026-09-30,
+    #: R5 rescope — E1'): True when this carried release is the pattern's
+    #: LAST throw, aimed at the OTHER site to land on the ball already held
+    #: there.  Copied from :attr:`Skill.shadow_landing` by
+    #: :func:`_fold_catch_throw_pairs` when the throw it folds set it — the
+    #: ONE explicit flag both the executor's command bypass
+    #: (:meth:`~jugglebot.motion.skills.executor.SkillExecutor._command_u`)
+    #: and its outcome bookkeeping read, no inference from schedule shape.
+    shadow_landing: bool = False
 
     def __post_init__(self):
         if not np.isfinite(float(self.t_release_abs_s)):
@@ -300,6 +310,17 @@ class Skill:
     #: REST's behaviour); R4's PRE-TILT REST is the one caller that states
     #: False (the ball is still in the air, not caught yet).
     holds_ball: bool = True
+    #: THROW only: True for the columns Stop's cross-site last throw (owner
+    #: decision D2, 2026-09-30, R5 rescope — E1'): this throw's ``target`` is
+    #: the OTHER site (100 mm away), aimed to land ON the ball the schedule
+    #: already holds there (:func:`compile_columns`'s closing REST, unchanged
+    #: pre-E form).  The explicit flag the executor's command bypass and
+    #: outcome bookkeeping read — no inference from "nothing scheduled after
+    #: this ball" (plan § 0: one data structure, no second copy of the same
+    #: fact).  ``False`` (every throw before R5, and R5's own ``n == 1``
+    #: schedule — nothing is held, so the last throw is an ordinary throw at
+    #: its own site).
+    shadow_landing: bool = False
     #: Seconds between this skill's DISPATCH and its splice base
     #: (``t_abs_s - window_s``).  :func:`compile_columns` sets it per skill;
     #: the default is the general :data:`LEAD_S`.
@@ -309,6 +330,9 @@ class Skill:
         if self.kind not in KINDS:
             raise ValueError('kind must be one of %s, got %r'
                               % (KINDS, self.kind))
+        if self.shadow_landing and self.kind != THROW:
+            raise ValueError('only a THROW may carry shadow_landing (kind=%r)'
+                              % (self.kind,))
         if self.then_throw is not None and self.kind != CATCH:
             raise ValueError(
                 'only a CATCH may carry then_throw (kind=%r) — a throw is '
@@ -462,7 +486,8 @@ def _fold_catch_throw_pairs(skills, dwell_s: float):
         j, throw = pair
         folded.add(j)
         out.append(dataclasses.replace(sk, then_throw=ThenThrow(
-            t_release_abs_s=throw.t_abs_s, y_d=throw.y_d, target=throw.target)))
+            t_release_abs_s=throw.t_abs_s, y_d=throw.y_d, target=throw.target,
+            shadow_landing=throw.shadow_landing)))
     return out
 
 
@@ -513,8 +538,51 @@ def _assign_leads(skills):
     return out
 
 
-def compile_columns(pattern: Pattern, t0_abs_s: float) -> Schedule:
+def schedule_has_shadow_landing(schedule: Schedule) -> bool:
+    """True if any skill in ``schedule`` carries the columns Stop's
+    cross-site last throw (owner decision D2, 2026-09-30 — ``Skill.
+    shadow_landing`` / ``ThenThrow.shadow_landing``, set by
+    :func:`compile_columns` for ``n_throws >= 2``): the schedule's clean end
+    state is "one ball held, the last ball rests on the platform", not an
+    ordinary rest.
+
+    False for every non-columns pattern (neither field is ever set outside
+    :func:`compile_columns`) and for a columns attempt whose last throw
+    never made it into the final schedule — a D3 drop's survivor tail
+    (:meth:`~jugglebot.motion.skills.executor.SkillExecutor.
+    _install_survivor_tail`) strips ``then_throw`` before appending its own
+    closing REST, so this reads False there too: D2 and D3 are mutually
+    exclusive end states by construction, and the caller (``skill_node.
+    _log_attempt_end``) only asks this when ``end_code`` is empty — a D3
+    drop already has its own, more specific, code.
+    """
+    return any(sk.shadow_landing
+              or (sk.then_throw is not None and sk.then_throw.shadow_landing)
+              for sk in schedule.skills)
+
+
+def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
+                    feed: Optional[LandingPrior] = None) -> Schedule:
     """The columns pattern's schedule (plan § 1.2 / § 2.4).
+
+    **Exactly one of ``t0_abs_s``/``feed`` (R5, owner decision D1,
+    2026-09-30).** ``t0_abs_s`` is the pre-R5 free clock instant (still used
+    by every caller that already knows when ball B lands — tests, and a
+    probe compile). ``feed`` is ball B's REAL, externally-observed arrival
+    (a Ball Butler ``ThrowAnnouncement`` or a converged tracker fit,
+    ``SkillNode._run_columns``'s FEED WAIT): the whole reason columns needs
+    a feed at all is that ``t0`` is not a free choice once a real ball is
+    already falling toward site 1 — it is READ OFF that ball's own landing
+    instant, ``t0 = feed.t_land_abs_s - transit_s(pattern)`` (the schedule's
+    own definition: "ball B is already in flight, landing at site 1 at
+    ``t0 + transit_s``", unchanged below), and the initial CATCH carries
+    ``landing_prior=feed`` so the executor aims at the OBSERVED arrival
+    rather than predicting one from a release this schedule never issued —
+    the same mechanism :func:`compile_reload`'s CATCH already uses
+    (``executor._predicted_landing`` honours ``Skill.landing_prior``
+    unconditionally, no new machinery here). Giving both, or neither, is
+    refused: a free ``t0`` and an observed arrival cannot both be the
+    authority for when ball B lands.
 
     Columns is two SELF-tosses (ball A at ``sites[0]``, ball B at ``sites[1]``)
     run half a beat out of phase, not a crossing pattern — each throw's target
@@ -528,14 +596,48 @@ def compile_columns(pattern: Pattern, t0_abs_s: float) -> Schedule:
     splices right after the previous catch and releases at ``t_abs_s``). Every
     throw except the LAST gets a matching CATCH at ``t_abs_s + flight_s``, same
     ball, same site, window ``transit_s`` (the segment splices right after the
-    release and lands at ``t_abs_s``) — the last throw's landing is R5's cone
-    delivery and is deliberately not scheduled here. Ball B's PRE-EXISTING
-    flight (airborne before ``t0``) gets one extra CATCH with no matching
-    THROW in this schedule. The schedule ends with a REST at the site of the
-    chronologically last CATCH, TWO ``rest_tail_s`` after it (one for that
-    catch's own tail, one for the REST's window — see the comment at the
-    append: one tail would dispatch the REST before the touch-down and splice
-    the catch away).
+    release and lands at ``t_abs_s``). Ball B's PRE-EXISTING flight (airborne
+    before ``t0``) gets one extra CATCH with no matching THROW in this
+    schedule.
+
+    **The Stop (owner decision D2, 2026-09-30, R5 rescope — E1'): the last
+    throw is aimed at the OTHER site, not its own.** For ``n_throws >= 2`` the
+    last throw's ``target`` is ``sites2[n % 2]`` — the site the
+    SECOND-TO-LAST ball is caught and held at (always the other of the two
+    sites, since consecutive throws alternate) — and it carries
+    ``shadow_landing=True``. Nothing meets it in the air: the schedule's
+    closing REST returns to the pre-E1 form, at the chronologically LAST
+    CATCH's own site (:func:`closing_rest_t_abs`, unchanged), so by the time
+    this throw lands the platform is already sitting there holding the ball
+    it caught, and the falling ball strikes it — the platform comes to rest
+    holding both (not a resumable state — cone delivery is a later rung).
+
+    This replaces E's first design (a shadow REST that had to physically
+    TRAVEL the 100 mm between sites in the ~0.228 s left after the previous
+    catch's tail): probed 2026-09-30, that REST refused ``LIMIT_VEL`` at the
+    session cap of 300 mm/s (needs >= 0.333 s for 100 mm on velocity alone,
+    before any accel/decel ramp). Aiming the throw that is ALREADY being
+    planned costs nothing extra and needs no travel at all — the platform
+    never has to move a second time; it is already at the site holding the
+    other ball. This is schedule-only: no new planner terminal — the last
+    throw (or, once folded, the CATCH that carries it) plans exactly like any
+    other throw, just aimed cross-site. Probed 2026-09-30 at the reference
+    operating point (apex 0.9 m, dwell 0.30 s, separation 100 mm, session
+    limits 300/5000/150000): the real ``segments.plan_segment`` ACCEPTS the
+    cross-site catch-with-throw (peak leg jerk 149 210 mm/s³ against the
+    150 000 cap — no headroom, but this is a single terminal event with
+    ``u = y_d`` fixed, not a box-swept command the learner re-aims, so the
+    tight margin is acceptable here and nowhere else).
+
+    ``n_throws == 1`` (a single launch, nothing caught yet) keeps the pre-R5
+    behaviour: the only throw stays at its own site, ``shadow_landing`` stays
+    ``False`` — there is nothing held to land on.
+
+    The executor bypasses the learner and the admissible box entirely for a
+    ``shadow_landing`` throw (``u = y_d`` exactly, no clip): the box is swept
+    per pattern for SAME-site throws, this is a cross-site one, and precision
+    buys nothing when the ball is landing on a ball already at rest — see
+    ``executor.SkillExecutor._command_u``.
 
     **Every same-site (CATCH, THROW) pair of one ball is emitted as ONE CATCH
     skill carrying ``then_throw``** (:func:`_fold_catch_throw_pairs`), so the
@@ -558,9 +660,16 @@ def compile_columns(pattern: Pattern, t0_abs_s: float) -> Schedule:
     :data:`HANDOFF_LEAD_S` (:func:`_assign_leads`) and spends the extra two
     knots on the solve rather than on moving the seam.
     """
+    if (t0_abs_s is None) == (feed is None):
+        raise ValueError(
+            'compile_columns takes exactly one of t0_abs_s (a free clock '
+            'instant) or feed (R5: ball B\'s observed arrival, from which '
+            't0 is derived) — got t0_abs_s=%r feed=%r' % (t0_abs_s, feed))
     t_f = flight_s(pattern.apex_m)
     beta = beat_s(t_f, pattern.dwell_s)
     tau = transit_s(t_f, pattern.dwell_s)
+    if feed is not None:
+        t0_abs_s = float(feed.t_land_abs_s) - tau
     if not tau > 0.0:
         raise ValueError(
             'dwell %.4f s >= flight %.4f s leaves no transit — the ball would '
@@ -588,8 +697,14 @@ def compile_columns(pattern: Pattern, t0_abs_s: float) -> Schedule:
 
     skills = []
     _check_window('initial CATCH', tau)
+    # `feed.t_land_abs_s` is already the ORIGINAL absolute instant (the
+    # same "not the relative one `_shifted` would double-shift" note as
+    # `compile_reload`'s own CATCH), so it rides through unshifted —
+    # `_shifted` below only ever moves `Skill.t_abs_s` / `ThenThrow.
+    # t_release_abs_s`, never `landing_prior`.
     skills.append(Skill(kind=CATCH, ball_id=1, site=site1,
-                        t_abs_s=t0_rel + tau, window_s=tau))
+                        t_abs_s=t0_rel + tau, window_s=tau,
+                        landing_prior=feed))
 
     _check_window('THROW 0 (the launch from rest)', pattern.launch_s)
     if n >= 2:
@@ -605,9 +720,20 @@ def compile_columns(pattern: Pattern, t0_abs_s: float) -> Schedule:
         site_i = sites2[ball_i]
         t_throw = t0_rel + i * beta
         window = pattern.launch_s if i == 0 else pattern.dwell_s
-        skills.append(Skill(kind=THROW, ball_id=ball_i, site=site_i,
-                            t_abs_s=t_throw, window_s=window,
-                            y_d=(np.zeros(2), pattern.apex_m), target=site_i))
+        # The Stop (D2, 2026-09-30, R5 rescope — E1', see the docstring): the
+        # LAST throw targets the OTHER site — the one the second-to-last ball
+        # is caught and held at (`sites2[n % 2]`, always the other of the two
+        # since consecutive throws alternate) — instead of its own. Every
+        # earlier throw is an ordinary self-toss, target = its own site.
+        # `n == 1` has no second-to-last ball to aim at, so it is excluded
+        # (`i == n - 1 and n >= 2`) and the only throw stays a self-toss.
+        is_stop_throw = (i == n - 1 and n >= 2)
+        target_i = sites2[n % 2] if is_stop_throw else site_i
+        throw_sk = Skill(kind=THROW, ball_id=ball_i, site=site_i,
+                         t_abs_s=t_throw, window_s=window,
+                         y_d=(np.zeros(2), pattern.apex_m), target=target_i,
+                         shadow_landing=is_stop_throw)
+        skills.append(throw_sk)
         if i <= n - 2:
             _check_window('CATCH %d' % i, tau)
             skills.append(Skill(kind=CATCH, ball_id=ball_i, site=site_i,
@@ -618,15 +744,12 @@ def compile_columns(pattern: Pattern, t0_abs_s: float) -> Schedule:
 
     catches = [s for s in skills if s.kind == CATCH]
     last_catch = max(catches, key=lambda s: s.t_abs_s)
-    # TWO tails, and the second one is the whole point: a REST is a SETTLE, and
-    # a SETTLE dispatched before the last touch-down splices OVER the catch —
-    # the head is cut at a knot before the ball arrives and the new window is
-    # solved to stop at the rest site, so the machine stops reaching for a ball
-    # that is still in the air.  One tail puts the REST's dispatch
-    # (`t_abs - rest_tail - lead`) a lead BEFORE the touch-down; two puts it a
-    # lead before the catch segment's own tail runs out, where the machine is
-    # already at rest and the splice only extends the hold.
-    rest_t = closing_rest_t_abs(last_catch.t_abs_s, pattern.rest_tail_s)
+    # The closing REST (pre-E1 form, restored): two `rest_tail_s` past the
+    # last CATCH's own touch-down plus the fresh-origin margin, at that
+    # catch's site — unchanged by the Stop, because nothing has to travel
+    # there any more (the last throw is already aimed at it).
+    rest_t = closing_rest_t_abs(float(last_catch.t_abs_s), pattern.rest_tail_s)
+    _check_window('closing REST', pattern.rest_tail_s)
     skills.append(Skill(kind=REST, ball_id=last_catch.ball_id,
                         site=last_catch.site, t_abs_s=rest_t,
                         window_s=pattern.rest_tail_s))
@@ -1049,7 +1172,7 @@ RELOAD_CATCH_WINDOW_S = 0.5
 
 
 def compile_reload_wait(site: Site, floor_lift_s: float,
-                        t0_abs_s: float) -> Schedule:
+                        t0_abs_s: float, holds_ball: bool = False) -> Schedule:
     """The R4 reload's OPENING REST bridge (owner decision D4, brief step
     1a) — installed BEFORE Ball Butler is even asked to reload, because the
     receive tilt :func:`compile_reload` needs is not known until BB's
@@ -1057,9 +1180,9 @@ def compile_reload_wait(site: Site, floor_lift_s: float,
     identical Skill construction to :func:`compile_one_ball`'s own opening
     REST (homes the hand from wherever it is to
     :data:`~jugglebot.motion.skills.sites.REST_HAND_REV`, lifts the cup onto
-    ``site``), except ``holds_ball=False`` — unlike the self-toss opening
-    REST (which assumes an operator has already placed a ball), nothing is
-    in the cup while BB's throw is still pending.
+    ``site``), except ``holds_ball`` defaults ``False`` — unlike the
+    self-toss opening REST (which assumes an operator has already placed a
+    ball), nothing is in the cup while BB's throw is still pending.
 
     ``SkillNode._run_one_ball`` (a Juggle goal with ``reload=True``) installs this
     schedule, then calls ``bb/reload`` + ``bb/throw_at_target``; the hand
@@ -1069,6 +1192,13 @@ def compile_reload_wait(site: Site, floor_lift_s: float,
     the hand is already at rest, so that schedule's own combined home+tilt
     REST (U2's SIMPLICITY contract) has nothing left to home and only
     reaches the tilt. This schedule's only job is to get there and hold.
+
+    ``holds_ball=True`` (R5, owner decision D1, 2026-09-30): the SAME bridge
+    shape reused as ``SkillNode._run_columns``'s opening REST — columns'
+    ball A is already seated in the cup (an operator placed it, exactly
+    like self-toss's opening REST) while ball B's feed is still awaited, so
+    the bridge must say so, or the executor's own "what does this REST
+    carry" bookkeeping would read the cup as empty while a ball sits in it.
     """
     t0_rel = 0.0
     period = float(floor_lift_s)
@@ -1076,7 +1206,7 @@ def compile_reload_wait(site: Site, floor_lift_s: float,
                  'reload)', period)
     skills = [Skill(kind=REST, ball_id=0, site=site,
                     t_abs_s=t0_rel + period, window_s=period,
-                    holds_ball=False)]
+                    holds_ball=bool(holds_ball))]
     skills = _assign_leads(skills)
     t0 = float(t0_abs_s)
     skills = [_shifted(s, t0) for s in skills]
@@ -1086,7 +1216,8 @@ def compile_reload_wait(site: Site, floor_lift_s: float,
 
 
 def compile_reload(landing_mm, landing_vel_mm_s, t_land_abs_s: float,
-                   pattern: OneBallPattern, t0_abs_s: float) -> Schedule:
+                   pattern: OneBallPattern, t0_abs_s: float,
+                   max_tilt_deg: float = tg.MAX_TILT_DEG) -> Schedule:
     """The R4 reload schedule (plan owner decision D4, 2026-09-23): the FSM's
     proven ball-butler-reload choreography, expressed as skills, anchored on
     Ball Butler's OWN ``ThrowAnnouncement`` — ``landing_mm`` /
@@ -1137,13 +1268,32 @@ def compile_reload(landing_mm, landing_vel_mm_s, t_land_abs_s: float,
     _on_announcement`` — received the announcement; the schedule's own clock
     is built at ``t0_rel = 0`` and shifted once at the end, per the identical
     note on :func:`compile_columns`), not a free parameter.
+
+    ``max_tilt_deg`` (R5 owner experiment, 2026-09-30, default
+    :data:`tilt_geometry.MAX_TILT_DEG`, 12°): the ceiling the PRE-TILT REST's
+    ``rest_tilt`` and the CATCH's ``hold_tilt`` are BOTH clamped to — the one
+    derivation point (:func:`tilt_geometry.tilt_to_receive`) both read, so a
+    tighter cap can never desync the REST's approach from what the CATCH
+    actually holds. Called here rather than through
+    ``segments.receive_hold_tilt`` only because that wrapper hardcodes the
+    12° default and has no cap argument — the underlying derivation is the
+    same function either way, so this is not a second copy of it. Must be ``0 < max_tilt_deg <= tilt_geometry.
+    MAX_TILT_DEG``: a cap of 0 could never hold an off-vertical arrival at
+    all (nothing to catch on the line), and one past 12° would exceed the
+    ceiling the QP's own held-axis contract was measured against
+    (``segments.receive_hold_tilt``'s docstring).
     """
     landing_mm = _vec3(landing_mm, 'landing_mm')
     landing_vel = _vec3(landing_vel_mm_s, 'landing_vel_mm_s')
     if not np.isfinite(float(t_land_abs_s)):
         raise ValueError('t_land_abs_s must be finite, got %r'
                           % (t_land_abs_s,))
-    tilt = sg.receive_hold_tilt(landing_vel)
+    max_tilt_deg = float(max_tilt_deg)
+    if not (0.0 < max_tilt_deg <= tg.MAX_TILT_DEG):
+        raise ValueError(
+            'max_tilt_deg must be in (0, %.1f], got %r'
+            % (tg.MAX_TILT_DEG, max_tilt_deg))
+    tilt = tg.tilt_to_receive(landing_vel, max_tilt_deg=max_tilt_deg)
     site0 = pattern.sites[0]
 
     t0_rel = 0.0
