@@ -11,17 +11,25 @@ For every machine self-toss (a ``/throw_announcements`` with
    marker positions over the ball's free-flight window (least squares via
    ``sim.juggle_noise.BallisticEstimator`` — the one estimator this probe
    uses; it is not re-implemented here) and reports the ANALYTIC crossing of
-   two planes: ``z = CATCH_CUP_Z_MM`` (830.0 mm, ``motion/skills/sites.py``,
-   the skill stack's catch plane) and ``z = 809.08 mm`` (the tracker node's
-   own landing plane, ``GEOM_INITIAL_HEIGHT_MM`` + ``JB_OP_DEFAULT_ACTIVE_Z_MM``
-   + ``HAND_CATCH_OFFSET_MM`` — see ``ball_tracker_node.py``). This is the
-   probe's GROUND TRUTH.
+   two planes: ``z = CATCH_CUP_Z_MM`` (``motion/skills/sites.py``, imported
+   not restated — the skill stack's ONE catch plane, and what the tracker has
+   predicted landings AT since R3, 2026-09-13) and ``z = FSM_ERA_CATCH_Z_MM``
+   (``GEOM_INITIAL_HEIGHT_MM`` + ``JB_OP_DEFAULT_ACTIVE_Z_MM`` +
+   ``HAND_CATCH_OFFSET_MM``, RECOMPUTED from config, not pinned to a literal —
+   this was the tracker's own landing plane pre-R3, 809.08 mm at the time this
+   probe was written; 812.98 mm since the 2026-09-27 kinematic calibration
+   moved the geometry; see ``ball_tracker_node.py``, which now aims at
+   ``CATCH_CUP_Z_MM`` instead). This is the probe's GROUND TRUTH.
 2. Scores ``/balls`` (``BallStateArray``) landing-prediction CANDIDATES
    against that ground truth (plan § 2.7 asks which one the learner's
    observed ``y`` should be):
-     (a) the LAST prediction before the ball crosses the tracker's own plane
-         (809.08 mm) or is caught, whichever is earlier -- scored against the
-         809.08 mm ground truth (that IS the plane this field targets);
+     (a) the LAST prediction before the ball crosses the FSM-era plane
+         (``FSM_ERA_CATCH_Z_MM`` — kept for scoring bags recorded BEFORE the
+         R3 fix below, when that plane really was the tracker's own; a
+         current bag's candidate (a) is scored against a plane the live
+         tracker no longer targets and should not be read as a tracker
+         error) or is caught, whichever is earlier -- scored against that
+         same plane's ground-truth crossing;
      (b) the prediction at ``t_cross_830 - 0.1 s`` (the CATCH freeze instant
          the executor stops re-aiming at);
      (c) the prediction ~150 ms after the physical release;
@@ -33,10 +41,10 @@ For every machine self-toss (a ``/throw_announcements`` with
      (e') the same projection, from the update nearest the executor's CATCH
          freeze instant (``t_cross_830 - executor.CATCH_FREEZE_S``).
    Candidate (d) (retired 2026-09-13) re-projected from candidate (a)'s
-   state, which is already at/under 809.08 mm -- i.e. already PAST the
-   830 mm plane on the way down, so no forward 830 mm crossing exists from
-   it; (e)/(e') fix this by picking a state that is provably still above the
-   830 mm plane (by 50 mm) before projecting forward.
+   state, which is already at/under the FSM-era plane -- i.e. already PAST
+   the 830 mm plane on the way down, so no forward 830 mm crossing exists
+   from it; (e)/(e') fix this by picking a state that is provably still above
+   the 830 mm plane (by 50 mm) before projecting forward.
 3. Counts flights with no usable track, a late-starting track, or a phantom
    distractor track (§ 2.7's "no observation" question), using a checkable
    predicate.
@@ -116,16 +124,34 @@ from sim.juggle_noise import BallisticEstimator                 # noqa: E402
 from jugglebot.motion.trajectory.ballistics_bc import (          # noqa: E402
     arrival_state_at_z)
 from jugglebot.motion.skills.executor import CATCH_FREEZE_S      # noqa: E402
+from jugglebot.motion.skills import sites                        # noqa: E402
 import jugglebot.hardware_config as hw                           # noqa: E402
 
 GRAVITY_MMPS2 = 9806.0
 G_VEC = np.array([0.0, 0.0, -GRAVITY_MMPS2])
 
-CATCH_CUP_Z_MM = 830.0
-TRACKER_LANDING_Z_MM = (hw.GEOM_INITIAL_HEIGHT_MM
-                         + hw.JB_OP_DEFAULT_ACTIVE_Z_MM
-                         + hw.HAND_CATCH_OFFSET_MM)
-assert abs(TRACKER_LANDING_Z_MM - 809.08) < 0.01, TRACKER_LANDING_Z_MM
+#: The skill stack's ONE catch plane (imported, not restated — CLAUDE.md § 0
+#: "no second copy of any constant"). This is also what the live tracker
+#: predicts landings AT (``ball_tracker_node.py``, since the R3 fix below).
+CATCH_CUP_Z_MM = sites.CATCH_CUP_Z_MM
+
+#: R5 2026-09-30 (this rung's bag-probe fix): this used to be named
+#: ``TRACKER_LANDING_Z_MM`` and carried an ``assert ... == 809.08`` — both
+#: wrong since the 2026-09-27 kinematic-calibration commit moved
+#: ``hw.GEOM_INITIAL_HEIGHT_MM`` (574.3 -> 578.2 mm), which recomputes this
+#: sum to 812.98 mm, crashing the probe on import. This plane is NOT the
+#: tracker's landing plane any more — the tracker has predicted at
+#: ``CATCH_CUP_Z_MM`` (830 mm) since the R3 fix (2026-09-13,
+#: `logbook/2026-09-13-skill-stack-r3-learner-single-site.md`: "skill had
+#: been aiming at the tracker's raw 809.08 mm plane instead of 830 mm ...
+#: Fixed"). It is kept, RECOMPUTED from config rather than pinned to a
+#: literal, so candidate (a) can still score bags recorded before that fix,
+#: when this WAS the real tracker plane. Do not read a current bag's
+#: candidate (a) error as a tracker defect — it is scored against a plane
+#: the live system no longer targets.
+FSM_ERA_CATCH_Z_MM = (hw.GEOM_INITIAL_HEIGHT_MM
+                       + hw.JB_OP_DEFAULT_ACTIVE_Z_MM
+                       + hw.HAND_CATCH_OFFSET_MM)
 
 # Mocap track-builder tuning (greedy nearest-neighbour association).
 _MAX_SPEED_MMPS = 9000.0        # generous upper bound on ball speed
@@ -553,7 +579,7 @@ def mine_bag(bag_dir, verbose=True):
         fl.gt_fit_rms_mm = rms
 
         dt830 = solve_z_crossing(p0[2], v0[2], G_VEC[2], CATCH_CUP_Z_MM)
-        dt809 = solve_z_crossing(p0[2], v0[2], G_VEC[2], TRACKER_LANDING_Z_MM)
+        dt809 = solve_z_crossing(p0[2], v0[2], G_VEC[2], FSM_ERA_CATCH_Z_MM)
         if dt830 is not None:
             fl.t_cross_830 = fl.t_ref + dt830
             fl.gt_xy_830 = (p0[0] + v0[0] * dt830, p0[1] + v0[1] * dt830)
