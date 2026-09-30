@@ -192,6 +192,61 @@ def test_round_trip_dump_then_load_is_equal(tmp_path):
         assert back == original
 
 
+def test_round_trip_dump_then_load_preserves_dwell_s(tmp_path):
+    """R5 (D4, 2026-09-30): dwell_s is a per-box stamp (schedule.Pattern.dwell_s
+    / skill_node's own dwell_s parameter were an unenforced timing twin before
+    this field existed -- plan § 0)."""
+    box = _box(dwell_s=0.25)
+    path = str(tmp_path / 'x.yaml')
+    ab.dump(path, [box])
+    loaded = ab.load(path)
+    assert loaded[0].dwell_s == pytest.approx(0.25)
+
+
+def test_round_trip_dump_then_load_tolerates_an_unstamped_dwell_s(tmp_path):
+    """A box built without dwell_s (dataclass default None -- the Python-level
+    escape hatch for callers outside this unit's file list, e.g.
+    tests/ros/test_skill_node.py, that construct AdmissibleBox directly and
+    never set it) round-trips as None, not refused and not guessed."""
+    box = _box(dwell_s=None)
+    path = str(tmp_path / 'x.yaml')
+    ab.dump(path, [box])
+    loaded = ab.load(path)
+    assert loaded[0].dwell_s is None
+
+
+def test_box_rejects_a_non_positive_dwell_s():
+    with pytest.raises(ValueError, match='dwell_s'):
+        _box(dwell_s=0.0)
+    with pytest.raises(ValueError, match='dwell_s'):
+        _box(dwell_s=-0.1)
+
+
+def test_check_limits_passes_when_the_dwell_matches():
+    ab.check_limits([_box(dwell_s=0.30)], _live_limits(), dwell_s=0.30)
+
+
+def test_check_limits_refuses_on_a_dwell_mismatch():
+    with pytest.raises(ab.LimitsMismatch, match='dwell_s'):
+        ab.check_limits([_box(dwell_s=0.30)], _live_limits(), dwell_s=0.20)
+
+
+def test_check_limits_refuses_an_unstamped_dwell_against_a_live_one():
+    """A box that never carried a dwell_s (None) is treated exactly like a
+    numeric mismatch when the caller actually cares about the live dwell --
+    it is not silently assumed to match."""
+    with pytest.raises(ab.LimitsMismatch, match='dwell_s'):
+        ab.check_limits([_box(dwell_s=None)], _live_limits(), dwell_s=0.30)
+
+
+def test_check_limits_skips_the_dwell_check_when_not_given():
+    """The default (`dwell_s=None` on the call) is a no-op -- every EXISTING
+    caller (skill_node.py's two call sites, tests/hardware/skills_plan_bench.py)
+    keeps working unchanged until it is wired to pass its own live dwell."""
+    ab.check_limits([_box(dwell_s=None)], _live_limits())
+    ab.check_limits([_box(dwell_s=0.20)], _live_limits())
+
+
 def test_dump_refuses_a_mix_of_provenance(tmp_path):
     boxes = [_box(), _box(swept_at='2026-09-13')]
     with pytest.raises(ValueError, match='swept_at|gate_hash|limits'):
@@ -445,25 +500,58 @@ def sweep_mod():
 
 @pytest.fixture(scope='module')
 def tiny_sweep(sweep_mod):
+    """R5 (D4, 2026-09-30): the real cell needs NO ``pre_release_hold_s``
+    override -- the old override existed only to work around the transit-baked
+    cell's incompatibility with the default 100 ms hold (see
+    ``test_the_cross_site_branch_gates_the_real_catch_with_throw_segment``
+    below for what replaced it). Re-pinned from a probe
+    (``scratchpad/probe_unitB_sweep5.py``, 2026-09-30) of what the tiny grid
+    actually admits AT THE DEFAULT HOLD: apex 0.90 m (the owner operating
+    point) fails MARGIN at every offset tried at dwell 0.30, but apex 0.85 m
+    (still inside D4's grid) passes at the identity command AND at a small +/-
+    5 mm y offset (x stays pinned at 0 -- +/-5 mm x refuses CHAIN_CATCH:MARGIN
+    / MARGIN) -- a real, non-empty, non-degenerate-in-y box."""
     site0, site1 = st.columns_sites(100.0)
-    # Hold OFF: the columns pattern flies with `pre_release_hold_s:=0` (see
-    # test_the_default_pre_release_hold_empties_the_columns_cell below).
     boxes, rows = sweep_mod.sweep(
-        apexes_m=(0.85, 0.90), offsets_mm=(-10.0, 0.0), site_pairs=[(site0, site1)],
-        pre_release_hold_s=0.0)
+        apexes_m=(0.85,), offsets_mm=(-5.0, 0.0, 5.0), dwell_s=0.30,
+        site_pairs=[(site0, site1)])
     return boxes, rows
 
 
-def test_the_default_pre_release_hold_empties_the_columns_cell(sweep_mod):
-    """KNOWN INCOMPATIBILITY, pinned so a fix shows up as a test change
-    (2026-09-29): the default 100 ms pre-release hold does not fit the columns
-    cell's 0.3 s dwell THROW (measured: hold 0 -> OK, 0.05 -> MARGIN,
-    0.1 -> INFEASIBLE), so the committed box's columns boxes are EMPTY and
-    columns flies with ``pre_release_hold_s:=0``."""
+def test_the_cross_site_branch_gates_the_real_catch_with_throw_segment(
+        sweep_mod, monkeypatch):
+    """R5 (D4, 2026-09-30) replaces
+    ``test_the_default_pre_release_hold_empties_the_columns_cell``: the
+    cross-site (columns) branch must be gated on the segment
+    ``schedule.compile_columns`` / ``_fold_catch_throw_pairs`` actually
+    dispatches -- a CATCH carrying ``then_throw`` -- not the old transit-baked
+    THROW that pattern never flies. Spy on ``segments.plan_segment`` the same
+    way ``test_single_site_sweep_uses_the_carried_throw_segment`` does for the
+    same-site branch, and assert at least one CATCH call in the cross-site
+    sweep carried ``then_throw``."""
+    calls = []
+    orig = sweep_mod.sg.plan_segment
+
+    def _spy(kind, seed, terminal, cfg, limits, geom, **kw):
+        if kind == sweep_mod.sg.CATCH:
+            calls.append(terminal.then_throw)
+        return orig(kind, seed, terminal, cfg, limits, geom, **kw)
+
+    monkeypatch.setattr(sweep_mod.sg, 'plan_segment', _spy)
     site0, site1 = st.columns_sites(100.0)
-    boxes, _rows = sweep_mod.sweep(
-        apexes_m=(0.90,), offsets_mm=(0.0,), site_pairs=[(site0, site1)])
-    assert len(boxes) == 1 and boxes[0].empty
+    boxes, rows = sweep_mod.sweep(apexes_m=(0.85,), offsets_mm=(0.0,),
+                                  dwell_s=0.30, site_pairs=[(site0, site1)])
+    assert calls, 'expected at least one CATCH plan_segment call from the sweep'
+    assert any(tt is not None for tt in calls), (
+        'the cross-site sweep never planned a CATCH with then_throw -- it '
+        'regressed to the old transit-baked THROW, the segment shape '
+        'schedule.compile_columns never flies')
+    assert len(boxes) == 1
+    assert boxes[0].pattern == 'columns'
+    assert not boxes[0].empty, (
+        'the identity command at apex 0.85 m / dwell 0.30 s must be '
+        'admissible -- it is the tiny_sweep fixture\'s own passing cell')
+    assert len(rows) >= 2
 
 
 def test_tiny_sweep_produces_one_box_inside_the_swept_grid(tiny_sweep):
@@ -476,15 +564,16 @@ def test_tiny_sweep_produces_one_box_inside_the_swept_grid(tiny_sweep):
     assert box.pattern == 'columns'
     assert box.site_pair == ('P2', 'P2')
     assert box.release_site_xy_mm == box.target_site_xy_mm
-    assert not box.empty, 'the owner operating point (0.90 m apex) must admit ' \
-                          'at least the identity-prior (0, 0) command'
+    assert not box.empty, 'apex 0.85 m must admit at least the identity-' \
+                          'prior (0, 0) command at the default pre-release hold'
     (xlo, xhi), (ylo, yhi) = box.landing_xy_m
-    assert -0.010 - 1e-9 <= xlo <= xhi <= 0.010 + 1e-9
-    assert -0.010 - 1e-9 <= ylo <= yhi <= 0.010 + 1e-9
+    # x is pinned at 0 in this tiny grid (+/-5 mm x refuses) -- only y widens.
+    assert xlo == pytest.approx(0.0) and xhi == pytest.approx(0.0)
+    assert -0.005 - 1e-9 <= ylo <= yhi <= 0.005 + 1e-9
     alo, ahi = box.apex_m
-    # The grid is swept in flight time; the box bounds the APEX (2026-09-18),
-    # so the bounds must land inside the swept grid's own apexes.
-    assert 0.85 - 1e-9 <= alo <= ahi <= 0.90 + 1e-9
+    # Only ONE apex (0.85 m) is in this tiny grid, so the band is a point.
+    assert alo == pytest.approx(0.85) and ahi == pytest.approx(0.85)
+    assert box.dwell_s == pytest.approx(0.30)
     # Every row actually reached a verdict -- the grid ran, not merely built.
     assert len(rows) >= 6
 
@@ -534,6 +623,46 @@ def test_tiny_hop_sweep_produces_a_hop_box_both_directions_containing_the_origin
         assert xlo <= 0.0 <= xhi
         assert ylo <= 0.0 <= yhi
     assert len(rows) >= 6
+
+
+# ---------------------------------------------------------------------------
+# R5 (D4, 2026-09-30): the hop's 0.80 m row and its own per-apex band
+# ---------------------------------------------------------------------------
+
+def test_hop_sweep_default_apex_grid_admits_the_080_row(sweep_mod):
+    """D4: the hop grid gains a 0.80 m row, independent of the columns/
+    self_toss APEXES_M -- probed real (scratchpad/probe_unitB_hop80.py,
+    2026-09-30): apex 0.80 m at the default HOP_SEPARATION_MM passes with
+    margin, both directions, at every offset in a small +/-10 mm grid."""
+    assert 0.80 in sweep_mod.HOP_APEXES_M
+    boxes, rows = sweep_mod.hop_sweep(apexes_m=(0.80,), offsets_mm=(-10.0, 0.0))
+    assert len(boxes) == 2
+    for box in boxes:
+        assert box.pattern == 'hop'
+        assert not box.empty, '%r must admit apex 0.80 m' % (box.site_pair,)
+        alo, ahi = box.apex_m
+        assert alo == pytest.approx(0.80) and ahi == pytest.approx(0.80)
+        assert box.dwell_s == pytest.approx(sweep_mod.DWELL_S)
+    assert len(rows) >= 6
+
+
+def test_single_apex_boxes_pattern_hop_records_the_requested_band_at_080(
+        sweep_mod):
+    """`_single_apex_boxes` generalised to `pattern='hop'` (R5, D4): the
+    resulting box's `apex_band_m` is the REQUESTED `(apex - h, apex + h)`, not
+    the grid-derived band `hop_sweep` would otherwise compute -- the same
+    R3-single-site defect this machinery already closes, now covering hop
+    too. Real solve, kept to a single flight/offset point for wall time."""
+    boxes, rows = sweep_mod._single_apex_boxes(
+        [0.80], flight_frac=[0.0], halfwidth_m=0.05, offsets_mm=[0.0],
+        dwell_s=0.30, separation_mm=250.0, leg_vel=300.0, leg_acc=5000.0,
+        leg_jerk=150000.0, hand_acc=3500.0, pattern='hop', log=lambda r: None)
+    assert len(boxes) == 2
+    for box in boxes:
+        assert box.pattern == 'hop'
+        assert box.apex_band_m == pytest.approx((0.75, 0.85))
+        assert not box.empty
+    assert len(rows) >= 2
 
 
 # ---------------------------------------------------------------------------
@@ -645,11 +774,13 @@ def test_single_apex_boxes_records_the_requested_band_not_the_grid_derived_one(
     exists. `sweep` itself is stubbed so this stays a unit test of the band
     construction, not a second copy of the real-solver sweep test above."""
     calls = []
+    pattern_flight_calls = []
 
     def _fake_sweep(*, flights_s, offsets_mm, dwell_s, separation_mm, leg_vel,
                     leg_acc, leg_jerk, hand_acc, center_flight_s, site_pairs,
-                    log):
+                    pattern_flight_s, log):
         calls.append(list(flights_s))
+        pattern_flight_calls.append(pattern_flight_s)
         site = site_pairs[0][0]
         site_xy = (float(site.cup_mm[0]), float(site.cup_mm[1]))
         box = sweep_mod.ab.AdmissibleBox(
@@ -676,6 +807,123 @@ def test_single_apex_boxes_records_the_requested_band_not_the_grid_derived_one(
     assert boxes[1].apex_band_m == pytest.approx((0.55, 0.65))
     centre0 = sweep_mod.sc.flight_s(0.5)
     assert calls[0] == pytest.approx([centre0 * 0.9, centre0, centre0 * 1.1])
+    # R5 (2026-09-30 fix): `_single_apex_boxes` passes the apex's OWN flight
+    # as `pattern_flight_s` on every call -- the schedule timing a ladder
+    # rung's fraction must NOT move with the commanded flight.
+    centre1 = sweep_mod.sc.flight_s(0.6)
+    assert pattern_flight_calls == pytest.approx([centre0, centre1])
+
+
+# ---------------------------------------------------------------------------
+# R5 fix (2026-09-30): `pattern_flight_s` separates the SCHEDULE's timing
+# (tau/t_land/t_release, and the incoming ball's arrival velocity) from the
+# COMMANDED flight (the carried throw's own ballistic solve) -- see
+# `_chained_catch_cell` / `_columns_catch_throw_cell`'s docstrings for the
+# full "Why". Before this fix every cell derived BOTH roles from the same
+# `flight_s`, so a ladder rung below the pattern apex wrongly shortened the
+# schedule window it was judged against and every `--single-apex` band
+# collapsed to a point at the pattern centre
+# (scratchpad/probe_pattern_flight_timing.py and
+# scratchpad/probe_ladder_below_pattern.py, 2026-09-30, confirm both the
+# defect and the fix -- see handoff_L.md's probe table).
+# ---------------------------------------------------------------------------
+
+def test_chained_catch_cell_timing_is_the_patterns_not_the_commanded(
+        sweep_mod, monkeypatch):
+    """`_chained_catch_cell`'s CatchTerminal must carry the PATTERN's timing
+    (`t_land_s`, `then_throw.t_release_s`) while the carried throw's own
+    `then_throw.flight_s` follows the COMMANDED flight -- production's own
+    split (`schedule.compile_columns` places every CATCH at
+    `t_throw + flight_s(pattern.apex_m)`; `executor._throw_terminal` gives the
+    carried throw `flight_s = sch.flight_s(u_apex)`). `sg.plan_segment` is
+    stubbed to capture the terminal without a real solve -- this is an
+    argument-construction check, not a threshold, so no probe/real-solve is
+    needed for it (see the module docstring's Discussion on when a probe is
+    required). Confirmed FAILING against the pre-fix body verbatim
+    (`scratchpad/probe_pattern_flight_timing.py`, 2026-09-30): the old
+    ``_chained_catch_cell`` set ``t_land_s = flight_s`` directly, so this
+    assertion would have read ``0.771193`` (Tc) instead of ``0.856881``
+    (Tp)."""
+    captured = {}
+
+    def _stub(kind, seed, terminal, cfg, limits, geom, **kw):
+        captured['terminal'] = terminal
+        raise sweep_mod.uc.CycleInfeasible('STUB')
+
+    monkeypatch.setattr(sweep_mod.sg, 'plan_segment', _stub)
+    site = st.columns_sites(100.0)[0]
+    Tp = sweep_mod.sc.flight_s(0.90)
+    Tc = Tp * 0.90  # f = -0.10, a ladder rung below the pattern
+    takeoff = np.array([0.0, 0.0, 5000.0])
+    sweep_mod._chained_catch_cell(
+        site, object(), takeoff, Tc, 0.30, (0.0, 0.0),
+        object(), object(), object(), pattern_flight_s=Tp)
+    terminal = captured['terminal']
+    assert terminal.t_land_s == pytest.approx(Tp)
+    assert terminal.then_throw.t_release_s == pytest.approx(Tp + 0.30)
+    assert terminal.then_throw.flight_s == pytest.approx(Tc)
+
+
+def test_columns_catch_throw_cell_timing_is_the_patterns_not_the_commanded(
+        sweep_mod, monkeypatch):
+    """Same split as the test above, for the cross-site columns cell:
+    `tau`/`t_release` are `sc.transit_s(pattern_flight_s, dwell_s)`-derived,
+    never the commanded flight's transit."""
+    captured = {}
+
+    def _stub(kind, seed, terminal, cfg, limits, geom, **kw):
+        captured['terminal'] = terminal
+        raise sweep_mod.uc.CycleInfeasible('STUB')
+
+    monkeypatch.setattr(sweep_mod.sg, 'plan_segment', _stub)
+    site0, site1 = st.columns_sites(100.0)
+    Tp = sweep_mod.sc.flight_s(0.90)
+    Tc = Tp * 0.90  # f = -0.10
+    takeoff = np.array([0.0, 0.0, 5000.0])
+    dwell = 0.30
+    sweep_mod._columns_catch_throw_cell(
+        site1, object(), takeoff, Tc, dwell, (0.0, 0.0),
+        object(), object(), object(), pattern_flight_s=Tp)
+    terminal = captured['terminal']
+    expected_tau = sweep_mod.sc.transit_s(Tp, dwell)
+    assert terminal.t_land_s == pytest.approx(expected_tau)
+    assert terminal.then_throw.t_release_s == pytest.approx(expected_tau + dwell)
+    assert terminal.then_throw.flight_s == pytest.approx(Tc)
+    # The pre-fix body used `sc.transit_s(flight_s, dwell_s)` -- Tc, not Tp --
+    # so this would have read `sc.transit_s(Tc, dwell)` instead, a shorter tau.
+    assert expected_tau != pytest.approx(sweep_mod.sc.transit_s(Tc, dwell))
+
+
+def test_single_apex_columns_ladder_admits_a_commanded_apex_below_the_pattern(
+        sweep_mod):
+    """The whole point of the fix: at the owner's historical leg_jerk=200k
+    reference point (the R5 diagnosis's ``runA``,
+    ``temp/probes/admissible_box_runA_200k_columns.yaml``), the columns
+    ladder around apex 0.90 m must admit commands BELOW 0.90 m -- before the
+    fix every band was a single point at the pattern centre (the defect this
+    unit closes). Real solve, pinned from a probe
+    (``scratchpad/probe_ladder_below_pattern.py``, 2026-09-30, identity offset
+    only for wall time -- 1.3 s for the whole 7-rung x 2-direction ladder):
+    the f=-0.20 rung (apex 0.576 m, the LOWEST rung tried) already passes at
+    zero offset, both directions; f=+0.05/+0.10 (above the pattern) refuse
+    ``HAND_LIMIT_ACC`` on the carried/launch throw -- a genuinely asymmetric
+    band, not a symmetric one an unfixed sweep could also produce by luck."""
+    boxes, rows = sweep_mod._single_apex_boxes(
+        [0.90], flight_frac=list(sweep_mod.SINGLE_APEX_FLIGHT_FRAC),
+        halfwidth_m=0.05, offsets_mm=[0.0], dwell_s=0.30, separation_mm=100.0,
+        leg_vel=300.0, leg_acc=5000.0, leg_jerk=200000.0, hand_acc=3500.0,
+        pattern='columns', log=lambda r: None)
+    assert len(boxes) == 2
+    for box in boxes:
+        assert not box.empty
+        alo, ahi = box.apex_m
+        assert alo == pytest.approx(0.576)
+        assert ahi == pytest.approx(0.90)
+        assert alo < 0.90, (
+            '%r admits no commanded apex below the pattern -- the R5 defect '
+            'regressed: a ladder rung is shortening the schedule timing '
+            'along with the command again' % (box.site_pair,))
+    assert len(rows) >= 2
 
 
 def test_single_site_sweep_also_gates_the_launch_throw_from_rest(

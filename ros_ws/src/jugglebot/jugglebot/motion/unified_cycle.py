@@ -452,11 +452,17 @@ class CycleGoals:
     #: already in); REQUIRED for a SETTLE, which has no catch to default from.
     settle_site_mm: Optional[np.ndarray] = None
     ball_id: int = 0
-    #: The receive attitude (rx, ry) rad this LANDING HOLDS, constant, through
-    #: the whole window — the FSM's pre-tilted catch (see
-    #: ``cup_cycle.CatchEvent.axis``).  ``None`` is the level-catch window.
-    #: Banking is off for a held attitude: the two are competing answers to the
-    #: same question, and the ball is seated by the tilt, not by the bank.
+    #: The receive attitude (rx, ry) rad this catch HOLDS, constant — the FSM's
+    #: pre-tilted catch (see ``cup_cycle.CatchEvent.axis``).  ``None`` is the
+    #: level-catch window.  A CATCH field: a :data:`LANDING` holds it through the
+    #: whole window; a :data:`STEADY` holds it through the touch-down and then
+    #: re-levels to the take-off tilt by the release, on the quintic
+    #: ``cup_realize.tilt_schedule``'s held-span branch builds (unchecked against
+    #: the tilt caps; ``validate_cycle`` refuses — ``cup_realize._smooth_slew``
+    #: states the rule).  Either way the seed must already be AT this attitude,
+    #: on the held line (the PRE-TILT REST's terminal).  Banking is off for a
+    #: held attitude: the two are competing answers to the same question, and
+    #: the ball is seated by the tilt, not by the bank.
     hold_tilt: Optional[Tuple[float, float]] = None
     #: The attitude (rx, ry) rad a SETTLE ENDS at — the PRE-TILT that puts the
     #: platform at the receive attitude before the ball arrives, and the DECAY
@@ -1562,11 +1568,11 @@ def plan_cycle(kind: str, goals: CycleGoals, state: CycleState,
             "give hold_tilt OR rest_tilt, not both: a window that holds the "
             "receive attitude through its catch cannot also slew to another "
             "one, and the slew is what breaks the held line.")
-    if goals.hold_tilt is not None and kind != LANDING:
+    if goals.hold_tilt is not None and kind not in (LANDING, STEADY):
         raise ValueError(
-            "hold_tilt is a %s field: only a window that catches and then rests "
-            "can hold the receive attitude (a release needs its own take-off "
-            "tilt). Got kind %r." % (LANDING, kind))
+            "hold_tilt is a catch field (%s or %s): only a window with a "
+            "touch-down has a receive attitude to hold. Got kind %r."
+            % (LANDING, STEADY, kind))
     if goals.rest_tilt is not None and kind != SETTLE:
         raise ValueError(
             "rest_tilt is a %s field: only a window that just moves and stops "
@@ -1927,15 +1933,24 @@ def _realize(kind, cup, goals, state, limits, geom, rcfg, *, t_wall,
         # Plan frame → gravity frame.  See step 1 above for why only this branch.
         start_tilt = _tilt_to_gravity(start_tilt, correction)
     rest_slew = False
+    held_from_k = None
     if goals.hold_tilt is not None:
-        # The HELD receive attitude: one constant at every knot, which is what
-        # the QP's held-axis rows assumed when they slaved the cup's lateral
-        # channel to the stroke.  A schedule that slews inside the window would
+        # The HELD receive attitude: one constant over the QP's held span, which
+        # is what its held-axis rows assumed when they slaved the cup's lateral
+        # channel to the stroke.  A schedule that slews inside the span would
         # walk the centroid through the 744.3 mm lever under a line the QP
-        # believes is fixed, so there is nothing to schedule here — only to pin.
+        # believes is fixed.  A LANDING's span is the whole window, so there is
+        # nothing to schedule — only to pin.  A STEADY's span ends at the
+        # touch-down and the release keeps ``_throw_tilt_for``'s take-off tilt:
+        # the held-span branch re-levels between them.  ``held_from_k`` is 0 —
+        # the seed at the held attitude, which the seam check below enforces;
+        # the capture span (> 0) is refused by the QP before this runs.
         hold = np.asarray(goals.hold_tilt, dtype=float).reshape(2)
         recv = hold
-        throw_tilt = hold
+        if kind == STEADY:
+            held_from_k = 0
+        else:
+            throw_tilt = hold
         if start_tilt is None:
             raise CycleInfeasible(TILT_PIN, [
                 "a held-attitude catch needs a seed that names its tilt, and "
@@ -1974,7 +1989,8 @@ def _realize(kind, cup, goals, state, limits, geom, rcfg, *, t_wall,
         try:
             tilts = cr.tilt_schedule(cup, recv, throw_tilt, rcfg,
                                      start_tilt=start_tilt,
-                                     rest_slew=rest_slew)
+                                     rest_slew=rest_slew,
+                                     held_from_k=held_from_k)
         except ValueError as exc:
             raise CycleInfeasible(TILT_PIN, [str(exc)])
         # ⚠ THE ATTITUDE HALF OF THE PLATFORM HOLD IS *NOT* TAKEN — measured, not

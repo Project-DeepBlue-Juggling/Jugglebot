@@ -403,15 +403,48 @@ def test_hold_axis_site_is_on_the_axis_through_the_landing_point():
     assert np.allclose(sg.hold_axis_site(land, tilt, land[2]), land, atol=1e-12)
 
 
-def test_a_held_attitude_catch_cannot_carry_its_own_throw():
-    """The refusal is at construction: a release needs its own take-off tilt."""
-    tilt = sg.receive_hold_tilt(_BB_ARRIVAL)
-    tt = sg.ThrowAfterCatch(t_release_s=1.3, site_mm=THROW_SITE_MM,
+def test_a_held_attitude_catch_carries_its_throw_and_releases_level(
+        bb_chain, limits, geom):
+    """PRE-TILT REST → ONE held catch-with-throw segment, rest-terminal.
+
+    The R4 reload's held CATCH + DECAY REST + THROW folded into one STEADY: the
+    receive attitude is held through the touch-down, re-levelled after it, and
+    the ball leaves a LEVEL cup going straight up; the SETTLE tail then brings
+    the machine to rest like every other segment (plan § 0: every segment
+    ends at rest at its site).  The release knot's velocity is the slew's true
+    zero, so ``extend``'s seam re-gate sees no step there.
+
+    MEASURED (scratchpad ``probe_fb_segment.py``, 2026-09-30, this module's
+    limits 300/5000/200k/3500, the 12° clamp of an 18° 4.5 m/s arrival):
+    (t_land 0.20, release 0.65) OK v187 a1970 j146k h3064; release 0.60
+    refuses LIMIT_JERK 211k.  With the slew landing ON the release knot the
+    same segment read 315k at the seam (``cup_realize.
+    HELD_SLEW_LANDS_BEFORE_RELEASE_KNOTS``).  FAIL-BEFORE: ``CatchTerminal``
+    refused ``then_throw`` + ``hold_tilt`` at construction.
+    """
+    tilt, pre, _, _ = bb_chain
+    cfg = sg.SegmentConfig()
+    seed = uc.state_at_knot(pre.plan, pre.meta, pre.plan.pose.shape[0] - 1)
+    level = np.array([CATCH_SITE_MM[0], CATCH_SITE_MM[1], uc.SETTLE_CUP_Z_MM])
+    tt = sg.ThrowAfterCatch(t_release_s=0.65, site_mm=THROW_SITE_MM,
                             target_mm=THROW_SITE_MM, flight_s=T_F)
-    with pytest.raises(ValueError, match='own take-off tilt'):
-        sg.CatchTerminal(landing_mm=CATCH_SITE_MM,
-                         landing_vel_mm_s=_BB_ARRIVAL, t_land_s=1.0,
-                         rest_site_mm=REST_MM, then_throw=tt, hold_tilt=tilt)
+    seg = sg.plan_segment(sg.CATCH, seed, sg.CatchTerminal(
+        landing_mm=CATCH_SITE_MM, landing_vel_mm_s=_BB_ARRIVAL, t_land_s=0.20,
+        rest_site_mm=level, then_throw=tt, hold_tilt=tilt), cfg, limits, geom)
+    assert seg.kind == sg.CATCH
+    k_rel = int(round(seg.release_t_s / DT))
+    k_td = int(np.floor(seg.event_t_s / DT + 1e-9))
+    tilts = seg.plan.pose[:, 3:5]
+    assert np.max(np.abs(tilts[:k_td + 2] - np.asarray(tilt))) < 1e-6
+    assert np.max(np.abs(tilts[k_rel - 2:k_rel + 1])) < 1e-9     # level release
+    assert np.allclose(seg.takeoff_vel_mm_s[:2], 0.0, atol=1e-6)
+    assert seg.takeoff_vel_mm_s[2] > 0.0
+    # rest-terminal: the machine stops at the rest site
+    assert np.max(np.abs(seg.plan.pose_vel[-1])) < 1e-6
+    assert abs(float(seg.plan.hand_vel_rps[-1])) < 1e-6
+    assert np.allclose(seg.rest_site_mm, level)
+    rep = seg.meta.report
+    assert rep.peak_leg_jerk_mmps3 <= limits.leg_jerk_mmps3
 
 
 @pytest.fixture(scope='module')

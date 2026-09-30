@@ -983,7 +983,7 @@ def _as_tilt_pair(value, name: str) -> np.ndarray:
 
 
 def _smooth_slew(start: np.ndarray, end: np.ndarray, n: int, dt: float,
-                 cfg) -> np.ndarray:
+                 cfg, *, checked: bool = True) -> np.ndarray:
     """Quintic-smoothstep tilt ramp from ``start`` to ``end`` over ``n`` knots.
 
     The attitude-bearing REST's schedule (the PRE-TILT that puts the platform at
@@ -1006,6 +1006,26 @@ def _smooth_slew(start: np.ndarray, end: np.ndarray, n: int, dt: float,
     Both caps are CHECKED, not clipped: a window too short for the requested
     attitude change is refused with the period it would need, rather than
     silently clipped back into the corner this function exists to avoid.
+
+    **Which slews are checked — two rules (normative, R5 2026-09-30).**  A slew
+    inside an attitude-bearing REST (``CycleGoals.rest_tilt``: the pre-tilt and
+    the decay) is CHECKED against both caps, as above, and ``validate_cycle``
+    gates the legs as well.  The re-level slew of a held catch that carries its
+    throw (a STEADY with ``CycleGoals.hold_tilt``: held through the touch-down,
+    then back to the take-off tilt by the release) is NOT checked
+    (``checked=False``) — the rule a LAUNCH from a tilted seed already follows:
+    the budget SHAPES the schedule (the slew spans every knot the window has
+    after the touch-down, the longest and so the gentlest quintic it can be) and
+    ``feasibility.validate_cycle``, the measured legs at 100 % of the session
+    limits, REFUSES.  Why the two differ: the caps are a static-lever model —
+    the cup at the TOP of the hand band (:data:`TILT_ACCEL_LEVER_MM`, 469 mm)
+    with half the leg-acceleration limit reserved for translation — and on this
+    move it over-refuses by ~4×: the legs ran at 1135 of 5000 mm/s² (23 %)
+    through the 0.5 s 12° re-tilt REST, the shortest the cap allows (R5 probe,
+    2026-09-30), and every fused catch-with-throw with a dwell ≤ 0.40 s refused
+    ``TILT_PIN`` although its legs pass (scratchpad ``probe_fused_ct.out``).
+    The gate that protects the machine is ``validate_cycle``, and it stays on
+    every path.
     """
     start = np.asarray(start, dtype=float).reshape(2)
     end = np.asarray(end, dtype=float).reshape(2)
@@ -1018,12 +1038,12 @@ def _smooth_slew(start: np.ndarray, end: np.ndarray, n: int, dt: float,
     accel_cap = float(cfg.tilt_accel_limit_rad_s2)
     peak_rate = 1.875 * mag / T
     peak_acc = 5.7735026918962575 * mag / (T * T)
-    if rate_cap > 0.0 and peak_rate > rate_cap * (1.0 + 1e-9):
+    if checked and rate_cap > 0.0 and peak_rate > rate_cap * (1.0 + 1e-9):
         raise ValueError(
             "a %.3f° attitude change over %.3f s needs %.3f rad/s of tilt rate, "
             "past the %.3f rad/s limit — give the REST at least %.3f s."
             % (np.degrees(mag), T, peak_rate, rate_cap, 1.875 * mag / rate_cap))
-    if accel_cap > 0.0 and peak_acc > accel_cap * (1.0 + 1e-9):
+    if checked and accel_cap > 0.0 and peak_acc > accel_cap * (1.0 + 1e-9):
         raise ValueError(
             "a %.3f° attitude change over %.3f s needs %.3f rad/s² of tilt "
             "acceleration, past the %.3f rad/s² limit (the leg-acceleration "
@@ -1036,7 +1056,8 @@ def _smooth_slew(start: np.ndarray, end: np.ndarray, n: int, dt: float,
 
 
 def tilt_schedule(cup_plan, receive_tilt, throw_tilt, cfg=None, *,
-                  start_tilt=None, rest_slew=False) -> np.ndarray:
+                  start_tilt=None, rest_slew=False,
+                  held_from_k=None) -> np.ndarray:
     """Per-knot cup tilt ``(rx, ry)`` for ``cup_plan``.  Returns an ``(n, 2)`` array.
 
     **Banking (``cfg.banking_enabled``, the default).**  A ball resting in the cup
@@ -1067,6 +1088,24 @@ def tilt_schedule(cup_plan, receive_tilt, throw_tilt, cfg=None, *,
     and the decay back to level after the seat.  See :func:`_smooth_slew` for why
     it is a quintic smoothstep and not the rate-limited ramp the branch below
     produces.
+
+    **``held_from_k`` — the held catch that carries its throw.**  Zero banking,
+    and the schedule is known before the QP because it depends only on the
+    knots: ``receive_tilt`` CONSTANT from ``held_from_k`` through ``catch_k + 1``
+    (the QP's held span ``[held_from_k, catch_k]`` slaves the cup's lateral
+    channel to the stroke on the premise that the attitude does not move, and
+    its last jerk knot drives the interval that holds the touch-down), then the
+    quintic :func:`_smooth_slew` to ``throw_tilt``, landing
+    :data:`HELD_SLEW_LANDS_BEFORE_RELEASE_KNOTS` knots before the release knot
+    (so the release knot's differenced velocity is the slew's true zero) —
+    UNCHECKED against the tilt caps, the rule that function's docstring states.
+    Measured (scratchpad ``probe_fused_ct.out``, 2026-09-30): starting the slew
+    at the touch-down beats holding it longer (2-8 extra knots gave LIMIT_VEL
+    347-1168 mm/s at a 0.30 s dwell) and a bang-bang slew is worse on the gate
+    (LIMIT_ACC 5153 against the quintic's LIMIT_JERK 312k).  Only
+    ``held_from_k == 0`` is built — the seed already at the held attitude; the
+    capture slew INTO the attitude (``> 0``) is refused by the QP before this
+    runs, so reaching it here is a caller bug.
 
     **Zero banking.**  No apparent-gravity content at all: hold ``receive_tilt``
     through the catch knot and ``throw_tilt`` after it.  When the two are equal the
@@ -1152,8 +1191,28 @@ def tilt_schedule(cup_plan, receive_tilt, throw_tilt, cfg=None, *,
     start = (None if start_tilt is None
              else _as_tilt_pair(start_tilt, 'start_tilt'))
 
+    if held_from_k is not None and (cfg.banking_enabled or rest_slew):
+        raise ValueError(
+            "held_from_k is a zero-banking, non-REST schedule: the held attitude "
+            "is the answer banking would give a second, disagreeing answer to, "
+            "and a REST has no catch to hold it through.")
     if cfg.banking_enabled:
         raw = _banking_raw(acc, cfg, start)
+    elif held_from_k is not None:
+        if int(held_from_k) != 0:
+            raise ValueError(
+                "held_from_k %d: only the held span from knot 0 is built (the "
+                "cup QP refuses a capture span, CATCH_AXIS)" % int(held_from_k))
+        if not 0 <= catch_k < n - 1:
+            raise ValueError(
+                "a held catch that carries a throw needs its catch knot inside "
+                "the window, got catch_k %d of %d knots" % (catch_k, n))
+        k_lvl = catch_k + 1                   # the last knot held
+        k_end = n - 1 - HELD_SLEW_LANDS_BEFORE_RELEASE_KNOTS
+        raw = np.repeat(throw[None, :], n, axis=0)
+        raw[:k_lvl] = recv
+        raw[k_lvl:k_end + 1] = _smooth_slew(recv, throw, k_end - k_lvl + 1,
+                                            dt, cfg, checked=False)
     elif rest_slew:
         # The attitude-bearing REST (``CycleGoals.rest_tilt``).  Gated on the new
         # flag so the zero-banking branch below stays the legacy two-constant
@@ -1233,6 +1292,24 @@ def tilt_schedule(cup_plan, receive_tilt, throw_tilt, cfg=None, *,
 
 
 # ── Decomposition ─────────────────────────────────────────────────────────────
+
+#: How many knots before the release a held catch-with-throw's re-level slew
+#: LANDS on the take-off tilt (``tilt_schedule``'s ``held_from_k`` branch).
+#:
+#: :func:`_knot_derivative`'s end value is the second-order one-sided stencil
+#: over the LAST THREE knots, and a quintic that arrives at the release knot
+#: approaches it as ``(1 − u)³``, which that stencil does not differentiate to
+#: zero.  MEASURED (scratchpad ``probe_fb_seam.py``, 2026-09-30, 12° re-level
+#: over 15 knots, R4 reload recipe): the release knot's pose velocity came out
+#: at ry −0.036 rad/s and x +3.99 mm/s where the slew's true rate is 0, the
+#: SETTLE tail seeded from it starts at 0, and ``extend``'s seam re-gate read
+#: the emitter's Hermite across that knot at **315 107 mm/s³** of leg jerk
+#: against the STEADY's own 133k — a velocity step the Teensy would stream.
+#: Landing the slew two knots early makes the three stencil knots equal, so the
+#: release knot's velocity is exactly the slew's zero and the seam is smooth.
+#: It costs the slew two knots, which the dwell floor pays (unit F-b handoff).
+HELD_SLEW_LANDS_BEFORE_RELEASE_KNOTS = 2
+
 
 def _knot_derivative(values: np.ndarray, dt: float) -> np.ndarray:
     """Second-order knot derivative of a uniformly-spaced series (central inside,

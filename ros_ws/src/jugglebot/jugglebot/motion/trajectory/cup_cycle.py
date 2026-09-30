@@ -352,9 +352,14 @@ class CatchEvent:
     t_s: float
     site: np.ndarray
     vel: np.ndarray
-    #: The cup up-axis (unit, world) HELD constant through the whole window — the
-    #: FSM's pre-tilted receive, stated in the QP.  ``None`` is the level-catch
-    #: program this stack has always assembled.
+    #: The cup up-axis (unit, world) HELD constant through the catch — the FSM's
+    #: pre-tilted receive, stated in the QP.  ``None`` is the level-catch program
+    #: this stack has always assembled.  Without a throw in the window it is held
+    #: through the WHOLE window (the catch, then the rest along the axis); with
+    #: one it is held over the knots ``[held_from_k, k_td]`` only — through the
+    #: touch-down — and the lateral channel is free again afterwards, so the cup
+    #: can reach the throw's launch line while the realiser re-levels the platform
+    #: (``cup_realize.tilt_schedule``'s held-span branch).
     #:
     #: **Why a held axis changes the PROGRAM and not just the tilt schedule.**  A
     #: BB arrival is 18-40° off vertical, and the FSM caught it by pre-tilting to
@@ -375,6 +380,12 @@ class CatchEvent:
     #: which — from a seed already on that line — is the line
     #: ``xy = site_xy + κ·(z − site_z)`` through the touch-down at every knot.
     axis: Optional[np.ndarray] = None
+    #: The first knot of the held span (the axis above).  ``0`` — the only value
+    #: built — says the seed is ALREADY on the held line at the held attitude
+    #: (the PRE-TILT REST put it there), which is checked, not assumed.  A later
+    #: knot is the CAPTURE span, the platform tilting onto the line inside the
+    #: window (R5 unit F-c), and is refused by name until it is built.
+    held_from_k: int = 0
 
 
 @dataclasses.dataclass
@@ -944,13 +955,16 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
     if axis is not None:
         axis = _held_axis(axis)
         kappa = axis[:2] / axis[2]
-        if throw is not None:
+        held_from_k = int(catch.held_from_k)
+        if held_from_k < 0:
+            raise ValueError("held_from_k must be >= 0, got %d" % held_from_k)
+        if held_from_k > 0:
             raise CupCycleInfeasible(
-                "this catch can't also throw a ball in the same window: "
-                "releasing needs its own tilt at launch, and tilting mid-catch "
-                "would break the catch's fixed line. Plan the catch on its "
-                "own, and do the throw from a level rest.",
-                reason='CATCH_AXIS')
+                "this catch would have to swing the platform onto the ball's "
+                "line partway through the window (at step %d), and that "
+                "capture move is not built yet — start the catch from a rest "
+                "that is already tilted on the line (the PRE-TILT REST)."
+                % held_from_k, reason='CATCH_AXIS')
         if state0.post_release:
             raise CupCycleInfeasible(
                 "this catch can't start right after a throw: just after a "
@@ -1208,6 +1222,39 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
                 % (first_owned * dt * 1e3, pre_hold_knots * dt * 1e3,
                    n * dt * 1e3), reason='HOLD_WINDOW')
 
+    # ---- the HELD SPAN (see CatchEvent.axis / held_from_k) ------------------
+    # The jerk knots whose lateral jerk is slaved to the axial one: the whole
+    # window for a held catch that ends at rest, ``held_from_k .. k_td`` for one
+    # that carries a throw.  Empty without an axis.
+    #
+    # A held catch that carries a throw needs room AFTER the span: the lateral
+    # jerks ``k_td+1 .. n−1`` are the only lateral freedom left, and the lateral
+    # rows written after the touch-down — the release triple and the
+    # pre-release hold's one row per held knot, per axis — need one each.
+    # MEASURED (scratchpad ``probe_fb_dwell_rank.py``, 2026-09-30, k_td 20, a
+    # 12° axis): with N = 4 pre-hold knots ``Aeq`` is rank 57/58/59 of 60 at
+    # 4/5/6 free jerks (the solver answers SINGULAR) and full rank from 7; with
+    # N = 0 rank 48/50 of 52 at 1/2 and full from 3.  So the floor is exactly
+    # ``3 + N`` and it is refused here, with the time it needs, rather than as
+    # a singular KKT deep in the solver.
+    held_knots = range(0)
+    if axis is not None:
+        if throw is not None:
+            need = 3 + pre_hold_knots
+            if n - 1 - k_td < need:
+                raise CupCycleInfeasible(
+                    "the ball is thrown again only %.0f ms after this tilted "
+                    "catch lands: the platform holds the catch's tilt until "
+                    "the ball is in the cup, and it then needs %d more steps "
+                    "(%.0f ms) of sideways freedom before the release to put "
+                    "the cup on the throw's launch line (%d of them the "
+                    "pre-release hold). Leave more time between the catch and "
+                    "the throw."
+                    % ((n * dt - float(catch.t_s)) * 1e3, need, need * dt * 1e3,
+                       pre_hold_knots),
+                    reason='HOLD_WINDOW')
+        held_knots = range(held_from_k, (k_td + 1) if throw is not None else n)
+
     # ---- hard equalities ---------------------------------------------------
     rows, rhs = [], []
     if throw is not None:
@@ -1327,7 +1374,15 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
         # per-knot position rows because those rows collide with the terminal
         # and touch-down equalities (same quantity, twice) while these two
         # nonzeros per row cannot: no other row touches a lateral jerk alone.
-        for k in range(n):
+        #
+        # THE HELD SPAN.  With no throw the line is held over every knot (the
+        # catch, then the rest up the axis).  With one it is held over the jerk
+        # knots ``held_from_k .. k_td`` — the last of them drives the interval
+        # that CONTAINS the touch-down, so the touch-down instant is still on
+        # the line and its lateral rows stay implied — and the lateral channel
+        # is free afterwards to reach the launch line, whose three release rows
+        # per axis the throw branch above writes in full.
+        for k in held_knots:
             for a in range(2):
                 row = np.zeros(nvar)
                 row[a * n + k] = 1.0
@@ -1360,10 +1415,16 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
     # arrival, 1.3 s window) the box does NOT bind, so this is a correctness
     # statement about which channel owns the bound rather than a refusal being
     # avoided; a shorter dive or a faster arrival is where it would start to.
-    jerk_axes = (2,) if axis is not None else (0, 1, 2)
-    for a in jerk_axes:
+    #
+    # The box is dropped on the HELD SPAN only (every knot for a held LANDING,
+    # the same columns in the same order as before the span existed): after the
+    # touch-down of a catch that carries a throw the lateral channel is the
+    # platform's again, and it is boxed like any other window's.
+    for a in (0, 1, 2):
         lim = jerk_z if a == 2 else jerk_xy
         for k in range(n):
+            if a < 2 and k in held_knots:
+                continue
             row = np.zeros(nvar)
             row[a * n + k] = 1.0
             box_rows.append(row); box_const.append(0.0)

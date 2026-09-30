@@ -155,9 +155,16 @@ class CatchTerminal:
     #: The receive attitude (rx, ry) rad held CONSTANT through the catch — the
     #: FSM's pre-tilted receive, for an arrival that is not vertical (a BB throw
     #: is 18-40° off).  ``None`` is the level catch.  Derive it with
-    #: :func:`receive_hold_tilt` and place the segment's rest site with
-    #: :func:`hold_axis_site`: the cup leaves the seat along the held axis, so
-    #: its rest is on that line, not under the landing point.
+    #: :func:`receive_hold_tilt`.  Standalone, the attitude is held through the
+    #: whole LANDING and the cup leaves the seat along the held axis, so place
+    #: the rest site with :func:`hold_axis_site` (on that line, not under the
+    #: landing point).  With ``then_throw`` it is held through the touch-down
+    #: only and the STEADY window re-levels to the release's take-off tilt
+    #: before the release (``unified_cycle.CycleGoals.hold_tilt``) — the R4
+    #: reload's DECAY REST + THROW folded into the catch; the SETTLE tail then
+    #: starts from a level release like any other carried throw.  Either way
+    #: the seed must already rest AT the attitude, on the held line (the
+    #: PRE-TILT REST).
     hold_tilt: Optional[Tuple[float, float]] = None
 
     def __post_init__(self):
@@ -168,13 +175,6 @@ class CatchTerminal:
                             _vec3(self.rest_site_mm, 'rest_site_mm'))
         if not float(self.t_land_s) > 0.0:
             raise ValueError('t_land_s must be > 0, got %r' % (self.t_land_s,))
-        if self.then_throw is not None and self.hold_tilt is not None:
-            raise ValueError(
-                'a held-attitude catch cannot carry its own throw: the release '
-                'needs its own take-off tilt and the receive attitude cannot be '
-                'held through the dwell (a throw from a 12° tilted rest was '
-                'measured LIMIT_JERK, 2026-09-23). Catch standalone, then throw '
-                'from the level rest the decay REST leaves.')
         if (self.then_throw is not None
                 and not float(self.then_throw.t_release_s) > float(self.t_land_s)):
             raise ValueError(
@@ -260,6 +260,19 @@ class Segment:
     #: ``plan_segment`` call as its ``warm_start`` (owner decision: carried on
     #: the ``Segment``, no cache).
     warm_start: Optional['cc.SolverState'] = None
+    #: The post-release state of THIS segment's release knot (``unified_cycle.
+    #: release_state_from_meta`` on the un-extended window), for a segment that
+    #: releases a ball; ``None`` otherwise.  THE ONE release seed a chained
+    #: certification may plan the next segment from.  Recorded here because the
+    #: extended ``plan``/``meta`` can no longer answer that question (the
+    #: release is not the terminal knot once the SETTLE tail is on), and the
+    #: alternative — a second, raw solve of "the same window" in the caller —
+    #: silently omitted the pre-release hold, the settle site and the hold
+    #: knots in four copies of ``tools/admissible_sweep.py`` (2026-09-30: every
+    #: chained box cell since the hold landed was seeded from a launch the
+    #: machine does not fly, and one copy crashed the hop sweep on a seed the
+    #: production solve had accepted).
+    release_state: Optional[uc.CycleState] = None
 
 
 def receive_hold_tilt(landing_vel_mm_s) -> Tuple[float, float]:
@@ -341,7 +354,8 @@ def _plan_throw(seed, terminal: ThrowTerminal, cfg: SegmentConfig,
     return Segment(kind=THROW, plan=plan, meta=meta, splice_k=0,
                    event_t_s=meta.t_release_s,
                    takeoff_vel_mm_s=meta.release_vel_mm_s,
-                   rest_site_mm=rest_mm, warm_start=meta.warm_start)
+                   rest_site_mm=rest_mm, warm_start=meta.warm_start,
+                   release_state=seed_b)
 
 
 def _plan_catch(seed, terminal: CatchTerminal, cfg: SegmentConfig,
@@ -375,6 +389,7 @@ def _plan_catch_throw(seed, terminal: CatchTerminal, cfg: SegmentConfig,
                             catch_site_mm=terminal.landing_mm,
                             catch_vel_mm_s=terminal.landing_vel_mm_s,
                             catch_t_s=terminal.t_land_s,
+                            hold_tilt=terminal.hold_tilt,
                             hold_platform_knots=_hold_knots(cfg, seed),
                             pre_release_hold_knots=_pre_hold_knots(cfg))
     plan_a, meta_a = uc.plan_steady(goals_a, seed, limits, geom,
@@ -389,7 +404,8 @@ def _plan_catch_throw(seed, terminal: CatchTerminal, cfg: SegmentConfig,
                    event_t_s=meta.t_catch_s,
                    takeoff_vel_mm_s=meta.release_vel_mm_s,
                    rest_site_mm=terminal.rest_site_mm,
-                   release_t_s=meta.t_release_s, warm_start=meta.warm_start)
+                   release_t_s=meta.t_release_s, warm_start=meta.warm_start,
+                   release_state=seed_b)
 
 
 def _plan_rest(seed, terminal: RestTerminal, cfg: SegmentConfig,

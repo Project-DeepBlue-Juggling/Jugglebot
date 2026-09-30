@@ -2881,12 +2881,121 @@ def test_the_attitude_fields_are_checked_per_kind(limits, geom):
     tilt = _u2_tilt()
     seed = _rest_state(REST_MM)
     for kind, kw in ((uc.SETTLE, dict(hold_tilt=tilt)),
+                     (uc.LAUNCH, dict(hold_tilt=tilt)),
                      (uc.LANDING, dict(rest_tilt=tilt)),
-                     (uc.LANDING, dict(hold_tilt=tilt, rest_tilt=tilt))):
+                     (uc.LANDING, dict(hold_tilt=tilt, rest_tilt=tilt)),
+                     (uc.STEADY, dict(hold_tilt=tilt, rest_tilt=tilt))):
         goals = _goals(period_s=1.0, throw_site_mm=None, throw_target_mm=None,
                        flight_s=None, catch_frac=None, catch_t_s=0.6, **kw)
         with pytest.raises(ValueError):
             uc.plan_cycle(kind, goals, seed, limits, geom)
+
+
+# ---------------------------------------------------------------------------
+# The held catch that carries its throw (R5 unit F-b, 2026-09-30)
+# ---------------------------------------------------------------------------
+#
+# THE RECIPE (scratchpad ``probe_fb_floors.py``, venv, 2026-09-30, on the
+# production rows): R5 session limits 300/5000/150k, hand 3500; column site P1
+# (catch (−50, 0, 830), release (−50, 0, 860) mm); the Ball Butler arrival at
+# P1 (1058, 475, −5507) mm/s, whose clamped receive tilt is (4.871°, −10.849°),
+# |11.892°|; the seed is the terminal of a 1.0 s tilted SETTLE (``rest_tilt``)
+# from the level rest at (−50, 0, SETTLE_CUP_Z_MM) onto the held line; the
+# STEADY catches at w and releases a vertical 0.9 m throw at w + d with the
+# 4-knot pre-release hold.  With the slew landing at the release knot these
+# cells reproduced unit F-a's monkeypatched table (``handoff_F.md`` § 2a) to
+# the printed digits ((w 0.20, d 0.40) OK v204 a2103 j143k h2942) — but that
+# release knot's differenced velocity was wrong (``cup_realize.
+# HELD_SLEW_LANDS_BEFORE_RELEASE_KNOTS``) and the segment's seam re-gate read
+# 315k.  With the slew landing two knots early (``probe_fb_floors2.py``):
+# (w 0.20, d 0.50) OK v179 a1534 j110k h3064; d 0.45 LIMIT_JERK 152k; d 0.40
+# LIMIT_JERK 219k.  The R4 reload flies the same catch as a held LANDING +
+# 0.30 s DECAY REST + a 0.40 s LAUNCH (0.90 s); this window is 0.70 s.
+
+_F_SITE = np.array([-50.0, 0.0, 830.0])
+_F_THROW = np.array([-50.0, 0.0, 860.0])
+_F_ARRIVAL = np.array([1058.0, 475.0, -5507.0])
+
+
+@pytest.fixture(scope='module')
+def r5_limits():
+    return TrajectoryLimits.from_config(hw).with_session_limits(
+        leg_vel_mmps=300.0, leg_acc_mmps2=5000.0, leg_jerk_mmps3=150000.0,
+        hand_acc_rps2=3500.0)
+
+
+@pytest.fixture(scope='module')
+def f_tilted_rest(r5_limits, geom):
+    tilt = tg.tilt_to_receive(_F_ARRIVAL)
+    site = _u2_on_axis(tilt, uc.SETTLE_CUP_Z_MM, site_mm=_F_SITE)
+    level = np.array([_F_SITE[0], _F_SITE[1], uc.SETTLE_CUP_Z_MM])
+    plan, _ = uc.plan_settle(uc.CycleGoals(
+        period_s=1.0, settle_site_mm=site,
+        rest_tilt=(float(tilt[0]), float(tilt[1])), holds_ball=False),
+        _rest_state(level), r5_limits, geom)
+    seed = uc.CycleState.at_rest(np.asarray(plan.pose[-1], float),
+                                 float(plan.hand_rev[-1]),
+                                 uc.build_realize_config(r5_limits))
+    return tilt, seed
+
+
+def _f_goals(tilt, w, d):
+    return uc.CycleGoals(
+        period_s=w + d, catch_site_mm=_F_SITE, catch_vel_mm_s=_F_ARRIVAL,
+        catch_t_s=w, throw_site_mm=_F_THROW, throw_target_mm=_F_THROW,
+        flight_s=2.0 * math.sqrt(2.0 * 0.9 / (ballistics_bc.GRAVITY_MMS2 / 1e3)),
+        pre_release_hold_knots=uc.pre_release_hold_knots(uc.PRE_RELEASE_HOLD_S),
+        hold_tilt=(float(tilt[0]), float(tilt[1])))
+
+
+def test_a_held_attitude_STEADY_holds_through_the_touch_down_and_releases_level(
+        r5_limits, geom, f_tilted_rest):
+    """Hold the receive attitude through the seat, re-level, release — one window.
+
+    Three facts, one mechanism: the attitude is CONSTANT from knot 0 through
+    ``k_td + 1`` (the QP slaved the cup's lateral channel on that premise); the
+    platform does not translate while the ball arrives (measured 0.563 mm of
+    centroid drift to ``k_td + 1`` — the realiser's own lever residual — where
+    the unheld catch refuses LIMIT_VEL at 624-800 mm/s); and the release is
+    level and vertical, so the ball goes up the column.  FAIL-BEFORE: ``plan_
+    cycle`` refused ``hold_tilt`` on a STEADY with ValueError.
+    """
+    tilt, seed = f_tilted_rest
+    plan, meta = uc.plan_steady(_f_goals(tilt, 0.20, 0.50), seed, r5_limits,
+                                geom)
+    k = int(math.floor(meta.t_catch_s / plan.dt + 1e-9))
+    tilts = plan.pose[:, 3:5]
+    assert np.max(np.abs(tilts[:k + 2] - np.asarray(tilt))) < 1e-6
+    # released level, and level on all three knots the release knot's velocity
+    # is differenced over — so that velocity is the slew's true zero (it was
+    # ry −0.036 rad/s with the slew landing ON the release knot)
+    assert np.max(np.abs(tilts[-3:])) < 1e-9
+    assert np.max(np.abs(plan.pose_vel[-1])) < 1e-9
+    assert np.max(np.abs(plan.pose[:k + 2, :2] - plan.pose[0, :2])) < 1.0
+    assert np.allclose(meta.release_vel_mm_s[:2], 0.0, atol=1e-6)
+    rep = meta.report
+    assert rep.peak_leg_jerk_mmps3 <= r5_limits.leg_jerk_mmps3
+    assert rep.peak_hand_acc_rps2 <= r5_limits.hand_acc_limit_rps2
+
+
+def test_the_held_attitude_STEADY_dwell_floor_is_0p50_at_the_R5_session_limits(
+        r5_limits, geom, f_tilted_rest):
+    """The threshold pin: (w 0.20, d 0.50) plans, d 0.45 refuses LIMIT_JERK.
+
+    The binding physics is the 11.9° re-level itself — leg jerk ≈ 60·Δθ/T³ ×
+    ~520 mm for a quintic over the dwell less the two early-landing knots — not
+    the catch, so shortening the dwell by 50 ms lifts the peak from 110k to
+    152k mm/s³ against 150k.  The slew is judged by ``validate_cycle`` alone
+    (the tilt caps would refuse ``TILT_PIN``, ``cup_realize._smooth_slew``'s rule);
+    this pin is what says that gate still bites.  Recipe and numbers: the
+    section header.  FAIL-BEFORE: ValueError at goal validation.
+    """
+    tilt, seed = f_tilted_rest
+    uc.plan_steady(_f_goals(tilt, 0.20, 0.50), seed, r5_limits, geom)
+    with pytest.raises(uc.CycleInfeasible) as exc:
+        uc.plan_steady(_f_goals(tilt, 0.20, 0.45), seed, r5_limits, geom)
+    assert exc.value.code == 'LIMIT_JERK', exc.value.code
+    assert 150000.0 < exc.value.report.peak_leg_jerk_mmps3 < 160000.0
 
 
 # ---------------------------------------------------------------------------

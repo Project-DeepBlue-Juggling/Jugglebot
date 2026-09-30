@@ -1484,12 +1484,14 @@ def test_a_no_axis_catch_assembles_the_program_it_always_did():
 
 
 def test_a_held_axis_window_refuses_what_it_cannot_hold():
-    """Five refusals, one physical fact each, all ``CATCH_AXIS``."""
-    throw = cc.ThrowEvent(1, 1.3, _W_THROW, _W_THROW, _W_FLIGHT_S)
+    """Four refusals, one physical fact each, all ``CATCH_AXIS``.
+
+    (A fifth, "this catch can't also throw", was retired at R5 2026-09-30: a
+    held catch now carries its throw by holding the line through the touch-down
+    only — see the held-span tests below — and what it cannot do there is a
+    ``HOLD_WINDOW`` refusal on the room left after the touch-down.)
+    """
     cases = {
-        # the throw needs its own take-off tilt, and the axis cannot be held
-        # through the dwell (a throw from a tilted rest is LIMIT_JERK)
-        'throw': dict(throw=throw),
         # the detach rows pin the first knots' acceleration DIRECTION, which the
         # slaved lateral channel cannot also satisfy
         'post_release': dict(post_release=True),
@@ -1514,6 +1516,149 @@ def test_a_malformed_held_axis_is_a_caller_bug_not_a_refusal():
     for bad in (np.array([0.0, 0.0, 2.0]), np.array([0.0, 0.0, -1.0])):
         with pytest.raises(ValueError):
             _held_axis_window(axis=bad)
+
+
+# ---------------------------------------------------------------------------
+# The HELD SPAN (R5 unit F-b, 2026-09-30): a held catch that carries its throw
+# ---------------------------------------------------------------------------
+#
+# THE RECIPE (scratchpad ``probe_fb_dwell_rank.py``, venv, 2026-09-30): the
+# held-axis recipe above (12° axis, seed at rest on the line at z 0.75), the
+# touch-down at t = 0.5075 s (k_td = 20, mid-interval) and a vertical throw
+# from (0.02, 0, 0.86) m at the window's end, ``n = k_td + 1 + free`` knots.
+# The line is held over the jerk knots 0..k_td only, and the lateral channel
+# is free afterwards to reach the launch line.
+
+_SPAN_TD_S = 0.5075
+_SPAN_K_TD = 20
+_SPAN_THROW = np.array([0.02, 0.0, 0.86])
+
+
+def _held_throw_events(free, dt=0.025):
+    n = _SPAN_K_TD + 1 + free
+    catch = cc.CatchEvent(0, _SPAN_TD_S, _AX_CATCH, _AX_CATCH_VEL,
+                          axis=_held_axis_vec())
+    throw = cc.ThrowEvent(1, n * dt, _SPAN_THROW, _SPAN_THROW, 0.857)
+    state0 = cc.CupState(_on_axis(0.75), np.zeros(3), np.zeros(3), None,
+                         post_release=False)
+    return state0, catch, throw, n * dt
+
+
+def test_a_held_catch_that_throws_needs_3_plus_N_free_steps_after_the_touch_down():
+    """``HOLD_WINDOW`` below the rank floor, a full-rank program at it.
+
+    After the held span the lateral jerks ``k_td+1 .. n−1`` are the only
+    lateral freedom left, and the rows written after the touch-down need one
+    each: the release triple plus the pre-release hold's row per held knot, per
+    axis — ``3 + N``.  MEASURED (``probe_fb_dwell_rank.py``, recipe above, the
+    refusal disabled): with N = 4 ``Aeq`` is rank 57/58/59 of 60 at 4/5/6 free
+    jerks (the solver answers SINGULAR) and full rank from 7; with N = 0 rank
+    48/50 of 52 at 1/2 and full from 3.
+
+    FAIL-BEFORE: before R5 every held catch with a throw was refused
+    ``CATCH_AXIS`` whatever the dwell, so both halves fail there.
+    """
+    cfg = _window_cfg()
+    for n_pre, short in ((4, 6), (0, 2)):
+        state0, catch, throw, period = _held_throw_events(short)
+        with pytest.raises(cc.CupCycleInfeasible) as exc:
+            cc._assemble(state0, throw, catch, period, cfg,
+                         pre_hold_knots=n_pre)
+        assert exc.value.reason == 'HOLD_WINDOW', (n_pre, exc.value.reason)
+        state0, catch, throw, period = _held_throw_events(short + 1)
+        p = cc._assemble(state0, throw, catch, period, cfg,
+                         pre_hold_knots=n_pre)
+        assert np.linalg.matrix_rank(p.Aeq) == p.Aeq.shape[0], n_pre
+
+
+def test_a_held_catch_that_throws_holds_the_line_only_through_the_touch_down():
+    """The line through the touch-down, then the launch line, in ONE solve.
+
+    Physical claims: every knot up to and including ``k_td + 1`` (the end of the
+    interval that holds the touch-down) is on the held line — the cup meets the
+    ball moving ALONG the axis, with no platform translation — and the release
+    is the full triple on all three axes (site, take-off velocity, ``acc ==
+    g``), which from a line that misses the throw site by millimetres is only
+    reachable because the lateral channel is free after the span.
+
+    Structure, asserted rather than inferred from a converged solve: the
+    slaving rows cover the span only (``2·(k_td+1)``), the lateral release rows
+    are written (9 release rows, not the 3 a held rest-terminal writes), and the
+    xy jerk box is dropped on the span only.
+
+    MEASURED (this recipe, free = 11, N = 4, 2026-09-30): off-line residual
+    through knot 21 at the equality floor (8.8e-14 m); the release site is
+    6.38 mm off the held line in x.  FAIL-BEFORE: ``CATCH_AXIS`` at assembly.
+    """
+    cfg = _window_cfg()
+    state0, catch, throw, period = _held_throw_events(11)
+    p = cc._assemble(state0, throw, catch, period, cfg, pre_hold_knots=4)
+    level = cc._assemble(state0, throw,
+                         dataclasses.replace(catch, axis=None), period, cfg,
+                         pre_hold_knots=4)
+    span = _SPAN_K_TD + 1
+    assert p.Aeq.shape[0] == 9 + 1 + 2 * span + 2 * 4
+    assert np.linalg.matrix_rank(p.Aeq) == p.Aeq.shape[0]
+    assert p.C.shape[1] == level.C.shape[1] - 4 * span   # 2 axes x 2 sides
+    plan = cc.plan_window([catch, throw], state0, cfg, period_s=period,
+                          pre_hold_knots=4)
+    a = _held_axis_vec()
+    kappa = a[:2] / a[2]
+    off = ((plan.pos[:, :2] - _AX_CATCH[:2])
+           - np.outer(plan.pos[:, 2] - _AX_CATCH[2], kappa))
+    assert np.max(np.abs(off[:span + 1])) < 1e-9, np.max(np.abs(off[:span + 1]))
+    assert np.max(np.abs(off[-1])) > 1e-3            # it LEFT the line
+    v_to = cc.takeoff_velocity(_SPAN_THROW, _SPAN_THROW, 0.857)
+    assert np.allclose(plan.pos[-1], _SPAN_THROW, atol=1e-9)
+    assert np.allclose(plan.vel[-1], v_to, atol=1e-9)
+    assert np.allclose(plan.acc[-1], cc.GRAVITY, atol=1e-9)
+
+
+def test_a_capture_span_is_refused_by_name_until_it_is_built():
+    """``held_from_k > 0`` — tilting onto the line INSIDE the window — is
+    designed (R5 handoff_F § 1: capture rows at ``k_a``, a quintic into the
+    attitude before it) but not built, and says so as one physical sentence
+    rather than falling through to the whole-window hold.  FAIL-BEFORE: the
+    field did not exist."""
+    cfg = _window_cfg()
+    state0, catch, throw, period = _held_throw_events(11)
+    for thr in (throw, None):
+        with pytest.raises(cc.CupCycleInfeasible) as exc:
+            cc._assemble(state0, thr, dataclasses.replace(catch, held_from_k=3),
+                         period, cfg, settle_site=_on_axis(0.75),
+                         pre_hold_knots=4 if thr is not None else 0)
+        assert exc.value.reason == 'CATCH_AXIS'
+        assert 'PRE-TILT REST' in str(exc.value)
+
+
+def test_a_held_LANDING_assembles_the_program_it_did_before_the_span():
+    """The held-span change moved no row of a held catch that ends at rest.
+
+    A regression GUARD, not a fail-before test: the fingerprints below were
+    captured from the pre-R5 code (scratchpad ``probe_fb_landing_fp.py``, run
+    2026-09-30 BEFORE any edit, and identical after), on
+    ``test_the_held_axis_rows_replace_the_lateral_rows_they_would_duplicate``'s
+    window.  Shapes exact; sums to 1e-12 relative, a BLAS-reordering margin
+    far under any row the change could have moved (one slaving row is 1.0).
+    """
+    cfg = _window_cfg()
+    state0 = cc.CupState(_on_axis(0.75), np.zeros(3), np.zeros(3), None,
+                         post_release=False)
+    held = cc.CatchEvent(0, 1.0, _AX_CATCH, _AX_CATCH_VEL, axis=_held_axis_vec())
+    p = cc._assemble(state0, None, held, 1.3, cfg, settle_site=_on_axis(0.75))
+    want = {
+        'H': ((156, 156), 188.41338207726022, 432.45536792274066),
+        'f': ((156,), 1447.8101077323429, 2229.4320591536516),
+        'Aeq': ((108, 156), 137.22172684402, 137.22172684402),
+        'beq': ((108,), 2.2631345900983257, 2.2631345900983257),
+        'C': ((156, 435), 123.22021694296444, 1363.6301253469796),
+        'bc': ((435,), -1059522.5998446967, 1059522.5998446967),
+    }
+    for name, (shape, total, absum) in want.items():
+        M = np.asarray(getattr(p, name))
+        assert M.shape == shape, name
+        assert float(M.sum()) == pytest.approx(total, rel=1e-12), name
+        assert float(np.abs(M).sum()) == pytest.approx(absum, rel=1e-12), name
 
 
 # ---------------------------------------------------------------------------

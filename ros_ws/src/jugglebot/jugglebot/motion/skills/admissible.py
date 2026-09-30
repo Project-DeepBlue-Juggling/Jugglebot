@@ -142,6 +142,21 @@ class AdmissibleBox:
     gate_hash: str
     #: ISO date the sweep that produced this box was run.
     swept_at: str
+    #: R5 (D4, 2026-09-30): the dwell (s) this box was swept at -- ``skill_node``'s
+    #: ``dwell_s`` parameter (default 0.30) and ``admissible_sweep.DWELL_S`` were
+    #: an UNENFORCED timing twin (plan § 0: "no second copy of any constant or
+    #: timing") before this field existed -- a box swept at dwell 0.30 could be
+    #: silently selected for a live session running at 0.20 with nothing to
+    #: catch the mismatch, and the columns cell's admitted set is dwell-shaped
+    #: (a shorter dwell widens the transit tau and loosens the catch-with-throw
+    #: gate). ``None`` is a box built before this field existed -- tolerated
+    #: (not refused) so the existing Python-constructed fixtures in
+    #: ``tests/motion/test_skills_executor.py`` / ``tests/ros/test_skill_node.py``
+    #: (out of this unit's file list, plan token-budget rule) keep working
+    #: unstamped; :func:`check_limits`'s ``dwell_s`` kwarg is the ACTIVE check
+    #: that matters (the operator-visible refusal at runtime) and treats a
+    #: ``None`` box exactly like a numeric mismatch when a live dwell is given.
+    dwell_s: Optional[float] = None
 
     def __post_init__(self):
         if (not isinstance(self.site_pair, tuple) or len(self.site_pair) != 2
@@ -193,6 +208,11 @@ class AdmissibleBox:
         if not isinstance(self.swept_at, str) or not self.swept_at:
             raise ValueError('swept_at must be a non-empty ISO date string, '
                               'got %r' % (self.swept_at,))
+        if self.dwell_s is not None:
+            dwell = float(self.dwell_s)
+            if not (math.isfinite(dwell) and dwell > 0.0):
+                raise ValueError('dwell_s must be None or a finite positive '
+                                  'float, got %r' % (self.dwell_s,))
 
     @property
     def empty(self) -> bool:
@@ -423,8 +443,8 @@ def _limits_dict(limits) -> Dict[str, float]:
     }
 
 
-def check_limits(boxes: List[AdmissibleBox], limits, *, check_gate: bool = True
-                 ) -> None:
+def check_limits(boxes: List[AdmissibleBox], limits, *, check_gate: bool = True,
+                 dwell_s: Optional[float] = None) -> None:
     """Refuse ``boxes`` against the LIVE session ``limits`` AND the live gate.
 
     ``limits`` is a ``TrajectoryLimits`` (or anything exposing the same
@@ -436,6 +456,15 @@ def check_limits(boxes: List[AdmissibleBox], limits, *, check_gate: bool = True
     exists. ``check_gate`` is a test-only escape hatch (a working-tree edit to
     either gated file mid-session must not fail every caller that does not
     care).
+
+    ``dwell_s`` (R5, D4, 2026-09-30): the LIVE session dwell, e.g.
+    ``schedule.Pattern.dwell_s`` / ``skill_node``'s own ``dwell_s`` parameter.
+    ``None`` (the default) skips the dwell check entirely -- a caller that
+    does not know its dwell (``tests/hardware/skills_plan_bench.py``) keeps
+    its behaviour; ``skill_node.py``'s three call sites pass the live
+    ``dwell_s`` (same rung, 2026-09-30). When given, a box whose
+    ``dwell_s`` is ``None`` (unstamped) OR numerically different is refused
+    naming ``'dwell_s'`` -- the same treatment ``leg_vel_mmps`` etc. get.
     """
     live = _limits_dict(limits)
     live_hash = gate_hash() if check_gate else None
@@ -450,6 +479,16 @@ def check_limits(boxes: List[AdmissibleBox], limits, *, check_gate: bool = True
                     'config/generated/admissible_box.yaml (tools/'
                     'admissible_sweep.py)' % (box.site_pair, key, swept_val,
                                               live_val))
+        if dwell_s is not None:
+            live_dwell = float(dwell_s)
+            if box.dwell_s is None or not math.isclose(
+                    float(box.dwell_s), live_dwell, rel_tol=1e-9, abs_tol=1e-9):
+                raise LimitsMismatch(
+                    'admissible box for site pair %r was swept with '
+                    'dwell_s=%r but the live session dwell is %r -- '
+                    'regenerate config/generated/admissible_box.yaml (tools/'
+                    'admissible_sweep.py --dwell-s %.4f)'
+                    % (box.site_pair, box.dwell_s, live_dwell, live_dwell))
         if check_gate and box.gate_hash != live_hash:
             raise LimitsMismatch(
                 'admissible box for site pair %r was swept against '
@@ -494,6 +533,8 @@ def dump(path: str, boxes: List[AdmissibleBox]) -> None:
                                        float(box.release_site_xy_mm[1])],
                 'target_site_xy_mm': [float(box.target_site_xy_mm[0]),
                                       float(box.target_site_xy_mm[1])],
+                'dwell_s': (float(box.dwell_s) if box.dwell_s is not None
+                           else None),
             }
             for box in boxes
         ],
@@ -581,6 +622,17 @@ def load(path: str) -> List[AdmissibleBox]:
         apex = (float(raw['apex_m'][0]), float(raw['apex_m'][1]))
         rel_xy = raw['release_site_xy_mm']
         tgt_xy = raw['target_site_xy_mm']
+        # R5 (D4, 2026-09-30): `dwell_s` is tolerated ABSENT or null -- a box
+        # swept before this field existed, or one round-tripped from a
+        # Python-built AdmissibleBox that never set it (see the field's own
+        # docstring). Unlike `pattern` / the site-xy fields (refused outright
+        # by `_REQUIRED_BOX_R4`), an unstamped dwell is not silently
+        # reinterpreted as some default dwell -- it stays `None`, and
+        # `check_limits(..., dwell_s=<live>)` refuses a `None` box exactly
+        # like a numeric mismatch when the live dwell actually matters to
+        # the caller.
+        raw_dwell = raw.get('dwell_s')
+        dwell = float(raw_dwell) if raw_dwell is not None else None
         out.append(AdmissibleBox(
             site_pair=tuple(raw['site_pair']),
             apex_band_m=(float(raw['apex_band_m'][0]), float(raw['apex_band_m'][1])),
@@ -593,6 +645,7 @@ def load(path: str) -> List[AdmissibleBox]:
             limits=limits_out,
             gate_hash=ghash,
             swept_at=swept_at,
+            dwell_s=dwell,
         ))
     _refuse_overlapping_apex_bands(out, AdmissibleError)
     return out

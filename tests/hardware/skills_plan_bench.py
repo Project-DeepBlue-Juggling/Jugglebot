@@ -145,13 +145,13 @@ SESSION_HAND_ACC_RPS2 = 3500.0
 #: The owner's R3 single-site self-toss operating point (brief_common.md § 0
 #: "Owner decisions", 2026-09-13): site P1 = the SAME (-50, 0) mm point
 #: ``columns_sites(100.0)`` names, apex/dwell/hand-acc unchanged from R2 — only
-#: the leg jerk ceiling moves, to 150 000 mm/s^3 (the box swept in
+#: the leg jerk ceiling moves, to 200 000 mm/s^3 since the R5 ramp (2026-09-30; the box swept in
 #: ``config/generated/admissible_box.yaml`` for site pair ('P1', 'P1') is
 #: swept at this jerk; a mismatch is caught loudly by ``admissible.
 #: check_limits`` rather than silently clipping against the wrong envelope).
 SELF_TOSS_SITE_X_MM = -50.0
 SELF_TOSS_SITE_Y_MM = 0.0
-SELF_TOSS_LEG_JERK_MMPS3 = 150000.0
+SELF_TOSS_LEG_JERK_MMPS3 = 200000.0
 #: Cold-start policy A (brief_common.md § "Owner decisions"): single-throw
 #: attempts until the memory holds ``learner.LearnerConfig.k_min`` (2) rows.
 #: One throw per rehearsal attempt is what lets ``--attempts 3`` (the default)
