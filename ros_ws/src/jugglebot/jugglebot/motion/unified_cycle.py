@@ -464,6 +464,31 @@ class CycleGoals:
     #: held attitude: the two are competing answers to the same question, and
     #: the ball is seated by the tilt, not by the bank.
     hold_tilt: Optional[Tuple[float, float]] = None
+    #: The touch-down receive attitude (rx, ry) rad this CATCH is PINNED to,
+    #: overriding the auto-computed ``tilt_to_receive(catch_vel_mm_s)`` at the
+    #: catch knot only — banking stays on (:attr:`banking_enabled` is read
+    #: unchanged) and no lateral channel is slaved, unlike :attr:`hold_tilt`.
+    #: ``None`` (every pre-R5 CATCH) keeps the auto-banked receive tilt.
+    #: R5's BB-fed columns feed catch is the one caller that sets it, to
+    #: ``(0.0, 0.0)`` — measured (Block A, 2026-09-30, `logbook/2026-09-30-
+    #: skill-stack-r5-sitting-1.md`): the machine caught 6 of 7 Ball Butler
+    #: feeds at 11.9° off vertical with the receive attitude pinned level.
+    #: ``tilt_to_receive`` would instead bank the platform toward that
+    #: arrival, and a level catch-and-throw already runs the leg jerk channel
+    #: at ~1.7x the session cap trying to swing that bank on and off inside
+    #: the transit + dwell (`level_pinned_feed_report.md` §1) — refusing the
+    #: catch outright. Pinning level removes the reorientation term
+    #: ``cup_realize.decompose``'s lever-arm shift would otherwise add (the
+    #: cup absorbs the arrival's lateral skid instead of the legs chasing it
+    #: with the platform), and it also makes ``feasibility.py``'s
+    #: ``_cup_contact_floor_check`` "level cup map" approximation
+    #: (``feasibility.py`` ~1145-1150) EXACT at the touch-down knot instead of
+    #: ~12° outside the sub-degree range that approximation states as its own
+    #: validity bound. Mutually exclusive with ``hold_tilt`` — the two are
+    #: different answers (a held line vs. a single pinned endpoint) to
+    #: overlapping questions, and a window that named both would have the
+    #: catch knot's tilt fought over by two callers.
+    receive_tilt: Optional[Tuple[float, float]] = None
     #: The attitude (rx, ry) rad a SETTLE ENDS at — the PRE-TILT that puts the
     #: platform at the receive attitude before the ball arrives, and the DECAY
     #: REST that takes it back to level after the seat.  ``None`` is the
@@ -1573,6 +1598,18 @@ def plan_cycle(kind: str, goals: CycleGoals, state: CycleState,
             "hold_tilt is a catch field (%s or %s): only a window with a "
             "touch-down has a receive attitude to hold. Got kind %r."
             % (LANDING, STEADY, kind))
+    if goals.hold_tilt is not None and goals.receive_tilt is not None:
+        raise ValueError(
+            "give hold_tilt OR receive_tilt, not both: hold_tilt holds the "
+            "receive attitude through the whole catch (and re-levels for the "
+            "release), receive_tilt only pins the touch-down endpoint the "
+            "auto tilt_to_receive would otherwise compute — the two answer "
+            "the same question at different scopes.")
+    if goals.receive_tilt is not None and kind not in (LANDING, STEADY):
+        raise ValueError(
+            "receive_tilt is a catch field (%s or %s): only a window with a "
+            "touch-down has a receive attitude to pin. Got kind %r."
+            % (LANDING, STEADY, kind))
     if goals.rest_tilt is not None and kind != SETTLE:
         raise ValueError(
             "rest_tilt is a %s field: only a window that just moves and stops "
@@ -1923,10 +1960,16 @@ def _realize(kind, cup, goals, state, limits, geom, rcfg, *, t_wall,
     ~1.35 mm is looking at this, and at a real difference.)
     """
     correction = state.levelling_correction
-    recv = (np.asarray(tg.tilt_to_receive(
-        np.asarray(goals.catch_vel_mm_s, dtype=float),
-        max_tilt_deg=rcfg.max_tilt_deg), dtype=float)
-            if goals.catch_vel_mm_s is not None else np.zeros(2))
+    if goals.receive_tilt is not None:
+        # The touch-down pin (CycleGoals.receive_tilt docstring): used
+        # INSTEAD of tilt_to_receive, not as a further clamp on it — the
+        # caller has already named the attitude it wants at the catch knot.
+        recv = np.asarray(goals.receive_tilt, dtype=float).reshape(2)
+    else:
+        recv = (np.asarray(tg.tilt_to_receive(
+            np.asarray(goals.catch_vel_mm_s, dtype=float),
+            max_tilt_deg=rcfg.max_tilt_deg), dtype=float)
+                if goals.catch_vel_mm_s is not None else np.zeros(2))
     throw_tilt = _throw_tilt_for(cup, rcfg.max_tilt_deg)
     start_tilt = _start_tilt_for(state)
     if start_tilt is not None and not state.post_release:

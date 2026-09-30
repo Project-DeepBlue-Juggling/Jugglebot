@@ -505,6 +505,35 @@ def test_compile_columns_feed_lands_the_initial_catch_landing_prior(cols):
     assert first.ball_id == 1
 
 
+def test_compile_columns_feed_sets_receive_tilt_level_on_the_feed_catch_only(cols):
+    """The feed catch (the skill carrying ``landing_prior=feed``) gets its
+    touch-down attitude pinned level -- Block A caught 6/7 real Ball Butler
+    feeds at 11.9 deg off vertical with the attitude pinned level, and the
+    auto-banked default refuses the transit on leg jerk
+    (``level_pinned_feed_report.md``, scratchpad, 2026-09-30). Every other
+    columns skill keeps ``receive_tilt=None``."""
+    pattern = _pattern(cols)
+    tau = sc.transit_s(sc.flight_s(pattern.apex_m), pattern.dwell_s)
+    t_land = 1_700_000_099.0 + tau
+    feed = sc.LandingPrior(pos_mm=cols[1].cup_mm, vel_mm_s=(1058.0, 475.0, -5507.0),
+                           t_land_abs_s=t_land)
+    schedule = sc.compile_columns(pattern, feed=feed)
+    feed_catches = [s for s in schedule.skills if s.landing_prior is feed]
+    assert len(feed_catches) == 1
+    assert feed_catches[0].receive_tilt == (0.0, 0.0)
+    others = [s for s in schedule.skills if s.landing_prior is not feed]
+    assert others
+    assert all(s.receive_tilt is None for s in others)
+
+
+def test_compile_columns_without_feed_no_skill_carries_receive_tilt(cols):
+    """The ``t0_abs_s`` (free-clock) branch has no real arrival to pin
+    against, so every skill keeps the auto-banked default."""
+    pattern = _pattern(cols)
+    schedule = sc.compile_columns(pattern, t0_abs_s=10.0)
+    assert all(s.receive_tilt is None for s in schedule.skills)
+
+
 def test_schedule_due_returns_only_skills_whose_dispatch_has_passed(cols):
     schedule = sc.compile_columns(_pattern(cols, n_throws=3), t0_abs_s=10.0)
     first_dispatch = schedule.skills[0].dispatch_s()
@@ -708,6 +737,13 @@ def test_compile_one_ball_catch_window_is_the_full_flight(site):
     schedule = sc.compile_one_ball(_self_pattern(site, n_throws=3), t0_abs_s=0.0)
     for c in [s for s in schedule.skills if s.kind == sc.CATCH]:
         assert c.window_s == pytest.approx(schedule.flight_s)
+
+
+def test_compile_one_ball_never_sets_receive_tilt(site):
+    """``receive_tilt`` is a columns-feed-catch-only field (plan § 0's
+    R5 unit) -- self-toss/hop never touch it."""
+    schedule = sc.compile_one_ball(_self_pattern(site, n_throws=3), t0_abs_s=10.0)
+    assert all(s.receive_tilt is None for s in schedule.skills)
 
 
 def test_compile_one_ball_every_catch_carries_the_handoff_lead(site):
@@ -1045,6 +1081,14 @@ def test_compile_reload_orders_the_choreography_then_the_pattern(site):
     assert kinds[3] == sc.THROW
     assert kinds[-1] == sc.REST
     assert all(s.ball_id == 0 for s in schedule.skills)
+
+
+def test_compile_reload_never_sets_receive_tilt(site):
+    """``compile_reload``'s catch holds a line (``hold_tilt``); it never sets
+    ``receive_tilt``, which is mutually exclusive with it."""
+    landing_mm, landing_vel, t_land_abs, pattern, t0 = _reload_args(site)
+    schedule = sc.compile_reload(landing_mm, landing_vel, t_land_abs, pattern, t0)
+    assert all(s.receive_tilt is None for s in schedule.skills)
 
 
 def test_compile_reload_pretilt_rest_holds_no_ball_and_ends_at_the_receive_tilt(site):

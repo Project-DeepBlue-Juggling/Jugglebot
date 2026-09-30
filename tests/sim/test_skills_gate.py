@@ -485,7 +485,7 @@ def test_a_small_hop_learner_run_commands_below_the_old_apex_floor():
 # ── R5: the columns learner run (Unit G, plan § R5) ─────────────────────────
 #
 # ``SelfTossGateConfig(pattern='columns', ...)`` -- the R3/R4 self-toss/hop
-# harness's own operating point (300/5000/150000, hand 3500) and band, driven
+# harness's own operating point (300/5000/200000, hand 3500) and band, driven
 # through ``SkillsGate.run_columns_attempt``/``run_columns_seed`` instead of
 # the one-ball ``run_self_toss_attempt``/``_seed``: both balls, one shared
 # memory, the columns Stop, ``boxes=None`` (the committed 'columns' box
@@ -533,6 +533,152 @@ def test_a_small_columns_learner_run_enters_the_apex_band():
     cfg, res = _small_columns_run()
     assert res['throws_to_band_apex'] is not None
     assert res['throws_to_band_apex'] <= cfg.band_entry_throws
+
+
+# ---------------------------------------------------------------------------
+# A Ball Butler-like FEED start for the columns gate (owner ask, 2026-09-30)
+# ---------------------------------------------------------------------------
+#
+# ``SelfTossGateConfig.feed_angle_deg``/``feed_speed_mmps`` (both ``None`` by
+# default) route ``SkillsGate.run_columns_attempt`` through
+# ``compile_columns(pattern, feed=LandingPrior(...))`` -- the SAME path
+# ``SkillNode._install_columns_schedule`` compiles a real Ball Butler feed
+# through -- instead of the R2 vertical self-toss spawn + free ``t0_abs_s``.
+# These tests use ``monkeypatch`` to intercept ``sk.compile_columns`` (to
+# check which branch fires and what it is called with, without re-testing
+# ``compile_columns`` itself -- that is ``tests/motion/test_skills_schedule.
+# py``'s job) and ``plant.spawn_ball`` (to check the spawned ball's actual
+# arrival, via the ``ballistics_bc`` forward-integration helpers rather than
+# running the whole schedule through MuJoCo -- the same "ballistics helper,
+# not a MuJoCo run" shape :func:`test_tracker_landing_time_is_anchored_to_
+# the_last_sample_not_now` uses above for a landing-time check).
+
+def test_columns_attempt_without_feed_calls_compile_columns_with_t0_only(
+        monkeypatch):
+    """Default (``feed_angle_deg``/``feed_speed_mmps`` both ``None``): the
+    vertical spawn is unchanged -- ``compile_columns`` is still called
+    positionally with ``(pattern, t0_abs_s)``, never ``feed=``."""
+    calls = []
+    real_compile = sk.compile_columns
+
+    def spy(*args, **kwargs):
+        calls.append((args, kwargs))
+        return real_compile(*args, **kwargs)
+
+    monkeypatch.setattr(sg.sk, 'compile_columns', spy)
+    cfg = SelfTossGateConfig(pattern='columns', target_throws=2,
+                             band_entry_throws=2, max_attempts=2)
+    SkillsGate(cfg).run_columns_seed(0)
+
+    assert len(calls) >= 1
+    args, kwargs = calls[0]
+    assert kwargs == {}
+    assert len(args) == 2
+    assert isinstance(args[1], float)
+
+
+def test_columns_attempt_with_feed_pins_the_touchdown_level_and_carries_the_landing(
+        monkeypatch):
+    """With both feed options set: ``compile_columns`` is called with
+    ``feed=LandingPrior(...)`` and no positional ``t0_abs_s`` (R5 owner
+    decision D1: exactly one of the two), and the compiled schedule's ONE
+    feed-carrying skill (``landing_prior is not None``) is the site-1 CATCH
+    that carries ``receive_tilt == (0.0, 0.0)`` -- the level-pinned
+    touch-down attitude `handoff_receive_level.md`'s ``compile_columns(feed=
+    ...)`` sets on the feed catch only (its own docstring: every other skill
+    keeps the dataclass default ``None``)."""
+    calls = []
+    real_compile = sk.compile_columns
+
+    def spy(*args, **kwargs):
+        sched = real_compile(*args, **kwargs)
+        calls.append((args, kwargs, sched))
+        return sched
+
+    monkeypatch.setattr(sg.sk, 'compile_columns', spy)
+    cfg = SelfTossGateConfig(pattern='columns', target_throws=2,
+                             band_entry_throws=2, max_attempts=2,
+                             feed_angle_deg=11.9, feed_speed_mmps=5600.0)
+    SkillsGate(cfg).run_columns_seed(0)
+
+    assert len(calls) >= 1
+    args, kwargs, sched = calls[0]
+    assert len(args) == 1
+    assert 'feed' in kwargs
+    feed = kwargs['feed']
+    assert isinstance(feed, sk.LandingPrior)
+    site1 = sites.columns_sites(cfg.separation_mm)[1]
+    assert feed.pos_mm == pytest.approx(
+        np.asarray(site1.catch_site_mm(), dtype=float), abs=1e-6)
+
+    feed_skills = [s for s in sched.skills if s.landing_prior is not None]
+    assert len(feed_skills) == 1
+    assert feed_skills[0].receive_tilt == (0.0, 0.0)
+    assert feed_skills[0].site.name == site1.name
+
+
+def test_columns_feed_calls_with_only_one_of_the_two_options_raise():
+    """The task's own contract: both feed options or neither -- one alone is
+    refused before any MuJoCo work runs (``run_columns_attempt``'s explicit
+    ``ValueError``, mirroring ``compile_columns``'s own "exactly one of
+    t0_abs_s/feed" rule)."""
+    cfg = SelfTossGateConfig(pattern='columns', target_throws=1,
+                             band_entry_throws=1, max_attempts=1,
+                             feed_angle_deg=11.9, feed_speed_mmps=None)
+    with pytest.raises(ValueError):
+        SkillsGate(cfg).run_columns_seed(0)
+
+
+def test_columns_feed_ball_1_arrives_at_the_requested_speed_and_angle():
+    """The spawned ball's actual MuJoCo state (captured at ``plant.
+    spawn_ball``, ball 1) forward-integrated through gravity for this
+    pattern's own flight time lands within 2 % of the requested speed and
+    0.5 deg of the requested angle off vertical, at site 1's catch plane --
+    checked with :func:`ballistics_bc.position_at`/``velocity_at`` rather
+    than running the schedule through MuJoCo (the module docstring's own
+    noise policy is ``bb_throw_noise_frac=0.0`` by default, so this is an
+    exact check, not a statistical one)."""
+    apex_m = 0.9
+    angle_deg = 11.9
+    speed_mmps = 5600.0
+    cfg = SelfTossGateConfig(pattern='columns', apex_m=apex_m,
+                             feed_angle_deg=angle_deg,
+                             feed_speed_mmps=speed_mmps,
+                             target_throws=1, band_entry_throws=1,
+                             max_attempts=1)
+    gate = SkillsGate(cfg)
+    captured = {}
+
+    class _StopAfterSpawn(Exception):
+        pass
+
+    real_spawn = gate.plant.spawn_ball
+
+    def spy_spawn(position_mm, velocity_mms, ball=0):
+        if ball == 1:
+            captured['pos'] = np.array(position_mm, dtype=float)
+            captured['vel'] = np.array(velocity_mms, dtype=float)
+            raise _StopAfterSpawn()
+        return real_spawn(position_mm, velocity_mms, ball)
+
+    gate.plant.spawn_ball = spy_spawn
+    with pytest.raises(_StopAfterSpawn):
+        gate.run_columns_seed(0)
+
+    assert 'vel' in captured, 'ball 1 was never spawned'
+    t_f = sk.flight_s(apex_m)
+    land_pos = bal.position_at(captured['pos'], captured['vel'], t_f)
+    land_vel = bal.velocity_at(captured['vel'], t_f)
+
+    site1 = sites.columns_sites(cfg.separation_mm)[1]
+    expect_pos = np.asarray(site1.catch_site_mm(), dtype=float)
+    assert land_pos == pytest.approx(expect_pos, abs=1.0)
+
+    speed = float(np.linalg.norm(land_vel))
+    assert speed == pytest.approx(speed_mmps, rel=0.02)
+    off_vert_deg = math.degrees(
+        math.acos(min(1.0, abs(float(land_vel[2])) / speed)))
+    assert off_vert_deg == pytest.approx(angle_deg, abs=0.5)
 
 
 # ---------------------------------------------------------------------------

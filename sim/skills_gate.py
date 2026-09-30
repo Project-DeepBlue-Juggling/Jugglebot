@@ -469,6 +469,21 @@ _SELF_TOSS_SEPARATION_MM = 100.0
 #: mismatch, so this constant and the sweep's must agree to the mm).
 _HOP_SEPARATION_MM = 250.0
 
+#: Ball Butler's horizontal bearing at site 1, reused for the R5 columns
+#: FEED trial (:meth:`SkillsGate.run_columns_attempt`'s ``feed_angle_deg``/
+#: ``feed_speed_mmps`` branch): the (x, y) direction of the F-a/F-b probes'
+#: reused real arrival vector ``(1058.0, 475.0, -5507.0)`` mm/s
+#: (``scratchpad/probe_bbfed_columns.py``, ``bbfed_columns_probe.md``, R5
+#: 2026-09-30 -- ~11.9 deg off vertical at that speed), so a FEED run's
+#: synthetic arrival points the same way the bench's real Ball Butler does
+#: instead of an arbitrary axis. Unit vector of the horizontal components
+#: only; the trial scales it by ``feed_speed_mmps * sin(feed_angle_deg)``
+#: and combines it with a vertical component
+#: ``-feed_speed_mmps * cos(feed_angle_deg)`` (arrival is downward).
+_COLUMNS_FEED_BEARING_XY = np.array([1058.0, 475.0])
+_COLUMNS_FEED_BEARING_XY_UNIT = (
+    _COLUMNS_FEED_BEARING_XY / np.linalg.norm(_COLUMNS_FEED_BEARING_XY))
+
 #: The band a throw's landing error must enter within
 #: :data:`SelfTossGateConfig.band_entry_throws` (plan § 4 R3): 20 mm lateral,
 #: 42 mm of APEX error.
@@ -568,9 +583,11 @@ def _make_observations(observer):
 class SelfTossGateConfig:
     """The R3/R4 sim-validation operating point (plan § 4 R3, R4 Unit U7a) —
     a SEPARATE config from :class:`SkillsGateConfig`: this run's limits
-    (150 000 mm/s³ leg jerk, matching ``config/generated/admissible_box.yaml``'s
-    (P1, P1)/(P1, P2)/(P2, P1) sweeps) differ from the columns gate's own R2
-    point (200 000), and its noise model adds the measured plant bias on top
+    (leg jerk ``_SESSION_LEG_JERK_MMPS3`` = 200 000 since the R5 ramp was HELD on
+    2026-09-30 and ``config/generated/admissible_box.yaml`` was re-swept at it —
+    150 000 until then, when the fed columns rehearsal refused ``LIMIT_JERK`` at
+    100-103 % of a cap the sitting no longer flies) share the columns gate's R2
+    point, and its noise model adds the measured plant bias on top
     of the R2 knobs — reusing one dataclass would force one gate to carry a
     field the other never sets.
 
@@ -596,7 +613,7 @@ class SelfTossGateConfig:
     separation_mm: float = _SELF_TOSS_SEPARATION_MM
     leg_vel_mmps: float = 300.0
     leg_acc_mmps2: float = 5000.0
-    leg_jerk_mmps3: float = 150000.0
+    leg_jerk_mmps3: float = _SESSION_LEG_JERK_MMPS3
     hand_acc_rps2: float = 3500.0
     #: Which aim source the executor runs with (``executor.AIM_SOURCES``).
     #: ``tracker`` here, not the LIVE default (``schedule``): this gate's
@@ -620,6 +637,19 @@ class SelfTossGateConfig:
     max_attempts: int = 60
     admissible_box_path: str = None
     report_path: str = None
+    #: R5 columns FEED trial (owner ask, 2026-09-30): when BOTH are set,
+    #: :meth:`SkillsGate.run_columns_attempt` spawns ball 1 on an oblique
+    #: arrival at site 1 -- this many degrees off vertical, at this speed
+    #: (mm/s), along :data:`_COLUMNS_FEED_BEARING_XY_UNIT`'s bearing --
+    #: instead of the R2 vertical self-toss spawn, and compiles the
+    #: schedule via ``compile_columns(pattern, feed=LandingPrior(...))``,
+    #: exactly as ``SkillNode._install_columns_schedule`` does for a real
+    #: Ball Butler feed. Both ``None`` (the default) is today's vertical
+    #: spawn, unchanged bit-for-bit; giving only one of the two is a
+    #: ``ValueError`` (see that method). Ignored outside ``pattern ==
+    #: 'columns'``.
+    feed_angle_deg: float = None
+    feed_speed_mmps: float = None
 
 
 def _sites_for(cfg: 'SelfTossGateConfig') -> tuple:
@@ -1324,7 +1354,12 @@ class SkillsGate:
                             throws_out: list) -> Tuple[str, dict, '_InstallCtx']:
         """One columns learner attempt, cold from a level rest at site 0 with
         ball B already airborne toward site 1 (the SAME setup
-        :meth:`run_trial` steps 1-2 use). The learner (:class:`_MemoryLearner`)
+        :meth:`run_trial` steps 1-2 use) -- vertically (``cfg.feed_angle_deg``/
+        ``cfg.feed_speed_mmps`` both ``None``, the default) or, when both are
+        set, on an oblique Ball Butler-like arrival compiled through
+        ``compile_columns(pattern, feed=LandingPrior(...))`` instead of a
+        free ``t0_abs_s`` -- see :data:`SelfTossGateConfig.feed_angle_deg`.
+        The learner (:class:`_MemoryLearner`)
         replaces the identity prior; the box lookup is BYPASSED
         (``boxes=None``): the committed 'columns' box entries are
         EMPTY/NaN as swept for this rung (``config/generated/
@@ -1370,17 +1405,74 @@ class SkillsGate:
 
         t_f = sk.flight_s(cfg.apex_m)
         beta = sk.beat_s(t_f, cfg.dwell_s)
-        v0_mm_s = math.sqrt(2.0 * bal.GRAVITY_MMS2 * cfg.apex_m * 1000.0)
         pos1 = site1.catch_site_mm()
-        pos1n, vel1n = noise.perturb_throw(
-            pos1, np.array([0.0, 0.0, v0_mm_s]), np.zeros(3))
-        t_spawn = float(plant.data.time)
-        plant.spawn_ball(pos1n, vel1n, ball=1)
-        t0_abs_s = t_spawn + beta
-
         pattern = sk.Pattern(sites=(site0, site1), apex_m=cfg.apex_m,
                              dwell_s=cfg.dwell_s, n_throws=n_throws)
-        sched = sk.compile_columns(pattern, t0_abs_s)
+
+        if cfg.feed_angle_deg is None and cfg.feed_speed_mmps is None:
+            # R2's vertical self-toss spawn -- ball B already airborne
+            # toward site 1, landing back at its own launch point after a
+            # full flight `t_f`. Unchanged bit-for-bit from before the FEED
+            # option (owner ask, 2026-09-30).
+            v0_mm_s = math.sqrt(2.0 * bal.GRAVITY_MMS2 * cfg.apex_m * 1000.0)
+            pos1n, vel1n = noise.perturb_throw(
+                pos1, np.array([0.0, 0.0, v0_mm_s]), np.zeros(3))
+            t_spawn = float(plant.data.time)
+            plant.spawn_ball(pos1n, vel1n, ball=1)
+            t0_abs_s = t_spawn + beta
+            sched = sk.compile_columns(pattern, t0_abs_s)
+        else:
+            # R5 FEED trial (owner ask, 2026-09-30): a Ball Butler-like
+            # oblique arrival at site 1, fed through `compile_columns`'s
+            # `feed=` path exactly as `SkillNode._install_columns_schedule`
+            # compiles a real BB announcement/tracker landing
+            # (`skill_node.py` ~3197/3321) -- `t0 = t_land - transit_s` is
+            # computed by `compile_columns` itself, not chosen here.
+            if cfg.feed_angle_deg is None or cfg.feed_speed_mmps is None:
+                raise ValueError(
+                    'feed_angle_deg and feed_speed_mmps must both be set, '
+                    'or both left None (the default vertical spawn) -- got '
+                    'feed_angle_deg=%r feed_speed_mmps=%r'
+                    % (cfg.feed_angle_deg, cfg.feed_speed_mmps))
+            angle = math.radians(cfg.feed_angle_deg)
+            lateral_mm_s = cfg.feed_speed_mmps * math.sin(angle)
+            land_vel_nom = np.array([
+                _COLUMNS_FEED_BEARING_XY_UNIT[0] * lateral_mm_s,
+                _COLUMNS_FEED_BEARING_XY_UNIT[1] * lateral_mm_s,
+                -cfg.feed_speed_mmps * math.cos(angle)])
+            land_pos_nom = np.asarray(pos1, dtype=float)
+            land_pos, land_vel = noise.perturb_throw(
+                land_pos_nom, land_vel_nom, np.zeros(3))
+
+            # Backward-integrate through gravity to a physical spawn point
+            # `t_f` (this pattern's own flight time) before touch-down --
+            # this lands the ball at `t_spawn + t_f`, the SAME wall-clock
+            # instant the vertical branch above lands at (its own
+            # `t0_abs_s + transit_s == t_spawn + beta + transit_s ==
+            # t_spawn + t_f`, since `beta == t_f - transit_s`), so a FEED
+            # run keeps the vertical branch's own proven dispatch margin
+            # for ball A's first THROW while landing ball B on an oblique
+            # arrival instead of a vertical one. Same backward-integration
+            # shape as `run_reload_attempt`'s synthetic BB announcement
+            # (see `_RELOAD_BALL_FLIGHT_LEAD_S`'s docstring for the
+            # floor-clearance reasoning); at this pattern's operating point
+            # (apex 0.9 m) and BB's ~11.9 deg/5.6 m/s arrival the spawn
+            # point is well clear of both the floor and the platform.
+            g = bal.GRAVITY_MMS2
+            flight_lead_s = t_f
+            spawn_vel = np.array([land_vel[0], land_vel[1],
+                                  land_vel[2] + g * flight_lead_s])
+            spawn_pos = np.array([
+                land_pos[0] - land_vel[0] * flight_lead_s,
+                land_pos[1] - land_vel[1] * flight_lead_s,
+                land_pos[2] - land_vel[2] * flight_lead_s
+                - 0.5 * g * flight_lead_s * flight_lead_s])
+            t_spawn = float(plant.data.time)
+            plant.spawn_ball(spawn_pos, spawn_vel, ball=1)
+            t_land_abs_s = t_spawn + flight_lead_s
+            feed = sk.LandingPrior(pos_mm=land_pos, vel_mm_s=land_vel,
+                                   t_land_abs_s=t_land_abs_s)
+            sched = sk.compile_columns(pattern, feed=feed)
 
         ball_state = {
             0: dict(estimator=BallisticEstimator(bal.G_VEC_MMS2),
@@ -1529,6 +1621,8 @@ class SkillsGate:
         return dict(
             seed=seed, policy='columns', pattern=cfg.pattern,
             separation_mm=cfg.separation_mm, apex_m=cfg.apex_m,
+            feed_angle_deg=cfg.feed_angle_deg,
+            feed_speed_mmps=cfg.feed_speed_mmps,
             throws=rows, n_throws_collected=len(rows), attempts=attempts,
             attempts_stats=attempts_stats, end_codes=end_codes,
             refusals=refusals, drops=drops_total, makes=makes_total,
@@ -1847,6 +1941,8 @@ def run_learn(cfg: SelfTossGateConfig = None, seeds=(0, 1, 2, 3, 4),
         'apex_m': cfg.apex_m,
         'dwell_s': cfg.dwell_s,
         'separation_mm': cfg.separation_mm,
+        'feed_angle_deg': cfg.feed_angle_deg,
+        'feed_speed_mmps': cfg.feed_speed_mmps,
         'xy_band_mm': cfg.xy_band_mm,
         'apex_band_mm': cfg.apex_band_mm,
         'band_entry_throws': cfg.band_entry_throws,
@@ -1875,7 +1971,7 @@ def run_reload_gate(cfg: SelfTossGateConfig = None,
     chain. PASS per seed = caught (kinematic capture) with zero pump
     rejects; the whole gate passes when every seed does. Reuses
     ``SelfTossGateConfig`` (the R3 self-toss operating point: apex 0.9 m,
-    dwell 0.30 s, session limits 300/5000/150000/3500) -- the reload's own
+    dwell 0.30 s, session limits 300/5000/200000/3500) -- the reload's own
     tail throws are kinematically ordinary self-toss throws at the SAME
     site (`compile_reload`'s own docstring), so this is the right box/limit
     point for them, not a third one."""
@@ -2025,6 +2121,18 @@ def main(argv=None) -> int:
                         'synthetic Ball Butler arrival (25 deg / 4.8 m/s) '
                         'through schedule.compile_reload, instead of the '
                         'columns gate')
+    p.add_argument('--feed-angle-deg', type=float, default=None,
+                   help='--learn --pattern columns only: spawn ball 1 on an '
+                        'oblique arrival at site 1, this many degrees off '
+                        'vertical, along the Ball Butler bearing '
+                        '(SelfTossGateConfig.feed_angle_deg), through '
+                        "compile_columns(feed=...) -- must be given "
+                        'together with --feed-speed-mmps (default: None, '
+                        "today's vertical spawn, unchanged)")
+    p.add_argument('--feed-speed-mmps', type=float, default=None,
+                   help='--learn --pattern columns only: the arrival speed '
+                        '(mm/s) for --feed-angle-deg -- must be given '
+                        'together with it')
     args = p.parse_args(argv)
 
     if args.reload:
@@ -2036,6 +2144,12 @@ def main(argv=None) -> int:
         return 0 if rep['passed'] else 1
 
     if args.learn:
+        if (args.feed_angle_deg is None) != (args.feed_speed_mmps is None):
+            p.error('--feed-angle-deg and --feed-speed-mmps must be given '
+                     'together, or both left off')
+        if (args.feed_angle_deg is not None and args.pattern != 'columns'):
+            p.error('--feed-angle-deg/--feed-speed-mmps only apply to '
+                     '--pattern columns')
         default_sep = (_HOP_SEPARATION_MM if args.pattern == 'hop'
                       else _SELF_TOSS_SEPARATION_MM)
         separation_mm = (float(args.separation_mm)
@@ -2048,6 +2162,10 @@ def main(argv=None) -> int:
             lcfg.apex_m = float(args.apex_m)
         if args.target_throws is not None:
             lcfg.target_throws = int(args.target_throws)
+        if args.feed_angle_deg is not None:
+            lcfg.feed_angle_deg = float(args.feed_angle_deg)
+        if args.feed_speed_mmps is not None:
+            lcfg.feed_speed_mmps = float(args.feed_speed_mmps)
         if args.seeds is not None:
             seeds = tuple(args.seeds)
         else:

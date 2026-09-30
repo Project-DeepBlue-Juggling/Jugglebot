@@ -403,6 +403,90 @@ def test_hold_axis_site_is_on_the_axis_through_the_landing_point():
     assert np.allclose(sg.hold_axis_site(land, tilt, land[2]), land, atol=1e-12)
 
 
+def test_catch_terminal_carries_receive_tilt():
+    """The touch-down pin threads through the dataclass unchanged — the
+    segment-layer half of ``unified_cycle.CycleGoals.receive_tilt``'s
+    contract."""
+    v = np.array([0.0, 0.0, -1000.0])
+    ct = sg.CatchTerminal(landing_mm=CATCH_SITE_MM, landing_vel_mm_s=v,
+                          t_land_s=0.3,
+                          rest_site_mm=np.array([0.0, 0.0, uc.SETTLE_CUP_Z_MM]),
+                          receive_tilt=(0.0, 0.0))
+    assert ct.receive_tilt == (0.0, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# R5: the BB-fed columns feed catch, level-pinned (``receive_tilt``) — the
+# acceptance case for ``level_pinned_feed_report.md`` / ``probe_
+# level_pinned_feed.py`` (scratchpad, 2026-09-30), reusing ``probe_
+# bbfed_columns.py``'s S1/S2 construction exactly: apex 0.90 m, dwell 0.30 s,
+# separation 100 mm, session limits 300/5000/200000 mm-space, hand_acc 3500
+# rev/s^2, seeded from ball A's own THROW-from-rest release at P1.
+# ---------------------------------------------------------------------------
+
+_BBFED_LEG_VEL = 300.0
+_BBFED_LEG_ACC = 5000.0
+_BBFED_LEG_JERK = 200000.0
+_BBFED_HAND_ACC = 3500.0
+_BBFED_APEX_M = 0.90
+_BBFED_DWELL_S = 0.30
+_BBFED_SEP_MM = 100.0
+#: BB's real arrival at P2 (bbfed_columns_probe.md's figure): 5.628 m/s,
+#: 11.892 deg off vertical.
+_BBFED_ARRIVAL_MM_S = np.array([1058.0, 475.0, -5507.0])
+
+
+@pytest.fixture(scope='module')
+def bbfed_limits():
+    return TrajectoryLimits.from_config(hw).with_session_limits(
+        leg_vel_mmps=_BBFED_LEG_VEL, leg_acc_mmps2=_BBFED_LEG_ACC,
+        leg_jerk_mmps3=_BBFED_LEG_JERK, hand_acc_rps2=_BBFED_HAND_ACC)
+
+
+@pytest.fixture(scope='module')
+def bbfed_seed(bbfed_limits, geom, cfg):
+    """S1: THROW A from rest at P1 — the seed every S2 case below shares."""
+    p1, _p2 = si.columns_sites(_BBFED_SEP_MM)
+    seed = _rest_state(p1.rest_site_mm())
+    terminal = sg.ThrowTerminal(site_mm=p1.throw_site_mm(),
+                                target_mm=p1.throw_site_mm(),
+                                flight_s=sc.flight_s(_BBFED_APEX_M),
+                                t_release_s=0.4)
+    seg1 = sg.plan_segment(sg.THROW, seed, terminal, cfg, bbfed_limits, geom)
+    return seg1.release_state
+
+
+def _bbfed_catch_terminal(receive_tilt):
+    p1, p2 = si.columns_sites(_BBFED_SEP_MM)
+    t_f = sc.flight_s(_BBFED_APEX_M)
+    tau = sc.transit_s(t_f, _BBFED_DWELL_S)
+    then_throw = sg.ThrowAfterCatch(t_release_s=tau + _BBFED_DWELL_S,
+                                    site_mm=p2.throw_site_mm(),
+                                    target_mm=p2.throw_site_mm(), flight_s=t_f)
+    return sg.CatchTerminal(landing_mm=p2.catch_site_mm(),
+                            landing_vel_mm_s=_BBFED_ARRIVAL_MM_S, t_land_s=tau,
+                            rest_site_mm=p2.rest_site_mm(), then_throw=then_throw,
+                            receive_tilt=receive_tilt)
+
+
+def test_a_bb_fed_feed_catch_refuses_unpinned_but_fits_level_pinned(
+        bbfed_limits, geom, cfg, bbfed_seed):
+    """The acceptance case (probe_bbfed_columns.py S2 / probe_level_pinned_
+    feed.py ratio=0.7, the default ``catch_vel_ratio``): BB's real arrival
+    refuses the ordinary auto-banked receive tilt (measured LIMIT_VEL, 122%
+    of the leg-velocity cap — bbfed_columns_probe.md sec 2) and fits
+    comfortably, hand-bound at ~95% like the pattern's own vertical catch,
+    once the touch-down attitude is pinned level."""
+    with pytest.raises(uc.CycleInfeasible):
+        sg.plan_segment(sg.CATCH, bbfed_seed, _bbfed_catch_terminal(None),
+                        cfg, bbfed_limits, geom)
+    seg = sg.plan_segment(sg.CATCH, bbfed_seed, _bbfed_catch_terminal((0.0, 0.0)),
+                          cfg, bbfed_limits, geom)
+    hand_frac = (seg.meta.report.peak_hand_acc_rps2
+                 / bbfed_limits.hand_acc_limit_rps2)
+    assert hand_frac <= 0.96, hand_frac
+
+
 def test_a_held_attitude_catch_carries_its_throw_and_releases_level(
         bb_chain, limits, geom):
     """PRE-TILT REST → ONE held catch-with-throw segment, rest-terminal.

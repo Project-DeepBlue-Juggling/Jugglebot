@@ -190,6 +190,42 @@ class TestSuccessPath:
         assert res.target_position_bb_local_mm.y == pytest.approx(0.0, abs=1e-6)
 
 
+class TestReleaseLagCorrection:
+    """R5 day-1 bag decomposition (2026-09-30, 14 flown BB-feed reload throws,
+    bag ~/Desktop/rosbags/2026-09-30_16-20-05, see
+    tools/probes/feed_catch_bag_probe.py and feed_timing_report.md): raw
+    mocap shows the ball's physical release running +37.2 ms after the
+    announced throw_time (push-phase lag, flight_fit.py's documented 5-55 ms
+    note) and the flight itself running +14.7 ms longer than the predicted
+    ToF -- individually noisy, but the sum lands the ball +51.9 ms late
+    against the schedule's committed landing epoch, stdev only 15.4 ms. Both
+    biases are applied in ball_butler_node's published ThrowAnnouncement
+    only; skill_node.py's `_install_announced_reload` reads throw_time/
+    landing_time verbatim and is not corrected again."""
+
+    def test_throw_time_and_landing_time_include_measured_bias(self, calibrated_node):
+        from jugglebot.ball_butler_node import (
+            BB_FLIGHT_BIAS_S, BB_RELEASE_PUSH_LAG_S)
+
+        calibrated_node._on_rigid_bodies(_rigid_bodies({
+            'Catching_Cone': (1200.0, 50.0, 0.0),
+        }))
+        req = BallButlerThrow.Request()
+        req.target_name = 'Catching_Cone'
+        res = calibrated_node._svc_throw_at_target(req, BallButlerThrow.Response())
+        assert res.success is True
+
+        ann = calibrated_node.throw_announcement_pub.published[0]
+        # MockClock.now() is always t=0 under the ROS2 mock (tests/ros/conftest.py),
+        # so the mock Time's to_msg() (nanoseconds, as an int) is directly
+        # dispatch(0) + delay + lag, in seconds once divided by 1e9.
+        expected_throw_time_s = res.throw_delay_s + BB_RELEASE_PUSH_LAG_S
+        expected_landing_time_s = (expected_throw_time_s
+                                    + res.predicted_tof_s + BB_FLIGHT_BIAS_S)
+        assert ann.throw_time / 1e9 == pytest.approx(expected_throw_time_s, abs=1e-6)
+        assert ann.landing_time / 1e9 == pytest.approx(expected_landing_time_s, abs=1e-6)
+
+
 class TestPointTargetExtension:
     """Phase-7 BallButlerThrow point-target extension: use_target_point skips QTM and
     aims at a caller-supplied world point; aim_only commands speed 0 (the 7a fast-path)."""

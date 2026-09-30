@@ -483,7 +483,16 @@ FW_OP_INFO = 0x05
 #: sector pause 0.5 -> 0.12 s; INFO 2 -> 3).
 #: 4 (2026-09-28) = no code change: receipt for the pipelined CAN transfer
 #: (can-bridge FW 22 RPC queue 8, host DATA depth 4).
-BB_FW_VERSION_EXPECTED = 4
+#: 5 (2026-09-30) = the Layer C fire-time yaw settle confirm: settled = error
+#: inside 1.0 deg for the last 15 samples (100 ms at 150 Hz) AND |rate| <=
+#: 12 deg/s (was an instantaneous 3 deg/s, which a settled yaw's encoder dither
+#: can cross — 4 of 5 THROW_ABORTED_NOT_SETTLED refusals at R5 2026-09-30 sat
+#: on a flat < 0.4 deg plateau).
+#: No wire change (THROW_ABORTED_NOT_SETTLED detail1 is still yaw error in
+#: centidegrees). Nothing on the runtime path compares this value; it is read
+#: only by tests/firmware/test_bb_fw_update_xref.py (tree vs tree) — the
+#: flash receipt is the fw-update tool's ``FW version: 4 -> 5`` line.
+BB_FW_VERSION_EXPECTED = 5
 
 
 def decode_platform_fw_reply(data: bytes):

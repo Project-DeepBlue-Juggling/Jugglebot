@@ -294,6 +294,17 @@ class Skill:
     #: catch (R4 reload) — passed to ``segments.CatchTerminal.hold_tilt``
     #: unchanged (``segments.receive_hold_tilt`` is the one derivation point).
     hold_tilt: Optional[Tuple[float, float]] = None
+    #: CATCH only: the touch-down receive attitude (rx, ry) rad this catch is
+    #: PINNED to — passed to ``segments.CatchTerminal.receive_tilt``
+    #: unchanged. Unlike ``hold_tilt`` this holds no line and slaves no
+    #: channel — it only overrides the single auto-computed
+    #: ``tilt_to_receive`` endpoint at the touch-down knot
+    #: (``unified_cycle.CycleGoals.receive_tilt``'s docstring has the
+    #: physical reason). ``compile_columns(feed=...)`` is the one caller that
+    #: sets it (``(0.0, 0.0)``, on the feed catch only — the skill carrying
+    #: ``landing_prior=feed``). ``None`` (every other CATCH) keeps the
+    #: auto-banked receive tilt. Mutually exclusive with ``hold_tilt``.
+    receive_tilt: Optional[Tuple[float, float]] = None
     #: REST only: the attitude (rx, ry) rad this REST ENDS at — passed to
     #: ``segments.RestTerminal.tilt`` unchanged.  ``None`` (every pre-R4 REST)
     #: is the level rest.
@@ -344,6 +355,14 @@ class Skill:
         if self.hold_tilt is not None and self.kind != CATCH:
             raise ValueError('only a CATCH may carry hold_tilt (kind=%r)'
                               % (self.kind,))
+        if self.receive_tilt is not None and self.kind != CATCH:
+            raise ValueError('only a CATCH may carry receive_tilt (kind=%r)'
+                              % (self.kind,))
+        if self.hold_tilt is not None and self.receive_tilt is not None:
+            raise ValueError(
+                'give hold_tilt OR receive_tilt, not both (see '
+                'unified_cycle.CycleGoals.receive_tilt for why the two are '
+                'mutually exclusive)')
         if self.rest_tilt is not None and self.kind != REST:
             raise ValueError('only a REST may carry rest_tilt (kind=%r)'
                               % (self.kind,))
@@ -702,9 +721,17 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
     # `compile_reload`'s own CATCH), so it rides through unshifted —
     # `_shifted` below only ever moves `Skill.t_abs_s` / `ThenThrow.
     # t_release_abs_s`, never `landing_prior`.
+    #
+    # `receive_tilt=(0.0, 0.0)` ONLY when this is a real feed (`feed is not
+    # None`): the level-pinned touch-down attitude (`Skill.receive_tilt`'s
+    # docstring) is what makes a BB feed's oblique arrival fit the transit +
+    # dwell window at all — a `t0_abs_s` schedule's initial catch has no real
+    # arrival to pin against (its own self-toss/hop landing is already
+    # vertical or near it) and keeps the auto-banked default, `None`.
     skills.append(Skill(kind=CATCH, ball_id=1, site=site1,
                         t_abs_s=t0_rel + tau, window_s=tau,
-                        landing_prior=feed))
+                        landing_prior=feed,
+                        receive_tilt=((0.0, 0.0) if feed is not None else None)))
 
     _check_window('THROW 0 (the launch from rest)', pattern.launch_s)
     if n >= 2:

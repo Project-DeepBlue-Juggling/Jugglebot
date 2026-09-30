@@ -94,6 +94,7 @@ from jugglebot.motion.skills.sites import (CATCH_CUP_Z_MM, REST_CUP_Z_MM,
 from jugglebot.motion.tilt_map import find_repo_root
 from jugglebot.motion.trajectory import ballistics_bc
 from jugglebot.motion.trajectory import tilt_geometry as tg
+from jugglebot.motion.trajectory.limits import TrajectoryLimits
 from jugglebot.ball_possession import (
     FlightLatch, advance_flight_latches, flight_in_progress)
 
@@ -1324,15 +1325,67 @@ class SkillNode(Node):
         pre-tilt lead), so on 2026-09-27 every rejected throw was announced
         first and refused 20 ms later. A schedule compiled from such an
         announcement is waiting at the receive attitude for a ball that is
-        not coming; the outcome ends it through its rest tail."""
+        not coming; the outcome ends it through its rest tail.
+
+        R5 (2026-09-30, `not_settled_report.md` Q4 option (d) — the
+        2026-09-30 sitting's 4/19 plausible false-positive rate on Ball
+        Butler's yaw-settle gate): ONE exception to "any non-``OK`` token
+        ends the attempt" — a bounded, once-per-attempt retry on the
+        literal token ``THROW_ABORTED_NOT_SETTLED``, compared as an exact
+        enum-member-NAME match (never a substring), same as every other
+        token here. This code alone carries the firmware's own guarantee
+        that NO frame was sent: ``aborted_ = true; active = false; return;
+        // send NO frames — hand stays at rest, ball retained``
+        (`~/Desktop/BallButler/ball_butler_main/HandTrajectoryStreamer.h`
+        :117-122, FW 5) — every OTHER refusal keeps ending the attempt exactly as
+        before, unconditionally, because that guarantee is specific to this
+        one code. `ctx.not_settled_retried` (armed `False` by
+        `_start_reload`) makes it fire at most once per attempt: a second
+        ``THROW_ABORTED_NOT_SETTLED`` on the same `ctx` falls straight
+        through to the ordinary end-attempt path below. The retry re-arms
+        ``ctx.phase = 'firing'`` under the same lock (excluding it from
+        `_check_reload_timeout`, exactly why `_maybe_fire_reload_throw`
+        does the same before its own first call) and then calls
+        `_fire_reload_throw` again, outside the lock — that method already
+        re-derives `delay_s` fresh from ``ctx.bridge.skills[-1].t_abs_s``,
+        floors it at `_BB_THROW_DELAY_FLOOR_S` (never asks Ball Butler for
+        an unmeetable delay) and recomputes/extends `ctx.deadline_mono` by
+        its own existing formula — so the retry gets a safe delay and an
+        extended deadline for free by reusing that one path, rather than
+        duplicating its floor/deadline logic here. Works unchanged for both
+        ``kind='reload'`` and ``kind='columns'`` ctxs, since
+        `_fire_reload_throw` itself only branches on `ctx.kind` for the
+        pre-tilt margin. A Stop landing during the retry's own blocking
+        round trip clears `_reload_ctx` (`_stop_attempt`), so
+        `_fire_reload_throw`'s existing `_still_current(ctx)` guard makes
+        the stale retry a no-op, same as it already does for the first
+        fire."""
         token = str(getattr(msg, 'data', '')).split(' ', 1)[0]
         if token == proto.BallButlerCommandOutcome.OK.name:
             return
+        retry_ctx = None
         with self._reload_lock:
             ctx = self._reload_ctx
             reloading = ((ctx is not None and ctx.phase == 'await_announcement')
                          or self._reload_throw_inflight)
+            if (ctx is not None and ctx.phase == 'await_announcement'
+                    and token
+                    == proto.BallButlerCommandOutcome.THROW_ABORTED_NOT_SETTLED.name
+                    and not ctx.not_settled_retried):
+                ctx.not_settled_retried = True
+                ctx.phase = 'firing'
+                retry_ctx = ctx
         if not reloading:
+            return
+        if retry_ctx is not None:
+            self.get_logger().debug(
+                'reload: THROW_ABORTED_NOT_SETTLED -- retrying '
+                'bb/throw_at_target once (firmware sent no frame on this '
+                'code: ball retained, hand at rest)')
+            self.get_logger().info(
+                'reload: Ball Butler was not settled -- retrying the throw '
+                'once')
+            self._fire_reload_throw(retry_ctx)
             return
         end_code = 'REJECTED_BB(%s)' % (token,)
         self._end_attempt(end_code, end_code)
@@ -3019,6 +3072,11 @@ class SkillNode(Node):
                 memory=memory, site=site, aim_site=aim_site, bridge=bridge,
                 reload_sent=reload_sent, bb_left_idle=False,
                 announced=False,
+                # R5 (2026-09-30, `not_settled_report.md` Q4 option (d)):
+                # armed False, flips True the first time
+                # `_on_bb_throw_outcome` retries a `THROW_ABORTED_NOT_SETTLED`
+                # for THIS attempt -- the retry-once gate.
+                not_settled_retried=False,
                 deadline_mono=time.perf_counter() + ready_timeout_s)
         response.success = True
         response.message = (
@@ -3272,6 +3330,44 @@ class SkillNode(Node):
                     'scheduled (%s) -- no columns schedule installed; the '
                     'platform stays at rest holding ball A (the bridge REST '
                     'is already streaming)' % (exc,))
+            return
+
+        # R5 pre-throw feasibility (2026-09-30, day-1 announcement gap):
+        # `compile_columns` succeeding only means the SCHEDULE's timing is
+        # consistent -- nothing above has actually solved the QP ball A's
+        # own THROW and the level-pinned feed CATCH need, and the feed
+        # catch has a real cliff (`level_pinned_feed_report.md` sec 3,
+        # scratchpad): a landing far enough from site1 in the direction
+        # that extends the platform's required transit refuses LIMIT_VEL --
+        # squarely inside Ball Butler's aim scatter. Checked HERE, before
+        # the executor swap below, so a doomed cycle refuses before ball A
+        # is thrown rather than stranding it in the air under an
+        # uncatchable feed. Uses THIS node's live limits (`_live_limits()`)
+        # -- the same session ceilings the swapped-in executor's segments
+        # will actually be planned against.
+        ll = self._live_limits()
+        check_limits = TrajectoryLimits.from_config(hw).with_session_limits(
+            leg_vel_mmps=ll.leg_vel_mmps, leg_acc_mmps2=ll.leg_acc_mmps2,
+            leg_jerk_mmps3=ll.leg_jerk_mmps3,
+            hand_acc_rps2=ll.hand_acc_limit_rps2)
+        try:
+            refusal = ex.plan_columns_first_cycle(schedule, check_limits)
+        except ValueError as exc:
+            refusal = 'could not check feasibility (%s)' % (exc,)
+        if refusal is not None:
+            if self._still_current(ctx):
+                _site1 = ctx.columns_pattern.sites[1]
+                _off = (np.asarray(feed.pos_mm, dtype=float)[:2]
+                        - np.asarray(_site1.catch_site_mm(), dtype=float)[:2])
+                self._end_attempt(
+                    'REJECTED_COLUMNS_FEED_UNCATCHABLE',
+                    'columns feed: the feed catch of ball B cannot be '
+                    'planned -- %s -- announced landing %.1f mm off site %s '
+                    '(dx %+.1f, dy %+.1f mm) -- no columns schedule '
+                    'installed; the platform stays at rest holding ball A '
+                    '(the bridge REST is already streaming)'
+                    % (refusal, float(np.linalg.norm(_off)), _site1.name,
+                       _off[0], _off[1]))
             return
 
         learner_cfg = lr.LearnerConfig()

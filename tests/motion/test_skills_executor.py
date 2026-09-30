@@ -4137,6 +4137,30 @@ def test_a_catch_with_no_schedule_release_is_aimed_by_its_landing_prior(sites):
     assert not x.attempt_ended
 
 
+def test_a_catch_terminal_carries_receive_tilt_from_its_skill(sites):
+    """``receive_tilt`` threads from ``Skill`` to the ``CatchTerminal`` the
+    same way ``hold_tilt`` does -- the executor's half of R5's BB-fed
+    columns feed-catch contract (``schedule.compile_columns(feed=...)``
+    sets it, ``_catch_terminal`` must pass it through unchanged)."""
+    p1, _p2 = sites
+    t_land = T0_ABS + 0.6
+    prior = sc.LandingPrior(pos_mm=p1.catch_site_mm(), vel_mm_s=LAND_VEL,
+                            t_land_abs_s=t_land)
+    skills = (
+        Skill(kind=sg.CATCH, ball_id=0, site=p1, t_abs_s=t_land, window_s=0.5,
+              landing_prior=prior, receive_tilt=(0.0, 0.0)),
+    )
+    sch = Schedule(pattern='self_toss', skills=skills, flight_s=FLIGHT_S,
+                   beat_s=2.0, transit_s=0.5, dwell_s=0.30, t0_abs_s=T0_ABS)
+    inst = _FakeInstaller()
+    x = ex.SkillExecutor(sch, inst, tracker=lambda ball_id: None)
+    catch_skill = sch.skills[0]
+    landing = ex.Landing(pos_mm=prior.pos_mm, vel_mm_s=prior.vel_mm_s,
+                         t_land_abs_s=prior.t_land_abs_s)
+    terminal = x._catch_terminal(0, catch_skill, landing)
+    assert terminal.receive_tilt == (0.0, 0.0)
+
+
 def test_a_held_axis_catch_terminal_recomputes_rest_site_from_the_given_landing(
         sites):
     """Regression (Unit U3 Part 2, 2026-09-23): `_catch_terminal`'s
@@ -4816,3 +4840,83 @@ def test_no_release_names_the_throw_that_never_left(sites):
     assert x.end_code == ex.ABORTED_NO_RELEASE
     assert x.end_message.startswith('throw 1/1 never left the hand')
     assert x.reports == []            # dropped: nothing flew to report
+
+
+# ---------------------------------------------------------------------------
+# R5: plan_columns_first_cycle -- the pre-throw feasibility check for a
+# Ball-Butler-fed columns start (`schedule.compile_columns(feed=...)`'s
+# first two skills, planned offline exactly as `SkillExecutor` would build
+# and dispatch them). Reuses THIS module's own `limits`/`sites`/`geom`
+# fixtures -- session 300/5000/200000/3500 mm-space, separation 100 mm --
+# which already sit at the R5 operating point
+# `level_pinned_feed_report.md`/`probe_bbfed_columns.py` (scratchpad,
+# 2026-09-30) were built against.
+# ---------------------------------------------------------------------------
+
+#: BB's real arrival at P2 (`bbfed_columns_probe.md`'s figure, scratchpad):
+#: 5.628 m/s, 11.892 deg off vertical.
+_BBFED_ARRIVAL_MM_S = np.array([1058.0, 475.0, -5507.0])
+
+
+def _bbfed_schedule(sites, dx_mm: float = 0.0, dy_mm: float = 0.0):
+    """A `compile_columns(feed=...)` schedule at the R5 operating point (apex
+    ~0.9 m, dwell 0.30 s, 6 throws), BB's real arrival landing at P2 offset
+    by `(dx_mm, dy_mm)` -- the announced-landing displacement Ball Butler's
+    aim scatter produces."""
+    p1, p2 = sites
+    pattern = sc.Pattern(sites=(p1, p2), apex_m=APEX_M, dwell_s=0.30,
+                         n_throws=6)
+    landing_mm = p2.catch_site_mm() + np.array([dx_mm, dy_mm, 0.0])
+    feed = sc.LandingPrior(pos_mm=landing_mm, vel_mm_s=_BBFED_ARRIVAL_MM_S,
+                           t_land_abs_s=T0_ABS)
+    return sc.compile_columns(pattern, feed=feed)
+
+
+def test_plan_columns_first_cycle_accepts_the_nominal_bb_feed(
+        limits, geom, sites):
+    """The acceptance case (`level_pinned_feed_report.md` sec "Verdict",
+    scratchpad): at BB's real arrival landing exactly on P2 (undisplaced),
+    both ball A's THROW from rest at P1 and the level-pinned feed
+    CATCH-with-throw of B at P2 plan cleanly -- no refusal."""
+    schedule = _bbfed_schedule(sites)
+    assert ex.plan_columns_first_cycle(schedule, limits, geom=geom) is None
+
+
+def test_plan_columns_first_cycle_refuses_a_feed_displaced_toward_the_far_site(
+        limits, geom, sites):
+    """A landing displaced in +x (away from ball A's own release site P1,
+    extending the platform's required transit) refuses LIMIT_VEL -- the
+    real cliff `level_pinned_feed_report.md` sec 3 measured, Ball Butler's
+    aim scatter (+/-8 mm after its volley re-fit, up to 27 mm biased before
+    it) is squarely inside it.
+
+    **+30 mm, not the report's +20 mm** (deliberate, re-probed empirically
+    -- CLAUDE.md's "empirical probe before... a threshold"): that report's
+    +/-20 mm scan hand-built `ThrowAfterCatch.site_mm` pinned to the SITE,
+    but `plan_columns_first_cycle` goes through the real
+    `SkillExecutor._catch_terminal`, whose 2026-09-28 "the release rides
+    the CAUGHT xy, not the site" rule (its own docstring) removes a
+    return-to-centre move the +20 mm case no longer has to make within the
+    dwell. Reprobed 2026-09-30 (`probe_feed_check.py`, scratchpad,
+    `OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1`): +20 mm is FEASIBLE through
+    the real terminal construction (0 mm through +20 mm all plan clean);
+    +30 mm is the smallest round displacement that reliably refuses
+    (LIMIT_VEL at 323.8 mm/s, 108% of the 300 mm/s cap -- inside the task's
+    own measured 102-109% band, just at a larger offset)."""
+    schedule = _bbfed_schedule(sites, dx_mm=30.0)
+    result = ex.plan_columns_first_cycle(schedule, limits, geom=geom)
+    assert result is not None
+    assert 'LIMIT_VEL' in result, result
+
+
+def test_plan_columns_first_cycle_needs_a_throw_and_a_feed_catch(sites):
+    """A schedule with neither a plain THROW nor a `landing_prior`-carrying
+    CATCH is a programming error, not a refusal -- raises rather than
+    silently reading the wrong skills."""
+    p1, _p2 = sites
+    sch = _single_throw_schedule(p1, ball_id=0, t_release=T0_ABS + LAUNCH_S)
+    only_catch = dataclasses.replace(sch.skills[0], kind=sg.CATCH,
+                                     landing_prior=None, y_d=None, target=None)
+    bad = dataclasses.replace(sch, skills=(only_catch,))
+    with pytest.raises(ValueError):
+        ex.plan_columns_first_cycle(bad, None)

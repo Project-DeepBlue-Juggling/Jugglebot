@@ -2884,11 +2884,53 @@ def test_the_attitude_fields_are_checked_per_kind(limits, geom):
                      (uc.LAUNCH, dict(hold_tilt=tilt)),
                      (uc.LANDING, dict(rest_tilt=tilt)),
                      (uc.LANDING, dict(hold_tilt=tilt, rest_tilt=tilt)),
-                     (uc.STEADY, dict(hold_tilt=tilt, rest_tilt=tilt))):
+                     (uc.STEADY, dict(hold_tilt=tilt, rest_tilt=tilt)),
+                     (uc.SETTLE, dict(receive_tilt=(0.0, 0.0))),
+                     (uc.LAUNCH, dict(receive_tilt=(0.0, 0.0)))):
         goals = _goals(period_s=1.0, throw_site_mm=None, throw_target_mm=None,
                        flight_s=None, catch_frac=None, catch_t_s=0.6, **kw)
         with pytest.raises(ValueError):
             uc.plan_cycle(kind, goals, seed, limits, geom)
+
+
+def test_receive_tilt_and_hold_tilt_are_mutually_exclusive(limits, geom):
+    """The two are different answers (a held line vs. a single pinned
+    endpoint) to overlapping questions about the catch knot's tilt — giving
+    both is refused rather than letting one silently win."""
+    tilt = _u2_tilt()
+    seed = _rest_state(REST_MM)
+    goals = _goals(period_s=1.0, catch_frac=None, catch_t_s=0.6,
+                   hold_tilt=(float(tilt[0]), float(tilt[1])),
+                   receive_tilt=(0.0, 0.0))
+    with pytest.raises(ValueError):
+        uc.plan_cycle(uc.LANDING, goals, seed, limits, geom)
+
+
+def test_receive_tilt_pins_the_touchdown_attitude_level(limits, geom):
+    """``receive_tilt=(0.0, 0.0)`` overrides ONLY the auto-computed touch-down
+    endpoint (``tilt_to_receive(catch_vel_mm_s)``) for an oblique arrival —
+    the ``None`` path is bit-for-bit unchanged from before this field
+    existed, and the level-pinned plan's touch-down tilt differs from the
+    auto-banked one (which is non-zero here, since ``CATCH_V_MM_S`` is not a
+    vertical arrival)."""
+    seed = _rest_state(REST_MM)
+    auto_tilt = tg.tilt_to_receive(CATCH_V_MM_S)
+    assert np.hypot(*auto_tilt) > 1e-6, 'fixture must be an oblique arrival'
+
+    goals_none_a = _goals(period_s=1.0, catch_frac=None, catch_t_s=0.6)
+    goals_none_b = _goals(period_s=1.0, catch_frac=None, catch_t_s=0.6)
+    plan_a, meta_a = uc.plan_landing(goals_none_a, seed, limits, geom)
+    plan_b, meta_b = uc.plan_landing(goals_none_b, seed, limits, geom)
+    assert np.array_equal(plan_a.pose, plan_b.pose)          # None path, bit-identical
+    assert np.array_equal(plan_a.hand_rev, plan_b.hand_rev)
+
+    goals_level = _goals(period_s=1.0, catch_frac=None, catch_t_s=0.6,
+                         receive_tilt=(0.0, 0.0))
+    plan_level, meta_level = uc.plan_landing(goals_level, seed, limits, geom)
+    k = int(plan_level.catch_k)                # the knot tilt_schedule pins
+    assert k == int(plan_a.catch_k)
+    assert np.allclose(plan_level.pose[k, 3:5], (0.0, 0.0), atol=1e-9)
+    assert not np.allclose(plan_a.pose[k, 3:5], plan_level.pose[k, 3:5], atol=1e-6)
 
 
 # ---------------------------------------------------------------------------

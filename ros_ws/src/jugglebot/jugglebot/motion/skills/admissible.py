@@ -138,7 +138,8 @@ class AdmissibleBox:
     target_site_xy_mm: Tuple[float, float]
     #: The session limits this box was swept under -- see ``_LIMIT_KEYS``.
     limits: Dict[str, float]
-    #: sha256(feasibility.py text + segments.py text)[:12] -- see :func:`gate_hash`.
+    #: sha256 of the seven ``_GATED_FILES`` files' text, in order, [:12] --
+    #: see :func:`gate_hash`.
     gate_hash: str
     #: ISO date the sweep that produced this box was run.
     swept_at: str
@@ -451,11 +452,11 @@ def check_limits(boxes: List[AdmissibleBox], limits, *, check_gate: bool = True,
     ``leg_vel_mmps`` / ``leg_acc_mmps2`` / ``leg_jerk_mmps3`` /
     ``hand_acc_limit_rps2`` attributes). Raises :class:`LimitsMismatch` naming
     the first field that differs -- a box swept under yesterday's limits, or
-    against yesterday's ``feasibility.py`` / ``segments.py`` (see
-    :func:`gate_hash`), is a box gating against a machine that no longer
-    exists. ``check_gate`` is a test-only escape hatch (a working-tree edit to
-    either gated file mid-session must not fail every caller that does not
-    care).
+    against yesterday's version of any of the seven gated files (see
+    :func:`gate_hash` / :data:`_GATED_FILES`), is a box gating against a
+    machine that no longer exists. ``check_gate`` is a test-only escape hatch
+    (a working-tree edit to a gated file mid-session must not fail every
+    caller that does not care).
 
     ``dwell_s`` (R5, D4, 2026-09-30): the LIVE session dwell, e.g.
     ``schedule.Pattern.dwell_s`` / ``skill_node``'s own ``dwell_s`` parameter.
@@ -492,7 +493,7 @@ def check_limits(boxes: List[AdmissibleBox], limits, *, check_gate: bool = True,
         if check_gate and box.gate_hash != live_hash:
             raise LimitsMismatch(
                 'admissible box for site pair %r was swept against '
-                'gate_hash=%r but the live gate (feasibility.py + segments.py) '
+                'gate_hash=%r but the live gate (the seven _GATED_FILES) '
                 'hashes to %r -- regenerate config/generated/admissible_box.yaml '
                 '(tools/admissible_sweep.py)'
                 % (box.site_pair, box.gate_hash, live_hash))

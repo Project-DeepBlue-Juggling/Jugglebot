@@ -166,6 +166,15 @@ class CatchTerminal:
     #: the seed must already rest AT the attitude, on the held line (the
     #: PRE-TILT REST).
     hold_tilt: Optional[Tuple[float, float]] = None
+    #: The touch-down receive attitude (rx, ry) rad this catch is PINNED to —
+    #: passed to ``unified_cycle.CycleGoals.receive_tilt`` unchanged (see its
+    #: docstring for the physical reason and the R5 BB-fed columns feed catch
+    #: that sets it).  Unlike ``hold_tilt`` this does not hold a line or slave
+    #: the lateral channel — it only overrides the single auto-computed
+    #: ``tilt_to_receive`` endpoint at the catch knot, leaving banking and the
+    #: rest of the window untouched.  ``None`` (every pre-R5 catch) keeps the
+    #: auto-banked receive tilt.  Mutually exclusive with ``hold_tilt``.
+    receive_tilt: Optional[Tuple[float, float]] = None
 
     def __post_init__(self):
         object.__setattr__(self, 'landing_mm', _vec3(self.landing_mm, 'landing_mm'))
@@ -368,6 +377,7 @@ def _plan_catch(seed, terminal: CatchTerminal, cfg: SegmentConfig,
                           catch_t_s=terminal.t_land_s,
                           settle_site_mm=terminal.rest_site_mm,
                           hold_tilt=terminal.hold_tilt,
+                          receive_tilt=terminal.receive_tilt,
                           hold_platform_knots=_hold_knots(cfg, seed))
     plan, meta = uc.plan_landing(goals, seed, limits, geom,
                                  warm_start=warm_start)
@@ -390,6 +400,7 @@ def _plan_catch_throw(seed, terminal: CatchTerminal, cfg: SegmentConfig,
                             catch_vel_mm_s=terminal.landing_vel_mm_s,
                             catch_t_s=terminal.t_land_s,
                             hold_tilt=terminal.hold_tilt,
+                            receive_tilt=terminal.receive_tilt,
                             hold_platform_knots=_hold_knots(cfg, seed),
                             pre_release_hold_knots=_pre_hold_knots(cfg))
     plan_a, meta_a = uc.plan_steady(goals_a, seed, limits, geom,

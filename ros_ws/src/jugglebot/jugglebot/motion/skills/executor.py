@@ -32,6 +32,7 @@ import numpy as np
 import jugglebot.hardware_config as hw
 from jugglebot import ball_possession as bp
 from jugglebot.motion import unified_cycle as uc
+from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.skills import admissible as adm
 from jugglebot.motion.skills import segments as sg
 from jugglebot.motion.skills import schedule as sch
@@ -49,6 +50,7 @@ from jugglebot.motion.skills.segments import (CATCH, REST, THROW, CatchTerminal,
                                               SegmentConfig, ThrowAfterCatch,
                                               ThrowTerminal)
 from jugglebot.motion.trajectory import ballistics_bc
+from jugglebot.motion.trajectory import cup_realize as cr
 from jugglebot.motion.trajectory import tilt_geometry as tg
 from jugglebot.motion.trajectory.cycle_plan import CyclePlan
 
@@ -1602,7 +1604,9 @@ class SkillExecutor:
         ``skill.hold_tilt`` straight through when the schedule set them (R4
         reload's held-axis CATCH — ``schedule.compile_reload``,
         ``segments.hold_axis_site``); ``skill.site.rest_site_mm()`` is the
-        default every pre-R4 CATCH still gets.
+        default every pre-R4 CATCH still gets. ``receive_tilt`` (R5, the
+        BB-fed columns feed catch) passes ``skill.receive_tilt`` straight
+        through the same way — ``None`` for every catch that does not set it.
         """
         landing = self._clamp_lateral_to_schedule(idx, skill, landing)
         then_throw = None
@@ -1650,7 +1654,8 @@ class SkillExecutor:
                              landing_vel_mm_s=landing.vel_mm_s,
                              t_land_s=float(landing.t_land_abs_s),
                              rest_site_mm=rest_mm, then_throw=then_throw,
-                             hold_tilt=skill.hold_tilt)
+                             hold_tilt=skill.hold_tilt,
+                             receive_tilt=skill.receive_tilt)
 
     def _rest_terminal(self, skill: Skill) -> RestTerminal:
         """A REST's terminal. ``rest_site_mm`` / ``tilt`` / ``holds_ball``
@@ -3101,3 +3106,178 @@ class SkillExecutor:
         return ['%.3f RESEND-SKIPPED %s skill %d: the tracker landing is '
                 '%.1f mm / %+.3f s from the committed aim'
                 % (t_abs_s, reason, idx, moved_mm, moved_s)]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# R5: the Ball-Butler-fed columns start — pre-throw feasibility
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _rest_state_at(cup_mm) -> uc.CycleState:
+    """A plan seed at rest with the cup at ``cup_mm`` — identical
+    construction to ``tools/admissible_sweep.py::_rest_state``,
+    ``tests/motion/test_skills_executor.py::_rest_state`` and
+    ``tests/motion/test_skills_segments.py::_rest_state`` (one physical
+    fact, several private copies by standing convention rather than a
+    shared helper module, since ``motion/`` has no "test/tool utilities"
+    module to hang one off without a new dependency edge nothing else
+    needs)."""
+    rcfg = cr.RealizeConfig()
+    cup_mm = np.asarray(cup_mm, dtype=float).reshape(3)
+    slider_mm = float(cup_mm[2]) - rcfg.cup_z_base_mm
+    rev = (slider_mm - rcfg.slider_rev_zero_mm) / 1000.0 * cr.HAND_REV_PER_M
+    pose = np.array([cup_mm[0], cup_mm[1], rcfg.active_z_mm, 0.0, 0.0, 0.0])
+    return uc.CycleState.at_rest(pose, rev, rcfg)
+
+
+def _never_install(*_args, **_kwargs):
+    """The installer a throwaway :class:`SkillExecutor` is built with for
+    :func:`plan_columns_first_cycle` — never called, because the check only
+    ever reaches into the executor's terminal builders
+    (:meth:`SkillExecutor._throw_terminal` / :meth:`SkillExecutor.
+    _catch_terminal`), never :meth:`SkillExecutor.tick` or :meth:`SkillExecutor.
+    _dispatch`. Raises loudly rather than silently returning a fake
+    ``InstallResult`` if that assumption is ever wrong."""
+    raise AssertionError(
+        'plan_columns_first_cycle: the throwaway SkillExecutor dispatched a '
+        'real install -- it must only ever use the terminal builders')
+
+
+def plan_columns_first_cycle(schedule: Schedule, limits, *,
+                             geom=None,
+                             cfg: Optional[SegmentConfig] = None
+                             ) -> Optional[str]:
+    """Pre-throw feasibility check for a Ball-Butler-fed columns start (R5,
+    2026-09-30, ``plans/active/two-ball-skill-stack.md`` § R5 "carried from
+    R4" / the R5 day-1 announcement gap).
+
+    ``schedule`` is a ``schedule.compile_columns(pattern, feed=...)`` result
+    (:func:`~jugglebot.motion.skills.schedule.compile_columns`'s ``feed``
+    branch — its very first two skills are ball A's launch THROW from rest
+    at its own site, and the CATCH-with-throw of ball B carrying
+    ``landing_prior=feed``). This plans BOTH, offline and exactly as the
+    real :class:`SkillExecutor` would build and dispatch them, and returns
+    ``None`` when both plan or a refusal string — the limit code and the
+    measured numbers, from whichever fails first — when either does not.
+
+    **Why this check exists.** ``compile_columns`` accepting a schedule only
+    means the SCHEDULE's timing is consistent (a positive transit, no
+    overlapping windows, the field-level ``ValueError``s on ``Skill``/
+    ``CycleGoals``) — nothing about that compile actually solves the QP the
+    schedule's first two skills need, and the feed catch has a real,
+    measured cliff (scratchpad ``level_pinned_feed_report.md`` § 3, run
+    2026-09-30, mechanism reconfirmed against THIS function 2026-09-30):
+    with the touch-down attitude pinned level (``Skill.receive_tilt`` — the
+    R5 fix that makes a BB arrival 11.9° off vertical fit the transit +
+    dwell window AT ALL, replacing a refusal at 122% of the leg-velocity
+    cap with a plan that has ~5-30 points of margin on every channel), a
+    landing displaced far enough from the nominal feed point IN THE
+    DIRECTION THAT EXTENDS the platform's required transit (away from ball
+    A's own release site) refuses ``LIMIT_VEL`` — every other direction
+    (toward ball A's site, or lateral) stays comfortably feasible.
+    **The report's own scan found the cliff at +20 mm (hand-built
+    terminals, release pinned to the site); reprobed THROUGH this
+    function (``probe_feed_check.py``, scratchpad, 2026-09-30) the cliff
+    sits further out, +30 mm (LIMIT_VEL at 108% of cap; 0 through +20 mm
+    all plan clean) — because :meth:`SkillExecutor._catch_terminal`'s
+    2026-09-28 "the release rides the CAUGHT xy, not the site" rule (its
+    own docstring) removes a return-to-centre move the +20 mm case no
+    longer has to make within the dwell.** Either way the margin at the
+    nominal site is thin enough, and Ball Butler's real aim scatter
+    (+/-8 mm after its volley re-fit, up to 27 mm biased before it) is
+    close enough to the (now +30 mm) cliff, that whether a real feed catch
+    clears the level program depends on which side of the nominal site the
+    ball actually lands — calling this BEFORE the compiled schedule's
+    executor is swapped in (``skill_node.py``'s ``_install_columns_
+    schedule``) turns a doomed cycle into a same-tick refusal instead of
+    stranding ball A in the air under a feed catch that cannot be planned.
+
+    **How the terminals are built.** Through a THROWAWAY
+    :class:`SkillExecutor` bound to ``schedule`` with a never-called
+    installer (:func:`_never_install`) and no ``learner``/``boxes``/
+    ``lateral_authority_m`` — at a first dispatch with none of those
+    configured, :meth:`SkillExecutor._command_u` is the identity prior
+    (``u = y_d`` exactly), which is what a live dispatch ALSO uses for
+    every release until a learner is wired in (``SkillExecutor.__init__``'s
+    own docstring, R2's behaviour) — so this reuses
+    :meth:`SkillExecutor._throw_terminal` / :meth:`SkillExecutor.
+    _catch_terminal` (the caught-xy carried release, the ``receive_tilt``
+    pass-through) rather than re-deriving a terminal shape here that could
+    silently drift from what a real dispatch builds. Both terminal builders
+    hand back the ABSOLUTE (wall-clock) event time (``Skill.t_abs_s`` /
+    ``ThenThrow.t_release_abs_s`` — the schedule's own clock, ``_event_abs_s``'s
+    docstring), which :func:`sg.plan_segment` may not consume directly (its
+    terminals speak the SEGMENT clock, seed-to-event); :func:`install_segment`
+    is the one place that gap is closed today (:func:`_terminal_on_segment_clock`
+    at its real fresh-origin/splice ``t_origin``), so this offline check closes
+    it the same way, at the ``t_origin`` a FRESH plan of each skill implies —
+    ``skill.t_abs_s - skill.window_s`` (no dispatch jitter, no splice: a fresh
+    plan of ball A's own launch or the feed catch alone, exactly what
+    ``schedule.compile_columns`` sized ``window_s`` to fit; the R5 probe this
+    unit was built against, ``probe_bbfed_columns.py``, hand-builds this same
+    relative time via ``pattern.launch_s`` / ``TAU`` / ``TAU + DWELL``, and
+    MEASURED that skipping this conversion changes the verdict: the raw
+    absolute time treats a THROW as a several-SECOND launch and its release
+    STATE feeds the feed catch a materially different seed — undisplaced went
+    from feasible to a false ``LIMIT_VEL`` refusal 3.9% over cap). Ball A's
+    THROW seeds from rest at its own site (:func:`_rest_state_at`); the feed
+    CATCH seeds from the THROW segment's own :attr:`Segment.release_state` —
+    the one release seed a chained plan may use (the field's own docstring) —
+    and is aimed at ``feed_skill.landing_prior`` directly (exactly what
+    :meth:`SkillExecutor._predicted_landing` returns for a
+    ``landing_prior``-carrying catch before any tracker fit exists, i.e.
+    at this announcement's first dispatch).
+
+    ``geom``/``cfg`` default to a fresh ``StewartGeometry()`` /
+    ``SegmentConfig()`` when not given — the production call site
+    (``skill_node.py``) has neither lying around, since every other segment
+    on this node is solved by ``trajectory_node`` over the
+    ``InstallSegment`` service, not locally; a test passes its own
+    module-scoped fixtures instead of rebuilding the geometry table per
+    case. Measured wall time (scratchpad, 2026-09-30, this module's R5
+    operating point, ``OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1``): see
+    ``handoff_feed_check.md`` — well inside the ~2.7 s an announcement
+    arrives ahead of ``t0``.
+    """
+    geom = StewartGeometry() if geom is None else geom
+    cfg = SegmentConfig() if cfg is None else cfg
+
+    throw_idx, throw_skill = next(
+        ((i, s) for i, s in enumerate(schedule.skills) if s.kind == THROW),
+        (None, None))
+    feed_idx, feed_skill = next(
+        ((i, s) for i, s in enumerate(schedule.skills)
+         if s.landing_prior is not None), (None, None))
+    if throw_skill is None or feed_skill is None:
+        raise ValueError(
+            'plan_columns_first_cycle needs a compile_columns(feed=...) '
+            'schedule -- a THROW skill and a CATCH carrying landing_prior '
+            'are both required, got kinds %r'
+            % ([s.kind for s in schedule.skills],))
+
+    dry = SkillExecutor(schedule, _never_install)
+
+    seed = _rest_state_at(throw_skill.site.rest_site_mm())
+    throw_terminal = dry._throw_terminal(throw_idx, throw_skill)
+    throw_origin_s = float(throw_skill.t_abs_s) - float(throw_skill.window_s)
+    throw_terminal = _terminal_on_segment_clock(THROW, throw_terminal,
+                                                throw_origin_s)
+    try:
+        seg1 = sg.plan_segment(THROW, seed, throw_terminal, cfg, limits, geom)
+    except uc.CycleInfeasible as exc:
+        return ('ball A THROW (site %s, from rest) refused: %s'
+                % (throw_skill.site.name, exc))
+
+    lp = feed_skill.landing_prior
+    landing = Landing(pos_mm=lp.pos_mm, vel_mm_s=lp.vel_mm_s,
+                      t_land_abs_s=lp.t_land_abs_s)
+    catch_terminal = dry._catch_terminal(feed_idx, feed_skill, landing)
+    catch_origin_s = float(feed_skill.t_abs_s) - float(feed_skill.window_s)
+    catch_terminal = _terminal_on_segment_clock(CATCH, catch_terminal,
+                                                catch_origin_s)
+    try:
+        sg.plan_segment(CATCH, seg1.release_state, catch_terminal, cfg,
+                        limits, geom)
+    except uc.CycleInfeasible as exc:
+        return ('feed CATCH (site %s, ball %d) refused: %s'
+                % (feed_skill.site.name, feed_skill.ball_id, exc))
+    return None

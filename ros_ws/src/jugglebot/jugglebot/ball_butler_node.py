@@ -77,6 +77,35 @@ _DEFAULT_THROW_DELAY_S = 2.5
 # Gravity (mm/s²) — for landing-velocity decay in published ThrowAnnouncement.
 _G_MMPS2 = hw.GRAVITY_MPS2 * 1000.0
 
+# Measured announcement bias (R5 day-1 sitting, 2026-09-30, 14 flown BB-feed
+# reload throws, bag ~/Desktop/rosbags/2026-09-30_16-20-05): the announced
+# `throw_time` above is `now + delay_s` -- the INTENDED command instant --
+# but raw mocap (unlabelled-marker free-fall fit, not the tracker's Kalman
+# state, which itself lags 60-200 ms per flight_fit.py) shows the ball's
+# PHYSICAL release running +37.2 ms (stdev 36.4 ms, n=14) after that. This is
+# the push-phase lag flight_fit.py already documents ("the announced
+# throw_time precedes the physical release by 5-55 ms -- the ball is still
+# being PUSHED at > g by the cup"), not the actuator latency
+# `hw.BB_OP_THROW_RELEASE_LATENCY_MS` already compensates for at dispatch
+# (goal.throw_time, above) -- this is a second, additive, unmodeled term.
+# Individually noisy (the release-detection window is only 14-47 ms wide per
+# feed) but stable in aggregate. Re-measure with
+# `tools/probes/feed_catch_bag_probe.py --bag <bag> --log <launch.log>`.
+BB_RELEASE_PUSH_LAG_S = 0.037
+
+# Same sitting/bag: the flight itself runs +14.7 ms (stdev 30.7 ms, n=14)
+# longer than the solver's predicted ToF (`sol.tof_s`, unchanged below --
+# this constant is a residual OBSERVED bias on top of the physics
+# prediction, not a correction to the physics itself). Individually noisy
+# like the term above, but the two SUM tightly: landing (raw-mocap crossing
+# of the catch plane) lands +51.9 ms late against the schedule's committed
+# landing epoch, stdev only 15.4 ms across all 14 feeds -- see
+# `feed_timing_report.md`'s Decomposition section (reproduced by the same
+# probe). BB_RELEASE_PUSH_LAG_S + BB_FLIGHT_BIAS_S = 0.052 s is applied
+# entirely here, in the node that PUBLISHES the announcement; skill_node.py
+# consumes `throw_time`/`landing_time` verbatim and is not corrected again.
+BB_FLIGHT_BIAS_S = 0.015
+
 # Default location of the 2D affine correction matrix (BB-local frame).
 # The file maps desired-landing → commanded-target so that, when run
 # through the BB hardware, the ball lands at the desired position.
@@ -479,6 +508,12 @@ class BallButlerNode(Node):
         # true arrival (now + delay_s + tof) — after compensation the actual release
         # lands at now + delay_s, so the announcement is correct. The latency is constant
         # across the workspace (no range/speed/pitch dependence), so one value suffices.
+        # As of 2026-09-30 this is not exact: even after this compensation the ball's
+        # physical release still measures ~37 ms after now + delay_s on average (14 feeds,
+        # raw mocap). That residual is corrected in the announcement's throw_time /
+        # landing_time only (BB_RELEASE_PUSH_LAG_S / BB_FLIGHT_BIAS_S), not by widening
+        # release_latency_s here — the two act on different things (the dispatch instant
+        # vs. the announcement's belief), so there is no double-counting.
         release_latency_s = hw.BB_OP_THROW_RELEASE_LATENCY_MS / 1000.0
         goal.throw_time = float(max(0.0, delay_s - release_latency_s)) if throw else 0.0
         # Suppress the predict_throw-based announcement (platform default catch
@@ -777,9 +812,17 @@ class BallButlerNode(Node):
         # Landing velocity: horizontal unchanged, vertical decays under g.
         vz_land = vz - _G_MMPS2 * sol.tof_s
 
+        # BB_RELEASE_PUSH_LAG_S / BB_FLIGHT_BIAS_S (defined above): correct the
+        # announced throw_time/landing_time by the measured release-push and
+        # residual-flight biases so a consumer's schedule is built against the
+        # ball's true expected timing, not the bare command/physics instants.
+        # `sol.tof_s` itself (ann.predicted_tof_sec below) is left as the raw
+        # solver prediction -- only the two derived clock fields move.
         now = self.get_clock().now()
-        throw_time = now + rclpy.time.Duration(seconds=delay_s)
-        landing_time = throw_time + rclpy.time.Duration(seconds=sol.tof_s)
+        throw_time = now + rclpy.time.Duration(
+            seconds=delay_s + BB_RELEASE_PUSH_LAG_S)
+        landing_time = throw_time + rclpy.time.Duration(
+            seconds=sol.tof_s + BB_FLIGHT_BIAS_S)
 
         ann = ThrowAnnouncement()
         ann.header.stamp = now.to_msg()

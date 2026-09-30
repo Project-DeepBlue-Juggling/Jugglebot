@@ -3315,6 +3315,135 @@ def test_c3_a_rejection_after_the_announcement_compiled_the_schedule_ends_it(tmp
     assert node._executor.end_code == 'REJECTED_BB(THROW_ABORTED_NOT_SETTLED)'
 
 
+# ═════════════════════════════════════════════════════════════════════════════
+# R5 (2026-09-30, `not_settled_report.md` Q4 option (d)): a bounded, once-
+# per-attempt Jetson-side retry on the literal token
+# THROW_ABORTED_NOT_SETTLED -- the firmware sends no frame on this code
+# alone (HandTrajectoryStreamer.h:117-122 (FW 5): ball retained, hand at rest).
+# ═════════════════════════════════════════════════════════════════════════════
+
+def test_r5_not_settled_retries_once_and_refires_the_throw(tmp_path):
+    """The FIRST `THROW_ABORTED_NOT_SETTLED` on an attempt re-fires
+    `bb/throw_at_target` instead of ending the attempt: the ctx survives,
+    re-arms `await_announcement`, and is marked so a second NOT_SETTLED
+    cannot retry again."""
+    node, _client = _node_with_client(response=_response())
+    resp = _start_reload(node, tmp_path)
+    assert resp.success is True, resp.message
+    assert node._reload_ctx is not None
+    assert node._reload_ctx.phase == 'await_announcement'
+    assert node._reload_ctx.not_settled_retried is False
+    assert len(node._bb_throw_cli.calls) == 1
+
+    node._on_bb_throw_outcome(
+        String(data='THROW_ABORTED_NOT_SETTLED (axis=1, detail1=120)'))
+
+    assert node._reload_ctx is not None
+    assert node._reload_ctx.phase == 'await_announcement'
+    assert node._reload_ctx.not_settled_retried is True
+    assert len(node._bb_throw_cli.calls) == 2
+    assert node._goal_end_code == ''
+    assert node._executor is not None and not node._executor.attempt_ended
+
+
+def test_r5_a_second_not_settled_on_the_same_attempt_ends_it(tmp_path):
+    """The retry is bounded to ONCE per attempt: a second
+    `THROW_ABORTED_NOT_SETTLED` on the SAME ctx ends it exactly like every
+    other refusal always has -- no third `bb/throw_at_target` call."""
+    node, _client = _node_with_client(response=_response())
+    resp = _start_reload(node, tmp_path)
+    assert resp.success is True, resp.message
+    node._on_bb_throw_outcome(
+        String(data='THROW_ABORTED_NOT_SETTLED (axis=1, detail1=120)'))
+    assert node._reload_ctx is not None
+    assert len(node._bb_throw_cli.calls) == 2
+
+    node._on_bb_throw_outcome(
+        String(data='THROW_ABORTED_NOT_SETTLED (axis=1, detail1=95)'))
+
+    assert node._reload_ctx is None
+    assert len(node._bb_throw_cli.calls) == 2
+    assert node._executor is not None
+    assert node._executor.end_code == 'REJECTED_BB(THROW_ABORTED_NOT_SETTLED)'
+    node._on_tick()
+    assert node._goal_end_code == 'REJECTED_BB(THROW_ABORTED_NOT_SETTLED)'
+
+
+def test_r5_a_different_refusal_code_does_not_retry(tmp_path):
+    """Only the literal token `THROW_ABORTED_NOT_SETTLED` retries -- every
+    other refusal ends the attempt on the FIRST occurrence, unchanged, since
+    the firmware's no-frame-sent guarantee is specific to that one code."""
+    node, _client = _node_with_client(response=_response())
+    resp = _start_reload(node, tmp_path)
+    assert resp.success is True, resp.message
+    assert len(node._bb_throw_cli.calls) == 1
+
+    node._on_bb_throw_outcome(
+        String(data='THROW_REJECTED_BAD_STATE (axis=n/a, detail1=0)'))
+
+    assert len(node._bb_throw_cli.calls) == 1
+    assert node._reload_ctx is None
+    assert node._executor is not None
+    assert node._executor.end_code == 'REJECTED_BB(THROW_REJECTED_BAD_STATE)'
+
+
+def test_r5_not_settled_retry_extends_the_deadline(tmp_path):
+    """The retry must not be killed by `_check_reload_timeout` on the
+    ORIGINAL (now stale) deadline -- `_fire_reload_throw` recomputes and
+    extends `ctx.deadline_mono` exactly as it does for the first fire."""
+    node, _client = _node_with_client(response=_response())
+    resp = _start_reload(node, tmp_path)
+    assert resp.success is True, resp.message
+    # An about-to-expire deadline (same idiom this file already uses
+    # elsewhere, e.g. `_reload_ctx.deadline_mono = time.perf_counter() -
+    # 1.0`).
+    node._reload_ctx.deadline_mono = time.perf_counter() + 0.001
+
+    node._on_bb_throw_outcome(
+        String(data='THROW_ABORTED_NOT_SETTLED (axis=1, detail1=120)'))
+
+    assert node._reload_ctx is not None
+    # Floored throw delay (2.5 s) + the ToF ceiling (1.5 s) + the announce
+    # timeout (1.0 s) = 5.0 s -- comfortably clear of the stale ~0 s deadline.
+    assert node._reload_ctx.deadline_mono - time.perf_counter() > 3.0
+    node._check_reload_timeout()
+    assert node._reload_ctx is not None
+
+
+def test_r5_a_stop_during_the_not_settled_retry_cancels_cleanly(tmp_path):
+    """A Stop landing while the retry's own `bb/throw_at_target` round trip
+    is in flight must not resurrect the attempt or double-end it -- the same
+    `_still_current(ctx)` guard `_fire_reload_throw` already relies on for
+    the FIRST fire
+    (test_c1_a_throw_call_overtaken_by_a_lane_refusal_does_not_overwrite_the_end_code)."""
+    node, _client = _node_with_client(response=_response())
+    resp = _start_reload(node, tmp_path)
+    assert resp.success is True, resp.message
+
+    class _StopOnCallThrowClient(_RecordingClient):
+        def __init__(self, node, **kw):
+            super().__init__(**kw)
+            self._node = node
+
+        def call_async(self, req):
+            fut = super().call_async(req)
+            self._node._stop_attempt()
+            return fut
+
+    node._bb_throw_cli = _StopOnCallThrowClient(
+        node, response=_bb_throw_response(success=True, message='ok',
+                                          predicted_tof_s=0.7,
+                                          throw_delay_s=3.0),
+        ready=True)
+
+    node._on_bb_throw_outcome(
+        String(data='THROW_ABORTED_NOT_SETTLED (axis=1, detail1=120)'))
+
+    assert len(node._bb_throw_cli.calls) == 1
+    assert node._reload_ctx is None
+    assert node._executor is not None
+    assert node._executor.end_code == 'STOPPED'
+
 
 # ═════════════════════════════════════════════════════════════════════════════
 # R4 reload C4 (2026-09-28): a refusal after the bridge executor exists ends
@@ -3883,6 +4012,61 @@ def test_columns_bb_announcement_installs_the_fed_schedule(tmp_path):
     assert first.landing_prior is not None
     assert first.landing_prior.t_land_abs_s == pytest.approx(5.0)
     assert first.ball_id == 1
+
+
+def test_columns_bb_announcement_refuses_an_uncatchable_feed(tmp_path):
+    """R5 pre-throw feasibility (`_install_columns_schedule`, 2026-09-30):
+    an announced landing displaced +30 mm in x from P2 -- away from ball
+    A's own release site P1, extending the platform's required transit --
+    cannot be planned (`executor.plan_columns_first_cycle` refuses
+    LIMIT_VEL, matching `test_plan_columns_first_cycle_refuses_a_feed_
+    displaced_toward_the_far_site` in ``test_skills_executor.py``). Ends
+    ``REJECTED_COLUMNS_FEED_UNCATCHABLE`` -- no executor swap (the bridge
+    REST the two-phase start already installed keeps streaming) and no
+    THROW is ever dispatched (the mocked ``trajectory/install_segment``
+    client sees nothing).
+
+    **+30 mm, not the report's +20 mm** -- see the executor test's
+    docstring: the real `SkillExecutor._catch_terminal`'s "release rides
+    the caught xy, not the site" rule (2026-09-28) widens the margin at
+    +20 mm, empirically reprobed 2026-09-30."""
+    node, _client = _node_with_client()
+    _columns_bb_started(node, tmp_path)
+    bridge_schedule = node._executor.schedule
+    ann = _bb_announcement(
+        target_id=node._robot_name, landing_mm=(80.0, 0.0, 830.0),
+        landing_vel_mm_s=(1058.0, 475.0, -5507.0), throw_time_s=0.5,
+        landing_time_s=5.0)
+    node._on_announcement(ann)
+    assert node._reload_ctx is None
+    assert node._executor is not None
+    assert node._executor.schedule is bridge_schedule   # no swap happened
+    assert node._executor.schedule.pattern != 'columns'
+    assert _client.calls == []            # no THROW (or anything) installed
+    # The bridge REST is still live (never ticked) at the refusal, so
+    # `_end_attempt` marks IT ended (`_end_attempt`'s own docstring) rather
+    # than `_goal_end_code` directly.
+    assert node._executor.attempt_ended is True
+    assert node._executor.end_code == 'REJECTED_COLUMNS_FEED_UNCATCHABLE'
+    assert 'LIMIT_VEL' in node._executor.end_message
+
+
+def test_columns_bb_announcement_at_the_nominal_site_still_installs(tmp_path):
+    """The pre-throw feasibility check is a no-op at a catchable feed --
+    `test_columns_bb_announcement_installs_the_fed_schedule`'s own
+    undisplaced-landing case, re-asserted here so a future change to the
+    check's margin has a same-file regression pinned alongside the refusal
+    case above."""
+    node, _client = _node_with_client()
+    _columns_bb_started(node, tmp_path)
+    ann = _bb_announcement(
+        target_id=node._robot_name, landing_mm=(50.0, 0.0, 830.0),
+        landing_vel_mm_s=(1058.0, 475.0, -5507.0), throw_time_s=0.5,
+        landing_time_s=5.0)
+    node._on_announcement(ann)
+    assert node._reload_ctx is None
+    assert node._executor is not None
+    assert node._executor.schedule.pattern == 'columns'
 
 
 def test_columns_tracker_feed_resolves_an_unannounced_landing_near_p2(tmp_path):
