@@ -122,6 +122,22 @@ def _seeded_type_counters() -> Dict[int, int]:
     return {int(t): 0 for t in p.MsgType}
 
 
+def _reuse_fixed_port(sock: socket.socket, port: int) -> None:
+    """Set SO_REUSEADDR only when binding a FIXED port.
+
+    Production binds the fixed ports 5005/5006, so it is unchanged. On an
+    ephemeral bind (port 0, every loopback test), Linux may hand out a port that
+    another SO_REUSEADDR socket still holds, and the NEWER socket then gets all
+    of that port's datagrams while the older one goes deaf. This was measured on
+    the Jetson on 2026-09-30: 900 ephemeral binds shared 8-15 ports with the
+    option set, and 0 without it. Under the parallel gate, that delivered one
+    test's FakeTeensy RPC reply (``ERR_UNKNOWN_METHOD``) to another test's
+    client. An ephemeral port has no reason to be shared.
+    """
+    if port:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
+
 @dataclass
 class LinkStats:
     """Counters surfaced for diagnostics; updated by the RX/TX paths.
@@ -298,12 +314,12 @@ class TeensyLinkClient:
         self._last_rx_seq.clear()
 
         self._stream_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._stream_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        _reuse_fixed_port(self._stream_sock, self._bind_stream)
         self._stream_sock.bind((self._bind_host, self._bind_stream))
         self._stream_sock.setblocking(False)
 
         self._rpc_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._rpc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        _reuse_fixed_port(self._rpc_sock, self._bind_rpc)
         self._rpc_sock.bind((self._bind_host, self._bind_rpc))
         self._rpc_sock.setblocking(False)
         # RPC socket ONLY: ask the kernel to stamp each datagram's receive time.

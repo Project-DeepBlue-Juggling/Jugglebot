@@ -44,14 +44,19 @@ class FakeTeensy:
     ):
         self._bind_host = bind_host
         self._jetson_addr = jetson_addr  # set by caller after Jetson binds
+        # SO_REUSEADDR on a fixed port only: on an ephemeral one it lets Linux
+        # hand this socket a port a parallel test's socket still holds
+        # (teensy_link.client._reuse_fixed_port).
         self.stream_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.stream_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if stream_port:
+            self.stream_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.stream_sock.bind((bind_host, stream_port))
         self.stream_sock.setblocking(False)
         self.stream_port = self.stream_sock.getsockname()[1]
 
         self.rpc_sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.rpc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        if rpc_port:
+            self.rpc_sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.rpc_sock.bind((bind_host, rpc_port))
         self.rpc_sock.setblocking(False)
         self.rpc_port = self.rpc_sock.getsockname()[1]

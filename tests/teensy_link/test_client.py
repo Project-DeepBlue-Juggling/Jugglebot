@@ -322,3 +322,32 @@ def test_client_wildcard_subscription_sees_everything(fake_teensy_and_client):
     time.sleep(0.15)
     assert int(MsgType.TELEMETRY) in all_types
     assert int(MsgType.HEARTBEAT_T2J) in all_types
+
+
+def _reuseaddr(sock):
+    return sock.getsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR)
+
+
+def test_ephemeral_binds_do_not_set_reuseaddr(fake_teensy_and_client):
+    """Loopback tests bind port 0. With SO_REUSEADDR, Linux may give such a
+    socket a port a parallel test's socket still holds, and the newer socket
+    then steals that port's traffic. Probe (2026-09-30, this Jetson): 900 binds
+    to ('127.0.0.1', 0) shared 8-15 ports with the option and 0 without, and
+    the newer socket always received the datagram. That is how one test's
+    FakeTeensy RPC reply reached another test's client under xdist."""
+    teensy, client = fake_teensy_and_client
+    for sock in (client.stream_sock, client.rpc_sock,
+                 teensy.stream_sock, teensy.rpc_sock):
+        assert _reuseaddr(sock) == 0
+
+
+def test_a_fixed_port_keeps_reuseaddr():
+    """Production binds 5005/5006 and keeps the option, unchanged."""
+    from teensy_link.client import _reuse_fixed_port
+    for port, want in ((p.PORT_STREAM, 1), (p.PORT_RPC, 1), (0, 0)):
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            _reuse_fixed_port(sock, port)
+            assert bool(_reuseaddr(sock)) == bool(want), port
+        finally:
+            sock.close()

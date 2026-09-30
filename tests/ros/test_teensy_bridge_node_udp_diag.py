@@ -79,13 +79,22 @@ def test_udp_diag_counts_are_cumulative_not_rates():
 
 
 def test_udp_diag_counts_tx_by_type():
+    """The exact count uses SETPOINT, which nothing sends unprompted here: the
+    setpoint thread only sends a command, over a live link. HEARTBEAT_J2T can
+    only be checked with >=, because the node's own 10 Hz heartbeat thread also
+    sends it. A beat landing between the two reads made an exact heartbeat
+    assert read 3 == 0 + 2 under the parallel gate."""
     teensy, client, node = _build_paired_node()
     try:
-        before = int(_diag_kv(node)[f'tx_{MsgType.HEARTBEAT_J2T.name}'])
+        kv = _diag_kv(node)
+        sp_before = int(kv[f'tx_{MsgType.SETPOINT.name}'])
+        hb_before = int(kv[f'tx_{MsgType.HEARTBEAT_J2T.name}'])
         for _ in range(2):
+            client.send_stream(int(MsgType.SETPOINT), b'\x00' * 8)
             client.send_heartbeat(t_jetson_us=1)
-        after = int(_diag_kv(node)[f'tx_{MsgType.HEARTBEAT_J2T.name}'])
-        assert after == before + 2
+        kv = _diag_kv(node)
+        assert int(kv[f'tx_{MsgType.SETPOINT.name}']) == sp_before + 2
+        assert int(kv[f'tx_{MsgType.HEARTBEAT_J2T.name}']) >= hb_before + 2
     finally:
         _teardown(teensy, client, node)
 
