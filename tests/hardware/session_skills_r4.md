@@ -1,5 +1,10 @@
 # R4 hardware runsheet — two sites, one ball, the Ball Butler reset
 
+> **R4 gate MET 2026-09-29 (sitting 4, § 11 below).** The follow-on sitting is
+> `session_skills_r5.md` (the 4° cup test, the fused reload, the interim
+> human-lobbed columns start) — this sheet stays the reference for its
+> bring-up, dress-rehearsal and recovery rows, unchanged.
+
 Skill-stack R4 (`plans/active/two-ball-skill-stack.md` § R4). Same machine as
 `session_skills_r3.md` and `session_cup_contact.md` — **those two sheets stay
 the reference for everything this one does not restate** (QTM preconditions,
