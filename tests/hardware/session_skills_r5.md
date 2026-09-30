@@ -124,7 +124,7 @@ Run R4-sheet rows 8b–12 with these numbers:
 | 16 | Same, `--pattern columns --separation-mm 100 --n-throws 3 --reload` — DISARMED (ACTIVATE only) | Rehearses the BB reload path through `skills/check` and the action's accept ladder (box lookup for BOTH `(P1,P1)`/`(P2,P2)`, opening REST sizing) without moving anything. A goal ACCEPTED that then times out on BB (no real BB round trip completing while disarmed, expected) reads `ABORTED_BB_THROW_TIMEOUT` or similar — that is this row proving the ladder, not a finding. |
 | 16a | Same, `--pattern columns --separation-mm 100 --n-throws 3` (no `--reload`, DISARMED) — **the feed wait timing out** | Goal ACCEPTED; console logs `"columns started: bridge REST holds ball A at P1 -- waiting up to 30.0 s for ball B to land near P2 ..."` (handoff_S2's exact start line), then, with no tracker landing offered, `ABORTED_NO_COLUMNS_FEED` after ~30 s: `"no tracker landing resolved the columns feed within the deadline -- the platform is at rest holding ball A (the bridge REST's rest tail)"` (handoff_S2 verbatim). This IS the row that proves the timeout path before Block C risks it live. |
 | 17 | Ctrl-C mid-attempt on one of rows 14–16a (repeat the row after) | `^C -- cancelling the goal (cancel on stop)`, `outcome=STOPPED` (or the current end_code). |
-| 18 | `ros2 service call skills/check std_srvs/srv/Trigger` | `ladder OK`, `frame check OK: ...`, `box OK: ('P1','P1') 0.85-0.95; ('P2','P2') 0.85-0.95; ...` (whatever bands the 200 000 sweep produced — read the live line, don't assume R4's numbers), `hop box OK: P1->P2 at 250.0 mm`, `hop box OK: P2->P1 at 250.0 mm`. **No dedicated "columns box OK" line exists** (`_svc_check` only checks self_toss's default pair and hop's two pairs, per `skill_node.py:3595-3653` as of this rung) — the columns `(P1,P1)`/`(P2,P2)` bands, if swept, show up folded into the same `box OK: ...` listing by site-pair name; confirm their apex band reads **0.90 m**, not R4's 0.85 (owner decision 2026-09-30, § 0) before Block C. A `LimitsMismatch` anywhere in this line means row 11 ran after row 3a's box, or with the wrong number — stop, do not power further. |
+| 18 | `ros2 service call skills/check std_srvs/srv/Trigger` | `ladder OK`, `frame check OK: ...`, `box OK: ('P1','P1') 0.85-0.95; ('P2','P2') 0.85-0.95; ...` (whatever bands the 200 000 sweep produced — read the live line, don't assume R4's numbers), `hop box OK: P1->P2 at 250.0 mm`, `hop box OK: P2->P1 at 250.0 mm`. **No dedicated "columns box OK" line exists** (`_svc_check` only checks self_toss's default pair and hop's two pairs, per `skill_node.py `_svc_check` (line range dropped 2026-09-30: the evening's edits moved it)` as of this rung) — the columns `(P1,P1)`/`(P2,P2)` bands, if swept, show up folded into the same `box OK: ...` listing by site-pair name; confirm their apex band reads **0.90 m**, not R4's 0.85 (owner decision 2026-09-30, § 0) before Block C. A `LimitsMismatch` anywhere in this line means row 11 ran after row 3a's box, or with the wrong number — stop, do not power further. |
 | 19 | Now ARM | Ready for § 2.5. |
 
 ## 2.5. The leg-jerk ramp measurement (owner decision 2026-09-30 — pre-registered stop rule)
@@ -198,6 +198,13 @@ expect the 0.70 s floor and a correspondingly later observed release.
 | 31 | `ros2 service call skills/check std_srvs/srv/Trigger` between attempts | Still clean. |
 
 ## 6. Block C — columns from a human lob (the interim start, D1)
+
+> **RETIRED (owner, 2026-09-30).** Sitting 1 flew this block three times; no lob was ever
+> claimed, even near-vertical ones beside the robot (`ABORTED_NO_COLUMNS_FEED` ×3, § 11). No
+> more human-initiated multi-ball routines — BB-led patterns are the goal. The next runsheet
+> replaces this block with a BB-fed start (the held-level feed catch planner unit,
+> `logbook/2026-09-30-skill-stack-r5-sitting-1.md`); this block's rows stay below as the record
+> of what was tried.
 
 `ros2 param set /skill_node separation_mm 100.0` first (the columns operating point —
 `sites.columns_sites(100.0)`: P1 (−50, 0), P2 (+50, 0) mm; catch plane z 830, release z 860). Set
@@ -298,54 +305,85 @@ any of them. Add:
 
 ## 11. Results
 
+Sitting 1, 2026-09-30, launch 16:20-16:57, bag `2026-09-30_16-20-05`. Full narrative, offline
+analysis and the (date, command, result) triples for the fixes this sitting motivated are in
+`logbook/2026-09-30-skill-stack-r5-sitting-1.md`.
+
 ### Ramp verdict (§ 2.5)
 
 | Item | Result |
 |---|---|
-| `lead_clamp_mask` / `torque_clamp_mask` seen non-zero? | |
-| Guard latch during the ramp block? | |
-| Verdict: HELD at 200 000 / REVERTED to 150 000 | |
-| Session limits used for Blocks A–C (fill in once decided) | |
+| `lead_clamp_mask` / `torque_clamp_mask` seen non-zero? | Not observed non-zero (no launch.log line reporting either mask set; not independently re-derived from the bag for this fill-in). |
+| Guard latch during the ramp block? | No — no `GUARD_LATCHED` in the launch log for the whole sitting. |
+| Verdict: HELD at 200 000 / REVERTED to 150 000 | **HELD at 200 000.** 4/4 self_toss dispatched (3 caught, 1 miss at apex 0.9063 m, a genuine drop — not a clamp/latch event); hop dispatched twice (8 throws total), all 8 caught. |
+| Session limits used for Blocks A–C | **300 / 5000 / 200 000 mm/s³, hand 3500 rev/s²** — the ramp held, so every later block flew at the ramped value, matching the box's `leg_jerk_mmps3: 200000.0` stamp. |
 
 ### Pre-power (§ 1) / bring-up (§ 2) / dress rehearsal (§ 3)
 
 | Item | Result |
 |---|---|
-| Date | *(fill in)* |
-| `./run_tests.sh --full` — (date, command, result) triple | |
-| gate_hash match (row 3) | |
-| box `leg_jerk_mmps3` stamp (row 3a) | |
-| hop + columns box rows present (row 3b) | |
-| Row 13 (`--rehearse --pattern self-toss`) — G1/G2/G4 verdict | |
-| Row 14/15 (`--via-action`, self-toss/hop, disarmed) — outcome | |
-| Row 16/16a (`--via-action --pattern columns`, reload/no-reload, disarmed) — outcome, feed-timeout observed? | |
-| Row 18 (`skills/check`) — box bands, columns apex band (expect 0.90) | |
+| Date | 2026-09-30 |
+| `./run_tests.sh --full` — (date, command, result) triple | Not run as a dedicated pre-sitting step under this rung; the tree the sitting launched from (committed 15:34) is the one the day-1 entry's own full-suite gate covers: `./run_tests.sh --full`, run 2026-09-30 15:10-15:16 — **PASS, 5760 passed / 9 skipped / 1 xfailed in 282.42 s (parallel), serial 6 passed in 19.73 s, 308 s total** (`temp/logs/gate_full_r5_day1_final2_20260930_1510.log`; see `logbook/2026-09-30-skill-stack-r5-columns-bb-start.md` § Verification). |
+| gate_hash match (row 3) | **MATCH** — `PYTHONPATH=ros_ws/src/jugglebot python -c "from jugglebot.motion.skills import admissible as ab; print(ab.gate_hash())"` reads `581109806b4e`; `config/generated/admissible_box.yaml`'s `gate_hash:` reads the same. |
+| box `leg_jerk_mmps3` stamp (row 3a) | `200000.0` — matches row 11's `set_limits`. |
+| hop + columns box rows present (row 3b) | Hop: 8 `pattern: hop` rows. Columns: 6 `pattern: columns` rows. Both ≥ 2. |
+| Row 13 (`--rehearse --pattern self-toss`) — G1/G2/G4 verdict | **NOT RUN** — the dress rehearsal (§ 3, rows 13-19) was not run this sitting (owner: does not run it). |
+| Row 14/15 (`--via-action`, self-toss/hop, disarmed) — outcome | **NOT RUN.** |
+| Row 16/16a (`--via-action --pattern columns`, reload/no-reload, disarmed) — outcome, feed-timeout observed? | **NOT RUN.** |
+| Row 18 (`skills/check`) — box bands, columns apex band (expect 0.90) | **NOT RUN** (folded into the skipped dress rehearsal; not independently confirmed live this sitting). |
 
 ### Block A — 4° cup test (§ 4)
 
-| Cap (deg) | Attempt | Hold angle logged | `seat=` | Caught | Rattle by eye | Notes |
-|---|---|---|---|---|---|---|
+8° was skipped (owner: 4° "worked perfectly every time"); the sweep continued down to 0°
+instead. Per-attempt hold angle, `seat=` and rattle-by-eye were not individually transcribed
+this fill-in — see `feed_catch_bag_probe` / the entry's landing-timing and lateral-bias tables
+(`logbook/2026-09-30-skill-stack-r5-sitting-1.md` § Observations) for the per-feed numbers.
 
-**Verdict (≥4/5 at 4° smooth, no rebound → cup takes 4°):** ___
+| Cap (deg) | n fed | Caught | Refusals (`THROW_ABORTED_NOT_SETTLED`, detail1) | `seat=` | Notes |
+|---|---|---|---|---|---|
+| 12 | 5 | 5/5 | 1 (30 centideg) | see feed_catch_bag_probe / entry table | includes Block B's fused-reload flights at 12 deg |
+| 8 | - | skipped | - | - | owner call, 4 deg already clean |
+| 4 | 2 | 2/2 | 2 (-18, -40 centideg) | see feed_catch_bag_probe / entry table | |
+| 0 | 7 | 6/7 | 2 (-47, -32 centideg) | see feed_catch_bag_probe / entry table | the 1 miss was `REJECTED_NO_BALL` (`launch.log:1114`), normal timing, not a rebound |
+
+**Verdict (≥4/5 at 4° smooth, no rebound → cup takes 4°):** MET at 4° (2/2, both smooth) and
+at 0° (6/7 caught, the one miss a `REJECTED_NO_BALL` precondition rejection rather than a
+rebound). Owner wants 0° investigated as the new default once the settle-refusal and
+feed-timing fixes land (see the entry's Fix section).
 
 ### Block B — fused reload (§ 5)
 
 | Pattern | PRE-TILT settle OK? | CATCH carries throw (no DECAY REST line)? | Release ~0.2 s sooner (by eye/bag)? | Caught | Notes |
 |---|---|---|---|---|---|
+| self_toss (reload) | OK | OK | Not independently timed against R4 this fill-in | 4/4 dispatches fed and caught (all outcomes True) | 2 dispatches at 12 deg, launch.log ~1834/1926 |
+| hop (reload) | OK | OK | Not independently timed against R4 this fill-in | fed and caught on both dispatches; 2/3 caught on the subsequent hop cycles each time | throw 3 never released (`ABORTED_NO_RELEASE`) on both hop dispatches, `launch.log:1731, 1813`, x +31/+32 mm — see entry Observations |
+
+No `HAND_LANE_REFUSED` and no guard latch observed. Block B passed by the owner's own report;
+some cycles looked jerky by eye (owner) — candidates traced in the entry's Discussion (catch
+dive, throw, release), not the jerk ceiling itself.
 
 ### Block C — columns from a human lob (§ 6)
 
 | Attempt | Lob outcome (late / off-bound / accepted) | Feed lands in (s) | Deficit (s), if logged | Ball B caught | Consecutive catches after | Notes |
 |---|---|---|---|---|---|---|
+| 1 | never claimed | - | not logged | n/a | 0 | goal accepted `launch.log:2017`, `ABORTED_NO_COLUMNS_FEED` at `launch.log:2029` after the 30 s deadline |
+| 2 | never claimed | - | not logged | n/a | 0 | goal accepted `launch.log:2035`, `ABORTED_NO_COLUMNS_FEED` at `launch.log:2047` |
+| 3 | never claimed | - | not logged | n/a | 0 | goal accepted `launch.log:2053`; `detect_human_throws` confirmed live on `/ball_tracker_node` at `launch.log:2003` |
 
-**D2 Stop observed?** ___ **D3 drop-with-survivor observed?** ___
+No deficit ("too late") message and no off-bound lob was logged for any attempt — the tracker
+never registered a candidate landing at all, including near-vertical lobs thrown beside the
+robot (owner report). Not diagnosed further this sitting. **RETIRED** (owner, 2026-09-30) — see
+the § 6 banner above and `logbook/2026-09-30-skill-stack-r5-sitting-1.md` § Open Questions.
+
+**D2 Stop observed?** No — Block C never reached an installed schedule to stop.
+**D3 drop-with-survivor observed?** No — same reason.
 
 ### Bag / boot-banner record
 
 | Rung | Time | Bag folder | `BLAS` on both up lines | Notes |
 |---|---|---|---|---|
-| Dress rehearsal | | | | |
-| Ramp measurement | | | | |
-| Block A | | | | |
-| Block B | | | | |
-| Block C | | | | |
+| Dress rehearsal | not run | `2026-09-30_16-20-05` | n/a (rehearsal skipped) | |
+| Ramp measurement | ~16:22 (`set_limits` at `launch.log:231`) | `2026-09-30_16-20-05` | yes — `skill_node ready · BLAS 1 thread` (`launch.log:44`), `trajectory up: 40 Hz stream on :5557 · BLAS 1 thread · pre/post-release hold 0.100/0.050 s` (`launch.log:54`) | Legs 300/5000/200000 mm/s²; ODrive fw 0.6.11-0 (Jugglebot axes 0-6), 0.6.11-0 (BB axes 7-8); bridge `BRIDGE_FW_CHECK: OK — can-bridge v25 [install_skew=0]` (`launch.log:82`); Platform Teensy firmware line not present in this launch.log — not in log. |
+| Block A | ~16:24-16:45 | `2026-09-30_16-20-05` | same boot as above (one continuous launch) | |
+| Block B | ~16:47-16:54 | `2026-09-30_16-20-05` | same boot | |
+| Block C | ~16:54-16:57 | `2026-09-30_16-20-05` | same boot | `detect_human_throws` confirmed live `launch.log:2003` |
