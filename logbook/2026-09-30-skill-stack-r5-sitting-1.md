@@ -326,7 +326,7 @@ runtime (`teensy_bridge_node.py` compares only `PLATFORM_FW_VERSION_EXPECTED`), 
 FW 4 against this tree is silent, not darkened. BB-repo logbook entry:
 `logbook/2026-09-30-yaw-settle-history-term.md` (BallButler repo). Test (2026-09-30, 18:31):
 build `pio run -e teensy40_can` → **SUCCESS, 5.04 s**, 0 warnings/errors, hex md5
-`4798642934b60aaa43edee5b985d3aa1` — **built, NOT flashed**. Jugglebot cross-repo: `pytest
+`4798642934b60aaa43edee5b985d3aa1` — **built, then FLASHED 22:45** (receipt `FW version: 4 -> 5`; the triple is under Open Questions). Jugglebot cross-repo: `pytest
 tests/firmware -q` → **263 passed, 1 skipped, 12.42 s**.
 
 **Retired: Block C (human-lob columns start)** — code path kept for reference; no further
@@ -418,12 +418,10 @@ frontmatter and index edits — see the session handoff.
 - Block C's tracker silence: `detect_human_throws` was confirmed live and no lob — including
   near-vertical ones beside the robot — was ever claimed. Not diagnosed; the path is retired
   rather than debugged, per the owner's decision to pursue BB-led feeds instead.
-- **BB FW 5 flash**: built (2026-09-30, `pio run -e teensy40_can`, md5
-  `4798642934b60aaa43edee5b985d3aa1`), NOT flashed — pending the boards being powered. Flash:
-  launch DOWN, BB in IDLE/ERROR, `cd ~/Desktop/BallButler/ball_butler_main && pio run -e
-  teensy40_can -t upload`; the receipt is the tool's `FW version: 4 -> 5` line, not a matching
-  hex md5. Next sitting: count `THROW_ABORTED_NOT_SETTLED` against this sitting's baseline
-  (5/19, 4 on plateaus) — expect ~0 on plateaus.
+- **BB FW 5 flash — DONE.** Flashed 2026-09-30 22:45 by Claude over CAN with the worktree's tool (the BB build's `pio` upload hook calls the MAIN checkout's `tools/teensy_link_bridge.py`, which is on `mvp-trajectory-bringup` at protocol 6 and dark against the protocol-9 bridge): `python tools/teensy_link_bridge.py --fw-update .../teensy40_can/firmware.hex --target bb`, a `--verify-only` rehearsal first (DATA 26.3 s, VERIFY OK, COMMIT withheld), then the real run: FW version before 4, BEGIN OK (BB parked, pitch 89.8 deg), DATA 163 840 B in 25.7 s (0 rewinds, 0 window retries, 0 missing acks), VERIFY OK crc32 0xF292D1C1, COMMIT OK, receipt **`Ball Butler FW version: 4 -> 5`** at 22:45:45 (log `temp/logs/bb_fw5_flash_20260930_2242.log`). Next sitting: count `THROW_ABORTED_NOT_SETTLED` against this sitting's baseline
+  (5/19, 4 on plateaus) — expect ~0 on plateaus. Open: repoint the BB repo's `platformio.ini`
+  upload hook at the skill-stack worktree (or a checkout on the board's protocol) so `pio run
+  -t upload` is safe again.
 - **Layer A follow-ups** (carried from the FW 5 build, not this sitting's to fix): the 100 ms
   settle dwell eats into Layer A's 0.1 s `SCHEDULE_MARGIN_S`, which does not reserve it
   explicitly; and Layer A's `YAW_TRAVERSE_DEG_PER_S = 60` assumption predicts 0.29 s for throw

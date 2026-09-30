@@ -1362,7 +1362,7 @@ the rung's tests passing or a handoff file in the scratchpad.
   5600`) **PASS 5/5 seeds, 1 attempt each, 0 drops, 30/30**; `./run_tests.sh --full` (20:04):
   **PASS 5784 passed, 9 skipped, 1 xfailed in 281.32 s, serial 6 passed**. Sitting 2 hardware
   gate (`tests/hardware/session_skills_r5_sitting2.md`): **OUTSTANDING** — the 0° reload gate
-  and the BB-fed columns block have not yet flown; BB FW 5 is built, not flashed.
+  and the BB-fed columns block have not yet flown; BB FW 5 flashed 2026-09-30 22:45 (receipt 4 -> 5).
 
 ### R6 — Close-out
 
