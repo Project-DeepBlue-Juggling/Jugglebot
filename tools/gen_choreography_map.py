@@ -505,7 +505,7 @@ _SKIP_DIRS = frozenset(('__pycache__', 'tests', 'archived'))
 
 #: Modules under the package that are not part of the Python-node graph.
 #: ``rosbridge_websocket_lean.py`` wraps the GUI's rosbridge: its service
-#: clients are created per websocket request, with names the browser chooses,
+#: clients are created on demand for whatever names the browser requests,
 #: so they have no static name and sit outside this map's declared scope
 #: (GUI/rosbridge consumers are NOT included).
 _SKIP_FILES = frozenset(('rosbridge_websocket_lean.py',))

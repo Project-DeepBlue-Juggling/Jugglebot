@@ -12,9 +12,10 @@ ros_ws/gui/js/ros-bridge.js, not here):
    client every 3 s for the life of the process — it persists after the browser
    disconnects. Measured 2026-09-13: idle rosbridge CPU was 2.95% before and
    59.45% after 1,200 calls (an hour of GUI discovery); per-call latency went
-   from 7.3 to 38.9 ms. `ClientReaper` + `build_call_service` below reproduce
-   the stock 1.3.1 `call_service` verbatim but destroy the client afterwards,
-   on the executor thread (upstream's `ros2` branch made the same change).
+   from 7.3 to 38.9 ms. Fixed first (2026-09-14) by destroying each client
+   after its call, on the executor thread; since item 6 there is no per-call
+   client left to leak — `ServiceClientPool` keeps one per service, so the
+   client count is bounded by the services the GUI calls, not by its calls.
 2. **1 ms timer spin.** Stock `main()` drives the executor from a tornado
    `PeriodicCallback(lambda: executor.spin_once(timeout_sec=0.01), 1)` — a
    1 kHz poll from inside the IOLoop. py-spy put 68% of rosbridge's CPU in
@@ -28,11 +29,11 @@ ros_ws/gui/js/ros-bridge.js, not here):
    on that thread via stock 1.3.1's `client.call(inst)`, which blocks with no
    timeout (`rclpy.client.Client.call`). One service reply that never came
    (2026-09-15 sitting) blocked that thread forever, so a later message on
-   the same connection (an IDLE click) never executed. `_call_with_timeout`
-   below replaces `client.call(inst)` with a bounded `call_async` +
-   `threading.Event` wait, so a hung service call surfaces as a
-   `service_response` with `result: False` (via stock `CallService._failure`)
-   instead of wedging the connection.
+   the same connection (an IDLE click) never executed. `ServiceClientPool
+   .call` below replaces `client.call(inst)` with a bounded wait on the
+   reply, so a hung service call surfaces as a `service_response` with
+   `result: False` (via stock `CallService._failure`) instead of wedging the
+   connection. (Item 6 is the likely reason that reply never came.)
 4. **Leaked subscriptions on reconnect.** With the queue thread blocked as in
    (3), a tab refresh's `on_close()` only called `incoming_queue.finish()` —
    `Protocol.finish()` (which unsubscribes every capability) runs on the
@@ -43,10 +44,9 @@ ros_ws/gui/js/ros-bridge.js, not here):
    thread once it unblocks is harmless — and, since `Subscribe.finish()` /
    `Advertise.finish()` reach `node.destroy_subscription()` /
    `node.destroy_publisher()`, which mutate the same node-internal entity
-   lists the executor thread iterates (the (2) hazard `ClientReaper` exists
-   for), the guarded `finish()` never runs inline off the executor thread:
-   it's scheduled there via a second reaper, `ProtocolReaper`, exactly like
-   `ClientReaper` schedules a leaked client's destroy — and because stock
+   lists the executor thread iterates (the hazard item 6 closes for service
+   clients), the guarded `finish()` never runs inline off the executor
+   thread: it's scheduled there via an `ExecutorThreadRunner` — and because stock
    `IncomingQueue.run()`'s own trailing `self.protocol.finish()` call goes
    through this same guarded, reaper-backed `protocol.finish` attribute, it
    is covered for free, with no change to `IncomingQueue` itself.
@@ -57,10 +57,30 @@ ros_ws/gui/js/ros-bridge.js, not here):
    `ball_butler_node` held the GUI for 50 s per `bb/aim`).
    `run_service_calls_off_the_queue_thread` runs each call on its own thread.
 
+6. **Service clients were created, and requests sent, off the executor
+   thread.** Foxy's `Node.create_client` appends the client to the node's
+   client list one line before registering it with its callback group
+   (`rclpy/node.py` 1273-1274), and `Client.call_async` sends the request
+   before recording that a reply is expected (`rclpy/client.py` 126-131) —
+   no lock in either. rosbridge did both on a worker thread while
+   `spin_forever` iterated those same lists: a wait set built between the two
+   lines raised `AssertionError` (`rclpy/callback_groups.py` 103; 12 times
+   2026-09-16..10-02, every one on `node.clients`), and a reply the executor
+   takes in the second gap is dropped as "cancelled" (`rclpy/executors.py`
+   365-367). A fresh client per call also made every call wait for DDS to
+   match a new reply reader (probe p99 ~100 ms, Fast-DDS's 100 ms bound), and
+   five GUI `/rosapi/topics` polls got no reply at all (a 50 s
+   `TimeoutError`) — which of those two mechanisms lost them is not pinned
+   down. `ServiceClientPool` closes both: one long-lived client per service,
+   created on the executor thread and used once its server is visible to it,
+   and every `call_async` issued there too, so the thread that takes replies
+   is the thread that registers them. The worker thread (item 5) only waits.
+
 Both numbers, the bench methodology and the acceptance measurements for (1)
 and (2) are recorded in `logbook/2026-09-14-rosbridge-cpu-leak-and-spin.md`;
 (3) and (4) are recorded in
-`logbook/2026-09-15-rosbridge-hung-call-and-close-teardown.md`.
+`logbook/2026-09-15-rosbridge-hung-call-and-close-teardown.md`; (6) in
+`logbook/2026-10-02-rosbridge-service-clients-on-executor-thread.md`.
 
 This module is imported by unit tests with no ROS2 or rosbridge_server on the
 path (the test gate runs against mocked rclpy modules — see
@@ -77,6 +97,7 @@ import importlib.util
 import os
 import sys
 import threading
+import time
 import traceback
 
 # Bound on how long a single `call_service` may block its thread (see this
@@ -94,90 +115,27 @@ import traceback
 # margin = 50 s.
 CALL_SERVICE_TIMEOUT_S = 50.0
 
-
-def _call_with_timeout(client, request, timeout_sec):
-    """A bounded replacement for stock 1.3.1's `client.call(inst)`
-    (`rclpy.client.Client.call`, which waits with no timeout — see this
-    module's docstring item 3).
-
-    Mirrors `Client.call`'s own implementation (`call_async` + a
-    `threading.Event` set from the future's done-callback) but gives up
-    after `timeout_sec`: on timeout, `client.remove_pending_request(future)`
-    is called (the same cleanup `call_async`'s done-callback would have done,
-    done early so a late response can't fire callbacks on a future nothing
-    is waiting on any more) and `TimeoutError` is raised. On completion
-    before the deadline, the future's exception is re-raised if it carries
-    one, else its result is returned — matching `Client.call`'s contract.
-    """
-    event = threading.Event()
-
-    def _unblock(_future):
-        event.set()
-
-    future = client.call_async(request)
-    future.add_done_callback(_unblock)
-
-    if not event.wait(timeout_sec):
-        client.remove_pending_request(future)
-        raise TimeoutError(
-            f"service call to {client.srv_name!r} timed out after "
-            f"{timeout_sec} s with no response")
-
-    exc = future.exception()
-    if exc is not None:
-        raise exc
-    return future.result()
+# How often a call re-checks a server its client cannot see yet (module
+# docstring item 6). Only the first call to a service after launch, or after
+# its server restarts, ever waits on this; the whole wait sits inside
+# CALL_SERVICE_TIMEOUT_S.
+SERVICE_READY_POLL_S = 0.02
 
 
-class ClientReaper:
-    """Destroys leaked rosbridge service clients on the executor thread.
+class ExecutorThreadRunner:
+    """Runs scheduled zero-arg callables on the executor thread.
 
-    `rclpy.node.Node.destroy_client` mutates the node's internal client list,
-    which the executor iterates while building each wait set — calling it from
-    a `ServiceCaller` worker thread (a plain `threading.Thread`, see stock
-    `rosbridge_library/internal/services.py::ServiceCaller`) would race that
-    iteration. A guard condition is the standard rclpy way to hand work to the
-    executor thread: triggering it wakes `spin_once()` and runs `_drain` there.
-    Upstream schedules the destroy the same way.
-    """
-
-    def __init__(self, node):
-        self._node = node
-        self._pending = collections.deque()
-        self._guard = node.create_guard_condition(self._drain)
-
-    def schedule(self, client):
-        """Queue `client` for destruction. Safe to call from any thread —
-        this is what `build_call_service`'s wrapper calls from a
-        `ServiceCaller` worker thread after each service call completes."""
-        self._pending.append(client)
-        self._guard.trigger()
-
-    def _drain(self):
-        """Guard-condition callback — runs on the executor thread. Pops and
-        destroys every pending client, leaving the queue empty."""
-        while self._pending:
-            client = self._pending.popleft()
-            self._node.destroy_client(client)
-
-
-class ProtocolReaper:
-    """Runs scheduled zero-arg callables on the executor thread. Mirrors
-    `ClientReaper` above, generalised from "destroy this client" to "run
-    this callable" — used to run a connection's `Protocol.finish()` (module
-    docstring item 4) off whichever thread closed the connection.
-
-    `Protocol.finish()` calls each capability's `finish()`; `Subscribe
-    .finish()` → `Subscription.unregister()` → `node.destroy_subscription()`
-    and `Advertise.finish()` → `node.destroy_publisher()` mutate the same
-    node-internal entity lists `SingleThreadedExecutor.spin_once()` iterates
-    on `spin_thread` while building each wait set — the exact hazard
-    `ClientReaper` exists for (`node.destroy_client` above), just for
-    subscriptions/publishers instead of clients. Calling `protocol.finish()`
-    inline from tornado's I/O thread (where `on_close` runs) or from a
-    connection's `IncomingQueue` thread would race that iteration; routing
-    it through a guard condition, as here, hands the work to the executor
-    thread instead.
+    `rclpy.node.Node` keeps its clients, subscriptions and other entities in
+    plain lists that `SingleThreadedExecutor.spin_once()` iterates on
+    `spin_thread` while building each wait set, so an rclpy call that
+    creates or destroys an entity — or sends a request whose reply the
+    executor will take (module docstring item 6) — must run on that thread.
+    A guard condition is the standard rclpy way to hand work there:
+    triggering it wakes `spin_once()` and runs `_drain` on the executor
+    thread. `main()` builds two: one behind `ServiceClientPool` (item 6), and
+    one running each closed connection's `Protocol.finish()` (item 4), whose
+    `Subscribe.finish()` → `node.destroy_subscription()` and
+    `Advertise.finish()` → `node.destroy_publisher()` are the same hazard.
     """
 
     def __init__(self, node):
@@ -193,31 +151,171 @@ class ProtocolReaper:
 
     def _drain(self):
         """Guard-condition callback — runs on the executor thread. Pops and
-        runs every pending callable, leaving the queue empty."""
+        runs every pending callable, leaving the queue empty. One callable
+        raising does not strand the ones queued behind it (they would wait
+        for the next trigger — a service call's send among them); the first
+        error is re-raised once the queue is empty, for `spin_forever` to
+        log."""
+        errors = []
         while self._pending:
             fn = self._pending.popleft()
-            fn()
+            try:
+                fn()
+            except Exception as exc:
+                errors.append(exc)
+        if errors:
+            raise errors[0]
 
 
-def build_call_service(svc, schedule_destroy, timeout_sec=CALL_SERVICE_TIMEOUT_S):
+def _run_on_executor_and_wait(run_on_executor, fn, deadline):
+    """Run `fn` on the executor thread, via `run_on_executor` (an
+    `ExecutorThreadRunner.schedule`), and block the calling thread until it
+    has run.
+
+    Returns `(True, <fn's return value>)`, re-raises what `fn` raised, or
+    returns `(False, None)` if `deadline` (a `time.monotonic()` value) passes
+    first. In that last case `fn` is marked abandoned under the same lock it
+    runs under, so it never runs later: a request its caller has given up on
+    is never sent.
+    """
+    ran = threading.Event()
+    lock = threading.Lock()
+    box = {'abandoned': False}
+
+    def task():
+        with lock:
+            if box['abandoned']:
+                return
+            try:
+                box['value'] = fn()
+            except Exception as exc:  # handed to the caller, not the executor
+                box['error'] = exc
+            ran.set()
+
+    run_on_executor(task)
+    if not ran.wait(max(0.0, deadline - time.monotonic())):
+        with lock:
+            if not ran.is_set():
+                box['abandoned'] = True
+                return False, None
+    if 'error' in box:
+        raise box['error']
+    return True, box['value']
+
+
+class ServiceClientPool:
+    """One long-lived service client per service, created — and every
+    request sent — on the executor thread (module docstring item 6).
+
+    `call()` runs on a `ServiceCaller` worker thread (item 5) and only waits.
+    `_send_if_ready()` is the one place a client is created or a request is
+    sent, and it runs only on the executor thread, handed there through
+    `run_on_executor` (an `ExecutorThreadRunner.schedule` in production).
+    Because that is also the thread that takes replies, it cannot take this
+    request's reply before `call_async` has registered it: it is busy
+    running `_send_if_ready` until then.
+
+    `_clients` is read and written only on the executor thread. It keeps one
+    client per (service name, service type) for the life of the process —
+    bounded by the distinct services the GUI calls, never by the number of
+    calls, which is what item 1's leak was. A client whose server restarts
+    stays valid; DDS matches it to the new server, and `service_is_ready()`
+    holds the next call until it has.
+    """
+
+    def __init__(self, node, run_on_executor, log=None):
+        self._node = node
+        self._run_on_executor = run_on_executor
+        self._log = log
+        self._clients = {}
+
+    def call(self, service, service_type, service_class, request, timeout_sec):
+        """Send `request` to `service` and block until its reply arrives.
+
+        Raises `TimeoutError` if `timeout_sec` passes first — whether the
+        executor thread never ran the send, the server never became visible
+        to the client, or the reply never came — and re-raises the reply
+        future's exception if it carries one. Stock
+        `CallService._failure` turns either into a `service_response` with
+        `result: False`.
+        """
+        deadline = time.monotonic() + timeout_sec
+
+        def send():
+            return self._send_if_ready(
+                service, service_type, service_class, request)
+
+        while True:
+            ran, sent = _run_on_executor_and_wait(
+                self._run_on_executor, send, deadline)
+            if not ran:
+                raise TimeoutError(
+                    f'service call to {service!r} timed out after '
+                    f'{timeout_sec} s: the rosbridge executor thread never '
+                    f'ran the send')
+            if sent is not None:
+                break
+            if time.monotonic() + SERVICE_READY_POLL_S >= deadline:
+                raise TimeoutError(
+                    f'service call to {service!r} timed out after '
+                    f'{timeout_sec} s: the server never became visible to '
+                    f"rosbridge's client")
+            time.sleep(SERVICE_READY_POLL_S)
+
+        client, future, replied = sent
+        if not replied.wait(max(0.0, deadline - time.monotonic())):
+            # Done early so a late reply can't fire callbacks on a future
+            # nothing waits on any more — on the executor thread, which is
+            # the thread that reads _pending_requests.
+            self._run_on_executor(
+                lambda: client.remove_pending_request(future))
+            raise TimeoutError(
+                f'service call to {service!r} timed out after {timeout_sec} s '
+                f'with no response')
+        exc = future.exception()
+        if exc is not None:
+            raise exc
+        return future.result()
+
+    def _send_if_ready(self, service, service_type, service_class, request):
+        """Executor thread only. Returns `(client, future, replied)` once the
+        request is sent, or None while the server is not yet visible to the
+        client (the caller polls)."""
+        key = (service, service_type)
+        client = self._clients.get(key)
+        if client is None:
+            client = self._node.create_client(service_class, service)
+            self._clients[key] = client
+            if self._log is not None:
+                self._log.info(
+                    f'rosbridge: created the service client for {service} '
+                    f'({service_type}); every later call reuses it '
+                    f'({len(self._clients)} clients)')
+        if not client.service_is_ready():
+            return None
+        replied = threading.Event()
+        future = client.call_async(request)
+        future.add_done_callback(lambda _future: replied.set())
+        return client, future, replied
+
+
+def build_call_service(svc, pool, timeout_sec=CALL_SERVICE_TIMEOUT_S):
     """Return a drop-in replacement for `rosbridge_library.internal.services
     .call_service(node_handle, service, args=None)`.
 
-    The body below is the 1.3.1 function verbatim (every helper referenced
-    through `svc`, the real `rosbridge_library.internal.services` module, so
-    this stays byte-for-byte faithful to upstream's request-building and error
-    handling), with two changes: the client is destroyed in a `finally` after
-    the call, via `schedule_destroy` (a `ClientReaper.schedule` bound method
-    in production); and `client.call(inst)` is replaced with
-    `_call_with_timeout(client, inst, timeout_sec)` so the call can never
-    block the connection's IncomingQueue thread forever (module docstring
-    item 3) — a timeout raises `TimeoutError`, which `finally` still schedules
-    the client for destroy and which stock `CallService._failure` turns into
-    a `service_response` with `result: False` for the browser, same as any
-    other service-call exception. Exceptions raised before `create_client` —
-    an unknown service (`svc.InvalidServiceException`) or bad args
-    (`svc.args_to_service_request_instance`) — never reach the `finally`, so
-    nothing is scheduled for a client that was never created.
+    The request-building half below is the 1.3.1 function verbatim (every
+    helper referenced through `svc`, the real `rosbridge_library.internal
+    .services` module, so this stays byte-for-byte faithful to upstream's
+    request-building and error handling). The call itself goes through
+    `pool` (a `ServiceClientPool`) instead of stock's per-call
+    `create_client` + `client.call(inst)`: no client per call (item 1), a
+    bounded wait (item 3), and no rclpy entity touched off the executor
+    thread (item 6). A timeout raises `TimeoutError`, which stock
+    `CallService._failure` turns into a `service_response` with
+    `result: False` for the browser, same as any other service-call
+    exception. Exceptions raised before the call — an unknown service
+    (`svc.InvalidServiceException`) or bad args
+    (`svc.args_to_service_request_instance`) — never reach the pool.
     """
 
     def call_service(node_handle, service, args=None):
@@ -244,21 +342,12 @@ def build_call_service(svc, schedule_destroy, timeout_sec=CALL_SERVICE_TIMEOUT_S
         # Populate the instance with the provided args
         svc.args_to_service_request_instance(service, inst, args)
 
-        client = node_handle.create_client(service_class, service)
-        try:
-            result = _call_with_timeout(client, inst, timeout_sec)
-            if result is not None:
-                # Turn the response into JSON and pass to the callback
-                json_response = svc.extract_values(result)
-            else:
-                raise Exception(result)
-
-            return json_response
-        finally:
-            # Unlike stock 1.3.1: the client is never freed there, and rclpy
-            # keeps it in node.__clients for the life of the process (see this
-            # module's docstring). This is the fix.
-            schedule_destroy(client)
+        result = pool.call(service, service_type, service_class, inst,
+                           timeout_sec)
+        if result is not None:
+            # Turn the response into JSON and pass to the callback
+            return svc.extract_values(result)
+        raise Exception(result)
 
     return call_service
 
@@ -281,8 +370,8 @@ def run_service_calls_off_the_queue_thread(call_service_module):
     run in this thread"), so the patch swaps the module-global name the
     capability looks up at call time for a shim whose ``run()`` calls the real
     caller's ``start()``. The worker still goes through the patched
-    ``internal.services.call_service`` (item 1's client destroy, item 3's
-    bound). Replies reach the socket through ``RosbridgeWebSocket.send_message``,
+    ``internal.services.call_service`` (item 3's bound, item 6's pooled
+    clients). Replies reach the socket through ``RosbridgeWebSocket.send_message``,
     which hands off via ``IOLoop.add_callback`` — thread-safe. Replies may now
     complete out of order; every GUI caller correlates by id.
     """
@@ -302,16 +391,17 @@ def run_service_calls_off_the_queue_thread(call_service_module):
 
 def _guard_protocol_finish(protocol, schedule):
     """Wrap `protocol.finish` (a `rosbridge_library.protocol.Protocol`
-    instance) so repeat calls SCHEDULE the real teardown, via `schedule` (a
-    `ProtocolReaper.schedule` bound method in production), onto the executor
+    instance) so repeat calls SCHEDULE the real teardown, via `schedule` (an
+    `ExecutorThreadRunner.schedule` bound method in production), onto the executor
     thread at most once, thread-safely — never run it inline on whichever
     thread called `finish()`.
 
     `Protocol.finish()` calls `capability.finish()` for every registered
     capability, and `Subscribe.finish()` / `Advertise.finish()` reach
     `node.destroy_subscription()` / `node.destroy_publisher()` — the same
-    entity-list-mutation-off-the-executor-thread hazard `ClientReaper`
-    exists for (see `ProtocolReaper`'s docstring above), so `finish()` must
+    entity-list-mutation-off-the-executor-thread hazard module docstring
+    item 6 closes for service clients (see `ExecutorThreadRunner`'s
+    docstring above), so `finish()` must
     never run inline off the executor thread regardless of how many times
     it's called.
 
@@ -375,8 +465,8 @@ def patch_rosbridge_websocket(rb_websocket_cls, subscribe_class, log, reaper):
     """Patch a rosbridge_server `RosbridgeWebSocket` class (a tornado
     `WebSocketHandler`) in place, fixing module docstring item 4 (leaked
     subscriptions when the connection's `IncomingQueue` thread is blocked —
-    see `_call_with_timeout` above for why that thread can no longer block
-    forever, but it can still take up to `timeout_sec`):
+    since item 5 no service call runs on that thread, and item 3 bounds the
+    ones that did, but the patch stays as the teardown path):
 
     - Wraps `open()` so, right after stock `open()` creates
       `self.protocol`, `self.protocol.finish` is replaced with the
@@ -385,8 +475,7 @@ def patch_rosbridge_websocket(rb_websocket_cls, subscribe_class, log, reaper):
       `self.protocol.finish()` call go through the same one-shot guard,
       regardless of which thread gets there first, and neither ever runs
       the real teardown inline: it's always scheduled onto the executor
-      thread via `reaper` (a `ProtocolReaper`), the same way `ClientReaper`
-      schedules a leaked client's destroy.
+      thread via `reaper` (an `ExecutorThreadRunner`).
     - Wraps `on_close()` so, after stock `on_close()` runs (client-count
       bookkeeping, logging, `incoming_queue.finish()` — unchanged), it also
       calls `self.protocol.finish()` — which, since `patched_open` already
@@ -519,22 +608,21 @@ def main(args=None):
     # and binds/starts the tornado HTTP(S) server — identical to stock main().
     node = stock.RosbridgeWebsocketNode()
 
-    # The leak fix: patch call_service (a module global ServiceCaller.run
-    # looks up at call time, so this takes effect for every future call)
-    # to destroy its client afterwards, on the executor thread. Also bounds
-    # the call (module docstring item 3) so it can never block a
-    # connection's IncomingQueue thread forever.
-    reaper = ClientReaper(node)
-    svc.call_service = build_call_service(
-        svc, reaper.schedule, CALL_SERVICE_TIMEOUT_S)
+    # Patch call_service (a module global ServiceCaller.run looks up at call
+    # time, so this takes effect for every future call) to call through one
+    # pooled client per service, created and sent on the executor thread
+    # (module docstring items 1 and 6), with a bounded wait (item 3).
+    service_runner = ExecutorThreadRunner(node)
+    pool = ServiceClientPool(node, service_runner.schedule, node.get_logger())
+    svc.call_service = build_call_service(svc, pool, CALL_SERVICE_TIMEOUT_S)
 
     # The hung-close fix (module docstring item 4): tear a connection's
     # subscriptions down immediately on close rather than waiting for its
     # (possibly still-blocked) IncomingQueue thread to reach it. The real
     # destroy_subscription()/destroy_publisher() calls that teardown makes
-    # must run on the executor thread (same entity-list hazard ClientReaper
-    # exists for above), so a second reaper schedules them there instead of
-    # running inline off tornado's I/O thread. Patching the class here,
+    # must run on the executor thread (the entity-list hazard of item 6), so
+    # a second runner schedules them there instead of running inline off
+    # tornado's I/O thread. Patching the class here,
     # before start_hook() starts the IOLoop that accepts connections, means
     # every connection for the life of this process goes through the
     # patched open()/on_close().
@@ -544,9 +632,9 @@ def main(args=None):
     import rosbridge_library.capabilities.call_service as call_service_cap
     run_service_calls_off_the_queue_thread(call_service_cap)
 
-    protocol_reaper = ProtocolReaper(node)
+    protocol_runner = ExecutorThreadRunner(node)
     patch_rosbridge_websocket(
-        RosbridgeWebSocket, Subscribe, node.get_logger(), protocol_reaper)
+        RosbridgeWebSocket, Subscribe, node.get_logger(), protocol_runner)
 
     # The spin-loop fix: one thread blocking in spin_once(), not a 1 kHz
     # tornado PeriodicCallback.

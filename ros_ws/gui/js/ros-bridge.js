@@ -357,16 +357,31 @@ export function withTimeout(promise, ms, label) {
     });
 }
 
+/** Local bound on one topic-discovery poll (rosbridge's own is 50 s). */
+const T_DISCOVERY_MS = 5000;
+let discoveryInFlight = false;
+
 /**
  * Discover all active ROS2 topics via rosbridge.
+ *
+ * One poll in flight at a time, bounded locally. main.js polls every 3 s and
+ * rosbridge gives each call its own thread with a 50 s bound, so a slow or
+ * silent rosapi used to collect ~16 concurrent calls per tab, each ending in
+ * its own rosbridge TimeoutError (logbook
+ * 2026-10-02-rosbridge-service-clients-on-executor-thread.md). Now a tick
+ * skips while a poll is pending, and a reply that never comes frees the slot
+ * after T_DISCOVERY_MS.
  * @param {function} callback - Called with { topics: string[], types: string[] }
  */
 export function discoverTopics(callback) {
     if (!ros || connectionState !== 'connected') return;
-    ros.getTopics(
-        (result) => { callback(result); },
-        (err) => { console.warn('Failed to discover topics:', err); }
-    );
+    if (discoveryInFlight) return;
+    discoveryInFlight = true;
+    withTimeout(
+        new Promise((resolve, reject) => ros.getTopics(resolve, reject)),
+        T_DISCOVERY_MS, 'topic discovery')
+        .then(callback, (err) => { console.warn('Failed to discover topics:', err); })
+        .finally(() => { discoveryInFlight = false; });
 }
 
 /**

@@ -3,7 +3,8 @@ jugglebot/rosbridge_websocket_lean.py (the CPU-leak + spin-thread fix for the
 GUI's rosbridge, logbook/2026-09-14-rosbridge-cpu-leak-and-spin.md), plus
 string-level tripwires pinning its launch/setup.py/GUI wiring.
 
-Every ClientReaper / build_call_service / spin_forever test below uses plain
+Every ExecutorThreadRunner / ServiceClientPool / build_call_service /
+spin_forever test below uses plain
 fakes — no rclpy, no rosbridge_library, no real ROS2. That's deliberate: this
 module is designed to import cleanly with mocked rclpy (see this repo's
 tests/ros/conftest.py), and a test suite is the only thing that would catch a
@@ -16,6 +17,7 @@ test_gui_geometry.py — they cannot prove the process starts under ROS2
 from __future__ import annotations
 
 import importlib
+import queue
 import re
 import sys
 import threading
@@ -27,9 +29,8 @@ import pytest
 from jugglebot.rosbridge_websocket_lean import (
     run_service_calls_off_the_queue_thread,
     CALL_SERVICE_TIMEOUT_S,
-    ClientReaper,
-    ProtocolReaper,
-    _call_with_timeout,
+    ExecutorThreadRunner,
+    ServiceClientPool,
     _guard_protocol_finish,
     _subscription_count,
     build_call_service,
@@ -47,7 +48,7 @@ MAIN_JS = GUI_JS_DIR / 'main.js'
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# ClientReaper
+# ExecutorThreadRunner
 # ═══════════════════════════════════════════════════════════════════════
 
 
@@ -64,119 +65,94 @@ class _FakeGuardCondition:
 
 
 class _FakeNode:
-    """Stand-in for the rclpy Node ClientReaper is built on."""
+    """Stand-in for the rclpy Node ExecutorThreadRunner is built on."""
 
     def __init__(self):
-        self.destroyed = []
         self.guard = None
 
     def create_guard_condition(self, callback):
         self.guard = _FakeGuardCondition(callback)
         return self.guard
 
-    def destroy_client(self, client):
-        self.destroyed.append(client)
 
-
-def test_schedule_appends_and_triggers_the_guard():
+def test_runner_schedule_appends_and_triggers_the_guard():
     node = _FakeNode()
-    reaper = ClientReaper(node)
+    runner = ExecutorThreadRunner(node)
+    calls = []
 
-    reaper.schedule('client-a')
+    runner.schedule(lambda: calls.append('a'))
 
-    assert list(reaper._pending) == ['client-a']
+    assert len(runner._pending) == 1
     assert node.guard.trigger_count == 1
-    assert node.destroyed == []  # nothing destroyed until _drain runs
+    assert calls == []  # nothing run until _drain runs
 
 
-def test_drain_destroys_each_pending_client_exactly_once_and_empties_queue():
+def test_runner_drain_runs_each_pending_callable_exactly_once():
     node = _FakeNode()
-    reaper = ClientReaper(node)
-    reaper.schedule('client-a')
-    reaper.schedule('client-b')
+    runner = ExecutorThreadRunner(node)
+    calls = []
+    runner.schedule(lambda: calls.append('a'))
+    runner.schedule(lambda: calls.append('b'))
 
-    reaper._drain()
+    runner._drain()
 
-    assert node.destroyed == ['client-a', 'client-b']
-    assert len(reaper._pending) == 0
+    assert calls == ['a', 'b']
+    assert len(runner._pending) == 0
 
-    # A second drain with nothing pending destroys nothing more.
-    reaper._drain()
-    assert node.destroyed == ['client-a', 'client-b']
+    # A second drain with nothing pending runs nothing more.
+    runner._drain()
+    assert calls == ['a', 'b']
 
 
-def test_concurrent_schedule_from_several_threads_then_one_drain_destroys_all():
+def test_runner_concurrent_schedule_from_several_threads_then_one_drain_runs_all():
     node = _FakeNode()
-    reaper = ClientReaper(node)
-    clients = [f'client-{i}' for i in range(20)]
-
-    threads = [threading.Thread(target=reaper.schedule, args=(c,))
-               for c in clients]
+    runner = ExecutorThreadRunner(node)
+    calls = []
+    threads = [threading.Thread(target=runner.schedule,
+                                args=(lambda i=i: calls.append(i),))
+               for i in range(20)]
     for t in threads:
         t.start()
     for t in threads:
         t.join()
 
-    assert len(reaper._pending) == 20
+    assert len(runner._pending) == 20
 
-    reaper._drain()
+    runner._drain()
 
-    assert sorted(node.destroyed) == sorted(clients)
-    assert len(reaper._pending) == 0
+    assert sorted(calls) == list(range(20))
+    assert len(runner._pending) == 0
+
+
+def test_runner_drain_runs_the_rest_when_one_raises_then_reraises_the_first():
+    """A raising teardown must not strand a service call's send queued behind
+    it until the next trigger; the error still reaches spin_forever's log."""
+    node = _FakeNode()
+    runner = ExecutorThreadRunner(node)
+    calls = []
+
+    def boom():
+        raise RuntimeError('boom')
+
+    runner.schedule(lambda: calls.append('a'))
+    runner.schedule(boom)
+    runner.schedule(lambda: calls.append('c'))
+
+    with pytest.raises(RuntimeError, match='boom'):
+        runner._drain()
+
+    assert calls == ['a', 'c']
+    assert len(runner._pending) == 0
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# build_call_service
+# ServiceClientPool — module docstring item 6
 # ═══════════════════════════════════════════════════════════════════════
-
-
-class _InvalidServiceException(Exception):
-    def __init__(self, servicename):
-        Exception.__init__(self, f'Service {servicename} does not exist')
-
-
-def _fake_svc():
-    """A fake stand-in for rosbridge_library.internal.services, carrying
-    exactly the six attributes build_call_service's body references."""
-    return types.SimpleNamespace(
-        expand_topic_name=lambda service, name, ns: service,
-        get_service_class=lambda t: f'class-for-{t}',
-        get_service_request_instance=lambda t: types.SimpleNamespace(type=t),
-        args_to_service_request_instance=lambda service, inst, args: None,
-        extract_values=lambda result: {'extracted': result},
-        InvalidServiceException=_InvalidServiceException,
-    )
-
-
-class _FakeNodeHandle:
-    def __init__(self, service_type=('some_msgs/srv/Trigger',), client=None):
-        self._service_type = service_type
-        self._client = client
-        self.create_client_calls = []
-
-    def get_name(self):
-        return 'rosbridge_websocket'
-
-    def get_namespace(self):
-        return '/'
-
-    def get_service_names_and_types(self):
-        if self._service_type is None:
-            return []
-        return [('my_service', self._service_type)]
-
-    def get_logger(self):
-        return types.SimpleNamespace(warning=lambda msg: None)
-
-    def create_client(self, service_class, service):
-        self.create_client_calls.append((service_class, service))
-        return self._client
 
 
 class _FakeFuture:
-    """Stand-in for rclpy.task.Future — enough surface for
-    _call_with_timeout: add_done_callback (firing immediately if already
-    done, matching rclpy), exception() and result()."""
+    """Stand-in for rclpy.task.Future: add_done_callback (firing immediately
+    if already done, matching rclpy), exception() and result()."""
 
     def __init__(self):
         self._done_callbacks = []
@@ -203,117 +179,225 @@ class _FakeFuture:
         return self._result
 
 
-class _FakeClient:
-    """Stand-in for rclpy.client.Client — call_async/remove_pending_request/
-    srv_name, the surface _call_with_timeout uses (not the old .call())."""
+class _ExecutorThread:
+    """A real thread running scheduled callables FIFO — the stand-in for
+    ExecutorThreadRunner + spin_forever, so the tests can check which thread
+    each rclpy call ran on."""
 
-    def __init__(self, result=None, error=None, srv_name='my_service',
-                 never_completes=False):
-        self._result = result
-        self._error = error
-        self._never_completes = never_completes
+    def __init__(self):
+        self._queue = queue.Queue()
+        self.thread = threading.Thread(target=self._run, daemon=True,
+                                       name='fake-executor')
+        self.thread.start()
+
+    def schedule(self, fn):
+        self._queue.put(fn)
+
+    def _run(self):
+        while True:
+            fn = self._queue.get()
+            if fn is None:
+                return
+            fn()
+
+    def flush(self):
+        """Block until everything scheduled so far has run."""
+        done = threading.Event()
+        self.schedule(done.set)
+        assert done.wait(2.0)
+
+    def stop(self):
+        self._queue.put(None)
+        self.thread.join(2.0)
+
+
+class _PoolClient:
+    """Stand-in for rclpy.client.Client. Records the thread of every call.
+    Its reply, like rclpy's, is delivered by the executor thread."""
+
+    def __init__(self, executor, srv_name, reply='raw-reply', error=None,
+                 not_ready_checks=0, never_replies=False):
+        self._executor = executor
         self.srv_name = srv_name
-        self.call_count = 0
+        self._reply = reply
+        self._error = error
+        self._not_ready_checks = not_ready_checks
+        self._never_replies = never_replies
+        self.ready_checks = 0
+        self.sent = []
         self.removed_pending = []
-        self._last_future = None
+        self.calls = []  # (method, thread)
+
+    def service_is_ready(self):
+        self.calls.append(('service_is_ready', threading.current_thread()))
+        self.ready_checks += 1
+        return self.ready_checks > self._not_ready_checks
 
     def call_async(self, request):
-        self.call_count += 1
+        self.calls.append(('call_async', threading.current_thread()))
+        self.sent.append(request)
         future = _FakeFuture()
-        self._last_future = future
-        if not self._never_completes:
-            future._complete(result=self._result, exception=self._error)
+        if not self._never_replies:
+            self._executor.schedule(
+                lambda: future._complete(result=self._reply,
+                                         exception=self._error))
         return future
 
     def remove_pending_request(self, future):
+        self.calls.append(('remove_pending_request',
+                           threading.current_thread()))
         self.removed_pending.append(future)
 
 
-def test_success_returns_extracted_values_and_schedules_destroy_once():
-    svc = _fake_svc()
-    client = _FakeClient(result='raw-result')
-    node_handle = _FakeNodeHandle(client=client)
-    scheduled = []
-    call_service = build_call_service(svc, scheduled.append)
+class _PoolNode:
+    """Stand-in for the rosbridge node: create_client builds a _PoolClient
+    with per-service behaviour from `behaviour`."""
 
-    response = call_service(node_handle, 'my_service', args=None)
+    def __init__(self, executor, behaviour=None, create_error=None):
+        self._executor = executor
+        self._behaviour = behaviour or {}
+        self._create_error = create_error
+        self.created = []  # (service, thread)
+        self.clients = []
 
-    assert response == {'extracted': 'raw-result'}
-    assert scheduled == [client]
-    assert client.call_count == 1
-
-
-def test_client_call_returning_none_raises_and_still_schedules_destroy_once():
-    svc = _fake_svc()
-    client = _FakeClient(result=None)
-    node_handle = _FakeNodeHandle(client=client)
-    scheduled = []
-    call_service = build_call_service(svc, scheduled.append)
-
-    with pytest.raises(Exception):
-        call_service(node_handle, 'my_service', args=None)
-
-    assert scheduled == [client]
+    def create_client(self, service_class, service):
+        self.created.append((service, threading.current_thread()))
+        if self._create_error is not None:
+            raise self._create_error
+        client = _PoolClient(self._executor, service,
+                             **self._behaviour.get(service, {}))
+        self.clients.append(client)
+        return client
 
 
-def test_client_call_raising_propagates_and_still_schedules_destroy_once():
-    svc = _fake_svc()
-    boom = RuntimeError('boom')
-    client = _FakeClient(error=boom)
-    node_handle = _FakeNodeHandle(client=client)
-    scheduled = []
-    call_service = build_call_service(svc, scheduled.append)
+class _InfoLog:
+    def __init__(self):
+        self.infos = []
 
-    with pytest.raises(RuntimeError, match='boom'):
-        call_service(node_handle, 'my_service', args=None)
-
-    assert scheduled == [client]
+    def info(self, msg):
+        self.infos.append(msg)
 
 
-def test_unknown_service_raises_invalid_service_and_schedules_nothing():
-    svc = _fake_svc()
-    node_handle = _FakeNodeHandle(service_type=None)  # no services registered
-    scheduled = []
-    call_service = build_call_service(svc, scheduled.append)
-
-    with pytest.raises(svc.InvalidServiceException):
-        call_service(node_handle, 'my_service', args=None)
-
-    assert node_handle.create_client_calls == []
-    assert scheduled == []
+@pytest.fixture
+def executor():
+    ex = _ExecutorThread()
+    yield ex
+    ex.stop()
 
 
-# ═══════════════════════════════════════════════════════════════════════
-# _call_with_timeout
-# ═══════════════════════════════════════════════════════════════════════
+def test_pool_creates_and_sends_only_on_the_executor_thread(executor):
+    """Item 6's contract: create_client, service_is_ready and call_async all
+    run on the executor thread, never the caller's. Fail-before: until
+    2026-10-02 build_call_service ran create_client + call_async on the
+    ServiceCaller worker thread, which raced the executor's wait-set build
+    (AssertionError) and its reply take (a reply dropped as 'cancelled')."""
+    node = _PoolNode(executor)
+    pool = ServiceClientPool(node, executor.schedule)
+
+    assert pool.call('/svc', 'pkg/srv/T', 'cls', 'req', 2.0) == 'raw-reply'
+
+    assert [t for _, t in node.created] == [executor.thread]
+    client = node.clients[0]
+    assert {name for name, _ in client.calls} == {'service_is_ready',
+                                                  'call_async'}
+    assert all(t is executor.thread for _, t in client.calls)
+    assert client.sent == ['req']
 
 
-def test_call_with_timeout_returns_result_when_future_completes():
-    client = _FakeClient(result='ok')
+def test_pool_keeps_one_client_per_service_for_every_later_call(executor):
+    node = _PoolNode(executor)
+    log = _InfoLog()
+    pool = ServiceClientPool(node, executor.schedule, log)
 
-    result = _call_with_timeout(client, 'req', timeout_sec=1.0)
+    for i in range(5):
+        pool.call('/rosapi/topics', 'rosapi/srv/Topics', 'cls', f'r{i}', 2.0)
+    pool.call('/bb/aim', 'pkg/srv/Aim', 'cls', 'aim', 2.0)
+    pool.call('/rosapi/topics', 'rosapi/srv/Topics', 'cls', 'r5', 2.0)
 
-    assert result == 'ok'
-    assert client.call_count == 1
-
-
-def test_call_with_timeout_raises_and_removes_pending_request_when_never_completes():
-    client = _FakeClient(never_completes=True)
-
-    with pytest.raises(TimeoutError, match='timed out after'):
-        _call_with_timeout(client, 'req', timeout_sec=0.05)
-
-    assert client.removed_pending == [client._last_future]
+    assert [s for s, _ in node.created] == ['/rosapi/topics', '/bb/aim']
+    topics, aim = node.clients
+    assert topics.sent == ['r0', 'r1', 'r2', 'r3', 'r4', 'r5']
+    assert aim.sent == ['aim']
+    assert len(log.infos) == 2  # one line per client created, not per call
 
 
-def test_call_with_timeout_propagates_the_futures_exception():
-    boom = RuntimeError('boom')
-    client = _FakeClient(error=boom)
+def test_pool_reraises_the_replys_exception(executor):
+    node = _PoolNode(executor, {'/svc': {'error': RuntimeError('boom')}})
+    pool = ServiceClientPool(node, executor.schedule)
 
     with pytest.raises(RuntimeError, match='boom'):
-        _call_with_timeout(client, 'req', timeout_sec=1.0)
+        pool.call('/svc', 'pkg/srv/T', 'cls', 'req', 2.0)
 
-    assert client.removed_pending == []  # completed, not timed out
+
+def test_pool_holds_the_send_until_the_server_is_visible_then_sends_once(executor):
+    """A fresh client is not used until service_is_ready(): its request then
+    goes to a server that can see it, rather than racing DDS matching."""
+    node = _PoolNode(executor, {'/svc': {'not_ready_checks': 3}})
+    pool = ServiceClientPool(node, executor.schedule)
+
+    assert pool.call('/svc', 'pkg/srv/T', 'cls', 'req', 2.0) == 'raw-reply'
+
+    client = node.clients[0]
+    assert client.ready_checks == 4
+    assert client.sent == ['req']
+
+
+def test_pool_times_out_without_sending_when_the_server_never_appears(executor):
+    node = _PoolNode(executor, {'/svc': {'not_ready_checks': 10 ** 9}})
+    pool = ServiceClientPool(node, executor.schedule)
+
+    with pytest.raises(TimeoutError, match='never became visible'):
+        pool.call('/svc', 'pkg/srv/T', 'cls', 'req', 0.2)
+
+    assert node.clients[0].sent == []
+
+
+def test_pool_times_out_with_no_response_and_unregisters_on_the_executor_thread(executor):
+    """A reply that never comes raises the same 'timed out after ... with no
+    response' text the bags were grepped for, and the pending request is
+    removed on the executor thread — the thread that reads
+    _pending_requests."""
+    node = _PoolNode(executor, {'/svc': {'never_replies': True}})
+    pool = ServiceClientPool(node, executor.schedule)
+
+    with pytest.raises(TimeoutError, match='timed out after 0.2 s with no response'):
+        pool.call('/svc', 'pkg/srv/T', 'cls', 'req', 0.2)
+
+    executor.flush()
+    client = node.clients[0]
+    assert len(client.removed_pending) == 1
+    assert [t for name, t in client.calls
+            if name == 'remove_pending_request'] == [executor.thread]
+
+
+def test_pool_never_sends_a_request_its_caller_abandoned():
+    """If the executor thread does not get to the send before the deadline,
+    the caller gives up and the send, run later, does nothing: no client is
+    created and no request goes out for a call that already reported
+    failure."""
+    held = []
+    node = _PoolNode(executor=None)
+    pool = ServiceClientPool(node, held.append)
+
+    with pytest.raises(TimeoutError, match='never ran the send'):
+        pool.call('/svc', 'pkg/srv/T', 'cls', 'req', 0.05)
+
+    for task in held:  # the executor thread finally gets there
+        task()
+    assert node.created == []
+
+
+def test_pool_hands_a_send_error_to_the_caller_and_keeps_serving(executor):
+    """An exception in the send is raised on the caller's thread, never on
+    the executor thread, which goes on serving later calls."""
+    node = _PoolNode(executor, create_error=RuntimeError('no client'))
+    pool = ServiceClientPool(node, executor.schedule)
+
+    with pytest.raises(RuntimeError, match='no client'):
+        pool.call('/svc', 'pkg/srv/T', 'cls', 'req', 2.0)
+
+    node._create_error = None
+    assert pool.call('/svc', 'pkg/srv/T', 'cls', 'req', 2.0) == 'raw-reply'
 
 
 def test_call_service_timeout_exceeds_the_guis_largest_client_timeout():
@@ -325,19 +409,102 @@ def test_call_service_timeout_exceeds_the_guis_largest_client_timeout():
     assert CALL_SERVICE_TIMEOUT_S * 1000 > t_svc_clear_ms
 
 
-def test_build_call_service_with_never_completing_client_times_out_and_still_schedules_destroy():
-    svc = _fake_svc()
-    client = _FakeClient(never_completes=True)
-    node_handle = _FakeNodeHandle(client=client)
-    scheduled = []
-    call_service = build_call_service(svc, scheduled.append, timeout_sec=0.05)
+# ═══════════════════════════════════════════════════════════════════════
+# build_call_service
+# ═══════════════════════════════════════════════════════════════════════
 
-    # This is exactly the exception path stock CallService._failure turns
-    # into a service_response with result: False (see module docstring).
+
+class _InvalidServiceException(Exception):
+    def __init__(self, servicename):
+        Exception.__init__(self, f'Service {servicename} does not exist')
+
+
+def _fake_svc():
+    """A fake stand-in for rosbridge_library.internal.services, carrying
+    exactly the six attributes build_call_service's body references."""
+    return types.SimpleNamespace(
+        expand_topic_name=lambda service, name, ns: '/' + service,
+        get_service_class=lambda t: f'class-for-{t}',
+        get_service_request_instance=lambda t: types.SimpleNamespace(type=t),
+        args_to_service_request_instance=lambda service, inst, args: None,
+        extract_values=lambda result: {'extracted': result},
+        InvalidServiceException=_InvalidServiceException,
+    )
+
+
+class _FakeNodeHandle:
+    def __init__(self, service_type=('some_msgs/srv/Trigger',)):
+        self._service_type = service_type
+
+    def get_name(self):
+        return 'rosbridge_websocket'
+
+    def get_namespace(self):
+        return '/'
+
+    def get_service_names_and_types(self):
+        if self._service_type is None:
+            return []
+        return [('/my_service', self._service_type)]
+
+    def get_logger(self):
+        return types.SimpleNamespace(warning=lambda msg: None)
+
+
+class _FakePool:
+    def __init__(self, result=None, error=None):
+        self._result = result
+        self._error = error
+        self.calls = []
+
+    def call(self, service, service_type, service_class, request, timeout_sec):
+        self.calls.append((service, service_type, service_class, request,
+                           timeout_sec))
+        if self._error is not None:
+            raise self._error
+        return self._result
+
+
+def test_success_calls_the_pool_once_and_returns_extracted_values():
+    pool = _FakePool(result='raw-result')
+    call_service = build_call_service(_fake_svc(), pool, timeout_sec=7.0)
+
+    response = call_service(_FakeNodeHandle(), 'my_service', args=None)
+
+    assert response == {'extracted': 'raw-result'}
+    [(service, service_type, service_class, request, timeout)] = pool.calls
+    assert (service, service_type, service_class, timeout) == (
+        '/my_service', 'some_msgs/srv/Trigger',
+        'class-for-some_msgs/srv/Trigger', 7.0)
+    assert request.type == 'some_msgs/srv/Trigger'
+
+
+def test_a_none_result_raises():
+    call_service = build_call_service(_fake_svc(), _FakePool(result=None))
+
+    with pytest.raises(Exception):
+        call_service(_FakeNodeHandle(), 'my_service', args=None)
+
+
+def test_a_pool_timeout_propagates_for_stock_callservice_to_report():
+    """Stock CallService._failure turns this into a service_response with
+    result: False (see module docstring item 3)."""
+    pool = _FakePool(error=TimeoutError('timed out after 0.05 s'))
+    call_service = build_call_service(_fake_svc(), pool, timeout_sec=0.05)
+
     with pytest.raises(TimeoutError, match='timed out after'):
-        call_service(node_handle, 'my_service', args=None)
+        call_service(_FakeNodeHandle(), 'my_service', args=None)
 
-    assert scheduled == [client]
+
+def test_unknown_service_raises_invalid_service_and_never_reaches_the_pool():
+    svc = _fake_svc()
+    pool = _FakePool(result='unused')
+    call_service = build_call_service(svc, pool)
+
+    with pytest.raises(svc.InvalidServiceException):
+        call_service(_FakeNodeHandle(service_type=None), 'my_service', args=None)
+
+    assert pool.calls == []
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -384,7 +551,7 @@ class _FakeCloseLog:
 
 
 class _FakeReaper:
-    """Stand-in for ProtocolReaper: records scheduled callables and only
+    """Stand-in for ExecutorThreadRunner: records scheduled callables and only
     runs them when drain() is called explicitly — mirroring how the real
     reaper only runs them once the executor thread's guard condition
     fires, never inline on the scheduling thread."""
@@ -399,35 +566,6 @@ class _FakeReaper:
         pending, self.pending = self.pending, []
         for fn in pending:
             fn()
-
-
-def test_protocol_reaper_schedule_appends_and_triggers_the_guard():
-    node = _FakeNode()
-    reaper = ProtocolReaper(node)
-    calls = []
-
-    reaper.schedule(lambda: calls.append('a'))
-
-    assert len(reaper._pending) == 1
-    assert node.guard.trigger_count == 1
-    assert calls == []  # nothing run until _drain runs
-
-
-def test_protocol_reaper_drain_runs_each_pending_callable_exactly_once():
-    node = _FakeNode()
-    reaper = ProtocolReaper(node)
-    calls = []
-    reaper.schedule(lambda: calls.append('a'))
-    reaper.schedule(lambda: calls.append('b'))
-
-    reaper._drain()
-
-    assert calls == ['a', 'b']
-    assert len(reaper._pending) == 0
-
-    # A second drain with nothing pending runs nothing more.
-    reaper._drain()
-    assert calls == ['a', 'b']
 
 
 def test_guard_protocol_finish_schedules_the_real_finish_exactly_once():
@@ -517,7 +655,8 @@ def test_patch_schedules_teardown_via_the_reaper_without_calling_finish_inline()
     NOT call protocol.finish inline — the fake protocol's finish is not
     invoked until the reaper drains (coordinator audit finding 2026-09-15:
     Subscribe.finish()/Advertise.finish() mutate node entity lists the
-    executor thread iterates, the same hazard ClientReaper exists for)."""
+    executor thread iterates — the hazard module docstring item 6 closes for
+    service clients)."""
     sub_cap = _FakeSubscribeCapability({'t1': object(), 't2': object()})
     protocol = _FakeProtocol([sub_cap, _OtherCapability()])
     log = _FakeCloseLog()
@@ -849,6 +988,17 @@ def test_subscribe_spy_requests_raw_cbor_compression(ros_bridge_js):
     assert "compression: 'cbor-raw'" in body, (
         "subscribeSpy no longer requests raw CBOR — rosbridge will decode "
         "every spied message again, including the two 100 Hz topics.")
+
+
+def test_discover_topics_keeps_one_bounded_poll_in_flight(ros_bridge_js):
+    """main.js polls every 3 s; without the single-flight guard a silent
+    rosapi collects ~16 concurrent 50 s calls per tab on rosbridge, and
+    without the local bound a lost reply holds the slot for 50 s."""
+    body = _extract_function_body(ros_bridge_js, 'discoverTopics')
+    assert 'if (discoveryInFlight) return;' in body
+    assert 'discoveryInFlight = true;' in body
+    assert 'withTimeout(' in body and 'T_DISCOVERY_MS' in body
+    assert '.finally(() => { discoveryInFlight = false; })' in body
 
 
 def _gui_subscribed_topics(main_js_text):
