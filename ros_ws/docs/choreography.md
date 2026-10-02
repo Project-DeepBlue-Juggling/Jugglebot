@@ -218,6 +218,13 @@
 - **subscribers:** `teensy_bridge_node`
 - **type:** `jugglebot_interfaces.msg.SetMotorVelCurrLimitsMessage`
 
+### `skills/attempt`
+
+- **publishers:** `skill_node`
+- **subscribers:** _none_
+- **type:** `diagnostic_msgs.msg.DiagnosticStatus`
+- **name source:** `constant`
+
 ### `throw_announcements`
 
 - **publishers:** `ball_butler_node`, `skill_node`
@@ -523,6 +530,7 @@ broken wire cannot hide among them.
 - `set_hand_gains` — service with no clients
 - `set_hand_state` — service with no clients
 - `set_motor_vel_curr_limits` — topic with no publishers
+- `skills/attempt` — topic with no subscribers
 - `skills/check` — service with no clients
 - `trajectory/commanded_pose` — topic with no subscribers
 - `trajectory/diagnostics` — topic with no subscribers

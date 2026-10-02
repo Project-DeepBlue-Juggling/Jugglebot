@@ -45,6 +45,7 @@ import { bbAimOnHeartbeat, bbAimOnOrchestratorState } from './bb-aim.js';
 import {
     initStateMinimap, minimapOnOrchestratorState, minimapOnControlMode,
     minimapOnRobotState, minimapOnLinkStatus, minimapOnLegSetpointEcho,
+    minimapOnSkillAttempt,
 } from './state-minimap.js';
 import {
     INITIAL_HEIGHT_MM, MM_TO_REV, HAND_MM_PER_REV, ODRIVE_STATE,
@@ -349,6 +350,11 @@ function subscribeAll() {
 
     // BB calibration result (latched — last value available to late subscribers)
     ros.subscribe('bb/calibration_result', 'jugglebot_interfaces/msg/BallButlerCalibrationResult', onBBCalibrationResult, 0);
+
+    // Juggle attempt start / refusal / end from skill_node, whatever sent the
+    // goal (GUI or terminal) — Event Log entries + chart markers.  Unthrottled:
+    // each message is a discrete event.
+    ros.subscribe('skills/attempt', 'diagnostic_msgs/msg/DiagnosticStatus', minimapOnSkillAttempt, 0);
 }
 
 // ---- Topic handlers ----
@@ -1054,6 +1060,7 @@ const GUI_SUBSCRIBED_TOPICS = new Set([
     'rigid_body_poses',
     'leg_setpoint_echo', 'control_mode_topic', 'motion/diagnostics',
     'bb/calibration_result', 'cone/heartbeat', 'cone/timing_result',
+    'skills/attempt',
 ]);
 
 /** Active spy subscriptions: Map<topicName, ROSLIB.Topic> */

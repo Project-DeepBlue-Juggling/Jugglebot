@@ -1208,11 +1208,9 @@ function onJuggleStartConfirm() {
     const data = reload ? pattern + ',reload' : pattern;
     juggleBusy = true;
     setJuggleStatus('Dispatching ' + pattern + (reload ? ' (reload)' : '') + '…', '');
-    emitEvent({
-        type: EVENT_TYPES.COMMAND,
-        label: 'Juggle Start',
-        detail: 'jugglebot/juggle_request (' + data + ')',
-    });
+    // No Event Log entry here: skill_node announces the attempt on
+    // skills/attempt (minimapOnSkillAttempt), for this button and a terminal
+    // `ros2 action send_goal` alike.
     ros.callService('jugglebot/juggle_request', 'jugglebot_interfaces/srv/SetString', { data })
         .then((res) => {
             if (res && res.success) {
@@ -1241,6 +1239,49 @@ function onJuggleStartConfirm() {
                 renderJuggleControls();
             }, 8000);
         });
+}
+
+/**
+ * skills/attempt (diagnostic_msgs/DiagnosticStatus) → Event Log + chart
+ * markers.  skill_node publishes one per Juggle goal event from EVERY goal
+ * source, so attempts started from a terminal show up too.  `name` is the
+ * event and `values` its string fields — the names are skill_node.py's
+ * ATTEMPT_* constants; rename both together.
+ *   juggle_start   pattern n_throws reload apex_m separation_mm (resolved:
+ *                  the goal's own fields, else skill_node's params)
+ *   juggle_refused pattern; message = the refusal reason
+ *   juggle_end     pattern outcome throws caught
+ */
+export function minimapOnSkillAttempt(msg) {
+    if (!msg) return;
+    const fields = {};
+    for (const v of (msg.values || [])) fields[v.key] = v.value;
+    const known = JUGGLE_PATTERNS.find(p => p.value === fields.pattern);
+    const pattern = known ? known.label : (fields.pattern || '?');
+    const throws = (n) => n + (n === '1' ? ' throw' : ' throws');
+    if (msg.name === 'juggle_start') {
+        const parts = ['Juggle Start', pattern, throws(fields.n_throws)];
+        if (fields.reload === '1') parts.push('reload');
+        emitEvent({
+            type: EVENT_TYPES.COMMAND,
+            label: parts.join(' · '),
+            detail: 'apex ' + fields.apex_m + ' m · separation ' + fields.separation_mm + ' mm',
+        });
+    } else if (msg.name === 'juggle_refused') {
+        const reason = String(msg.message || '').replace(/^refused:\s*/i, '');
+        emitEvent({
+            type: EVENT_TYPES.STATE,
+            label: 'Juggle Refused · ' + pattern + ' · ' + reason,
+            detail: msg.message,
+        });
+    } else if (msg.name === 'juggle_end') {
+        emitEvent({
+            type: EVENT_TYPES.STATE,
+            label: 'Juggle End · ' + pattern + ' · ' + fields.outcome + ' · '
+                + throws(fields.throws) + ', ' + fields.caught + ' caught',
+            detail: 'outcome ' + fields.outcome,
+        });
+    }
 }
 
 function onJuggleStopClick() {

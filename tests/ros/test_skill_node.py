@@ -3627,6 +3627,60 @@ class TestJuggleAction:
         gh.canceled.assert_not_called()
         gh.abort.assert_called_once()
 
+    # ── skills/attempt: the GUI's view of every goal, whatever sent it ──
+
+    @staticmethod
+    def _attempt_events(node):
+        return [(m.name, m.message, {kv.key: kv.value for kv in m.values})
+                for m in node._attempt_pub.published]
+
+    @pytest.mark.parametrize('num_cycles, expected', [
+        (0, str(sn._DEFAULT_N_THROWS)),   # 0 = the node's n_throws param
+        (7, '7'),                          # a terminal goal's own count wins
+    ])
+    def test_an_accepted_goal_announces_its_resolved_request(
+            self, tmp_path, num_cycles, expected):
+        node, _client = _node_with_client()
+        _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+        _prelevel_ready(node)
+        with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)):
+            assert (node._juggle_goal(_self_toss_goal(num_cycles=num_cycles))
+                   == sn.GoalResponse.ACCEPT)
+        [(name, _msg, values)] = self._attempt_events(node)
+        assert name == sn.ATTEMPT_START
+        assert values['pattern'] == 'self_toss'
+        assert values['n_throws'] == expected
+        assert values['reload'] == '0'
+        assert set(values) == {'pattern', 'n_throws', 'reload', 'apex_m',
+                               'separation_mm'}
+
+    def test_a_refused_goal_announces_the_reason(self):
+        node, _client = _node_with_client()
+        assert node._juggle_goal(_goal('not_a_pattern')) == sn.GoalResponse.REJECT
+        [(name, message, values)] = self._attempt_events(node)
+        assert name == sn.ATTEMPT_REFUSED
+        assert values == {'pattern': 'not_a_pattern'}
+        assert 'not_a_pattern' in message      # the refusal's own sentence
+
+    def test_execute_announces_the_attempt_end(self, tmp_path):
+        """Same shortest-path-to-idle as the end-code test above."""
+        node, _client = _node_with_client()
+        _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+        _prelevel_ready(node)
+        with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)):
+            assert (node._juggle_goal(_self_toss_goal())
+                   == sn.GoalResponse.ACCEPT)
+        node._stop_attempt()
+        node._on_tick()
+        gh = MagicMock(is_cancel_requested=False)
+        gh.request.pattern = 'self_toss'
+        node._juggle_execute(gh)
+        name, message, values = self._attempt_events(node)[-1]
+        assert name == sn.ATTEMPT_END
+        assert message == 'STOPPED'
+        assert values == {'pattern': 'self_toss', 'outcome': 'STOPPED',
+                          'throws': '0', 'caught': '0'}
+
     def test_execute_publishes_feedback_and_honours_a_live_cancel(self, tmp_path):
         """Uses self_toss, not columns (R5): a `reload=False` columns start
         leaves `_reload_ctx` armed for the FEED WAIT even once the opening

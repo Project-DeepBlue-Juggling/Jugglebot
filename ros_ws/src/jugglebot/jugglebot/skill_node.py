@@ -54,7 +54,7 @@ from rclpy.executors import MultiThreadedExecutor
 from rclpy.logging import LoggingSeverity
 from rclpy.node import Node
 
-from diagnostic_msgs.msg import DiagnosticStatus
+from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
 from geometry_msgs.msg import Point, Pose, Quaternion, Vector3
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
@@ -143,6 +143,16 @@ _TICK_HZ = 40.0
 #: <= 5 Hz") — one order below the 40 Hz tick, plenty for a human-readable
 #: throw_index/caught readout and no load on the action transport.
 _FEEDBACK_HZ = 5.0
+
+#: skills/attempt — one DiagnosticStatus per Juggle goal event, from EVERY
+#: goal source (GUI relay, `ros2 action send_goal`, scripts), so the GUI's
+#: Event Log and chart markers see attempts it did not start itself. `name`
+#: is the event, `values` its fields (all strings). The GUI reads these
+#: names in state-minimap.js `minimapOnSkillAttempt` — rename both together.
+ATTEMPT_TOPIC = 'skills/attempt'
+ATTEMPT_START = 'juggle_start'      # pattern n_throws reload apex_m separation_mm
+ATTEMPT_REFUSED = 'juggle_refused'  # pattern; message = the refusal reason
+ATTEMPT_END = 'juggle_end'          # pattern outcome throws caught
 
 #: `_stop_attempt`'s bound on waiting for `_tick_lock` (finding 12, R3 audit,
 #: 2026-09-13): a tick mid-`_dispatch` can itself be blocked inside
@@ -828,6 +838,8 @@ class SkillNode(Node):
 
         self._announce_pub = self.create_publisher(
             ThrowAnnouncement, 'throw_announcements', 10)
+        self._attempt_pub = self.create_publisher(
+            DiagnosticStatus, ATTEMPT_TOPIC, 10)
 
         # ── every subscription gets its OWN callback group (finding 4, R3
         # audit, 2026-09-13) ────────────────────────────────────────────────
@@ -2338,10 +2350,18 @@ class SkillNode(Node):
         self._attempt_label = pattern + (' (reload)' if reload else '')
 
         if pattern == 'columns':
-            return self._run_columns(apex_m, separation_mm, dwell_s,
-                                     n_throws, reload)
-        return self._run_one_ball(pattern, apex_m, separation_mm, dwell_s,
-                                  n_throws, reload)
+            result = self._run_columns(apex_m, separation_mm, dwell_s,
+                                       n_throws, reload)
+        else:
+            result = self._run_one_ball(pattern, apex_m, separation_mm,
+                                        dwell_s, n_throws, reload)
+        # The RESOLVED request (goal fields, else this node's params), for
+        # `_juggle_goal`'s skills/attempt start event. On the result, not on
+        # `self`: goal callbacks run on a reentrant group.
+        result.attempt = dict(pattern=pattern, n_throws=n_throws,
+                              reload=reload, apex_m=apex_m,
+                              separation_mm=separation_mm)
+        return result
 
     def _run_columns(self, apex_m: float, separation_mm: float,
                      dwell_s: float, n_throws: int,
@@ -3553,6 +3573,17 @@ class SkillNode(Node):
 
     # ── the Juggle action (R4 owner decision D3, U5) ────────────────────
 
+    def _publish_attempt_event(self, event: str, message: str, level,
+                               **fields: str) -> None:
+        """One skills/attempt message (see `ATTEMPT_TOPIC`)."""
+        msg = DiagnosticStatus()
+        msg.name = event
+        msg.hardware_id = 'skill_node'
+        msg.level = level
+        msg.message = message
+        msg.values = [KeyValue(key=k, value=v) for k, v in fields.items()]
+        self._attempt_pub.publish(msg)
+
     def _juggle_goal(self, goal_request):
         """``goal_callback``: accept iff `_start_pattern` compiles a
         schedule — the SAME no-motion refusal ladder the deleted
@@ -3564,7 +3595,18 @@ class SkillNode(Node):
         if not result.success:
             self.get_logger().error('jugglebot/juggle REJECTED: %s'
                                     % (result.message,))
+            self._publish_attempt_event(
+                ATTEMPT_REFUSED, str(result.message), DiagnosticStatus.WARN,
+                pattern=str(getattr(goal_request, 'pattern', '')))
             return GoalResponse.REJECT
+        attempt = result.attempt
+        self._publish_attempt_event(
+            ATTEMPT_START, 'accepted', DiagnosticStatus.OK,
+            pattern=attempt['pattern'],
+            n_throws=str(attempt['n_throws']),
+            reload='1' if attempt['reload'] else '0',
+            apex_m='%.3f' % attempt['apex_m'],
+            separation_mm='%.1f' % attempt['separation_mm'])
         start = getattr(result, 'start_line', '')
         if start:
             self.get_logger().debug('jugglebot/juggle ACCEPTED: %s'
@@ -3622,6 +3664,13 @@ class SkillNode(Node):
         # each throw's operator line.
         result.throws, result.caught = rp.summarise(self._goal_reports)
         result.per_throw = list(self._goal_outcome_lines)
+        self._publish_attempt_event(
+            ATTEMPT_END, outcome,
+            DiagnosticStatus.OK if outcome in ('COMPLETED', 'STOPPED')
+            else DiagnosticStatus.WARN,
+            pattern=str(goal_handle.request.pattern),
+            outcome=outcome, throws=str(result.throws),
+            caught=str(result.caught))
         if cancelled:
             goal_handle.canceled()
         elif result.success:
