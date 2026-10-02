@@ -1,5 +1,17 @@
 # R5 hardware runsheet, sitting 2 — the receive-level feed catch and BB-fed columns
 
+> **FLOWN 2026-10-02 — three blockers found; six fix units landed 2026-10-02 afternoon, none
+> flown — this sheet is SUPERSEDED by `tests/hardware/session_skills_r5_sitting3.md`.** (1) The
+> 0° gate's `receive_tilt` level pin never reached the
+> `InstallSegment` wire, so the live feed catch still banks the old `tilt_to_receive` pin — the
+> 0° gate FAILED on timing even though every ball was caught. (2) The flown site layout (Ball
+> Butler feeds P2, ball A throws from P1) lets B's descent cross A's own throw column every
+> cycle — mocap confirms the two balls' markers merge in flight in all 4 attempts where both
+> threw. (3) A fresh-origin THROW/CATCH has no solve-time budget (`ORIGIN_TOO_LATE`), so a
+> 76-84 ms columns solve kills the attempt before any ball leaves the cup. Full analysis and
+> proposed fixes (U0-U3, none landed): `logbook/2026-10-02-skill-stack-r5-sitting-2.md`. Results
+> below (§ 11).
+
 Skill-stack R5 (`plans/active/two-ball-skill-stack.md` § R5, "Owner decisions (2026-09-30
 evening)"). Same machine as `session_skills_r5.md` (sitting 1) and, behind it,
 `session_skills_r4.md` — **those sheets stay the reference for everything this one does not
@@ -373,48 +385,60 @@ relevant this sitting:
 
 ## 11. Results
 
-(blank -- fill in after the sitting)
+Flown 2026-10-02, launch 12:43-13:01, bag `~/Desktop/rosbags/2026-10-02_12-43-28`. Full
+analysis: `logbook/2026-10-02-skill-stack-r5-sitting-2.md`.
 
 ### BB accuracy-volley re-fit (§ 4)
 
 | Item | Result |
 |---|---|
-| Volley completed (throws / cells) | |
-| Fit procedure used | |
-| New matrix `n_pairs` / source | |
-| Rebuild + relaunch confirmed | |
-| Verify: 3 reloads at 12 deg, \|y\| bias | |
+| Volley completed (throws / cells) | **Not run** — owner call: cone throws have been reliable and the fit is slow |
+| Fit procedure used | N/A |
+| New matrix `n_pairs` / source | N/A — the stale 2026-06-09 affine (10.3° of yaw stale, per sitting 1) stayed in use |
+| Rebuild + relaunch confirmed | N/A |
+| Verify: 3 reloads at 12 deg, \|y\| bias | Not run (this sitting's reloads ran at 0°, not 12°) |
 
 ### The 0 deg gate (§ 5)
 
 | Item | Result |
 |---|---|
-| Feeds attempted / caught | |
-| Smooth seats (+0.05..+0.15 s) | |
-| `THROW_ABORTED_NOT_SETTLED` refusals (vs 5/19 baseline) | |
-| Retry-once fired and cleared? | |
-| Landing-vs-committed mean (probe) | |
-| High-speed camera clips (3) | |
-| **Verdict (PASS / FAIL against § 5's criterion)** | |
+| Feeds attempted / caught | 10 / 10 |
+| Smooth seats (+0.05..+0.15 s) | 1 / 8 (seat 121-340 ms after landing; 2 of the 10 feeds lack full landing data) |
+| `THROW_ABORTED_NOT_SETTLED` refusals (vs 5/19 baseline) | Not isolated in this sitting's analysis (no NOT_SETTLED event noted in the analysed feed window) |
+| Retry-once fired and cleared? | Not isolated this sitting (see above) |
+| Landing-vs-committed mean (probe) | **+55.3 ms** (sd 24.2 ms, n=8) — outside the ±30 ms criterion |
+| High-speed camera clips (3) | Not recorded in this sitting's analysed facts |
+| **Verdict (PASS / FAIL against § 5's criterion)** | **FAIL** — catch rate alone passes (10/10 ≥ 9); landing (+55.3 ms) and smooth-seat (1/8 < 8) both miss |
 
 ### Ball Butler-fed columns (§ 6)
 
 | Attempt | `num_cycles` | Feed outcome (accepted / `REJECTED_COLUMNS_FEED_UNCATCHABLE` / settle refusal) | Ball B caught | Consecutive catches after | Notes |
 |---|---|---|---|---|---|
-| | | | | | |
+| 1 | 6 | A's THROW installed; feed CATCH **refused at install** (`LIMIT_VEL` 349.5 mm/s + cup-contact floor) | No | 0 | Mocap: A/B markers merge +0.174 s after A's release, 575 mm above the plane (graze, no kink in A's own track) |
+| 2 | 6 | A's own THROW **refused `ORIGIN_TOO_LATE`** (solve 0.076 s) | No | 0 | A never threw; no collision |
+| 3 | 6 | A's THROW installed; feed CATCH **refused at install** (`LIMIT_VEL` 352.2 mm/s + cup-contact floor) | No | 0 | Mocap merge +0.184 s, 583 mm above plane, min separation 44.3 mm (< 74 mm ball-touch threshold); real velocity change after merge, which ball ambiguous |
+| 4 | 6 | A's own THROW **refused `ORIGIN_TOO_LATE`** (solve 0.083 s) | No | 0 | A never threw; no collision |
+| 5 | 6 | A's own THROW **refused `ORIGIN_TOO_LATE`** (solve 0.084 s) | No | 0 | A never threw; no collision |
+| 6 | 6 | A's THROW installed; feed CATCH **refused at install** (`LIMIT_VEL` 350.4 mm/s + cup-contact floor) | No | 0 | Mocap merge +0.190 s, 548 mm above plane, min separation 76.6 mm (borderline); real velocity change after merge |
+| 7 | 6 | A's THROW installed; feed CATCH **refused at install** (`LIMIT_VEL` 377.7 mm/s + cup-contact floor) | No | 0 | Mocap merge starts +0.05 s, ~1.0 m up, unresolved for ~0.8 s — a geometrically more severe encounter than 1/3/6 |
 
-**D2 Stop observed?**
-**D3 drop-with-survivor observed?**
+0/7 attempts completed a single columns cycle; root cause and the owner's proposed site-swap
+fix (not flown) are in the logbook entry's Discussion (a)/(c).
+
+**D2 Stop observed?** No — no attempt reached a Stop condition.
+**D3 drop-with-survivor observed?** No — not reached.
 
 ### Fallback (§ 7)
 
-**Exercised?**
+**Exercised?** No. The owner proposed the BB-placement-style swap (JB starts at the far site,
+moves to receive) verbally after the sitting; it was analysed offline afterward (feasibility
+tables, logbook entry Measured 7 / Discussion (c)) but not flown.
 
 ### Bag / boot-banner record
 
 | Rung | Time | Bag folder | Notes |
 |---|---|---|---|
-| Pre-power / FW 5 flash | | | |
-| BB accuracy volley | | | |
-| 0 deg gate | | | |
-| BB-fed columns | | | |
+| Pre-power / FW 5 flash | — | — | Not re-flashed this sitting; BB FW 5 was flashed 2026-09-30 22:45 (receipt 4 -> 5) and carried forward |
+| BB accuracy volley | — | `~/Desktop/rosbags/2026-10-02_12-43-28` | Not run (see § 4 above) |
+| 0 deg gate | 12:43-13:01 (within the one launch window) | `~/Desktop/rosbags/2026-10-02_12-43-28` | 10 feeds, `launch.log` lines 690-1749 |
+| BB-fed columns | 12:43-13:01 (within the one launch window) | `~/Desktop/rosbags/2026-10-02_12-43-28` | 7 attempts, `launch.log` lines 1855-2113 |
