@@ -467,50 +467,87 @@ function gridShapeFor(n) {
 }
 
 /**
- * Indices of charts that sit at the bottom of their column in the current
- * layout — these are the ones that render the x-axis tick labels.
- *
- * The grid uses CSS `grid-auto-flow: column`, so visible cells fill
- * top-to-bottom in column 1, then column 2, and so on, in DOM (motor-
- * numeric) order.  For visible position k in a layout with `rows` per
- * column, the bottom-of-column slot is reached when k % rows == rows - 1
- * OR when k is the last visible chart (partial trailing column).
+ * Visible chart indices grouped by grid column.  Column-major fill in
+ * motor-numeric order: `rows` charts per column, so only the trailing
+ * column can be short (e.g. 8 visible → [0,1,2] [3,4,5] [6,7]).
  */
-function computeBottomOfColumnIds() {
+function visibleColumns() {
     const visible = [];
     for (let i = 0; i < MOTOR_COUNT; i++) {
         if (visibleCharts.has(i)) visible.push(i);
     }
-    const n = visible.length;
-    if (n === 0) return new Set();
-    const { rows } = gridShapeFor(n);
-    const bottom = new Set();
-    for (let k = 0; k < n; k++) {
-        if (k % rows === rows - 1 || k === n - 1) bottom.add(visible[k]);
+    if (visible.length === 0) return [];
+    const { rows } = gridShapeFor(visible.length);
+    const columns = [];
+    for (let k = 0; k < visible.length; k += rows) {
+        columns.push(visible.slice(k, k + rows));
     }
-    return bottom;
+    return columns;
 }
+
+/**
+ * Indices of charts that sit at the bottom of their column in the current
+ * layout — these are the ones that render the x-axis tick labels.
+ */
+function computeBottomOfColumnIds() {
+    return new Set(visibleColumns().map(col => col[col.length - 1]));
+}
+
+function gcd(a, b) {
+    return b === 0 ? a : gcd(b, a % b);
+}
+
+/** x-axis height (px) on a bottom-of-column chart (tick labels) and on every
+ *  other chart (a stub, no labels).  Shared by buildUPlotOpts and the grid
+ *  layout, which gives the bottom row the difference back. */
+const X_AXIS_SIZE = 28;
+const X_AXIS_STUB_SIZE = 4;
 
 /**
  * Apply the grid template and hidden classes based on the current
  * visibleCharts set, then resize + repaint so uPlot adapts and the
  * freshly-unhidden charts immediately display their cached history.
+ *
+ * Every column fills the full grid height, however many charts it holds:
+ * the row track count is the LCM of the column lengths, and a chart in a
+ * column of m spans tracks/m of them.  So with BB Hand hidden, Hand and
+ * BB Pitch take half the height each (3 tracks of 6); with both BB charts
+ * hidden, Hand takes all of it.
+ *
+ * The bottom chart of each column draws the time-axis labels, which would
+ * eat X_AXIS_SIZE - X_AXIS_STUB_SIZE px of its plot area.  A fixed extra
+ * track under the grid gives that back: bottom charts span into it (and
+ * the row gap before it), so every chart in a column plots at one height.
  */
 function applyChartLayout() {
-    const n = visibleCharts.size;
-    const { cols, rows } = gridShapeFor(n);
+    const columns = visibleColumns();
+    const tracks = columns.reduce((acc, col) => acc * col.length / gcd(acc, col.length), 1);
 
     const grid = document.getElementById('chart-grid');
     if (grid) {
-        grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
-        grid.style.gridTemplateRows = `repeat(${rows}, 1fr)`;
+        const rowGap = parseFloat(getComputedStyle(grid).rowGap) || 0;
+        const axisTrack = Math.max(X_AXIS_SIZE - X_AXIS_STUB_SIZE - rowGap, 0);
+        grid.style.gridTemplateColumns = `repeat(${Math.max(columns.length, 1)}, 1fr)`;
+        grid.style.gridTemplateRows = `repeat(${tracks}, 1fr) ${axisTrack}px`;
     }
 
     for (let i = 0; i < MOTOR_COUNT; i++) {
         const cell = document.getElementById(`chart-${i}`);
         if (!cell) continue;
         cell.classList.toggle('chart-hidden', !visibleCharts.has(i));
+        cell.style.gridColumn = '';
+        cell.style.gridRow = '';
     }
+    columns.forEach((col, c) => {
+        const span = tracks / col.length;
+        col.forEach((idx, j) => {
+            const cell = document.getElementById(`chart-${idx}`);
+            if (!cell) return;
+            const isBottom = j === col.length - 1;
+            cell.style.gridColumn = `${c + 1}`;
+            cell.style.gridRow = `${j * span + 1} / span ${isBottom ? span + 1 : span}`;
+        });
+    });
 
     // Rebuild (rather than just resize) so the x-axis assignment refreshes:
     // the bottom-of-column chart changes whenever the visible set changes,
@@ -1171,7 +1208,7 @@ function buildUPlotOpts(chartIdx, width, height, showXAxis = true, onCursor = nu
             grid: { stroke: gridStroke, width: 1 },
             ticks: { stroke: showXAxis ? ticksStroke : 'transparent', width: 1, size: showXAxis ? 6 : 0 },
             font: '11px JetBrains Mono, monospace',
-            size: showXAxis ? 28 : 4,
+            size: showXAxis ? X_AXIS_SIZE : X_AXIS_STUB_SIZE,
             values: showXAxis
                 ? (u, splits) => splits.map(v => {
                     const d = new Date(v * 1000);

@@ -191,10 +191,11 @@
 }
 
 /* ---- Chart grid ----
-   DOM order is motor-numeric (chart-0 … chart-8); grid-auto-flow: column
-   fills top-to-bottom then left-to-right so col1 = L0/L1/L2, etc.  JS sets
-   grid-template-columns / grid-template-rows inline based on how many charts
-   are currently visible. */
+   DOM order is motor-numeric (chart-0 … chart-8), filled top-to-bottom then
+   left-to-right so col1 = L0/L1/L2, etc.  The template below is only the
+   pre-JS default: applyChartLayout() sets the templates inline and places
+   every visible cell explicitly (grid-column / grid-row), so a column holding
+   fewer charts than the others still fills the full height. */
 #chart-grid {
     display: grid;
     grid-template-columns: repeat(3, 1fr);

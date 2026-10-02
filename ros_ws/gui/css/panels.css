@@ -1128,9 +1128,12 @@
 
 .history-entry {
     display: grid;
-    grid-template-columns: 10px 72px 1fr;
+    /* Time column sized to its text (HH:MM:SS.mmm; monospace, so every row
+       gets the same width) — a fixed 72px was narrower than the timestamp,
+       which then ran into the label. */
+    grid-template-columns: 10px max-content minmax(0, 1fr);
     align-items: center;
-    gap: 6px;
+    gap: 8px;
     padding: 2px 4px;
     border-bottom: 1px dashed var(--border-color);
     border-radius: var(--border-radius-sm);
