@@ -732,6 +732,16 @@ class SkillNode(Node):
         # the goal result's `per_throw`/`throws`/`caught`. All three are
         # reset by `_start_pattern` at the start of every accepted goal.
         self._goal_done_event = threading.Event()
+        # ...and only once the goal's attempt EXISTS (2026-10-02): `_start_
+        # pattern` disarms this before its frame check / `_prelevel` /
+        # compile and re-arms it only after the executor (or reload
+        # context) is installed. The 40 Hz tick runs on its own thread
+        # throughout that window and sees "no executor, no reload" -- before
+        # this flag it fired the event there, so every goal ended COMPLETED
+        # (0/0) at once and a cancel (the GUI Stop) found no goal to cancel.
+        # Read and written only under `_reload_lock`, with the event's
+        # clear/set, so a tick cannot act on a stale arm.
+        self._goal_armed = False
         self._goal_end_code = ''
         self._goal_outcome_lines = []
         #: The attempt's ThrowReports (the result's counts) and its name on
@@ -2264,15 +2274,17 @@ class SkillNode(Node):
         self._reload_ctx is None`, NOT merely the former (see
         `_goal_done_event`'s `__init__` comment: the latter is also true
         mid-reload-wait, between the bridge REST finishing and the real
-        reload schedule swapping in). Called at the end of every `_on_tick`
+        reload schedule swapping in) — and only once `_goal_armed` (the
+        goal's attempt has been installed; the start window before that is
+        also "no executor, no reload"). Called at the end of every `_on_tick`
         that took the tick lock, so `_juggle_execute`'s wait can never miss
         the transition — including the one `_check_reload_timeout` alone
         causes (that function runs before the lock, in the SAME `_on_tick`
         call this method ends)."""
         with self._reload_lock:
-            idle = self._executor is None and self._reload_ctx is None
-        if idle:
-            self._goal_done_event.set()
+            if (self._goal_armed and self._executor is None
+                    and self._reload_ctx is None):
+                self._goal_done_event.set()
 
     # ── attempt lifecycle ──────────────────────────────────────────────
 
@@ -2346,7 +2358,9 @@ class SkillNode(Node):
         self._goal_outcome_lines = []
         self._goal_reports = []
         self._goal_end_code = ''
-        self._goal_done_event.clear()
+        with self._reload_lock:
+            self._goal_armed = False
+            self._goal_done_event.clear()
         self._attempt_label = pattern + (' (reload)' if reload else '')
 
         if pattern == 'columns':
@@ -2361,6 +2375,11 @@ class SkillNode(Node):
         result.attempt = dict(pattern=pattern, n_throws=n_throws,
                               reload=reload, apex_m=apex_m,
                               separation_mm=separation_mm)
+        if result.success:
+            # The attempt is installed now -- from here `_maybe_signal_goal_
+            # done` may end the goal (see `_goal_armed`'s `__init__` comment).
+            with self._reload_lock:
+                self._goal_armed = True
         return result
 
     def _run_columns(self, apex_m: float, separation_mm: float,

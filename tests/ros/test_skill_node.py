@@ -3627,6 +3627,44 @@ class TestJuggleAction:
         gh.canceled.assert_not_called()
         gh.abort.assert_called_once()
 
+    @pytest.mark.parametrize('pattern', ['self_toss', 'columns'])
+    def test_a_tick_during_the_start_compile_does_not_end_the_goal(
+            self, tmp_path, pattern):
+        """2026-10-02: every Juggle goal reported COMPLETED (0/0) the moment it
+        started, while the attempt went on to run -- and with the goal already
+        terminal, the GUI Stop (a goal cancel) had nothing to cancel.
+        `_start_pattern` cleared `_goal_done_event`, then spent the frame
+        check, `_prelevel` round trip and compile with no executor installed;
+        the 40 Hz tick runs on its own thread and fired the event in that
+        window. Here the tick runs from inside the frame check, which both
+        start paths call before installing."""
+        node, _client = _node_with_client()
+        _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+        _prelevel_ready(node)
+        real_frame_check = node._frame_check_error
+
+        def frame_check_with_a_concurrent_tick():
+            node._on_tick()
+            return real_frame_check()
+
+        node._frame_check_error = frame_check_with_a_concurrent_tick
+        node._goal_done_event.set()          # the previous goal's, as live
+        with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
+                          _good_box_path(tmp_path, columns=True)), \
+             patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+            assert (node._juggle_goal(_goal(pattern, separation_mm=100.0))
+                   == sn.GoalResponse.ACCEPT)
+        assert not node._goal_done_event.is_set(), (
+            'the goal was reported done before its attempt was installed')
+        node._on_tick()
+        assert not node._goal_done_event.is_set()
+        # ...and the attempt's real end still ends the goal.
+        node._stop_attempt()
+        with node._reload_lock:
+            node._reload_ctx = None          # columns' feed wait (see above)
+        node._on_tick()
+        assert node._goal_done_event.is_set()
+
     # ── skills/attempt: the GUI's view of every goal, whatever sent it ──
 
     @staticmethod
