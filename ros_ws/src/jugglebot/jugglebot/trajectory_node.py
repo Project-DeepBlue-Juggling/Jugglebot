@@ -387,9 +387,10 @@ def _ceil_to_grid(t: float, dt: float) -> float:
 
 
 def _wire_tilt(tilt_rad, is_set: bool) -> Optional[Tuple[float, float]]:
-    """``InstallSegment.Request.{hold,rest}_tilt_rad`` + its ``*_set`` flag
-    (R4 reload, Unit U3; the flag added by the R4 phase-end audit,
-    2026-09-24) -> ``segments.CatchTerminal.hold_tilt`` /
+    """``InstallSegment.Request.{hold,receive,rest}_tilt_rad`` + its
+    ``*_set`` flag (R4 reload, Unit U3; the flag added by the R4 phase-end
+    audit, 2026-09-24; ``receive_tilt_rad`` added R5, 2026-10-02) ->
+    ``segments.CatchTerminal.hold_tilt`` / ``CatchTerminal.receive_tilt`` /
     ``RestTerminal.tilt``, or ``None``.
 
     The FLAG says whether a tilt was given. ``(0.0, 0.0)`` is the DECAY
@@ -4080,7 +4081,16 @@ class TrajectoryNode(Node):
         probe measured REFUSING ``LIMIT_VEL`` 574.9 mm/s > 250.0 for exactly
         this transition, ``handoff_U2.md`` "Fail-before / pass-after"). A
         zero-sentinel would silently collapse the DECAY REST's explicit
-        level target onto the branch already proven to refuse it."""
+        level target onto the branch already proven to refuse it.
+
+        ``receive_tilt_rad`` (R5, 2026-10-02) decodes the same way onto
+        ``CatchTerminal.receive_tilt`` -- added after the field was found
+        NOT wire-plumbed (encoded nowhere, decoded nowhere), so every live
+        BB-fed columns feed catch planned with ``receive_tilt=None`` and
+        refused ``LIMIT_VEL`` on the 2026-10-02 sitting even though the
+        offline pre-throw check and the sim gate, which both plan with the
+        executor's own terminal in-process, passed. Mutually exclusive with
+        ``hold_tilt_rad`` (``schedule.Skill.__post_init__`` validates)."""
         if kind == sk_seg.THROW:
             return sk_seg.ThrowTerminal(
                 site_mm=np.asarray(request.site_mm, dtype=float),
@@ -4102,7 +4112,9 @@ class TrajectoryNode(Node):
                 rest_site_mm=np.asarray(request.rest_site_mm, dtype=float),
                 then_throw=then_throw,
                 hold_tilt=_wire_tilt(request.hold_tilt_rad,
-                                     request.hold_tilt_set))
+                                     request.hold_tilt_set),
+                receive_tilt=_wire_tilt(request.receive_tilt_rad,
+                                        request.receive_tilt_set))
         return sk_seg.RestTerminal(
             rest_site_mm=np.asarray(request.rest_site_mm, dtype=float),
             t_rest_s=float(t_event_perf),
@@ -4193,25 +4205,95 @@ class TrajectoryNode(Node):
         seed_rest = None
         fresh = record is None or (t_now_s + self._segment_lead_s) >= record.end_s
         if fresh:
-            seed_rest, code, err = self._cycle_start_state(uc.SETTLE)
-            if seed_rest is None:
-                return self._reject_segment(
-                    response, code, '%s — cannot seed a segment' % (err,), t_wall)
+            # `record` STILL STREAMING at this instant (`t_now_s <
+            # record.end_s`) is the one `fresh` sub-case the LIVE at-rest test
+            # below must not run on (found 2026-10-02 while landing
+            # `reserve_fresh_lead`, `scratchpad/probe_rest_tail.py/.out`): a
+            # REST keeps moving right up to its own last knot — 2.4-33 mm/s
+            # 25 ms before the end on the schedule's own park/pretilt moves —
+            # so `_cycle_start_state`'s rest bound (0.3 mm/s platform, 0.2
+            # rev/s hand, scaled off the live leg/hand vel limits) reads that
+            # motion as "not at rest" on every fresh install dispatched before
+            # the record's real end. Under the dispatch look-ahead that is
+            # exactly what happens: a reload CATCH dispatches at the pre-tilt
+            # REST's NOMINAL end (`schedule.py`'s `pretilt_end_rel`, which is
+            # also the CATCH's own `dispatch_s`), and a REBASED pre-tilt REST
+            # (R5 sitting 2 measured +0.16-0.18 s) ends AFTER that nominal
+            # instant — so the record is provably still on the wire when this
+            # handler runs, fail-closed on a machine that is doing exactly
+            # what it was told to.
+            #
+            # The fix is not to loosen the rest bound — it is to stop asking
+            # the LIVE state that question at all. `fresh`'s own test
+            # (`t_now_s + lead_s >= record.end_s`) is the exact claim `t0 >=
+            # record.end_s` once `reserve_fresh_lead` (below) plants the new
+            # segment's origin at `t0 = t_now_s + lead_s`: by construction the
+            # record WILL have reached ITS OWN terminal rest (plan § 0, every
+            # segment rest-terminal) by the time this new segment's knot 0 is
+            # due, however fast it is moving right now. The seed this install
+            # needs is that terminal rest — `record.plan.pose[-1]` /
+            # `record.plan.hand_rev[-1]`, EXACT zero velocity and
+            # acceleration — not a snapshot of motion the machine will have
+            # already left behind by `t0`. That is exactly what
+            # `install_segment` builds on its own (`_rest_seed`) whenever it
+            # is handed a `record` and no `seed_rest`, with no separate live-
+            # telemetry re-verification layered on top — the same trust a
+            # SPLICE already places in `record` (it seeds off
+            # `record.meta`/`state_at_knot` alone, no live-state gate at all).
+            # So here that leaves `seed_rest` at its `None` default: no live
+            # read, no E8 tilt lookup (the correction is inherited from the
+            # record's own `levelling_correction`, exactly as a chained window
+            # already does), no at-rest numeric test to fail.
+            #
+            # A record that has ALREADY reached its end (`record.end_s <=
+            # t_now_s` — no record streamed inside the lead, or there is no
+            # record at all) is UNCHANGED: `_cycle_start_state` still runs,
+            # because that is the one place the MEASURED-vs-commanded hand
+            # RECONCILIATION lives (2026-09-16 defect: a hand park that
+            # bypasses this emitter leaves a stale commanded belief behind,
+            # and only a truly-settled rest can be safely corrected against
+            # the encoder — see that method's docstring). Skipping it
+            # unconditionally whenever `record is not None` would silently
+            # drop that reconciliation for every ordinary fresh install too,
+            # which is not this defect's class.
+            #
+            # A fresh REST is the other exception (audit, 2026-10-02):
+            # `install_segment` reserves NO lead for it (`reserved = ... and
+            # kind != REST` — a REST's origin is `t_now_s` itself, it carries
+            # no event to protect), so a fresh REST dispatched while the
+            # previous record still streams starts NOW, from wherever the
+            # machine IS. Its right seed is therefore the live state, moving
+            # or not — `_cycle_start_state`'s post-release branch builds
+            # exactly that — never the record's not-yet-reached terminal
+            # rest, which would put up to `lead_s` of REST-tail motion
+            # (2.4-33 mm/s, `probe_rest_tail.py`) between the seed and the
+            # machine at knot 0 with only `_install_continuity_ok`'s
+            # solve-latency tolerance in the way.
+            if (record is None or t_now_s >= record.end_s
+                    or kind == sk_seg.REST):
+                seed_rest, code, err = self._cycle_start_state(uc.SETTLE)
+                if seed_rest is None:
+                    return self._reject_segment(
+                        response, code, '%s — cannot seed a segment' % (err,), t_wall)
             # t0 snapping (C2FF spec, 2026-09-14): a FRESH origin installs
-            # `install_segment`'s `t0 = t_now_s` verbatim (see its docstring),
-            # so snapping the FIRST un-emitted grid knot in HERE is the one
+            # `install_segment`'s `t0 = t_now_s` verbatim for a REST, and
+            # `t0 = t_now_s + lead_s` for a THROW/CATCH (`reserve_fresh_lead`
+            # below, 2026-10-02 — `lead_s` is LEAD_KNOTS whole knots, so the
+            # origin stays on the grid), so snapping the FIRST un-emitted grid
+            # knot in HERE is the one
             # place that origin is ever set for this (hand-carrying) install
-            # path. Safe to move `t_now_s` forward by up to one knot: the
-            # `fresh` branch only fires when the machine is holding a
-            # terminal REST (`seed_rest` above), so the seed
-            # (pose, zero vel, zero accel) is still exactly valid at the
-            # later, grid-aligned instant — nothing about it depends on WHEN
-            # within that rest window it is sampled. The SPLICE branch below
-            # is untouched: its `t_now_s` stays real wall time, because the
-            # chain's t0 is already on the grid (the fresh origin that seeded
-            # it was) — see the `fresh` predicate above, which recomputes the
-            # identical way `install_segment` does, so a monotonic forward
-            # snap here cannot flip that predicate's answer inside it.
+            # path. Safe to move `t_now_s` forward by up to one knot either
+            # way: when `seed_rest` was built above it is an EXACT rest
+            # (pose, zero vel, zero accel), unchanged by WHEN within that rest
+            # window it is sampled; when it was left `None`, `install_segment`
+            # seeds from `record`'s own terminal rest, which is a property of
+            # `record` alone and does not depend on `t_now_s` either. The
+            # SPLICE branch below is untouched: its `t_now_s` stays real wall
+            # time, because the chain's t0 is already on the grid (the fresh
+            # origin that seeded it was) — see the `fresh` predicate above,
+            # which recomputes the identical way `install_segment` does, so a
+            # monotonic forward snap here cannot flip that predicate's answer
+            # inside it.
             t_now_s = self._snap_t0_to_grid(t_now_s)
 
         # The install-time lookahead check `install_segment` makes on a splice
@@ -4219,12 +4301,21 @@ class TrajectoryNode(Node):
         # value taken here): the whole question is whether the solve outran the
         # wire, and a read taken before the solve cannot see the solve's own
         # duration (see `install_segment`'s `t_install_s` docstring).
+        #
+        # `reserve_fresh_lead=True` (2026-10-02, R5 sitting 2): an
+        # event-bearing fresh origin gets the dispatch lead the schedule
+        # reserved — origin `t_now + lead_s`, the splice's SOLVE_BUDGET, no
+        # skipped knot. Between this install and that origin `_emit_once`
+        # samples `plan.state_at(tau < 0)`, which a CyclePlan answers with
+        # knot 0's boundary conditions (the held rest, zero rate, zero cubic
+        # accel), so the wire keeps carrying the rest it already carried and
+        # the plan starts on the grid at `t0` (see `install_segment`).
         new_record, result, seg = sk_exec.install_segment(
             record, seed_rest, kind, terminal, t_now_s,
             lead_s=self._segment_lead_s, cfg=self._segment_cfg,
             limits=self._limits, geom=self._geom,
             warm_start=self._segment_warm_start,
-            t_install_s=time.perf_counter)
+            t_install_s=time.perf_counter, reserve_fresh_lead=True)
 
         if not result.accepted:
             return self._reject_segment(response, result.code, result.message,

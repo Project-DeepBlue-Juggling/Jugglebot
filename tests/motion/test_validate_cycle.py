@@ -544,7 +544,9 @@ def test_hand_limit_acc_refuses_a_span_over_the_cap(geom):
     assert report.peak_hand_acc_rps2 == pytest.approx(6400.0)
     assert report.peak_hand_vel_rps <= float(hw.JB_TRAJ_HAND_VEL_LIMIT_RPS)
     detail = report.reasons[0]
-    assert '6400.0 rev/s^2' in detail and '3500.0 rev/s^2' in detail
+    # The detail names the SHIPPED limit (3900 since 2026-10-02, was 3500).
+    assert '6400.0 rev/s^2' in detail
+    assert ('%.1f rev/s^2' % float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)) in detail
     assert '[trajectory_op.hand_acc_limit_rps2]' in detail
 
 
@@ -674,18 +676,22 @@ def _descent(p0, *, catch_k=1):
 def test_catch_runway_refuses_with_the_achieved_catch_velocity(geom):
     """Recipe: ``catch_k = 1``, hand ``[3.5, 1.0]`` rev at a constant -100 rev/s.
 
-    100 rev/s needs ``100²/(2·3500) = 1.429`` rev to stop, plus the 0.614 rev
-    margin (R1: HAND_REV_PER_M) = 2.043 rev, against 1.000 rev of stroke below
-    the catch.  Reported as
+    100 rev/s needs ``100²/(2·3900) = 1.282`` rev to stop (``1.429`` at the
+    pre-2026-10-02 limit of 3500), plus the 0.614 rev margin (20 mm of stroke at
+    R1's HAND_REV_PER_M) = 1.896 rev (was 2.043), against 1.000 rev of stroke
+    below the catch.  Reported as
     ``HAND_STROKE`` because the fact IS a stroke fact: the travel below the catch
     is insufficient.  The SHIPPED ``hand_acc_limit_rps2`` is used deliberately —
-    it is the deceleration authority the requirement is sized against.
+    it is the deceleration authority the requirement is sized against, so the
+    expected runway below is computed from the shipped constants, not pinned.
     """
     report = feas.validate_cycle(_descent(3.5), _limits(), geom)
     assert report.code == feas.HAND_STROKE
     detail = report.reasons[0]
     assert 'catch runway' in detail
-    assert '1.000 rev' in detail and '2.043 rev' in detail
+    runway_rev = (_RUNWAY_SPEED_RPS ** 2 / (2.0 * float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2))
+                  + 0.020 * float(hw.HAND_REV_PER_M))
+    assert '1.000 rev' in detail and ('%.3f rev' % runway_rev) in detail
     assert 'achieved catch speed 100.0 rev/s' in detail
 
 

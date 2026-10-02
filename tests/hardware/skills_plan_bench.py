@@ -202,6 +202,12 @@ DEFAULT_MAX_AGE_S = 2.0
 DEFAULT_SETTLE_S = 3.0
 _TICK_HZ = 40.0
 _TICK_PERIOD_S = 1.0 / _TICK_HZ
+#: skill_node's ``_DISPATCH_LOOKAHEAD_S``, mirrored (2026-10-02): a skill
+#: dispatches this far ahead of the tick so a reserved fresh origin
+#: (``install_segment(..., reserve_fresh_lead=True)``) plans at least the
+#: schedule's own ``window_s`` — one tick of dispatch quantisation plus the
+#: node's ceil-snap of ``t_now`` onto the knot grid.
+_DISPATCH_LOOKAHEAD_S = _TICK_PERIOD_S + float(hw.JB_TRAJ_KNOT_DT_S)
 #: skill_node's own START_LEAD_S — one second of dispatch margin, not a
 #: physical constant of the pattern.
 _START_LEAD_S = 1.0
@@ -726,6 +732,8 @@ def drive_executor(exe, call_meta: list, *, run_t0: float, attempt: int,
         for (idx, skill, res), meta in zip(new_results, new_meta):
             is_resend = idx in seen_idx
             seen_idx.add(idx)
+            # Negative = dispatched EARLY, inside the executor's
+            # dispatch_lookahead_s (_DISPATCH_LOOKAHEAD_S, 2026-10-02).
             dispatch_late_ms = (None if is_resend else
                                 round((t_tick - skill.dispatch_s()) * 1e3, 3))
             rows.append(_row(
@@ -941,10 +949,14 @@ def rehearse_attempt(attempt: int, *, n_throws: int, jitter_mm: float,
         # (_segment_warm_start: passed to every install, replaced on accept).
         # Omitting it made every rehearsed solve cold (2026-09-13: QP tails of
         # 21-45 ms, and a 139 ms refusal, the node does not pay).
+        # `reserve_fresh_lead=True` is trajectory_node's own rule (2026-10-02):
+        # `t_now_s` here is the executor's DISPATCH tick, so a fresh THROW/CATCH
+        # starts LEAD_S after it with the splice's solve budget — the window
+        # and the ORIGIN_TOO_LATE verdict the robot gets, not window + lead.
         new_rec, res, _seg = ex.install_segment(
             rec, seed_rest, kind, terminal, t_now_s,
             limits=limits, geom=geom, t_install_s=now_fn,
-            warm_start=state.get('ws'))
+            warm_start=state.get('ws'), reserve_fresh_lead=True)
         rtt_ms = (now_fn() - t_a) * 1e3
         # The node's plan_wall_ms is its callback's own wall time, refusals
         # included (trajectory_node._reject_segment times from entry);
@@ -1043,7 +1055,8 @@ def rehearse_attempt(attempt: int, *, n_throws: int, jitter_mm: float,
                                now_fn=now_fn)
     exe = ex.SkillExecutor(schedule, installer, tracker=tracker,
                            learner=learner, boxes=boxes,
-                           on_experience=on_experience)
+                           on_experience=on_experience,
+                           dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
     sched_rows, ended, end_code, _abort = drive_executor(
         exe, call_meta, run_t0=run_t0, attempt=attempt, now_fn=now_fn,
         sleep_fn=sleep_fn)
@@ -1384,7 +1397,8 @@ def live_attempt(attempt: int, runner: '_Runner', *, n_throws: int,
     schedule = build_schedule(n_throws=n_throws, t0_abs_s=t0)
     tracker = make_tracker(schedule, jitter_mm=jitter_mm, seed=attempt,
                            now_fn=clock_now)
-    exe = ex.SkillExecutor(schedule, installer, tracker=tracker)
+    exe = ex.SkillExecutor(schedule, installer, tracker=tracker,
+                           dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
 
     def abort_check_and_sample():
         sample()

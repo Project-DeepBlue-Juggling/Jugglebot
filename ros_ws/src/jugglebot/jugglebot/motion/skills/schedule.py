@@ -1338,7 +1338,14 @@ def compile_reload(landing_mm, landing_vel_mm_s, t_land_abs_s: float,
     # from the ACTIVE PLAN's commanded state at t_now -- still mid-slew, off
     # the held-axis line -- and every sitting-3 reload CATCH was refused
     # CATCH_AXIS (5.681 / 1.065 mm vs 0.1 mm) with the hand parked at the
-    # bottom of its stroke. The catch motion itself keeps the 0.725 s it ran.
+    # bottom of its stroke. The catch MOTION is no longer the 0.725 s
+    # (window + lead) it flew until 2026-10-02: on the live path
+    # (trajectory_node, `install_segment(..., reserve_fresh_lead=True)`) a
+    # fresh CATCH's origin sits LEAD_S after its dispatch, so the machine
+    # HOLDS the pre-tilt rest for that lead (the solve's budget) and the catch
+    # plans over RELOAD_CATCH_WINDOW_S (0.5 s) plus at most skill_node's
+    # dispatch look-ahead (_DISPATCH_LOOKAHEAD_S, 0.050 s). Offline callers
+    # that omit the flag still plan window + lead.
     pretilt_end_rel = t_land_rel - RELOAD_CATCH_WINDOW_S - LEAD_S
     pretilt_dispatch_rel = pretilt_end_rel - pretilt_period - LEAD_S
     if pretilt_dispatch_rel < t0_rel - 1e-9:

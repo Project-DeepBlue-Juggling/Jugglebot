@@ -616,6 +616,13 @@ class InstallSegment:
             # tilt" (trajectory_node._wire_tilt).
             self.hold_tilt_set = False
             self.hold_tilt_rad = [0.0, 0.0]
+            # R5 (2026-10-02): same NaN/flag discipline as hold_tilt/rest_tilt
+            # above -- the level touch-down pin (`Skill.receive_tilt`). A mock
+            # missing this defaulted every pre-R5 test's decode correctly
+            # (rosidl zero-fills), but it was also the gap that let the real
+            # field go unplumbed on both wire halves for one sitting.
+            self.receive_tilt_set = False
+            self.receive_tilt_rad = [0.0, 0.0]
             self.rest_tilt_set = False
             self.rest_tilt_rad = [0.0, 0.0]
 

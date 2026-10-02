@@ -84,8 +84,9 @@ The geometry arrives through explicit cfg fields
 the bottom of its stroke — and :attr:`CupCycleConfig.catch_runway_margin_m`),
 never by importing platform geometry here; the floor defaults to ``z_min_m``,
 which is already documented in the sim planner as the caller's slider-reachable
-range. ``a_hand_max`` defaults to the owner-signed 3500 rev/s² divided by the
-package's existing slider gain (see :data:`HAND_MAX_DECEL_MPS2`).
+range. ``a_hand_max`` defaults to the owner-signed hand acceleration limit
+(3900 rev/s² since 2026-10-02, 3500 before) divided by the package's existing
+slider gain (see :data:`HAND_MAX_DECEL_MPS2`).
 
 The whole constraint is disableable (``catch_runway_enabled = False``) so exact
 legacy parity against the CasADi reference stays assertable. **WP3's
@@ -131,9 +132,15 @@ HAND_REV_PER_M = float(hw.HAND_REV_PER_M)
 #: take-off velocities are bit-comparable. NOT the tracker's 9.81.
 GRAVITY = np.array([0.0, 0.0, -9.806])
 
-#: Owner-signed hand acceleration LIMIT (Phase 0 decision 4, 2026-08-30):
-#: 3500 rev/s², under the C-HAND-2 authority bound of 3925.5 rev/s².
-HAND_ACC_LIMIT_RPS2 = 3500.0
+#: Owner-signed hand acceleration LIMIT: 3500 rev/s² from Phase 0 decision 4
+#: (2026-08-30), raised to the YAML ceiling 3900 on 2026-10-02 (the fed columns
+#: rehearsal's same-site catch-and-throw peaked at 101 % of 3500 in both feed
+#: layouts; logbook 2026-10-02-skill-stack-r5-sitting-2), still under the
+#: C-HAND-2 authority bound of 3925.5 rev/s². IMPORTED from the YAML's
+#: ``hand_acc_limit_rps2`` rather than restated: the restated 3500 this used
+#: to be sat silently under the raised gate for one sweep on 2026-10-02 —
+#: the in-QP bound and ``validate_cycle``'s gate must be one number.
+HAND_ACC_LIMIT_RPS2 = float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)
 
 #: Default ``a_hand_max`` for the catch runway (m/s²) ≈ 110.70 — the hand
 #: acceleration limit converted through the measured hand geometry

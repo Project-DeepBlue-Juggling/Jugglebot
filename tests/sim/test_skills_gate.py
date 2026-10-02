@@ -582,11 +582,18 @@ def test_columns_attempt_with_feed_pins_the_touchdown_level_and_carries_the_land
     """With both feed options set: ``compile_columns`` is called with
     ``feed=LandingPrior(...)`` and no positional ``t0_abs_s`` (R5 owner
     decision D1: exactly one of the two), and the compiled schedule's ONE
-    feed-carrying skill (``landing_prior is not None``) is the site-1 CATCH
-    that carries ``receive_tilt == (0.0, 0.0)`` -- the level-pinned
+    feed-carrying skill (``landing_prior is not None``) is the feed-site
+    CATCH that carries ``receive_tilt == (0.0, 0.0)`` -- the level-pinned
     touch-down attitude `handoff_receive_level.md`'s ``compile_columns(feed=
     ...)`` sets on the feed catch only (its own docstring: every other skill
-    keeps the dataclass default ``None``)."""
+    keeps the dataclass default ``None``).
+
+    R5 sitting 2 (2026-10-02): a FEED trial swaps which site holds A and
+    which is fed (``run_columns_attempt``'s own docstring) -- site 0 is
+    the feed site, site 1 holds A, and the feed's target is walked
+    ``cfg.feed_aim_toward_a_mm`` (default 20 mm) from site 0 TOWARD site 1,
+    not site 0 itself (the undisplaced feed site refuses LIMIT_ACC at
+    101 %)."""
     calls = []
     real_compile = sk.compile_columns
 
@@ -607,14 +614,21 @@ def test_columns_attempt_with_feed_pins_the_touchdown_level_and_carries_the_land
     assert 'feed' in kwargs
     feed = kwargs['feed']
     assert isinstance(feed, sk.LandingPrior)
-    site1 = sites.columns_sites(cfg.separation_mm)[1]
-    assert feed.pos_mm == pytest.approx(
-        np.asarray(site1.catch_site_mm(), dtype=float), abs=1e-6)
+    site0, site1 = sites.columns_sites(cfg.separation_mm)
+    unit_xy = ((np.asarray(site1.cup_mm[:2], dtype=float)
+               - np.asarray(site0.cup_mm[:2], dtype=float))
+              / np.linalg.norm(np.asarray(site1.cup_mm[:2], dtype=float)
+                               - np.asarray(site0.cup_mm[:2], dtype=float)))
+    expect_xy = (np.asarray(site0.cup_mm[:2], dtype=float)
+                + cfg.feed_aim_toward_a_mm * unit_xy)
+    expect_pos = np.array([expect_xy[0], expect_xy[1],
+                           site0.catch_site_mm()[2]])
+    assert feed.pos_mm == pytest.approx(expect_pos, abs=1e-6)
 
     feed_skills = [s for s in sched.skills if s.landing_prior is not None]
     assert len(feed_skills) == 1
     assert feed_skills[0].receive_tilt == (0.0, 0.0)
-    assert feed_skills[0].site.name == site1.name
+    assert feed_skills[0].site.name == site0.name
 
 
 def test_columns_feed_calls_with_only_one_of_the_two_options_raise():
@@ -633,11 +647,13 @@ def test_columns_feed_ball_1_arrives_at_the_requested_speed_and_angle():
     """The spawned ball's actual MuJoCo state (captured at ``plant.
     spawn_ball``, ball 1) forward-integrated through gravity for this
     pattern's own flight time lands within 2 % of the requested speed and
-    0.5 deg of the requested angle off vertical, at site 1's catch plane --
-    checked with :func:`ballistics_bc.position_at`/``velocity_at`` rather
-    than running the schedule through MuJoCo (the module docstring's own
-    noise policy is ``bb_throw_noise_frac=0.0`` by default, so this is an
-    exact check, not a statistical one)."""
+    0.5 deg of the requested angle off vertical, at the feed site's aim
+    point (R5 sitting 2, 2026-10-02: site 0, walked `feed_aim_toward_a_mm`
+    toward site 1 -- not site 1's catch plane, which is now where A
+    rests) -- checked with :func:`ballistics_bc.position_at`/
+    ``velocity_at`` rather than running the schedule through MuJoCo (the
+    module docstring's own noise policy is ``bb_throw_noise_frac=0.0`` by
+    default, so this is an exact check, not a statistical one)."""
     apex_m = 0.9
     angle_deg = 11.9
     speed_mmps = 5600.0
@@ -670,8 +686,15 @@ def test_columns_feed_ball_1_arrives_at_the_requested_speed_and_angle():
     land_pos = bal.position_at(captured['pos'], captured['vel'], t_f)
     land_vel = bal.velocity_at(captured['vel'], t_f)
 
-    site1 = sites.columns_sites(cfg.separation_mm)[1]
-    expect_pos = np.asarray(site1.catch_site_mm(), dtype=float)
+    site0, site1 = sites.columns_sites(cfg.separation_mm)
+    unit_xy = ((np.asarray(site1.cup_mm[:2], dtype=float)
+               - np.asarray(site0.cup_mm[:2], dtype=float))
+              / np.linalg.norm(np.asarray(site1.cup_mm[:2], dtype=float)
+                               - np.asarray(site0.cup_mm[:2], dtype=float)))
+    expect_xy = (np.asarray(site0.cup_mm[:2], dtype=float)
+                + cfg.feed_aim_toward_a_mm * unit_xy)
+    expect_pos = np.array([expect_xy[0], expect_xy[1],
+                           site0.catch_site_mm()[2]])
     assert land_pos == pytest.approx(expect_pos, abs=1.0)
 
     speed = float(np.linalg.norm(land_vel))

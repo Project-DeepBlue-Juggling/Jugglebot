@@ -57,6 +57,7 @@ from jugglebot.motion import unified_cycle as uc
 from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.skills import executor as ex
 from jugglebot.motion.skills import segments as sg
+from jugglebot.motion.skills import sites as si
 from jugglebot.motion.trajectory import cup_realize as cr
 from jugglebot.motion.trajectory.limits import TrajectoryLimits
 
@@ -160,3 +161,185 @@ def test_a_fresh_rest_origin_is_bit_identical_when_the_solve_stays_inside_the_wi
     assert new_record.t0_s == T0_ABS
     assert 'REBASED' not in res.message
     assert res.message.startswith('fresh origin:')
+
+
+# ---------------------------------------------------------------------------
+# reserve_fresh_lead=True — the LIVE rule for an event-bearing fresh origin
+# (2026-10-02, R5 sitting 2: three of seven Ball-Butler-fed columns attempts
+# refused ORIGIN_TOO_LATE at ball A's first throw on 76/83/84 ms solves).
+# ---------------------------------------------------------------------------
+
+LEAD_S = ex.LEAD_S
+#: The solve a reserved fresh origin may spend: ``LEAD_S`` less the wire read,
+#: i.e. ``schedule.SOLVE_BUDGET_KNOTS`` knots (0.150 s) — the SAME budget a
+#: splice has.
+BUDGET_S = LEAD_S - WIRE_MARGIN_S
+#: The schedule's own first-throw window (``Pattern.launch_s``).
+LAUNCH_S = 0.4
+FLIGHT_S = 0.857
+#: The REAL columns site P1 at the R5 separation (the fed-columns ball A's
+#: site): its rest -> release geometry is what the 0.4 s launch was sized on.
+#: A made-up rest 80 mm under the release refuses HAND_LIMIT_ACC at 0.4 s.
+_SITE = si.columns_sites(100.0)[0]
+
+
+def _throw_terminal(t_release_abs):
+    return sg.ThrowTerminal(site_mm=_SITE.throw_site_mm(),
+                            target_mm=_SITE.catch_site_mm(),
+                            flight_s=FLIGHT_S, t_release_s=t_release_abs)
+
+
+def _reserved_throw(limits, geom, solve_s, *, reserve=True):
+    """A THROW dispatched the way the schedule dispatches one
+    (``Skill.dispatch_s = t_abs - window - lead``): ``t_now = T0_ABS`` and the
+    release at ``T0_ABS + LAUNCH_S + LEAD_S``, with the solve's lateness
+    INJECTED through ``t_install_s`` (never measured — this pins the rule)."""
+    return ex.install_segment(
+        None, _rest_state(_SITE.rest_site_mm()), sg.THROW,
+        _throw_terminal(T0_ABS + LAUNCH_S + LEAD_S), T0_ABS,
+        limits=limits, geom=geom, t_install_s=T0_ABS + solve_s,
+        reserve_fresh_lead=reserve)
+
+
+def test_a_solve_the_default_rule_refuses_installs_with_the_lead_reserved(
+        limits, geom):
+    """The sitting's numbers: a 0.10 s solve is past today's 0.075 s wire
+    margin (the DEFAULT rule refuses it ``ORIGIN_TOO_LATE`` — the defect) but
+    inside the 0.150 s budget a reserved origin has, so it installs with
+    ``t0 = t_now + LEAD_S`` and the release still at its absolute instant."""
+    assert 0.10 > WIRE_MARGIN_S and 0.10 < BUDGET_S
+    _rec, res_default, _seg = _reserved_throw(limits, geom, 0.10,
+                                              reserve=False)
+    assert res_default.code == ex.ORIGIN_TOO_LATE, res_default.message
+
+    rec, res, seg = _reserved_throw(limits, geom, 0.10)
+    assert res.accepted, res.message
+    assert res.splice_k == 0
+    assert res.t0_s == pytest.approx(T0_ABS + LEAD_S, abs=1e-12)
+    assert rec.t0_s == res.t0_s
+    # The event did not move: release = t0 + event tau = the absolute instant.
+    assert res.t0_s + res.event_t_s == pytest.approx(
+        T0_ABS + LAUNCH_S + LEAD_S, abs=1e-9)
+    assert rec.t0_s + float(rec.meta.releases[0].t_s) == pytest.approx(
+        T0_ABS + LAUNCH_S + LEAD_S, abs=1e-9)
+    assert res.message.startswith('fresh origin:')
+    assert '%.3f s budget' % BUDGET_S in res.message, res.message
+    assert seg.kind == sg.THROW
+
+
+def test_the_reserved_window_is_the_schedules_window_not_window_plus_lead(
+        limits, geom):
+    """The planned window shrinks by exactly the lead: the default plans
+    ``launch_s + lead`` (the live 0.600 s "over 0.900 s from rest" THROW), the
+    reserved origin plans ``launch_s`` — the window ``plan_columns_first_cycle``
+    and the admissible box certify (``t_abs - window_s``)."""
+    rec_d, res_d, _ = _reserved_throw(limits, geom, 0.0, reserve=False)
+    rec_r, res_r, _ = _reserved_throw(limits, geom, 0.0)
+    assert res_d.accepted and res_r.accepted, (res_d.message, res_r.message)
+    assert res_d.event_t_s == pytest.approx(LAUNCH_S + LEAD_S)
+    assert res_r.event_t_s == pytest.approx(LAUNCH_S)
+    assert (rec_d.plan.total_duration - rec_r.plan.total_duration
+            == pytest.approx(LEAD_S, abs=1e-9))
+
+
+@pytest.mark.parametrize('solve_s, accepted', [
+    (BUDGET_S - 1e-3, True),
+    (BUDGET_S, False),            # knot 0 is exactly on the wire-read horizon
+    (BUDGET_S + 0.034, False),    # the sitting's worst refused solve, + budget
+])
+def test_a_reserved_fresh_throw_refuses_only_past_the_budget(
+        limits, geom, solve_s, accepted):
+    """The refusal is the SPLICE's arithmetic with ``k_s = 0``:
+    ``0 <= floor((t_inst - t0)/dt) + WIRE_READ_KNOTS`` — a solve shorter than
+    the budget keeps knot 0 ahead of the wire, one at or past it does not, and
+    the message names the measured solve and the budget."""
+    rec, res, seg = _reserved_throw(limits, geom, solve_s)
+    assert res.accepted is accepted, res.message
+    if accepted:
+        assert res.t0_s == pytest.approx(T0_ABS + LEAD_S, abs=1e-12)
+        return
+    assert res.code == ex.ORIGIN_TOO_LATE, res.message
+    assert rec is None and seg is None
+    assert '%.3f' % solve_s in res.message
+    assert '%.3f s solve budget' % BUDGET_S in res.message, res.message
+
+
+def test_a_reserved_fresh_catch_installs_lead_after_dispatch(limits, geom):
+    """A fresh CATCH (the reload's feed catch is one) takes the same rule."""
+    t_land = T0_ABS + LEAD_S + 0.5
+    rec, res, _seg = ex.install_segment(
+        None, _rest_state(_REST_MM), sg.CATCH, _catch_terminal(t_land),
+        T0_ABS, limits=limits, geom=geom, t_install_s=T0_ABS + 0.12,
+        reserve_fresh_lead=True)
+    assert res.accepted, res.message
+    assert res.t0_s == pytest.approx(T0_ABS + LEAD_S, abs=1e-12)
+    assert res.t0_s + res.event_t_s == pytest.approx(t_land, abs=1e-9)
+
+
+def test_a_reserved_window_under_the_floor_is_refused_before_the_solve(
+        limits, geom):
+    """An event closer to the reserved origin than ``MIN_WINDOW_S`` refuses
+    ``WINDOW_TOO_SHORT``, exactly as a splice does — never a solve on a
+    window the gate cannot measure."""
+    rec, res, seg = ex.install_segment(
+        None, _rest_state(_SITE.rest_site_mm()), sg.THROW,
+        _throw_terminal(T0_ABS + LEAD_S + 0.05), T0_ABS,
+        limits=limits, geom=geom, t_install_s=T0_ABS,
+        reserve_fresh_lead=True)
+    assert res.code == ex.WINDOW_TOO_SHORT, res.message
+    assert rec is None and seg is None
+
+
+def test_a_rest_ignores_the_reservation_and_keeps_the_rebase_rule(
+        limits, geom):
+    """A REST carries no event, so it keeps ``t0 = t_now`` inside the wire
+    margin and the REBASE past it — the flag changes nothing for it."""
+    seed = _rest_state(_REST_MM)
+    _r, res_in, _s = ex.install_segment(
+        None, seed, sg.REST, _rest_terminal(T0_ABS + 0.5), T0_ABS,
+        limits=limits, geom=geom, t_install_s=T0_ABS + 0.05,
+        reserve_fresh_lead=True)
+    assert res_in.accepted and res_in.t0_s == T0_ABS, res_in.message
+    _r, res_late, _s = ex.install_segment(
+        None, seed, sg.REST, _rest_terminal(T0_ABS + 0.5), T0_ABS,
+        limits=limits, geom=geom, t_install_s=T0_ABS + 0.4,
+        reserve_fresh_lead=True)
+    assert res_late.accepted and 'REBASED' in res_late.message
+    assert res_late.t0_s == pytest.approx(T0_ABS + 0.4 + WIRE_MARGIN_S,
+                                          abs=1e-9)
+
+
+def test_until_t0_the_reserved_plan_streams_the_held_rest(limits, geom):
+    """Premise (1) of the reservation, pinned on the objects the live emitter
+    samples: for ``tau <= 0`` a ``CyclePlan`` answers knot 0's boundary
+    conditions (``cycle_plan._locate``), and knot 0 of a plan seeded at rest
+    IS the rest — the seed pose and hand, zero rate, zero cubic acceleration —
+    so every ``KnotEmitter`` frame named before ``t0`` is the flat hold the
+    lane was already playing (legs AND hand: u0 = u1, zero v, zero
+    ``hand_acc_rps2``, so the hand's ``J·α`` feedforward is zero), and the
+    frame named ``t0 - dt`` hands over to the plan's own first span with no
+    step (its ``u1`` is knot 0)."""
+    from jugglebot.motion.trajectory.emitter import KnotEmitter
+    seed = _rest_state(_SITE.rest_site_mm())
+    rec, res, _seg = _reserved_throw(limits, geom, 0.10)
+    assert res.accepted, res.message
+    plan = rec.plan
+    em = KnotEmitter(geom, knot_dt_s=DT)
+    f_knot0 = em.frame(plan, 0.0, 0)
+    for k in range(ex.LEAD_KNOTS, 0, -1):          # every frame before t0
+        tau = -k * DT
+        pose, twist, accel = plan.state_at(tau)
+        assert np.allclose(pose, seed.pose, atol=1e-9)
+        assert np.allclose(twist, 0.0, atol=1e-9)
+        assert np.allclose(accel, 0.0, atol=1e-6)
+        h_rev, h_vel = plan.hand_at(tau)
+        assert h_rev == pytest.approx(float(seed.hand_rev), abs=1e-9)
+        assert h_vel == pytest.approx(0.0, abs=1e-9)
+        assert plan.hand_accel_at(tau) == pytest.approx(0.0, abs=1e-6)
+        f = em.frame(plan, tau, 0)
+        assert np.allclose(f['motor_rev'], f_knot0['motor_rev'], atol=1e-12)
+        assert np.allclose(f['cmd_next_mm'], f['ext_mm'], atol=1e-9)
+        assert np.allclose(f['vel_mm_s'], 0.0, atol=1e-6)
+        assert float(f['hand_next_rev']) == pytest.approx(float(f['hand_rev']),
+                                                          abs=1e-12)
+        assert float(f['hand_acc_rps2']) == pytest.approx(0.0, abs=1e-6)

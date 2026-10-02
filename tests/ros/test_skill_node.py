@@ -41,6 +41,7 @@ from jugglebot_interfaces.srv import BallButlerThrow, InstallSegment
 
 from jugglebot import ball_possession
 from jugglebot import skill_node as sn
+import jugglebot.hardware_config as hw
 from jugglebot.motion.skills import admissible as adm
 from jugglebot.motion.skills import executor as ex
 from jugglebot.motion.skills.executor import CAUGHT_WINDOW_S
@@ -274,7 +275,7 @@ def _columns_fed(node, tmp_path, *, plant_id):
     ``compile_columns`` schedule rather than the two-phase start's opening
     bridge — the steady state a test that asserts on the compiled
     schedule's own shape needs. Mirrors
-    `test_columns_tracker_feed_resolves_an_unannounced_landing_near_p2`
+    `test_columns_tracker_feed_resolves_an_unannounced_landing_near_the_aim_point`
     exactly (brief_S2.md item 2's own recipe), just factored out for reuse
     by tests that came from BEFORE the two-phase start existed and only
     care about the compiled schedule, not the feed machinery itself."""
@@ -290,8 +291,12 @@ def _columns_fed(node, tmp_path, *, plant_id):
         resp = node._start_pattern(_columns_goal(reload=False,
                                                   separation_mm=100.0))
     assert resp.success is True, resp.message
+    # R5 sitting 2 (2026-10-02): the default FED layout holds ball A at P2
+    # and feeds P1, Ball Butler's aim walked 20 mm toward P2 (x = -30) --
+    # `ctx.aim_site` is the bound check's own centre (`_maybe_resolve_
+    # columns_feed`), so the landing must be near THAT point now, not P2.
     node._on_balls(BallStateArray(balls=[
-        _ball(7, status=1, tracking=1, x=51.0, y=-2.0, z=800.0,
+        _ball(7, status=1, tracking=1, x=-29.0, y=-2.0, z=800.0,
              vz=-3000.0, sec=0, nanosec=int((lead_needed + 1.0) * 1e9),
              landing_from_fit=True)]))
     assert node._reload_ctx is None
@@ -468,7 +473,10 @@ def test_self_toss_is_refused_on_a_dwell_mismatch(tmp_path):
         pattern='self_toss', release_site_xy_mm=(-50.0, 0.0),
         target_site_xy_mm=(-50.0, 0.0),
         limits={'leg_vel_mmps': 300.0, 'leg_acc_mmps2': 5000.0,
-               'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': 3500.0},
+               'leg_jerk_mmps3': 200000.0,
+               # The node's live hand limit IS this constant (`_live_limits`;
+               # set_limits has no hand field) — 3900 since 2026-10-02.
+               'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
         gate_hash=adm.gate_hash(), swept_at='2026-09-13',
         dwell_s=0.20)                            # != the node's default 0.30
     adm.dump(str(box_path), [box])
@@ -556,6 +564,63 @@ def test_hold_tilt_max_deg_clamps_outside_the_ceiling():
     assert 0.0 < node._hold_tilt_max_deg() <= tg.MAX_TILT_DEG
 
 
+def test_columns_feed_site_defaults_to_p1():
+    """R5 sitting 2 (owner decision, 2026-10-02): the NEW default feeds P1
+    (A at P2) -- the site NEAREST Ball Butler along its bearing, so B's
+    descent never crosses A's own column."""
+    node, _client = _node_with_client()
+    assert node.get_parameter('columns_feed_site').value == 'P1'
+    assert node._columns_feed_site_name() == 'P1'
+
+
+def test_columns_feed_site_p2_restores_the_flown_layout(tmp_path):
+    """`columns_feed_site='P2'` restores the OLD (2026-09-30..10-02) layout
+    -- A at P1, feed at P2 -- for an A/B comparison; the aim is still
+    walked `columns_feed_aim_toward_a_mm` TOWARD A's site, now P1, so it
+    lands at P2 - 20 = (+30, 0), not P2 itself."""
+    node, _client = _node_with_client()
+    node._params['plant_id'] = 'test_columns_feed_site_p2'
+    node.set_parameters([_MockParameter('P2', name='columns_feed_site')])
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    _reload_ready(node)
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
+                      _good_box_path(tmp_path, columns=True)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        assert (node._juggle_goal(_columns_goal(reload=True, separation_mm=100.0))
+               == sn.GoalResponse.ACCEPT)
+    assert node._reload_ctx.site.name == 'P1'
+    assert node._reload_ctx.aim_site.name == 'P2'
+    assert node._reload_ctx.aim_site.cup_mm[:2] == pytest.approx([30.0, 0.0])
+
+
+def test_columns_feed_site_rejects_an_unknown_value():
+    """Same shape as `_catch_aim_source`: a typo in a launch override must
+    not leave the operator with no columns start at all -- falls back to
+    the LIVE default ('P1') with an error logged."""
+    node, _client = _node_with_client()
+    node.set_parameters([_MockParameter('P3', name='columns_feed_site')])
+    assert node._columns_feed_site_name() == 'P1'
+
+
+def test_columns_feed_aim_toward_a_mm_defaults_to_20():
+    """2026-10-02 sitting 2 margins: 20 mm toward A clears the swapped
+    layout's undisplaced LIMIT_ACC refusal at 80/83/73 % vel/acc/jerk."""
+    node, _client = _node_with_client()
+    assert node.get_parameter('columns_feed_aim_toward_a_mm').value == 20.0
+    assert node._columns_feed_aim_toward_a_mm() == pytest.approx(20.0)
+
+
+def test_columns_feed_aim_toward_a_mm_clamps_outside_0_40():
+    """A bound on a planner cost, not a policy (mirrors `_catch_resend_
+    max`/`_hold_tilt_max_deg`): out-of-range is clamped into ``[0, 40]``,
+    never refused, with a WARN logged."""
+    node, _client = _node_with_client()
+    node.set_parameters([_MockParameter(100.0, name='columns_feed_aim_toward_a_mm')])
+    assert node._columns_feed_aim_toward_a_mm() == pytest.approx(40.0)
+    node.set_parameters([_MockParameter(-5.0, name='columns_feed_aim_toward_a_mm')])
+    assert node._columns_feed_aim_toward_a_mm() == pytest.approx(0.0)
+
+
 def test_self_toss_refuses_an_uncovered_apex_before_any_motion(tmp_path):
     """THE LATENT DEFECT this closes (found 2026-09-14): the only swept box
     covers apex 0.85-0.95 m; requesting 0.5 m (uncovered) must refuse BEFORE
@@ -568,7 +633,7 @@ def test_self_toss_refuses_an_uncovered_apex_before_any_motion(tmp_path):
         pattern='self_toss', release_site_xy_mm=(-50.0, 0.0),
         target_site_xy_mm=(-50.0, 0.0),
         limits={'leg_vel_mmps': 300.0, 'leg_acc_mmps2': 5000.0,
-               'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': 3500.0},
+               'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
         gate_hash=adm.gate_hash(), swept_at='2026-09-13',
         dwell_s=sn._DEFAULT_DWELL_S)
     adm.dump(str(box_path), [box])
@@ -1183,7 +1248,7 @@ def test_check_reports_box_refused_when_the_apex_param_is_uncovered(tmp_path):
         pattern='self_toss', release_site_xy_mm=(-50.0, 0.0),
         target_site_xy_mm=(-50.0, 0.0),
         limits={'leg_vel_mmps': 300.0, 'leg_acc_mmps2': 5000.0,
-               'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': 3500.0},
+               'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
         gate_hash=adm.gate_hash(), swept_at='2026-09-13',
         dwell_s=sn._DEFAULT_DWELL_S)
     adm.dump(str(box_path), [box])
@@ -2453,7 +2518,7 @@ def _good_box_path(tmp_path, *, apex_band_m=(0.85, 0.95), hop=False,
         pattern='self_toss', release_site_xy_mm=(-50.0, 0.0),
         target_site_xy_mm=(-50.0, 0.0),
         limits={'leg_vel_mmps': 300.0, 'leg_acc_mmps2': 5000.0,
-               'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': 3500.0},
+               'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
         gate_hash=adm.gate_hash(), swept_at='2026-09-13',
         dwell_s=sn._DEFAULT_DWELL_S)
     boxes = [box]
@@ -2468,7 +2533,7 @@ def _good_box_path(tmp_path, *, apex_band_m=(0.85, 0.95), hop=False,
                 landing_xy_m=((-0.02, 0.02), (-0.02, 0.02)), apex_m=(0.85, 0.90),
                 pattern='hop', release_site_xy_mm=rel, target_site_xy_mm=tgt,
                 limits={'leg_vel_mmps': 300.0, 'leg_acc_mmps2': 5000.0,
-                       'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': 3500.0},
+                       'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
                 gate_hash=adm.gate_hash(), swept_at='2026-09-13',
                 dwell_s=sn._DEFAULT_DWELL_S))
     if columns:
@@ -2482,7 +2547,7 @@ def _good_box_path(tmp_path, *, apex_band_m=(0.85, 0.95), hop=False,
                 landing_xy_m=((-0.02, 0.02), (-0.02, 0.02)), apex_m=(0.85, 0.95),
                 pattern='columns', release_site_xy_mm=xy, target_site_xy_mm=xy,
                 limits={'leg_vel_mmps': 300.0, 'leg_acc_mmps2': 5000.0,
-                       'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': 3500.0},
+                       'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
                 gate_hash=adm.gate_hash(), swept_at='2026-09-13',
                 dwell_s=sn._DEFAULT_DWELL_S))
     adm.dump(str(box_path), boxes)
@@ -3570,7 +3635,16 @@ class TestJuggleAction:
         """R5 (owner decision D3, 2026-09-30): `reload=True` on a columns
         goal is no longer refused -- it ACCEPTS and arms the BB
         choreography (`await_bb_idle`), same as a reload='self_toss'
-        goal."""
+        goal.
+
+        R5 sitting 2 (2026-10-02): the default `columns_feed_site` ('P1')
+        holds ball A at P2 and feeds P1 -- the site NEAREST Ball Butler
+        along its bearing, so B's descent never crosses A's own column
+        (the OLD default, P1-holds/P2-feeds, let the two balls merge in
+        flight on 4/4 attempts). `aim_site` keeps the feed site's NAME
+        (P1) but is walked `columns_feed_aim_toward_a_mm` (20 mm default)
+        toward A's site -- the swapped layout's undisplaced catch refuses
+        LIMIT_ACC at 101 %."""
         node, _client = _node_with_client()
         node._params['plant_id'] = 'test_columns_reload_lift'
         _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
@@ -3584,8 +3658,10 @@ class TestJuggleAction:
         assert node._reload_ctx is not None
         assert node._reload_ctx.kind == 'columns'
         assert node._reload_ctx.phase == 'await_bb_idle'
-        assert node._reload_ctx.aim_site.name == 'P2'
-        assert node._reload_ctx.site.name == 'P1'
+        assert node._reload_ctx.aim_site.name == 'P1'
+        assert node._reload_ctx.aim_site.cup_mm[:2] == pytest.approx(
+            [-30.0, 0.0])
+        assert node._reload_ctx.site.name == 'P2'
 
     def test_cancel_callback_always_accepts(self):
         node, _client = _node_with_client()
@@ -3784,7 +3860,7 @@ class TestJuggleAction:
                 landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), apex_m=(0.6, 1.2),
                 pattern='hop', release_site_xy_mm=rel, target_site_xy_mm=tgt,
                 limits={'leg_vel_mmps': 300.0, 'leg_acc_mmps2': 5000.0,
-                       'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': 3500.0},
+                       'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
                 gate_hash=adm.gate_hash(), swept_at='2026-09-13',
                 dwell_s=sn._DEFAULT_DWELL_S)
             for pair, rel, tgt in [(('P1', 'P2'), (-50.0, 0.0), (50.0, 0.0)),
@@ -4085,14 +4161,18 @@ def _columns_bb_started(node, tmp_path):
 
 def test_columns_bb_announcement_installs_the_fed_schedule(tmp_path):
     """The announcement path (brief_S2.md item 2): BB's `ThrowAnnouncement`
-    for us, naming a landing at P2, compiles `compile_columns(pattern,
-    feed=...)` and swaps the executor -- the SAME claim-then-swap
-    `_install_announced_reload` uses for the one-ball reload."""
+    for us, naming a landing near the feed AIM point (R5 sitting 2,
+    2026-10-02: the default FED layout feeds P1, aim walked 20 mm toward
+    A's site P2, `ctx.aim_site` -- not P2 itself, the OLD default's feed
+    site), compiles `compile_columns(pattern, feed=...)` and swaps the
+    executor -- the SAME claim-then-swap `_install_announced_reload` uses
+    for the one-ball reload."""
     node, _client = _node_with_client()
     _columns_bb_started(node, tmp_path)
     assert node._reload_ctx.phase == 'await_announcement'
+    aim = node._reload_ctx.aim_site.cup_mm
     ann = _bb_announcement(
-        target_id=node._robot_name, landing_mm=(50.0, 0.0, 830.0),
+        target_id=node._robot_name, landing_mm=tuple(float(v) for v in aim),
         landing_vel_mm_s=(0.0, 0.0, -3000.0), throw_time_s=0.5,
         landing_time_s=5.0)
     node._on_announcement(ann)
@@ -4108,25 +4188,38 @@ def test_columns_bb_announcement_installs_the_fed_schedule(tmp_path):
 
 def test_columns_bb_announcement_refuses_an_uncatchable_feed(tmp_path):
     """R5 pre-throw feasibility (`_install_columns_schedule`, 2026-09-30):
-    an announced landing displaced +30 mm in x from P2 -- away from ball
-    A's own release site P1, extending the platform's required transit --
-    cannot be planned (`executor.plan_columns_first_cycle` refuses
-    LIMIT_VEL, matching `test_plan_columns_first_cycle_refuses_a_feed_
-    displaced_toward_the_far_site` in ``test_skills_executor.py``). Ends
-    ``REJECTED_COLUMNS_FEED_UNCATCHABLE`` -- no executor swap (the bridge
-    REST the two-phase start already installed keeps streaming) and no
-    THROW is ever dispatched (the mocked ``trajectory/install_segment``
-    client sees nothing).
+    an announced landing displaced 30 mm in x AWAY from A's site (R5
+    sitting 2, 2026-10-02: the default FED layout holds A at P2 and feeds
+    P1 -- the cup must reverse against Ball Butler's own +x lateral
+    arrival to match it at touch-down, so moving further FROM P2 only
+    makes that worse) cannot be planned (`executor.plan_columns_first_
+    cycle` refuses LIMIT_VEL, matching `test_plan_columns_first_cycle_
+    refuses_a_feed_displaced_toward_the_far_site` in
+    ``test_skills_executor.py``). Ends ``REJECTED_COLUMNS_FEED_
+    UNCATCHABLE`` -- no executor swap (the bridge REST the two-phase
+    start already installed keeps streaming) and no THROW is ever
+    dispatched (the mocked ``trajectory/install_segment`` client sees
+    nothing).
 
-    **+30 mm, not the report's +20 mm** -- see the executor test's
-    docstring: the real `SkillExecutor._catch_terminal`'s "release rides
-    the caught xy, not the site" rule (2026-09-28) widens the margin at
-    +20 mm, empirically reprobed 2026-09-30."""
+    **30 mm past the feed SITE (P1, x = -80), not the 20 mm the aim is
+    walked to** -- the undisplaced feed site itself already refuses
+    LIMIT_ACC (101 %, `_run_columns`'s own docstring), and the real
+    `SkillExecutor._catch_terminal`'s "release rides the caught xy, not
+    the site" rule (2026-09-28) widens the margin versus the offline
+    planner probe (`scratchpad/probe_feed_swap.py`), so this stays well
+    past the LIMIT_VEL cliff the probe found at -10/-20 mm rather than
+    riming it."""
     node, _client = _node_with_client()
     _columns_bb_started(node, tmp_path)
     bridge_schedule = node._executor.schedule
+    # `node._reload_ctx.site` is A's held site; the feed site is the OTHER
+    # of the two named `columns_sites` (`ctx.aim_site` keeps the feed
+    # site's name but sits AT the aim offset, not the site itself).
+    a_name = node._reload_ctx.site.name
+    feed_site = next(s for s in sn.columns_sites(100.0) if s.name != a_name)
     ann = _bb_announcement(
-        target_id=node._robot_name, landing_mm=(80.0, 0.0, 830.0),
+        target_id=node._robot_name,
+        landing_mm=(float(feed_site.cup_mm[0]) - 30.0, 0.0, 830.0),
         landing_vel_mm_s=(1058.0, 475.0, -5507.0), throw_time_s=0.5,
         landing_time_s=5.0)
     node._on_announcement(ann)
@@ -4143,16 +4236,23 @@ def test_columns_bb_announcement_refuses_an_uncatchable_feed(tmp_path):
     assert 'LIMIT_VEL' in node._executor.end_message
 
 
-def test_columns_bb_announcement_at_the_nominal_site_still_installs(tmp_path):
-    """The pre-throw feasibility check is a no-op at a catchable feed --
-    `test_columns_bb_announcement_installs_the_fed_schedule`'s own
-    undisplaced-landing case, re-asserted here so a future change to the
-    check's margin has a same-file regression pinned alongside the refusal
-    case above."""
+def test_columns_bb_announcement_at_the_aim_point_still_installs(tmp_path):
+    """The pre-throw feasibility check is a no-op at the real operating
+    point -- the feed AIM point (R5 sitting 2, 2026-10-02: the default
+    FED layout's undisplaced feed SITE refuses LIMIT_ACC at 101 %,
+    `_run_columns`'s own docstring, so the aim is walked
+    `columns_feed_aim_toward_a_mm` toward A's site before this check ever
+    runs). Re-asserted here, alongside `test_columns_bb_announcement_
+    installs_the_fed_schedule`'s own undisplaced-aim case, so a future
+    change to the check's margin has a same-file regression pinned
+    alongside the refusal case above, with Ball Butler's own real
+    arrival velocity this time (the other test's is a plain vertical
+    drop)."""
     node, _client = _node_with_client()
     _columns_bb_started(node, tmp_path)
+    aim = node._reload_ctx.aim_site.cup_mm
     ann = _bb_announcement(
-        target_id=node._robot_name, landing_mm=(50.0, 0.0, 830.0),
+        target_id=node._robot_name, landing_mm=tuple(float(v) for v in aim),
         landing_vel_mm_s=(1058.0, 475.0, -5507.0), throw_time_s=0.5,
         landing_time_s=5.0)
     node._on_announcement(ann)
@@ -4161,11 +4261,16 @@ def test_columns_bb_announcement_at_the_nominal_site_still_installs(tmp_path):
     assert node._executor.schedule.pattern == 'columns'
 
 
-def test_columns_tracker_feed_resolves_an_unannounced_landing_near_p2(tmp_path):
+def test_columns_tracker_feed_resolves_an_unannounced_landing_near_the_aim_point(
+        tmp_path):
     """The tracker path (brief_S2.md item 2, ``reload=False`` -- no Ball
     Butler round trip at all): an un-announced, converged, descending
-    landing within the feed bound of P2 resolves the FEED WAIT the same
-    way, through `_on_balls`."""
+    landing within the feed bound of the feed AIM POINT resolves the FEED
+    WAIT the same way, through `_on_balls`. R5 sitting 2 (2026-10-02): the
+    default FED layout holds ball A at P2 and feeds P1, aim walked 20 mm
+    toward P2 (x = -30, `ctx.aim_site` -- the bound check's own centre,
+    `_maybe_resolve_columns_feed`) -- the OLD default fed P2 directly (x =
+    50), which is why this landing moved too."""
     node, _client = _node_with_client()
     node._params['plant_id'] = 'test_columns_tracker_feed'
     _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
@@ -4180,8 +4285,10 @@ def test_columns_tracker_feed_resolves_an_unannounced_landing_near_p2(tmp_path):
     assert resp.success is True, resp.message
     assert node._reload_ctx.kind == 'columns'
     assert node._reload_ctx.phase == 'await_feed'
+    aim = node._reload_ctx.aim_site.cup_mm
     node._on_balls(BallStateArray(balls=[
-        _ball(7, status=1, tracking=1, x=51.0, y=-2.0, z=800.0,
+        _ball(7, status=1, tracking=1, x=float(aim[0]) + 1.0,
+             y=float(aim[1]) - 2.0, z=800.0,
              vz=-3000.0, sec=0, nanosec=int((lead_needed + 1.0) * 1e9),
              landing_from_fit=True)]))
     assert node._reload_ctx is None
@@ -4200,9 +4307,12 @@ def test_columns_tracker_feed_ignores_a_landing_outside_the_bound(tmp_path):
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_columns_goal(reload=False, separation_mm=100.0))
     assert resp.success is True, resp.message
+    aim = node._reload_ctx.aim_site.cup_mm
     node._on_balls(BallStateArray(balls=[
-        _ball(7, status=1, tracking=1, x=51.0 + sn.COLUMNS_FEED_BOUND_X_MM + 5.0,
-             y=0.0, z=800.0, vz=-3000.0, sec=100, landing_from_fit=True)]))
+        _ball(7, status=1, tracking=1,
+             x=float(aim[0]) + sn.COLUMNS_FEED_BOUND_X_MM + 5.0,
+             y=float(aim[1]), z=800.0, vz=-3000.0, sec=100,
+             landing_from_fit=True)]))
     assert node._reload_ctx is not None
     assert node._reload_ctx.phase == 'await_feed'
     assert node._executor.schedule.pattern != 'columns'
@@ -4220,8 +4330,10 @@ def test_columns_tracker_feed_lead_deficit_is_logged_once(tmp_path):
         resp = node._start_pattern(_columns_goal(reload=False, separation_mm=100.0))
     assert resp.success is True, resp.message
     rec = _rec_logger(node)
-    too_soon = _ball(7, status=1, tracking=1, x=50.0, y=0.0, z=800.0,
-                     vz=-3000.0, sec=0, nanosec=1, landing_from_fit=True)
+    aim = node._reload_ctx.aim_site.cup_mm
+    too_soon = _ball(7, status=1, tracking=1, x=float(aim[0]), y=float(aim[1]),
+                     z=800.0, vz=-3000.0, sec=0, nanosec=1,
+                     landing_from_fit=True)
     node._on_balls(BallStateArray(balls=[too_soon]))
     node._on_balls(BallStateArray(balls=[too_soon]))
     deficit_lines = [m for s, m in rec.lines

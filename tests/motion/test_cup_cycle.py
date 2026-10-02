@@ -468,18 +468,21 @@ def test_runway_requirement_is_the_stopping_distance():
 
 
 def test_runway_default_decel_is_the_signed_off_hand_limit():
-    """3500 rev/s² ÷ the package's slider gain, and the gain's two sources agree.
+    """3900 rev/s² ÷ the package's slider gain, and the gain's two sources agree.
 
-    3500 rev/s² is the owner-signed hand acceleration limit (Phase 0 decision 4,
-    2026-08-30), under the C-HAND-2 authority bound of 3925.5. R1 (2026-09-11):
-    the gain is the MEASURED ``hw.HAND_REV_PER_M`` (jugglebot_geometry.
-    hand_mm_per_rev, inverted) — ``hand_stroke`` and the retired
-    ``TEENSY_LINEAR_GAIN`` fudge-factor gain it derived are both deleted.
+    3900 rev/s² is the owner-signed hand acceleration limit (3500 from Phase 0
+    decision 4, 2026-08-30, raised to the YAML ceiling on 2026-10-02 when the
+    fed columns rehearsal's same-site catch-and-throw peaked at 101 % of 3500 in
+    both feed layouts — logbook 2026-10-02-skill-stack-r5-sitting-2), under the
+    C-HAND-2 authority bound of 3925.5. R1 (2026-09-11): the gain is the
+    MEASURED ``hw.HAND_REV_PER_M`` (jugglebot_geometry.hand_mm_per_rev,
+    inverted) — ``hand_stroke`` and the retired ``TEENSY_LINEAR_GAIN``
+    fudge-factor gain it derived are both deleted.
     """
     assert cc.HAND_REV_PER_M == hw.HAND_REV_PER_M
-    assert cc.HAND_ACC_LIMIT_RPS2 == 3500.0
+    assert cc.HAND_ACC_LIMIT_RPS2 == 3900.0
     assert cc.HAND_ACC_LIMIT_RPS2 == hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2
-    assert cc.HAND_MAX_DECEL_MPS2 == pytest.approx(3500.0 / hw.HAND_REV_PER_M)
+    assert cc.HAND_MAX_DECEL_MPS2 == pytest.approx(3900.0 / hw.HAND_REV_PER_M)
     assert cc.CupCycleConfig().catch_runway_decel_mps2 == cc.HAND_MAX_DECEL_MPS2
 
 
@@ -1640,8 +1643,17 @@ def test_a_held_LANDING_assembles_the_program_it_did_before_the_span():
     ``test_the_held_axis_rows_replace_the_lateral_rows_they_would_duplicate``'s
     window.  Shapes exact; sums to 1e-12 relative, a BLAS-reordering margin
     far under any row the change could have moved (one slaving row is 1.0).
+
+    The catch-runway deceleration is FROZEN at the 3500 rev/s² hand cap the
+    fingerprints were captured under: the cap moved to 3900 on 2026-10-02
+    (``cc.HAND_ACC_LIMIT_RPS2`` now follows the YAML), which rewrites the
+    runway rows of ``bc`` and would fail this guard for a reason it does not
+    guard — the held-span rows, not the hand cap, are what it pins.
     """
-    cfg = _window_cfg()
+    cfg = cc.CupCycleConfig(z_min_m=0.690, z_max_m=0.985,
+                            catch_runway_z_floor_m=0.690,
+                            catch_runway_enabled=True,
+                            catch_runway_decel_mps2=3500.0 / cc.HAND_REV_PER_M)
     state0 = cc.CupState(_on_axis(0.75), np.zeros(3), np.zeros(3), None,
                          post_release=False)
     held = cc.CatchEvent(0, 1.0, _AX_CATCH, _AX_CATCH_VEL, axis=_held_axis_vec())

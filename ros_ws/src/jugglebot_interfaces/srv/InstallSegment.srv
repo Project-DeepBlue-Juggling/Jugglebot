@@ -26,6 +26,8 @@ float64[3] release_site_mm     # CATCH-with-throw only: the skill's OWN site (cu
 # false flag is belt and braces. One decode point: trajectory_node._wire_tilt.
 bool hold_tilt_set             # CATCH only: hold_tilt_rad is given
 float64[2] hold_tilt_rad       # CATCH only: the receive attitude (rx, ry) held through a held-axis catch (R4 reload)
+bool receive_tilt_set          # CATCH only: receive_tilt_rad is given
+float64[2] receive_tilt_rad    # CATCH only: the level touch-down attitude this catch is PINNED to (R5, `Skill.receive_tilt`) — the BB-fed columns feed catch's auto-banked `tilt_to_receive` override; mutually exclusive with hold_tilt_set (CycleGoals validates); unset = the auto-banked default
 bool rest_tilt_set             # REST only: rest_tilt_rad is given
 float64[2] rest_tilt_rad       # REST only: the attitude (rx, ry) this REST ends at (R4 reload's PRE-TILT / DECAY REST)
 ---

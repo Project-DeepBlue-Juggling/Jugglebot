@@ -185,7 +185,7 @@ namespace TrajOp {
   constexpr float LEG_JERK_CEILING_MMPS3 = 200000.0f;
   constexpr float HAND_VEL_LIMIT_RPS = 200.0f;
   constexpr float HAND_VEL_CEILING_RPS = 300.0f;
-  constexpr float HAND_ACC_LIMIT_RPS2 = 3500.0f;
+  constexpr float HAND_ACC_LIMIT_RPS2 = 3900.0f;
   constexpr float HAND_ACC_CEILING_RPS2 = 3900.0f;
   constexpr float KNOT_DT_S = 0.025f;
   constexpr uint32_t EMIT_LEAD_KNOTS = 0u;

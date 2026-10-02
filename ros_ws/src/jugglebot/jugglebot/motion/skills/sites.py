@@ -98,10 +98,18 @@ class Site:
 def columns_sites(separation_mm: float) -> Tuple[Site, Site]:
     """The two columns-pattern sites, ``separation_mm`` apart, straddling x=0.
 
-    Plan § 1.2 / § 2.4: ball A lives at ``P1``, ball B at ``P2`` — a columns
-    pattern is two SELF-tosses run out of phase, so ``separation_mm`` is the xy
-    gap between the two hands' cups, not a throw's lateral travel (a columns
-    throw's landing target is its own site — see ``schedule.compile_columns``).
+    Plan § 1.2 / § 2.4: a columns pattern is two SELF-tosses run out of
+    phase, so ``separation_mm`` is the xy gap between the two hands' cups,
+    not a throw's lateral travel (a columns throw's landing target is its
+    own site — see ``schedule.compile_columns``). The pattern itself is
+    symmetric — a plain vertical run names ball A at ``P1``, ball B at
+    ``P2`` — but a Ball-Butler-FED start (``SkillNode._run_columns``) holds
+    A at ``P2`` and feeds ``P1`` instead: ``P1`` is the site NEAREST Ball
+    Butler along its feed bearing, so the incoming ball's descent never
+    crosses the held ball's own column (2026-10-02 sitting 2 — the flown
+    P1-holds/P2-feeds layout let ball B's +x,+y transit pass through ball
+    A's column ~0.09 s before landing, merging in all 4 of 4 attempts; see
+    ``logbook/2026-10-02-skill-stack-r5-sitting-2.md``).
     Symmetric about the platform origin so a session is centred rather than
     biased to one side.
     """

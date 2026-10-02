@@ -884,7 +884,8 @@ def install_segment(record: Optional[PlanRecord],
                     lead_s: float = LEAD_S,
                     cfg: Optional[SegmentConfig] = None,
                     limits=None, geom=None, warm_start=None,
-                    t_install_s: Union[None, float, Callable[[], float]] = None
+                    t_install_s: Union[None, float, Callable[[], float]] = None,
+                    reserve_fresh_lead: bool = False
                     ) -> Tuple[Optional[PlanRecord], InstallResult,
                                Optional[Segment]]:
     """Plan one skill and put it on the machine — the ONE install path.
@@ -927,6 +928,47 @@ def install_segment(record: Optional[PlanRecord],
       carry an absolute event (the release or the landing is a real instant
       the rest of the schedule, the tracker and the ball's flight all agree
       on), so the origin cannot be silently pushed later the way a REST's can.
+
+    **``reserve_fresh_lead=True`` — the live rule for an event-bearing fresh
+    origin (2026-10-02, R5 sitting 2: 3 of 7 Ball-Butler-fed columns attempts
+    refused ``ORIGIN_TOO_LATE`` at ball A's first throw on solves of 76-84
+    ms).**  The default above pins ``t0 = t_now_s`` BEFORE the solve, so the
+    dispatch lead the schedule reserved (``Skill.dispatch_s = t_abs - window
+    - lead``) silently becomes extra WINDOW (the live THROW planned 0.600 s
+    for a 0.4 s ``launch_s``) and the solve is left only the 75 ms wire
+    margin — and every solve under that margin still SKIPS the plan's first
+    ``solve + <=1`` knot(s), because nothing reaches the wire before the
+    install: a commanded step on the hand (measured offline at the R5
+    operating point, ``scratchpad/probe_fresh_origin.py``: 0.015-0.07 rev and
+    0.7-1.4 rev/s for a 50-100 ms skip of a from-rest THROW, over the
+    firmware's 0.005 rev / 0.5 rev/s promotion tolerance).  With the flag set
+    a THROW/CATCH fresh origin is planned EXACTLY as a splice is:
+
+    * ``t0 = t_now_s + lead_s`` — the origin sits where a splice's ``k_s``
+      would (the first instant ``lead_s`` ahead of dispatch), so the planned
+      window is the schedule's own ``window_s`` less the dispatch lateness,
+      i.e. the window ``plan_columns_first_cycle`` and the admissible box
+      already certify (``t_abs - window_s``), not ``window_s + lead``;
+    * refused :data:`ORIGIN_TOO_LATE` by the SPLICE's own arithmetic with
+      ``k_s = 0`` on that origin — ``0 <= floor((t_inst - t0)/dt) +
+      WIRE_READ_KNOTS`` — so the solve budget is ``lead_s - WIRE_READ_KNOTS·dt``
+      = :data:`~jugglebot.motion.skills.schedule.SOLVE_BUDGET_KNOTS` knots
+      (150 ms at ``LEAD_S``), the same budget every splice has;
+    * between the install and ``t0`` the machine HOLDS: ``CyclePlan.state_at``
+      / ``hand_at`` / ``hand_accel_at`` return knot 0's boundary conditions
+      for ``t <= 0`` (``cycle_plan.py`` ``_locate``), and knot 0 of a plan
+      seeded at rest IS the held pose with zero velocity and zero cubic
+      acceleration, so the emitter streams the rest it was already streaming
+      and hands over to the plan at ``t0`` on the same cubic — no knot is
+      ever skipped, nothing moves before ``t0``, and the feedforward path
+      (leg torque FF, hand ``J·α``) sees ``α = 0`` until the plan's own first
+      span.
+
+    A REST ignores the flag (it keeps the rebase rule above: it carries no
+    event, so sliding its origin costs nothing).  The flag is opt-in because
+    offline callers (sweeps, the bench rehearsal, most tests) pass the WINDOW
+    START as ``t_now_s`` and mean "plan from here"; the live node and the sim
+    gate pass the DISPATCH instant and set it.
 
     *Splice* — the previous segment is still streaming.  The new window opens at
     ``k_s = splice_knot(meta, τ, lead_s)``, the first knot at least ``lead_s``
@@ -990,9 +1032,26 @@ def install_segment(record: Optional[PlanRecord],
                 raise ValueError(
                     'no record and no seed_rest — a fresh origin needs the '
                     'machine state to plan from, and nothing here can invent it')
-            t0 = t_now_s
+            # `reserve_fresh_lead` (see the docstring): an event-bearing
+            # fresh origin sits `lead_s` after dispatch, exactly where a
+            # splice's `k_s` would, so the solve has the schedule's own budget
+            # and knot 0 is still ahead of the wire when it lands. A REST
+            # keeps `t0 = t_now_s` and the rebase rule below.
+            reserved = bool(reserve_fresh_lead) and kind != REST
+            t0 = t_now_s + (lead_s if reserved else 0.0)
             k_s = 0
             t_origin = t0
+            if reserved:
+                window_s = _event_abs_s(kind, terminal) - t_origin
+                if window_s < MIN_WINDOW_S - 1e-12:
+                    return record, InstallResult(
+                        False, WINDOW_TOO_SHORT,
+                        'a %.3f s window from the reserved fresh origin '
+                        '(dispatch + %.3f s lead) to the %s is under the '
+                        '%d-knot floor (%.3f s) — the gate has no stencil to '
+                        'measure a jerk in'
+                        % (window_s, lead_s, kind, MIN_WINDOW_KNOTS,
+                           MIN_WINDOW_S), 0.0), None
         else:
             dt = float(record.plan.dt)
             tau = t_now_s - float(record.t0_s)
@@ -1035,6 +1094,35 @@ def install_segment(record: Optional[PlanRecord],
                       else float(t_install_s()) if callable(t_install_s)
                       else float(t_install_s))
             wire_margin_s = WIRE_READ_KNOTS * dt
+            if reserved:
+                # The SPLICE's own test with `k_s = 0` on the reserved origin
+                # (one rule, two branches): knot 0 must still be ahead of the
+                # last knot the wire has read by the install instant. Inside
+                # that, the emitter streams knot 0 (= the held rest) until
+                # `t0` and no knot of this plan is ever skipped.
+                solve_s = t_inst - t_now_s
+                budget_s = lead_s - wire_margin_s
+                k_wire = int(math.floor((t_inst - t0) / dt)) + WIRE_READ_KNOTS
+                if 0 <= k_wire:
+                    return record, InstallResult(
+                        False, ORIGIN_TOO_LATE,
+                        'the solve took %.3f s, past the %.3f s solve budget a '
+                        'fresh %s reserves (origin %.3f s after dispatch, less '
+                        'the %d-knot wire read): knot 0 would already be '
+                        'behind the wire, so the plan\'s first knots would be '
+                        'skipped — a commanded step off the held lane'
+                        % (solve_s, budget_s, kind, lead_s, WIRE_READ_KNOTS),
+                        float(seg.meta.plan_wall_s)), None
+                new_record = PlanRecord(plan=seg.plan, meta=seg.meta, t0_s=t0)
+                return new_record, InstallResult(
+                    True, 'OK',
+                    'fresh origin: %s over %.3f s from rest, origin +%.3f s '
+                    'after dispatch (solve %.3f s of a %.3f s budget)'
+                    % (kind, seg.plan.total_duration, t0 - t_now_s, solve_s,
+                       budget_s),
+                    float(seg.meta.plan_wall_s), splice_k=0, t0_s=t0,
+                    event_t_s=float(seg.event_t_s or 0.0),
+                    seeded_post_release=False), seg
             solve_s = t_inst - t0_before_solve
             if solve_s - wire_margin_s > 0.0:
                 # `t_inst + wire_margin_s` is how old the origin will be once
@@ -1188,7 +1276,8 @@ class SkillExecutor:
                  lateral_authority_m: Optional[float] = None,
                  observer: Optional[Callable[[int, float], str]] = None,
                  on_experience: Optional[Callable[[Experience], None]] = None,
-                 observations: Optional[Callable[[float], Observations]] = None):
+                 observations: Optional[Callable[[float], Observations]] = None,
+                 dispatch_lookahead_s: float = 0.0):
         self.schedule = schedule
         self.installer = installer
         self.tracker = tracker
@@ -1243,6 +1332,14 @@ class SkillExecutor:
         self.observer = observer
         self.on_experience = on_experience
         self.observations = observations
+        if not (math.isfinite(float(dispatch_lookahead_s))
+                and float(dispatch_lookahead_s) >= 0.0):
+            raise ValueError('dispatch_lookahead_s must be finite and >= 0, '
+                             'got %r' % (dispatch_lookahead_s,))
+        #: Seconds AHEAD of ``t_abs_s`` a skill may dispatch (see :meth:`tick`):
+        #: the caller's own dispatch quantisation, so a reserved fresh origin
+        #: never plans under the schedule's ``window_s``. 0.0 = R2 behaviour.
+        self.dispatch_lookahead_s = float(dispatch_lookahead_s)
 
         self.dispatched = set()          #: indices of ``schedule.skills``
         self.results = []                #: (index, Skill, InstallResult)
@@ -2016,6 +2113,24 @@ class SkillExecutor:
         attempt through whatever rest tail is already streaming, exactly like
         ``reload_sequencer.py``'s universal abort. With no ``observations``
         this block is skipped entirely: R2 behaviour, unchanged.
+
+        **Dispatch look-ahead** (``dispatch_lookahead_s``, 2026-10-02): a skill
+        dispatches on the first tick with ``dispatch_s() <= t_abs_s +
+        dispatch_lookahead_s``, not ``<= t_abs_s``. Since the fresh-origin
+        reservation (:func:`install_segment`'s ``reserve_fresh_lead``) a fresh
+        THROW/CATCH plans over ``t_event - (t_now + lead)``, so every second
+        between ``dispatch_s()`` and the instant the installer actually reads
+        as ``t_now`` comes straight out of the plan's window: on the robot
+        that is up to one orchestrator tick here, plus ``trajectory_node``'s
+        ceil-snap of ``t_now`` onto the 40 Hz knot grid, plus the service
+        transit — the live first throws of 2026-10-02 planned 0.375 s
+        against the 0.4 s ``launch_s`` the admissible box and
+        ``plan_columns_first_cycle`` certify. Dispatching the quantisation
+        early keeps the planned window at or above ``window_s`` (by at most
+        the look-ahead). A splice is unaffected except that it dispatches
+        that much earlier: its ``k_s`` still follows ``t_now + lead``, so its
+        window only grows. The installer is still handed the real
+        ``t_abs_s``, never ``dispatch_s()``.
         """
         t_abs_s = float(t_abs_s)
         lines = []
@@ -2050,7 +2165,8 @@ class SkillExecutor:
                 for idx, skill in enumerate(self.schedule.skills):
                     if idx in self.dispatched:
                         continue
-                    if skill.dispatch_s() > t_abs_s:
+                    if skill.dispatch_s() > (t_abs_s
+                                             + self.dispatch_lookahead_s):
                         continue
                     dispatch_lines, deferred = self._dispatch(
                         idx, skill, t_abs_s, obs)
@@ -3158,6 +3274,13 @@ def plan_columns_first_cycle(schedule: Schedule, limits, *,
     real :class:`SkillExecutor` would build and dispatch them, and returns
     ``None`` when both plan or a refusal string — the limit code and the
     measured numbers, from whichever fails first — when either does not.
+    The LIVE terminal additionally crosses the ``InstallSegment`` wire
+    (``skill_node._installer`` -> ``trajectory_node.
+    _segment_terminal_from_request``), which this offline, in-process check
+    does not exercise — ``tests/ros/test_install_segment.py``'s wire-map
+    contract test is what guards that every terminal field actually reaches
+    that wire (2026-10-02: ``receive_tilt`` did not, and this function's own
+    PASS was the reason that sitting's refusal was not caught sooner).
 
     **Why this check exists.** ``compile_columns`` accepting a schedule only
     means the SCHEDULE's timing is consistent (a positive transit, no

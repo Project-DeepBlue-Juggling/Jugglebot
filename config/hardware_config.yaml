@@ -866,7 +866,7 @@ trajectory_op:
                                    # a session ramp can never ask for a hand velocity feedforward the
                                    # firmware would clip — the clip would be silent, and a silently
                                    # clipped VELFF is a lagging hand, not a refused plan.
-  hand_acc_limit_rps2: 3500.0      # Session hand acceleration limit {rev/s^2} at launch. Also the
+  hand_acc_limit_rps2: 3900.0      # Session hand acceleration limit {rev/s^2} at launch. Also the
                                    # deceleration authority validate_cycle sizes the catch runway with
                                    # (v^2/2a), and cup_cycle.HAND_ACC_LIMIT_RPS2 mirrors it for the
                                    # in-QP bound.

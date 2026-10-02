@@ -139,6 +139,18 @@ _SERVICE_WAIT_S = 2.0
 #: become the reason a dispatch lands late.
 _TICK_HZ = 40.0
 
+#: How far AHEAD of the tick a skill dispatches (``SkillExecutor``'s
+#: ``dispatch_lookahead_s``, 2026-10-02). A reserved fresh origin (THROW/CATCH
+#: from rest) plans over ``t_event - (t_now + LEAD_S)``, so the gap between
+#: ``Skill.dispatch_s()`` and the ``t_now`` ``trajectory_node`` actually plans
+#: from is cut straight out of the window. That gap is two quantisations plus
+#: the service transit: this tick (up to ``1/_TICK_HZ``) and the node's
+#: ceil-snap of ``t_now`` onto the 40 Hz knot grid (up to one knot). The live
+#: first throws of 2026-10-02 planned 0.375 s against the certified 0.4 s
+#: ``launch_s``; dispatching both quantisations early keeps the window in
+#: ``[window_s - transit, window_s + 0.050 s]``.
+_DISPATCH_LOOKAHEAD_S = 1.0 / _TICK_HZ + float(hw.JB_TRAJ_KNOT_DT_S)
+
 #: The Juggle action's `execute_callback` feedback publish rate (brief: "at
 #: <= 5 Hz") — one order below the 40 Hz tick, plenty for a human-readable
 #: throw_index/caught readout and no load on the action transport.
@@ -365,13 +377,16 @@ _RELOAD_TOF_CEILING_S = 1.5
 
 
 def _wire_tilt_out(tilt):
-    """``segments.CatchTerminal.hold_tilt`` / ``RestTerminal.tilt`` ->
-    ``(is_set, [rx, ry])`` for ``InstallSegment.Request.{hold,rest}_tilt_set``
-    / ``*_tilt_rad`` (R4 reload, Unit U3; the flag since the R4 audit,
-    2026-09-24): ``None`` -> ``(False, [nan, nan])`` — the FLAG is the "no
-    tilt" answer (rosidl zero-initialises the array, and a REST's own
-    ``(0.0, 0.0)`` is a real target), the NaN is belt and braces. See
-    ``trajectory_node._wire_tilt``, the one decode point."""
+    """``segments.CatchTerminal.hold_tilt`` / ``CatchTerminal.receive_tilt``
+    / ``RestTerminal.tilt`` -> ``(is_set, [rx, ry])`` for
+    ``InstallSegment.Request.{hold,receive,rest}_tilt_set`` / ``*_tilt_rad``
+    (R4 reload, Unit U3; the flag since the R4 audit, 2026-09-24;
+    ``receive_tilt`` added R5, 2026-10-02 — see the 2026-10-02 sitting's
+    logbook entry for the refusal this fixed): ``None`` -> ``(False, [nan,
+    nan])`` — the FLAG is the "no tilt" answer (rosidl zero-initialises the
+    array, and a REST's own ``(0.0, 0.0)`` is a real target), the NaN is
+    belt and braces. See ``trajectory_node._wire_tilt``, the one decode
+    point."""
     if tilt is None:
         return False, [float('nan'), float('nan')]
     return True, [float(tilt[0]), float(tilt[1])]
@@ -390,6 +405,28 @@ def _mocap_aim_point_mm(site: Site, z_mm: float, offset_mm):
                                                     float(offset_mm[1]))
     return (float(site.cup_mm[0]) + dx, float(site.cup_mm[1]) + dy,
            float(z_mm))
+
+
+def _columns_feed_aim_site(feed_site: Site, a_site: Site,
+                           offset_mm: float) -> Site:
+    """R5 sitting 2 (2026-10-02, owner's collision fix): a `Site` at
+    ``feed_site``'s xy, walked ``offset_mm`` TOWARD ``a_site`` — Ball
+    Butler's real aim point, not the nominal feed site, so the feed catch
+    clears the swapped layout's undisplaced cliff (`_run_columns`'s own
+    docstring: the undisplaced catch refuses LIMIT_ACC at 101 %, 20-30 mm
+    toward A clears it with margin). Keeps ``feed_site``'s own NAME: the
+    box lookup and the OUTCOME lines stay keyed to the feed SITE (P1 by
+    default) -- only the point Ball Butler is asked to throw at moves.
+    ``offset_mm <= 0`` returns ``feed_site`` itself unchanged."""
+    if offset_mm <= 0.0:
+        return feed_site
+    delta_xy = (np.asarray(a_site.cup_mm[:2], dtype=float)
+               - np.asarray(feed_site.cup_mm[:2], dtype=float))
+    norm = float(np.linalg.norm(delta_xy))
+    unit_xy = delta_xy / norm if norm > 1e-9 else np.zeros(2)
+    xy = np.asarray(feed_site.cup_mm[:2], dtype=float) + offset_mm * unit_xy
+    return Site(feed_site.name,
+               np.array([xy[0], xy[1], float(feed_site.cup_mm[2])]))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -794,6 +831,22 @@ class SkillNode(Node):
         # cap, default unchanged from the ceiling so an un-set launch flies
         # exactly as before.
         self.declare_parameter('hold_tilt_max_deg', float(tg.MAX_TILT_DEG))
+        # R5 sitting 2 (owner decision, 2026-10-02): which `columns_sites`
+        # site a FED columns start holds ball A at and feeds -- 'P1' is the
+        # NEW default (A at P2, feed at P1), the site NEAREST Ball Butler
+        # along its feed bearing, so B's descent never crosses A's own
+        # column (the flown P1-holds/P2-feeds layout let the two balls'
+        # mocap markers merge in flight on 4/4 attempts, 2026-10-02 sitting
+        # 2). 'P2' restores that flown layout for an A/B comparison.
+        self.declare_parameter('columns_feed_site', 'P1')
+        # How far Ball Butler's aim is walked from the feed site TOWARD
+        # ball A's site (`_columns_feed_aim_site`) -- the swapped layout's
+        # UNDISPLACED feed catch refuses LIMIT_ACC at 101 % (the cup must
+        # reverse against Ball Butler's own +x lateral arrival to match it
+        # at touch-down); 20 mm toward A clears at 80/83/73 %
+        # vel/acc/jerk, with the refusing cliff 30 mm further away on the
+        # far side (2026-10-02 sitting 2 margins).
+        self.declare_parameter('columns_feed_aim_toward_a_mm', 20.0)
 
         # ── the install client + tick timer share ONE reentrant group ──────
         # Fixed 2026-09-13 (found by reading, never exercised live): `main`
@@ -1149,6 +1202,36 @@ class SkillNode(Node):
             self.get_logger().warn(
                 'hold_tilt_max_deg %.3f outside (0, %.1f] -- using %.3f'
                 % (raw, float(tg.MAX_TILT_DEG), cap))
+        return cap
+
+    def _columns_feed_site_name(self) -> str:
+        """`columns_feed_site`, validated against ``{'P1', 'P2'}`` -- which
+        `columns_sites` site a FED columns start feeds (`_run_columns`'s
+        R5 sitting 2 generalisation, 2026-10-02). An unknown value falls
+        back to the LIVE default ('P1') with an error logged, same shape
+        as `_catch_aim_source`: a typo in a launch override must not leave
+        the operator with no columns start at all."""
+        value = str(self.get_parameter('columns_feed_site').value)
+        if value not in ('P1', 'P2'):
+            self.get_logger().error(
+                "columns_feed_site=%r is not one of ('P1', 'P2') -- using "
+                "'P1'" % (value,))
+            return 'P1'
+        return value
+
+    def _columns_feed_aim_toward_a_mm(self) -> float:
+        """`columns_feed_aim_toward_a_mm`, clamped to ``[0, 40]`` with a
+        WARN outside it -- same shape as `_catch_resend_max`: a bound on
+        how far Ball Butler's aim is walked off the feed site toward ball
+        A's site, not a policy (2026-10-02 sitting 2 margins: 20 mm clears
+        at 80/83/73 % vel/acc/jerk, the refusing cliff is 30 mm further
+        away on the far side)."""
+        raw = float(self.get_parameter('columns_feed_aim_toward_a_mm').value)
+        cap = min(max(raw, 0.0), 40.0)
+        if abs(cap - raw) > 1e-9:
+            self.get_logger().warn(
+                'columns_feed_aim_toward_a_mm %.3f outside [0, 40] -- using '
+                '%.3f' % (raw, cap))
         return cap
 
     def _catch_aim_source(self) -> str:
@@ -1540,6 +1623,8 @@ class SkillNode(Node):
             req.landing_vel_mm_s = [float(v) for v in terminal.landing_vel_mm_s]
             req.rest_site_mm = [float(v) for v in terminal.rest_site_mm]
             req.hold_tilt_set, req.hold_tilt_rad = _wire_tilt_out(terminal.hold_tilt)
+            req.receive_tilt_set, req.receive_tilt_rad = _wire_tilt_out(
+                terminal.receive_tilt)
             tt = terminal.then_throw
             if tt is not None:
                 req.t_release_s = float(tt.t_release_s)
@@ -2390,9 +2475,9 @@ class SkillNode(Node):
         replacing the R2-R4 body that refused outright (`_hand_home_error`,
         deleted): an opening REST BRIDGE (`compile_reload_wait(...,
         holds_ball=True)`, `_start_reload`'s own bridge shape) homes the
-        hand and lifts the cup onto site 0 (P1) holding ball A, then a FEED
-        WAIT for ball B's real arrival at site 1 (P2) — a Ball Butler
-        `ThrowAnnouncement` (``reload=True``, routed through
+        hand and lifts the cup onto ball A's site holding ball A, then a
+        FEED WAIT for ball B's real arrival at the feed site — a Ball
+        Butler `ThrowAnnouncement` (``reload=True``, routed through
         `_start_reload`'s own BB choreography, generalised by
         ``kind='columns'``) or the tracker's own converged fit of an
         un-announced landing (``reload=False``, `_maybe_resolve_columns_feed`
@@ -2400,6 +2485,22 @@ class SkillNode(Node):
         always a valid feed regardless of whether Ball Butler was also
         asked). On resolution, `_install_columns_schedule` compiles
         ``compile_columns(pattern, feed=...)`` and swaps the executor.
+
+        Which `columns_sites` site holds A and which is fed is
+        `columns_feed_site` (R5 sitting 2, owner decision, 2026-10-02): the
+        NEW default is 'P1' (A at P2, feed at P1) — P1 is the site NEAREST
+        Ball Butler along its feed bearing, so B's descent never crosses
+        A's own column (the OLD default, 'P2', let the two balls' mocap
+        markers merge in flight on 4/4 attempts, 2026-10-02 sitting 2). The
+        swapped layout's own cost: the feed catch must reverse the cup
+        against Ball Butler's +x lateral arrival to match it at touch-down,
+        so the UNDISPLACED catch refuses LIMIT_ACC at 101 % — Ball Butler's
+        aim is therefore walked `columns_feed_aim_toward_a_mm` (20 mm
+        default) from the feed site TOWARD A's site (`_columns_feed_aim_
+        site`), which clears at 80/83/73 % vel/acc/jerk with the refusing
+        cliff 30 mm further away on the far side. The catch SITE (box
+        lookup, OUTCOME lines) stays keyed to the feed site's own name —
+        only Ball Butler's aim point moves.
 
         No-motion refusal ladder, `_run_one_ball`'s own order (box/memory
         before anything moves, then the hand-homing/frame checks): box +
@@ -2416,9 +2517,19 @@ class SkillNode(Node):
             return SimpleNamespace(success=False, message=msg)
         plant_id = str(self.get_parameter('plant_id').value)
         sites = columns_sites(separation_mm)
+        # R5 sitting 2 (2026-10-02): `columns_feed_site` picks which of the
+        # two named sites ball B is fed at; the other holds ball A (see the
+        # docstring above). `columns_sites` always returns `(P1, P2)`, so
+        # this is a plain pick, never a guess from xy.
+        if self._columns_feed_site_name() == sites[0].name:
+            feed_site, a_site = sites[0], sites[1]
+        else:
+            feed_site, a_site = sites[1], sites[0]
+        feed_aim_site = _columns_feed_aim_site(
+            feed_site, a_site, self._columns_feed_aim_toward_a_mm())
         try:
-            pattern = Pattern(sites=sites, apex_m=apex_m, dwell_s=dwell_s,
-                             n_throws=n_throws)
+            pattern = Pattern(sites=(a_site, feed_site), apex_m=apex_m,
+                             dwell_s=dwell_s, n_throws=n_throws)
         except ValueError as exc:
             msg = 'columns pattern refused: %s' % (exc,)
             self.get_logger().debug(msg)
@@ -2482,14 +2593,16 @@ class SkillNode(Node):
             # D3's lift (owner decision, 2026-09-30): `reload=True` on a
             # columns goal means "ball B comes from Ball Butler" — the SAME
             # bridge-then-BB-round-trip choreography `_start_reload` runs
-            # for the one-ball reload, generalised (`kind='columns'`) rather
-            # than duplicated: bridge holds at P1 WITH ball A
-            # (`holds_ball=True`), BB is asked to aim at P2
-            # (`aim_site=sites[1]`) instead of P1.
+            # for the one-ball reload, generalised (`kind='columns'`)
+            # rather than duplicated: bridge holds at `a_site` WITH ball A
+            # (`holds_ball=True`), BB is asked to aim at `feed_aim_site`
+            # (R5 sitting 2: the feed site, walked toward A's site —
+            # `_columns_feed_aim_site`'s own docstring) instead of `a_site`.
             return self._start_reload(
-                SimpleNamespace(success=None, message=None), site=sites[0],
+                SimpleNamespace(success=None, message=None), site=a_site,
                 lift_s=lift_s, boxes=boxes, memory=memory, kind='columns',
-                aim_site=sites[1], columns_pattern=pattern, holds_ball=True)
+                aim_site=feed_aim_site, columns_pattern=pattern,
+                holds_ball=True)
 
         # No Ball Butler round trip at all (the interim human-lob
         # sittings): arm the bridge + FEED WAIT directly. Same t0 idiom as
@@ -2497,10 +2610,14 @@ class SkillNode(Node):
         # first dispatch lands at/after "now").
         now = self.get_clock().now().nanoseconds / 1e9
         try:
-            probe = compile_reload_wait(sites[0], lift_s, now, holds_ball=True)
+            probe = compile_reload_wait(a_site, lift_s, now, holds_ball=True)
             deficit = now - probe.skills[0].dispatch_s()
-            t0 = now + max(deficit, 0.0) + (1.0 / _TICK_HZ)
-            bridge = compile_reload_wait(sites[0], lift_s, t0, holds_ball=True)
+            # + _DISPATCH_LOOKAHEAD_S: the executor dispatches that far ahead
+            # of its tick, so without it the first skill would go out on
+            # the start tick itself rather than one tick after it.
+            t0 = (now + max(deficit, 0.0) + (1.0 / _TICK_HZ)
+                  + _DISPATCH_LOOKAHEAD_S)
+            bridge = compile_reload_wait(a_site, lift_s, t0, holds_ball=True)
         except ValueError as exc:
             msg = 'columns bridge schedule refused: %s' % (exc,)
             self.get_logger().debug(msg)
@@ -2514,28 +2631,29 @@ class SkillNode(Node):
             catch_aim_source=self._catch_aim_source(),
             resend_max_per_catch=self._catch_resend_max(),
             launch_ratio=self._launch_ratio,
-            observer=self._ball_evidence, observations=self._observations)
+            observer=self._ball_evidence, observations=self._observations,
+            dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
         with self._reload_lock:
             self._reload_throw_inflight = False
             self._reload_ctx = SimpleNamespace(
                 kind='columns', phase='await_feed', pattern=None,
                 columns_pattern=pattern, boxes=boxes, memory=memory,
-                site=sites[0], aim_site=sites[1], bridge=bridge,
+                site=a_site, aim_site=feed_aim_site, bridge=bridge,
                 reload_sent=False, bb_left_idle=False, announced=False,
                 lead_deficit_logged=False,
                 deadline_mono=(time.perf_counter()
                               + COLUMNS_TRACKER_FEED_DEADLINE_S))
         msg = ('columns feed armed: waiting up to %.1f s for a tracker '
               'landing near %s (reload=False, no Ball Butler round trip)'
-              % (COLUMNS_TRACKER_FEED_DEADLINE_S, sites[1].name))
+              % (COLUMNS_TRACKER_FEED_DEADLINE_S, feed_aim_site.name))
         self.get_logger().debug(msg)
         return SimpleNamespace(
             success=True, message=msg,
             start_line=(
                 '%s started: bridge REST holds ball A at %s -- waiting up '
                 'to %.1f s for ball B to land near %s · memory %d rows'
-                % (self._attempt_label or 'columns', sites[0].name,
-                   COLUMNS_TRACKER_FEED_DEADLINE_S, sites[1].name,
+                % (self._attempt_label or 'columns', a_site.name,
+                   COLUMNS_TRACKER_FEED_DEADLINE_S, feed_aim_site.name,
                    len(memory))))
 
     def _live_limits(self):
@@ -2900,7 +3018,11 @@ class SkillNode(Node):
             # the real schedule's first dispatch at or after "now".
             probe = compile_one_ball(pattern, now)
             deficit = now - probe.skills[0].dispatch_s()
-            t0 = now + max(deficit, 0.0) + (1.0 / _TICK_HZ)
+            # + _DISPATCH_LOOKAHEAD_S: the executor dispatches that far ahead
+            # of its tick, so without it the first skill would go out on
+            # the start tick itself rather than one tick after it.
+            t0 = (now + max(deficit, 0.0) + (1.0 / _TICK_HZ)
+                  + _DISPATCH_LOOKAHEAD_S)
             schedule = compile_one_ball(pattern, t0)
         except ValueError as exc:
             msg = '%s schedule refused: %s' % (kind, exc)
@@ -2933,7 +3055,8 @@ class SkillNode(Node):
             lateral_authority_m=float(self.get_parameter(
                 'learner_lateral_authority_mm').value) / 1000.0,
             observer=self._ball_evidence, observations=self._observations,
-            on_experience=self._bind_on_experience(memory))
+            on_experience=self._bind_on_experience(memory),
+            dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
         msg = (
             '%s schedule compiled: %d skills, %d throws, plant_id=%r, '
             'memory rows=%d, t0=%.3f'
@@ -2979,10 +3102,12 @@ class SkillNode(Node):
         `_run_columns` with ``kind='columns'`` — the SAME bridge-then-BB-
         round-trip choreography, generalised rather than duplicated (plan
         § 0, one path per function): ``site`` is where the bridge REST
-        holds (P1, already holding ball A — ``holds_ball=True``),
-        ``aim_site`` is where Ball Butler is asked to throw (P2, ball B's
-        site — "the reload aims at P1 today; make the aim site a parameter
-        of that path"), and ``columns_pattern`` (a `schedule.Pattern`,
+        holds (ball A's site, already holding it — ``holds_ball=True``),
+        ``aim_site`` is where Ball Butler is asked to throw — ball B's
+        feed site, walked toward A's site by `_run_columns`'s own
+        `columns_feed_aim_toward_a_mm` (R5 sitting 2, 2026-10-02:
+        `_columns_feed_aim_site`) — and ``columns_pattern`` (a
+        `schedule.Pattern`,
         columns' own shape) rides the ctx in place of ``pattern`` — the two
         are mutually exclusive, selected by ``kind``, because
         `_install_announced_reload` compiles a different schedule
@@ -3018,7 +3143,11 @@ class SkillNode(Node):
             # rather than threading a third compiler through that block.
             probe = compile_reload_wait(site, lift_s, now, holds_ball=holds_ball)
             deficit = now - probe.skills[0].dispatch_s()
-            t0 = now + max(deficit, 0.0) + (1.0 / _TICK_HZ)
+            # + _DISPATCH_LOOKAHEAD_S: the executor dispatches that far ahead
+            # of its tick, so without it the first skill would go out on
+            # the start tick itself rather than one tick after it.
+            t0 = (now + max(deficit, 0.0) + (1.0 / _TICK_HZ)
+                  + _DISPATCH_LOOKAHEAD_S)
             bridge = compile_reload_wait(site, lift_s, t0, holds_ball=holds_ball)
         except ValueError as exc:
             # No motion has been committed yet -- an ordinary goal REJECT
@@ -3039,7 +3168,8 @@ class SkillNode(Node):
             catch_aim_source=self._catch_aim_source(),
             resend_max_per_catch=self._catch_resend_max(),
             launch_ratio=self._launch_ratio,
-            observer=self._ball_evidence, observations=self._observations)
+            observer=self._ball_evidence, observations=self._observations,
+            dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
 
         # From HERE ON (C4): the bridge REST is a committed physical fact.
         # A refusal below ACCEPTS the goal and ends the attempt through
@@ -3284,7 +3414,8 @@ class SkillNode(Node):
             lateral_authority_m=float(self.get_parameter(
                 'learner_lateral_authority_mm').value) / 1000.0,
             observer=self._ball_evidence, observations=self._observations,
-            on_experience=self._bind_on_experience(ctx.memory))
+            on_experience=self._bind_on_experience(ctx.memory),
+            dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
         # The SkillExecutor SWAP (brief step 1c): the bridge's own executor
         # is done by now in every ordinary case (its one REST dispatched
         # ticks ago) — this still takes `_tick_lock` first, same reason
@@ -3421,7 +3552,8 @@ class SkillNode(Node):
             lateral_authority_m=float(self.get_parameter(
                 'learner_lateral_authority_mm').value) / 1000.0,
             observer=self._ball_evidence, observations=self._observations,
-            on_experience=self._bind_on_experience(ctx.memory))
+            on_experience=self._bind_on_experience(ctx.memory),
+            dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
         # The SkillExecutor SWAP, `_install_announced_reload`'s shape
         # exactly: `_tick_lock` first (a tick mid-dispatch on another
         # thread must not read `_executor` half-swapped), then ONE

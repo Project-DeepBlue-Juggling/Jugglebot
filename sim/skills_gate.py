@@ -131,6 +131,14 @@ from teensy_link.setpoint_pump import (                            # noqa: E402
 
 from sim.plant.mujoco_plant import MuJoCoPlant                     # noqa: E402
 from sim.juggle_noise import BallisticEstimator, JuggleNoise, NoiseConfig  # noqa: E402
+
+#: ``skill_node._DISPATCH_LOOKAHEAD_S``, mirrored (2026-10-02): the node's
+#: executors dispatch this far ahead of their tick (one 40 Hz orchestrator
+#: tick + trajectory_node's ceil-snap of ``t_now`` onto the knot grid), so a
+#: reserved fresh origin (``install_segment(..., reserve_fresh_lead=True)``)
+#: never plans under the schedule's ``window_s``. Restated rather than
+#: imported: ``skill_node`` pulls in rclpy, which this gate must not need.
+_DISPATCH_LOOKAHEAD_S = 1.0 / 40.0 + float(hw.JB_TRAJ_KNOT_DT_S)
 from sim import stream_chain                                       # noqa: E402
 from sim.gate_common import ViewerClosed, attach_viewer             # noqa: E402
 
@@ -143,7 +151,12 @@ from sim.gate_common import ViewerClosed, attach_viewer             # noqa: E402
 _SESSION_LEG_VEL_MMPS = 300.0
 _SESSION_LEG_ACC_MMPS2 = 5000.0
 _SESSION_LEG_JERK_MMPS3 = 200000.0
-_SESSION_HAND_ACC_RPS2 = 3500.0
+# Owner, 2026-10-02: 3900 (was 3500). The fed columns rehearsal's same-site
+# catch-and-throw fold peaked at 101 % of 3500 in BOTH feed layouts (the
+# 2026-09-30 pass was the same knife edge landing on the right side), so the
+# session cap moved to the YAML ceiling; config/hardware_config.yaml
+# `hand_acc_limit_rps2` is 3900 since the same day and the box is re-swept at it.
+_SESSION_HAND_ACC_RPS2 = 3900.0
 
 #: Worst |mirror - plan| (rev) the HAND / LEG reconstruction bands allow --
 #: carried over from ``sim/unified_gate.py`` (deleted this rung) verbatim, with
@@ -406,7 +419,13 @@ def _make_installer(ictx: _InstallCtx, seg_cfg, limits, geom):
     def installer(kind, terminal, t_now_s, *, ball_id):
         new_record, result, seg = ex.install_segment(
             ictx.record, ictx.seed_rest, kind, terminal, t_now_s,
-            cfg=seg_cfg, limits=limits, geom=geom, warm_start=ictx.warm_start)
+            cfg=seg_cfg, limits=limits, geom=geom, warm_start=ictx.warm_start,
+            # trajectory_node's own rule (2026-10-02): `t_now_s` is the
+            # executor's dispatch tick, so an event-bearing fresh origin
+            # starts LEAD_S after it -- the window the robot plans, not
+            # window + lead. The stream loop holds knot 0 until that origin
+            # exactly as the robot's emitter does.
+            reserve_fresh_lead=True)
         ictx.installs_total += 1
         if result.accepted:
             ictx.record = new_record
@@ -469,7 +488,9 @@ _SELF_TOSS_SEPARATION_MM = 100.0
 #: mismatch, so this constant and the sweep's must agree to the mm).
 _HOP_SEPARATION_MM = 250.0
 
-#: Ball Butler's horizontal bearing at site 1, reused for the R5 columns
+#: Ball Butler's horizontal bearing at the feed site (R5 sitting 2,
+#: 2026-10-02: not necessarily site 1 -- see `run_columns_attempt`'s own
+#: swap), reused for the R5 columns
 #: FEED trial (:meth:`SkillsGate.run_columns_attempt`'s ``feed_angle_deg``/
 #: ``feed_speed_mmps`` branch): the (x, y) direction of the F-a/F-b probes'
 #: reused real arrival vector ``(1058.0, 475.0, -5507.0)`` mm/s
@@ -614,7 +635,10 @@ class SelfTossGateConfig:
     leg_vel_mmps: float = 300.0
     leg_acc_mmps2: float = 5000.0
     leg_jerk_mmps3: float = _SESSION_LEG_JERK_MMPS3
-    hand_acc_rps2: float = 3500.0
+    #: Follows the session constant (3900 since 2026-10-02, see its comment)
+    #: for the same reason ``leg_jerk_mmps3`` follows its own: a stale literal
+    #: here made every fed attempt restart on the 2026-09-30 rehearsal.
+    hand_acc_rps2: float = _SESSION_HAND_ACC_RPS2
     #: Which aim source the executor runs with (``executor.AIM_SOURCES``).
     #: ``tracker`` here, not the LIVE default (``schedule``): this gate's
     #: whole tracker-refine surface (``_make_tracker``, the RESEND
@@ -639,9 +663,9 @@ class SelfTossGateConfig:
     report_path: str = None
     #: R5 columns FEED trial (owner ask, 2026-09-30): when BOTH are set,
     #: :meth:`SkillsGate.run_columns_attempt` spawns ball 1 on an oblique
-    #: arrival at site 1 -- this many degrees off vertical, at this speed
-    #: (mm/s), along :data:`_COLUMNS_FEED_BEARING_XY_UNIT`'s bearing --
-    #: instead of the R2 vertical self-toss spawn, and compiles the
+    #: arrival at the FEED site -- this many degrees off vertical, at this
+    #: speed (mm/s), along :data:`_COLUMNS_FEED_BEARING_XY_UNIT`'s bearing
+    #: -- instead of the R2 vertical self-toss spawn, and compiles the
     #: schedule via ``compile_columns(pattern, feed=LandingPrior(...))``,
     #: exactly as ``SkillNode._install_columns_schedule`` does for a real
     #: Ball Butler feed. Both ``None`` (the default) is today's vertical
@@ -650,6 +674,31 @@ class SelfTossGateConfig:
     #: 'columns'``.
     feed_angle_deg: float = None
     feed_speed_mmps: float = None
+    #: R5 sitting 2 (owner decision, 2026-10-02): mirrors `skill_node.
+    #: SkillNode`'s own `columns_feed_site` -- in a FEED trial (both of
+    #: the above set), which named `columns_sites` site holds ball A and
+    #: which is fed. 'P1' (the default) is the swapped layout
+    #: `run_columns_attempt` implements unconditionally today: A at site
+    #: 1 (P2), feed at site 0 (P1) -- site 0 is the site NEAREST Ball
+    #: Butler along its feed bearing, so the incoming ball's descent
+    #: never crosses A's own column. 'P2' is the OLD, un-swapped layout
+    #: (A at site 0, feed at site 1) that let the two balls' mocap
+    #: markers merge in flight on 4/4 attempts, 2026-10-02 sitting 2 --
+    #: kept here only so this gate can still reproduce it. Ignored
+    #: outside a FEED trial; any other value raises (no silent
+    #: fallback -- this is a sim knob, not a launch parameter an
+    #: operator can mistype).
+    columns_feed_site: str = 'P1'
+    #: R5 sitting 2 (owner decision, 2026-10-02): mirrors `skill_node.
+    #: SkillNode`'s own `columns_feed_aim_toward_a_mm` -- in a FEED trial
+    #: (both of the above set), ball B's synthetic arrival targets the
+    #: FEED site walked this many mm toward the held ball A's site, not
+    #: the feed site itself (`run_columns_attempt`'s own docstring: the
+    #: swapped layout's UNDISPLACED feed catch refuses LIMIT_ACC at
+    #: 101 %, the cup must reverse against Ball Butler's +x lateral
+    #: arrival to match it at touch-down; 20 mm toward A clears at
+    #: 80/83/73 % vel/acc/jerk). Ignored outside a FEED trial.
+    feed_aim_toward_a_mm: float = 20.0
 
 
 def _sites_for(cfg: 'SelfTossGateConfig') -> tuple:
@@ -883,7 +932,8 @@ class SkillsGate:
         installer = _make_installer(ictx, self.seg_cfg, self.limits, geom)
         executor = ex.SkillExecutor(
             sched, installer, tracker=tracker,
-            catch_aim_source=self.cfg.catch_aim_source)
+            catch_aim_source=self.cfg.catch_aim_source,
+            dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
 
         # 4. Stream (the one loop -- ``_stream_chain``).
         t_end = t_land_final + QUIET_TAIL_S
@@ -999,6 +1049,15 @@ class SkillsGate:
         frame_seq = 0
         frame_t0 = None
         latch_tau = 0.0
+        #: The ``t0_s`` of the record the mirror's last frame was latched
+        #: from: the reconstruction check compares the mirror against THAT
+        #: plan's phase only (a fresh install changes ``record`` before its
+        #: first frame reaches the mirror; a splice keeps ``t0_s`` and a
+        #: bit-identical head, so it stays comparable).
+        latch_t0 = None
+        #: Monotone wire stamp across records (the robot stamps every frame
+        #: with its own knot instant, never a per-plan counter that restarts).
+        wire_seq = 0
         emitted = accepted = 0
         flags_seen = set()
         worst_leg = worst_hand = 0.0
@@ -1035,15 +1094,26 @@ class SkillsGate:
 
             if t >= next_frame_t - 1e-9:
                 record = ictx.record
-                if record is not None:
+                if record is not None and (frame_t0 is None
+                                           or record.t0_s != frame_t0):
                     # A fresh install starts a NEW record.t0_s (a splice never
                     # does -- install_segment carries it forward unchanged) --
-                    # reset the frame counter to that origin so knot 0 samples
-                    # at tau=0 exactly.
-                    if frame_t0 is None or record.t0_s != frame_t0:
-                        frame_t0 = record.t0_s
-                        frame_seq = 0
-                        next_frame_t = record.t0_s
+                    # re-grid the frame counter onto that origin so knot 0
+                    # samples at tau=0 exactly. The first frame is the first
+                    # grid instant AT OR AFTER now, which is BEFORE t0 for a
+                    # reserved fresh origin (t_now + LEAD_S): those frames
+                    # sample tau < 0, which a CyclePlan answers with knot 0 --
+                    # the hold trajectory_node's emitter streams between the
+                    # install and t0 (its `_emit_once` samples
+                    # `state_at(t_k - t0)` on the absolute grid). Until
+                    # 2026-10-02 this jumped straight to tau = 0 at the
+                    # install instant, so a future origin's plan reached the
+                    # mirror (t0 - t_install) EARLY.
+                    frame_t0 = record.t0_s
+                    frame_seq = int(math.ceil(
+                        (t - record.t0_s) / record.plan.dt - 1e-9))
+                    next_frame_t = record.t0_s + frame_seq * record.plan.dt
+                if record is not None and t >= next_frame_t - 1e-9:
                     # Sample the NOMINAL grid instant (seq*dt), never the raw
                     # physical clock: TICK_S (2 ms) does not divide dt (25 ms)
                     # evenly, so a frame gated on "t >= next_frame_t" can fire
@@ -1056,18 +1126,22 @@ class SkillsGate:
                     # property of the plan or the wire.
                     tau = frame_seq * record.plan.dt
                     if tau <= record.plan.total_duration + 1e-9:
-                        frame = emitter.frame(record.plan, tau, frame_seq)
+                        frame = emitter.frame(record.plan, tau, wire_seq)
                         sp, _reason = pump.build(
-                            frame, t_origin_us=int(frame_seq * 25000))
+                            frame, t_origin_us=int(wire_seq * 25000))
                         emitted += 1
+                        wire_seq += 1
                         if sp is not None:
                             accepted += 1
                             flags_seen.add(int(sp.flags))
                             stream_chain.latch(mirror, Setpoint.unpack(sp.pack()),
                                               t)
                             latch_tau = tau
+                            latch_t0 = record.t0_s
                         frame_seq += 1
-                next_frame_t += record.plan.dt if record is not None else KNOT_DT_S
+                    next_frame_t += record.plan.dt
+                elif record is None:
+                    next_frame_t += KNOT_DT_S
 
             record = ictx.record
             if record is not None:
@@ -1083,7 +1157,10 @@ class SkillsGate:
                         stream_chain.slider_mm_of_rev(hand_out[0], rcfg))
 
                 tau_phase = latch_tau + (t - mirror.base_timestamp)
-                if 0.0 <= tau_phase <= record.plan.total_duration:
+                # Negative phases (the pre-t0 hold) are checked too: the plan
+                # answers knot 0 there, which is what the mirror must hold.
+                if (latch_t0 == record.t0_s
+                        and tau_phase <= record.plan.total_duration):
                     d_leg, d_hand = stream_chain.recon(
                         record.plan, mirror, tau_phase, geom, self.mm_to_rev)
                     worst_leg = max(worst_leg, d_leg)
@@ -1221,7 +1298,8 @@ class SkillsGate:
             learner=learner, boxes=boxes,
             observer=observer, on_experience=lambda exp: (
                 memory.append(exp), throws_out.append(exp)),
-            observations=observations)
+            observations=observations,
+            dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
 
         # A generous, bounded timeout -- the real exit is ``executor.done``
         # (``stop_check``), so a refused or dropped attempt does not stream
@@ -1352,13 +1430,32 @@ class SkillsGate:
     def run_columns_attempt(self, *, n_throws: int, memory: mem.Memory,
                             learner_cfg: lr.LearnerConfig, noise: JuggleNoise,
                             throws_out: list) -> Tuple[str, dict, '_InstallCtx']:
-        """One columns learner attempt, cold from a level rest at site 0 with
-        ball B already airborne toward site 1 (the SAME setup
-        :meth:`run_trial` steps 1-2 use) -- vertically (``cfg.feed_angle_deg``/
-        ``cfg.feed_speed_mmps`` both ``None``, the default) or, when both are
-        set, on an oblique Ball Butler-like arrival compiled through
-        ``compile_columns(pattern, feed=LandingPrior(...))`` instead of a
-        free ``t0_abs_s`` -- see :data:`SelfTossGateConfig.feed_angle_deg`.
+        """One columns learner attempt, cold from a level rest holding ball
+        A with ball B already airborne toward the FEED site (the SAME
+        setup :meth:`run_trial` steps 1-2 use) -- vertically
+        (``cfg.feed_angle_deg``/``cfg.feed_speed_mmps`` both ``None``, the
+        default: A rests at site 0, B feeds site 1, unchanged bit-for-bit
+        since before the FEED option) or, when both are set, on an oblique
+        Ball Butler-like arrival compiled through ``compile_columns(pattern,
+        feed=LandingPrior(...))`` instead of a free ``t0_abs_s`` -- see
+        :data:`SelfTossGateConfig.feed_angle_deg`.
+
+        **A FEED trial swaps which site holds A and which is fed, per
+        `cfg.columns_feed_site` (R5 sitting 2, owner decision,
+        2026-10-02), mirroring `skill_node.SkillNode._run_columns`'s own
+        swap**: by default (``columns_feed_site='P1'``) A rests at site
+        1, B feeds site 0 -- site 0 is the site NEAREST Ball Butler
+        along its feed bearing, so B's descent never crosses A's own
+        column (the OLD, un-swapped FEED trial, ``columns_feed_site=
+        'P2'``, let the two balls' mocap markers merge in flight on 4/4
+        attempts, 2026-10-02 sitting 2). The swapped
+        layout's own cost: the feed catch must reverse the cup against
+        Ball Butler's +x lateral arrival to match it at touch-down, so the
+        UNDISPLACED feed catch refuses LIMIT_ACC at 101 % -- the synthetic
+        arrival's target is therefore walked `cfg.feed_aim_toward_a_mm`
+        toward site 1 (A's site), not site 0 itself. The vertical
+        (non-FEED) spawn above is NOT swapped -- A still rests at site 0,
+        B still feeds site 1, exactly as before the FEED option existed.
         The learner (:class:`_MemoryLearner`)
         replaces the identity prior; the box lookup is BYPASSED
         (``boxes=None``): the committed 'columns' box entries are
@@ -1390,8 +1487,27 @@ class SkillsGate:
         plant = self.plant
         geom = self.geom
         site0, site1 = sites.columns_sites(cfg.separation_mm)
+        # R5 sitting 2 (2026-10-02): a FEED trial swaps which site holds A
+        # and which is fed (mirrors `SkillNode._run_columns`'s own swap,
+        # class docstring above); the vertical run keeps site 0 = A,
+        # site 1 = feed, unchanged.
+        feed_mode = not (cfg.feed_angle_deg is None
+                        and cfg.feed_speed_mmps is None)
+        # R5 sitting 2 (2026-10-02): `cfg.columns_feed_site` picks the
+        # swap ONLY inside a FEED trial (`SelfTossGateConfig.
+        # columns_feed_site`'s own docstring) -- the vertical (non-FEED)
+        # spawn is never swapped, unchanged bit-for-bit.
+        if not feed_mode:
+            a_site, feed_site = site0, site1
+        elif cfg.columns_feed_site == 'P1':
+            a_site, feed_site = site1, site0
+        elif cfg.columns_feed_site == 'P2':
+            a_site, feed_site = site0, site1
+        else:
+            raise ValueError("cfg.columns_feed_site must be 'P1' or 'P2', "
+                             'got %r' % (cfg.columns_feed_site,))
 
-        rest0 = self._rest_state(site0)
+        rest0 = self._rest_state(a_site)
         pose0 = np.asarray(rest0.pose, dtype=float)
         plant.reset(pose0)
         plant.command(plant.pose_to_extensions(pose0))
@@ -1405,15 +1521,15 @@ class SkillsGate:
 
         t_f = sk.flight_s(cfg.apex_m)
         beta = sk.beat_s(t_f, cfg.dwell_s)
-        pos1 = site1.catch_site_mm()
-        pattern = sk.Pattern(sites=(site0, site1), apex_m=cfg.apex_m,
+        pos1 = feed_site.catch_site_mm()
+        pattern = sk.Pattern(sites=(a_site, feed_site), apex_m=cfg.apex_m,
                              dwell_s=cfg.dwell_s, n_throws=n_throws)
 
-        if cfg.feed_angle_deg is None and cfg.feed_speed_mmps is None:
+        if not feed_mode:
             # R2's vertical self-toss spawn -- ball B already airborne
-            # toward site 1, landing back at its own launch point after a
-            # full flight `t_f`. Unchanged bit-for-bit from before the FEED
-            # option (owner ask, 2026-09-30).
+            # toward the feed site, landing back at its own launch point
+            # after a full flight `t_f`. Unchanged bit-for-bit from before
+            # the FEED option (owner ask, 2026-09-30).
             v0_mm_s = math.sqrt(2.0 * bal.GRAVITY_MMS2 * cfg.apex_m * 1000.0)
             pos1n, vel1n = noise.perturb_throw(
                 pos1, np.array([0.0, 0.0, v0_mm_s]), np.zeros(3))
@@ -1423,11 +1539,12 @@ class SkillsGate:
             sched = sk.compile_columns(pattern, t0_abs_s)
         else:
             # R5 FEED trial (owner ask, 2026-09-30): a Ball Butler-like
-            # oblique arrival at site 1, fed through `compile_columns`'s
-            # `feed=` path exactly as `SkillNode._install_columns_schedule`
-            # compiles a real BB announcement/tracker landing
-            # (`skill_node.py` ~3197/3321) -- `t0 = t_land - transit_s` is
-            # computed by `compile_columns` itself, not chosen here.
+            # oblique arrival at the feed site, fed through
+            # `compile_columns`'s `feed=` path exactly as `SkillNode.
+            # _install_columns_schedule` compiles a real BB
+            # announcement/tracker landing (`skill_node.py` ~3197/3321) --
+            # `t0 = t_land - transit_s` is computed by `compile_columns`
+            # itself, not chosen here.
             if cfg.feed_angle_deg is None or cfg.feed_speed_mmps is None:
                 raise ValueError(
                     'feed_angle_deg and feed_speed_mmps must both be set, '
@@ -1440,7 +1557,19 @@ class SkillsGate:
                 _COLUMNS_FEED_BEARING_XY_UNIT[0] * lateral_mm_s,
                 _COLUMNS_FEED_BEARING_XY_UNIT[1] * lateral_mm_s,
                 -cfg.feed_speed_mmps * math.cos(angle)])
-            land_pos_nom = np.asarray(pos1, dtype=float)
+            # R5 sitting 2 (2026-10-02): the synthetic arrival targets the
+            # feed site walked `feed_aim_toward_a_mm` TOWARD A's site
+            # (`SkillNode._columns_feed_aim_site`'s own mirror) -- the
+            # swapped layout's UNDISPLACED feed catch refuses LIMIT_ACC at
+            # 101 % (class docstring above).
+            a_minus_feed_xy = (np.asarray(a_site.cup_mm[:2], dtype=float)
+                              - np.asarray(feed_site.cup_mm[:2], dtype=float))
+            norm = float(np.linalg.norm(a_minus_feed_xy))
+            aim_unit_xy = (a_minus_feed_xy / norm if norm > 1e-9
+                          else np.zeros(2))
+            aim_xy = (np.asarray(feed_site.cup_mm[:2], dtype=float)
+                     + cfg.feed_aim_toward_a_mm * aim_unit_xy)
+            land_pos_nom = np.array([aim_xy[0], aim_xy[1], float(pos1[2])])
             land_pos, land_vel = noise.perturb_throw(
                 land_pos_nom, land_vel_nom, np.zeros(3))
 
@@ -1501,7 +1630,8 @@ class SkillsGate:
             learner=learner, boxes=None, resend_max_per_catch=0,
             observer=observer,
             on_experience=lambda exp: (
-                memory.append(exp), throws_out.append(exp)))
+                memory.append(exp), throws_out.append(exp)),
+            dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
 
         # A generous, bounded timeout -- the real exit is ``executor.done``
         # (``stop_check``), matching ``run_self_toss_attempt``.
@@ -1808,7 +1938,8 @@ class SkillsGate:
         executor = ex.SkillExecutor(
             sched, installer, tracker=tracker,
             catch_aim_source=self.cfg.catch_aim_source,
-            observer=observer, observations=observations)
+            observer=observer, observations=observations,
+            dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
 
         # A generous, bounded timeout -- the real exit is `executor.done`
         # (`stop_check`), same reason `run_self_toss_attempt` gives.
@@ -2123,16 +2254,34 @@ def main(argv=None) -> int:
                         'columns gate')
     p.add_argument('--feed-angle-deg', type=float, default=None,
                    help='--learn --pattern columns only: spawn ball 1 on an '
-                        'oblique arrival at site 1, this many degrees off '
-                        'vertical, along the Ball Butler bearing '
-                        '(SelfTossGateConfig.feed_angle_deg), through '
-                        "compile_columns(feed=...) -- must be given "
-                        'together with --feed-speed-mmps (default: None, '
-                        "today's vertical spawn, unchanged)")
+                        'oblique arrival at the feed site (R5 sitting 2, '
+                        '2026-10-02: the site NEAREST Ball Butler, not '
+                        "necessarily site 1 -- SkillsGate.run_columns_"
+                        'attempt swaps which site holds A), this many '
+                        'degrees off vertical, along the Ball Butler '
+                        'bearing (SelfTossGateConfig.feed_angle_deg), '
+                        "through compile_columns(feed=...) -- must be "
+                        'given together with --feed-speed-mmps (default: '
+                        "None, today's vertical spawn, unchanged)")
     p.add_argument('--feed-speed-mmps', type=float, default=None,
                    help='--learn --pattern columns only: the arrival speed '
                         '(mm/s) for --feed-angle-deg -- must be given '
                         'together with it')
+    p.add_argument('--columns-feed-site', choices=('P1', 'P2'), default=None,
+                   help='--learn --pattern columns, --feed-angle-deg only: '
+                        'which named site is fed (SelfTossGateConfig.'
+                        'columns_feed_site, default \'P1\' -- the swapped '
+                        'layout: A at site 1, feed at site 0). \'P2\' is '
+                        'the OLD, un-swapped layout (A at site 0, feed at '
+                        'site 1), R5 sitting 2, 2026-10-02')
+    p.add_argument('--feed-aim-toward-a-mm', type=float, default=None,
+                   help='--learn --pattern columns, --feed-angle-deg only: '
+                        'how far (mm) the synthetic arrival is walked from '
+                        "the feed site TOWARD ball A's site "
+                        '(SelfTossGateConfig.feed_aim_toward_a_mm, default '
+                        '20.0 -- the swapped layout\'s undisplaced feed '
+                        'catch refuses LIMIT_ACC at 101 %%, R5 sitting 2, '
+                        '2026-10-02)')
     args = p.parse_args(argv)
 
     if args.reload:
@@ -2166,6 +2315,10 @@ def main(argv=None) -> int:
             lcfg.feed_angle_deg = float(args.feed_angle_deg)
         if args.feed_speed_mmps is not None:
             lcfg.feed_speed_mmps = float(args.feed_speed_mmps)
+        if args.columns_feed_site is not None:
+            lcfg.columns_feed_site = str(args.columns_feed_site)
+        if args.feed_aim_toward_a_mm is not None:
+            lcfg.feed_aim_toward_a_mm = float(args.feed_aim_toward_a_mm)
         if args.seeds is not None:
             seeds = tuple(args.seeds)
         else:

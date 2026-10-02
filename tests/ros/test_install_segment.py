@@ -20,6 +20,7 @@ the same reason: this file is now their only consumer.
 from __future__ import annotations
 
 import contextlib
+import dataclasses
 import time
 
 import numpy as np
@@ -30,9 +31,11 @@ from std_srvs.srv import Trigger
 from jugglebot_interfaces.msg import MotorStateSingle, RobotState
 from jugglebot_interfaces.srv import InstallSegment
 import jugglebot.hardware_config as hw
+from jugglebot import skill_node as sn
 from jugglebot import trajectory_node as tn
 from jugglebot.motion import unified_cycle as uc
 from jugglebot.motion.skills import executor as sk_exec
+from jugglebot.motion.skills import segments as sk_seg
 from jugglebot.motion.trajectory import cup_realize as cr
 from jugglebot.motion.trajectory import feasibility as feas
 from jugglebot.motion.trajectory.cycle_plan import CyclePlan
@@ -204,6 +207,12 @@ def _perf_node(**kw):
 # ═════════════════════════════════════════════════════════════════════════════
 
 def test_throw_from_rest_accepts_at_a_fresh_origin():
+    """The live path reserves the dispatch lead for an event-bearing fresh
+    origin (``install_segment(..., reserve_fresh_lead=True)``, 2026-10-02):
+    ``t0`` is the grid-aligned request instant PLUS ``LEAD_S``, not the
+    request instant — pinned with an ABSOLUTE one-knot tolerance because a
+    bare ``approx(at)`` on a large ``perf_counter`` value has a relative
+    tolerance wider than the 0.225 s it must tell apart."""
     node = _perf_node()
     with _frozen_perf() as at:
         resp = node._svc_install_segment(_throw_req(at + 0.6),
@@ -211,7 +220,14 @@ def test_throw_from_rest_accepts_at_a_fresh_origin():
     assert resp.accepted is True, resp.message
     assert resp.code == feas.OK
     assert resp.splice_k == 0
-    assert resp.t0_mono == pytest.approx(at)
+    # t0 = the node's grid-aligned request instant + LEAD_S: within one knot
+    # of `at + LEAD_S` (the grid alignment is the node's, not this test's).
+    assert resp.t0_mono - sk_exec.LEAD_S == pytest.approx(
+        at, abs=float(hw.JB_TRAJ_KNOT_DT_S) + 1e-9)
+    # The release is still the requested absolute instant, to the knot the
+    # planner places it on.
+    assert resp.t_event_mono == pytest.approx(
+        at + 0.6, abs=float(hw.JB_TRAJ_KNOT_DT_S) + 1e-9)
     assert isinstance(node._active_plan, CyclePlan)
     assert node._cycle is not None
     assert node._cycle[0] is node._active_plan
@@ -224,6 +240,151 @@ def test_a_rest_segment_accepts_at_a_fresh_origin():
                                          InstallSegment.Response())
     assert resp.accepted is True, resp.message
     assert resp.splice_k == 0
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# A fresh THROW/CATCH dispatched while the previous REST is STILL STREAMING
+# (2026-10-02, unit U2, `scratchpad/design_fresh_origin_budget.md`)
+#
+# A REST keeps moving right up to its own last knot (2.4-33 mm/s 25 ms before
+# the end on the schedule's own park/pretilt moves — probe
+# `scratchpad/probe_rest_tail.py/.out`), and the reload CATCH dispatches
+# exactly at the pre-tilt REST's NOMINAL end (`schedule.py`'s
+# `pretilt_end_rel`, also the CATCH's own `dispatch_s`). A REBASED pre-tilt
+# REST (R5 sitting 2: +0.16-0.18 s) ends AFTER that nominal instant, so the
+# record is still on the wire when the next install lands. `_cycle_start_state`'s
+# live rest bound (0.3 mm/s platform, 0.2 rev/s hand) used to read that as
+# "the machine is moving" and refuse every such install fail-closed; the fix
+# seeds the fresh origin from the STILL-STREAMING record's own terminal rest
+# instead, because `fresh`'s own test (`t_now + lead_s >= record.end_s`) is
+# exactly the claim `t0 >= record.end_s` the reservation needs.
+# ═════════════════════════════════════════════════════════════════════════════
+
+def test_a_fresh_throw_installs_while_the_previous_rest_is_still_streaming():
+    """A REST to a different cup height (hand moving, platform untouched) is
+    installed over 1.0 s; a THROW is then dispatched 0.2 s into it — inside
+    the 0.225 s reserved lead of the REST's own end (`fresh` fires), and the
+    REST's own plan is still short of ITS end (0.2 s < 1.0 s duration) when
+    this handler runs, so the record is provably still streaming. The
+    install must ACCEPT: the seed is the REST's TERMINAL rest (exact zero
+    velocity), not the live, still-moving hand — the live hand is checked
+    below to be well over the 0.2 rev/s bound that used to gate this, so the
+    old live-rest test would have refused it."""
+    node = _perf_node()
+    with _frozen_perf() as at:
+        resp = node._svc_install_segment(_rest_req(at + 1.0, rest_z=850.0),
+                                         InstallSegment.Response())
+        assert resp.accepted is True, resp.message
+    rest_end = resp.t0_mono + resp.duration_s
+
+    real_perf = time.perf_counter
+    t2 = rest_end - 0.2
+    time.perf_counter = lambda: t2
+    try:
+        _refresh(node)
+        _, hand_vel = node._commanded_hand_state()
+        assert abs(hand_vel) > 1.0, (
+            'fixture must still be moving at t2 for this test to mean '
+            'anything: hand_vel=%.4f' % hand_vel)
+        resp2 = node._svc_install_segment(_throw_req(t2 + 0.6),
+                                          InstallSegment.Response())
+    finally:
+        time.perf_counter = real_perf
+    assert resp2.accepted is True, resp2.message
+    assert resp2.code == feas.OK
+    assert resp2.splice_k == 0
+
+
+def test_a_fresh_throw_refuses_when_nothing_is_streaming_and_the_hand_moves():
+    """The mirror case: with NO record streaming (the lane held — `node._cycle`
+    stays `None`, only `_active_plan` set) the live at-rest test is exactly
+    as it always was. A moving hand with no cup track to read refuses
+    `_IN_MOTION` before any seed is built — the same refusal
+    `test_a_moving_machine_is_never_reconciled` pins directly on
+    `_cycle_start_state`, driven here through the full service."""
+    node = _reconcile_node(commanded_hand_rev=0.5639, measured_hand_rev=0.0001)
+    with node._plan_lock:
+        node._active_plan = _HandHoldPlan(node._last_pose.copy(),
+                                          lambda tau: (0.5639, 5.0))
+        node._plan_t0 = time.perf_counter()
+    assert node._cycle is None
+    resp = node._svc_install_segment(_throw_req(time.perf_counter() + 0.6),
+                                     InstallSegment.Response())
+    assert resp.accepted is False
+    assert resp.code == tn._IN_MOTION
+    assert 'hand 5.0000 rev/s' in resp.message
+
+
+def test_a_fresh_rest_while_the_previous_rest_still_streams_seeds_from_the_live_state():
+    """A fresh REST is NOT lead-reserved (`install_segment`: `reserved = ...
+    and kind != REST`, its origin is the dispatch instant itself), so the
+    seed-skip above must not apply to it (audit, 2026-10-02): a second REST
+    dispatched 0.2 s before the first one ends starts NOW, from the live,
+    still-moving hand — `_cycle_start_state` keeps building that seed — and
+    its knot 0 therefore sits on the commanded hand of the moment, not on the
+    first REST's terminal rest (0.2 s of tail motion away, inside the 1.0 rev
+    drift bound `_install_continuity_ok` would let through)."""
+    node = _perf_node()
+    with _frozen_perf() as at:
+        resp = node._svc_install_segment(_rest_req(at + 1.0, rest_z=850.0),
+                                         InstallSegment.Response())
+        assert resp.accepted is True, resp.message
+    rest_end = resp.t0_mono + resp.duration_s
+
+    real_perf = time.perf_counter
+    t2 = rest_end - 0.2
+    time.perf_counter = lambda: t2
+    try:
+        _refresh(node)
+        hand_before, hand_vel = node._commanded_hand_state()
+        assert abs(hand_vel) > 1.0, (
+            'fixture must still be moving at t2: hand_vel=%.4f' % hand_vel)
+        resp2 = node._svc_install_segment(_rest_req(t2 + 1.0, rest_z=800.0),
+                                          InstallSegment.Response())
+        assert resp2.accepted is True, resp2.message
+        assert resp2.splice_k == 0
+        # Unreserved: the origin is the dispatch instant (one knot of grid
+        # snapping), not `t2 + LEAD_S`.
+        assert resp2.t0_mono == pytest.approx(t2, abs=float(hw.JB_TRAJ_KNOT_DT_S) + 1e-9)
+        _refresh(node)
+        hand_after, _ = node._commanded_hand_state()
+    finally:
+        time.perf_counter = real_perf
+    # Knot 0 of the new plan IS the live hand of the dispatch instant.
+    assert hand_after == pytest.approx(hand_before, abs=0.05), (
+        'the fresh REST was seeded %.3f rev away from the live hand'
+        % (hand_after - hand_before))
+
+
+def test_a_fresh_throw_refuses_when_the_streaming_rest_has_drifted_too_far():
+    """The new seeding leans on `fresh`'s own `t0 >= record.end_s`; it does
+    not, by itself, bound how far the COMMANDED state can be from the
+    terminal rest at the install instant — only `install_segment`'s existing
+    post-solve `_install_continuity_ok` does (unchanged by this fix, the same
+    guard a SPLICE already relies on with no separate live check of its
+    own). A REST fast enough to still be 150 mm / several rev/s from its own
+    terminal site with only the reserved lead left before its end is refused
+    there: `STALE_STATE`, "commanded state moved during planning" — the hand
+    POSITION drift (> 1.0 rev), not the retired live-velocity rest bound."""
+    node = _perf_node()
+    with _frozen_perf() as at:
+        resp = node._svc_install_segment(_rest_req(at + 0.5, rest_z=900.0),
+                                         InstallSegment.Response())
+        assert resp.accepted is True, resp.message
+    rest_end = resp.t0_mono + resp.duration_s
+
+    real_perf = time.perf_counter
+    t2 = rest_end - 0.225
+    time.perf_counter = lambda: t2
+    try:
+        _refresh(node)
+        resp2 = node._svc_install_segment(_throw_req(t2 + 0.6),
+                                          InstallSegment.Response())
+    finally:
+        time.perf_counter = real_perf
+    assert resp2.accepted is False
+    assert resp2.code == feas.STALE_STATE
+    assert 'commanded state moved during planning' in resp2.message
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -686,6 +847,146 @@ def test_a_nonzero_hold_tilt_rad_round_trips_onto_the_catch_terminal():
     req.hold_tilt_rad = [0.01, -0.20943951023931956]
     terminal = node._segment_terminal_from_request('CATCH', req, 10.0)
     assert terminal.hold_tilt == pytest.approx((0.01, -0.20943951023931956))
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# receive_tilt_rad (R5, 2026-10-02) -- the level touch-down pin the BB-fed
+# columns feed catch needs was NOT carried over InstallSegment: skill_node's
+# `_installer` encoded only `terminal.hold_tilt`, and trajectory_node's
+# `_segment_terminal_from_request` decoded only `request.hold_tilt_*`, so
+# every live feed catch planned with `receive_tilt=None` (the banked
+# `tilt_to_receive` pin) and refused LIMIT_VEL on the robot -- while the
+# offline pre-throw check (`executor.plan_columns_first_cycle`) and the sim
+# gate both plan IN-PROCESS with the executor's own terminal (pin present)
+# and so both passed. Four of seven fed columns attempts refused the feed
+# catch at install on the 2026-10-02 sitting.
+# ═════════════════════════════════════════════════════════════════════════════
+
+def test_receive_tilt_round_trips_through_both_wire_halves():
+    """Drives BOTH wire halves with the real functions: `skill_node.
+    _wire_tilt_out` (what `_installer`'s CATCH branch calls to encode
+    `terminal.receive_tilt`) builds the request fields, and trajectory_node's
+    `_segment_terminal_from_request` decodes them back. `(0.0, 0.0)` is a
+    REAL value (the set flag carries it), not "unset" -- same discipline as
+    `hold_tilt_rad` / `rest_tilt_rad` above."""
+    node = _perf_node()
+    req = _catch_req(10.0)
+    req.receive_tilt_set, req.receive_tilt_rad = sn._wire_tilt_out((0.0, 0.0))
+    terminal = node._segment_terminal_from_request('CATCH', req, 10.0)
+    assert terminal.receive_tilt == (0.0, 0.0)
+    assert terminal.receive_tilt is not None
+    assert terminal.hold_tilt is None          # untouched by the new field
+
+
+def test_receive_tilt_none_round_trips_to_none():
+    node = _perf_node()
+    req = _catch_req(10.0)
+    req.receive_tilt_set, req.receive_tilt_rad = sn._wire_tilt_out(None)
+    terminal = node._segment_terminal_from_request('CATCH', req, 10.0)
+    assert terminal.receive_tilt is None
+
+
+def test_a_nonzero_receive_tilt_rad_round_trips_onto_the_catch_terminal():
+    node = _perf_node()
+    req = _catch_req(10.0)
+    req.receive_tilt_set = True
+    req.receive_tilt_rad = [0.01, -0.20943951023931956]
+    terminal = node._segment_terminal_from_request('CATCH', req, 10.0)
+    assert terminal.receive_tilt == pytest.approx((0.01, -0.20943951023931956))
+    assert terminal.hold_tilt is None          # the two are mutually exclusive
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Wire-map contract (R5, 2026-10-02) -- THE class fix. Every dataclass field
+# of ThrowTerminal / CatchTerminal / RestTerminal must appear below either in
+# an explicit WIRE MAP (the InstallSegment.Request field(s) it travels as) or
+# in a commented EXCLUSION list (fields that are derived or never cross the
+# wire, each with the reason). `receive_tilt` landed on `CatchTerminal`
+# 2026-09-30 with no entry in `skill_node._installer` or `trajectory_node.
+# _segment_terminal_from_request` -- a gap neither the mocked-ROS test suite
+# (which never round-trips a terminal through the service) nor the offline
+# pre-throw check / sim gate (which plan in-process with the executor's own
+# terminal) could see. A field added to one of these three dataclasses
+# without a matching entry here now fails THIS test, by name, instead of
+# surfacing only as a refusal on the real robot.
+# ═════════════════════════════════════════════════════════════════════════════
+
+_THROW_WIRE_MAP = {
+    'site_mm': ('site_mm',),
+    'target_mm': ('target_mm',),
+    'flight_s': ('flight_s',),
+    't_release_s': ('t_event_s',),
+}
+
+_CATCH_WIRE_MAP = {
+    'landing_mm': ('site_mm',),
+    'landing_vel_mm_s': ('landing_vel_mm_s',),
+    't_land_s': ('t_event_s',),
+    'rest_site_mm': ('rest_site_mm',),
+    # The carried release -- ThrowAfterCatch's own fields, reused onto the
+    # THROW wire fields (InstallSegment.srv's own comment: "one throw, one
+    # pair of fields, whichever kind carries it"). `then_throw is None`
+    # leaves `t_release_s` at its wire sentinel (<= 0.0); the other three
+    # stay at their rosidl defaults and are not read in that case.
+    'then_throw': ('t_release_s', 'release_site_mm', 'target_mm', 'flight_s'),
+    'hold_tilt': ('hold_tilt_set', 'hold_tilt_rad'),
+    'receive_tilt': ('receive_tilt_set', 'receive_tilt_rad'),   # R5, 2026-10-02
+}
+
+_REST_WIRE_MAP = {
+    'rest_site_mm': ('rest_site_mm',),
+    't_rest_s': ('t_event_s',),
+    'tilt': ('rest_tilt_set', 'rest_tilt_rad'),
+}
+
+_REST_WIRE_EXCLUDED = {
+    'holds_ball': (
+        'NOT currently wire-plumbed -- InstallSegment.srv has no holds_ball '
+        "field, so trajectory_node's rebuild always defaults RestTerminal."
+        'holds_ball to True regardless of what the executor set '
+        '(executor._rest_terminal passes skill.holds_ball through on the '
+        'live dispatch path). Same CLASS of gap as receive_tilt above; '
+        'pre-existing, out of scope for the 2026-10-02 receive_tilt fix, '
+        'and flagged here by name rather than silently excused.'
+    ),
+}
+
+
+def _assert_wire_map_complete(cls, wire_map, excluded):
+    """Every field of ``cls`` is in ``wire_map`` or ``excluded``; every
+    ``InstallSegment.Request`` field name ``wire_map`` cites actually
+    exists."""
+    fields = {f.name for f in dataclasses.fields(cls)}
+    accounted = set(wire_map) | set(excluded)
+    missing = fields - accounted
+    assert not missing, (
+        '%s field(s) %r are neither wire-mapped nor excluded -- a new '
+        'terminal field needs an entry in this wire-map contract '
+        '(tests/ros/test_install_segment.py) or it can silently never '
+        'reach the live service' % (cls.__name__, sorted(missing)))
+    stale = accounted - fields
+    assert not stale, (
+        '%s wire map/exclusion names field(s) %r that no longer exist on '
+        'the dataclass -- stale entry' % (cls.__name__, sorted(stale)))
+    req = InstallSegment.Request()
+    for terminal_field, req_fields in wire_map.items():
+        for req_field in req_fields:
+            assert hasattr(req, req_field), (
+                '%s.%s is wire-mapped to InstallSegment.Request.%s, which '
+                'does not exist' % (cls.__name__, terminal_field, req_field))
+
+
+def test_every_throw_terminal_field_is_wire_mapped_or_excluded():
+    _assert_wire_map_complete(sk_seg.ThrowTerminal, _THROW_WIRE_MAP, {})
+
+
+def test_every_catch_terminal_field_is_wire_mapped_or_excluded():
+    _assert_wire_map_complete(sk_seg.CatchTerminal, _CATCH_WIRE_MAP, {})
+
+
+def test_every_rest_terminal_field_is_wire_mapped_or_excluded():
+    _assert_wire_map_complete(sk_seg.RestTerminal, _REST_WIRE_MAP,
+                              _REST_WIRE_EXCLUDED)
 
 
 # ═════════════════════════════════════════════════════════════════════════════

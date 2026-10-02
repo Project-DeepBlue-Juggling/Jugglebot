@@ -939,6 +939,37 @@ def test_the_executor_dispatches_each_skill_once_at_its_dispatch_instant(sites):
     assert not x.attempt_ended
 
 
+@pytest.mark.parametrize('lookahead_s, dispatches', [(0.025, True),
+                                                     (0.0, False)])
+def test_a_dispatch_lookahead_dispatches_a_skill_due_inside_it(
+        sites, lookahead_s, dispatches):
+    """``dispatch_lookahead_s`` (2026-10-02): a skill due ``0.02 s`` after the
+    tick dispatches ON that tick with a 0.025 s look-ahead, and not with none
+    — so a reserved fresh origin (``t_now + LEAD_S``) plans at least the
+    schedule's own window instead of losing the tick's quantisation (the
+    live first throws planned 0.375 s against a certified 0.4 s). The
+    installer is handed the TICK instant, never ``dispatch_s()``."""
+    sch = _schedule(sites)
+    inst = _FakeInstaller()
+    x = ex.SkillExecutor(sch, inst, dispatch_lookahead_s=lookahead_s)
+    t = sch.skills[0].dispatch_s() - 0.02
+    x.tick(t)
+    assert bool(inst.calls) is dispatches
+    if dispatches:
+        kind, _terminal, t_now_s, _ball = inst.calls[0]
+        assert kind == sg.THROW
+        assert t_now_s == t
+        # The window a reserved origin would plan: t_event - (t + LEAD_S).
+        assert (sch.skills[0].t_abs_s - (t_now_s + ex.LEAD_S)
+                >= sch.skills[0].window_s)
+
+
+def test_a_negative_dispatch_lookahead_is_refused(sites):
+    with pytest.raises(ValueError):
+        ex.SkillExecutor(_schedule(sites), _FakeInstaller(),
+                         dispatch_lookahead_s=-0.01)
+
+
 def test_the_throw_terminal_carries_the_identity_prior_command(sites):
     """R2's learner is off, so the commanded landing IS the desired one: the
     target is the throw's own site (columns is two self-tosses) and ``y_d``'s
