@@ -1,0 +1,306 @@
+<!doctype html>
+<html lang="en">
+<!--
+  test_juggle_panel.html — standalone harness for js/juggle-panel.js.
+
+  Mounts the Juggle panel at minimap width on the GUI's own background with
+  a FAKE service transport (no rosbridge, no robot), so every state can be
+  driven and screenshotted:  connected / ACTIVE / collapsed, node defaults
+  (ok / failing / slow), relay behaviour (ok / reject / refuse / timeout /
+  pre-2026-10-04 "old" relay that drops every field but reload), and
+  injected skills/attempt messages.
+
+  Every control is also a URL parameter, for headless screenshots:
+    ?conn=1&active=1&compact=0&theme=dark&font=14&width=420
+    &defaults=ok|fail|slow&relay=ok|old|reject|refuse|timeout
+    &pattern=columns&reload=1&apex=0.8&sep=&n=6
+    &scene=running|ended|aborted|refused|dispatch|invalid
+-->
+<head>
+<meta charset="utf-8">
+<title>Juggle panel harness</title>
+<script>
+  // Theme + font BEFORE first paint (same idea as index.html's head script).
+  (function () {
+    const q = new URLSearchParams(location.search);
+    if (q.get('theme') === 'light') document.documentElement.setAttribute('data-theme', 'light');
+    const f = parseInt(q.get('font'), 10);
+    if (f >= 10 && f <= 22) document.documentElement.style.fontSize = f + 'px';
+  })();
+</script>
+<link rel="stylesheet" href="css/theme.css">
+<link rel="stylesheet" href="css/viewer.css">
+<link rel="stylesheet" href="css/panels.css">
+<link rel="stylesheet" href="css/state-minimap.css">
+<link rel="stylesheet" href="css/juggle-panel.css">
+<style>
+  html, body { overflow: auto; }
+  #h-app { display: flex; gap: 16px; padding: 12px; align-items: flex-start; min-height: 100vh; }
+  /* Stand-in for #state-minimap.expanded: opaque card column at minimap width. */
+  #h-minimap {
+    width: var(--minimap-width, 420px);
+    flex-shrink: 0;
+    background: var(--bg-card);
+    border: 1px solid var(--border-color);
+    display: flex; flex-direction: column;
+  }
+  #h-minimap.collapsed { width: 210px; background: var(--bg-overlay); border-radius: var(--border-radius); }
+  #h-minimap .h-active {
+    margin: 8px 10px; height: 64px; border: 2px solid var(--state-active);
+    border-radius: 5px; background: rgba(34, 197, 94, 0.10);
+    font-size: var(--font-size-xs); color: var(--text-primary); padding: 6px 8px; font-weight: 600;
+  }
+  #h-minimap.collapsed .h-active { height: 36px; }
+  #h-controls {
+    flex: 1; min-width: 260px; max-width: 520px;
+    font-size: 12px; color: var(--text-secondary);
+    display: flex; flex-direction: column; gap: 8px;
+  }
+  #h-controls fieldset { border: 1px solid var(--border-color); border-radius: 6px; padding: 6px 8px; }
+  #h-controls legend { padding: 0 4px; color: var(--text-muted); }
+  #h-controls button, #h-controls select {
+    margin: 2px; padding: 3px 7px; font-size: 12px; cursor: pointer;
+    background: var(--bg-secondary); color: var(--text-primary);
+    border: 1px solid var(--border-color); border-radius: 4px;
+  }
+  #h-controls button.on { border-color: var(--accent-green); color: var(--accent-green); }
+  #h-controls input[type=number] { width: 5em; font-size: 12px; }
+  #h-log {
+    font-family: var(--font-mono); font-size: 11px; white-space: pre-wrap;
+    max-height: 220px; overflow: auto; color: var(--text-secondary);
+    background: var(--bg-card); border: 1px solid var(--border-color); border-radius: 6px; padding: 6px;
+  }
+</style>
+</head>
+<body>
+<div id="h-app">
+  <div id="h-minimap">
+    <div id="minimap-header"><span class="minimap-title">State Machine</span><span id="minimap-chevron">▾</span></div>
+    <div class="h-active">ACTIVE · GUI <span style="font-weight:400;color:var(--text-muted)">(graph stand-in)</span></div>
+    <div id="juggle-mount"></div>
+  </div>
+  <div id="h-controls">
+    <div style="color:var(--text-muted)">Synthetic harness — fake transport, no ROS connection, no robot commands.</div>
+    <fieldset><legend>Gate</legend>
+      <button id="b-conn">Connected</button><button id="b-active">ACTIVE</button>
+      <button id="b-compact">Collapsed minimap</button>
+    </fieldset>
+    <fieldset><legend>View</legend>
+      <button id="b-theme">Light theme</button>
+      font <button data-font="12">12</button><button data-font="14">14</button><button data-font="16">16</button>
+      width <button data-width="300">300</button><button data-width="360">360</button><button data-width="420">420</button>
+    </fieldset>
+    <fieldset><legend>skill_node defaults (get_parameters)</legend>
+      <select id="s-defaults"><option value="ok">answer</option><option value="fail">fail</option><option value="slow">never answer</option></select>
+      apex <input id="d-apex" type="number" step="0.05" value="0.9">
+      sep <input id="d-sep" type="number" step="10" value="250">
+      dwell <input id="d-dwell" type="number" step="0.01" value="0.27">
+      n <input id="d-n" type="number" step="1" value="4">
+      feed <select id="d-feed"><option>P1</option><option>P2</option></select>
+      <button id="b-refetch">Reconnect (refetch)</button>
+    </fieldset>
+    <fieldset><legend>Relay (juggle_request)</legend>
+      <select id="s-relay">
+        <option value="ok">ok (new relay)</option><option value="old">old relay (drops fields)</option>
+        <option value="reject">reject</option><option value="refuse">skill_node refuses</option>
+        <option value="timeout">never answers</option>
+      </select>
+    </fieldset>
+    <fieldset><legend>Inject skills/attempt</legend>
+      <button id="i-start">juggle_start</button><button id="i-end-ok">end COMPLETED</button>
+      <button id="i-end-stop">end STOPPED</button><button id="i-end-abort">end ABORTED</button>
+      <button id="i-refused">juggle_refused</button>
+    </fieldset>
+    <div id="h-churn" style="font-family:var(--font-mono);font-size:11px">DOM churn: measuring…</div>
+    <div id="h-log"></div>
+  </div>
+</div>
+
+<script type="module">
+import {
+    buildJugglePanel, renderJugglePanel, jugglePanelOnSkillAttempt, setJugglePanelTransport,
+} from './js/juggle-panel.js';
+import { subscribeEvents } from './js/event-store.js';
+
+const q = new URLSearchParams(location.search);
+const H = {
+    connected: q.get('conn') !== '0',
+    active: q.get('active') !== '0',
+    compact: q.get('compact') === '1',
+    defaultsMode: q.get('defaults') || 'ok',
+    relay: q.get('relay') || 'ok',
+};
+const $ = (id) => document.getElementById(id);
+const logEl = $('h-log');
+function log(line) {
+    logEl.textContent = new Date().toLocaleTimeString([], { hour12: false }) + '  ' + line + '\n' + logEl.textContent;
+}
+subscribeEvents((e) => log('EVENT LOG  ' + e.label + (e.detail ? '  (' + e.detail + ')' : '')));
+
+function nodeDefaults() {
+    return {
+        apex_m: parseFloat($('d-apex').value), separation_mm: parseFloat($('d-sep').value),
+        dwell_s: parseFloat($('d-dwell').value), n_throws: parseInt($('d-n').value, 10),
+        columns_feed_site: $('d-feed').value,
+    };
+}
+function pv(name, v) {
+    if (typeof v === 'string') return { type: 4, string_value: v };
+    if (name === 'n_throws') return { type: 2, integer_value: v };
+    return { type: 3, double_value: v };
+}
+function attempt(name, values, message) {
+    const msg = { name, message: message || '', values: Object.entries(values).map(([key, value]) => ({ key, value: String(value) })) };
+    log('skills/attempt  ' + name + '  ' + JSON.stringify(values) + (message ? '  "' + message + '"' : ''));
+    jugglePanelOnSkillAttempt(msg);
+}
+/** Resolve a request the way skill_node would (typed, else its params). */
+function resolved(data, honourFields) {
+    const parts = data.split(',');
+    const d = nodeDefaults();
+    const r = { pattern: parts[0], n_throws: d.n_throws, reload: parts[1] === 'reload' ? '1' : '0',
+        apex_m: d.apex_m.toFixed(3), separation_mm: d.separation_mm.toFixed(1) };
+    if (honourFields) for (const t of parts.slice(1)) {
+        const [k, v] = t.split('=');
+        if (k === 'apex_m') r.apex_m = parseFloat(v).toFixed(3);
+        if (k === 'separation_mm') r.separation_mm = parseFloat(v).toFixed(1);
+        if (k === 'num_cycles') r.n_throws = parseInt(v, 10);
+    }
+    return r;
+}
+let lastResolved = null;
+
+setJugglePanelTransport({
+    callService(name, type, req) {
+        if (name === '/skill_node/get_parameters') {
+            const mode = $('s-defaults').value;
+            log('call ' + name + ' ' + JSON.stringify(req.names) + ' → ' + mode);
+            if (mode === 'fail') return Promise.reject(new Error('Service /skill_node/get_parameters does not exist'));
+            if (mode === 'slow') return new Promise(() => {});
+            const d = nodeDefaults();
+            return new Promise((res) => setTimeout(() => res({ values: req.names.map((n) => pv(n, d[n])) }), 120));
+        }
+        if (name === 'jugglebot/juggle_request') {
+            const relay = $('s-relay').value;
+            log('call ' + name + '  data="' + req.data + '"  (relay ' + relay + ')');
+            if (relay === 'timeout') return new Promise(() => {});
+            if (relay === 'reject') {
+                return Promise.resolve({ success: false, message: "juggle request refused: unknown token 'apex=0.8' (expected key=value from apex_m, separation_mm, num_cycles)" });
+            }
+            const honour = relay !== 'old';
+            const r = resolved(req.data, honour);
+            lastResolved = r;
+            setTimeout(() => {
+                if (relay === 'refuse') {
+                    attempt('juggle_refused', { pattern: r.pattern },
+                        'refused: apex ' + r.apex_m + ' m is outside the admissible box for (P1,P1) — swept 0.700..1.000 m at dwell 0.270 s');
+                } else {
+                    attempt('juggle_start', r, 'accepted');
+                }
+            }, 400);
+            return Promise.resolve({ success: true, message: honour
+                ? 'Juggle dispatched (pattern=' + JSON.stringify(r.pattern).replace(/"/g, "'") + ', reload=' + (r.reload === '1' ? 'True' : 'False') + ').'
+                : 'Juggle dispatched.' });
+        }
+        if (name === 'jugglebot/juggle_stop') {
+            log('call ' + name);
+            setTimeout(() => attempt('juggle_end', { pattern: (lastResolved || {}).pattern || 'columns', outcome: 'STOPPED', throws: 3, caught: 3 }), 300);
+            return Promise.resolve({ success: true, message: 'Stop requested — the attempt ends at its next rest.' });
+        }
+        return Promise.reject(new Error('harness: no fake for ' + name));
+    },
+});
+
+const mount = $('juggle-mount');
+buildJugglePanel(mount);
+
+function render() {
+    renderJugglePanel({ connected: H.connected, active: H.active, expanded: !H.compact,
+        mainState: H.connected ? (H.active ? 'ACTIVE' : 'IDLE') : null });
+    $('h-minimap').classList.toggle('collapsed', H.compact);
+    $('b-conn').classList.toggle('on', H.connected);
+    $('b-active').classList.toggle('on', H.active);
+    $('b-compact').classList.toggle('on', H.compact);
+    $('b-theme').classList.toggle('on', document.documentElement.getAttribute('data-theme') === 'light');
+}
+setInterval(render, 250);   // the minimap's TICK_MS cadence
+
+// DOM-churn probe: renderJugglePanel runs every minimap frame and must not
+// touch the DOM when nothing changed.  Animation writes (ball cx/cy, hand
+// transform/stem) are counted apart; they must be ZERO while collapsed.
+let anim = 0, other = 0;
+const otherKinds = new Set();
+new MutationObserver((recs) => {
+    for (const r of recs) {
+        const t = r.target;
+        const isAnim = r.type === 'attributes' && t.closest && t.closest('svg')
+            && (['cx', 'cy', 'transform', 'y2'].includes(r.attributeName));
+        if (isAnim) anim++; else { other++; otherKinds.add(r.type + ':' + (r.attributeName || (t.id || t.className || t.nodeName))); }
+    }
+}).observe(mount, { subtree: true, childList: true, attributes: true, characterData: true });
+setInterval(() => {
+    $('h-churn').textContent = 'DOM churn last 2 s — animation writes: ' + anim + ', other mutations: ' + other
+        + (other ? '  [' + [...otherKinds].slice(0, 6).join(', ') + ']' : '');
+    anim = 0; other = 0; otherKinds.clear();
+}, 2000);
+
+$('b-conn').onclick = () => { H.connected = !H.connected; render(); };
+$('b-active').onclick = () => { H.active = !H.active; render(); };
+$('b-compact').onclick = () => { H.compact = !H.compact; render(); };
+$('b-theme').onclick = () => {
+    const light = document.documentElement.getAttribute('data-theme') === 'light';
+    if (light) document.documentElement.removeAttribute('data-theme');
+    else document.documentElement.setAttribute('data-theme', 'light');
+    render();
+};
+document.querySelectorAll('[data-font]').forEach((b) => { b.onclick = () => { document.documentElement.style.fontSize = b.dataset.font + 'px'; }; });
+document.querySelectorAll('[data-width]').forEach((b) => { b.onclick = () => { document.documentElement.style.setProperty('--minimap-width', b.dataset.width + 'px'); }; });
+$('b-refetch').onclick = () => { H.connected = false; render(); H.connected = true; render(); };
+$('i-start').onclick = () => attempt('juggle_start', lastResolved || resolved($('juggle-pattern').value, false), 'accepted');
+$('i-end-ok').onclick = () => attempt('juggle_end', { pattern: $('juggle-pattern').value, outcome: 'COMPLETED', throws: 6, caught: 6 });
+$('i-end-stop').onclick = () => attempt('juggle_end', { pattern: $('juggle-pattern').value, outcome: 'STOPPED', throws: 2, caught: 2 });
+$('i-end-abort').onclick = () => attempt('juggle_end', { pattern: $('juggle-pattern').value, outcome: 'ABORTED_LIMIT_ACC', throws: 3, caught: 2 });
+$('i-refused').onclick = () => attempt('juggle_refused', { pattern: $('juggle-pattern').value }, 'refused: separation 400.0 mm has no swept admissible box (P1,P1) — sweep it first');
+
+// ---- URL-driven setup + scenes (for headless screenshots) ----
+if (q.get('defaults')) $('s-defaults').value = q.get('defaults');
+if (q.get('relay')) $('s-relay').value = q.get('relay');
+if (q.get('feed')) $('d-feed').value = q.get('feed');
+if (q.get('width')) document.documentElement.style.setProperty('--minimap-width', q.get('width') + 'px');
+
+function setPattern(v) { const s = $('juggle-pattern'); s.value = v; s.dispatchEvent(new Event('change')); }
+function type(id, v) { const i = $(id); i.value = v; i.dispatchEvent(new Event('input')); }
+function holdStart() {
+    const b = $('juggle-start');
+    b.dispatchEvent(new PointerEvent('pointerdown', { button: 0, bubbles: true }));
+    setTimeout(() => b.dispatchEvent(new PointerEvent('pointerup', { button: 0, bubbles: true })), 900);
+}
+
+render();
+if (q.get('pattern')) setPattern(q.get('pattern'));
+if (q.get('reload') === '1') { const r = $('juggle-reload'); r.checked = true; r.dispatchEvent(new Event('change')); }
+if (q.get('apex')) type('juggle-apex-m', q.get('apex'));
+if (q.get('sep')) type('juggle-separation-mm', q.get('sep'));
+if (q.get('n')) type('juggle-num-cycles', q.get('n'));
+
+const scene = q.get('scene');
+setTimeout(() => {
+    const pat = $('juggle-pattern').value;
+    if (scene === 'running') {
+        attempt('juggle_start', resolved(pat + ($('juggle-reload').checked ? ',reload' : ''), false), 'accepted');
+    } else if (scene === 'ended') {
+        attempt('juggle_start', resolved(pat, false), 'accepted');
+        attempt('juggle_end', { pattern: pat, outcome: 'COMPLETED', throws: 6, caught: 5 });
+    } else if (scene === 'aborted') {
+        attempt('juggle_end', { pattern: pat, outcome: 'ABORTED_LIMIT_ACC', throws: 3, caught: 2 });
+    } else if (scene === 'refused') {
+        attempt('juggle_refused', { pattern: pat }, 'refused: apex 1.200 m is outside the admissible box for (P2,P2) — swept 0.700..1.000 m at dwell 0.270 s');
+    } else if (scene === 'dispatch' || scene === 'mismatch') {
+        holdStart();
+    } else if (scene === 'invalid') {
+        type('juggle-apex-m', '900');
+    }
+}, 400);
+</script>
+</body>
+</html>

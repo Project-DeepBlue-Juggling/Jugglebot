@@ -57,7 +57,8 @@ try {
  assert(near(axis.x,R[0][0])&&near(axis.y,R[2][0])&&near(axis.z,-R[1][0]),'Platform orientation preserves yaw and tilt');
  const hand=meshes.find(o=>o.name==='jb_hand');
  assert(near(hand.position.y,.2),'Jugglebot hand stroke in metres');
- bb.updateBallButlerPose({x:0,y:0,z:0},{x:0,y:0,z:0,w:1});
+ // Calibration at yaw offset 90 deg = identity group rotation (ball-butler-model.js frame note).
+ bb.setBallButlerCalibration({success:true,position_mm:{x:0,y:0,z:BB_PITCH_Z_OFFSET_MM},yaw_offset_rad:Math.PI/2},{glide:false});
  for(const pitch of [0,45,90]) {
   bb.updateBallButler(0,pitch,150);scene.updateMatrixWorld(true);
   const h=world(meshes.find(o=>o.name==='bb_hand'));
@@ -92,7 +93,7 @@ try {
   const sprite=new THREE.Sprite(new THREE.SpriteMaterial({map:new THREE.CanvasTexture(canvas),depthTest:false,depthWrite:false}));
   sprite.scale.set(.16,.04,1);sprite.renderOrder=11;scene.add(sprite);return sprite;
  });
- bb.updateBallButlerPose({x:0,y:-650,z:0},{x:0,y:0,z:0,w:1});
+ bb.setBallButlerCalibration({success:true,position_mm:{x:0,y:-650,z:BB_PITCH_Z_OFFSET_MM},yaw_offset_rad:Math.PI/2},{glide:false});
  const cadGroups=[sceneGroups.Platform,sceneGroups['Ball Butler']];
  const baselineRoot=new URLSearchParams(location.search).get('baseline');
  let oldJB,oldBB,oldGroups;
@@ -100,7 +101,8 @@ try {
   oldJB=await import(baselineRoot+'/stewart-model.js');oldBB=await import(baselineRoot+'/ball-butler-model.js');
   oldJB.initStewartModel();oldBB.initBallButlerModel();oldGroups=[sceneGroups.Platform,sceneGroups['Ball Butler']];
   oldGroups.forEach(g=>g.visible=false);
-  oldBB.updateBallButlerPose({x:0,y:-650,z:0},{x:0,y:0,z:0,w:1});
+  if(oldBB.updateBallButlerPose) oldBB.updateBallButlerPose({x:0,y:-650,z:0},{x:0,y:0,z:0,w:1});
+  else oldBB.setBallButlerCalibration({success:true,position_mm:{x:0,y:-650,z:BB_PITCH_Z_OFFSET_MM},yaw_offset_rad:Math.PI/2},{glide:false});
  }
  let frame=0,last=performance.now(),samples=[],mode='cad',stats={},time=0;
  function tick(now) {

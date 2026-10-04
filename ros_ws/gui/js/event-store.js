@@ -31,7 +31,8 @@ export const EVENT_COLORS = Object.freeze({
     fault:       '#ef4444',  // red
     command:     '#06b6d4',  // cyan
     calibration: '#a78bfa',  // violet
-    connection:  '#f43f5e',  // rose-red — ROS2 link up/down (mirrors --accent-rose)
+    connection:  '#22c55e',  // green — ROS2 link up/down (mirrors --accent-green;
+                             // was rose-red, too close to fault's red)
 });
 
 // ---- Store ----

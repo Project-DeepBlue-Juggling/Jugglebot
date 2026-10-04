@@ -72,15 +72,17 @@ function renderList() {
         dot.style.background = EVENT_COLORS[ev.type] || '#94a3b8';
         row.appendChild(dot);
 
-        const time = document.createElement('span');
-        time.className = 'history-time';
-        time.textContent = formatTime(ev.t);
-        row.appendChild(time);
-
+        // Label sits right after the dot; the timestamp is right-aligned in
+        // the last column (panels.css .history-entry).
         const label = document.createElement('span');
         label.className = 'history-label';
         label.textContent = ev.label;
         row.appendChild(label);
+
+        const time = document.createElement('span');
+        time.className = 'history-time';
+        time.textContent = formatTime(ev.t);
+        row.appendChild(time);
 
         // Hovering a row emphasises that event's marker on every chart; the
         // cost is one chart redraw per hover (coalesced via rAF upstream).

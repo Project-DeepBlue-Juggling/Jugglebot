@@ -1,0 +1,411 @@
+/* ===================================================================
+   juggle-panel.css — The Juggle command panel (built by js/juggle-panel.js,
+   mounted by js/state-minimap.js under the state-machine graph)
+
+   Sized for the ~280 px left below the ACTIVE cluster in the EXPANDED
+   minimap at the default 14 px root font, and em/rem-based throughout so the
+   A−/A+ control (usable range 12–16 px) scales it as one piece.  In the
+   COLLAPSED minimap (210 px wide) `.jp-compact` drops the diagram, fields and
+   timing and keeps pattern / reload / Start / Stop / status / overrides.
+   =================================================================== */
+
+:root {
+    /* Diagram roles.  Ball 1 / Ball 2 are the operator's names
+       (schedule.ball_label); the hand is the blue every hold-fill uses and
+       Ball Butler the purple the juggle Start button carries. */
+    --jp-ball1: var(--accent-cyan);
+    --jp-ball2: var(--accent-amber);
+    --jp-hand: var(--accent-blue);
+    --jp-feed: var(--accent-purple);
+    /* Warn text — raw --accent-amber is ~2.2:1 on the light theme's white. */
+    --jp-warn: var(--accent-amber);
+}
+
+:root[data-theme="light"] {
+    --jp-ball1: #0891b2;    /* cyan-600 — the raw cyan washes out on white */
+    --jp-ball2: #d97706;    /* amber-600 */
+    --jp-feed: #7c3aed;     /* violet-600 */
+    --jp-warn: #b45309;     /* amber-700 — ≥4.5:1 on white */
+}
+
+.jp-root {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px 10px 10px;
+    border-top: 1px solid var(--border-color);
+    flex-shrink: 0;
+    font-size: var(--font-size-sm);
+    color: var(--text-primary);
+}
+
+/* ---- Header: title · clear-overrides · state badge ---- */
+
+.jp-head {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 1.6em;
+}
+
+.jp-title {
+    flex: 1;
+    font-size: var(--font-size-sm);
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--text-secondary);
+}
+
+.jp-clear {
+    border: none;
+    background: none;
+    padding: 0 4px;
+    font-family: var(--font-sans);
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+    cursor: pointer;
+}
+.jp-clear:hover { color: var(--accent-blue); }
+.jp-clear[hidden] { display: none; }
+
+.jp-badge {
+    flex-shrink: 0;
+    border: 1px solid currentColor;
+    color: var(--text-muted);
+    background: transparent;
+}
+.jp-badge.ready   { color: var(--accent-green);  background: rgba(34, 197, 94, 0.12); }
+.jp-badge.busy    { color: var(--accent-blue);   background: rgba(59, 130, 246, 0.12); }
+.jp-badge.gated   { color: var(--jp-warn);       background: rgba(245, 158, 11, 0.10); }
+.jp-badge.running {
+    color: var(--jp-feed);
+    background: rgba(167, 139, 250, 0.14);
+    animation: jp-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes jp-pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(167, 139, 250, 0.0); }
+    50%      { box-shadow: 0 0 0 3px rgba(167, 139, 250, 0.22); }
+}
+
+/* ---- Pattern select + reload ---- */
+
+.jp-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+}
+
+.jp-select {
+    flex: 1 1 9em;
+    min-width: 0;
+    padding: 4px 6px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font-family: var(--font-sans);
+    font-size: var(--font-size-sm);
+    font-weight: 500;
+    cursor: pointer;
+}
+.jp-select:hover { border-color: var(--accent-blue); }
+.jp-select:focus-visible,
+.jp-input:focus-visible {
+    outline: none;
+    border-color: var(--accent-blue);
+    box-shadow: 0 0 0 2px rgba(59, 130, 246, 0.25);
+}
+
+.jp-reload {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+    white-space: nowrap;
+    cursor: pointer;
+    user-select: none;
+}
+.jp-reload input { accent-color: var(--jp-feed); cursor: inherit; }
+.jp-reload.forced { color: var(--jp-feed); cursor: not-allowed; }
+
+/* ---- Diagram + fields ---- */
+
+.jp-main {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto;
+    gap: 8px;
+    align-items: center;
+}
+
+.jp-diagram-wrap {
+    min-width: 0;
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    background: var(--bg-primary);
+}
+
+.jp-diagram {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-height: 11em;
+    user-select: none;
+}
+
+.jp-fields {
+    display: grid;
+    grid-template-columns: auto 5em auto;
+    align-items: center;
+    column-gap: 5px;
+    row-gap: 4px;
+}
+
+.jp-flabel {
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+    text-align: right;
+}
+.jp-flabel.na { opacity: 0.45; }
+
+.jp-input {
+    width: 100%;
+    padding: 3px 6px;
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    background: var(--bg-secondary);
+    color: var(--text-primary);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-sm);
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+}
+.jp-input::placeholder { color: var(--text-muted); opacity: 1; }
+.jp-input:disabled { opacity: 0.4; cursor: not-allowed; }
+/* A typed value is an override that WILL be sent — mark it so it can't hide. */
+.jp-input.override {
+    border-color: var(--accent-blue);
+    background: rgba(59, 130, 246, 0.10);
+}
+.jp-input.invalid {
+    border-color: var(--accent-red);
+    background: rgba(239, 68, 68, 0.10);
+}
+
+.jp-unit {
+    min-width: 1.6em;
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+}
+
+.jp-readonly {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 3px;
+    white-space: nowrap;
+    padding: 3px 5px;
+    border: 1px dashed var(--border-color);
+    border-radius: var(--border-radius-sm);
+    color: var(--text-secondary);
+    font-family: var(--font-mono);
+    font-size: var(--font-size-sm);
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    cursor: help;
+}
+/* Padlock: an SVG mask painted with a theme token (a background-image
+   could not follow the theme). */
+.jp-readonly::before {
+    content: '';
+    flex-shrink: 0;
+    width: 0.8em;
+    height: 0.8em;
+    background: var(--text-muted);
+    -webkit-mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 7V5a4 4 0 0 1 8 0v2h1v8H3V7h1zm2 0h4V5a2 2 0 0 0-4 0v2z'/%3E%3C/svg%3E") center / contain no-repeat;
+            mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Cpath d='M4 7V5a4 4 0 0 1 8 0v2h1v8H3V7h1zm2 0h4V5a2 2 0 0 0-4 0v2z'/%3E%3C/svg%3E") center / contain no-repeat;
+}
+
+/* ---- Derived timing / overrides summary ---- */
+
+.jp-timing,
+.jp-summary {
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+    font-variant-numeric: tabular-nums;
+    line-height: 1.35;
+}
+.jp-timing.muted { color: var(--text-muted); font-style: italic; }
+.jp-timing.warn  { color: var(--jp-warn); }
+.jp-summary { color: var(--accent-blue); }
+.jp-summary[hidden] { display: none; }
+
+/* ---- Start / Stop / status ---- */
+
+.jp-actions {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+
+.jp-actions .cmd-btn { flex: 0 0 auto; padding: 5px 14px; }
+.jp-start { min-width: 5.5em; }
+
+/* Purple accent — distinct from home/activate/deactivate/fault (viewer.css). */
+.cmd-btn.btn-juggle {
+    border-color: var(--jp-feed);
+    color: var(--jp-feed);
+}
+.cmd-btn.jp-stop:not(:disabled) {
+    border-color: var(--accent-red);
+    color: var(--accent-red);
+}
+
+/* Up to two lines, then clipped (the full text is the title): the request
+   preview must show its overrides, which sit at the END of the string. */
+.jp-status {
+    flex: 1;
+    min-width: 0;
+    font-size: var(--font-size-xs);
+    line-height: 1.4;
+    color: var(--text-secondary);
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+}
+.jp-status.ok      { color: var(--accent-green); }
+.jp-status.err     { color: var(--accent-red); }
+.jp-status.muted   { color: var(--text-muted); }
+.jp-status.preview { color: var(--text-muted); font-family: var(--font-mono); word-break: break-all; }
+
+/* ---- Attempt line + stale-relay warning ---- */
+
+/* Two lines max: a refusal's REASON is the part that matters and sits at
+   the end (the full text is the title). */
+.jp-attempt {
+    font-size: var(--font-size-xs);
+    line-height: 1.4;
+    color: var(--text-secondary);
+    display: -webkit-box;
+    -webkit-box-orient: vertical;
+    -webkit-line-clamp: 2;
+    overflow: hidden;
+    overflow-wrap: anywhere;
+}
+.jp-attempt::before {
+    content: '';
+    display: inline-block;
+    width: 7px;
+    height: 7px;
+    margin-right: 6px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    vertical-align: 0;
+}
+.jp-attempt.muted { color: var(--text-muted); }
+.jp-attempt.ok::before  { background: var(--accent-green); }
+.jp-attempt.err         { color: var(--accent-red); }
+.jp-attempt.err::before { background: var(--accent-red); }
+.jp-attempt.run         { color: var(--text-primary); }
+.jp-attempt.run::before {
+    background: var(--jp-feed);
+    animation: pulse-fault 1s ease-in-out infinite;  /* theme.css keyframes */
+}
+
+.jp-warn {
+    padding: 4px 6px;
+    border: 1px solid var(--jp-warn);
+    border-radius: var(--border-radius-sm);
+    background: rgba(245, 158, 11, 0.10);
+    color: var(--jp-warn);
+    font-size: var(--font-size-xs);
+    line-height: 1.35;
+}
+.jp-warn[hidden] { display: none; }
+
+/* ---- Compact (collapsed minimap) ---- */
+
+.jp-root.jp-compact { padding: 6px 8px 8px; gap: 5px; }
+.jp-root.jp-compact .jp-main,
+.jp-root.jp-compact .jp-timing { display: none; }
+.jp-root.jp-compact .jp-actions { flex-wrap: wrap; }
+.jp-root.jp-compact .jp-status { flex-basis: 100%; }
+.jp-root:not(.jp-compact) .jp-summary { display: none; }
+/* Collapsed space is the 3-D view's: "No attempt yet" earns no line there. */
+.jp-root.jp-compact .jp-attempt.none { display: none; }
+
+/* ---- SVG diagram (viewBox units; colours from the tokens above) ---- */
+
+.jp-diagram text {
+    font-family: var(--font-sans);
+    fill: var(--text-muted);
+}
+.jp-legend      { font-size: 7px; fill: var(--text-secondary) !important; }
+.jp-site-label  { font-size: 7.5px; font-weight: 600; }
+.jp-dim-label   { font-size: 6.5px; }
+.jp-apex-label  { font-size: 7.5px; fill: var(--text-secondary) !important; }
+.jp-apex-word   { font-size: 6.5px; }
+.jp-apex-label.override { fill: var(--accent-blue) !important; font-weight: 600; }
+.jp-feed-label  { font-size: 6.5px; fill: var(--jp-feed) !important; }
+.jp-feed-label.lob { fill: var(--text-muted) !important; }
+.jp-speed {
+    font-size: 6.5px;
+    cursor: pointer;
+    text-decoration: underline dotted;
+}
+.jp-speed:hover { fill: var(--accent-blue) !important; }
+
+.jp-plat { fill: var(--text-muted); opacity: 0.35; }
+.jp-tick { stroke: var(--text-muted); stroke-width: 0.8; }
+.jp-dim  { stroke: var(--text-muted); stroke-width: 0.6; opacity: 0.7; }
+
+.jp-apex-line {
+    stroke: var(--text-muted);
+    stroke-width: 0.6;
+    stroke-dasharray: 3 2;
+}
+
+.jp-path {
+    fill: none;
+    stroke-width: 1;
+    stroke-dasharray: 1.2 2.2;
+    stroke-linecap: round;
+    opacity: 0.75;
+}
+.jp-path.b1 { stroke: var(--jp-ball1); }
+.jp-path.b2 { stroke: var(--jp-ball2); }
+.jp-path.phantom { opacity: 0.35; }
+
+.jp-ball { stroke-width: 0.8; }
+.jp-ball.b1 { fill: var(--jp-ball1); stroke: var(--jp-ball1); }
+.jp-ball.b2 { fill: var(--jp-ball2); stroke: var(--jp-ball2); }
+/* Phantom = motion only: hollow, dashed, ghosted. */
+.jp-ball.phantom {
+    fill-opacity: 0.12;
+    stroke-width: 1.1;
+    stroke-dasharray: 1.6 1.2;
+}
+.jp-guess .jp-ball:not(.legend) { opacity: 0.6; }
+
+.jp-hand-cup  { fill: var(--jp-hand); }
+.jp-hand-stem { stroke: var(--jp-hand); stroke-width: 1.6; opacity: 0.55; }
+
+.jp-bb-base { fill: var(--jp-feed); opacity: 0.35; }
+.jp-bb-body { fill: var(--jp-feed); opacity: 0.7; }
+.jp-bb-arm  { stroke: var(--jp-feed); stroke-width: 1.6; stroke-linecap: round; }
+
+.jp-feed {
+    fill: none;
+    stroke: var(--jp-feed);
+    stroke-width: 0.9;
+    stroke-dasharray: 3 2;
+}
+.jp-feed.lob { stroke: var(--text-muted); }
+.jp-arrowhead { fill: var(--jp-feed); }
+.jp-arrowhead.lob { fill: var(--text-muted); }

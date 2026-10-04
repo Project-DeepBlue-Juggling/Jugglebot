@@ -1128,10 +1128,10 @@
 
 .history-entry {
     display: grid;
-    /* Time column sized to its text (HH:MM:SS.mmm; monospace, so every row
-       gets the same width) — a fixed 72px was narrower than the timestamp,
-       which then ran into the label. */
-    grid-template-columns: 10px max-content minmax(0, 1fr);
+    /* dot | label | time.  The label sits right next to the dot and takes
+       the slack; the time column is sized to its text (HH:MM:SS.mmm;
+       monospace, so every row gets the same width) and right-aligned. */
+    grid-template-columns: 10px minmax(0, 1fr) max-content;
     align-items: center;
     gap: 8px;
     padding: 2px 4px;
@@ -1159,6 +1159,7 @@
 .history-time {
     color: var(--text-muted);
     white-space: nowrap;
+    text-align: right;
 }
 
 .history-label {

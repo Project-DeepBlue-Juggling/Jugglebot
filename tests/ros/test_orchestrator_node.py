@@ -1020,7 +1020,8 @@ class TestJuggleRelay:
     SetString relay (rosbridge on Foxy has no action transport) — R4 owner
     decision D3, replaces the retired GUI reload-relay service). The
     relay dispatches ONE Juggle goal fire-and-forget, parsed from
-    ``<pattern>[,reload]``; skill_node owns preconditions + the outcome. See
+    ``<pattern>[,reload][,apex_m=<f>][,separation_mm=<f>][,num_cycles=<n>]``;
+    skill_node owns preconditions + the outcome. See
     orchestrator_node._svc_juggle_request / _svc_juggle_stop."""
 
     def test_juggle_request_service_registered_as_setstring(self, orch):
@@ -1084,6 +1085,70 @@ class TestJuggleRelay:
         goal = captured['goal']
         assert goal.pattern == 'self_toss'
         assert goal.reload is True
+
+    def _dispatch(self, orch, data):
+        """Send ``data`` through the relay; return (response, goals sent)."""
+        sent = []
+
+        def _spy_send(goal):
+            sent.append(goal)
+            return MockFuture()
+
+        orch._juggle_client._server_ready = True
+        orch._juggle_client.send_goal_async = _spy_send
+        res = orch._svc_juggle_request(_set_string_req(data),
+                                       SetString.Response())
+        return res, sent
+
+    def test_goal_carries_the_operator_numeric_fields(self, orch):
+        """The Juggle panel's typed values reach the goal verbatim; skill_node
+        (not the relay) decides whether they are admissible."""
+        res, sent = self._dispatch(
+            orch, 'columns,reload,apex_m=0.8,separation_mm=125,num_cycles=6')
+        assert res.success is True
+        (goal,) = sent
+        assert goal.pattern == 'columns'
+        assert goal.reload is True
+        assert goal.apex_m == 0.8
+        assert goal.separation_mm == 125.0
+        assert goal.num_cycles == 6
+        assert isinstance(goal.num_cycles, int)
+
+    def test_tokens_after_the_pattern_may_come_in_any_order(self, orch):
+        """``reload`` is a token like any other, not a fixed second slot —
+        and the fields the request omits keep their 0 sentinel."""
+        res, sent = self._dispatch(orch, 'hop,num_cycles=3,reload')
+        assert res.success is True
+        (goal,) = sent
+        assert goal.reload is True
+        assert goal.num_cycles == 3
+        assert goal.apex_m == 0.0
+        assert goal.separation_mm == 0.0
+
+    def test_an_explicit_zero_is_the_node_default_sentinel(self, orch):
+        res, sent = self._dispatch(orch, 'self_toss,apex_m=0')
+        assert res.success is True
+        assert sent[0].apex_m == 0.0
+
+    @pytest.mark.parametrize('data', [
+        'hop,apex=1.2',              # unknown key: would silently fly the default
+        'hop,relaod',                # typo'd flag
+        'hop,num_cycles=2.5',        # not an int
+        'hop,apex_m=abc',
+        'hop,apex_m=',
+        'hop,apex_m=-0.5',
+        'hop,apex_m=nan',
+        'hop,separation_mm=inf',
+        'hop,num_cycles=-1',
+        'hop,apex_m=0.8,apex_m=0.9',  # ambiguous
+    ])
+    def test_a_bad_token_is_refused_without_dispatching(self, orch, data):
+        """Refuse, never drop: dropping an operator's malformed value would
+        fly the node's default in its place with a success ACK."""
+        res, sent = self._dispatch(orch, data)
+        assert res.success is False
+        assert 'refused' in res.message
+        assert sent == []
 
     def test_an_empty_pattern_is_refused_without_dispatching(self, orch):
         sent = []

@@ -193,9 +193,15 @@ export function initViewer(container) {
     animate();
 }
 
+const frameHooks = [];
+/** Register a per-frame callback(nowMs) on the existing render loop (no extra rAF). */
+export function onFrame(cb) { frameHooks.push(cb); }
+
 function animate() {
     requestAnimationFrame(animate);
     controls.update();
-    updateRobotMaterials(performance.now());
+    const now = performance.now();
+    updateRobotMaterials(now);
+    for (const cb of frameHooks) cb(now);
     renderer.render(scene, camera);
 }

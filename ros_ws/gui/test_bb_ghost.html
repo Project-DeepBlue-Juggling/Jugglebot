@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>BB ghost / calibrated placement</title>
+<style>body{margin:0;background:#0f172a;color:#e2e8f0;font:14px system-ui}#viewer{height:88vh}button{margin:6px;padding:8px}</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>
+<div>Synthetic preview only. URL: ?calibrate=1 (calibrate after 3 s) or ?calibrate=now.
+<button id="cal">Calibrate</button><button id="ghost">Ghost</button></div>
+<div id="viewer"></div>
+<script>
+// ?ff=N runs the animation clock Nx faster (headless software GL only manages a few fps).
+const ff = +new URLSearchParams(location.search).get('ff') || 1;
+if (ff !== 1) { const pn = performance.now.bind(performance); performance.now = () => pn() * ff; }
+</script>
+<script type="module">
+import {initViewer, sceneGroups, camera, controls, registerPickables} from './js/viewer.js';
+import * as jb from './js/stewart-model.js';
+import * as bb from './js/ball-butler-model.js';
+initViewer(document.getElementById('viewer'));
+camera.position.set(2.2,1.5,2.4); controls.target.set(0,.3,0);
+if (new URLSearchParams(location.search).get('view') === 'top') { camera.position.set(0.01,2.6,0.01); controls.target.set(-.3,0,0); }
+jb.initStewartModel(); bb.initBallButlerModel();
+registerPickables([...jb.getStewartPickables(),...bb.getBallButlerPickables()]);
+bb.updateBallButler(20, 55, 40);
+const good = {success:true, position_mm:{x:-707,y:-149,z:230}, yaw_offset_rad:0.6};
+const cal = () => bb.setBallButlerCalibration(good);
+document.getElementById('cal').onclick = cal;
+document.getElementById('ghost').onclick = () => bb.setBallButlerCalibration(null);
+const q = new URLSearchParams(location.search).get('calibrate');
+if (q === 'now') cal(); else if (q) setTimeout(cal, 3000);
+const info = document.createElement('pre'); document.body.appendChild(info);
+let frames = 0;
+(function tick() { requestAnimationFrame(tick); frames++;
+  const g = sceneGroups['Ball Butler'], m = g.getObjectByProperty('isMesh', true).material;
+  info.textContent = `frames=${frames} pos(three m)=${g.position.toArray().map(v=>v.toFixed(3))} opacity=${m.opacity.toFixed(2)} transparent=${m.transparent}`; })();
+</script>
+</html>

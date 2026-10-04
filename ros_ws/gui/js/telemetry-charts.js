@@ -22,6 +22,10 @@
  *     pitch group / hand sphere).
  *   - The vertical crosshair shows per-curve value callouts at each series
  *     intersection, synced across all charts via uPlot's cursor sync group.
+ *   - While the pointer is over any chart, every chart dots its REAL samples
+ *     (drawSampleDots) so data and line interpolation can be told apart.  The
+ *     dots fade in with zoom and are not drawn at all once samples sit closer
+ *     than SAMPLE_DOT_MIN_SPACING_PX — at that density they are just noise.
  */
 
 import { setStewartHighlight } from './stewart-model.js';
@@ -1160,6 +1164,10 @@ function buildUPlotOpts(chartIdx, width, height, showXAxis = true, onCursor = nu
     const gridStroke = cssVar('--chart-grid-stroke', 'rgba(51,65,85,0.5)');
     const gridStrokeMinor = cssVar('--chart-grid-stroke-minor', 'rgba(51,65,85,0.3)');
     const ticksStroke = cssVar('--chart-ticks-stroke', '#334155');
+    // Sample-dot outline = the chart surface, so a dot reads as a punched
+    // marker on its line.  Module-level: the draw hook can't afford a
+    // getComputedStyle per frame.
+    sampleDotOutline = cssVar('--bg-card', '#1e293b');
 
     // Determine which scale groups are in use, and the colour to tint the
     // axis with.  When several signals share a scale (e.g. measured +
@@ -1332,6 +1340,7 @@ function buildAllCharts() {
     chartDeltaCallouts.length = 0;
     // The hovered chart is about to be destroyed, and mouseleave won't fire.
     clearMarkerHover();
+    sampleDotsOver = null;
 
     for (let i = 0; i < MOTOR_COUNT; i++) {
         const cell = document.getElementById(`chart-${i}`);
@@ -1742,6 +1751,10 @@ function attachMouseControls(u) {
         if (!sameIds(ids, prevIds)) u.redraw(false, false);
     });
     over.addEventListener('mouseleave', clearMarkerHover);
+
+    // --- Hover: dot the real samples on every chart ---------------------
+    over.addEventListener('mouseenter', () => setSampleDotsHover(over));
+    over.addEventListener('mouseleave', () => setSampleDotsHover(null, over));
 }
 
 // ---- Event-marker hover tooltip ----------------------------------------
@@ -1849,6 +1862,113 @@ function clearMarkerHover() {
     u.redraw(false, false);
 }
 
+// ---- Sample dots: where the real data points are -----------------------
+
+/** Mean on-screen sample spacing (CSS px) below which no dots are drawn: the
+ *  20 Hz stream at the default 10 s window sits near 2 px, where dots would
+ *  merge into a thick, noisy line. */
+const SAMPLE_DOT_MIN_SPACING_PX = 4;
+/** Spacing at which the dots reach full opacity.  Between the two they fade
+ *  in, so a wheel zoom never pops them on and off at a single threshold. */
+const SAMPLE_DOT_FULL_SPACING_PX = 10;
+
+/** The uPlot `over` element the pointer is in, or null — dots are drawn on
+ *  EVERY chart while it is set, matching the synced crosshair. */
+let sampleDotsOver = null;
+/** Dot outline colour — the chart surface, re-read at each chart build. */
+let sampleDotOutline = '#1e293b';
+let sampleDotsLeavePending = false;
+
+/** Enter (`over` set) or leave (`over` null, `leaving` = the element left)
+ *  a chart.  Leaving one chart and entering the next fires leave→enter in
+ *  the same task, so the off-redraw waits a frame and is skipped if another
+ *  chart was entered meanwhile — moving across the grid costs no redraws. */
+function setSampleDotsHover(over, leaving = null) {
+    if (over) {
+        const wasOff = sampleDotsOver === null;
+        sampleDotsOver = over;
+        if (wasOff && !sampleDotsLeavePending) redrawAllOverlays();
+        return;
+    }
+    if (sampleDotsOver !== leaving) return;
+    sampleDotsOver = null;
+    if (sampleDotsLeavePending) return;
+    sampleDotsLeavePending = true;
+    requestAnimationFrame(() => {
+        sampleDotsLeavePending = false;
+        if (sampleDotsOver === null) redrawAllOverlays();
+    });
+}
+
+/** First index i with ts[i] >= t (ts ascending). */
+function lowerBoundTs(ts, t) {
+    let lo = 0, hi = ts.length;
+    while (lo < hi) {
+        const mid = (lo + hi) >>> 1;
+        if (ts[mid] < t) lo = mid + 1;
+        else hi = mid;
+    }
+    return lo;
+}
+
+/**
+ * Dot every real sample of every shown series while a chart is hovered —
+ * the line between dots is uPlot's linear interpolation, not data.  Opacity
+ * and radius follow the mean on-screen spacing of the samples in view, so
+ * the dots appear as you zoom in and vanish at the wider windows.  Called
+ * from drawChartOverlays with the plot-area clip already applied.
+ */
+function drawSampleDots(u) {
+    if (sampleDotsOver === null) return;
+    const ts = u.data && u.data[0];
+    if (!ts || ts.length === 0) return;
+    const xMin = u.scales.x.min;
+    const xMax = u.scales.x.max;
+    // Visible samples, plus one either side so a dot straddling the plot
+    // edge is half-drawn (clipped) rather than missing.
+    const vis0 = lowerBoundTs(ts, xMin);
+    const vis1 = lowerBoundTs(ts, xMax);          // exclusive
+    if (vis1 <= vis0) return;
+    const spacing = vis1 - vis0 > 1
+        ? (u.valToPos(ts[vis1 - 1], 'x') - u.valToPos(ts[vis0], 'x')) / (vis1 - 1 - vis0)
+        : Infinity;
+    if (!(spacing >= SAMPLE_DOT_MIN_SPACING_PX)) return;
+    const alpha = Math.min(1, (spacing - SAMPLE_DOT_MIN_SPACING_PX)
+        / (SAMPLE_DOT_FULL_SPACING_PX - SAMPLE_DOT_MIN_SPACING_PX));
+    if (alpha <= 0) return;
+    const dpr = devicePixelRatio;
+    const r = Math.min(3, Math.max(1.75, spacing * 0.2)) * dpr;
+    const i0 = Math.max(0, vis0 - 1);
+    const i1 = Math.min(ts.length - 1, vis1);
+
+    const ctx = u.ctx;
+    ctx.globalAlpha = alpha;
+    ctx.lineWidth = 1 * dpr;
+    ctx.strokeStyle = sampleDotOutline;
+    for (let s = 1; s < u.series.length; s++) {
+        const ser = u.series[s];
+        const col = u.data[s];
+        if (!ser.show || !col) continue;
+        ctx.beginPath();
+        let any = false;
+        for (let i = i0; i <= i1; i++) {
+            const v = col[i];
+            if (!Number.isFinite(v)) continue;     // NaN = gap (see nanGaps)
+            const x = u.valToPos(ts[i], 'x', true);
+            const y = u.valToPos(v, ser.scale, true);
+            ctx.moveTo(x + r, y);
+            ctx.arc(x, y, r, 0, 2 * Math.PI);
+            any = true;
+        }
+        if (!any) continue;
+        // uPlot normalises series.stroke to a function at init.
+        ctx.fillStyle = typeof ser.stroke === 'function' ? ser.stroke(u, s) : ser.stroke;
+        ctx.fill();
+        ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+}
+
 // ---- Canvas overlays: event markers + delta-cursor bookmarks ------------
 
 /**
@@ -1893,6 +2013,7 @@ function redrawAllOverlays() {
 
 /**
  * Draw hook — invoked by uPlot after its own series/axis paint.  We draw:
+ *   0. Sample dots while a chart is hovered (drawSampleDots).
  *   1. Event markers: faint vertical lines at each in-range event timestamp.
  *   2. Delta-cursor bookmarks: bright vertical lines (A cyan, B cyan dashed)
  *      with the A/B labels at the top of the plot area.
@@ -1913,6 +2034,9 @@ function drawChartOverlays(u) {
     ctx.beginPath();
     ctx.rect(left, top, width, height);
     ctx.clip();
+
+    // ---- Sample dots (hover only; under the markers) ----
+    drawSampleDots(u);
 
     // ---- Event markers ----
     // One pass: un-highlighted events drawn faint, the highlighted one drawn

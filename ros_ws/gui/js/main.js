@@ -15,7 +15,7 @@ import {
 import { legLengthsToPose } from './stewart-fk.js';
 import { initMocapMarkers, initRigidBodyTriads, updateMocapMarkers, updateRigidBodyAxes } from './mocap-markers.js';
 import {
-    initBallButlerModel, updateBallButler, updateBallButlerPose,
+    initBallButlerModel, updateBallButler, setBallButlerCalibration,
     setBBPitchFault, setBBHandFault,
     getBallButlerPickables,
 } from './ball-butler-model.js';
@@ -288,6 +288,7 @@ function onConnectionStateChange(state) {
             // default. A same-session blip self-heals via resubscribeAll() on
             // reconnect (the still-latched success=true is re-delivered).
             resetBBCalibration();
+            setBallButlerCalibration(null);
             setJogPanelVisible(false);
             setSpeedLimitsPanelVisible(false);
             stopTopicDiscovery();
@@ -666,15 +667,7 @@ function onRigidBodyPoses(msg) {
     const bodies = msg.bodies || [];
     updateRigidBodyAxes(bodies);
 
-    // Align Ball Butler 3D model with its mocap rigid body pose
-    const bbBody = bodies.find(b => b.name === 'Ball_Butler');
-    if (bbBody && bbBody.pose) {
-        const poseStamped = bbBody.pose;
-        const pose = poseStamped.pose || poseStamped;
-        if (pose.position && pose.orientation) {
-            updateBallButlerPose(pose.position, pose.orientation);
-        }
-    }
+    // NOTE: BB's 3D placement comes from bb/calibration_result, not this pose.
 }
 
 // Commanded-leg staleness watchdog (mirrors the mocap-connection pattern):
@@ -735,6 +728,8 @@ let bbCalibrationInitialSkipped = false;
 function onBBCalibrationResult(msg) {
     recordTopicMessage('bb/calibration_result');
     updateBBCalibration(msg);
+    // Placement uses every message, incl. the latched one the event log skips.
+    setBallButlerCalibration(msg);
     // Skip the latched-stale message during the wall-clock init window OR
     // while no real telemetry has arrived yet — `lastRobotStateMs === 0`
     // catches slow-handshake cases where the latched message lands after

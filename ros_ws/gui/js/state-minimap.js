@@ -31,6 +31,9 @@
 import * as ros from './ros-bridge.js';
 import { holdToConfirm } from './hold-to-confirm.js';
 import { emitEvent, EVENT_TYPES } from './event-store.js';
+import {
+    JUGGLE_PATTERNS, buildJugglePanel, renderJugglePanel, jugglePanelOnSkillAttempt,
+} from './juggle-panel.js';
 
 // ====================================================================
 // S1. Constants
@@ -1143,119 +1146,23 @@ function renderStatusLine() {
     dom.status.className = s.cls ? 'status-' + s.cls : '';
 }
 
-// ---- Juggle controls (GUI → jugglebot/juggle_request → jugglebot/juggle;
+// ---- Juggle (GUI → jugglebot/juggle_request → jugglebot/juggle;
 // ---- jugglebot/juggle_stop cancels) — R4, owner decision D3 ----
 //
-// Replaces the single-button Reload relay: a pattern <select> (Self-toss /
-// Hop / Columns), a "Reload first" checkbox, a hold-to-confirm Start (motion
-// starts — the same affordance every other motion-starting control on this
-// map uses) and an immediate-click Stop (it ENDS motion, so no hold — a
-// stop must never be slow to land). Start/Stop are both fire-and-forget with
-// a status hint: the callService below returns the relay's DISPATCH ack
-// (accepted/unavailable), not the attempt's COMPLETED/STOPPED/<end_code>
-// outcome — rosbridge on Foxy has no ROS2-action transport, so the outcome
-// can't come back here; it is logged by orchestrator_node and skill_node.
-// juggleBusy latches Start disabled for a brief re-dispatch cooldown after a
-// successful dispatch (a genuine concurrent goal is rejected by skill_node
-// anyway — the cooldown only stops accidental double-holds).
-const JUGGLE_COOLDOWN_MS = 4000;
-const JUGGLE_PATTERNS = [
-    { value: 'self_toss', label: 'Self-toss' },
-    { value: 'hop', label: 'Hop' },
-    { value: 'columns', label: 'Columns' },
-    // B2: columns motion flown with one real ball (a phantom at the other
-    // site) -- same apex_m/separation_mm/reload fields as Columns, no new
-    // GUI affordance needed (SkillNode._run_columns_1ball).
-    { value: 'columns_1ball', label: 'Columns (1 ball)' },
-    // B2, R5 sitting 4: the OTHER half -- ball A phantom (Jugglebot's own
-    // strokes fly empty), ball B real and fed by Ball Butler. reload=True
-    // is required (SkillNode._run_columns refuses reload=False for this
-    // pattern); same apex_m/separation_mm fields otherwise
-    // (SkillNode._run_columns(..., phantom_a=True)).
-    { value: 'columns_1ball_fed', label: 'Columns (1 ball, fed)' },
-];
-let juggleBusy = false;
-let juggleStatusMsg = null;    // { text, cls } | null
-let juggleCooldownTimer = null;
-let juggleStatusClearTimer = null;
-
-function setJuggleStatus(text, cls) {
-    juggleStatusMsg = text ? { text, cls: cls || '' } : null;
-    renderJuggleControls();
-}
-
-function renderJuggleControls() {
-    if (!dom || !dom.juggleStart) return;
-    const connected = snap.conn === 'connected';
-    const active = snap.orch.main === 'ACTIVE';
-    const gated = juggleBusy || !connected || !active;
-    dom.jugglePattern.disabled = gated;
-    dom.juggleReload.disabled = gated;
-    dom.juggleStart.disabled = gated;
-    dom.juggleStart.title = juggleBusy
-        ? 'Juggle dispatched — waiting for the attempt…'
-        : !connected
-            ? 'rosbridge disconnected'
-            : !active
-                ? 'Start is available only in ACTIVE'
-                : 'hold to confirm — starts platform/hand motion';
-    // Stop is gated on connection alone — it must stay reachable even while
-    // Start's own cooldown is latched (that cooldown is about NOT double-
-    // dispatching a start, never about blocking a stop).
-    dom.juggleStop.disabled = !connected;
-    dom.juggleStop.title = connected
-        ? 'ends the running attempt immediately'
-        : 'rosbridge disconnected';
-    const s = juggleStatusMsg || { text: '', cls: '' };
-    dom.juggleStatus.textContent = s.text;
-    dom.juggleStatus.className = s.cls ? 'status-' + s.cls : '';
-}
-
-function onJuggleStartConfirm() {
-    if (juggleBusy || snap.conn !== 'connected' || snap.orch.main !== 'ACTIVE') return;
-    const pattern = dom.jugglePattern.value;
-    const reload = !!dom.juggleReload.checked;
-    const data = reload ? pattern + ',reload' : pattern;
-    juggleBusy = true;
-    setJuggleStatus('Dispatching ' + pattern + (reload ? ' (reload)' : '') + '…', '');
-    // No Event Log entry here: skill_node announces the attempt on
-    // skills/attempt (minimapOnSkillAttempt), for this button and a terminal
-    // `ros2 action send_goal` alike.
-    ros.callService('jugglebot/juggle_request', 'jugglebot_interfaces/srv/SetString', { data })
-        .then((res) => {
-            if (res && res.success) {
-                setJuggleStatus(res.message || 'Juggle dispatched.', 'ok');
-            } else {
-                setJuggleStatus((res && res.message) || 'Juggle rejected.', 'err');
-            }
-        })
-        .catch((err) => {
-            setJuggleStatus('Juggle failed: ' + (err && err.message ? err.message : err), 'err');
-        })
-        .finally(() => {
-            // Hold Start disabled for a short re-dispatch cooldown, then let
-            // the ACTIVE/connection gate govern again (renderJuggleControls
-            // runs every applySnapshot frame).
-            clearTimeout(juggleCooldownTimer);
-            juggleCooldownTimer = setTimeout(() => {
-                juggleBusy = false;
-                renderJuggleControls();
-            }, JUGGLE_COOLDOWN_MS);
-            renderJuggleControls();
-            // Auto-clear the sticky status after a while so it doesn't linger stale.
-            clearTimeout(juggleStatusClearTimer);
-            juggleStatusClearTimer = setTimeout(() => {
-                juggleStatusMsg = null;
-                renderJuggleControls();
-            }, 8000);
-        });
-}
+// The command surface (pattern, throws, apex, separation, read-only dwell,
+// reload, hold-to-confirm Start, immediate Stop, attempt status and the
+// pattern diagram) lives in juggle-panel.js since 2026-10-04; this map only
+// mounts it (buildDom) and feeds it the same snapshot every frame
+// (applySnapshot → renderJugglePanel), so its Start gate is this map's
+// connection + ACTIVE reading, staleness rules included.
 
 /**
  * skills/attempt (diagnostic_msgs/DiagnosticStatus) → Event Log + chart
- * markers.  skill_node publishes one per Juggle goal event from EVERY goal
- * source, so attempts started from a terminal show up too.  `name` is the
- * event and `values` its string fields — the names are skill_node.py's
+ * markers, then the Juggle panel's RUNNING / last-outcome / stale-relay
+ * cross-check (jugglePanelOnSkillAttempt).  skill_node publishes one per
+ * Juggle goal event from EVERY goal source, so attempts started from a
+ * terminal show up too.  `name` is the event and `values` its string
+ * fields — the names are skill_node.py's
  * ATTEMPT_* constants; rename both together.
  *   juggle_start   pattern n_throws reload apex_m separation_mm (resolved:
  *                  the goal's own fields, else skill_node's params)
@@ -1292,34 +1199,7 @@ export function minimapOnSkillAttempt(msg) {
             detail: 'outcome ' + fields.outcome,
         });
     }
-}
-
-function onJuggleStopClick() {
-    if (snap.conn !== 'connected') return;
-    setJuggleStatus('Stopping…', '');
-    emitEvent({
-        type: EVENT_TYPES.COMMAND,
-        label: 'Juggle Stop',
-        detail: 'jugglebot/juggle_stop',
-    });
-    ros.callService('jugglebot/juggle_stop', 'std_srvs/srv/Trigger', {})
-        .then((res) => {
-            if (res && res.success) {
-                setJuggleStatus(res.message || 'Stopped.', 'ok');
-            } else {
-                setJuggleStatus((res && res.message) || 'Nothing to stop.', '');
-            }
-        })
-        .catch((err) => {
-            setJuggleStatus('Stop failed: ' + (err && err.message ? err.message : err), 'err');
-        })
-        .finally(() => {
-            clearTimeout(juggleStatusClearTimer);
-            juggleStatusClearTimer = setTimeout(() => {
-                juggleStatusMsg = null;
-                renderJuggleControls();
-            }, 8000);
-        });
+    jugglePanelOnSkillAttempt(msg);
 }
 
 function svgEl(tag, attrs, cls) {
@@ -1540,7 +1420,12 @@ function applySnapshot() {
         dom.action.title = (a.title || '') + (a.disabled || busy ? '' : ' — hold to confirm');
     }
     renderStatusLine();
-    renderJuggleControls();
+    renderJugglePanel({
+        connected: snap.conn === 'connected',
+        active: snap.orch.main === 'ACTIVE',
+        mainState: snap.orch.main,
+        expanded,
+    });
 }
 
 function scheduleRender() {
@@ -1622,69 +1507,29 @@ function buildDom() {
     action.addEventListener('pointerleave', clearHeldAction);
     action.addEventListener('pointercancel', clearHeldAction);
 
-    // Juggle controls (R4, owner decision D3): a pattern <select>, a "Reload
-    // first" checkbox, a hold-to-confirm Start and an immediate-click Stop —
-    // Start uses the SAME hold affordance every other motion-starting control
-    // on this map uses (it starts platform/hand motion); Stop is a plain
-    // click (it ENDS motion — skill_node gates every precondition on goal
-    // accept and aborts safely, so a stray Start click is safe, but a slow
+    // Juggle panel (R4 owner decision D3; juggle-panel.js since 2026-10-04):
+    // Start uses the SAME hold affordance every other motion-starting
+    // control on this map uses (it starts platform/hand motion); Stop is a
+    // plain click (it ENDS motion — skill_node gates every precondition on
+    // goal accept and aborts safely, so a stray Start is safe, but a slow
     // Stop is not). Kept OUT of the contextual-action render path
     // (computeAction/plans) so the fire-and-forget dispatch can never be
     // confused with a state-machine plan.
-    const juggleRow = document.createElement('div');
-    juggleRow.id = 'minimap-juggle-row';
-    const jugglePattern = document.createElement('select');
-    jugglePattern.id = 'minimap-juggle-pattern';
-    jugglePattern.className = 'cmd-select';
-    for (const p of JUGGLE_PATTERNS) {
-        const opt = document.createElement('option');
-        opt.value = p.value;
-        opt.textContent = p.label;
-        jugglePattern.appendChild(opt);
-    }
-    const juggleReloadLabel = document.createElement('label');
-    juggleReloadLabel.id = 'minimap-juggle-reload-label';
-    juggleReloadLabel.className = 'cmd-checkbox-label';
-    const juggleReload = document.createElement('input');
-    juggleReload.type = 'checkbox';
-    juggleReload.id = 'minimap-juggle-reload';
-    juggleReloadLabel.appendChild(juggleReload);
-    juggleReloadLabel.appendChild(document.createTextNode('Reload first'));
-    const juggleStart = document.createElement('button');
-    juggleStart.id = 'minimap-juggle-start';
-    juggleStart.type = 'button';
-    juggleStart.className = 'cmd-btn hold-fillable btn-reload';
-    juggleStart.textContent = 'Start';
-    juggleStart.disabled = true;
-    holdToConfirm(juggleStart, onJuggleStartConfirm, HOLD_MS);
-    const juggleStop = document.createElement('button');
-    juggleStop.id = 'minimap-juggle-stop';
-    juggleStop.type = 'button';
-    juggleStop.className = 'cmd-btn';
-    juggleStop.textContent = 'Stop';
-    juggleStop.disabled = true;
-    juggleStop.addEventListener('click', onJuggleStopClick);
-    juggleRow.appendChild(jugglePattern);
-    juggleRow.appendChild(juggleReloadLabel);
-    juggleRow.appendChild(juggleStart);
-    juggleRow.appendChild(juggleStop);
-    const juggleStatus = document.createElement('div');
-    juggleStatus.id = 'minimap-juggle-status';
+    const juggle = document.createElement('div');
+    juggle.id = 'minimap-juggle';
+    buildJugglePanel(juggle);
 
     root.appendChild(header);
     root.appendChild(svg);
     root.appendChild(status);
     root.appendChild(action);
-    root.appendChild(juggleRow);
-    root.appendChild(juggleStatus);
+    root.appendChild(juggle);
 
     dom = {
         root, header, svg, status, action,
-        jugglePattern, juggleReload, juggleStart, juggleStop, juggleStatus,
         armedBadge: armed, guardBadge: guard, chevron: chev,
         faultLive: null, clusterSub: null,
     };
-    renderJuggleControls();
     return true;
 }
 
