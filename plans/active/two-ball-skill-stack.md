@@ -99,6 +99,11 @@ own diff against it before reporting. A finding against a value is a defect.
 - Grep before deleting, count to zero after. Probe before a threshold test.
   One logbook entry per change; `/audit --unstaged` once per rung, at its end.
 - Every number carries provenance: bag, command, date.
+- **Ball names (owner, 2026-10-04).** Operator-facing text says **Ball 1** for the ball in
+  Jugglebot's hand at the start (schedule id 0; "ball A" in code prose) and **Ball 2** for the
+  one Ball Butler feeds or that waits at the second site (id 1; "ball B") — numbered by the
+  order Jugglebot's hand first throws them (`schedule.ball_label`). Sites keep their names,
+  so in fed columns Ball 1 holds at P2 and Ball 2 lands at P1; the crossover is deliberate.
 
 **Physical operating point (current, provenance-dated).**
 - Launch leg session limits (`jugglebot_launch.py` via `config/hardware_config.yaml`
@@ -1409,6 +1414,26 @@ the rung's tests passing or a handoff file in the scratchpad.
   one-ball columns, then fed columns. Open after this: feed-catch accuracy (30-40 mm entry
   offset, open-loop), the hop re-aim refusals, leg acceleration feedforward before any
   acceleration-limit raise, skill_node refusing a start while a jam is held.
+- **Sitting 4 (2026-10-04 evening, four launches; analysed and fixed the same night).** Fed
+  columns never passed four throws. The jam detector could never fire on the robot (its 50 ms
+  diagnostic-age gate against a 1 Hz frame; the replay had used the 100 Hz republish age);
+  a missed feed never ended the pattern (the one cup sensor confirmed Ball 1's seat flicker as
+  Ball 2's release, a 40 Hz tick lottery); the catches are on time (±10 ms) and bounce with
+  lateral miss — Ball Butler lands (+29, +25) mm from its request on every feed and none seats
+  before the +0.19 s throw reversal; the `LIMIT_*` refusals are landing-time jitter (±20–30 ms)
+  against the 10 % margin — more dwell costs transit, and the session acc/jerk already sit on
+  the YAML ceilings; attempt 2's guard latch was a false trip on a 100 ms-old hand encoder
+  sample. Landed: detector age bound 1.5 s + measured-descent P1 + `HAND_MOVE_TO` as a
+  command source (replay PASS on six bags, all three pinches); `MISSED_CATCH` end on a
+  sample-complete RAW seat window + `RELEASE_SEAT_EPS_S` 0.10; `columns_1ball_fed` (Ball 1
+  phantom, Ball Butler feeds Ball 2; sim PASS 5/5); `columns_feed_bb_bias_mm` with
+  `tools/probes/feed_lateral_miss.py`; can-bridge FW 27 (hand guard counts only feedback
+  ≤ 30 ms old, MOTOR_FB_STALE on axis 6; flashed 21:44); Ball 1 / Ball 2 names in every
+  operator line. **Not fixed: the refusal margin** — needs a ±25 ms landing-time dimension in
+  the box sweep and a geometry or ceiling decision (the legs sat on the 10 A clamp in
+  transits; raising acc/jerk means raising that clamp — owner's call). Next:
+  `tests/hardware/session_skills_r5_sitting5.md` (the fed half alone with the bias measured,
+  then fed columns). Entry: `logbook/2026-10-04-skill-stack-r5-sitting-4.md`.
 - **Outcome (sitting 1 + evening fix units, 2026-09-30).** Sitting 1 flew the 4°/0° cup test and
   the fused reload; Block C (human lob) never claimed a feed and is retired (see the owner
   decisions above). Four fix units landed the same evening, uncommitted at the time of this

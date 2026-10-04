@@ -1,5 +1,12 @@
 # R5 hardware runsheet, sitting 4 — one step at a time: feed, self-toss, one-ball columns, fed columns
 
+> **FLOWN 2026-10-04 evening** (four launches: bench check, level trim 31 throws, one-ball columns,
+> 20 + 2 fed attempts). § 2 reproduced a 6 s pinch the detector could not see (its diagnostic-age
+> gate against a 1 Hz frame — not the stale `pos_cmd` the operator noticed, which was true by
+> coincidence); § 3 gave `level_trim_deg [+0.0945, +0.3678]`; § 5 never passed four throws.
+> Analysis, fixes and the next sheet: `logbook/2026-10-04-skill-stack-r5-sitting-4.md`,
+> `session_skills_r5_sitting5.md`. Superseded.
+
 Skill-stack R5 (`plans/active/two-ball-skill-stack.md` § R5). Same machine as sittings 1-3
 (`session_skills_r5.md`, `session_skills_r5_sitting2.md`, `session_skills_r5_sitting3.md` stay the
 reference for everything this sheet does not restate: QTM preconditions, the guard/`/recover`/
