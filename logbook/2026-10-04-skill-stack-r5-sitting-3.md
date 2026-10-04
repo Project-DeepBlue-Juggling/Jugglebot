@@ -372,7 +372,8 @@ additive, PROTOCOL_VERSION 9 unchanged) through ACTIVATE's own ladder and gates 
 terminal reply carrying the outcome; a second call RETARGETS the move (ACTIVATE's refuse-while-busy
 would have IDLEd the hand onto the ball at the 10 s timeout), so the bridge checks `outcome`, uses
 the no-wait client and preempts with a new move. Built (`pio run -e teensy41`, 800,824 B, md5
-`8d5ab3d10d220fd20aec43e584fb91c8`), NOT flashed: the owner decides. Tests: 49 pure (fixture of the
+`8d5ab3d10d220fd20aec43e584fb91c8`), flashed 2026-10-04 16:34 after the commit (receipt: the board's
+`BridgeIdentity` frame reads `fw_version=26, protocol_version=9`). Tests: 49 pure (fixture of the
 event's `/hand_telemetry`, 96 rows: fires 103 ms before the latch; silent stall fires; every
 false-positive row of the design does not; sequence order), 12 bridge (relief first, disarm before
 raise, SUPERSEDED/retarget, `RpcTimeout` before `RpcError`, UNRECOVERED keeps 10 A), 7 native
@@ -451,7 +452,7 @@ All runs 2026-10-04 unless stated. Console output by path under `temp/logs/`.
   firmware `pytest tests/teensy_link tests/firmware -q` 713 passed, 1 skipped in 246.95 s, native
   `test_leg_activate` 27 cases / 199 assertions and `test_rpc_dispatch` 30 / 189, 0 failed;
   `pio run -e teensy41` SUCCESS 12.5 s, hex 800,824 B, md5 `8d5ab3d10d220fd20aec43e584fb91c8`,
-  NOT flashed.
+  flashed 16:34, receipt `BridgeIdentity(fw_version=26, protocol_version=9)` on the stream port.
 - **Probes**: `tools/probes/hand_jam_replay.py` over the four 2026-10-02 bags
   (`temp/probes/hand_jam_replay_20261002.log`): the latched event fires 103 ms before the latch;
   two more fires are the un-latched pinches at 1790929174.17 and 1790929358.65/360.83 (now the
@@ -464,8 +465,9 @@ All runs 2026-10-04 unless stated. Console output by path under `temp/logs/`.
 
 ## Open Questions
 
-1. **Flash FW 26?** Without it the jam recovery is relief-only (10 A cut, `HAND_JAM_UNRECOVERED`
-   'firmware has no HAND_MOVE_TO'); with it the bench check in the sitting-4 sheet § 2 applies.
+1. **FW 26 is flashed** (16:34, receipt taken), so the sitting-4 sheet's § 2 bench check applies in
+   full. Standing rule from the owner (2026-10-04): a finished firmware build that is the only relevant
+   one going forward is flashed as part of finishing the unit, not held for a decision.
 2. **The D2 Stop fold at dwell 0.27.** The jitter-free virtual loop passes it at 125 mm with 10 %
    margin; the live splice has less. If every attempt's final cross-site throw refuses
    `LIMIT_JERK` on the robot, the fix is a same-site Stop (the cup transits to the last ball,
