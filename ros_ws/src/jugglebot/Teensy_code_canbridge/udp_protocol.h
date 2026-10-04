@@ -91,6 +91,7 @@ namespace RpcMethod {
   constexpr uint16_t BB_FW_VERIFY = 0x005Eu;  // Ball Butler FW-over-CAN: CRC-32 over the staged image (relay → CAN1 0x7D6 op 0x03)
   constexpr uint16_t BB_FW_COMMIT = 0x005Fu;  // Ball Butler FW-over-CAN: apply the staged image + reboot (relay → CAN1 0x7D6 op 0x04)
   constexpr uint16_t BB_FW_INFO = 0x0060u;  // Ball Butler FW-over-CAN: read the running FW_VERSION (relay → CAN1 0x7D6 op 0x05)
+  constexpr uint16_t HAND_MOVE_TO = 0x0061u;  // Hand-only TRAP_TRAJ move to a caller target (ACTIVATE's axis-6 ladder); deferred reply at arrival / timeout / supersede
 }
 namespace RpcStatus {
   constexpr uint16_t OK = 0x0000u;  // Success
@@ -590,6 +591,23 @@ struct ResultHandTorqueScale {
   uint32_t age_ms;  // age of the cached reply in ms (0xFFFFFFFF = none)
 };
 static_assert(sizeof(ResultHandTorqueScale) == 16, "ResultHandTorqueScale size drift");
+// ArgHandMoveTo (HAND_MOVE_TO)
+struct ArgHandMoveTo {
+  uint8_t axis;  // must be 6 (the hand); anything else is ERR_BAD_ARGS
+  float target_rev;  // hand target (rev, Jugglebot convention), finite, [0, HAND_MOTOR_MAX_POSITION]
+  float vel_rps;  // TRAP_TRAJ cruise (rev/s), 0 < v <= GENTLE_MOVE_VEL_LIMIT_RPS
+};
+static_assert(sizeof(ArgHandMoveTo) == 9, "ArgHandMoveTo size drift");
+// ResultHandMoveTo (HAND_MOVE_TO (result))
+struct ResultHandMoveTo {
+  uint8_t outcome;  // 0 ARRIVED / 1 SUPERSEDED / 2 TIMEOUT / 3 ABORTED
+  uint8_t pad[3];  // zero
+  float pos_rev;  // measured hand position at the reply (rev)
+  float vel_rps;  // measured hand velocity at the reply (rev/s)
+  float target_rev;  // the target this reply's request commanded (rev)
+  uint32_t elapsed_ms;  // ms from the request's acceptance to the reply
+};
+static_assert(sizeof(ResultHandMoveTo) == 20, "ResultHandMoveTo size drift");
 // ArgBbThrow (BB_THROW)
 struct ArgBbThrow {
   float yaw_rad;  // Yaw angle in radians [-pi, pi)
@@ -637,6 +655,8 @@ constexpr uint16_t RESULT_TIME_OF_DAY_SIZE = 8u;
 constexpr uint16_t RESULT_AXIS_VERSIONS_SIZE = 57u;
 constexpr uint16_t RESULT_BB_AXIS_VERSIONS_SIZE = 17u;
 constexpr uint16_t RESULT_HAND_TORQUE_SCALE_SIZE = 16u;
+constexpr uint16_t ARG_HAND_MOVE_TO_SIZE = 9u;
+constexpr uint16_t RESULT_HAND_MOVE_TO_SIZE = 20u;
 constexpr uint16_t ARG_BB_THROW_SIZE = 16u;
 constexpr uint16_t ARG_ROBOT_STATE_SIZE = 10u;
 constexpr uint16_t ARG_PLATFORM_FW_BEGIN_SIZE = 4u;

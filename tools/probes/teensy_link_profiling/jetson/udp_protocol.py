@@ -91,6 +91,7 @@ class RpcMethod(IntEnum):
     BB_FW_VERIFY = 94  # Ball Butler FW-over-CAN: CRC-32 over the staged image (relay → CAN1 0x7D6 op 0x03)
     BB_FW_COMMIT = 95  # Ball Butler FW-over-CAN: apply the staged image + reboot (relay → CAN1 0x7D6 op 0x04)
     BB_FW_INFO = 96  # Ball Butler FW-over-CAN: read the running FW_VERSION (relay → CAN1 0x7D6 op 0x05)
+    HAND_MOVE_TO = 97  # Hand-only TRAP_TRAJ move to a caller target (ACTIVATE's axis-6 ladder); deferred reply at arrival / timeout / supersede
 
 class RpcStatus(IntEnum):
     OK = 0  # Success
@@ -1054,6 +1055,51 @@ class ResultHandTorqueScale:
         vals = _RESULT_HAND_TORQUE_SCALE_STRUCT.unpack(data[:16])
         it = iter(vals)
         return cls(next(it), tuple(next(it) for _ in range(3)), next(it), next(it), next(it))
+
+# ArgHandMoveTo (HAND_MOVE_TO)
+ARG_HAND_MOVE_TO_FMT = '<Bff'
+ARG_HAND_MOVE_TO_SIZE = 9
+_ARG_HAND_MOVE_TO_STRUCT = struct.Struct(ARG_HAND_MOVE_TO_FMT)
+assert _ARG_HAND_MOVE_TO_STRUCT.size == 9
+
+@dataclass
+class ArgHandMoveTo:
+    axis: int = 0
+    target_rev: float = 0.0
+    vel_rps: float = 0.0
+
+    def pack(self) -> bytes:
+        return _ARG_HAND_MOVE_TO_STRUCT.pack(self.axis, self.target_rev, self.vel_rps)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'ArgHandMoveTo':
+        vals = _ARG_HAND_MOVE_TO_STRUCT.unpack(data[:9])
+        it = iter(vals)
+        return cls(next(it), next(it), next(it))
+
+# ResultHandMoveTo (HAND_MOVE_TO (result))
+RESULT_HAND_MOVE_TO_FMT = '<BBBBfffI'
+RESULT_HAND_MOVE_TO_SIZE = 20
+_RESULT_HAND_MOVE_TO_STRUCT = struct.Struct(RESULT_HAND_MOVE_TO_FMT)
+assert _RESULT_HAND_MOVE_TO_STRUCT.size == 20
+
+@dataclass
+class ResultHandMoveTo:
+    outcome: int = 0
+    pad: tuple = field(default_factory=lambda: (0,) * 3)
+    pos_rev: float = 0.0
+    vel_rps: float = 0.0
+    target_rev: float = 0.0
+    elapsed_ms: int = 0
+
+    def pack(self) -> bytes:
+        return _RESULT_HAND_MOVE_TO_STRUCT.pack(self.outcome, *self.pad, self.pos_rev, self.vel_rps, self.target_rev, self.elapsed_ms)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'ResultHandMoveTo':
+        vals = _RESULT_HAND_MOVE_TO_STRUCT.unpack(data[:20])
+        it = iter(vals)
+        return cls(next(it), tuple(next(it) for _ in range(3)), next(it), next(it), next(it), next(it))
 
 # ArgBbThrow (BB_THROW)
 ARG_BB_THROW_FMT = '<ffff'

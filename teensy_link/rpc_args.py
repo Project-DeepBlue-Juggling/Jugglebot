@@ -35,6 +35,8 @@ from .protocol import (
     ResultAxisVersions,
     ResultBbAxisVersions,
     ResultHandTorqueScale,
+    ArgHandMoveTo,
+    ResultHandMoveTo,
     ArgPlatformFwBegin,
     ArgPlatformFwData,
     ArgPlatformFwVerify,
@@ -71,6 +73,11 @@ __all__ = [
     "PLATFORM_FW_STATUS_BAD_IDENTITY", "PLATFORM_FW_STATUS_FLASH_ERR",
     "PLATFORM_FW_STATUS_PARKING", "PLATFORM_FW_STATUS_PARK_FAILED",
     "FW_OP_INFO", "BB_FW_VERSION_EXPECTED",
+    # HAND_MOVE_TO (FW 26)
+    "ArgHandMoveTo", "ResultHandMoveTo", "encode_hand_move_to",
+    "encode_hand_move_to_result", "decode_hand_move_to_result",
+    "HAND_AXIS", "HAND_MOVE_ARRIVED", "HAND_MOVE_SUPERSEDED", "HAND_MOVE_TIMEOUT",
+    "HAND_MOVE_ABORTED", "HAND_MOVE_OUTCOME_NAMES",
     # method association
     "METHOD",
 ]
@@ -292,6 +299,49 @@ def encode_hand_torque_scale_result(state: int, value: int, reply_seq: int,
 def decode_hand_torque_scale_result(blob: bytes) -> ResultHandTorqueScale:
     """Decode a GET_HAND_TORQUE_SCALE result blob (exact-size unpack)."""
     return ResultHandTorqueScale.unpack(blob)
+
+
+# ── HAND_MOVE_TO (can-bridge FW 26, additive RpcMethod) ──────────────────────
+# ACTIVATE's axis-6 TRAP_TRAJ ladder with a caller target: the hand-jam
+# recovery's raise and lower. The firmware is the validator (axis 6 only, finite
+# target in [0, HAND_MOTOR_MAX_POSITION], 0 < vel <= GENTLE_MOVE_VEL_LIMIT_RPS)
+# and answers ERR_BAD_ARGS otherwise; this encoder deliberately does NOT
+# pre-validate, so the firmware's refusal stays the one enforcement point and a
+# host-side check can never drift from it. The reply is DEFERRED to the move's
+# end and carries ResultHandMoveTo. Outcome codes mirror the firmware's
+# HandMoveOutcome enum (Teensy_code_canbridge/leg_activate.h, pinned by
+# tests/teensy_link/test_rpc_args.py).
+HAND_AXIS = 6
+HAND_MOVE_ARRIVED = 0      # status OK: at target, settled, handed off to PASSTHROUGH
+HAND_MOVE_SUPERSEDED = 1   # status OK: a newer HAND_MOVE_TO retargeted this move
+HAND_MOVE_TIMEOUT = 2      # ERR_TIMEOUT: 10 s elapsed, the hand was commanded IDLE
+HAND_MOVE_ABORTED = 3      # ERR_BUS_DOWN / ERR_REJECTED / ERR_TIMEOUT(TX): hand IDLE
+HAND_MOVE_OUTCOME_NAMES = {
+    HAND_MOVE_ARRIVED: "ARRIVED",
+    HAND_MOVE_SUPERSEDED: "SUPERSEDED",
+    HAND_MOVE_TIMEOUT: "TIMEOUT",
+    HAND_MOVE_ABORTED: "ABORTED",
+}
+
+
+def encode_hand_move_to(target_rev: float, vel_rps: float, axis: int = HAND_AXIS) -> bytes:
+    """HAND_MOVE_TO args: axis (must be 6), target (rev), TRAP_TRAJ cruise (rev/s)."""
+    return ArgHandMoveTo(axis=int(axis), target_rev=float(target_rev),
+                         vel_rps=float(vel_rps)).pack()
+
+
+def encode_hand_move_to_result(outcome: int, pos_rev: float, vel_rps: float,
+                               target_rev: float, elapsed_ms: int) -> bytes:
+    """Pack a HAND_MOVE_TO result blob — the firmware-side mirror, for fakes and
+    the round-trip test."""
+    return ResultHandMoveTo(outcome=int(outcome), pad=(0, 0, 0), pos_rev=float(pos_rev),
+                            vel_rps=float(vel_rps), target_rev=float(target_rev),
+                            elapsed_ms=int(elapsed_ms)).pack()
+
+
+def decode_hand_move_to_result(blob: bytes) -> ResultHandMoveTo:
+    """Decode a HAND_MOVE_TO result blob (exact-size unpack)."""
+    return ResultHandMoveTo.unpack(blob)
 
 
 # ── Platform-Teensy relay ─────────────────────────────────────────────────────
@@ -747,7 +797,11 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # replies uplinked as PLATFORM_FRAMEs, and the RPC socket receive queue 1 -> 8.
 # No wire change; PROTOCOL_VERSION stays 9. That branch's FW 21/22 images are
 # proto 6 and DARK against this tree despite the lower number.
-EXPECTED_BRIDGE_FW_VERSION = 25
+# 25 -> 26 (2026-10-04): one ADDITIVE RpcMethod HAND_MOVE_TO (0x61) for the
+# hand-jam recovery, the first RPC whose reply is deferred to the end of the move.
+# No wire change to any existing message; PROTOCOL_VERSION stays 9; an FW 25
+# board answers 0x61 with ERR_UNKNOWN_METHOD.
+EXPECTED_BRIDGE_FW_VERSION = 26
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────
@@ -808,6 +862,7 @@ METHOD = {
     RpcMethod.BB_FW_BEGIN: ArgPlatformFwBegin,     # BB shares the Platform arg structs
     RpcMethod.BB_FW_DATA: ArgPlatformFwData,
     RpcMethod.BB_FW_VERIFY: ArgPlatformFwVerify,
+    RpcMethod.HAND_MOVE_TO: ArgHandMoveTo,         # FW 26, deferred reply
     # BB_RELOAD/RESET/CALIBRATE_LOC are payloadless — no entry (matches NOP).
     # TILT_READ/STATE_READ are payloadless too (reply arrives as a PLATFORM_FRAME).
     # PLATFORM_FW_COMMIT is payloadless too — no entry (matches NOP).

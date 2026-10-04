@@ -38,9 +38,20 @@ lookup) lives in :mod:`jugglebot.motion.tilt_map`.
 
 Pure Python — no ROS imports (this module is consumed by ROS nodes, but also by
 ``tests/motion`` with no ROS mocking at all).
+
+**The operator trim (A3, 2026-10-04).** :func:`offset_with_trim` /
+:func:`validate_trim_deg` add a small, bounded, OPERATOR-set correction —
+``trajectory_node``'s ``level_trim_deg`` parameter — on top of the measured
+offset above, at the same point (before :func:`correction_from_offset`'s sign
+flip) and in the same convention. It is not part of C-LEVEL-1/C-LEVEL-2 (it
+does not change the enumerated ingest sites, the composition order, or the
+map): it is a static bias on the one value both contracts already start from.
+See ``tools/probes/level_vs_ballfit.py`` for how a trim value is measured.
 """
 
 from __future__ import annotations
+
+import math
 
 import numpy as np
 
@@ -57,7 +68,18 @@ __all__ = [
     'apply_gravity_correction',
     'correct_pose',
     'uncorrect_pose',
+    'LEVEL_TRIM_MAX_DEG',
+    'validate_trim_deg',
+    'offset_with_trim',
 ]
+
+# `level_trim_deg`'s hard bound (deg, per axis). A static operator trim is a
+# small fudge on an already-measured level reference (u2_throw_verticality,
+# 2026-10-02: the measured lean against gravity is 0.1-0.4 deg), never a
+# substitute for re-running `level` — 1.0 deg is generous headroom over that
+# measured envelope while still catching a fat-fingered entry (e.g. radians
+# typed where degrees were meant, or a sign-flipped whole-degree offset).
+LEVEL_TRIM_MAX_DEG = 1.0
 
 
 def identity_correction() -> np.ndarray:
@@ -83,6 +105,63 @@ def correction_from_offset(tilt_x: float, tilt_y: float) -> np.ndarray:
     """
     return rotvec_to_rot_matrix(
         np.array([-float(tilt_x), -float(tilt_y), 0.0]))
+
+
+def validate_trim_deg(trim_deg, max_deg: float = LEVEL_TRIM_MAX_DEG):
+    """Validate a ``level_trim_deg`` parameter value ``[trim_x, trim_y]`` (deg).
+
+    Returns ``(ok, trim_x, trim_y, message)``. On success ``message`` is
+    ``''`` and ``(trim_x, trim_y)`` are the float-cast input, unchanged. On
+    failure — not exactly two values, a non-finite value, or either axis
+    exceeding ``max_deg`` in magnitude — returns ``(False, 0.0, 0.0,
+    <reason>)``: the WHOLE pair is refused, never clamped axis-by-axis, so a
+    single bad value cannot leave the other axis half-applied. The caller
+    (``trajectory_node._apply_level_trim_param``) logs ``reason`` as a WARN
+    and uses ``(0.0, 0.0)`` — a trim that failed validation behaves exactly
+    like no trim at all, never like the last-good trim (there is no
+    "last-good" fallback to reach for: 0 is always safe).
+    """
+    try:
+        values = [float(v) for v in trim_deg]
+    except (TypeError, ValueError):
+        return False, 0.0, 0.0, (
+            'level_trim_deg must be two numbers [x_deg, y_deg], got %r'
+            % (trim_deg,))
+    if len(values) != 2:
+        return False, 0.0, 0.0, (
+            'level_trim_deg must have exactly 2 values [x_deg, y_deg], got '
+            '%d' % len(values))
+    trim_x, trim_y = values
+    if not (math.isfinite(trim_x) and math.isfinite(trim_y)):
+        return False, 0.0, 0.0, (
+            'level_trim_deg must be finite, got [%r, %r]' % (trim_x, trim_y))
+    if abs(trim_x) > max_deg or abs(trim_y) > max_deg:
+        return False, 0.0, 0.0, (
+            'level_trim_deg [%.4f, %.4f] deg exceeds the +/-%.1f deg bound '
+            'on at least one axis' % (trim_x, trim_y, max_deg))
+    return True, trim_x, trim_y, ''
+
+
+def offset_with_trim(tilt_x: float, tilt_y: float,
+                      trim_x_deg: float, trim_y_deg: float):
+    """Add an already-validated ``level_trim_deg`` (deg) to the raw
+    ``/gravity_offset`` ``(tilt_x, tilt_y)`` (rad).
+
+    Same point, same convention as the offset itself: the trim is added
+    BEFORE the sign flip in :func:`correction_from_offset`, so it is a
+    correction to the MEASURED tilt error, not to the counter-rotation —
+    increasing ``tilt_y`` here increases the platform's commanded counter-tilt
+    in -y, the same direction a larger measured ``tilt_y`` would have.
+    Returns the effective ``(tilt_x, tilt_y)`` in rad.
+
+    ``trim_x_deg == trim_y_deg == 0.0`` returns ``(float(tilt_x),
+    float(tilt_y))`` with no intermediate radian round-trip, so a trim of
+    zero is bit-identical to no trim at all — not just numerically close.
+    """
+    if trim_x_deg == 0.0 and trim_y_deg == 0.0:
+        return float(tilt_x), float(tilt_y)
+    return (float(tilt_x) + math.radians(trim_x_deg),
+            float(tilt_y) + math.radians(trim_y_deg))
 
 
 def correction_for_pose(offset, tilt_map, pose) -> np.ndarray:

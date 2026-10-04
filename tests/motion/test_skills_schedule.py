@@ -534,6 +534,68 @@ def test_compile_columns_without_feed_no_skill_carries_receive_tilt(cols):
     assert all(s.receive_tilt is None for s in schedule.skills)
 
 
+# ── B2: `columns_1ball` — ball B a phantom (plan handoff, 2026-10-04) ──
+
+def test_pattern_rejects_a_phantom_ball_id_outside_zero_or_one(cols):
+    with pytest.raises(ValueError, match='phantom_balls'):
+        _pattern(cols, phantom_balls=(2,))
+
+
+def test_pattern_defaults_to_no_phantom_balls(cols):
+    assert _pattern(cols).phantom_balls == ()
+
+
+def test_schedule_is_phantom_reads_the_tuple_it_was_built_with(cols):
+    schedule = sc.compile_columns(_pattern(cols, n_throws=2, phantom_balls=(1,)),
+                                  t0_abs_s=10.0)
+    assert schedule.is_phantom(1) is True
+    assert schedule.is_phantom(0) is False
+
+
+def test_compile_columns_carries_phantom_balls_onto_the_schedule(cols):
+    """The ONE place a compiler sets `Schedule.phantom_balls` to anything
+    but `()` — see that field's own docstring."""
+    plain = sc.compile_columns(_pattern(cols, n_throws=3), t0_abs_s=10.0)
+    phantom = sc.compile_columns(
+        _pattern(cols, n_throws=3, phantom_balls=(1,)), t0_abs_s=10.0)
+    assert plain.phantom_balls == ()
+    assert phantom.phantom_balls == (1,)
+
+
+def _skill_motion_fingerprint(sk):
+    """Every field that describes PHYSICAL motion (never `Site`'s own
+    object identity, which carries an ndarray and cannot go through a plain
+    `==`) — the fields `test_compile_columns_phantom_balls_does_not_change_
+    the_motion` diffs between a phantom and a plain compile."""
+    tt = sk.then_throw
+    return (sk.kind, sk.ball_id, sk.site.name, sk.t_abs_s, sk.window_s,
+           tuple(sk.y_d[0]) if sk.y_d is not None else None,
+           sk.y_d[1] if sk.y_d is not None else None,
+           sk.target.name if sk.target is not None else None,
+           sk.shadow_landing, sk.lead_s,
+           None if tt is None else
+           (tt.t_release_abs_s, tuple(tt.y_d[0]), tt.y_d[1], tt.target.name,
+            tt.shadow_landing))
+
+
+def test_compile_columns_phantom_balls_does_not_change_the_motion(cols):
+    """B2's whole design constraint: `compile_columns` is UNCHANGED in
+    motion by `phantom_balls` — every skill's kind/site/ball_id/timing/y_d/
+    target/shadow_landing/lead is identical with or without the flag, which
+    is only ever read back through `Schedule.is_phantom` downstream (the
+    executor/skill_node enforcement points), never by this compiler."""
+    plain = sc.compile_columns(_pattern(cols, n_throws=4), t0_abs_s=1_700_000_000.0)
+    phantom = sc.compile_columns(
+        _pattern(cols, n_throws=4, phantom_balls=(1,)), t0_abs_s=1_700_000_000.0)
+    assert len(plain.skills) == len(phantom.skills)
+    assert [_skill_motion_fingerprint(s) for s in plain.skills] == [
+        _skill_motion_fingerprint(s) for s in phantom.skills]
+    assert (plain.flight_s, plain.beat_s, plain.transit_s, plain.dwell_s,
+           plain.t0_abs_s, plain.pattern) == (
+        phantom.flight_s, phantom.beat_s, phantom.transit_s, phantom.dwell_s,
+        phantom.t0_abs_s, phantom.pattern)
+
+
 def test_schedule_due_returns_only_skills_whose_dispatch_has_passed(cols):
     schedule = sc.compile_columns(_pattern(cols, n_throws=3), t0_abs_s=10.0)
     first_dispatch = schedule.skills[0].dispatch_s()
@@ -1312,3 +1374,114 @@ def test_compile_reload_rejects_a_non_positive_n_throws(site):
     pattern = dataclasses.replace(pattern, n_throws=0)
     with pytest.raises(ValueError, match='n_throws'):
         sc.compile_reload(landing_mm, landing_vel, t_land_abs, pattern, t0)
+
+
+# ---------------------------------------------------------------------------
+# compile_reload_columns (B2 — `columns_1ball`'s reload start, 2026-10-04)
+# ---------------------------------------------------------------------------
+
+def _reload_columns_args(cols, t0=1000.0, throw_delay_s=3.0, n_throws=5):
+    a_site = cols[0]
+    landing_mm = a_site.catch_site_mm()
+    landing_vel = _bb_arrival_vel_mm_s()
+    t_land_abs = t0 + throw_delay_s
+    columns_pattern = _pattern(cols, n_throws=n_throws, phantom_balls=(1,))
+    return landing_mm, landing_vel, t_land_abs, columns_pattern, t0
+
+
+def test_compile_reload_columns_rejects_a_pattern_with_no_phantom_ball(cols):
+    landing_mm, landing_vel, t_land_abs, pattern, t0 = _reload_columns_args(cols)
+    plain = dataclasses.replace(pattern, phantom_balls=())
+    with pytest.raises(ValueError, match='phantom_balls'):
+        sc.compile_reload_columns(landing_mm, landing_vel, t_land_abs,
+                                  sc.FLOOR_LIFT_S, plain, t0)
+
+
+def test_compile_reload_columns_lead_in_matches_compile_reload(cols):
+    """The PRE-TILT REST / CATCH / DECAY REST prefix is byte-identical to
+    what `compile_reload` itself would build for ball A alone at the same
+    site — the whole reason this function reuses it rather than restating
+    the derivation."""
+    landing_mm, landing_vel, t_land_abs, pattern, t0 = _reload_columns_args(cols)
+    got = sc.compile_reload_columns(landing_mm, landing_vel, t_land_abs,
+                                    sc.FLOOR_LIFT_S, pattern, t0)
+    ref_one_ball = sc.OneBallPattern(sites=(pattern.sites[0],),
+                                     apex_m=pattern.apex_m,
+                                     dwell_s=pattern.dwell_s, n_throws=1,
+                                     floor_lift_s=sc.FLOOR_LIFT_S)
+    ref = sc.compile_reload(landing_mm, landing_vel, t_land_abs,
+                            ref_one_ball, t0)
+    assert [(s.kind, s.ball_id, s.t_abs_s, s.window_s, s.hold_tilt,
+            s.rest_tilt) for s in got.skills[:3]] == [
+        (s.kind, s.ball_id, s.t_abs_s, s.window_s, s.hold_tilt, s.rest_tilt)
+        for s in ref.skills[:3]]
+
+
+def test_compile_reload_columns_hands_off_into_columns_at_the_decay_rest(cols):
+    """What follows the lead-in is `compile_columns`'s own schedule, anchored
+    at the DECAY REST's end instant -- ball A's THROW 0 fires exactly there,
+    same as an ordinary launch from a level rest."""
+    landing_mm, landing_vel, t_land_abs, pattern, t0 = _reload_columns_args(cols)
+    got = sc.compile_reload_columns(landing_mm, landing_vel, t_land_abs,
+                                    sc.FLOOR_LIFT_S, pattern, t0)
+    decay_rest = got.skills[2]
+    assert decay_rest.kind == sc.REST
+    throw0 = got.skills[3]
+    assert throw0.kind == sc.THROW
+    assert throw0.ball_id == 0
+    # One launch window AFTER the decay end (2026-10-04): anchored AT the
+    # decay end, THROW 0's `launch_s` window fell inside the decay slew and
+    # the sim refused LIMIT_JERK on every seed (`compile_reload_columns`).
+    assert throw0.t_abs_s == pytest.approx(decay_rest.t_abs_s + throw0.window_s)
+    assert got.pattern == 'columns'
+    assert got.phantom_balls == (1,)
+
+
+def test_compile_reload_columns_dispatch_is_monotone_non_decreasing(cols):
+    landing_mm, landing_vel, t_land_abs, pattern, t0 = _reload_columns_args(
+        cols, n_throws=6)
+    got = sc.compile_reload_columns(landing_mm, landing_vel, t_land_abs,
+                                    sc.FLOOR_LIFT_S, pattern, t0)
+    disp = [s.dispatch_s() for s in got.skills]
+    assert all(disp[i] >= disp[i - 1] - 1e-9 for i in range(1, len(disp)))
+
+
+def test_compile_reload_columns_skill_count_is_lead_in_plus_columns_tail(cols):
+    landing_mm, landing_vel, t_land_abs, pattern, t0 = _reload_columns_args(
+        cols, n_throws=5)
+    got = sc.compile_reload_columns(landing_mm, landing_vel, t_land_abs,
+                                    sc.FLOOR_LIFT_S, pattern, t0)
+    tail = sc.compile_columns(pattern, t0_abs_s=got.skills[2].t_abs_s)
+    assert len(got.skills) == 3 + len(tail.skills)
+
+
+# ── `phantom_feed_prior`: the one-ball start mirrors the fed start (2026-10-04) ──
+
+def test_phantom_feed_prior_is_a_vertical_arrival_at_the_aim_site_one_transit_after_t0(cols):
+    """MEASURED 2026-10-04 (`sim/skills_gate.py --one-ball`, apex 0.95 / dwell
+    0.25 / sep 125): the phantom's first catch at the NOMINAL site refused
+    LIMIT_JERK on every seed while the fed start's aim-walked, level-pinned
+    first catch passed 5/5 -- so the one-ball start takes the fed start's
+    prior. A vertical arrival has no lateral velocity for the cup to match,
+    which is the easiest ball that catch can meet."""
+    p = _pattern(cols, phantom_balls=(1,))
+    aim = st.Site(cols[1].name, np.array([cols[1].cup_mm[0] + 10.0,
+                                          cols[1].cup_mm[1], cols[1].cup_mm[2]]))
+    t0 = 100.0
+    prior = sc.phantom_feed_prior(p, aim, t0)
+    assert prior.pos_mm == pytest.approx(aim.catch_site_mm())
+    assert prior.vel_mm_s[0] == pytest.approx(0.0, abs=1e-9)
+    assert prior.vel_mm_s[1] == pytest.approx(0.0, abs=1e-9)
+    assert prior.vel_mm_s[2] < -4000.0  # falling, at the pattern's flight speed
+    assert prior.t_land_abs_s == pytest.approx(
+        t0 + sc.transit_s(sc.flight_s(APEX_M), DWELL_S))
+    sched = sc.compile_columns(p, feed=prior)
+    first_catch = next(s for s in sched.skills if s.kind == sg.CATCH and s.ball_id == 1)
+    assert first_catch.landing_prior is prior
+    assert first_catch.receive_tilt == (0.0, 0.0)
+    assert first_catch.site.name == cols[1].name  # the SITE stays nominal
+
+
+def test_phantom_feed_prior_refuses_a_pattern_without_the_phantom(cols):
+    with pytest.raises(ValueError, match='phantom_balls'):
+        sc.phantom_feed_prior(_pattern(cols), cols[1], 0.0)

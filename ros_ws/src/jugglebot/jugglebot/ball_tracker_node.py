@@ -29,11 +29,17 @@ import jugglebot.hardware_config as hw
 from jugglebot.motion.skills import sites
 from jugglebot.tracking.matcher import BallTracker, parse_label_prefixes
 from jugglebot.tracking.ball import Ball
+from jugglebot.ball_possession import announced_source, require_identity_fields
 
 
 class BallTrackerNode(Node):
     def __init__(self):
         super().__init__('ball_tracker_node')
+        # Every published track carries its announcement's (source,
+        # throw_time) — the two-ball association key. An un-rebuilt
+        # jugglebot_interfaces would make `_ball_to_msg` raise on the first
+        # publish; refuse here, once, with the fix in the message.
+        require_identity_fields(BallState)
         # Detail lines (per-throw announcements, config dump) log at DEBUG; no
         # .debug( call here is per-frame.
         self.get_logger().set_level(LoggingSeverity.DEBUG)
@@ -158,7 +164,7 @@ class BallTrackerNode(Node):
             initial_position=initial_position,
             initial_velocity=initial_velocity,
             throw_time=throw_time,
-            source=msg.thrower_name or "ball_butler",
+            source=announced_source(msg.thrower_name),
             destination=destination,
             landing_position=landing_pos if landing_time_s > 0 else None,
             landing_velocity=landing_vel if landing_time_s > 0 else None,
@@ -268,6 +274,15 @@ class BallTrackerNode(Node):
         )
 
         msg.landing_from_fit = bool(ball.landing_from_fit)
+
+        # The announcement's own throw_time, verbatim: with ``source`` it is
+        # the identity key every consumer correlates a release on
+        # (`ball_possession.match_announced_track`). Zero (left default) for
+        # an un-announced (parabolic) track, which has no identity.
+        if ball.throw_time > 0:
+            msg.throw_time = Time()
+            msg.throw_time.sec = int(ball.throw_time)
+            msg.throw_time.nanosec = int((ball.throw_time % 1) * 1e9)
 
         # Convert absolute landing_time to ROS2 Time
         if ball.landing_time > 0:

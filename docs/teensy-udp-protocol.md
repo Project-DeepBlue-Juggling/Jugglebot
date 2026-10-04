@@ -129,6 +129,7 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `BB_FW_VERIFY` | 0x005E | Ball Butler FW-over-CAN: CRC-32 over the staged image (relay → CAN1 0x7D6 op 0x03) |
 | `BB_FW_COMMIT` | 0x005F | Ball Butler FW-over-CAN: apply the staged image + reboot (relay → CAN1 0x7D6 op 0x04) |
 | `BB_FW_INFO` | 0x0060 | Ball Butler FW-over-CAN: read the running FW_VERSION (relay → CAN1 0x7D6 op 0x05) |
+| `HAND_MOVE_TO` | 0x0061 | Hand-only TRAP_TRAJ move to a caller target (ACTIVATE's axis-6 ladder); deferred reply at arrival / timeout / supersede |
 
 ### RpcStatus
 
@@ -737,6 +738,29 @@ wraps the generated Python. `AXIS_ALL = 0xFF` broadcasts to all legs.
 | `value` | u32 | cached axis0.config.can.input_torque_scale (uint32) |
 | `reply_seq` | u32 | count of cached replies since boot |
 | `age_ms` | u32 | age of the cached reply in ms (0xFFFFFFFF = none) |
+
+### ArgHandMoveTo (`HAND_MOVE_TO`)
+
+**9 bytes**. Python struct fmt: `<Bff`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `axis` | u8 | must be 6 (the hand); anything else is ERR_BAD_ARGS |
+| `target_rev` | f32 | hand target (rev, Jugglebot convention), finite, [0, HAND_MOTOR_MAX_POSITION] |
+| `vel_rps` | f32 | TRAP_TRAJ cruise (rev/s), 0 < v <= GENTLE_MOVE_VEL_LIMIT_RPS |
+
+### ResultHandMoveTo (`HAND_MOVE_TO (result)`)
+
+**20 bytes**. Python struct fmt: `<BBBBfffI`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `outcome` | u8 | 0 ARRIVED / 1 SUPERSEDED / 2 TIMEOUT / 3 ABORTED |
+| `pad` | u8 | zero |
+| `pos_rev` | f32 | measured hand position at the reply (rev) |
+| `vel_rps` | f32 | measured hand velocity at the reply (rev/s) |
+| `target_rev` | f32 | the target this reply's request commanded (rev) |
+| `elapsed_ms` | u32 | ms from the request's acceptance to the reply |
 
 ### ArgBbThrow (`BB_THROW`)
 

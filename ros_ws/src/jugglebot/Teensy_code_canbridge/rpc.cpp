@@ -242,6 +242,20 @@ static bool take(const uint8_t* args, uint16_t arg_len, Arg& out) {
   return true;
 }
 
+// ── Deferred replies (HAND_MOVE_TO, FW 26) ───────────────────────────────────
+// A dispatch case that LATCHED a long op whose answer comes later returns this
+// sentinel instead of a wire status; on_request then sends nothing, and
+// rpc_service() sends the real RPC_RESPONSE when the op ends. 0xFFFF is no
+// RpcStatus (the wire statuses are 0x0000..0x0006), so it can never be mistaken
+// for one; it never leaves this file.
+static constexpr uint16_t RPC_DEFERRED = 0xFFFFu;
+static_assert(RPC_DEFERRED != JbUdp::RpcStatus::OK &&
+              RPC_DEFERRED != JbUdp::RpcStatus::ERR_UNKNOWN_METHOD,
+              "RPC_DEFERRED must not alias a wire RpcStatus");
+// req_id of the request being dispatched (net task only — on_request sets it), so
+// a deferring case can hand it to the op that will answer.
+static uint16_t s_cur_req_id = 0;
+
 static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
                          uint8_t* result, uint16_t& res_len) {
   res_len = 0;
@@ -409,6 +423,17 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
       ArgAxisOnly a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
       return activate_request(a.axis);
     }
+    case RpcMethod::HAND_MOVE_TO: {
+      // FW 26, ADDITIVE (an FW <= 25 board answers ERR_UNKNOWN_METHOD). ACTIVATE's
+      // axis-6 ladder with a caller target + cruise; every check (axis 6 only,
+      // finite in-stroke target, 0 < vel <= GENTLE_MOVE_VEL_LIMIT_RPS, ACTIVATE's
+      // gates) lives in hand_move_request, the one enforcement point. Refusals
+      // answer NOW; an accepted move is answered when it ENDS (rpc_service), with
+      // the measured hand position — the net task never waits on the move.
+      ArgHandMoveTo a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
+      const uint16_t st = hand_move_request(a.axis, a.target_rev, a.vel_rps, s_cur_req_id);
+      return (st == RpcStatus::OK) ? RPC_DEFERRED : st;
+    }
     case RpcMethod::DEACTIVATE: {
       // Fire-and-monitor TRAP_TRAJ controlled lower to the STOW pose,
       // then IDLE. Validate + latch a start, return immediately (the ODrive runs
@@ -559,7 +584,9 @@ static void on_request(uint16_t /*seq*/, const uint8_t* payload, uint16_t len) {
 
   uint8_t result[RESULT_BUF_CAP];
   uint16_t res_len = 0;
+  s_cur_req_id = req_id;
   const uint16_t status = dispatch(method, args, arg_len, result, res_len);
+  if (status == RPC_DEFERRED) return;   // answered later by rpc_service()
 
   uint8_t out[JbUdp::MAX_PAYLOAD];
   const uint16_t n = pack_response(method, req_id, status,
@@ -570,6 +597,21 @@ static void on_request(uint16_t /*seq*/, const uint8_t* payload, uint16_t len) {
 
 void rpc_server_init() {
   udp_on_rpc_request(on_request);
+}
+
+void rpc_service() {
+  // Drain the deferred HAND_MOVE_TO replies the activate task posted. Called from
+  // task_net (the 4 KB-stack task that already sends every other RPC_RESPONSE),
+  // so the activate task never touches the socket. Bounded: the mailbox holds at
+  // most HM_MAILBOX_CAP (4) replies.
+  HandMoveReply r;
+  while (hand_move_pop_reply(r)) {
+    uint8_t out[RESP_HEAD + sizeof(JbUdp::RpcArgs::ResultHandMoveTo)];
+    const uint16_t n = pack_response(JbUdp::RpcMethod::HAND_MOVE_TO, r.req_id, r.status,
+                                     reinterpret_cast<const uint8_t*>(&r.result),
+                                     sizeof(r.result), out, sizeof(out));
+    if (n) udp_send_rpc(JbUdp::MsgType::RPC_RESPONSE, out, n);
+  }
 }
 
 }  // namespace Rpc

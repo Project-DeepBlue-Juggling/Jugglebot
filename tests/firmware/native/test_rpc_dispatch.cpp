@@ -104,6 +104,22 @@ bool fault_mpc_active()            { return g_mpc_active; }
 uint16_t homing_request(uint8_t axis)     { g_homing_axis = axis; return g_homing_ret; }
 uint16_t activate_request(uint8_t axis)   { g_activate_axis = axis; return g_activate_ret; }
 uint16_t deactivate_request(uint8_t axis) { g_deactivate_axis = axis; return g_deactivate_ret; }
+// HAND_MOVE_TO (FW 26): record the decoded args + the req_id dispatch handed over,
+// and model the reply mailbox the activate task posts into (one slot is enough here).
+static uint8_t  g_hm_axis = 0xEE;
+static float    g_hm_target = -1.0f, g_hm_vel = -1.0f;
+static uint16_t g_hm_req_id = 0, g_hm_ret = JbUdp::RpcStatus::OK;
+static bool          g_hm_reply_ready = false;
+static HandMoveReply g_hm_reply;
+uint16_t hand_move_request(uint8_t axis, float target_rev, float vel_rps, uint16_t req_id) {
+  g_hm_axis = axis; g_hm_target = target_rev; g_hm_vel = vel_rps; g_hm_req_id = req_id;
+  return g_hm_ret;
+}
+bool hand_move_pop_reply(HandMoveReply& out) {
+  if (!g_hm_reply_ready) return false;
+  out = g_hm_reply; g_hm_reply_ready = false; return true;
+}
+uint32_t hand_move_reply_drops() { return 0; }
 
 // ── platform_relay.h ──
 namespace Relay {
@@ -152,7 +168,18 @@ uint16_t bb_version_fill_blob(uint8_t* out, uint16_t cap) {
 }
 
 // ── udp_link.h (link deps pulled in by rpc_server_init/on_request; never called) ──
-bool udp_send_rpc(uint8_t, const uint8_t*, uint16_t) { return true; }
+// Records the last RPC frame sent (on_request's immediate replies and
+// rpc_service's deferred ones both land here).
+static int      g_udp_sends = 0;
+static uint8_t  g_udp_last_type = 0;
+static uint8_t  g_udp_last[64];
+static uint16_t g_udp_last_len = 0;
+bool udp_send_rpc(uint8_t t, const uint8_t* p, uint16_t n) {
+  ++g_udp_sends; g_udp_last_type = t;
+  g_udp_last_len = (n <= sizeof(g_udp_last)) ? n : (uint16_t)sizeof(g_udp_last);
+  memcpy(g_udp_last, p, g_udp_last_len);
+  return true;
+}
 void udp_on_rpc_request(FrameHandler) {}
 
 }  // namespace CanBridge
@@ -629,4 +656,73 @@ TEST_CASE("GET_HAND_TORQUE_SCALE: an unanswered read re-triggers after 500 ms; a
   fake_set_commands_allowed(false);
   CHECK(hts_call().state == 4);
   CHECK(fake_sent_count() == 0);
+}
+
+// ── HAND_MOVE_TO (FW 26): routing + the deferred reply ─────────────────────────
+//  The validation itself is leg_activate's (test_leg_activate.cpp); here: the
+//  args reach hand_move_request intact with THIS request's req_id, an accepted
+//  move sends NOTHING now, a refusal answers now, and rpc_service sends the
+//  posted reply as an RPC_RESPONSE for HAND_MOVE_TO with the echoed req_id.
+static void send_request(uint16_t method, uint16_t req_id, const void* args, uint16_t n) {
+  uint8_t buf[64];
+  const uint16_t len = Rpc::pack_request(method, req_id, static_cast<const uint8_t*>(args), n,
+                                         buf, sizeof(buf));
+  REQUIRE(len > 0);
+  Rpc::on_request(0, buf, len);
+}
+
+TEST_CASE("HAND_MOVE_TO: args + req_id reach hand_move_request; an accepted move defers its reply") {
+  reset_all();
+  g_udp_sends = 0; g_hm_ret = RpcStatus::OK; g_hm_reply_ready = false;
+  JbUdp::RpcArgs::ArgHandMoveTo a{};
+  a.axis = HAND_AXIS; a.target_rev = 3.25f; a.vel_rps = 1.5f;
+  send_request(RpcMethod::HAND_MOVE_TO, 0x1234, &a, sizeof(a));
+  CHECK(g_hm_axis == HAND_AXIS);
+  CHECK(g_hm_target == doctest::Approx(3.25f));
+  CHECK(g_hm_vel == doctest::Approx(1.5f));
+  CHECK(g_hm_req_id == 0x1234);
+  CHECK(g_udp_sends == 0);          // deferred: no reply until the move ends
+
+  // The activate task posts the terminal reply; rpc_service sends it.
+  g_hm_reply.req_id = 0x1234; g_hm_reply.status = RpcStatus::OK;
+  memset(&g_hm_reply.result, 0, sizeof(g_hm_reply.result));
+  g_hm_reply.result.outcome = HAND_MOVE_ARRIVED; g_hm_reply.result.pos_rev = 3.249f;
+  g_hm_reply_ready = true;
+  Rpc::rpc_service();
+  REQUIRE(g_udp_sends == 1);
+  CHECK(g_udp_last_type == JbUdp::MsgType::RPC_RESPONSE);
+  uint16_t m = 0, id = 0, st = 0, rl = 0; const uint8_t* res = nullptr;
+  REQUIRE(Rpc::parse_response(g_udp_last, g_udp_last_len, &m, &id, &st, &res, &rl));
+  CHECK(m == RpcMethod::HAND_MOVE_TO);
+  CHECK(id == 0x1234);
+  CHECK(st == RpcStatus::OK);
+  REQUIRE(rl == sizeof(JbUdp::RpcArgs::ResultHandMoveTo));
+  JbUdp::RpcArgs::ResultHandMoveTo r; memcpy(&r, res, sizeof(r));
+  CHECK(r.outcome == HAND_MOVE_ARRIVED);
+  CHECK(r.pos_rev == doctest::Approx(3.249f));
+  Rpc::rpc_service();
+  CHECK(g_udp_sends == 1);          // drained: nothing more to send
+}
+
+TEST_CASE("HAND_MOVE_TO: a refusal answers immediately with the refusal status") {
+  reset_all();
+  g_udp_sends = 0; g_hm_ret = RpcStatus::ERR_BUS_DOWN; g_hm_reply_ready = false;
+  JbUdp::RpcArgs::ArgHandMoveTo a{};
+  a.axis = HAND_AXIS; a.target_rev = 1.0f; a.vel_rps = 2.5f;
+  send_request(RpcMethod::HAND_MOVE_TO, 7, &a, sizeof(a));
+  REQUIRE(g_udp_sends == 1);
+  uint16_t m = 0, id = 0, st = 0, rl = 0; const uint8_t* res = nullptr;
+  REQUIRE(Rpc::parse_response(g_udp_last, g_udp_last_len, &m, &id, &st, &res, &rl));
+  CHECK(id == 7);
+  CHECK(st == RpcStatus::ERR_BUS_DOWN);
+  g_hm_ret = RpcStatus::OK;
+}
+
+TEST_CASE("HAND_MOVE_TO: a short arg blob is ERR_BAD_ARGS and never reaches the op") {
+  reset_all();
+  g_hm_axis = 0xEE;
+  uint8_t oneb[1] = {HAND_AXIS};
+  uint8_t result[64]; uint16_t res_len = 0;
+  CHECK(Rpc::dispatch(RpcMethod::HAND_MOVE_TO, oneb, 1, result, res_len) == RpcStatus::ERR_BAD_ARGS);
+  CHECK(g_hm_axis == 0xEE);
 }

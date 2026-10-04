@@ -824,6 +824,118 @@ def test_a_restarted_node_reports_no_correction_although_the_teensy_flag_persist
     assert np.allclose(node_b._gravity_correction, np.eye(3))
 
 
+# ── level_trim_deg (A3, 2026-10-04) ────────────────────────────
+# A small, bounded operator trim added to the raw /gravity_offset reading at
+# the same point and in the same convention as the offset itself (same
+# contract-observability discipline as the block above: the arithmetic and
+# validation are tested in isolation in tests/motion/test_levelling.py; these
+# pin the NODE's wiring of it — parameter default, startup seeding, live
+# re-derivation off the stashed raw reading, and the "refused -> use 0, not
+# the old value" policy).
+
+def test_level_trim_defaults_to_zero_and_is_a_noop():
+    node = _node()
+    assert node._level_trim_deg == (0.0, 0.0)
+    assert node._gravity_offset == (0.0, 0.0)
+    assert np.array_equal(node._gravity_correction, np.eye(3))
+
+
+def test_level_trim_zero_leaves_the_gravity_offset_bit_identical():
+    """The acceptance bar from A3's spec: a trim of 0 must not perturb the
+    commanded attitude at all — checked bit-for-bit against a correction built
+    with no trim machinery in the loop whatsoever."""
+    node = _traj_mode_node()
+    node._on_gravity_offset(Float64MultiArray(data=[0.013592347421588673,
+                                                      0.001207157476773584]))
+    assert node._gravity_offset == (0.013592347421588673,
+                                     0.001207157476773584)
+    assert np.array_equal(
+        node._gravity_correction,
+        levelling.correction_from_offset(0.013592347421588673,
+                                          0.001207157476773584))
+
+
+def test_level_trim_launch_override_is_added_before_the_sign_flip(monkeypatch):
+    """A launch override ``level_trim_deg:=[0.3, -0.2]`` must land in the
+    EFFECTIVE offset the very first time a /gravity_offset arrives — same
+    convention as the raw reading, added before correction_from_offset's
+    negation (motion/levelling.offset_with_trim)."""
+    orig = TrajectoryNode.declare_parameter
+
+    def _declare(self, name, default_value):
+        if name == 'level_trim_deg':
+            default_value = [0.3, -0.2]
+        return orig(self, name, default_value)
+
+    monkeypatch.setattr(TrajectoryNode, 'declare_parameter', _declare)
+    node = _node()
+    assert node._level_trim_deg == (0.3, -0.2)
+    node._on_gravity_offset(Float64MultiArray(data=[0.01, -0.02]))
+    expected_x, expected_y = levelling.offset_with_trim(0.01, -0.02, 0.3, -0.2)
+    assert node._gravity_offset == (expected_x, expected_y)
+    assert np.array_equal(
+        node._gravity_correction,
+        levelling.correction_from_offset(expected_x, expected_y))
+
+
+def test_level_trim_set_live_reapplies_to_the_last_raw_reading():
+    """``ros2 param set /trajectory_node level_trim_deg [...]`` must take
+    effect immediately against whatever /gravity_offset last delivered —
+    /gravity_offset itself is a one-shot latched publish, so a trim set after
+    it cannot wait for a fresh message that may never come."""
+    from tests.ros.conftest import _MockParameter
+    node = _traj_mode_node()
+    node._on_gravity_offset(Float64MultiArray(data=[0.01, -0.02]))
+    assert node._gravity_offset == (0.01, -0.02)
+
+    res = node.set_parameters(
+        [_MockParameter([0.5, -0.5], name='level_trim_deg')])
+    assert res[0].successful
+    assert node._level_trim_deg == (0.5, -0.5)
+    expected_x, expected_y = levelling.offset_with_trim(0.01, -0.02, 0.5, -0.5)
+    assert node._gravity_offset == (expected_x, expected_y)
+    assert np.array_equal(
+        node._gravity_correction,
+        levelling.correction_from_offset(expected_x, expected_y))
+
+
+def test_level_trim_out_of_range_is_refused_and_uses_zero_not_the_old_value():
+    """Unlike ``pre_release_hold_s`` (REFUSED -> old value kept), an
+    out-of-range ``level_trim_deg`` is REFUSED -> (0.0, 0.0) is used — there is
+    no "last-good trim" to prefer over no trim. The rclpy-layer result still
+    reports success: the node always accepts the parameter SET, it is what it
+    DOES with the value that is gated."""
+    from tests.ros.conftest import _MockParameter
+    node = _traj_mode_node()
+    node._on_gravity_offset(Float64MultiArray(data=[0.01, -0.02]))
+
+    res = node.set_parameters(
+        [_MockParameter([0.5, -0.5], name='level_trim_deg')])
+    assert res[0].successful
+    assert node._level_trim_deg == (0.5, -0.5)
+
+    res = node.set_parameters(
+        [_MockParameter([2.0, 0.0], name='level_trim_deg')])   # past +/-1 deg
+    assert res[0].successful
+    assert node._level_trim_deg == (0.0, 0.0)
+    assert node._gravity_offset == (0.01, -0.02)                # raw, untrimmed
+    assert np.array_equal(
+        node._gravity_correction,
+        levelling.correction_from_offset(0.01, -0.02))
+
+
+def test_level_trim_set_live_does_not_disturb_pre_release_hold_s():
+    """The shared ``_on_set_parameters`` callback handles two unrelated
+    parameters; setting one must not touch the other's state."""
+    from tests.ros.conftest import _MockParameter
+    from jugglebot.motion import unified_cycle as uc
+    node = _node()
+    res = node.set_parameters(
+        [_MockParameter([0.4, 0.4], name='level_trim_deg')])
+    assert res[0].successful
+    assert node._segment_cfg.pre_release_hold_s == uc.PRE_RELEASE_HOLD_S
+
+
 # ── leg_torques_diagnostic (gravity FF observability) ─────────
 # trajectory_node republishes each emitted frame's torque_Nm on the SAME topic
 # (leg_torques_diagnostic, Float64MultiArray, 6 leg values, TRUE Nm, extension-

@@ -129,6 +129,8 @@ from udp_protocol import (  # noqa: E402, F401
     ArgRobotState,
     ResultAxisVersions,  # GET_AXIS_VERSIONS result blob
     ResultBbAxisVersions,  # GET_BB_AXIS_VERSIONS result blob (FW 20, additive)
+    ArgHandMoveTo,  # HAND_MOVE_TO args (FW 26, additive)
+    ResultHandMoveTo,  # HAND_MOVE_TO deferred-reply result blob (FW 26)
     ResultHandTorqueScale,  # GET_HAND_TORQUE_SCALE result blob (FW 22, additive)
     ArgPlatformFwBegin,  # PLATFORM_FW_BEGIN — Platform firmware-over-CAN (2026-09-09)
     ArgPlatformFwData,  # PLATFORM_FW_DATA

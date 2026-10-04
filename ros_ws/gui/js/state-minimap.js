@@ -1163,6 +1163,10 @@ const JUGGLE_PATTERNS = [
     { value: 'self_toss', label: 'Self-toss' },
     { value: 'hop', label: 'Hop' },
     { value: 'columns', label: 'Columns' },
+    // B2: columns motion flown with one real ball (a phantom at the other
+    // site) -- same apex_m/separation_mm/reload fields as Columns, no new
+    // GUI affordance needed (SkillNode._run_columns_1ball).
+    { value: 'columns_1ball', label: 'Columns (1 ball)' },
 ];
 let juggleBusy = false;
 let juggleStatusMsg = null;    // { text, cls } | null

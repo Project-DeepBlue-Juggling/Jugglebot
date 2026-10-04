@@ -160,6 +160,15 @@ def test_the_bump_history_records_what_this_version_carries():
     assert 'can_fault_leg' in history, history
     assert 'PROTOCOL_VERSION 8→9' in history or 'PROTOCOL_VERSION 8->9' in history, history
     assert 'DARKNESS' in history, history
+    # FW 26 — HAND_MOVE_TO.  From FW 24 the history continues on `// N→N+1:`
+    # lines BELOW the constant, so this clause reads the whole file.  The
+    # substance: a new hand-MOTION path exists (axis 6 only, ACTIVATE's gates),
+    # its reply is deferred, and the bump is wire-compatible (an FW 25 board
+    # answers ERR_UNKNOWN_METHOD — the recovery then has relief only).
+    m26 = re.search(r'^// 25→26:(.*)$', text, re.M)
+    assert m26 is not None, "FW 26 history line missing"
+    assert 'HAND_MOVE_TO' in m26.group(1) and 'DEFERRED' in m26.group(1), m26.group(1)
+    assert 'NO WIRE CHANGE' in m26.group(1) and 'ERR_UNKNOWN_METHOD' in m26.group(1), m26.group(1)
 
 
 def test_the_version_this_release_pins_is_actually_uplinked():

@@ -13,11 +13,17 @@
 //  via telemetry. Staying active through MONITOR is what makes HOME/ACTIVATE
 //  mutually exclusive for the WHOLE physical move (not just the ~10 ms fire) —
 //  the firmware, not host serialization, is the safety boundary.
+//
+//  HAND_MOVE_TO (FW 26) runs THIS ladder for axis 6 alone with a caller target and
+//  cruise (activate_target_rev / activate_traj_vel_rps read s_mode), answers its
+//  request through a reply mailbox the net task drains, and retargets in flight
+//  on a second request. See leg_activate.h for why each of those three exists.
 // =============================================================================
 #include "leg_activate.h"
 
 #include <Arduino.h>          // __get_PRIMASK / __disable_irq / __set_PRIMASK
-#include <cmath>              // fabsf
+#include <cmath>              // fabsf, std::isfinite
+#include <cstring>            // memset
 #include "canbridge_config.h"
 #include "protocol_config.h"  // ODriveState, ODriveControlMode, ODriveInputMode
 #include "hardware_config.h"  // JBOp::, ODriveDefaults::
@@ -59,13 +65,89 @@ static uint64_t s_t_start_us = 0;     // ladder start (overall timeout clock)
 static uint64_t s_t_phase_us = 0;     // current sub-phase entry (settle clock)
 static uint8_t  s_result[NUM_AXES] = { ACTIVATE_NONE };
 
+// ── HAND_MOVE_TO (FW 26) — the same ladder, a caller target (leg_activate.h) ──
+// s_mode says which op owns the ladder; it is written BEFORE s_phase leaves IDLE
+// (inside the same IRQ guard) so the net task never sees a running ladder with a
+// stale owner.
+enum class AMode : uint8_t { ACTIVATE, HAND_MOVE };
+static AMode s_mode = AMode::ACTIVATE;
+// net task → activate task: one latched start-or-retarget.
+static volatile bool     s_hm_req = false;
+static volatile float    s_hm_req_target = 0.0f;
+static volatile float    s_hm_req_vel = 0.0f;
+static volatile uint16_t s_hm_req_id = 0;
+static volatile uint64_t s_hm_req_t_us = 0;
+// activate-task-owned: the move in flight.
+static float    s_hm_target = 0.0f;
+static float    s_hm_vel = 0.0f;
+static uint16_t s_hm_id = 0;
+static uint64_t s_hm_t_accept_us = 0;
+// activate task → net task reply mailbox. At most two replies per activate_step
+// (a SUPERSEDED for the old request + a terminal one for the new), and the net
+// task drains at 1 kHz against task_homing's HOMING_RATE_HZ, so 4 never fills;
+// an overflow is counted (a lost reply is a host RpcTimeout, never a silent OK).
+static constexpr uint8_t HM_MAILBOX_CAP = 4;
+static HandMoveReply s_hm_box[HM_MAILBOX_CAP];
+static volatile uint8_t  s_hm_box_head = 0;    // next pop
+static volatile uint8_t  s_hm_box_count = 0;
+static volatile uint32_t s_hm_box_drops = 0;
+
 // ── Per-axis activate target (no second copy of any constant) ─────────────────
 // Legs: the IK of [0,0,default_active_z,0,0,0]. Hand: JBOp::HAND_ACTIVATE_POSITION_REV
 // (0.0 rev = the clip floor, one clean revolution-count above the homed hardstop
 // at HAND_ABS_POS_REV = -0.10). Both are codegen'd — never a literal here.
 static inline float activate_target_rev(uint8_t a) {
-  return (a == HAND_AXIS) ? JBOp::HAND_ACTIVATE_POSITION_REV
-                          : JBOp::ACTIVATE_POSITION_REVS[a];
+  if (a == HAND_AXIS)   // HAND_MOVE_TO: the caller's validated target, else the park
+    return (s_mode == AMode::HAND_MOVE) ? s_hm_target : JBOp::HAND_ACTIVATE_POSITION_REV;
+  return JBOp::ACTIVATE_POSITION_REVS[a];
+}
+// TRAP_TRAJ cruise: the caller's (validated <= GENTLE_MOVE_VEL_LIMIT_RPS) for a
+// HAND_MOVE_TO, the op's own gentle ceiling for ACTIVATE.
+static inline float activate_traj_vel_rps() {
+  return (s_mode == AMode::HAND_MOVE) ? s_hm_vel : JBOp::GENTLE_MOVE_VEL_LIMIT_RPS;
+}
+
+// Post one HAND_MOVE_TO reply for request `id` (activate-task context). The
+// measured hand state rides along so the caller learns where the hand IS.
+static void hm_post(uint16_t id, uint16_t status, uint8_t outcome, float target,
+                    uint64_t t_accept_us) {
+  HandMoveReply r;
+  r.req_id = id;
+  r.status = status;
+  memset(&r.result, 0, sizeof(r.result));
+  r.result.outcome    = outcome;
+  r.result.pos_rev    = axes[HAND_AXIS].pos_rev;
+  r.result.vel_rps    = axes[HAND_AXIS].vel_rps;
+  r.result.target_rev = target;
+  r.result.elapsed_ms = (uint32_t)((micros64() - t_accept_us) / 1000ull);
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
+  if (s_hm_box_count < HM_MAILBOX_CAP) {
+    s_hm_box[(uint8_t)((s_hm_box_head + s_hm_box_count) % HM_MAILBOX_CAP)] = r;
+    s_hm_box_count = (uint8_t)(s_hm_box_count + 1);
+  } else {
+    s_hm_box_drops = s_hm_box_drops + 1;
+  }
+  __set_PRIMASK(pm);
+}
+// Command every target's trajectory target (COMMAND, and a HAND_MOVE_TO retarget
+// in MONITOR — both through this ONE loop, so the hand's setpoint has one cold-start
+// wire path). Position-only target (vel_ff = tor_ff = 0). encode_leg_setpoint clips
+// to the axis's [0,max] (defence against a bad target) + applies leg_sign
+// (identity on axis 6). The ODrive TRAP_TRAJ planner trajectories from the
+// seeded current pos (or, on a retarget, from the current state) to here. It is
+// the SAME encoder the 500 Hz hand lane uses — no second hand codec.
+static void command_targets() {
+  for (uint8_t i = 0; i < NUM_AXES; ++i) {
+    if (!(s_targets & (uint8_t)(1u << i))) continue;
+    can_jugglebot_send(
+        ODrive::encode_leg_setpoint(i, activate_target_rev(i), 0.0f, 0.0f));
+  }
+}
+
+// Terminal reply for the move in flight (only when a HAND_MOVE_TO owns the ladder).
+static void hm_finish(uint16_t status, uint8_t outcome) {
+  if (s_mode != AMode::HAND_MOVE) return;
+  hm_post(s_hm_id, status, outcome, s_hm_target, s_hm_t_accept_us);
 }
 
 // ── Bus / fault gate (mirror leg_homing::homing_allowed). Never drive a
@@ -100,18 +182,28 @@ static uint8_t resolve_targets(uint8_t axis) {
 
 // Stop every targeted leg and record the outcome. Called on every abort path —
 // the legs are ALWAYS left in IDLE, never driving.
-static void abort_all(uint8_t result) {
+// A HAND_MOVE_TO in flight is answered here with `hm_status` / `hm_outcome`
+// (after the IDLE is queued, so the reply reports the action already taken).
+static void abort_all(uint8_t result,
+                      uint16_t hm_status = JbUdp::RpcStatus::ERR_REJECTED,
+                      uint8_t hm_outcome = HAND_MOVE_ABORTED) {
   for (uint8_t i = 0; i < NUM_AXES; ++i) {
     if (!(s_targets & (uint8_t)(1u << i))) continue;
     can_jugglebot_send(ODrive::encode_set_state(i, ODriveState::IDLE));
     s_result[i] = result;
   }
+  hm_finish(hm_status, hm_outcome);
   s_phase = APhase::IDLE;
   s_targets = 0;
 }
 
 void activate_init() {
   s_start_req = false;
+  s_hm_req = false;
+  s_mode = AMode::ACTIVATE;
+  s_hm_box_head = 0;
+  s_hm_box_count = 0;
+  s_hm_box_drops = 0;
   s_phase = APhase::IDLE;
   s_targets = 0;
   for (uint8_t i = 0; i < NUM_AXES; ++i) s_result[i] = ACTIVATE_NONE;
@@ -132,26 +224,137 @@ uint16_t activate_request(uint8_t axis) {
   // IRQ-guarded so (busy-check + latch) is atomic vs the activate task that
   // consumes s_start_req at the top of activate_step.
   const uint32_t pm = __get_PRIMASK(); __disable_irq();
-  const bool busy = (s_phase != APhase::IDLE) || s_start_req;
+  const bool busy = (s_phase != APhase::IDLE) || s_start_req || s_hm_req;
   if (!busy) { s_start_axis = axis; s_start_req = true; }
   __set_PRIMASK(pm);
   return busy ? RpcStatus::ERR_REJECTED : RpcStatus::OK;
 }
 
-bool activate_active() { return s_phase != APhase::IDLE || s_start_req; }
+bool activate_active() { return s_phase != APhase::IDLE || s_start_req || s_hm_req; }
+
+uint16_t hand_move_request(uint8_t axis, float target_rev, float vel_rps, uint16_t req_id) {
+  using namespace JbUdp;
+  // Args first — pure validation, independent of machine state. Axis 6 ONLY:
+  // there is no per-leg move RPC and this must not become one (a coupled
+  // platform moved one leg at a time tilts and binds). A bad target is REFUSED,
+  // never clipped into range: a caller asking for an out-of-stroke position has
+  // a bug that a silent clip would hide.
+  if (axis != HAND_AXIS) return RpcStatus::ERR_BAD_ARGS;
+  if (!std::isfinite(target_rev) || target_rev < 0.0f ||
+      target_rev > HAND_MOTOR_MAX_POSITION) return RpcStatus::ERR_BAD_ARGS;
+  if (!std::isfinite(vel_rps) || !(vel_rps > 0.0f) ||
+      vel_rps > JBOp::GENTLE_MOVE_VEL_LIMIT_RPS) return RpcStatus::ERR_BAD_ARGS;
+  if (!leg_present(HAND_AXIS)) return RpcStatus::ERR_BAD_ARGS;   // ACTIVATE parity (no present target)
+  // The SAME gates as activate_request, in the same order: no motion on a dead
+  // bus or under the latched E-STOP (ERR_BUS_DOWN), none beside another
+  // cold-start move, a deferred stow or the live stream (ERR_REJECTED).
+  if (!activate_allowed()) return RpcStatus::ERR_BUS_DOWN;
+  if (homing_active() || deactivate_active()) return RpcStatus::ERR_REJECTED;
+  if (fault_stow_pending()) return RpcStatus::ERR_REJECTED;
+  if (fault_mpc_active()) return RpcStatus::ERR_REJECTED;
+  // An errored hand is refused up front with no frame sent (ACTIVATE finds the
+  // same in SETUP and IDLEs the axis; the recovery clears errors first, so an
+  // error here is a caller sequencing bug worth a loud, motion-free answer).
+  if (axes[HAND_AXIS].active_errors != 0) return RpcStatus::ERR_REJECTED;
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
+  const bool busy = s_hm_req || s_start_req ||
+                    (s_phase != APhase::IDLE && s_mode != AMode::HAND_MOVE);
+  if (!busy) {
+    s_hm_req_target = target_rev;
+    s_hm_req_vel    = vel_rps;
+    s_hm_req_id     = req_id;
+    s_hm_req_t_us   = micros64();
+    s_hm_req        = true;
+  }
+  __set_PRIMASK(pm);
+  return busy ? RpcStatus::ERR_REJECTED : RpcStatus::OK;
+}
+
+bool hand_move_active() {
+  return s_hm_req || (s_phase != APhase::IDLE && s_mode == AMode::HAND_MOVE);
+}
+
+bool hand_move_pop_reply(HandMoveReply& out) {
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
+  const bool have = s_hm_box_count > 0;
+  if (have) {
+    out = s_hm_box[s_hm_box_head];
+    s_hm_box_head  = (uint8_t)((s_hm_box_head + 1) % HM_MAILBOX_CAP);
+    s_hm_box_count = (uint8_t)(s_hm_box_count - 1);
+  }
+  __set_PRIMASK(pm);
+  return have;
+}
+
+uint32_t hand_move_reply_drops() { return s_hm_box_drops; }
+
+// Consume a latched HAND_MOVE_TO (activate-task context): a START from IDLE, or a
+// RETARGET of the HAND_MOVE_TO in flight. Runs before the ACTIVATE consume so a
+// start owns the ladder this tick.
+static void hm_consume() {
+  const uint32_t pm = __get_PRIMASK(); __disable_irq();
+  const bool     req   = s_hm_req;
+  const float    tgt   = s_hm_req_target;
+  const float    vel   = s_hm_req_vel;
+  const uint16_t id    = s_hm_req_id;
+  const uint64_t t_acc = s_hm_req_t_us;
+  const bool     fresh = req && s_phase == APhase::IDLE;
+  s_hm_req = false;
+  if (fresh) { s_mode = AMode::HAND_MOVE; s_phase = APhase::SETUP; }  // owner before phase
+  __set_PRIMASK(pm);
+  if (!req) return;
+
+  if (fresh) {
+    s_hm_target = tgt; s_hm_vel = vel; s_hm_id = id; s_hm_t_accept_us = t_acc;
+    s_targets = resolve_targets(HAND_AXIS);
+    if (s_targets == 0) {   // hand vanished between request and consume
+      hm_post(id, JbUdp::RpcStatus::ERR_BAD_ARGS, HAND_MOVE_ABORTED, tgt, t_acc);
+      s_phase = APhase::IDLE;
+      return;
+    }
+    s_result[HAND_AXIS] = ACTIVATE_RUNNING;
+    s_setup_idx = 0;
+    s_t_start_us = micros64();
+    s_t_phase_us = s_t_start_us;
+    return;
+  }
+  if (s_mode != AMode::HAND_MOVE) {
+    // Unreachable (hand_move_request refuses while an ACTIVATE owns the ladder);
+    // never touch a running ACTIVATE — answer the request instead.
+    hm_post(id, JbUdp::RpcStatus::ERR_REJECTED, HAND_MOVE_ABORTED, tgt, t_acc);
+    return;
+  }
+  // RETARGET. Answer the superseded request first, then adopt the new one with a
+  // fresh timeout clock. If the hand is already configured, re-send the cruise;
+  // if the old target was already commanded, command the new one now — the
+  // ODrive TRAP_TRAJ planner replans from the current pos/vel (profiled, no step).
+  hm_post(s_hm_id, JbUdp::RpcStatus::OK, HAND_MOVE_SUPERSEDED, s_hm_target, s_hm_t_accept_us);
+  s_hm_target = tgt; s_hm_vel = vel; s_hm_id = id; s_hm_t_accept_us = t_acc;
+  s_t_start_us = micros64();
+  const bool configured = !(s_phase == APhase::SETUP && s_setup_idx <= HAND_AXIS);
+  if (configured &&
+      !can_jugglebot_send(ODrive::encode_set_traj_vel_limit(HAND_AXIS, s_hm_vel))) {
+    abort_all(ACTIVATE_FAILED, JbUdp::RpcStatus::ERR_TIMEOUT, HAND_MOVE_ABORTED);
+    return;
+  }
+  if (s_phase == APhase::MONITOR) command_targets();   // s_targets == the hand alone
+}
 
 uint8_t activate_result(uint8_t axis) {
   return (axis < NUM_AXES) ? s_result[axis] : (uint8_t)ACTIVATE_NONE;
 }
 
 void activate_step() {
+  // ── HAND_MOVE_TO start / retarget (net task → activate task). ──
+  hm_consume();
+
   // ── Consume a pending start request (net task → activate task). ──
   if (s_phase == APhase::IDLE) {
     const uint32_t pm = __get_PRIMASK(); __disable_irq();
     const bool    start = s_start_req;
     const uint8_t ax    = s_start_axis;
     s_start_req = false;
-    if (start) s_phase = APhase::SETUP;
+    if (start) { s_mode = AMode::ACTIVATE; s_phase = APhase::SETUP; }
     __set_PRIMASK(pm);
     if (!start) return;
     s_targets = resolve_targets(ax);
@@ -167,8 +370,12 @@ void activate_step() {
   const uint64_t now = micros64();
 
   // ── Aborts that apply in every active phase (checked before any drive). ──
-  if (!activate_allowed())               { abort_all(ACTIVATE_FAILED); return; }
-  if (now - s_t_start_us > A_TIMEOUT_US)  { abort_all(ACTIVATE_FAILED); return; }
+  if (!activate_allowed()) {
+    abort_all(ACTIVATE_FAILED, JbUdp::RpcStatus::ERR_BUS_DOWN, HAND_MOVE_ABORTED); return;
+  }
+  if (now - s_t_start_us > A_TIMEOUT_US) {
+    abort_all(ACTIVATE_FAILED, JbUdp::RpcStatus::ERR_TIMEOUT, HAND_MOVE_TIMEOUT); return;
+  }
 
   switch (s_phase) {
     case APhase::SETUP: {
@@ -209,7 +416,7 @@ void activate_step() {
       // a cold-start park must never inherit them. (There is no generated hand
       // trap-traj limit; if one is ever added this is its single consumer.)
       ok = can_jugglebot_send(
-               ODrive::encode_set_traj_vel_limit(i, JBOp::GENTLE_MOVE_VEL_LIMIT_RPS)) && ok;
+               ODrive::encode_set_traj_vel_limit(i, activate_traj_vel_rps())) && ok;
       ok = can_jugglebot_send(
                ODrive::encode_set_traj_acc_limits(
                    i, ODriveDefaults::TRAP_ACC_LIMIT_RPS2,
@@ -219,7 +426,7 @@ void activate_step() {
                    i, ODriveControlMode::POSITION, ODriveInputMode::TRAP_TRAJ)) && ok;
       ok = can_jugglebot_send(
                ODrive::encode_set_state(i, ODriveState::CLOSED_LOOP)) && ok;
-      if (!ok) { abort_all(ACTIVATE_FAILED); return; }
+      if (!ok) { abort_all(ACTIVATE_FAILED, JbUdp::RpcStatus::ERR_TIMEOUT, HAND_MOVE_ABORTED); return; }
       axes[i].controller_mode = (uint8_t)ODriveControlMode::POSITION;   // commanded-mode record
       axes[i].input_mode      = (uint8_t)ODriveInputMode::TRAP_TRAJ;    // (axis_state.h)
       ++s_setup_idx;   // next target leg on the next tick
@@ -227,16 +434,7 @@ void activate_step() {
     }
     case APhase::COMMAND: {
       if (now - s_t_phase_us < SETTLE_SETUP_US) break;  // let CLOSED_LOOP + mode/limits settle
-      for (uint8_t i = 0; i < NUM_AXES; ++i) {
-        if (!(s_targets & (uint8_t)(1u << i))) continue;
-        // Position-only target (vel_ff = tor_ff = 0). encode_leg_setpoint clips to
-        // the axis's [0,max] (defence against a bad target) + applies leg_sign
-        // (identity on axis 6). The ODrive TRAP_TRAJ planner trajectories from the
-        // seeded current pos to here. It is the SAME encoder the 500 Hz hand lane
-        // uses — one wire path per axis, no second hand codec.
-        can_jugglebot_send(
-            ODrive::encode_leg_setpoint(i, activate_target_rev(i), 0.0f, 0.0f));
-      }
+      command_targets();
       s_phase = APhase::MONITOR;  // stay active through the physical move
       break;
     }
@@ -272,12 +470,14 @@ void activate_step() {
           if (!can_jugglebot_send(ODrive::encode_set_controller_mode(
                   HAND_AXIS, ODriveControlMode::POSITION,
                   ODriveInputMode::PASSTHROUGH))) {
-            abort_all(ACTIVATE_FAILED); return;   // a hand left in TRAP_TRAJ is a
+            abort_all(ACTIVATE_FAILED, JbUdp::RpcStatus::ERR_TIMEOUT, HAND_MOVE_ABORTED);
+            return;                               // a hand left in TRAP_TRAJ is a
           }                                       // silently-inert lane — fail loudly
           axes[HAND_AXIS].input_mode = (uint8_t)ODriveInputMode::PASSTHROUGH;
         }
         for (uint8_t i = 0; i < NUM_AXES; ++i)
           if (s_targets & (uint8_t)(1u << i)) s_result[i] = ACTIVATE_OK;
+        hm_finish(JbUdp::RpcStatus::OK, HAND_MOVE_ARRIVED);   // HAND_MOVE_TO: arrived + handed off
         s_phase = APhase::IDLE;
         s_targets = 0;
       }

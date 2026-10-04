@@ -75,6 +75,9 @@ log/
 /rosinstall/
 *.mcap
 *.csv
+# Committed test fixtures decoded from bags (hand-jam event, 2026-10-04) are the
+# one CSV class that MUST ship: the test fails by name without them.
+!tests/motion/fixtures/*.csv
 **/metadata.yaml
 *.qtm
 experimenting/Juggling Analysis Tool/data/5_ball_juggling_cut_balls_only.tsv

@@ -1986,6 +1986,132 @@ def test_a_fitted_estimate_at_or_after_its_crossing_is_admitted_and_the_last_win
     assert experiences[0].y[0] == pytest.approx(0.004)      # the refined fit stood
 
 
+# ---------------------------------------------------------------------------
+# B2 (`columns_1ball`): a phantom ball produces motion and nothing else —
+# `Schedule.is_phantom`'s three enforcement points (2026-10-04)
+# ---------------------------------------------------------------------------
+
+def test_a_phantom_balls_release_registers_no_outcome_row(sites):
+    """`_register_outcome`'s guard: a phantom's THROW still installs (motion
+    happens) but writes no pending row, so no OUTCOME line and no learner
+    row ever follow it — the real ball's own row is unaffected."""
+    p1, p2 = sites
+    t1 = ROS_T0
+    t2 = ROS_T0 + 2.0
+    skills = (
+        Skill(kind=sg.THROW, ball_id=0, site=p1, t_abs_s=t1, window_s=LAUNCH_S,
+              y_d=(np.zeros(2), APEX_M), target=p1),
+        Skill(kind=sg.THROW, ball_id=1, site=p2, t_abs_s=t2, window_s=LAUNCH_S,
+              y_d=(np.zeros(2), APEX_M), target=p2),
+    )
+    sch = Schedule(pattern='columns', skills=skills, flight_s=FLIGHT_S,
+                  beat_s=FLIGHT_S, transit_s=FLIGHT_S, dwell_s=0.3,
+                  t0_abs_s=t1 - LAUNCH_S, phantom_balls=(1,))
+    inst = _FakeInstaller()
+    landings = {
+        0: _fit_landing(pos_mm=p1.catch_site_mm(), vel_mm_s=LAND_VEL,
+                       t_land_abs_s=t1 + FLIGHT_S + 0.01),
+        1: _fit_landing(pos_mm=p2.catch_site_mm(), vel_mm_s=LAND_VEL,
+                       t_land_abs_s=t2 + FLIGHT_S - 0.02),
+    }
+    experiences = []
+    x = ex.SkillExecutor(sch, inst, tracker=lambda b: landings.get(b),
+                         observer=lambda b, t: ex.CAUGHT_EVIDENCE,
+                         on_experience=experiences.append)
+    t = sch.skills[0].dispatch_s() - 0.01
+    t_end = t2 + FLIGHT_S + ex.CAUGHT_WINDOW_S + 1.0
+    while t < t_end:
+        x.tick(t)
+        t += 0.01
+    assert not x.attempt_ended
+    # Both throws installed (motion happened for both)...
+    throw_calls = [c for c in inst.calls if c[0] == sg.THROW]
+    assert [c[3] for c in throw_calls] == [0, 1]
+    # ...but only the REAL ball's release produced an experience row.
+    assert [e.ball_id for e in experiences] == [0]
+
+
+def test_a_phantom_balls_catch_never_reads_the_tracker_and_ignores_a_landing_it_offers(sites):
+    """`_tracked_landing`'s guard: even when a tracker fit is sitting right
+    there for the phantom's ball id, the catch is aimed at the schedule's
+    own synthesised vertical landing, never the tracker's -- open-loop on
+    the schedule, no re-aim (`schedule.Schedule.is_phantom`'s docstring)."""
+    p1, p2 = sites
+    t_land = ROS_T0 + FLIGHT_S
+    # A standalone CATCH with NO previous release in this schedule at all --
+    # the one case (columns' "ball already airborne before t0") that used to
+    # fall through to the tracker; for a phantom it now falls through to the
+    # schedule's own synthesised landing instead (`_predicted_landing`).
+    skills = (
+        Skill(kind=sg.CATCH, ball_id=1, site=p2, t_abs_s=t_land,
+              window_s=0.5),
+    )
+    sch = Schedule(pattern='columns', skills=skills, flight_s=FLIGHT_S,
+                  beat_s=FLIGHT_S, transit_s=0.5, dwell_s=0.3,
+                  t0_abs_s=ROS_T0, phantom_balls=(1,))
+    inst = _FakeInstaller()
+    # A tracker fit sitting at a DIFFERENT position than the schedule's own
+    # vertical landing -- if this were ever read, the catch would aim there.
+    decoy = _fit_landing(pos_mm=p2.catch_site_mm() + np.array([40.0, 0.0, 0.0]),
+                         vel_mm_s=LAND_VEL, t_land_abs_s=t_land)
+    x = ex.SkillExecutor(sch, inst, tracker=lambda b: decoy)
+    t = sch.skills[0].dispatch_s() - 0.01
+    while t < t_land + 1.0 and not x.done:
+        x.tick(t)
+        t += 0.01
+    assert not x.attempt_ended, x.end_message
+    catch_calls = [c for c in inst.calls if c[0] == sg.CATCH]
+    assert len(catch_calls) == 1
+    terminal = catch_calls[0][1]
+    assert np.allclose(terminal.landing_mm[:2], p2.catch_site_mm()[:2])
+    assert not np.allclose(terminal.landing_mm[:2], decoy.pos_mm[:2])
+
+
+def test_a_phantom_balls_predicted_landing_is_the_patterns_own_vertical_self_toss(sites):
+    """Direct unit check of the synthesised landing `_predicted_landing`
+    hands the phantom's first catch: the position is the site's own catch
+    point, and the arrival speed is exactly the no-drag vertical speed this
+    schedule's `flight_s` implies -- the same closed form a real self-toss
+    catch at this site would be aimed at."""
+    _p1, p2 = sites
+    t_land = ROS_T0 + FLIGHT_S
+    skills = (Skill(kind=sg.CATCH, ball_id=1, site=p2, t_abs_s=t_land,
+                    window_s=0.5),)
+    sch = Schedule(pattern='columns', skills=skills, flight_s=FLIGHT_S,
+                  beat_s=FLIGHT_S, transit_s=0.5, dwell_s=0.3,
+                  t0_abs_s=ROS_T0, phantom_balls=(1,))
+    x = ex.SkillExecutor(sch, _FakeInstaller())
+    landing = x._predicted_landing(0, sch.skills[0])
+    assert landing is not None
+    assert np.allclose(landing.pos_mm, p2.catch_site_mm())
+    assert landing.t_land_abs_s == pytest.approx(t_land)
+    # The SAME no-drag closed form `ballistics_bc` uses everywhere else in
+    # this module -- release and catch z differ by 30 mm
+    # (RELEASE_CUP_Z_MM vs CATCH_CUP_Z_MM), so the plain symmetric
+    # ``g*(t_f/2)`` estimate is not quite exact; this is what the real
+    # function actually computes, read back through the same closed form.
+    want_launch = ballistics_bc.launch_velocity(
+        p2.throw_site_mm(), p2.catch_site_mm(), FLIGHT_S)
+    want_vel = ballistics_bc.arrival_velocity(want_launch, FLIGHT_S)
+    assert np.allclose(landing.vel_mm_s, want_vel)
+
+
+def test_a_non_phantom_balls_first_catch_still_falls_back_to_the_tracker(sites):
+    """Unchanged control: WITHOUT `phantom_balls`, the identical schedule
+    shape (a standalone catch with no release of its own) still predicts
+    nothing and falls through to the tracker -- exactly the pre-B2
+    behaviour this unit must not disturb for a real ball."""
+    _p1, p2 = sites
+    t_land = ROS_T0 + FLIGHT_S
+    skills = (Skill(kind=sg.CATCH, ball_id=1, site=p2, t_abs_s=t_land,
+                    window_s=0.5),)
+    sch = Schedule(pattern='columns', skills=skills, flight_s=FLIGHT_S,
+                  beat_s=FLIGHT_S, transit_s=0.5, dwell_s=0.3,
+                  t0_abs_s=ROS_T0)
+    x = ex.SkillExecutor(sch, _FakeInstaller())
+    assert x._predicted_landing(0, sch.skills[0]) is None
+    assert sch.is_phantom(1) is False
+
 
 def test_a_blind_flight_produces_no_row(sites):
     p1, _p2 = sites
@@ -3738,11 +3864,16 @@ def test_an_observed_flight_outside_the_band_leaves_no_row(sites):
     near-unit multiple of the commanded one is not an observation of this
     throw, so the row is DROPPED with the reason named. A 2.23 s flight
     against a 0.857 s command — armB-090 row 1, 2026-09-16 — arrives 2.6x too
-    fast, i.e. at 6.8x the commanded apex."""
+    fast, i.e. at 6.8x the commanded apex.
+
+    Since 2026-10-04 a landing that far off in TIME is refused earlier, by the
+    association gate (`tracked_landing_refusal`); this estimate keeps the
+    band's own subject by landing ON the scheduled instant with the arrival
+    speed of that 2.23 s flight -- in time, physically not this throw."""
     p1, _p2 = sites
     t_sched = ROS_T0 + FLIGHT_S
     sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
-    wild = _land(p1, ROS_T0 + 2.2317)
+    wild = _land(p1, t_sched, t_release=t_sched - 2.2317)
     experiences = []
     lines = []
     x = ex.SkillExecutor(sch, _FakeInstaller(), tracker=lambda b: wild,
@@ -4951,3 +5082,127 @@ def test_plan_columns_first_cycle_needs_a_throw_and_a_feed_catch(sites):
     bad = dataclasses.replace(sch, skills=(only_catch,))
     with pytest.raises(ValueError):
         ex.plan_columns_first_cycle(bad, None)
+
+
+# ---------------------------------------------------------------------------
+# The two-ball association contract, executor half (2026-10-04)
+# ---------------------------------------------------------------------------
+#
+# INVARIANT: a tracker estimate is used for a release (catch aim, re-aim,
+# release evidence, OUTCOME row) only if it can be THAT release's flight;
+# otherwise the catch keeps the schedule. On 2026-10-02 the robot's
+# correlator handed each columns ball the OTHER ball's track (fixed upstream
+# in `ball_possession`, keyed on (source, throw_time)); these tests pin the
+# executor's physical cross-check against exactly that input.
+
+def test_the_identity_band_is_a_third_of_the_beat():
+    assert ex.tracked_landing_band_s(0.579) == pytest.approx(0.193)
+    # No 0.2 s ceiling on a one-ball beat (see the constant's comment).
+    assert ex.tracked_landing_band_s(1.157) == pytest.approx(1.157 / 3.0)
+    assert ex.tracked_landing_band_s(None) == ex.TRACKED_LANDING_TIME_BAND_S
+    assert ex.tracked_landing_band_s(0.0) == ex.TRACKED_LANDING_TIME_BAND_S
+
+
+def test_an_estimate_one_beat_early_is_refused_and_a_genuine_one_is_not():
+    beat = 0.579
+    band = ex.tracked_landing_band_s(beat)
+    sched_xy = np.array([-50.0, 0.0])
+    t_sched = 100.0
+    other = _fit_landing(pos_mm=np.array([50.0, 0.0, 830.0]),
+                         vel_mm_s=np.array([0.0, 0.0, -4200.0]),
+                         t_land_abs_s=t_sched - beat)
+    why = ex.tracked_landing_refusal(other, t_sched, sched_xy, band)
+    assert why is not None and '-0.579 s' in why
+    # The release lag's worst measured case (0.137 s) plus a 100 mm lateral
+    # bias is still this ball.
+    genuine = _fit_landing(pos_mm=np.array([50.0, 0.0, 830.0]),
+                           vel_mm_s=np.array([0.0, 0.0, -4200.0]),
+                           t_land_abs_s=t_sched + 0.137)
+    assert ex.tracked_landing_refusal(genuine, t_sched, sched_xy, band) is None
+    # The -830.8 mm feed-ball read (U1 § 6 defect 1) is refused on xy alone,
+    # time included.
+    garbage = _fit_landing(pos_mm=np.array([-880.8, 0.0, 830.0]),
+                           vel_mm_s=np.array([0.0, 0.0, -4200.0]),
+                           t_land_abs_s=t_sched)
+    why = ex.tracked_landing_refusal(garbage, t_sched, sched_xy, band)
+    assert why is not None and 'identity bound' in why
+
+
+def test_a_columns_catch_handed_the_other_balls_flight_keeps_the_schedule(
+        limits, geom):
+    """THE sitting-3 input, end to end: a real ``compile_columns`` schedule
+    through the real planner, with a tracker cross-wired exactly as HEAD's
+    correlator was -- each schedule ball is served the OTHER ball's converged
+    fit. Without the gate, the first catch aimed on it is planned a beat
+    early and the real install refuses (sitting 3: WINDOW_TOO_SHORT on every
+    fed-columns attempt); with it every catch keeps the schedule, the attempt
+    runs to the end, each refusal is named once per skill, and no OUTCOME row
+    is written from the wrong ball's flight."""
+    sites_ = si.columns_sites(SEPARATION_MM)
+    sched = sc.compile_columns(
+        sc.Pattern(sites=sites_, apex_m=0.9, dwell_s=0.30, n_throws=6), T0_ABS)
+    arrival = np.array([0.0, 0.0, -0.5 * 9806.0 * sched.flight_s])
+    landings = {}
+    for sk in sched.skills:
+        if sk.kind == sg.CATCH:
+            landings.setdefault(sk.ball_id, []).append(_fit_landing(
+                pos_mm=sk.site.catch_site_mm(), vel_mm_s=arrival.copy(),
+                t_land_abs_s=float(sk.t_abs_s)))
+    clock = {'t': T0_ABS - 1.0}
+
+    # Ball 1's FIRST catch is of a ball released before t0 (no prior, nothing
+    # in this schedule to gate against -- the feed catch carries a
+    # `landing_prior` on the robot): served honestly, so the crossed input
+    # starts at the first catch the schedule itself threw.
+    t_first_b = min(float(sk.t_abs_s) for sk in sched.skills
+                    if sk.kind == sg.CATCH and sk.ball_id == 1)
+
+    def crossed_tracker(ball_id):
+        own = int(ball_id) == 1 and clock['t'] < t_first_b + 0.05
+        for land in landings.get(int(ball_id) if own else 1 - int(ball_id), ()):
+            if land.t_land_abs_s > clock['t'] - 0.05:
+                return land
+        return None
+
+    state = {'record': None, 'catches': []}
+
+    def installer(kind, terminal, t_now_s, ball_id=0):
+        rec = state['record']
+        seed = (_rest_state(sites_[0].rest_site_mm()) if rec is None else None)
+        new_rec, res, _seg = ex.install_segment(
+            rec, seed, kind, terminal, t_now_s, limits=limits, geom=geom)
+        assert res.accepted, '%s: %s' % (res.code, res.message)
+        state['record'] = new_rec
+        if kind == sg.CATCH:
+            state['catches'].append((ball_id, float(terminal.t_land_s)))
+        return res
+
+    experiences = []
+    execu = ex.SkillExecutor(sched, installer, tracker=crossed_tracker,
+                             catch_aim_source=ex.AIM_TRACKER,
+                             observer=lambda b, t: ex.CAUGHT_EVIDENCE,
+                             on_experience=experiences.append)
+    t_end = max(sk.t_abs_s for sk in sched.skills) + 1.5
+    t = clock['t']
+    lines = []
+    while t < t_end and not execu.attempt_ended:
+        clock['t'] = t
+        lines.extend(execu.tick(t))
+        t += DT / 10.0
+
+    assert not execu.attempt_ended, execu.end_code
+    assert not any('WINDOW_TOO_SHORT' in ln for ln in lines)
+    # Every catch was installed on its OWN scheduled landing instant.
+    sched_land = sorted(float(sk.t_abs_s) for sk in sched.skills
+                        if sk.kind == sg.CATCH)
+    got = sorted(t_land for _b, t_land in state['catches'])
+    assert got and all(min(abs(g - s) for s in sched_land) < 1e-6 for g in got)
+    refused = [ln for ln in lines if 'TRACKER-IDENTITY-REFUSED skill' in ln]
+    assert refused
+    # Once per skill, not once per tick.
+    keys = [ln.split('TRACKER-IDENTITY-REFUSED skill ')[1].split()[0]
+            for ln in refused]
+    assert len(keys) == len(set(keys))
+    # The wrong ball's flight is never a row.
+    assert experiences == []
+    assert any('TRACKER-IDENTITY-REFUSED throw' in ln for ln in lines)

@@ -492,7 +492,14 @@ def test_wire_layout_frozen(gen):
     #   and CacheDiag 129→157 B (+hb_frames[7], the per-axis heartbeat census
     #   beside enc_frames). Both structs GROW, which is as incompatible as
     #   shrinking one.
-    _EXPECTED = "1201acee8ab2cc6181a561036a2b994dd0c192822be14c5b62e5ba12f8e54e99"
+    # Re-pinned for the ADDITIVE HAND_MOVE_TO RPC (2026-10-04, can-bridge FW 26):
+    # two new arg structs, ArgHandMoveTo (u8 axis + f32 target_rev + f32 vel_rps,
+    # 9 B) and ResultHandMoveTo (u8 outcome + u8 pad[3] + 3 x f32 + u32, 20 B),
+    # behind one new RpcMethod 0x0061. No existing message, arg or MsgType
+    # changed, so PROTOCOL_VERSION stays 9 and an FW 25 board answers 0x61 with
+    # ERR_UNKNOWN_METHOD. Previous digest:
+    #   1201acee8ab2cc6181a561036a2b994dd0c192822be14c5b62e5ba12f8e54e99
+    _EXPECTED = "1b70c6cfaf9bab68ae25c66753de991ac9a10c7a5528fe4a8c537732a1db92bc"
     assert digest == _EXPECTED, (
         "The UDP wire LAYOUT changed (a message/arg field layout, a framed MsgType "
         "value, or a framing constant). If INCOMPATIBLE, bump PROTOCOL_VERSION. Either "

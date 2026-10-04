@@ -18,6 +18,8 @@ session offset and a `[0.15, -0.08, 0]` target the two orders differ by
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 import pytest
 
@@ -241,3 +243,90 @@ def test_uncorrect_pose_is_the_transpose_not_the_negated_offset():
     negated = rotvec_to_rot_matrix(
         -rot_matrix_to_rotvec(correction))
     assert correction.T == pytest.approx(negated, abs=1e-12)
+
+
+# ── validate_trim_deg / offset_with_trim — the A3 operator trim ──
+# (2026-10-04, `level_trim_deg` — trajectory_node, backed by
+# tools/probes/level_vs_ballfit.py)
+
+
+def test_offset_with_trim_zero_is_bit_identical_to_no_trim():
+    """The whole point of a default-[0,0] lever: with no trim configured the
+    commanded attitude must be EXACTLY what it was before this lever existed,
+    not merely close. Checked as float equality, not ``pytest.approx``."""
+    for tilt_x, tilt_y in ((0.0, 0.0), (0.013592347421588673,
+                                        0.001207157476773584), (-0.05, 0.4)):
+        eff_x, eff_y = levelling.offset_with_trim(tilt_x, tilt_y, 0.0, 0.0)
+        assert eff_x == float(tilt_x)
+        assert eff_y == float(tilt_y)
+        # ...and the correction built from it is bit-identical too.
+        assert np.array_equal(
+            levelling.correction_from_offset(eff_x, eff_y),
+            levelling.correction_from_offset(tilt_x, tilt_y))
+
+
+def test_offset_with_trim_adds_in_the_offsets_own_convention():
+    """The trim is added BEFORE the sign flip, same convention as the raw
+    ``/gravity_offset`` reading — so a +y trim increases tilt_y the same way a
+    larger MEASURED tilt_y would, and the resulting correction counter-tilts
+    FURTHER in -y, not less."""
+    tilt_x, tilt_y = 0.01, -0.02
+    eff_x, eff_y = levelling.offset_with_trim(tilt_x, tilt_y, 1.0, -0.5)
+    assert eff_x == pytest.approx(tilt_x + math.radians(1.0), abs=1e-15)
+    assert eff_y == pytest.approx(tilt_y + math.radians(-0.5), abs=1e-15)
+    # Same single Rodrigues as correction_from_offset(eff_x, eff_y) directly —
+    # this is a strict pre-step, not a second transform.
+    assert np.array_equal(
+        levelling.correction_for_pose((eff_x, eff_y), None, (0, 0, 170, 0, 0, 0)),
+        levelling.correction_from_offset(eff_x, eff_y))
+
+
+@pytest.mark.parametrize('trim_x,trim_y', [(0.0, 0.0), (1.0, 1.0), (-1.0, -1.0),
+                                            (0.3, -0.07), (1.0, -1.0)])
+def test_validate_trim_deg_accepts_within_the_one_degree_bound(trim_x, trim_y):
+    ok, x, y, msg = levelling.validate_trim_deg([trim_x, trim_y])
+    assert ok is True
+    assert (x, y) == (trim_x, trim_y)
+    assert msg == ''
+
+
+@pytest.mark.parametrize('trim_deg', [
+    [1.0001, 0.0],            # just over the bound, x
+    [0.0, -1.5],              # well over the bound, y
+    [5.0, 5.0],               # a plausible fat-fingered whole-degree entry
+])
+def test_validate_trim_deg_refuses_past_the_one_degree_bound(trim_deg):
+    ok, x, y, msg = levelling.validate_trim_deg(trim_deg)
+    assert ok is False
+    assert (x, y) == (0.0, 0.0)
+    assert msg != ''
+
+
+@pytest.mark.parametrize('trim_deg', [
+    [0.5],                           # too few values
+    [0.5, 0.2, 0.1],                 # too many values
+    [float('nan'), 0.0],             # non-finite x
+    [0.0, float('inf')],             # non-finite y
+    ['not-a-number', 0.0],           # not castable to float
+])
+def test_validate_trim_deg_refuses_malformed_input(trim_deg):
+    ok, x, y, msg = levelling.validate_trim_deg(trim_deg)
+    assert ok is False
+    assert (x, y) == (0.0, 0.0)
+    assert msg != ''
+
+
+def test_validate_trim_deg_refuses_the_whole_pair_not_axis_by_axis():
+    """A bad y must not leave a good x half-applied: the refusal is a single
+    atomic (0, 0), never (x, 0) or (0, y)."""
+    ok, x, y, _ = levelling.validate_trim_deg([0.2, 5.0])
+    assert ok is False
+    assert (x, y) == (0.0, 0.0)
+
+
+def test_validate_trim_deg_respects_a_custom_bound():
+    ok, x, y, _ = levelling.validate_trim_deg([0.6, 0.6], max_deg=0.5)
+    assert ok is False
+    ok, x, y, _ = levelling.validate_trim_deg([0.4, 0.4], max_deg=0.5)
+    assert ok is True
+    assert (x, y) == (0.4, 0.4)

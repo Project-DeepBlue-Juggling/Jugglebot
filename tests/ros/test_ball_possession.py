@@ -2298,8 +2298,10 @@ def test_the_node_calls_the_extracted_latch():
     # The skill node reaches the rule through the per-release flight-latch
     # layer (2026-09-16) rather than calling `latch_announced_ball` directly;
     # the layer itself lives here and IS that call, so re-inlining either half
-    # still shows up as this assertion going red.
-    assert skill_node.advance_flight_latches is bp.advance_flight_latches
+    # still shows up as this assertion going red. Since 2026-10-04 that layer
+    # is `advance_correlation` (one claimed set across every schedule ball).
+    assert skill_node.advance_correlation is bp.advance_correlation
+    assert skill_node.announced_source is bp.announced_source
     assert skill_node.flight_in_progress is bp.flight_in_progress
     assert skill_node.FlightLatch is bp.FlightLatch
 

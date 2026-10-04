@@ -54,6 +54,7 @@
 // =============================================================================
 
 #include <cstdint>
+#include "udp_protocol.h"   // JbUdp::RpcArgs::ResultHandMoveTo
 
 namespace CanBridge {
 
@@ -82,5 +83,67 @@ void activate_step();
 
 bool    activate_active();             // an activate is pending or running
 uint8_t activate_result(uint8_t axis); // last ActivateResult for an axis (0..6, hand included)
+
+// ── HAND_MOVE_TO (FW 26, additive RPC 0x61) ──────────────────────────────────
+//  ACTIVATE's axis-6 ladder with a CALLER target and cruise: SETUP (error gate,
+//  seed input_pos at the measured position, traj vel = the caller's cruise, traj
+//  acc/dec, POSITION/TRAP_TRAJ, CLOSED_LOOP) -> 10 ms settle -> COMMAND
+//  encode_leg_setpoint(target) -> MONITOR until |pos-target| <= tol and
+//  |vel| <= tol -> the same POSITION/PASSTHROUGH hand-off ACTIVATE performs. It
+//  SHARES ACTIVATE's state machine, so it is mutually exclusive with ACTIVATE,
+//  HOME and DEACTIVATE by construction (activate_active() is true throughout,
+//  which also holds leg_interp's coldstart interlock) and inherits every abort:
+//  bus down / E-STOP / 10 s timeout -> the hand is commanded IDLE.
+//
+//  WHY it exists: the hand-jam recovery must raise a hand that is pinching a ball
+//  and later lower it, and nothing else can put the hand at a chosen position
+//  outside a streamed pattern (the relay allow-table carries no hand position op
+//  by design, ACTIVATE's target is the constant 0.0). It never touches the current
+//  limit: the caller sets that first with SET_VEL_CURR_LIMITS, so a recovery runs
+//  the whole move at its relief current.
+//
+//  WHY the reply is deferred (the net task never waits): the caller needs to know
+//  where the move ENDED, and the move takes seconds. hand_move_request() only
+//  validates + latches; the activate task posts exactly one reply per accepted
+//  request into a small mailbox on whichever terminal path the move takes, and
+//  the NET task drains it (Rpc::rpc_service) and sends the RPC_RESPONSE. The
+//  activate task never touches the socket: task_homing has a 1 KB stack sized
+//  for CAN sends, and lwIP's send path belongs on task_net's 4 KB one.
+//
+//  WHY a second request RETARGETS instead of being refused: the recovery's stall
+//  response (raise again while a lower is stalled on the ball) must not wait out
+//  the 10 s timeout, whose IDLE would drop the hand onto the ball it is meant to
+//  free. The ODrive TRAP_TRAJ planner replans from the current state, so a
+//  retarget is profiled, never a step. The superseded request is answered
+//  (status OK, outcome SUPERSEDED) and the timeout clock restarts for the new
+//  target. A request arriving while another is still latched (not yet consumed
+//  by the task, <= one task tick) is refused ERR_REJECTED so no request can go
+//  unanswered.
+enum HandMoveOutcome : uint8_t {
+  HAND_MOVE_ARRIVED    = 0,   // OK: at target, settled, handed off to PASSTHROUGH
+  HAND_MOVE_SUPERSEDED = 1,   // OK: a newer HAND_MOVE_TO retargeted this move
+  HAND_MOVE_TIMEOUT    = 2,   // ERR_TIMEOUT: 10 s elapsed, hand commanded IDLE
+  HAND_MOVE_ABORTED    = 3,   // ERR_BUS_DOWN / ERR_REJECTED / ERR_TIMEOUT (TX): hand IDLE
+};
+
+// One deferred HAND_MOVE_TO reply (req_id echoed from the request).
+struct HandMoveReply {
+  uint16_t req_id;
+  uint16_t status;                          // JbUdp::RpcStatus
+  JbUdp::RpcArgs::ResultHandMoveTo result;
+};
+// Net-task side of the mailbox: pop the oldest pending reply (false = none).
+bool     hand_move_pop_reply(HandMoveReply& out);
+uint32_t hand_move_reply_drops();         // mailbox overflows since boot (must stay 0)
+
+// RPC entry (net-task context). Returns OK when the request was LATCHED (the
+// activate task answers it later through the mailbox) or the refusal status (answer it now):
+//   ERR_BAD_ARGS  axis != HAND_AXIS, hand absent, target not finite or outside
+//                 [0, HAND_MOTOR_MAX_POSITION], vel not in (0, GENTLE_MOVE_VEL_LIMIT_RPS]
+//   ERR_BUS_DOWN  ACTIVATE's activate_allowed() gate (bus / CAN-down / E-STOP latch)
+//   ERR_REJECTED  HOME / DEACTIVATE / stow / MPC-stream active, an ACTIVATE pending
+//                 or running, another HAND_MOVE_TO still latched, hand active_errors
+uint16_t hand_move_request(uint8_t axis, float target_rev, float vel_rps, uint16_t req_id);
+bool     hand_move_active();          // a HAND_MOVE_TO is latched or running
 
 }  // namespace CanBridge

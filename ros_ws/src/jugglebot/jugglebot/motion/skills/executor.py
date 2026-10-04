@@ -421,6 +421,93 @@ STOP_AFTER_S = 0.6
 #: catch moved further than that is a different catch, not a refinement.
 EXTERNAL_LANDING_TIME_BAND_S = 0.15
 
+# ── The two-ball association contract, executor half (2026-10-04) ────────────
+#
+# INVARIANT: a tracker estimate is used for a release -- to aim or re-aim its
+# catch, as its release evidence, or as its OUTCOME row -- only if it can be
+# THAT release's flight; when the wanted ball has no valid estimate the catch
+# keeps the schedule. The identity itself is enforced upstream, exactly, by
+# the correlator (`ball_possession.advance_correlation`, keyed on the
+# announcement's (source, throw_time)); this is the PHYSICAL cross-check every
+# tracker read passes through, one rule (:func:`tracked_landing_refusal`) at
+# the executor's two read points (:meth:`SkillExecutor._valid_tracked_landing`
+# for a catch, :meth:`SkillExecutor._release_landing` for a release).
+#
+# Why a time band discriminates: on a two-ball pattern the OTHER ball lands
+# one beat (``Schedule.beat_s``, 0.579 s on columns) from this one, and on
+# 2026-10-02 every mis-associated estimate sat exactly there (skill 3 aimed at
+# A's landing: WINDOW_TOO_SHORT -0.228 s; the throw-2/3 OUTCOME rows "release
+# -556..-584 ms"). A genuine estimate sits within the release lag
+# (0.019-0.137 s) plus apex scatter (~0.02 s) of its schedule. So the band is
+# a third of the beat (:func:`tracked_landing_band_s`): under half the
+# spacing to the neighbouring landing, on any pattern -- 0.193 s on columns.
+#
+# NO 0.2 s ceiling on the identity band, deliberately: on columns a third of
+# the beat is already below it, and on a one-ball pattern (no neighbouring
+# ball) a ceiling would buy no identity discrimination while refusing a
+# GENUINE flight the plant mis-throws by more than 0.2 s -- the measured
+# 2026-09-16 plant flew 1.238x the commanded flight (+0.204 s at 0.857 s),
+# and that row is exactly what the learner exists to absorb
+# (`test_a_plant_throwing_25_percent_fast_is_still_IN_band`). The release
+# EVIDENCE keeps its own pre-existing :data:`RELEASE_FIT_TOL_S` cap on top:
+# that one is about a bounce's ballistic arc, not identity.
+
+#: The landing-time band (s) for a schedule that carries no beat (a REST-only
+#: or hand-built schedule): :data:`RELEASE_FIT_TOL_S`'s measured provenance
+#: (fitted touch-down minus scheduled +0.027..+0.066 s over 18 219 samples,
+#: 2026-09-29), clearing the worst measured release lag (0.137 s).
+TRACKED_LANDING_TIME_BAND_S = RELEASE_FIT_TOL_S
+
+#: Lateral identity bound (mm, per axis) on a tracker landing against the
+#: schedule's landing for the same release. Not the platform's lateral
+#: AUTHORITY (:attr:`SkillExecutor.lateral_authority_m`, 20 mm live), which
+#: decides how far a VALID estimate may move the catch: this decides whether
+#: the estimate is about this ball at all. Our own throws' lateral bias is
+#: +0.05..+0.12 m (:meth:`SkillExecutor._clamp_lateral_to_schedule`), Ball
+#: Butler's feed arrived 80 mm off its aim on 2026-10-02; an estimate further
+#: off than 200 mm is a different object (that day's -830.8 mm was the feed
+#: ball's post-catch Kalman read for our own launch) and is refused WHOLE --
+#: time included -- so the clamp never keeps the time of a position it would
+#: have had to throw away.
+TRACKED_LANDING_LATERAL_IDENTITY_MM = 200.0
+
+
+def tracked_landing_band_s(beat_s: Optional[float]) -> float:
+    """The landing-time band (s) for a schedule with release spacing
+    ``beat_s`` (``Schedule.beat_s``: release to release of ANY ball, 0.579 s
+    on columns): ``beat_s / 3``, which keeps the band under half the spacing
+    to the neighbouring ball's landing with margin. A missing or
+    non-positive beat falls back to :data:`TRACKED_LANDING_TIME_BAND_S`."""
+    if beat_s is None or not math.isfinite(float(beat_s)) or float(beat_s) <= 0.0:
+        return TRACKED_LANDING_TIME_BAND_S
+    return float(beat_s) / 3.0
+
+
+def tracked_landing_refusal(landing: 'Landing', t_land_scheduled_s: float,
+                            scheduled_xy_mm, band_s: float) -> Optional[str]:
+    """Why ``landing`` cannot be the flight whose scheduled landing is
+    ``(scheduled_xy_mm, t_land_scheduled_s)``, or ``None`` if it can. Pure.
+
+    THE rule of the association contract's executor half (comment block
+    above): refused when its landing instant is more than ``band_s`` from the
+    scheduled one, or (``scheduled_xy_mm`` given) its xy is more than
+    :data:`TRACKED_LANDING_LATERAL_IDENTITY_MM` off on either axis."""
+    kind = 'fitted' if bool(getattr(landing, 'from_fit', False)) else 'unfitted'
+    dt = float(landing.t_land_abs_s) - float(t_land_scheduled_s)
+    if not abs(dt) <= float(band_s):
+        return ('%s landing %+.3f s from the scheduled (band +-%.3f s)'
+                % (kind, dt, float(band_s)))
+    if scheduled_xy_mm is not None:
+        off = (np.asarray(landing.pos_mm, dtype=float)[:2]
+               - np.asarray(scheduled_xy_mm, dtype=float)[:2])
+        axis = int(np.argmax(np.abs(off)))
+        if not abs(float(off[axis])) <= TRACKED_LANDING_LATERAL_IDENTITY_MM:
+            return ('%s landing %+.1f mm in %s from the scheduled site '
+                    '(identity bound %.0f mm)'
+                    % (kind, float(off[axis]), 'xy'[axis],
+                       TRACKED_LANDING_LATERAL_IDENTITY_MM))
+    return None
+
 
 @dataclasses.dataclass(frozen=True)
 class Observations:
@@ -1379,6 +1466,10 @@ class SkillExecutor:
         #: OR the lateral clamp (:meth:`_clamp_lateral_to_schedule`, reason
         #: ``'AIM-LATERAL-CLAMPED'``) -- one shared once-per-(catch, reason) set.
         self._resend_notes = set()
+        #: Keys (``('catch', idx)`` / ``('throw', throw_no)``) whose
+        #: TRACKER-IDENTITY-REFUSED line is already out -- once per skill, so
+        #: a ~180 Hz stream of the wrong ball's estimate is one line, not 180.
+        self._identity_refused = set()
         #: ``catch idx -> the cup position that catch's CARRIED release was
         #: planned from`` (:meth:`_catch_terminal`, latest call wins -- a
         #: re-send re-derives it from the refined landing). Read by
@@ -1575,6 +1666,17 @@ class SkillExecutor:
         ``vel_mm_s`` and ``t_land_abs_s`` pass through untouched: a tracker
         fit may move the catch in TIME and in arrival VELOCITY, never
         laterally beyond the authority.
+
+        **The time this keeps is always a vetted one** (2026-10-04). Every
+        tracker landing reaching here came through :meth:`_tracked_landing`,
+        i.e. passed :meth:`_valid_tracked_landing`: inside the landing-time
+        band of THIS catch's schedule and inside
+        :data:`TRACKED_LANDING_LATERAL_IDENTITY_MM` of its site. An estimate
+        too far off to be this ball is refused WHOLE there and the catch
+        keeps the schedule; the clamp only ever clips a valid estimate's xy
+        to the platform's authority. Before this, a +101.9 mm estimate of
+        the OTHER columns ball was clipped here and its time (one beat
+        early) kept, and the install refused WINDOW_TOO_SHORT (2026-10-02).
 
         Why: the plant's lateral landing bias is real and constant-velocity
         (``y`` +0.05..+0.12 m, growing with apex), so a converged fit
@@ -1880,6 +1982,20 @@ class SkillExecutor:
         otherwise fall this catch straight to the tracker, which is the
         RIGHT fallback for a ball thrown before ``t0`` but the WRONG one here
         -- the announcement already says exactly where BB's ball is headed).
+
+        **B2's phantom ball (``schedule.is_phantom``):** the tracker never
+        runs for it (``_tracked_landing``'s own guard), so the "fall back to
+        the tracker" escape above is dead for it -- a phantom catch with no
+        release of its own in this schedule yet (the SAME "already airborne
+        before t0" first catch the paragraph above describes, just of a
+        ball that was never really thrown) would otherwise end the attempt
+        ``NO_LANDING`` on a track that can never arrive. It gets the ONE
+        landing a phantom can ever have: a plain self-toss at this site,
+        synthesised from the pattern's own flight time (every throw in a
+        columns schedule shares one apex -- ``self.schedule.flight_s``) --
+        the identical ``ballistics_bc`` closed form below, just with no
+        ``prev`` to read ``site``/``y_d``/``release_idx`` off, because this
+        ball was never really released.
         """
         if skill.landing_prior is not None:
             lp = skill.landing_prior
@@ -1887,6 +2003,14 @@ class SkillExecutor:
                           t_land_abs_s=lp.t_land_abs_s)
         prev = _previous_release(self.schedule, idx, skill.ball_id)
         if prev is None:
+            if self.schedule.is_phantom(skill.ball_id):
+                flight_s = float(self.schedule.flight_s)
+                pos_mm = skill.site.catch_site_mm()
+                launch_vel = ballistics_bc.launch_velocity(
+                    skill.site.throw_site_mm(), pos_mm, flight_s)
+                vel_mm_s = ballistics_bc.arrival_velocity(launch_vel, flight_s)
+                return Landing(pos_mm=pos_mm, vel_mm_s=vel_mm_s,
+                              t_land_abs_s=float(skill.t_abs_s))
             return None
         site, t_release_s, y_d, target, release_idx = prev
         pos_mm = self._commanded_target_mm(target, y_d)
@@ -1974,7 +2098,20 @@ class SkillExecutor:
         :meth:`_valid_tracked_landing`, or ``None``. The ONE place the
         tracker is called and its answer checked, shared by the aim
         (:meth:`_catch_aim`) and the re-aim (:meth:`_resend_live_catch`) so
-        the two can never disagree about what a usable landing is."""
+        the two can never disagree about what a usable landing is.
+
+        **B2's phantom ball never reaches the tracker at all** — the
+        enforcement point for "a phantom ball's catches are open-loop on
+        the schedule" (``schedule.Schedule.is_phantom``'s docstring): there
+        is no real ball for ``self.tracker`` to have latched onto, so
+        calling it risks aiming at whatever it happens to be tracking
+        instead. Returning ``None`` here sends both callers straight to
+        :meth:`_predicted_landing` (the schedule's own commanded landing) —
+        the fallback every catch already takes for a ball with no tracker
+        answer, not a new code path.
+        """
+        if self.schedule.is_phantom(skill.ball_id):
+            return None
         if self.tracker is None:
             return None
         return self._valid_tracked_landing(
@@ -2068,33 +2205,99 @@ class SkillExecutor:
     def _valid_tracked_landing(self, idx: int, skill: Skill,
                                landing: Optional[Landing]
                                ) -> Optional[Landing]:
-        """``landing`` if it is trustworthy for CATCH ``idx``, else ``None``.
+        """``landing`` if it can be THIS catch's ball, else ``None`` -- the
+        catch half of the two-ball association contract (module comment
+        above :func:`tracked_landing_refusal`), and the ONE gate the aim
+        (:meth:`_catch_aim`) and the re-aim (:meth:`_resend_live_catch`) both
+        read through (:meth:`_tracked_landing`). ``None`` means the catch
+        keeps the schedule.
 
-        A tracker landing is only valid for this catch if it lands AFTER this
-        ball's own previous release (:func:`_previous_release`): a tracker
-        whose estimator is not reset until the ball's next physical release
-        (the sim tracker; the robot's per-ball correlation resets the same
-        way) keeps returning the FROZEN landing of the flight that just
-        ended, so an un-gated re-use aims the next catch at a landing already
-        in the past. With no previous release in this schedule (columns' very
-        first catch) there is nothing to gate against: accept as before."""
+        1. It must land AFTER this ball's own previous release
+           (:func:`_previous_release`): a tracker whose estimator is not reset
+           until the ball's next physical release (the sim tracker) keeps
+           returning the FROZEN landing of the flight that just ended. Routine,
+           so refused silently.
+        2. It must pass :func:`tracked_landing_refusal` against the landing
+           the schedule predicts for this catch (:meth:`_predicted_landing`):
+           within :func:`tracked_landing_band_s` of its instant and
+           :data:`TRACKED_LANDING_LATERAL_IDENTITY_MM` of its xy. On
+           2026-10-02 skill 3 (B at P1) was handed A's converged fit, one beat
+           early and 100 mm over: the lateral clamp kept its TIME and the
+           install refused WINDOW_TOO_SHORT (-0.228 s) on every fed-columns
+           attempt. Refused once per catch with a ``TRACKER-IDENTITY-REFUSED``
+           line.
+
+        An externally announced ball (``skill.landing_prior``) is gated on the
+        announcement instead, the band also capped at
+        :data:`EXTERNAL_LANDING_TIME_BAND_S` (the announcement is that ball's
+        timing authority). With no previous release in this schedule and no
+        prior there is nothing to gate against: accept as before."""
         if landing is None:
             return None
+        band_s = tracked_landing_band_s(getattr(self.schedule, 'beat_s', None))
         if skill.landing_prior is not None:
-            # An externally announced ball: the announcement is the timing
-            # authority (:data:`EXTERNAL_LANDING_TIME_BAND_S`).
-            if (abs(float(landing.t_land_abs_s)
-                    - float(skill.landing_prior.t_land_abs_s))
-                    > EXTERNAL_LANDING_TIME_BAND_S):
+            band_s = min(EXTERNAL_LANDING_TIME_BAND_S, band_s)
+        else:
+            prev = _previous_release(self.schedule, idx, skill.ball_id)
+            if prev is None:
+                return landing
+            if float(landing.t_land_abs_s) <= prev[1]:
                 return None
+        predicted = self._predicted_landing(idx, skill)
+        refusal = tracked_landing_refusal(
+            landing, predicted.t_land_abs_s, predicted.pos_mm, band_s)
+        if refusal is None:
             return landing
-        prev = _previous_release(self.schedule, idx, skill.ball_id)
-        if prev is None:
-            return landing
-        t_release_s = prev[1]
-        if float(landing.t_land_abs_s) <= t_release_s:
-            return None
-        return landing
+        self._note_identity_refused(
+            ('catch', idx),
+            'TRACKER-IDENTITY-REFUSED skill %d (ball %d): %s -- not this '
+            'catch\'s ball; the catch keeps the schedule'
+            % (idx, skill.ball_id, refusal), self._pending_notes)
+        return None
+
+    def _note_identity_refused(self, key, line: str, sink: List[str]) -> None:
+        """Queue ``line`` on ``sink`` the first time ``key`` is refused."""
+        if key in self._identity_refused:
+            return
+        self._identity_refused.add(key)
+        sink.append(line)
+
+    def _release_landing(self, pend: '_PendingOutcome',
+                         landing: Optional[Landing], lines: List[str], *,
+                         band_cap_s: Optional[float] = None
+                         ) -> Tuple[Optional[Landing], Optional[str]]:
+        """The release half of the association contract: ``(landing, None)``
+        if ``landing`` can be ``pend``'s own flight, ``(None, reason)`` if not
+        (``reason`` ``None`` too for no landing, or the silently-refused
+        previous flight). The ONE gate :meth:`_advance_release_evidence` and
+        :meth:`_advance_outcomes` read the tracker through.
+
+        Same rule as the catch (:func:`tracked_landing_refusal`), against this
+        release's own scheduled landing: ``t_land_scheduled_s`` (release +
+        flight of the COMMANDED apex) and the commanded landing xy
+        (``target_xy_mm`` + the command's lateral offset). On 2026-10-02 the
+        throw-2/3 OUTCOME rows were the OTHER ball's flight -- one beat off
+        ("release -556..-584 ms"), 100 mm over -- and 33 such rows reached the
+        learner's memory. Logged once per throw. ``band_cap_s`` tightens the
+        band further for one caller (the release evidence's own
+        :data:`RELEASE_FIT_TOL_S`)."""
+        if landing is None or float(landing.t_land_abs_s) <= pend.t_release_s:
+            return None, None
+        sched_xy = (np.asarray(pend.target_xy_mm, dtype=float)[:2]
+                    + 1000.0 * np.asarray(pend.u, dtype=float)[:2])
+        band_s = tracked_landing_band_s(getattr(self.schedule, 'beat_s', None))
+        if band_cap_s is not None:
+            band_s = min(band_s, float(band_cap_s))
+        refusal = tracked_landing_refusal(
+            landing, pend.t_land_scheduled_s, sched_xy, band_s)
+        if refusal is None:
+            return landing, None
+        self._note_identity_refused(
+            ('throw', pend.throw_no),
+            'TRACKER-IDENTITY-REFUSED throw %d (ball %d): %s -- not this '
+            'release\'s flight; no evidence or row from it'
+            % (pend.throw_no, pend.ball_id, refusal), lines)
+        return None, refusal
 
     # ── the tick ──
 
@@ -2340,7 +2543,20 @@ class SkillExecutor:
         throw that actually flew, not the one first asked for. The two agree
         exactly whenever this catch was never re-sent, and a re-send after
         this registration is not chased — the row is written once.
+
+        **B2's phantom ball (``schedule.is_phantom``) registers nothing,
+        checked first and unconditionally** — the invariant ("a phantom
+        ball produces motion and nothing else",
+        :meth:`~jugglebot.motion.skills.schedule.Schedule.is_phantom`) holds
+        whether or not a learner is wired, so this guard must not depend on
+        :attr:`on_experience` being set. No pending row means
+        :meth:`_advance_release_evidence` never waits on evidence for this
+        release either — the two concerns (no OUTCOME/learner row, no
+        release-evidence requirement) share this one list, so skipping the
+        append here is the single enforcement point for both.
         """
+        if self.schedule.is_phantom(skill.ball_id):
+            return
         if self.on_experience is None:
             return
         if skill.kind == THROW:
@@ -2553,13 +2769,15 @@ class SkillExecutor:
                         and t_abs_s >= pend.t_release_s):
                     landing = self.tracker(pend.ball_id)
                     if (landing is not None
-                            and bool(getattr(landing, 'from_fit', False))
-                            and float(landing.t_land_abs_s)
-                            > pend.t_release_s
-                            and abs(float(landing.t_land_abs_s)
-                                    - pend.t_land_scheduled_s)
-                            <= RELEASE_FIT_TOL_S):
-                        pend.release_confirmed = True
+                            and bool(getattr(landing, 'from_fit', False))):
+                        # The association gate subsumes the old
+                        # RELEASE_FIT_TOL_S check: after release, inside
+                        # the landing-time band, inside the identity bound.
+                        landing, _refusal = self._release_landing(
+                            pend, landing, lines,
+                            band_cap_s=RELEASE_FIT_TOL_S)
+                        if landing is not None:
+                            pend.release_confirmed = True
             if (not pend.release_confirmed
                     and t_abs_s >= pend.t_release_s + RELEASE_GRACE_S):
                 survivor = self._survivor_catch(pend.ball_id)
@@ -2851,8 +3069,19 @@ class SkillExecutor:
         remaining = []
         for pend in self._pending_outcomes:
             if self.tracker is not None and t_abs_s >= pend.t_release_s:
-                self._consider_landing(pend, self.tracker(pend.ball_id),
-                                       t_abs_s)
+                landing = self.tracker(pend.ball_id)
+                if landing is not None and landing.from_fit:
+                    # Only a fit can become a row; an unfitted estimate is
+                    # left to `_consider_landing`, which names it as such.
+                    raw = landing
+                    landing, refusal = self._release_landing(
+                        pend, landing, lines)
+                    if refusal is not None:
+                        pend.rejected_apex_m = _observed_apex_m(raw)
+                        pend.rejected_reason = ('not this release\'s flight: '
+                                                + refusal)
+                        pend.n_rejected += 1
+                self._consider_landing(pend, landing, t_abs_s)
 
         # Read the cup BEFORE the finalise test, so the closing tick -- which
         # is inside the window by construction -- still counts. One read

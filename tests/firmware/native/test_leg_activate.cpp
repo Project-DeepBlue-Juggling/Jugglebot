@@ -25,6 +25,7 @@
 
 #include <cstdint>
 #include <cstring>
+#include <limits>
 
 #include "udp_protocol.h"
 #include "protocol_config.h"
@@ -401,4 +402,187 @@ TEST_CASE("an abort with the hand targeted leaves the HAND in IDLE too") {
     if (cs_sent_at(i).id == idle.id && memcmp(cs_sent_at(i).buf, idle.buf, 8) == 0)
       saw_hand_idle = true;
   CHECK(saw_hand_idle);
+}
+
+// ── HAND_MOVE_TO (FW 26): ACTIVATE's axis-6 ladder with a caller target ────────
+//  The contract (leg_activate.h): axis 6 only; finite target in
+//  [0, HAND_MOTOR_MAX_POSITION]; 0 < vel <= GENTLE_MOVE_VEL_LIMIT_RPS; ACTIVATE's
+//  gates; the caller's cruise on the traj vel limit; 10 s timeout -> IDLE +
+//  ERR_TIMEOUT; arrival -> the PASSTHROUGH hand-off + OK ARRIVED; exactly one
+//  deferred reply per accepted request; a second request retargets (SUPERSEDED).
+static int drain_replies(HandMoveReply* out, int cap) {
+  int n = 0; HandMoveReply r;
+  while (hand_move_pop_reply(r)) { if (n < cap) out[n] = r; ++n; }
+  return n;
+}
+static bool sent_frame(const ODrive::CanFrame& f) {
+  for (size_t i = 0; i < cs_sent_count(); ++i)
+    if (cs_sent_at(i).id == f.id && memcmp(cs_sent_at(i).buf, f.buf, 8) == 0) return true;
+  return false;
+}
+static constexpr float HM_V = 2.0f;
+
+TEST_CASE("hand_move_request refuses every out-of-contract argument (ERR_BAD_ARGS, nothing latched)") {
+  full_reset((uint8_t)(0x3F | HAND_BIT));
+  const float nan = std::numeric_limits<float>::quiet_NaN();
+  const float inf = std::numeric_limits<float>::infinity();
+  for (uint8_t leg = 0; leg < NUM_LEGS; ++leg)                         // legs refused
+    CHECK(hand_move_request(leg, 1.0f, HM_V, 1) == JbUdp::RpcStatus::ERR_BAD_ARGS);
+  CHECK(hand_move_request(JbUdp::RpcArgs::AXIS_ALL, 1.0f, HM_V, 1) == JbUdp::RpcStatus::ERR_BAD_ARGS);
+  CHECK(hand_move_request(HAND_AXIS, -0.001f, HM_V, 1) == JbUdp::RpcStatus::ERR_BAD_ARGS);
+  CHECK(hand_move_request(HAND_AXIS, HAND_MOTOR_MAX_POSITION + 0.001f, HM_V, 1) == JbUdp::RpcStatus::ERR_BAD_ARGS);
+  CHECK(hand_move_request(HAND_AXIS, nan, HM_V, 1) == JbUdp::RpcStatus::ERR_BAD_ARGS);
+  CHECK(hand_move_request(HAND_AXIS, inf, HM_V, 1) == JbUdp::RpcStatus::ERR_BAD_ARGS);
+  CHECK(hand_move_request(HAND_AXIS, 1.0f, 0.0f, 1) == JbUdp::RpcStatus::ERR_BAD_ARGS);
+  CHECK(hand_move_request(HAND_AXIS, 1.0f, -1.0f, 1) == JbUdp::RpcStatus::ERR_BAD_ARGS);
+  CHECK(hand_move_request(HAND_AXIS, 1.0f, nan, 1) == JbUdp::RpcStatus::ERR_BAD_ARGS);
+  CHECK(hand_move_request(HAND_AXIS, 1.0f, JBOp::GENTLE_MOVE_VEL_LIMIT_RPS + 0.01f, 1) == JbUdp::RpcStatus::ERR_BAD_ARGS);
+  CHECK_FALSE(hand_move_active());
+  CHECK_FALSE(activate_active());
+  // The closed bounds are admissible.
+  CHECK(hand_move_request(HAND_AXIS, 0.0f, JBOp::GENTLE_MOVE_VEL_LIMIT_RPS, 1) == JbUdp::RpcStatus::OK);
+  full_reset((uint8_t)(0x3F | HAND_BIT));
+  CHECK(hand_move_request(HAND_AXIS, HAND_MOTOR_MAX_POSITION, HM_V, 1) == JbUdp::RpcStatus::OK);
+  full_reset(0x3F);                                                     // hand absent
+  CHECK(hand_move_request(HAND_AXIS, 1.0f, HM_V, 1) == JbUdp::RpcStatus::ERR_BAD_ARGS);
+}
+
+TEST_CASE("hand_move_request carries ACTIVATE's gates: latch/bus -> ERR_BUS_DOWN, stream/siblings -> ERR_REJECTED") {
+  full_reset(HAND_BIT); cs_set_guard_estop(true);               // the latched E-STOP
+  CHECK(hand_move_request(HAND_AXIS, 1.0f, HM_V, 1) == JbUdp::RpcStatus::ERR_BUS_DOWN);
+  full_reset(HAND_BIT); cs_set_can_bus_down(true);
+  CHECK(hand_move_request(HAND_AXIS, 1.0f, HM_V, 1) == JbUdp::RpcStatus::ERR_BUS_DOWN);
+  full_reset(HAND_BIT); cs_set_jugglebot_health(JbUdp::BusHealth::BUS_OFF);
+  CHECK(hand_move_request(HAND_AXIS, 1.0f, HM_V, 1) == JbUdp::RpcStatus::ERR_BUS_DOWN);
+  full_reset(HAND_BIT); cs_set_mpc_active(true);                 // stream live
+  CHECK(hand_move_request(HAND_AXIS, 1.0f, HM_V, 1) == JbUdp::RpcStatus::ERR_REJECTED);
+  full_reset(HAND_BIT); g_sib_homing = true;
+  CHECK(hand_move_request(HAND_AXIS, 1.0f, HM_V, 1) == JbUdp::RpcStatus::ERR_REJECTED);
+  full_reset(HAND_BIT); g_sib_deactivate = true;
+  CHECK(hand_move_request(HAND_AXIS, 1.0f, HM_V, 1) == JbUdp::RpcStatus::ERR_REJECTED);
+  full_reset(HAND_BIT); cs_set_stow_pending(true);
+  CHECK(hand_move_request(HAND_AXIS, 1.0f, HM_V, 1) == JbUdp::RpcStatus::ERR_REJECTED);
+  full_reset(HAND_BIT); axes[HAND_AXIS].active_errors = 0x1;
+  CHECK(hand_move_request(HAND_AXIS, 1.0f, HM_V, 1) == JbUdp::RpcStatus::ERR_REJECTED);
+  CHECK(cs_sent_count() == 0);                                   // refusals send nothing
+  CHECK_FALSE(hand_move_active());
+  // ACTIVATE and HAND_MOVE_TO exclude each other both ways.
+  full_reset((uint8_t)(0x01 | HAND_BIT));
+  REQUIRE(activate_request(0) == JbUdp::RpcStatus::OK);
+  CHECK(hand_move_request(HAND_AXIS, 1.0f, HM_V, 1) == JbUdp::RpcStatus::ERR_REJECTED);
+  full_reset((uint8_t)(0x01 | HAND_BIT));
+  REQUIRE(hand_move_request(HAND_AXIS, 1.0f, HM_V, 1) == JbUdp::RpcStatus::OK);
+  CHECK(activate_request(0) == JbUdp::RpcStatus::ERR_REJECTED);
+  CHECK(activate_active());                    // holds HOME/DEACTIVATE + the coldstart interlock off
+  CHECK(hand_move_request(HAND_AXIS, 2.0f, HM_V, 2) == JbUdp::RpcStatus::ERR_REJECTED);  // one latch at a time
+}
+
+TEST_CASE("HAND_MOVE_TO runs the hand ladder with the caller's target + cruise and replies ARRIVED after the hand-off") {
+  full_reset((uint8_t)(0x3F | HAND_BIT));
+  axes[HAND_AXIS].pos_rev = 1.20f;             // stalled mid-stroke
+  REQUIRE(hand_move_request(HAND_AXIS, 2.20f, HM_V, 0x4242) == JbUdp::RpcStatus::OK);
+  activate_step();                             // consume + SETUP the hand (one axis)
+  // Only the hand is configured: seed at the MEASURED position, the caller's cruise.
+  REQUIRE(cs_sent_count() == 5);
+  for (size_t i = 0; i < cs_sent_count(); ++i)
+    CHECK((cs_sent_at(i).id >> 5) == HAND_AXIS);                // no leg frame, ever
+  CHECK(sent_frame(ODrive::encode_set_input_pos(HAND_AXIS, ODrive::leg_sign(HAND_AXIS, 1.20f), 0, 0)));
+  CHECK(sent_frame(ODrive::encode_set_traj_vel_limit(HAND_AXIS, HM_V)));
+  CHECK(sent_frame(ODrive::encode_set_controller_mode(HAND_AXIS, ODriveControlMode::POSITION, ODriveInputMode::TRAP_TRAJ)));
+  activate_step();                             // -> COMMAND
+  cs_advance(20000); cs_clear_sent();
+  activate_step();                             // COMMAND
+  REQUIRE(cs_sent_count() == 1);
+  CHECK(sent_frame(ODrive::encode_leg_setpoint(HAND_AXIS, 2.20f, 0.0f, 0.0f)));
+  HandMoveReply r[4];
+  CHECK(drain_replies(r, 4) == 0);             // not arrived: no reply yet
+  activate_step();                             // MONITOR, still at 1.20
+  CHECK(drain_replies(r, 4) == 0);
+  axes[HAND_AXIS].pos_rev = 2.205f; axes[HAND_AXIS].vel_rps = 0.02f;  // arrived + settled
+  cs_clear_sent();
+  activate_step();
+  CHECK(sent_frame(ODrive::encode_set_controller_mode(HAND_AXIS, ODriveControlMode::POSITION, ODriveInputMode::PASSTHROUGH)));
+  CHECK_FALSE(hand_move_active());
+  CHECK_FALSE(activate_active());
+  CHECK(activate_result(HAND_AXIS) == ACTIVATE_OK);
+  REQUIRE(drain_replies(r, 4) == 1);
+  CHECK(r[0].req_id == 0x4242);
+  CHECK(r[0].status == JbUdp::RpcStatus::OK);
+  CHECK(r[0].result.outcome == HAND_MOVE_ARRIVED);
+  CHECK(r[0].result.pos_rev == doctest::Approx(2.205f));
+  CHECK(r[0].result.target_rev == doctest::Approx(2.20f));
+  CHECK(r[0].result.elapsed_ms >= 20);
+}
+
+TEST_CASE("HAND_MOVE_TO never touches the current limit (no SET_VEL_CURR_LIMITS frame)") {
+  full_reset(HAND_BIT);
+  REQUIRE(hand_move_request(HAND_AXIS, 1.0f, HM_V, 1) == JbUdp::RpcStatus::OK);
+  run_to_monitor(1);
+  axes[HAND_AXIS].pos_rev = 1.0f;
+  activate_step();
+  const uint32_t limits_id = ODrive::encode_set_vel_curr_limits(HAND_AXIS, 1.0f, 1.0f).id;
+  for (size_t i = 0; i < cs_sent_count(); ++i) CHECK(cs_sent_at(i).id != limits_id);
+}
+
+TEST_CASE("HAND_MOVE_TO times out after GENTLE_MOVE_TIMEOUT_S: hand IDLE + ERR_TIMEOUT, exactly one reply") {
+  full_reset(HAND_BIT);
+  REQUIRE(hand_move_request(HAND_AXIS, 3.0f, HM_V, 9) == JbUdp::RpcStatus::OK);
+  run_to_monitor(1);                           // never arrives (pos stays 0)
+  cs_clear_sent();
+  cs_advance((uint64_t)(JBOp::GENTLE_MOVE_TIMEOUT_S * 1.0e6f) + 1000);
+  activate_step();
+  CHECK(sent_frame(ODrive::encode_set_state(HAND_AXIS, ODriveState::IDLE)));
+  CHECK_FALSE(hand_move_active());
+  CHECK(activate_result(HAND_AXIS) == ACTIVATE_FAILED);
+  HandMoveReply r[4];
+  REQUIRE(drain_replies(r, 4) == 1);
+  CHECK(r[0].req_id == 9);
+  CHECK(r[0].status == JbUdp::RpcStatus::ERR_TIMEOUT);
+  CHECK(r[0].result.outcome == HAND_MOVE_TIMEOUT);
+  activate_step();
+  CHECK(drain_replies(r, 4) == 0);
+}
+
+TEST_CASE("HAND_MOVE_TO aborts to IDLE with ERR_BUS_DOWN when the guard latches mid-move") {
+  full_reset(HAND_BIT);
+  REQUIRE(hand_move_request(HAND_AXIS, 3.0f, HM_V, 5) == JbUdp::RpcStatus::OK);
+  run_to_monitor(1);
+  cs_set_guard_estop(true); cs_clear_sent();
+  activate_step();
+  CHECK(sent_frame(ODrive::encode_set_state(HAND_AXIS, ODriveState::IDLE)));
+  HandMoveReply r[4];
+  REQUIRE(drain_replies(r, 4) == 1);
+  CHECK(r[0].status == JbUdp::RpcStatus::ERR_BUS_DOWN);
+  CHECK(r[0].result.outcome == HAND_MOVE_ABORTED);
+}
+
+TEST_CASE("a second HAND_MOVE_TO retargets in flight: old answered SUPERSEDED, new cruise + target sent, fresh timeout") {
+  full_reset(HAND_BIT);
+  axes[HAND_AXIS].pos_rev = 2.0f;
+  REQUIRE(hand_move_request(HAND_AXIS, 0.0f, HM_V, 100) == JbUdp::RpcStatus::OK);   // lower
+  run_to_monitor(1);
+  cs_advance((uint64_t)(JBOp::GENTLE_MOVE_TIMEOUT_S * 1.0e6f) - 500000);  // stalled, near timeout
+  activate_step();
+  REQUIRE(hand_move_request(HAND_AXIS, 4.5f, 1.0f, 101) == JbUdp::RpcStatus::OK);     // raise again
+  cs_clear_sent();
+  activate_step();
+  CHECK(sent_frame(ODrive::encode_set_traj_vel_limit(HAND_AXIS, 1.0f)));
+  CHECK(sent_frame(ODrive::encode_leg_setpoint(HAND_AXIS, 4.5f, 0.0f, 0.0f)));
+  CHECK_FALSE(sent_frame(ODrive::encode_set_state(HAND_AXIS, ODriveState::IDLE)));
+  HandMoveReply r[4];
+  REQUIRE(drain_replies(r, 4) == 1);
+  CHECK(r[0].req_id == 100);
+  CHECK(r[0].status == JbUdp::RpcStatus::OK);
+  CHECK(r[0].result.outcome == HAND_MOVE_SUPERSEDED);
+  CHECK(r[0].result.target_rev == doctest::Approx(0.0f));
+  // The old deadline passes without an IDLE: the retarget restarted the clock.
+  cs_advance(1000000); cs_clear_sent();
+  activate_step();
+  CHECK(hand_move_active());
+  CHECK_FALSE(sent_frame(ODrive::encode_set_state(HAND_AXIS, ODriveState::IDLE)));
+  axes[HAND_AXIS].pos_rev = 4.5f; axes[HAND_AXIS].vel_rps = 0.0f;
+  activate_step();
+  REQUIRE(drain_replies(r, 4) == 1);
+  CHECK(r[0].req_id == 101);
+  CHECK(r[0].result.outcome == HAND_MOVE_ARRIVED);
 }

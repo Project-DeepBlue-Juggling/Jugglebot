@@ -1,0 +1,786 @@
+"""Hand-jam detector and recovery step machine (pure Python, no ROS).
+
+THE INVARIANT
+    **A stalled hand at the clamp under a descending command is relieved
+    before anything else and never pushed through.**
+
+Why this exists (2026-10-02, bag ``2026-10-02_18-11-14``): a ball caught
+between the descending cup and the funnel ring stalled the hand at 2.87 rev
+while the streamed REST command kept descending. The hand ODrive's position
+loop plus integrator sat at the 50 A clamp (~57 N on the ball, ~150 W of
+copper loss) for 2.05 s from contact. The guard's MAX_DEVIATION latch caught
+it by 0.027 rev, and the latch did not relieve it: output-off froze the last
+lead-clamped ``input_pos`` and the ODrive kept pushing. It ended only because
+the ball gave way and was forced through. A ball that stopped the hand
+0.9 mm lower would never have latched at all, so ``MAX_DEVIATION_HAND_REV``
+is not a jam detector. This module is the jam detector, plus the choreography
+that gets the hand off the ball without pushing it through.
+
+Split of responsibility (one enforcement point each):
+    * ``JamDetector.step`` is the ONLY place a jam is recognised (P1-P6 and
+      the sustain, below). It is fed from the bridge's telemetry RX path,
+      never from the ROS executor (``_park_hand`` blocks executor threads for
+      seconds; a detector parked behind it is no detector).
+    * ``JamRecovery`` is the ONLY place the recovery ORDER is decided. It
+      emits intents (relief, converge-clear, disarm, move, restore) and
+      consumes telemetry; it executes nothing. Its ordering rules are the
+      invariant made concrete:
+        1. relief (SET_VEL_CURR_LIMITS to ``relief_curr_a``) is the FIRST
+           actuator-affecting intent, before any CLEAR_ERRORS or motion;
+        2. no move is emitted until the relief AND the disarm have been
+           acknowledged (the firmware refuses a single-axis op under an armed
+           stream, and an unconfirmed disarm races it);
+        3. every move after a stall is UP (away from the ring) until the
+           hand has dwelt above the stall, and the downward move is watched
+           by a stall monitor that answers a re-pinch with another raise,
+           never a harder push;
+        4. the shipped current limit is restored LAST, only after the hand
+           has arrived at the park, and never on an UNRECOVERED path.
+
+The predicate (all of them, sustained >= ``sustain_s``):
+    P1 the lane was descending: ``vel_ff_cmd < -descend_vel_rps`` at some
+       sample in the last ``descend_window_s``, or ``pos_cmd`` has dropped by
+       more than ``descend_drop_rev`` from its maximum over that window;
+    P2 the hand is stalled: ``|vel_meas| < stall_vel_rps``;
+    P3 the command is below the hand: ``pos_cmd - pos_meas < -lag_rev``;
+    P4 the current is at the clamp: ``|iq_meas| >= iq_frac x curr_limit_a``
+       (the SHIPPED limit, so the relieved hand does not re-trigger);
+    P5 ``pos_meas`` is inside ``band_rev`` (where a ring pinch is possible);
+    P6 axis 6 is CLOSED_LOOP with ``active_errors == 0`` and its diagnostic
+       is younger than ``max_age_s``.
+    P1-P4 + P6 without P5 is a ``HAND_STALL``: relief only, no automatic
+    motion (out of the band there is no ring to raise away from).
+
+Failure modes the design enumerates, and what answers each:
+    * Ball pinched in the band (the 2026-10-02 event)        -> HAND_JAM: relief, clear,
+      disarm, raise R1, dwell, lower with the stall monitor, restore.
+    * Silent stall below the latch threshold (no guard latch) -> fires all the same:
+      the predicate does not consult the latch.
+    * Normal descent or catch (lag <= 0.2 rev, moving)        -> P2, P3.
+    * Settling at rest or park (still, small current)         -> P4, P5.
+    * Top stop at 10.7 rev (stalled at the clamp, ascending)  -> P1, P3, P5.
+    * String/spool snag or carriage bind (identical while descending) -> fires; the
+      RAISE tracking check discriminates (a ball pinch is one-sided, the hand rises
+      freely): no ``raise_track_tol_rev`` of rise within ``raise_track_window_s`` ->
+      retarget the move to hold at the measured position, UNRECOVERED.
+    * Encoder freeze or slip                                  -> P6 (ODrive errors /
+      stale diagnostic); a frozen encoder under a raise also fails the tracking check,
+      and the relief current bounds any runaway.
+    * Hand ODrive fault (current 0 or IDLE)                   -> P4, P6.
+    * Undervoltage (lag without the clamp)                    -> P4, P6.
+    * A ball landing on the cup (stall < 100 ms)              -> the sustain.
+    * Operator's fingers in the funnel                        -> not excluded; the same
+      reaction is the right one (relief, raise; a re-pinch on the lower is <= 14 N).
+    * Ball still pinched on the lower                         -> attempt 2 raises R2
+      (> the ball's diameter); a second stall raises R2 again and STAYS raised
+      (UNRECOVERED): never push a ball through, never IDLE a raised hand onto it.
+    * Firmware without HAND_MOVE_TO (ERR_UNKNOWN_METHOD)      -> relief-only,
+      UNRECOVERED 'firmware has no HAND_MOVE_TO'; the relief stays applied.
+    * Relief, clear, disarm or restore not acknowledged; hand telemetry lost or
+      stale mid-move; an exception in the executor              -> UNRECOVERED with the
+      current left at the relief value; the bridge keeps RECOVERING held until the
+      operator's ``/recover`` (which resumes at the lower, step 5).
+"""
+from __future__ import annotations
+
+import enum
+import math
+from collections import deque
+from dataclasses import dataclass, fields
+from typing import Deque, List, Optional, Sequence, Tuple
+
+#: ODrive AxisState.CLOSED_LOOP_CONTROL.
+AXIS_STATE_CLOSED_LOOP = 8
+
+#: The carriage's gravity hold is <= 3.6 A (design §4 step 1); a relief below
+#: this would let the hand sag onto the ball, so the floor is a little above.
+RELIEF_CURR_MIN_A = 4.0
+#: A "relief" above ~20 A is no longer relief (>= 23 N on the ball).
+RELIEF_CURR_MAX_A = 20.0
+
+#: Status strings the executor reports for a move that cannot run at all.
+STATUS_UNKNOWN_METHOD = 'ERR_UNKNOWN_METHOD'
+STATUS_NO_CLIENT_METHOD = 'NO_CLIENT_METHOD'
+
+
+def _finite(*xs: float) -> bool:
+    return all(isinstance(x, (int, float)) and math.isfinite(x) for x in xs)
+
+
+@dataclass(frozen=True)
+class JamConfig:
+    """Detector + recovery parameters. The first block are the bridge's
+    ``hand_jam.*`` ROS parameters; the second block are the design's fixed
+    numbers (§3/§4), kept here so the tests and the bridge share one copy.
+
+    ``stall_vel_rps`` is 1.5, not the design draft's 1.0: on the 2026-10-02
+    event the measured velocity read -1.243 rev/s at T-0.148 s while the ball
+    was compressing (pos moved 0.007 rev in that 63 ms), which reset a 1.0
+    threshold's sustain and delayed the fire to T-0.023 s. 1.5 rev/s is still
+    >10x below any descent the lane streams, and P3 (lag) is what separates a
+    pinch from a moving catch anyway.
+    """
+    enabled: bool = True
+    band_rev: Tuple[float, float] = (1.0, 3.6)
+    stall_vel_rps: float = 1.5
+    lag_rev: float = 0.5
+    iq_frac: float = 0.9
+    sustain_s: float = 0.10
+    relief_curr_a: float = 10.0
+    raise_rev: Tuple[float, float] = (1.0, 2.5)
+    dwell_s: float = 0.6
+    lower_stall_s: float = 0.15
+    raise_track_tol_rev: float = 0.1
+    # ── fixed (design §3/§4), not ROS parameters ──
+    descend_window_s: float = 0.3
+    descend_vel_rps: float = 1.0
+    descend_drop_rev: float = 0.05
+    max_age_s: float = 0.05
+    max_gap_s: float = 0.05
+    raise_track_window_s: float = 0.3
+    lower_stall_vel_rps: float = 0.3
+    lower_stall_margin_rev: float = 0.5
+    lower_grace_s: float = 0.5
+    park_rev: float = 0.0
+    park_tol_rev: float = 0.1
+    move_vel_rps: float = 2.5
+    raise_max_rev: float = 10.0
+    bb_wait_max_s: float = 5.0
+    telem_max_age_s: float = 0.25
+    hold_wait_s: float = 2.0
+    relief_attempts: int = 2
+    restore_attempts: int = 2
+
+    #: The names exposed as bridge ROS parameters (``hand_jam.<name>``).
+    ROS_PARAMS = ('enabled', 'band_rev', 'stall_vel_rps', 'lag_rev', 'iq_frac',
+                  'sustain_s', 'relief_curr_a', 'raise_rev', 'dwell_s',
+                  'lower_stall_s', 'raise_track_tol_rev')
+
+    @classmethod
+    def from_values(cls, **kw) -> 'JamConfig':
+        """Build and VALIDATE a config from (possibly ROS-typed) values.
+        Raises ValueError naming the first offending parameter."""
+        known = {f.name for f in fields(cls)}
+        out = {}
+        for k, v in kw.items():
+            if k not in known:
+                raise ValueError(f'{k}: unknown hand_jam parameter')
+            if k in ('band_rev', 'raise_rev'):
+                try:
+                    v = tuple(float(x) for x in v)
+                except (TypeError, ValueError):
+                    raise ValueError(f'{k}: must be a list of two numbers, got {v!r}')
+            elif k == 'enabled':
+                if not isinstance(v, bool):
+                    raise ValueError(f'enabled: must be a bool, got {v!r}')
+            elif k in ('relief_attempts', 'restore_attempts'):
+                v = int(v)
+            else:
+                try:
+                    v = float(v)
+                except (TypeError, ValueError):
+                    raise ValueError(f'{k}: must be a number, got {v!r}')
+            out[k] = v
+        cfg = cls(**out)
+        cfg.validate()
+        return cfg
+
+    def validate(self) -> None:
+        """Raise ValueError on any parameter outside its physical range."""
+        def need(cond: bool, name: str, why: str) -> None:
+            if not cond:
+                raise ValueError(f'{name}: {why} (got {getattr(self, name)!r})')
+
+        for name in ('stall_vel_rps', 'lag_rev', 'iq_frac', 'sustain_s',
+                     'relief_curr_a', 'dwell_s', 'lower_stall_s',
+                     'raise_track_tol_rev', 'descend_window_s', 'max_age_s',
+                     'raise_track_window_s', 'move_vel_rps', 'raise_max_rev'):
+            need(_finite(getattr(self, name)) and getattr(self, name) > 0,
+                 name, 'must be finite and > 0')
+        need(len(self.band_rev) == 2 and _finite(*self.band_rev), 'band_rev',
+             'must be two finite numbers')
+        lo, hi = self.band_rev
+        # A re-pinch inside the band must stay visible to the lower's stall
+        # monitor, which only counts above park + lower_stall_margin_rev.
+        need(self.park_rev + self.lower_stall_margin_rev <= lo < hi <= self.raise_max_rev,
+             'band_rev', f'must satisfy park+{self.lower_stall_margin_rev} <= lo < hi '
+             f'<= {self.raise_max_rev}')
+        need(len(self.raise_rev) == 2 and _finite(*self.raise_rev)
+             and 0 < self.raise_rev[0] <= self.raise_rev[1], 'raise_rev',
+             'must be two finite numbers with 0 < R1 <= R2')
+        need(self.iq_frac <= 1.0, 'iq_frac', 'must be <= 1 (a fraction of the clamp)')
+        need(self.stall_vel_rps <= 5.0, 'stall_vel_rps',
+             'must be <= 5 rev/s (above that a moving hand reads as stalled)')
+        need(self.lag_rev <= 2.0, 'lag_rev',
+             'must be <= the 2.0 rev lead clamp (the lag can never exceed it)')
+        # P1 must still hold when the sustain completes, or a stall that
+        # began at the end of the descent could never fire.
+        need(self.sustain_s < self.descend_window_s, 'sustain_s',
+             f'must be < the {self.descend_window_s} s descent window')
+        need(RELIEF_CURR_MIN_A <= self.relief_curr_a <= RELIEF_CURR_MAX_A,
+             'relief_curr_a', f'must be in [{RELIEF_CURR_MIN_A}, {RELIEF_CURR_MAX_A}] A '
+             '(above the carriage gravity hold, well below the 50 A clamp)')
+        need(self.dwell_s >= 0.2, 'dwell_s', 'must be >= 0.2 s (a 74 mm free fall '
+             'is 0.12 s plus rolling off the lip)')
+        need(self.lower_stall_s <= 1.0, 'lower_stall_s', 'must be <= 1 s')
+        need(self.raise_track_tol_rev <= 1.0, 'raise_track_tol_rev', 'must be <= 1 rev')
+        need(0 < self.move_vel_rps <= 2.5, 'move_vel_rps',
+             'must be in (0, 2.5] rev/s (the HAND_MOVE_TO cruise bound)')
+
+
+# ═══════════════════════════════ detector ═══════════════════════════════════
+
+class Verdict(enum.Enum):
+    NONE = 'NONE'
+    HAND_JAM = 'HAND_JAM'
+    HAND_STALL = 'HAND_STALL'
+
+
+@dataclass(frozen=True)
+class HandSample:
+    """One telemetry sample of axis 6. ``t`` is monotonic seconds;
+    ``age_s`` is the age of the diagnostic that carried iq/state/errors;
+    ``curr_limit_a`` is the SHIPPED current limit P4 is a fraction of."""
+    t: float
+    pos_cmd: float
+    vel_ff_cmd: float
+    pos_meas: float
+    vel_meas: float
+    iq_meas: float
+    axis_state: int
+    active_errors: int
+    age_s: float
+    curr_limit_a: float
+
+
+@dataclass(frozen=True)
+class Predicates:
+    p1: bool = False
+    p2: bool = False
+    p3: bool = False
+    p4: bool = False
+    p5: bool = False
+    p6: bool = False
+
+    @property
+    def stall(self) -> bool:
+        return self.p1 and self.p2 and self.p3 and self.p4 and self.p6
+
+    @property
+    def jam(self) -> bool:
+        return self.stall and self.p5
+
+    def text(self) -> str:
+        return ' '.join(f'P{i}={"T" if getattr(self, f"p{i}") else "f"}'
+                        for i in range(1, 7))
+
+
+class JamDetector:
+    """P1-P6 + the sustain, stepped once per telemetry sample. Fires ONCE
+    (the returned verdict is non-NONE on exactly the firing sample) and then
+    stays latched (``fired``) until ``reset()``: one jam is one recovery."""
+
+    def __init__(self, cfg: JamConfig):
+        self.cfg = cfg
+        self.reset()
+
+    def reset(self) -> None:
+        self.fired: Verdict = Verdict.NONE
+        self.fire_sample: Optional[HandSample] = None
+        self.last: Predicates = Predicates()
+        self.last_sample: Optional[HandSample] = None
+        self._prev_t: Optional[float] = None
+        self._last_desc_t = -math.inf
+        # Monotone deque of (t, pos_cmd): the window maximum is at the head.
+        self._cmd_max: Deque[Tuple[float, float]] = deque()
+        self._stall_since: Optional[float] = None
+        self._jam_since: Optional[float] = None
+
+    @property
+    def held_s(self) -> float:
+        if self._stall_since is None or self.last_sample is None:
+            return 0.0
+        return self.last_sample.t - self._stall_since
+
+    def _window(self, s: HandSample) -> Tuple[float, Deque[Tuple[float, float]]]:
+        """P1's window state INCLUDING ``s``, without mutating the detector."""
+        last_desc = self._last_desc_t
+        if _finite(s.vel_ff_cmd) and s.vel_ff_cmd < -self.cfg.descend_vel_rps:
+            last_desc = s.t
+        dq = deque(self._cmd_max)
+        if _finite(s.pos_cmd):
+            while dq and dq[-1][1] <= s.pos_cmd:
+                dq.pop()
+            dq.append((s.t, s.pos_cmd))
+        while dq and dq[0][0] < s.t - self.cfg.descend_window_s:
+            dq.popleft()
+        return last_desc, dq
+
+    def _evaluate(self, s: HandSample, last_desc: float,
+                  dq: Deque[Tuple[float, float]]) -> Predicates:
+        c = self.cfg
+        if not _finite(s.pos_cmd, s.pos_meas, s.vel_meas, s.iq_meas, s.age_s,
+                       s.curr_limit_a):
+            return Predicates()   # non-finite telemetry is never a jam (P6's job)
+        drop = (dq[0][1] - s.pos_cmd) if dq else 0.0
+        p1 = (s.t - last_desc) <= c.descend_window_s or drop > c.descend_drop_rev
+        p2 = abs(s.vel_meas) < c.stall_vel_rps
+        p3 = (s.pos_cmd - s.pos_meas) < -c.lag_rev
+        p4 = abs(s.iq_meas) >= c.iq_frac * s.curr_limit_a
+        p5 = c.band_rev[0] <= s.pos_meas <= c.band_rev[1]
+        p6 = (int(s.axis_state) == AXIS_STATE_CLOSED_LOOP
+              and int(s.active_errors) == 0 and 0.0 <= s.age_s < c.max_age_s)
+        return Predicates(p1, p2, p3, p4, p5, p6)
+
+    def peek(self, s: HandSample) -> Predicates:
+        """The predicates ``s`` WOULD produce, without stepping (dry run)."""
+        return self._evaluate(s, *self._window(s))
+
+    def step(self, s: HandSample) -> Verdict:
+        last_desc, dq = self._window(s)
+        preds = self._evaluate(s, last_desc, dq)
+        gap = (self._prev_t is not None
+               and not (0.0 <= s.t - self._prev_t <= self.cfg.max_gap_s))
+        self._last_desc_t, self._cmd_max, self._prev_t = last_desc, dq, s.t
+        self.last, self.last_sample = preds, s
+        if self.fired is not Verdict.NONE:
+            return Verdict.NONE
+        if gap:
+            # A telemetry gap breaks the "sustained" claim: restart it here.
+            self._stall_since = self._jam_since = None
+        if not preds.stall:
+            self._stall_since = self._jam_since = None
+            return Verdict.NONE
+        if self._stall_since is None:
+            self._stall_since = s.t
+        if preds.p5:
+            if self._jam_since is None:
+                self._jam_since = s.t
+        else:
+            self._jam_since = None
+        sustain = self.cfg.sustain_s - 1e-9
+        if self._jam_since is not None and s.t - self._jam_since >= sustain:
+            verdict = Verdict.HAND_JAM
+        elif not preds.p5 and s.t - self._stall_since >= sustain:
+            verdict = Verdict.HAND_STALL
+        else:
+            return Verdict.NONE
+        self.fired, self.fire_sample = verdict, s
+        return verdict
+
+
+# ═══════════════════════════════ recovery ═══════════════════════════════════
+
+class Outcome(enum.Enum):
+    RUNNING = 'RUNNING'
+    HAND_JAM_RECOVERED = 'HAND_JAM_RECOVERED'
+    HAND_JAM_UNRECOVERED = 'HAND_JAM_UNRECOVERED'
+    HAND_STALL_RELIEVED = 'HAND_STALL_RELIEVED'
+
+
+class IntentKind(enum.Enum):
+    HOLD_RECOVERING = 'HOLD_RECOVERING'   # step 0: hold fault_state=RECOVERING
+    SET_CURRENT = 'SET_CURRENT'           # steps 1 and 6: SET_VEL_CURR_LIMITS(6, ...)
+    CONVERGE_CLEAR = 'CONVERGE_CLEAR'     # step 2: the converge-first clear
+    DISARM = 'DISARM'                     # step 2: disarm and CONFIRM on the wire
+    MOVE = 'MOVE'                         # steps 3/5: HAND_MOVE_TO (asynchronous)
+    WAIT = 'WAIT'                         # poll again
+    END = 'END'
+
+
+class Step(enum.Enum):
+    TRIGGER = 0
+    RELIEF = 1
+    CLEAR = 2
+    DISARM = 21
+    RAISE = 3
+    RAISING = 31
+    DWELL = 4
+    BB_GATE = 41
+    LOWER = 5
+    LOWERING = 51
+    FINAL_RAISING = 52
+    HOLDING = 53
+    RESTORE = 6
+    DONE = 99
+
+
+@dataclass(frozen=True)
+class Intent:
+    kind: IntentKind
+    curr_a: float = math.nan
+    target_rev: float = math.nan
+    vel_rps: float = math.nan
+    purpose: str = ''
+    outcome: Optional[Outcome] = None
+    reason: str = ''
+
+
+@dataclass(frozen=True)
+class IntentResult:
+    ok: bool
+    status: str = 'OK'
+    msg: str = ''
+
+
+@dataclass(frozen=True)
+class RecoveryObs:
+    """What the machine reads each poll. ``move_*`` describe the LATEST move
+    the executor started (``move_done`` False while it is in flight)."""
+    t: float
+    pos: float
+    vel: float
+    iq: float = 0.0
+    telem_age_s: float = 0.0
+    latched: bool = False
+    armed: bool = False
+    bb_pending: bool = False
+    move_done: bool = False
+    move_ok: bool = False
+    move_status: str = ''
+    move_msg: str = ''
+
+
+_SYNC = (IntentKind.HOLD_RECOVERING, IntentKind.SET_CURRENT,
+         IntentKind.CONVERGE_CLEAR, IntentKind.DISARM, IntentKind.MOVE)
+_MONITORED = (Step.RAISING, Step.LOWERING, Step.FINAL_RAISING, Step.HOLDING)
+
+
+class JamRecovery:
+    """The §4 HAND_JAM sequence as an explicit step machine.
+
+    Protocol: ``intent = rec.next(obs)``; for every intent kind in ``_SYNC``
+    the executor carries it out and calls ``rec.result(IntentResult)`` before
+    the next ``next()`` (a MOVE's result is its START acknowledgement; its
+    completion arrives later through ``obs.move_*``). ``WAIT`` means poll
+    again; ``END`` is terminal and repeats. ``abort(reason)`` is the
+    executor's exit for an exception: UNRECOVERED, nothing restored.
+
+    ``resume=True`` is the operator's ``/recover`` after an UNRECOVERED or
+    HAND_STALL terminal: hold, relief (idempotent), clear-if-latched, disarm,
+    then straight to the Ball-Butler gate and the lower (step 5). A stall on
+    a resumed lower is final (raise R2 and stay).
+    """
+
+    def __init__(self, cfg: JamConfig, *, kind: Verdict, stall_pos: float,
+                 restore_curr_a: float, iq_at_trigger: float = math.nan,
+                 resume: bool = False):
+        if kind is Verdict.NONE:
+            raise ValueError('JamRecovery needs a fired verdict')
+        if not (_finite(restore_curr_a) and restore_curr_a > 0):
+            raise ValueError(f'restore_curr_a must be finite and > 0, got {restore_curr_a!r}')
+        self.cfg = cfg
+        self.kind = kind
+        self.resume = resume
+        self.stall_pos = float(stall_pos)
+        self.iq_at_trigger = float(iq_at_trigger)
+        self.restore_curr_a = float(restore_curr_a)
+        # Relief is never ABOVE the shipped limit (a low-current configure
+        # must not be "relieved" upward).
+        self.relief_curr_a = min(float(cfg.relief_curr_a), self.restore_curr_a)
+        self.step = Step.TRIGGER
+        self.outcome = Outcome.RUNNING
+        self.reason = ''
+        # Raises issued so far (R1, R2...); a resume starts on the last one.
+        self.attempt = len(cfg.raise_rev) - 1 if resume else 0
+        self.raises: List[float] = []
+        self.lower_stalls = 0
+        self.history: List[str] = []
+        self._pending: Optional[Intent] = None
+        self._tries = 0
+        self._t0: Optional[float] = None
+        self._move_t0 = 0.0
+        self._move_p0 = 0.0
+        self._tracked = False
+        self._dwell_t0 = 0.0
+        self._gate_t0 = 0.0
+        self._moving_seen = False
+        self._still_since: Optional[float] = None
+        self._hold_reason = ''
+
+    # ── public ──
+    @property
+    def done(self) -> bool:
+        return self.outcome is not Outcome.RUNNING
+
+    @property
+    def holds_recovering(self) -> bool:
+        """Whether the bridge must keep fault_state=RECOVERING after this run:
+        every terminal except RECOVERED (the operator acknowledges via
+        ``/recover``)."""
+        return self.outcome is not Outcome.HAND_JAM_RECOVERED
+
+    def raise_target(self, from_pos: float, attempt: int) -> float:
+        r = self.cfg.raise_rev[min(attempt, len(self.cfg.raise_rev) - 1)]
+        return min(float(from_pos) + r, self.cfg.raise_max_rev)
+
+    def abort(self, reason: str) -> None:
+        if not self.done:
+            self._end(Outcome.HAND_JAM_UNRECOVERED, reason)
+
+    def summary(self) -> str:
+        raises = ','.join(f'{r:+.2f}' for r in self.raises) or 'none'
+        s = (f'{self.outcome.value} ({self.kind.value}{", resumed" if self.resume else ""}): '
+             f'stall at {self.stall_pos:+.3f} rev, iq {self.iq_at_trigger:+.1f} A, '
+             f'raises [{raises}] rev, lower stalls {self.lower_stalls}')
+        return f'{s} — {self.reason}' if self.reason else s
+
+    def result(self, res: IntentResult) -> None:
+        it = self._pending
+        if it is None:
+            raise RuntimeError('result() without a pending intent')
+        self._pending = None
+        self._on_result(it, res)
+
+    def next(self, obs: RecoveryObs) -> Intent:
+        if self._pending is not None:
+            raise RuntimeError(f'next() before result() for {self._pending.kind.value}')
+        if self._t0 is None:
+            self._t0 = obs.t
+        for _ in range(16):   # bounded internal transitions per poll
+            if self.done:
+                return Intent(IntentKind.END, outcome=self.outcome, reason=self.reason)
+            it = self._advance(obs)
+            if it is not None:
+                if it.kind in _SYNC:
+                    self._pending = it
+                return it
+        return Intent(IntentKind.WAIT)
+
+    # ── internals ──
+    def _end(self, outcome: Outcome, reason: str = '') -> None:
+        self.outcome, self.reason, self.step = outcome, reason, Step.DONE
+        self.history.append(f'END {outcome.value} {reason}'.strip())
+
+    def _move(self, obs: RecoveryObs, target: float, purpose: str, step: Step) -> Intent:
+        self.step = step
+        self._move_t0, self._move_p0 = obs.t, obs.pos
+        self._tracked = False
+        self._moving_seen = False
+        self._still_since = None
+        if purpose not in ('lower', 'hold'):
+            self.raises.append(target)
+        self.history.append(f'MOVE {purpose} -> {target:+.3f}')
+        return Intent(IntentKind.MOVE, target_rev=target, vel_rps=self.cfg.move_vel_rps,
+                      purpose=purpose)
+
+    def _move_unavailable_reason(self, status: str, msg: str) -> Optional[str]:
+        if status == STATUS_UNKNOWN_METHOD:
+            return 'firmware has no HAND_MOVE_TO'
+        if status == STATUS_NO_CLIENT_METHOD:
+            return 'teensy_link RpcClient has no hand_move_to'
+        return None
+
+    def _advance(self, obs: RecoveryObs) -> Optional[Intent]:
+        c = self.cfg
+        st = self.step
+        if st in _MONITORED and (not _finite(obs.pos, obs.vel)
+                                 or obs.telem_age_s > c.telem_max_age_s):
+            self._end(Outcome.HAND_JAM_UNRECOVERED,
+                      f'hand telemetry lost/stale during the {st.name.lower()} '
+                      f'(age {obs.telem_age_s:.2f} s) — nothing further commanded')
+            return None
+        if st is Step.TRIGGER:
+            return Intent(IntentKind.HOLD_RECOVERING)
+        if st is Step.RELIEF:
+            return Intent(IntentKind.SET_CURRENT, curr_a=self.relief_curr_a,
+                          purpose='relief')
+        if st is Step.CLEAR:
+            if obs.latched:
+                return Intent(IntentKind.CONVERGE_CLEAR)
+            self.step = Step.DISARM
+            return None
+        if st is Step.DISARM:
+            return Intent(IntentKind.DISARM)
+        if st is Step.RAISE:
+            if obs.armed:
+                self._end(Outcome.HAND_JAM_UNRECOVERED,
+                          'wire re-armed before the raise — refusing to co-drive the hand')
+                return None
+            purpose = f'raise{self.attempt + 1}'
+            return self._move(obs, self.raise_target(self.stall_pos, self.attempt),
+                              purpose, Step.RAISING)
+        if st in (Step.RAISING, Step.FINAL_RAISING):
+            if obs.move_done and not obs.move_ok:
+                # Checked BEFORE tracking: a raise the firmware refused never
+                # moved, and its reason (e.g. no HAND_MOVE_TO) is the outcome.
+                why = self._move_unavailable_reason(obs.move_status, obs.move_msg)
+                self._end(Outcome.HAND_JAM_UNRECOVERED,
+                          why or f'raise failed: {obs.move_status} {obs.move_msg}'.strip())
+                return None
+            if not self._tracked and obs.t - self._move_t0 >= c.raise_track_window_s:
+                if obs.pos - self._move_p0 < c.raise_track_tol_rev:
+                    # Abort to HOLD AT MEASURED: retarget the running move to
+                    # where the hand is (a newer HAND_MOVE_TO supersedes it).
+                    # Never leave it to the firmware's 10 s timeout, which
+                    # IDLEs the hand.
+                    self._hold_reason = (
+                        f'raise did not track (rose {obs.pos - self._move_p0:+.3f} rev '
+                        f'in {c.raise_track_window_s:.1f} s) — not a one-sided ball '
+                        f'pinch (snag/bind/encoder?)')
+                    return self._move(obs, obs.pos, 'hold', Step.HOLDING)
+                self._tracked = True
+            if not obs.move_done:
+                return Intent(IntentKind.WAIT)
+            if st is Step.FINAL_RAISING:
+                self._end(Outcome.HAND_JAM_UNRECOVERED,
+                          f'the lower stalled {self.lower_stalls}x — hand left RAISED at '
+                          f'{obs.pos:+.3f} rev at {self.relief_curr_a:.0f} A; remove the '
+                          f'ball, then /recover')
+                return None
+            self.step, self._dwell_t0 = Step.DWELL, obs.t
+            return None
+        if st is Step.HOLDING:
+            if obs.move_done:
+                self._end(Outcome.HAND_JAM_UNRECOVERED, self._hold_reason + (
+                    f'; held at measured {obs.pos:+.3f} rev' if obs.move_ok else
+                    f'; the hold move failed: {obs.move_status} {obs.move_msg}'.rstrip()))
+                return None
+            if obs.t - self._move_t0 >= c.hold_wait_s:
+                self._end(Outcome.HAND_JAM_UNRECOVERED,
+                          self._hold_reason + '; the hold at measured did not confirm')
+                return None
+            return Intent(IntentKind.WAIT)
+        if st is Step.DWELL:
+            if obs.t - self._dwell_t0 < c.dwell_s:
+                return Intent(IntentKind.WAIT)
+            self.step, self._gate_t0 = Step.BB_GATE, obs.t
+            return None
+        if st is Step.BB_GATE:
+            if obs.bb_pending and obs.t - self._gate_t0 < c.bb_wait_max_s:
+                return Intent(IntentKind.WAIT)
+            self.step = Step.LOWER
+            return None
+        if st is Step.LOWER:
+            if obs.armed:
+                self._end(Outcome.HAND_JAM_UNRECOVERED,
+                          'wire re-armed before the lower — refusing to co-drive the hand')
+                return None
+            return self._move(obs, c.park_rev, 'lower', Step.LOWERING)
+        if st is Step.LOWERING:
+            return self._lowering(obs)
+        if st is Step.RESTORE:
+            return Intent(IntentKind.SET_CURRENT, curr_a=self.restore_curr_a,
+                          purpose='restore')
+        return Intent(IntentKind.WAIT)
+
+    def _lowering(self, obs: RecoveryObs) -> Optional[Intent]:
+        c = self.cfg
+        if abs(obs.vel) >= c.lower_stall_vel_rps:
+            self._moving_seen, self._still_since = True, None
+        elif ((self._moving_seen or obs.t - self._move_t0 >= c.lower_grace_s)
+              and obs.pos > c.park_rev + c.lower_stall_margin_rev):
+            if self._still_since is None:
+                self._still_since = obs.t
+            if obs.t - self._still_since >= c.lower_stall_s - 1e-9:
+                # The ball is still there. Answer with a RAISE, never a push.
+                self.lower_stalls += 1
+                self.stall_pos = obs.pos
+                self.history.append(f'LOWER STALL at {obs.pos:+.3f}')
+                self.attempt += 1
+                if self.attempt < len(c.raise_rev):
+                    return self._move(obs, self.raise_target(obs.pos, self.attempt),
+                                      f'raise{self.attempt + 1}', Step.RAISING)
+                return self._move(obs, self.raise_target(obs.pos, len(c.raise_rev) - 1),
+                                  'final_raise', Step.FINAL_RAISING)
+        else:
+            self._still_since = None
+        if not obs.move_done:
+            return Intent(IntentKind.WAIT)
+        if not obs.move_ok:
+            why = self._move_unavailable_reason(obs.move_status, obs.move_msg)
+            self._end(Outcome.HAND_JAM_UNRECOVERED,
+                      why or f'lower failed: {obs.move_status} {obs.move_msg}'.strip())
+            return None
+        if abs(obs.pos - c.park_rev) > c.park_tol_rev:
+            self._end(Outcome.HAND_JAM_UNRECOVERED,
+                      f'lower reported complete at {obs.pos:+.3f} rev, off the park — '
+                      f'shipped current NOT restored')
+            return None
+        self.step = Step.RESTORE
+        return None
+
+    def _on_result(self, it: Intent, res: IntentResult) -> None:
+        k = it.kind
+        self.history.append(f'{k.value}{"(" + it.purpose + ")" if it.purpose else ""} '
+                            f'-> {"ok" if res.ok else "FAIL " + res.status}')
+        if k is IntentKind.HOLD_RECOVERING:
+            self.step = Step.RELIEF
+        elif k is IntentKind.SET_CURRENT and it.purpose == 'relief':
+            if res.ok:
+                self._tries = 0
+                if self.kind is Verdict.HAND_STALL and not self.resume:
+                    self._end(Outcome.HAND_STALL_RELIEVED,
+                              f'out-of-band stall: relieved to {self.relief_curr_a:.0f} A, '
+                              f'no automatic motion; /recover lowers and restores')
+                else:
+                    self.step = Step.CLEAR
+            else:
+                self._tries += 1
+                if self._tries >= self.cfg.relief_attempts:
+                    self._end(Outcome.HAND_JAM_UNRECOVERED,
+                              f'relief SET_VEL_CURR_LIMITS failed {self._tries}x: {res.msg}')
+                # else: the step stays RELIEF, so the next poll retries it.
+        elif k is IntentKind.CONVERGE_CLEAR:
+            if res.ok:
+                self.step = Step.DISARM
+            else:
+                self._end(Outcome.HAND_JAM_UNRECOVERED,
+                          f'guard clear failed (relief stays): {res.msg}')
+        elif k is IntentKind.DISARM:
+            if res.ok:
+                self.step = Step.BB_GATE if self.resume else Step.RAISE
+            else:
+                self._end(Outcome.HAND_JAM_UNRECOVERED,
+                          f'disarm did not confirm on the wire (relief stays): {res.msg}')
+        elif k is IntentKind.MOVE:
+            if not res.ok:
+                why = self._move_unavailable_reason(res.status, res.msg)
+                self._end(Outcome.HAND_JAM_UNRECOVERED,
+                          why or f'{it.purpose} could not start: {res.status} {res.msg}')
+        elif k is IntentKind.SET_CURRENT and it.purpose == 'restore':
+            if res.ok:
+                self._end(Outcome.HAND_JAM_RECOVERED,
+                          f'hand at the park, {self.restore_curr_a:.0f} A restored')
+            else:
+                self._tries += 1
+                if self._tries >= self.cfg.restore_attempts:
+                    self._end(Outcome.HAND_JAM_UNRECOVERED,
+                              f'restore to {self.restore_curr_a:.0f} A not acknowledged — '
+                              f'current left at {self.relief_curr_a:.0f} A: {res.msg}')
+
+
+def planned_steps(cfg: JamConfig, *, stall_pos: float, latched: bool, armed: bool,
+                  restore_curr_a: float, vel_limit: float, kind: Verdict = Verdict.HAND_JAM,
+                  resume: bool = False) -> List[str]:
+    """The sequence ``JamRecovery`` would run from here, as text (dry run)."""
+    rec = JamRecovery(cfg, kind=kind, stall_pos=stall_pos,
+                      restore_curr_a=restore_curr_a, resume=resume)
+    out = ['0 hold fault_state=RECOVERING (orchestrator FAULT, trajectory_node frozen, '
+           'install_segment refused)',
+           f'1 SET_VEL_CURR_LIMITS(6, {vel_limit:g} rev/s, {rec.relief_curr_a:g} A) — relief first']
+    if kind is Verdict.HAND_STALL and not resume:
+        out.append('END HAND_STALL_RELIEVED (out of band: no automatic motion)')
+        return out
+    out.append('2 ' + ('converge-first clear (_svc_recover steps 1-4), then ' if latched
+                       else 'not latched: ') + ('disarm + confirm on the wire' if armed
+                                                 else 'wire already disarmed (confirm)'))
+    if not resume:
+        r1 = rec.raise_target(stall_pos, 0)
+        out.append(f'3 HAND_MOVE_TO({r1:+.3f} rev, {cfg.move_vel_rps:g} rev/s) — must rise '
+                   f'>= {cfg.raise_track_tol_rev:g} rev in {cfg.raise_track_window_s:g} s')
+        out.append(f'4 dwell {cfg.dwell_s:g} s')
+    out.append(f'4b wait for any Ball Butler throw to land (+1 s, <= {cfg.bb_wait_max_s:g} s)')
+    out.append(f'5 HAND_MOVE_TO({cfg.park_rev:+.3f} rev) with the stall monitor '
+               f'(|v| < {cfg.lower_stall_vel_rps:g} rev/s for {cfg.lower_stall_s:g} s above '
+               f'{cfg.park_rev + cfg.lower_stall_margin_rev:+.2f} rev -> raise '
+               f'+{cfg.raise_rev[-1]:g} rev' + ('' if resume else ', dwell, lower again')
+               + '; a final stall stays raised, UNRECOVERED)')
+    out.append(f'6 SET_VEL_CURR_LIMITS(6, {vel_limit:g} rev/s, {restore_curr_a:g} A) at the '
+               f'park — restore LAST, then RECOVERED (wire left disarmed; orchestrator re-arms)')
+    return out
+
+
+def kinds_text(seq: Sequence[Intent]) -> List[str]:
+    """Compact rendering of an intent sequence (tests, logs)."""
+    return [f'{i.kind.value}:{i.purpose}' if i.purpose else i.kind.value for i in seq]

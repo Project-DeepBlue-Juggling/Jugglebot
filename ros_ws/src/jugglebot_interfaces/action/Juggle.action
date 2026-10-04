@@ -8,8 +8,13 @@
 # REJECTED at accept (the same "an attempt is already running" refusal
 # skills/start_* used to return).
 
-string pattern                 # self_toss | hop | columns (schedule.Schedule.pattern's
-                               # own names). Required — no default pattern.
+string pattern                 # self_toss | hop | columns | columns_1ball
+                               # (SkillNode._PATTERNS -- the last one never
+                               # becomes a schedule.Schedule.pattern value of
+                               # its own; it is columns motion with one real
+                               # ball, schedule.Pattern.phantom_balls, and
+                               # compiles to Schedule.pattern 'columns').
+                               # Required — no default pattern.
 float64 apex_m                 # ball apex height, m; 0 => the node's apex_m param
 float64 separation_mm          # site separation, mm; hop/columns only; 0 => the
                                # node's separation_mm param (self_toss ignores this)

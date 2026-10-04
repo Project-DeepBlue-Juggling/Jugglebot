@@ -68,6 +68,7 @@ using JbUdp::RpcArgs::ArgRobotState;   // STATE_WRITE (Platform-Teensy relay)
 using JbUdp::RpcArgs::ArgPlatformFwBegin;    // PLATFORM_FW_BEGIN  (FW-over-CAN relay, FW 19)
 using JbUdp::RpcArgs::ArgPlatformFwData;     // PLATFORM_FW_DATA   (FW-over-CAN relay, FW 19)
 using JbUdp::RpcArgs::ArgPlatformFwVerify;   // PLATFORM_FW_VERIFY (FW-over-CAN relay, FW 19)
+using JbUdp::RpcArgs::ArgHandMoveTo;         // HAND_MOVE_TO (FW 26, deferred reply)
 
 using JbUdp::RpcArgs::AXIS_ALL;   // broadcast to all axes (CLEAR_ERRORS/REBOOT)
 
@@ -88,6 +89,10 @@ inline bool method_gates_on_bus_transmittable(uint16_t method) {
 
 // Register the server dispatcher with udp_link (call during setup).
 void rpc_server_init();
+
+// Net-task service hook (call from task_net after udp_link_service): sends the
+// deferred HAND_MOVE_TO replies (FW 26) the activate task posted.
+void rpc_service();
 
 // FW 22 hand torque-scale readback cache (GET_HAND_TORQUE_SCALE). record: the
 // CAN3 TxSdo decode seam, for a reply whose endpoint id is the qualified

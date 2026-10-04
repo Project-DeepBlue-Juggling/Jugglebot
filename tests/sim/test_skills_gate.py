@@ -393,7 +393,19 @@ def test_a_small_self_toss_learner_run_enters_the_apex_band():
     assert res['drops'] == 0
     assert res['throws_to_band_apex'] is not None
     assert res['throws_to_band_apex'] <= cfg.band_entry_throws
-    assert res['throws'][-1]['err_apex_mm'] <= cfg.apex_band_mm
+    # "Stays in the band" is judged on the MEAN signed apex error from band
+    # entry on, not on the last throw alone (2026-10-04, learner A2). Seed 0
+    # flies throws 3-5 on ONE command whose apex scatters by (0, +26, -45) mm
+    # in this sim, so a single last-throw sample tests the scatter, not the
+    # learner: the pre-A2 law passed it only because its command sat +57 mm
+    # high on average (apex 0.964 / 0.990 / 0.918 m) and throw 5's -45 mm
+    # draw cancelled that bias; the A2 law flies 0.898 / 0.923 / 0.853 m
+    # (mean -9 mm) and the same draw lands it 47 mm low. Both laws pass the
+    # mean criterion (pre-A2: band entry at throw 5, window = that one
+    # +18 mm throw; A2: entry at throw 3, mean -9 mm over throws 3-5).
+    entry = res['throws_to_band_apex'] - 1
+    signed = [1000.0 * (float(t['y'][2]) - cfg.apex_m) for t in res['throws'][entry:]]
+    assert abs(sum(signed) / len(signed)) <= cfg.apex_band_mm, signed
     assert all(t['caught'] for t in res['throws'])
 
 
@@ -591,7 +603,7 @@ def test_columns_attempt_with_feed_pins_the_touchdown_level_and_carries_the_land
     R5 sitting 2 (2026-10-02): a FEED trial swaps which site holds A and
     which is fed (``run_columns_attempt``'s own docstring) -- site 0 is
     the feed site, site 1 holds A, and the feed's target is walked
-    ``cfg.feed_aim_toward_a_mm`` (default 20 mm) from site 0 TOWARD site 1,
+    ``cfg.feed_aim_toward_a_mm`` (default 10 mm since 2026-10-04) from site 0 TOWARD site 1,
     not site 0 itself (the undisplaced feed site refuses LIMIT_ACC at
     101 %)."""
     calls = []
@@ -705,6 +717,80 @@ def test_columns_feed_ball_1_arrives_at_the_requested_speed_and_angle():
 
 
 # ---------------------------------------------------------------------------
+# The two-ball-association identity fix (U1/B1, 2026-10-04): the gate's
+# tracker goes through the REAL correlator, not ground truth
+# ---------------------------------------------------------------------------
+#
+# Before this rung, `_make_tracker`'s ground-truth stand-in answered
+# ``tracker(ball_id)`` straight off ``ball_state[ball_id]`` -- the identity
+# step the robot actually does (resolving an announced release to the
+# tracker id MINTED for it) never ran, so fed columns PASSED 5/5 in sim on
+# 2026-10-02 while every live attempt mis-latched
+# (``u1_two_ball_association.md`` SS 3). ``_IdentityTracker`` mints one id
+# per ANNOUNCEMENT (``_make_installer``'s ``on_release``) and resolves
+# ``tracker(ball_id)`` through ``ball_possession.advance_correlation``/
+# ``flight_in_progress`` -- the SAME pure functions ``skill_node`` runs, not
+# a copy. ``SelfTossGateConfig.correlator`` picks the rule: ``'fixed'``
+# (the default) is the 2026-10-04 identity fix; ``'head'`` is the PRE-fix
+# exclusion rule (``advance_flight_latches``, one claimed set PER schedule
+# ball) -- the negative control below.
+
+def _small_fed_columns_run(correlator):
+    cfg = SelfTossGateConfig(pattern='columns', apex_m=0.9,
+                             feed_angle_deg=11.9, feed_speed_mmps=5600.0,
+                             target_throws=4, band_entry_throws=4,
+                             max_attempts=1, correlator=correlator)
+    return cfg, SkillsGate(cfg).run_columns_seed(0)
+
+
+def test_the_head_correlator_mis_latches_fed_columns_releases():
+    """The negative control (U1 handoff SS "Pass criteria"; B1 probe
+    ``probe_assoc8.py``, 2026-10-04): with the PRE-2026-10-04 exclusion rule
+    (``correlator='head'``), every release after the first latches the
+    OTHER schedule ball's still-airborne flight (U1 SS 2a's own mechanism:
+    a latch resolves 50 ms before its own release, while the other ball,
+    released one beat earlier, is IN_FLIGHT and unclaimed by THIS ball's
+    own per-schedule-ball exclusion set).
+
+    The executor's OWN downstream band gate (A1's fix, landed the same
+    day: ``_valid_tracked_landing``'s ``TRACKER-IDENTITY-REFUSED``) catches
+    the bad read before install and refuses the ROW rather than a hard
+    ``WINDOW_TOO_SHORT`` -- so under TODAY's full stack the symptom is every
+    throw past the first producing NO learner row, each refused "not this
+    release's flight" with a fitted-landing gap of about one beat (MEASURED,
+    this run: 0.54-0.57 s against a 0.579 s beat -- U1's own finding, same
+    mechanism). Proves this gate CAN see the class the identity fix closes:
+    before ``_IdentityTracker`` existed, the ground-truth stand-in could
+    never reach even this soft refusal (U1 SS 3)."""
+    cfg, res = _small_fed_columns_run('head')
+    assoc = res['association']
+    assert assoc['wrong_ball_rows'] >= 1, assoc
+    assert assoc['ok'] is False, assoc
+    # Only throw 1 (nothing to mis-latch onto yet) ever reaches the learner.
+    assert res['n_throws_collected'] <= 1, res['throws']
+
+
+def test_the_fixed_correlator_resolves_fed_columns_releases_correctly():
+    """The fix (``correlator='fixed'``, the default): every release
+    resolves to its OWN track -- the identity key is the announcement's own
+    ``(thrower, throw_time)``, which no other release can satisfy -- so
+    every throw (the Stop included) gets a real ``ThrowReport`` row and the
+    learner rows' release error stays an order of magnitude inside the
+    pass-criteria bound (beat/2). MEASURED, this run: max release error
+    17.5 ms against a ~277.7 ms bound, 0 wrong-ball rows, 0
+    ``WINDOW_TOO_SHORT`` refusals, target reached in the one attempt this
+    test allows."""
+    cfg, res = _small_fed_columns_run('fixed')
+    assoc = res['association']
+    assert assoc['ok'] is True, assoc
+    assert assoc['wrong_ball_rows'] == 0, assoc
+    assert assoc['window_too_short'] is False, assoc
+    assert assoc['release_err_bad'] == 0, assoc
+    assert res['n_throws_collected'] == cfg.target_throws
+    assert res['attempts'] == 1
+
+
+# ---------------------------------------------------------------------------
 # A re-send SUPERSEDES its pending release (main session, 2026-09-28)
 # ---------------------------------------------------------------------------
 
@@ -758,3 +844,79 @@ def test_a_resend_supersedes_its_own_pending_release(monkeypatch):
     assert ball == 0 and t_rel == pytest.approx(1.3)
     assert rel_site[1] == pytest.approx(land[1] + 20.0)
     assert vel[1] == pytest.approx(-20.0)      # the LAST takeoff, with its fly-back
+
+
+# ---------------------------------------------------------------------------
+# B2b: the columns_1ball trial -- ball A real, ball B a PHANTOM
+# (``schedule.Pattern.phantom_balls=(1,)``, never spawned). Driven through
+# ``SkillsGate.run_columns_1ball_attempt``/``_seed`` (handoff
+# ``handoff_B2_sim_trial.md``): the same REAL MuJoCo plant/hand the ordinary
+# ``columns`` gate trial above already drives -- ``compile_columns`` is
+# byte-identical in its own MOTION output whether or not ``phantom_balls``
+# is set -- only the bookkeeping differs downstream (B2's own enforcement
+# points in ``executor.py``/``schedule.py``, exercised here against the real
+# plant/hand rather than only the offline unit tests in
+# ``tests/motion/test_skills_{schedule,executor}.py``).
+# ---------------------------------------------------------------------------
+
+def _small_one_ball_columns_run(reload=False):
+    cfg = SelfTossGateConfig(pattern='columns', apex_m=0.9, target_throws=4,
+                             band_entry_throws=4, max_attempts=3,
+                             one_ball=True, one_ball_reload=reload)
+    return cfg, SkillsGate(cfg).run_columns_1ball_seed(0, reload=reload)
+
+
+def test_a_small_one_ball_columns_run_catches_a_with_b_as_motion_only():
+    """A (the real ball) catches every throw it produces a row for, with NO
+    refusal of any kind -- in particular never ``REJECTED_NO_BALL`` nor
+    ``ABORTED_NO_RELEASE``, the two a phantom's empty hand could otherwise
+    spuriously trip (``executor.py::_register_outcome``'s and
+    ``schedule.py::Schedule.is_phantom``'s docstrings say why they
+    structurally cannot -- confirmed here against the real plant/hand).
+
+    B's own THROW/CATCH skills dispatch as real MOTION (the cup transits to
+    B's site, the hand strokes there) -- counted directly off the compiled
+    schedule, not inferred -- while producing ZERO experience/learner rows:
+    the "motion and nothing else" invariant, end to end."""
+    cfg, res = _small_one_ball_columns_run()
+    assert res['refusals'] == 0, res['end_codes']
+    assert 'REJECTED_NO_BALL' not in res['end_codes']
+    assert 'ABORTED_NO_RELEASE' not in res['end_codes']
+    assert res['drops'] == 0
+    assert res['a_throws'] > 0
+    assert res['a_caught'] == res['a_throws']
+    assert res['b_skills_dispatched'] > 0
+    assert res['b_experience_rows'] == 0
+    assert res['association']['ok'] is True, res['association']
+    assert res['passed'] is True, res
+
+
+def test_the_one_ball_columns_phantom_produces_no_learner_rows_or_announcement():
+    """B2's three enforcement points, from the gate's own vantage rather
+    than the unit tests that already pin them in isolation: a phantom's
+    release is never announced to the identity tracker (never mints a
+    track, never latches a correlation -- the gate's OWN mirror of
+    ``SkillNode._maybe_announce``'s real guard), and
+    ``on_experience``/the learner's memory never see ``ball_id == 1``."""
+    throws_out: list = []
+    announced: list = []
+    gate = SkillsGate(SelfTossGateConfig(pattern='columns', apex_m=0.9))
+    monkeypatch_target = sg._IdentityTracker.announce
+    try:
+        def spying_announce(self, ball_id, t_release_s, **kw):
+            announced.append(int(ball_id))
+            return monkeypatch_target(self, ball_id, t_release_s, **kw)
+        sg._IdentityTracker.announce = spying_announce
+        tmp_memory = sg.mem.Memory(
+            sg.os.path.join(sg.tempfile.mkdtemp(), 'memory.csv'))
+        end_code, loop, ictx, b_skills = gate.run_columns_1ball_attempt(
+            n_throws=4, memory=tmp_memory, learner_cfg=sg.lr.LearnerConfig(),
+            noise=sg.JuggleNoise(sg.NoiseConfig(), seed=0),
+            throws_out=throws_out)
+    finally:
+        sg._IdentityTracker.announce = monkeypatch_target
+    assert end_code == '', end_code
+    assert b_skills > 0
+    assert 1 not in announced, announced
+    assert all(int(exp.ball_id) == 0 for exp in throws_out), throws_out
+    assert len(tmp_memory) == len(throws_out)

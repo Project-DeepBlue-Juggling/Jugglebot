@@ -649,15 +649,40 @@ class TrajectoryNode(Node):
         # status timer — a plain bool is GIL-atomic across that split (the
         # _guard_frozen pattern above).
         self._gravity_correction_loaded = False
-        # The RAW measured offset behind that matrix, [tilt_x, tilt_y] rad.
-        # C-LEVEL-2 composes `level_offset + map residual` in ROTATION-VECTOR
-        # space and passes the sum through ONE Rodrigues, so the ingest sites
-        # need the offset itself, not the pre-built matrix. Both are stored: the
+        # The EFFECTIVE offset behind that matrix, [tilt_x, tilt_y] rad — the
+        # wire reading from /gravity_offset PLUS level_trim_deg (below), in
+        # that same convention (motion/levelling.offset_with_trim). C-LEVEL-2
+        # composes `level_offset + map residual` in ROTATION-VECTOR space and
+        # passes the sum through ONE Rodrigues, so the ingest sites need the
+        # offset itself, not the pre-built matrix. Both are stored: the
         # matrix above stays the C-LEVEL-1 answer and is what the map-degrade
         # path falls back to, so no ingest ever has to rebuild it under a fault.
         # Written and read on the executor thread only, always as a pair with
-        # the matrix above (see _on_gravity_offset).
+        # the matrix above (see _on_gravity_offset / _apply_level_trim_param).
         self._gravity_offset = (0.0, 0.0)
+        # The RAW wire reading behind the EFFECTIVE offset above, stored
+        # separately so a runtime `level_trim_deg` change
+        # (_on_set_parameters) can re-derive the effective offset without
+        # waiting for the orchestrator to re-publish /gravity_offset (it is
+        # a latched, one-shot-per-boot publish — see _on_gravity_offset).
+        self._gravity_offset_raw = (0.0, 0.0)
+        # A3 (2026-10-04): a small, bounded OPERATOR trim [trim_x, trim_y]
+        # deg, ADDED to the raw offset above at the same point and in the
+        # same convention as /gravity_offset itself — BEFORE the sign flip in
+        # levelling.correction_from_offset. It exists to correct a static
+        # residual lean the `level` procedure's inclinometer reading does not
+        # capture (measured from ball free-flight fits against the
+        # commanded/mocap platform attitude — see
+        # tools/probes/level_vs_ballfit.py); it is not a replacement for
+        # `level`. All arithmetic/validation is
+        # motion/levelling.validate_trim_deg / offset_with_trim — this node
+        # only stores state and logs. Declared as a parameter immediately
+        # below so `_apply_level_trim_param` can seed _gravity_offset from it
+        # (default [0, 0] is a no-op: bit-identical to no trim at all).
+        self._level_trim_deg = (0.0, 0.0)
+        self._level_trim_logged = False
+        self.declare_parameter('level_trim_deg', [0.0, 0.0])
+        self._apply_level_trim_param(self.get_parameter('level_trim_deg').value)
 
         # ── C-LEVEL-2: the pose-dependent residual tilt map ──────
         # `None` = no calibration loaded ⇒ behaviour is EXACTLY C-LEVEL-1. The
@@ -2043,6 +2068,11 @@ class TrajectoryNode(Node):
         The orchestrator publishes ``[tilt_x, tilt_y]`` (rad) — the measured tilt
         error; the sign convention that turns it into the counter-tilting
         correction lives in ``motion/levelling.py``, shared with mpc_bridge_node.
+        The RAW reading is stashed in ``self._gravity_offset_raw`` (used only to
+        re-derive the effective offset if ``level_trim_deg`` changes later);
+        ``self._gravity_offset`` — what every ingest site actually reads — is
+        this raw reading plus the currently-active trim
+        (``_apply_level_trim_param``), same point, same convention.
 
         The correction can change mid-session (the operator levels *after*
         launch). By C-LEVEL-1's in-flight rule an already-installed plan keeps the
@@ -2075,12 +2105,66 @@ class TrajectoryNode(Node):
         # whether a correction is loaded. The raw offset is stored alongside the
         # matrix because the ingest sites compose `offset + map residual` before
         # the single Rodrigues; the matrix stays the offset-only answer.
-        self._gravity_offset = (tilt_x, tilt_y)
+        self._gravity_offset_raw = (tilt_x, tilt_y)
+        eff_x, eff_y = levelling.offset_with_trim(
+            tilt_x, tilt_y, *self._level_trim_deg)
+        self._gravity_offset = (eff_x, eff_y)
         self._gravity_correction = levelling.correction_from_offset(
-            tilt_x, tilt_y)
+            eff_x, eff_y)
         self._gravity_correction_loaded = True
-        self.get_logger().info(
-            f"level correction updated: tilt x={tilt_x:.4f} y={tilt_y:.4f} rad")
+        if self._level_trim_deg == (0.0, 0.0):
+            self.get_logger().info(
+                f"level correction updated: tilt x={tilt_x:.4f} "
+                f"y={tilt_y:.4f} rad")
+        else:
+            self.get_logger().info(
+                f"level correction updated: tilt x={tilt_x:.4f} "
+                f"y={tilt_y:.4f} rad + level_trim_deg "
+                f"[{self._level_trim_deg[0]:+.3f}, "
+                f"{self._level_trim_deg[1]:+.3f}] deg -> effective "
+                f"x={eff_x:.4f} y={eff_y:.4f} rad")
+
+    def _apply_level_trim_param(self, value) -> None:
+        """Validate ``value`` as ``level_trim_deg`` and (re)derive the
+        effective ``self._gravity_offset`` from the stashed raw reading
+        (``self._gravity_offset_raw``) plus it.
+
+        Called at startup, with the declared parameter's initial value (which
+        is how a trim of ``[0.0, 0.0]`` ends up baked into the very first
+        ``self._gravity_offset`` assignment — see ``__init__``), and from
+        ``_on_set_parameters`` on every live ``level_trim_deg`` set. All
+        arithmetic/validation is ``motion/levelling.validate_trim_deg`` /
+        ``offset_with_trim`` — this method only logs and updates state, per
+        the same "node stays thin" rule the rest of the levelling frame
+        follows (``motion/levelling.py`` module docstring).
+
+        An out-of-range or malformed trim is REFUSED (WARN) and ``(0.0,
+        0.0)`` is used in its place — never the previous trim. There is no
+        "last-good value" to fall back to that is any safer than 0, and
+        pretending the refused value had silently become the old one would
+        be the more surprising behaviour of the two.
+        """
+        ok, trim_x, trim_y, reason = levelling.validate_trim_deg(value)
+        if not ok:
+            self.get_logger().warning(
+                'level_trim_deg %r REFUSED (%s); using [0.0, 0.0]'
+                % (value, reason))
+            trim_x, trim_y = 0.0, 0.0
+        changed = (trim_x, trim_y) != self._level_trim_deg
+        self._level_trim_deg = (trim_x, trim_y)
+        eff_x, eff_y = levelling.offset_with_trim(
+            self._gravity_offset_raw[0], self._gravity_offset_raw[1],
+            trim_x, trim_y)
+        self._gravity_offset = (eff_x, eff_y)
+        self._gravity_correction = levelling.correction_from_offset(
+            eff_x, eff_y)
+        if changed or not self._level_trim_logged:
+            self.get_logger().info(
+                'level_trim_deg = [%+.4f, %+.4f] deg (added to the raw '
+                '/gravity_offset reading before the correction is built; '
+                'effective offset x=%.6f y=%.6f rad)'
+                % (trim_x, trim_y, eff_x, eff_y))
+            self._level_trim_logged = True
 
     # ── C-LEVEL-2: tilt-map load / reload / degrade ─────────────
 
@@ -3677,8 +3761,17 @@ class TrajectoryNode(Node):
     def _on_set_parameters(self, params):
         """Validate + apply a live ``pre_release_hold_s`` (range [0, 0.25] s,
         the same fence as startup); an invalid value is REFUSED and the old
-        one kept. Every other parameter passes through unchanged."""
+        one kept. ``level_trim_deg`` is handled by ``_apply_level_trim_param``
+        — ALWAYS accepted at the rclpy layer (``successful=True``), unlike
+        ``pre_release_hold_s`` above: an out-of-range trim substitutes
+        ``(0.0, 0.0)`` internally rather than rejecting the set, so
+        ``ros2 param set`` always reports what the node actually did with it,
+        never a bounce back to a stale value it only looks like it kept.
+        Every other parameter passes through unchanged."""
         for param in params:
+            if param.name == 'level_trim_deg':
+                self._apply_level_trim_param(param.value)
+                continue
             if param.name != 'pre_release_hold_s':
                 continue
             try:

@@ -4,7 +4,9 @@ Skill-stack R5 (`plans/active/two-ball-skill-stack.md` § R5, re-scoped 2026-09-
 machine as `session_skills_r4.md` — **that sheet stays the reference for everything this one
 does not restate** (QTM preconditions, bring-up rows, the guard/`/recover`/hand-homing recovery
 flow, the R4 watch items carried below). Driver: `jugglebot/juggle` action, patterns
-`self_toss` / `hop` / `columns`; `skills/check`; `jugglebot/juggle_stop`; the GUI reload button.
+`self_toss` / `hop` / `columns` / `columns_1ball` (B2: columns motion with one real ball,
+a phantom at the other site — `skill_node.py::SkillNode._run_columns_1ball`); `skills/check`;
+`jugglebot/juggle_stop`; the GUI reload button.
 `session_skills_r4_diag.md` is the model for a data-gathering (no pre-registered pass/fail gate)
 sitting shape — this sheet borrows that shape for §§ 3.5–6.
 

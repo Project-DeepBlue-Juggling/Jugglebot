@@ -290,6 +290,23 @@ ENUMS = {
         ("BB_FW_VERIFY", 0x005E, "Ball Butler FW-over-CAN: CRC-32 over the staged image (relay → CAN1 0x7D6 op 0x03)"),
         ("BB_FW_COMMIT", 0x005F, "Ball Butler FW-over-CAN: apply the staged image + reboot (relay → CAN1 0x7D6 op 0x04)"),
         ("BB_FW_INFO",   0x0060, "Ball Butler FW-over-CAN: read the running FW_VERSION (relay → CAN1 0x7D6 op 0x05)"),
+        # ADDITIVE (2026-10-04, FW 26 — no PROTOCOL_VERSION bump, the
+        # GET_BB_AXIS_VERSIONS precedent: an FW <= 25 board answers this id with
+        # ERR_UNKNOWN_METHOD, loudly, and the host treats the method as
+        # unavailable). The ONE way to put the hand at a caller-chosen position
+        # outside a streamed pattern: ACTIVATE's axis-6 TRAP_TRAJ ladder (same
+        # gates, same 10 s timeout -> IDLE, same PASSTHROUGH hand-off on arrival)
+        # with the target and cruise taken from the args instead of the constant
+        # HAND_ACTIVATE_POSITION_REV. Exists for the hand-jam recovery (raise off a
+        # ball pinched under the ring, then lower to park): the relay allow-table
+        # deliberately carries no hand position command, and a latched guard can
+        # only IDLE the hand or cut its current. Axis 6 only, target in
+        # [0, HAND_MOTOR_MAX_POSITION], vel in (0, GENTLE_MOVE_VEL_LIMIT_RPS];
+        # never touches the current limit. The reply is DEFERRED to the move's
+        # end (the net task never waits) and carries ResultHandMoveTo; a second
+        # HAND_MOVE_TO while one runs RETARGETS it and answers the first with
+        # outcome SUPERSEDED. Not idempotent (host: retries forced to 0).
+        ("HAND_MOVE_TO", 0x0061, "Hand-only TRAP_TRAJ move to a caller target (ACTIVATE's axis-6 ladder); deferred reply at arrival / timeout / supersede"),
     ],
     "RpcStatus": [
         ("OK",            0x0000, "Success"),
@@ -1629,6 +1646,28 @@ RPC_ARGS = [
         Field("value", "u32", 1, "cached axis0.config.can.input_torque_scale (uint32)"),
         Field("reply_seq", "u32", 1, "count of cached replies since boot"),
         Field("age_ms", "u32", 1, "age of the cached reply in ms (0xFFFFFFFF = none)"),
+    ]),
+    # HAND_MOVE_TO (FW 26, additive). Packed like ArgVelCurr (u8 + two f32 = 9 B).
+    # The firmware validates everything (axis == 6, finite target inside
+    # [0, HAND_MOTOR_MAX_POSITION], 0 < vel <= GENTLE_MOVE_VEL_LIMIT_RPS) and
+    # answers ERR_BAD_ARGS otherwise; it never clips a bad target into range —
+    # a caller asking for 12 rev has a bug, and a silent clip would hide it.
+    RpcArg("ArgHandMoveTo", "HAND_MOVE_TO", [
+        Field("axis",       "u8",  1, "must be 6 (the hand); anything else is ERR_BAD_ARGS"),
+        Field("target_rev", "f32", 1, "hand target (rev, Jugglebot convention), finite, [0, HAND_MOTOR_MAX_POSITION]"),
+        Field("vel_rps",    "f32", 1, "TRAP_TRAJ cruise (rev/s), 0 < v <= GENTLE_MOVE_VEL_LIMIT_RPS"),
+    ]),
+    # HAND_MOVE_TO result, carried by the DEFERRED reply on every terminal path
+    # (status OK: ARRIVED / SUPERSEDED; ERR_TIMEOUT / ERR_BUS_DOWN / ERR_REJECTED:
+    # TIMEOUT / ABORTED, the hand left IDLE). pos/vel are the measured hand state
+    # at the reply, so the caller learns where the hand actually is.
+    RpcArg("ResultHandMoveTo", "HAND_MOVE_TO (result)", [
+        Field("outcome",    "u8",  1, "0 ARRIVED / 1 SUPERSEDED / 2 TIMEOUT / 3 ABORTED"),
+        Field("pad",        "u8",  3, "zero"),
+        Field("pos_rev",    "f32", 1, "measured hand position at the reply (rev)"),
+        Field("vel_rps",    "f32", 1, "measured hand velocity at the reply (rev/s)"),
+        Field("target_rev", "f32", 1, "the target this reply's request commanded (rev)"),
+        Field("elapsed_ms", "u32", 1, "ms from the request's acceptance to the reply"),
     ]),
     # Ball Butler — typed firmware-side encoders own the wire format (the can-bridge
     # refuses a malformed throw before it hits CAN1).

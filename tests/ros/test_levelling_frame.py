@@ -255,6 +255,22 @@ _LEVELLING_MANIFEST = (
      'levelling.correct_pose', 'apply:E5+E6'),
     ('trajectory_node.py', 'TrajectoryNode._on_gravity_offset',
      'levelling.correction_from_offset', 'store'),
+    # `level_trim_deg` (2026-10-04, R5 sitting 3): the operator trim is ADDED
+    # to the raw wire offset BEFORE the one negation `correction_from_offset`
+    # performs -- a `store`-class ingest, once per /gravity_offset message
+    # (`offset_with_trim`), and once more when the parameter itself changes
+    # (`_apply_level_trim_param` re-derives the stored correction from the
+    # retained raw offset, so a live `ros2 param set` lands without waiting
+    # for a re-publish). `validate_trim_deg` is the range check (|trim| <=
+    # 1 deg, else WARN and zero). None of them is a per-pose build or apply.
+    ('trajectory_node.py', 'TrajectoryNode._on_gravity_offset',
+     'levelling.offset_with_trim', 'store'),
+    ('trajectory_node.py', 'TrajectoryNode._apply_level_trim_param',
+     'levelling.validate_trim_deg', 'store'),
+    ('trajectory_node.py', 'TrajectoryNode._apply_level_trim_param',
+     'levelling.offset_with_trim', 'store'),
+    ('trajectory_node.py', 'TrajectoryNode._apply_level_trim_param',
+     'levelling.correction_from_offset', 'store'),
     ('trajectory_node.py', 'TrajectoryNode._on_platform_pose',
      'levelling.correction_for_pose', 'build:E1'),
     ('trajectory_node.py', 'TrajectoryNode._on_platform_pose',
@@ -301,7 +317,11 @@ _BUILD_FUNCS = frozenset({'levelling.correction_for_pose'})
 # the one surface whose whole job is answering "are these two poses the same".
 _EGRESS_FUNCS = frozenset({'levelling.uncorrect_pose'})
 _STORE_FUNCS = frozenset(
-    {'levelling.correction_from_offset', 'levelling.identity_correction'})
+    {'levelling.correction_from_offset', 'levelling.identity_correction',
+     # `level_trim_deg` (2026-10-04): both run on the raw wire OFFSET, once
+     # per message or per parameter change, before the one negation -- a
+     # store-class ingest, never a per-pose build or apply.
+     'levelling.offset_with_trim', 'levelling.validate_trim_deg'})
 
 # An apply/egress whose correction is BUILT in another scope and CARRIED to it,
 # mapped to the scope that must do the building. Added 2026-09-06 for E8.

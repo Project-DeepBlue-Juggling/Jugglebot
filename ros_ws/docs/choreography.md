@@ -358,6 +358,18 @@
 - **clients:** `orchestrator_node`
 - **type:** `jugglebot_interfaces.srv.GetTiltReadingService`
 
+### `hand_jam_dry_run`
+
+- **servers:** `teensy_bridge_node`
+- **clients:** _none_
+- **type:** `std_srvs.srv.Trigger`
+
+### `hand_move_to`
+
+- **servers:** `teensy_bridge_node`
+- **clients:** _none_
+- **type:** `jugglebot_interfaces.srv.SetFloat`
+
 ### `home`
 
 - **servers:** `teensy_bridge_node`
@@ -514,6 +526,8 @@ broken wire cannot hide among them.
 - `cone/timing_result` — topic with no subscribers
 - `configure` — service with no clients
 - `deactivate` — service with no clients
+- `hand_jam_dry_run` — service with no clients
+- `hand_move_to` — service with no clients
 - `home` — service with no clients
 - `jugglebot/juggle_request` — service with no clients
 - `jugglebot/juggle_stop` — service with no clients

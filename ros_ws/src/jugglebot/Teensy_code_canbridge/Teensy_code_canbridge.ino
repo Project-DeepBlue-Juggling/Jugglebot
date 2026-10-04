@@ -199,6 +199,7 @@ static void task_net(void*) {
   TickType_t last = xTaskGetTickCount();
   for (;;) {
     udp_link_service();
+    Rpc::rpc_service();   // deferred HAND_MOVE_TO replies (FW 26) — sent on THIS task's stack
     // 1 ms cadence: well above the 40 Hz downlink + 10 Hz heartbeat rates while
     // leaving the CPU to the higher-priority CAN/interp tasks.
     vTaskDelayUntil(&last, pdMS_TO_TICKS(1));

@@ -133,14 +133,21 @@ TOOL_NAME = 'tests/hardware/skills_plan_bench.py'
 KIND_THROW, KIND_CATCH, KIND_REST = 0, 1, 2
 _WIRE_KIND = {sg.THROW: KIND_THROW, sg.CATCH: KIND_CATCH, sg.REST: KIND_REST}
 
-#: The owner's R2 operating point (brief_common.md § 0, 2026-09-12).
-APEX_M = 0.9
-SEPARATION_MM = 100.0
-DWELL_S = 0.30
-SESSION_LEG_VEL_MMPS = 300.0
+#: The operating point this bench rehearses. R2's (brief_common.md § 0,
+#: 2026-09-12) was apex 0.9 / separation 100 / dwell 0.30 / legs 300-5000-
+#: 200000 / hand 3500; since 2026-10-04 (R5 sitting 3, `logbook/2026-10-04-
+#: skill-stack-r5-sitting-3.md`) the columns geometry is apex 0.95 /
+#: separation 125 / dwell 0.27 at leg velocity 350 and hand 3900, which is
+#: what `config/generated/admissible_box.yaml` is swept at and what the
+#: sitting-4 runsheet sets with `set_limits` -- the bench must rehearse the
+#: point the robot will fly, not the one it flew in September.
+APEX_M = 0.95
+SEPARATION_MM = 125.0
+DWELL_S = 0.27
+SESSION_LEG_VEL_MMPS = 350.0
 SESSION_LEG_ACC_MMPS2 = 5000.0
 SESSION_LEG_JERK_MMPS3 = 200000.0
-SESSION_HAND_ACC_RPS2 = 3500.0
+SESSION_HAND_ACC_RPS2 = 3900.0
 
 #: The owner's R3 single-site self-toss operating point (brief_common.md § 0
 #: "Owner decisions", 2026-09-13): site P1 = the SAME (-50, 0) mm point

@@ -59,7 +59,8 @@ from geometry_msgs.msg import Point, Pose, Quaternion, Vector3
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from jugglebot_interfaces.action import Juggle
-from jugglebot_interfaces.msg import (BallButlerHeartbeat, BallStateArray,
+from jugglebot_interfaces.msg import (BallButlerHeartbeat, BallState,
+                                      BallStateArray,
                                       HandTelemetryMessage, RigidBodyPoses,
                                       ThrowAnnouncement, TrajectoryStatus)
 from jugglebot_interfaces.srv import BallButlerThrow, GoToPose, InstallSegment
@@ -83,9 +84,11 @@ from jugglebot.motion.skills.schedule import (LEAD_S,
                                               compile_columns,
                                               compile_one_ball,
                                               compile_reload,
+                                              compile_reload_columns,
                                               compile_reload_wait,
                                               flight_s, floor_lift_s,
                                               home_hand_bounds,
+                                              phantom_feed_prior,
                                               schedule_has_shadow_landing,
                                               transit_s)
 from jugglebot.motion.skills.segments import CATCH, REST, THROW
@@ -96,7 +99,8 @@ from jugglebot.motion.trajectory import ballistics_bc
 from jugglebot.motion.trajectory import tilt_geometry as tg
 from jugglebot.motion.trajectory.limits import TrajectoryLimits
 from jugglebot.ball_possession import (
-    FlightLatch, advance_flight_latches, flight_in_progress)
+    FlightLatch, advance_correlation, announced_source, flight_in_progress,
+    require_identity_fields)
 
 # BallStatus enum (BallState.msg): 0 = TO_BE_THROWN, 1 = IN_FLIGHT, 2 = CAUGHT.
 # Restated (not imported from reload_coordinator_node — that module is ROS/FSM
@@ -272,7 +276,18 @@ _FRAME_CHECK_MIN_SAMPLES = 20
 #: no box and is refused NO_ADMISSIBLE_COMMAND before anything moves.
 _DEFAULT_APEX_M = 0.9
 _DEFAULT_SEPARATION_MM = 250.0
-_DEFAULT_DWELL_S = 0.30
+#: 0.30 -> 0.27 on 2026-10-04 (R5 sitting 3): with two balls in columns the
+#: hand period is fixed by the apex, so dwell trades TRANSIT budget against
+#: the DWELL-phase re-attitude. At the 125 mm separation / 350 mm/s point
+#: the jitter-free executor loop (`tests/hardware/skills_plan_bench.py`'s
+#: build_schedule, 8 throws incl. the Stop fold, limits at 90 %) is
+#: acceleration-bound at dwell 0.30 (4507-4813 mm/s^2 against 4500) and
+#: jerk-bound at 0.25 (205-226 k against 180 k -- the catch-with-throw has
+#: 50 ms less to re-level for its throw), and passes all three at 0.27.
+#: The admissible box is swept at this dwell; `check_limits` refuses a
+#: live dwell it was not swept for, so this constant and the YAML move
+#: together.
+_DEFAULT_DWELL_S = 0.27
 _DEFAULT_N_THROWS = 4
 
 #: The columns schedule's first skill installs this long after a columns
@@ -845,8 +860,15 @@ class SkillNode(Node):
         # reverse against Ball Butler's own +x lateral arrival to match it
         # at touch-down); 20 mm toward A clears at 80/83/73 %
         # vel/acc/jerk, with the refusing cliff 30 mm further away on the
-        # far side (2026-10-02 sitting 2 margins).
-        self.declare_parameter('columns_feed_aim_toward_a_mm', 20.0)
+        # far side (2026-10-02 sitting 2 margins). 20 -> 10 mm on 2026-10-04:
+        # the balls pass 490 mm up where the falling ball still carries 84 %
+        # of its landing error, and at 100 mm separation the 20 mm aim spent
+        # 17 of the 26 mm of surface clearance on the pass right after the
+        # feed (sitting 3: 2 of 6 ground-truthed attempts collided). At the
+        # 125 mm separation flown from sitting 4 the clearance is 51 mm; 10 mm
+        # keeps the feed catch inside the leg limits (aim 0 demands 98 % of
+        # the 5000 mm/s^2 acceleration limit) while spending 8 mm of it.
+        self.declare_parameter('columns_feed_aim_toward_a_mm', 10.0)
 
         # ── the install client + tick timer share ONE reentrant group ──────
         # Fixed 2026-09-13 (found by reading, never exercised live): `main`
@@ -919,6 +941,11 @@ class SkillNode(Node):
         # concurrently with a blocked service call instead of queuing behind
         # it.
         self._sub_cbgroup = MutuallyExclusiveCallbackGroup()
+        # The two-ball association contract keys every release on the
+        # track's (source, throw_time) — refuse to start against a stale
+        # interface build rather than never correlating a release
+        # (`ball_possession.require_identity_fields`).
+        require_identity_fields(BallState)
         self.create_subscription(BallStateArray, 'balls', self._on_balls, 10,
                                  callback_group=self._sub_cbgroup)
         self.create_subscription(
@@ -1127,7 +1154,7 @@ class SkillNode(Node):
         # ball was found), so the correlation is a direct fact, not a
         # `FlightLatch` search over an unknown release -- unlike the
         # announcement path (`_install_announced_reload`), which never
-        # learns the tracker id until `advance_flight_latches` finds it.
+        # learns the tracker id until `advance_correlation` finds it.
         with self._correlation_lock:
             self._correlation[1] = (FlightLatch(t_release_s=now,
                                                 announced_id=int(ball_id)),)
@@ -1144,18 +1171,29 @@ class SkillNode(Node):
         """Refine every live schedule-ball-id -> tracker-id correlation
         against the latest ``/balls`` snapshot (item 3, plan § 2.7).
 
-        ``jugglebot.ball_possession`` owns the RULE — `latch_announced_ball`
-        per announced release (shared with `reload_coordinator_node`'s FSM
-        latch, plan discipline: one rule, not a lookalike copy) and
-        `advance_flight_latches` over the per-release queue; this method owns
-        the per-schedule-ball-id state the rule threads through."""
-        now_s = self._now_s()
+        ``jugglebot.ball_possession`` owns the RULE — an identity latch
+        resolves only to the track minted for its own announcement
+        (`match_announced_track`: source + throw_time), a legacy latch
+        (the human-lob feed, id already known) keeps `latch_announced_ball`
+        (shared with `reload_coordinator_node`'s FSM latch), and
+        `advance_correlation` runs every per-release queue at once against
+        ONE claimed set; this method owns the per-schedule-ball-id state the
+        rule threads through."""
         with self._correlation_lock:
-            for ball_id, latches in list(self._correlation.items()):
-                self._correlation[ball_id] = advance_flight_latches(
-                    self._raw_balls, robot_name=self._robot_name,
-                    latches=latches, now_s=now_s,
-                    in_flight_status=_BALL_STATUS_IN_FLIGHT)
+            self._advance_correlation_locked(self._now_s())
+
+    def _advance_correlation_locked(self, now_s: float) -> None:
+        """`_advance_correlation`'s body, for a caller already holding
+        ``_correlation_lock`` (every site that queues a latch). ALL schedule
+        balls advance together through `ball_possession.advance_correlation`,
+        so one claimed set spans both columns balls: a tracker id latched by
+        one schedule ball can never be latched by the other (the 2026-10-02
+        fed-columns mis-association, where each ball's re-release latched the
+        OTHER ball's flight)."""
+        self._correlation = dict(advance_correlation(
+            self._raw_balls, robot_name=self._robot_name,
+            correlation=self._correlation, now_s=float(now_s),
+            in_flight_status=_BALL_STATUS_IN_FLIGHT))
 
     def _tracker(self, ball_id: int):
         """The executor's tracker callable — keyed by SCHEDULE ball id.
@@ -1729,7 +1767,22 @@ class SkillNode(Node):
         (the executor's own `_u_cache` caches it by skill index — see
         `SkillExecutor._catch_terminal`'s docstring), so de-duplicating on the
         release's own absolute wall-clock instant is exact, not a heuristic.
+
+        **B2's phantom ball (`schedule.is_phantom`) is never announced, and
+        arms no `FlightLatch`.** The enforcement point for "a phantom ball
+        produces motion and nothing else" on the tracker-correlation side:
+        there is no physical ball for this release to correlate to, so
+        publishing a `ThrowAnnouncement` for it would have the tracker (and
+        Ball Butler, and any other `thrower_name`/`target_id` subscriber)
+        waiting on a track that can never appear, and latching
+        `self._correlation[ball_id]` would arm a catch-side identity check
+        this ball's catch never needs (it is never tracked at all — see
+        `SkillExecutor._tracked_landing`). Checked first, before the
+        de-duplication cache below, so a phantom release never occupies a
+        slot in it either.
         """
+        if self._executor is not None and self._executor.schedule.is_phantom(ball_id):
+            return
         physics = self._release_physics(kind, terminal)
         if physics is None or not result.accepted or t_release_mono <= 0.0:
             return
@@ -1767,14 +1820,19 @@ class SkillNode(Node):
         preexisting = tuple(sorted(int(b.id) for b in self._raw_balls
                                    if int(b.status) == _BALL_STATUS_IN_FLIGHT))
         t_release_ros_s = (float(now_ros.nanoseconds) * 1e-9) + delta_s
+        # An IDENTITY latch (`thrower` set): it resolves only to the track
+        # the tracker mints for THIS announcement — source == our name,
+        # throw_time == this very instant (`ball_possession.
+        # match_announced_track`) — never to whichever of our balls happens
+        # to be IN_FLIGHT when the release comes due.
         with self._correlation_lock:
-            self._correlation[int(ball_id)] = advance_flight_latches(
-                self._raw_balls, robot_name=self._robot_name,
-                latches=tuple(self._correlation.get(int(ball_id), ()))
-                        + (FlightLatch(t_release_s=t_release_ros_s,
-                                       preexisting=preexisting),),
-                now_s=float(now_ros.nanoseconds) * 1e-9,
-                in_flight_status=_BALL_STATUS_IN_FLIGHT)
+            self._correlation[int(ball_id)] = (
+                tuple(self._correlation.get(int(ball_id), ()))
+                + (FlightLatch(t_release_s=t_release_ros_s,
+                               preexisting=preexisting,
+                               thrower=announced_source(self._robot_name)),))
+            self._advance_correlation_locked(
+                float(now_ros.nanoseconds) * 1e-9)
         self._announce_pub.publish(ann)
         self.get_logger().debug(
             'skill announced ball %d: release in %.3f s, |v| %.3f m/s'
@@ -2393,8 +2451,14 @@ class SkillNode(Node):
         return response
 
     #: Pattern names the Juggle goal accepts — `schedule.Schedule.pattern`'s
-    #: own set (R4 owner decision D1).
-    _PATTERNS = ('self_toss', 'hop', 'columns')
+    #: own set (R4 owner decision D1), plus B2's ``columns_1ball`` (columns
+    #: motion flown with one real ball — `_run_columns_1ball`). The LATTER
+    #: never becomes a `Schedule.pattern` value of its own: `compile_columns`
+    #: always labels it 'columns' (the admissible box has no
+    #: 'columns_1ball' kind, and none is swept — see `_run_columns_1ball`'s
+    #: docstring), so this tuple names one more GOAL-facing string than
+    #: `Schedule.pattern` has values.
+    _PATTERNS = ('self_toss', 'hop', 'columns', 'columns_1ball')
 
     def _start_pattern(self, goal) -> SimpleNamespace:
         """The Juggle goal's shared no-motion refusal ladder + schedule
@@ -2451,6 +2515,9 @@ class SkillNode(Node):
         if pattern == 'columns':
             result = self._run_columns(apex_m, separation_mm, dwell_s,
                                        n_throws, reload)
+        elif pattern == 'columns_1ball':
+            result = self._run_columns_1ball(apex_m, separation_mm, dwell_s,
+                                             n_throws, reload)
         else:
             result = self._run_one_ball(pattern, apex_m, separation_mm,
                                         dwell_s, n_throws, reload)
@@ -2655,6 +2722,175 @@ class SkillNode(Node):
                 % (self._attempt_label or 'columns', a_site.name,
                    COLUMNS_TRACKER_FEED_DEADLINE_S, feed_aim_site.name,
                    len(memory))))
+
+    def _run_columns_1ball(self, apex_m: float, separation_mm: float,
+                           dwell_s: float, n_throws: int,
+                           reload: bool) -> SimpleNamespace:
+        """B2's ``columns_1ball`` branch of `_start_pattern`: columns motion
+        flown with ball A real and ball B a PHANTOM
+        (`schedule.Pattern.phantom_balls`) -- the owner's own framing: "JB
+        running columns with just a single ball (to test the vertical
+        throws while the Platform zips from side to side)". The cup still
+        transits to the phantom's site and the hand still strokes there --
+        the legs see identical dynamics to a real two-ball columns attempt
+        -- but nothing is ever caught or thrown there; see
+        `schedule.Schedule.is_phantom`'s docstring for the three
+        enforcement points the "produces motion and nothing else" invariant
+        is held at.
+
+        Site pick mirrors `_run_columns`'s own (`_columns_feed_site_name`)
+        -- not because anything is fed here, but so an operator sees the
+        same two named sites an ordinary columns attempt would use. The
+        admissible-box lookup is `_run_columns`'s own 'columns' check on
+        BOTH site pairs: this IS columns motion (`compile_columns`,
+        unchanged in MOTION), and no box was ever swept for a
+        'columns_1ball' kind -- none needs to be, because `compile_columns`
+        always labels its own `Schedule.pattern` 'columns', phantom or not
+        (the box-lookup contract `SkillExecutor._command_u` reads).
+
+        Start: ``reload=True`` reuses the self-toss reload choreography
+        verbatim for ball A ALONE (`_start_reload`, ``kind='columns_1ball'``)
+        -- Ball Butler feeds and the robot catches ball A exactly as a
+        plain self-toss reload would, and only once that reload's own
+        DECAY REST leaves ball A resting, level, at its site does the
+        columns schedule begin (`schedule.compile_reload_columns`,
+        `_install_announced_reload`'s own branch) -- NOT the fed columns
+        start (`_run_columns`'s own ``reload=True``, which feeds ball B).
+        ``reload=False`` compiles the columns schedule directly --
+        `_run_one_ball`'s own non-reload shape, ball A assumed already
+        held at its site.
+        """
+        if _ADMISSIBLE_BOX_PATH is None:
+            msg = ('cannot find the repo root from %r -- the admissible box '
+                  '/ memory paths cannot be resolved' % (__file__,))
+            self.get_logger().debug(msg)
+            return SimpleNamespace(success=False, message=msg)
+        plant_id = str(self.get_parameter('plant_id').value)
+        sites = columns_sites(separation_mm)
+        # Same site pick as `_run_columns` (2026-10-02 sitting 2's default),
+        # purely for naming consistency -- nothing is fed at `phantom_site`
+        # here, so none of that sitting's collision/aim-walk concerns apply.
+        if self._columns_feed_site_name() == sites[0].name:
+            phantom_site, a_site = sites[0], sites[1]
+        else:
+            phantom_site, a_site = sites[1], sites[0]
+        try:
+            pattern = Pattern(sites=(a_site, phantom_site), apex_m=apex_m,
+                             dwell_s=dwell_s, n_throws=n_throws,
+                             phantom_balls=(1,))
+        except ValueError as exc:
+            msg = 'columns_1ball pattern refused: %s' % (exc,)
+            self.get_logger().debug(msg)
+            return SimpleNamespace(success=False, message=msg)
+
+        try:
+            boxes = adm.load(_ADMISSIBLE_BOX_PATH)
+            adm.check_limits(boxes, self._live_limits(), dwell_s=dwell_s)
+        except adm.AdmissibleError as exc:
+            msg = 'admissible box refused: %s' % (exc,)
+            self.get_logger().debug(msg)
+            return SimpleNamespace(success=False, message=msg)
+
+        missing = []
+        for site in sites:
+            xy = (float(site.cup_mm[0]), float(site.cup_mm[1]))
+            if adm.select(boxes, 'columns', (site.name, site.name), apex_m,
+                         release_site_xy_mm=xy, target_site_xy_mm=xy) is None:
+                reason = adm.describe_miss(
+                    boxes, 'columns', (site.name, site.name), apex_m,
+                    release_site_xy_mm=xy, target_site_xy_mm=xy)
+                missing.append('%r: %s' % ((site.name, site.name), reason))
+        if missing:
+            msg = ('columns_1ball refused: no admissible box covers site '
+                  'pair(s) -- %s' % ('; '.join(missing)))
+            self.get_logger().debug(msg)
+            return SimpleNamespace(success=False, message=msg)
+
+        try:
+            memory = Memory(memory_path(_REPO_ROOT, plant_id))
+        except (ValueError, OSError, csv.Error) as exc:
+            msg = 'memory refused: %s' % (exc,)
+            self.get_logger().debug(msg)
+            return SimpleNamespace(success=False, message=msg)
+
+        lift_s, lift_err = self._opening_rest_period()
+        if lift_err:
+            msg = 'columns_1ball refused: %s' % (lift_err,)
+            self.get_logger().debug(msg)
+            return SimpleNamespace(success=False, message=msg)
+
+        frame_err = self._frame_check_error()
+        if frame_err:
+            msg = 'columns_1ball refused: %s' % (frame_err,)
+            self.get_logger().debug(msg)
+            return SimpleNamespace(success=False, message=msg)
+
+        # A new attempt reuses small ball ids -- drop any flight latch an
+        # earlier (possibly early-ended) attempt left for them, same as
+        # `_run_columns`/`_run_one_ball`/`_start_reload`.
+        with self._correlation_lock:
+            self._correlation.pop(0, None)
+            self._correlation.pop(1, None)
+
+        if reload:
+            return self._start_reload(
+                SimpleNamespace(success=None, message=None), site=a_site,
+                lift_s=lift_s, boxes=boxes, memory=memory,
+                kind='columns_1ball', columns_pattern=pattern)
+
+        # The phantom's first catch takes the FED start's aim point (the
+        # feed site walked `columns_feed_aim_toward_a_mm` toward A) and
+        # its level pin, via `compile_columns`'s own `feed=` branch
+        # (`schedule.phantom_feed_prior`): at the nominal site the first
+        # catch refused LIMIT_JERK on every sim seed at the sitting-4
+        # geometry while the fed start passed 5/5 (2026-10-04). The
+        # schedule's t0 is derived from the prior's landing instant exactly
+        # as the fed start derives it from Ball Butler's.
+        aim_site = _columns_feed_aim_site(
+            phantom_site, a_site, self._columns_feed_aim_toward_a_mm())
+        now = self.get_clock().now().nanoseconds / 1e9
+        try:
+            probe = compile_columns(
+                pattern, feed=phantom_feed_prior(pattern, aim_site, now))
+            deficit = now - probe.skills[0].dispatch_s()
+            t0 = (now + max(deficit, 0.0) + (1.0 / _TICK_HZ)
+                  + _DISPATCH_LOOKAHEAD_S)
+            schedule = compile_columns(
+                pattern, feed=phantom_feed_prior(pattern, aim_site, t0))
+        except ValueError as exc:
+            msg = 'columns_1ball schedule refused: %s' % (exc,)
+            self.get_logger().debug(msg)
+            return SimpleNamespace(success=False, message=msg)
+
+        learner_cfg = lr.LearnerConfig()
+        learner = SimpleNamespace(
+            command=lambda x, y_d: memory.command(x, y_d, learner_cfg))
+        self._sched_refused_at_start = self._sched_refused
+        self._force_hold = False
+        self._hold_forced_code = ''
+        self._executor = SkillExecutor(
+            schedule, self._installer, tracker=self._tracker,
+            catch_aim_source=self._catch_aim_source(),
+            resend_max_per_catch=self._catch_resend_max(),
+            launch_ratio=self._launch_ratio,
+            learner=learner, boxes=boxes,
+            lateral_authority_m=float(self.get_parameter(
+                'learner_lateral_authority_mm').value) / 1000.0,
+            observer=self._ball_evidence, observations=self._observations,
+            on_experience=self._bind_on_experience(memory),
+            dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
+        msg = (
+            'columns_1ball schedule compiled: %d skills, %d throws, '
+            'plant_id=%r, memory rows=%d, t0=%.3f'
+            % (len(schedule.skills), n_throws, plant_id, len(memory), t0))
+        self.get_logger().debug(msg)
+        return SimpleNamespace(
+            success=True, message=msg,
+            start_line=rp.start_line(
+                self._attempt_label or 'columns_1ball',
+                self._executor.n_throws, apex_m, memory_rows=len(memory),
+                frame_offset_mm=self._frame_offset_mm(),
+                extra='(%s -> %s phantom)' % (a_site.name, phantom_site.name)))
 
     def _live_limits(self):
         """The session limits `admissible.check_limits` judges the loaded box
@@ -3241,6 +3477,13 @@ class SkillNode(Node):
                 memory=memory, site=site, aim_site=aim_site, bridge=bridge,
                 reload_sent=reload_sent, bb_left_idle=False,
                 announced=False,
+                # B2 (`kind='columns_1ball'`): `_install_announced_reload`'s
+                # own branch needs this bridge REST's lift period again to
+                # build `compile_reload_columns`'s throwaway lead-in pattern
+                # (`OneBallPattern.floor_lift_s`) -- carried on every ctx
+                # (harmless for every other kind, which never reads it)
+                # rather than threaded through as a second parameter.
+                lift_s=float(lift_s),
                 # R5 (2026-09-30, `not_settled_report.md` Q4 option (d)):
                 # armed False, flips True the first time
                 # `_on_bb_throw_outcome` retries a `THROW_ABORTED_NOT_SETTLED`
@@ -3345,6 +3588,92 @@ class SkillNode(Node):
         throw_time_s = (float(msg.throw_time.sec)
                        + float(msg.throw_time.nanosec) * 1e-9)
 
+        # B2 (`columns_1ball`, owner's words: "A is fed, held, then the
+        # pattern starts"): this is ball A's OWN reload -- the identical
+        # choreography a plain self-toss reload runs -- but the schedule
+        # that follows it is columns motion with a phantom at the other
+        # site, not a second self-toss loop. `compile_reload_columns` reuses
+        # `compile_reload` for the PRE-TILT/CATCH/DECAY lead-in and hands
+        # off into `compile_columns` itself (see that function's docstring
+        # for why the two compose safely). A separate branch from
+        # `kind == 'columns'` below -- that one is ball B's REAL feed
+        # (`compile_columns(..., feed=...)`); this one is ball A's reload
+        # (`compile_reload_columns`, no `feed` anywhere, because ball B
+        # never arrives at all).
+        if ctx.kind == 'columns_1ball':
+            now = self.get_clock().now().nanoseconds / 1e9
+            cap_deg = self._hold_tilt_max_deg()
+            try:
+                schedule = compile_reload_columns(
+                    landing_mm, landing_vel_mm_s, t_land_abs_s, ctx.lift_s,
+                    ctx.columns_pattern, now, max_tilt_deg=cap_deg)
+            except (ValueError, AssertionError) as exc:
+                if self._still_current(ctx):
+                    self._end_attempt(
+                        'REJECTED_RELOAD_UNSCHEDULABLE',
+                        'columns_1ball reload: the announced landing could '
+                        'not be scheduled (%s) -- no schedule installed; '
+                        'the platform stays at rest under the aim point '
+                        '(the bridge REST is already streaming)' % (exc,))
+                return
+            # Ball A is schedule ball id 0 -- the SAME FlightLatch rule the
+            # plain reload branch below applies to its own release.
+            preexisting = tuple(sorted(int(b.id) for b in self._raw_balls
+                                       if int(b.status) == _BALL_STATUS_IN_FLIGHT))
+            with self._correlation_lock:
+                self._correlation[0] = (FlightLatch(
+                    t_release_s=throw_time_s, preexisting=preexisting,
+                    thrower=announced_source(msg.thrower_name)),)
+                self._advance_correlation_locked(self._now_s())
+            learner_cfg = lr.LearnerConfig()
+            learner = SimpleNamespace(
+                command=lambda x, y_d: ctx.memory.command(x, y_d, learner_cfg))
+            executor = SkillExecutor(
+                schedule, self._installer, tracker=self._tracker,
+                catch_aim_source=self._catch_aim_source(),
+                resend_max_per_catch=self._catch_resend_max(),
+                launch_ratio=self._launch_ratio,
+                learner=learner, boxes=ctx.boxes,
+                lateral_authority_m=float(self.get_parameter(
+                    'learner_lateral_authority_mm').value) / 1000.0,
+                observer=self._ball_evidence, observations=self._observations,
+                on_experience=self._bind_on_experience(ctx.memory),
+                dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
+            # Same tick-locked claim-then-swap as the plain reload branch
+            # below (duplicated rather than shared -- that branch is
+            # heavily tested and touching it to extract a helper is out of
+            # scope for this unit).
+            got_lock = self._tick_lock.acquire(timeout=_STOP_LOCK_WAIT_S)
+            if not got_lock:
+                self.get_logger().warning(
+                    'columns_1ball reload: could not acquire the tick lock '
+                    'within %.1f s -- swapping the executor without it'
+                    % (_STOP_LOCK_WAIT_S,))
+            try:
+                with self._reload_lock:
+                    installed = self._reload_ctx is ctx
+                    if installed:
+                        self._sched_refused_at_start = self._sched_refused
+                        self._force_hold = False
+                        self._hold_forced_code = ''
+                        self._executor = executor
+                        self._reload_ctx = None
+                        self._reload_throw_inflight = True
+            finally:
+                if got_lock:
+                    self._tick_lock.release()
+            if not installed:
+                self.get_logger().info(
+                    'columns_1ball reload: the attempt ended (stop, timeout '
+                    'or a refused hand lane) while the announced schedule '
+                    'was compiling -- not installed')
+                return
+            self.get_logger().info(
+                'columns_1ball reload: Ball Butler\'s ball is in the air -- '
+                'catching ball A, then starting the columns pattern '
+                '(phantom at %s)' % (ctx.columns_pattern.sites[1].name,))
+            return
+
         # R5 (owner decision D1, 2026-09-30): a columns feed arriving as a
         # Ball Butler announcement compiles `compile_columns`, not
         # `compile_reload` -- `_install_columns_schedule` is the shared
@@ -3359,11 +3688,13 @@ class SkillNode(Node):
             preexisting = tuple(sorted(int(b.id) for b in self._raw_balls
                                        if int(b.status) == _BALL_STATUS_IN_FLIGHT))
             with self._correlation_lock:
-                self._correlation[1] = advance_flight_latches(
-                    self._raw_balls, robot_name=self._robot_name,
-                    latches=(FlightLatch(t_release_s=throw_time_s,
-                                         preexisting=preexisting),),
-                    now_s=self._now_s(), in_flight_status=_BALL_STATUS_IN_FLIGHT)
+                # Identity-keyed on Ball Butler's own (thrower_name,
+                # throw_time): a BB track can never satisfy one of OUR
+                # latches, nor ours this one.
+                self._correlation[1] = (FlightLatch(
+                    t_release_s=throw_time_s, preexisting=preexisting,
+                    thrower=announced_source(msg.thrower_name)),)
+                self._advance_correlation_locked(self._now_s())
             feed = LandingPrior(pos_mm=landing_mm, vel_mm_s=landing_vel_mm_s,
                                 t_land_abs_s=t_land_abs_s)
             self._install_columns_schedule(ctx, feed)
@@ -3389,18 +3720,17 @@ class SkillNode(Node):
             return
 
         # Same FlightLatch rule `_maybe_announce` applies to our own
-        # releases (`advance_flight_latches`, ball_possession's one RULE) —
+        # releases (`advance_correlation`, ball_possession's one RULE) —
         # a fresh, unlatched latch for the reload's schedule ball id (0,
         # `compile_reload`'s own convention), not appended to whatever an
         # earlier attempt left (already dropped in `_start_reload`).
         preexisting = tuple(sorted(int(b.id) for b in self._raw_balls
                                    if int(b.status) == _BALL_STATUS_IN_FLIGHT))
         with self._correlation_lock:
-            self._correlation[0] = advance_flight_latches(
-                self._raw_balls, robot_name=self._robot_name,
-                latches=(FlightLatch(t_release_s=throw_time_s,
-                                     preexisting=preexisting),),
-                now_s=self._now_s(), in_flight_status=_BALL_STATUS_IN_FLIGHT)
+            self._correlation[0] = (FlightLatch(
+                t_release_s=throw_time_s, preexisting=preexisting,
+                thrower=announced_source(msg.thrower_name)),)
+            self._advance_correlation_locked(self._now_s())
 
         learner_cfg = lr.LearnerConfig()
         learner = SimpleNamespace(

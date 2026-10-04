@@ -312,6 +312,9 @@ class BallState:
     tracking: int = 0
     source: str = ''
     destination: str = ''
+    # 2026-10-04: the announcement's own throw_time — with `source`, the
+    # two-ball association key (`ball_possession.match_announced_track`).
+    throw_time: object = field(default_factory=lambda: MsgTime())
     position: object = field(default_factory=lambda: Point())
     velocity: object = field(default_factory=lambda: Vector3())
     landing_position: object = field(default_factory=lambda: Point())

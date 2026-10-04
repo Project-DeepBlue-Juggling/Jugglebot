@@ -11,6 +11,7 @@ message feeds the executor's tracker callable.
 
 from __future__ import annotations
 
+import dataclasses
 import math
 import threading
 import time
@@ -42,6 +43,14 @@ from jugglebot_interfaces.srv import BallButlerThrow, InstallSegment
 from jugglebot import ball_possession
 from jugglebot import skill_node as sn
 import jugglebot.hardware_config as hw
+
+#: The session leg velocity every box fixture and the status fixture below
+#: carry -- 350 since 2026-10-04 (R5 sitting 3: the roomier columns geometry
+#: is swept and flown at 350 mm/s; `config/generated/admissible_box.yaml`
+#: says so, and `check_limits` refuses a live limit the box was not swept
+#: at, so a fixture pinning the old 300 fails every test that loads the
+#: real box). One name, so the next raise is one edit.
+_SESSION_LEG_VEL_MMPS = 350.0
 from jugglebot.motion.skills import admissible as adm
 from jugglebot.motion.skills import executor as ex
 from jugglebot.motion.skills.executor import CAUGHT_WINDOW_S
@@ -65,16 +74,25 @@ class _Time:
 
 def _ball(id, status=0, destination='', tracking=0,
          x=0.0, y=0.0, z=0.0, vx=0.0, vy=0.0, vz=0.0,
-         sec=0, nanosec=0, landing_from_fit=True):
+         sec=0, nanosec=0, landing_from_fit=True, source='',
+         throw_time_s=None):
     """A duck-typed ``/balls`` element — every field `_on_balls` /
-    `latch_announced_ball` reads (id/status/destination/tracking/landing
-    fields), never the real ``BallState`` message type (see the module
-    docstring: `_on_balls` just reads attributes)."""
+    `latch_announced_ball` / `match_announced_track` reads (id/status/
+    destination/tracking/source/throw_time/landing fields), never the real
+    ``BallState`` message type (see the module docstring: `_on_balls` just
+    reads attributes). ``throw_time_s=None`` is an un-announced track (zero
+    stamp, no identity)."""
     ball = MagicMock()
     ball.id = id
     ball.status = status
     ball.destination = destination
     ball.tracking = tracking
+    ball.source = source
+    if throw_time_s is None:
+        ball.throw_time = _Time(0, 0)
+    else:
+        sec_ = int(math.floor(float(throw_time_s)))
+        ball.throw_time = _Time(sec_, int(round((float(throw_time_s) - sec_) * 1e9)))
     ball.landing_position = _Vec(x, y, z)
     ball.landing_velocity = _Vec(vx, vy, vz)
     ball.time_at_land = _Time(sec, nanosec)
@@ -82,6 +100,15 @@ def _ball(id, status=0, destination='', tracking=0,
     # this flag decides whether a landing may become a learner row.
     ball.landing_from_fit = landing_from_fit
     return ball
+
+
+def _identity(node, ball_id=0, k=-1):
+    """The ``(source, throw_time)`` the tracker stamps on the track it mints
+    for schedule ball ``ball_id``'s ``k``-th announced release — read off the
+    node's own identity latch, exactly the key `match_announced_track`
+    matches (`ball_possession`, the two-ball association contract)."""
+    latch = node._correlation[ball_id][k]
+    return {'source': latch.thrower, 'throw_time_s': latch.t_release_s}
 
 
 def _pose_at(x, y):
@@ -96,13 +123,13 @@ def _pose_at(x, y):
 
 def _status(**overrides):
     """A `trajectory/status` message at the admissible box's swept limits
-    (`config/generated/admissible_box.yaml`: 300/5000/200000 since the R5
-    re-sweep, 2026-09-30 — the session leg jerk ramped from 150000 to the YAML
+    (`config/generated/admissible_box.yaml`: 350/5000/200000 since the sitting-3
+    re-sweep, 2026-10-04; 300 from 2026-09-30 — the session leg jerk ramped from 150000 to the YAML
     ceiling; the launch default stays 150000 until the ramp is logged, which
     is why the runsheet sets the limits before `skills/check`) — the LIVE
     limits `_run_one_ball` reads."""
     st = TrajectoryStatus()
-    st.leg_vel_limit_mmps = 300.0
+    st.leg_vel_limit_mmps = _SESSION_LEG_VEL_MMPS
     st.leg_acc_limit_mmps2 = 5000.0
     st.leg_jerk_limit_mmps3 = 200000.0
     for k, v in overrides.items():
@@ -250,6 +277,18 @@ def _columns_goal(**overrides):
     return _goal('columns', **overrides)
 
 
+#: The columns point `config/generated/admissible_box.yaml` is swept at --
+#: separation 125 / apex 0.95 since 2026-10-04 (R5 sitting 3). Tests that
+#: start a columns goal against the REAL box (no `_good_box_path` fixture)
+#: use this; the fixture-backed tests keep their own 100 mm / 0.9 m boxes.
+_FLOWN_COLUMNS = dict(separation_mm=125.0, apex_m=0.95)
+
+
+def _flown_columns_goal(**overrides):
+    kw = dict(_FLOWN_COLUMNS); kw.update(overrides)
+    return _goal('columns', **kw)
+
+
 def _self_toss_goal(**overrides):
     return _goal('self_toss', **overrides)
 
@@ -292,11 +331,13 @@ def _columns_fed(node, tmp_path, *, plant_id):
                                                   separation_mm=100.0))
     assert resp.success is True, resp.message
     # R5 sitting 2 (2026-10-02): the default FED layout holds ball A at P2
-    # and feeds P1, Ball Butler's aim walked 20 mm toward P2 (x = -30) --
-    # `ctx.aim_site` is the bound check's own centre (`_maybe_resolve_
-    # columns_feed`), so the landing must be near THAT point now, not P2.
+    # and feeds P1, Ball Butler's aim walked toward P2 -- 20 mm (x = -30)
+    # until 2026-10-04, 10 mm (x = -40) since (sitting 3: the 20 mm aim
+    # spent 17 of the 26 mm of column clearance). `ctx.aim_site` is the
+    # bound check's own centre (`_maybe_resolve_columns_feed`), so the
+    # landing must be near THAT point now, not P2.
     node._on_balls(BallStateArray(balls=[
-        _ball(7, status=1, tracking=1, x=-29.0, y=-2.0, z=800.0,
+        _ball(7, status=1, tracking=1, x=-39.0, y=-2.0, z=800.0,
              vz=-3000.0, sec=0, nanosec=int((lead_needed + 1.0) * 1e9),
              landing_from_fit=True)]))
     assert node._reload_ctx is None
@@ -386,7 +427,8 @@ def test_stop_keeps_ticking_until_a_pending_flight_finalises_then_appends_its_ro
         node._on_balls(BallStateArray(balls=[
             _ball(7, status=1, destination='jugglebot', tracking=1,
                  x=-50.0, y=0.0, z=830.0, vz=-2500.0,
-                 sec=int(t_land), nanosec=int((t_land % 1.0) * 1e9))]))
+                 sec=int(t_land), nanosec=int((t_land % 1.0) * 1e9),
+                 **_identity(node))]))
 
         # The outcome observation FREEZES at the crossing (2026-09-16), so the
         # tracker has to be sampled while the ball is still in the air — which
@@ -472,7 +514,7 @@ def test_self_toss_is_refused_on_a_dwell_mismatch(tmp_path):
         landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), apex_m=(0.6, 1.2),
         pattern='self_toss', release_site_xy_mm=(-50.0, 0.0),
         target_site_xy_mm=(-50.0, 0.0),
-        limits={'leg_vel_mmps': 300.0, 'leg_acc_mmps2': 5000.0,
+        limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': 5000.0,
                'leg_jerk_mmps3': 200000.0,
                # The node's live hand limit IS this constant (`_live_limits`;
                # set_limits has no hand field) — 3900 since 2026-10-02.
@@ -590,7 +632,8 @@ def test_columns_feed_site_p2_restores_the_flown_layout(tmp_path):
                == sn.GoalResponse.ACCEPT)
     assert node._reload_ctx.site.name == 'P1'
     assert node._reload_ctx.aim_site.name == 'P2'
-    assert node._reload_ctx.aim_site.cup_mm[:2] == pytest.approx([30.0, 0.0])
+    # 10 mm toward A since 2026-10-04 (was 20: x = 30).
+    assert node._reload_ctx.aim_site.cup_mm[:2] == pytest.approx([40.0, 0.0])
 
 
 def test_columns_feed_site_rejects_an_unknown_value():
@@ -606,8 +649,8 @@ def test_columns_feed_aim_toward_a_mm_defaults_to_20():
     """2026-10-02 sitting 2 margins: 20 mm toward A clears the swapped
     layout's undisplaced LIMIT_ACC refusal at 80/83/73 % vel/acc/jerk."""
     node, _client = _node_with_client()
-    assert node.get_parameter('columns_feed_aim_toward_a_mm').value == 20.0
-    assert node._columns_feed_aim_toward_a_mm() == pytest.approx(20.0)
+    assert node.get_parameter('columns_feed_aim_toward_a_mm').value == 10.0
+    assert node._columns_feed_aim_toward_a_mm() == pytest.approx(10.0)
 
 
 def test_columns_feed_aim_toward_a_mm_clamps_outside_0_40():
@@ -632,7 +675,7 @@ def test_self_toss_refuses_an_uncovered_apex_before_any_motion(tmp_path):
         landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), apex_m=(0.6, 1.2),
         pattern='self_toss', release_site_xy_mm=(-50.0, 0.0),
         target_site_xy_mm=(-50.0, 0.0),
-        limits={'leg_vel_mmps': 300.0, 'leg_acc_mmps2': 5000.0,
+        limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': 5000.0,
                'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
         gate_hash=adm.gate_hash(), swept_at='2026-09-13',
         dwell_s=sn._DEFAULT_DWELL_S)
@@ -792,7 +835,7 @@ def test_the_tick_dispatches_the_opening_rest_bridge_through_the_mocked_client()
     launch THROW and the test asserted its flight time; a REST has none."""
     node, client = _node_with_client(response=_response())
     _freshen(node)
-    assert node._start_pattern(_columns_goal(separation_mm=100.0)).success is True
+    assert node._start_pattern(_flown_columns_goal()).success is True
     bridge = node._executor.schedule.skills[0]
     assert bridge.kind == 'REST'
     assert bridge.holds_ball is True
@@ -913,7 +956,7 @@ def test_correlation_latches_the_new_ball_and_excludes_a_preexisting_one():
     node._on_balls(BallStateArray(balls=[
         _ball(99, status=1, destination='jugglebot', tracking=1),
         _ball(7, status=1, destination='jugglebot', tracking=1,
-             x=1.0, y=2.0, z=3.0),
+             x=1.0, y=2.0, z=3.0, **_identity(node)),
     ]))
     assert node._correlation[0][0].announced_id == 7
     landing = node._tracker(0)
@@ -930,11 +973,13 @@ def test_the_tracker_withholds_a_landing_until_tracking_is_confirmed():
                              t_release_s=100.0)
     node._installer('THROW', terminal, 100.0, ball_id=0)
     node._on_balls(BallStateArray(
-        balls=[_ball(7, status=1, destination='jugglebot', tracking=0)]))
+        balls=[_ball(7, status=1, destination='jugglebot', tracking=0,
+                     **_identity(node))]))
     assert node._correlation[0][0].announced_id == 7
     assert node._tracker(0) is None    # IN_FLIGHT alone proves nothing
     node._on_balls(BallStateArray(
-        balls=[_ball(7, status=1, destination='jugglebot', tracking=1)]))
+        balls=[_ball(7, status=1, destination='jugglebot', tracking=1,
+                     **_identity(node))]))
     assert node._tracker(0) is not None
 
 
@@ -951,7 +996,8 @@ def test_a_catch_resend_does_not_re_announce_or_reset_correlation():
     node._installer('CATCH', terminal, 99.0, ball_id=0)
     assert len(node._announce_pub.published) == 1
     node._on_balls(BallStateArray(
-        balls=[_ball(7, status=1, destination='jugglebot', tracking=1)]))
+        balls=[_ball(7, status=1, destination='jugglebot', tracking=1,
+                     **_identity(node))]))
     assert node._correlation[0][0].announced_id == 7
 
     # A re-send carrying the IDENTICAL release (same then_throw content).
@@ -1058,7 +1104,7 @@ def test_a_second_announcement_does_not_reset_the_flight_in_progress():
     node._installer('THROW', first, 100.0, ball_id=0)
     node._on_balls(BallStateArray(balls=[
         _ball(48, status=1, destination='jugglebot', tracking=1,
-             sec=100, nanosec=600_000_000)]))
+             sec=100, nanosec=600_000_000, **_identity(node))]))
     assert node._correlation[0][0].announced_id == 48
 
     node._install_cli._response = _response(t_event_mono=51.15,
@@ -1071,6 +1117,60 @@ def test_a_second_announcement_does_not_reset_the_flight_in_progress():
     assert node._correlation[0][0].announced_id == 48        # NOT reset
     assert node._correlation[0][1].announced_id is None
     assert node._correlation[0][1].preexisting == (48,)      # the airborne id
+
+
+def test_columns_releases_each_correlate_to_their_own_track():
+    """The two-ball association contract through the node's own announce and
+    ``/balls`` paths (sitting 3, 2026-10-02). Ball 0 (A) is released, then
+    ball 1 (B) one beat later. 50 ms before B's release A's track is
+    IN_FLIGHT+CONFIRMED and B's own is still TO_BE_THROWN -- the instant
+    HEAD's exclusion rule handed B's latch A's id, and skill 3 then aimed B's
+    catch at A's landing (WINDOW_TOO_SHORT). The identity latch takes B's
+    own track, and the tracker serves B's landing for ball 1."""
+    from jugglebot.motion.skills.segments import (CatchTerminal, ThrowAfterCatch,
+                                                  ThrowTerminal)
+
+    node, _client = _node_with_client(
+        response=_response(t_event_mono=50.0, t_release_mono=0.0))
+    a = ThrowTerminal(site_mm=[50.0, 0.0, 860.0], target_mm=[50.0, 0.0, 830.0],
+                      flight_s=0.857, t_release_s=100.0)
+    node._installer('THROW', a, 100.0, ball_id=0)
+    node._install_cli._response = _response(t_release_mono=50.579)
+    b = CatchTerminal(
+        landing_mm=[-50.0, 0.0, 830.0], landing_vel_mm_s=[0.0, 0.0, -4200.0],
+        t_land_s=100.5, rest_site_mm=[-50.0, 0.0, 750.0],
+        then_throw=ThrowAfterCatch(t_release_s=100.579,
+                                   site_mm=[-50.0, 0.0, 860.0],
+                                   target_mm=[-50.0, 0.0, 830.0],
+                                   flight_s=0.857))
+    node._installer('CATCH', b, 100.0, ball_id=1)
+    id_a, id_b = _identity(node, 0), _identity(node, 1)
+    assert id_a['source'] == id_b['source'] == node._robot_name
+    # One beat apart (less the wall time this test spent between the two
+    # installs: each release is `t_release_mono - perf_counter()` from now).
+    assert id_b['throw_time_s'] - id_a['throw_time_s'] == pytest.approx(
+        0.579, abs=0.05)
+
+    def snapshot(b_status, b_tracking):
+        return BallStateArray(balls=[
+            _ball(47, status=1, destination='jugglebot', tracking=1,
+                  x=50.0, z=830.0, vz=-4200.0, sec=10, **id_a),
+            _ball(48, status=b_status, destination='jugglebot',
+                  tracking=b_tracking, x=-50.0, z=830.0, vz=-4200.0, sec=11,
+                  **id_b)])
+
+    t_b = id_b['throw_time_s']
+    node._now_s = lambda: t_b - 0.05
+    node._on_balls(snapshot(0, 0))
+    assert [l.announced_id for l in node._correlation[0]] == [47]
+    assert [l.announced_id for l in node._correlation[1]] == [48]
+    node._now_s = lambda: t_b + 0.1
+    node._on_balls(snapshot(1, 1))
+    assert node._tracker(1).pos_mm[0] == pytest.approx(-50.0)   # B's, not A's
+    assert node._tracker(0).pos_mm[0] == pytest.approx(50.0)
+    # The node refuses to start against a stale BallState (grep-proof that
+    # it calls the shared check rather than a lookalike).
+    assert sn.require_identity_fields is ball_possession.require_identity_fields
 
 
 def test_hand_telemetry_updates_possession_evidence():
@@ -1247,7 +1347,7 @@ def test_check_reports_box_refused_when_the_apex_param_is_uncovered(tmp_path):
         landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), apex_m=(0.6, 1.2),
         pattern='self_toss', release_site_xy_mm=(-50.0, 0.0),
         target_site_xy_mm=(-50.0, 0.0),
-        limits={'leg_vel_mmps': 300.0, 'leg_acc_mmps2': 5000.0,
+        limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': 5000.0,
                'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
         gate_hash=adm.gate_hash(), swept_at='2026-09-13',
         dwell_s=sn._DEFAULT_DWELL_S)
@@ -1400,7 +1500,7 @@ def test_installer_reports_service_unavailable():
     the end code this test is about is the installer's own."""
     node, _client = _node_with_client(ready=False)
     _freshen(node)
-    node._start_pattern(_columns_goal(separation_mm=100.0))
+    node._start_pattern(_flown_columns_goal())
     first = node._executor.schedule.skills[0]
     node._executor.tick(first.dispatch_s())
     assert node._executor.attempt_ended is True
@@ -1921,7 +2021,7 @@ def test_the_live_catch_aim_default_is_the_trackers_converged_fit():
     node ships the tracker aim rather than the open-loop A/B arm."""
     node, _client = _node_with_client()
     assert node.get_parameter('catch_aim_source').value == 'tracker'
-    node._start_pattern(_columns_goal(separation_mm=100.0))
+    node._start_pattern(_flown_columns_goal())
     assert node._executor.catch_aim_source == 'tracker'
     assert node._executor.launch_ratio is not None
 
@@ -1930,7 +2030,7 @@ def test_the_live_catch_aim_default_is_the_trackers_converged_fit():
 def test_the_aim_source_parameter_reaches_the_executor(value):
     node, _client = _node_with_client()
     node.set_parameters([_MockParameter(value, name='catch_aim_source')])
-    node._start_pattern(_columns_goal(separation_mm=100.0))
+    node._start_pattern(_flown_columns_goal())
     assert node._executor.catch_aim_source == value
 
 
@@ -1941,7 +2041,7 @@ def test_an_unknown_aim_source_falls_back_to_the_live_default():
     having chosen it."""
     node, _client = _node_with_client()
     node.set_parameters([_MockParameter('mocap', name='catch_aim_source')])
-    node._start_pattern(_columns_goal(separation_mm=100.0))
+    node._start_pattern(_flown_columns_goal())
     assert node._executor.catch_aim_source == 'tracker'
 
 
@@ -2517,7 +2617,7 @@ def _good_box_path(tmp_path, *, apex_band_m=(0.85, 0.95), hop=False,
         landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), apex_m=(0.6, 1.2),
         pattern='self_toss', release_site_xy_mm=(-50.0, 0.0),
         target_site_xy_mm=(-50.0, 0.0),
-        limits={'leg_vel_mmps': 300.0, 'leg_acc_mmps2': 5000.0,
+        limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': 5000.0,
                'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
         gate_hash=adm.gate_hash(), swept_at='2026-09-13',
         dwell_s=sn._DEFAULT_DWELL_S)
@@ -2532,7 +2632,7 @@ def _good_box_path(tmp_path, *, apex_band_m=(0.85, 0.95), hop=False,
                 site_pair=names, apex_band_m=apex_band_m,
                 landing_xy_m=((-0.02, 0.02), (-0.02, 0.02)), apex_m=(0.85, 0.90),
                 pattern='hop', release_site_xy_mm=rel, target_site_xy_mm=tgt,
-                limits={'leg_vel_mmps': 300.0, 'leg_acc_mmps2': 5000.0,
+                limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': 5000.0,
                        'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
                 gate_hash=adm.gate_hash(), swept_at='2026-09-13',
                 dwell_s=sn._DEFAULT_DWELL_S))
@@ -2546,7 +2646,7 @@ def _good_box_path(tmp_path, *, apex_band_m=(0.85, 0.95), hop=False,
                 site_pair=(name, name), apex_band_m=apex_band_m,
                 landing_xy_m=((-0.02, 0.02), (-0.02, 0.02)), apex_m=(0.85, 0.95),
                 pattern='columns', release_site_xy_mm=xy, target_site_xy_mm=xy,
-                limits={'leg_vel_mmps': 300.0, 'leg_acc_mmps2': 5000.0,
+                limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': 5000.0,
                        'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
                 gate_hash=adm.gate_hash(), swept_at='2026-09-13',
                 dwell_s=sn._DEFAULT_DWELL_S))
@@ -3660,7 +3760,7 @@ class TestJuggleAction:
         assert node._reload_ctx.phase == 'await_bb_idle'
         assert node._reload_ctx.aim_site.name == 'P1'
         assert node._reload_ctx.aim_site.cup_mm[:2] == pytest.approx(
-            [-30.0, 0.0])
+            [-40.0, 0.0])  # 10 mm toward A since 2026-10-04 (was 20: -30)
         assert node._reload_ctx.site.name == 'P2'
 
     def test_cancel_callback_always_accepts(self):
@@ -3859,7 +3959,7 @@ class TestJuggleAction:
                 site_pair=pair, apex_band_m=(0.85, 0.95),
                 landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), apex_m=(0.6, 1.2),
                 pattern='hop', release_site_xy_mm=rel, target_site_xy_mm=tgt,
-                limits={'leg_vel_mmps': 300.0, 'leg_acc_mmps2': 5000.0,
+                limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': 5000.0,
                        'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
                 gate_hash=adm.gate_hash(), swept_at='2026-09-13',
                 dwell_s=sn._DEFAULT_DWELL_S)
@@ -4433,3 +4533,165 @@ def test_a_stop_during_the_columns_feed_wait_clears_the_reload_ctx_too(tmp_path)
     node._on_tick()    # the ordinary next-cycle retirement + goal-done signal
     assert node._executor is None
     assert node._goal_done_event.is_set() is True
+
+
+# ---------------------------------------------------------------------------
+# B2: `columns_1ball` — columns motion with ball A real, ball B a phantom
+# (plan handoff, 2026-10-04)
+# ---------------------------------------------------------------------------
+
+def _columns_1ball_goal(**overrides):
+    return _goal('columns_1ball', **overrides)
+
+
+def test_columns_1ball_is_one_of_the_patterns_the_juggle_goal_accepts():
+    assert 'columns_1ball' in sn.SkillNode._PATTERNS
+
+
+def test_columns_1ball_reload_false_compiles_a_phantom_schedule_immediately(
+        tmp_path):
+    """Unlike plain `columns` (which arms a FEED WAIT), `reload=False` here
+    compiles `compile_columns` straight away -- A is assumed already held,
+    `_run_one_ball`'s own non-reload shape -- and ball A ends up real at P2,
+    the phantom at P1 (the default `_columns_feed_site_name`, owner's own
+    framing: "A at P2, B phantom at P1")."""
+    node, _client = _node_with_client()
+    node._params['plant_id'] = 'test_columns_1ball_' + str(id(node))
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
+                      _good_box_path(tmp_path, columns=True)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_columns_1ball_goal(separation_mm=100.0,
+                                                       reload=False))
+    assert resp.success is True, resp.message
+    assert node._reload_ctx is None       # no feed wait armed -- no real B
+    assert node._executor is not None
+    schedule = node._executor.schedule
+    assert schedule.pattern == 'columns'       # the box-lookup contract
+    assert schedule.phantom_balls == (1,)
+    assert schedule.is_phantom(1) is True
+    assert schedule.is_phantom(0) is False
+    ball0_site = next(s.site.name for s in schedule.skills if s.ball_id == 0)
+    ball1_site = next(s.site.name for s in schedule.skills if s.ball_id == 1)
+    assert ball0_site == 'P2'       # A, real
+    assert ball1_site == 'P1'       # B, phantom
+
+
+def test_columns_1ball_reload_true_starts_the_plain_reload_choreography(
+        tmp_path):
+    """`reload=True` reuses the self-toss reload verbatim for ball A ALONE
+    -- `kind='columns_1ball'` on the ctx, not `kind='columns'` (that one
+    feeds ball B) -- and asks Ball Butler to throw at A's OWN site, not a
+    feed-aim-walked point (there is nothing to walk toward; B never
+    arrives)."""
+    node, _client = _node_with_client()
+    node._params['plant_id'] = 'test_columns_1ball_reload_' + str(id(node))
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    reload_client, throw_client = _reload_ready(node)
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
+                      _good_box_path(tmp_path, columns=True)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_columns_1ball_goal(separation_mm=100.0,
+                                                       reload=True))
+    assert resp.success is True, resp.message
+    assert node._reload_ctx is not None
+    assert node._reload_ctx.kind == 'columns_1ball'
+    assert node._reload_ctx.phase == 'await_bb_idle'
+    a_site = node._reload_ctx.site
+    assert a_site.name == 'P2'
+    _bb_ready(node)
+    node._maybe_fire_reload_throw()
+    assert node._reload_ctx.phase == 'await_announcement'
+    throw_req = throw_client.calls[0]
+    assert throw_req.target_point_global_mm.x == pytest.approx(
+        float(a_site.catch_site_mm()[0]))
+    assert throw_req.target_point_global_mm.y == pytest.approx(
+        float(a_site.catch_site_mm()[1]))
+
+
+def test_columns_1ball_announcement_installs_the_merged_schedule(tmp_path):
+    """Once Ball Butler's announcement for ball A lands, the executor swaps
+    to `compile_reload_columns`'s merged schedule: the reload lead-in
+    (REST/CATCH/REST) then the columns tail, phantom B included."""
+    node, _client = _node_with_client()
+    node._params['plant_id'] = 'test_columns_1ball_announce_' + str(id(node))
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    _reload_ready(node)
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
+                      _good_box_path(tmp_path, columns=True)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_columns_1ball_goal(separation_mm=100.0,
+                                                       reload=True))
+    assert resp.success is True, resp.message
+    a_site = node._reload_ctx.site
+    _bb_ready(node)
+    node._maybe_fire_reload_throw()
+    ann = _bb_announcement(
+        target_id=node._robot_name,
+        landing_mm=tuple(float(v) for v in a_site.catch_site_mm()),
+        landing_vel_mm_s=(0.0, 0.0, -3000.0), throw_time_s=0.5,
+        landing_time_s=5.0)
+    node._on_announcement(ann)
+    assert node._reload_ctx is None
+    assert node._executor is not None
+    schedule = node._executor.schedule
+    assert schedule.pattern == 'columns'
+    assert schedule.phantom_balls == (1,)
+    kinds = [s.kind for s in schedule.skills[:4]]
+    assert kinds == ['REST', 'CATCH', 'REST', 'THROW']
+    assert schedule.skills[1].landing_prior is not None   # BB's own catch
+    assert schedule.skills[3].ball_id == 0
+    # The columns release sits one launch window AFTER the decay REST's end
+    # (`compile_reload_columns`, 2026-10-04: anchored AT the decay end, the
+    # launch window fell inside the decay slew and refused LIMIT_JERK).
+    assert schedule.skills[3].t_abs_s == pytest.approx(
+        schedule.skills[2].t_abs_s + schedule.skills[3].window_s)
+
+
+def test_columns_1balls_phantom_first_visit_never_refuses_no_ball_or_no_release(
+        tmp_path):
+    """The whole point of B2's three enforcement points, exercised through
+    the node's own install path: dispatching the phantom's THROW and CATCH
+    produces ordinary ACCEPTED installs and never ends the attempt
+    `REJECTED_NO_BALL` (the hand-possession ladder) or `ABORTED_NO_RELEASE`
+    (the release-evidence timeout) -- neither of which has anything to read
+    for a ball that was never really thrown.
+
+    Ball A's OWN release evidence (a real ball, unaffected by B2) is
+    confirmed through a TRACKER fit rather than the hand sensor -- the
+    sensor-latch path is sensitive to exactly which instant each discrete
+    tick lands on (ticking at successive skills' own ``dispatch_s()``, as
+    this file's established idiom does, visits instants BEFORE ball A's
+    release as often as after it), where the tracker path is not: it simply
+    does nothing before the release and confirms once at or after it,
+    which is what this test needs from a ball it is not actually about.
+    """
+    node, _client = _node_with_client(response=_response())
+    node._params['plant_id'] = 'test_columns_1ball_dispatch_' + str(id(node))
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
+                      _good_box_path(tmp_path, columns=True)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_columns_1ball_goal(separation_mm=100.0,
+                                                       reload=False,
+                                                       num_cycles=2))
+    assert resp.success is True, resp.message
+    executor = node._executor
+    ball0_catch_idx, ball0_catch = next(
+        (i, s) for i, s in enumerate(executor.schedule.skills)
+        if s.kind == 'CATCH' and s.ball_id == 0)
+    fit = executor._predicted_landing(ball0_catch_idx, ball0_catch)
+    # Patched on the EXECUTOR, not `node._tracker` -- the executor already
+    # captured `self._tracker` (the bound method) by value at construction
+    # (`_run_columns_1ball`), so patching the node's own attribute after the
+    # fact would not reach it.
+    executor.tracker = lambda ball_id: (
+        dataclasses.replace(fit, from_fit=True) if ball_id == 0 else None)
+    forbidden = {'REJECTED_NO_BALL', 'ABORTED_NO_RELEASE'}
+    for sk in executor.schedule.skills:
+        executor.tick(sk.dispatch_s())
+        assert executor.end_code not in forbidden, (
+            executor.end_code, executor.end_message)
+    phantom_calls = [c for c in _client.calls
+                    if getattr(c, 'ball_id', None) == 1]
+    assert phantom_calls, 'the phantom never dispatched -- nothing to prove'

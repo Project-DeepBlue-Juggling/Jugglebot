@@ -1960,6 +1960,119 @@ RELEASE_LATCH_EPS_S = 0.050
 MAX_FLIGHT_LATCHES = 4
 
 
+# ── The release identity (2026-10-04, R5 sitting 3) ──────────────────────────
+#
+# THE INVARIANT (the two-ball association contract): **a tracker estimate is
+# used only for the release it was announced for.** The tracker's identity IS
+# the announcement — it mints one track per ``ThrowAnnouncement``
+# (`tracking/matcher.py::handle_announcement`), mocap markers carry none — so
+# the only exact key for "the track minted for THIS release" is the
+# announcement's own ``(thrower_name, throw_time)``, carried back on every
+# ``BallState`` as ``(source, throw_time)``.
+#
+# Why the exclusion rule above could not hold it (bag `2026-10-02_18-11-14`,
+# every fed-columns attempt): the rule resolves a latch to "the first
+# IN_FLIGHT, destination-tagged id not excluded". It resolves 50 ms BEFORE its
+# release (`RELEASE_LATCH_EPS_S`), when this release's own id is still
+# TO_BE_THROWN — and the OTHER schedule ball, released one beat (0.579 s)
+# earlier, is IN_FLIGHT and was claimed only by ITS schedule ball's latches,
+# which this ball's `claimed` never saw. So ball 1's re-release latched A's
+# flight, ball 0's latched B's, and once (preexisting is a stale snapshot)
+# ball 0's launch latched Ball Butler's feed ball. Every exclusion heuristic
+# is a race against resolution order; an identity key has no order.
+#
+# Enforced here, once: a latch that carries its ``thrower`` resolves ONLY to
+# the track whose ``source == thrower`` and ``|throw_time - t_release_s| <=``
+# :data:`THROW_TIME_MATCH_TOL_S`, and every latch of every schedule ball
+# resolves against ONE claimed set (:func:`advance_correlation`), so no
+# tracker id is ever claimed twice. ``preexisting`` stays as belt and braces.
+# The executor's landing-time band (`motion/skills/executor.py::
+# tracked_landing_refusal`) is the physical cross-check downstream of it.
+
+#: How close a track's ``throw_time`` must be to a latch's ``t_release_s`` to
+#: BE that release's track. Both sides carry the SAME number — skill_node
+#: computes the announced release once and both latches and publishes it
+#: (`_maybe_announce`; a Ball Butler latch reads the very ``throw_time`` the
+#: tracker reads), and the tracker copies it verbatim onto its track and back
+#: onto ``/balls`` — so the only disagreement is float/nanosecond rounding
+#: (< 1 µs at ROS epoch magnitudes). 2 ms is slack for that and is ~300x below
+#: the shortest release spacing scheduled (columns' 0.579 s beat), so it can
+#: never admit another release's track.
+THROW_TIME_MATCH_TOL_S = 0.002
+
+#: The ``source`` the tracker gives an announcement with an empty
+#: ``thrower_name`` (`ball_tracker_node._on_announcement`). Defined here, once,
+#: because a latch's ``thrower`` must equal the track's ``source`` exactly:
+#: both sides call :func:`announced_source`.
+DEFAULT_ANNOUNCED_SOURCE = 'ball_butler'
+
+
+def announced_source(thrower_name: Optional[str]) -> str:
+    """The ``BallState.source`` the tracker stamps on the track it mints for
+    an announcement with this ``thrower_name``. Pure; the ONE mapping both
+    the tracker and every identity latch use."""
+    return str(thrower_name) if thrower_name else DEFAULT_ANNOUNCED_SOURCE
+
+
+def ball_throw_time_s(ball: Any) -> Optional[float]:
+    """A ``/balls`` element's announced ``throw_time`` in seconds, or None.
+
+    None for a track with no announcement (a parabolic detection: the field is
+    zero) — such a track has no identity and can never satisfy an identity
+    latch. Raises ``AttributeError`` for a message type with no ``throw_time``
+    at all: a stale ``jugglebot_interfaces`` build must fail loudly, never
+    silently fall back to association by exclusion
+    (:func:`require_identity_fields` catches it at node start)."""
+    stamp = ball.throw_time
+    t_s = float(stamp.sec) + float(stamp.nanosec) * 1e-9
+    return t_s if t_s != 0.0 else None
+
+
+def require_identity_fields(ball_state_cls: Any) -> None:
+    """Raise ``RuntimeError`` unless ``BallState`` carries ``throw_time``.
+
+    Called at node START by every producer and consumer of the identity key
+    (`ball_tracker_node`, `skill_node`). ``throw_time`` arrived with the
+    2026-10-04 message change, which needs a TWO-package colcon build
+    (``jugglebot_interfaces`` + ``jugglebot``) and a restart of every node;
+    a node that started against the old generated message would otherwise
+    never latch an identity-keyed release (the catch would quietly keep the
+    schedule on every throw) or, on the tracker, die on its first publish."""
+    if not hasattr(ball_state_cls(), 'throw_time'):
+        raise RuntimeError(
+            'jugglebot_interfaces/msg/BallState has no throw_time field: the '
+            'interface package is stale. Rebuild BOTH packages '
+            '(colcon build --packages-select jugglebot_interfaces jugglebot), '
+            're-source install/setup.bash and restart every node -- the '
+            'two-ball association contract keys on (source, throw_time)')
+
+
+def match_announced_track(balls: Iterable[Any], *, thrower: str,
+                          t_release_s: float,
+                          exclude: Iterable[int] = ()) -> Optional[int]:
+    """The tracker id minted for the announcement ``(thrower, t_release_s)``,
+    or None. Pure.
+
+    Any lifecycle status qualifies: the identity is the announcement, not the
+    status — :func:`flight_in_progress` applies the IN_FLIGHT / CONFIRMED
+    gate on every READ. Among several matches (a duplicated announcement) the
+    nearest ``throw_time`` wins; ``exclude`` ids never match.
+    """
+    excluded = set(int(i) for i in exclude)
+    best: Optional[Tuple[float, int]] = None
+    for b in balls:
+        tracker_id = int(b.id)
+        if tracker_id in excluded or str(b.source) != str(thrower):
+            continue
+        t_throw = ball_throw_time_s(b)
+        if t_throw is None:
+            continue
+        miss_s = abs(t_throw - float(t_release_s))
+        if miss_s <= THROW_TIME_MATCH_TOL_S and (best is None or miss_s < best[0]):
+            best = (miss_s, tracker_id)
+    return None if best is None else best[1]
+
+
 class FlightLatch(NamedTuple):
     """One announced release, and the tracker id it has been correlated to.
 
@@ -1970,11 +2083,54 @@ class FlightLatch(NamedTuple):
     PROVISIONAL latch onto an untagged track (see `latch_announced_ball`);
     ``preexisting`` are the ids already IN_FLIGHT when this release was
     announced.
+
+    ``thrower`` is the announcement's ``thrower_name`` as the tracker maps it
+    (:func:`announced_source`). Set, it makes this an IDENTITY latch: it
+    resolves only to the track :func:`match_announced_track` names, as soon as
+    that track exists, and is final once resolved. ``None`` keeps the legacy
+    exclusion rule (`latch_announced_ball`) for latches with no announcement
+    to key on — the human-lob columns feed, whose id is already known when the
+    latch is made, and `tools/probes/outcome_landing_replay.py` on bags
+    recorded before ``BallState.throw_time`` existed.
     """
     t_release_s: float
     announced_id: Optional[int] = None
     untagged: bool = False
     preexisting: Tuple[int, ...] = ()
+    thrower: Optional[str] = None
+
+
+def _advance_one(balls: List[Any], latch: FlightLatch, claimed: set, *,
+                 robot_name: str, now_s: float,
+                 in_flight_status: int) -> FlightLatch:
+    """Refine ONE latch against a snapshot, mutating ``claimed`` (the ids
+    every OTHER latch already holds). The single rule behind
+    :func:`advance_flight_latches` and :func:`advance_correlation`."""
+    mine = None if latch.announced_id is None else int(latch.announced_id)
+    if latch.thrower is not None:
+        if mine is not None:
+            return latch                    # an identity latch is final
+        tracker_id = match_announced_track(
+            balls, thrower=latch.thrower, t_release_s=latch.t_release_s,
+            exclude=set(int(i) for i in latch.preexisting) | claimed)
+        if tracker_id is None:
+            return latch
+        claimed.add(int(tracker_id))
+        return latch._replace(announced_id=int(tracker_id), untagged=False)
+    if mine is None and float(latch.t_release_s) > float(now_s) + RELEASE_LATCH_EPS_S:
+        return latch
+    exclude = set(int(i) for i in latch.preexisting) | (claimed - {mine})
+    announced_id, untagged = latch_announced_ball(
+        balls, robot_name=robot_name, announced_id=mine,
+        preexisting_ids=exclude, untagged_latch=bool(latch.untagged),
+        in_flight_status=in_flight_status)
+    if announced_id is None:
+        return latch
+    if mine is not None and int(announced_id) != mine:
+        claimed.discard(mine)
+    claimed.add(int(announced_id))
+    return latch._replace(announced_id=int(announced_id),
+                          untagged=bool(untagged))
 
 
 def advance_flight_latches(balls: Iterable[Any], *, robot_name: str,
@@ -1982,7 +2138,10 @@ def advance_flight_latches(balls: Iterable[Any], *, robot_name: str,
                            in_flight_status: int,
                            max_latches: int = MAX_FLIGHT_LATCHES,
                            ) -> Tuple[FlightLatch, ...]:
-    """Refine every RELEASED latch against one ``/balls`` snapshot. Pure.
+    """Refine every RELEASED latch of ONE schedule ball against one
+    ``/balls`` snapshot. Pure. A node with more than one schedule ball must
+    call :func:`advance_correlation` instead, which shares the claimed set
+    across all of them (the 2026-10-02 two-ball mis-association).
 
     Latches are resolved in release order, and each one excludes the ids its
     siblings have already claimed: two flights of one schedule ball overlap in
@@ -1990,36 +2149,49 @@ def advance_flight_latches(balls: Iterable[Any], *, robot_name: str,
     `latch_announced_ball` would otherwise hand the newer release the older
     flight's id — it prefers the first destination-tagged candidate it sees.
 
-    A latch whose ``t_release_s`` is still in the future (beyond
-    :data:`RELEASE_LATCH_EPS_S`) is returned untouched: whatever is IN_FLIGHT
-    now belongs to some other release.
+    A legacy latch (no ``thrower``) whose ``t_release_s`` is still in the
+    future (beyond :data:`RELEASE_LATCH_EPS_S`) is returned untouched:
+    whatever is IN_FLIGHT now belongs to some other release. An identity latch
+    needs no such wait — its key names its own track.
 
     -> the latches, newest ``max_latches`` kept, in release order.
     """
+    return advance_correlation(
+        balls, robot_name=robot_name, correlation={0: latches}, now_s=now_s,
+        in_flight_status=in_flight_status, max_latches=max_latches)[0]
+
+
+def advance_correlation(balls: Iterable[Any], *, robot_name: str,
+                        correlation: Dict[int, Sequence[FlightLatch]],
+                        now_s: float, in_flight_status: int,
+                        max_latches: int = MAX_FLIGHT_LATCHES,
+                        ) -> Dict[int, Tuple[FlightLatch, ...]]:
+    """Refine EVERY schedule ball's latches against one ``/balls`` snapshot,
+    with ONE claimed set across all of them. Pure.
+
+    ``correlation`` maps schedule ball id -> its latches (the node's
+    ``_correlation``). All latches are resolved together in release order,
+    and a tracker id claimed by any latch of any schedule ball is excluded
+    for every other latch — "no id claimed twice" is a property of the
+    correlation, not of one ball's queue (module comment above,
+    "The release identity").
+
+    -> ``{ball_id: latches}``, each newest ``max_latches`` kept, in release
+    order; every input key is present in the output.
+    """
     balls = list(balls)
-    ordered = sorted(latches, key=lambda l: float(l.t_release_s))
-    claimed = {int(l.announced_id) for l in ordered
-               if l.announced_id is not None}
-    out: List[FlightLatch] = []
-    for latch in ordered:
-        if (latch.announced_id is None
-                and float(latch.t_release_s) > float(now_s) + RELEASE_LATCH_EPS_S):
-            out.append(latch)
-            continue
-        mine = None if latch.announced_id is None else int(latch.announced_id)
-        exclude = set(int(i) for i in latch.preexisting) | (claimed - {mine})
-        announced_id, untagged = latch_announced_ball(
-            balls, robot_name=robot_name, announced_id=mine,
-            preexisting_ids=exclude, untagged_latch=bool(latch.untagged),
-            in_flight_status=in_flight_status)
-        if announced_id is not None:
-            if mine is not None and int(announced_id) != mine:
-                claimed.discard(mine)
-            claimed.add(int(announced_id))
-            latch = latch._replace(announced_id=int(announced_id),
-                                   untagged=bool(untagged))
-        out.append(latch)
-    return tuple(out[-int(max_latches):]) if max_latches > 0 else tuple(out)
+    flat = sorted(((float(l.t_release_s), int(k), j, l)
+                   for k, ls in correlation.items() for j, l in enumerate(ls)),
+                  key=lambda e: (e[0], e[1], e[2]))
+    claimed = {int(e[3].announced_id) for e in flat
+               if e[3].announced_id is not None}
+    out: Dict[int, List[FlightLatch]] = {int(k): [] for k in correlation}
+    for _t, k, _j, latch in flat:
+        out[k].append(_advance_one(balls, latch, claimed,
+                                   robot_name=robot_name, now_s=now_s,
+                                   in_flight_status=in_flight_status))
+    return {k: (tuple(v[-int(max_latches):]) if max_latches > 0 else tuple(v))
+            for k, v in out.items()}
 
 
 def flight_in_progress(balls: Iterable[Any], *,

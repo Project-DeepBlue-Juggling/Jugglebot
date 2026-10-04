@@ -10,13 +10,13 @@ from __future__ import annotations
 import pytest
 
 from tests.ros.conftest import _MockParameter
-from tests.ros.test_skill_node import _columns_goal, _node_with_client
+from tests.ros.test_skill_node import _flown_columns_goal, _node_with_client
 
 
 def test_the_default_cap_reaches_the_executor():
     node, _client = _node_with_client()
     assert node.get_parameter('catch_resend_max').value == 2
-    node._start_pattern(_columns_goal(separation_mm=100.0))
+    node._start_pattern(_flown_columns_goal())
     assert node._executor.resend_max_per_catch == 2
 
 
@@ -24,5 +24,5 @@ def test_the_default_cap_reaches_the_executor():
 def test_the_cap_is_clamped_to_zero_to_five(value, expect):
     node, _client = _node_with_client()
     node.set_parameters([_MockParameter(value, name='catch_resend_max')])
-    node._start_pattern(_columns_goal(separation_mm=100.0))
+    node._start_pattern(_flown_columns_goal())
     assert node._executor.resend_max_per_catch == expect

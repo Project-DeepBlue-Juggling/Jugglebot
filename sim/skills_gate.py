@@ -98,6 +98,7 @@ import statistics
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 
 import numpy as np
 
@@ -148,7 +149,10 @@ from sim.gate_common import ViewerClosed, attach_viewer             # noqa: E402
 #  test_the_session_limits_match_the_gates_that_planned_them), so this triple
 # is the ONE place the R2 operating point's leg limits live for that bench.
 # ---------------------------------------------------------------------------
-_SESSION_LEG_VEL_MMPS = 300.0
+# 300 -> 350 on 2026-10-04 (R5 sitting 3): the roomier columns geometry (apex
+# 0.95, dwell 0.25, separation 125) is swept and flown at 350 mm/s; at 300 the
+# one-ball trial's steady catch refused LIMIT_VEL at 300.2 mm/s.
+_SESSION_LEG_VEL_MMPS = 350.0
 _SESSION_LEG_ACC_MMPS2 = 5000.0
 _SESSION_LEG_JERK_MMPS3 = 200000.0
 # Owner, 2026-10-02: 3900 (was 3500). The fed columns rehearsal's same-site
@@ -249,7 +253,7 @@ def _columns_final_removal(sched: 'sk.Schedule'):
 class SkillsGateConfig:
     apex_m: float = 0.9
     separation_mm: float = 100.0
-    dwell_s: float = 0.30
+    dwell_s: float = 0.27
     n_throws: int = 20
     seeds: tuple = (0, 1, 2, 3, 4)
     leg_vel_mmps: float = _SESSION_LEG_VEL_MMPS
@@ -407,14 +411,201 @@ def _make_tracker(plant, ball_state: dict):
     return tracker
 
 
-def _make_installer(ictx: _InstallCtx, seg_cfg, limits, geom):
+class _AnnouncedStamp:
+    """A ``builtin_interfaces/Time``-shaped stand-in (``.sec``/``.nanosec``)
+    for one track's announced ``throw_time`` -- the ONLY thing
+    ``ball_possession.ball_throw_time_s``/``match_announced_track`` read off
+    a synthetic ``/balls`` record. Mirrors ``tests/ros/
+    test_two_ball_association.py``'s ``_T`` so both layers build the same
+    shape from the same float."""
+
+    def __init__(self, t_s: float):
+        self.sec = int(math.floor(t_s))
+        self.nanosec = int(round((t_s - self.sec) * 1e9))
+
+
+#: Mirrors the real tracker's terminal-track retention (``ball_possession``
+#: module docstring: "the ~2 s the terminal track is retained") -- how long
+#: a CAUGHT track still appears in the synthetic ``/balls`` snapshot fed to
+#: the correlator, so the negative control (``legacy=True``) sees the same
+#: stale-track overlap the 2026-10-02 mis-latch fed on.
+_TRACK_RETENTION_S = 2.0
+
+
+class _IdentityTracker:
+    """Mints one tracker id per ANNOUNCED release -- never per schedule/
+    physical ball -- and resolves every ``tracker(ball_id)`` read through
+    the REAL correlator (``ball_possession.advance_correlation`` /
+    ``flight_in_progress``), so a mis-association in THAT rule fails this
+    gate the way it failed the 2026-10-02 sitting (U1, "The release
+    identity"). Before this class, ``_make_tracker`` answered ``tracker
+    (ball_id)`` straight off ground truth (``ball_state[ball_id]``) -- the
+    association step the robot actually does never ran, so no seed could
+    reproduce the mis-latch (``u1_two_ball_association.md`` § 3).
+
+    ``physical_tracker(phys_ball_id) -> Optional[ex.Landing]`` is
+    :func:`_make_tracker`'s own closure, reused verbatim -- this class only
+    decides WHICH physical ball's fit answers WHICH schedule ball's read;
+    the fit itself is not duplicated here.
+
+    ``legacy=True`` is the negative control (owner ask, handoff § "What
+    would make the gate faithful"): announcements carry no ``thrower``, so
+    every latch resolves through the PRE-2026-10-04 exclusion rule
+    (``advance_flight_latches``, one claimed set PER schedule ball) instead
+    of the identity rule -- this must reproduce WINDOW_TOO_SHORT on fed
+    columns, proving the gate can see the class the fix closes.
+    """
+
+    #: Lifecycle ints, matching ``jugglebot_interfaces/msg/BallState`` and
+    #: ``tests/ros/test_two_ball_association.py``'s ``TBT, FLY, CAUGHT`` /
+    #: ``ANN, CONF`` -- not load-bearing here (``ball_possession`` takes
+    #: these as parameters, not literals), kept equal for readability only.
+    TBT, FLY, CAUGHT = 0, 1, 2
+    ANNOUNCED, CONFIRMED = 0, 1
+
+    def __init__(self, physical_tracker, *, legacy: bool = False):
+        self._physical_tracker = physical_tracker
+        self._legacy = bool(legacy)
+        self._next_id = 1
+        self._tracks: dict = {}            # tid -> mutable state dict
+        self.correlation: dict = {}        # schedule ball_id -> (FlightLatch,...)
+        self._prev_records: list = []
+        self._records_cache: list = []
+        self._now_s = 0.0
+
+    def announce(self, ball_id: int, t_release_s: float, *,
+                 thrower: str = 'jugglebot') -> int:
+        """Mint a new track for ONE announced release of schedule ``ball_id``
+        and queue its correlation latch -- the sim's stand-in for
+        ``skill_node._maybe_announce`` (our own throws) / ``_install_
+        announced_reload`` (a Ball Butler feed), called at ACCEPTED INSTALL
+        (a THROW, or a CATCH carrying a ``then_throw``), never on a re-send
+        of the same release (:func:`_make_installer`'s ``on_release`` fires
+        once per accepted ``(ball_id, t_release_s)`` pair -- a RE-send
+        supersedes its own pending release, it does not re-announce it)."""
+        tid = self._next_id
+        self._next_id += 1
+        self._tracks[tid] = dict(phys=int(ball_id), status=self.TBT,
+                                 tracking=self.ANNOUNCED, caught_at=None,
+                                 seen_airborne=False)
+        preexisting = tuple(sorted(r.id for r in self._prev_records
+                                   if r.status == self.FLY))
+        latch = bp.FlightLatch(
+            t_release_s=float(t_release_s), preexisting=preexisting,
+            thrower=(None if self._legacy else bp.announced_source(thrower)))
+        self._tracks[tid]['throw_time'] = float(t_release_s)
+        self._tracks[tid]['source'] = bp.announced_source(thrower)
+        self.correlation[int(ball_id)] = (
+            tuple(self.correlation.get(int(ball_id), ())) + (latch,))
+        return tid
+
+    def _build_records(self) -> list:
+        return [SimpleNamespace(
+                    id=tid, status=tr['status'], tracking=tr['tracking'],
+                    source=tr['source'], destination='jugglebot',
+                    throw_time=_AnnouncedStamp(tr['throw_time']))
+                for tid, tr in self._tracks.items()]
+
+    def tick(self, now_s: float, ball_state: dict) -> None:
+        """Advance every track's lifecycle from ``ball_state`` (the sim's
+        ground truth: TBT -> IN_FLIGHT at its own announced ``throw_time``,
+        ANNOUNCED -> CONFIRMED once that flight's estimator has a fit,
+        IN_FLIGHT -> CAUGHT once the physical ball is no longer airborne),
+        drop tracks CAUGHT longer than :data:`_TRACK_RETENTION_S`, then
+        refine the correlation against the resulting snapshot.
+
+        Call ONCE per sim tick, BEFORE ``executor.tick`` -- the correlator
+        must see this instant's snapshot before the executor's own dispatch
+        check reads :meth:`tracker`, exactly as a real ``/balls`` message
+        precedes the node's dispatch on the same clock."""
+        now_s = float(now_s)
+        expired = []
+        for tid, tr in self._tracks.items():
+            if tr['status'] == self.TBT and now_s >= tr['throw_time'] - 1e-9:
+                tr['status'] = self.FLY
+            if tr['status'] == self.FLY:
+                bstate = ball_state.get(tr['phys'])
+                if bstate is not None:
+                    if (tr['tracking'] != self.CONFIRMED
+                            and bstate['estimator'].n >= _FIT_MIN_SAMPLES):
+                        tr['tracking'] = self.CONFIRMED
+                    # ``seen_airborne`` gates the CAUGHT transition on having
+                    # actually observed flight at least once -- NOT merely
+                    # "not airborne now". The physical release (``_stream_
+                    # chain``'s ``pending_releases`` pop, which sets
+                    # ``bstate['airborne'] = True``) and this track's own
+                    # TBT -> FLY flip key on the SAME announced instant, but
+                    # float accumulation over hundreds of 2 ms ticks can put
+                    # them one tick apart (root-caused 2026-10-04 B1, probe
+                    # ``probe_assoc6.py``: every track read "not airborne"
+                    # on the tick it was minted FLY -- the ball had not
+                    # physically left the hand yet -- and was immediately
+                    # marked CAUGHT, so ``flight_in_progress`` never saw a
+                    # single FLY/CONFIRMED track and NO run produced any
+                    # learner row at all). Requiring one TRUE sighting first
+                    # removes the race regardless of tick alignment.
+                    if bstate['airborne']:
+                        tr['seen_airborne'] = True
+                    elif tr['seen_airborne']:
+                        tr['status'] = self.CAUGHT
+                        tr['caught_at'] = now_s
+            if (tr['status'] == self.CAUGHT and tr['caught_at'] is not None
+                    and now_s - tr['caught_at'] > _TRACK_RETENTION_S):
+                expired.append(tid)
+        for tid in expired:
+            del self._tracks[tid]
+
+        records = self._build_records()
+        if self._legacy:
+            self.correlation = {
+                k: bp.advance_flight_latches(
+                    records, robot_name='jugglebot', latches=v, now_s=now_s,
+                    in_flight_status=self.FLY)
+                for k, v in self.correlation.items()}
+        else:
+            self.correlation = bp.advance_correlation(
+                records, robot_name='jugglebot', correlation=self.correlation,
+                now_s=now_s, in_flight_status=self.FLY)
+        self._prev_records = records
+        self._records_cache = records
+        self._now_s = now_s
+
+    def tracker(self, ball_id: int):
+        """``tracker(ball_id) -> Optional[ex.Landing]`` for ``SkillExecutor``
+        -- the sim's stand-in for ``skill_node._tracker``: resolve the
+        flight in progress through the real correlator, then answer with
+        THAT track's bound physical ball's fit (never ground truth keyed
+        directly on ``ball_id``)."""
+        latches = self.correlation.get(int(ball_id), ())
+        tid = bp.flight_in_progress(
+            self._records_cache, latches=latches, now_s=self._now_s,
+            in_flight_status=self.FLY, confirmed_tracking=self.CONFIRMED)
+        if tid is None:
+            return None
+        tr = self._tracks.get(tid)
+        if tr is None:
+            return None
+        return self._physical_tracker(tr['phys'])
+
+
+def _make_installer(ictx: _InstallCtx, seg_cfg, limits, geom, *,
+                    on_release=None):
     """The one ``installer(kind, terminal, t_now_s, *, ball_id) ->
     InstallResult`` closure — ``ex.install_segment`` over ``ictx``'s live
     record, plus the pending-release bookkeeping every caller needs (a THROW
     or a CATCH's carried ``then_throw`` schedules the physical release the
     stream loop later pops).  Factored out of ``run_trial`` for the same
     reason as :func:`_make_tracker`: the R3 self-toss run needs the identical
-    policy, not a second copy of it."""
+    policy, not a second copy of it.
+
+    ``on_release(ball_id, t_release_s)``, when given, fires ONCE per
+    newly-scheduled ``(ball_id, t_release_s)`` pair, at the SAME accepted
+    install this function already treats as the release's own announcement
+    (``skill_node._maybe_announce`` runs at accepted install too, 0.6-0.8 s
+    before the physical release) -- never on a re-send of the same release
+    (a re-send carries the identical ``t_release_s``, only a different
+    aim). :class:`_IdentityTracker` binds this to ``announce``."""
+    announced: set = set()
 
     def installer(kind, terminal, t_now_s, *, ball_id):
         new_record, result, seg = ex.install_segment(
@@ -460,6 +651,11 @@ def _make_installer(ictx: _InstallCtx, seg_cfg, limits, geom):
                     np.asarray(src.site_mm, dtype=float),
                     np.asarray(src.target_mm, dtype=float)))
                 ictx.pending_releases.sort(key=lambda pr: pr[0])
+                if on_release is not None:
+                    key = (int(ball_id), round(t_rel, 6))
+                    if key not in announced:
+                        announced.add(key)
+                        on_release(int(ball_id), t_rel)
         return result
     return installer
 
@@ -624,7 +820,7 @@ class SelfTossGateConfig:
     which ``schedule.compile_one_ball`` sets from the sites tuple's length)."""
 
     apex_m: float = 0.9
-    dwell_s: float = 0.30
+    dwell_s: float = 0.27
     #: 'self_toss' (1 site, P1) or 'hop' (2 sites, P1<->P2) -- see the class
     #: docstring. Validated by :func:`_sites_for`.
     pattern: str = 'self_toss'
@@ -632,8 +828,8 @@ class SelfTossGateConfig:
     #: ``_SELF_TOSS_SEPARATION_MM`` (100 mm); a hop run sets this to
     #: ``_HOP_SEPARATION_MM`` (250 mm) to match the swept 'hop' boxes.
     separation_mm: float = _SELF_TOSS_SEPARATION_MM
-    leg_vel_mmps: float = 300.0
-    leg_acc_mmps2: float = 5000.0
+    leg_vel_mmps: float = _SESSION_LEG_VEL_MMPS
+    leg_acc_mmps2: float = _SESSION_LEG_ACC_MMPS2
     leg_jerk_mmps3: float = _SESSION_LEG_JERK_MMPS3
     #: Follows the session constant (3900 since 2026-10-02, see its comment)
     #: for the same reason ``leg_jerk_mmps3`` follows its own: a stale literal
@@ -698,7 +894,42 @@ class SelfTossGateConfig:
     #: 101 %, the cup must reverse against Ball Butler's +x lateral
     #: arrival to match it at touch-down; 20 mm toward A clears at
     #: 80/83/73 % vel/acc/jerk). Ignored outside a FEED trial.
-    feed_aim_toward_a_mm: float = 20.0
+    #: 20 -> 10 mm on 2026-10-04, with skill_node's default (sitting 3: the
+    #: 20 mm aim spent 17 of the 26 mm of column clearance on the first pass).
+    feed_aim_toward_a_mm: float = 10.0
+
+    #: Which correlation rule :class:`_IdentityTracker` applies (2026-10-04,
+    #: U1 "two-ball association" fix). ``'fixed'`` (the default): identity
+    #: latches keyed on the announcement's own ``(thrower, throw_time)`` --
+    #: the 2026-10-04 fix (``ball_possession.advance_correlation``).
+    #: ``'head'``: the PRE-fix exclusion rule (``advance_flight_latches``,
+    #: one claimed set PER schedule ball) -- the negative control that must
+    #: reproduce WINDOW_TOO_SHORT on fed columns (U1 handoff § "Pass
+    #: criteria"), proving this gate can see the class the fix closes.
+    correlator: str = 'fixed'
+
+    #: B2b (2026-10-04): run :meth:`SkillsGate.run_columns_1ball_seed`
+    #: instead of :meth:`SkillsGate.run_columns_seed` -- ball A real, ball
+    #: B a PHANTOM (``schedule.Pattern.phantom_balls=(1,)``, never
+    #: spawned). Ignored outside ``pattern == 'columns'`` (CLI-enforced,
+    #: ``main()``'s own ``p.error``, no silent fallback).
+    one_ball: bool = False
+    #: B2b only: ``True`` compiles the lead-in through
+    #: ``schedule.compile_reload_columns`` (ball A fed externally, exactly
+    #: as :meth:`SkillsGate.run_reload_attempt`'s own synthetic Ball
+    #: Butler arrival) instead of ``compile_columns`` directly (ball A
+    #: already resting at its site). Ignored outside ``one_ball``.
+    one_ball_reload: bool = False
+
+
+def _correlator_is_legacy(cfg: 'SelfTossGateConfig') -> bool:
+    """``cfg.correlator`` as the ``legacy`` bool :class:`_IdentityTracker`
+    takes. Raises on anything but ``'fixed'``/``'head'`` -- no silent
+    fallback to the fix (or to the negative control) on a typo."""
+    if cfg.correlator not in ('fixed', 'head'):
+        raise ValueError("cfg.correlator must be 'fixed' or 'head', got %r"
+                         % (cfg.correlator,))
+    return cfg.correlator == 'head'
 
 
 def _sites_for(cfg: 'SelfTossGateConfig') -> tuple:
@@ -784,6 +1015,61 @@ def _monotone_verdict(errs, band_entry_throws: int, target_throws: int,
     mad = float(np.median(np.abs(span - np.median(span))))
     s = 1.4826 * mad
     return bool(float(np.median(late)) <= float(np.median(early)) + k * s)
+
+
+#: The substring :meth:`~jugglebot.motion.skills.executor.SkillExecutor.
+#: _valid_tracked_landing` puts in ``ThrowReport.no_row_reason`` when it
+#: refuses a tracker read whose landing time misses THIS release's own
+#: scheduled landing by more than its band (``TRACKER-IDENTITY-REFUSED``,
+#: ``executor.py:2253``/``2297``) -- the ONE place a wrong-ball read
+#: surfaces WITHOUT the gate needing its own (ground-truth) comparison.
+#: Probed empirically 2026-10-04 (B1, ``probe_assoc8.py``, ``--correlator
+#: head`` on fed columns): every throw past the first reads this, with a
+#: fitted-landing-vs-scheduled gap of 0.54-0.57 s -- one beat (0.579 s),
+#: exactly U1's own finding, and NOT a ``WINDOW_TOO_SHORT`` end_code -- A1's
+#: band gate (landed the same day as this unit) already intercepts the bad
+#: READ downstream before an install ever sees it, so the hard refusal U1
+#: diagnosed against the OLD code does not reproduce verbatim; this is the
+#: layered defense working, and the substring below is what a wrong-ball
+#: row looks like under TODAY's full stack.
+_WRONG_BALL_REASON = "not this release's flight"
+
+
+def _association_verdict(reports: list, end_codes: list,
+                         beat_s: float) -> dict:
+    """The two-ball-association pass criteria over one run (U1 handoff §
+    "Pass criteria", read through :class:`_IdentityTracker`'s REAL
+    correlator rather than ground truth):
+
+    1. no refusal is ``WINDOW_TOO_SHORT`` -- the 2026-10-02 sitting's own
+       symptom (a mis-latched release's window measures against the WRONG
+       flight's landing) under the PRE-A1 stack;
+    2. every LEARNER row's (``ThrowReport.row``) ``release_err_s`` is inside
+       ``beat_s / 2`` -- a mis-latched row reads a WHOLE beat off (U1 § 2d:
+       -0.519..-0.575 s against this run's own beat), well outside the
+       genuine release lag (0.02-0.14 s) plus apex-fit scatter the bound
+       otherwise tolerates;
+    3. no row is refused for reading the WRONG release's flight
+       (:data:`_WRONG_BALL_REASON`, A1's ``TRACKER-IDENTITY-REFUSED`` band,
+       which is what a wrong-ball attribution looks like under today's full
+       stack -- see that constant's own note)."""
+    window_too_short = any('WINDOW_TOO_SHORT' in str(c) for c in end_codes)
+    wrong_ball = [r for r in reports
+                 if not r.row and _WRONG_BALL_REASON in (r.no_row_reason or '')]
+    errs = [float(r.release_err_s) for r in reports
+           if r.row and r.release_err_s is not None]
+    bound = float(beat_s) / 2.0
+    bad = [e for e in errs if abs(e) >= bound]
+    return dict(
+        window_too_short=bool(window_too_short),
+        wrong_ball_rows=len(wrong_ball),
+        release_err_checked=len(errs),
+        release_err_max_s=(max(abs(e) for e in errs) if errs
+                           else float('nan')),
+        release_err_bound_s=bound,
+        release_err_bad=len(bad),
+        ok=bool((not window_too_short) and len(bad) == 0
+                and len(wrong_ball) == 0))
 
 
 def _wall_ms_stats(wall_s) -> dict:
@@ -995,10 +1281,19 @@ class SkillsGate:
     def _stream_chain(self, *, plant, geom, rcfg, noise, executor, ictx,
                       ball_state, t_end, release_bias=None,
                       final_removal=None, final_target_xy_mm=None,
-                      stop_check=None, pending_spawn=None):
+                      stop_check=None, pending_spawn=None, identity=None):
         """The emitter/pump/wire/mirror/executor.tick loop (module
         docstring) -- run by every caller against a live ``PlanRecord``
         (``ictx``) and the executor dispatching one ``Schedule``.
+
+        ``identity`` (:class:`_IdentityTracker` or ``None``): when given,
+        ``identity.tick(t, ball_state)`` runs every sim tick BEFORE
+        ``executor.tick(t)`` -- the correlator must see this instant's
+        synthetic ``/balls`` snapshot before the executor's own dispatch
+        check can read ``identity.tracker``, exactly as a real ``/balls``
+        message precedes the node's dispatch on the same clock. ``None``
+        (the R2/R4 callers that do not use the identity-aware tracker)
+        changes nothing from before this parameter existed.
 
         ``ball_state`` is ``{ball_id: {'estimator', 'airborne',
         'next_obs_t', 'expect_held', 'lost_since'}}`` -- the per-ball
@@ -1082,6 +1377,11 @@ class SkillsGate:
                 bstate['estimator'].reset()
                 bstate['next_obs_t'] = t
                 pending_spawn = None
+
+            # The correlator's snapshot for THIS instant, before the
+            # executor reads it (``identity`` docstring above).
+            if identity is not None:
+                identity.tick(t, ball_state)
 
             # Dispatch-check every TICK, not every 40 Hz frame: a skill's
             # window budget is measured from the ACTUAL install instant
@@ -1247,7 +1547,7 @@ class SkillsGate:
     def run_self_toss_attempt(self, *, pattern_sites, n_throws: int,
                               memory: mem.Memory, learner_cfg: lr.LearnerConfig,
                               boxes: list, noise: JuggleNoise,
-                              throws_out: list
+                              throws_out: list, reports_out: list = None
                               ) -> Tuple[str, dict, '_InstallCtx']:
         """One self-toss (``pattern_sites`` = ``(P1,)``) or hop
         (``pattern_sites`` = ``(P1, P2)``, R4) attempt, cold from the
@@ -1259,6 +1559,17 @@ class SkillsGate:
         this attempt produces (in schedule order); the memory itself is
         appended to as a side effect of ``on_experience`` (below), so it
         carries forward to the NEXT attempt even though the plant does not.
+        ``reports_out``, when given, accumulates this attempt's
+        ``executor.reports`` (one ``ThrowReport`` per finalised release,
+        INCLUDING no-row releases) -- the two-ball-association pass criteria
+        (U1 handoff § "Pass criteria") read ``release_err_s`` off these, not
+        off ``Experience``, which does not carry it.
+
+        The ``tracker`` wired into the executor goes through the REAL
+        correlator (:class:`_IdentityTracker`, over :func:`_make_tracker`'s
+        ground-truth fit), not ground truth directly -- `cfg.correlator`
+        picks the identity rule (``'fixed'``, the 2026-10-04 fix) or the
+        legacy exclusion rule (``'head'``, the negative control).
 
         Returns ``(end_code, loop_stats, ictx)`` -- ``end_code`` is ``''`` for
         an attempt that ran its whole schedule with no refusal.
@@ -1286,14 +1597,16 @@ class SkillsGate:
                              airborne=False, next_obs_t=None,
                              expect_held=True, lost_since=None,
                              last_obs_t=None)}
-        tracker = _make_tracker(plant, ball_state)
+        identity = _IdentityTracker(_make_tracker(plant, ball_state),
+                                    legacy=_correlator_is_legacy(cfg))
         ictx = _InstallCtx(park)
-        installer = _make_installer(ictx, self.seg_cfg, self.limits, geom)
+        installer = _make_installer(ictx, self.seg_cfg, self.limits, geom,
+                                    on_release=identity.announce)
         observer = _make_observer(plant)
         observations = _make_observations(observer)
         learner = _MemoryLearner(memory, learner_cfg)
         executor = ex.SkillExecutor(
-            sched, installer, tracker=tracker,
+            sched, installer, tracker=identity.tracker,
             catch_aim_source=self.cfg.catch_aim_source,
             learner=learner, boxes=boxes,
             observer=observer, on_experience=lambda exp: (
@@ -1309,7 +1622,9 @@ class SkillsGate:
             plant=plant, geom=geom, rcfg=self.rcfg, noise=noise,
             executor=executor, ictx=ictx, ball_state=ball_state, t_end=t_end,
             release_bias=_measured_release_bias,
-            stop_check=lambda: executor.done)
+            stop_check=lambda: executor.done, identity=identity)
+        if reports_out is not None:
+            reports_out.extend(executor.reports)
         return str(executor.end_code), loop, ictx
 
     def run_self_toss_seed(self, seed: int, policy: str = 'A') -> dict:
@@ -1341,6 +1656,7 @@ class SkillsGate:
         assert len(memory) == 0, 'a fresh tmp path must be a cold memory'
 
         throws: list = []
+        reports: list = []
         attempts = 0
         refusals = 0
         drops_total = 0
@@ -1360,7 +1676,7 @@ class SkillsGate:
             end_code, loop, ictx = self.run_self_toss_attempt(
                 pattern_sites=pattern_sites, n_throws=n_throws, memory=memory,
                 learner_cfg=cfg.learner_cfg, boxes=boxes, noise=noise,
-                throws_out=throws)
+                throws_out=throws, reports_out=reports)
             end_codes.append(end_code)
             if end_code:
                 refusals += 1
@@ -1398,6 +1714,9 @@ class SkillsGate:
             [r['err_apex_mm'] for r in rows], cfg.band_entry_throws,
             cfg.target_throws)
 
+        beat = sk.beat_s(sk.flight_s(cfg.apex_m), cfg.dwell_s)
+        assoc = _association_verdict(reports, end_codes, beat)
+
         return dict(
             seed=seed, policy=policy, pattern=cfg.pattern,
             separation_mm=cfg.separation_mm, throws=rows,
@@ -1410,8 +1729,9 @@ class SkillsGate:
             throws_to_band_apex=throws_to_band_apex,
             entered_band=entered_band,
             monotone_xy=monotone_xy, monotone_apex=monotone_apex,
+            association=assoc,
             passed=bool(entered_band and bool(monotone_xy)
-                       and bool(monotone_apex)),
+                       and bool(monotone_apex) and assoc['ok']),
             wall_s=time.time() - t_wall0)
 
     # ── R5: the columns learner run (Unit G, plan § R5) ─────────────────────
@@ -1429,7 +1749,8 @@ class SkillsGate:
 
     def run_columns_attempt(self, *, n_throws: int, memory: mem.Memory,
                             learner_cfg: lr.LearnerConfig, noise: JuggleNoise,
-                            throws_out: list) -> Tuple[str, dict, '_InstallCtx']:
+                            throws_out: list, reports_out: list = None
+                            ) -> Tuple[str, dict, '_InstallCtx']:
         """One columns learner attempt, cold from a level rest holding ball
         A with ball B already airborne toward the FEED site (the SAME
         setup :meth:`run_trial` steps 1-2 use) -- vertically
@@ -1478,7 +1799,22 @@ class SkillsGate:
         bypasses the learner entirely and produces no experience row, see
         ``compile_columns``/``executor._finalise_outcome``) reaches
         ``on_experience``; ``throws_out`` accumulates them in schedule
-        order, same contract as :meth:`run_self_toss_attempt`.
+        order, same contract as :meth:`run_self_toss_attempt`. ``reports_out``
+        is this attempt's ``executor.reports``, same contract too (U1
+        handoff's pass criteria read ``release_err_s`` off these).
+
+        The tracker is :class:`_IdentityTracker` over ground truth, exactly
+        as :meth:`run_self_toss_attempt` wires it -- THIS is the method the
+        2026-10-02 mis-latch needed: two schedule balls, each announced
+        while the other is mid-flight, is precisely the shape the old
+        ground-truth stand-in could never exercise (U1 § 3). A FEED trial
+        additionally announces ball 1's feed flight with ``thrower=
+        'ball_butler'`` at its physical spawn instant -- the sim's stand-in
+        for Ball Butler's own ``ThrowAnnouncement`` (``_install_announced_
+        reload``'s real-system counterpart) -- the un-fed vertical spawn
+        announces nothing for that first flight, matching the real system's
+        "ball already in the air, no prior to gate against" case (U1
+        handoff, "What A1 changed... accepted as before").
 
         Returns ``(end_code, loop_stats, ictx)`` -- ``end_code`` is ``''``
         for an attempt that ran its whole schedule with no refusal.
@@ -1611,9 +1947,18 @@ class SkillsGate:
                    airborne=True, next_obs_t=t_spawn, expect_held=False,
                    lost_since=None, last_obs_t=None),
         }
-        tracker = _make_tracker(plant, ball_state)
+        identity = _IdentityTracker(_make_tracker(plant, ball_state),
+                                    legacy=_correlator_is_legacy(cfg))
+        if feed_mode:
+            # Ball Butler's own announcement of its feed throw -- physically
+            # released the instant it enters the scene (the sim has no BB
+            # launcher node to announce it any earlier); thrower='ball_butler'
+            # makes this an IDENTITY latch no jugglebot release can ever
+            # satisfy (`bp.match_announced_track`'s source check).
+            identity.announce(1, t_spawn, thrower='ball_butler')
         ictx = _InstallCtx(rest0)
-        installer = _make_installer(ictx, self.seg_cfg, self.limits, geom)
+        installer = _make_installer(ictx, self.seg_cfg, self.limits, geom,
+                                    on_release=identity.announce)
         learner = _MemoryLearner(memory, learner_cfg)
         # ``_make_observer`` takes ``ball_id`` as an argument (unlike
         # ``_make_observations``, which hardcodes ball 0) -- it is already
@@ -1625,7 +1970,7 @@ class SkillsGate:
         # row still read ``caught=False`` without this wire).
         observer = _make_observer(plant)
         executor = ex.SkillExecutor(
-            sched, installer, tracker=tracker,
+            sched, installer, tracker=identity.tracker,
             catch_aim_source=self.cfg.catch_aim_source,
             learner=learner, boxes=None, resend_max_per_catch=0,
             observer=observer,
@@ -1639,7 +1984,9 @@ class SkillsGate:
         loop = self._stream_chain(
             plant=plant, geom=geom, rcfg=self.rcfg, noise=noise,
             executor=executor, ictx=ictx, ball_state=ball_state, t_end=t_end,
-            stop_check=lambda: executor.done)
+            stop_check=lambda: executor.done, identity=identity)
+        if reports_out is not None:
+            reports_out.extend(executor.reports)
         return str(executor.end_code), loop, ictx
 
     def run_columns_seed(self, seed: int) -> dict:
@@ -1679,6 +2026,7 @@ class SkillsGate:
         assert len(memory) == 0, 'a fresh tmp path must be a cold memory'
 
         throws: list = []
+        reports: list = []
         attempts_stats: list = []
         attempts = 0
         refusals = 0
@@ -1696,7 +2044,7 @@ class SkillsGate:
             throws_before = len(throws)
             end_code, loop, ictx = self.run_columns_attempt(
                 n_throws=n_throws, memory=memory, learner_cfg=cfg.learner_cfg,
-                noise=noise, throws_out=throws)
+                noise=noise, throws_out=throws, reports_out=reports)
             end_codes.append(end_code)
             if end_code:
                 refusals += 1
@@ -1748,6 +2096,9 @@ class SkillsGate:
             else:
                 _run = 0
 
+        beat = sk.beat_s(sk.flight_s(cfg.apex_m), cfg.dwell_s)
+        assoc = _association_verdict(reports, end_codes, beat)
+
         return dict(
             seed=seed, policy='columns', pattern=cfg.pattern,
             separation_mm=cfg.separation_mm, apex_m=cfg.apex_m,
@@ -1764,9 +2115,349 @@ class SkillsGate:
             entered_band=entered_band,
             monotone_xy=monotone_xy, monotone_apex=monotone_apex,
             longest_consecutive_catches=longest_consecutive_catches,
+            association=assoc,
             passed=bool(drops_total == 0
                        and longest_consecutive_catches >= min(
-                           30, cfg.target_throws)),
+                           30, cfg.target_throws)
+                       and assoc['ok']),
+            wall_s=time.time() - t_wall0)
+
+    # ── B2b: the columns_1ball trial (ball A real, ball B a PHANTOM) ───────
+
+    def run_columns_1ball_attempt(self, *, n_throws: int, memory: mem.Memory,
+                                  learner_cfg: lr.LearnerConfig,
+                                  noise: JuggleNoise, throws_out: list,
+                                  reports_out: list = None,
+                                  reload: bool = False
+                                  ) -> Tuple[str, dict, '_InstallCtx', int]:
+        """B2b's ``columns_1ball`` trial: ball A real at site 0, ball B a
+        PHANTOM at site 1 (``schedule.Pattern.phantom_balls=(1,)``) --
+        columns motion with one real ball (owner's framing, ``skill_node.
+        SkillNode._run_columns_1ball``'s own docstring: "JB running columns
+        with just a single ball, to test the vertical throws while the
+        Platform zips from side to side"). Site pick is UNSWAPPED (A at
+        site 0, B phantom at site 1) -- unlike :meth:`run_columns_attempt`'s
+        FEED trial, nothing is ever fed at the phantom's site, so none of
+        that swap's collision/aim-walk concerns apply (mirrors
+        ``_run_columns_1ball``'s own site pick, which exists only so an
+        operator sees the same two named sites an ordinary columns attempt
+        would).
+
+        **Ball B is never physically spawned** -- no ``plant.spawn_ball``
+        call for ball 1 anywhere in this method, in either branch below. It
+        stays parked (``BallManager.reset``'s default: far above the
+        scene, ``held`` forever False) for the whole attempt. The schedule
+        still carries ball B's own THROW/CATCH skills (``compile_columns``
+        is byte-identical in its own MOTION output whether or not
+        ``phantom_balls`` is set -- B2's own contract,
+        ``schedule.Pattern.phantom_balls``'s docstring): the cup still
+        transits to B's site and the hand still strokes there, so the legs
+        see identical dynamics to a real two-ball columns attempt -- this
+        method's own return value (below) lets the caller confirm those
+        skills actually DISPATCHED as motion, not merely that the compiled
+        schedule contains them.
+
+        ``reload=False`` (the default) compiles the columns schedule
+        directly, ball A assumed already resting at site 0 -- mirrors
+        ``_run_columns_1ball``'s own non-reload branch and this gate's own
+        :meth:`run_columns_attempt` non-FEED branch (the same full-beat
+        dispatch margin). ``reload=True`` instead runs ball A through the
+        SAME synthetic Ball-Butler arrival :meth:`run_reload_attempt` uses
+        (``_RELOAD_ARRIVAL_ANGLE_DEG`` / ``_RELOAD_ARRIVAL_SPEED_MMPS``,
+        backward-integrated to a physical spawn point), then hands the
+        DECAY REST's end off into the columns tail via
+        ``schedule.compile_reload_columns`` -- mirrors
+        ``_run_columns_1ball``'s own ``reload=True`` branch, which calls
+        ``_start_reload(..., kind='columns_1ball', columns_pattern=
+        pattern)`` on the real node; the sim gate has no ``_start_reload``,
+        so this inlines :meth:`run_reload_attempt`'s own synthetic-
+        announcement shape against the one-ball-columns compiler instead of
+        a second ``compile_reload`` call. ``lift_s`` is left at
+        ``schedule.FLOOR_LIFT_S`` (the already-home case) -- the same choice
+        :meth:`run_reload_attempt`'s own ``OneBallPattern`` makes implicitly
+        (its default ``floor_lift_s``), since this gate always resets from
+        a level rest with the hand at home.
+
+        **The identity tracker never announces or latches ball B** -- the
+        gate's OWN enforcement, parallel to ``SkillNode._maybe_announce``'s
+        real one (``schedule.Schedule.is_phantom``'s docstring): the
+        ``on_release`` closure below drops any release whose ``ball_id`` is
+        in ``pattern.phantom_balls`` before it ever reaches
+        :meth:`_IdentityTracker.announce`, so this gate's own
+        correlation/association bookkeeping sees exactly what the real
+        robot's tracker would -- never a track minted for a ball that was
+        never thrown.
+
+        Returns ``(end_code, loop_stats, ictx, b_skills_dispatched)`` --
+        ``end_code`` is ``''`` for an attempt that ran its whole schedule
+        with no refusal (the SAME contract :meth:`run_columns_attempt`
+        returns, which also means every skill in the compiled schedule --
+        A's and B's -- reached dispatch); ``b_skills_dispatched`` is the
+        number of ball B's own THROW/CATCH skills the compiled schedule
+        carries, counted off the schedule itself (not a second, separate
+        tally), so the caller can assert "B's skills executed as motion"
+        against the SAME number the executor actually dispatched.
+        """
+        cfg: SelfTossGateConfig = self.cfg
+        plant = self.plant
+        geom = self.geom
+        site0, site1 = sites.columns_sites(cfg.separation_mm)
+        # Unswapped: A at site 0, B (phantom) at site 1 -- see the method
+        # docstring (no feed exists to collide with, unlike the FEED
+        # trial's own swap).
+        a_site, phantom_site = site0, site1
+        pattern = sk.Pattern(sites=(a_site, phantom_site), apex_m=cfg.apex_m,
+                             dwell_s=cfg.dwell_s, n_throws=n_throws,
+                             phantom_balls=(1,))
+
+        rest0 = self._rest_state(a_site)
+        pose0 = np.asarray(rest0.pose, dtype=float)
+        plant.reset(pose0)
+        plant.command(plant.pose_to_extensions(pose0))
+        plant.command_hand(stream_chain.slider_mm_of_rev(
+            float(rest0.hand_rev), self.rcfg))
+        for _ in range(40):
+            plant.step(KNOT_DT_S)
+            if self.viewer is not None:
+                self.viewer.sync()
+
+        pending_spawn = None
+        if not reload:
+            # Ball A assumed already held at site 0 -- mirrors
+            # `run_columns_attempt`'s own non-FEED spawn.
+            plant.ball_manager.ball(0).spawn_in_hand()
+            t_f = sk.flight_s(cfg.apex_m)
+            beta = sk.beat_s(t_f, cfg.dwell_s)
+            # A full beat of margin before dispatch -- the same idiom
+            # `run_columns_attempt` uses for its own vertical spawn, ample
+            # for `launch_s` + `LEAD_S` + dispatch lookahead.
+            t0_abs_s = float(plant.data.time) + beta
+            # The phantom's first catch mirrors the FED start's aim point
+            # and level pin (`sk.phantom_feed_prior`, the node's own
+            # `_run_columns_1ball` does the same): at the nominal site it
+            # refused LIMIT_JERK on every seed at the sitting-4 geometry
+            # (2026-10-04) while the fed start passed 5/5.
+            a_minus_ph_xy = (np.asarray(a_site.cup_mm[:2], dtype=float)
+                             - np.asarray(phantom_site.cup_mm[:2], dtype=float))
+            _norm = float(np.linalg.norm(a_minus_ph_xy))
+            _unit = a_minus_ph_xy / _norm if _norm > 1e-9 else np.zeros(2)
+            _aim_xy = (np.asarray(phantom_site.cup_mm[:2], dtype=float)
+                       + cfg.feed_aim_toward_a_mm * _unit)
+            aim_site = sites.Site(phantom_site.name, np.array(
+                [_aim_xy[0], _aim_xy[1], float(phantom_site.cup_mm[2])]))
+            sched = sk.compile_columns(
+                pattern, feed=sk.phantom_feed_prior(pattern, aim_site, t0_abs_s))
+            ball_state_0 = dict(
+                estimator=BallisticEstimator(bal.G_VEC_MMS2), airborne=False,
+                next_obs_t=None, expect_held=True, lost_since=None,
+                last_obs_t=None)
+        else:
+            # Ball A is fed externally, exactly as `run_reload_attempt`'s
+            # own synthetic Ball Butler arrival -- see the method docstring.
+            angle = math.radians(self._RELOAD_ARRIVAL_ANGLE_DEG)
+            speed = self._RELOAD_ARRIVAL_SPEED_MMPS
+            land_pos_nom = np.asarray(a_site.catch_site_mm(), dtype=float)
+            land_vel_nom = np.array([speed * math.cos(angle), 0.0,
+                                     -speed * math.sin(angle)])
+            land_pos, land_vel = noise.perturb_throw(
+                land_pos_nom, land_vel_nom, np.zeros(3))
+            t0_abs_s = float(plant.data.time)
+            t_land_abs_s = t0_abs_s + self._RELOAD_ANNOUNCE_LEAD_S
+            g = bal.GRAVITY_MMS2
+            flight_lead_s = self._RELOAD_BALL_FLIGHT_LEAD_S
+            spawn_vel = np.array([land_vel[0], land_vel[1],
+                                  land_vel[2] + g * flight_lead_s])
+            spawn_pos = np.array([
+                land_pos[0] - land_vel[0] * flight_lead_s,
+                land_pos[1] - land_vel[1] * flight_lead_s,
+                land_pos[2] - land_vel[2] * flight_lead_s
+                - 0.5 * g * flight_lead_s * flight_lead_s])
+            spawn_t_abs_s = t_land_abs_s - flight_lead_s
+            pending_spawn = (spawn_t_abs_s, spawn_pos, spawn_vel, 0)
+            sched = sk.compile_reload_columns(
+                land_pos, land_vel, t_land_abs_s, sk.FLOOR_LIFT_S, pattern,
+                t0_abs_s)
+            ball_state_0 = dict(
+                estimator=BallisticEstimator(bal.G_VEC_MMS2), airborne=False,
+                next_obs_t=None, expect_held=False, lost_since=None,
+                last_obs_t=None)
+
+        b_skills_dispatched = sum(
+            1 for s in sched.skills
+            if s.kind in (THROW, CATCH) and int(s.ball_id) == 1)
+
+        ball_state = {
+            0: ball_state_0,
+            # Ball 1 (phantom) is never spawned -- this entry exists only
+            # so `_stream_chain`'s `ball_state[b_id]` lookups (the
+            # release-pop loop, the per-ball make/drop/observe loop) don't
+            # KeyError on B's own scheduled releases: a parked ball's
+            # `held` reads False forever, so `_stream_chain` never actually
+            # calls `plant.release_ball`/counts a capture for it, and
+            # `expect_held=False` here means it is never watched for a drop
+            # either -- every field below stays physically inert.
+            1: dict(estimator=BallisticEstimator(bal.G_VEC_MMS2),
+                   airborne=False, next_obs_t=None, expect_held=False,
+                   lost_since=None, last_obs_t=None),
+        }
+        identity = _IdentityTracker(_make_tracker(plant, ball_state),
+                                    legacy=_correlator_is_legacy(cfg))
+
+        def on_release(ball_id: int, t_release_s: float) -> None:
+            # THE enforcement point (gate-side mirror of `SkillNode.
+            # _maybe_announce`'s real one): a phantom's release is never
+            # announced, so it can never mint a tracker id or latch a
+            # correlation.
+            if int(ball_id) in pattern.phantom_balls:
+                return
+            identity.announce(ball_id, t_release_s)
+
+        ictx = _InstallCtx(rest0)
+        installer = _make_installer(ictx, self.seg_cfg, self.limits, geom,
+                                    on_release=on_release)
+        learner = _MemoryLearner(memory, learner_cfg)
+        observer = _make_observer(plant)
+        executor = ex.SkillExecutor(
+            sched, installer, tracker=identity.tracker,
+            catch_aim_source=self.cfg.catch_aim_source,
+            learner=learner, boxes=None, resend_max_per_catch=0,
+            observer=observer,
+            on_experience=lambda exp: (
+                memory.append(exp), throws_out.append(exp)),
+            dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
+
+        # A generous, bounded timeout -- the real exit is `executor.done`
+        # (`stop_check`), matching `run_columns_attempt`.
+        t_end = float(sched.skills[-1].t_abs_s) + 1.0
+        loop = self._stream_chain(
+            plant=plant, geom=geom, rcfg=self.rcfg, noise=noise,
+            executor=executor, ictx=ictx, ball_state=ball_state, t_end=t_end,
+            stop_check=lambda: executor.done, identity=identity,
+            pending_spawn=pending_spawn)
+        if reports_out is not None:
+            reports_out.extend(executor.reports)
+        return str(executor.end_code), loop, ictx, b_skills_dispatched
+
+    def run_columns_1ball_seed(self, seed: int, *, reload: bool = False
+                               ) -> dict:
+        """One seed of B2b's ``columns_1ball`` trial
+        (:meth:`run_columns_1ball_attempt`), chained like
+        :meth:`run_columns_seed` -- cheap resets until ``cfg.target_throws``
+        of ball A's OWN experience rows have been collected (ball B
+        produces none, by construction -- see that method's docstring).
+
+        PASS criteria (``handoff_B2_sim_trial.md`` § "Pass criteria",
+        confirmed against the REAL plant/hand rather than only the offline
+        unit tests):
+          - every attempt's ``end_code`` is ``''`` -- no refusal of any
+            kind, in particular never ``REJECTED_NO_BALL``/
+            ``ABORTED_NO_RELEASE`` (the two a phantom's empty hand could
+            otherwise spuriously trip -- see ``executor.py::
+            _register_outcome``'s and ``schedule.py::Schedule.is_phantom``'s
+            docstrings for why they structurally cannot).
+          - ball A caught every throw it produced a row for (``n``/``n``),
+            with the same band/monotone-convergence verdicts
+            :meth:`run_columns_seed` reports (computed over A's rows only).
+          - ball B's own THROW/CATCH skills dispatched as motion at least
+            once (``b_skills_dispatched``, summed across attempts).
+          - zero experience rows carry ``ball_id == 1`` -- B trains nothing.
+          - the usual association verdict (:func:`_association_verdict`).
+        """
+        cfg: SelfTossGateConfig = self.cfg
+        noise = JuggleNoise(cfg.noise, seed=seed)
+        tmp_dir = tempfile.mkdtemp(
+            prefix='skills_gate_columns1ball_seed%d_' % seed)
+        memory = mem.Memory(os.path.join(tmp_dir, 'memory.csv'))
+        assert len(memory) == 0, 'a fresh tmp path must be a cold memory'
+
+        throws: list = []
+        reports: list = []
+        attempts = 0
+        refusals = 0
+        drops_total = makes_total = 0
+        b_skills_dispatched_total = 0
+        end_codes: list = []
+        plan_wall_s_all: list = []
+        t_wall0 = time.time()
+
+        while len(throws) < cfg.target_throws and attempts < cfg.max_attempts:
+            remaining = cfg.target_throws - len(throws)
+            n_throws = max(2, remaining + 1)
+            attempts += 1
+            end_code, loop, ictx, b_skills = self.run_columns_1ball_attempt(
+                n_throws=n_throws, memory=memory, learner_cfg=cfg.learner_cfg,
+                noise=noise, throws_out=throws, reports_out=reports,
+                reload=reload)
+            end_codes.append(end_code)
+            if end_code:
+                refusals += 1
+            drops_total += loop['drops']
+            makes_total += loop['makes']
+            b_skills_dispatched_total += b_skills
+            plan_wall_s_all.extend(ictx.plan_wall_s)
+
+        b_rows = [exp for exp in throws if int(exp.ball_id) == 1]
+        a_rows = [exp for exp in throws if int(exp.ball_id) == 0]
+        a_caught = sum(1 for exp in a_rows if exp.caught)
+
+        rows = []
+        for i, exp in enumerate(a_rows):
+            err_xy_mm = float(1000.0 * np.linalg.norm(exp.y[:2]))
+            err_apex_mm = float(1000.0 * abs(float(exp.y[2]) - cfg.apex_m))
+            rows.append(dict(
+                throw=i + 1, err_xy_mm=err_xy_mm, err_apex_mm=err_apex_mm,
+                caught=bool(exp.caught)))
+
+        throws_to_band_xy = next(
+            (r['throw'] for r in rows if r['err_xy_mm'] <= cfg.xy_band_mm),
+            None)
+        throws_to_band_apex = next(
+            (r['throw'] for r in rows
+             if r['err_apex_mm'] <= cfg.apex_band_mm), None)
+        monotone_xy = _monotone_verdict(
+            [r['err_xy_mm'] for r in rows], cfg.band_entry_throws,
+            cfg.target_throws)
+        monotone_apex = _monotone_verdict(
+            [r['err_apex_mm'] for r in rows], cfg.band_entry_throws,
+            cfg.target_throws)
+
+        longest_consecutive_catches = 0
+        _run = 0
+        for r in rows:
+            if r['caught']:
+                _run += 1
+                longest_consecutive_catches = max(longest_consecutive_catches,
+                                                  _run)
+            else:
+                _run = 0
+
+        beat = sk.beat_s(sk.flight_s(cfg.apex_m), cfg.dwell_s)
+        assoc = _association_verdict(reports, end_codes, beat)
+        _FORBIDDEN_PHANTOM_CODES = ('REJECTED_NO_BALL', 'ABORTED_NO_RELEASE')
+        no_forbidden_refusal = not any(
+            ec in _FORBIDDEN_PHANTOM_CODES for ec in end_codes)
+
+        return dict(
+            seed=seed, policy='columns_1ball', pattern='columns',
+            reload=bool(reload), apex_m=cfg.apex_m,
+            separation_mm=cfg.separation_mm,
+            attempts=attempts, end_codes=end_codes, refusals=refusals,
+            drops=drops_total, makes=makes_total,
+            plan_wall_ms=_wall_ms_stats(plan_wall_s_all),
+            a_throws=len(a_rows), a_caught=a_caught,
+            b_experience_rows=len(b_rows),
+            b_skills_dispatched=b_skills_dispatched_total,
+            throws_to_band_xy=throws_to_band_xy,
+            throws_to_band_apex=throws_to_band_apex,
+            monotone_xy=monotone_xy, monotone_apex=monotone_apex,
+            longest_consecutive_catches=longest_consecutive_catches,
+            association=assoc,
+            passed=bool(refusals == 0 and no_forbidden_refusal
+                       and drops_total == 0
+                       and len(a_rows) > 0 and a_caught == len(a_rows)
+                       and len(b_rows) == 0
+                       and b_skills_dispatched_total > 0
+                       and assoc['ok']),
             wall_s=time.time() - t_wall0)
 
     # ── R4: the reload trial (Unit U3, brief step 5, owner decision D4) ────
@@ -2057,7 +2748,10 @@ def run_learn(cfg: SelfTossGateConfig = None, seeds=(0, 1, 2, 3, 4),
     cfg = SelfTossGateConfig() if cfg is None else cfg
     gate = SkillsGate(cfg)
     t0 = time.time()
-    if cfg.pattern == 'columns':
+    if cfg.pattern == 'columns' and cfg.one_ball:
+        seed_results = [gate.run_columns_1ball_seed(s, reload=cfg.one_ball_reload)
+                        for s in seeds]
+    elif cfg.pattern == 'columns':
         seed_results = [gate.run_columns_seed(s) for s in seeds]
     else:
         seed_results = [gate.run_self_toss_seed(s, policy=policy)
@@ -2178,6 +2872,15 @@ def _print_learn_table(rep: dict) -> None:
                  r['throws_to_band_apex'], r['monotone_xy'],
                  r['monotone_apex'], r['attempts'], r['drops'], r['makes'],
                  p50, r.get('longest_consecutive_catches', '-')))
+        assoc = r.get('association')
+        if assoc is not None:
+            print('[skills_gate_learn]   assoc=%s window_too_short=%s '
+                  'wrong_ball_rows=%d release_err_max_s=%.4f (bound %.4f, '
+                  'bad %d/%d)'
+                  % ('OK' if assoc['ok'] else 'FAIL',
+                     assoc['window_too_short'], assoc['wrong_ball_rows'],
+                     assoc['release_err_max_s'], assoc['release_err_bound_s'],
+                     assoc['release_err_bad'], assoc['release_err_checked']))
     print('[skills_gate_learn] %s  (wall %.1f s over %d seed(s))'
           % ('PASS' if rep['passed'] else 'FAIL', rep['wall_s'],
              len(rep['seeds'])))
@@ -2282,6 +2985,33 @@ def main(argv=None) -> int:
                         '20.0 -- the swapped layout\'s undisplaced feed '
                         'catch refuses LIMIT_ACC at 101 %%, R5 sitting 2, '
                         '2026-10-02)')
+    p.add_argument('--correlator', choices=('fixed', 'head'), default=None,
+                   help='--learn only: which tracker-correlation rule '
+                        '_IdentityTracker applies. \'fixed\' (the default): '
+                        'identity latches keyed on the announcement\'s own '
+                        '(thrower, throw_time) -- the 2026-10-04 two-ball-'
+                        'association fix. \'head\': the pre-fix exclusion '
+                        'rule -- the negative control that must reproduce '
+                        'WINDOW_TOO_SHORT on fed columns.')
+    p.add_argument('--dwell-s', type=float, default=None,
+                   help='--learn only: override SelfTossGateConfig.dwell_s '
+                        '(default 0.25). Use this to pin the dwell this run '
+                        'plans at to the admissible box\'s OWN swept dwell '
+                        '(config/generated/admissible_box.yaml\'s dwell_s) '
+                        'when the two differ and a box-dwell mismatch '
+                        'matters to the caller.')
+    p.add_argument('--one-ball', action='store_true',
+                   help='--learn --pattern columns only (B2b): run the '
+                        'columns_1ball trial -- ball A real, ball B a '
+                        'PHANTOM (schedule.Pattern.phantom_balls=(1,), '
+                        'never spawned) -- instead of the two-real-ball '
+                        'columns gate')
+    p.add_argument('--one-ball-reload', action='store_true',
+                   help='--one-ball only: ball A is fed externally through '
+                        'schedule.compile_reload_columns (the same '
+                        'synthetic Ball Butler arrival --reload uses for '
+                        'self_toss/hop) instead of starting already held '
+                        'at its site')
     args = p.parse_args(argv)
 
     if args.reload:
@@ -2299,6 +3029,13 @@ def main(argv=None) -> int:
         if (args.feed_angle_deg is not None and args.pattern != 'columns'):
             p.error('--feed-angle-deg/--feed-speed-mmps only apply to '
                      '--pattern columns')
+        if args.one_ball and args.pattern != 'columns':
+            p.error('--one-ball only applies to --pattern columns')
+        if args.one_ball_reload and not args.one_ball:
+            p.error('--one-ball-reload requires --one-ball')
+        if args.one_ball and args.feed_angle_deg is not None:
+            p.error('--one-ball and --feed-angle-deg/--feed-speed-mmps are '
+                     'mutually exclusive -- B2b has no FEED variant')
         default_sep = (_HOP_SEPARATION_MM if args.pattern == 'hop'
                       else _SELF_TOSS_SEPARATION_MM)
         separation_mm = (float(args.separation_mm)
@@ -2319,6 +3056,14 @@ def main(argv=None) -> int:
             lcfg.columns_feed_site = str(args.columns_feed_site)
         if args.feed_aim_toward_a_mm is not None:
             lcfg.feed_aim_toward_a_mm = float(args.feed_aim_toward_a_mm)
+        if args.correlator is not None:
+            lcfg.correlator = str(args.correlator)
+        if args.dwell_s is not None:
+            lcfg.dwell_s = float(args.dwell_s)
+        if args.one_ball:
+            lcfg.one_ball = True
+        if args.one_ball_reload:
+            lcfg.one_ball_reload = True
         if args.seeds is not None:
             seeds = tuple(args.seeds)
         else:

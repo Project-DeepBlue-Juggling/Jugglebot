@@ -57,6 +57,10 @@ NON_IDEMPOTENT_METHODS = frozenset({
     int(p.RpcMethod.DEACTIVATE),
     int(p.RpcMethod.REBOOT_ODRIVES),
     int(p.RpcMethod.BB_THROW),
+    # A re-dispatched HAND_MOVE_TO (same req_id) would RETARGET the move in
+    # flight, and the firmware would answer the original as SUPERSEDED under the
+    # very req_id this call is waiting on — a retry would mis-report its own move.
+    int(p.RpcMethod.HAND_MOVE_TO),
 })
 
 
@@ -112,6 +116,17 @@ class HandTorqueScaleUnavailable(RuntimeError):
         super().__init__(reason)
         self.reason = reason
         self.state = state
+
+
+class HandMoveToUnavailable(RuntimeError):
+    """The bridge firmware has no HAND_MOVE_TO (it answered ERR_UNKNOWN_METHOD:
+    can-bridge FW <= 25). A hand-jam recovery treats this as "relief only": it
+    cannot raise or lower the hand, so it must report the jam unrecovered rather
+    than fall back to any other hand-motion path."""
+
+    def __init__(self, reason: str = "firmware has no HAND_MOVE_TO"):
+        super().__init__(reason)
+        self.reason = reason
 
 
 class RpcClient:
@@ -177,6 +192,50 @@ class RpcClient:
                 raise HandTorqueScaleUnavailable(
                     f"no torque-scale reply within {timeout_s:.2f} s", r.state)
             time.sleep(float(poll_s))
+
+    def hand_move_to(self, target_rev: float, vel_rps: float = 2.5,
+                     timeout_s: float = 12.0) -> bytes:
+        """Move the hand (axis 6) to ``target_rev`` with ACTIVATE's TRAP_TRAJ
+        ladder at cruise ``vel_rps``, and block until the MOVE ends.
+
+        The can-bridge (FW 26+) defers the reply to the move's end, so the
+        return is the ResultHandMoveTo blob of a move that is over (decode with
+        :func:`rpc_args.decode_hand_move_to_result`): outcome ARRIVED (at
+        target, handed off to PASSTHROUGH) or SUPERSEDED (a newer HAND_MOVE_TO,
+        e.g. from :meth:`hand_move_to_nowait` on another thread, retargeted it),
+        plus the measured position at the reply. ``timeout_s`` must exceed the
+        firmware's 10 s move timeout so a slow move is reported by the firmware
+        (``RpcError`` ERR_TIMEOUT, hand IDLE) rather than by this client
+        (:class:`RpcTimeout`, move state unknown).
+
+        Raises :class:`HandMoveToUnavailable` when the firmware answers
+        ERR_UNKNOWN_METHOD (FW <= 25); :class:`RpcError` for every refusal or
+        abort (ERR_BAD_ARGS / ERR_BUS_DOWN / ERR_REJECTED / ERR_TIMEOUT) and
+        :class:`RpcTimeout` when no reply arrives. Never retried (a re-dispatch
+        would retarget its own move). Blocks for the whole move — never call it
+        from an executor or control loop.
+        """
+        from . import rpc_args as _ra
+        try:
+            return self.call(int(p.RpcMethod.HAND_MOVE_TO),
+                             _ra.encode_hand_move_to(target_rev, vel_rps),
+                             timeout=float(timeout_s), retries=0)
+        except RpcTimeout:
+            raise
+        except RpcError as exc:
+            if exc.status == int(p.RpcStatus.ERR_UNKNOWN_METHOD):
+                raise HandMoveToUnavailable() from exc
+            raise
+
+    def hand_move_to_nowait(self, target_rev: float, vel_rps: float = 2.5) -> "RpcCall":
+        """Send HAND_MOVE_TO and return the in-flight :class:`RpcCall` at once,
+        so a caller can watch telemetry (tracking, stall) while the move runs
+        and retarget it with a second HAND_MOVE_TO. ``RpcCall.result()`` raises
+        :class:`RpcError` on a non-OK reply; map ERR_UNKNOWN_METHOD to
+        :class:`HandMoveToUnavailable` yourself (see :meth:`hand_move_to`)."""
+        from . import rpc_args as _ra
+        return self.send_nowait(int(p.RpcMethod.HAND_MOVE_TO),
+                                _ra.encode_hand_move_to(target_rev, vel_rps))
 
     def close(self) -> None:
         """Detach from the underlying link. Pending calls will time out."""

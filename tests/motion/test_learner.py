@@ -27,25 +27,32 @@ from jugglebot.motion.skills import memory as mem
 # ---------------------------------------------------------------------------
 
 def _reference_command(x, y_d, X, U, Y, cfg):
+    """Plan § 2.5 as amended 2026-10-04 (learner module docstring): support
+    gate on the joint metric, the k MOST RECENT support rows, the anchor on
+    the joint kernel, the fit on the STATE kernel only."""
     n = X.shape[0]
     if n < cfg.k_min:
         return y_d.copy()
     h_y = np.asarray(cfg.h_y, dtype=float)
     d2 = (((X - x) / cfg.h_x) ** 2).sum(axis=1) + (((Y - y_d) / h_y) ** 2).sum(axis=1)
-    kk = min(cfg.k, n)
-    idx = np.argsort(d2, kind='stable')[:kk]
+    support = [i for i in range(n) if d2[i] <= cfg.support_d2]
+    idx = np.array(support[max(0, len(support) - cfg.k):], dtype=int)
+    if idx.size < cfg.k_min:
+        return y_d.copy()
+    kk = idx.size
     w = np.exp(-d2[idx])
     Xs, Us, Ys = X[idx], U[idx], Y[idx]
     u_bar = (w[:, None] * Us).sum(axis=0) / w.sum()
+    v = np.exp(-(((Xs - x) / cfg.h_x) ** 2).sum(axis=1))
     Z = np.vstack([(Xs - x).T, (Us - u_bar).T, np.ones((1, kk))])
     Theta0 = np.hstack([np.zeros((3, 4)), np.eye(3), u_bar[:, None]])
-    sw = np.sqrt(w)
+    sv = np.sqrt(v)
     # Weighted ridge toward Theta0 as one augmented least-squares solve per row
-    # (sqrt(w)-scaled data rows plus sqrt(gamma)*(I | Theta0) prior rows).
-    Aaug = np.vstack([(Z * sw).T, np.sqrt(cfg.gamma) * np.eye(8)])
+    # (sqrt(v)-scaled data rows plus sqrt(gamma)*(I | Theta0) prior rows).
+    Aaug = np.vstack([(Z * sv).T, np.sqrt(cfg.gamma) * np.eye(8)])
     Theta = np.zeros((3, 8))
     for r in range(3):
-        baug = np.concatenate([sw * Ys[:, r], np.sqrt(cfg.gamma) * Theta0[r]])
+        baug = np.concatenate([sv * Ys[:, r], np.sqrt(cfg.gamma) * Theta0[r]])
         Theta[r] = np.linalg.lstsq(Aaug, baug, rcond=None)[0]
     D, d = Theta[:, 4:7], Theta[:, 7]
     # eq. 21's argmin as one augmented least-squares solve (D rows plus
@@ -152,6 +159,154 @@ def test_corrects_an_affine_bias_within_six_throws():
 
 
 # ---------------------------------------------------------------------------
+# The forward model never sees a sample chosen by its own outcome (A2,
+# 2026-10-04 -- learner module docstring)
+# ---------------------------------------------------------------------------
+
+#: The 48 most recent P1 self-toss rows of ``temp/learn/jugglebot/memory.csv``
+#: (x = (-0.05, 0, 0, 0), sittings 2026-10-02 18:47 .. 2026-10-03 00:26, real
+#: hardware, uncurated -- one row lands > 100 mm off), copied as data:
+#: (u0, u1, u_apex, y0, y1, y_apex) in mm, rounded to 0.1 mm. Mean residual
+#: y - u = (+13.2, +8.3) mm laterally: this plant lands beyond its command in
+#: +y, so a learner must command y BELOW the target. The pre-fix law (k
+#: nearest in the joint state/OUTCOME metric) returned u_y = +2.8 mm on these
+#: rows -- the wrong sign -- because its 16 neighbours were the 16 throws that
+#: happened to land nearest the target (their mean landing IS the target, so
+#: its step was ~0); the fixed law returns u_y = -3.2 mm (probe
+#: ``scratchpad/s3/a2/fixture_probe.py``, 2026-10-04).
+_P1_SELF_TOSS_ROWS_MM = [
+    (-15.7, 1.5, 835.2, 29.3, 37.4, 918.4),
+    (-15.7, 1.5, 835.2, 8.1, -2.3, 924.0),
+    (-14.8, 1.4, 835.3, 15.3, 17.1, 919.6),
+    (-14.8, 1.4, 835.3, -21.9, 5.8, 917.8),
+    (-15.1, 2.2, 835.3, -26.6, 10.4, 910.9),
+    (-15.1, 2.2, 835.3, 26.9, -5.4, 921.6),
+    (-15.1, 2.2, 835.3, 26.4, 34.5, 929.5),
+    (-15.1, 2.2, 835.3, -19.9, 18.4, 919.9),
+    (-15.1, 2.2, 835.3, 45.1, 18.9, 934.5),
+    (-15.1, 2.2, 835.3, 8.2, 42.9, 917.1),
+    (-15.1, 2.2, 835.3, 22.6, 43.9, 915.9),
+    (-15.1, 2.2, 835.3, 3.9, 13.5, 921.1),
+    (-15.1, 2.2, 835.3, 48.7, 39.6, 919.8),
+    (-15.1, 2.2, 835.3, 36.6, 11.8, 921.0),
+    (-15.1, 2.2, 835.3, -13.7, 27.9, 921.4),
+    (-15.1, 2.2, 835.3, -7.7, 27.6, 918.1),
+    (-15.1, 2.2, 835.3, -4.4, 9.1, 922.4),
+    (-15.1, 2.2, 835.3, -23.5, 72.5, 924.3),
+    (-15.1, 2.2, 835.3, -335.3, -171.4, 813.3),
+    (-15.1, 2.0, 835.7, 23.6, 8.3, 918.9),
+    (-15.1, 2.0, 835.7, 15.0, 25.7, 923.9),
+    (-15.1, 2.0, 835.7, 23.7, 9.1, 930.8),
+    (-15.1, 2.0, 835.7, -16.8, 37.7, 923.2),
+    (-15.1, 2.0, 835.7, 43.1, 27.3, 924.0),
+    (-15.1, 2.0, 835.7, -38.0, 34.9, 924.8),
+    (-15.1, 2.0, 835.7, 29.4, -3.4, 929.5),
+    (-15.1, 2.0, 835.7, -8.2, 5.8, 929.9),
+    (-15.1, 2.0, 835.7, 12.3, -33.0, 930.2),
+    (-15.1, 2.0, 835.7, 10.6, 7.2, 920.7),
+    (-15.1, 3.0, 819.4, -6.7, -2.2, 888.3),
+    (-15.1, 3.0, 819.4, -5.5, 37.3, 893.1),
+    (-15.1, 3.0, 819.4, -23.2, -11.5, 891.8),
+    (-15.0, 2.4, 819.6, -0.3, -2.1, 899.6),
+    (-15.0, 2.4, 819.6, -13.2, 8.3, 896.3),
+    (-15.5, 3.0, 819.8, 13.2, -6.8, 888.8),
+    (-15.5, 3.0, 819.8, -19.6, -4.8, 886.1),
+    (-15.5, 3.0, 819.8, -13.7, -15.4, 893.1),
+    (-15.5, 3.0, 819.8, -33.8, 4.0, 897.3),
+    (-15.5, 3.0, 819.8, 39.8, 11.5, 903.4),
+    (-15.5, 3.0, 819.8, -13.4, 26.5, 885.1),
+    (-15.5, 3.0, 819.8, 6.3, -24.8, 894.8),
+    (-15.5, 3.0, 819.8, 44.4, 39.9, 914.8),
+    (-15.5, 3.0, 819.8, -14.8, -3.3, 902.0),
+    (-15.5, 3.0, 819.8, -22.0, 56.9, 911.8),
+    (-15.5, 3.0, 819.8, 29.8, 41.7, 897.6),
+    (-15.5, 3.0, 819.8, 6.9, -10.4, 906.5),
+    (-15.9, 4.1, 819.1, 7.4, -11.6, 887.0),
+    (-15.9, 4.1, 819.1, 8.6, 10.9, 897.4),
+]
+
+
+def _p1_self_toss_memory():
+    F = np.asarray(_P1_SELF_TOSS_ROWS_MM, dtype=float) / 1e3
+    n = F.shape[0]
+    return np.tile([-0.05, 0.0, 0.0, 0.0], (n, 1)), F[:, :3], F[:, 3:]
+
+
+def test_real_p1_memory_commands_against_the_plants_measured_offset():
+    """Regression for the 2026-10-02 sign flip: on the real rows the lateral
+    command opposes the mean residual on BOTH axes (the plant lands beyond
+    its command, so the command sits short of the target)."""
+    X, U, Y = _p1_self_toss_memory()
+    y_d = np.array([0.0, 0.0, 0.9])
+    u = lr.command(X[0], y_d, X, U, Y, lr.LearnerConfig())
+    residual = (Y - U).mean(axis=0)
+    assert residual[0] > 0.0 and residual[1] > 0.0
+    assert np.sign(u[0] - y_d[0]) == -np.sign(residual[0])
+    assert np.sign(u[1] - y_d[1]) == -np.sign(residual[1])
+    # Measured -3.2 mm (2026-10-04); the pre-fix law's +2.8 mm fails here.
+    assert u[1] < -1.5e-3
+
+
+def test_a_noisy_plant_at_one_state_is_not_frozen_by_its_own_luckiest_throws():
+    """The mechanism, synthetic: 160 rows at one state, commands constant to
+    ~1 mm, plant y = u + b + noise (sd 23 mm, b_y = +11 mm). The command
+    must step against b. The pre-fix law took the 16 rows that landed
+    nearest the target, saw a plant on target, and stepped ~0."""
+    rng = np.random.default_rng(11)
+    n = 160
+    y_d = np.array([0.0, 0.0, 0.9])
+    u0 = np.array([-0.015, 0.003, 0.82])
+    b = np.array([0.015, 0.011, 0.08])
+    X = np.zeros((n, 4))
+    U = u0 + rng.normal(scale=[1e-3, 1e-3, 2e-3], size=(n, 3))
+    Y = U + b + rng.normal(scale=[0.023, 0.023, 0.020], size=(n, 3))
+    u = lr.command(np.zeros(4), y_d, X, U, Y, lr.LearnerConfig())
+    # The ideal damped step from u0 is -(u0 + b - y_d)/(1 + eta) = -11.7 mm
+    # in y; a 16-row window carries ~6 mm of noise, so pin half of it.
+    assert u[1] - u0[1] < -0.5 * (u0[1] + b[1]) / 1.2
+
+
+def test_an_identical_command_neighbourhood_has_exactly_the_identity_slope():
+    """When the neighbours' commands do not vary the data carry no
+    information on dy/du, and the slope IS the prior: D == I."""
+    cfg = lr.LearnerConfig()
+    rng = np.random.default_rng(5)
+    n = 12
+    x = np.zeros(4)
+    Xs = np.zeros((n, 4))
+    Us = np.tile([-0.015, 0.003, 0.82], (n, 1))
+    Ys = Us + 0.01 + rng.normal(scale=0.02, size=(n, 3))
+    d2s = rng.uniform(0.0, 2.0, size=n)
+    u_bar, Theta = lr._local_fit(x, Xs, Us, Ys, d2s, cfg)
+    np.testing.assert_allclose(Theta[:, 4:7], np.eye(3), rtol=0.0, atol=1e-12)
+    np.testing.assert_allclose(u_bar, Us[0], rtol=0.0, atol=1e-15)
+
+
+def test_a_well_spread_neighbourhood_still_identifies_a_true_slope():
+    """The fix must not blunt learning the data support: a noise-free plant
+    y = c + D_true (u - u0), D_true = diag(0.6, 0.6, 0.8), 40 rows with u
+    spread +-0.10 m. The fitted D must move >= 70 % of the way from the
+    prior I to D_true (measured 2026-10-04: 88 / 79 / 76 %; the pre-fix
+    joint-kernel fit reached 55 / 58 / 63 %, because weighting by the
+    outcome's distance down-weights exactly the rows that spread u)."""
+    cfg = lr.LearnerConfig()
+    rng = np.random.default_rng(1)
+    D_true = np.diag([0.6, 0.6, 0.8])
+    u0 = np.array([0.0, 0.0, 0.82])
+    c = np.array([0.01, 0.01, 0.9])
+    n = 40
+    X = np.zeros((n, 4))
+    U = u0 + rng.uniform(-1.0, 1.0, size=(n, 3)) * 0.10
+    Y = c + (U - u0) @ D_true.T
+    y_d = np.array([0.0, 0.0, 0.9])
+    idx, d2 = lr._neighbourhood(np.zeros(4), y_d, X, Y, cfg)
+    assert idx.size == cfg.k and list(idx) == list(range(n - cfg.k, n))
+    _u_bar, Theta = lr._local_fit(np.zeros(4), X[idx], U[idx], Y[idx], d2[idx], cfg)
+    frac = (1.0 - np.diag(Theta[:, 4:7])) / (1.0 - np.diag(D_true))
+    assert np.all(frac >= 0.70), frac
+
+
+# ---------------------------------------------------------------------------
 # Determinism
 # ---------------------------------------------------------------------------
 
@@ -169,35 +324,37 @@ def test_identical_inputs_are_bitwise_deterministic():
     assert np.array_equal(u1, u2)
 
 
-def test_equal_distance_neighbours_resolve_by_row_order():
-    """With more equal-distance rows than k, only the FIRST k (stable-sort
-    order) enter the fit -- rows past the cut must not move the result."""
+def test_the_window_is_the_most_recent_k_support_rows():
+    """With more support rows than k, only the LAST k (most recent, row
+    order = append order) enter the fit -- older rows must not move the
+    result, whatever their distance (2026-10-04: the window is chosen by
+    time, never by how close a row's outcome came to the target)."""
     cfg = lr.LearnerConfig()  # k = 16
     x = np.zeros(4)
     y_d = np.array([0.0, 0.0, 0.85])
     n = 20
-    X = np.zeros((n, 4))       # every row at the exact query state -> d2 == 0 for all
+    X = np.zeros((n, 4))       # every row at the exact query state
     Y = np.tile(y_d, (n, 1))   # every row at the exact target -> d2 == 0 for all
     rng = np.random.default_rng(3)
     U = y_d + rng.normal(scale=0.02, size=(n, 3))
 
     u_full = lr.command(x, y_d, X, U, Y, cfg)
 
-    # Recompute using only the first k=16 rows directly: must match exactly.
-    u_first_k = lr.command(x, y_d, X[:16], U[:16], Y[:16], cfg)
-    assert np.array_equal(u_full, u_first_k)
+    # Recompute using only the last k=16 rows directly: must match exactly.
+    u_last_k = lr.command(x, y_d, X[4:], U[4:], Y[4:], cfg)
+    assert np.array_equal(u_full, u_last_k)
 
-    # Perturbing a row PAST the cut (index 16) must not change the result.
-    U_perturbed = U.copy()
-    U_perturbed[16] += 1.0
-    u_perturbed = lr.command(x, y_d, X, U_perturbed, Y, cfg)
-    assert np.array_equal(u_full, u_perturbed)
+    # Perturbing a row OLDER than the window (index 3) must not change it,
+    # even when that moves the row's outcome nearer the target than any other.
+    U_perturbed, Y_perturbed = U.copy(), Y.copy()
+    U_perturbed[3] += 1.0
+    Y_perturbed[3] = y_d
+    assert np.array_equal(u_full, lr.command(x, y_d, X, U_perturbed, Y_perturbed, cfg))
 
-    # Perturbing a row INSIDE the cut (index 0) must change the result.
+    # Perturbing a row INSIDE the window (the newest) must change the result.
     U_changed = U.copy()
-    U_changed[0] += 1.0
-    u_changed = lr.command(x, y_d, X, U_changed, Y, cfg)
-    assert not np.array_equal(u_full, u_changed)
+    U_changed[-1] += 1.0
+    assert not np.array_equal(u_full, lr.command(x, y_d, X, U_changed, Y, cfg))
 
 
 # ---------------------------------------------------------------------------
@@ -222,17 +379,34 @@ def test_command_rejects_non_finite_query():
                    np.zeros((0, 4)), np.zeros((0, 3)), np.zeros((0, 3)))
 
 
-def test_a_command_that_cannot_be_computed_raises_rather_than_returning_nan():
-    """Every neighbour 100 m from the target in y: the weights underflow to
-    exactly 0, u_bar is 0/0, and the learner must refuse by name — a NaN
-    command would otherwise travel on to a throw terminal."""
+def test_no_row_inside_the_support_returns_the_identity_prior_exactly():
+    """Every row 100 m from the target in y: none is inside the support gate,
+    so the memory says nothing about this query and the command is the
+    identity prior, exactly as for a cold memory (2026-10-04; before, the
+    weights underflowed and the skill was refused)."""
     cfg = lr.LearnerConfig()
     x = np.zeros(4)
     y_d = np.array([0.0, 0.0, 0.857])
     X = np.zeros((3, 4))
     U = np.tile(y_d, (3, 1))
     Y = U + np.array([100.0, 0.0, 0.0])
-    with pytest.raises(ValueError, match='not finite'):
+    u = lr.command(x, y_d, X, U, Y, cfg)
+    assert np.array_equal(u, y_d)
+    assert u is not y_d
+
+
+def test_a_command_that_cannot_be_computed_raises_rather_than_returning_nan():
+    """A non-finite row inside the support makes u_bar inf: the learner must
+    refuse by name -- a NaN command would otherwise travel on to a throw
+    terminal."""
+    cfg = lr.LearnerConfig()
+    x = np.zeros(4)
+    y_d = np.array([0.0, 0.0, 0.857])
+    X = np.zeros((3, 4))
+    U = np.tile(y_d, (3, 1))
+    U[:, 0] = 1e308            # the weighted sum overflows to inf
+    Y = np.tile(y_d, (3, 1))
+    with np.errstate(over='ignore'), pytest.raises(ValueError, match='not finite'):
         lr.command(x, y_d, X, U, Y, cfg)
 
 

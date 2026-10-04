@@ -72,6 +72,7 @@ from jugglebot_interfaces.msg import (
 )
 from jugglebot_interfaces.srv import (
     ODriveCommandService,
+    SetFloat,
     SetHandGains,
     SetString,
     ActivateOrDeactivate,
@@ -116,6 +117,7 @@ from teensy_link import (
 )
 from teensy_link import protocol as p
 from teensy_link import rpc_args
+from teensy_link.rpc import HandMoveToUnavailable, RpcTimeout
 from teensy_link.fault_logic import LinkLossLatch
 from teensy_link.setpoint_pump import SetpointPump, FLAG_HAS_HAND, HAND_FF_GAIN_MAX
 from teensy_link.encoder_search import (
@@ -136,6 +138,7 @@ from jugglebot.can.motor_state import MotorStateTracker
 from jugglebot import mocap_status as mocap_st
 import jugglebot.hardware_config as hw
 import jugglebot.protocol_config as proto
+from jugglebot.motion import hand_jam as hj
 
 
 #: /cache_diag WARN threshold on the per-axis encoder-cache age FLOOR
@@ -1243,6 +1246,66 @@ class _MpcCommandSetpointSource:
             pass
 
 
+# ── Hand-jam recovery (motion/hand_jam.py, 2026-10-04) ──
+# The client-side bound on one HAND_MOVE_TO round trip: the firmware's own
+# op timeout is 10 s (then IDLE + ERR_TIMEOUT), so 12 s always sees its reply.
+_HAND_MOVE_TO_TIMEOUT_S = 12.0
+# A Ball Butler throw counts as "pending" for this long after its goal ends
+# (the CMD_RESULT arrives at the release): <= ~1 s of flight for the apexes
+# flown, plus the design's 1 s margin. The jam's lower waits it out (<= 5 s).
+_HAND_JAM_BB_LAND_S = 2.0
+# How long /recover blocks on a resumed jam sequence (lower <= ~4 s at
+# 2.5 rev/s, plus a stall's raise + the final raise).
+_HAND_JAM_RESUME_WAIT_S = 60.0
+
+
+class _HandMoveSlot:
+    """The jam worker's one live HAND_MOVE_TO (jam worker thread only).
+
+    HAND_MOVE_TO's reply is DEFERRED to the move's end, so the move is sent
+    with ``hand_move_to_nowait`` and polled here while the worker watches the
+    telemetry (the raise-tracking check and the lower's stall monitor must
+    run DURING the move). A newer move RETARGETS the running one in the
+    firmware (its reply comes back OK/SUPERSEDED): the older call is
+    released on the spot, so its late reply can never be read as the newer
+    move's outcome. That retarget is how the hold-at-measured and the
+    raise-again are commanded — never by waiting on the firmware's 10 s move
+    timeout, which IDLEs the hand onto whatever is under it.
+    """
+
+    def __init__(self, node):
+        self._node = node
+        self._call = None
+        self._t0 = 0.0
+        self._result = (True, False, '', '')   # (done, ok, status, msg)
+
+    def snapshot(self):
+        call = self._call
+        if call is not None:
+            if call.done():
+                self._call = None
+                self._result = (True,) + self._node._hand_move_reply(call.result)
+            elif time.monotonic() - self._t0 > _HAND_MOVE_TO_TIMEOUT_S:
+                call.release()
+                self._call = None
+                self._result = (True, False, 'RPC_TIMEOUT',
+                                f'no HAND_MOVE_TO reply in {_HAND_MOVE_TO_TIMEOUT_S:.0f} s '
+                                f'— move state unknown')
+        return self._result
+
+    def start(self, target_rev, vel_rps):
+        old, self._call = self._call, None
+        if old is not None:
+            old.release()      # superseded: its late SUPERSEDED reply is dropped
+        ok, status, msg, call = self._node.teensy_hand_move_to_nowait(target_rev, vel_rps)
+        if not ok:
+            self._result = (True, False, status, msg)
+            return hj.IntentResult(False, status, msg)
+        self._call, self._t0 = call, time.monotonic()
+        self._result = (False, False, '', '')
+        return hj.IntentResult(True, 'STARTED')
+
+
 class TeensyBridgeNode(Node):
     """ROS 2 node bridging the can-bridge Teensy UDP link to production topics.
 
@@ -1339,6 +1402,21 @@ class TeensyBridgeNode(Node):
         # the operator must confirm the hand ODrive's `input_torque_scale`
         # matches the wire scale before arming K > 0).
         self.declare_parameter('hand_torque_ff_gain', 0.0)
+        # Hand-jam detector + recovery (motion/hand_jam.py). Bridge parameters,
+        # not YAML, for now: a YAML edit + regen changes the admissible-box
+        # gate hash and forces a ~22 min re-sweep per configuration. Each is
+        # validated together in `_hand_jam_load_config`.
+        _hj_defaults = hj.JamConfig()
+        for _hj_name in hj.JamConfig.ROS_PARAMS:
+            _hj_v = getattr(_hj_defaults, _hj_name)
+            self.declare_parameter(f'hand_jam.{_hj_name}',
+                                   list(_hj_v) if isinstance(_hj_v, tuple) else _hj_v)
+        # The bench handle's cruise (/hand_move_to): the ACTIVATE park's own
+        # 2.5 rev/s is the firmware ceiling; 1.0 rev/s (33 mm/s) is slow
+        # enough for the operator to watch the detector fire and the relief
+        # land before the pinch builds. Not a JamConfig field: the recovery
+        # itself never reads it.
+        self.declare_parameter('hand_jam.bench_vel_rps', 1.0)
 
         self._heartbeat_timeout_s = float(
             self.get_parameter('heartbeat_timeout_s').value)
@@ -2155,6 +2233,24 @@ class TeensyBridgeNode(Node):
         # trajectory_node stays frozen until the hand is parked (2026-09-23).
         # Same threading posture as `_deactivate_in_progress`.
         self._recovery_park_in_progress = False
+        # Hand-jam recovery state (motion/hand_jam.py). `_hand_jam_hold` is the
+        # jam's own RECOVERING word, deliberately NOT `_recovery_park_in_progress`:
+        # that flag's owner clears it in a `finally`, and a jam held UNRECOVERED
+        # (hand raised off a ball) must outlive any park. Set by the RX thread at
+        # the fire edge (step 0, same tick) and by the jam worker; read by the
+        # link-status timer and the arm pre-check. Plain bools, GIL-atomic; the
+        # busy/hold claim itself is serialised by `_hand_jam_lock`.
+        self._hand_jam_cfg = self._hand_jam_load_config()
+        self._hand_jam_detector = hj.JamDetector(self._hand_jam_cfg)
+        self._hand_jam_lock = threading.Lock()
+        self._hand_jam_busy = False
+        self._hand_jam_hold = False
+        self._hand_jam_rec = None
+        self._hand_jam_thread = None
+        self._hand_jam_status = 'IDLE' if self._hand_jam_cfg.enabled else 'DISABLED'
+        self._hand_jam_telem_mono = 0.0
+        self._hand_jam_bb_end_mono = -math.inf
+        self._hand_jam_poll_dt = 0.02
         # Serializes _arm_setpoint_output (audit 2026-07-15): the arm service
         # lives in the Reentrant group, so without this two overlapping arms
         # could both pass the mpc_active check and double-start the ingest.
@@ -2255,6 +2351,18 @@ class TeensyBridgeNode(Node):
         # through must keep running underneath it.
         self.create_service(Trigger, 'park_hand', self._svc_park_hand_logged,
                             callback_group=self._recover_cbgroup)
+        # /hand_jam_dry_run — validate-only: the live P1-P6 inputs and the
+        # steps a jam fired now would run (the bench check's step 1).
+        self.create_service(Trigger, 'hand_jam_dry_run', self._svc_hand_jam_dry_run,
+                            callback_group=self._recover_cbgroup)
+        # /hand_move_to — the OPERATOR's bench handle on HAND_MOVE_TO (FW 26):
+        # a profiled axis-6 move to `data` rev at `hand_jam.bench_vel_rps`,
+        # for the jam-recovery bench check (raise the hand, place a ball on
+        # the funnel ring, command a slow descent and watch the detector).
+        # Refused on an armed wire or while a jam is held, exactly as
+        # /park_hand is: the firmware refuses those too, this just says why.
+        self.create_service(SetFloat, 'hand_move_to', self._svc_hand_move_to_logged,
+                            callback_group=self._recover_cbgroup)
         # Instance-level so tests can shorten the descent-convergence wait (a
         # never-converging descent otherwise blocks the test for the full timeout).
         self._recover_verify_timeout_s = _RECOVER_VERIFY_TIMEOUT_S
@@ -2311,6 +2419,10 @@ class TeensyBridgeNode(Node):
             # with no clock read and no threshold to tune. See the honesty gate
             # there. Unbounded in Python, so no wrap case exists.
             self._telemetry_gen += 1
+        # The hand-jam detector is fed HERE, on the RX thread, not from an
+        # executor timer: an executor thread blocked for seconds (`_park_hand`,
+        # a cold-start verb) must not blind it. Non-blocking by contract.
+        self._hand_jam_feed(tm)
 
     def _on_diagnostic(self, msg_type, seq, payload, addr):
         try:
@@ -4373,6 +4485,12 @@ class TeensyBridgeNode(Node):
         if self._recovery_park_in_progress:
             return False, ('guard-recovery hand park in progress — refuse to '
                            'arm until it completes; retry')
+        # (a5) No arm under a hand-jam recovery or its held terminal: the
+        # firmware refuses HAND_MOVE_TO under an armed stream, and a stream
+        # would drag a hand raised off a ball back down onto it.
+        if self._hand_jam_hold or self._hand_jam_busy:
+            return False, (f'hand-jam recovery holds the hand ({self._hand_jam_status}) '
+                           f'— refuse to arm; /recover first')
 
         # (b) a fresh mpccmd frame on :5557 within 0.5 s (is trajectory_node up?).
         source, created_here = self._acquire_setpoint_source()
@@ -4541,7 +4659,7 @@ class TeensyBridgeNode(Node):
                 return False, last
             time.sleep(0.02)
 
-    def _svc_recover(self, req, res):
+    def _svc_recover(self, req, res, *, park_hand=True):
         """``/recover`` (Trigger, FIX 3): one-call recovery from a latched Teensy guard.
 
         The 2026-07-10 stuttering-stroke runaway left the streamed u0 diverged
@@ -4573,7 +4691,14 @@ class TeensyBridgeNode(Node):
         clears onto a diverged command; those refusals state the manual disarm→clear
         recovery. Also the shared converge-first sequence the armed bare ``/clear_errors``
         reroutes through.
+
+        ``park_hand=False`` is the hand-jam recovery's call (steps 1-4 only): the
+        jam sequence owns the hand and must not have it TRAP_TRAJ'd down onto a
+        ball that may still be pinched. With ``park_hand=True`` (every service
+        entry) a HELD hand jam is resumed instead (`_hand_jam_resume`).
         """
+        if park_hand and (self._hand_jam_hold or self._hand_jam_busy):
+            return self._hand_jam_resume(res)
         last_why = 'descent not yet attempted'
         for _attempt in range(_RECOVER_MAX_RESEED_ATTEMPTS):
             # 1. Ask trajectory_node to (re-)install a profiled descent onto the CURRENT
@@ -4612,6 +4737,11 @@ class TeensyBridgeNode(Node):
                 # the hand at all. Disarm-then-park (2026-09-23): the firmware
                 # rejects the op under an armed stream — see
                 # `_park_hand_disarmed`.
+                if not park_hand:
+                    res.success = True
+                    res.message = ('reseed unavailable — cleared DIRECTLY (escape '
+                                   f'hatch): {cmsg}; hand left to the caller')
+                    return res
                 pok, pmsg = self._park_hand_disarmed()
                 res.success = pok
                 res.message = (
@@ -4686,6 +4816,11 @@ class TeensyBridgeNode(Node):
         # path, before any schedule can stream it. See _HAND_PARK_BAND_REV.
         # Disarm-then-park (2026-09-23): the firmware's MPC-stream interlock
         # rejected every armed park before — see `_park_hand_disarmed`.
+        if not park_hand:
+            res.success = True
+            res.message = ('reseeded, converged, CLEAR_ERRORS fired; hand left to '
+                           'the caller')
+            return res
         pok, pmsg = self._park_hand_disarmed()
         if not pok:
             # The guard IS cleared, but reporting success would send the
@@ -5097,7 +5232,8 @@ class TeensyBridgeNode(Node):
         if hb is None:
             return 'UNKNOWN'
         fault = _enum_name(FaultState, hb.fault_state)
-        if fault == 'NONE' and self._recovery_park_in_progress:
+        if fault == 'NONE' and (self._recovery_park_in_progress
+                                or self._hand_jam_hold):
             return 'RECOVERING'
         return fault
 
@@ -5310,6 +5446,9 @@ class TeensyBridgeNode(Node):
                 # RAW get_gpio_states word in hex. Rendered unconditionally
                 # (never-seen reads 'unknown (never seen)') so an unflashed or
                 # dead bridge is visible here rather than absent.
+                # Hand-jam detector/recovery: IDLE / DISABLED / RUNNING:<step> /
+                # the last outcome and its reason (motion/hand_jam.py).
+                KeyValue(key='hand_jam', value=str(self._hand_jam_status)),
                 KeyValue(key='hand_ball_sensor',
                          value=self._hand_ball_sensor_str()),
                 # CAN3 wire-error instrument (bridge FW 5+). Renders
@@ -5784,6 +5923,65 @@ class TeensyBridgeNode(Node):
         return self._call_rpc(RpcMethod.SET_VEL_CURR_LIMITS,
                               rpc_args.encode_set_vel_curr_limits(axis, vel_limit, curr_limit),
                               **kw)
+
+    def _hand_move_reply(self, get_blob):
+        """Classify one HAND_MOVE_TO reply into ``(ok, status, message)``;
+        ``get_blob()`` returns the reply blob or raises the client's exception.
+        ``ok`` is True ONLY for outcome ARRIVED: the reply is deferred to the
+        move's end and an OK status also covers SUPERSEDED, so the outcome is
+        read, never the status alone. ``RpcTimeout`` is caught BEFORE
+        ``RpcError`` (it is a subclass): no reply means the move state is
+        UNKNOWN (status ``RPC_TIMEOUT``), which is not the firmware's own
+        ERR_TIMEOUT (the move timed out and the hand was commanded IDLE)."""
+        try:
+            blob = get_blob()
+        except HandMoveToUnavailable as e:
+            return False, hj.STATUS_UNKNOWN_METHOD, str(e)
+        except RpcTimeout as e:
+            return False, 'RPC_TIMEOUT', f'no HAND_MOVE_TO reply ({e}) — move state unknown'
+        except RpcError as e:
+            if int(e.status) == int(p.RpcStatus.ERR_UNKNOWN_METHOD):
+                return False, hj.STATUS_UNKNOWN_METHOD, 'firmware has no HAND_MOVE_TO'
+            try:
+                status = p.RpcStatus(int(e.status)).name
+            except ValueError:
+                status = f'status_{e.status}'
+            return False, status, self._annotate_rpc_error(str(e))
+        r = rpc_args.decode_hand_move_to_result(blob)
+        name = rpc_args.HAND_MOVE_OUTCOME_NAMES.get(int(r.outcome), f'outcome_{r.outcome}')
+        msg = (f'{name} at {r.pos_rev:+.3f} rev (target {r.target_rev:+.3f} rev, '
+               f'{int(r.elapsed_ms)} ms)')
+        return int(r.outcome) == rpc_args.HAND_MOVE_ARRIVED, name, msg
+
+    def teensy_hand_move_to(self, target_rev, vel_rps=2.5,
+                            timeout_s=_HAND_MOVE_TO_TIMEOUT_S):
+        """HAND_MOVE_TO (can-bridge FW 26, additive RpcMethod): an axis-6-only
+        TRAP_TRAJ to ``target_rev`` at ``vel_rps``, BLOCKING until the move
+        ends. Returns ``(ok, status, message)`` per `_hand_move_reply`
+        (``ERR_UNKNOWN_METHOD`` from a board older than FW 26;
+        ``NO_CLIENT_METHOD`` from a teensy_link that predates the method).
+        The method id lives only in protocol_config; never retried (a
+        re-dispatch would retarget its own move)."""
+        fn = getattr(self._rpc, 'hand_move_to', None)
+        if fn is None:
+            return (False, hj.STATUS_NO_CLIENT_METHOD,
+                    'teensy_link RpcClient has no hand_move_to (client predates FW 26)')
+        return self._hand_move_reply(lambda: fn(float(target_rev), vel_rps=float(vel_rps),
+                                                timeout_s=float(timeout_s)))
+
+    def teensy_hand_move_to_nowait(self, target_rev, vel_rps=2.5):
+        """Send HAND_MOVE_TO and return ``(ok, status, message, call)`` at
+        once; the jam worker polls ``call`` (`_HandMoveSlot`) while it watches
+        the telemetry, and retargets with a newer move."""
+        fn = getattr(self._rpc, 'hand_move_to_nowait', None)
+        if fn is None:
+            return (False, hj.STATUS_NO_CLIENT_METHOD,
+                    'teensy_link RpcClient has no hand_move_to_nowait (client predates '
+                    'FW 26)', None)
+        try:
+            return True, 'SENT', '', fn(float(target_rev), vel_rps=float(vel_rps))
+        except RpcError as e:
+            return False, 'SEND_FAILED', self._annotate_rpc_error(str(e)), None
 
     def teensy_set_pos_gain(self, axis, pos_gain):
         return self._call_rpc(RpcMethod.SET_POS_GAIN,
@@ -6768,6 +6966,257 @@ class TeensyBridgeNode(Node):
                 if was_armed else 'wire was already disarmed')
         return True, f'{pmsg}; {wire}'
 
+    # ── Hand-jam detector + recovery (motion/hand_jam.py, 2026-10-04) ──────
+    # The invariant (module docstring): a stalled hand at the clamp under a
+    # descending command is relieved before anything else and never pushed
+    # through. Detection runs on the RX thread (`_hand_jam_feed`); the
+    # sequence runs on its own worker thread (`_hand_jam_run`), never on the
+    # executor; the ORDER lives in `hj.JamRecovery`, and this block only
+    # executes its intents through the existing primitives.
+
+    def _hand_jam_load_config(self):
+        """Read and validate the ``hand_jam.*`` parameters. One invalid value
+        is an ERROR and the design defaults are used for ALL of them: a typo
+        must never silently disable or detune a safety detector."""
+        vals = {n: self.get_parameter(f'hand_jam.{n}').value
+                for n in hj.JamConfig.ROS_PARAMS}
+        try:
+            cfg = hj.JamConfig.from_values(**vals)
+        except ValueError as e:
+            self.get_logger().error(
+                f'hand_jam parameter REJECTED ({e}) — using the design defaults '
+                f'for every hand_jam.* value')
+            return hj.JamConfig()
+        if not cfg.enabled:
+            self.get_logger().warning(
+                'hand_jam.enabled is false — the hand-jam detector is OFF: a ball '
+                'pinched under the cup is pushed at the current clamp until the '
+                'guard (if ever) latches, and the latch does not relieve it')
+        return cfg
+
+    def _hand_jam_sample(self, tm=None):
+        """A `hj.HandSample` from the caches (``tm`` = the telemetry frame
+        the RX thread just decoded). None until axis 6 has a diagnostic."""
+        with self._lock:
+            telem = tm if tm is not None else self._latest_telemetry
+            diag = self._latest_diag.get(_HAND_AXIS)
+            diag_mono = self._latest_diag_mono.get(_HAND_AXIS)
+            cmd = dict(self._last_hand_cmd)
+        if telem is None or diag is None or diag_mono is None:
+            return None
+        now = time.monotonic()
+        return hj.HandSample(
+            t=now, pos_cmd=float(cmd['pos']), vel_ff_cmd=float(cmd['vel']),
+            pos_meas=float(telem.pos_rev[_HAND_AXIS]),
+            vel_meas=float(telem.vel_rps[_HAND_AXIS]),
+            iq_meas=float(diag.iq_measured), axis_state=int(diag.axis_state),
+            active_errors=int(diag.active_errors), age_s=now - diag_mono,
+            # P4 is a fraction of the SHIPPED limit, so a relieved hand
+            # (10 A) can never read as "at the clamp" again.
+            curr_limit_a=float(self._hand_curr_limit))
+
+    def _hand_jam_feed(self, tm):
+        """RX-thread detector step. Never blocks, never raises."""
+        try:
+            self._hand_jam_telem_mono = time.monotonic()
+            cfg = getattr(self, '_hand_jam_cfg', None)   # RX may beat __init__
+            if (cfg is None or not cfg.enabled or self._hand_jam_busy
+                    or self._hand_jam_hold):
+                return
+            sample = self._hand_jam_sample(tm)
+            if sample is None:
+                return
+            verdict = self._hand_jam_detector.step(sample)
+            if verdict is not hj.Verdict.NONE:
+                self._hand_jam_start(verdict, sample)
+        except Exception as e:  # noqa: BLE001 — never kill the RX thread
+            self.get_logger().error(f'hand_jam detector error: {e}',
+                                    throttle_duration_sec=5.0)
+
+    def _hand_jam_start(self, verdict, sample, *, resume=False):
+        """Build the recovery, claim the worker, hold RECOVERING (step 0, in
+        the firing tick) and start the worker thread. None if one runs."""
+        rec = hj.JamRecovery(self._hand_jam_cfg, kind=verdict,
+                             stall_pos=sample.pos_meas,
+                             restore_curr_a=float(self._hand_curr_limit),
+                             iq_at_trigger=sample.iq_meas, resume=resume)
+        with self._hand_jam_lock:
+            if self._hand_jam_busy:
+                return None
+            self._hand_jam_busy = True
+            self._hand_jam_hold = True
+        self._hand_jam_rec = rec
+        self._hand_jam_status = f'RUNNING:{rec.step.name}'
+        if not resume:
+            self.get_logger().error(
+                f'HAND JAM detected ({verdict.value}): hand stalled at '
+                f'{sample.pos_meas:+.3f} rev under a descending command '
+                f'(cmd {sample.pos_cmd:+.3f} rev), iq {sample.iq_meas:+.1f} A — '
+                f'relieving to {rec.relief_curr_a:g} A first '
+                f'[{self._hand_jam_detector.last.text()}]')
+        t = threading.Thread(target=self._hand_jam_run, args=(rec,),
+                             name='hand_jam', daemon=True)
+        self._hand_jam_thread = t
+        t.start()
+        return rec
+
+    def _hand_jam_obs(self, move):
+        """What `hj.JamRecovery` reads each poll (jam worker thread)."""
+        with self._lock:
+            telem = self._latest_telemetry
+            diag = self._latest_diag.get(_HAND_AXIS)
+            hb = self._latest_heartbeat
+        now = time.monotonic()
+        done, ok, status, msg = move.snapshot()
+        return hj.RecoveryObs(
+            t=now,
+            pos=float(telem.pos_rev[_HAND_AXIS]) if telem is not None else math.nan,
+            vel=float(telem.vel_rps[_HAND_AXIS]) if telem is not None else math.nan,
+            iq=float(diag.iq_measured) if diag is not None else math.nan,
+            telem_age_s=now - self._hand_jam_telem_mono,
+            latched=hb is not None and int(hb.fault_state) != int(FaultState.NONE),
+            # Armed if WE stage it or the firmware still reports it.
+            armed=bool(self._mpc_active) or (
+                hb is not None and bool(int(hb.flags) & _T2J_FLAG_MPC_ACTIVE)),
+            bb_pending=bool(self._bb_throw_active) or (
+                now - self._hand_jam_bb_end_mono) < _HAND_JAM_BB_LAND_S,
+            move_done=done, move_ok=ok, move_status=status, move_msg=msg)
+
+    def _hand_jam_execute(self, it, move):
+        """Carry out one synchronous intent through the existing primitives."""
+        kind = it.kind
+        if kind is hj.IntentKind.HOLD_RECOVERING:
+            self._hand_jam_hold = True
+            return hj.IntentResult(True)
+        if kind is hj.IntentKind.SET_CURRENT:
+            # The shipped vel limit rides along; the CACHED current limit is
+            # left alone on purpose — it is what the restore puts back.
+            ok, msg, _ = self.teensy_set_vel_curr_limits(
+                _HAND_AXIS, float(self._hand_vel_limit), float(it.curr_a))
+            return hj.IntentResult(ok, 'OK' if ok else 'ERR', msg)
+        if kind is hj.IntentKind.CONVERGE_CLEAR:
+            r = self._svc_recover(Trigger.Request(), Trigger.Response(),
+                                  park_hand=False)
+            return hj.IntentResult(bool(r.success), 'OK' if r.success else 'ERR',
+                                   str(r.message))
+        if kind is hj.IntentKind.DISARM:
+            if self._mpc_active:
+                self.get_logger().info(
+                    'hand jam: disarming the setpoint output before moving the '
+                    'hand (the orchestrator re-arms after RECOVERED)')
+                self._stop_setpoint_output()
+            ok = self._wait_wire_disarmed()
+            return hj.IntentResult(ok, 'OK' if ok else 'ERR_TIMEOUT',
+                                   '' if ok else 'T2J bit3 still set after 1 s')
+        if kind is hj.IntentKind.MOVE:
+            return move.start(it.target_rev, it.vel_rps)
+        raise RuntimeError(f'hand jam: unhandled intent {kind.value}')
+
+    def _hand_jam_run(self, rec):
+        """The jam worker. EVERY exit ends in an outcome: RECOVERED has
+        restored the shipped current last; anything else (an exception
+        included) leaves the relief applied and RECOVERING held."""
+        move = _HandMoveSlot(self)
+        try:
+            while True:
+                it = rec.next(self._hand_jam_obs(move))
+                self._hand_jam_status = f'RUNNING:{rec.step.name}'
+                if it.kind is hj.IntentKind.END:
+                    break
+                if it.kind is hj.IntentKind.WAIT:
+                    time.sleep(self._hand_jam_poll_dt)
+                    continue
+                rec.result(self._hand_jam_execute(it, move))
+        except Exception as e:  # noqa: BLE001 — the outcome must always land
+            rec.abort(f'exception in the jam worker: {e!r} — relief left applied, '
+                      f'nothing restored')
+        finally:
+            self._hand_jam_finish(rec)
+
+    def _hand_jam_finish(self, rec):
+        summary = rec.summary()
+        if rec.outcome is hj.Outcome.HAND_JAM_RECOVERED:
+            self._hand_jam_detector.reset()
+            self.get_logger().info(
+                f'HAND JAM {summary}; wire left disarmed (the orchestrator '
+                f're-arms) — pick the ball up from under the ring')
+        else:
+            self.get_logger().error(
+                f'HAND JAM {summary}; fault_state stays RECOVERING — keep fingers '
+                f'out from under the powered hand, remove the ball, then /recover')
+        self._hand_jam_status = (f'{rec.outcome.value}: {rec.reason}' if rec.reason
+                                 else rec.outcome.value)
+        with self._hand_jam_lock:
+            self._hand_jam_hold = rec.holds_recovering
+            self._hand_jam_busy = False
+
+    def _hand_jam_resume(self, res):
+        """``/recover`` (or ``/clear_errors``) while a hand jam is HELD — the
+        operator's acknowledgement. Resumes the sequence at the lower (step 5)
+        after the idempotent relief / clear / disarm prelude, and blocks for
+        the outcome (this runs in the reentrant recovery group)."""
+        if self._hand_jam_busy:
+            res.success = False
+            res.message = (f'hand-jam recovery is running ({self._hand_jam_status}) '
+                           f'— wait for its outcome')
+            return res
+        sample = self._hand_jam_sample()
+        if sample is None:
+            res.success = False
+            res.message = 'hand-jam resume refused: no hand telemetry/diagnostic'
+            return res
+        prev = self._hand_jam_rec
+        kind = prev.kind if prev is not None else hj.Verdict.HAND_JAM
+        rec = self._hand_jam_start(kind, sample, resume=True)
+        if rec is None:
+            res.success = False
+            res.message = 'hand-jam recovery already running'
+            return res
+        t = self._hand_jam_thread
+        t.join(timeout=_HAND_JAM_RESUME_WAIT_S)
+        res.success = (not t.is_alive()
+                       and rec.outcome is hj.Outcome.HAND_JAM_RECOVERED)
+        res.message = ('hand-jam resume: ' + rec.summary() if not t.is_alive() else
+                       f'hand-jam resume still running ({self._hand_jam_status})')
+        return res
+
+    def _svc_hand_jam_dry_run(self, req, res):
+        """``/hand_jam_dry_run`` (validate-only): the live predicate inputs,
+        P1-P6 as the detector would evaluate them now, and the steps a jam
+        fired now would run. Commands nothing and steps nothing."""
+        cfg = self._hand_jam_cfg
+        sample = self._hand_jam_sample()
+        lines = [f'hand_jam: {self._hand_jam_status}; enabled={cfg.enabled}; '
+                 f'band={list(cfg.band_rev)} rev, stall<{cfg.stall_vel_rps} rev/s, '
+                 f'lag>{cfg.lag_rev} rev, |iq|>={cfg.iq_frac}x{self._hand_curr_limit:g} A, '
+                 f'sustain {cfg.sustain_s} s']
+        if sample is None:
+            lines.append('inputs: no hand telemetry/diagnostic yet — predicates unavailable')
+            pos = math.nan
+        else:
+            preds = self._hand_jam_detector.peek(sample)
+            pos = sample.pos_meas
+            lines.append(
+                f'inputs: pos_cmd={sample.pos_cmd:+.3f} vel_ff_cmd={sample.vel_ff_cmd:+.2f} '
+                f'pos_meas={sample.pos_meas:+.3f} vel_meas={sample.vel_meas:+.2f} '
+                f'iq={sample.iq_meas:+.1f} A state={sample.axis_state} '
+                f'errors=0x{sample.active_errors:x} diag_age={sample.age_s * 1e3:.0f} ms')
+            lines.append(f'predicates: {preds.text()} -> stall={preds.stall} '
+                         f'jam={preds.jam} (held {self._hand_jam_detector.held_s:.3f} s)')
+        with self._lock:
+            hb = self._latest_heartbeat
+        latched = hb is not None and int(hb.fault_state) != int(FaultState.NONE)
+        armed = bool(self._mpc_active)
+        lines += ['plan: ' + x for x in hj.planned_steps(
+            cfg, stall_pos=pos, latched=latched, armed=armed,
+            restore_curr_a=float(self._hand_curr_limit),
+            vel_limit=float(self._hand_vel_limit))]
+        text = '\n'.join(lines)
+        self.get_logger().info('hand_jam_dry_run:\n' + text)
+        res.success = True
+        res.message = text
+        return res
+
     def _svc_park_hand(self, req, res):
         """``/park_hand``: bring the hand home through the profiled ACTIVATE op
         if it is outside ``_HAND_PARK_BAND_REV``, else report it already parked.
@@ -6781,6 +7230,12 @@ class TeensyBridgeNode(Node):
         the recovery path did not clear — and on an ARMED wire it still
         refuses rather than park (the lane is commanding its last knot).
         """
+        if self._hand_jam_hold or self._hand_jam_busy:
+            res.success = False
+            res.message = (f'hand-jam recovery holds the hand ({self._hand_jam_status}) '
+                           f'— a park would push it down with no stall monitor; '
+                           f'use /recover')
+            return res
         ok, msg = self._park_hand()
         res.success = ok
         res.message = msg if ok else f'{msg}; {_HAND_NOT_PARKED_HINT}'
@@ -7085,6 +7540,11 @@ class TeensyBridgeNode(Node):
     # ── ROS service handlers (existing-type subset) ───────────
 
     def _svc_clear_errors(self, req, res):
+        if self._hand_jam_hold or self._hand_jam_busy:
+            # A held hand jam: the operator's clear (the orchestrator's
+            # clear_errors conduit lands here too) is its acknowledgement —
+            # the same resume /recover runs, never a bare clear + park.
+            return self._svc_recover(req, res)
         # 2026-07-11 clear-errors jolt: WHILE ARMED (mpc_active=1) the guard is actively
         # gating leg output, so a bare clear onto a diverged command re-enables output
         # with u0 off the drifted encoder → the pos_gain × lead velocity kick to the
@@ -7194,6 +7654,33 @@ class TeensyBridgeNode(Node):
         # failure gets a line here.
         return self._log_service_outcome(
             'clear_errors', self._svc_clear_errors(req, res), quiet_success=True)
+
+    def _svc_hand_move_to(self, req, res):
+        """``/hand_move_to`` (SetFloat: ``data`` = target rev): the bench
+        handle on the FW 26 HAND_MOVE_TO move, blocking until the move ends.
+        Refused while the wire is armed (a stream owns the hand), while a jam
+        is held or a jam recovery is running (its worker owns the hand), or
+        for a non-finite target; the firmware repeats the arm/latch refusals
+        and bounds the target itself. Nothing here changes the current limit."""
+        target = float(req.data)
+        if not math.isfinite(target):
+            res.success, res.message = False, f'target {req.data!r} is not finite'
+            return res
+        if self._mpc_active:
+            res.success, res.message = False, 'refused: wire is ARMED (a stream owns the hand)'
+            return res
+        if self._hand_jam_hold or self._hand_jam_busy:
+            res.success, res.message = (
+                False, 'refused: a hand-jam recovery holds the hand (/recover resumes it)')
+            return res
+        vel = float(self.get_parameter('hand_jam.bench_vel_rps').value)
+        ok, status, msg = self.teensy_hand_move_to(target, vel_rps=vel)
+        res.success = bool(ok)
+        res.message = f'HAND_MOVE_TO {target:+.3f} rev at {vel:g} rev/s: {status} {msg}'
+        return res
+
+    def _svc_hand_move_to_logged(self, req, res):
+        return self._log_service_outcome('hand_move_to', self._svc_hand_move_to(req, res))
 
     def _svc_park_hand_logged(self, req, res):
         # _park_hand logs its own complete / failed / not-needed lines.
@@ -7877,6 +8364,8 @@ class TeensyBridgeNode(Node):
         finally:
             with self._bb_throw_lock:
                 self._bb_throw_active = False
+            # The hand-jam lower waits out a ball still in the air.
+            self._hand_jam_bb_end_mono = time.monotonic()
 
     def _svc_bb_reload(self, req, res):
         """bb/reload — BB_RELOAD RPC. ERR_BUS_DOWN surfaces as failure (the

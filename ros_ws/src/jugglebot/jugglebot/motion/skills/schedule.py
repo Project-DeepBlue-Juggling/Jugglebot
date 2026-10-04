@@ -391,6 +391,26 @@ class Pattern:
     #: The SETTLE tail every THROW/CATCH segment carries — ``segments``'s
     #: probed default, imported rather than restated.
     rest_tail_s: float = sg.REST_TAIL_S
+    #: Schedule ball ids (0 and/or 1, :func:`compile_columns`'s own
+    #: ``i % 2`` numbering) that produce MOTION ONLY — B2's
+    #: ``columns_1ball`` (``SkillNode._run_columns_1ball``): the cup still
+    #: transits to the phantom's site and the hand still strokes empty (the
+    #: legs see identical dynamics to a real two-ball columns attempt), but
+    #: nothing is actually in the cup. ``()`` (every pattern before B2, and
+    #: ordinary columns) keeps every ball real. Carried onto
+    #: :attr:`Schedule.phantom_balls` unchanged by :func:`compile_columns` —
+    #: the ONE place this tuple is read by a compiler; the three
+    #: ENFORCEMENT points (no tracker latch / no OUTCOME-and-learner row / no
+    #: re-aim) live downstream, in ``SkillNode._maybe_announce`` and
+    #: ``SkillExecutor._register_outcome`` / ``_tracked_landing`` — see
+    #: :meth:`Schedule.is_phantom`.
+    phantom_balls: Tuple[int, ...] = ()
+
+    def __post_init__(self):
+        bad = tuple(b for b in self.phantom_balls if int(b) not in (0, 1))
+        if bad:
+            raise ValueError('phantom_balls may only name schedule ball ids '
+                             '0 or 1, got %r' % (self.phantom_balls,))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -425,11 +445,32 @@ class Schedule:
     #: schedule silently borrow another pattern's swept box -- the same class
     #: of defect as a box swept for one apex being reused at another.
     pattern: str
+    #: Schedule ball ids that are motion-only — see :class:`Pattern`'s own
+    #: field (the ONE place a compiler sets this to anything but ``()``:
+    #: :func:`compile_columns`, when ``pattern.phantom_balls`` is non-empty).
+    #: ``()`` for every schedule :func:`compile_one_ball` / :func:`compile_reload`
+    #: / :func:`compile_reload_wait` build — no pattern's ball is ever a
+    #: phantom except B2's ``columns_1ball``.
+    phantom_balls: Tuple[int, ...] = ()
 
     def due(self, t_abs_s: float) -> Tuple[Skill, ...]:
         """Skills whose dispatch instant has passed by ``t_abs_s``."""
         return tuple(s for s in self.skills
                      if s.dispatch_s() <= float(t_abs_s))
+
+    def is_phantom(self, ball_id: int) -> bool:
+        """True if ``ball_id`` is this schedule's motion-only ball (B2).
+
+        THE INVARIANT this flag enforces, at its three call sites
+        (``SkillNode._maybe_announce``, ``SkillExecutor._register_outcome``,
+        ``SkillExecutor._tracked_landing``): **a phantom ball produces
+        motion and nothing else.** Its skills install exactly like a real
+        ball's — same cup transit, same hand stroke, same leg dynamics — but
+        it arms no tracker latch, waits on no release evidence, writes no
+        OUTCOME row, trains no learner row, and its catches never read a
+        tracker fit (open-loop on the schedule, no re-aim).
+        """
+        return int(ball_id) in self.phantom_balls
 
 
 #: Knots of margin the CLOSING REST's splice base keeps PAST the end of the
@@ -803,7 +844,8 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
     skills = [_shifted(s, t0) for s in skills]
     return Schedule(skills=tuple(skills), flight_s=t_f, beat_s=beta,
                     transit_s=tau, dwell_s=float(pattern.dwell_s),
-                    t0_abs_s=t0, pattern='columns')
+                    t0_abs_s=t0, pattern='columns',
+                    phantom_balls=pattern.phantom_balls)
 
 
 #: Duration (s) of the OPENING REST that lifts the hand from the ACTIVATE park
@@ -1416,6 +1458,131 @@ def compile_reload(landing_mm, landing_vel_mm_s, t_land_abs_s: float,
     return Schedule(skills=tuple(skills), flight_s=t_f, beat_s=period,
                     transit_s=t_f, dwell_s=float(pattern.dwell_s), t0_abs_s=t0,
                     pattern=('self_toss' if n_sites == 1 else 'hop'))
+
+
+def phantom_feed_prior(pattern: Pattern, aim_site: Site,
+                       t0_abs_s: float) -> LandingPrior:
+    """The one landing a ``columns_1ball`` phantom's FIRST catch is aimed at
+    (:attr:`Pattern.phantom_balls`, B2): a plain vertical arrival at
+    ``aim_site``'s catch point, at the pattern's own flight speed, landing
+    exactly one transit after ``t0_abs_s`` -- so :func:`compile_columns`'s
+    ``feed=`` branch builds the phantom start with the SAME skill the fed
+    start uses (the level-pinned, aim-walked first catch) rather than the
+    ``t0_abs_s`` branch's auto-banked catch at the nominal site.
+
+    Why not the nominal site: MEASURED 2026-10-04 (`sim/skills_gate.py
+    --one-ball`, apex 0.95 / dwell 0.25 / separation 125): the phantom's
+    first catch at the nominal site refused LIMIT_JERK on every seed (peak
+    212 379 mm/s^3 against 200 000, 6 % over), while the fed start -- whose
+    first catch is walked ``columns_feed_aim_toward_a_mm`` toward ball A
+    and pinned level -- passed 5/5 at the same geometry, and so did two
+    real balls. The one-ball pattern exists to rehearse the FED start's
+    motion with ball A alone, so its first catch takes the fed start's
+    aim point and attitude; a vertical arrival is the easiest ball that
+    catch can meet (no lateral velocity to match), so this prior is a
+    lower bound on the real feed's demand, never an over-estimate.
+
+    ``aim_site`` is whatever the caller feeds Ball Butler in the fed start
+    (``skill_node._columns_feed_aim_site``); the SITE named by the skill
+    stays ``pattern.sites[1]`` -- ``compile_columns`` reads the site from
+    the pattern and only the landing from this prior.
+    """
+    if 1 not in tuple(pattern.phantom_balls):
+        raise ValueError(
+            'phantom_feed_prior is for columns_1ball only -- '
+            'pattern.phantom_balls must name ball 1, got %r'
+            % (pattern.phantom_balls,))
+    t_f = flight_s(pattern.apex_m)
+    tau = transit_s(t_f, pattern.dwell_s)
+    pos_mm = np.asarray(aim_site.catch_site_mm(), dtype=float)
+    launch_vel = ballistics_bc.launch_velocity(
+        np.asarray(aim_site.throw_site_mm(), dtype=float), pos_mm, t_f)
+    vel_mm_s = ballistics_bc.arrival_velocity(launch_vel, t_f)
+    return LandingPrior(pos_mm=pos_mm, vel_mm_s=np.asarray(vel_mm_s, dtype=float),
+                        t_land_abs_s=float(t0_abs_s) + tau)
+
+
+def compile_reload_columns(landing_mm, landing_vel_mm_s, t_land_abs_s: float,
+                           lift_s: float, columns_pattern: Pattern,
+                           t0_abs_s: float,
+                           max_tilt_deg: float = tg.MAX_TILT_DEG) -> Schedule:
+    """B2's ``columns_1ball`` reload start (``SkillNode._run_columns_1ball``,
+    ``reload=True``) — owner's words: "A is fed, held, then the pattern
+    starts". Ball Butler's reload choreography for ball A — PRE-TILT REST
+    -> held-tilt CATCH -> DECAY REST — hands off into the COLUMNS schedule
+    (:func:`compile_columns`, ball A self-tossing from ``columns_pattern.
+    sites[0]``, a phantom from ``sites[1]`` — :attr:`Pattern.phantom_balls`)
+    rather than :func:`compile_reload`'s own one-ball tail
+    (:func:`_append_one_ball_pattern`): this is columns motion with one real
+    ball, not a second self-toss reload.
+
+    **Reuses** :func:`compile_reload` **itself** for the lead-in, via a
+    throwaway ``OneBallPattern(sites=(columns_pattern.sites[0],),
+    n_throws=1, ...)`` that is never surfaced, rather than duplicating its
+    PRE-TILT/CATCH/DECAY timing derivation: that function is delicately
+    measured (its own docstring cites probe measurements for every margin
+    in that lead-in), and restating it here would be a second copy that
+    could silently drift from it. ``lead_in.skills[:3]`` is exactly
+    ``[PRE-TILT REST, CATCH, DECAY REST]`` — the one-ball-pattern-agnostic
+    prefix every reload schedule shares, asserted below rather than assumed
+    silently — and everything :func:`_append_one_ball_pattern` appends
+    after it (the throwaway THROW/CATCH/closing REST) is discarded.
+
+    The columns schedule is then compiled fresh, anchored at the DECAY
+    REST's own (already-absolute) end instant: that is exactly where it
+    leaves ball A at rest, level, at ``columns_pattern.sites[0]`` —
+    :func:`compile_columns`'s own assumption for ``t0_abs_s`` ("ball A is in
+    the hand at site 0, about to be thrown").
+
+    MEASURED (probe, 2026-10-04, default apex/dwell/launch_s): the DECAY
+    REST's dispatch lands 0.6 s before the columns schedule's own THROW 0
+    dispatch (:data:`DECAY_S` 1.0 s vs. the pattern's ``launch_s`` 0.4 s) —
+    comfortable margin. :func:`_check_dispatch_monotone` runs again below
+    over the COMBINED list regardless (never assumed from that one
+    measurement), so a non-default ``launch_s`` — or a future change to
+    either constant — gets the same hard refusal every other compiler gives
+    rather than a silently mis-ordered schedule.
+    """
+    if not columns_pattern.phantom_balls:
+        raise ValueError(
+            'compile_reload_columns is for columns_1ball only -- '
+            'columns_pattern.phantom_balls must name a phantom ball, got %r'
+            % (columns_pattern.phantom_balls,))
+    lead_in_pattern = OneBallPattern(sites=(columns_pattern.sites[0],),
+                                     apex_m=columns_pattern.apex_m,
+                                     dwell_s=columns_pattern.dwell_s,
+                                     n_throws=1, launch_s=columns_pattern.launch_s,
+                                     rest_tail_s=columns_pattern.rest_tail_s,
+                                     floor_lift_s=float(lift_s))
+    lead_in = compile_reload(landing_mm, landing_vel_mm_s, t_land_abs_s,
+                             lead_in_pattern, t0_abs_s, max_tilt_deg=max_tilt_deg)
+    prefix = lead_in.skills[:3]
+    if tuple(s.kind for s in prefix) != (REST, CATCH, REST):
+        raise AssertionError(
+            'compile_reload\'s own lead-in shape changed -- '
+            'compile_reload_columns assumes its first three skills are '
+            'exactly [PRE-TILT REST, CATCH, DECAY REST], got %r'
+            % (tuple(s.kind for s in prefix),))
+    decay_end_abs = float(prefix[-1].t_abs_s)
+    # `compile_columns`'s t0 is ball A's RELEASE instant (THROW 0 sits at
+    # t0 with its `launch_s` window BEFORE it), whereas `_append_one_ball_
+    # pattern` -- the self-toss reload's own tail -- releases `launch_s`
+    # AFTER the rest end. Anchoring columns at the decay end itself put the
+    # launch window inside the decay slew: MEASURED 2026-10-04 (`sim/
+    # skills_gate.py --one-ball --one-ball-reload`, every seed) THROW 0
+    # spliced at 0.8 s of the 1.0 s DECAY REST and refused LIMIT_JERK at
+    # 421 223 mm/s^3. The release goes one launch window after the decay
+    # end, exactly where the self-toss reload puts its first release.
+    columns_sched = compile_columns(
+        columns_pattern,
+        t0_abs_s=decay_end_abs + float(columns_pattern.launch_s))
+    combined = prefix + columns_sched.skills
+    _check_dispatch_monotone(combined)
+    return Schedule(skills=combined, flight_s=columns_sched.flight_s,
+                    beat_s=columns_sched.beat_s,
+                    transit_s=columns_sched.transit_s,
+                    dwell_s=columns_sched.dwell_s, t0_abs_s=float(t0_abs_s),
+                    pattern='columns', phantom_balls=columns_pattern.phantom_balls)
 
 
 def _shifted(sk: Skill, t0: float) -> Skill:

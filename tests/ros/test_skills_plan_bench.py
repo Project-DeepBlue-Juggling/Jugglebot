@@ -488,7 +488,20 @@ def test_the_attempt_loop_dispatches_the_whole_schedule_pre_position_first(
                           'max_emit_gap_ms': None})
         return res
 
-    sites = si.columns_sites(spb.SEPARATION_MM)
+    # The UNFED two-ball start (`build_schedule`'s `t0_abs_s` path: ball B's
+    # first catch at the NOMINAL site, auto-banked) is 6 % over the jerk
+    # limit at the sitting-4 geometry (separation 125: MEASURED 2026-10-04,
+    # 212 379 mm/s^3 against 200 000 -- the same number the one-ball trial
+    # hit before its first catch took the fed start's aim point). Nothing
+    # flies that start -- a two-ball start is always FED, and the fed start's
+    # aim-walked, level-pinned first catch passes 5/5 at 125 -- so this loop
+    # smoke keeps the geometry the unfed schedule is feasible at (the R2
+    # point: separation 100, dwell 0.30; the dwell-0.25 Stop fold is 3-13 %
+    # over the jerk limit in this jitter-free virtual run). It tests the
+    # loop, not the geometry.
+    unfed_separation_mm = 100.0
+    unfed_dwell_s = 0.30
+    sites = si.columns_sites(unfed_separation_mm)
     pre_terminal = sg.RestTerminal(rest_site_mm=sites[0].rest_site_mm(),
                                    t_rest_s=now_fn() + 1.0)
     pre_new_rec, pre_res, _seg = ex.install_segment(
@@ -500,7 +513,9 @@ def test_the_attempt_loop_dispatches_the_whole_schedule_pre_position_first(
         sleep_fn(0.005)
 
     t0 = now_fn() + spb._START_LEAD_S
-    schedule = spb.build_schedule(n_throws=n_throws, t0_abs_s=t0)
+    schedule = spb.build_schedule(n_throws=n_throws, t0_abs_s=t0,
+                                  separation_mm=unfed_separation_mm,
+                                  dwell_s=unfed_dwell_s)
     assert len(schedule.skills) == n_throws + 2
     tracker = spb.make_tracker(schedule, jitter_mm=0.0, seed=0, now_fn=now_fn)
     exe = ex.SkillExecutor(schedule, installer, tracker=tracker)
