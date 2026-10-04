@@ -124,7 +124,9 @@ const LAYOUTS = {
         ],
     },
     expanded: {
-        viewBox: '0 0 266 432',
+        // Height trimmed to just below ACTIVE (was 432): the Juggle panel sits
+        // under the graph and must fit without scrolling (owner, 2026-10-05).
+        viewBox: '0 0 266 344',
         nodeFont: 11, chipFont: 9.5, captionFont: 8, edgeLabelFont: 9,
         nodes: {
             BOOT:      { x: 20,  y: 16,  w: 100, h: 28 },
@@ -132,7 +134,8 @@ const LAYOUTS = {
             HOMING:    { x: 20,  y: 88,  w: 100, h: 28 },
             IDLE:      { x: 20,  y: 160, w: 100, h: 28 },
             LEVELLING: { x: 150, y: 160, w: 96,  h: 28 },
-            ACTIVE:    { x: 14,  y: 232, w: 232, h: 150 },
+            // h ends 9 units (~13 px) below the second chip row (y 300+30).
+            ACTIVE:    { x: 14,  y: 232, w: 232, h: 107 },
         },
         chips: { x0: 24, y0: 262, w: 104, h: 30, dx: 110, dy: 38 },
         clusterLabel: { x: 26, y: 252 },

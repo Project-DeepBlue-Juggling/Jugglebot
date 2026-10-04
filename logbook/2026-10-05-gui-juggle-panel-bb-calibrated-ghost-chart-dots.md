@@ -75,13 +75,25 @@ subsystem:
   RESOLVED apex, separation and throws with the typed values, and shows an amber "relay out of
   date?" warning on a mismatch, so a stale install cannot fly the defaults silently.
 - **Dwell is read-only.** It is a skill_node parameter, not a Juggle goal field, and the
-  admissible box is swept at it (`check_limits` refuses an unswept dwell). Making it settable
-  needs an action field and an owner decision — open question.
-- **Mirrored BB hand side (open, not fixed).** A numeric check of the CAD chain against
-  `throw_ballistics.bb_release_state` matches along-throw and vertical exactly. The lateral hand
-  offset is mirrored: the FK puts the hand |s| = 105.65 mm to the RIGHT of the throw direction,
-  the CAD mesh puts it on the LEFT. The GUI hand side was left unchanged pending the owner's
-  physical check.
+  admissible box is swept at it (`check_limits` refuses an unswept dwell). The owner decided on
+  2026-10-05 to keep it view-only.
+- **Mirrored BB hand side — the GUI is right; the FK sign is now the open question.** A numeric
+  check of the CAD chain against `throw_ballistics.bb_release_state` matches along-throw and
+  vertical exactly, but the lateral hand offset is mirrored. The owner confirmed on 2026-10-05
+  that the physical hand is to the LEFT of the pitch axis, looking along the throw, which matches
+  the CAD. The FK puts it on the RIGHT. Worked case: at world yaw 0 the throw is along +X, and
+  the lateral term `s·(−sin ψ, cos ψ)` = `−105.65·(0, 1)` puts the release at −Y, which is the
+  right-hand side with Z up. `yaw_solve_thetas` uses the same `s`, so the forward and inverse
+  models agree with each other and the round-trip tests cannot see this. A 2|s| = 211 mm
+  lateral release error would be visible in throws unless something absorbs it; the most likely
+  candidate is the yaw-zero convention anchored on marker 4, which would cancel it at one range
+  only (≈17° at 700 mm). NOT changed here: it is aim-bearing and needs a hardware check (same
+  azimuth, two ranges — a mirrored `s` leaves a range-dependent lateral miss).
+
+**Follow-up, 2026-10-05 (owner):** the expanded state-machine graph was trimmed so the Juggle panel
+fits without scrolling. ACTIVE now ends ~13 px below the SPACEMOUSE/GUI chips (was ~75 px), and
+the SVG ends just below ACTIVE (viewBox height 432 → 344). The ACTIVE-to-JUGGLE gap fell from
+98 px to 29 px, most of which is the status line (CDP measurement on the live GUI).
 
 ## Verification
 
