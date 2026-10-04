@@ -897,6 +897,25 @@ class SelfTossGateConfig:
     #: 20 -> 10 mm on 2026-10-04, with skill_node's default (sitting 3: the
     #: 20 mm aim spent 17 of the 26 mm of column clearance on the first pass).
     feed_aim_toward_a_mm: float = 10.0
+    #: B4 (R5 sitting 4, 2026-10-04): Ball Butler's own measured landing
+    #: bias -- mirrors `skill_node.SkillNode`'s `columns_feed_bb_bias_mm`
+    #: (schedule frame, mm; `bias = landing - request`). ``(0.0, 0.0)``
+    #: (the default) is today's behaviour, unchanged: the ball spawns to
+    #: land exactly where the schedule's own `LandingPrior` says it will
+    #: (`aim_xy`, same as `feed_aim_toward_a_mm`'s own point) -- there is
+    #: no "announced vs. physical" gap in this harness otherwise, since
+    #: it builds its own synthetic announcement FROM the physical
+    #: landing. A nonzero value opens exactly that gap, the other way
+    #: round from the real fix: the `LandingPrior` fed to
+    #: `compile_columns` (what the catch schedule plans against) stays at
+    #: the UNBIASED `aim_xy` -- the request/announced point, same as a
+    #: real Ball Butler's own reported belief -- while the ball is
+    #: physically spawned to land `feed_bb_bias_mm` away from it, so this
+    #: knob characterises the UNCORRECTED failure `columns_feed_bb_bias_mm`
+    #: exists to cancel (R5 sitting 4: the probe read [+25.8, +27.3] on the L3 bag, A2's hand analysis (+29, +25); see
+    #: `run_columns_attempt`'s own paragraph on this field for the exact
+    #: split). Ignored outside a FEED trial.
+    feed_bb_bias_mm: Tuple[float, float] = (0.0, 0.0)
 
     #: Which correlation rule :class:`_IdentityTracker` applies (2026-10-04,
     #: U1 "two-ball association" fix). ``'fixed'`` (the default): identity
@@ -920,6 +939,14 @@ class SelfTossGateConfig:
     #: Butler arrival) instead of ``compile_columns`` directly (ball A
     #: already resting at its site). Ignored outside ``one_ball``.
     one_ball_reload: bool = False
+
+    #: B2 (R5 sitting 4): run :meth:`SkillsGate.run_columns_1ball_fed_seed`
+    #: instead of :meth:`SkillsGate.run_columns_seed` -- the OTHER half of
+    #: ``one_ball``: ball A a PHANTOM (``schedule.Pattern.
+    #: phantom_balls=(0,)``, never spawned), ball B real and fed by Ball
+    #: Butler (``feed_angle_deg``/``feed_speed_mmps`` both required, CLI-
+    #: enforced). Mutually exclusive with ``one_ball`` (CLI-enforced).
+    one_ball_fed: bool = False
 
 
 def _correlator_is_legacy(cfg: 'SelfTossGateConfig') -> bool:
@@ -1749,7 +1776,8 @@ class SkillsGate:
 
     def run_columns_attempt(self, *, n_throws: int, memory: mem.Memory,
                             learner_cfg: lr.LearnerConfig, noise: JuggleNoise,
-                            throws_out: list, reports_out: list = None
+                            throws_out: list, reports_out: list = None,
+                            phantom_a: bool = False
                             ) -> Tuple[str, dict, '_InstallCtx']:
         """One columns learner attempt, cold from a level rest holding ball
         A with ball B already airborne toward the FEED site (the SAME
@@ -1818,6 +1846,23 @@ class SkillsGate:
 
         Returns ``(end_code, loop_stats, ictx)`` -- ``end_code`` is ``''``
         for an attempt that ran its whole schedule with no refusal.
+
+        ``phantom_a`` (R5 sitting 4, B2's ``columns_1ball_fed`` -- the other
+        half of ``columns_1ball``: ball A phantom at ``a_site``, ball B
+        real, fed, exactly as the FEED trial above): requires ``feed_mode``
+        (``cfg.feed_angle_deg``/``cfg.feed_speed_mmps`` both set) -- a
+        vertical spawn would have nothing real to catch at all. Ball A is
+        never spawned in hand, ``ball_state[0]`` is the SAME inert shape
+        :meth:`run_columns_1ball_attempt` gives its own phantom ball
+        (``expect_held=False``, never watched for a drop/catch), and its
+        release is never announced (the ``on_release`` filter below, that
+        method's own mirror). ``pattern.phantom_balls=(0,)`` is the ONE
+        enforcement point for everything else (no OUTCOME row, no tracker
+        latch, no ball-evidence precondition, never a D3 survivor) --
+        ``executor._register_outcome``'s own phantom guard already means
+        ``throws_out``/``memory`` only ever see ball B's rows, so the
+        verdict this feeds (:meth:`run_columns_1ball_fed_seed`) counts ball
+        B alone with no extra filtering needed.
         """
         cfg: SelfTossGateConfig = self.cfg
         plant = self.plant
@@ -1843,6 +1888,12 @@ class SkillsGate:
             raise ValueError("cfg.columns_feed_site must be 'P1' or 'P2', "
                              'got %r' % (cfg.columns_feed_site,))
 
+        if phantom_a and not feed_mode:
+            raise ValueError(
+                'phantom_a requires feed_mode (feed_angle_deg/feed_speed_mmps '
+                'both set) -- a vertical, un-fed spawn leaves ball B with '
+                'nothing real to catch')
+
         rest0 = self._rest_state(a_site)
         pose0 = np.asarray(rest0.pose, dtype=float)
         plant.reset(pose0)
@@ -1853,13 +1904,18 @@ class SkillsGate:
             plant.step(KNOT_DT_S)
             if self.viewer is not None:
                 self.viewer.sync()
-        plant.ball_manager.ball(0).spawn_in_hand()
+        # B2 (`columns_1ball_fed`): ball A is never physically there to
+        # spawn when it is the phantom -- see `run_columns_1ball_attempt`'s
+        # own phantom ball, never spawned either.
+        if not phantom_a:
+            plant.ball_manager.ball(0).spawn_in_hand()
 
         t_f = sk.flight_s(cfg.apex_m)
         beta = sk.beat_s(t_f, cfg.dwell_s)
         pos1 = feed_site.catch_site_mm()
         pattern = sk.Pattern(sites=(a_site, feed_site), apex_m=cfg.apex_m,
-                             dwell_s=cfg.dwell_s, n_throws=n_throws)
+                             dwell_s=cfg.dwell_s, n_throws=n_throws,
+                             phantom_balls=((0,) if phantom_a else ()))
 
         if not feed_mode:
             # R2's vertical self-toss spawn -- ball B already airborne
@@ -1908,6 +1964,19 @@ class SkillsGate:
             land_pos_nom = np.array([aim_xy[0], aim_xy[1], float(pos1[2])])
             land_pos, land_vel = noise.perturb_throw(
                 land_pos_nom, land_vel_nom, np.zeros(3))
+            # B4 (R5 sitting 4, 2026-10-04): `cfg.feed_bb_bias_mm` opens the
+            # gap between what the schedule BELIEVES (`land_pos`, fed to
+            # `LandingPrior` below unchanged -- the request/announced
+            # point) and where the ball is PHYSICALLY spawned to land --
+            # the dataclass field's own docstring names which side of the
+            # real `columns_feed_bb_bias_mm` fix this characterises
+            # (the uncorrected failure, not the fix itself: nothing here
+            # corrects the `LandingPrior`, mirroring the fact that this
+            # harness has no skill_node-equivalent correction path).
+            # Zero (the default) makes `physical_land_pos` bit-for-bit
+            # `land_pos` -- no behaviour change.
+            bias_x, bias_y = cfg.feed_bb_bias_mm
+            physical_land_pos = land_pos + np.array([bias_x, bias_y, 0.0])
 
             # Backward-integrate through gravity to a physical spawn point
             # `t_f` (this pattern's own flight time) before touch-down --
@@ -1928,9 +1997,9 @@ class SkillsGate:
             spawn_vel = np.array([land_vel[0], land_vel[1],
                                   land_vel[2] + g * flight_lead_s])
             spawn_pos = np.array([
-                land_pos[0] - land_vel[0] * flight_lead_s,
-                land_pos[1] - land_vel[1] * flight_lead_s,
-                land_pos[2] - land_vel[2] * flight_lead_s
+                physical_land_pos[0] - land_vel[0] * flight_lead_s,
+                physical_land_pos[1] - land_vel[1] * flight_lead_s,
+                physical_land_pos[2] - land_vel[2] * flight_lead_s
                 - 0.5 * g * flight_lead_s * flight_lead_s])
             t_spawn = float(plant.data.time)
             plant.spawn_ball(spawn_pos, spawn_vel, ball=1)
@@ -1940,8 +2009,14 @@ class SkillsGate:
             sched = sk.compile_columns(pattern, feed=feed)
 
         ball_state = {
+            # B2 (`columns_1ball_fed`): the SAME inert shape
+            # `run_columns_1ball_attempt` gives its own phantom ball --
+            # `expect_held=False` means `_stream_chain` never watches it for
+            # a drop or counts a capture for it, exactly like a phantom
+            # ball's real cup is never physically occupied.
             0: dict(estimator=BallisticEstimator(bal.G_VEC_MMS2),
-                   airborne=False, next_obs_t=None, expect_held=True,
+                   airborne=False, next_obs_t=None,
+                   expect_held=not phantom_a,
                    lost_since=None, last_obs_t=None),
             1: dict(estimator=BallisticEstimator(bal.G_VEC_MMS2),
                    airborne=True, next_obs_t=t_spawn, expect_held=False,
@@ -1956,9 +2031,19 @@ class SkillsGate:
             # makes this an IDENTITY latch no jugglebot release can ever
             # satisfy (`bp.match_announced_track`'s source check).
             identity.announce(1, t_spawn, thrower='ball_butler')
+
+        def on_release(ball_id: int, t_release_s: float) -> None:
+            # B2's mirror of `run_columns_1ball_attempt`'s own filter (the
+            # gate-side `SkillNode._maybe_announce` equivalent): a
+            # phantom's release is never announced, so it can never mint a
+            # tracker id or latch a correlation.
+            if int(ball_id) in pattern.phantom_balls:
+                return
+            identity.announce(ball_id, t_release_s)
+
         ictx = _InstallCtx(rest0)
         installer = _make_installer(ictx, self.seg_cfg, self.limits, geom,
-                                    on_release=identity.announce)
+                                    on_release=on_release)
         learner = _MemoryLearner(memory, learner_cfg)
         # ``_make_observer`` takes ``ball_id`` as an argument (unlike
         # ``_make_observations``, which hardcodes ball 0) -- it is already
@@ -2117,6 +2202,157 @@ class SkillsGate:
             longest_consecutive_catches=longest_consecutive_catches,
             association=assoc,
             passed=bool(drops_total == 0
+                       and longest_consecutive_catches >= min(
+                           30, cfg.target_throws)
+                       and assoc['ok']),
+            wall_s=time.time() - t_wall0)
+
+    # ── B2 (R5 sitting 4): columns_1ball_fed -- ball A PHANTOM, ball B ──────
+    # real and fed by Ball Butler (the OTHER half of columns_1ball, below).
+
+    def run_columns_1ball_fed_attempt(self, *, n_throws: int,
+                                      memory: mem.Memory,
+                                      learner_cfg: lr.LearnerConfig,
+                                      noise: JuggleNoise, throws_out: list,
+                                      reports_out: list = None
+                                      ) -> Tuple[str, dict, '_InstallCtx']:
+        """B2's ``columns_1ball_fed`` trial (R5 sitting 4): a thin wrapper
+        over :meth:`run_columns_attempt`'s own ``phantom_a=True`` branch --
+        ball B's FEED (Ball Butler's oblique arrival, ``cfg.feed_angle_deg``
+        / ``cfg.feed_speed_mmps``) is not re-implemented here, because it is
+        IDENTICAL whether or not ball A is real: same spawn physics, same
+        tracker/identity wiring, same installer. Requires ``cfg.
+        feed_angle_deg``/``cfg.feed_speed_mmps`` both set (CLI: ``--one-ball-
+        fed`` refuses otherwise, see :func:`main`) -- see that method's
+        ``phantom_a`` paragraph for why a vertical spawn cannot be phantom-A.
+        """
+        return self.run_columns_attempt(
+            n_throws=n_throws, memory=memory, learner_cfg=learner_cfg,
+            noise=noise, throws_out=throws_out, reports_out=reports_out,
+            phantom_a=True)
+
+    def run_columns_1ball_fed_seed(self, seed: int) -> dict:
+        """One seed of B2's ``columns_1ball_fed`` trial
+        (:meth:`run_columns_1ball_fed_attempt`), chained like
+        :meth:`run_columns_seed` -- cheap resets until ``cfg.target_throws``
+        of ball B's own experience rows have been collected (ball A
+        produces none, by construction -- ``executor._register_outcome``'s
+        phantom guard, same enforcement point :meth:`run_columns_1ball_seed`
+        relies on for ball A in the mirror case).
+
+        PASS criteria, the FEED trial's own shape (:meth:`run_columns_seed`)
+        applied to ball B's rows, PLUS the phantom-specific checks
+        :meth:`run_columns_1ball_seed` runs for its own phantom ball:
+          - no attempt ends ``REJECTED_NO_BALL``/``ABORTED_NO_RELEASE`` (the
+            two a phantom's empty hand could otherwise spuriously trip).
+          - zero experience rows carry ``ball_id == 0`` -- A trains nothing.
+          - drops == 0 and the usual longest-consecutive-catches /
+            association verdicts, computed over ball B's rows (the only
+            rows there are).
+        """
+        cfg: SelfTossGateConfig = self.cfg
+        if cfg.feed_angle_deg is None or cfg.feed_speed_mmps is None:
+            raise ValueError(
+                'columns_1ball_fed requires feed_angle_deg and '
+                'feed_speed_mmps both set -- ball B is the only real ball '
+                'and it is always fed')
+        noise = JuggleNoise(cfg.noise, seed=seed)
+        tmp_dir = tempfile.mkdtemp(
+            prefix='skills_gate_columns1ballfed_seed%d_' % seed)
+        memory = mem.Memory(os.path.join(tmp_dir, 'memory.csv'))
+        assert len(memory) == 0, 'a fresh tmp path must be a cold memory'
+
+        throws: list = []
+        reports: list = []
+        attempts = 0
+        refusals = 0
+        drops_total = makes_total = 0
+        end_codes: list = []
+        plan_wall_s_all: list = []
+        t_wall0 = time.time()
+
+        while len(throws) < cfg.target_throws and attempts < cfg.max_attempts:
+            remaining = cfg.target_throws - len(throws)
+            # Floored at 3, not 2 (`run_columns_seed`'s own floor): ball B
+            # (the real one here) is at ODD schedule index, and the Stop
+            # (`compile_columns`'s own cross-site last throw) lands on ball
+            # B whenever `n_throws` is EVEN -- at the floor of 2 this makes
+            # ball B's ONLY throw the Stop, which carries no experience row
+            # (`shadow_landing`), so the attempt nets ZERO new rows and the
+            # loop never converges. `rows(n) = (n - 1) // 2` for either
+            # parity (worked out from `compile_columns`'s own `ball_i =
+            # i % 2` / stop-index arithmetic) is >= 1 once `n >= 3`, so 3
+            # is the smallest floor that always makes progress.
+            n_throws = max(3, remaining + 1)
+            attempts += 1
+            end_code, loop, ictx = self.run_columns_1ball_fed_attempt(
+                n_throws=n_throws, memory=memory, learner_cfg=cfg.learner_cfg,
+                noise=noise, throws_out=throws, reports_out=reports)
+            end_codes.append(end_code)
+            if end_code:
+                refusals += 1
+            drops_total += loop['drops']
+            makes_total += loop['makes']
+            plan_wall_s_all.extend(ictx.plan_wall_s)
+
+        a_rows = [exp for exp in throws if int(exp.ball_id) == 0]
+        b_rows = [exp for exp in throws if int(exp.ball_id) == 1]
+
+        rows = []
+        for i, exp in enumerate(b_rows):
+            err_xy_mm = float(1000.0 * np.linalg.norm(exp.y[:2]))
+            err_apex_mm = float(1000.0 * abs(float(exp.y[2]) - cfg.apex_m))
+            rows.append(dict(
+                throw=i + 1, err_xy_mm=err_xy_mm, err_apex_mm=err_apex_mm,
+                caught=bool(exp.caught)))
+
+        throws_to_band_xy = next(
+            (r['throw'] for r in rows if r['err_xy_mm'] <= cfg.xy_band_mm),
+            None)
+        throws_to_band_apex = next(
+            (r['throw'] for r in rows
+             if r['err_apex_mm'] <= cfg.apex_band_mm), None)
+        monotone_xy = _monotone_verdict(
+            [r['err_xy_mm'] for r in rows], cfg.band_entry_throws,
+            cfg.target_throws)
+        monotone_apex = _monotone_verdict(
+            [r['err_apex_mm'] for r in rows], cfg.band_entry_throws,
+            cfg.target_throws)
+
+        longest_consecutive_catches = 0
+        _run = 0
+        for r in rows:
+            if r['caught']:
+                _run += 1
+                longest_consecutive_catches = max(longest_consecutive_catches,
+                                                  _run)
+            else:
+                _run = 0
+
+        beat = sk.beat_s(sk.flight_s(cfg.apex_m), cfg.dwell_s)
+        assoc = _association_verdict(reports, end_codes, beat)
+        _FORBIDDEN_PHANTOM_CODES = ('REJECTED_NO_BALL', 'ABORTED_NO_RELEASE')
+        no_forbidden_refusal = not any(
+            ec in _FORBIDDEN_PHANTOM_CODES for ec in end_codes)
+
+        return dict(
+            seed=seed, policy='columns_1ball_fed', pattern='columns',
+            apex_m=cfg.apex_m, separation_mm=cfg.separation_mm,
+            feed_angle_deg=cfg.feed_angle_deg,
+            feed_speed_mmps=cfg.feed_speed_mmps,
+            attempts=attempts, end_codes=end_codes, refusals=refusals,
+            drops=drops_total, makes=makes_total,
+            plan_wall_ms=_wall_ms_stats(plan_wall_s_all),
+            throws=rows, n_throws_collected=len(rows),
+            a_experience_rows=len(a_rows), b_throws=len(b_rows),
+            throws_to_band_xy=throws_to_band_xy,
+            throws_to_band_apex=throws_to_band_apex,
+            monotone_xy=monotone_xy, monotone_apex=monotone_apex,
+            longest_consecutive_catches=longest_consecutive_catches,
+            association=assoc,
+            passed=bool(no_forbidden_refusal
+                       and drops_total == 0
+                       and len(a_rows) == 0 and len(b_rows) > 0
                        and longest_consecutive_catches >= min(
                            30, cfg.target_throws)
                        and assoc['ok']),
@@ -2751,6 +2987,8 @@ def run_learn(cfg: SelfTossGateConfig = None, seeds=(0, 1, 2, 3, 4),
     if cfg.pattern == 'columns' and cfg.one_ball:
         seed_results = [gate.run_columns_1ball_seed(s, reload=cfg.one_ball_reload)
                         for s in seeds]
+    elif cfg.pattern == 'columns' and cfg.one_ball_fed:
+        seed_results = [gate.run_columns_1ball_fed_seed(s) for s in seeds]
     elif cfg.pattern == 'columns':
         seed_results = [gate.run_columns_seed(s) for s in seeds]
     else:
@@ -2985,6 +3223,18 @@ def main(argv=None) -> int:
                         '20.0 -- the swapped layout\'s undisplaced feed '
                         'catch refuses LIMIT_ACC at 101 %%, R5 sitting 2, '
                         '2026-10-02)')
+    p.add_argument('--bb-bias-mm', nargs=2, type=float, default=None,
+                   metavar=('BX', 'BY'),
+                   help='--learn --pattern columns, --feed-angle-deg only '
+                        '(B4, R5 sitting 4): SelfTossGateConfig.'
+                        'feed_bb_bias_mm -- opens a gap between where the '
+                        "schedule's own LandingPrior believes ball B will "
+                        'land (unchanged, the request/announced point) and '
+                        'where it is PHYSICALLY spawned to land, mirroring '
+                        'the real Ball Butler bias skill_node.py\'s '
+                        'columns_feed_bb_bias_mm cancels (default [0.0, '
+                        '0.0]: no behaviour change; measured 2026-10-04: '
+                        '[29.0, 25.0])')
     p.add_argument('--correlator', choices=('fixed', 'head'), default=None,
                    help='--learn only: which tracker-correlation rule '
                         '_IdentityTracker applies. \'fixed\' (the default): '
@@ -3012,6 +3262,14 @@ def main(argv=None) -> int:
                         'synthetic Ball Butler arrival --reload uses for '
                         'self_toss/hop) instead of starting already held '
                         'at its site')
+    p.add_argument('--one-ball-fed', action='store_true',
+                   help='--learn --pattern columns only (B2, R5 sitting 4): '
+                        'run the columns_1ball_fed trial -- the OTHER half '
+                        'of --one-ball: ball A a PHANTOM (schedule.Pattern.'
+                        'phantom_balls=(0,), never spawned), ball B real '
+                        'and fed by Ball Butler. Requires --feed-angle-deg/'
+                        '--feed-speed-mmps (ball B is always fed here); '
+                        'mutually exclusive with --one-ball')
     args = p.parse_args(argv)
 
     if args.reload:
@@ -3036,6 +3294,18 @@ def main(argv=None) -> int:
         if args.one_ball and args.feed_angle_deg is not None:
             p.error('--one-ball and --feed-angle-deg/--feed-speed-mmps are '
                      'mutually exclusive -- B2b has no FEED variant')
+        if args.one_ball_fed and args.pattern != 'columns':
+            p.error('--one-ball-fed only applies to --pattern columns')
+        if args.one_ball_fed and args.one_ball:
+            p.error('--one-ball-fed and --one-ball are mutually exclusive '
+                     '-- each is phantom on the OTHER ball')
+        if args.one_ball_fed and args.feed_angle_deg is None:
+            p.error('--one-ball-fed requires --feed-angle-deg/'
+                     '--feed-speed-mmps -- ball B is always fed in this '
+                     'trial')
+        if args.bb_bias_mm is not None and args.feed_angle_deg is None:
+            p.error('--bb-bias-mm only applies with --feed-angle-deg/'
+                     '--feed-speed-mmps set')
         default_sep = (_HOP_SEPARATION_MM if args.pattern == 'hop'
                       else _SELF_TOSS_SEPARATION_MM)
         separation_mm = (float(args.separation_mm)
@@ -3056,6 +3326,9 @@ def main(argv=None) -> int:
             lcfg.columns_feed_site = str(args.columns_feed_site)
         if args.feed_aim_toward_a_mm is not None:
             lcfg.feed_aim_toward_a_mm = float(args.feed_aim_toward_a_mm)
+        if args.bb_bias_mm is not None:
+            lcfg.feed_bb_bias_mm = (float(args.bb_bias_mm[0]),
+                                    float(args.bb_bias_mm[1]))
         if args.correlator is not None:
             lcfg.correlator = str(args.correlator)
         if args.dwell_s is not None:
@@ -3064,6 +3337,8 @@ def main(argv=None) -> int:
             lcfg.one_ball = True
         if args.one_ball_reload:
             lcfg.one_ball_reload = True
+        if args.one_ball_fed:
+            lcfg.one_ball_fed = True
         if args.seeds is not None:
             seeds = tuple(args.seeds)
         else:

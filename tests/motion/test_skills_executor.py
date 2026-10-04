@@ -1020,7 +1020,7 @@ def test_a_catch_with_neither_a_prior_nor_a_landing_ends_at_the_deadline(sites):
     lines = x.tick(deadline)
     assert x.attempt_ended and x.end_code == ex.NO_LANDING
     assert len(inst.calls) == 1          # the CATCH never reached the installer
-    assert 'ball 7' in lines[0]
+    assert sc.ball_label(7) in lines[0]        # 'Ball 8' -- id 7 is outside 0/1
     # Nothing further dispatches, including the REST.
     assert x.tick(sch.skills[2].dispatch_s() + 1.0) == []
     assert len(inst.calls) == 1
@@ -2668,6 +2668,29 @@ def test_a_launch_throw_refuses_each_ladder_row_alone(sites, field, value, code)
     assert want in lines[0]
 
 
+def test_a_phantom_throw_dispatches_on_an_empty_cup_with_no_ball_evidence_refusal(sites):
+    """B2 (`columns_1ball_fed`, R5 sitting 4): `_dispatch`'s ladder call
+    (``launch=skill.kind == THROW and not schedule.is_phantom(ball_id)``)
+    must not demand ball evidence for a phantom's THROW — an empty cup is
+    its normal state (`schedule.Pattern.phantom_balls`'s docstring). Same
+    fresh-origin launch shape as `test_a_launch_throw_refuses_each_ladder_
+    row_alone`'s own `EVIDENCE_EMPTY` row, just phantom this time: that
+    row refuses `REJECTED_NO_BALL`; this one must install instead."""
+    p1, _p2 = sites
+    sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
+    sch = dataclasses.replace(sch, phantom_balls=(0,))
+    inst = _FakeInstaller()
+    obs = _obs(ball_evidence=bp.EVIDENCE_EMPTY)
+    x = ex.SkillExecutor(sch, inst, observations=lambda t: obs)
+    lines = x.tick(sch.skills[0].dispatch_s())
+
+    assert not x.attempt_ended, lines
+    assert ex.REJECTED_NO_BALL not in lines[0]
+    assert ex.REJECTED_BALL_UNKNOWN not in lines[0]
+    throw_calls = [c for c in inst.calls if c[0] == sg.THROW]
+    assert len(throw_calls) == 1
+
+
 def test_a_fully_failing_observation_reports_every_row_at_once(sites):
     """The runsheet rehearsal reports every refusal together (Workflow Rules:
     "make gates report every refusal at once"): the log line names all four
@@ -2966,6 +2989,55 @@ def test_a_drop_with_a_survivor_still_in_flight_keeps_catching_it(sites):
     assert rest.t_abs_s == pytest.approx(
         sc.closing_rest_t_abs(t_land1, sg.REST_TAIL_S))
     assert abs(rest.t_abs_s - skills[2].t_abs_s) > 0.1
+
+
+def test_a_drop_with_only_a_phantom_partner_left_aborts_instead_of_a_survivor_tail(sites):
+    """B2 (`columns_1ball_fed`): the same shape as `test_a_drop_with_a_
+    survivor_still_in_flight_keeps_catching_it`, except ball 1's own
+    undispatched CATCH is now the schedule's PHANTOM -- `_survivor_catch`
+    must exclude it (`schedule.Schedule.is_phantom`), so there is no real
+    survivor to keep catching and the attempt aborts exactly as a
+    genuinely one-ball schedule would, instead of installing a tail around
+    a catch with nothing in it."""
+    p1, p2 = sites
+    t_throw0 = ROS_T0
+    t_land1 = t_throw0 + 2.0
+    tt = sc.ThenThrow(t_release_abs_s=t_land1 + 0.3,
+                      y_d=(np.zeros(2), APEX_M), target=p2)
+    skills = (
+        Skill(kind=sg.THROW, ball_id=0, site=p1, t_abs_s=t_throw0,
+              window_s=LAUNCH_S, y_d=(np.zeros(2), APEX_M), target=p1),
+        Skill(kind=sg.CATCH, ball_id=1, site=p2, t_abs_s=t_land1,
+              window_s=0.5, then_throw=tt),
+        Skill(kind=sg.REST, ball_id=1, site=p2,
+              t_abs_s=t_land1 + sg.REST_TAIL_S, window_s=sg.REST_TAIL_S),
+    )
+    sch = Schedule(pattern='columns', skills=skills, flight_s=FLIGHT_S,
+                   beat_s=0.578, transit_s=0.278, dwell_s=0.30,
+                   t0_abs_s=t_throw0, phantom_balls=(1,))
+    assert skills[1].dispatch_s() > t_throw0 + ex.RELEASE_GRACE_S + 0.05
+
+    inst = _FakeInstaller()
+    experiences = []
+    x = ex.SkillExecutor(
+        sch, inst, tracker=lambda b: None,
+        observer=lambda ball_id, t: bp.EVIDENCE_SEATED,
+        observations=lambda t: _obs(), on_experience=experiences.append)
+
+    t = skills[0].dispatch_s() - 0.01
+    t_end = t_throw0 + ex.RELEASE_GRACE_S + 0.05
+    lines = []
+    while t < t_end:
+        lines.extend(x.tick(t))
+        t += 0.02
+
+    assert experiences == []
+    assert x.attempt_ended is True
+    assert x.end_code == ex.ABORTED_NO_RELEASE
+    assert ex.DROPPED_SURVIVOR_STOPPED not in ''.join(lines)
+    # The schedule was NOT cut -- no survivor tail installed.
+    assert len(x.schedule.skills) == 3
+    assert x.schedule.skills[1].then_throw is tt
 
 
 def test_a_release_with_evidence_produces_no_abort_possession_path(sites):
@@ -5206,3 +5278,371 @@ def test_a_columns_catch_handed_the_other_balls_flight_keeps_the_schedule(
     # The wrong ball's flight is never a row.
     assert experiences == []
     assert any('TRACKER-IDENTITY-REFUSED throw' in ln for ln in lines)
+
+
+# ---------------------------------------------------------------------------
+# Q4 (R5 sitting 4, 2026-10-04 evening, report_a1.md): RELEASE_SEAT_EPS_S --
+# a SEATED sample seen only AFTER the release+epsilon window must never arm
+# `seated_seen`.
+# ---------------------------------------------------------------------------
+
+def test_another_balls_seat_after_the_release_never_confirms_it(sites):
+    """EMPTY through the release and past :data:`ex.RELEASE_SEAT_EPS_S`, then
+    a 25 ms SEATED blip well AFTER that epsilon (another ball's arrival, or
+    this one's own late settle chatter), then EMPTY again inside
+    :data:`ex.RELEASE_GRACE_S` -- BEFORE the Q4 fix this SEATED sample armed
+    ``seated_seen`` and the following EMPTY falsely confirmed the release;
+    with the fix ``seated_seen`` never arms, so no evidence is ever found
+    and the grace deadline aborts ``ABORTED_NO_RELEASE`` instead."""
+    p1, _p2 = sites
+    t_release = ROS_T0
+    sch = _single_throw_schedule(p1, ball_id=0, t_release=t_release)
+    inst = _FakeInstaller()
+    experiences = []
+    assert ex.RELEASE_SEAT_EPS_S < 0.20       # the blip below sits past it
+
+    def observer(ball_id, t):
+        if t_release + 0.20 <= t < t_release + 0.225:
+            return bp.EVIDENCE_SEATED
+        return bp.EVIDENCE_EMPTY
+
+    x = ex.SkillExecutor(
+        sch, inst, tracker=None, observer=observer,
+        observations=lambda t: _obs(), on_experience=experiences.append)
+
+    x.tick(sch.skills[0].dispatch_s())        # before release: EMPTY
+    x.tick(t_release + 0.05)                  # still EMPTY, still < eps
+    x.tick(t_release + 0.21)                  # the blip: SEATED, past eps
+    x.tick(t_release + 0.30)                  # EMPTY again -- must NOT confirm
+    lines = x.tick(t_release + ex.RELEASE_GRACE_S + 0.01)
+
+    assert x.attempt_ended and x.end_code == ex.ABORTED_NO_RELEASE
+    assert ex.ABORTED_NO_RELEASE in lines[0]
+    assert experiences == []
+
+
+# ---------------------------------------------------------------------------
+# Q3 (R5 sitting 4, 2026-10-04 evening, report_a1.md): the MISSED_CATCH
+# evidence rule.
+# ---------------------------------------------------------------------------
+
+def _feed_catch_schedule(sites, t_open_rel_s=-0.40, dwell_s=0.30):
+    """A's THROW (arms ``t_open`` with a release before the feed's landing)
+    -> B's feed CATCH, aimed by a ``landing_prior`` (no schedule release of
+    its own -- the real feed shape) and carrying a ``then_throw`` (R) ->
+    B's own NEXT catch (undispatched, well after the decision instant -- the
+    row this rule must DROP, Q1 fault (b)) -> A's own next catch (the D3
+    survivor) -> a closing REST. Mirrors the sitting-4 shape (B fed to P1
+    while A cycles through P2) closely enough to exercise
+    ``_register_catch``/``_advance_catch_evidence`` for real, through a fake
+    ``seat_window`` the test controls directly.
+
+    ``t_open_rel_s``/``dwell_s`` (B1c, sitting 4): A's own throw-1 release
+    and B's carried-release dwell are PARAMETERISED, not fixed, so
+    :func:`test_missed_catch_fixture_replay` can build a schedule per real
+    attempt whose OWN ``_register_catch`` arithmetic reproduces that
+    attempt's real ``t_open_rel_s``/``t_close_rel_s`` (``missed_catch_
+    20261004.csv``) exactly, rather than querying real per-attempt samples
+    through one fixed synthetic window. Defaults reproduce this function's
+    ORIGINAL fixed numbers (``t_open`` at ``L - 0.40``, dwell ``0.30``) for
+    every other caller unchanged.
+
+    Returns ``(schedule, L, R, t_land_a)``."""
+    p1, p2 = sites
+    L = T0_ABS + 0.5                          # B's feed catch landing
+    # `_register_catch`'s own t_open = latest_release + OPEN_AFTER_RELEASE_S
+    # -- inverted here so THIS schedule's t_open comes out at `t_open_rel_s`.
+    t_throw_a = L + t_open_rel_s - ex.MISSED_CATCH_OPEN_AFTER_RELEASE_S
+    R = L + dwell_s                          # B's carried throw release
+    # Far enough past the decision instant that it is still UNDISPATCHED
+    # when MISSED_CATCH fires (its own `dispatch_s()` runs ~0.7 s ahead of
+    # `t_abs_s` here, same lead the executor assigns any CATCH) -- this is
+    # the row the rule must drop, not one it races to beat.
+    t_b_next = R + 2.0                       # B's own next catch (dropped)
+    t_land_a = R + 1.0                       # A's own next catch (survivor)
+    prior = sc.LandingPrior(pos_mm=p1.catch_site_mm(), vel_mm_s=LAND_VEL,
+                            t_land_abs_s=L)
+    tt = sc.ThenThrow(t_release_abs_s=R, y_d=(np.zeros(2), APEX_M), target=p1)
+    skills = (
+        Skill(kind=sg.THROW, ball_id=0, site=p1, t_abs_s=t_throw_a,
+              window_s=LAUNCH_S, y_d=(np.zeros(2), APEX_M), target=p2),
+        Skill(kind=sg.CATCH, ball_id=1, site=p1, t_abs_s=L, window_s=0.5,
+              landing_prior=prior, then_throw=tt),
+        Skill(kind=sg.CATCH, ball_id=1, site=p1, t_abs_s=t_b_next,
+              window_s=0.5),
+        Skill(kind=sg.CATCH, ball_id=0, site=p2, t_abs_s=t_land_a,
+              window_s=0.5),
+        Skill(kind=sg.REST, ball_id=0, site=p2,
+              t_abs_s=t_land_a + sg.REST_TAIL_S, window_s=sg.REST_TAIL_S),
+    )
+    sch = Schedule(pattern='columns', skills=skills, flight_s=FLIGHT_S,
+                  beat_s=0.578, transit_s=0.278, dwell_s=dwell_s,
+                  t0_abs_s=t_throw_a)
+    return sch, L, R, t_land_a
+
+
+def _observer_confirms_a_only(ball_id, t):
+    """Confirms ball 0's (A's) own release via possession evidence (SEATED
+    through its release, then EMPTY) so ``_feed_catch_schedule``'s opening
+    THROW never trips its OWN ``ABORTED_NO_RELEASE`` deadline while a test
+    drives time past it -- ball 1's row is deliberately left unconfirmed
+    (always EMPTY), the MISSED_CATCH rule's own row to drop."""
+    if ball_id == 0:
+        return (bp.EVIDENCE_SEATED if t <= T0_ABS else bp.EVIDENCE_EMPTY)
+    return bp.EVIDENCE_EMPTY
+
+
+def _drive_to_decision(sch, seat_window, t_decide, observer=None):
+    inst = _FakeInstaller()
+    experiences = []
+    x = ex.SkillExecutor(
+        sch, inst, tracker=None,
+        observer=(observer if observer is not None
+                 else _observer_confirms_a_only),
+        observations=lambda t: _obs(), on_experience=experiences.append,
+        seat_window=seat_window)
+    lines = []
+    t = sch.skills[0].dispatch_s() - 0.01
+    while t < t_decide:
+        lines.extend(x.tick(t))
+        t += 0.02
+    lines.extend(x.tick(t_decide))
+    return x, lines, experiences
+
+
+def test_missed_catch_fires_on_an_empty_cup_and_keeps_the_survivor(sites):
+    """``seat_window`` reports a sample-complete, LIVE, never-seated window
+    -- (40, 0, 0.01) -- for every query. MISSED_CATCH fires at
+    ``R + MISSED_CATCH_CLOSE_AFTER_RELEASE_S + MISSED_CATCH_DECIDE_LAG_S``
+    (``R + 0.15``, Q3's own worked example): B's own next catch is dropped
+    from the schedule (never installed), A's survivor catch is kept with
+    its carried throw stripped, and ticking well past
+    ``RELEASE_GRACE_S``/``CAUGHT_WINDOW_S`` never raises
+    ``ABORTED_NO_RELEASE``/``DROPPED_SURVIVOR_STOPPED`` for B's now-dropped
+    carried-throw row (Q1 fault (b))."""
+    sch, _L, R, t_land_a = _feed_catch_schedule(sites)
+    seat_window = lambda t0, t1: ex.SeatWindow(n_valid=int(round((t1 - t0) * 100)), n_seated=0,
+                                               max_gap_s=0.01)
+    t_decide = R + ex.MISSED_CATCH_CLOSE_AFTER_RELEASE_S \
+        + ex.MISSED_CATCH_DECIDE_LAG_S
+    x, lines, experiences = _drive_to_decision(sch, seat_window, t_decide)
+
+    assert x.end_code == ex.MISSED_CATCH
+    assert any(ex.MISSED_CATCH in ln and 'CATCH' in ln for ln in lines)
+    assert x.attempt_ended is False
+    # B's own next catch is gone; A's survivor catch is kept, throw stripped.
+    kinds_balls = [(sk.kind, sk.ball_id) for sk in x.schedule.skills]
+    assert (sg.CATCH, 1) not in kinds_balls[2:]   # B's next catch dropped
+    survivor = [sk for sk in x.schedule.skills
+               if sk.kind == sg.CATCH and sk.ball_id == 0]
+    assert len(survivor) == 1 and survivor[0].then_throw is None
+    # Drive well past every later deadline this attempt could still trip.
+    t = t_decide
+    t_end = t_land_a + ex.CAUGHT_WINDOW_S + 1.0
+    while t < t_end:
+        lines.extend(x.tick(t))
+        t += 0.02
+    assert ex.ABORTED_NO_RELEASE not in ''.join(lines)
+    assert ex.DROPPED_SURVIVOR_STOPPED not in ''.join(lines)
+    assert x.end_code == ex.MISSED_CATCH          # never overwritten
+    assert experiences == []                      # B's carried throw: no row
+
+
+def test_an_attempt_ended_by_a_later_skill_still_resolves_an_open_catch_window(sites):
+    """Audit finding (2026-10-04): `done` waits on every open `_PendingCatch`,
+    and `_advance_catch_evidence` used to run only while the attempt was
+    live -- so a LATER skill's refusal (a sibling ball's LIMIT_JERK, a mode
+    change) that ended the attempt before an EARLIER catch's window closed
+    left that row open forever: `done` never came True, the Juggle goal hung,
+    and every later start was refused. Now the window keeps being visited
+    after the end: the verdict resolves the row (and the ball's outcome
+    rows) without dispatching anything, and `done` comes True."""
+    sch, _L, R, t_land_a = _feed_catch_schedule(sites)
+    seat_window = lambda t0, t1: ex.SeatWindow(n_valid=int(round((t1 - t0) * 100)), n_seated=0,
+                                               max_gap_s=0.01)
+    t_close = R + ex.MISSED_CATCH_CLOSE_AFTER_RELEASE_S
+    # Drive until the feed catch is registered but its window is still open,
+    # then end the attempt the way a later refusal does.
+    x, lines, _exp = _drive_to_decision(sch, seat_window, t_close - 0.05)
+    assert x._pending_catches, 'the feed catch must be registered and open'
+    assert not x.attempt_ended
+    x.attempt_ended = True
+    x.end_code = 'LIMIT_JERK'           # the installer's refusal code, as a later skill would set it
+    x.end_kind = sg.CATCH
+    assert not x.done                     # the open window holds `done` back
+    t = t_close - 0.05
+    while t < t_close + ex.MISSED_CATCH_DECIDE_LAG_S + 0.5:
+        lines.extend(x.tick(t))
+        t += 0.02
+    assert x._pending_catches == []       # the window resolved after the end
+    # Ball A's own throw-1 outcome row finalises on its own clock
+    # (CAUGHT_WINDOW_S after its landing) exactly as before this change;
+    # once it has, nothing holds `done` back.
+    t_end = t_land_a + ex.CAUGHT_WINDOW_S + 1.0
+    while t < t_end:
+        lines.extend(x.tick(t))
+        t += 0.02
+    assert x.done
+    assert x.end_code == 'LIMIT_JERK'     # the earlier end is never overwritten
+    assert any('attempt already ended' in ln for ln in lines)
+    assert not any(ln.startswith('%.3f END' % t) for ln in lines)  # nothing re-ended
+
+
+def test_missed_catch_one_seated_sample_vetoes(sites):
+    """A single SEATED sample anywhere in the window (``n_seated=1``) vetoes
+    the miss, the safe direction -- a real but messy catch must never read
+    as MISSED_CATCH."""
+    sch, _L, R, _t_land_a = _feed_catch_schedule(sites)
+    seat_window = lambda t0, t1: ex.SeatWindow(n_valid=int(round((t1 - t0) * 100)), n_seated=1,
+                                               max_gap_s=0.01)
+    t_decide = R + ex.MISSED_CATCH_CLOSE_AFTER_RELEASE_S \
+        + ex.MISSED_CATCH_DECIDE_LAG_S
+    x, lines, _exp = _drive_to_decision(sch, seat_window, t_decide + 0.1)
+
+    assert x.end_code != ex.MISSED_CATCH
+    assert ex.MISSED_CATCH not in ''.join(lines)
+
+
+def test_missed_catch_late_real_seat_is_not_a_miss(sites):
+    """A seat at ``R + 0.03`` -- well inside the catch's own close
+    (``R + MISSED_CATCH_CLOSE_AFTER_RELEASE_S``) -- is a late but real catch,
+    not a miss: one SEATED sample in the window is enough to veto,
+    regardless of how late inside the window it fell."""
+    sch, _L, R, _t_land_a = _feed_catch_schedule(sites)
+    seat_window = lambda t0, t1: ex.SeatWindow(n_valid=int(round((t1 - t0) * 100)), n_seated=1,
+                                               max_gap_s=0.01)
+    assert R + 0.03 < R + ex.MISSED_CATCH_CLOSE_AFTER_RELEASE_S
+    t_decide = R + ex.MISSED_CATCH_CLOSE_AFTER_RELEASE_S \
+        + ex.MISSED_CATCH_DECIDE_LAG_S
+    x, lines, _exp = _drive_to_decision(sch, seat_window, t_decide + 0.1)
+
+    assert x.end_code != ex.MISSED_CATCH
+    assert ex.MISSED_CATCH not in ''.join(lines)
+
+
+def test_missed_catch_blind_window_is_silent(sites):
+    """``seat_window`` returning ``None`` (the buffer does not cover the
+    window) is BLIND -- no verdict either way, not a miss."""
+    sch, _L, R, _t_land_a = _feed_catch_schedule(sites)
+    seat_window = lambda t0, t1: None
+    t_decide = R + ex.MISSED_CATCH_CLOSE_AFTER_RELEASE_S \
+        + ex.MISSED_CATCH_DECIDE_LAG_S
+    x, lines, _exp = _drive_to_decision(sch, seat_window, t_decide + 0.1)
+
+    assert x.end_code != ex.MISSED_CATCH
+    assert ex.MISSED_CATCH not in ''.join(lines)
+
+
+def test_missed_catch_never_arms_for_a_phantom_ball(sites):
+    """``Schedule.is_phantom`` is checked, unconditionally, at registration
+    (beside ``test_a_phantom_balls_release_registers_no_outcome_row``): even
+    an always-empty ``seat_window`` never fires MISSED_CATCH for a phantom
+    ball's catch."""
+    sch, _L, R, _t_land_a = _feed_catch_schedule(sites)
+    sch = dataclasses.replace(sch, phantom_balls=(1,))
+    seat_window = lambda t0, t1: ex.SeatWindow(n_valid=int(round((t1 - t0) * 100)), n_seated=0,
+                                               max_gap_s=0.01)
+    t_decide = R + ex.MISSED_CATCH_CLOSE_AFTER_RELEASE_S \
+        + ex.MISSED_CATCH_DECIDE_LAG_S
+    x, lines, _exp = _drive_to_decision(sch, seat_window, t_decide + 0.1)
+
+    assert x.end_code != ex.MISSED_CATCH
+    assert ex.MISSED_CATCH not in ''.join(lines)
+
+
+def test_missed_catch_rule_off_without_a_seat_window(sites):
+    """``seat_window=None`` (the default): the rule never arms at all, even
+    on a schedule shaped exactly like the fires-on-a-miss case -- R2/R3
+    callers and the sim gate (unless it wires one) are unaffected."""
+    sch, _L, R, _t_land_a = _feed_catch_schedule(sites)
+    t_decide = R + ex.MISSED_CATCH_CLOSE_AFTER_RELEASE_S \
+        + ex.MISSED_CATCH_DECIDE_LAG_S
+    x, lines, _exp = _drive_to_decision(sch, None, t_decide + 0.1)
+
+    assert x.end_code != ex.MISSED_CATCH
+    assert ex.MISSED_CATCH not in ''.join(lines)
+
+
+def test_missed_catch_fixture_replay(sites):
+    """Replay ``tests/motion/fixtures/missed_catch_20261004.csv``
+    (``tools/probes/missed_catch_fixture.py``, provenance in its docstring:
+    the 2026-10-04 sitting's own per-attempt facts, report_a1.md Q1) through
+    the real ``_register_catch``/``_advance_catch_evidence`` path, one
+    ``_feed_catch_schedule`` per attempt with its ``seat_window`` backed by
+    that attempt's own sample rows.
+
+    B1c (sitting 4): builds the synthetic schedule PER ATTEMPT
+    (``_feed_catch_schedule``'s new ``t_open_rel_s``/``dwell_s`` params) so
+    ``_register_catch``'s OWN arithmetic reproduces that attempt's real
+    ``t_open_rel_s``/``t_close_rel_s`` (the fixture's columns, computed by
+    the generator with the same arithmetic): the ``(t0, t1)`` the rule then
+    passes into ``seat_window`` ARE, to within the generator's `%.4f`
+    rounding, ``L + t_open_rel_s``/``L + t_close_rel_s``, so filtering the
+    CSV's own ``t_rel_s`` rows by ``t0 - L``/``t1 - L`` (as the ORIGINAL
+    version did) now queries the REAL window instead of one fixed window
+    every attempt. (B1's version queried every attempt over the SAME fixed
+    window -- [-0.40, +0.42] from the synthetic schedule's old fixed
+    numbers -- and fired 0/14 on real misses, because that fixed window
+    does not match any real attempt's own; passing the CSV's bounds straight
+    into ``seat_window`` without also moving the schedule was tried and
+    rejected here too: it desyncs the LIVENESS check, whose ``expected``
+    sample count is still ``_register_catch``'s own ``t_close_s -
+    t_open_s`` span -- a real ~0.586 s window read against a stale ~0.82 s
+    synthetic span undercounts live and the row goes BLIND, not MISSED.)
+    ``dwell_s`` is derived from each attempt's own ``t_close_rel_s`` (not
+    hardcoded), so a future attempt where the OTHER ball's landing guard
+    binds instead of the dwell term would show up as a mismatched decision,
+    not a silently wrong window. Must fire MISSED_CATCH on all 14 'miss'
+    attempts and never on the 8 'caught' ones."""
+    import csv
+    import os
+    path = os.path.join(os.path.dirname(__file__), 'fixtures',
+                       'missed_catch_20261004.csv')
+    by_attempt = {}
+    windows = {}
+    with open(path, newline='') as f:
+        for row in csv.DictReader(f):
+            key = (row['attempt'], row['label'])
+            by_attempt.setdefault(key, []).append(
+                (float(row['t_rel_s']), row['valid'] == 'True',
+                 row['raw'] == 'True', row['held'] == 'True'))
+            windows[key] = (float(row['t_open_rel_s']),
+                           float(row['t_close_rel_s']))
+    assert len(by_attempt) == 22
+    n_fired = {'miss': 0, 'caught': 0}
+    for (attempt, label), rows in by_attempt.items():
+        t_open_rel_s, t_close_rel_s = windows[(attempt, label)]
+        dwell_s = t_close_rel_s - ex.MISSED_CATCH_CLOSE_AFTER_RELEASE_S
+        sch, L, R, _t_land_a = _feed_catch_schedule(
+            sites, t_open_rel_s=t_open_rel_s, dwell_s=dwell_s)
+        t_throw_a = L + t_open_rel_s - ex.MISSED_CATCH_OPEN_AFTER_RELEASE_S
+
+        def observer(ball_id, t, t_throw_a=t_throw_a):
+            if ball_id == 0:
+                return (bp.EVIDENCE_SEATED if t <= t_throw_a
+                       else bp.EVIDENCE_EMPTY)
+            return bp.EVIDENCE_EMPTY
+
+        def seat_window(t0, t1, rows=rows, L=L):
+            samples = [r for r in rows if t0 - L <= r[0] <= t1 - L]
+            if not samples:
+                return None
+            n_valid = sum(1 for _t, valid, _r, _h in samples if valid)
+            # Raw bit only (B1c) -- see executor.SeatWindow's docstring.
+            n_seated = sum(1 for _t, valid, raw, _h in samples
+                          if valid and raw)
+            times = sorted(t for t, valid, _r, _h in samples if valid)
+            gaps = [b - a for a, b in zip(times, times[1:])]
+            return ex.SeatWindow(n_valid=n_valid, n_seated=n_seated,
+                                 max_gap_s=(max(gaps) if gaps else 0.0))
+
+        t_decide = R + ex.MISSED_CATCH_CLOSE_AFTER_RELEASE_S \
+            + ex.MISSED_CATCH_DECIDE_LAG_S
+        x, lines, _exp = _drive_to_decision(sch, seat_window, t_decide + 0.1,
+                                            observer=observer)
+        fired = x.end_code == ex.MISSED_CATCH
+        if fired:
+            n_fired[label] += 1
+        assert fired == (label == 'miss'), (
+            '%s attempt %s: fired=%s' % (label, attempt, fired))
+    assert n_fired == {'miss': 14, 'caught': 0}

@@ -13,6 +13,7 @@ stops a downward move (a pinch) and falls once the hand is raised far enough.
 from __future__ import annotations
 
 import csv
+import dataclasses
 import math
 import pathlib
 
@@ -65,6 +66,30 @@ def _descent_into(stop_rev, *, dur=1.0, dt=0.01, start=6.0, v=-20.0, lag=0.15,
         cmd = max(raw, meas - 2.0)
         out.append(_s(t, cmd, v if raw > rest else 0.0, meas, vel_meas, iq,
                       state, err, age))
+    return out
+
+
+def _hand_move_to_trace(target, *, start, v, stop=None, dur=1.0, dt=0.01,
+                        moving_iq=-5.0, iq_stall=-50.0, state=8, err=0, age=0.01):
+    """A HAND_MOVE_TO-shaped move (2026-10-04, D2): ``pos_cmd`` is the SINGLE
+    target write the whole trace (never changes, unlike the streamed REST
+    lane's ``_descent_into``), and ``vel_ff_cmd`` is always 0 (HAND_MOVE_TO
+    carries no feedforward — the bridge writes it that way,
+    ``teensy_bridge_node.teensy_hand_move_to``). The hand moves from
+    ``start`` at velocity ``v`` and STOPS at ``stop`` if given (a ball,
+    snag...) short of ``target`` — maintaining the lag ``target`` keeps
+    below (or above) the stop, same as ``_descent_into``'s ``stop_rev`` vs.
+    ``rest``; with no ``stop`` it just moves until the trace ends."""
+    out, pos, stuck = [], start, False
+    for i in range(int(dur / dt)):
+        t = i * dt
+        if not stuck:
+            pos += v * dt
+            if stop is not None and ((v < 0 and pos <= stop) or (v > 0 and pos >= stop)):
+                pos, stuck = stop, True
+        vel = 0.0 if stuck else v
+        iq = iq_stall if stuck else moving_iq
+        out.append(_s(t, target, 0.0, pos, vel, iq, state, err, age))
     return out
 
 
@@ -156,7 +181,17 @@ def test_fp_encoder_freeze_with_odrive_errors():
 
 
 def test_fp_stale_diagnostic():
-    _never(_descent_into(3.0, age=0.2))
+    # Above the new bound (1.5 s, 2026-10-04): a dead diagnostic feed is
+    # still a false positive this must reject.
+    _never(_descent_into(3.0, age=2.0))
+
+
+def test_fires_with_a_diagnostic_age_inside_the_new_bound():
+    # Below 1.5 s but above the design draft's 0.05 s: this is exactly the
+    # gap the draft bound closed off (see test_fires_through_the_
+    # one_hertz_diagnostic_cadence for the cadence that produces it live).
+    assert [v for _, v in _fires(JamDetector(JamConfig()), _descent_into(3.0, age=1.0))
+           ] == [Verdict.HAND_JAM]
 
 
 @pytest.mark.parametrize('state,iq', [(1, 0.0), (8, 0.0)])
@@ -170,6 +205,47 @@ def test_fp_undervoltage_lag_without_the_clamp():
 
 def test_fp_ball_landing_on_the_cup_shorter_than_the_sustain():
     _never(_descent_into(3.0, release_after=0.12))   # clamp for 90 ms only
+
+
+def test_fires_through_the_one_hertz_diagnostic_cadence():
+    """D1 (2026-10-04, R5 sitting 4): the can-bridge firmware
+    (``Teensy_code_canbridge/telemetry.cpp``, ``diag_changed`` /
+    ``DIAG_FORCE_PERIOD_US`` = 1e6) sends axis 6's DIAGNOSTIC on-change or
+    forced at 1 Hz, so in a steady clamp stall (iq constant -> no on-change
+    send) the diagnostic age ramps 0 -> ~1 s every second instead of staying
+    near zero. ``max_age_s`` 0.05 (the design draft) is then true for <= 50
+    ms per second, so the 100 ms sustain can never complete; 1.5 s survives
+    the whole cycle. Pins the defect class, not just the live symptom."""
+    base = _descent_into(2.5, dur=3.0)
+    t_stall = next(s.t for s in base if s.iq_meas == -50.0)
+    tr = [dataclasses.replace(
+              s, age_s=((s.t - t_stall) % 1.0) if s.t >= t_stall else s.age_s)
+         for s in base]
+    assert [v for _, v in _fires(JamDetector(JamConfig()), tr)] == [Verdict.HAND_JAM]
+    assert _fires(JamDetector(JamConfig(max_age_s=0.05)), tr) == []
+
+
+def test_fp_hand_move_to_descent_fires_by_measured_velocity():
+    """D2 (2026-10-04): HAND_MOVE_TO writes the command cache ONCE (the
+    target, 0.5 rev — well below the 2.5 rev stop, so the lag persists for
+    as long as the hand is stuck); P1's measured-descent alternative is what
+    lets the detector witness the rest of the move through the encoder
+    instead."""
+    tr = _hand_move_to_trace(0.5, start=5.0, v=-2.0, stop=2.5, dur=1.5)
+    assert [v for _, v in _fires(JamDetector(JamConfig()), tr)] == [Verdict.HAND_JAM]
+
+
+def test_fp_hand_move_to_ascent_into_a_stop_never_fires():
+    # Same shape, opposite direction (target above the stop, so there is no
+    # lag once stuck — P3 false — and vel_meas is never negative, so the
+    # new alternative never opens a false-positive class for an ascent).
+    _never(_hand_move_to_trace(4.0, start=0.5, v=2.0, stop=2.5, dur=1.5))
+
+
+def test_fp_hand_move_to_soft_catch_moving_low_current_never_fires():
+    # Still moving into the cup (vel_meas magnitude above stall_vel_rps) at
+    # ordinary cruise current when the trace ends -- P2 stays false.
+    _never(_hand_move_to_trace(2.5, start=5.0, v=-2.0, dur=0.3, moving_iq=-5.0))
 
 
 def test_telemetry_gap_restarts_the_sustain():

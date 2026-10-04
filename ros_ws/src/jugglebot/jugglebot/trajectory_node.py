@@ -131,6 +131,7 @@ from jugglebot.motion import unified_cycle as uc
 from jugglebot.motion.trajectory.cycle_plan import CyclePlan
 from jugglebot.motion.skills import executor as sk_exec
 from jugglebot.motion.skills import segments as sk_seg
+from jugglebot.motion.skills.schedule import ball_label
 
 # The control mode in which explicit move services (go_to_pose) are accepted. In
 # any other streaming mode (STANDBY holds; SPACEMOUSE has its own command
@@ -4470,9 +4471,9 @@ class TrajectoryNode(Node):
         response.plan_wall_ms = (time.perf_counter() - t_wall) * 1e3
         self._cycle_plan_wall_ms = response.plan_wall_ms
         self.get_logger().debug(
-            'install_segment %s ball %d: splice_k=%d, plan %.1f ms, event tau '
+            'install_segment %s %s: splice_k=%d, plan %.1f ms, event tau '
             '%.3f s'
-            % (kind, ball_id, response.splice_k, response.plan_wall_ms,
+            % (kind, ball_label(ball_id), response.splice_k, response.plan_wall_ms,
                float(result.event_t_s)))
         return response
 

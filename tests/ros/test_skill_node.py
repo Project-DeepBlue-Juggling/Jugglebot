@@ -664,6 +664,41 @@ def test_columns_feed_aim_toward_a_mm_clamps_outside_0_40():
     assert node._columns_feed_aim_toward_a_mm() == pytest.approx(0.0)
 
 
+def test_columns_feed_bb_bias_mm_defaults_to_0_0():
+    """B4 (R5 sitting 4): ``[0.0, 0.0]`` -- unset, a FED catch plans and
+    requests exactly as before this parameter existed."""
+    node, _client = _node_with_client()
+    assert list(node.get_parameter('columns_feed_bb_bias_mm').value) == [0.0, 0.0]
+    assert node._columns_feed_bb_bias_mm() == (0.0, 0.0)
+
+
+def test_columns_feed_bb_bias_mm_clamps_outside_60():
+    """Same WARN-and-clamp shape as `_columns_feed_aim_toward_a_mm`: a
+    bound on a planner input, not a policy -- out-of-range per axis is
+    clamped into ``[-60, 60]``, never refused."""
+    node, _client = _node_with_client()
+    node.set_parameters([_MockParameter([100.0, -90.0], name='columns_feed_bb_bias_mm')])
+    assert node._columns_feed_bb_bias_mm() == pytest.approx((60.0, -60.0))
+    node.set_parameters([_MockParameter([29.0, 25.0], name='columns_feed_bb_bias_mm')])
+    assert node._columns_feed_bb_bias_mm() == pytest.approx((29.0, 25.0))
+
+
+def test_columns_feed_bb_bias_mm_rejects_a_malformed_value():
+    """A malformed value (wrong length, or non-finite) is REFUSED (ERROR)
+    and ``(0.0, 0.0)`` is used -- never a silently-carried-forward prior
+    value, same rule `trajectory_node._apply_level_trim_param` applies to
+    its own ``[x, y]`` parameter."""
+    node, _client = _node_with_client()
+    node.set_parameters([_MockParameter([5.0], name='columns_feed_bb_bias_mm')])
+    assert node._columns_feed_bb_bias_mm() == (0.0, 0.0)
+    node.set_parameters([_MockParameter([float('nan'), 5.0],
+                                        name='columns_feed_bb_bias_mm')])
+    assert node._columns_feed_bb_bias_mm() == (0.0, 0.0)
+    node.set_parameters([_MockParameter([float('inf'), 5.0],
+                                        name='columns_feed_bb_bias_mm')])
+    assert node._columns_feed_bb_bias_mm() == (0.0, 0.0)
+
+
 def test_self_toss_refuses_an_uncovered_apex_before_any_motion(tmp_path):
     """THE LATENT DEFECT this closes (found 2026-09-14): the only swept box
     covers apex 0.85-0.95 m; requesting 0.5 m (uncovered) must refuse BEFORE
@@ -4361,6 +4396,95 @@ def test_columns_bb_announcement_at_the_aim_point_still_installs(tmp_path):
     assert node._executor.schedule.pattern == 'columns'
 
 
+def test_columns_feed_bb_bias_mm_shifts_the_request_and_the_feed_prior(tmp_path):
+    """B4 (R5 sitting 4): on the fed-columns path (`kind == 'columns'`) the
+    point SENT to Ball Butler is walked BACK by `columns_feed_bb_bias_mm`
+    (so Ball Butler's own measured landing error cancels), and the
+    announced landing used for the feed `LandingPrior` is walked FORWARD
+    by it (the announcement reports Ball Butler's belief -- the request
+    point it actually received -- not where the ball truly lands).
+    `_run_columns`'s own docstring on the parameter."""
+    node, _client = _node_with_client()
+    node.set_parameters([_MockParameter([29.0, 25.0], name='columns_feed_bb_bias_mm')])
+    _columns_bb_started(node, tmp_path)
+    aim = node._reload_ctx.aim_site.cup_mm
+    throw_req = node._bb_throw_cli.calls[0]
+    assert throw_req.target_point_global_mm.x == pytest.approx(float(aim[0]) - 29.0)
+    assert throw_req.target_point_global_mm.y == pytest.approx(float(aim[1]) - 25.0)
+
+    # Ball Butler announces its OWN belief -- the request it actually
+    # received -- same shape as `test_columns_bb_announcement_installs_
+    # the_fed_schedule`.
+    ann = _bb_announcement(
+        target_id=node._robot_name,
+        landing_mm=(throw_req.target_point_global_mm.x,
+                   throw_req.target_point_global_mm.y, sn.CATCH_CUP_Z_MM),
+        landing_vel_mm_s=(0.0, 0.0, -3000.0), throw_time_s=0.5,
+        landing_time_s=5.0)
+    node._on_announcement(ann)
+    assert node._reload_ctx is None
+    assert node._executor is not None
+    assert node._executor.schedule.pattern == 'columns'
+    catches = [s for s in node._executor.schedule.skills if s.kind == sn.CATCH]
+    first = min(catches, key=lambda s: s.t_abs_s)
+    # Walked FORWARD by the bias from the announced (request) landing --
+    # back to the TRUE aim point, since announced == aim - bias here.
+    assert first.landing_prior.pos_mm[0] == pytest.approx(float(aim[0]), abs=1e-6)
+    assert first.landing_prior.pos_mm[1] == pytest.approx(float(aim[1]), abs=1e-6)
+
+
+def test_columns_feed_bb_bias_mm_leaves_self_toss_reload_untouched(tmp_path):
+    """B4: the bias applies ONLY to `kind == 'columns'` -- a plain
+    self-toss/hop reload request (`kind == 'reload'`) is unchanged by a
+    non-zero `columns_feed_bb_bias_mm` (same request point
+    `test_reload_installs_the_bridge_rest_then_calls_bb_reload_and_throw`
+    asserts with the parameter at its default)."""
+    node, _client = _node_with_client(response=_response())
+    node._params['plant_id'] = 'test_reload_bridge_bias'
+    node.set_parameters([_MockParameter([29.0, 25.0], name='columns_feed_bb_bias_mm')])
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    _prelevel_ready(node)
+    _reload_client, throw_client = _reload_ready(node)
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_self_toss_goal(reload=True))
+    assert resp.success is True, resp.message
+    bridge_rest = node._executor.schedule.skills[0]
+    node._executor.tick(bridge_rest.dispatch_s())
+    _bb_ready(node)
+    node._maybe_fire_reload_throw()
+    throw_req = throw_client.calls[0]
+    assert throw_req.target_point_global_mm.x == pytest.approx(-50.0)
+    assert throw_req.target_point_global_mm.y == pytest.approx(0.0)
+
+
+def test_columns_feed_bb_bias_mm_leaves_columns_1ball_reload_untouched(tmp_path):
+    """B4: `kind == 'columns_1ball'` (ball A's own reload, the OTHER half
+    of `columns_1ball_fed`) is unaffected too -- only `kind == 'columns'`
+    is biased, same request point
+    `test_columns_1ball_reload_true_starts_the_plain_reload_choreography`
+    asserts with the parameter at its default."""
+    node, _client = _node_with_client()
+    node._params['plant_id'] = 'test_columns_1ball_reload_bias_' + str(id(node))
+    node.set_parameters([_MockParameter([29.0, 25.0], name='columns_feed_bb_bias_mm')])
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    _reload_client, throw_client = _reload_ready(node)
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
+                      _good_box_path(tmp_path, columns=True)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_columns_1ball_goal(separation_mm=100.0,
+                                                       reload=True))
+    assert resp.success is True, resp.message
+    a_site = node._reload_ctx.site
+    _bb_ready(node)
+    node._maybe_fire_reload_throw()
+    throw_req = throw_client.calls[0]
+    assert throw_req.target_point_global_mm.x == pytest.approx(
+        float(a_site.catch_site_mm()[0]))
+    assert throw_req.target_point_global_mm.y == pytest.approx(
+        float(a_site.catch_site_mm()[1]))
+
+
 def test_columns_tracker_feed_resolves_an_unannounced_landing_near_the_aim_point(
         tmp_path):
     """The tracker path (brief_S2.md item 2, ``reload=False`` -- no Ball
@@ -4695,3 +4819,59 @@ def test_columns_1balls_phantom_first_visit_never_refuses_no_ball_or_no_release(
     phantom_calls = [c for c in _client.calls
                     if getattr(c, 'ball_id', None) == 1]
     assert phantom_calls, 'the phantom never dispatched -- nothing to prove'
+
+
+# ---------------------------------------------------------------------------
+# B2 (R5 sitting 4): `columns_1ball_fed` -- the OTHER half of `columns_1ball`
+# above: ball A (schedule id 0) phantom, ball B (schedule id 1) real and fed
+# by Ball Butler, through `_run_columns(..., phantom_a=True)` (the SAME fed
+# path the plain `columns` pattern uses, not `_run_columns_1ball`).
+# ---------------------------------------------------------------------------
+
+def _columns_1ball_fed_goal(**overrides):
+    return _goal('columns_1ball_fed', **overrides)
+
+
+def test_columns_1ball_fed_is_one_of_the_patterns_the_juggle_goal_accepts():
+    assert 'columns_1ball_fed' in sn.SkillNode._PATTERNS
+
+
+def test_columns_1ball_fed_refuses_reload_false():
+    """Unlike plain `columns`, this pattern has no ball A to fall back on
+    for a human-lob feed -- Ball Butler is the ONLY feed for ball B, so
+    `reload=False` is refused outright rather than silently arming a
+    tracker-only wait that can never be satisfied."""
+    node, _client = _node_with_client()
+    node._params['plant_id'] = 'test_columns_1ball_fed_refuse_' + str(id(node))
+    resp = node._start_pattern(_columns_1ball_fed_goal(separation_mm=100.0,
+                                                       reload=False))
+    assert resp.success is False
+    assert 'reload' in resp.message
+    assert node._executor is None
+    assert node._reload_ctx is None
+
+
+def test_columns_1ball_fed_reload_true_arms_the_fed_choreography_with_empty_cup_bridge(
+        tmp_path):
+    """`reload=True` routes through the SAME `kind='columns'` BB-feed
+    choreography the plain `columns` pattern uses (`_run_columns`'s own
+    `phantom_a` paragraph) -- not `columns_1ball`'s own `kind='columns_
+    1ball'` reload (that one reloads ball A itself; here ball A never
+    arrives at all). The opening bridge REST carries `holds_ball=False`
+    (the cup is empty), and the compiled `columns_pattern` names ball 0 as
+    the phantom."""
+    node, _client = _node_with_client()
+    node._params['plant_id'] = 'test_columns_1ball_fed_reload_' + str(id(node))
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    _reload_ready(node)
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
+                      _good_box_path(tmp_path, columns=True)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_columns_1ball_fed_goal(separation_mm=100.0,
+                                                           reload=True))
+    assert resp.success is True, resp.message
+    assert node._reload_ctx is not None
+    assert node._reload_ctx.kind == 'columns'
+    assert node._reload_ctx.phase == 'await_bb_idle'
+    assert node._reload_ctx.columns_pattern.phantom_balls == (0,)
+    assert node._reload_ctx.bridge.skills[0].holds_ball is False

@@ -384,6 +384,44 @@ def test_teensy_hand_move_to_maps_the_client_outcomes():
         _teardown(teensy, client, node)
 
 
+def test_hand_move_to_writes_the_jam_detector_command_cache():
+    """D2 (2026-10-04): HAND_MOVE_TO is a TRAP_TRAJ the ODrive plans and runs
+    internally, and nothing echoes it (the HAND_CMD_ECHO sniff is
+    event-driven off the STREAMED lane only, ``_on_hand_cmd_echo``) -- the
+    target IS the command, and the only place that knows it is the caller.
+    Both call sites must write ``_last_hand_cmd`` BEFORE the RPC is sent,
+    same as the ACTIVATE park, or P3 compares a HAND_MOVE_TO descent
+    against a stale cached command (the bench-check gap the detector
+    couldn't see, runsheet sec. 2)."""
+    teensy, client, node = _build_paired_node()
+    try:
+        _set_hand(node, pos=2.0, cmd=(0.0, 0.0))
+
+        def arrived(t, vel_rps, timeout_s):
+            return _blob(rpc_args.HAND_MOVE_ARRIVED, t, t)
+        node._rpc.hand_move_to = arrived
+        ok, _, _ = node.teensy_hand_move_to(0.5, 2.5)
+        assert ok
+        sample = node._hand_jam_sample()
+        assert sample.pos_cmd == 0.5 and sample.vel_ff_cmd == 0.0
+
+        calls = []
+        node._rpc.hand_move_to_nowait = lambda t, vel_rps=2.5: calls.append(t) or _FakeCall(t)
+        ok, _, _, _call = node.teensy_hand_move_to_nowait(1.25, 2.5)
+        assert ok and calls == [1.25]
+        sample = node._hand_jam_sample()
+        assert sample.pos_cmd == 1.25 and sample.vel_ff_cmd == 0.0
+
+        # A client predating the method sends nothing -- must not fabricate
+        # a command for a move that never happened.
+        node._rpc = types.SimpleNamespace()
+        node.teensy_hand_move_to(9.0)
+        sample = node._hand_jam_sample()
+        assert sample.pos_cmd == 1.25         # unchanged
+    finally:
+        _teardown(teensy, client, node)
+
+
 def _raise(exc):
     def f():
         raise exc

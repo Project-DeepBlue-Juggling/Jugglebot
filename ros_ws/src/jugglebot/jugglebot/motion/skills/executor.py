@@ -44,7 +44,7 @@ from jugglebot.motion.skills.schedule import (HANDOFF_LEAD_KNOTS,
                                                HANDOFF_LEAD_S, LEAD_KNOTS,
                                                LEAD_S, MIN_WINDOW_KNOTS,
                                                MIN_WINDOW_S, WIRE_READ_KNOTS,
-                                               Schedule, Skill)
+                                               Schedule, Skill, ball_label)
 from jugglebot.motion.skills.segments import (CATCH, REST, THROW, CatchTerminal,
                                               RestTerminal, Segment,
                                               SegmentConfig, ThrowAfterCatch,
@@ -352,10 +352,42 @@ ABORTED_NO_RELEASE = 'ABORTED_NO_RELEASE'
 #: this attempt's clean finish followed a drop, not a fault-free pattern.
 DROPPED_SURVIVOR_STOPPED = 'DROPPED_SURVIVOR_STOPPED'
 
+#: A CATCH's own evidence rule (R5 sitting 4, 2026-10-04 evening,
+#: ``report_a1.md`` Q3): the ball this CATCH was aimed at never reached the
+#: cup -- the possession sensor read EMPTY on every valid sample across the
+#: catch's whole evidence window (:meth:`SkillExecutor._advance_catch_
+#: evidence`). Distinct from :data:`ABORTED_NO_RELEASE` (a RELEASE never
+#: confirmed) and from a normal miss the OUTCOME ladder would score (which
+#: needs a release row to exist at all -- a feed catch with no carried
+#: release registers none, so a missed feed ran to ``ABORTED_NO_RELEASE``/
+#: ``DROPPED_SURVIVOR_STOPPED`` on its carried throw's timeout instead, one
+#: full beat later than the cup already knew). Same D3 shape as the release
+#: drop: a survivor ball still with a CATCH left keeps being caught (its own
+#: undispatched schedule continues, ``attempt_ended`` stays False); no
+#: survivor ends the attempt through the normal stop path
+#: (``skill_node._maybe_hold_pending_event`` / ``stop_terminals``).
+MISSED_CATCH = 'MISSED_CATCH'
+
 #: Seconds a throw's release evidence may lag ``t_release`` before the attempt
 #: aborts ``ABORTED_NO_RELEASE``. Restated, not imported, from
 #: ``toss_sequencer.TOSS_RELEASE_GRACE_S`` (0.5 s) -- that module dies at R4.
 RELEASE_GRACE_S = 0.5
+
+#: How long AFTER a release a possession SEATED reading may still arm
+#: :attr:`_PendingOutcome.seated_seen` for THAT release's own confirmation
+#: (R5 sitting 4, 2026-10-04 evening, ``report_a1.md`` Q4). A SEATED sample
+#: taken later than this can only be another ball's arrival or that ball's
+#: own settle chatter -- never evidence this release happened. Measured: a
+#: seated ball's raw bit falls 0.045-0.057 s AFTER its release (the cup
+#: rim clears before the sensor's own debounce settles), while the other
+#: ball's earliest arrival in columns is release + 0.34 s -- so 0.10 s clears
+#: the real fall-time with margin and sits a long way inside the other
+#: ball's earliest possible seat. Without this gate, a SEATED sample from the
+#: NEXT ball's arrival (inside this row's :data:`RELEASE_GRACE_S` window)
+#: could falsely confirm a release that never happened (R5 sitting 4,
+#: attempts 1/9/10/16/R1: ball A's seat-plus-settle-flicker at the OTHER
+#: site falsely confirmed ball B's empty carried throw).
+RELEASE_SEAT_EPS_S = 0.10
 
 #: A tracker landing is release evidence only when it comes from a CONVERGED
 #: fit (:attr:`Landing.from_fit`) whose touch-down lies within this of the
@@ -378,6 +410,66 @@ RELEASE_GRACE_S = 0.5
 #: The time check keeps a bounce that flies a ballistic arc of its own from
 #: converging into evidence.
 RELEASE_FIT_TOL_S = 0.2
+
+# ── The MISSED_CATCH evidence rule (R5 sitting 4, 2026-10-04 evening,
+# ``report_a1.md`` Q3) ────────────────────────────────────────────────────
+#
+# A CATCH's own window: [t_open, t_close], armed only when both ends can be
+# computed and leave a non-degenerate window; fires :data:`MISSED_CATCH` at
+# the first tick >= ``t_close + MISSED_CATCH_DECIDE_LAG_S`` iff the cup never
+# read RAW-SEATED anywhere inside the window AND the sensor was demonstrably
+# live over it (see :meth:`SkillExecutor._register_catch` /
+# :meth:`SkillExecutor._advance_catch_evidence`). Replayed on the 2026-10-04
+# sitting (``tools/probes/missed_catch_fixture.py``,
+# ``tests/motion/fixtures/missed_catch_20261004.csv``, B1c's raw-bit fix):
+# fires 14/14 misses, 0/8 caught feeds over 22 attempts.
+
+#: How long AFTER the latest scheduled release of ANY ball before this
+#: catch's landing ``L`` the evidence window opens. A seated ball's raw bit
+#: falls 0.045-0.057 s after its OWN release (the same measurement
+#: :data:`RELEASE_SEAT_EPS_S` is sized from) -- opening any earlier would
+#: read the previous ball still mid-fall-into-the-cup as "not yet seated"
+#: evidence for THIS catch, which it is not. The DEBOUNCED ``held`` twin
+#: falls later still (~0.14 s after release) and is why :class:`SeatWindow`
+#: does not count it: a 0.10 s margin against the RAW fall clears the
+#: previous ball; the same margin against the debounced fall would not,
+#: and `held` adds no sensitivity a real seat's raw bit hasn't already
+#: provided.
+MISSED_CATCH_OPEN_AFTER_RELEASE_S = 0.10
+
+#: How long after a carried release ``R`` (this CATCH's own ``then_throw``)
+#: the window closes, when one exists. Margin: the latest observed seat on a
+#: catch carrying a throw was ``R + 0.028`` s (n=11, real feed catches) --
+#: 92 ms (R + 0.12) - (R + 0.028) inside this close.
+MISSED_CATCH_CLOSE_AFTER_RELEASE_S = 0.12
+
+#: How long after the scheduled landing ``L`` the window closes when this
+#: CATCH carries no throw (a plain, final catch). Margin: the latest
+#: observed seat on a plain catch was ``L + 0.358`` s -- 142 ms inside this
+#: close.
+MISSED_CATCH_CLOSE_AFTER_LANDING_S = 0.50
+
+#: The window's close is pulled back to sit this far before the OTHER ball's
+#: next scheduled landing (whichever comes first), so the window never reads
+#: the neighbour's own arrival as this catch's evidence -- on columns this
+#: caps the close at ``L + 0.38`` (a 0.579 s beat, so the neighbour lands at
+#: ``L + 0.48``).
+MISSED_CATCH_OTHER_LANDING_GUARD_S = 0.10
+
+#: Seconds after ``t_close`` the rule actually fires -- one orchestrator
+#: tick of slack so the window's own last sample has definitely arrived
+#: before the verdict is taken.
+MISSED_CATCH_DECIDE_LAG_S = 0.03
+
+#: The sensor must have reported at least this fraction of the samples a
+#: live 100 Hz feed would produce over the window's span, or the window's
+#: evidence is BLIND (no verdict either way) rather than a miss.
+MISSED_CATCH_MIN_VALID_FRAC = 0.8
+
+#: The largest gap (s) between consecutive valid samples the window may
+#: contain and still count as live. Matches the hand-telemetry staleness
+#: family already used elsewhere in this plan arc (0.05 s).
+MISSED_CATCH_MAX_GAP_S = 0.05
 
 #: The stop REST's first choice (:meth:`SkillExecutor.stop_terminals`) is at
 #: rest this long BEFORE the next pending release -- two knots, so the REST's
@@ -669,10 +761,13 @@ class _PendingOutcome:
     ``release_confirmed`` is the R3 ladder's own bookkeeping (plan § carried
     R3 note / ``ABORTED_NO_RELEASE``): confirmed only by evidence AT OR AFTER
     :attr:`t_release_s` -- a possession EMPTY reading that follows a SEATED
-    reading (:attr:`seated_seen`) seen at or after release, or a tracker
-    landing whose ``t_land_abs_s`` is itself after release -- checked every
-    tick from registration until :data:`RELEASE_GRACE_S` past release has
-    elapsed with no evidence found -- see :meth:`SkillExecutor.
+    reading (:attr:`seated_seen`, itself ARMED only by a SEATED sample taken
+    at or before ``t_release_s + RELEASE_SEAT_EPS_S`` -- R5 sitting 4,
+    2026-10-04 evening, ``report_a1.md`` Q4: a SEATED sample seen at or
+    after release) seen at or after release, or a tracker landing whose
+    ``t_land_abs_s`` is itself after release -- checked every tick from
+    registration until :data:`RELEASE_GRACE_S` past release has elapsed
+    with no evidence found -- see :meth:`SkillExecutor.
     _advance_release_evidence`. This is deliberately blind to evidence from
     BEFORE the release instant: a carried throw (a CATCH with a
     ``then_throw``) is registered at the catch's dispatch, up to a beat
@@ -681,6 +776,14 @@ class _PendingOutcome:
     never confirm THIS row's release. Unconfirmed past the deadline drops
     this row: no evidence the ball left means no learner row, whether or not
     anything else ends the attempt first.
+
+    ``seated_seen``'s own epsilon (:data:`RELEASE_SEAT_EPS_S`) keeps a
+    SEATED sample that first appears AFTER that window from arming this
+    row at all: that sample can only be another ball's arrival at the
+    OTHER site or that ball's own settle chatter, which must never stand in
+    for THIS release's own seat (sitting 4 attempts 1/9/10/16/R1: ball A's
+    seat-plus-flicker falsely confirmed ball B's empty carried throw,
+    report_a1.md Q1/Q4).
     """
 
     ball_id: int
@@ -753,6 +856,83 @@ class _PendingOutcome:
     #: caught, and must not reach the learner's memory. See
     #: :meth:`SkillExecutor._finalise_outcome`.
     shadow_landing: bool = False
+
+
+@dataclasses.dataclass(frozen=True)
+class SeatWindow:
+    """One ``seat_window(t0, t1)`` answer (R5 sitting 4, ``report_a1.md``
+    Q3) -- a SAMPLE-COMPLETE count over ``[t0, t1]``, not a tick read:
+    ``n_valid`` samples had a valid possession reading, ``n_seated`` of
+    those were SEATED on the RAW bit, and ``max_gap_s`` is the largest gap
+    between consecutive valid samples' arrival times. The caller
+    (:meth:`SkillExecutor._register_catch` / :meth:`SkillExecutor.
+    _advance_catch_evidence`) judges liveness and fires :data:`MISSED_CATCH`
+    from these three numbers alone; this type carries no policy.
+
+    ``n_seated`` counts the RAW bit only, not the DEBOUNCED ``held`` twin
+    (B1c, sitting 4, fixing B1's own fixture: against the REAL raw-bit
+    sequences in ``tests/motion/fixtures/missed_catch_20261004.csv`` the
+    raw-or-held rule fired 0/14 on genuine misses, because ``held``'s
+    debounce lingers after the PREVIOUS ball leaves -- it falls ~0.14 s
+    after that release, inside THIS catch's own window, which opens only
+    :data:`MISSED_CATCH_OPEN_AFTER_RELEASE_S` (0.10 s) after it -- and
+    vetoed every one of them. Counting raw only loses no sensitivity to a
+    real catch: ``held`` is DERIVED from ``raw`` (it only ever reads SEATED
+    after raw already has), so a genuine seat always shows up on the raw
+    bit first -- dropping ``held`` from the count drops only its lingering
+    false-positive tail, never a true positive."""
+
+    n_valid: int
+    n_seated: int
+    max_gap_s: float
+
+
+@dataclasses.dataclass
+class _PendingCatch:
+    """One accepted CATCH, still waiting on its own :data:`MISSED_CATCH`
+    verdict (R5 sitting 4, ``report_a1.md`` Q3) -- registered at the CATCH's
+    dispatch (:meth:`SkillExecutor._register_catch`), resolved by
+    :meth:`SkillExecutor._advance_catch_evidence`.
+
+    ``t_open_s``/``t_close_s`` are computed ONCE, at registration, from the
+    schedule as it stood then -- a pure function of
+    ``(ball_id, t_land_scheduled_s)`` and the schedule's other releases/
+    landings. A later schedule mutation (:meth:`SkillExecutor.
+    _install_survivor_tail`) never reaches back to revise an already
+    registered window."""
+
+    ball_id: int
+    catch_idx: int
+    t_land_scheduled_s: float
+    t_open_s: float
+    t_close_s: float
+
+
+def _latest_release_before(schedule: Schedule, t_before: float
+                           ) -> Optional[float]:
+    """The latest scheduled release (a THROW's own, or a CATCH's carried
+    ``then_throw``) of ANY ball strictly before ``t_before`` -- pure, reads
+    only ``schedule.skills`` (:meth:`SkillExecutor._register_catch`'s
+    ``t_open`` anchor, ``report_a1.md`` Q3)."""
+    releases = []
+    for sk in schedule.skills:
+        if sk.kind == THROW:
+            releases.append(float(sk.t_abs_s))
+        elif sk.kind == CATCH and sk.then_throw is not None:
+            releases.append(float(sk.then_throw.t_release_abs_s))
+    before = [r for r in releases if r < float(t_before)]
+    return max(before) if before else None
+
+
+def _next_landing_other_ball(schedule: Schedule, ball_id: int,
+                             t_after: float) -> Optional[float]:
+    """The earliest scheduled CATCH landing, for a ball OTHER than
+    ``ball_id``, strictly after ``t_after`` -- pure (:meth:`SkillExecutor.
+    _register_catch`'s ``t_close`` guard, ``report_a1.md`` Q3)."""
+    landings = [float(sk.t_abs_s) for sk in schedule.skills
+               if sk.kind == CATCH and sk.ball_id != ball_id
+               and float(sk.t_abs_s) > float(t_after)]
+    return min(landings) if landings else None
 
 
 @dataclasses.dataclass
@@ -1364,7 +1544,9 @@ class SkillExecutor:
                  observer: Optional[Callable[[int, float], str]] = None,
                  on_experience: Optional[Callable[[Experience], None]] = None,
                  observations: Optional[Callable[[float], Observations]] = None,
-                 dispatch_lookahead_s: float = 0.0):
+                 dispatch_lookahead_s: float = 0.0,
+                 seat_window: Optional[Callable[[float, float],
+                                                Optional[SeatWindow]]] = None):
         self.schedule = schedule
         self.installer = installer
         self.tracker = tracker
@@ -1427,6 +1609,12 @@ class SkillExecutor:
         #: the caller's own dispatch quantisation, so a reserved fresh origin
         #: never plans under the schedule's ``window_s``. 0.0 = R2 behaviour.
         self.dispatch_lookahead_s = float(dispatch_lookahead_s)
+        #: ``(t0, t1) -> Optional[SeatWindow]`` -- the possession evidence
+        #: over a wall-clock span, for the :data:`MISSED_CATCH` rule
+        #: (:meth:`_register_catch` / :meth:`_advance_catch_evidence`). No
+        #: ``seat_window`` ⇒ the rule is off and a CATCH behaves exactly as
+        #: before this rule existed (R2/R3 callers unchanged).
+        self.seat_window = seat_window
 
         self.dispatched = set()          #: indices of ``schedule.skills``
         self.results = []                #: (index, Skill, InstallResult)
@@ -1457,6 +1645,10 @@ class SkillExecutor:
         self._u_cache = {}
         #: Released balls awaiting outcome finalisation (:class:`_PendingOutcome`).
         self._pending_outcomes: List[_PendingOutcome] = []
+        #: Accepted CATCHes awaiting their own :data:`MISSED_CATCH` verdict
+        #: (:class:`_PendingCatch`) -- empty, and never appended to, when
+        #: :attr:`seat_window` is ``None``.
+        self._pending_catches: List[_PendingCatch] = []
         #: CATCH indices whose ONE hand-measured re-aim is already settled —
         #: applied, refused, or given up on (:data:`AIM_SCHEDULE_HAND`).
         self._hand_corrected = set()
@@ -1494,10 +1686,18 @@ class SkillExecutor:
         contract — nothing needs to "end" a schedule that simply ran out), and
         a released ball can still be in flight (its outcome not yet due) when
         either kind of finish happens, so its row is still worth a cold memory
-        (plan § 2.7, "outcomes keep finalising after the attempt ends")."""
+        (plan § 2.7, "outcomes keep finalising after the attempt ends").
+
+        Also waits on any open :class:`_PendingCatch` (R5 sitting 4,
+        ``report_a1.md`` Q3): every skill can already be dispatched the
+        instant the schedule's LAST catch installs, a beat before that
+        catch's own :data:`MISSED_CATCH` evidence window has even closed --
+        without this a caller that stops at ``done`` would never see the
+        verdict on a schedule's final catch."""
         finished = (self.attempt_ended
                    or len(self.dispatched) >= len(self.schedule.skills))
-        return finished and not self._pending_outcomes
+        return (finished and not self._pending_outcomes
+               and not self._pending_catches)
 
     # ── the R3 command: learner + admissible box, computed once per throw ──
 
@@ -2250,9 +2450,9 @@ class SkillExecutor:
             return landing
         self._note_identity_refused(
             ('catch', idx),
-            'TRACKER-IDENTITY-REFUSED skill %d (ball %d): %s -- not this '
+            'TRACKER-IDENTITY-REFUSED skill %d (%s): %s -- not this '
             'catch\'s ball; the catch keeps the schedule'
-            % (idx, skill.ball_id, refusal), self._pending_notes)
+            % (idx, ball_label(skill.ball_id), refusal), self._pending_notes)
         return None
 
     def _note_identity_refused(self, key, line: str, sink: List[str]) -> None:
@@ -2294,9 +2494,9 @@ class SkillExecutor:
             return landing, None
         self._note_identity_refused(
             ('throw', pend.throw_no),
-            'TRACKER-IDENTITY-REFUSED throw %d (ball %d): %s -- not this '
+            'TRACKER-IDENTITY-REFUSED throw %d (%s): %s -- not this '
             'release\'s flight; no evidence or row from it'
-            % (pend.throw_no, pend.ball_id, refusal), lines)
+            % (pend.throw_no, ball_label(pend.ball_id), refusal), lines)
         return None, refusal
 
     # ── the tick ──
@@ -2394,7 +2594,22 @@ class SkillExecutor:
                         lines.extend(
                             self._resend_hand_corrected_catch(t_abs_s))
                 if not self.attempt_ended and self.observations is not None:
+                    lines.extend(self._advance_catch_evidence(t_abs_s))
+                if not self.attempt_ended and self.observations is not None:
                     lines.extend(self._advance_release_evidence(t_abs_s))
+        if self.attempt_ended and self.observations is not None:
+            # An attempt that a LATER skill ended (a sibling ball's LIMIT_*
+            # refusal, a mode change, a refused hand lane) can leave an
+            # EARLIER catch's :class:`_PendingCatch` with its window still
+            # open; `done` waits on that row, and `attempt_ended` never
+            # resets, so the row must keep being visited here or the goal
+            # hangs forever (audit, 2026-10-04 -- the same treatment
+            # `_advance_outcomes` below already gets: outcomes keep
+            # finalising after the attempt ends). Every exit of the per-row
+            # loop drops the row whatever `attempt_ended` says; the live
+            # ordering ("before `_advance_release_evidence`") only matters
+            # while the attempt runs, which is the branch above.
+            lines.extend(self._advance_catch_evidence(t_abs_s))
         lines.extend(self._advance_outcomes(t_abs_s))
         return lines
 
@@ -2417,8 +2632,17 @@ class SkillExecutor:
         # rows legitimately puts one at idx 0.
         fresh_origin = idx == 0 and skill.kind != CATCH
         if obs is not None and (skill.kind != REST or fresh_origin):
+            # B2's phantom ball (`columns_1ball_fed`, `schedule.is_phantom`):
+            # its cup is empty by design (facts.md / `Pattern.phantom_balls`
+            # docstring -- "an empty cup is the phantom's normal state"), so
+            # a THROW of it must never demand the ball-evidence rows
+            # (`REJECTED_BALL_UNKNOWN`/`REJECTED_NO_BALL`) -- those exist to
+            # catch a REAL throw whose ball was never confirmed seated, not
+            # to refuse a deliberately-empty stroke.
             codes = precondition_refusals(
-                obs, launch=(skill.kind == THROW),
+                obs,
+                launch=(skill.kind == THROW
+                       and not self.schedule.is_phantom(skill.ball_id)),
                 skip_mocap=(skill.kind == REST))
             if codes:
                 self.dispatched.add(idx)
@@ -2465,14 +2689,15 @@ class SkillExecutor:
                     self.end_code = NO_LANDING
                     self.end_message = ('nothing to aim the catch at: no '
                                         'schedule prior and no tracker '
-                                        'landing for ball %d'
-                                        % (skill.ball_id,))
+                                        'landing for %s'
+                                        % (ball_label(skill.ball_id),))
                     self.end_kind = skill.kind
                     return (['%.3f END %s: no schedule prior and no '
-                            'tracker landing for ball %d by the deadline '
+                            'tracker landing for %s by the deadline '
                             '(%.3f s) — a catch cannot be aimed at a ball '
                             'nothing in this attempt has seen or thrown'
-                            % (t_abs_s, NO_LANDING, skill.ball_id, deadline)],
+                            % (t_abs_s, NO_LANDING, ball_label(skill.ball_id),
+                               deadline)],
                            False)
                 terminal = self._catch_terminal(idx, skill, landing)
             elif skill.kind == THROW:
@@ -2517,6 +2742,7 @@ class SkillExecutor:
                    _event_abs_s(CATCH, terminal),
                    (' — awaiting the measured hand ratio'
                     if aim_source == AIM_SCHEDULE_HAND else '')))
+            self._register_catch(idx, skill, _event_abs_s(CATCH, terminal))
         else:
             self._live_catch = None
         self._register_outcome(idx, skill)
@@ -2584,6 +2810,61 @@ class SkillExecutor:
             throw_no=self._n_registered,
             release_z_mm=float(skill.site.throw_site_mm()[2]),
             shadow_landing=shadow_landing))
+
+    def _register_catch(self, idx: int, skill: Skill,
+                        t_land_scheduled_s: float) -> None:
+        """Arm the :data:`MISSED_CATCH` evidence rule for CATCH ``idx``, if
+        it can be armed (R5 sitting 4, ``report_a1.md`` Q3).
+
+        Off entirely when :attr:`seat_window` is unset (R2/R3 callers, and
+        the sim gate unless it wires one) — same shape as
+        :meth:`_register_outcome`'s ``on_experience`` gate. Also skipped,
+        unconditionally, for a phantom ball
+        (:meth:`~jugglebot.motion.skills.schedule.Schedule.is_phantom`) and
+        for a shadow landing (``skill.shadow_landing`` -- always False for a
+        CATCH itself, kept for symmetry with
+        :func:`~jugglebot.motion.skills.schedule.schedule_has_shadow_landing`'s
+        own check -- or ``skill.then_throw.shadow_landing``, this catch's
+        OWN carried release being the columns Stop's cross-site throw): the
+        false-positive list in ``report_a1.md`` Q3 names both as "never
+        register" cases, not "register then veto".
+
+        UNARMED (no row at all, the rule simply does not apply to this
+        catch) when ``t_open`` cannot be anchored (no scheduled release
+        before this landing at all) or comes out past the already-armed
+        :data:`CAUGHT_LEAD_S` floor the OUTCOME ladder uses, or when the
+        other-ball landing guard collapses the window to empty or negative.
+        """
+        if self.seat_window is None:
+            return
+        if self.schedule.is_phantom(skill.ball_id):
+            return
+        if bool(skill.shadow_landing) or (
+                skill.then_throw is not None
+                and bool(skill.then_throw.shadow_landing)):
+            return
+        L = float(t_land_scheduled_s)
+        latest_release = _latest_release_before(self.schedule, L)
+        if latest_release is None:
+            return
+        t_open = latest_release + MISSED_CATCH_OPEN_AFTER_RELEASE_S
+        if t_open > L - CAUGHT_LEAD_S:
+            return
+        if skill.then_throw is not None:
+            t_close = (float(skill.then_throw.t_release_abs_s)
+                      + MISSED_CATCH_CLOSE_AFTER_RELEASE_S)
+        else:
+            t_close = L + MISSED_CATCH_CLOSE_AFTER_LANDING_S
+        other_landing = _next_landing_other_ball(self.schedule,
+                                                 skill.ball_id, L)
+        if other_landing is not None:
+            t_close = min(t_close,
+                         other_landing - MISSED_CATCH_OTHER_LANDING_GUARD_S)
+        if t_close <= t_open:
+            return
+        self._pending_catches.append(_PendingCatch(
+            ball_id=skill.ball_id, catch_idx=idx, t_land_scheduled_s=L,
+            t_open_s=t_open, t_close_s=t_close))
 
     def _note_catch_aim(self, ball_id: int, catch_idx: int,
                         t_land_abs_s: float, reaim: bool = False) -> None:
@@ -2679,33 +2960,70 @@ class SkillExecutor:
         decision, 2026-09-30, R5 rescope). ``None`` when no other ball has
         one left (a one-ball schedule, or every other CATCH already
         dispatched), in which case the caller falls back to
-        :data:`ABORTED_NO_RELEASE` unchanged."""
+        :data:`ABORTED_NO_RELEASE` unchanged.
+
+        A phantom ball's own CATCH is never a candidate (B2,
+        ``columns_1ball_fed``, ``schedule.is_phantom``): it has no ball in
+        it by design, so "continuing to catch it" is not a real survivor --
+        a dropped real ball with a phantom partner must fall through to the
+        ordinary end exactly as a genuinely one-ball schedule does.
+        ``dropped_ball_id`` itself is never a phantom ball here: both
+        callers (:meth:`_advance_release_evidence`, :meth:`_advance_catch_evidence`)
+        only ever see ``pend.ball_id`` from a row :meth:`_register_outcome`/
+        :meth:`_register_catch` registered, and both already refuse to
+        register a phantom ball's row."""
         candidates = [(j, sk) for j, sk in enumerate(self.schedule.skills)
                      if j not in self.dispatched and sk.kind == CATCH
-                     and sk.ball_id != dropped_ball_id]
+                     and sk.ball_id != dropped_ball_id
+                     and not self.schedule.is_phantom(sk.ball_id)]
         if not candidates:
             return None
         return min(candidates, key=lambda pair: float(pair[1].t_abs_s))
 
-    def _install_survivor_tail(self, y_idx: int, y_skill: Skill) -> None:
+    def _install_survivor_tail(self, y_idx: int, y_skill: Skill,
+                               dropped_ball_id: int) -> None:
         """D3: cut the schedule to ``y_skill`` (its own carried throw
         stripped -- nothing is thrown after a drop) plus one closing REST at
         its site, the same fresh-origin margin every other closing REST uses
         (:func:`~jugglebot.motion.skills.schedule.closing_rest_t_abs`).
 
-        Indices ``0 .. y_idx - 1`` are UNCHANGED objects: :attr:`dispatched`
-        and :attr:`results` are indexed by position, so anything already
-        dispatched must keep the exact index and plan it was installed
-        under. :func:`~jugglebot.motion.skills.schedule._assign_leads` runs
-        over the WHOLE new list rather than just the tail -- it is a pure
+        Indices ``0 .. y_idx - 1`` are UNCHANGED OBJECTS for whatever is
+        already DISPATCHED: :attr:`dispatched` and :attr:`results` are
+        indexed by position, so anything already dispatched must keep the
+        exact index and plan it was installed under.
+        :func:`~jugglebot.motion.skills.schedule._assign_leads` runs over
+        the WHOLE new list rather than just the tail -- it is a pure
         function of the ordered sequence up to each index, so the prefix's
         leads come back identical to what they already were (this is
         provable, not merely checked: its loop state at index ``k`` depends
-        only on skills ``0 .. k-1``, which the prefix does not change), and
-        only ``y_skill`` (now releasing nothing) and the new REST are
-        actually affected.
+        only on skills ``0 .. k-1``, which the kept prefix does not change).
+
+        ``dropped_ball_id``'s own UNDISPATCHED skills before ``y_idx`` are
+        DROPPED from the prefix (R5 sitting 4, ``report_a1.md`` Q1 fault
+        (b) / Q3 (4)): without this, a drop verdict reached EARLY -- before
+        every one of the dropped ball's own later, still-scheduled skills
+        has been dispatched -- left them in the kept prefix verbatim, so
+        they still ran (sitting 4 attempts 1/17/19/R1/R2: the dropped ball's
+        later rows timed out LATER and overwrote this very end_code with
+        ``ABORTED_NO_RELEASE``). Dropping only indices ``>= len(dispatched)``
+        preserves the index invariant above: :attr:`dispatched` is a
+        CONTIGUOUS prefix ``{0, .., k-1}`` by construction (:meth:`tick`
+        dispatches in schedule order and stops at the first not-yet-due or
+        refused skill), so nothing below ``k`` is ever filtered and nothing
+        at or above it is ever referenced by :attr:`dispatched`/
+        :attr:`results`.
+
+        ``y_skill`` is never a phantom ball's CATCH (B2, ``columns_1ball_fed``):
+        :meth:`_survivor_catch` already excludes phantom candidates, so this
+        method only ever installs a tail around a real ball's catch.
         """
-        prefix = list(self.schedule.skills[:y_idx])
+        k = len(self.dispatched)
+        assert self.dispatched == set(range(k)), (
+            'dispatched must be a contiguous prefix {0, .., k-1} for the '
+            'survivor-tail filter to drop indices >= k safely -- got %r'
+            % (sorted(self.dispatched),))
+        prefix = [sk for i, sk in enumerate(self.schedule.skills[:y_idx])
+                 if i < k or sk.ball_id != dropped_ball_id]
         stripped = dataclasses.replace(y_skill, then_throw=None)
         rest_t = sch.closing_rest_t_abs(float(y_skill.t_abs_s), sg.REST_TAIL_S)
         rest = Skill(kind=REST, ball_id=y_skill.ball_id, site=y_skill.site,
@@ -2713,6 +3031,120 @@ class SkillExecutor:
         new_tail = sch._assign_leads(prefix + [stripped, rest])
         self.schedule = dataclasses.replace(self.schedule,
                                             skills=tuple(new_tail))
+
+    def _advance_catch_evidence(self, t_abs_s: float) -> List[str]:
+        """Fire :data:`MISSED_CATCH` for any armed :class:`_PendingCatch`
+        whose decision instant has arrived -- called each tick from
+        :meth:`tick`, BEFORE :meth:`_advance_release_evidence` (R5 sitting 4,
+        2026-10-04 evening, ``report_a1.md`` Q3), only when ``observations``
+        is wired -- the same gate every other PORT@R3 row runs under.
+
+        Off entirely when :attr:`seat_window` is unset: :attr:`_pending_
+        catches` is then always empty (:meth:`_register_catch` never
+        appends to it without one), so this is a no-op loop over nothing --
+        R2/R3 callers, and the sim gate unless it wires one, are unaffected.
+
+        At the first tick ``t_abs_s >= t_close + MISSED_CATCH_DECIDE_LAG_S``:
+        query :attr:`seat_window` over ``[t_open, t_close]``. ``None`` (the
+        buffer does not cover the window) is BLIND -- no verdict, the row is
+        simply dropped. Otherwise :data:`MISSED_CATCH` fires iff the window
+        was LIVE (``n_valid`` at least :data:`MISSED_CATCH_MIN_VALID_FRAC`
+        of a live 100 Hz feed's sample count over the span, and no gap
+        wider than :data:`MISSED_CATCH_MAX_GAP_S`) AND it saw no RAW-SEATED
+        sample at all (``n_seated == 0``, the raw bit only -- see
+        :class:`SeatWindow`) -- a single raw-seated sample anywhere in the
+        window vetoes the miss, the safe direction (a real but messy catch
+        is never worth risking a false positive over).
+
+        On fire: every one of ball ``b``'s own pending OUTCOME rows
+        (:attr:`_pending_outcomes`) is dropped too -- no row: ball ``b``'s
+        catch produced no ball (Q1 fault (b): the catch's own carried
+        throw, if any, was already dispatched open-loop and would
+        otherwise time out LATER and overwrite this verdict with
+        ``ABORTED_NO_RELEASE``/``DROPPED_SURVIVOR_STOPPED``). Then the D3
+        shape, exactly as :meth:`_advance_release_evidence`'s own drop:
+        :meth:`_survivor_catch` found -- :meth:`_install_survivor_tail`
+        cuts the schedule to it (``attempt_ended`` stays False, dispatch
+        continues); not found -- ``attempt_ended`` is set True and the
+        normal stop path (``skill_node._maybe_hold_pending_event`` /
+        :meth:`stop_terminals`) brings the machine to rest. ``end_code`` is
+        :data:`MISSED_CATCH` either way, and ``end_kind`` is set to
+        :data:`CATCH` so the operator line reads "... ENDED (MISSED_CATCH)
+        at the CATCH: ...".
+        """
+        if not self._pending_catches:
+            return []
+        lines = []
+        remaining = []
+        for pend in self._pending_catches:
+            if t_abs_s < pend.t_close_s + MISSED_CATCH_DECIDE_LAG_S:
+                remaining.append(pend)
+                continue
+            window = self.seat_window(pend.t_open_s, pend.t_close_s)
+            if window is None:
+                continue                 # blind: no verdict, row dropped
+            span_s = pend.t_close_s - pend.t_open_s
+            expected = 100.0 * span_s
+            live = (expected <= 0.0
+                   or (float(window.n_valid) / expected)
+                      >= MISSED_CATCH_MIN_VALID_FRAC)
+            live = live and float(window.max_gap_s) <= MISSED_CATCH_MAX_GAP_S
+            if not live or window.n_seated > 0:
+                continue                 # confirmed, or not trustworthy
+            self._pending_outcomes = [
+                p for p in self._pending_outcomes
+                if p.ball_id != pend.ball_id]
+            t_open_rel = pend.t_open_s - pend.t_land_scheduled_s
+            t_close_rel = pend.t_close_s - pend.t_land_scheduled_s
+            survivor = self._survivor_catch(pend.ball_id)
+            if survivor is not None and not self.attempt_ended:
+                self._install_survivor_tail(*survivor, pend.ball_id)
+                self.end_code = MISSED_CATCH
+                self.end_kind = CATCH
+                self.end_message = (
+                    'the CATCH of %s (skill %d) produced no ball -- '
+                    '%s caught, no further throws'
+                    % (ball_label(pend.ball_id), pend.catch_idx,
+                       ball_label(survivor[1].ball_id)))
+                lines.append(
+                    '%.3f END %s: the CATCH of %s (skill %d) produced '
+                    'no ball -- cup EMPTY on all %d valid samples over '
+                    '[%+.2f, %+.2f] s of its scheduled landing -- %s '
+                    'continues to its own catch (skill %d), then rest'
+                    % (t_abs_s, MISSED_CATCH, ball_label(pend.ball_id),
+                       pend.catch_idx, window.n_valid, t_open_rel, t_close_rel,
+                       ball_label(survivor[1].ball_id), survivor[0]))
+                continue
+            if not self.attempt_ended:
+                self.attempt_ended = True
+                self.end_code = MISSED_CATCH
+                self.end_kind = CATCH
+                self.end_message = (
+                    'the CATCH of %s (skill %d) produced no ball'
+                    % (ball_label(pend.ball_id), pend.catch_idx))
+                lines.append(
+                    '%.3f END %s: the CATCH of %s (skill %d) produced '
+                    'no ball -- cup EMPTY on all %d valid samples over '
+                    '[%+.2f, %+.2f] s of its scheduled landing -- no ball '
+                    'left to catch, stopped'
+                    % (t_abs_s, MISSED_CATCH, ball_label(pend.ball_id),
+                       pend.catch_idx, window.n_valid, t_open_rel,
+                       t_close_rel))
+            else:
+                # The attempt was already ended by a later skill (a
+                # refusal, a mode change): the verdict still resolves this
+                # row and the ball's outcome rows -- nothing to dispatch.
+                lines.append(
+                    '%.3f %s (attempt already ended): the CATCH of %s '
+                    '(skill %d) produced no ball -- cup EMPTY on all %d '
+                    'valid samples over [%+.2f, %+.2f] s of its scheduled '
+                    'landing -- its outcome rows dropped'
+                    % (t_abs_s, MISSED_CATCH, ball_label(pend.ball_id),
+                       pend.catch_idx, window.n_valid, t_open_rel,
+                       t_close_rel))
+            continue                     # dropped either way
+        self._pending_catches = remaining
+        return lines
 
     def _advance_release_evidence(self, t_abs_s: float) -> List[str]:
         """Confirm every accepted release actually left the hand (PORT@R3,
@@ -2725,13 +3157,16 @@ class SkillExecutor:
         release, while the cup still carries the ball from the PRECEDING
         throw):
 
-        * possession evidence (:attr:`observer`) -- a SEATED reading latches
-          :attr:`_PendingOutcome.seated_seen`; an EMPTY reading before
-          :attr:`_PendingOutcome.t_release_s` clears it (that EMPTY belongs
-          to the previous ball's flight, not this release); an EMPTY reading
-          AT OR AFTER ``t_release_s`` confirms the release only if
-          ``seated_seen`` is set -- i.e. EMPTY must follow a SEATED sample
-          taken at or after the release;
+        * possession evidence (:attr:`observer`) -- a SEATED reading at or
+          before ``t_release_s + RELEASE_SEAT_EPS_S`` latches
+          :attr:`_PendingOutcome.seated_seen` (Q4, 2026-10-04 evening: a
+          SEATED sample seen only AFTER that -- another ball's arrival, or
+          this one's own settle chatter past the window -- must never arm
+          it); an EMPTY reading before :attr:`_PendingOutcome.t_release_s`
+          clears it (that EMPTY belongs to the previous ball's flight, not
+          this release); an EMPTY reading AT OR AFTER ``t_release_s``
+          confirms the release only if ``seated_seen`` is set -- i.e. EMPTY
+          must follow a SEATED sample taken at or before the epsilon;
         * tracker evidence (:attr:`tracker`) -- a landing confirms the
           release only when sampled at or after ``t_release_s``, the
           landing's own ``t_land_abs_s`` is after ``t_release_s`` (a stale
@@ -2758,7 +3193,9 @@ class SkillExecutor:
             if not pend.release_confirmed:
                 if self.observer is not None:
                     ev = self.observer(pend.ball_id, t_abs_s)
-                    if ev == bp.EVIDENCE_SEATED:
+                    if (ev == bp.EVIDENCE_SEATED
+                            and t_abs_s <= pend.t_release_s
+                                       + RELEASE_SEAT_EPS_S):
                         pend.seated_seen = True
                     elif ev == bp.EVIDENCE_EMPTY:
                         if t_abs_s < pend.t_release_s:
@@ -2790,20 +3227,21 @@ class SkillExecutor:
                     # site. `end_code` is set here so the eventual clean
                     # finish still names the drop; `attempt_ended` stays
                     # False so `tick` keeps dispatching.
-                    self._install_survivor_tail(*survivor)
+                    self._install_survivor_tail(*survivor, pend.ball_id)
                     self.end_code = DROPPED_SURVIVOR_STOPPED
                     self.end_message = (
                         'throw %d/%d never left the hand (no release '
-                        'evidence by +%.1f s) -- ball %d caught, no '
+                        'evidence by +%.1f s) -- %s caught, no '
                         'further throws'
                         % (pend.throw_no, self.n_throws, RELEASE_GRACE_S,
-                           survivor[1].ball_id))
+                           ball_label(survivor[1].ball_id)))
                     lines.append(
-                        '%.3f DROP %s: no release evidence for ball %d by '
-                        't_release + %.1f s -- ball %d continues to its own '
+                        '%.3f DROP %s: no release evidence for %s by '
+                        't_release + %.1f s -- %s continues to its own '
                         'catch, then rest'
-                        % (t_abs_s, DROPPED_SURVIVOR_STOPPED, pend.ball_id,
-                           RELEASE_GRACE_S, survivor[1].ball_id))
+                        % (t_abs_s, DROPPED_SURVIVOR_STOPPED,
+                           ball_label(pend.ball_id), RELEASE_GRACE_S,
+                           ball_label(survivor[1].ball_id)))
                     continue
                 if not self.attempt_ended:
                     self.attempt_ended = True
@@ -2813,9 +3251,9 @@ class SkillExecutor:
                         'evidence by +%.1f s)'
                         % (pend.throw_no, self.n_throws, RELEASE_GRACE_S))
                     lines.append(
-                        '%.3f END %s: no release evidence for ball %d by '
+                        '%.3f END %s: no release evidence for %s by '
                         't_release + %.1f s -- no learner row'
-                        % (t_abs_s, ABORTED_NO_RELEASE, pend.ball_id,
+                        % (t_abs_s, ABORTED_NO_RELEASE, ball_label(pend.ball_id),
                            RELEASE_GRACE_S))
                 continue                     # dropped either way
             remaining.append(pend)
@@ -3162,13 +3600,15 @@ class SkillExecutor:
                              no_row_reason='%s (%d estimate(s) refused)'
                              % (pend.rejected_reason, pend.n_rejected),
                              apex_m=pend.rejected_apex_m)
-                return ['%.3f OUTCOME ball %d: no row: %s%s (%d estimate(s) '
-                        'refused)' % (finalise_at, pend.ball_id, seen,
-                                      pend.rejected_reason, pend.n_rejected)]
+                return ['%.3f OUTCOME %s: no row: %s%s (%d estimate(s) '
+                        'refused)' % (finalise_at, ball_label(pend.ball_id),
+                                      seen, pend.rejected_reason,
+                                      pend.n_rejected)]
             self._report(pend, row=False,
                          no_row_reason='no landing estimate was ever observed')
-            return ['%.3f OUTCOME ball %d: no landing estimate was ever '
-                    'observed — no row' % (finalise_at, pend.ball_id)]
+            return ['%.3f OUTCOME %s: no landing estimate was ever '
+                    'observed — no row'
+                    % (finalise_at, ball_label(pend.ball_id))]
         apex_obs_m = _observed_apex_m(pend.best_landing)
         # The PHYSICAL band (``memory.APEX_RATIO_BAND``): an observed apex
         # that is not a multiple near 1 of the commanded one is not an
@@ -3182,9 +3622,9 @@ class SkillExecutor:
                          '[%.3f, %.3f] of commanded %.3f m'
                          % (apex_obs_m, APEX_RATIO_BAND[0] * u_apex,
                             APEX_RATIO_BAND[1] * u_apex, u_apex))
-            return ['%.3f OUTCOME ball %d: no row: observed apex %.3f m '
+            return ['%.3f OUTCOME %s: no row: observed apex %.3f m '
                     'outside [%.3f, %.3f] of commanded %.3f m'
-                    % (finalise_at, pend.ball_id, apex_obs_m,
+                    % (finalise_at, ball_label(pend.ball_id), apex_obs_m,
                        APEX_RATIO_BAND[0] * u_apex,
                        APEX_RATIO_BAND[1] * u_apex, u_apex)]
         landing_xy_m = ((np.asarray(pend.best_landing.pos_mm, dtype=float)[:2]
@@ -3216,10 +3656,10 @@ class SkillExecutor:
                  else ' seat=%+.3f s vs scheduled landing'
                  % (pend.t_seat_s - float(pend.t_land_scheduled_s)))
         shadow = ' (landed on the held ball)' if pend.shadow_landing else ''
-        return ['%.3f OUTCOME ball %d: y=(%.4f, %.4f) m apex=%.4f m '
+        return ['%.3f OUTCOME %s: y=(%.4f, %.4f) m apex=%.4f m '
                 'caught=%s%s%s'
-                % (finalise_at, pend.ball_id, y[0], y[1], y[2], caught, phase,
-                   shadow)]
+                % (finalise_at, ball_label(pend.ball_id), y[0], y[1], y[2],
+                   caught, phase, shadow)]
 
     def _resend_hand_corrected_catch(self, t_abs_s: float) -> List[str]:
         """:data:`AIM_SCHEDULE_HAND`: re-aim the committed CATCH ONCE, from
@@ -3616,8 +4056,9 @@ def plan_columns_first_cycle(schedule: Schedule, limits, *,
     try:
         seg1 = sg.plan_segment(THROW, seed, throw_terminal, cfg, limits, geom)
     except uc.CycleInfeasible as exc:
-        return ('ball A THROW (site %s, from rest) refused: %s'
-                % (throw_skill.site.name, exc))
+        return ('%s THROW (site %s, from rest) refused: %s'
+                % (ball_label(throw_skill.ball_id), throw_skill.site.name,
+                   exc))
 
     lp = feed_skill.landing_prior
     landing = Landing(pos_mm=lp.pos_mm, vel_mm_s=lp.vel_mm_s,
@@ -3630,6 +4071,6 @@ def plan_columns_first_cycle(schedule: Schedule, limits, *,
         sg.plan_segment(CATCH, seg1.release_state, catch_terminal, cfg,
                         limits, geom)
     except uc.CycleInfeasible as exc:
-        return ('feed CATCH (site %s, ball %d) refused: %s'
-                % (feed_skill.site.name, feed_skill.ball_id, exc))
+        return ('feed CATCH (site %s, %s) refused: %s'
+                % (feed_skill.site.name, ball_label(feed_skill.ball_id), exc))
     return None

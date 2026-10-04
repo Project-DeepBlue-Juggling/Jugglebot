@@ -5966,6 +5966,22 @@ class TeensyBridgeNode(Node):
         if fn is None:
             return (False, hj.STATUS_NO_CLIENT_METHOD,
                     'teensy_link RpcClient has no hand_move_to (client predates FW 26)')
+        # Write the jam detector's command cache BEFORE the RPC is sent, same
+        # as the ACTIVATE park (`_run_activate`, ~7378-7382): HAND_MOVE_TO is
+        # a TRAP_TRAJ the ODrive plans and runs internally, and nothing echoes
+        # it back (the HAND_CMD_ECHO sniff is event-driven off the STREAMED
+        # lane only, `_on_hand_cmd_echo`), so the target IS the command — the
+        # only place that knows it is the caller, here. Last writer wins,
+        # which is correct: whichever of the streamed lane, ACTIVATE or
+        # HAND_MOVE_TO commanded the hand most recently IS the command. The
+        # jam recovery's own raise/lower moves dispatch through this same
+        # method, and that is right too: the detector is held
+        # (`_hand_jam_hold`) for the whole recovery, so this write cannot
+        # retrigger it; after HAND_JAM_RECOVERED the streamed lane's next
+        # echo overwrites it, and after UNRECOVERED the cache correctly says
+        # the hand was last sent to wherever the recovery left it.
+        with self._lock:
+            self._last_hand_cmd = {'pos': float(target_rev), 'vel': 0.0, 'tor': 0.0}
         return self._hand_move_reply(lambda: fn(float(target_rev), vel_rps=float(vel_rps),
                                                 timeout_s=float(timeout_s)))
 
@@ -5978,6 +5994,10 @@ class TeensyBridgeNode(Node):
             return (False, hj.STATUS_NO_CLIENT_METHOD,
                     'teensy_link RpcClient has no hand_move_to_nowait (client predates '
                     'FW 26)', None)
+        # See `teensy_hand_move_to`'s comment: the target IS the command, and
+        # this write must land before the RPC is sent.
+        with self._lock:
+            self._last_hand_cmd = {'pos': float(target_rev), 'vel': 0.0, 'tor': 0.0}
         try:
             return True, 'SENT', '', fn(float(target_rev), vel_rps=float(vel_rps))
         except RpcError as e:

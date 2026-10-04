@@ -801,7 +801,12 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # hand-jam recovery, the first RPC whose reply is deferred to the end of the move.
 # No wire change to any existing message; PROTOCOL_VERSION stays 9; an FW 25
 # board answers 0x61 with ERR_UNKNOWN_METHOD.
-EXPECTED_BRIDGE_FW_VERSION = 26
+# 26 -> 27 (2026-10-04): the hand deviation guard counts an exceed only on an
+# encoder anchor <= 30 ms old (HAND_DEV_FRESH_US; the R5 sitting-4 attempt-2
+# false MAX_DEVIATION trip on a 99.9 ms-old anchor), and MOTOR_FB_STALE output
+# suppression now covers the hand (axis 6) while its lane is active. No wire
+# change; PROTOCOL_VERSION stays 9.
+EXPECTED_BRIDGE_FW_VERSION = 27
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

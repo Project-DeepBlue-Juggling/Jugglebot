@@ -67,6 +67,26 @@ def test_beat_and_transit_reproduce_the_owners_section_2_4_numbers():
     assert (beta + tau) == pytest.approx(t_f, abs=1e-12)
 
 
+def test_ball_label_names_schedule_ids_0_and_1_ball_1_and_ball_2():
+    """Owner convention (2026-10-04): Ball 1 is schedule id 0 (ball A, the
+    one already in Jugglebot's hand), Ball 2 is schedule id 1 (ball B, Ball
+    Butler's feed) -- the crossover with site names (P1/P2) lives in the
+    callers, not here."""
+    assert sc.ball_label(0) == 'Ball 1'
+    assert sc.ball_label(1) == 'Ball 2'
+
+
+def test_ball_label_never_raises_for_an_id_outside_0_1_or_a_bad_input():
+    """A log formatter must always get a string back -- an id outside 0/1
+    falls back to ``'Ball %d' % (id + 1)``, and a value that cannot be read
+    as an int falls back to a placeholder rather than raising."""
+    assert sc.ball_label(2) == 'Ball 3'
+    assert sc.ball_label(7) == 'Ball 8'
+    assert sc.ball_label(-1) == 'Ball 0'
+    assert sc.ball_label('not an id') == 'Ball ?'
+    assert sc.ball_label(None) == 'Ball ?'
+
+
 def test_skill_dispatch_s_subtracts_window_and_its_own_lead():
     site = st.Site('P1', np.array([0.0, 0.0, 830.0]))
     skill = sc.Skill(kind=sc.THROW, ball_id=0, site=site, t_abs_s=10.0,
@@ -587,6 +607,45 @@ def test_compile_columns_phantom_balls_does_not_change_the_motion(cols):
     plain = sc.compile_columns(_pattern(cols, n_throws=4), t0_abs_s=1_700_000_000.0)
     phantom = sc.compile_columns(
         _pattern(cols, n_throws=4, phantom_balls=(1,)), t0_abs_s=1_700_000_000.0)
+    assert len(plain.skills) == len(phantom.skills)
+    assert [_skill_motion_fingerprint(s) for s in plain.skills] == [
+        _skill_motion_fingerprint(s) for s in phantom.skills]
+    assert (plain.flight_s, plain.beat_s, plain.transit_s, plain.dwell_s,
+           plain.t0_abs_s, plain.pattern) == (
+        phantom.flight_s, phantom.beat_s, phantom.transit_s, phantom.dwell_s,
+        phantom.t0_abs_s, phantom.pattern)
+
+
+# ── B2 (R5 sitting 4): `columns_1ball_fed` — ball 0 (A) a phantom, ball 1
+# (B) real and fed. The OTHER half of `columns_1ball` above: `compile_columns`
+# is generic over WHICH ball is named in `phantom_balls` (only
+# `phantom_feed_prior`, `columns_1ball` only, assumes ball 1) — these tests
+# pin that genericity against the `feed=` path `columns_1ball_fed` actually
+# uses.
+
+def test_compile_columns_fed_with_phantom_a_marks_ball_0_phantom_ball_1_not(cols):
+    pattern = _pattern(cols, n_throws=2, phantom_balls=(0,))
+    tau = sc.transit_s(sc.flight_s(pattern.apex_m), pattern.dwell_s)
+    t_land = 1_700_000_200.0 + tau
+    feed = sc.LandingPrior(pos_mm=cols[1].cup_mm, vel_mm_s=(0.0, 0.0, -2000.0),
+                           t_land_abs_s=t_land)
+    schedule = sc.compile_columns(pattern, feed=feed)
+    assert schedule.phantom_balls == (0,)
+    assert schedule.is_phantom(0) is True
+    assert schedule.is_phantom(1) is False
+
+
+def test_compile_columns_fed_phantom_a_does_not_change_the_motion(cols):
+    """Mirrors `test_compile_columns_phantom_balls_does_not_change_the_motion`
+    for the `feed=` path and the OTHER ball named: `phantom_balls=(0,)`
+    changes nothing `compile_columns` itself plans."""
+    tau = sc.transit_s(sc.flight_s(_pattern(cols).apex_m), _pattern(cols).dwell_s)
+    t_land = 1_700_000_300.0 + tau
+    feed = sc.LandingPrior(pos_mm=cols[1].cup_mm, vel_mm_s=(0.0, 0.0, -2000.0),
+                           t_land_abs_s=t_land)
+    plain = sc.compile_columns(_pattern(cols, n_throws=4), feed=feed)
+    phantom = sc.compile_columns(
+        _pattern(cols, n_throws=4, phantom_balls=(0,)), feed=feed)
     assert len(plain.skills) == len(phantom.skills)
     assert [_skill_motion_fingerprint(s) for s in plain.skills] == [
         _skill_motion_fingerprint(s) for s in phantom.skills]

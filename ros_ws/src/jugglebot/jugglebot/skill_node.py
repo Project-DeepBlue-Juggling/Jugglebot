@@ -74,13 +74,15 @@ from jugglebot.motion.skills import executor as ex
 from jugglebot.motion.skills import learner as lr
 from jugglebot.motion.skills import report as rp
 from jugglebot.motion.skills.executor import (InstallResult, Landing,
-                                              Observations, SkillExecutor,
+                                              Observations, SeatWindow,
+                                              SkillExecutor,
                                               precondition_refusals)
 from jugglebot.motion.skills.hand_launch import HandLaunchMonitor
 from jugglebot.motion.skills.memory import Memory, memory_path
 from jugglebot.motion.skills.schedule import (LEAD_S,
                                               LandingPrior, OneBallPattern,
                                               Pattern, PRETILT_S,
+                                              ball_label,
                                               compile_columns,
                                               compile_one_ball,
                                               compile_reload,
@@ -195,6 +197,13 @@ _TRAJ_STATUS_STALE_S = 1.0
 #: `reload_coordinator_node.py` at R4, 2026-09-24 — this is now the one
 #: statement of the value, not a restatement of a dead module's).
 _HAND_STATE_STALE_S = 0.5
+
+#: How much history `_hand_telemetry_hist` keeps for the MISSED_CATCH
+#: evidence rule's `_seat_window` (R5 sitting 4, 2026-10-04 evening,
+#: `report_a1.md` Q3): comfortably past the widest window this plan arc's
+#: patterns ever open (`MISSED_CATCH_CLOSE_AFTER_LANDING_S` = 0.50 s, plus
+#: the lead the window opens before its landing).
+_SEAT_WINDOW_HIST_S = 2.0
 
 #: The session-start mocap-Platform-vs-commanded-position frame check (plan
 #: `plans/archived/cup-contact-contract.md` § 1, 2026-09-18): on 2026-09-18 the
@@ -614,6 +623,20 @@ class SkillNode(Node):
         self._possession_evidence = ball_possession.EVIDENCE_UNKNOWN
         # Debounced twin for the ladder's SEATED precondition (see _on_hand_telemetry).
         self._possession_evidence_stable = ball_possession.EVIDENCE_UNKNOWN
+        # The MISSED_CATCH evidence rule's own history (R5 sitting 4,
+        # 2026-10-04 evening, `report_a1.md` Q3/brief item 3): a bounded
+        # ring of `(wall arrival time, valid, raw, held)`, one entry per
+        # `_on_hand_telemetry` callback, read by `_seat_window`. 2 s of
+        # history at this topic's rate (bounded by `maxlen`, same
+        # no-growth-once-full contract as `_platform_mocap_xy` above) is
+        # comfortably past the widest MISSED_CATCH window this plan arc
+        # uses (L + 0.50 s).
+        self._hand_telemetry_hist = collections.deque(maxlen=400)
+        # The deque is appended on `_sub_cbgroup`'s thread and iterated on
+        # `_on_tick`'s (MultiThreadedExecutor): CPython raises
+        # 'deque mutated during iteration' on that race, so both sides
+        # take this lock (audit, 2026-10-04).
+        self._hand_hist_lock = threading.Lock()
         self._executor = None  # a live SkillExecutor, or None between attempts
         # The last ACCEPTED install's future event (a THROW's release, or a
         # CATCH-with-throw's carried release) on the schedule's own wall
@@ -869,6 +892,23 @@ class SkillNode(Node):
         # keeps the feed catch inside the leg limits (aim 0 demands 98 % of
         # the 5000 mm/s^2 acceleration limit) while spending 8 mm of it.
         self.declare_parameter('columns_feed_aim_toward_a_mm', 10.0)
+        # B4 (R5 sitting 4, 2026-10-04): where Ball Butler's own ball
+        # actually lands relative to the point it is asked to hit, schedule
+        # frame, mm (the probe read [+25.8, +27.3] on the 2026-10-04 L3 bag,
+        # n=14 -- A2's hand analysis of the same feeds gave (+29, +25);
+        # re-measure with tools/probes/feed_lateral_miss.py every sitting). Applied at
+        # exactly two points, both only on the fed-columns path
+        # (`_run_columns`, `ctx.kind == 'columns'` -- covers both `columns`
+        # and `columns_1ball_fed`; see `_fire_reload_throw` and
+        # `_install_announced_reload`): the point sent to Ball Butler is
+        # walked BACK by this bias (so Ball Butler's own landing error
+        # cancels), and the announced landing used as the feed catch's
+        # `LandingPrior` is walked FORWARD by it (the announcement reports
+        # Ball Butler's belief -- the request point -- not where the ball
+        # actually lands). Reload (`columns_1ball`, `reload`) and
+        # hop/self_toss are untouched -- Ball Butler's bias there is folded
+        # into the ordinary tracker-fit catch, not a schedule-frame prior.
+        self.declare_parameter('columns_feed_bb_bias_mm', [0.0, 0.0])
 
         # ── the install client + tick timer share ONE reentrant group ──────
         # Fixed 2026-09-13 (found by reading, never exercised live): `main`
@@ -1133,11 +1173,12 @@ class SkillNode(Node):
         if margin_s < 0.0:
             if not getattr(ctx, 'lead_deficit_logged', False):
                 self.get_logger().info(
-                    'columns feed: ball %d lands in %.3f s, %.3f s short of '
+                    'columns feed: %s lands in %.3f s, %.3f s short of '
                     'the %.3f s the transit catch needs (tau %.3f + launch '
                     '%.3f + lead %.3f + one tick) -- still waiting'
-                    % (ball_id, float(landing.t_land_abs_s) - now, -margin_s,
-                       lead_needed_s, tau, float(pattern.launch_s), LEAD_S))
+                    % (ball_label(ball_id), float(landing.t_land_abs_s) - now,
+                       -margin_s, lead_needed_s, tau, float(pattern.launch_s),
+                       LEAD_S))
                 with self._reload_lock:
                     if self._reload_ctx is ctx:
                         ctx.lead_deficit_logged = True
@@ -1161,9 +1202,9 @@ class SkillNode(Node):
         feed = LandingPrior(pos_mm=landing.pos_mm, vel_mm_s=landing.vel_mm_s,
                             t_land_abs_s=landing.t_land_abs_s)
         self.get_logger().debug(
-            'columns feed: un-announced ball %d accepted (dx %.1f mm, dy '
+            'columns feed: un-announced %s accepted (dx %.1f mm, dy '
             '%.1f mm of %s, margin %.3f s)'
-            % (ball_id, dx_mm, dy_mm, ctx.aim_site.name, margin_s))
+            % (ball_label(ball_id), dx_mm, dy_mm, ctx.aim_site.name, margin_s))
         self._install_columns_schedule(ctx, feed)
         return True
 
@@ -1272,6 +1313,39 @@ class SkillNode(Node):
                 '%.3f' % (raw, cap))
         return cap
 
+    def _columns_feed_bb_bias_mm(self) -> Tuple[float, float]:
+        """`columns_feed_bb_bias_mm`, clamped per-axis to ``[-60, 60]`` with
+        a WARN outside it -- same shape as `_columns_feed_aim_toward_a_mm`:
+        where Ball Butler's own ball actually lands relative to the point
+        it is asked to hit (``bias = landing - request``, schedule frame;
+        `tools/probes/feed_lateral_miss.py` read ``[+25.8, +27.3]`` mm on the
+        2026-10-04 L3 bag, n=14; A2's hand analysis of the same feeds, a
+        cross-check by a different script, gave ``(+29, +25)``). A malformed value (not a
+        finite 2-element array) is REFUSED (ERROR) and ``(0.0, 0.0)`` is
+        used -- never a silently-carried-forward prior value, same rule
+        `trajectory_node._apply_level_trim_param` applies to its own
+        ``[x, y]`` parameter."""
+        raw = self.get_parameter('columns_feed_bb_bias_mm').value
+        try:
+            bx_raw, by_raw = float(raw[0]), float(raw[1])
+        except (TypeError, ValueError, IndexError):
+            self.get_logger().error(
+                'columns_feed_bb_bias_mm %r is not a 2-element array -- '
+                'using [0.0, 0.0]' % (raw,))
+            return (0.0, 0.0)
+        if not (math.isfinite(bx_raw) and math.isfinite(by_raw)):
+            self.get_logger().error(
+                'columns_feed_bb_bias_mm %r is not finite -- using '
+                '[0.0, 0.0]' % (raw,))
+            return (0.0, 0.0)
+        bx = min(max(bx_raw, -60.0), 60.0)
+        by = min(max(by_raw, -60.0), 60.0)
+        if abs(bx - bx_raw) > 1e-9 or abs(by - by_raw) > 1e-9:
+            self.get_logger().warn(
+                'columns_feed_bb_bias_mm %r outside +-60 mm per axis -- '
+                'using [%.3f, %.3f]' % (raw, bx, by))
+        return (bx, by)
+
     def _catch_aim_source(self) -> str:
         """The validated ``catch_aim_source`` parameter. An unknown value
         falls back to the LIVE default (:data:`executor.AIM_TRACKER`) with an
@@ -1297,8 +1371,9 @@ class SkillNode(Node):
         the stroke."""
         r = self._hand_launch.ratio(t_release_abs_s)
         self.get_logger().debug(
-            'hand launch ratio for the release at %.3f (ball %d): %s'
-            % (t_release_abs_s, ball_id, self._hand_launch.last_reason))
+            'hand launch ratio for the release at %.3f (%s): %s'
+            % (t_release_abs_s, ball_label(ball_id),
+               self._hand_launch.last_reason))
         return r
 
     def _on_traj_status(self, msg) -> None:
@@ -1579,6 +1654,22 @@ class SkillNode(Node):
             self._possession_evidence_stable = (
                 ball_possession.EVIDENCE_SEATED if bool(held)
                 else ball_possession.EVIDENCE_EMPTY)
+        # MISSED_CATCH's own history (R5 sitting 4, `report_a1.md` Q3/brief
+        # item 3): one entry per callback, O(1), on THIS node's wall clock
+        # (the schedule's own clock -- `_PendingCatch`'s window is stamped
+        # on it, never `time.perf_counter()`). `maxlen` is the memory bound;
+        # the deque is additionally trimmed by AGE so `_seat_window`'s
+        # coverage check means what it says regardless of this topic's rate.
+        t_wall = self.get_clock().now().nanoseconds / 1e9
+        with self._hand_hist_lock:
+            self._hand_telemetry_hist.append((
+                t_wall, valid,
+                (bool(raw) if (valid and raw is not None) else None),
+                (bool(held) if (valid and held is not None) else None)))
+            while (self._hand_telemetry_hist
+                  and self._hand_telemetry_hist[0][0]
+                     < t_wall - _SEAT_WINDOW_HIST_S):
+                self._hand_telemetry_hist.popleft()
 
     def _observations(self, t_abs_s: float) -> Observations:
         """The R3 precondition ladder's snapshot of the whole machine at one
@@ -1643,6 +1734,52 @@ class SkillNode(Node):
         ball by ~240 ms (ball_possession.py). The ladder's SEATED precondition
         reads the debounced twin instead (`_observations`, 2026-09-16)."""
         return self._possession_evidence
+
+    def _seat_window(self, t0_s: float, t1_s: float
+                     ) -> Optional[SeatWindow]:
+        """The executor's ``seat_window`` callable (R5 sitting 4,
+        2026-10-04 evening, `report_a1.md` Q3/brief item 3): a SAMPLE-
+        COMPLETE possession count over ``[t0_s, t1_s]`` on the schedule's
+        own wall clock, from `_hand_telemetry_hist`.
+
+        ``None`` when the buffer does not COVER the window -- its oldest
+        sample is already after ``t0_s`` (history has not reached back
+        that far, or was trimmed/empty), or its newest is still before
+        ``t1_s`` (this tick is asking before the telemetry for the window's
+        own close has arrived). Both read as BLIND to the caller (no
+        verdict either way) rather than a false miss. A SEATED sample
+        counts on the RAW bit ONLY (B1c, R5 sitting 4: the debounced
+        `held` twin still goes into the ring buffer below, for the
+        operator line / diagnostics, but it is not counted here -- against
+        the real raw-bit sequences in `missed_catch_20261004.csv`, `held`'s
+        debounce lingers ~0.14 s past the PREVIOUS ball's release, inside
+        this catch's own window, and vetoed every one of 14 genuine
+        misses. `held` is derived from `raw` and never seats before it, so
+        counting raw alone loses no sensitivity to a real catch -- see
+        `executor.SeatWindow`'s docstring for the full argument).
+        """
+        with self._hand_hist_lock:
+            hist = list(self._hand_telemetry_hist)   # snapshot: see __init__
+        if not hist:
+            return None
+        if hist[0][0] > float(t0_s) or hist[-1][0] < float(t1_s):
+            return None
+        n_valid = 0
+        n_seated = 0
+        max_gap_s = 0.0
+        t_prev = None
+        for t, valid, raw, held in hist:
+            if t < float(t0_s) or t > float(t1_s):
+                continue
+            if t_prev is not None:
+                max_gap_s = max(max_gap_s, t - t_prev)
+            t_prev = t
+            if valid:
+                n_valid += 1
+                if bool(raw):
+                    n_seated += 1
+        return SeatWindow(n_valid=n_valid, n_seated=n_seated,
+                          max_gap_s=max_gap_s)
 
     # ── the installer callable SkillExecutor dispatches through ────────────
 
@@ -1835,8 +1972,9 @@ class SkillNode(Node):
                 float(now_ros.nanoseconds) * 1e-9)
         self._announce_pub.publish(ann)
         self.get_logger().debug(
-            'skill announced ball %d: release in %.3f s, |v| %.3f m/s'
-            % (int(ball_id), delta_s, float(np.linalg.norm(vel)) / 1000.0))
+            'skill announced %s: release in %.3f s, |v| %.3f m/s'
+            % (ball_label(ball_id), delta_s,
+               float(np.linalg.norm(vel)) / 1000.0))
 
     def _wait_future(self, future, timeout_s: float = _SERVICE_WAIT_S):
         """Poll a service future to completion. Mirrors
@@ -2093,8 +2231,8 @@ class SkillNode(Node):
             self._end_attempt(
                 'ABORTED_NO_COLUMNS_FEED',
                 'no tracker landing resolved the columns feed within the '
-                'deadline -- the platform is at rest holding ball A (the '
-                'bridge REST\'s rest tail)')
+                'deadline -- the platform is at rest holding %s (the '
+                'bridge REST\'s rest tail)' % (ball_label(0),))
         else:
             self._end_attempt(
                 'ABORTED_NO_ANNOUNCEMENT',
@@ -2199,6 +2337,18 @@ class SkillNode(Node):
                      _BB_THROW_DELAY_FLOOR_S)
         aim_x, aim_y, aim_z = _mocap_aim_point_mm(
             ctx.aim_site, CATCH_CUP_Z_MM, self._mocap_to_schedule_mm)
+        if ctx.kind == 'columns':
+            # B4: walk Ball Butler's own request BACK by its measured
+            # landing bias (`bias = landing - request`) so its landing
+            # error cancels -- `columns_feed_bb_bias_mm`'s own docstring.
+            # A pure translation either side of `_mocap_aim_point_mm`
+            # commutes (both frames share the same x/y axes, only the
+            # origin differs), so subtracting here (mocap frame) is the
+            # same correction as subtracting in `ctx.aim_site`'s own
+            # schedule frame.
+            bias_x, bias_y = self._columns_feed_bb_bias_mm()
+            aim_x -= bias_x
+            aim_y -= bias_y
         req = BallButlerThrow.Request()
         req.use_target_point = True
         req.target_name = self._robot_name
@@ -2452,13 +2602,17 @@ class SkillNode(Node):
 
     #: Pattern names the Juggle goal accepts — `schedule.Schedule.pattern`'s
     #: own set (R4 owner decision D1), plus B2's ``columns_1ball`` (columns
-    #: motion flown with one real ball — `_run_columns_1ball`). The LATTER
-    #: never becomes a `Schedule.pattern` value of its own: `compile_columns`
-    #: always labels it 'columns' (the admissible box has no
-    #: 'columns_1ball' kind, and none is swept — see `_run_columns_1ball`'s
-    #: docstring), so this tuple names one more GOAL-facing string than
-    #: `Schedule.pattern` has values.
-    _PATTERNS = ('self_toss', 'hop', 'columns', 'columns_1ball')
+    #: motion flown with one real ball — `_run_columns_1ball`) and R5
+    #: sitting 4's ``columns_1ball_fed`` (the other half: ball B real and
+    #: fed by Ball Butler, ball A phantom — `_run_columns(...,
+    #: phantom_a=True)`). NEITHER becomes a `Schedule.pattern` value of its
+    #: own: `compile_columns` always labels it 'columns' (the admissible box
+    #: has no 'columns_1ball'/'columns_1ball_fed' kind, and none is swept —
+    #: see `_run_columns_1ball`'s docstring and `_run_columns`'s own
+    #: ``phantom_a`` paragraph), so this tuple names two more GOAL-facing
+    #: strings than `Schedule.pattern` has values.
+    _PATTERNS = ('self_toss', 'hop', 'columns', 'columns_1ball',
+                'columns_1ball_fed')
 
     def _start_pattern(self, goal) -> SimpleNamespace:
         """The Juggle goal's shared no-motion refusal ladder + schedule
@@ -2485,6 +2639,21 @@ class SkillNode(Node):
         # is LIFTED — `reload=True` on a columns goal now means "ball B
         # comes from Ball Butler" (`_run_columns` routes it through
         # `_start_reload`'s BB choreography, aim site P2).
+        #
+        # B2 (R5 sitting 4): `columns_1ball_fed` has no ball A to fall back
+        # on for the ordinary `columns` pattern's `reload=False` human-lob
+        # path (`_run_columns`'s own no-Ball-Butler branch still arms a
+        # bridge "holding" a ball that, here, does not exist) -- Ball
+        # Butler is the ONLY feed this mode has. Refused here, explicitly,
+        # rather than silently arming a tracker-only wait that can never be
+        # satisfied by a non-existent ball A.
+        if pattern == 'columns_1ball_fed' and not reload:
+            return SimpleNamespace(
+                success=False,
+                message=('columns_1ball_fed refused: reload=False -- %s '
+                         'is phantom in this pattern, so Ball Butler is '
+                         'the ONLY feed for %s; pass reload=True'
+                         % (ball_label(0), ball_label(1))))
         refused = self._refuse_if_running(SimpleNamespace(success=None,
                                                           message=None))
         if refused is not None:
@@ -2515,6 +2684,12 @@ class SkillNode(Node):
         if pattern == 'columns':
             result = self._run_columns(apex_m, separation_mm, dwell_s,
                                        n_throws, reload)
+        elif pattern == 'columns_1ball_fed':
+            # Always `reload=True` -- the refusal above already rejected
+            # `reload=False` for this pattern, so `reload` is True here by
+            # construction, not re-derived from the goal a second time.
+            result = self._run_columns(apex_m, separation_mm, dwell_s,
+                                       n_throws, True, phantom_a=True)
         elif pattern == 'columns_1ball':
             result = self._run_columns_1ball(apex_m, separation_mm, dwell_s,
                                              n_throws, reload)
@@ -2536,7 +2711,7 @@ class SkillNode(Node):
 
     def _run_columns(self, apex_m: float, separation_mm: float,
                      dwell_s: float, n_throws: int,
-                     reload: bool) -> SimpleNamespace:
+                     reload: bool, phantom_a: bool = False) -> SimpleNamespace:
         """The ``columns`` branch of :meth:`_start_pattern` — R5's
         feed-triggered two-phase start (owner decision D1, 2026-09-30),
         replacing the R2-R4 body that refused outright (`_hand_home_error`,
@@ -2576,6 +2751,22 @@ class SkillNode(Node):
         pair, `_run_one_ball`'s "refuse before any motion" rule applied
         here for the identical reason) + memory, THEN the opening REST's
         sizing (`_opening_rest_period`) and the frame check.
+
+        ``phantom_a`` (B2, R5 sitting 4, ``columns_1ball_fed``, default
+        ``False``): ball A (schedule id 0, this method's own ``a_site``) is
+        motion-only -- the opposite half of the already-landed
+        ``columns_1ball`` (which flies ball B's strokes empty while ball A
+        is real). The bridge REST never holds a ball for it
+        (``holds_ball=not phantom_a``, both below) and the compiled
+        ``Pattern`` carries ``phantom_balls=(0,)`` so every downstream
+        phantom enforcement point (``schedule.Schedule.is_phantom``'s own
+        three call sites, plus the precondition ladder and the D3 survivor
+        policy in ``executor.py``) applies to it. Only reached with
+        ``reload=True`` -- `_start_pattern` refuses ``reload=False`` for
+        this pattern outright, because Ball Butler is the ONLY feed this
+        mode has (there is no ball A to fall back on for a human-lob feed
+        the way the ordinary ``columns`` pattern's ``reload=False`` branch
+        does).
         """
         if _ADMISSIBLE_BOX_PATH is None:
             msg = ('cannot find the repo root from %r -- the admissible box '
@@ -2596,7 +2787,8 @@ class SkillNode(Node):
             feed_site, a_site, self._columns_feed_aim_toward_a_mm())
         try:
             pattern = Pattern(sites=(a_site, feed_site), apex_m=apex_m,
-                             dwell_s=dwell_s, n_throws=n_throws)
+                             dwell_s=dwell_s, n_throws=n_throws,
+                             phantom_balls=((0,) if phantom_a else ()))
         except ValueError as exc:
             msg = 'columns pattern refused: %s' % (exc,)
             self.get_logger().debug(msg)
@@ -2665,26 +2857,34 @@ class SkillNode(Node):
             # (`holds_ball=True`), BB is asked to aim at `feed_aim_site`
             # (R5 sitting 2: the feed site, walked toward A's site —
             # `_columns_feed_aim_site`'s own docstring) instead of `a_site`.
+            # B2: `holds_ball=not phantom_a` — ball A's cup is empty by
+            # design when it is the phantom.
             return self._start_reload(
                 SimpleNamespace(success=None, message=None), site=a_site,
                 lift_s=lift_s, boxes=boxes, memory=memory, kind='columns',
                 aim_site=feed_aim_site, columns_pattern=pattern,
-                holds_ball=True)
+                holds_ball=not phantom_a)
 
         # No Ball Butler round trip at all (the interim human-lob
         # sittings): arm the bridge + FEED WAIT directly. Same t0 idiom as
         # `_start_reload`'s own bridge compile (probe, then shift so the
-        # first dispatch lands at/after "now").
+        # first dispatch lands at/after "now"). `holds_ball=not phantom_a`,
+        # same as the reload branch above -- `_start_pattern` never reaches
+        # here with `phantom_a=True` (it refuses `reload=False` for
+        # `columns_1ball_fed` outright), but a direct caller gets the
+        # correct bridge regardless.
         now = self.get_clock().now().nanoseconds / 1e9
         try:
-            probe = compile_reload_wait(a_site, lift_s, now, holds_ball=True)
+            probe = compile_reload_wait(a_site, lift_s, now,
+                                        holds_ball=not phantom_a)
             deficit = now - probe.skills[0].dispatch_s()
             # + _DISPATCH_LOOKAHEAD_S: the executor dispatches that far ahead
             # of its tick, so without it the first skill would go out on
             # the start tick itself rather than one tick after it.
             t0 = (now + max(deficit, 0.0) + (1.0 / _TICK_HZ)
                   + _DISPATCH_LOOKAHEAD_S)
-            bridge = compile_reload_wait(a_site, lift_s, t0, holds_ball=True)
+            bridge = compile_reload_wait(a_site, lift_s, t0,
+                                         holds_ball=not phantom_a)
         except ValueError as exc:
             msg = 'columns bridge schedule refused: %s' % (exc,)
             self.get_logger().debug(msg)
@@ -2699,7 +2899,8 @@ class SkillNode(Node):
             resend_max_per_catch=self._catch_resend_max(),
             launch_ratio=self._launch_ratio,
             observer=self._ball_evidence, observations=self._observations,
-            dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
+            dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
+            seat_window=self._seat_window)
         with self._reload_lock:
             self._reload_throw_inflight = False
             self._reload_ctx = SimpleNamespace(
@@ -2717,11 +2918,18 @@ class SkillNode(Node):
         return SimpleNamespace(
             success=True, message=msg,
             start_line=(
-                '%s started: bridge REST holds ball A at %s -- waiting up '
-                'to %.1f s for ball B to land near %s · memory %d rows'
-                % (self._attempt_label or 'columns', a_site.name,
-                   COLUMNS_TRACKER_FEED_DEADLINE_S, feed_aim_site.name,
-                   len(memory))))
+                ('%s started: %s phantom -- Jugglebot\'s own strokes '
+                 'fly empty; waiting up to %.1f s for %s to land near '
+                 '%s · memory %d rows'
+                 % (self._attempt_label or 'columns', ball_label(0),
+                    COLUMNS_TRACKER_FEED_DEADLINE_S, ball_label(1),
+                    feed_aim_site.name, len(memory)))
+                if phantom_a else
+                ('%s started: bridge REST holds %s at %s -- waiting up '
+                 'to %.1f s for %s to land near %s · memory %d rows'
+                 % (self._attempt_label or 'columns', ball_label(0),
+                    a_site.name, COLUMNS_TRACKER_FEED_DEADLINE_S,
+                    ball_label(1), feed_aim_site.name, len(memory)))))
 
     def _run_columns_1ball(self, apex_m: float, separation_mm: float,
                            dwell_s: float, n_throws: int,
@@ -2878,7 +3086,8 @@ class SkillNode(Node):
                 'learner_lateral_authority_mm').value) / 1000.0,
             observer=self._ball_evidence, observations=self._observations,
             on_experience=self._bind_on_experience(memory),
-            dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
+            dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
+            seat_window=self._seat_window)
         msg = (
             'columns_1ball schedule compiled: %d skills, %d throws, '
             'plant_id=%r, memory rows=%d, t0=%.3f'
@@ -3292,7 +3501,8 @@ class SkillNode(Node):
                 'learner_lateral_authority_mm').value) / 1000.0,
             observer=self._ball_evidence, observations=self._observations,
             on_experience=self._bind_on_experience(memory),
-            dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
+            dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
+            seat_window=self._seat_window)
         msg = (
             '%s schedule compiled: %d skills, %d throws, plant_id=%r, '
             'memory rows=%d, t0=%.3f'
@@ -3405,7 +3615,8 @@ class SkillNode(Node):
             resend_max_per_catch=self._catch_resend_max(),
             launch_ratio=self._launch_ratio,
             observer=self._ball_evidence, observations=self._observations,
-            dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
+            dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
+            seat_window=self._seat_window)
 
         # From HERE ON (C4): the bridge REST is a committed physical fact.
         # A refusal below ACCEPTS the goal and ends the attempt through
@@ -3638,7 +3849,8 @@ class SkillNode(Node):
                     'learner_lateral_authority_mm').value) / 1000.0,
                 observer=self._ball_evidence, observations=self._observations,
                 on_experience=self._bind_on_experience(ctx.memory),
-                dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
+                dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
+                seat_window=self._seat_window)
             # Same tick-locked claim-then-swap as the plain reload branch
             # below (duplicated rather than shared -- that branch is
             # heavily tested and touching it to extract a helper is out of
@@ -3670,8 +3882,9 @@ class SkillNode(Node):
                 return
             self.get_logger().info(
                 'columns_1ball reload: Ball Butler\'s ball is in the air -- '
-                'catching ball A, then starting the columns pattern '
-                '(phantom at %s)' % (ctx.columns_pattern.sites[1].name,))
+                'catching %s, then starting the columns pattern '
+                '(phantom at %s)' % (ball_label(0),
+                                     ctx.columns_pattern.sites[1].name))
             return
 
         # R5 (owner decision D1, 2026-09-30): a columns feed arriving as a
@@ -3695,6 +3908,29 @@ class SkillNode(Node):
                     t_release_s=throw_time_s, preexisting=preexisting,
                     thrower=announced_source(msg.thrower_name)),)
                 self._advance_correlation_locked(self._now_s())
+            # B4: the announcement reports Ball Butler's own belief -- the
+            # request point `_fire_reload_throw` sent it, walked BACK by
+            # the same bias -- not where the ball actually lands, so the
+            # feed `LandingPrior` the catch plans against is walked FORWARD
+            # by it (`columns_feed_bb_bias_mm`'s own docstring). Request
+            # point restated here (not reread from the request actually
+            # sent) from `ctx.aim_site.cup_mm` directly, schedule frame,
+            # for the INFO line below -- `ctx.aim_site` is unchanged state
+            # between the two calls.
+            bias_x, bias_y = self._columns_feed_bb_bias_mm()
+            req_x, req_y = (float(ctx.aim_site.cup_mm[0]),
+                            float(ctx.aim_site.cup_mm[1]))
+            landing_mm = landing_mm + np.array([bias_x, bias_y, 0.0])
+            self.get_logger().info(
+                # The literal prefix up to '... mm, bias [...] mm' is matched
+                # by `tools/probes/feed_lateral_miss.py`'s `_RE_BIAS` --
+                # ball naming is appended AFTER it, not interleaved, so that
+                # probe keeps parsing this line unchanged.
+                'columns feed bias: request (%.1f, %.1f) mm, bias '
+                '[%+.1f, %+.1f] mm, corrected prior (%.1f, %.1f) mm '
+                '(schedule frame; columns_feed_bb_bias_mm) for %s'
+                % (req_x, req_y, bias_x, bias_y, landing_mm[0], landing_mm[1],
+                   ball_label(1)))
             feed = LandingPrior(pos_mm=landing_mm, vel_mm_s=landing_vel_mm_s,
                                 t_land_abs_s=t_land_abs_s)
             self._install_columns_schedule(ctx, feed)
@@ -3745,7 +3981,8 @@ class SkillNode(Node):
                 'learner_lateral_authority_mm').value) / 1000.0,
             observer=self._ball_evidence, observations=self._observations,
             on_experience=self._bind_on_experience(ctx.memory),
-            dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
+            dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
+            seat_window=self._seat_window)
         # The SkillExecutor SWAP (brief step 1c): the bridge's own executor
         # is done by now in every ordinary case (its one REST dispatched
         # ticks ago) — this still takes `_tick_lock` first, same reason
@@ -3818,6 +4055,13 @@ class SkillNode(Node):
         resolve it differently (a fresh, unlatched `FlightLatch` search for
         the announcement path vs. a KNOWN tracker id for the tracker path).
         """
+        # B2 (`columns_1ball_fed`): ball A's cup may be phantom-empty
+        # (`ctx.columns_pattern.phantom_balls`) rather than actually
+        # holding it -- the two refusal messages below describe the
+        # bridge REST's real physical state either way.
+        _a_state = ('phantom-empty (no %s)' % (ball_label(0),)
+                   if ctx.columns_pattern.phantom_balls
+                   else 'holding %s' % (ball_label(0),))
         try:
             schedule = compile_columns(ctx.columns_pattern, feed=feed)
         except ValueError as exc:
@@ -3828,8 +4072,8 @@ class SkillNode(Node):
                     'REJECTED_COLUMNS_UNSCHEDULABLE',
                     'columns feed: the observed landing could not be '
                     'scheduled (%s) -- no columns schedule installed; the '
-                    'platform stays at rest holding ball A (the bridge REST '
-                    'is already streaming)' % (exc,))
+                    'platform stays at rest %s (the bridge REST '
+                    'is already streaming)' % (exc, _a_state))
             return
 
         # R5 pre-throw feasibility (2026-09-30, day-1 announcement gap):
@@ -3861,13 +4105,13 @@ class SkillNode(Node):
                         - np.asarray(_site1.catch_site_mm(), dtype=float)[:2])
                 self._end_attempt(
                     'REJECTED_COLUMNS_FEED_UNCATCHABLE',
-                    'columns feed: the feed catch of ball B cannot be '
+                    'columns feed: the feed catch of %s cannot be '
                     'planned -- %s -- announced landing %.1f mm off site %s '
                     '(dx %+.1f, dy %+.1f mm) -- no columns schedule '
-                    'installed; the platform stays at rest holding ball A '
+                    'installed; the platform stays at rest %s '
                     '(the bridge REST is already streaming)'
-                    % (refusal, float(np.linalg.norm(_off)), _site1.name,
-                       _off[0], _off[1]))
+                    % (ball_label(1), refusal, float(np.linalg.norm(_off)),
+                       _site1.name, _off[0], _off[1], _a_state))
             return
 
         learner_cfg = lr.LearnerConfig()
@@ -3883,7 +4127,8 @@ class SkillNode(Node):
                 'learner_lateral_authority_mm').value) / 1000.0,
             observer=self._ball_evidence, observations=self._observations,
             on_experience=self._bind_on_experience(ctx.memory),
-            dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
+            dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
+            seat_window=self._seat_window)
         # The SkillExecutor SWAP, `_install_announced_reload`'s shape
         # exactly: `_tick_lock` first (a tick mid-dispatch on another
         # thread must not read `_executor` half-swapped), then ONE
@@ -3920,14 +4165,14 @@ class SkillNode(Node):
         now = self.get_clock().now().nanoseconds / 1e9
         self.get_logger().debug(
             'columns feed: compiled the fed schedule (%d skills) and '
-            'swapped the executor -- ball B landing (%.1f, %.1f, %.1f) mm '
-            'in %.3f s' % (len(schedule.skills), feed.pos_mm[0],
-                          feed.pos_mm[1], feed.pos_mm[2],
+            'swapped the executor -- %s landing (%.1f, %.1f, %.1f) mm '
+            'in %.3f s' % (len(schedule.skills), ball_label(1),
+                          feed.pos_mm[0], feed.pos_mm[1], feed.pos_mm[2],
                           float(feed.t_land_abs_s) - now))
         self.get_logger().info(
-            'columns feed accepted: ball B lands in %.2f s -- catching it, '
+            'columns feed accepted: %s lands in %.2f s -- catching it, '
             'then %d throw%s'
-            % (float(feed.t_land_abs_s) - now, n_after,
+            % (ball_label(1), float(feed.t_land_abs_s) - now, n_after,
                '' if n_after == 1 else 's'))
 
     def _bind_on_experience(self, memory: Memory):

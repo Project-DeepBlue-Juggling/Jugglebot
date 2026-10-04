@@ -136,7 +136,11 @@ uint32_t interp_hand_stale_holds();
 // is a cumulative exceed-tick counter the 10 Hz fault task differences (race-
 // free single-writer census — no read-then-clear); the max |residual| and the
 // worst-tick snapshot are the bench `hand7 observe` read.
-uint32_t interp_hand_dev_over_ticks();   // ticks with |dev| > MAX_DEVIATION_HAND_REV
+uint32_t interp_hand_dev_over_ticks();   // ticks with |dev| > MAX_DEVIATION_HAND_REV (fresh anchor only, FW 27)
+// FW 27: exceed ticks NOT counted above because the raw encoder-anchor age was
+// > HAND_DEV_FRESH_US — the extrapolated anchor's own error, not a deviation
+// (canbridge_config.h). Same counter gate as dev_over; [hand7] dev_stale=.
+uint32_t interp_hand_dev_stale_skips();
 float    interp_hand_dev_last();         // most recent tick's residual (rev)
 float    interp_hand_dev_max();          // max |residual| since boot/reset (signed value at the max)
 float    interp_hand_dev_snap_cmd();     // raw command at the worst-residual tick

@@ -1358,3 +1358,182 @@ TEST_CASE("hand MAX_DEVIATION latch reports the TRIP's excursion, never the boot
   CHECK(fault_max_dev_enc() == doctest::Approx(0.0f).epsilon(0.01));     // … and fb pair
   CHECK(interp_hand_dev_max() == doctest::Approx(4.0f).epsilon(0.01));   // console read unchanged
 }
+
+// ═══ FW 27: the hand guard reads only FRESH feedback ═════════════════════════
+//
+//  R5 sitting 4 attempt 2 (2026-10-04 1791104246.0) latched MAX_DEVIATION on
+//  axis 6 with u0 9.6116 against fb_ex 6.3405: the anchor was 99.9 ms old,
+//  frozen at 1.213 rev / 51.30 rev/s mid-stroke by an ODrive-side encoder frame
+//  drop (plans/active/leg-bus-frame-drops.md), so fb + vel·age under-estimated
+//  an accelerating hand and the true residual was only ~0.4–1.4 rev — a FALSE
+//  trip. FW 27: (1) an exceed tick counts toward the latch only when the raw
+//  anchor age is <= HAND_DEV_FRESH_US (30 ms), else it is a stale skip; (2)
+//  MOTOR_FB_STALE covers the hand, so a hand blind past 150 ms stops instead.
+
+// An armed session with the hand lane latched at zero residual: output is
+// ENABLED by the fault_step, and the next interp tick is the enable edge (the
+// lane clears and the staged frame of that tick re-latches it — the live
+// stream-then-arm shape the existing hand-deviation test uses).
+static void fw27_arm_hand_session() {
+  reset_all();
+  fake_set_clock(10'000'000, 10'000'000);
+  fault_set_mpc_active(true);
+  fake_set_udp_last_rx_us(fake_mono_us());
+  axes[0].heartbeat_seen = true;                     // leg 0 present + fresh: leg guards quiet
+  stamp_hb(0);
+  axes[0].pos_timestamp_us = fake_mono_us();
+  axes[HAND_AXIS].heartbeat_seen = true;
+  stamp_hb(HAND_AXIS);
+  write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());
+  JbUdp::SetpointPayload sp; memset(&sp, 0, sizeof(sp));
+  sp.flags = 0x4u;                                   // HAS_HAND, u0 = 0 = the encoder
+  interp_on_setpoint(1, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
+  interp_isr();
+  fault_step();
+  REQUIRE(interp_output_enabled());
+  REQUIRE(fault_guard_mode() != JbUdp::GuardMode::ESTOP);
+}
+
+// One 500 Hz tick with the hand commanded to `cmd` while its encoder anchor is
+// `age_us` old. The encoder position is back-solved so the AGE-EXTRAPOLATED
+// anchor is exactly `fb_ex` for any age — the residual (cmd − fb_ex) is then
+// identical across ages and only the freshness differs.
+static void fw27_hand_tick(uint16_t seq, float cmd, float fb_ex, float fbv, uint64_t age_us) {
+  fake_advance(INTERP_PERIOD_US);
+  stamp_hb(0);
+  axes[0].pos_timestamp_us = fake_mono_us();
+  stamp_hb(HAND_AXIS);
+  const float fb = fb_ex - fbv * (float)((double)age_us * 1e-6);
+  write_pos_vel(hand_axis(), fb, fbv, fake_mono_us() - age_us);
+  JbUdp::SetpointPayload sp; memset(&sp, 0, sizeof(sp));
+  sp.u0[HAND_AXIS] = cmd;
+  sp.flags = 0x4u;                                   // HAS_HAND
+  interp_on_setpoint(seq, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
+  interp_isr();
+  fake_set_udp_last_rx_us(fake_mono_us());
+}
+
+// attempt 2's snapshot (residual 9.6116 − 6.3405 = 3.27 rev) and the brief's
+// 4.5 rev-ahead case — both past MAX_DEVIATION_HAND_REV (2.5).
+struct Fw27Case { float cmd; float fb_ex; };
+static const Fw27Case kFw27Cases[] = { {9.6116f, 6.3405f}, {9.6116f, 5.1116f} };
+
+TEST_CASE("FW 27: an exceed on a STALE anchor (attempt 2: 99.9 ms) does NOT latch; it counts a stale skip") {
+  for (const Fw27Case& c : kFw27Cases) {
+    for (uint64_t age_us : {(uint64_t)HAND_DEV_FRESH_US + 1u, (uint64_t)99'900u}) {
+      CAPTURE(c.cmd); CAPTURE(c.fb_ex); CAPTURE(age_us);
+      fw27_arm_hand_session();
+      fw27_hand_tick(2, c.cmd, c.fb_ex, 51.30f, age_us);
+      // Not vacuous: the lane computed the residual and it IS past the band.
+      REQUIRE(interp_hand_lane_active());
+      CHECK(interp_hand_dev_last() == doctest::Approx(c.cmd - c.fb_ex).epsilon(0.001));
+      CHECK(interp_hand_dev_last() > MAX_DEVIATION_HAND_REV);
+      CHECK(interp_hand_dev_over_ticks() == 0u);     // the latch's counter did not move
+      CHECK(interp_hand_dev_stale_skips() == 1u);    // … the stale skip did
+      fault_step();
+      CHECK(fault_guard_mode() != JbUdp::GuardMode::ESTOP);
+      CHECK(fault_state() != JbUdp::FaultState::MAX_DEVIATION);
+      CHECK(fault_state() != JbUdp::FaultState::MOTOR_FB_STALE);   // 99.9 ms < 150 ms
+      CHECK(interp_output_enabled());
+      // `hand7 reset` zeroes the new counter with its siblings.
+      interp_hand_counters_reset();
+      CHECK(interp_hand_dev_stale_skips() == 0u);
+    }
+  }
+}
+
+TEST_CASE("FW 27: the SAME residual on a FRESH anchor (5 ms, and the 30 ms bound) still latches on ONE tick") {
+  for (const Fw27Case& c : kFw27Cases) {
+    for (uint64_t age_us : {(uint64_t)5'000u, (uint64_t)HAND_DEV_FRESH_US}) {
+      CAPTURE(c.cmd); CAPTURE(c.fb_ex); CAPTURE(age_us);
+      fw27_arm_hand_session();
+      fw27_hand_tick(2, c.cmd, c.fb_ex, 51.30f, age_us);
+      CHECK(interp_hand_dev_over_ticks() == 1u);     // one tick is enough — unchanged
+      CHECK(interp_hand_dev_stale_skips() == 0u);
+      fault_step();
+      CHECK(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
+      CHECK(fault_state() == JbUdp::FaultState::MAX_DEVIATION);
+      CHECK(fault_max_dev_leg() == HAND_AXIS);
+      CHECK(fault_max_dev_value() == doctest::Approx(c.cmd - c.fb_ex).epsilon(0.001));
+      CHECK(fault_max_dev_u0() == doctest::Approx(c.cmd).epsilon(0.001));
+      CHECK(fault_max_dev_enc() == doctest::Approx(c.fb_ex).epsilon(0.001));
+      CHECK(interp_output_enabled() == false);
+    }
+  }
+}
+
+TEST_CASE("FW 27: hand feedback older than MOTOR_FB_STALENESS suppresses output recoverably (axis 6 joins the legs)") {
+  fw27_arm_hand_session();
+  fw27_hand_tick(2, 0.0f, 0.0f, 0.0f, 0u);           // the enable-edge tick re-latches the lane
+  REQUIRE(interp_hand_lane_active());
+  fault_step();
+  REQUIRE(interp_output_enabled());
+
+  // The hand's encoder freezes; the legs, both heartbeats and the link stay
+  // fresh, so the ONLY stale thing is axis 6. Pre FW 27 nothing noticed.
+  fake_advance(200'000);                             // > 150 ms, < the 250 ms setpoint staleness
+  stamp_hb(0);
+  axes[0].pos_timestamp_us = fake_mono_us();
+  stamp_hb(HAND_AXIS);
+  fake_set_udp_last_rx_us(fake_mono_us());
+  fault_step();
+  CHECK(fault_state() == JbUdp::FaultState::MOTOR_FB_STALE);
+  CHECK(interp_output_enabled() == false);           // suppressed — the hand TX shares this gate
+  CHECK(fault_guard_mode() != JbUdp::GuardMode::ESTOP);   // recoverable, NOT latched
+
+  // Hand feedback returns → output re-enables (exactly the leg contract).
+  write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());
+  fault_step();
+  CHECK(fault_state() != JbUdp::FaultState::MOTOR_FB_STALE);
+  CHECK(interp_output_enabled());
+}
+
+TEST_CASE("FW 27: a stale hand does NOT suppress when the lane is idle or axis 6 was never seen") {
+  SUBCASE("lane idle (a legs-only session): the hand's age is not a reason to stop the legs") {
+    reset_all();
+    fake_set_clock(10'000'000, 10'000'000);
+    fault_set_mpc_active(true);
+    fake_set_udp_last_rx_us(fake_mono_us());
+    axes[0].heartbeat_seen = true;
+    stamp_hb(0);
+    axes[0].pos_timestamp_us = fake_mono_us();
+    axes[HAND_AXIS].heartbeat_seen = true;
+    stamp_hb(HAND_AXIS);
+    write_pos_vel(hand_axis(), 0.0f, 0.0f, fake_mono_us());
+    JbUdp::SetpointPayload sp; memset(&sp, 0, sizeof(sp));   // no HAS_HAND
+    interp_on_setpoint(1, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
+    interp_isr();
+    REQUIRE(interp_have_latched());
+    REQUIRE_FALSE(interp_hand_lane_active());
+    fake_advance(200'000);
+    stamp_hb(0);
+    axes[0].pos_timestamp_us = fake_mono_us();
+    stamp_hb(HAND_AXIS);
+    fake_set_udp_last_rx_us(fake_mono_us());
+    fault_step();
+    CHECK(fault_state() != JbUdp::FaultState::MOTOR_FB_STALE);
+    CHECK(interp_output_enabled());
+  }
+  SUBCASE("lane active but axis 6 never reported (ts 0): the interp sends it nothing, so nothing to stop") {
+    reset_all();
+    fake_set_clock(10'000'000, 10'000'000);
+    fault_set_mpc_active(true);
+    fake_set_udp_last_rx_us(fake_mono_us());
+    axes[0].heartbeat_seen = true;
+    stamp_hb(0);
+    axes[0].pos_timestamp_us = fake_mono_us();
+    REQUIRE(axes[HAND_AXIS].pos_timestamp_us == 0u);
+    JbUdp::SetpointPayload sp; memset(&sp, 0, sizeof(sp));
+    sp.flags = 0x4u;                                 // HAS_HAND
+    interp_on_setpoint(1, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
+    interp_isr();
+    REQUIRE(interp_hand_lane_active());
+    fake_advance(200'000);
+    stamp_hb(0);
+    axes[0].pos_timestamp_us = fake_mono_us();
+    fake_set_udp_last_rx_us(fake_mono_us());
+    fault_step();
+    CHECK(fault_state() != JbUdp::FaultState::MOTOR_FB_STALE);
+    CHECK(interp_output_enabled());
+  }
+}

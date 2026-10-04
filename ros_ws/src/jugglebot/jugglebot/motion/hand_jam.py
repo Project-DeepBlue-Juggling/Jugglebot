@@ -40,14 +40,46 @@ Split of responsibility (one enforcement point each):
 The predicate (all of them, sustained >= ``sustain_s``):
     P1 the lane was descending: ``vel_ff_cmd < -descend_vel_rps`` at some
        sample in the last ``descend_window_s``, or ``pos_cmd`` has dropped by
-       more than ``descend_drop_rev`` from its maximum over that window;
+       more than ``descend_drop_rev`` from its maximum over that window, OR
+       the hand itself was descending: ``vel_meas < -stall_vel_rps`` (NOT
+       ``descend_vel_rps`` — see below) at some sample in that same window
+       (2026-10-04: HAND_MOVE_TO is a TRAP_TRAJ planned once, inside the
+       ODrive, and the ACTIVATE park never streams — the command cache gets
+       a single write at the START of the move and the window forgets it
+       after ``descend_window_s``, while the real descent can run for
+       seconds. The encoder witnesses the whole thing, so this alternative
+       is the only one of the three that stays true for the move's full
+       duration. Bounded by ``stall_vel_rps`` rather than the commanded
+       alternatives' ``descend_vel_rps`` because ``vel_meas`` is a real,
+       noisy encoder-derived estimate (``vel_ff_cmd`` is a clean streamed
+       command and has no such noise): a single -1.418 rev/s sample on an
+       otherwise-still hand — the SAME noise floor ``stall_vel_rps``'s own
+       1.5-not-1.0 choice already measured, below — opened a 0.3 s window
+       and fired a second, spurious HAND_JAM on bag 2026-10-02_18-11-14 when
+       bounded by the lower ``descend_vel_rps``. It still opens no new
+       false-positive class: it is one of five ANDed predicates, and a
+       catch, the pre-stroke dip, or a ball landing on the cup still answer
+       to P2/P3/P4/the sustain exactly as before — see the failure-mode
+       table);
     P2 the hand is stalled: ``|vel_meas| < stall_vel_rps``;
     P3 the command is below the hand: ``pos_cmd - pos_meas < -lag_rev``;
     P4 the current is at the clamp: ``|iq_meas| >= iq_frac x curr_limit_a``
        (the SHIPPED limit, so the relieved hand does not re-trigger);
     P5 ``pos_meas`` is inside ``band_rev`` (where a ring pinch is possible);
     P6 axis 6 is CLOSED_LOOP with ``active_errors == 0`` and its diagnostic
-       is younger than ``max_age_s``.
+       is younger than ``max_age_s`` (2026-10-04: 1.5 s, not 0.05 — the
+       can-bridge firmware (``Teensy_code_canbridge/telemetry.cpp``,
+       ``diag_changed``) sends axis 6's DIAGNOSTIC on-change
+       (``DIAG_IQ_THRESH_A`` 0.5 A, ``DIAG_TEMP_THRESH_C`` 1.0 C, or a
+       bus-voltage change) or forced at ``DIAG_FORCE_PERIOD_US`` = 1 Hz,
+       staggered per axis. In a steady stall at the clamp iq is constant, so
+       the next frame is ~1 s away and a 0.05 s bound was true for <= 50 ms
+       per second — the sustain could never complete (bags
+       2026-10-04_19-52-08 and _20-10-26, both silent on the live node).
+       1.5 s is one forced-refresh period plus the stagger and UDP jitter, so
+       it still faults a bridge that stopped sending diagnostics altogether;
+       it loses nothing on the state/error side, because ``axis_state`` and
+       ``active_errors`` transitions are themselves on-change and prompt).
     P1-P4 + P6 without P5 is a ``HAND_STALL``: relief only, no automatic
     motion (out of the band there is no ring to raise away from).
 
@@ -59,6 +91,14 @@ Failure modes the design enumerates, and what answers each:
     * Normal descent or catch (lag <= 0.2 rev, moving)        -> P2, P3.
     * Settling at rest or park (still, small current)         -> P4, P5.
     * Top stop at 10.7 rev (stalled at the clamp, ascending)  -> P1, P3, P5.
+    * HAND_MOVE_TO or ACTIVATE-commanded descent (a TRAP_TRAJ planned once,
+      inside the ODrive — the command cache sees a single write, never a
+      stream) -> P1's measured-descent alternative (``vel_meas``): the
+      encoder witnesses the whole move, not just its start.
+    * Diagnostic cadence drops to on-change/the 1 Hz forced refresh during a
+      steady clamp stall (iq constant)                        -> P6's
+      ``max_age_s`` (1.5 s) still passes every sample; only a bridge that
+      stops sending diagnostics altogether now faults it.
     * String/spool snag or carriage bind (identical while descending) -> fires; the
       RAISE tracking check discriminates (a ball pinch is one-sided, the hand rises
       freely): no ``raise_track_tol_rev`` of rise within ``raise_track_window_s`` ->
@@ -118,7 +158,14 @@ class JamConfig:
     was compressing (pos moved 0.007 rev in that 63 ms), which reset a 1.0
     threshold's sustain and delayed the fire to T-0.023 s. 1.5 rev/s is still
     >10x below any descent the lane streams, and P3 (lag) is what separates a
-    pinch from a moving catch anyway.
+    pinch from a moving catch anyway. P1's measured-descent alternative
+    (2026-10-04) reuses this same bound for the identical reason — see its
+    docstring above (a -1.418 rev/s sample on the SAME bag, found by the
+    replay probe once that alternative existed).
+
+    ``max_age_s`` is 1.5, not the design draft's 0.05 (2026-10-04, R5 sitting
+    4): see P6's docstring above for the firmware DIAGNOSTIC cadence that
+    makes 0.05 s unfireable on the live node.
     """
     enabled: bool = True
     band_rev: Tuple[float, float] = (1.0, 3.6)
@@ -135,7 +182,7 @@ class JamConfig:
     descend_window_s: float = 0.3
     descend_vel_rps: float = 1.0
     descend_drop_rev: float = 0.05
-    max_age_s: float = 0.05
+    max_age_s: float = 1.5
     max_gap_s: float = 0.05
     raise_track_window_s: float = 0.3
     lower_stall_vel_rps: float = 0.3
@@ -224,6 +271,9 @@ class JamConfig:
              'is 0.12 s plus rolling off the lip)')
         need(self.lower_stall_s <= 1.0, 'lower_stall_s', 'must be <= 1 s')
         need(self.raise_track_tol_rev <= 1.0, 'raise_track_tol_rev', 'must be <= 1 rev')
+        need(self.max_age_s <= 5.0, 'max_age_s',
+             'must be <= 5.0 s (above that a dead diagnostic feed should fault via '
+             "P6's state/error checks, not an unbounded age)")
         need(0 < self.move_vel_rps <= 2.5, 'move_vel_rps',
              'must be in (0, 2.5] rev/s (the HAND_MOVE_TO cruise bound)')
 
@@ -291,6 +341,7 @@ class JamDetector:
         self.last_sample: Optional[HandSample] = None
         self._prev_t: Optional[float] = None
         self._last_desc_t = -math.inf
+        self._last_meas_desc_t = -math.inf
         # Monotone deque of (t, pos_cmd): the window maximum is at the head.
         self._cmd_max: Deque[Tuple[float, float]] = deque()
         self._stall_since: Optional[float] = None
@@ -302,11 +353,30 @@ class JamDetector:
             return 0.0
         return self.last_sample.t - self._stall_since
 
-    def _window(self, s: HandSample) -> Tuple[float, Deque[Tuple[float, float]]]:
+    def _window(self, s: HandSample) -> Tuple[float, float, Deque[Tuple[float, float]]]:
         """P1's window state INCLUDING ``s``, without mutating the detector."""
         last_desc = self._last_desc_t
         if _finite(s.vel_ff_cmd) and s.vel_ff_cmd < -self.cfg.descend_vel_rps:
             last_desc = s.t
+        # The MEASURED-descent alternative, tracked next to the commanded one:
+        # a HAND_MOVE_TO/ACTIVATE target is a single write the window forgets
+        # after descend_window_s, but the encoder keeps witnessing the move
+        # for as long as it actually runs.
+        # Bounded by stall_vel_rps, NOT descend_vel_rps (2026-10-04, found by
+        # the replay probe on bag 2026-10-02_18-11-14 at T+1.401 s: a single
+        # vel_meas sample of -1.418 rev/s — inside [descend_vel_rps,
+        # stall_vel_rps) = [1.0, 1.5) — on an otherwise-still hand opened a
+        # 0.3 s false-positive window and fired a second HAND_JAM 1.4 s after
+        # the real one. That is the SAME noise floor JamConfig's docstring
+        # already measured for P2 (stall_vel_rps is 1.5, not 1.0, because a
+        # -1.243 rev/s creep sample reset a 1.0 threshold's sustain on this
+        # same bag) — vel_ff_cmd is a clean streamed command with no such
+        # noise, so descend_vel_rps stays correct for the two commanded
+        # alternatives, but vel_meas is a real encoder-derived estimate and
+        # must clear the same floor P2 does before it counts as "moving".
+        last_meas_desc = self._last_meas_desc_t
+        if _finite(s.vel_meas) and s.vel_meas < -self.cfg.stall_vel_rps:
+            last_meas_desc = s.t
         dq = deque(self._cmd_max)
         if _finite(s.pos_cmd):
             while dq and dq[-1][1] <= s.pos_cmd:
@@ -314,16 +384,17 @@ class JamDetector:
             dq.append((s.t, s.pos_cmd))
         while dq and dq[0][0] < s.t - self.cfg.descend_window_s:
             dq.popleft()
-        return last_desc, dq
+        return last_desc, last_meas_desc, dq
 
-    def _evaluate(self, s: HandSample, last_desc: float,
+    def _evaluate(self, s: HandSample, last_desc: float, last_meas_desc: float,
                   dq: Deque[Tuple[float, float]]) -> Predicates:
         c = self.cfg
         if not _finite(s.pos_cmd, s.pos_meas, s.vel_meas, s.iq_meas, s.age_s,
                        s.curr_limit_a):
             return Predicates()   # non-finite telemetry is never a jam (P6's job)
         drop = (dq[0][1] - s.pos_cmd) if dq else 0.0
-        p1 = (s.t - last_desc) <= c.descend_window_s or drop > c.descend_drop_rev
+        p1 = ((s.t - last_desc) <= c.descend_window_s or drop > c.descend_drop_rev
+              or (s.t - last_meas_desc) <= c.descend_window_s)
         p2 = abs(s.vel_meas) < c.stall_vel_rps
         p3 = (s.pos_cmd - s.pos_meas) < -c.lag_rev
         p4 = abs(s.iq_meas) >= c.iq_frac * s.curr_limit_a
@@ -337,11 +408,12 @@ class JamDetector:
         return self._evaluate(s, *self._window(s))
 
     def step(self, s: HandSample) -> Verdict:
-        last_desc, dq = self._window(s)
-        preds = self._evaluate(s, last_desc, dq)
+        last_desc, last_meas_desc, dq = self._window(s)
+        preds = self._evaluate(s, last_desc, last_meas_desc, dq)
         gap = (self._prev_t is not None
                and not (0.0 <= s.t - self._prev_t <= self.cfg.max_gap_s))
-        self._last_desc_t, self._cmd_max, self._prev_t = last_desc, dq, s.t
+        self._last_desc_t, self._last_meas_desc_t = last_desc, last_meas_desc
+        self._cmd_max, self._prev_t = dq, s.t
         self.last, self.last_sample = preds, s
         if self.fired is not Verdict.NONE:
             return Verdict.NONE

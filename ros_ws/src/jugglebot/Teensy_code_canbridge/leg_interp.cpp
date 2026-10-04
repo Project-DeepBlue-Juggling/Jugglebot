@@ -200,6 +200,13 @@ static volatile uint32_t s_hand_unseen_skips     = 0;   // lane active but axis 
 static volatile uint32_t s_hand_stale_holds      = 0;   // ticks whose clamp-anchor age hit the staleness cap
 static volatile uint32_t s_hand_lead_clamp_ticks = 0;   // THE lead-duty counter (nonzero in a throw ⇒ abort sitting)
 static volatile uint32_t s_hand_dev_over_ticks   = 0;   // ticks with |residual| > MAX_DEVIATION_HAND_REV
+// FW 27: exceed ticks NOT counted above because the encoder anchor was older
+// than HAND_DEV_FRESH_US (a stale-anchor residual is extrapolation error, not
+// deviation — canbridge_config.h). Same single-writer census idiom and the same
+// out_en && !coldstart counter gate as dev_over, so the two partition every
+// counted exceed tick: a non-zero dev_stale is the frame-drop class landing in a
+// stroke, which the guard deliberately did not trip on.
+static volatile uint32_t s_hand_dev_stale_skips  = 0;
 static volatile float    s_hand_dev_last         = 0.0f;
 static volatile float    s_hand_dev_max          = 0.0f;   // residual (signed) at the worst |residual| tick
 static volatile float    s_hand_dev_snap_cmd     = 0.0f;   // raw command at that tick
@@ -1200,7 +1207,10 @@ static void interp_isr() {
       // MOTOR_FB_STALENESS_US and the cap is COUNTED (stale_holds): past the
       // cap the anchor stops following a possibly-dead extrapolation, the
       // frame still transmits, and the counter makes the telemetry gap loud.
-      uint64_t age_us = (now_mono > hts) ? (now_mono - hts) : 0u;
+      // FW 27: keep the RAW (pre-cap) age — the deviation guard's freshness
+      // gate below reads it; the cap only bounds how far the anchor runs.
+      const uint64_t raw_age_us = (now_mono > hts) ? (now_mono - hts) : 0u;
+      uint64_t age_us = raw_age_us;
       if (age_us > MOTOR_FB_STALENESS_US) { age_us = MOTOR_FB_STALENESS_US; ++s_hand_stale_holds; }
       const float fb    = hand_axis().pos_rev;   // single-word atomic reads
       const float fbv   = hand_axis().vel_rps;
@@ -1251,14 +1261,29 @@ static void interp_isr() {
       // The CLAMPS are not gated either — only the counting is.
       const bool hand_counts = out_en && !coldstart;
       if (hand_counts && adev > MAX_DEVIATION_HAND_REV) {
-        ++s_hand_dev_over_ticks;
-        // The trip's OWN excursion (most recent exceed tick) — what the fault
-        // machine freezes into the MAX_DEVIATION latch snapshot. Multiple
-        // exceed ticks inside one 10 Hz poll window are the same excursion;
-        // last-writer-wins is the honest per-trip read (2026-09-02 fix).
-        s_hand_dev_trip_dev = dev;
-        s_hand_dev_trip_cmd = h_pos;
-        s_hand_dev_trip_fb  = fb_ex;
+        // FW 27 FRESHNESS GATE (canbridge_config.h HAND_DEV_FRESH_US): an
+        // exceed counts toward the MAX_DEVIATION latch only when the encoder
+        // anchor is fresh. Past 30 ms of age fb_ex is extrapolated on a frozen
+        // velocity and its error alone (½·a·age²) can fill the 2.5 rev band
+        // mid-stroke — R5 sitting 4 attempt 2 latched on a 99.9 ms-old anchor
+        // with a ~0.4–1.4 rev true residual. Such a tick is counted as a
+        // stale skip instead, and neither the counter the fault task
+        // differences nor the trip snapshot moves. A blind window longer than
+        // MOTOR_FB_STALENESS_US is the fault task's MOTOR_FB_STALE output
+        // suppression's job (axis 6 covered since FW 27). dev_last / dev_max
+        // above stay UNGATED observations, as before.
+        if (raw_age_us <= HAND_DEV_FRESH_US) {
+          ++s_hand_dev_over_ticks;
+          // The trip's OWN excursion (most recent exceed tick) — what the fault
+          // machine freezes into the MAX_DEVIATION latch snapshot. Multiple
+          // exceed ticks inside one 10 Hz poll window are the same excursion;
+          // last-writer-wins is the honest per-trip read (2026-09-02 fix).
+          s_hand_dev_trip_dev = dev;
+          s_hand_dev_trip_cmd = h_pos;
+          s_hand_dev_trip_fb  = fb_ex;
+        } else {
+          ++s_hand_dev_stale_skips;
+        }
       }
 
       // ── Hand lead clamp (MAX_LEAD_HAND_REV, against fb_ex) + lead-duty ─────
@@ -1584,6 +1609,7 @@ void interp_reset() {
   s_hand_stale_holds = 0;
   s_hand_lead_clamp_ticks = 0;
   s_hand_dev_over_ticks = 0;
+  s_hand_dev_stale_skips = 0;   // FW 27 — zeroed with its sibling
   s_hand_dev_last = s_hand_dev_max = 0.0f;
   s_hand_dev_snap_cmd = s_hand_dev_snap_fb = 0.0f;
   s_hand_dev_trip_dev = s_hand_dev_trip_cmd = s_hand_dev_trip_fb = 0.0f;
@@ -1726,6 +1752,7 @@ uint32_t interp_hand_sent()             { return s_hand_sent; }
 uint32_t interp_hand_unseen_skips()     { return s_hand_unseen_skips; }
 uint32_t interp_hand_stale_holds()      { return s_hand_stale_holds; }
 uint32_t interp_hand_dev_over_ticks()   { return s_hand_dev_over_ticks; }
+uint32_t interp_hand_dev_stale_skips()  { return s_hand_dev_stale_skips; }   // FW 27
 float    interp_hand_dev_last()         { return s_hand_dev_last; }
 float    interp_hand_dev_max()          { return s_hand_dev_max; }
 float    interp_hand_dev_snap_cmd()     { return s_hand_dev_snap_cmd; }
@@ -1753,7 +1780,7 @@ static const char* sched_phase_name(const SchedGroup& g) {
 
 static void hand7_print_status() {
   Serial.printf("[hand7] guard=%s lane=%s sent=%lu unseen=%lu"
-                " stale=%lu lead=%lu dev_over=%lu dev_last=%.4f dev_max=%.4f"
+                " stale=%lu lead=%lu dev_over=%lu dev_stale=%lu dev_last=%.4f dev_max=%.4f"
                 " dev_cmd=%.4f dev_fb=%.4f"
                 " sched=%s promo_dp=%.5f promo_dv=%.4f promo_da=%.3f promo_over=%lu"
                 " stops=%lu refused=%lu expired=%lu demoted=%lu"
@@ -1765,6 +1792,7 @@ static void hand7_print_status() {
                 (unsigned long)s_hand_stale_holds,
                 (unsigned long)s_hand_lead_clamp_ticks,
                 (unsigned long)s_hand_dev_over_ticks,
+                (unsigned long)s_hand_dev_stale_skips,   // FW 27: exceeds skipped on a stale anchor
                 (double)s_hand_dev_last,
                 (double)s_hand_dev_max,
                 (double)s_hand_dev_snap_cmd,
@@ -1795,6 +1823,7 @@ void interp_hand_counters_reset() {
   s_hand_stale_holds      = 0;
   s_hand_lead_clamp_ticks = 0;
   s_hand_dev_over_ticks   = 0;
+  s_hand_dev_stale_skips  = 0;   // FW 27 — printed on [hand7], so `hand7 reset` zeroes it
   s_hand_dev_last         = 0.0f;
   s_hand_dev_max          = 0.0f;
   s_hand_dev_snap_cmd     = 0.0f;

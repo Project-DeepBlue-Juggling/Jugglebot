@@ -100,7 +100,12 @@ _RESEND = re.compile(r'\]: (\d+\.\d+) RESEND(?:-REFUSED (\w+))? (?:at )?skill (\
                      r'([\d.]+) mm / ([+-][\d.]+) s')
 _CLAMP = re.compile(r'\[(\d+\.\d+)\] \[skill_node\]: AIM-LATERAL-CLAMPED skill (\d+): tracker landing '
                     r'([+-][\d.]+) mm in (\w)')
-_SEAT = re.compile(r'\]: (\d+\.\d+) OUTCOME ball \d+: y=.*caught=(\w+)(?: seat=([+-][\d.]+) s)?')
+# `[Bb]all \d+`, not `ball \d+`: R5 sitting 4 (2026-10-05) renamed the OUTCOME
+# line's ball naming to the operator-facing `Ball 1`/`Ball 2` convention
+# (`schedule.ball_label`) -- this keeps both spellings parsing, so a bag/log
+# captured before 2026-10-05 ("ball 0"/"ball 1") and one captured after
+# ("Ball 1"/"Ball 2") both match.
+_SEAT = re.compile(r'\]: (\d+\.\d+) OUTCOME [Bb]all \d+: y=.*caught=(\w+)(?: seat=([+-][\d.]+) s)?')
 
 
 def parse_log(path):

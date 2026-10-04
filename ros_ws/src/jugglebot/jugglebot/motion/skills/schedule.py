@@ -162,6 +162,33 @@ def transit_s(flight_s_: float, dwell_s: float) -> float:
     return (float(flight_s_) - float(dwell_s)) / 2.0
 
 
+def ball_label(ball_id: int) -> str:
+    """Operator-facing name for a schedule ball id (owner convention,
+    2026-10-04). Code prose keeps ``'ball A'``/``'ball B'`` and schedule ids
+    0/1; every OPERATOR-FACING string (log lines, START/END lines, the
+    executor's evidence lines, the sim gate's verdict lines) names a ball
+    through this function instead, as **Ball 1**/**Ball 2** — numbered by
+    the order Jugglebot's hand FIRST THROWS them, not by site: ball A / id 0
+    is the ball already in Jugglebot's hand at rest ("Ball 1"), ball B / id
+    1 is the one Ball Butler feeds or that waits at the second site ("Ball
+    2"). Sites keep their own names, so in fed columns Ball 1 holds at P2
+    and Ball 2 lands at P1 — a deliberate crossover, not a bug to "fix".
+
+    Never raises, so a log formatter can always produce a string: an id
+    outside 0/1 falls back to ``'Ball %d' % (id + 1)``, and anything that
+    cannot be read as an int falls back to ``'Ball ?'``.
+    """
+    try:
+        bid = int(ball_id)
+    except (TypeError, ValueError):
+        return 'Ball ?'
+    if bid == 0:
+        return 'Ball 1'
+    if bid == 1:
+        return 'Ball 2'
+    return 'Ball %d' % (bid + 1,)
+
+
 def _vec3(value, name: str) -> np.ndarray:
     """Same validation as ``segments._vec3`` (private there — this module
     needs its own three-vector guard for :class:`LandingPrior`, and a schedule
@@ -379,7 +406,16 @@ class Skill:
 
 @dataclasses.dataclass(frozen=True)
 class Pattern:
-    """Columns-pattern parameters (columns only at R2 — plan § 1.2)."""
+    """Columns-pattern parameters (columns only at R2 — plan § 1.2).
+
+    Ball naming (owner, 2026-10-04): this module's own code prose says
+    ``'ball A'``/``'ball B'`` and schedule ids 0/1 throughout — unchanged by
+    this convention. Every OPERATOR-FACING string instead names a ball
+    through :func:`ball_label` as **Ball 1**/**Ball 2** (ball A/id 0 is
+    "Ball 1", ball B/id 1 is "Ball 2"); see that function's docstring for
+    the full glossary, including the deliberate P1/P2 crossover in fed
+    columns.
+    """
 
     sites: Tuple[Site, Site]
     apex_m: float
@@ -393,17 +429,27 @@ class Pattern:
     rest_tail_s: float = sg.REST_TAIL_S
     #: Schedule ball ids (0 and/or 1, :func:`compile_columns`'s own
     #: ``i % 2`` numbering) that produce MOTION ONLY — B2's
-    #: ``columns_1ball`` (``SkillNode._run_columns_1ball``): the cup still
-    #: transits to the phantom's site and the hand still strokes empty (the
-    #: legs see identical dynamics to a real two-ball columns attempt), but
-    #: nothing is actually in the cup. ``()`` (every pattern before B2, and
-    #: ordinary columns) keeps every ball real. Carried onto
-    #: :attr:`Schedule.phantom_balls` unchanged by :func:`compile_columns` —
-    #: the ONE place this tuple is read by a compiler; the three
-    #: ENFORCEMENT points (no tracker latch / no OUTCOME-and-learner row / no
-    #: re-aim) live downstream, in ``SkillNode._maybe_announce`` and
-    #: ``SkillExecutor._register_outcome`` / ``_tracked_landing`` — see
-    #: :meth:`Schedule.is_phantom`.
+    #: ``columns_1ball`` (``SkillNode._run_columns_1ball``, phantom ball 1 —
+    #: Jugglebot's ball A real, nothing fed) and R5 sitting 4's
+    #: ``columns_1ball_fed`` (``SkillNode._run_columns(..., phantom_a=True)``,
+    #: the other half: phantom ball 0 — ball A's own strokes fly empty while
+    #: ball B is real and fed by Ball Butler through the SAME
+    #: ``compile_columns(pattern, feed=...)`` path the ordinary ``columns``
+    #: pattern uses): the cup still transits to the phantom's site and the
+    #: hand still strokes empty (the legs see identical dynamics to a real
+    #: two-ball columns attempt), but nothing is actually in the cup. ``()``
+    #: (every pattern before B2, and ordinary columns) keeps every ball
+    #: real. Nothing in :func:`compile_columns` reads WHICH id is named here
+    #: — it is generic over either ball being the phantom; only
+    #: :func:`phantom_feed_prior` (``columns_1ball`` only) assumes ball 1.
+    #: Carried onto :attr:`Schedule.phantom_balls` unchanged by
+    #: :func:`compile_columns` — the ONE place this tuple is read by a
+    #: compiler; the enforcement points (no tracker latch / no
+    #: OUTCOME-and-learner row / no re-aim / no ball-evidence precondition /
+    #: never a D3 survivor target) live downstream, in
+    #: ``SkillNode._maybe_announce`` and ``SkillExecutor._register_outcome``
+    #: / ``_register_catch`` / ``_tracked_landing`` / ``_dispatch`` /
+    #: ``_survivor_catch`` — see :meth:`Schedule.is_phantom`.
     phantom_balls: Tuple[int, ...] = ()
 
     def __post_init__(self):
@@ -450,7 +496,8 @@ class Schedule:
     #: :func:`compile_columns`, when ``pattern.phantom_balls`` is non-empty).
     #: ``()`` for every schedule :func:`compile_one_ball` / :func:`compile_reload`
     #: / :func:`compile_reload_wait` build — no pattern's ball is ever a
-    #: phantom except B2's ``columns_1ball``.
+    #: phantom except B2's ``columns_1ball`` and R5 sitting 4's
+    #: ``columns_1ball_fed``.
     phantom_balls: Tuple[int, ...] = ()
 
     def due(self, t_abs_s: float) -> Tuple[Skill, ...]:

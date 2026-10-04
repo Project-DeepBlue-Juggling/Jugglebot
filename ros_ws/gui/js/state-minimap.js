@@ -1167,6 +1167,12 @@ const JUGGLE_PATTERNS = [
     // site) -- same apex_m/separation_mm/reload fields as Columns, no new
     // GUI affordance needed (SkillNode._run_columns_1ball).
     { value: 'columns_1ball', label: 'Columns (1 ball)' },
+    // B2, R5 sitting 4: the OTHER half -- ball A phantom (Jugglebot's own
+    // strokes fly empty), ball B real and fed by Ball Butler. reload=True
+    // is required (SkillNode._run_columns refuses reload=False for this
+    // pattern); same apex_m/separation_mm fields otherwise
+    // (SkillNode._run_columns(..., phantom_a=True)).
+    { value: 'columns_1ball_fed', label: 'Columns (1 ball, fed)' },
 ];
 let juggleBusy = false;
 let juggleStatusMsg = null;    // { text, cls } | null

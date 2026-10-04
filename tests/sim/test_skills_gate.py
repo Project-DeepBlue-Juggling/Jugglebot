@@ -920,3 +920,42 @@ def test_the_one_ball_columns_phantom_produces_no_learner_rows_or_announcement()
     assert 1 not in announced, announced
     assert all(int(exp.ball_id) == 0 for exp in throws_out), throws_out
     assert len(tmp_memory) == len(throws_out)
+
+
+# ---------------------------------------------------------------------------
+# B2 (R5 sitting 4): `columns_1ball_fed` -- the OTHER half of `columns_1ball`
+# above: ball A (schedule id 0) a PHANTOM, ball B (schedule id 1) real and
+# fed by Ball Butler through `run_columns_attempt`'s own FEED machinery
+# (`run_columns_1ball_fed_attempt`/`_seed` -- a thin wrapper, not a
+# duplicate: the FEED physics are shared with the ordinary fed `columns`
+# trial above).
+# ---------------------------------------------------------------------------
+
+def _small_one_ball_fed_columns_run():
+    cfg = SelfTossGateConfig(pattern='columns', apex_m=0.9, target_throws=4,
+                             band_entry_throws=4, max_attempts=3,
+                             one_ball_fed=True, feed_angle_deg=11.9,
+                             feed_speed_mmps=5600.0)
+    return cfg, SkillsGate(cfg).run_columns_1ball_fed_seed(0)
+
+
+def test_a_small_one_ball_fed_columns_run_catches_b_with_a_as_motion_only():
+    """Mirrors `test_a_small_one_ball_columns_run_catches_a_with_b_as_
+    motion_only` with the balls swapped: B (the real, fed ball) catches
+    every throw it produces a row for, with no `REJECTED_NO_BALL`/
+    `ABORTED_NO_RELEASE`, and A produces zero experience rows."""
+    cfg, res = _small_one_ball_fed_columns_run()
+    assert res['refusals'] == 0, res['end_codes']
+    assert 'REJECTED_NO_BALL' not in res['end_codes']
+    assert 'ABORTED_NO_RELEASE' not in res['end_codes']
+    assert res['drops'] == 0
+    assert res['a_experience_rows'] == 0
+    assert res['b_throws'] > 0
+    assert res['association']['ok'] is True, res['association']
+    assert res['passed'] is True, res
+
+
+def test_one_ball_fed_requires_feed_angle_and_speed():
+    cfg = SelfTossGateConfig(pattern='columns', one_ball_fed=True)
+    with pytest.raises(ValueError, match='feed_angle_deg'):
+        SkillsGate(cfg).run_columns_1ball_fed_seed(0)

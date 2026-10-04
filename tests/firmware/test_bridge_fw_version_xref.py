@@ -168,6 +168,16 @@ def test_the_bump_history_records_what_this_version_carries():
     m26 = re.search(r'^// 25→26:(.*)$', text, re.M)
     assert m26 is not None, "FW 26 history line missing"
     assert 'HAND_MOVE_TO' in m26.group(1) and 'DEFERRED' in m26.group(1), m26.group(1)
+    # FW 27 — hand guard freshness.  The substance: a SAFETY PREDICATE changed
+    # on axis 6 in both directions — the deviation guard now IGNORES exceed ticks
+    # on a stale (> HAND_DEV_FRESH_US) anchor, and MOTOR_FB_STALE suppression now
+    # COVERS the hand — and the bump is wire-invisible, so only BRIDGE_FW_CHECK
+    # (not link health) says whether the fix is aboard.
+    m27 = re.search(r'^// 26→27:(.*)$', text, re.M)
+    assert m27 is not None, "FW 27 history line missing"
+    assert 'HAND_DEV_FRESH_US' in m27.group(1), m27.group(1)
+    assert 'MOTOR_FB_STALE' in m27.group(1), m27.group(1)
+    assert 'NO WIRE CHANGE' in m27.group(1), m27.group(1)
     assert 'NO WIRE CHANGE' in m26.group(1) and 'ERR_UNKNOWN_METHOD' in m26.group(1), m26.group(1)
 
 

@@ -540,6 +540,26 @@ static void evaluate_guard() {
       }
     }
   }
+  // ── The hand (axis 6) — FW 27 ──────────────────────────────────────────────
+  // The loop above stops at NUM_LEGS, so until FW 26 a hand whose encoder went
+  // silent kept streaming on an age-capped extrapolated anchor forever. The
+  // hand needs this MORE since FW 27: its deviation guard now ignores exceed
+  // ticks on an anchor older than HAND_DEV_FRESH_US (30 ms), so this rule is
+  // what bounds that blind window. Same 150 ms threshold, same recoverable
+  // suppression, same shared output gate as a leg (interp_set_output_enabled
+  // below gates the hand's TX too — leg_interp.cpp `out_en`; there is no
+  // separate hand output path to stop). Gated like the hand DEVIATION guard:
+  // mpc_active AND the hand lane active (the interp is driving the hand) — a
+  // legs-only session never streams the hand, so its feedback age is not a
+  // reason to stop the legs. hts == 0 (axis 6 never reported) is skipped: the
+  // interp already transmits nothing for an unseen hand (unseen_skips), so
+  // there is no hand output to suppress. Same torn-read (atomic_read_u64) and
+  // ordering (now > ts) discipline as the leg loop.
+  if (!fb_stale && s_mpc_active && interp_hand_lane_active()) {
+    const uint64_t now = micros64();
+    const uint64_t hts = atomic_read_u64(&axes[HAND_AXIS].pos_timestamp_us);
+    if (hts != 0 && now > hts && (now - hts > MOTOR_FB_STALENESS_US)) fb_stale = true;
+  }
 
   // Latch the guard E-STOP: once any guard condition trips, hold it
   // (sticky guard_mode==ESTOP + output gated off) until fault_notify_clear_errors().
