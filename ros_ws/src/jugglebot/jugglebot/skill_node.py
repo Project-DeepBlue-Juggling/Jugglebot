@@ -88,9 +88,9 @@ from jugglebot.motion.skills.schedule import (LEAD_S,
                                               compile_reload,
                                               compile_reload_columns,
                                               compile_reload_wait,
+                                              compile_rest_columns,
                                               flight_s, floor_lift_s,
                                               home_hand_bounds,
-                                              phantom_feed_prior,
                                               schedule_has_shadow_landing,
                                               transit_s)
 from jugglebot.motion.skills.segments import CATCH, REST, THROW
@@ -3026,9 +3026,13 @@ class SkillNode(Node):
         columns schedule begin (`schedule.compile_reload_columns`,
         `_install_announced_reload`'s own branch) -- NOT the fed columns
         start (`_run_columns`'s own ``reload=True``, which feeds ball B).
-        ``reload=False`` compiles the columns schedule directly --
+        ``reload=False`` compiles the whole schedule at once --
         `_run_one_ball`'s own non-reload shape, ball A assumed already
-        held at its site.
+        held in the cup: an opening REST that homes the hand, levels the
+        platform and carries the cup to ball A's site, then the columns
+        schedule (`schedule.compile_rest_columns`; R5 sitting 6,
+        2026-10-05 -- without the REST, THROW 0 was planned from the
+        ACTIVATE park and refused on every attempt).
         """
         if _ADMISSIBLE_BOX_PATH is None:
             msg = ('cannot find the repo root from %r -- the admissible box '
@@ -3116,17 +3120,26 @@ class SkillNode(Node):
         # geometry while the fed start passed 5/5 (2026-10-04). The
         # schedule's t0 is derived from the prior's landing instant exactly
         # as the fed start derives it from Ball Butler's.
+        #
+        # THE SCHEDULE OPENS ON A REST (`compile_rest_columns`, R5 sitting 6,
+        # 2026-10-05): the hand-homing move `_opening_rest_period` sized
+        # above was logged here and never scheduled, so THROW 0 was planned
+        # straight from the live state -- 7 attempts refused INFEASIBLE from
+        # the ACTIVATE park (hand 0.0 rev, the cup 10 mm under the planner
+        # floor) and 2 refused LIMIT_JERK from the tilted pose a failed
+        # reload catch had left. The REST homes the hand, levels the
+        # platform and carries the cup onto ball A's site first, exactly as
+        # `_run_columns`'s bridge and `_run_one_ball`'s opening REST do; t0
+        # is the REST's start, same idiom as `_run_columns`'s bridge compile.
         aim_site = _columns_feed_aim_site(
             phantom_site, a_site, self._columns_feed_aim_toward_a_mm())
         now = self.get_clock().now().nanoseconds / 1e9
         try:
-            probe = compile_columns(
-                pattern, feed=phantom_feed_prior(pattern, aim_site, now))
+            probe = compile_rest_columns(pattern, aim_site, lift_s, now)
             deficit = now - probe.skills[0].dispatch_s()
             t0 = (now + max(deficit, 0.0) + (1.0 / _TICK_HZ)
                   + _DISPATCH_LOOKAHEAD_S)
-            schedule = compile_columns(
-                pattern, feed=phantom_feed_prior(pattern, aim_site, t0))
+            schedule = compile_rest_columns(pattern, aim_site, lift_s, t0)
         except ValueError as exc:
             msg = 'columns_1ball schedule refused: %s' % (exc,)
             self.get_logger().debug(msg)

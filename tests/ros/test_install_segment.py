@@ -22,6 +22,7 @@ from __future__ import annotations
 import contextlib
 import dataclasses
 import time
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -385,6 +386,140 @@ def test_a_fresh_throw_refuses_when_the_streaming_rest_has_drifted_too_far():
     assert resp2.accepted is False
     assert resp2.code == feas.STALE_STATE
     assert 'commanded state moved during planning' in resp2.message
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# R5 sitting 6 (2026-10-05): the levelling REST after a HIGH catch, replayed
+# ═════════════════════════════════════════════════════════════════════════════
+# The one reload attempt of that sitting caught Ball Butler's ball and then
+# ended `STALE_STATE` at the REST: "hand position drift 1.2600 rev > 1.0000",
+# seed "IN MOTION ... hand -34.6888 rev/s". A REST is dispatched a lead before
+# its scheduled start and is given no lead by `install_segment`, so after a
+# CATCH it takes the machine over mid-runway from the moving hand; the guard
+# measures the hand's travel across the solve. At the 930 mm catch plane the
+# runway is ~100 mm longer in the same time, so the hand is ~10 rev/s faster
+# there than at 830 (15-25 rev/s in sittings 4-5) and a 36 ms solve crosses
+# the bound. The guard is untouched; `SkillExecutor` now retries the REST each
+# tick until its scheduled start. This test is that whole chain offline: the
+# REAL executor, the REAL handler, planner and guard, a clock that charges
+# each install the solve time the robot measured.
+
+def _sitting6_rest_after_a_high_catch(solve_s):
+    from jugglebot_interfaces.srv import SetTrajectoryLimits
+    from jugglebot.motion.skills import schedule as sk_sched
+    from jugglebot.motion.skills import sites as sk_sites
+    site = sk_sites.columns_sites(125.0)[1]
+    rest_mm = np.array([0.0, 0.0, float(site.rest_site_mm()[2])])
+    node = _perf_node()
+    req = SetTrajectoryLimits.Request()          # the R5 launch default
+    req.leg_vel_limit_mmps = 350.0
+    req.leg_acc_limit_mmps2 = 5000.0
+    req.leg_jerk_limit_mmps3 = 200000.0
+    node._svc_set_limits(req, SetTrajectoryLimits.Response())
+    home = _robot_state(hand_rev=_hand_rev_for_cup_z(rest_mm[2]))
+    node._on_robot_state(home)
+
+    real_perf, real_install = time.perf_counter, tn.sk_exec.install_segment
+    # The clock starts 0.1 ms before a knot-grid instant, so the handler's
+    # grid snap of the CATCH's origin is the same on every run: without it the
+    # catch record's end moves by up to a knot with the wall clock's phase, and
+    # with it whether the REST installs fresh or as a splice.
+    dt = float(hw.JB_TRAJ_KNOT_DT_S)
+    grid0 = (int(real_perf() / dt) + 2) * dt
+    clock = {'t': grid0 - 1e-4, 'solve_s': 0.0}
+
+    def slow_install(*args, **kwargs):
+        # the seed is already sampled (`_cycle_start_state`); the guard reads
+        # the clock after this returns -- exactly the solve's place in time
+        clock['t'] += clock['solve_s']
+        return real_install(*args, **kwargs)
+
+    log = SimpleNamespace(tries=[], lines=[])
+
+    def installer(kind, terminal, t_now_s, ball_id=None):
+        node._on_robot_state(home)               # 100 Hz on the real graph
+        _rev, hand_vel = node._commanded_hand_state()
+        resp = node._svc_install_segment(
+            _rest_req(terminal.t_rest_s, rest_z=float(terminal.rest_site_mm[2])),
+            InstallSegment.Response())
+        log.tries.append((clock['t'], float(hand_vel), bool(resp.accepted),
+                          str(resp.code), str(resp.message), node._cycle))
+        return sk_exec.InstallResult(bool(resp.accepted), str(resp.code),
+                                     str(resp.message), 0.0, splice_k=0)
+
+    time.perf_counter = lambda: clock['t']
+    tn.sk_exec.install_segment = slow_install
+    try:
+        t_land = grid0 + sk_sched.LEAD_S + 0.6
+        # a Ball Butler feed at the 930 mm plane (sitting 5: ~5.7 m/s at 830)
+        resp = node._svc_install_segment(
+            _catch_req(t_land, site_z=float(site.catch_site_mm()[2]),
+                       vel_z=-5520.0, rest_z=float(rest_mm[2])),
+            InstallSegment.Response())
+        assert resp.accepted is True, resp.message
+        catch_cycle = node._cycle
+        # `compile_reload`'s own placement of the DECAY REST
+        start = t_land + sk_seg.REST_TAIL_S + sk_sched.REST_FRESH_MARGIN_S
+        rest = sk_sched.Skill(kind=sk_seg.REST, ball_id=0, site=site,
+                              t_abs_s=start + sk_sched.DECAY_S,
+                              window_s=sk_sched.DECAY_S, rest_site_mm=rest_mm,
+                              lead_s=sk_sched.LEAD_S)
+        sched = sk_sched.Schedule(
+            pattern='self_toss', skills=(rest,), flight_s=0.0,
+            beat_s=sk_sched.DECAY_S, transit_s=0.0, dwell_s=0.0,
+            t0_abs_s=start)
+        x = sk_exec.SkillExecutor(sched, installer,
+                                  dispatch_lookahead_s=sn._DISPATCH_LOOKAHEAD_S)
+        clock['solve_s'] = float(solve_s)
+        # The first tick lands 10 ms into the executor's dispatch tick (on the
+        # robot, anywhere in its 25 ms): `t_now + lead` is then 10 ms past the
+        # catch record's end, so the install is FRESH -- the branch the robot
+        # took -- rather than sitting on the fresh/splice boundary.
+        t = rest.dispatch_s() - sn._DISPATCH_LOOKAHEAD_S + 0.010
+        while t < start + 0.2 and not x.attempt_ended and 0 not in x.dispatched:
+            clock['t'] = max(clock['t'], t)
+            log.lines.extend(x.tick(clock['t']))
+            t = max(t + 1.0 / sn._TICK_HZ, clock['t'])
+    finally:
+        time.perf_counter = real_perf
+        tn.sk_exec.install_segment = real_install
+    return x, log, catch_cycle, start
+
+
+@pytest.mark.parametrize('solve_s', [0.036, 0.073])
+def test_the_rest_after_a_high_catch_is_refused_then_installs_on_a_retry(solve_s):
+    """36 ms is the solve the robot measured on the refused attempt; 73 ms is
+    the slowest REST solve in the sitting-4/5 logs. Probe (2026-10-06, this
+    harness): at 36 ms the first try refuses at 1.2002 rev with the hand at
+    -34.1 rev/s (the robot: 1.2600 rev at -34.69), the second at 1.1035, the
+    third installs at -28.7 rev/s, 0.157 s before the scheduled start; at
+    73 ms 2.3324 and 1.6503 are refused and the third installs at -15.4
+    rev/s, 0.046 s before it; at 21 ms the first try installs."""
+    x, log, catch_cycle, start = _sitting6_rest_after_a_high_catch(solve_s)
+    assert not x.attempt_ended, (x.end_code, x.end_message)
+    assert 0 in x.dispatched
+    refused, accepted = log.tries[:-1], log.tries[-1]
+    assert refused, 'the fixture must reproduce the refusal to mean anything'
+    for _t, hand_vel, ok, code, message, cycle in refused:
+        assert not ok and code == feas.STALE_STATE
+        assert 'hand position drift' in message
+        assert abs(hand_vel) > 25.0             # past anything sitting 5 flew
+        assert cycle is catch_cycle             # a refusal leaves the CATCH streaming
+    assert accepted[2] is True, accepted[4]
+    assert accepted[5] is not catch_cycle       # the REST now owns the wire
+    # every try, the accepted one included, is inside the REST's lead window
+    assert accepted[0] < start
+    assert sum('REST-RETRY skill 0' in ln for ln in log.lines) == len(refused)
+
+
+def test_the_rest_after_a_high_catch_installs_at_once_when_the_solve_is_quick():
+    """The control: a 21 ms solve (the fastest in the logs) keeps the hand's
+    travel under the bound even at 930 mm, so nothing is retried and the REST
+    starts when it always did."""
+    x, log, _catch_cycle, _start = _sitting6_rest_after_a_high_catch(0.021)
+    assert not x.attempt_ended
+    assert [tr[2] for tr in log.tries] == [True]
+    assert not any('REST-RETRY' in ln for ln in log.lines)
 
 
 # ═════════════════════════════════════════════════════════════════════════════

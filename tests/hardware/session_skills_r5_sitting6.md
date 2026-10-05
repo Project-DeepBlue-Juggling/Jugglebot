@@ -36,6 +36,26 @@ decisions follow:
 
 **Operator runs every motion command; Claude never does.** No firmware change this sitting.
 
+**First attempt, 2026-10-05 night: ten attempts, no throw — fixed 2026-10-06, re-fly from row 1**
+(`logbook/2026-10-06-skill-stack-r5-sitting-6-start-state-refusals.md`). Three refusals, one cause:
+a skill planned from wherever the machine happened to be.
+
+- *7 × `INFEASIBLE` at THROW 0, 2 × `LIMIT_JERK` at THROW 0* — `columns_1ball` **without reload**
+  (the GUI Juggle panel's default; the reload box was not ticked) planned its first throw straight
+  from the ACTIVATE park (hand 0.0 rev, the cup 10 mm under the planner floor), and twice from the
+  tilted hold a dead reload attempt had left. That start now opens with a REST that homes the hand,
+  levels the platform and carries the cup to P2: expect `REST skill 0` first and the first throw
+  ~1.5 s later than before. It is a valid start again; row 15 still asks for the reload one.
+- *1 × `STALE_STATE` at the levelling REST* — the one reload attempt, after the feed was caught:
+  the hand is faster after a high catch (34.7 rev/s, 12.8-29.5 in sittings 4-5) and its travel
+  across the 36 ms solve read as 1.26 rev against the install guard's 1.0. The guard is unchanged;
+  the executor now retries a REST on the next tick, until its scheduled start. Expect up to a few
+  `REST-RETRY skill N` lines (DEBUG, launch.log) after a catch, then `REST skill N`. **A
+  `STALE_STATE` END at a REST is now a finding — bag it.**
+
+No gated file changed (box gate `3c9533225417` stands). The trim was not the cause, but launch 2
+ran without it: row 9 still applies.
+
 ## 0. Pre-sitting (no ROS, any time)
 
 | # | Step | Expect |
@@ -67,7 +87,7 @@ first, before anything new depends on it.
 
 | # | Step | Expect |
 |---|---|---|
-| 15 | `{pattern: columns_1ball, apex_m: 0.95, separation_mm: 125.0, num_cycles: 6, reload: true}` ×3 (Ball Butler feeds Ball 1 into the parked cup at P2, as in sitting 5) | Watch the hand: it should sit near the top of its stroke between a throw and the next catch and drop only a short way before the ball arrives (~7 cm), then carry the ball down. Sitting 5 caught every real throw (1/1, 3/3, 5/5 at `num_cycles` 3/6/10 — `num_cycles` counts the phantom's throws too, so 6 cycles is 3 real throws). **Stop rule for the change:** a real throw missed in 2 of 3 runs, or a ball visibly bouncing out of the cup on contact → stop motion and report; the rollback is one constant + a re-sweep. |
+| 15 | `{pattern: columns_1ball, apex_m: 0.95, separation_mm: 125.0, num_cycles: 6, reload: true}` ×3 (Ball Butler feeds Ball 1 into the parked cup at P2, as in sitting 5). **From the GUI Juggle panel, tick the reload box — it is off by default.** | Watch the hand: it should sit near the top of its stroke between a throw and the next catch and drop only a short way before the ball arrives (~7 cm), then carry the ball down. Sitting 5 caught every real throw (1/1, 3/3, 5/5 at `num_cycles` 3/6/10 — `num_cycles` counts the phantom's throws too, so 6 cycles is 3 real throws). **Stop rule for the change:** a real throw missed in 2 of 3 runs, or a ball visibly bouncing out of the cup on contact → stop motion and report; the rollback is one constant + a re-sweep. |
 | 16 | `python tools/probes/throw_outcome_bag_probe.py --bag <bag>` (Claude, between blocks) | Apex readings now centre on the commanded 0.95 m (the rise-aware definition), not ~0.96. |
 
 ## 3. The fed half: `columns_1ball_fed` with the hop entry

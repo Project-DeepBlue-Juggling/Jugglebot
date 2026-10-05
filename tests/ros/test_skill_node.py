@@ -4787,7 +4787,8 @@ def test_columns_1ball_is_one_of_the_patterns_the_juggle_goal_accepts():
 def test_columns_1ball_reload_false_compiles_a_phantom_schedule_immediately(
         tmp_path):
     """Unlike plain `columns` (which arms a FEED WAIT), `reload=False` here
-    compiles `compile_columns` straight away -- A is assumed already held,
+    compiles the whole schedule straight away (`compile_rest_columns`: an
+    opening REST, then `compile_columns`) -- A is assumed already held,
     `_run_one_ball`'s own non-reload shape -- and ball A ends up real at P2,
     the phantom at P1 (the default `_columns_feed_site_name`, owner's own
     framing: "A at P2, B phantom at P1")."""
@@ -4811,6 +4812,77 @@ def test_columns_1ball_reload_false_compiles_a_phantom_schedule_immediately(
     ball1_site = next(s.site.name for s in schedule.skills if s.ball_id == 1)
     assert ball0_site == 'P2'       # A, real
     assert ball1_site == 'P1'       # B, phantom
+
+
+def test_columns_1ball_reload_false_opens_on_a_rest_from_the_activate_park(
+        tmp_path):
+    """R5 sitting 6 (2026-10-05): the first Juggle after ACTIVATE, ball
+    hand-seated, hand parked at 0.0 rev -- 7 attempts ended `INFEASIBLE` at
+    THROW 0 because the node logged "opening REST homes the hand" and never
+    scheduled it. The schedule now OPENS on that REST: ball A's site, ball
+    held, over the period `_opening_rest_period` sized from the parked hand;
+    THROW 0's launch window starts where the REST ends."""
+    node, _client = _node_with_client()
+    node._params['plant_id'] = 'test_columns_1ball_park_' + str(id(node))
+    _freshen(node, pos_meas=0.0, pos_cmd=0.0)
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
+                      _good_box_path(tmp_path, columns=True)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_columns_1ball_goal(separation_mm=100.0,
+                                                       reload=False))
+    assert resp.success is True, resp.message
+    schedule = node._executor.schedule
+    rest0 = schedule.skills[0]
+    assert rest0.kind == 'REST'
+    assert rest0.site.name == 'P2' and rest0.holds_ball is True
+    assert rest0.window_s == pytest.approx(sn.floor_lift_s(0.0))
+    throw0 = next(s for s in schedule.skills if s.kind == 'THROW')
+    assert throw0.ball_id == 0
+    assert throw0.t_abs_s - throw0.window_s == pytest.approx(rest0.t_abs_s)
+    # the first dispatch is still ahead of "now": nothing is already late
+    now = node.get_clock().now().nanoseconds / 1e9
+    assert rest0.dispatch_s() >= now
+
+
+@pytest.mark.parametrize('pattern,reload', [
+    ('self_toss', False), ('self_toss', True),
+    ('hop', False), ('hop', True),
+    ('columns', False), ('columns', True),
+    ('columns_1ball', False), ('columns_1ball', True),
+    ('columns_1ball_fed', True),
+])
+def test_every_pattern_entry_opens_on_a_rest(tmp_path, pattern, reload):
+    """THE START-STATE CONTRACT (R5 sitting 6, 2026-10-05): whatever a Juggle
+    goal starts, the first skill it puts on the machine is a REST -- the one
+    skill that may be planned from wherever the machine is (parked hand,
+    off-site, tilted) and that leaves it level, homed and at the site, which
+    is the only start every gate (the sim gate, the box sweep) certifies a
+    THROW or CATCH from. `columns_1ball` with `reload=False` was the one
+    entry that broke it, and it cost a sitting: 9 attempts, 0 throws.
+
+    Parametrised over every `(pattern, reload)` the node accepts; the last
+    assert fails when `_PATTERNS` grows without this list growing with it."""
+    node, _client = _node_with_client()
+    node._params['plant_id'] = 'test_opens_on_rest_%s_%s' % (pattern, id(node))
+    _freshen(node, pos_meas=0.0, pos_cmd=0.0)      # the ACTIVATE park hand
+    _prelevel_ready(node)       # self_toss/hop pre-level; unused by columns
+    if reload:
+        _reload_ready(node)
+    # the fixture's hop boxes are the 250 mm sweep's; the others sit at 100 mm
+    separation_mm = 250.0 if pattern == 'hop' else 100.0
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
+                      _good_box_path(tmp_path, hop=True, columns=True)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_goal(pattern, separation_mm=separation_mm,
+                                         reload=reload))
+    assert resp.success is True, resp.message
+    first = node._executor.schedule.skills[0]
+    assert first.kind == 'REST', (
+        '%s reload=%s puts a %s on the machine first' % (pattern, reload,
+                                                         first.kind))
+    covered = {'self_toss', 'hop', 'columns', 'columns_1ball',
+               'columns_1ball_fed'}
+    assert set(sn.SkillNode._PATTERNS) == covered
 
 
 def test_columns_1ball_reload_true_starts_the_plain_reload_choreography(

@@ -1763,6 +1763,64 @@ def compile_reload_columns(landing_mm, landing_vel_mm_s, t_land_abs_s: float,
                     pattern='columns', phantom_balls=columns_pattern.phantom_balls)
 
 
+def compile_rest_columns(columns_pattern: Pattern, aim_site: Site,
+                         lift_s: float, t0_abs_s: float) -> Schedule:
+    """``columns_1ball`` with ``reload=False`` (``SkillNode._run_columns_1ball``):
+    an OPENING REST, then the columns schedule. Ball A is already seated in
+    the cup (an operator placed it); the REST homes the hand, levels the
+    platform and carries the cup onto ball A's site, so THROW 0 is planned
+    from the one start state every gate certifies — level, homed, at the
+    site — instead of from wherever the machine happens to be.
+
+    **Why it exists (R5 sitting 6, 2026-10-05, 9 attempts, 0 throws).** Until
+    this function the no-reload start compiled :func:`compile_columns` alone,
+    so THROW 0 was a fresh origin from the LIVE state. Two live states broke
+    it: (1) the ACTIVATE park — hand 0.0 rev, the cup 10 mm under the planner
+    floor (:data:`FLOOR_LIFT_S`'s own note) — which the QP refuses as an
+    unbounded dual step (7 attempts; reproduced offline: a start at or below
+    0.10 rev is infeasible, 0.18 rev and above installs); (2) the tilted
+    receive pose a failed reload catch leaves behind (~12 deg), which refuses
+    ``LIMIT_JERK`` at 255 k against 200 k (2 attempts). Every other pattern
+    entry already opened on a REST (:func:`compile_one_ball`,
+    :func:`compile_reload_wait`); this one logged the hand-homing move and
+    never scheduled it.
+
+    The REST is :func:`compile_reload_wait`'s own skill with
+    ``holds_ball=True`` — the bridge ``SkillNode._run_columns`` opens on —
+    reused rather than restated. The columns schedule is the SAME compile the
+    no-reload start has always used
+    (``compile_columns(pattern, feed=phantom_feed_prior(...))``, the fed
+    start's aim point and level pin for the phantom's first catch), anchored
+    so ball A's release is one ``launch_s`` after the REST's end: THROW 0's
+    launch window starts exactly where the REST leaves the machine, the anchor
+    :func:`compile_reload_columns` uses after its DECAY REST and
+    :func:`compile_one_ball` uses after its opening REST.
+
+    ``t0_abs_s`` is the REST's start (the bridge's own convention), not ball
+    A's release.
+    """
+    if 1 not in tuple(columns_pattern.phantom_balls):
+        raise ValueError(
+            'compile_rest_columns is for columns_1ball only -- '
+            'columns_pattern.phantom_balls must name ball 1, got %r'
+            % (columns_pattern.phantom_balls,))
+    bridge = compile_reload_wait(columns_pattern.sites[0], lift_s, t0_abs_s,
+                                 holds_ball=True)
+    prefix = bridge.skills
+    rest_end_abs = float(prefix[-1].t_abs_s)
+    release_abs = rest_end_abs + float(columns_pattern.launch_s)
+    columns_sched = compile_columns(
+        columns_pattern,
+        feed=phantom_feed_prior(columns_pattern, aim_site, release_abs))
+    combined = prefix + columns_sched.skills
+    _check_dispatch_monotone(combined)
+    return Schedule(skills=combined, flight_s=columns_sched.flight_s,
+                    beat_s=columns_sched.beat_s,
+                    transit_s=columns_sched.transit_s,
+                    dwell_s=columns_sched.dwell_s, t0_abs_s=float(t0_abs_s),
+                    pattern='columns', phantom_balls=columns_pattern.phantom_balls)
+
+
 def _shifted(sk: Skill, t0: float) -> Skill:
     """``sk`` with every absolute instant it carries moved by ``t0``.
 

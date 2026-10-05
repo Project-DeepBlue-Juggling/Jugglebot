@@ -1709,6 +1709,83 @@ def test_compile_reload_columns_skill_count_is_lead_in_plus_columns_tail(cols):
     assert len(got.skills) == 3 + len(tail.skills)
 
 
+# ── `compile_rest_columns`: the no-reload `columns_1ball` opens on a REST ──
+# (R5 sitting 6, 2026-10-05: 9 attempts, 0 throws -- THROW 0 was planned from
+# the ACTIVATE park and from a tilted pose because nothing scheduled the REST)
+
+def _rest_columns(cols, lift_s=None, t0=1000.0, n_throws=5):
+    pattern = _pattern(cols, n_throws=n_throws, phantom_balls=(1,))
+    lift = sc.FLOOR_LIFT_S if lift_s is None else lift_s
+    return pattern, sc.compile_rest_columns(pattern, cols[1], lift, t0), lift, t0
+
+
+def test_compile_rest_columns_opens_on_a_rest_holding_ball_a_at_its_site(cols):
+    """The contract this compiler exists for: skill 0 is a REST, at ball A's
+    site, holding ball A, over the sized hand-homing period, starting at
+    ``t0_abs_s`` -- the bridge ``compile_reload_wait(..., holds_ball=True)``
+    builds, reused rather than restated."""
+    pattern, got, lift, t0 = _rest_columns(cols)
+    rest = got.skills[0]
+    bridge = sc.compile_reload_wait(cols[0], lift, t0, holds_ball=True).skills[0]
+    assert rest == bridge
+    assert rest.kind == sg.REST and rest.holds_ball is True
+    assert rest.site.name == cols[0].name
+    assert rest.window_s == pytest.approx(lift)
+    assert rest.t_abs_s == pytest.approx(t0 + lift)
+    assert got.pattern == 'columns' and got.phantom_balls == (1,)
+    assert got.t0_abs_s == pytest.approx(t0)
+
+
+def test_compile_rest_columns_releases_ball_a_one_launch_window_after_the_rest(cols):
+    """THROW 0's launch window starts exactly where the REST leaves the machine
+    (level, homed, at the site): the anchor ``compile_reload_columns`` uses
+    after its DECAY REST. A window that started earlier would splice THROW 0
+    into the REST's slew (that compiler's own measured LIMIT_JERK)."""
+    pattern, got, lift, t0 = _rest_columns(cols)
+    rest = got.skills[0]
+    throw0 = next(s for s in got.skills if s.kind == sg.THROW)
+    assert throw0.ball_id == 0
+    assert throw0.t_abs_s == pytest.approx(rest.t_abs_s + pattern.launch_s)
+    assert throw0.t_abs_s - throw0.window_s == pytest.approx(rest.t_abs_s)
+
+
+def test_compile_rest_columns_tail_is_the_no_reload_columns_compile_unchanged(cols):
+    """Everything after the REST is the schedule the no-reload start has always
+    compiled -- ``compile_columns(pattern, feed=phantom_feed_prior(...))``, the
+    fed start's aim point and level pin -- anchored at the new release
+    instant. Only the opening REST is new."""
+    pattern, got, lift, t0 = _rest_columns(cols)
+    release = t0 + lift + pattern.launch_s
+    tail = sc.compile_columns(
+        pattern, feed=sc.phantom_feed_prior(pattern, cols[1], release))
+    assert len(got.skills) == 1 + len(tail.skills)
+    for mine, theirs in zip(got.skills[1:], tail.skills):
+        assert mine.kind == theirs.kind and mine.ball_id == theirs.ball_id
+        assert mine.t_abs_s == pytest.approx(theirs.t_abs_s)
+        assert mine.window_s == pytest.approx(theirs.window_s)
+        assert mine.lead_s == pytest.approx(theirs.lead_s)
+    first_catch = next(s for s in got.skills
+                       if s.kind == sg.CATCH and s.ball_id == 1)
+    assert first_catch.receive_tilt == (0.0, 0.0)
+
+
+def test_compile_rest_columns_dispatch_is_monotone_at_a_ros_epoch(cols):
+    """Dispatch order holds across the REST/columns seam, at a ROS-epoch t0
+    (the magnitude that broke ``compile_columns``'s own 1e-9 s comparisons
+    before 2026-09-13) and with a hand-homing period longer than the floor."""
+    for lift in (sc.FLOOR_LIFT_S, 3.2):
+        _pattern_, got, _lift, _t0 = _rest_columns(cols, lift_s=lift,
+                                                   t0=1789263419.5)
+        disp = [s.dispatch_s() for s in got.skills]
+        assert all(b >= a - 1e-9 for a, b in zip(disp, disp[1:]))
+        assert got.skills[0].kind == sg.REST
+
+
+def test_compile_rest_columns_rejects_a_pattern_with_no_phantom_ball(cols):
+    with pytest.raises(ValueError, match='phantom_balls'):
+        sc.compile_rest_columns(_pattern(cols), cols[1], sc.FLOOR_LIFT_S, 0.0)
+
+
 # ── `phantom_feed_prior`: the one-ball start mirrors the fed start (2026-10-04) ──
 
 def test_phantom_feed_prior_is_a_vertical_arrival_at_the_aim_site_one_transit_after_t0(cols):

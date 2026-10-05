@@ -50,6 +50,7 @@ from jugglebot.motion.skills.segments import (CATCH, REST, THROW, CatchTerminal,
                                               SegmentConfig, ThrowAfterCatch,
                                               ThrowTerminal)
 from jugglebot.motion.trajectory import ballistics_bc
+from jugglebot.motion.trajectory.feasibility import STALE_STATE
 from jugglebot.motion.trajectory import cup_realize as cr
 from jugglebot.motion.trajectory import tilt_geometry as tg
 from jugglebot.motion.trajectory.cycle_plan import CyclePlan
@@ -2673,9 +2674,10 @@ class SkillExecutor:
                   obs: Optional[Observations] = None
                   ) -> Tuple[List[str], bool]:
         """Try to dispatch skill ``idx``.  Returns ``(lines, deferred)`` --
-        ``deferred`` is True only for a CATCH still waiting on its own
-        landing (below); every other path dispatches, refuses, or ends the
-        attempt outright and reports ``deferred=False``."""
+        ``deferred`` is True for a CATCH still waiting on its own landing and
+        for a REST refused ``STALE_STATE`` before its scheduled start (both
+        below); every other path dispatches, refuses, or ends the attempt
+        outright and reports ``deferred=False``."""
         # `idx == 0` is the only skill any attempt can be SURE is a fresh
         # origin (Unit B): both `compile_one_ball` and `compile_columns`
         # build their opening REST as "a fresh install (no record yet)", and
@@ -2774,6 +2776,37 @@ class SkillExecutor:
         self._pending_notes = []
         res = self.installer(skill.kind, terminal, t_abs_s,
                              ball_id=skill.ball_id)
+        if (not res.accepted and skill.kind == REST
+                and res.code == STALE_STATE
+                and t_abs_s < float(skill.t_abs_s) - float(skill.window_s)):
+            # A REST refused STALE_STATE is RETRIED on the next tick, until
+            # its own scheduled start (R5 sitting 6, 2026-10-05). A REST is
+            # dispatched `lead_s` before that start and the installer gives
+            # it no lead (`install_segment`: a REST's origin is `t_now`), so
+            # after a CATCH it takes the machine over mid-runway, seeded
+            # from the moving hand. The install guard measures the hand's
+            # travel across the solve against 1.0 rev; at the 930 mm catch
+            # plane the hand was still at 34.7 rev/s there (15-25 at 830),
+            # a 36 ms solve read as 1.26 rev, and the one refusal ended the
+            # attempt with the ball caught. The guard's own message says
+            # "retry", and a REST is the one skill that can: it carries no
+            # event, its END is pinned (`RestTerminal.t_rest_s`), so starting
+            # later only shortens it toward the `window_s` the schedule
+            # certified -- never below, hence the bound. Every tick the
+            # runway slows the hand; by the scheduled start the catch has
+            # ended and the REST plans from rest, which the guard cannot
+            # refuse. A refusal leaves the active plan untouched
+            # (`trajectory_node._reject_segment`), so the CATCH keeps
+            # streaming between tries. `deferred=True` holds schedule order,
+            # as the CATCH deferral above does. Nothing is recorded in
+            # `results`/`dispatched` until the REST installs or the window
+            # closes; THROW/CATCH refusals are unchanged (they carry an
+            # event and end the attempt).
+            return (clamp_lines + [
+                '%.3f REST-RETRY skill %d: %s -- retried next tick, until '
+                'the scheduled start %.3f'
+                % (t_abs_s, idx, res.message,
+                   float(skill.t_abs_s) - float(skill.window_s))], True)
         self.dispatched.add(idx)
         self.results.append((idx, skill, res))
         if not res.accepted:

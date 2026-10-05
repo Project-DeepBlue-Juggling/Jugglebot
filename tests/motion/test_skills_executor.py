@@ -5831,3 +5831,247 @@ def test_missed_catch_fixture_replay(sites):
         assert fired == (label == 'miss'), (
             '%s attempt %s: fired=%s' % (label, attempt, fired))
     assert n_fired == {'miss': 14, 'caught': 0}
+
+
+# ---------------------------------------------------------------------------
+# R5 sitting 6 (2026-10-05): three start-state refusals, ten attempts, no throw
+# (logbook 2026-10-06-skill-stack-r5-sitting-6-start-state-refusals)
+# ---------------------------------------------------------------------------
+
+def _columns_1ball_no_reload(sites_r5, hand_rev_now, t0=ROS_T0):
+    """The schedule ``SkillNode._run_columns_1ball`` compiles for
+    ``reload=False`` at the R5 point, with the node's default site pick (the
+    phantom at the feed site P1, ball A at P2)."""
+    phantom_site, a_site = sites_r5
+    pattern = sc.Pattern(sites=(a_site, phantom_site), apex_m=R5_APEX_M,
+                         dwell_s=R5_DWELL_S, n_throws=6, phantom_balls=(1,))
+    sched = sc.compile_rest_columns(
+        pattern, phantom_site, sc.floor_lift_s(hand_rev_now), t0)
+    return a_site, sched
+
+
+def _install_rest_then_throw_0(a_site, sched, seed, lookahead_s, limits, geom):
+    """Skill 0 (the opening REST) from ``seed``, then THROW 0 off the record
+    that leaves — both through ``install_segment`` with the ROS handler's own
+    ``reserve_fresh_lead=True``, each dispatched ``lookahead_s`` early as the
+    executor's tick does on the robot."""
+    rest0 = sched.skills[0]
+    throw0 = next(s for s in sched.skills if s.kind == sg.THROW)
+    assert rest0.kind == sg.REST
+    record, res_rest, seg_rest = ex.install_segment(
+        None, seed, sg.REST,
+        sg.RestTerminal(rest_site_mm=a_site.rest_site_mm(),
+                        t_rest_s=rest0.t_abs_s, holds_ball=True),
+        rest0.dispatch_s() - lookahead_s, limits=limits, geom=geom,
+        reserve_fresh_lead=True)
+    if not res_rest.accepted:
+        return res_rest, None, seg_rest, None
+    _record2, res_throw, seg_throw = ex.install_segment(
+        record, None, sg.THROW,
+        sg.ThrowTerminal(site_mm=a_site.throw_site_mm(),
+                         target_mm=a_site.catch_site_mm(),
+                         flight_s=sched.flight_s, t_release_s=throw0.t_abs_s),
+        throw0.dispatch_s() - lookahead_s, limits=limits, geom=geom,
+        reserve_fresh_lead=True)
+    return res_rest, res_throw, seg_rest, seg_throw
+
+
+def _activate_park() -> uc.CycleState:
+    """Where ACTIVATE leaves the machine: centred, level, hand at 0.0 rev —
+    the cup 10 mm under the planner floor."""
+    return uc.CycleState.at_rest(
+        np.array([0.0, 0.0, float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM), 0.0, 0.0, 0.0]),
+        float(hw.JB_OP_HAND_ACTIVATE_POSITION_REV), cr.RealizeConfig())
+
+
+@pytest.mark.parametrize('lookahead_s', [0.0, 0.05])
+def test_no_reload_columns_1ball_installs_from_the_activate_park(
+        limits_r5, geom, sites_r5, lookahead_s):
+    """Seven attempts of 2026-10-05 ended ``INFEASIBLE`` at THROW 0 ("unbounded
+    dual step admitting inequality 13"): the first Juggle after ACTIVATE,
+    hand-seated ball, hand parked at 0.0 rev. With the opening REST the same
+    start installs — the REST from the park, then THROW 0 from the REST, both
+    as a fresh origin (exact dispatch) and as a splice into the REST's final
+    knots (dispatched one look-ahead early, as the robot does).
+
+    Recipe confirmed by probe before this test was written (2026-10-06,
+    ``scratchpad/probe_rest_columns_install.py``, the R5 limits, t0 at 100 s
+    and at a ROS epoch, look-ahead 0/25/50/75 ms): every REST and THROW 0
+    accepted, hand acceleration 3449 rev/s² against 3900."""
+    a_site, sched = _columns_1ball_no_reload(
+        sites_r5, float(hw.JB_OP_HAND_ACTIVATE_POSITION_REV))
+    res_rest, res_throw, _seg_rest, seg_throw = _install_rest_then_throw_0(
+        a_site, sched, _activate_park(), lookahead_s, limits_r5, geom)
+    assert res_rest.accepted, res_rest.message
+    assert res_throw is not None and res_throw.accepted, res_throw.message
+    assert (seg_throw.meta.report.peak_hand_acc_rps2
+            <= limits_r5.hand_acc_limit_rps2)
+
+
+def test_throw_0_planned_straight_from_the_activate_park_is_refused(
+        limits_r5, geom, sites_r5):
+    """Why the REST is not optional: the THROW the old no-reload compile
+    planned first, seeded from the park itself, has no solution — the cup
+    starts 10 mm under the floor, must regain it within one knot, and the
+    ball-stays-seated bound then forbids the braking that needs. Reproduced
+    2026-10-06 (``scratchpad/probe_s6_throw0.py --hand 0.0``): refused at
+    0.0 and 0.10 rev, installs from 0.18 rev up.
+
+    Only the refusal is asserted, not its code: which path an infeasible QP
+    refuses through depends on the BLAS (``cup_cycle._verify``'s docstring)."""
+    a_site, sched = _columns_1ball_no_reload(
+        sites_r5, float(hw.JB_OP_HAND_ACTIVATE_POSITION_REV))
+    throw0 = next(s for s in sched.skills if s.kind == sg.THROW)
+    _record, res, seg = ex.install_segment(
+        None, _activate_park(), sg.THROW,
+        sg.ThrowTerminal(site_mm=a_site.throw_site_mm(),
+                         target_mm=a_site.catch_site_mm(),
+                         flight_s=sched.flight_s, t_release_s=throw0.t_abs_s),
+        throw0.dispatch_s(), limits=limits_r5, geom=geom,
+        reserve_fresh_lead=True)
+    assert not res.accepted and seg is None
+
+
+def test_no_reload_columns_1ball_installs_from_a_tilted_receive_hold(
+        limits_r5, geom, sites_r5):
+    """Two attempts of 2026-10-05 ended ``LIMIT_JERK`` (254 659 mm/s³ against
+    200 000) at THROW 0: a reload catch had just died and left the platform
+    in its tilted receive hold, off-site, ball in the cup, and the throw had
+    to level it inside its own 0.4 s launch window. The opening REST levels it
+    first — here from the worst hold the node can command (the 12° hold-tilt
+    cap), at the pose the bag showed — well inside the jerk limit, and THROW 0
+    then starts level.
+
+    Probe (2026-10-06, ``scratchpad/probe_rest_from_tilt.py``): REST leg jerk
+    74 504-99 229 mm/s³ across 6-11.99° of start tilt; THROW 0 accepted at
+    every one."""
+    hand_rev = 0.2668
+    a_site, sched = _columns_1ball_no_reload(sites_r5, hand_rev)
+    axis = np.array([0.0691, -0.2073])
+    rot = axis / np.linalg.norm(axis) * np.radians(11.99)
+    seed = uc.CycleState.at_rest(
+        np.array([99.0, 12.0, float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM),
+                  rot[0], rot[1], 0.0]), hand_rev, cr.RealizeConfig())
+    res_rest, res_throw, seg_rest, _seg_throw = _install_rest_then_throw_0(
+        a_site, sched, seed, 0.05, limits_r5, geom)
+    assert res_rest.accepted, res_rest.message
+    assert (seg_rest.meta.report.peak_leg_jerk_mmps3
+            <= 0.6 * limits_r5.leg_jerk_mmps3)
+    assert res_throw is not None and res_throw.accepted, res_throw.message
+
+
+_STALE_HAND = ('commanded state moved during planning (hand position drift '
+               '1.2600 rev > 1.0000) — retry')
+
+
+def _stale():
+    return ex.InstallResult(False, feas.STALE_STATE, _STALE_HAND, 0.0)
+
+
+def _rest_then_throw_schedule(sites, throw_due_with_the_rest=False):
+    """A REST over 1.0 s, then a THROW. With ``throw_due_with_the_rest`` the
+    THROW's dispatch instant falls inside the REST's lead window, so both are
+    due on the same ticks."""
+    p1, _p2 = sites
+    rest_start = T0_ABS + 1.0
+    rest = Skill(kind=sg.REST, ball_id=0, site=p1, t_abs_s=rest_start + 1.0,
+                 window_s=1.0)
+    t_throw = (rest_start + LAUNCH_S if throw_due_with_the_rest
+               else rest_start + 1.0 + LAUNCH_S)
+    throw = Skill(kind=sg.THROW, ball_id=0, site=p1, t_abs_s=t_throw,
+                  window_s=LAUNCH_S, y_d=(np.zeros(2), APEX_M), target=p1)
+    return rest, throw, Schedule(
+        pattern='self_toss', skills=(rest, throw), flight_s=FLIGHT_S,
+        beat_s=FLIGHT_S, transit_s=FLIGHT_S, dwell_s=0.3, t0_abs_s=T0_ABS)
+
+
+def _tick_until(x, t_start, t_end, dt=0.025):
+    lines, t = [], t_start
+    while t < t_end and not x.attempt_ended:
+        lines.extend(x.tick(t))
+        t += dt
+    return lines
+
+
+def test_a_rest_refused_stale_state_is_retried_until_it_installs(sites):
+    """The one reload attempt of 2026-10-05 caught Ball Butler's ball and then
+    ended ``STALE_STATE`` at the levelling REST: dispatched a lead before its
+    scheduled start, it is seeded from the hand still descending after the
+    catch, and at the 930 mm plane that hand was at 34.7 rev/s — a 36 ms solve
+    read as 1.26 rev against the install guard's 1.0. The guard is right to
+    refuse and says "retry"; the executor now does, because a REST carries no
+    event and its end is pinned. Two refusals then an acceptance: the attempt
+    lives, the REST is installed once, and only the accepted result is kept."""
+    rest, _throw, sch = _rest_then_throw_schedule(sites)
+    inst = _FakeInstaller([_stale(), _stale()])
+    x = ex.SkillExecutor(sch, inst)
+    lines = _tick_until(x, rest.dispatch_s() - 0.01,
+                        rest.t_abs_s - rest.window_s + 0.2)
+    assert not x.attempt_ended
+    rest_calls = [c for c in inst.calls if c[0] == sg.REST]
+    assert len(rest_calls) == 3
+    assert rest_calls[0][2] < rest_calls[1][2] < rest_calls[2][2]
+    # every try stays inside the lead window: the REST never starts later than
+    # the schedule said it would, so its window is never shorter than certified
+    assert rest_calls[-1][2] < rest.t_abs_s - rest.window_s
+    assert 0 in x.dispatched
+    assert [(i, r.accepted) for i, _s, r in x.results] == [(0, True)]
+    assert sum('REST-RETRY skill 0' in ln for ln in lines) == 2
+
+
+def test_a_rest_still_refused_at_its_scheduled_start_ends_the_attempt(sites):
+    """The retry is bounded by the REST's own scheduled start (``t_abs_s -
+    window_s``): past it a later start would cut the window under what the
+    schedule certified, so the refusal ends the attempt exactly as before."""
+    rest, _throw, sch = _rest_then_throw_schedule(sites)
+    inst = _FakeInstaller([_stale() for _ in range(200)])
+    x = ex.SkillExecutor(sch, inst)
+    scheduled_start = rest.t_abs_s - rest.window_s
+    _tick_until(x, rest.dispatch_s() - 0.01, scheduled_start + 0.5)
+    assert x.attempt_ended and x.end_code == feas.STALE_STATE
+    assert x.end_kind == sg.REST
+    times = [c[2] for c in inst.calls]
+    assert all(c[0] == sg.REST for c in inst.calls)
+    assert len(times) > 2
+    assert times[-2] < scheduled_start <= times[-1]
+
+
+def test_nothing_later_dispatches_ahead_of_a_rest_being_retried(sites):
+    """Schedule order holds through the retries: a THROW already due on the
+    same ticks waits for the REST, as it waits for a deferred CATCH."""
+    _rest, _throw, sch = _rest_then_throw_schedule(
+        sites, throw_due_with_the_rest=True)
+    inst = _FakeInstaller([_stale(), _stale()])
+    x = ex.SkillExecutor(sch, inst)
+    _tick_until(x, sch.skills[0].dispatch_s() - 0.01, T0_ABS + 1.2)
+    assert not x.attempt_ended
+    assert [c[0] for c in inst.calls] == [sg.REST, sg.REST, sg.REST, sg.THROW]
+
+
+def test_a_throw_refused_stale_state_still_ends_the_attempt_at_once(sites):
+    """Only a REST is retried. A THROW carries the release instant the whole
+    schedule is built on; it cannot start later, so its refusal is final."""
+    p1, _p2 = sites
+    throw = Skill(kind=sg.THROW, ball_id=0, site=p1, t_abs_s=T0_ABS + 1.0,
+                  window_s=LAUNCH_S, y_d=(np.zeros(2), APEX_M), target=p1)
+    sch = Schedule(pattern='self_toss', skills=(throw,), flight_s=FLIGHT_S,
+                   beat_s=FLIGHT_S, transit_s=FLIGHT_S, dwell_s=0.3,
+                   t0_abs_s=T0_ABS)
+    inst = _FakeInstaller([_stale()])
+    x = ex.SkillExecutor(sch, inst)
+    _tick_until(x, throw.dispatch_s() - 0.01, T0_ABS + 1.0)
+    assert x.attempt_ended and x.end_code == feas.STALE_STATE
+    assert len(inst.calls) == 1
+
+
+def test_a_rest_refused_for_any_other_reason_is_not_retried(sites):
+    """The retry is for the one refusal whose own message asks for it. A REST
+    the planner cannot build (a limit, a tilt pin) is refused the same way a
+    tick later, so it ends the attempt at once and says why."""
+    rest, _throw, sch = _rest_then_throw_schedule(sites)
+    inst = _FakeInstaller([ex.InstallResult(
+        False, 'LIMIT_JERK', 'peak leg jerk 254659 mm/s³ > 200000', 0.0)])
+    x = ex.SkillExecutor(sch, inst)
+    _tick_until(x, rest.dispatch_s() - 0.01, rest.t_abs_s)
+    assert x.attempt_ended and x.end_code == 'LIMIT_JERK'
+    assert len(inst.calls) == 1
