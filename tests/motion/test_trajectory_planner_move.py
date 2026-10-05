@@ -48,7 +48,14 @@ def test_move_starts_at_seed_ends_at_rest_target(geom, limits):
 
 # ── Minimal-feasible vs explicit duration ─────────────────────
 
-def test_minimal_feasible_when_duration_none(geom, limits):
+def test_minimal_feasible_when_duration_none(geom):
+    # Pinned at the R2/R3 session point (300/5000/150000): the minimal search
+    # starts at the 0.20 s `min_move_duration_s` floor, and at the R5 launch
+    # default (350/5000/200000, 2026-10-05) this 20 mm move fits INSIDE the
+    # floor, so "90 % of the found duration is infeasible" is no longer true —
+    # the floor, not a limit, is what binds. Freeze the limits characterised.
+    limits = TrajectoryLimits.from_config(hw, leg_vel_mmps=300.0, leg_acc_mmps2=5000.0,
+                                          leg_jerk_mmps3=150000.0)
     target = NEUTRAL + np.array([0., 0., 20., 0., 0., 0.])
     plan, report = planner.build_move(_rest(), target, None, limits, geom)
     # build_move hands back the accepting report — it agrees with a fresh validate.

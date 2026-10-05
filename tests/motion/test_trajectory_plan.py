@@ -128,7 +128,13 @@ def test_build_return_to_neutral_feasible(geom, limits):
     assert np.allclose(twist, 0.0)
 
 
-def test_too_fast_move_raises_limit(geom, limits):
+def test_too_fast_move_raises_limit(geom):
+    # Pinned at the R2/R3 session point (300/5000/150000): the YAML launch
+    # default moved to 350/5000/200000 on 2026-10-05, where the same move
+    # refuses LIMIT_JERK first (269 993 > 200 000) — a characterisation test
+    # freezes the limits it characterised.
+    limits = TrajectoryLimits.from_config(hw, leg_vel_mmps=300.0, leg_acc_mmps2=5000.0,
+                                          leg_jerk_mmps3=150000.0)
     with pytest.raises(TrajectoryInfeasible) as exc:
         planner.build_return_to_neutral(
             (NEUTRAL, np.zeros(6), np.zeros(6)),

@@ -35,8 +35,8 @@ DOWN and reads logs/bags between blocks.
 |---|---|---|
 | 1 | `cd ~/Desktop/Jugglebot-skills && git fetch && git status -sb && git log --oneline -1` | On `skill-stack`, in sync, at or after the sitting-4 fix commit. |
 | 2 | `cd ros_ws && colcon build --packages-select jugglebot_interfaces jugglebot && source install/setup.bash` | Both packages (the `Juggle.action` comment and every node changed). Done by Claude after the commit; repeat only if HEAD moved. |
-| 3 | **FW 27 is on the board** (flashed 2026-10-04 21:44, loader `SUCCESS`, booted; the post-flash identity sniff was blocked by the permission classifier, so the receipt is row 8's `BRIDGE_FW_CHECK` line). | At bring-up: `BRIDGE_FW_CHECK: OK — can-bridge v27`. A skew WARN naming v26 means the flash did not take: launch DOWN, `cd ros_ws/src/jugglebot/Teensy_code_canbridge`, `pio run -e teensy41 -t upload`. |
-| 4 | `grep gate_hash config/generated/admissible_box.yaml` | Unchanged from sitting 4: gate `458bb544b345`, 350/5000/200000, hand 3900, dwell 0.27, sites (±62.5, 0). |
+| 3 | **FW 27 is on the board** — receipt received: all three 2026-10-05 morning launches logged `BRIDGE_FW_CHECK: OK — can-bridge v27 [install_skew=0]`. | A skew WARN naming v26 would mean a different board: launch DOWN, `cd ros_ws/src/jugglebot/Teensy_code_canbridge`, `pio run -e teensy41 -t upload`. |
+| 4 | `grep gate_hash config/generated/admissible_box.yaml` | Gate `6f535fc4f888` (re-swept 2026-10-05 after the launch default moved to 350/5000/200000 — same boxes as sitting 4's `458bb544b345`, hand 3900, dwell 0.27, sites (±62.5, 0)). |
 | 5 | Learner memory: `wc -l temp/learn/jugglebot/memory*.csv` | `memory.csv` 378 rows + header after sitting 4 (144 appended that evening). Keep `plant_id jugglebot`. |
 | 6 | `tools/nightly_ticker.sh check --who "sitting 5"` | GREEN, or a RED you have read. |
 
@@ -47,7 +47,7 @@ DOWN and reads logs/bags between blocks.
 | 7 | Launch, GUI up, bag recording. `level` FIRST. | `/gravity_offset` published; `trajectory_node` logs `level_trim_deg [0.0, 0.0]` at startup. |
 | 8 | Read the bridge's startup lines | `BRIDGE_FW_CHECK: OK — can-bridge v27 [install_skew=0]` — this is FW 27's receipt. |
 | 9 | `ros2 param set /trajectory_node level_trim_deg "[0.0945, 0.3678]"` (sitting 4's measurement, FK-based; its effect on the landings is unconfirmed — § 6 has the optional A/B) | `trajectory_node` logs the trim once (effective offset ≈ x −0.0014 y +0.0094 rad). |
-| 10 | `ros2 service call /trajectory/set_limits jugglebot_interfaces/srv/SetTrajectoryLimits "{leg_vel_limit_mmps: 350.0, leg_acc_limit_mmps2: 5000.0, leg_jerk_limit_mmps3: 200000.0}"` | `applied_*` echoes 350 / 5000 / 200000. |
+| 10 | **No ramp.** Since 2026-10-05 the launch default IS 350/5000/200000 (`trajectory_op` in the YAML; the committed box is pinned to it by the suite). Read it back without changing it (0 = keep): `ros2 service call /trajectory/set_limits jugglebot_interfaces/srv/SetTrajectoryLimits "{leg_vel_limit_mmps: 0.0, leg_acc_limit_mmps2: 0.0, leg_jerk_limit_mmps3: 0.0}"`. | `applied_*` echoes 350 / 5000 / 200000 from the launch default. (The morning's three launches were refused every goal because this row had been the only coupling — `logbook/2026-10-05-skill-stack-r5-sitting-5-launch-limits-and-jam-anchor.md`.) |
 | 11 | `ros2 service call /hand_jam_dry_run std_srvs/srv/Trigger` | `hand_jam: ARMED; enabled=True; band=[1.0, 3.6] rev …` with `diag_age=… ms` in the predicate line (a few hundred ms at rest is NORMAL now — the bound is 1.5 s). `enabled=False` → stop and say so. |
 | 12 | `ros2 param set /skill_node catch_resend_max 0` (two-site convention, whole sitting) | Set. |
 | 13 | Seat a ball; `ros2 service call skills/check std_srvs/srv/Trigger` | `ladder OK`, `frame check OK`, `box OK` for the columns pairs at the 0.95 band. |
@@ -58,12 +58,21 @@ Sitting 4's § 2 reproduced the pinch (hand stalled at +2.9 rev at 50 A for 6 s,
 the detector stayed silent for the reason the entry gives; the same bag now fires 70 ms into the
 stall in replay. `HAND_MOVE_TO` writes its target as the command, so P3 is honest here too.
 
+**2026-10-05 morning (bag `2026-10-05_10-30-08`):** the detector fired on both pinches within
+~0.2 s; both recoveries ended `HAND_JAM_UNRECOVERED … raise did not track` because a raise
+issued as a RETARGET of the stalled move planned from the setpoint that had run on below the
+hand (the entry above). The recovery now ANCHORS before every raise (a `HAND_MOVE_TO` to the
+measured position; ARRIVED at once, setpoint handed to the hand, the push stops) and raises to
+an ABSOLUTE 5.0 rev (`hand_jam.raise_to_rev`, the owner's clearance height), not 1.0 rev above
+the stall. Expect in the log: `anchors 1` in the RECOVERED line, and the bag showing a
+SUPERSEDED (the bench lower) + ARRIVED (the anchor) pair before the raise.
+
 | # | Step | Expect |
 |---|---|---|
 | 14 | GUI Deactivate (wire DISARMED, hand parked). `ros2 service call /hand_move_to jugglebot_interfaces/srv/SetFloat "{data: 4.0}"` | `HAND_MOVE_TO +4.000 rev at 1 rev/s: ARRIVED`. |
 | 15 | Place a ball on the funnel ring, under the cup. Hands clear. | |
-| 16 | `ros2 service call /hand_move_to jugglebot_interfaces/srv/SetFloat "{data: 0.0}"` | The hand descends at 1 rev/s, stalls on the ball, within ~0.2 s: `HAND JAM detected (HAND_JAM): hand stalled at +2.9 rev …` → relief to 10 A, raise 1.0 rev, dwell, the ball drops through, lower, `HAND_JAM_RECOVERED`; `/link_status` `hand_jam` `RECOVERING` → `IDLE`. **Record the stall position.** |
-| 17 | If the ball does not drop on the first raise: attempt 2 (2.5 rev); if it still stalls, `HAND_JAM_UNRECOVERED` with the hand RAISED at 10 A. Remove the ball, `ros2 service call /recover std_srvs/srv/Trigger`. | `/recover` resumes at the lower and restores 50 A at rest. |
+| 16 | `ros2 service call /hand_move_to jugglebot_interfaces/srv/SetFloat "{data: 0.0}"` | The hand descends at 1 rev/s, stalls on the ball, within ~0.2 s: `HAND JAM detected (HAND_JAM): hand stalled at +2.8 rev …` → relief to 10 A; the ball springs the hand up ~0.3 rev; the hand RESTS (no push: iq falls to the gravity hold, not −8 to −10 A) → anchor → raise to **+5.000 rev at 2.5 rev/s, rising within 0.3 s** → dwell 0.6 s, the ball drops through → lower → `HAND_JAM_RECOVERED … raises [+5.00] rev, anchors 1, lower stalls 0`; `/link_status` `hand_jam` `RECOVERING` → `IDLE`. **Record the stall position and whether the ball passed under the cup on the first raise.** |
+| 17 | If the ball does not drop on the first dwell: the lower stalls, anchor, raise to 5.0 again, dwell, lower; if it still stalls, anchor, final raise to 5.0, `HAND_JAM_UNRECOVERED` with the hand RAISED at 10 A. Remove the ball, `ros2 service call /recover std_srvs/srv/Trigger`. | `/recover` resumes at the lower and restores 50 A at rest. A `raise did not track` with the ball under the cup is now a FINDING (the anchor should have ended the retarget) — bag it, say so. |
 
 Stop rule for this block: any fire with the ball NOT under the hand (a false positive) ends the
 block; set `hand_jam.enabled false` for the rest of the sitting and bag the event. A fire that

@@ -33,7 +33,12 @@ Split of responsibility (one enforcement point each):
         3. every move after a stall is UP (away from the ring) until the
            hand has dwelt above the stall, and the downward move is watched
            by a stall monitor that answers a re-pinch with another raise,
-           never a harder push;
+           never a harder push; every raise starts FROM THE HAND — an anchor
+           (a HAND_MOVE_TO to the measured position, once at rest) ends any
+           move in flight at the hand and snaps the ODrive setpoint to it,
+           because a raise that RETARGETS a stalled move is planned from a
+           setpoint that ran on below the hand and pushes down first
+           (2026-10-05);
         4. the shipped current limit is restored LAST, only after the hand
            has arrived at the park, and never on an UNRECOVERED path.
 
@@ -85,7 +90,17 @@ The predicate (all of them, sustained >= ``sustain_s``):
 
 Failure modes the design enumerates, and what answers each:
     * Ball pinched in the band (the 2026-10-02 event)        -> HAND_JAM: relief, clear,
-      disarm, raise R1, dwell, lower with the stall monitor, restore.
+      disarm, anchor, raise to the clearance height (``raise_to_rev``), dwell,
+      lower with the stall monitor, restore.
+    * A HAND_MOVE_TO in flight when a raise is due (the recovery's own
+      stalled lower; the bench lower that provoked the pinch) -> the anchor:
+      a retargeted raise would plan from the setpoint that kept descending
+      while the hand was stalled, and the hand would be pushed down at the
+      relief current until that setpoint climbed back past it (bag
+      2026-10-05_10-30-08: 0.6 s on raise 1, which passed the tracking check
+      only on the ball's 0.3 rev spring-back; the whole window on raise 2,
+      "did not track"). The anchor ARRIVES on the measured position at once
+      and its PASSTHROUGH hand-off puts the setpoint on the hand.
     * Silent stall below the latch threshold (no guard latch) -> fires all the same:
       the predicate does not consult the latch.
     * Normal descent or catch (lag <= 0.2 rev, moving)        -> P2, P3.
@@ -111,8 +126,9 @@ Failure modes the design enumerates, and what answers each:
     * A ball landing on the cup (stall < 100 ms)              -> the sustain.
     * Operator's fingers in the funnel                        -> not excluded; the same
       reaction is the right one (relief, raise; a re-pinch on the lower is <= 14 N).
-    * Ball still pinched on the lower                         -> attempt 2 raises R2
-      (> the ball's diameter); a second stall raises R2 again and STAYS raised
+    * Ball still pinched on the lower                         -> attempt 2: anchor,
+      raise to the clearance height again, dwell, lower; a stall after the
+      last attempt anchors, raises there once more and STAYS raised
       (UNRECOVERED): never push a ball through, never IDLE a raised hand onto it.
     * Firmware without HAND_MOVE_TO (ERR_UNKNOWN_METHOD)      -> relief-only,
       UNRECOVERED 'firmware has no HAND_MOVE_TO'; the relief stays applied.
@@ -166,6 +182,31 @@ class JamConfig:
     ``max_age_s`` is 1.5, not the design draft's 0.05 (2026-10-04, R5 sitting
     4): see P6's docstring above for the firmware DIAGNOSTIC cadence that
     makes 0.05 s unfireable on the live node.
+
+    ``raise_to_rev`` (2026-10-05, R5 sitting 5) is an ABSOLUTE height, 5.0
+    rev, not the design draft's relative lifts of (1.0, 2.5) rev above the
+    stall. The owner watched the first honest bench recovery: a 1.0 rev lift
+    from the stall (2.81 rev, the ball squashed at 50 A) put the cup 0.56 rev
+    above where the ball sits once relieved (3.25 rev) and the ball could not
+    pass under the hand; 5.0 rev (163 mm above the park) clears a ball resting
+    on the ring. Every raise goes there; ``raise_min_rev`` is the floor on the
+    lift for a stall near or above it, so the tracking check still measures
+    something. ``raise_attempts`` is the number of raise-dwell-lower cycles
+    before the final raise that stays up.
+
+    ``anchor_*`` (same sitting): the ODrive plans a HAND_MOVE_TO from its OWN
+    setpoint, and a move RETARGETED while the hand is stalled plans from a
+    setpoint that kept descending past the hand (bag 2026-10-05_10-30-08: the
+    hand sat pressed on the ball at -8.6 A for 0.6 s after the first raise was
+    commanded and for the whole 0.3 s window after the second, "raise did not
+    track"). An ANCHOR -- a HAND_MOVE_TO to the measured position, issued
+    once the hand has been at rest for ``anchor_rest_s`` -- ARRIVES at once
+    (the firmware's arrival test is on the measured position) and its
+    PASSTHROUGH hand-off snaps the setpoint to the hand, so the push stops and
+    the raise that follows starts a fresh move planned from where the hand is.
+    ``anchor_wait_max_s`` bounds the wait for rest (a hand that will not settle
+    is anchored where it is); ``anchor_attempts`` re-anchors once if the first
+    does not confirm within ``hold_wait_s``.
     """
     enabled: bool = True
     band_rev: Tuple[float, float] = (1.0, 3.6)
@@ -174,7 +215,7 @@ class JamConfig:
     iq_frac: float = 0.9
     sustain_s: float = 0.10
     relief_curr_a: float = 10.0
-    raise_rev: Tuple[float, float] = (1.0, 2.5)
+    raise_to_rev: float = 5.0
     dwell_s: float = 0.6
     lower_stall_s: float = 0.15
     raise_track_tol_rev: float = 0.1
@@ -185,6 +226,11 @@ class JamConfig:
     max_age_s: float = 1.5
     max_gap_s: float = 0.05
     raise_track_window_s: float = 0.3
+    raise_min_rev: float = 1.0
+    raise_attempts: int = 2
+    anchor_rest_s: float = 0.15
+    anchor_wait_max_s: float = 1.0
+    anchor_attempts: int = 2
     lower_stall_vel_rps: float = 0.3
     lower_stall_margin_rev: float = 0.5
     lower_grace_s: float = 0.5
@@ -200,7 +246,7 @@ class JamConfig:
 
     #: The names exposed as bridge ROS parameters (``hand_jam.<name>``).
     ROS_PARAMS = ('enabled', 'band_rev', 'stall_vel_rps', 'lag_rev', 'iq_frac',
-                  'sustain_s', 'relief_curr_a', 'raise_rev', 'dwell_s',
+                  'sustain_s', 'relief_curr_a', 'raise_to_rev', 'dwell_s',
                   'lower_stall_s', 'raise_track_tol_rev')
 
     @classmethod
@@ -212,7 +258,7 @@ class JamConfig:
         for k, v in kw.items():
             if k not in known:
                 raise ValueError(f'{k}: unknown hand_jam parameter')
-            if k in ('band_rev', 'raise_rev'):
+            if k == 'band_rev':
                 try:
                     v = tuple(float(x) for x in v)
                 except (TypeError, ValueError):
@@ -220,7 +266,8 @@ class JamConfig:
             elif k == 'enabled':
                 if not isinstance(v, bool):
                     raise ValueError(f'enabled: must be a bool, got {v!r}')
-            elif k in ('relief_attempts', 'restore_attempts'):
+            elif k in ('relief_attempts', 'restore_attempts', 'raise_attempts',
+                       'anchor_attempts'):
                 v = int(v)
             else:
                 try:
@@ -241,9 +288,14 @@ class JamConfig:
         for name in ('stall_vel_rps', 'lag_rev', 'iq_frac', 'sustain_s',
                      'relief_curr_a', 'dwell_s', 'lower_stall_s',
                      'raise_track_tol_rev', 'descend_window_s', 'max_age_s',
-                     'raise_track_window_s', 'move_vel_rps', 'raise_max_rev'):
+                     'raise_track_window_s', 'move_vel_rps', 'raise_max_rev',
+                     'raise_to_rev', 'raise_min_rev', 'anchor_rest_s',
+                     'anchor_wait_max_s'):
             need(_finite(getattr(self, name)) and getattr(self, name) > 0,
                  name, 'must be finite and > 0')
+        for name in ('raise_attempts', 'anchor_attempts'):
+            need(isinstance(getattr(self, name), int) and getattr(self, name) >= 1,
+                 name, 'must be an int >= 1')
         need(len(self.band_rev) == 2 and _finite(*self.band_rev), 'band_rev',
              'must be two finite numbers')
         lo, hi = self.band_rev
@@ -252,9 +304,15 @@ class JamConfig:
         need(self.park_rev + self.lower_stall_margin_rev <= lo < hi <= self.raise_max_rev,
              'band_rev', f'must satisfy park+{self.lower_stall_margin_rev} <= lo < hi '
              f'<= {self.raise_max_rev}')
-        need(len(self.raise_rev) == 2 and _finite(*self.raise_rev)
-             and 0 < self.raise_rev[0] <= self.raise_rev[1], 'raise_rev',
-             'must be two finite numbers with 0 < R1 <= R2')
+        # The clearance height must lift a stall anywhere in the band by at
+        # least the floor, and must be reachable.
+        need(hi + self.raise_min_rev <= self.raise_to_rev <= self.raise_max_rev,
+             'raise_to_rev', f'must satisfy band hi + {self.raise_min_rev} <= raise_to_rev '
+             f'<= {self.raise_max_rev} (a raise must clear a ball from anywhere in '
+             f'the band)')
+        need(self.raise_min_rev > self.raise_track_tol_rev, 'raise_min_rev',
+             f'must exceed raise_track_tol_rev ({self.raise_track_tol_rev}) or the '
+             f'tracking check cannot pass a minimal lift')
         need(self.iq_frac <= 1.0, 'iq_frac', 'must be <= 1 (a fraction of the clamp)')
         need(self.stall_vel_rps <= 5.0, 'stall_vel_rps',
              'must be <= 5 rev/s (above that a moving hand reads as stalled)')
@@ -465,6 +523,8 @@ class Step(enum.Enum):
     RELIEF = 1
     CLEAR = 2
     DISARM = 21
+    ANCHOR = 22        # wait for rest, then HAND_MOVE_TO the measured position
+    ANCHORING = 23     # the anchor in flight: ARRIVED snaps the setpoint to the hand
     RAISE = 3
     RAISING = 31
     DWELL = 4
@@ -515,7 +575,8 @@ class RecoveryObs:
 
 _SYNC = (IntentKind.HOLD_RECOVERING, IntentKind.SET_CURRENT,
          IntentKind.CONVERGE_CLEAR, IntentKind.DISARM, IntentKind.MOVE)
-_MONITORED = (Step.RAISING, Step.LOWERING, Step.FINAL_RAISING, Step.HOLDING)
+_MONITORED = (Step.ANCHOR, Step.ANCHORING, Step.RAISING, Step.LOWERING,
+              Step.FINAL_RAISING, Step.HOLDING)
 
 
 class JamRecovery:
@@ -531,7 +592,16 @@ class JamRecovery:
     ``resume=True`` is the operator's ``/recover`` after an UNRECOVERED or
     HAND_STALL terminal: hold, relief (idempotent), clear-if-latched, disarm,
     then straight to the Ball-Butler gate and the lower (step 5). A stall on
-    a resumed lower is final (raise R2 and stay).
+    a resumed lower is final (anchor, raise to the clearance height and stay).
+
+    Every raise is preceded by an ANCHOR (``Step.ANCHOR`` / ``ANCHORING``): a
+    HAND_MOVE_TO to the measured position once the hand has rested
+    ``anchor_rest_s``. It ends whatever HAND_MOVE_TO is in flight (the
+    recovery's own stalled lower; the bench's) AT THE HAND -- the firmware
+    answers ARRIVED on the measured position and hands the axis to
+    PASSTHROUGH with the setpoint on the hand -- so the raise is a fresh move
+    planned from where the hand is. See ``JamConfig``'s ``anchor_*`` note for
+    the bag that showed a retargeted raise pushing down instead.
     """
 
     def __init__(self, cfg: JamConfig, *, kind: Verdict, stall_pos: float,
@@ -553,10 +623,12 @@ class JamRecovery:
         self.step = Step.TRIGGER
         self.outcome = Outcome.RUNNING
         self.reason = ''
-        # Raises issued so far (R1, R2...); a resume starts on the last one.
-        self.attempt = len(cfg.raise_rev) - 1 if resume else 0
+        # Raise-dwell-lower cycles used so far; at ``raise_attempts`` the next
+        # raise is the final one that stays up. A resume starts there.
+        self.attempt = cfg.raise_attempts if resume else 0
         self.raises: List[float] = []
         self.lower_stalls = 0
+        self.anchors = 0
         self.history: List[str] = []
         self._pending: Optional[Intent] = None
         self._tries = 0
@@ -566,6 +638,9 @@ class JamRecovery:
         self._tracked = False
         self._dwell_t0 = 0.0
         self._gate_t0 = 0.0
+        self._anchor_t0: Optional[float] = None
+        self._anchor_tries = 0
+        self._rest_since: Optional[float] = None
         self._moving_seen = False
         self._still_since: Optional[float] = None
         self._hold_reason = ''
@@ -582,9 +657,11 @@ class JamRecovery:
         ``/recover``)."""
         return self.outcome is not Outcome.HAND_JAM_RECOVERED
 
-    def raise_target(self, from_pos: float, attempt: int) -> float:
-        r = self.cfg.raise_rev[min(attempt, len(self.cfg.raise_rev) - 1)]
-        return min(float(from_pos) + r, self.cfg.raise_max_rev)
+    def raise_target(self, from_pos: float) -> float:
+        """The clearance height, lifted at least ``raise_min_rev`` above
+        ``from_pos`` (the anchored hand) and never above ``raise_max_rev``."""
+        c = self.cfg
+        return min(max(c.raise_to_rev, float(from_pos) + c.raise_min_rev), c.raise_max_rev)
 
     def abort(self, reason: str) -> None:
         if not self.done:
@@ -594,7 +671,7 @@ class JamRecovery:
         raises = ','.join(f'{r:+.2f}' for r in self.raises) or 'none'
         s = (f'{self.outcome.value} ({self.kind.value}{", resumed" if self.resume else ""}): '
              f'stall at {self.stall_pos:+.3f} rev, iq {self.iq_at_trigger:+.1f} A, '
-             f'raises [{raises}] rev, lower stalls {self.lower_stalls}')
+             f'raises [{raises}] rev, anchors {self.anchors}, lower stalls {self.lower_stalls}')
         return f'{s} — {self.reason}' if self.reason else s
 
     def result(self, res: IntentResult) -> None:
@@ -630,11 +707,21 @@ class JamRecovery:
         self._tracked = False
         self._moving_seen = False
         self._still_since = None
-        if purpose not in ('lower', 'hold'):
+        if purpose not in ('lower', 'hold', 'anchor'):
             self.raises.append(target)
         self.history.append(f'MOVE {purpose} -> {target:+.3f}')
         return Intent(IntentKind.MOVE, target_rev=target, vel_rps=self.cfg.move_vel_rps,
                       purpose=purpose)
+
+    def _begin_anchor(self, t: Optional[float]) -> None:
+        """Enter ``Step.ANCHOR``: the next raise waits for the hand to rest,
+        then anchors the setpoint on it (see the class docstring). ``t`` is
+        the poll time, or ``None`` from a result handler (the first ANCHOR
+        poll stamps it)."""
+        self.step = Step.ANCHOR
+        self._anchor_t0 = t
+        self._rest_since = None
+        self._anchor_tries = 0
 
     def _move_unavailable_reason(self, status: str, msg: str) -> Optional[str]:
         if status == STATUS_UNKNOWN_METHOD:
@@ -664,14 +751,61 @@ class JamRecovery:
             return None
         if st is Step.DISARM:
             return Intent(IntentKind.DISARM)
+        if st is Step.ANCHOR:
+            if obs.armed:
+                self._end(Outcome.HAND_JAM_UNRECOVERED,
+                          'wire re-armed before the raise — refusing to co-drive the hand')
+                return None
+            # Rest first: an anchor at a position the hand is still leaving
+            # (the ball springing back 0.3 rev as 50 A becomes 10 A) would
+            # drive it back there. A hand that will not settle is anchored
+            # where it is after anchor_wait_max_s; the ARRIVED wait bounds it.
+            if self._anchor_t0 is None:
+                self._anchor_t0 = obs.t
+            if abs(obs.vel) < c.lower_stall_vel_rps:
+                if self._rest_since is None:
+                    self._rest_since = obs.t
+            else:
+                self._rest_since = None
+            rested = (self._rest_since is not None
+                      and obs.t - self._rest_since >= c.anchor_rest_s - 1e-9)
+            if not rested and obs.t - self._anchor_t0 < c.anchor_wait_max_s:
+                return Intent(IntentKind.WAIT)
+            if not rested:
+                self.history.append(f'ANCHOR without rest after {c.anchor_wait_max_s:g} s')
+            self.anchors += 1
+            return self._move(obs, obs.pos, 'anchor', Step.ANCHORING)
+        if st is Step.ANCHORING:
+            if obs.move_done:
+                if obs.move_ok:
+                    self.step = Step.RAISE
+                    return None
+                why = self._move_unavailable_reason(obs.move_status, obs.move_msg)
+                self._end(Outcome.HAND_JAM_UNRECOVERED,
+                          why or f'anchor failed: {obs.move_status} {obs.move_msg}'.strip())
+                return None
+            if obs.t - self._move_t0 >= c.hold_wait_s:
+                self._anchor_tries += 1
+                if self._anchor_tries < c.anchor_attempts:
+                    # The hand crept off the anchor: anchor again where it is now.
+                    self.history.append(f'ANCHOR did not confirm, re-anchoring at {obs.pos:+.3f}')
+                    self.anchors += 1
+                    return self._move(obs, obs.pos, 'anchor', Step.ANCHORING)
+                self._end(Outcome.HAND_JAM_UNRECOVERED,
+                          f'the anchor at the measured position did not confirm '
+                          f'{self._anchor_tries}x (hand at {obs.pos:+.3f} rev, moving?) — '
+                          f'relief stays, nothing raised')
+                return None
+            return Intent(IntentKind.WAIT)
         if st is Step.RAISE:
             if obs.armed:
                 self._end(Outcome.HAND_JAM_UNRECOVERED,
                           'wire re-armed before the raise — refusing to co-drive the hand')
                 return None
-            purpose = f'raise{self.attempt + 1}'
-            return self._move(obs, self.raise_target(self.stall_pos, self.attempt),
-                              purpose, Step.RAISING)
+            target = self.raise_target(obs.pos)
+            if self.attempt >= c.raise_attempts:
+                return self._move(obs, target, 'final_raise', Step.FINAL_RAISING)
+            return self._move(obs, target, f'raise{self.attempt + 1}', Step.RAISING)
         if st in (Step.RAISING, Step.FINAL_RAISING):
             if obs.move_done and not obs.move_ok:
                 # Checked BEFORE tracking: a raise the firmware refused never
@@ -745,16 +879,16 @@ class JamRecovery:
             if self._still_since is None:
                 self._still_since = obs.t
             if obs.t - self._still_since >= c.lower_stall_s - 1e-9:
-                # The ball is still there. Answer with a RAISE, never a push.
+                # The ball is still there. Answer with a RAISE, never a push —
+                # anchored first, because the lower's setpoint has run on
+                # below the stalled hand and a retargeted raise would plan
+                # from there (Step.RAISE picks raise-again or the final raise).
                 self.lower_stalls += 1
                 self.stall_pos = obs.pos
                 self.history.append(f'LOWER STALL at {obs.pos:+.3f}')
                 self.attempt += 1
-                if self.attempt < len(c.raise_rev):
-                    return self._move(obs, self.raise_target(obs.pos, self.attempt),
-                                      f'raise{self.attempt + 1}', Step.RAISING)
-                return self._move(obs, self.raise_target(obs.pos, len(c.raise_rev) - 1),
-                                  'final_raise', Step.FINAL_RAISING)
+                self._begin_anchor(obs.t)
+                return None
         else:
             self._still_since = None
         if not obs.move_done:
@@ -801,7 +935,10 @@ class JamRecovery:
                           f'guard clear failed (relief stays): {res.msg}')
         elif k is IntentKind.DISARM:
             if res.ok:
-                self.step = Step.BB_GATE if self.resume else Step.RAISE
+                if self.resume:
+                    self.step = Step.BB_GATE
+                else:
+                    self._begin_anchor(None)
             else:
                 self._end(Outcome.HAND_JAM_UNRECOVERED,
                           f'disarm did not confirm on the wire (relief stays): {res.msg}')
@@ -837,17 +974,21 @@ def planned_steps(cfg: JamConfig, *, stall_pos: float, latched: bool, armed: boo
     out.append('2 ' + ('converge-first clear (_svc_recover steps 1-4), then ' if latched
                        else 'not latched: ') + ('disarm + confirm on the wire' if armed
                                                  else 'wire already disarmed (confirm)'))
+    r1 = rec.raise_target(stall_pos)
+    anchor = (f'anchor: HAND_MOVE_TO(the measured position) once the hand has rested '
+              f'{cfg.anchor_rest_s:g} s (ARRIVED hands the setpoint to the hand; the push '
+              f'stops), then ')
     if not resume:
-        r1 = rec.raise_target(stall_pos, 0)
-        out.append(f'3 HAND_MOVE_TO({r1:+.3f} rev, {cfg.move_vel_rps:g} rev/s) — must rise '
-                   f'>= {cfg.raise_track_tol_rev:g} rev in {cfg.raise_track_window_s:g} s')
+        out.append(f'3 {anchor}HAND_MOVE_TO({r1:+.3f} rev, {cfg.move_vel_rps:g} rev/s) — '
+                   f'must rise >= {cfg.raise_track_tol_rev:g} rev in '
+                   f'{cfg.raise_track_window_s:g} s')
         out.append(f'4 dwell {cfg.dwell_s:g} s')
     out.append(f'4b wait for any Ball Butler throw to land (+1 s, <= {cfg.bb_wait_max_s:g} s)')
     out.append(f'5 HAND_MOVE_TO({cfg.park_rev:+.3f} rev) with the stall monitor '
                f'(|v| < {cfg.lower_stall_vel_rps:g} rev/s for {cfg.lower_stall_s:g} s above '
-               f'{cfg.park_rev + cfg.lower_stall_margin_rev:+.2f} rev -> raise '
-               f'+{cfg.raise_rev[-1]:g} rev' + ('' if resume else ', dwell, lower again')
-               + '; a final stall stays raised, UNRECOVERED)')
+               f'{cfg.park_rev + cfg.lower_stall_margin_rev:+.2f} rev -> {anchor}raise to '
+               f'{cfg.raise_to_rev:+.3f} rev' + ('' if resume else ', dwell, lower again')
+               + f'; after {cfg.raise_attempts} cycles a stall stays raised, UNRECOVERED)')
     out.append(f'6 SET_VEL_CURR_LIMITS(6, {vel_limit:g} rev/s, {restore_curr_a:g} A) at the '
                f'park — restore LAST, then RECOVERED (wire left disarmed; orchestrator re-arms)')
     return out

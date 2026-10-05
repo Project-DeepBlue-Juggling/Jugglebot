@@ -254,9 +254,11 @@ def test_recovered_sequence_order_restores_last_and_releases_recovering():
         sample = node._hand_jam_sample()
         assert node._hand_jam_start(hj.Verdict.HAND_JAM, sample) is not None
         _wait_done(node)
+        # The anchor (a HAND_MOVE_TO to the measured 2.85) precedes the raise
+        # to the absolute clearance height (2026-10-05).
         assert [c[:2] for c in calls] == [
             ('SET_VEL_CURR', 10.0), ('RECOVER', False), ('STOP_SP', None),
-            ('WAIT_DISARMED', None), ('MOVE', 3.85), ('MOVE', 0.0),
+            ('WAIT_DISARMED', None), ('MOVE', 2.85), ('MOVE', 5.0), ('MOVE', 0.0),
             ('SET_VEL_CURR', 50.0)]
         assert all(c[2] for c in calls), 'RECOVERING dropped mid-sequence'
         assert node._hand_jam_hold is False
@@ -471,7 +473,11 @@ def test_a_retarget_supersedes_and_the_old_reply_is_never_read():
         _teardown(teensy, client, node)
 
 
-def test_a_wedged_ball_retargets_the_lower_up_twice_and_never_restores():
+def test_a_wedged_ball_anchors_each_stalled_lower_at_the_hand_and_never_restores():
+    """Every stalled lower is ended by an ANCHOR (a HAND_MOVE_TO to the
+    measured position, which the firmware answers SUPERSEDED for the lower
+    and ARRIVED for the anchor), then the raise goes to the absolute 5.0 rev
+    clearance height; the final raise stays up, UNRECOVERED (2026-10-05)."""
     teensy, client, node = _build_paired_node()
     hand = _FakeHand(node, 2.85, ball=2.85, clear=float('inf'))
     try:
@@ -482,14 +488,16 @@ def test_a_wedged_ball_retargets_the_lower_up_twice_and_never_restores():
         node._hand_jam_start(hj.Verdict.HAND_JAM, node._hand_jam_sample())
         _wait_done(node, timeout=20.0)
         moves = [c[1] for c in calls if c[0] == 'MOVE']
-        assert moves[:3] == [3.85, 0.0, 5.35] and moves[3] == 0.0
-        assert moves[4] == 5.35 and len(moves) == 5          # final raise, stays up
+        # anchor, raise1, lower, anchor, raise2, lower, anchor, final raise
+        assert moves == [2.85, 5.0, 0.0, 2.85, 5.0, 0.0, 2.85, 5.0]
         assert ('SET_VEL_CURR', 50.0) not in [c[:2] for c in calls]
-        # each stalled lower was RETARGETED (superseded), not left to time out
+        # each stalled lower was RETARGETED by its anchor (superseded), not
+        # left to time out; the anchors themselves ARRIVED
         outcomes = [rpc_args.decode_hand_move_to_result(c.final).outcome for c in hand.calls]
-        assert outcomes[1] == outcomes[3] == rpc_args.HAND_MOVE_SUPERSEDED
-        assert hand.calls[1].released and hand.calls[3].released
-        assert hand.pos > 5.3 and node._hand_jam_hold is True
+        assert outcomes[2] == outcomes[5] == rpc_args.HAND_MOVE_SUPERSEDED
+        assert outcomes[0] == outcomes[3] == outcomes[6] == rpc_args.HAND_MOVE_ARRIVED
+        assert hand.calls[2].released and hand.calls[5].released
+        assert hand.pos > 4.9 and node._hand_jam_hold is True
         assert node._hand_jam_status.startswith('HAND_JAM_UNRECOVERED')
     finally:
         hand.stop()

@@ -1434,6 +1434,22 @@ the rung's tests passing or a handoff file in the scratchpad.
   transits; raising acc/jerk means raising that clamp — owner's call). Next:
   `tests/hardware/session_skills_r5_sitting5.md` (the fed half alone with the bias measured,
   then fed columns). Entry: `logbook/2026-10-04-skill-stack-r5-sitting-4.md`.
+- **Sitting 5, morning (2026-10-05, three launches, nothing flown).** FW 27's receipt is in
+  (`BRIDGE_FW_CHECK: OK — can-bridge v27`). Every JUGGLE goal was refused: the box is swept at
+  350/5000/200000 and the launch default was still 300/5000/150000, coupled only by a runsheet
+  row the morning skipped. The launch default is now the R5 point and the committed box is
+  pinned to the launch default (limits, gate hash, dwell) by the suite; the box was re-swept
+  at the same limits for the new gate hash. The jam detector fired honestly on both bench
+  pinches, and both recoveries ended UNRECOVERED on `raise did not track`: a raise issued as a
+  RETARGET of the stalled move is planned by the ODrive from the setpoint that ran on below
+  the hand, so the hand is pushed down at the relief current until the setpoint climbs back
+  (0.6 s on raise 1, the whole window on raise 2; raise 1 passed its check only on the ball's
+  spring-back). Fixed: an ANCHOR (HAND_MOVE_TO to the measured position) before every raise,
+  and the raise is an absolute 5.0 rev clearance (`hand_jam.raise_to_rev`, the owner's number)
+  instead of 1.0 rev above the stall; the test plant now carries the ODrive setpoint and fails
+  the old machine the way the robot did. Entry:
+  `logbook/2026-10-05-skill-stack-r5-sitting-5-launch-limits-and-jam-anchor.md`. The sitting-5
+  sheet continues from § 2.
 - **Outcome (sitting 1 + evening fix units, 2026-09-30).** Sitting 1 flew the 4°/0° cup test and
   the fused reload; Block C (human lob) never claimed a feed and is retired (see the owner
   decisions above). Four fix units landed the same evening, uncommitted at the time of this

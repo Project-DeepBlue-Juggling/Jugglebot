@@ -498,6 +498,11 @@ def sweep_mod():
     return _load_sweep_module()
 
 
+#: The session limits ``tiny_sweep`` is pinned at (see its docstring).
+_TINY_SWEEP_LIMITS = dict(leg_vel_mmps=300.0, leg_acc_mmps2=5000.0,
+                          leg_jerk_mmps3=150000.0)
+
+
 @pytest.fixture(scope='module')
 def tiny_sweep(sweep_mod):
     """R5 (D4, 2026-09-30): the real cell needs NO ``pre_release_hold_s``
@@ -510,10 +515,20 @@ def tiny_sweep(sweep_mod):
     point) fails MARGIN at every offset tried at dwell 0.30, but apex 0.85 m
     (still inside D4's grid) passes at the identity command AND at a small +/-
     5 mm y offset (x stays pinned at 0 -- +/-5 mm x refuses CHAIN_CATCH:MARGIN
-    / MARGIN) -- a real, non-empty, non-degenerate-in-y box."""
+    / MARGIN) -- a real, non-empty, non-degenerate-in-y box.
+
+    The limits are PINNED to the R2/R3 point (300/5000/150000) the probe ran
+    at, not read from the tool's defaults: those follow the YAML launch
+    default, which moved to the R5 point 350/5000/200000 on 2026-10-05, and at
+    the roomier limits the -5 mm x cell passes (the planner is simply more
+    permissive) and the "x pinned at 0" characterisation below is false. A
+    characterisation test freezes the conditions it characterised."""
     site0, site1 = st.columns_sites(100.0)
     boxes, rows = sweep_mod.sweep(
         apexes_m=(0.85,), offsets_mm=(-5.0, 0.0, 5.0), dwell_s=0.30,
+        leg_vel=_TINY_SWEEP_LIMITS['leg_vel_mmps'],
+        leg_acc=_TINY_SWEEP_LIMITS['leg_acc_mmps2'],
+        leg_jerk=_TINY_SWEEP_LIMITS['leg_jerk_mmps3'],
         site_pairs=[(site0, site1)])
     return boxes, rows
 
@@ -585,14 +600,10 @@ def test_tiny_sweep_yaml_round_trips_and_validates(tmp_path, tiny_sweep,
     ab.dump(path, boxes)
     loaded = ab.load(path)
     assert loaded == boxes
-    # "Live" here is the limits the tiny sweep actually ran at. Since 2026-09-21
-    # the tool's defaults are the GENERATED launch constants (300/5000/150000),
-    # not the 200 000 literal `_live_limits` still carries for the hand-built
-    # `_box()` cases above, so the two are read from the same place.
-    live = _live_limits(leg_vel_mmps=sweep_mod.LEG_VEL_MMPS,
-                        leg_acc_mmps2=sweep_mod.LEG_ACC_MMPS2,
-                        leg_jerk_mmps3=sweep_mod.LEG_JERK_MMPS3,
-                        hand_acc_rps2=sweep_mod.HAND_ACC_RPS2)
+    # "Live" here is the limits the tiny sweep actually ran at: the pinned
+    # `_TINY_SWEEP_LIMITS` (since 2026-10-05; before that the tool's defaults,
+    # which follow the YAML launch default) plus the tool's hand cap.
+    live = _live_limits(hand_acc_rps2=sweep_mod.HAND_ACC_RPS2, **_TINY_SWEEP_LIMITS)
     ab.check_limits(loaded, live)
 
 
@@ -976,3 +987,36 @@ def test_describe_miss_names_a_site_separation_mismatch():
                            target_site_xy_mm=(50.0, 0.0))
     assert 'IS covered' in msg and 'separation_mm' in msg
     assert '100.0 mm apart' in msg
+
+
+# ── the committed box agrees with the launch (2026-10-05) ────────────────────
+
+_COMMITTED_BOX = os.path.join(_REPO, 'config', 'generated', 'admissible_box.yaml')
+
+
+def test_the_committed_box_is_swept_at_the_launch_defaults_and_the_live_gate():
+    """R5 sitting 5 (2026-10-05) lost three launches to a box swept at
+    350/5000/200000 while the launch default was still 300/5000/150000:
+    ``check_limits`` refused every pattern by name until the operator ramped
+    ``trajectory/set_limits`` by hand, and nothing in the suite could see the
+    divergence because the launch default and the swept limits were pinned in
+    two places with only a runsheet row between them. This is the one
+    enforcement point: the committed box carries the limits the launch starts
+    at (``hw.JB_TRAJ_*`` -- the YAML session defaults) and the gate hash of
+    the gated files as committed. Moving the YAML working point, editing a
+    gated file, or re-sweeping at other limits without the matching change
+    fails here, not at the first JUGGLE goal of a sitting.
+
+    The dwell is pinned separately where ``skill_node``'s default lives
+    (``tests/ros/test_skill_node.py``)."""
+    boxes = ab.load(_COMMITTED_BOX)
+    assert boxes, 'no boxes in the committed admissible_box.yaml'
+    launch = TrajectoryLimits.from_config(hw)
+    # No gate escape hatch: the committed box must match the committed gate.
+    ab.check_limits(boxes, launch, check_gate=True)
+    for box in boxes:
+        assert box.limits['leg_vel_mmps'] == pytest.approx(hw.JB_TRAJ_LEG_VEL_LIMIT_MMPS)
+        assert box.limits['leg_acc_mmps2'] == pytest.approx(hw.JB_TRAJ_LEG_ACC_LIMIT_MMPS2)
+        assert box.limits['leg_jerk_mmps3'] == pytest.approx(hw.JB_TRAJ_LEG_JERK_LIMIT_MMPS3)
+        assert box.limits['hand_acc_rps2'] == pytest.approx(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)
+        assert box.gate_hash == ab.gate_hash()

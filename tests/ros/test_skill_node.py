@@ -502,6 +502,22 @@ def test_self_toss_is_refused_on_a_limits_mismatch(tmp_path):
     assert node._executor is None
 
 
+def test_the_committed_box_is_swept_at_the_node_default_dwell():
+    """The dwell half of the launch/box contract (2026-10-05; the limits and
+    gate half is tests/motion/test_skills_admissible.py): every committed box
+    carries ``skill_node``'s default ``dwell_s``, so a launch with the default
+    parameters is not refused ``LimitsMismatch: ... dwell_s ...`` at its first
+    goal. Changing the default dwell means a re-sweep in the same commit."""
+    import os
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..',
+                        'config', 'generated', 'admissible_box.yaml')
+    boxes = adm.load(path)
+    assert boxes
+    for box in boxes:
+        assert box.dwell_s == pytest.approx(sn._DEFAULT_DWELL_S), (
+            box.site_pair, box.pattern, box.dwell_s)
+
+
 def test_self_toss_is_refused_on_a_dwell_mismatch(tmp_path):
     """R5 (D4, 2026-09-30): a box swept at a different dwell than the LIVE
     session dwell (``skill_node``'s ``dwell_s`` parameter) refuses by name --
