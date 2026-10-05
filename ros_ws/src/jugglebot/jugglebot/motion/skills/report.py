@@ -15,10 +15,12 @@ Timing words, all in the wall-clock seconds the schedule runs on:
   commanded to (:func:`release_error_s`): the fitted parabola traced back
   to the RELEASE HEIGHT on the way up, minus the THROW's release instant.
   The planner commands exactly that flight — release at the site's throw
-  height (860 mm), land on the catch plane (830 mm) ``schedule.flight_s``
-  later (the ``|v| 4.166 m/s`` a 0.9 m skill announces is that 860 -> 830
-  ballistic, not a same-height one) — so a throw that leaves on time reads
-  0 ms. It is read where the flight is known best (the tracker's converged
+  height (860 mm), land on the catch plane (930 mm since R5 sitting 6's
+  catch-high decision, 2026-10-05 -- was 830 before it) ``schedule.flight_s``
+  later (the ``|v| 4.283 m/s`` a 0.9 m skill announces today is that
+  860 -> 930 ballistic, not a same-height one; the pre-catch-high figure was
+  4.166 m/s for 860 -> 830) — so a throw that leaves on time reads 0 ms. It
+  is read where the flight is known best (the tracker's converged
   ballistic fit), not from a telemetry sample; a 1 % error in the fitted
   arrival speed moves it about 9 ms at a 0.9 m apex.
 - **arrival** — when the ball reached the catch plane, minus when the catch

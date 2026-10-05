@@ -78,6 +78,18 @@ FLIGHT_S = 0.857
 APEX_M = sc.apex_m(FLIGHT_S)
 LAUNCH_S = 0.4
 SEPARATION_MM = 100.0
+#: The R5 operating point (plan § 0, catch-high sitting 6, 2026-10-05):
+#: apex 0.95 m, dwell 0.27 s, separation 125 mm, leg 350/5000/200000, hand
+#: acc 3900 rev/s^2 -- the committed box's own point, re-swept there after
+#: ``sites.CATCH_CUP_Z_MM`` moved 830 -> 930 mm. A handful of tests below
+#: need only a FEASIBLE schedule to exercise executor/learner/attribution
+#: logic (not a check of the R2/R3 point itself); those move here rather
+#: than loosen any assertion, since the R2 point's final rest-terminal
+#: CATCH now refuses LIMIT_JERK at the new catch height (218k at 900 mm,
+#: 272k at 930 against the R2 fixture's 200000 cap).
+R5_APEX_M = 0.95
+R5_DWELL_S = 0.27
+R5_SEPARATION_MM = 125.0
 #: An arbitrary non-zero wall-clock origin: nothing in the executor may assume
 #: the schedule starts at t = 0 (the robot's is the CAN wall clock).
 T0_ABS = 100.0
@@ -109,6 +121,19 @@ def limits():
 @pytest.fixture(scope='module')
 def sites():
     return si.columns_sites(SEPARATION_MM)
+
+
+@pytest.fixture(scope='module')
+def limits_r5():
+    """The R5 operating point's session limits (see ``R5_APEX_M`` above)."""
+    return TrajectoryLimits.from_config(hw).with_session_limits(
+        leg_vel_mmps=350.0, leg_acc_mmps2=5000.0, leg_jerk_mmps3=200000.0,
+        hand_acc_rps2=3900.0)
+
+
+@pytest.fixture(scope='module')
+def sites_r5():
+    return si.columns_sites(R5_SEPARATION_MM)
 
 
 def _rest_state(cup_mm, correction=None) -> uc.CycleState:
@@ -488,26 +513,25 @@ def test_the_handoff_budget_is_eight_knots_and_the_knot_past_it_refuses(
 # The whole columns schedule, through the real chain
 # ---------------------------------------------------------------------------
 
-def test_a_six_throw_columns_schedule_installs_end_to_end(limits, geom):
-    """The R2 acceptance shape, offline: ``compile_columns`` -> ``SkillExecutor``
+def test_a_six_throw_columns_schedule_installs_end_to_end(limits_r5, geom):
+    """The acceptance shape, offline: ``compile_columns`` -> ``SkillExecutor``
     -> ``install_segment``, a perfect analytic tracker, no plant.
 
     Every install is accepted, every peak stays inside the session limits, and
-    the machine ends at rest.  (date, command, result) 2026-09-12,
-    ``pytest tests/motion/test_skills_executor.py -q``: 8 installs, worst
-    ``plan_wall_s`` **34.5 ms**, peaks 266 mm/s / 4034 mm/s² / 146k mm/s³ /
-    3399 rev/s² against 300 / 5000 / 200000 / 3500 (the peaks are unchanged by
-    the 2026-09-12 lead re-measurement — the leads move WHEN a segment is
-    dispatched, never what it plans).  The solve time matters as much as the
-    peaks: a handoff splice clears the wire by
-    ``HANDOFF_LEAD_KNOTS - WIRE_READ_KNOTS`` = eight knots (200 ms), and
-    ``test_the_handoff_budget_is_eight_knots_and_the_knot_past_it_refuses``
-    asserts both sides of that number against an INJECTED solve time rather
-    than this box's.
+    the machine ends at rest.  Moved to the R5 operating point 2026-10-05 (the
+    R2 point's final rest-terminal CATCH refuses LIMIT_JERK once
+    ``sites.CATCH_CUP_Z_MM`` moves 830 -> 930 mm): (date, command, result)
+    2026-10-05, ``pytest tests/motion/test_skills_executor.py::test_a_six_throw_columns_schedule_installs_end_to_end -q``:
+    8 installs, peaks 288 mm/s / 4194 mm/s² / 156387 mm/s³ / 3655 rev/s²
+    against 350 / 5000 / 200000 / 3900 (the R5 point's session limits).
+    ``plan_wall_s`` is not pinned here (load-dependent under xdist -- see the
+    note below the install loop); an unloaded probe of this exact schedule
+    measured a worst install at 183 ms.
     """
-    sites = si.columns_sites(SEPARATION_MM)
+    sites = si.columns_sites(R5_SEPARATION_MM)
     sched = sc.compile_columns(
-        sc.Pattern(sites=sites, apex_m=0.9, dwell_s=0.30, n_throws=6), T0_ABS)
+        sc.Pattern(sites=sites, apex_m=R5_APEX_M, dwell_s=R5_DWELL_S,
+                  n_throws=6), T0_ABS)
     arrival = np.array([0.0, 0.0, -0.5 * 9806.0 * sched.flight_s])
     landings = {}
     for sk in sched.skills:
@@ -530,7 +554,7 @@ def test_a_six_throw_columns_schedule_installs_end_to_end(limits, geom):
         rec = state['record']
         seed = (_rest_state(sites[0].rest_site_mm()) if rec is None else None)
         new_rec, res, _seg = ex.install_segment(
-            rec, seed, kind, terminal, t_now_s, limits=limits, geom=geom)
+            rec, seed, kind, terminal, t_now_s, limits=limits_r5, geom=geom)
         assert res.accepted, '%s: %s' % (res.code, res.message)
         state['record'] = new_rec
         walls.append(res.plan_wall_s)
@@ -559,10 +583,10 @@ def test_a_six_throw_columns_schedule_installs_end_to_end(limits, geom):
     # Only the REST, dispatched a tail after the last touch-down, does not.
     assert snapped == [False] + [True] * 6 + [False]
     worst = np.max(np.array(peaks), axis=0)
-    assert worst[0] <= limits.leg_vel_mmps
-    assert worst[1] <= limits.leg_acc_mmps2
-    assert worst[2] <= limits.leg_jerk_mmps3
-    assert worst[3] <= limits.hand_acc_limit_rps2
+    assert worst[0] <= limits_r5.leg_vel_mmps
+    assert worst[1] <= limits_r5.leg_acc_mmps2
+    assert worst[2] <= limits_r5.leg_jerk_mmps3
+    assert worst[3] <= limits_r5.hand_acc_limit_rps2
     # ``plan_wall_s`` is RECORDED (in this test's docstring), never asserted:
     # this file runs under xdist, and a solve on a loaded box inflates ~100x
     # (3.58 s observed 2026-09-12 against a competing suite — the thread-pool
@@ -2086,10 +2110,11 @@ def test_a_phantom_balls_predicted_landing_is_the_patterns_own_vertical_self_tos
     assert np.allclose(landing.pos_mm, p2.catch_site_mm())
     assert landing.t_land_abs_s == pytest.approx(t_land)
     # The SAME no-drag closed form `ballistics_bc` uses everywhere else in
-    # this module -- release and catch z differ by 30 mm
-    # (RELEASE_CUP_Z_MM vs CATCH_CUP_Z_MM), so the plain symmetric
-    # ``g*(t_f/2)`` estimate is not quite exact; this is what the real
-    # function actually computes, read back through the same closed form.
+    # this module -- release and catch z differ (RELEASE_CUP_Z_MM vs
+    # CATCH_CUP_Z_MM: 70 mm since R5 sitting 6's catch-high, 2026-10-05; was
+    # -30 mm), so the plain symmetric ``g*(t_f/2)`` estimate is not quite
+    # exact; this is what the real function actually computes, read back
+    # through the same closed form.
     want_launch = ballistics_bc.launch_velocity(
         p2.throw_site_mm(), p2.catch_site_mm(), FLIGHT_S)
     want_vel = ballistics_bc.arrival_velocity(want_launch, FLIGHT_S)
@@ -2481,6 +2506,72 @@ def test_a_shadow_landed_throw_is_never_read_caught(sites):
     assert 'landed on the held ball' not in ordinary_outcome
 
 
+def test_an_entry_hop_throw_bypasses_the_learner_and_box_even_when_set(sites):
+    """The hop entry's THROW 0 (owner decision, 2026-10-05, R5 sitting-6
+    prep -- `scratchpad/s6/design.md` Decision 1): `u = y_d` exactly, no
+    learner, no box lookup -- the SAME bypass `shadow_landing` uses
+    (`_command_u`'s own docstring), proven here with a learner/box pair
+    that WOULD distort the command if either were consulted. The learner is
+    never even called (not merely discarded)."""
+    p1, _p2 = sites
+    sch = _single_throw_schedule(p1, ball_id=0, t_release=T0_ABS + LAUNCH_S)
+    hop_skill = dataclasses.replace(sch.skills[0], entry_hop=True)
+    sch = dataclasses.replace(sch, skills=(hop_skill,))
+    inst = _FakeInstaller()
+    learner = _FakeLearner(u=[0.5, 0.5, 5.0])
+    boxes = [_box(site_pair=(p1.name, p1.name))]
+    x = ex.SkillExecutor(sch, inst, learner=learner, boxes=boxes)
+    x.tick(sch.skills[0].dispatch_s())
+    assert learner.calls == []
+    _kind, terminal, _t, _b = inst.calls[0]
+    assert np.allclose(terminal.target_mm, p1.catch_site_mm())
+    assert terminal.flight_s == pytest.approx(sc.flight_s(APEX_M))
+
+
+def test_an_entry_hop_throw_writes_no_memory_row_but_reports_normally(sites):
+    """The hop entry's THROW 0 shares `shadow_landing`'s NO-MEMORY-ROW
+    treatment (a cross-site throw from the feed site would pool with that
+    site's vertical column throws in the learner's memory and corrupt
+    both) but NONE of its possession-latch override: this ball is caught
+    in the ordinary way, so `caught` reads normally and the OUTCOME line
+    is reported exactly like any other throw's, just tagged so an operator
+    can tell it was the hop entry."""
+    p1, p2 = sites
+    t_release = ROS_T0
+    t_land = t_release + FLIGHT_S
+    hop_skills = (
+        Skill(kind=sg.THROW, ball_id=0, site=p2, t_abs_s=t_release,
+              window_s=LAUNCH_S, y_d=(np.zeros(2), APEX_M), target=p1,
+              entry_hop=True),
+        Skill(kind=sg.REST, ball_id=0, site=p1, t_abs_s=t_land + sg.REST_TAIL_S,
+              window_s=sg.REST_TAIL_S),
+    )
+    hop_sch = Schedule(pattern='columns', skills=hop_skills,
+                       flight_s=FLIGHT_S, beat_s=0.578, transit_s=0.278,
+                       dwell_s=0.30, t0_abs_s=t_release - LAUNCH_S)
+    assert hop_sch.skills[0].entry_hop is True
+    land = _fit_landing(pos_mm=p1.catch_site_mm(), vel_mm_s=LAND_VEL,
+                        t_land_abs_s=t_land)
+    inst = _FakeInstaller()
+    experiences = []
+    x = ex.SkillExecutor(hop_sch, inst, tracker=lambda b: land,
+                         observer=lambda b, t: ex.CAUGHT_EVIDENCE,
+                         on_experience=experiences.append)
+    t = hop_sch.skills[0].dispatch_s() - 0.01
+    t_end = t_land + ex.CAUGHT_WINDOW_S + 0.05
+    lines = []
+    while t < t_end:
+        lines.extend(x.tick(t))
+        t += 0.02
+    # NO memory row, same as `shadow_landing` -- but `caught` reads NORMALLY
+    # (the observer saw SEATED evidence for THIS ball's own catch, not a
+    # latched-over reading of some other ball).
+    assert experiences == []
+    outcome = [ln for ln in lines if 'OUTCOME' in ln][0]
+    assert 'caught=True' in outcome
+    assert 'hop entry' in outcome
+
+
 # ── one sensor, one row per tick (2026-09-16, the audit on the R2/R3 columns
 # operating point) ───────────────────────────────────────────────────────
 #
@@ -2559,15 +2650,20 @@ def test_a_single_pending_row_still_latches_as_before(sites):
     assert pend_a.caught_seen is True
 
 
-def test_a_columns_schedule_attributes_every_catch_to_its_own_ball(limits, geom):
+def test_a_columns_schedule_attributes_every_catch_to_its_own_ball(limits_r5,
+                                                                  geom):
     """The end-to-end shape: a real ``compile_columns`` schedule (two balls,
-    overlapping verdict windows at the R2 operating point) run through the
-    real chain with a shared, ``ball_id``-blind observer that reads SEATED
-    continuously. Every released ball must still finalise ``caught=True`` on
-    its own row -- one ball's cup never steals another's verdict."""
-    sites_ = si.columns_sites(SEPARATION_MM)
+    overlapping verdict windows at the R5 operating point -- moved from R2
+    2026-10-05, the R2 point's final CATCH refuses LIMIT_JERK once the catch
+    plane moved 830 -> 930 mm, and this test only needs a FEASIBLE schedule
+    to exercise the attribution logic) run through the real chain with a
+    shared, ``ball_id``-blind observer that reads SEATED continuously. Every
+    released ball must still finalise ``caught=True`` on its own row -- one
+    ball's cup never steals another's verdict."""
+    sites_ = si.columns_sites(R5_SEPARATION_MM)
     sched = sc.compile_columns(
-        sc.Pattern(sites=sites_, apex_m=0.9, dwell_s=0.30, n_throws=6), T0_ABS)
+        sc.Pattern(sites=sites_, apex_m=R5_APEX_M, dwell_s=R5_DWELL_S,
+                  n_throws=6), T0_ABS)
     arrival = np.array([0.0, 0.0, -0.5 * 9806.0 * sched.flight_s])
     landings = {}
     for sk in sched.skills:
@@ -2589,7 +2685,7 @@ def test_a_columns_schedule_attributes_every_catch_to_its_own_ball(limits, geom)
         rec = state['record']
         seed = (_rest_state(sites_[0].rest_site_mm()) if rec is None else None)
         new_rec, res, _seg = ex.install_segment(
-            rec, seed, kind, terminal, t_now_s, limits=limits, geom=geom)
+            rec, seed, kind, terminal, t_now_s, limits=limits_r5, geom=geom)
         assert res.accepted, '%s: %s' % (res.code, res.message)
         state['record'] = new_rec
         return res
@@ -3590,9 +3686,9 @@ def test_a_catch_the_schedule_cannot_aim_still_waits_for_the_tracker(sites):
 
 def _corrected_t_land(sch, r):
     """The arrival the measured ratio implies, restated from the same closed
-    form: the release is 30 mm ABOVE the catch plane (cup height at throw vs
-    at catch), so the flight is not level and T' is only APPROXIMATELY r x
-    T."""
+    form: the release is 70 mm BELOW the catch plane (cup height at throw vs
+    at catch, since R5 sitting 6's catch-high, 2026-10-05; was 30 mm ABOVE),
+    so the flight is not level and T' is only APPROXIMATELY r x T."""
     throw = sch.skills[0]
     release_mm = throw.site.throw_site_mm()
     pos_mm = throw.site.catch_site_mm()
@@ -3772,6 +3868,41 @@ def _land(site, t_land, dx_mm=0.0, t_release=None):
                       vel_mm_s=np.array([0.0, 0.0, vz]), t_land_abs_s=t_land)
 
 
+#: The release-to-catch rise (m), mirroring ``executor._CATCH_RISE_M``: since
+#: the catch-high plane change (2026-10-05) the executor reads a landing's
+#: observed apex through ``schedule.apex_from_crossing`` (rise-aware), not
+#: the plain symmetric ``sc.apex_m(T)`` -- those two formulas only agree at
+#: zero rise. A test deriving an EXPECTED observed apex from one of
+#: :func:`_land`'s fabricated flights must go through the same inverse.
+_CATCH_RISE_M = (si.CATCH_CUP_Z_MM - si.RELEASE_CUP_Z_MM) / 1000.0
+
+
+def _land_apex_m(t_land, t_release=None):
+    """The observed apex (m) that :func:`_land`'s fabricated landing for
+    ``(t_land, t_release)`` implies, through the SAME rise-aware formula
+    ``executor._observed_apex_m`` uses on the real ``Landing``."""
+    t_rel = ROS_T0 if t_release is None else t_release
+    vz_m_s = -(float(t_land) - float(t_rel)) / 2.0 * 9.806
+    return sc.apex_from_crossing(vz_m_s, _CATCH_RISE_M)
+
+
+def test_an_impossible_crossing_is_refused_as_an_observation_not_raised(sites):
+    """``apex_from_crossing`` refuses a non-descending crossing; inside the
+    tick that must read as "not this throw's flight" (NaN -> out of band ->
+    no row), never an exception (2026-10-05: ``apex_from_vz``'s ``abs()``
+    used to admit it silently)."""
+    p1, _p2 = sites
+    up = _fit_landing(pos_mm=p1.catch_site_mm(), vel_mm_s=np.array([0.0, 0.0, 250.0]),
+                      t_land_abs_s=ROS_T0 + FLIGHT_S)
+    assert np.isnan(ex._observed_apex_m(up))
+    pend = ex._PendingOutcome(
+        ball_id=0, x=np.zeros(4), u=np.array([0.0, 0.0, APEX_M]),
+        t_release_s=ROS_T0, t_land_scheduled_s=ROS_T0 + FLIGHT_S,
+        target_xy_mm=p1.catch_site_mm()[:2], t_next_release_s=None)
+    assert ex.SkillExecutor._consider_landing(pend, up, ROS_T0 + FLIGHT_S) is False
+    assert pend.best_landing is None and pend.n_rejected == 1
+
+
 def test_the_landing_observation_freezes_at_the_next_release(sites):
     """A fitted estimate that only converges AFTER the scheduled crossing still
     becomes the row (2026-09-20), while an estimate served once this ball's
@@ -3829,7 +3960,11 @@ def test_a_chained_re_throw_cannot_contaminate_its_own_previous_row(sites):
     launch_rows = [e for e in experiences
                    if e.t_abs_s == pytest.approx(t_throw)]
     assert len(launch_rows) == 1
-    assert launch_rows[0].y[2] == pytest.approx(sc.apex_m(FLIGHT_S + 0.04))
+    # Through the rise-aware inverse (``_land_apex_m``, catch-high 2026-10-05)
+    # -- the plain symmetric ``sc.apex_m(FLIGHT_S + 0.04)`` no longer matches
+    # since release and catch no longer sit at the same height.
+    assert launch_rows[0].y[2] == pytest.approx(
+        _land_apex_m(t_land + 0.04, t_release=t_throw))
     assert launch_rows[0].y[0] == pytest.approx(0.008)
     assert launch_rows[0].caught is True
 
@@ -3852,7 +3987,8 @@ def test_an_out_of_band_estimate_is_refused_at_admission(sites):
     assert not ex.SkillExecutor._consider_landing(pend, wild, t_sched - 0.15)
     assert pend.best_landing is good
     assert pend.n_rejected == 1
-    assert pend.rejected_apex_m == pytest.approx(sc.apex_m(FLIGHT_S + 1.2))
+    # Rise-aware (catch-high 2026-10-05): see ``_land_apex_m``.
+    assert pend.rejected_apex_m == pytest.approx(_land_apex_m(t_sched + 1.2))
     # ... and the ordinary refinement (the LAST admissible estimate wins) IS
     # accepted.
     better = _land(p1, t_sched, dx_mm=5.5)
@@ -3958,7 +4094,11 @@ def test_an_observed_flight_outside_the_band_leaves_no_row(sites):
     assert experiences == []
     out = [ln for ln in lines if 'OUTCOME' in ln]
     assert len(out) == 1
-    assert 'no row: observed apex 6.105 m outside [0.225, 2.305] of ' \
+    # 6.140 m, not the pre-catch-high 6.105 m: rise-aware (see
+    # ``_land_apex_m``) -- re-measured 2026-10-05 after ``CATCH_CUP_Z_MM``
+    # moved 830 -> 930 mm. The band bounds stay [0.225, 2.305] (0.25x/2.56x of
+    # the commanded 0.900 m), unaffected by the rise.
+    assert 'no row: observed apex 6.140 m outside [0.225, 2.305] of ' \
            'commanded 0.900 m' in out[0]
 
 
@@ -3978,7 +4118,10 @@ def test_a_plant_throwing_25_percent_fast_is_still_IN_band(sites):
         x.tick(t)
         t += 0.025
     assert len(experiences) == 1
-    assert experiences[0].y[2] == pytest.approx(1.238 ** 2 * APEX_M)
+    # Rise-aware (catch-high 2026-10-05): the plain symmetric ``1.238**2 *
+    # APEX_M`` only matched at zero rise; see ``_land_apex_m``.
+    assert experiences[0].y[2] == pytest.approx(
+        _land_apex_m(ROS_T0 + 1.238 * FLIGHT_S))
 
 
 def test_the_window_closes_before_this_balls_next_release():
@@ -4073,7 +4216,14 @@ def test_a_crowded_schedule_row_never_carries_the_next_flight(sites):
     t_throw = sch.skills[0].t_abs_s
     t_rethrow = sch.skills[1].then_throw.t_release_abs_s
     # A synthetic tracker that only ever offers the NEXT flight's landing.
-    wild = _land(p1, t_rethrow + FLIGHT_S, dx_mm=321.0)
+    # ``t_release=t_rethrow`` (2026-10-05): without it ``_land`` falls back to
+    # the module's absolute-epoch ``ROS_T0``, and against this schedule's
+    # small ``T0_ABS``-relative clock that is a huge ASCENDING "flight" --
+    # harmless under the old ``apex_from_vz`` (``abs()``-only), but the
+    # rise-aware ``apex_from_crossing`` the executor now reads outcomes
+    # through (catch-high 2026-10-05) correctly raises on a non-descending
+    # crossing. Pin the release to make this landing merely wild, not broken.
+    wild = _land(p1, t_rethrow + FLIGHT_S, dx_mm=321.0, t_release=t_rethrow)
     experiences = []
     lines = []
     # `AIM_SCHEDULE` (the LIVE default): the tracker feeds outcome capture
@@ -4671,7 +4821,16 @@ def test_the_next_catch_s_priors_fly_from_the_offset_release(reaimed_self_toss):
     VELOCITY gains -23.34 mm/s in y (= -20 mm / 0.8569 s, zero for a release
     at the site), and the hand-corrected prior -- which crosses the catch
     PLANE rather than assuming the commanded point -- lands 3.56 mm on the
-    far side of the site at the measured r = 1.086 (0.00 mm before)."""
+    far side of the site at the measured r = 1.086 (0.00 mm before).
+
+    RE-MEASURED 2026-10-05 (``sites.CATCH_CUP_Z_MM`` moved 830 -> 930 mm, the
+    catch-high change: the plane the hand-corrected prior crosses moved with
+    it): the hand-corrected prior now lands 3.66 mm on the far side -- (date,
+    command, result) 2026-10-05, ``pytest
+    tests/motion/test_skills_executor.py::test_the_next_catch_s_priors_fly_from_the_offset_release -q``:
+    passes with ``corrected.pos_mm[1] == -3.6589`` (was -3.5582 at the old
+    830 mm catch plane). The commanded-position and arrival-velocity checks
+    above are unaffected -- neither depends on the catch plane."""
     sched, execu, _records, landings = reaimed_self_toss
     idx = _carried_catch_idx(sched)
     nxt = [j for j in range(idx + 1, len(sched.skills))
@@ -4684,21 +4843,28 @@ def test_the_next_catch_s_priors_fly_from_the_offset_release(reaimed_self_toss):
     assert prior.vel_mm_s[1] == pytest.approx(-23.3405, abs=1e-3)
 
     corrected = execu._hand_corrected_landing(nxt, skill, 1.086)
-    assert corrected.pos_mm[1] == pytest.approx(-3.5582, abs=1e-3)
+    assert corrected.pos_mm[1] == pytest.approx(-3.6589, abs=1e-3)
     assert corrected.pos_mm[0] == pytest.approx(
         float(skill.site.catch_site_mm()[0]), abs=1e-6)
 
 
-def test_a_hop_catch_releases_from_the_caught_position_too(limits_r3, geom):
+def test_a_hop_catch_releases_from_the_caught_position_too(limits_r5, geom):
     """The same rule across sites: a 250 mm hop's CATCH at P2, carrying the
     throw back to P1, releases from the +15 mm x landing it caught -- the hop
     shape whose 3/3 throws overshot the far site by +87..+104 mm at the
     2026-09-27 sitting (a LATE release into a plan already re-accelerating,
     unit B's half of that defect; this half stops the release point itself
-    from moving)."""
+    from moving).
+
+    Moved from ``limits_r3`` to ``limits_r5`` 2026-10-05: at the R3 hand-acc
+    cap (3500 rev/s^2) this CATCH now refuses HAND_LIMIT_ACC (3668.7 > 3500)
+    once ``sites.CATCH_CUP_Z_MM`` moves 830 -> 930 mm -- a higher catch plane
+    needs more hand deceleration on arrival. This test only needs the install
+    to succeed to check the release-position invariant, so it moves to the
+    R5 hand cap (3900) rather than loosen anything."""
     p1, p2 = si.columns_sites(250.0)
     sched, execu, records, landings = _carried_chain(
-        (p1, p2), (15.0, 0.0, 0.0), limits_r3, geom)
+        (p1, p2), (15.0, 0.0, 0.0), limits_r5, geom)
     idx = _carried_catch_idx(sched)
     assert sched.skills[idx].site.name == 'P2'
     assert sched.skills[idx].then_throw.target.name == 'P1'
@@ -5092,7 +5258,8 @@ def test_no_release_names_the_throw_that_never_left(sites):
 _BBFED_ARRIVAL_MM_S = np.array([1058.0, 475.0, -5507.0])
 
 
-def _bbfed_schedule(sites, dx_mm: float = 0.0, dy_mm: float = 0.0):
+def _bbfed_schedule(sites, dx_mm: float = 0.0, dy_mm: float = 0.0,
+                    entry: str = 'transit'):
     """A `compile_columns(feed=...)` schedule at the R5 operating point (apex
     ~0.9 m, dwell 0.30 s, 6 throws), BB's real arrival landing at P2 offset
     by `(dx_mm, dy_mm)` -- the announced-landing displacement Ball Butler's
@@ -5103,7 +5270,7 @@ def _bbfed_schedule(sites, dx_mm: float = 0.0, dy_mm: float = 0.0):
     landing_mm = p2.catch_site_mm() + np.array([dx_mm, dy_mm, 0.0])
     feed = sc.LandingPrior(pos_mm=landing_mm, vel_mm_s=_BBFED_ARRIVAL_MM_S,
                            t_land_abs_s=T0_ABS)
-    return sc.compile_columns(pattern, feed=feed)
+    return sc.compile_columns(pattern, feed=feed, entry=entry)
 
 
 def test_plan_columns_first_cycle_accepts_the_nominal_bb_feed(
@@ -5141,6 +5308,21 @@ def test_plan_columns_first_cycle_refuses_a_feed_displaced_toward_the_far_site(
     result = ex.plan_columns_first_cycle(schedule, limits, geom=geom)
     assert result is not None
     assert 'LIMIT_VEL' in result, result
+
+
+def test_plan_columns_first_cycle_accepts_the_hop_entry(limits, geom, sites):
+    """The hop entry (owner decision, 2026-10-05, R5 sitting-6 prep): THROW
+    0 releases cross-site, from the feed site (P2) where the bridge REST now
+    parks ball A, straight into the level-pinned feed CATCH at the SAME
+    site -- no transit needed at all, so this plans at least as cleanly as
+    the nominal (undisplaced) transit-entry case above."""
+    schedule = _bbfed_schedule(sites, entry='hop')
+    throw0 = next(s for s in schedule.skills if s.kind == sg.THROW)
+    p1, p2 = sites
+    assert throw0.entry_hop is True
+    assert throw0.site.name == p2.name
+    assert throw0.target.name == p1.name
+    assert ex.plan_columns_first_cycle(schedule, limits, geom=geom) is None
 
 
 def test_plan_columns_first_cycle_needs_a_throw_and_a_feed_catch(sites):
@@ -5201,7 +5383,7 @@ def test_an_estimate_one_beat_early_is_refused_and_a_genuine_one_is_not():
 
 
 def test_a_columns_catch_handed_the_other_balls_flight_keeps_the_schedule(
-        limits, geom):
+        limits_r5, geom):
     """THE sitting-3 input, end to end: a real ``compile_columns`` schedule
     through the real planner, with a tracker cross-wired exactly as HEAD's
     correlator was -- each schedule ball is served the OTHER ball's converged
@@ -5209,10 +5391,13 @@ def test_a_columns_catch_handed_the_other_balls_flight_keeps_the_schedule(
     early and the real install refuses (sitting 3: WINDOW_TOO_SHORT on every
     fed-columns attempt); with it every catch keeps the schedule, the attempt
     runs to the end, each refusal is named once per skill, and no OUTCOME row
-    is written from the wrong ball's flight."""
-    sites_ = si.columns_sites(SEPARATION_MM)
+    is written from the wrong ball's flight. Moved to the R5 operating point
+    2026-10-05 (only a feasible schedule is needed here; the R2 point's final
+    CATCH refuses LIMIT_JERK once the catch plane moved 830 -> 930 mm)."""
+    sites_ = si.columns_sites(R5_SEPARATION_MM)
     sched = sc.compile_columns(
-        sc.Pattern(sites=sites_, apex_m=0.9, dwell_s=0.30, n_throws=6), T0_ABS)
+        sc.Pattern(sites=sites_, apex_m=R5_APEX_M, dwell_s=R5_DWELL_S,
+                  n_throws=6), T0_ABS)
     arrival = np.array([0.0, 0.0, -0.5 * 9806.0 * sched.flight_s])
     landings = {}
     for sk in sched.skills:
@@ -5242,7 +5427,7 @@ def test_a_columns_catch_handed_the_other_balls_flight_keeps_the_schedule(
         rec = state['record']
         seed = (_rest_state(sites_[0].rest_site_mm()) if rec is None else None)
         new_rec, res, _seg = ex.install_segment(
-            rec, seed, kind, terminal, t_now_s, limits=limits, geom=geom)
+            rec, seed, kind, terminal, t_now_s, limits=limits_r5, geom=geom)
         assert res.accepted, '%s: %s' % (res.code, res.message)
         state['record'] = new_rec
         if kind == sg.CATCH:

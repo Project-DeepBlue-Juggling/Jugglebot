@@ -916,6 +916,17 @@ class SelfTossGateConfig:
     #: `run_columns_attempt`'s own paragraph on this field for the exact
     #: split). Ignored outside a FEED trial.
     feed_bb_bias_mm: Tuple[float, float] = (0.0, 0.0)
+    #: The fed columns entry (owner decision, 2026-10-05, R5 sitting-6 prep)
+    #: -- mirrors `skill_node.SkillNode`'s own `columns_entry`: 'hop' (the
+    #: default) spawns Jugglebot already parked at the feed site holding
+    #: ball A (or empty, for a one-ball-fed trial), and THROW 0 releases it
+    #: cross-site from there (`schedule.compile_columns(entry='hop')`).
+    #: 'transit' reproduces the pre-R5 self-toss entry (held at ball A's own
+    #: site) bit-for-bit, for A/B comparison. Ignored outside a FEED trial
+    #: (`feed_angle_deg`/`feed_speed_mmps` both set) -- a vertical-spawn
+    #: trial has no feed to park for, same gate `compile_columns` itself
+    #: enforces.
+    columns_entry: str = 'hop'
 
     #: Which correlation rule :class:`_IdentityTracker` applies (2026-10-04,
     #: U1 "two-ball association" fix). ``'fixed'`` (the default): identity
@@ -1863,6 +1874,16 @@ class SkillsGate:
         ``throws_out``/``memory`` only ever see ball B's rows, so the
         verdict this feeds (:meth:`run_columns_1ball_fed_seed`) counts ball
         B alone with no extra filtering needed.
+
+        ``cfg.columns_entry`` (owner decision, 2026-10-05, R5 sitting-6
+        prep): inside a FEED trial only, ``'hop'`` (the default) spawns
+        Jugglebot already AT the feed site (``rest0`` is ``feed_site``'s own
+        rest, not ``a_site``'s) holding ball A (or empty, ``phantom_a``) and
+        compiles the schedule with ``compile_columns(..., entry='hop')`` --
+        mirroring ``SkillNode._run_columns``'s own hop entry bit for bit,
+        including the un-walked Ball-Butler-equivalent aim point.
+        ``'transit'`` reproduces the pre-R5 vertical-spawn-trial shape
+        (``rest0`` at ``a_site``, a self-toss THROW 0) exactly.
         """
         cfg: SelfTossGateConfig = self.cfg
         plant = self.plant
@@ -1893,8 +1914,16 @@ class SkillsGate:
                 'phantom_a requires feed_mode (feed_angle_deg/feed_speed_mmps '
                 'both set) -- a vertical, un-fed spawn leaves ball B with '
                 'nothing real to catch')
+        if cfg.columns_entry not in ('hop', 'transit'):
+            raise ValueError("cfg.columns_entry must be 'hop' or 'transit', "
+                             'got %r' % (cfg.columns_entry,))
+        # The hop entry (owner decision, 2026-10-05, R5 sitting-6 prep):
+        # ignored outside a FEED trial -- the vertical spawn below never
+        # reads it, `compile_columns` itself refuses `entry='hop'` without a
+        # `feed`. Mirrors `SkillNode._run_columns`'s own `bridge_site`.
+        hop_entry = feed_mode and cfg.columns_entry == 'hop'
 
-        rest0 = self._rest_state(a_site)
+        rest0 = self._rest_state(feed_site if hop_entry else a_site)
         pose0 = np.asarray(rest0.pose, dtype=float)
         plant.reset(pose0)
         plant.command(plant.pose_to_extensions(pose0))
@@ -1953,14 +1982,18 @@ class SkillsGate:
             # feed site walked `feed_aim_toward_a_mm` TOWARD A's site
             # (`SkillNode._columns_feed_aim_site`'s own mirror) -- the
             # swapped layout's UNDISPLACED feed catch refuses LIMIT_ACC at
-            # 101 % (class docstring above).
+            # 101 % (class docstring above). The hop entry (2026-10-05)
+            # never makes that reversal (the cup is already parked at the
+            # feed site), so it targets the UN-walked feed site, mirroring
+            # `_run_columns`'s own `0.0 if entry == 'hop' else ...`.
             a_minus_feed_xy = (np.asarray(a_site.cup_mm[:2], dtype=float)
                               - np.asarray(feed_site.cup_mm[:2], dtype=float))
             norm = float(np.linalg.norm(a_minus_feed_xy))
             aim_unit_xy = (a_minus_feed_xy / norm if norm > 1e-9
                           else np.zeros(2))
+            aim_toward_a_mm = 0.0 if hop_entry else cfg.feed_aim_toward_a_mm
             aim_xy = (np.asarray(feed_site.cup_mm[:2], dtype=float)
-                     + cfg.feed_aim_toward_a_mm * aim_unit_xy)
+                     + aim_toward_a_mm * aim_unit_xy)
             land_pos_nom = np.array([aim_xy[0], aim_xy[1], float(pos1[2])])
             land_pos, land_vel = noise.perturb_throw(
                 land_pos_nom, land_vel_nom, np.zeros(3))
@@ -2006,7 +2039,9 @@ class SkillsGate:
             t_land_abs_s = t_spawn + flight_lead_s
             feed = sk.LandingPrior(pos_mm=land_pos, vel_mm_s=land_vel,
                                    t_land_abs_s=t_land_abs_s)
-            sched = sk.compile_columns(pattern, feed=feed)
+            sched = sk.compile_columns(
+                pattern, feed=feed,
+                entry=('hop' if hop_entry else 'transit'))
 
         ball_state = {
             # B2 (`columns_1ball_fed`): the SAME inert shape
@@ -2122,9 +2157,19 @@ class SkillsGate:
         plan_wall_s_all: list = []
         t_wall0 = time.time()
 
+        # Throws per attempt that carry no experience row: the Stop
+        # (`shadow_landing`) always, plus the hop entry's THROW 0 (`entry_hop`,
+        # `run_columns_attempt`'s own `hop_entry` condition) on a fed trial.
+        # Sized `remaining + 1` with the hop entry, an attempt nets one row
+        # short and every later attempt (2 throws: hop + Stop) nets zero --
+        # 60 attempts, longest 29, MEASURED 2026-10-05 on the first hop runs.
+        hop_entry = (not (cfg.feed_angle_deg is None
+                          and cfg.feed_speed_mmps is None)
+                     and cfg.columns_entry == 'hop')
+        rowless = 2 if hop_entry else 1
         while len(throws) < cfg.target_throws and attempts < cfg.max_attempts:
             remaining = cfg.target_throws - len(throws)
-            n_throws = max(2, remaining + 1)
+            n_throws = max(1 + rowless, remaining + rowless)
             attempts += 1
             throws_before = len(throws)
             end_code, loop, ictx = self.run_columns_attempt(
@@ -3235,6 +3280,17 @@ def main(argv=None) -> int:
                         'columns_feed_bb_bias_mm cancels (default [0.0, '
                         '0.0]: no behaviour change; measured 2026-10-04: '
                         '[29.0, 25.0])')
+    p.add_argument('--columns-entry', choices=('hop', 'transit'), default=None,
+                   help='--learn --pattern columns, --feed-angle-deg only '
+                        '(owner decision, 2026-10-05, R5 sitting-6 prep): '
+                        'SelfTossGateConfig.columns_entry -- \'hop\' (the '
+                        'default) spawns Jugglebot already parked at the '
+                        'feed site holding ball A (or empty, --one-ball-fed) '
+                        'and THROW 0 releases it cross-site from there '
+                        "(schedule.compile_columns(entry='hop')); 'transit' "
+                        "reproduces the pre-R5 self-toss entry (held at "
+                        "ball A's own site) bit-for-bit. Ignored outside a "
+                        'FEED trial.')
     p.add_argument('--correlator', choices=('fixed', 'head'), default=None,
                    help='--learn only: which tracker-correlation rule '
                         '_IdentityTracker applies. \'fixed\' (the default): '
@@ -3329,6 +3385,8 @@ def main(argv=None) -> int:
         if args.bb_bias_mm is not None:
             lcfg.feed_bb_bias_mm = (float(args.bb_bias_mm[0]),
                                     float(args.bb_bias_mm[1]))
+        if args.columns_entry is not None:
+            lcfg.columns_entry = str(args.columns_entry)
         if args.correlator is not None:
             lcfg.correlator = str(args.correlator)
         if args.dwell_s is not None:

@@ -771,7 +771,25 @@ def test_main_leaves_columns_n_throws_default_unchanged(capsys):
 
 # ── the self-toss rehearsal loop, on a virtual clock — the R3-g proof ───────
 
-def test_self_toss_rehearsal_pre_positions_then_runs_the_schedule_clean():
+@pytest.fixture
+def r3_catch_plane(monkeypatch):
+    """The two self-toss rehearsal tests below characterise R3's rehearsal --
+    its cold-start plant-error model (+11 % launch speed, +8.5 mrad aim) at
+    the 830 mm catch plane they were measured at. Since 2026-10-05 the live
+    plane is 930 (catch high), where a throw that much too fast cannot be
+    caught and re-thrown inside the 0.27 s dwell (from ~900 mm: HAND_LIMIT_ACC
+    4305 rev/s^2 at 900, QP-infeasible at 930; nominal throws plan at 930,
+    7/7 installs) -- a tolerance the high catch gives up, recorded in
+    logbook/2026-10-05-skill-stack-r5-sitting-5-afternoon-parked-feed-and-
+    catch-high.md. Freezing the plane keeps these tests about the rehearsal's
+    own logic. ``Site.catch_site_mm``'s default is bound at import, hence the
+    second patch."""
+    monkeypatch.setattr(si, 'CATCH_CUP_Z_MM', 830.0)
+    monkeypatch.setattr(si.Site.catch_site_mm, '__defaults__', (830.0,))
+
+
+def test_self_toss_rehearsal_pre_positions_then_runs_the_schedule_clean(
+        r3_catch_plane):
     """One attempt, virtual clock, no learner: the pre-position (R3-g finding
     — schedule.compile_one_ball's own FLOOR_LIFT_S refuses LIMIT_JERK at the
     150 000 mm/s^3 R3 session limit, see SELF_TOSS_PRELIFT_S's docstring) plus
@@ -804,7 +822,7 @@ def test_self_toss_rehearsal_pre_positions_then_runs_the_schedule_clean():
 
 
 def test_self_toss_rehearsal_grows_memory_and_the_learner_changes_the_command(
-        tmp_path):
+        tmp_path, r3_catch_plane):
     """Three cold-start attempts (n_throws=1 each, policy A), ONE memory
     shared across them: by the third attempt the memory holds >= LearnerConfig
     .k_min (2) rows, so the commanded (landing offset, flight) must differ

@@ -15,18 +15,40 @@ import numpy as np
 
 from jugglebot.motion import unified_cycle as uc
 
-#: Cup-opening world z (mm) a THROW releases at, and a CATCH is aimed at — the
-#: sittings' geometry (``reload_coordinator_node._UNIFIED_THROW_CUP_Z_MM`` /
-#: ``_UNIFIED_CATCH_CUP_Z_MM``) and the R2 sizing sweep confirming both stay
-#: inside the cup box at the owner's R2 operating point (apex 0.9 m, dwell
-#: 0.30 s, leg 300/5000/200000, hand acc 3500) — see ``tools/probes/
+#: Cup-opening world z (mm) a THROW releases at — the sittings' geometry
+#: (``reload_coordinator_node._UNIFIED_THROW_CUP_Z_MM``, that module since
+#: deleted at R4 under tag ``fsm-final``) and the R2 sizing sweep confirming
+#: it stays inside the cup box at the owner's R2 operating point (apex 0.9 m,
+#: dwell 0.30 s, leg 300/5000/200000, hand acc 3500) — see ``tools/probes/
 #: skills_sizing_sweep.py`` runs 2026-09-11/12, ``temp/probes/
-#: skills_sizing_frontier2.md``. Deliberately NOT imported from
-#: ``reload_coordinator_node`` — that module is ROS (``jugglebot`` node code)
-#: and ``motion/`` may never import it; this is the ONE definition, and R4
-#: re-points the coordinator's copies at it (tracked in the plan, not here).
+#: skills_sizing_frontier2.md``. (``CATCH_CUP_Z_MM`` below shares this history
+#: up to 2026-10-05, when CATCH HIGH moved it off this pair's original 830 mm
+#: — see its own paragraph.) This is the ONE definition; ``motion/`` may never
+#: import ROS node code to check against it.
 RELEASE_CUP_Z_MM = 860.0
-CATCH_CUP_Z_MM = 830.0
+
+#: CATCH HIGH (owner decision, 2026-10-05): 830 -> 930. ``scratchpad/s6/
+#: catch_height_probe.py`` (real chain, LAUNCH+STEADYx3, apex 0.95, sep 125,
+#: dwell 0.27, leg 350/5000/200000, hand 3900) measured, by catch z:
+#:
+#: | catch z | empty drop before contact | cup v at contact | with-ball stroke | leg a / j      | hand a |
+#: | 830     | 169 mm                     | -1.61 m/s         | 137 mm            | 4133 / 159920  | 3528   |
+#: | 930     | 68 mm                      | -0.96 m/s         | 237 mm            | 4073 / 157709  | 3509   |
+#: | 950     | 48 mm                       | -0.80 m/s         | 251 mm (bottom lifts to 0.49 rev) | 4074 / 154400 | 3513 |
+#:
+#: All feasible 830-970; 930 sits just below the knee where the DWELL, not the
+#: stroke, starts limiting depth -- i.e. the hand waits near the top and
+#: carries the ball down through the main stroke rather than diving to meet
+#: it. The C-CUP-2 contact floor (<= 0.7 g downward in the 0.125 s before
+#: touch-down) is UNCHANGED; it is why the empty drop is ~146-169 mm at 830
+#: (reaching 1.6 m/s under 0.7 g takes that much descent) and shrinks at 930.
+#:
+#: ``RELEASE_CUP_Z_MM`` stays 860 -- raising it was tried and refused on the
+#: same probe: release 880 needs 4416 rev/s^2 of post-release hand braking
+#: against the 3900 cap; 900 needs 4907; 920 is QP-infeasible. The climb
+#: after release is the hand braking from ~4.3 m/s, forced by physics, not a
+#: tuning knob.
+CATCH_CUP_Z_MM = 930.0
 
 #: The cup-opening height a cycle settles at between skills. ``unified_cycle``
 #: already derives this (the settle clamp every LANDING/SETTLE window aims

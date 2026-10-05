@@ -237,6 +237,14 @@ hardware. Facts that size the work:
    command and outcome are the same physical quantity** (amended 2026-09-18):
    `u = (landing offset x, y [m], apex above the catch plane [m])` and
    `y` the same three, all read off the tracker's converged gravity-fixed fit.
+   **Amended 2026-10-05 (catch plane 830 → 930, above the 860 release):** the
+   apex is the FLIGHT-EQUIVALENT apex — the `u` whose `flight_s(u)` the
+   planner would have used to put the observed catch-plane crossing speed
+   there, given the release-to-catch rise (`schedule.apex_from_crossing`).
+   It equals `v_z²/2g` when the two planes coincide; with them apart, the old
+   reading made a perfect plant read `y ≠ u` (+14.5 mm at a −30 mm rise,
+   −35 mm at +70 mm). Rows recorded before the change were migrated once by
+   the same formula (`tools/migrate_memory_catch_plane.py`).
    The learner does not learn a time — a flight time is measured from the
    commanded release knot, which the physical release lags by 0.02–0.14 s
    throw to throw, through a crossing estimate itself extrapolated to ±40 ms,
@@ -328,7 +336,8 @@ Reset:      Ball Butler reload = a CATCH skill whose terminal comes from an exte
 - `Experience(x, u, y, t_abs_s, ball_id, caught)` with x ∈ R⁴ = (site xy,
   seat offset xy of the ball just caught), u ∈ R³ = commanded (landing xy,
   apex above the catch plane), y ∈ R³ = the same three observed — the apex
-  from the fit's crossing speed, `h = v_z²/2g` (2026-09-18, § 0 item 5). SI
+  from the fit's crossing speed, `h = v_z²/2g` (2026-09-18), rise-aware since
+  2026-10-05 (§ 0 item 5, `schedule.apex_from_crossing`). SI
   units. The CSV names those columns `u2_apex_m`/`y2_apex_m` and a
   pre-2026-09-18 flight-time file is REFUSED on load, not reinterpreted.
 - `Memory` — append-only rows under `temp/learn/<plant_id>/memory.csv`; a
@@ -423,9 +432,10 @@ the real memory this moves the self-toss command from (−15.9, +4.1) mm to
 ### 2.7 Perception and outcome
 
 `/balls` carries the landing prediction (`landing_position`,
-`landing_velocity`, `time_at_land`) per tracked ball, predicted at the 830 mm
+`landing_velocity`, `time_at_land`) per tracked ball, predicted at the 930 mm
 catch plane (`sites.CATCH_CUP_Z_MM`; moved from 809.08 mm at R3 — the FSM's
-catch plane moves with it, decision 5). The CATCH terminal is the latest
+catch plane moves with it, decision 5 — and from 830 mm on 2026-10-05, the
+owner's "catch high": the empty hand waits near the top of its stroke). The CATCH terminal is the latest
 prediction. **Landed at R3:** the THROW outcome y is the tracker's last
 estimate of the catch-plane crossing, taken outside a 0.012 s guard
 (`OUTCOME_GUARD_S`, `executor.py`) around the scheduled landing instant so a
@@ -1450,6 +1460,20 @@ the rung's tests passing or a handoff file in the scratchpad.
   the old machine the way the robot did. Entry:
   `logbook/2026-10-05-skill-stack-r5-sitting-5-launch-limits-and-jam-anchor.md`. The sitting-5
   sheet continues from § 2.
+- **Sitting 5, afternoon (2026-10-05, bag `2026-10-05_16-42-57`).** The jam recovery passed twice
+  on the bench (owner: objective complete); Ball 1's half caught every real throw; Ball 2's half
+  caught nothing cleanly in 21 runs — 13 never attempted (the transit into the feed catch refused
+  `LIMIT_ACC` 5010-5306 vs 5000), 6 attempted with the cup arriving with the ball, still sliding,
+  31-64 mm off centre, while the same sitting's 3 feeds into a PARKED cup were caught 3/3 at the same
+  11-12° arrival. Owner decisions (evening): the fed columns start with a **hop entry** (Jugglebot
+  holds Ball 1 at the feed site, throws it across to its own site, stays parked for Ball 2;
+  `skill_node` `columns_entry`, default `hop`), and **every catch is taken high** (catch plane
+  930 mm, release unchanged at 860; the learner's apex made rise-aware, § 0 item 5 amended, memory
+  migrated; `sites.py` joins the box's gated files; the cost: less tolerance to a throw that flies
+  high — the columns apex ceiling is 0.950 m, and R3's +11 % cold-start plant error is refused from
+  ~900 mm; fallback 880 mm). Tilting toward Ball Butler was considered and kept as the fallback. Entry:
+  `logbook/2026-10-05-skill-stack-r5-sitting-5-afternoon-parked-feed-and-catch-high.md`; next sheet
+  `tests/hardware/session_skills_r5_sitting6.md`.
 - **Outcome (sitting 1 + evening fix units, 2026-09-30).** Sitting 1 flew the 4°/0° cup test and
   the fused reload; Block C (human lob) never claimed a feed and is retired (see the owner
   decisions above). Four fix units landed the same evening, uncommitted at the time of this

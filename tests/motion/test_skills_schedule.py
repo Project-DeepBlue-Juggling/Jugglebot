@@ -52,6 +52,58 @@ def test_apex_m_rejects_a_non_positive_flight():
         sc.apex_m(-0.5)
 
 
+# ---------------------------------------------------------------------------
+# apex_from_crossing (R5 sitting 6, 2026-10-05: catch-high plane change)
+# ---------------------------------------------------------------------------
+
+def test_apex_from_crossing_matches_the_design_docs_worked_example():
+    """Check value from the design doc: vz=-4.349, rise=-0.030 -> apex~0.9495
+    (the doc's own rounding; this module's ``_G_SI`` matches to 3 dp)."""
+    assert sc.apex_from_crossing(-4.349, -0.030) == pytest.approx(0.9495,
+                                                                   abs=2e-4)
+
+
+def test_apex_from_crossing_reduces_to_apex_from_vz_at_zero_rise():
+    for vz in (-1.5, -3.2, -4.349, -6.0):
+        assert sc.apex_from_crossing(vz, 0.0) == pytest.approx(
+            sc.apex_from_vz(vz), abs=1e-12)
+
+
+def test_apex_from_crossing_round_trips_a_perfect_plant():
+    """For a throw planned with ``flight_s(u)`` as its release-to-crossing
+    time, the crossing speed the planner's own model implies
+    (``v_c = rise/T - g*T/2``) must read back to ``u`` through
+    :func:`apex_from_crossing` -- this is the whole point of the function."""
+    g = sc._G_SI
+    for u, rise in ((0.9, -0.030), (0.95, 0.070), (0.7, 0.0), (1.1, -0.1)):
+        t_f = sc.flight_s(u)
+        v_c = rise / t_f - g * t_f / 2.0
+        assert v_c < 0.0  # descending at the crossing, as the design assumes
+        assert sc.apex_from_crossing(v_c, rise) == pytest.approx(u, abs=1e-9)
+
+
+def test_apex_from_crossing_rejects_a_non_descending_crossing():
+    with pytest.raises(ValueError, match='descending'):
+        sc.apex_from_crossing(0.0, -0.03)
+    with pytest.raises(ValueError, match='descending'):
+        sc.apex_from_crossing(1.0, -0.03)
+
+
+def test_apex_from_crossing_rejects_non_finite_inputs():
+    with pytest.raises(ValueError, match='finite'):
+        sc.apex_from_crossing(float('nan'), -0.03)
+    with pytest.raises(ValueError, match='finite'):
+        sc.apex_from_crossing(-4.0, float('inf'))
+
+
+def test_apex_from_crossing_rejects_a_negative_discriminant():
+    """No real crossing time: a ball crossing at only -0.1 m/s cannot have
+    fallen 10 m below release under constant gravity -- it would have to be
+    moving far faster by then."""
+    with pytest.raises(ValueError, match='discriminant'):
+        sc.apex_from_crossing(-0.1, -10.0)
+
+
 def test_beat_and_transit_reproduce_the_owners_section_2_4_numbers():
     """beta = 0.5785, tau = 0.2785 (plan § 0) -- computed from ``flight_s``,
     not hardcoded beyond what the owner's own rounding of ``t_f`` (0.857 s,
@@ -154,6 +206,31 @@ def test_skill_rejects_a_non_positive_window():
     site = st.Site('P1', np.array([0.0, 0.0, 830.0]))
     with pytest.raises(ValueError, match='window_s'):
         sc.Skill(kind=sc.REST, ball_id=0, site=site, t_abs_s=1.0, window_s=0.0)
+
+
+def test_skill_entry_hop_defaults_false():
+    site = st.Site('P1', np.array([0.0, 0.0, 830.0]))
+    skill = sc.Skill(kind=sc.THROW, ball_id=0, site=site, t_abs_s=1.0,
+                     window_s=0.4)
+    assert skill.entry_hop is False
+
+
+def test_skill_rejects_entry_hop_on_a_non_throw():
+    site = st.Site('P1', np.array([0.0, 0.0, 830.0]))
+    with pytest.raises(ValueError, match='entry_hop'):
+        sc.Skill(kind=sc.CATCH, ball_id=0, site=site, t_abs_s=1.0,
+                window_s=0.4, entry_hop=True)
+
+
+def test_skill_rejects_entry_hop_with_shadow_landing():
+    """THROW 0 (the only throw `entry_hop` ever marks) can never be the
+    columns Stop's cross-site last throw (`shadow_landing` requires
+    `i == n - 1 and n >= 2`, never `i == 0`) -- the two are mutually
+    exclusive by construction, enforced here too."""
+    site = st.Site('P1', np.array([0.0, 0.0, 830.0]))
+    with pytest.raises(ValueError, match='mutually exclusive'):
+        sc.Skill(kind=sc.THROW, ball_id=0, site=site, t_abs_s=1.0,
+                window_s=0.4, entry_hop=True, shadow_landing=True)
 
 
 # ---------------------------------------------------------------------------
@@ -554,6 +631,124 @@ def test_compile_columns_without_feed_no_skill_carries_receive_tilt(cols):
     assert all(s.receive_tilt is None for s in schedule.skills)
 
 
+# ---------------------------------------------------------------------------
+# R5 sitting 6 prep (owner decision, 2026-10-05): the HOP ENTRY --
+# `compile_columns(..., entry='hop')`. `scratchpad/s6/design.md` Decision 1.
+
+def _feed_for(cols, pattern, t_land_offset=500.0):
+    tau = sc.transit_s(sc.flight_s(pattern.apex_m), pattern.dwell_s)
+    return sc.LandingPrior(pos_mm=cols[1].cup_mm, vel_mm_s=(0.0, 0.0, -5500.0),
+                           t_land_abs_s=1_700_000_000.0 + t_land_offset + tau)
+
+
+def test_compile_columns_default_entry_is_transit(cols):
+    """Existing callers/tests that never pass ``entry`` get the pre-R5
+    self-toss entry, unchanged -- the schedule-level default is
+    ``'transit'``, not ``'hop'`` (``skill_node``'s own ROS parameter
+    defaults to ``'hop'``, a DIFFERENT layer -- see that parameter's own
+    docstring)."""
+    pattern = _pattern(cols, n_throws=3)
+    feed = _feed_for(cols, pattern)
+    default = sc.compile_columns(pattern, feed=feed)
+    transit = sc.compile_columns(pattern, feed=feed, entry='transit')
+    assert [_skill_motion_fingerprint(s) for s in default.skills] == [
+        _skill_motion_fingerprint(s) for s in transit.skills]
+    throw0 = default.skills[0]
+    assert throw0.kind == sc.THROW and throw0.entry_hop is False
+    assert throw0.site.name == cols[0].name
+
+
+def test_compile_columns_entry_hop_requires_feed(cols):
+    """A free-``t0_abs_s`` schedule has no real feed ball to park THROW 0
+    for."""
+    with pytest.raises(ValueError, match='feed'):
+        sc.compile_columns(_pattern(cols), t0_abs_s=10.0, entry='hop')
+
+
+def test_compile_columns_rejects_an_unknown_entry(cols):
+    pattern = _pattern(cols)
+    feed = _feed_for(cols, pattern)
+    with pytest.raises(ValueError, match='entry'):
+        sc.compile_columns(pattern, feed=feed, entry='sideways')
+
+
+def test_compile_columns_hop_throw0_released_at_the_feed_site(cols):
+    """THROW 0 = ball A released at ``sites[1]`` (the feed site) with
+    ``target=sites[0]`` (ball A's own site, unchanged from the self-toss
+    entry's own target) -- a cross-site throw, same apex/flight time, same
+    ``t0``."""
+    pattern = _pattern(cols, n_throws=3)
+    feed = _feed_for(cols, pattern)
+    hop = sc.compile_columns(pattern, feed=feed, entry='hop')
+    throw0 = hop.skills[0]
+    assert throw0.kind == sc.THROW
+    assert throw0.ball_id == 0
+    assert throw0.entry_hop is True
+    assert throw0.site.name == cols[1].name
+    assert throw0.target.name == cols[0].name
+    assert tuple(throw0.y_d[0]) == (0.0, 0.0)
+    assert throw0.y_d[1] == pytest.approx(pattern.apex_m)
+
+
+def test_compile_columns_hop_vs_transit_identical_except_throw0(cols):
+    """Hop and transit schedules compiled from the SAME feed are identical
+    except THROW 0's ``site``/``entry_hop`` -- every event time, every other
+    skill's site, the folds, the leads, the Stop and the closing REST are
+    all untouched (``compile_columns``'s own docstring: "Every other skill
+    ... is IDENTICAL")."""
+    pattern = _pattern(cols, n_throws=4)
+    feed = _feed_for(cols, pattern)
+    hop = sc.compile_columns(pattern, feed=feed, entry='hop')
+    transit = sc.compile_columns(pattern, feed=feed, entry='transit')
+    assert len(hop.skills) == len(transit.skills)
+    throw0_hop, throw0_transit = hop.skills[0], transit.skills[0]
+    assert throw0_hop.kind == sc.THROW and throw0_transit.kind == sc.THROW
+    # Same event instant, same window, same target, same y_d -- only the
+    # release SITE and `entry_hop` differ.
+    assert throw0_hop.t_abs_s == pytest.approx(throw0_transit.t_abs_s)
+    assert throw0_hop.window_s == pytest.approx(throw0_transit.window_s)
+    assert throw0_hop.target.name == throw0_transit.target.name
+    assert throw0_hop.site.name == cols[1].name
+    assert throw0_transit.site.name == cols[0].name
+    assert throw0_hop.entry_hop is True
+    assert throw0_transit.entry_hop is False
+    # Every other skill, field for field.
+    assert [_skill_motion_fingerprint(s) for s in hop.skills[1:]] == [
+        _skill_motion_fingerprint(s) for s in transit.skills[1:]]
+    assert (hop.flight_s, hop.beat_s, hop.transit_s, hop.dwell_s,
+           hop.t0_abs_s, hop.pattern) == (
+        transit.flight_s, transit.beat_s, transit.transit_s, transit.dwell_s,
+        transit.t0_abs_s, transit.pattern)
+
+
+def test_compile_columns_hop_catch_after_throw0_lands_at_as_own_site(cols):
+    """The catch that meets THROW 0's landing sits at ball A's own site
+    (``target``, ``sites[0]``), not the feed site it was released from --
+    and still folds correctly with ball A's next throw there (``n=4``: throw
+    ``i=2`` is ball A's self-toss from the SAME site)."""
+    pattern = _pattern(cols, n_throws=4)
+    feed = _feed_for(cols, pattern)
+    hop = sc.compile_columns(pattern, feed=feed, entry='hop')
+    ball0_catches = [s for s in hop.skills
+                    if s.kind == sc.CATCH and s.ball_id == 0]
+    assert ball0_catches
+    for c in ball0_catches:
+        assert c.site.name == cols[0].name
+
+
+def test_compile_columns_1ball_fed_phantom_a_hop_throw0_is_entry_hop(cols):
+    """``columns_1ball_fed`` (ball A a phantom) hops exactly like a real
+    ball A -- ``phantom_balls`` and ``entry`` are orthogonal knobs."""
+    pattern = _pattern(cols, n_throws=3, phantom_balls=(0,))
+    feed = _feed_for(cols, pattern)
+    hop = sc.compile_columns(pattern, feed=feed, entry='hop')
+    throw0 = hop.skills[0]
+    assert throw0.kind == sc.THROW and throw0.ball_id == 0
+    assert throw0.entry_hop is True
+    assert throw0.site.name == cols[1].name
+    assert hop.is_phantom(0) is True
+
+
 # ── B2: `columns_1ball` — ball B a phantom (plan handoff, 2026-10-04) ──
 
 def test_pattern_rejects_a_phantom_ball_id_outside_zero_or_one(cols):
@@ -592,7 +787,7 @@ def _skill_motion_fingerprint(sk):
            tuple(sk.y_d[0]) if sk.y_d is not None else None,
            sk.y_d[1] if sk.y_d is not None else None,
            sk.target.name if sk.target is not None else None,
-           sk.shadow_landing, sk.lead_s,
+           sk.shadow_landing, sk.entry_hop, sk.lead_s,
            None if tt is None else
            (tt.t_release_abs_s, tuple(tt.y_d[0]), tt.y_d[1], tt.target.name,
             tt.shadow_landing))

@@ -909,6 +909,23 @@ class SkillNode(Node):
         # hop/self_toss are untouched -- Ball Butler's bias there is folded
         # into the ordinary tracker-fit catch, not a schedule-frame prior.
         self.declare_parameter('columns_feed_bb_bias_mm', [0.0, 0.0])
+        # The fed columns entry (owner decision, 2026-10-05, R5 sitting-6
+        # prep -- `scratchpad/s6/design.md` Decision 1, `schedule.
+        # compile_columns`'s own ``entry`` kwarg): 'hop' parks ball A at the
+        # FEED site through the opening REST and THROW 0 releases it FROM
+        # THERE, cross-site, to ball A's own site -- the cup is already at
+        # the feed site for the feed catch instead of having to transit
+        # there after the launch (measured, bag 2026-10-05_16-42-57: 13/21
+        # `columns_1ball_fed` runs under the old 'transit' entry never even
+        # reached the feed catch window). 'transit' keeps the pre-R5 entry
+        # (bridge holds ball A at its OWN site, THROW 0 a self-toss there)
+        # -- kept for A/B comparison and rollback. Read ONCE, at goal start
+        # (`_run_columns`), not re-read mid-attempt. Applies to the fed
+        # paths of `columns` and `columns_1ball_fed` only (`_run_columns`'s
+        # `reload=True` Ball-Butler path and its `reload=False` tracker-feed
+        # branch); `columns_1ball` (`_run_columns_1ball`, its own reload
+        # into a parked cup, no feed) is untouched.
+        self.declare_parameter('columns_entry', 'hop')
 
         # ── the install client + tick timer share ONE reentrant group ──────
         # Fixed 2026-09-13 (found by reading, never exercised live): `main`
@@ -1345,6 +1362,19 @@ class SkillNode(Node):
                 'columns_feed_bb_bias_mm %r outside +-60 mm per axis -- '
                 'using [%.3f, %.3f]' % (raw, bx, by))
         return (bx, by)
+
+    def _columns_entry(self) -> str:
+        """`columns_entry`, clamped to ``('hop', 'transit')`` with a WARN
+        and 'hop' outside it -- same shape as `_columns_feed_site_name`.
+        Read ONCE per attempt, at `_run_columns`'s own start -- see that
+        parameter's own docstring for what each value does."""
+        value = str(self.get_parameter('columns_entry').value)
+        if value not in ('hop', 'transit'):
+            self.get_logger().warn(
+                "columns_entry=%r is not one of ('hop', 'transit') -- using "
+                "'hop'" % (value,))
+            return 'hop'
+        return value
 
     def _catch_aim_source(self) -> str:
         """The validated ``catch_aim_source`` parameter. An unknown value
@@ -2767,6 +2797,17 @@ class SkillNode(Node):
         mode has (there is no ball A to fall back on for a human-lob feed
         the way the ordinary ``columns`` pattern's ``reload=False`` branch
         does).
+
+        ``columns_entry`` (owner decision, 2026-10-05, R5 sitting-6 prep):
+        read ONCE, here, before either branch below. ``'hop'`` (the
+        parameter's default) parks ball A at the FEED site through the
+        bridge REST and has THROW 0 release it cross-site, from there --
+        the cup is already parked for the feed catch instead of having to
+        transit there after the launch (``schedule.compile_columns``'s own
+        ``entry='hop'`` docstring has the full mechanism and the measured
+        reason). ``'transit'`` keeps the pre-R5 self-toss entry (bridge
+        holds ball A at ITS OWN site) byte-for-byte, for A/B comparison and
+        rollback.
         """
         if _ADMISSIBLE_BOX_PATH is None:
             msg = ('cannot find the repo root from %r -- the admissible box '
@@ -2783,8 +2824,24 @@ class SkillNode(Node):
             feed_site, a_site = sites[0], sites[1]
         else:
             feed_site, a_site = sites[1], sites[0]
+        # The hop entry (owner decision, 2026-10-05, R5 sitting-6 prep --
+        # `columns_entry`'s own docstring, `schedule.compile_columns`'s
+        # `entry` kwarg): read ONCE, here, at goal start. Under 'hop' the
+        # bridge REST parks at the FEED site (not `a_site`) and Ball
+        # Butler's aim is the UN-walked feed site -- the
+        # `columns_feed_aim_toward_a_mm` walk existed only because the
+        # TRANSIT entry's catch reversed the cup against Ball Butler's own
+        # +x arrival; the hop entry never makes that reversal, and walking
+        # it anyway would cost 10 mm of ball-ball clearance for nothing.
+        entry = self._columns_entry()
+        bridge_site = feed_site if entry == 'hop' else a_site
         feed_aim_site = _columns_feed_aim_site(
-            feed_site, a_site, self._columns_feed_aim_toward_a_mm())
+            feed_site, a_site,
+            (0.0 if entry == 'hop' else self._columns_feed_aim_toward_a_mm()))
+        entry_tag = ('hop entry: %s thrown from %s to %s, cup parked for '
+                    '%s -- ' % (ball_label(0), feed_site.name, a_site.name,
+                                ball_label(1))
+                    if entry == 'hop' else '')
         try:
             pattern = Pattern(sites=(a_site, feed_site), apex_m=apex_m,
                              dwell_s=dwell_s, n_throws=n_throws,
@@ -2858,12 +2915,14 @@ class SkillNode(Node):
             # (R5 sitting 2: the feed site, walked toward A's site —
             # `_columns_feed_aim_site`'s own docstring) instead of `a_site`.
             # B2: `holds_ball=not phantom_a` — ball A's cup is empty by
-            # design when it is the phantom.
+            # design when it is the phantom. `site=bridge_site` — the feed
+            # site under the hop entry, ball A's own site under transit
+            # (see `entry`'s own comment above).
             return self._start_reload(
-                SimpleNamespace(success=None, message=None), site=a_site,
+                SimpleNamespace(success=None, message=None), site=bridge_site,
                 lift_s=lift_s, boxes=boxes, memory=memory, kind='columns',
                 aim_site=feed_aim_site, columns_pattern=pattern,
-                holds_ball=not phantom_a)
+                holds_ball=not phantom_a, entry=entry)
 
         # No Ball Butler round trip at all (the interim human-lob
         # sittings): arm the bridge + FEED WAIT directly. Same t0 idiom as
@@ -2875,7 +2934,7 @@ class SkillNode(Node):
         # correct bridge regardless.
         now = self.get_clock().now().nanoseconds / 1e9
         try:
-            probe = compile_reload_wait(a_site, lift_s, now,
+            probe = compile_reload_wait(bridge_site, lift_s, now,
                                         holds_ball=not phantom_a)
             deficit = now - probe.skills[0].dispatch_s()
             # + _DISPATCH_LOOKAHEAD_S: the executor dispatches that far ahead
@@ -2883,7 +2942,7 @@ class SkillNode(Node):
             # the start tick itself rather than one tick after it.
             t0 = (now + max(deficit, 0.0) + (1.0 / _TICK_HZ)
                   + _DISPATCH_LOOKAHEAD_S)
-            bridge = compile_reload_wait(a_site, lift_s, t0,
+            bridge = compile_reload_wait(bridge_site, lift_s, t0,
                                          holds_ball=not phantom_a)
         except ValueError as exc:
             msg = 'columns bridge schedule refused: %s' % (exc,)
@@ -2906,29 +2965,32 @@ class SkillNode(Node):
             self._reload_ctx = SimpleNamespace(
                 kind='columns', phase='await_feed', pattern=None,
                 columns_pattern=pattern, boxes=boxes, memory=memory,
-                site=a_site, aim_site=feed_aim_site, bridge=bridge,
+                site=bridge_site, aim_site=feed_aim_site, bridge=bridge,
+                entry=entry,
                 reload_sent=False, bb_left_idle=False, announced=False,
                 lead_deficit_logged=False,
                 deadline_mono=(time.perf_counter()
                               + COLUMNS_TRACKER_FEED_DEADLINE_S))
-        msg = ('columns feed armed: waiting up to %.1f s for a tracker '
+        msg = ('%scolumns feed armed: waiting up to %.1f s for a tracker '
               'landing near %s (reload=False, no Ball Butler round trip)'
-              % (COLUMNS_TRACKER_FEED_DEADLINE_S, feed_aim_site.name))
+              % (entry_tag, COLUMNS_TRACKER_FEED_DEADLINE_S,
+                 feed_aim_site.name))
         self.get_logger().debug(msg)
         return SimpleNamespace(
             success=True, message=msg,
             start_line=(
-                ('%s started: %s phantom -- Jugglebot\'s own strokes '
+                ('%s started: %s%s phantom -- Jugglebot\'s own strokes '
                  'fly empty; waiting up to %.1f s for %s to land near '
                  '%s · memory %d rows'
-                 % (self._attempt_label or 'columns', ball_label(0),
-                    COLUMNS_TRACKER_FEED_DEADLINE_S, ball_label(1),
-                    feed_aim_site.name, len(memory)))
+                 % (self._attempt_label or 'columns', entry_tag,
+                    ball_label(0), COLUMNS_TRACKER_FEED_DEADLINE_S,
+                    ball_label(1), feed_aim_site.name, len(memory)))
                 if phantom_a else
-                ('%s started: bridge REST holds %s at %s -- waiting up '
+                ('%s started: %sbridge REST holds %s at %s -- waiting up '
                  'to %.1f s for %s to land near %s · memory %d rows'
-                 % (self._attempt_label or 'columns', ball_label(0),
-                    a_site.name, COLUMNS_TRACKER_FEED_DEADLINE_S,
+                 % (self._attempt_label or 'columns', entry_tag,
+                    ball_label(0), bridge_site.name,
+                    COLUMNS_TRACKER_FEED_DEADLINE_S,
                     ball_label(1), feed_aim_site.name, len(memory)))))
 
     def _run_columns_1ball(self, apex_m: float, separation_mm: float,
@@ -3523,7 +3585,8 @@ class SkillNode(Node):
                       kind: str = 'reload',
                       aim_site: Optional[Site] = None,
                       columns_pattern: Optional[Pattern] = None,
-                      holds_ball: bool = False):
+                      holds_ball: bool = False,
+                      entry: str = 'transit'):
         """R4 reload start path (owner decision D4; C1/C4 rework,
         2026-09-28): installs the opening-REST-only bridge
         (`schedule.compile_reload_wait` — homes the hand, holds level at
@@ -3563,6 +3626,14 @@ class SkillNode(Node):
         reload's own pre-R5 behaviour (``aim_site = site``,
         ``holds_ball = False``) so this call is byte-for-byte unchanged
         for `kind='reload'`.
+
+        ``entry`` (owner decision, 2026-10-05, R5 sitting-6 prep): carried
+        onto the ctx unchanged, for `_install_columns_schedule` to pass to
+        `compile_columns`. Meaningless for `kind != 'columns'` (`'transit'`
+        default, never read there); `_run_columns` has already folded it
+        into ``site``/``aim_site`` by the time it calls here, so this
+        parameter exists only so the compiled SCHEDULE later matches the
+        bridge REST this call already committed to.
 
         C4: once the bridge `SkillExecutor` below is constructed, the
         machine has a COMMITTED, already-ticking plan (the 40 Hz timer
@@ -3695,6 +3766,10 @@ class SkillNode(Node):
                 # (harmless for every other kind, which never reads it)
                 # rather than threaded through as a second parameter.
                 lift_s=float(lift_s),
+                # The hop entry (2026-10-05): carried for
+                # `_install_columns_schedule` -- meaningless for
+                # `kind != 'columns'` (default 'transit', never read there).
+                entry=entry,
                 # R5 (2026-09-30, `not_settled_report.md` Q4 option (d)):
                 # armed False, flips True the first time
                 # `_on_bb_throw_outcome` retries a `THROW_ABORTED_NOT_SETTLED`
@@ -3702,15 +3777,23 @@ class SkillNode(Node):
                 not_settled_retried=False,
                 deadline_mono=time.perf_counter() + ready_timeout_s)
         response.success = True
+        # The hop entry's own name, `kind='columns'` only (`_run_columns`'s
+        # own `entry_tag` -- restated here rather than threaded through as a
+        # parameter, since this response text has nothing else in common
+        # with that method's).
+        entry_tag = ('hop entry: %s held at %s, thrown cross-site at the '
+                    'feed -- ' % (ball_label(0), site.name)
+                    if kind == 'columns' and entry == 'hop' else '')
         response.message = (
-            '%s -- awaiting Ball Butler ready (IDLE, ball in hand, connected) '
-            'within %.1f s' % (head, ready_timeout_s))
+            '%s%s -- awaiting Ball Butler ready (IDLE, ball in hand, '
+            'connected) within %.1f s'
+            % (entry_tag, head, ready_timeout_s))
         self.get_logger().debug(response.message)
         offset = self._frame_offset_mm()
         response.start_line = (
-            '%s started: Ball Butler %s — waiting up to %.1f s for it to be '
-            'ready, then catching its throw · memory %d rows%s'
-            % (self._attempt_label or 'reload',
+            '%s started: %sBall Butler %s — waiting up to %.1f s for it to '
+            'be ready, then catching its throw · memory %d rows%s'
+            % (self._attempt_label or 'reload', entry_tag,
                'is fetching a ball' if reload_sent else 'already holds a ball',
                ready_timeout_s, len(memory),
                '' if offset is None
@@ -4036,15 +4119,15 @@ class SkillNode(Node):
             % (hold_deg, cap_deg, n_after, '' if n_after == 1 else 's'))
 
     def _install_columns_schedule(self, ctx, feed: LandingPrior) -> None:
-        """Compile ``compile_columns(ctx.columns_pattern, feed=feed)`` and
-        install it for ``ctx`` -- the columns counterpart of
-        `_install_announced_reload`'s reload compile-then-swap tail (R5,
-        owner decision D1, 2026-09-30), sharing its claim-then-swap shape
-        exactly (the 2026-09-29 race fix: the caller claims ``ctx`` BEFORE
-        this runs, and the swap below installs only if the claim is still
-        current -- a Stop, the deadline or a refused hand lane that ended
-        the attempt during the compile wins and the compiled schedule is
-        dropped, unchanged from the reload path).
+        """Compile ``compile_columns(ctx.columns_pattern, feed=feed,
+        entry=ctx.entry)`` and install it for ``ctx`` -- the columns
+        counterpart of `_install_announced_reload`'s reload compile-then-
+        swap tail (R5, owner decision D1, 2026-09-30), sharing its
+        claim-then-swap shape exactly (the 2026-09-29 race fix: the caller
+        claims ``ctx`` BEFORE this runs, and the swap below installs only if
+        the claim is still current -- a Stop, the deadline or a refused hand
+        lane that ended the attempt during the compile wins and the
+        compiled schedule is dropped, unchanged from the reload path).
 
         Called from BOTH feed sources -- `_install_announced_reload`'s
         columns branch (a Ball Butler announcement) and
@@ -4054,6 +4137,13 @@ class SkillNode(Node):
         method does not touch correlation itself, because the two sources
         resolve it differently (a fresh, unlatched `FlightLatch` search for
         the announcement path vs. a KNOWN tracker id for the tracker path).
+
+        ``ctx.entry`` (owner decision, 2026-10-05, R5 sitting-6 prep): set
+        by `_run_columns`/`_start_reload` at goal start, read straight
+        through to `compile_columns` -- the bridge REST this ctx's own
+        schedule already committed to (`_run_columns`'s ``bridge_site``)
+        must match the entry the COMPILED schedule assumes, or THROW 0
+        would be planned from a site the cup never actually rested at.
         """
         # B2 (`columns_1ball_fed`): ball A's cup may be phantom-empty
         # (`ctx.columns_pattern.phantom_balls`) rather than actually
@@ -4063,7 +4153,8 @@ class SkillNode(Node):
                    if ctx.columns_pattern.phantom_balls
                    else 'holding %s' % (ball_label(0),))
         try:
-            schedule = compile_columns(ctx.columns_pattern, feed=feed)
+            schedule = compile_columns(ctx.columns_pattern, feed=feed,
+                                       entry=ctx.entry)
         except ValueError as exc:
             # The claim already holds `_reload_ctx`, so this attempt must be
             # ended here, not left to time out.
@@ -4170,10 +4261,10 @@ class SkillNode(Node):
                           feed.pos_mm[0], feed.pos_mm[1], feed.pos_mm[2],
                           float(feed.t_land_abs_s) - now))
         self.get_logger().info(
-            'columns feed accepted: %s lands in %.2f s -- catching it, '
-            'then %d throw%s'
-            % (ball_label(1), float(feed.t_land_abs_s) - now, n_after,
-               '' if n_after == 1 else 's'))
+            'columns feed accepted (%s entry): %s lands in %.2f s -- '
+            'catching it, then %d throw%s'
+            % (ctx.entry, ball_label(1), float(feed.t_land_abs_s) - now,
+               n_after, '' if n_after == 1 else 's'))
 
     def _bind_on_experience(self, memory: Memory):
         """``on_experience`` callable bound to ``memory`` (plan § 2.5 step 6):

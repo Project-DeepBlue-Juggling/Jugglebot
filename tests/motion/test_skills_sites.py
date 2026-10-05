@@ -72,10 +72,15 @@ def test_columns_sites_rejects_a_non_positive_separation():
         st.columns_sites(-10.0)
 
 
-def test_release_and_catch_z_match_the_reload_coordinators_sittings_geometry():
-    """PROVENANCE pin: these are the same numbers
-    ``reload_coordinator_node._UNIFIED_THROW_CUP_Z_MM`` /
-    ``_UNIFIED_CATCH_CUP_Z_MM`` carry (checked by literal value, since
-    ``motion/`` may not import that ROS module to check it by reference)."""
+def test_release_z_matches_the_reload_coordinators_sittings_geometry():
+    """PROVENANCE pin: the same number ``reload_coordinator_node.
+    _UNIFIED_THROW_CUP_Z_MM`` carried (that module is deleted at R4; checked
+    by literal value since ``motion/`` may not import ROS node code anyway)."""
     assert st.RELEASE_CUP_Z_MM == 860.0
-    assert st.CATCH_CUP_Z_MM == 830.0
+
+
+def test_catch_z_is_the_catch_high_point_2026_10_05():
+    """PROVENANCE pin: the owner's catch-high decision (R5 sitting 6,
+    2026-10-05) moved the catch plane from 830 to 930 mm; see
+    :data:`CATCH_CUP_Z_MM`'s docstring for the probe table it was picked from."""
+    assert st.CATCH_CUP_Z_MM == 930.0

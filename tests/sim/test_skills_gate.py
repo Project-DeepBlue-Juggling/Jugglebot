@@ -615,9 +615,15 @@ def test_columns_attempt_with_feed_pins_the_touchdown_level_and_carries_the_land
         return sched
 
     monkeypatch.setattr(sg.sk, 'compile_columns', spy)
+    # `columns_entry='transit'` (owner decision, 2026-10-05, R5 sitting-6
+    # prep): this test is ABOUT the walked feed-aim point, a transit-only
+    # mechanism (`columns_feed_aim_toward_a_mm`'s own docstring) -- the hop
+    # entry (now the gate's own default) never walks the aim at all, see
+    # `test_columns_entry_hop_aims_at_the_unwalked_feed_site` below.
     cfg = SelfTossGateConfig(pattern='columns', target_throws=2,
                              band_entry_throws=2, max_attempts=2,
-                             feed_angle_deg=11.9, feed_speed_mmps=5600.0)
+                             feed_angle_deg=11.9, feed_speed_mmps=5600.0,
+                             columns_entry='transit')
     SkillsGate(cfg).run_columns_seed(0)
 
     assert len(calls) >= 1
@@ -669,11 +675,15 @@ def test_columns_feed_ball_1_arrives_at_the_requested_speed_and_angle():
     apex_m = 0.9
     angle_deg = 11.9
     speed_mmps = 5600.0
+    # `columns_entry='transit'` (owner decision, 2026-10-05): this test is
+    # ABOUT the walked feed-aim point -- see the docstring and the sibling
+    # comment above `test_columns_attempt_with_feed_pins_the_touchdown_
+    # level_and_carries_the_landing`.
     cfg = SelfTossGateConfig(pattern='columns', apex_m=apex_m,
                              feed_angle_deg=angle_deg,
                              feed_speed_mmps=speed_mmps,
                              target_throws=1, band_entry_throws=1,
-                             max_attempts=1)
+                             max_attempts=1, columns_entry='transit')
     gate = SkillsGate(cfg)
     captured = {}
 
@@ -716,6 +726,44 @@ def test_columns_feed_ball_1_arrives_at_the_requested_speed_and_angle():
     assert off_vert_deg == pytest.approx(angle_deg, abs=0.5)
 
 
+def test_columns_entry_hop_aims_at_the_unwalked_feed_site():
+    """The hop entry (owner decision, 2026-10-05, R5 sitting-6 prep --
+    `SelfTossGateConfig.columns_entry`'s OWN default, 'hop'): ball 1's feed
+    targets the feed site itself, NOT walked `feed_aim_toward_a_mm` toward
+    site 1 -- that walk exists only to counter the TRANSIT entry's catch
+    reversal (`run_columns_attempt`'s own docstring), which the hop entry
+    never makes. Mirrors `test_columns_feed_ball_1_arrives_at_the_requested_
+    speed_and_angle`'s own spy-spawn shape, entry flipped."""
+    apex_m = 0.9
+    cfg = SelfTossGateConfig(pattern='columns', apex_m=apex_m,
+                             feed_angle_deg=11.9, feed_speed_mmps=5600.0,
+                             target_throws=1, band_entry_throws=1,
+                             max_attempts=1, columns_entry='hop')
+    gate = SkillsGate(cfg)
+    captured = {}
+
+    class _StopAfterSpawn(Exception):
+        pass
+
+    real_spawn = gate.plant.spawn_ball
+
+    def spy_spawn(position_mm, velocity_mms, ball=0):
+        if ball == 1:
+            captured['pos'] = np.array(position_mm, dtype=float)
+            captured['vel'] = np.array(velocity_mms, dtype=float)
+            raise _StopAfterSpawn()
+        return real_spawn(position_mm, velocity_mms, ball)
+
+    gate.plant.spawn_ball = spy_spawn
+    with pytest.raises(_StopAfterSpawn):
+        gate.run_columns_seed(0)
+
+    t_f = sk.flight_s(apex_m)
+    land_pos = bal.position_at(captured['pos'], captured['vel'], t_f)
+    site0, _site1 = sites.columns_sites(cfg.separation_mm)
+    assert land_pos == pytest.approx(site0.catch_site_mm(), abs=1.0)
+
+
 # ---------------------------------------------------------------------------
 # The two-ball-association identity fix (U1/B1, 2026-10-04): the gate's
 # tracker goes through the REAL correlator, not ground truth
@@ -736,10 +784,15 @@ def test_columns_feed_ball_1_arrives_at_the_requested_speed_and_angle():
 # ball) -- the negative control below.
 
 def _small_fed_columns_run(correlator):
+    # `columns_entry='transit'` (owner decision, 2026-10-05): this helper's
+    # whole point is the CORRELATOR fix (U1), characterised at the SAME
+    # operating point it was originally measured at (one attempt reaching
+    # exactly `target_throws`) -- not a claim about either entry.
     cfg = SelfTossGateConfig(pattern='columns', apex_m=0.9,
                              feed_angle_deg=11.9, feed_speed_mmps=5600.0,
                              target_throws=4, band_entry_throws=4,
-                             max_attempts=1, correlator=correlator)
+                             max_attempts=1, correlator=correlator,
+                             columns_entry='transit')
     return cfg, SkillsGate(cfg).run_columns_seed(0)
 
 
@@ -897,10 +950,18 @@ def test_the_one_ball_columns_phantom_produces_no_learner_rows_or_announcement()
     release is never announced to the identity tracker (never mints a
     track, never latches a correlation -- the gate's OWN mirror of
     ``SkillNode._maybe_announce``'s real guard), and
-    ``on_experience``/the learner's memory never see ``ball_id == 1``."""
+    ``on_experience``/the learner's memory never see ``ball_id == 1``.
+
+    ``apex_m=0.95`` (the R5 point, not R2/R3's 0.9): since
+    ``sites.CATCH_CUP_Z_MM`` moved 830 -> 930 mm (2026-10-05, catch-high) the
+    0.9 m apex ends this attempt LIMIT_VEL at the live session limits
+    (confirmed 2026-10-05 against this exact call: apex 0.9 -> 'LIMIT_VEL',
+    apex 0.95 -> '', independent of ``separation_mm``) -- only a feasible
+    attempt is needed here, this unit is about the phantom-ball bookkeeping,
+    not the operating point."""
     throws_out: list = []
     announced: list = []
-    gate = SkillsGate(SelfTossGateConfig(pattern='columns', apex_m=0.9))
+    gate = SkillsGate(SelfTossGateConfig(pattern='columns', apex_m=0.95))
     monkeypatch_target = sg._IdentityTracker.announce
     try:
         def spying_announce(self, ball_id, t_release_s, **kw):
@@ -959,3 +1020,39 @@ def test_one_ball_fed_requires_feed_angle_and_speed():
     cfg = SelfTossGateConfig(pattern='columns', one_ball_fed=True)
     with pytest.raises(ValueError, match='feed_angle_deg'):
         SkillsGate(cfg).run_columns_1ball_fed_seed(0)
+
+
+# ---------------------------------------------------------------------------
+# R5 sitting 6 prep (owner decision, 2026-10-05): `--columns-entry`'s CLI
+# wiring -- cheap, `run_learn` monkeypatched away so no sim actually runs.
+
+def _capture_learn_cfg(monkeypatch):
+    captured = {}
+
+    def fake_run_learn(cfg, seeds=(0, 1, 2, 3, 4), policy='A'):
+        captured['cfg'] = cfg
+        return {'passed': True, 'seeds': {}}
+
+    monkeypatch.setattr(sg, 'run_learn', fake_run_learn)
+    monkeypatch.setattr(sg, '_print_learn_table', lambda rep: None)
+    return captured
+
+
+def test_main_columns_entry_flag_sets_the_gate_config(monkeypatch):
+    captured = _capture_learn_cfg(monkeypatch)
+    rc = sg.main(['--learn', '--no-viewer', '--pattern', 'columns',
+                 '--feed-angle-deg', '11.9', '--feed-speed-mmps', '5600',
+                 '--columns-entry', 'transit'])
+    assert rc == 0
+    assert captured['cfg'].columns_entry == 'transit'
+
+
+def test_main_columns_entry_defaults_to_hop_when_the_flag_is_unset(monkeypatch):
+    """`SelfTossGateConfig.columns_entry`'s own default (`'hop'`) is what a
+    run gets when `--columns-entry` is never passed -- mirrors
+    `skill_node.SkillNode`'s own ROS parameter default."""
+    captured = _capture_learn_cfg(monkeypatch)
+    rc = sg.main(['--learn', '--no-viewer', '--pattern', 'columns',
+                 '--feed-angle-deg', '11.9', '--feed-speed-mmps', '5600'])
+    assert rc == 0
+    assert captured['cfg'].columns_entry == 'hop'

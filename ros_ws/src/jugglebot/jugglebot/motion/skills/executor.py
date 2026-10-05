@@ -37,7 +37,7 @@ from jugglebot.motion.skills import admissible as adm
 from jugglebot.motion.skills import segments as sg
 from jugglebot.motion.skills import schedule as sch
 from jugglebot.motion.skills.report import ThrowReport, release_error_s
-from jugglebot.motion.skills.sites import RELEASE_CUP_Z_MM
+from jugglebot.motion.skills.sites import CATCH_CUP_Z_MM, RELEASE_CUP_Z_MM
 from jugglebot.motion.skills.memory import (APEX_RATIO_BAND, Experience,
                                             apex_in_band)
 from jugglebot.motion.skills.schedule import (HANDOFF_LEAD_KNOTS,
@@ -693,16 +693,41 @@ class _NoAdmissibleCommand(Exception):
     into a :data:`NO_ADMISSIBLE_COMMAND` refusal; never escapes this module."""
 
 
+#: The release-to-catch RISE (m), signed: positive when the catch plane sits
+#: above the release plane. Fed to :func:`schedule.apex_from_crossing` so
+#: :func:`_observed_apex_m` reads the SAME physical quantity the command is
+#: at any plane offset — see that function's docstring (R5 sitting 6,
+#: 2026-10-05: CATCH HIGH moved ``CATCH_CUP_Z_MM`` off ``RELEASE_CUP_Z_MM``
+#: by +70 mm instead of -30 mm, which would otherwise have shifted every
+#: learned apex by ~50 mm with no change in actual throw accuracy).
+_CATCH_RISE_M = (CATCH_CUP_Z_MM - RELEASE_CUP_Z_MM) / 1000.0
+
+
 def _observed_apex_m(landing: 'Landing') -> float:
-    """The apex (m above the catch plane) a landing estimate implies —
-    ``schedule.apex_from_vz`` on its vertical arrival speed, converted from
-    the mm/s this layer's :class:`Landing` carries.
+    """The apex (m, release-relative) a landing estimate implies —
+    ``schedule.apex_from_crossing`` on its vertical arrival speed and
+    :data:`_CATCH_RISE_M`, converted from the mm/s this layer's
+    :class:`Landing` carries.
 
     This is the learner's OUTCOME (2026-09-18): the same physical quantity
     the command is, read off the tracker's converged parabola, so neither the
-    release instant nor the filter's lag can bias it."""
-    return sch.apex_from_vz(float(np.asarray(landing.vel_mm_s,
-                                             dtype=float)[2]) / 1000.0)
+    release instant nor the filter's lag can bias it. Using the rise-aware
+    function (rather than ``apex_from_vz`` directly on the crossing speed)
+    is what keeps that quantity invariant to the release/catch plane offset
+    too (R5 sitting 6, 2026-10-05) — a perfect plant reads ``y == u`` at ANY
+    plane offset, not only the historical -30 mm one.
+
+    A crossing ``apex_from_crossing`` refuses (not descending, non-finite)
+    returns NaN instead of raising: this runs inside the tick, and
+    ``memory.apex_in_band`` already rejects a non-finite apex, so an
+    impossible estimate is refused as "not this throw's flight" like any other
+    out-of-band one. (``apex_from_vz``'s ``abs()`` used to admit it silently.)"""
+    try:
+        return sch.apex_from_crossing(
+            float(np.asarray(landing.vel_mm_s, dtype=float)[2]) / 1000.0,
+            _CATCH_RISE_M)
+    except ValueError:
+        return float('nan')
 
 
 @dataclasses.dataclass
@@ -856,6 +881,22 @@ class _PendingOutcome:
     #: caught, and must not reach the learner's memory. See
     #: :meth:`SkillExecutor._finalise_outcome`.
     shadow_landing: bool = False
+    #: A fed columns schedule's HOP ENTRY throw (owner decision, 2026-10-05,
+    #: R5 sitting-6 prep — read straight off
+    #: :attr:`~jugglebot.motion.skills.schedule.Skill.entry_hop` at
+    #: registration, THROW only). Shares ``shadow_landing``'s command bypass
+    #: in :meth:`SkillExecutor._command_u` (``u = y_d`` exactly, no learner,
+    #: no box lookup) and its NO-MEMORY-ROW treatment in
+    #: :meth:`_finalise_outcome` — a cross-site throw from the feed site
+    #: would pool with that site's vertical column throws in the learner's
+    #: memory (same release-site ``x``) and corrupt both, and no box is
+    #: swept for a 125 mm cross pair under the ``columns`` pattern. UNLIKE
+    #: ``shadow_landing`` it does NOT override the possession latch: this
+    #: ball is caught in the ordinary way (it is not landing on a ball
+    #: already held), so ``caught`` is read normally and the OUTCOME line is
+    #: reported exactly like any other throw's, just tagged so an operator
+    #: can tell it was the hop entry.
+    entry_hop: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1703,7 +1744,8 @@ class SkillExecutor:
 
     def _command_u(self, idx: int, site, target, y_d,
                    release_offset_m=None,
-                   shadow_landing: bool = False) -> Tuple[np.ndarray, float]:
+                   shadow_landing: bool = False,
+                   entry_hop: bool = False) -> Tuple[np.ndarray, float]:
         """The commanded ``u = (landing_xy_m, apex_m)`` for the ball this
         skill releases — computed ONCE (at ``idx``'s first dispatch) and
         cached, so a CATCH re-send's later calls return the SAME command
@@ -1747,6 +1789,19 @@ class SkillExecutor:
         is swept per pattern for SAME-site throws only (this one is not; a
         lookup here would either miss and refuse, or hit a box that was never
         measured for this segment shape).
+
+        ``entry_hop`` (owner decision, 2026-10-05, R5 sitting-6 prep): a fed
+        columns schedule's HOP ENTRY (THROW 0, released from the feed site —
+        ``schedule.compile_columns(entry='hop')``) gets the SAME bypass as
+        ``shadow_landing`` for the SAME structural reason — this is a
+        cross-site throw, so the box swept for SAME-site throws does not
+        apply, and a cross throw from the feed site would pool with that
+        site's vertical column throws in the learner's memory (same
+        release-site ``x``) and corrupt both. Unlike ``shadow_landing`` this
+        throw IS caught in the ordinary way; only the command is bypassed
+        here, not the catch's own possession reading (that is
+        :meth:`_finalise_outcome` / :meth:`_report`'s concern, not this
+        method's).
         """
         if idx in self._u_cache:
             _x, u_dy, u_apex = self._u_cache[idx]
@@ -1759,7 +1814,7 @@ class SkillExecutor:
         x = np.array([float(site.cup_mm[0]) / 1000.0,
                      float(site.cup_mm[1]) / 1000.0,
                      float(off[0]), float(off[1])])
-        if shadow_landing:
+        if shadow_landing or entry_hop:
             u_dy, u_apex = dy, apex
             self._u_cache[idx] = (x, u_dy, u_apex)
             return u_dy, u_apex
@@ -1851,7 +1906,8 @@ class SkillExecutor:
         disagree about which of the two a number is (2026-09-18)."""
         u_dy, u_apex = self._command_u(idx, skill.site, skill.target,
                                        skill.y_d,
-                                       shadow_landing=skill.shadow_landing)
+                                       shadow_landing=skill.shadow_landing,
+                                       entry_hop=skill.entry_hop)
         return ThrowTerminal(
             site_mm=skill.site.throw_site_mm(),
             target_mm=self._commanded_target_mm(skill.target, (u_dy, u_apex)),
@@ -2788,10 +2844,18 @@ class SkillExecutor:
         if skill.kind == THROW:
             target, t_release = skill.target, float(skill.t_abs_s)
             shadow_landing = bool(skill.shadow_landing)
+            entry_hop = bool(skill.entry_hop)
         elif skill.kind == CATCH and skill.then_throw is not None:
             target = skill.then_throw.target
             t_release = float(skill.then_throw.t_release_abs_s)
             shadow_landing = bool(skill.then_throw.shadow_landing)
+            # A carried throw's `then_throw` has no `entry_hop` field of its
+            # own (`ThenThrow` carries only `shadow_landing` —
+            # `compile_columns` never folds THROW 0 into a catch: nothing
+            # precedes it to fold with, it is always the schedule's first
+            # skill): a hop-entry THROW is always registered as a standalone
+            # THROW skill, never through this branch.
+            entry_hop = False
         else:
             return
         x, u_dy, u_apex = self._u_cache[idx]
@@ -2809,7 +2873,7 @@ class SkillExecutor:
             t_next_release_s=_next_release(self.schedule, idx, skill.ball_id),
             throw_no=self._n_registered,
             release_z_mm=float(skill.site.throw_site_mm()[2]),
-            shadow_landing=shadow_landing))
+            shadow_landing=shadow_landing, entry_hop=entry_hop))
 
     def _register_catch(self, idx: int, skill: Skill,
                         t_land_scheduled_s: float) -> None:
@@ -3414,7 +3478,8 @@ class SkillExecutor:
            same instant, on the same margin (:meth:`_next_release_bound`,
            :meth:`_bound_by_next_release`).
         5. The apex the estimate's arrival speed implies
-           (``schedule.apex_from_vz``) is inside ``memory.APEX_RATIO_BAND`` x
+           (``_observed_apex_m`` / ``schedule.apex_from_crossing``) is inside
+           ``memory.APEX_RATIO_BAND`` x
            the COMMANDED apex. An estimate outside it is not about this throw
            — 2026-09-16's rows recorded 2.23 s of flight (5.4× the commanded
            apex) for a 0.857 s command. Testing this at ADMISSION, and not
@@ -3647,7 +3712,16 @@ class SkillExecutor:
         # operator's report still gets the real observed landing/apex below
         # (`row=True`): only the memory row is skipped, not the account of
         # what happened.
-        if not pend.shadow_landing:
+        #
+        # `entry_hop` (owner decision, 2026-10-05, R5 sitting-6 prep): the
+        # SAME no-memory-row treatment, for the SAME reason -- `u = y_d`
+        # exactly (`_command_u`'s bypass) and a cross-site throw from the
+        # feed site would pool with that site's vertical column throws in
+        # the memory (same release-site `x`) and corrupt both. UNLIKE
+        # `shadow_landing` the possession latch is NOT overridden here --
+        # this ball is caught in the ordinary way, so `caught` (above) is
+        # already read normally for it.
+        if not pend.shadow_landing and not pend.entry_hop:
             exp = Experience(x=pend.x, u=pend.u, y=y, t_abs_s=pend.t_release_s,
                              ball_id=pend.ball_id, caught=bool(caught))
             self.on_experience(exp)
@@ -3656,10 +3730,11 @@ class SkillExecutor:
                  else ' seat=%+.3f s vs scheduled landing'
                  % (pend.t_seat_s - float(pend.t_land_scheduled_s)))
         shadow = ' (landed on the held ball)' if pend.shadow_landing else ''
+        hop = ' (hop entry, no learner row)' if pend.entry_hop else ''
         return ['%.3f OUTCOME %s: y=(%.4f, %.4f) m apex=%.4f m '
-                'caught=%s%s%s'
+                'caught=%s%s%s%s'
                 % (finalise_at, ball_label(pend.ball_id), y[0], y[1], y[2],
-                   caught, phase, shadow)]
+                   caught, phase, shadow, hop)]
 
     def _resend_hand_corrected_catch(self, t_abs_s: float) -> List[str]:
         """:data:`AIM_SCHEDULE_HAND`: re-aim the committed CATCH ONCE, from

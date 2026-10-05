@@ -217,6 +217,17 @@ def _node_with_client(response=None, ready=True, hand=True, frame=True):
         _hand_at(node)
     if frame:
         _frame_ready(node)
+    # The hop entry (owner decision, 2026-10-05, R5 sitting-6 prep):
+    # `columns_entry`'s LIVE default flipped to 'hop', but this whole file's
+    # pre-existing fed-columns test surface (`ctx.site`/`ctx.aim_site`
+    # numeric assertions, the `columns_feed_aim_toward_a_mm` walk) was built
+    # against the pre-R5 self-toss entry -- pinning 'transit' HERE, in the
+    # one shared construction helper, means that surface needs no per-test
+    # changes. A test ABOUT the hop entry itself overrides this back
+    # explicitly (`node.set_parameters([_MockParameter('hop', name=
+    # 'columns_entry')])`); a test about the bare DECLARED default
+    # constructs its own `sn.SkillNode()` instead of using this helper.
+    node.set_parameters([_MockParameter('transit', name='columns_entry')])
     return node, client
 
 
@@ -713,6 +724,91 @@ def test_columns_feed_bb_bias_mm_rejects_a_malformed_value():
     node.set_parameters([_MockParameter([float('inf'), 5.0],
                                         name='columns_feed_bb_bias_mm')])
     assert node._columns_feed_bb_bias_mm() == (0.0, 0.0)
+
+
+# ---------------------------------------------------------------------------
+# R5 sitting 6 prep (owner decision, 2026-10-05): the HOP ENTRY --
+# `columns_entry`. `scratchpad/s6/design.md` Decision 1. Most fed-columns
+# tests in this file go through `_node_with_client`, which pins
+# `columns_entry='transit'` so that large pre-existing surface (built
+# against the pre-R5 entry) needs no per-test changes -- see that helper's
+# own comment. The tests below exercise `columns_entry` itself.
+
+def test_columns_entry_declared_default_is_hop():
+    """The ROS parameter's own declared default -- a BARE node, not
+    `_node_with_client`'s helper (which pins 'transit' for this file's
+    pre-existing fed-columns surface)."""
+    node = sn.SkillNode()
+    assert node.get_parameter('columns_entry').value == 'hop'
+    assert node._columns_entry() == 'hop'
+
+
+def test_columns_entry_rejects_an_unknown_value():
+    """Same WARN-and-fallback shape as `_columns_feed_site_name`."""
+    node, _client = _node_with_client()
+    node.set_parameters([_MockParameter('sideways', name='columns_entry')])
+    assert node._columns_entry() == 'hop'
+
+
+def test_columns_entry_hop_bridge_rest_holds_at_the_feed_site(tmp_path):
+    """Hop entry, the reload=False (tracker-feed) branch, default layout
+    (`columns_feed_site='P1'`: feed P1, A P2): the bridge REST parks at the
+    FEED site, not ball A's own site, and Ball Butler's aim is the
+    UN-walked feed site (the 10 mm walk toward A exists only to counter the
+    TRANSIT entry's catch reversal, which the hop entry never makes)."""
+    node, _client = _node_with_client()
+    node.set_parameters([_MockParameter('hop', name='columns_entry')])
+    node._params['plant_id'] = 'test_columns_entry_hop_bridge'
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
+                      _good_box_path(tmp_path, columns=True)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_columns_goal(reload=False, separation_mm=100.0))
+    assert resp.success is True, resp.message
+    assert node._reload_ctx.entry == 'hop'
+    assert node._reload_ctx.site.name == 'P1'
+    assert node._reload_ctx.aim_site.name == 'P1'
+    assert node._reload_ctx.aim_site.cup_mm[:2] == pytest.approx([-50.0, 0.0])
+
+
+def test_columns_entry_transit_reproduces_todays_bridge_and_aim(tmp_path):
+    """'transit' keeps the pre-R5 entry byte-for-byte: bridge REST at ball
+    A's own site, Ball Butler's aim walked `columns_feed_aim_toward_a_mm`
+    toward it -- pinned here explicitly (every other fed-columns test in
+    this file gets it implicitly, via `_node_with_client`'s own pin)."""
+    node, _client = _node_with_client()
+    node.set_parameters([_MockParameter('transit', name='columns_entry')])
+    node._params['plant_id'] = 'test_columns_entry_transit_bridge'
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
+                      _good_box_path(tmp_path, columns=True)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_columns_goal(reload=False, separation_mm=100.0))
+    assert resp.success is True, resp.message
+    assert node._reload_ctx.entry == 'transit'
+    assert node._reload_ctx.site.name == 'P2'
+    assert node._reload_ctx.aim_site.name == 'P1'
+    assert node._reload_ctx.aim_site.cup_mm[:2] == pytest.approx([-40.0, 0.0])
+
+
+def test_columns_entry_hop_bb_request_aims_at_the_unwalked_feed_site_plus_bias(
+        tmp_path):
+    """The reload=True Ball Butler path: under the hop entry the request
+    point is the UN-walked feed site (not walked toward A), with
+    `columns_feed_bb_bias_mm` still applied on top exactly as under
+    transit (`_fire_reload_throw` reads `ctx.aim_site` generically, with no
+    `entry` branch of its own)."""
+    node, _client = _node_with_client()
+    node.set_parameters([
+        _MockParameter('hop', name='columns_entry'),
+        _MockParameter([29.0, 25.0], name='columns_feed_bb_bias_mm')])
+    _columns_bb_started(node, tmp_path)
+    assert node._reload_ctx.site.name == 'P1'
+    aim = node._reload_ctx.aim_site.cup_mm
+    assert aim[:2] == pytest.approx([-50.0, 0.0])
+    throw_req = node._bb_throw_cli.calls[0]
+    assert throw_req.target_point_global_mm.x == pytest.approx(float(aim[0]) - 29.0)
+    assert throw_req.target_point_global_mm.y == pytest.approx(float(aim[1]) - 25.0)
 
 
 def test_self_toss_refuses_an_uncovered_apex_before_any_motion(tmp_path):

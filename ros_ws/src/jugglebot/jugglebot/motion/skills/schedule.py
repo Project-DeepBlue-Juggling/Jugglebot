@@ -152,6 +152,64 @@ def apex_from_vz(vz_m_s: float) -> float:
     return v * v / (2.0 * _G_SI)
 
 
+def apex_from_crossing(vz_m_s: float, rise_m: float) -> float:
+    """The apex (m, release-relative) implied by a crossing at a DIFFERENT
+    height than release, ``rise_m`` above release (negative if the crossing
+    plane sits below the release plane -- e.g. a catch plane below the
+    release plane, as every throw ran until 2026-10-05).
+
+    Inverts the planner's own model for the release-to-crossing time ``T``:
+    the average vertical speed over ``T`` is ``rise_m / T``, and the crossing
+    (instantaneous) speed is ``g·T`` less than the release speed, so
+    ``v_c = rise_m / T - g·T / 2``. Solving for ``T > 0`` (the physical root;
+    ``v_c`` must be negative, i.e. descending, or the quadratic's positive
+    root is not the crossing the ball we track actually makes):
+
+        T = (-v_c + sqrt(v_c² + 2·g·rise_m)) / g
+
+    and the apex is then read off :func:`apex_m` at that flight time (``T``
+    is exactly the flight time a SYMMETRIC throw of this apex would take),
+    using the SAME ``g`` (:data:`_G_SI`) as :func:`flight_s` /
+    :func:`apex_from_vz`: ``apex = g·T² / 8``.
+
+    At ``rise_m = 0`` this reduces exactly to :func:`apex_from_vz`: ``T``
+    becomes ``2·|v_c| / g`` and ``apex = g·T²/8 = v_c² / (2·g)``.
+
+    This is the fix for the catch-high plane change (plan R5 sitting 6,
+    2026-10-05): the learner's outcome used to read ``apex_from_vz`` directly
+    off the catch-plane crossing speed, which is only "the apex above the
+    catch plane" when release and catch are the SAME height. With
+    ``RELEASE_CUP_Z_MM`` and ``CATCH_CUP_Z_MM`` at different heights, a
+    perfect plant reads ``y != u`` by an amount that tracks the plane offset
+    (rise -30 mm -> y = u + 14.5 mm; rise +70 mm -> y = u - 35 mm) -- a
+    spurious ~50 mm learner bias from a geometry change alone, not a real
+    throw error. Reading the outcome through this function instead makes a
+    perfect plant read ``y == u`` at ANY plane offset.
+
+    Check (design doc worked example): ``vz_m_s=-4.349``, ``rise_m=-0.030``
+    -> ``T=0.8801``, ``apex=0.9495``.
+
+    Raises ``ValueError`` if ``vz_m_s`` is non-negative (not descending),
+    non-finite, or the discriminant ``v_c² + 2·g·rise_m`` is negative (no
+    real crossing time -- the ball never reaches a plane ``rise_m`` above
+    release at this crossing speed).
+    """
+    v_c = float(vz_m_s)
+    rise = float(rise_m)
+    if not math.isfinite(v_c) or not math.isfinite(rise):
+        raise ValueError('vz_m_s and rise_m must be finite, got %r, %r'
+                          % (vz_m_s, rise_m))
+    if not v_c < 0.0:
+        raise ValueError('vz_m_s must be descending (< 0), got %r' % (vz_m_s,))
+    discriminant = v_c * v_c + 2.0 * _G_SI * rise
+    if not discriminant >= 0.0:
+        raise ValueError(
+            'no real crossing time for vz_m_s=%r, rise_m=%r (discriminant '
+            '%r < 0)' % (vz_m_s, rise_m, discriminant))
+    flight_time_s = (-v_c + math.sqrt(discriminant)) / _G_SI
+    return apex_m(flight_time_s)
+
+
 def beat_s(flight_s_: float, dwell_s: float) -> float:
     """Time between successive throws from the SAME hand: ``(t_f + d) / 2``."""
     return (float(flight_s_) + float(dwell_s)) / 2.0
@@ -359,6 +417,24 @@ class Skill:
     #: schedule — nothing is held, so the last throw is an ordinary throw at
     #: its own site).
     shadow_landing: bool = False
+    #: THROW only: True for a fed columns schedule's HOP ENTRY (owner
+    #: decision, 2026-10-05, R5 sitting 6 prep — ``scratchpad/s6/design.md``
+    #: Decision 1): THROW 0 released from the FEED site (``sites[1]``) with
+    #: ``target=sites[0]`` — a cross-site throw into the schedule's own
+    #: pattern — instead of a self-toss from ``sites[0]``, so the cup is
+    #: already parked at the feed site for the feed catch rather than having
+    #: to transit there after the launch. Set by :func:`compile_columns`
+    #: (``entry='hop'``) on THROW 0 only; every other throw is an ordinary
+    #: self-toss. Mutually exclusive with ``shadow_landing`` (THROW 0 can
+    #: never be the columns Stop's cross-site last throw — that needs
+    #: ``n_throws >= 2`` and ``i == n - 1``, never ``i == 0``). The
+    #: executor bypasses the learner AND the admissible box for this throw
+    #: (``u = y_d`` exactly) and writes no memory row — the same bypass
+    #: mechanism ``shadow_landing`` uses, but none of its other semantics
+    #: (this throw's ``caught`` reads normally; it is not landing on a ball
+    #: already at rest). ``False`` (every throw before this decision, and
+    #: every throw but THROW 0 under a hop-entry schedule).
+    entry_hop: bool = False
     #: Seconds between this skill's DISPATCH and its splice base
     #: (``t_abs_s - window_s``).  :func:`compile_columns` sets it per skill;
     #: the default is the general :data:`LEAD_S`.
@@ -371,6 +447,14 @@ class Skill:
         if self.shadow_landing and self.kind != THROW:
             raise ValueError('only a THROW may carry shadow_landing (kind=%r)'
                               % (self.kind,))
+        if self.entry_hop and self.kind != THROW:
+            raise ValueError('only a THROW may carry entry_hop (kind=%r)'
+                              % (self.kind,))
+        if self.entry_hop and self.shadow_landing:
+            raise ValueError(
+                'entry_hop and shadow_landing are mutually exclusive — '
+                'THROW 0 (the only throw entry_hop ever marks) can never '
+                'be the columns Stop\'s cross-site last throw')
         if self.then_throw is not None and self.kind != CATCH:
             raise ValueError(
                 'only a CATCH may carry then_throw (kind=%r) — a throw is '
@@ -669,7 +753,8 @@ def schedule_has_shadow_landing(schedule: Schedule) -> bool:
 
 
 def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
-                    feed: Optional[LandingPrior] = None) -> Schedule:
+                    feed: Optional[LandingPrior] = None,
+                    entry: str = 'transit') -> Schedule:
     """The columns pattern's schedule (plan § 1.2 / § 2.4).
 
     **Exactly one of ``t0_abs_s``/``feed`` (R5, owner decision D1,
@@ -746,6 +831,33 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
     buys nothing when the ball is landing on a ball already at rest — see
     ``executor.SkillExecutor._command_u``.
 
+    **The HOP ENTRY (owner decision, 2026-10-05, R5 sitting-6 prep —
+    ``entry='hop'``).** A fed schedule's pre-R5 entry parks
+    ball A at ``sites[0]`` and throws it there (THROW 0, a self-toss) while
+    ball B is still falling toward ``sites[1]`` — so the cup has to TRANSIT
+    from ``sites[0]`` to ``sites[1]`` between the launch and the feed catch,
+    arriving against the feed ball's own velocity rather than parked and
+    waiting (measured, bag 2026-10-05_16-42-57: 13/21 ``columns_1ball_fed``
+    runs never even reached the feed catch window, and the 6 that did caught
+    0/6 clean). Under the hop entry, ball A is instead held at the FEED site
+    (``sites[1]``) through the opening REST and THROW 0 releases it FROM
+    THERE, cross-site, at ``target=sites[0]`` — same apex, same flight time,
+    same ``t0`` as the self-toss it replaces (only the release ``site``
+    changes; the catch that follows it, and everything else in the
+    schedule, keeps landing at ``sites[0]`` exactly as before). The cup is
+    therefore already parked at ``sites[1]`` and simply stays there for the
+    feed catch, instead of arriving mid-transit. ``entry='hop'`` requires
+    ``feed is not None`` — a free-``t0_abs_s`` schedule has no real feed
+    ball to park for, so there is nothing for the hop to buy — and raises
+    ``ValueError`` otherwise. The feed CATCH keeps ``receive_tilt=(0.0,
+    0.0)`` unchanged (the level-pinned touch-down attitude, independent of
+    which entry parked the cup there). THROW 0 carries
+    :attr:`Skill.entry_hop` under the hop entry (see that attribute for the
+    executor-side bypass); ``entry='transit'`` reproduces the pre-R5
+    self-toss entry exactly (kept for A/B comparison and rollback) and
+    never sets ``entry_hop`` on any skill, so every pre-existing caller
+    (which does not pass ``entry`` at all) is byte-for-byte unchanged.
+
     **Every same-site (CATCH, THROW) pair of one ball is emitted as ONE CATCH
     skill carrying ``then_throw``** (:func:`_fold_catch_throw_pairs`), so the
     schedule holds ``1 + (n_throws − 1) + 1 + 1 = n_throws + 2`` skills: the
@@ -772,6 +884,12 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
             'compile_columns takes exactly one of t0_abs_s (a free clock '
             'instant) or feed (R5: ball B\'s observed arrival, from which '
             't0 is derived) — got t0_abs_s=%r feed=%r' % (t0_abs_s, feed))
+    if entry not in ('hop', 'transit'):
+        raise ValueError("entry must be 'hop' or 'transit', got %r" % (entry,))
+    if entry == 'hop' and feed is None:
+        raise ValueError(
+            "entry='hop' requires feed (a free-t0_abs_s schedule has no "
+            "real feed ball to park THROW 0 for)")
     t_f = flight_s(pattern.apex_m)
     beta = beat_s(t_f, pattern.dwell_s)
     tau = transit_s(t_f, pattern.dwell_s)
@@ -844,14 +962,27 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
         # (`i == n - 1 and n >= 2`) and the only throw stays a self-toss.
         is_stop_throw = (i == n - 1 and n >= 2)
         target_i = sites2[n % 2] if is_stop_throw else site_i
-        throw_sk = Skill(kind=THROW, ball_id=ball_i, site=site_i,
+        # The hop entry (owner decision, 2026-10-05 — see the docstring):
+        # THROW 0 only, and only under `entry='hop'`. It is released from
+        # the FEED site (`sites2[1]`) rather than its own self-toss site
+        # (`site_i`, still `sites2[0]` here) -- `target_i` is untouched by
+        # this (it is already `site_i` == `sites2[0]` for i == 0, since
+        # `is_stop_throw` can never be True at i == 0), so the ball still
+        # lands at `sites[0]` exactly as the self-toss entry would.
+        is_hop_throw = (entry == 'hop' and i == 0)
+        release_site_i = sites2[1] if is_hop_throw else site_i
+        throw_sk = Skill(kind=THROW, ball_id=ball_i, site=release_site_i,
                          t_abs_s=t_throw, window_s=window,
                          y_d=(np.zeros(2), pattern.apex_m), target=target_i,
-                         shadow_landing=is_stop_throw)
+                         shadow_landing=is_stop_throw, entry_hop=is_hop_throw)
         skills.append(throw_sk)
         if i <= n - 2:
             _check_window('CATCH %d' % i, tau)
-            skills.append(Skill(kind=CATCH, ball_id=ball_i, site=site_i,
+            # `site=target_i`, not `site_i`: the catch must sit where the
+            # ball actually LANDS. Identical to `site_i` for every throw
+            # except the hop entry's THROW 0, where the two differ by
+            # construction (release at the feed site, landing at its own).
+            skills.append(Skill(kind=CATCH, ball_id=ball_i, site=target_i,
                                 t_abs_s=t_throw + t_f, window_s=tau))
 
     skills.sort(key=lambda s: s.t_abs_s)

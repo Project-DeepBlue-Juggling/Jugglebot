@@ -18,6 +18,7 @@ import os
 
 import numpy as np
 import pytest
+from _pytest.monkeypatch import MonkeyPatch as _MonkeyPatch
 
 import jugglebot.hardware_config as hw
 from jugglebot.motion.skills import admissible as ab
@@ -140,11 +141,13 @@ _GATE_TREE_FILES = ('segments.py', 'unified_cycle.py',
                     os.path.join('trajectory', 'cup_cycle.py'),
                     os.path.join('trajectory', 'cup_realize.py'),
                     os.path.join('trajectory', 'tilt_geometry.py'),
-                    'hardware_config.py')
+                    'hardware_config.py',
+                    os.path.join('skills', 'sites.py'))
 
 
 def _write_gate_tree(root, contents='x'):
     os.makedirs(os.path.join(root, 'trajectory'), exist_ok=True)
+    os.makedirs(os.path.join(root, 'skills'), exist_ok=True)
     for rel in _GATE_TREE_FILES:
         with open(os.path.join(root, rel), 'w') as handle:
             handle.write(contents)
@@ -167,7 +170,10 @@ def test_gate_hash_changes_when_any_of_the_gated_files_change(tmp_path, which):
     added files goes undetected (plan R4 carried item (d)). The kinematic
     calibration (2026-09-27) added the generated `hardware_config.py`, the IK
     geometry: a geometry change must force the re-sweep, not rely on it being
-    remembered (plans/active/kinematic-calibration.md § 7)."""
+    remembered (plans/active/kinematic-calibration.md § 7). R5 sitting 6
+    (2026-10-05, catch-high) added `skills/sites.py`: the catch/release/rest
+    cup planes decide segment feasibility too, and `CATCH_CUP_Z_MM` moved
+    830 -> 930 the same day."""
     root = str(tmp_path)
     _write_gate_tree(root)
     before = ab.gate_hash(root=root)
@@ -502,6 +508,17 @@ def sweep_mod():
 _TINY_SWEEP_LIMITS = dict(leg_vel_mmps=300.0, leg_acc_mmps2=5000.0,
                           leg_jerk_mmps3=150000.0)
 
+#: ``tiny_sweep`` characterises the R2/R3 LIMITS point and must keep doing so
+#: even though ``sites.CATCH_CUP_Z_MM`` has since moved (plan R5 sitting 6,
+#: 2026-10-05, catch-high): a higher catch plane needs more leg jerk, so at
+#: the tiny grid's own apex 0.85 m / dwell 0.30 s the identity cell now
+#: refuses LIMIT_JERK at 930 mm even though it passed at 830 mm. Freezing the
+#: catch plane back to the value the probe this fixture is pinned to
+#: (``scratchpad/probe_unitB_sweep5.py``, 2026-09-30) actually ran at
+#: preserves the ALREADY-PINNED characterisation rather than moving it to a
+#: point it was never about.
+_TINY_SWEEP_CATCH_Z_MM = 830.0
+
 
 @pytest.fixture(scope='module')
 def tiny_sweep(sweep_mod):
@@ -522,14 +539,30 @@ def tiny_sweep(sweep_mod):
     default, which moved to the R5 point 350/5000/200000 on 2026-10-05, and at
     the roomier limits the -5 mm x cell passes (the planner is simply more
     permissive) and the "x pinned at 0" characterisation below is false. A
-    characterisation test freezes the conditions it characterised."""
-    site0, site1 = st.columns_sites(100.0)
-    boxes, rows = sweep_mod.sweep(
-        apexes_m=(0.85,), offsets_mm=(-5.0, 0.0, 5.0), dwell_s=0.30,
-        leg_vel=_TINY_SWEEP_LIMITS['leg_vel_mmps'],
-        leg_acc=_TINY_SWEEP_LIMITS['leg_acc_mmps2'],
-        leg_jerk=_TINY_SWEEP_LIMITS['leg_jerk_mmps3'],
-        site_pairs=[(site0, site1)])
+    characterisation test freezes the conditions it characterised.
+
+    Since 2026-10-05 that freeze also covers ``sites.CATCH_CUP_Z_MM`` (see
+    ``_TINY_SWEEP_CATCH_Z_MM``): the catch plane moved 830 -> 930 mm the same
+    day the launch limits moved, and the probe this fixture reproduces ran at
+    830 mm. ``monkeypatch`` is function-scoped and this fixture is
+    module-scoped, so the freeze/restore is done by hand with the same
+    ``_pytest.monkeypatch.MonkeyPatch`` class the ``monkeypatch`` fixture
+    itself wraps -- re-verified against this exact grid 2026-10-05: frozen at
+    830 mm the box is non-empty with x pinned at 0 and y in [-5, 5] mm,
+    byte-identical to the pre-catch-high characterisation below."""
+    mp = _MonkeyPatch()
+    mp.setattr(st.Site.catch_site_mm, '__defaults__', (_TINY_SWEEP_CATCH_Z_MM,))
+    mp.setattr(st, 'CATCH_CUP_Z_MM', _TINY_SWEEP_CATCH_Z_MM)
+    try:
+        site0, site1 = st.columns_sites(100.0)
+        boxes, rows = sweep_mod.sweep(
+            apexes_m=(0.85,), offsets_mm=(-5.0, 0.0, 5.0), dwell_s=0.30,
+            leg_vel=_TINY_SWEEP_LIMITS['leg_vel_mmps'],
+            leg_acc=_TINY_SWEEP_LIMITS['leg_acc_mmps2'],
+            leg_jerk=_TINY_SWEEP_LIMITS['leg_jerk_mmps3'],
+            site_pairs=[(site0, site1)])
+    finally:
+        mp.undo()
     return boxes, rows
 
 
@@ -543,7 +576,15 @@ def test_the_cross_site_branch_gates_the_real_catch_with_throw_segment(
     THROW that pattern never flies. Spy on ``segments.plan_segment`` the same
     way ``test_single_site_sweep_uses_the_carried_throw_segment`` does for the
     same-site branch, and assert at least one CATCH call in the cross-site
-    sweep carried ``then_throw``."""
+    sweep carried ``then_throw``.
+
+    Runs at the R5 operating point (apex 0.95 m, dwell 0.27 s, 125 mm
+    separation) since 2026-10-05 -- moved from the tiny grid's apex 0.85 m /
+    dwell 0.30 s / 100 mm, which this test was only ever reusing for
+    convenience (unlike ``tiny_sweep``, nothing here characterises that exact
+    point): at the new catch plane (``sites.CATCH_CUP_Z_MM`` 830 -> 930 mm)
+    that cell refuses LIMIT_JERK even at the sweep's live default limits, and
+    this test only needs a feasible box to check the segment-call shape."""
     calls = []
     orig = sweep_mod.sg.plan_segment
 
@@ -553,9 +594,9 @@ def test_the_cross_site_branch_gates_the_real_catch_with_throw_segment(
         return orig(kind, seed, terminal, cfg, limits, geom, **kw)
 
     monkeypatch.setattr(sweep_mod.sg, 'plan_segment', _spy)
-    site0, site1 = st.columns_sites(100.0)
-    boxes, rows = sweep_mod.sweep(apexes_m=(0.85,), offsets_mm=(0.0,),
-                                  dwell_s=0.30, site_pairs=[(site0, site1)])
+    site0, site1 = st.columns_sites(125.0)
+    boxes, rows = sweep_mod.sweep(apexes_m=(0.95,), offsets_mm=(0.0,),
+                                  dwell_s=0.27, site_pairs=[(site0, site1)])
     assert calls, 'expected at least one CATCH plan_segment call from the sweep'
     assert any(tt is not None for tt in calls), (
         'the cross-site sweep never planned a CATCH with then_throw -- it '
@@ -564,8 +605,8 @@ def test_the_cross_site_branch_gates_the_real_catch_with_throw_segment(
     assert len(boxes) == 1
     assert boxes[0].pattern == 'columns'
     assert not boxes[0].empty, (
-        'the identity command at apex 0.85 m / dwell 0.30 s must be '
-        'admissible -- it is the tiny_sweep fixture\'s own passing cell')
+        'the identity command at apex 0.95 m / dwell 0.27 s must be '
+        'admissible -- the R5 operating point\'s own passing cell')
     assert len(rows) >= 2
 
 

@@ -16,7 +16,9 @@ the method `a2_feed_lateral.py` used in the 2026-10-04 R5 sitting 4
 analysis -- a disjoint nearest-neighbour tracker seeded near the Platform
 body, grown both ways with constant-velocity prediction), and compares the
 fitted landing xy at the free-fall crossing of the catch plane
-(`sites.CATCH_CUP_Z_MM`, restated as `PLANE_MM` to avoid a ROS2 import)
+(`sites.CATCH_CUP_Z_MM`, imported live -- `--plane-mm` overrides it for an
+older bag: bags recorded before 2026-10-06 need `--plane-mm 830`, the plane
+before R5 sitting 6's catch-high move to 930)
 against the Platform body's own mocap xy at that same instant.
 
 FRAME AND SIGN CONVENTION (settled from the raw L3/L4 bags, R5 sitting 4,
@@ -72,9 +74,28 @@ import sys
 
 import numpy as np
 
+_HERE = os.path.dirname(os.path.abspath(__file__))          # tools/probes
+_REPO = os.path.dirname(os.path.dirname(_HERE))
+_ROS_PKG = os.path.join(_REPO, 'ros_ws', 'src', 'jugglebot')
+for _p in (_ROS_PKG, _REPO):
+    if _p not in sys.path:
+        sys.path.insert(0, _p)
+
+from jugglebot.motion.skills import sites                       # noqa: E402
+
 G_MM_S2 = 9810.0
-PLANE_MM = 830.0  # sites.CATCH_CUP_Z_MM, restated to avoid a ROS2 import
-SEAT_DEADLINE_S = 0.19
+#: The skill stack's ONE catch plane (imported live, not restated --
+#: `motion/` has no ROS imports, so this needed no ROS2-avoidance workaround).
+#: `--plane-mm` overrides it at the CLI for an older bag.
+PLANE_MM = sites.CATCH_CUP_Z_MM
+#: 0.20 s (R5 sitting 6, 2026-10-05, catch-high: measured at the new 930 mm
+#: plane -- `/tmp/catch_seat_deadline_probe.py`, the real chain LAUNCH +
+#: STEADYx3, apex 0.95/sep 125/dwell 0.27/leg 350-5000-200000/hand 3900 --
+#: time from each catch (`meta.catches[i].t_s`) to the hand's next upward
+#: velocity zero-crossing: 0.1970 s at catch 930, rounded up. The PRE-catch-
+#: high value was 0.184 s at catch 830 (reproducing this constant's old 0.19
+#: within 3%, i.e. the same empirical quantity, not a coincidence).
+SEAT_DEADLINE_S = 0.20
 
 TOPICS = ['/mocap_data', '/hand_telemetry', '/rigid_body_poses']
 
@@ -110,7 +131,10 @@ def parse_feeds(log_path):
             bias_seen = (float(bm.group(3)), float(bm.group(4)))
         if lvl == 'INFO' and txt.startswith('columns') and ' started' in txt.split(':')[0]:
             head = txt.split(':')[0]
-            cur = dict(reload='(reload)' in head, oneball='columns_1ball' in head,
+            # The pattern NAME, not a substring: 'columns_1ball' is a prefix
+            # of 'columns_1ball_fed', whose feed this probe exists to measure.
+            cur = dict(reload='(reload)' in head,
+                      oneball=head.split(' ')[0] == 'columns_1ball',
                       seen_skill1=False)
             continue
         if cur is None or not cur['reload'] or cur['oneball']:
@@ -201,7 +225,7 @@ def track_ball(mocap, t_land, xy0, xy_gate=220.0):
     return ts, ps
 
 
-def measure_feed(feed, mocap, hand, body):
+def measure_feed(feed, mocap, hand, body, plane_mm=PLANE_MM):
     """One feed's ``(dx, dy)`` -- ``None`` if the ball track or the free-
     fall fit never converged (unconverged fits are skipped, not zero-
     filled, same as `a2_feed_lateral.py`)."""
@@ -227,7 +251,7 @@ def measure_feed(feed, mocap, hand, body):
     cz = np.polyfit(tp - t0, z, 1)
     cx = np.polyfit(tp - t0, ps[sel, 0], 1)
     cy = np.polyfit(tp - t0, ps[sel, 1], 1)
-    disc = cz[0] ** 2 + 2 * G_MM_S2 * (cz[1] - PLANE_MM)
+    disc = cz[0] ** 2 + 2 * G_MM_S2 * (cz[1] - plane_mm)
     if disc <= 0:
         return None
     ta = t0 + (cz[0] + math.sqrt(disc)) / G_MM_S2
@@ -281,6 +305,10 @@ def main(argv=None) -> int:
                          'from the log\'s own "columns feed bias" INFO line, '
                          '[0.0, 0.0] if the log predates that line)')
     ap.add_argument('--out', default=None, help='also write the summary here')
+    ap.add_argument('--plane-mm', type=float, default=PLANE_MM,
+                    help='override the catch plane (default: the live '
+                         'sites.CATCH_CUP_Z_MM, %r mm); bags recorded '
+                         'before 2026-10-06 need --plane-mm 830' % (PLANE_MM,))
     args = ap.parse_args(argv)
 
     out_lines = []
@@ -292,7 +320,7 @@ def main(argv=None) -> int:
             tls = [f['t_land'] for f in feeds]
             mocap, hand, body = read_window(bag, min(tls) - 0.8, max(tls) + 0.3)
             for f in feeds:
-                r = measure_feed(f, mocap, hand, body)
+                r = measure_feed(f, mocap, hand, body, plane_mm=args.plane_mm)
                 if r is not None:
                     rows.append(r)
         if not rows:

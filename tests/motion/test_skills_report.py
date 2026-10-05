@@ -51,7 +51,12 @@ def test_a_throw_released_on_time_reads_zero_release_error():
     860 mm throw height, land on the 830 mm catch plane flight_s later. Its
     launch speed is the 4.166 m/s skill_node announced on the robot
     (2026-09-29 19:11) — so this is the physical flight, and an on-time
-    release of it must read 0, a 15 ms late one +15 ms."""
+    release of it must read 0, a 15 ms late one +15 ms.
+
+    ``z_land`` is FROZEN at the pre-catch-high plane (830, not the live
+    ``sites.CATCH_CUP_Z_MM`` 930 since 2026-10-05): this characterises a
+    dated robot announcement, not the live geometry, and ``release_error_s``
+    takes ``z_land`` as a plain parameter — nothing here reads the constant."""
     g, z_rel, z_land = 9806.0, 860.0, 830.0
     t_flight = sch.flight_s(0.9)
     v0 = (z_land - z_rel + 0.5 * g * t_flight ** 2) / t_flight

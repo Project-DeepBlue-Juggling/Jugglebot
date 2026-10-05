@@ -138,7 +138,7 @@ class AdmissibleBox:
     target_site_xy_mm: Tuple[float, float]
     #: The session limits this box was swept under -- see ``_LIMIT_KEYS``.
     limits: Dict[str, float]
-    #: sha256 of the seven ``_GATED_FILES`` files' text, in order, [:12] --
+    #: sha256 of the eight ``_GATED_FILES`` files' text, in order, [:12] --
     #: see :func:`gate_hash`.
     gate_hash: str
     #: ISO date the sweep that produced this box was run.
@@ -247,25 +247,33 @@ _GATED_FILES = (
     ('unified_cycle.py',),
     ('trajectory', 'tilt_geometry.py'),
     ('hardware_config.py',),
+    # 2026-10-05 (R5 sitting 6, catch-high): the catch/release/rest cup
+    # planes decide segment feasibility just as much as the files above --
+    # a plane change (e.g. CATCH_CUP_Z_MM 830 -> 930) must invalidate a box
+    # swept against the old one, the same as a limits/geometry change does.
+    ('skills', 'sites.py'),
 )
 
 
 def gate_hash(root: str = None) -> str:
-    """sha256 of the seven :data:`_GATED_FILES`' TEXT, in order, first 12 hex
+    """sha256 of the eight :data:`_GATED_FILES`' TEXT, in order, first 12 hex
     chars.
 
     Deliberately NOT the commit hash: a working-tree edit to any gated file
     (the common case while iterating on a sweep) must invalidate a box that
     was swept against the old gate, and a git hash only changes at commit.
 
-    ``root`` (test-only) maps EVERY one of the seven paths directly under it
+    ``root`` (test-only) maps EVERY one of the eight paths directly under it
     (``root/trajectory/feasibility.py``, ``root/segments.py``,
-    ``root/unified_cycle.py``, ``root/hardware_config.py``, ...) -- a flat
-    tmp tree, not a repo layout -- rather than replicating the live tree's
-    ``motion/`` vs ``motion/skills/`` vs package-root split. Left ``None``,
-    each path resolves against the live tree: this module's own directory
-    (``motion/skills``) for ``segments.py``, the package root
-    (``jugglebot/``) for ``hardware_config.py``, and ``motion/`` for the rest.
+    ``root/unified_cycle.py``, ``root/hardware_config.py``,
+    ``root/skills/sites.py``, ...) -- a flat tmp tree, not a repo layout --
+    rather than replicating the live tree's ``motion/`` vs ``motion/skills/``
+    vs package-root split. Left ``None``, each path resolves against the
+    live tree: this module's own directory (``motion/skills``) for
+    ``segments.py``, the package root (``jugglebot/``) for
+    ``hardware_config.py``, and ``motion/`` for the rest (which is where
+    ``motion/skills/sites.py`` already lives, so ``('skills', 'sites.py')``
+    needs no special case below).
     """
     here = os.path.dirname(os.path.abspath(__file__))
     motion_dir = os.path.join(here, os.pardir)
@@ -452,7 +460,7 @@ def check_limits(boxes: List[AdmissibleBox], limits, *, check_gate: bool = True,
     ``leg_vel_mmps`` / ``leg_acc_mmps2`` / ``leg_jerk_mmps3`` /
     ``hand_acc_limit_rps2`` attributes). Raises :class:`LimitsMismatch` naming
     the first field that differs -- a box swept under yesterday's limits, or
-    against yesterday's version of any of the seven gated files (see
+    against yesterday's version of any of the eight gated files (see
     :func:`gate_hash` / :data:`_GATED_FILES`), is a box gating against a
     machine that no longer exists. ``check_gate`` is a test-only escape hatch
     (a working-tree edit to a gated file mid-session must not fail every
@@ -493,7 +501,7 @@ def check_limits(boxes: List[AdmissibleBox], limits, *, check_gate: bool = True,
         if check_gate and box.gate_hash != live_hash:
             raise LimitsMismatch(
                 'admissible box for site pair %r was swept against '
-                'gate_hash=%r but the live gate (the seven _GATED_FILES) '
+                'gate_hash=%r but the live gate (the eight _GATED_FILES) '
                 'hashes to %r -- regenerate config/generated/admissible_box.yaml '
                 '(tools/admissible_sweep.py)'
                 % (box.site_pair, box.gate_hash, live_hash))

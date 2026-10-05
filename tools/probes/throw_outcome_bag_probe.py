@@ -13,7 +13,9 @@ For every machine self-toss (a ``/throw_announcements`` with
    uses; it is not re-implemented here) and reports the ANALYTIC crossing of
    two planes: ``z = CATCH_CUP_Z_MM`` (``motion/skills/sites.py``, imported
    not restated — the skill stack's ONE catch plane, and what the tracker has
-   predicted landings AT since R3, 2026-09-13) and ``z = FSM_ERA_CATCH_Z_MM``
+   predicted landings AT since R3, 2026-09-13; ``--plane-mm`` overrides it —
+   bags recorded before 2026-10-06 need ``--plane-mm 830``, the plane before
+   R5 sitting 6's catch-high move to 930) and ``z = FSM_ERA_CATCH_Z_MM``
    (``GEOM_INITIAL_HEIGHT_MM`` + ``JB_OP_DEFAULT_ACTIVE_Z_MM`` +
    ``HAND_CATCH_OFFSET_MM``, RECOMPUTED from config, not pinned to a literal —
    this was the tracker's own landing plane pre-R3, 809.08 mm at the time this
@@ -855,7 +857,16 @@ def main(argv=None):
     ap.add_argument('--bag', action='append', required=True,
                      help='bag name under ~/Desktop/rosbags, or a full path; '
                           'repeatable')
+    ap.add_argument('--plane-mm', type=float, default=None,
+                     help='override CATCH_CUP_Z_MM (default: the live '
+                          'sites.CATCH_CUP_Z_MM, %r mm); bags recorded '
+                          'before 2026-10-06 need --plane-mm 830'
+                          % (sites.CATCH_CUP_Z_MM,))
     args = ap.parse_args(argv)
+
+    if args.plane_mm is not None:
+        global CATCH_CUP_Z_MM
+        CATCH_CUP_Z_MM = float(args.plane_mm)
 
     out_dir = os.path.join(_REPO, 'temp', 'probes')
     os.makedirs(out_dir, exist_ok=True)
