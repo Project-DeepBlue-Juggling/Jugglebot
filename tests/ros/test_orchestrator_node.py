@@ -180,6 +180,52 @@ class TestOnRobotState:
         orch._on_robot_state(msg)  # Should not raise
 
 
+def _robot_state_legs(leg_state, **kw):
+    """A /robot_state with every LEG axis (0-5) in ``leg_state`` and the hand
+    (axis 6) left at IDLE, plus any _make_robot_state_msg fields."""
+    from jugglebot.can import odrive
+    kw.setdefault('all_heartbeats', True)
+    msg = _make_robot_state_msg(**kw)
+    for i in odrive.LEG_AXES:
+        msg.motor_states[i].current_state = leg_state
+    return msg
+
+
+class TestLegsClosedLoop:
+    """ctx.legs_closed_loop: all six LEG axes in ODrive CLOSED_LOOP with no
+    active error (FaultHandler's real-fault exit stow precondition)."""
+
+    @staticmethod
+    def _closed_loop():
+        from jugglebot.can import odrive
+        return odrive.AXIS_STATES['CLOSED_LOOP']
+
+    def test_six_closed_loop_no_errors_is_true(self, orch):
+        orch._on_robot_state(_robot_state_legs(self._closed_loop()))
+        assert orch.ctx.legs_closed_loop is True
+
+    def test_one_leg_idle_is_false(self, orch):
+        msg = _robot_state_legs(self._closed_loop())
+        msg.motor_states[3].current_state = 1        # IDLE
+        orch._on_robot_state(msg)
+        assert orch.ctx.legs_closed_loop is False
+
+    def test_one_leg_with_active_errors_is_false(self, orch):
+        msg = _robot_state_legs(self._closed_loop())
+        msg.motor_states[0].active_errors = 0x200
+        orch._on_robot_state(msg)
+        assert orch.ctx.legs_closed_loop is False
+
+    def test_five_motor_states_is_false(self, orch):
+        orch._on_robot_state(_robot_state_legs(self._closed_loop()))
+        assert orch.ctx.legs_closed_loop is True
+        msg = RobotStateMsg()
+        msg.motor_states = [MotorStateSingle(current_state=self._closed_loop())
+                            for _ in range(5)]
+        orch._on_robot_state(msg)
+        assert orch.ctx.legs_closed_loop is False
+
+
 # ════════════════════════════════════════════════════════════════
 # _on_command — command queuing
 # ════════════════════════════════════════════════════════════════
@@ -1523,3 +1569,62 @@ class TestOperatorConsoleLines:
             RuntimeError('already destroyed'))
         orch.destroy_node()        # a raising destroy must not propagate
         assert calls == ['home']
+
+
+# ════════════════════════════════════════════════════════════════
+# Real-fault exit stow through the node (ARMING_CONTRACT choreography step 6)
+# ════════════════════════════════════════════════════════════════
+
+
+class TestFaultExitStowThroughTick:
+    def test_replay_2026_10_06_dispatches_deactivate_and_holds_fault(self, orch):
+        """2026-10-06 20:25 through _tick: guard-forced FAULT from ACTIVE (its
+        on_exit deactivate cancelled), promoted real by the hand ODrive's reboot,
+        then everything clears with the legs closed-loop and homed. The node
+        dispatches ONE profiled deactivate, FAULT holds until it succeeds, then
+        BOOT -> IDLE."""
+        from jugglebot.can import odrive
+        closed = odrive.AXIS_STATES['CLOSED_LOOP']
+        healthy = dict(is_homed=True, firmware_validated=True)
+
+        orch.sm.force_transition(RobotState.ACTIVE, orch.ctx)
+        orch._on_robot_state(_robot_state_legs(closed, **healthy))
+        orch._on_link_status(_link_status('NONE'))     # mpc_active=1: armed
+        orch._tick()                                    # enter ACTIVE
+        spy = MagicMock()
+        spy.service_is_ready.return_value = True
+        fut = MockFuture()
+        spy.call_async.return_value = fut
+        orch._activate_client = spy
+        cap = _Capture(orch)
+
+        orch._on_link_status(_link_status('MOTOR_FB_STALE'))
+        orch._tick()
+        assert orch.sm.state == RobotState.FAULT       # forced, guard-only
+        orch._on_robot_state(_robot_state_legs(
+            closed, errors=['ODrive error on hand'],
+            has_fatal_odrive_error=True, **healthy))
+        orch._tick()
+        assert orch.ctx.control_mode == 'ERROR'        # promoted to real
+        spy.call_async.assert_not_called()
+
+        orch._on_link_status(_link_status('NONE'))
+        orch._on_robot_state(_robot_state_legs(closed, **healthy))
+        orch._tick()
+        assert orch.sm.state == RobotState.FAULT
+        spy.call_async.assert_called_once()
+        assert spy.call_async.call_args[0][0].command == 'deactivate'
+        stow_lines = [m for m in cap.at('info') if m.startswith('FAULT exit')]
+        assert len(stow_lines) == 1
+        orch._tick()
+        orch._tick()
+        assert orch.sm.state == RobotState.FAULT       # held while it runs
+        spy.call_async.assert_called_once()
+
+        fut.set_result(MagicMock(success=True, message='stowed'))
+        orch._on_robot_state(_robot_state_legs(1, **healthy))   # legs IDLE
+        orch._tick()
+        assert orch.sm.state == RobotState.BOOT
+        orch._tick()
+        assert orch.sm.state == RobotState.IDLE
+        spy.call_async.assert_called_once()

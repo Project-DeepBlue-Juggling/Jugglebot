@@ -59,6 +59,13 @@ class Context:
         self.firmware_validated = False       # All ODrives report consistent firmware
         self.encoder_search_complete = False
         self.is_homed = False
+        # True iff ALL six LEG axes report ODrive CLOSED_LOOP_CONTROL with
+        # active_errors == 0 (derived by the orchestrator from
+        # /robot_state.motor_states; fewer than six entries -> False). This is
+        # "the legs are holding a pose and a profiled DEACTIVATE can lower them".
+        # FaultHandler's real-fault exit from ACTIVE stows only when it is true
+        # (ARMING_CONTRACT choreography step 6).
+        self.legs_closed_loop = False
         self.errors = []                     # Error strings from /robot_state
         self.fatal_error = False
         self.fatal_can_error = False
@@ -622,6 +629,13 @@ class FaultHandler(StateHandler):
 
     BOOT (the real-fault exit) then re-validates heartbeats and either skips to
     IDLE (if already homed) or proceeds through HOMING (if ODrives rebooted).
+
+    Real-fault exit stow (ARMING_CONTRACT choreography step 6, 2026-10-06): a
+    real fault whose visit began in ACTIVE, once everything has cleared, first
+    requests the profiled DEACTIVATE if all six legs are closed-loop and the
+    robot is homed, and holds FAULT until it succeeds. Without it a forced
+    ACTIVE->FAULT (whose ActiveHandler.on_exit deactivate the orchestrator
+    cancels) reached IDLE with the legs still holding an active pose.
     """
 
     def __init__(self):
@@ -629,8 +643,21 @@ class FaultHandler(StateHandler):
         # True iff FAULT was entered PURELY because of a Teensy guard latch (from
         # ACTIVE) with NO ODrive-level error — see on_enter.
         self._guard_only = False
+        # Real-fault exit stow bookkeeping, all reset on every on_enter.
+        # _from_active: this FAULT visit began in ACTIVE. Sticky, so a guard-only
+        # fault promoted to real mid-FAULT (promotion does not re-enter) still
+        # stows.
+        self._from_active = False
+        self._stow_requested = False   # our 'deactivate' is in flight
+        self._stow_done = False        # it succeeded: the legs are stowed
+        self._stow_failed = False      # it failed: hold FAULT until clear_errors
 
     def on_enter(self, ctx):
+        self._from_active = ctx.prev_state == RobotState.ACTIVE
+        self._stow_requested = False
+        self._stow_done = False
+        self._stow_failed = False
+
         # A GUARD-ONLY fault is observability + clear_errors routing ONLY: the Teensy
         # guard suppresses leg output WITHOUT disarming the ODrives, and trajectory_node
         # already installed a gate-validated profiled descent + froze target
@@ -725,17 +752,80 @@ class FaultHandler(StateHandler):
             # heartbeats, then skips to IDLE if already homed. A latched Teensy guard
             # riding on top holds FAULT too — leaving while it is still latched would
             # return to a silently-crippled robot; clear_errors clears the Teensy latch
-            # and the next /link_status drops guard_latched so this exit fires.
+            # and the next /link_status drops guard_latched so this exit fires. (The
+            # bridge also refuses DEACTIVATE with ERR_BUS_DOWN while latched, so the
+            # exit stow below must wait for the same condition.)
+            self._resolve_stow(ctx)
             if (not ctx.has_fatal_error and not ctx.errors
                     and not ctx.boot_timed_out and not ctx.guard_latched):
-                return RobotState.BOOT
+                nxt = self._real_fault_exit(ctx)
+                if nxt is not None:
+                    return nxt
+            if self._stow_requested:
+                # The stow is in flight in the orchestrator's single tracked
+                # operation slot. Leave operator commands QUEUED: a clear_errors
+                # dispatched now would take that slot, orphan the deactivate,
+                # and its result would be read as the stow's (an IDLE claimed
+                # while the platform is still descending). They are consumed on
+                # the first tick after the stow resolves.
+                return None
 
         cmd = ctx.consume_command()
         if cmd == 'clear_errors':
             ctx.request = 'clear_errors'
             ctx.boot_timed_out = False
+            # One stow retry per clear_errors: a failed stow re-arms here and
+            # nowhere else, so a refusing bridge cannot make the exit spin.
+            self._stow_failed = False
         # Other commands silently discarded (already logged on receipt)
 
+        return None
+
+    def _resolve_stow(self, ctx):
+        """Read the outcome of our exit stow once the operation resolves.
+
+        Runs every real-fault tick, whatever the exit condition, so a stow that
+        resolves while a NEW error is present is still accounted for.
+        """
+        if not self._stow_requested:
+            return
+        if ctx.operation_pending or ctx.operation_result is None:
+            return
+        self._stow_requested = False
+        if ctx.operation_result is True:
+            self._stow_done = True
+        else:
+            # The robot is NOT stowed: BOOT -> IDLE would lie about it. Hold
+            # FAULT; the operator's clear_errors re-runs the exit and retries.
+            self._stow_failed = True
+
+    def _real_fault_exit(self, ctx):
+        """The real-fault exit, given every error and the guard latch have cleared.
+
+        Returns BOOT, or None to hold FAULT. A FAULT visit that began in ACTIVE
+        with all six legs closed-loop and the robot homed means the legs are
+        still holding an active pose: request the profiled DEACTIVATE first and
+        hold FAULT until it succeeds, so the machine never reaches IDLE
+        ("platform stowed, legs idle") while they hold it (ARMING_CONTRACT
+        choreography step 6). Otherwise BOOT at once, as before: a leg that
+        dropped out of closed loop (e.g. an ODrive reboot) is BOOT -> HOMING's
+        job, and a fault from BOOT/HOMING/IDLE/LEVELLING has no active pose.
+        """
+        if self._stow_done:
+            return RobotState.BOOT
+        if self._stow_requested or self._stow_failed:
+            return None
+        if not (self._from_active and ctx.is_homed and ctx.legs_closed_loop):
+            return RobotState.BOOT
+        if ctx.operation_pending:
+            # A tracked operation (an operator clear_errors, or the
+            # ActiveHandler.on_exit deactivate on a handler-returned
+            # ACTIVE->FAULT) is still in flight. Requesting now would orphan it
+            # in the orchestrator's single slot; wait for it to resolve.
+            return None
+        ctx.operation_result = None
+        ctx.request = 'deactivate'
+        self._stow_requested = True
         return None
 
     def on_exit(self, ctx):

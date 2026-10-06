@@ -92,7 +92,7 @@ work (2026-07-15) hit three distinct doors into that hole:
 | Invariant | Code | Test |
 |---|---|---|
 | A1 | `teensy_bridge_node.py` `_arm_setpoint_output` (sole 0→1 path); `__init__` boot-arm removed; `_park_hand_disarmed` + `_published_fault_state` (the recovery-park precondition) | `tests/ros/test_teensy_bridge_node_read.py` (boot-arm inert); `tests/ros/test_teensy_bridge_node_recover.py::test_arm_is_refused_while_the_recovery_park_runs`, `::test_fault_state_reads_recovering_only_while_the_park_runs` |
-| A2 | `state_machine.py` `ActiveHandler` arm phase; `FaultHandler.on_enter` disarm; `orchestrator_node.py` `arm_setpoints`/`disarm_setpoints` dispatch | `tests/ros/test_state_machine.py` arm-phase / retry / FAULT cases |
+| A2 | `state_machine.py` `ActiveHandler` arm phase; `FaultHandler.on_enter` disarm; `FaultHandler` real-fault exit stow (choreography step 6); `orchestrator_node.py` `arm_setpoints`/`disarm_setpoints` dispatch and the `legs_closed_loop` derivation in `_on_robot_state` | `tests/ros/test_state_machine.py` arm-phase / retry / FAULT cases and `TestFaultExitStow`; `tests/ros/test_orchestrator_node.py::TestLegsClosedLoop` and `TestFaultExitStowThroughTick` |
 | A3 | `teensy_bridge_node.py` `_run_deactivate` head | disarm-before-DEACTIVATE order test |
 | A4 | `state_machine.py` `ActiveHandler.on_exit` (no blank) + `IdleHandler` deferred blank | mode-survives-deactivate ordering test |
 | A5 | `trajectory_node.py` wire-state WARN + response suffix + `is_homed` seed gate; `teensy_bridge_node.py` `teensy_mpc_active` KeyValue; `state_machine.py` `BootHandler` latch pre-flight | disarmed-accept, seed-gate, pre-flight tests |
@@ -127,6 +127,25 @@ work (2026-07-15) hit three distinct doors into that hole:
 6. Real fault at any point → FAULT entry disarms (A2). Guard-only fault from
    ACTIVE → stays armed, guard suppresses output, resume re-verifies the arm
    through A1 (idempotent if still armed).
+   **The real-fault exit from ACTIVE stows the legs** (2026-10-06). The
+   trigger: a forced ACTIVE→FAULT cancels ActiveHandler.on_exit's deactivate,
+   so the legs could reach IDLE still holding an active pose. Once every error
+   and the guard latch have cleared, a real fault whose FAULT visit began in
+   ACTIVE (`prev_state==ACTIVE` at entry, which includes a guard-only fault
+   promoted mid-FAULT) requests the profiled DEACTIVATE when all six legs are
+   in CLOSED_LOOP with no active error and the robot is homed. It **holds FAULT
+   until that DEACTIVATE succeeds**, so IDLE ("platform stowed, legs idle") is
+   never claimed while the legs still hold a pose. A failed stow also holds
+   FAULT, with one retry per operator `clear_errors`. If any leg is not
+   closed-loop, FAULT exits to BOOT at once, as before (re-arming a leg that
+   dropped out is BOOT→HOMING's job). Scope: faults whose visit began in
+   ACTIVE only — a real fault during LEVELLING (which holds the same active
+   pose through its settle/tilt phases) still exits to BOOT without a stow;
+   that gap is recorded as open in
+   `logbook/2026-10-06-orchestrator-real-fault-exit-stows-the-legs.md`. The
+   mode stays `ERROR` through this stow. A4 does not apply: the wire was disarmed at FAULT entry (A2), and A3
+   re-confirms the disarm before DEACTIVATE. The guard-only resume path is
+   unchanged and does not stow.
 
 ## What this deliberately does NOT change
 

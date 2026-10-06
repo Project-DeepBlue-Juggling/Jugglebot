@@ -1196,6 +1196,215 @@ class TestFaultHandler:
 
 
 # ════════════════════════════════════════════════════════════════
+# Real-fault exit stow (ARMING_CONTRACT choreography step 6, 2026-10-06)
+# ════════════════════════════════════════════════════════════════
+
+
+def _dispatch(ctx):
+    """Stand in for the orchestrator's _process_requests: drain the requests and
+    start the tracked ones the way _start_service_call does (pending, no result).
+    'disarm_setpoints' is fire-and-forget and never touches the slot."""
+    reqs = ctx.drain_requests()
+    if any(r in ('deactivate', 'clear_errors') for r in reqs):
+        ctx.operation_pending = True
+        ctx.operation_result = None
+    return reqs
+
+
+def _resolve(ctx, ok):
+    """The tracked operation completes (_check_pending_operations)."""
+    ctx.operation_pending = False
+    ctx.operation_result = ok
+
+
+def _force_fault(sm, ctx):
+    """The orchestrator's forced FAULT entry: force_transition, then
+    _cancel_pending_operations (which drops ActiveHandler.on_exit's deactivate)."""
+    sm.force_transition(RobotState.FAULT, ctx)
+    ctx.operation_pending = False
+    ctx.operation_result = None
+    ctx.clear_requests()
+    ctx.clear_commands()
+
+
+class TestFaultExitStow:
+    """A real fault that began in ACTIVE stows the legs before BOOT when all six
+    are closed-loop and homed, and holds FAULT until the stow succeeds. Replays
+    2026-10-06 20:25: MOTOR_FB_STALE on axis 6 forced a guard-only FAULT, the hand
+    ODrive's reboot promoted it to real, and the clear went FAULT -> BOOT -> IDLE
+    with no deactivate, leaving the legs holding an ACTIVE pose 62 mm off centre."""
+
+    @staticmethod
+    def _armed_active(**ctx_kw):
+        """A machine in ACTIVE, activated and armed, legs holding the pose."""
+        sm = build_default_machine(log_fn=lambda msg: None)
+        ctx = Context()
+        ctx.is_homed = True
+        ctx.legs_closed_loop = True
+        ctx.wire_armed = True
+        for k, v in ctx_kw.items():
+            setattr(ctx, k, v)
+        sm.force_transition(RobotState.ACTIVE, ctx)
+        sm.tick(ctx)                       # enter: requests 'activate'
+        _dispatch(ctx)
+        _resolve(ctx, True)
+        sm.tick(ctx)                       # activated: requests 'arm_setpoints'
+        ctx.drain_requests()
+        ctx.operation_result = True
+        sm.tick(ctx)                       # armed
+        assert sm.state == RobotState.ACTIVE
+        return sm, ctx
+
+    def _guard_fault_promoted_then_cleared(self, **ctx_kw):
+        """ACTIVE -> forced FAULT (guard-only) -> promoted real by a hand ODrive
+        error -> guard and errors clear. Returns (sm, ctx, requests of the
+        clearing tick)."""
+        sm, ctx = self._armed_active(**ctx_kw)
+        ctx.guard_latched = True                     # 718.60 MOTOR_FB_STALE
+        _force_fault(sm, ctx)
+        sm.tick(ctx)
+        assert sm.state == RobotState.FAULT
+        assert ctx.control_mode == 'STANDBY'         # guard-only on entry
+        assert _dispatch(ctx) == []
+        ctx.errors = ['ODrive error on hand']        # 720.41 hand INITIALIZING
+        ctx.fatal_error = True
+        sm.tick(ctx)
+        assert ctx.control_mode == 'ERROR'           # promoted to real
+        assert _dispatch(ctx) == ['disarm_setpoints']
+        ctx.errors = []                              # 721.00 hand back, guard clears
+        ctx.fatal_error = False
+        ctx.guard_latched = False
+        sm.tick(ctx)
+        return sm, ctx, _dispatch(ctx)
+
+    def test_replay_2026_10_06_stows_before_boot(self):
+        sm, ctx, reqs = self._guard_fault_promoted_then_cleared()
+        assert reqs == ['deactivate']
+        assert sm.state == RobotState.FAULT          # held while the stow runs
+        for _ in range(5):
+            sm.tick(ctx)
+            assert sm.state == RobotState.FAULT
+            assert _dispatch(ctx) == []              # no second request
+        _resolve(ctx, True)
+        ctx.legs_closed_loop = False                 # legs IDLE at STOW
+        sm.tick(ctx)
+        assert sm.state == RobotState.BOOT
+        assert _dispatch(ctx) == []
+        # BOOT then skips to IDLE (already homed), as before.
+        ctx.all_heartbeats = True
+        ctx.firmware_validated = True
+        ctx.link_status_seen = True
+        sm.tick(ctx)
+        assert sm.state == RobotState.IDLE
+
+    def test_legs_not_closed_loop_exits_to_boot_at_once(self):
+        sm, ctx, reqs = self._guard_fault_promoted_then_cleared(
+            legs_closed_loop=False)
+        assert 'deactivate' not in reqs
+        assert sm.state == RobotState.BOOT
+
+    def test_not_homed_exits_to_boot_at_once(self):
+        handler = FaultHandler()
+        ctx = Context()
+        ctx.prev_state = RobotState.ACTIVE
+        ctx.legs_closed_loop = True
+        ctx.is_homed = False
+        ctx.fatal_error = True
+        handler.on_enter(ctx)
+        ctx.drain_requests()
+        ctx.fatal_error = False
+        assert handler.execute(ctx) == RobotState.BOOT
+        assert ctx.drain_requests() == []
+
+    @pytest.mark.parametrize('origin', [RobotState.HOMING, RobotState.IDLE])
+    def test_real_fault_not_from_active_exits_to_boot_at_once(self, origin):
+        handler = FaultHandler()
+        ctx = Context()
+        ctx.prev_state = origin
+        ctx.is_homed = True
+        ctx.legs_closed_loop = True
+        ctx.errors = ['SOME_ERROR']
+        handler.on_enter(ctx)
+        ctx.drain_requests()
+        ctx.errors = []
+        assert handler.execute(ctx) == RobotState.BOOT
+        assert ctx.drain_requests() == []
+
+    def test_failed_stow_holds_fault_and_clear_errors_retries_once(self):
+        sm, ctx, reqs = self._guard_fault_promoted_then_cleared()
+        assert reqs == ['deactivate']
+        _resolve(ctx, False)                         # the stow failed
+        for _ in range(5):                           # no spin, no BOOT
+            sm.tick(ctx)
+            assert sm.state == RobotState.FAULT
+            assert _dispatch(ctx) == []
+        ctx.enqueue_command('clear_errors')
+        sm.tick(ctx)
+        assert _dispatch(ctx) == ['clear_errors']    # pending, as dispatched
+        sm.tick(ctx)
+        assert _dispatch(ctx) == []                  # waits for clear_errors
+        _resolve(ctx, True)
+        sm.tick(ctx)
+        assert sm.state == RobotState.FAULT
+        assert _dispatch(ctx) == ['deactivate']      # exactly one retry
+        sm.tick(ctx)
+        assert _dispatch(ctx) == []
+        _resolve(ctx, True)
+        ctx.legs_closed_loop = False
+        sm.tick(ctx)
+        assert sm.state == RobotState.BOOT
+
+    def test_clear_errors_during_the_stow_waits_for_it(self):
+        """A clear_errors sent while the stow is in flight is NOT dispatched (it
+        would take the single tracked slot and its result would read as the
+        stow's); it stays queued and is consumed after the stow resolves."""
+        sm, ctx, reqs = self._guard_fault_promoted_then_cleared()
+        assert reqs == ['deactivate']
+        ctx.enqueue_command('clear_errors')
+        sm.tick(ctx)
+        assert _dispatch(ctx) == []
+        assert sm.state == RobotState.FAULT
+        _resolve(ctx, False)
+        sm.tick(ctx)                                 # failure + queued command
+        assert _dispatch(ctx) == ['clear_errors']
+        assert sm.state == RobotState.FAULT
+
+    def test_in_flight_tracked_op_delays_the_stow_request(self):
+        """A handler-returned ACTIVE -> FAULT keeps ActiveHandler.on_exit's
+        deactivate in flight (only a FORCED entry cancels it): the stow is not
+        requested over it, and once it lands with the legs stowed, BOOT."""
+        handler = FaultHandler()
+        ctx = Context()
+        ctx.prev_state = RobotState.ACTIVE
+        ctx.is_homed = True
+        ctx.legs_closed_loop = True
+        ctx.operation_pending = True                 # on_exit's deactivate
+        handler.on_enter(ctx)
+        ctx.drain_requests()
+        assert handler.execute(ctx) is None
+        assert ctx.drain_requests() == []
+        _resolve(ctx, True)
+        ctx.legs_closed_loop = False
+        assert handler.execute(ctx) == RobotState.BOOT
+        assert ctx.drain_requests() == []
+
+    def test_guard_only_clear_resumes_active_without_stow(self):
+        """Pins the UNCHANGED guard-only path: legs closed-loop and homed, the
+        guard clears with no ODrive error -> straight back to ACTIVE with the
+        no-re-arm resume, and no deactivate."""
+        sm, ctx = self._armed_active()
+        ctx.guard_latched = True
+        _force_fault(sm, ctx)
+        sm.tick(ctx)
+        assert _dispatch(ctx) == []
+        ctx.guard_latched = False
+        sm.tick(ctx)
+        assert sm.state == RobotState.ACTIVE
+        assert ctx.resume_active_no_rearm is True
+        assert 'deactivate' not in _dispatch(ctx)
+
+
+# ════════════════════════════════════════════════════════════════
 # build_default_machine()
 # ════════════════════════════════════════════════════════════════
 

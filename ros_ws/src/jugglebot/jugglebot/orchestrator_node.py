@@ -229,6 +229,20 @@ class OrchestratorNode(Node):
                 for i in odrive.JUGGLEBOT_AXES
             )
 
+        # Are all six legs holding a pose that a profiled DEACTIVATE can lower?
+        # ODrive CLOSED_LOOP_CONTROL (odrive.AXIS_STATES['CLOSED_LOOP'], i.e.
+        # protocol_config.ODRIVE_STATES — the constant the bridge's activate path
+        # uses) with no active error, on every LEG axis. FaultHandler's
+        # real-fault exit from ACTIVE stows only when this is true
+        # (ARMING_CONTRACT choreography step 6). A message too short to carry
+        # every leg reads False: no evidence the legs are holding.
+        states = msg.motor_states
+        self.ctx.legs_closed_loop = (
+            len(states) > max(odrive.LEG_AXES)
+            and all(states[i].current_state == odrive.AXIS_STATES['CLOSED_LOOP']
+                    and states[i].active_errors == 0
+                    for i in odrive.LEG_AXES))
+
         self.ctx.firmware_validated = msg.firmware_validated
         self.ctx.encoder_search_complete = msg.encoder_search_complete
         self.ctx.is_homed = msg.is_homed
@@ -694,9 +708,16 @@ class OrchestratorNode(Node):
                         # A genuine RPC failure still faults: the CAN write did
                         # not land, which is a real machine problem, not an
                         # optional subsystem being unavailable.
+                        # A failed stow in FAULT holds FAULT (state_machine
+                        # FaultHandler._resolve_stow): say how to retry it.
+                        hint = (' — FAULT holds (legs not stowed); '
+                                'clear_errors retries the stow'
+                                if (self._pending_label == 'deactivate'
+                                    and self.sm.state == RobotState.FAULT)
+                                else '')
                         self.get_logger().warning(
                             f'{self._pending_label or "operation"} failed: '
-                            f'{detail}')
+                            f'{detail}{hint}')
                     elif self._pending_label == 'clear_errors':
                         self.get_logger().info('clear_errors: done')
             except Exception as e:
@@ -797,6 +818,16 @@ class OrchestratorNode(Node):
             self._start_service_call(self._activate_client, activate_req)
 
         elif req == 'deactivate':
+            # FaultHandler's real-fault exit stow (ARMING_CONTRACT choreography
+            # step 6) is the only 'deactivate' raised in a FAULT that was
+            # already FAULT on the previous tick: ActiveHandler.on_exit's
+            # deactivate is dispatched on the transition tick itself, when
+            # _last_sm_state is still ACTIVE. Log-only; dispatch is identical.
+            if (self.sm.state == RobotState.FAULT
+                    and self._last_sm_state == RobotState.FAULT):
+                self.get_logger().info(
+                    'FAULT exit: stowing the legs (profiled deactivate) — '
+                    'FAULT holds until the stow completes')
             deactivate_req = ActivateOrDeactivate.Request()
             deactivate_req.command = 'deactivate'
             self._start_service_call(self._activate_client, deactivate_req)
