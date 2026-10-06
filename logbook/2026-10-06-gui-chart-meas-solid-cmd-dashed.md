@@ -25,6 +25,10 @@ colours, scales and data paths are unchanged, so saved signal selections still l
 Follow-up (same day, owner): the toolbar now lists `Current (meas)` before `Current (cmd)`,
 so both pairs read meas-then-cmd.
 
+Second follow-up (same day, owner): the Current colours are swapped so both pairs share one
+shade rule — measured is the saturated shade (`#3b82f6` blue, `#f59e0b` amber), commanded the
+lighter one (`#60a5fa`, `#fbbf24`). Previously Current had them the other way round.
+
 ## Verification
 
 - 2026-10-06, `pytest tests/ros/test_gui_geometry.py tests/sim/test_logbook*.py -q`: **169 passed**.
