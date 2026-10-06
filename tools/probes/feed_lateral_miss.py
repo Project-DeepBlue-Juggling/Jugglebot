@@ -17,8 +17,11 @@ analysis -- a disjoint nearest-neighbour tracker seeded near the Platform
 body, grown both ways with constant-velocity prediction), and compares the
 fitted landing xy at the free-fall crossing of the catch plane
 (`sites.CATCH_CUP_Z_MM`, imported live -- `--plane-mm` overrides it for an
-older bag: bags recorded before 2026-10-06 need `--plane-mm 830`, the plane
-before R5 sitting 6's catch-high move to 930)
+older bag: the plane was 830 until the catch-high move landed on the evening
+of 2026-10-05 (commit 7a0e4384, ~21:30), 930 from then until the owner's
+reversion on the evening of 2026-10-06 (the sitting-6 bags of 2026-10-05
+22:27-22:43 and 2026-10-06 20:19 need `--plane-mm 930`), and 830 again
+since -- the live default.)
 against the Platform body's own mocap xy at that same instant.
 
 FRAME AND SIGN CONVENTION (settled from the raw L3/L4 bags, R5 sitting 4,
@@ -307,8 +310,9 @@ def main(argv=None) -> int:
     ap.add_argument('--out', default=None, help='also write the summary here')
     ap.add_argument('--plane-mm', type=float, default=PLANE_MM,
                     help='override the catch plane (default: the live '
-                         'sites.CATCH_CUP_Z_MM, %r mm); bags recorded '
-                         'before 2026-10-06 need --plane-mm 830' % (PLANE_MM,))
+                         'sites.CATCH_CUP_Z_MM, %r mm); bags from the '
+                         'catch-high window, 2026-10-05 ~21:30 to 2026-10-06 '
+                         'evening, need --plane-mm 930' % (PLANE_MM,))
     args = ap.parse_args(argv)
 
     out_lines = []

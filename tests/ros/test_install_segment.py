@@ -399,10 +399,26 @@ def test_a_fresh_throw_refuses_when_the_streaming_rest_has_drifted_too_far():
 # measures the hand's travel across the solve. At the 930 mm catch plane the
 # runway is ~100 mm longer in the same time, so the hand is ~10 rev/s faster
 # there than at 830 (15-25 rev/s in sittings 4-5) and a 36 ms solve crosses
-# the bound. The guard is untouched; `SkillExecutor` now retries the REST each
+# the bound. The guard is untouched; `SkillExecutor` retries the REST each
 # tick until its scheduled start. This test is that whole chain offline: the
 # REAL executor, the REAL handler, planner and guard, a clock that charges
 # each install the solve time the robot measured.
+#
+# PINNED at 930 mm deliberately (2026-10-06 ripple, catch plane reverted to
+# 830 -- plan `two-ball-skill-stack.md`): rewriting the harness to follow the
+# live ``sites.CATCH_CUP_Z_MM`` (now 830) with the matching landing speed
+# (sqrt(2 g (860 + 950 - 830)/1000) ~= 4.38 m/s, vs 930's ~5.52 m/s) was
+# tried first and makes the refusal NEVER reproduce, even at the slowest
+# solve ever measured on the robot (73 ms) -- the shorter 830 mm runway
+# doesn't move the hand far enough to cross the 1.0 rev deviation bound.
+# That is itself the useful finding (reverting catch plane also removes the
+# STALE_STATE/REST-RETRY risk catch-high introduced), but it leaves nothing
+# for these three tests to characterise. Freezing the scenario at the
+# historical 930 mm / -5520 mm/s sitting-6 numbers (same pattern as
+# ``test_skills_admissible.py``'s ``_TINY_SWEEP_CATCH_Z_MM`` and
+# ``test_skills_plan_bench.py``'s ``r3_catch_plane``) keeps this harness
+# testing the REST-RETRY mechanism itself rather than testing that nothing
+# happens at today's default.
 
 def _sitting6_rest_after_a_high_catch(solve_s):
     from jugglebot_interfaces.srv import SetTrajectoryLimits
@@ -451,9 +467,12 @@ def _sitting6_rest_after_a_high_catch(solve_s):
     tn.sk_exec.install_segment = slow_install
     try:
         t_land = grid0 + sk_sched.LEAD_S + 0.6
-        # a Ball Butler feed at the 930 mm plane (sitting 5: ~5.7 m/s at 830)
+        # Frozen at the historical 930 mm sitting-6 catch plane and its
+        # landing speed -- see the "PINNED at 930 mm" note above the
+        # function docstring for why this does not follow the live
+        # ``sites.CATCH_CUP_Z_MM`` (830 since 2026-10-06).
         resp = node._svc_install_segment(
-            _catch_req(t_land, site_z=float(site.catch_site_mm()[2]),
+            _catch_req(t_land, site_z=930.0,
                        vel_z=-5520.0, rest_z=float(rest_mm[2])),
             InstallSegment.Response())
         assert resp.accepted is True, resp.message

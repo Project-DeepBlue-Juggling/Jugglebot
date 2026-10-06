@@ -79,8 +79,10 @@ def test_release_z_matches_the_reload_coordinators_sittings_geometry():
     assert st.RELEASE_CUP_Z_MM == 860.0
 
 
-def test_catch_z_is_the_catch_high_point_2026_10_05():
-    """PROVENANCE pin: the owner's catch-high decision (R5 sitting 6,
-    2026-10-05) moved the catch plane from 830 to 930 mm; see
-    :data:`CATCH_CUP_Z_MM`'s docstring for the probe table it was picked from."""
-    assert st.CATCH_CUP_Z_MM == 930.0
+def test_catch_z_is_back_at_830_2026_10_06():
+    """PROVENANCE pin: CATCH HIGH (R5 sitting 6, 2026-10-05) moved the catch
+    plane from 830 to 930 mm; the owner's 2026-10-06 decision returned it to
+    **830** (restoring the original contact speed -- the hand's hold at the
+    top of its stroke is kept by the stroke itself, not by the plane). See
+    :data:`CATCH_CUP_Z_MM`'s docstring for both probe tables."""
+    assert st.CATCH_CUP_Z_MM == 830.0

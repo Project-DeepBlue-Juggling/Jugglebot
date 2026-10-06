@@ -27,9 +27,14 @@ from jugglebot.motion import unified_cycle as uc
 #: import ROS node code to check against it.
 RELEASE_CUP_Z_MM = 860.0
 
-#: CATCH HIGH (owner decision, 2026-10-05): 830 -> 930. ``scratchpad/s6/
-#: catch_height_probe.py`` (real chain, LAUNCH+STEADYx3, apex 0.95, sep 125,
-#: dwell 0.27, leg 350/5000/200000, hand 3900) measured, by catch z:
+#: CATCH HIGH history. 830 mm until 2026-10-05; CATCH HIGH (owner decision,
+#: 2026-10-05) raised it to 930; owner decision 2026-10-06 returned it to
+#: **830**, restoring the original contact speed -- see the two paragraphs
+#: below in order.
+#:
+#: 2026-10-05 (830 -> 930). ``scratchpad/s6/catch_height_probe.py`` (real
+#: chain, LAUNCH+STEADYx3, apex 0.95, sep 125, dwell 0.27, leg 350/5000/200000,
+#: hand 3900) measured, by catch z:
 #:
 #: | catch z | empty drop before contact | cup v at contact | with-ball stroke | leg a / j      | hand a |
 #: | 830     | 169 mm                     | -1.61 m/s         | 137 mm            | 4133 / 159920  | 3528   |
@@ -48,7 +53,23 @@ RELEASE_CUP_Z_MM = 860.0
 #: against the 3900 cap; 900 needs 4907; 920 is QP-infeasible. The climb
 #: after release is the hand braking from ~4.3 m/s, forced by physics, not a
 #: tuning knob.
-CATCH_CUP_Z_MM = 930.0
+#:
+#: 2026-10-06 (930 -> 830, owner decision). The hand brakes to the top of its
+#: stroke (~998 mm cup z) after every throw at EITHER plane; the plane only
+#: sets the empty drop before contact and, through the C-CUP-2 contact floor
+#: above, the cup speed at contact: 830 = 169 mm drop, cup -1.61 m/s,
+#: ball-cup relative impact ~2.7 m/s, hold at the top 0.08-0.11 s (measured
+#: 2026-10-04 bag); 930 = 68 mm drop, cup -0.96 m/s, relative impact
+#: ~3.2 m/s, hold 0.16-0.19 s (2026-10-06 bag). Seen at 930 on 2026-10-06: a
+#: slow with-ball carry-down the owner read as a lazy hand, a cup-sensor seat
+#: at +0.23..+0.29 s after the landing (around the re-release), and the
+#: columns apex ceiling at 0.950 m (was 1.047 at 830; sitting 5 entry §
+#: "What catch high costs"). Returning to 830 restores the original contact
+#: speed; the hold at the top is kept by the stroke itself, not by the plane.
+#: No learner memory migration is needed -- rows are release-relative since
+#: ``schedule.apex_from_crossing``; the 10-05 migration was a definition
+#: change (``tools/migrate_memory_catch_plane.py`` docstring).
+CATCH_CUP_Z_MM = 830.0
 
 #: The cup-opening height a cycle settles at between skills. ``unified_cycle``
 #: already derives this (the settle clamp every LANDING/SETTLE window aims

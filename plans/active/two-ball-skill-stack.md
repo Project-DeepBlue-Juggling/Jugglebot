@@ -244,7 +244,13 @@ hardware. Facts that size the work:
    It equals `v_z²/2g` when the two planes coincide; with them apart, the old
    reading made a perfect plant read `y ≠ u` (+14.5 mm at a −30 mm rise,
    −35 mm at +70 mm). Rows recorded before the change were migrated once by
-   the same formula (`tools/migrate_memory_catch_plane.py`).
+   the same formula (`tools/migrate_memory_catch_plane.py`). **The owner
+   returned the catch plane to 830 on 2026-10-06** (contact-speed regression
+   from catch high; `logbook/2026-10-06-skill-stack-r5-catch-plane-830-and-
+   leg-current-15a.md`) — the FLIGHT-EQUIVALENT apex definition stays
+   necessary regardless, since release (860) and catch (830) still do not
+   coincide, and no further memory migration was needed (rows are
+   release-relative since this amendment, not plane-relative).
    The learner does not learn a time — a flight time is measured from the
    commanded release knot, which the physical release lags by 0.02–0.14 s
    throw to throw, through a crossing estimate itself extrapolated to ±40 ms,
@@ -432,10 +438,14 @@ the real memory this moves the self-toss command from (−15.9, +4.1) mm to
 ### 2.7 Perception and outcome
 
 `/balls` carries the landing prediction (`landing_position`,
-`landing_velocity`, `time_at_land`) per tracked ball, predicted at the 930 mm
+`landing_velocity`, `time_at_land`) per tracked ball, predicted at the 830 mm
 catch plane (`sites.CATCH_CUP_Z_MM`; moved from 809.08 mm at R3 — the FSM's
-catch plane moves with it, decision 5 — and from 830 mm on 2026-10-05, the
-owner's "catch high": the empty hand waits near the top of its stroke). The CATCH terminal is the latest
+catch plane moves with it, decision 5 — then from 830 to 930 mm on
+2026-10-05, the owner's "catch high": the empty hand waits near the top of
+its stroke — and back to 830 mm on 2026-10-06, the owner returning it to
+restore the original contact speed; see
+`logbook/2026-10-06-skill-stack-r5-catch-plane-830-and-leg-current-15a.md`).
+The CATCH terminal is the latest
 prediction. **Landed at R3:** the THROW outcome y is the tracker's last
 estimate of the catch-plane crossing, taken outside a 0.012 s guard
 (`OUTCOME_GUARD_S`, `executor.py`) around the scheduled landing instant so a

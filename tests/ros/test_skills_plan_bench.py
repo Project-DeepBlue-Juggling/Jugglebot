@@ -775,15 +775,18 @@ def test_main_leaves_columns_n_throws_default_unchanged(capsys):
 def r3_catch_plane(monkeypatch):
     """The two self-toss rehearsal tests below characterise R3's rehearsal --
     its cold-start plant-error model (+11 % launch speed, +8.5 mrad aim) at
-    the 830 mm catch plane they were measured at. Since 2026-10-05 the live
-    plane is 930 (catch high), where a throw that much too fast cannot be
-    caught and re-thrown inside the 0.27 s dwell (from ~900 mm: HAND_LIMIT_ACC
-    4305 rev/s^2 at 900, QP-infeasible at 930; nominal throws plan at 930,
-    7/7 installs) -- a tolerance the high catch gives up, recorded in
-    logbook/2026-10-05-skill-stack-r5-sitting-5-afternoon-parked-feed-and-
-    catch-high.md. Freezing the plane keeps these tests about the rehearsal's
-    own logic. ``Site.catch_site_mm``'s default is bound at import, hence the
-    second patch."""
+    the 830 mm catch plane they were measured at. From 2026-10-05 to
+    2026-10-06 the live plane was 930 (catch high), where a throw that much
+    too fast cannot be caught and re-thrown inside the 0.27 s dwell (from
+    ~900 mm: HAND_LIMIT_ACC 4305 rev/s^2 at 900, QP-infeasible at 930;
+    nominal throws plan at 930, 7/7 installs) -- a tolerance the high catch
+    gave up, recorded in logbook/2026-10-05-skill-stack-r5-sitting-5-
+    afternoon-parked-feed-and-catch-high.md. The owner returned the live
+    plane to 830 on 2026-10-06 (contact-speed regression from catch high),
+    so this freeze now matches the default again -- kept explicit anyway so
+    these tests stay about the rehearsal's own logic, not the live default.
+    ``Site.catch_site_mm``'s default is bound at import, hence the second
+    patch."""
     monkeypatch.setattr(si, 'CATCH_CUP_Z_MM', 830.0)
     monkeypatch.setattr(si.Site.catch_site_mm, '__defaults__', (830.0,))
 

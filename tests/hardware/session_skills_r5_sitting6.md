@@ -34,6 +34,11 @@ decisions follow:
    planner. The learner's apex is now measured the way the planner commands it (rise-aware), and the
    existing memory rows were migrated once (§ 0).
 
+   **NOTE, 2026-10-06 evening:** the owner reverted the catch plane back to **830 mm** after this
+   sitting — see `logbook/2026-10-06-skill-stack-r5-catch-plane-830-and-leg-current-15a.md`. Every
+   830/930 figure in this sheet describes this sitting's catch-high state and is historical from
+   here on.
+
 **Operator runs every motion command; Claude never does.** No firmware change this sitting.
 
 **First attempt, 2026-10-05 night: ten attempts, no throw — fixed 2026-10-06, re-fly from row 1**
@@ -98,7 +103,7 @@ the air: this block isolates the parked feed catch.
 | # | Step | Expect |
 |---|---|---|
 | 17 | Empty cup. `{pattern: columns_1ball_fed, apex_m: 0.95, separation_mm: 125.0, num_cycles: 4, reload: true}` ×5 | The start line names the hop entry. The bridge REST parks the cup at **P1**; one empty throw stroke at P1; the cup STAYS at P1 for Ball 2. **No `LIMIT_ACC at skill 1`** (that transit no longer exists — one is a finding, bag it). Each feed either seats (then Ball 2 is thrown and caught at P1) or ends `MISSED_CATCH` after one empty stroke. |
-| 18 | `python tools/probes/feed_lateral_miss.py --run S6 <launch.log> <bag> --bias-in-force 0 0` (Claude; the probe now finds `columns_1ball_fed` feeds and defaults to the 930 plane) | Ball − cup xy per feed, medians, seated-before-deadline %, and `RECOMMENDED columns_feed_bb_bias_mm = [<x>, <y>]`. Sitting 5's parked-cup feeds (P2, n 3) sat 23-30 mm off; against P1 expect a different bias. |
+| 18 | `python tools/probes/feed_lateral_miss.py --run S6 <launch.log> <bag> --bias-in-force 0 0` (Claude; the probe now finds `columns_1ball_fed` feeds and defaults to the live catch plane -- 930 mm during this sitting, back to 830 mm since the 2026-10-06 evening reversion; pass `--plane-mm 930` to re-analyse this sitting's bags after the reversion) | Ball − cup xy per feed, medians, seated-before-deadline %, and `RECOMMENDED columns_feed_bb_bias_mm = [<x>, <y>]`. Sitting 5's parked-cup feeds (P2, n 3) sat 23-30 mm off; against P1 expect a different bias. |
 | 19 | `ros2 param set /skill_node columns_feed_bb_bias_mm "[<x>, <y>]"` | skill_node logs the request point, bias and corrected prior at the next feed accept. |
 | 20 | Row 17's goal ×10 (`num_cycles: 6`) | **Pass:** Ball 2 seats on ≥ 7 of 10 feeds (sitting 5's parked control: 3/3; sitting 1's held-level feeds: 13/14) and is re-thrown ≥ 3 times in ≥ 5 of 10 runs; median \|Δx\|, \|Δy\| ≤ 10 mm. A `MISSED_CATCH` on a feed you SAW seat is a defect — bag it and stop the block. |
 

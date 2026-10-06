@@ -509,14 +509,16 @@ _TINY_SWEEP_LIMITS = dict(leg_vel_mmps=300.0, leg_acc_mmps2=5000.0,
                           leg_jerk_mmps3=150000.0)
 
 #: ``tiny_sweep`` characterises the R2/R3 LIMITS point and must keep doing so
-#: even though ``sites.CATCH_CUP_Z_MM`` has since moved (plan R5 sitting 6,
-#: 2026-10-05, catch-high): a higher catch plane needs more leg jerk, so at
-#: the tiny grid's own apex 0.85 m / dwell 0.30 s the identity cell now
-#: refuses LIMIT_JERK at 930 mm even though it passed at 830 mm. Freezing the
-#: catch plane back to the value the probe this fixture is pinned to
-#: (``scratchpad/probe_unitB_sweep5.py``, 2026-09-30) actually ran at
-#: preserves the ALREADY-PINNED characterisation rather than moving it to a
-#: point it was never about.
+#: even though ``sites.CATCH_CUP_Z_MM`` moved away for a day (plan R5 sitting
+#: 6, 2026-10-05, catch-high): a higher catch plane needs more leg jerk, so at
+#: the tiny grid's own apex 0.85 m / dwell 0.30 s the identity cell refused
+#: LIMIT_JERK at 930 mm even though it passed at 830 mm. The owner returned
+#: the live plane to 830 on 2026-10-06, so this freeze again matches the
+#: default -- kept explicit anyway, since freezing the catch plane to the
+#: value the probe this fixture is pinned to (``scratchpad/probe_unitB_
+#: sweep5.py``, 2026-09-30) actually ran at preserves the ALREADY-PINNED
+#: characterisation rather than making it depend on the live default's
+#: current value.
 _TINY_SWEEP_CATCH_Z_MM = 830.0
 
 
@@ -541,10 +543,13 @@ def tiny_sweep(sweep_mod):
     permissive) and the "x pinned at 0" characterisation below is false. A
     characterisation test freezes the conditions it characterised.
 
-    Since 2026-10-05 that freeze also covers ``sites.CATCH_CUP_Z_MM`` (see
+    From 2026-10-05 that freeze also covers ``sites.CATCH_CUP_Z_MM`` (see
     ``_TINY_SWEEP_CATCH_Z_MM``): the catch plane moved 830 -> 930 mm the same
     day the launch limits moved, and the probe this fixture reproduces ran at
-    830 mm. ``monkeypatch`` is function-scoped and this fixture is
+    830 mm. (The owner returned the live plane to 830 on 2026-10-06, so this
+    freeze matches the default again -- kept explicit regardless, same
+    reasoning as ``_TINY_SWEEP_CATCH_Z_MM``'s docstring.) ``monkeypatch`` is
+    function-scoped and this fixture is
     module-scoped, so the freeze/restore is done by hand with the same
     ``_pytest.monkeypatch.MonkeyPatch`` class the ``monkeypatch`` fixture
     itself wraps -- re-verified against this exact grid 2026-10-05: frozen at
@@ -582,9 +587,12 @@ def test_the_cross_site_branch_gates_the_real_catch_with_throw_segment(
     separation) since 2026-10-05 -- moved from the tiny grid's apex 0.85 m /
     dwell 0.30 s / 100 mm, which this test was only ever reusing for
     convenience (unlike ``tiny_sweep``, nothing here characterises that exact
-    point): at the new catch plane (``sites.CATCH_CUP_Z_MM`` 830 -> 930 mm)
-    that cell refuses LIMIT_JERK even at the sweep's live default limits, and
-    this test only needs a feasible box to check the segment-call shape."""
+    point): at the R5 sitting-6 catch plane (``sites.CATCH_CUP_Z_MM``
+    830 -> 930 mm, 2026-10-05 to 2026-10-06, since returned to 830) that cell
+    refused LIMIT_JERK even at the sweep's live default limits, and this
+    test only needs a feasible box to check the segment-call shape -- it
+    reads the live ``CATCH_CUP_Z_MM`` (no monkeypatch here), so it is
+    unaffected by the 2026-10-06 reversion."""
     calls = []
     orig = sweep_mod.sg.plan_segment
 

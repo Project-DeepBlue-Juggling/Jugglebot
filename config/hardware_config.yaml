@@ -192,11 +192,16 @@ dynamics:
                                                 # motor shaft}, applied in the SetpointPump before the wire scale.
                                                 # 0.15 Nm ≈ 2.6 A of feedforward current (0.15 × 0.9673 / 0.055133),
                                                 # i.e. ~3× the largest gravity+inertia torque seen anywhere in the
-                                                # workspace and still leaving ~7.4 A of the 10 A current_soft_max
-                                                # for the velocity loop's disturbance rejection.
+                                                # workspace and still leaving ~7.4 A of headroom under the leg
+                                                # current clamp (`leg_curr_limit_a`, 15 A since 2026-10-06, 10 A
+                                                # before) for the velocity loop's disturbance rejection — the
+                                                # ~7.4 A figure is against the pre-2026-10-06 10 A limit and has
+                                                # not been re-derived at 15 A.
                                                 # WHY A CLAMP AT ALL: the ODrive ADDS input_torque to the velocity
                                                 # loop's output BEFORE the torque limit, so a feedforward above
-                                                # ~0.55 Nm (= 10 A × 0.055133) saturates the current clamp and the
+                                                # ~0.55 Nm (= the leg current clamp's pre-2026-10-06 value, 10 A,
+                                                # × 0.055133; `leg_curr_limit_a` is 15 A since 2026-10-06) saturates
+                                                # the current clamp and the
                                                 # position loop loses ALL authority — the leg then runs open-loop
                                                 # at full current until MAX_DEVIATION E-STOPs it mid-motion.  This
                                                 # Jetson-side clamp binds FIRST (0.15 × 0.9673 = 0.1451 wire-Nm) and
@@ -221,12 +226,13 @@ dynamics:
                                                 #   2. THIS firmware backstop: ±0.25 wire-Nm (≈4.5 A) — catches a
                                                 #      Jetson-side bug or a pump bypass (the direct-frame bench
                                                 #      harnesses build their own Setpoint frames).  Well under the
-                                                #      ~0.55 wire-Nm (10 A × 0.055133) point where the FF would
-                                                #      consume the whole current budget and the position loop
-                                                #      loses all authority.
-                                                #   3. The ODrive current clamp (current_soft_max 10 A) — last
-                                                #      resort; by the time it binds, the position loop has no
-                                                #      authority left.
+                                                #      ~0.55 wire-Nm (the leg current clamp's pre-2026-10-06 value,
+                                                #      10 A, × 0.055133) point where the FF would consume the
+                                                #      whole current budget and the position loop loses all
+                                                #      authority.
+                                                #   3. The ODrive current clamp (`leg_curr_limit_a`, 15 A since
+                                                #      2026-10-06, 10 A before) — last resort; by the time it
+                                                #      binds, the position loop has no authority left.
                                                 # NEEDS A CAN-BRIDGE REFLASH to take effect: until the firmware is
                                                 # reflashed this clamp is dormant and layer 1 is the only software
                                                 # clamp.  When it binds, the firmware sets the per-leg
@@ -690,7 +696,18 @@ jugglebot_odrive_defaults:
                                          # past 7.5 only widens the UN-clamped envelope;
                                          # the VELFF cap raise is a firmware-flash item.
                                          # See logbook 2026-07-16-max-deviation-guard-tracking-lag.md.
-  leg_curr_limit_a: 10.0                 # Leg current limit {A}
+  leg_curr_limit_a: 15.0                 # Leg current limit {A}. 10.0 -> 15.0 (owner decision,
+                                         # 2026-10-06): legs 1 and 2 carry every x transit and
+                                         # touch the 10 A clamp ~1% of transit time (peak 10.3 A,
+                                         # p95 6-7 A); when the clamp binds the position loop has
+                                         # no authority (see the current-clamp-chain comment on
+                                         # torque_ff_firmware_clamp_wire_nm above, layer 3).
+                                         # Thermal headroom is large: FET temps <= 35 C over two
+                                         # 7-17 min sessions, motor thermistors at ambient, bus
+                                         # minimum 44.9 V, time at >= 9.5 A under 0.3% of a
+                                         # session. WATCH at the next sitting: peak current, FET
+                                         # temp, tracking error. 15 A ~ 77 N string tension per
+                                         # leg vs 51 N at 10 A (Kt 0.057 Nm/A, spool ~11.2 mm).
   hand_vel_limit_rps: 1000.0             # Hand velocity limit {rev/s}
   hand_curr_limit_a: 50.0                # Hand current limit {A}
   hand_pos_gain: 35.0                    # Hand position gain

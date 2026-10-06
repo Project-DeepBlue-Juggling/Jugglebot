@@ -4094,11 +4094,15 @@ def test_an_observed_flight_outside_the_band_leaves_no_row(sites):
     assert experiences == []
     out = [ln for ln in lines if 'OUTCOME' in ln]
     assert len(out) == 1
-    # 6.140 m, not the pre-catch-high 6.105 m: rise-aware (see
-    # ``_land_apex_m``) -- re-measured 2026-10-05 after ``CATCH_CUP_Z_MM``
-    # moved 830 -> 930 mm. The band bounds stay [0.225, 2.305] (0.25x/2.56x of
-    # the commanded 0.900 m), unaffected by the rise.
-    assert 'no row: observed apex 6.140 m outside [0.225, 2.305] of ' \
+    # 6.090 m: rise-aware (see ``_land_apex_m``), at the live 830 mm catch
+    # plane. This is neither the pre-rise-aware 830 mm figure (6.105 m) nor
+    # the rise-aware 930 mm figure measured 2026-10-05 during catch-high
+    # (6.140 m) -- the rise-aware computation and the 830 -> 930 -> 830
+    # catch-plane moves were never both exercised at 830 mm until now
+    # (re-measured 2026-10-06, catch plane returned to 830). The band bounds
+    # stay [0.225, 2.305] (0.25x/2.56x of the commanded 0.900 m), unaffected
+    # by the rise.
+    assert 'no row: observed apex 6.090 m outside [0.225, 2.305] of ' \
            'commanded 0.900 m' in out[0]
 
 
@@ -4872,11 +4876,17 @@ def test_the_next_catch_s_priors_fly_from_the_offset_release(reaimed_self_toss):
 
     RE-MEASURED 2026-10-05 (``sites.CATCH_CUP_Z_MM`` moved 830 -> 930 mm, the
     catch-high change: the plane the hand-corrected prior crosses moved with
-    it): the hand-corrected prior now lands 3.66 mm on the far side -- (date,
+    it): the hand-corrected prior landed 3.66 mm on the far side -- (date,
     command, result) 2026-10-05, ``pytest
     tests/motion/test_skills_executor.py::test_the_next_catch_s_priors_fly_from_the_offset_release -q``:
-    passes with ``corrected.pos_mm[1] == -3.6589`` (was -3.5582 at the old
-    830 mm catch plane). The commanded-position and arrival-velocity checks
+    passed with ``corrected.pos_mm[1] == -3.6589`` (was -3.5582 at the old
+    830 mm catch plane).
+
+    RE-MEASURED AGAIN 2026-10-06 (the owner returned the catch plane to
+    830 mm): the hand-corrected prior is back to landing 3.56 mm on the far
+    side, byte-identical to the pre-catch-high measurement above --
+    ``corrected.pos_mm[1] == -3.5582`` (date, command, result) 2026-10-06,
+    same command, passes. The commanded-position and arrival-velocity checks
     above are unaffected -- neither depends on the catch plane."""
     sched, execu, _records, landings = reaimed_self_toss
     idx = _carried_catch_idx(sched)
@@ -4890,7 +4900,7 @@ def test_the_next_catch_s_priors_fly_from_the_offset_release(reaimed_self_toss):
     assert prior.vel_mm_s[1] == pytest.approx(-23.3405, abs=1e-3)
 
     corrected = execu._hand_corrected_landing(nxt, skill, 1.086)
-    assert corrected.pos_mm[1] == pytest.approx(-3.6589, abs=1e-3)
+    assert corrected.pos_mm[1] == pytest.approx(-3.5582, abs=1e-3)
     assert corrected.pos_mm[0] == pytest.approx(
         float(skill.site.catch_site_mm()[0]), abs=1e-6)
 

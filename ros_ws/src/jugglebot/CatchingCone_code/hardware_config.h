@@ -137,7 +137,7 @@ namespace ODriveDefaults {
   constexpr float TRAP_ACC_LIMIT_RPS2 = 30.0f;
   constexpr float TRAP_DEC_LIMIT_RPS2 = 30.0f;
   constexpr float LEG_VEL_LIMIT_RPS = 12.0f;
-  constexpr float LEG_CURR_LIMIT_A = 10.0f;
+  constexpr float LEG_CURR_LIMIT_A = 15.0f;
   constexpr float HAND_VEL_LIMIT_RPS = 1000.0f;
   constexpr float HAND_CURR_LIMIT_A = 50.0f;
   constexpr float HAND_POS_GAIN = 35.0f;
