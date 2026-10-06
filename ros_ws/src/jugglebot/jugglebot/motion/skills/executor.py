@@ -260,10 +260,11 @@ CAUGHT_LEAD_S = 0.10
 #: take after it, a sensor question.  Worst-case finalise latency is their sum,
 #: 1.05 s since 2026-09-17 -- longer than the ~0.95 s beat, which is fine: on
 #: a chained catch :meth:`SkillExecutor._bound_by_next_release` closes the
-#: window at the next release whatever the sum says, and the next throw's
-#: command is computed at its dispatch (~1.1 s before its release), before
-#: this row could reach the memory under ANY window.  Only a final catch ever
-#: waits the full sum, and nothing is waiting on it.
+#: window :data:`SEAT_AFTER_RELEASE_S` past the next release whatever the sum
+#: says, and the next throw's command is computed at its dispatch (~1.1 s
+#: before its release), before this row could reach the memory under ANY
+#: window.  Only a final catch ever waits the full sum, and nothing is
+#: waiting on it.
 CAUGHT_LAND_DEFER_CAP_S = 0.35
 
 #: How far BEFORE this ball's NEXT scheduled release a row's verdict window
@@ -471,6 +472,37 @@ MISSED_CATCH_MIN_VALID_FRAC = 0.8
 #: contain and still count as live. Matches the hand-telemetry staleness
 #: family already used elsewhere in this plan arc (0.05 s).
 MISSED_CATCH_MAX_GAP_S = 0.05
+
+#: How long AFTER this ball's next scheduled release ``R`` a SEATED sample
+#: still counts as this row's catch -- the same bound the MISSED_CATCH rule
+#: closes its own window at (:data:`MISSED_CATCH_CLOSE_AFTER_RELEASE_S`),
+#: imported rather than restated so the two verdicts taken on one cup sensor
+#: can never disagree about the same samples.
+#:
+#: **Why the ``caught`` window had to reach past the release at all** (R5
+#: sitting 6, 2026-10-06, catch high at 930 mm): the cup sensor does not read
+#: SEATED when the ball lands -- the cup is descending at ~0.5 g and the ball
+#: rides down under a fraction of its own weight -- but when the hand bottoms
+#: out and REVERSES into the next stroke, which with the catch at 930 mm
+#: (237 mm of with-ball stroke, ``sites.CATCH_CUP_Z_MM``) is +0.23 .. +0.29 s
+#: after the scheduled landing against a re-release at +0.27 s. The old close
+#: at ``R - 0.010`` plus one 40 Hz tick of sampling phase scored three of
+#: five chained catches MISSED although every one of them was in the cup and
+#: was re-thrown (bag ``2026-10-06_20-19-40``: raw-bit edges at +0.227,
+#: +0.230, +0.234, +0.242, +0.255, +0.288 s; the executor's own latch 1-31 ms
+#: inside the close on the ones it caught). Sitting 4's rule had already
+#: measured the latest seat on a chained catch at ``R + 0.028`` s (n=11) and
+#: chosen ``R + 0.12``; this row now closes its SEATED evidence there too.
+#: Safe past the release because a SEATED sample there can only be THIS ball
+#: (still in, or just leaving, the cup -- the raw bit lags a departing ball):
+#: a ball that was never caught leaves the cup empty through the whole
+#: interval, and the OTHER ball's arrival is kept out by the same
+#: :data:`MISSED_CATCH_OTHER_LANDING_GUARD_S` the miss rule uses. The TRACKER
+#: bound (:data:`OUTCOME_NEXT_RELEASE_EPS_S`) is unchanged: after the release
+#: the track is the next flight's, and that freeze answers a different
+#: question (which estimate is this flight's) from this one (did the cup hold
+#: the ball before it left).
+SEAT_AFTER_RELEASE_S = MISSED_CATCH_CLOSE_AFTER_RELEASE_S
 
 #: The stop REST's first choice (:meth:`SkillExecutor.stop_terminals`) is at
 #: rest this long BEFORE the next pending release -- two knots, so the REST's
@@ -779,9 +811,10 @@ class _PendingOutcome:
     2026-09-16 to 2026-09-20): it is the LAST fitted estimate served for this
     flight before the ball leaves the cup again, the fit's own parabola
     whether read before or after the landing -- see
-    :meth:`SkillExecutor._consider_landing`. The window itself closes before
-    this ball's NEXT scheduled release (:attr:`t_next_release_s`), and a
-    finalised row whose observed apex is not within
+    :meth:`SkillExecutor._consider_landing`. The window itself closes
+    :data:`SEAT_AFTER_RELEASE_S` past this ball's NEXT scheduled release
+    (:attr:`t_seat_close_s`; it closed just BEFORE the release until
+    2026-10-06), and a finalised row whose observed apex is not within
     ``memory.APEX_RATIO_BAND`` of the commanded one is DROPPED.
 
     ``release_confirmed`` is the R3 ladder's own bookkeeping (plan § carried
@@ -839,6 +872,16 @@ class _PendingOutcome:
     #: _outcome_window` stays a pure function of the row, and bounds
     #: ``finalise_at`` by :data:`OUTCOME_NEXT_RELEASE_EPS_S`.
     t_next_release_s: Optional[float] = None
+    #: The instant past which a SEATED sample no longer counts as THIS row's
+    #: catch, on a chained catch: :attr:`t_next_release_s` +
+    #: :data:`SEAT_AFTER_RELEASE_S`, pulled back
+    #: :data:`MISSED_CATCH_OTHER_LANDING_GUARD_S` before the OTHER ball's
+    #: next scheduled landing (the cup sensor is blind to ``ball_id``).
+    #: ``None`` when the schedule never throws this ball again -- the window
+    #: then runs :data:`CAUGHT_WINDOW_S` past the landing anchor as before.
+    #: Filled at registration (:func:`_seat_close`) so
+    #: :meth:`SkillExecutor._outcome_window` stays a pure function of the row.
+    t_seat_close_s: Optional[float] = None
     release_confirmed: bool = False
     seated_seen: bool = False
     #: Latched True by :meth:`SkillExecutor._advance_outcomes` on the first
@@ -927,6 +970,12 @@ class SeatWindow:
     n_valid: int
     n_seated: int
     max_gap_s: float
+    #: Wall stamp of the FIRST raw-SEATED sample inside the window, or
+    #: ``None`` when ``n_seated`` is 0 (or the source does not record it).
+    #: Read by :meth:`SkillExecutor._finalise_outcome` for the OUTCOME line's
+    #: ``seat`` phase when the sample-complete count, not the per-tick
+    #: latch, is what carried the ``caught`` verdict (R5 sitting 6).
+    t_first_seated_s: Optional[float] = None
 
 
 @dataclasses.dataclass
@@ -1068,6 +1117,29 @@ def _next_release(schedule: Schedule, idx: int,
         if sk.kind == CATCH and sk.then_throw is not None:
             return float(sk.then_throw.t_release_abs_s)
     return None
+
+
+def _seat_close(schedule: Schedule, ball_id: int,
+                t_land_scheduled_s: float,
+                t_next_release_s: Optional[float]) -> Optional[float]:
+    """The instant a chained row's SEATED evidence closes
+    (:attr:`_PendingOutcome.t_seat_close_s`): ``t_next_release_s +
+    SEAT_AFTER_RELEASE_S``, pulled back to
+    :data:`MISSED_CATCH_OTHER_LANDING_GUARD_S` before the OTHER ball's next
+    scheduled landing after this one -- the same two bounds
+    :meth:`SkillExecutor._register_catch` closes the MISSED_CATCH window
+    with, so the two verdicts read the same samples. ``None`` when this ball
+    is never thrown again (a final catch keeps the
+    :data:`CAUGHT_WINDOW_S` close). Pure: reads only ``schedule.skills``.
+    """
+    if t_next_release_s is None:
+        return None
+    t_close = float(t_next_release_s) + SEAT_AFTER_RELEASE_S
+    other = _next_landing_other_ball(schedule, ball_id,
+                                     float(t_land_scheduled_s))
+    if other is not None:
+        t_close = min(t_close, other - MISSED_CATCH_OTHER_LANDING_GUARD_S)
+    return t_close
 
 
 def _event_abs_s(kind: str, terminal) -> float:
@@ -2899,11 +2971,15 @@ class SkillExecutor:
         x[2:4] = self._release_offset_m(idx, skill.site)
         target_xy_mm = np.asarray(target.catch_site_mm(), dtype=float)[:2]
         self._n_registered += 1
+        t_land_scheduled = t_release + sch.flight_s(u_apex)
+        t_next_release = _next_release(self.schedule, idx, skill.ball_id)
         self._pending_outcomes.append(_PendingOutcome(
             ball_id=skill.ball_id, x=x, u=u, t_release_s=t_release,
-            t_land_scheduled_s=t_release + sch.flight_s(u_apex),
+            t_land_scheduled_s=t_land_scheduled,
             target_xy_mm=target_xy_mm,
-            t_next_release_s=_next_release(self.schedule, idx, skill.ball_id),
+            t_next_release_s=t_next_release,
+            t_seat_close_s=_seat_close(self.schedule, skill.ball_id,
+                                       t_land_scheduled, t_next_release),
             throw_no=self._n_registered,
             release_z_mm=float(skill.site.throw_site_mm()[2]),
             shadow_landing=shadow_landing, entry_hop=entry_hop))
@@ -3379,6 +3455,15 @@ class SkillExecutor:
         arbitrarily: every call re-derives it from ``best_landing``, which is
         itself one-way (a landing already accepted is never replaced by a
         worse one).
+
+        On a chained catch ``finalise_at`` is pulled back to
+        :attr:`_PendingOutcome.t_seat_close_s` -- :data:`SEAT_AFTER_RELEASE_S`
+        past this ball's next release (R5 sitting 6; it was
+        :data:`OUTCOME_NEXT_RELEASE_EPS_S` BEFORE it until 2026-10-06, which
+        closed the window before the cup sensor could have seated at the 930
+        mm catch). The tracker's own freeze stays at the release
+        (:meth:`_consider_landing`, :meth:`_landing_instant`): only the
+        SEATED evidence reaches past it.
         """
         t_sched = float(pend.t_land_scheduled_s)
         # The lead can never reach back past the RELEASE: before it, a SEATED
@@ -3414,24 +3499,31 @@ class SkillExecutor:
     @staticmethod
     def _bound_by_next_release(pend: _PendingOutcome, finalise_at: float,
                                t_open: float) -> float:
-        """``finalise_at``, pulled back so the window closes BEFORE this
-        ball's next scheduled release (:data:`OUTCOME_NEXT_RELEASE_EPS_S`).
+        """``finalise_at``, pulled back to this row's SEATED-evidence close
+        (:attr:`_PendingOutcome.t_seat_close_s`: :data:`SEAT_AFTER_RELEASE_S`
+        past this ball's next scheduled release, kept clear of the other
+        ball's next landing).
 
-        The window's only business past the landing is the SEATED latch, and
-        the ball is physically back in the cup for that whole interval -- so
-        closing at the re-release costs nothing a catch needs, while a window
-        that reached past it would be sampling a ball in its NEXT flight (the
-        2026-09-16 contamination, see :data:`OUTCOME_NEXT_RELEASE_EPS_S`).
+        The window's only business past the landing is the SEATED latch.
+        Until 2026-10-06 it closed :data:`OUTCOME_NEXT_RELEASE_EPS_S` BEFORE
+        the re-release on the reasoning that the ball is back in the cup for
+        the whole interval and the cup is empty by construction after it; the
+        first half is true, the second is not what the sensor shows -- the
+        raw bit seats when the hand reverses at the bottom of its stroke and
+        lags the ball on its way out, so the seat of a catch taken high lands
+        AROUND the re-release (see :data:`SEAT_AFTER_RELEASE_S`). The tracker
+        contamination that bound was also guarding (the 2026-09-16 rows that
+        recorded the NEXT flight) is held by the freeze in
+        :meth:`_consider_landing`, which still stops at the release.
 
         Never pulled back before ``t_open``: a schedule whose re-release
         crowds the landing would otherwise invert the window and finalise a
         row before the ball had arrived. The bound is skipped entirely when
         the schedule never throws this ball again.
         """
-        bound = SkillExecutor._next_release_bound(pend)
-        if bound is None:
+        if pend.t_seat_close_s is None:
             return finalise_at
-        return max(t_open, min(finalise_at, bound))
+        return max(t_open, min(finalise_at, float(pend.t_seat_close_s)))
 
     @staticmethod
     def _landing_instant(pend: _PendingOutcome) -> float:
@@ -3449,11 +3541,13 @@ class SkillExecutor:
         The next-release term matters on a CROWDED schedule -- one whose
         re-release falls BEFORE the scheduled landing (a late-arriving plant,
         or a beat shorter than the commanded flight). Without it the freeze
-        and the window bound would disagree: :meth:`_bound_by_next_release`
-        would close the verdict at the re-release while the freeze still sat
-        at the later scheduled landing, leaving a gap in which the NEXT
-        flight's estimate was still admissible. Both now stop at the same
-        instant, on the same margin.
+        and ``t_open`` would disagree: the window could open after the
+        release while the freeze still sat at the later scheduled landing,
+        leaving a gap in which the NEXT flight's estimate was still
+        admissible. The freeze (:meth:`_consider_landing`) and this instant
+        stop at the release on the same margin; the SEATED evidence window
+        alone runs past it (:meth:`_bound_by_next_release`, since
+        2026-10-06), which touches neither.
         """
         cands = [float(pend.t_land_scheduled_s)]
         if pend.best_landing is not None:
@@ -3639,12 +3733,47 @@ class SkillExecutor:
 
         for pend in self._pending_outcomes:
             t_open, finalise_at = self._outcome_window(pend)
-            if t_abs_s < finalise_at:
+            # With a sample-complete source wired, decide one orchestrator
+            # tick late (MISSED_CATCH_DECIDE_LAG_S, as the miss rule does) so
+            # the window's own last telemetry sample has arrived before the
+            # history is read; without one the verdict is the per-tick latch
+            # alone and finalises on the closing tick as before.
+            lag = (MISSED_CATCH_DECIDE_LAG_S if self.seat_window is not None
+                   else 0.0)
+            if t_abs_s < finalise_at + lag:
                 remaining.append(pend)
                 continue
+            self._latch_from_history(pend, t_open, finalise_at)
             lines.extend(self._finalise_outcome(pend, finalise_at))
         self._pending_outcomes = remaining
         return lines
+
+    def _latch_from_history(self, pend: _PendingOutcome, t_open: float,
+                            t_close: float) -> None:
+        """Set :attr:`_PendingOutcome.caught_seen` from the SAMPLE-COMPLETE
+        possession history over ``[t_open, t_close]`` when the per-tick latch
+        has not already (R5 sitting 6, 2026-10-06).
+
+        The per-tick latch reads ONE observer sample per 40 Hz tick against a
+        100 Hz sensor: a seat that lands inside the last tick of the window
+        is seen or missed by sampling phase (sitting 6: the executor's own
+        latch fell 1-31 ms inside the close on the catches it scored, and
+        past it on the ones it did not). :attr:`seat_window` is the same
+        history the MISSED_CATCH rule reads -- every sample, on the schedule's
+        clock -- so a single raw-SEATED sample anywhere in the window counts,
+        exactly as it vetoes a miss there. ``None`` (the buffer does not
+        cover the window) leaves the latch as it stands: BLIND is never a
+        verdict either way. Off entirely when no ``seat_window`` is wired
+        (R2/R3 callers, the sim gate): the latch is then the whole rule.
+        """
+        if pend.caught_seen or self.seat_window is None:
+            return
+        window = self.seat_window(float(t_open), float(t_close))
+        if window is None or window.n_seated <= 0:
+            return
+        pend.caught_seen = True
+        if window.t_first_seated_s is not None:
+            pend.t_seat_s = float(window.t_first_seated_s)
 
     def _report(self, pend: _PendingOutcome, *, row: bool,
                 no_row_reason: str = '',

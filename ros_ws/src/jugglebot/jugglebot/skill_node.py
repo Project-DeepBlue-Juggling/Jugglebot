@@ -1798,6 +1798,7 @@ class SkillNode(Node):
         n_seated = 0
         max_gap_s = 0.0
         t_prev = None
+        t_first_seated = None
         for t, valid, raw, held in hist:
             if t < float(t0_s) or t > float(t1_s):
                 continue
@@ -1808,8 +1809,11 @@ class SkillNode(Node):
                 n_valid += 1
                 if bool(raw):
                     n_seated += 1
+                    if t_first_seated is None:
+                        t_first_seated = float(t)
         return SeatWindow(n_valid=n_valid, n_seated=n_seated,
-                          max_gap_s=max_gap_s)
+                          max_gap_s=max_gap_s,
+                          t_first_seated_s=t_first_seated)
 
     # ── the installer callable SkillExecutor dispatches through ────────────
 

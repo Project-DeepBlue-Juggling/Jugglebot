@@ -4124,36 +4124,83 @@ def test_a_plant_throwing_25_percent_fast_is_still_IN_band(sites):
         _land_apex_m(ROS_T0 + 1.238 * FLIGHT_S))
 
 
-def test_the_window_closes_before_this_balls_next_release():
-    """``_outcome_window`` never reaches past the next release
-    (:data:`ex.OUTCOME_NEXT_RELEASE_EPS_S`) — the structural half of the fix:
-    a row cannot still be open when its ball leaves the cup again."""
+def test_the_window_closes_at_the_seat_close_past_this_balls_next_release():
+    """``_outcome_window`` closes its SEATED evidence at the row's
+    ``t_seat_close_s`` -- :data:`ex.SEAT_AFTER_RELEASE_S` PAST the next
+    release (R5 sitting 6, 2026-10-06) -- never before it, and never past the
+    nominal :data:`ex.CAUGHT_WINDOW_S` close. Until 2026-10-06 it closed
+    :data:`ex.OUTCOME_NEXT_RELEASE_EPS_S` BEFORE the release; the cup sensor
+    at the 930 mm catch seats around the release, so that close read three
+    of five real catches as misses. The tracker freeze keeps the old margin
+    (:func:`test_the_landing_freezes_at_this_balls_next_release`)."""
     mk = lambda t_next, t_obs=None: ex._PendingOutcome(
         ball_id=0, x=np.zeros(4), u=np.array([0.0, 0.0, 10.0]),
         t_release_s=0.0, t_land_scheduled_s=10.0, target_xy_mm=np.zeros(2),
         t_next_release_s=t_next,
+        t_seat_close_s=(None if t_next is None
+                        else t_next + ex.SEAT_AFTER_RELEASE_S),
         best_landing=(None if t_obs is None else _land_at(t_obs)))
-    eps = ex.OUTCOME_NEXT_RELEASE_EPS_S
+    after = ex.SEAT_AFTER_RELEASE_S
+    assert after == ex.MISSED_CATCH_CLOSE_AFTER_RELEASE_S   # one bound, two verdicts
     # No next release: unchanged, the window is the landing plus the window.
     assert ex.SkillExecutor._outcome_window(mk(None))[1] == pytest.approx(
         10.0 + ex.CAUGHT_WINDOW_S)
-    # A next release INSIDE the nominal window pulls the close back to it.
+    # A next release INSIDE the nominal window pulls the close back to the
+    # seat close -- PAST the release, not before it.
     assert ex.SkillExecutor._outcome_window(mk(10.2))[1] == pytest.approx(
-        10.2 - eps)
+        10.2 + after)
+    assert ex.SkillExecutor._outcome_window(mk(10.2))[1] > 10.2
     # ... and that holds against an observed landing that would have deferred
     # the close even further (the 2026-09-16 exposure).
     assert ex.SkillExecutor._outcome_window(mk(10.2, t_obs=10.19))[1] == \
-        pytest.approx(10.2 - eps)
+        pytest.approx(10.2 + after)
     # A next release beyond it changes nothing.
     assert ex.SkillExecutor._outcome_window(mk(11.0))[1] == pytest.approx(
         10.0 + ex.CAUGHT_WINDOW_S)
-    # A re-release that crowds the landing pulls the whole window back onto
-    # it — `_landing_instant` shares the bound, so the open moves with the
-    # close and the window is never inverted.
+    # A re-release that crowds the landing: the open still follows
+    # `_landing_instant` (the release less its eps), the close the seat
+    # close, and the window is never inverted.
     crowded = ex.SkillExecutor._outcome_window(mk(9.5))
-    assert crowded[1] == pytest.approx(9.5 - eps)
-    assert crowded[0] == pytest.approx(9.5 - eps - ex.CAUGHT_LEAD_S)
+    assert crowded[1] == pytest.approx(9.5 + after)
+    assert crowded[0] == pytest.approx(
+        9.5 - ex.OUTCOME_NEXT_RELEASE_EPS_S - ex.CAUGHT_LEAD_S)
     assert crowded[0] < crowded[1]
+    # A row registered WITHOUT a seat close (a caller that never set one)
+    # keeps the nominal close: the field, not the next release, is the bound.
+    bare = ex._PendingOutcome(
+        ball_id=0, x=np.zeros(4), u=np.array([0.0, 0.0, 10.0]),
+        t_release_s=0.0, t_land_scheduled_s=10.0, target_xy_mm=np.zeros(2),
+        t_next_release_s=10.2)
+    assert ex.SkillExecutor._outcome_window(bare)[1] == pytest.approx(
+        10.0 + ex.CAUGHT_WINDOW_S)
+
+
+def test_the_seat_close_mirrors_the_missed_catch_rules_bounds(sites):
+    """``_seat_close`` is the MISSED_CATCH rule's close for the OUTCOME row:
+    the next release plus :data:`ex.SEAT_AFTER_RELEASE_S`, pulled back
+    :data:`ex.MISSED_CATCH_OTHER_LANDING_GUARD_S` before the other ball's
+    next landing, ``None`` for a ball never thrown again."""
+    sch = _schedule_with_then_throw(sites)
+    tt = sch.skills[1].then_throw
+    r = float(tt.t_release_abs_s)
+    land = float(sch.skills[1].t_abs_s)
+    # One ball, re-thrown once: the next release plus the margin.
+    assert ex._seat_close(sch, 0, land, r) == pytest.approx(
+        r + ex.SEAT_AFTER_RELEASE_S)
+    # Never thrown again: no seat close.
+    assert ex._seat_close(sch, 0, land, None) is None
+    # The other ball landing soon after pulls the close back in front of it.
+    other = Skill(kind=sg.CATCH, ball_id=1, site=sites[1],
+                  t_abs_s=r + 0.05, window_s=0.3)
+    crowded = dataclasses.replace(sch, skills=tuple(sch.skills) + (other,))
+    assert ex._seat_close(crowded, 0, land, r) == pytest.approx(
+        r + 0.05 - ex.MISSED_CATCH_OTHER_LANDING_GUARD_S)
+    # A landing of the SAME ball is not "the other ball".
+    same = Skill(kind=sg.CATCH, ball_id=0, site=sites[1],
+                 t_abs_s=r + 0.05, window_s=0.3)
+    same_sch = dataclasses.replace(sch, skills=tuple(sch.skills) + (same,))
+    assert ex._seat_close(same_sch, 0, land, r) == pytest.approx(
+        r + ex.SEAT_AFTER_RELEASE_S)
 
 
 def _land_at(t_land, t_release=0.0):
@@ -6075,3 +6122,162 @@ def test_a_rest_refused_for_any_other_reason_is_not_retried(sites):
     _tick_until(x, rest.dispatch_s() - 0.01, rest.t_abs_s)
     assert x.attempt_ended and x.end_code == 'LIMIT_JERK'
     assert len(inst.calls) == 1
+
+
+# ── R5 sitting 6 (2026-10-06): the seat of a catch taken high lands around
+# the re-release ─────────────────────────────────────────────────────────────
+#
+# Bag 2026-10-06_20-19-40, columns_1ball at the 930 mm catch plane: the raw
+# cup-sensor bit went SEATED +0.227 .. +0.288 s after the scheduled landing
+# (the hand bottoming out and reversing into the next stroke), against a
+# re-release at +0.27 s. The executor's window closed at the release less
+# 10 ms, its per-tick latch fell 1-31 ms inside that close on the catches it
+# scored, and three of five chained catches were reported MISSED although
+# each was in the cup and was thrown again. The two rules below pin the fix:
+# the SEATED evidence closes SEAT_AFTER_RELEASE_S past the release (the miss
+# rule's own bound), and the sample-complete history decides the verdict.
+
+
+def _chained_catch_run(sites, *, seated_from_s, seated_until_s=None,
+                       seat_window=None, tick_s=0.025, phase_s=0.0):
+    """THROW then a CATCH carrying a re-throw (``_schedule_with_then_throw``:
+    the re-release ``R`` is ``t_land + 0.30``). The observer reads SEATED
+    on ticks in ``[t_land + seated_from_s, t_land + seated_until_s]`` (the
+    raw bit, relative to the SCHEDULED landing; ``None`` = open-ended) and
+    EMPTY otherwise. Ticks every ``tick_s`` from ``phase_s`` past the first
+    dispatch, like the node's 40 Hz loop. Returns ``(experiences,
+    executor)``; the tracker serves the schedule's own landing so the row
+    always has a fit."""
+    sch = _schedule_with_then_throw(sites)
+    p1, p2 = sites
+    t_land = float(sch.skills[1].t_abs_s)
+    land = _fit_landing(pos_mm=p2.catch_site_mm(), vel_mm_s=LAND_VEL,
+                      t_land_abs_s=t_land)
+    t_hi = (np.inf if seated_until_s is None else t_land + seated_until_s)
+
+    def observer(ball_id, t):
+        return (bp.EVIDENCE_SEATED
+                if t_land + seated_from_s <= t <= t_hi else bp.EVIDENCE_EMPTY)
+
+    experiences = []
+    x = ex.SkillExecutor(sch, _FakeInstaller(), tracker=lambda b: land,
+                         observer=observer, on_experience=experiences.append,
+                         seat_window=seat_window)
+    t = sch.skills[0].dispatch_s() - 0.01 + phase_s
+    t_end = t_land + 0.30 + ex.SEAT_AFTER_RELEASE_S + 0.5
+    while t < t_end:
+        x.tick(t)
+        t += tick_s
+    return experiences, x
+
+
+@pytest.mark.parametrize('seat_rel_to_release_s', [-0.043, -0.005, +0.018, +0.10])
+def test_a_seat_around_the_rerelease_is_this_rows_catch(sites, seat_rel_to_release_s):
+    """Sitting 6's edges, relative to the re-release ``R``: -0.043 s (the
+    latest the old close could still see, with a lucky tick), -0.005 s
+    (inside the old 10 ms eps -- scored MISSED), +0.018 s (attempt 3's seat
+    during the next stroke -- MISSED) and +0.10 s (just inside the miss
+    rule's own bound). Every one is the ball in the cup: CAUGHT."""
+    seat_from = 0.30 + seat_rel_to_release_s
+    experiences, _x = _chained_catch_run(sites, seated_from_s=seat_from,
+                                         seated_until_s=seat_from + 0.16)
+    assert len(experiences) == 1
+    assert experiences[0].caught is True
+
+
+def test_a_seat_past_the_seat_close_is_not_this_rows_catch(sites):
+    """The evidence window still closes: a SEATED first seen past
+    ``R + SEAT_AFTER_RELEASE_S`` is not attributed to this row (the ball has
+    long left; with two balls it would be the other ball's arrival)."""
+    experiences, _x = _chained_catch_run(
+        sites, seated_from_s=0.30 + ex.SEAT_AFTER_RELEASE_S + 0.03)
+    assert len(experiences) == 1
+    assert experiences[0].caught is False
+
+
+def test_an_empty_cup_through_the_rerelease_is_still_a_miss(sites):
+    """Widening the close adds catches, never invents one: EMPTY on every
+    tick through the landing, the re-release and the margin past it stays
+    MISSED."""
+    experiences, _x = _chained_catch_run(sites, seated_from_s=np.inf)
+    assert len(experiences) == 1
+    assert experiences[0].caught is False
+
+
+def test_the_seat_close_is_the_executors_window_on_a_real_schedule(sites):
+    """The row registered off a real THROW carries the seat close
+    ``_seat_close`` computes -- the re-release plus the margin -- so the
+    window a tick is measured against is the one the tests above assume."""
+    sch = _schedule_with_then_throw(sites)
+    x = ex.SkillExecutor(sch, _FakeInstaller(), tracker=lambda b: None,
+                         on_experience=lambda e: None)
+    x.tick(sch.skills[0].dispatch_s())
+    pend = x._pending_outcomes[0]
+    r = float(sch.skills[1].then_throw.t_release_abs_s)
+    assert pend.t_next_release_s == pytest.approx(r)
+    assert pend.t_seat_close_s == pytest.approx(r + ex.SEAT_AFTER_RELEASE_S)
+    assert ex.SkillExecutor._outcome_window(pend)[1] == pytest.approx(
+        r + ex.SEAT_AFTER_RELEASE_S)
+
+
+def test_the_sample_complete_history_carries_a_seat_the_ticks_missed(sites):
+    """A SEATED pulse shorter than one tick, between two ticks, is invisible
+    to the per-tick latch; the history (``seat_window``, the miss rule's
+    source) sees every sample. With it wired the verdict is CAUGHT, the seat
+    phase is the history's first SEATED stamp, and the row waits one
+    MISSED_CATCH_DECIDE_LAG_S past its close so that stamp has arrived."""
+    sch = _schedule_with_then_throw(sites)
+    t_land = float(sch.skills[1].t_abs_s)
+    t_edge = t_land + 0.30 + 0.018                  # attempt 3's seat
+    calls = []
+
+    def seat_window(t0, t1):
+        calls.append((t0, t1))
+        n = int(round((t1 - t0) * 100))
+        seated = 1 if t0 <= t_edge <= t1 else 0
+        return ex.SeatWindow(n_valid=n, n_seated=seated, max_gap_s=0.01,
+                             t_first_seated_s=(t_edge if seated else None))
+
+    # The per-tick observer never sees the pulse (EMPTY on every tick).
+    experiences, x = _chained_catch_run(sites, seated_from_s=np.inf,
+                                        seat_window=seat_window)
+    assert len(experiences) == 1
+    assert experiences[0].caught is True
+    assert calls and calls[-1][1] == pytest.approx(
+        t_land + 0.30 + ex.SEAT_AFTER_RELEASE_S)
+    assert x.reports[-1].caught is True
+    assert x.reports[-1].seat_s == pytest.approx(t_edge - t_land)
+
+
+def test_the_history_is_blind_when_it_does_not_cover_the_window(sites):
+    """``None`` from ``seat_window`` is BLIND, not a miss: the per-tick latch
+    stands as it is (here: never SEATED, so MISSED), and nothing is invented."""
+    experiences, _x = _chained_catch_run(sites, seated_from_s=np.inf,
+                                         seat_window=lambda t0, t1: None)
+    assert len(experiences) == 1
+    assert experiences[0].caught is False
+
+
+def test_the_row_finalises_one_decide_lag_after_its_close_with_a_history(sites):
+    """With ``seat_window`` wired the row stays open until
+    ``close + MISSED_CATCH_DECIDE_LAG_S`` (so the window's last sample has
+    arrived); without one it finalises on the closing tick as before."""
+    sch = _schedule_with_then_throw(sites)
+    p2 = sites[1]
+    t_land = float(sch.skills[1].t_abs_s)
+    close = t_land + 0.30 + ex.SEAT_AFTER_RELEASE_S
+    land = _fit_landing(pos_mm=p2.catch_site_mm(), vel_mm_s=LAND_VEL,
+                      t_land_abs_s=t_land)
+    for wired in (False, True):
+        experiences = []
+        x = ex.SkillExecutor(
+            sch, _FakeInstaller(), tracker=lambda b: land,
+            observer=lambda b, t: bp.EVIDENCE_EMPTY,
+            on_experience=experiences.append,
+            seat_window=((lambda t0, t1: None) if wired else None))
+        x.tick(sch.skills[0].dispatch_s())
+        x.tick(sch.skills[1].dispatch_s())
+        x.tick(close + 0.005)
+        assert len(experiences) == (0 if wired else 1), wired
+        x.tick(close + ex.MISSED_CATCH_DECIDE_LAG_S + 0.005)
+        assert len(experiences) == 1, wired

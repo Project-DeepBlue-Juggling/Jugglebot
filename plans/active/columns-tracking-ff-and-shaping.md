@@ -35,9 +35,14 @@ First measurements, from a healthy-plant bag (`2026-10-05_16-42-57`, 35 hops):
   No large unobserved wobble in x is *yet demonstrated*.
 - **The 3 Hz mode is NOT confirmed.** The spectral peaks are harmonics of the 0.87 Hz hop train.
   Free-decay evidence is thin and looks lag-like.
-- **Leg 4 is the real anomaly.** It sits on the 10 A / lead clamp every hop (lag 70 ms, RMS
-  3.7 mm), though its modelled accel torque is the smallest of the six. Inertial FF will not
-  cure it; its cause is unidentified.
+- **Leg 4 was the real anomaly — RESOLVED 2026-10-06 by the owner's leg-ODrive
+  `FULL_CALIBRATION_SEQUENCE`.** On the 2026-10-05 bag it sat on the 10 A / lead clamp every hop
+  (lag 70 ms, RMS 3.7 mm; 95th-percentile |iq| 9.85 A, on the clamp 6.9 % of the run) though its
+  modelled accel torque is the smallest of the six. On the 2026-10-06 evening bag, after the
+  recalibration, it reads like legs 0/3/5 (p95 2.67 A, never on the clamp) while legs 0/3/5
+  are unchanged — an encoder-offset / commutation calibration drift, not a plant outlier
+  (`logbook/2026-10-06-skill-stack-r5-sitting-6-catch-high-seat-verdict.md`). Legs 1 and 2
+  remain the working pair in the lateral transits (p95 6–7 A).
 - **Sizing:** with inertial FF on, the real columns plan needs up to ~0.26 Nm per leg (legs 1, 2),
   likely an upper bound. The 0.15 Nm Jetson clamp would clip 27 % of knots; the firmware 0.25 wire-Nm clamp
   is almost enough. Both clamps need to rise to ~0.27 TRUE Nm (hard ceiling 0.30).
@@ -63,8 +68,9 @@ accel) if that is the better trade. Phase 0 picks which.
 - Operator records one isolated hop plus a 1.5 s hold, a few repeats, existing topics only. Add a
   small hop-train-free capture so a ring-down is visible.
 - Estimate the platform's actual lateral response (ring frequency and damping, or its absence).
-- Diagnose leg 4's persistent saturation separately (mechanical, per-leg gain/Kt, cable or
-  friction). Fix or explain it before judging FF, since it contaminates every A/B.
+- ~~Diagnose leg 4's persistent saturation separately (mechanical, per-leg gain/Kt, cable or
+  friction). Fix or explain it before judging FF, since it contaminates every A/B.~~ Done by
+  the leg recalibration (2026-10-06, § 1); any A/B uses a post-recalibration bag.
 - **Decision gate:** wobble is real and lag/ring-like → continue. Wobble is not measurable in the
   platform → stop and re-scope with the owner (the visible wobble may be tilt or hand reaction,
   which this plan does not address).
@@ -121,7 +127,7 @@ accel) if that is the better trade. Phase 0 picks which.
 
 ## 4. Risks
 1. Wobble is not in the platform's x or is hop-train aliasing → Phase 0 gate stops the plan early.
-2. Leg 4's saturation masks any FF benefit → diagnosed first.
+2. ~~Leg 4's saturation masks any FF benefit → diagnosed first.~~ Retired 2026-10-06 (recalibrated; § 1).
 3. Clamp raise eats current budget (4.5 A of 10 A at peak) and the loop loses authority → ramped scale, abort signatures.
 4. Torque staircase injects its own 40 Hz content → mid-knot sampling or interpolation, measured in Phase 3.
 5. Shaping delay breaks schedule timing or the learner → planner-integrated design, sim gate before hardware.
