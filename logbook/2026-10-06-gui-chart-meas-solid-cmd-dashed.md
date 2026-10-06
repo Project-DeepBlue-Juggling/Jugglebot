@@ -22,6 +22,9 @@ the setpoint's label is `Current (cmd)` (was `Current (set)`), so both commanded
 "cmd". The two tooltips that named the dashed trace were updated to match. Signal keys,
 colours, scales and data paths are unchanged, so saved signal selections still load.
 
+Follow-up (same day, owner): the toolbar now lists `Current (meas)` before `Current (cmd)`,
+so both pairs read meas-then-cmd.
+
 ## Verification
 
 - 2026-10-06, `pytest tests/ros/test_gui_geometry.py tests/sim/test_logbook*.py -q`: **169 passed**.
