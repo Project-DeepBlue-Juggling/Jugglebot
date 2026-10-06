@@ -121,8 +121,13 @@ def test_no_vote_without_a_majority():
 def test_outcast_yaw_anchor_refuses():
     """The yaw offset IS the anchor's parked angle; an anchor the others
     out-voted is biased by the same order, so fail closed."""
-    with pytest.raises(ValueError, match='Yaw-anchor Marker 4 is the outcast'):
+    with pytest.raises(ValueError) as exc:
         _run(_dataset(shifted=(BB_YAW_ANCHOR_INDEX,)))
+    # The operator line must say WHY an outcast fails here when one elsewhere
+    # does not: the yaw offset has no other source.
+    assert str(exc.value).startswith(
+        'Yaw-anchor Marker 4 is the outcast, so the yaw offset cannot be '
+        'estimated reliably — it is read from this marker alone: circle centre ')
 
 
 def test_outcast_plane_marker_is_left_out_of_the_plane_height():

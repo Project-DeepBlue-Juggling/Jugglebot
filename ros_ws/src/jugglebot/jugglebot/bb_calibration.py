@@ -737,8 +737,9 @@ def run_calibration(
         # the axis is biased by that order, ~1.5° at its 117 mm radius, i.e.
         # ~80 mm sideways at a 3 m throw — with no error raised downstream.
         raise ValueError(
-            f'Yaw-anchor Marker {yaw_anchor_index + 1} is the outcast: '
-            f'{metrics[yaw_anchor_index].reason}')
+            f'Yaw-anchor Marker {yaw_anchor_index + 1} is the outcast, so the '
+            f'yaw offset cannot be estimated reliably — it is read from this '
+            f'marker alone: {metrics[yaw_anchor_index].reason}')
 
     yaw_offset_rad, yaw_std_deg = calculate_yaw_offset(
         marker_trajectories[yaw_anchor_index],
