@@ -93,6 +93,30 @@ def test_calibration_success_is_one_info_line():
     assert not log.at('WARN') and not log.at('ERROR')
 
 
+def test_calibration_outcast_is_named_on_the_success_line():
+    """A marker the consensus excluded (bb_calibration MIN_AGREEING_MARKERS) is
+    named, with its distance, on the one INFO outcome line, and its reason
+    rides the per-marker WARN — the calibration still succeeds."""
+    import jugglebot.mocap_node as mn
+    node = _mocap_node()
+    log = _rec(node)
+    node._on_bb_heartbeat(_hb(BallButlerStates.CALIBRATING))
+    node._calib_data = {0: [np.zeros(3)]}
+    result = _fake_result()
+    result.marker_metrics[1] = SimpleNamespace(
+        status='outcast', distance_from_axis_mm=4.981,
+        reason='circle centre 4.98 mm from the axis the other 6 markers agree on')
+    with patch.object(mn, 'run_calibration', return_value=result):
+        node._on_bb_heartbeat(_hb(BallButlerStates.IDLE))
+    assert log.at('INFO')[1] == (
+        'BB calibrated: pos (-1019, -435, 1738) mm · axis tilt 0.62° '
+        '· yaw offset +1.78° ±0.02° · swept 119° '
+        '· outcast Marker 2 (4.98 mm off axis)')
+    assert log.at('WARN') == ['Marker 2: outcast — circle centre 4.98 mm from '
+                              'the axis the other 6 markers agree on']
+    assert not log.at('ERROR')
+
+
 def test_calibration_failure_is_one_error_line():
     import jugglebot.mocap_node as mn
     node = _mocap_node()

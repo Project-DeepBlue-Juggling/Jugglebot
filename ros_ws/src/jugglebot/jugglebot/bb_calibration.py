@@ -10,7 +10,10 @@ trace circular arcs as the yaw motor sweeps.  After the sweep completes, this mo
    per-marker geometry carries a secondary, lower floor. See
    :data:`MIN_ARC_DEG` and :data:`MIN_MARKER_ARC_DEG`.
 1. Fits a 3D circle to each marker trajectory (plane fit via SVD + algebraic circle fit).
-2. Extracts the common rotation axis (weighted average of circle normals/centers).
+2. Extracts the common rotation axis (weighted average of circle normals/centers)
+   from the largest subset of markers that agree on it — at least
+   :data:`MIN_AGREEING_MARKERS`; a marker left out is reported as an outcast
+   and the calibration still stands (:data:`MAX_AXIS_DEVIATION_MM`).
 3. Intersects the axis with the horizontal plane at the average Z height of the
    CO-PLANAR markers only (:data:`BB_PLANE_MARKER_INDICES`, QTM 3–7), offset by
    the pitch-axis vertical offset, to get the BB global position.
@@ -25,6 +28,7 @@ with minor cleanup.
 
 from __future__ import annotations
 
+import itertools
 import math
 import numpy as np
 from dataclasses import dataclass, field
@@ -127,6 +131,27 @@ MIN_MARKER_ARC_DEG = 20.0
 #: marker CAN be genuinely stubby without its radius collapsing (a clean,
 #: low-noise partial occlusion — which is what the synthetic fixtures model).
 MIN_MARKER_RADIUS_MM = 20.0
+
+#: How far (mm) a marker's fitted circle centre may sit from the rotation axis
+#: the consensus markers agree on. Unchanged from the original hard-coded 3.0,
+#: and deliberately NOT tightened: on the 14 recorded calibrations of
+#: 2026-10-05/06 the healthy markers, with the one outcast removed, still
+#: spread 1.29–2.30 mm, because ~1 mm of pose-dependent QTM error is levered up
+#: by fitting ~80–120° arcs. A 2.0 mm gate refused 9 of those 14.
+MAX_AXIS_DEVIATION_MM = 3.0
+
+#: Fewest markers that may out-vote an outcast (:func:`find_rotation_axis`).
+#: Of the 7, up to 2 can be excluded; with 5 or fewer fitted (occlusion) there
+#: is no majority to vote against one, and every fitted marker must agree.
+#:
+#: WHY (2026-10-06 sitting): all 7 rejections that night, and 4 of 5 the night
+#: before, were ONE marker — QTM 1, whose readings at the parked pose crept
+#: ~3 mm relative to the rest of the constellation over the first minutes of a
+#: session — taking the whole calibration down while the other six agreed
+#: within 2.3 mm. Fitted without it, BB's position agreed within 0.8 mm across
+#: all 9 attempts, so the refusals guarded nothing. The consensus keeps the
+#: gate strict for the markers it trusts and names the one it did not.
+MIN_AGREEING_MARKERS = 5
 
 #: Minimum yaw readings before the yaw-span gate is meaningful — the same count
 #: :func:`calculate_yaw_offset` already demands. Below it, ``run_calibration``
@@ -279,6 +304,8 @@ def find_rotation_axis(
     min_points: int = 50,
     min_marker_arc_deg: float = MIN_MARKER_ARC_DEG,
     min_radius_mm: float = MIN_MARKER_RADIUS_MM,
+    max_axis_dev_mm: float = MAX_AXIS_DEVIATION_MM,
+    min_agreeing: int = MIN_AGREEING_MARKERS,
 ) -> tuple[np.ndarray, np.ndarray, dict[int, MarkerFitMetrics]]:
     """Find the rotation axis from multiple marker circular trajectories.
 
@@ -296,11 +323,16 @@ def find_rotation_axis(
             into the axis average (:data:`MIN_MARKER_RADIUS_MM`) — the
             noise-proof half of the pair, since a collapsed fit is what
             *causes* the span to read wide.
+        max_axis_dev_mm: how far a circle centre may sit from the consensus
+            axis (:data:`MAX_AXIS_DEVIATION_MM`).
+        min_agreeing: fewest markers that may out-vote an outcast
+            (:data:`MIN_AGREEING_MARKERS`).
 
     Returns:
-        axis_point:   a point on the axis (mm).
-        axis_direction: unit vector along the axis.
-        quality_metrics: per-marker fit metrics.
+        axis_point:   a point on the axis (mm), from the consensus markers.
+        axis_direction: unit vector along the axis, ditto.
+        quality_metrics: per-marker fit metrics; an excluded marker carries
+            status ``'outcast'`` and its distance from the consensus axis.
 
     Raises:
         ValueError on insufficient data, too small an arc, or poor geometric
@@ -408,32 +440,71 @@ def find_rotation_axis(
             f'Calibration failed: only {len(centers)} markers had '
             f'sufficient data{detail}')
 
-    w = np.array(weights)
-    w /= w.sum()
-    c = np.array(centers)
-    n = np.array(normals)
+    fitted = [idx for idx, m in quality.items() if m.status == 'ok']
+    weight_of = dict(zip(fitted, weights))
 
-    axis_direction = (n * w[:, np.newaxis]).sum(axis=0)
-    axis_direction /= np.linalg.norm(axis_direction)
+    def axis_of(subset):
+        w = np.array([weight_of[i] for i in subset])
+        w /= w.sum()
+        n = (np.array([quality[i].normal for i in subset]) * w[:, np.newaxis]).sum(axis=0)
+        n /= np.linalg.norm(n)
+        p = (np.array([quality[i].center for i in subset]) * w[:, np.newaxis]).sum(axis=0)
+        return p, n
 
-    axis_point = (c * w[:, np.newaxis]).sum(axis=0)
+    def deviations(point, direction, markers):
+        out = {}
+        for i in markers:
+            v = quality[i].center - point
+            out[i] = float(np.linalg.norm(v - np.dot(v, direction) * direction))
+        return out
 
-    # Verify circle centres lie near the axis
-    max_dev = 0.0
-    for idx, m in quality.items():
-        if m.status != 'ok' or m.center is None:
-            continue
-        v = m.center - axis_point
-        perp = v - np.dot(v, axis_direction) * axis_direction
-        dist = float(np.linalg.norm(perp))
-        m.distance_from_axis_mm = dist
-        max_dev = max(max_dev, dist)
+    # Consensus (see MAX_AXIS_DEVIATION_MM / MIN_AGREEING_MARKERS): the largest
+    # subset whose centres all lie within tolerance of their OWN axis wins —
+    # all markers first, then one fewer, never below MIN_AGREEING_MARKERS. A
+    # marker left out is an outcast: excluded from the axis, reported, and
+    # the calibration stands. With too few markers to out-vote one, the
+    # subset is the full set, i.e. the pre-consensus rule.
+    smallest = min_agreeing if len(fitted) > min_agreeing else len(fitted)
+    best = None
+    for size in range(len(fitted), smallest - 1, -1):
+        for subset in itertools.combinations(fitted, size):
+            point, direction = axis_of(subset)
+            devs = deviations(point, direction, subset)
+            worst = max(devs.values())
+            if best is None or worst < best[0]:
+                best = (worst, subset, point, direction, devs)
+        if best[0] <= max_axis_dev_mm:
+            break
+        if size > smallest:
+            best = None
 
-    if max_dev > 3.0:
+    max_dev, consensus, axis_point, axis_direction, _ = best
+    all_devs = deviations(axis_point, axis_direction, fitted)
+    for i in fitted:
+        quality[i].distance_from_axis_mm = all_devs[i]
+
+    if max_dev > max_axis_dev_mm:
+        # Name every marker's deviation from the full-set axis: the failure
+        # line is then the per-marker breakdown, which the 2026-10-06 sitting
+        # had to dig out of a bag because only successes logged it.
+        point, direction = axis_of(fitted)
+        full = deviations(point, direction, fitted)
+        detail = ', '.join(f'Marker {i + 1} {full[i]:.2f}' for i in sorted(full))
         raise ValueError(
-            f'Circle centres deviate up to {max_dev:.2f} mm from axis. '
+            f'Circle centres deviate up to {max(full.values()):.2f} mm from axis '
+            f'({detail} mm; no {smallest} of {len(fitted)} agree within '
+            f'{max_axis_dev_mm:.1f} mm). '
             'This may indicate non-rigid motion or poor marker visibility.'
         )
+
+    n_agree = len(consensus)
+    for i in fitted:
+        if i not in consensus:
+            m = quality[i]
+            m.status = 'outcast'
+            m.reason = (f'circle centre {m.distance_from_axis_mm:.2f} mm from the '
+                        f'axis the other {n_agree} markers agree on '
+                        f'(> {max_axis_dev_mm:.1f} mm) — excluded')
 
     return axis_point, axis_direction, quality
 
@@ -544,6 +615,8 @@ def run_calibration(
     min_marker_arc_deg: float = MIN_MARKER_ARC_DEG,
     plane_marker_indices: tuple = BB_PLANE_MARKER_INDICES,
     yaw_anchor_index: int = BB_YAW_ANCHOR_INDEX,
+    max_axis_dev_mm: float = MAX_AXIS_DEVIATION_MM,
+    min_agreeing: int = MIN_AGREEING_MARKERS,
 ) -> CalibrationResult:
     """Execute the full calibration pipeline.
 
@@ -572,6 +645,10 @@ def run_calibration(
                            these or not, feed the axis fit.
         yaw_anchor_index:  zero-based index of the yaw-offset anchor marker
                            (:data:`BB_YAW_ANCHOR_INDEX`).
+        max_axis_dev_mm / min_agreeing: the consensus gate, forwarded to
+                           :func:`find_rotation_axis`. An outcast is left out
+                           of the axis AND the plane height; an outcast yaw
+                           anchor refuses the calibration.
 
     Returns:
         CalibrationResult on success.
@@ -602,8 +679,6 @@ def run_calibration(
             + ', '.join(str(i + 1) for i in sorted(plane_marker_indices))
             + ') — cannot place the BB x/y plane')
 
-    avg_z = float(np.mean(plane_z)) + pitch_z_offset_mm
-
     # ── PRIMARY sweep-completeness gate: BB's own yaw series ────────────────
     # Before any geometry. The marker-derived span is measured around a fitted
     # centre, and on a truncated sweep that centre is the ill-conditioned thing
@@ -627,7 +702,21 @@ def run_calibration(
 
     # Rotation axis
     axis_point, axis_dir, metrics = find_rotation_axis(
-        marker_trajectories, min_points, min_marker_arc_deg, min_radius_mm)
+        marker_trajectories, min_points, min_marker_arc_deg, min_radius_mm,
+        max_axis_dev_mm, min_agreeing)
+    outcasts = {i for i, m in metrics.items() if m.status == 'outcast'}
+
+    # The plane height comes from the co-planar markers the consensus kept: an
+    # outcast's readings are the ones that disagreed, so its Z is not trusted
+    # either. Fail closed, as above, if that leaves none.
+    plane_z = [z for i in plane_marker_indices
+               if i in marker_trajectories and i not in outcasts
+               for z in marker_trajectories[i][:, 2]]
+    if not plane_z:
+        raise ValueError(
+            'Every co-planar marker with data was an outcast — cannot place '
+            'the BB x/y plane')
+    avg_z = float(np.mean(plane_z)) + pitch_z_offset_mm
 
     # Intersection with Z plane
     intersection = find_axis_plane_intersection(axis_point, axis_dir, avg_z)
@@ -642,6 +731,14 @@ def run_calibration(
         raise ValueError(
             f'Insufficient yaw-anchor Marker {yaw_anchor_index + 1} data for '
             'yaw offset calculation')
+    if yaw_anchor_index in outcasts:
+        # Fail CLOSED. The yaw offset is this one marker's parked angle about
+        # the axis; a marker whose readings put its circle centre > 3 mm off
+        # the axis is biased by that order, ~1.5° at its 117 mm radius, i.e.
+        # ~80 mm sideways at a 3 m throw — with no error raised downstream.
+        raise ValueError(
+            f'Yaw-anchor Marker {yaw_anchor_index + 1} is the outcast: '
+            f'{metrics[yaw_anchor_index].reason}')
 
     yaw_offset_rad, yaw_std_deg = calculate_yaw_offset(
         marker_trajectories[yaw_anchor_index],

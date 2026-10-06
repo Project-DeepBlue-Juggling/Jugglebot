@@ -510,13 +510,21 @@ class MocapNode(Node):
         # BB's own reported yaw span is encoder-derived, so unlike the per-marker
         # arc_span it is not inflated by QTM marker noise (MIN_ARC_DEG was set
         # from it, 2026-08-25).
+        # An outcast (a marker the consensus excluded, bb_calibration
+        # MIN_AGREEING_MARKERS) is named on the outcome line itself: the
+        # calibration stands, but a marker that keeps turning up here is a
+        # physical fault to go and look at.
         pos = result.bb_position_mm
+        outcasts = ''.join(
+            f' · outcast Marker {idx + 1} ({m.distance_from_axis_mm:.2f} mm off axis)'
+            for idx, m in sorted(result.marker_metrics.items())
+            if m.status == 'outcast')
         self.get_logger().info(
             f'BB calibrated: pos ({pos[0]:.0f}, {pos[1]:.0f}, {pos[2]:.0f}) mm '
             f'· axis tilt {result.axis_tilt_deg:.2f}° '
             f'· yaw offset {math.degrees(result.yaw_offset_rad):+.2f}° '
             f'±{result.yaw_offset_std_deg:.2f}° '
-            f'· swept {result.yaw_span_deg:.0f}°'
+            f'· swept {result.yaw_span_deg:.0f}°{outcasts}'
         )
         self.get_logger().debug(
             f'Axis direction: ({result.axis_direction[0]:.4f}, '
