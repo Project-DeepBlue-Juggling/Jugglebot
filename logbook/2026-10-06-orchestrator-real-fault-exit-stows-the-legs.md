@@ -44,4 +44,16 @@ This follows the owner's decision of 2026-10-06. The rejected alternative was to
 
 ## Open Questions
 
-- A real fault during LEVELLING leaves the legs at the level pose in the same way: `LevellingHandler.on_exit` clears requests, and `level_deactivate` never runs. It is outside this change's scope, which covers faults from ACTIVE only.
+- ~~A real fault during LEVELLING leaves the legs at the level pose in the same way: `LevellingHandler.on_exit` clears requests, and `level_deactivate` never runs.~~ **Closed 2026-10-07** by the section below: the stow now covers FAULT visits that began in LEVELLING.
+
+## 2026-10-07 — extended to faults that began in LEVELLING
+
+The owner extended the stow to LEVELLING (2026-10-07). `level_activate` runs the same profiled ACTIVATE and holds the pose through settle, tilt, correction, persist and the mocap check until `level_deactivate`. A real fault in that window, whether forced by an ODrive error at `_tick` step 2 or returned by the handler on a failed `level_*` op, has `prev_state == LEVELLING`, so it went BOOT → IDLE with the legs still posed.
+
+- **Contract first:** `ARMING_CONTRACT.md` choreography step 6 now scopes the stow to visits that began in ACTIVE or LEVELLING. The A2 row names the new tests.
+- **Code:** `FaultHandler._from_active` is renamed `_legs_posed_at_entry = ctx.prev_state in _LEGS_POSED_STATES`, where `_LEGS_POSED_STATES = (ACTIVE, LEVELLING)`. The rest of the stow is unchanged: one request, hold, one retry per `clear_errors`, queued commands, and the wait for an in-flight op. The guard-only classification stays ACTIVE with an armed wire, because LEVELLING never arms the wire.
+- **Orchestrator:** comment only. A handler-returned LEVELLING → FAULT fires only on a resolved `level_*` result: `_check_pending_operations` clears `operation_pending` with the result, and `on_exit` clears queued requests. So the tracked slot is empty, and the stow goes out on the first FAULT tick alongside the A2 disarm.
+- **Residual (not fixed):** suppose a forced fault lands while `level_deactivate` is in flight, and the errors clear with the legs still closed-loop. The stow's deactivate would then meet a running move. The firmware busy-rejects a second concurrent move (`teensy_bridge_node.py` cold-start callback group), so the stow fails and FAULT holds until a `clear_errors` retry. That is the safe direction.
+- **Tests:** `TestFaultExitStowFromLevelling` (4) and `TestFaultExitStowFromLevellingThroughTick` (2) cover a forced fault mid-settle, a handler-returned NaN tilt, legs not closed-loop, and a guard latch in LEVELLING being a real fault. Reverting the predicate to ACTIVE-only fails five of them; the legs-not-closed-loop test is green either way.
+- 2026-10-07, `python -m pytest tests/ros/test_state_machine.py tests/ros/test_orchestrator_node.py tests/ros/test_orchestrator_conduit_contract.py tests/ros/test_orchestrator_conduit_integration.py -q -p no:cacheprovider`: **290 passed in 3.67 s**.
+- Full gate (`./run_tests.sh --full`, run 2026-10-07, log `temp/logs/gate_full_r5_levelling_stow_20261007.log`): **parallel 6131 passed, 9 skipped, 1 xfailed in 305.54 s; serial 6 passed in 20.02 s; RESULT PASS, exit 0.** The only edit after that run is this line; the logbook tests were re-run after it.

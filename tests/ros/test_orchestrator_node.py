@@ -1628,3 +1628,92 @@ class TestFaultExitStowThroughTick:
         orch._tick()
         assert orch.sm.state == RobotState.IDLE
         spy.call_async.assert_called_once()
+
+
+class TestFaultExitStowFromLevellingThroughTick:
+    """The real-fault exit stow for a FAULT visit that began in LEVELLING
+    (ARMING_CONTRACT choreography step 6, extended 2026-10-07), through _tick:
+    level_activate holds the active pose until level_deactivate, and
+    LevellingHandler.on_exit only clears requests, so before the extension the
+    exit went BOOT -> IDLE with the legs at the level pose."""
+
+    @staticmethod
+    def _levelling_mid_settle(orch):
+        """LEVELLING entered through the node, level_activate succeeded, legs
+        closed-loop and homed, settle running. Returns (activate spy, the two
+        activate-client futures, CLOSED_LOOP state, healthy robot_state kw)."""
+        from jugglebot.can import odrive
+        closed = odrive.AXIS_STATES['CLOSED_LOOP']
+        healthy = dict(is_homed=True, firmware_validated=True)
+        spy = MagicMock()
+        spy.service_is_ready.return_value = True
+        futs = [MockFuture(), MockFuture()]
+        spy.call_async.side_effect = futs
+        orch._activate_client = spy
+        orch._on_link_status(_link_status('NONE'))
+        orch._on_robot_state(_robot_state_legs(closed, **healthy))
+        orch.sm.force_transition(RobotState.LEVELLING, orch.ctx)
+        orch._tick()                                   # dispatches level_activate
+        spy.call_async.assert_called_once()
+        assert spy.call_async.call_args[0][0].command == 'activate'
+        futs[0].set_result(MagicMock(success=True, message='activated'))
+        orch._tick()                                   # activated: settle
+        assert orch.sm.state == RobotState.LEVELLING
+        return spy, futs, closed, healthy
+
+    @staticmethod
+    def _stow_then_boot_idle(orch, spy, fut, cap, healthy):
+        """The stow was just dispatched: FAULT holds while it runs, then BOOT
+        and IDLE once it succeeds with the legs at IDLE."""
+        assert orch.sm.state == RobotState.FAULT
+        assert spy.call_async.call_count == 2
+        assert spy.call_async.call_args[0][0].command == 'deactivate'
+        assert len([m for m in cap.at('info')
+                    if m.startswith('FAULT exit')]) == 1
+        orch._tick()
+        orch._tick()
+        assert orch.sm.state == RobotState.FAULT       # held while it runs
+        assert spy.call_async.call_count == 2
+        fut.set_result(MagicMock(success=True, message='stowed'))
+        orch._on_robot_state(_robot_state_legs(1, **healthy))   # legs IDLE
+        orch._tick()
+        assert orch.sm.state == RobotState.BOOT
+        orch._tick()
+        assert orch.sm.state == RobotState.IDLE
+        assert spy.call_async.call_count == 2
+
+    def test_forced_odrive_fault_mid_settle_stows_then_idle(self, orch):
+        spy, futs, closed, healthy = self._levelling_mid_settle(orch)
+        cap = _Capture(orch)
+        orch._on_robot_state(_robot_state_legs(
+            closed, errors=['ODrive error on leg 2'],
+            has_fatal_odrive_error=True, **healthy))
+        orch._tick()
+        assert orch.sm.state == RobotState.FAULT       # forced (_tick step 2)
+        assert orch.ctx.control_mode == 'ERROR'
+        assert spy.call_async.call_count == 1
+        orch._on_robot_state(_robot_state_legs(closed, **healthy))
+        orch._tick()
+        self._stow_then_boot_idle(orch, spy, futs[1], cap, healthy)
+
+    def test_handler_returned_fault_on_nan_tilt_stows_then_idle(self, orch):
+        """level_get_tilt returns NaN -> LevellingHandler returns FAULT. The
+        failed tilt call has resolved, so nothing is in flight in the tracked
+        slot and the node needs no extra handling: the stow goes out on the
+        first FAULT tick."""
+        spy, futs, closed, healthy = self._levelling_mid_settle(orch)
+        tilt = MagicMock()
+        tilt.service_is_ready.return_value = True
+        tfut = MockFuture()
+        tilt.call_async.return_value = tfut
+        orch._tilt_client = tilt
+        orch.sm._handlers[RobotState.LEVELLING]._settle_start -= 60.0
+        orch._tick()                                   # settled: get tilt
+        tilt.call_async.assert_called_once()
+        cap = _Capture(orch)
+        tfut.set_result(MagicMock(tilt_xy=[float('nan'), float('nan')]))
+        orch._tick()
+        assert orch.sm.state == RobotState.FAULT       # handler-returned
+        assert spy.call_async.call_count == 1
+        orch._tick()                                   # enter FAULT: stow
+        self._stow_then_boot_idle(orch, spy, futs[1], cap, healthy)

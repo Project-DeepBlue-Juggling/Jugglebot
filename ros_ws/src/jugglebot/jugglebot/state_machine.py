@@ -63,8 +63,9 @@ class Context:
         # active_errors == 0 (derived by the orchestrator from
         # /robot_state.motor_states; fewer than six entries -> False). This is
         # "the legs are holding a pose and a profiled DEACTIVATE can lower them".
-        # FaultHandler's real-fault exit from ACTIVE stows only when it is true
-        # (ARMING_CONTRACT choreography step 6).
+        # FaultHandler's real-fault exit stow (a visit that began in ACTIVE or
+        # LEVELLING) runs only when it is true (ARMING_CONTRACT choreography
+        # step 6).
         self.legs_closed_loop = False
         self.errors = []                     # Error strings from /robot_state
         self.fatal_error = False
@@ -607,6 +608,15 @@ class ActiveHandler(StateHandler):
         ctx.request = 'deactivate'
 
 
+# States that hold the six legs at an active pose in CLOSED_LOOP: ACTIVE, and
+# LEVELLING (level_activate runs the same profiled ACTIVATE and the pose is held
+# through settle / tilt / correction / persist / mocap-check until
+# level_deactivate). A real fault whose FAULT visit began in one of them stows
+# the legs on exit (FaultHandler._real_fault_exit, ARMING_CONTRACT choreography
+# step 6). NOT the guard-only classification, which stays ACTIVE + armed wire.
+_LEGS_POSED_STATES = (RobotState.ACTIVE, RobotState.LEVELLING)
+
+
 class FaultHandler(StateHandler):
     """Error state — classify severity and wait for resolution.
 
@@ -630,12 +640,15 @@ class FaultHandler(StateHandler):
     BOOT (the real-fault exit) then re-validates heartbeats and either skips to
     IDLE (if already homed) or proceeds through HOMING (if ODrives rebooted).
 
-    Real-fault exit stow (ARMING_CONTRACT choreography step 6, 2026-10-06): a
-    real fault whose visit began in ACTIVE, once everything has cleared, first
-    requests the profiled DEACTIVATE if all six legs are closed-loop and the
-    robot is homed, and holds FAULT until it succeeds. Without it a forced
-    ACTIVE->FAULT (whose ActiveHandler.on_exit deactivate the orchestrator
-    cancels) reached IDLE with the legs still holding an active pose.
+    Real-fault exit stow (ARMING_CONTRACT choreography step 6, 2026-10-06;
+    LEVELLING added 2026-10-07): a real fault whose visit began in ACTIVE or
+    LEVELLING, once everything has cleared, first requests the profiled
+    DEACTIVATE if all six legs are closed-loop and the robot is homed, and
+    holds FAULT until it succeeds. Without it a forced ACTIVE->FAULT (whose
+    ActiveHandler.on_exit deactivate the orchestrator cancels), or any fault
+    during LEVELLING (whose level_activate holds the same active pose until
+    level_deactivate, and whose on_exit only clears requests), reached IDLE
+    with the legs still holding an active pose.
     """
 
     def __init__(self):
@@ -644,16 +657,18 @@ class FaultHandler(StateHandler):
         # ACTIVE) with NO ODrive-level error — see on_enter.
         self._guard_only = False
         # Real-fault exit stow bookkeeping, all reset on every on_enter.
-        # _from_active: this FAULT visit began in ACTIVE. Sticky, so a guard-only
+        # _legs_posed_at_entry: this FAULT visit began in a state that holds
+        # the legs at an active pose in CLOSED_LOOP (ACTIVE, or LEVELLING
+        # between level_activate and level_deactivate). Sticky, so a guard-only
         # fault promoted to real mid-FAULT (promotion does not re-enter) still
-        # stows.
-        self._from_active = False
+        # stows. The guard-only classification below stays ACTIVE-only.
+        self._legs_posed_at_entry = False
         self._stow_requested = False   # our 'deactivate' is in flight
         self._stow_done = False        # it succeeded: the legs are stowed
         self._stow_failed = False      # it failed: hold FAULT until clear_errors
 
     def on_enter(self, ctx):
-        self._from_active = ctx.prev_state == RobotState.ACTIVE
+        self._legs_posed_at_entry = ctx.prev_state in _LEGS_POSED_STATES
         self._stow_requested = False
         self._stow_done = False
         self._stow_failed = False
@@ -803,25 +818,29 @@ class FaultHandler(StateHandler):
         """The real-fault exit, given every error and the guard latch have cleared.
 
         Returns BOOT, or None to hold FAULT. A FAULT visit that began in ACTIVE
-        with all six legs closed-loop and the robot homed means the legs are
-        still holding an active pose: request the profiled DEACTIVATE first and
-        hold FAULT until it succeeds, so the machine never reaches IDLE
-        ("platform stowed, legs idle") while they hold it (ARMING_CONTRACT
+        or LEVELLING with all six legs closed-loop and the robot homed means the
+        legs are still holding an active pose: request the profiled DEACTIVATE
+        first and hold FAULT until it succeeds, so the machine never reaches
+        IDLE ("platform stowed, legs idle") while they hold it (ARMING_CONTRACT
         choreography step 6). Otherwise BOOT at once, as before: a leg that
         dropped out of closed loop (e.g. an ODrive reboot) is BOOT -> HOMING's
-        job, and a fault from BOOT/HOMING/IDLE/LEVELLING has no active pose.
+        job, and a fault from BOOT/HOMING/IDLE has no active pose.
         """
         if self._stow_done:
             return RobotState.BOOT
         if self._stow_requested or self._stow_failed:
             return None
-        if not (self._from_active and ctx.is_homed and ctx.legs_closed_loop):
+        if not (self._legs_posed_at_entry and ctx.is_homed
+                and ctx.legs_closed_loop):
             return RobotState.BOOT
         if ctx.operation_pending:
             # A tracked operation (an operator clear_errors, or the
             # ActiveHandler.on_exit deactivate on a handler-returned
             # ACTIVE->FAULT) is still in flight. Requesting now would orphan it
-            # in the orchestrator's single slot; wait for it to resolve.
+            # in the orchestrator's single slot; wait for it to resolve. (A
+            # handler-returned LEVELLING->FAULT leaves nothing in flight: it
+            # fires only on a RESOLVED level_* result, and on_exit clears any
+            # queued request.)
             return None
         ctx.operation_result = None
         ctx.request = 'deactivate'

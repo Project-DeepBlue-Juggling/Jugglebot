@@ -1200,12 +1200,19 @@ class TestFaultHandler:
 # ════════════════════════════════════════════════════════════════
 
 
+# Requests the orchestrator tracks in its single operation slot (the ones these
+# tests drive; 'arm_setpoints' is drained by hand where it occurs).
+_TRACKED_REQUESTS = ('activate', 'deactivate', 'clear_errors',
+                     'level_activate', 'level_get_tilt', 'level_deactivate')
+
+
 def _dispatch(ctx):
     """Stand in for the orchestrator's _process_requests: drain the requests and
-    start the tracked ones the way _start_service_call does (pending, no result).
-    'disarm_setpoints' is fire-and-forget and never touches the slot."""
+    start the tracked ones the way _start_service_call / _start_tilt_service_call
+    do (pending, no result). 'disarm_setpoints' is fire-and-forget and never
+    touches the slot."""
     reqs = ctx.drain_requests()
-    if any(r in ('deactivate', 'clear_errors') for r in reqs):
+    if any(r in _TRACKED_REQUESTS for r in reqs):
         ctx.operation_pending = True
         ctx.operation_result = None
     return reqs
@@ -1402,6 +1409,130 @@ class TestFaultExitStow:
         assert sm.state == RobotState.ACTIVE
         assert ctx.resume_active_no_rearm is True
         assert 'deactivate' not in _dispatch(ctx)
+
+
+class TestFaultExitStowFromLevelling:
+    """A real fault whose FAULT visit began in LEVELLING stows the legs the same
+    way (ARMING_CONTRACT choreography step 6, extended 2026-10-07):
+    level_activate runs the profiled ACTIVATE and the pose is held through
+    settle / tilt / correction / persist / mocap-check, and
+    LevellingHandler.on_exit only clears requests, so without the stow the
+    real-fault exit reached BOOT -> IDLE with the legs at the level pose."""
+
+    @staticmethod
+    def _levelling_mid_settle(**ctx_kw):
+        """A machine in LEVELLING, level_activate succeeded, mid-settle."""
+        sm = build_default_machine(log_fn=lambda msg: None)
+        ctx = Context()
+        ctx.is_homed = True
+        ctx.legs_closed_loop = True
+        for k, v in ctx_kw.items():
+            setattr(ctx, k, v)
+        sm.force_transition(RobotState.LEVELLING, ctx)
+        sm.tick(ctx)                       # enter: requests 'level_activate'
+        assert _dispatch(ctx) == ['level_activate']
+        _resolve(ctx, True)
+        sm.tick(ctx)                       # activated: settle starts
+        assert sm.state == RobotState.LEVELLING
+        assert _dispatch(ctx) == []
+        return sm, ctx
+
+    @staticmethod
+    def _boot_to_idle(sm, ctx):
+        ctx.all_heartbeats = True
+        ctx.firmware_validated = True
+        ctx.link_status_seen = True
+        sm.tick(ctx)
+        assert sm.state == RobotState.IDLE
+
+    def _forced_fault_then_cleared(self, **ctx_kw):
+        """An ODrive error forces FAULT mid-settle (orchestrator _tick step 2),
+        then clears. Returns (sm, ctx, requests of the clearing tick)."""
+        sm, ctx = self._levelling_mid_settle(**ctx_kw)
+        ctx.errors = ['ODrive error on leg 2']
+        ctx.fatal_error = True
+        _force_fault(sm, ctx)
+        sm.tick(ctx)
+        assert sm.state == RobotState.FAULT
+        assert ctx.control_mode == 'ERROR'
+        assert _dispatch(ctx) == ['disarm_setpoints']
+        ctx.errors = []
+        ctx.fatal_error = False
+        sm.tick(ctx)
+        return sm, ctx, _dispatch(ctx)
+
+    def test_forced_fault_mid_settle_stows_before_boot(self):
+        sm, ctx, reqs = self._forced_fault_then_cleared()
+        assert reqs == ['deactivate']
+        for _ in range(5):
+            sm.tick(ctx)
+            assert sm.state == RobotState.FAULT      # held while the stow runs
+            assert _dispatch(ctx) == []              # no second request
+        _resolve(ctx, True)
+        ctx.legs_closed_loop = False                 # legs IDLE at STOW
+        sm.tick(ctx)
+        assert sm.state == RobotState.BOOT
+        assert _dispatch(ctx) == []
+        self._boot_to_idle(sm, ctx)
+
+    def test_handler_returned_fault_on_failed_tilt_stows_before_boot(self):
+        """level_get_tilt resolves False -> LevellingHandler returns FAULT. The
+        failed op has RESOLVED (nothing in flight), no error string is set, so
+        the stow is requested on the first FAULT tick, alongside the A2
+        disarm."""
+        sm, ctx = self._levelling_mid_settle()
+        sm._handlers[RobotState.LEVELLING]._settle_start -= 60.0   # settled
+        sm.tick(ctx)
+        assert _dispatch(ctx) == ['level_get_tilt']
+        _resolve(ctx, False)                         # NaN tilt / service fail
+        sm.tick(ctx)
+        assert sm.state == RobotState.FAULT          # handler-returned
+        sm.tick(ctx)
+        assert ctx.control_mode == 'ERROR'
+        assert _dispatch(ctx) == ['disarm_setpoints', 'deactivate']
+        for _ in range(5):
+            sm.tick(ctx)
+            assert sm.state == RobotState.FAULT
+            assert _dispatch(ctx) == []
+        _resolve(ctx, True)
+        ctx.legs_closed_loop = False
+        sm.tick(ctx)
+        assert sm.state == RobotState.BOOT
+        self._boot_to_idle(sm, ctx)
+
+    def test_legs_not_closed_loop_exits_to_boot_at_once(self):
+        """A leg out of CLOSED_LOOP at the clear (e.g. an ODrive reboot): no
+        pose to lower, BOOT at once, as before — re-arming is HOMING's job."""
+        sm, ctx, reqs = self._forced_fault_then_cleared(
+            legs_closed_loop=False)
+        assert 'deactivate' not in reqs
+        assert sm.state == RobotState.BOOT
+
+    def test_guard_latch_during_levelling_is_a_real_fault(self):
+        """LEVELLING never arms the wire, so a guard latch carried into a
+        LEVELLING fault is NOT guard-only even with a stale armed mirror: the
+        mode goes ERROR, the wire is disarmed, and on the clear the exit is the
+        stow + BOOT, never a resume into ACTIVE."""
+        sm, ctx = self._levelling_mid_settle(wire_armed=True)
+        sm._handlers[RobotState.LEVELLING]._settle_start -= 60.0
+        sm.tick(ctx)
+        assert _dispatch(ctx) == ['level_get_tilt']
+        ctx.guard_latched = True                     # latch, no ODrive error
+        _resolve(ctx, False)
+        sm.tick(ctx)
+        assert sm.state == RobotState.FAULT
+        sm.tick(ctx)
+        assert ctx.control_mode == 'ERROR'           # not the guard-only hold
+        assert _dispatch(ctx) == ['disarm_setpoints']  # held: guard latched
+        ctx.guard_latched = False
+        sm.tick(ctx)
+        assert sm.state == RobotState.FAULT
+        assert _dispatch(ctx) == ['deactivate']
+        assert ctx.resume_active_no_rearm is False
+        _resolve(ctx, True)
+        ctx.legs_closed_loop = False
+        sm.tick(ctx)
+        assert sm.state == RobotState.BOOT
 
 
 # ════════════════════════════════════════════════════════════════
