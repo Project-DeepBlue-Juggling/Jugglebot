@@ -323,6 +323,25 @@ def test_gate_threshold_is_three_sigma_when_that_is_larger():
     assert not check_calibration_consistency(0.95, 0.1, BB_POS, 0.3, REF).accepted
 
 
+def test_gate_threshold_combines_both_sigmas():
+    """The limit is 3·√(σ_new² + σ_ref²): with σ 0.1 on both sides it is
+    0.424°, not 0.3°. A reference without a σ is treated as exact."""
+    ref = dict(REF, yaw_offset_std_deg=0.1)
+    v = check_calibration_consistency(0.95, 0.1, BB_POS, 0.3, ref)
+    assert v.accepted and abs(v.threshold_deg - 3 * math.hypot(0.1, 0.1)) < 1e-9
+    assert not check_calibration_consistency(1.05, 0.1, BB_POS, 0.3, ref).accepted
+    assert not check_calibration_consistency(0.95, 0.1, BB_POS, 0.3, REF).accepted
+
+
+def test_gate_accepts_the_sweep_pair_it_refused_on_2026_10_09():
+    """Bag 2026-10-09_23-49-07 replayed with the fix: sweep 1 +0.4124° ±0.047 as
+    the reference, sweep 2 +0.6095° ±0.063 (Δ 0.197°) was refused at
+    max(3·0.063, 0.15) = 0.189°; with both σ the limit is 0.236°."""
+    ref = {'yaw_offset_deg': 0.4124, 'yaw_offset_std_deg': 0.047, 'position_mm': list(BB_POS)}
+    v = check_calibration_consistency(0.6095, 0.063, BB_POS, 0.3, ref)
+    assert v.accepted and 0.23 < v.threshold_deg < 0.24
+
+
 def test_gate_refuses_yaw_axis_and_residual():
     assert 'yaw' in check_calibration_consistency(0.8, 0.04, BB_POS, 0.3, REF).message
     v = check_calibration_consistency(0.6, 0.04, BB_POS + [0, 1.6, 0], 0.3, REF)

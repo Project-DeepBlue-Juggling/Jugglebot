@@ -3,7 +3,7 @@ estimator inputs it collects (2026-10-09, sweep estimator).
 
 * With NO state file the first calibration is accepted, persisted and logged
   at WARN (there is no reference; the template's pin is not one).
-* Afterwards a calibration is refused when |Δyaw| > max(3σ, 0.15°), the axis
+* Afterwards a calibration is refused when |Δyaw| > max(3·√(σ_new² + σ_ref²), 0.15°), the axis
   point moved > 1.5 mm, or the template residual > 0.5 mm, unless the
   one-shot ``bb_moved`` (BB moved or QTM recalibrated) is armed — which does
   not excuse the residual.

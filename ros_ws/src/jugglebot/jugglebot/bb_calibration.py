@@ -1366,9 +1366,14 @@ def check_calibration_consistency(
     (``no_reference`` set; the caller logs a WARN) — there is nothing to
     compare against, and the template's pin is NOT used as one.
 
-    With a reference, refused when |Δyaw| > max(n_sigma·σ_new, min_deg), or
-    |Δaxis point| > ``max_axis_shift_mm`` (3D), or the template residual >
-    ``max_residual_mm``. ``bb_moved`` — the operator's statement that BB moved
+    With a reference, refused when |Δyaw| > max(n_sigma·√(σ_new² + σ_ref²),
+    min_deg), or |Δaxis point| > ``max_axis_shift_mm`` (3D), or the template
+    residual > ``max_residual_mm``. Both estimates carry their own σ
+    (``yaw_offset_std_deg``; the reference's as persisted, 0 if absent): the
+    difference of two independent sweeps spreads √2 wider than one, and a
+    limit of 3σ_new alone refused a good pair in bag 2026-10-09_23-49-07
+    (Δ 0.197° against 0.189°, both sweeps ±0.05–0.06°; logbook
+    2026-10-09-bb-calibration-heartbeat-yaw-wrap). ``bb_moved`` — the operator's statement that BB moved
     OR that QTM was recalibrated (either changes the frame; one override
     resets the reference) — accepts a yaw/axis change; it does not excuse a
     template residual (a marker that moved on BB needs a new template, not a
@@ -1379,7 +1384,8 @@ def check_calibration_consistency(
                                  'persisted as the reference', no_reference=True)
     ref_yaw = float(reference['yaw_offset_deg'])
     delta = math.degrees(wrap_pi(math.radians(new_offset_deg - ref_yaw)))
-    thr = max(n_sigma * new_std_deg, min_deg)
+    ref_std = float(reference.get('yaw_offset_std_deg') or 0.0)
+    thr = max(n_sigma * math.hypot(float(new_std_deg), ref_std), min_deg)
     ref_pos = reference.get('position_mm')
     shift = (float(np.linalg.norm(np.asarray(new_position_mm, float) - np.asarray(ref_pos, float)))
              if ref_pos is not None else 0.0)

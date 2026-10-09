@@ -126,8 +126,28 @@ ROS launch DOWN for the BB flash, because the fw-update tool owns the bridge's U
    - Sweep yaw and confirm `bb_yaw` leads the heartbeat yaw by ~80–170 ms.
    - Two names only means a stale/absent 0x7D8: BB still on FW 5, or BB dark.
 
+## Flash record and wire check (2026-10-10)
+
+- **BB flashed to FW 6 over CAN, 2026-10-09 23:44** (BallButler `main` `c99ce96`; through the
+  FW 27 bridge, 25.3 s, `FW version: 5 -> 6`). The ini's tool path had to be the live
+  checkout's (`~/Desktop/Jugglebot-skills/tools/teensy_link_bridge.py`); BallButler `587e732`
+  points it there.
+- **Can-bridge flashed to FW 28 over USB, 2026-10-10 00:01** from this branch (`02abfe49`):
+  `pio run -e teensy41`, waiting `teensy_loader_cli --mcu=TEENSY41 -w -v`, 134-baud touch of
+  the hub's by-id port only (`BRIDGE_IDENTITY` reports 28, link UP, uptime reset).
+- **Raw-link check with BB on** (`BallButler/ball_butler_main/scripts/bb_link_check.py`, no
+  ROS, 5 s window): `BB_YAW_ESTIMATE` 99.9 Hz beside `BB_AXIS_ESTIMATES` 99.9 Hz, **500/500
+  stamps paired**; `yaw_age_us` min 21 µs, median 3.0 ms, p95 3.0 ms, max 6.05 ms (the 150 Hz
+  sample-and-hold prediction: 0–6.7 ms); stamped yaw −2.9° while the heartbeat read 357.13°
+  (the same angle before the [0, 360) wrap); BB bus 457 frames/s, +150 over a BB FW 5 bag.
+- **Still owed:** the ROS topic check (`/bb/axis_estimates` with `bb_yaw`, after a host launch)
+  and the first live calibration with `yaw source stamped`. Status stays `in-progress`.
+- Seen at rest (yaw motor unpowered): the stamped yaw crept 0.2° over 5 s with a reported
+  −0.8 °/s. Physical creep of the unpowered stage rather than encoder noise, by its size;
+  harmless to the moving-sweep estimator, unexplained.
+
 ## Open Questions / Follow-ups
 
 - Hardware check (step 4), then flip to `resolved`.
-- Measure the `yaw_age_us` distribution (expect ~0–7.5 ms, mean ≈ 4). Decide whether to publish it or correct for it.
+- `yaw_age_us` measured 2026-10-10: median 3.0 ms, max 6.05 ms (above). Decide whether to publish it or correct for it.
 - The calibration consumer (`mocap_node` BB pose fit) still reads heartbeat yaw. Switching it to `bb_yaw` is the next unit.

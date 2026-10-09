@@ -42,7 +42,7 @@ The first fix read the offset from the sweep's stationary yaw-0 pause only: per-
 2. Position from the body model's axis point over the sweep; the arc fit stays as a cross-check; tilt from the arc fit as before.
 3. Template rebuilt yaw-balanced from all 7 markers of A, B and the 7-sweep bag, with E(y) and the gauge in it. Gauge pinned to session A's frame: A's own data must read 0.208°. ONE number (`gauge.pinned_yaw_offset_deg`) is the owner's adjustment.
 4. σ = per-sweep formal error ⊕ out-of-sample repeatability (leave-sweeps-out on the 7 sweeps). No per-frame SD, no pause floor.
-5. Gate: no state file → accept, persist, WARN; afterwards refuse |Δyaw| > max(3σ, 0.15°), |Δaxis| > 1.5 mm, or template residual > 0.5 mm; the one-shot `bb_moved` resets the reference (also after a QTM recalibration).
+5. Gate: no state file → accept, persist, WARN; afterwards refuse |Δyaw| > max(3σ, 0.15°) (since 2026-10-10: 3·√(σ_new² + σ_ref²), see 2026-10-09-bb-calibration-heartbeat-yaw-wrap), |Δaxis| > 1.5 mm, or template residual > 0.5 mm; the one-shot `bb_moved` resets the reference (also after a QTM recalibration).
 6. Drop the 80 ms constant, the pause floor, the QTM 1/2-at-yaw-0 claim.
 
 **Findings made during the work that changed the code (each checked on the bags before acting):**
@@ -71,7 +71,7 @@ The first fix read the offset from the sweep's stationary yaw-0 pause only: per-
 - **σ** = √(formal SE² + 0.0308²): 0.046–0.070° per sweep.
 - **Gate** (`check_calibration_consistency`, in `mocap_node`):
   - **Reference:** the state file (`~/bb_calibration_sessions/bb_calibration_last_accepted.json`), now storing position, lag, source and residual too. With no state file the calibration is accepted, persisted and logged at WARN; the template's pin is not a reference.
-  - **Refusals:** `CALIBRATION_INCONSISTENT` (Δyaw > max(3σ, 0.15°), or Δaxis > 1.5 mm in 3D), `TEMPLATE_RESIDUAL` (> 0.5 mm; `bb_moved` does not excuse it: a moved marker needs a new template), and `CALIBRATION_STATE_UNREADABLE` (a corrupt state file is no longer a silent fallback).
+  - **Refusals:** `CALIBRATION_INCONSISTENT` (Δyaw > max(3σ, 0.15°) — both sweeps' σ combined since 2026-10-10 — or Δaxis > 1.5 mm in 3D), `TEMPLATE_RESIDUAL` (> 0.5 mm; `bb_moved` does not excuse it: a moved marker needs a new template), and `CALIBRATION_STATE_UNREADABLE` (a corrupt state file is no longer a silent fallback).
   - **Override:** `bb_moved` is one-shot, and is the flag for BB moved OR QTM recalibrated (rotating markers cannot tell the two apart). The accepted calibration becomes the reference.
 - **`mocap_node` inputs:**
   - **Frames:** at their QTM stamp (`frame_ros_ns`, ROS clock), one per distinct stamp. The 200 Hz timer snapshots the latest frame, so duplicates are dropped; unstamped frames feed the arc fit only.
