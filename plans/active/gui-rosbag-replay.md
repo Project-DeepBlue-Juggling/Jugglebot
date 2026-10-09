@@ -25,10 +25,10 @@ available only while no live ROS2 session is connected.
 the map and its tickets live in `.scratch/gui-replay/` (gitignored, local to
 the `Jugglebot-skills` worktree). Ticket 00 holds the 21 charting decisions,
 ticket 01 the decode / payload measurements, ticket 05 the backend decisions.
-**Tickets 02 (engine and feed contract), 03 (replay UI prototype) and 04 (3D
-trails prototype) are still open**: Phases 2–4 below are outlines that each
-ticket's resolution will turn into a detailed phase. Phase 1 is fully decided
-and is the first build.
+Ticket 02 (engine and feed contract) was resolved 2026-10-10 and is Phase 2
+below. **Tickets 03 (replay UI prototype — mock built, owner's pick pending)
+and 04 (3D trails prototype) are still open**: Phases 3–4 are outlines that
+each ticket's resolution will turn into a detailed phase.
 
 ## Context
 
@@ -139,8 +139,8 @@ recordings root holding exactly one `.mcap`; the nested
 |---|---|---|
 | 1a | Converter worker (`replay/convert.py`): rosbags decode, chunking with reorder buffer, manifest, overview, bulk CLI; synthetic MCAP fixture; tests | done 2026-10-10 (software) |
 | 1b | Server (`replay/cache.py`, `replay/api.py`, `gui_server.py`): threaded, routes, worker queue, eviction, refusals; unit file in `tools/systemd/`; tests | done 2026-10-10 (software; unit not yet installed on the box) |
-| 1c | End-to-end test (real worker through the API on the fixture); bulk conversion of the newest recordings by hand; unit installed on the box | e2e test done 2026-10-10; bulk run + unit install = owner steps |
-| 2 | Browser engine: feed over chunks (recording via the API, session buffer in memory), playhead clock, dispatch through the live handlers, seek semantics, prefetch, chart-store swap | **pending ticket 02** |
+| 1c | End-to-end test (real worker through the API on the fixture); bulk conversion of the newest recordings by hand; unit installed on the box | done 2026-10-10: e2e test; unit installed and the service restarted by the owner; live open path smoke-tested (24 MB / 114 s recording queued → complete in 18 s, 12 chunks, 3.2 MB, chunk served gzip). Bulk pre-conversion remains optional |
+| 2 | Browser engine: feed over chunks (recording via the API, session buffer in memory), playhead clock, dispatch through the live handlers, seek semantics, prefetch, chart-store swap | decided 2026-10-10 (ticket 02); building in worktree `gui-replay-phase2` |
 | 3 | Replay UI: lobby, picker, trackbar + transport + hotkeys, timeline overview, zoom; replay-only-while-disconnected gating | **pending ticket 03** |
 | 4 | Balls in the 3D scene with trails (live and replay), `tail_length_ms` input | **pending ticket 04** |
 | 5 | Hardening and fog: session-buffer memory ceiling, deep links `?recording=<id>&t=`, read-only minimap / juggle panel in replay | after 2–4 |
@@ -211,14 +211,58 @@ recordings root holding exactly one `.mcap`; the nested
 - Bulk-convert the newest recordings by hand; record the measured
   conversion time per MB in the logbook entry.
 
-## Phases 2–5 (outline, pending tickets)
+## Phase 2 — Browser engine
 
-- **Phase 2 engine** (ticket 02): one feed abstraction over chunks, the
-  playhead clock injected into the 42 wall-clock call sites, dispatch through
-  the existing `main.js` handlers with publish / service calls fenced off,
-  seek = latest-before per state topic + history window for charts and
-  trails, prefetch ± N chunks ahead-biased, chart store swapped on seek and
-  appended during play, msgpack decoder vendored under `ros_ws/gui/lib/`.
+Settled by wayfinder ticket 02 (`.scratch/gui-replay/issues/02-design-proposal.md`). Six units, in order U1 → U2 → U3
+∥ U4 → U5 → U6; U3 is the design-bearing unit.
+
+- **Feed.** A `Source` (recording or session buffer) exposes sync `range()`, `chunkIndex()`, `status()` and async
+  `load(i)`, `window(t0, t1)`, `latestBefore(t, topic)`, `timeline()`. The engine reads resident chunks synchronously
+  inside a tick and never awaits mid-dispatch. A decoded chunk keeps per-topic `t` (Float64Array) and the schema
+  columns; rows are hydrated lazily, one per dispatched record, by the inverse of the `schema.py` flattening rule;
+  non-finite floats follow the representation live rosbridge delivers (probed in U1). The recording source drives the
+  Phase 1 API (open, manifest, 1 s status polling while converting, chunk fetch, msgpack decode). The session buffer
+  is built in the browser from the subscription wrapper in `ros-bridge.js`: epoch-aligned 10 s chunks over the last
+  600 s plus a per-topic last-message sidecar; its ceiling (Phase 5) shortens the horizon, never drops topics.
+- **Clock.** `js/clock.js` provides `now()`, `setTimeout`/`clearTimeout` and `isReplay()`. In replay `now()` returns
+  the dispatched record's `t` during its handlers and the playhead otherwise; timers run on a virtual queue driven by
+  playhead travel, frozen while paused, cleared on seek and scaled by the speed. Every remaining
+  `Date.now()`/`performance.now()`/`new Date()` read carries a `// wall-clock:` marker, pinned by a contract test.
+- **Dispatch.** Replay calls the handlers registered through `ros.subscribe()` via `ros.dispatchLocal()`, merged
+  across topics in time order. Publishing and service calls are refused by `ros-bridge.js` while replay is active, and
+  every command affordance is disabled under `body.replay`. The reconnect loop keeps running;
+  `setConnectionState('connected')` exits replay before any listener is notified.
+- **Seek.** A seek resets every handler latch (`main.js resetForSeek()`), the CAN/UDP rings and the replay event
+  store, dispatches a muted latest-before baseline at `p − W`, pre-rolls `(p − W, p]` at 1× rates for edge-, history-
+  and event-bearing topics, then latest-before at `p` for the rest (`W` = visible span, at most 30 s). A drag-scrub
+  skips the pre-roll until release. Pausing settles every state topic to its latest record before the playhead.
+- **Rates.** Each topic is dispatched no faster than its live rate: rosbridge-throttle emulation in playhead time with
+  the gate scaled by the speed; event topics never drop a record; `orchestrator_state` and `control_mode_topic` also
+  pass on change. Reverse playback dispatches state topics only, mutes event emission and ends with a seek.
+- **Charts.** Replay swaps in an immutable `ReplayChartStore` built from per-chunk derived columns through the same
+  `telemetrySample()` the live path uses; the live ring is restored on exit. The buffer is rebuilt on every swap or
+  chunk append, never shifted in place; the span is clamped to 120 s.
+- **Cache.** Resident chunks cover the chart window plus 20 s ahead and 10 s behind in the play direction, at most 16,
+  evicted farthest-first, fetched serially. A missing chunk or the converted frontier puts the engine in `buffering`
+  with the playhead held.
+- **Mode.** LIVE → LOBBY → OPENING → REPLAY{paused, playing, buffering} → LOBBY; a reconnect exits to LIVE with a
+  toast. Entry and exit are single ordered functions; exit ends with the live disconnect blanking.
+- **Decoder.** `@msgpack/msgpack` 2.8.0, vendored under `ros_ws/gui/lib/` with its size and hash.
+- **Tests.** Node harnesses under `tests/ros/js/` with pytest wrappers per unit (feed round-trip against a
+  Python-written chunk, clock contract, engine rate/order/seek/fence properties, chart derivation parity, cache
+  residency, mode transitions). DOM wiring is exercised by hand through `ros_ws/gui/test_replay_engine.html` until
+  Phase 3 replaces it.
+
+Owner-level choices settled by delegation (2026-10-10): the replay chart span
+is clamped to 120 s; a seek pre-rolls 30 s of events rather than building a
+per-recording event index; above 1× the stale indicators flag only gaps of at
+least speed × timeout; "Replay last session" opens paused at the end minus one
+span; the session-buffer horizon stays 600 s by default (`SESSION_BUFFER_SEC`),
+with U6 measuring the heap on the box so the owner can cap it at 300 s if the
+browser runs on the Jetson.
+
+## Phases 3–5 (outline, pending tickets)
+
 - **Phase 3 UI** (ticket 03): lobby in `#command-overlay`, picker modal
   (date, duration, size, cache state, "converting n %", "duration unknown",
   "recording in progress"), trackbar with date header and HH:MM:SS readout,

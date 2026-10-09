@@ -61,4 +61,6 @@ One correction during the build: the server agent implemented the per-recording 
 
 ## Outcome
 
+**On-box validation (2026-10-10, after the owner installed the unit and restarted the service):** `GET /api/replay/recordings` on the live :8081 reported `worker_available: true` and 468 recordings; `POST .../2026-10-10_00-24-06/open` (24 MB, 114 s) went queued → complete in 18 s (12 chunks, 3.2 MB under `temp/replay_cache/`), and `chunks/0` came back `application/msgpack` with `Content-Encoding: gzip`. Phase 1 is therefore complete on the box, not only in software.
+
 Backend complete and tested; not yet live. Next: the owner installs the unit and restarts the GUI service when nobody is using the GUI; Phases 2-4 wait on wayfinder tickets 02 (engine), 03 (UI), 04 (trails).

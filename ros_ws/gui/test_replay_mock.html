@@ -1,0 +1,367 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Replay UI mock (throwaway)</title>
+<link rel="stylesheet" href="css/theme.css">
+<link rel="stylesheet" href="css/viewer.css">
+<style>
+/* THROWAWAY mock for wayfinder ticket 03. Canned data only; nothing here talks to a server. */
+html, body { margin:0; height:100%; background:var(--bg-primary); color:var(--text-primary); font-family:var(--font-sans); font-size:var(--font-size-base); }
+body { display:flex; flex-direction:column; }
+#mockbar { display:flex; flex-wrap:wrap; gap:6px 16px; align-items:center; padding:6px 12px; background:var(--bg-secondary); border-bottom:1px solid var(--border-color); font-size:var(--font-size-sm); }
+#mockbar .grp { display:flex; gap:4px; align-items:center; }
+#mockbar .lbl { color:var(--text-muted); text-transform:uppercase; font-size:var(--font-size-xs); letter-spacing:.05em; margin-right:2px; }
+.sw { padding:3px 10px; border:1px solid var(--border-color); background:var(--bg-card); color:var(--text-secondary); border-radius:var(--border-radius-sm); cursor:pointer; font:inherit; font-size:var(--font-size-xs); }
+.sw.on { border-color:var(--accent-blue); color:var(--text-primary); background:var(--bg-card-hover); }
+#app { flex:1; display:flex; min-height:0; }
+#viewer-pane { flex:1; position:relative; min-width:0; overflow:hidden;
+  background:radial-gradient(ellipse at 50% 55%, #1b2a44 0%, var(--viewer-bg) 70%); }
+#viewer-fake { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; color:var(--text-muted); font-family:var(--font-mono); font-size:var(--font-size-sm); pointer-events:none; }
+#sidebar { width:var(--sidebar-width); background:var(--bg-secondary); border-left:1px solid var(--border-color); padding:var(--gap); color:var(--text-muted); font-size:var(--font-size-sm); box-sizing:border-box; flex:none; }
+#connection-status .status-dot { width:8px; height:8px; border-radius:50%; background:var(--accent-red); }
+#connection-status.replay .status-dot { background:var(--accent-cyan); }
+.banner { position:absolute; top:52px; left:var(--gap); right:var(--gap); padding:8px 12px; border-radius:var(--border-radius-sm); font-size:var(--font-size-sm); z-index:10; border:1px solid; }
+.banner.warn { background:rgba(245,158,11,.12); border-color:var(--accent-amber); color:var(--accent-amber); }
+.banner.err { background:rgba(239,68,68,.12); border-color:var(--accent-red); color:var(--accent-red); }
+.cmd-btn.btn-replay { border-color:var(--accent-cyan); color:var(--accent-cyan); }
+.cmd-btn small { color:var(--text-muted); margin-left:6px; font-weight:400; }
+.cmd-btn.ghost { opacity:.35; }
+.note { color:var(--text-muted); font-size:var(--font-size-xs); }
+
+/* ---- picker ---- */
+#picker-bg { position:absolute; inset:0; background:rgba(0,0,0,.55); z-index:30; display:flex; align-items:center; justify-content:center; }
+#picker { width:min(760px, 94%); max-height:86%; display:flex; flex-direction:column; background:var(--bg-card); border:1px solid var(--border-color); border-radius:var(--border-radius); box-shadow:0 12px 40px rgba(0,0,0,.5); }
+#picker header { display:flex; align-items:center; gap:10px; padding:10px 14px; border-bottom:1px solid var(--border-color); }
+#picker header h3 { margin:0; font-size:var(--font-size-lg); flex:none; }
+#pk-filter { flex:1; background:var(--bg-primary); color:var(--text-primary); border:1px solid var(--border-color); border-radius:var(--border-radius-sm); padding:5px 8px; font:inherit; font-size:var(--font-size-sm); }
+#pk-list { overflow:auto; }
+.pk-row { display:grid; grid-template-columns: 150px 82px 66px 1fr 150px; gap:8px; align-items:center; padding:7px 14px; border-bottom:1px solid var(--border-color); cursor:pointer; font-size:var(--font-size-sm); }
+.pk-row:hover { background:var(--bg-card-hover); }
+.pk-row.first { border-left:3px solid var(--accent-cyan); background:rgba(6,182,212,.06); }
+.pk-row.refused { opacity:.45; cursor:not-allowed; }
+.pk-row .mono, .mono { font-family:var(--font-mono); }
+.pk-row .when b { display:block; font-weight:600; }
+.pk-row .when span { color:var(--text-muted); font-size:var(--font-size-xs); }
+.chips { display:flex; flex-wrap:wrap; gap:3px; }
+.chip { font-family:var(--font-mono); font-size:10px; padding:0 5px; border-radius:9999px; border:1px solid var(--border-color); color:var(--text-secondary); }
+.chip.missing { color:var(--text-muted); border-style:dashed; text-decoration:line-through; opacity:.6; }
+.st { font-size:var(--font-size-xs); padding:2px 8px; border-radius:9999px; border:1px solid; text-align:center; white-space:nowrap; position:relative; overflow:hidden; }
+.st.complete { color:var(--accent-green); border-color:var(--accent-green); }
+.st.none { color:var(--text-muted); border-color:var(--border-color); }
+.st.conv { color:var(--accent-blue); border-color:var(--accent-blue); }
+.st.conv i { position:absolute; left:0; top:0; bottom:0; background:rgba(59,130,246,.3); }
+.st.conv span { position:relative; }
+.st.warn { color:var(--accent-amber); border-color:var(--accent-amber); }
+.st.refuse { color:var(--accent-red); border-color:var(--accent-red); }
+.pk-foot { padding:8px 14px; border-top:1px solid var(--border-color); display:flex; justify-content:space-between; color:var(--text-muted); font-size:var(--font-size-xs); }
+
+/* ---- trackbar + transport ---- */
+#tb { font-size:var(--font-size-sm); background:var(--bg-overlay); backdrop-filter:blur(8px); border:0 solid var(--border-color); z-index:12; }
+#viewer-pane.varA #tb { position:absolute; left:0; right:0; bottom:0; padding:8px var(--gap) var(--gap); border-top-width:1px; }
+#viewer-pane.varB #tb { position:absolute; left:var(--gap); right:var(--gap); top:52px; padding:8px 12px; border-width:1px; border-radius:var(--border-radius); background:rgba(15,23,42,.78); }
+#tb-head { display:flex; gap:14px; align-items:baseline; margin-bottom:4px; flex-wrap:wrap; }
+#tb-date { color:var(--text-secondary); }
+#tb-play { font-family:var(--font-mono); font-size:var(--font-size-lg); color:var(--accent-cyan); }
+#tb-el { font-family:var(--font-mono); color:var(--text-secondary); }
+#tb-speed { font-family:var(--font-mono); padding:1px 8px; border:1px solid var(--accent-cyan); color:var(--accent-cyan); border-radius:9999px; }
+#tb-zoomtag { margin-left:auto; display:flex; gap:8px; align-items:center; color:var(--text-muted); font-size:var(--font-size-xs); }
+#tb-ctl { display:flex; gap:5px; align-items:center; margin:6px 0 2px; flex-wrap:wrap; }
+#tb-ctl .cmd-btn { padding:3px 10px; font-family:var(--font-mono); }
+#tb-keys { margin-left:auto; color:var(--text-muted); font-size:var(--font-size-xs); }
+#tb-keys kbd { font-family:var(--font-mono); border:1px solid var(--border-color); border-radius:3px; padding:0 4px; color:var(--text-secondary); }
+svg.tl { display:block; width:100%; cursor:crosshair; user-select:none; }
+.tl text { fill:var(--text-muted); font-family:var(--font-mono); font-size:9px; }
+.legend { display:flex; flex-wrap:wrap; gap:4px 12px; margin-top:4px; color:var(--text-muted); font-size:var(--font-size-xs); }
+.legend span { display:inline-flex; align-items:center; gap:4px; }
+.legend svg { width:12px; height:12px; }
+.lg-band { width:12px; height:8px; border-radius:2px; display:inline-block; }
+</style>
+</head>
+<body>
+<div id="mockbar">
+  <div class="grp"><span class="lbl">Layout</span><button class="sw" data-k="layout" data-v="A">A docked bottom</button><button class="sw" data-k="layout" data-v="B">B floating over viewer</button></div>
+  <div class="grp"><span class="lbl">Overview</span><button class="sw" data-k="ovh" data-v="compact">compact</button><button class="sw" data-k="ovh" data-v="tall">tall</button></div>
+  <div class="grp"><span class="lbl">Screen</span><button class="sw" data-k="scr" data-v="lobby">lobby (session buffer)</button><button class="sw" data-k="scr" data-v="fresh">lobby (fresh load)</button><button class="sw" data-k="scr" data-v="picker">picker</button><button class="sw" data-k="scr" data-v="player">player</button></div>
+  <div class="grp"><span class="lbl">Recording</span><button class="sw" data-k="rec" data-v="short">149 s</button><button class="sw" data-k="rec" data-v="long">13 h</button></div>
+  <div class="grp"><span class="lbl">Open</span><button class="sw" data-k="prog" data-v="0">fully converted</button><button class="sw" data-k="prog" data-v="1">progressive (converting)</button></div>
+  <div class="grp"><span class="lbl">Backend</span><button class="sw" data-k="be" data-v="up">up</button><button class="sw" data-k="be" data-v="down">unavailable</button></div>
+</div>
+<div id="app">
+  <div id="viewer-pane">
+    <div id="viewer-fake">[ 3D viewer ]</div>
+    <div id="connection-status"><span class="status-dot"></span><span id="conn-txt"></span></div>
+    <div id="banner-slot"></div>
+    <div id="command-overlay"></div>
+    <div id="tb" style="display:none"></div>
+    <div id="picker-slot"></div>
+  </div>
+  <div id="sidebar">[ sidebar: panels, 420px ]<br><br><span class="note">Mock is throwaway. Keys work in the player screen: space, left/right, [ ], + / -, Home/End.</span></div>
+</div>
+
+<script>
+'use strict';
+// ------------------------------------------------------------------ canned data
+const KINDS = {  // tick kinds from replay/schema.py
+  fault:         {c:'#ef4444', g:'tri',  l:'fault'},
+  fault_cleared: {c:'#22c55e', g:'tri_d',l:'fault cleared'},
+  homed:         {c:'#3b82f6', g:'sq',   l:'homed'},
+  levelled:      {c:'#06b6d4', g:'sq',   l:'levelled'},
+  catch_event:   {c:'#f59e0b', g:'dia',  l:'cone catch'},
+  skill_attempt: {c:'#a78bfa', g:'circ', l:'skill attempt'},
+  bb_calibration:{c:'#e2e8f0', g:'plus', l:'BB calibration'},
+};
+const BAND_C = {IDLE:'#f59e0b', LEVELLING:'#06b6d4', ACTIVE:'#22c55e', FAULT:'#ef4444'};
+const TOPICS = ['robot_state','orchestrator','tracking/balls','cone_catch','skill_events','bb_state','hand_state'];
+const H = 3600;
+const RECS = {
+  short: { name:'last live session', date:'2026-10-09  14:03:11', dur:149,
+    bands:[['IDLE',0,20],['LEVELLING',20,35],['ACTIVE',35,120],['FAULT',120,128],['IDLE',128,149]],
+    ticks:[['homed',3],['levelled',34],['skill_attempt',41],['catch_event',47],['skill_attempt',62],['catch_event',69],['skill_attempt',88],['catch_event',95],['bb_calibration',100],['skill_attempt',108],['fault',120],['fault_cleared',128]],
+    present:{robot_state:[[0,149]],orchestrator:[[0,149]],'tracking/balls':[[36,119]],cone_catch:[[41,120]],skill_events:[[35,120]],bb_state:[],hand_state:[[0,149]]}},
+  long: { name:'overnight soak', date:'2026-10-08  19:42:07', dur:13*H,
+    bands:[['IDLE',0,600],['LEVELLING',600,700],['ACTIVE',700,9000],['FAULT',9000,9060],['IDLE',9060,9500],['LEVELLING',9500,9600],['ACTIVE',9600,31000],['FAULT',31000,31300],['IDLE',31300,13*H]],
+    ticks:[['homed',60],['levelled',690],['fault',9000],['fault_cleared',9060],['levelled',9590],['bb_calibration',12000],['fault',31000],['fault_cleared',31300]]
+      .concat([...Array(60)].map((_,i)=>['skill_attempt',900+i*140+(i%7)*9]))
+      .concat([...Array(40)].map((_,i)=>['catch_event',1000+i*210+(i%5)*13]))
+      .concat([...Array(30)].map((_,i)=>['skill_attempt',10000+i*600+(i%3)*30])),
+    present:{robot_state:[[0,13*H]],orchestrator:[[0,13*H]],'tracking/balls':[[700,9000],[9600,31000]],cone_catch:[[700,9000],[9600,31000]],skill_events:[[700,9000],[9600,31000]],bb_state:[[12000,40000]],hand_state:[[0,13*H]]}},
+};
+const ROWS = [  // state: complete|conv|none|nodur|live ; missing = topics with zero messages
+  {when:'2026-10-09  14:03', rel:'Last live session (in memory)', dur:'02:29', size:'38 MB', st:'complete', missing:['bb_state'], first:true},
+  {when:'2026-10-08  19:42', rel:'overnight soak', dur:'13:00:00', size:'4.2 GB', st:'complete', missing:[]},
+  {when:'2026-10-07  16:20', rel:'sitting 6 attempt 2', dur:'47:12', size:'1.1 GB', st:'conv', pct:37, missing:[]},
+  {when:'2026-10-06  21:05', rel:'catch-high flights', dur:'31:40', size:'820 MB', st:'none', missing:[]},
+  {when:'2026-10-05  09:11', rel:'crash during write', dur:null, size:'260 MB', st:'nodur', missing:[]},
+  {when:'2026-10-10  09:58', rel:'rosbag2_2026_10_10-09_58', dur:'12:03+', size:'180 MB', st:'live', missing:[]},
+  {when:'2026-10-02  15:44', rel:'leg-only bench, no tracker', dur:'08:30', size:'64 MB', st:'complete', missing:['tracking/balls','cone_catch','skill_events','bb_state']},
+];
+
+// ------------------------------------------------------------------ state
+const S = {layout:'A', ovh:'compact', scr:'lobby', rec:'short', prog:'0', be:'up', t:0, speed:1, playing:false, z:null, filter:'', conv:0.62};
+const LADDER = [1/8,1/4,1/2,1,2,4,8];
+const $ = id => document.getElementById(id);
+const pad = n => String(Math.floor(n)).padStart(2,'0');
+const hms = s => pad(s/3600)+':'+pad((s%3600)/60)+':'+pad(s%60);
+const rec = () => RECS[S.rec];
+const view = () => S.z || [0, rec().dur];
+const spd = v => (v<1 ? '1/'+Math.round(1/v) : v)+'x';
+
+// ------------------------------------------------------------------ svg helpers
+function glyph(g, x, y, c, r) {
+  const f = `fill="${c}" stroke="none"`;
+  switch (g) {
+    case 'tri':   return `<path d="M${x},${y-r} L${x+r},${y+r} L${x-r},${y+r}Z" ${f}/>`;
+    case 'tri_d': return `<path d="M${x},${y+r} L${x+r},${y-r} L${x-r},${y-r}Z" ${f}/>`;
+    case 'sq':    return `<rect x="${x-r+1}" y="${y-r+1}" width="${2*r-2}" height="${2*r-2}" ${f}/>`;
+    case 'dia':   return `<path d="M${x},${y-r} L${x+r},${y} L${x},${y+r} L${x-r},${y}Z" ${f}/>`;
+    case 'circ':  return `<circle cx="${x}" cy="${y}" r="${r-1}" ${f}/>`;
+    case 'plus':  return `<path d="M${x-r},${y}H${x+r}M${x},${y-r}V${y+r}" stroke="${c}" stroke-width="2" fill="none"/>`;
+  }
+}
+function axisTicks(w, v0, v1, y) {
+  const span = v1 - v0, steps = [1,5,10,30,60,300,600,1800,3600,7200], n = Math.max(2, w/90);
+  const st = steps.find(s => span/s <= n) || 7200; let o = '';
+  for (let t = Math.ceil(v0/st)*st; t <= v1; t += st) {
+    const x = (t-v0)/span*w; o += `<path d="M${x},${y}v4" stroke="#475569"/><text x="${x+2}" y="${y+12}">${hms(t).replace(/^00:/,'')}</text>`;
+  }
+  return o;
+}
+
+// ------------------------------------------------------------------ overview (full recording) + trackbar (zoomed view)
+function overview(w) {
+  const R = rec(), tall = S.ovh === 'tall', bh = tall ? 20 : 9, rh = tall ? 7 : 3, th = tall ? 18 : 12;
+  const x = t => t/R.dur*w; let y = 0, o = '';
+  o += `<g>`;
+  R.bands.forEach(([n,a,b]) => o += `<rect x="${x(a)}" y="${y}" width="${Math.max(1,x(b)-x(a))}" height="${bh}" fill="${BAND_C[n]}" opacity=".75"><title>${n} ${hms(a)}-${hms(b)}</title></rect>`);
+  if (tall) R.bands.forEach(([n,a,b]) => { if (x(b)-x(a) > 60) o += `<text x="${x(a)+3}" y="${y+14}" style="fill:#0f172a;font-weight:700">${n}</text>`; });
+  y += bh + 2;
+  // ticks (7 kinds); dense runs cluster naturally on the long recording
+  o += `<rect x="0" y="${y}" width="${w}" height="${th}" fill="rgba(148,163,184,.07)"/>`;
+  R.ticks.forEach(([k,t]) => { const K = KINDS[k]; o += glyph(K.g, x(t), y+th/2, K.c, tall ? 5 : 4).replace('<', `<g><title>${K.l} @ ${hms(t)}</title></g><`); });
+  y += th + 2;
+  // per-topic presence (decision 18: not recorded = dashed + dimmed)
+  const topics = tall ? TOPICS : ['robot_state','tracking/balls','cone_catch','bb_state'];
+  topics.forEach(tp => {
+    const sp = R.present[tp];
+    if (!sp.length) o += `<rect x="0" y="${y}" width="${w}" height="${rh}" fill="none" stroke="#475569" stroke-dasharray="3 3" opacity=".5"/>`;
+    else sp.forEach(([a,b]) => o += `<rect x="${x(a)}" y="${y}" width="${Math.max(1,x(b)-x(a))}" height="${rh}" fill="#64748b"/>`);
+    if (tall) o += `<text x="3" y="${y+rh}" style="${sp.length?'':'text-decoration:line-through;opacity:.6'};font-size:7px;fill:#e2e8f0;paint-order:stroke;stroke:#0f172a;stroke-width:2px">${tp}${sp.length?'':' (not recorded)'}</text>`;
+    y += rh + 1;
+  });
+  y += 2;
+  // converted span (progressive open): unconverted tail hatched
+  if (S.prog === '1') {
+    const cx = w*S.conv;
+    o += `<rect x="${cx}" y="0" width="${w-cx}" height="${y}" fill="url(#hatch)"/><path d="M${cx},0V${y}" stroke="#3b82f6" stroke-width="2"/>`;
+    o += `<text x="${cx+4}" y="${y-2}" style="fill:#3b82f6">converting ${Math.round(S.conv*100)} %</text>`;
+  }
+  // zoom window + playhead
+  if (S.z) o += `<rect x="${x(S.z[0])}" y="0" width="${Math.max(2,x(S.z[1])-x(S.z[0]))}" height="${y}" fill="rgba(6,182,212,.18)" stroke="#06b6d4"/>`;
+  o += `<path d="M${x(S.t)},0V${y}" stroke="#f1f5f9" stroke-width="1.5"/>`;
+  o += axisTicks(w, 0, R.dur, y);
+  return {svg:o, h:y + 16};
+}
+function trackbar(w) {
+  const R = rec(), [v0,v1] = view(), x = t => (t-v0)/(v1-v0)*w, h = 26; let o = '';
+  R.bands.forEach(([n,a,b]) => { if (b>v0 && a<v1) o += `<rect x="${x(Math.max(a,v0))}" y="8" width="${x(Math.min(b,v1))-x(Math.max(a,v0))}" height="3" fill="${BAND_C[n]}" opacity=".9"/>`; });
+  o += `<rect x="0" y="11" width="${w}" height="6" rx="3" fill="#334155"/>`;
+  o += `<rect x="0" y="11" width="${Math.max(0,Math.min(w,x(S.t)))}" height="6" rx="3" fill="#06b6d4" opacity=".8"/>`;
+  if (S.prog === '1') { const cx = x(R.dur*S.conv); if (cx < w) o += `<rect x="${Math.max(0,cx)}" y="11" width="${w-Math.max(0,cx)}" height="6" fill="url(#hatch)" opacity=".9"/>`; }
+  R.ticks.forEach(([k,t]) => { if (t>=v0 && t<=v1) o += glyph(KINDS[k].g, x(t), 4, KINDS[k].c, 3); });
+  o += axisTicks(w, v0, v1, 18);
+  const px = x(S.t); if (px>=0 && px<=w) o += `<circle cx="${px}" cy="14" r="6" fill="#f1f5f9" stroke="#06b6d4" stroke-width="2"/>`;
+  return o;
+}
+const HATCH = `<defs><pattern id="hatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)"><rect width="6" height="6" fill="rgba(15,23,42,.55)"/><path d="M0,0V6" stroke="#475569" stroke-width="2"/></pattern></defs>`;
+
+function legend() {
+  let o = Object.values(KINDS).map(K => `<span><svg viewBox="0 0 12 12">${glyph(K.g,6,6,K.c,5)}</svg>${K.l}</span>`).join('');
+  o += Object.entries(BAND_C).map(([n,c]) => `<span><i class="lg-band" style="background:${c}"></i>${n}</span>`).join('');
+  o += `<span><i class="lg-band" style="border:1px dashed #64748b"></i>not recorded</span>`;
+  if (S.prog === '1') o += `<span><i class="lg-band" style="background:repeating-linear-gradient(45deg,#475569 0 2px,#0f172a 2px 5px)"></i>not yet converted</span>`;
+  return o;
+}
+
+function renderTB() {
+  const tb = $('tb'), R = rec();
+  if (S.scr !== 'player') { tb.style.display = 'none'; return; }
+  tb.style.display = '';
+  const dur = S.prog === '1' && R.dur >= H ? R.dur : R.dur;
+  tb.innerHTML = `
+   <div id="tb-head">
+     <span id="tb-date">${R.date.slice(0,10)} &nbsp;<span class="note">${R.name}</span></span>
+     <span id="tb-play">${R.date.slice(12)} +${hms(S.t)}</span>
+     <span id="tb-el">${hms(S.t)} / ${hms(dur)}</span>
+     <span id="tb-speed" title="speed ladder: 1/8x 1/4x 1/2x 1x 2x 4x 8x">${spd(S.speed)}</span>
+     <span id="tb-zoomtag">${S.z ? 'zoom '+hms(S.z[0])+' - '+hms(S.z[1])+' ('+((S.z[1]-S.z[0])/ (tb.clientWidth||900)).toFixed(1)+' s/px)' : 'drag on overview to zoom ('+(dur/(tb.clientWidth||900)).toFixed(1)+' s/px)'}
+       <button class="sw" id="zr" ${S.z?'':'disabled'}>reset zoom</button></span>
+   </div>
+   <svg class="tl" id="trackbar" height="30">${HATCH}<g id="tbg"></g></svg>
+   <div id="tb-ctl">
+     <button class="cmd-btn" data-a="home" title="Home">|&lt;</button>
+     <button class="cmd-btn" data-a="rw" title="slower / rewind ([)">&lt;&lt;</button>
+     <button class="cmd-btn" data-a="stepb" title="step -1 frame (left)">-1f</button>
+     <button class="cmd-btn btn-replay" data-a="play" style="min-width:64px">${S.playing ? 'Pause' : 'Play'}</button>
+     <button class="cmd-btn" data-a="stepf" title="step +1 frame (right)">+1f</button>
+     <button class="cmd-btn" data-a="ff" title="faster (])">&gt;&gt;</button>
+     <button class="cmd-btn" data-a="end" title="End">&gt;|</button>
+     <span id="tb-keys"><kbd>space</kbd> play <kbd>&larr;</kbd><kbd>&rarr;</kbd> step <kbd>[</kbd><kbd>]</kbd> speed <kbd>+</kbd><kbd>-</kbd> zoom <kbd>Home</kbd><kbd>End</kbd> ends</span>
+   </div>
+   <svg class="tl" id="ov" height="10">${HATCH}<g id="ovg"></g></svg>
+   <div class="legend">${legend()}</div>`;
+  paintTL();
+  tb.querySelector('#zr').onclick = () => { S.z = null; renderTB(); };
+  tb.querySelectorAll('[data-a]').forEach(b => b.onclick = () => act(b.dataset.a));
+  wireDrag();
+}
+function paintTL() {
+  const tb = $('trackbar'), ov = $('ov'); if (!tb) return;
+  const w = tb.clientWidth || 800;
+  tb.querySelector('#tbg').innerHTML = trackbar(w);
+  const o = overview(w); ov.setAttribute('height', o.h); ov.querySelector('#ovg').innerHTML = o.svg;
+  const R = rec(); $('tb-play').innerHTML = R.date.slice(12) + ' +' + hms(S.t); $('tb-el').textContent = hms(S.t) + ' / ' + hms(R.dur);
+}
+function wireDrag() {
+  const ov = $('ov'), tb = $('trackbar'), R = rec(); let a = null;
+  const tAt = (el, e) => { const r = el.getBoundingClientRect(); return Math.max(0, Math.min(1, (e.clientX - r.left)/r.width)); };
+  ov.onmousedown = e => { a = tAt(ov, e); ov.dataset.drag = 1; };
+  window.onmousemove = e => { if (a == null) return; const b = tAt(ov, e); S.z = [Math.min(a,b)*R.dur, Math.max(a,b)*R.dur]; paintTL(); };
+  window.onmouseup = e => { if (a == null) return; const b = tAt(ov, e);
+    if (Math.abs(b-a)*ov.clientWidth < 4) { S.t = a*R.dur; S.z = S.z && S.z[1]-S.z[0] > 0 ? S.z : null; if (!S.z) paintTL(); } // click = seek
+    a = null; renderTB(); };
+  tb.onmousedown = e => { const [v0,v1] = view(); const mv = ev => { S.t = v0 + tAt(tb, ev)*(v1-v0); paintTL(); }; mv(e);
+    const up = () => { window.removeEventListener('mousemove', mv); window.removeEventListener('mouseup', up); }; window.addEventListener('mousemove', mv); window.addEventListener('mouseup', up); };
+}
+function act(a) {
+  const R = rec(), i = LADDER.indexOf(S.speed);
+  if (a === 'play') S.playing = !S.playing;
+  if (a === 'ff') S.speed = LADDER[Math.min(6, i+1)];
+  if (a === 'rw') S.speed = LADDER[Math.max(0, i-1)];
+  if (a === 'stepf') { S.t = Math.min(R.dur, S.t + 1/30); S.playing = false; }
+  if (a === 'stepb') { S.t = Math.max(0, S.t - 1/30); S.playing = false; }
+  if (a === 'home') S.t = 0;
+  if (a === 'end') S.t = R.dur;
+  if (a === 'zin') { const c = S.t, [v0,v1] = view(), s = (v1-v0)/4; S.z = [Math.max(0,c-s), Math.min(R.dur,c+s)]; }
+  if (a === 'zout') { const [v0,v1] = view(), s = (v1-v0); S.z = (s*2 >= R.dur) ? null : [Math.max(0,v0-s/2), Math.min(R.dur,v1+s/2)]; }
+  renderTB();
+}
+document.addEventListener('keydown', e => {
+  if (S.scr !== 'player' || e.target.tagName === 'INPUT') return;
+  const m = {' ':'play', ArrowRight:'stepf', ArrowLeft:'stepb', ']':'ff', '[':'rw', '+':'zin', '=':'zin', '-':'zout', Home:'home', End:'end'}[e.key];
+  if (m) { e.preventDefault(); act(m); }
+});
+let last = performance.now();
+setInterval(() => { const n = performance.now(), dt = (n-last)/1000; last = n;
+  if (S.playing && S.scr === 'player') { S.t = Math.min(rec().dur, S.t + dt*S.speed); if (S.t >= rec().dur) S.playing = false; paintTL(); }
+  if (S.prog === '1' && S.scr === 'player' && S.conv < 1) { S.conv = Math.min(1, S.conv + dt*0.004); } }, 100);
+
+// ------------------------------------------------------------------ lobby + picker + banners
+function renderLobby() {
+  const lobby = S.scr === 'lobby' || S.scr === 'fresh' || S.scr === 'picker';
+  const co = $('command-overlay'), cs = $('connection-status'), bn = $('banner-slot');
+  cs.className = lobby ? '' : 'replay';
+  $('conn-txt').textContent = lobby ? 'Disconnected (rosbridge ws://jetson:9090)' : 'REPLAY  ' + rec().date.slice(0,10);
+  let b = '';
+  if (lobby) b += `<div class="banner warn">Not connected to the robot. Live commands are unavailable &mdash; you can still review a recording.</div>`;
+  if (S.be === 'down') b += `<div class="banner err" style="top:${lobby?92:52}px">Replay backend unavailable &mdash; the converter worker is not installed or not running (venv python missing). Recordings cannot be opened; live view is unaffected. <span class="note">[retry]</span></div>`;
+  bn.innerHTML = b;
+  co.style.display = (S.scr === 'player' && S.layout === 'A') ? 'none' : (S.scr === 'player' ? 'none' : '');
+  const dis = S.be === 'down' ? 'disabled' : '';
+  co.innerHTML = S.scr === 'fresh'
+    ? `<button class="cmd-btn btn-replay" id="b-open" ${dis}>Open recording&hellip;</button><span class="note">no live session in this page's memory</span>`
+    : `<button class="cmd-btn btn-replay" id="b-sess" ${dis}>Replay last session<small>in memory, 09:42 of data</small></button>
+       <button class="cmd-btn" id="b-open" ${dis}>Open recording&hellip;</button>
+       <span class="note">Home / Level / Activate are hidden while disconnected</span>`;
+  const o = $('b-open'), s = $('b-sess');
+  if (o) o.onclick = () => set('scr', 'picker');
+  if (s) s.onclick = () => { S.rec = 'short'; S.prog = '0'; S.t = 0; S.z = null; set('scr', 'player'); };
+  if (S.scr === 'picker') { co.style.display = ''; }
+}
+function renderPicker() {
+  const slot = $('picker-slot');
+  if (S.scr !== 'picker') { slot.innerHTML = ''; return; }
+  const f = S.filter.toLowerCase();
+  const rows = ROWS.filter(r => (r.when + r.rel).toLowerCase().includes(f));
+  slot.innerHTML = `<div id="picker-bg"><div id="picker">
+    <header><h3>Open recording</h3><input id="pk-filter" placeholder="filter by date, name, topic&hellip;" value="${S.filter}" autofocus>
+      <button class="sw" id="pk-x">close</button></header>
+    <div class="pk-row note" style="cursor:default;opacity:.8"><span>Started</span><span>Duration</span><span>Size</span><span>Topics recorded (struck = zero messages)</span><span>Cache</span></div>
+    <div id="pk-list">${rows.map((r,i) => {
+      const st = {complete:'<div class="st complete">complete</div>', none:'<div class="st none">not converted</div>',
+        conv:`<div class="st conv"><i style="width:${r.pct}%"></i><span>converting ${r.pct} %</span></div>`,
+        nodur:'<div class="st warn" title="no index; metadata missing">duration unknown, no index</div>',
+        live:'<div class="st refuse" title="the bag is still being written">recording in progress</div>'}[r.st];
+      return `<div class="pk-row${r.first?' first':''}${r.st==='live'?' refused':''}" data-i="${i}">
+        <div class="when"><b>${r.when}</b><span>${r.rel}</span></div>
+        <span class="mono">${r.dur ?? '?'}</span><span class="mono">${r.size}</span>
+        <div class="chips">${TOPICS.map(t => `<span class="chip${r.missing.includes(t)?' missing':''}">${t}</span>`).join('')}</div>${st}</div>`; }).join('') || '<div class="pk-row" style="cursor:default">no matches</div>'}</div>
+    <div class="pk-foot"><span>Rows sorted newest first, live session pinned. Click a row to open; <i>converting</i> rows open progressively; <i>recording in progress</i> is refused.</span><span>${rows.length} of ${ROWS.length}</span></div>
+  </div></div>`;
+  $('pk-filter').oninput = e => { S.filter = e.target.value; const p = e.target.selectionStart; renderPicker(); const n = $('pk-filter'); n.focus(); n.setSelectionRange(p,p); };
+  $('pk-x').onclick = () => set('scr', 'lobby');
+  slot.querySelectorAll('.pk-row[data-i]').forEach(el => el.onclick = () => {
+    const r = rows[el.dataset.i]; if (r.st === 'live') return;
+    S.rec = r.dur && r.dur.startsWith('13') ? 'long' : 'short'; S.prog = r.st === 'conv' ? '1' : '0'; if (r.st === 'conv') S.conv = r.pct/100;
+    S.t = 0; S.z = null; set('scr', 'player'); });
+}
+
+// ------------------------------------------------------------------ switcher
+function set(k, v) {
+  S[k] = v; if (k === 'rec') { S.t = 0; S.z = null; }
+  if (k === 'prog' && v === '1') S.conv = 0.62;
+  if (k === 'scr' && v === 'player' && S.prog === '1' && S.conv >= 1) S.conv = 0.62;
+  paint();
+}
+function paint() {
+  document.querySelectorAll('.sw[data-k]').forEach(b => b.classList.toggle('on', S[b.dataset.k] === b.dataset.v));
+  $('viewer-pane').className = 'var' + S.layout;
+  renderLobby(); renderPicker(); renderTB();
+}
+document.querySelectorAll('.sw[data-k]').forEach(b => b.onclick = () => set(b.dataset.k, b.dataset.v));
+window.addEventListener('resize', () => { if (S.scr === 'player') paintTL(); });
+paint();
+</script>
+</body>
+</html>
