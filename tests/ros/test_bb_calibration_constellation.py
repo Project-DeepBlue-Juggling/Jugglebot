@@ -15,6 +15,9 @@ a fixed E(y) is removed, and the axis point is the posed template origin
 * E(y): held fixed, so windows over different yaw ranges agree;
 * the gauge (published = raw − raw_at_pin + pinned; editing the pin by δ
   shifts the result by δ) and σ (formal ⊕ repeatability);
+* the mocap-clock gate (2026-10-10): frame stamps whose QTM->ROS mapping
+  wandered (a loaded Jetson) are refused, a clean grid — snapshot-skipped,
+  µs-jittered — is not;
 * loud failures; the consistency gate; ``run_calibration``'s path (position
   from the body model, arc fit as cross-check); the template file.
 """
@@ -38,6 +41,7 @@ from jugglebot.bb_calibration import (
     fit_yaw_latency,
     load_marker_template,
     match_template,
+    mocap_clock_off_grid,
     run_calibration,
     stamped_yaw_samples_from_joint_state,
     track_constellation,
@@ -236,6 +240,64 @@ def test_sigma_is_formal_error_combined_with_the_repeatability():
 
 
 # ── loud failures ───────────────────────────────────────────────────────────
+
+def _ema_mapped_stamps(t_frames, packets_per_frame=3, stalls_per_s=5.0,
+                       stall_ms=(30.0, 120.0), seed=0, alpha=0.01, base_s=0.001):
+    """Frame stamps as mocap_interface maps them: QTM packets at
+    ``packets_per_frame`` × the frame rate, each received ``base_s`` late
+    except during executor stalls (exponential arrivals, uniform durations),
+    when it waits for the stall's end; the QTM->ROS offset is the EMA
+    (``alpha`` per packet) of the receive latency, applied at each frame.
+    3 packets/frame (QTM 300 Hz vs mocap_node's ~100 Hz distinct frames) with
+    3–5 stalls/s of 30–120 ms gives 7–36 % off grid over 10 seeds — the
+    11–36 % of bag 2026-10-10_00-24-06 (probe /tmp/probe_bbclock, 2026-10-10)."""
+    rng = np.random.default_rng(seed)
+    tf = np.asarray(t_frames, dtype=float)
+    dt = (tf[1] - tf[0]) / packets_per_frame
+    tp = np.arange(tf[0] - 1.0, tf[-1] + dt / 2, dt)
+    recv = tp + base_s
+    t = tp[0]
+    while True:
+        t += rng.exponential(1.0 / stalls_per_s)
+        if t > tp[-1]:
+            break
+        d = rng.uniform(*stall_ms) * 1e-3
+        m = (recv >= t) & (recv < t + d)
+        recv[m] = t + d
+    o, off = base_s, np.empty(len(tp))
+    for i in range(len(tp)):
+        o += alpha * ((recv[i] - tp[i]) - o)
+        off[i] = o
+    return tf + np.interp(tf, tp, off) - base_s
+
+
+def test_mocap_clock_metric_is_zero_on_a_clean_grid_even_snapshot_skipped_and_jittered():
+    """mocap_node publishes snapshots on a timer, so consecutive distinct
+    frames are 1–3 QTM periods apart; µs-level stamp noise stays on grid."""
+    rng = np.random.default_rng(3)
+    t = np.cumsum(rng.integers(1, 4, 900)) / 300.0 + rng.normal(0.0, 20e-6, 900)
+    assert mocap_clock_off_grid(t) < 0.01
+    assert mocap_clock_off_grid(np.arange(0.0, 5.0, 0.005)) == 0.0
+    assert mocap_clock_off_grid(np.arange(0.0, 0.2, 0.005)) is None   # too few intervals
+
+
+@pytest.mark.parametrize('seed', [0, 1, 2])
+def test_a_wandering_qtm_clock_mapping_is_refused_for_either_yaw_source(seed):
+    frames, samples = _synth(phi_deg=0.3, lag=0.004, rate=100.0, seed=seed)
+    ts = _ema_mapped_stamps([f[0] for f in frames], seed=seed)
+    assert mocap_clock_off_grid(ts) > 0.05
+    wandering = [(float(t), P) for t, (_, P) in zip(ts, frames)]
+    for source in ('stamped', 'heartbeat'):
+        with pytest.raises(ValueError, match='CONSTELLATION_MOCAP_CLOCK'):
+            estimate_sweep_yaw_offset(wandering, samples, _tmpl(), yaw_source=source)
+
+
+def test_a_clean_clock_passes_the_mocap_clock_gate_and_reports_it():
+    frames, samples = _synth(phi_deg=0.3, lag=0.004, rate=100.0, seed=5)
+    est = estimate_sweep_yaw_offset(frames, samples, _tmpl(), yaw_source='stamped')
+    assert est.frame_clock_off_grid == 0.0
+    assert 'mocap clock 0.0 % off grid' in est.summary()
+
 
 def test_too_few_frames_fails_loudly():
     frames, samples = _synth(seed=12)

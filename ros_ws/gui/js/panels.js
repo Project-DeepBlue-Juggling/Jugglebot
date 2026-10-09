@@ -13,6 +13,7 @@ import { callService } from './ros-bridge.js';
 import { onWorkspaceStatus } from './jog-panel.js';
 import { initBBAim, isBBAimEditing, bbAimOnDisconnect } from './bb-aim.js';
 import { isReplayFenced } from './replay/fence.js';
+import { calibrationIndicator, attemptNote } from './bb-calibration-status.js';
 
 // ---- Motor grid ----
 
@@ -527,6 +528,7 @@ export function initBBPanel() {
                 <span id="bb-calib-text">Not Calibrated</span>
             </span>
         </div>
+        <div class="bb-calib-note" id="bb-calib-note" hidden></div>
         <div class="bb-readouts">
             <div class="bb-readout">
                 <div class="label">Yaw</div>
@@ -733,21 +735,32 @@ export function setBBDisconnected() {
 // ---- BB calibration status ----
 
 /**
- * Update Ball Butler calibration status from bb/calibration_result.
+ * Update Ball Butler calibration status from bb/calibration_result — the
+ * calibration in force (a failed sweep never replaces a success there; see
+ * bb-calibration-status.js). Shows the last success's acceptance time.
  * @param {object} msg - BallButlerCalibrationResult message
  */
 export function updateBBCalibration(msg) {
     const dot = document.getElementById('bb-calib-dot');
     const text = document.getElementById('bb-calib-text');
     if (!dot) return;
+    const view = calibrationIndicator(msg);
+    dot.className = 'bb-calib-dot ' + (view.calibrated ? 'calibrated' : 'uncalibrated');
+    if (text) text.textContent = view.text;
+}
 
-    if (msg.success) {
-        dot.className = 'bb-calib-dot calibrated';
-        if (text) text.textContent = 'Calibrated';
-    } else {
-        dot.className = 'bb-calib-dot uncalibrated';
-        if (text) text.textContent = 'Not Calibrated';
-    }
+/**
+ * Show the most recent attempt's failure reason (bb/calibration_attempt)
+ * beside the indicator, or clear it when the attempt succeeded.
+ * @param {object|null} msg - BallButlerCalibrationResult message
+ */
+export function updateBBCalibrationAttempt(msg) {
+    const note = document.getElementById('bb-calib-note');
+    if (!note) return;
+    const textOut = attemptNote(msg);
+    note.textContent = textOut;
+    note.title = textOut;
+    note.hidden = !textOut;
 }
 
 /**
@@ -769,6 +782,7 @@ export function resetBBCalibration() {
     const text = document.getElementById('bb-calib-text');
     if (dot) dot.className = 'bb-calib-dot uncalibrated';
     if (text) text.textContent = 'Not Calibrated';
+    updateBBCalibrationAttempt(null);
 }
 
 // ---- Motion planner panel ----

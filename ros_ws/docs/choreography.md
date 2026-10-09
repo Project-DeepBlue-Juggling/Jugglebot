@@ -43,6 +43,12 @@
 - **subscribers:** `mocap_node`
 - **type:** `sensor_msgs.msg.JointState`
 
+### `bb/calibration_attempt`
+
+- **publishers:** `mocap_node`
+- **subscribers:** _none_
+- **type:** `jugglebot_interfaces.msg.BallButlerCalibrationResult`
+
 ### `bb/calibration_result`
 
 - **publishers:** `mocap_node`
@@ -513,6 +519,7 @@ broken wire cannot hide among them.
 
 - `activate` — service with no clients
 - `bb/aim` — service with no clients
+- `bb/calibration_attempt` — topic with no subscribers
 - `bb/cancel_accuracy_calibration` — service with no clients
 - `bb/markers` — topic with no subscribers
 - `bb/odrive_diag` — topic with no subscribers
