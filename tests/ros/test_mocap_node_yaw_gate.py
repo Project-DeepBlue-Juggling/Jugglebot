@@ -132,6 +132,16 @@ def test_inconsistent_yaw_is_refused_and_not_persisted(tmp_path):
     assert json.loads(path.read_text())['yaw_offset_deg'] == pytest.approx(0.6)
 
 
+def test_gate_limit_uses_the_state_files_sigma(tmp_path):
+    """The same Δ 0.25° that is refused against a σ-less reference passes when
+    the state file carries σ_ref = 0.06: limit 3·√(0.06² + 0.06²) = 0.255°. The
+    node must hand the gate the file's yaw_offset_std_deg (it did not, 2026-10-10)."""
+    node, path = _node(tmp_path, dict(_ref(0.6), yaw_offset_std_deg=0.06))
+    _, msg = _calibrate(node, _result(0.85, std=0.06))
+    assert msg.success and 'limit ±0.255°' in msg.message
+    assert json.loads(path.read_text())['yaw_offset_deg'] == pytest.approx(0.85)
+
+
 def test_moved_axis_point_is_refused(tmp_path):
     node, _ = _node(tmp_path, _ref(0.6))
     _, msg = _calibrate(node, _result(0.6, pos=[POS[0] + 1.6, POS[1], POS[2]]))

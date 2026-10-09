@@ -93,6 +93,7 @@ STATUS_FAILED = "failed"
 # (main.js subscribeAll()). Every topic the browser consumes live is converted.
 # Pinned by tests/ros/test_replay_allowlist.py against the JS source.
 SUBSCRIBED: Tuple[str, ...] = (
+    "/bb/calibration_attempt",   # every sweep's outcome (keep-last-good, 2026-10-10); the result topic below carries only the calibration in force
     "/bb/calibration_result",
     "/bb/heartbeat",
     "/clock_diag",

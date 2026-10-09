@@ -229,7 +229,9 @@ def test_inconsistent_failure_is_one_short_line_with_the_decisive_numbers(tmp_pa
     log = _rec(node)
     _sweep(node, _result(0.56))
     msg = node.pub_calibration_attempt.published[-1].message
-    assert msg == ('CALIBRATION_INCONSISTENT: Δyaw -0.390° exceeds ±0.150° vs 0.950° '
+    # Limit 3·√(σ_new² + σ_ref²) with both σ 0.05 (the reference's σ comes from the
+    # state file written by the first sweep): 0.212°, not the 0.15° floor.
+    assert msg == ('CALIBRATION_INCONSISTENT: Δyaw -0.390° exceeds ±0.212° vs 0.950° '
                    f'(accepted {node._last_good_at[:19]}) — set bb_moved:=true if BB or '
                    'QTM moved')
     errors = _at(log, 'error')

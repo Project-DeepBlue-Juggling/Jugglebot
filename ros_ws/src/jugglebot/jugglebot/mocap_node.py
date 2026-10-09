@@ -818,6 +818,9 @@ class MocapNode(Node):
             with open(path, 'r') as f:
                 state = json.load(f)
             ref = {'yaw_offset_deg': float(state['yaw_offset_deg']),
+                   # The reference's own σ: the gate's limit is
+                   # 3·√(σ_new² + σ_ref²) (0 if the file predates it).
+                   'yaw_offset_std_deg': float(state.get('yaw_offset_std_deg') or 0.0),
                    'position_mm': [float(v) for v in state['position_mm']]}
             # Seconds are enough to identify it; the full stamp stays in the file.
             stamp = str(state.get('accepted_at', '?'))[:19]
