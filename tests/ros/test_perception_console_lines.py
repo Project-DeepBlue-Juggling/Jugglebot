@@ -49,12 +49,23 @@ def _rec(node):
 
 # ── mocap_node: BB calibration ───────────────────────────────────────────────
 
-def _mocap_node():
+def _mocap_node(tmp_path=None, last_accepted_deg=1.78):
+    """A mocap node whose consistency-gate state lives under *tmp_path* (never
+    the real ~/bb_calibration_sessions), seeded with a last accepted yaw
+    offset that the fake result below agrees with."""
+    import json
     import jugglebot.mocap_node as mn
     iface = MagicMock()
     iface.is_receiving.return_value = True
     with patch.object(mn, 'MocapInterface', return_value=iface):
-        return mn.MocapNode()
+        node = mn.MocapNode()
+    if tmp_path is not None:
+        state = tmp_path / 'last_accepted.json'
+        state.write_text(json.dumps({'yaw_offset_deg': last_accepted_deg,
+                                     'position_mm': [-1018.99, -434.58, 1738.14],
+                                     'accepted_at': 'test'}))
+        node._params['bb_calibration_state_file'] = str(state)
+    return node
 
 
 def _hb(state):
@@ -71,15 +82,20 @@ def _fake_result():
         axis_direction=np.array([0.001, 0.02, 0.9998]),
         axis_tilt_deg=0.62, yaw_offset_rad=np.radians(1.78),
         yaw_offset_std_deg=0.02, yaw_span_deg=118.8,
+        yaw_method='constellation', anchor_yaw_offset_rad=None,
+        arc_position_mm=np.array([-1019.4, -435.9, 1738.0]),
+        yaw_estimate=SimpleNamespace(lag_s=0.0832, template_residual_mm=0.3,
+                                     yaw_source='heartbeat', n_frames=1200,
+                                     summary=lambda: 'sweep estimator: (fake)'),
         marker_metrics={0: SimpleNamespace(status='ok', radius_mm=99.0,
                                            fit_residual_mm=0.2,
                                            distance_from_axis_mm=1.0,
                                            arc_span_deg=100.0)})
 
 
-def test_calibration_success_is_one_info_line():
+def test_calibration_success_is_one_info_line(tmp_path):
     import jugglebot.mocap_node as mn
-    node = _mocap_node()
+    node = _mocap_node(tmp_path)
     log = _rec(node)
     node._on_bb_heartbeat(_hb(BallButlerStates.CALIBRATING))
     node._calib_data = {0: [np.zeros(3)]}
@@ -89,16 +105,16 @@ def test_calibration_success_is_one_info_line():
     assert len(info) == 2, info
     assert 'started' in info[0]
     assert info[1] == ('BB calibrated: pos (-1019, -435, 1738) mm · axis tilt 0.62° '
-                       '· yaw offset +1.78° ±0.02° · swept 119°')
+                       '· yaw offset +1.78° ±0.02° (lag 83 ms, gate ok) · swept 119°')
     assert not log.at('WARN') and not log.at('ERROR')
 
 
-def test_calibration_outcast_is_named_on_the_success_line():
+def test_calibration_outcast_is_named_on_the_success_line(tmp_path):
     """A marker the consensus excluded (bb_calibration MIN_AGREEING_MARKERS) is
     named, with its distance, on the one INFO outcome line, and its reason
     rides the per-marker WARN — the calibration still succeeds."""
     import jugglebot.mocap_node as mn
-    node = _mocap_node()
+    node = _mocap_node(tmp_path)
     log = _rec(node)
     node._on_bb_heartbeat(_hb(BallButlerStates.CALIBRATING))
     node._calib_data = {0: [np.zeros(3)]}
@@ -110,16 +126,16 @@ def test_calibration_outcast_is_named_on_the_success_line():
         node._on_bb_heartbeat(_hb(BallButlerStates.IDLE))
     assert log.at('INFO')[1] == (
         'BB calibrated: pos (-1019, -435, 1738) mm · axis tilt 0.62° '
-        '· yaw offset +1.78° ±0.02° · swept 119° '
+        '· yaw offset +1.78° ±0.02° (lag 83 ms, gate ok) · swept 119° '
         '· outcast Marker 2 (4.98 mm off axis)')
     assert log.at('WARN') == ['Marker 2: outcast — circle centre 4.98 mm from '
                               'the axis the other 6 markers agree on']
     assert not log.at('ERROR')
 
 
-def test_calibration_failure_is_one_error_line():
+def test_calibration_failure_is_one_error_line(tmp_path):
     import jugglebot.mocap_node as mn
-    node = _mocap_node()
+    node = _mocap_node(tmp_path)
     log = _rec(node)
     node._on_bb_heartbeat(_hb(BallButlerStates.CALIBRATING))
     node._calib_data = {0: [np.zeros(3)]}
