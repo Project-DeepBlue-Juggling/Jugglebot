@@ -533,12 +533,6 @@ class MocapNode(Node):
     def _on_bb_heartbeat(self, msg: BallButlerHeartbeat):
         previous = self._bb_last_state
 
-        # Record yaw during calibration for offset calculation
-        if self._calibrating and self._calib_invalid is None:
-            self._calib_yaw_readings.append(msg.yaw_deg)
-            self._calib_yaw_samples.append(
-                (self.get_clock().now().nanoseconds * 1e-9, float(msg.yaw_deg)))
-
         if msg.state != self._bb_last_state:
             self._bb_last_state = msg.state
 
@@ -560,6 +554,15 @@ class MocapNode(Node):
             self._calib_yaw_samples = []
             self._calib_stamped_yaw = []
             self.get_logger().info('BB calibration started, collecting marker data')
+
+        # Record yaw during calibration for offset calculation — AFTER the
+        # start edge, so the first CALIBRATING heartbeat's yaw is in the
+        # window (it was dropped while this ran first; bag 2026-10-09_23-49-07),
+        # and before the end edge, so the first post-sweep sample still is.
+        if self._calibrating and self._calib_invalid is None:
+            self._calib_yaw_readings.append(msg.yaw_deg)
+            self._calib_yaw_samples.append(
+                (self.get_clock().now().nanoseconds * 1e-9, float(msg.yaw_deg)))
 
         # Detect calibration end (state transition away from CALIBRATING)
         if previous == BallButlerStates.CALIBRATING and msg.state != BallButlerStates.CALIBRATING:

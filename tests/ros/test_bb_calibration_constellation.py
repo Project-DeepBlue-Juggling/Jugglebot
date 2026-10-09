@@ -273,6 +273,36 @@ def test_no_motion_fails_loudly():
         estimate_sweep_yaw_offset(frames, samples, _tmpl())
 
 
+
+@pytest.mark.parametrize('parked_deg', [-0.3, -2.3])
+def test_heartbeat_yaw_wrapped_to_0_360_with_a_negative_start_reads_as_the_signed_series(parked_deg):
+    """Bag 2026-10-09_23-49-07: the heartbeat's yaw is wrapped to [0, 360), BB
+    parks just below zero (359.6; sweep 1 started at 357.7 = −2.3°), and a
+    bare np.unwrap kept the whole series on the +360 branch, outside E's valid
+    range — 5 of 7 sweeps failed CONSTELLATION_TOO_FEW_MOVING with n = 0. The
+    same samples on the wire's [0, 360) must give exactly what the signed
+    series gives (logbook 2026-10-09-bb-calibration-heartbeat-yaw-wrap)."""
+    frames, samples = _synth(phi_deg=0.3, lag=0.083, seed=4)
+    signed = [(t, y + parked_deg) for t, y in samples]
+    wire = [(t, (y + parked_deg) % 360.0) for t, y in samples]
+    assert wire[0][1] == pytest.approx(360.0 + parked_deg)       # starts on the 360 side
+    tr = track_constellation(frames, _tmpl())
+    a = estimate_sweep_yaw_offset(frames, signed, _tmpl(), track=tr)
+    b = estimate_sweep_yaw_offset(frames, wire, _tmpl(), track=tr)
+    assert a.n_moving >= bc.SWEEP_MIN_MOVING_SAMPLES
+    assert b.n_moving == a.n_moving
+    assert b.lag_s == pytest.approx(a.lag_s, abs=1e-9)
+    assert b.phi_raw_deg == pytest.approx(a.phi_raw_deg, abs=1e-9)
+    assert b.n_frames_moving == a.n_frames_moving
+
+
+def test_canonical_yaw_leaves_a_signed_unwrapped_series_unchanged():
+    """The stamped bb_yaw is firmware-unwrapped and may be negative: no-op."""
+    y = np.array([-4.0, -0.4, 0.0, 37.5, 129.9, 60.0, -1.0])
+    assert np.allclose(bc.canonical_yaw_deg(y), y)
+    assert np.allclose(bc.canonical_yaw_deg(y % 360.0), y)
+
+
 # ── the consistency gate ────────────────────────────────────────────────────
 
 REF = {'yaw_offset_deg': 0.6, 'position_mm': list(BB_POS)}

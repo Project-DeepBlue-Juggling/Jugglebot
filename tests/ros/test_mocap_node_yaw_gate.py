@@ -222,6 +222,20 @@ def test_solver_gets_qtm_stamped_frames_once_each_and_heartbeat_yaw(tmp_path):
     assert len(kw['calibration_data'][0]) == 5
 
 
+
+def test_the_first_calibrating_heartbeats_yaw_is_recorded(tmp_path):
+    """The yaw sample was appended BEFORE the start edge was detected, so the
+    first CALIBRATING heartbeat never reached the window (bag
+    2026-10-09_23-49-07: one sample lost per sweep)."""
+    node, _ = _node(tmp_path, _ref(0.6))
+    node._on_bb_heartbeat(_hb(BallButlerStates.IDLE, yaw=359.6))
+    assert node._calib_yaw_samples == [] and node._calib_yaw_readings == []
+    node._on_bb_heartbeat(_hb(BallButlerStates.CALIBRATING, yaw=359.7))
+    assert node._calib_yaw_readings == [pytest.approx(359.7)]
+    assert [y for _, y in node._calib_yaw_samples] == [pytest.approx(359.7)]
+    node._on_bb_heartbeat(_hb(BallButlerStates.CALIBRATING, yaw=3.0))
+    assert [y for _, y in node._calib_yaw_samples] == [pytest.approx(359.7), pytest.approx(3.0)]
+
 def test_stamped_yaw_stream_is_preferred_over_the_heartbeat(tmp_path):
     import jugglebot.mocap_node as mn
     node, _ = _node(tmp_path, _ref(0.6))

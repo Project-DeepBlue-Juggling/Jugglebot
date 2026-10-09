@@ -204,6 +204,27 @@ def angular_span_deg(angles_deg) -> float:
     return float(np.degrees(2.0 * np.pi - largest_gap))
 
 
+def canonical_yaw_deg(yaw_deg) -> np.ndarray:
+    """BB's reported yaw series on its principal branch, continuous: each
+    sample wrapped to [-180, 180), then unwrapped from the first.
+
+    The heartbeat's ``yaw_deg`` is wrapped to [0, 360) on the wire, so BB
+    parked at -0.4° arrives as 359.6°. A bare ``np.unwrap`` keeps the branch
+    of the FIRST sample, so a sweep whose first sample sat just below zero
+    was read on the +360 branch (359.7, 360.1, ... 484, ...), every sample
+    fell outside E's valid range (-5...130°), and the sweep failed with
+    ``CONSTELLATION_TOO_FEW_MOVING: 0 moving heartbeat yaw samples`` -- 5 of
+    the 7 sweeps of bag ``2026-10-09_23-49-07`` (first recorded yaw 357.72 /
+    359.98 / 359.96 / 359.61 / 359.63 failed; 0.11 / 0.09 passed; logbook
+    2026-10-09-bb-calibration-heartbeat-yaw-wrap). BB's physical yaw range
+    (about -5...130°) never approaches ±180°, so the principal branch is the
+    right one for every sample. The stamped ``bb_yaw`` (already unwrapped by
+    the firmware, may be negative) passes through unchanged.
+    """
+    y = np.asarray(yaw_deg, dtype=float)
+    return np.degrees(np.unwrap(np.radians((y + 180.0) % 360.0 - 180.0)))
+
+
 # ---------------------------------------------------------------------------
 #  3D circle fitting
 # ---------------------------------------------------------------------------
@@ -555,7 +576,10 @@ def calculate_yaw_offset(
 
     # Last ~1 s of marker data (200 Hz → 200 pts)
     recent_m3 = anchor_positions[-min(200, len(anchor_positions)):]
-    recent_yaw = yaw_readings_deg[-min(10, len(yaw_readings_deg)):]
+    # Principal branch: a parked hold straddling 0/360 on the wire (359.9, 0.1)
+    # would otherwise average to ~180 (see canonical_yaw_deg).
+    recent_yaw = [float(v) for v in
+                  canonical_yaw_deg(yaw_readings_deg[-min(10, len(yaw_readings_deg)):])]
 
     # Yaw-anchor marker angle in global frame (circular mean)
     angles = [math.atan2(p[1] - axis_point[1], p[0] - axis_point[0]) for p in recent_m3]
@@ -1065,7 +1089,7 @@ def fit_yaw_latency(t_frames, theta_deg, t_yaw, yaw_deg, e_deg_fn=None,
     ty = np.asarray(t_yaw, dtype=float)
     y = np.asarray(yaw_deg, dtype=float)
     o = np.argsort(ty, kind='stable')
-    ty, y = ty[o], np.degrees(np.unwrap(np.radians(y[o])))
+    ty, y = ty[o], canonical_yaw_deg(y[o])
     if len(ty) < 3 or len(tf) < 2:
         return None
     w = np.gradient(y, ty)
@@ -1279,7 +1303,7 @@ def estimate_sweep_yaw_offset(
     # pose reconstructs non-rigidly in every 2026-10-09 bag (pair separations
     # off by 1.3–2.4 mm there vs ≤ 0.3 mm (A/B) / 0.6 mm (7-sweep bag) at
     # other yaws), and the pause is ~25 % of a sweep's frames.
-    w = np.gradient(np.degrees(np.unwrap(np.radians(ys[:, 1]))), ys[:, 0])
+    w = np.gradient(canonical_yaw_deg(ys[:, 1]), ys[:, 0])
     moving = np.abs(np.interp(track.t + fit.lag_s, ys[:, 0], w)) > SWEEP_MIN_SPEED_DEG_S
     if moving.sum() < min_frames:
         raise ValueError(
