@@ -540,6 +540,18 @@
 .bb-calib-dot.calibrated   { background: var(--accent-green); box-shadow: 0 0 4px var(--accent-green); }
 .bb-calib-dot.uncalibrated { background: var(--accent-red); }
 
+/* The last calibration attempt's failure reason (bb/calibration_attempt),
+   shown beside a still-valid "Calibrated" — one line, full text on hover. */
+.bb-calib-note {
+    color: var(--accent-red);
+    font-size: var(--font-size-sm);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    margin-bottom: 4px;
+}
+.bb-calib-note[hidden] { display: none; }
+
 /* ---- BB Calibrate button ---- */
 .bb-calibrate-row {
     display: flex;

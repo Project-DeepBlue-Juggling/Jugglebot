@@ -22,6 +22,7 @@ import {
 import {
     initAllPanels, initCollapsiblePanels, updateMotorGrid, updateOrchestratorState,
     updateFlags, updateBBPanel, setBBDisconnected, updateBBCalibration,
+    updateBBCalibrationAttempt,
     updateTrackingError, updateMotionPanel,
     recordTopicMessage, registerTopic, updateTopicMonitor, clearTopicData,
     setMocapConnected, setMocapAligned,
@@ -349,8 +350,11 @@ function subscribeAll() {
     // Motion planner diagnostics (500Hz -> throttle to 5Hz = 200ms)
     ros.subscribe('motion/diagnostics', 'diagnostic_msgs/msg/DiagnosticStatus', onMotionDiagnostics, 200);
 
-    // BB calibration result (latched — last value available to late subscribers)
+    // BB calibration in force (latched — last value available to late subscribers;
+    // a failed sweep never replaces a success on it)
     ros.subscribe('bb/calibration_result', 'jugglebot_interfaces/msg/BallButlerCalibrationResult', onBBCalibrationResult, 0);
+    // Every sweep's outcome (latched): the event log + the failure note
+    ros.subscribe('bb/calibration_attempt', 'jugglebot_interfaces/msg/BallButlerCalibrationResult', onBBCalibrationAttempt, 0);
 
     // Juggle attempt start / refusal / end from skill_node, whatever sent the
     // goal (GUI or terminal) — Event Log entries + chart markers.  Unthrottled:
@@ -716,7 +720,17 @@ function onMotionDiagnostics(msg) {
     updateMotionPanel(msg);
 }
 
-/** bb/calibration_result is latched — the first message that lands in a
+/** bb/calibration_result — the calibration IN FORCE (keep-last-good,
+ *  2026-10-10: mocap_node never latches a failure over a success here). It
+ *  drives the indicator and BB's 3D placement; the event log follows
+ *  bb/calibration_attempt, so one sweep is one event. */
+function onBBCalibrationResult(msg) {
+    recordTopicMessage('bb/calibration_result');
+    updateBBCalibration(msg);
+    setBallButlerCalibration(msg);
+}
+
+/** bb/calibration_attempt is latched — the first message that lands in a
  *  short window after GUI init is the stale history record and is dropped
  *  so reloading doesn't plant a phantom marker.  Any message after the
  *  window is a genuine live publish and is emitted as an event.  Message
@@ -725,11 +739,10 @@ const BB_CALIBRATION_STALE_WINDOW_MS = 1000;
 const guiInitTimeMs = Date.now();
 let bbCalibrationInitialSkipped = false;
 
-function onBBCalibrationResult(msg) {
-    recordTopicMessage('bb/calibration_result');
-    updateBBCalibration(msg);
-    // Placement uses every message, incl. the latched one the event log skips.
-    setBallButlerCalibration(msg);
+function onBBCalibrationAttempt(msg) {
+    recordTopicMessage('bb/calibration_attempt');
+    // The note uses every message, incl. the latched one the event log skips.
+    updateBBCalibrationAttempt(msg);
     // Skip the latched-stale message during the wall-clock init window OR
     // while no real telemetry has arrived yet — `lastRobotStateMs === 0`
     // catches slow-handshake cases where the latched message lands after
@@ -1054,7 +1067,7 @@ const GUI_SUBSCRIBED_TOPICS = new Set([
     'mocap_data',
     'rigid_body_poses',
     'leg_setpoint_echo', 'control_mode_topic', 'motion/diagnostics',
-    'bb/calibration_result', 'cone/heartbeat', 'cone/timing_result',
+    'bb/calibration_result', 'bb/calibration_attempt', 'cone/heartbeat', 'cone/timing_result',
     'skills/attempt',
 ]);
 

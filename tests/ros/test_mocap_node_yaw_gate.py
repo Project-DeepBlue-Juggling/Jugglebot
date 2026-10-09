@@ -81,7 +81,9 @@ def _calibrate(node, result):
     node._calib_data = {0: [np.zeros(3)]}
     with patch.object(mn, 'run_calibration', return_value=result) as solver:
         node._on_bb_heartbeat(_hb(BallButlerStates.IDLE))
-    return solver, node.pub_calibration.published[-1]
+    # Every outcome is on bb/calibration_attempt; bb/calibration_result keeps the
+    # last success once there is one (keep-last-good, 2026-10-10).
+    return solver, node.pub_calibration_attempt.published[-1]
 
 
 def _rec(node):

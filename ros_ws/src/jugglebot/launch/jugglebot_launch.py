@@ -628,6 +628,7 @@ def generate_launch_description():
             # (disposition per the can_node<->Teensy parity audit, 2026-07-06).
             '/bb/heartbeat',
             '/bb/calibration_result',
+            '/bb/calibration_attempt',   # every sweep's outcome (keep-last-good, 2026-10-10)
             '/qtm_clock_offset_sec',
             '/motion/tracking_error',
             '/motion/diagnostics',

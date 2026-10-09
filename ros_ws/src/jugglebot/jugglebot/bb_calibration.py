@@ -520,9 +520,8 @@ def find_rotation_axis(
         detail = ', '.join(f'Marker {i + 1} {full[i]:.2f}' for i in sorted(full))
         raise ValueError(
             f'Circle centres deviate up to {max(full.values()):.2f} mm from axis '
-            f'({detail} mm; no {smallest} of {len(fitted)} agree within '
-            f'{max_axis_dev_mm:.1f} mm). '
-            'This may indicate non-rigid motion or poor marker visibility.'
+            f'({detail} mm; no {smallest} of {len(fitted)} within '
+            f'{max_axis_dev_mm:.1f} mm) — non-rigid motion or poor marker visibility'
         )
 
     n_agree = len(consensus)
@@ -1338,8 +1337,8 @@ def estimate_sweep_yaw_offset(
             f'markers in the calibration window (need {min_frames})')
     if n < min_frames:
         raise ValueError(
-            f'CONSTELLATION_TOO_FEW_MARKERS: only {n} of {track.n_frames_in} frames '
-            f'matched >= {CONSTELLATION_MIN_MATCHED} template markers with a fit under '
+            f'CONSTELLATION_TOO_FEW_MARKERS: {n} of {track.n_frames_in} frames matched '
+            f'>= {CONSTELLATION_MIN_MATCHED} template markers within '
             f'{CONSTELLATION_FRAME_MAX_RMS_MM:.1f} mm (need {min_frames})')
     off_grid = mocap_clock_off_grid(track.t)
     if off_grid is not None and off_grid > max_clock_off_grid:
@@ -1360,15 +1359,14 @@ def estimate_sweep_yaw_offset(
             f'{yaw_source} yaw samples overlap the mocap frames (need {min_moving})')
     if fit.at_edge:
         raise ValueError(
-            f'CONSTELLATION_LAG_AT_EDGE: the {yaw_source} yaw-to-mocap lag fit '
-            f'{fit.lag_s * 1e3:.1f} ms is at the edge of its search range '
-            f'[{lag_grid_s[0] * 1e3:.0f}, {lag_grid_s[1] * 1e3:.0f}] ms — the true lag '
-            'may lie outside it')
+            f'CONSTELLATION_LAG_AT_EDGE: {yaw_source} yaw lag {fit.lag_s * 1e3:.1f} ms '
+            f'at the edge of its search range '
+            f'[{lag_grid_s[0] * 1e3:.0f}, {lag_grid_s[1] * 1e3:.0f}] ms')
     if fit.residual_rms_deg > max_lag_residual_deg:
         raise ValueError(
-            f'CONSTELLATION_LAG_RESIDUAL: mocap yaw vs {yaw_source} yaw scatters '
-            f'{fit.residual_rms_deg:.2f}° RMS at the best lag {fit.lag_s * 1e3:.1f} ms '
-            f'(limit {max_lag_residual_deg:.2f}°) — wrong yaw units/source or a bad track')
+            f'CONSTELLATION_LAG_RESIDUAL: mocap vs {yaw_source} yaw {fit.residual_rms_deg:.2f}° '
+            f'RMS > {max_lag_residual_deg:.2f}° at lag {fit.lag_s * 1e3:.1f} ms — wrong yaw '
+            'units/source or a bad track')
     # Position and template residual come from the MOVING frames too (frame
     # time + lag inside a turning stretch of the reported yaw). The parked
     # pose reconstructs non-rigidly in every 2026-10-09 bag (pair separations
@@ -1378,15 +1376,14 @@ def estimate_sweep_yaw_offset(
     moving = np.abs(np.interp(track.t + fit.lag_s, ys[:, 0], w)) > SWEEP_MIN_SPEED_DEG_S
     if moving.sum() < min_frames:
         raise ValueError(
-            f'CONSTELLATION_TOO_FEW_MOVING: only {int(moving.sum())} posed mocap frames '
+            f'CONSTELLATION_TOO_FEW_MOVING: {int(moving.sum())} posed mocap frames '
             f'while BB was turning (need {min_frames})')
     tres = track.template_residual_mm(moving)
     if not (tres <= max_residual_mm):
         raise ValueError(
-            f'CONSTELLATION_RESIDUAL: a BB marker-pair separation is off the template by '
-            f'{tres:.2f} mm (mean over the moving sweep; limit {max_residual_mm:.2f} mm) — '
-            'the template no longer describes BB\'s markers (a marker moved); refusing '
-            'rather than guessing')
+            f'CONSTELLATION_RESIDUAL: marker-pair separations off the template by '
+            f'{tres:.2f} mm > {max_residual_mm:.2f} mm — a marker moved on BB; rebuild '
+            'the template')
     rep = float(template.repeatability_deg)
     offset_deg = fit.phi_raw_deg + template.gauge_shift_deg
     org = track.origin[moving]
@@ -1465,15 +1462,22 @@ def check_calibration_consistency(
     if template_residual_mm > max_residual_mm:
         return GateVerdict(
             False,
-            f'TEMPLATE_RESIDUAL: a BB marker sits {template_residual_mm:.2f} mm from the '
-            f'template (limit {max_residual_mm:.2f} mm) — a marker moved on BB; rebuild the '
-            f'template (bb_moved does not override this). {head}',
+            f'TEMPLATE_RESIDUAL: a BB marker sits {template_residual_mm:.2f} mm off the '
+            f'template > {max_residual_mm:.2f} mm — a marker moved on BB; rebuild the '
+            'template (bb_moved does not override this)',
             delta, thr, shift)
     problems = []
     if abs(delta) > thr:
         problems.append('yaw')
     if shift > max_axis_shift_mm:
         problems.append('axis point')
+    # The refusal's operator line: the code and the decisive numbers only
+    # (the estimator detail is the caller's DEBUG). Wording, not logic.
+    exceeded = []
+    if 'yaw' in problems:
+        exceeded.append(f'Δyaw {delta:+.3f}° exceeds ±{thr:.3f}°')
+    if 'axis point' in problems:
+        exceeded.append(f'axis point moved {shift:.2f} mm > {max_axis_shift_mm:.1f} mm')
     if not problems:
         return GateVerdict(True, f'{head} ok', delta, thr, shift)
     if bb_moved:
@@ -1482,10 +1486,8 @@ def check_calibration_consistency(
                                  'correction)', delta, thr, shift, overridden=True)
     return GateVerdict(
         False,
-        f'CALIBRATION_INCONSISTENT: the {" and ".join(problems)} moved and BB is not declared '
-        f'moved — refused. New yaw offset {new_offset_deg:.3f}° ±{new_std_deg:.3f}°. {head}. '
-        'If BB really moved or QTM was recalibrated, set the mocap_node parameter '
-        'bb_moved:=true and recalibrate (then refit the aim correction)',
+        f'CALIBRATION_INCONSISTENT: {", ".join(exceeded)} vs {ref_yaw:.3f}° '
+        f'({reference_label}) — set bb_moved:=true if BB or QTM moved',
         delta, thr, shift)
 
 # ---------------------------------------------------------------------------
