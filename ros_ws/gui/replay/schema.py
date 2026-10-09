@@ -38,7 +38,8 @@ Flattening (``cols`` keys) is the normative rule the browser unflattens by:
 - every message of a topic has the same field set, so all columns of a topic
   have length ``n``;
 - field names starting with ``__`` (rosbags' dataclass ``__msgtype__``) are
-  not fields and are skipped.
+  not fields and are skipped. IDL constants (e.g. DiagnosticStatus
+  OK/WARN/ERROR/STALE) are not fields and are never columns.
 
 ``t0`` is the log time of the first ALLOW-LISTED message (served data starts
 there); ``metadata.yaml``'s duration may exceed the cache span by the lead of
@@ -77,7 +78,8 @@ from __future__ import annotations
 
 from typing import Dict, Optional, Tuple
 
-FORMAT_VERSION = 1
+FORMAT_VERSION = 2
+# 2 (2026-10-10): IDL constants dropped from columns; the server discards caches with an older format on open.
 CHUNK_S = 10.0
 
 MANIFEST = "manifest.json"

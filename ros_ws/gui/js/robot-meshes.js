@@ -1,4 +1,5 @@
 /** Static, offline-reduced CAD assets. One fetch, shared GPU geometry, no ROS work. */
+import * as clock from './clock.js';
 import * as THREE from 'three';
 import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 
@@ -61,7 +62,7 @@ export function cadMesh(name, color, axis = null) {
     return mesh;
 }
 
-export function setRobotAxisStates(motors, now = performance.now()) {
+export function setRobotAxisStates(motors, now = performance.now()) { // wall-clock: UI animation; freshness bypassed in replay
     for (let i = 0; i < axes.length; i++) {
         axes[i].state = motors[i]?.current_state ?? null;
         axes[i].seen = motors[i] ? now : -Infinity;
@@ -71,7 +72,7 @@ export function setRobotAxisStates(motors, now = performance.now()) {
 export function setAxisFault(index, faulted) {
     const axis = axes[index];
     if (!axis) return;
-    if (faulted && !axis.fault) axis.faultAt = performance.now();
+    if (faulted && !axis.fault) axis.faultAt = performance.now(); // wall-clock: UI animation; freshness bypassed in replay
     axis.fault = !!faulted;
 }
 
@@ -86,7 +87,7 @@ export function setAxisHighlight(index, highlighted) {
 export function updateRobotMaterials(now) {
     const idleBrightness = .62 + .18 * Math.sin(now * Math.PI * 2 / 3200);
     for (const axis of axes) {
-        const fresh = now - axis.seen < 1500;
+        const fresh = axis.seen !== -Infinity && (clock.isReplay() || now - axis.seen < 1500);
         const fault = fresh && axis.fault;
         for (const mat of axis.materials) {
             normalColor.setHex(mat.userData.baseColor);

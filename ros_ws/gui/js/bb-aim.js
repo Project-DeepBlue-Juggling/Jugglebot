@@ -42,6 +42,7 @@
 
 import { callService, withTimeout } from './ros-bridge.js';
 import { emitEvent, EVENT_TYPES } from './event-store.js';
+import { isReplayFenced } from './replay/fence.js';
 import { BB_YAW_LIM_MIN_DEG, BB_YAW_LIM_MAX_DEG,
          BB_PITCH_DEG_MIN, BB_PITCH_DEG_MAX } from './geometry-config.js';
 
@@ -81,6 +82,7 @@ export function isBBAimEditing(axis) {
 }
 
 function allowed() {
+    if (isReplayFenced()) return false;  // replay fence: refreshAffordance drops drag-aim
     return orchIdle && bbReady;
 }
 

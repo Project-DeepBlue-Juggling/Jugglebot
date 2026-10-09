@@ -135,6 +135,19 @@ def test_column_order_and_shape(indexed):
     assert "ball_held_stamp.nanosec" in hand
 
 
+def test_diagnostic_status_columns_are_fields_only(indexed):
+    _, m, out, _ = indexed
+    seen = 0
+    for rec in _chunks(out, len(m["chunks"])):
+        for topic, tp in rec["topics"].items():
+            if tp["type"] == "diagnostic_msgs/msg/DiagnosticStatus":
+                seen += 1
+                assert list(tp["cols"]) == ["level", "name", "message", "hardware_id", "values"], topic
+                for c in ("OK", "WARN", "ERROR", "STALE"):
+                    assert c not in tp["cols"], (topic, c)
+    assert seen > 0
+
+
 def test_chunk_sorting_and_census(indexed):
     _, m, out, _ = indexed
     recs = _chunks(out, len(m["chunks"]))
@@ -286,6 +299,14 @@ def test_cli_bulk_skips_complete(tmp_path):
     assert m["recording"] == "2026-10-02_10-00-00" and m["status"] == schema.STATUS_COMPLETE
     r = subprocess.run(args, cwd=str(GUI), capture_output=True, text=True)
     assert r.returncode == 0 and "already complete" in r.stderr
+    # An old-format complete cache is NOT skipped: it is reconverted.
+    mp = cache / "2026-10-02_10-00-00" / schema.MANIFEST
+    m = json.loads(mp.read_text())
+    m["format"] = schema.FORMAT_VERSION - 1
+    mp.write_text(json.dumps(m))
+    r = subprocess.run(args, cwd=str(GUI), capture_output=True, text=True)
+    assert r.returncode == 0 and "converting 2026-10-02_10-00-00" in r.stderr
+    assert json.loads(mp.read_text())["format"] == schema.FORMAT_VERSION
 
 
 # 8. chunk bounds --------------------------------------------------------
@@ -297,3 +318,45 @@ def test_chunk_bounds(indexed, unindexed):
             lo, hi = schema.chunk_bounds(i, m["t0"])
             assert entry["t0"] == pytest.approx(lo) and entry["t1"] == pytest.approx(hi)
             assert rec["t0"] == entry["t0"] and rec["t1"] == entry["t1"]
+
+
+# 9. field enumeration vs the .msg definitions -------------------------------
+
+def _msg_field_names(text: str):
+    """Field names of one .msg body: 'type name' lines, constants (with '=') excluded."""
+    out = []
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if not line or "=" in line:
+            continue
+        out.append(line.split()[1])
+    return out
+
+
+def test_field_names_match_msg_definitions():
+    """``_field_names`` drops dataclass fields that carry a default (IDL
+    constants).  A real field that ever gains a default would be silently
+    dropped from the chunks; pin the enumeration to the .msg definitions."""
+    from replay.convert import _field_names
+    from tests.ros._replay_fixture import MSG_DIR, SEP, _full_name, make_typestore
+
+    ts = make_typestore()
+    top = ["jugglebot_interfaces/msg/RobotState", "jugglebot_interfaces/msg/HandTelemetryMessage",
+           "jugglebot_interfaces/msg/MocapDataMulti", "jugglebot_interfaces/msg/CatchEvent",
+           "std_msgs/msg/String", "diagnostic_msgs/msg/DiagnosticStatus"]
+    names = set(top)
+    for t in top:  # nested dependency closure
+        gen, _ = ts.generate_msgdef(t, ros_version=2)
+        for blk in gen.split(SEP)[1:]:
+            names.add(_full_name(blk.strip().splitlines()[0].split("MSG:", 1)[1].strip()))
+    checked = 0
+    for name in sorted(names):
+        if name.startswith("jugglebot_interfaces/msg/"):
+            f = MSG_DIR / (name.rsplit("/", 1)[1] + ".msg")
+            expected = _msg_field_names(f.read_text())
+        else:
+            gen, _ = ts.generate_msgdef(name, ros_version=2)
+            expected = _msg_field_names(gen.split(SEP)[0])
+        assert _field_names(ts.types[name]) == expected, name
+        checked += 1
+    assert checked >= len(top)

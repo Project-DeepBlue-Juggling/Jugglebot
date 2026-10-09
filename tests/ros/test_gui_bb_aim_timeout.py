@@ -61,7 +61,7 @@ _HARNESS = os.path.join(_JS_DIR, 'bb_aim_harness.js')
 _FAKE_ROS_BRIDGE = os.path.join(_JS_DIR, 'fake_ros_bridge.js')
 
 #: bb-aim.js's own real dependencies, copied verbatim into the sandbox.
-_REAL_SOURCES = ('bb-aim.js', 'event-store.js', 'geometry-config.js')
+_REAL_SOURCES = ('bb-aim.js', 'event-store.js', 'geometry-config.js', 'clock.js')
 
 
 # ---------------------------------------------------------------------------
@@ -124,6 +124,9 @@ def sandbox(tmp_path):
     for name in _REAL_SOURCES:
         shutil.copy(os.path.join(_GUI_JS_DIR, name), os.path.join(sb, name))
     shutil.copy(_FAKE_ROS_BRIDGE, os.path.join(sb, 'ros-bridge.js'))
+    # bb-aim.js consults the replay affordance fence (js/replay/fence.js).
+    os.makedirs(os.path.join(sb, 'replay'), exist_ok=True)
+    shutil.copy(os.path.join(_GUI_JS_DIR, 'replay', 'fence.js'), os.path.join(sb, 'replay', 'fence.js'))
     shutil.copy(_HARNESS, os.path.join(sb, 'bb_aim_harness.js'))
     with open(os.path.join(sb, 'package.json'), 'w', encoding='utf-8') as f:
         f.write('{"type": "module"}\n')

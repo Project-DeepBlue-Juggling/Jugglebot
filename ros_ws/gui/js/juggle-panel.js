@@ -41,6 +41,7 @@
  * refused), so it is shown read-only.
  */
 
+import * as clock from './clock.js';
 import * as ros from './ros-bridge.js';
 import { holdToConfirm } from './hold-to-confirm.js';
 import { emitEvent, EVENT_TYPES } from './event-store.js';
@@ -414,7 +415,7 @@ function onStartConfirm() {
     busy = true;
     warn = null;
     crossCheck = {
-        pattern: p.value, typed: typedOverrides(p), reload: effectiveReload(p), t: Date.now(),
+        pattern: p.value, typed: typedOverrides(p), reload: effectiveReload(p), t: Date.now(), // wall-clock: command path
     };
     setTransient('Dispatching ' + data + '…', '');
     // No Event Log entry here: skill_node announces the attempt on
@@ -483,7 +484,7 @@ export function jugglePanelOnSkillAttempt(msg) {
     if (!msg) return;
     const f = {};
     for (const v of (msg.values || [])) f[v.key] = v.value;
-    const now = Date.now();
+    const now = clock.now();
     if (msg.name === 'juggle_start') {
         running = {
             pattern: f.pattern, n: f.n_throws, reload: f.reload === '1',
@@ -822,14 +823,14 @@ function animLoop(now) {
 
 function ensureAnim() {
     if (rafId || !animShouldRun()) return;
-    animT0 = performance.now() - (staticPhase() / speed) * 1000;
+    animT0 = performance.now() - (staticPhase() / speed) * 1000; // wall-clock: UI animation
     rafId = requestAnimationFrame(animLoop);
 }
 
 function onSpeedClick(ev) {
     ev.stopPropagation();
     const i = SPEEDS.indexOf(speed);
-    const now = performance.now();
+    const now = performance.now(); // wall-clock: UI animation
     const s = ((now - animT0) / 1000) * speed;
     speed = SPEEDS[(i + 1) % SPEEDS.length];
     animT0 = now - (s / speed) * 1000;   // keep the pose continuous
@@ -1087,7 +1088,7 @@ function attemptView() {
     if (running) {
         const label = patternOf(running.pattern).value === running.pattern
             ? patternOf(running.pattern).label : (running.pattern || '?');
-        const secs = Math.max(0, Math.floor((Date.now() - running.t0) / 1000));
+        const secs = Math.max(0, Math.floor((clock.now() - running.t0) / 1000));
         const text = 'Running · ' + label + ' · ' + running.n + ' throws · apex ' + running.apex
             + ' m' + (patternOf(running.pattern).sites === 2 ? ' · ' + running.sep + ' mm' : '')
             + (running.reload ? ' · reload' : '') + ' · ' + secs + ' s';

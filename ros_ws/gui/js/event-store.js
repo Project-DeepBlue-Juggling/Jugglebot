@@ -9,6 +9,7 @@
  * Everything is in-memory; nothing persists across reload (by design — see
  * the Phase-2 plan).
  */
+import * as clock from './clock.js';
 
 // ---- Types & palette ----
 
@@ -58,6 +59,67 @@ let highlightedEventId = null;
 /** @type {Set<(id: number|null) => void>} */
 const highlightListeners = new Set();
 
+/** Replay mute (design § 4 baseline, § 7 reverse): while true emitEvent()
+ *  drops every event, so handler edge detectors can re-baseline silently. */
+let eventsMuted = false;
+
+/** (t|type|label) keys while the replay store is active, else null (design § 7 dedup). */
+let replayKeys = null;
+
+function notifyCleared() {
+    for (const cb of listeners) {
+        try { cb(null); } catch { /* ignore */ }
+    }
+}
+
+/**
+ * Replay mode (design § 8): park the live events, start an empty replay store
+ * with (t, type, label) dedup. Returns the opaque snapshot for restoreEvents().
+ * @returns {{events:object[]}}
+ */
+export function snapshotAndBeginReplayEvents() {
+    const snap = { events: events.slice() };
+    events.length = 0;
+    replayKeys = new Set();
+    highlightedEventId = null;
+    chartHoveredIds = [];
+    notifyCleared();
+    return snap;
+}
+
+/** Leave the replay store; the live events come back exactly as parked. */
+export function restoreEvents(snap) {
+    replayKeys = null;
+    events.length = 0;
+    if (snap && snap.events) for (const e of snap.events) events.push(e);
+    highlightedEventId = null;
+    chartHoveredIds = [];
+    notifyCleared();
+}
+
+/** @returns {boolean} true while the replay event store is active. */
+export function inReplayEvents() { return replayKeys !== null; }
+
+/** Replay store only: drop events later than `t` (a backward seek / reverse pass un-happens them). */
+export function trimEventsAfter(t) {
+    if (!replayKeys || !events.length || events[events.length - 1].t <= t) return;
+    let changed = false;
+    for (let i = events.length - 1; i >= 0; i--) {
+        if (events[i].t > t) {
+            replayKeys.delete(events[i].t + '|' + events[i].type + '|' + events[i].label);
+            events.splice(i, 1);
+            changed = true;
+        }
+    }
+    if (changed) notifyCleared();
+}
+
+/** @param {boolean} muted */
+export function setEventsMuted(muted) { eventsMuted = !!muted; }
+
+/** @returns {boolean} */
+export function eventsAreMuted() { return eventsMuted; }
+
 /**
  * Emit a new event into the store.  `t` defaults to "now" (wall-clock
  * seconds).  If a caller wants to time-stamp against a ROS header, they
@@ -66,16 +128,26 @@ const highlightListeners = new Set();
  * @param {{type: string, label: string, detail?: string, t?: number}} ev
  */
 export function emitEvent(ev) {
+    if (eventsMuted) return;
     if (!ev || !ev.type || !ev.label) return;
     const entry = {
         id: nextEventId++,
-        t: typeof ev.t === 'number' ? ev.t : Date.now() / 1000,
+        t: typeof ev.t === 'number' ? ev.t : clock.now() / 1000,
         type: ev.type,
         label: ev.label,
         detail: ev.detail || '',
     };
+    if (replayKeys) {
+        // Replay store (design § 7): re-playing a span does not double its events.
+        const key = entry.t + '|' + entry.type + '|' + entry.label;
+        if (replayKeys.has(key)) return;
+        replayKeys.add(key);
+    }
     events.push(entry);
-    if (events.length > MAX_EVENTS) events.shift();
+    if (events.length > MAX_EVENTS) {
+        const gone = events.shift();
+        if (replayKeys) replayKeys.delete(gone.t + '|' + gone.type + '|' + gone.label);
+    }
     for (const cb of listeners) {
         try { cb(entry); } catch { /* listener error — skip */ }
     }

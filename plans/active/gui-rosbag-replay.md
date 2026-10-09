@@ -66,7 +66,7 @@ delegated to Claude's judgment):
    gzipped and served with `Content-Encoding: gzip`, so a seek costs zero
    decode CPU. The converter holds one chunk plus a one-chunk reorder buffer,
    so memory is bounded by a chunk, not the window. `format` in the manifest
-   invalidates every cache when the chunk schema changes.
+   invalidates every cache when the chunk schema changes (enforced at `open`: a complete cache with an older format is discarded and reconverted; listed as `stale`).
 3. **Allowlist = the GUI's subscribe set** plus the two topics the plan adds
    (`/balls`, `/cone/catch_event`), pinned by a contract test against the JS
    source. Other recorded topics are counted in the manifest, not converted.

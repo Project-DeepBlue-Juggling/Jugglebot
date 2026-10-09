@@ -86,7 +86,11 @@ def _parse_metadata(path: str) -> Dict[str, Optional[float]]:
 
 def find_recording(rosbags_root: str, recording_id: str,
                    cache_root: str = "", now: Optional[float] = None) -> Optional[Dict[str, Any]]:
-    """One recording's info dict (same shape as a listing row) or None."""
+    """One recording's info dict (same shape as a listing row) or None.
+
+    ``cache`` is the manifest status ("none", "converting", "complete",
+    "failed") or "stale" for a complete cache whose format is not current
+    (it is discarded and reconverted on the next open)."""
     if not valid_id(recording_id):
         return None
     d = os.path.join(rosbags_root, recording_id)
@@ -117,6 +121,8 @@ def find_recording(rosbags_root: str, recording_id: str,
     info.update(_parse_metadata(os.path.join(d, "metadata.yaml")))
     man = read_manifest(cache_root, recording_id) if cache_root else None
     info["cache"] = man.get("status", "none") if man else "none"
+    if man and info["cache"] == schema.STATUS_COMPLETE and not is_format_current(man):
+        info["cache"] = "stale"
     return info
 
 
@@ -220,6 +226,11 @@ def disk_free_bytes(cache_root: str) -> int:
             break
         p = parent
     return shutil.disk_usage(p or ".").free
+
+
+def is_format_current(manifest: Optional[Dict[str, Any]]) -> bool:
+    """True when the manifest was written under the current chunk schema."""
+    return bool(manifest) and manifest.get("format") == schema.FORMAT_VERSION
 
 
 def is_stale_partial(manifest: Optional[Dict[str, Any]], worker_alive: bool) -> bool:

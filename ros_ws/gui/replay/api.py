@@ -119,6 +119,22 @@ class ReplayBackend:
         with self._lock:
             return rid == self._running
 
+    def join_worker(self, rid: str, timeout: float = 5.0) -> bool:
+        """Wait until `rid` is neither running nor queued-running; False on timeout."""
+        deadline = time.monotonic() + timeout
+        with self._lock:
+            proc = self._proc if rid == self._running else None
+        if proc is not None:
+            try:
+                proc.wait(timeout=max(0.0, deadline - time.monotonic()))
+            except subprocess.TimeoutExpired:
+                return False
+        while time.monotonic() < deadline:
+            if not self.is_running(rid):
+                return True
+            time.sleep(0.01)
+        return not self.is_running(rid)
+
     def worker_alive(self, rid: str) -> bool:
         with self._lock:
             return rid == self._running and self._proc is not None and self._proc.poll() is None
@@ -202,8 +218,10 @@ class ReplayBackend:
             for k in ("chunks_done", "chunks_total", "t0", "t1", "error"):
                 out[k] = man.get(k, out[k])
         mstat = man.get("status") if man else None
-        if mstat == schema.STATUS_COMPLETE:
+        if mstat == schema.STATUS_COMPLETE and cache.is_format_current(man):
             out["status"] = "complete"
+        elif mstat == schema.STATUS_COMPLETE:
+            pass  # older chunk format: not servable, reported "none" until reconverted
         elif pos is not None and pos > 0:
             out["status"] = "queued"
         elif mstat == schema.STATUS_FAILED:
@@ -226,6 +244,10 @@ class ReplayBackend:
 
     def _file_route(self, handler: Any, rid: str, name: str) -> None:
         fn = schema.MANIFEST if name == "manifest" else schema.OVERVIEW
+        man = cache.read_manifest(self.cache_root, rid)
+        if man and not cache.is_format_current(man):
+            self._json(handler, 404, {"error": name + " not available"})
+            return
         try:
             with open(os.path.join(cache.cache_dir(self.cache_root, rid), fn), "rb") as f:
                 body = f.read()
@@ -240,7 +262,8 @@ class ReplayBackend:
             return
         i = int(idx)
         man = cache.read_manifest(self.cache_root, rid)
-        if not man or i >= int(man.get("chunks_done", 0)):
+        if not man or not cache.is_format_current(man) \
+                or i >= int(man.get("chunks_done", 0)):
             self._json(handler, 404, {"error": "chunk not ready"})
             return
         try:
@@ -267,10 +290,18 @@ class ReplayBackend:
         man = cache.read_manifest(self.cache_root, rid)
         if man and man.get("status") == schema.STATUS_COMPLETE:
             src = man.get("source", {})
-            if src.get("size_bytes") == info["size_bytes"] and \
-                    abs(float(src.get("mtime", -1)) - info["mtime"]) < 1e-3:
+            fresh = cache.is_format_current(man) \
+                and src.get("size_bytes") == info["size_bytes"] \
+                and abs(float(src.get("mtime", -1)) - info["mtime"]) < 1e-3
+            if fresh:
                 cache.touch_opened(self.cache_root, rid)
                 self._json(handler, 200, self.status(rid))
+                return
+            # Stale.  A worker whose manifest already says complete may not
+            # have exited yet; wait for it so the stale cache is discarded and
+            # reconverted rather than served through the queued branch.
+            if self.is_running(rid) and not self.join_worker(rid, 5.0):
+                self._refuse(handler, "busy")
                 return
         if info["in_progress"]:
             self._refuse(handler, "recording_in_progress")

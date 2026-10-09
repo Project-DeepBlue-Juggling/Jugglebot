@@ -45,6 +45,7 @@
  * in the GUI would give it a second, silently-diverging opinion.
  */
 
+import * as clock from './clock.js';
 import { HARDWARE_MODELS } from './geometry-config.js';
 
 // ---- Device registry ----
@@ -459,8 +460,8 @@ function applyStale() {
 }
 
 function armStaleTimer() {
-    if (staleTimer) clearTimeout(staleTimer);
-    staleTimer = setTimeout(() => {
+    if (staleTimer) clock.clearTimeout(staleTimer);
+    staleTimer = clock.setTimeout(() => {
         staleState.msgStale = true;
         applyStale();
     }, STALE_TIMEOUT_MS);
@@ -512,7 +513,7 @@ export function setHardwareVersionsRosLink(isUp) {
     if (!isUp) {
         // The 3 s watchdog would fire on its own, but not for 3 s — and a
         // dropped websocket is known-stale immediately.
-        if (staleTimer) clearTimeout(staleTimer);
+        if (staleTimer) clock.clearTimeout(staleTimer);
         staleState.msgStale = true;
     }
     applyStale();

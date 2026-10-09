@@ -16,6 +16,7 @@
 import * as ros from './ros-bridge.js';
 import { DEFAULT_ACTIVE_Z_MM } from './geometry-config.js';
 import { emitEvent, EVENT_TYPES } from './event-store.js';
+import { isReplayFenced } from './replay/fence.js';
 
 // ---- Axis definitions ----
 
@@ -151,6 +152,7 @@ export function initJogPanel() {
 
     // Home button — multi-axis reset.
     document.getElementById('jog-home').addEventListener('click', () => {
+        if (isReplayFenced()) return;
         jogTarget = [0, 0, 0, 0, 0, 0];
         publishPose();
         updateReadout();
@@ -167,6 +169,7 @@ export function initJogPanel() {
 // ---- Jog logic ----
 
 function onJogClick(axis, step) {
+    if (isReplayFenced()) return;   // replay fence: no jog, no COMMAND event
     // step is in mm for translation, degrees for rotation
     const delta = axis.type === 'trans'
         ? step
@@ -191,7 +194,7 @@ function publishPose() {
     const [x, y, z, rx, ry, rz] = jogTarget;
     const [qw, qx, qy, qz] = rotvecToQuat(rx, ry, rz);
 
-    const now = Date.now();
+    const now = Date.now(); // wall-clock: command path: pose header, runs only while connected
     const secs = Math.floor(now / 1000);
     const nsecs = (now % 1000) * 1e6;
 
@@ -234,6 +237,7 @@ function updateReadout() {
  * @param {boolean} visible
  */
 export function setJogPanelVisible(visible) {
+    if (visible && isReplayFenced()) return;  // replay fence: recorded GUI mode never opens the jog panel
     const panel = document.getElementById('panel-jog');
     if (panel) {
         panel.style.display = visible ? '' : 'none';
@@ -320,6 +324,7 @@ function publishLimits() {
  * @param {boolean} visible
  */
 export function setSpeedLimitsPanelVisible(visible) {
+    if (visible && isReplayFenced()) return;  // replay fence (hide still allowed)
     const panel = document.getElementById('panel-speed-limits');
     if (panel) {
         panel.style.display = visible ? '' : 'none';

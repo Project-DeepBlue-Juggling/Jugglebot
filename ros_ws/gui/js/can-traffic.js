@@ -30,6 +30,7 @@
  * toggle — same contract as telemetry-charts' rebuildCharts().
  */
 
+import * as clock from './clock.js';
 import { CAN_BITS_PER_FRAME_APPROX } from './geometry-config.js';
 import { nanGaps } from './telemetry-charts.js';
 
@@ -178,7 +179,7 @@ let linkGapInjected = false;
  *  edge while frozen with an EMPTY ring (a page that has never connected).
  *  Once the ring has columns the newest one is a better edge; see
  *  getViewAnchor.  Re-stamped on every down edge. */
-let freezeAnchor = Date.now() / 1000;
+let freezeAnchor = Date.now() / 1000; // wall-clock: init-time: module-load freeze anchor
 
 // ---- DOM helpers ----
 
@@ -330,7 +331,7 @@ export function canTrafficOnProfile(msg) {
     if (staleState.linkDown) return;
 
     const kv = kvMap(msg);
-    const now = Date.now() / 1000;
+    const now = clock.now() / 1000;
 
     times.push(now);
     for (const bus of BUSES) {
@@ -415,7 +416,7 @@ export function setCanTrafficRosLink(isUp) {
     staleState.rosDown = !isUp;
     // Stamp the freeze instant on the DOWN edge only: it is the x-window's
     // right edge until the ring has a column to anchor to (getViewAnchor).
-    if (!isUp) freezeAnchor = Date.now() / 1000;
+    if (!isUp) freezeAnchor = clock.now() / 1000;
     applyStaleUI();
     paint();
 }
@@ -452,13 +453,13 @@ function setHealthDot(bus, healthName) {
 // ---- Staleness ----
 
 function armProfileWatchdog() {
-    if (profileStaleTimer) clearTimeout(profileStaleTimer);
-    profileStaleTimer = setTimeout(onProfileStale, STALE_TIMEOUT_MS);
+    if (profileStaleTimer) clock.clearTimeout(profileStaleTimer);
+    profileStaleTimer = clock.setTimeout(onProfileStale, STALE_TIMEOUT_MS);
 }
 
 function armHealthWatchdog() {
-    if (healthStaleTimer) clearTimeout(healthStaleTimer);
-    healthStaleTimer = setTimeout(onHealthStale, STALE_TIMEOUT_MS);
+    if (healthStaleTimer) clock.clearTimeout(healthStaleTimer);
+    healthStaleTimer = clock.setTimeout(onHealthStale, STALE_TIMEOUT_MS);
 }
 
 /** No 'profile' message for >3 s: readouts '--' and one all-NaN chart column
@@ -485,7 +486,7 @@ function onHealthStale() {
  *  same visual gap — harmless. */
 function injectGapColumn() {
     if (times.length === 0) return;
-    times.push(Date.now() / 1000);
+    times.push(clock.now() / 1000);
     for (const bus of BUSES) rates[bus.id].push(NaN);
     trimRing();
 }
@@ -530,6 +531,19 @@ function trimRing() {
         times.shift();
         for (const bus of BUSES) rates[bus.id].shift();
     }
+}
+
+/**
+ * Replay seek / exit: empty the rate ring and re-arm the link-gap latch so the
+ * next 'profile' sample is treated as the first (rates here are per-window
+ * counts, so there is no cross-sample anchor to go stale).  Staleness state
+ * and DOM readouts are left to their normal writers.
+ */
+export function resetTrafficRing() {
+    times.length = 0;
+    for (const bus of BUSES) rates[bus.id].length = 0;
+    linkGapInjected = false;
+    paint();
 }
 
 // ---- Series visibility ----
@@ -837,7 +851,7 @@ function updateCallouts(u) {
  * below it stayed put — same situation, two different behaviours.
  */
 function getViewAnchor() {
-    if (!staleState.rosDown) return Date.now() / 1000;
+    if (!staleState.rosDown) return clock.now() / 1000;
     return times.length ? times[times.length - 1] : freezeAnchor;
 }
 

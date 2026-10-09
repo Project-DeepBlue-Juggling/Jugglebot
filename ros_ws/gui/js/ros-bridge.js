@@ -4,7 +4,15 @@
  * Manages a single WebSocket connection to rosbridge_server (port 9090).
  * Automatically reconnects on disconnection and re-subscribes to all topics.
  * Provides throttled subscription helpers.
+ *
+ * Replay (design § 3): dispatchLocal() feeds recorded messages to the same
+ * subscription callbacks; publish()/callService() refuse while
+ * clock.isReplay() (transport fence); setBeforeConnectedHook() lets the replay
+ * mode exit before any listener sees 'connected'.
  */
+
+import * as clock from './clock.js';
+import { getSessionBuffer } from './replay/session.js';
 
 const RECONNECT_INTERVAL_MS = 2000;
 const STALE_TIMEOUT_MS = 5000;  // Mark disconnected if no messages for 5 seconds
@@ -46,6 +54,10 @@ let staleCheckTimer = null;
 
 /** Saved URL for reconnect */
 let savedUrl = null;
+
+/** Called synchronously on a 'connected' edge BEFORE the state listeners
+ *  (replay mode exit — it must not run after main.js's connect handling). */
+let beforeConnectedHook = null;
 
 /**
  * Initialise the ROS connection. Call once at startup.
@@ -147,8 +159,11 @@ function setConnectionState(state) {
     connectionState = state;
 
     if (state === 'connected') {
-        lastMessageTime = Date.now();
+        lastMessageTime = Date.now(); // wall-clock: stale-socket detection
         startStaleCheck();
+        if (beforeConnectedHook) {
+            try { beforeConnectedHook(); } catch (e) { console.error('Before-connected hook error:', e); }
+        }
     }
 
     for (const cb of stateListeners) {
@@ -158,7 +173,7 @@ function setConnectionState(state) {
 
 /** Bump the last-message timestamp. Called from wrapped subscription callbacks. */
 function touchActivity() {
-    lastMessageTime = Date.now();
+    lastMessageTime = Date.now(); // wall-clock: stale-socket detection
     // If we were marked stale-disconnected, restore connected state
     if (connectionState === 'disconnected' && ros && ros.isConnected) {
         setConnectionState('connected');
@@ -169,7 +184,7 @@ function startStaleCheck() {
     if (staleCheckTimer) return;
     staleCheckTimer = setInterval(() => {
         if (connectionState !== 'connected') return;
-        if (Date.now() - lastMessageTime >= STALE_TIMEOUT_MS) {
+        if (Date.now() - lastMessageTime >= STALE_TIMEOUT_MS) { // wall-clock: stale-socket detection
             // Silence on a socket the browser still believes is open is the
             // half-open-transport signature: the TCP/NAT path died but no
             // 'close' event ever fired, so the reconnect-on-close path can't
@@ -206,6 +221,15 @@ export function onConnectionStateChange(cb) {
     cb(connectionState);
 }
 
+/**
+ * Register the one pre-notify hook run on every 'connected' edge before the
+ * state listeners (null clears it).
+ * @param {function|null} fn
+ */
+export function setBeforeConnectedHook(fn) {
+    beforeConnectedHook = typeof fn === 'function' ? fn : null;
+}
+
 /** @returns {'connected' | 'disconnected' | 'connecting'} */
 export function getConnectionState() {
     return connectionState;
@@ -239,9 +263,36 @@ function createSubscription(entry) {
 
     topic.subscribe((msg) => {
         touchActivity();
+        // Session-buffer tap (replay design § 8): every DELIVERED message, stamped with clock.now().
+        // Nothing arrives in replay (the socket is down) but guard anyway.
+        if (!clock.isReplay()) {
+            try { getSessionBuffer().record(entry.topicName, msg, clock.now() / 1000); } catch (e) { /* never break a subscriber */ }
+        }
         entry.callback(msg);
     });
     entry.rosTopic = topic;
+}
+
+/**
+ * Replay dispatch: invoke the callbacks subscribe() registered for
+ * `topicName` (leading '/' ignored on both sides) with a recorded message.
+ * Does NOT touch the activity/stale bookkeeping. A throwing callback is
+ * logged and skipped so one handler cannot stall the rest of a replay tick.
+ * @param {string} topicName
+ * @param {object} msg
+ * @param {object} [opts] reserved (muting is applied by the caller)
+ * @returns {number} callbacks invoked
+ */
+export function dispatchLocal(topicName, msg, opts) {
+    const name = topicName.charAt(0) === '/' ? topicName.slice(1) : topicName;
+    let n = 0;
+    for (const entry of subscriptions) {
+        const en = entry.topicName.charAt(0) === '/' ? entry.topicName.slice(1) : entry.topicName;
+        if (en !== name) continue;
+        n++;
+        try { entry.callback(msg); } catch (e) { console.error('Replay dispatch error on ' + name + ':', e); }
+    }
+    return n;
 }
 
 function resubscribeAll() {
@@ -275,6 +326,7 @@ export function advertise(topicName, messageType) {
 
     const pub = {
         publish(msg) {
+            if (clock.isReplay()) return;  // transport fence: never publish during replay
             if (entry.rosTopic && connectionState === 'connected') {
                 entry.rosTopic.publish(new ROSLIB.Message(msg));
             }
@@ -308,6 +360,10 @@ export function callService(serviceName, serviceType, request = {}) {
     return new Promise((resolve, reject) => {
         if (!ros || connectionState !== 'connected') {
             reject(new Error('Not connected to ROS'));
+            return;
+        }
+        if (clock.isReplay()) {
+            reject(new Error('Replay active - commands disabled'));
             return;
         }
 

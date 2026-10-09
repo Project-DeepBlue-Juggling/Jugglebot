@@ -200,7 +200,7 @@ export function onFrame(cb) { frameHooks.push(cb); }
 function animate() {
     requestAnimationFrame(animate);
     controls.update();
-    const now = performance.now();
+    const now = performance.now(); // wall-clock: UI animation: render loop
     updateRobotMaterials(now);
     for (const cb of frameHooks) cb(now);
     renderer.render(scene, camera);

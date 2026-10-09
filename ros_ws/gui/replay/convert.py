@@ -155,8 +155,13 @@ def _is_message(v) -> bool:
 
 def _field_names(msg) -> List[str]:
     # rosbags message classes carry a ``__msgtype__`` dataclass field (the
-    # type name) ahead of the real ones; it is not part of the definition.
-    return [f.name for f in dataclasses.fields(msg) if not f.name.startswith("__")]
+    # type name) after the real ones; it is not part of the definition. IDL
+    # CONSTANTS (DiagnosticStatus OK/WARN/ERROR/STALE) are also dataclass fields,
+    # distinguished only by carrying a default (real fields have none).
+    return [f.name for f in dataclasses.fields(msg)
+            if not f.name.startswith("__")
+            and f.default is dataclasses.MISSING
+            and f.default_factory is dataclasses.MISSING]
 
 
 def _build_spec(msg, chain: Tuple[str, ...], out: List) -> None:
@@ -475,6 +480,7 @@ def _bulk(root: str, cache_root: str, newest: Optional[int], chunk_s: float) -> 
             st = os.stat(bag)
             src = old.get("source", {})
             if (old.get("status") == schema.STATUS_COMPLETE
+                    and old.get("format") == schema.FORMAT_VERSION
                     and src.get("size_bytes") == st.st_size
                     and src.get("mtime") == st.st_mtime):
                 _log("skip %s: already complete" % d)

@@ -5,12 +5,14 @@
  * that are called from main.js when new ROS data arrives.
  */
 
+import * as clock from './clock.js';
 import { ODRIVE_STATE, BB_STATE_NAMES, LEG_STROKE_MM, MM_TO_REV,
          CC_DELTA_OK_MS, CC_DELTA_WARN_MS,
          CC_OFFSET_DISPLAY_LIMIT_MS, CC_OFFSET_HISTORY_LEN } from './geometry-config.js';
 import { callService } from './ros-bridge.js';
 import { onWorkspaceStatus } from './jog-panel.js';
 import { initBBAim, isBBAimEditing, bbAimOnDisconnect } from './bb-aim.js';
+import { isReplayFenced } from './replay/fence.js';
 
 // ---- Motor grid ----
 
@@ -371,10 +373,10 @@ export function updateBallHeld(msg) {
     } else {
         if (held !== ballLastHeld) ballFlickerAtMs = 0;   // verdict flip: not flicker
         ballLastHeld = held;
-        if (!!msg.ball_held_raw !== held) ballFlickerAtMs = Date.now();
+        if (!!msg.ball_held_raw !== held) ballFlickerAtMs = clock.now();
     }
     const flicker = ballFlickerAtMs !== 0
-        && (Date.now() - ballFlickerAtMs) < BALL_FLICKER_HOLD_MS;
+        && (clock.now() - ballFlickerAtMs) < BALL_FLICKER_HOLD_MS;
 
     let klass, text;
     if (!valid)     { klass = 'unknown'; text = 'UNKNOWN'; }
@@ -460,6 +462,7 @@ function driveBBConnectionEdge(connected) {
 }
 
 function onBBCalibrateClick() {
+    if (isReplayFenced()) return;  // replay fence
     const btn = document.getElementById('bb-calibrate-btn');
     if (!btn || btn.disabled) return;
 
@@ -485,6 +488,7 @@ function onBBCalibrateClick() {
 }
 
 function onBBResetClick() {
+    if (isReplayFenced()) return;  // replay fence
     const btn = document.getElementById('bb-calibrate-btn');
     if (!btn || btn.disabled) return;
 
@@ -781,8 +785,8 @@ export function updateMotionPanel(msg) {
     if (!panel) return;
 
     // Reset timeout — show disconnected state if no data for 3s
-    if (motionTimeout) clearTimeout(motionTimeout);
-    motionTimeout = setTimeout(() => { setMotionDisconnected(); }, MOTION_TIMEOUT_MS);
+    if (motionTimeout) clock.clearTimeout(motionTimeout);
+    motionTimeout = clock.setTimeout(() => { setMotionDisconnected(); }, MOTION_TIMEOUT_MS);
 
     // Parse key-value pairs into a map
     const kv = {};
@@ -1090,7 +1094,7 @@ export function recordTopicMessage(topicName) {
         entry = { type: '', timestamps: [], lastTime: 0 };
         topicData.set(topicName, entry);
     }
-    const now = Date.now();
+    const now = clock.now();
     entry.timestamps.push(now);
     entry.lastTime = now;
 }
@@ -1126,7 +1130,7 @@ export function updateTopicMonitor() {
     if (!container) return;
 
     const windowMs = WINDOW_OPTIONS[currentWindowIndex];
-    const now = Date.now();
+    const now = clock.now();
 
     // Prune old timestamps
     for (const entry of topicData.values()) {
@@ -1598,6 +1602,7 @@ function syncBBThrowCoordsVisibility() {
 }
 
 function onBBThrowClick() {
+    if (isReplayFenced()) return;  // replay fence
     const sel = document.getElementById('bb-throw-target-select');
     const btn = document.getElementById('bb-throw-btn');
     const status = document.getElementById('bb-throw-status');

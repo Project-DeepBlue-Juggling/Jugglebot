@@ -1142,6 +1142,12 @@ class TestBBCalibrationStaleLatchReset:
         m = re.search(r"case 'disconnected':(.*?)break;", main_js, re.S)
         assert m, "onConnectionStateChange 'disconnected' branch not found"
         body = m.group(1)
+        # Since the replay seek reset (2026-10-10) the branch's blanking lives
+        # in blankDisconnectedState(), shared with main.js resetForSeek().
+        if 'blankDisconnectedState()' in body:
+            f = re.search(r'function blankDisconnectedState\(\) \{(.*?)\n\}', main_js, re.S)
+            assert f, 'blankDisconnectedState() body not found'
+            body = f.group(1)
         assert 'resetBBCalibration()' in body, \
             'the disconnect branch must call resetBBCalibration() so a fresh ' \
             'session does not inherit the previous session\'s "Calibrated"'

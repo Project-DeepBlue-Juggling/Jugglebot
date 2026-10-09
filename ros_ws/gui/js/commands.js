@@ -9,6 +9,7 @@ import * as ros from './ros-bridge.js';
 import { currentOrchestratorState } from './panels.js';
 import { emitEvent, EVENT_TYPES } from './event-store.js';
 import { holdToConfirm } from './hold-to-confirm.js';
+import { isReplayFenced } from './replay/fence.js';
 
 /** Commands gated by hold-to-confirm.  Clear Errors can re-arm a faulted
  *  motor under load, so it's worth a deliberate gesture; everything else
@@ -50,6 +51,7 @@ export function initCommands() {
         btn.disabled = true;
 
         const dispatch = () => {
+            if (isReplayFenced()) return;   // replay fence: never publish or log a COMMAND
             if (cmdPublisher) {
                 cmdPublisher.publish({ data: cmd.command });
             }
@@ -77,6 +79,11 @@ export function initCommands() {
  * Called after each orchestrator_state message.
  */
 export function updateCommandStates() {
+    if (isReplayFenced()) {
+        // Replay fence: a recorded IDLE must not light the command buttons.
+        for (const id of ['cmd-home', 'cmd-level', 'cmd-activate', 'cmd-deactivate', 'cmd-clear']) setEnabled(id, false);
+        return;
+    }
     const state = currentOrchestratorState;
     const active = state === 'ACTIVE';
 

@@ -28,6 +28,7 @@
  * with per-step preconditions and a hard verify-gate before any deactivate.
  */
 
+import * as clock from './clock.js';
 import * as ros from './ros-bridge.js';
 import { holdToConfirm } from './hold-to-confirm.js';
 import { emitEvent, EVENT_TYPES } from './event-store.js';
@@ -195,9 +196,9 @@ const snap = {
 /** Recent leg_setpoint_echo samples for the teardown quiescence wait. */
 const echoSamples = [];  // [{t: ms, v: number[6]}]
 
-function isLinkFresh(s) { return Date.now() - s.link.lastMs < LINK_STALE_MS; }
-function isOrchFresh(s) { return Date.now() - s.orch.lastMs < ORCH_STALE_MS; }
-function isRobotFresh(s) { return Date.now() - s.robot.lastMs < ROBOT_STALE_MS; }
+function isLinkFresh(s) { return clock.now() - s.link.lastMs < LINK_STALE_MS; }
+function isOrchFresh(s) { return clock.now() - s.orch.lastMs < ORCH_STALE_MS; }
+function isRobotFresh(s) { return clock.now() - s.robot.lastMs < ROBOT_STALE_MS; }
 function guardLatched(s) {
     return s.link.faultState !== 'NONE' && s.link.faultState !== 'UNKNOWN';
 }
@@ -211,7 +212,7 @@ export function minimapOnOrchestratorState(str) {
     snap.orch.raw = String(str);
     snap.orch.main = (parts[0] || '').toUpperCase();
     snap.orch.sub = (parts[1] || '').toUpperCase();
-    snap.orch.lastMs = Date.now();
+    snap.orch.lastMs = clock.now();
     pump();
     scheduleRender();
 }
@@ -224,7 +225,7 @@ export function minimapOnControlMode(str) {
 
 export function minimapOnRobotState(msg) {
     const r = snap.robot;
-    r.lastMs = Date.now();
+    r.lastMs = clock.now();
     r.is_homed = !!msg.is_homed;
     r.firmware_validated = !!msg.firmware_validated;
     r.error = msg.error || [];
@@ -246,7 +247,7 @@ export function minimapOnRobotState(msg) {
 export function minimapOnLinkStatus(msg) {
     const kv = {};
     for (const v of (msg.values || [])) kv[v.key] = v.value;
-    snap.link.lastMs = Date.now();
+    snap.link.lastMs = clock.now();
     snap.link.faultState = kv.fault_state || 'UNKNOWN';
     // Tri-state parse — anything other than an exact 0/1 is null (UNVERIFIED),
     // never 0: the teardown's disarm verify-gate requires an exact fresh 0
@@ -262,7 +263,7 @@ export function minimapOnLinkStatus(msg) {
 
 /** Feeds ONLY the teardown quiescence predicate (accepted-u0 echo, ~20 Hz). */
 export function minimapOnLegSetpointEcho(msg) {
-    const now = Date.now();
+    const now = clock.now();
     echoSamples.push({ t: now, v: Array.prototype.slice.call(msg.data || []) });
     while (echoSamples.length && now - echoSamples[0].t > ECHO_KEEP_MS) {
         echoSamples.shift();
@@ -287,7 +288,7 @@ export function minimapOnLegSetpointEcho(msg) {
  * disarm that follows is the actual safety step.
  */
 function echoQuiescentSince(t0) {
-    const now = Date.now();
+    const now = clock.now();
     if (!echoSamples.length) return false;
     if (now - echoSamples[echoSamples.length - 1].t > QUIESCE_FRESH_MS) return false;
     const win = echoSamples.filter((sm) => sm.t >= t0 && now - sm.t <= QUIESCE_WINDOW_MS);
@@ -334,6 +335,13 @@ function onConnChange(state) {
     }
     pump();  // aborts any in-flight plan ('rosbridge disconnected')
     scheduleRender();
+}
+
+/** Replay seek reset: the disconnected blanking above (no event is emitted
+ *  here; the CONNECTION event lives in main.js). Replay runs disconnected, so
+ *  snap.conn is already 'disconnected'. */
+export function minimapResetForSeek() {
+    onConnChange('disconnected');
 }
 
 // ====================================================================
@@ -594,7 +602,7 @@ function teardownSteps(s) {
         // freeze of moving legs) — see echoQuiescentSince's doc comment.
         let tQuiesce0 = null;
         steps.push(waitStep(() => {
-            if (tQuiesce0 === null) { tQuiesce0 = Date.now(); return false; }
+            if (tQuiesce0 === null) { tQuiesce0 = clock.now(); return false; }
             return echoQuiescentSince(tQuiesce0);
         }, QUIESCE_TIMEOUT_MS, 'continue',
             'leg setpoints quiescent ≤' + QUIESCE_TOL_REV + ' rev over ' +
@@ -779,7 +787,7 @@ function pump() {
             w.resolve(true);
             return;
         }
-        if (Date.now() > pendingWait.deadline) {
+        if (Date.now() > pendingWait.deadline) { // wall-clock: command path: sequencer deadline
             const w = pendingWait;
             pendingWait = null;
             w.resolve(false);
@@ -789,7 +797,7 @@ function pump() {
 
 function waitFor(step) {
     return new Promise((resolve, reject) => {
-        pendingWait = { step, deadline: Date.now() + step.timeoutMs, resolve, reject };
+        pendingWait = { step, deadline: Date.now() + step.timeoutMs, resolve, reject }; // wall-clock: command path: sequencer deadline
         pump();  // predicate may already hold
     });
 }

@@ -28,6 +28,7 @@
  *     than SAMPLE_DOT_MIN_SPACING_PX — at that density they are just noise.
  */
 
+import * as clock from './clock.js';
 import { setStewartHighlight } from './stewart-model.js';
 import { setBallButlerHighlight } from './ball-butler-model.js';
 import {
@@ -203,6 +204,23 @@ const WHEEL_ZOOM_STEP = 1.1;
 const MIN_X_SPAN_SEC = 0.05;
 /** Maximum x-axis span (seconds) — never exceed the cache retention. */
 const MAX_X_SPAN_SEC = CACHE_WINDOW_SEC;
+/** Replay span cap (seconds): ≈ 12 k points per series at ~98 Hz, i.e. the
+ *  live point budget (maxPoints) whose paint cost is proven. */
+export const REPLAY_MAX_SPAN_SEC = 120;
+
+/** The replay chart store while in replay, else null (replay design § 5). */
+let replayStore = null;
+/** Playhead (seconds, record time) the replay window is centred on. */
+let replayPlayhead = 0;
+/** Injected `(tSec) => void` that routes a pan/zoom re-centre to engine.seek. */
+let replaySeek = null;
+/** Live view state parked while in replay, restored byte-for-byte on exit. */
+let replaySaved = null;
+let replayUnsub = null;
+
+function maxSpanSec() {
+    return replayStore ? REPLAY_MAX_SPAN_SEC : MAX_X_SPAN_SEC;
+}
 
 // ---- Data store ----
 
@@ -1002,7 +1020,7 @@ function applyPauseButtonUI() {
  * on-screen span so un-pause can resume at the same width.
  */
 function pauseCharts() {
-    if (paused) return;
+    if (paused || replayStore) return; // replay is never paused: the playhead owns the scale
     // Capture the anchor BEFORE flipping `paused`: getViewAnchor() returns
     // pausedWindowEnd once paused, and wall-clock now would jump the window
     // past the data when the stream has already gone stale (>1 s).
@@ -1457,6 +1475,96 @@ function resizeAllCharts() {
     if (anyMissing) rebuildAllCharts();
 }
 
+// ---- Replay charts (replay design § 5) ----
+
+/** Point `stores` at the replay store's current axes and hand the charts the
+ *  whole resident buffer (immutable, so zero-copy views are safe); only the
+ *  x scale moves per frame. */
+function applyReplayAxes() {
+    if (!replayStore) return;
+    stores.splice(0, stores.length, ...replayStore.axes);
+    if (charts.some(Boolean)) repaintAllCharts(true);
+}
+
+/**
+ * Enter replay charts: park the live ring and view state, point `stores` at
+ * the replay store's axes.  Call BEFORE the first `store.setResident()`.
+ * @param {{axes:object[], onRebuild:Function, invalidate:Function}} store
+ * @param {{onSeek?:(tSec:number)=>void}} [opts]  onSeek routes pan/zoom re-centres to engine.seek
+ */
+export function enterReplayCharts(store, opts) {
+    if (replayStore) exitReplayCharts();
+    replaySaved = {
+        stores: stores.slice(), paused, viewMode, manualXRange, liveWindowSec,
+        pausedWindowStart, pausedWindowEnd, rawRevMode,
+    };
+    replayStore = store;
+    replaySeek = (opts && opts.onSeek) || null;
+    paused = false;
+    viewMode = 'live';
+    manualXRange = null;
+    liveWindowSec = Math.min(liveWindowSec, REPLAY_MAX_SPAN_SEC);
+    applyPauseButtonUI();
+    syncWindowSelectState();
+    replayUnsub = store.onRebuild(applyReplayAxes);
+    applyReplayAxes();
+}
+
+/** Leave replay charts: the very same live store objects go back into `stores`. */
+export function exitReplayCharts() {
+    if (!replayStore) return;
+    if (replayUnsub) replayUnsub();
+    replayUnsub = null;
+    replayStore = null;
+    replaySeek = null;
+    const sv = replaySaved;
+    replaySaved = null;
+    if (sv) {
+        // The unit toggle may have flipped during replay (it only invalidated
+        // the replay store); bring the parked live history to the current unit
+        // so live charts never mix units.
+        if (sv.rawRevMode !== rawRevMode) {
+            const now = rawRevMode;
+            rawRevMode = sv.rawRevMode;
+            const before = sv.stores.map((_, i) => axisUnitsFor(i));
+            rawRevMode = now;
+            for (let i = 0; i < sv.stores.length; i++) {
+                convertStoreUnits(sv.stores[i], before[i], axisUnitsFor(i));
+            }
+        }
+        stores.splice(0, stores.length, ...sv.stores);
+        paused = sv.paused;
+        viewMode = sv.viewMode;
+        manualXRange = sv.manualXRange;
+        liveWindowSec = sv.liveWindowSec;
+        pausedWindowStart = sv.pausedWindowStart;
+        pausedWindowEnd = sv.pausedWindowEnd;
+    }
+    applyPauseButtonUI();
+    syncWindowSelectState();
+    if (charts.some(Boolean)) repaintAllCharts(true);
+}
+
+/** Move the replay window: ONLY the x scale changes (centred on pSec). */
+export function setReplayPlayhead(pSec) {
+    replayPlayhead = pSec;
+    if (!replayStore) return;
+    const min = pSec - liveWindowSec / 2;
+    const max = pSec + liveWindowSec / 2;
+    for (let i = 0; i < MOTOR_COUNT; i++) {
+        if (charts[i]) charts[i].setScale('x', { min, max });
+    }
+}
+
+/** Test hook: a snapshot of axis i of the CURRENT stores (live ring or replay). */
+export function _storeSnapshot(i) {
+    const s = stores[i];
+    if (!s) return null;
+    const cols = {};
+    for (const k in s.columns) cols[k] = Array.from(s.columns[k].subarray(0, s.length));
+    return { length: s.length, timestamps: Array.from(s.timestamps.subarray(0, s.length)), columns: cols };
+}
+
 // ---- Data ingestion ----
 
 /**
@@ -1478,38 +1586,55 @@ function resizeAllCharts() {
  * @param {number[]|null} commandedLegs – leg_setpoint_echo data (6 legs, motor revs) or null
  * @param {object|null} handTelemetry – HandTelemetryMessage or null
  */
+/**
+ * The pure per-axis sample: one motor_state (+ the joined commanded sources)
+ * -> the values object a store column set holds, in the axis's display unit.
+ * Shared by the live path (onTelemetryData) and the replay chart store, so the
+ * two cannot drift apart.  Reads only rawRevMode (via axisUnitsFor).
+ *
+ * @param {object} m  one robot_state.motor_states entry
+ * @param {number} idx  axis index 0..8
+ * @param {number[]|null} commandedLegs  leg_setpoint_echo data (6 legs, motor revs) or null
+ * @param {object|null} hand  HandTelemetryMessage (pos_cmd in motor revs) or null
+ * @returns {object} values keyed by SIGNAL_GROUPS key
+ */
+export function telemetrySample(m, idx, commandedLegs, hand) {
+    const u = axisUnitsFor(idx);
+    const values = {
+        pos_measured:  m.pos_estimate * u.posScale + u.posOffset,
+        vel_measured:  m.vel_estimate * u.velScale,
+        iq_setpoint:   m.iq_setpoint,
+        iq_measured:   m.iq_measured,
+        fet_temp:      m.fet_temp,
+        motor_temp:    m.motor_temp,
+        bus_voltage:   m.bus_voltage,
+        bus_current:   m.bus_current,
+    };
+
+    // Commanded position — legs from leg_setpoint_echo, hand from
+    // hand_telemetry.  Both arrive in motor revs, so both go through the
+    // SAME per-axis map as pos_measured above (see the unit-boundary note).
+    // The BB axes have no commanded source: NaN in, NaN out, gap drawn.
+    if (idx < 6 && commandedLegs && commandedLegs.length > idx) {
+        values.pos_commanded = commandedLegs[idx] * u.posScale + u.posOffset;
+    } else if (idx === 6 && hand) {
+        values.pos_commanded = hand.pos_cmd * u.posScale + u.posOffset;
+    } else {
+        values.pos_commanded = NaN;
+    }
+    return values;
+}
+
 export function onTelemetryData(motorStates, commandedLegs, handTelemetry) {
     if (!motorStates || motorStates.length === 0) return;
+    // Replay charts are fed from chunk columns (replay/chart-store.js), never
+    // from the dispatched handlers — a second feed would double every sample.
+    if (replayStore || clock.isReplay()) return;
 
-    const now = Date.now() / 1000; // uPlot uses seconds
+    const now = clock.now() / 1000; // uPlot uses seconds
 
     for (let i = 0; i < Math.min(motorStates.length, MOTOR_COUNT); i++) {
-        const m = motorStates[i];
-        const u = axisUnitsFor(i);
-        const values = {
-            pos_measured:  m.pos_estimate * u.posScale + u.posOffset,
-            vel_measured:  m.vel_estimate * u.velScale,
-            iq_setpoint:   m.iq_setpoint,
-            iq_measured:   m.iq_measured,
-            fet_temp:      m.fet_temp,
-            motor_temp:    m.motor_temp,
-            bus_voltage:   m.bus_voltage,
-            bus_current:   m.bus_current,
-        };
-
-        // Commanded position — legs from leg_setpoint_echo, hand from
-        // hand_telemetry.  Both arrive in motor revs, so both go through the
-        // SAME per-axis map as pos_measured above (see the unit-boundary note).
-        // The BB axes have no commanded source: NaN in, NaN out, gap drawn.
-        if (i < 6 && commandedLegs && commandedLegs.length > i) {
-            values.pos_commanded = commandedLegs[i] * u.posScale + u.posOffset;
-        } else if (i === 6 && handTelemetry) {
-            values.pos_commanded = handTelemetry.pos_cmd * u.posScale + u.posOffset;
-        } else {
-            values.pos_commanded = NaN;
-        }
-
-        stores[i].push(now, values);
+        stores[i].push(now, telemetrySample(motorStates[i], i, commandedLegs, handTelemetry));
     }
 
     // Schedule a coalesced repaint
@@ -1527,11 +1652,13 @@ export function onTelemetryData(motorStates, commandedLegs, handTelemetry) {
  *     the last sample's timestamp, so data stays visible instead of walking off.
  */
 function getViewAnchor() {
+    // Replay: the window is centred on the playhead (decision 15).
+    if (replayStore) return replayPlayhead + liveWindowSec / 2;
     if (paused) return pausedWindowEnd;
     const store = stores[0];
-    if (!store || store.length === 0) return Date.now() / 1000;
+    if (!store || store.length === 0) return Date.now() / 1000; // wall-clock: live branch (replay returns above)
     const lastT = store.timestamps[store.length - 1];
-    const wall = Date.now() / 1000;
+    const wall = Date.now() / 1000; // wall-clock: live branch (replay returns above)
     return (wall - lastT) < 1.0 ? wall : lastT;
 }
 
@@ -1544,10 +1671,11 @@ function clampXRange(min, max) {
         max = mid + MIN_X_SPAN_SEC / 2;
         span = MIN_X_SPAN_SEC;
     }
-    if (span > MAX_X_SPAN_SEC) {
+    const maxSpan = maxSpanSec();
+    if (span > maxSpan) {
         const mid = (min + max) / 2;
-        min = mid - MAX_X_SPAN_SEC / 2;
-        max = mid + MAX_X_SPAN_SEC / 2;
+        min = mid - maxSpan / 2;
+        max = mid + maxSpan / 2;
     }
     return { min, max };
 }
@@ -1566,7 +1694,19 @@ function clampXRange(min, max) {
  */
 function setXRangeAllCharts(min, max, fromSelection = false) {
     const clamped = clampXRange(min, max);
-    const wallNow = Date.now() / 1000;
+    if (replayStore) {
+        // Replay: there is no live edge and no history to freeze.  A pan / zoom /
+        // box-select re-centres the playhead on the requested range (decision
+        // 15) and sets the span; the engine's seek moves the data window.
+        liveWindowSec = clamped.max - clamped.min;
+        manualXRange = null;
+        viewMode = 'live';
+        syncWindowSelectState();
+        setReplayPlayhead((clamped.min + clamped.max) / 2);
+        if (replaySeek) replaySeek(replayPlayhead);
+        return;
+    }
+    const wallNow = Date.now() / 1000; // wall-clock: live branch (replay returns above)
     const FUTURE_EPSILON = 0.1;
 
     // Box-zoom selections honour the user's exact range — skip the live-
@@ -1577,7 +1717,7 @@ function setXRangeAllCharts(min, max, fromSelection = false) {
         // Caught up to (or overshot) live — return to live tracking.
         const span = Math.max(
             MIN_X_SPAN_SEC,
-            Math.min(MAX_X_SPAN_SEC, clamped.max - clamped.min),
+            Math.min(maxSpanSec(), clamped.max - clamped.min),
         );
         liveWindowSec = span;
         manualXRange = null;
@@ -1676,7 +1816,7 @@ function attachMouseControls(u) {
             const currentSpan = scale.max - scale.min;
             const newSpan = currentSpan * factor;
             liveWindowSec = Math.max(MIN_X_SPAN_SEC,
-                                     Math.min(MAX_X_SPAN_SEC, newSpan));
+                                     Math.min(maxSpanSec(), newSpan));
             syncWindowSelectState();
             // Immediate repaint so the zoom feels instant — next telemetry
             // frame would otherwise take up to 50 ms to land.
@@ -2322,7 +2462,7 @@ function clearDeltaBookmarks() {
  * seconds stripped.  Example: 2026-04-21T14-32-05.
  */
 function isoFilenameStamp() {
-    return new Date().toISOString().replace(/:/g, '-').replace(/\..+$/, '');
+    return new Date().toISOString().replace(/:/g, '-').replace(/\..+$/, ''); // wall-clock: export filename
 }
 
 /**
@@ -2760,8 +2900,14 @@ function setRawRevMode(on) {
     if (on !== rawRevMode) {
         const before = stores.map((_, i) => axisUnitsFor(i));
         rawRevMode = on;
-        for (let i = 0; i < stores.length; i++) {
-            convertStoreUnits(stores[i], before[i], axisUnitsFor(i));
+        if (replayStore) {
+            // Replay columns are immutable: re-derive them from the chunks in
+            // the new unit instead of converting in place.
+            replayStore.invalidate();
+        } else {
+            for (let i = 0; i < stores.length; i++) {
+                convertStoreUnits(stores[i], before[i], axisUnitsFor(i));
+            }
         }
         // Rebuild: axis labels, y-range pad floors, callout titles and Δ pills
         // are all baked per build.  Also repaints (copying while paused).

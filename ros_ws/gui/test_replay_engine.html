@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="en"><meta charset="utf-8"><title>Replay engine dev page</title>
+<!--
+  THROWAWAY dev transport for the replay engine (Phase 2 / U6). Not a product page.
+  It loads the REAL index.html (document.write of its text, so main.js, the 3D viewer, charts and panels are
+  the live ones, driven by the engine through ros.dispatchLocal) with a fixed transport strip on top.
+  Use it with the ROS stack DOWN (replay refuses while rosbridge is connected). URL: /test_replay_engine.html
+-->
+<body>
+<script>
+(async () => {
+  const html = await (await fetch('index.html')).text();
+  const strip = `
+  <div id="dev-strip" style="position:fixed;z-index:99999;top:0;left:0;right:0;background:#111c;color:#e5e7eb;
+       font:12px/1.4 ui-monospace,monospace;padding:6px 10px;display:flex;flex-wrap:wrap;gap:6px;align-items:center;backdrop-filter:blur(4px)">
+    <b>REPLAY DEV</b>
+    <select id="dv-rec" style="max-width:260px"></select>
+    <button id="dv-open">open recording</button>
+    <button id="dv-sess">replay last session</button>
+    <button id="dv-exit">exit</button>
+    <button id="dv-play">play</button><button id="dv-pause">pause</button>
+    <button id="dv-back">step -1</button><button id="dv-fwd">step +1</button>
+    <span id="dv-speeds"></span>
+    <input id="dv-seek" size="9" placeholder="seek +s"><button id="dv-seekgo">seek</button>
+    <span id="dv-text" style="white-space:pre"></span>
+  </div>`;
+  const boot = `<script type="module">
+    import * as main from './js/main.js';
+    import { getReplayMode } from './js/replay/wiring.js';
+    const mode = getReplayMode(main);
+    window.__mode = mode;
+    const $ = (id) => document.getElementById(id);
+    let notice = '';
+    mode.on('notice', (n) => { notice = n.text; });
+    fetch('/api/replay/recordings').then((r) => r.json()).then((j) => {
+      const list = Array.isArray(j) ? j : (j.recordings || []);
+      $('dv-rec').innerHTML = list.map((r) => '<option value="' + (r.id || r) + '">' + (r.id || r) + '</option>').join('');
+    }).catch((e) => { $('dv-rec').innerHTML = '<option>(recordings: ' + e + ')</option>'; });
+    const fail = (e) => { notice = 'ERROR: ' + (e.reason || e.message); };
+    $('dv-open').onclick = () => mode.enterReplay({ kind: 'recording', id: $('dv-rec').value }).catch(fail);
+    $('dv-sess').onclick = () => mode.enterReplay({ kind: 'session' }).catch(fail);
+    $('dv-exit').onclick = () => mode.exitReplay('user');
+    const eng = () => mode.engine();
+    $('dv-play').onclick = () => eng() && eng().play();
+    $('dv-pause').onclick = () => eng() && eng().pause();
+    $('dv-back').onclick = () => eng() && eng().step(-1);
+    $('dv-fwd').onclick = () => eng() && eng().step(1);
+    $('dv-seekgo').onclick = () => { const e = eng(); if (e) e.seek(e.state().range.t0 + (+$('dv-seek').value || 0)); };
+    for (const s of [-8, -4, -2, -1, -0.5, -0.25, 0.25, 0.5, 1, 2, 4, 8]) {
+      const b = document.createElement('button'); b.textContent = 'x' + s;
+      b.onclick = () => eng() && eng().setSpeed(s); $('dv-speeds').appendChild(b);
+    }
+    setInterval(() => {
+      const st = mode.state(); const e = eng(); let t = 'mode=' + st.mode + (st.sub ? '/' + st.sub : '');
+      if (e && st.range) {
+        const t0 = st.range.t0;
+        t += '  p=+' + (st.playhead - t0).toFixed(2) + 's / ' + (st.range.t1 - t0).toFixed(1) + 's  speed=' + st.speed;
+        t += '\\nbuffered: ' + e.bufferedRanges().map((r) => '[' + (r.t0 - t0).toFixed(0) + '..' + (r.t1 - t0).toFixed(0) + (r.state === 'loading' ? '~' : '') + ']').join(' ');
+      }
+      const pm = performance.memory;
+      t += '\\nheap: ' + (pm ? (pm.usedJSHeapSize / 1048576).toFixed(1) + ' MB' : 'n/a (Chrome only)');
+      if (notice) t += '\\n' + notice;
+      $('dv-text').textContent = t;
+    }, 250);
+  <\/script>`;
+  let page = html.replace(/<body[^>]*>/i, (m) => m + strip);
+  page = page.replace('<script type="module" src="js/main.js"><\/script>', '<script type="module" src="js/main.js"><\/script>' + boot);
+  document.open(); document.write(page); document.close();
+})();
+</script>
+</body></html>

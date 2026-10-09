@@ -59,9 +59,11 @@
  * a msg_type this firmware/enum pair does not name.  The aggregate footer
  * shows both so the gap is visible rather than silently absorbed.
  *
- * No imports: this panel is a table, not a chart — it needs neither the
+ * No imports but clock.js: this panel is a table, not a chart — it needs neither the
  * geometry constants nor telemetry-charts' uPlot gap hook.
  */
+
+import * as clock from './clock.js';
 
 // ---- Key contract with teensy_bridge_node._publish_udp_diag ----
 //
@@ -496,7 +498,7 @@ export function udpTrafficOnDiag(msg) {
     if (order.length) typeOrder = order;
     checkAggregates(kv);
 
-    const now = Date.now() / 1000;
+    const now = clock.now() / 1000;
 
     // Counter RESET (the bridge node restarted): every count in the ring is
     // from a different process, so differencing across the boundary would
@@ -508,6 +510,18 @@ export function udpTrafficOnDiag(msg) {
 
     samples.push({ t: now, kv });
     while (samples.length > RING_CAP) samples.shift();
+    paint();
+}
+
+/**
+ * Replay seek / exit: drop the differenced-counter ring.  Rates are computed
+ * from the two newest samples, so emptying it makes the next sample the
+ * first (no pair, hence no negative or spurious rate).  Latency/RTT footer
+ * state is not part of the ring and is untouched.
+ */
+export function resetTrafficRing() {
+    samples.length = 0;
+    typeOrder = [];
     paint();
 }
 
@@ -604,8 +618,8 @@ export function setUdpTrafficRosLink(isUp) {
 // ---- Staleness ----
 
 function armDiagWatchdog() {
-    if (diagStaleTimer) clearTimeout(diagStaleTimer);
-    diagStaleTimer = setTimeout(() => {
+    if (diagStaleTimer) clock.clearTimeout(diagStaleTimer);
+    diagStaleTimer = clock.setTimeout(() => {
         staleState.diagStale = true;
         applyStaleUI();
         paint();
@@ -613,8 +627,8 @@ function armDiagWatchdog() {
 }
 
 function armHealthWatchdog() {
-    if (healthStaleTimer) clearTimeout(healthStaleTimer);
-    healthStaleTimer = setTimeout(() => {
+    if (healthStaleTimer) clock.clearTimeout(healthStaleTimer);
+    healthStaleTimer = clock.setTimeout(() => {
         staleState.healthStale = true;
         applyStaleUI();
         paint();

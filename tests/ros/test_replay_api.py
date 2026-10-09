@@ -34,6 +34,7 @@ ap.add_argument("--bag"); ap.add_argument("--out")
 a = ap.parse_args()
 FAIL = {fail!r}
 SLEEP = {sleep!r}
+AFTER = {after!r}
 st = os.stat(a.bag)
 rid = os.path.basename(os.path.dirname(a.bag))
 os.makedirs(a.out, exist_ok=True)
@@ -57,13 +58,14 @@ man["completed_at"] = "2026-10-10T00:00:01"; man["chunks"] = []
 with open(os.path.join(a.out, schema.OVERVIEW), "w") as f:
     json.dump({{"format": 1, "t0": 0.0, "t1": 30.0, "bands": [], "ticks": [], "presence": {{}}}}, f)
 w()
+time.sleep(AFTER)
 '''
 
 
-def write_stub(d, name="stub_worker", fail=False, sleep=0.05):
+def write_stub(d, name="stub_worker", fail=False, sleep=0.05, after=0.0):
     os.makedirs(str(d), exist_ok=True)
     with open(os.path.join(str(d), name + ".py"), "w") as f:
-        f.write(STUB.format(gui=GUI, fail=fail, sleep=sleep))
+        f.write(STUB.format(gui=GUI, fail=fail, sleep=sleep, after=after))
     return name
 
 
@@ -123,6 +125,15 @@ class Srv:
                 return st
             time.sleep(0.05)
         raise AssertionError("status never reached {}: {}".format(want, st))
+
+    def wait_idle(self, rid, timeout=10.0):
+        """Block until the worker queue no longer holds `rid` (process exited)."""
+        end = time.time() + timeout
+        while time.time() < end:
+            if self.backend.queue_position(rid) is None:
+                return
+            time.sleep(0.02)
+        raise AssertionError("worker never went idle for " + rid)
 
     def close(self):
         self.server.shutdown()
@@ -400,6 +411,7 @@ def test_source_changed_discards_complete_cache(srv):
     p = make_bag(srv.root, A)
     srv.jreq("/api/replay/recordings/{}/open".format(A), "POST")
     srv.wait_status(A, ("complete",))
+    srv.wait_idle(A)
     old = cache.read_manifest(srv.cache, A)["source"]["size_bytes"]
     with open(p, "ab") as f:
         f.write(b"more-bytes")
@@ -441,5 +453,78 @@ def test_midrun_manifest_invariant(tmp_path):
             time.sleep(0.05)
         assert seen >= 2
         s.wait_status(A, ("complete",))
+        s.wait_idle(A)
     finally:
         s.close()
+
+
+def test_stale_open_while_finished_worker_still_exiting(tmp_path):
+    # The worker writes its complete manifest, then lingers 1 s before exiting.
+    s = Srv(tmp_path, stub_kwargs={"after": 1.0})
+    try:
+        p = make_bag(s.root, A)
+        s.jreq("/api/replay/recordings/{}/open".format(A), "POST")
+        end = time.time() + 10
+        while time.time() < end:
+            m = cache.read_manifest(s.cache, A)
+            if m and m.get("status") == schema.STATUS_COMPLETE:
+                break
+            time.sleep(0.02)
+        assert s.backend.queue_position(A) is not None  # still lingering
+        with open(p, "ab") as f:
+            f.write(b"more-bytes")
+        t = time.time() - 3600
+        os.utime(p, (t, t))
+        new_size = os.stat(p).st_size
+        code, st = s.jreq("/api/replay/recordings/{}/open".format(A), "POST")
+        assert code == 200 and st["status"] in ("queued", "converting")
+        s.wait_status(A, ("complete",), timeout=10)
+        s.wait_idle(A)
+        assert cache.read_manifest(s.cache, A)["source"]["size_bytes"] == new_size
+    finally:
+        s.close()
+
+
+def _set_manifest_format(cache_root, rid, fmt):
+    p = os.path.join(cache_root, rid, schema.MANIFEST)
+    with open(p) as f:
+        man = json.load(f)
+    man["format"] = fmt
+    with open(p, "w") as f:
+        json.dump(man, f)
+
+
+def test_old_format_cache_is_stale_discarded_and_reconverted(srv):
+    make_bag(srv.root, A)
+    srv.jreq("/api/replay/recordings/{}/open".format(A), "POST")
+    srv.wait_status(A, ("complete",))
+    srv.wait_idle(A)
+    _set_manifest_format(srv.cache, A, 1)
+    _c, j = srv.jreq("/api/replay/recordings")
+    assert j["recordings"][0]["cache"] == "stale"
+    assert srv.jreq("/api/replay/recordings/{}/status".format(A))[1]["status"] != "complete"
+    code, st = srv.jreq("/api/replay/recordings/{}/open".format(A), "POST")
+    assert code == 200 and st["status"] in ("queued", "converting")
+    srv.wait_status(A, ("complete",))
+    assert cache.read_manifest(srv.cache, A)["format"] == schema.FORMAT_VERSION == 2
+
+
+def test_current_format_complete_cache_returns_complete_immediately(srv):
+    make_bag(srv.root, A)
+    srv.jreq("/api/replay/recordings/{}/open".format(A), "POST")
+    srv.wait_status(A, ("complete",))
+    assert cache.read_manifest(srv.cache, A)["format"] == schema.FORMAT_VERSION
+    code, st = srv.jreq("/api/replay/recordings/{}/open".format(A), "POST")
+    assert code == 200 and st["status"] == "complete"
+
+
+def test_old_format_cache_chunk_and_files_404(srv):
+    make_bag(srv.root, A)
+    srv.jreq("/api/replay/recordings/{}/open".format(A), "POST")
+    srv.wait_status(A, ("complete",))
+    srv.wait_idle(A)
+    base = "/api/replay/recordings/{}/".format(A)
+    assert srv.req(base + "chunks/0")[0] == 200
+    _set_manifest_format(srv.cache, A, 1)
+    assert srv.req(base + "chunks/0")[0] == 404
+    assert srv.req(base + "manifest")[0] == 404

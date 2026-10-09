@@ -5,6 +5,7 @@
  * Subscribes to all ROS topics and routes data to the appropriate modules.
  */
 
+import * as clock from './clock.js';
 import * as ros from './ros-bridge.js';
 import { setRobotAxisStates } from './robot-meshes.js';
 import { initViewer, sceneGroups, registerPickables, onMeshPick } from './viewer.js';
@@ -45,7 +46,7 @@ import { bbAimOnHeartbeat, bbAimOnOrchestratorState } from './bb-aim.js';
 import {
     initStateMinimap, minimapOnOrchestratorState, minimapOnControlMode,
     minimapOnRobotState, minimapOnLinkStatus, minimapOnLegSetpointEcho,
-    minimapOnSkillAttempt,
+    minimapOnSkillAttempt, minimapResetForSeek,
 } from './state-minimap.js';
 import {
     INITIAL_HEIGHT_MM, MM_TO_REV, HAND_MM_PER_REV, ODRIVE_STATE,
@@ -181,7 +182,7 @@ function updateConnectionQuality() {
         el.classList.remove('ok', 'slow', 'stale');
         return;
     }
-    const ageMs = Date.now() - lastRobotStateMs;
+    const ageMs = clock.now() - lastRobotStateMs;
     let label, klass;
     if (ageMs < 300)        { label = 'OK';    klass = 'ok'; }
     else if (ageMs < 1000)  { label = 'Slow';  klass = 'slow'; }
@@ -249,51 +250,91 @@ function onConnectionStateChange(state) {
             text.textContent = 'Connecting...';
             break;
         case 'disconnected':
-            setRobotAxisStates([]);
             dot.className = 'status-dot disconnected';
             text.textContent = 'Disconnected';
-            // Drop the freshness latch so we don't claim "Stale" against
-            // the *previous* session's clock when reconnect happens.
-            lastRobotStateMs = 0;
-            // Drop the state-transition latch too — any state change that
-            // happened during disconnect shouldn't be emitted as a fake
-            // event with the reconnect timestamp.
-            lastOrchestratorState = null;
-            // Re-baseline the cone catch counter for the same stale-reconnect
-            // reason: a catch that lands during the websocket outage must not
-            // flash green on reconnect (the cone panel only re-baselined on a
-            // cone-reported-offline heartbeat, which never arrives while the
-            // bridge is down). Idempotent + safe if the cone was never connected.
-            setCatchingConeDisconnected();
-            // A full websocket drop takes the whole ROS graph — including the
-            // Ball Butler heartbeat — down, so treat BB as disconnected too:
-            // blanks its readouts and auto-collapses the panel on the same
-            // disconnect edge that Catching Cone uses (consistency + no frozen
-            // stale readouts). Idempotent if BB was never connected.
-            setBBDisconnected();
-            // (The ball-in-hand pill needs no disconnect handling: a websocket
-            // drop stops /hand_telemetry, and the 1 s HAND_TELEM_TIMEOUT_MS
-            // watchdog below drives the pill to UNKNOWN within one period.)
-            // Drop the control-mode latch so a reconnect re-arms the speed-limit
-            // reset on the next mode-entry edge instead of treating the first
-            // post-reconnect message as "same mode".
-            lastControlMode = null;
-            // Reset the BB calibration indicator for the same stale-latch
-            // reason. "Calibrated" is set by a latched event (bb/calibration_result
-            // from mocap_node) that is never re-published to say a session ended;
-            // a long-lived GUI tab that outlives ROS relaunches would otherwise
-            // show the previous session's "Calibrated" against a fresh,
-            // uncalibrated BB. A websocket drop means the whole graph (mocap_node
-            // included) is gone, so calibration state is unknown → show the safe
-            // default. A same-session blip self-heals via resubscribeAll() on
-            // reconnect (the still-latched success=true is re-delivered).
-            resetBBCalibration();
-            setBallButlerCalibration(null);
-            setJogPanelVisible(false);
-            setSpeedLimitsPanelVisible(false);
+            blankDisconnectedState();
             stopTopicDiscovery();
             break;
     }
+}
+
+/**
+ * The disconnect-branch blanking: every handler latch and panel the
+ * disconnected state resets. Shared by the live disconnect edge and the
+ * replay seek reset (resetForSeek); behaviour for live is unchanged.
+ */
+export function blankDisconnectedState() {
+    setRobotAxisStates([]);
+    // Drop the freshness latch so we don't claim "Stale" against
+    // the *previous* session's clock when reconnect happens.
+    lastRobotStateMs = 0;
+    // Drop the state-transition latch too — any state change that
+    // happened during disconnect shouldn't be emitted as a fake
+    // event with the reconnect timestamp.
+    lastOrchestratorState = null;
+    // Re-baseline the cone catch counter for the same stale-reconnect
+    // reason: a catch that lands during the websocket outage must not
+    // flash green on reconnect (the cone panel only re-baselined on a
+    // cone-reported-offline heartbeat, which never arrives while the
+    // bridge is down). Idempotent + safe if the cone was never connected.
+    setCatchingConeDisconnected();
+    // A full websocket drop takes the whole ROS graph — including the
+    // Ball Butler heartbeat — down, so treat BB as disconnected too:
+    // blanks its readouts and auto-collapses the panel on the same
+    // disconnect edge that Catching Cone uses (consistency + no frozen
+    // stale readouts). Idempotent if BB was never connected.
+    setBBDisconnected();
+    // (The ball-in-hand pill needs no disconnect handling: a websocket
+    // drop stops /hand_telemetry, and the 1 s HAND_TELEM_TIMEOUT_MS
+    // watchdog below drives the pill to UNKNOWN within one period.)
+    // Drop the control-mode latch so a reconnect re-arms the speed-limit
+    // reset on the next mode-entry edge instead of treating the first
+    // post-reconnect message as "same mode".
+    lastControlMode = null;
+    // Reset the BB calibration indicator for the same stale-latch
+    // reason. "Calibrated" is set by a latched event (bb/calibration_result
+    // from mocap_node) that is never re-published to say a session ended;
+    // a long-lived GUI tab that outlives ROS relaunches would otherwise
+    // show the previous session's "Calibrated" against a fresh,
+    // uncalibrated BB. A websocket drop means the whole graph (mocap_node
+    // included) is gone, so calibration state is unknown → show the safe
+    // default. A same-session blip self-heals via resubscribeAll() on
+    // reconnect (the still-latched success=true is re-delivered).
+    resetBBCalibration();
+    setBallButlerCalibration(null);
+    setJogPanelVisible(false);
+    setSpeedLimitsPanelVisible(false);
+}
+
+/**
+ * Replay seek reset (replay design § 4 step 3): clear every handler latch —
+ * the fault latches the live disconnect deliberately keeps included — then
+ * re-run the disconnect blanking and the minimap's disconnected handling,
+ * WITHOUT a CONNECTION event. bbCalibrationInitialSkipped is set so the
+ * baseline calibration_result is placed but a later recorded one is an event.
+ * The replay engine calls this through its onResetForSeek hook; the CAN/UDP
+ * rings and the replay event store are reset by the replay mode module.
+ */
+export function resetForSeek() {
+    for (const key of Object.keys(lastFaultFlags)) lastFaultFlags[key] = null;
+    lastMotorErrorMasks.clear();
+    lastOrchestratorState = null;
+    lastControlMode = null;
+    lastRobotStateMs = 0;
+    bbCalibrationInitialSkipped = true;
+    // Data latches the cleared watchdogs would otherwise leave stale; the
+    // seek baseline re-dispatches both topics.
+    latestCommandedLegs = null;
+    latestHandTelemetry = null;
+    blankDisconnectedState();
+    minimapResetForSeek();
+    updateCommandStates();   // fenced -> every command button disabled even if no orchestrator_state is dispatched
+}
+
+/** Live latches replay entry would clobber (resetForSeek sets them); mode.js saves/restores. */
+export function getReplayLatches() { return { bbCalibrationInitialSkipped }; }
+export function restoreReplayLatches(saved) {
+    if (saved) bbCalibrationInitialSkipped = !!saved.bbCalibrationInitialSkipped;
 }
 
 // ---- ROS subscriptions ----
@@ -389,7 +430,7 @@ const lastMotorErrorMasks = new Map();
 
 function onRobotState(msg) {
     recordTopicMessage('robot_state');
-    lastRobotStateMs = Date.now();
+    lastRobotStateMs = clock.now();
     minimapOnRobotState(msg);  // cheap field copies only (20 Hz throttled)
     const motors = msg.motor_states || [];
 
@@ -639,16 +680,16 @@ function onHandTelemetry(msg) {
     // PUBLISHER: if teensy_bridge_node dies (or the subscription drops) the
     // pill would freeze on its last HELD forever, which is exactly the failure
     // the tri-state exists to prevent. No message ⇒ UNKNOWN.
-    if (handTelemTimeout) clearTimeout(handTelemTimeout);
-    handTelemTimeout = setTimeout(() => updateBallHeld(null), HAND_TELEM_TIMEOUT_MS);
+    if (handTelemTimeout) clock.clearTimeout(handTelemTimeout);
+    handTelemTimeout = clock.setTimeout(() => updateBallHeld(null), HAND_TELEM_TIMEOUT_MS);
 }
 
 function onMocapData(msg) {
     recordTopicMessage('mocap_data');
     // mocap_data arriving means QTM connection is live
     setMocapConnected(true);
-    if (mocapConnTimeout) clearTimeout(mocapConnTimeout);
-    mocapConnTimeout = setTimeout(() => {
+    if (mocapConnTimeout) clock.clearTimeout(mocapConnTimeout);
+    mocapConnTimeout = clock.setTimeout(() => {
         setMocapConnected(false);
         setMocapAligned(false);
         updateMocapMarkers([]); // clear markers when disconnected
@@ -681,8 +722,8 @@ function onLegSetpointEcho(msg) {
     recordTopicMessage('leg_setpoint_echo');
     minimapOnLegSetpointEcho(msg);  // feeds the teardown quiescence wait
     latestCommandedLegs = msg.data;
-    if (legEchoTimeout) clearTimeout(legEchoTimeout);
-    legEchoTimeout = setTimeout(() => {
+    if (legEchoTimeout) clock.clearTimeout(legEchoTimeout);
+    legEchoTimeout = clock.setTimeout(() => {
         latestCommandedLegs = null;
     }, LEG_ECHO_TIMEOUT_MS);
 }
@@ -722,7 +763,7 @@ function onMotionDiagnostics(msg) {
  *  window is a genuine live publish and is emitted as an event.  Message
  *  type has no header.stamp, so we can't gate on message age directly. */
 const BB_CALIBRATION_STALE_WINDOW_MS = 1000;
-const guiInitTimeMs = Date.now();
+const guiInitTimeMs = Date.now(); // wall-clock: init-time: GUI-init latch for latched calibration
 let bbCalibrationInitialSkipped = false;
 
 function onBBCalibrationResult(msg) {
@@ -735,7 +776,7 @@ function onBBCalibrationResult(msg) {
     // catches slow-handshake cases where the latched message lands after
     // the 1 s window but before the link is genuinely live.
     if (!bbCalibrationInitialSkipped &&
-        ((Date.now() - guiInitTimeMs) < BB_CALIBRATION_STALE_WINDOW_MS ||
+        ((Date.now() - guiInitTimeMs) < BB_CALIBRATION_STALE_WINDOW_MS || // wall-clock: init-time: GUI-init latch for latched calibration
          lastRobotStateMs === 0)) {
         bbCalibrationInitialSkipped = true;
         return;
