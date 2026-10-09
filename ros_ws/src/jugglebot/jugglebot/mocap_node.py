@@ -4,7 +4,11 @@ Publishes:
   mocap_data             (MocapDataMulti)   — all markers (labelled + unlabelled) at 200 Hz
   rigid_body_poses       (RigidBodyPoses)   — all rigid bodies at 200 Hz
   bb/markers             (MocapDataMulti)   — BB fiducial markers (always, when QTM connected)
-  bb/calibration_result  (BallButlerCalibrationResult) — latched, after each calibration
+  bb/calibration_result  (BallButlerCalibrationResult) — latched: the calibration IN
+                         FORCE. Only a success replaces it; a failure lands here
+                         only while this process has no success yet.
+  bb/calibration_attempt (BallButlerCalibrationResult) — latched: the outcome of the
+                         most recent sweep, success or failure (one short line)
   qtm_clock_offset_sec   (Float64)          — QTM↔ROS clock offset at 1 Hz
   mocap/status           (DiagnosticStatus) — QTM reception + BB fiducial visibility at 5 Hz
 
@@ -95,6 +99,15 @@ DEFAULT_CALIBRATION_STATE_FILE = os.path.join(
 #: without the yaw lane) gives 0.
 MIN_STAMPED_YAW_SAMPLES = 100
 
+#: Bound on a published calibration FAILURE text (and so on its ERROR line):
+#: one line, the code plus the decisive numbers. The estimator detail goes to
+#: DEBUG. ``_publish_calibration_failure`` enforces it (collapses whitespace,
+#: truncates with an ellipsis and logs the full text at DEBUG) — a safety net:
+#: every reason the node produces fits without truncation
+#: (tests/ros/test_mocap_node_keep_last_good.py). The 2026-10-09 live failure
+#: line was ~900 characters.
+MAX_CALIBRATION_FAILURE_CHARS = 240
+
 # BB_MARKER_COUNT (``mocap_interface.ball_butler_markers`` is a fixed
 # (BB_MARKER_COUNT, 4) array with NaN rows for the ones QTM cannot see this
 # frame) and BB_YAW_ANCHOR_INDEX (the marker ``run_calibration`` hard-requires
@@ -135,6 +148,19 @@ class MocapNode(Node):
         self.pub_calibration = self.create_publisher(
             BallButlerCalibrationResult, 'bb/calibration_result', latched_qos
         )
+        # Keep-last-good (2026-10-10): bb/calibration_result is the calibration
+        # IN FORCE, so a failed sweep never replaces a previous success there —
+        # a consumer that (re)subscribes after the failure gets the success.
+        # Every sweep's OUTCOME (success or failure, one short line) goes here,
+        # latched too so a reloaded GUI can still show why the last attempt
+        # failed. Same type: no interface change, nothing to rebuild.
+        self.pub_calibration_attempt = self.create_publisher(
+            BallButlerCalibrationResult, 'bb/calibration_attempt', latched_qos
+        )
+        #: The last SUCCESSFUL result this process published (None until one),
+        #: and when it was accepted (ISO-8601 UTC, seconds).
+        self._last_good_calibration: BallButlerCalibrationResult | None = None
+        self._last_good_at = ''
 
         # Q1 — the ONLY ROS-observable QTM-connection signal. Until this topic
         # existed, `MocapInterface.is_receiving()` never left this process, so
@@ -340,7 +366,8 @@ class MocapNode(Node):
         Two failure modes, two named codes, both fail-CLOSED — a refusal is
         always safer than a plausible-looking BB pose, because
         ``ball_butler_node`` aims every subsequent throw with whatever
-        ``bb/calibration_result`` last carried:
+        ``bb/calibration_result`` last carried (a refusal leaves the last
+        good calibration in force, or none if there never was one):
 
         * ``QTM_DROPOUT_MID_SWEEP`` — QTM went dark part-way through. The arc
           the solver sees is a fragment; ``min_points=50`` at 200 Hz means
@@ -373,9 +400,10 @@ class MocapNode(Node):
             else:
                 # A failure with a MORE specific cause is already latched (and
                 # already published). Close the window, but do NOT publish
-                # again: bb/calibration_result is latched, so a second publish
-                # would overwrite 'QTM_DROPOUT_MID_SWEEP' — the thing the
-                # operator actually needs to read — with the vaguer timeout.
+                # again: bb/calibration_attempt (and, with no success yet,
+                # bb/calibration_result) is latched, so a second publish would
+                # overwrite 'QTM_DROPOUT_MID_SWEEP' — the thing the operator
+                # actually needs to read — with the vaguer timeout.
                 self.get_logger().warn(
                     f'Calibration window closed on the {CALIBRATION_TIMEOUT_S:.0f} s '
                     f'cap; already invalidated ({self._calib_invalid})')
@@ -391,8 +419,7 @@ class MocapNode(Node):
         if not self.mocap.is_receiving():
             self._invalidate_calibration(
                 'QTM_DROPOUT_MID_SWEEP',
-                'QTM stopped delivering frames during the sweep — the collected '
-                'arc has a hole, so the fit is not trustworthy')
+                'QTM stopped delivering frames mid-sweep — the arc has a hole')
 
     def _invalidate_calibration(self, code: str, detail: str):
         """Latch a collection window invalid and publish the named failure."""
@@ -671,11 +698,17 @@ class MocapNode(Node):
         summary = f'{est.summary()}; {arc_note}'
         reference, ref_label, ref_error = self._gate_reference()
         if ref_error and not self._bb_moved_armed:
-            # A corrupt state file must not silently disable the gate.
+            # A corrupt state file must not silently disable the gate. The
+            # estimator detail is DEBUG; the failure is one short line.
+            self.get_logger().debug(f'Refused sweep: {summary}')
             self._publish_calibration_failure(
-                f'CALIBRATION_STATE_UNREADABLE: {ref_error} — fix or delete the file, or '
-                f'set bb_moved:=true to make this calibration the reference [{summary}]')
+                f'CALIBRATION_STATE_UNREADABLE: {ref_error} — fix or delete it, or '
+                'set bb_moved:=true')
             return
+        if ref_error:
+            self.get_logger().warn(
+                f'BB calibration state unreadable ({ref_error}); bb_moved:=true makes '
+                'this calibration the new reference')
         verdict = check_calibration_consistency(
             yaw_deg, result.yaw_offset_std_deg, result.bb_position_mm,
             est.template_residual_mm, None if ref_error else reference,
@@ -686,7 +719,8 @@ class MocapNode(Node):
             f'Yaw offset {yaw_deg:+.4f}° — {summary}; retired anchor estimator '
             f'on the same sweep {anchor}; {verdict.message}')
         if not verdict.accepted:
-            self._publish_calibration_failure(f'{verdict.message} [{summary}]')
+            # The estimator summary is in the DEBUG line just above.
+            self._publish_calibration_failure(verdict.message)
             return
         if verdict.no_reference:
             self.get_logger().warn(
@@ -695,8 +729,9 @@ class MocapNode(Node):
                 'landings before trusting the aim')
         if self._bb_moved_armed and (verdict.overridden or ref_error):
             self._bb_moved_armed = False   # one-shot: consumed by this calibration
-        self._persist_accepted(result, verdict.message)
-        result_message = f'Calibration successful · {summary} · {verdict.message}'
+        accepted_at = self._persist_accepted(result, verdict.message)
+        result_message = (f'Calibration successful (accepted {accepted_at}) · {summary} · '
+                          f'{verdict.message}')
 
         # One operator line; the detail (axis direction, per-marker fits) is DEBUG.
         # BB's own reported yaw span is encoder-derived, so unlike the per-marker
@@ -738,7 +773,7 @@ class MocapNode(Node):
                 self.get_logger().warn(f'Marker {idx + 1}: {m.status} — {m.reason}')
 
         # Publish on latched topic
-        self._publish_calibration_result(result, result_message)
+        self._publish_calibration_result(result, result_message, accepted_at)
 
     def _gate_reference(self):
         """(reference, label, error) for the gate: the last accepted calibration
@@ -751,19 +786,26 @@ class MocapNode(Node):
                 state = json.load(f)
             ref = {'yaw_offset_deg': float(state['yaw_offset_deg']),
                    'position_mm': [float(v) for v in state['position_mm']]}
-            return ref, f'last accepted ({state.get("accepted_at", "?")})', ''
+            # Seconds are enough to identify it; the full stamp stays in the file.
+            stamp = str(state.get('accepted_at', '?'))[:19]
+            return ref, f'accepted {stamp}', ''
         except FileNotFoundError:
             return None, '', ''
         except (OSError, ValueError, KeyError, TypeError) as e:
-            msg = f'BB calibration state file unreadable ({path}): {e!r}'
-            self.get_logger().error(msg)
-            return None, '', msg
+            # The refusal line names the file and the error class; the full
+            # exception is DEBUG (it was a second, ~200-char ERROR line).
+            self.get_logger().debug(f'BB calibration state file unreadable ({path}): {e!r}')
+            return None, '', f'{os.path.basename(path)}: {type(e).__name__}'
 
-    def _persist_accepted(self, result: CalibrationResult, verdict: str):
+    def _persist_accepted(self, result: CalibrationResult, verdict: str) -> str:
+        """Write the accepted calibration to the state file (atomically);
+        returns its acceptance time as ISO-8601 UTC to the second
+        (``2026-10-10T12:34:56Z``) — returned even if the write fails."""
         path = str(self.get_parameter('bb_calibration_state_file').value)
         est = result.yaw_estimate
+        now = datetime.datetime.now(datetime.timezone.utc)
         state = {
-            'accepted_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            'accepted_at': now.isoformat(),
             'yaw_offset_deg': math.degrees(result.yaw_offset_rad),
             'yaw_offset_std_deg': result.yaw_offset_std_deg,
             'position_mm': [float(v) for v in result.bb_position_mm],
@@ -788,9 +830,13 @@ class MocapNode(Node):
             self.get_logger().error(
                 f'Could not persist the accepted BB calibration to {path}: {e} — '
                 'the next calibration is gated against the previous reference')
+        return now.strftime('%Y-%m-%dT%H:%M:%SZ')
 
     def _publish_calibration_result(self, result: CalibrationResult,
-                                    message: str = 'Calibration successful'):
+                                    message: str = 'Calibration successful',
+                                    accepted_at: str = ''):
+        """A success replaces the calibration in force (bb/calibration_result)
+        and is the latest attempt (bb/calibration_attempt)."""
         msg = BallButlerCalibrationResult()
         msg.success = True
         msg.message = message
@@ -801,14 +847,41 @@ class MocapNode(Node):
         msg.yaw_offset_std_deg = result.yaw_offset_std_deg
         msg.axis_tilt_deg = result.axis_tilt_deg
         self.pub_calibration.publish(msg)
+        self.pub_calibration_attempt.publish(msg)
+        self._last_good_calibration = msg
+        self._last_good_at = accepted_at
         self.get_logger().debug('Published calibration result on bb/calibration_result')
 
     def _publish_calibration_failure(self, reason: str):
+        """Report a failed sweep: ONE short line, and never over a success.
+
+        The failure always goes to ``bb/calibration_attempt``. It goes to the
+        latched ``bb/calibration_result`` only while this process has no
+        successful calibration: once one exists the failed result is
+        discarded there, so ``ball_butler_node`` (including one that restarts
+        after the failure), the GUI's Calibrated indicator and the
+        accuracy-testing runner all keep the last good calibration. The state
+        file is written on success only (``_persist_accepted``).
+
+        ``reason`` is collapsed to one line and bounded by
+        ``MAX_CALIBRATION_FAILURE_CHARS`` (full text at DEBUG if it had to be
+        cut) — the one enforcement point for the short-message contract.
+        """
+        reason = ' '.join(str(reason).split())
+        if len(reason) > MAX_CALIBRATION_FAILURE_CHARS:
+            self.get_logger().debug(f'Calibration failure (full text): {reason}')
+            reason = reason[:MAX_CALIBRATION_FAILURE_CHARS - 1].rstrip() + '…'
         msg = BallButlerCalibrationResult()
         msg.success = False
         msg.message = reason
-        self.pub_calibration.publish(msg)
-        self.get_logger().error(f'BB calibration FAILED: {reason}')
+        self.pub_calibration_attempt.publish(msg)
+        if self._last_good_calibration is None:
+            self.pub_calibration.publish(msg)
+            self.get_logger().error(f'BB calibration FAILED: {reason}')
+        else:
+            kept = f' from {self._last_good_at}' if self._last_good_at else ''
+            self.get_logger().error(
+                f'BB calibration FAILED: {reason} (kept the calibration{kept})')
 
     # ──────────────────────────────────────────────────────────────────────
     #  Lifecycle

@@ -349,7 +349,12 @@ class BallButlerNode(Node):
             self._target_positions_mm[body.name] = (p.x, p.y, p.z)
 
     def _on_bb_calibration(self, msg: BallButlerCalibrationResult):
-        """Store BB calibration so global→local transforms work."""
+        """Store BB calibration so global→local transforms work.
+
+        A failure never displaces a stored calibration. mocap_node also never
+        latches a failure over a success on this topic (keep-last-good,
+        2026-10-10: failures go to bb/calibration_attempt), so a node that
+        (re)starts after a failed sweep still receives the last good one."""
         if not msg.success:
             return
         self._bb_position_mm = (msg.position_mm.x, msg.position_mm.y, msg.position_mm.z)
