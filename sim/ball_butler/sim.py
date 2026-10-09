@@ -115,8 +115,11 @@ def _wrap_pi(angle: float) -> float:
 def _yaw_solve(x: float, y: float, s: float) -> float:
     """Solve for yaw angle given target (x, y) and off-axis offset s.
 
-    Returns the yaw angle in radians (choosing the solution with smallest
-    absolute value).  Raises ``ValueError`` if no solution exists.
+    Returns the one physical root, ``base − asin(s/hyp)`` (positive range
+    along the throw line); the twin of ``throw_ballistics.yaw_solve_thetas``,
+    which explains why the smaller-|yaw| rule used until 2026-10-09 aimed
+    targets behind the yaw-axis plane the wrong way.  Raises ``ValueError``
+    if no solution exists.
     """
     hyp = math.hypot(x, y)
     r_sq = x * x + y * y - s * s
@@ -127,9 +130,7 @@ def _yaw_solve(x: float, y: float, s: float) -> float:
     base = math.atan2(y, x)
     s_over_hyp = max(-1.0, min(1.0, s / hyp))
     delta = math.asin(s_over_hyp)
-    t1 = _wrap_pi(base - delta)
-    t2 = _wrap_pi(base - math.pi + delta)
-    return t1 if abs(t1) <= abs(t2) else t2
+    return _wrap_pi(base - delta)
 
 
 # ---------------------------------------------------------------------------

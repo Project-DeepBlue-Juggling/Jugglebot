@@ -55,10 +55,37 @@ def test_yaw_solve_origin_returns_nan():
     assert math.isnan(t1) and math.isnan(t2) and math.isnan(chosen)
 
 
-def test_yaw_solve_picks_smaller_magnitude():
-    # Target with one obvious near solution and a far back-half solution
-    t1, t2, chosen = yaw_solve_thetas(2000.0, 50.0, -105.65)
-    assert chosen == t1 if abs(t1) <= abs(t2) else t2
+def _reconstruct(theta, r, s):
+    return r * math.cos(theta) - s * math.sin(theta), r * math.sin(theta) + s * math.cos(theta)
+
+
+@pytest.mark.parametrize("s", [105.65, -105.65])
+def test_yaw_solve_takes_the_positive_range_root_everywhere(s):
+    """t1 reproduces the target with r > 0; t2 only with r < 0 (the target
+    behind the release point). The chosen root is t1 at every bearing."""
+    for bearing_deg in range(-179, 181, 7):
+        for hyp in (150.0, 600.0, 2000.0):
+            x = hyp * math.cos(math.radians(bearing_deg))
+            y = hyp * math.sin(math.radians(bearing_deg))
+            t1, t2, chosen = yaw_solve_thetas(x, y, s)
+            r = math.sqrt(hyp * hyp - s * s)
+            assert chosen == t1
+            assert _reconstruct(t1, r, s) == pytest.approx((x, y), abs=1e-6)
+            assert _reconstruct(t2, -r, s) == pytest.approx((x, y), abs=1e-6)
+
+
+@pytest.mark.parametrize("s", [105.65, -105.65])
+def test_forward_root_is_what_the_old_rule_chose_in_front_of_the_yaw_axis_plane(s):
+    """No behaviour change for any target with |bearing| < 90 deg (the whole
+    calibrated region spans bearings 7-67 deg): the smaller-|yaw| rule picked
+    t1 there, so every recorded calibration command is unchanged."""
+    for bearing_deg in range(-89, 90, 2):
+        for hyp in (400.0, 1000.0, 1600.0):
+            x = hyp * math.cos(math.radians(bearing_deg))
+            y = hyp * math.sin(math.radians(bearing_deg))
+            t1, t2, chosen = yaw_solve_thetas(x, y, s)
+            old_rule = t1 if abs(t1) <= abs(t2) else t2
+            assert chosen == old_rule == t1
 
 
 # ─────────────────────────────────────────────────────────────────────
@@ -239,15 +266,29 @@ def test_solve_throw_local_yaw_out_of_range_raises():
         solve_throw_local(100.0, -1500.0, 0.0)
 
 
-@pytest.mark.xfail(strict=True, reason="yaw_solve picks the smaller-|yaw| root; t2 = base - pi + delta always has the target BEHIND the release point (negative range), so a target behind BB is 'solved' with a forward yaw. Masked under negative s (t2 < 0 deg was out of range); exposed by s = +105.65 (2026-10-09). Fix pending owner decision: always take t1.")
 def test_target_behind_bb_is_not_solved_with_a_forward_yaw():
     """2 m directly behind BB: the only physical solution (t1) needs yaw ~177 deg;
-    a solution near 0 deg would throw away from the target."""
+    until 2026-10-09 the smaller-|yaw| rule returned t2 = 3 deg under s = +105.65
+    and the ball would have flown away from the target with no error."""
     try:
         sol = solve_throw_local(-2000.0, 0.0, 0.0)
     except ValueError:
         return
     assert abs(math.degrees(sol.yaw_rad)) > 90.0
+
+
+def test_target_behind_the_yaw_axis_plane_on_the_hand_side_is_reachable():
+    """(-100, 1000): bearing 95.7 deg, t1 = 89.7 deg, inside the yaw limits. The
+    old rule took t2 = -78 deg and refused a target BB can reach."""
+    sol = solve_throw_local(-100.0, 1000.0, 0.0)
+    assert math.degrees(sol.yaw_rad) == pytest.approx(89.7, abs=0.1)
+
+
+def test_target_behind_on_the_far_side_is_refused_not_aimed_forward():
+    """(-1000, -1000): bearing -135 deg, t1 = -139 deg -> refused. The old rule
+    took t2, which wraps to +49 deg: accepted, and aimed the wrong way."""
+    with pytest.raises(ValueError, match="out of BB range"):
+        solve_throw_local(-1000.0, -1000.0, 0.0)
 
 
 def test_solve_throw_local_peak_height_below_limit():

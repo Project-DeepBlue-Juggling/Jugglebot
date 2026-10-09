@@ -184,9 +184,21 @@ def yaw_solve_thetas(x: float, y: float, s: float) -> Tuple[float, float, float]
 
     where ``r = √(x²+y²−s²)`` is the horizontal range along the throw direction.
 
-    Returns ``(t1, t2, chosen)`` in radians wrapped to (-π, π].  ``chosen`` is
-    the solution with the smaller magnitude.  If no solution exists (target
-    is inside the s-offset circle, or x == y == 0) all three return NaN.
+    Writing ``x + iy = (r + is)·e^{iθ}`` gives ``θ = atan2(y, x) − atan2(s, r)``:
+    with ``r > 0`` that is ``t1 = base − asin(s/hyp)``, the ONE physical root.
+    ``t2 = base − π + asin(s/hyp)`` is the same equation solved with ``r < 0``,
+    i.e. the target BEHIND the release point along the throw line. Until
+    2026-10-09 ``chosen`` was whichever root had the smaller |yaw|, which is
+    ``t2`` for every target behind the yaw-axis plane (|bearing| > 90°): those
+    were then either refused by the yaw limits or, for the quadrant the sign
+    of ``s`` left inside the limits, aimed the WRONG WAY with no error
+    (``s = +105.65``: (−2000, 0) "solved" at yaw 3°). ``chosen`` is now always
+    ``t1``; ``t2`` is still returned for diagnostics. Nothing changes for any
+    target in front of the yaw-axis plane (the whole calibrated region).
+
+    Returns ``(t1, t2, chosen)`` in radians wrapped to (-π, π].  If no
+    solution exists (target inside the s-offset circle, or x == y == 0) all
+    three return NaN.
     """
     hyp = math.hypot(x, y)
     r_sq = x * x + y * y - s * s
@@ -198,8 +210,7 @@ def yaw_solve_thetas(x: float, y: float, s: float) -> Tuple[float, float, float]
     delta = math.asin(s_over_hyp)
     t1 = _wrap_pi(base - delta)
     t2 = _wrap_pi(base - math.pi + delta)
-    chosen = t1 if abs(t1) <= abs(t2) else t2
-    return t1, t2, chosen
+    return t1, t2, t1
 
 
 @dataclass

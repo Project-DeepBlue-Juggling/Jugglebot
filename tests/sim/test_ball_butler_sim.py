@@ -154,18 +154,30 @@ class TestBallReachesTarget:
 # ===================================================================
 
 class TestErrors:
-    @pytest.mark.xfail(strict=True, reason="yaw_solve picks the smaller-|yaw| root; t2 = base - pi + delta always has the target BEHIND the release point (negative range), so a target behind BB is 'solved' with a forward yaw. Masked under negative s (t2 < 0 deg was out of range); exposed by s = +105.65 (2026-10-09). Fix pending owner decision: always take t1.")
-    def test_unreachable_behind_bb(self):
-        """Target directly behind BB (negative local X) should fail."""
+    def test_behind_bb_is_never_aimed_forward(self):
+        """A target behind BB is either refused or reached by yawing round
+        (|yaw| > 90 deg). Until 2026-10-09 the smaller-|yaw| root put the
+        target behind the release point and 'solved' (-2000, 0) at yaw 3 deg."""
         # Use a simple BB pointing along world +X so "behind" is -X
         bb = BallButlerSim.from_hardware_config(
             position_mm=[0.0, 0.0, 1500.0],
             yaw_offset_rad=0.0,
         )
-        # Target far behind BB (negative local X = negative world X)
-        target = np.array([-2000.0, 0.0, 1500.0])
-        with pytest.raises(ValueError):
-            bb.compute_release_state(target)
+        try:
+            _, vel, _ = bb.compute_release_state(np.array([-2000.0, 0.0, 1500.0]))
+        except ValueError:
+            return
+        # yaw_offset is 0, so the release velocity's bearing IS the solved yaw
+        assert abs(math.degrees(math.atan2(vel[1], vel[0]))) > 90.0
+
+    def test_behind_on_the_far_side_is_refused(self):
+        """(-1000, -1000) local: the physical root is -139 deg, outside [0, 185]."""
+        bb = BallButlerSim.from_hardware_config(
+            position_mm=[0.0, 0.0, 1500.0],
+            yaw_offset_rad=0.0,
+        )
+        with pytest.raises(ValueError, match="outside limits"):
+            bb.compute_release_state(np.array([-1000.0, -1000.0, 1500.0]))
 
     def test_target_too_far(self):
         """Target requiring more than max speed should fail."""
