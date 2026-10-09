@@ -1,26 +1,55 @@
 #!/usr/bin/env python3
 """Standalone HTTP server for the Jugglebot GUI.
 
-Serves static files from this directory on all interfaces.
-Completely independent of ROS2 - start once and leave running.
+Serves static files from this directory on all interfaces and the
+``/api/replay/`` rosbag-replay routes (replay/api.py). Pure stdlib, no ROS2 -
+start once and leave running. Conversion runs in a niced subprocess under the
+venv interpreter (``--worker-python``); the server itself needs nothing.
 
 Usage:
-    python3 gui_server.py [--port 8081]
+    python3 gui_server.py [--port 8081] [--rosbags-dir DIR] [--cache-dir DIR]
 """
+from __future__ import annotations
 
 import argparse
-import functools
 import http.server
 import os
+import sys
+
+_HERE = os.path.dirname(os.path.abspath(__file__))
+if _HERE not in sys.path:
+    sys.path.insert(0, _HERE)
+
+from replay.api import ReplayBackend  # noqa: E402
 
 
 class CORSHandler(http.server.SimpleHTTPRequestHandler):
-    """SimpleHTTPRequestHandler with CORS and correct MIME types."""
+    """SimpleHTTPRequestHandler with CORS, correct MIME types and the replay API."""
+
+    backend = None  # set per server in make_server
+    _replay_headers_sent = False
 
     def end_headers(self):
-        self.send_header("Access-Control-Allow-Origin", "*")
-        self.send_header("Cache-Control", "no-cache")
+        if not self._replay_headers_sent:  # the API adds these itself
+            self.send_header("Access-Control-Allow-Origin", "*")
+            self.send_header("Cache-Control", "no-cache")
         super().end_headers()
+
+    def do_GET(self):
+        if self.backend is not None and self.backend.handle("GET", self.path, self):
+            return
+        super().do_GET()
+
+    def do_HEAD(self):
+        if self.backend is not None and self.path.startswith("/api/replay/"):
+            self.send_error(405)
+            return
+        super().do_HEAD()
+
+    def do_POST(self):
+        if self.backend is not None and self.backend.handle("POST", self.path, self):
+            return
+        self.send_error(404)
 
     def guess_type(self, path):
         # Ensure .js files are served as ES modules
@@ -31,22 +60,52 @@ class CORSHandler(http.server.SimpleHTTPRequestHandler):
         return super().guess_type(path)
 
 
-class ReusableHTTPServer(http.server.HTTPServer):
-    """HTTPServer with SO_REUSEADDR enabled to avoid 'Address already in use'."""
+class ReusableHTTPServer(http.server.ThreadingHTTPServer):
+    """Threaded server with SO_REUSEADDR (no 'Address already in use')."""
     allow_reuse_address = True
+    daemon_threads = True
+
+
+def build_parser():
+    parser = argparse.ArgumentParser(description="Jugglebot GUI server")
+    parser.add_argument("--port", type=int, default=8081, help="Port to serve on")
+    parser.add_argument("--rosbags-dir", default="~/Desktop/rosbags")
+    parser.add_argument("--cache-dir",
+                        default=os.path.join(_HERE, "..", "..", "temp", "replay_cache"))
+    parser.add_argument("--worker-python", default="~/Desktop/PDJ_venv/venv/bin/python")
+    parser.add_argument("--cache-cap-gb", type=float, default=10.0)
+    parser.add_argument("--min-free-gb", type=float, default=5.0)
+    return parser
+
+
+def make_server(args):
+    """Build (server, backend). ``args`` may carry optional ``host`` and
+    ``worker_module`` attributes (tests)."""
+    backend = ReplayBackend(
+        rosbags_root=os.path.abspath(os.path.expanduser(args.rosbags_dir)),
+        cache_root=os.path.abspath(os.path.expanduser(args.cache_dir)),
+        worker_python=os.path.expanduser(args.worker_python),
+        gui_dir=getattr(args, "gui_dir", None) or _HERE,
+        cap_bytes=int(args.cache_cap_gb * 1e9),
+        min_free_bytes=int(args.min_free_gb * 1e9),
+        worker_module=getattr(args, "worker_module", "replay.convert"))
+
+    class Handler(CORSHandler):
+        pass
+
+    Handler.backend = backend
+    handler = lambda *a, **kw: Handler(*a, directory=_HERE, **kw)  # noqa: E731
+    server = ReusableHTTPServer((getattr(args, "host", "0.0.0.0"), args.port), handler)
+    return server, backend
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Jugglebot GUI server")
-    parser.add_argument("--port", type=int, default=8081, help="Port to serve on")
-    args = parser.parse_args()
-
-    directory = os.path.dirname(os.path.abspath(__file__))
-    handler = functools.partial(CORSHandler, directory=directory)
-
-    server = ReusableHTTPServer(("0.0.0.0", args.port), handler)
+    args = build_parser().parse_args()
+    server, backend = make_server(args)
     print("Serving Jugglebot GUI on http://0.0.0.0:{}".format(args.port))
-    print("  Directory: {}".format(directory))
+    print("  Directory: {}".format(_HERE))
+    print("  Replay: rosbags={} cache={} worker_available={}".format(
+        backend.rosbags_root, backend.cache_root, backend.worker_available))
     print("  Press Ctrl+C to stop")
     try:
         server.serve_forever()

@@ -1,0 +1,25 @@
+[Unit]
+Description=Jugglebot GUI server (static front-end + rosbag replay API, port 8081)
+After=network.target
+# Appliance behaviour: never hit the start-rate limiter and give up. Combined
+# with Restart=always below, a crash-looping server keeps retrying forever
+# rather than landing in "start-limit-hit" / failed.
+StartLimitIntervalSec=0
+
+[Service]
+# gui_server.py stays pure Python stdlib, so the system interpreter is enough
+# and the server has no dependency on the project venv being present at boot.
+# Only the replay conversion WORKER (a niced subprocess it spawns on demand)
+# needs the venv (mcap, rosbags, msgpack) - that is --worker-python. If the venv
+# is missing the server still starts and reports worker_available=false.
+ExecStart=/usr/bin/python3 /home/jetson/Desktop/Jugglebot-skills/ros_ws/gui/gui_server.py --port 8081 --rosbags-dir /home/jetson/Desktop/rosbags --cache-dir /home/jetson/Desktop/Jugglebot-skills/temp/replay_cache --worker-python /home/jetson/Desktop/PDJ_venv/venv/bin/python
+WorkingDirectory=/home/jetson/Desktop/Jugglebot-skills/ros_ws/gui
+# Unbuffered stdout so the server's startup line shows up immediately in
+# `journalctl -u jugglebot-gui` (important for headless debugging).
+Environment=PYTHONUNBUFFERED=1
+Restart=always
+RestartSec=3
+User=jetson
+
+[Install]
+WantedBy=multi-user.target

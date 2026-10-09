@@ -104,3 +104,6 @@ MUJOCO_LOG.TXT
 
 # MkDocs build output
 site/
+
+# wayfinder maps (local-markdown tracker; decisions collapse into plans/active/ when a map clears)
+.scratch/
