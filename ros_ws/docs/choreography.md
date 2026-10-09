@@ -40,7 +40,7 @@
 ### `bb/axis_estimates`
 
 - **publishers:** `teensy_bridge_node`
-- **subscribers:** _none_
+- **subscribers:** `mocap_node`
 - **type:** `sensor_msgs.msg.JointState`
 
 ### `bb/calibration_result`
@@ -513,7 +513,6 @@ broken wire cannot hide among them.
 
 - `activate` — service with no clients
 - `bb/aim` — service with no clients
-- `bb/axis_estimates` — topic with no subscribers
 - `bb/cancel_accuracy_calibration` — service with no clients
 - `bb/markers` — topic with no subscribers
 - `bb/odrive_diag` — topic with no subscribers

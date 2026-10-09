@@ -1,5 +1,5 @@
 ---
-title: Ball Butler's yaw offset comes from the whole marker constellation, not one anchor marker about the sweep's axis point; a consistency gate refuses a frame change unless bb_moved is set
+title: Ball Butler's yaw offset and position come from the whole calibration sweep, with the heartbeat lag fitted per sweep and a fixed E(y), against a 7-marker body template; a consistency gate refuses a frame change unless bb_moved is set
 type: feature
 date: 2026-10-09
 status: in-progress
@@ -9,6 +9,7 @@ files_changed:
   - ros_ws/src/jugglebot/jugglebot/bb_calibration.py
   - ros_ws/src/jugglebot/jugglebot/mocap_node.py
   - ros_ws/src/jugglebot/resources/bb_marker_template.json
+  - ros_ws/docs/choreography.md
   - tests/ros/test_bb_calibration_constellation.py
   - tests/ros/test_mocap_node_yaw_gate.py
   - tests/ros/test_perception_console_lines.py
@@ -22,75 +23,137 @@ tags:
   - testing
 ---
 
-# Ball Butler's yaw offset comes from the whole marker constellation, not one anchor marker about the sweep's axis point; a consistency gate refuses a frame change unless bb_moved is set
+# Ball Butler's yaw offset and position come from the whole calibration sweep, with the heartbeat lag fitted per sweep and a fixed E(y), against a 7-marker body template; a consistency gate refuses a frame change unless bb_moved is set
 
 ## Problem
 
-`bb_calibration.calculate_yaw_offset` read BB's yaw offset from ONE marker (QTM 4) at 117.6 mm from the axis point that the sweep fitted, so 1 mm of axis error was 0.49° of yaw. Two calibrations on 2026-10-09 with BB untouched stored 0.208° (session A, `20261009T002142_931068Z`, in whose frame `throw_affine_correction.json` was fitted) and 0.681° (session B), and session B's throws landed −8 mm sideways at 1 m. The investigation (`~/bb_calibration_sessions/yaw_offset_investigation_20261009/REPORT.md`) showed that the axis point caused it, and that an axis-free constellation orientation reproduced A↔B to 0.05°. This entry implements that estimator. The design decisions (estimator, position from the sweep, template resource, gauge pin, σ, gate, sweep unchanged) were made before the work started and are not re-opened here.
+`bb_calibration.calculate_yaw_offset` read BB's yaw offset from ONE marker (QTM 4) at 117.6 mm from the axis point that the sweep fitted, so 1 mm of axis error was 0.49° of yaw. Two calibrations on 2026-10-09 with BB untouched stored 0.208° (session A, `20261009T002142_931068Z`, the frame `throw_affine_correction.json` was fitted in) and 0.681° (session B, `20261009T031319_612936Z`); session B's throws landed −8 mm sideways at 1 m (`~/bb_calibration_sessions/yaw_offset_investigation_20261009/REPORT.md`).
+
+## Superseded first design (same day, commit ceea98c7)
+
+The first fix read the offset from the sweep's stationary yaw-0 pause only: per-marker medians of the hold, a label-free 2D match to a 4-marker co-planar template, σ floored at a 0.13° hold scatter, gauge pinned so the 7-sweep bag's pauses averaged 0.208°. It was no more repeatable per sweep (SD 0.095°) than the anchor (0.090°), it saw only 3 markers at the pause, and a second investigation (`~/bb_calibration_sessions/bb_placement_reinvestigation_20261009/REPORT.md`) showed its pin was taken on frames where the parked pose reconstructs non-rigidly. It also excluded the moving sweep on the strength of an "~80 ms" heartbeat lag treated as a constant, and dropped the off-plane markers QTM 1/2 on a claim ("they distort at yaw 0") that was an instrument effect at one pose. The owner rejected it. This entry replaces it; nothing of the pause estimator, its 0.13° floor, the 80 ms constant or the QTM 1/2 exclusion remains.
+
+## Discussion
+
+**Why the whole sweep.** The moving sweep has ~37 heartbeat samples spread over 0–125° per sweep, where the pause has one pose. What stood in the way was the heartbeat's lag: it is unstamped, and its yaw passes three free-running 10 Hz stages, so it lags the mocap frames by a per-session amount (80–85 ms in the 7-sweep bag, 94–97 ms in A). Fitting that lag per sweep is cheap and well conditioned: a lag error shows as ±ω·δτ with opposite signs on the outbound and return legs.
+
+**Decisions (made before the work; recorded here):**
+1. Estimator = whole sweep, lag fitted per sweep, all visible yaw-stage markers as one rigid body, a fixed E(y), one offset per sweep, loud failures.
+2. Position from the body model's axis point over the sweep; the arc fit stays as a cross-check; tilt from the arc fit as before.
+3. Template rebuilt yaw-balanced from all 7 markers of A, B and the 7-sweep bag, with E(y) and the gauge in it. Gauge pinned to session A's frame: A's own data must read 0.208°. ONE number (`gauge.pinned_yaw_offset_deg`) is the owner's adjustment.
+4. σ = per-sweep formal error ⊕ out-of-sample repeatability (leave-sweeps-out on the 7 sweeps). No per-frame SD, no pause floor.
+5. Gate: no state file → accept, persist, WARN; afterwards refuse |Δyaw| > max(3σ, 0.15°), |Δaxis| > 1.5 mm, or template residual > 0.5 mm; the one-shot `bb_moved` resets the reference (also after a QTM recalibration).
+6. Drop the 80 ms constant, the pause floor, the QTM 1/2-at-yaw-0 claim.
+
+**Findings made during the work that changed the code (each checked on the bags before acting):**
+- **Session B's heartbeat is a two-age mixture, not a drifting lag.** A single-lag fit on B scatters 5° RMS. The per-sample age (where the posed θ crosses the reported yaw) is bimodal: ~75 ms or ~175 ms, exactly one 0.1 s republish period apart, 66–83 % of samples in the older mode per 10-minute window; A is unimodal at 94 ms. The bridge's 0.1 s timer republishes the latest heartbeat, so when it and the upstream 10 Hz stage tick nearly together a sample is fresh or one period stale. The investigation's "150 → 174 ms drifting" was this mixture read through a direction-split median. The lag fit for the heartbeat therefore lets each sample be one period older, whichever reads closer; a stamped source is fitted with one lag. Without this, every heartbeat calibration in a session like B would fail.
+- **The parked pose is non-rigid in all three bags**, not only the 7-sweep bag: marker-pair separations at |y| < 1.5° are off the template by up to 1.3–1.4 mm (A, B) and 2.4 mm (7-sweep bag), against ≤ 0.29 mm (A, B) and ≤ 0.57 mm (7-sweep bag) at other yaws. So the position and the template residual are taken over the MOVING frames (frame time + lag inside a turning stretch), as the yaw is. Over all frames the template residual of the 7 sweeps was 0.76–1.28 mm; over the moving frames it is 0.20–0.47 mm.
+- **The template residual is a pair-separation residual**, the largest mean (over the sweep) error of a marker-pair distance against the template. A marker that moved on BB changes its separations by up to its displacement; a per-marker mean residual vector instead picks up pose-dependent reconstruction error (0.5–0.8 mm per marker on the 7 sweeps).
+- **Yaw samples are not interpolated across a lost track** (gap > 50 ms between posed frames): A's slews toward the reload pose lose the markers, and interpolating θ across those gaps produced 20° residuals.
+
+**What was ruled out.** A 2D fit about world z (the first design): the 3D rigid fit needs no tilt estimate because the body frame carries the axis. An E-free estimator: within one bag it repeats about as well (SD 0.044° vs 0.031°, same yaw range in every sweep), but it reads −0.12° instead of +0.26° raw, so the offset would depend on the yaw range a window covers; A's slews (0–147°) and the sweeps (0–125°) cover different ranges. Applying E(y) to the aim: not done, moving and stationary relations differ by a few tenths.
+
+**Accepted tradeoffs.** The template residual gate (0.5 mm) has thin margin on the 7-sweep bag (worst sweep 0.46 mm). The one-period-stale mixture would also absorb a genuine 100 ms lag jump within a sweep; it reports the stale fraction so that is visible. E(y) comes from one bag (the only one with sweeps).
 
 ## What changed
 
-- **Estimator** (`estimate_constellation_yaw_offset`). Stationary holds come from BB's heartbeat yaw (within ±0.15° for ≥ 0.8 s; frames trimmed 0.15 s at both ends). Each hold collapses to per-marker medians (points present in ≥ 60 % of frames). The **template is matched by geometry only**: every (point pair, template pair) whose 3D separation and height difference agree within 3 mm proposes a rotation about world z, and the proposal that matches the most markers wins and is then refined by Procrustes. QTM labels are ignored, so a relabelled, missing or spurious point only changes which points are used. Per hold, offset = θ − reported yaw. Consecutive holds less than 1° apart with no heartbeat gap count as one visit (sweep 6 crept 0.4° during its pause), and the visits are circular-averaged. The estimator fails loudly with `CONSTELLATION_NO_HOLD`, `CONSTELLATION_TOO_FEW_MARKERS` (< 3 matched) or `CONSTELLATION_RESIDUAL` (a hold's x/y RMS > 1.0 mm). It runs in 2D about world z, not 3D in the axis frame, because a 3D fit would need the sweep's tilt, which is unstable (0.76° vs 1.15° stored for one mounting). The 2D bias from ignoring a tilt τ is τ × 0.0094 for the shipped template: 0.011° at 1.2°.
-- **Position, tilt, the sweep, the arc-span floor and the consensus are unchanged.** `run_calibration(..., marker_frames=, yaw_samples=, template=)` takes the constellation path. Without a template it still runs the retired anchor estimator, so the sweep-fit fixtures and their anchor pins (`test_yaw_offset_is_anchored_on_qtm_4`, `test_outcast_yaw_anchor_refuses`, …) are kept unchanged as tests of that legacy path. `CalibrationResult.yaw_method` names the path, and `mocap_node` refuses to publish anything but `'constellation'`. On the constellation path a missing or outcast QTM 4 no longer refuses; the anchor value is logged at DEBUG as a diagnostic.
-- **Template** `resources/bb_marker_template.json`: 4 markers, BB-local mm. It was built by generalised Procrustes over the 611 stationary holds of session A, with provenance, cross-checks and excluded markers recorded in the file. **Deviation from the plan, made on the data:** it holds only the four co-planar yaw-stage markers. The two off-plane markers (QTM 1/2, about 28 mm lower) distort at the parked yaw-0 pose, which is where the sweep pauses. On the 7 sweeps below they raise the pinned per-sweep SD from 0.095° to 0.297° and the pause RMS from 0.13–0.42 mm to 0.6–1.3 mm. QTM's own `Ball_Butler` 6DOF follows the same ±0.3° (SD 0.298°). QTM 1 is also the marker whose parked readings crept about 3 mm on 2026-10-05/06. At the throwing yaws of A/B the six-marker set is the better one (per-hold SD 0.15° vs 0.20–0.21°), so the multi-hold follow-up must revisit marker selection per pose. The instrument check is in Verification.
-- **σ** (`yaw_offset_std_deg`, published) = √(σ_stat² + σ_tmpl²):
-  - σ_stat = s/√N over N visits, where s is the per-visit SD, floored at the measured 0.13° hold scatter while N < 5.
-  - σ_tmpl = mean of σ_c/lever, where σ_c = RMS·√(n/(2n−3)) is the per-coordinate residual SD of an n-marker fit.
-  - For one sweep pause this gives 0.16–0.33°. It is not the per-frame SD, which was the old 0.03°.
-- **Gate** (`check_yaw_offset_consistency`, in `mocap_node`). A new offset more than max(3σ_stat, 0.15°) from the reference is published as a failure, `YAW_OFFSET_INCONSISTENT …`, which names the delta, the limit and the override. σ_stat is the repeatability; the template term is common to two calibrations at the same pose. With one pause the limit is ±0.39°, which would have refused session B's 0.47°.
-  - **Reference:** the last accepted calibration (`~/bb_calibration_sessions/bb_calibration_last_accepted.json`, parameter `bb_calibration_state_file`, written atomically on accept). If no calibration has been accepted yet, or the state file is corrupt, the reference is the template's pinned 0.208°.
-  - **Override:** the parameter `bb_moved` (default false) is one-shot. It arms the next calibration only and re-arms when set true again.
-  - **Interface:** `BallButlerCalibrationResult` is unchanged; `message` carries the method, the visit count, the σ split and the gate verdict.
+- **Estimator** (`bb_calibration.estimate_sweep_yaw_offset`):
+  - `track_constellation` poses every frame against the 7-marker body template, label-free. The first frame, and any after a lost track or a 50 ms gap, is matched by geometry (`match_template`, with a 6 mm height tolerance for the tilted axis). Later frames reuse the previous pose to assign points within 3 mm. Each frame gets a 3D Kabsch fit. Frames with < 3 markers or RMS > 1.5 mm are rejected and counted.
+  - `fit_yaw_latency` grid-fits the lag over −50…300 ms in 1 ms steps, with parabolic refinement. Samples are those with |dy/dt| > 5°/s, y inside E's valid range, and an unbroken track. The fit minimises the scatter of θ(t_y − τ) − y − E(y). The offset φ is the mean at the best τ. Its formal SE uses n_eff from the lag-1 autocorrelation.
+  - Published offset = φ_raw − `raw_offset_at_pin_deg` + `pinned_yaw_offset_deg`.
+  - Loud failures: `CONSTELLATION_TOO_FEW_FRAMES` (< 200), `CONSTELLATION_TOO_FEW_MARKERS`, `CONSTELLATION_RESIDUAL` (pair residual > 1.0 mm), `CONSTELLATION_TOO_FEW_MOVING`, `CONSTELLATION_LAG_AT_EDGE`, `CONSTELLATION_LAG_RESIDUAL` (> 1.0° RMS; a unit or source mismatch gives degrees).
+  - The pause holds, visits and the 0.13° floor are deleted. So is the 2D-hold estimator.
+- **Position.** `run_calibration` returns the body model's axis point as `bb_position_mm`; the arc fit's intersection is now `arc_position_mm`. It is the primary by the data: per-sweep SD x 0.04 / y 0.18 mm, against x 0.04 / y 0.38 mm for the arc fit. It also lands within 0.5 mm of A's and B's body-model points, while the arc fit sits 0.9–1.4 mm south of it in y. Tilt and all sweep gates are unchanged (arc fit).
+- **Template** `resources/bb_marker_template.json`, schema 2 (the loader refuses schema 1):
+  - **Markers:** all 7 yaw-stage markers in a body frame: origin on the yaw axis, z along the axis, x toward QTM 4.
+  - **Build:** generalised Procrustes over yaw-balanced frames (≤ 40 per 2° bin per bag): A 2941, B 2950, and the 7-sweep bag 2520 with its parked frames excluded.
+  - **Contents:** E(y), `gauge` (pin, raw value at the pin, uncertainty, the edit rule) and `sigma.repeatability_deg` 0.0308°, each with provenance.
+- **σ** = √(formal SE² + 0.0308²): 0.046–0.070° per sweep.
+- **Gate** (`check_calibration_consistency`, in `mocap_node`):
+  - **Reference:** the state file (`~/bb_calibration_sessions/bb_calibration_last_accepted.json`), now storing position, lag, source and residual too. With no state file the calibration is accepted, persisted and logged at WARN; the template's pin is not a reference.
+  - **Refusals:** `CALIBRATION_INCONSISTENT` (Δyaw > max(3σ, 0.15°), or Δaxis > 1.5 mm in 3D), `TEMPLATE_RESIDUAL` (> 0.5 mm; `bb_moved` does not excuse it: a moved marker needs a new template), and `CALIBRATION_STATE_UNREADABLE` (a corrupt state file is no longer a silent fallback).
+  - **Override:** `bb_moved` is one-shot, and is the flag for BB moved OR QTM recalibrated (rotating markers cannot tell the two apart). The accepted calibration becomes the reference.
+- **`mocap_node` inputs:**
+  - **Frames:** at their QTM stamp (`frame_ros_ns`, ROS clock), one per distinct stamp. The 200 Hz timer snapshots the latest frame, so duplicates are dropped; unstamped frames feed the arc fit only.
+  - **Heartbeat yaw:** at ROS receive time; it was `time.monotonic()`, a different clock from the frame stamps.
+  - **Stamped yaw:** the node subscribes to `bb/axis_estimates`. A `bb_yaw` joint (degrees; the sibling branch `bb-stamped-yaw-100hz`, BB fw 6 + can-bridge fw 28) is collected. With ≥ 100 samples in the window it is used with a single-age lag fit (expected a few ms); the two-joint message of older firmware falls back to the heartbeat.
+- **Result message:** carries the estimator summary (frames, markers, residuals, source, lag, stale fraction, σ split), the arc-fit cross-check and the gate verdict. The INFO line reads `(lag N ms, gate ok)`. `ros_ws/docs/choreography.md` is regenerated for the new subscription.
 
-## Validation (offline, three bags, BB untouched since session A)
+## Validation (offline, node-shaped inputs, shipped template)
 
-**Headline: the rosbag `2026-10-09_18-56-37`** (7 calibration sweeps, 0 → 125.5° → 0 with a pause of about 2 s at 0). The 125° turnaround is not stationary: 2 heartbeats, about 0.2 s, so it contributes no hold. "Old" is the anchor value the node published in the bag. "New" is an end-to-end replay of `run_calibration` + the gate with the node's exact inputs: labelled BB markers only, the window's heartbeats, and the shipped template. The replay reproduces the published positions to ≤ 0.03 mm and the published anchor values to ≤ 0.02°, which checks the replay against the node.
+Inputs: labelled BB markers at their QTM stamps, labels dropped; the heartbeat at receive time; the CALIBRATING window; the whole `run_calibration` path. "old" is the anchor value the node published in the bag.
 
-| sweep | old (anchor) ° | old axis y mm | new ° | new σ ° (stat ⊕ tmpl) | markers / pause RMS mm | gate vs 0.208 |
-|---|---|---|---|---|---|---|
-| 1 | 1.020 | −391.57 | 0.288 | 0.164 | 3 / 0.14 | ok (+0.08) |
-| 2 | 1.058 | −391.48 | 0.056 | 0.204 | 3 / 0.21 | ok (−0.15) |
-| 3 | 1.018 | −391.36 | 0.180 | 0.331 | 3 / 0.42 | ok (−0.03) |
-| 4 | 0.916 | −390.86 | 0.235 | 0.315 | 3 / 0.39 | ok (+0.03) |
-| 5 | 0.820 | −390.72 | 0.123 | 0.161 | 3 / 0.13 | ok (−0.09) |
-| 6 | 0.887 | −390.72 | 0.325 | 0.207 | 3 / 0.16 | ok (+0.12) |
-| 7 | 0.878 | −390.73 | 0.250 | 0.285 | 3 / 0.35 | ok (+0.04) |
-| **spread** | mean 0.942, **SD 0.090, range 0.24** | | mean 0.208 (pinned), **SD 0.095, range 0.27** | | | |
+**Rosbag `2026-10-09_18-56-37`, 7 sweeps:**
 
-- **Read honestly.** Within one bag the new estimator's scatter (0.095°) equals the old one's (0.090°); a single pause cannot beat the ~0.1–0.13° hold-to-hold scatter. The gain is in the cross-session numbers. The old estimator put this untouched BB at 0.94°, i.e. 0.73° from session A's 0.208°, through its axis point (y −391.6 … −390.7 vs A's −389.26; 1.5–2.3 mm × 0.49°/mm). Had this calibration been accepted, the deployed affine would have been misapplied by about 0.7° (about 12 mm at 1 m). Only 3 markers are seen at the pause (QTM 4, 6, 7), the minimum.
-- **Gauge pin** (decision 4): the template is rotated so that the mean over these 7 sweeps is 0.208° (raw mean 0.502°; pinned SE 0.036°). Every number above and below uses this gauge.
-- **Cross-check on the session bags** (in-session stationary holds, shipped template):
+| sweep | yaw offset ° (pinned) | σ ° | lag ms (stale %) | axis x, y mm (body model) | arc-fit x, y mm | template residual mm | lag-fit RMS ° | old anchor ° |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 0.435 | 0.070 | 84.7 (0) | −975.86, −389.85 | −975.82, −391.22 | 0.46 | 0.28 | 1.020 |
+| 2 | 0.493 | 0.050 | 83.8 (0) | −975.79, −389.87 | −975.79, −391.13 | 0.38 | 0.24 | 1.058 |
+| 3 | 0.459 | 0.050 | 80.5 (3) | −975.78, −389.74 | −975.75, −391.03 | 0.37 | 0.24 | 1.018 |
+| 4 | 0.443 | 0.046 | 80.5 (0) | −975.74, −389.51 | −975.72, −390.55 | 0.26 | 0.20 | 0.916 |
+| 5 | 0.428 | 0.050 | 82.3 (0) | −975.75, −389.50 | −975.81, −390.40 | 0.33 | 0.22 | 0.820 |
+| 6 | 0.447 | 0.046 | 82.6 (3) | −975.75, −389.48 | −975.75, −390.40 | 0.23 | 0.21 | 0.887 |
+| 7 | 0.431 | 0.046 | 84.1 (0) | −975.75, −389.48 | −975.76, −390.41 | 0.20 | 0.20 | 0.878 |
+| **SD** | **0.023** (mean 0.448, range 0.065) | | 1.7 | x 0.043, y 0.178 (z 1735.00 ± 0.04) | x 0.037, y 0.376 | | | 0.090 |
 
-  | | A (00:21) | B (03:13) | B − A |
-  |---|---|---|---|
-  | all holds (n 489 / 204) | −0.093° (SD 0.21) | −0.051° (SD 0.20) | **+0.042°** (investigation: +0.054°) |
-  | yaw-0 holds right after the session's calibration (n 2 / 1) | −0.171° | −0.025° | |
-  | yaw 1–20 / 20–40 / 40–70 | −0.21 / 0.00 / +0.18° | −0.16 / +0.07 / +0.13° | |
+- 1087–1273 frames per sweep are posed (0–25 rejected) with 3–7 markers matched, and 32–38 heartbeat samples enter each fit.
+- **Leave-sweeps-out (the check the investigation left undone).** Each sweep was estimated with E(y) refitted on the other six. The out-of-sample per-sweep SD is **0.031°** (range 0.090°), against 0.023° in-sample. The largest change of any sweep's value is 0.016°. The E coefficients move (e₁ 0.26–0.60), but the offsets barely do: E is constrained where the sweeps put their samples. The template's `repeatability_deg` is this 0.031°.
+- E(y) as fitted (moving relation, at fixed offset): +0.03° at 10°, −0.11° at 50°, −0.31° at 70°, −0.57° at 90°, −1.10° at 125°.
+  - The shape is like the investigation's (−0.44° at 70°, −1.57° at 125°). Its level differs because the template, the anchor direction and the lag model differ, and only differences of φ matter.
 
-  A and B agree with each other. Both read **0.25–0.38° below** this bag's pauses, including the like-for-like post-calibration yaw-0 holds (A −0.17°, B −0.03° vs 0.21 ± 0.04°). This bag's own pre-sweep idle hold read −0.08°.
+**Sessions A and B through the same estimator** (their bags start after their calibration, so these are the throw slews in 10-minute windows; per-window lag fitted):
 
-  The difference is **not explained**. The candidates are all untested:
-  - BB parked at reported yaw +0.07° (A) and −0.32° (B) but −0.26 … −0.59° after these sweeps: a backlash band near the yaw zero;
-  - a yaw re-home or a QTM recalibration between 03:13 and 18:56;
-  - pose-dependent mocap error at 3 markers.
+| | windows: yaw offset ° (pinned) | lag ms | stale % | axis x, y mm | template residual mm |
+|---|---|---|---|---|---|
+| A (00:21) | 0.256, 0.191, 0.204, 0.194, 0.194 → **0.208** by construction (window SD 0.028, SE 0.012) | 94.2–97.1 | 3–4 | −976.22, −389.49 | 0.13–0.20 |
+| A, last partial window | 0.050, **excluded**: template residual 0.64 mm > the gate's 0.5 mm, axis z +1 mm (unexplained) | 94.3 | 4 | | 0.64 |
+| B (03:13) | 0.212, 0.197, 0.195 → **0.201** | 74.0–76.0 | 66–83 | −976.44, −389.89 | 0.16–0.18 |
 
-  The anchor estimator's own A→N difference (+0.73°) is fully accounted for by its axis error, so it says nothing about a real change. **Consequence:** if A's frame differs from this bag's by about 0.3°, the pin carries that into every throw (≲ 5 mm at 1 m), and the gate's ±0.39° would have just passed A's post-cal hold (Δ −0.38°). The first live sweep plus a short validation set settles it.
-- **Pose dependence** (the investigation's tentative 0.3° at yaw 0). With the six-marker set A/B read about +0.3° at yaw 0 relative to the throwing yaws, as in the investigation. With the four co-planar markers the yaw-0 holds sit within 0.04° (A) and 0.14° (B) of the 1–20° level instead, so most of that 0.3° was the off-plane pair distorting at yaw 0. The four-marker set has its own trend across the throwing yaws (−0.2° → +0.15° from 1–20° to 40–70°; the six-marker set is flatter there). The moving sweep cannot measure it: the heartbeat lags the mocap frames by about 80 ms (±7° at 90°/s), and the outbound/return average still leaves about 1°. This is why both hold trims are 0.15 s.
+- **B − A = −0.007°**, well within 0.05°. A and B are the same state, as both investigations found.
+- **The 7-sweep bag reads 0.448°: +0.24° from A's frame.**
+  - This is the shift the reinvestigation reported as +0.4 ± 0.2° (its methods spread +0.24…+0.6°, body model +0.43°). This estimator sits at the low end.
+  - Marker geometry and the axis point are unchanged: body-model axis N vs A 0.47 mm.
 
-## Rule: moving BB means re-pin + refit
+**The pin and its uncertainty.** `gauge.raw_offset_at_pin_deg` = 0.0244° is A's mean raw value over its 5 accepted windows, so A reads exactly 0.208°. The transfer is good to the window SE (0.012°). Whether today's BB should aim with ~0.45° (this estimator's reading of the 18:56 state) or something nearer 0.6° is not decided by mocap: the cause of the A → 18:56 shift is unidentified. Take the pin as ± 0.2° until a validation sitting measures it. B's validation showed bearing error responds 1:1 to offset error.
 
-The pinned gauge and the affine are only valid together and only for this mounting. If BB is physically moved: set `bb_moved:=true` on `mocap_node`, calibrate (the gate lets one changed offset through and persists it), re-pin the template's `gauge` to the new frame, and refit `throw_affine_correction.json`. Recorded in the template's `gauge.rule`.
+## How to adjust the pin after the validation sitting
+
+If ~40 validation throws give a mean bearing error implying an offset error δ (positive = the offset should be larger):
+1. Edit ONLY `gauge.pinned_yaw_offset_deg` in `ros_ws/src/jugglebot/resources/bb_marker_template.json`, from `0.208` to `0.208 + δ`. Nothing else in the file changes; the template is not rebuilt.
+2. Rebuild/deploy the package.
+3. Set `bb_moved:=true` on `mocap_node` and calibrate once, so the stored reference moves by the same δ. Otherwise the gate compares a δ-shifted calibration with the old reference and refuses it when |δ| > the limit.
+
+## Rule: moving BB or recalibrating QTM means re-pin + refit
+
+The affine and the gauge are valid together for this mounting and QTM calibration only. After a physical move of BB or a QTM recalibration:
+- set `bb_moved:=true`;
+- calibrate (the gate lets one changed yaw/axis through and makes it the reference);
+- refit `throw_affine_correction.json`, or re-pin from landings.
+
+Recorded in the template's `gauge.rule`.
 
 ## Deferred
 
-- **Multi-hold sequence** across the throwing yaws, approached from one direction (firmware sub-state or host-driven aims). The estimator already adds the extra holds to N, so σ_stat drops as √N. It should revisit the six- vs four-marker choice per pose.
-- **The BallButler runner's post-hoc per-session offset and affine rotation** (REPORT § 4). Its "Cross-repo note" belongs in the BallButler logbook when that lands.
-- **Merge into `skill-stack`, build, deploy, and the first live sweep** with the node check: the INFO line `… ±σ (1 hold(s), gate ok)` and the persisted state file. Also: settle the 0.25–0.38° A/B-vs-pause difference above, and ask the owner whether BB was power-cycled or re-homed, or QTM recalibrated, between 03:13 and 18:56.
-- Offline scripts (`extract.py`, `build_template.py`, `pin_gauge.py`, `validate_new_bag.py`, `session_phi.py`, `replay_node.py`, `sweep_posedep.py`) live in the worktree's `temp/bbyaw/` and are not committed. Their logic is that of the investigation directory.
+- **Merge into `skill-stack`, build, deploy, the first live sweep, and the validation sitting** that sets the pin. The node check is the INFO line `… (lag N ms, gate ok)`, the WARN for the first (reference-less) calibration, and the persisted state file.
+- **The stamped `bb_yaw` path end to end** (sibling branch `bb-stamped-yaw-100hz`): the first live sweep with fw 6/28 should report lag a few ms with 0 % stale.
+- The unexplained items: the A → 18:56 shift (+0.24° here), and A's last window (residual 0.64 mm, axis z +1 mm). Fixed base or room markers would separate a BB move from an encoder or frame change (REPORT Q3).
+- Offline scripts in the worktree's `temp/bbyaw/sweep/` (`build1_template.py` … `build5_validate.py`, `probe_*.py`, not committed). They reuse the reinvestigation's `common.py` loader, GPA and axis helpers, and run the production functions.
 
 ## Verification
 
-- New and touched calibration tests (2026-10-09, `pytest tests/ros/test_bb_calibration_constellation.py tests/ros/test_mocap_node_yaw_gate.py tests/ros/test_perception_console_lines.py tests/ros/test_mocap_node.py tests/ros/test_bb_calibration_arc_span.py tests/ros/test_bb_calibration_coplanar.py tests/ros/test_bb_calibration_consensus.py ros_ws/src/jugglebot/jugglebot/tests/test_bb_calibration.py tests/ros/test_mocap_status.py -q -p no:cacheprovider`): **149 passed, 1 skipped in 3.52 s**.
-  - The new tests cover: label-free matching (permuted, missing, spurious, < 3); a known rotation under noise; the gauge sign; holds, creep and gaps; visits; σ (N = 1 floor, N = 16 SD/√N); loud failures; the gate's accept, refuse, 3σ, override and wrap cases; the node's one-shot override, persistence, template-gauge fallback, corrupt state file, missing template and anchor refusal; and the shipped file (gauge 0.208°, separations > 2 × tolerance, self-match at any yaw minus any marker).
-  - `test_perception_console_lines.py` changed deliberately: the INFO line now carries `(N hold(s), gate ok)`, and its node writes gate state under `tmp_path`, never `~/bb_calibration_sessions`.
+- Scoped, during the work (2026-10-09, `pytest tests/ros/test_bb_calibration_constellation.py tests/ros/test_mocap_node_yaw_gate.py tests/ros/test_perception_console_lines.py tests/ros/test_mocap_node.py tests/ros/test_bb_calibration_arc_span.py tests/ros/test_bb_calibration_coplanar.py tests/ros/test_bb_calibration_consensus.py ros_ws/src/jugglebot/jugglebot/tests/test_bb_calibration.py tests/ros/test_mocap_status.py tests/ros/test_choreography_map.py -q -p no:cacheprovider`): all green after the choreography regeneration.
+- What the new and rewritten tests cover:
+  - label-free matching and the tracker;
+  - the lag fit on synthetic sweeps with known lags (20–250 ms);
+  - the one-period-stale heartbeat (60 % stale: φ within 0.03°; a single-lag fit > 1° RMS);
+  - the stamped 100 Hz path (4 ms lag, 0 % stale);
+  - E held fixed (0–60° and 0–120° windows agree; without E they differ by > 0.1°), and E's valid range;
+  - the gauge (an edit of the pin by δ shifts by δ) and σ;
+  - every loud failure;
+  - the gate: no reference, yaw, axis, residual even with `bb_moved`, the override, wrap;
+  - `run_calibration` (position = body model, arc cross-check kept, missing anchor);
+  - the `bb_yaw` JointState parsing (3-joint and 2-joint);
+  - the shipped template and the loader's refusals;
+  - in the node: first-calibration WARN, persistence, refusal, the one-shot reset of the reference, the corrupt state file, QTM-stamped frame de-duplication, and the stamped-source preference and fallback.
+- The anchor-path tests (`test_bb_calibration_arc_span.py`, `_coplanar.py`, `_consensus.py`, `jugglebot/tests/test_bb_calibration.py`) are unchanged and run the legacy path.
 - Full gate `./run_tests.sh --full`: the (date, command, result) triple is in the commit message (`git log --grep "Logbook-Entry: 2026-10-09-bb-constellation-yaw-offset"`).

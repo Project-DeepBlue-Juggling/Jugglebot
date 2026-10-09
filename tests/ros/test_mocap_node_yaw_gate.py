@@ -1,11 +1,20 @@
-"""mocap_node's yaw-offset consistency gate and its bb_moved override (2026-10-09).
+"""mocap_node's calibration consistency gate, its bb_moved override and the
+estimator inputs it collects (2026-10-09, sweep estimator).
 
-A calibration whose constellation yaw offset disagrees with the last accepted
-one by more than max(3σ_repeatability, 0.15°) is published as a FAILURE unless
-the operator armed ``bb_moved``; the accepted result is persisted so the gate
-survives restarts; with nothing persisted the template's pinned gauge (the
-frame the aim correction was fitted in) is the reference. See
-``logbook/2026-10-09-bb-constellation-yaw-offset.md``.
+* With NO state file the first calibration is accepted, persisted and logged
+  at WARN (there is no reference; the template's pin is not one).
+* Afterwards a calibration is refused when |Δyaw| > max(3σ, 0.15°), the axis
+  point moved > 1.5 mm, or the template residual > 0.5 mm, unless the
+  one-shot ``bb_moved`` (BB moved or QTM recalibrated) is armed — which does
+  not excuse the residual.
+* An unreadable state file refuses (never a silent fallback) unless
+  ``bb_moved`` is armed.
+* The solver gets mocap frames at their QTM stamps (one per distinct stamp)
+  and yaw samples on the ROS clock; a stamped ``bb_yaw`` (degrees) on
+  bb/axis_estimates is preferred over the heartbeat; the two-joint message
+  of older firmware falls back to the heartbeat.
+
+See ``logbook/2026-10-09-bb-constellation-yaw-offset.md``.
 """
 from __future__ import annotations
 
@@ -18,6 +27,8 @@ import numpy as np
 import pytest
 
 from jugglebot.protocol_config import BallButlerStates
+
+POS = [-975.75, -389.5, 1735.0]
 
 
 def _node(tmp_path, state=None, template=True):
@@ -36,6 +47,10 @@ def _node(tmp_path, state=None, template=True):
     return node, path
 
 
+def _ref(yaw=0.6, pos=POS):
+    return {'yaw_offset_deg': yaw, 'position_mm': list(pos), 'accepted_at': 't0'}
+
+
 def _hb(state, yaw=0.0):
     from jugglebot_interfaces.msg import BallButlerHeartbeat
     msg = BallButlerHeartbeat()
@@ -44,15 +59,17 @@ def _hb(state, yaw=0.0):
     return msg
 
 
-def _result(yaw_deg, stat=0.13):
+def _result(yaw_deg, std=0.06, pos=POS, tres=0.3):
     return SimpleNamespace(
-        bb_position_mm=np.array([-975.6, -389.3, 1734.9]),
+        bb_position_mm=np.array(pos, dtype=float),
+        arc_position_mm=np.array(pos, dtype=float) + [0.1, -1.5, 0.0],
         axis_direction=np.array([0.0, 0.0, 1.0]), axis_tilt_deg=0.8,
-        yaw_offset_rad=math.radians(yaw_deg), yaw_offset_std_deg=math.hypot(stat, 0.1),
+        yaw_offset_rad=math.radians(yaw_deg), yaw_offset_std_deg=std,
         yaw_span_deg=125.0, marker_metrics={}, yaw_method='constellation',
         anchor_yaw_offset_rad=math.radians(0.9),
-        yaw_estimate=SimpleNamespace(n_holds=1, holds=[SimpleNamespace(n_matched=3)],
-                                     stat_std_deg=stat, template_std_deg=0.1))
+        yaw_estimate=SimpleNamespace(lag_s=0.082, template_residual_mm=tres,
+                                     yaw_source='heartbeat', n_frames=1200,
+                                     summary=lambda: 'sweep estimator: (fake)'))
 
 
 def _calibrate(node, result):
@@ -64,58 +81,88 @@ def _calibrate(node, result):
     return solver, node.pub_calibration.published[-1]
 
 
+def _rec(node):
+    lines = []
+
+    class L:
+        def __getattr__(self, level):
+            return lambda m, *a, **k: lines.append((level, m))
+    node._logger = L()
+    return lines
+
+
 def test_node_loads_the_shipped_template():
     import jugglebot.mocap_node as mn
     with patch.object(mn, 'MocapInterface', return_value=MagicMock()):
         node = mn.MocapNode()
-    assert node._marker_template is not None
-    assert node._marker_template.reference_yaw_offset_deg == pytest.approx(0.208)
+    t = node._marker_template
+    assert t is not None and len(t.points_mm) == 7
+    assert t.pinned_yaw_offset_deg == pytest.approx(0.208)
 
 
-def test_solver_gets_the_constellation_inputs(tmp_path):
-    node, _ = _node(tmp_path)
-    node._on_bb_heartbeat(_hb(BallButlerStates.CALIBRATING))
-    node._on_bb_heartbeat(_hb(BallButlerStates.CALIBRATING, yaw=1.0))
-    solver, _ = _calibrate(node, _result(0.25))
-    kw = solver.call_args.kwargs
-    assert kw['template'] is node._marker_template
-    assert kw['yaw_samples'] and all(len(s) == 2 for s in kw['yaw_samples'])
-    assert 'marker_frames' in kw
+def test_first_calibration_without_a_reference_is_accepted_persisted_and_warned(tmp_path):
+    node, path = _node(tmp_path)
+    log = _rec(node)
+    _, msg = _calibrate(node, _result(5.0))      # far from any pin: not compared
+    assert msg.success and 'no reference' in msg.message
+    assert json.loads(path.read_text())['yaw_offset_deg'] == pytest.approx(5.0)
+    warns = [m for lv, m in log if lv == 'warn']
+    assert any('no reference calibration exists' in m for m in warns)
 
 
 def test_consistent_calibration_is_accepted_and_persisted(tmp_path):
-    node, path = _node(tmp_path, {'yaw_offset_deg': 0.208, 'accepted_at': 't0'})
-    _, msg = _calibrate(node, _result(0.30))
-    assert msg.success
-    assert 'constellation yaw from 1 hold(s)' in msg.message and 'gate' in msg.message
-    assert json.loads(path.read_text())['yaw_offset_deg'] == pytest.approx(0.30)
+    node, path = _node(tmp_path, _ref(0.6))
+    _, msg = _calibrate(node, _result(0.70))
+    assert msg.success and 'sweep estimator' in msg.message and 'gate' in msg.message
+    st = json.loads(path.read_text())
+    assert st['yaw_offset_deg'] == pytest.approx(0.70)
+    assert st['position_mm'] == pytest.approx(POS)
+    assert st['lag_ms'] == pytest.approx(82.0) and st['yaw_source'] == 'heartbeat'
 
 
-def test_inconsistent_calibration_is_refused_and_not_persisted(tmp_path):
-    node, path = _node(tmp_path, {'yaw_offset_deg': 0.208, 'accepted_at': 't0'})
-    _, msg = _calibrate(node, _result(0.681))
-    assert not msg.success
-    assert msg.message.startswith('YAW_OFFSET_INCONSISTENT')
-    assert json.loads(path.read_text())['yaw_offset_deg'] == pytest.approx(0.208)
+def test_inconsistent_yaw_is_refused_and_not_persisted(tmp_path):
+    node, path = _node(tmp_path, _ref(0.6))
+    _, msg = _calibrate(node, _result(0.85))     # 0.25° > max(3·0.06, 0.15)
+    assert not msg.success and msg.message.startswith('CALIBRATION_INCONSISTENT')
+    assert json.loads(path.read_text())['yaw_offset_deg'] == pytest.approx(0.6)
 
 
-def test_without_a_persisted_calibration_the_template_gauge_is_the_reference(tmp_path):
-    node, path = _node(tmp_path)
-    _, msg = _calibrate(node, _result(0.95))
-    assert not msg.success and 'template-pinned gauge' in msg.message
-    assert not path.exists()
+def test_moved_axis_point_is_refused(tmp_path):
+    node, _ = _node(tmp_path, _ref(0.6))
+    _, msg = _calibrate(node, _result(0.6, pos=[POS[0] + 1.6, POS[1], POS[2]]))
+    assert not msg.success and 'axis point' in msg.message
 
 
-def test_bb_moved_override_is_one_shot(tmp_path):
-    node, path = _node(tmp_path, {'yaw_offset_deg': 0.208, 'accepted_at': 't0'})
-    from rcl_interfaces.msg import SetParametersResult  # noqa: F401  (mock present)
+def test_template_residual_is_refused_even_with_bb_moved(tmp_path):
+    node, _ = _node(tmp_path, _ref(0.6))
     node._on_set_parameters([SimpleNamespace(name='bb_moved', value=True)])
-    _, msg = _calibrate(node, _result(3.0))
+    _, msg = _calibrate(node, _result(0.6, tres=0.7))
+    assert not msg.success and msg.message.startswith('TEMPLATE_RESIDUAL')
+
+
+def test_bb_moved_override_is_one_shot_and_resets_the_reference(tmp_path):
+    node, path = _node(tmp_path, _ref(0.6))
+    node._on_set_parameters([SimpleNamespace(name='bb_moved', value=True)])
+    _, msg = _calibrate(node, _result(3.0, pos=[POS[0] + 5, POS[1], POS[2]]))
     assert msg.success and 'bb_moved override' in msg.message
     assert json.loads(path.read_text())['yaw_offset_deg'] == pytest.approx(3.0)
-    # consumed: the next disagreeing calibration is gated again
-    _, msg = _calibrate(node, _result(0.208))
-    assert not msg.success and 'YAW_OFFSET_INCONSISTENT' in msg.message
+    # consumed: the next disagreeing calibration is gated against the NEW reference
+    _, msg = _calibrate(node, _result(0.6))
+    assert not msg.success and 'CALIBRATION_INCONSISTENT' in msg.message
+    _, msg = _calibrate(node, _result(3.05, pos=[POS[0] + 5, POS[1], POS[2]]))
+    assert msg.success
+
+
+def test_corrupt_state_file_refuses_unless_bb_moved(tmp_path):
+    node, path = _node(tmp_path)
+    path.write_text('{not json')
+    _, msg = _calibrate(node, _result(0.6))
+    assert not msg.success and msg.message.startswith('CALIBRATION_STATE_UNREADABLE')
+    node._on_set_parameters([SimpleNamespace(name='bb_moved', value=True)])
+    _, msg = _calibrate(node, _result(0.6))
+    assert msg.success
+    assert json.loads(path.read_text())['yaw_offset_deg'] == pytest.approx(0.6)
+    assert not node._bb_moved_armed
 
 
 def test_missing_template_refuses_the_calibration(tmp_path):
@@ -126,15 +173,78 @@ def test_missing_template_refuses_the_calibration(tmp_path):
 
 
 def test_an_anchor_result_is_never_published(tmp_path):
-    node, _ = _node(tmp_path, {'yaw_offset_deg': 0.208, 'accepted_at': 't0'})
-    r = _result(0.2)
+    node, _ = _node(tmp_path, _ref(0.6))
+    r = _result(0.6)
     r.yaw_method = 'anchor'
     _, msg = _calibrate(node, r)
     assert not msg.success and 'anchor' in msg.message
 
 
-def test_corrupt_state_file_falls_back_to_the_template_gauge(tmp_path):
-    node, path = _node(tmp_path)
-    path.write_text('{not json')
-    _, msg = _calibrate(node, _result(0.25))
-    assert msg.success and 'template-pinned gauge' in msg.message
+def _bb_markers(stamp_ns, n=4):
+    from jugglebot_interfaces.msg import MocapDataMulti, MocapDataSingle
+    msg = MocapDataMulti()
+    msg.stamp.sec = stamp_ns // 1_000_000_000
+    msg.stamp.nanosec = stamp_ns % 1_000_000_000
+    for i in range(n):
+        s = MocapDataSingle()
+        s.position.x, s.position.y, s.position.z = float(i), 0.0, 1.0
+        msg.markers.append(s)
+    return msg
+
+
+def _axis_estimates(stamp_s, yaw_deg, with_yaw=True):
+    from sensor_msgs.msg import JointState
+    js = JointState()
+    js.header.stamp.sec = int(stamp_s)
+    js.header.stamp.nanosec = int(round((stamp_s % 1) * 1e9))
+    js.name = ['bb_pitch', 'bb_hand'] + (['bb_yaw'] if with_yaw else [])
+    js.position = [0.0, 0.0] + ([yaw_deg] if with_yaw else [])
+    return js
+
+
+def test_solver_gets_qtm_stamped_frames_once_each_and_heartbeat_yaw(tmp_path):
+    import jugglebot.mocap_node as mn
+    node, _ = _node(tmp_path, _ref(0.6))
+    node._on_bb_heartbeat(_hb(BallButlerStates.CALIBRATING))
+    t0 = 1_791_532_600_000_000_000
+    for k in (0, 1, 1, 2):                      # frame 1 snapshotted twice
+        node._accumulate_calibration_markers(_bb_markers(t0 + k * 5_000_000))
+    node._accumulate_calibration_markers(_bb_markers(0))   # no stamp: arc fit only
+    node._on_bb_heartbeat(_hb(BallButlerStates.CALIBRATING, yaw=1.0))
+    with patch.object(mn, 'run_calibration', return_value=_result(0.6)) as solver:
+        node._on_bb_heartbeat(_hb(BallButlerStates.IDLE))
+    kw = solver.call_args.kwargs
+    assert kw['template'] is node._marker_template
+    assert [round(t, 3) for t, _ in kw['marker_frames']] == [
+        round(t0 * 1e-9 + d, 3) for d in (0.0, 0.005, 0.010)]
+    assert kw['yaw_source'] == 'heartbeat'
+    assert kw['yaw_samples'] and all(len(s) == 2 for s in kw['yaw_samples'])
+    assert len(kw['calibration_data'][0]) == 5
+
+
+def test_stamped_yaw_stream_is_preferred_over_the_heartbeat(tmp_path):
+    import jugglebot.mocap_node as mn
+    node, _ = _node(tmp_path, _ref(0.6))
+    node._on_bb_heartbeat(_hb(BallButlerStates.CALIBRATING))
+    node._calib_data = {0: [np.zeros(3)]}
+    for k in range(mn.MIN_STAMPED_YAW_SAMPLES):
+        node._on_bb_axis_estimates(_axis_estimates(1000.0 + 0.01 * k, 36.0))
+    with patch.object(mn, 'run_calibration', return_value=_result(0.6)) as solver:
+        node._on_bb_heartbeat(_hb(BallButlerStates.IDLE))
+    kw = solver.call_args.kwargs
+    assert kw['yaw_source'] == 'stamped'
+    assert len(kw['yaw_samples']) == mn.MIN_STAMPED_YAW_SAMPLES
+    assert kw['yaw_samples'][0] == (pytest.approx(1000.0), pytest.approx(36.0))
+
+
+def test_a_short_or_absent_stamped_stream_falls_back_to_the_heartbeat(tmp_path):
+    import jugglebot.mocap_node as mn
+    node, _ = _node(tmp_path, _ref(0.6))
+    node._on_bb_heartbeat(_hb(BallButlerStates.CALIBRATING))
+    node._calib_data = {0: [np.zeros(3)]}
+    node._on_bb_axis_estimates(_axis_estimates(1000.0, 36.0))
+    for k in range(200):                         # older firmware: two joints, no yaw
+        node._on_bb_axis_estimates(_axis_estimates(1000.0 + 0.01 * k, 0.0, with_yaw=False))
+    with patch.object(mn, 'run_calibration', return_value=_result(0.6)) as solver:
+        node._on_bb_heartbeat(_hb(BallButlerStates.IDLE))
+    assert solver.call_args.kwargs['yaw_source'] == 'heartbeat'

@@ -1,26 +1,29 @@
-"""BB yaw offset from the whole marker constellation (2026-10-09).
+"""BB yaw offset and position from the WHOLE calibration sweep (2026-10-09).
 
-``bb_calibration.estimate_constellation_yaw_offset`` replaced the single
-yaw-anchor marker as the source of BB's yaw offset: the anchor's angle about
-the sweep's fitted axis point moved 0.49° per mm of axis error, and two
-calibrations of an untouched BB stored 0.208° and 0.681°
+``bb_calibration.estimate_sweep_yaw_offset`` replaced the single yaw-anchor
+marker (and, the same day, a first design that read the stationary yaw-0
+pause only): every mocap frame is posed as a rigid body against the stored
+body template, the reported yaw's lag behind the frames is FITTED per sweep,
+a fixed E(y) is removed, and the axis point is the posed template origin
 (``logbook/2026-10-09-bb-constellation-yaw-offset.md``). These tests pin:
 
-* label-free marker identity — permuted order, a missing marker, a spurious
-  nearby point, too few markers;
-* the orientation estimate on a synthetic constellation with known rotation
-  and noise, and the gauge (rotating the template shifts the estimate);
-* stationary-hold detection and the visit grouping;
-* the σ model (hold-to-hold SD/√N, floored for small N, ⊕ template term);
-* the consistency gate (accept / refuse / override);
-* ``run_calibration``'s constellation path (an outcast or missing anchor no
-  longer refuses), and the shipped template file.
+* label-free marker identity (permuted, missing, spurious, too few) and the
+  per-frame tracker;
+* the latency fit on a synthetic sweep with a known lag (heartbeat 10 Hz,
+  and the one-period-stale heartbeat mixture), and the stamped 100 Hz path
+  (lag ≈ 0, still fitted and reported);
+* E(y): held fixed, so windows over different yaw ranges agree;
+* the gauge (published = raw − raw_at_pin + pinned; editing the pin by δ
+  shifts the result by δ) and σ (formal ⊕ repeatability);
+* loud failures; the consistency gate; ``run_calibration``'s path (position
+  from the body model, arc fit as cross-check); the template file.
 """
 from __future__ import annotations
 
 import json
 import math
 import os
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -29,14 +32,15 @@ from jugglebot import bb_calibration as bc
 from jugglebot.bb_calibration import (
     CONSTELLATION_MATCH_TOL_MM,
     GATE_MIN_DEG,
-    HOLD_SCATTER_FLOOR_DEG,
     MarkerTemplate,
-    check_yaw_offset_consistency,
-    estimate_constellation_yaw_offset,
-    find_stationary_holds,
+    check_calibration_consistency,
+    estimate_sweep_yaw_offset,
+    fit_yaw_latency,
     load_marker_template,
     match_template,
     run_calibration,
+    stamped_yaw_samples_from_joint_state,
+    track_constellation,
     wrap_pi,
 )
 
@@ -44,8 +48,9 @@ REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), os.pardir, os.par
 SHIPPED_TEMPLATE = os.path.join(REPO, 'ros_ws', 'src', 'jugglebot', 'resources',
                                 'bb_marker_template.json')
 
-#: A BB-like constellation (BB-local mm): six yaw-stage markers 75–135 mm off
-#: the axis, two of them ~30 mm lower — the shape, not the numbers, of BB's.
+#: A BB-like body template (mm, origin on the yaw axis): six yaw-stage markers
+#: 75–135 mm off the axis, two of them ~30 mm lower — the shape, not the
+#: numbers, of BB's.
 TEMPLATE = np.array([
     [117.6, 0.0, -17.0],
     [106.0, 66.0, -46.0],
@@ -55,6 +60,7 @@ TEMPLATE = np.array([
     [-30.0, -80.0, -18.0],
 ])
 BB_POS = np.array([-975.5, -389.3, 1734.9])
+E_COEF = (0.47, -1.59, 0.40)          # the shipped template's shape: −1.1° at 125°
 
 
 def _rz(a):
@@ -66,7 +72,49 @@ def _place(theta, template=TEMPLATE, origin=BB_POS):
     return template @ _rz(theta).T + origin
 
 
-# ── label-free matching ──────────────────────────────────────────────────────
+def _tmpl(e=E_COEF, raw_pin=0.0, pinned=0.0, rep=0.03):
+    return MarkerTemplate(points_mm=TEMPLATE, e_coef_deg=e, raw_offset_at_pin_deg=raw_pin,
+                          pinned_yaw_offset_deg=pinned, repeatability_deg=rep)
+
+
+def _yaw_profile(t, y_max=120.0, leg=1.4, pause=2.0, start=0.3):
+    """Reported (encoder) yaw: rest, smooth 0 → y_max → 0 (cosine legs), rest."""
+    t = np.asarray(t, dtype=float)
+    u = np.clip((t - start) / leg, 0, 1)
+    v = np.clip((t - start - leg) / leg, 0, 1)
+    up = 0.5 * (1 - np.cos(np.pi * u))
+    down = 0.5 * (1 - np.cos(np.pi * v))
+    return y_max * (up - down)
+
+
+def _synth(phi_deg=0.3, lag=0.083, e=E_COEF, y_max=120.0, rate=10.0, noise_mm=0.1,
+           stale=0.0, seed=0, duration=5.4, displace=None, keep=None, units=1.0,
+           labelled=False):
+    """Frames (stamped, unlabelled, permuted, plus a stray) of a BB whose
+    physical yaw is y + E(y) + φ, and yaw samples (t, y(t − age)) with
+    age = lag, or lag + 0.1 s for a ``stale`` fraction of them."""
+    rng = np.random.default_rng(seed)
+    tm = _tmpl(e)
+    tf = np.arange(0.0, duration, 0.005)
+    y = _yaw_profile(tf, y_max)
+    th = np.radians(y + tm.e_deg(y) + phi_deg)
+    T = TEMPLATE.copy()
+    if displace is not None:
+        T[displace[0]] = T[displace[0]] + displace[1]
+    idx = np.arange(len(T)) if keep is None else np.asarray(keep)
+    frames = []
+    for t, a in zip(tf, th):
+        P = _place(a, T[idx]) + rng.normal(0.0, noise_mm, (len(idx), 3))
+        if not labelled:   # labelled: rows in template order, no stray
+            P = np.vstack([P, BB_POS + [-40.0, 125.0, 112.0]])[rng.permutation(len(idx) + 1)]
+        frames.append((float(t), P))
+    ty = np.arange(0.35, duration, 1.0 / rate) + rng.uniform(-0.002, 0.002, int(np.ceil((duration - 0.35) * rate)))[:len(np.arange(0.35, duration, 1.0 / rate))]
+    age = lag + 0.1 * (rng.random(len(ty)) < stale)
+    samples = [(float(t), float(_yaw_profile(t - a, y_max)) * units) for t, a in zip(ty, age)]
+    return frames, samples
+
+
+# ── label-free matching and the tracker ─────────────────────────────────────
 
 def test_match_recovers_rotation_and_identity_under_permutation():
     rng = np.random.default_rng(1)
@@ -76,17 +124,13 @@ def test_match_recovers_rotation_and_identity_under_permutation():
     m = match_template(world[order], TEMPLATE)
     assert m is not None and len(m.pairs) == len(TEMPLATE)
     assert abs(wrap_pi(m.theta_rad - theta)) < 1e-9
-    # template index ti is matched to the point that came from ti
     assert all(order[pi] == ti for ti, pi in m.pairs)
-    assert m.rms_mm < 1e-9
 
 
 def test_match_survives_a_missing_and_a_spurious_marker():
     theta = math.radians(-12.0)
     world = _place(theta)
     pts = np.delete(world, 2, axis=0)
-    # a reflection 12 mm from a real marker, and a far stray (the pitch-stage
-    # marker seen in the 2026-10-09 bag sits ~130 mm above the yaw stage)
     pts = np.vstack([pts, world[0] + [12.0, 0.0, 0.0], BB_POS + [-40.0, 125.0, 112.0]])
     m = match_template(pts, TEMPLATE)
     assert m is not None
@@ -101,258 +145,264 @@ def test_match_needs_three_markers():
     assert m is not None and len(m.pairs) == 3
 
 
-def test_match_with_noise_is_close_and_deterministic():
-    rng = np.random.default_rng(7)
-    theta = math.radians(100.0)
-    pts = _place(theta) + rng.normal(0.0, 0.3, (len(TEMPLATE), 3))
-    m1 = match_template(pts, TEMPLATE)
-    m2 = match_template(pts.copy(), TEMPLATE)
-    assert m1.pairs == m2.pairs and m1.theta_rad == m2.theta_rad
-    # 0.3 mm noise over a ~200 mm lever: well under 0.5°
-    assert abs(math.degrees(wrap_pi(m1.theta_rad - theta))) < 0.5
+def test_tracker_poses_every_frame_label_free_and_recovers_axis_point():
+    frames, _ = _synth(seed=3)
+    tr = track_constellation(frames, _tmpl())
+    assert len(tr.t) == len(frames) and tr.n_rejected == 0
+    assert np.all(tr.n_matched == len(TEMPLATE))   # the stray is never matched
+    assert np.allclose(tr.origin.mean(axis=0), BB_POS, atol=0.05)
+    assert tr.template_residual_mm() < 0.05
 
 
-# ── holds ────────────────────────────────────────────────────────────────────
+# ── the latency fit and the estimator ───────────────────────────────────────
 
-def test_holds_exclude_settling_creep_and_break_on_a_gap():
-    t = np.arange(0.0, 6.0, 0.1)
-    yaw = np.where(t < 1.0, 120.0 * (1.0 - t), 0.0)       # sweep back to 0
-    yaw = np.where((t >= 1.0) & (t < 1.6), -0.9 + 1.5 * (t - 1.0), yaw)  # creep
-    samples = [(a, b) for a, b in zip(t, yaw) if not (3.95 < a < 4.45)]  # 0.5 s gap
-    holds = find_stationary_holds(samples)
-    assert [(round(a, 1), round(b, 1)) for a, b, _ in holds] == [(1.6, 3.9), (4.5, 5.9)]
-
-
-def _hold_frames(t0, t1, theta, rng, noise_mm=0.2, rate=200.0, drop=None):
-    frames = []
-    for t in np.arange(t0, t1, 1.0 / rate):
-        p = _place(theta) + rng.normal(0.0, noise_mm, TEMPLATE.shape)
-        if drop is not None:
-            p = np.delete(p, drop, axis=0)
-        frames.append((t, p))
-    return frames
+def test_latency_fit_recovers_a_known_heartbeat_lag_and_offset():
+    frames, samples = _synth(phi_deg=0.3, lag=0.083, seed=4)
+    est = estimate_sweep_yaw_offset(frames, samples, _tmpl())
+    assert est.lag_s == pytest.approx(0.083, abs=0.002)
+    assert est.phi_raw_deg == pytest.approx(0.3, abs=0.02)
+    assert est.yaw_source == 'heartbeat'
+    assert np.allclose(est.axis_point_mm, BB_POS, atol=0.05)
+    assert '83' in est.summary() and 'lag' in est.summary()
 
 
-def _yaw_hold(t0, t1, yaw_deg):
-    return [(t, yaw_deg) for t in np.arange(t0, t1 + 1e-9, 0.1)]
+def test_a_wrong_lag_would_bias_nothing_because_it_is_fitted_not_assumed():
+    for lag in (0.02, 0.15, 0.25):
+        frames, samples = _synth(phi_deg=-0.2, lag=lag, seed=5)
+        est = estimate_sweep_yaw_offset(frames, samples, _tmpl())
+        assert est.lag_s == pytest.approx(lag, abs=0.002)
+        assert est.phi_raw_deg == pytest.approx(-0.2, abs=0.02)
 
 
-def test_estimate_recovers_a_known_offset_over_several_holds():
-    rng = np.random.default_rng(3)
-    offset = math.radians(0.208)
-    frames, samples, t = [], [], 0.0
-    for yaw in (5.0, 20.0, 35.0, 50.0, 65.0):
-        frames += _hold_frames(t, t + 1.5, math.radians(yaw) + offset, rng)
-        samples += _yaw_hold(t, t + 1.5, yaw)
-        t += 3.0
-    est = estimate_constellation_yaw_offset(frames, samples, TEMPLATE)
-    assert est.n_holds == 5
-    assert abs(math.degrees(wrap_pi(est.yaw_offset_rad - offset))) < 0.01
+def test_one_period_stale_heartbeat_samples_are_absorbed():
+    """Session B: heartbeat ages ~75 ms or ~175 ms (35/65 %) — a single-lag
+    fit scatters by degrees; the stale mixture recovers lag and offset."""
+    frames, samples = _synth(phi_deg=0.3, lag=0.075, stale=0.6, seed=6)
+    est = estimate_sweep_yaw_offset(frames, samples, _tmpl())
+    assert est.phi_raw_deg == pytest.approx(0.3, abs=0.03)
+    assert est.lag_s == pytest.approx(0.075, abs=0.003)     # the younger age
+    assert 0.45 < est.stale_fraction < 0.75
+    single = fit_yaw_latency(*_track_args(frames, samples))
+    assert single.residual_rms_deg > 1.0
 
 
-def test_gauge_rotating_the_template_shifts_the_estimate_by_minus_delta():
-    rng = np.random.default_rng(4)
-    frames = _hold_frames(0.0, 2.0, math.radians(0.5), rng)
-    samples = _yaw_hold(0.0, 2.0, 0.0)
-    delta = math.radians(0.3)
-    a = estimate_constellation_yaw_offset(frames, samples, TEMPLATE)
-    b = estimate_constellation_yaw_offset(frames, samples, TEMPLATE @ _rz(delta).T)
-    assert abs(math.degrees(wrap_pi(a.yaw_offset_rad - b.yaw_offset_rad - delta))) < 1e-9
+def _track_args(frames, samples):
+    tr = track_constellation(frames, _tmpl())
+    s = np.array(samples)
+    return tr.t, tr.theta_deg, s[:, 0], s[:, 1], _tmpl().e_deg
 
 
-def test_label_free_estimate_is_unchanged_by_a_missing_marker():
-    rng = np.random.default_rng(5)
-    frames = _hold_frames(0.0, 2.0, math.radians(10.25), rng, drop=4)
-    est = estimate_constellation_yaw_offset(frames, _yaw_hold(0.0, 2.0, 10.0), TEMPLATE)
-    assert est.holds[0].n_matched == len(TEMPLATE) - 1
-    assert abs(math.degrees(est.yaw_offset_rad) - 0.25) < 0.02
+def test_stamped_100hz_source_fits_a_near_zero_lag_with_one_age():
+    frames, samples = _synth(phi_deg=0.3, lag=0.004, rate=100.0, seed=7)
+    est = estimate_sweep_yaw_offset(frames, samples, _tmpl(), yaw_source='stamped')
+    assert est.lag_s == pytest.approx(0.004, abs=0.002)
+    assert est.stale_fraction == 0.0
+    assert est.phi_raw_deg == pytest.approx(0.3, abs=0.02)
+    assert est.n_moving > 150 and 'stamped' in est.summary()
 
 
-# ── σ model ──────────────────────────────────────────────────────────────────
-
-def test_sigma_single_hold_is_floored_at_the_measured_hold_scatter():
-    rng = np.random.default_rng(6)
-    frames = _hold_frames(0.0, 2.0, 0.0, rng, noise_mm=0.05)
-    est = estimate_constellation_yaw_offset(frames, _yaw_hold(0.0, 2.0, 0.0), TEMPLATE)
-    assert est.n_holds == 1
-    assert est.stat_std_deg == pytest.approx(HOLD_SCATTER_FLOOR_DEG)
-    assert est.yaw_offset_std_deg == pytest.approx(
-        math.hypot(est.stat_std_deg, est.template_std_deg))
-    # NOT the per-frame SD, which is ~100× smaller here
-    assert est.yaw_offset_std_deg >= HOLD_SCATTER_FLOOR_DEG
+def test_E_is_held_fixed_so_the_yaw_range_covered_does_not_move_the_offset():
+    full = _synth(phi_deg=0.3, y_max=120.0, seed=8)
+    half = _synth(phi_deg=0.3, y_max=60.0, seed=8)
+    with_e = [estimate_sweep_yaw_offset(*w, _tmpl()).phi_raw_deg for w in (full, half)]
+    assert with_e[0] == pytest.approx(0.3, abs=0.02) and with_e[1] == pytest.approx(0.3, abs=0.02)
+    no_e = [estimate_sweep_yaw_offset(*w, _tmpl(e=(0.0, 0.0, 0.0))).phi_raw_deg for w in (full, half)]
+    assert abs(no_e[0] - no_e[1]) > 0.1      # without E the range leaks into φ
 
 
-def test_sigma_many_holds_is_the_hold_to_hold_sd_over_root_n():
-    rng = np.random.default_rng(8)
-    true = np.radians(rng.normal(0.0, 0.2, 16))      # BB's pointing scatter per hold
-    frames, samples, t = [], [], 0.0
-    for k, extra in enumerate(true):
-        yaw = 5.0 + 4.0 * k
-        frames += _hold_frames(t, t + 1.2, math.radians(yaw) + extra, rng, noise_mm=0.05, rate=100.0)
-        samples += _yaw_hold(t, t + 1.2, yaw)
-        t += 2.0
-    est = estimate_constellation_yaw_offset(frames, samples, TEMPLATE)
-    assert est.n_holds == 16
-    sd = np.degrees(np.std(true, ddof=1))
-    assert est.hold_sd_deg == pytest.approx(sd, abs=0.01)
-    assert est.stat_std_deg == pytest.approx(est.hold_sd_deg / 4.0)
+def test_E_is_only_applied_inside_its_valid_range():
+    tm = _tmpl()
+    assert tm.e_deg(np.array([0.0, -3.0]))[1] == 0.0          # clamped at zero
+    f = fit_yaw_latency(*_track_args(*_synth(seed=9)), e_valid_yaw_deg=(-5.0, 50.0))
+    g = fit_yaw_latency(*_track_args(*_synth(seed=9)))
+    assert f.n_moving < g.n_moving
 
 
-def test_two_halves_of_one_pause_are_one_visit():
-    rng = np.random.default_rng(9)
-    frames = _hold_frames(0.0, 2.2, 0.0, rng)
-    samples = _yaw_hold(0.0, 1.0, 0.0) + _yaw_hold(1.1, 2.2, 0.3)   # crept 0.3°
-    est = estimate_constellation_yaw_offset(frames, samples, TEMPLATE)
-    assert len(est.holds) == 2 and est.n_holds == 1
+def test_gauge_published_is_raw_minus_pin_reference_plus_pin_and_shifts_by_delta():
+    frames, samples = _synth(phi_deg=0.3, seed=10)
+    tr = track_constellation(frames, _tmpl())
+    a = estimate_sweep_yaw_offset(None, samples, _tmpl(raw_pin=0.1, pinned=0.208), track=tr)
+    b = estimate_sweep_yaw_offset(None, samples, _tmpl(raw_pin=0.1, pinned=0.258), track=tr)
+    assert math.degrees(a.yaw_offset_rad) == pytest.approx(a.phi_raw_deg - 0.1 + 0.208, abs=1e-9)
+    assert math.degrees(b.yaw_offset_rad - a.yaw_offset_rad) == pytest.approx(0.05, abs=1e-9)
 
 
-# ── loud failures ────────────────────────────────────────────────────────────
+def test_sigma_is_formal_error_combined_with_the_repeatability():
+    frames, samples = _synth(seed=11)
+    est = estimate_sweep_yaw_offset(frames, samples, _tmpl(rep=0.031))
+    assert est.repeatability_deg == 0.031
+    assert est.yaw_offset_std_deg == pytest.approx(math.hypot(est.formal_se_deg, 0.031))
+    assert 0.0 < est.formal_se_deg < 0.05
 
-def test_no_stationary_hold_fails_loudly():
-    rng = np.random.default_rng(10)
-    samples = [(t, 50.0 * t) for t in np.arange(0.0, 2.0, 0.1)]
-    with pytest.raises(ValueError, match='CONSTELLATION_NO_HOLD'):
-        estimate_constellation_yaw_offset(_hold_frames(0.0, 2.0, 0.0, rng), samples, TEMPLATE)
+
+# ── loud failures ───────────────────────────────────────────────────────────
+
+def test_too_few_frames_fails_loudly():
+    frames, samples = _synth(seed=12)
+    with pytest.raises(ValueError, match='CONSTELLATION_TOO_FEW_FRAMES'):
+        estimate_sweep_yaw_offset(frames[:150], samples, _tmpl())
 
 
-def test_too_few_markers_fails_loudly():
-    rng = np.random.default_rng(11)
-    frames = _hold_frames(0.0, 2.0, 0.0, rng, drop=[0, 1, 2, 3])
+def test_too_few_matched_markers_fails_loudly():
+    frames, samples = _synth(seed=13, keep=[0, 3])
     with pytest.raises(ValueError, match='CONSTELLATION_TOO_FEW_MARKERS'):
-        estimate_constellation_yaw_offset(frames, _yaw_hold(0.0, 2.0, 0.0), TEMPLATE)
+        estimate_sweep_yaw_offset(frames, samples, _tmpl())
 
 
 def test_a_moved_marker_fails_loudly_rather_than_biasing():
-    rng = np.random.default_rng(12)
-    moved = TEMPLATE.copy()
-    moved[1] += [2.5, -2.0, 0.0]          # a marker knocked ~3 mm on BB
-    frames = [(t, p @ np.eye(3)) for t, p in _hold_frames(0.0, 2.0, 0.0, rng, noise_mm=0.0)]
-    frames = [(t, _place(0.0, moved)) for t, _ in frames]
+    frames, samples = _synth(seed=14, displace=(4, np.array([1.6, 0.0, 0.0])))
     with pytest.raises(ValueError, match='CONSTELLATION_RESIDUAL'):
-        estimate_constellation_yaw_offset(frames, _yaw_hold(0.0, 2.0, 0.0), TEMPLATE,
-                                          max_residual_mm=1.0)
+        estimate_sweep_yaw_offset(frames, samples, _tmpl())
 
 
-# ── consistency gate ─────────────────────────────────────────────────────────
+def test_lag_outside_the_search_range_fails_loudly():
+    frames, samples = _synth(seed=15, lag=0.33)
+    with pytest.raises(ValueError, match='CONSTELLATION_LAG_AT_EDGE'):
+        estimate_sweep_yaw_offset(frames, samples, _tmpl(), yaw_source='stamped')
+
+
+def test_wrong_yaw_units_fail_loudly():
+    frames, samples = _synth(seed=16, rate=100.0, lag=0.004, units=1.0 / 360.0)
+    with pytest.raises(ValueError, match='CONSTELLATION_LAG_RESIDUAL|CONSTELLATION_TOO_FEW_MOVING'):
+        estimate_sweep_yaw_offset(frames, samples, _tmpl(), yaw_source='stamped')
+
+
+def test_no_motion_fails_loudly():
+    frames, samples = _synth(seed=17, y_max=0.0)
+    with pytest.raises(ValueError, match='CONSTELLATION_TOO_FEW_MOVING'):
+        estimate_sweep_yaw_offset(frames, samples, _tmpl())
+
+
+# ── the consistency gate ────────────────────────────────────────────────────
+
+REF = {'yaw_offset_deg': 0.6, 'position_mm': list(BB_POS)}
+
+
+def test_gate_without_reference_accepts_and_says_so():
+    v = check_calibration_consistency(5.0, 0.05, BB_POS, 0.2, None)
+    assert v.accepted and v.no_reference
+
 
 def test_gate_accepts_within_the_threshold():
-    v = check_yaw_offset_consistency(0.30, 0.04, 0.208)
-    assert v.accepted and v.threshold_deg == pytest.approx(GATE_MIN_DEG)
-
-
-def test_gate_refuses_the_2026_10_09_discrepancy():
-    """Session B stored 0.681° against A's 0.208° with BB untouched."""
-    v = check_yaw_offset_consistency(0.681, 0.13, 0.208)
-    assert not v.accepted
-    assert v.message.startswith('YAW_OFFSET_INCONSISTENT')
-    assert 'bb_moved' in v.message
+    v = check_calibration_consistency(0.7, 0.04, BB_POS + [0.5, 0, 0], 0.3, REF)
+    assert v.accepted and not v.overridden and v.threshold_deg == GATE_MIN_DEG
 
 
 def test_gate_threshold_is_three_sigma_when_that_is_larger():
-    assert check_yaw_offset_consistency(0.208 + 0.38, 0.13, 0.208).accepted
-    assert not check_yaw_offset_consistency(0.208 + 0.40, 0.13, 0.208).accepted
+    assert check_calibration_consistency(0.85, 0.1, BB_POS, 0.3, REF).accepted
+    assert not check_calibration_consistency(0.95, 0.1, BB_POS, 0.3, REF).accepted
+
+
+def test_gate_refuses_yaw_axis_and_residual():
+    assert 'yaw' in check_calibration_consistency(0.8, 0.04, BB_POS, 0.3, REF).message
+    v = check_calibration_consistency(0.6, 0.04, BB_POS + [0, 1.6, 0], 0.3, REF)
+    assert not v.accepted and 'axis point' in v.message
+    v = check_calibration_consistency(0.6, 0.04, BB_POS, 0.51, REF, bb_moved=True)
+    assert not v.accepted and v.message.startswith('TEMPLATE_RESIDUAL')
 
 
 def test_gate_override_accepts_and_says_so():
-    v = check_yaw_offset_consistency(5.0, 0.05, 0.208, bb_moved=True)
-    assert v.accepted and 'bb_moved override' in v.message
-
-
-def test_gate_without_reference_accepts():
-    assert check_yaw_offset_consistency(5.0, 0.05, None).accepted
+    v = check_calibration_consistency(3.0, 0.04, BB_POS + [5, 0, 0], 0.3, REF, bb_moved=True)
+    assert v.accepted and v.overridden and 'bb_moved' in v.message
 
 
 def test_gate_wraps_angles():
-    assert check_yaw_offset_consistency(179.95, 0.02, -179.95).accepted
+    ref = {'yaw_offset_deg': -179.95, 'position_mm': list(BB_POS)}
+    assert check_calibration_consistency(179.95, 0.02, BB_POS, 0.1, ref).accepted
 
 
 # ── run_calibration: the constellation path ─────────────────────────────────
 
-def _sweep(offset_rad, rng, missing=(), outcast_shift=None):
-    """A 0 → 120 → 0 sweep with a 2.5 s pause at 0, 200 Hz frames, 10 Hz yaw.
-
-    BB has 7 labelled markers: the six template markers (labels 1–6 in some
-    order) plus one pitch-stage marker (label 0) that the template omits.
-    """
-    def yaw_at(t):
-        if t < 1.5:
-            return 120.0 * t / 1.5
-        if t < 3.0:
-            return 120.0 * (3.0 - t) / 1.5
-        return 0.0
-    label_of = [3, 6, 2, 5, 1, 4]       # template marker k carries QTM index label_of[k]
+def _sweep_inputs(seed, missing_anchor=False):
+    """Labelled per-marker data for the arc fit (template marker k carries QTM
+    index label_of[k]) from the same synthetic sweep."""
+    frames, samples = _synth(phi_deg=0.3, seed=seed, noise_mm=0.05, labelled=True)
+    label_of = [3, 6, 2, 5, 1, 4]
     data = {i: [] for i in range(7)}
-    frames = []
-    for t in np.arange(0.0, 5.5, 0.005):
-        world = _place(math.radians(yaw_at(t)) + offset_rad)
-        world = world + rng.normal(0.0, 0.1, world.shape)
-        pts = []
-        for k, p in enumerate(world):
-            lab = label_of[k]
-            if lab in missing:
-                continue
-            if outcast_shift is not None and lab == bc.BB_YAW_ANCHOR_INDEX:
-                p = p + outcast_shift
-            data[lab].append(p)
-            pts.append(p)
-        stray = BB_POS + [-40.0, 125.0, 112.0]
-        data[0].append(stray)
-        pts.append(stray)
-        frames.append((t, np.array(pts)))
-    samples = [(t, yaw_at(t)) for t in np.arange(0.0, 5.55, 0.1)]
-    return data, [y for _, y in samples], frames, samples
+    lab_frames = []
+    for t, P in frames:
+        keep = [k for k in range(len(P))
+                if not (missing_anchor and label_of[k] == bc.BB_YAW_ANCHOR_INDEX)]
+        for k in keep:
+            data[label_of[k]].append(P[k])
+        lab_frames.append((t, P[keep]))
+    return data, [y for _, y in samples], lab_frames, samples
 
 
-def test_run_calibration_constellation_path():
-    rng = np.random.default_rng(20)
-    data, yaws, frames, samples = _sweep(math.radians(0.208), rng)
+@pytest.fixture(scope='module')
+def sweep_inputs():
+    return _sweep_inputs(20)
+
+
+def test_run_calibration_constellation_path(sweep_inputs):
+    data, yaws, frames, samples = sweep_inputs
     res = run_calibration(data, yaws, pitch_z_offset_mm=0.0, min_agreeing=4,
-                          marker_frames=frames, yaw_samples=samples,
-                          template=MarkerTemplate(points_mm=TEMPLATE))
+                          marker_frames=frames, yaw_samples=samples, template=_tmpl())
     assert res.yaw_method == 'constellation'
-    assert res.yaw_estimate.n_holds == 1
-    assert abs(math.degrees(res.yaw_offset_rad) - 0.208) < 0.02
-    assert res.yaw_offset_std_deg >= HOLD_SCATTER_FLOOR_DEG
-    assert res.anchor_yaw_offset_rad is not None
+    assert math.degrees(res.yaw_offset_rad) == pytest.approx(0.3, abs=0.03)
+    assert np.allclose(res.bb_position_mm, BB_POS, atol=0.1)      # body-model axis point
+    assert res.arc_position_mm is not None                          # cross-check kept
+    assert np.allclose(res.arc_position_mm[:2], BB_POS[:2], atol=1.0)
+    assert res.yaw_estimate.lag_s == pytest.approx(0.083, abs=0.003)
 
 
-def test_missing_yaw_anchor_no_longer_refuses_on_the_constellation_path():
-    rng = np.random.default_rng(21)
-    data, yaws, frames, samples = _sweep(math.radians(0.208), rng,
-                                         missing=(bc.BB_YAW_ANCHOR_INDEX,))
+def test_missing_yaw_anchor_does_not_refuse_on_the_constellation_path():
+    data, yaws, frames, samples = _sweep_inputs(21, missing_anchor=True)
     res = run_calibration(data, yaws, pitch_z_offset_mm=0.0, min_agreeing=4,
-                          marker_frames=frames, yaw_samples=samples,
-                          template=MarkerTemplate(points_mm=TEMPLATE))
+                          marker_frames=frames, yaw_samples=samples, template=_tmpl())
     assert res.anchor_yaw_offset_rad is None
-    assert abs(math.degrees(res.yaw_offset_rad) - 0.208) < 0.02
+    assert math.degrees(res.yaw_offset_rad) == pytest.approx(0.3, abs=0.03)
 
 
-def test_template_without_frames_is_refused():
-    rng = np.random.default_rng(22)
-    data, yaws, _, _ = _sweep(0.0, rng)
+def test_template_without_frames_is_refused(sweep_inputs):
+    data, yaws, _, _ = sweep_inputs
     with pytest.raises(ValueError, match='timestamped'):
-        run_calibration(data, yaws, pitch_z_offset_mm=0.0, min_agreeing=4,
-                        template=MarkerTemplate(points_mm=TEMPLATE))
+        run_calibration(data, yaws, pitch_z_offset_mm=0.0, min_agreeing=4, template=_tmpl())
 
 
-# ── the shipped template ─────────────────────────────────────────────────────
+# ── stamped yaw on bb/axis_estimates ────────────────────────────────────────
 
-def test_shipped_template_loads_with_its_gauge_and_provenance():
+def _js(names, pos, sec=1000, nanosec=5_000_000):
+    return SimpleNamespace(header=SimpleNamespace(stamp=SimpleNamespace(sec=sec, nanosec=nanosec)),
+                           name=names, position=pos)
+
+
+def test_stamped_yaw_is_read_from_the_bb_yaw_joint_in_degrees():
+    out = stamped_yaw_samples_from_joint_state(_js(['bb_pitch', 'bb_hand', 'bb_yaw'], [0.1, 0.2, 47.25]))
+    assert out == [(pytest.approx(1000.005), 47.25)]
+    assert stamped_yaw_samples_from_joint_state(_js(['bb_pitch', 'bb_hand'], [0.1, 0.2])) == []
+    assert stamped_yaw_samples_from_joint_state(_js(['bb_yaw'], [47.0], sec=0, nanosec=0)) == []
+
+
+# ── the shipped template ────────────────────────────────────────────────────
+
+def test_shipped_template_loads_with_E_gauge_and_provenance():
     t = load_marker_template(SHIPPED_TEMPLATE)
-    assert 3 <= len(t.points_mm) <= bc.BB_MARKER_COUNT
-    assert t.reference_yaw_offset_deg == pytest.approx(0.208)
+    assert len(t.points_mm) == bc.BB_MARKER_COUNT
+    assert t.pinned_yaw_offset_deg == pytest.approx(0.208)
+    assert 0.0 < t.repeatability_deg < 0.1
+    assert t.e_deg(np.array([125.0]))[0] < -0.5          # physical lags reported at large yaw
     raw = json.load(open(SHIPPED_TEMPLATE))
-    for key in ('provenance', 'gauge', 'markers'):
+    for key in ('provenance', 'gauge', 'markers', 'E', 'sigma'):
         assert key in raw
-    assert 'move' in raw['gauge']['rule'].lower()
-    # every marker is within BB's footprint
+    assert 'pinned_yaw_offset_deg' in raw['gauge']['how_to_adjust']
     r = np.hypot(t.points_mm[:, 0], t.points_mm[:, 1])
     assert np.all(r < 200.0)
 
 
+def test_template_loader_refuses_the_schema_1_file_and_malformed_ones(tmp_path):
+    p = tmp_path / 't.json'
+    p.write_text(json.dumps({'schema': 1, 'markers': [{'xyz_mm': [1, 2, 3]}] * 3}))
+    with pytest.raises(ValueError, match='schema'):
+        load_marker_template(str(p))
+    raw = json.load(open(SHIPPED_TEMPLATE))
+    del raw['E']['coef_deg']
+    p.write_text(json.dumps(raw))
+    with pytest.raises(ValueError, match='malformed'):
+        load_marker_template(str(p))
+
+
 def test_shipped_template_markers_are_unambiguous_at_the_match_tolerance():
-    """Label-free matching is unique only if no two markers are confusable:
-    every pairwise separation must exceed twice the match tolerance."""
     p = load_marker_template(SHIPPED_TEMPLATE).points_mm
     d = np.linalg.norm(p[:, None] - p[None], axis=2)
     assert d[~np.eye(len(p), dtype=bool)].min() > 2 * CONSTELLATION_MATCH_TOL_MM

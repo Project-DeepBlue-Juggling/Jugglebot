@@ -62,6 +62,7 @@ def _mocap_node(tmp_path=None, last_accepted_deg=1.78):
     if tmp_path is not None:
         state = tmp_path / 'last_accepted.json'
         state.write_text(json.dumps({'yaw_offset_deg': last_accepted_deg,
+                                     'position_mm': [-1018.99, -434.58, 1738.14],
                                      'accepted_at': 'test'}))
         node._params['bb_calibration_state_file'] = str(state)
     return node
@@ -82,8 +83,10 @@ def _fake_result():
         axis_tilt_deg=0.62, yaw_offset_rad=np.radians(1.78),
         yaw_offset_std_deg=0.02, yaw_span_deg=118.8,
         yaw_method='constellation', anchor_yaw_offset_rad=None,
-        yaw_estimate=SimpleNamespace(n_holds=1, holds=[SimpleNamespace(n_matched=3)],
-                                     stat_std_deg=0.13, template_std_deg=0.1),
+        arc_position_mm=np.array([-1019.4, -435.9, 1738.0]),
+        yaw_estimate=SimpleNamespace(lag_s=0.0832, template_residual_mm=0.3,
+                                     yaw_source='heartbeat', n_frames=1200,
+                                     summary=lambda: 'sweep estimator: (fake)'),
         marker_metrics={0: SimpleNamespace(status='ok', radius_mm=99.0,
                                            fit_residual_mm=0.2,
                                            distance_from_axis_mm=1.0,
@@ -102,7 +105,7 @@ def test_calibration_success_is_one_info_line(tmp_path):
     assert len(info) == 2, info
     assert 'started' in info[0]
     assert info[1] == ('BB calibrated: pos (-1019, -435, 1738) mm · axis tilt 0.62° '
-                       '· yaw offset +1.78° ±0.02° (1 hold(s), gate ok) · swept 119°')
+                       '· yaw offset +1.78° ±0.02° (lag 83 ms, gate ok) · swept 119°')
     assert not log.at('WARN') and not log.at('ERROR')
 
 
@@ -123,7 +126,7 @@ def test_calibration_outcast_is_named_on_the_success_line(tmp_path):
         node._on_bb_heartbeat(_hb(BallButlerStates.IDLE))
     assert log.at('INFO')[1] == (
         'BB calibrated: pos (-1019, -435, 1738) mm · axis tilt 0.62° '
-        '· yaw offset +1.78° ±0.02° (1 hold(s), gate ok) · swept 119° '
+        '· yaw offset +1.78° ±0.02° (lag 83 ms, gate ok) · swept 119° '
         '· outcast Marker 2 (4.98 mm off axis)')
     assert log.at('WARN') == ['Marker 2: outcast — circle centre 4.98 mm from '
                               'the axis the other 6 markers agree on']

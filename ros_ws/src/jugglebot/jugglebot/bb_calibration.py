@@ -17,11 +17,13 @@ trace circular arcs as the yaw motor sweeps.  After the sweep completes, this mo
 3. Intersects the axis with the horizontal plane at the average Z height of the
    CO-PLANAR markers only (:data:`BB_PLANE_MARKER_INDICES`, QTM 3–7), offset by
    the pitch-axis vertical offset, to get the BB global position.
-4. Reads yaw_offset_rad from the ORIENTATION OF THE WHOLE CONSTELLATION
-   against a stored BB-local marker template, in the stationary hold(s) of
-   the window, minus BB's reported yaw — no axis point involved
-   (:func:`estimate_constellation_yaw_offset`, since 2026-10-09). The retired
-   estimator — one anchor marker's angle about the fitted axis point
+4. Reads yaw_offset_rad — and, since 2026-10-09, the position — from the
+   WHOLE SWEEP: every mocap frame is fitted as a rigid body against a stored
+   BB body template, the reported yaw's lag behind the frames is fitted per
+   sweep, and a fixed yaw-dependent term E(y) is removed
+   (:func:`estimate_sweep_yaw_offset`). The arc fit of steps 1–3 stays as the
+   tilt, the sweep gates and the position cross-check. The retired estimator
+   — one anchor marker's angle about the fitted axis point
    (:data:`BB_YAW_ANCHOR_INDEX`, :func:`calculate_yaw_offset`) — still runs
    when no template is given (sweep-fit fixtures) and as a logged diagnostic.
 
@@ -590,207 +592,193 @@ def calculate_yaw_offset(
 
 
 # ---------------------------------------------------------------------------
-#  Yaw offset from the whole marker constellation (2026-10-09)
+#  Yaw offset from the whole sweep: rigid constellation + fitted latency
+#  (2026-10-09, second design)
 # ---------------------------------------------------------------------------
 #
-# WHY THIS REPLACED THE ANCHOR. ``calculate_yaw_offset`` reads ONE marker's
-# angle about the axis point the sweep fitted. That marker sits 117.6 mm from
-# the axis, so the offset moves 0.487° per mm of axis-point error, and the
-# sweep's axis point is good to ~1–2 mm at best (the consensus gate above
-# tolerates 3 mm). Two calibrations on 2026-10-09 with BB untouched stored
-# 0.208° and 0.681°, and every throw of the second session was misaimed by
-# −8 mm at 1 m (investigation:
+# WHY NOT THE ANCHOR. ``calculate_yaw_offset`` reads ONE marker's angle about
+# the axis point the sweep fitted. That marker sits 117.6 mm from the axis, so
+# the offset moves 0.487° per mm of axis-point error, and the sweep's axis
+# point is good to ~1–2 mm at best. Two calibrations of an untouched BB stored
+# 0.208° and 0.681° on 2026-10-09 (investigation:
 # ~/bb_calibration_sessions/yaw_offset_investigation_20261009/REPORT.md).
 #
-# The estimator below needs no axis point. In each stationary hold it finds
-# the yaw-stage markers by GEOMETRY (not by QTM label: labels were reshuffled
-# on 2026-09-27 and QTM swaps them under occlusion), fits the rotation about
-# world z that carries a stored BB-local template onto them (2D Procrustes on
-# x/y, z used only to tell markers apart), subtracts BB's reported yaw and
-# averages over holds. Numbers (old vs new per sweep, the gauge pin, the
-# cross-session check): logbook ``2026-10-09-bb-constellation-yaw-offset``.
+# WHAT THIS DOES. Every mocap frame of the calibration window is fitted, as a
+# rigid body, against a stored BB body template (all seven yaw-stage markers,
+# matched by geometry, not by QTM label), so each frame gives BB's world pose:
+# the yaw θ(t) of the template's x axis and the world position of the
+# template origin, which IS the yaw axis point. The reported yaw y(t) (the
+# heartbeat, unstamped, or a stamped 100 Hz stream when one exists) lags the
+# frames by a per-session constant τ (80–85 ms in the 7-sweep bag, 94–97 ms in
+# session A; in session B ~75 ms, with 66–83 % of the samples one 0.1 s
+# republish period older — the earlier reading of B as "150→174 ms drifting"
+# was that mixture; see :func:`fit_yaw_latency`). Three free-running 10 Hz
+# stages sit between the encoder and the heartbeat's receive time. τ is FITTED per
+# sweep, never assumed: over the moving samples (|dy/dt| > 5°/s), the τ that
+# minimises the scatter of θ(t_y − τ) − y − E(y) about its mean. A lag error
+# shows as ±ω·δτ with opposite signs on the outbound and return legs, so the
+# minimum is sharp. The offset is the mean at the best τ.
 #
-# WHICH MARKERS. The template holds the four CO-PLANAR yaw-stage markers only.
-# The two off-plane markers (QTM 1 and 2, ~28 mm lower) distort at the parked
-# yaw-0 pose — the pose the sweep's pause is at — by up to ~1.5 mm, and pulled
-# single-sweep offsets about by ±0.45°; QTM 1 is also the marker whose parked
-# readings crept ~3 mm on 2026-10-05/06 (MIN_AGREEING_MARKERS above).
+# E(y), physical minus reported yaw beyond the reported zero (−0.09° at 10°,
+# −0.44° at 70°, −1.57° at 125°; fitted once on the 7-sweep bag and stored in
+# the template), is held FIXED inside the estimator so that the offset does
+# not depend on which yaw range a window covers. It is an estimator term
+# only: moving and stationary relations differ by a few tenths of a degree,
+# so E is NOT applied to aim.
 #
-# WHY 2D ABOUT WORLD z, NOT A 3D FIT IN THE AXIS FRAME. A 3D fit needs the
-# axis direction, i.e. the sweep's tilt estimate, which is itself unstable
-# (0.76° vs 1.15° stored for the same mounting; 0.4° from whole-session
-# fits). Ignoring a tilt τ biases the 2D rotation by at most
-# τ·|Σ(hᵢ−h̄)pᵢ|/Σ|pᵢ|² (markers at different heights shift differently),
-# which for the shipped template and τ ≤ 1.2° is small — the template file's
-# ``provenance.tilt_coupling_deg_per_deg`` holds the factor.
+# The stationary pause is not used for yaw: on the 7-sweep bag the parked
+# pose reconstructed non-rigidly (up to 2.5 mm), and one pose cannot beat the
+# ~0.1–0.13° pose-to-pose scatter anyway. Per-sweep repeatability of this
+# estimator on those 7 sweeps is in the template's ``sigma`` block and the
+# logbook entry ``2026-10-09-bb-constellation-yaw-offset``.
+#
+# GAUGE. The raw offset φ_raw is the angle of the template's x axis minus the
+# reported yaw. The published offset is
+#     φ_raw − gauge.raw_offset_at_pin_deg + gauge.pinned_yaw_offset_deg
+# where ``raw_offset_at_pin_deg`` is what this estimator reads on session A
+# (the frame ``throw_affine_correction.json`` was fitted in) and
+# ``pinned_yaw_offset_deg`` is A's stored 0.208°. A landing-based correction δ
+# is applied by editing ``pinned_yaw_offset_deg`` alone (0.208 → 0.208 + δ).
 
-#: Fewest template markers a hold must match, or the hold is not used. Three
-#: is the fewest for which a rigid 2D fit has a residual at all (two points
-#: always fit exactly, so a mismatch could not be seen).
+#: Fewest template markers a frame must match to give a pose. Three is the
+#: fewest for which a rigid fit has a residual at all.
 CONSTELLATION_MIN_MATCHED = 3
 
-#: A hold point within this distance (mm, 3D) of a transformed template
-#: marker is that marker. Hold medians scatter 0.2–1.0 mm about the template
-#: (session A, 611 holds) and the closest pair of template markers is ~59 mm
-#: apart (the off-plane QTM 1/2, ~30 mm from their neighbours, are not in the
-#: template and so are just spurious points), so a stray point cannot steal a
-#: match unless it sits on a marker's position.
+#: A frame point within this distance (mm, 3D) of a posed template marker IS
+#: that marker. The closest template markers are ~30 mm apart (the off-plane
+#: QTM 1/2 to their neighbours) and frame-to-frame motion at 90°/s and 200 Hz
+#: is ~1.2 mm at the outer markers, so a tracked pose from the previous frame
+#: assigns correctly with margin.
 CONSTELLATION_MATCH_TOL_MM = 3.0
 
-#: Ceiling on a hold's template-fit RMS residual (mm, x/y). A hold above it
-#: is not silently dropped: the whole estimate FAILS, because a residual this
-#: large means the template no longer describes the markers (a marker moved
-#: on BB, or a wrong point set was matched). Set above every hold of the
-#: three 2026-10-09 bags with the shipped template — max 0.73 mm over 489
-#: holds of session A, 0.80 mm over 204 of B, 0.42 mm over the 7 sweep
-#: pauses — and low enough that one marker knocked ~2 mm trips it.
+#: Height-difference tolerance (mm) of the label-free initial match only. The
+#: proposal stage rotates about world z, but the yaw axis is tilted ~1–1.5°
+#: from z, which changes a pair's height difference by up to sep·sin(tilt)
+#: (≈ 3 mm at 120 mm); the 3D refit that follows is exact.
+CONSTELLATION_INIT_DZ_TOL_MM = 6.0
+
+#: A frame whose rigid-fit RMS exceeds this (mm) gives no pose and is counted
+#: as rejected (a reflection, a swapped point). On the 2026-10-09 bags
+#: accepted frames have a median RMS of ~0.2–0.4 mm.
+CONSTELLATION_FRAME_MAX_RMS_MM = 1.5
+
+#: Fewest posed frames for an estimate (a 0→120→0 sweep at 200 Hz gives
+#: ~1700; 200 is ~1 s of motion and far below any real sweep).
+CONSTELLATION_MIN_FRAMES = 200
+
+#: Template residual (mm): the largest mean error, over the window, of a
+#: marker-pair separation against the template's. A marker that moved on BB
+#: changes its separations by up to its displacement; per-frame noise and the
+#: pose-dependent reconstruction error (which moves the per-marker residuals
+#: by ~0.5–0.8 mm on the 7-sweep bag) largely average out of a distance. Above CONSTELLATION_MAX_RESIDUAL_MM the estimate FAILS (the template no
+#: longer describes BB); above GATE_MAX_RESIDUAL_MM a calibration with a
+#: reference is refused by the gate.
 CONSTELLATION_MAX_RESIDUAL_MM = 1.0
 
-#: Stationary-hold detection on BB's reported yaw series (heartbeat, 10 Hz):
-#: a run of samples within ±HOLD_YAW_TOL_DEG of its first sample, at least
-#: HOLD_MIN_S long, with marker frames taken from HOLD_TRIM_START_S after its
-#: first sample to HOLD_TRIM_END_S before its last. The encoder dithers by
-#: ±0.05°; the sweep's 0° pause settles by ~0.6° over its first ~0.6 s
-#: (2026-10-09 bag), which this excludes. Both trims exceed the heartbeat's
-#: lag behind the mocap frames, measured ~80 ms on the same bag (the moving
-#: sweep reads ±7° at ~90°/s): the last stationary heartbeat describes BB
-#: ~80 ms earlier, so frames up to it could already contain the next move.
-HOLD_YAW_TOL_DEG = 0.15
-HOLD_MIN_S = 0.8
-HOLD_TRIM_START_S = 0.15
-HOLD_TRIM_END_S = 0.15
-#: Heartbeat gap (s) that breaks a hold: a missing heartbeat is not evidence
-#: BB stayed still.
-HOLD_MAX_GAP_S = 0.3
-#: Consecutive holds closer than this in yaw (deg), with no heartbeat gap
-#: between them, are ONE visit to a pose: the yaw crept past
-#: HOLD_YAW_TOL_DEG while settling (2026-10-09 bag, sweep 6: 0.4° over 2 s).
-#: They are averaged into one draw, because the uncertainty treats holds as
-#: independent draws of BB's pointing and two halves of one pause are not.
-VISIT_MAX_YAW_STEP_DEG = 1.0
-#: A hold point must be present in this fraction of the hold's frames.
-HOLD_MIN_PRESENCE = 0.6
-#: Clustering radius (mm) when collapsing a hold's frames to marker medians.
-HOLD_CLUSTER_RADIUS_MM = 3.0
+#: Moving samples: |dy/dt| above this (deg/s) on the reported-yaw series.
+SWEEP_MIN_SPEED_DEG_S = 5.0
+#: Fewest moving yaw samples (a 0→120→0 heartbeat sweep has ~28; a 100 Hz
+#: stamped stream ~280).
+SWEEP_MIN_MOVING_SAMPLES = 15
+#: Latency search grid (s) and step. Reaches 0.30 s because session B's lag
+#: drifted to 174 ms; reaches below zero so a stamped source (lag ≈ 0) has its
+#: minimum inside the grid. A minimum within LAG_EDGE_STEPS of either end
+#: FAILS: the true lag may lie outside the range.
+LAG_GRID_S = (-0.05, 0.30)
+LAG_STEP_S = 0.001
+LAG_EDGE_STEPS = 3
+#: A yaw sample is used only if the posed frames around t_y − τ, over the
+#: whole lag grid, have no gap longer than this (s): θ is not interpolated
+#: across a lost track (occlusion, rejected frames).
+LAG_MAX_FRAME_GAP_S = 0.05
+#: The heartbeat's republish period (s): a heartbeat sample is either fresh
+#: (age τ) or one period stale (τ + this) — see :func:`fit_yaw_latency`.
+HEARTBEAT_STALE_PERIOD_S = 0.1
+#: Ceiling on the RMS (deg) of θ(t_y − τ) − y − E(y) − φ at the best τ. The
+#: 7-sweep bag gives 0.20–0.28°, sessions A/B 0.31–0.45° (0.64° on a sweep
+#: with E left out); a scale or unit
+#: mismatch in the yaw source, or wrong correspondences, give degrees.
+LAG_MAX_RESIDUAL_DEG = 1.0
 
-#: Floor (deg) on the per-hold scatter used for the uncertainty when there are
-#: too few holds to measure it (fewer than :data:`HOLD_SCATTER_MIN_N`). Measured
-#: 2026-10-09 over 611 (A) and 227 (B) holds: 0.12–0.15° — BB's real pointing
-#: relative to its reported yaw varies by this much from one hold to the next,
-#: so a single hold cannot be better than this however many frames it has.
-HOLD_SCATTER_FLOOR_DEG = 0.13
-HOLD_SCATTER_MIN_N = 5
-
-#: Consistency gate (see :func:`check_yaw_offset_consistency`): a new offset
-#: more than max(GATE_N_SIGMA·σ, GATE_MIN_DEG) from the last accepted one is
-#: refused unless the operator declares that BB moved.
+#: Consistency gate (see :func:`check_calibration_consistency`).
 GATE_N_SIGMA = 3.0
 GATE_MIN_DEG = 0.15
+GATE_MAX_AXIS_SHIFT_MM = 1.5
+GATE_MAX_RESIDUAL_MM = 0.5
 
 
 @dataclass
 class MarkerTemplate:
-    """BB-local yaw-stage marker positions (mm) and the gauge they carry.
+    """BB body template: marker positions in BB's body frame, plus the
+    estimator constants that travel with them.
 
-    ``points_mm`` (K, 3): x/y in BB's local frame (x = BB yaw 0, rotation
-    about world z), z = world height. The rotation of this template IS the
-    yaw-offset gauge: rotating it by δ shifts every estimate by −δ.
-    ``reference_yaw_offset_deg`` / ``reference_std_deg`` are what the gauge was
-    pinned to (the consistency gate's reference when no calibration has been
-    accepted yet).
+    Body frame: origin on the yaw axis (at the calibrated BB height), z along
+    the yaw axis, x toward QTM 4 (the old anchor marker), mm.
+    ``e_coef_deg`` — E(y) = e1·u + e2·u² + e3·u³, u = max(y, 0)/100, deg;
+    applied only to yaw within ``e_valid_yaw_deg``. ``raw_offset_at_pin_deg``
+    and ``pinned_yaw_offset_deg`` set the gauge (module comment above).
+    ``repeatability_deg`` is the out-of-sample per-sweep scatter, combined
+    with each sweep's formal error into the published σ.
     """
     points_mm: np.ndarray
     names: tuple = ()
-    reference_yaw_offset_deg: Optional[float] = None
-    reference_std_deg: Optional[float] = None
+    e_coef_deg: tuple = (0.0, 0.0, 0.0)
+    e_valid_yaw_deg: tuple = (-5.0, 130.0)
+    raw_offset_at_pin_deg: float = 0.0
+    pinned_yaw_offset_deg: float = 0.0
+    pin_uncertainty_deg: Optional[float] = None
+    repeatability_deg: float = 0.0
     source: str = ''
+
+    def e_deg(self, yaw_deg):
+        """E(y) in degrees (array in, array out)."""
+        u = np.maximum(np.asarray(yaw_deg, dtype=float), 0.0) / 100.0
+        e1, e2, e3 = self.e_coef_deg
+        return e1 * u + e2 * u ** 2 + e3 * u ** 3
+
+    @property
+    def gauge_shift_deg(self) -> float:
+        """Added to the raw offset to put it in the pinned frame."""
+        return self.pinned_yaw_offset_deg - self.raw_offset_at_pin_deg
 
 
 def load_marker_template(path: str) -> MarkerTemplate:
-    """Load ``resources/bb_marker_template.json``. Raises ValueError if malformed."""
+    """Load ``resources/bb_marker_template.json`` (schema 2). Raises ValueError
+    if malformed — including a schema-1 (pause-estimator) file."""
     import json
     with open(path, 'r') as f:
         data = json.load(f)
+    if data.get('schema') != 2:
+        raise ValueError(f'BB marker template {path}: schema {data.get("schema")!r}, '
+                         'need 2 (body frame + E(y) + gauge)')
     try:
         markers = data['markers']
         pts = np.array([m['xyz_mm'] for m in markers], dtype=float)
         names = tuple(str(m.get('id', i)) for i, m in enumerate(markers))
-    except (KeyError, TypeError) as e:
-        raise ValueError(f'malformed BB marker template {path}: {e}')
+        ey = data['E']
+        coef = tuple(float(v) for v in ey['coef_deg'])
+        valid = tuple(float(v) for v in ey['valid_yaw_deg'])
+        gauge = data['gauge']
+        raw_pin = float(gauge['raw_offset_at_pin_deg'])
+        pinned = float(gauge['pinned_yaw_offset_deg'])
+        pin_sd = gauge.get('pin_uncertainty_deg')
+        rep = float(data['sigma']['repeatability_deg'])
+    except (KeyError, TypeError, ValueError) as e:
+        raise ValueError(f'malformed BB marker template {path}: {e!r}')
     if pts.ndim != 2 or pts.shape[1] != 3 or pts.shape[0] < CONSTELLATION_MIN_MATCHED:
         raise ValueError(f'BB marker template {path} needs >= '
                          f'{CONSTELLATION_MIN_MATCHED} markers of xyz, got {pts.shape}')
-    if not np.all(np.isfinite(pts)):
-        raise ValueError(f'BB marker template {path} has non-finite coordinates')
-    gauge = data.get('gauge', {})
-    ref = gauge.get('pinned_yaw_offset_deg')
-    ref_sd = gauge.get('pinned_std_deg')
+    if len(coef) != 3 or len(valid) != 2 or valid[0] >= valid[1]:
+        raise ValueError(f'BB marker template {path}: E needs 3 coefficients and a '
+                         'valid yaw range lo < hi')
+    if not (np.all(np.isfinite(pts)) and np.all(np.isfinite(coef))
+            and math.isfinite(raw_pin) and math.isfinite(pinned) and math.isfinite(rep)):
+        raise ValueError(f'BB marker template {path} has non-finite values')
     return MarkerTemplate(
-        points_mm=pts, names=names,
-        reference_yaw_offset_deg=None if ref is None else float(ref),
-        reference_std_deg=None if ref_sd is None else float(ref_sd),
-        source=path)
-
-
-def find_stationary_holds(yaw_samples, yaw_tol_deg: float = HOLD_YAW_TOL_DEG,
-                          min_hold_s: float = HOLD_MIN_S,
-                          max_gap_s: float = HOLD_MAX_GAP_S):
-    """Stationary holds in a timestamped yaw series.
-
-    ``yaw_samples``: sequence of (t_s, yaw_deg), time-ordered. Returns a list of
-    (t_first, t_last, yaw_deg_mean) for each maximal run of samples within
-    ±``yaw_tol_deg`` of the run's first sample (circularly), with no gap above
-    ``max_gap_s``, lasting at least ``min_hold_s``. Deterministic, greedy, left
-    to right.
-    """
-    s = np.asarray(yaw_samples, dtype=float).reshape(-1, 2)
-    holds = []
-    n = len(s)
-    i = 0
-    while i < n:
-        j = i
-        while (j + 1 < n
-               and abs(math.degrees(wrap_pi(math.radians(s[j + 1, 1] - s[i, 1])))) <= yaw_tol_deg
-               and s[j + 1, 0] - s[j, 0] <= max_gap_s):
-            j += 1
-        if s[j, 0] - s[i, 0] >= min_hold_s:
-            d = np.radians(s[i:j + 1, 1] - s[i, 1])
-            mean = s[i, 1] + math.degrees(math.atan2(np.sin(d).mean(), np.cos(d).mean()))
-            holds.append((float(s[i, 0]), float(s[j, 0]), float(mean)))
-        i = j + 1
-    return holds
-
-
-def cluster_hold_points(frames, min_presence: float = HOLD_MIN_PRESENCE,
-                        radius_mm: float = HOLD_CLUSTER_RADIUS_MM) -> np.ndarray:
-    """Collapse a stationary hold's frames to one median point per marker.
-
-    ``frames``: list of (n_i, 3) arrays (any marker set per frame, no labels).
-    A cluster is kept if it has points in at least ``min_presence`` of the
-    frames; a marker that flickers in and out, or a reflection, is dropped.
-    Returns (M, 3). Deterministic: seeds are taken in frame order.
-    """
-    frames = [np.asarray(f, dtype=float).reshape(-1, 3) for f in frames]
-    frames = [f[np.all(np.isfinite(f), axis=1)] for f in frames]
-    nfr = len(frames)
-    if nfr == 0:
-        return np.empty((0, 3))
-    fid = np.concatenate([np.full(len(f), k) for k, f in enumerate(frames)]) if nfr else np.empty(0)
-    pts = np.concatenate(frames) if nfr else np.empty((0, 3))
-    used = np.zeros(len(pts), bool)
-    out = []
-    for k in range(len(pts)):
-        if used[k]:
-            continue
-        c = pts[k]
-        for _ in range(3):
-            m = (~used) & (np.linalg.norm(pts - c, axis=1) < radius_mm)
-            c = np.median(pts[m], axis=0)
-        m = (~used) & (np.linalg.norm(pts - c, axis=1) < radius_mm)
-        used |= m
-        if len(np.unique(fid[m])) >= min_presence * nfr:
-            out.append(c)
-    return np.array(out).reshape(-1, 3)
+        points_mm=pts, names=names, e_coef_deg=coef, e_valid_yaw_deg=valid,
+        raw_offset_at_pin_deg=raw_pin, pinned_yaw_offset_deg=pinned,
+        pin_uncertainty_deg=None if pin_sd is None else float(pin_sd),
+        repeatability_deg=rep, source=path)
 
 
 def _rot2(theta: float) -> np.ndarray:
@@ -815,9 +803,24 @@ def procrustes_rotation_2d(template_xy: np.ndarray, observed_xy: np.ndarray):
     return theta, t, float(math.sqrt(np.mean(np.sum(res ** 2, axis=1))))
 
 
+def kabsch(template: np.ndarray, observed: np.ndarray):
+    """Proper rotation R and translation t minimising Σ|R·aᵢ + t − bᵢ|² (rows
+    are points). Returns (R, t, rms_mm)."""
+    a = np.asarray(template, dtype=float)
+    b = np.asarray(observed, dtype=float)
+    ac, bc = a.mean(axis=0), b.mean(axis=0)
+    H = (a - ac).T @ (b - bc)
+    U, _, Vt = np.linalg.svd(H)
+    d = 1.0 if np.linalg.det(Vt.T @ U.T) >= 0 else -1.0
+    R = Vt.T @ np.diag([1.0, 1.0, d]) @ U.T
+    t = bc - R @ ac
+    res = a @ R.T + t - b
+    return R, t, float(math.sqrt(np.mean(np.sum(res ** 2, axis=1))))
+
+
 @dataclass
 class TemplateMatch:
-    """A label-free match of hold points to the template."""
+    """A label-free match of points to the template (rotation about z)."""
     theta_rad: float            # rotation template → world, about z
     pairs: list                 # [(template_index, point_index), ...]
     rms_mm: float               # x/y RMS residual of the matched pairs
@@ -842,18 +845,20 @@ def _assign(template_w: np.ndarray, points: np.ndarray, tol: float):
 
 
 def match_template(points: np.ndarray, template: np.ndarray,
-                   tol_mm: float = CONSTELLATION_MATCH_TOL_MM) -> Optional[TemplateMatch]:
-    """Find which hold points are which template markers, by geometry alone.
+                   tol_mm: float = CONSTELLATION_MATCH_TOL_MM,
+                   dz_tol_mm: Optional[float] = None) -> Optional[TemplateMatch]:
+    """Find which points are which template markers, by geometry alone.
 
     Every (point pair, template pair) whose 3D separations agree within
-    ``tol_mm`` (and whose height difference agrees: the yaw stage only turns
-    about ~vertical, so Δz is invariant) proposes a rotation about z plus a
-    translation; the proposal matching the most markers (then the smallest
-    residual) wins and is refined by Procrustes on its matches. Labels play no
-    part, so a relabelled, missing or spurious marker changes only which
-    points are used. Returns None when fewer than
-    :data:`CONSTELLATION_MIN_MATCHED` markers match.
+    ``tol_mm`` and whose height differences agree within ``dz_tol_mm``
+    (default ``tol_mm``; the yaw stage turns about a near-vertical axis, so
+    Δz is near-invariant) proposes a rotation about z plus a translation; the
+    proposal matching the most markers (then the smallest residual) wins and
+    is refined by Procrustes on its matches. Labels play no part, so a
+    relabelled, missing or spurious marker changes only which points are
+    used. Returns None when fewer than :data:`CONSTELLATION_MIN_MATCHED` match.
     """
+    dz_tol = tol_mm if dz_tol_mm is None else dz_tol_mm
     P = np.asarray(points, dtype=float).reshape(-1, 3)
     T = np.asarray(template, dtype=float).reshape(-1, 3)
     if len(P) < CONSTELLATION_MIN_MATCHED or len(T) < CONSTELLATION_MIN_MATCHED:
@@ -870,7 +875,7 @@ def match_template(points: np.ndarray, template: np.ndarray,
                 for b in range(len(T)):
                     if a == b or abs(dP[i, j] - dT[a, b]) > tol_mm:
                         continue
-                    if abs((P[j, 2] - P[i, 2]) - (T[b, 2] - T[a, 2])) > tol_mm:
+                    if abs((P[j, 2] - P[i, 2]) - (T[b, 2] - T[a, 2])) > dz_tol:
                         continue
                     vt = T[b, :2] - T[a, :2]
                     th = math.atan2(vt[0] * vo[1] - vt[1] * vo[0], vt[0] * vo[0] + vt[1] * vo[1])
@@ -878,7 +883,7 @@ def match_template(points: np.ndarray, template: np.ndarray,
                     txy = P[i, :2] - R @ T[a, :2]
                     tz = P[i, 2] - T[a, 2]
                     Tw = np.c_[T[:, :2] @ R.T + txy, T[:, 2] + tz]
-                    pairs = _assign(Tw, P, tol_mm)
+                    pairs = _assign(Tw, P, max(tol_mm, dz_tol))
                     if len(pairs) < CONSTELLATION_MIN_MATCHED:
                         continue
                     ti = [p[0] for p in pairs]
@@ -897,7 +902,7 @@ def match_template(points: np.ndarray, template: np.ndarray,
         th, txy, rms = procrustes_rotation_2d(T[ti, :2], P[pi, :2])
         tz = float(np.mean(P[pi, 2] - T[ti, 2]))
         Tw = np.c_[T[:, :2] @ _rot2(th).T + txy, T[:, 2] + tz]
-        new_pairs = _assign(Tw, P, tol_mm)
+        new_pairs = _assign(Tw, P, max(tol_mm, dz_tol))
         if len(new_pairs) < CONSTELLATION_MIN_MATCHED or new_pairs == pairs:
             break
         pairs = new_pairs
@@ -910,150 +915,399 @@ def match_template(points: np.ndarray, template: np.ndarray,
 
 
 @dataclass
-class HoldEstimate:
-    """One stationary hold's contribution to the yaw offset."""
-    t_start: float
-    t_end: float
-    yaw_deg: float              # BB's reported yaw (mean over the hold)
-    offset_rad: float           # θ(template → world) − reported yaw
-    n_matched: int
-    rms_mm: float
-    lever_mm: float
-    n_frames: int
-    visit: int = 0              # holds sharing a visit are one draw (VISIT_MAX_YAW_STEP_DEG)
+class ConstellationTrack:
+    """Per-frame rigid poses of the template over a window (posed frames only)."""
+    t: np.ndarray               # (n,) frame stamps, s
+    R: np.ndarray               # (n, 3, 3) body → world rotation
+    origin: np.ndarray          # (n, 3) world position of the body origin (the axis point)
+    rms_mm: np.ndarray          # (n,) per-frame fit RMS
+    n_matched: np.ndarray       # (n,) markers matched
+    points: np.ndarray          # (n, K, 3) matched points in template order (nan: unmatched)
+    template_mm: np.ndarray     # (K, 3) the template the track was fitted with
+    n_frames_in: int = 0
+    n_rejected: int = 0         # frames with < 3 matched or RMS > the frame ceiling
+
+    @property
+    def theta_deg(self) -> np.ndarray:
+        """Unwrapped world yaw (deg) of the body x axis."""
+        return np.degrees(np.unwrap(np.arctan2(self.R[:, 1, 0], self.R[:, 0, 0])))
+
+    def pair_residual_mm(self, mask=None) -> np.ndarray:
+        """(K, K) mean observed − template separation per marker pair over the
+        frames in ``mask`` (default all); nan where a pair was never seen."""
+        P = self.points if mask is None else self.points[np.asarray(mask, bool)]
+        T = self.template_mm
+        K = len(T)
+        out = np.full((K, K), np.nan)
+        dT = np.linalg.norm(T[:, None] - T[None], axis=2)
+        for a in range(K):
+            for b in range(a + 1, K):
+                d = np.linalg.norm(P[:, a] - P[:, b], axis=1)
+                d = d[np.isfinite(d)]
+                if len(d):
+                    out[a, b] = out[b, a] = float(d.mean()) - dT[a, b]
+        return out
+
+    def template_residual_mm(self, mask=None) -> float:
+        """Largest |mean separation error| over marker pairs: a marker that
+        moved on BB changes its separations by up to its displacement, while
+        frame noise averages out over the window."""
+        r = np.abs(self.pair_residual_mm(mask))
+        return float(np.nanmax(r)) if np.any(np.isfinite(r)) else float('nan')
+
+
+def track_constellation(marker_frames, template,
+                        tol_mm: float = CONSTELLATION_MATCH_TOL_MM,
+                        max_frame_rms_mm: float = CONSTELLATION_FRAME_MAX_RMS_MM,
+                        max_track_gap_s: float = 0.05) -> ConstellationTrack:
+    """Fit the template to every frame as a rigid body, label-free.
+
+    ``marker_frames``: sequence of (t_s, (n, 3) points), any order. The first
+    frame (and any after a lost track or a gap > ``max_track_gap_s``) is
+    matched from scratch (:func:`match_template`); later frames reuse the
+    previous pose to assign points to markers within ``tol_mm`` and refit in
+    3D (:func:`kabsch`). Deterministic.
+    """
+    T = template.points_mm if isinstance(template, MarkerTemplate) else np.asarray(template, float)
+    K = len(T)
+    frames = sorted(((float(t), np.asarray(f, dtype=float).reshape(-1, 3)) for t, f in marker_frames),
+                    key=lambda r: r[0])
+    ts, Rs, os_, rms_l, nm_l = [], [], [], [], []
+    pts_l = []
+    prev = None          # (t, R, origin)
+    rejected = 0
+    for t, P in frames:
+        P = P[np.all(np.isfinite(P), axis=1)]
+        pairs = None
+        if prev is not None and t - prev[0] <= max_track_gap_s and len(P) >= CONSTELLATION_MIN_MATCHED:
+            pairs = _assign(T @ prev[1].T + prev[2], P, tol_mm)
+            if len(pairs) < CONSTELLATION_MIN_MATCHED:
+                pairs = None
+        if pairs is None:
+            m = match_template(P, T, tol_mm, CONSTELLATION_INIT_DZ_TOL_MM)
+            pairs = None if m is None else m.pairs
+        fit = None
+        if pairs is not None:
+            for _ in range(2):   # fit, re-assign with the 3D pose, refit
+                ti = [p[0] for p in pairs]
+                pi = [p[1] for p in pairs]
+                R, o, rms = kabsch(T[ti], P[pi])
+                fit = (R, o, rms, pairs)
+                new = _assign(T @ R.T + o, P, tol_mm)
+                if len(new) < CONSTELLATION_MIN_MATCHED or new == pairs:
+                    break
+                pairs = new
+        if fit is None or fit[2] > max_frame_rms_mm:
+            rejected += 1
+            prev = None
+            continue
+        R, o, rms, pairs = fit
+        ti = [p[0] for p in pairs]
+        pi = [p[1] for p in pairs]
+        Pm = np.full((K, 3), np.nan)
+        Pm[ti] = P[pi]
+        pts_l.append(Pm)
+        ts.append(t)
+        Rs.append(R)
+        os_.append(o)
+        rms_l.append(rms)
+        nm_l.append(len(pairs))
+        prev = (t, R, o)
+    return ConstellationTrack(
+        t=np.array(ts), R=np.array(Rs).reshape(-1, 3, 3), origin=np.array(os_).reshape(-1, 3),
+        rms_mm=np.array(rms_l), n_matched=np.array(nm_l, dtype=int),
+        points=np.array(pts_l).reshape(-1, K, 3), template_mm=np.array(T, dtype=float), n_frames_in=len(frames), n_rejected=rejected)
 
 
 @dataclass
-class ConstellationYawEstimate:
-    """Yaw offset from the whole constellation, with a real uncertainty."""
-    yaw_offset_rad: float
-    yaw_offset_std_deg: float   # total: hold statistics ⊕ template-fit term
-    stat_std_deg: float         # hold-to-hold SD/√N (floored for small N)
-    template_std_deg: float     # template-fit residual term (does not average down)
-    hold_sd_deg: float          # measured SD of the per-visit offsets (0 if N == 1)
-    holds: list                 # [HoldEstimate]
-    n_holds_rejected: int = 0   # holds with too few matched markers
-    visit_offsets_rad: list = field(default_factory=list)  # one per visit: the N averaged
-
-    @property
-    def n_holds(self) -> int:
-        """N of the σ: independent pose visits (see VISIT_MAX_YAW_STEP_DEG)."""
-        return len(self.visit_offsets_rad)
+class LatencyFit:
+    """Best lag and offset of θ(t_y − τ) − y − E(y) over the moving samples."""
+    lag_s: float
+    phi_raw_deg: float          # mean at the best lag (template gauge, before the pin)
+    residual_rms_deg: float
+    formal_se_deg: float        # SD/√n_eff, n_eff from the lag-1 autocorrelation
+    n_moving: int
+    at_edge: bool
+    lag_grid_s: tuple = LAG_GRID_S
+    #: Fraction of samples read one ``stale_period_s`` older than ``lag_s``
+    #: (heartbeat only; 0 for a stamped source).
+    stale_fraction: float = 0.0
+    stale_period_s: float = 0.0
 
 
-def estimate_constellation_yaw_offset(
+def fit_yaw_latency(t_frames, theta_deg, t_yaw, yaw_deg, e_deg_fn=None,
+                    e_valid_yaw_deg=(-1e9, 1e9),
+                    lag_grid_s: tuple = LAG_GRID_S, lag_step_s: float = LAG_STEP_S,
+                    min_speed_deg_s: float = SWEEP_MIN_SPEED_DEG_S,
+                    max_frame_gap_s: float = LAG_MAX_FRAME_GAP_S,
+                    stale_period_s: Optional[float] = None) -> Optional[LatencyFit]:
+    """Grid-fit the lag τ between the frames' yaw θ(t) and the reported yaw y(t_y).
+
+    Model: θ(t_y − τ) = y + E(y) + φ on samples where BB is turning
+    (|dy/dt| > ``min_speed_deg_s``), with y inside ``e_valid_yaw_deg`` and
+    t_y − τ inside the frames' span, with no gap between posed frames longer
+    than ``max_frame_gap_s``, for every τ of the grid (so the sample set does
+    not change with τ, and θ is never interpolated across a lost track). For each τ, φ is the mean and the cost is the
+    scatter about it; the minimum is refined by a parabola through its
+    neighbours. Returns None when fewer than two samples qualify.
+
+    ``stale_period_s`` (the heartbeat only): each sample may instead be one
+    period older than τ, whichever reads closer. The heartbeat's yaw passes a
+    0.1 s host timer that republishes the latest value, so when that timer
+    and the upstream 10 Hz stage tick nearly together a sample is either fresh
+    or exactly one period stale — session B (2026-10-09 03:13) has ages of
+    ~75 ms and ~175 ms (17–34 % / 66–83 % per 10-minute window), and a
+    single-lag fit there scatters 5° RMS.
+    A stamped source has no such stage, so it is fitted with one lag.
+    """
+    tf = np.asarray(t_frames, dtype=float)
+    th = np.asarray(theta_deg, dtype=float)
+    ty = np.asarray(t_yaw, dtype=float)
+    y = np.asarray(yaw_deg, dtype=float)
+    o = np.argsort(ty, kind='stable')
+    ty, y = ty[o], np.degrees(np.unwrap(np.radians(y[o])))
+    if len(ty) < 3 or len(tf) < 2:
+        return None
+    w = np.gradient(y, ty)
+    lo, hi = lag_grid_s
+    P = float(stale_period_s) if stale_period_s else 0.0
+    hi_eff = hi + P                      # oldest age any sample may be read at
+    sel = ((np.abs(w) > min_speed_deg_s) & (y >= e_valid_yaw_deg[0]) & (y <= e_valid_yaw_deg[1])
+           & (ty - hi_eff >= tf[0]) & (ty - lo <= tf[-1]))
+    if len(tf) > 1 and np.any(sel):
+        gap = np.diff(tf)
+        i0 = np.clip(np.searchsorted(tf, ty - hi_eff) - 1, 0, len(gap) - 1)
+        i1 = np.clip(np.searchsorted(tf, ty - lo), 0, len(gap) - 1)
+        for k in np.where(sel)[0]:
+            if gap[i0[k]:i1[k] + 1].max() > max_frame_gap_s:
+                sel[k] = False
+    if sel.sum() < 2:
+        return None
+    ty_m, y_m = ty[sel], y[sel]
+    target = y_m + (e_deg_fn(y_m) if e_deg_fn is not None else 0.0)
+
+    def resid(tau):
+        """Per-sample d = θ(t_y − age) − target, the age being τ, or τ + P for
+        a sample that reads closer one stale period later; and that choice."""
+        d0 = np.interp(ty_m - tau, tf, th) - target
+        if not P:
+            return d0, np.zeros(len(d0), bool)
+        d1 = np.interp(ty_m - tau - P, tf, th) - target
+        phi = float(np.median(d0))
+        for _ in range(3):
+            stale = np.abs(d1 - phi) < np.abs(d0 - phi)
+            d = np.where(stale, d1, d0)
+            phi = float(d.mean())
+        return d, stale
+
+    n_steps = int(round((hi - lo) / lag_step_s)) + 1
+    taus = lo + lag_step_s * np.arange(n_steps)
+    cost = np.empty(n_steps)
+    for k, tau in enumerate(taus):
+        d, _ = resid(tau)
+        cost[k] = float(np.mean((d - d.mean()) ** 2))
+    kb = int(np.argmin(cost))
+    tau = float(taus[kb])
+    if 0 < kb < n_steps - 1:
+        c0, c1, c2 = cost[kb - 1], cost[kb], cost[kb + 1]
+        den = c0 - 2 * c1 + c2
+        if den > 0:
+            tau += lag_step_s * float(np.clip(0.5 * (c0 - c2) / den, -0.5, 0.5))
+    d, stale = resid(tau)
+    if P and stale.mean() > 0.9:
+        # (Nearly) every sample one period older than τ is the same fit as
+        # all of them fresh at τ + P: report that canonical single-age form
+        # when it fits about as well (the few noise picks cost < 1.5× in
+        # variance; a genuine two-age mixture costs far more — its fresh
+        # samples, read ω·P ≈ degrees off, have no younger age to fall back on).
+        d2, stale2 = resid(tau + P)
+        if np.var(d2) <= 1.5 * np.var(d):
+            tau, d, stale = tau + P, d2, stale2
+    # θ and y may differ by whole turns (unwrap branches): wrap about the circular mean.
+    m0 = math.degrees(math.atan2(float(np.sin(np.radians(d)).mean()), float(np.cos(np.radians(d)).mean())))
+    d = m0 + (d - m0 + 180.0) % 360.0 - 180.0
+    phi = float(d.mean())
+    r = d - phi
+    n = len(r)
+    sd = float(np.std(r, ddof=1)) if n > 1 else 0.0
+    rho = float(np.corrcoef(r[:-1], r[1:])[0, 1]) if n > 3 and np.std(r) > 0 else 0.0
+    rho = min(max(rho, 0.0), 0.95)
+    n_eff = max(n * (1.0 - rho) / (1.0 + rho), 1.0)
+    edge = LAG_EDGE_STEPS * lag_step_s
+    return LatencyFit(
+        lag_s=tau, phi_raw_deg=((phi + 180.0) % 360.0) - 180.0,
+        residual_rms_deg=float(np.sqrt(np.mean(r ** 2))),
+        formal_se_deg=sd / math.sqrt(n_eff), n_moving=n,
+        at_edge=bool(tau < lo + edge or tau > hi - edge),
+        lag_grid_s=(float(lo), float(hi)),
+        stale_fraction=float(stale.mean()) if n else 0.0,
+        stale_period_s=P)
+
+
+#: Joint name of the stamped BB yaw in ``bb/axis_estimates`` (JointState,
+#: 100 Hz, stamped with the bridge's synced wall clock at its snapshot). It
+#: is the third joint after ``bb_pitch`` / ``bb_hand``, position in DEGREES
+#: (BB-local, unwrapped, the heartbeat's zero), appended only when the bridge
+#: has a fresh BB yaw frame (BB firmware 6 + can-bridge firmware 28); older
+#: firmware publishes two joints and the heartbeat is used. The value is the
+#: latest of BB's 150 Hz samples as of the stamp (0–6.7 ms old), so the fitted
+#: lag should come out at a few ms; it is still fitted and reported.
+STAMPED_YAW_JOINT = 'bb_yaw'
+
+
+def stamped_yaw_samples_from_joint_state(msg) -> list:
+    """[(t_s, yaw_deg)] from one ``bb/axis_estimates`` JointState (empty if it
+    carries no stamped yaw). Duck-typed: needs ``header.stamp``, ``name``,
+    ``position``."""
+    names = list(getattr(msg, 'name', []) or [])
+    pos = list(getattr(msg, 'position', []) or [])
+    st = msg.header.stamp
+    t = st.sec + st.nanosec * 1e-9
+    out = []
+    if t <= 0:
+        return out
+    if STAMPED_YAW_JOINT in names:
+        i = names.index(STAMPED_YAW_JOINT)
+        if i < len(pos) and math.isfinite(pos[i]):
+            out.append((t, float(pos[i])))
+    return out
+
+
+@dataclass
+class SweepYawEstimate:
+    """BB's yaw offset and axis point from one calibration window."""
+    yaw_offset_rad: float       # pinned gauge (published)
+    yaw_offset_std_deg: float   # formal SE ⊕ out-of-sample repeatability
+    formal_se_deg: float
+    repeatability_deg: float
+    phi_raw_deg: float          # template gauge, before the pin
+    lag_s: float
+    lag_residual_rms_deg: float
+    n_moving: int               # yaw samples in the fit
+    axis_point_mm: np.ndarray   # mean world position of the body origin over the posed frames
+    axis_point_sd_mm: np.ndarray
+    n_frames: int               # posed frames
+    n_frames_rejected: int
+    matched_min: int
+    matched_max: int
+    frame_rms_median_mm: float
+    template_residual_mm: float
+    yaw_source: str = 'heartbeat'
+    n_frames_moving: int = 0    # posed frames inside a turning stretch (position + residual)
+    stale_fraction: float = 0.0 # heartbeat samples read one republish period older
+
+    def summary(self) -> str:
+        """One-line description for the result message."""
+        return (f'sweep estimator: {self.n_frames} frames ({self.n_frames_moving} moving, '
+                f'{self.n_frames_rejected} rejected, '
+                f'{self.matched_min}-{self.matched_max} markers, median fit '
+                f'{self.frame_rms_median_mm:.2f} mm, template residual '
+                f'{self.template_residual_mm:.2f} mm), yaw source {self.yaw_source} '
+                f'lag {self.lag_s * 1e3:.1f} ms ({self.stale_fraction * 100:.0f} % one period '
+                f'stale) over {self.n_moving} moving samples '
+                f'(residual {self.lag_residual_rms_deg:.2f}° RMS), '
+                f'σ {self.yaw_offset_std_deg:.3f}° (formal {self.formal_se_deg:.3f}° ⊕ '
+                f'repeatability {self.repeatability_deg:.3f}°)')
+
+
+def estimate_sweep_yaw_offset(
     marker_frames,
     yaw_samples,
-    template,
-    min_matched: int = CONSTELLATION_MIN_MATCHED,
+    template: MarkerTemplate,
+    *,
+    yaw_source: str = 'heartbeat',
+    lag_grid_s: tuple = LAG_GRID_S,
+    min_frames: int = CONSTELLATION_MIN_FRAMES,
     max_residual_mm: float = CONSTELLATION_MAX_RESIDUAL_MM,
-    match_tol_mm: float = CONSTELLATION_MATCH_TOL_MM,
-    hold_scatter_floor_deg: float = HOLD_SCATTER_FLOOR_DEG,
-    holds=None,
-) -> ConstellationYawEstimate:
-    """BB's yaw offset from every qualifying stationary hold of a window.
+    max_lag_residual_deg: float = LAG_MAX_RESIDUAL_DEG,
+    min_moving: int = SWEEP_MIN_MOVING_SAMPLES,
+    track: Optional[ConstellationTrack] = None,
+) -> SweepYawEstimate:
+    """BB's yaw offset (and axis point) from a whole calibration window.
 
     Args:
-        marker_frames: sequence of (t_s, (n, 3) array) — every BB marker point
-            of each mocap frame, labels discarded. Same clock as yaw_samples.
-        yaw_samples: sequence of (t_s, yaw_deg) — BB's reported yaw.
-        template: :class:`MarkerTemplate` or a (K, 3) array.
-        holds: optional explicit [(t_first, t_last, yaw_deg)], else
-            :func:`find_stationary_holds` on ``yaw_samples``.
+        marker_frames: sequence of (t_s, (n, 3) points) — every BB marker
+            point of each mocap frame, labels discarded, stamped at the QTM
+            frame time mapped to the ROS clock.
+        yaw_samples: sequence of (t_s, yaw_deg) on the same clock — the
+            heartbeat's receive time, or a stamped stream's sample time.
+        template: :class:`MarkerTemplate` (schema 2).
+        yaw_source: label for the message ('heartbeat' / 'stamped').
+        track: a precomputed :func:`track_constellation` (offline reuse).
 
-    Per hold: frames from HOLD_TRIM_START_S after the first stationary
-    heartbeat to HOLD_TRIM_END_S before the last → per-marker medians →
-    :func:`match_template` → offset = θ − reported yaw. The holds are then
-    circular-averaged with equal weight (each is one draw of BB's pointing vs
-    its reported yaw; frames within a hold are not independent draws of that).
-
-    Uncertainty (deg): σ = √(σ_stat² + σ_tmpl²), with
-    σ_stat = s/√N over N independent pose visits, s the per-visit SD — but
-    never below ``hold_scatter_floor_deg`` while N < HOLD_SCATTER_MIN_N,
-    because a handful of visits cannot measure their own scatter and the
-    measured value is 0.13°; σ_tmpl = mean over holds of σ_c/lever, the
-    template-fit term: σ_c = RMS·√(n/(2n−3)) is the per-coordinate residual
-    SD of an n-marker rigid 2D fit, and σ_c/lever is the rotation uncertainty
-    it implies. σ_tmpl is systematic at a pose, so it is not divided by √N.
-    σ_stat alone is the REPEATABILITY at a pose — what the consistency gate
-    compares (:func:`check_yaw_offset_consistency`): σ_tmpl is common to two
-    calibrations taken at the same pose and cancels in their difference.
-
-    Raises ValueError (loudly, with the cause) when no hold qualifies, or any
-    matched hold's residual exceeds ``max_residual_mm``.
+    Raises ValueError (loudly, with a code) when: too few frames were posed
+    (CONSTELLATION_TOO_FEW_FRAMES / CONSTELLATION_TOO_FEW_MARKERS), the
+    template residual is above ``max_residual_mm`` (CONSTELLATION_RESIDUAL),
+    too few moving yaw samples (CONSTELLATION_TOO_FEW_MOVING), the lag fit
+    hits the edge of its grid (CONSTELLATION_LAG_AT_EDGE), or its residual is
+    above ``max_lag_residual_deg`` (CONSTELLATION_LAG_RESIDUAL).
     """
-    T = template.points_mm if isinstance(template, MarkerTemplate) else np.asarray(template, float)
-    ys = sorted(((float(t), float(y)) for t, y in yaw_samples), key=lambda r: r[0])
-    if holds is None:
-        holds = find_stationary_holds(ys)
-    if not holds:
+    if track is None:
+        track = track_constellation(marker_frames, template)
+    n = len(track.t)
+    if track.n_frames_in < min_frames:
         raise ValueError(
-            'CONSTELLATION_NO_HOLD: BB never held still for '
-            f'{HOLD_MIN_S:.1f} s (yaw within ±{HOLD_YAW_TOL_DEG:.2f}°) in the '
-            'calibration window — no stationary pose to read the yaw offset from')
-    frames = sorted(((float(t), f) for t, f in marker_frames), key=lambda r: r[0])
-    ft = np.array([t for t, _ in frames]) if frames else np.empty(0)
-
-    estimates = []
-    rejected = []
-    visit = -1
-    prev = None
-    for (t0, t1, yaw) in holds:
-        if (prev is None or t0 - prev[1] > HOLD_MAX_GAP_S + 1e-9
-                or abs(math.degrees(wrap_pi(math.radians(yaw - prev[2])))) > VISIT_MAX_YAW_STEP_DEG):
-            visit += 1
-        prev = (t0, t1, yaw)
-        a, b = t0 + HOLD_TRIM_START_S, t1 - HOLD_TRIM_END_S
-        i0, i1 = np.searchsorted(ft, [a, b], side='left')
-        window = [frames[k][1] for k in range(int(i0), int(i1))]
-        pts = cluster_hold_points(window)
-        m = match_template(pts, T, match_tol_mm) if len(window) else None
-        if m is None or len(m.pairs) < min_matched:
-            rejected.append((t0, t1, yaw, 0 if m is None else len(m.pairs), len(window)))
-            continue
-        if m.rms_mm > max_residual_mm:
-            raise ValueError(
-                f'CONSTELLATION_RESIDUAL: the hold at yaw {yaw:.2f}° fits the BB '
-                f'marker template with {m.rms_mm:.2f} mm RMS > {max_residual_mm:.2f} mm '
-                f'({len(m.pairs)} markers matched) — the template no longer '
-                'describes BB\'s markers (a marker moved, or a wrong point set '
-                'was matched); refusing rather than guessing')
-        estimates.append(HoldEstimate(
-            t_start=t0, t_end=t1, yaw_deg=yaw,
-            offset_rad=wrap_pi(m.theta_rad - math.radians(yaw)),
-            n_matched=len(m.pairs), rms_mm=m.rms_mm, lever_mm=m.lever_mm,
-            n_frames=len(window), visit=visit))
-    if not estimates:
-        detail = ', '.join(f'yaw {y:.1f}°: {n} matched of {len(T)} ({nf} frames)'
-                           for _, _, y, n, nf in rejected)
+            f'CONSTELLATION_TOO_FEW_FRAMES: {track.n_frames_in} mocap frames with BB '
+            f'markers in the calibration window (need {min_frames})')
+    if n < min_frames:
         raise ValueError(
-            f'CONSTELLATION_TOO_FEW_MARKERS: no stationary hold matched '
-            f'{min_matched} or more of the {len(T)} template markers ({detail})')
-
-    # One draw per visit (frame-weighted circular mean of its holds), then an
-    # equal-weight circular mean over visits.
-    phi = []
-    for v in sorted({h.visit for h in estimates}):
-        hs = [h for h in estimates if h.visit == v]
-        w = np.array([h.n_frames for h in hs], dtype=float)
-        a = np.array([h.offset_rad for h in hs])
-        phi.append(math.atan2(float((w * np.sin(a)).sum()), float((w * np.cos(a)).sum())))
-    phi = np.array(phi)
-    mean = math.atan2(float(np.sin(phi).mean()), float(np.cos(phi).mean()))
-    dev = np.degrees(np.array([wrap_pi(p - mean) for p in phi]))
-    n = len(phi)
-    hold_sd = float(np.std(dev, ddof=1)) if n > 1 else 0.0
-    s = hold_sd if n >= HOLD_SCATTER_MIN_N else max(hold_sd, hold_scatter_floor_deg)
-    stat = s / math.sqrt(n)
-    tmpl = float(np.mean([
-        math.degrees(h.rms_mm * math.sqrt(h.n_matched / (2.0 * h.n_matched - 3.0)) / h.lever_mm)
-        for h in estimates]))
-    return ConstellationYawEstimate(
-        yaw_offset_rad=mean,
-        yaw_offset_std_deg=math.sqrt(stat ** 2 + tmpl ** 2),
-        stat_std_deg=stat, template_std_deg=tmpl, hold_sd_deg=hold_sd,
-        holds=estimates, n_holds_rejected=len(rejected),
-        visit_offsets_rad=[float(p) for p in phi])
+            f'CONSTELLATION_TOO_FEW_MARKERS: only {n} of {track.n_frames_in} frames '
+            f'matched >= {CONSTELLATION_MIN_MATCHED} template markers with a fit under '
+            f'{CONSTELLATION_FRAME_MAX_RMS_MM:.1f} mm (need {min_frames})')
+    ys = np.array(sorted(((float(t), float(v)) for t, v in yaw_samples),
+                         key=lambda r: r[0])).reshape(-1, 2)
+    fit = fit_yaw_latency(track.t, track.theta_deg, ys[:, 0], ys[:, 1],
+                          template.e_deg, template.e_valid_yaw_deg, lag_grid_s,
+                          stale_period_s=HEARTBEAT_STALE_PERIOD_S if yaw_source == 'heartbeat' else None)
+    if fit is None or fit.n_moving < min_moving:
+        raise ValueError(
+            f'CONSTELLATION_TOO_FEW_MOVING: {0 if fit is None else fit.n_moving} moving '
+            f'{yaw_source} yaw samples overlap the mocap frames (need {min_moving})')
+    if fit.at_edge:
+        raise ValueError(
+            f'CONSTELLATION_LAG_AT_EDGE: the {yaw_source} yaw-to-mocap lag fit '
+            f'{fit.lag_s * 1e3:.1f} ms is at the edge of its search range '
+            f'[{lag_grid_s[0] * 1e3:.0f}, {lag_grid_s[1] * 1e3:.0f}] ms — the true lag '
+            'may lie outside it')
+    if fit.residual_rms_deg > max_lag_residual_deg:
+        raise ValueError(
+            f'CONSTELLATION_LAG_RESIDUAL: mocap yaw vs {yaw_source} yaw scatters '
+            f'{fit.residual_rms_deg:.2f}° RMS at the best lag {fit.lag_s * 1e3:.1f} ms '
+            f'(limit {max_lag_residual_deg:.2f}°) — wrong yaw units/source or a bad track')
+    # Position and template residual come from the MOVING frames too (frame
+    # time + lag inside a turning stretch of the reported yaw). The parked
+    # pose reconstructs non-rigidly in every 2026-10-09 bag (pair separations
+    # off by 1.3–2.4 mm there vs ≤ 0.3 mm (A/B) / 0.6 mm (7-sweep bag) at
+    # other yaws), and the pause is ~25 % of a sweep's frames.
+    w = np.gradient(np.degrees(np.unwrap(np.radians(ys[:, 1]))), ys[:, 0])
+    moving = np.abs(np.interp(track.t + fit.lag_s, ys[:, 0], w)) > SWEEP_MIN_SPEED_DEG_S
+    if moving.sum() < min_frames:
+        raise ValueError(
+            f'CONSTELLATION_TOO_FEW_MOVING: only {int(moving.sum())} posed mocap frames '
+            f'while BB was turning (need {min_frames})')
+    tres = track.template_residual_mm(moving)
+    if not (tres <= max_residual_mm):
+        raise ValueError(
+            f'CONSTELLATION_RESIDUAL: a BB marker-pair separation is off the template by '
+            f'{tres:.2f} mm (mean over the moving sweep; limit {max_residual_mm:.2f} mm) — '
+            'the template no longer describes BB\'s markers (a marker moved); refusing '
+            'rather than guessing')
+    rep = float(template.repeatability_deg)
+    offset_deg = fit.phi_raw_deg + template.gauge_shift_deg
+    org = track.origin[moving]
+    return SweepYawEstimate(
+        yaw_offset_rad=wrap_pi(math.radians(offset_deg)),
+        yaw_offset_std_deg=math.sqrt(fit.formal_se_deg ** 2 + rep ** 2),
+        formal_se_deg=fit.formal_se_deg, repeatability_deg=rep,
+        phi_raw_deg=fit.phi_raw_deg, lag_s=fit.lag_s,
+        lag_residual_rms_deg=fit.residual_rms_deg, n_moving=fit.n_moving,
+        stale_fraction=fit.stale_fraction,
+        axis_point_mm=org.mean(axis=0), axis_point_sd_mm=org.std(axis=0),
+        n_frames=n, n_frames_rejected=track.n_rejected,
+        matched_min=int(track.n_matched.min()), matched_max=int(track.n_matched.max()),
+        frame_rms_median_mm=float(np.median(track.rms_mm)),
+        template_residual_mm=tres, yaw_source=yaw_source,
+        n_frames_moving=int(moving.sum()))
 
 
 @dataclass
@@ -1062,54 +1316,76 @@ class GateVerdict:
     message: str
     delta_deg: float = 0.0
     threshold_deg: float = 0.0
+    axis_shift_mm: float = 0.0
+    overridden: bool = False
+    no_reference: bool = False
 
 
-def check_yaw_offset_consistency(
+def check_calibration_consistency(
     new_offset_deg: float,
     new_std_deg: float,
-    reference_offset_deg: Optional[float],
+    new_position_mm,
+    template_residual_mm: float,
+    reference: Optional[dict],
     bb_moved: bool = False,
     reference_label: str = 'last accepted',
     n_sigma: float = GATE_N_SIGMA,
     min_deg: float = GATE_MIN_DEG,
+    max_axis_shift_mm: float = GATE_MAX_AXIS_SHIFT_MM,
+    max_residual_mm: float = GATE_MAX_RESIDUAL_MM,
 ) -> GateVerdict:
-    """Refuse a yaw offset that disagrees with the reference while BB is unmoved.
+    """Refuse a calibration that disagrees with the last accepted one while BB
+    is not declared moved.
 
-    Threshold max(n_sigma·σ_new, min_deg), σ_new the REPEATABILITY of the new
-    estimate (``ConstellationYawEstimate.stat_std_deg``: 0.13° for one hold,
-    so ±0.39°; it shrinks as √N once there are several holds). The template
-    term of the published σ is left out on purpose: it is systematic at a pose
-    and common to two calibrations taken at the same pose, so it cancels in
-    their difference. The reference is the last accepted
-    calibration (or, before any, the template's pinned gauge). The aim
-    correction is only valid in the frame it was fitted in, so a calibration
-    that moves the frame without BB having moved misaims every throw (the
-    0.47° of 2026-10-09); ``bb_moved`` is the operator's explicit statement
-    that a change is real, and then the new value is accepted (and the affine
-    must be refitted).
+    ``reference``: the last accepted calibration ({'yaw_offset_deg',
+    'position_mm'}) or None. With no reference the calibration is accepted
+    (``no_reference`` set; the caller logs a WARN) — there is nothing to
+    compare against, and the template's pin is NOT used as one.
+
+    With a reference, refused when |Δyaw| > max(n_sigma·σ_new, min_deg), or
+    |Δaxis point| > ``max_axis_shift_mm`` (3D), or the template residual >
+    ``max_residual_mm``. ``bb_moved`` — the operator's statement that BB moved
+    OR that QTM was recalibrated (either changes the frame; one override
+    resets the reference) — accepts a yaw/axis change; it does not excuse a
+    template residual (a marker that moved on BB needs a new template, not a
+    new reference).
     """
-    if reference_offset_deg is None:
-        return GateVerdict(True, 'gate: no reference (first calibration)')
-    delta = math.degrees(wrap_pi(math.radians(new_offset_deg - reference_offset_deg)))
+    if reference is None:
+        return GateVerdict(True, 'gate: no reference calibration — accepted and '
+                                 'persisted as the reference', no_reference=True)
+    ref_yaw = float(reference['yaw_offset_deg'])
+    delta = math.degrees(wrap_pi(math.radians(new_offset_deg - ref_yaw)))
     thr = max(n_sigma * new_std_deg, min_deg)
-    if abs(delta) <= thr:
-        return GateVerdict(True, f'gate: {delta:+.3f}° vs {reference_label} '
-                                 f'{reference_offset_deg:.3f}° (limit ±{thr:.3f}°) ok',
-                           delta, thr)
+    ref_pos = reference.get('position_mm')
+    shift = (float(np.linalg.norm(np.asarray(new_position_mm, float) - np.asarray(ref_pos, float)))
+             if ref_pos is not None else 0.0)
+    head = (f'gate: Δyaw {delta:+.3f}° (limit ±{thr:.3f}°), Δaxis {shift:.2f} mm '
+            f'(limit {max_axis_shift_mm:.1f} mm) vs {reference_label} {ref_yaw:.3f}°')
+    if template_residual_mm > max_residual_mm:
+        return GateVerdict(
+            False,
+            f'TEMPLATE_RESIDUAL: a BB marker sits {template_residual_mm:.2f} mm from the '
+            f'template (limit {max_residual_mm:.2f} mm) — a marker moved on BB; rebuild the '
+            f'template (bb_moved does not override this). {head}',
+            delta, thr, shift)
+    problems = []
+    if abs(delta) > thr:
+        problems.append('yaw')
+    if shift > max_axis_shift_mm:
+        problems.append('axis point')
+    if not problems:
+        return GateVerdict(True, f'{head} ok', delta, thr, shift)
     if bb_moved:
-        return GateVerdict(True, f'gate: {delta:+.3f}° vs {reference_label} '
-                                 f'{reference_offset_deg:.3f}° exceeds ±{thr:.3f}° — '
-                                 'ACCEPTED on bb_moved override (refit the aim correction)',
-                           delta, thr)
+        return GateVerdict(True, f'{head} — {" and ".join(problems)} changed, ACCEPTED on '
+                                 'the bb_moved override (new reference; refit the aim '
+                                 'correction)', delta, thr, shift, overridden=True)
     return GateVerdict(
         False,
-        f'YAW_OFFSET_INCONSISTENT: new yaw offset {new_offset_deg:.3f}° ±{new_std_deg:.3f}° '
-        f'differs from the {reference_label} {reference_offset_deg:.3f}° by {delta:+.3f}° '
-        f'(limit ±{thr:.3f}°) and BB is not declared moved — refused. If BB really '
-        'moved, set the mocap_node parameter bb_moved:=true and recalibrate, then '
-        'refit the aim correction',
-        delta, thr)
-
+        f'CALIBRATION_INCONSISTENT: the {" and ".join(problems)} moved and BB is not declared '
+        f'moved — refused. New yaw offset {new_offset_deg:.3f}° ±{new_std_deg:.3f}°. {head}. '
+        'If BB really moved or QTM was recalibrated, set the mocap_node parameter '
+        'bb_moved:=true and recalibrate (then refit the aim correction)',
+        delta, thr, shift)
 
 # ---------------------------------------------------------------------------
 #  High-level calibration result
@@ -1130,17 +1406,22 @@ class CalibrationResult:
     yaw_span_deg: float = 0.0
     marker_metrics: dict[int, MarkerFitMetrics] = field(default_factory=dict)
     #: Which estimator produced ``yaw_offset_rad``: ``'constellation'`` (the
-    #: production path, :func:`estimate_constellation_yaw_offset`) or
-    #: ``'anchor'`` (the retired single-marker estimator, only when the caller
-    #: passed no constellation inputs — sweep-fit fixtures and diagnostics).
-    #: ``mocap_node`` refuses to publish anything but ``'constellation'``.
+    #: production path, :func:`estimate_sweep_yaw_offset`) or ``'anchor'``
+    #: (the retired single-marker estimator, only when the caller passed no
+    #: template — sweep-fit fixtures and diagnostics). ``mocap_node`` refuses
+    #: to publish anything but ``'constellation'``.
     yaw_method: str = 'anchor'
-    #: The constellation estimate (holds, σ breakdown); None on the anchor path.
-    yaw_estimate: Optional[ConstellationYawEstimate] = None
+    #: The sweep estimate (lag, σ breakdown, residuals); None on the anchor path.
+    yaw_estimate: Optional[SweepYawEstimate] = None
     #: The retired anchor estimator's value on the same sweep (rad), kept as a
     #: logged diagnostic on the constellation path; None if it could not be
     #: computed (anchor missing or an outcast — no longer a refusal).
     anchor_yaw_offset_rad: Optional[float] = None
+    #: The arc fit's axis point at the plane height (the pre-2026-10-09
+    #: position). On the constellation path ``bb_position_mm`` is the body
+    #: model's axis point and this is the cross-check; on the anchor path the
+    #: two are the same.
+    arc_position_mm: Optional[np.ndarray] = None
 
 
 def run_calibration(
@@ -1160,13 +1441,16 @@ def run_calibration(
     marker_frames=None,
     yaw_samples=None,
     template=None,
+    yaw_source: str = 'heartbeat',
 ) -> CalibrationResult:
     """Execute the full calibration pipeline.
 
-    POSITION, tilt and the sweep gates always come from the sweep's arc fit.
-    The YAW OFFSET comes from :func:`estimate_constellation_yaw_offset` when
+    Tilt and the sweep gates always come from the sweep's arc fit. The YAW
+    OFFSET and the POSITION come from :func:`estimate_sweep_yaw_offset` when
     ``template`` is given (with ``marker_frames`` and ``yaw_samples``, both
-    timestamped on one clock) — the production path since 2026-10-09. Without
+    timestamped on one clock; ``yaw_source`` labels the yaw stream) — the
+    production path since 2026-10-09; the arc fit's position is then kept as
+    ``arc_position_mm``, a cross-check. Without
     a template it falls back to the retired single-anchor estimator
     (:func:`calculate_yaw_offset`), which the sweep-fit tests still exercise;
     ``CalibrationResult.yaw_method`` says which ran, and ``mocap_node``
@@ -1281,7 +1565,8 @@ def run_calibration(
         if marker_frames is None or yaw_samples is None:
             raise ValueError('constellation yaw offset needs timestamped '
                              'marker_frames and yaw_samples with the template')
-        est = estimate_constellation_yaw_offset(marker_frames, yaw_samples, template)
+        est = estimate_sweep_yaw_offset(marker_frames, yaw_samples, template,
+                                        yaw_source=yaw_source)
         if est.yaw_offset_std_deg > max_yaw_std_deg:
             raise ValueError(
                 f'Yaw offset uncertainty too high: ±{est.yaw_offset_std_deg:.2f}° '
@@ -1294,8 +1579,16 @@ def run_calibration(
                 and len(yaw_readings_deg) >= MIN_YAW_READINGS):
             anchor, _ = calculate_yaw_offset(
                 marker_trajectories[yaw_anchor_index], yaw_readings_deg, intersection)
+        # POSITION: the body model's axis point (the template origin, posed
+        # in every moving frame and averaged) is primary. On the 7-sweep bag
+        # it repeats to 0.04 mm (x) / 0.18 mm (y) per sweep and lands within
+        # 0.5 mm of sessions A/B; the arc fit's intersection repeats to
+        # 0.04 / 0.38 mm and sits 0.9–1.4 mm south of it in y (and 1.1–2.0 mm
+        # of A's stored position) — logbook 2026-10-09-bb-constellation-yaw-offset.
+        # The arc fit stays as the cross-check (arc_position_mm) and still
+        # supplies the tilt and every sweep-completeness gate above.
         return CalibrationResult(
-            bb_position_mm=intersection,
+            bb_position_mm=np.asarray(est.axis_point_mm, dtype=float),
             yaw_offset_rad=est.yaw_offset_rad,
             yaw_offset_std_deg=est.yaw_offset_std_deg,
             axis_direction=axis_dir,
@@ -1305,6 +1598,7 @@ def run_calibration(
             yaw_method='constellation',
             yaw_estimate=est,
             anchor_yaw_offset_rad=anchor,
+            arc_position_mm=intersection,
         )
 
     # LEGACY (no template): yaw offset anchored on one physical marker
@@ -1344,4 +1638,5 @@ def run_calibration(
         axis_tilt_deg=tilt_deg,
         yaw_span_deg=yaw_span,
         marker_metrics=metrics,
+        arc_position_mm=intersection,
     )

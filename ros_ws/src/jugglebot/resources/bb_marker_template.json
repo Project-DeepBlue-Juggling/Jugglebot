@@ -1,106 +1,107 @@
 {
-  "schema": 1,
-  "description": "Ball Butler yaw-stage marker template, BB-local frame, for the constellation yaw-offset estimator (bb_calibration.estimate_constellation_yaw_offset).",
-  "frame": "x/y: BB-local, x along BB yaw 0, rotation about world z, origin at session A's stored BB position (-975.55, -389.26) mm (the origin is irrelevant to the estimator). z: world z minus session A's stored BB z (1734.86 mm). Units mm.",
+  "schema": 2,
+  "description": "Ball Butler body template for the sweep yaw-offset estimator (bb_calibration.estimate_sweep_yaw_offset): the seven yaw-stage markers (QTM labels Ball Butler - 1..7; the estimator ignores labels and matches by geometry), plus E(y), the gauge pin and the repeatability that travel with them.",
+  "frame": "BB body frame, mm. Origin: the yaw axis point at world z = session A stored BB z (1734.86 mm) in the 7-sweep bag; z: the yaw axis (fitted from the 7 sweeps' rotations; world tilt 1.68 deg); x: toward QTM 4 (the retired anchor marker), perpendicular to the axis. The posed origin IS the published BB position.",
   "markers": [
     {
-      "id": "m0",
+      "id": "QTM1",
       "xyz_mm": [
-        117.633,
-        0.015,
-        -16.777
-      ],
-      "radius_mm": 117.63
+        116.7154,
+        64.5725,
+        -47.345
+      ]
     },
     {
-      "id": "m1",
+      "id": "QTM2",
       "xyz_mm": [
-        102.797,
-        57.35,
-        -17.548
-      ],
-      "radius_mm": 117.71
+        132.292,
+        16.7564,
+        -48.1745
+      ]
     },
     {
-      "id": "m2",
+      "id": "QTM3",
       "xyz_mm": [
-        37.464,
-        64.903,
-        -17.359
-      ],
-      "radius_mm": 74.94
+        79.9248,
+        -86.8566,
+        -22.1639
+      ]
     },
     {
-      "id": "m3",
+      "id": "QTM4",
       "xyz_mm": [
-        79.305,
-        -86.996,
-        -19.304
-      ],
-      "radius_mm": 117.72
+        118.2179,
+        -0.0,
+        -19.8663
+      ]
+    },
+    {
+      "id": "QTM5",
+      "xyz_mm": [
+        0.0041,
+        -99.7377,
+        -21.1622
+      ]
+    },
+    {
+      "id": "QTM6",
+      "xyz_mm": [
+        103.408,
+        57.2346,
+        -20.4479
+      ]
+    },
+    {
+      "id": "QTM7",
+      "xyz_mm": [
+        38.0115,
+        64.6491,
+        -19.2098
+      ]
     }
   ],
+  "E": {
+    "coef_deg": [
+      0.474763,
+      -1.590844,
+      0.404731
+    ],
+    "basis": "E(y) = e1*u + e2*u^2 + e3*u^3 deg, u = max(y, 0)/100, y = reported yaw in deg; E(0) = 0",
+    "valid_yaw_deg": [
+      -5.0,
+      130.0
+    ],
+    "meaning": "physical minus reported yaw beyond the reported zero, MOVING relation, at fixed offset. Held fixed inside the estimator so the offset does not depend on the yaw range a window covers. NOT an aim correction: stationary holds relate differently by a few tenths.",
+    "values_deg": {
+      "10": 0.032,
+      "30": 0.01,
+      "50": -0.11,
+      "70": -0.308,
+      "90": -0.566,
+      "110": -0.864,
+      "125": -1.102
+    },
+    "provenance": "Fitted 2026-10-09 on the 7 calibration sweeps of rosbag 2026-10-09_18-56-37 (cubic, per-sweep offset and lag, alternated with the lag fit; heartbeat yaw with the one-period-stale mixture). Residual 0.246 deg RMS."
+  },
   "gauge": {
     "pinned_yaw_offset_deg": 0.208,
-    "pinned_std_deg": 0.0358,
-    "pinned_on": "mean of the estimator over the 7 calibration sweeps (0-deg pause) of rosbag 2026-10-09_18-56-37",
-    "frame_of": "session 20261009T002142_931068Z stored pose: yaw offset 0.208 deg, position (-975.55, -389.26, 1734.86) mm - the frame resources/throw_affine_correction.json was fitted in",
-    "rule": "BB has not moved since session A (owner, 2026-10-09). If BB is ever physically moved, the gauge must be re-pinned AND the aim correction refitted; calibrate with the mocap_node parameter bb_moved:=true to pass the consistency gate once."
+    "raw_offset_at_pin_deg": 0.0244,
+    "raw_offset_at_pin_se_deg": 0.0123,
+    "pin_uncertainty_deg": 0.2,
+    "reads_on_7_sweep_bag_deg": 0.448,
+    "published_offset": "yaw_offset_deg = phi_raw - raw_offset_at_pin_deg + pinned_yaw_offset_deg",
+    "pinned_on": "session 20261009T002142_931068Z (A, 00:21): the estimator on A's own moving frames (throw slews, 5 10-minute windows, per-window lag 94-97 ms; the last, partial window excluded: template residual 0.64 mm > the gate's 0.5 mm, it read -0.134) reads raw_offset_at_pin_deg (window SD 0.028); A's stored offset 0.208 deg is the frame resources/throw_affine_correction.json was fitted in. So A reads 0.208 by construction.",
+    "uncertainty": "The pin transfers A's frame to within the SE of A's windows (0.012 deg). Session B through the same code reads 0.201 (B - A = -0.007). The 7-sweep bag (18:56) reads 0.448 (per-sweep SD 0.023): this estimator puts today's BB +0.24 deg from A's frame. The reinvestigation (bb_placement_reinvestigation_20261009/REPORT.md) found +0.4 +/- 0.2 deg across methods (+0.24..+0.6, body model +0.43), marker geometry and axis point unchanged, cause unidentified. So the pin is exact for A's frame, but whether the aim of today's BB wants ~0.45 (this estimator) or more is settled only by landings: take the pin as uncertain by +/- 0.2 deg until a validation sitting measures it.",
+    "how_to_adjust": "After a validation sitting measures a mean bearing error implying an offset error delta (deg; positive = the offset should be larger), edit ONLY pinned_yaw_offset_deg: 0.208 -> 0.208 + delta. Everything else in this file stays. Then set mocap_node bb_moved:=true and recalibrate once, so the stored reference moves by the same delta.",
+    "rule": "Valid for this mounting and this affine only. If BB is physically moved or QTM is recalibrated: set bb_moved:=true, calibrate, and refit throw_affine_correction.json (or re-pin from landings)."
+  },
+  "sigma": {
+    "repeatability_deg": 0.0308,
+    "provenance": "Out-of-sample per-sweep SD on the 7 sweeps of rosbag 2026-10-09_18-56-37: each sweep estimated with E refitted on the other six (leave-one-out). In-sample SD 0.023 deg. Published sigma = sqrt(formal_se^2 + repeatability^2)."
   },
   "provenance": {
-    "built": "2026-10-09",
-    "template_from": "session A bag /home/jetson/bb_calibration_sessions/20261009T002142_931068Z/bag (611 stationary holds, generalised Procrustes, label-free matching)",
-    "template_hold_rms_mm_p50_p95_p99_max": [
-      0.217,
-      0.572,
-      0.646,
-      0.727
-    ],
-    "gauge_from": "rosbag /home/jetson/Desktop/rosbags/2026-10-09_18-56-37 (7 calibration sweeps, BB untouched since session A)",
-    "raw_gauge_per_sweep_deg": [
-      0.5824,
-      0.3503,
-      0.4751,
-      0.5297,
-      0.4178,
-      0.6199,
-      0.5444
-    ],
-    "tilt_coupling_deg_per_deg": 0.0094,
-    "scripts": "Jugglebot worktree temp/bbyaw/ (extract.py, build_template.py, pin_gauge.py; not committed); logic from ~/bb_calibration_sessions/yaw_offset_investigation_20261009/",
-    "logbook": "logbook/2026-10-09-bb-constellation-yaw-offset.md",
-    "template_hold_rms_note": "upper-plane 4-marker template; per-hold RMS (mm) over the matched holds: session A p50 0.217 / p99 0.646 / max 0.728 (489 holds), session B max 0.802 (204), new bag pauses 0.13-0.42 (7)",
-    "cross_check": {
-      "session_A_all_holds_deg": -0.093,
-      "session_A_yaw0_postcal_holds_deg": -0.171,
-      "session_B_all_holds_deg": -0.051,
-      "session_B_yaw0_postcal_hold_deg": -0.025,
-      "new_bag_sweep_pauses_deg": [
-        0.288,
-        0.056,
-        0.18,
-        0.235,
-        0.123,
-        0.325,
-        0.25
-      ],
-      "note": "see logbook/2026-10-09-bb-constellation-yaw-offset.md: the pinned gauge reads A/B in-session holds 0.25-0.38 deg lower than the new bag pauses; unexplained (park-yaw/backlash, re-home or QTM between sessions are candidates)"
-    }
-  },
-  "excluded_markers": {
-    "why": "The two off-plane markers (QTM 1 and 2, ~28 mm below the others, added 2026-09-27) distort at the parked yaw-0 pose: on the 7 sweeps of the 18:56 bag their inclusion raises the per-sweep scatter from 0.095 to 0.297 deg and the hold RMS from ~0.25 to ~0.8 mm; QTM 1 was already the marker whose parked readings crept ~3 mm on 2026-10-05/06. Kept here for reference only; the estimator does not use them.",
-    "xyz_mm": [
-      [
-        117.008,
-        64.044,
-        -44.389
-      ],
-      [
-        132.517,
-        16.368,
-        -44.831
-      ]
-    ]
-  },
-  "markers_note": "QTM labels are NOT used. At build time these were (by position): m0 = QTM 4 (the retired yaw anchor), m1 = QTM 6, m2 = QTM 7, m3 = the co-planar marker seen only at throwing yaws (QTM 3 or 5)."
+    "built": "2026-10-09, temp/bbyaw/sweep/build1_template.py .. build4_write.py (worktree Jugglebot-bbyaw, not committed)",
+    "template": "Generalised Procrustes over labelled frames, yaw-balanced (<= 40 frames per 2-deg bin of lag-corrected yaw per bag): session A {\"frames\": 2941, \"bins\": 75, \"yaw_range\": [-0.0, 147.0]}, session B {\"frames\": 2950, \"bins\": 77, \"yaw_range\": [-0.4, 151.8]}, 7-sweep bag {\"frames\": 2520, \"bins\": 63, \"yaw_range\": [1.5, 125.5]} (its parked |y| < 1.5 deg frames excluded: non-rigid reconstruction there).",
+    "rigidity": "per-marker RMS of the selected frames against the template 0.41-0.63 mm (A), 0.43-0.63 (B), 0.58-0.92 (7-sweep bag, moving)"
+  }
 }
