@@ -724,6 +724,27 @@ HEARTBEAT_STALE_PERIOD_S = 0.1
 #: mismatch in the yaw source, or wrong correspondences, give degrees.
 LAG_MAX_RESIDUAL_DEG = 1.0
 
+#: Mocap-clock gate (see :func:`mocap_clock_off_grid`). A frame's stamp is its
+#: QTM frame time mapped to ROS through mocap_interface's QTM->ROS offset, an
+#: EMA (alpha 0.01 per packet, ~0.3 s) of the packets' RECEIVE latency. Under
+#: Jetson load that offset wanders by tens of ms within a sweep (bag
+#: 2026-10-10_00-24-06: 4-59 ms per sweep, vs 0.6-2.3 ms on 2026-10-09_23-49-07),
+#: so a frame's stamp is late or early by the wander e(t). The lag fit removes
+#: only its mean; the rest biases the offset by -mean(omega*e) (~omega*(e_out -
+#: e_ret)/2: 0.3 deg for 10 ms at 67 deg/s) - invisible in the lag residual,
+#: and identical for the heartbeat and the stamped yaw (logbook
+#: 2026-10-10-bb-yaw-offset-spread-stamped-source). The raw QTM frame times sit
+#: on a k*P grid, so a stable mapping keeps consecutive stamp differences on it;
+#: a wandering one moves them off it. Fraction of consecutive differences more
+#: than P/8 off the grid: 0.0-0.4 % per sweep on the clean bag, 11-36 % on the
+#: loaded one. Above MOCAP_CLOCK_MAX_OFF_GRID the estimate FAILS.
+MOCAP_CLOCK_MAX_OFF_GRID = 0.05
+#: Fewest consecutive frame intervals for the mocap-clock metric (below this
+#: it is not computed and the gate does not apply).
+MOCAP_CLOCK_MIN_INTERVALS = 50
+#: Grid tolerance, as a fraction of the frame period.
+MOCAP_CLOCK_GRID_TOL = 0.125
+
 #: Consistency gate (see :func:`check_calibration_consistency`).
 GATE_N_SIGMA = 3.0
 GATE_MIN_DEG = 0.15
@@ -1043,6 +1064,38 @@ def track_constellation(marker_frames, template,
         points=np.array(pts_l).reshape(-1, K, 3), template_mm=np.array(T, dtype=float), n_frames_in=len(frames), n_rejected=rejected)
 
 
+def mocap_clock_off_grid(t_frames) -> Optional[float]:
+    """Fraction of consecutive distinct frame stamps whose difference is more
+    than ``MOCAP_CLOCK_GRID_TOL`` of a frame period off a whole number of
+    periods — a direct measure of how much the QTM->ROS mapping moved between
+    frames (see ``MOCAP_CLOCK_MAX_OFF_GRID``). None when fewer than
+    ``MOCAP_CLOCK_MIN_INTERVALS`` intervals exist.
+
+    The period P is not assumed (the QTM rate is a QTM setting, and the stamps
+    are in ROS seconds): P0 is the median of the differences near their 5th
+    percentile; mocap_node publishes snapshots on a timer, so the smallest
+    common difference may be a multiple of the true period, and the metric is
+    the smallest over P0/n, n = 1..4 (P0/n >= 1 ms) — a finer grid that the
+    stamps also fit cannot raise it, so this never refuses a clean clock for
+    the wrong P."""
+    t = np.unique(np.asarray(t_frames, dtype=float))
+    d = np.diff(t)
+    d = d[d > 0]
+    if len(d) < MOCAP_CLOCK_MIN_INTERVALS:
+        return None
+    p5 = float(np.percentile(d, 5))
+    near = d[(d > 0.75 * p5) & (d < 1.25 * p5)]
+    p0 = float(np.median(near)) if len(near) else p5
+    best = 1.0
+    for n in range(1, 5):
+        P = p0 / n
+        if P < 1e-3:
+            break
+        frac = d - np.round(d / P) * P
+        best = min(best, float(np.mean(np.abs(frac) > MOCAP_CLOCK_GRID_TOL * P)))
+    return best
+
+
 @dataclass
 class LatencyFit:
     """Best lag and offset of θ(t_y − τ) − y − E(y) over the moving samples."""
@@ -1219,14 +1272,19 @@ class SweepYawEstimate:
     yaw_source: str = 'heartbeat'
     n_frames_moving: int = 0    # posed frames inside a turning stretch (position + residual)
     stale_fraction: float = 0.0 # heartbeat samples read one republish period older
+    #: Fraction of frame intervals off the QTM frame grid (:func:`mocap_clock_off_grid`; None: too few frames to tell).
+    frame_clock_off_grid: Optional[float] = None
 
     def summary(self) -> str:
         """One-line description for the result message."""
+        clock = ('n/a' if self.frame_clock_off_grid is None
+                 else f'{self.frame_clock_off_grid * 100:.1f} % off grid')
         return (f'sweep estimator: {self.n_frames} frames ({self.n_frames_moving} moving, '
                 f'{self.n_frames_rejected} rejected, '
                 f'{self.matched_min}-{self.matched_max} markers, median fit '
                 f'{self.frame_rms_median_mm:.2f} mm, template residual '
-                f'{self.template_residual_mm:.2f} mm), yaw source {self.yaw_source} '
+                f'{self.template_residual_mm:.2f} mm, mocap clock {clock}), '
+                f'yaw source {self.yaw_source} '
                 f'lag {self.lag_s * 1e3:.1f} ms ({self.stale_fraction * 100:.0f} % one period '
                 f'stale) over {self.n_moving} moving samples '
                 f'(residual {self.lag_residual_rms_deg:.2f}° RMS), '
@@ -1246,6 +1304,7 @@ def estimate_sweep_yaw_offset(
     max_lag_residual_deg: float = LAG_MAX_RESIDUAL_DEG,
     min_moving: int = SWEEP_MIN_MOVING_SAMPLES,
     track: Optional[ConstellationTrack] = None,
+    max_clock_off_grid: float = MOCAP_CLOCK_MAX_OFF_GRID,
 ) -> SweepYawEstimate:
     """BB's yaw offset (and axis point) from a whole calibration window.
 
@@ -1262,6 +1321,10 @@ def estimate_sweep_yaw_offset(
     Raises ValueError (loudly, with a code) when: too few frames were posed
     (CONSTELLATION_TOO_FEW_FRAMES / CONSTELLATION_TOO_FEW_MARKERS), the
     template residual is above ``max_residual_mm`` (CONSTELLATION_RESIDUAL),
+    the frame stamps' QTM->ROS mapping wandered during the sweep (more than
+    ``max_clock_off_grid`` of the frame intervals off the QTM grid;
+    CONSTELLATION_MOCAP_CLOCK — the offset would be biased by an amount the
+    lag residual cannot show, for either yaw source),
     too few moving yaw samples (CONSTELLATION_TOO_FEW_MOVING), the lag fit
     hits the edge of its grid (CONSTELLATION_LAG_AT_EDGE), or its residual is
     above ``max_lag_residual_deg`` (CONSTELLATION_LAG_RESIDUAL).
@@ -1278,6 +1341,14 @@ def estimate_sweep_yaw_offset(
             f'CONSTELLATION_TOO_FEW_MARKERS: only {n} of {track.n_frames_in} frames '
             f'matched >= {CONSTELLATION_MIN_MATCHED} template markers with a fit under '
             f'{CONSTELLATION_FRAME_MAX_RMS_MM:.1f} mm (need {min_frames})')
+    off_grid = mocap_clock_off_grid(track.t)
+    if off_grid is not None and off_grid > max_clock_off_grid:
+        raise ValueError(
+            f'CONSTELLATION_MOCAP_CLOCK: {off_grid * 100:.1f} % of the mocap frame intervals are '
+            f'off the QTM frame grid (limit {max_clock_off_grid * 100:.1f} %) — the QTM-to-ROS '
+            'clock mapping wandered during the sweep (a loaded Jetson), which biases the yaw '
+            'offset by up to tenths of a degree whichever yaw source is used; refusing. '
+            'Recalibrate with the Jetson unloaded (no test suite or other heavy process)')
     ys = np.array(sorted(((float(t), float(v)) for t, v in yaw_samples),
                          key=lambda r: r[0])).reshape(-1, 2)
     fit = fit_yaw_latency(track.t, track.theta_deg, ys[:, 0], ys[:, 1],
@@ -1331,7 +1402,7 @@ def estimate_sweep_yaw_offset(
         matched_min=int(track.n_matched.min()), matched_max=int(track.n_matched.max()),
         frame_rms_median_mm=float(np.median(track.rms_mm)),
         template_residual_mm=tres, yaw_source=yaw_source,
-        n_frames_moving=int(moving.sum()))
+        n_frames_moving=int(moving.sum()), frame_clock_off_grid=off_grid)
 
 
 @dataclass
