@@ -1,0 +1,106 @@
+{
+  "schema": 1,
+  "description": "Ball Butler yaw-stage marker template, BB-local frame, for the constellation yaw-offset estimator (bb_calibration.estimate_constellation_yaw_offset).",
+  "frame": "x/y: BB-local, x along BB yaw 0, rotation about world z, origin at session A's stored BB position (-975.55, -389.26) mm (the origin is irrelevant to the estimator). z: world z minus session A's stored BB z (1734.86 mm). Units mm.",
+  "markers": [
+    {
+      "id": "m0",
+      "xyz_mm": [
+        117.633,
+        0.015,
+        -16.777
+      ],
+      "radius_mm": 117.63
+    },
+    {
+      "id": "m1",
+      "xyz_mm": [
+        102.797,
+        57.35,
+        -17.548
+      ],
+      "radius_mm": 117.71
+    },
+    {
+      "id": "m2",
+      "xyz_mm": [
+        37.464,
+        64.903,
+        -17.359
+      ],
+      "radius_mm": 74.94
+    },
+    {
+      "id": "m3",
+      "xyz_mm": [
+        79.305,
+        -86.996,
+        -19.304
+      ],
+      "radius_mm": 117.72
+    }
+  ],
+  "gauge": {
+    "pinned_yaw_offset_deg": 0.208,
+    "pinned_std_deg": 0.0358,
+    "pinned_on": "mean of the estimator over the 7 calibration sweeps (0-deg pause) of rosbag 2026-10-09_18-56-37",
+    "frame_of": "session 20261009T002142_931068Z stored pose: yaw offset 0.208 deg, position (-975.55, -389.26, 1734.86) mm - the frame resources/throw_affine_correction.json was fitted in",
+    "rule": "BB has not moved since session A (owner, 2026-10-09). If BB is ever physically moved, the gauge must be re-pinned AND the aim correction refitted; calibrate with the mocap_node parameter bb_moved:=true to pass the consistency gate once."
+  },
+  "provenance": {
+    "built": "2026-10-09",
+    "template_from": "session A bag /home/jetson/bb_calibration_sessions/20261009T002142_931068Z/bag (611 stationary holds, generalised Procrustes, label-free matching)",
+    "template_hold_rms_mm_p50_p95_p99_max": [
+      0.217,
+      0.572,
+      0.646,
+      0.727
+    ],
+    "gauge_from": "rosbag /home/jetson/Desktop/rosbags/2026-10-09_18-56-37 (7 calibration sweeps, BB untouched since session A)",
+    "raw_gauge_per_sweep_deg": [
+      0.5824,
+      0.3503,
+      0.4751,
+      0.5297,
+      0.4178,
+      0.6199,
+      0.5444
+    ],
+    "tilt_coupling_deg_per_deg": 0.0094,
+    "scripts": "Jugglebot worktree temp/bbyaw/ (extract.py, build_template.py, pin_gauge.py; not committed); logic from ~/bb_calibration_sessions/yaw_offset_investigation_20261009/",
+    "logbook": "logbook/2026-10-09-bb-constellation-yaw-offset.md",
+    "template_hold_rms_note": "upper-plane 4-marker template; per-hold RMS (mm) over the matched holds: session A p50 0.217 / p99 0.646 / max 0.728 (489 holds), session B max 0.802 (204), new bag pauses 0.13-0.42 (7)",
+    "cross_check": {
+      "session_A_all_holds_deg": -0.093,
+      "session_A_yaw0_postcal_holds_deg": -0.171,
+      "session_B_all_holds_deg": -0.051,
+      "session_B_yaw0_postcal_hold_deg": -0.025,
+      "new_bag_sweep_pauses_deg": [
+        0.288,
+        0.056,
+        0.18,
+        0.235,
+        0.123,
+        0.325,
+        0.25
+      ],
+      "note": "see logbook/2026-10-09-bb-constellation-yaw-offset.md: the pinned gauge reads A/B in-session holds 0.25-0.38 deg lower than the new bag pauses; unexplained (park-yaw/backlash, re-home or QTM between sessions are candidates)"
+    }
+  },
+  "excluded_markers": {
+    "why": "The two off-plane markers (QTM 1 and 2, ~28 mm below the others, added 2026-09-27) distort at the parked yaw-0 pose: on the 7 sweeps of the 18:56 bag their inclusion raises the per-sweep scatter from 0.095 to 0.297 deg and the hold RMS from ~0.25 to ~0.8 mm; QTM 1 was already the marker whose parked readings crept ~3 mm on 2026-10-05/06. Kept here for reference only; the estimator does not use them.",
+    "xyz_mm": [
+      [
+        117.008,
+        64.044,
+        -44.389
+      ],
+      [
+        132.517,
+        16.368,
+        -44.831
+      ]
+    ]
+  },
+  "markers_note": "QTM labels are NOT used. At build time these were (by position): m0 = QTM 4 (the retired yaw anchor), m1 = QTM 6, m2 = QTM 7, m3 = the co-planar marker seen only at throwing yaws (QTM 3 or 5)."
+}

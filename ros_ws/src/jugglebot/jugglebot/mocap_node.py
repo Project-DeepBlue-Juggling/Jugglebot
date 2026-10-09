@@ -17,7 +17,10 @@ Static TF:
 
 from __future__ import annotations
 
+import datetime
+import json
 import math
+import os
 import time
 
 import numpy as np
@@ -26,6 +29,7 @@ from rclpy.logging import LoggingSeverity
 from rclpy.node import Node
 from rclpy.qos import QoSProfile, DurabilityPolicy
 
+from rcl_interfaces.msg import SetParametersResult
 from std_msgs.msg import Float64
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
 from geometry_msgs.msg import TransformStamped
@@ -50,7 +54,13 @@ from jugglebot import mocap_status as mocap_st
 from .bb_calibration import (
     run_calibration, CalibrationResult, MIN_ARC_DEG,
     BB_MARKER_COUNT, BB_YAW_ANCHOR_INDEX,
+    load_marker_template, check_yaw_offset_consistency,
 )
+
+try:
+    from ament_index_python.packages import get_package_share_directory
+except ImportError:  # pragma: no cover - outside a ROS install
+    get_package_share_directory = None
 
 
 #: Cadence of the ``mocap/status`` publisher and of the calibration health
@@ -65,6 +75,17 @@ MOCAP_STATUS_PERIOD_S = 0.2
 #: CALIBRATING (or the exit edge was lost), and the old code would have kept
 #: accumulating markers into a dict nothing would ever finalize.
 CALIBRATION_TIMEOUT_S = 60.0
+
+#: BB-local yaw-stage marker template the yaw offset is read against
+#: (``bb_calibration.estimate_constellation_yaw_offset``). A basename is looked
+#: up next to the source tree's ``resources/`` and in ``share/jugglebot/resources``.
+DEFAULT_MARKER_TEMPLATE_FILE = 'bb_marker_template.json'
+
+#: Where the last ACCEPTED calibration is persisted, so the consistency gate
+#: survives restarts. Beside the BallButler runner's session directories.
+DEFAULT_CALIBRATION_STATE_FILE = os.path.join(
+    os.path.expanduser('~'), 'bb_calibration_sessions',
+    'bb_calibration_last_accepted.json')
 
 # BB_MARKER_COUNT (``mocap_interface.ball_butler_markers`` is a fixed
 # (BB_MARKER_COUNT, 4) array with NaN rows for the ones QTM cannot see this
@@ -155,8 +176,68 @@ class MocapNode(Node):
         #: other than CALIBRATING.
         self._calib_blocked = False
         self._calib_start_mono = 0.0
+        #: Timestamped copies for the constellation yaw estimator: every frame's
+        #: visible BB points (labels discarded) and every heartbeat's yaw, both
+        #: on time.monotonic() at receipt.
+        self._calib_frames: list = []
+        self._calib_yaw_samples: list = []
+
+        # ── Yaw-offset template + consistency gate (2026-10-09) ───────────
+        # bb_moved: the operator's explicit statement that BB was physically
+        # moved, so a yaw offset that disagrees with the last accepted one is
+        # real. ONE-SHOT: it arms the next calibration only, and is re-armed by
+        # setting it true again (a parameter left true must not disable the
+        # gate for good). Moving BB also invalidates the aim correction
+        # (throw_affine_correction.json): refit it.
+        self.declare_parameter('bb_marker_template_file', DEFAULT_MARKER_TEMPLATE_FILE)
+        self.declare_parameter('bb_calibration_state_file', DEFAULT_CALIBRATION_STATE_FILE)
+        self.declare_parameter('bb_moved', False)
+        self._bb_moved_armed = bool(self.get_parameter('bb_moved').value)
+        self.add_on_set_parameters_callback(self._on_set_parameters)
+        self._marker_template = None
+        self._marker_template_error = ''
+        self._load_marker_template(
+            str(self.get_parameter('bb_marker_template_file').value))
 
         self.get_logger().info('Mocap node up (QTM connects in the background)')
+
+    def _on_set_parameters(self, params):
+        for p in params:
+            if p.name == 'bb_moved':
+                self._bb_moved_armed = bool(p.value)
+                if self._bb_moved_armed:
+                    self.get_logger().warn(
+                        'bb_moved armed: the next BB calibration may move the yaw '
+                        'frame past the consistency gate (refit the aim correction)')
+        return SetParametersResult(successful=True)
+
+    def _load_marker_template(self, name: str):
+        """Resolve and load the marker template; on failure record why (the
+        calibration then FAILS with that reason — there is no anchor fallback)."""
+        candidates = [name,
+                      os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                   os.pardir, 'resources', name)]
+        if get_package_share_directory is not None:
+            try:
+                candidates.append(os.path.join(
+                    get_package_share_directory('jugglebot'), 'resources', name))
+            except Exception:
+                pass
+        path = next((c for c in candidates if os.path.isfile(c)), None)
+        if path is None:
+            self._marker_template_error = f'BB marker template not found ({name})'
+        else:
+            try:
+                self._marker_template = load_marker_template(path)
+            except (OSError, ValueError) as e:
+                self._marker_template_error = f'BB marker template unreadable ({path}): {e}'
+        if self._marker_template is None:
+            self.get_logger().error(
+                f'{self._marker_template_error} — BB calibrations will be refused')
+        else:
+            self.get_logger().debug(
+                f'BB marker template: {len(self._marker_template.points_mm)} markers '
+                f'from {path}, gauge {self._marker_template.reference_yaw_offset_deg}°')
 
     # ──────────────────────────────────────────────────────────────────────
     #  Publishing
@@ -306,6 +387,8 @@ class MocapNode(Node):
         self._calib_blocked = blocked
         self._calib_data = {}
         self._calib_yaw_readings = []
+        self._calib_frames = []
+        self._calib_yaw_samples = []
 
     def _publish_mocap_data(self):
         is_aligned = self.mocap.is_aligned
@@ -431,6 +514,7 @@ class MocapNode(Node):
         # Record yaw during calibration for offset calculation
         if self._calibrating and self._calib_invalid is None:
             self._calib_yaw_readings.append(msg.yaw_deg)
+            self._calib_yaw_samples.append((time.monotonic(), float(msg.yaw_deg)))
 
         if msg.state != self._bb_last_state:
             self._bb_last_state = msg.state
@@ -448,6 +532,8 @@ class MocapNode(Node):
             self._calib_start_mono = time.monotonic()
             self._calib_data = {i: [] for i in range(BB_MARKER_COUNT)}
             self._calib_yaw_readings = []
+            self._calib_frames = []
+            self._calib_yaw_samples = []
             self.get_logger().info('BB calibration started, collecting marker data')
 
         # Detect calibration end (state transition away from CALIBRATING)
@@ -475,14 +561,21 @@ class MocapNode(Node):
     # ──────────────────────────────────────────────────────────────────────
 
     def _accumulate_calibration_markers(self, msg: MocapDataMulti):
-        """Store each marker position from a bb/markers message."""
+        """Store each marker position from a bb/markers message: per label for
+        the sweep's arc fit, and as one unlabelled, timestamped point set per
+        frame for the constellation yaw estimator."""
+        frame = []
         for i, marker in enumerate(msg.markers):
             if i >= BB_MARKER_COUNT:
                 break
             pos = marker.position
             if math.isnan(pos.x) or math.isnan(pos.y) or math.isnan(pos.z):
                 continue
-            self._calib_data[i].append(np.array([pos.x, pos.y, pos.z]))
+            p = np.array([pos.x, pos.y, pos.z])
+            self._calib_data[i].append(p)
+            frame.append(p)
+        if frame:
+            self._calib_frames.append((time.monotonic(), np.array(frame)))
 
     def _finalize_calibration(self):
         """Run the calibration pipeline and publish the result."""
@@ -495,16 +588,58 @@ class MocapNode(Node):
             if pts:
                 self.get_logger().debug(f'Marker {idx + 1}: {len(pts)} valid samples')
 
+        if self._marker_template is None:
+            # No anchor fallback: the single-marker yaw offset is what misaimed
+            # session B by 0.47° (2026-10-09). Refuse, naming the cause.
+            self._publish_calibration_failure(
+                f'{self._marker_template_error} — cannot estimate the yaw offset')
+            return
+
         try:
             result: CalibrationResult = run_calibration(
                 calibration_data=self._calib_data,
                 yaw_readings_deg=self._calib_yaw_readings,
                 pitch_z_offset_mm=hw.BB_GEOM_PITCH_Z_OFFSET_MM,
+                marker_frames=self._calib_frames,
+                yaw_samples=self._calib_yaw_samples,
+                template=self._marker_template,
             )
         except ValueError as e:
             self.get_logger().debug(f'Calibration solver rejected the sweep: {e}')
             self._publish_calibration_failure(str(e))
             return
+        if result.yaw_method != 'constellation':  # defensive: never publish the anchor value
+            self._publish_calibration_failure(
+                f'internal: yaw offset came from the {result.yaw_method!r} estimator')
+            return
+
+        # ── Consistency gate against the last accepted calibration ─────────
+        yaw_deg = math.degrees(result.yaw_offset_rad)
+        ref, ref_label = self._gate_reference()
+        est = result.yaw_estimate
+        # The gate's σ is the REPEATABILITY (hold statistics): the template
+        # term is systematic at a pose and common to the two calibrations
+        # compared, so it cancels in their difference (bb_calibration).
+        verdict = check_yaw_offset_consistency(
+            yaw_deg, est.stat_std_deg, ref,
+            bb_moved=self._bb_moved_armed, reference_label=ref_label)
+        summary = (f'constellation yaw from {est.n_holds} hold(s), '
+                   f'{min(h.n_matched for h in est.holds)}-'
+                   f'{max(h.n_matched for h in est.holds)} markers, '
+                   f'σ {result.yaw_offset_std_deg:.3f}° '
+                   f'(holds {est.stat_std_deg:.3f}°, template {est.template_std_deg:.3f}°)')
+        anchor = ('n/a' if result.anchor_yaw_offset_rad is None
+                  else f'{math.degrees(result.anchor_yaw_offset_rad):+.3f}°')
+        self.get_logger().debug(
+            f'Yaw offset {yaw_deg:+.4f}° — {summary}; retired anchor estimator '
+            f'on the same sweep {anchor}; {verdict.message}')
+        if not verdict.accepted:
+            self._publish_calibration_failure(f'{verdict.message} [{summary}]')
+            return
+        if self._bb_moved_armed and abs(verdict.delta_deg) > verdict.threshold_deg:
+            self._bb_moved_armed = False   # one-shot: consumed by this calibration
+        self._persist_accepted(result, verdict.message)
+        result_message = f'Calibration successful · {summary} · {verdict.message}'
 
         # One operator line; the detail (axis direction, per-marker fits) is DEBUG.
         # BB's own reported yaw span is encoder-derived, so unlike the per-marker
@@ -524,6 +659,7 @@ class MocapNode(Node):
             f'· axis tilt {result.axis_tilt_deg:.2f}° '
             f'· yaw offset {math.degrees(result.yaw_offset_rad):+.2f}° '
             f'±{result.yaw_offset_std_deg:.2f}° '
+            f'({result.yaw_estimate.n_holds} hold(s), gate ok) '
             f'· swept {result.yaw_span_deg:.0f}°{outcasts}'
         )
         self.get_logger().debug(
@@ -545,12 +681,58 @@ class MocapNode(Node):
                 self.get_logger().warn(f'Marker {idx + 1}: {m.status} — {m.reason}')
 
         # Publish on latched topic
-        self._publish_calibration_result(result)
+        self._publish_calibration_result(result, result_message)
 
-    def _publish_calibration_result(self, result: CalibrationResult):
+    def _gate_reference(self):
+        """(yaw_offset_deg, label) the gate compares against: the last accepted
+        calibration if one is persisted, else the template's pinned gauge (the
+        frame the deployed aim correction was fitted in), else (None, '')."""
+        path = str(self.get_parameter('bb_calibration_state_file').value)
+        try:
+            with open(path, 'r') as f:
+                state = json.load(f)
+            return float(state['yaw_offset_deg']), f'last accepted ({state.get("accepted_at", "?")})'
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError, KeyError, TypeError) as e:
+            # A corrupt state file must not silently disable the gate: fall
+            # through to the template's pinned reference and say so.
+            self.get_logger().error(f'BB calibration state file unreadable ({path}): {e}')
+        ref = self._marker_template.reference_yaw_offset_deg
+        if ref is not None:
+            return ref, 'template-pinned gauge'
+        return None, ''
+
+    def _persist_accepted(self, result: CalibrationResult, verdict: str):
+        path = str(self.get_parameter('bb_calibration_state_file').value)
+        est = result.yaw_estimate
+        state = {
+            'accepted_at': datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            'yaw_offset_deg': math.degrees(result.yaw_offset_rad),
+            'yaw_offset_std_deg': result.yaw_offset_std_deg,
+            'position_mm': [float(v) for v in result.bb_position_mm],
+            'axis_tilt_deg': result.axis_tilt_deg,
+            'method': result.yaw_method,
+            'n_holds': est.n_holds,
+            'gate': verdict,
+            'template': self._marker_template.source,
+        }
+        try:
+            os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
+            tmp = path + '.tmp'
+            with open(tmp, 'w') as f:
+                json.dump(state, f, indent=2)
+            os.replace(tmp, path)
+        except OSError as e:
+            self.get_logger().error(
+                f'Could not persist the accepted BB calibration to {path}: {e} — '
+                'the next calibration is gated against the previous reference')
+
+    def _publish_calibration_result(self, result: CalibrationResult,
+                                    message: str = 'Calibration successful'):
         msg = BallButlerCalibrationResult()
         msg.success = True
-        msg.message = 'Calibration successful'
+        msg.message = message
         msg.position_mm.x = float(result.bb_position_mm[0])
         msg.position_mm.y = float(result.bb_position_mm[1])
         msg.position_mm.z = float(result.bb_position_mm[2])
