@@ -100,9 +100,8 @@ The verdict is FAIL on the lateral mean alone. That mean is consistent in sign a
 
 ## Outcome
 
-Committed on `bb-positive-s-affine-2026-10-09` and pushed; **not merged, built or deployed**. To deploy:
+Merged into `skill-stack` (fast-forward, `01b6cc69` + `4888b0ce`, pushed) and the live workspace `~/Desktop/Jugglebot-skills/ros_ws` rebuilt on 2026-10-09 17:33 (`colcon build`, the venv active as before; installed `throw_ballistics.py` sha `cb09095e…`, `BB_GEOM_YAW_S_OFFSET_MM = 105.65`, both affine resources installed). The branch and its worktree are deleted; the S8 sweep and gate logs were copied to this checkout's `temp/logs/` and `temp/sweeps/`. **Not yet run on hardware through the node.** Remaining:
 
-1. Merge the branch into `skill-stack` (`~/Desktop/Jugglebot-skills`), `colcon build` the workspace.
-2. Start the stack; check the node logs `Aim correction source: …/throw_affine_correction.json` with no pairing ERROR, and that `skill_node` accepts the re-swept box (gate `1cd76c2d3c4a`).
-3. Throw a handful of targets on the hand side (BB-local y ≳ 200 mm) before a pattern.
-4. Re-measure `columns_feed_bb_bias_mm` with `tools/probes/feed_lateral_miss.py` only if feeds still miss; it stays (0, 0) until then.
+1. Start the stack; check the node logs `Aim correction source: …/throw_affine_correction.json` with no pairing ERROR, and that `skill_node` accepts the re-swept box (gate `1cd76c2d3c4a`).
+2. Throw a handful of targets on the hand side (BB-local y ≳ 200 mm) before a pattern.
+3. Re-measure `columns_feed_bb_bias_mm` with `tools/probes/feed_lateral_miss.py` only if feeds still miss; it stays (0, 0) until then.
