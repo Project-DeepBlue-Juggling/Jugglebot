@@ -10,9 +10,12 @@ estimator inputs it collects (2026-10-09, sweep estimator).
 * An unreadable state file refuses (never a silent fallback) unless
   ``bb_moved`` is armed.
 * The solver gets mocap frames at their QTM stamps (one per distinct stamp)
-  and yaw samples on the ROS clock; a stamped ``bb_yaw`` (degrees) on
-  bb/axis_estimates is preferred over the heartbeat; the two-joint message
-  of older firmware falls back to the heartbeat.
+  and yaw samples on the ROS clock. The yaw source follows ``bb_yaw_source``
+  (2026-10-10): ``heartbeat`` by default even when a stamped ``bb_yaw``
+  (degrees) arrives on bb/axis_estimates; ``stamped`` uses it (refused when
+  it is absent); ``auto`` prefers it and falls back to the heartbeat for the
+  two-joint message of older firmware. See
+  ``logbook/2026-10-10-bb-yaw-offset-spread-stamped-source.md``.
 
 See ``logbook/2026-10-09-bb-constellation-yaw-offset.md``.
 """
@@ -236,9 +239,63 @@ def test_the_first_calibrating_heartbeats_yaw_is_recorded(tmp_path):
     node._on_bb_heartbeat(_hb(BallButlerStates.CALIBRATING, yaw=3.0))
     assert [y for _, y in node._calib_yaw_samples] == [pytest.approx(359.7), pytest.approx(3.0)]
 
-def test_stamped_yaw_stream_is_preferred_over_the_heartbeat(tmp_path):
+def _stamped_sweep(node, n):
+    import jugglebot.mocap_node as mn
+    node._on_bb_heartbeat(_hb(BallButlerStates.CALIBRATING))
+    node._calib_data = {0: [np.zeros(3)]}
+    for k in range(n):
+        node._on_bb_axis_estimates(_axis_estimates(1000.0 + 0.01 * k, 36.0))
+    with patch.object(mn, 'run_calibration', return_value=_result(0.6)) as solver:
+        node._on_bb_heartbeat(_hb(BallButlerStates.IDLE))
+    return solver, node.pub_calibration.published[-1]
+
+
+def test_the_heartbeat_is_the_default_yaw_source_even_with_a_stamped_stream(tmp_path):
+    """Bag 2026-10-10_00-24-06: the stamped source's only bag scattered 0.27° SD
+    (the mocap clock, which scattered the heartbeat too); the heartbeat is the only
+    source verified to repeat (0.062° SD, bag 2026-10-09_23-49-07)."""
     import jugglebot.mocap_node as mn
     node, _ = _node(tmp_path, _ref(0.6))
+    assert node.get_parameter('bb_yaw_source').value == 'heartbeat'
+    solver, msg = _stamped_sweep(node, mn.MIN_STAMPED_YAW_SAMPLES + 50)
+    assert solver.call_args.kwargs['yaw_source'] == 'heartbeat'
+    assert solver.call_args.kwargs['yaw_samples'] is not node._calib_stamped_yaw
+
+
+def test_bb_yaw_source_stamped_uses_the_stamped_stream(tmp_path):
+    import jugglebot.mocap_node as mn
+    node, _ = _node(tmp_path, _ref(0.6))
+    node._params['bb_yaw_source'] = 'stamped'
+    solver, _ = _stamped_sweep(node, mn.MIN_STAMPED_YAW_SAMPLES)
+    kw = solver.call_args.kwargs
+    assert kw['yaw_source'] == 'stamped' and len(kw['yaw_samples']) == mn.MIN_STAMPED_YAW_SAMPLES
+
+
+def test_bb_yaw_source_stamped_without_the_stream_is_refused_not_substituted(tmp_path):
+    import jugglebot.mocap_node as mn
+    node, _ = _node(tmp_path, _ref(0.6))
+    node._params['bb_yaw_source'] = 'stamped'
+    solver, msg = _stamped_sweep(node, mn.MIN_STAMPED_YAW_SAMPLES - 1)
+    assert not solver.called
+    assert not msg.success and 'BB_YAW_SOURCE_UNAVAILABLE' in msg.message
+
+
+def test_an_invalid_bb_yaw_source_is_rejected_at_set_time_and_refused_at_calibration(tmp_path):
+    import jugglebot.mocap_node as mn
+    node, _ = _node(tmp_path, _ref(0.6))
+    res = node._on_set_parameters([SimpleNamespace(name='bb_yaw_source', value='mocap')])
+    assert not res.successful and 'heartbeat' in res.reason
+    assert node._on_set_parameters([SimpleNamespace(name='bb_yaw_source', value='auto')]).successful
+    node._params['bb_yaw_source'] = 'mocap'          # e.g. a launch-file typo
+    solver, msg = _stamped_sweep(node, mn.MIN_STAMPED_YAW_SAMPLES)
+    assert not solver.called
+    assert not msg.success and 'BB_YAW_SOURCE_INVALID' in msg.message
+
+
+def test_auto_prefers_the_stamped_yaw_stream_over_the_heartbeat(tmp_path):
+    import jugglebot.mocap_node as mn
+    node, _ = _node(tmp_path, _ref(0.6))
+    node._params['bb_yaw_source'] = 'auto'
     node._on_bb_heartbeat(_hb(BallButlerStates.CALIBRATING))
     node._calib_data = {0: [np.zeros(3)]}
     for k in range(mn.MIN_STAMPED_YAW_SAMPLES):
@@ -251,9 +308,10 @@ def test_stamped_yaw_stream_is_preferred_over_the_heartbeat(tmp_path):
     assert kw['yaw_samples'][0] == (pytest.approx(1000.0), pytest.approx(36.0))
 
 
-def test_a_short_or_absent_stamped_stream_falls_back_to_the_heartbeat(tmp_path):
+def test_auto_with_a_short_or_absent_stamped_stream_falls_back_to_the_heartbeat(tmp_path):
     import jugglebot.mocap_node as mn
     node, _ = _node(tmp_path, _ref(0.6))
+    node._params['bb_yaw_source'] = 'auto'
     node._on_bb_heartbeat(_hb(BallButlerStates.CALIBRATING))
     node._calib_data = {0: [np.zeros(3)]}
     node._on_bb_axis_estimates(_axis_estimates(1000.0, 36.0))

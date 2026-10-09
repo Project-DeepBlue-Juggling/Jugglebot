@@ -95,6 +95,20 @@ DEFAULT_CALIBRATION_STATE_FILE = os.path.join(
 #: without the yaw lane) gives 0.
 MIN_STAMPED_YAW_SAMPLES = 100
 
+#: ``bb_yaw_source`` parameter values: which BB yaw the sweep estimator fits.
+#: ``heartbeat`` (DEFAULT) — the 10 Hz bb/heartbeat yaw at its receive time;
+#: ``stamped`` — the 100 Hz bb_yaw of bb/axis_estimates at its bridge stamp
+#: (refused when fewer than MIN_STAMPED_YAW_SAMPLES arrived); ``auto`` — the
+#: stamped stream when it has enough samples, else the heartbeat (the
+#: 2026-10-10 behaviour). The heartbeat is the default because it is the only
+#: source verified to repeat (0.062° SD over 7 sweeps, bag 2026-10-09_23-49-07);
+#: the stamped source's only bag (2026-10-10_00-24-06) had a wandering
+#: QTM->ROS clock that scattered BOTH sources ~0.25° and that the estimator now
+#: refuses (CONSTELLATION_MOCAP_CLOCK), so it is unverified, not shown bad
+#: (logbook 2026-10-10-bb-yaw-offset-spread-stamped-source).
+BB_YAW_SOURCES = ('heartbeat', 'stamped', 'auto')
+DEFAULT_BB_YAW_SOURCE = 'heartbeat'
+
 # BB_MARKER_COUNT (``mocap_interface.ball_butler_markers`` is a fixed
 # (BB_MARKER_COUNT, 4) array with NaN rows for the ones QTM cannot see this
 # frame) and BB_YAW_ANCHOR_INDEX (the marker ``run_calibration`` hard-requires
@@ -209,6 +223,7 @@ class MocapNode(Node):
         self.declare_parameter('bb_marker_template_file', DEFAULT_MARKER_TEMPLATE_FILE)
         self.declare_parameter('bb_calibration_state_file', DEFAULT_CALIBRATION_STATE_FILE)
         self.declare_parameter('bb_moved', False)
+        self.declare_parameter('bb_yaw_source', DEFAULT_BB_YAW_SOURCE)
         self._bb_moved_armed = bool(self.get_parameter('bb_moved').value)
         self.add_on_set_parameters_callback(self._on_set_parameters)
         self._marker_template = None
@@ -219,6 +234,11 @@ class MocapNode(Node):
         self.get_logger().info('Mocap node up (QTM connects in the background)')
 
     def _on_set_parameters(self, params):
+        for p in params:
+            if p.name == 'bb_yaw_source' and p.value not in BB_YAW_SOURCES:
+                return SetParametersResult(
+                    successful=False,
+                    reason=f'bb_yaw_source must be one of {", ".join(BB_YAW_SOURCES)}')
         for p in params:
             if p.name == 'bb_moved':
                 self._bb_moved_armed = bool(p.value)
@@ -634,10 +654,24 @@ class MocapNode(Node):
                 f'{self._marker_template_error} — cannot estimate the yaw offset')
             return
 
-        # The stamped 100 Hz yaw (bb/axis_estimates) when the bridge provides
-        # it: sample-time stamps, so the fitted lag should come out near zero
-        # (it is still fitted and reported). Otherwise the heartbeat.
-        if len(self._calib_stamped_yaw) >= MIN_STAMPED_YAW_SAMPLES:
+        # Yaw source per the bb_yaw_source parameter (BB_YAW_SOURCES): the
+        # heartbeat by default; the stamped 100 Hz yaw (bb/axis_estimates)
+        # when asked for, or under 'auto' when the bridge provides it.
+        requested = str(self.get_parameter('bb_yaw_source').value)
+        have_stamped = len(self._calib_stamped_yaw) >= MIN_STAMPED_YAW_SAMPLES
+        if requested not in BB_YAW_SOURCES:
+            self._publish_calibration_failure(
+                f'BB_YAW_SOURCE_INVALID: bb_yaw_source {requested!r} is not one of '
+                f'{", ".join(BB_YAW_SOURCES)}')
+            return
+        if requested == 'stamped' and not have_stamped:
+            self._publish_calibration_failure(
+                f'BB_YAW_SOURCE_UNAVAILABLE: bb_yaw_source is stamped but only '
+                f'{len(self._calib_stamped_yaw)} stamped yaw samples arrived (need '
+                f'{MIN_STAMPED_YAW_SAMPLES}; BB firmware 6 + can-bridge firmware 28) — set '
+                'bb_yaw_source:=heartbeat or auto')
+            return
+        if requested == 'stamped' or (requested == 'auto' and have_stamped):
             yaw_samples, yaw_source = self._calib_stamped_yaw, 'stamped'
         else:
             yaw_samples, yaw_source = self._calib_yaw_samples, 'heartbeat'
