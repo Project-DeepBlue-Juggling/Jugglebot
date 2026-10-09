@@ -208,6 +208,10 @@ def test_overview(indexed):
         assert by_kind[kind][0]["t"] - t0 == pytest.approx(at, abs=rs_period), kind
     assert len(by_kind["catch_event"]) == 2
     assert len(by_kind["skill_attempt"]) == 3
+    # bb_calibration ticks come from /bb/calibration_attempt (every sweep,
+    # success and failure); the one /bb/calibration_result adds none.
+    assert [tk["label"] for tk in by_kind["bb_calibration"]] == ["ok", "failed", "ok"]
+    assert [tk["t"] - t0 for tk in by_kind["bb_calibration"]] == pytest.approx([7.5, 15.2, 30.1], abs=0.01)
     # label = .message, or .name when the message is empty (attempt 1).
     assert [tk["label"] for tk in by_kind["skill_attempt"]] == [
         "attempt 0 CAUGHT", "skill_1", "attempt 2 CAUGHT"]

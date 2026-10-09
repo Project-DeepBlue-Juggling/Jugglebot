@@ -20,7 +20,7 @@
  *   chunk's recorded mean period ((t1 - t0) / n); 0 at or below 1x.
  * onChange: also dispatch any record whose `data` differs from the last
  * dispatched one (orchestrator_state, control_mode_topic).
- * every: dispatch every record (event topics; bb/calibration_result, a rare
+ * every: dispatch every record (event topics; bb/calibration_result, bb/calibration_attempt, a rare
  * latched edge whose second publish must not be gated away at 8x).
  */
 
@@ -46,6 +46,7 @@ export const TOPIC_POLICY = Object.freeze({
     '/robot_state':           { cls: E, throttleMs: 50 },
     '/orchestrator_state':    { cls: E, throttleMs: 0, onChange: true },
     '/bb/calibration_result': { cls: E, throttleMs: 0, every: true },
+    '/bb/calibration_attempt': { cls: E, throttleMs: 0, every: true },
     '/mocap_data':            { cls: R, throttleMs: 50 },
     '/rigid_body_poses':      { cls: R, throttleMs: 50 },
     '/hand_telemetry':        { cls: R, throttleMs: 100 },

@@ -135,7 +135,7 @@ OVERVIEW_TICK_KINDS: Tuple[str, ...] = (
     "levelled",         # /robot_state levelling_complete rises
     "catch_event",      # /cone/catch_event message
     "skill_attempt",    # /skills/attempt message (DiagnosticStatus; label = .message or .name)
-    "bb_calibration",   # /bb/calibration_result message
+    "bb_calibration",   # /bb/calibration_attempt message (every sweep; label ok/failed from .success)
 )
 
 

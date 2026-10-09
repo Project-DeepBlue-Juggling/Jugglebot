@@ -13,6 +13,7 @@ Timeline (seconds from the start, defaults):
   /mocap_data         50 Hz, 2 markers
   /skills/attempt     3 messages (DiagnosticStatus)
   /cone/catch_event   2 messages
+  /bb/calibration_attempt 3 messages (one failure); /bb/calibration_result 1 message
   /bb/axis_estimates  50 Hz Float64MultiArray — NOT allow-listed (skipped)
 """
 from __future__ import annotations
@@ -33,6 +34,8 @@ SEP = "=" * 80
 T_START_NS = 1_791_532_600_000_000_000
 SKILL_TIMES = (6.05, 12.33, 27.71)
 CATCH_TIMES = (13.42, 25.18)
+CAL_ATTEMPT_TIMES = (7.5, 15.2, 30.1)   # the middle one is a FAILED sweep
+CAL_RESULT_TIME = 7.5                    # the calibration in force (no overview tick)
 
 JB = "jugglebot_interfaces/msg/"
 
@@ -190,6 +193,18 @@ def _build_messages(ts, duration_s: float, seed: int) -> List[Tuple[int, str, st
             catch_time=_time(ts, t_ns), sequence=n, time_synced=True,
             retrigger_suppressed=False)
         add(t, "/cone/catch_event", JB + "CatchEvent", msg, {"sequence": n})
+
+    CalT = JB + "BallButlerCalibrationResult"
+    Point3 = T["geometry_msgs/msg/Point"]
+    cal_msgs = [("/bb/calibration_attempt", t, n != 1) for n, t in enumerate(CAL_ATTEMPT_TIMES)]
+    cal_msgs.append(("/bb/calibration_result", CAL_RESULT_TIME, True))
+    for topic, t, ok in cal_msgs:
+        if t >= duration_s:
+            continue
+        msg = T[CalT](position_mm=Point3(x=1.0, y=2.0, z=3.0), yaw_offset_rad=0.1,
+                      yaw_offset_std_deg=0.2, axis_tilt_deg=0.3, success=ok,
+                      message="" if ok else "sweep refused")
+        add(t, topic, CalT, msg, {"success": ok})
 
     FMA = T["std_msgs/msg/Float64MultiArray"]
     Layout = T["std_msgs/msg/MultiArrayLayout"]

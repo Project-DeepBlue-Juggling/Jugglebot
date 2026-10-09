@@ -237,9 +237,14 @@ class _Overview:
             names = cols.get("name") or [""] * len(ts)
             for t, m, n in zip(ts, msgs, names):
                 self.ticks.append({"t": t, "kind": "skill_attempt", "label": m or n or ""})
-        elif topic == "/bb/calibration_result":
-            for t in ts:
-                self.ticks.append({"t": t, "kind": "bb_calibration", "label": ""})
+        elif topic == "/bb/calibration_attempt":
+            # every sweep (success and failure); /bb/calibration_result only
+            # carries the calibration in force since keep-last-good 2026-10-10
+            ok = cols.get("success")
+            for k, t in enumerate(ts):
+                good = True if ok is None else bool(ok[k])
+                self.ticks.append({"t": t, "kind": "bb_calibration",
+                                   "label": "ok" if good else "failed"})
 
     def note_chunk(self, i: int, topics: Dict[str, int]) -> None:
         for topic, n in topics.items():
