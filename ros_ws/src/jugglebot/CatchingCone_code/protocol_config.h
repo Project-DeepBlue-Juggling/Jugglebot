@@ -121,6 +121,7 @@ namespace BallButlerCanId {
   constexpr uint32_t CMD_RESULT = 0x7D5;
   constexpr uint32_t FW_UPDATE_CMD = 0x7D6;
   constexpr uint32_t FW_UPDATE_REPLY = 0x7D7;
+  constexpr uint32_t YAW_ESTIMATE = 0x7D8;
 }
 
 // Catching Cone Teensy <-> Host
@@ -207,6 +208,11 @@ namespace HeartbeatEncoding {
   constexpr float yaw_res_deg = 0.01f;
   constexpr float pitch_res_deg = 0.002f;
   constexpr float hand_res_mm = 0.01f;
+}
+
+// Ball Butler YAW_ESTIMATE CAN frame encoding (stamped 100 Hz yaw)
+namespace YawEstimateEncoding {
+  constexpr float vel_res_dps = 0.1f;
 }
 
 // ODrive input scaling (vel_ff and torque_ff are sent as int16 * scale)

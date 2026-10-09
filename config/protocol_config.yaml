@@ -113,6 +113,14 @@ can_ids:
     # on FW_UPDATE_REPLY, which the bridge uplinks verbatim as a PLATFORM_FRAME.
     FW_UPDATE_CMD:    0x7D6
     FW_UPDATE_REPLY:  0x7D7
+    # Stamped 100 Hz yaw (2026-10-09): BB -> bridge, one frame per fresh 150 Hz
+    # YawAxis sample. 8 bytes LE: f32 yaw_deg (BB-local, unwrapped — the heartbeat's
+    # quantity before its [0,360) wrap + 0.01 deg truncation) | i16 yaw velocity in
+    # encoding.yaw_estimate.vel_res_dps counts | u16 sample age at TX (us, BB
+    # monotonic, saturating). The bridge relays it as UDP BB_YAW_ESTIMATE paired with
+    # BB_AXIS_ESTIMATES -> /bb/axis_estimates name bb_yaw. The 10 Hz heartbeat yaw is
+    # unchanged. Lowest-priority BB id: it never outranks ODrive control traffic.
+    YAW_ESTIMATE:     0x7D8
 
   # Catching Cone Teensy <-> Host
   catching_cone:
@@ -206,6 +214,12 @@ encoding:
     yaw_res_deg:   0.01
     pitch_res_deg: 0.002
     hand_res_mm:   0.01
+
+  # Ball Butler YAW_ESTIMATE (0x7D8) CAN frame encoding: yaw velocity as int16 counts.
+  # 0.1 deg/s gives +-3276 deg/s, covering YawAxis's 2 rev/s (720 deg/s) glitch
+  # threshold; yaw position rides as an f32 (no quantisation beyond float).
+  yaw_estimate:
+    vel_res_dps:   0.1
 
   # ODrive input scaling factors (vel_ff and torque_ff are sent as int16 * scale).
   # The hand VELOCITY scale stays 100 (0.01 rev/s/count, +-327 rev/s range for

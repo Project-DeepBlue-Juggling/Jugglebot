@@ -89,6 +89,7 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `RPC_RESPONSE` | 0x90 | RPC response (RPC port, T→J) |
 | `CACHE_DIAG` | 0x91 | 1 Hz encoder-cache freshness census (per-axis age floor/peak) + CAN RX-ring occupancy (STREAM, T→J) |
 | `RING_DIAG` | 0x92 | 1 Hz CAN RX-ring TRUE-occupancy census (true_depth vs reported _available = the leak) + jugglebot delivery lag + SDO RTT (STREAM, T→J) |
+| `BB_YAW_ESTIMATE` | 0x93 | Ball Butler yaw estimate @100Hz, paired 1:1 with BB_AXIS_ESTIMATES by t_bridge_us (STREAM, T→J) |
 
 ### RpcMethod
 
@@ -397,6 +398,20 @@ Payload **24 bytes**. Python struct fmt: `<Qffff`.
 | `pitch_vel_rps` | f32 | 1 | BB pitch (node 7) vel_estimate (rev/s) |
 | `hand_pos_rev` | f32 | 1 | BB hand (node 8) pos_estimate (rev) |
 | `hand_vel_rps` | f32 | 1 | BB hand (node 8) vel_estimate (rev/s) |
+
+### BbYawEstimate (`MsgType.BB_YAW_ESTIMATE`, T2J, STREAM port)
+
+Ball Butler yaw at the BB_AXIS_ESTIMATES cadence, so /bb/axis_estimates can carry a sample-time-stamped yaw beside pitch/hand (2026-10-09; the 10 Hz unstamped heartbeat yaw lagged mocap by a per-session 78-174 ms). Yaw is measured by BB's own Teensy (AS5047P, 150 Hz YawAxis ISR), not an ODrive, so it reaches the bridge as BB's CAN1 YAW_ESTIMATE frame (BallButlerCanId::YAW_ESTIMATE, one per fresh 150 Hz sample: f32 yaw_deg, i16 yaw vel at YawEstimateEncoding::vel_res_dps, u16 sample age at TX). Emitted in the same telemetry tick as, and immediately BEFORE, the BB_AXIS_ESTIMATES frame it pairs with: `t_bridge_us` is the IDENTICAL value, so the host attaches it to that frame by exact match. Sent only while a BB yaw frame is fresher than BB_YAW_FRESH_US; silence otherwise (old BB firmware, BB dark). Additive — no existing frame changes, so NO PROTOCOL_VERSION bump (the LegCmd precedent): an old host counts and ignores it; a new host against an old bridge just publishes no yaw.
+
+Payload **24 bytes**. Python struct fmt: `<QffII`.
+
+| Field | Type | Count | Notes |
+|-------|------|------:|-------|
+| `t_bridge_us` | u64 | 1 | Bridge wall-clock at emit (us) — IDENTICAL to the paired BB_AXIS_ESTIMATES t_bridge_us |
+| `yaw_deg` | f32 | 1 | BB-local yaw (deg): the same Proprioception yaw the 0x7D1 heartbeat reports, unwrapped and untruncated (the heartbeat wraps to [0,360) and truncates to 0.01 deg) |
+| `yaw_vel_dps` | f32 | 1 | BB yaw velocity (deg/s): YawAxis EMA-filtered vel_rps * 360, quantised to YawEstimateEncoding::vel_res_dps on CAN |
+| `yaw_age_us` | u32 | 1 | Age of the yaw SAMPLE at t_bridge_us (us): BB's sample-to-TX age + the bridge's RX-to-emit age, both on monotonic clocks (no cross-clock term). True sample time = t_bridge_us - yaw_age_us |
+| `bb_frames` | u32 | 1 | BB YAW_ESTIMATE CAN frames received this boot (rate/loss check: ~150/s) |
 
 ### LegCmd (`MsgType.LEG_CMD`, T2J, STREAM port)
 

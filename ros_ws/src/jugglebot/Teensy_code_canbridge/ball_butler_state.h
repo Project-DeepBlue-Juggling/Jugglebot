@@ -49,6 +49,62 @@ struct BallButlerState {
 // Singleton; defined in ball_butler_state.cpp.
 extern BallButlerState bb_state;
 
+// ── BB stamped yaw estimate (CAN1 YAW_ESTIMATE 0x7D8, FW 28) ────────────────
+// Written by the CAN1 RX decode once per BB frame (~150 Hz, one per fresh
+// YawAxis sample); read by telemetry.cpp send_bb_estimates() at 100 Hz. Same
+// seqlock idiom as BallButlerState. All times are bridge micros64() (monotonic):
+// the sample's age at emit is (now_mono - rx_mono_us) + age_at_tx_us, with no
+// wall-clock term, so a time-sync slew cannot move it.
+struct BbYawEstimateCache {
+  volatile float    yaw_deg      = 0.0f;   // BB-local, unwrapped (deg)
+  volatile float    yaw_vel_dps  = 0.0f;   // deg/s, decoded from the int16
+  volatile uint32_t age_at_tx_us = 0;      // BB sample -> BB TX (us, BB monotonic)
+  volatile uint64_t rx_mono_us   = 0;      // bridge micros64() at RX decode
+  volatile uint32_t frames       = 0;      // frames decoded this boot
+  volatile bool     seen         = false;
+  volatile uint32_t seq          = 0;
+};
+
+extern BbYawEstimateCache bb_yaw;
+
+struct BbYawEstimateSnapshot {
+  float    yaw_deg;
+  float    yaw_vel_dps;
+  uint32_t age_at_tx_us;
+  uint64_t rx_mono_us;
+  uint32_t frames;
+  bool     seen;
+};
+
+inline void write_bb_yaw(BbYawEstimateCache& c, float yaw_deg, float yaw_vel_dps,
+                         uint32_t age_at_tx_us, uint64_t rx_mono_us) {
+  c.seq = c.seq + 1;          // odd → write in progress
+  asm volatile("" ::: "memory");
+  c.yaw_deg      = yaw_deg;
+  c.yaw_vel_dps  = yaw_vel_dps;
+  c.age_at_tx_us = age_at_tx_us;
+  c.rx_mono_us   = rx_mono_us;
+  c.frames       = c.frames + 1;
+  c.seen         = true;
+  asm volatile("" ::: "memory");
+  c.seq = c.seq + 1;          // even → done
+}
+
+inline void snapshot_bb_yaw(const BbYawEstimateCache& c, BbYawEstimateSnapshot& out) {
+  uint32_t s0, s1;
+  do {
+    s0 = c.seq;
+    out.yaw_deg      = c.yaw_deg;
+    out.yaw_vel_dps  = c.yaw_vel_dps;
+    out.age_at_tx_us = c.age_at_tx_us;
+    out.rx_mono_us   = c.rx_mono_us;
+    out.frames       = c.frames;
+    out.seen         = c.seen;
+    asm volatile("" ::: "memory");
+    s1 = c.seq;
+  } while ((s0 & 1) || (s0 != s1));
+}
+
 // Snapshot returned by snapshot_bb(): the fields a reader cares about, copied
 // out atomically so no consumer sees a torn write across them.
 struct BallButlerSnapshot {

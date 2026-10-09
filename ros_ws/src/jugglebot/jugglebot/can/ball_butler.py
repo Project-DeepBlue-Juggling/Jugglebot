@@ -19,6 +19,7 @@ HEARTBEAT_ID = proto.CAN_ID_BB_HEARTBEAT
 RELOAD_CMD_ID = proto.CAN_ID_BB_RELOAD_CMD
 RESET_CMD_ID = proto.CAN_ID_BB_RESET_CMD
 CALIBRATE_CMD_ID = proto.CAN_ID_BB_CALIBRATE_LOC_CMD
+YAW_ESTIMATE_ID = proto.CAN_ID_BB_YAW_ESTIMATE
 
 # Re-export enums from protocol_config
 BallButlerStates = proto.BallButlerStates
@@ -68,6 +69,36 @@ class BallButlerHeartbeat:
         if self.state == BallButlerStates.ERROR:
             return BallButlerError(self.state_data)
         return BallButlerError.NONE
+
+
+@dataclass
+class BallButlerYawEstimate:
+    """Decoded Ball Butler YAW_ESTIMATE (CAN 0x7D8, BB FW >= 6) — 8 bytes LE.
+
+    The Python mirror of BB ``CanInterface::maybePublishYawEstimate_`` and the
+    can-bridge ``decode_bb_yaw_estimate`` (which is the only runtime decoder:
+    the bridge forwards it as UDP BB_YAW_ESTIMATE → /bb/axis_estimates bb_yaw).
+
+    Frame layout (little-endian):
+        Bytes 0-3: yaw_deg (float32, BB-local, unwrapped — the heartbeat's
+                   yaw before its [0, 360) wrap and 0.01 deg truncation)
+        Bytes 4-5: yaw velocity (int16, scaled by vel_resolution, deg/s)
+        Bytes 6-7: sample age at BB TX (uint16, us, saturating at 65535)
+    """
+    vel_resolution: ClassVar[float] = proto.YAW_ESTIMATE_VEL_RES_DPS
+
+    yaw_deg: float = 0.0
+    yaw_vel_dps: float = 0.0
+    age_us: int = 0
+
+    @classmethod
+    def from_can_frame(cls, data: bytes) -> 'BallButlerYawEstimate':
+        """Unpack from 8-byte CAN frame."""
+        if len(data) < 8:
+            raise ValueError(f"BB yaw estimate: expected 8 bytes, got {len(data)}")
+        yaw_deg, vel_i, age_us = struct.unpack('<fhH', bytes(data[:8]))
+        return cls(yaw_deg=yaw_deg, yaw_vel_dps=vel_i * cls.vel_resolution,
+                   age_us=age_us)
 
 
 # ═══════════════════════════════════════════════════════════════

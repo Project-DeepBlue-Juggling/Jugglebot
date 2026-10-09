@@ -10,6 +10,7 @@
 #include "udp_link.h"
 #include "axis_state.h"
 #include "can_buses.h"
+#include "ball_butler_state.h"   // bb_yaw — the BB YAW_ESTIMATE cache forwarded as BB_YAW_ESTIMATE (FW 28)
 #include "time_base.h"
 #include "leg_homing.h"   // homing_result() — uplinked in the Diagnostic (see logbook 2026-07-05-canhub-hardening-18a-homing-result-uplink)
 #include "gpio_poll.h"    // gpio_poll_snapshot() — the hand ball-sensor cache uplinked as HAND_SENSOR
@@ -141,6 +142,15 @@ static void send_bb_diag(uint8_t idx) {
 // and the pitch is quasi-static during the throw, so 100 Hz resolves both. Bump to
 // a dedicated higher-rate task only if a sharp servo-overshoot transient must be
 // caught (the ODrive side already supports it).
+//
+// FW 28: BB yaw rides beside it. BB's yaw is not an ODrive — it arrives as BB's
+// own CAN1 YAW_ESTIMATE (0x7D8, one per fresh 150 Hz YawAxis sample) — so it is a
+// separate ADDITIVE uplink, BB_YAW_ESTIMATE, sent immediately BEFORE the
+// BB_AXIS_ESTIMATES of the same tick with the IDENTICAL t_bridge_us: the host
+// pairs the two by exact match (in-order on one socket, so the yaw is already
+// stashed when its partner arrives). Silent unless a yaw frame is fresher than
+// BB_YAW_FRESH_US. yaw_age_us is the sample's age at t_bridge_us, built only
+// from monotonic intervals (BB sample->TX + bridge RX->now).
 static void send_bb_estimates() {
   JbUdp::BbAxisEstimatesPayload e{};
   float pos, vel; uint64_t ts;
@@ -149,6 +159,20 @@ static void send_bb_estimates() {
   snapshot_pos_vel(bb_axes[1], pos, vel, ts);   // node 8 = hand
   e.hand_pos_rev = pos;  e.hand_vel_rps = vel;
   e.t_bridge_us = now_wall_us();   // wire-bound absolute timestamp — wall by contract
+
+  BbYawEstimateSnapshot y;
+  snapshot_bb_yaw(bb_yaw, y);
+  const uint64_t now_mono = micros64();          // interval clock: freshness + age
+  const uint64_t since_rx = (now_mono > y.rx_mono_us) ? (now_mono - y.rx_mono_us) : 0;
+  if (y.seen && since_rx < BB_YAW_FRESH_US) {
+    JbUdp::BbYawEstimatePayload ye{};
+    ye.t_bridge_us = e.t_bridge_us;              // IDENTICAL — the host's pairing key
+    ye.yaw_deg     = y.yaw_deg;
+    ye.yaw_vel_dps = y.yaw_vel_dps;
+    ye.yaw_age_us  = (uint32_t)(since_rx + y.age_at_tx_us);   // < 50 ms + 65.5 ms: fits u32
+    ye.bb_frames   = y.frames;
+    udp_send_stream(JbUdp::MsgType::BB_YAW_ESTIMATE, (const uint8_t*)&ye, sizeof(ye));
+  }
   udp_send_stream(JbUdp::MsgType::BB_AXIS_ESTIMATES, (const uint8_t*)&e, sizeof(e));
 }
 

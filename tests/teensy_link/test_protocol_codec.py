@@ -960,3 +960,25 @@ def test_ring_diag_full_frame_roundtrip_and_unknown_type_tolerance():
     assert mt == 146
     assert seq == 31
     assert p.RingDiag.unpack(payload).true_depth_jb == 7
+
+
+def test_bb_yaw_estimate_roundtrip_and_shape():
+    """BB_YAW_ESTIMATE (0x93, can-bridge FW 28, 2026-10-09): additive 24 B uplink.
+
+    Its partner BB_AXIS_ESTIMATES keeps its exact pre-existing 24 B layout — the
+    yaw rides a NEW msg type precisely so no existing frame changes and
+    PROTOCOL_VERSION stays 9. Distinct values per field so a swapped pair fails.
+    """
+    assert int(p.MsgType.BB_YAW_ESTIMATE) == 0x93
+    assert p.BB_YAW_ESTIMATE_SIZE == 24
+    assert p.BB_AXIS_ESTIMATES_SIZE == 24
+    y = p.BbYawEstimate(t_bridge_us=1_760_000_000_000_123, yaw_deg=-7.25,
+                        yaw_vel_dps=88.5, yaw_age_us=6_700, bb_frames=123_456)
+    raw = y.pack()
+    assert len(raw) == p.BB_YAW_ESTIMATE_SIZE
+    back = p.BbYawEstimate.unpack(raw)
+    assert back.t_bridge_us == y.t_bridge_us
+    assert back.yaw_deg == pytest.approx(-7.25)
+    assert back.yaw_vel_dps == pytest.approx(88.5)
+    assert back.yaw_age_us == 6_700
+    assert back.bb_frames == 123_456

@@ -250,6 +250,14 @@ def generate_cpp(cfg: dict) -> str:
         lines.append(f"  constexpr float {name} = {val}f;")
     lines.append("}")
 
+    # Yaw-estimate encoding (BB YAW_ESTIMATE 0x7D8, 2026-10-09)
+    lines.append("")
+    lines.append("// Ball Butler YAW_ESTIMATE CAN frame encoding (stamped 100 Hz yaw)")
+    lines.append("namespace YawEstimateEncoding {")
+    for name, val in cfg["encoding"]["yaw_estimate"].items():
+        lines.append(f"  constexpr float {name} = {val}f;")
+    lines.append("}")
+
     # Input scales
     lines.append("")
     lines.append("// ODrive input scaling (vel_ff and torque_ff are sent as int16 * scale)")
@@ -432,6 +440,10 @@ def generate_python(cfg: dict) -> str:
     lines.append("# Ball Butler heartbeat CAN frame encoding resolutions")
     for name, val in cfg["encoding"]["heartbeat"].items():
         lines.append(f"HEARTBEAT_{name.upper()} = {val}")
+    lines.append("")
+    lines.append("# Ball Butler YAW_ESTIMATE CAN frame encoding (stamped 100 Hz yaw)")
+    for name, val in cfg["encoding"]["yaw_estimate"].items():
+        lines.append(f"YAW_ESTIMATE_{name.upper()} = {val}")
     lines.append("")
 
     # Input scales

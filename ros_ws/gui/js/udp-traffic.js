@@ -185,6 +185,9 @@ const NOMINAL_RATES = {
     // and all three sends are unconditional, so they share TELEM_RATE_HZ.
     rx_BB_AXIS_ESTIMATES: { hz: 100 },
     rx_LEG_CMD: { hz: 100 },
+    // BB_YAW_ESTIMATE (FW 28) rides the same tick but is CONDITIONAL — sent only
+    // while BB's 0x7D8 yaw frame is fresh (BB_YAW_FRESH_US) — so it gets no
+    // nominal: a dark or pre-FW-6 BB would otherwise paint a permanent alarm.
     // JBBallDetect::CHECK_INTERVAL_MS = 20 ms, hardware_config.h:524 (the 50 ms
     // at :512 belongs to BBBallDetect, a different robot).  The uplink sends on
     // a new poll reply with a 1 Hz keepalive floor (HAND_SENSOR_KEEPALIVE_US,

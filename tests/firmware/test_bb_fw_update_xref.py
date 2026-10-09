@@ -36,7 +36,14 @@ from teensy_link import rpc_args
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__))))
-_BB_DIR = os.path.join(os.path.dirname(_REPO_ROOT), 'BallButler', 'ball_butler_main')
+# JUGGLEBOT_BALLBUTLER_DIR overrides the sibling checkout's location (the
+# directory holding ball_butler_main/), for a Jugglebot worktree paired with a
+# BallButler feature-branch worktree that must not be compared against the
+# owner's ../BallButler. Unset (the normal case): ../BallButler, as before.
+_BB_DIR = os.path.join(
+    os.environ.get('JUGGLEBOT_BALLBUTLER_DIR')
+    or os.path.join(os.path.dirname(_REPO_ROOT), 'BallButler'),
+    'ball_butler_main')
 _BB_H = os.path.join(_BB_DIR, 'FwUpdate.h')
 _BB_CPP = os.path.join(_BB_DIR, 'FwUpdate.cpp')
 _PLATFORM_INO = os.path.join(_REPO_ROOT, 'ros_ws', 'src', 'jugglebot',

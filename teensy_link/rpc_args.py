@@ -542,7 +542,11 @@ FW_OP_INFO = 0x05
 #: centidegrees). Nothing on the runtime path compares this value; it is read
 #: only by tests/firmware/test_bb_fw_update_xref.py (tree vs tree) — the
 #: flash receipt is the fw-update tool's ``FW version: 4 -> 5`` line.
-BB_FW_VERSION_EXPECTED = 5
+#: 6 (2026-10-09) = the YAW_ESTIMATE frame (CAN1 0x7D8): one frame per fresh
+#: 150 Hz yaw sample (f32 yaw_deg, i16 vel at 0.1 deg/s, u16 sample age at TX),
+#: relayed by can-bridge FW 28 into /bb/axis_estimates name bb_yaw. The 0x7D1
+#: heartbeat is unchanged.
+BB_FW_VERSION_EXPECTED = 6
 
 
 def decode_platform_fw_reply(data: bytes):
@@ -806,7 +810,13 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # false MAX_DEVIATION trip on a 99.9 ms-old anchor), and MOTOR_FB_STALE output
 # suppression now covers the hand (axis 6) while its lane is active. No wire
 # change; PROTOCOL_VERSION stays 9.
-EXPECTED_BRIDGE_FW_VERSION = 27
+# 27 -> 28 (2026-10-09): stamped BB yaw. CAN1 YAW_ESTIMATE (0x7D8, BB FW 6) is
+# decoded into a yaw cache and each 100 Hz telemetry tick emits one ADDITIVE
+# BB_YAW_ESTIMATE (0x93) just before BB_AXIS_ESTIMATES with the identical
+# t_bridge_us; the host pairs them into /bb/axis_estimates name bb_yaw. No wire
+# change to any existing message; PROTOCOL_VERSION stays 9; an FW 27 board just
+# never sends 0x93 (the topic keeps its two-name shape).
+EXPECTED_BRIDGE_FW_VERSION = 28
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

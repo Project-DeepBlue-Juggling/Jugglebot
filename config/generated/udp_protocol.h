@@ -54,6 +54,7 @@ namespace MsgType {
   constexpr uint8_t RPC_RESPONSE = 144u;  // RPC response (RPC port, T→J)
   constexpr uint8_t CACHE_DIAG = 145u;  // 1 Hz encoder-cache freshness census (per-axis age floor/peak) + CAN RX-ring occupancy (STREAM, T→J)
   constexpr uint8_t RING_DIAG = 146u;  // 1 Hz CAN RX-ring TRUE-occupancy census (true_depth vs reported _available = the leak) + jugglebot delivery lag + SDO RTT (STREAM, T→J)
+  constexpr uint8_t BB_YAW_ESTIMATE = 147u;  // Ball Butler yaw estimate @100Hz, paired 1:1 with BB_AXIS_ESTIMATES by t_bridge_us (STREAM, T→J)
 }
 namespace RpcMethod {
   constexpr uint16_t NOP = 0x0000u;  // No-op (link test)
@@ -311,6 +312,16 @@ struct BbAxisEstimatesPayload {
 };
 static_assert(sizeof(BbAxisEstimatesPayload) == 24, "BbAxisEstimatesPayload size drift");
 
+// BbYawEstimate: Ball Butler yaw at the BB_AXIS_ESTIMATES cadence, so /bb/axis_estimates can carry a sample-time-stamped yaw beside pitch/hand (2026-10-09; the 10 Hz unstamped heartbeat yaw lagged mocap by a per-session 78-174 ms). Yaw is measured by BB's own Teensy (AS5047P, 150 Hz YawAxis ISR), not an ODrive, so it reaches the bridge as BB's CAN1 YAW_ESTIMATE frame (BallButlerCanId::YAW_ESTIMATE, one per fresh 150 Hz sample: f32 yaw_deg, i16 yaw vel at YawEstimateEncoding::vel_res_dps, u16 sample age at TX). Emitted in the same telemetry tick as, and immediately BEFORE, the BB_AXIS_ESTIMATES frame it pairs with: `t_bridge_us` is the IDENTICAL value, so the host attaches it to that frame by exact match. Sent only while a BB yaw frame is fresher than BB_YAW_FRESH_US; silence otherwise (old BB firmware, BB dark). Additive — no existing frame changes, so NO PROTOCOL_VERSION bump (the LegCmd precedent): an old host counts and ignores it; a new host against an old bridge just publishes no yaw.
+struct BbYawEstimatePayload {
+  uint64_t t_bridge_us;  // Bridge wall-clock at emit (us) — IDENTICAL to the paired BB_AXIS_ESTIMATES t_bridge_us
+  float yaw_deg;  // BB-local yaw (deg): the same Proprioception yaw the 0x7D1 heartbeat reports, unwrapped and untruncated (the heartbeat wraps to [0,360) and truncates to 0.01 deg)
+  float yaw_vel_dps;  // BB yaw velocity (deg/s): YawAxis EMA-filtered vel_rps * 360, quantised to YawEstimateEncoding::vel_res_dps on CAN
+  uint32_t yaw_age_us;  // Age of the yaw SAMPLE at t_bridge_us (us): BB's sample-to-TX age + the bridge's RX-to-emit age, both on monotonic clocks (no cross-clock term). True sample time = t_bridge_us - yaw_age_us
+  uint32_t bb_frames;  // BB YAW_ESTIMATE CAN frames received this boot (rate/loss check: ~150/s)
+};
+static_assert(sizeof(BbYawEstimatePayload) == 24, "BbYawEstimatePayload size drift");
+
 // LegCmd: The Teensy's COMMANDED leg interp output — the float32 cubic-Hermite ladder result (after the lead + stroke clamps) that leg_interp.cpp writes to axes[i].target_pos_rev each 500 Hz tick and would send to the leg ODrives — snapshotted at the telemetry-task rate. Additive diagnostic (no existing frame changes, so NO PROTOCOL_VERSION bump): it exposes the on-Teensy float32 interpolator output so a bench validation can measure the float32-vs-float64 interp residual DIRECTLY, rather than inferring it from the encoder. Written for all legs regardless of the output gate, so it reflects the interp even when CAN3 TX is suppressed. Jugglebot convention (positive = extension).
 struct LegCmdPayload {
   uint64_t t_teensy_us;  // Teensy wall-clock at snapshot (us)
@@ -489,6 +500,7 @@ constexpr uint16_t PROFILE_SIZE = 76u;
 constexpr uint16_t CONE_FRAME_SIZE = 21u;
 constexpr uint16_t CMD_RESULT_FRAME_SIZE = 21u;
 constexpr uint16_t BB_AXIS_ESTIMATES_SIZE = 24u;
+constexpr uint16_t BB_YAW_ESTIMATE_SIZE = 24u;
 constexpr uint16_t LEG_CMD_SIZE = 56u;
 constexpr uint16_t PLATFORM_FRAME_SIZE = 21u;
 constexpr uint16_t HAND_CMD_ECHO_SIZE = 16u;

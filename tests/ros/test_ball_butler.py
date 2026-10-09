@@ -228,3 +228,30 @@ class TestEncodeStateCommand:
     def test_not_extended_id(self):
         msg = encode_state_command(RELOAD_CMD_ID)
         assert msg.is_extended_id is False
+
+
+# ── YAW_ESTIMATE (0x7D8, BB FW 6) — the stamped 100 Hz yaw source ──────────────
+
+def test_yaw_estimate_id_is_the_generated_constant():
+    assert ball_butler.YAW_ESTIMATE_ID == proto.CAN_ID_BB_YAW_ESTIMATE == 0x7D8
+
+
+def test_yaw_estimate_decodes_bb_layout():
+    """Bytes as BB's maybePublishYawEstimate_ builds them: f32 | i16 | u16 LE."""
+    vel_counts = int(round(-123.4 / proto.YAW_ESTIMATE_VEL_RES_DPS))
+    frame = struct.pack('<fhH', 181.375, vel_counts, 6543)
+    y = ball_butler.BallButlerYawEstimate.from_can_frame(frame)
+    assert y.yaw_deg == pytest.approx(181.375)     # unwrapped, untruncated
+    assert y.yaw_vel_dps == pytest.approx(-123.4)
+    assert y.age_us == 6543
+
+
+def test_yaw_estimate_keeps_negative_yaw_unwrapped():
+    """The heartbeat wraps -0.5 deg to 359.5; this frame must not."""
+    frame = struct.pack('<fhH', -0.5, 0, 0)
+    assert ball_butler.BallButlerYawEstimate.from_can_frame(frame).yaw_deg == pytest.approx(-0.5)
+
+
+def test_yaw_estimate_rejects_short_frame():
+    with pytest.raises(ValueError):
+        ball_butler.BallButlerYawEstimate.from_can_frame(b'\x00' * 7)

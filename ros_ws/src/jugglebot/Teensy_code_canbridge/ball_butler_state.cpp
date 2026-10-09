@@ -6,5 +6,6 @@
 namespace CanBridge {
 
 BallButlerState bb_state;
+BbYawEstimateCache bb_yaw;
 
 }  // namespace CanBridge

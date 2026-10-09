@@ -54,6 +54,7 @@ class MsgType(IntEnum):
     RPC_RESPONSE = 144  # RPC response (RPC port, T→J)
     CACHE_DIAG = 145  # 1 Hz encoder-cache freshness census (per-axis age floor/peak) + CAN RX-ring occupancy (STREAM, T→J)
     RING_DIAG = 146  # 1 Hz CAN RX-ring TRUE-occupancy census (true_depth vs reported _available = the leak) + jugglebot delivery lag + SDO RTT (STREAM, T→J)
+    BB_YAW_ESTIMATE = 147  # Ball Butler yaw estimate @100Hz, paired 1:1 with BB_AXIS_ESTIMATES by t_bridge_us (STREAM, T→J)
 
 class RpcMethod(IntEnum):
     NOP = 0  # No-op (link test)
@@ -465,6 +466,29 @@ class BbAxisEstimates:
     @classmethod
     def unpack(cls, data: bytes) -> 'BbAxisEstimates':
         vals = _BB_AXIS_ESTIMATES_STRUCT.unpack(data[:24])
+        it = iter(vals)
+        return cls(next(it), next(it), next(it), next(it), next(it))
+
+# BbYawEstimate: Ball Butler yaw at the BB_AXIS_ESTIMATES cadence, so /bb/axis_estimates can carry a sample-time-stamped yaw beside pitch/hand (2026-10-09; the 10 Hz unstamped heartbeat yaw lagged mocap by a per-session 78-174 ms). Yaw is measured by BB's own Teensy (AS5047P, 150 Hz YawAxis ISR), not an ODrive, so it reaches the bridge as BB's CAN1 YAW_ESTIMATE frame (BallButlerCanId::YAW_ESTIMATE, one per fresh 150 Hz sample: f32 yaw_deg, i16 yaw vel at YawEstimateEncoding::vel_res_dps, u16 sample age at TX). Emitted in the same telemetry tick as, and immediately BEFORE, the BB_AXIS_ESTIMATES frame it pairs with: `t_bridge_us` is the IDENTICAL value, so the host attaches it to that frame by exact match. Sent only while a BB yaw frame is fresher than BB_YAW_FRESH_US; silence otherwise (old BB firmware, BB dark). Additive — no existing frame changes, so NO PROTOCOL_VERSION bump (the LegCmd precedent): an old host counts and ignores it; a new host against an old bridge just publishes no yaw.
+BB_YAW_ESTIMATE_FMT = '<QffII'
+BB_YAW_ESTIMATE_SIZE = 24
+_BB_YAW_ESTIMATE_STRUCT = struct.Struct(BB_YAW_ESTIMATE_FMT)
+assert _BB_YAW_ESTIMATE_STRUCT.size == 24
+
+@dataclass
+class BbYawEstimate:
+    t_bridge_us: int = 0
+    yaw_deg: float = 0.0
+    yaw_vel_dps: float = 0.0
+    yaw_age_us: int = 0
+    bb_frames: int = 0
+
+    def pack(self) -> bytes:
+        return _BB_YAW_ESTIMATE_STRUCT.pack(self.t_bridge_us, self.yaw_deg, self.yaw_vel_dps, self.yaw_age_us, self.bb_frames)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'BbYawEstimate':
+        vals = _BB_YAW_ESTIMATE_STRUCT.unpack(data[:24])
         it = iter(vals)
         return cls(next(it), next(it), next(it), next(it), next(it))
 

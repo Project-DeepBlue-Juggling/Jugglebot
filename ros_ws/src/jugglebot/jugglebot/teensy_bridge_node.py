@@ -104,6 +104,7 @@ from teensy_link import (
     ConeFrame,
     CmdResultFrame,
     BbAxisEstimates,
+    BbYawEstimate,
     LegCmd,
     PlatformFrame,
     HandCmdEcho,
@@ -1601,7 +1602,12 @@ class TeensyBridgeNode(Node):
         # RX-thread queues MUST exist before any subscribe() below: the client's
         # RX thread is already live, so a frame arriving between subscribe() and
         # a later __init__ line would hit an unset attribute (startup race).
-        self._bb_est_queue = []   # list of BbAxisEstimates, drained by timer
+        self._bb_est_queue = []   # list of (BbAxisEstimates, BbYawEstimate | None), drained by timer
+        # Latest BB_YAW_ESTIMATE (can-bridge FW >= 28): the bridge sends it just
+        # BEFORE the BB_AXIS_ESTIMATES of the same tick with the IDENTICAL
+        # t_bridge_us, so _on_bb_estimates pairs by exact stamp match on the RX
+        # thread (in-order, one socket) — never by drain timing.
+        self._bb_yaw_last: BbYawEstimate | None = None
         # Latest BB estimate sample + host-arrival time, for the robot_state BB
         # append (pos/vel source). Kept separate from the queue: the queue is
         # drained (emptied) by _publish_bb_axis_estimates, so "latest" must not
@@ -1796,6 +1802,7 @@ class TeensyBridgeNode(Node):
         self._client.subscribe(int(MsgType.DIAGNOSTIC), self._on_diagnostic)
         self._client.subscribe(int(MsgType.PROFILE), self._on_profile)
         self._client.subscribe(int(MsgType.CONE_FRAME), self._on_cone_frame)
+        self._client.subscribe(int(MsgType.BB_YAW_ESTIMATE), self._on_bb_yaw_estimate)
         self._client.subscribe(int(MsgType.BB_AXIS_ESTIMATES), self._on_bb_estimates)
         self._client.subscribe(int(MsgType.CMD_RESULT), self._on_cmd_result)
         self._client.subscribe(int(MsgType.PLATFORM_FRAME), self._on_platform_frame)
@@ -1984,7 +1991,9 @@ class TeensyBridgeNode(Node):
         # CAN1 nodes 7/8) for during-throw diagnostics: launch angle vs commanded
         # pitch, hand launch speed vs commanded. Published as JointState
         # (name=[bb_pitch, bb_hand], position=rev, velocity=rev/s), stamped with
-        # the bridge wall-clock at sample time. Every sample is queued in
+        # the bridge wall-clock at sample time. Since can-bridge FW 28 / BB FW 6 a
+        # third name, bb_yaw (deg, deg/s), rides along when the paired
+        # BB_YAW_ESTIMATE arrived — see _publish_bb_axis_estimates. Every sample is queued in
         # _on_bb_estimates and drained on the executor thread by
         # _publish_bb_axis_estimates (publishing off the RX thread, per the
         # other RX callbacks' contract).
@@ -2649,8 +2658,14 @@ class TeensyBridgeNode(Node):
         except Exception:  # noqa: BLE001
             return
         with self._lock:
+            y = self._bb_yaw_last
+            # Exact-stamp pairing: the bridge stamps both frames of a tick with
+            # one t_bridge_us. A mismatch (old bridge FW, a lost yaw datagram,
+            # BB dark) publishes this sample without bb_yaw — never a yaw from
+            # another tick.
+            yaw = y if (y is not None and y.t_bridge_us == e.t_bridge_us) else None
             q = self._bb_est_queue
-            q.append(e)
+            q.append((e, yaw))
             if len(q) > 4000:        # ~40 s at 100 Hz — bound if the drain stalls
                 del q[:len(q) - 4000]
             # Latest-wins stash for the robot_state BB append (the queue above is
@@ -2658,6 +2673,17 @@ class TeensyBridgeNode(Node):
             # serve as "latest").
             self._latest_bb_est = e
             self._latest_bb_est_mono = time.monotonic()
+
+    def _on_bb_yaw_estimate(self, msg_type, seq, payload, addr):
+        # RX-thread callback: stash only. The partner BB_AXIS_ESTIMATES of the
+        # same tick follows on the same socket and does the pairing + queueing.
+        # Malformed frames dropped.
+        try:
+            y = BbYawEstimate.unpack(payload)
+        except Exception:  # noqa: BLE001
+            return
+        with self._lock:
+            self._bb_yaw_last = y
 
     def _on_leg_cmd(self, msg_type, seq, payload, addr):
         # RX-thread callback: decode + queue every sample. Same contract as
@@ -2789,18 +2815,27 @@ class TeensyBridgeNode(Node):
         self._bb_throw_event.set()
 
     def _publish_bb_axis_estimates(self):
-        """Drain queued BB pitch/hand estimates → /bb/axis_estimates (JointState).
+        """Drain queued BB pitch/hand(/yaw) estimates → /bb/axis_estimates (JointState).
 
         Each sample is stamped with the bridge wall-clock at sample time
         (e.t_bridge_us, time-synced to the Jetson), so per-sample timing is
-        correct regardless of when this drain runs. position=rev, velocity=rev/s;
-        name=[bb_pitch, bb_hand]. Pitch deg = 90 + 360*pos_rev (PitchAxis.h);
-        ball speed = vel_rps * 2*pi*HAND_SPOOL_RADIUS_M.
+        correct regardless of when this drain runs. bb_pitch / bb_hand:
+        position=rev, velocity=rev/s. Pitch deg = 90 + 360*pos_rev
+        (PitchAxis.h); ball speed = vel_rps * 2*pi*HAND_SPOOL_RADIUS_M.
+
+        bb_yaw (can-bridge FW >= 28 + BB FW >= 6; appended third, only when the
+        paired BB_YAW_ESTIMATE arrived — otherwise the message keeps the
+        two-name shape): position = BB-local yaw in DEGREES, velocity = deg/s —
+        the same quantity /bb/heartbeat reports, but unwrapped and untruncated
+        (the heartbeat wraps to [0, 360) and truncates to 0.01 deg). Same stamp
+        as pitch/hand. Like them it is the latest sample as of the stamp: BB
+        samples yaw at 150 Hz, so the sample itself is ``yaw_age_us`` older
+        (0-6.7 ms hold + BB loop/CAN transit; carried on the wire, not here).
         """
         with self._lock:
             batch = self._bb_est_queue
             self._bb_est_queue = []
-        for e in batch:
+        for e, yaw in batch:
             js = JointState()
             t_us = int(e.t_bridge_us)
             js.header.stamp.sec = t_us // 1_000_000
@@ -2808,6 +2843,10 @@ class TeensyBridgeNode(Node):
             js.name = ['bb_pitch', 'bb_hand']
             js.position = [float(e.pitch_pos_rev), float(e.hand_pos_rev)]
             js.velocity = [float(e.pitch_vel_rps), float(e.hand_vel_rps)]
+            if yaw is not None:
+                js.name.append('bb_yaw')
+                js.position.append(float(yaw.yaw_deg))
+                js.velocity.append(float(yaw.yaw_vel_dps))
             self.bb_estimates_pub.publish(js)
 
     def _publish_leg_cmd_executed(self):

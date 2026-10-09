@@ -499,7 +499,14 @@ def test_wire_layout_frozen(gen):
     # changed, so PROTOCOL_VERSION stays 9 and an FW 25 board answers 0x61 with
     # ERR_UNKNOWN_METHOD. Previous digest:
     #   1201acee8ab2cc6181a561036a2b994dd0c192822be14c5b62e5ba12f8e54e99
-    _EXPECTED = "1b70c6cfaf9bab68ae25c66753de991ac9a10c7a5528fe4a8c537732a1db92bc"
+    # Re-pinned for the ADDITIVE BB_YAW_ESTIMATE uplink (2026-10-09, can-bridge
+    # FW 28 / BB FW 6): MsgType 0x93 + a 24 B payload (u64 t_bridge_us identical
+    # to the paired BB_AXIS_ESTIMATES, f32 yaw_deg, f32 yaw_vel_dps, u32
+    # yaw_age_us, u32 bb_frames) — BB's yaw at the 100 Hz estimate cadence for
+    # /bb/axis_estimates name bb_yaw. No existing message changed, so
+    # PROTOCOL_VERSION stays 9; an old host ignores 0x93. Previous digest:
+    #   1b70c6cfaf9bab68ae25c66753de991ac9a10c7a5528fe4a8c537732a1db92bc
+    _EXPECTED = "681bd26e16941f4b55ae8ba83741af1f674510b175f762d862399169339f5250"
     assert digest == _EXPECTED, (
         "The UDP wire LAYOUT changed (a message/arg field layout, a framed MsgType "
         "value, or a framing constant). If INCOMPATIBLE, bump PROTOCOL_VERSION. Either "

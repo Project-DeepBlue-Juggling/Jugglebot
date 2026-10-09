@@ -322,6 +322,25 @@ static void decode_bb_heartbeat(const CAN_message_t& msg) {
       /*t_us=*/         micros64());   // bb_state.last_heartbeat_us monotonic: read as an interval by the watchdog + [bb] diag
 }
 
+// Decode a Ball Butler YAW_ESTIMATE (CAN1 id 0x7D8, BB FW 6 / bridge FW 28) into
+// bb_yaw. Frame layout (8 bytes, little-endian; BB CanInterface::
+// maybePublishYawEstimate_):
+//   bytes 0-3 = yaw_deg (float32, BB-local, unwrapped)
+//   bytes 4-5 = yaw_vel (int16, scaled by YawEstimateEncoding::vel_res_dps)
+//   bytes 6-7 = age_us  (uint16, BB sample -> TX age, saturating)
+// Short frames are dropped. RX time is micros64() (interval clock): the emit
+// side only ever subtracts it from another micros64().
+static void decode_bb_yaw_estimate(const CAN_message_t& msg, uint64_t now_mono) {
+  if (msg.len < 8) return;
+  const uint8_t* d = msg.buf;
+  float yaw_deg; int16_t vel_i; uint16_t age_us;
+  memcpy(&yaw_deg, &d[0], 4);
+  memcpy(&vel_i,   &d[4], 2);
+  memcpy(&age_us,  &d[6], 2);
+  write_bb_yaw(bb_yaw, yaw_deg, (float)vel_i * YawEstimateEncoding::vel_res_dps,
+               (uint32_t)age_us, now_mono);
+}
+
 // Ball Butler ODrive telemetry on CAN1 (node ids 7=pitch, 8=hand). Decode the
 // slow telemetry frames into the separate bb_axes cache — emitted as DIAGNOSTIC
 // frames (axis_id 7/8) by telemetry.cpp. Mirrors the platform decode_into_cache
@@ -445,6 +464,7 @@ static void on_bb_rx(const CAN_message_t& msg) {
   atomic_write_u64(&s_bb_last_rx_us, now_mono);   // 64-bit monotonic; read as an interval by health_of
   if (msg.id == BallButlerCanId::HEARTBEAT)  { decode_bb_heartbeat(msg); return; }
   if (msg.id == BallButlerCanId::CMD_RESULT) { cmd_result_ring_push(msg, now); return; }
+  if (msg.id == BallButlerCanId::YAW_ESTIMATE) { decode_bb_yaw_estimate(msg, now_mono); return; }
   // BB firmware-over-CAN reply (0x7D7, 2026-09-28): verbatim into the relay ring,
   // uplinked as a PLATFORM_FRAME. Second producer on that ring — safe, the push
   // is IRQ-masked and all three buses are serviced from the one CAN RX task.

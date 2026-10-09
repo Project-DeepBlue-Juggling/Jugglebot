@@ -106,6 +106,7 @@ CAN_ID_BB_CALIBRATE_LOC_CMD = 0x7D4
 CAN_ID_BB_CMD_RESULT = 0x7D5
 CAN_ID_BB_FW_UPDATE_CMD = 0x7D6
 CAN_ID_BB_FW_UPDATE_REPLY = 0x7D7
+CAN_ID_BB_YAW_ESTIMATE = 0x7D8
 
 # Catching Cone Teensy <-> Host
 CAN_ID_CC_CATCH_EVENT = 0x7E0
@@ -179,6 +180,9 @@ class CatchingConeStates(IntEnum):
 HEARTBEAT_YAW_RES_DEG = 0.01
 HEARTBEAT_PITCH_RES_DEG = 0.002
 HEARTBEAT_HAND_RES_MM = 0.01
+
+# Ball Butler YAW_ESTIMATE CAN frame encoding (stamped 100 Hz yaw)
+YAW_ESTIMATE_VEL_RES_DPS = 0.1
 
 # ODrive input scaling (vel_ff and torque_ff are sent as int16 * scale)
 INPUT_SCALE_HAND_VEL = 100.0
