@@ -98,7 +98,8 @@ def test_joint_local_coordinates(asset):
     # BB actuator frame rotates -90 deg around Z and translates to the rail.
     assert bounds['bb_pitch'][1][1] == pytest.approx(.4066, abs=.003)
     assert bounds['bb_hand'][0][1] == pytest.approx(.037, abs=.001)
-    # Runtime adds -105.65 mm to X, putting the hand alongside the rail.
+    # Asset bounds, checked via the pre-2026-10-09 placement (-105.65 mm on X).
+    # The runtime now adds BB_YAW_S_OFFSET_MM = +105.65 mm (hand on its true side).
     assert bounds['bb_hand'][0][0] - .10565 == pytest.approx(-.14192, abs=.001)
     assert bounds['bb_hand'][1][0] - .10565 == pytest.approx(-.04765, abs=.001)
 

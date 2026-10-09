@@ -1598,7 +1598,7 @@ ball_tracking:
 #     Physical dimensions used for Ball Butler aiming calculations.
 # ============================================================
 ball_butler_geometry:
-  yaw_s_offset_mm: -105.65             # Ball centroid to Stage 2 origin, along yaw axis {mm} (measured in Onshape)
+  yaw_s_offset_mm: 105.65              # Ball centroid to Stage 2 origin, along yaw axis {mm} (Onshape magnitude). POSITIVE since 2026-10-09: the hand was modelled on the wrong side (BallButler logbook 2026-10-05/-09); pairs ONLY with the positive-s aim correction
   pitch_d_offset_mm: 41.0              # Distance behind origin to pitch axis, along BB's centerline {mm} (Onshape)
   release_l_position_mm: 150.0         # Release point: 105.5 mm pitch-axis-to-ball offset + ~44.5 mm constant from Trajectory.h
   pitch_z_offset_mm: 17.5              # Vertical offset of pitch axis from BB origin (yaw axis) {mm}

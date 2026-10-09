@@ -314,7 +314,7 @@ namespace Tracking {
 // ==========================================================================
 
 namespace BBGeom {
-  constexpr float YAW_S_OFFSET_MM = -105.65f;
+  constexpr float YAW_S_OFFSET_MM = 105.65f;
   constexpr float PITCH_D_OFFSET_MM = 41.0f;
   constexpr float RELEASE_L_POSITION_MM = 150.0f;
   constexpr float PITCH_Z_OFFSET_MM = 17.5f;

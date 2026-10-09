@@ -414,6 +414,17 @@ class BallButlerNode(Node):
             if mat is None or len(mat) < 2 or any(len(row) != 3 for row in mat[:2]):
                 raise ValueError("missing or malformed 'matrix' (need 2x3 or 3x3)")
 
+            # A correction is only valid with the hand offset it was fitted
+            # with: the 2026-10-09 matrix needs s > 0, every earlier one was
+            # fitted with s < 0. A mismatched pair (half a deployment) aims
+            # wrong silently, so refuse it and throw uncorrected, loudly.
+            needs_positive_s = bool(data.get('provenance', {}).get('requires_corrected_positive_s'))
+            if needs_positive_s != (hw.BB_GEOM_YAW_S_OFFSET_MM > 0):
+                raise ValueError(
+                    f"matrix fitted for {'positive' if needs_positive_s else 'negative'} s but "
+                    f"BB_GEOM_YAW_S_OFFSET_MM = {hw.BB_GEOM_YAW_S_OFFSET_MM}; "
+                    f"deploy the correction and the hand offset together")
+
             # Pad to 3x3 for inversion if needed
             mat3 = [
                 [float(mat[0][0]), float(mat[0][1]), float(mat[0][2])],

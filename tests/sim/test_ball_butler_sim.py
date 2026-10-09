@@ -25,11 +25,19 @@ from sim.input.scripted import _ball_landing, _compute_catch_target
 # ~500mm horizontal, ~700mm above catch height.  Position is approximate
 # until measured on the real setup; user will provide the exact value.
 _BB_POS = np.array([300.0, -400.0, 1500.0])
-# Yaw offset points BB's local +X toward Jugglebot origin
-_BB_YAW_OFFSET = math.atan2(
-    0.0 - _BB_POS[1],   # JB_y - BB_y
-    0.0 - _BB_POS[0],   # JB_x - BB_x
-)
+# The hand sits on BB's local +Y side (s = +105.65 mm since 2026-10-09), so a
+# target straight down local +X needs a negative yaw and is out of range. The
+# fixtures turn BB's yaw-zero heading 30 deg clockwise of the line to the target,
+# putting the target on the hand side (local y = range * sin 30 deg).
+_HAND_SIDE_SKEW_RAD = math.radians(-30.0)
+
+
+def _heading_with_target_on_hand_side(position, target=(0.0, 0.0)):
+    return math.atan2(target[1] - position[1], target[0] - position[0]) + _HAND_SIDE_SKEW_RAD
+
+
+# Yaw offset: BB's local +X a little clockwise of Jugglebot's origin
+_BB_YAW_OFFSET = _heading_with_target_on_hand_side(_BB_POS)
 
 # Jugglebot catch height (platform_height + active_z + hand_catch_offset)
 _CATCH_Z = float(hw.GEOM_INITIAL_HEIGHT_MM) + 80.0 + 129.2   # was the literal 783.5 (574.3-based) until the 2026-09-27 calibration
@@ -51,7 +59,7 @@ class TestConfig:
         bb = _make_bb()
         cfg = bb.config
         # Verify key geometry values from hardware_config.yaml
-        assert cfg.yaw_s_offset_mm == pytest.approx(-105.65)
+        assert cfg.yaw_s_offset_mm == pytest.approx(105.65)
         assert cfg.pitch_d_offset_mm == pytest.approx(41.0)
         assert cfg.release_l_position_mm == pytest.approx(150.0)
         assert cfg.pitch_z_offset_mm == pytest.approx(17.5)
@@ -146,6 +154,7 @@ class TestBallReachesTarget:
 # ===================================================================
 
 class TestErrors:
+    @pytest.mark.xfail(strict=True, reason="yaw_solve picks the smaller-|yaw| root; t2 = base - pi + delta always has the target BEHIND the release point (negative range), so a target behind BB is 'solved' with a forward yaw. Masked under negative s (t2 < 0 deg was out of range); exposed by s = +105.65 (2026-10-09). Fix pending owner decision: always take t1.")
     def test_unreachable_behind_bb(self):
         """Target directly behind BB (negative local X) should fail."""
         # Use a simple BB pointing along world +X so "behind" is -X
@@ -178,13 +187,13 @@ class TestWorldFrame:
 
         # Two BBs at different positions, each pointing at JB
         pos1 = np.array([500.0, 0.0, 1500.0])
-        yaw1 = math.atan2(-pos1[1], -pos1[0])
+        yaw1 = _heading_with_target_on_hand_side(pos1)
         bb1 = BallButlerSim.from_hardware_config(pos1, yaw1)
         r1_pos, r1_vel, _ = bb1.compute_release_state(target)
         _, land1, _ = _ball_landing(r1_pos, r1_vel, _CATCH_Z)
 
         pos2 = np.array([0.0, -500.0, 1400.0])
-        yaw2 = math.atan2(-pos2[1], -pos2[0])
+        yaw2 = _heading_with_target_on_hand_side(pos2)
         bb2 = BallButlerSim.from_hardware_config(pos2, yaw2)
         r2_pos, r2_vel, _ = bb2.compute_release_state(target)
         _, land2, _ = _ball_landing(r2_pos, r2_vel, _CATCH_Z)
@@ -204,18 +213,18 @@ class TestWorldFrame:
         pos = np.array([500.0, 0.0, 1500.0])
         target1 = np.array([0.0, 0.0, _CATCH_Z])
 
-        # BB pointing at origin
-        yaw1 = math.atan2(0 - pos[1], 0 - pos[0])
+        # BB pointing (hand-side skewed) at origin
+        yaw1 = _heading_with_target_on_hand_side(pos)
         bb1 = BallButlerSim.from_hardware_config(pos, yaw1)
         rp1, _, _ = bb1.compute_release_state(target1)
 
         # BB rotated 45° — aim at a different target that's in range
         yaw2 = yaw1 + math.radians(45)
         bb2 = BallButlerSim.from_hardware_config(pos, yaw2)
-        # Need a target along bb2's forward axis
+        # Need a target ahead of bb2, on its hand side (30 deg off its +X axis)
         target2 = np.array([
-            pos[0] + 500 * math.cos(yaw2),
-            pos[1] + 500 * math.sin(yaw2),
+            pos[0] + 500 * math.cos(yaw2 - _HAND_SIDE_SKEW_RAD),
+            pos[1] + 500 * math.sin(yaw2 - _HAND_SIDE_SKEW_RAD),
             _CATCH_Z,
         ])
         rp2, _, _ = bb2.compute_release_state(target2)

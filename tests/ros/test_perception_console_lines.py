@@ -210,7 +210,7 @@ def test_bb_calibration_received_is_debug_only():
 def test_bb_throw_success_is_one_info_line_and_ok_result_is_debug():
     n = _bb_node()
     log = _calibrated(n)
-    _bodies(n, 'jugglebot', (1200.0, 50.0, 0.0))
+    _bodies(n, 'jugglebot', (1200.0, 400.0, 0.0))   # local y > s: reachable with positive s
     req = BallButlerThrow.Request()
     req.target_name = 'jugglebot'
     res = n._svc_throw_at_target(req, BallButlerThrow.Response())

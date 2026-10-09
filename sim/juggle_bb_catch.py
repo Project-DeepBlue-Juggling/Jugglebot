@@ -17,7 +17,7 @@ the catch controller, contact, or seat.
 Launch / velocity model
 -----------------------
 * **Launch position** = the ball's release point (world mm). Init = the *real Ball
-  Butler* release point for a throw from the demo placement ``(-872,-630,1430)`` mm
+  Butler* release point for a throw from the measured placement ``(-975.6,-389.3,1734.9)`` mm
   aimed at ``(0,0,catch_z)`` — so the default preset lands at the catch point.
   (Spawning from the raw BB placement instead misses by ~120 mm; the release point
   is the point that lands on target — see the harness header comment.)
@@ -87,7 +87,8 @@ from sim._paths import bootstrap_paths  # noqa: E402
 bootstrap_paths()
 
 from sim.ball_butler.sim import BallButlerSim
-from sim.juggle_catch import CONTROL_DT, SingleCatchConfig, SingleCatchRunner
+from sim.juggle_catch import (BB_PLACEMENT_MM, BB_YAW_OFFSET_RAD, CONTROL_DT,
+                              SingleCatchConfig, SingleCatchRunner)
 from sim.juggle_noise import JuggleNoise
 from sim.juggle_tilt import realize_tilted
 # Reuse the viewer / recording plumbing verbatim (do NOT re-implement it).
@@ -99,10 +100,12 @@ from sim.viz.recording import (
     _KEY_RIGHT_ARROW, _KEY_LEFT_ARROW,
 )
 
-# ---- The demo Ball Butler placement (world mm), aimed from across the room. ----
-# Matches sim/juggle_catch.py's use_real_bb default + tools/probes/juggle_fastcatch.py.
-DEMO_BB_PLACEMENT_MM = np.array([-872.0, -630.0, 1430.0])
-DEMO_BB_YAW_RAD = math.atan2(630.0, 872.0)      # == atan2(-y, -x): aim at origin
+# ---- The Ball Butler placement (world mm) the preset throws from. ----
+# The MEASURED 2026-10-09 pose, shared with sim/juggle_catch.py's use_real_bb
+# default and tools/probes/juggle_fastcatch.py (see BB_PLACEMENT_MM there for why
+# the invented, origin-aimed demo placement (-872, -630, 1430) had to go).
+DEMO_BB_PLACEMENT_MM = np.asarray(BB_PLACEMENT_MM, float)
+DEMO_BB_YAW_RAD = BB_YAW_OFFSET_RAD
 
 # ---- GLFW physical key codes (uppercase-ASCII) for the operator controls. ----
 _KEY_I, _KEY_J, _KEY_K, _KEY_L, _KEY_O, _KEY_U = 73, 74, 75, 76, 79, 85
@@ -126,7 +129,7 @@ ARROW_WIDTH_M = 0.008     # velocity arrow shaft width
 
 
 def _preset_launch(catch_z_m: float, target_xy_mm=(0.0, 0.0)):
-    """The real-BB release ``(pos_mm, vel_mms)`` for a throw from the demo placement
+    """The real-BB release ``(pos_mm, vel_mms)`` for a throw from the measured placement
     aimed at ``(target_xy, catch_z)`` — the on-target preset. Spawning from THIS
     release point lands at the catch point (spawning from the raw placement misses
     by ~120 mm)."""

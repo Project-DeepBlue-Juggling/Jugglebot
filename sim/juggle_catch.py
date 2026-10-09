@@ -32,6 +32,7 @@ Pure-Python, no ROS2. SI internally; mm at the plant boundary.
 from __future__ import annotations
 
 import dataclasses
+import math
 import os
 import sys
 
@@ -58,6 +59,34 @@ from sim.plant.mujoco_plant import MuJoCoPlant
 CONTROL_DT = 0.025
 WORKSPACE_XY_M = 0.15        # |cup xy - centre| reach bound (matches planner)
 SEAT_RADIUS_MM = 40.0        # cup seat radius (mirrors ball.manager.SEAT_RADIUS_M)
+
+# ---- The Ball Butler placement (world mm) the real-BB feed throws from. ----
+# MEASURED, not chosen: the post-reinstall mocap pose calibration of 2026-10-09
+# (BallButler session 20261009T002142_931068Z: position (-975.6, -389.3, 1734.9)
+# mm, yaw offset 0.208 deg, i.e. BB-local +x runs along world +x). Until
+# 2026-10-09 this was an invented demo placement (-872, -630, 1430) aimed with
+# its local +x axis straight at the origin, which put the feed target dead ahead
+# of the yaw axis; with the hand offset s on its real side (+105.65 mm, the
+# 2026-10-09 flip) a dead-ahead target needs a NEGATIVE yaw and the solver
+# refuses it. From the measured pose the origin sits at BB-local (977, 386) mm,
+# bearing 21.6 deg: on the hand side, inside the calibrated region (x 386-1570,
+# y 195-928 mm), solved at yaw 15.8 deg. The feed arrives at ~5.5 m/s, 12 deg
+# from vertical (was ~4.9 m/s, ~15 deg from the demo placement).
+BB_PLACEMENT_MM = (-975.6, -389.3, 1734.9)
+BB_YAW_OFFSET_RAD = 0.003634          # 0.208 deg
+
+
+def bb_yaw_offset_aiming_throw_line_at_origin(position_mm) -> float:
+    """The yaw offset that puts the hand's THROW LINE through the world origin
+    at yaw command 0. The release point sits ``s`` beside the yaw axis, so the
+    line is turned ``asin(s / range)`` away from the axis-to-origin bearing (the
+    geometry ``throw_ballistics.yaw_solve_thetas`` inverts). Aiming the local +x
+    axis at the origin instead (the pre-2026-10-09 rule) is refused for s > 0."""
+    from jugglebot import hardware_config as hw   # lazy: the synthetic path never needs it
+    x, y = float(position_mm[0]), float(position_mm[1])
+    hyp = math.hypot(x, y)
+    s = float(hw.BB_GEOM_YAW_S_OFFSET_MM)
+    return math.atan2(-y, -x) - math.asin(max(-1.0, min(1.0, s / hyp)))
 # Momentum-budget deceleration (× g) for the continuous velocity-matched catch:
 # once the co-moving cup receives the ball it is arrested to rest over
 # d = v²/(2·a). At 6 g even the fast (~4.9 m/s) real-BB arrival is arrested in
@@ -174,14 +203,17 @@ class SingleCatchConfig:
     # By default the incoming ball is a SYNTHETIC gentle lob (``takeoff_velocity``
     # over ``flight_s`` from ``bb_origin_offset_m``), arriving ~2.5 m/s. Set
     # ``use_real_bb`` to spawn from the REAL ``BallButlerSim`` kinematics instead —
-    # a fast, flat throw (~4.9 m/s vz at catch_z from the demo BB placement), the
-    # arrival the hardware actually delivers. The §3 BB-throw noise + the apex-
-    # spawn are applied identically to both sources. See the fast-catch probe
-    # (tools/probes/juggle_fastcatch.py) and
-    # logbook/2026-07-02-fast-catch-fidelity.md.
+    # a fast, flat throw (~5.5 m/s vz at catch_z, 12 deg from vertical, from the
+    # measured BB placement ``BB_PLACEMENT_MM``; ~4.9 m/s from the invented demo
+    # placement used until 2026-10-09), the arrival the hardware actually
+    # delivers. The §3 BB-throw noise + the apex-spawn are applied identically to
+    # both sources. See the fast-catch probe (tools/probes/juggle_fastcatch.py)
+    # and logbook/2026-07-02-fast-catch-fidelity.md.
     use_real_bb: bool = False
-    bb_position_mm: "tuple[float, float, float]" = (-872.0, -630.0, 1430.0)
-    bb_yaw_offset_rad: "float | None" = None   # None -> aim from position at origin
+    bb_position_mm: "tuple[float, float, float]" = BB_PLACEMENT_MM
+    # None -> the hand's throw line passes through the origin at yaw 0
+    # (bb_yaw_offset_aiming_throw_line_at_origin), NOT the local +x axis.
+    bb_yaw_offset_rad: "float | None" = BB_YAW_OFFSET_RAD
     # ---- optional MANUAL launch (operator-driven, e.g. sim/juggle_bb_catch.py) ----
     # When set to a ``(pos_mm(3), vel_mms(3))`` pair the incoming ball spawns from
     # THAT operator-chosen release state instead of the synthetic/real-BB branch —
@@ -293,7 +325,7 @@ class SingleCatchRunner:
         * **synthetic** (default): a gentle ballistic lob via ``takeoff_velocity``
           over ``flight_s`` from ``bb_origin_offset_m`` — arrives ~2.5 m/s.
         * **real BB**: the actual ``BallButlerSim`` kinematics aimed at ``target``
-          — a fast, flat throw (~4.9 m/s vz at catch_z from the demo placement),
+          — a fast, flat throw (~5.5 m/s vz at catch_z from the measured placement),
           the arrival the hardware delivers. Imported lazily so the default path
           keeps its import surface unchanged.
         """
@@ -309,7 +341,7 @@ class SingleCatchRunner:
             from sim.ball_butler.sim import BallButlerSim
             pos = np.asarray(cfg.bb_position_mm, float)
             yaw = (cfg.bb_yaw_offset_rad if cfg.bb_yaw_offset_rad is not None
-                   else float(np.arctan2(-pos[1], -pos[0])))   # aim from BB at origin
+                   else bb_yaw_offset_aiming_throw_line_at_origin(pos))
             bb = BallButlerSim.from_hardware_config(pos, yaw)
             target_mm = target * 1000.0
             rel_pos_mm, rel_vel_mms, _ = bb.compute_release_state(target_mm)

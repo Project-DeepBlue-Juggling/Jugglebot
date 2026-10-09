@@ -94,10 +94,13 @@ def test_global_to_bb_local_pure_rotation_90deg():
 def _platform_target_in_bb_local():
     """A target in BB local frame that's typical of the catching cone:
 
-    ~1.2 m in front of BB (x), small lateral offset (y), at z=0 in BB local
-    frame (BB origin is roughly co-planar with the catch height in practice).
+    ~1.2 m in front of BB (x), 400 mm toward the hand side (y), at z=0 in BB
+    local frame (BB origin is roughly co-planar with the catch height in
+    practice). The real calibration targets sit at local y 195-928 mm; with
+    the hand on its true side (s = +105.65 mm since 2026-10-09) a target at
+    small y needs a negative yaw and is out of range.
     """
-    return 1200.0, 50.0, 0.0
+    return 1200.0, 400.0, 0.0
 
 
 def test_solve_throw_local_returns_throwsolution_for_typical_target():
@@ -208,10 +211,11 @@ def test_solve_throw_local_far_target_raises_speed_constraint():
     """A target far enough that no pitch satisfies the speed cap.
 
     100 m in front at z=0 is well outside the 5 m/s BB envelope — every
-    pitch in the search grid will need v > v_max.
+    pitch in the search grid will need v > v_max. (5 m lateral keeps the
+    yaw solution inside [0, 185] deg with positive s.)
     """
     with pytest.raises(ValueError, match="No feasible trajectory"):
-        solve_throw_local(100_000.0, 0.0, 0.0)
+        solve_throw_local(100_000.0, 5_000.0, 0.0)
 
 
 def test_solve_throw_local_target_on_s_circle_above_raises():
@@ -233,6 +237,17 @@ def test_solve_throw_local_yaw_out_of_range_raises():
     # yaw — set y very negative to push outside.
     with pytest.raises(ValueError, match="out of BB range"):
         solve_throw_local(100.0, -1500.0, 0.0)
+
+
+@pytest.mark.xfail(strict=True, reason="yaw_solve picks the smaller-|yaw| root; t2 = base - pi + delta always has the target BEHIND the release point (negative range), so a target behind BB is 'solved' with a forward yaw. Masked under negative s (t2 < 0 deg was out of range); exposed by s = +105.65 (2026-10-09). Fix pending owner decision: always take t1.")
+def test_target_behind_bb_is_not_solved_with_a_forward_yaw():
+    """2 m directly behind BB: the only physical solution (t1) needs yaw ~177 deg;
+    a solution near 0 deg would throw away from the target."""
+    try:
+        sol = solve_throw_local(-2000.0, 0.0, 0.0)
+    except ValueError:
+        return
+    assert abs(math.degrees(sol.yaw_rad)) > 90.0
 
 
 def test_solve_throw_local_peak_height_below_limit():

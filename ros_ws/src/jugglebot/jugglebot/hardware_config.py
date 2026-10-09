@@ -281,7 +281,7 @@ TRACKING_FLIGHT_FIT_FREEZE_ABOVE_PLANE_MM = 250.0
 # Ball Butler Geometry & Kinematics
 # ============================================================================
 
-BB_GEOM_YAW_S_OFFSET_MM = -105.65
+BB_GEOM_YAW_S_OFFSET_MM = 105.65
 BB_GEOM_PITCH_D_OFFSET_MM = 41.0
 BB_GEOM_RELEASE_L_POSITION_MM = 150.0
 BB_GEOM_PITCH_Z_OFFSET_MM = 17.5

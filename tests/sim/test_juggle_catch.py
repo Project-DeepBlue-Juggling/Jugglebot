@@ -66,8 +66,9 @@ def test_reach_clamped_to_workspace():
 
 def test_fast_real_ball_butler_throw_is_seated():
     """Fast-catch FIDELITY (2026-07-02): a REAL Ball Butler throw — the fast, flat
-    arrival the hardware actually delivers (~4.9 m/s vz, ~15° from vertical at
-    catch_z, from the demo BB placement) — is caught, held, and seated tightly by
+    arrival the hardware actually delivers (~5.5 m/s vz, ~12° from vertical at
+    catch_z, from the measured 2026-10-09 BB placement; ~4.9 m/s / ~15° from the
+    invented demo placement until then) — is caught, held, and seated tightly by
     the phase-matched descent seat + the firmed catch contact.
 
     This is the primitive the old (soft 50 ms contact + hold-high-then-drop-late)

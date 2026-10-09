@@ -84,7 +84,7 @@ export const DEFAULT_ACTIVE_Z_MM = 170.0;
 
 // ---- Ball Butler geometry (hardware_config.yaml -> ball_butler_geometry) ----
 
-export const BB_YAW_S_OFFSET_MM = -105.65;
+export const BB_YAW_S_OFFSET_MM = 105.65;
 export const BB_PITCH_D_OFFSET_MM = 41.0;
 export const BB_RELEASE_L_POSITION_MM = 150.0;
 export const BB_PITCH_Z_OFFSET_MM = 17.5;
