@@ -247,7 +247,15 @@ namespace EndpointId {
   }
   namespace odrive_s1_0_6_11 {
     constexpr uint16_t get_gpio_states = 700;
-    constexpr uint16_t commutation_mapper_pos_abs = 488;
+    constexpr uint16_t commutation_mapper_pos_abs = 451;
+    constexpr uint16_t can_input_torque_scale = 273;
+    constexpr uint16_t can_input_vel_scale = 272;
+    constexpr uint16_t can_node_id = 262;
+    constexpr uint16_t fw_version_major = 10;
+    constexpr uint16_t fw_version_minor = 11;
+    constexpr uint16_t fw_version_revision = 12;
+    constexpr uint16_t hw_version_major = 6;
+    constexpr uint16_t hw_version_minor = 7;
   }
 }
 

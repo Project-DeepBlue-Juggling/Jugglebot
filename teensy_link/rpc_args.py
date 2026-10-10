@@ -551,7 +551,12 @@ FW_OP_INFO = 0x05
 #: bb_pitch_* for pitch. FW 6 borrowed Jugglebot's hand_tor (1000) for BB's
 #: hand drive (input_torque_scale 100): a 10x torque feedforward. No wire
 #: change on the BB<->bridge link.
-BB_FW_VERSION_EXPECTED = 7
+#: 8 (2026-10-10) = the hand input-scale guard: at every hand arm BB SDO-READs
+#: node 8's axis0.config.can.input_torque_scale / input_vel_scale (S1 0.6.11-1
+#: ids 273 / 272, EndpointId::odrive_s1_0_6_11) and zeroes that node's
+#: set_input_pos vel_ff/tor_ff while a reply mismatches bb_hand_tor/bb_hand_vel
+#: (USB-serial warning only; no wire change on the BB<->bridge link).
+BB_FW_VERSION_EXPECTED = 8
 
 
 def decode_platform_fw_reply(data: bytes):
