@@ -177,3 +177,8 @@ It is the investigation's `bench.py` adapted:
 **Reviewer's adjustment (merge, 2026-10-10 23:05):** `ball_tracker_node.py` `missed_frames_to_lose` 10 → 15 so the
 lose-track window stays ~50 ms at ~300 msgs/s (it would have shrunk to ~33 ms). `TRACKING_MAX_FRAMES_WITHOUT_MEASUREMENT`
 = 200 stays (gated `hardware_config.py`; now ~0.67 s of coasting instead of ~1 s) — revisit at the next admissible re-sweep.
+
+**Merged-state gate (skill-stack 7500b425, 2026-10-10 22:38–22:44, alone on the box, log
+`temp/logs/full_gate_mocap_queue_merged_20261010.log`):** PASS — 6596 passed, 9 skipped, 1 xfailed; serial 6 passed.
+Installed with `colcon build --packages-select jugglebot` at 22:46; live verification (≈300 unique frames/s on `/mocap_data`
+on an idle box, the 1 Hz stream line, a loss WARN only under real starvation) is the owner's next launch.
