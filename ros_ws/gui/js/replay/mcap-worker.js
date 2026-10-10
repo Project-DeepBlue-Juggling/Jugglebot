@@ -8,14 +8,14 @@
 //
 //   main -> worker: {op:'open', req, url} {op:'load', req, i, lite?} {op:'latest', req, topic, t} {op:'close'}
 //   worker -> main: {op:'opened', req, t0, t1, slots, topics, skipped, chunkCount, size, etag, ms}
-//                   {op:'slot', req, i, t0, t1, topics:{"/x":{type,n,t,cols}}, dropped, bytes, ms}
+//                   {op:'slot', req, i, t0, t1, topics:{"/x":{type,n,t,cols,kinds}}, dropped, bytes, ms}
 //                   {op:'latest', req, row:{t, flat}|null}
 //                   {op:'error', req, code, message}
 //
 // `createWorkerHandler` is exported so node tests drive the same handler inline;
 // the global onmessage binds only inside a real worker scope.
 import { ALLOWLIST } from './allowlist.js';
-import { openRecording, decodeSlot, latestRow, httpReadable } from './mcap-decode.js';
+import { openRecording, decodeSlot, latestRow, httpReadable, topicBuffers } from './mcap-decode.js';
 
 const CODES = new Set(['no_index', 'compressed', 'in_progress', 'changed', 'http', 'empty', 'decode', 'range']);
 
@@ -53,8 +53,9 @@ export function createWorkerHandler(deps) {
       } else if (msg.op === 'load') {
         if (!rec) throw new RangeError('load before open');
         const s = await decodeSlot(rec, msg.i);
-        const transfer = [];
-        for (const name in s.topics) transfer.push(s.topics[name].t.buffer);
+        const bufs = new Set();   // EVERY typed buffer moves (t, f64/u8 columns, CSR offsets/flat/leaves); only string/any arrays clone
+        for (const name in s.topics) topicBuffers(s.topics[name], bufs);
+        const transfer = [...bufs];
         deps.post({
           op: 'slot', req: msg.req, i: s.i, t0: s.t0, t1: s.t1, topics: s.topics, dropped: s.dropped,
           bytes: s.bytes, ms: now() - t0,

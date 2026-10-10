@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Replay browser feed: chunk shape + SessionBufferSource (+ McapSource agreeing with it).
+"""Replay browser feed: chunk shape (the SessionBufferSource was deleted 2026-10-10).
 
 Phase 2 unit U1. Python is ground truth: a synthetic bag is written with
 ``tests/ros/_replay_fixture.py::write_bag`` (which also returns the plain dict
@@ -137,34 +137,6 @@ def test_non_finite_floats_become_null_like_rosbridge(run):
     assert run[2]["nan_cols_untouched"] is True  # decoded columns keep the real NaN
 
 
-def test_session_buffer_ring_horizon_and_sidecar(run):
-    r = run[2]["session"]
-    assert r["horizon"] == 600
-    assert r["max_chunks"] <= 61
-    assert r["chunks_final"] <= 61
-    assert r["oldest_age"] <= 600 + 10 and r["oldest_age"] >= 590
-    assert r["range_t1_is_now"] is True
-    # on-change topic recorded once at base, 700 s ago, still resolves via the sidecar
-    assert r["sidecar"] == {"t": 0, "msg": {"data": "JOG"}}
-    assert r["before_ring"] is None
-    mid = r["mid"]
-    assert mid["x"] == mid["expect"] and mid["b"] == 2 * mid["x"]
-    assert mid["arr"] == [mid["x"], mid["x"] + 1] and mid["motors"] == [{"p": mid["x"]}]
-    assert r["window_chunks"] == sorted(r["window_chunks"]) and len(r["window_chunks"]) == 3
-    assert r["window_sealed"] == [True, True, False]
-
-
-def test_session_snapshot_is_frozen_and_clear(run):
-    r = run[2]["session"]
-    assert r["snapshot_rows"][0] == r["snapshot_rows"][1]      # later records/eviction/write on the snapshot do not change it
-    assert r["live_chunks_after_jump"] <= 61
-    assert r["cleared"] == [0, 0]
-    assert r["snapshot_survives_clear"] is True
-
-
-def test_session_and_recording_agree_on_the_same_data(run):
-    r = run[2]["agree"]
-    assert r["windows_equal"] is True
-    assert all(r["lb_equal"]) and len(r["lb_equal"]) == 15
-    assert r["session_band"] == ["IDLE", "LEVELLING", "ACTIVE"]
-    assert r["session_presence_topics"] == ["/orchestrator_state", "/robot_state", "/skills/attempt"]
+def test_chunk_from_record_adopts_typed_buffers_without_copying(run):
+    a = run[2]["adopt"]
+    assert a["same"] is True and a["typed"] is True and a["topics"] > 3

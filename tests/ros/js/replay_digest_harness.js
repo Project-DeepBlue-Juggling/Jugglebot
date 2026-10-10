@@ -5,10 +5,10 @@
 // covered against the live path by test_gui_replay_chart.py); the binning is what is under test here.
 const { createReplayChartStore, SIGNAL_KEYS, MOTOR_COUNT } = await import('./replay/chart-store.js');
 const { createDigester, SLOT_S } = await import('./replay/digest.js');
-const { chunkFromRecord } = await import('./replay/chunk.js');
+const { chunkFromRecord, buildColumns } = await import('./replay/chunk.js');
 const { loadRecords } = await import('./replay_test_support.js');
 
-const { manifest, records } = loadRecords(process.argv[2]);
+const { manifest, records } = loadRecords(process.argv[2], buildColumns);
 const T0 = manifest.t0;
 const chunks = records.map((r) => chunkFromRecord(r));
 const out = {};

@@ -59,6 +59,7 @@ export async function decodeSlot(rec, i) {
 }
 export async function latestRow() { state.started.push('latest'); return null; }
 export function httpReadable() { return {}; }
+export function topicBuffers(topic, out = new Set()) { out.add(topic.t.buffer); return out; }
 """
 
 

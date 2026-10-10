@@ -34,11 +34,9 @@ active = true; source = rec('converting', ['/robot_state']); emit(); out.convert
 source.status = () => ({ state: 'complete' }); srcListeners.forEach((f) => f()); out.completedLater = dimmed().length;
 // 5. re-open a different source clears the old marks
 source = rec('complete', ABSENT_TABLE.flatMap((r) => r.topics)); emit(); out.allPresent = dimmed();
-// 6. session source with topicSet
-source = { kind: 'session', topicSet: () => ['/robot_state', '/orchestrator_state'] }; emit(); out.session = dimmed();
 // 7. zero-count topic counts as absent; pure helpers
 out.zeroCount = Array.from(topicsOf({ kind: 'recording', status: () => ({ state: 'complete' }), manifest: () => ({ topics: { '/robot_state': { count: 0 }, '/balls': { count: 2 } } }) })).sort();
-out.nullWhenUnknown = [topicsOf(null), topicsOf({ kind: 'session' })];
+out.nullWhenUnknown = [topicsOf(null), topicsOf({ kind: 'recording' })];
 out.pureNull = absentRegions(null);
 // 8. W4: any-present semantics on the multi-topic regions (tracking is fed by robot_state; BB/cone by their result topics)
 source = rec('complete', ['/robot_state', '/bb/calibration_result', '/cone/timing_result']); emit(); out.w4_partial = dimmed();

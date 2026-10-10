@@ -11,7 +11,6 @@ import { createFenceDom } from './fence-dom.js';
 import { createHide } from './hide.js';
 import { setJugglePanelReplayHidden } from '../../juggle-panel.js';
 import * as ros from '../../ros-bridge.js';
-import { getSessionBuffer } from '../session.js';
 
 let ui = null;
 /** The UI singleton created by initReplayUi (null before main.js init). */
@@ -21,8 +20,8 @@ export function getReplayUi() { return ui; }
 export function initReplayUi(mode) {
     const document_ = document;
     const toaster = createToaster({ document: document_ });
-    const picker = createPicker({ document: document_, fetch: (u, o) => fetch(u, o), mode, getSessionBuffer });
-    const lobby = createLobby({ document: document_, ros, mode, picker, toaster, getSessionBuffer });
+    const picker = createPicker({ document: document_, fetch: (u, o) => fetch(u, o), mode });
+    const lobby = createLobby({ document: document_, ros, mode, picker, toaster });
     const trackbar = createTrackbar({
         document: document_, mode, dock: lobby.dock,
         raf: { request: (cb) => requestAnimationFrame(cb), cancel: (id) => cancelAnimationFrame(id) },

@@ -17,12 +17,28 @@ export function revive(v) {
   return v;
 }
 
-export function loadRecords(dir) {
+/**
+ * Load the oracle chunk JSON as the records the REAL worker delivers: every topic carries typed `cols` +
+ * `kinds` built by `buildColumns` (chunk.js, the shipped builder - pass it in, sandboxes lay the modules out
+ * differently) so every harness exercises the typed shape.  The oracle's plain columns stay under `plain`
+ * (for the latest-row reply and by-value comparisons).
+ */
+export function loadRecords(dir, buildColumns) {
+  if (typeof buildColumns !== 'function') throw new Error('loadRecords(dir, buildColumns): pass chunk.js buildColumns');
   const manifest = JSON.parse(fs.readFileSync(path.join(dir, 'manifest.json'), 'utf8'));
   const records = [];
   for (let i = 0; i < manifest.chunks.length; i++) {
     const f = path.join(dir, 'chunk-' + String(i).padStart(5, '0') + '.json');
-    records.push(revive(JSON.parse(fs.readFileSync(f, 'utf8'))));
+    const rec = revive(JSON.parse(fs.readFileSync(f, 'utf8')));
+    for (const name in rec.topics) {
+      const tp = rec.topics[name];
+      const typed = buildColumns(tp.cols);
+      tp.plain = tp.cols;
+      tp.cols = typed.cols;
+      tp.kinds = typed.kinds;
+      tp.t = Float64Array.from(tp.t);
+    }
+    records.push(rec);
   }
   const overview = fs.existsSync(path.join(dir, 'overview.json'))
     ? JSON.parse(fs.readFileSync(path.join(dir, 'overview.json'), 'utf8')) : null;
@@ -64,7 +80,7 @@ export function fakeWorkerFactory(manifest, records, opts) {
             const tp = {};
             for (const name in r.topics) {
               tp[name] = { type: r.topics[name].type, n: r.topics[name].n,
-                t: Float64Array.from(r.topics[name].t), cols: r.topics[name].cols };
+                t: r.topics[name].t.slice(), cols: r.topics[name].cols, kinds: r.topics[name].kinds };
             }
             return reply({ op: 'slot', i: r.i, t0: r.t0, t1: r.t1, topics: tp, dropped: {}, bytes: 0, ms: 1 });
           }
@@ -75,7 +91,7 @@ export function fakeWorkerFactory(manifest, records, opts) {
               for (let k = tp.t.length - 1; k >= 0; k--) {
                 if (tp.t[k] <= msg.t) {
                   const flat = {};
-                  for (const c in tp.cols) flat[c] = tp.cols[c][k];
+                  for (const c in tp.plain) flat[c] = tp.plain[c][k];
                   return reply({ op: 'latest', row: { t: tp.t[k], flat } });
                 }
               }

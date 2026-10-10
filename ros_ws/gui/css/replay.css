@@ -20,7 +20,6 @@
 }
 .replay-btn:hover:not(:disabled) { background: var(--bg-card-hover); }
 .replay-btn:disabled { opacity: .4; cursor: not-allowed; }
-.replay-btn.replay-primary { border-color: var(--accent-cyan); color: var(--accent-cyan); }
 
 .status-dot.replay { background: var(--accent-cyan); }
 

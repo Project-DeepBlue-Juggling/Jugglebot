@@ -68,12 +68,6 @@ const mode = {
 };
 const emitMode = (evt, v) => modeListeners[evt].forEach((f) => f(v));
 
-let sessionData = false;
-const sessionBuf = {
-    range: () => (sessionData ? { t0: 100, t1: 142, frontier: 142 } : { t0: 0, t1: 0, frontier: 0 }),
-    chunkCount: () => (sessionData ? 5 : 0),
-};
-
 const ALL4 = { '/robot_state': { type: 'x', count: 9 }, '/balls': { type: 'x', count: 4 }, '/cone/catch_event': { type: 'x', count: 1 }, '/bb/heartbeat': { type: 'x', count: 2 } };
 const REC = (id, startSec, extra) => Object.assign({
     id, size_bytes: 2.5e9, mtime: startSec + 100, closed: true, indexed: true, in_progress: false,
@@ -112,8 +106,8 @@ const { createLobby } = await import('./replay/ui/lobby.js');
 
 const timers = [];
 const toaster = createToaster({ document: doc, timers: { set: (f, ms) => { timers.push({ f, ms }); return timers.length; }, clear() {} } });
-const picker = createPicker({ document: doc, fetch: fetchFn, mode, getSessionBuffer: () => sessionBuf });
-const lobby = createLobby({ document: doc, ros, mode, picker, toaster, getSessionBuffer: () => sessionBuf });
+const picker = createPicker({ document: doc, fetch: fetchFn, mode });
+const lobby = createLobby({ document: doc, ros, mode, picker, toaster });
 await settle();
 
 const out = {};
@@ -138,24 +132,19 @@ setConn('disconnected');
 out.live_button_untouched = liveBtn.hidden === false;
 out.probe_fetches = fetchLog.filter((u) => u === '/api/replay/recordings').length;
 
-// 2. session button / row only with buffer data
-out.session_empty = { disabled: q('replay-btn-session').disabled, text: q('replay-btn-session').textContent };
-sessionData = true; lobby.update();
-out.session_data = { disabled: q('replay-btn-session').disabled, text: q('replay-btn-session').textContent };
+out.session_btn_absent = !q('replay-btn-session');
 
 // 3. picker list states
 await picker.open(); await settle();
 let m = picker.model();
 out.rows_keys = m.rows.map((r) => r.key);
 out.empty_row_when = rowByKey('r_empty').children[0].children[0].textContent;
-out.session_row = m.rows[0].when;
 out.states = {};
 for (const k of ['r_complete', 'r_rich', 'r_noindex', 'r_live', 'r_old']) {
     const el = rowByKey(k);
     out.states[k] = { cell: cellText(el), refused: el.className.includes('refused'), chips: chipState(el), when: el.children[0].children[0].textContent,
         dur: el.children[1].textContent, topics: el.children[3].textContent };
 }
-out.sessions_cell = cellText(rowByKey('session'));
 out.banner_hidden_ok = q('replay-pk-banner').hidden;
 
 // 4. filter
@@ -175,7 +164,7 @@ pending.resolve(); out.chose = await p; out.open_after_success = picker.isOpen()
 
 // 6. refusals keep the picker open with a message
 out.refusals = {};
-for (const reason of ['recording_in_progress', 'in_progress', 'no_index', 'compressed', 'changed', 'http', 'no session buffer', 'connected']) {
+for (const reason of ['recording_in_progress', 'in_progress', 'no_index', 'compressed', 'changed', 'http', 'connected']) {
     await picker.open(); await settle();
     const pr = picker.choose('r_complete'); await settle();
     const err = new Error('x'); err.reason = reason; pending.reject(err);
@@ -183,12 +172,6 @@ for (const reason of ['recording_in_progress', 'in_progress', 'no_index', 'compr
     out.refusals[reason] = { ok, open: picker.isOpen(), msg: q('replay-pk-msg').textContent, msg_visible: !q('replay-pk-msg').hidden };
     picker.close();
 }
-// session row choice
-await picker.open(); await settle();
-enterCalls = [];
-const ps = picker.choose('session'); await settle(); pending.resolve(); await ps;
-out.session_call = enterCalls.slice();
-
 // 7. Esc closes; backdrop closes
 await picker.open(); doc.key('Escape'); out.esc_closed = !picker.isOpen();
 await picker.open(); q('replay-picker-bg').listeners.click[0]({ target: q('replay-picker-bg') }); out.backdrop_closed = !picker.isOpen();

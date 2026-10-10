@@ -1,9 +1,9 @@
-// replay_mode_harness.js — drives the REAL replay/mode.js (+ engine, cache, sources, session, event-store,
+// replay_mode_harness.js — drives the REAL replay/mode.js (+ engine, cache, McapSource over a scripted fake worker, event-store,
 // clock, fence, ros-bridge) under node with a stubbed ROSLIB/DOM; prints one JSON object that
 // tests/ros/test_gui_replay_mode.py asserts on.
 //
 // Sandbox layout (built by the pytest fixture, verbatim copies): clock.js, event-store.js, ros-bridge.js,
-// replay/{chunk,sources,session,policy,engine,cache,fence,mode}.js, this file, package.json {"type":"module"}.
+// replay/{chunk,sources,slot,policy,engine,cache,fence,mode}.js, replay_test_support.js, this file, package.json {"type":"module"}.
 // Faked: ROSLIB, document.body, the chart/link/main collaborators (they only LOG, so the order is assertable).
 let fakeNow = 1791532600000;
 Date.now = () => fakeNow;
@@ -33,10 +33,11 @@ const clock = await import('./clock.js');
 const ros = await import('./ros-bridge.js');
 const ev = await import('./event-store.js');
 const { setReplayFence } = await import('./replay/fence.js');
-const { getSessionBuffer } = await import('./replay/session.js');
+const { McapSource } = await import('./replay/sources.js');
+const { fakeWorkerFactory } = await import('./replay_test_support.js');
 const { createChunkCache } = await import('./replay/cache.js');
 const { createEngine } = await import('./replay/engine.js');
-const { indexLatestBefore } = await import('./replay/chunk.js');
+const { indexLatestBefore, buildColumns } = await import('./replay/chunk.js');
 const { createReplayMode } = await import('./replay/mode.js');
 
 const tick = () => new Promise((r) => setImmediate(r));
@@ -58,7 +59,7 @@ const out = {};
 const order = [];
 const T0 = fakeNow / 1000;
 
-// ---- connect, then feed 30 s live (the session-buffer tap) ----
+// ---- connect, then feed 30 s live (exercises the live handlers; the replay data is the recording below) ----
 ros.init('ws://localhost:9090');
 const r0 = rosInstances[rosInstances.length - 1];
 r0.fire('connection');
@@ -71,17 +72,26 @@ for (let k = 0; k < 60; k++) {
     topicsByName.orchestrator_state.cb({ data: k < 10 ? 'BOOT' : (k < 30 ? 'IDLE' : (k < 45 ? 'ACTIVE' : 'IDLE')) });
     feedStamps.push(fakeNow / 1000);
 }
-const buf = getSessionBuffer();
-const lastRS = await buf.latestBefore(T0 + 1e6, '/robot_state');
-const lastOS = await buf.latestBefore(T0 + 1e6, '/orchestrator_state');
-const liveRangeBefore = buf.range();
-out.tap = {
-    n_robot_state_recorded: seen.filter((s) => s[0] === 'robot_state').length,
-    last_robot_state: lastRS ? { t: lastRS.t, v: lastRS.msg.v } : null,
-    last_orch: lastOS ? { t: lastOS.t, data: lastOS.msg.data } : null,
-    expected_last_t: feedStamps[feedStamps.length - 1],
-    range: liveRangeBefore,
-};
+
+// ---- the recording: the same 60 x 0.5 s feed as three 10 s slots served by McapSource over a fake worker ----
+const T1 = feedStamps[feedStamps.length - 1];
+const noNet = async () => ({ status: 503, json: async () => ({ status: 'unavailable', reason: 'worker_unavailable' }) });
+const records = [0, 1, 2].map((i) => {
+    const rs = { type: 'T', n: 0, t: [], cols: { v: [] } };
+    const os = { type: 'T', n: 0, t: [], cols: { data: [] } };
+    for (let k = i * 20; k < (i + 1) * 20; k++) {
+        const t = T0 + k * 0.5;
+        rs.t.push(t); rs.cols.v.push(k); rs.n++;
+        os.t.push(t); os.cols.data.push(k < 10 ? 'BOOT' : (k < 30 ? 'IDLE' : (k < 45 ? 'ACTIVE' : 'IDLE'))); os.n++;
+    }
+    // the worker's typed shape (t as Float64Array, cols + kinds from the shipped builder)
+    for (const tp of [rs, os]) { const c = buildColumns(tp.cols); tp.cols = c.cols; tp.kinds = c.kinds; tp.t = Float64Array.from(tp.t); }
+    return { i, t0: T0 + i * 10, t1: T0 + (i + 1) * 10, topics: { '/robot_state': rs, '/orchestrator_state': os } };
+});
+const manifest = { t0: T0, t1: T1 };
+function mkSource() {
+    return McapSource({ id: 'rec', fetch: noNet, fileUrl: 'x', overviewPollMs: 0, makeWorker: fakeWorkerFactory(manifest, records) });
+}
 
 const liveEventsBefore = JSON.stringify(ev.getRecentEvents(null, 100));
 
@@ -115,13 +125,7 @@ const mkdeps = (extra) => Object.assign({
     resetForSeek() { order.push('resetForSeek'); lastOrch = null; },
     blankDisconnectedState() { order.push('blank'); },
     resetTrafficRings() { order.push('trafficReset'); },
-    makeRecordingSource() {
-        const s = getSessionBuffer().snapshot();
-        s.kind = 'recording';
-        s.open = async () => 'complete';
-        return s;
-    },
-    getSessionBuffer,
+    makeRecordingSource() { return mkSource(); },
     createCache: (source) => createChunkCache({ source }),
     createEngine,
     indexLatestBefore,
@@ -142,7 +146,7 @@ const mode = createReplayMode(mkdeps({ clock: clockSpy }));
 
 // (1) entry refused while connected
 let refused = null;
-try { await mode.enterReplay({ kind: 'session' }); } catch (e) { refused = e.reason || e.message; }
+try { await mode.enterReplay({ kind: 'recording', id: 'x' }); } catch (e) { refused = e.reason || e.message; }
 out.refused_connected = { reason: refused, state: mode.state().mode, order_len: order.length };
 
 // connection listener recorder (registered AFTER mode's hook, like main.js is)
@@ -161,43 +165,38 @@ r0.fire('close');
 out.lobby = mode.state().mode;
 listenerLog.length = 0;
 
-// (6)+(2) replay last session: paused at t1 - span; ordered entry
-await mode.enterReplay({ kind: 'session' });
+// (6)+(2) open a recording: paused at t0; ordered entry
+await mode.enterReplay({ kind: 'recording', id: 'x' });
 const e0 = mode.engine();
 const st0 = mode.state();
 out.entry = {
     order_prefix: order.slice(0, 8),
     after_entry_sample: order.slice(8, 12),
     state: st0,
-    t1: liveRangeBefore.t1,
-    expect_playhead: liveRangeBefore.t1 - 10,
+    t1: T1,
+    expect_playhead: T0,
     fenced: classes.has('replay'),
     isReplay: clock.isReplay(),
     resident_chunks: fakeStore.last,
     events_in_replay_store_at_entry: ev.getRecentEvents(null, 100).length,
 };
 
-// (5) the tap is skipped in replay: a stray socket callback does not reach the live buffer
-const beforeStray = getSessionBuffer().range();
-topicsByName.robot_state.cb({ v: 12345 });
-out.tap_replay_skip = { before: beforeStray.t1, after: getSessionBuffer().range().t1 };
-
-// play forward through the whole snapshot
+// play forward through the whole recording
 async function run(n, dt) { for (let i = 0; i < n; i++) { e0.tick(dt); await settle(2); } }
 await e0.play();
 await run(400, 100);
 const keysOf = () => ev.getRecentEvents(null, 100).map((e) => e.t + '|' + e.type + '|' + e.label).sort();
 const keys1 = keysOf();
-out.forward = { mode: mode.state().sub, playhead: mode.state().playhead, t1: liveRangeBefore.t1, n_events: keys1.length, keys: keys1 };
+out.forward = { mode: mode.state().sub, playhead: mode.state().playhead, t1: T1, n_events: keys1.length, keys: keys1 };
 
 // (7) reverse then forward again: no duplicates
-await e0.seek(liveRangeBefore.t1 - 1);
+await e0.seek(T1 - 1);
 e0.setSpeed(-1);
 await e0.play();
 await run(100, 100);
 out.reverse = { events_during_reverse: keysOf().length, playhead: mode.state().playhead };
 e0.setSpeed(1);
-await e0.seek(liveRangeBefore.t1 - 10);
+await e0.seek(T0);
 await e0.play();
 await run(400, 100);
 const keys2 = keysOf();
@@ -242,7 +241,7 @@ out.connected_edge = {
     const newest = () => rosInstances[rosInstances.length - 1];
     const loopEdge = () => { ros.init('ws://localhost:9090'); newest().fire('close'); };  // connecting -> disconnected
     newest().fire('close');                      // connected -> disconnected (idle: delivered)
-    await mode.enterReplay({ kind: 'session' });
+    await mode.enterReplay({ kind: 'recording', id: 'x' });
     order.length = 0; listenerLog.length = 0;
     for (let i = 0; i < 3; i++) loopEdge();
     const during = {
@@ -257,7 +256,7 @@ out.connected_edge = {
     };
     // exitReplay path: listeners hear transitions again afterwards
     newest().fire('close');
-    await mode.enterReplay({ kind: 'session' });
+    await mode.enterReplay({ kind: 'recording', id: 'x' });
     loopEdge();
     order.length = 0; listenerLog.length = 0;
     await mode.exitReplay('user');
@@ -284,7 +283,7 @@ let r409 = null;
 try { await m2.enterReplay({ kind: 'recording', id: 'y' }); } catch (e) { r409 = e.reason; }
 out.refusal_409 = { reason: r409, order_len: order.length, state: m2.state().mode, isReplay: clock.isReplay() };
 
-// (a) rollback: a throwing entry step leaves the GUI exactly as it was (the session buffer is still populated)
+// (a) rollback: a throwing entry step leaves the GUI exactly as it was 
 {
     const noHook = (extra) => {
         const d = mkdeps(Object.assign({ clock: clockSpy }, extra));
@@ -300,7 +299,7 @@ out.refusal_409 = { reason: r409, order_len: order.length, state: m2.state().mod
         restoreReplayLatches: (v) => { order.push('latches.restore:' + v.s); },
     }));
     let e3 = null;
-    try { await m3.enterReplay({ kind: 'session' }); } catch (e) { e3 = e.message; }
+    try { await m3.enterReplay({ kind: 'recording', id: 'x' }); } catch (e) { e3 = e.message; }
     out.entry_throw = {
         error: e3, isReplay: clock.isReplay(), fenced: classes.has('replay'), state: m3.state().mode,
         active: m3.isActive(), order: order.slice(),
@@ -311,7 +310,7 @@ out.refusal_409 = { reason: r409, order_len: order.length, state: m2.state().mod
     const m4 = createReplayMode(noHook({
         charts: Object.assign({}, mkdeps().charts, { exit() { order.push('charts.exit'); throw new Error('boom-exit'); } }),
     }));
-    await m4.enterReplay({ kind: 'session' });
+    await m4.enterReplay({ kind: 'recording', id: 'x' });
     const wasReplay = clock.isReplay();
     order.length = 0;
     await m4.exitReplay('user');
@@ -333,9 +332,7 @@ out.refusal_409 = { reason: r409, order_len: order.length, state: m2.state().mod
     const d5 = mkdeps({
         clock: clockSpy,
         makeRecordingSource() {
-            const s = getSessionBuffer().snapshot();
-            s.kind = 'recording';
-            s.open = async () => 'complete';
+            const s = mkSource();
             const realLoad = s.load.bind(s);
             s.load = async (i) => { loads.push([i, released]); if (!released) await gate; return realLoad(i); };
             return s;
@@ -361,9 +358,7 @@ out.refusal_409 = { reason: r409, order_len: order.length, state: m2.state().mod
     const d6 = mkdeps({
         clock: clockSpy,
         makeRecordingSource() {
-            const s = getSessionBuffer().snapshot();
-            s.kind = 'recording';
-            s.open = async () => 'complete';
+            const s = mkSource();
             s.load = async () => { throw Object.assign(new Error('x'), { reason: 'decode' }); };
             const realClose = s.close ? s.close.bind(s) : () => {};
             s.close = () => { closed6++; return realClose(); };
@@ -390,21 +385,38 @@ out.refusal_409 = { reason: r409, order_len: order.length, state: m2.state().mod
         },
     }));
     order.length = 0;
-    await mD.enterReplay({ kind: 'session' });
+    await mD.enterReplay({ kind: 'recording', id: 'x' });
     const during = { n: made.length, keys: made.length ? Object.keys(made[0].o).sort() : [], store_is_fake: made.length && made[0].o.store === fakeStore,
         engine_state: made.length ? typeof made[0].o.engine.state : null, disposed: made.length ? made[0].disposed : -1 };
     await mD.exitReplay('user');
-    await mD.enterReplay({ kind: 'session' });
+    await mD.enterReplay({ kind: 'recording', id: 'x' });
     await mD.exitReplay('user');
     out.digester = { during, after: made.map((d) => d.disposed), n_total: made.length,
         dispose_before_charts_exit: order.indexOf('digester.dispose') < order.indexOf('charts.exit') };
 }
 
-// no session buffer
-getSessionBuffer().clear();
-let nb = null;
-try { await mode.enterReplay({ kind: 'session' }); } catch (e) { nb = e.reason; }
-out.no_session = { reason: nb, state: mode.state().mode };
+// resident-set changes coalesce to ONE store rebuild per animation frame (a seek's pre-roll lands as several slots)
+{
+    const q = [];
+    let nid = 0;
+    const raf = { request(cb) { q.push({ id: ++nid, cb }); return nid; }, cancel(id) { const i = q.findIndex((x) => x.id === id); if (i >= 0) q.splice(i, 1); }, hidden: () => false };
+    const flushFrames = async () => { for (let g = 0; g < 8 && q.length; g++) { const f = q.splice(0); for (const x of f) x.cb(0); await settle(2); } };
+    const mR = createReplayMode(mkdeps({ clock: clockSpy, raf }));
+    await mR.enterReplay({ kind: 'recording', id: 'x' });
+    await flushFrames();
+    const calls = () => order.filter((o) => o === 'store.setResident').length;
+    const base = calls();
+    const eR = mR.engine();
+    const seekP = eR.seek(T0 + 25);
+    for (let i = 0; i < 40; i++) await settle(1);          // let every slot of the seek land, no frame fired yet
+    const before = calls();
+    await seekP;
+    const beforeFrame = calls();
+    await flushFrames();
+    const afterFrame = calls();
+    await mR.exitReplay('user');
+    out.resident_coalesce = { before_frame: beforeFrame - base, after_frame: afterFrame - base, pending_exit_clean: q.length === 0 };
+}
 
 console.log(JSON.stringify(out));
 process.exit(0);

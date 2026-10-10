@@ -15,8 +15,9 @@
  *   - Fill order is NEAREST-FIRST around the centre (ahead wins a tie); one slot per step, one load in
  *     flight, a `defer` hop between steps so the main thread is never held.
  *   - BY-PRODUCT: a slot whose chunk is already in memory (cache-resident, or source.peek) is digested
- *     synchronously instead of being re-loaded.  Sealed chunks only (an open session chunk is covered by
- *     the full tier and is retried later).
+ *     synchronously instead of being re-loaded.  Sealed chunks only (plain-array `t` = unsealed fixture:
+ *     not digested, marked failed).  The chunk's derived chart columns are shared with the chart store
+ *     (chart-store.js caches them per chunk), so a chunk that is both resident and digested is derived once.
  *   - Otherwise source.load(i, {lite: true}): the worker's low-priority lane, never memoised by the
  *     source - the chunk object is dropped as soon as it is digested.
  *   - PAUSED (no new load issued) while the engine is buffering (a seek or a stall) or the cache has a
@@ -127,7 +128,7 @@ export function createDigester(opts) {
       if (ch && centreWants(next)) {
         if (take(next, ch)) publish(); else failed.add(next);   // unsealed: do not hot-loop
       } else if (!ch) {
-        failed.add(next);   // nothing to digest (session gap): do not spin on it
+        failed.add(next);   // nothing to digest (a gap): do not spin on it
       }
       kick();
     }, () => {

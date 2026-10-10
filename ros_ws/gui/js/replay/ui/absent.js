@@ -6,7 +6,7 @@
  * region lives in ABSENT_TABLE (keys are policy.js TOPIC_POLICY chunk names). A region is dimmed when NONE
  * of its topics is present. Nothing here touches the overview (decision 18: no per-topic rows there).
  *
- * The topic set is only judged when authoritative: a session snapshot (its own chunks) or an OPENED
+ * The topic set is only judged when authoritative: an OPENED
  * recording (manifest.topics = the topic census the McapSource worker read from the MCAP summary on
  * `opened`; status() is always complete, so it is judged from the first frame; a later `source.onChange`
  * re-evaluates).
@@ -41,9 +41,6 @@ export function absentRegions(present, table = ABSENT_TABLE) {
 /** Authoritative topic set of a source, or null while it cannot be judged. */
 export function topicsOf(source) {
     if (!source) return null;
-    if (source.kind === 'session') {
-        return typeof source.topicSet === 'function' ? new Set(source.topicSet()) : null;
-    }
     const st = source.status ? source.status() : null;
     const man = source.manifest ? source.manifest() : null;
     if (!st || st.state !== 'complete' || !man || !man.topics) return null;

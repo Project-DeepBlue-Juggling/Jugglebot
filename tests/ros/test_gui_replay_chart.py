@@ -198,3 +198,13 @@ def test_digest_installs_repaint_once_per_frame(out):
 def test_y_range_covers_the_digest_envelope_over_the_visible_window(out):
     r = out["range_env"]
     assert r["emax_finite"] is True and r["covers"] is True
+
+
+def test_typed_derivation_hydrates_nothing_and_derives_each_chunk_once(out):
+    d = out["derive_once"]
+    assert d["hydrations"] == 0                       # robot_state / echo / hand are read from the typed columns
+    assert d["resident_calls"] > 0
+    assert d["digest_resident_extra"] == 0            # digest of a resident chunk reuses setResident's derivation
+    assert d["far_calls"] > 0                         # a non-resident chunk is derived once for its digest ...
+    assert d["promote_extra"] == 0                    # ... and not again when it becomes resident
+    assert d["again_extra"] == 0

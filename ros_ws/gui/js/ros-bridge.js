@@ -12,7 +12,6 @@
  */
 
 import * as clock from './clock.js';
-import { getSessionBuffer } from './replay/session.js';
 
 const RECONNECT_INTERVAL_MS = 2000;
 const STALE_TIMEOUT_MS = 5000;  // Mark disconnected if no messages for 5 seconds
@@ -284,11 +283,6 @@ function createSubscription(entry) {
 
     topic.subscribe((msg) => {
         touchActivity();
-        // Session-buffer tap (replay design § 8): every DELIVERED message, stamped with clock.now().
-        // Nothing arrives in replay (the socket is down) but guard anyway.
-        if (!clock.isReplay()) {
-            try { getSessionBuffer().record(entry.topicName, msg, clock.now() / 1000); } catch (e) { /* never break a subscriber */ }
-        }
         entry.callback(msg);
     });
     entry.rosTopic = topic;

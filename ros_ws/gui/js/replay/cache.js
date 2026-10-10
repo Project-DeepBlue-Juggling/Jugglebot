@@ -1,8 +1,8 @@
 /**
  * Chunk residency cache for the replay engine (design § 6).
  *
- *   createChunkCache({source, spanSec, maxResident = 16, aheadSec = 20, behindSec = 10, retryMs = 2000, now})
- *     peek(i)                          sync  resident chunk or null (a session gap is an EMPTY chunk, never null)
+ *   createChunkCache({source, spanSec, maxResident = 8, aheadSec = 10, behindSec = 10, retryMs = 2000, now})
+ *     peek(i)                          sync  resident chunk or null (a gap is an EMPTY chunk, never null)
  *     ensure(iFrom, iTo, direction)    async resolves when every covering chunk is resident
  *                                      (chunks past a FINAL source's end count as satisfied)
  *     setPlayhead(pSec, dir, spanSec)  recompute the wanted set, evict, (re)start the serial fetcher
@@ -20,10 +20,10 @@
  * so eviction always removes the farthest.
  * Fetches are issued ONE AT A TIME through source.load. Nothing at or past the source's frontier
  * chunk is requested (bounds(i)[0] >= frontier); source.onChange with a larger frontier re-plans.
- * A load that resolves null (a session-buffer gap) is stored as an empty chunk.
+ * A load that resolves null (a gap) is stored as an empty chunk.
  */
 
-const DEFAULTS = { spanSec: 30, maxResident: 16, aheadSec: 20, behindSec: 10, retryMs: 2000 };
+const DEFAULTS = { spanSec: 30, maxResident: 8, aheadSec: 10, behindSec: 10, retryMs: 2000 };
 
 export function createChunkCache(opts) {
     const source = opts.source;
@@ -220,7 +220,7 @@ export function createChunkCache(opts) {
         }
         const rng = loadable();
         const key = rng ? rng.lo + ':' + rng.hi : 'none';
-        if (key === lastLimit) { settleWaiters(); return; } // cheap path: session sources fire per record
+        if (key === lastLimit) { settleWaiters(); return; } // cheap path: a source may fire onChange often
         lastLimit = key;
         for (const i of Array.from(failedAt.keys())) failedAt.delete(i);
         replan();

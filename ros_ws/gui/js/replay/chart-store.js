@@ -19,9 +19,12 @@
  *     time order into FRESH Float64Arrays and swaps `axes`; nothing is ever
  *     shifted or written in place, so a view uPlot holds can never move under
  *     it (the 2026-09-07 drift class).  `version` increases on every rebuild.
- *   - A chunk is cached only once sealed (`t instanceof Float64Array`); the
- *     session buffer's OPEN chunk (plain `t`, growing `n`) is re-derived on
- *     every setResident from a snapshot of its first `n` rows.
+ *   - A chunk is cached only once sealed (every topic's `t` is a Float64Array, as the worker delivers them);
+ *     an unsealed chunk (plain-array `t`: a test fixture) is re-derived on every setResident.
+ *   - Derivation reads the chunk's TYPED columns directly (motor_states CSR leaves -> one scratch
+ *     object, echo/hand joins refilled only when the joined row changes): no per-row hydration.  The
+ *     derived columns are shared: setResident and the digester's by-product digest (digestChunk) read
+ *     the SAME per-chunk cache entry, so a chunk is derived once however it is reached.
  *
  * Two tiers (post-Phase-4, the 10-minute view):
  *   - FULL tier: the resident chunks above.
@@ -35,14 +38,14 @@
  *     regions' {t, min, max} (+ `split`, the count of leading points before the resident window).
  *     `axes[a].timestamps/columns/length` stay FULL-tier only.
  *
- * Cross-chunk joins: pass `latestBefore(topic, tSec)` backed by the feed so an
- * echo that precedes a chunk's first robot_state is found in the previous
- * chunk.  Without it the store searches the chunks handed to setResident only,
+ * Cross-chunk joins: pass `latestBefore(topic, tSec)` -> `{t, tp, k}` (the topic entry and row index,
+ * NOT a hydrated row) backed by the feed so an echo that precedes a chunk's first robot_state is found
+ * in the previous chunk.  Without it the store searches the chunks handed to setResident only,
  * and the head of the first resident chunk may be left unjoined.
  *
  * Pure module: no DOM, no uPlot, no telemetry-charts import (injected).
  */
-import { indexLatestBefore, scrubNonFinite } from './chunk.js';
+import { indexLatestBefore, scrubNonFinite, typedColumns, leafFiller } from './chunk.js';
 
 export const LEG_ECHO_STALE_S = 1.0;
 export const MOTOR_COUNT = 9;
@@ -167,7 +170,7 @@ class ReplayAxisStore {
 /**
  * @param {{telemetrySample:Function, latestBefore?:Function}} deps
  *   telemetrySample(m, idx, commandedLegs, hand) -> values; latestBefore(topic, tSec)
- *   -> {t, row}|null with row the hydrated message (optional, see header).
+ *   -> {t, tp, k}|null (optional, see header).
  */
 export function createReplayChartStore(deps) {
   const telemetrySample = deps.telemetrySample;
@@ -191,68 +194,141 @@ export function createReplayChartStore(deps) {
     onInvalidate(fn) { invalidateListeners.add(fn); return () => invalidateListeners.delete(fn); },
   };
 
-  /** Latest-before over the resident chunks (default join source). */
+  /** Latest-before over the resident chunks (default join source): {t, tp, k} or null. */
   function residentLatest(topic, tSec) {
     for (let c = resident.length - 1; c >= 0; c--) {
       const tp = resident[c].topics[topic];
       if (!tp || tp.n === 0) continue;
       const k = indexLatestBefore(tp.t, tSec, tp.n);
-      if (k >= 0) return { t: tp.t[k], row: tp.hydrate(k) };
+      if (k >= 0) return { t: tp.t[k], tp, k };
     }
     return null;
   }
 
-  function derive(chunk, latestOpt) {
+  /** latest-before that looks in the chunk itself first (a far chunk is not resident), else the store's source. */
+  function ownFirstLatest(chunk) {
+    const fallback = injectedLatest || residentLatest;
+    return (topic, tSec) => {
+      const tp = chunk.topics[topic];
+      if (tp && tp.n > 0) {
+        const k = indexLatestBefore(tp.t, tSec, tp.n);
+        if (k >= 0) return { t: tp.t[k], tp, k };
+      }
+      return fallback(topic, tSec);
+    };
+  }
+
+  /**
+   * Derive the nine axes' signal columns from a chunk's TYPED columns: motor_states is read straight from its
+   * CSR leaves into one reusable scratch object (no per-row hydration, no per-row row object); the echo / hand
+   * joins fill a reusable legs array / hand scratch only when the joined row changes.  telemetrySample() is
+   * the live function, so values (incl. null for a non-finite field, the rosbridge rule) are unchanged.
+   */
+  function derive(chunk) {
+    const latest = ownFirstLatest(chunk);
     const rs = chunk.topics[ROBOT_STATE];
     const n = rs ? rs.n : 0;
-    const latest = latestOpt || injectedLatest || residentLatest;
-    const axT = [];
-    const axC = [];
-    for (let a = 0; a < MOTOR_COUNT; a++) { axT.push([]); axC.push({}); for (const k of SIGNAL_KEYS) axC[a][k] = []; }
-    // The join rows change slowly; remember the last lookup so a 100 Hz chunk
-    // does not hydrate the same echo row 100 times.
-    let echoT = NaN, echoRow = null, handT = NaN, handRow = null;
+    const axT = [], axC = [], cnt = new Int32Array(MOTOR_COUNT);
+    const ms = n > 0 ? typedColumns(rs) : null;
+    const mk = ms ? ms.kinds.motor_states : undefined;
+    const mc = ms ? ms.cols.motor_states : undefined;
+    const isCsr = !!(mk && typeof mk === 'object' && mk.csr && mk.csr.leaves);
+    let fillMotor = null;
+    if (isCsr) fillMotor = leafFiller(mk.csr.leaves, mc.leaves);
+    let maxCnt = 0;
+    if (isCsr) {
+      for (let k = 0; k < n; k++) { const c = mc.offsets[k + 1] - mc.offsets[k]; if (c > maxCnt) maxCnt = c; }
+    } else if (mk === 'any') {
+      for (let k = 0; k < n; k++) { const m = mc[k]; if (m && m.length > maxCnt) maxCnt = m.length; }
+    }
+    if (maxCnt > MOTOR_COUNT) maxCnt = MOTOR_COUNT;
+    for (let a = 0; a < MOTOR_COUNT; a++) {
+      const len = a < maxCnt ? n : 0;
+      axT.push(new Float64Array(len));
+      const c = {};
+      for (const key of SIGNAL_KEYS) c[key] = new Float64Array(len);
+      axC.push(c);
+    }
+    const scratch = {};                 // the motor row telemetrySample reads
+    const legs = [];                    // the joined leg_setpoint_echo.data (reused; length = the row's)
+    const handRow = {};                 // the joined hand_telemetry row (scalar columns)
+    let echoTp = null, echoK = -1, handTp = null, handK = -1;
+    let echoFill = null, handFill = null;
+    let echoOk = false;
     for (let k = 0; k < n; k++) {
       const t = rs.t[k];
-      const motors = scrubNonFinite(rs.cols.motor_states[k]);
-      if (!motors || motors.length === 0) continue;
+      let cntK, off = 0, objs = null;
+      if (isCsr) { off = mc.offsets[k]; cntK = mc.offsets[k + 1] - off; }
+      else if (mk === 'any') { objs = scrubNonFinite(mc[k]); cntK = objs ? objs.length : 0; }
+      else cntK = 0;
+      if (cntK === 0) continue;
       const e = latest(LEG_ECHO, t);
-      let legs = null;
+      let useLegs = false;
       if (e && t - e.t < LEG_ECHO_STALE_S) {
-        if (e.t !== echoT) { echoT = e.t; echoRow = e.row; }
-        legs = echoRow && echoRow.data ? echoRow.data : null;
+        if (e.tp !== echoTp || e.k !== echoK) {
+          echoTp = e.tp; echoK = e.k;
+          const et = typedColumns(e.tp);
+          const ek = et.kinds.data, ec = et.cols.data;
+          echoOk = false;
+          if (ek && typeof ek === 'object' && typeof ek.csr === 'string' && ek.csr !== 'str') {
+            const f = ek.csr === 'f64';
+            const b = ec.offsets[e.k], q = ec.offsets[e.k + 1];
+            legs.length = q - b;
+            for (let j = b; j < q; j++) { const v = ec.flat[j]; legs[j - b] = f ? (Number.isFinite(v) ? v : null) : v !== 0; }
+            echoOk = true;
+          } else if (ek === 'any' && ec[e.k] != null) {
+            const arr = scrubNonFinite(ec[e.k]);
+            legs.length = arr.length;
+            for (let j = 0; j < arr.length; j++) legs[j] = arr[j];
+            echoOk = true;
+          }
+        }
+        useLegs = echoOk;
       }
       const h = latest(HAND, t);
       let hand = null;
       if (h) {
-        if (h.t !== handT) { handT = h.t; handRow = h.row; }
+        if (h.tp !== handTp || h.k !== handK) {
+          if (h.tp !== handTp) { const ht = typedColumns(h.tp); handFill = leafFiller(ht.kinds, ht.cols); }
+          handTp = h.tp; handK = h.k;
+          handFill(handRow, h.k);
+        }
         hand = handRow;
       }
-      const cnt = Math.min(motors.length, MOTOR_COUNT);
-      for (let i = 0; i < cnt; i++) {
-        const v = telemetrySample(motors[i], i, legs, hand);
-        axT[i].push(t);
-        for (const key of SIGNAL_KEYS) axC[i][key].push(v[key] === undefined ? NaN : v[key]);
+      const c = cntK < MOTOR_COUNT ? cntK : MOTOR_COUNT;
+      for (let i = 0; i < c; i++) {
+        let m;
+        if (isCsr) { fillMotor(scratch, off + i); m = scratch; } else m = objs[i];
+        const v = telemetrySample(m, i, useLegs ? legs : null, hand);
+        const o = cnt[i]++;
+        axT[i][o] = t;
+        const ac = axC[i];
+        for (let q = 0; q < SIGNAL_KEYS.length; q++) { const key = SIGNAL_KEYS[q]; ac[key][o] = v[key] === undefined ? NaN : v[key]; }
       }
     }
     const axes = [];
     for (let a = 0; a < MOTOR_COUNT; a++) {
-      const cols = {};
-      for (const key of SIGNAL_KEYS) cols[key] = Float64Array.from(axC[a][key]);
-      axes.push({ t: Float64Array.from(axT[a]), cols });
+      const m = cnt[a], cols = {};
+      let T = axT[a];
+      if (m !== T.length) T = T.slice(0, m);
+      for (const key of SIGNAL_KEYS) cols[key] = m === axC[a][key].length ? axC[a][key] : axC[a][key].slice(0, m);
+      axes.push({ t: T, cols });
     }
     return axes;
   }
 
+  /**
+   * The chunk's derived axes, computed ONCE and shared by setResident and the digester's by-product
+   * digest (digestChunk).  Cached for every sealed chunk when the join source is injected (its answer
+   * does not depend on the resident set); with the default resident-only join, only for resident chunks.
+   */
   function derivedFor(chunk) {
-    let sealed = true;
-    for (const name in chunk.topics) if (!(chunk.topics[name].t instanceof Float64Array)) sealed = false;
-    if (sealed) {
+    if (isSealed(chunk) && (injectedLatest || resident.indexOf(chunk) >= 0)) {
       let d = cache.get(chunk);
       if (!d) { d = derive(chunk); cache.set(chunk, d); }
       return d;
     }
-    return derive(chunk); // open chunk: never cached, derived from a snapshot of n rows
+    return derive(chunk); // unsealed chunk (plain-array t, a test fixture) or a non-resident one with no injected join: not cached
   }
 
   /** [t0, t1] spanned by the resident chunks, or null. */
@@ -342,26 +418,6 @@ export function createReplayChartStore(deps) {
     return true;
   }
 
-  /** latest-before that looks in the chunk itself first (a far chunk is not resident), else the store's source. */
-  function ownFirstLatest(chunk) {
-    const fallback = injectedLatest || residentLatest;
-    const memo = {};
-    return (topic, tSec) => {
-      const tp = chunk.topics[topic];
-      if (tp && tp.n > 0) {
-        const k = indexLatestBefore(tp.t, tSec, tp.n);
-        if (k >= 0) {
-          const m = memo[topic];
-          if (m && m.k === k) return m.v;
-          const v = { t: tp.t[k], row: tp.hydrate(k) };
-          memo[topic] = { k, v };
-          return v;
-        }
-      }
-      return fallback(topic, tSec);
-    };
-  }
-
   /**
    * Bin a SEALED chunk's derived columns (the exact setResident derivation, incl. the echo/hand joins)
    * into 1 s min/max/mean bins.  Returns null for an open (unsealed) chunk.  Digest shape:
@@ -370,7 +426,7 @@ export function createReplayChartStore(deps) {
    */
   function digestChunk(chunk) {
     if (!isSealed(chunk)) return null;
-    const d = resident.indexOf(chunk) >= 0 ? derivedFor(chunk) : derive(chunk, ownFirstLatest(chunk));
+    const d = derivedFor(chunk);
     const nb = Math.max(1, Math.round((chunk.t1 - chunk.t0) / BIN_S));
     const axes = [];
     for (let a = 0; a < MOTOR_COUNT; a++) {

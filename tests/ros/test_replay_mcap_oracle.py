@@ -63,7 +63,7 @@ def _sandbox(tmp_path):
     sb = tmp_path / "sb"
     (sb / "js" / "replay").mkdir(parents=True)
     (sb / "lib").mkdir()
-    for name in ("mcap-decode.js", "allowlist.js"):
+    for name in ("mcap-decode.js", "allowlist.js", "chunk.js"):
         shutil.copy(GUI / "js" / "replay" / name, sb / "js" / "replay" / name)
     shutil.copy(GUI / "lib" / "mcap-bundle.min.js", sb / "lib" / "mcap-bundle.min.js")
     shutil.copy(HARNESS, sb / "harness.js")
@@ -117,6 +117,8 @@ def _untag(v):
 
 def _same(a, b, where):
     """Strict structure, floats within 1e-9, NaN == NaN (both sides non-finite)."""
+    if a is None and isinstance(b, float) and not math.isfinite(b):
+        return 1        # hydrate() maps non-finite to null (rosbridge's rule); the oracle keeps NaN/Inf
     if isinstance(a, float) or isinstance(b, float):
         if isinstance(a, bool) or isinstance(b, bool):
             assert a == b, where
@@ -174,6 +176,12 @@ def test_js_decode_equals_python_oracle(world):
     orch = [v for s in js["slots"] for v in s["topics"].get("/orchestrator_state", {}).get("cols", {}).get("data", [])]
     assert orch.count("TIE_A") == 1 and orch.index("TIE_A") + 1 == orch.index("TIE_B")
     assert orch.index("TIE_C") + 1 == orch.index("TIE_D") and "EDGE_LO" in orch
+    # The typed layout is really in play: scalar, bool, string and both CSR flavours, and nothing fell back to 'any'.
+    kinds = [kd for sl in js["slots"] for tp in sl["topics"].values() for kd in tp["kinds"].values()]
+    assert "any" not in kinds
+    assert {"f64", "u8", "str"} <= {k for k in kinds if isinstance(k, str)}
+    assert any(isinstance(k, dict) and isinstance(k["csr"], str) for k in kinds)
+    assert any(isinstance(k, dict) and isinstance(k["csr"], dict) for k in kinds)
     print("\nORACLE slots=%d values=%d mismatches=0 open_ms=%.1f decode_ms=%.1f"
           % (n_slots, n_values, js["openMs"], js["decodeMs"]))
 

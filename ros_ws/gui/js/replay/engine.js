@@ -73,8 +73,8 @@ function byTime(a, b) { return (a.t - b.t) || (a.ord - b.ord) || ((a.k || 0) - (
 
 /**
  * A cache that loads every available chunk on the first ensure() (and any
- * newly converted ones on later calls). A load that resolves null (a session
- * buffer index with no data) is stored as an empty chunk, so a gap is "no
+ * newly converted ones on later calls). A load that resolves null (a slot with no
+ * data) is stored as an empty chunk, so a gap is "no
  * data", not "loading".
  * @param {object} source
  */
@@ -220,8 +220,9 @@ export function createEngine(opts) {
         if (r.msg === null) r.msg = r.ch.topics[r.topic].hydrate(r.k);
         return r.msg;
     }
+    // The on-change gate compares the RAW column value on both sides (collectForward reads the same column),
+    // never a hydrated msg.data (bool columns are Uint8 0/1 raw, true/false hydrated; non-finite NaN vs null).
     function dataOf(r) {
-        if (r.msg !== null) return r.msg ? r.msg.data : undefined;
         const col = r.ch.topics[r.topic].cols.data;
         return col ? col[r.k] : undefined;
     }

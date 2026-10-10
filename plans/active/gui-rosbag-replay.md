@@ -1,5 +1,5 @@
 ---
-title: GUI rosbag replay — one playhead over any MCAP recording or the last live session
+title: GUI rosbag replay — one playhead over any MCAP recording
 created: 2026-10-10
 status: active
 owner: Harrison
@@ -17,7 +17,7 @@ related_code:
 # GUI rosbag replay
 
 The browser GUI (`ros_ws/gui/`) will replay any MCAP recording on the Jetson
-disk, or the last live session still in memory, through **one playhead** that
+disk through **one playhead** that
 drives the charts, the 3D scene and every panel whose topic was recorded, with
 a trackbar, transport controls and hotkeys in place of the command buttons,
 available only while no live ROS2 session is connected.
@@ -70,8 +70,9 @@ Backend decisions (ticket 05, 2026-10-10; items 2, 4, 5, 6 and 9 revised by tick
 5. **Open holds until slot 0 is resident**, then REPLAY paused. The overview pass runs on the first GET of a
    recording's overview, never as a sweep (the server is always up and a sweep would compete with a live session).
 6. *(Eviction deleted: there is no cache.)*
-7. **Session buffer = the same chunk shape**, built in the browser at arrival (ring of 60 × 10 s): one feed
-   implementation for both sources (Phase 2).
+7. ~~**Session buffer = the same chunk shape**, built in the browser at arrival (ring of 60 × 10 s).~~ **REMOVED
+   2026-10-10** (`logbook/2026-10-10-gui-replay-memory-and-main-thread.md`): the newest recording covers "replay the
+   last session"; the live path no longer taps messages.
 8. **Served rate**: slots carry the full recorded rate. The browser never calls handlers faster than the live rate,
    whatever the speed; charts ingest columns, not messages. The decimation rule above 1× is ticket 02's.
 9. **Unindexed bags are refused `no_index`** (no summary section to seek by); a footer-less file still growing is
@@ -99,14 +100,13 @@ nested `Old naming scheme/` folder is out of scope.
 - *Live mode* — rosbridge connected, data streams in. *Replay mode* — the
   exclusive in-page state driven by the playhead; reachable only while
   rosbridge is disconnected. *Lobby* — the disconnected command overlay
-  offering the two replay entries.
+  offering the replay entry (the picker; the session row was removed 2026-10-10).
 - *Playhead* — the single replay time, wall-clock seconds.
-- *Recording* — one bag directory. *Session buffer* — the chunks retained in
-  the browser during live mode (600 s). *Source* — a recording or the session
-  buffer; *feed* — the time-ordered records a source yields.
+- *Recording* — one bag directory. *Session buffer* — retired 2026-10-10 (the
+  newest recording covers it). *Source* — a recording; *feed* — the time-ordered records a source yields.
 - *Chunk* — a fixed 10 s slot of a source's feed built by the worker, every allow-listed topic
-  columnar in one record; the unit of decode, residency and of the session
-  buffer. *Window* — a contiguous run of chunks around the playhead.
+  columnar in one record; the unit of decode and residency.
+  *Window* — a contiguous run of chunks around the playhead.
 - *Overview pass* — the one-off venv pass over a recording that yields its
   timeline overview, cached under `temp/replay_overview/<id>.json`. *Allowlist* —
   the topics the decoder keeps.
@@ -121,11 +121,11 @@ nested `Old naming scheme/` folder is out of scope.
 | 1a | (superseded by 4) Converter worker (`replay/convert.py`): rosbags decode, chunking with reorder buffer, manifest, overview, bulk CLI; synthetic MCAP fixture; tests | done 2026-10-10 (software) |
 | 1b | Server (`replay/cache.py`, `replay/api.py`, `gui_server.py`): threaded, routes, worker queue, eviction, refusals; unit file in `tools/systemd/`; tests | done 2026-10-10 (software; unit not yet installed on the box) |
 | 1c | End-to-end test (real worker through the API on the fixture); bulk conversion of the newest recordings by hand; unit installed on the box | done 2026-10-10: e2e test; unit installed and the service restarted by the owner; live open path smoke-tested (24 MB / 114 s recording queued → complete in 18 s, 12 chunks, 3.2 MB, chunk served gzip). Bulk pre-conversion remains optional |
-| 2 | Browser engine: feed over chunks (recording via the API, session buffer in memory), playhead clock, dispatch through the live handlers, seek semantics, prefetch, chart-store swap | software-complete 2026-10-10 (`81355621`…`ca4b6781`, merged to `skill-stack`); the real GUI calls `getReplayMode` only in Phase 3; the dev page was retired in Phase 3 |
+| 2 | Browser engine: feed over chunks (recording via the API; the session buffer was removed 2026-10-10), playhead clock, dispatch through the live handlers, seek semantics, prefetch, chart-store swap | software-complete 2026-10-10 (`81355621`…`ca4b6781`, merged to `skill-stack`); the real GUI calls `getReplayMode` only in Phase 3; the dev page was retired in Phase 3 |
 | 3 | Replay UI: lobby, picker, trackbar + transport + hotkeys, timeline overview, zoom; replay-only-while-disconnected gating | done 2026-10-10 (`2026-10-10-gui-replay-ui-phase3.md`); owner browser session held 2026-10-10, feedback in `2026-10-10-gui-replay-phase3-owner-feedback.md` |
 | 4 | Direct MCAP source: vendored @mcap/core + rosmsg2 bundle, decode in a module Web Worker over HTTP Range, McapSource behind the Source seam, hold-until-slot-0 open; backend = listing + Range + cached overview pass; converter cache deleted, convert.py kept as the test oracle | software-complete 2026-10-10 (`2026-10-10-gui-replay-direct-mcap-phase4.md`); gate pending; owner browser unverified |
 | 5 | Balls in the 3D scene with trails (live and replay), `tail_length_ms` input | **pending the owner's pick on ticket 04** (prototype `ros_ws/gui/test_replay_trails.html` built 2026-10-10, committed on skill-stack) |
-| 6 | Hardening and fog: session-buffer memory ceiling, deep links `?recording=<id>&t=`, read-only minimap / juggle panel in replay | after 2–5; session-buffer ceiling: owner measured ≈ 1 MB heap per recorded second resident on 2026-10-10 (600 s ≈ 600 MB) → decide 300 s / topic cut |
+| 6 | Hardening and fog: deep links `?recording=<id>&t=`, read-only minimap / juggle panel in replay | after 2–5; the session-buffer ceiling is moot (buffer removed 2026-10-10); replay residency is 8 slots / 10 s ahead |
 
 ## Phase 1 — Backend (historical)
 
@@ -141,14 +141,13 @@ original narrative is in the Phase 1 logbook entries.
 Settled by wayfinder ticket 02 (`.scratch/gui-replay/issues/02-design-proposal.md`). Six units, in order U1 → U2 → U3
 ∥ U4 → U5 → U6; U3 is the design-bearing unit.
 
-- **Feed.** A `Source` (recording or session buffer) exposes sync `range()`, `chunkIndex()`, `status()` and async
+- **Feed.** A `Source` (a recording; the session buffer was removed 2026-10-10) exposes sync `range()`, `chunkIndex()`, `status()` and async
   `load(i)`, `window(t0, t1)`, `latestBefore(t, topic)`, `timeline()`. The engine reads resident chunks synchronously
   inside a tick and never awaits mid-dispatch. A decoded chunk keeps per-topic `t` (Float64Array) and the schema
   columns; rows are hydrated lazily, one per dispatched record, by the inverse of the `schema.py` flattening rule;
   non-finite floats follow the representation live rosbridge delivers (probed in U1). The recording source (Phase 4: `McapSource`) reads the
-  `.mcap` over HTTP Range and decodes in a worker. The session buffer
-  is built in the browser from the subscription wrapper in `ros-bridge.js`: epoch-aligned 10 s chunks over the last
-  600 s plus a per-topic last-message sidecar; its ceiling (Phase 6) shortens the horizon, never drops topics.
+  `.mcap` over HTTP Range and decodes in a worker. (The in-browser session buffer described here originally was
+  removed 2026-10-10.)
 - **Clock.** `js/clock.js` provides `now()`, `setTimeout`/`clearTimeout` and `isReplay()`. In replay `now()` returns
   the dispatched record's `t` during its handlers and the playhead otherwise; timers run on a virtual queue driven by
   playhead travel, frozen while paused, cleared on seek and scaled by the speed. Every remaining
@@ -180,10 +179,8 @@ Settled by wayfinder ticket 02 (`.scratch/gui-replay/issues/02-design-proposal.m
 Owner-level choices settled by delegation (2026-10-10): the replay chart span
 is clamped to 120 s (raised to 600 by the two-tier store, see Phase 4); a seek pre-rolls 30 s of events rather than building a
 per-recording event index; above 1× the stale indicators flag only gaps of at
-least speed × timeout; "Replay last session" opens paused at the end minus one
-span; the session-buffer horizon stays 600 s by default (`SESSION_BUFFER_SEC`),
-with U6 measuring the heap on the box so the owner can cap it at 300 s if the
-browser runs on the Jetson.
+least speed × timeout. ("Replay last session" and the 600 s session buffer were
+removed 2026-10-10.)
 
 ## Phase 3 — Replay UI
 
@@ -210,7 +207,7 @@ Main imports the UI, never the reverse.
 **Contracts and tests.** DOM fence (decision 10): `FENCE_SURFACES` = command overlay, jog panel, juggle panel,
 minimap sequencer, Ball Butler, hold-to-confirm; a MutationObserver re-fences re-enabled controls; selectors are
 checked against the real GUI sources (`test_gui_replay_ui_fence_dom.py`). Absent state (decision 18): `ABSENT_TABLE`
-judges only an authoritative topic set (session snapshot or complete recording) and re-evaluates on
+judges only an authoritative topic set (a complete recording) and re-evaluates on
 `source.onChange` (`test_gui_replay_ui_absent.py`). Also `test_gui_replay_ui_{lobby,trackbar}.py` and two schema contracts
 in `test_gui_replay_format_contract.py` (drawn tick kinds and picker key topics are in the schema).
 
@@ -260,6 +257,8 @@ allowlist JS pin; vendored-bundle sha256; slot math pinned across main thread, w
 
 **Two-tier chart store** (owner ask, `logbook/2026-10-10-gui-replay-ten-minute-span-and-hidden-inputs.md`): `REPLAY_MAX_SPAN_SEC` 600; full rate in the resident window, 1 s min/max/mean digests of the derived signals out to +-330 s (`js/replay/digest.js`, low-priority never-memoised `lite` worker loads, paused while playback buffers), drawn by the `drawReplayEnvelope` hook.
 **Replay-hidden input regions** (`js/replay/ui/hide.js`): juggle minimap, BB target, jog and speed-limit panels get `replay-hidden` in REPLAY; the juggle rAF stops.
+
+**Memory and main thread** (2026-10-10, `logbook/2026-10-10-gui-replay-memory-and-main-thread.md`): slots are typed per leaf (scalars Float64Array, arrays of objects CSR `offsets` + one typed column per leaf) and TRANSFERRED, not cloned: 17.9 to 5.6 MB per busy-bag slot, load arrival on the main thread p50 240 to 26 ms. Residency is 8 slots / 10 s ahead (was 16 / 20). The live session buffer is REMOVED (decision 7): the newest recording covers it, the lobby offers only the picker. Charts derive once per chunk from the typed columns and rebuild once per animation frame.
 
 **Migration.** `rm -rf temp/replay_cache/`; reinstall the unit (new ExecStart, `--overview-dir`); module workers need
 Chrome/Edge 80+ or Firefox 114+.

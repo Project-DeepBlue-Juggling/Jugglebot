@@ -48,9 +48,6 @@ def out(tmp_path_factory):
     sb = tmp_path_factory.mktemp("bridge")
     for name in ("ros-bridge.js", "clock.js"):
         shutil.copy(JS / name, sb / name)
-    (sb / "replay").mkdir()
-    for name in ("session.js", "sources.js", "slot.js", "chunk.js"):   # ros-bridge.js imports the session-buffer tap (U6)
-        shutil.copy(JS / "replay" / name, sb / "replay" / name)
     shutil.copy(HARNESS, sb / "replay_bridge_harness.js")
     (sb / "package.json").write_text('{"type": "module"}\n')
     proc = subprocess.run([NODE, str(sb / "replay_bridge_harness.js")],

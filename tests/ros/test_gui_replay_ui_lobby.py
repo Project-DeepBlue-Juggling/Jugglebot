@@ -93,17 +93,14 @@ def test_listing_is_the_only_fetch(out):
     assert out["non_listing_fetches"] == 0
 
 
-def test_session_button_and_row_need_buffer_data(out):
-    assert out["session_empty"]["disabled"] is True
-    assert out["session_empty"]["text"] == "Replay last session"
-    assert out["session_data"]["disabled"] is False
-    assert out["session_data"]["text"] == "Replay last session (in memory, 00:42 of data)"
-    assert out["session_row"] == "Last live session (in memory, 00:42 of data)"
-    assert out["rows_keys"][0] == "session"
+def test_no_session_button_or_row(out):
+    """The live session buffer ("Replay last session") was deleted 2026-10-10: no lobby button, no picker row."""
+    assert out["session_btn_absent"] is True
+    assert "session" not in out["rows_keys"]
 
 
 def test_list_newest_first_and_row_states(out):
-    assert out["rows_keys"] == ["session", "r_live", "r_complete", "r_rich", "r_noindex", "r_empty", "r_old"]
+    assert out["rows_keys"] == ["r_live", "r_complete", "r_rich", "r_noindex", "r_empty", "r_old"]
     s = out["states"]
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", s["r_complete"]["when"])
     assert s["r_complete"]["cell"] == "ready" and s["r_complete"]["dur"] == "01:40"
@@ -112,7 +109,6 @@ def test_list_newest_first_and_row_states(out):
     assert s["r_noindex"]["refused"] is True                                      # dimmed: a killed recording cannot be opened
     assert s["r_live"]["cell"] == "recording in progress" and s["r_live"]["refused"] is True
     assert s["r_complete"]["refused"] is False
-    assert out["sessions_cell"] == "in memory"
     assert out["banner_hidden_ok"] is True
 
 
@@ -126,10 +122,10 @@ def test_missing_key_topics_are_struck_chips(out):
 
 
 def test_filter_narrows(out):
-    assert out["filter_stale"] == ["session", "r_old"]    # the session row is pinned
+    assert out["filter_stale"] == ["r_old"]
     # topic filter matches the listing's topics: rows with topics null drop out
-    assert out["filter_topic"] == ["session", "r_live", "r_complete", "r_rich", "r_old"]
-    assert out["filter_none"] == ["session"]
+    assert out["filter_topic"] == ["r_live", "r_complete", "r_rich", "r_old"]
+    assert out["filter_none"] == []
 
 
 def test_choose_calls_enter_replay_and_closes(out):
@@ -138,7 +134,6 @@ def test_choose_calls_enter_replay_and_closes(out):
     assert out["opening_cell"] == "opening…"
     assert out["calls"] == [{"kind": "recording", "id": "r_complete"}]
     assert out["chose"] is True and out["open_after_success"] is False
-    assert out["session_call"] == [{"kind": "session"}]
 
 
 @pytest.mark.parametrize("reason,fragment", [
@@ -148,7 +143,6 @@ def test_choose_calls_enter_replay_and_closes(out):
     ("compressed", "compressed chunks"),
     ("changed", "changed on disk"),
     ("http", "could not be read"),
-    ("no session buffer", "no live session"),
     ("connected", "Connected to the robot"),
 ])
 def test_refusal_message_keeps_picker_open(out, reason, fragment):

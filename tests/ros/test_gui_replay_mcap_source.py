@@ -151,7 +151,7 @@ def test_main_thread_slot_math_equals_the_worker_copy_and_python(tmp_path):
     sb = tmp_path / "sb"
     (sb / "js" / "replay").mkdir(parents=True)
     (sb / "lib").mkdir()
-    for name in ("slot.js", "mcap-decode.js"):
+    for name in ("slot.js", "mcap-decode.js", "chunk.js"):
         shutil.copy(GUI / "js" / "replay" / name, sb / "js" / "replay" / name)
     shutil.copy(GUI / "lib" / "mcap-bundle.min.js", sb / "lib" / "mcap-bundle.min.js")
     shutil.copy(JS / "replay_slot_pin_harness.js", sb / "replay_slot_pin_harness.js")

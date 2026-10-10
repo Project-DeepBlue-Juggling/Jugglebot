@@ -1,11 +1,10 @@
 /**
  * picker.js — the in-GUI "Open recording" modal (charting decision 12).
  *
- * createPicker({document, fetch, mode, getSessionBuffer, baseUrl?}) ->
+ * createPicker({document, fetch, mode, baseUrl?}) ->
  *   {open, close, isOpen, probe, retry, setFilter, choose, model, on}
  *
- * open(): GET /api/replay/recordings; rows newest first (format.buildRows), first row the in-memory
- * session when the buffer has data. The listing row carries everything (indexed, in_progress, duration_s,
+ * open(): GET /api/replay/recordings; rows newest first (format.buildRows). The listing row carries everything (indexed, in_progress, duration_s,
  * topics with counts), so there are no per-row fetches. Rows without an index ("no index", killed
  * recordings) and in-progress rows are dimmed and not selectable. choose(key) calls mode.enterReplay;
  * a rejection maps `.reason` to a message and the modal stays open; success closes it. An unreachable
@@ -22,7 +21,6 @@ export function createPicker(deps) {
     const fetchFn = deps.fetch;
     const mode = deps.mode;
     const base = deps.baseUrl === undefined ? '/api/replay' : deps.baseUrl;
-    const getSession = deps.getSessionBuffer;
     const listeners = { backend: new Set() };
 
     let open = false;
@@ -41,15 +39,7 @@ export function createPicker(deps) {
 
     function emitBackend() { for (const cb of Array.from(listeners.backend)) { try { cb({ down: backendDown, why: backendWhy, note: overviewNote }); } catch (e) { console.error(e); } } }
 
-    function sessionInfo() {
-        try {
-            const b = getSession();
-            const r = b.range();
-            const has = b.chunkCount() > 0 && r.frontier > r.t0;
-            return { has, seconds: has ? r.frontier - r.t0 : 0 };
-        } catch (e) { return { has: false, seconds: 0 }; }
-    }
-    const rows = () => buildRows(listing, sessionInfo(), filter);
+    const rows = () => buildRows(listing, filter);
 
     /** @returns {Promise<boolean>} true when the listing was reachable */
     async function loadList() {
@@ -171,14 +161,14 @@ export function createPicker(deps) {
         return !backendDown;
     }
 
-    /** @param {string} key 'session' or a recording id */
+    /** @param {string} key a recording id */
     async function choose(key) {
         if (opening) return false;
         const r = rows().find((x) => x.key === key);
         if (!r || !r.selectable) return false;
         opening = key; message = ''; render();
         try {
-            await mode.enterReplay(r.kind === 'session' ? { kind: 'session' } : { kind: 'recording', id: r.id });
+            await mode.enterReplay({ kind: 'recording', id: r.id });
         } catch (e) {
             opening = null;
             message = refusalMessage(e && (e.reason || e.message));

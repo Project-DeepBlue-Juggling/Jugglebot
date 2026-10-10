@@ -1,17 +1,17 @@
 # -*- coding: utf-8 -*-
 """Replay mode state machine (ros_ws/gui/js/replay/mode.js), design § 3 / § 8, Phase 2 unit U6.
 
-``tests/ros/js/replay_mode_harness.js`` runs the real mode.js with the real engine, cache, session buffer,
+``tests/ros/js/replay_mode_harness.js`` runs the real mode.js with the real engine, cache, McapSource (scripted fake worker),
 event store, clock, fence and ros-bridge under node (ROSLIB and the chart / link / main collaborators faked
-to LOG), feeds 30 s through the ros-bridge tap, then prints JSON this file asserts on.
+to LOG), feeds 30 s to the live handlers and serves the same 30 s as a three-slot recording, then prints JSON this file asserts on.
 
 Properties:
-1. entry is refused while connected; a 409 refusal and an empty session buffer leave the GUI untouched;
+1. entry is refused while connected; a 409 refusal leaves the GUI untouched;
 2. entry order == design § 8 (events snapshot, clock, fence, charts, links, resetForSeek);
 3. exit order is the reverse and ends with the live disconnect blanking;
 4. a connected edge mid-replay exits BEFORE main's connection listener observes it; live events restored;
-5. the ros-bridge tap records every delivered message with clock.now(), and is skipped in replay;
-6. "replay last session" opens paused at t1 - span, and plays to t1 then pauses (frozen snapshot is complete);
+5. (retired 2026-10-10: the live session-buffer tap was deleted; see test_gui_replay_memory_contract.py);
+6. a recording opens paused at t0, and plays to t1 then pauses;
 7. replay events dedup on (t, type, label) across a reverse-then-forward pass.
 """
 from __future__ import annotations
@@ -51,8 +51,9 @@ def out(tmp_path_factory):
     (sb / "replay").mkdir()
     for name in ("clock.js", "event-store.js", "ros-bridge.js"):
         shutil.copy(JS / name, sb / name)
-    for name in ("chunk.js", "sources.js", "slot.js", "session.js", "policy.js", "engine.js", "cache.js", "fence.js", "mode.js"):
+    for name in ("chunk.js", "sources.js", "slot.js", "policy.js", "engine.js", "cache.js", "fence.js", "mode.js"):
         shutil.copy(JS / "replay" / name, sb / "replay" / name)
+    shutil.copy(HARNESS.parent / "replay_test_support.js", sb / "replay_test_support.js")
     shutil.copy(HARNESS, sb / "replay_mode_harness.js")
     (sb / "package.json").write_text('{"type": "module"}\n')
     proc = subprocess.run([NODE, str(sb / "replay_mode_harness.js")],
@@ -67,9 +68,8 @@ def test_entry_refused_while_connected(out):
     assert out["lobby"] == "LOBBY"
 
 
-def test_refusal_and_empty_session_touch_nothing(out):
+def test_refusal_touches_nothing(out):
     assert out["refusal_409"] == {"reason": "ros_running", "order_len": 0, "state": "LOBBY", "isReplay": False}
-    assert out["no_session"] == {"reason": "no session buffer", "state": "LOBBY"}
 
 
 def test_entry_order_is_design_section_8(out):
@@ -103,16 +103,7 @@ def test_connected_edge_exits_before_main_listener(out):
     assert c["order"][-1] == "blank" and "charts.exit" in c["order"]
 
 
-def test_session_buffer_tap(out):
-    t = out["tap"]
-    assert t["n_robot_state_recorded"] == 60
-    assert t["last_robot_state"] == {"t": t["expected_last_t"], "v": 59}
-    assert t["last_orch"]["t"] == t["expected_last_t"]
-    s = out["tap_replay_skip"]
-    assert s["before"] == s["after"]
-
-
-def test_replay_last_session_opens_paused_at_t1_minus_span(out):
+def test_recording_opens_paused_at_t0_and_plays_to_t1(out):
     e = out["entry"]
     assert e["state"]["mode"] == "REPLAY" and e["state"]["sub"] == "paused"
     assert e["state"]["playhead"] == pytest.approx(e["expect_playhead"], abs=1e-6)
@@ -187,3 +178,10 @@ def test_digester_lives_exactly_as_long_as_the_replay(out):
     assert d["during"]["keys"] == ["cache", "engine", "source", "store"] and d["during"]["store_is_fake"]
     assert d["n_total"] == 2 and d["after"] == [1, 1]          # disposed exactly once per replay
     assert d["dispose_before_charts_exit"]
+
+
+def test_resident_changes_rebuild_the_chart_store_once_per_frame(out):
+    c = out["resident_coalesce"]
+    assert c["before_frame"] == 0          # slot arrivals alone never rebuild
+    assert c["after_frame"] == 1           # the next frame rebuilds exactly once
+    assert c["pending_exit_clean"] is True

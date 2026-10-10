@@ -6,9 +6,9 @@ property, the real ``engine.js``) against a scripted source whose ``load`` laten
 and growing frontier the harness controls, then prints JSON that this file asserts on.
 
 Properties:
-1. ahead bias: forward at p the loads go current -> ahead -> behind, covering +20 s / -10 s
+1. ahead bias: forward at p the loads go current -> ahead -> behind, covering +10 s / -10 s
    (+1 chunk behind); reverse mirrors;
-2. cap: 30 chunks wanted -> 16 resident, the farthest never kept, a far jump evicts the old set;
+2. cap: 30 chunks wanted -> 8 resident, the farthest never kept, a far jump evicts the old set;
 3. serial fetch: never more than one load in flight, in priority order;
 4. bufferedRanges: merged resident / loading runs in time order;
 5. frontier: nothing at or past the frontier chunk is requested; growth fetches the missing
@@ -64,11 +64,12 @@ def out(tmp_path_factory):
 
 def test_ahead_bias_forward_and_reverse(out):
     a = out["ahead"]
-    # p = chunk 50 + 3 s, span 0: forward window [493, 523] -> 49..52, +1 behind -> 48
-    assert a["1"]["order"] == [50, 51, 52, 49, 48]
-    assert a["1"]["resident"] == [48, 49, 50, 51, 52]
+    # p = chunk 50 + 3 s, span 0, DEFAULT residency (ahead 10 s / behind 10 s since 2026-10-10):
+    # forward window [493, 513] -> 49..51, +1 behind -> 48
+    assert a["1"]["order"] == [50, 51, 49, 48]
+    assert a["1"]["resident"] == [48, 49, 50, 51]
     # reverse mirrors: current, then earlier chunks first, +1 chunk later than the window
-    assert a["-1"]["order"] == [50, 49, 48, 51, 52]
+    assert a["-1"]["order"] == [50, 49, 51, 52]
     # ahead 40 s / behind 10 s: forward reaches +40 s ahead and only -10 s (+1 chunk) behind
     assert a["wideFwd"] == [48, 49, 50, 51, 52, 53, 54]
     assert a["wideRev"] == [46, 47, 48, 49, 50, 51, 52]
@@ -76,18 +77,18 @@ def test_ahead_bias_forward_and_reverse(out):
 
 def test_cap_keeps_nearest_and_evicts_farthest(out):
     c = out["cap"]
-    assert len(c["first"]) == 16 and c["size"] == 16
-    assert all(abs(i - c["cur1"]) <= 8 for i in c["first"]), c["first"]
+    assert len(c["first"]) == 8 and c["size"] == 8
+    assert all(abs(i - c["cur1"]) <= 4 for i in c["first"]), c["first"]
     assert c["cur1"] in c["first"]
-    assert len(c["second"]) == 16
+    assert len(c["second"]) == 8
     assert not set(c["first"]) & set(c["second"])  # a far jump evicts the whole old set
-    assert all(abs(i - c["cur2"]) <= 8 for i in c["second"])
+    assert all(abs(i - c["cur2"]) <= 4 for i in c["second"])
 
 
 def test_serial_fetch_in_priority_order(out):
     s = out["serial"]
     assert s["maxInflight"] == 1
-    assert s["order"] == [50, 51, 52, 49, 48]
+    assert s["order"] == [50, 51, 49, 48]
     assert all(st["inflight"] <= 1 for st in s["steps"])
     assert s["steps"][0]["parked"] == [50]  # only the current chunk was requested first
 
@@ -97,9 +98,9 @@ def test_buffered_ranges_merge_and_order(out):
     assert r["resident"] == [50]  # chunk 51 is held in flight, so nothing after it has loaded
     ranges = r["ranges"]
     t0 = 1000
-    # time order: loading 48..49 (merged), resident 50, loading 51..52 (in flight + queued, merged)
+    # time order: loading 48..49 (merged), resident 50, loading 51 (in flight)
     assert [(x["state"], x["t0"] - t0, x["t1"] - t0) for x in ranges] == [
-        ("loading", 480, 500), ("resident", 500, 510), ("loading", 510, 530)], ranges
+        ("loading", 480, 500), ("resident", 500, 510), ("loading", 510, 520)], ranges
 
 
 def test_frontier_gates_requests_and_growth_refetches(out):

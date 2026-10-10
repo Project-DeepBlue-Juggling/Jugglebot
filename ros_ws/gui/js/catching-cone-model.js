@@ -3,6 +3,7 @@ import * as THREE from 'three';
 import { scene, sceneGroups, onFrame, robotToThreeScaled } from './viewer.js';
 import { cadMesh } from './robot-meshes.js';
 import { INITIAL_HEIGHT_MM } from './geometry-config.js';
+import * as clock from './clock.js';
 
 let model;
 let lastSeen = -Infinity;
@@ -14,12 +15,14 @@ export function initCatchingConeModel() {
     group.add(model);
     scene.add(group);
     sceneGroups['Catching Cone'] = group;
-    onFrame(now => {
-        if (now - lastSeen > 1500) model.visible = false;
+    // Staleness runs on the replay-aware clock (frozen while paused, scaled by speed), not the render
+    // loop's wall time: a paused replay must keep the cone, and live is unchanged.
+    onFrame(() => {
+        if (clock.now() - lastSeen > 1500) model.visible = false;
     });
 }
 
-export function updateCatchingCone(bodies, now = performance.now()) { // wall-clock: staleness vs the render loop's performance.now() (viewer.js onFrame)
+export function updateCatchingCone(bodies, now = clock.now()) {
     if (!model) return;
     const body = bodies.find(b => b.name?.replace(/[ -]/g, '_') === 'Catching_Cone');
     const stamped = body?.pose;

@@ -54,19 +54,10 @@ def test_reopen_with_every_topic_present_clears_old_marks(out):
     assert out["allPresent"] == []
 
 
-def test_session_source_uses_topic_set(out):
-    assert "#panel-bb" in out["session"] and "#panel-flags" not in out["session"]
-
-
 def test_zero_count_topic_is_absent_and_unknown_is_null(out):
     assert out["zeroCount"] == ["/balls"]
     assert out["nullWhenUnknown"] == [None, None]
     assert out["pureNull"] == []
-
-
-def test_session_source_exposes_topic_set():
-    src = (REPO / "ros_ws" / "gui" / "js" / "replay" / "sources.js").read_text()
-    assert "topicSet()" in src
 
 
 def test_table_topics_match_what_feeds_each_region(out):

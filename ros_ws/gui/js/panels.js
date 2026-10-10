@@ -905,29 +905,37 @@ export function initTrackingGrid() {
     }
 }
 
+/** Per-index {canvas, ctx} cache: the element lookup and getContext('2d') happen once. */
+const _trackingSpark = [];
+
 /** Lazy canvas-context fetch + DPI-correct sizing (called from
  *  updateTrackingError on every tick — so a panel resize naturally
- *  reflows the sparkline without a separate ResizeObserver). */
-function getTrackingSparklineCtx(i) {
-    const canvas = document.getElementById(`track-spark-${i}`);
-    if (!canvas) return null;
+ *  reflows the sparkline without a separate ResizeObserver).  cssW/cssH are
+ *  the sizes updateTrackingError read before any DOM write this tick (layout
+ *  is read once per tick, not forced again after each style/text write). */
+function getTrackingSparklineCtx(i, cssW, cssH) {
+    let e = _trackingSpark[i];
+    if (!e || !e.canvas.isConnected) {
+        const canvas = document.getElementById(`track-spark-${i}`);
+        if (!canvas) { _trackingSpark[i] = undefined; return null; }
+        e = _trackingSpark[i] = { canvas, ctx: canvas.getContext('2d') };
+    }
+    if (!cssW || !cssH) return null;
     const dpr = window.devicePixelRatio || 1;
-    const cssW = canvas.clientWidth;
-    const cssH = canvas.clientHeight;
-    if (cssW === 0 || cssH === 0) return null;
     const targetW = Math.round(cssW * dpr);
     const targetH = Math.round(cssH * dpr);
+    const canvas = e.canvas;
     if (canvas.width !== targetW || canvas.height !== targetH) {
         canvas.width = targetW;
         canvas.height = targetH;
     }
-    return canvas.getContext('2d');
+    return e.ctx;
 }
 
 /** Push the latest error magnitude onto the i-th history buffer and
  *  redraw the sparkline.  Threshold-aware colouring matches the bar/
  *  numeric value above it. */
-function drawTrackingSparkline(i, err, threshold) {
+function drawTrackingSparkline(i, err, threshold, cssW, cssH) {
     const buf = trackingHistory[i];
     if (!buf) return;
     // Shift left by 1 (cheap memcpy on a typed array), append the new
@@ -935,7 +943,7 @@ function drawTrackingSparkline(i, err, threshold) {
     buf.copyWithin(0, 1);
     buf[TRACKING_HIST_LEN - 1] = err;
 
-    const ctx = getTrackingSparklineCtx(i);
+    const ctx = getTrackingSparklineCtx(i, cssW, cssH);
     if (!ctx) return;
     const w = ctx.canvas.width;
     const h = ctx.canvas.height;
@@ -997,7 +1005,16 @@ export function updateTrackingError(errors) {
         { ok: 0.05, warn: 0.2 }, // hand (rev)
     ];
 
-    for (let i = 0; i < Math.min(errors.length, 7); i++) {
+    const n = Math.min(errors.length, 7);
+    // Read every canvas size first, before any style/text write below can
+    // invalidate layout (one reflow per tick instead of one per axis).
+    const sz = [];
+    for (let i = 0; i < n; i++) {
+        const c = document.getElementById(`track-spark-${i}`);
+        sz.push(c ? c.clientWidth : 0, c ? c.clientHeight : 0);
+    }
+
+    for (let i = 0; i < n; i++) {
         const th = i < 6 ? thresholds[0] : thresholds[1];
 
         const bar = document.getElementById(`track-bar-${i}`);
@@ -1011,7 +1028,7 @@ export function updateTrackingError(errors) {
                 val.textContent = '--';
                 val.className = 'motor-value';
             }
-            drawTrackingSparkline(i, NaN, th);
+            drawTrackingSparkline(i, NaN, th, sz[2 * i], sz[2 * i + 1]);
             continue;
         }
 
@@ -1039,7 +1056,7 @@ export function updateTrackingError(errors) {
             else val.className = 'motor-value tracking-error-bad';
         }
 
-        drawTrackingSparkline(i, err, th);
+        drawTrackingSparkline(i, err, th, sz[2 * i], sz[2 * i + 1]);
     }
 }
 

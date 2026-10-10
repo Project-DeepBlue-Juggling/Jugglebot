@@ -24,7 +24,7 @@
  *   charts: {createStore(storeDeps), enter(store, {onSeek}), exit(), setPlayhead(p), telemetrySample},
  *   links: {can(isUp), udp(isUp), hw(isUp)},
  *   resetForSeek(), blankDisconnectedState(), resetTrafficRings?(),
- *   makeRecordingSource(id), getSessionBuffer(), createCache(source), createDigester?({source, cache, engine, store}), createEngine(opts), indexLatestBefore,
+ *   makeRecordingSource(id), createCache(source), createDigester?({source, cache, engine, store}), createEngine(opts), indexLatestBefore,
  *   visibleSpanSec?() (default 30), raf?: {request, cancel, hidden}, perfNow?()
  * }
  */
@@ -84,7 +84,7 @@ export function createReplayMode(deps) {
             const tp = ch && ch.topics && ch.topics[topic];
             if (!tp || tp.n < 1) continue;
             const k = D.indexLatestBefore(tp.t, tSec, tp.n);
-            if (k >= 0) return { t: tp.t[k], row: tp.hydrate(k) };
+            if (k >= 0) return { t: tp.t[k], tp, k };
         }
         return null;
     }
@@ -103,8 +103,19 @@ export function createReplayMode(deps) {
         }
         return out;
     }
-    function syncResident() {
+    // Resident-set changes (a seek's pre-roll arrives as several slots within a second) are coalesced to ONE
+    // chart-store rebuild (and so one setData) per animation frame; `buffered` stays immediate.
+    let residentRaf = null;
+    function flushResident() {
+        if (residentRaf !== null && D.raf) D.raf.cancel(residentRaf);
+        residentRaf = null;
         if (store) store.setResident(residentChunks());
+    }
+    function syncResident() {
+        if (store) {
+            if (!D.raf) flushResident();
+            else if (residentRaf === null) residentRaf = D.raf.request(() => { residentRaf = null; flushResident(); });
+        }
         emit('buffered', cache ? cache.bufferedRanges() : []);
     }
 
@@ -136,9 +147,9 @@ export function createReplayMode(deps) {
     }
 
     /**
-     * @param {{kind:'recording', id:string}|{kind:'session'}} spec
+     * @param {{kind:'recording', id:string}} spec
      * @returns {Promise<void>} resolves paused at the start once slot 0 is resident (held in OPENING until then);
-     *   rejects with a refusal Error (`.reason`: no_index|compressed|in_progress|changed|empty|decode|http) / 'no session buffer' / 'not disconnected'.
+     *   rejects with a refusal Error (`.reason`: no_index|compressed|in_progress|changed|empty|decode|http) / 'not disconnected'.
      */
     async function enterReplay(spec) {
         if (phase !== 'idle') throw new Error('replay already active');
@@ -151,21 +162,12 @@ export function createReplayMode(deps) {
         kind = spec.kind;
         emit('state', snapshotState());
         try {
-            if (spec.kind === 'session') {
-                const snap = D.getSessionBuffer().snapshot();
-                const r = snap.range();
-                if (!(snap.chunkCount() > 0 && r.frontier > r.t0)) {
-                    const e = new Error('no session buffer'); e.reason = 'no session buffer'; throw e;
-                }
-                source = snap;
-            } else {
-                source = D.makeRecordingSource(spec.id);
-                await source.open();
-                // HOLD (design § 4): OPENING lasts until the opening slot is resident. A recording
-                // opens at t0, so the pre-roll before it is empty and the hold is exactly slot 0.
-                // A refusal or decode failure here leaves the live GUI untouched.
-                await source.load(source.chunkIndex(source.range().t0));
-            }
+            source = D.makeRecordingSource(spec.id);
+            await source.open();
+            // HOLD (design § 4): OPENING lasts until the opening slot is resident. A recording
+            // opens at t0, so the pre-roll before it is empty and the hold is exactly slot 0.
+            // A refusal or decode failure here leaves the live GUI untouched.
+            await source.load(source.chunkIndex(source.range().t0));
             if (myToken !== token) throw new Error('replay entry aborted');
             if (D.ros.getConnectionState() === 'connected') {
                 const e = new Error('rosbridge connected'); e.reason = 'connected'; throw e;
@@ -203,12 +205,12 @@ export function createReplayMode(deps) {
                 eng.on('buffering', () => emit('state', snapshotState())),
             ];
             const r = source.range();
-            const start = spec.kind === 'session' ? Math.max(r.t0, r.frontier - span()) : r.t0;
-            await eng.seek(start);
+            await eng.seek(r.t0);
             if (myToken !== token) throw new Error('replay entry aborted');
             phase = 'replay';
             if (D.createDigester) digester = D.createDigester({ source, cache, engine: eng, store });
-            syncResident();
+            flushResident();
+            emit('buffered', cache.bufferedRanges());
             emit('state', snapshotState());
         } catch (err) {
             if (myToken === token) doExit(null, true);
@@ -222,6 +224,8 @@ export function createReplayMode(deps) {
         token++;
         abortReason = reason || null;
         stopLoop();
+        if (residentRaf !== null && D.raf) D.raf.cancel(residentRaf);
+        residentRaf = null;
         unsubEng.forEach((u) => { try { u(); } catch (e) { /* ignore */ } });
         unsubEng = [];
         if (digester) { try { digester.dispose(); } catch (e) { console.error(e); } digester = null; }

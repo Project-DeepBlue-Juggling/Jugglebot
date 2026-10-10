@@ -3,6 +3,10 @@
 // Builds the schema.py chunk record ({t, cols} per topic) for one 10 s slot
 // straight from an indexed, uncompressed rosbag2 MCAP.
 import { McapIndexedReader, parse, MessageReader } from '../../lib/mcap-bundle.min.js';
+import { buildColumns } from './chunk.js';
+
+// The typed columnar layout (buildColumn/buildColumns) lives in chunk.js beside its readers.
+export { buildColumn, buildColumns } from './chunk.js';
 
 export const CHUNK_S = 10;
 const MS_NS = 1_000_000n;
@@ -119,7 +123,23 @@ function slotSpan(rec, loNs, hiNs) {
   return a === null ? null : [a, b];
 }
 
-// Decode slot i into {topics:{"/x":{type,n,t:Float64Array,cols}}, dropped, bytes}.
+
+// Every transferable ArrayBuffer under a decoded topic record (deduped), for postMessage's transfer list.
+export function topicBuffers(topic, out = new Set()) {
+  out.add(topic.t.buffer);
+  for (const k in topic.cols) {
+    const c = topic.cols[k];
+    if (ArrayBuffer.isView(c)) out.add(c.buffer);
+    else if (c && c.offsets) {
+      out.add(c.offsets.buffer);
+      if (ArrayBuffer.isView(c.flat)) out.add(c.flat.buffer);
+      if (c.leaves) for (const l in c.leaves) if (ArrayBuffer.isView(c.leaves[l])) out.add(c.leaves[l].buffer);
+    }
+  }
+  return out;
+}
+
+// Decode slot i into {topics:{"/x":{type,n,t:Float64Array,cols,kinds}}, dropped, bytes}.
 export async function decodeSlot(rec, i) {
   if (!(i >= 0 && i < rec.slots)) throw new RangeError('slot ' + i + ' outside [0,' + rec.slots + ')');
   const lo = rec.t0Ns + BigInt(i) * SLOT_NS - MS_NS, hi = rec.t0Ns + BigInt(i + 1) * SLOT_NS + MS_NS;
@@ -142,7 +162,8 @@ export async function decodeSlot(rec, i) {
   const topics = {};
   for (const name of Object.keys(acc).sort()) {
     const o = acc[name];
-    topics[name] = { type: o.type, n: o.n, t: Float64Array.from(o.ts), cols: o.cols };
+    const { cols, kinds } = buildColumns(o.cols);
+    topics[name] = { type: o.type, n: o.n, t: Float64Array.from(o.ts), cols, kinds };
   }
   return { i, t0: rec.t0 + i * CHUNK_S, t1: rec.t0 + (i + 1) * CHUNK_S, topics, dropped,
     bytes: span ? Number(span[1] - span[0]) : 0 };

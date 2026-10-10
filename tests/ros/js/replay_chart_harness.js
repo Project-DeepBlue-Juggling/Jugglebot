@@ -62,11 +62,11 @@ globalThis.uPlot.fmtDate = () => () => ''; globalThis.uPlot.tzDate = () => 0;
 
 const tc = await import('./telemetry-charts.js');
 const { createReplayChartStore, SIGNAL_KEYS } = await import('./replay/chart-store.js');
-const { chunkFromRecord, makeTopic } = await import('./replay/chunk.js');
+const { chunkFromRecord, makeTopic, buildColumns } = await import('./replay/chunk.js');
 const { loadRecords } = await import('./replay_test_support.js');
 
 const cacheDir = process.argv[2];
-const { manifest, records } = loadRecords(cacheDir);
+const { manifest, records } = loadRecords(cacheDir, buildColumns);
 const out = {};
 
 tc.initTelemetryCharts();
@@ -98,7 +98,7 @@ function feedLatest(topic, tSec) {
     if (!tp) continue;
     let lo = 0, hi = tp.n - 1, ans = -1;
     while (lo <= hi) { const mid = (lo + hi) >> 1; if (tp.t[mid] <= tSec) { ans = mid; lo = mid + 1; } else hi = mid - 1; }
-    if (ans >= 0 && (best === null || tp.t[ans] >= best.t)) best = { t: tp.t[ans], row: tp.hydrate(ans) };
+    if (ans >= 0 && (best === null || tp.t[ans] >= best.t)) best = { t: tp.t[ans], tp, k: ans };
   }
   return best;
 }
@@ -197,12 +197,13 @@ out.equality = diff(liveSnap, store.axes);
   store.setResident(chunks);
 }
 
-// ---- open chunk: plain-array t, growing n, never cached ----
+// ---- unsealed chunk (plain-array t, plain columns, growing n): never cached, still derived ----
 {
   const src = chunks[0].topics['/robot_state'];
+  const plain = records[0].topics['/robot_state'].plain;
   const mk = (n) => {
     const cols = {};
-    for (const c in src.cols) cols[c] = src.cols[c].slice(0, n);
+    for (const c in plain) cols[c] = plain[c].slice(0, n);
     const tp = makeTopic(src.type, Array.from(src.t.subarray(0, n)), cols);
     return { i: 0, t0: chunks[0].t0, t1: chunks[0].t1, topics: { '/robot_state': tp } };
   };
@@ -414,5 +415,29 @@ tc.exitReplayCharts();
   }
   tc.exitReplayCharts();
   out.env_hook.removed = liveCharts().map((c) => !hasHook(c, 'drawReplayEnvelope'));
+}
+// ---- typed derivation: no hydration, and a chunk is derived ONCE however it is reached ----
+{
+  let calls = 0, hyd = 0;
+  const spy = (m, i, l, h) => { calls++; return tc.telemetrySample(m, i, l, h); };
+  const restore = [];
+  for (const c of chunks) for (const name in c.topics) {
+    const tp = c.topics[name]; const o = tp.hydrate;
+    tp.hydrate = function (k) { hyd++; return o.call(this, k); };
+    restore.push(() => { tp.hydrate = o; });
+  }
+  const s3 = createReplayChartStore({ telemetrySample: spy, latestBefore: feedLatest });
+  s3.setResident([chunks[0]]);
+  const afterResident = calls;
+  s3.digestChunk(chunks[0]);                    // resident: the by-product digest reuses the derived columns
+  const afterDigestResident = calls;
+  s3.digestChunk(chunks[1]);                    // NOT resident: derived once here ...
+  const afterDigestFar = calls;
+  s3.setResident([chunks[0], chunks[1]]);       // ... and shared when it becomes resident
+  const afterBoth = calls;
+  s3.digestChunk(chunks[1]);
+  out.derive_once = { hydrations: hyd, resident_calls: afterResident, digest_resident_extra: afterDigestResident - afterResident,
+    far_calls: afterDigestFar - afterDigestResident, promote_extra: afterBoth - afterDigestFar, again_extra: calls - afterBoth };
+  for (const r of restore) r();
 }
 console.log(JSON.stringify(out));

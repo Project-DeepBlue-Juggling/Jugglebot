@@ -1,24 +1,22 @@
 /**
  * lobby.js — the disconnected command overlay IS the lobby (charting decisions 7/8).
  *
- * createLobby({document, ros, mode, picker, toaster, getSessionBuffer}) -> {update, dock, state}
+ * createLobby({document, ros, mode, picker, toaster}) -> {update, dock, state}
  *
  * Visible when the rosbridge state is not 'connected' and replay is idle: the live command buttons
- * (direct children of #command-overlay) are hidden by CSS and the lobby ("Replay last session" /
- * "Open recording…") sits in their place, with the "Not connected…" banner. While replay is OPENING /
+ * (direct children of #command-overlay) are hidden by CSS and the lobby ("Open recording…") sits in their place, with the "Not connected…" banner. While replay is OPENING /
  * REPLAY the lobby hides and `#replay-dock` (a stable id; unit 2 fills it) owns the overlay region.
  * On 'connected' the live overlay returns. Also owns the header text (`REPLAY  <date>`) because the
  * live connection listener is suppressed while replay is active, and routes mode 'notice' to the toaster.
  */
 import { h, fill, ensure } from './dom.js';
-import { fmtDuration, fmtDateTime, dateFromId } from './format.js';
+import { fmtDateTime, dateFromId } from './format.js';
 
 export const BANNER_TEXT = 'Not connected to the robot. Live commands are unavailable — you can still review a recording.';
 
 export function createLobby(deps) {
     const doc = deps.document;
     const { ros, mode, picker, toaster } = deps;
-    const getSession = deps.getSessionBuffer;
 
     const overlay = doc.getElementById('command-overlay');
     const viewerPane = doc.getElementById('viewer-pane') || (overlay && overlay.parentNode) || doc.body;
@@ -31,36 +29,18 @@ export function createLobby(deps) {
     let overviewNote = '';
     let failed = false;          // a real connect attempt has failed (a 'disconnected' EDGE; never the initial default)
     let lobbyShown = false;
-    let btnSession = null, btnOpen = null;
+    let btnOpen = null;
     let savedHeader = null;
 
-    function sessionSeconds() {
-        try {
-            const b = getSession();
-            const r = b.range();
-            return b.chunkCount() > 0 && r.frontier > r.t0 ? r.frontier - r.t0 : 0;
-        } catch (e) { return 0; }
-    }
-
     function buildButtons() {
-        btnSession = h(doc, 'button', { cls: 'replay-btn replay-primary', id: 'replay-btn-session', on: { click: () => {
-            if (btnSession.disabled) return;
-            mode.enterReplay({ kind: 'session' }).catch((e) => {
-                toaster.show('Could not replay the session: ' + (e && (e.reason || e.message)), 6000);
-            });
-        } } });
         btnOpen = h(doc, 'button', { cls: 'replay-btn', id: 'replay-btn-open', text: 'Open recording…', on: { click: () => {
             if (!btnOpen.disabled) picker.open();
         } } });
-        fill(lobbyEl, [btnSession, btnOpen, h(doc, 'span', { cls: 'replay-note', text: 'Home / Level / Activate are hidden while disconnected' })]);
+        fill(lobbyEl, [btnOpen, h(doc, 'span', { cls: 'replay-note', text: 'Home / Level / Activate are hidden while disconnected' })]);
     }
 
     function refreshButtons() {
-        if (!btnSession) buildButtons();
-        const secs = sessionSeconds();
-        btnSession.textContent = secs > 0 ? 'Replay last session (in memory, ' + fmtDuration(secs) + ' of data)' : 'Replay last session';
-        btnSession.disabled = !(secs > 0);   // the session replay needs no backend
-        btnSession.title = secs > 0 ? '' : 'No live session in this page\'s memory';
+        if (!btnOpen) buildButtons();
         btnOpen.disabled = !!backendDown;
         btnOpen.title = backendDown ? 'Replay backend unreachable' : '';
     }

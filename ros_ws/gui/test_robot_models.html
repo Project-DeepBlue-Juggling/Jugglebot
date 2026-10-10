@@ -20,6 +20,7 @@ import {poseToLegLengths, rotvecToRotMatrix} from './js/stewart-fk.js';
 import {INITIAL_HEIGHT_MM, BB_YAW_S_OFFSET_MM, BB_PITCH_D_OFFSET_MM, BB_PITCH_Z_OFFSET_MM} from './js/geometry-config.js';
 import {initMocapMarkers, initRigidBodyTriads, updateMocapMarkers, updateRigidBodyAxes} from './js/mocap-markers.js';
 import {initCatchingConeModel, updateCatchingCone} from './js/catching-cone-model.js';
+import * as clock from './js/clock.js';
 const output = document.querySelector('#results');
 const messages = [];
 function assert(ok, message) { if (!ok) throw new Error(message); messages.push(`PASS ${message}`); }
@@ -54,7 +55,7 @@ try {
  coneBody.name='Catching_Cone';
  coneBody.pose.pose.position.x=NaN;updateCatchingCone([coneBody]);assert(!cone.visible,'Invalid QTM pose hides cone');
  coneBody.pose.pose.position.x=650;
- updateCatchingCone([coneBody],performance.now()-1600);
+ updateCatchingCone([coneBody],clock.now()-1600);
  await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
  assert(!cone.visible,'Stale cone pose disappears');
  updateCatchingCone([coneBody]);
@@ -126,7 +127,7 @@ try {
  }
  let frame=0,last=performance.now(),samples=[],mode='cad',stats={},time=0;
  function tick(now) {
-  updateCatchingCone([coneBody],now);
+  updateCatchingCone([coneBody],clock.now());
   if(motion)time+=.018;
   const r=rotvecToRotMatrix([.05*Math.sin(time),.06*Math.cos(time),.1*Math.sin(time*.7)]);
   const p=[15*Math.sin(time),20*Math.cos(time),130+80*Math.sin(time*.5)];

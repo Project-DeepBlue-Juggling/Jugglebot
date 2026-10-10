@@ -23,7 +23,6 @@ const REFUSALS = {
     decode: 'This recording could not be decoded.',
     range: 'The server could not serve that part of the recording.',
     ros_running: 'Replay is unavailable while the robot stack is running.',
-    'no session buffer': 'There is no live session in this page\'s memory to replay.',
     connected: 'Connected to the robot. Disconnect first; replay is only available while disconnected.',
 };
 
@@ -90,23 +89,14 @@ function topicSet(topics) {
 /**
  * Build the picker rows.
  * @param {object|null} listing  GET /api/replay/recordings body (or null)
- * @param {{has:boolean, seconds:number}|null} session  the in-memory session buffer
  * @param {string} filter text over date + id + topic names
  * @returns {object[]} rows: {key, kind, id, when, name, duration, size, topicCount, chips, state,
- *   selectable, first, haystack}; `state` is 'memory' | 'ready' | 'noindex' | 'inprogress'
+ *   selectable, first, haystack}; `state` is 'ready' | 'noindex' | 'inprogress'
  */
-export function buildRows(listing, session, filter) {
+export function buildRows(listing, filter) {
     const rows = [];
     const recs = ((listing && listing.recordings) || []).slice();
     recs.sort((a, b) => rowStart(b) - rowStart(a));
-    if (session && session.has) {
-        rows.push({
-            key: 'session', kind: 'session', id: null, first: true, selectable: true,
-            when: 'Last live session (in memory, ' + fmtDuration(session.seconds) + ' of data)',
-            name: '', duration: fmtDuration(session.seconds), size: '', topicCount: null,
-            chips: [], state: 'memory', haystack: 'last live session in memory',
-        });
-    }
     for (const r of recs) {
         const topics = topicSet(r.topics);
         const chips = KEY_TOPICS.map((k) => ({ label: k.label, missing: topics ? !topics.has(k.topic) : false, known: !!topics }));
@@ -135,7 +125,6 @@ function startOk(r) {
 export function stateCell(row, opening) {
     if (opening) return { text: 'opening…', cls: 'conv' };
     switch (row.state) {
-        case 'memory': return { text: 'in memory', cls: 'complete' };
         case 'inprogress': return { text: 'recording in progress', cls: 'refuse' };
         case 'noindex': return { text: 'no index', cls: 'warn' };
         default: return { text: 'ready', cls: 'none' };

@@ -2,9 +2,10 @@
 // serves the Python oracle's chunks (replay_test_support.js). Prints one JSON object.
 // Usage: node replay_mcap_source_harness.js <chunkJsonDir>
 const { McapSource } = await import('./sources.js');
+const { buildColumns } = await import('./chunk.js');
 const { loadRecords, fakeWorkerFactory } = await import('./replay_test_support.js');
 
-const { manifest, records, overview } = loadRecords(process.argv[2]);
+const { manifest, records, overview } = loadRecords(process.argv[2], buildColumns);
 const out = {};
 const T0 = manifest.t0;
 const noNet = async () => ({ status: 503, json: async () => ({ status: 'unavailable', reason: 'worker_unavailable' }) });
@@ -49,7 +50,7 @@ const mk = (o) => McapSource(Object.assign({ id: 'rec', fetch: noNet, fileUrl: '
     same_object: a === b && b === ch, loads_posted: log.filter((x) => x === 'load:1').length,
     peek_hit: src.peek(1) === ch, peek_miss: src.peek(3),
     n: tp.n, want_n: want.n, t_is_f64: tp.t instanceof Float64Array,
-    t_equal: JSON.stringify(Array.from(tp.t)) === JSON.stringify(want.t),
+    t_equal: JSON.stringify(Array.from(tp.t)) === JSON.stringify(Array.from(want.t)),
     cols_equal: JSON.stringify(tp.cols) === JSON.stringify(want.cols),
     hydrate0: tp.hydrate(0), range_error: rangeErr, neg_error: negErr,
     window: (await src.window(T0 + 5, T0 + 15, ['/robot_state'])).map((c) => ({ i: c.i, topics: Object.keys(c.topics) })),

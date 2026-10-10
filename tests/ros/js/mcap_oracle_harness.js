@@ -6,6 +6,7 @@
 import fs from 'node:fs';
 import { openRecording, decodeSlot, latestRow, slotOf, httpReadable } from './js/replay/mcap-decode.js';
 import { ALLOWLIST } from './js/replay/allowlist.js';
+import { makeTopic, flattenMessage } from './js/replay/chunk.js';
 
 const [, , bag, out, mode = 'file'] = process.argv;
 
@@ -56,7 +57,18 @@ for (let i = 0; i < rec.slots; i++) {
   const s = await decodeSlot(rec, i);
   res.decodeMs += Number(process.hrtime.bigint() - s0) / 1e6;
   const topics = {};
-  for (const [name, o] of Object.entries(s.topics)) topics[name] = { type: o.type, n: o.n, t: Array.from(o.t), cols: o.cols };
+  for (const [name, o] of Object.entries(s.topics)) {
+    // BY VALUE after hydration: typed columns -> row objects (hydrate: non-finite -> null) -> flattened back to
+    // per-column arrays, so the comparison sees exactly what a consumer of hydrate(k) sees.
+    const tp = makeTopic(o.type, o.t, o.cols, o.kinds);
+    const cols = {};
+    for (const c of Object.keys(o.kinds)) cols[c] = new Array(o.n);
+    for (let k = 0; k < o.n; k++) {
+      const flat = flattenMessage(tp.hydrate(k));
+      for (const c of Object.keys(o.kinds)) cols[c][k] = flat[c];
+    }
+    topics[name] = { type: o.type, n: o.n, t: Array.from(o.t), cols, kinds: o.kinds };
+  }
   res.slots.push({ i, t0: s.t0, t1: s.t1, topics, dropped: s.dropped });
 }
 // latest-row spot checks: a rarely published topic far back, and a miss before the first message

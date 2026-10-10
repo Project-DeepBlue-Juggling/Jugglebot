@@ -93,11 +93,11 @@ const out = {};
     out.ahead = res;
 }
 
-// ---- (2) cap: 30 chunks wanted, only 16 resident, farthest evicted ----
+// ---- (2) cap: 30 chunks wanted, only 8 resident, farthest evicted ----
 {
     const src = makeSource();
     const cache = createChunkCache({ source: src });
-    cache.setPlayhead(T0 + 503, 1, 300); // 150+20 s ahead, 150+10 behind
+    cache.setPlayhead(T0 + 503, 1, 300); // 150+10 s ahead, 150+10 behind
     await settle(80);
     const first = residentSet(cache, 100);
     cache.setPlayhead(T0 + 703, 1, 300); // jump: old set must go
@@ -107,12 +107,12 @@ const out = {};
 
 // ---- (3) serial fetch in priority order ----
 {
-    const src = makeSource({ hold: [50, 51, 52, 49, 48] });
+    const src = makeSource({ hold: [50, 51, 49, 48] });
     const cache = createChunkCache({ source: src });
     cache.setPlayhead(T0 + 503, 1, 0);
     await settle(4);
     const steps = [{ parked: src.parkedList(), inflight: src.log.inflight }];
-    for (const i of [50, 51, 52, 49, 48]) {
+    for (const i of [50, 51, 49, 48]) {
         src.release(i);
         await settle(4);
         steps.push({ parked: src.parkedList(), inflight: src.log.inflight });
