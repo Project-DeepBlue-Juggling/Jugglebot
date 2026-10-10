@@ -546,7 +546,12 @@ FW_OP_INFO = 0x05
 #: 150 Hz yaw sample (f32 yaw_deg, i16 vel at 0.1 deg/s, u16 sample age at TX),
 #: relayed by can-bridge FW 28 into /bb/axis_estimates name bb_yaw. The 0x7D1
 #: heartbeat is unchanged.
-BB_FW_VERSION_EXPECTED = 6
+#: 7 (2026-10-10) = BB's own CAN input scales: set_input_pos vel_ff/tor_ff
+#: use InputScale::bb_hand_* (100/100, the S1's saved config) for the hand and
+#: bb_pitch_* for pitch. FW 6 borrowed Jugglebot's hand_tor (1000) for BB's
+#: hand drive (input_torque_scale 100): a 10x torque feedforward. No wire
+#: change on the BB<->bridge link.
+BB_FW_VERSION_EXPECTED = 7
 
 
 def decode_platform_fw_reply(data: bytes):
