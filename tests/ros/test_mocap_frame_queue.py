@@ -350,36 +350,88 @@ def test_the_1hz_debug_line_carries_the_counters():
     assert 'stream 300 frames/s' in line and 'QTM gaps 0 frames (total 3)' in line
 
 
-def test_loss_warns_at_once_then_is_throttled_and_summed():
+def _window(iface, node, start_fn, received, missing_every=0, gap=1, drain=True):
+    """Receive `received` frames from number `start_fn`, skipping `gap` frame
+    numbers after every `missing_every`-th; drain so the queue never overflows.
+    Returns the next frame number."""
+    fn = start_fn
+    for i in range(received):
+        _receive(iface, fn)
+        fn += 1
+        if missing_every and (i + 1) % missing_every == 0:
+            fn += gap
+        if drain and i % 100 == 99:
+            iface.drain_frames()
+    iface.drain_frames()
+    return fn
+
+
+def test_loss_at_or_below_5_percent_is_silent_and_in_the_debug_line():
+    """4 % of ~3000 expected frames lost to QTM single-frame skips: no WARN."""
+    iface = _iface()
+    node = _node(iface)
+    _health(node, 10.0)
+    _window(iface, node, 0, 2880, missing_every=24)   # 119 seen skipped of ~3000 = 4 %
+    line = _health(node, 20.0)
+    assert node._logger.at('WARN') == []
+    assert 'QTM gaps 119 frames' in line and 'node overflow 0' in line
+
+
+def test_qtm_loss_above_5_percent_warns_naming_qtm_not_the_jetson():
     import jugglebot.mocap_node as mn
     iface = _iface()
     node = _node(iface)
-    _health(node, 10.0)                              # baseline, nothing lost
-    assert node._logger.at('WARN') == []
-
-    for fn in (1, 2, 5):                             # 2 frames QTM never sent
-        _receive(iface, fn)
-    _health(node, 11.0)
+    _health(node, 10.0)
+    _window(iface, node, 0, 2820, missing_every=15)   # 187 seen skipped of 3007 = 6.2 %
+    _health(node, 10.0 + mn.MOCAP_LOSS_WARN_PERIOD_S - 1)
+    assert node._logger.at('WARN') == []              # judged only when the window ends
+    _health(node, 10.0 + mn.MOCAP_LOSS_WARN_PERIOD_S)
     warns = node._logger.at('WARN')
     assert len(warns) == 1
-    assert warns[0].startswith('mocap: 2 QTM frames lost in the last 1 s')
-    assert '0 dropped by mocap_node' in warns[0] and '2 never received from QTM' in warns[0]
+    w = warns[0]
+    assert w.startswith('mocap: 187 of 3007 expected QTM frames lost (6.2 %) in the last 10 s')
+    assert '187 never received from QTM (187 frame-number gaps)' in w
+    assert 'dropped by mocap_node' not in w and 'Jetson' not in w     # the node dropped nothing
+    assert 'QTM' in w and 'frame-drop' in w
 
-    iface.drain_frames()
-    for fn in range(6, 6 + FRAME_QUEUE_MAXLEN + 4):  # a > 0.5 s stall: 4 overflow
-        _receive(iface, fn)
-    _health(node, 12.0)
-    iface.drain_frames()
-    _receive(iface, 6 + FRAME_QUEUE_MAXLEN + 4 + 3)  # and 3 more gap frames
-    _health(node, 13.0)
-    assert len(node._logger.at('WARN')) == 1         # throttled ...
-    _health(node, 11.0 + mn.MOCAP_LOSS_WARN_PERIOD_S)
+
+def test_node_overflow_above_5_percent_warns_with_the_starvation_wording():
+    import jugglebot.mocap_node as mn
+    iface = _iface()
+    node = _node(iface)
+    _health(node, 10.0)
+    fn = 0
+    for _ in range(10):                               # ten > 0.5 s stalls, 20 overflow each
+        for _ in range(FRAME_QUEUE_MAXLEN + 20):
+            _receive(iface, fn)
+            fn += 1
+        iface.drain_frames()
+    _window(iface, node, fn, 1500)                    # 200 of 3200 = 6.25 %
+    _health(node, 10.0 + mn.MOCAP_LOSS_WARN_PERIOD_S)
     warns = node._logger.at('WARN')
-    assert len(warns) == 2                           # ... and summed, none lost
-    assert warns[1].startswith('mocap: 7 QTM frames lost in the last 10 s')
-    assert '4 dropped by mocap_node' in warns[1] and '3 never received from QTM' in warns[1]
-    _health(node, 40.0)
-    assert len(node._logger.at('WARN')) == 2         # quiet when nothing is lost
+    assert len(warns) == 1
+    w = warns[0]
+    assert '200 dropped by mocap_node (frame queue full: starved for over 0.5 s)' in w
+    assert 'never received from QTM' not in w
+    assert 'check its load' in w
+
+
+def test_a_multi_frame_gap_burst_is_judged_by_the_same_rule():
+    """A single 200-frame QTM outage in a window (6.7 %) warns; the window is
+    then cleared, and the next quiet window is silent."""
+    import jugglebot.mocap_node as mn
+    iface = _iface()
+    node = _node(iface)
+    _health(node, 10.0)
+    fn = _window(iface, node, 0, 1400)
+    fn += 200
+    fn = _window(iface, node, fn, 1400)
+    _health(node, 20.0)
+    assert len(node._logger.at('WARN')) == 1
+    assert '200 never received from QTM (1 frame-number gaps)' in node._logger.at('WARN')[0]
+    _window(iface, node, fn, 3000)
+    _health(node, 30.0)
+    assert len(node._logger.at('WARN')) == 1
 
 
 def test_no_loss_no_warn():
