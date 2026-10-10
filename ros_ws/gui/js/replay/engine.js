@@ -25,7 +25,8 @@
  *   pause()            -> Promise; forward: settle(); after reverse or scrub: seek(p)
  *   seek(t)            -> Promise<playhead>; full § 4 order. Synchronous when every
  *                      needed chunk is resident and no latestBefore fallback is needed.
- *   scrub(t)           sync; reset + latest-before(t) of every STATE topic, muted (drag)
+ *   scrub(t)           sync, LIGHT: playhead (-> charts re-centre, cache follows) only; no reset,
+ *                      no dispatch. Marks state dirty: always follow a drag with seek(t) on release
  *   setSpeed(x)        snaps |x| to SPEED_LADDER, sign kept (negative = reverse) -> speed
  *   step(n)            -> Promise<playhead>; pauses, moves +-|n| records of the fastest state topic
  *   tick(dtMs)         the rAF body; dp = clamp(dt, 0, 100) * speed; returns the playhead
@@ -547,6 +548,10 @@ export function createEngine(opts) {
     }
 
     function scrub(tSec) {
+        // LIGHT PATH (drag preview): move the playhead only. No reset, no dispatch, no panel/3D work -
+        // the hooks' onPlayhead re-centres the charts (one x-scale move) and the chunk cache follows
+        // the playhead. State is marked dirty, so the caller MUST follow the drag with seek(t)
+        // (release / rest), which runs the full baseline + pre-roll pipeline once.
         if (disposed) return p;
         ++seekToken;           // a pending seek is superseded
         seekBusy = false;
@@ -555,18 +560,6 @@ export function createEngine(opts) {
         let t = +tSec;
         if (!Number.isFinite(t)) t = p;
         t = Math.min(Math.max(t, r.t0), Math.max(r.t0, r.frontier));
-        clk._clearTimers();
-        lastT.clear();
-        lastVal.clear();
-        callHook('onResetForSeek');
-        const list = [];
-        for (const topic of STATE_TOPICS) {
-            const L = latestResident(topic, t);
-            if (L && !L.missing) list.push(L);
-        }
-        list.sort(byTime);
-        for (const rr of list) doDispatch(rr, true);
-        clk._setNow(t * 1000);
         travelPos = t;
         dirty = true;
         setPlayhead(t);

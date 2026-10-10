@@ -1,4 +1,5 @@
 /* Replay UI (Phase 3): lobby, picker, banners, toasts, dock. Visual spec: test_replay_mock.html. */
+:root { --replay-playhead: var(--accent-cyan); }  /* trackbar playhead AND the chart playhead lines */
 .replay-lobby[hidden], .replay-dock[hidden], .replay-banner[hidden], .replay-picker-bg[hidden],
 .replay-pk-msg[hidden] { display: none !important; }
 
@@ -31,6 +32,9 @@
 .replay-banner.warn { background: rgba(245,158,11,.12); border-color: var(--accent-amber); color: var(--accent-amber); }
 .replay-banner.err { background: rgba(239,68,68,.12); border-color: var(--accent-red); color: var(--accent-red); }
 #replay-backend-banner { top: 92px; }
+/* Follow the expanded state-machine strip exactly as #command-overlay and #connection-status do
+   (state-minimap.css): inset by --minimap-width so the banner never sits under the opaque panel. */
+#viewer-pane.minimap-expanded .replay-banner { left: calc(var(--minimap-width) + var(--gap)); }
 .replay-picker .replay-banner { position: static; margin: 8px 14px 0; }
 .replay-retry { padding: 0 6px; border: none; background: none; color: inherit; text-decoration: underline; }
 
@@ -105,7 +109,7 @@
     border-radius: 3px; cursor: pointer; }
 .rp-conv { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: rgba(59,130,246,.35); }
 .rp-front { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px dashed var(--accent-blue); }
-.rp-playhead { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--accent-cyan); }
+.rp-playhead { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--replay-playhead); }
 .rp-ov { position: relative; height: 12px; margin-top: 3px; cursor: crosshair; background: var(--bg-primary);
     border-radius: 2px; overflow: hidden; }
 .rp-ov-strip { position: absolute; inset: 0; }

@@ -117,9 +117,18 @@ def test_hotkeys_ignored_in_text_inputs_and_with_modifiers(out):
     assert out["keys"]["ctrl"] == 0
 
 
-def test_drag_scrubs_then_release_seeks(out):
-    # bar spans x=100..1100 over 0..100 s: 600 -> 50 s, 700 -> 60 s, release at 800 -> 70 s
-    assert out["drag"] == ["scrub:50", "scrub:60", "seek:70"]
+def test_drag_coalesces_to_one_scrub_per_frame_then_seeks_on_release(out):
+    # bar spans x=100..1100 over 0..100 s. Nothing reaches the engine before the frame; 60 moves in one
+    # frame -> one scrub at the LAST position (895 -> 79.5 s); release at 800 -> one seek at 70 s.
+    assert out["drag_before_frame"] == []
+    assert out["drag_after_frame"] == ["scrub:79.5"]
+    assert out["drag"] == ["scrub:79.5", "seek:70"]
+
+
+def test_drag_rest_runs_the_full_seek_once(out):
+    # down at 50 s scrubs on the first frame; ~9 frames of rest -> exactly one seek at 50 s, not one per frame
+    assert out["drag_rest"] == ["scrub:50", "seek:50"]
+    assert out["drag_rest_after"] == ["scrub:50", "seek:50", "scrub:60", "seek:60"]
 
 
 def test_zoom_keys_about_playhead_and_reset(out):

@@ -126,3 +126,31 @@ def test_unit_toggle_during_replay_converts_parked_live_store(out):
     ut = out["unit_toggle"]
     assert ut["converted"] is True  # the toggle really changes pos/vel columns
     assert ut["vs_direct"] == pytest.approx(0.0, abs=1e-6)
+
+
+def test_playhead_line_hook_installs_draws_from_value_and_removes(out):
+    pl = out["playhead_line"]
+    assert pl["before"] and not any(pl["before"])             # live charts carry no playhead hook
+    assert all(pl["installed"]) and len(pl["installed"]) == 9  # installed on enter
+    # panned window [10, 30], playhead 25 -> 3/4 of the plot box (left 100, width 400), NOT the centre
+    assert len(pl["drawn"]) == 1 and pl["drawn"][0]["x"] == pytest.approx(400.0)
+    assert pl["drawn"][0]["color"] == "#abcdef"                # the --replay-playhead var, trimmed
+    assert pl["drawn"][0]["w"] >= 1
+    assert pl["outside"] == 0                                  # playhead outside the window: no line
+    assert all(pl["removed"])                                  # removed on exit
+    assert pl["x_panned"] == pytest.approx(400.0) and pl["x_centre"] == pytest.approx(300.0)
+    assert pl["x_left"] == pytest.approx(100.0)
+    assert pl["x_out"] is None and pl["x_bad"] is None and pl["x_degenerate"] is None
+
+
+def test_chart_dom_contracts_for_feedback_unit_a():
+    """CSS contracts: banners follow the expanded minimap; the window select has a fixed width;
+    the trackbar playhead and the chart playhead share one variable."""
+    rc = (GUI / "css" / "replay.css").read_text()
+    cc = (GUI / "css" / "charts.css").read_text()
+    assert "#viewer-pane.minimap-expanded .replay-banner" in rc and "--minimap-width" in rc
+    assert ":root { --replay-playhead:" in rc
+    assert "background: var(--replay-playhead)" in rc
+    sel = cc[cc.index("#chart-window-select {"):]
+    sel = sel[:sel.index("}")]
+    assert "width: 84px" in sel and "box-sizing: border-box" in sel

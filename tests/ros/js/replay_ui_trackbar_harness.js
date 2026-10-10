@@ -134,9 +134,23 @@ state.playhead = T0 + 50;
 
 // ---- scrub / seek on the bar ----
 const bar = ids('rp-bar'); bar.rect = { left: 100, width: 1000 };
+const rel = (calls_) => calls_.map((c) => c.map((x) => (typeof x === 'number' && x > 1e8 ? +(x - T0).toFixed(3) : x)).join(':'));
+// 60 moves inside one frame -> exactly one scrub (the last position); one seek on release
 calls = []; bar.fire('mousedown', { clientX: 600, preventDefault() {} });
-emitDoc('mousemove', { clientX: 700 }); emitDoc('mouseup', { clientX: 800 });
-out.drag = calls.map((c) => c.map((x) => (typeof x === 'number' && x > 1e8 ? +(x - T0).toFixed(3) : x)).join(':'));
+out.drag_before_frame = rel(calls);                 // nothing reaches the engine until the frame
+for (let i = 0; i < 60; i++) emitDoc('mousemove', { clientX: 600 + i * 5 });   // last = 895 -> 79.5 s
+tb.frame();
+out.drag_after_frame = rel(calls);
+tb.frame(); tb.frame();                              // no new move: no further scrub
+emitDoc('mouseup', { clientX: 800 });
+out.drag = rel(calls);
+// pointer rest: REST frames after the last move run one seek, the drag stays live; mouseup seeks again
+calls = []; bar.fire('mousedown', { clientX: 600, preventDefault() {} }); tb.frame();
+for (let i = 0; i < 20; i++) tb.frame();
+out.drag_rest = rel(calls);
+emitDoc('mousemove', { clientX: 700 }); tb.frame();
+emitDoc('mouseup', { clientX: 700 });
+out.drag_rest_after = rel(calls);
 
 // ---- zoom: keys, drag-select, clamp ----
 state.playhead = T0 + 50;

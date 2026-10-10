@@ -153,6 +153,11 @@
     font-family: var(--font-mono);
     padding: 2px 6px;
     cursor: pointer;
+    /* Fixed width: a select sizes itself to its SELECTED option, and the transient
+       custom-span entry ("9.1s", "1m 37s") is wider than a preset.  The 6-18 px change
+       reflowed the wrapping toolbar and so resized every chart cell under zoom. */
+    box-sizing: border-box;
+    width: 84px;
 }
 
 /* The visible span is off every preset (wheel/box-zoom, pan) — the dropdown

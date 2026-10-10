@@ -1331,7 +1331,7 @@ function buildUPlotOpts(chartIdx, width, height, showXAxis = true, onCursor = nu
             // Drawn after every series/axis paint — lets us overlay event
             // markers and delta-cursor bookmarks without touching the
             // plotted data.
-            draw: [drawChartOverlays],
+            draw: replayStore ? [drawChartOverlays, drawReplayPlayhead] : [drawChartOverlays],
         },
         legend: { show: false },
         padding: [8, 8, 0, 0],
@@ -1486,6 +1486,54 @@ function applyReplayAxes() {
     if (charts.some(Boolean)) repaintAllCharts(true);
 }
 
+// ---- Replay playhead line in every chart ----
+// Same colour as the trackbar playhead (CSS var --replay-playhead, css/replay.css),
+// read once per enter.  Positioned from the playhead VALUE, not the box centre, so a
+// panned / zoomed chart still shows the true playhead.
+let playheadColor = '#06b6d4';
+
+function readPlayheadColor() {
+    try {
+        const v = getComputedStyle(document.documentElement).getPropertyValue('--replay-playhead');
+        if (v && v.trim()) playheadColor = v.trim();
+    } catch (e) { /* keep the default */ }
+}
+
+/** Canvas-pixel x of value `p` on a linear x scale spanning [xMin, xMax] across the plot
+ *  box [left, left+width]; null when p is outside the visible window. */
+export function playheadCanvasX(p, xMin, xMax, left, width) {
+    if (xMin == null || xMax == null || !(xMax > xMin) || !(p >= xMin && p <= xMax)) return null;
+    return left + (p - xMin) / (xMax - xMin) * width;
+}
+
+function drawReplayPlayhead(u) {
+    const ctx = u.ctx;
+    if (!replayStore || !ctx || !u.bbox) return;
+    const { left, top, width, height } = u.bbox;
+    const x = playheadCanvasX(replayPlayhead, u.scales.x.min, u.scales.x.max, left, width);
+    if (x === null) return;
+    ctx.save();
+    ctx.strokeStyle = playheadColor;
+    ctx.lineWidth = 2 * (window.devicePixelRatio || 1);
+    ctx.beginPath();
+    ctx.moveTo(x, top);
+    ctx.lineTo(x, top + height);
+    ctx.stroke();
+    ctx.restore();
+}
+
+function installPlayheadHook(u) {
+    if (!u || !u.hooks) return;
+    const a = u.hooks.draw || (u.hooks.draw = []);
+    if (a.indexOf(drawReplayPlayhead) < 0) a.push(drawReplayPlayhead);
+}
+
+function removePlayheadHook(u) {
+    if (!u || !u.hooks || !u.hooks.draw) return;
+    const i = u.hooks.draw.indexOf(drawReplayPlayhead);
+    if (i >= 0) u.hooks.draw.splice(i, 1);
+}
+
 /**
  * Enter replay charts: park the live ring and view state, point `stores` at
  * the replay store's axes.  Call BEFORE the first `store.setResident()`.
@@ -1500,6 +1548,8 @@ export function enterReplayCharts(store, opts) {
     };
     replayStore = store;
     replaySeek = (opts && opts.onSeek) || null;
+    readPlayheadColor();
+    for (let i = 0; i < charts.length; i++) installPlayheadHook(charts[i]);
     paused = false;
     viewMode = 'live';
     manualXRange = null;
@@ -1517,6 +1567,7 @@ export function exitReplayCharts() {
     replayUnsub = null;
     replayStore = null;
     replaySeek = null;
+    for (let i = 0; i < charts.length; i++) removePlayheadHook(charts[i]);
     const sv = replaySaved;
     replaySaved = null;
     if (sv) {

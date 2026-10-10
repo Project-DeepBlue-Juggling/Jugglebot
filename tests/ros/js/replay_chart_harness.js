@@ -38,7 +38,7 @@ globalThis.window = { addEventListener() {}, devicePixelRatio: 1 };
 const rafQ = [];
 globalThis.requestAnimationFrame = (fn) => { rafQ.push(fn); return rafQ.length; };
 function flushRaf() { for (let n = 0; n < 5 && rafQ.length; n++) rafQ.splice(0).forEach((f) => f()); }
-globalThis.getComputedStyle = () => ({ rowGap: '0', getPropertyValue() { return ''; } });
+globalThis.getComputedStyle = () => ({ rowGap: '0', getPropertyValue(k) { return k === '--replay-playhead' ? ' #abcdef ' : ''; } });
 globalThis.ResizeObserver = class { observe() {} };
 const ls = {};
 globalThis.localStorage = { getItem: (k) => (k in ls ? ls[k] : null), setItem: (k, v) => { ls[k] = v; } };
@@ -46,8 +46,14 @@ const made = [];
 globalThis.uPlot = class {
   constructor(o, d, c) {
     this.opts = o; this.data = d; this.scales = { x: { min: null, max: null } };
-    this.over = fakeEl('over'); this.sets = []; this.destroyed = false; this.bbox = {};
+    this.over = fakeEl('over'); this.sets = []; this.destroyed = false;
     this.select = { left: 0, top: 0, width: 0, height: 0 };
+    this.hooks = o.hooks;
+    this.bbox = { left: 100, top: 10, width: 400, height: 60 };
+    this.strokes = [];
+    const self = this;
+    this.ctx = { save() {}, restore() {}, beginPath() {}, moveTo(x, y) { self._mv = [x, y]; }, lineTo() {}, rect() {}, clip() {},
+                 stroke() { self.strokes.push({ color: this.strokeStyle, w: this.lineWidth, x: self._mv[0] }); }, fillRect() {}, fillText() {}, set font(v) {} };
     made.push(this);
   }
   setScale(k, r) { this.sets.push([k, r]); this.scales[k] = { min: r.min, max: r.max }; }
@@ -295,5 +301,33 @@ tc.exitReplayCharts();
   const after = snapAll();
   out.unit_toggle = { converted: maxDiff(s0, direct).changed > 0, vs_direct: maxDiff(direct, after).worst };
   unitsBtn._h.click();                 // restore for hygiene
+}
+// ---- playhead line in every chart (feedback unit A, item 3) ----
+{
+  const hasHook = (u) => u.hooks.draw.some((f) => f.name === 'drawReplayPlayhead');
+  const before = liveCharts().map(hasHook);
+  tc.enterReplayCharts(store, { onSeek: () => {} });
+  const inChart = liveCharts();
+  const installed = inChart.map(hasHook);
+  tc.setReplayPlayhead(T0 + 20);
+  // a PANNED window: the playhead sits at 3/4 of the box, not the centre
+  const u = inChart[0];
+  tc.setReplayPlayhead(T0 + 25);
+  u.scales.x = { min: T0 + 10, max: T0 + 30 };       // pan AFTER the playhead move (setScale would re-centre)
+  u.strokes.length = 0;
+  const f = u.hooks.draw.find((g) => g.name === 'drawReplayPlayhead');
+  f(u);
+  const drawn = u.strokes.slice();
+  u.scales.x = { min: T0 + 40, max: T0 + 60 };      // playhead outside the window: nothing drawn
+  u.strokes.length = 0; f(u);
+  const outside = u.strokes.length;
+  tc.exitReplayCharts();
+  const removed = liveCharts().map((c) => !hasHook(c));
+  out.playhead_line = {
+    before, installed, drawn, outside, removed,
+    x_panned: tc.playheadCanvasX(25, 10, 30, 100, 400), x_centre: tc.playheadCanvasX(20, 10, 30, 100, 400),
+    x_left: tc.playheadCanvasX(10, 10, 30, 100, 400), x_out: tc.playheadCanvasX(31, 10, 30, 100, 400),
+    x_bad: tc.playheadCanvasX(5, null, null, 0, 1), x_degenerate: tc.playheadCanvasX(5, 5, 5, 0, 1),
+  };
 }
 console.log(JSON.stringify(out));

@@ -33,6 +33,8 @@ export function nextSpeed(cur, dir) {
 
 /** A failing / partial /overview is retried no more often than every this many frames. */
 const TL_RETRY_FRAMES = 200;
+/** A bar drag whose pointer rests this many frames (~150 ms at 60 Hz) runs the full seek once. */
+const REST_FRAMES = 9;
 
 const fmtSpeed = (s) => (s < 0 ? '-' : '') + '×' + Math.abs(s);
 const p2 = (n) => (n < 10 ? '0' : '') + n;
@@ -66,7 +68,8 @@ export function createTrackbar(deps) {
     let frameNo = 0, tlRetryAt = 0;               // frame-count backoff for /overview retries (no wall clock)
     let drawnKey = '';
     const cache = { head: '', conv: '', front: '', play: '', el: '', speed: '', mode: '', zoom: '', date: '', pbtn: '' };
-    let dragging = null;                          // {kind:'bar'} | {kind:'ov', fa}
+    let dragging = null;                          // {kind:'bar', rest, rested, t} | {kind:'ov', fa}
+    let pendingScrub = null;                      // latest bar-drag time, flushed once per frame (latest wins)
     let lastFull = { t0: 0, t1: 0 };
     let unsubMode = null;
 
@@ -147,9 +150,19 @@ export function createTrackbar(deps) {
     }
     function onBarDown(ev) {
         const e = engine(); if (!e) return;
-        dragging = { kind: 'bar' };
-        e.scrub(barTime(ev));
+        dragging = { kind: 'bar', rest: 0, rested: false, t: null };
+        queueScrub(barTime(ev));
         if (ev.preventDefault) ev.preventDefault();
+    }
+    /** Drag positions coalesce to the latest per animation frame (frame() flushes one engine.scrub). */
+    function queueScrub(t) {
+        if (t === null || !dragging) return;
+        pendingScrub = t; dragging.t = t; dragging.rest = 0; dragging.rested = false;
+    }
+    function flushScrub(e) {
+        if (pendingScrub === null) return;
+        const t = pendingScrub; pendingScrub = null;
+        e.scrub(t);
     }
     function onOvDown(ev) {
         if (!engine()) return;
@@ -158,7 +171,7 @@ export function createTrackbar(deps) {
     }
     function onMove(ev) {
         if (!dragging) return;
-        if (dragging.kind === 'bar') { const e = engine(); if (e) e.scrub(barTime(ev)); return; }
+        if (dragging.kind === 'bar') { queueScrub(barTime(ev)); return; }
         const fb = fracOf(els.ov, ev);
         els.sel.hidden = false;
         els.sel.style.left = (Math.min(dragging.fa, fb) * 100).toFixed(2) + '%';
@@ -166,7 +179,7 @@ export function createTrackbar(deps) {
     }
     function onUp(ev) {
         if (!dragging) return;
-        const d = dragging; dragging = null;
+        const d = dragging; dragging = null; pendingScrub = null;
         const e = engine(); if (!e) return;
         if (d.kind === 'bar') { e.seek(barTime(ev)); return; }
         els.sel.hidden = true;
@@ -233,6 +246,12 @@ export function createTrackbar(deps) {
         const e = engine();
         if (!e) return;
         frameNo++;
+        flushScrub(e);
+        if (dragging && dragging.kind === 'bar' && pendingScrub === null && !dragging.rested && dragging.t !== null
+            && ++dragging.rest >= REST_FRAMES) {
+            dragging.rested = true;           // pointer rests mid-drag: full pipeline once, drag continues
+            e.seek(dragging.t);
+        }
         const s = e.state();
         const r = s.range;
         const full = fullRange(r);
@@ -302,7 +321,7 @@ export function createTrackbar(deps) {
         if (!isMounted) return;
         isMounted = false;
         tlToken++;
-        dragging = null;
+        dragging = null; pendingScrub = null;
         doc.removeEventListener('keydown', onKeyCapture, true);
         doc.removeEventListener('mousemove', onMove);
         doc.removeEventListener('mouseup', onUp);

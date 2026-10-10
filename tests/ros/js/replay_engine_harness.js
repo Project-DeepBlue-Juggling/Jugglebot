@@ -116,9 +116,9 @@ async function newEngine(opt) {
     await base.ensure();
     const cache = opt.wrapCache ? opt.wrapCache(base) : base;
     const spy = makeSpy();
-    const resets = { n: 0 };
+    const resets = { n: 0, playheads: 0 };
     const eng = createEngine({ source, cache, dispatch: spy.dispatch, clock,
-        hooks: { onResetForSeek() { resets.n++; } } });
+        hooks: { onResetForSeek() { resets.n++; }, onPlayhead() { resets.playheads++; } } });
     return { eng, spy, source, cache, base, resets };
 }
 
@@ -303,12 +303,19 @@ for (const s of [1, 4]) {
     const S = await newEngine();
     await S.eng.seek(T0 + 10);
     const mark = S.spy.log.length;
+    const r0 = S.resets.n, ph0 = S.resets.playheads;
     S.eng.scrub(T0 + 30);
+    S.eng.scrub(T0 + 31);
     const scrubbed = S.spy.log.slice(mark);
+    const scrubCost = { dispatches: scrubbed.length, resets: S.resets.n - r0, playheads: S.resets.playheads - ph0,
+        playhead: S.eng.state().playhead - T0 };
+    const mark2 = S.spy.log.length, r1 = S.resets.n;
+    await S.eng.seek(T0 + 31);
+    const seekCost = { dispatches: S.spy.log.length - mark2, resets: S.resets.n - r1 };
+    S.eng.scrub(T0 + 30);
     const p1 = await S.eng.step(1);
     const p2 = await S.eng.step(-1);
-    out.scrub = { all_muted: scrubbed.every((e) => e.muted), n: scrubbed.length,
-        topics: Array.from(new Set(scrubbed.map((e) => e.topic))).sort(),
+    out.scrub = { scrubCost, seekCost,
         step_fwd: p1 - T0, step_back: p2 - T0, mode: S.eng.state().mode };
 }
 

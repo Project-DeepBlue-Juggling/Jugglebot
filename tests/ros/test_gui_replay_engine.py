@@ -152,10 +152,15 @@ def test_seek_clears_timers(out):
     assert c["pendingBefore"] >= 1 and not c["probeFired"] and c["firesAfter"] == 0
 
 
+def test_scrub_is_light_and_seek_is_the_full_pipeline(out):
+    # a scrub step: playhead + one hook call, zero dispatches, zero resets; the release seek runs once in full
+    s = out["scrub"]
+    assert s["scrubCost"] == {"dispatches": 0, "resets": 0, "playheads": 2, "playhead": pytest.approx(31)}
+    assert s["seekCost"]["resets"] == 1 and s["seekCost"]["dispatches"] > 0
+
+
 def test_scrub_and_step(out):
     s = out["scrub"]
-    assert s["all_muted"] and s["n"] == 4
-    assert s["topics"] == ["/hand_telemetry", "/mocap_data", "/orchestrator_state", "/robot_state"]
     assert 30 < s["step_fwd"] < 30 + 1 / 180 + 1e-6  # one mocap record (180 Hz, the fastest)
     assert abs(s["step_back"] - 30) < 1e-6 and s["mode"] == "paused"
 
