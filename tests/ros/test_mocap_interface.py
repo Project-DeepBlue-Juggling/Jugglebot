@@ -42,13 +42,15 @@ def _marker(x, y, z, residual=0.5):
     return m
 
 
-def _packet(qtm_us, *, unlabelled=None):
+def _packet(qtm_us, *, unlabelled=None, framenumber=None):
     """A QTM packet stand-in carrying only what on_packet needs: its own
-    timestamp and (optionally) unlabelled markers. Labelled/6dof are None so
-    on_packet's parameter-refresh check (which needs real marker_dict/
-    body_dict bookkeeping) never fires."""
+    timestamp, frame number (default: derived from the timestamp at 300 Hz, so
+    successive packets are distinct frames) and (optionally) unlabelled
+    markers. Labelled/6dof are None so on_packet's parameter-refresh check
+    (which needs real marker_dict/body_dict bookkeeping) never fires."""
     p = MagicMock()
     p.timestamp = qtm_us
+    p.framenumber = qtm_us // 3333 if framenumber is None else framenumber
     p.get_3d_markers_residual.return_value = None
     p.get_6d.return_value = None
     if unlabelled is None:
@@ -83,25 +85,24 @@ def test_latest_frame_ros_ns_follows_the_packet_timestamp_through_the_offset():
 
 
 def test_marker_snapshot_and_frame_time_update_together():
-    """The frame's markers and its own time are written under the SAME lock
-    in on_packet (2026-09-20) — a reader must never see one packet's markers
-    paired with a different packet's time."""
+    """A frame's markers and its own time travel in ONE record (the 2026-09-20
+    same-lock rule; since 2026-10-10 the queued MocapFrame) — a reader must
+    never see one packet's markers paired with a different packet's time."""
     iface = _make_iface()
     iface.ready_to_publish = True
 
     _set_ros_ns(iface, 1_000_000_000)
     iface.on_packet(_packet(100_000, unlabelled=[_marker(1.0, 2.0, 3.0)]))
-    markers_a = iface.get_all_markers_base_frame()
-    frame_a_ns = iface.latest_frame_ros_ns()
-    assert markers_a.shape[0] == 1 and markers_a[0, 0] == 1.0
-
+    frame_a_ns = iface.qtm_timestamp_to_ros_ns(100_000)
     _set_ros_ns(iface, 1_050_000_000)
     iface.on_packet(_packet(150_000, unlabelled=[_marker(9.0, 8.0, 7.0)]))
-    markers_b = iface.get_all_markers_base_frame()
-    frame_b_ns = iface.latest_frame_ros_ns()
-    assert markers_b.shape[0] == 1 and markers_b[0, 0] == 9.0
-    assert frame_b_ns == iface.qtm_timestamp_to_ros_ns(150_000)
+    frame_b_ns = iface.qtm_timestamp_to_ros_ns(150_000)
+
+    a, b = iface.drain_frames()
+    assert a.unlabelled == [(1.0, 2.0, 3.0, 0.5)] and a.stamp_ns == frame_a_ns
+    assert b.unlabelled == [(9.0, 8.0, 7.0, 0.5)] and b.stamp_ns == frame_b_ns
     assert frame_b_ns != frame_a_ns
+    assert iface.latest_frame() is b and iface.latest_frame_ros_ns() == frame_b_ns
 
 
 def test_qtm_outage_logs_first_then_silent():

@@ -361,15 +361,16 @@ def test_labelled_base_markers_reach_the_window_and_bbs_own_do_not(tmp_path):
     P = NOM @ _Rz(H0).T + O0
     iface = node.mocap
     iface.is_receiving.return_value = True
-    iface.get_all_markers_base_frame.return_value = np.c_[P[[0, 3]], np.zeros(2)]
-    iface.get_labelled_markers.return_value = [
+    from jugglebot.mocap_interface import MocapFrame
+    unlabelled = [tuple(P[i]) + (0.0,) for i in (0, 3)]
+    labelled = [
         ('Catching Cone - 4', *P[1], 0.1), ('Catching Cone - 5', *P[2], 0.1),
         ('Ball Butler - 1', 0.0, 0.0, 0.0, 0.1), ('Ball Butler - 2', 10.0, 0.0, 0.0, 0.1)]
-    iface.get_body_poses.return_value = {}
-    iface.get_ball_butler_markers_base_frame.return_value = np.empty((0, 4))
+    nan_bb = ((math.nan,) * 4,) * 7
     node._on_bb_heartbeat(_hb(BallButlerStates.CALIBRATING))
     for k in range(60):
-        iface.latest_frame_ros_ns.return_value = int((100.0 + 0.01 * k) * 1e9)
+        iface.drain_frames.return_value = [MocapFrame(
+            k, 0, int((100.0 + 0.01 * k) * 1e9), None, True, labelled, unlabelled, (), nan_bb)]
         node._publish_mocap_data()
     assert len(node._calib_base_points) == 60
     pts = node._calib_base_points[-1][1]
