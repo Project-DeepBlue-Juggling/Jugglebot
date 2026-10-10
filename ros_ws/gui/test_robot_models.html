@@ -82,7 +82,7 @@ try {
  for(const pitch of [0,45,90]) {
   bb.updateBallButler(0,pitch,150);scene.updateMatrixWorld(true);
   const h=world(meshes.find(o=>o.name==='bb_hand'));
-  assert(near(h.x,BB_YAW_S_OFFSET_MM*.001)&&near(h.y,(BB_PITCH_Z_OFFSET_MM+150*Math.sin(pitch*Math.PI/180))*.001)&&near(h.z,(BB_PITCH_D_OFFSET_MM-150*Math.cos(pitch*Math.PI/180))*.001),`BB hand travel at ${pitch} degrees`);
+  assert(near(h.x,-BB_YAW_S_OFFSET_MM*.001)&&near(h.y,(BB_PITCH_Z_OFFSET_MM+150*Math.sin(pitch*Math.PI/180))*.001)&&near(h.z,(BB_PITCH_D_OFFSET_MM-150*Math.cos(pitch*Math.PI/180))*.001),`BB hand travel at ${pitch} degrees`);
  }
  const motors=Array.from({length:9},()=>({current_state:1}));
  setRobotAxisStates(motors,0);updateRobotMaterials(0);const idleA=outer[0].material.color.clone();

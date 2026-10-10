@@ -240,3 +240,24 @@ MIME types and no-cache preview responses. Vendored the pinned Three.js 0.170.0
 module and required loaders/controls with its MIT license; both index.html and
 the demo now load it locally, removing their external CDN dependency. A fresh
 preview on port 8083 avoids cached incorrect MIME responses.
+
+## 2026-10-10: BallButler hand on the FK's side of the yaw axis
+
+After 01b6cc69 flipped `yaw_s_offset_mm` to +105.65, the render put BB's hand
+2s (211 mm) to the right of its physical position. `throw_ballistics.bb_release_state`
+places the hand at `s·(−sin θ, cos θ)`, which is left of the throw for positive s,
+but `updateBallButler` added +s along robot +X, which is right of the +Y throw.
+Under the old negative s the two errors cancelled. The fix sets the mesh offset to `−s`.
+`test_robot_models.html` now asserts the FK-derived `x = −s` at identity heading,
+and the misleading `test_gui_robot_assets.py` comment is corrected (its numbers
+were already right).
+
+The gate also caught 6c02b310's `catching-cone-model.js` reading `performance.now()`
+without the `// wall-clock:` marker that `test_gui_clock_contract.py` requires.
+It is marked, not migrated, because its staleness is compared against the render
+loop's own wall-clock `now` (`viewer.js` onFrame). Behaviour is unchanged. During
+a paused replay the cone still hides after 1.5 s of wall time, which is left to the replay owner.
+
+Verification (2026-10-10): headless Chromium (SwiftShader) on
+`http://localhost:8081/test_robot_models.html`: all checks PASS, including
+"BB hand travel at 0/45/90 degrees". Gate result is in the commit message.

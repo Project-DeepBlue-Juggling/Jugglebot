@@ -23,10 +23,9 @@ const DEG2RAD = Math.PI / 180;
 // (yaw + yaw_offset_rad) CCW from world +X, so the group heading is
 // yaw_offset - 90 deg. position_mm is the point on the yaw axis at PITCH-axis
 // height, while the CAD origin sits BB_PITCH_Z_OFFSET_MM below the pitch axis.
-// NOTE: the CAD hand mesh sits |s| to the LEFT of the throw direction, as the
-// real hand does (owner, 2026-10-05); throw_ballistics' FK puts it on the RIGHT.
-// That is an open question for the aim model, not this file - see logbook
-// 2026-10-05-gui-juggle-panel-bb-calibrated-ghost-chart-dots.
+// Lateral hand offset: the FK places the hand at s * (-sin, cos)(azimuth), i.e.
+// positive s is to the LEFT of the throw (the real hand's side; s = +105.65 since
+// 01b6cc69). Left of robot +Y is robot -X, so the mesh offset is -s.
 const GHOST_ORBIT_PERIOD_S = 25;      // one lap around the robot
 const GHOST_ORBIT_R_MM = 700;         // roughly where BB really lives
 const GHOST_HOVER_MM = 300;
@@ -179,7 +178,7 @@ export function updateBallButler(yawDeg, pitchDeg, handPosMM) {
     yawGroup.rotation.y = yawDeg * DEG2RAD;
     // CAD rail is vertical at rest. Positive pitch aims toward robot +Y.
     pitchGroup.rotation.x = (pitchDeg - 90) * DEG2RAD;
-    hand.position.set(BB_YAW_S_OFFSET_MM * .001, handPosMM * .001, 0);
+    hand.position.set(-BB_YAW_S_OFFSET_MM * .001, handPosMM * .001, 0);
 }
 
 export function setBallButlerVisible(visible) { if (bbGroup) bbGroup.visible = visible; }

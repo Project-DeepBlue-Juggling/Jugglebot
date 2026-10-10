@@ -19,7 +19,7 @@ export function initCatchingConeModel() {
     });
 }
 
-export function updateCatchingCone(bodies, now = performance.now()) {
+export function updateCatchingCone(bodies, now = performance.now()) { // wall-clock: staleness vs the render loop's performance.now() (viewer.js onFrame)
     if (!model) return;
     const body = bodies.find(b => b.name?.replace(/[ -]/g, '_') === 'Catching_Cone');
     const stamped = body?.pose;
