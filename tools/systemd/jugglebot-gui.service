@@ -9,10 +9,11 @@ StartLimitIntervalSec=0
 [Service]
 # gui_server.py stays pure Python stdlib, so the system interpreter is enough
 # and the server has no dependency on the project venv being present at boot.
-# Only the replay conversion WORKER (a niced subprocess it spawns on demand)
-# needs the venv (mcap, rosbags, msgpack) - that is --worker-python. If the venv
-# is missing the server still starts and reports worker_available=false.
-ExecStart=/usr/bin/python3 /home/jetson/Desktop/Jugglebot-skills/ros_ws/gui/gui_server.py --port 8081 --rosbags-dir /home/jetson/Desktop/rosbags --cache-dir /home/jetson/Desktop/Jugglebot-skills/temp/replay_cache --worker-python /home/jetson/Desktop/PDJ_venv/venv/bin/python
+# The browser reads recordings itself over HTTP Range, so the server only lists
+# and serves bytes. Only the replay OVERVIEW worker (a niced subprocess it spawns
+# on demand) needs the venv (mcap, rosbags) - that is --worker-python. If the venv
+# is missing the server still starts and reports overview_available=false.
+ExecStart=/usr/bin/python3 /home/jetson/Desktop/Jugglebot-skills/ros_ws/gui/gui_server.py --port 8081 --rosbags-dir /home/jetson/Desktop/rosbags --worker-python /home/jetson/Desktop/PDJ_venv/venv/bin/python
 WorkingDirectory=/home/jetson/Desktop/Jugglebot-skills/ros_ws/gui
 # Unbuffered stdout so the server's startup line shows up immediately in
 # `journalctl -u jugglebot-gui` (important for headless debugging).

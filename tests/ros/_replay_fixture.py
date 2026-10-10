@@ -24,7 +24,7 @@ import random
 from pathlib import Path
 from typing import Dict, List, Tuple
 
-from mcap.writer import Writer
+from mcap.writer import CompressionType, Writer
 from rosbags.typesys import Stores, get_types_from_msg, get_typestore
 
 REPO = Path(__file__).resolve().parents[2]
@@ -54,6 +54,13 @@ def _full_name(short: str) -> str:
     return short if "/msg/" in short else "%s/msg/%s" % (pkg, name)
 
 
+def _dep_header_name(short: str) -> str:
+    """rosbag2's dependency header form: ``pkg/Type`` (no ``/msg/``) - what real
+    bags carry (checked against a 2026-10-10 bag); the browser's rosmsg parser
+    resolves references by exactly this spelling."""
+    return short.replace("/msg/", "/")
+
+
 def embedded_schema(ts, typename: str) -> str:
     """rosbag2's embedded ros2msg text: own raw text, then MSG: blocks per dep."""
     gen, _ = ts.generate_msgdef(typename, ros_version=2)
@@ -69,7 +76,7 @@ def embedded_schema(ts, typename: str) -> str:
         b = b.strip()
         first, _, body = b.partition("\n")
         dep = _full_name(first[5:].strip())
-        out.append(SEP + "\nMSG: " + dep + "\n" + own_text(dep, body))
+        out.append(SEP + "\nMSG: " + _dep_header_name(dep) + "\n" + own_text(dep, body))
     return "\n".join(out)
 
 
@@ -78,7 +85,11 @@ def _time(ts, t_ns: int):
     return T(sec=t_ns // 10**9, nanosec=t_ns % 10**9)
 
 
-def _build_messages(ts, duration_s: float, seed: int) -> List[Tuple[int, str, str, object, Dict]]:
+EDGE_TIMES = (10.0, 10.0, 20.0, 20.0, 29.9999999)   # slot-edge ties + a hair before an edge
+EDGE_VALUES = ("TIE_A", "TIE_B", "TIE_C", "TIE_D", "EDGE_LO")
+
+
+def _build_messages(ts, duration_s: float, seed: int, edge_messages: bool = False) -> List[Tuple[int, str, str, object, Dict]]:
     """[(t_ns, topic, typename, msg_obj, plain_dict)] in log-time order."""
     import numpy as np
 
@@ -214,14 +225,26 @@ def _build_messages(ts, duration_s: float, seed: int) -> List[Tuple[int, str, st
                   data=np.array([rng.uniform(-1, 1) for _ in range(3)], dtype=np.float64))
         add(t, "/bb/axis_estimates", "std_msgs/msg/Float64MultiArray", msg, {})
 
+    if edge_messages:
+        # Equal-log-time pairs exactly on slot edges (order = insertion order)
+        # and one message a hair before an edge: the slot-assignment and tie cases.
+        for t, val in zip(EDGE_TIMES, EDGE_VALUES):
+            if t < duration_s:
+                add(t, "/orchestrator_state", "std_msgs/msg/String",
+                    T["std_msgs/msg/String"](data=val), {"data": val})
+
     out.sort(key=lambda r: r[0])
     return out
 
 
 def write_bag(path, duration_s: float = 35.0, *, seed: int = 0, unindexed: bool = False,
-              chunk_size: int = 64 * 1024, late_message: bool = False) -> Dict:
+              chunk_size: int = 64 * 1024, late_message: bool = False,
+              compression: str = "none", edge_messages: bool = False) -> Dict:
     """Write a synthetic rosbag2-style MCAP at ``path``; return what was written.
 
+    ``compression``: "none" (rosbag2's default; the browser reader refuses
+    compressed chunks) or "zstd"/"lz4" for the refusal test. ``edge_messages``:
+    opt-in equal-timestamp pairs on slot edges (the MCAP oracle test).
     ``unindexed``: the file stops before the footer/summary (a killed recording)
     and one /orchestrator_state message is written 0.3 s late in file order.
     ``late_message``: one /orchestrator_state message is written > 20 s late in
@@ -237,7 +260,7 @@ def write_bag(path, duration_s: float = 35.0, *, seed: int = 0, unindexed: bool 
     if late_message:
         unindexed = True
     ts = make_typestore()
-    msgs = _build_messages(ts, duration_s, seed)
+    msgs = _build_messages(ts, duration_s, seed, edge_messages)
 
     order = list(range(len(msgs)))
     moved = None
@@ -256,7 +279,7 @@ def write_bag(path, duration_s: float = 35.0, *, seed: int = 0, unindexed: bool 
         moved = victim
 
     buf = io.BytesIO()
-    w = Writer(buf, chunk_size=chunk_size)
+    w = Writer(buf, chunk_size=chunk_size, compression=CompressionType[compression.upper()])
     w.start(profile="ros2", library="jugglebot-test-fixture")
     schema_ids, channel_ids = {}, {}
     written_flags = []
@@ -311,6 +334,7 @@ def write_bag(path, duration_s: float = 35.0, *, seed: int = 0, unindexed: bool 
         "reordered": (msgs[moved][0], msgs[moved][1]) if (moved is not None and not late_message) else None,
         "late": (msgs[moved][0], msgs[moved][1]) if late_message else None,
         "n_messages": len(in_file),
+        "types": {msgs[k][1]: msgs[k][2] for k in in_file},
     }
     _write_metadata(path, info)
     return info
@@ -328,5 +352,15 @@ def _write_metadata(path: Path, info: Dict) -> None:
         "  starting_time:\n"
         "    nanoseconds_since_epoch: %d\n"
         "  message_count: %d\n"
+        "  topics_with_message_count:\n"
     ) % (path.name, info["t1_ns"] - info["t0_ns"], info["t0_ns"], info["n_messages"])
+    for topic in sorted(info["topics"]):
+        text += (
+            "    - topic_metadata:\n"
+            "        name: %s\n"
+            "        type: %s\n"
+            "        serialization_format: cdr\n"
+            "        offered_qos_profiles: ''\n"
+            "      message_count: %d\n"
+        ) % (topic, info["types"][topic], len(info["topics"][topic]))
     (path.parent / "metadata.yaml").write_text(text)

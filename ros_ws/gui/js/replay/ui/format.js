@@ -11,12 +11,17 @@ export const KEY_TOPICS = [
     { label: 'bb state', topic: '/bb/heartbeat' },
 ];
 
-/** Human messages for every enterReplay / list rejection reason. */
+/** Human messages for every enterReplay / list rejection reason (McapSource `.reason` vocabulary + mode). */
 const REFUSALS = {
     recording_in_progress: 'This recording is still being written; open it once the recording has stopped.',
-    disk_low: 'Not enough free disk space to convert this recording. Free some space or shrink the replay cache.',
-    worker_unavailable: 'The replay converter is not running, so this recording cannot be opened.',
-    busy: 'The converter is busy with another recording. Try again in a moment.',
+    in_progress: 'This recording is still being written; open it once the recording has stopped.',
+    no_index: 'This recording has no index (the recorder was killed before closing it), so it cannot be opened.',
+    compressed: 'This recording uses compressed chunks, which the replay reader does not support.',
+    changed: 'The recording changed on disk while it was being read. Close and reopen it.',
+    http: 'The recording could not be read from the server. Check the connection and try again.',
+    empty: 'This recording contains no replayable messages.',
+    decode: 'This recording could not be decoded.',
+    range: 'The server could not serve that part of the recording.',
     ros_running: 'Replay is unavailable while the robot stack is running.',
     'no session buffer': 'There is no live session in this page\'s memory to replay.',
     connected: 'Connected to the robot. Disconnect first; replay is only available while disconnected.',
@@ -85,13 +90,12 @@ function topicSet(topics) {
 /**
  * Build the picker rows.
  * @param {object|null} listing  GET /api/replay/recordings body (or null)
- * @param {{[id:string]:{topics?:object, pct?:number}}} extras per-id enrichment (manifest topics, status pct)
  * @param {{has:boolean, seconds:number}|null} session  the in-memory session buffer
  * @param {string} filter text over date + id + topic names
- * @returns {object[]} rows: {key, kind, id, when, name, duration, size, topicCount, chips, cache, pct,
- *   selectable, first, haystack}
+ * @returns {object[]} rows: {key, kind, id, when, name, duration, size, topicCount, chips, state,
+ *   selectable, first, haystack}; `state` is 'memory' | 'ready' | 'noindex' | 'inprogress'
  */
-export function buildRows(listing, extras, session, filter) {
+export function buildRows(listing, session, filter) {
     const rows = [];
     const recs = ((listing && listing.recordings) || []).slice();
     recs.sort((a, b) => rowStart(b) - rowStart(a));
@@ -100,26 +104,22 @@ export function buildRows(listing, extras, session, filter) {
             key: 'session', kind: 'session', id: null, first: true, selectable: true,
             when: 'Last live session (in memory, ' + fmtDuration(session.seconds) + ' of data)',
             name: '', duration: fmtDuration(session.seconds), size: '', topicCount: null,
-            chips: [], cache: 'memory', pct: null, haystack: 'last live session in memory',
+            chips: [], state: 'memory', haystack: 'last live session in memory',
         });
     }
     for (const r of recs) {
-        const ex = (extras && extras[r.id]) || {};
-        const topics = topicSet(ex.topics || r.topics);
+        const topics = topicSet(r.topics);
         const chips = KEY_TOPICS.map((k) => ({ label: k.label, missing: topics ? !topics.has(k.topic) : false, known: !!topics }));
-        let cache = r.cache || 'none';
-        let pct = null;
-        if (r.in_progress) cache = 'in_progress';
-        else if (cache === 'converting' && typeof ex.pct === 'number') pct = Math.max(0, Math.min(100, Math.round(ex.pct)));
+        const state = r.in_progress ? 'inprogress' : (r.indexed === false ? 'noindex' : 'ready');
         const noIndex = r.duration_s === null || r.duration_s === undefined;
         const when = (startOk(r) ? fmtDateTime(rowStart(r)) : (dateFromId(r.id) || r.id));
         rows.push({
-            key: r.id, kind: 'recording', id: r.id, first: false, selectable: !r.in_progress,
+            key: r.id, kind: 'recording', id: r.id, first: false, selectable: state === 'ready',
             when, name: r.id,
             duration: noIndex ? null : fmtDuration(r.duration_s), noIndex,
             size: fmtSize(r.size_bytes),
             topicCount: topics ? topics.size : null,
-            chips, cache, pct,
+            chips, state,
             haystack: (when + ' ' + r.id + ' ' + (topics ? Array.from(topics).join(' ') : '')).toLowerCase(),
         });
     }
@@ -131,16 +131,13 @@ function startOk(r) {
     return nsOk(r) || typeof r.mtime === 'number';
 }
 
-/** Cache cell text + css modifier for a row. */
-export function cacheCell(row, opening) {
+/** Status cell text + css modifier for a row (no conversion/cache states exist: a recording is read in place). */
+export function stateCell(row, opening) {
     if (opening) return { text: 'opening…', cls: 'conv' };
-    switch (row.cache) {
+    switch (row.state) {
         case 'memory': return { text: 'in memory', cls: 'complete' };
-        case 'complete': return { text: 'cached', cls: 'complete' };
-        case 'stale': return { text: 'stale — will reconvert', cls: 'warn' };
-        case 'converting': return { text: row.pct === null ? 'converting' : 'converting ' + row.pct + ' %', cls: 'conv' };
-        case 'in_progress': return { text: 'recording in progress', cls: 'refuse' };
-        case 'failed': return { text: 'conversion failed', cls: 'refuse' };
-        default: return row.noIndex ? { text: 'duration unknown, no index', cls: 'warn' } : { text: 'not converted', cls: 'none' };
+        case 'inprogress': return { text: 'recording in progress', cls: 'refuse' };
+        case 'noindex': return { text: 'no index', cls: 'warn' };
+        default: return { text: 'ready', cls: 'none' };
     }
 }

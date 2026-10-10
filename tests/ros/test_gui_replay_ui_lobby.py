@@ -81,13 +81,16 @@ def test_empty_bag_sentinel_start_ns_sorts_by_mtime_and_renders_a_sane_date(out)
 
 
 def test_picker_double_open_probe_and_reopen(out):
-    """Audit N3: double-open registers one keydown handler; a probe during the list load does not orphan it;
-    re-opening does not refetch manifests for rows already enriched."""
+    """Audit N3: double-open registers one keydown handler; a probe during the list load does not orphan it."""
     d = out["double_open"]
     assert d["first"] == d["second"] == 1 and d["after_close"] == 0
     assert out["probe_during_load"]["rows"] >= 5 and out["probe_during_load"]["loading"] is False
-    assert out["close_aborts"] is True
-    assert out["reopen_manifest_fetches"] < 3   # complete/stale rows are skipped; only 'converting' is refreshed
+
+
+def test_listing_is_the_only_fetch(out):
+    """Phase 4: the listing row carries topics/duration/indexed, so the picker never fetches /manifest or /status
+    per row (replaces the enrichment tests: close_aborts, reopen_manifest_fetches)."""
+    assert out["non_listing_fetches"] == 0
 
 
 def test_session_button_and_row_need_buffer_data(out):
@@ -100,14 +103,15 @@ def test_session_button_and_row_need_buffer_data(out):
 
 
 def test_list_newest_first_and_row_states(out):
-    assert out["rows_keys"] == ["session", "r_live", "r_complete", "r_conv", "r_noindex", "r_empty", "r_stale"]
+    assert out["rows_keys"] == ["session", "r_live", "r_complete", "r_rich", "r_noindex", "r_empty", "r_old"]
     s = out["states"]
     assert re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", s["r_complete"]["when"])
-    assert s["r_complete"]["cell"] == "cached" and s["r_complete"]["dur"] == "01:40"
-    assert s["r_conv"]["cell"] == "converting 62 %"
-    assert s["r_noindex"]["cell"] == "duration unknown, no index" and s["r_noindex"]["dur"] == "?"
-    assert s["r_stale"]["cell"].startswith("stale")
+    assert s["r_complete"]["cell"] == "ready" and s["r_complete"]["dur"] == "01:40"
+    assert s["r_rich"]["cell"] == "ready" and s["r_old"]["cell"] == "ready"      # no cached/converting/stale states exist
+    assert s["r_noindex"]["cell"] == "no index" and s["r_noindex"]["dur"] == "?"
+    assert s["r_noindex"]["refused"] is True                                      # dimmed: a killed recording cannot be opened
     assert s["r_live"]["cell"] == "recording in progress" and s["r_live"]["refused"] is True
+    assert s["r_complete"]["refused"] is False
     assert out["sessions_cell"] == "in memory"
     assert out["banner_hidden_ok"] is True
 
@@ -115,20 +119,22 @@ def test_list_newest_first_and_row_states(out):
 def test_missing_key_topics_are_struck_chips(out):
     s = out["states"]
     assert s["r_complete"]["chips"] == [["robot_state", False], ["balls", True], ["cone catch", True], ["bb state", True]]
-    assert s["r_conv"]["chips"] == [["robot_state", False], ["balls", False], ["cone catch", False], ["bb state", False]]
+    assert s["r_rich"]["chips"] == [["robot_state", False], ["balls", False], ["cone catch", False], ["bb state", False]]
     assert s["r_complete"]["topics"] == "2 topics"          # balls has count 0 -> not a recorded topic
-    assert s["r_noindex"]["topics"] == "—"             # unconverted rows have no manifest yet
+    assert s["r_noindex"]["topics"] == "—"             # topics: null (no metadata.yaml counts) -> unknown, no struck chips
+    assert all(not m for _, m in s["r_noindex"]["chips"])
 
 
 def test_filter_narrows(out):
-    assert out["filter_stale"] == ["session", "r_stale"]    # the session row is pinned
-    # topic filter matches manifest topics: the never-converted rows (no manifest) drop out
-    assert out["filter_topic"] == ["session", "r_complete", "r_conv", "r_stale"]
+    assert out["filter_stale"] == ["session", "r_old"]    # the session row is pinned
+    # topic filter matches the listing's topics: rows with topics null drop out
+    assert out["filter_topic"] == ["session", "r_live", "r_complete", "r_rich", "r_old"]
     assert out["filter_none"] == ["session"]
 
 
 def test_choose_calls_enter_replay_and_closes(out):
     assert out["choose_live"] is False and out["calls_after_live"] == 0
+    assert out["choose_noindex"] is False and out["calls_after_noindex"] == 0      # no-index rows are not selectable
     assert out["opening_cell"] == "opening…"
     assert out["calls"] == [{"kind": "recording", "id": "r_complete"}]
     assert out["chose"] is True and out["open_after_success"] is False
@@ -137,9 +143,11 @@ def test_choose_calls_enter_replay_and_closes(out):
 
 @pytest.mark.parametrize("reason,fragment", [
     ("recording_in_progress", "still being written"),
-    ("disk_low", "free disk space"),
-    ("worker_unavailable", "converter is not running"),
-    ("busy", "busy"),
+    ("in_progress", "still being written"),
+    ("no_index", "no index"),
+    ("compressed", "compressed chunks"),
+    ("changed", "changed on disk"),
+    ("http", "could not be read"),
     ("no session buffer", "no live session"),
     ("connected", "Connected to the robot"),
 ])
@@ -153,13 +161,23 @@ def test_close_gestures(out):
     assert out["esc_closed"] is True and out["backdrop_closed"] is True and out["inner_click_keeps"] is True
 
 
-def test_backend_unavailable_banner_and_retry(out):
+def test_unreachable_listing_banner_and_retry(out):
     b = out["backend_down"]
-    assert b["banner_visible"] and b["has_retry"] and "unavailable" in b["text"]
+    assert b["banner_visible"] and b["has_retry"] and "unreachable" in b["text"] and b["cls"].endswith("err")
     assert b["open_disabled"] is True and b["backend_banner_hidden"] is False
     assert out["backend_back"] == {"banner_hidden": True, "open_disabled": False}
-    u = out["list_unreachable"]
-    assert u["banner_visible"] and "unreachable" in u["text"]
+
+
+def test_missing_overview_worker_is_only_a_note(out):
+    """Phase 4: opening never needs the venv worker; overview_available=false is an amber note, not a blocker."""
+    n = out["overview_note"]
+    assert n["banner_visible"] and "overview unavailable" in n["text"].lower() and n["cls"].endswith("warn")
+    assert n["has_retry"] is False and n["open_disabled"] is False and n["rows_selectable"] >= 3
+    assert n["lobby_note_hidden"] is False and n["lobby_cls"].endswith("warn") and "overview unavailable" in n["lobby_note"].lower()
+
+
+def test_header_says_opening_until_slot_zero_is_resident(out):
+    assert out["header_opening"] == "REPLAY  opening…"
 
 
 def test_header_status_and_toast(out):

@@ -107,8 +107,6 @@
 .rp-zoomtag { margin-left: auto; color: var(--text-muted); font-size: var(--font-size-xs); font-family: var(--font-mono); }
 .rp-bar { position: relative; height: 14px; background: var(--bg-primary); border: 1px solid var(--border-color);
     border-radius: 3px; cursor: pointer; }
-.rp-conv { position: absolute; left: 0; top: 0; bottom: 0; width: 0; background: rgba(59,130,246,.35); }
-.rp-front { position: absolute; top: 0; bottom: 0; width: 0; border-left: 2px dashed var(--accent-blue); }
 .rp-playhead { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--replay-playhead); }
 .rp-ov { position: relative; height: 12px; margin-top: 3px; cursor: crosshair; background: var(--bg-primary);
     border-radius: 2px; overflow: hidden; }
@@ -119,7 +117,7 @@
 .rp-ctl { display: flex; gap: 5px; align-items: center; margin: 6px 0 2px; flex-wrap: wrap; }
 .rp-btn { padding: 3px 10px; font-family: var(--font-mono); }
 .rp-keys { margin-left: auto; color: var(--text-muted); font-size: var(--font-size-xs); }
-.rp-sel[hidden], .rp-front[hidden], .rp-buffering[hidden] { display: none !important; }
+.rp-sel[hidden], .rp-buffering[hidden] { display: none !important; }
 
 /* ---- unit 3: "not in this recording" + command fence ---- */
 .replay-absent { opacity: 0.35; filter: grayscale(1); }

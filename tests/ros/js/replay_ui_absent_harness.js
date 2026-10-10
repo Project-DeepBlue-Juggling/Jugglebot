@@ -28,9 +28,9 @@ active = true; source = rec('complete', ['/robot_state', '/orchestrator_state', 
 emit(); out.complete = dimmed(); out.bbTitle = els['#panel-bb'].title; out.flagsTitle = els['#panel-flags'].title;
 // 2. exit clears and restores titles
 active = false; emit(); out.afterExit = dimmed(); out.bbTitleAfter = els['#panel-bb'].title;
-// 3. converting recording: not judged
+// 3. a source that is not complete is not judged (guard; McapSource itself is complete from `opened`)
 active = true; source = rec('converting', ['/robot_state']); emit(); out.converting = dimmed();
-// 4. conversion completes -> source.onChange re-evaluates
+// 4. it completes -> source.onChange re-evaluates
 source.status = () => ({ state: 'complete' }); srcListeners.forEach((f) => f()); out.completedLater = dimmed().length;
 // 5. re-open a different source clears the old marks
 source = rec('complete', ABSENT_TABLE.flatMap((r) => r.topics)); emit(); out.allPresent = dimmed();

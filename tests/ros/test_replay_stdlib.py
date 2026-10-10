@@ -2,8 +2,8 @@
 
 The systemd unit (tools/systemd/jugglebot-gui.service) runs gui_server.py under
 /usr/bin/python3 without the project venv, so a stray numpy/msgpack/mcap/yaml
-import in the server side would crash the GUI at boot. Only the converter
-subprocess (replay.convert) may use third-party packages.
+import in the server side would crash the GUI at boot. Only the overview
+worker (replay.overview, replay.decode) may use third-party packages.
 """
 from __future__ import annotations
 
@@ -15,13 +15,13 @@ import sys
 REPO = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 GUI = os.path.join(REPO, "ros_ws", "gui")
 FILES = [os.path.join(GUI, "gui_server.py")] + [
-    os.path.join(GUI, "replay", n) for n in ("schema.py", "cache.py", "api.py")]
+    os.path.join(GUI, "replay", n) for n in ("schema.py", "recordings.py", "api.py")]
 
 CODE = """
 import sys
 sys.path.insert(0, {gui!r})
 import gui_server
-import replay.schema, replay.cache, replay.api
+import replay.schema, replay.recordings, replay.api
 bad = [m for m in ("numpy", "msgpack", "mcap", "rosbags", "yaml") if m in sys.modules]
 if bad:
     sys.stderr.write("third-party modules loaded: %s\\n" % bad)
@@ -30,7 +30,7 @@ if bad:
 
 ALLOW = {"argparse", "functools", "gzip", "http", "json", "os", "re", "shutil",
          "subprocess", "sys", "threading", "time", "typing", "urllib", "datetime",
-         "glob", "errno", "io", "pathlib", "collections", "__future__",
+         "glob", "struct", "errno", "io", "pathlib", "collections", "__future__",
          "replay", "gui_server", "socketserver", "signal", "logging", "tempfile"}
 
 

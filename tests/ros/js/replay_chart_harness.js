@@ -1,15 +1,10 @@
 // Node harness for ros_ws/gui/js/replay/chart-store.js + the replay branches of telemetry-charts.js.
-// Usage: node replay_chart_harness.js <cacheDir> <sandboxDir>   (prints one JSON object)
+// Usage: node replay_chart_harness.js <chunkJsonDir>   (prints one JSON object)
 // Run by tests/ros/test_gui_replay_chart.py inside a sandbox holding VERBATIM copies of
 // telemetry-charts.js, clock.js, event-store.js, geometry-config.js, replay/{chunk,chart-store}.js,
 // stub stewart-model.js / ball-butler-model.js, and a {"type":"module"} package.json.
 import fs from 'fs';
 import path from 'path';
-import zlib from 'zlib';
-import { createRequire } from 'module';
-
-const require = createRequire(import.meta.url);
-globalThis.MessagePack = require('./msgpack.min.cjs');
 
 // ---- minimal DOM / uPlot fakes (enough for initTelemetryCharts to build 9 charts) ----
 function fakeEl(name) {
@@ -65,10 +60,11 @@ globalThis.uPlot.fmtDate = () => () => ''; globalThis.uPlot.tzDate = () => 0;
 
 const tc = await import('./telemetry-charts.js');
 const { createReplayChartStore, SIGNAL_KEYS } = await import('./replay/chart-store.js');
-const { decodeChunk, makeTopic } = await import('./replay/chunk.js');
+const { chunkFromRecord, makeTopic } = await import('./replay/chunk.js');
+const { loadRecords } = await import('./replay_test_support.js');
 
 const cacheDir = process.argv[2];
-const manifest = JSON.parse(fs.readFileSync(path.join(cacheDir, 'manifest.json'), 'utf8'));
+const { manifest, records } = loadRecords(cacheDir);
 const out = {};
 
 tc.initTelemetryCharts();
@@ -77,10 +73,7 @@ out.n_charts = liveCharts().length;
 
 // ---- chunks + a synthetic /leg_setpoint_echo topic (the fixture bag has none) ----
 const chunks = [];
-for (let i = 0; i < manifest.chunks.length; i++) {
-  const name = 'chunk-' + String(i).padStart(5, '0') + '.msgpack.gz';
-  chunks.push(decodeChunk(new Uint8Array(zlib.gunzipSync(fs.readFileSync(path.join(cacheDir, name))))));
-}
+for (const rec of records) chunks.push(chunkFromRecord(rec));
 const T0 = manifest.t0;
 const GAP = [T0 + 12.0, T0 + 13.3];
 const echoRows = [];

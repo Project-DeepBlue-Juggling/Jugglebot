@@ -1,29 +1,21 @@
-// Node harness for ros_ws/gui/js/replay/{chunk,sources}.js.
-// Usage: node replay_feed_harness.js <cacheDir> <sandboxDir>   (prints one JSON object)
-// Run by tests/ros/test_gui_replay_feed.py inside a sandbox holding verbatim copies of
-// chunk.js, sources.js, msgpack.min.js (as msgpack.min.cjs) and a {"type":"module"} package.json.
+// Node harness for ros_ws/gui/js/replay/{chunk,sources}.js (chunk shape, session buffer, and the
+// McapSource-vs-session agreement check). The McapSource contract itself is replay_mcap_source_harness.js.
+// Usage: node replay_feed_harness.js <chunkJsonDir> <sandboxDir>   (prints one JSON object)
+// Run by tests/ros/test_gui_replay_feed.py inside a sandbox holding verbatim copies of chunk.js,
+// sources.js, slot.js, replay_test_support.js and a {"type":"module"} package.json. The chunk JSON is the
+// Python oracle's output (tests/ros/_replay_chunks.py).
 import fs from 'fs';
 import path from 'path';
-import zlib from 'zlib';
-import { createRequire } from 'module';
 
-const require = createRequire(import.meta.url);
-globalThis.MessagePack = require('./msgpack.min.cjs');
-
-const { decodeChunk, flattenMessage, indexLatestBefore, makeHydrator } = await import('./chunk.js');
-const { RecordingSource, SessionBufferSource, createSessionBuffer, SESSION_BUFFER_SEC } = await import('./sources.js');
+const { chunkFromRecord, flattenMessage, indexLatestBefore, makeHydrator } = await import('./chunk.js');
+const { McapSource, SessionBufferSource, createSessionBuffer, SESSION_BUFFER_SEC } = await import('./sources.js');
+const { loadRecords, revive, fakeWorkerFactory } = await import('./replay_test_support.js');
 
 const cacheDir = process.argv[2];
 const sandbox = process.argv[3];
-const manifest = JSON.parse(fs.readFileSync(path.join(cacheDir, 'manifest.json'), 'utf8'));
-const overview = JSON.parse(fs.readFileSync(path.join(cacheDir, 'overview.json'), 'utf8'));
-const N = manifest.chunks.length;
+const { manifest, records } = loadRecords(cacheDir);
+const N = records.length;
 const out = {};
-
-function chunkBytes(i) {
-  const name = 'chunk-' + String(i).padStart(5, '0') + '.msgpack.gz';
-  return new Uint8Array(zlib.gunzipSync(fs.readFileSync(path.join(cacheDir, name))));
-}
 
 // ---- (1)(2)(3) decode / hydrate / flatten round-trip / index edges --------
 const WANT = ['/robot_state', '/mocap_data', '/orchestrator_state', '/skills/attempt'];
@@ -31,7 +23,7 @@ const hydrated = {};
 const rt = { rows: 0, mismatches: 0 };
 const idx = { before: null, exact: null, between: null, after: null, last_k: null };
 for (let i = 0; i < N; i++) {
-  const ch = decodeChunk(chunkBytes(i));
+  const ch = chunkFromRecord(records[i]);
   for (const name of WANT) {
     const tp = ch.topics[name];
     if (!tp) continue;
@@ -62,9 +54,9 @@ out.index = idx;
 
 // ---- non-finite rule ------------------------------------------------------
 {
-  const f = path.join(sandbox, 'nan_chunk.msgpack');
+  const f = path.join(sandbox, 'nan_chunk.json');
   if (fs.existsSync(f)) {
-    const ch = decodeChunk(new Uint8Array(fs.readFileSync(f)));
+    const ch = chunkFromRecord(revive(JSON.parse(fs.readFileSync(f, 'utf8'))));
     const tp = ch.topics['/nan'];
     out.nan = [0, 1].map((k) => tp.hydrate(k));
     out.nan_cols_untouched = Number.isNaN(tp.cols['x'][0]);
@@ -72,140 +64,6 @@ out.index = idx;
   const h = makeHydrator(['a.b', 'a.c', 'z']);
   out.hydrator = h({ 'a.b': [1], 'a.c': [[1, 2]], z: [undefined] }, 0);
   out.flatten_typed = flattenMessage({ a: { b: new Float32Array([1, 2]) }, l: [{ x: 1 }], n: null });
-}
-
-// ---- fake server over the cache dir ---------------------------------------
-let done = 1;
-const log = [];
-function resp(status, body) {
-  return {
-    ok: status >= 200 && status < 300, status,
-    json: async () => body,
-    arrayBuffer: async () => body.buffer.slice(body.byteOffset, body.byteOffset + body.byteLength),
-  };
-}
-async function fakeFetch(url, init) {
-  log.push((init && init.method || 'GET') + ' ' + url);
-  const m = /\/recordings\/([^/]+)\/(.*)$/.exec(url);
-  const [id, rest] = [m[1], m[2]];
-  if (id === 'busy') return resp(409, { status: 'refused', reason: 'recording_in_progress' });
-  const complete = done >= N;
-  if (rest === 'open') return resp(200, { status: complete ? 'complete' : 'converting' });
-  if (rest === 'status') {
-    return resp(200, { status: complete ? 'complete' : 'converting', chunks_done: done,
-      chunks_total: N, t0: manifest.t0, t1: complete ? manifest.t1 : null, error: null });
-  }
-  if (rest === 'manifest') {
-    const mm = JSON.parse(JSON.stringify(manifest));
-    if (!complete) { mm.status = 'converting'; mm.chunks = []; mm.t1 = null; mm.chunks_done = done; }
-    return resp(200, mm);
-  }
-  if (rest === 'overview') return complete ? resp(200, overview) : resp(404, { error: 'no overview' });
-  const c = /^chunks\/(\d+)$/.exec(rest);
-  if (c) {
-    const i = Number(c[1]);
-    return i < done ? resp(200, chunkBytes(i)) : resp(404, {});
-  }
-  return resp(404, {});
-}
-const mk = (extra) => RecordingSource(Object.assign({ id: 'rec', fetch: fakeFetch, pollMs: 0 }, extra || {}));
-const T0 = manifest.t0;
-
-// ---- (4) RecordingSource ---------------------------------------------------
-{
-  const r = {};
-  done = 1;
-  const src = mk();
-  const events = [];
-  src.onChange((s) => events.push(s.state + ':' + s.chunksDone));
-  await src.open();
-  r.open_status = src.status();
-  r.range_after_open = src.range();
-  r.t0 = T0;
-  let rejected = null;
-  try { await src.load(1); } catch (e) { rejected = e.constructor.name; }
-  r.load_beyond_frontier = rejected;
-  done = 3;
-  await src.poll();
-  r.range_after_poll3 = src.range();
-  r.status_after_poll3 = src.status();
-  done = 4; // all chunks sealed; status flips to complete on the next poll
-  await src.poll();
-  r.status_final = src.status();
-  r.range_final = src.range();
-  r.events = events;
-  r.manifest_chunks = (src.manifest().chunks || []).length;
-
-  const w = await src.window(T0 + 5, T0 + 15, ['/robot_state']);
-  r.window = w.map((c) => ({ i: c.i, topics: Object.keys(c.topics), n: c.topics['/robot_state'].n }));
-  r.window_n_total = w.reduce((a, c) => a + c.topics['/robot_state'].n, 0);
-  const tl = await src.timeline();
-  r.timeline_is_overview = JSON.stringify(tl) === JSON.stringify(overview);
-
-  r.lb = {};
-  const queries = [
-    ['/robot_state', 0.0001], ['/robot_state', 9.9999], ['/robot_state', 10.0], ['/robot_state', 34.5],
-    ['/orchestrator_state', 10.0], ['/skills/attempt', 34.9], ['/cone/catch_event', 34.9],
-    ['/skills/attempt', 3.0], ['/robot_state', -5],
-  ];
-  for (const [topic, off] of queries) {
-    const hit = await src.latestBefore(T0 + off, topic);
-    (r.lb[topic] = r.lb[topic] || []).push({ off, t: hit ? hit.t : null, keys: hit ? Object.keys(hit.msg).slice(0, 3) : null });
-  }
-  src.close();
-
-  // converting-mode scan-back (frontier chunk 3, last /skills/attempt in chunk 2)
-  done = 4;
-  const conv = (extra) => RecordingSource(Object.assign({ id: 'rec', pollMs: 0, fetch: async (u, i) => {
-    const res = await fakeFetch(u, i);
-    if (/\/(status|manifest)$/.test(u)) { // present a still-converting recording
-      const b = await res.json();
-      b.status = 'converting'; b.chunks = []; b.t1 = null;
-      return resp(200, b);
-    }
-    return res;
-  } }, extra || {}));
-  const s2 = conv();
-  await s2.open();
-  const h2 = await s2.latestBefore(T0 + 34.9, '/skills/attempt');
-  r.scan_default = h2 ? h2.t : null;
-  r.scan_state = s2.status().state;
-  s2.close();
-  const s3 = conv({ scanBackChunks: 1 });
-  await s3.open();
-  const h3 = await s3.latestBefore(T0 + 34.9, '/skills/attempt');
-  r.scan_limit1 = h3 ? h3.t : null;
-  const h3b = await s3.latestBefore(T0 + 34.9, '/robot_state');
-  r.scan_limit1_present = h3b ? h3b.t : null;
-  s3.close();
-
-  // manifest-driven lookup needs no scan-back: complete + scanBackChunks 1 still finds chunk 2
-  const s4 = mk({ scanBackChunks: 1 });
-  await s4.open();
-  const h4 = await s4.latestBefore(T0 + 34.9, '/skills/attempt');
-  r.manifest_lookup = h4 ? h4.t : null;
-  s4.close();
-
-  // polling timer: injected timers, stops at complete and on close()
-  const ticks = { set: 0, cleared: 0, fn: null };
-  const timers = { setInterval: (fn, ms) => { ticks.set++; ticks.ms = ms; ticks.fn = fn; return 7; },
-                   clearInterval: (id) => { if (id === 7) ticks.cleared++; } };
-  done = 1;
-  const s5 = RecordingSource({ id: 'rec', fetch: fakeFetch, timers });
-  await s5.open();
-  r.timer_ms = ticks.ms;
-  done = 4;
-  await s5.poll();
-  r.timer_cleared_at_complete = ticks.cleared;
-  s5.close();
-
-  // 409 refusal
-  let refusal = null;
-  try { await RecordingSource({ id: 'busy', fetch: fakeFetch, pollMs: 0 }).open(); }
-  catch (e) { refusal = { reason: e.reason, status: e.status }; }
-  r.refusal = refusal;
-  r.posted_open = log.filter((l) => l.startsWith('POST ')).length >= 1;
-  out.recording = r;
 }
 
 // ---- (5) SessionBufferSource -----------------------------------------------
@@ -256,8 +114,9 @@ const T0 = manifest.t0;
 // ---- (5b) session vs recording on the same data -------------------------------
 {
   const r = {};
-  done = N;
-  const rec = mk();
+  const T0 = manifest.t0;
+  const rec = McapSource({ id: 'rec', fetch: async () => ({ status: 503, json: async () => ({}) }),
+    makeWorker: fakeWorkerFactory(manifest, records), overviewPollMs: 0, fileUrl: 'x' });
   await rec.open();
   const ses = SessionBufferSource({ horizonSec: 600 });
   const all = [];

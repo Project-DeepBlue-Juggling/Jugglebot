@@ -42,7 +42,7 @@ def test_exit_clears_classes_and_restores_titles(out):
     assert out["bbTitleAfter"] == "orig bb"
 
 
-def test_converting_recording_is_not_judged(out):
+def test_incomplete_source_is_not_judged(out):
     assert out["converting"] == []
 
 

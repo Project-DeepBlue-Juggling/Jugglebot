@@ -51,7 +51,7 @@ def out(tmp_path_factory):
     (sb / "replay").mkdir()
     for name in ("clock.js", "event-store.js", "ros-bridge.js"):
         shutil.copy(JS / name, sb / name)
-    for name in ("chunk.js", "sources.js", "session.js", "policy.js", "engine.js", "cache.js", "fence.js", "mode.js"):
+    for name in ("chunk.js", "sources.js", "slot.js", "session.js", "policy.js", "engine.js", "cache.js", "fence.js", "mode.js"):
         shutil.copy(JS / "replay" / name, sb / "replay" / name)
     shutil.copy(HARNESS, sb / "replay_mode_harness.js")
     (sb / "package.json").write_text('{"type": "module"}\n')
@@ -158,3 +158,24 @@ def test_reconnect_loop_edges_never_reach_listeners_during_replay(out):
     assert c["listener_states"] == ["connected"] and c["blanks"] == 1 and c["mode"] == "LIVE"
     assert f["exit_blanks"] == 1                  # exit runs the blanking itself, once
     assert f["after_exit_states"] == ["connecting", "disconnected"] and f["mode_after"] == "LOBBY"
+
+
+def test_recording_entry_holds_in_opening_until_slot_0_is_resident(out):
+    """Phase 4 design § 4: REPLAY is not entered (and no entry step runs) before the opening slot is resident;
+    once it is, the entry completes paused. Root cause guarded: entering with an unloaded source made the
+    first seek wait inside REPLAY with the fence up and the live panels already blanked."""
+    h = out["hold_slot0"]
+    assert h["held"]["state"] == "OPENING"
+    assert h["held"]["order"] == [] and h["held"]["isReplay"] is False
+    assert h["held"]["loads"] == [[h["first_load_index"], False]]
+    assert h["after"]["state"] == "REPLAY" and h["after"]["sub"] == "paused"
+    assert h["after"]["snapshot_at"] is True and h["after"]["isReplay"] is True
+
+
+def test_recording_entry_slot_0_load_failure_leaves_lobby_untouched(out):
+    """A slot-0 load that rejects aborts the entry with the load's reason: still LOBBY, no entry step ran,
+    the clock never went to replay, and the half-opened source was closed."""
+    f = out["hold_slot0_fail"]
+    assert f["reason"] == "decode" and f["state"] == "LOBBY"
+    assert f["order"] == [] and f["isReplay"] is False
+    assert f["closed"] >= 1

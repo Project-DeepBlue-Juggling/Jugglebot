@@ -6,9 +6,10 @@ owner: Harrison
 last_updated: 2026-10-10
 related_plan: two-ball-skill-stack.md
 related_code:
-  - ros_ws/gui/replay/schema.py (the cache contract: layout, chunk record, manifest, overview, allowlist)
-  - ros_ws/gui/replay/convert.py (the venv worker)
-  - ros_ws/gui/replay/api.py + cache.py (stdlib routes under gui_server.py)
+  - ros_ws/gui/replay/schema.py (the contract: chunk record, flatten rule, slot math, overview, allowlist)
+  - ros_ws/gui/replay/{recordings,api}.py (stdlib routes under gui_server.py), decode.py + overview.py (venv overview pass), convert.py (test oracle)
+  - ros_ws/gui/js/replay/{mcap-decode,mcap-worker,slot,allowlist}.js + sources.js McapSource
+  - tools/gui_vendor/ (vendored MCAP bundle build)
   - ros_ws/gui/gui_server.py
   - tools/systemd/jugglebot-gui.service
 ---
@@ -27,8 +28,8 @@ the `Jugglebot-skills` worktree). Ticket 00 holds the 21 charting decisions,
 ticket 01 the decode / payload measurements, ticket 05 the backend decisions.
 Ticket 02 (engine and feed contract) was resolved 2026-10-10 and is Phase 2
 below. Ticket 03 (replay UI) was resolved 2026-10-10 and is Phase 3 below;
-**ticket 04 (3D trails prototype) is still open**: Phase 4 is an outline that
-its resolution will turn into a detailed phase.
+Ticket 06 (direct MCAP) is Phase 4 below; **ticket 04 (3D trails prototype) is
+still open**: Phase 5 is an outline that its resolution will turn into a detailed phase.
 
 ## Context
 
@@ -52,65 +53,46 @@ its resolution will turn into a detailed phase.
 
 ## Architecture
 
-Backend decisions (ticket 05, 2026-10-10; round 1 owner-confirmed, round 2
-delegated to Claude's judgment):
+Backend decisions (ticket 05, 2026-10-10; items 2, 4, 5, 6 and 9 revised by ticket 06 / Phase 4):
 
-1. **Decoder: `rosbags` typestore** (`get_typestore(Stores.ROS2_FOXY)`, types
-   registered from the embedded `ros2msg` schemas, `deserialize_cdr`). The
-   reader stays `mcap` (`SeekingReader` for indexed bags, `NonSeekingReader`
-   for unindexed). `tools/probes/` keeps `mcap_ros2`; no shared code.
-2. **Convert once, serve files.** First open streams the bag once, in the
-   background, into `temp/replay_cache/<id>/`: `manifest.json`,
-   `overview.json` and fixed **10 s** chunks `chunk-NNNNN.msgpack.gz`, every
-   allow-listed topic columnar (flattened field paths) in one file, stored
-   gzipped and served with `Content-Encoding: gzip`, so a seek costs zero
-   decode CPU. The converter holds one chunk plus a one-chunk reorder buffer,
-   so memory is bounded by a chunk, not the window. `format` in the manifest
-   invalidates every cache when the chunk schema changes (enforced at `open`: a complete cache with an older format is discarded and reconverted; listed as `stale`).
-3. **Allowlist = the GUI's subscribe set** plus the two topics the plan adds
-   (`/balls`, `/cone/catch_event`), pinned by a contract test against the JS
-   source. Other recorded topics are counted in the manifest, not converted.
-4. **Backend inside `gui_server.py`, still stdlib**: `ThreadingHTTPServer`;
-   the `/api/replay/` routes are file reads; the conversion is a subprocess
-   under the venv interpreter (`--worker-python`, nice 10, one at a time).
-   Venv missing → the lobby shows "replay backend unavailable"; the static
-   GUI is unaffected. The unit file lands in `tools/systemd/`.
-5. **Open is progressive**: replay opens on the first chunk; a status endpoint
-   reports progress; the converted span fills in under the trackbar. Convert
-   on open only, plus a bulk CLI run by hand; no automatic sweep (the server
-   is always up and a sweep would compete with a live session). A partial
-   cache (worker killed) is discarded and rebuilt, never resumed.
-6. **Eviction**: LRU by last-open, 10 GB cap, and refuse to start a conversion
-   below 5 GB free (the guard protects the recorder; the cap is incidental).
-7. **Session buffer = the same chunk shape**, built in the browser at arrival
-   (ring of 60 × 10 s): one feed implementation for both sources (Phase 2).
-8. **Served rate**: chunks carry the full recorded rate. The browser never
-   calls handlers faster than the live rate, whatever the speed; charts ingest
-   columns, not messages. The decimation rule above 1× is ticket 02's.
-9. **Unindexed bags** convert uniformly through `NonSeekingReader` (duration
-   unknown until the pass ends). A footer-less file still growing is a
-   *recording in progress* and is refused until its mtime is ≥ 10 s old.
+1. **Decoder: `rosbags` typestore** (`get_typestore(Stores.ROS2_FOXY)`, types registered from the embedded `ros2msg`
+   schemas, `deserialize_cdr`), kept for the oracle (`convert.py`) and the overview pass. The reader stays `mcap`
+   (`SeekingReader` for indexed bags). `tools/probes/` keeps `mcap_ros2`; no shared code.
+2. **Direct MCAP, decoded in the browser worker.** The server hands out the `.mcap` bytes over HTTP Range; a module Web
+   Worker (vendored `@mcap/core` + rosmsg2 bundle) decodes fixed **10 s** slots on demand, every allow-listed topic
+   columnar (flattened field paths) in one record. No converted cache exists. Reversed from ticket 05's convert-once
+   cache because the only wait that scaled with recording length was the conversion (about 4x real time on the Jetson).
+3. **Allowlist = the GUI's subscribe set** plus the two topics the plan adds (`/balls`, `/cone/catch_event`), pinned by a
+   contract test against the JS source. Other recorded topics are counted, not decoded.
+4. **Backend inside `gui_server.py`, still stdlib**: `ThreadingHTTPServer`; the `/api/replay/` routes are listing and
+   file reads; the venv subprocess (`--worker-python`, nice 10, one at a time) runs the **overview pass only**. Venv
+   missing → the overview is `unavailable`, replay itself still works. The unit file lives in `tools/systemd/`.
+5. **Open holds until slot 0 is resident**, then REPLAY paused. The overview pass runs on the first GET of a
+   recording's overview, never as a sweep (the server is always up and a sweep would compete with a live session).
+6. *(Eviction deleted: there is no cache.)*
+7. **Session buffer = the same chunk shape**, built in the browser at arrival (ring of 60 × 10 s): one feed
+   implementation for both sources (Phase 2).
+8. **Served rate**: slots carry the full recorded rate. The browser never calls handlers faster than the live rate,
+   whatever the speed; charts ingest columns, not messages. The decimation rule above 1× is ticket 02's.
+9. **Unindexed bags are refused `no_index`** (no summary section to seek by); a footer-less file still growing is
+   `recording_in_progress`.
 10. **No duration cap**; a zoomable trackbar is a ticket 03 item.
 
 **The contract has one enforcement point:** `ros_ws/gui/replay/schema.py`
-defines the layout, the chunk record, the flattening rule, the manifest, the
-overview and the allowlist; the worker writes it, the server serves it, the
-browser (Phase 2) unflattens by it. Changing the shape bumps `FORMAT_VERSION`.
+defines the chunk record, the flattening rule, slot math, the overview and the
+allowlist; the oracle and the overview pass write it, the server serves it, the
+browser worker builds slots by it. Changing the shape bumps `FORMAT_VERSION`.
 
-### HTTP API (served by `gui_server.py`, all `Cache-Control: no-cache`)
+### HTTP API (served by `gui_server.py`)
 
 | route | returns |
 |---|---|
-| `GET /api/replay/recordings` | `{"recordings": [...newest first], "cache": {"bytes", "cap_bytes", "disk_free_bytes"}, "worker_available": bool}`; each recording: `id`, `path`, `size_bytes`, `mtime`, `closed` (MCAP footer magic present), `in_progress`, `duration_s` / `message_count` (from `metadata.yaml` when present, regex-parsed, else `null`), `cache` (`none`/`converting`/`complete`/`failed`) |
-| `POST /api/replay/recordings/<id>/open` | `200 {"status": "complete"|"converting"|"queued"}` or `409 {"status": "refused", "reason": "recording_in_progress"|"disk_low"|"worker_unavailable"}`; touches `.opened`, evicts LRU, discards a stale partial cache with no live worker, starts or queues the worker; `404` unknown id |
-| `GET /api/replay/recordings/<id>/status` | `{"status": "none"|"queued"|"converting"|"complete"|"failed", "chunks_done", "chunks_total", "t0", "t1", "error"}` |
-| `GET /api/replay/recordings/<id>/manifest` | `manifest.json` (`404` if none) |
-| `GET /api/replay/recordings/<id>/overview` | `overview.json` (`404` until complete) |
-| `GET /api/replay/recordings/<id>/chunks/<i>` | the stored bytes, `Content-Type: application/msgpack`, `Content-Encoding: gzip`; `404` if `i >= chunks_done` |
+| `GET /api/replay/recordings` | `{"recordings": [...newest first], "overview_available": bool}`; row: `id, size_bytes, mtime, closed, indexed, in_progress, duration_s, message_count, start_ns, topics{counts}, overview` (`overview` = `ready|none|queued|computing|failed`) |
+| `GET\|HEAD /api/replay/recordings/<id>/file` | the `.mcap` bytes; Range → `206`, unsatisfiable/multi-range `416`, `If-Match` mismatch `412`, `409 recording_in_progress`\|`no_index` (also `X-Replay-Reason`), `404` unknown id, `400 bad recording id`; `Accept-Ranges`, ETag, `no-store` |
+| `GET /api/replay/recordings/<id>/overview` | `200` overview JSON, `202 {queued\|computing}`, `409` refused, `503 worker_unavailable`, `500 failed` |
 
-Recordings are the top-level `YYYY-MM-DD_HH-MM-SS` directories of the
-recordings root holding exactly one `.mcap`; the nested
-`Old naming scheme/` folder is out of scope.
+Recordings are the top-level `YYYY-MM-DD_HH-MM-SS` directories of the recordings root holding exactly one `.mcap`; the
+nested `Old naming scheme/` folder is out of scope.
 
 ## Vocabulary
 
@@ -122,13 +104,12 @@ recordings root holding exactly one `.mcap`; the nested
 - *Recording* — one bag directory. *Session buffer* — the chunks retained in
   the browser during live mode (600 s). *Source* — a recording or the session
   buffer; *feed* — the time-ordered records a source yields.
-- *Chunk* — a fixed 10 s slice of a source's feed, every allow-listed topic
-  columnar in one record; the unit of fetch, of the cache and of the session
+- *Chunk* — a fixed 10 s slot of a source's feed built by the worker, every allow-listed topic
+  columnar in one record; the unit of decode, residency and of the session
   buffer. *Window* — a contiguous run of chunks around the playhead.
-- *Cache* — a recording's converted form under `temp/replay_cache/<id>/`.
-  *Conversion* — the one-off backend pass, run by the *worker* (a venv
-  subprocess of the GUI server). *Allowlist* — the topics the backend
-  converts.
+- *Overview pass* — the one-off venv pass over a recording that yields its
+  timeline overview, cached under `temp/replay_overview/<id>.json`. *Allowlist* —
+  the topics the decoder keeps.
 - *Timeline overview* — per-recording bands, ticks and presence drawn under
   the trackbar. *Trail* — the `tail_length_ms` of history behind a ball or
   marker.
@@ -137,79 +118,23 @@ recordings root holding exactly one `.mcap`; the nested
 
 | Phase | Scope | Status |
 |---|---|---|
-| 1a | Converter worker (`replay/convert.py`): rosbags decode, chunking with reorder buffer, manifest, overview, bulk CLI; synthetic MCAP fixture; tests | done 2026-10-10 (software) |
+| 1a | (superseded by 4) Converter worker (`replay/convert.py`): rosbags decode, chunking with reorder buffer, manifest, overview, bulk CLI; synthetic MCAP fixture; tests | done 2026-10-10 (software) |
 | 1b | Server (`replay/cache.py`, `replay/api.py`, `gui_server.py`): threaded, routes, worker queue, eviction, refusals; unit file in `tools/systemd/`; tests | done 2026-10-10 (software; unit not yet installed on the box) |
 | 1c | End-to-end test (real worker through the API on the fixture); bulk conversion of the newest recordings by hand; unit installed on the box | done 2026-10-10: e2e test; unit installed and the service restarted by the owner; live open path smoke-tested (24 MB / 114 s recording queued → complete in 18 s, 12 chunks, 3.2 MB, chunk served gzip). Bulk pre-conversion remains optional |
 | 2 | Browser engine: feed over chunks (recording via the API, session buffer in memory), playhead clock, dispatch through the live handlers, seek semantics, prefetch, chart-store swap | software-complete 2026-10-10 (`81355621`…`ca4b6781`, merged to `skill-stack`); the real GUI calls `getReplayMode` only in Phase 3; the dev page was retired in Phase 3 |
-| 3 | Replay UI: lobby, picker, trackbar + transport + hotkeys, timeline overview, zoom; replay-only-while-disconnected gating | software-complete 2026-10-10 (`2026-10-10-gui-replay-ui-phase3.md`); owner browser session pending |
-| 4 | Balls in the 3D scene with trails (live and replay), `tail_length_ms` input | **pending the owner's pick on ticket 04** (prototype `ros_ws/gui/test_replay_trails.html` built 2026-10-10, committed on skill-stack) |
-| 5 | Hardening and fog: session-buffer memory ceiling, deep links `?recording=<id>&t=`, read-only minimap / juggle panel in replay | after 2–4; session-buffer ceiling: owner measured ≈ 1 MB heap per recorded second resident on 2026-10-10 (600 s ≈ 600 MB) → decide 300 s / topic cut |
+| 3 | Replay UI: lobby, picker, trackbar + transport + hotkeys, timeline overview, zoom; replay-only-while-disconnected gating | done 2026-10-10 (`2026-10-10-gui-replay-ui-phase3.md`); owner browser session held 2026-10-10, feedback in `2026-10-10-gui-replay-phase3-owner-feedback.md` |
+| 4 | Direct MCAP source: vendored @mcap/core + rosmsg2 bundle, decode in a module Web Worker over HTTP Range, McapSource behind the Source seam, hold-until-slot-0 open; backend = listing + Range + cached overview pass; converter cache deleted, convert.py kept as the test oracle | software-complete 2026-10-10 (`2026-10-10-gui-replay-direct-mcap-phase4.md`); gate pending; owner browser unverified |
+| 5 | Balls in the 3D scene with trails (live and replay), `tail_length_ms` input | **pending the owner's pick on ticket 04** (prototype `ros_ws/gui/test_replay_trails.html` built 2026-10-10, committed on skill-stack) |
+| 6 | Hardening and fog: session-buffer memory ceiling, deep links `?recording=<id>&t=`, read-only minimap / juggle panel in replay | after 2–5; session-buffer ceiling: owner measured ≈ 1 MB heap per recorded second resident on 2026-10-10 (600 s ≈ 600 MB) → decide 300 s / topic cut |
 
-## Phase 1 — Backend
+## Phase 1 — Backend (historical)
 
-### 1a Converter worker — `ros_ws/gui/replay/convert.py`
-
-- CLI: `python -m replay.convert --bag <file.mcap> --out <cache_dir>
-  [--chunk-s 10]` (run with `cwd=ros_ws/gui`), and `--bulk <recordings_root>
-  --cache-root <dir> [--newest N]` for the by-hand sweep. Exit 0 on complete,
-  1 on failure (manifest `status: failed`, `error` set).
-- Reader: `mcap` `make_reader`; `SeekingReader` when the file ends with the
-  MCAP footer magic, `NonSeekingReader` otherwise (`chunks_total` unknown
-  until the end). Types: the `rosbags` typestore, registered once from the
-  embedded `ros2msg` schemas (the concatenated rosbag2 format with
-  `MSG: pkg/msg/Name` separators). Decode only allow-listed channels; count
-  the others into `skipped_topics`.
-- Chunking: `t0` = first message's log time; chunk `i` covers
-  `[t0 + 10 i, t0 + 10 (i + 1))`. Two chunks stay open (reorder buffer);
-  chunk `i` is sealed when a message with `t >= t0 + 10 (i + 2)` arrives, or at
-  the end. A message for an already-sealed chunk increments `dropped_late`.
-  Every index gets a file, empty ones included. Columns per
-  `schema.py`'s flattening rule; `msgpack.packb` + `gzip` level 6; written
-  to a temp name and renamed into place.
-- Manifest: written at start (status converting), rewritten at most once per
-  second while converting (`chunks_done`, running `topics` counts), finalised
-  at completion (`t1`, `chunks` index, `completed_at`, status complete).
-  Atomic rename on every write.
-- Overview at completion: `/orchestrator_state` `.data` value segments as the
-  band; ticks per `OVERVIEW_TICK_KINDS`; presence = merged runs of chunks
-  where a topic has `n >= 1`.
-- Memory: never more than the two open chunks decoded; a 60 s window is
-  never materialised.
-
-### 1b Server — `replay/cache.py`, `replay/api.py`, `gui_server.py`
-
-- `cache.py` (stdlib): list recordings (dir scan, `closed` by footer magic,
-  `in_progress` = not closed and mtime < 10 s old, `metadata.yaml` regex
-  parse for duration / message count), read manifests, cache size, LRU
-  eviction (`.opened` mtime, else `completed_at`), disk guard
-  (`shutil.disk_usage`), stale-partial detection.
-- `api.py` (stdlib): route table above; a worker queue thread running one
-  `subprocess.Popen(["nice", "-n", "10", worker_python, "-m",
-  "replay.convert", ...], cwd=gui_dir)` at a time (the `nice` prefix only
-  where the binary exists; `preexec_fn` is unsafe in a threaded server);
-  `worker_available` probed at start (`worker_python -c "import mcap,
-  rosbags, msgpack"`, 30 s timeout) and re-probed lazily on `open` so a slow
-  cold boot cannot disable replay for the server's lifetime. `open` is
-  serialised by a lock so two concurrent opens cannot discard a running
-  worker's cache.
-- `gui_server.py`: `ThreadingHTTPServer`; new args `--rosbags-dir`
-  (default `~/Desktop/rosbags`), `--cache-dir` (default
-  `<repo>/temp/replay_cache`), `--worker-python` (default
-  `~/Desktop/PDJ_venv/venv/bin/python`), `--cache-cap-gb 10`,
-  `--min-free-gb 5`; `/api/replay/` delegated to `api.py`; static serving
-  and CORS unchanged.
-- `tools/systemd/jugglebot-gui.service` lands in the repo with the explicit
-  arguments; `tools/systemd/README.md` gains the install / restart lines
-  (`sudo cp`, `daemon-reload`, `restart`). Installing is an owner action: the
-  running service keeps the old code until restarted.
-
-### 1c Integration
-
-- `tests/ros/test_replay_e2e.py`: the API with `sys.executable` as the
-  worker converts the synthetic fixture end to end; status progresses;
-  chunks decode in Python to the written values.
-- Bulk-convert the newest recordings by hand; record the measured
-  conversion time per MB in the logbook entry.
+Built 2026-10-10 as a convert-once cache; **superseded by Phase 4**, which deleted `replay/cache.py`, the
+open/status/manifest/chunks routes, the cache flags (`--cache-dir`, `--cache-cap-gb`, `--min-free-gb`) and the msgpack
+wire format. What survives: `schema.py` (layout, chunk record, flattening rule, allowlist, overview shape,
+`FORMAT_VERSION`), `convert.py` as the test oracle (`--bulk` removed), the threaded stdlib server, the venv worker
+(now the overview pass only), and `tools/systemd/jugglebot-gui.service` (ExecStart without the cache flags). The
+original narrative is in the Phase 1 logbook entries.
 
 ## Phase 2 — Browser engine
 
@@ -220,10 +145,10 @@ Settled by wayfinder ticket 02 (`.scratch/gui-replay/issues/02-design-proposal.m
   `load(i)`, `window(t0, t1)`, `latestBefore(t, topic)`, `timeline()`. The engine reads resident chunks synchronously
   inside a tick and never awaits mid-dispatch. A decoded chunk keeps per-topic `t` (Float64Array) and the schema
   columns; rows are hydrated lazily, one per dispatched record, by the inverse of the `schema.py` flattening rule;
-  non-finite floats follow the representation live rosbridge delivers (probed in U1). The recording source drives the
-  Phase 1 API (open, manifest, 1 s status polling while converting, chunk fetch, msgpack decode). The session buffer
+  non-finite floats follow the representation live rosbridge delivers (probed in U1). The recording source (Phase 4: `McapSource`) reads the
+  `.mcap` over HTTP Range and decodes in a worker. The session buffer
   is built in the browser from the subscription wrapper in `ros-bridge.js`: epoch-aligned 10 s chunks over the last
-  600 s plus a per-topic last-message sidecar; its ceiling (Phase 5) shortens the horizon, never drops topics.
+  600 s plus a per-topic last-message sidecar; its ceiling (Phase 6) shortens the horizon, never drops topics.
 - **Clock.** `js/clock.js` provides `now()`, `setTimeout`/`clearTimeout` and `isReplay()`. In replay `now()` returns
   the dispatched record's `t` during its handlers and the playhead otherwise; timers run on a virtual queue driven by
   playhead travel, frozen while paused, cleared on seek and scaled by the speed. Every remaining
@@ -242,12 +167,12 @@ Settled by wayfinder ticket 02 (`.scratch/gui-replay/issues/02-design-proposal.m
 - **Charts.** Replay swaps in an immutable `ReplayChartStore` built from per-chunk derived columns through the same
   `telemetrySample()` the live path uses; the live ring is restored on exit. The buffer is rebuilt on every swap or
   chunk append, never shifted in place; the span is clamped to 120 s.
-- **Cache.** Resident chunks cover the chart window plus 20 s ahead and 10 s behind in the play direction, at most 16,
-  evicted farthest-first, fetched serially. A missing chunk or the converted frontier puts the engine in `buffering`
+- **Residency.** Resident chunks cover the chart window plus 20 s ahead and 10 s behind in the play direction, at most 16,
+  evicted farthest-first, fetched serially. A missing chunk puts the engine in `buffering`
   with the playhead held.
 - **Mode.** LIVE → LOBBY → OPENING → REPLAY{paused, playing, buffering} → LOBBY; a reconnect exits to LIVE with a
   toast. Entry and exit are single ordered functions; exit ends with the live disconnect blanking.
-- **Decoder.** `@msgpack/msgpack` 2.8.0, vendored under `ros_ws/gui/lib/` with its size and hash.
+- **Decoder.** Phase 2 used `@msgpack/msgpack` 2.8.0 (removed in Phase 4; the vendored MCAP bundle replaces it).
 - **Tests.** Node harnesses under `tests/ros/js/` with pytest wrappers per unit (feed round-trip against a
   Python-written chunk, clock contract, engine rate/order/seek/fence properties, chart derivation parity, cache
   residency, mode transitions). DOM wiring is covered by the real UI (Phase 3), which retired the dev page.
@@ -268,12 +193,12 @@ Built 2026-10-10; narrative and verification in `logbook/2026-10-10-gui-replay-u
 bottom where the command overlay sits; compact overview (state bands + ticks, no per-topic rows); lobby and picker as
 mocked. Orchestrator: the ticks drawn are exactly fault, skill_attempt, catch_event, bb_calibration (the recorded
 vocabulary, `schema.OVERVIEW_TICK_KINDS`); a BB throw tick is deferred (no recorded topic carries it); absent topics
-dim rather than hide; seeks clamp to the converted frontier; FF/RW are the x0.25..x8 ladder, RW from forward = reverse x1.
+dim rather than hide; seeks clamped to the converted frontier (gone in Phase 4: the status is always complete); FF/RW are the x0.25..x8 ladder, RW from forward = reverse x1.
 
 **Modules** (`ros_ws/gui/js/replay/ui/`, styles in `css/replay.css`; each takes `document` through a factory):
 - `index.js` entry, `main.js` calls `initReplayUi(getReplayMode({...}))` before `ros.init()`; `getReplayUi()` returns
   `{toaster, picker, lobby, trackbar, absent, fenceDom, mode, dock}`.
-- `lobby.js` disconnected overlay buttons, header text, `notice` routing. `picker.js` modal and ticket 05 states.
+- `lobby.js` disconnected overlay buttons, header text, `notice` routing. `picker.js` modal.
 - `trackbar.js` bar, transport, hotkeys, one rAF loop; `overview.js` layout/zoom math and the strip.
 - `absent.js` and `fence-dom.js` the two DOM contracts; `toast.js`, `dom.js`, `format.js` helpers.
 
@@ -285,45 +210,78 @@ Main imports the UI, never the reverse.
 **Contracts and tests.** DOM fence (decision 10): `FENCE_SURFACES` = command overlay, jog panel, juggle panel,
 minimap sequencer, Ball Butler, hold-to-confirm; a MutationObserver re-fences re-enabled controls; selectors are
 checked against the real GUI sources (`test_gui_replay_ui_fence_dom.py`). Absent state (decision 18): `ABSENT_TABLE`
-judges only an authoritative topic set (session snapshot or complete recording) and re-evaluates on conversion
-completion (`test_gui_replay_ui_absent.py`). Also `test_gui_replay_ui_{lobby,trackbar}.py` and two schema contracts
+judges only an authoritative topic set (session snapshot or complete recording) and re-evaluates on
+`source.onChange` (`test_gui_replay_ui_absent.py`). Also `test_gui_replay_ui_{lobby,trackbar}.py` and two schema contracts
 in `test_gui_replay_format_contract.py` (drawn tick kinds and picker key topics are in the schema).
 
-**Known follow-up.** The picker fetches `/manifest` and `/status` per row; extend the list response to carry topics
-and progress.
+**Known follow-up** (closed by Phase 4): the picker's per-row `/manifest` and `/status` fetches are gone; the listing
+row carries `topics` and `overview`.
 
-**Phase 4 hand-offs surfaced here.**
+**Phase 5 hand-offs surfaced here.**
 (a) Trail history feed: `policy.js` classes `/mocap_data` as state-render and `/balls` as columns-only, so a trail
 needs a *columns window* `[p − tail_length_ms, p]` read from the resident chunks on every seek, scrub and reverse step
 and appended from columns in forward play, ungated by speed. Pre-roll must cover at least the tail; `resetForSeek`
 must reset the trail layer; a ball that is also an unlabelled mocap marker needs a duplicate-trail rule.
 (b) A BB throw tick is derivable from `/balls`.
 
-## Phases 4–5 (outline, pending ticket 04)
-- **Phase 4 balls and trails** (ticket 04): `/balls` in the 3D scene, trails
-  behind balls and markers, `tail_length_ms`.
-- **Phase 5**: the fog items on the map.
+
+## Phase 4 — Direct MCAP source
+
+Built 2026-10-10; narrative and verification in `logbook/2026-10-10-gui-replay-direct-mcap-phase4.md`. Settled by ticket
+06 (`.scratch/gui-replay/issues/06-design-proposal.md`), which reverses ticket 05's convert-once cache.
+
+**Decisions.** The browser reads the `.mcap` itself over HTTP Range and decodes in a module Web Worker; the only wait
+that scaled with recording length was the conversion (about 4x real time on the Jetson), and over Ethernet the 5x byte
+difference is noise. Spike: 31x real time cold, 57-82x steady under node on the Jetson, 0 mismatches against the Python
+oracle. Open holds until slot 0 is resident. Unindexed bags are refused `no_index`. The Source seam made the swap local.
+
+**Browser modules** (`ros_ws/gui/js/replay/`): `mcap-decode.js` (open, decodeSlot, latestRow, flatten, slotOf,
+httpReadable), `mcap-worker.js`, `slot.js` (main-thread `slotOf` twin; keeps the 119 kB bundle off the main thread),
+`allowlist.js`, and `sources.js` `McapSource`. Vendored `lib/mcap-bundle.min.js` is built by `tools/gui_vendor/build.sh`
+(pinned versions, reproducible, sha256 pinned by `test_gui_vendor_pin.py`).
+
+**Backend** (`ros_ws/gui/replay/`, stdlib server): `recordings.py` (listing, footer and metadata parse, memoised),
+`api.py` (routes below), `decode.py` + `overview.py` (venv overview pass, niced, one at a time, atomic write to
+`temp/replay_overview/<id>.json` with a source stamp), `convert.py` kept as the test oracle, `schema.py` still the one
+contract. Routes: `GET recordings`; `GET|HEAD recordings/<id>/file` (200/206/416, 412 on `If-Match` mismatch, 409
+`recording_in_progress`|`no_index` with an `X-Replay-Reason` header, `Accept-Ranges`, ETag, `no-store`, 1 MiB
+streaming); `GET recordings/<id>/overview` (200, 202 queued|computing, 409, 503, 500). No manifest route: the worker's
+`open` reply is the manifest. Listing row: `id, size_bytes, mtime, closed, indexed, in_progress, duration_s,
+message_count, start_ns, topics, overview`.
+
+**Worker protocol.** Requests `open|load|latest|close`, replies `opened|slot|row|error`, one FIFO, `t` arrays
+transferred; the worker builds a 10 s slot in memory with the `schema.py` flatten rule.
+
+**Hold rule.** `mode.js` loads slot 0 explicitly BEFORE the ordered entry; a refusal leaves the live GUI untouched; then
+REPLAY paused (not auto-play).
+
+**Contract tests.** JS decode == Python oracle on the fixture; Range file-vs-server; overview pass == oracle overview;
+allowlist JS pin; vendored-bundle sha256; slot math pinned across main thread, worker and Python.
+
+**Migration.** `rm -rf temp/replay_cache/`; reinstall the unit (new ExecStart, `--overview-dir`); module workers need
+Chrome/Edge 80+ or Firefox 114+.
+
+## Phases 5-6 (outline)
+- **Phase 5 balls and trails** (ticket 04, pending the owner's pick): `/balls` in the 3D scene, trails behind balls and
+  markers, `tail_length_ms`.
+- **Phase 6**: the fog items on the map.
 
 ## Testing Plan
 
-- Phase 1 tests run under the venv in the default gate (`./run_tests.sh`):
-  `tests/ros/test_replay_convert.py`, `test_replay_api.py`,
-  `test_replay_allowlist.py`, `test_replay_e2e.py`. The fixture
-  (`tests/ros/_replay_fixture.py`) writes a small synthetic MCAP from the
-  repo's `.msg` definitions with `rosbags` + the `mcap` writer, embedding the
-  schemas in rosbag2's format, with an "unindexed" variant (footer removed).
+- Backend tests run under the venv in the default gate (`./run_tests.sh`): `tests/ros/test_replay_{convert,api,range,
+  stdlib,overview,mcap_oracle}.py`, `test_gui_vendor_pin.py`. The fixture (`tests/ros/_replay_fixture.py`) writes a small
+  synthetic MCAP from the repo's `.msg` definitions with `rosbags` + the `mcap` writer (`compression="none"` default,
+  opt-in zstd/lz4), embedding the schemas in rosbag2's format, with an "unindexed" variant (footer removed).
 - Contract test: the allowlist equals the JS subscribe set plus `PLANNED`.
-- Server tests bind ephemeral ports and use `tmp_path`; the worker in tests is
-  `sys.executable` or a stub script; no test touches `~/Desktop/rosbags`.
-- Phase 2–4 tests follow the node-harness standard (`tests/ros/js/`).
+- Server tests bind ephemeral ports and use `tmp_path`; no test touches `~/Desktop/rosbags` except the footer/listing
+  test over the real bags, which skips without them.
+- Phase 2-5 tests follow the node-harness standard (`tests/ros/js/`).
 
 ## Notes for Collaborators
 
-- The map (`.scratch/gui-replay/map.md`) is the decision index; it is
-  gitignored, so this plan carries the decisions that matter to the build.
-  Continue the map with `/wayfinder .scratch/gui-replay/map.md`, one ticket
-  per session.
-- Never restart `jugglebot-gui.service` while another session is using the
-  GUI; the new server code is inert until the restart.
-- `temp/replay_cache/` is rebuildable; deleting it costs one conversion per
-  recording opened afterwards.
+- The map (`.scratch/gui-replay/map.md`) is the decision index; it is gitignored, so this plan carries the decisions
+  that matter to the build. Continue the map with `/wayfinder .scratch/gui-replay/map.md`, one ticket per session.
+- Never restart `jugglebot-gui.service` while another session is using the GUI; the new server code is inert until the
+  restart.
+- `temp/replay_overview/` is rebuildable (one overview pass per recording opened afterwards); `temp/replay_cache/` is
+  dead since Phase 4 and may be deleted.

@@ -70,16 +70,15 @@ def test_readouts_for_playhead_and_range(out):
     assert r["clock"] == r["expect_clock"]          # wall-clock time of day HH:MM:SS
     assert r["elapsed"] == "00:10 / 01:40"
     assert r["speed"] == "×1" and r["play_btn"] == "Play"
-    assert r["head_left"] == "10.00%" and r["conv_w"] == "100.00%"
+    assert r["head_left"] == "10.00%"
     assert r["date"] == "2026-10-09"
-    assert r["buffering_hidden"] is True and r["front_hidden"] is True
+    assert r["buffering_hidden"] is True
 
 
-def test_frontier_fill_and_buffering_flag_follow_state(out):
+def test_buffering_flag_follows_state(out):
     p = out["progressive"]
     assert p["buffering_hidden"] is False           # engine mode 'buffering'
-    assert p["front_hidden"] is False               # source still converting: frontier marker shown
-    assert p["elapsed"] == "00:40 / ?"              # duration unknown until complete
+    assert p["elapsed"] == "00:40 / 00:40"          # the range is always complete: no "/ ?" progressive duration
     assert p["play_btn"] == "Pause"                 # buffering counts as playing intent
 
 
@@ -167,19 +166,14 @@ def test_overview_placement_at_two_zooms(out):
     assert r["tick_titles"][0].startswith("skill attempt (hop) @ ")
 
 
-def test_trackbar_source_state_names_are_the_real_vocabulary():
-    """Frontier-marker logic compares source.status().state to names the backend/sources.js really emit:
-    schema STATUS_* plus 'none' (api status route, no manifest yet) and 'live' (session source)."""
+def test_no_converted_span_or_frontier_marker(out):
+    """Phase 4: McapSource.status() is always complete, so the converted-span fill (.rp-conv) and the dashed
+    frontier marker (.rp-front) and every source-state comparison are gone (replaces
+    test_trackbar_source_state_names_are_the_real_vocabulary and the frontier-fill half of the progressive test)."""
     import re
-    import sys
-    sys.path.insert(0, str(REPO / "ros_ws" / "gui"))
-    from replay import schema
     src = (UI / "trackbar.js").read_text()
-    used = set(re.findall(r"sstate\s*[!=]==\s*'(\w+)'", src))
-    real = {schema.STATUS_CONVERTING, schema.STATUS_COMPLETE, schema.STATUS_FAILED, "none", "live"}
-    assert used and used <= real, used - real
-    harness = HARNESS.read_text()
-    assert "srcState = 'converting'" in harness and "srcState = 'complete'" in harness
+    assert not re.findall(r"sstate", src) and "rp-conv" not in src and "rp-front" not in src
+    assert out["readouts"]["conv_els"] == 0 and out["readouts"]["front_els"] == 0
 
 
 def test_space_does_not_double_fire_the_live_chart_pause(out):
@@ -194,3 +188,11 @@ def test_space_does_not_double_fire_the_live_chart_pause(out):
 def test_failing_overview_is_not_refetched_every_frame(out):
     """Audit W3: a partial/failed /overview is retried on a frame-count backoff, not per animation frame."""
     assert out["overview_refetch"]["fetches"] <= 2
+
+
+def test_source_onchange_redraws_a_partial_overview_without_waiting(out):
+    """Phase 4: the source polls /overview itself and fires onChange when it lands; the trackbar re-reads the
+    partial timeline at once instead of waiting up to TL_RETRY_FRAMES (found by the smoke: bands 0 right after 200)."""
+    o = out["overview_onchange"]
+    assert o["bands_before"] == 0 and o["bands_after"] >= 1
+    assert o["subscribed"] is True and o["unsubscribed"] == 1

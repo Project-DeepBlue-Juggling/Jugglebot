@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.ros._replay_chunks import export_chunks
 from tests.ros._replay_fixture import write_bag
 
 REPO = Path(__file__).resolve().parents[2]
@@ -62,11 +63,13 @@ def out(tmp_path_factory):
         shutil.copy(GUI / "js" / "replay" / name, sb / "replay" / name)
     (sb / "stewart-model.js").write_text("export function setStewartHighlight() {}\n")
     (sb / "ball-butler-model.js").write_text("export function setBallButlerHighlight() {}\n")
-    shutil.copy(GUI / "lib" / "msgpack.min.js", sb / "msgpack.min.cjs")
+    chunks = d / "chunks"
+    assert export_chunks(cache, chunks) == 4
+    shutil.copy(HARNESS.parent / "replay_test_support.js", sb / "replay_test_support.js")
     shutil.copy(HARNESS, sb / "replay_chart_harness.js")
     (sb / "package.json").write_text('{"type": "module"}\n')
 
-    proc = subprocess.run([NODE, str(sb / "replay_chart_harness.js"), str(cache)],
+    proc = subprocess.run([NODE, str(sb / "replay_chart_harness.js"), str(chunks)],
                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=180)
     if proc.returncode != 0:
         pytest.fail("node harness failed in %s\n%s" % (sb, proc.stderr.decode("utf-8", "replace")))

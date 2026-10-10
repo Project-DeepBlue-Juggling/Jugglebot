@@ -134,30 +134,10 @@ export function createReplayMode(deps) {
         lastTs = null;
     }
 
-    function waitFirstChunk(src, myToken) {
-        const ready = () => {
-            const st = src.status();
-            if (st.state === 'failed') return 'failed';
-            if (src.kind === 'session') return 'ok';
-            return (st.chunksDone || 0) >= 1 ? 'ok' : null;
-        };
-        return new Promise((resolve, reject) => {
-            const check = () => {
-                if (myToken !== token) { reject(new Error('replay entry aborted')); return true; }
-                const r = ready();
-                if (r === 'failed') { reject(new Error('replay conversion failed')); return true; }
-                if (r === 'ok') { resolve(); return true; }
-                return false;
-            };
-            if (check()) return;
-            const un = src.onChange(() => { if (check()) un(); });
-        });
-    }
-
     /**
      * @param {{kind:'recording', id:string}|{kind:'session'}} spec
-     * @returns {Promise<void>} resolves paused at the start once the first chunk is resident;
-     *   rejects with the 409 reason string-bearing Error (`.reason`) / 'no session buffer' / 'not disconnected'.
+     * @returns {Promise<void>} resolves paused at the start once slot 0 is resident (held in OPENING until then);
+     *   rejects with a refusal Error (`.reason`: no_index|compressed|in_progress|changed|empty|decode|http) / 'no session buffer' / 'not disconnected'.
      */
     async function enterReplay(spec) {
         if (phase !== 'idle') throw new Error('replay already active');
@@ -180,7 +160,10 @@ export function createReplayMode(deps) {
             } else {
                 source = D.makeRecordingSource(spec.id);
                 await source.open();
-                await waitFirstChunk(source, myToken);
+                // HOLD (design § 4): OPENING lasts until the opening slot is resident. A recording
+                // opens at t0, so the pre-roll before it is empty and the hold is exactly slot 0.
+                // A refusal or decode failure here leaves the live GUI untouched.
+                await source.load(source.chunkIndex(source.range().t0));
             }
             if (myToken !== token) throw new Error('replay entry aborted');
             if (D.ros.getConnectionState() === 'connected') {

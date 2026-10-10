@@ -1,25 +1,34 @@
-"""The replay cache contract — the one place the file layout, chunk record,
-manifest and overview shapes are defined. STDLIB ONLY (imported by the GUI
-server under the system interpreter).
+"""The replay data contract — the one place the chunk record, the flatten rule,
+the slot math, the allow-list and the overview shape are defined. STDLIB ONLY
+(imported by the GUI server under the system interpreter).
+
+PHASE 4 (design 06, 2026-10-10): there is NO server-side cache any more. The
+browser reads the MCAP directly (``js/replay/mcap-decode.js``) and builds each
+10 s chunk record IN MEMORY in its worker; "chunk" below is the shape of that
+in-memory record. The cache layout and manifest sections describe what the test
+oracle (``replay/convert.py``) writes to disk, nothing else. The OVERVIEW is
+computed on first request by ``replay/overview.py`` (one niced venv pass at a
+time, cached in ``temp/replay_overview/<id>.json`` with a
+``"source": {"size_bytes", "mtime"}`` stamp; a format or source mismatch means
+recompute) and served by ``GET recordings/<id>/overview``.
 
 Decided in wayfinder ticket 05 (2026-10-10); see
 ``plans/active/gui-rosbag-replay.md`` § Architecture.
 
-Cache layout, ``<cache_root>/<recording_id>/``::
+Oracle output layout, ``<out_dir>/``::
 
     manifest.json           status + range + topic census (written by the worker)
     overview.json           timeline bands / ticks / presence (written at completion)
     chunk-00000.msgpack.gz  chunk i covers [t0 + i*CHUNK_S, t0 + (i+1)*CHUNK_S)
-    .opened                 touch file; its mtime is the LRU key (server-owned)
 
 Chunks are sealed strictly in order, so ``manifest["chunks_done"] == k`` means
 chunk files 0..k-1 exist and are complete. Every index in 0..N-1 has a file,
 empty stretches included, so the sequence is contiguous.
 
-Chunk record (msgpack map, stored gzip-compressed, served with
-``Content-Encoding: gzip``)::
+Chunk record (in-memory record built by the worker; the oracle ``convert.py``
+writes the same record as msgpack+gzip files)::
 
-    {"format": 1, "i": int, "t0": float, "t1": float,
+    {"format": 2, "i": int, "t0": float, "t1": float,
      "topics": {"/robot_state": {"type": "jugglebot_interfaces/msg/RobotState",
                                  "n": int,
                                  "t": [float, ...],          # MCAP log_time, seconds, ascending
@@ -65,9 +74,9 @@ Manifest::
 
     A ``failed`` manifest keeps ``chunks_done`` (its sealed chunk files are valid) and ``chunks: []``.
 
-Overview (written once, at completion)::
+Overview (written once, at completion; the pass adds a "source" stamp)::
 
-    {"format": 1, "t0": float, "t1": float,
+    {"format": 2, "t0": float, "t1": float,
      "bands": [{"topic": "/orchestrator_state", "segments": [[t_start, t_end, value_str], ...]}],
      "ticks": [{"t": float, "kind": str, "label": str}, ...],
      "presence": {"/x": [[t_start, t_end], ...]}}   # merged runs of chunks where the topic has n >= 1
@@ -79,12 +88,11 @@ from __future__ import annotations
 from typing import Dict, Optional, Tuple
 
 FORMAT_VERSION = 2
-# 2 (2026-10-10): IDL constants dropped from columns; the server discards caches with an older format on open.
+# 2 (2026-10-10): IDL constants dropped from columns; an overview with an older format counts as absent and is recomputed.
 CHUNK_S = 10.0
 
 MANIFEST = "manifest.json"
 OVERVIEW = "overview.json"
-OPENED_MARK = ".opened"
 CHUNK_FMT = "chunk-{:05d}.msgpack.gz"
 
 STATUS_CONVERTING = "converting"

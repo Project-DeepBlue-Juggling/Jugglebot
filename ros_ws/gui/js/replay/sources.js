@@ -1,6 +1,6 @@
 /**
- * Replay feed sources: one read interface over a converted recording
- * (RecordingSource) and the live 600 s session buffer (SessionBufferSource).
+ * Replay feed sources: one read interface over a recording read directly from its
+ * MCAP in a module worker (McapSource) and the live 600 s session buffer (SessionBufferSource).
  *
  *   source.kind                      'recording' | 'session'
  *   source.range()                   sync  {t0, t1, frontier}   (frontier = end of sealed data)
@@ -8,17 +8,18 @@
  *   source.load(i)                   async Chunk | null
  *   source.window(t0, t1, topics?)   async Chunk[]
  *   source.latestBefore(t, topic)    async {t, msg} | null
- *   source.timeline()                async overview-shaped object, {partial:true,...} when incomplete
- *   source.status()                  sync  {state, chunksDone, chunksTotal}
+ *   source.timeline()                async overview-shaped object, {partial:true,...} until the overview arrives
+ *   source.status()                  sync  {state, chunksDone, chunksTotal}  (a recording is always 'complete')
  *   source.onChange(cb)              -> unsubscribe
  *   source.peek(i)                   sync  resident chunk or null (tiny scan-back memo; cache.js owns playback residency)
  *
  * Chunk shape: see chunk.js. Times are wall-clock seconds.
  *
- * The recording URL layout is `${baseUrl}/recordings/${id}/...` with baseUrl
+ * The recording URLs are `${baseUrl}/recordings/${id}/{file,overview}` with baseUrl
  * defaulting to '/api/replay' (gui_server.py routes).
  */
-import { decodeChunk, flattenMessage, indexLatestBefore, makeTopic } from './chunk.js';
+import { CHUNK_FORMAT, chunkFromRecord, flattenMessage, indexLatestBefore, makeTopic } from './chunk.js';
+import { slotOf } from './slot.js';
 
 export const SESSION_BUFFER_SEC = 600;
 const CHUNK_S = 10;
@@ -69,135 +70,141 @@ function topicRow(ch, topic, t) {
 }
 
 // ---------------------------------------------------------------------------
-// Recording source
+// Recording source: a direct MCAP reader in a module Web Worker (design § 3)
 // ---------------------------------------------------------------------------
 
 /**
- * @param {{id:string, baseUrl?:string, fetch:function, decoder?:object,
- *          pollMs?:number, timers?:{setInterval:function, clearInterval:function},
- *          scanBackChunks?:number}} opts
- *   pollMs 0 disables the timer (tests call poll() themselves).
+ * @param {{id:string, baseUrl?:string, fetch:function, makeWorker:function,
+ *          fileUrl?:string, overviewPollMs?:number,
+ *          timers?:{setTimeout:function, clearTimeout:function}}} opts
+ *   makeWorker() -> {postMessage(msg, transfer?), onmessage, onerror?, terminate()}; the worker
+ *   answers with the mcap-worker.js protocol. fileUrl overrides the Range URL (tests).
  */
-export function RecordingSource(opts) {
+export function McapSource(opts) {
   const base = (opts.baseUrl === undefined ? '/api/replay' : opts.baseUrl) +
     '/recordings/' + encodeURIComponent(opts.id);
   const doFetch = opts.fetch;
-  const scanBack = opts.scanBackChunks === undefined ? 6 : opts.scanBackChunks;
-  const pollMs = opts.pollMs === undefined ? 1000 : opts.pollMs;
+  const pollMs = opts.overviewPollMs === undefined ? 2000 : opts.overviewPollMs;
   const timers = opts.timers || globalThis;
 
-  let state = 'none';
-  let manifest = null;
+  let worker = null;
+  let nextReq = 1;
+  const pending = new Map();   // req -> {resolve, reject}
   let t0 = null;
   let t1 = null;
-  let chunksDone = 0;
-  let chunksTotal = null;
-  let timer = null;
+  let slots = 0;
+  let topics = {};             // "/x" -> {type, count}
+  let skipped = {};
+  let dropped = {};
+  let overview = null;
+  let unavailable = null;
+  let ovTimer = null;
   let closed = false;
-  let polling = false;
   const listeners = new Set();
-  const memo = new Map();     // i -> Chunk
-  const inflight = new Map(); // i -> Promise<Chunk>
+  const memo = new Map();      // i -> Chunk
+  const inflight = new Map();  // i -> Promise<Chunk>
 
   function emit() { for (const cb of Array.from(listeners)) cb(self.status()); }
 
-  async function getJson(path) {
-    const res = await doFetch(base + path);
-    if (!res.ok) return null;
-    return res.json();
+  function refusal(code, message) {
+    const err = new Error(message || code);
+    err.reason = code;
+    err.status = code === 'http' || code === 'decode' || code === 'closed' ? undefined : 'refused';
+    return err;
   }
 
-  async function loadManifest() {
-    const m = await getJson('/manifest');
-    if (m) {
-      manifest = m;
-      if (m.t0 !== null && m.t0 !== undefined) t0 = m.t0;
-      if (state === 'complete' && m.t1 !== null) t1 = m.t1;
+  function onMessage(ev) {
+    const m = ev.data;
+    const p = pending.get(m.req);
+    if (!p) return;
+    pending.delete(m.req);
+    if (m.op === 'error') p.reject(refusal(m.code, m.message));
+    else p.resolve(m);
+  }
+
+  function send(msg, transfer) {
+    if (closed || !worker) return Promise.reject(refusal('closed', 'replay source closed'));
+    return new Promise((resolve, reject) => {
+      msg.req = nextReq++;
+      pending.set(msg.req, { resolve, reject });
+      worker.postMessage(msg, transfer || []);
+    });
+  }
+
+  function failAll(err) {
+    for (const p of Array.from(pending.values())) p.reject(err);
+    pending.clear();
+  }
+
+  // ---- overview: the only poller (the trackbar's retry just re-reads timeline()) ----
+  async function pollOverview(attempt) {
+    ovTimer = null;
+    if (closed) return;
+    let delay = null;
+    try {
+      const res = await doFetch(base + '/overview');
+      if (closed) return;
+      if (res.status === 200) {
+        const body = await res.json();
+        if (body && body.format === CHUNK_FORMAT) overview = body;
+        else unavailable = 'format';
+        emit();
+        return;
+      }
+      if (res.status === 202) { delay = pollMs; attempt = 0; }
+      else {
+        let why = null;
+        try { const b = await res.json(); why = b && (b.reason || b.status); } catch (e) { why = null; }
+        unavailable = why || ('http_' + res.status);
+        emit();
+        return;
+      }
+    } catch (e) {
+      delay = Math.min(pollMs * Math.pow(2, attempt), 15000); // network error: back off
+      attempt++;
     }
-  }
-
-  function applyStatus(s) {
-    const prev = state + '|' + chunksDone + '|' + chunksTotal;
-    state = s.status;
-    chunksDone = s.chunks_done || 0;
-    chunksTotal = s.chunks_total === undefined ? null : s.chunks_total;
-    if (s.t0 !== null && s.t0 !== undefined) t0 = s.t0;
-    if (s.t1 !== null && s.t1 !== undefined) t1 = s.t1;
-    return prev !== state + '|' + chunksDone + '|' + chunksTotal;
+    if (!closed) ovTimer = timers.setTimeout(() => { pollOverview(attempt); }, delay);
   }
 
   const self = {
     kind: 'recording',
     id: opts.id,
 
-    /** POST .../open; rejects (with .reason) on a 409 refusal. */
+    /** Start the worker and read the MCAP summary; rejects with `.reason` on a refusal. */
     async open() {
-      const res = await doFetch(base + '/open', { method: 'POST' });
-      let body = null;
-      try { body = await res.json(); } catch (e) { body = null; }
-      if (res.status === 409) {
-        const err = new Error('replay open refused: ' + (body && body.reason));
-        err.reason = body && body.reason;
-        err.status = 'refused';
-        throw err;
-      }
-      if (!res.ok) {
-        const err = new Error('replay open failed: HTTP ' + res.status);
-        err.httpStatus = res.status;
-        throw err;
-      }
-      state = body.status;
-      const st = await getJson('/status');
-      if (st) applyStatus(st);
-      await loadManifest();
-      if (state !== 'complete' && state !== 'failed' && pollMs > 0 && !closed) {
-        timer = timers.setInterval(() => { self.poll(); }, pollMs);
-      }
+      worker = opts.makeWorker();
+      worker.onmessage = onMessage;
+      worker.onerror = (e) => failAll(refusal('decode', 'replay worker failed: ' + (e && e.message)));
+      const path = base + '/file';
+      const url = opts.fileUrl || (typeof location !== 'undefined' ? new URL(path, location.href).href : path);
+      const o = await send({ op: 'open', url });
+      t0 = o.t0; t1 = o.t1; slots = o.slots;
+      topics = o.topics || {}; skipped = o.skipped || {};
+      pollOverview(0);   // the first GET enqueues the pass; not awaited, open never waits on it
       emit();
-      return body.status;
-    },
-
-    /** One status poll (the timer calls this every pollMs). */
-    async poll() {
-      if (polling || closed) return;
-      polling = true;
-      try {
-        const st = await getJson('/status');
-        if (!st) return;
-        const changed = applyStatus(st);
-        if (manifest === null || state === 'complete') await loadManifest();
-        if ((state === 'complete' || state === 'failed') && timer !== null) {
-          timers.clearInterval(timer);
-          timer = null;
-        }
-        if (changed) emit();
-      } finally {
-        polling = false;
-      }
+      return 'complete';
     },
 
     range() {
       if (t0 === null) return { t0: 0, t1: 0, frontier: 0 };
-      const done = state === 'complete';
-      const end = done && t1 !== null ? t1 : t0 + chunksDone * CHUNK_S;
-      return { t0, t1: done && t1 !== null ? t1 : end, frontier: end };
+      return { t0, t1, frontier: t1 };
     },
 
-    chunkIndex(t) { return Math.floor((t - (t0 || 0)) / CHUNK_S); },
+    chunkIndex(t) { return slotOf(t, t0 || 0); },
     bounds(i) { return [(t0 || 0) + i * CHUNK_S, (t0 || 0) + (i + 1) * CHUNK_S]; },
 
     peek(i) { return memo.get(i) || null; },
 
     async load(i) {
-      if (!(i >= 0 && i < chunksDone)) throw new RangeError('chunk ' + i + ' not available (chunks_done ' + chunksDone + ')');
+      if (!(i >= 0 && i < slots)) throw new RangeError('chunk ' + i + ' outside [0,' + slots + ')');
       const hit = memo.get(i);
       if (hit) return hit;
       let p = inflight.get(i);
       if (!p) {
         p = (async () => {
-          const res = await doFetch(base + '/chunks/' + i);
-          if (!res.ok) throw new Error('chunk ' + i + ': HTTP ' + res.status);
-          const ch = decodeChunk(await res.arrayBuffer(), opts.decoder);
+          const s = await send({ op: 'load', i });
+          for (const name in s.dropped) dropped[name] = (dropped[name] || 0) + s.dropped[name];
+          const ch = chunkFromRecord(s);
           memo.set(i, ch);
           while (memo.size > MEMO_CAP) memo.delete(memo.keys().next().value);
           return ch;
@@ -208,56 +215,59 @@ export function RecordingSource(opts) {
       return p;
     },
 
-    async window(wt0, wt1, topics) {
-      const last = chunksDone - 1;
+    async window(wt0, wt1, topicList) {
       const a = Math.max(0, self.chunkIndex(wt0));
-      const b = Math.min(last, self.chunkIndex(wt1));
+      const b = Math.min(slots - 1, self.chunkIndex(wt1));
       const out = [];
-      for (let i = a; i <= b; i++) out.push(pickTopics(await self.load(i), topics));
+      for (let i = a; i <= b; i++) out.push(pickTopics(await self.load(i), topicList));
       return out;
     },
 
     async latestBefore(t, topic) {
-      if (chunksDone < 1) return null;
-      let i = Math.min(chunksDone - 1, self.chunkIndex(t));
-      if (i < 0) return null;
-      if (state === 'complete' && manifest && manifest.chunks && manifest.chunks.length) {
-        // manifest-driven: nearest chunk at or before i that holds the topic
-        for (let j = Math.min(i, manifest.chunks.length - 1); j >= 0; j--) {
-          const cnt = manifest.chunks[j].topics && manifest.chunks[j].topics[topic];
-          if (cnt > 0) {
-            const row = topicRow(await self.load(j), topic, t);
-            if (row) return row;
-          }
-        }
-        return null;
-      }
-      const stop = Math.max(0, i - scanBack + 1);
-      for (; i >= stop; i--) {
-        const row = topicRow(await self.load(i), topic, t);
+      if (!(topic in topics) || t0 === null || t < t0) return null;
+      // Memo shortcut (sync-resident slots): slot(t), then slot(t)-1 only when slot(t) is
+      // resident too, so "no row <= t in slot(t)" is known rather than assumed.
+      const s = Math.min(slots - 1, self.chunkIndex(t));
+      const cur = memo.get(s);
+      if (cur) {
+        const row = topicRow(cur, topic, t);
         if (row) return row;
+        const prev = memo.get(s - 1);
+        if (prev) { const r2 = topicRow(prev, topic, t); if (r2) return r2; }
       }
-      return null;
+      const m = await send({ op: 'latest', topic, t });
+      if (!m.row) return null;
+      const cols = {};
+      for (const k in m.row.flat) cols[k] = [m.row.flat[k]];
+      const tp = makeTopic(topics[topic].type, [m.row.t], cols);
+      return { t: m.row.t, msg: tp.hydrate(0) };
     },
 
+    /** Never touches the network: the source polls /overview itself and fires onChange. */
     async timeline() {
-      if (state === 'complete') {
-        const ov = await getJson('/overview');
-        if (ov) return ov;
-      }
-      return { partial: true, presence: presenceOf(Array.from(memo.values())) };
+      if (overview) return overview;
+      const out = { partial: true, presence: {} };
+      if (unavailable) out.unavailable = unavailable;
+      return out;
     },
 
-    status() { return { state, chunksDone, chunksTotal }; },
-
+    status() { return { state: 'complete', chunksDone: slots, chunksTotal: slots, dropped }; },
     onChange(cb) { listeners.add(cb); return () => listeners.delete(cb); },
-
-    manifest() { return manifest; },
+    topicSet() { return Object.keys(topics); },
+    manifest() { return { t0, t1, topics, skipped_topics: skipped }; },
 
     close() {
+      if (closed) return;
       closed = true;
-      if (timer !== null) { timers.clearInterval(timer); timer = null; }
+      if (ovTimer !== null) { timers.clearTimeout(ovTimer); ovTimer = null; }
+      failAll(refusal('closed', 'replay source closed'));
+      if (worker) {
+        try { worker.postMessage({ op: 'close' }); } catch (e) { /* ignore */ }
+        try { worker.terminate(); } catch (e) { /* ignore */ }
+        worker = null;
+      }
       listeners.clear();
+      memo.clear();
     },
   };
   return self;

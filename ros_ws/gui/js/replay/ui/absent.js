@@ -6,9 +6,10 @@
  * region lives in ABSENT_TABLE (keys are policy.js TOPIC_POLICY chunk names). A region is dimmed when NONE
  * of its topics is present. Nothing here touches the overview (decision 18: no per-topic rows there).
  *
- * The topic set is only judged when authoritative: a session snapshot (its own chunks) or a COMPLETE
- * recording (manifest.topics). While a recording is still converting the manifest lists only the topics
- * sealed so far, so nothing is dimmed until it completes (a later `source.onChange` re-evaluates).
+ * The topic set is only judged when authoritative: a session snapshot (its own chunks) or an OPENED
+ * recording (manifest.topics = the topic census the McapSource worker read from the MCAP summary on
+ * `opened`; status() is always complete, so it is judged from the first frame; a later `source.onChange`
+ * re-evaluates).
  *
  * createAbsent({document, mode}) -> {update, applied}; pure helpers exported for tests.
  */

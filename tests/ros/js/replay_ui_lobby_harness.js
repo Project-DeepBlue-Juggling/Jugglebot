@@ -55,9 +55,10 @@ const setConn = (s) => { connState = s; rosListeners.forEach((f) => f(s)); };
 
 let active = false, srcRange = { t0: 1791532600, t1: 1791532700, frontier: 1791532700 };
 const modeListeners = { state: [], notice: [] };
-let pending = null, enterCalls = [];
+let pending = null, enterCalls = [], openingState = false;
 const mode = {
     isActive: () => active,
+    state: () => ({ mode: openingState ? 'OPENING' : (active ? 'REPLAY' : 'LOBBY') }),
     source: () => ({ range: () => srcRange, id: 'x' }),
     on(evt, cb) { modeListeners[evt].push(cb); return () => {}; },
     enterReplay(spec) {
@@ -73,41 +74,33 @@ const sessionBuf = {
     chunkCount: () => (sessionData ? 5 : 0),
 };
 
+const ALL4 = { '/robot_state': { type: 'x', count: 9 }, '/balls': { type: 'x', count: 4 }, '/cone/catch_event': { type: 'x', count: 1 }, '/bb/heartbeat': { type: 'x', count: 2 } };
 const REC = (id, startSec, extra) => Object.assign({
-    id, path: '/x/' + id, size_bytes: 2.5e9, mtime: startSec + 100, closed: true, in_progress: false,
-    duration_s: 100, message_count: 10, start_ns: startSec * 1e9, cache: 'none',
+    id, size_bytes: 2.5e9, mtime: startSec + 100, closed: true, indexed: true, in_progress: false,
+    duration_s: 100, message_count: 10, start_ns: startSec * 1e9, topics: ALL4, overview: 'none',
 }, extra || {});
 const T0 = 1791532600;
 let listing, fetchLog = [], failList = false;
 const resetListing = () => {
     listing = {
         recordings: [
-            REC('r_complete', T0 + 5000, { cache: 'complete' }),
-            REC('r_conv', T0 + 4000, { cache: 'converting' }),
-            REC('r_noindex', T0 + 3000, { duration_s: null, start_ns: null, mtime: T0 + 3000, cache: 'none' }),
-            REC('r_live', T0 + 6000, { closed: false, in_progress: true }),
-            REC('r_stale', T0 + 2000, { cache: 'stale' }),
-            REC('r_empty', 0, { start_ns: 9223372036854775807, duration_s: 0, mtime: T0 + 2500, cache: 'none' }),   // empty bag: INT64_MAX sentinel
+            // balls has count 0 in the metadata => the backend omits it (allow-listed topics with count >= 1 only)
+            REC('r_complete', T0 + 5000, { overview: 'ready', topics: { '/robot_state': { type: 'x', count: 9 }, '/orchestrator_state': { type: 'x', count: 3 } } }),
+            REC('r_rich', T0 + 4000),
+            REC('r_noindex', T0 + 3000, { indexed: false, duration_s: null, message_count: null, start_ns: null, topics: null, mtime: T0 + 3000 }),
+            REC('r_live', T0 + 6000, { closed: false, in_progress: true, indexed: false }),
+            REC('r_old', T0 + 2000, { overview: 'computing' }),
+            REC('r_empty', 0, { start_ns: 9223372036854775807, duration_s: 0, mtime: T0 + 2500, topics: null }),   // empty bag: INT64_MAX sentinel
         ],
-        cache: { bytes: 0, cap_bytes: 1, disk_free_bytes: 1 }, worker_available: true,
+        overview_available: true,
     };
 };
 resetListing();
 const jres = (j, ok = true) => Promise.resolve({ ok, status: ok ? 200 : 500, json: () => Promise.resolve(j) });
-let lastSignal = null;
 const fetchFn = (url, opt) => {
     fetchLog.push(url);
-    if (opt && opt.signal) lastSignal = opt.signal;
     if (failList) return Promise.reject(new Error('ECONNREFUSED'));
     if (url === '/api/replay/recordings') return jres(listing);
-    let m = /recordings\/(\w+)\/manifest$/.exec(url);
-    if (m) {
-        if (m[1] === 'r_complete') return jres({ topics: { '/robot_state': { count: 9 }, '/balls': { count: 0 }, '/orchestrator_state': { count: 3 } } });
-        if (m[1] === 'r_conv') return jres({ topics: { '/robot_state': { count: 9 }, '/balls': { count: 4 }, '/cone/catch_event': { count: 1 }, '/bb/heartbeat': { count: 2 } } });
-        return jres({ topics: { '/robot_state': { count: 1 }, '/balls': { count: 1 }, '/cone/catch_event': { count: 1 }, '/bb/heartbeat': { count: 1 } } });
-    }
-    m = /recordings\/(\w+)\/status$/.exec(url);
-    if (m) return jres({ chunks_done: 31, chunks_total: 50 });
     return jres({}, false);
 };
 const settle = async () => { for (let i = 0; i < 60; i++) await new Promise((r) => setImmediate(r)); };
@@ -157,7 +150,7 @@ out.rows_keys = m.rows.map((r) => r.key);
 out.empty_row_when = rowByKey('r_empty').children[0].children[0].textContent;
 out.session_row = m.rows[0].when;
 out.states = {};
-for (const k of ['r_complete', 'r_conv', 'r_noindex', 'r_live', 'r_stale']) {
+for (const k of ['r_complete', 'r_rich', 'r_noindex', 'r_live', 'r_old']) {
     const el = rowByKey(k);
     out.states[k] = { cell: cellText(el), refused: el.className.includes('refused'), chips: chipState(el), when: el.children[0].children[0].textContent,
         dur: el.children[1].textContent, topics: el.children[3].textContent };
@@ -166,13 +159,14 @@ out.sessions_cell = cellText(rowByKey('session'));
 out.banner_hidden_ok = q('replay-pk-banner').hidden;
 
 // 4. filter
-picker.setFilter('stale'); out.filter_stale = picker.model().rows.map((r) => r.key);
+picker.setFilter('r_old'); out.filter_stale = picker.model().rows.map((r) => r.key);
 picker.setFilter('/robot'.slice(1)); out.filter_topic = picker.model().rows.map((r) => r.key);
 picker.setFilter('zzz'); out.filter_none = picker.model().rows.map((r) => r.key);
 picker.setFilter('');
 
 // 5. choose: in-progress is refused, a recording calls enterReplay and closes on success
 out.choose_live = await picker.choose('r_live'); out.calls_after_live = enterCalls.length;
+out.choose_noindex = await picker.choose('r_noindex'); out.calls_after_noindex = enterCalls.length;
 const p = picker.choose('r_complete');
 await settle();
 out.opening_cell = cellText(rowByKey('r_complete'));
@@ -181,7 +175,7 @@ pending.resolve(); out.chose = await p; out.open_after_success = picker.isOpen()
 
 // 6. refusals keep the picker open with a message
 out.refusals = {};
-for (const reason of ['recording_in_progress', 'disk_low', 'worker_unavailable', 'busy', 'no session buffer', 'connected']) {
+for (const reason of ['recording_in_progress', 'in_progress', 'no_index', 'compressed', 'changed', 'http', 'no session buffer', 'connected']) {
     await picker.open(); await settle();
     const pr = picker.choose('r_complete'); await settle();
     const err = new Error('x'); err.reason = reason; pending.reject(err);
@@ -200,21 +194,26 @@ await picker.open(); doc.key('Escape'); out.esc_closed = !picker.isOpen();
 await picker.open(); q('replay-picker-bg').listeners.click[0]({ target: q('replay-picker-bg') }); out.backdrop_closed = !picker.isOpen();
 await picker.open(); q('replay-picker-bg').listeners.click[0]({ target: q('replay-picker') }); out.inner_click_keeps = picker.isOpen(); picker.close();
 
-// 8. backend unavailable -> banner + retry; lobby disables Open recording
-listing.worker_available = false;
-await picker.open(); await settle();
+// 8. unreachable listing -> red banner + retry, lobby disables Open; overview_available=false is only a NOTE
+failList = true; await picker.open(); await settle();
 out.backend_down = { banner_visible: !q('replay-pk-banner').hidden, text: q('replay-pk-banner').textContent, has_retry: !!q('replay-pk-retry'),
-    open_disabled: q('replay-btn-open').disabled, backend_banner_hidden: q('replay-backend-banner').hidden };
-listing.worker_available = true;
+    cls: q('replay-pk-banner').className, open_disabled: q('replay-btn-open').disabled, backend_banner_hidden: q('replay-backend-banner').hidden };
+failList = false;
 q('replay-pk-retry').click(); await settle();
 out.backend_back = { banner_hidden: q('replay-pk-banner').hidden, open_disabled: q('replay-btn-open').disabled };
 picker.close();
-failList = true; await picker.open(); await settle();
-out.list_unreachable = { banner_visible: !q('replay-pk-banner').hidden, text: q('replay-pk-banner').textContent };
-failList = false; picker.close();
+listing.overview_available = false;
+await picker.open(); await settle();
+out.overview_note = { banner_visible: !q('replay-pk-banner').hidden, text: q('replay-pk-banner').textContent, cls: q('replay-pk-banner').className,
+    has_retry: !!q('replay-pk-retry'), open_disabled: q('replay-btn-open').disabled, lobby_note_hidden: q('replay-backend-banner').hidden,
+    lobby_note: q('replay-backend-banner').textContent, lobby_cls: q('replay-backend-banner').className,
+    rows_selectable: picker.model().rows.filter((r) => r.selectable).length };
+listing.overview_available = true; picker.close();
 
 // 9. header + notice toast
-active = true; emitMode('state', {});
+openingState = true; active = true; emitMode('state', {});
+out.header_opening = ctext.textContent;
+openingState = false; emitMode('state', {});
 out.header_replay = { text: ctext.textContent, dot: dot.className, cls_active: overlay.classList.contains('replay-active'),
     dock_hidden: q('replay-dock').hidden, lobby_hidden: q('replay-lobby').hidden };
 active = false; emitMode('state', {});
@@ -235,15 +234,7 @@ picker.close(); out.double_open = { first: n1, second: n2, after_close: (docList
     out.probe_during_load = { rows: rowEls().length, loading: picker.model().loading };
     picker.close();
 }
-{
-    // enrichment of rows already in extras is skipped on re-open; close stops further manifest fetches
-    await picker.open(); await settle(); picker.close();
-    const m0 = fetchLog.length;
-    await picker.open(); await settle();
-    out.reopen_manifest_fetches = fetchLog.slice(m0).filter((u) => /manifest$/.test(u)).length;
-    const sig = lastSignal; picker.close();
-    out.close_aborts = !!sig && sig.aborted === true;
-}
+out.non_listing_fetches = fetchLog.filter((u) => u !== '/api/replay/recordings').length;   // no manifest / status enrichment, ever
 
 console.log(JSON.stringify(out));
 process.exit(0);

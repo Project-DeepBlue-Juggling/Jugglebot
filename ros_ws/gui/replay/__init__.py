@@ -1,15 +1,16 @@
-"""Replay backend for the browser GUI: a recording's MCAP file is converted
-once into a per-recording cache (manifest + overview + 10 s chunks) that the
-GUI server serves as plain files.
+"""Replay backend for the browser GUI: the server lists recordings and serves
+their MCAP files over HTTP Range (the browser decodes them in a Web Worker),
+plus a cached per-recording overview pass for the timeline strip.
 
 Two halves with different interpreters:
 
-- ``schema``, ``cache``, ``api`` are **stdlib only**: ``gui_server.py`` imports
+- ``schema``, ``recordings``, ``api`` are **stdlib only**: ``gui_server.py`` imports
   them under ``/usr/bin/python3`` (the systemd unit's premise is that boot never
   depends on the project venv).
-- ``convert`` is the **worker**: it imports ``mcap``, ``rosbags`` and
-  ``msgpack`` and only ever runs as a subprocess under the venv interpreter
-  (``python -m replay.convert``), one conversion at a time.
+- ``overview`` (with ``decode``) is the **worker**: it imports ``mcap`` and
+  ``rosbags`` and only ever runs as a subprocess under the venv interpreter
+  (``python -m replay.overview``), one pass at a time. ``convert`` is the test
+  oracle (the same venv imports, plus ``msgpack``); nothing at runtime calls it.
 
 Design record: ``plans/active/gui-rosbag-replay.md`` (Phase 1) and the
 wayfinder map's ticket 05 under ``.scratch/gui-replay/`` (gitignored).

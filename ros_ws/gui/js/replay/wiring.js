@@ -17,7 +17,7 @@ import { setCanTrafficRosLink, resetTrafficRing as resetCanTrafficRing } from '.
 import { setUdpTrafficRosLink, resetTrafficRing as resetUdpTrafficRing } from '../udp-traffic.js';
 import { setHardwareVersionsRosLink } from '../hardware-versions.js';
 import { createReplayChartStore } from './chart-store.js';
-import { RecordingSource } from './sources.js';
+import { McapSource } from './sources.js';
 import { getSessionBuffer } from './session.js';
 import { createChunkCache } from './cache.js';
 import { createEngine } from './engine.js';
@@ -53,7 +53,12 @@ export function getReplayMode(mainApi, extra) {
         getReplayLatches: mainApi.getReplayLatches,
         restoreReplayLatches: mainApi.restoreReplayLatches,
         resetTrafficRings: extra.resetTrafficRings || resetTrafficRings,
-        makeRecordingSource: (id) => RecordingSource({ id, fetch: (u, o) => fetch(u, o) }),
+        makeRecordingSource: (id) => McapSource({
+            id,
+            fetch: (u, o) => fetch(u, o),
+            // module worker (Chrome/Edge 80+, Firefox 114+): the decode bundle is ESM
+            makeWorker: () => new Worker(new URL('./mcap-worker.js', import.meta.url), { type: 'module' }),
+        }),
         getSessionBuffer,
         createCache: (source) => createChunkCache({ source }),
         createEngine,

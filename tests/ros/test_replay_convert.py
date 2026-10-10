@@ -5,7 +5,8 @@ from tests/ros/_replay_fixture.py.
 Pins: chunk count / contiguity, exact round-trip of flattened columns,
 skipped-topic census, overview bands/ticks/presence, the unindexed (killed
 recording) path with its two-chunk reorder buffer, dropped_late, the CLI exit
-codes, and chunk bounds.
+codes, and chunk bounds. The converter is the TEST ORACLE since Phase 4
+(design 06): the browser reads the MCAP directly; ``--bulk`` is gone.
 """
 from __future__ import annotations
 
@@ -285,32 +286,6 @@ def test_cli_complete_and_failed(tmp_path):
     m = json.loads((tmp_path / "bad" / schema.MANIFEST).read_text())
     assert m["status"] == schema.STATUS_FAILED
     assert m["error"]
-
-
-def test_cli_bulk_skips_complete(tmp_path):
-    root = tmp_path / "rosbags"
-    for name in ("2026-10-01_10-00-00", "2026-10-02_10-00-00"):
-        (root / name).mkdir(parents=True)
-        write_bag(root / name / (name + "_0.mcap"), 11.0, seed=5)
-    (root / "not-a-recording").mkdir()
-    cache = tmp_path / "cache"
-    args = [sys.executable, "-m", "replay.convert", "--bulk", str(root),
-            "--cache-root", str(cache), "--newest", "1"]
-    r = subprocess.run(args, cwd=str(GUI), capture_output=True, text=True)
-    assert r.returncode == 0, r.stderr
-    assert sorted(p.name for p in cache.iterdir()) == ["2026-10-02_10-00-00"]
-    m = json.loads((cache / "2026-10-02_10-00-00" / schema.MANIFEST).read_text())
-    assert m["recording"] == "2026-10-02_10-00-00" and m["status"] == schema.STATUS_COMPLETE
-    r = subprocess.run(args, cwd=str(GUI), capture_output=True, text=True)
-    assert r.returncode == 0 and "already complete" in r.stderr
-    # An old-format complete cache is NOT skipped: it is reconverted.
-    mp = cache / "2026-10-02_10-00-00" / schema.MANIFEST
-    m = json.loads(mp.read_text())
-    m["format"] = schema.FORMAT_VERSION - 1
-    mp.write_text(json.dumps(m))
-    r = subprocess.run(args, cwd=str(GUI), capture_output=True, text=True)
-    assert r.returncode == 0 and "converting 2026-10-02_10-00-00" in r.stderr
-    assert json.loads(mp.read_text())["format"] == schema.FORMAT_VERSION
 
 
 # 8. chunk bounds --------------------------------------------------------

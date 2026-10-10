@@ -49,10 +49,14 @@ Armed 2026-08-01 (`logbook/2026-08-01-nightly-tier-and-mpc-dormancy.md`).
 Unlike the nightly units above, this is a **system** unit
 (`/etc/systemd/system/`, `User=jetson`), serving the GUI on :8081 and the
 `/api/replay/` rosbag-replay routes. The server itself is stdlib-only and runs
-under `/usr/bin/python3`; only the conversion worker it spawns on demand (niced,
-one at a time) needs the venv, via `--worker-python`. The rosbags root and the
-cache directory (`temp/replay_cache`, gitignored, LRU-capped at 10 GB) are
-passed on the `ExecStart` line.
+under `/usr/bin/python3`; it lists recordings and serves the `.mcap` bytes over
+HTTP Range (the browser decodes them itself). Only the overview worker it spawns
+on demand (niced, one at a time) needs the venv, via `--worker-python`; its
+results land in `temp/replay_overview/` (gitignored, tens of kB each, `--overview-dir`).
+The rosbags root is passed on the `ExecStart` line.
+
+**Migration (Phase 4):** the converter cache is gone. After installing the new
+unit, remove the old cache: `rm -rf temp/replay_cache/` (up to 10 GB).
 
 ```bash
 sudo cp tools/systemd/jugglebot-gui.service /etc/systemd/system/
@@ -62,6 +66,5 @@ systemctl status jugglebot-gui
 ```
 
 **Do not restart while someone is using the GUI**: the restart drops every open
-page's connection and kills a running conversion (its partial cache is discarded
-and re-queued on the next open). Edit the unit here, then re-run the block above;
+page's connection and kills a running overview pass (it is re-run on the next request). Edit the unit here, then re-run the block above;
 the install is a copy, so the two can drift.

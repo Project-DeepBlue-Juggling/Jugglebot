@@ -1,11 +1,12 @@
 /**
- * Replay chunk codec: decode a Phase 1 chunk, index it, hydrate rows lazily.
+ * Replay chunk shape: index a 10 s slot, hydrate rows lazily.
  *
- * The wire shape is defined by ros_ws/gui/replay/schema.py (read its docstring):
- * per topic, one `t` array and one column per flattened field. This module is
- * the browser half of that contract:
+ * The record shape is defined by ros_ws/gui/replay/schema.py (read its docstring):
+ * per topic, one `t` array and one column per flattened field. The mcap worker
+ * (mcap-worker.js over mcap-decode.js) builds it in memory; this module is the
+ * consumer half of that contract:
  *
- *   - decodeChunk()    msgpack bytes -> {i, t0, t1, topics:{"/x": {type, n, t:Float64Array, cols, hydrate(k)}}}
+ *   - chunkFromRecord() worker slot record -> {i, t0, t1, topics:{"/x": {type, n, t:Float64Array, cols, hydrate(k)}}}
  *   - makeHydrator()   column paths -> a function building row k as a nested plain object
  *                      (split on '.', nested objects; array columns assigned as-is)
  *   - flattenMessage() the exact inverse (plain objects recurse with dotted paths,
@@ -174,17 +175,12 @@ export function makeTopic(type, t, cols) {
 }
 
 /**
- * Decode one chunk body (the msgpack bytes; the browser has already undone gzip).
- * @param {ArrayBuffer|Uint8Array} arrayBuffer
- * @param {{decode:function}} [decoder] defaults to the vendored global MessagePack
+ * Build a chunk from the worker's slot record ({i, t0, t1, topics:{"/x":{type, t, cols}}}):
+ * the same shape the session buffer holds, so cache/engine/chart store see one chunk type.
+ * `t` arrives as a transferred Float64Array; `cols` are plain arrays (the schema.py contract).
+ * @param {{i:number, t0:number, t1:number, topics:object}} rec
  */
-export function decodeChunk(arrayBuffer, decoder) {
-  decoder = decoder || globalThis.MessagePack;
-  const bytes = arrayBuffer instanceof Uint8Array ? arrayBuffer : new Uint8Array(arrayBuffer);
-  const rec = decoder.decode(bytes);
-  if (rec.format !== CHUNK_FORMAT) {
-    throw new Error('unsupported replay chunk format ' + rec.format + ' (decoder expects ' + CHUNK_FORMAT + ')');
-  }
+export function chunkFromRecord(rec) {
   const topics = {};
   for (const name in rec.topics) {
     const src = rec.topics[name];

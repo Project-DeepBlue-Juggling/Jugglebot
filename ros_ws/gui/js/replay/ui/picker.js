@@ -5,16 +5,17 @@
  *   {open, close, isOpen, probe, retry, setFilter, choose, model, on}
  *
  * open(): GET /api/replay/recordings; rows newest first (format.buildRows), first row the in-memory
- * session when the buffer has data. Per-row enrichment (manifest topics for the chips / topic count,
- * /status for "converting n %") is fetched lazily after the list renders — the listing itself carries
- * neither. choose(key) calls mode.enterReplay; a rejection maps `.reason` to a message and the modal
- * stays open; success closes it. `worker_available === false` (or an unreachable list) raises the red
- * banner with [retry]; `on('backend', cb)` reports it to the lobby.
+ * session when the buffer has data. The listing row carries everything (indexed, in_progress, duration_s,
+ * topics with counts), so there are no per-row fetches. Rows without an index ("no index", killed
+ * recordings) and in-progress rows are dimmed and not selectable. choose(key) calls mode.enterReplay;
+ * a rejection maps `.reason` to a message and the modal stays open; success closes it. An unreachable
+ * list raises the red banner with [retry]; `overview_available === false` is only a NOTE (the overview
+ * strip is optional; opening never needs the worker). `on('backend', cb)` reports {down, why, note}.
  */
 import { h, fill } from './dom.js';
-import { buildRows, cacheCell, refusalMessage } from './format.js';
+import { buildRows, stateCell, refusalMessage } from './format.js';
 
-const ENRICH_CACHE = new Set(['complete', 'stale', 'converting', 'failed']);
+const OVERVIEW_NOTE = 'Timeline overview unavailable (the overview worker is not running). Recordings still open; only the overview strip is missing.';
 
 export function createPicker(deps) {
     const doc = deps.document;
@@ -26,7 +27,6 @@ export function createPicker(deps) {
 
     let open = false;
     let listing = null;
-    let extras = {};
     let filter = '';
     let loading = false;
     let backendDown = false;
@@ -34,13 +34,12 @@ export function createPicker(deps) {
     let message = '';
     let opening = null;          // key of the row being opened
     let loadToken = 0;
-    let abort = null;            // AbortController for the in-flight enrichment (aborted on close / reload)
-    const RENDER_EVERY = 25;     // batch enrichment re-renders
+    let overviewNote = '';       // non-blocking: the timeline overview worker is absent
     let root = null;
     let keyHandler = null;
     const refs = {};
 
-    function emitBackend() { for (const cb of Array.from(listeners.backend)) { try { cb({ down: backendDown, why: backendWhy }); } catch (e) { console.error(e); } } }
+    function emitBackend() { for (const cb of Array.from(listeners.backend)) { try { cb({ down: backendDown, why: backendWhy, note: overviewNote }); } catch (e) { console.error(e); } } }
 
     function sessionInfo() {
         try {
@@ -50,9 +49,9 @@ export function createPicker(deps) {
             return { has, seconds: has ? r.frontier - r.t0 : 0 };
         } catch (e) { return { has: false, seconds: 0 }; }
     }
-    const rows = () => buildRows(listing, extras, sessionInfo(), filter);
+    const rows = () => buildRows(listing, sessionInfo(), filter);
 
-    /** @returns {Promise<boolean>} true when the backend answered with worker_available */
+    /** @returns {Promise<boolean>} true when the listing was reachable */
     async function loadList() {
         const my = ++loadToken;
         loading = true; render();
@@ -62,8 +61,8 @@ export function createPicker(deps) {
             const j = await res.json();
             if (my !== loadToken) return false;
             listing = j;
-            backendDown = j.worker_available === false;
-            backendWhy = backendDown ? 'Replay backend unavailable — the converter worker is not installed or not running. Recordings cannot be opened; the live view is unaffected.' : '';
+            backendDown = false; backendWhy = '';
+            overviewNote = j.overview_available === false ? OVERVIEW_NOTE : '';
         } catch (e) {
             if (my !== loadToken) return false;
             listing = null;
@@ -73,36 +72,7 @@ export function createPicker(deps) {
         loading = false;
         emitBackend();
         render();
-        if (!backendDown) enrich(my);
         return !backendDown;
-    }
-
-    /** Sequential lazy fetch of manifest topics / conversion pct (never blocks the list). */
-    async function enrich(my) {
-        if (abort) abort.abort();
-        const ac = typeof AbortController === 'function' ? new AbortController() : null;
-        abort = ac;
-        const opt = ac ? { signal: ac.signal } : undefined;
-        let pending = 0;
-        for (const r of ((listing && listing.recordings) || [])) {
-            if (my !== loadToken || !open) return;
-            if (!ENRICH_CACHE.has(r.cache)) continue;
-            if (extras[r.id] && extras[r.id].topics && r.cache !== 'converting') continue;   // already enriched
-            const ex = extras[r.id] || (extras[r.id] = {});
-            try {
-                const m = await fetchFn(base + '/recordings/' + encodeURIComponent(r.id) + '/manifest', opt);
-                if (m.ok) { const mj = await m.json(); if (mj && mj.topics) ex.topics = mj.topics; }
-                if (r.cache === 'converting') {
-                    const s = await fetchFn(base + '/recordings/' + encodeURIComponent(r.id) + '/status', opt);
-                    if (s.ok) {
-                        const sj = await s.json();
-                        if (sj && sj.chunks_total) ex.pct = 100 * (sj.chunks_done || 0) / sj.chunks_total;
-                    }
-                }
-            } catch (e) { /* enrichment is best-effort */ }
-            if (my === loadToken && ++pending % RENDER_EVERY === 0) render();
-        }
-        if (my === loadToken && open) render();
     }
 
     // ---- DOM ----
@@ -128,8 +98,10 @@ export function createPicker(deps) {
         if (!root) return;
         root.hidden = !open;
         if (!open) return;
-        refs.banner.hidden = !backendDown;
-        if (backendDown) {
+        refs.banner.hidden = !backendDown && !overviewNote;
+        refs.banner.className = 'replay-banner ' + (backendDown ? 'err' : 'warn');
+        if (!backendDown) fill(refs.banner, overviewNote ? [h(doc, 'span', { text: overviewNote })] : []);
+        else {
             fill(refs.banner, [h(doc, 'span', { text: backendWhy + ' ' }),
                 h(doc, 'button', { cls: 'replay-btn replay-retry', id: 'replay-pk-retry', text: '[retry]', on: { click: () => retry() } })]);
         }
@@ -140,12 +112,12 @@ export function createPicker(deps) {
         if (loading && !kids.length) kids.push(h(doc, 'div', { cls: 'replay-pk-row', text: 'loading…' }));
         else if (!kids.length) kids.push(h(doc, 'div', { cls: 'replay-pk-row empty', text: backendDown ? 'no recordings available' : 'no matches' }));
         fill(refs.list, kids);
-        refs.foot.textContent = rs.length + ' row' + (rs.length === 1 ? '' : 's') + ' · newest first · converting rows open progressively · a recording in progress cannot be opened';
+        refs.foot.textContent = rs.length + ' row' + (rs.length === 1 ? '' : 's') + ' · newest first · recordings open in place, no conversion · dimmed rows (no index, in progress) cannot be opened';
     }
 
     function rowEl(r) {
         const isOpening = opening === r.key;
-        const cell = cacheCell(r, isOpening);
+        const cell = stateCell(r, isOpening);
         const cls = 'replay-pk-row' + (r.first ? ' first' : '') + (r.selectable ? '' : ' refused') + (isOpening ? ' opening' : '');
         const chips = r.chips.map((c) => h(doc, 'span', { cls: 'replay-chip' + (c.missing ? ' missing' : ''), text: c.label,
             title: c.missing ? 'not in this recording' : '' }));
@@ -173,7 +145,6 @@ export function createPicker(deps) {
     function close() {
         if (!open) return;
         open = false; loadToken++; opening = null;
-        if (abort) { abort.abort(); abort = null; }
         if (keyHandler) { doc.removeEventListener('keydown', keyHandler); keyHandler = null; }
         render();
     }
@@ -189,8 +160,8 @@ export function createPicker(deps) {
             const j = await res.json();
             if (my !== loadToken) return !backendDown;
             if (!wasOpen) listing = j;
-            backendDown = j.worker_available === false;
-            backendWhy = backendDown ? 'Replay backend unavailable — the converter worker is not installed or not running. Recordings cannot be opened; the live view is unaffected.' : '';
+            backendDown = false; backendWhy = '';
+            overviewNote = j.overview_available === false ? OVERVIEW_NOTE : '';
         } catch (e) {
             if (my !== loadToken) return !backendDown;
             backendDown = true;
@@ -221,7 +192,7 @@ export function createPicker(deps) {
 
     return {
         open: openPicker, close, isOpen: () => open, probe, retry, setFilter, choose,
-        model: () => ({ open, loading, backendDown, backendWhy, message, opening, filter, rows: rows() }),
+        model: () => ({ open, loading, backendDown, backendWhy, overviewNote, message, opening, filter, rows: rows() }),
         on(evt, cb) { listeners[evt].add(cb); return () => listeners[evt].delete(cb); },
     };
 }

@@ -322,6 +322,63 @@ out.refusal_409 = { reason: r409, order_len: order.length, state: m2.state().mod
     console.error = origErr;
 }
 
+// hold-until-slot-0 (Phase 4 design § 4): a recording's entry stays in OPENING, touching nothing, until the
+// opening slot is resident; then the ordered entry runs and REPLAY starts paused.
+{
+    order.length = 0;
+    let release;
+    const gate = new Promise((r) => { release = r; });
+    let released = false;
+    const loads = [];
+    const d5 = mkdeps({
+        clock: clockSpy,
+        makeRecordingSource() {
+            const s = getSessionBuffer().snapshot();
+            s.kind = 'recording';
+            s.open = async () => 'complete';
+            const realLoad = s.load.bind(s);
+            s.load = async (i) => { loads.push([i, released]); if (!released) await gate; return realLoad(i); };
+            return s;
+        },
+    });
+    d5.ros = Object.assign({}, ros, { setBeforeConnectedHook() {} });
+    const m5 = createReplayMode(d5);
+    const p5 = m5.enterReplay({ kind: 'recording', id: 'z' });
+    await new Promise((r) => setTimeout(r, 30));
+    const held = { state: m5.state().mode, order: order.slice(), isReplay: clock.isReplay(), loads: loads.slice() };
+    released = true; release();
+    await p5;
+    const st = m5.state();
+    out.hold_slot0 = {
+        held, after: { state: st.mode, sub: st.sub, snapshot_at: order.indexOf('events.snapshot') >= 0, isReplay: clock.isReplay() },
+        first_load_index: loads.length ? loads[0][0] : null,
+    };
+    await m5.exitReplay('user');
+
+    // slot-0 load FAILS: the entry rejects with the load's reason, nothing was touched, the source is closed
+    order.length = 0;
+    let closed6 = 0;
+    const d6 = mkdeps({
+        clock: clockSpy,
+        makeRecordingSource() {
+            const s = getSessionBuffer().snapshot();
+            s.kind = 'recording';
+            s.open = async () => 'complete';
+            s.load = async () => { throw Object.assign(new Error('x'), { reason: 'decode' }); };
+            const realClose = s.close ? s.close.bind(s) : () => {};
+            s.close = () => { closed6++; return realClose(); };
+            return s;
+        },
+    });
+    d6.ros = Object.assign({}, ros, { setBeforeConnectedHook() {} });
+    const m6 = createReplayMode(d6);
+    let r6 = null;
+    try { await m6.enterReplay({ kind: 'recording', id: 'z' }); } catch (e) { r6 = e.reason; }
+    out.hold_slot0_fail = {
+        reason: r6, state: m6.state().mode, order: order.slice(), isReplay: clock.isReplay(), closed: closed6,
+    };
+}
+
 // no session buffer
 getSessionBuffer().clear();
 let nb = null;

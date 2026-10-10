@@ -83,22 +83,21 @@ out.readouts = {
     clock: ids('rp-clock').textContent, expect_clock: clockOf(state.playhead),
     elapsed: ids('rp-elapsed').textContent, speed: ids('rp-speed').textContent,
     play_btn: ids('rp-play').textContent, head_left: dock.find((e) => e.className === 'rp-playhead')[0].style.left,
-    conv_w: dock.find((e) => e.className === 'rp-conv')[0].style.width,
-    buffering_hidden: ids('rp-buffering').hidden, front_hidden: dock.find((e) => e.className === 'rp-front')[0].hidden,
+    buffering_hidden: ids('rp-buffering').hidden,
+    conv_els: dock.find((e) => e.className === 'rp-conv').length, front_els: dock.find((e) => e.className === 'rp-front').length,
     date: dock.find((e) => e.className === 'rp-date')[0].textContent,
     bands: dock.find((e) => e.className === 'rp-band').length, ticks: dock.find((e) => e.className === 'rp-tick').length,
     tick_titles: dock.find((e) => e.className === 'rp-tick').map((e) => e.title),
 };
 
-// ---- progressive + buffering ----
-state.mode = 'buffering'; state.frontier = T0 + 40; state.range = { t0: T0, t1: T0 + 40, frontier: T0 + 40 }; state.playhead = T0 + 40; srcState = 'converting';
+// ---- buffering (a gap in the resident window; the converted-span fill / frontier marker are gone) ----
+state.mode = 'buffering'; state.frontier = T0 + 40; state.range = { t0: T0, t1: T0 + 40, frontier: T0 + 40 }; state.playhead = T0 + 40;
 tb.frame();
 out.progressive = {
-    buffering_hidden: ids('rp-buffering').hidden, front_hidden: dock.find((e) => e.className === 'rp-front')[0].hidden,
-    conv_w: dock.find((e) => e.className === 'rp-conv')[0].style.width, elapsed: ids('rp-elapsed').textContent,
+    buffering_hidden: ids('rp-buffering').hidden, elapsed: ids('rp-elapsed').textContent,
     play_btn: ids('rp-play').textContent,
 };
-state.mode = 'paused'; state.frontier = T0 + 100; state.range = { t0: T0, t1: T0 + 100, frontier: T0 + 100 }; state.playhead = T0 + 10; srcState = 'complete'; state.speed = 1;
+state.mode = 'paused'; state.frontier = T0 + 100; state.range = { t0: T0, t1: T0 + 100, frontier: T0 + 100 }; state.playhead = T0 + 10; state.speed = 1;
 tb.frame();
 
 // ---- buttons ----
@@ -207,6 +206,24 @@ out.math = {
     for (let i = 0; i < 300; i++) { tb2.frame(); if (i % 50 === 0) await tick(); }
     out.overview_refetch = { fetches };
     tb2.dispose();
+}
+
+// ---- Phase 4: a source onChange (the /overview poll landing) re-reads a partial timeline at once ----
+{
+    const tb3dock = new El('div'); tb3dock.id = 'dock3';
+    let tl3 = { partial: true, presence: {} }; let cb3 = null, unsubs = 0;
+    const src3 = { range: () => state.range, status: () => ({ state: 'complete' }), timeline: () => Promise.resolve(tl3),
+        onChange: (cb) => { cb3 = cb; return () => { unsubs++; cb3 = null; }; } };
+    const mode3 = { isActive: () => true, engine: () => eng, source: () => src3, on: () => () => {}, exitReplay: rec('exitReplay') };
+    const tb3 = createTrackbar({ document: doc, mode: mode3, dock: tb3dock, raf: null });
+    for (let i = 0; i < 5; i++) { tb3.frame(); await tick(); }
+    const before = tb3dock.find((e) => e.className === 'rp-band').length;
+    tl3 = Object.assign({}, timelineObj);
+    cb3();                                   // the source's overview poll landed
+    await tick(); tb3.frame();
+    out.overview_onchange = { bands_before: before, bands_after: tb3dock.find((e) => e.className === 'rp-band').length, subscribed: cb3 !== null };
+    tb3.dispose();
+    out.overview_onchange.unsubscribed = unsubs;
 }
 
 // ---- unmount ----

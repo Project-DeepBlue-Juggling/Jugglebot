@@ -28,6 +28,7 @@ export function createLobby(deps) {
     const backendBanner = ensure(doc, 'replay-backend-banner', viewerPane, 'div', 'replay-banner err');
 
     let backendDown = false;
+    let overviewNote = '';
     let failed = false;          // a real connect attempt has failed (a 'disconnected' EDGE; never the initial default)
     let lobbyShown = false;
     let btnSession = null, btnOpen = null;
@@ -61,7 +62,7 @@ export function createLobby(deps) {
         btnSession.disabled = !(secs > 0);   // the session replay needs no backend
         btnSession.title = secs > 0 ? '' : 'No live session in this page\'s memory';
         btnOpen.disabled = !!backendDown;
-        btnOpen.title = backendDown ? 'Replay backend unavailable' : '';
+        btnOpen.title = backendDown ? 'Replay backend unreachable' : '';
     }
 
     function headerText() {
@@ -87,7 +88,8 @@ export function createLobby(deps) {
         if (!dot || !text) return;
         if (active) {
             dot.className = 'status-dot replay';
-            text.textContent = 'REPLAY  ' + replayDate();
+            const opening = mode.state && mode.state().mode === 'OPENING';
+            text.textContent = opening ? 'REPLAY  opening…' : 'REPLAY  ' + replayDate();   // held until slot 0 is resident
         } else {
             const [c, t] = headerText();
             dot.className = c; text.textContent = t;
@@ -111,15 +113,17 @@ export function createLobby(deps) {
             refreshButtons();
             if (!lobbyShown) { lobbyShown = true; picker.probe(); }
         } else lobbyShown = false;
-        backendBanner.hidden = !(showLobby && backendDown);
-        if (showLobby && backendDown) backendBanner.textContent = 'Replay backend unavailable. Recordings cannot be opened; the live view is unaffected.';
+        backendBanner.hidden = !(showLobby && (backendDown || overviewNote));
+        backendBanner.className = 'replay-banner ' + (backendDown ? 'err' : 'warn');
+        if (showLobby && backendDown) backendBanner.textContent = 'Replay backend unreachable. Recordings cannot be listed; the live view is unaffected.';
+        else if (showLobby && overviewNote) backendBanner.textContent = 'Timeline overview unavailable. Recordings still open.';
         if (active || wasActive) paintHeader(active);
         wasActive = active;
     }
 
     mode.on('state', update);
     mode.on('notice', (n) => { if (n && n.text) toaster.show(n.text, 6000); });
-    picker.on('backend', (b) => { backendDown = b.down; update(); });
+    picker.on('backend', (b) => { backendDown = b.down; overviewNote = b.note || ''; update(); });
     let registering = true;
     ros.onConnectionStateChange((st) => {
         if (!registering) {
@@ -131,5 +135,5 @@ export function createLobby(deps) {
     registering = false;
     update();
 
-    return { update, dock, state: () => ({ lobby: !lobbyEl.hidden, active: mode.isActive(), backendDown }) };
+    return { update, dock, state: () => ({ lobby: !lobbyEl.hidden, active: mode.isActive(), backendDown, overviewNote }) };
 }

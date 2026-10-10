@@ -3,11 +3,12 @@
 
 Serves static files from this directory on all interfaces and the
 ``/api/replay/`` rosbag-replay routes (replay/api.py). Pure stdlib, no ROS2 -
-start once and leave running. Conversion runs in a niced subprocess under the
-venv interpreter (``--worker-python``); the server itself needs nothing.
+start once and leave running. The browser reads recordings over HTTP Range; the
+overview pass runs in a niced subprocess under the venv interpreter
+(``--worker-python``); the server itself needs nothing.
 
 Usage:
-    python3 gui_server.py [--port 8081] [--rosbags-dir DIR] [--cache-dir DIR]
+    python3 gui_server.py [--port 8081] [--rosbags-dir DIR] [--overview-dir DIR]
 """
 from __future__ import annotations
 
@@ -41,8 +42,7 @@ class CORSHandler(http.server.SimpleHTTPRequestHandler):
         super().do_GET()
 
     def do_HEAD(self):
-        if self.backend is not None and self.path.startswith("/api/replay/"):
-            self.send_error(405)
+        if self.backend is not None and self.backend.handle("HEAD", self.path, self):
             return
         super().do_HEAD()
 
@@ -70,11 +70,9 @@ def build_parser():
     parser = argparse.ArgumentParser(description="Jugglebot GUI server")
     parser.add_argument("--port", type=int, default=8081, help="Port to serve on")
     parser.add_argument("--rosbags-dir", default="~/Desktop/rosbags")
-    parser.add_argument("--cache-dir",
-                        default=os.path.join(_HERE, "..", "..", "temp", "replay_cache"))
+    parser.add_argument("--overview-dir",
+                        default=os.path.join(_HERE, "..", "..", "temp", "replay_overview"))
     parser.add_argument("--worker-python", default="~/Desktop/PDJ_venv/venv/bin/python")
-    parser.add_argument("--cache-cap-gb", type=float, default=10.0)
-    parser.add_argument("--min-free-gb", type=float, default=5.0)
     return parser
 
 
@@ -83,12 +81,10 @@ def make_server(args):
     ``worker_module`` attributes (tests)."""
     backend = ReplayBackend(
         rosbags_root=os.path.abspath(os.path.expanduser(args.rosbags_dir)),
-        cache_root=os.path.abspath(os.path.expanduser(args.cache_dir)),
+        overview_dir=os.path.abspath(os.path.expanduser(args.overview_dir)),
         worker_python=os.path.expanduser(args.worker_python),
         gui_dir=getattr(args, "gui_dir", None) or _HERE,
-        cap_bytes=int(args.cache_cap_gb * 1e9),
-        min_free_bytes=int(args.min_free_gb * 1e9),
-        worker_module=getattr(args, "worker_module", "replay.convert"))
+        worker_module=getattr(args, "worker_module", "replay.overview"))
 
     class Handler(CORSHandler):
         pass
@@ -104,8 +100,8 @@ def main():
     server, backend = make_server(args)
     print("Serving Jugglebot GUI on http://0.0.0.0:{}".format(args.port))
     print("  Directory: {}".format(_HERE))
-    print("  Replay: rosbags={} cache={} worker_available={}".format(
-        backend.rosbags_root, backend.cache_root, backend.worker_available))
+    print("  Replay: rosbags={} overview={} worker_available={}".format(
+        backend.rosbags_root, backend.overview_dir, backend.worker_available))
     print("  Press Ctrl+C to stop")
     try:
         server.serve_forever()

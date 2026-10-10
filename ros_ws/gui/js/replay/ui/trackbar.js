@@ -65,9 +65,10 @@ export function createTrackbar(deps) {
     let rafId = null;
     let view = null;                              // null = full range, else {v0, v1}
     let timeline = null, tlToken = 0, tlFetching = false;
+    let unsubSrc = null;                          // source.onChange -> re-read a partial timeline at once (no 200-frame wait)
     let frameNo = 0, tlRetryAt = 0;               // frame-count backoff for /overview retries (no wall clock)
     let drawnKey = '';
-    const cache = { head: '', conv: '', front: '', play: '', el: '', speed: '', mode: '', zoom: '', date: '', pbtn: '' };
+    const cache = { head: '', play: '', el: '', speed: '', mode: '', zoom: '', date: '', pbtn: '' };
     let dragging = null;                          // {kind:'bar', rest, rested, t} | {kind:'ov', fa}
     let pendingScrub = null;                      // latest bar-drag time, flushed once per frame (latest wins)
     let lastFull = { t0: 0, t1: 0 };
@@ -202,12 +203,10 @@ export function createTrackbar(deps) {
             buf: h(doc, 'span', { cls: 'rp-buffering', id: 'rp-buffering', text: 'buffering', hidden: true }),
             zoomtag: h(doc, 'span', { cls: 'rp-zoomtag', id: 'rp-zoomtag' }),
             pbtn: bPlay,
-            conv: h(doc, 'div', { cls: 'rp-conv' }),
-            front: h(doc, 'div', { cls: 'rp-front', hidden: true }),
             head: h(doc, 'div', { cls: 'rp-playhead' }),
             sel: h(doc, 'div', { cls: 'rp-sel', hidden: true }),
         };
-        els.bar = h(doc, 'div', { cls: 'rp-bar', id: 'rp-bar', on: { mousedown: onBarDown } }, [els.conv, els.front, els.head]);
+        els.bar = h(doc, 'div', { cls: 'rp-bar', id: 'rp-bar', on: { mousedown: onBarDown } }, [els.head]);
         els.ovStrip = h(doc, 'div', { cls: 'rp-ov-strip' });
         els.ov = h(doc, 'div', { cls: 'rp-ov', id: 'rp-ov', on: { mousedown: onOvDown, dblclick: resetZoom } }, [els.ovStrip, els.sel]);
         const head = h(doc, 'div', { cls: 'rp-head' }, [els.date, els.play, els.el, els.speed, els.buf, els.zoomtag]);
@@ -223,6 +222,15 @@ export function createTrackbar(deps) {
             h(doc, 'span', { cls: 'rp-keys', text: 'Space play  ←/→ ±1 s  Shift ±10 s  , . sample  + − zoom  Esc reset' }),
         ]);
         root = h(doc, 'div', { cls: 'rp-tb', id: 'rp-tb' }, [head, els.bar, els.ov, ctl]);
+    }
+
+    /** The trackbar mounts at OPENING, before the source exists; (re)subscribe as soon as it does. */
+    function subscribeSource() {
+        if (unsubSrc) return;
+        const src = mode.source && mode.source();
+        if (!src || typeof src.onChange !== 'function') return;
+        unsubSrc = src.onChange(() => { if (!timeline || timeline.partial) fetchTimeline(); });
+        fetchTimeline();
     }
 
     function fetchTimeline() {
@@ -252,6 +260,7 @@ export function createTrackbar(deps) {
             dragging.rested = true;           // pointer rests mid-drag: full pipeline once, drag continues
             e.seek(dragging.t);
         }
+        subscribeSource();
         const s = e.state();
         const r = s.range;
         const full = fullRange(r);
@@ -259,18 +268,9 @@ export function createTrackbar(deps) {
         const v = curView(full);
         const px = pctS(frac(s.playhead, v.v0, v.v1));
         if (px !== cache.head) { cache.head = px; els.head.style.left = px; }
-        const cw = pctS(frac(Math.min(s.frontier, v.v1), v.v0, v.v1));
-        if (cw !== cache.conv) { cache.conv = cw; els.conv.style.width = cw; }
-        const src = mode.source && mode.source();
-        const st = src && src.status ? src.status() : null;
-        const sstate = st ? st.state : 'complete';
-        // progressive open: the converted span ends at the frontier until the source is complete
-        const incomplete = sstate !== 'complete' && sstate !== 'failed' && sstate !== 'live';
-        const fr = incomplete ? pctS(frac(s.frontier, v.v0, v.v1)) : '';
-        if (fr !== cache.front) { cache.front = fr; els.front.hidden = !incomplete; els.front.style.left = fr; }
         const clock = fmtClock(s.playhead);
         if (clock !== cache.play) { cache.play = clock; els.play.textContent = clock; }
-        const elapsed = fmtMMSS(s.playhead - r.t0) + ' / ' + (r.t1 > r.t0 && !incomplete ? fmtMMSS(r.t1 - r.t0) : '?');
+        const elapsed = fmtMMSS(s.playhead - r.t0) + ' / ' + (r.t1 > r.t0 ? fmtMMSS(r.t1 - r.t0) : '?');
         if (elapsed !== cache.el) { cache.el = elapsed; els.el.textContent = elapsed; }
         const sp = fmtSpeed(s.speed);
         if (sp !== cache.speed) { cache.speed = sp; els.speed.textContent = sp; }
@@ -285,13 +285,13 @@ export function createTrackbar(deps) {
         if (date !== cache.date) { cache.date = date; els.date.textContent = date; }
         const zt = view ? fmtClock(view.v0) + ' – ' + fmtClock(view.v1) + '  (Esc resets)' : '';
         if (zt !== cache.zoom) { cache.zoom = zt; els.zoomtag.textContent = zt; }
-        // overview: once per (timeline, view, full range); retry a partial timeline when conversion completes
+        // overview: once per (timeline, view, full range); a partial timeline (the source is still polling /overview) is re-read, rate-limited
         const key = (timeline ? 1 : 0) + '|' + v.v0 + '|' + v.v1;
         if (key !== drawnKey) {
             drawnKey = key;
             if (timeline) renderOverview(doc, els.ovStrip, timeline, v);
         }
-        if ((!timeline || (timeline.partial && sstate === 'complete')) && frameNo >= tlRetryAt) fetchTimeline();
+        if ((!timeline || timeline.partial) && frameNo >= tlRetryAt) fetchTimeline();
     }
 
     function loop() {
@@ -313,6 +313,7 @@ export function createTrackbar(deps) {
         doc.addEventListener('keydown', onKeyCapture, true);
         doc.addEventListener('mousemove', onMove);
         doc.addEventListener('mouseup', onUp);
+        subscribeSource();
         fetchTimeline();
         frame();
         if (raf && rafId === null) rafId = raf.request(loop);
@@ -321,6 +322,7 @@ export function createTrackbar(deps) {
         if (!isMounted) return;
         isMounted = false;
         tlToken++;
+        if (unsubSrc) { unsubSrc(); unsubSrc = null; }
         dragging = null; pendingScrub = null;
         doc.removeEventListener('keydown', onKeyCapture, true);
         doc.removeEventListener('mousemove', onMove);
