@@ -1,0 +1,603 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Replay trails prototype (throwaway)</title>
+<link rel="stylesheet" href="css/theme.css">
+<style>
+/* THROWAWAY prototype for wayfinder ticket 04 (.scratch/gui-replay/issues/04-trails-prototype.md).
+   Synthetic data only; nothing here talks to rosbridge or the replay server. */
+html, body { margin:0; height:100%; background:var(--bg-primary); color:var(--text-primary); font-family:var(--font-sans); font-size:var(--font-size-base, 14px); }
+body { display:flex; flex-direction:column; }
+.bar { display:flex; flex-wrap:wrap; gap:6px 14px; align-items:center; padding:5px 10px; background:var(--bg-secondary); border-bottom:1px solid var(--border-color); font-size:12px; }
+.grp { display:flex; gap:3px; align-items:center; }
+.lbl { color:var(--text-muted); text-transform:uppercase; font-size:10px; letter-spacing:.05em; margin-right:3px; }
+.sw { padding:3px 8px; border:1px solid var(--border-color); background:var(--bg-card); color:var(--text-secondary); border-radius:var(--border-radius-sm); cursor:pointer; font:inherit; font-size:11px; }
+.sw.on { border-color:var(--accent-blue); color:var(--text-primary); background:var(--bg-card-hover); }
+.sw.rec::after { content:' *'; color:var(--accent-cyan); }
+input[type=range] { accent-color:var(--accent-cyan); }
+#scrub { flex:1; min-width:200px; }
+.mono { font-family:var(--font-mono); }
+#viewer { flex:1; position:relative; min-height:0; }
+#hud { position:absolute; left:10px; bottom:10px; margin:0; padding:8px 10px; background:var(--bg-overlay); border:1px solid var(--border-color); border-radius:var(--border-radius-sm); font:11px/1.45 var(--font-mono); color:var(--text-secondary); pointer-events:none; white-space:pre; z-index:5; }
+#jump { position:absolute; right:10px; bottom:10px; max-width:460px; margin:0; padding:8px 10px; background:var(--bg-overlay); border:1px solid var(--accent-cyan); border-radius:var(--border-radius-sm); font:11px/1.45 var(--font-mono); color:var(--text-primary); white-space:pre-wrap; z-index:5; }
+#note { position:absolute; left:10px; top:8px; right:10px; font-size:11px; color:var(--text-muted); pointer-events:none; z-index:5; }
+</style>
+<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>
+</head>
+<body>
+<div class="bar" id="bar1"></div>
+<div class="bar" id="bar2">
+  <span class="grp"><span class="lbl">tail_length_ms</span>
+    <input id="tail" type="range" min="0" max="5000" step="100" value="1000">
+    <span id="tailv" class="mono">1000</span><span class="mono" style="color:var(--text-muted)">&nbsp;(rec 1000, range 0-5000, 0 = off)</span></span>
+  <span class="grp" id="replayStrip">
+    <button class="sw" id="play">pause</button>
+    <span id="speeds" class="grp"></span>
+    <button class="sw" id="jb">jump -20 s</button><button class="sw" id="jf">jump +20 s</button>
+  </span>
+  <input id="scrub" type="range" min="0" max="120" step="0.01" value="0">
+  <span id="tread" class="mono">t=0.00 s</span>
+</div>
+<div id="viewer">
+  <div id="note">Synthetic: 6 Platform + 2 Base + 1 Ball Butler + 1 unlabelled marker; Platform 2 is occluded for t mod 12 in [6,9) s.
+    Balls every 4 s: even cycle BB to hand (CAUGHT), odd cycle hand toss (DROPPED); cycle mod 4 = 3 loses tracking mid-flight.
+    Recording = 0..120 s. * on a button = the agent's recommendation.<br>
+    Replay feed: "columns window" = the trail reads [p - tail, p] from chunk columns at recorded rate; "dispatch as built" = today's policy.js
+    (/mocap_data is state-render: ONE latest-before record on seek, gated 50 ms x speed in play; /balls is columns-only today, i.e. never
+    dispatched, modelled here as if it were state-render); "pre-roll 30 s" = both reclassified so the seek pre-roll (p - 30, p] reaches them.</div>
+  <pre id="hud"></pre>
+  <pre id="jump">Jump / seek readout appears here (replay mode).</pre>
+</div>
+<script type="module">
+import * as THREE from 'three';
+import { LineSegments2 } from 'three/addons/lines/LineSegments2.js';
+import { LineSegmentsGeometry } from 'three/addons/lines/LineSegmentsGeometry.js';
+import { LineMaterial } from 'three/addons/lines/LineMaterial.js';
+import { initViewer, scene, camera, controls, renderer, onFrame } from './js/viewer.js';
+import { initMocapMarkers, updateMocapMarkers } from './js/mocap-markers.js';
+
+/* =====================================================================================
+ * TRAIL MODULE — lift target: ros_ws/gui/js/trails.js (Phase 4). Pure Three.js, no DOM.
+ *
+ *   const layer = createTrailLayer(parentGroup, {capacity, maxTracks, getResolution});
+ *   layer.setStyle({technique, ageMode, endMode})   // not hot path (rebuilds renderers)
+ *   layer.setColorFn((key, tag) => 0xRRGGBB)         // colour chosen on acquire only
+ *   layer.beginMessage(tag)                          // one per /mocap_data or /balls message
+ *   layer.push(tag, key, tSec, xMm, yMm, zMm)        // robot frame mm; key = label|id (no alloc)
+ *   layer.endMessage(tag, tSec)                      // tracks of `tag` absent from it: end(t)
+ *   layer.end(key, tSec)                             // explicit end (e.g. ball CAUGHT/DROPPED)
+ *   layer.render(nowSec, tailMs) -> drawn vertices   // once per frame, on the render loop
+ *   layer.reset()                                    // seek / scrub / mocap disconnect
+ *   layer.stats(nowSec, tailMs)                      // readout only
+ *
+ * Storage per track: a CPU ring (Float32 xyz + Float64 t, `capacity` samples) and, per
+ * technique, GPU buffers written ONCE per sample. The 'line' and 'ribbon' techniques use a
+ * DOUBLED ring (each sample written to slot s and s+capacity) so the last k samples are always
+ * one contiguous range -> geometry.setDrawRange(start, k), and age fade is computed in the
+ * shader from a per-vertex time attribute + uNow/uTail uniforms: per frame the CPU only does
+ * two binary searches and sets uniforms. 'fat' (Line2) cannot take a time attribute without
+ * forking LineMaterial, so it re-copies the visible samples each frame (no allocation).
+ * Time: seconds on ONE clock for push and render (see the ticket: clock.now() in both modes).
+ * A push with t < last t resets the track (time went backwards = a seek the caller missed).
+ * A push to an ENDED key starts a fresh trail (no line drawn across the gap).
+ * =================================================================================== */
+const BG = new THREE.Color(0x0f172a);
+
+function makeLineRenderer(cap) {           // technique 'line': GL_LINE_STRIP, 1 px, shader alpha
+  const g = new THREE.BufferGeometry();
+  const pos = new THREE.BufferAttribute(new Float32Array(2 * cap * 3), 3).setUsage(THREE.DynamicDrawUsage);
+  const at = new THREE.BufferAttribute(new Float32Array(2 * cap), 1).setUsage(THREE.DynamicDrawUsage);
+  g.setAttribute('position', pos); g.setAttribute('aT', at); g.setDrawRange(0, 0);
+  const m = new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false,
+    uniforms: { uNow: {value: 0}, uTail: {value: 1}, uColor: {value: new THREE.Color()}, uDim: {value: 1} },
+    vertexShader: `attribute float aT; uniform float uNow, uTail; varying float vAge;
+      void main(){ vAge = (uNow - aT) / uTail; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }`,
+    fragmentShader: `uniform vec3 uColor; uniform float uDim; varying float vAge;
+      void main(){ if (vAge > 1.0 || vAge < -1e-4) discard;
+        float a = uDim > 0.5 ? 1.0 - vAge : 1.0; gl_FragColor = vec4(uColor, a); }`,
+  });
+  const obj = new THREE.Line(g, m); obj.frustumCulled = false;
+  return {
+    obj, thinSupported: false,
+    write(s, x, y, z, px, py, pz, tRel) {
+      for (const o of [s, s + cap]) { pos.array[o * 3] = x; pos.array[o * 3 + 1] = y; pos.array[o * 3 + 2] = z; at.array[o] = tRel; }
+      pos.addUpdateRange(s * 3, 3); pos.addUpdateRange((s + cap) * 3, 3); at.addUpdateRange(s, 1); at.addUpdateRange(s + cap, 1);
+      pos.needsUpdate = true; at.needsUpdate = true;
+    },
+    draw(trail, start, k, nowRel, tail, style) {
+      g.setDrawRange(start, k); m.uniforms.uNow.value = nowRel; m.uniforms.uTail.value = tail;
+      m.uniforms.uDim.value = style.ageMode === 'thin' ? 0 : 1; return k;
+    },
+    setColor(c) { m.uniforms.uColor.value.setHex(c); },
+    dispose() { g.dispose(); m.dispose(); },
+  };
+}
+
+function makeRibbonRenderer(cap, getRes) { // technique 'ribbon': screen-space quad strip, per-vertex width AND alpha
+  const nv = 2 * cap * 2;                   // doubled ring x 2 vertices per sample (side -1/+1)
+  const g = new THREE.BufferGeometry();
+  const pos = new THREE.BufferAttribute(new Float32Array(nv * 3), 3).setUsage(THREE.DynamicDrawUsage);
+  const prev = new THREE.BufferAttribute(new Float32Array(nv * 3), 3).setUsage(THREE.DynamicDrawUsage);
+  const at = new THREE.BufferAttribute(new Float32Array(nv), 1).setUsage(THREE.DynamicDrawUsage);
+  const side = new Float32Array(nv); for (let i = 0; i < nv; i++) side[i] = (i & 1) ? 1 : -1;
+  const idx = new Uint16Array(6 * (2 * cap - 1));
+  for (let j = 0; j < 2 * cap - 1; j++) { const a = 2 * j; idx.set([a, a + 1, a + 2, a + 1, a + 3, a + 2], 6 * j); }
+  g.setAttribute('position', pos); g.setAttribute('aPrev', prev); g.setAttribute('aT', at);
+  g.setAttribute('aSide', new THREE.BufferAttribute(side, 1)); g.setIndex(new THREE.BufferAttribute(idx, 1)); g.setDrawRange(0, 0);
+  const m = new THREE.ShaderMaterial({
+    transparent: true, depthWrite: false, side: THREE.DoubleSide,
+    uniforms: { uNow: {value: 0}, uTail: {value: 1}, uColor: {value: new THREE.Color()}, uDim: {value: 1}, uThin: {value: 0},
+                uWidth: {value: 4}, uRes: {value: new THREE.Vector2(1, 1)} },
+    vertexShader: `attribute vec3 aPrev; attribute float aT, aSide;
+      uniform float uNow, uTail, uThin, uWidth; uniform vec2 uRes; varying float vAge;
+      void main(){
+        vec4 c = projectionMatrix * modelViewMatrix * vec4(position, 1.0);
+        vec4 p = projectionMatrix * modelViewMatrix * vec4(aPrev, 1.0);
+        vec2 d = (c.xy / c.w - p.xy / p.w) * uRes;                 // pixels
+        float L = length(d); d = L > 1e-4 ? d / L : vec2(1.0, 0.0);
+        vec2 n = vec2(-d.y, d.x);
+        float age = (uNow - aT) / uTail; vAge = age;
+        float w = uWidth * (uThin > 0.5 ? clamp(1.0 - age, 0.0, 1.0) : 1.0);
+        c.xy += n * aSide * w / uRes * c.w;                          // half-width w/2 px == w/res NDC
+        gl_Position = c; }`,
+    fragmentShader: `uniform vec3 uColor; uniform float uDim; varying float vAge;
+      void main(){ if (vAge > 1.0 || vAge < -1e-4) discard;
+        float a = uDim > 0.5 ? 1.0 - vAge : 1.0; gl_FragColor = vec4(uColor, a); }`,
+  });
+  const obj = new THREE.Mesh(g, m); obj.frustumCulled = false;
+  const wv = (o, x, y, z, px, py, pz, tRel) => {
+    for (let v = 2 * o; v < 2 * o + 2; v++) {
+      pos.array[v * 3] = x; pos.array[v * 3 + 1] = y; pos.array[v * 3 + 2] = z;
+      prev.array[v * 3] = px; prev.array[v * 3 + 1] = py; prev.array[v * 3 + 2] = pz; at.array[v] = tRel;
+    }
+    pos.addUpdateRange(o * 6, 6); prev.addUpdateRange(o * 6, 6); at.addUpdateRange(o * 2, 2);
+  };
+  return {
+    obj, thinSupported: true,
+    write(s, x, y, z, px, py, pz, tRel) {
+      wv(s, x, y, z, px, py, pz, tRel); wv(s + cap, x, y, z, px, py, pz, tRel);
+      pos.needsUpdate = true; prev.needsUpdate = true; at.needsUpdate = true;
+    },
+    draw(trail, start, k, nowRel, tail, style) {
+      if (k < 2) { g.setDrawRange(0, 0); return 0; }
+      g.setDrawRange(6 * start, 6 * (k - 1));
+      const u = m.uniforms; u.uNow.value = nowRel; u.uTail.value = tail;
+      u.uDim.value = style.ageMode === 'thin' ? 0 : 1; u.uThin.value = style.ageMode === 'dim' ? 0 : 1;
+      getRes(u.uRes.value); return 2 * k;
+    },
+    setColor(c) { m.uniforms.uColor.value.setHex(c); },
+    dispose() { g.dispose(); m.dispose(); },
+  };
+}
+
+function makeFatRenderer(cap) {             // technique 'fat': three/addons Line2 segments, uniform width
+  const g = new LineSegmentsGeometry();
+  g.setPositions(new Float32Array(cap * 6)); g.setColors(new Float32Array(cap * 6));
+  const pBuf = g.attributes.instanceStart.data, cBuf = g.attributes.instanceColorStart.data;
+  const m = new LineMaterial({ linewidth: 3, vertexColors: true, transparent: true, depthWrite: false, worldUnits: false });
+  const obj = new LineSegments2(g, m); obj.frustumCulled = false;
+  const col = new THREE.Color();
+  return {
+    obj, thinSupported: false,
+    write() { /* nothing: Line2 has no time attribute; draw() copies from the CPU ring */ },
+    draw(trail, start, k, nowRel, tail, style) {
+      if (k < 2) { g.instanceCount = 0; obj.visible = false; return 0; }
+      obj.visible = true;
+      const P = pBuf.array, C = cBuf.array, cap_ = trail.cap, xs = trail.px, ts = trail.tt;
+      const dim = style.ageMode !== 'thin';
+      for (let j = 0; j < k - 1; j++) {
+        const a = (trail.lo + j) % cap_, b = (trail.lo + j + 1) % cap_;
+        P[6 * j] = xs[3 * a]; P[6 * j + 1] = xs[3 * a + 1]; P[6 * j + 2] = xs[3 * a + 2];
+        P[6 * j + 3] = xs[3 * b]; P[6 * j + 4] = xs[3 * b + 1]; P[6 * j + 5] = xs[3 * b + 2];
+        for (let e = 0; e < 2; e++) {   // "dim" = lerp toward the scene background (no per-vertex alpha in LineMaterial)
+          const age = (nowRel - (ts[e ? b : a] - trail.epoch)) / tail;
+          const f = dim ? Math.max(0, Math.min(1, 1 - age)) : 1;
+          col.copy(BG).lerp(trail.color3, f);
+          C[6 * j + 3 * e] = col.r; C[6 * j + 3 * e + 1] = col.g; C[6 * j + 3 * e + 2] = col.b;
+        }
+      }
+      pBuf.needsUpdate = true; cBuf.needsUpdate = true; g.instanceCount = k - 1;
+      return 2 * (k - 1);
+    },
+    setColor() { /* colour is baked per frame from trail.color3 */ },
+    dispose() { g.dispose(); m.dispose(); },
+  };
+}
+
+class Trail {
+  constructor(cap) {
+    this.cap = cap; this.px = new Float32Array(cap * 3); this.tt = new Float64Array(cap);
+    this.color3 = new THREE.Color(); this.r = null; this.key = null; this.tag = null; this.seq = 0;
+    this.reset();
+  }
+  reset() { this.n = 0; this.epoch = 0; this.lastT = -Infinity; this.endT = Infinity; this.lo = 0; }
+  push(t, x, y, z) {                        // Three.js metres
+    if (t < this.lastT) this.reset();       // time went backwards: start over
+    else if (t === this.lastT) return;
+    if (this.endT !== Infinity) this.reset();   // revived key: fresh trail, no line across the gap
+    if (this.n === 0) this.epoch = t;
+    const cap = this.cap, s = this.n % cap, q = (this.n + cap - 1) % cap;
+    const has = this.n > 0;
+    const px = has ? this.px[3 * q] : x, py = has ? this.px[3 * q + 1] : y, pz = has ? this.px[3 * q + 2] : z;
+    this.px[3 * s] = x; this.px[3 * s + 1] = y; this.px[3 * s + 2] = z; this.tt[s] = t;
+    if (this.r) this.r.write(s, x, y, z, px, py, pz, t - this.epoch);
+    this.n++; this.lastT = t;
+  }
+  end(t) { if (this.endT === Infinity) this.endT = t; }
+  firstAtOrAfter(t) {                       // smallest sample number i in [n-m, n) with tt >= t
+    const m = Math.min(this.n, this.cap); let lo = this.n - m, hi = this.n;
+    while (lo < hi) { const mid = (lo + hi) >> 1; if (this.tt[mid % this.cap] >= t) hi = mid; else lo = mid + 1; }
+    return lo;
+  }
+  render(now, tail, style) {                // returns drawn vertices
+    if (this.n === 0 || tail <= 0) { if (this.r) this.r.draw(this, 0, 0, 0, 1, style); return 0; }
+    const lo = this.firstAtOrAfter(now - tail);
+    const hi = this.firstAtOrAfter(now + 1e-9);   // exclude samples after the playhead
+    this.lo = lo;
+    const k = hi - lo;
+    return this.r.draw(this, k > 0 ? lo % this.cap : 0, Math.max(0, k), now - this.epoch, tail, style);
+  }
+  visibleSpan(now, tail) {                  // readout: seconds of history actually shown
+    if (this.n === 0) return 0;
+    const lo = this.firstAtOrAfter(now - tail), hi = this.firstAtOrAfter(now + 1e-9);
+    if (hi - lo < 1) return 0;
+    return now - this.tt[lo % this.cap];
+  }
+}
+
+function createTrailLayer(parent, { capacity, maxTracks, getResolution }) {
+  const group = new THREE.Group(); group.name = 'trails'; parent.add(group);
+  const style = { technique: 'ribbon', ageMode: 'dim', endMode: 'fade' };
+  const pool = []; for (let i = 0; i < maxTracks; i++) pool.push(new Trail(capacity));
+  const free = pool.slice(); const live = new Map();   // key -> Trail
+  const seq = { mocap: 0, balls: 0 };
+  let colorFn = () => 0x06b6d4, dropped = 0;
+
+  function attach(tr) {
+    const r = style.technique === 'line' ? makeLineRenderer(capacity)
+      : style.technique === 'fat' ? makeFatRenderer(capacity) : makeRibbonRenderer(capacity, getResolution);
+    tr.r = r; r.setColor(tr.color3.getHex()); group.add(r.obj);
+    // re-write the stored samples into the new buffers (style change only, not hot path)
+    const m = Math.min(tr.n, tr.cap);
+    for (let i = tr.n - m; i < tr.n; i++) {
+      const s = i % tr.cap, q = (i + tr.cap - 1) % tr.cap, first = i === tr.n - m;
+      r.write(s, tr.px[3 * s], tr.px[3 * s + 1], tr.px[3 * s + 2],
+        tr.px[3 * (first ? s : q)], tr.px[3 * (first ? s : q) + 1], tr.px[3 * (first ? s : q) + 2], tr.tt[s] - tr.epoch);
+    }
+  }
+  function detach(tr) { if (tr.r) { group.remove(tr.r.obj); tr.r.dispose(); tr.r = null; } }
+  for (const tr of pool) attach(tr);
+  function release(tr) { tr.reset(); live.delete(tr.key); tr.key = null; free.push(tr); tr.r.draw(tr, 0, 0, 0, 1, style); }
+
+  return {
+    group, style,
+    setStyle(s) { Object.assign(style, s); for (const tr of pool) { detach(tr); attach(tr); } },
+    setColorFn(fn) { colorFn = fn; for (const [k, tr] of live) { tr.color3.setHex(fn(k, tr.tag)); tr.r.setColor(tr.color3.getHex()); } },
+    beginMessage(tag) { seq[tag]++; },
+    push(tag, key, t, xMm, yMm, zMm) {
+      let tr = live.get(key);
+      if (!tr) {
+        tr = free.pop();
+        if (!tr) { dropped++; return; }     // pool exhausted: drop, never allocate
+        tr.key = key; tr.tag = tag; live.set(key, tr);
+        tr.color3.setHex(colorFn(key, tag)); tr.r.setColor(tr.color3.getHex());
+      }
+      tr.seq = seq[tag];
+      tr.push(t, xMm * 0.001, zMm * 0.001, -yMm * 0.001);   // robot (x,y,z) mm -> Three (x,z,-y) m
+    },
+    endMessage(tag, t) {
+      for (const tr of live.values()) if (tr.tag === tag && tr.seq !== seq[tag]) this.end(tr.key, t);
+    },
+    end(key, t) {
+      const tr = live.get(key); if (!tr) return;
+      if (style.endMode === 'cut') release(tr); else tr.end(t);
+    },
+    render(now, tailMs) {
+      const tail = tailMs / 1000; let v = 0;
+      for (const tr of live.values()) {
+        if (tr.endT !== Infinity && now - tr.endT > tail) { release(tr); continue; }
+        v += tr.render(now, tail, style);
+      }
+      return v;
+    },
+    reset() { for (const tr of [...live.values()]) release(tr); },
+    stats(now, tailMs) {
+      const tail = tailMs / 1000, out = { mocap: [], balls: [], active: live.size, dropped };
+      for (const tr of live.values()) { const sp = tr.visibleSpan(now, tail); if (sp > 0) out[tr.tag].push(sp); }
+      return out;
+    },
+  };
+}
+/* ============================ end of the trail module ============================ */
+
+/* ---------------- synthetic recording (deterministic in t; mm, robot frame) ---------------- */
+const G = 9810, REC_T1 = 120, CYCLE = 4;
+const BB_REL = [-650, -140, 450], CATCH = [0, 0, 830], DROP_AT = [350, 250, 0];
+function flight(R, C, zA) {
+  const vz = Math.sqrt(2 * G * (zA - R[2])), tu = vz / G, td = Math.sqrt(2 * (zA - C[2]) / G), T = tu + td;
+  return { R, T, vx: (C[0] - R[0]) / T, vy: (C[1] - R[1]) / T, vz };
+}
+const F_FEED = flight(BB_REL, CATCH, 1300), F_TOSS = flight(CATCH, DROP_AT, 1500);
+function platformCentre(t, o) {
+  o[0] = 40 * Math.sin(2 * Math.PI * t / 7); o[1] = 30 * Math.sin(2 * Math.PI * t / 5.3);
+  o[2] = 578.2 + 40 * Math.sin(2 * Math.PI * t / 3.1); o[3] = 0.15 * Math.sin(2 * Math.PI * t / 9); return o;
+}
+const LABELS = ['Platform 1', 'Platform 2', 'Platform 3', 'Platform 4', 'Platform 5', 'Platform 6', 'Base 1', 'Base 2', 'Ball Butler 1', ''];
+const mPool = LABELS.map((label) => ({ label, residual: 0.3, position: { x: 0, y: 0, z: 0 } }));
+const mOut = []; const pc = [0, 0, 0, 0];
+function mocapAt(t, out) {                  // fills `out` with the markers visible at t (reused objects)
+  out.length = 0; platformCentre(t, pc);
+  for (let i = 0; i < 6; i++) {
+    if (i === 1 && (t % 12) >= 6 && (t % 12) < 9) continue;     // Platform 2 occluded
+    const a = pc[3] + i * Math.PI / 3, m = mPool[i];
+    m.position.x = pc[0] + 180 * Math.cos(a); m.position.y = pc[1] + 180 * Math.sin(a); m.position.z = pc[2] + 10; out.push(m);
+  }
+  for (let i = 0; i < 2; i++) { const a = Math.PI / 6 + i * Math.PI, m = mPool[6 + i]; m.position.x = 380 * Math.cos(a); m.position.y = 380 * Math.sin(a); m.position.z = 0; out.push(m); }
+  const bb = mPool[8]; bb.position.x = -700; bb.position.y = -150; bb.position.z = 300 + 30 * Math.sin(2 * Math.PI * t / 6); out.push(bb);
+  const u = mPool[9]; u.position.x = -680 + 60 * Math.cos(2 * Math.PI * t / 2.5); u.position.y = -150 + 60 * Math.sin(2 * Math.PI * t / 2.5); u.position.z = 420; out.push(u);
+  return out;
+}
+const bPool = [0, 1].map(() => ({ id: 0, status: 0, x: 0, y: 0, z: 0 }));
+const bOut = [];
+function ballsAt(t, out) {                  // the /balls array at t: 0 or 1 track per cycle (ids monotonic)
+  out.length = 0; if (t < 0) return out;
+  const c = Math.floor(t / CYCLE), u = t - c * CYCLE, b = bPool[c & 1], F = (c & 1) ? F_TOSS : F_FEED;
+  b.id = c + 1;
+  const lostAt = (c % 4 === 3) ? 0.6 + 0.7 * F.T : Infinity;      // tracking loss mid-flight
+  if (u < 0.6) { b.status = 0; b.x = F.R[0]; b.y = F.R[1]; b.z = F.R[2]; }
+  else if (u < 0.6 + F.T) {
+    if (u >= lostAt + 0.08) return out;                             // gone from /balls
+    const s = u - 0.6; b.status = u >= lostAt ? 4 : 1;
+    b.x = F.R[0] + F.vx * s; b.y = F.R[1] + F.vy * s; b.z = F.R[2] + F.vz * s - 0.5 * G * s * s;
+  } else if (u < 0.6 + F.T + 0.4) {
+    if (lostAt !== Infinity) return out;
+    const E = (c & 1) ? DROP_AT : CATCH; b.status = (c & 1) ? 3 : 2; b.x = E[0]; b.y = E[1]; b.z = E[2];
+  } else return out;
+  out.push(b); return out;
+}
+
+/* ---------------- page state + switcher ---------------- */
+const opt = {
+  mode: 'replay', technique: 'ribbon', ageMode: 'dim', color: 'gui', endMode: 'fade', keying: 'label',
+  ballFrom: 'all', rate: 20, feed: 'columns',
+};
+const REC = { mode: 'replay', technique: 'ribbon', ageMode: 'dim', color: 'gui', endMode: 'fade', keying: 'label', ballFrom: 'all', rate: 20, feed: 'columns' };
+const GROUPS = [
+  ['mode', 'mode', [['live', 'live'], ['replay', 'replay']]],
+  ['technique', 'trail technique', [['line', 'ring line 1px + alpha'], ['fat', 'fat Line2'], ['ribbon', 'ring ribbon shader']]],
+  ['ageMode', 'age ->', [['dim', 'dim'], ['thin', 'thin'], ['both', 'both']]],
+  ['color', 'colour', [['gui', 'GUI label / per ball id'], ['track', 'per track'], ['accent', 'single accent']]],
+  ['endMode', 'end of track', [['fade', 'fade over tail'], ['cut', 'cut']]],
+  ['keying', 'marker key', [['label', 'label + NN'], ['slot', 'slot index']]],
+  ['ballFrom', 'ball trail', [['all', 'all statuses'], ['flight', 'IN_FLIGHT only']]],
+  ['rate', 'mocap rate', [[20, '20 Hz (live throttle)'], [100, '100 Hz']]],
+  ['feed', 'replay feed', [['columns', 'columns window'], ['dispatch', 'dispatch as built'], ['preroll', 'pre-roll 30 s']]],
+];
+const bar1 = document.getElementById('bar1');
+for (const [k, lbl, vals] of GROUPS) {
+  const g = document.createElement('span'); g.className = 'grp';
+  g.innerHTML = `<span class="lbl">${lbl}</span>`;
+  for (const [v, txt] of vals) {
+    const b = document.createElement('button'); b.className = 'sw' + (REC[k] === v ? ' rec' : ''); b.textContent = txt;
+    b.dataset.k = k; b.dataset.v = String(v);
+    b.onclick = () => { opt[k] = typeof REC[k] === 'number' ? +v : v; applyOpt(k); };
+    g.appendChild(b);
+  }
+  bar1.appendChild(g);
+}
+function paintBar() { for (const b of bar1.querySelectorAll('button')) b.classList.toggle('on', String(opt[b.dataset.k]) === b.dataset.v); }
+
+/* ---------------- scene ---------------- */
+const viewerEl = document.getElementById('viewer');
+initViewer(viewerEl);
+camera.position.set(1.6, 1.4, 1.7); controls.target.set(-0.15, 0.55, 0); controls.update();
+initMocapMarkers();
+{ // platform-sized floor reference + catch plane ring
+  const ring = (r, y, c) => { const g = new THREE.RingGeometry(r - 0.003, r, 96); g.rotateX(-Math.PI / 2);
+    const o = new THREE.Mesh(g, new THREE.MeshBasicMaterial({ color: c, side: THREE.DoubleSide, transparent: true, opacity: .6 })); o.position.y = y; scene.add(o); };
+  ring(0.41, 0, 0x334155); ring(0.219, 0.578, 0x334155); ring(0.06, 0.830, 0x22c55e);
+}
+const ballGeo = new THREE.SphereGeometry(0.034, 16, 12);
+const ballMeshes = [0, 1].map(() => { const m = new THREE.Mesh(ballGeo, new THREE.MeshStandardMaterial({ color: 0xffffff, emissive: 0x222222 })); m.visible = false; scene.add(m); return m; });
+
+const resV = new THREE.Vector2();
+const layer = createTrailLayer(scene, {
+  capacity: 640,           // 5 s max tail x 100 Hz feed x ~1.25 headroom
+  maxTracks: 24,           // 10 markers (+slot-keying churn) + balls in flight/ending
+  getResolution: (v) => { renderer.getDrawingBufferSize(resV); v.copy(resV); },
+});
+const BALL_HUES = [0xf59e0b, 0xa78bfa, 0xec4899, 0x22c55e, 0xf97316];
+const TRACK_HUES = [0x3b82f6, 0xef4444, 0xeab308, 0x22c55e, 0xa78bfa, 0xec4899, 0x06b6d4, 0xf97316, 0x84cc16, 0xf43f5e, 0x14b8a6, 0xe879f9];
+const BALL_KEY = 1e9;
+function guiLabelColour(label) {
+  if (!label) return 0xd1d5db;
+  if (label.startsWith('Ball Butler')) return 0xeab308; if (label.startsWith('Platform')) return 0x3b82f6;
+  if (label.startsWith('Base')) return 0xef4444; if (label.startsWith('Ball')) return 0x22c55e; return 0xd1d5db;
+}
+function hashKey(k) { if (typeof k === 'number') return Math.abs(k | 0); let h = 7; for (let i = 0; i < k.length; i++) h = (h * 31 + k.charCodeAt(i)) | 0; return Math.abs(h); }
+function colorFor(key, tag) {
+  if (opt.color === 'accent') return 0x06b6d4;
+  if (tag === 'balls') return BALL_HUES[(key - BALL_KEY) % BALL_HUES.length];
+  if (opt.color === 'track') return TRACK_HUES[hashKey(key) % TRACK_HUES.length];
+  return typeof key === 'string' ? guiLabelColour(key) : 0xd1d5db;   // slot / NN keys have no label
+}
+layer.setColorFn(colorFor);
+
+/* ---------------- marker keying: QTM label when present, else nearest neighbour ---------------- */
+const NN_GATE_MM = 80, nn = Array.from({ length: 8 }, (_, i) => ({ key: -(i + 1), x: 0, y: 0, z: 0, t: -Infinity, used: false }));
+function unlabelledKey(m, t) {
+  let best = null, bd = NN_GATE_MM * NN_GATE_MM;
+  for (const s of nn) {
+    if (s.used || t - s.t > 0.5) continue;
+    const dx = s.x - m.position.x, dy = s.y - m.position.y, dz = s.z - m.position.z, d = dx * dx + dy * dy + dz * dz;
+    if (d < bd) { bd = d; best = s; }
+  }
+  if (!best) { best = nn.reduce((a, b) => (a.t < b.t ? a : b)); best.key = best.key - 8; }   // new identity
+  best.used = true; best.x = m.position.x; best.y = m.position.y; best.z = m.position.z; best.t = t; return best.key;
+}
+let lastMarkers = mOut;
+function onMocap(t, markers) {               // == main.js onMocapData's new trail lines
+  layer.beginMessage('mocap');
+  for (const s of nn) s.used = false;
+  for (let i = 0; i < markers.length; i++) {
+    const m = markers[i];
+    const key = opt.keying === 'slot' ? i : (m.label || unlabelledKey(m, t));
+    layer.push('mocap', key, t, m.position.x, m.position.y, m.position.z);
+  }
+  layer.endMessage('mocap', t);
+  lastMarkers = markers;
+}
+let lastBalls = [];
+function onBalls(t, balls) {                 // == a future main.js onBalls
+  layer.beginMessage('balls');
+  for (const b of balls) {
+    if (opt.ballFrom === 'flight' && b.status !== 1) continue;
+    layer.push('balls', BALL_KEY + b.id, t, b.x, b.y, b.z);
+  }
+  layer.endMessage('balls', t);              // a track gone from /balls (or no longer IN_FLIGHT) ends
+  lastBalls = balls;
+}
+
+/* ---------------- feeds: live, and the three replay feed models ---------------- */
+const BALL_RATE = 100;
+let pushes = 0;
+const gateLast = { m: -Infinity, b: -Infinity };   // engine's per-topic t_last (cleared on seek)
+function feedRange(t0, t1, rate, gate, fn, lk) {   // records on the k/rate grid in (t0, t1], dispatched through a gate
+  let last = lk ? gateLast[lk] : -Infinity, n = 0;
+  for (let k = Math.floor(t0 * rate) + 1, kEnd = Math.floor(t1 * rate + 1e-9); k <= kEnd; k++) {
+    const t = k / rate; if (t < 0) continue;
+    if (t - last + 1e-9 >= gate) { fn(t); last = t; n++; }
+  }
+  if (lk) gateLast[lk] = last;
+  return n;
+}
+const mocapRec = (t) => { onMocap(t, mocapAt(t, mOut)); pushes++; };
+const ballsRec = (t) => { onBalls(t, ballsAt(t, bOut)); pushes++; };
+const latestBefore = (t, rate) => Math.floor(t * rate + 1e-9) / rate;
+
+let p = 6, speed = 1, playing = true, liveT0 = performance.now(), liveLast = 0, lastP = p, jumpInfo = null;
+function gateM(sp) { return 0.05 * Math.max(1, Math.abs(sp)); }                    // /mocap_data throttleMs 50
+function gateB(sp) { return Math.abs(sp) > 1 ? Math.abs(sp) / BALL_RATE : 0; }      // unthrottled periodic: mean period above 1x
+
+/** seek / jump / scrub — what the trail module receives under each feed model. */
+function seekTo(t, why) {
+  t = Math.max(0, Math.min(REC_T1, t)); const before = pushes;
+  layer.reset(); gateLast.m = gateLast.b = -Infinity;    // engine hooks.onResetForSeek + lastT.clear()
+  for (const s of nn) s.t = -Infinity;                   // NN association state is part of the reset
+  const tail = +tailEl.value / 1000;
+  if (opt.feed === 'columns') {                          // trail reads [p - tail, p] from chunk columns, full rate
+    feedRange(t - tail - 1e-6, t, opt.rate, 0, mocapRec); feedRange(t - tail - 1e-6, t, BALL_RATE, 0, ballsRec);
+  } else if (opt.feed === 'dispatch') {                  // state-render: ONE latest-before record each
+    mocapRec(latestBefore(t, opt.rate)); ballsRec(latestBefore(t, BALL_RATE));
+  } else {                                               // reclassified to pre-roll: (p - 30, p] at the 1x gates
+    feedRange(t - 30, t, opt.rate, gateM(1), mocapRec, 'm'); feedRange(t - 30, t, BALL_RATE, gateB(1), ballsRec, 'b');
+  }
+  p = lastP = t;
+  if (why) jumpInfo = { why, pushed: pushes - before, at: t, frames: 0 };
+}
+function forward(t0, t1, sp) {
+  if (opt.feed === 'columns' || opt.mode === 'live') { feedRange(t0, t1, opt.rate, 0, mocapRec); feedRange(t0, t1, BALL_RATE, 0, ballsRec); }
+  else {
+    feedRange(t0, t1, opt.rate, gateM(sp), mocapRec, 'm'); feedRange(t0, t1, BALL_RATE, gateB(sp), ballsRec, 'b');
+  }
+}
+function reverse(t) {                                    // engine reverse: latest-before per state topic, muted
+  if (opt.feed === 'columns') seekTo(t, null);           // columns: rebuild the window (cheap: <= tail x rate)
+  else { mocapRec(latestBefore(t, opt.rate)); ballsRec(latestBefore(t, BALL_RATE)); }   // t < last -> Trail.reset()
+  lastP = t;
+}
+
+/* ---------------- controls ---------------- */
+const tailEl = document.getElementById('tail'), tailV = document.getElementById('tailv');
+tailEl.oninput = () => { tailV.textContent = tailEl.value; if (opt.mode === 'replay' && opt.feed === 'columns' && !playing) seekTo(p, null); };
+const scrubEl = document.getElementById('scrub'), tread = document.getElementById('tread');
+let scrubbing = false;
+scrubEl.addEventListener('input', () => {             // drag = engine scrub(): reset + latest-before, muted
+  if (opt.mode !== 'replay') return; scrubbing = true;
+  const t = +scrubEl.value;
+  if (opt.feed === 'columns') seekTo(t, 'scrub (drag)');
+  else { layer.reset(); mocapRec(latestBefore(t, opt.rate)); ballsRec(latestBefore(t, BALL_RATE)); p = lastP = t; jumpInfo = { why: 'scrub (drag)', pushed: 2, at: t, frames: 0 }; }
+});
+scrubEl.addEventListener('change', () => { if (opt.mode === 'replay') { scrubbing = false; seekTo(+scrubEl.value, 'scrub release = seek'); } });
+document.getElementById('jf').onclick = () => seekTo(p + 20, 'jump +20 s');
+document.getElementById('jb').onclick = () => seekTo(p - 20, 'jump -20 s');
+const playBtn = document.getElementById('play');
+playBtn.onclick = () => { playing = !playing; playBtn.textContent = playing ? 'pause' : 'play';
+  if (!playing && speed < 0) seekTo(p, 'pause after reverse = seek'); };
+const speedsEl = document.getElementById('speeds');
+for (const s of [-1, 0.25, 1, 2, 4, 8]) {
+  const b = document.createElement('button'); b.className = 'sw'; b.textContent = (s < 0 ? 'rev ' : '') + Math.abs(s) + 'x';
+  b.onclick = () => { const wasRev = speed < 0; speed = s; paintSpeeds(); if (wasRev && s > 0) seekTo(p, 'flip to forward = seek'); };
+  b.dataset.s = s; speedsEl.appendChild(b);
+}
+function paintSpeeds() { for (const b of speedsEl.children) b.classList.toggle('on', +b.dataset.s === speed); }
+function applyOpt(k) {
+  paintBar();
+  if (k === 'technique' || k === 'ageMode' || k === 'endMode') layer.setStyle({ technique: opt.technique, ageMode: opt.ageMode, endMode: opt.endMode });
+  if (k === 'color') layer.setColorFn(colorFor);
+  if (k === 'mode') { document.getElementById('replayStrip').style.opacity = opt.mode === 'replay' ? 1 : .35; scrubEl.disabled = opt.mode !== 'replay';
+    layer.reset(); if (opt.mode === 'live') { liveT0 = performance.now(); liveLast = 0; } else seekTo(p, 'enter replay = seek'); }
+  if (k === 'keying' || k === 'ballFrom' || k === 'rate' || k === 'feed') { if (opt.mode === 'replay') seekTo(p, 'option change = seek'); else layer.reset(); }
+}
+paintBar(); paintSpeeds(); layer.setStyle({ technique: opt.technique, ageMode: opt.ageMode, endMode: opt.endMode });
+
+/* ---------------- per-frame ---------------- */
+const hud = document.getElementById('hud'), jumpEl = document.getElementById('jump');
+let fpsN = 0, fpsT = performance.now(), fps = 0, cpuAcc = 0, cpuN = 0, cpuMs = 0, pushT = 0, pushRate = 0, lastWall = performance.now(), verts = 0;
+const STATUS = ['TO_BE_THROWN', 'IN_FLIGHT', 'CAUGHT', 'DROPPED', 'UNKNOWN'];
+const fmt = (a) => a.length ? `${(1000 * Math.min(...a)).toFixed(0)}..${(1000 * Math.max(...a)).toFixed(0)} ms (${a.length} trails)` : 'none';
+onFrame((wall) => {
+  const dt = Math.min(0.1, (wall - lastWall) / 1000); lastWall = wall;
+  const c0 = performance.now();
+  let now;
+  if (opt.mode === 'live') {
+    now = (wall - liveT0) / 1000;           // live: clock.now() at receipt for push AND render
+    forward(liveLast, now, 1); liveLast = now;      // live: rosbridge already throttled the feed (rate switch)
+  } else {
+    if (playing && !scrubbing) {
+      const np = Math.max(0, Math.min(REC_T1, p + dt * speed));
+      if (speed > 0) forward(lastP, np, speed); else if (np !== p) reverse(np);
+      p = lastP = np;
+    }
+    now = p; scrubEl.value = p.toFixed(2);
+  }
+  verts = layer.render(now, +tailEl.value);
+  cpuAcc += performance.now() - c0; cpuN++;
+  updateMocapMarkers(lastMarkers);
+  for (let i = 0; i < 2; i++) {
+    const b = lastBalls[i], m = ballMeshes[i];
+    if (!b) { m.visible = false; continue; }
+    m.visible = true; m.position.set(b.x * 1e-3, b.z * 1e-3, -b.y * 1e-3);
+    m.material.color.setHex(BALL_HUES[b.id % BALL_HUES.length]); m.material.opacity = 1;
+  }
+  fpsN++;
+  if (wall - fpsT >= 1000) { fps = fpsN * 1000 / (wall - fpsT); cpuMs = cpuAcc / cpuN; pushRate = (pushes - pushT) * 1000 / (wall - fpsT);
+    fpsN = 0; cpuAcc = 0; cpuN = 0; pushT = pushes; fpsT = wall; }
+  tread.textContent = `t=${now.toFixed(2)} s`;
+  const st = layer.stats(now, +tailEl.value);
+  const ballTxt = lastBalls.map((b) => `id ${b.id} ${STATUS[b.status]}`).join(', ') || '(no tracks on /balls)';
+  hud.textContent =
+    `fps ${fps.toFixed(0)}   trail cpu ${cpuMs.toFixed(2)} ms/frame (feed + render)   msgs ${pushRate.toFixed(0)}/s\n` +
+    `drawn vertices ${verts}   active trails ${st.active}   pool-exhausted drops ${st.dropped}\n` +
+    `technique ${opt.technique}${opt.ageMode !== 'dim' && opt.technique !== 'ribbon' ? '  (thin unsupported here: drawn as dim)' : ''}\n` +
+    `marker trail span ${fmt(st.mocap)}\nball trail span   ${fmt(st.balls)}\n/balls: ${ballTxt}`;
+  if (jumpInfo && ++jumpInfo.frames === 2) {
+    jumpEl.textContent =
+      `${jumpInfo.why} -> t=${jumpInfo.at.toFixed(2)} s, feed "${opt.feed}"\n` +
+      `messages handed to the trail module: ${jumpInfo.pushed}\n` +
+      `requested tail ${tailEl.value} ms; shown immediately after:\n` +
+      `  markers ${fmt(st.mocap)}\n  balls   ${fmt(st.balls)}\n` +
+      (opt.feed === 'dispatch' ? '  -> one record per topic: trails regrow over tail_length_ms of play\n' : '') +
+      (opt.feed === 'preroll' ? '  -> full span, but at the 1x gate (20 Hz mocap) and 30 s of pushes\n' : '') +
+      (opt.feed === 'columns' ? '  -> full span at recorded rate; pushes = tail x rate only\n' : '');
+  }
+});
+seekTo(p, 'initial seek');
+// test hook for headless checks
+window.__trails = { layer, opt, seekTo, get p() { return p; }, stats: () => layer.stats(p, +tailEl.value), applyOpt, get verts() { return verts; }, get fps() { return fps; }, get cpuMs() { return cpuMs; } };
+</script>
+</body>
+</html>
