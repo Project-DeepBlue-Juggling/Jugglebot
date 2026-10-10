@@ -2,7 +2,7 @@
 title: Ball Butler gets its own CAN input scales (bb_hand_* 100/100, bb_pitch_* 1000/1000) — BB FW 6 had borrowed Jugglebot's hand_tor (1000) for BB's hand S1 (input_torque_scale 100), a 10x torque feedforward; BB_FW_VERSION_EXPECTED 6 -> 7
 type: bugfix
 date: 2026-10-10
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack — R5 (Ball Butler calibration)"
 related_plan: two-ball-skill-stack.md
 files_changed:
@@ -90,3 +90,12 @@ external_changes: BallButler branch `bb-fw7-own-hand-scales` —
 `ball_butler_main/protocol_config.h` (copied, + `InputScale::bb_*`),
 `ball_butler_main/CanInterface.{h,cpp}` (per-node scales), `ball_butler_main/FwUpdate.h`
 (FW_VERSION 7), `logbook/2026-10-10-bb-hand-torque-ff-scale.md`, `logbook/INDEX.md`.
+
+**Flashed 2026-10-10 17:21 local:** BB FW 7 went over CAN from the merged BallButler `main` (`da3bfbe`) with this
+checkout's `tools/teensy_link_bridge.py --fw-update --target bb` (163 840 B in 25.4 s, 26 rewinds, VERIFY OK, receipt
+`FW version: 6 -> 7`); `bb_link_check.py` afterwards: bridge FW 28, BB on the bus, `bb_yaw` 99.8 Hz, 401/401 paired.
+`test_bb_fw_update_xref.py` + `test_udp_protocol_xlang.py` against the merged BallButler tree: 49 passed;
+`generate_config.py --check`: CONFIG FRESH. This entry's scope (the keys, the regeneration, the expected version) is
+live; the behavioural verification of the hand (rest ~+0.46 mm after a reload, no pre-throw kick, stroke ~236 mm, no
+spinouts, then the 40-throw validation) is the owner's first FW 7 sitting, tracked in BallButler
+`logbook/2026-10-10-bb-hand-torque-ff-scale.md`.
