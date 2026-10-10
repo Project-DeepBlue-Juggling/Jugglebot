@@ -689,14 +689,32 @@ CONSTELLATION_FRAME_MAX_RMS_MM = 1.5
 #: ~1700; 200 is ~1 s of motion and far below any real sweep).
 CONSTELLATION_MIN_FRAMES = 200
 
-#: Template residual (mm): the largest mean error, over the window, of a
-#: marker-pair separation against the template's. A marker that moved on BB
-#: changes its separations by up to its displacement; per-frame noise and the
-#: pose-dependent reconstruction error (which moves the per-marker residuals
-#: by ~0.5–0.8 mm on the 7-sweep bag) largely average out of a distance. Above CONSTELLATION_MAX_RESIDUAL_MM the estimate FAILS (the template no
+#: Template residual (mm): per marker pair, the mean separation error against
+#: the template in each TEMPLATE_RESIDUAL_BIN_DEG bin of the body's own posed
+#: yaw (moving frames), then the MEDIAN over those bins; the residual is the
+#: largest |.| over pairs. A marker that moved on BB changes its separations by
+#: up to its displacement, by the same amount at EVERY pose, so the median over
+#: poses keeps it. QTM's reconstruction error at BB's location is not like
+#: that: it is pose-dependent (pair Q3-Q6 swings from +0.4 to -2.1 mm across
+#: the sweep on bag 2026-10-10_10-32-31, identically on both legs) with the
+#: same pattern in every sitting and a sitting-dependent amplitude (0.5-1.7x
+#: that of bag 2026-10-09_23-49-07), and its window MEAN (the statistic until
+#: 2026-10-10) reached 0.56-0.64 mm on five sweeps whose yaw offsets agree
+#: with the good bag's to 0.01 deg, refusing all of them. Binned: 0.22-0.42 mm
+#: on 26 sweeps of four sittings; a displacement injected to bias the yaw by
+#: 0.1 deg reads 0.5-1.7 mm on it, as on the window mean (logbook
+#: 2026-10-10-bb-template-residual-coverage). A pair seen in fewer than
+#: TEMPLATE_RESIDUAL_MIN_BINS bins keeps its window mean. Above
+#: CONSTELLATION_MAX_RESIDUAL_MM the estimate FAILS (the template no
 #: longer describes BB); above GATE_MAX_RESIDUAL_MM a calibration with a
 #: reference is refused by the gate.
 CONSTELLATION_MAX_RESIDUAL_MM = 1.0
+#: Pose bin width (deg of posed body yaw) of the template residual.
+TEMPLATE_RESIDUAL_BIN_DEG = 15.0
+#: Fewest frames for a pose bin to enter a pair's median.
+TEMPLATE_RESIDUAL_MIN_BIN_FRAMES = 20
+#: Fewest populated bins for a pair's median (else its window mean).
+TEMPLATE_RESIDUAL_MIN_BINS = 3
 
 #: Moving samples: |dy/dt| above this (deg/s) on the reported-yaw series.
 SWEEP_MIN_SPEED_DEG_S = 5.0
@@ -992,10 +1010,47 @@ class ConstellationTrack:
                     out[a, b] = out[b, a] = float(d.mean()) - dT[a, b]
         return out
 
+    def pair_residual_pose_binned_mm(self, mask=None,
+                                     bin_deg: float = TEMPLATE_RESIDUAL_BIN_DEG,
+                                     min_frames: int = TEMPLATE_RESIDUAL_MIN_BIN_FRAMES,
+                                     min_bins: int = TEMPLATE_RESIDUAL_MIN_BINS) -> np.ndarray:
+        """(K, K) per-pair median, over bins of the posed body yaw (``bin_deg``
+        wide, >= ``min_frames`` frames each), of the bin's mean observed −
+        template separation, over the frames in ``mask`` (default all). A pair
+        with fewer than ``min_bins`` such bins gets its window mean
+        (:meth:`pair_residual_mm`); nan where a pair was never seen. See
+        :data:`CONSTELLATION_MAX_RESIDUAL_MM` for why the median over poses."""
+        sel = np.ones(len(self.t), bool) if mask is None else np.asarray(mask, bool)
+        P = self.points[sel]
+        out = self.pair_residual_mm(sel)
+        if len(P) == 0:
+            return out
+        th = self.theta_deg[sel]
+        b = np.floor((th - th.min()) / bin_deg).astype(int)
+        T = self.template_mm
+        dT = np.linalg.norm(T[:, None] - T[None], axis=2)
+        for a in range(len(T)):
+            for c in range(a + 1, len(T)):
+                e = np.linalg.norm(P[:, a] - P[:, c], axis=1) - dT[a, c]
+                ok = np.isfinite(e)
+                means = [float(e[ok & (b == k)].mean()) for k in np.unique(b[ok])
+                         if np.count_nonzero(ok & (b == k)) >= min_frames]
+                if len(means) >= min_bins:
+                    out[a, c] = out[c, a] = float(np.median(means))
+        return out
+
     def template_residual_mm(self, mask=None) -> float:
-        """Largest |mean separation error| over marker pairs: a marker that
-        moved on BB changes its separations by up to its displacement, while
-        frame noise averages out over the window."""
+        """Largest |pose-binned separation error| over marker pairs
+        (:meth:`pair_residual_pose_binned_mm`): a marker that moved on BB
+        changes its separations by up to its displacement at every pose, while
+        frame noise averages out within a bin and pose-dependent reconstruction
+        error is suppressed by the median over bins."""
+        r = np.abs(self.pair_residual_pose_binned_mm(mask))
+        return float(np.nanmax(r)) if np.any(np.isfinite(r)) else float('nan')
+
+    def template_residual_window_mm(self, mask=None) -> float:
+        """Largest |window-mean separation error| over marker pairs — the
+        statistic before 2026-10-10, kept as a diagnostic."""
         r = np.abs(self.pair_residual_mm(mask))
         return float(np.nanmax(r)) if np.any(np.isfinite(r)) else float('nan')
 
@@ -1273,6 +1328,8 @@ class SweepYawEstimate:
     stale_fraction: float = 0.0 # heartbeat samples read one republish period older
     #: Fraction of frame intervals off the QTM frame grid (:func:`mocap_clock_off_grid`; None: too few frames to tell).
     frame_clock_off_grid: Optional[float] = None
+    #: The window-mean pair statistic (diagnostic; the gate reads the pose-binned ``template_residual_mm``).
+    template_residual_window_mm: float = float('nan')
 
     def summary(self) -> str:
         """One-line description for the result message."""
@@ -1282,7 +1339,8 @@ class SweepYawEstimate:
                 f'{self.n_frames_rejected} rejected, '
                 f'{self.matched_min}-{self.matched_max} markers, median fit '
                 f'{self.frame_rms_median_mm:.2f} mm, template residual '
-                f'{self.template_residual_mm:.2f} mm, mocap clock {clock}), '
+                f'{self.template_residual_mm:.2f} mm (window mean '
+                f'{self.template_residual_window_mm:.2f}), mocap clock {clock}), '
                 f'yaw source {self.yaw_source} '
                 f'lag {self.lag_s * 1e3:.1f} ms ({self.stale_fraction * 100:.0f} % one period '
                 f'stale) over {self.n_moving} moving samples '
@@ -1399,6 +1457,7 @@ def estimate_sweep_yaw_offset(
         matched_min=int(track.n_matched.min()), matched_max=int(track.n_matched.max()),
         frame_rms_median_mm=float(np.median(track.rms_mm)),
         template_residual_mm=tres, yaw_source=yaw_source,
+        template_residual_window_mm=track.template_residual_window_mm(moving),
         n_frames_moving=int(moving.sum()), frame_clock_off_grid=off_grid)
 
 
