@@ -80,5 +80,9 @@ live on. The node runs with no priority or core reservation and ~40 % of a core 
 
 ## Open
 
+- **Fix 1, 3 and 4 built 2026-10-10** (bounded frame queue, cheaper per-frame work, loss counters + WARN): logbook
+  `2026-10-10-mocap-frame-queue`, branch `mocap-frame-queue-2026-10-10`, not merged or deployed; this entry stays open
+  until `/mocap_data` is verified at ~300 unique frames/s live.
+
 - n = 1 bag per condition around the onset; the load at 12:26 and 19:23 is inferred (no CPU log).
 - Decide whether to build fixes 1–4 before relying on catches (two-ball juggling).

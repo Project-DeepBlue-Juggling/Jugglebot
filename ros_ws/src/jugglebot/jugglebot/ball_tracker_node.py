@@ -75,7 +75,10 @@ class BallTrackerNode(Node):
             landing_z=self._landing_z,
             match_threshold_base_mm=hw.TRACKING_MATCH_THRESHOLD_BASE_MM,
             parabolic_min_frames=hw.TRACKING_MIN_MATCHES_TO_CONFIRM,
-            missed_frames_to_lose=10,
+            # 15 frames ~ 50 ms: mocap_node publishes every QTM frame (~300/s)
+            # since 2026-10-10 (logbook 2026-10-10-mocap-frame-queue); 10 frames
+            # meant ~50 ms at the old ~200 msgs/s and would now be ~33 ms.
+            missed_frames_to_lose=15,
             max_frames_without_measurement=hw.TRACKING_MAX_FRAMES_WITHOUT_MEASUREMENT,
             process_noise=hw.TRACKING_PROCESS_NOISE,
             measurement_noise=hw.TRACKING_MEASUREMENT_NOISE,

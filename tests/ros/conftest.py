@@ -329,20 +329,13 @@ class BallStateArray:
 
 
 @dataclass
-class _MockPoseInner:
-    """Just enough of geometry_msgs/Pose for the director's body.pose.pose.position access."""
-    position: object = None
-
-
-@dataclass
-class _MockPoseStamped:
-    pose: object = field(default_factory=_MockPoseInner)
-
-
-@dataclass
 class RigidBodyPose:
     name: str = ""
-    pose: object = field(default_factory=_MockPoseStamped)
+    # A full PoseStamped (defined further down; the lambda defers the lookup),
+    # as the real message default-constructs one: mocap_node fills this
+    # default in place rather than building a second PoseStamped per body
+    # per frame (logbook 2026-10-10-mocap-frame-queue).
+    pose: object = field(default_factory=lambda: PoseStamped())
 
 
 @dataclass
