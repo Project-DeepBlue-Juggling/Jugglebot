@@ -139,7 +139,7 @@ DEFAULT_BASE_FRAME_FILE = 'bb_base_frame.json'
 DEFAULT_BASE_FRAME_STATE_FILE = os.path.join(
     os.path.expanduser('~'), 'bb_calibration_sessions', 'bb_base_frame_state.json')
 #: ``bb_pose_source``: what the published BB world pose comes from.
-#: ``sweep`` (DEFAULT) — the sweep estimator's world pose, gated in the world
+#: ``sweep`` — the sweep estimator's world pose, gated in the world
 #: (unchanged); the base frame, when seen, is a diagnostic and each accepted
 #: sweep consistent with it extends the BB-in-base pool. ``base_frame`` — this
 #: window's base pose composed with the pooled BB-in-base constants, gated in
@@ -147,10 +147,15 @@ DEFAULT_BASE_FRAME_STATE_FILE = os.path.join(
 #: change is refused unless bb_moved); refused when the base is not seen.
 #: ``auto`` — base_frame once the pool has ``bb_base_min_sweeps`` sweeps and the
 #: base is seen with a residual inside BASE_MAX_RESIDUAL_MM, else sweep.
-#: Default sweep: on 2026-10-10 the base path agreed with the sweeps only to
-#: the sweeps' own scatter (logbook 2026-10-10-bb-base-marker-frame).
+#: Default ``auto`` since 2026-10-10 13:45: the second sitting with the frame
+#: (8 sweeps, stamped yaw, all accepted) read κ = +179.515° ± 0.011° against
+#: the build's +179.491° ± 0.016° (Δ 0.024°, 1.3 combined SE, inside the 0.05°
+#: criterion for a BB-vs-base QTM warp) with the base heading shifted only
+#: +0.003° and the origin 0.7 mm — BB-in-base holds across sittings, so the
+#: base path (≈ 0.01° per sitting) replaces the sweep's own 0.03–0.05° value
+#: whenever the base is seen (logbook 2026-10-10-bb-base-marker-frame).
 BB_POSE_SOURCES = ('sweep', 'base_frame', 'auto')
-DEFAULT_BB_POSE_SOURCE = 'sweep'
+DEFAULT_BB_POSE_SOURCE = 'auto'
 #: Cadence (s) of the slow running base-pose estimate fed from the 200 Hz path.
 BASE_MONITOR_PERIOD_S = 0.2
 #: A window that does not see the base may use the running estimate if its

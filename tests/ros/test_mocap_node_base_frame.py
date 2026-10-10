@@ -1,6 +1,6 @@
 """mocap_node and the BB base-marker frame (2026-10-10).
 
-``bb_pose_source``: ``sweep`` (default; world gate unchanged, base frame a
+``bb_pose_source``: ``sweep`` (world gate unchanged, base frame a
 diagnostic + pool input), ``base_frame`` (published pose = this window's base
 pose ∘ pooled BB-in-base constants, gated in the base frame), ``auto`` (base
 frame once the pool has ``bb_base_min_sweeps`` and the base is seen).
@@ -133,13 +133,15 @@ def _base_records(tmp_path):
 
 # ── Parameters ──────────────────────────────────────────────────────────────
 
-def test_default_pose_source_is_sweep_and_an_invalid_value_is_refused(tmp_path):
+def test_default_pose_source_is_auto_and_an_invalid_value_is_refused(tmp_path):
+    """``auto`` since the second sitting with the frame (2026-10-10 13:45) read
+    κ within 0.024° of the build's reference (1.3 combined SE)."""
     import jugglebot.mocap_node as mn
-    assert mn.DEFAULT_BB_POSE_SOURCE == 'sweep'
+    assert mn.DEFAULT_BB_POSE_SOURCE == 'auto'
     node = _node(tmp_path)
     node._params.pop('bb_pose_source')
     node.declare_parameter('bb_pose_source', mn.DEFAULT_BB_POSE_SOURCE)
-    assert node.get_parameter('bb_pose_source').value == 'sweep'
+    assert node.get_parameter('bb_pose_source').value == 'auto'
     bad = node._on_set_parameters([SimpleNamespace(name='bb_pose_source', value='landings')])
     assert not bad.successful and 'bb_pose_source' in bad.reason
     ok = node._on_set_parameters([SimpleNamespace(name='bb_pose_source', value='auto')])
