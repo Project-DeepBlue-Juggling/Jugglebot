@@ -1,0 +1,296 @@
+{
+  "schema": 1,
+  "description": "Ball Butler base-marker frame: four coplanar markers fastened to BB's shelf (no QTM label; identified by geometry), their as-built coordinates, and BB's pose in that frame pooled over accepted sweeps. mocap_node composes this sitting's base pose with these constants (bb_pose_source base_frame / auto). jugglebot/bb_base_frame.py.",
+  "frame": "Base frame, mm: origin C (the L's corner); z the marker plane's normal, pointing up; x along C->E with its normal component removed; y = z x x (S on +y). Heading = angle of the posed x axis projected on world xy.",
+  "nominal": {
+    "cs_mm": 115.0,
+    "cm_mm": 80.0,
+    "ce_mm": 240.0,
+    "note": "owner's nominal (3D-printed); identification tolerance 4.0 mm per pair distance"
+  },
+  "as_built": {
+    "markers": [
+      {
+        "id": "C",
+        "xyz_mm": [
+          0.0,
+          0.0,
+          0.0
+        ],
+        "frame_sd_mm": [
+          0.0096,
+          0.0142,
+          0.0051
+        ]
+      },
+      {
+        "id": "M",
+        "xyz_mm": [
+          80.1444,
+          0.3103,
+          -0.4136
+        ],
+        "frame_sd_mm": [
+          0.0096,
+          0.0145,
+          0.0077
+        ]
+      },
+      {
+        "id": "E",
+        "xyz_mm": [
+          239.8183,
+          0.0,
+          -0.0818
+        ],
+        "frame_sd_mm": [
+          0.011,
+          0.0081,
+          0.0026
+        ]
+      },
+      {
+        "id": "S",
+        "xyz_mm": [
+          0.1181,
+          115.3317,
+          -0.1642
+        ],
+        "frame_sd_mm": [
+          0.0136,
+          0.0222,
+          0.0
+        ]
+      }
+    ],
+    "pair_distances_mm": {
+      "CM": {
+        "as_built_mm": 80.146,
+        "nominal_mm": 80.0
+      },
+      "CE": {
+        "as_built_mm": 239.818,
+        "nominal_mm": 240.0
+      },
+      "CS": {
+        "as_built_mm": 115.332,
+        "nominal_mm": 115.0
+      },
+      "ME": {
+        "as_built_mm": 159.675,
+        "nominal_mm": 160.0
+      },
+      "MS": {
+        "as_built_mm": 140.122,
+        "nominal_mm": 140.09
+      },
+      "ES": {
+        "as_built_mm": 266.003,
+        "nominal_mm": 266.13
+      }
+    },
+    "plane_tilt_deg": 1.042,
+    "plane_normal_world": [
+      0.00291,
+      -0.01796,
+      0.99983
+    ],
+    "built_from": "2026-10-10_12-26-22_0.mcap: generalised Procrustes over 16184 frames with all four markers (of 16616)"
+  },
+  "bb_in_base": {
+    "kappa_deg": 179.49077,
+    "kappa_sd_deg": 0.05028,
+    "kappa_se_deg": 0.0159,
+    "n_sweeps": 10,
+    "axis_point_mm": [
+      177.5375,
+      148.8615,
+      76.7082
+    ],
+    "axis_point_sd_mm": [
+      0.0268,
+      0.0312,
+      0.043
+    ],
+    "meaning": "kappa = published yaw offset (pinned gauge, about world z) - base heading; axis_point = BB's axis point in the base frame. Summary only: mocap_node pools the records (each moved to the current pin).",
+    "records": [
+      {
+        "kappa_deg": 179.50422148347351,
+        "sigma_deg": 0.07028226646833731,
+        "axis_point_b_mm": [
+          177.5373269126813,
+          148.80932624003336,
+          76.73557049957645
+        ],
+        "pin_deg": 0.208,
+        "accepted_at": "2026-10-10T01:26:55Z",
+        "yaw_offset_deg": 0.45449009140149893,
+        "base_heading_deg": -179.04973139207198,
+        "source": "2026-10-10_12-26-22_0.mcap sweep 1"
+      },
+      {
+        "kappa_deg": 179.53794275742328,
+        "sigma_deg": 0.07816741669439453,
+        "axis_point_b_mm": [
+          177.5314682193651,
+          148.87472957277734,
+          76.69351481493027
+        ],
+        "pin_deg": 0.208,
+        "accepted_at": "2026-10-10T01:27:08Z",
+        "yaw_offset_deg": 0.48787471749149447,
+        "base_heading_deg": -179.05006803993174,
+        "source": "2026-10-10_12-26-22_0.mcap sweep 2"
+      },
+      {
+        "kappa_deg": 179.44984307129155,
+        "sigma_deg": 0.09062593186102028,
+        "axis_point_b_mm": [
+          177.49252734924235,
+          148.8944111510679,
+          76.72826836374924
+        ],
+        "pin_deg": 0.208,
+        "accepted_at": "2026-10-10T01:27:27Z",
+        "yaw_offset_deg": 0.39815810955170683,
+        "base_heading_deg": -179.05168496173985,
+        "source": "2026-10-10_12-26-22_0.mcap sweep 3"
+      },
+      {
+        "kappa_deg": 179.471147141085,
+        "sigma_deg": 0.08027880738453384,
+        "axis_point_b_mm": [
+          177.50164442653667,
+          148.88467603363316,
+          76.7144035482131
+        ],
+        "pin_deg": 0.208,
+        "accepted_at": "2026-10-10T01:27:39Z",
+        "yaw_offset_deg": 0.42045166214339613,
+        "base_heading_deg": -179.0506954789416,
+        "source": "2026-10-10_12-26-22_0.mcap sweep 4"
+      },
+      {
+        "kappa_deg": 179.55420619002717,
+        "sigma_deg": 0.089737181492743,
+        "axis_point_b_mm": [
+          177.58419688799333,
+          148.83791421870498,
+          76.68533902136369
+        ],
+        "pin_deg": 0.208,
+        "accepted_at": "2026-10-10T01:27:52Z",
+        "yaw_offset_deg": 0.5033487327299548,
+        "base_heading_deg": -179.05085745729718,
+        "source": "2026-10-10_12-26-22_0.mcap sweep 5"
+      },
+      {
+        "kappa_deg": 179.5742631811209,
+        "sigma_deg": 0.06850378863808367,
+        "axis_point_b_mm": [
+          177.5441678146421,
+          148.85589754071242,
+          76.69910190977869
+        ],
+        "pin_deg": 0.208,
+        "accepted_at": "2026-10-10T01:28:04Z",
+        "yaw_offset_deg": 0.5233470772378073,
+        "base_heading_deg": -179.05091610388305,
+        "source": "2026-10-10_12-26-22_0.mcap sweep 6"
+      },
+      {
+        "kappa_deg": 179.4325985262025,
+        "sigma_deg": 0.07798563095203578,
+        "axis_point_b_mm": [
+          177.5624589630709,
+          148.82056973954195,
+          76.80299089716564
+        ],
+        "pin_deg": 0.208,
+        "accepted_at": "2026-10-10T01:28:15Z",
+        "yaw_offset_deg": 0.380730139590436,
+        "base_heading_deg": -179.05186838661206,
+        "source": "2026-10-10_12-26-22_0.mcap sweep 7"
+      },
+      {
+        "kappa_deg": 179.48405278561208,
+        "sigma_deg": 0.0748802395033515,
+        "axis_point_b_mm": [
+          177.54973761730207,
+          148.90569668822133,
+          76.636661545594
+        ],
+        "pin_deg": 0.208,
+        "accepted_at": "2026-10-10T01:28:26Z",
+        "yaw_offset_deg": 0.4321802707875839,
+        "base_heading_deg": -179.05187251482448,
+        "source": "2026-10-10_12-26-22_0.mcap sweep 8"
+      },
+      {
+        "kappa_deg": 179.46534481763612,
+        "sigma_deg": 0.07465777873474144,
+        "axis_point_b_mm": [
+          177.5282832969844,
+          148.8670646137482,
+          76.68670627381805
+        ],
+        "pin_deg": 0.208,
+        "accepted_at": "2026-10-10T01:28:40Z",
+        "yaw_offset_deg": 0.4119855371267176,
+        "base_heading_deg": -179.0533592805094,
+        "source": "2026-10-10_12-26-22_0.mcap sweep 9"
+      },
+      {
+        "kappa_deg": 179.43407640162846,
+        "sigma_deg": 0.0800277739713508,
+        "axis_point_b_mm": [
+          177.5431960684139,
+          148.86451976576262,
+          76.69956256625039
+        ],
+        "pin_deg": 0.208,
+        "accepted_at": "2026-10-10T01:28:58Z",
+        "yaw_offset_deg": 0.38080850542743105,
+        "base_heading_deg": -179.05326789620102,
+        "source": "2026-10-10_12-26-22_0.mcap sweep 10"
+      }
+    ]
+  },
+  "gauge": {
+    "pinned_yaw_offset_deg_at_build": 0.208,
+    "pin_uncertainty_deg": 0.2,
+    "note": "kappa is measured from the PUBLISHED (pinned) sweep offsets, so at the build sitting the base-derived offset equals the constellation's: same gauge, the frame throw_affine_correction.json was fitted in. Each record carries the pin it was measured under and pooling moves it to the marker template's CURRENT gauge.pinned_yaw_offset_deg, so a landing-derived re-pin (BallButler settle_yaw_gauge.py: add delta to the pin) moves kappa by the same delta with no re-sweep. The pin's own uncertainty is common to every sitting and is not in kappa_se_deg."
+  },
+  "provenance": {
+    "built": "2026-10-10T01:56:39Z by tools/bb_base_frame_build.py --bag 2026-10-10_12-26-22_0.mcap",
+    "base_pose_at_build": {
+      "origin_mm": [
+        -801.6851378019078,
+        -236.78938365130492,
+        1659.9768949490174
+      ],
+      "R": [
+        [
+          -0.9998593786695674,
+          0.01651469842428493,
+          0.0029133524439253775
+        ],
+        [
+          -0.016564408606089296,
+          -0.9997015744071298,
+          -0.01795501310041019
+        ],
+        [
+          0.0026159613984377853,
+          -0.018000746202874365,
+          0.9998345512544072
+        ]
+      ],
+      "heading_deg": -179.05088264260792,
+      "tilt_deg": 1.042258288680096,
+      "heading_se_deg": 0.0001866552774478141,
+      "n_frames": 16170
+    },
+    "note": "Seeded from the 10 sweeps mocap_node published live at this sitting (heartbeat yaw source, all accepted): the deployed gauge. Offline replays of the same sweeps through the estimator read kappa +179.507 (stamped yaw, SD 0.021) and +179.512 (heartbeat at bag log time, SD 0.038) vs +179.491 here (SD 0.050): within 1.3 SE. Analysis scripts and outputs: ~/bb_calibration_sessions/base_frame_20261010/ (*.py, *.txt); logbook 2026-10-10-bb-base-marker-frame."
+  }
+}
