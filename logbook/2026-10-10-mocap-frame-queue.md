@@ -214,3 +214,8 @@ node dropped nothing. Tests: `tests/ros/test_mocap_frame_queue.py` (4 % silent, 
 the starvation wording, a 200-frame outage warns once).
 
 Status stays in-progress until the owner confirms the WARN behaviour on a sitting.
+
+**Merged-state gate for the WARN rule (skill-stack f5221120, 2026-10-11 00:12–00:19, log
+`temp/logs/full_gate_gapwarn_merged_20261011.log`):** 6605 passed, 9 skipped, 1 xfailed, 1 failed —
+`tests/ros/test_skill_node.py::test_columns_releases_each_correlate_to_their_own_track`, no mocap involvement, passed
+alone at 00:20 (another agent's scoped test run shared the box during the gate); serial 6 passed. Installed 00:21.
