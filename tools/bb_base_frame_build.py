@@ -4,9 +4,9 @@ base-marker frame (as-built marker coordinates + pooled BB-in-base constants).
 
 Two sources:
 
-  --bag BAG.mcap      learn the as-built base template from the bag's unlabelled
-                      markers (/mocap_data) and take one BB-in-base record per
-                      ACCEPTED sweep the node published in it (/bb/calibration_result,
+  --bag BAG.mcap      learn the as-built base template from the bag's markers
+                      (/mocap_data; every marker but BB's own, labelled or
+                      not) and take one BB-in-base record per ACCEPTED sweep the node published in it (/bb/calibration_result,
                       success; each paired with the base pose over its CALIBRATING
                       window from /bb/heartbeat). The published values are the
                       deployed gauge (the node's own numbers, not an offline replay).
@@ -44,7 +44,7 @@ CALIBRATING = 5     # BallButlerStates.CALIBRATING
 
 
 def read_bag(path):
-    """(unlabelled frames [(stamp_s, (m,3))], heartbeats [(t, state)], accepted results)."""
+    """(base-candidate frames [(stamp_s, (m,3))], heartbeats [(t, state)], accepted results)."""
     from mcap_ros2.reader import read_ros2_messages
     frames, hb, res = [], [], []
     last = None
@@ -58,8 +58,9 @@ def read_bag(path):
             if ns <= 0 or ns == last:
                 continue
             last = ns
-            U = np.array([(k.position.x, k.position.y, k.position.z)
-                          for k in m.markers if not k.label]).reshape(-1, 3)
+            U = bf.base_candidate_points(
+                np.empty((0, 3)), [(k.label, k.position.x, k.position.y, k.position.z, 0.0)
+                                   for k in m.markers])
             frames.append((ns * 1e-9, U))
         elif topic == '/bb/heartbeat':
             hb.append((t, int(m.state)))
@@ -164,11 +165,16 @@ def resource_json(as_built, recs, pin_deg, repeat_deg, pin_sd, provenance):
             'kappa_sd_deg': None if pooled is None else round(pooled.sd_deg, 5),
             'kappa_se_deg': None if pooled is None else round(pooled.se_deg, 5),
             'n_sweeps': 0 if pooled is None else pooled.n,
+            'n_records': len(recs),
+            'outliers': [] if pooled is None else bf.pool_summary(recs, pooled)['outliers'],
+            'outlier_rule': None if pooled is None else bf.pool_summary(recs, pooled)['rule'],
             'axis_point_mm': None if pooled is None else [round(float(v), 4) for v in pooled.axis_point_b_mm],
             'axis_point_sd_mm': None if pooled is None else [round(float(v), 4) for v in pooled.axis_point_sd_mm],
             'meaning': ('kappa = published yaw offset (pinned gauge, about world z) - base heading; '
                         'axis_point = BB\'s axis point in the base frame. Summary only: mocap_node '
-                        'pools the records (each moved to the current pin).'),
+                        'pools the records (each moved to the current pin), robustly: n_sweeps '
+                        'counts the kept records, outliers lists the excluded ones (all records '
+                        'stay below).'),
             'records': [r.to_dict() for r in recs],
         },
         'gauge': {
@@ -218,8 +224,12 @@ def main(argv=None):
         prov['note'] = a.note
     out = resource_json(as_built, recs, pin, rep, pin_sd, prov)
     b = out['bb_in_base']
-    print(f'kappa {b["kappa_deg"]}° SD {b["kappa_sd_deg"]} SE {b["kappa_se_deg"]} n {b["n_sweeps"]}; '
+    print(f'kappa {b["kappa_deg"]}° SD {b["kappa_sd_deg"]} SE {b["kappa_se_deg"]} n {b["n_sweeps"]} '
+          f'of {b["n_records"]} ({len(b["outliers"])} outliers excluded); '
           f'axis point {b["axis_point_mm"]} mm (SD {b["axis_point_sd_mm"]})')
+    for o in b['outliers']:
+        print(f'  outlier: record {o["index"]} κ {o["kappa_deg"]:+.4f}° accepted {o["accepted_at"]} '
+              f'({o["source"]})')
     if a.dry_run:
         return 0
     with open(a.out, 'w') as f:

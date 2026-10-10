@@ -44,6 +44,12 @@ def _node(tmp_path, state=None, template=True):
     if state is not None:
         path.write_text(json.dumps(state))
     node._params['bb_calibration_state_file'] = str(path)
+    # These tests pin the WORLD gate: pose source sweep, and a private base
+    # pool (never the live ~/bb_calibration_sessions state). Under the default
+    # auto with the seeded pool, a window without the base leads its refusal
+    # with BASE_FRAME_NOT_SEEN (tests/ros/test_mocap_node_base_frame.py).
+    node._params['bb_pose_source'] = 'sweep'
+    node._params['bb_base_frame_state_file'] = str(tmp_path / 'base_state.json')
     if not template:
         node._marker_template = None
         node._marker_template_error = 'BB marker template not found (x.json)'

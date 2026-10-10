@@ -105,7 +105,7 @@ def _sweep(node, yaw_deg, pos, base=None):
     import jugglebot.mocap_node as mn
     node._on_bb_heartbeat(_hb(BallButlerStates.CALIBRATING))
     node._calib_data = {0: [np.zeros(3)]}
-    node._calib_unlabelled = [] if base is None else _base_frames(*base)
+    node._calib_base_points = [] if base is None else _base_frames(*base)
     with patch.object(mn, 'run_calibration', return_value=_result(yaw_deg, pos)):
         node._on_bb_heartbeat(_hb(BallButlerStates.IDLE))
     return node.pub_calibration_attempt.published[-1]
@@ -285,7 +285,7 @@ def test_a_window_without_the_base_uses_the_running_estimate(tmp_path):
     import jugglebot.mocap_node as mn
     node._on_bb_heartbeat(_hb(BallButlerStates.CALIBRATING))
     node._calib_data = {0: [np.zeros(3)]}
-    node._calib_unlabelled = [(101.0, np.zeros((0, 3)))] * 5
+    node._calib_base_points = [(101.0, np.zeros((0, 3)))] * 5
     with patch.object(mn, 'run_calibration', return_value=_result(yaw, pos)):
         node._on_bb_heartbeat(_hb(BallButlerStates.IDLE))
     assert node.pub_calibration_attempt.published[-1].success
@@ -340,7 +340,7 @@ def test_unlabelled_markers_feed_the_window_and_the_running_estimate(tmp_path):
         U = np.c_[P, np.zeros(len(P))]
         node._feed_base_frame(U, int(round(t * 1e9)))
         node._feed_base_frame(U, int(round(t * 1e9)))        # a re-published frame: once
-    assert len(node._calib_unlabelled) == 500
+    assert len(node._calib_base_points) == 500
     assert node._base_monitor._frames == 25                  # 5 s at BASE_MONITOR_PERIOD_S
     lines = _rec(node)
     node._report_base_frame_once()
@@ -348,4 +348,112 @@ def test_unlabelled_markers_feed_the_window_and_the_running_estimate(tmp_path):
     seen = [m for lv, m in lines if lv == 'info' and m.startswith('BB base frame seen')]
     assert len(seen) == 1 and 'QTM frame shift' in seen[0]
     node._end_calibration()
-    assert node._calib_unlabelled == []
+    assert node._calib_base_points == []
+
+
+# ── Label-agnostic collection (2026-10-10 14:10) ────────────────────────────
+
+def test_labelled_base_markers_reach_the_window_and_bbs_own_do_not(tmp_path):
+    """QTM's re-enabled Base / Catching Cone bodies labelled two of the four base
+    markers (logbook 2026-10-10-bb-base-frame-robustness): every labelled marker
+    but BB's own feeds the window and the running estimate."""
+    node = _node(tmp_path)
+    P = NOM @ _Rz(H0).T + O0
+    iface = node.mocap
+    iface.is_receiving.return_value = True
+    iface.get_all_markers_base_frame.return_value = np.c_[P[[0, 3]], np.zeros(2)]
+    iface.get_labelled_markers.return_value = [
+        ('Catching Cone - 4', *P[1], 0.1), ('Catching Cone - 5', *P[2], 0.1),
+        ('Ball Butler - 1', 0.0, 0.0, 0.0, 0.1), ('Ball Butler - 2', 10.0, 0.0, 0.0, 0.1)]
+    iface.get_body_poses.return_value = {}
+    iface.get_ball_butler_markers_base_frame.return_value = np.empty((0, 4))
+    node._on_bb_heartbeat(_hb(BallButlerStates.CALIBRATING))
+    for k in range(60):
+        iface.latest_frame_ros_ns.return_value = int((100.0 + 0.01 * k) * 1e9)
+        node._publish_mocap_data()
+    assert len(node._calib_base_points) == 60
+    pts = node._calib_base_points[-1][1]
+    assert pts.shape == (4, 3) and np.allclose(np.sort(pts, axis=0), np.sort(P, axis=0))
+    pose = bf.estimate_base_pose(node._calib_base_points, NOM, min_frames=50)
+    assert pose.heading_deg == pytest.approx(H0, abs=1e-6)
+
+
+# ── Failure messages that name the real cause ───────────────────────────────
+
+def _err_lines(lines):
+    return [m for lv, m in lines if lv == 'error' and m.startswith('BB calibration FAILED')]
+
+
+def test_auto_without_the_base_leads_the_refusal_with_the_base_not_bb_moved(tmp_path):
+    """14:10: two base markers labelled, the base not seen, ``auto`` fell back
+    to the sweep and the owner's routine QTM transform tripped the world gate
+    with 'set bb_moved:=true'. The cause to fix is the base's visibility."""
+    yaw, pos = _bb_world()
+    node = _node(tmp_path, pose_source='auto')
+    lines = _rec(node)
+    good = _sweep(node, yaw, pos, base=(H0, O0))            # base seen: base_frame path
+    assert good.success and 'pose source base_frame' in good.message
+    yaw2, pos2 = _bb_world(h=H0 + 0.41, o=O0 + [25.0, -18.0, 5.0])   # QTM re-transformed
+    msg = _sweep(node, yaw2, pos2)                           # ... and the base not seen
+    assert not msg.success
+    assert msg.message.startswith('BASE_FRAME_NOT_SEEN: 0 of 0 frames posed the base markers')
+    assert 'check QTM sees the 4 shelf markers' in msg.message
+    assert 'world gate also refused: Δyaw +0.41°, Δaxis' in msg.message
+    assert 'bb_moved' not in msg.message
+    assert len(msg.message) <= 240 and not msg.message.endswith('…')
+    err = _err_lines(lines)[-1]
+    assert err.endswith(f'(kept the calibration from {node._last_good_at})')
+    assert any('the base frame was not seen' in m for lv, m in lines if lv == 'warn')
+    assert node.pub_calibration.published[-1] is good       # keep-last-good holds
+
+
+def test_the_base_led_message_fits_the_cap_with_the_longest_not_seen_reason(tmp_path):
+    import jugglebot.mocap_node as mn
+    yaw, pos = _bb_world()
+    node = _node(tmp_path, pose_source='auto',
+                 state={'yaw_offset_deg': yaw, 'yaw_offset_std_deg': 0.07,
+                        'position_mm': list(pos), 'accepted_at': '2026-10-10T01:26:55'})
+    # the median-disagreement variant, with five-digit counts
+    node._calib_base_points = []
+    view = {'pose': None, 'pooled': node._base_frame_view(_result(yaw, pos))['pooled'],
+            'error': 'BASE_FRAME_NOT_SEEN: 49 of 99999 posed base frames agree with their '
+                     'median (need 50)'}
+    assert node._base_expected('auto', view)
+    yaw2, pos2 = _bb_world(h=H0 - 12.345, o=O0 + [999.0, -999.0, 99.0])
+    with patch.object(mn, 'estimate_base_pose', side_effect=ValueError(view['error'])):
+        msg = _sweep(node, yaw2, pos2)
+    assert msg.message.startswith('BASE_FRAME_NOT_SEEN: 49 of 99999')
+    assert len(msg.message) <= mn.MAX_CALIBRATION_FAILURE_CHARS and not msg.message.endswith('…')
+
+
+def test_bb_moved_stays_the_advice_when_the_base_would_not_have_decided(tmp_path):
+    """Pool below bb_base_min_sweeps (auto would have used the sweep anyway), or
+    no base model: the world gate's own message, bb_moved advice included."""
+    yaw, pos = _bb_world()
+    ref = {'yaw_offset_deg': yaw, 'yaw_offset_std_deg': 0.07, 'position_mm': list(pos),
+           'accepted_at': '2026-10-10T01:26:55'}
+    yaw2, pos2 = _bb_world(h=H0 + 0.41)
+    node = _node(_dir(tmp_path, 'a'), pose_source='auto', n_seed=3, state=ref)
+    msg = _sweep(node, yaw2, pos2)
+    assert msg.message.startswith('CALIBRATION_INCONSISTENT') and 'bb_moved:=true' in msg.message
+    node = _node(_dir(tmp_path, 'b'), pose_source='auto', state=ref)
+    node._base_model, node._base_model_error = None, 'BB base frame not found (x.json)'
+    msg = _sweep(node, yaw2, pos2)
+    assert msg.message.startswith('CALIBRATION_INCONSISTENT') and 'bb_moved:=true' in msg.message
+    node = _node(_dir(tmp_path, 'c'), pose_source='sweep', state=ref)
+    msg = _sweep(node, yaw2, pos2)
+    assert msg.message.startswith('CALIBRATION_INCONSISTENT') and 'bb_moved:=true' in msg.message
+
+
+def test_a_base_frame_pool_outlier_is_excluded_and_counted_in_the_message(tmp_path):
+    """The robust pool in the node: a seeded outlier is excluded from the
+    published κ and counted on the outcome line."""
+    yaw, pos = _bb_world()
+    node = _node(tmp_path, pose_source='base_frame')
+    node._base_model.records.append(bf.KappaRecord(
+        kappa_deg=KAPPA + 0.5, sigma_deg=0.07, axis_point_b_mm=tuple(P_B), pin_deg=PIN))
+    msg = _sweep(node, yaw, pos, base=(H0, O0))
+    assert msg.success and '1 outliers excluded' in msg.message
+    assert math.degrees(msg.yaw_offset_rad) == pytest.approx(bf.wrap_deg(H0 + KAPPA), abs=2e-3)
+    pool = json.loads((tmp_path / 'base.json').read_text())['pool']
+    assert pool['n_total'] == 12 and pool['n_kept'] == 11 and len(pool['outliers']) == 1

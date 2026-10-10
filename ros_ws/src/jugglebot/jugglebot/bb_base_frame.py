@@ -15,9 +15,13 @@ and the published BB world pose is their composition (:func:`compose_bb_pose`).
 
 Geometry (owner's nominal, 3D-printed, fastened to the shelf). Four coplanar
 markers in an L: corner C; short span C–S, |CS| = 115 mm; long span C–M–E
-collinear, |CM| = 80 mm, |CE| = 240 mm. They carry no QTM label: they are
-identified by their pairwise distances among the unlabelled markers
-(:func:`identify_base_markers`). A planar template's mirror image is reachable
+collinear, |CM| = 80 mm, |CE| = 240 mm. They need no QTM label: they are
+identified by their pairwise distances (:func:`identify_base_markers`) among
+ALL the frame's markers except BB's own yaw-stage markers
+(:func:`base_candidate_points`), so a QTM rigid body that grabs (labels) a
+base marker cannot hide it — on 2026-10-10 14:10 the re-enabled Base /
+Catching Cone bodies labelled two of the four and the unlabelled-only
+identifier saw 0 of 805 frames. A planar template's mirror image is reachable
 by a proper rotation (a half-turn about an in-plane axis), so the handedness is
 fixed by requiring the posed plane normal to point UP (world +z).
 
@@ -111,12 +115,35 @@ BASE_MAX_RESIDUAL_MM = 0.5
 #: a QTM frame shift (it is accepted either way).
 BASE_SHIFT_REPORT_MM = 0.2
 BASE_SHIFT_REPORT_DEG = 0.01
-#: BB-in-base gate: |Δκ| > max(N·√(σ_new² + SE_pool²), MIN) or |Δp_b| > MAX.
-#: The same limits as the world gate (bb_calibration GATE_*): the sweep's
-#: precision did not change, only the frame it is compared in.
+#: BB-in-base gate: |Δκ| > max(N·√(σ_src² + SE_pool²), MIN) or |Δp_b| > MAX,
+#: Δκ against the ROBUST pooled κ (:func:`pool_kappa`). σ_src is the measured
+#: per-sweep κ scatter of the new sweep's yaw source (KAPPA_SWEEP_SD_DEG), not
+#: the sweep's published σ (which over-states it: 0.036–0.045° stamped,
+#: 0.07–0.09° heartbeat). MIN 0.09° = 3 × the stamped per-sweep SD; it was
+#: 0.15° (the world gate's floor) until 2026-10-10, which let two sweeps
+#: +0.07–0.09° off into the pool (logbook 2026-10-10-bb-base-frame-robustness).
 KAPPA_GATE_N_SIGMA = 3.0
-KAPPA_GATE_MIN_DEG = 0.15
+KAPPA_GATE_MIN_DEG = 0.09
 BB_IN_BASE_MAX_SHIFT_MM = 1.5
+#: Per-sweep κ SD by yaw source (deg), measured 2026-10-10: stamped 0.030°
+#: (13:45 sitting, 8 sweeps), heartbeat 0.050° (12:26 sitting, 10 live sweeps).
+#: An unknown source gets the larger.
+KAPPA_SWEEP_SD_DEG = {'stamped': 0.030, 'heartbeat': 0.050}
+#: Robust pool (:func:`kappa_outliers`): a record more than CLIP_N·σ_g from the
+#: pool median is excluded, σ_g = max(1.4826·MAD of its yaw-source group about
+#: the median, SIGMA_FLOOR[source]) for a group of ≥ MIN_GROUP records, else
+#: max(SIGMA_FLOOR, KAPPA_SWEEP_SD_DEG)[source]. The floor bounds the false
+#: exclusions a small group's MAD (which reads low) would make. Stamped 0.020°
+#: = its per-sweep SD without the two suspect sweeps (12:26 offline stamped
+#: replay 0.021°, 13:45 sitting less its +0.07° sweep 0.020°); heartbeat 0.050°
+#: (its measured SD — no cleaner estimate exists). If the stamped σ is really
+#: 0.030°, a good record is excluded with p ≈ 4.6 % (|z| > 2), not 0.3 %.
+KAPPA_POOL_CLIP_N = 3.0
+KAPPA_POOL_SIGMA_FLOOR_DEG = {'stamped': 0.020, 'heartbeat': 0.050}
+KAPPA_POOL_MIN_GROUP = 5
+#: QTM rigid-body names of BB's own yaw-stage markers (labels ``<body> - i``):
+#: the only markers the base identifier does not search (they turn with yaw).
+BB_MARKER_BODIES = ('Ball Butler', 'Ball_Butler')
 #: Pooled sweeps the ``auto`` pose source needs before it uses the base frame.
 DEFAULT_MIN_POOLED_SWEEPS = 5
 #: Records kept in the pool (oldest dropped): ~a week of sittings.
@@ -142,6 +169,20 @@ def wrap_deg(a: float) -> float:
 # ---------------------------------------------------------------------------
 #  Identification and tracking
 # ---------------------------------------------------------------------------
+
+def base_candidate_points(unlabelled, labelled) -> np.ndarray:
+    """(n, 3) points the base identifier searches in one frame: every
+    unlabelled marker (rows x, y, z[, residual]) plus every labelled one
+    (``(label, x, y, z, residual)``) except BB's own (BB_MARKER_BODIES).
+    Labels play no other part: the base is found by geometry."""
+    U = np.asarray(unlabelled if unlabelled is not None else np.empty((0, 3)), dtype=float)
+    U = U.reshape(-1, U.shape[1] if U.ndim == 2 and U.shape[1] else 3)[:, :3]
+    L = [(float(x), float(y), float(z)) for label, x, y, z, *_ in (labelled or ())
+         if str(label).rsplit(' - ', 1)[0] not in BB_MARKER_BODIES]
+    if not L:
+        return U.copy()
+    return np.vstack([U, np.array(L, dtype=float)])
+
 
 @dataclass
 class BaseFrameMatch:
@@ -267,7 +308,7 @@ class BaseFrameTracker:
 
 def track_base_frame(frames, template, **kw) -> BaseFrameTrack:
     """Pose the base template in every frame. ``frames``: (t_s, (n, 3) points)
-    — the frame's UNLABELLED markers (labels play no part)."""
+    — the frame's candidate markers (:func:`base_candidate_points`)."""
     T = np.asarray(template, dtype=float).reshape(-1, 3)
     K = len(T)
     tr = BaseFrameTracker(T, **kw)
@@ -390,7 +431,8 @@ def estimate_base_pose(frames, template, *, track: Optional[BaseFrameTrack] = No
                        outlier_mm: float = BASE_OUTLIER_MM,
                        outlier_deg: float = BASE_OUTLIER_DEG,
                        block_s: float = BASE_SE_BLOCK_S) -> BasePose:
-    """Static base pose over a window of unlabelled-marker frames.
+    """Static base pose over a window of candidate-marker frames
+    (:func:`base_candidate_points`).
 
     Raises ValueError ``BASE_FRAME_NOT_SEEN`` when fewer than ``min_frames``
     frames pose the base (after outlier rejection)."""
@@ -483,33 +525,88 @@ class KappaRecord:
 
 @dataclass
 class PooledKappa:
-    kappa_deg: float            # in the CURRENT pin
-    sd_deg: float               # sweep-to-sweep SD (0 for n = 1)
+    kappa_deg: float            # in the CURRENT pin; mean of the kept records
+    sd_deg: float               # sweep-to-sweep SD of the kept records (0 for n = 1)
     se_deg: float               # SE of the mean
-    n: int
+    n: int                      # records kept (outliers excluded)
     axis_point_b_mm: np.ndarray
     axis_point_sd_mm: np.ndarray
+    n_total: int = 0            # records in the pool, outliers included
+    outliers: tuple = ()        # indices (into the records given) of the excluded ones
+
+    @property
+    def n_outliers(self) -> int:
+        return len(self.outliers)
+
+    def count_note(self) -> str:
+        """'n 20' or 'n 20 of 22, 2 outliers excluded' — the pool on one line."""
+        if not self.outliers:
+            return f'n {self.n}'
+        return f'n {self.n} of {self.n_total}, {self.n_outliers} outliers excluded'
+
+
+def kappa_record_yaw_source(rec: KappaRecord) -> str:
+    """'stamped' or 'heartbeat': the yaw source a record was measured with
+    (the node writes ``mocap_node (<source>)``; the 12:26 seed records are the
+    live heartbeat values)."""
+    return 'stamped' if 'stamped' in rec.source else 'heartbeat'
+
+
+def kappa_sweep_sd_deg(yaw_source: str) -> float:
+    """Per-sweep κ SD (deg) of a yaw source; the larger for an unknown one."""
+    return KAPPA_SWEEP_SD_DEG.get(yaw_source, max(KAPPA_SWEEP_SD_DEG.values()))
+
+
+def kappa_outliers(kappas, sources, clip_n: float = KAPPA_POOL_CLIP_N,
+                   min_group: int = KAPPA_POOL_MIN_GROUP) -> np.ndarray:
+    """Boolean mask of the records more than ``clip_n``·σ_g from the median κ
+    (``kappas`` unwrapped, in one pin). σ_g per yaw-source group: the group's
+    1.4826·MAD about the common median, floored at KAPPA_POOL_SIGMA_FLOOR_DEG
+    (a group of ≥ ``min_group``), else the larger of that floor and the
+    source's per-sweep SD. Never excludes every record."""
+    ks = np.asarray(kappas, dtype=float)
+    src = np.asarray(list(sources))
+    out = np.zeros(len(ks), dtype=bool)
+    if len(ks) < 2:
+        return out
+    med = float(np.median(ks))
+    dev = np.abs(ks - med)
+    for g in sorted(set(src.tolist())):
+        sel = src == g
+        floor = KAPPA_POOL_SIGMA_FLOOR_DEG.get(g, max(KAPPA_POOL_SIGMA_FLOOR_DEG.values()))
+        if sel.sum() >= min_group:
+            sig = max(1.4826 * float(np.median(dev[sel])), floor)
+        else:
+            sig = max(floor, kappa_sweep_sd_deg(g))
+        out[sel] = dev[sel] > clip_n * sig
+    return np.zeros(len(ks), dtype=bool) if out.all() else out
 
 
 def pool_kappa(records, pin_now_deg: float, repeatability_deg: float = 0.0) -> Optional[PooledKappa]:
-    """Pool κ records (each moved to the current pin). SE = max(SD, the
-    records' RMS σ, ``repeatability_deg``)/√n — a small pool's sample SD is
-    itself uncertain, so it never claims better than the per-sweep σ allows.
-    None for no records."""
+    """Pool κ records (each moved to the current pin), robustly: the records
+    :func:`kappa_outliers` flags are excluded (and listed in ``outliers``);
+    κ and p_b are the means of the rest. SE = max(SD, the kept records' RMS σ
+    while n < 5, ``repeatability_deg``)/√n — a small pool's sample SD is itself
+    uncertain, so it never claims better than the per-sweep σ allows. None for
+    no records."""
     recs = list(records)
     if not recs:
         return None
     k0 = recs[0].kappa_deg + pin_now_deg - recs[0].pin_deg
-    ks = np.array([k0 + wrap_deg(r.kappa_deg + pin_now_deg - r.pin_deg - k0) for r in recs])
-    pb = np.array([r.axis_point_b_mm for r in recs], dtype=float)
-    n = len(recs)
+    ks_all = np.array([k0 + wrap_deg(r.kappa_deg + pin_now_deg - r.pin_deg - k0) for r in recs])
+    bad = kappa_outliers(ks_all, [kappa_record_yaw_source(r) for r in recs])
+    keep = ~bad
+    ks = ks_all[keep]
+    pb = np.array([r.axis_point_b_mm for r in recs], dtype=float)[keep]
+    n = len(ks)
     sd = float(ks.std(ddof=1)) if n > 1 else 0.0
-    sig = float(np.sqrt(np.mean([r.sigma_deg ** 2 for r in recs])))
+    sig = float(np.sqrt(np.mean([r.sigma_deg ** 2 for r, k in zip(recs, keep) if k])))
     floor = max(sd, sig if n < 5 else 0.0, float(repeatability_deg))
     return PooledKappa(kappa_deg=wrap_deg(float(ks.mean())), sd_deg=sd,
                        se_deg=floor / math.sqrt(n), n=n,
                        axis_point_b_mm=pb.mean(axis=0),
-                       axis_point_sd_mm=pb.std(axis=0, ddof=1) if n > 1 else np.zeros(3))
+                       axis_point_sd_mm=pb.std(axis=0, ddof=1) if n > 1 else np.zeros(3),
+                       n_total=len(recs), outliers=tuple(int(i) for i in np.flatnonzero(bad)))
 
 
 # ---------------------------------------------------------------------------
@@ -574,14 +671,42 @@ def load_base_state(path: str):
     return {'records': recs, 'base_ref': ref}
 
 
-def base_state_to_json(records, base_ref) -> dict:
-    return {'schema': 1,
-            'description': 'mocap_node runtime state for the BB base-marker frame: the pooled '
-                           'BB-in-base records (κ per accepted sweep) and the last base pose in '
-                           'the world. Seeded from resources/bb_base_frame.json; '
-                           'tools/bb_base_frame_build.py --from-state folds it back.',
-            'records': [r.to_dict() for r in list(records)[-MAX_POOLED_RECORDS:]],
-            'base_ref': base_ref}
+def pool_summary(records, pooled: Optional[PooledKappa]) -> Optional[dict]:
+    """The pool as written next to its records (derived, for a reader: the
+    node and the build tool recompute it): κ, SD, SE, counts, and which records
+    the robust pool excludes."""
+    if pooled is None:
+        return None
+    recs = list(records)
+    return {'kappa_deg': round(float(pooled.kappa_deg), 5), 'sd_deg': round(pooled.sd_deg, 5),
+            'se_deg': round(pooled.se_deg, 5), 'n_kept': pooled.n, 'n_total': pooled.n_total,
+            'axis_point_mm': [round(float(v), 4) for v in pooled.axis_point_b_mm],
+            'outliers': [{'index': i, 'accepted_at': recs[i].accepted_at,
+                          'kappa_deg': recs[i].kappa_deg, 'source': recs[i].source}
+                         for i in pooled.outliers],
+            'rule': (f'excluded: |κ − median| > {KAPPA_POOL_CLIP_N:g}·σ_g, σ_g = max(1.4826·MAD '
+                     f'of the yaw-source group, floor {KAPPA_POOL_SIGMA_FLOOR_DEG}) for a group '
+                     f'of ≥ {KAPPA_POOL_MIN_GROUP}, else max(floor, per-sweep SD '
+                     f'{KAPPA_SWEEP_SD_DEG}) — bb_base_frame.kappa_outliers')}
+
+
+def base_state_to_json(records, base_ref, pin_now_deg: Optional[float] = None,
+                       repeatability_deg: float = 0.0) -> dict:
+    """The state file: the newest MAX_POOLED_RECORDS records, kept whole
+    (outliers included: the exclusion is recomputed at every pooling), and —
+    given the current pin — the derived pool summary (:func:`pool_summary`)."""
+    recs = list(records)[-MAX_POOLED_RECORDS:]
+    out = {'schema': 1,
+           'description': 'mocap_node runtime state for the BB base-marker frame: the pooled '
+                          'BB-in-base records (κ per accepted sweep) and the last base pose in '
+                          'the world. Seeded from resources/bb_base_frame.json; '
+                          'tools/bb_base_frame_build.py --from-state folds it back. '
+                          '"pool" is derived (the robust pool of these records).',
+           'records': [r.to_dict() for r in recs],
+           'base_ref': base_ref}
+    if pin_now_deg is not None:
+        out['pool'] = pool_summary(recs, pool_kappa(recs, pin_now_deg, repeatability_deg))
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -610,7 +735,8 @@ def check_base_frame_consistency(
     max_axis_shift_mm: float = BB_IN_BASE_MAX_SHIFT_MM,
     max_residual_mm: float = BASE_MAX_RESIDUAL_MM,
 ) -> BaseGateVerdict:
-    """Gate a sweep in the base frame.
+    """Gate a sweep in the base frame. ``sigma_deg`` is the new sweep's
+    per-sweep κ scatter (:func:`kappa_sweep_sd_deg` of its yaw source).
 
     BB-in-base (invariant to QTM frame shifts) is compared with the pool: a
     change means BB or the base frame moved ON THE SHELF — refused
@@ -642,7 +768,7 @@ def check_base_frame_consistency(
     thr = max(n_sigma * math.hypot(sigma_deg, pooled.se_deg), min_deg)
     da = float(np.linalg.norm(np.asarray(axis_point_b_mm, float) - pooled.axis_point_b_mm))
     head = (f'base gate: Δκ {dk:+.3f}° (limit ±{thr:.3f}°), Δp_b {da:.2f} mm vs the pooled '
-            f'BB-in-base (n {pooled.n})')
+            f'BB-in-base ({pooled.count_note()})')
     bad = []
     if abs(dk) > thr:
         bad.append(f'Δκ {dk:+.3f}° exceeds ±{thr:.3f}°')
@@ -656,8 +782,8 @@ def check_base_frame_consistency(
                                dk, thr, da, shift_mm, shift_deg, qtm, reset_pool=True,
                                overridden=True)
     return BaseGateVerdict(
-        False, f'BB_IN_BASE_MOVED: {", ".join(bad)} (pooled n {pooled.n}) — BB or the base frame '
-               'moved on the shelf; set bb_moved:=true if BB was moved',
+        False, f'BB_IN_BASE_MOVED: {", ".join(bad)} (pooled {pooled.count_note()}) — BB or the '
+               'base frame moved on the shelf; set bb_moved:=true if BB was moved',
         dk, thr, da, shift_mm, shift_deg, qtm)
 
 
@@ -667,8 +793,9 @@ def check_base_frame_consistency(
 
 class BaseFrameMonitor:
     """A slow running base pose for the node: ``update`` a few times a second
-    with a frame's unlabelled markers; ``pose`` is the static pose over the
-    poses of the last ``window_s`` (None if fewer than ``min_frames``)."""
+    with a frame's candidate markers (:func:`base_candidate_points`); ``pose``
+    is the static pose over the poses of the last ``window_s`` (None if fewer
+    than ``min_frames``)."""
 
     def __init__(self, template, window_s: float = 30.0, min_frames: int = 20):
         self.T = np.asarray(template, dtype=float).reshape(-1, 3)
