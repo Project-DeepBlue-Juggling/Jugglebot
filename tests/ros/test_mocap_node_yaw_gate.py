@@ -108,7 +108,8 @@ def test_node_loads_the_shipped_template():
         node = mn.MocapNode()
     t = node._marker_template
     assert t is not None and len(t.points_mm) == 7
-    assert t.pinned_yaw_offset_deg == pytest.approx(0.208)
+    # Re-pinned 2026-10-11 from landings (0.208 - 0.179; template gauge.repinned_on).
+    assert t.pinned_yaw_offset_deg == pytest.approx(0.029)
 
 
 def test_first_calibration_without_a_reference_is_accepted_persisted_and_warned(tmp_path):
