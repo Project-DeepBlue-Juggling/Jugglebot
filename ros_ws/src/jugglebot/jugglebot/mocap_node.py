@@ -65,8 +65,9 @@ from .bb_calibration import (
 )
 from .bb_base_frame import (
     BaseFrameMonitor, KappaRecord, BASE_MAX_RESIDUAL_MM, DEFAULT_MIN_POOLED_SWEEPS,
-    base_state_to_json, bb_in_base, check_base_frame_consistency, compose_bb_pose,
-    estimate_base_pose, load_base_frame, load_base_state, pool_kappa,
+    base_candidate_points, base_state_to_json, bb_in_base, check_base_frame_consistency,
+    compose_bb_pose, estimate_base_pose, kappa_sweep_sd_deg, load_base_frame, load_base_state,
+    pool_kappa,
 )
 
 try:
@@ -132,14 +133,15 @@ DEFAULT_BB_YAW_SOURCE = 'auto'
 MAX_CALIBRATION_FAILURE_CHARS = 240
 
 #: BB base-marker frame (2026-10-10, ``jugglebot.bb_base_frame``): four fixed
-#: markers on BB's shelf, unlabelled in QTM, posed by geometry. The resource
+#: markers on BB's shelf, posed by geometry among every marker but BB's own
+#: (a QTM label on a base marker does not hide it). The resource
 #: holds their as-built coordinates and the seed BB-in-base records; the state
 #: file holds the node's running pool (seeded from the resource when absent).
 DEFAULT_BASE_FRAME_FILE = 'bb_base_frame.json'
 DEFAULT_BASE_FRAME_STATE_FILE = os.path.join(
     os.path.expanduser('~'), 'bb_calibration_sessions', 'bb_base_frame_state.json')
 #: ``bb_pose_source``: what the published BB world pose comes from.
-#: ``sweep`` (DEFAULT) — the sweep estimator's world pose, gated in the world
+#: ``sweep`` — the sweep estimator's world pose, gated in the world
 #: (unchanged); the base frame, when seen, is a diagnostic and each accepted
 #: sweep consistent with it extends the BB-in-base pool. ``base_frame`` — this
 #: window's base pose composed with the pooled BB-in-base constants, gated in
@@ -147,10 +149,15 @@ DEFAULT_BASE_FRAME_STATE_FILE = os.path.join(
 #: change is refused unless bb_moved); refused when the base is not seen.
 #: ``auto`` — base_frame once the pool has ``bb_base_min_sweeps`` sweeps and the
 #: base is seen with a residual inside BASE_MAX_RESIDUAL_MM, else sweep.
-#: Default sweep: on 2026-10-10 the base path agreed with the sweeps only to
-#: the sweeps' own scatter (logbook 2026-10-10-bb-base-marker-frame).
+#: Default ``auto`` since 2026-10-10 13:45: the second sitting with the frame
+#: (8 sweeps, stamped yaw, all accepted) read κ = +179.515° ± 0.011° against
+#: the build's +179.491° ± 0.016° (Δ 0.024°, 1.3 combined SE, inside the 0.05°
+#: criterion for a BB-vs-base QTM warp) with the base heading shifted only
+#: +0.003° and the origin 0.7 mm — BB-in-base holds across sittings, so the
+#: base path (≈ 0.01° per sitting) replaces the sweep's own 0.03–0.05° value
+#: whenever the base is seen (logbook 2026-10-10-bb-base-marker-frame).
 BB_POSE_SOURCES = ('sweep', 'base_frame', 'auto')
-DEFAULT_BB_POSE_SOURCE = 'sweep'
+DEFAULT_BB_POSE_SOURCE = 'auto'
 #: Cadence (s) of the slow running base-pose estimate fed from the 200 Hz path.
 BASE_MONITOR_PERIOD_S = 0.2
 #: A window that does not see the base may use the running estimate if its
@@ -269,10 +276,10 @@ class MocapNode(Node):
         self._calib_last_frame_ns = None
         self._calib_yaw_samples: list = []
         self._calib_stamped_yaw: list = []
-        #: Every distinct frame's UNLABELLED markers in the window, for the
-        #: base-marker frame (its markers carry no QTM label).
-        self._calib_unlabelled: list = []
-        self._calib_last_unl_ns = None
+        #: Every distinct frame's base-candidate markers in the window (all but
+        #: BB's own, labelled or not: bb_base_frame.base_candidate_points).
+        self._calib_base_points: list = []
+        self._calib_last_base_ns = None
         self.create_subscription(
             JointState, 'bb/axis_estimates', self._on_bb_axis_estimates, 50)
 
@@ -575,24 +582,26 @@ class MocapNode(Node):
         self._calib_last_frame_ns = None
         self._calib_yaw_samples = []
         self._calib_stamped_yaw = []
-        self._calib_unlabelled = []
-        self._calib_last_unl_ns = None
+        self._calib_base_points = []
+        self._calib_last_base_ns = None
 
-    def _feed_base_frame(self, unlabelled, frame_ros_ns):
-        """Unlabelled markers → the calibration window (every distinct frame)
-        and the slow running base estimate (every BASE_MONITOR_PERIOD_S)."""
-        if unlabelled is None or frame_ros_ns is None or unlabelled.shape[0] == 0:
+    def _feed_base_frame(self, points, frame_ros_ns):
+        """A frame's base-candidate markers ((n, ≥3): every marker but BB's
+        own, ``base_candidate_points``) → the calibration window (every
+        distinct frame) and the slow running base estimate (every
+        BASE_MONITOR_PERIOD_S)."""
+        if points is None or frame_ros_ns is None or points.shape[0] == 0:
             return
         t = frame_ros_ns * 1e-9
         if (self._calibrating and self._calib_invalid is None
-                and frame_ros_ns != self._calib_last_unl_ns):
-            self._calib_last_unl_ns = frame_ros_ns
-            self._calib_unlabelled.append((t, np.array(unlabelled[:, :3], dtype=float)))
+                and frame_ros_ns != self._calib_last_base_ns):
+            self._calib_last_base_ns = frame_ros_ns
+            self._calib_base_points.append((t, np.array(points[:, :3], dtype=float)))
         if self._base_monitor is not None and (
                 self._base_monitor_last_t is None
                 or t - self._base_monitor_last_t >= BASE_MONITOR_PERIOD_S):
             self._base_monitor_last_t = t
-            self._base_monitor.update(t, np.array(unlabelled[:, :3], dtype=float))
+            self._base_monitor.update(t, np.array(points[:, :3], dtype=float))
 
     def _publish_mocap_data(self):
         is_aligned = self.mocap.is_aligned
@@ -638,7 +647,10 @@ class MocapNode(Node):
         except Exception as e:
             self.get_logger().error(f'Error publishing markers: {e}')
         try:
-            self._feed_base_frame(unlabelled, frame_ros_ns)
+            # Labelled markers too: a QTM rigid body that grabs a base marker
+            # (2026-10-10 14:10: Base / Catching Cone took two of the four)
+            # must not hide the base. Only BB's own are left out.
+            self._feed_base_frame(base_candidate_points(unlabelled, labelled), frame_ros_ns)
         except Exception as e:
             self.get_logger().error(f'Error tracking the BB base frame: {e}',
                                     throttle_duration_sec=5.0)
@@ -740,8 +752,8 @@ class MocapNode(Node):
             self._calib_last_frame_ns = None
             self._calib_yaw_samples = []
             self._calib_stamped_yaw = []
-            self._calib_unlabelled = []
-            self._calib_last_unl_ns = None
+            self._calib_base_points = []
+            self._calib_last_base_ns = None
             self.get_logger().info('BB calibration started, collecting marker data')
 
         # Record yaw during calibration for offset calculation — AFTER the
@@ -898,7 +910,7 @@ class MocapNode(Node):
                   else f'{math.degrees(result.anchor_yaw_offset_rad):+.3f}°')
         if pose_source == 'base_frame':
             base_verdict = check_base_frame_consistency(
-                view['kappa'], result.yaw_offset_std_deg, view['p_b'], view['pose'],
+                view['kappa'], kappa_sweep_sd_deg(est.yaw_source), view['p_b'], view['pose'],
                 view['pooled'], view['base_ref'], bb_moved=bb_moved)
             self.get_logger().debug(
                 f'Yaw offset (sweep) {yaw_deg:+.4f}° — {summary}; retired anchor estimator '
@@ -925,7 +937,7 @@ class MocapNode(Node):
             published.bb_position_mm = np.asarray(pos_b, dtype=float)
             published.yaw_method = 'base_frame'
             gate_message = (f'{base_verdict.message} · pose source base_frame: {yaw_b:+.4f}° '
-                            f'±{sigma_b:.3f}° (κ {pooled.kappa_deg:+.4f}°, n {pooled.n}) vs '
+                            f'±{sigma_b:.3f}° (κ {pooled.kappa_deg:+.4f}°, {pooled.count_note()}) vs '
                             f'sweep {yaw_deg:+.4f}° (Δ {yaw_b - yaw_deg:+.3f}°), axis point '
                             f'{float(np.linalg.norm(pos_b - result.bb_position_mm)):.2f} mm '
                             'from the sweep\'s')
@@ -955,7 +967,7 @@ class MocapNode(Node):
                                        '— this sweep is not pooled')
             elif view['pose'] is not None:
                 base_verdict = check_base_frame_consistency(
-                    view['kappa'], result.yaw_offset_std_deg, view['p_b'], view['pose'],
+                    view['kappa'], kappa_sweep_sd_deg(est.yaw_source), view['p_b'], view['pose'],
                     view['pooled'], view['base_ref'], bb_moved=bb_moved and verdict.accepted)
             self.get_logger().debug(
                 f'Yaw offset {yaw_deg:+.4f}° — {summary}; retired anchor estimator '
@@ -963,7 +975,16 @@ class MocapNode(Node):
                 + ('' if base_verdict is None else f'; {base_verdict.message}'))
             if not verdict.accepted:
                 message = verdict.message
-                if (base_verdict is not None and base_verdict.accepted
+                if message.startswith('CALIBRATION_INCONSISTENT') and \
+                        self._base_expected(requested_pose, view):
+                    # The base frame would have decided this sweep and was not
+                    # seen: THAT is the cause to fix (restore the base view),
+                    # not bb_moved — the world gate's numbers follow as context.
+                    message = (f'{view["error"]} — check QTM sees the 4 shelf markers '
+                               '(occluded? taken into the Ball Butler body?); world gate also '
+                               'refused: Δyaw '
+                               f'{verdict.delta_deg:+.2f}°, Δaxis {verdict.axis_shift_mm:.1f} mm')
+                elif (base_verdict is not None and base_verdict.accepted
                         and not base_verdict.no_reference and base_verdict.qtm_shift
                         and message.startswith('CALIBRATION_INCONSISTENT')):
                     # Short hint (the failure line is bounded): the base frame
@@ -1072,15 +1093,15 @@ class MocapNode(Node):
             return view
         T = self._base_model.template_mm
         try:
-            view['pose'] = estimate_base_pose(self._calib_unlabelled, T)
+            view['pose'] = estimate_base_pose(self._calib_base_points, T)
         except ValueError as e:
             view['error'] = str(e)
             # A window that missed the base may use the running estimate.
             last = self._base_monitor_last_t
             pose = self._base_monitor.pose(last) if self._base_monitor is not None else None
             if pose is not None and last is not None and \
-                    self._calib_unlabelled and \
-                    self._calib_unlabelled[-1][0] - pose.t_span_s[1] <= BASE_MONITOR_MAX_AGE_S:
+                    self._calib_base_points and \
+                    self._calib_base_points[-1][0] - pose.t_span_s[1] <= BASE_MONITOR_MAX_AGE_S:
                 view['pose'], view['from_monitor'] = pose, True
         records, base_ref, err = self._base_state()
         view['records'], view['base_ref'], view['state_error'] = records, base_ref, err
@@ -1115,9 +1136,26 @@ class MocapNode(Node):
         if not problem and n < need:
             problem = f'{n} pooled sweeps < {need}'
         if problem:
-            self.get_logger().debug(f'bb_pose_source auto: sweep ({problem})')
+            if self._base_expected(requested, view):
+                # Not silent: the pose source the operator relies on is gone.
+                self.get_logger().warn(f'bb_pose_source auto: the base frame was not seen — this '
+                                       f'sweep falls back to the world gate ({problem})')
+            else:
+                self.get_logger().debug(f'bb_pose_source auto: sweep ({problem})')
             return 'sweep', ''
         return 'base_frame', ''
+
+    def _base_expected(self, requested: str, view: dict) -> bool:
+        """True when the base frame would have posed this sweep — pose source
+        auto/base_frame, the model loaded, the pool at ``bb_base_min_sweeps`` —
+        but the window did not see it (BASE_FRAME_NOT_SEEN). Then the missing
+        base, not a BB move, is the cause to name."""
+        if requested not in ('auto', 'base_frame') or self._base_model is None:
+            return False
+        if view['pose'] is not None or not view['error'].startswith('BASE_FRAME_NOT_SEEN'):
+            return False
+        n = 0 if view['pooled'] is None else view['pooled'].n
+        return n >= int(self.get_parameter('bb_base_min_sweeps').value)
 
     def _pool_records(self, view: dict, result, reset: bool) -> list:
         """The pool with this accepted sweep appended (a new pool on reset)."""
@@ -1141,7 +1179,9 @@ class MocapNode(Node):
             os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
             tmp = path + '.tmp'
             with open(tmp, 'w') as f:
-                json.dump(base_state_to_json(records, ref), f, indent=2)
+                tpl = self._marker_template
+                json.dump(base_state_to_json(records, ref, tpl.pinned_yaw_offset_deg,
+                                             tpl.repeatability_deg), f, indent=2)
             os.replace(tmp, path)
         except OSError as e:
             self.get_logger().error(f'Could not persist the BB base frame pool to {path}: {e}')

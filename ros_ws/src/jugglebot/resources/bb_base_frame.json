@@ -98,21 +98,37 @@
     "built_from": "2026-10-10_12-26-22_0.mcap: generalised Procrustes over 16184 frames with all four markers (of 16616)"
   },
   "bb_in_base": {
-    "kappa_deg": 179.49077,
-    "kappa_sd_deg": 0.05028,
-    "kappa_se_deg": 0.0159,
-    "n_sweeps": 10,
+    "kappa_deg": 179.49742,
+    "kappa_sd_deg": 0.03717,
+    "kappa_se_deg": 0.00831,
+    "n_sweeps": 20,
+    "n_records": 22,
+    "outliers": [
+      {
+        "index": 13,
+        "accepted_at": "2026-10-10T02:47:06Z",
+        "kappa_deg": 179.57348560710955,
+        "source": "mocap_node (stamped)"
+      },
+      {
+        "index": 18,
+        "accepted_at": "2026-10-10T03:11:24Z",
+        "kappa_deg": 179.59114604438852,
+        "source": "mocap_node (stamped)"
+      }
+    ],
+    "outlier_rule": "excluded: |\u03ba \u2212 median| > 3\u00b7\u03c3_g, \u03c3_g = max(1.4826\u00b7MAD of the yaw-source group, floor {'stamped': 0.02, 'heartbeat': 0.05}) for a group of \u2265 5, else max(floor, per-sweep SD {'stamped': 0.03, 'heartbeat': 0.05}) \u2014 bb_base_frame.kappa_outliers",
     "axis_point_mm": [
-      177.5375,
-      148.8615,
-      76.7082
+      177.5372,
+      148.8951,
+      76.6399
     ],
     "axis_point_sd_mm": [
-      0.0268,
-      0.0312,
-      0.043
+      0.0495,
+      0.079,
+      0.1468
     ],
-    "meaning": "kappa = published yaw offset (pinned gauge, about world z) - base heading; axis_point = BB's axis point in the base frame. Summary only: mocap_node pools the records (each moved to the current pin).",
+    "meaning": "kappa = published yaw offset (pinned gauge, about world z) - base heading; axis_point = BB's axis point in the base frame. Summary only: mocap_node pools the records (each moved to the current pin), robustly: n_sweeps counts the kept records, outliers lists the excluded ones (all records stay below).",
     "records": [
       {
         "kappa_deg": 179.50422148347351,
@@ -253,6 +269,174 @@
         "yaw_offset_deg": 0.38080850542743105,
         "base_heading_deg": -179.05326789620102,
         "source": "2026-10-10_12-26-22_0.mcap sweep 10"
+      },
+      {
+        "kappa_deg": 179.46700672529047,
+        "sigma_deg": 0.040890114861824915,
+        "axis_point_b_mm": [
+          177.48062512132583,
+          149.02797826821242,
+          76.38438502199315
+        ],
+        "pin_deg": 0.208,
+        "accepted_at": "2026-10-10T02:46:24Z",
+        "yaw_offset_deg": 0.4164121754332999,
+        "base_heading_deg": -179.05059454985718,
+        "source": "mocap_node (stamped)"
+      },
+      {
+        "kappa_deg": 179.513717834637,
+        "sigma_deg": 0.044809808475106135,
+        "axis_point_b_mm": [
+          177.4859730479097,
+          149.03426194231423,
+          76.44233391731099
+        ],
+        "pin_deg": 0.208,
+        "accepted_at": "2026-10-10T02:46:40Z",
+        "yaw_offset_deg": 0.46376841712413375,
+        "base_heading_deg": -179.04994941751283,
+        "source": "mocap_node (stamped)"
+      },
+      {
+        "kappa_deg": 179.5044564951614,
+        "sigma_deg": 0.0389060346284177,
+        "axis_point_b_mm": [
+          177.4948834758707,
+          149.03294360770462,
+          76.41570789593042
+        ],
+        "pin_deg": 0.208,
+        "accepted_at": "2026-10-10T02:46:53Z",
+        "yaw_offset_deg": 0.45527073169703275,
+        "base_heading_deg": -179.04918576346438,
+        "source": "mocap_node (stamped)"
+      },
+      {
+        "kappa_deg": 179.57348560710955,
+        "sigma_deg": 0.04224201224961525,
+        "axis_point_b_mm": [
+          177.4780009405147,
+          149.04302692925486,
+          76.42811136483073
+        ],
+        "pin_deg": 0.208,
+        "accepted_at": "2026-10-10T02:47:06Z",
+        "yaw_offset_deg": 0.5252844145208482,
+        "base_heading_deg": -179.04820119258872,
+        "source": "mocap_node (stamped)"
+      },
+      {
+        "kappa_deg": 179.5180549972397,
+        "sigma_deg": 0.03746415163127958,
+        "axis_point_b_mm": [
+          177.49044512917274,
+          149.00351604528058,
+          76.49210628651204
+        ],
+        "pin_deg": 0.208,
+        "accepted_at": "2026-10-10T02:47:20Z",
+        "yaw_offset_deg": 0.47078156653666436,
+        "base_heading_deg": -179.047273430703,
+        "source": "mocap_node (stamped)"
+      },
+      {
+        "kappa_deg": 179.5014740834825,
+        "sigma_deg": 0.03629652076469742,
+        "axis_point_b_mm": [
+          177.50727897147,
+          148.94547576342376,
+          76.54479150420218
+        ],
+        "pin_deg": 0.208,
+        "accepted_at": "2026-10-10T02:47:34Z",
+        "yaw_offset_deg": 0.45368078453421157,
+        "base_heading_deg": -179.04779329894828,
+        "source": "mocap_node (stamped)"
+      },
+      {
+        "kappa_deg": 179.53075301441964,
+        "sigma_deg": 0.04033049470453194,
+        "axis_point_b_mm": [
+          177.50622739073933,
+          148.89822368160412,
+          76.57013376419762
+        ],
+        "pin_deg": 0.208,
+        "accepted_at": "2026-10-10T02:47:51Z",
+        "yaw_offset_deg": 0.4835842145156598,
+        "base_heading_deg": -179.04716879990394,
+        "source": "mocap_node (stamped)"
+      },
+      {
+        "kappa_deg": 179.51341535938474,
+        "sigma_deg": 0.03716009067893071,
+        "axis_point_b_mm": [
+          177.51204345874763,
+          148.92850107456852,
+          76.52878473313562
+        ],
+        "pin_deg": 0.208,
+        "accepted_at": "2026-10-10T02:48:12Z",
+        "yaw_offset_deg": 0.46699878880370127,
+        "base_heading_deg": -179.04641657058107,
+        "source": "mocap_node (stamped)"
+      },
+      {
+        "kappa_deg": 179.59114604438852,
+        "sigma_deg": 0.03600182073779309,
+        "axis_point_b_mm": [
+          177.5978717142107,
+          148.81385004880877,
+          76.83903891177859
+        ],
+        "pin_deg": 0.208,
+        "accepted_at": "2026-10-10T03:11:24Z",
+        "yaw_offset_deg": 0.5311824570129959,
+        "base_heading_deg": -179.0599635873755,
+        "source": "mocap_node (stamped)"
+      },
+      {
+        "kappa_deg": 179.4972187811473,
+        "sigma_deg": 0.03896595125671264,
+        "axis_point_b_mm": [
+          177.65978466413992,
+          148.84431297095875,
+          76.54481021110499
+        ],
+        "pin_deg": 0.208,
+        "accepted_at": "2026-10-10T03:14:33Z",
+        "yaw_offset_deg": 0.7669655962071499,
+        "base_heading_deg": -178.73025318494015,
+        "source": "mocap_node (stamped)"
+      },
+      {
+        "kappa_deg": 179.4990082445717,
+        "sigma_deg": 0.0368574725962394,
+        "axis_point_b_mm": [
+          177.6286387338575,
+          148.76545635687512,
+          76.93259162301537
+        ],
+        "pin_deg": 0.208,
+        "accepted_at": "2026-10-10T03:14:48Z",
+        "yaw_offset_deg": 0.7690893877436235,
+        "base_heading_deg": -178.72991885682808,
+        "source": "mocap_node (stamped)"
+      },
+      {
+        "kappa_deg": 179.49551280038185,
+        "sigma_deg": 0.03632721719532983,
+        "axis_point_b_mm": [
+          177.60362431745688,
+          148.8071525310211,
+          76.86109998943115
+        ],
+        "pin_deg": 0.208,
+        "accepted_at": "2026-10-10T03:15:02Z",
+        "yaw_offset_deg": 0.7651863273044457,
+        "base_heading_deg": -178.73032647307744,
+        "source": "mocap_node (stamped)"
       }
     ]
   },
@@ -291,6 +475,7 @@
       "heading_se_deg": 0.0001866552774478141,
       "n_frames": 16170
     },
-    "note": "Seeded from the 10 sweeps mocap_node published live at this sitting (heartbeat yaw source, all accepted): the deployed gauge. Offline replays of the same sweeps through the estimator read kappa +179.507 (stamped yaw, SD 0.021) and +179.512 (heartbeat at bag log time, SD 0.038) vs +179.491 here (SD 0.050): within 1.3 SE. Analysis scripts and outputs: ~/bb_calibration_sessions/base_frame_20261010/ (*.py, *.txt); logbook 2026-10-10-bb-base-marker-frame."
+    "note": "2026-10-10 15:00 local: folded the node pool as of 03:15:02Z (22 records: 10 seed + 8 of the 13:45 sitting + 1 of 14:10 + 3 of 14:13) under the robust pool (bb_base_frame.kappa_outliers): 2 stamped records excluded (02:47:06Z +179.5735, 03:11:24Z +179.5911); kappa +179.4908 (10 seed) -> +179.4974 (20 kept); the plain mean of all 22 would be +179.5051. logbook 2026-10-10-bb-base-frame-robustness.",
+    "updated": "2026-10-10T03:50:57Z by tools/bb_base_frame_build.py --from-state state_snapshot_before.json (22 records)"
   }
 }
