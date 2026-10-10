@@ -169,3 +169,11 @@ Recorded in the template's `gauge.rule`.
   - in the node: first-calibration WARN, persistence, refusal, the one-shot reset of the reference, the corrupt state file, QTM-stamped frame de-duplication, and the stamped-source preference and fallback.
 - The anchor-path tests (`test_bb_calibration_arc_span.py`, `_coplanar.py`, `_consensus.py`, `jugglebot/tests/test_bb_calibration.py`) are unchanged and run the legacy path.
 - Full gate `./run_tests.sh --full`: the (date, command, result) triple is in the commit message (`git log --grep "Logbook-Entry: 2026-10-09-bb-constellation-yaw-offset"`).
+
+**Re-pin merged and installed (skill-stack a5653e99, 2026-10-11 01:00–01:12):** full gate on the merged tree 6604 passed,
+9 skipped, 1 xfailed, 2 failed — `test_skill_node.py::test_every_pattern_entry_opens_on_a_rest[columns_1ball-True]` and
+`test_install_segment.py::test_TI1_seven_channel_frames_reach_the_wire_and_the_flags_fall`, both timing-sensitive, both pass
+alone (another session's pytest run shared the box; the gate took 500 s against the usual 340); serial 6 passed. The merge
+touches only the template, its two tests and these logbooks. The template's `how_to_adjust` now says: one sweep with the
+base seen, no `bb_moved` (κ and the sweep move together); `bb_moved` once only on the sweep-only path. Awaiting the owner's
+confirming sweep (≈ 0.62–0.63°) before this entry is resolved.
