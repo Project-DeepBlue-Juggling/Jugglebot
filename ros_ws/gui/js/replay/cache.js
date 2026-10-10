@@ -30,7 +30,7 @@ export function createChunkCache(opts) {
     const aheadSec = opts.aheadSec === undefined ? DEFAULTS.aheadSec : opts.aheadSec;
     const behindSec = opts.behindSec === undefined ? DEFAULTS.behindSec : opts.behindSec;
     const retryMs = opts.retryMs === undefined ? DEFAULTS.retryMs : opts.retryMs;
-    const nowFn = opts.now || (() => Date.now());
+    const nowFn = opts.now || (() => Date.now());   // wall-clock: chunk-fetch retry backoff paces real HTTP failures, not recorded time
     let spanSec = opts.spanSec === undefined ? DEFAULTS.spanSec : opts.spanSec;
 
     const resident = new Map();   // i -> Chunk

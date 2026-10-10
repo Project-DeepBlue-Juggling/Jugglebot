@@ -27,6 +27,7 @@
     <link rel="stylesheet" href="css/charts.css">
     <link rel="stylesheet" href="css/state-minimap.css">
     <link rel="stylesheet" href="css/juggle-panel.css">
+    <link rel="stylesheet" href="css/replay.css">
 
     <!-- uPlot charting library (vendored locally, not ES module) -->
     <link rel="stylesheet" href="lib/uPlot.min.css">
@@ -123,7 +124,13 @@
             <div id="state-minimap" class="collapsed"></div>
 
             <!-- Command buttons -->
-            <div id="command-overlay"></div>
+            <!-- Replay (Phase 3): banners over the viewer; lobby + dock live INSIDE the overlay (js/replay/ui/) -->
+            <div id="replay-banner" class="replay-banner warn" hidden></div>
+            <div id="replay-backend-banner" class="replay-banner err" hidden></div>
+            <div id="command-overlay">
+                <div id="replay-lobby" class="replay-lobby" hidden></div>
+                <div id="replay-dock" class="replay-dock" hidden></div>
+            </div>
         </div>
 
         <!-- Draggable resize handle between viewer and sidebar -->

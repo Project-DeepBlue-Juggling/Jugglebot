@@ -16,3 +16,21 @@ def test_chunk_format_matches_schema():
     assert int(m.group(1)) == schema.FORMAT_VERSION, (
         f"chunk.js CHUNK_FORMAT={m.group(1)} != replay/schema.py FORMAT_VERSION="
         f"{schema.FORMAT_VERSION}: both files must change together")
+
+
+def test_overview_tick_kinds_drawn_by_ui_are_in_schema():
+    """overview.js TICK_KINDS (the kinds the UI draws) must be a subset of schema.OVERVIEW_TICK_KINDS."""
+    src = (ROOT / "ros_ws/gui/js/replay/ui/overview.js").read_text()
+    block = re.search(r"export const TICK_KINDS\s*=\s*\{(.*?)\n\};", src, re.S)
+    assert block, "overview.js must define TICK_KINDS"
+    drawn = set(re.findall(r"^\s{4}(\w+):\s*\{", block.group(1), re.M))
+    assert drawn == {"fault", "skill_attempt", "catch_event", "bb_calibration"}
+    assert drawn <= set(schema.OVERVIEW_TICK_KINDS), drawn - set(schema.OVERVIEW_TICK_KINDS)
+
+
+def test_picker_key_topics_are_in_allowlist():
+    src = (ROOT / "ros_ws/gui/js/replay/ui/format.js").read_text()
+    keys = re.search(r"KEY_TOPICS[^=]*=\s*\[(.*?)\]", src, re.S)
+    assert keys, "format.js must define KEY_TOPICS"
+    topics = re.findall(r"topic:\s*'(/[^']+)'", keys.group(1))
+    assert len(topics) == 4 and set(topics) <= set(schema.ALLOWLIST), set(topics) - set(schema.ALLOWLIST)

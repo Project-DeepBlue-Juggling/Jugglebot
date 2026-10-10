@@ -2,7 +2,7 @@
 """Grep contract for the GUI's time sources (replay design § 2).
 
 Every ``Date.now(`` / ``performance.now(`` / ``new Date()`` in
-``ros_ws/gui/js/*.js`` (outside ``clock.js``; ``lib/`` is not scanned) must either
+``ros_ws/gui/js/**/*.js`` (recursive, so ``js/replay/**`` is covered; outside ``js/clock.js``; ``lib/`` is not scanned) must either
 be migrated to ``clock.now()`` or carry a same-line ``// wall-clock: <reason>``
 marker, so a new site cannot silently read wall time. ``new Date(x)`` with an
 argument (formatters) is exempt. The nine data-staleness watchdogs must use
@@ -27,8 +27,8 @@ def _read(name):
 
 def test_every_wall_clock_read_is_marked():
     bad = []
-    for path in sorted(glob.glob(os.path.join(_GUI_JS, '*.js'))):
-        name = os.path.basename(path)
+    for path in sorted(glob.glob(os.path.join(_GUI_JS, '**', '*.js'), recursive=True)):
+        name = os.path.relpath(path, _GUI_JS).replace(os.sep, '/')
         if name == 'clock.js':
             continue
         for i, line in enumerate(_read(name), 1):

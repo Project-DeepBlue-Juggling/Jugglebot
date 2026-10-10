@@ -1,0 +1,171 @@
+# -*- coding: utf-8 -*-
+"""Replay UI unit 1 (Phase 3): lobby, picker, header status, toast.
+
+``tests/ros/js/replay_ui_lobby_harness.js`` runs the real ``replay/ui/{dom,format,toast,picker,lobby}.js`` under
+node with a minimal fake DOM, a fake ``fetch`` (listing + manifest + status), a fake ros connection state and a
+fake mode whose ``enterReplay`` resolves/rejects on demand, then prints JSON this file asserts on.
+"""
+from __future__ import annotations
+
+import glob
+import json
+import os
+import re
+import shutil
+import subprocess
+from pathlib import Path
+
+import pytest
+
+REPO = Path(__file__).resolve().parents[2]
+UI = REPO / "ros_ws" / "gui" / "js" / "replay" / "ui"
+HARNESS = REPO / "tests" / "ros" / "js" / "replay_ui_lobby_harness.js"
+
+
+def _find_node():
+    found = shutil.which("node") or shutil.which("nodejs")
+    if found:
+        return found
+    for pat in (os.path.expanduser("~/.nvm/versions/node/*/bin/node"), "/usr/local/bin/node", "/usr/bin/node"):
+        hits = sorted(glob.glob(pat))
+        if hits:
+            return hits[-1]
+    return None
+
+
+NODE = _find_node()
+pytestmark = pytest.mark.skipif(NODE is None, reason="node not installed")
+
+
+@pytest.fixture(scope="module")
+def out(tmp_path_factory):
+    sb = tmp_path_factory.mktemp("uilobby")
+    (sb / "replay" / "ui").mkdir(parents=True)
+    for name in ("dom.js", "format.js", "toast.js", "picker.js", "lobby.js"):
+        shutil.copy(UI / name, sb / "replay" / "ui" / name)
+    shutil.copy(HARNESS, sb / "replay_ui_lobby_harness.js")
+    (sb / "package.json").write_text('{"type": "module"}\n')
+    proc = subprocess.run([NODE, str(sb / "replay_ui_lobby_harness.js")],
+                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=120)
+    assert proc.returncode == 0, proc.stderr.decode()
+    return json.loads(proc.stdout.decode().strip().splitlines()[-1])
+
+
+def test_lobby_follows_connection_state(out):
+    d = out["disconnected"]
+    assert d["lobby_hidden"] is False and d["banner_hidden"] is False and d["cls_lobby"] is True
+    assert d["banner"].startswith("Not connected to the robot. Live commands are unavailable")
+    assert d["dock_hidden"] is True
+    for k in ("connected",):
+        c = out[k]
+        assert c["lobby_hidden"] is True and c["banner_hidden"] is True and c["cls_lobby"] is False
+    assert out["connecting"]["lobby_hidden"] is False      # not 'connected' -> still the lobby
+    assert out["live_button_untouched"] is True            # hiding is CSS-only, the live buttons are not torn down
+    assert out["probe_fetches"] >= 1                       # the lobby probes the backend once on show
+
+
+def test_lobby_does_not_flash_on_cold_load(out):
+    """Audit N2: the initial 'disconnected' default is not a failed connect (no lobby, no banner, no probe);
+    nothing shows while the first attempt is merely 'connecting'; only a disconnected EDGE shows the lobby."""
+    for k in ("initial", "first_connecting"):
+        d = out[k]
+        assert d["lobby_hidden"] is True and d["banner_hidden"] is True and d["cls_lobby"] is False, k
+    assert out["initial"]["probe_fetches"] == 0
+
+
+def test_empty_bag_sentinel_start_ns_sorts_by_mtime_and_renders_a_sane_date(out):
+    """Audit N4: an empty bag reports start_ns = INT64_MAX; it must sort by mtime - duration (between r_noindex
+    and r_stale) and show a real date, not a year-2262 row at the top."""
+    import re
+    assert re.match(r"^2026-\d\d-\d\d", out["empty_row_when"]), out["empty_row_when"]
+
+
+def test_picker_double_open_probe_and_reopen(out):
+    """Audit N3: double-open registers one keydown handler; a probe during the list load does not orphan it;
+    re-opening does not refetch manifests for rows already enriched."""
+    d = out["double_open"]
+    assert d["first"] == d["second"] == 1 and d["after_close"] == 0
+    assert out["probe_during_load"]["rows"] >= 5 and out["probe_during_load"]["loading"] is False
+    assert out["close_aborts"] is True
+    assert out["reopen_manifest_fetches"] < 3   # complete/stale rows are skipped; only 'converting' is refreshed
+
+
+def test_session_button_and_row_need_buffer_data(out):
+    assert out["session_empty"]["disabled"] is True
+    assert out["session_empty"]["text"] == "Replay last session"
+    assert out["session_data"]["disabled"] is False
+    assert out["session_data"]["text"] == "Replay last session (in memory, 00:42 of data)"
+    assert out["session_row"] == "Last live session (in memory, 00:42 of data)"
+    assert out["rows_keys"][0] == "session"
+
+
+def test_list_newest_first_and_row_states(out):
+    assert out["rows_keys"] == ["session", "r_live", "r_complete", "r_conv", "r_noindex", "r_empty", "r_stale"]
+    s = out["states"]
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", s["r_complete"]["when"])
+    assert s["r_complete"]["cell"] == "cached" and s["r_complete"]["dur"] == "01:40"
+    assert s["r_conv"]["cell"] == "converting 62 %"
+    assert s["r_noindex"]["cell"] == "duration unknown, no index" and s["r_noindex"]["dur"] == "?"
+    assert s["r_stale"]["cell"].startswith("stale")
+    assert s["r_live"]["cell"] == "recording in progress" and s["r_live"]["refused"] is True
+    assert out["sessions_cell"] == "in memory"
+    assert out["banner_hidden_ok"] is True
+
+
+def test_missing_key_topics_are_struck_chips(out):
+    s = out["states"]
+    assert s["r_complete"]["chips"] == [["robot_state", False], ["balls", True], ["cone catch", True], ["bb state", True]]
+    assert s["r_conv"]["chips"] == [["robot_state", False], ["balls", False], ["cone catch", False], ["bb state", False]]
+    assert s["r_complete"]["topics"] == "2 topics"          # balls has count 0 -> not a recorded topic
+    assert s["r_noindex"]["topics"] == "—"             # unconverted rows have no manifest yet
+
+
+def test_filter_narrows(out):
+    assert out["filter_stale"] == ["session", "r_stale"]    # the session row is pinned
+    # topic filter matches manifest topics: the never-converted rows (no manifest) drop out
+    assert out["filter_topic"] == ["session", "r_complete", "r_conv", "r_stale"]
+    assert out["filter_none"] == ["session"]
+
+
+def test_choose_calls_enter_replay_and_closes(out):
+    assert out["choose_live"] is False and out["calls_after_live"] == 0
+    assert out["opening_cell"] == "opening…"
+    assert out["calls"] == [{"kind": "recording", "id": "r_complete"}]
+    assert out["chose"] is True and out["open_after_success"] is False
+    assert out["session_call"] == [{"kind": "session"}]
+
+
+@pytest.mark.parametrize("reason,fragment", [
+    ("recording_in_progress", "still being written"),
+    ("disk_low", "free disk space"),
+    ("worker_unavailable", "converter is not running"),
+    ("busy", "busy"),
+    ("no session buffer", "no live session"),
+    ("connected", "Connected to the robot"),
+])
+def test_refusal_message_keeps_picker_open(out, reason, fragment):
+    r = out["refusals"][reason]
+    assert r["ok"] is False and r["open"] is True and r["msg_visible"] is True
+    assert fragment in r["msg"]
+
+
+def test_close_gestures(out):
+    assert out["esc_closed"] is True and out["backdrop_closed"] is True and out["inner_click_keeps"] is True
+
+
+def test_backend_unavailable_banner_and_retry(out):
+    b = out["backend_down"]
+    assert b["banner_visible"] and b["has_retry"] and "unavailable" in b["text"]
+    assert b["open_disabled"] is True and b["backend_banner_hidden"] is False
+    assert out["backend_back"] == {"banner_hidden": True, "open_disabled": False}
+    u = out["list_unreachable"]
+    assert u["banner_visible"] and "unreachable" in u["text"]
+
+
+def test_header_status_and_toast(out):
+    h = out["header_replay"]
+    assert re.fullmatch(r"REPLAY  \d{4}-\d{2}-\d{2}", h["text"]) and h["dot"] == "status-dot replay"
+    assert h["cls_active"] and h["dock_hidden"] is False and h["lobby_hidden"] is True
+    a = out["header_after"]
+    assert a["text"] == "Disconnected" and a["dot"] == "status-dot disconnected" and a["lobby_hidden"] is False
+    assert out["toasts"] == ["Replay ended: rosbridge connected"] and out["toasts_after_timer"] == 0

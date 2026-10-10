@@ -43,6 +43,8 @@ import {
     setHardwareVersionsRosLink,
 } from './hardware-versions.js';
 import { initCommands, updateCommandStates } from './commands.js';
+import { getReplayMode } from './replay/wiring.js';
+import { initReplayUi } from './replay/ui/index.js';
 import { bbAimOnHeartbeat, bbAimOnOrchestratorState } from './bb-aim.js';
 import {
     initStateMinimap, minimapOnOrchestratorState, minimapOnControlMode,
@@ -147,6 +149,14 @@ function init() {
 
     // 6c. Init command / event history panel.
     initCommandHistory();
+
+    // 6d. Replay (Phase 3): the mode singleton + lobby/picker/toast UI. Before ros.init() so the
+    //     before-connected hook and state suppressor are armed ahead of the first connection edge.
+    try {
+        initReplayUi(getReplayMode({ resetForSeek, blankDisconnectedState, getReplayLatches, restoreReplayLatches }));
+    } catch (e) {
+        console.error('Replay UI init failed; live GUI unaffected:', e);
+    }
 
     // 7. Init ROS connection
     ros.onConnectionStateChange(onConnectionStateChange);

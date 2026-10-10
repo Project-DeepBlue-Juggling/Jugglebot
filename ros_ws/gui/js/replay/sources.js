@@ -454,6 +454,13 @@ export function SessionBufferSource(opts) {
     /** Number of chunks currently in the ring. */
     chunkCount() { return ring.size; },
 
+    /** Chunk names of every topic holding at least one sample (the ABSENT_TABLE input for a session replay). */
+    topicSet() {
+      const out = new Set();
+      for (const ch of ring.values()) for (const name in ch.topics) if (ch.topics[name].n > 0) out.add(name);
+      return Array.from(out);
+    },
+
     /**
      * Frozen read-only copy for replay: sealed chunks are shared by reference
      * (immutable), the open chunk is copied, so later record()/eviction on the

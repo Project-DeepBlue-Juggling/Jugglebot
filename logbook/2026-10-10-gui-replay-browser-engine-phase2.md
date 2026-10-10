@@ -88,3 +88,5 @@ Replay engine, clock, charts, cache and mode switching are in place behind the d
 ## Next
 
 The owner opens `http://<jetson>:8081/test_replay_engine.html` with the ROS stack down after the merge (steps in the plan, Phase 2, and on the dev page). Phase 3 (the real UI) waits on the ticket 03 pick; Phase 4 on ticket 04.
+
+Update 2026-10-10: Phase 3 retired the dev page (`test_replay_engine.html` deleted); the real UI is the path now (`2026-10-10-gui-replay-ui-phase3.md`).

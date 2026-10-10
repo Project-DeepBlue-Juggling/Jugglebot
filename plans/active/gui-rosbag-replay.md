@@ -26,9 +26,9 @@ the map and its tickets live in `.scratch/gui-replay/` (gitignored, local to
 the `Jugglebot-skills` worktree). Ticket 00 holds the 21 charting decisions,
 ticket 01 the decode / payload measurements, ticket 05 the backend decisions.
 Ticket 02 (engine and feed contract) was resolved 2026-10-10 and is Phase 2
-below. **Tickets 03 (replay UI prototype — mock built, owner's pick pending)
-and 04 (3D trails prototype) are still open**: Phases 3–4 are outlines that
-each ticket's resolution will turn into a detailed phase.
+below. Ticket 03 (replay UI) was resolved 2026-10-10 and is Phase 3 below;
+**ticket 04 (3D trails prototype) is still open**: Phase 4 is an outline that
+its resolution will turn into a detailed phase.
 
 ## Context
 
@@ -140,10 +140,10 @@ recordings root holding exactly one `.mcap`; the nested
 | 1a | Converter worker (`replay/convert.py`): rosbags decode, chunking with reorder buffer, manifest, overview, bulk CLI; synthetic MCAP fixture; tests | done 2026-10-10 (software) |
 | 1b | Server (`replay/cache.py`, `replay/api.py`, `gui_server.py`): threaded, routes, worker queue, eviction, refusals; unit file in `tools/systemd/`; tests | done 2026-10-10 (software; unit not yet installed on the box) |
 | 1c | End-to-end test (real worker through the API on the fixture); bulk conversion of the newest recordings by hand; unit installed on the box | done 2026-10-10: e2e test; unit installed and the service restarted by the owner; live open path smoke-tested (24 MB / 114 s recording queued → complete in 18 s, 12 chunks, 3.2 MB, chunk served gzip). Bulk pre-conversion remains optional |
-| 2 | Browser engine: feed over chunks (recording via the API, session buffer in memory), playhead clock, dispatch through the live handlers, seek semantics, prefetch, chart-store swap | software-complete 2026-10-10 (`81355621`…`ca4b6781`, merged to `skill-stack`); the real GUI calls `getReplayMode` only in Phase 3; owner dev-page session (`test_replay_engine.html`) pending |
-| 3 | Replay UI: lobby, picker, trackbar + transport + hotkeys, timeline overview, zoom; replay-only-while-disconnected gating | **pending ticket 03** |
-| 4 | Balls in the 3D scene with trails (live and replay), `tail_length_ms` input | **pending ticket 04** |
-| 5 | Hardening and fog: session-buffer memory ceiling, deep links `?recording=<id>&t=`, read-only minimap / juggle panel in replay | after 2–4 |
+| 2 | Browser engine: feed over chunks (recording via the API, session buffer in memory), playhead clock, dispatch through the live handlers, seek semantics, prefetch, chart-store swap | software-complete 2026-10-10 (`81355621`…`ca4b6781`, merged to `skill-stack`); the real GUI calls `getReplayMode` only in Phase 3; the dev page was retired in Phase 3 |
+| 3 | Replay UI: lobby, picker, trackbar + transport + hotkeys, timeline overview, zoom; replay-only-while-disconnected gating | software-complete 2026-10-10 (`2026-10-10-gui-replay-ui-phase3.md`); owner browser session pending |
+| 4 | Balls in the 3D scene with trails (live and replay), `tail_length_ms` input | **pending the owner's pick on ticket 04** (prototype `ros_ws/gui/test_replay_trails.html` built 2026-10-10, committed on skill-stack) |
+| 5 | Hardening and fog: session-buffer memory ceiling, deep links `?recording=<id>&t=`, read-only minimap / juggle panel in replay | after 2–4; session-buffer ceiling: owner measured ≈ 1 MB heap per recorded second resident on 2026-10-10 (600 s ≈ 600 MB) → decide 300 s / topic cut |
 
 ## Phase 1 — Backend
 
@@ -250,8 +250,7 @@ Settled by wayfinder ticket 02 (`.scratch/gui-replay/issues/02-design-proposal.m
 - **Decoder.** `@msgpack/msgpack` 2.8.0, vendored under `ros_ws/gui/lib/` with its size and hash.
 - **Tests.** Node harnesses under `tests/ros/js/` with pytest wrappers per unit (feed round-trip against a
   Python-written chunk, clock contract, engine rate/order/seek/fence properties, chart derivation parity, cache
-  residency, mode transitions). DOM wiring is exercised by hand through `ros_ws/gui/test_replay_engine.html` until
-  Phase 3 replaces it.
+  residency, mode transitions). DOM wiring is covered by the real UI (Phase 3), which retired the dev page.
 
 Owner-level choices settled by delegation (2026-10-10): the replay chart span
 is clamped to 120 s; a seek pre-rolls 30 s of events rather than building a
@@ -261,12 +260,46 @@ span; the session-buffer horizon stays 600 s by default (`SESSION_BUFFER_SEC`),
 with U6 measuring the heap on the box so the owner can cap it at 300 s if the
 browser runs on the Jetson.
 
-## Phases 3–5 (outline, pending tickets)
+## Phase 3 — Replay UI
 
-- **Phase 3 UI** (ticket 03): lobby in `#command-overlay`, picker modal
-  (date, duration, size, cache state, "converting n %", "duration unknown",
-  "recording in progress"), trackbar with date header and HH:MM:SS readout,
-  speed ladder, step / FF / RW, hotkeys, overview bands and ticks, zoom.
+Built 2026-10-10; narrative and verification in `logbook/2026-10-10-gui-replay-ui-phase3.md`. Ticket 03 resolved.
+
+**Decisions.** Owner (on the mock `ros_ws/gui/test_replay_mock.html`): layout A, trackbar + transport docked at the
+bottom where the command overlay sits; compact overview (state bands + ticks, no per-topic rows); lobby and picker as
+mocked. Orchestrator: the ticks drawn are exactly fault, skill_attempt, catch_event, bb_calibration (the recorded
+vocabulary, `schema.OVERVIEW_TICK_KINDS`); a BB throw tick is deferred (no recorded topic carries it); absent topics
+dim rather than hide; seeks clamp to the converted frontier; FF/RW are the x0.25..x8 ladder, RW from forward = reverse x1.
+
+**Modules** (`ros_ws/gui/js/replay/ui/`, styles in `css/replay.css`; each takes `document` through a factory):
+- `index.js` entry, `main.js` calls `initReplayUi(getReplayMode({...}))` before `ros.init()`; `getReplayUi()` returns
+  `{toaster, picker, lobby, trackbar, absent, fenceDom, mode, dock}`.
+- `lobby.js` disconnected overlay buttons, header text, `notice` routing. `picker.js` modal and ticket 05 states.
+- `trackbar.js` bar, transport, hotkeys, one rAF loop; `overview.js` layout/zoom math and the strip.
+- `absent.js` and `fence-dom.js` the two DOM contracts; `toast.js`, `dom.js`, `format.js` helpers.
+
+**Hooks.** Dock is `#replay-dock` inside `#command-overlay` (class `replay-active` hides the live buttons). Mode
+singleton via `getReplayMode()` (no args after init). Toasts via `getReplayUi().toaster.show(text, ms)`. `lobby.js`
+owns `#conn-text`/`#conn-dot` while replay is active. The trackbar mounts and unmounts on `mode.on('state')`.
+Main imports the UI, never the reverse.
+
+**Contracts and tests.** DOM fence (decision 10): `FENCE_SURFACES` = command overlay, jog panel, juggle panel,
+minimap sequencer, Ball Butler, hold-to-confirm; a MutationObserver re-fences re-enabled controls; selectors are
+checked against the real GUI sources (`test_gui_replay_ui_fence_dom.py`). Absent state (decision 18): `ABSENT_TABLE`
+judges only an authoritative topic set (session snapshot or complete recording) and re-evaluates on conversion
+completion (`test_gui_replay_ui_absent.py`). Also `test_gui_replay_ui_{lobby,trackbar}.py` and two schema contracts
+in `test_gui_replay_format_contract.py` (drawn tick kinds and picker key topics are in the schema).
+
+**Known follow-up.** The picker fetches `/manifest` and `/status` per row; extend the list response to carry topics
+and progress.
+
+**Phase 4 hand-offs surfaced here.**
+(a) Trail history feed: `policy.js` classes `/mocap_data` as state-render and `/balls` as columns-only, so a trail
+needs a *columns window* `[p − tail_length_ms, p]` read from the resident chunks on every seek, scrub and reverse step
+and appended from columns in forward play, ungated by speed. Pre-roll must cover at least the tail; `resetForSeek`
+must reset the trail layer; a ball that is also an unlabelled mocap marker needs a duplicate-trail rule.
+(b) A BB throw tick is derivable from `/balls`.
+
+## Phases 4–5 (outline, pending ticket 04)
 - **Phase 4 balls and trails** (ticket 04): `/balls` in the 3D scene, trails
   behind balls and markers, `tail_length_ms`.
 - **Phase 5**: the fog items on the map.
