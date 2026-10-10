@@ -173,3 +173,7 @@ It is the investigation's `bench.py` adapted:
 - Base-frame identification rate / vectorising `identify_base_markers` (4-7 ms GIL pieces).
 - The `PoseStamped` header of each rigid body still carries the receive time, not the QTM-derived frame stamp.
   Switching it would give `/rigid_body_poses` consumers a capture-time stamp (no node reads it; check the offline probes under `tools/probes/` before changing it).
+
+**Reviewer's adjustment (merge, 2026-10-10 23:05):** `ball_tracker_node.py` `missed_frames_to_lose` 10 → 15 so the
+lose-track window stays ~50 ms at ~300 msgs/s (it would have shrunk to ~33 ms). `TRACKING_MAX_FRAMES_WITHOUT_MEASUREMENT`
+= 200 stays (gated `hardware_config.py`; now ~0.67 s of coasting instead of ~1 s) — revisit at the next admissible re-sweep.
