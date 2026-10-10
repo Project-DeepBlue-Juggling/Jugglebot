@@ -165,3 +165,14 @@ def test_main_thread_slot_math_equals_the_worker_copy_and_python(tmp_path):
     got = json.loads(proc.stdout.decode())
     for (t, t0), (main, worker) in zip(vec, got):
         assert main == worker == schema.chunk_index(t, t0), (t, t0, main, worker)
+
+
+def test_lite_loads_use_their_own_lane_and_are_never_memoised(out):
+    r = out[2]["lite"]
+    assert r["same_in_flight"] is True and r["fresh_each_time"] is True    # dedupe in flight only
+    assert r["afterLite"] == {"peek": None, "lite_posts": 2, "normal_posts": 0}   # not memoised: 2 decodes, peek stays empty
+    assert r["chunk_ok"] is True
+    assert r["full_is_memoised"] is True and r["lite_hits_memo"] is True   # a resident slot is served free
+    assert r["shared_with_inflight_full"] is True and r["posts5"] == ["load:5"]   # no second decode
+    assert r["adopt7"]["same"] is True and r["adopt7"]["memoised"] is True and len(r["adopt7"]["posts"]) == 1
+    assert r["range_error"] == "RangeError"

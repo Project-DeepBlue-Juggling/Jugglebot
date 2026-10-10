@@ -194,6 +194,8 @@ try {
 let diagramKey = '';
 let model = null;               // see buildModel()
 let rafId = 0;
+let replayHidden = false;      // replay mode hides the panel: no renders, no rAF loop
+let lastGate = null;            // last renderJugglePanel input, re-applied once on un-hide
 let animT0 = 0;
 const reducedMotion = typeof matchMedia === 'function'
     && matchMedia('(prefers-reduced-motion: reduce)').matches;
@@ -811,7 +813,7 @@ function drawFrame(s) {
 }
 
 function animShouldRun() {
-    return !!(dom && model && gate.expanded && !reducedMotion
+    return !!(dom && model && gate.expanded && !reducedMotion && !replayHidden
         && !document.hidden && dom.root.isConnected);
 }
 
@@ -1018,6 +1020,8 @@ export function buildJugglePanel(container) {
  * @param {{connected:boolean, active:boolean, expanded?:boolean, mainState?:string|null}} g
  */
 export function renderJugglePanel(g) {
+    if (g) lastGate = g;
+    if (replayHidden) return;   // replay: panel is display:none, nothing to paint
     if (!dom || !g) return;
     const wasConnected = gate.connected, wasActive = gate.active, wasExpanded = gate.expanded;
     gate.connected = !!g.connected;
@@ -1229,4 +1233,20 @@ function sync() {
  */
 export function setJugglePanelTransport(t) {
     if (t && typeof t.callService === 'function') transport = t;
+}
+
+/**
+ * Replay mode hides the Juggle panel (replay/ui/hide.js). While hidden the rAF animation is cancelled and
+ * renderJugglePanel is a no-op; un-hiding re-renders once from the last snapshot and resumes the loop.
+ */
+export function setJugglePanelReplayHidden(on) {
+    on = !!on;
+    if (on === replayHidden) return;
+    replayHidden = on;
+    if (on) {
+        if (rafId) { cancelAnimationFrame(rafId); rafId = 0; }
+    } else {
+        if (lastGate) renderJugglePanel(lastGate);
+        ensureAnim();
+    }
 }

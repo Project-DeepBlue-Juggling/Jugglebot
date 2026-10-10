@@ -2,7 +2,11 @@
 // reader per `open`; a single async FIFO, so reader state and byte spans never
 // race (no cancellation: cache.js fetches one slot at a time).
 //
-//   main -> worker: {op:'open', req, url} {op:'load', req, i} {op:'latest', req, topic, t} {op:'close'}
+// Two lanes, still one reader: every message is served FIFO within its lane, and the normal lane is
+// always drained before the next LITE message starts ({op:'load', lite:true}: the digester's far-tier
+// loads, digest.js). A lite decode already running is not interrupted - playback waits at most one slot.
+//
+//   main -> worker: {op:'open', req, url} {op:'load', req, i, lite?} {op:'latest', req, topic, t} {op:'close'}
 //   worker -> main: {op:'opened', req, t0, t1, slots, topics, skipped, chunkCount, size, etag, ms}
 //                   {op:'slot', req, i, t0, t1, topics:{"/x":{type,n,t,cols}}, dropped, bytes, ms}
 //                   {op:'latest', req, row:{t, flat}|null}
@@ -24,7 +28,9 @@ export function createWorkerHandler(deps) {
   const allowlist = deps.allowlist || ALLOWLIST;
   const now = deps.now || (() => (typeof performance !== 'undefined' ? performance.now() : Date.now()));   // wall-clock: decode timing diagnostics (ms) for the worker's replies, not recorded time
   let rec = null;
-  let tail = Promise.resolve();
+  const hi = [];   // normal lane (open / load / latest / close)
+  const lo = [];   // lite lane (low-priority far-tier loads)
+  let draining = false;
 
   function fail(req, e) {
     let code = e && e.reason;
@@ -64,10 +70,22 @@ export function createWorkerHandler(deps) {
     }
   }
 
+  async function drain() {
+    try {
+      while (hi.length || lo.length) {
+        const item = hi.length ? hi.shift() : lo.shift();
+        await run(item.msg);
+        item.done();
+      }
+    } finally { draining = false; }
+  }
+
   return {
     handle(msg) {
-      tail = tail.then(() => run(msg));
-      return tail;
+      const p = new Promise((done) => { (msg.op === 'load' && msg.lite ? lo : hi).push({ msg, done }); });
+      // Start on a microtask so messages posted in the same tick are ordered by LANE, not arrival.
+      if (!draining) { draining = true; Promise.resolve().then(drain); }
+      return p;
     },
   };
 }

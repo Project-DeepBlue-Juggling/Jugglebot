@@ -21,6 +21,7 @@ import { McapSource } from './sources.js';
 import { getSessionBuffer } from './session.js';
 import { createChunkCache } from './cache.js';
 import { createEngine } from './engine.js';
+import { createDigester } from './digest.js';
 import { indexLatestBefore } from './chunk.js';
 import { createReplayMode } from './mode.js';
 
@@ -62,6 +63,7 @@ export function getReplayMode(mainApi, extra) {
         getSessionBuffer,
         createCache: (source) => createChunkCache({ source }),
         createEngine,
+        createDigester,
         indexLatestBefore,
         visibleSpanSec: extra.visibleSpanSec,
         raf: {

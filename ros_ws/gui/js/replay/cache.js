@@ -10,6 +10,7 @@
  *     onChange(cb)                     cb({reason: 'residency'|'frontier'|'error', error: null|Error}) -> unsubscribe
  *     frontier()                       source.range().frontier
  *     size()                           resident chunk count
+ *     loading()                        true while a source.load is in flight (digest.js pauses on it)
  *     dispose()                        cancel pending work (waiters resolve)
  *
  * Wanted set (forward): chunks covering [p - span/2 - behind, p + span/2 + ahead] plus one extra chunk
@@ -278,6 +279,7 @@ export function createChunkCache(opts) {
         onChange(cb) { listeners.add(cb); return () => listeners.delete(cb); },
         frontier() { return source.range().frontier; },
         size() { return resident.size; },
+        loading() { return loadingIdx !== null; },
 
         dispose() {
             disposed = true;

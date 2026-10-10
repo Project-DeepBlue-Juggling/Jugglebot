@@ -8,6 +8,8 @@ import { createLobby } from './lobby.js';
 import { createTrackbar } from './trackbar.js';
 import { createAbsent } from './absent.js';
 import { createFenceDom } from './fence-dom.js';
+import { createHide } from './hide.js';
+import { setJugglePanelReplayHidden } from '../../juggle-panel.js';
 import * as ros from '../../ros-bridge.js';
 import { getSessionBuffer } from '../session.js';
 
@@ -27,6 +29,7 @@ export function initReplayUi(mode) {
     });
     const absent = createAbsent({ document: document_, mode });
     const fenceDom = createFenceDom({ document: document_, mode, MutationObserver: globalThis.MutationObserver });
-    ui = { toaster, picker, lobby, trackbar, absent, fenceDom, mode, dock: lobby.dock };
+    const hide = createHide({ document: document_, mode, setJuggleHidden: setJugglePanelReplayHidden });
+    ui = { toaster, picker, lobby, trackbar, absent, fenceDom, hide, mode, dock: lobby.dock };
     return ui;
 }

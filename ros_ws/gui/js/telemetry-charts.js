@@ -204,9 +204,11 @@ const WHEEL_ZOOM_STEP = 1.1;
 const MIN_X_SPAN_SEC = 0.05;
 /** Maximum x-axis span (seconds) — never exceed the cache retention. */
 const MAX_X_SPAN_SEC = CACHE_WINDOW_SEC;
-/** Replay span cap (seconds): ≈ 12 k points per series at ~98 Hz, i.e. the
- *  live point budget (maxPoints) whose paint cost is proven. */
-export const REPLAY_MAX_SPAN_SEC = 120;
+/** Replay span cap (seconds).  The charts plot the store's COMPOSED two-tier data: full-rate samples
+ *  only for the resident chunks (tens of seconds) and 1 s digest means elsewhere, so a 10-minute
+ *  view is ~600 + resident points per series - inside the live point budget (maxPoints) whose
+ *  paint cost is proven.  The default window (liveWindowSec) is unchanged. */
+export const REPLAY_MAX_SPAN_SEC = 600;
 
 /** The replay chart store while in replay, else null (replay design § 5). */
 let replayStore = null;
@@ -1211,6 +1213,25 @@ function buildUPlotOpts(chartIdx, width, height, showXAxis = true, onCursor = nu
         scales[scaleKey] = {
             auto: true,
             range: (u, dataMin, dataMax) => {
+                // Replay: the drawn envelope can exceed the full-tier data; cover it over the visible x window.
+                if (replayStore) {
+                    const ax = replayStore.axes[chartIdx];
+                    const xs = u.scales.x;
+                    if (ax && typeof ax.envelope === 'function' && xs && xs.min != null && xs.max != null) {
+                        for (const sig of signalList) {
+                            if (sig.scale !== scaleKey || !activeSignals.has(sig.key)) continue;
+                            const env = ax.envelope(sig.key);
+                            const t = env.t;
+                            for (let i = 0; i < t.length; i++) {
+                                if (t[i] < xs.min) continue;
+                                if (t[i] > xs.max) break;
+                                const lo = env.min[i], hi = env.max[i];
+                                if (lo === lo && (dataMin == null || lo < dataMin)) dataMin = lo;
+                                if (hi === hi && (dataMax == null || hi > dataMax)) dataMax = hi;
+                            }
+                        }
+                    }
+                }
                 // When no data or all values identical, show a small range around the value
                 if (dataMin == null || dataMax == null) return [0, 1];
                 if (dataMin === dataMax) {
@@ -1331,7 +1352,7 @@ function buildUPlotOpts(chartIdx, width, height, showXAxis = true, onCursor = nu
             // Drawn after every series/axis paint — lets us overlay event
             // markers and delta-cursor bookmarks without touching the
             // plotted data.
-            draw: replayStore ? [drawChartOverlays, drawReplayPlayhead] : [drawChartOverlays],
+            draw: replayStore ? [drawChartOverlays, drawReplayEnvelope, drawReplayPlayhead] : [drawChartOverlays],
         },
         legend: { show: false },
         padding: [8, 8, 0, 0],
@@ -1482,8 +1503,124 @@ function resizeAllCharts() {
  *  x scale moves per frame. */
 function applyReplayAxes() {
     if (!replayStore) return;
+    const ax0 = replayStore.axes[0];
+    const fullTs = ax0 ? ax0.timestamps : null;
+    // A rebuild that kept the full-rate arrays (only the digest tier changed - the digester's
+    // trickle of slot installs) is coalesced to ONE repaint per animation frame; a real rebuild
+    // (new resident chunks / unit toggle) repaints immediately.
+    const digestOnly = fullTs !== null && replayFullTs === fullTs;
+    replayFullTs = fullTs;
+    if (digestOnly) {
+        if (!replayRepaintPending) {
+            replayRepaintPending = true;
+            requestAnimationFrame(() => {
+                if (!replayRepaintPending) return;
+                replayRepaintPending = false;
+                applyReplayAxesNow();
+            });
+        }
+        return;
+    }
+    replayRepaintPending = false;
+    applyReplayAxesNow();
+}
+
+let replayFullTs = null;
+let replayRepaintPending = false;
+
+function applyReplayAxesNow() {
+    if (!replayStore) return;
     stores.splice(0, stores.length, ...replayStore.axes);
     if (charts.some(Boolean)) repaintAllCharts(true);
+}
+
+// ---- Replay min-max envelope of the far (digest) tier ----
+// A faint band in the series colour from store.axes[i].envelope(key): the per-second min..max the
+// 1 s mean line cannot show.  Drawn ONLY over the digest regions (the envelope arrays hold nothing
+// else), broken wherever neighbouring bins are > ENV_GAP_SEC apart (a missing digest) and at the
+// resident window (`split`).  No allocation: scalar maths on the shared Float64Arrays, direct ctx
+// path calls, one fill per run.
+const ENV_ALPHA = 0.15;
+const ENV_GAP_SEC = 1.5;
+
+function drawEnvRun(u, ctx, sc, t, lo, hi, s, e, x0, kx) {
+    // polygon: forward along max, back along min (run = [s, e))
+    ctx.beginPath();
+    for (let i = s; i < e; i++) {
+        const x = x0 + (t[i] - kx.min) * kx.k;
+        const y = u.valToPos(hi[i], sc.scale, true);
+        if (i === s) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+    }
+    for (let i = e - 1; i >= s; i--) {
+        ctx.lineTo(x0 + (t[i] - kx.min) * kx.k, u.valToPos(lo[i], sc.scale, true));
+    }
+    ctx.closePath();
+    ctx.fill();
+}
+
+const envKx = { min: 0, k: 0 };
+const envSc = { scale: '', min: 0, max: 0 };
+
+function drawReplayEnvelope(u) {
+    const ctx = u.ctx;
+    if (!replayStore || !ctx || !u.bbox) return;
+    const idx = charts.indexOf(u);
+    const axis = idx >= 0 ? replayStore.axes[idx] : null;
+    if (!axis || typeof axis.envelope !== 'function') return;
+    const xMin = u.scales.x.min, xMax = u.scales.x.max;
+    if (xMin == null || xMax == null || !(xMax > xMin)) return;
+    const { left, top, width, height } = u.bbox;
+    envKx.min = xMin;
+    envKx.k = width / (xMax - xMin);
+    let started = false;
+    for (let g = 0; g < SIGNAL_GROUPS.length; g++) {
+        const sig = SIGNAL_GROUPS[g];
+        if (!activeSignals.has(sig.key)) continue;
+        const env = axis.envelope(sig.key);
+        const t = env.t, n = t.length;
+        if (n === 0) continue;
+        const ys = u.scales[sig.scale];
+        if (!ys || ys.min == null || ys.max == null) continue;
+        if (!started) {
+            started = true;
+            ctx.save();
+            ctx.beginPath();
+            ctx.rect(left, top, width, height);
+            ctx.clip();
+            ctx.globalAlpha = ENV_ALPHA;
+        }
+        ctx.fillStyle = sig.color;
+        envSc.scale = sig.scale; envSc.min = ys.min; envSc.max = ys.max;
+        // visible index range (t ascending within each region; the two regions are time-ordered too)
+        let a = 0;
+        { let l = 0, h = n; while (l < h) { const m = (l + h) >> 1; if (t[m] < xMin - ENV_GAP_SEC) l = m + 1; else h = m; } a = l; }
+        let s = -1;
+        for (let i = a; i < n; i++) {
+            if (t[i] > xMax + ENV_GAP_SEC) break;
+            const ok = env.min[i] === env.min[i] && env.max[i] === env.max[i];
+            const brk = s >= 0 && (!ok || i === env.split || t[i] - t[i - 1] > ENV_GAP_SEC);
+            if (brk) { drawEnvRun(u, ctx, envSc, t, env.min, env.max, s, i, left, envKx); s = -1; }
+            if (ok && s < 0) s = i;
+        }
+        if (s >= 0) {
+            let e = n;
+            while (e > s && t[e - 1] > xMax + ENV_GAP_SEC) e--;
+            drawEnvRun(u, ctx, envSc, t, env.min, env.max, s, e, left, envKx);
+        }
+    }
+    if (started) ctx.restore();
+}
+
+function installEnvelopeHook(u) {
+    if (!u || !u.hooks) return;
+    const a = u.hooks.draw || (u.hooks.draw = []);
+    if (a.indexOf(drawReplayEnvelope) < 0) a.push(drawReplayEnvelope);
+}
+
+function removeEnvelopeHook(u) {
+    if (!u || !u.hooks || !u.hooks.draw) return;
+    const i = u.hooks.draw.indexOf(drawReplayEnvelope);
+    if (i >= 0) u.hooks.draw.splice(i, 1);
 }
 
 // ---- Replay playhead line in every chart ----
@@ -1549,7 +1686,10 @@ export function enterReplayCharts(store, opts) {
     replayStore = store;
     replaySeek = (opts && opts.onSeek) || null;
     readPlayheadColor();
-    for (let i = 0; i < charts.length; i++) installPlayheadHook(charts[i]);
+    replayFullTs = null;
+    replayRepaintPending = false;
+    // envelope BEFORE the playhead: the playhead line is always the topmost draw
+    for (let i = 0; i < charts.length; i++) { installEnvelopeHook(charts[i]); installPlayheadHook(charts[i]); }
     paused = false;
     viewMode = 'live';
     manualXRange = null;
@@ -1567,7 +1707,9 @@ export function exitReplayCharts() {
     replayUnsub = null;
     replayStore = null;
     replaySeek = null;
-    for (let i = 0; i < charts.length; i++) removePlayheadHook(charts[i]);
+    replayFullTs = null;
+    replayRepaintPending = false;
+    for (let i = 0; i < charts.length; i++) { removeEnvelopeHook(charts[i]); removePlayheadHook(charts[i]); }
     const sv = replaySaved;
     replaySaved = null;
     if (sv) {

@@ -5,7 +5,8 @@
  *   source.kind                      'recording' | 'session'
  *   source.range()                   sync  {t0, t1, frontier}   (frontier = end of sealed data)
  *   source.chunkIndex(t) / bounds(i) sync
- *   source.load(i)                   async Chunk | null
+ *   source.load(i, {lite}?)          async Chunk | null; lite = low-priority far-tier load (digest.js): served after
+ *                                    every normal load by the worker and NEVER memoised (far slots must not stay resident)
  *   source.window(t0, t1, topics?)   async Chunk[]
  *   source.latestBefore(t, topic)    async {t, msg} | null
  *   source.timeline()                async overview-shaped object, {partial:true,...} until the overview arrives
@@ -103,6 +104,7 @@ export function McapSource(opts) {
   const listeners = new Set();
   const memo = new Map();      // i -> Chunk
   const inflight = new Map();  // i -> Promise<Chunk>
+  const liteInflight = new Map(); // i -> Promise<Chunk> (lite loads: dedupe only, never memoised)
 
   function emit() { for (const cb of Array.from(listeners)) cb(self.status()); }
 
@@ -195,11 +197,33 @@ export function McapSource(opts) {
 
     peek(i) { return memo.get(i) || null; },
 
-    async load(i) {
+    async load(i, loadOpts) {
       if (!(i >= 0 && i < slots)) throw new RangeError('chunk ' + i + ' outside [0,' + slots + ')');
       const hit = memo.get(i);
       if (hit) return hit;
+      if (loadOpts && loadOpts.lite) {
+        // A normal load already in flight serves a lite caller too; otherwise a lite lane message.
+        const full = inflight.get(i);
+        if (full) return full;
+        let lp = liteInflight.get(i);
+        if (!lp) {
+          lp = (async () => {
+            const s = await send({ op: 'load', i, lite: true });
+            for (const name in s.dropped) dropped[name] = (dropped[name] || 0) + s.dropped[name];
+            return chunkFromRecord(s);
+          })();
+          liteInflight.set(i, lp);
+          lp.then(() => liteInflight.delete(i), () => liteInflight.delete(i));
+        }
+        return lp;
+      }
       let p = inflight.get(i);
+      const lp0 = liteInflight.get(i);
+      if (lp0 && !p) {   // adopt an in-flight lite decode of this slot: one decode, not two
+        p = lp0.then((ch) => { memo.set(i, ch); while (memo.size > MEMO_CAP) memo.delete(memo.keys().next().value); return ch; });
+        inflight.set(i, p);
+        p.then(() => inflight.delete(i), () => inflight.delete(i));
+      }
       if (!p) {
         p = (async () => {
           const s = await send({ op: 'load', i });

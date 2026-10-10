@@ -124,3 +124,7 @@
 body.replay button:disabled[title="unavailable in replay"],
 body.replay input:disabled[title="unavailable in replay"],
 body.replay select:disabled[title="unavailable in replay"] { cursor: not-allowed; }
+
+/* Input panels that tell nothing about a recording are hidden while replay is active (ui/hide.js).
+   !important so it wins over live code's inline display; removing the class restores the inline value. */
+.replay-hidden { display: none !important; }

@@ -48,7 +48,7 @@ export function fakeWorkerFactory(manifest, records, opts) {
       terminated: false,
       onmessage: null,
       postMessage(msg) {
-        if (opts.log) opts.log.push(msg.op + (msg.i !== undefined ? ':' + msg.i : ''));
+        if (opts.log) opts.log.push((msg.lite ? msg.op + 'lite' : msg.op) + (msg.i !== undefined ? ':' + msg.i : ''));
         Promise.resolve().then(async () => {
           if (w.terminated) return;
           const reply = (m) => { if (!w.terminated && w.onmessage) w.onmessage({ data: Object.assign({ req: msg.req }, m) }); };

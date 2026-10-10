@@ -45,14 +45,16 @@ globalThis.uPlot = class {
     this.select = { left: 0, top: 0, width: 0, height: 0 };
     this.hooks = o.hooks;
     this.bbox = { left: 100, top: 10, width: 400, height: 60 };
-    this.strokes = [];
+    this.strokes = []; this.fills = []; this.setDataCalls = 0;
     const self = this;
-    this.ctx = { save() {}, restore() {}, beginPath() {}, moveTo(x, y) { self._mv = [x, y]; }, lineTo() {}, rect() {}, clip() {},
+    this.ctx = { save() {}, restore() {}, beginPath() { self._path = []; }, moveTo(x, y) { self._mv = [x, y]; (self._path = self._path || []).push([x, y]); },
+                 lineTo(x, y) { (self._path = self._path || []).push([x, y]); }, closePath() {}, rect() {}, clip() {},
+                 fill() { self.fills.push({ color: this.fillStyle, alpha: this.globalAlpha, pts: (self._path || []).slice() }); },
                  stroke() { self.strokes.push({ color: this.strokeStyle, w: this.lineWidth, x: self._mv[0] }); }, fillRect() {}, fillText() {}, set font(v) {} };
     made.push(this);
   }
   setScale(k, r) { this.sets.push([k, r]); this.scales[k] = { min: r.min, max: r.max }; }
-  setData(d) { this.data = d; }
+  setData(d) { this.data = d; this.setDataCalls++; }
   setSize() {} destroy() { this.destroyed = true; } setSelect() {}
   posToVal(px) { return px; } valToPos() { return 0; } redraw() {}
 };
@@ -240,7 +242,7 @@ tc.enterReplayCharts(store, { onSeek: (t) => { seekTo = t; } });
     span: sc[0].max - sc[0].min,
     only_scale: liveCharts().every((u, i) => u.sets.length === sets0[i] + 1),
   };
-  // wheel zoom-out with a huge delta: live mode would allow 600 s, replay caps at 120 s
+  // wheel zoom-out with a huge delta: live mode allows 600 s; replay also caps at REPLAY_MAX_SPAN_SEC (600)
   const over = liveCharts()[0].over;
   over._h.wheel({ preventDefault() {}, deltaY: 100000, clientX: 400 });
   flushRaf();
@@ -322,5 +324,95 @@ tc.exitReplayCharts();
     x_left: tc.playheadCanvasX(10, 10, 30, 100, 400), x_out: tc.playheadCanvasX(31, 10, 30, 100, 400),
     x_bad: tc.playheadCanvasX(5, null, null, 0, 1), x_degenerate: tc.playheadCanvasX(5, 5, 5, 0, 1),
   };
+}
+// ---- A2: two-tier composed view, gaps, per-bin clipping, envelope hook, coalesced redraw ----
+{
+  const hasHook = (u, name) => u.hooks.draw.some((f) => f.name === name);
+  const st = createReplayChartStore({ telemetrySample: tc.telemetrySample, latestBefore: feedLatest });
+  const sliceRes = chunks[2];                                   // resident [T0+20, T0+30]
+  st.setResident([sliceRes]);
+  const full0 = st.axes[0].timestamps;
+  out.tiers_none = { same_ts: st.axes[0].getAlignedData(['pos_measured'])[0] === full0 };
+  // digests of slots 0 and 3; slot 1 is MISSING (its digest has not arrived); slot 2 is resident
+  const dg = new Map([[0, st.digestChunk(chunks[0])], [3, st.digestChunk(chunks[3])]]);
+  st.setDigests(dg);
+  const d0 = st.axes[0].getAlignedData(['pos_measured']);
+  const ts = d0[0], pm = d0[1];
+  let mono = true;
+  for (let k = 1; k < ts.length; k++) if (!(ts[k] > ts[k - 1])) mono = false;
+  const nanIdx = [];
+  for (let k = 0; k < pm.length; k++) if (Number.isNaN(pm[k])) nanIdx.push(k);
+  const fs0 = full0[0], fe0 = full0[full0.length - 1];
+  const nGapPts = nanIdx.filter((k) => ts[k] < fs0 - 1e-9 || ts[k] > fe0 + 1e-9).length;
+  out.tiers = {
+    mono, n_full: full0.length, n_total: ts.length,
+    n_before: Array.from(ts).filter((t) => t < fs0).length, n_after: Array.from(ts).filter((t) => t > fe0).length,
+    gap_points_outside_full: nGapPts,
+    gap_between_slot0_and_full: nanIdx.some((k) => ts[k] > T0 + 10 && ts[k] < fs0),
+    gap_between_full_and_slot3: nanIdx.some((k) => ts[k] > fe0 && ts[k] < T0 + 30.5),
+    cols_len_ok: d0.every((c) => c.length === ts.length),
+  };
+  // per-bin clipping at a window edge: the resident window starts mid-slot (25 s into a 20..30 slot)
+  {
+    const mid = Object.assign({}, chunks[2], { t0: T0 + 25 });
+    const s3 = createReplayChartStore({ telemetrySample: tc.telemetrySample, latestBefore: feedLatest });
+    s3.setResident([mid]);
+    s3.setDigests(new Map([[2, s3.digestChunk(chunks[2])]]));
+    const env = s3.envelope(0, 'pos_measured');
+    const rr = s3.residentRange();
+    out.clip = { env_t: Array.from(env.t).map((t) => +(t - T0).toFixed(3)), rr0: +(rr.t0 - T0).toFixed(3), split: env.split,
+      inside: Array.from(env.t).filter((t) => t > rr.t0 - 0.5 && t < rr.t1 + 0.5).length };
+  }
+  // envelope hook: installed on enter (before the playhead hook), draws only over digest regions
+  const names = (u) => u.hooks.draw.map((f) => f.name);
+  const before = liveCharts().map((u) => hasHook(u, 'drawReplayEnvelope'));
+  tc.enterReplayCharts(st, { onSeek: () => {} });
+  flushRaf();
+  const u = liveCharts()[0];
+  const order = names(u);
+  u.scales = new Proxy({ x: { min: T0, max: T0 + 35 } }, { get: (o, k) => (k in o ? o[k] : { min: -1e9, max: 1e9 }) });
+  u.valToPos = (v) => v;
+  const f = u.hooks.draw.find((g) => g.name === 'drawReplayEnvelope');
+  u.fills.length = 0;
+  f(u);
+  const tOf = (x) => T0 + (x - 100) / 400 * 35;
+  const times = [];
+  for (const fl of u.fills) for (const pt of fl.pts) times.push(tOf(pt[0]));
+  out.env_hook = {
+    before, installed: liveCharts().map((c) => hasHook(c, 'drawReplayEnvelope')), order,
+    n_fills: u.fills.length, alpha_ok: u.fills.every((fl) => fl.alpha === 0.15 && typeof fl.color === 'string' && fl.color.length > 0),
+    inside_full: times.filter((t) => t > fs0 + 1e-6 && t < fe0 - 1e-6).length,
+    n_pts: times.length, has_before: times.some((t) => t < fs0), has_after: times.some((t) => t > fe0),
+  };
+  // no digests -> nothing drawn
+  st.setDigests(new Map());
+  flushRaf();
+  u.fills.length = 0; f(u);
+  out.env_hook.none_drawn = u.fills.length;
+  st.setDigests(dg);
+  flushRaf();
+  // one redraw per frame for a burst of digest installs; a real rebuild repaints at once
+  const c0 = liveCharts().map((c) => c.setDataCalls);
+  for (let k = 0; k < 7; k++) st.setDigests(new Map(dg));
+  const c1 = liveCharts().map((c) => c.setDataCalls);
+  flushRaf();
+  const c2 = liveCharts().map((c) => c.setDataCalls);
+  st.setResident([sliceRes]);
+  const c3 = liveCharts().map((c) => c.setDataCalls);
+  flushRaf();
+  const c4 = liveCharts().map((c) => c.setDataCalls);
+  const dlt = (a, b) => a.map((v, i) => b[i] - v);
+  out.coalesce = { burst_before_frame: dlt(c0, c1), burst_after_frame: dlt(c1, c2), rebuild_immediate: dlt(c2, c3), rebuild_after_frame: dlt(c3, c4) };
+  // y-range covers the digest envelope over the visible x window (a spike above the full-tier max)
+  {
+    u.scales = { x: { min: T0, max: T0 + 35 } };
+    const env = st.envelope(0, 'pos_measured');
+    let emax = -Infinity;
+    for (let k = 0; k < env.t.length; k++) if (env.t[k] >= T0 && env.t[k] <= T0 + 35 && env.max[k] === env.max[k] && env.max[k] > emax) emax = env.max[k];
+    const his = Object.keys(u.opts.scales).filter((k) => k !== 'x').map((k) => u.opts.scales[k].range(u, 0, emax - 1)[1]);
+    out.range_env = { emax_finite: Number.isFinite(emax), covers: his.some((h) => h >= emax), base_below: emax - 1 < emax };
+  }
+  tc.exitReplayCharts();
+  out.env_hook.removed = liveCharts().map((c) => !hasHook(c, 'drawReplayEnvelope'));
 }
 console.log(JSON.stringify(out));

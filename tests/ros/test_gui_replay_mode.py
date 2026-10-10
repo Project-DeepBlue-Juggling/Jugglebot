@@ -179,3 +179,11 @@ def test_recording_entry_slot_0_load_failure_leaves_lobby_untouched(out):
     assert f["reason"] == "decode" and f["state"] == "LOBBY"
     assert f["order"] == [] and f["isReplay"] is False
     assert f["closed"] >= 1
+
+
+def test_digester_lives_exactly_as_long_as_the_replay(out):
+    d = out["digester"]
+    assert d["during"]["n"] == 1 and d["during"]["disposed"] == 0
+    assert d["during"]["keys"] == ["cache", "engine", "source", "store"] and d["during"]["store_is_fake"]
+    assert d["n_total"] == 2 and d["after"] == [1, 1]          # disposed exactly once per replay
+    assert d["dispose_before_charts_exit"]

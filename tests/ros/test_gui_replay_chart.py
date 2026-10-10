@@ -115,10 +115,10 @@ def test_buffer_is_immutable_across_rebuilds(out):
 
 
 def test_playhead_moves_only_the_scale_and_span_is_clamped(out):
-    assert out["window"]["span"] == 120 and out["window"]["cap"] == 120
+    assert out["window"]["span"] == 600 and out["window"]["cap"] == 600
     p = out["playhead"]
     assert p["centred"] and p["only_scale"] and p["span"] == pytest.approx(10.0)
-    assert out["wheel_span"] == pytest.approx(120.0)
+    assert out["wheel_span"] == pytest.approx(600.0)
     assert out["wheel_centre_offset"] == pytest.approx(0.0, abs=1e-6)
     assert out["select"]["span"] == pytest.approx(8.0) and out["select"]["centred"]
     assert out["select"]["seek"] == pytest.approx(34.0, abs=1e-6)
@@ -157,3 +157,44 @@ def test_chart_dom_contracts_for_feedback_unit_a():
     sel = cc[cc.index("#chart-window-select {"):]
     sel = sel[:sel.index("}")]
     assert "width: 84px" in sel and "box-sizing: border-box" in sel
+
+
+def test_two_tier_composed_data_has_gaps_for_missing_digests(out):
+    t = out["tiers"]
+    assert out["tiers_none"]["same_ts"]                       # no digests: exactly the zero-copy full tier
+    assert t["mono"] and t["cols_len_ok"]                     # monotonic x, every column the same length
+    assert t["n_before"] > 0 and t["n_after"] > 0             # digest bins on both sides of the full tier
+    assert t["n_total"] == t["n_full"] + t["n_before"] + t["n_after"]
+    # slot 0 | (slot 1 missing) | full | slot 3: a NaN point on the 10 s hole, none at the contiguous edge
+    assert t["gap_between_slot0_and_full"] is True
+    assert t["gap_between_full_and_slot3"] is False
+    assert t["gap_points_outside_full"] == 1
+
+
+def test_digest_bins_are_clipped_per_bin_at_the_resident_edge(out):
+    c = out["clip"]
+    assert c["rr0"] == pytest.approx(25.0)
+    assert c["env_t"] == pytest.approx([20.5, 21.5, 22.5, 23.5, 24.5])   # the bins before the window are present
+    assert c["inside"] == 0 and c["split"] == 5                          # none inside it
+
+
+def test_envelope_hook_draws_only_over_digest_regions(out):
+    h = out["env_hook"]
+    assert not any(h["before"]) and all(h["installed"]) and len(h["installed"]) == 9
+    assert h["order"].index("drawReplayEnvelope") < h["order"].index("drawReplayPlayhead")
+    assert h["n_fills"] >= 2 and h["n_fills"] % 2 == 0        # one run per region (slot 0, slot 3) per signal
+    assert h["alpha_ok"] and h["has_before"] and h["has_after"]
+    assert h["inside_full"] == 0 and h["none_drawn"] == 0
+    assert all(h["removed"])
+
+
+def test_digest_installs_repaint_once_per_frame(out):
+    c = out["coalesce"]
+    assert set(c["burst_before_frame"]) == {0}                # a burst of installs repaints nothing yet
+    assert set(c["burst_after_frame"]) == {1}                 # ... then exactly one setData per chart
+    assert set(c["rebuild_immediate"]) == {1} and set(c["rebuild_after_frame"]) == {0}
+
+
+def test_y_range_covers_the_digest_envelope_over_the_visible_window(out):
+    r = out["range_env"]
+    assert r["emax_finite"] is True and r["covers"] is True

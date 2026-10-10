@@ -24,7 +24,7 @@
  *   charts: {createStore(storeDeps), enter(store, {onSeek}), exit(), setPlayhead(p), telemetrySample},
  *   links: {can(isUp), udp(isUp), hw(isUp)},
  *   resetForSeek(), blankDisconnectedState(), resetTrafficRings?(),
- *   makeRecordingSource(id), getSessionBuffer(), createCache(source), createEngine(opts), indexLatestBefore,
+ *   makeRecordingSource(id), getSessionBuffer(), createCache(source), createDigester?({source, cache, engine, store}), createEngine(opts), indexLatestBefore,
  *   visibleSpanSec?() (default 30), raf?: {request, cancel, hidden}, perfNow?()
  * }
  */
@@ -41,6 +41,7 @@ export function createReplayMode(deps) {
     let cache = null;
     let eng = null;
     let store = null;
+    let digester = null;          // far-tier digester (digest.js), lives exactly as long as the replay
     let evSnap = null;
     let latchSnap = null;         // main.js latches saved at entry, restored at exit
     let entered = false;          // the ordered entry sequence ran (exit must undo it)
@@ -206,6 +207,7 @@ export function createReplayMode(deps) {
             await eng.seek(start);
             if (myToken !== token) throw new Error('replay entry aborted');
             phase = 'replay';
+            if (D.createDigester) digester = D.createDigester({ source, cache, engine: eng, store });
             syncResident();
             emit('state', snapshotState());
         } catch (err) {
@@ -222,6 +224,7 @@ export function createReplayMode(deps) {
         stopLoop();
         unsubEng.forEach((u) => { try { u(); } catch (e) { /* ignore */ } });
         unsubEng = [];
+        if (digester) { try { digester.dispose(); } catch (e) { console.error(e); } digester = null; }
         if (unsubCache) { unsubCache(); unsubCache = null; }
         if (eng) { try { eng.dispose(); } catch (e) { console.error(e); } eng = null; }
         if (cache) { try { cache.dispose(); } catch (e) { console.error(e); } cache = null; }
@@ -273,6 +276,8 @@ export function createReplayMode(deps) {
         isActive: () => phase !== 'idle',
         engine: () => eng,
         source: () => source,
+        store: () => store,
+        digester: () => digester,
         on(evt, cb) { listeners[evt].add(cb); return () => listeners[evt].delete(cb); },
     };
 }

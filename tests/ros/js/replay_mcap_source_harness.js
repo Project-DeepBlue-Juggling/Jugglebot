@@ -179,4 +179,33 @@ const mk = (o) => McapSource(Object.assign({ id: 'rec', fetch: noNet, fileUrl: '
   out.close = { pending_reason: reason, terminated: worker.terminated, load_after_close: after };
 }
 
+// ---- lite loads (digest.js far tier): own worker lane, never memoised, dedupe, normal-load sharing ----
+{
+  const log = [];
+  const src = mk({ makeWorker: fakeWorkerFactory(manifest, records, { log }) });
+  await src.open();
+  const [la, lb] = await Promise.all([src.load(3, { lite: true }), src.load(3, { lite: true })]);
+  const lc = await src.load(3, { lite: true });
+  const afterLite = { peek: src.peek(3), lite_posts: log.filter((x) => x === 'loadlite:3').length, normal_posts: log.filter((x) => x === 'load:3').length };
+  const full = await src.load(3);
+  const lite_after_full = await src.load(3, { lite: true });
+  // a normal load in flight serves a lite caller (no second decode)
+  const p5 = src.load(5);
+  const l5 = src.load(5, { lite: true });
+  const [c5, c5l] = await Promise.all([p5, l5]);
+  // a normal load during a lite decode of the same slot adopts it: ONE decode
+  const l7 = src.load(7, { lite: true });
+  const n7 = src.load(7);
+  const [c7l, c7] = await Promise.all([l7, n7]);
+  out.lite = {
+    same_in_flight: la === lb, fresh_each_time: lc !== la, afterLite,
+    chunk_ok: la.i === 3 && la.topics['/robot_state'].n === records[3].topics['/robot_state'].n,
+    full_is_memoised: src.peek(3) === full, lite_hits_memo: lite_after_full === full,
+    shared_with_inflight_full: c5 === c5l, posts5: log.filter((x) => x.endsWith(':5')),
+    adopt7: { posts: log.filter((x) => x.endsWith(':7')), same: c7l === c7, memoised: src.peek(7) === c7 },
+    range_error: await src.load(records.length, { lite: true }).then(() => null, (e) => e.constructor.name),
+  };
+  src.close();
+}
+
 process.stdout.write(JSON.stringify(out));

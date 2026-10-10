@@ -379,6 +379,27 @@ out.refusal_409 = { reason: r409, order_len: order.length, state: m2.state().mod
     };
 }
 
+// digester lifecycle (post-Phase-4): created on entry with {source, cache, engine, store}, disposed on exit
+{
+    const made = [];
+    const mD = createReplayMode(mkdeps({
+        clock: clockSpy,
+        createDigester(o) {
+            const d = { o, disposed: 0, dispose() { this.disposed++; order.push('digester.dispose'); } };
+            order.push('digester.create'); made.push(d); return d;
+        },
+    }));
+    order.length = 0;
+    await mD.enterReplay({ kind: 'session' });
+    const during = { n: made.length, keys: made.length ? Object.keys(made[0].o).sort() : [], store_is_fake: made.length && made[0].o.store === fakeStore,
+        engine_state: made.length ? typeof made[0].o.engine.state : null, disposed: made.length ? made[0].disposed : -1 };
+    await mD.exitReplay('user');
+    await mD.enterReplay({ kind: 'session' });
+    await mD.exitReplay('user');
+    out.digester = { during, after: made.map((d) => d.disposed), n_total: made.length,
+        dispose_before_charts_exit: order.indexOf('digester.dispose') < order.indexOf('charts.exit') };
+}
+
 // no session buffer
 getSessionBuffer().clear();
 let nb = null;

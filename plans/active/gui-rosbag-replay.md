@@ -166,7 +166,7 @@ Settled by wayfinder ticket 02 (`.scratch/gui-replay/issues/02-design-proposal.m
   pass on change. Reverse playback dispatches state topics only, mutes event emission and ends with a seek.
 - **Charts.** Replay swaps in an immutable `ReplayChartStore` built from per-chunk derived columns through the same
   `telemetrySample()` the live path uses; the live ring is restored on exit. The buffer is rebuilt on every swap or
-  chunk append, never shifted in place; the span is clamped to 120 s.
+  chunk append, never shifted in place; the span is clamped to 120 s (raised to 600 by the two-tier store, see Phase 4).
 - **Residency.** Resident chunks cover the chart window plus 20 s ahead and 10 s behind in the play direction, at most 16,
   evicted farthest-first, fetched serially. A missing chunk puts the engine in `buffering`
   with the playhead held.
@@ -178,7 +178,7 @@ Settled by wayfinder ticket 02 (`.scratch/gui-replay/issues/02-design-proposal.m
   residency, mode transitions). DOM wiring is covered by the real UI (Phase 3), which retired the dev page.
 
 Owner-level choices settled by delegation (2026-10-10): the replay chart span
-is clamped to 120 s; a seek pre-rolls 30 s of events rather than building a
+is clamped to 120 s (raised to 600 by the two-tier store, see Phase 4); a seek pre-rolls 30 s of events rather than building a
 per-recording event index; above 1× the stale indicators flag only gaps of at
 least speed × timeout; "Replay last session" opens paused at the end minus one
 span; the session-buffer horizon stays 600 s by default (`SESSION_BUFFER_SEC`),
@@ -258,13 +258,16 @@ REPLAY paused (not auto-play).
 **Contract tests.** JS decode == Python oracle on the fixture; Range file-vs-server; overview pass == oracle overview;
 allowlist JS pin; vendored-bundle sha256; slot math pinned across main thread, worker and Python.
 
+**Two-tier chart store** (owner ask, `logbook/2026-10-10-gui-replay-ten-minute-span-and-hidden-inputs.md`): `REPLAY_MAX_SPAN_SEC` 600; full rate in the resident window, 1 s min/max/mean digests of the derived signals out to +-330 s (`js/replay/digest.js`, low-priority never-memoised `lite` worker loads, paused while playback buffers), drawn by the `drawReplayEnvelope` hook.
+**Replay-hidden input regions** (`js/replay/ui/hide.js`): juggle minimap, BB target, jog and speed-limit panels get `replay-hidden` in REPLAY; the juggle rAF stops.
+
 **Migration.** `rm -rf temp/replay_cache/`; reinstall the unit (new ExecStart, `--overview-dir`); module workers need
 Chrome/Edge 80+ or Firefox 114+.
 
 ## Phases 5-6 (outline)
 - **Phase 5 balls and trails** (ticket 04, pending the owner's pick): `/balls` in the 3D scene, trails behind balls and
   markers, `tail_length_ms`.
-- **Phase 6**: the fog items on the map.
+- **Phase 6**: the fog items on the map. Owner's remaining latency asks: the overview strip arrives only after the niced pass (pre-compute overviews for all recordings in the background at service start), and slot buffering is serial (one worker/reader; add a second reader for prefetch).
 
 ## Testing Plan
 
