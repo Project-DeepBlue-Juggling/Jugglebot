@@ -145,6 +145,9 @@ and replay checks only; no hardware was involved.
   tests/ros/test_install_segment.py -q` → **168 passed in 71.10 s**.
 - **Full gate** (`./run_tests.sh --full`, run 2026-10-10 11:29–11:38): **PASS** — parallel 6391 passed, 9 skipped, 1 xfailed in 364.67 s; serial 6 passed; total 392 s. Only this entry and its INDEX row were edited afterwards; the tests that read them were rerun (`pytest tests/sim/test_logbook_front_matter.py tests/sim/test_logbook_search.py tests/sim/test_plans_index.py -q`, run 2026-10-10: **111 passed in 0.99 s**).
 
+
+**Merge into skill-stack (0c63c664, 2026-10-10).** Gate on the merged tree: two runs under concurrent load (an 8-minute `colcon build` of `jugglebot_interfaces`, then isolation reruns) failed only on `tests/ros/test_skill_node.py::test_installer_reports_service_unavailable` (both runs) and once on `test_teensy_bridge_node_setpoint.py::test_hand_step_violation_not_sent` — neither file is touched by this branch, both pass alone (8/8) and the skill-node file passes 3/3 under `-n 4` on an idle box on both the pre-merge (6ca9494c) and merged trees, and the first is a pre-existing load-sensitive flake (FAILED in the gate logs of 2026-09-30, 10-04 and 10-05). Third run, nothing else on the box, 12:04–12:10: **PASS — 6394 passed, 9 skipped, 1 xfailed (319 s) + 6 serial**. Install rebuilt (`colcon build --packages-select jugglebot_interfaces jugglebot`).
+
 ## Open Questions
 
 - **Live catch timing with stamps about 3 ms earlier is untested.** So is anything tuned against the old
