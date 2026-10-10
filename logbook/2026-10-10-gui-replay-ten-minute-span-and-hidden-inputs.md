@@ -80,7 +80,7 @@ All 2026-10-10, venv, headless Chromium with software GL for smokes.
 - Unit A2: same command -> 445 passed, 1 skipped. Smoke (`smoke_report_7.md`, 13 h bag `2026-06-23_20-31-20`, playhead at t0, playback running): ring of 34 slots, 22 digested at 5 s and all 34 by 11 s; buffering transitions over 10 s of playback: 0 with the digester and 0 without; heap after GC 7.2 MB at open -> 8.4 MB ring full -> 8.7 MB (no-digester run 6.9 / 7.2 / 7.5, so the ring costs about 1.2 MB); 9-chart forced redraw 1.84 ms at a 131 s span vs 2.59 ms at 600 s (software-GL rAF frames of ~450-550 ms dominate and cannot resolve this).
 - Unit C: same command -> 444 passed, 1 skipped. Smoke (`smoke7.mjs`, `smoke_report_6.md`): all four regions `display:none` in REPLAY, juggle rAF count frozen at 24 over 1.5 s, regions restored and rAF resumed after exit, `#panel-bb`/`#bb-content` visible. ROS was UP, so Chromium ran with `--host-resolver-rules` refusing :9090.
 - Branch gate (`./run_tests.sh`, run 2026-10-10 in the replay worktree): parallel 6536 passed, 9 skipped, **1 failed** = `tests/firmware/test_bb_fw_update_xref.py::test_bb_fw_version_matches_the_host_expectation` (the BallButler repo on this box is at FW 8 and `BB_FW_VERSION_EXPECTED` was 6 on this branch; `skill-stack` `b02c44e0` bumps it to 8 — nothing in this block touches either side); serial 3 passed.
-- MERGED GATE: pending
+- Merged-state gate (`./run_tests.sh`, run 2026-10-10 in the replay worktree after merging `skill-stack` at `feffc470`, which carries the FW-8 pin): parallel **6537 passed, 9 skipped in 285.44 s**; serial 3 passed in 10.13 s; PASS.
 
 ## Outcome
 
