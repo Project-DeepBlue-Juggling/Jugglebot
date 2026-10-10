@@ -11,10 +11,10 @@ estimator inputs it collects (2026-10-09, sweep estimator).
   ``bb_moved`` is armed.
 * The solver gets mocap frames at their QTM stamps (one per distinct stamp)
   and yaw samples on the ROS clock. The yaw source follows ``bb_yaw_source``
-  (2026-10-10): ``heartbeat`` by default even when a stamped ``bb_yaw``
-  (degrees) arrives on bb/axis_estimates; ``stamped`` uses it (refused when
-  it is absent); ``auto`` prefers it and falls back to the heartbeat for the
-  two-joint message of older firmware. See
+  (2026-10-10): ``auto`` by default — the stamped ``bb_yaw`` (degrees) on
+  bb/axis_estimates when enough samples arrived, else the heartbeat (the
+  two-joint message of older firmware); ``stamped`` insists on it (refused
+  when absent); ``heartbeat`` ignores it. See
   ``logbook/2026-10-10-bb-yaw-offset-spread-stamped-source.md``.
 
 See ``logbook/2026-10-09-bb-constellation-yaw-offset.md``.
@@ -262,16 +262,18 @@ def _stamped_sweep(node, n):
     return solver, node.pub_calibration.published[-1]
 
 
-def test_the_heartbeat_is_the_default_yaw_source_even_with_a_stamped_stream(tmp_path):
-    """Bag 2026-10-10_00-24-06: the stamped source's only bag scattered 0.27° SD
-    (the mocap clock, which scattered the heartbeat too); the heartbeat is the only
-    source verified to repeat (0.062° SD, bag 2026-10-09_23-49-07)."""
+def test_auto_is_the_default_yaw_source_and_prefers_the_stamped_stream(tmp_path):
+    """Default ``auto`` since 2026-10-10 12:26: bag 2026-10-10_12-26-22 (clean clock)
+    replays at 0.021° SD stamped vs 0.038° heartbeat. With enough stamped samples
+    the solver gets the stamped stream; with none it falls back to the heartbeat."""
     import jugglebot.mocap_node as mn
     node, _ = _node(tmp_path, _ref(0.6))
-    assert node.get_parameter('bb_yaw_source').value == 'heartbeat'
+    assert node.get_parameter('bb_yaw_source').value == 'auto'
     solver, msg = _stamped_sweep(node, mn.MIN_STAMPED_YAW_SAMPLES + 50)
+    assert solver.call_args.kwargs['yaw_source'] == 'stamped'
+    assert len(solver.call_args.kwargs['yaw_samples']) == mn.MIN_STAMPED_YAW_SAMPLES + 50
+    solver, _ = _stamped_sweep(node, 0)
     assert solver.call_args.kwargs['yaw_source'] == 'heartbeat'
-    assert solver.call_args.kwargs['yaw_samples'] is not node._calib_stamped_yaw
 
 
 def test_bb_yaw_source_stamped_uses_the_stamped_stream(tmp_path):

@@ -80,3 +80,6 @@ The literal ship criterion was "the base path within each sweep's σ for all 10"
   - a second sitting. Whether κ holds across a QTM recalibration is THE open question: a non-rigid QTM warp that differs between BB and the base, ~180 mm apart, is not removed.
 
 external_changes: none (BallButler not edited). `settle_yaw_gauge.py`'s ACTION line ("add δ to gauge.pinned_yaw_offset_deg … rebuild, re-run the sweep") stays correct. Under `base_frame` / `auto`, κ follows the pin after the rebuild, and the sweep is only needed to refresh the world reference.
+
+**Merge follow-up (skill-stack, 2026-10-10):** `bb_yaw_source` default flipped `heartbeat` → `auto`. This sitting is the first clean-clock bag carrying both sources; the replay above reads 0.021° SD stamped against 0.038° heartbeat, meeting the rule pre-registered in 2026-10-10-bb-yaw-offset-spread-stamped-source (stamped SD ≤ 0.08° on a clean sitting). `test_auto_is_the_default_yaw_source_and_prefers_the_stamped_stream` pins it.
+

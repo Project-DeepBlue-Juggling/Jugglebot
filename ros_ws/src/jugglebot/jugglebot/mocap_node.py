@@ -106,18 +106,22 @@ DEFAULT_CALIBRATION_STATE_FILE = os.path.join(
 MIN_STAMPED_YAW_SAMPLES = 100
 
 #: ``bb_yaw_source`` parameter values: which BB yaw the sweep estimator fits.
-#: ``heartbeat`` (DEFAULT) — the 10 Hz bb/heartbeat yaw at its receive time;
+#: ``heartbeat`` — the 10 Hz bb/heartbeat yaw at its receive time;
 #: ``stamped`` — the 100 Hz bb_yaw of bb/axis_estimates at its bridge stamp
-#: (refused when fewer than MIN_STAMPED_YAW_SAMPLES arrived); ``auto`` — the
-#: stamped stream when it has enough samples, else the heartbeat (the
-#: 2026-10-10 behaviour). The heartbeat is the default because it is the only
-#: source verified to repeat (0.062° SD over 7 sweeps, bag 2026-10-09_23-49-07);
-#: the stamped source's only bag (2026-10-10_00-24-06) had a wandering
-#: QTM->ROS clock that scattered BOTH sources ~0.25° and that the estimator now
-#: refuses (CONSTELLATION_MOCAP_CLOCK), so it is unverified, not shown bad
-#: (logbook 2026-10-10-bb-yaw-offset-spread-stamped-source).
+#: (refused when fewer than MIN_STAMPED_YAW_SAMPLES arrived); ``auto``
+#: (DEFAULT since 2026-10-10 12:26) — the stamped stream when it has enough
+#: samples, else the heartbeat (older firmware's two-joint message). The
+#: heartbeat was the default while the stamped source's only bag
+#: (2026-10-10_00-24-06) had a wandering QTM->ROS clock that scattered BOTH
+#: sources ~0.25° (now refused as CONSTELLATION_MOCAP_CLOCK). The first clean
+#: sitting with both sources, bag 2026-10-10_12-26-22 (10 sweeps, clock gate
+#: 0.0 %), replays at 0.021° SD stamped against 0.038° heartbeat (the
+#: heartbeat's receive-time jitter is most of its scatter), meeting the
+#: pre-registered rule for the switch (stamped SD <= 0.08° on a clean sitting;
+#: logbooks 2026-10-10-bb-yaw-offset-spread-stamped-source and
+#: 2026-10-10-bb-base-marker-frame).
 BB_YAW_SOURCES = ('heartbeat', 'stamped', 'auto')
-DEFAULT_BB_YAW_SOURCE = 'heartbeat'
+DEFAULT_BB_YAW_SOURCE = 'auto'
 #: Bound on a published calibration FAILURE text (and so on its ERROR line):
 #: one line, the code plus the decisive numbers. The estimator detail goes to
 #: DEBUG. ``_publish_calibration_failure`` enforces it (collapses whitespace,
