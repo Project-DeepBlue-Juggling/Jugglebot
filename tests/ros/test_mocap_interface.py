@@ -65,7 +65,7 @@ def test_latest_frame_ros_ns_is_none_before_any_packet():
 
 def test_latest_frame_ros_ns_follows_the_packet_timestamp_through_the_offset():
     """`latest_frame_ros_ns()` must track whichever packet was processed
-    LAST, converted through the SAME smoothed offset `qtm_timestamp_to_ros_ns`
+    LAST, converted through the SAME offset `qtm_timestamp_to_ros_ns`
     exposes — not a value frozen at first sync."""
     iface = _make_iface()
     iface.ready_to_publish = True
@@ -140,3 +140,47 @@ def test_qtm_disconnect_marks_outage_and_silences_reconnect():
     # The reconnect loop now retries silently.
     iface._log_qtm_outage('still down')
     assert iface.logger.warning.call_count == 1
+
+
+# ── Clock sync: minimum-latency offset (2026-10-10) ────────────────────────
+# logbook 2026-10-10-mocap-min-latency-clock-sync: the offset is the LOWER
+# envelope of (receive - QTM time), so a packet that sat in a queue must not
+# move the frame stamps (the old EMA moved them by 1 % of every excess).
+
+def test_a_queued_packet_does_not_move_the_frame_stamps():
+    iface = _make_iface()
+    iface.ready_to_publish = True
+    base_ns = 5_000_000_000
+    for k in range(30):                          # 300 Hz, 2 ms latency
+        q_us = 1_000_000 + k * 3333
+        _set_ros_ns(iface, base_ns + q_us * 1000 + 2_000_000)
+        iface.on_packet(_packet(q_us))
+    before = iface.qtm_timestamp_to_ros_ns(2_000_000)
+    _set_ros_ns(iface, base_ns + 1_100_000 * 1000 + 42_000_000)   # 40 ms late
+    iface.on_packet(_packet(1_100_000))
+    assert iface.qtm_timestamp_to_ros_ns(2_000_000) == before
+    assert before == 2_000_000 * 1000 + base_ns + 2_000_000
+
+
+def test_sync_status_keeps_its_keys_and_adds_the_estimator_diagnostics():
+    iface = _make_iface()
+    assert iface.get_qtm_sync_status()['synced'] is False
+    _set_ros_ns(iface, 5_000_000_000)
+    iface.on_packet(_packet(1_000_000))
+    st = iface.get_qtm_sync_status()
+    assert st['synced'] is True
+    assert st['offset_s'] == (5_000_000_000 - 1_000_000_000) / 1e9
+    assert st['sample_count'] == 1
+    for key in ('last_excess_latency_ms', 'envelope_minus_output_ms', 'window_fill',
+                'drift_ppm', 'slew_clamps', 'outlier_clips', 'reanchors', 'restarts'):
+        assert key in st
+
+
+def test_disconnect_resets_the_clock_sync():
+    iface = _make_iface()
+    _set_ros_ns(iface, 5_000_000_000)
+    iface.on_packet(_packet(1_000_000))
+    assert iface.get_qtm_sync_status()['synced'] is True
+    iface._on_qtm_disconnect(None)
+    assert iface.get_qtm_sync_status()['synced'] is False
+    assert iface.qtm_timestamp_to_ros_ns(1_000_000) is None

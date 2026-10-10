@@ -10,6 +10,7 @@ import xml.etree.ElementTree as ET
 from geometry_msgs.msg import PoseStamped # To convert the rigid body pose(s) to a ROS2 message
 import jugglebot.hardware_config as hw
 from jugglebot.bb_calibration import BB_MARKER_COUNT
+from jugglebot.qtm_clock_sync import MinLatencyClockSync
 
 class MocapInterface:
     """
@@ -61,12 +62,15 @@ class MocapInterface:
 
         # ── QTM ↔ ROS Clock Sync ───────────────────────────────────────
         # QTM packet.timestamp is in microseconds (monotonic from QTM start).
-        # We maintain a running offset: ros_time_ns = qtm_timestamp_us * 1000 + _qtm_to_ros_offset_ns
-        # Updated every frame with exponential smoothing to filter network jitter.
-        self._qtm_to_ros_offset_ns: Optional[int] = None
-        self._qtm_sync_alpha = 0.01  # Smoothing factor (lower = more stable, slower to adapt)
+        # Mapping: ros_time_ns = qtm_timestamp_us * 1000 + _qtm_to_ros_offset_ns.
+        # Estimated from the MINIMUM receive latency over a sliding window, with
+        # a drift term and a slew limit (jugglebot.qtm_clock_sync; logbook
+        # 2026-10-10-mocap-min-latency-clock-sync). Until 2026-10-10 this was an
+        # EMA of every packet's latency, which put the Jetson's queueing delay
+        # into every frame stamp (4-59 ms wander within one sweep under load).
+        self._qtm_sync = MinLatencyClockSync()
+        self._qtm_to_ros_offset_ns: Optional[int] = None   # mirror of _qtm_sync.offset_ns
         self._qtm_sync_count = 0
-        self._qtm_last_timestamp_us: Optional[int] = None  # For detecting QTM restart
         self._qtm_sync_lock = threading.Lock()
 
         # The QTM timestamp (µs) of the most recent packet's marker snapshot,
@@ -192,9 +196,9 @@ class MocapInterface:
         self.connection = None
         # Reset clock sync so stale offsets aren't used during the gap
         with self._qtm_sync_lock:
+            self._qtm_sync = MinLatencyClockSync()
             self._qtm_to_ros_offset_ns = None
             self._qtm_sync_count = 0
-            self._qtm_last_timestamp_us = None
         # Clear all cached data so downstream sees empty state, not stale data
         with self.data_lock:
             self.all_markers = np.empty((0, 4))
@@ -497,15 +501,14 @@ class MocapInterface:
     #########################################################################################################
 
     def _update_qtm_clock_sync(self, packet):
-        """Update the QTM-to-ROS clock offset using the packet timestamp.
+        """Feed one packet's (QTM timestamp, ROS receive time) to the clock-sync estimator.
 
-        QTM's packet.timestamp is in microseconds (monotonic from measurement start).
-        We pair it with the current ROS clock reading and maintain an exponentially
-        smoothed offset so that:
-            ros_time_ns ≈ qtm_timestamp_us * 1000 + offset_ns
-
-        The first few samples use direct assignment to converge quickly, then
-        switch to exponential smoothing to filter network jitter.
+        ``ros_time_ns ≈ qtm_timestamp_us * 1000 + offset_ns`` where offset_ns is the
+        lower envelope of ``ros_receive_ns - qtm_ns`` over a sliding window
+        (queueing only ever adds delay), drift-corrected and slew-limited — see
+        jugglebot.qtm_clock_sync. The first packet initialises it directly; a QTM
+        restart (timestamp backwards / jump > 5 s) or a clock step far outside
+        the window's range re-anchors it.
         """
         if self.node is None:
             return
@@ -514,42 +517,20 @@ class MocapInterface:
             qtm_us = packet.timestamp  # QTM camera time in microseconds
             ros_ns = self.node.get_clock().now().nanoseconds  # ROS time in nanoseconds
 
-            qtm_ns = int(qtm_us) * 1000  # Convert QTM μs → ns
-            measured_offset = ros_ns - qtm_ns
-
             with self._qtm_sync_lock:
-                # Detect QTM restart: timestamp jumped backwards or by > 5 s
-                if self._qtm_last_timestamp_us is not None:
-                    dt_us = qtm_us - self._qtm_last_timestamp_us
-                    if dt_us < 0 or dt_us > 5_000_000:
-                        self.logger.warning(
-                            f"QTM timestamp discontinuity ({dt_us / 1e6:.3f} s) — "
-                            "resetting clock sync"
-                        )
-                        self._qtm_to_ros_offset_ns = None
-                        self._qtm_sync_count = 0
-                self._qtm_last_timestamp_us = qtm_us
-
-                if self._qtm_to_ros_offset_ns is None:
-                    # First sample (or after reset) — initialise directly
-                    self._qtm_to_ros_offset_ns = measured_offset
-                    self._qtm_sync_count = 1
-                    self.logger.debug(
-                        f"QTM clock sync initialised: offset = {measured_offset / 1e9:.6f} s"
-                    )
-                else:
-                    self._qtm_sync_count += 1
-
-                    # Use direct averaging for the first 100 samples to converge fast,
-                    # then switch to exponential smoothing
-                    if self._qtm_sync_count <= 100:
-                        alpha = 1.0 / self._qtm_sync_count
-                    else:
-                        alpha = self._qtm_sync_alpha
-
-                    self._qtm_to_ros_offset_ns = int(
-                        self._qtm_to_ros_offset_ns + alpha * (measured_offset - self._qtm_to_ros_offset_ns)
-                    )
+                event = self._qtm_sync.update(int(qtm_us), int(ros_ns))
+                self._qtm_to_ros_offset_ns = self._qtm_sync.offset_ns
+                self._qtm_sync_count = self._qtm_sync.count
+            if event == 'restart':
+                self.logger.warning("QTM timestamp discontinuity — resetting clock sync")
+            elif event in ('reanchor_below', 'reanchor_above'):
+                self.logger.warning(
+                    f"QTM clock offset moved far outside the sync window ({event}) — "
+                    "re-anchored clock sync")
+            elif event == 'init':
+                self.logger.debug(
+                    f"QTM clock sync initialised: offset = {self._qtm_to_ros_offset_ns / 1e9:.6f} s"
+                )
 
         except Exception as e:
             self.logger.error(f"QTM clock sync error: {e}", throttle_duration_sec=5.0)
@@ -588,13 +569,23 @@ class MocapInterface:
         return self.qtm_timestamp_to_ros_ns(qtm_us)
 
     def get_qtm_sync_status(self) -> dict:
-        """Return the current QTM clock sync status for diagnostics."""
+        """Return the current QTM clock sync status for diagnostics.
+
+        ``synced`` / ``offset_s`` / ``sample_count`` as before; the estimator's
+        diagnostics (last packet's excess latency over the envelope, pending
+        slew, window fill, fitted drift, slew-clamp / outlier-clip / re-anchor
+        counts) are merged in under their own keys.
+        """
         with self._qtm_sync_lock:
-            return {
+            status = {
                 "synced": self._qtm_to_ros_offset_ns is not None,
                 "offset_s": self._qtm_to_ros_offset_ns / 1e9 if self._qtm_to_ros_offset_ns is not None else None,
                 "sample_count": self._qtm_sync_count,
             }
+            diag = self._qtm_sync.diagnostics()
+        diag.pop('sample_count', None)
+        status.update(diag)
+        return status
 
     #########################################################################################################
     #                                  Package Data For Parent Modules                                      #

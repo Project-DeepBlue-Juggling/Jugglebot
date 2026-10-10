@@ -18,6 +18,8 @@ a fixed E(y) is removed, and the axis point is the posed template origin
 * the mocap-clock gate (2026-10-10): frame stamps whose QTM->ROS mapping
   wandered (a loaded Jetson) are refused, a clean grid — snapshot-skipped,
   µs-jittered — is not;
+* the template residual is pose-binned (2026-10-10): pose-dependent QTM
+  reconstruction error does not read as a moved marker, a displacement does;
 * loud failures; the consistency gate; ``run_calibration``'s path (position
   from the body model, arc fit as cross-check); the template file.
 """
@@ -315,6 +317,63 @@ def test_a_moved_marker_fails_loudly_rather_than_biasing():
     frames, samples = _synth(seed=14, displace=(4, np.array([1.6, 0.0, 0.0])))
     with pytest.raises(ValueError, match='CONSTELLATION_RESIDUAL'):
         estimate_sweep_yaw_offset(frames, samples, _tmpl())
+
+
+def _pose_band_error(frames, samples, index, partner, error_mm, band_deg=(15.0, 50.0)):
+    """Labelled frames with marker ``index`` reconstructed ``error_mm`` further
+    from marker ``partner`` than it is, but only while the reported yaw is inside
+    ``band_deg`` — the shape of QTM's pose-dependent reconstruction error at
+    BB's location (bag 2026-10-10_10-32-31: pair Q3-Q6 −1.3..−2.1 mm at
+    15–45° of yaw, ≈ 0 elsewhere, identical on both sweep legs)."""
+    out = []
+    for t, P in frames:
+        P = P.copy()
+        if band_deg[0] <= _yaw_profile(t) <= band_deg[1]:
+            u = P[index] - P[partner]
+            P[index] = P[index] + error_mm * u / np.linalg.norm(u)
+        out.append((t, P))
+    return out, samples
+
+
+def test_pose_dependent_reconstruction_error_does_not_read_as_a_moved_marker():
+    """2026-10-10 (logbook 2026-10-10-bb-template-residual-coverage): five
+    sweeps refused TEMPLATE_RESIDUAL at a window-mean 0.56–0.64 mm, every one
+    of it pose-dependent reconstruction error — offsets within 0.01° of the
+    good bag's. A 3 mm error confined to 15–50° of yaw moves the window
+    mean of a pair past the 0.5 mm gate; the pose-binned median does not."""
+    frames, samples = _pose_band_error(*_synth(seed=40, labelled=True), 4, 5, 3.0)
+    est = estimate_sweep_yaw_offset(frames, samples, _tmpl())
+    assert est.template_residual_window_mm > bc.GATE_MAX_RESIDUAL_MM
+    assert est.template_residual_mm < 0.15
+    assert 'window mean' in est.summary()
+    v = check_calibration_consistency(0.3, 0.05, BB_POS, est.template_residual_mm,
+                                      {'yaw_offset_deg': 0.3, 'position_mm': list(BB_POS)})
+    assert v.accepted
+
+
+def test_a_marker_moved_on_bb_reads_the_same_binned_or_window_mean():
+    """A real displacement shifts its pairs at every pose, so the median over
+    pose bins keeps it: 0.8 mm along body x on marker 4 (pair 4–5 nearly
+    along it) is refused by the gate whichever statistic is read."""
+    frames, samples = _synth(seed=41, displace=(4, np.array([0.8, 0.0, 0.0])))
+    est = estimate_sweep_yaw_offset(frames, samples, _tmpl())
+    assert est.template_residual_mm > bc.GATE_MAX_RESIDUAL_MM
+    assert est.template_residual_mm == pytest.approx(est.template_residual_window_mm, abs=0.05)
+    v = check_calibration_consistency(0.3, 0.05, BB_POS, est.template_residual_mm,
+                                      {'yaw_offset_deg': 0.3, 'position_mm': list(BB_POS)},
+                                      bb_moved=True)
+    assert not v.accepted and v.message.startswith('TEMPLATE_RESIDUAL')
+
+
+def test_template_residual_falls_back_to_the_window_mean_with_too_few_pose_bins():
+    """A pair seen in fewer than TEMPLATE_RESIDUAL_MIN_BINS bins keeps its
+    window mean (the pre-2026-10-10 statistic): a window spanning < 30° of
+    yaw has at most 2 bins of 15°."""
+    frames, _ = _synth(seed=42, y_max=25.0, displace=(4, np.array([0.8, 0.0, 0.0])))
+    tr = track_constellation(frames, _tmpl())
+    assert tr.template_residual_mm() == pytest.approx(tr.template_residual_window_mm(), abs=1e-12)
+    assert np.allclose(tr.pair_residual_pose_binned_mm(), tr.pair_residual_mm(), equal_nan=True)
+    assert np.isnan(tr.template_residual_mm(np.zeros(len(tr.t), bool)))
 
 
 def test_lag_outside_the_search_range_fails_loudly():
