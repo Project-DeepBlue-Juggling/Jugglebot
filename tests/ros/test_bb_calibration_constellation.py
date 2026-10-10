@@ -549,7 +549,10 @@ def test_stamped_yaw_is_read_from_the_bb_yaw_joint_in_degrees():
 def test_shipped_template_loads_with_E_gauge_and_provenance():
     t = load_marker_template(SHIPPED_TEMPLATE)
     assert len(t.points_mm) == bc.BB_MARKER_COUNT
-    assert t.pinned_yaw_offset_deg == pytest.approx(0.208)
+    # Re-pinned 2026-10-11 from landings: 0.208 (session A) - 0.179 (sitting
+    # 20261010T123404_756897Z); raw_offset_at_pin_deg is A's and unchanged.
+    assert t.pinned_yaw_offset_deg == pytest.approx(0.029)
+    assert t.raw_offset_at_pin_deg == pytest.approx(0.0244)
     assert 0.0 < t.repeatability_deg < 0.1
     assert t.e_deg(np.array([125.0]))[0] < -0.5          # physical lags reported at large yaw
     raw = json.load(open(SHIPPED_TEMPLATE))

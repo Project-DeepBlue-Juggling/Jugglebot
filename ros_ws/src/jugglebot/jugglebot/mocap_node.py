@@ -165,10 +165,16 @@ BASE_MONITOR_PERIOD_S = 0.2
 #: newest pose is at most this old (s).
 BASE_MONITOR_MAX_AGE_S = 30.0
 
-#: Shortest interval (s) between two "frames lost" WARN lines. Losses inside
-#: the interval are summed into the next line, so none goes unreported; the
-#: first loss after a quiet spell warns at once (on the next 1 Hz check).
+#: Length (s) of the window the frames-lost WARN judges, and so the shortest
+#: interval between two WARN lines. Losses are summed over the window and
+#: judged once it ends; a window at or below MOCAP_LOSS_WARN_FRACTION is
+#: silent (its counts stay in the 1 Hz DEBUG stream line).
 MOCAP_LOSS_WARN_PERIOD_S = 10.0
+#: WARN only when MORE than this fraction of the window's expected QTM frames
+#: was lost (node overflow + frame numbers QTM never sent). Owner's rule
+#: 2026-10-11: the healthy 2026-10-10 sitting lost 0.4-0.8 % to sporadic
+#: single-frame QTM skips (logbook 2026-10-10-mocap-frame-queue).
+MOCAP_LOSS_WARN_FRACTION = 0.05
 #: QTM's nominal stream rate, for the WARN's "starved for over x s" figure.
 QTM_STREAM_HZ = 300.0
 
@@ -320,9 +326,8 @@ class MocapNode(Node):
         # Stream-health state for the 1 Hz line and the frames-lost WARN.
         self._stream_prev: dict | None = None
         self._stream_prev_mono: float | None = None
-        self._loss_pending = [0, 0, 0]        # node overflow, QTM gap frames, gap events
+        self._loss_pending = [0, 0, 0, 0]     # node overflow, QTM gap frames, gap events, frames received
         self._loss_pending_since: float | None = None
-        self._loss_warn_mono: float | None = None
         self.create_timer(MOCAP_STATUS_PERIOD_S, self._publish_mocap_status)
         # Q5b/Q5c ride their OWN timer rather than piggy-backing on the status
         # publisher: the publisher must stay a pure snapshot read (determinism
@@ -526,26 +531,37 @@ class MocapNode(Node):
         def d(key):
             return st[key] - prev[key]
         ovf, gap, events = d('overflow_drops'), d('qtm_gap_frames'), d('qtm_gap_events')
-        if ovf or gap:
-            if self._loss_pending_since is None:
-                self._loss_pending_since = prev_mono if prev_mono is not None else now
-            p = self._loss_pending
-            p[0] += ovf
-            p[1] += gap
-            p[2] += events
+        if self._loss_pending_since is None:
+            self._loss_pending_since = prev_mono if prev_mono is not None else now
         p = self._loss_pending
-        if (p[0] or p[1]) and (self._loss_warn_mono is None
-                               or now - self._loss_warn_mono >= MOCAP_LOSS_WARN_PERIOD_S):
-            self.get_logger().warn(
-                f'mocap: {p[0] + p[1]} QTM frames lost in the last '
-                f'{now - self._loss_pending_since:.0f} s — {p[0]} dropped by mocap_node '
-                f'(frame queue full: starved for over '
-                f'{FRAME_QUEUE_MAXLEN / QTM_STREAM_HZ:.1f} s), {p[1]} never received from '
-                f'QTM ({p[2]} frame-number gaps); QTM 2D drop {st["max_drop_rate"]}‰ — '
-                'check the Jetson load (another job running?) and QTM')
-            self._loss_warn_mono = now
-            self._loss_pending = [0, 0, 0]
-            self._loss_pending_since = None
+        p[0] += ovf
+        p[1] += gap
+        p[2] += events
+        p[3] += d('frames_queued')
+        window = now - self._loss_pending_since
+        if window >= MOCAP_LOSS_WARN_PERIOD_S:
+            # Judge the window: frames expected = received + never sent.
+            lost, expected = p[0] + p[1], p[3] + p[1]
+            if lost and lost > MOCAP_LOSS_WARN_FRACTION * expected:
+                sides = []
+                if p[0]:
+                    sides.append(f'{p[0]} dropped by mocap_node (frame queue full: '
+                                 f'starved for over {FRAME_QUEUE_MAXLEN / QTM_STREAM_HZ:.1f} s)')
+                if p[1]:
+                    sides.append(f'{p[1]} never received from QTM ({p[2]} frame-number gaps)')
+                advice = []
+                if p[0]:
+                    advice.append('the Jetson was starved: check its load (another job running?)')
+                if p[1]:
+                    advice.append("check QTM's real-time output (frame-drop / out-of-sync "
+                                  "indicator, QTM PC load)")
+                self.get_logger().warn(
+                    f'mocap: {lost} of {expected} expected QTM frames lost '
+                    f'({100.0 * lost / expected:.1f} %) in the last {window:.0f} s — '
+                    + ', '.join(sides) + f'; QTM 2D drop {st["max_drop_rate"]}‰ — '
+                    + '; '.join(advice))
+            self._loss_pending = [0, 0, 0, 0]
+            self._loss_pending_since = now
         span = (now - prev_mono) if prev_mono is not None else 0.0
         rate = d('frames_queued') / span if span > 0 else 0.0
         return ('stream {:.0f} frames/s, queue max {}/{}, lost: node overflow {} (total {}), '

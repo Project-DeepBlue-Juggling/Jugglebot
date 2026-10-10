@@ -182,3 +182,40 @@ lose-track window stays ~50 ms at ~300 msgs/s (it would have shrunk to ~33 ms). 
 `temp/logs/full_gate_mocap_queue_merged_20261010.log`):** PASS — 6596 passed, 9 skipped, 1 xfailed; serial 6 passed.
 Installed with `colcon build --packages-select jugglebot` at 22:46; live verification (≈300 unique frames/s on `/mocap_data`
 on an idle box, the 1 Hz stream line, a loss WARN only under real starvation) is the owner's next launch.
+
+## First sitting on the queue (2026-10-10 23:32-23:44; WARN tuned 2026-10-11)
+
+Bag `~/Desktop/rosbags/2026-10-10_23-32-12`, session `~/bb_calibration_sessions/20261010T123404_756897Z/` (analysis
+scripts and `REPORT.md` in `~/bb_calibration_sessions/qtm_gaps_20261010/`).
+
+Measured: `ros2 topic hz /mocap_data` ~300 Hz, 47 of 48 landings accepted. The session bag holds 168,378 `/mocap_data`
+messages over 564 s (298.75 Hz mean); every stamp step is an exact multiple of 3.333 ms (residual std 0.001 ms).
+679 gap events, 710 missing frames = 0.42 % of expected: 648 single-frame, 31 two-frame, none longer. Mean 11.9 gap
+events per 10 s (min 4, max 24). No periodicity (phase mod 0.5/1/2 s and frame index mod 2..300 flat), Poisson-like
+but mildly clustered (39 % of gaps within 100 ms of another); rate during throws 1.30/s vs 1.14/s outside, so not
+throw-correlated. The node's own counter agrees with the bag: 718 gap frames in the 1 Hz lines vs 709 from stamp
+slots, so the frame number and the QTM timestamp skip together (a true missing slot, not a renumbering). The message
+before a gap arrived late (54 % vs 17 % baseline had a > 6 ms receive interval), the gap itself is not tied to a large
+publish batch. The WARN's repeated 8-24 frames per 10 s were all of this kind; the 21 s window at launch (3219 frames
+dropped by the node, queue full) was the startup stall, the only node-side loss. QTM's out-of-sync figure read 2-7 ‰
+in the DEBUG lines while 2D drop read 0 ‰.
+
+Receive path read, not changed: qtm_rt's `Receiver` loops over every complete RT packet in the TCP buffer and calls
+`on_packet` once per data packet, so two packets in a read are not collapsed; the node's accounting counts
+`frame_number > last + 1` and treats a lower number as a restart, a duplicate returns before the count. No
+off-by-one found. Inference: QTM did not send these frames (or a TCP stall upstream of the Jetson ate them); a
+FW 5 bag (2026-10-09, 180 distinct frames/s via the 200 Hz timer) cannot say whether it is new.
+
+Changed: the loss WARN now judges each 10 s window and fires only when MORE than 5 % of the expected frames
+(received + never sent) were lost, node overflow and QTM gaps combined (owner's rule). Below that, the counts stay in
+the 1 Hz DEBUG stream line. The text names the side: node overflow says the Jetson was starved (check its load);
+frames never received from QTM say to check QTM's real-time output; the Jetson-load advice no longer appears when the
+node dropped nothing. Tests: `tests/ros/test_mocap_frame_queue.py` (4 % silent, 6 % warns, overflow-only warns with
+the starvation wording, a 200-frame outage warns once).
+
+Status stays in-progress until the owner confirms the WARN behaviour on a sitting.
+
+**Merged-state gate for the WARN rule (skill-stack f5221120, 2026-10-11 00:12–00:19, log
+`temp/logs/full_gate_gapwarn_merged_20261011.log`):** 6605 passed, 9 skipped, 1 xfailed, 1 failed —
+`tests/ros/test_skill_node.py::test_columns_releases_each_correlate_to_their_own_track`, no mocap involvement, passed
+alone at 00:20 (another agent's scoped test run shared the box during the gate); serial 6 passed. Installed 00:21.
