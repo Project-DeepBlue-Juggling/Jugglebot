@@ -18,7 +18,7 @@
  * and the live disconnect blanking is the very last step so no recorded value survives.
  *
  * deps: {
- *   ros: {getConnectionState, dispatchLocal, setBeforeConnectedHook},
+ *   ros: {getConnectionState, dispatchLocal, setBeforeConnectedHook, setStateSuppressor?},
  *   clock: {_enterReplay, _exitReplay, ...} (also handed to the engine),
  *   fence: {setReplayFence}, events: {snapshotAndBeginReplayEvents, restoreEvents, setEventsMuted, trimEventsAfter},
  *   charts: {createStore(storeDeps), enter(store, {onSeek}), exit(), setPlayhead(p), telemetrySample},
@@ -279,6 +279,10 @@ export function createReplayMode(deps) {
     }
 
     D.ros.setBeforeConnectedHook(() => exitIfActive('rosbridge connected'));
+    // Hold back connecting/disconnected edges from every live listener while OPENING/REPLAY (the
+    // failed-reconnect loop would otherwise blank the panels every ~2 s). The exit sequence runs
+    // main's blanking itself, as its last step.
+    if (D.ros.setStateSuppressor) D.ros.setStateSuppressor(() => phase !== 'idle');
 
     return {
         enterReplay, exitReplay, exitIfActive,

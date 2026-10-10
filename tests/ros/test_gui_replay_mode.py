@@ -144,3 +144,17 @@ def test_throwing_exit_step_still_undoes_fence_and_clock(out):
     assert t["logged"]
     assert t["order"].index("charts.exit") < t["order"].index("fence.false") < t["order"].index("clock.exit")
     assert t["order"][-1] == "blank"
+
+
+def test_reconnect_loop_edges_never_reach_listeners_during_replay(out):
+    """Flicker class (owner, 2026-10-10): with rosbridge down, the reconnect loop's connecting<->disconnected
+    edges reached main's listener while OPENING/REPLAY and blanked the panels every ~2 s. The ros-bridge
+    suppressor (installed by mode.js) holds every non-'connected' edge back from ALL listeners in that phase."""
+    f = out["flicker_class"]
+    d = f["during"]
+    assert d["listener_states"] == [] and d["blanks"] == 0 and d["mode"] == "REPLAY"
+    assert d["conn"] == "disconnected"           # the bridge still tracks the truth
+    c = f["connected"]                            # the 'connected' pre-notify exit path is unchanged
+    assert c["listener_states"] == ["connected"] and c["blanks"] == 1 and c["mode"] == "LIVE"
+    assert f["exit_blanks"] == 1                  # exit runs the blanking itself, once
+    assert f["after_exit_states"] == ["connecting", "disconnected"] and f["mode_after"] == "LOBBY"

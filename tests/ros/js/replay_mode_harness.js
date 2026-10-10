@@ -236,6 +236,39 @@ out.connected_edge = {
     mid_entry_steps: midOrderLen,
 };
 
+// (8) flicker class: the failed-reconnect loop's connecting<->disconnected edges must reach NO live
+// listener while OPENING/REPLAY (one enforcement point: the ros-bridge suppressor installed by mode.js).
+{
+    const newest = () => rosInstances[rosInstances.length - 1];
+    const loopEdge = () => { ros.init('ws://localhost:9090'); newest().fire('close'); };  // connecting -> disconnected
+    newest().fire('close');                      // connected -> disconnected (idle: delivered)
+    await mode.enterReplay({ kind: 'session' });
+    order.length = 0; listenerLog.length = 0;
+    for (let i = 0; i < 3; i++) loopEdge();
+    const during = {
+        listener_states: listenerLog.map((l) => l.state), blanks: order.filter((x) => x === 'blank').length,
+        mode: mode.state().mode, conn: ros.getConnectionState(),
+    };
+    order.length = 0; listenerLog.length = 0;
+    ros.init('ws://localhost:9090'); newest().fire('connection');     // connected edge exits, as before
+    const connected = {
+        listener_states: listenerLog.map((l) => l.state), blanks: order.filter((x) => x === 'blank').length,
+        mode: mode.state().mode,
+    };
+    // exitReplay path: listeners hear transitions again afterwards
+    newest().fire('close');
+    await mode.enterReplay({ kind: 'session' });
+    loopEdge();
+    order.length = 0; listenerLog.length = 0;
+    await mode.exitReplay('user');
+    const exitBlanks = order.filter((x) => x === 'blank').length;
+    loopEdge();
+    out.flicker_class = {
+        during, connected, exit_blanks: exitBlanks,
+        after_exit_states: listenerLog.map((l) => l.state), mode_after: mode.state().mode,
+    };
+}
+
 // refusal path: a recording whose open() rejects with the 409 reason leaves the GUI untouched
 r0.fire('close');
 order.length = 0;

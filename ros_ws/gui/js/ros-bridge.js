@@ -58,6 +58,7 @@ let savedUrl = null;
 /** Called synchronously on a 'connected' edge BEFORE the state listeners
  *  (replay mode exit — it must not run after main.js's connect handling). */
 let beforeConnectedHook = null;
+let stateSuppressor = null;
 
 /**
  * Initialise the ROS connection. Call once at startup.
@@ -158,6 +159,16 @@ function setConnectionState(state) {
     if (state === connectionState) return;
     connectionState = state;
 
+    // The one enforcement point for the replay flicker class: while replay owns the GUI
+    // (OPENING/REPLAY) the failed-reconnect loop's connecting<->disconnected edges must not
+    // reach ANY listener (each one blanks/greys live panels, then the next replay dispatch
+    // repaints them).  connectionState above still tracks the truth for getConnectionState().
+    if (state !== 'connected' && stateSuppressor) {
+        let hold = false;
+        try { hold = !!stateSuppressor(); } catch (e) { console.error('State suppressor error:', e); }
+        if (hold) return;
+    }
+
     if (state === 'connected') {
         lastMessageTime = Date.now(); // wall-clock: stale-socket detection
         startStaleCheck();
@@ -228,6 +239,16 @@ export function onConnectionStateChange(cb) {
  */
 export function setBeforeConnectedHook(fn) {
     beforeConnectedHook = typeof fn === 'function' ? fn : null;
+}
+
+/**
+ * Register the one predicate consulted on every NON-'connected' edge: when it returns true the
+ * edge is recorded in getConnectionState() but not delivered to state listeners. The replay
+ * mode machine installs `() => phase !== 'idle'` (null clears it).
+ * @param {function|null} fn
+ */
+export function setStateSuppressor(fn) {
+    stateSuppressor = typeof fn === 'function' ? fn : null;
 }
 
 /** @returns {'connected' | 'disconnected' | 'connecting'} */
