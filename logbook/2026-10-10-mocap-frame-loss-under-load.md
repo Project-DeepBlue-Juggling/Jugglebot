@@ -86,3 +86,5 @@ live on. The node runs with no priority or core reservation and ~40 % of a core 
 
 - n = 1 bag per condition around the onset; the load at 12:26 and 19:23 is inferred (no CPU log).
 - Decide whether to build fixes 1–4 before relying on catches (two-ball juggling).
+
+- 2026-10-11: the queue's first sitting shows ~0.4 % sporadic single-frame QTM skips (QTM-side, not node loss) - see `2026-10-10-mocap-frame-queue`, "First sitting on the queue".
