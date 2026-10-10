@@ -1232,17 +1232,7 @@ function buildUPlotOpts(chartIdx, width, height, showXAxis = true, onCursor = nu
                         }
                     }
                 }
-                // When no data or all values identical, show a small range around the value
-                if (dataMin == null || dataMax == null) return [0, 1];
-                if (dataMin === dataMax) {
-                    const v = dataMin;
-                    const pad = Math.max(Math.abs(v) * 0.1, padFloor);
-                    return [v - pad, v + pad];
-                }
-                // Add 5% padding above and below
-                const span = dataMax - dataMin;
-                const pad = span * 0.05;
-                return [dataMin - pad, dataMax + pad];
+                return yRangeFor(dataMin, dataMax, padFloor);
             },
         };
     }
@@ -3129,6 +3119,40 @@ function decimalsFor(chartIdx, scaleKey) {
         return u.decimals[scaleKey];
     }
     return SCALE_META[scaleKey]?.decimals ?? 2;
+}
+
+/**
+ * Y-scale span below which data counts as flat, relative to its magnitude.
+ * uPlot's numeric tick loop (numAxisSplits) steps `v = roundDec(v + incr)` until
+ * v > max; when the span is a few ulps of a large value (|v| >= ~1e9, e.g. a
+ * near-constant raw field) the chosen incr is below half an ulp, v never
+ * advances, and the loop grows one array to V8's maximum length: about 1.1 GB
+ * and a 6 s stall per draw, then "RangeError: Invalid array length" (measured
+ * 2026-10-11, headless Chromium 154, [1.79e9, 1.79e9 + 4.8e-7] and
+ * [3e9, 3e9 + 1e-6]). 1e-9 is far above float resolution (2.2e-16) and far
+ * below anything a 9-chart grid can show.
+ */
+export const Y_MIN_REL_SPAN = 1e-9;
+
+/**
+ * Y range for one scale: [0, 1] with no (or non-finite) data, the flat-data pad
+ * when the span is flat to within Y_MIN_REL_SPAN, otherwise the data plus 5 %.
+ * Every y scale of the telemetry charts goes through here, so every range
+ * handed to uPlot has a span its tick loop can step across.
+ */
+export function yRangeFor(dataMin, dataMax, padFloor) {
+    if (dataMin == null || dataMax == null) return [0, 1];
+    if (!Number.isFinite(dataMin) || !Number.isFinite(dataMax)) return [0, 1];
+    const span = dataMax - dataMin;
+    if (span <= Math.max(Math.abs(dataMin), Math.abs(dataMax)) * Y_MIN_REL_SPAN) {
+        // Flat (or flat to float resolution): a small range around the value
+        const v = dataMin === dataMax ? dataMin : (dataMin + dataMax) / 2;
+        const pad = Math.max(Math.abs(v) * 0.1, padFloor);
+        return [v - pad, v + pad];
+    }
+    // Add 5% padding above and below
+    const pad = span * 0.05;
+    return [dataMin - pad, dataMax + pad];
 }
 
 /** Flat-data y-range pad floor for one (chart, scale-group) pair. */

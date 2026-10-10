@@ -208,3 +208,24 @@ def test_typed_derivation_hydrates_nothing_and_derives_each_chunk_once(out):
     assert d["far_calls"] > 0                         # a non-resident chunk is derived once for its digest ...
     assert d["promote_extra"] == 0                    # ... and not again when it becomes resident
     assert d["again_extra"] == 0
+
+
+def test_y_range_never_stalls_uplots_tick_loop(out):
+    """Owner 2026-10-11: 2.0 GB tab while scrubbing. A y span of a few ulps at |v| >= ~1e9 makes
+    uPlot's numAxisSplits never advance; it grows one array to V8's max length (~1.1 GB, ~6 s)
+    and throws "Invalid array length". Recipe confirmed in headless Chromium 154 with the vendored
+    uPlot 1.6.31: data [1.79e9, 1.79e9 + 4.8e-7] and [3e9, 3e9 + 1e-6]. The harness mirrors
+    findIncr + numAxisSplits; the OLD range formula must stall on those inputs (so the mirror is
+    faithful) and yRangeFor must not, on any axis height / tick spacing tried."""
+    y = out["y_split"]
+    rows = {(r["a"], r["b"]): r for r in y["rows"]}
+    assert rows[(1.79e9, 1.79e9 + 4.8e-7)]["oldWorst"] == -1
+    assert rows[(3e9, 3e9 + 1e-6)]["oldWorst"] == -1
+    for r in y["rows"]:
+        assert r["worst"] >= 0, r                      # the tick loop terminates (-1 = stalled) on every axis size tried
+        lo, hi = r["r"]
+        assert hi - lo > max(abs(lo), abs(hi)) * y["Y_MIN_REL_SPAN"]
+    # Ordinary data keeps the old range exactly (flat and spanning cases).
+    for key in ((100, 100.5), (5, 5), (0, 0), (-2, 7)):
+        assert rows[key]["same"] is True, rows[key]
+    assert all(r == [0, 1] for r in y["nulls"])

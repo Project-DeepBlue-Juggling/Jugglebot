@@ -440,4 +440,43 @@ tc.exitReplayCharts();
     far_calls: afterDigestFar - afterDigestResident, promote_extra: afterBoth - afterDigestFar, again_extra: calls - afterBoth };
   for (const r of restore) r();
 }
+
+// ---- y range vs uPlot's numeric tick loop (mirror of the vendored uPlot 1.6.31 numAxisSplits/findIncr) ----
+{
+  const Te = new Map();
+  const roundDec = (v, d) => (Number.isInteger(v) ? v : Math.round(v * 10 ** d * (1 + Number.EPSILON)) / 10 ** d);
+  const incrs = [];
+  for (let e = -32; e < 32; e++) for (const m of [1, 2, 2.5, 5]) {
+    const dec = Math.max(0, -e) + (m === 2.5 && e <= 0 ? 1 : 0);
+    const v = e < 0 ? roundDec(m * 10 ** e, dec) : m * 10 ** e;
+    incrs.push(v); Te.set(v, dec);
+  }
+  const digits = (v) => 1 + (0 | Math.log10((v ^ (v >> 31)) - (v >> 31)));
+  // Number of ticks the loop emits for [lo, hi] on a dim-px axis, or -1 if it does not advance within 1e5 steps.
+  function ticks(lo, hi, dim, space) {
+    const o = Math.max(digits(lo), digits(hi)), s = hi - lo;
+    let found = 0;
+    for (const e of incrs) { if (dim * e / s >= space && 17 >= o + (e < 5 ? Te.get(e) : 0)) { found = e; break; } }
+    if (!found) return 0;
+    const dec = Te.get(found) || 0;
+    let n = 0;
+    for (let v = roundDec(Math.ceil(lo / found) * found, dec); v <= hi; v = roundDec(v + found, dec)) if (++n > 1e5) return -1;
+    return n;
+  }
+  const oldRange = (a, b, pf) => (a === b ? [a - Math.max(Math.abs(a) * 0.1, pf), a + Math.max(Math.abs(a) * 0.1, pf)] : [a - (b - a) * 0.05, b + (b - a) * 0.05]);
+  const cases = [[1.79e9, 1.79e9 + 4.8e-7], [3e9, 3e9 + 1e-6], [3e9, 3e9 + 4.8e-7], [1e12, 1e12 + 2.5e-4], [100, 100.5], [5, 5], [0, 0], [-2, 7]];
+  const rows = [];
+  for (const [a, b] of cases) {
+    const r = tc.yRangeFor(a, b, 0.5), o = oldRange(a, b, 0.5);
+    let worst = 1e9;
+    for (const dim of [40, 133, 300, 2000]) for (const sp of [10, 30, 50]) worst = Math.min(worst, ticks(r[0], r[1], dim, sp));
+    let oldWorst = 1e9;
+    for (const dim of [40, 133, 300, 2000]) for (const sp of [10, 30, 50]) oldWorst = Math.min(oldWorst, ticks(o[0], o[1], dim, sp));
+    rows.push({ a, b, r, worst, oldWorst, same: r[0] === o[0] && r[1] === o[1] });
+  }
+  out.y_split = {
+    rows, Y_MIN_REL_SPAN: tc.Y_MIN_REL_SPAN,
+    nulls: [tc.yRangeFor(null, 3, 0.5), tc.yRangeFor(1, null, 0.5), tc.yRangeFor(-Infinity, 3, 0.5), tc.yRangeFor(1, Infinity, 0.5), tc.yRangeFor(NaN, 1, 0.5)],
+  };
+}
 console.log(JSON.stringify(out));
