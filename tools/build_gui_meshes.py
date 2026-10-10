@@ -22,6 +22,7 @@ from mathutils.bvhtree import BVHTree
 ROOT = Path(__file__).resolve().parents[1]
 # Registration from CAD export frames into each runtime rigid body's local frame.
 SPECS = [
+    ('catching_cone', 'Catching Cone.glb', (0, 0, 0)),
     ('jb_base', 'jugglebot/Base.glb', (0, 0, -.082)),
     ('jb_platform', 'jugglebot/Platform.glb', (0, 0, 0)),
     ('jb_outer', 'jugglebot/Leg Outer.glb', (0, 0, -.064)),

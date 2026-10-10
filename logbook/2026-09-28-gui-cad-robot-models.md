@@ -214,3 +214,29 @@ in the manifest identify the replacement files.
 Final asset: 19,191,820 bytes; 462,837 robot triangles. The focused geometry,
 FK, asset provenance, colour, coordinate and logbook suite passed all 182 tests.
 Full Linux gate/live robot verification remains outstanding on the Jetson.
+
+## 2026-10-10: QTM-tracked catching cone
+
+Added `temp/gui-robot-source/Catching Cone.glb` to the offline build, with zero
+registration offset: the supplied origin is the QTM rigid-body origin. The
+existing `rigid_body_poses` stream drives the CAD position and orientation,
+accepting `Catching_Cone` and `Catching Cone`. The mesh hides when absent,
+invalid, disconnected, or without a valid pose for 1.5 seconds. A separate
+View-menu group preserves manual visibility; existing markers and triads remain.
+Cone markers have their own purple legend entry.
+
+The cone reduces from 244,672 to 5,486 triangles; maximum sampled surface error
+is 0.405281 mm. It adds one opaque draw call and 201,008 bytes to the bundle,
+with no new ROS subscription or server-side processing. Total robot geometry
+is 468,323 triangles. The original export remains ignored and is not deployed.
+
+Validation: 148 asset/geometry/FK tests pass; whitespace check passes. The demo
+now includes cone pose, rotation, loss, recovery, invalid-pose, staleness and
+visibility checks, and initializes the now-separate Local Triads group. Browser verification subsequently passed all 35 checks: median 33.4 ms,
+p95 33.5 ms, 30 draw calls including overlays. Live QTM alignment still needs
+confirmation. The Windows preview server served JavaScript as text/plain due
+to registry MIME associations. Added tools/serve_gui.py with explicit JavaScript
+MIME types and no-cache preview responses. Vendored the pinned Three.js 0.170.0
+module and required loaders/controls with its MIT license; both index.html and
+the demo now load it locally, removing their external CDN dependency. A fresh
+preview on port 8083 avoids cached incorrect MIME responses.

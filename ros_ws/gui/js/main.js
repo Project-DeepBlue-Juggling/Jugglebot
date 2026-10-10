@@ -15,6 +15,7 @@ import {
 } from './stewart-model.js';
 import { legLengthsToPose } from './stewart-fk.js';
 import { initMocapMarkers, initRigidBodyTriads, updateMocapMarkers, updateRigidBodyAxes } from './mocap-markers.js';
+import { initCatchingConeModel, updateCatchingCone } from './catching-cone-model.js';
 import {
     initBallButlerModel, updateBallButler, setBallButlerCalibration,
     setBBPitchFault, setBBHandFault,
@@ -84,6 +85,7 @@ function init() {
     const container = document.getElementById('viewer-container');
     initViewer(container);
     initRigidBodyTriads();
+    initCatchingConeModel();
     initStewartModel();
     initBallButlerModel();
     initMocapMarkers();
@@ -289,6 +291,7 @@ export function blankDisconnectedState() {
     // cone-reported-offline heartbeat, which never arrives while the
     // bridge is down). Idempotent + safe if the cone was never connected.
     setCatchingConeDisconnected();
+    updateCatchingCone([]);
     // A full websocket drop takes the whole ROS graph — including the
     // Ball Butler heartbeat — down, so treat BB as disconnected too:
     // blanks its readouts and auto-collapses the panel on the same
@@ -721,6 +724,7 @@ function onRigidBodyPoses(msg) {
     recordTopicMessage('rigid_body_poses');
     const bodies = msg.bodies || [];
     updateRigidBodyAxes(bodies);
+    updateCatchingCone(bodies);
 
     // NOTE: BB's 3D placement comes from bb/calibration_result, not this pose.
 }

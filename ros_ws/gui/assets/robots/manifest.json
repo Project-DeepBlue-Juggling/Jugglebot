@@ -3,6 +3,19 @@
   "tolerance_mm": 0.75,
   "validation": "Bidirectional sampled surface distance; vertices, centroids, edge midpoints and extrema. Not a formal Hausdorff bound.",
   "parts": {
+    "catching_cone": {
+      "source": "Catching Cone.glb",
+      "sha256": "187d43daf2d9268485d5f359e255944991a4daf8517d12e69d7cac3747abc8f3",
+      "source_triangles": 244672,
+      "triangles": 5486,
+      "sampled_max_error_mm": 0.405281,
+      "registration_offset_m": [
+        0,
+        0,
+        0
+      ],
+      "unique_components": 6
+    },
     "jb_base": {
       "source": "jugglebot/Base.glb",
       "sha256": "26ddd6f025096bd697dd709cd3228d9fa557db599c652277d87c42bc62890549",
@@ -122,6 +135,6 @@
       "registration_rotation_z_degrees": -90
     }
   },
-  "bytes": 19191820,
-  "scene_triangles": 462837
+  "bytes": 19392828,
+  "scene_triangles": 468323
 }

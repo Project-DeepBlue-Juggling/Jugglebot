@@ -1,14 +1,14 @@
 <!doctype html>
 <html lang="en"><meta charset="utf-8"><title>Robot CAD verification</title>
 <style>body{margin:0;background:#0f172a;color:#e2e8f0;font:14px system-ui}#viewer{height:72vh}#results{white-space:pre-wrap;padding:12px}button{margin:6px;padding:8px}#state{padding:8px}</style>
-<script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>
+<script type="importmap">{"imports":{"three":"./lib/three/build/three.module.js","three/addons/":"./lib/three/examples/jsm/"}}</script>
 <div id="state">Synthetic preview only — no ROS connection or robot commands</div>
 <button id="idle">IDLE</button><button id="closed">CLOSED_LOOP</button><button id="fault">Fault</button><button id="unknown">Unknown</button><button id="motion">Pause motion</button>
 <div id="viewer"></div><pre id="results">Loading and checking CAD…</pre>
 <script>
 window.addEventListener('error', event => { document.getElementById('results').textContent='FAIL '+event.message; });
 window.addEventListener('unhandledrejection', event => { document.getElementById('results').textContent='FAIL '+event.reason; });
-setTimeout(()=>{const out=document.getElementById('results');if(out.textContent.startsWith('Loading'))out.textContent='Still loading - check the GUI server and Three.js CDN connection.';},15000);
+setTimeout(()=>{const out=document.getElementById('results');if(out.textContent.startsWith('Loading'))out.textContent='Still loading - check the local GUI server and browser console.';},15000);
 </script>
 <script type="module">
 import * as THREE from 'three';
@@ -18,7 +18,8 @@ import * as bb from './js/ball-butler-model.js';
 import {setRobotAxisStates, updateRobotMaterials, setAxisFault} from './js/robot-meshes.js';
 import {poseToLegLengths, rotvecToRotMatrix} from './js/stewart-fk.js';
 import {INITIAL_HEIGHT_MM, BB_YAW_S_OFFSET_MM, BB_PITCH_D_OFFSET_MM, BB_PITCH_Z_OFFSET_MM} from './js/geometry-config.js';
-import {initMocapMarkers, updateMocapMarkers, updateRigidBodyAxes} from './js/mocap-markers.js';
+import {initMocapMarkers, initRigidBodyTriads, updateMocapMarkers, updateRigidBodyAxes} from './js/mocap-markers.js';
+import {initCatchingConeModel, updateCatchingCone} from './js/catching-cone-model.js';
 const output = document.querySelector('#results');
 const messages = [];
 function assert(ok, message) { if (!ok) throw new Error(message); messages.push(`PASS ${message}`); }
@@ -31,13 +32,32 @@ document.getElementById('motion').onclick=()=>{motion=!motion;};
 try {
  initViewer(document.getElementById('viewer'));
  camera.position.set(1.5,1.15,1.8); controls.target.set(0,.4,.1);
- jb.initStewartModel(); bb.initBallButlerModel(); initMocapMarkers();
+ jb.initStewartModel(); bb.initBallButlerModel(); initMocapMarkers(); initRigidBodyTriads(); initCatchingConeModel();
  registerPickables([...jb.getStewartPickables(),...bb.getBallButlerPickables()]);
  const meshes=[];
  scene.traverse(o=>{if(o.userData.ready)meshes.push(o);});
  await Promise.all(meshes.map(o=>o.userData.ready));
  assert(near(sceneGroups.Grid.position.y,-.082),'Grid at robot Z = -82 mm');
- assert(meshes.length===19 && meshes.every(o=>o.geometry.getAttribute('position')?.count>0),'All 19 articulated mesh instances loaded');
+ assert(meshes.length===20 && meshes.every(o=>o.geometry.getAttribute('position')?.count>0),'All 20 CAD mesh instances loaded');
+ const cone=meshes.find(o=>o.name==='catching_cone');
+ assert(!cone.visible,'Cone hidden before QTM detection');
+ const coneBody={name:'Catching_Cone',pose:{header:{frame_id:'world'},pose:{position:{x:650,y:200,z:0},orientation:{x:0,y:0,z:Math.SQRT1_2,w:Math.SQRT1_2}}}};
+ updateCatchingCone([coneBody]);
+ assert(cone.visible&&near(cone.position.x,.65)&&near(cone.position.z,-.2),'Cone follows QTM position in millimetres');
+ const coneX=new THREE.Vector3(1,0,0).applyQuaternion(cone.quaternion);
+ assert(near(coneX.z,-1),'Cone follows QTM rotation');
+ updateCatchingCone([]);assert(!cone.visible,'Absent cone disappears');
+ coneBody.name='Catching Cone';updateCatchingCone([coneBody]);assert(cone.visible,'Cone returns with spaced QTM name');
+ sceneGroups['Catching Cone'].visible=false;updateCatchingCone([coneBody]);
+ assert(!sceneGroups['Catching Cone'].visible,'Pose updates respect View visibility toggle');
+ sceneGroups['Catching Cone'].visible=true;
+ coneBody.name='Catching_Cone';
+ coneBody.pose.pose.position.x=NaN;updateCatchingCone([coneBody]);assert(!cone.visible,'Invalid QTM pose hides cone');
+ coneBody.pose.pose.position.x=650;
+ updateCatchingCone([coneBody],performance.now()-1600);
+ await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));
+ assert(!cone.visible,'Stale cone pose disappears');
+ updateCatchingCone([coneBody]);
  const outer=meshes.filter(o=>o.name==='jb_outer'), inner=meshes.filter(o=>o.name==='jb_inner');
  assert(outer.every(o=>o.geometry===outer[0].geometry) && inner.every(o=>o.geometry===inner[0].geometry),'Six legs share two GPU geometries');
  const base=meshes.find(o=>o.name==='jb_base'); base.geometry.computeBoundingBox();
@@ -81,10 +101,10 @@ try {
  const bodies=['Base','Platform','BallButler'].map(name=>({name,pose:{position:{x:0,y:0,z:0},orientation:{x:0,y:0,z:0,w:1}}}));
  bodies[1].pose.position.z=INITIAL_HEIGHT_MM;
  bodies[2].pose.position.y=-650;
- updateRigidBodyAxes(bodies);
+ updateRigidBodyAxes([...bodies,coneBody]);
  updateMocapMarkers([{label:'Base 1',position:{x:0,y:0,z:60},residual:.5}]);
- assert(sceneGroups['Mocap Markers'].children.length===4,'Base, Platform and BallButler triads plus marker retained');
- assert(sceneGroups['Mocap Markers'].children.slice(0,3).every(g=>!g.children[0].material.depthTest),'All triads stay visible inside opaque CAD');
+ assert(sceneGroups['Local Triads'].children.length===4 && sceneGroups['Mocap Markers'].children.length===1,'All four rigid-body triads plus marker retained');
+ assert(sceneGroups['Local Triads'].children.every(g=>!g.children[0].material.depthTest),'All triads stay visible inside opaque CAD');
  // Demo-only labels identify the synthetic rigid bodies; production receives real poses.
  const labels=bodies.map(body=>{
   const canvas=document.createElement('canvas');canvas.width=256;canvas.height=64;
@@ -106,6 +126,7 @@ try {
  }
  let frame=0,last=performance.now(),samples=[],mode='cad',stats={},time=0;
  function tick(now) {
+  updateCatchingCone([coneBody],now);
   if(motion)time+=.018;
   const r=rotvecToRotMatrix([.05*Math.sin(time),.06*Math.cos(time),.1*Math.sin(time*.7)]);
   const p=[15*Math.sin(time),20*Math.cos(time),130+80*Math.sin(time*.5)];
@@ -115,7 +136,7 @@ try {
   Object.assign(bodies[1].pose.position,{x:c[0],y:c[1],z:c[2]});
   const q=platform.parent.quaternion;
   Object.assign(bodies[1].pose.orientation,{x:q.x,y:-q.z,z:q.y,w:q.w});
-  updateRigidBodyAxes(bodies);
+  updateRigidBodyAxes([...bodies,coneBody]);
   bodies.forEach((body,i)=>{const p=body.pose.position;labels[i].position.set(p.x*.001,p.z*.001+.09,-p.y*.001);});
   setRobotAxisStates(Array.from({length:9},()=>({current_state:state})),now);
   for(let i=0;i<9;i++)setAxisFault(i,fault);

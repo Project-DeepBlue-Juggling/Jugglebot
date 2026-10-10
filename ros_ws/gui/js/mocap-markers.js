@@ -45,6 +45,8 @@ function residualToScale(residual) {
 
 /** Colour lookup by label prefix (ordered: longest prefix first for correct matching) */
 const COLOUR_MAP = [
+    { prefix: 'Catching_Cone', color: 0xa78bfa, group: 'Catching Cone' },
+    { prefix: 'Catching Cone', color: 0xa78bfa, group: 'Catching Cone' },
     { prefix: 'Ball Butler', color: 0xeab308, group: 'Ball Butler' }, // yellow
     { prefix: 'Platform',    color: 0x3b82f6, group: 'Platform' },    // blue
     { prefix: 'Base',        color: 0xef4444, group: 'Base' },        // red
@@ -54,6 +56,7 @@ const DEFAULT_COLOUR = 0xd1d5db; // light grey for unlabelled
 
 /** CSS colour strings matching COLOUR_MAP for the info box dots */
 const CSS_COLOURS = {
+    'Catching Cone': '#a78bfa',
     'Platform':    '#3b82f6',
     'Base':        '#ef4444',
     'Ball Butler': '#eab308',
