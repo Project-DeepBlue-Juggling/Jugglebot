@@ -1,9 +1,10 @@
 """Mocap Interface Node — QTM streaming, tf2 broadcast, BB calibration.
 
-Publishes:
-  mocap_data             (MocapDataMulti)   — all markers (labelled + unlabelled) at 200 Hz
-  rigid_body_poses       (RigidBodyPoses)   — all rigid bodies at 200 Hz
-  bb/markers             (MocapDataMulti)   — BB fiducial markers (always, when QTM connected)
+Publishes (one message per QTM frame, ~300 Hz, since 2026-10-10: the frame
+queue, logbook 2026-10-10-mocap-frame-queue):
+  mocap_data             (MocapDataMulti)   — all markers (labelled + unlabelled), per frame
+  rigid_body_poses       (RigidBodyPoses)   — all rigid bodies, per frame that carries any
+  bb/markers             (MocapDataMulti)   — BB fiducial markers, per frame (when QTM connected)
   bb/calibration_result  (BallButlerCalibrationResult) — latched: the calibration IN
                          FORCE. Only a success replaces it; a failure lands here
                          only while this process has no success yet.
@@ -38,7 +39,7 @@ from rcl_interfaces.msg import SetParametersResult
 from std_msgs.msg import Float64
 from sensor_msgs.msg import JointState
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
-from geometry_msgs.msg import TransformStamped
+from geometry_msgs.msg import Point, TransformStamped
 from jugglebot_interfaces.msg import (
     MocapDataMulti,
     MocapDataSingle,
@@ -49,7 +50,7 @@ from jugglebot_interfaces.msg import (
 )
 import tf2_ros
 
-from .mocap_interface import MocapInterface
+from .mocap_interface import FRAME_QUEUE_MAXLEN, MocapInterface
 from jugglebot.protocol_config import (
     BallButlerStates,
     MOCAP_ALIGNMENT_POS_THRESH_MM,
@@ -79,7 +80,7 @@ except ImportError:  # pragma: no cover - outside a ROS install
 #: Cadence of the ``mocap/status`` publisher and of the calibration health
 #: check. 5 Hz: fast enough that the consumers' 1.0 s staleness window
 #: (``mocap_status.MOCAP_STATUS_MAX_AGE_S``) needs five consecutive missed
-#: cycles before they refuse, slow enough to be free next to the 200 Hz marker
+#: cycles before they refuse, slow enough to be free next to the per-frame marker
 #: path.
 MOCAP_STATUS_PERIOD_S = 0.2
 
@@ -158,11 +159,82 @@ DEFAULT_BASE_FRAME_STATE_FILE = os.path.join(
 #: whenever the base is seen (logbook 2026-10-10-bb-base-marker-frame).
 BB_POSE_SOURCES = ('sweep', 'base_frame', 'auto')
 DEFAULT_BB_POSE_SOURCE = 'auto'
-#: Cadence (s) of the slow running base-pose estimate fed from the 200 Hz path.
+#: Cadence (s) of the slow running base-pose estimate fed from the per-frame path.
 BASE_MONITOR_PERIOD_S = 0.2
 #: A window that does not see the base may use the running estimate if its
 #: newest pose is at most this old (s).
 BASE_MONITOR_MAX_AGE_S = 30.0
+
+#: Shortest interval (s) between two "frames lost" WARN lines. Losses inside
+#: the interval are summed into the next line, so none goes unreported; the
+#: first loss after a quiet spell warns at once (on the next 1 Hz check).
+MOCAP_LOSS_WARN_PERIOD_S = 10.0
+#: QTM's nominal stream rate, for the WARN's "starved for over x s" figure.
+QTM_STREAM_HZ = 300.0
+
+
+# ── Per-frame message building ───────────────────────────────────────────────
+# The publisher builds one MocapDataSingle per marker per frame (~25 at
+# ~300 Hz). The generated Foxy classes type-check every field in a Python
+# property setter: ~8 µs per marker with the setters, ~1 µs writing the
+# generated slots directly (measured on the Jetson, logbook
+# 2026-10-10-mocap-frame-queue). _marker_fast writes the slots; it is used
+# only when the classes have rosidl's slot layout AND it builds a message
+# equal to the checked one (checked once at import), else _marker_checked —
+# the old code path — is used (it is, under the tests' message stand-ins).
+
+def _marker_checked(x, y, z, residual, label=''):
+    s = MocapDataSingle()
+    pos = s.position
+    pos.x = float(x)
+    pos.y = float(y)
+    pos.z = float(z)
+    s.residual = float(residual)
+    if label:
+        s.label = label
+    return s
+
+
+_object_new = object.__new__
+
+
+def _marker_fast(x, y, z, residual, label=''):
+    p = _object_new(Point)
+    p._x = float(x)
+    p._y = float(y)
+    p._z = float(z)
+    s = _object_new(MocapDataSingle)
+    s._position = p
+    s._residual = float(residual)
+    s._label = str(label)
+    return s
+
+
+def _marker_fast_is_safe() -> bool:
+    try:
+        if set(getattr(Point, '__slots__', ())) != {'_x', '_y', '_z'}:
+            return False
+        if set(getattr(MocapDataSingle, '__slots__', ())) != {'_position', '_residual', '_label'}:
+            return False
+        for args in ((1.5, -2.25, 3e3, 0.5, 'Ball Butler - 1'),
+                     (float('nan'), 0.0, -1.0, 0.0, '')):
+            a, b = _marker_checked(*args), _marker_fast(*args)
+            if repr(a) != repr(b) or type(a.position) is not type(b.position):
+                return False
+        return True
+    except Exception:
+        return False
+
+
+#: The builder the publisher uses (see above).
+MARKER_FAST_PATH = _marker_fast_is_safe()
+_make_marker = _marker_fast if MARKER_FAST_PATH else _marker_checked
+
+
+def _set_stamp(stamp, ns):
+    """Write ROS time ``ns`` into a builtin_interfaces/Time field."""
+    stamp.sec = int(ns // 1_000_000_000)
+    stamp.nanosec = int(ns % 1_000_000_000)
 
 # BB_MARKER_COUNT (``mocap_interface.ball_butler_markers`` is a fixed
 # (BB_MARKER_COUNT, 4) array with NaN rows for the ones QTM cannot see this
@@ -239,7 +311,18 @@ class MocapNode(Node):
 
         # ── Timers ────────────────────────────────────────────────────────
         self.create_timer(1.0, self._publish_clock_offset)
+        # The publisher tick DRAINS the frame queue (every frame since the
+        # last tick, one message each), so its period sets latency (0-5 ms,
+        # consumers fit against the frames' own QTM stamps), not loss. Kept at
+        # 5 ms: a faster tick costs executor wake-ups for at most 2.5 ms less
+        # mean latency (logbook 2026-10-10-mocap-frame-queue).
         self.create_timer(hw.TRACKING_MOCAP_DT_S, self._publish_mocap_data)
+        # Stream-health state for the 1 Hz line and the frames-lost WARN.
+        self._stream_prev: dict | None = None
+        self._stream_prev_mono: float | None = None
+        self._loss_pending = [0, 0, 0]        # node overflow, QTM gap frames, gap events
+        self._loss_pending_since: float | None = None
+        self._loss_warn_mono: float | None = None
         self.create_timer(MOCAP_STATUS_PERIOD_S, self._publish_mocap_status)
         # Q5b/Q5c ride their OWN timer rather than piggy-backing on the status
         # publisher: the publisher must stay a pure snapshot read (determinism
@@ -421,25 +504,79 @@ class MocapNode(Node):
             f'({pose.origin_mm[0]:.1f}, {pose.origin_mm[1]:.1f}, {pose.origin_mm[2]:.1f}) mm, '
             f'tilt {pose.tilt_deg:.2f}°{note}')
 
+    def _check_stream_health(self) -> str:
+        """Once a second (the clock-offset timer): read the frame-queue and QTM
+        counters, WARN when frames were lost — dropped by this node (queue
+        overflow: starved for longer than the queue holds) or never sent by
+        QTM (frame-number gaps) — and return the counters for the 1 Hz DEBUG
+        line. The WARN is throttled to one per MOCAP_LOSS_WARN_PERIOD_S; losses
+        in between are summed into the next one, so none goes unreported."""
+        try:
+            st = self.mocap.take_stream_stats()
+        except Exception as e:
+            self.get_logger().error(f'Error reading the mocap stream counters: {e}',
+                                    throttle_duration_sec=5.0)
+            return ''
+        now = time.monotonic()
+        prev, prev_mono = self._stream_prev, self._stream_prev_mono
+        self._stream_prev, self._stream_prev_mono = st, now
+        if prev is None:
+            prev = dict.fromkeys(st, 0)
+
+        def d(key):
+            return st[key] - prev[key]
+        ovf, gap, events = d('overflow_drops'), d('qtm_gap_frames'), d('qtm_gap_events')
+        if ovf or gap:
+            if self._loss_pending_since is None:
+                self._loss_pending_since = prev_mono if prev_mono is not None else now
+            p = self._loss_pending
+            p[0] += ovf
+            p[1] += gap
+            p[2] += events
+        p = self._loss_pending
+        if (p[0] or p[1]) and (self._loss_warn_mono is None
+                               or now - self._loss_warn_mono >= MOCAP_LOSS_WARN_PERIOD_S):
+            self.get_logger().warn(
+                f'mocap: {p[0] + p[1]} QTM frames lost in the last '
+                f'{now - self._loss_pending_since:.0f} s — {p[0]} dropped by mocap_node '
+                f'(frame queue full: starved for over '
+                f'{FRAME_QUEUE_MAXLEN / QTM_STREAM_HZ:.1f} s), {p[1]} never received from '
+                f'QTM ({p[2]} frame-number gaps); QTM 2D drop {st["max_drop_rate"]}‰ — '
+                'check the Jetson load (another job running?) and QTM')
+            self._loss_warn_mono = now
+            self._loss_pending = [0, 0, 0]
+            self._loss_pending_since = None
+        span = (now - prev_mono) if prev_mono is not None else 0.0
+        rate = d('frames_queued') / span if span > 0 else 0.0
+        return ('stream {:.0f} frames/s, queue max {}/{}, lost: node overflow {} (total {}), '
+                'QTM gaps {} frames (total {}), duplicates {}, QTM restarts {}, '
+                'QTM 2D drop {}‰, out of sync {}‰').format(
+                    rate, st['max_queue_depth'], FRAME_QUEUE_MAXLEN, ovf, st['overflow_drops'],
+                    gap, st['qtm_gap_frames'], d('duplicate_frames'), st['qtm_restarts'],
+                    st['max_drop_rate'], st['max_out_of_sync_rate'])
+
     def _publish_clock_offset(self):
         self._report_base_frame_once()
+        stream = self._check_stream_health()
         status = self.mocap.get_qtm_sync_status()
         offset = status.get('offset_s')
         if offset is not None:
             msg = Float64()
             msg.data = offset
             self.pub_clock_offset.publish(msg)
-            # Clock-sync health at 1 Hz, DEBUG only: mocap/status's key set is a
-            # pinned contract (mocap_status.py), so the estimator's diagnostics
-            # ride the log rather than new KeyValues.
+            # Clock-sync and stream health at 1 Hz, DEBUG only: mocap/status's
+            # key set is a pinned contract (mocap_status.py), so the
+            # estimator's diagnostics and the frame counters ride the log
+            # rather than new KeyValues.
             if 'window_fill' in status:
                 self.get_logger().debug(
                     'qtm clock sync: excess latency {:.2f} ms, envelope-output {:+.3f} ms, '
                     'window fill {:.2f}, drift {:+.1f} ppm, slew clamps {}, outlier clips {}, '
-                    're-anchors {}, restarts {}'.format(
+                    're-anchors {}, restarts {}{}'.format(
                         status['last_excess_latency_ms'], status['envelope_minus_output_ms'],
                         status['window_fill'], status['drift_ppm'], status['slew_clamps'],
-                        status['outlier_clips'], status['reanchors'], status['restarts']))
+                        status['outlier_clips'], status['reanchors'], status['restarts'],
+                        f'; {stream}' if stream else ''))
 
     def _bb_marker_visibility(self) -> tuple[int, bool]:
         """(count of BB fiducials QTM currently resolves, yaw-anchor visible).
@@ -603,54 +740,67 @@ class MocapNode(Node):
             self._base_monitor_last_t = t
             self._base_monitor.update(t, np.array(points[:, :3], dtype=float))
 
-    def _publish_mocap_data(self):
-        is_aligned = self.mocap.is_aligned
+    def _base_feed_due(self, frame_ros_ns) -> bool:
+        """Whether _feed_base_frame would use this frame (the same conditions),
+        so the per-frame base-candidate array is built only when it will be:
+        every frame of a calibration window, else once per BASE_MONITOR_PERIOD_S."""
+        if frame_ros_ns is None:
+            return False
+        if (self._calibrating and self._calib_invalid is None
+                and frame_ros_ns != self._calib_last_base_ns):
+            return True
+        return self._base_monitor is not None and (
+            self._base_monitor_last_t is None
+            or frame_ros_ns * 1e-9 - self._base_monitor_last_t >= BASE_MONITOR_PERIOD_S)
 
+    def _publish_mocap_data(self):
+        """Publisher tick: drain the frame queue and publish EVERY frame that
+        arrived since the last tick, oldest first, each with its own stamp
+        (logbook 2026-10-10-mocap-frame-queue). An empty tick publishes
+        nothing — until 2026-10-10 it re-published the last frame with an
+        empty marker list (a third of /mocap_data in the loaded bags) and a
+        stamp re-converted through the moved offset, which is what made the
+        stamps step backwards a few µs 164-490 times per bag."""
         # ── Stop publishing when QTM packets aren't arriving ──
         # The GUI has its own 2-second timeout that sets disconnected/unaligned
         # and clears markers, so going silent here is the correct behaviour.
         if not self.mocap.is_receiving():
             return
+        for frame in self.mocap.drain_frames():
+            self._publish_frame(frame)
 
-        unlabelled = self.mocap.get_all_markers_base_frame()
-        labelled = self.mocap.get_labelled_markers()
-        frame_ros_ns = self.mocap.latest_frame_ros_ns()
+    def _publish_frame(self, frame):
+        """One QTM frame (``mocap_interface.MocapFrame``) onto mocap_data,
+        rigid_body_poses and bb/markers, and into the base-frame feed and the
+        calibration window."""
+        frame_ros_ns = frame.stamp_ns
+        labelled = frame.labelled
+        unlabelled = frame.unlabelled
+        make = _make_marker
         try:
             msg = MocapDataMulti()
-            msg.aligned = is_aligned
+            msg.aligned = bool(frame.aligned)
             if frame_ros_ns is not None:
-                msg.stamp.sec = int(frame_ros_ns // 1_000_000_000)
-                msg.stamp.nanosec = int(frame_ros_ns % 1_000_000_000)
+                _set_stamp(msg.stamp, frame_ros_ns)
 
-            # Add labelled markers (with their QTM label)
+            markers = msg.markers
+            # Labelled markers (with their QTM label)
             for label, x, y, z, residual in labelled:
-                s = MocapDataSingle()
-                s.position.x = float(x)
-                s.position.y = float(y)
-                s.position.z = float(z)
-                s.residual = float(residual)
-                s.label = label
-                msg.markers.append(s)
-
-            # Add unlabelled markers (label left as empty string)
-            if unlabelled is not None and unlabelled.shape[0] > 0:
-                for i in range(unlabelled.shape[0]):
-                    s = MocapDataSingle()
-                    s.position.x = float(unlabelled[i, 0])
-                    s.position.y = float(unlabelled[i, 1])
-                    s.position.z = float(unlabelled[i, 2])
-                    s.residual = float(unlabelled[i, 3])
-                    msg.markers.append(s)
+                markers.append(make(x, y, z, residual, label))
+            # Unlabelled markers (label left as empty string)
+            for x, y, z, residual in unlabelled:
+                markers.append(make(x, y, z, residual))
 
             self.pub_mocap.publish(msg)
-            self.mocap.clear_markers()
         except Exception as e:
-            self.get_logger().error(f'Error publishing markers: {e}')
+            self.get_logger().error(f'Error publishing markers: {e}',
+                                    throttle_duration_sec=5.0)
         try:
             # Labelled markers too: a QTM rigid body that grabs a base marker
             # (2026-10-10 14:10: Base / Catching Cone took two of the four)
             # must not hide the base. Only BB's own are left out.
-            self._feed_base_frame(base_candidate_points(unlabelled, labelled), frame_ros_ns)
+            if self._base_feed_due(frame_ros_ns):
+                self._feed_base_frame(base_candidate_points(unlabelled, labelled), frame_ros_ns)
         except Exception as e:
             self.get_logger().error(f'Error tracking the BB base frame: {e}',
                                     throttle_duration_sec=5.0)
@@ -664,48 +814,57 @@ class MocapNode(Node):
         # silently block every throw. Alignment is still computed and surfaced
         # via MocapDataMulti.aligned (plus a misalignment warning) for the GUI;
         # it is informational, not a hard gate on rigid-body publishing.
+        # Stamps as before the frame queue: the message at publish time, each
+        # pose at its frame's receive time.
         try:
-            body_poses = self.mocap.get_body_poses()
-            if body_poses:
+            if frame.bodies:
                 msg = RigidBodyPoses()
                 msg.header.stamp = self.get_clock().now().to_msg()
                 msg.header.frame_id = 'world'
-                for name, pose in body_poses.items():
+                receive_ns = frame.receive_ns
+                for name, frame_id, x, y, z, qx, qy, qz, qw in frame.bodies:
                     body_msg = RigidBodyPose()
                     body_msg.name = name
-                    body_msg.pose = pose
+                    # Fill the PoseStamped the constructor already built (a
+                    # second one per body per frame was ~1/5 of this path)
+                    pose = body_msg.pose
+                    if receive_ns is not None:
+                        _set_stamp(pose.header.stamp, receive_ns)
+                    pose.header.frame_id = frame_id
+                    position = pose.pose.position
+                    position.x = float(x)
+                    position.y = float(y)
+                    position.z = float(z)
+                    orientation = pose.pose.orientation
+                    orientation.x = float(qx)
+                    orientation.y = float(qy)
+                    orientation.z = float(qz)
+                    orientation.w = float(qw)
                     msg.bodies.append(body_msg)
-                if msg.bodies:
-                    self.pub_rigid_bodies.publish(msg)
-            self.mocap.clear_body_poses()
+                self.pub_rigid_bodies.publish(msg)
         except Exception as e:
-            self.get_logger().error(f'Error publishing body poses: {e}')
+            self.get_logger().error(f'Error publishing body poses: {e}',
+                                    throttle_duration_sec=5.0)
 
         # ── BB markers (always published; accumulated during calibration) ──
         try:
-            bb_markers = self.mocap.get_ball_butler_markers_base_frame()
-            if bb_markers is not None and bb_markers.shape[0] > 0:
-                msg = MocapDataMulti()
-                if frame_ros_ns is not None:
-                    msg.stamp.sec = int(frame_ros_ns // 1_000_000_000)
-                    msg.stamp.nanosec = int(frame_ros_ns % 1_000_000_000)
-                for i in range(bb_markers.shape[0]):
-                    s = MocapDataSingle()
-                    s.position.x = float(bb_markers[i, 0])
-                    s.position.y = float(bb_markers[i, 1])
-                    s.position.z = float(bb_markers[i, 2])
-                    s.residual = float(bb_markers[i, 3])
-                    msg.markers.append(s)
-                self.pub_bb_markers.publish(msg)
+            msg = MocapDataMulti()
+            if frame_ros_ns is not None:
+                _set_stamp(msg.stamp, frame_ros_ns)
+            markers = msg.markers
+            for x, y, z, residual in frame.bb_markers:
+                markers.append(make(x, y, z, residual))
+            self.pub_bb_markers.publish(msg)
 
-                # Accumulate for calibration. An invalidated window (Q5b/Q5c)
-                # stops sampling: more points cannot repair an arc with a hole
-                # in it, and a growing dict would only make the garbage look
-                # better-supported.
-                if self._calibrating and self._calib_invalid is None:
-                    self._accumulate_calibration_markers(msg)
+            # Accumulate for calibration. An invalidated window (Q5b/Q5c)
+            # stops sampling: more points cannot repair an arc with a hole
+            # in it, and a growing dict would only make the garbage look
+            # better-supported.
+            if self._calibrating and self._calib_invalid is None:
+                self._accumulate_calibration_markers(msg)
         except Exception as e:
-            self.get_logger().error(f'Error publishing BB markers: {e}')
+            self.get_logger().error(f'Error publishing BB markers: {e}',
+                                    throttle_duration_sec=5.0)
 
     # ──────────────────────────────────────────────────────────────────────
     #  Static TF
@@ -797,11 +956,11 @@ class MocapNode(Node):
     def _accumulate_calibration_markers(self, msg: MocapDataMulti):
         """Store each marker position from a bb/markers message: per label for
         the sweep's arc fit, and as one unlabelled point set per QTM frame,
-        at the frame's QTM stamp, for the sweep yaw estimator. The publisher
-        runs on a timer at the QTM rate and snapshots the latest frame, so a
-        frame can be seen twice: one point set per distinct stamp. A message
-        without a stamp (QTM clock sync not yet established) feeds the arc fit
-        only."""
+        at the frame's QTM stamp, for the sweep yaw estimator. Since the frame
+        queue (2026-10-10) the publisher sends each QTM frame once; the
+        one-point-set-per-distinct-stamp rule stays as the guard it was when a
+        latest-frame snapshot could be published twice. A message without a
+        stamp (QTM clock sync not yet established) feeds the arc fit only."""
         frame = []
         for i, marker in enumerate(msg.markers):
             if i >= BB_MARKER_COUNT:
