@@ -238,6 +238,26 @@ encoding:
     # Leg axes (CAN IDs 0-5) — matches odrive_pro_leg_config.json
     leg_vel: 1000.0
     leg_tor: 10000.0
+    # ---- Ball Butler: its own drives, its own keys (2026-10-10) ----
+    # "Each axis with unique limits has its own set of keys": BB's firmware
+    # used hand_vel/hand_tor (Jugglebot's hand Pro) for its own drives, so the
+    # FW 22 change of hand_tor 100 -> 1000 silently became a 10x torque
+    # feedforward on BB's hand when BB FW 6 regenerated this header.  BB's
+    # CanInterface picks the pair by node; the Jugglebot keys above never
+    # reach a BB drive.  BB's yaw is a brushed DC motor on an H-bridge (PWM),
+    # not an ODrive, and has no keys.
+    # BB hand (CAN ID 8, ODrive S1) — matches odrive_s1_bb_hand_config.json
+    # (owner read node 8 input_torque_scale = 100 with odrivetool, 2026-10-10).
+    bb_hand_vel: 100.0
+    bb_hand_tor: 100.0
+    # BB pitch (CAN ID 7, ODrive Micro) — matches BallButler's
+    # bb_pitch_odrive_micro_config.json.  That file is a 2026-03 snapshot whose
+    # node_id reads 0 (the live drive is 7), so these two values are NOT
+    # confirmed against the live drive.  Wire-inert today: PitchAxis sends
+    # vel_ff = tor_ff = 0 (TRAP_TRAJ), and 0 * any scale is 0.  Read the drive
+    # back before ever sending pitch feedforward.
+    bb_pitch_vel: 1000.0
+    bb_pitch_tor: 1000.0
 
 # =============================================================================
 # SDO (Arbitrary Parameter Access)
@@ -259,9 +279,28 @@ endpoints:
     # from api.odriverobotics.com/releases/firmware/index, whose get_gpio_states
     # reads 726 in the same file). Read by the FW 22 hand torque-scale readback.
     can_input_torque_scale: 283
-  odrive_s1_0_6_11:             # BallButler hand (hw 5.2.0) — values proven in production on BB
-    get_gpio_states: 700
-    commutation_mapper_pos_abs: 488
+  odrive_s1_0_6_11:             # BallButler hand, CAN node 8 (hw 5.2.0)
+    # Source for every id in this block (2026-10-10): the ODrive S1 flat
+    # endpoint table "config/ODrive config Files/odrive-s1-0.6.11-1_flat_endpoints.json"
+    # (fw_version 0.6.11-1, hw_version 5.2.0, tree crc 52326, 631 endpoints),
+    # supplied by the owner.  The Pro's ids above come from the Pro's own table;
+    # never copy an id between the two boards.
+    get_gpio_states: 700          # function; invoked on the wire by BB's ball-in-hand poll every session
+    # axis0.commutation_mapper.pos_abs (float, r).  Was 488 until 2026-10-10,
+    # labelled "proven in production": in this table 488 is
+    # axis0.task_times.can_heartbeat.length.  No firmware sends it (BB's only
+    # caller, CanInterface::isEncoderSearchComplete, is never called).
+    commutation_mapper_pos_abs: 451
+    # BB FW 8 hand input-scale guard: SDO READ (opcode 0) at every hand arm,
+    # compared with input_scales.bb_hand_tor / bb_hand_vel.
+    can_input_torque_scale: 273   # axis0.config.can.input_torque_scale (uint32, rw)
+    can_input_vel_scale: 272      # axis0.config.can.input_vel_scale (uint32, rw)
+    can_node_id: 262              # axis0.config.can.node_id (uint32, rw) — guard log only
+    fw_version_major: 10          # uint8, r — guard log only
+    fw_version_minor: 11          # uint8, r — guard log only
+    fw_version_revision: 12       # uint8, r — guard log only
+    hw_version_major: 6           # uint8, r — not read by any firmware yet
+    hw_version_minor: 7           # uint8, r — not read by any firmware yet
 
 # =============================================================================
 # Motion Capture Alignment

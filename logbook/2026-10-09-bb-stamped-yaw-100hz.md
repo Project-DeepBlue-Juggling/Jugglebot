@@ -2,7 +2,7 @@
 title: Ball Butler yaw joins /bb/axis_estimates — stamped at sample time, 100 Hz (can-bridge FW 28, BB FW 6, additive BB_YAW_ESTIMATE)
 type: feature
 date: 2026-10-09
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack — R5 (Ball Butler calibration)"
 related_plan: two-ball-skill-stack.md
 files_changed:
@@ -140,8 +140,19 @@ ROS launch DOWN for the BB flash, because the fw-update tool owns the bridge's U
   stamps paired**; `yaw_age_us` min 21 µs, median 3.0 ms, p95 3.0 ms, max 6.05 ms (the 150 Hz
   sample-and-hold prediction: 0–6.7 ms); stamped yaw −2.9° while the heartbeat read 357.13°
   (the same angle before the [0, 360) wrap); BB bus 457 frames/s, +150 over a BB FW 5 bag.
-- **Still owed:** the ROS topic check (`/bb/axis_estimates` with `bb_yaw`, after a host launch)
-  and the first live calibration with `yaw source stamped`. Status stays `in-progress`.
+- **Closed 2026-10-10:** `/bb/axis_estimates` has carried `bb_yaw` at 100 Hz on every launch since the
+  bridge flash, and every BB calibration from the 13:45 sitting on ran with `yaw source stamped` (bb_yaw lag
+  against mocap −0.2…+2.5 ms per sweep, where the heartbeat had lagged 78–174 ms per session);
+  `bb_yaw_source` defaults to `auto` since 308e0b8b. The accuracy pay-off is in
+  [2026-10-10-bb-yaw-offset-spread-stamped-source](2026-10-10-bb-yaw-offset-spread-stamped-source.md) and
+  [2026-10-10-bb-base-marker-frame](2026-10-10-bb-base-marker-frame.md).
+- **Caveat, tracked in BallButler `logbook/2026-10-10-bb-hand-torque-ff-scale.md`:** the BB FW 6 build that
+  carries 0x7D8 regenerated `protocol_config.h` from this checkout and so took `input_scales.hand_tor` (1000,
+  Jugglebot's hand ODrive Pro) for BB's own hand ODrive S1 (configured 100): BB's hand torque feedforward has
+  gone out ×10 since the flash (pre-throw kick, 215 mm strokes, spinouts, throws ~7 % slow, landings 120 mm
+  short in the 2026-10-10 14:49 sitting). The stamped yaw itself is unaffected. The proposed fix adds
+  `bb_hand_vel` / `bb_hand_tor` to `config/protocol_config.yaml` and regenerates (BB FW 7,
+  `BB_FW_VERSION_EXPECTED` 7) — a separate entry when it lands.
 - Seen at rest (yaw motor unpowered): the stamped yaw crept 0.2° over 5 s with a reported
   −0.8 °/s. Physical creep of the unpowered stage rather than encoder noise, by its size;
   harmless to the moving-sweep estimator, unexplained.
