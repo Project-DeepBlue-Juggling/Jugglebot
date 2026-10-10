@@ -65,6 +65,11 @@ def _mocap_node(tmp_path=None, last_accepted_deg=1.78):
                                      'position_mm': [-1018.99, -434.58, 1738.14],
                                      'accepted_at': 'test'}))
         node._params['bb_calibration_state_file'] = str(state)
+        node._params['bb_base_frame_state_file'] = str(tmp_path / 'base_state.json')
+    # The world-gate path's console (pose source sweep): under the default auto
+    # with the seeded base pool, a window without the base adds a WARN line
+    # (tests/ros/test_mocap_node_base_frame.py).
+    node._params['bb_pose_source'] = 'sweep'
     return node
 
 

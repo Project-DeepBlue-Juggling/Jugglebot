@@ -71,6 +71,37 @@ def test_identifies_the_four_markers_among_scene_markers_and_recovers_the_pose()
     assert bf.heading_deg(m.R) == pytest.approx(-179.05, abs=0.02)
 
 
+def test_candidates_are_every_marker_but_bbs_own():
+    """2026-10-10 14:10: QTM's re-enabled Base / Catching Cone bodies labelled
+    two of the four base markers; the unlabelled-only identifier then saw 0 of
+    805 frames. Every labelled marker is a candidate except BB's yaw stage."""
+    U = np.array([[1.0, 2.0, 3.0, 0.4], [4.0, 5.0, 6.0, 0.3]])
+    L = [('Catching Cone - 4', 7.0, 8.0, 9.0, 0.2), ('Base - 2', 10.0, 11.0, 12.0, 0.2),
+         ('Ball Butler - 3', 0.0, 0.0, 0.0, 0.1), ('Ball_Butler - 1', 0.0, 0.0, 0.0, 0.1),
+         ('Platform - 1', 13.0, 14.0, 15.0, 0.1)]
+    C = bf.base_candidate_points(U, L)
+    assert C.shape == (5, 3)
+    assert np.allclose(C, [[1, 2, 3], [4, 5, 6], [7, 8, 9], [10, 11, 12], [13, 14, 15]])
+    assert bf.base_candidate_points(np.empty((0, 4)), []).shape == (0, 3)
+    assert bf.base_candidate_points(None, L[:1]).shape == (1, 3)
+
+
+def test_a_label_grab_cannot_hide_the_base_and_bbs_own_markers_are_not_searched():
+    """Two base markers labelled by another body are still found; a copy of the L
+    among BB's labelled markers (a decoy the identifier would otherwise have to
+    break a tie on) is not searched."""
+    rng = np.random.default_rng(21)
+    base = NOM @ R0.T + O0 + rng.normal(0, 0.02, (4, 3))
+    decoy = NOM @ R0.T + O0 + np.array([400.0, 300.0, 50.0])     # same L, elsewhere
+    U = base[[0, 3]]
+    L = [('Catching Cone - 4', *base[1], 0.1), ('Catching Cone - 5', *base[2], 0.1)]
+    L += [(f'Ball Butler - {i + 1}', *decoy[i], 0.1) for i in range(4)]
+    assert bf.identify_base_markers(U, NOM) is None              # the unlabelled two alone
+    m = bf.identify_base_markers(bf.base_candidate_points(U, L), NOM)
+    assert m is not None and len(m.pairs) == 4
+    assert np.allclose(m.t, O0, atol=0.1)
+
+
 def test_one_occluded_marker_leaves_a_three_marker_pose_two_leave_none():
     """Any one of C, M, E may be missing; S may not: C-M-E are collinear and
     fix no rotation about their line (BASE_MIN_SPREAD_MM)."""
@@ -230,6 +261,51 @@ def test_pool_mean_sd_se_and_the_pin_moves_kappa():
     assert bf.pool_kappa([], 0.208) is None
 
 
+def _st(k, **kw):
+    r = _rec(k, **kw)
+    r.source = 'mocap_node (stamped)'
+    return r
+
+
+def test_robust_pool_excludes_a_stamped_outlier_counts_it_and_keeps_the_record():
+    """The 2026-10-10 pool: stamped sweeps scatter ~0.02° (MAD), and two sat
+    +0.07° / +0.09° off; the mean of the rest is the pooled κ."""
+    rng = np.random.default_rng(5)
+    good = list(179.50 + rng.normal(0, 0.02, 12))
+    recs = [_st(k, sigma=0.04) for k in good] + [_st(179.59, sigma=0.04)]
+    p = bf.pool_kappa(recs, 0.208, 0.0308)
+    assert p.outliers == (12,) and p.n == 12 and p.n_total == 13 and p.n_outliers == 1
+    assert p.kappa_deg == pytest.approx(np.mean(good))
+    assert p.count_note() == 'n 12 of 13, 1 outliers excluded'
+    assert bf.pool_kappa(recs[:12], 0.208).count_note() == 'n 12'
+    summary = bf.pool_summary(recs, p)
+    assert [o['index'] for o in summary['outliers']] == [12] and summary['n_total'] == 13
+    state = bf.base_state_to_json(recs, None, 0.208, 0.0308)
+    assert len(state['records']) == 13 and state['pool']['n_kept'] == 12
+
+
+def test_robust_pool_judges_each_yaw_source_by_its_own_scatter():
+    """A heartbeat sweep 0.07° off is inside heartbeat scatter (SD 0.05°); a
+    stamped one is not. A group of < 5 is judged by its nominal per-sweep SD."""
+    hb = [_rec(179.50 + d) for d in (-0.08, -0.05, -0.03, -0.01, 0.0, 0.01, 0.03, 0.05, 0.08, 0.06)]
+    st = [_st(179.50 + d) for d in (-0.02, -0.01, -0.005, 0.0, 0.0, 0.005, 0.01, 0.015, -0.015, 0.02)]
+    hb.append(_rec(179.57))
+    st.append(_st(179.57))
+    p = bf.pool_kappa(hb + st, 0.208)
+    assert p.outliers == (21,)
+    # three stamped records: σ_g = max(0.020, 0.030) → a 0.07° record stays
+    assert bf.pool_kappa([_st(179.50), _st(179.51), _st(179.57)], 0.208).outliers == ()
+    assert bf.kappa_sweep_sd_deg('stamped') == 0.030
+    assert bf.kappa_sweep_sd_deg('heartbeat') == 0.050
+    assert bf.kappa_sweep_sd_deg('mocap') == 0.050                # unknown: the larger
+    assert bf.kappa_record_yaw_source(_rec(1.0)) == 'heartbeat'   # the 12:26 seed records
+
+
+def test_robust_pool_never_excludes_every_record():
+    assert bf.kappa_outliers([1.0, 2.0], ['stamped', 'stamped']).tolist() == [False, False]
+    assert bf.kappa_outliers([1.0], ['stamped']).tolist() == [False]
+
+
 def test_pool_wraps_at_180_and_a_small_pool_never_claims_better_than_its_sigma():
     p = bf.pool_kappa([_rec(179.99), _rec(-179.99)], 0.208)
     assert abs(abs(p.kappa_deg) - 180.0) < 1e-6
@@ -269,14 +345,23 @@ def test_gate_a_bb_in_base_change_is_refused_unless_bb_moved():
     assert len(v.message) < 240
 
 
-def test_gate_limit_is_combined_sigma_with_a_floor():
+def test_gate_limit_is_combined_sigma_with_a_0_09_floor():
+    """max(3·√(σ_src² + SE²), 0.09°): 0.15° (the world gate's floor) until
+    2026-10-10, which let a stamped sweep +0.09° off into the pool."""
+    assert bf.KAPPA_GATE_MIN_DEG == 0.09
     base = _pose_from(R0, O0)
-    v = bf.check_base_frame_consistency(179.63, 0.07, (177.54, 148.86, 76.71), base, _pooled(), REF)
-    assert v.threshold_deg == pytest.approx(max(3 * math.hypot(0.07, 0.016), 0.15))
-    assert v.accepted        # Δ 0.14 < 0.215
-    v = bf.check_base_frame_consistency(179.60, 0.01, (177.54, 148.86, 76.71), base,
+    hb = bf.kappa_sweep_sd_deg('heartbeat')
+    v = bf.check_base_frame_consistency(179.63, hb, (177.54, 148.86, 76.71), base, _pooled(), REF)
+    assert v.threshold_deg == pytest.approx(3 * math.hypot(0.05, 0.016))
+    assert v.accepted        # Δ 0.14 < 0.158
+    st = bf.kappa_sweep_sd_deg('stamped')
+    v = bf.check_base_frame_consistency(179.57, st, (177.54, 148.86, 76.71), base,
                                         _pooled(se=0.005), REF)
-    assert v.threshold_deg == pytest.approx(0.15) and v.accepted
+    assert v.threshold_deg == pytest.approx(3 * math.hypot(0.03, 0.005)) and v.accepted
+    v = bf.check_base_frame_consistency(179.59, 0.01, (177.54, 148.86, 76.71), base,
+                                        _pooled(se=0.005), REF)
+    assert v.threshold_deg == pytest.approx(0.09) and not v.accepted     # Δ 0.10 > 0.09
+    assert v.message.startswith('BB_IN_BASE_MOVED') and 'bb_moved:=true' in v.message
 
 
 def test_gate_a_knocked_base_refuses_even_with_bb_moved_and_no_pool_seeds():
@@ -315,18 +400,33 @@ def test_committed_resource_loads_and_matches_its_summary():
     dT = np.linalg.norm(model.template_mm[:, None] - model.template_mm[None], axis=2)
     dN = np.linalg.norm(model.nominal_mm[:, None] - model.nominal_mm[None], axis=2)
     assert np.max(np.abs(dT - dN)) < 0.5       # as-built within 0.5 mm of nominal
-    assert len(model.records) == data['bb_in_base']['n_sweeps'] >= 5
+    assert len(model.records) == data['bb_in_base']['n_records']
     pin = data['gauge']['pinned_yaw_offset_deg_at_build']
     p = bf.pool_kappa(model.records, pin)
+    assert p.n == data['bb_in_base']['n_sweeps'] >= 5
     assert p.kappa_deg == pytest.approx(data['bb_in_base']['kappa_deg'], abs=1e-4)
+    assert [o['index'] for o in data['bb_in_base']['outliers']] == list(p.outliers)
     assert model.base_ref is not None
 
 
 def test_committed_resource_is_in_the_sweep_gauge():
     """Gauge continuity: at the build sitting, the base-derived offset (each
-    sweep's base heading + pooled κ) averages to the published sweep offsets."""
+    sweep's base heading + pooled κ) averages to the published sweep offsets of
+    the records the robust pool keeps."""
     model = bf.load_base_frame(RES)
     p = bf.pool_kappa(model.records, model.records[0].pin_deg)
-    derived = [bf.wrap_deg(r.base_heading_deg + p.kappa_deg) for r in model.records]
-    assert np.mean(derived) == pytest.approx(np.mean([r.yaw_offset_deg for r in model.records]),
-                                             abs=2e-3)
+    kept = [r for i, r in enumerate(model.records) if i not in p.outliers]
+    derived = [bf.wrap_deg(r.base_heading_deg + p.kappa_deg) for r in kept]
+    assert np.mean(derived) == pytest.approx(np.mean([r.yaw_offset_deg for r in kept]), abs=2e-3)
+
+
+def test_committed_pool_excludes_exactly_the_two_suspect_stamped_sweeps():
+    """The pool folded on 2026-10-10 (22 records): the robust rule excludes the
+    two stamped sweeps the old ±0.15° gate let in (+0.07° and +0.09° off the
+    median), and nothing else; κ moved +0.0067° from the 10-record seed
+    (logbook 2026-10-10-bb-base-frame-robustness)."""
+    model = bf.load_base_frame(RES)
+    p = bf.pool_kappa(model.records, model.records[0].pin_deg)
+    assert [model.records[i].accepted_at for i in p.outliers] == [
+        '2026-10-10T02:47:06Z', '2026-10-10T03:11:24Z']
+    assert p.kappa_deg == pytest.approx(179.4974, abs=1e-4)
