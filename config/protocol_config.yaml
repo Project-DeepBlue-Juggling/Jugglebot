@@ -238,6 +238,26 @@ encoding:
     # Leg axes (CAN IDs 0-5) — matches odrive_pro_leg_config.json
     leg_vel: 1000.0
     leg_tor: 10000.0
+    # ---- Ball Butler: its own drives, its own keys (2026-10-10) ----
+    # "Each axis with unique limits has its own set of keys": BB's firmware
+    # used hand_vel/hand_tor (Jugglebot's hand Pro) for its own drives, so the
+    # FW 22 change of hand_tor 100 -> 1000 silently became a 10x torque
+    # feedforward on BB's hand when BB FW 6 regenerated this header.  BB's
+    # CanInterface picks the pair by node; the Jugglebot keys above never
+    # reach a BB drive.  BB's yaw is a brushed DC motor on an H-bridge (PWM),
+    # not an ODrive, and has no keys.
+    # BB hand (CAN ID 8, ODrive S1) — matches odrive_s1_bb_hand_config.json
+    # (owner read node 8 input_torque_scale = 100 with odrivetool, 2026-10-10).
+    bb_hand_vel: 100.0
+    bb_hand_tor: 100.0
+    # BB pitch (CAN ID 7, ODrive Micro) — matches BallButler's
+    # bb_pitch_odrive_micro_config.json.  That file is a 2026-03 snapshot whose
+    # node_id reads 0 (the live drive is 7), so these two values are NOT
+    # confirmed against the live drive.  Wire-inert today: PitchAxis sends
+    # vel_ff = tor_ff = 0 (TRAP_TRAJ), and 0 * any scale is 0.  Read the drive
+    # back before ever sending pitch feedforward.
+    bb_pitch_vel: 1000.0
+    bb_pitch_tor: 1000.0
 
 # =============================================================================
 # SDO (Arbitrary Parameter Access)
