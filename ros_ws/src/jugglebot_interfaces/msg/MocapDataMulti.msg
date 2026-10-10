@@ -4,7 +4,8 @@ MocapDataSingle[] markers # The marker(s) being tracked.
 bool aligned              # True when the mocap base body is within alignment thresholds
 
 # The QTM frame time this packet of markers was captured at, expressed on the
-# ROS clock through MocapInterface's smoothed QTM<->ROS offset
+# ROS clock through MocapInterface's QTM<->ROS offset (minimum receive latency
+# over a sliding window since 2026-10-10, jugglebot/qtm_clock_sync.py)
 # (qtm_timestamp_to_ros_ns / latest_frame_ros_ns in mocap_interface.py). Zero
 # (sec = nanosec = 0) when the offset has not been established yet (startup,
 # or just after a QTM restart resets the sync).

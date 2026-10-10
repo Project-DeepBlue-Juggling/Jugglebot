@@ -198,7 +198,7 @@ class BallTrackerNode(Node):
         ballistic fit's sample times enough (10 ms -> 30 mm at 3 m/s, past
         the fit's 12 mm residual gate) that the fit never converges — 34/60
         throws in that bag left the learner no row. `msg.stamp` carries the
-        QTM frame time through `MocapInterface`'s smoothed QTM<->ROS offset
+        QTM frame time through `MocapInterface`'s QTM<->ROS offset
         instead, so the fit sees the time the frame was actually captured
         at, not when this callback happened to run.
         """

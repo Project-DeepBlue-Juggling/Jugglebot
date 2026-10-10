@@ -315,6 +315,17 @@ class MocapNode(Node):
             msg = Float64()
             msg.data = offset
             self.pub_clock_offset.publish(msg)
+            # Clock-sync health at 1 Hz, DEBUG only: mocap/status's key set is a
+            # pinned contract (mocap_status.py), so the estimator's diagnostics
+            # ride the log rather than new KeyValues.
+            if 'window_fill' in status:
+                self.get_logger().debug(
+                    'qtm clock sync: excess latency {:.2f} ms, envelope-output {:+.3f} ms, '
+                    'window fill {:.2f}, drift {:+.1f} ppm, slew clamps {}, outlier clips {}, '
+                    're-anchors {}, restarts {}'.format(
+                        status['last_excess_latency_ms'], status['envelope_minus_output_ms'],
+                        status['window_fill'], status['drift_ppm'], status['slew_clamps'],
+                        status['outlier_clips'], status['reanchors'], status['restarts']))
 
     def _bb_marker_visibility(self) -> tuple[int, bool]:
         """(count of BB fiducials QTM currently resolves, yaw-anchor visible).
