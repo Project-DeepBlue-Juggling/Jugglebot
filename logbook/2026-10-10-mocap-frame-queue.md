@@ -2,7 +2,7 @@
 title: mocap_node publishes every QTM frame from a bounded queue (150 frames, 0.5 s) instead of a latest-frame snapshot; per-frame work cut so all ~300 frames/s cost 23-24 % of a core against 43 % for 200 before; frame loss now logged (1 Hz counters, throttled WARN); built and gated, not deployed
 type: bugfix
 date: 2026-10-10
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack — R5 (Ball Butler calibration) / catching"
 related_plan: two-ball-skill-stack.md
 files_changed:
@@ -219,3 +219,5 @@ Status stays in-progress until the owner confirms the WARN behaviour on a sittin
 `temp/logs/full_gate_gapwarn_merged_20261011.log`):** 6605 passed, 9 skipped, 1 xfailed, 1 failed —
 `tests/ros/test_skill_node.py::test_columns_releases_each_correlate_to_their_own_track`, no mocap involvement, passed
 alone at 00:20 (another agent's scoped test run shared the box during the gate); serial 6 passed. Installed 00:21.
+
+**Resolved 2026-10-11.** Verified live 2026-10-10 23:32 and 2026-10-11 11:27: `ros2 topic hz /mocap_data` ≈ 300 throughout, 47/48 landings accepted; under the 5 % rule only windows covering a BB calibration sweep warn (see the investigation entry).
