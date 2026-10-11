@@ -13,7 +13,7 @@ time, cached in ``temp/replay_overview/<id>.json`` with a
 recompute) and served by ``GET recordings/<id>/overview``.
 
 Decided in wayfinder ticket 05 (2026-10-10); see
-``plans/active/gui-rosbag-replay.md`` § Architecture.
+``plans/archived/gui-rosbag-replay.md`` § Architecture.
 
 Oracle output layout, ``<out_dir>/``::
 

@@ -1,9 +1,11 @@
 ---
 title: GUI rosbag replay — one playhead over any MCAP recording
 created: 2026-10-10
-status: active
+status: completed
 owner: Harrison
 last_updated: 2026-10-11
+completed: 2026-10-11
+archived: 2026-10-11
 related_plan: two-ball-skill-stack.md
 related_code:
   - ros_ws/gui/replay/schema.py (the contract: chunk record, flatten rule, slot math, overview, allowlist)
@@ -119,14 +121,14 @@ nested `Old naming scheme/` folder is out of scope.
 | Phase | Scope | Status |
 |---|---|---|
 | 1a | (superseded by 4) Converter worker (`replay/convert.py`): rosbags decode, chunking with reorder buffer, manifest, overview, bulk CLI; synthetic MCAP fixture; tests | done 2026-10-10 (software) |
-| 1b | Server (`replay/cache.py`, `replay/api.py`, `gui_server.py`): threaded, routes, worker queue, eviction, refusals; unit file in `tools/systemd/`; tests | done 2026-10-10 (software; unit not yet installed on the box) |
+| 1b | Server (`replay/cache.py`, `replay/api.py`, `gui_server.py`): threaded, routes, worker queue, eviction, refusals; unit file in `tools/systemd/`; tests | done 2026-10-10 (unit installed in 1c) |
 | 1c | End-to-end test (real worker through the API on the fixture); bulk conversion of the newest recordings by hand; unit installed on the box | done 2026-10-10: e2e test; unit installed and the service restarted by the owner; live open path smoke-tested (24 MB / 114 s recording queued → complete in 18 s, 12 chunks, 3.2 MB, chunk served gzip). Bulk pre-conversion remains optional |
 | 2 | Browser engine: feed over chunks (recording via the API; the session buffer was removed 2026-10-10), playhead clock, dispatch through the live handlers, seek semantics, prefetch, chart-store swap | software-complete 2026-10-10 (`81355621`…`ca4b6781`, merged to `skill-stack`); the real GUI calls `getReplayMode` only in Phase 3; the dev page was retired in Phase 3 |
 | 3 | Replay UI: lobby, picker, trackbar + transport + hotkeys, timeline overview, zoom; replay-only-while-disconnected gating | done 2026-10-10 (`2026-10-10-gui-replay-ui-phase3.md`); owner browser session held 2026-10-10, feedback in `2026-10-10-gui-replay-phase3-owner-feedback.md` |
-| 4 | Direct MCAP source: vendored @mcap/core + rosmsg2 bundle, decode in a module Web Worker over HTTP Range, McapSource behind the Source seam, hold-until-slot-0 open; backend = listing + Range + cached overview pass; converter cache deleted, convert.py kept as the test oracle | software-complete 2026-10-10 (`2026-10-10-gui-replay-direct-mcap-phase4.md`); gate pending; owner browser unverified |
-| 5 | Balls in the 3D scene with trails (live and replay), `tail_length_ms` input | software-complete 2026-10-11 (`2026-10-11-gui-replay-trails-phase5.md`; gate 6601 passed); owner live-throw check of D3 and a browser look pending |
-| 5b | Trail-length overlay (bottom right of the 3D scene), replay range up to the recording length, far-tier ball history | software-complete 2026-10-11 (`2026-10-11-gui-replay-trail-overlay-and-ball-history.md`) |
-| 6 | Deep links `?recording=<id>&t=` + copy-link button; labelled marker trails follow the slider in replay (far tier). Skill state stays hidden; latency deferred | software-complete 2026-10-11 (`2026-10-11-gui-replay-deep-links-and-marker-history.md`); owner browser look + live D3 throw pending |
+| 4 | Direct MCAP source: vendored @mcap/core + rosmsg2 bundle, decode in a module Web Worker over HTTP Range, McapSource behind the Source seam, hold-until-slot-0 open; backend = listing + Range + cached overview pass; converter cache deleted, convert.py kept as the test oracle | done 2026-10-10 (`2026-10-10-gui-replay-direct-mcap-phase4.md`; gate 6498 passed); owner ran it 2026-10-10 ("very snappy") |
+| 5 | Balls in the 3D scene with trails (live and replay), `tail_length_ms` input | done 2026-10-11 (`2026-10-11-gui-replay-trails-phase5.md`; gate 6601 passed); live D3 check closed by the owner as good enough |
+| 5b | Trail-length overlay (bottom right of the 3D scene), replay range up to the recording length, far-tier ball history | done 2026-10-11 (`2026-10-11-gui-replay-trail-overlay-and-ball-history.md`); far tier append-only since ticket 09 (`2026-10-11-gui-replay-far-tier-append-only-uploads.md`) |
+| 6 | Deep links `?recording=<id>&t=` + copy-link button; labelled marker trails follow the slider in replay (far tier). Skill state stays hidden; latency deferred | done 2026-10-11 (`2026-10-11-gui-replay-deep-links-and-marker-history.md`); owner's Chrome look done |
 
 ## Phase 1 — Backend (historical)
 
@@ -372,8 +374,8 @@ Map tickets 07–10 (`.scratch/gui-replay/issues/`).
   recorder change first.
 - **Latency (09): deferred by the owner** ("Latency is fine for now. We can revisit this once Phase 6 is complete"):
   background overview pre-compute, a second prefetch reader and fast-pan lag are NOT in Phase 6.
-- **Still owed (10.1, 10.3):** a live throw to check the D3 40 mm duplicate-trail gate at the live throttles, and the
-  owner's first look at Phases 5/5b in Chrome on Win10.
+- **Closed by the owner 2026-10-11 (10.1, 10.3):** the live D3 duplicate-trail check and the connected live layout
+  are "good enough for now"; the owner's Chrome look is done (see the Archival note).
 
 ## Testing Plan
 
@@ -394,3 +396,24 @@ Map tickets 07–10 (`.scratch/gui-replay/issues/`).
   restart.
 - `temp/replay_overview/` is rebuildable (one overview pass per recording opened afterwards); `temp/replay_cache/` is
   dead since Phase 4 and may be deleted.
+
+## Archival note (2026-10-11)
+
+**Completed.** All phases shipped on `skill-stack` (Phases 1-6 plus the ticket 09 follow-up). Final gate, archival
+tree: `./run_tests.sh` (run 2026-10-11): 6666 passed, 9 skipped, serial 3 passed. The owner closed the arc
+the same day after using replay in Chrome on Win10: a 17 min recording buffers in under 30 s, and the tab holds
+steady at about 600 MB.
+
+- **Deliberate scope reductions (owner decisions, not loose ends):**
+  - ticket 09's background overview pre-compute at service start, a second prefetch reader and fast chart-pan lag;
+  - a read-only recorded skill-state display, which needs a recorder change first (ticket 08);
+  - the live D3 duplicate-trail throw check and a closer look at the connected live layout ("good enough for now").
+- **Owner-side caveats from resolved entries:**
+  - the two overview-listing race fixes (`2026-10-11-gui-replay-overview-listing-race.md` and
+    `2026-10-11-gui-replay-overview-stale-version-race.md`, the second found by the archival gate) take effect at the
+    next `jugglebot-gui.service` restart;
+  - real-GPU frame times were never measured here, because headless Chromium on the Jetson renders in software.
+- **Residue:**
+  - the design record (wayfinder map and tickets) stays in the gitignored `.scratch/gui-replay/`;
+  - the attribution probes are `tools/probes/replay_lane_trace.mjs` and `tools/probes/replay_slot_load_timing.mjs`.
+- No xfail markers were added by this arc.

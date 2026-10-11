@@ -12,6 +12,6 @@ Two halves with different interpreters:
   (``python -m replay.overview``), one pass at a time. ``convert`` is the test
   oracle (the same venv imports, plus ``msgpack``); nothing at runtime calls it.
 
-Design record: ``plans/active/gui-rosbag-replay.md`` (Phase 1) and the
+Design record: ``plans/archived/gui-rosbag-replay.md`` (Phase 1) and the
 wayfinder map's ticket 05 under ``.scratch/gui-replay/`` (gitignored).
 """
