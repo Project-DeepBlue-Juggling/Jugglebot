@@ -1448,3 +1448,127 @@ def test_a_leg_jerk_peak_is_read_from_both_sides_of_a_knot(geom, side):
     report = feas.validate_cycle(plan, _limits(jerk=limit), geom)
     assert report.code == feas.LIMIT_JERK, report.reasons
     assert report.peak_leg_jerk_mmps3 == pytest.approx(two_sided, rel=1e-6)
+
+
+def _signed_leg_samples(plan, geom, ts):
+    """Signed ``(vel, acc)`` per leg at ``ts`` through the gate's own chain
+    (``J·twist``; ``J·accel + J̇·twist``) - the reference's raw material."""
+    poses, twists, accels = plan.states_at(np.asarray(ts, dtype=float))
+    J, _lv, _R = feas._batched_jacobian(poses, geom)
+    J_dot = feas._batched_jacobian_dot(poses, twists, geom)
+    vel = np.einsum('nij,nj->ni', J, twists)
+    acc = np.einsum('nij,nj->ni', J, accels) + np.einsum('nij,nj->ni', J_dot, twists)
+    return vel, acc
+
+
+def _independent_peak_leg_and_time(plan, geom, kind):
+    """INDEPENDENT (leg, t) of the binding ``kind`` ('vel'|'acc'|'jerk') peak.
+
+    Built by a plain per-span loop on a ``sub_dt`` grid with one-sided knot
+    samples (1 ps either side), NOT from the gate's arrays or argmax code.
+    vel / acc: argmax of |signed leg value| over every sample.  jerk: per leg,
+    |difference of consecutive samples| / sub_dt over each span's sequence
+    [right-limit, interior rows, left-limit] plus the two straddle pairs at
+    every interior knot, timed at the LATER sample of the pair.  Returns
+    ``(leg, t, value)``.
+    """
+    m = feas._CYCLE_SAMPLES_PER_KNOT
+    dt = float(plan.dt)
+    sub_dt = dt / m
+    n_span = int(plan.n_knots) - 1
+    best = (-1.0, None, None)
+
+    def consider(val, leg, t):
+        nonlocal best
+        if val > best[0]:
+            best = (float(val), int(leg), float(t))
+
+    if kind in ('vel', 'acc'):
+        times = [k * dt for k in range(n_span + 1)]
+        times += [i * dt + j * sub_dt for i in range(n_span) for j in range(1, m)]
+        v, a = _signed_leg_samples(plan, geom, times)
+        arr = np.abs(v if kind == 'vel' else a)
+        for n, t in enumerate(times):
+            leg = int(np.argmax(arr[n]))
+            consider(arr[n, leg], leg, t)
+        if kind == 'acc':
+            for i in range(n_span):
+                for t0, tq in ((i * dt + 1e-12, i * dt),
+                               ((i + 1) * dt - 1e-12, (i + 1) * dt)):
+                    _v, a1 = _signed_leg_samples(plan, geom, [t0])
+                    leg = int(np.argmax(np.abs(a1[0])))
+                    consider(abs(a1[0, leg]), leg, tq)
+        return best[1], best[2], best[0]
+
+    straddle_before = {}
+    for i in range(n_span):
+        ts = ([i * dt + 1e-12] + [i * dt + j * sub_dt for j in range(1, m)]
+              + [(i + 1) * dt - 1e-12])
+        _v, a = _signed_leg_samples(plan, geom, ts)
+        for n in range(1, len(ts)):
+            d = np.abs(a[n] - a[n - 1]) / sub_dt
+            leg = int(np.argmax(d))
+            consider(d[leg], leg, i * dt + n * sub_dt)
+        if i >= 1:   # knot i: right-limit vs the row before it (above), then
+            # the row after it vs the left-limit of knot i (below)
+            prev_row, prev_left = straddle_before[i - 1]
+            d1 = np.abs(a[0] - prev_row) / sub_dt
+            leg = int(np.argmax(d1))
+            consider(d1[leg], leg, i * dt)
+            d2 = np.abs(a[1] - prev_left) / sub_dt
+            leg = int(np.argmax(d2))
+            consider(d2[leg], leg, i * dt)
+        straddle_before[i] = (a[-2] if m > 1 else a[0], a[-1])
+    return best[1], best[2], best[0]
+
+
+def _assert_names_peak(rep, plan, geom, kind, word):
+    import re
+    leg, t, _val = _independent_peak_leg_and_time(plan, geom, kind)
+    sub_dt = float(plan.dt) / feas._CYCLE_SAMPLES_PER_KNOT
+    assert rep.peak_leg_index == leg, (kind, rep.peak_leg_index, leg, t)
+    assert abs(rep.peak_leg_t_s - t) <= sub_dt + 1e-9, (kind, rep.peak_leg_t_s, t)
+    r = rep.reasons[0]
+    assert re.match(r'peak leg %s [-+\d.eE]+ \S+ > [-+\d.eE]+ \(leg %d at '
+                    r't=%.3f s on the gated plan' % (
+                        word, rep.peak_leg_index, rep.peak_leg_t_s), r), r
+    return leg, t
+
+
+def test_a_limit_refusal_names_the_leg_and_the_time(geom):
+    """2026-10-11 (sitting 7): "peak leg jerk 237862 > 200000" never said WHICH
+    leg.  A LIMIT_VEL / LIMIT_ACC / LIMIT_JERK refusal now carries the 0-based
+    leg and the plan-clock time of the peak; the old prefix is unchanged; an OK
+    plan carries None (the argmax is computed on refusal only).  The binding
+    leg and time are recomputed INDEPENDENTLY by
+    :func:`_independent_peak_leg_and_time` (per-span loop on a sub_dt grid with
+    one-sided knot samples); the leg must match exactly and the time within one
+    sub-sample."""
+    _cup, _realized, cyc = _clean_cycle()
+    base = feas.validate_cycle(cyc, _limits(), geom)
+    assert base.ok and base.peak_leg_index is None and base.peak_leg_t_s is None
+    for kw, code, word, peak in (
+            ('vel', feas.LIMIT_VEL, 'velocity', base.peak_leg_vel_mmps),
+            ('acc', feas.LIMIT_ACC, 'acceleration', base.peak_leg_acc_mmps2),
+            ('jerk', feas.LIMIT_JERK, 'jerk', base.peak_leg_jerk_mmps3)):
+        rep = feas.validate_cycle(cyc, _limits(**{kw: 0.9 * peak}), geom)
+        assert rep.code == code
+        _assert_names_peak(rep, cyc, geom, kw, word)
+
+
+@pytest.mark.parametrize('side', ['left', 'right'])
+def test_a_knot_side_jerk_refusal_names_the_knot_leg_and_time(geom, side):
+    """The knot-side jerk (into / out of the sole interior knot) is the binding
+    peak on the ``_two_sided_acc_plan`` fixtures: the named time must be the
+    knot (``dt``) within one sub-sample and the leg the independent one."""
+    plan = _two_sided_acc_plan(side)
+    two_sided = _two_sided_jerk_reference(plan, geom)
+    rep = feas.validate_cycle(plan, _limits(jerk=0.95 * two_sided), geom)
+    assert rep.code == feas.LIMIT_JERK, rep.reasons
+    leg, t = _assert_names_peak(rep, plan, geom, 'jerk', 'jerk')
+    sub_dt = float(plan.dt) / feas._CYCLE_SAMPLES_PER_KNOT
+    assert abs(t - float(plan.dt)) <= sub_dt + 1e-9   # at the knot, not mid-span
+    assert abs(rep.peak_leg_t_s - float(plan.dt)) <= sub_dt + 1e-9
+    # the independent reference reproduces the gate's own jerk value too
+    assert _independent_peak_leg_and_time(plan, geom, 'jerk')[2] * \
+        feas._VALIDATE_JERK_MARGIN == pytest.approx(two_sided, rel=1e-6)

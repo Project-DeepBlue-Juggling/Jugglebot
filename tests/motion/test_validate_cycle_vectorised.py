@@ -20,7 +20,7 @@ set within 1e-6 relative of a MEASURED peak, where the two implementations'
 last-bit differences would show up as a flipped verdict if they existed.
 
 PARITY BOUND (owner, 2026-09-12): ``ok`` and ``code`` identical, ``reasons``
-identical strings, every ``peak_*`` field within 1e-9 relative.
+identical strings (after stripping the 2026-10-11 " (leg N at t=... s ...)" LIMIT_* suffix, whose correctness is test_validate_cycle.py's), every ``peak_*`` field within 1e-9 relative.
 
 WHERE THE ARITHMETIC DIFFERS IN EXPRESSION (and why 1e-9 is still the right bound)
 ---------------------------------------------------------------------------------
@@ -60,7 +60,7 @@ sample grid was under-reading the true peak by 10.8-24.3% on measured plans
 (``feasibility.py``, the block under ``peak_vel = ...`` in ``validate_cycle``
 pass 1; ``logbook/2026-09-21-two-sided-knot-sampling.md``). So
 ``_validate_cycle_scalar`` gains a SCALAR two-sided read of the same law, kept
-this file's full-strength parity (ok/code/reasons identical, every peak within
+this file's full-strength parity (ok/code/reasons identical modulo the 2026-10-11 leg/time suffix, every peak within
 1e-9 relative, the 1e-6 near-threshold sweep) covering LIMIT_ACC and
 LIMIT_JERK — the two codes this change touches.
 
@@ -83,6 +83,7 @@ reading, reachable via ``_validate_cycle_scalar(..., two_sided=False)``.
 from __future__ import annotations
 
 import dataclasses
+import re
 
 import numpy as np
 import pytest
@@ -512,7 +513,13 @@ DT = 0.025
 #: ``tests/motion/test_validate_cycle.py``'s job — the same split every other
 #: reference-vs-live test in this repo uses.
 _PEAKS = tuple(f.name for f in dataclasses.fields(fz.FeasibilityReport)
-               if f.name.startswith('peak_') and f.name != 'peak_hand_c2_rps2')
+               if f.name.startswith('peak_')
+               and f.name not in ('peak_hand_c2_rps2', 'peak_leg_index',
+                                  'peak_leg_t_s'))
+# 2026-10-11: the live gate appends " (leg N at t=... s on the gated plan's
+# clock)" to a LIMIT_* reason; the frozen twin predates it. Strip before the
+# verbatim comparison; the suffix itself is test_validate_cycle.py's job.
+_WHERE_SUFFIX = re.compile(r" \(leg \d+ at t=[-+\d.]+ s on the gated plan's clock\)")
 
 
 @pytest.fixture(scope='module')
@@ -661,7 +668,7 @@ def _assert_parity(vec, ref, ctx):
     """The owner's 2026-09-12 bound: verdict identical, every peak < 1e-9 rel."""
     assert vec.code == ref.code, f"{ctx}: code {vec.code} != {ref.code}"
     assert vec.ok == ref.ok, f"{ctx}: ok {vec.ok} != {ref.ok}"
-    assert list(vec.reasons) == list(ref.reasons), (
+    assert [_WHERE_SUFFIX.sub('', r) for r in vec.reasons] == list(ref.reasons), (
         f"{ctx}: reasons\n  vec {vec.reasons}\n  ref {ref.reasons}")
     for f in _PEAKS:
         a = float(getattr(vec, f))

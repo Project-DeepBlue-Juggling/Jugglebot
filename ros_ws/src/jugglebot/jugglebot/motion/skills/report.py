@@ -129,6 +129,9 @@ def throw_line(r: ThrowReport) -> Tuple[str, str]:
 
 
 _PEAK = re.compile(r'peak ([a-z ]+?) ([-+\d.eE]+) ?(\S+) > ([-+\d.eE]+)')
+# Appended by feasibility._where_suffix AFTER the peak/limit prefix (2026-10-11):
+# "(leg 4 at t=0.200 s on the gated plan's clock)". Leg numbering is 0-based.
+_WHERE = re.compile(r'\(leg (\d+) at t=([-+\d.]+) s')
 _REJECTED = re.compile(r'^REJECTED_CYCLE_INFEASIBLE\((\w+): (.*)\)$', re.S)
 
 
@@ -143,17 +146,23 @@ def short_refusal(message: str, limit: int = 90) -> str:
     """A planner refusal in a few words: its code and the number that broke.
 
     ``REJECTED_CYCLE_INFEASIBLE(LIMIT_JERK: <clock preamble>; peak leg jerk
-    257921 mm/s³ > 150000)`` -> ``LIMIT_JERK: leg jerk 258k > 150k mm/s³``.
+    257921 mm/s³ > 150000 (leg 4 at t=0.200 s on the gated plan's clock))`` ->
+    ``LIMIT_JERK: leg jerk 258k > 150k mm/s³ (leg 4 @ +0.200 s)``.
     The whole message stays in the DEBUG record; this is the screen's copy."""
     text = str(message).strip()
     m = _REJECTED.match(text)
     code, detail = (m.group(1), m.group(2)) if m else ('', text)
+    detail_full = detail
     peak = _PEAK.search(detail)
     if peak is not None:
         what, value, unit, limit_v = peak.groups()
         try:
             detail = '%s %s > %s %s' % (what, _compact(float(value)),
                                         _compact(float(limit_v)), unit)
+            where = _WHERE.search(detail_full)
+            if where is not None:
+                detail += ' (leg %s @ +%.3f s)' % (where.group(1),
+                                                   float(where.group(2)))
         except ValueError:
             pass
     elif len(detail) > limit:

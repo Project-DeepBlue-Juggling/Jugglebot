@@ -234,6 +234,21 @@ class FeasibilityReport:
     # 2026-09-14) — zero on every gate but validate_cycle, and zero there too
     # for a plan with < 3 knots (no interior knot to measure).
     peak_hand_c2_rps2: float = 0.0
+    #: WHICH leg and WHEN the limit that fired peaked (2026-10-11, sitting 7: a
+    #: bare "peak leg jerk 237862 > 200000" never said which leg). 0-based leg
+    #: index, the numbering WORKSPACE reasons ("leg %d out of stroke") and the
+    #: heartbeat lines print; time in seconds on the gated plan's clock (t=0 = plan
+    #: start). Set ONLY on a LIMIT_VEL / LIMIT_ACC / LIMIT_JERK refusal from
+    #: :func:`validate_cycle` (computed on refusal, never on the OK hot path);
+    #: ``None`` everywhere else. Message/report field only - no gate reads it.
+    peak_leg_index: 'int | None' = None
+    peak_leg_t_s: 'float | None' = None
+
+
+def _where_suffix(leg: int, t: float) -> str:
+    """``' (leg 4 at t=0.200 s on the gated plan's clock)'`` - appended AFTER the
+    unchanged ``peak ... > limit`` prefix so every regex reading it still matches."""
+    return " (leg %d at t=%.3f s on the gated plan's clock)" % (int(leg), float(t))
 
 
 class TrajectoryInfeasible(Exception):
@@ -1554,18 +1569,18 @@ def validate_cycle(cycle_plan, limits, geom, *,
     peak_jerk = 0.0
     sub_dt = dt / m
     n_spans = n_knots - 1
-    span_acc = np.empty((n_spans, m + 1, 6), dtype=float)
-    span_acc[:, 0] = acc_above
-    span_acc[:, m] = acc_below
+    leg_span_acc = np.empty((n_spans, m + 1, 6), dtype=float)
+    leg_span_acc[:, 0] = acc_above
+    leg_span_acc[:, m] = acc_below
     if m > 1:
-        span_acc[:, 1:m] = leg_acc[:-1].reshape(n_spans, m, 6)[:, 1:]
-    peak_jerk = float(np.max(np.abs(np.diff(span_acc, axis=1))))
+        leg_span_acc[:, 1:m] = leg_acc[:-1].reshape(n_spans, m, 6)[:, 1:]
+    peak_jerk = float(np.max(np.abs(np.diff(leg_span_acc, axis=1))))
     if n_spans >= 2:
         # knot k = 1 .. n_knots-2: the last row before it (span k-1's row m-1) up
         # to its limit from above, and its limit from below up to the first row
         # after it (span k's row 1).
-        into_knot = acc_above[1:] - span_acc[:-1, m - 1]
-        out_of_knot = span_acc[1:, 1] - acc_below[:-1]
+        into_knot = acc_above[1:] - leg_span_acc[:-1, m - 1]
+        out_of_knot = leg_span_acc[1:, 1] - acc_below[:-1]
         peak_jerk = max(peak_jerk,
                         float(np.max(np.abs(into_knot))),
                         float(np.max(np.abs(out_of_knot))))
@@ -1681,18 +1696,57 @@ def validate_cycle(cycle_plan, limits, geom, *,
     min_cup_acc_z, cup_contact_reason = _cup_contact_floor_check(cycle_plan)
     code = OK
     reasons: list = []
+    peak_leg_index = None
+    peak_leg_t_s = None
     if peak_vel > limits.leg_vel_mmps:
         code = LIMIT_VEL
+        _r, _c = np.unravel_index(int(np.argmax(np.abs(leg_vel))), leg_vel.shape)
+        peak_leg_index, peak_leg_t_s = int(_c), float(ts[_r])
         reasons = [f"peak leg velocity {peak_vel:.1f} mm/s > "
-                   f"{limits.leg_vel_mmps:.1f}"]
+                   f"{limits.leg_vel_mmps:.1f}"
+                   + _where_suffix(peak_leg_index, peak_leg_t_s)]
     elif peak_acc > limits.leg_acc_mmps2:
         code = LIMIT_ACC
+        # Candidates: the grid rows (time ts[r]) and the two one-sided knot limits
+        # (acc_above[i] at knot i, acc_below[i] at knot i+1).
+        _cands = [(float(np.max(np.abs(leg_acc))), 0), (
+            float(np.max(np.abs(acc_above))), 1), (
+            float(np.max(np.abs(acc_below))), 2)]
+        _which = max(_cands)[1]
+        if _which == 0:
+            _r, _c = np.unravel_index(int(np.argmax(np.abs(leg_acc))),
+                                      leg_acc.shape)
+            _t = float(ts[_r])
+        else:
+            _arr = acc_above if _which == 1 else acc_below
+            _r, _c = np.unravel_index(int(np.argmax(np.abs(_arr))), _arr.shape)
+            _t = (int(_r) + (0 if _which == 1 else 1)) * float(dt)
+        peak_leg_index, peak_leg_t_s = int(_c), _t
         reasons = [f"peak leg acceleration {peak_acc:.1f} mm/s² > "
-                   f"{limits.leg_acc_mmps2:.1f}"]
+                   f"{limits.leg_acc_mmps2:.1f}"
+                   + _where_suffix(peak_leg_index, peak_leg_t_s)]
     elif peak_jerk > limits.leg_jerk_mmps3:
         code = LIMIT_JERK
+        # Same candidate set as the peak_jerk computation above; the time is the
+        # LATER sample of the straddling difference.
+        _d = np.abs(np.diff(leg_span_acc, axis=1))                  # (n_spans,m,6)
+        _best = (float(np.max(_d)), 0)
+        _into = _out = None
+        if n_spans >= 2:
+            _into, _out = np.abs(into_knot), np.abs(out_of_knot)
+            _best = max(_best, (float(np.max(_into)), 1),
+                        (float(np.max(_out)), 2))
+        if _best[1] == 0:
+            _s, _r, _c = np.unravel_index(int(np.argmax(_d)), _d.shape)
+            _t = int(_s) * float(dt) + (int(_r) + 1) * sub_dt
+        else:
+            _arr = _into if _best[1] == 1 else _out
+            _k, _c = np.unravel_index(int(np.argmax(_arr)), _arr.shape)
+            _t = (int(_k) + 1) * float(dt)
+        peak_leg_index, peak_leg_t_s = int(_c), _t
         reasons = [f"peak leg jerk {peak_jerk:.0f} mm/s³ > "
-                   f"{limits.leg_jerk_mmps3:.0f}"]
+                   f"{limits.leg_jerk_mmps3:.0f}"
+                   + _where_suffix(peak_leg_index, peak_leg_t_s)]
     elif peak_step > step_bound:
         code = STEP_BOUND
         reasons = [f"peak per-knot step {peak_step:.3f} rev > "
@@ -1754,7 +1808,8 @@ def validate_cycle(cycle_plan, limits, geom, *,
         peak_leg_jerk_mmps3=peak_jerk, peak_leg_ext_mm=peak_ext,
         peak_step_rev=peak_step, peak_hand_rev=peak_hand_rev,
         peak_hand_vel_rps=peak_hand_vel, peak_hand_acc_rps2=peak_hand_acc,
-        peak_hand_step_rev=peak_hand_step, peak_hand_c2_rps2=peak_hand_c2)
+        peak_hand_step_rev=peak_hand_step, peak_hand_c2_rps2=peak_hand_c2,
+        peak_leg_index=peak_leg_index, peak_leg_t_s=peak_leg_t_s)
 
 
 def _hand_stroke_reason(rev: float, t: float,
