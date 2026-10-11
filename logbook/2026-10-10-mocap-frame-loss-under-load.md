@@ -2,7 +2,7 @@
 title: mocap_node loses QTM frames when the Jetson is loaded — 180 unique frames/s on an idle box, 70–116 in the loaded sittings of 2026-10-10; the latest-snapshot publisher turns any stall into loss; the node's per-frame cost grew 22 % this week (secondary); fixes proposed, not built
 type: investigation
 date: 2026-10-10
-status: open
+status: resolved
 phase: "two-ball-skill-stack — R5 (Ball Butler calibration) / catching"
 related_plan: two-ball-skill-stack.md
 files_changed:
@@ -88,3 +88,5 @@ live on. The node runs with no priority or core reservation and ~40 % of a core 
 - Decide whether to build fixes 1–4 before relying on catches (two-ball juggling).
 
 - 2026-10-11: the queue's first sitting shows ~0.4 % sporadic single-frame QTM skips (QTM-side, not node loss) - see `2026-10-10-mocap-frame-queue`, "First sitting on the queue".
+
+**Resolved 2026-10-11 by `2026-10-10-mocap-frame-queue`.** Known and owner-accepted remainder: in both launches since the queue (2026-10-10 23:32, 2026-10-11 11:27) about 3250 frames (≈ 10.8 s) were dropped by mocap_node during the 18 s BB calibration sweep, and the 10 s loss window did not close until the sweep ended — inferred: the sweep blocks mocap_node's executor so the publish timer cannot drain the queue. The sweep still converges (±0.01°) on its ~1400 frames; nothing tracks balls during a sweep. Fix if ever needed: run the sweep collection without blocking the executor (callback group / worker). Residual QTM-side single-frame skips 0.42 % (`~/bb_calibration_sessions/qtm_gaps_20261010/`).

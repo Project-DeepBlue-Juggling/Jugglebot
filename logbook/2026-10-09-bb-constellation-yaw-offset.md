@@ -2,7 +2,7 @@
 title: Ball Butler's yaw offset and position come from the whole calibration sweep, with the heartbeat lag fitted per sweep and a fixed E(y), against a 7-marker body template; a consistency gate refuses a frame change unless bb_moved is set
 type: feature
 date: 2026-10-09
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack — R5 (Ball Butler calibration)"
 related_plan: two-ball-skill-stack.md
 files_changed:
@@ -177,3 +177,5 @@ alone (another session's pytest run shared the box; the gate took 500 s against 
 touches only the template, its two tests and these logbooks. The template's `how_to_adjust` now says: one sweep with the
 base seen, no `bb_moved` (κ and the sweep move together); `bb_moved` once only on the sweep-only path. Awaiting the owner's
 confirming sweep (≈ 0.62–0.63°) before this entry is resolved.
+
+**Resolved 2026-10-11.** The owner's confirming sweep (launch 11:27, base seen) reported `yaw offset +1.79° ±0.01° · base frame (sweep +1.71°)` with `gauge pinned 0.029°`. That is the predicted 0.626° plus the +1.176° base-heading change the launch line reported (an expected QTM frame change: base moved 82.9 mm, +1.176°, BB-in-base unchanged, accepted as a QTM frame shift). Pooled κ 179.3135° (25 of 27) = the pre-re-pin pool − 0.179°. Watch: the sweep path read 0.08° below the base path here and 0.09° below at 23:34 (same sign twice); the robust pool absorbs it if it persists. Marker 3 was excluded once as an outcast (3.8 mm off axis).

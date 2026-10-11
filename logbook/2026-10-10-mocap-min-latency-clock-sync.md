@@ -2,7 +2,7 @@
 title: QTM->ROS clock offset is now the minimum receive latency over a 16 s window (drift term, 1 ms/s slew limit) instead of an EMA of every packet's latency — bag-2 within-sweep offset wander 15–85 ms -> 0.06–0.69 ms in replay; BB calibration SD 0.27° -> 0.094°, off-grid 11–35 % -> 0 %
 type: feature
 date: 2026-10-10
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack — R5 (Ball Butler calibration)"
 related_plan: two-ball-skill-stack.md
 files_changed:
@@ -156,3 +156,5 @@ and replay checks only; no hardware was involved.
   window fill ≈ 1, and few slew clamps; then rerun 7 sweeps under load.
 - **What are the isolated sub-floor packets?**
 - **What makes bag-2 sweep 7 an outlier?**
+
+**Resolved 2026-10-11.** Confirmed live in every sitting since 2026-10-10 12:26: drift settles to a few ppm (−4 to −13 ppm at 19:23), 0 restarts, 0 re-anchors. Catch timing on BB throws matched the 2026-10-09 baseline (catch time vs predicted +26.8 ms vs +27.2 ms). Skill-stack catch timing with the ~3 ms earlier stamps is first exercised by the next R5 sitting; any learner offset tuned against the old stamps should be watched there.

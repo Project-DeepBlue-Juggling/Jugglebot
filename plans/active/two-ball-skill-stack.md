@@ -1498,6 +1498,20 @@ the rung's tests passing or a handoff file in the scratchpad.
   gate (`tests/hardware/session_skills_r5_sitting2.md`): **OUTSTANDING** — the 0° reload gate
   and the BB-fed columns block have not yet flown; BB FW 5 flashed 2026-09-30 22:45 (receipt 4 -> 5).
 
+- **BB accuracy chunk closed 2026-10-11 (before resuming the R5 hardware gate).** Ball Butler's feed accuracy
+  was rebuilt 2026-10-09..11 and is back at its repeatability floor: positive hand offset s (+105.65 mm) with a refitted
+  aim affine; a whole-sweep BB pose calibration on the stamped 100 Hz yaw (BB FW 6+, bridge FW 28) with a
+  keep-last-good result, a min-latency QTM clock sync and a fixed base-marker frame (`bb_pose_source`/`bb_yaw_source`
+  default `auto`); BB FW 7/8 fixed a 10x hand torque feedforward that FW 6 had borrowed from Jugglebot's hand scale
+  (own `bb_*` input-scale keys + an SDO readback guard); mocap_node now publishes every QTM frame from a bounded queue
+  (~300/s; loss WARN only above 5 % per 10 s); the yaw-gauge pin was settled from landings (0.208 -> 0.029 deg).
+  Last validation (2026-10-10 23:34, 47/48 accepted): RMS 24.6 mm, mean (-8.1, -8.7) mm. Carried, not blocking:
+  ~11 mm short radial bias (next affine refit); mocap frames are lost while a BB calibration sweep runs (the sweep
+  blocks mocap_node's executor; harmless outside sweeps, owner-accepted); live catch timing with the new clock sync
+  and 300 Hz stream is first exercised by the next R5 sitting. Entries: `2026-10-09-bb-constellation-yaw-offset`,
+  `2026-10-10-bb-base-marker-frame`, `2026-10-10-mocap-frame-queue`, `2026-10-10-mocap-frame-loss-under-load`;
+  BallButler `2026-10-10-bb-hand-torque-ff-scale`, `2026-10-10-bb-yaw-gauge-pin-settled`.
+
 ### R6 — Close-out
 
 Delete what R5 left dead, review `docs/` (the MPC-era motion-planner pages),
