@@ -11,9 +11,12 @@ memory's storage (that is ``memory.Memory``).
 Centring (paper eq. S18, verbatim, confirmed by the R3 hyperparameter probe
 -- the plan text alone does not state it): ``delta_x_i = x_i - x`` is about
 the QUERY state, never a weighted mean; ``delta_u_i = u_i - u_bar`` is about
-the kernel-weighted mean command of step 2. ``Theta_0 = [0, I, u_bar]``
-because the identity prior ``f0(x, u) = u`` gives ``df0/dx = 0``,
-``df0/du = I``, ``f0(x, u_bar) = u_bar``.
+the kernel-weighted mean command of step 2. The paper's ``Theta_0 = [0, I,
+u_bar]`` comes from the identity prior ``f0(x, u) = u`` (``df0/dx = 0``,
+``df0/du = I``, ``f0(x, u_bar) = u_bar``); this module shifts that prior by
+the neighbourhood's mean residual, ``Theta_0 = [0, I, u_bar + r_bar]``
+(2026-10-12, :func:`_local_fit`). A cold memory still returns the identity
+prior exactly -- the shift exists only where support rows exist.
 
 Units: SI throughout (metres, seconds) -- ``gamma`` is unit-dependent (it
 competes with ``sum_i v_i * (u_i - u_bar)^2`` in m^2 in the ridge), so a
@@ -87,6 +90,18 @@ Failure modes of this law, enumerated:
   apart) share one affine fit; the joint-weighted anchor separates them and
   ``D`` is identified exactly when their commands are spread apart (the
   identity prior otherwise). Residual: the plant's non-affinity across them.
+* **Thin state support inside the gate** (support rows present, but all at
+  a different state, so ``sum v`` falls toward ``gamma``): the ridge pulls
+  the fit onto its prior. Until 2026-10-12 that prior was "apex = command",
+  ~75 mm wrong for this plant, and the command walked UP toward ``y_d``
+  (sitting 7b rows 465/467, sum v 0.03/0.02: u_apex 0.891/0.901 against a
+  supported 0.865-0.882; the second ball's catch was refused LIMIT_JERK).
+  Closed twice: the seat-offset half of ``x`` no longer partitions the
+  memory (``LearnerConfig.h_seat``), and the prior carries the window's
+  mean residual (:func:`_local_fit`), so thin support degrades to "what
+  this site's rows say the plant does". Replayed on the real memory: the
+  two rows return 0.874; well-supported rows move <= 1.9 mm in apex from
+  the prior shift alone.
 * **No row near the query** now returns the identity prior instead of
   raising on an underflowed weight sum (the gate guarantees every weight is
   >= e^-support_d2). A non-finite result still raises by name.
@@ -118,8 +133,27 @@ class LearnerConfig:
     #: Below this many SUPPORT rows (``d2 <= support_d2``), return the
     #: identity prior untouched.
     k_min: int = 2
-    #: State kernel bandwidth (m) -- site xy + seat-offset xy all share one scale.
+    #: State kernel bandwidth (m) on the SITE half of ``x`` (``x[0:2]``).
+    #: Sites are >= 62.5 mm apart, so 10 mm keeps every site's rows separate
+    #: (the support gate's 3 bandwidths = 30 mm).
     h_x: float = 0.01
+    #: State kernel bandwidth (m) on the SEAT-OFFSET half of ``x``
+    #: (``x[2:4]``, the carried release's xy off its site). INERT by design
+    #: (2026-10-12, U1): a row at the far corner of the lateral authority
+    #: from the query (2 x 20 mm per axis, 56.6 mm) keeps
+    #: ``exp(-(0.0566/1)^2) = 0.997`` of a matched row's weight. Until then
+    #: the offset shared ``h_x`` and partitioned the memory into 10 mm cells;
+    #: a throw from a sparsely visited corner found support rows only at
+    #: ``v ~ e^-7`` and the fit fell to the identity prior (sitting 7b rows
+    #: 465/467: u_apex 0.891/0.901 against 0.865-0.882, the second's catch
+    #: refused LIMIT_JERK). The pre-registered test on the real memory found
+    #: no offset effect above noise on any channel (landing x/y, apex):
+    #: |t| <= 2.5 and <= 0.4 sd for a full 20 mm offset. The offset still
+    #: enters the fit's ``delta_x`` regressor, so a real slope remains
+    #: learnable -- across the whole site instead of per cell. If a later
+    #: measurement finds one, this is the knob to shrink, to the measured
+    #: scale.
+    h_seat: float = 1.0
     #: Target kernel bandwidth (m, m, m) -- must stay >= the cold-start error
     #: (probe finding 1) or the weights underflow before any correction lands.
     #:
@@ -153,6 +187,9 @@ class LearnerConfig:
                               % (self.k, self.k_min))
         if not (math.isfinite(self.h_x) and self.h_x > 0.0):
             raise ValueError('h_x must be finite and > 0, got %r' % (self.h_x,))
+        if not (math.isfinite(self.h_seat) and self.h_seat > 0.0):
+            raise ValueError('h_seat must be finite and > 0, got %r'
+                              % (self.h_seat,))
         h_y = tuple(float(v) for v in self.h_y)
         if len(h_y) != 3 or not all(math.isfinite(v) and v > 0.0 for v in h_y):
             raise ValueError('h_y must be a 3-tuple of finite positive floats, '
@@ -194,6 +231,14 @@ def _matrix(value, n_rows: int, n_cols: int, name: str) -> np.ndarray:
     return arr
 
 
+def _state_d2(X, x, cfg: LearnerConfig) -> np.ndarray:
+    """Each row's squared STATE distance from the query, in bandwidths:
+    ``h_x`` on the site half, ``h_seat`` on the seat-offset half. The one
+    definition both the support gate and the fit's state kernel use."""
+    h = np.array([cfg.h_x, cfg.h_x, cfg.h_seat, cfg.h_seat])
+    return (((X - x) / h) ** 2).sum(axis=1)
+
+
 def _neighbourhood(x, y_d, X, Y, cfg: LearnerConfig):
     """``(idx, d2)``: the neighbourhood rows (oldest-first indices into
     ``X``/``Y``, at most ``cfg.k``) and every row's joint ``d2``.
@@ -203,7 +248,7 @@ def _neighbourhood(x, y_d, X, Y, cfg: LearnerConfig):
     window is the most recent ``k`` support rows (row order = append order).
     """
     h_y = np.asarray(cfg.h_y, dtype=float)
-    d2 = (((X - x) / cfg.h_x) ** 2).sum(axis=1) + (((Y - y_d) / h_y) ** 2).sum(axis=1)
+    d2 = _state_d2(X, x, cfg) + (((Y - y_d) / h_y) ** 2).sum(axis=1)
     support = np.flatnonzero(d2 <= cfg.support_d2)
     return support[-cfg.k:], d2
 
@@ -216,6 +261,16 @@ def _local_fit(x, Xs, Us, Ys, d2s, cfg: LearnerConfig):
     the STATE kernel only, so the intercept ``d`` -- where the plant is
     believed to land from ``u_bar`` -- is not dragged toward ``y_d`` by
     rows chosen for having landed there (module docstring).
+
+    The ridge prior ``Theta0`` is the identity SHIFTED by the neighbourhood's
+    mean residual ``r_bar = mean(y_i - u_i)``: ``f0(x, u) = u + r_bar``, so
+    ``d0 = u_bar + r_bar`` (2026-10-12, U1). Where the state kernel carries
+    the fit (``sum v >> gamma``) the prior is invisible; where it does not --
+    support rows that are all at a different state -- the fit falls back to
+    what those rows say the plant does, not to "apex = command", which this
+    plant misses by ~75 mm. ``r_bar`` is UNWEIGHTED over the window, so the
+    outcome never weights it (the A2 invariant: the window itself is chosen
+    by recency inside the gate).
     """
     kk = Xs.shape[0]
     w = np.exp(-d2s)
@@ -227,11 +282,12 @@ def _local_fit(x, Xs, Us, Ys, d2s, cfg: LearnerConfig):
             'u_bar %r over %d rows)'
             % (float(sw), None if u_bar is None else u_bar.tolist(), kk))
 
-    v = np.exp(-(((Xs - x) / cfg.h_x) ** 2).sum(axis=1))  # state kernel only
+    v = np.exp(-_state_d2(Xs, x, cfg))                  # state kernel only
     delta_x = Xs - x                                    # about the QUERY state (eq. S18)
     delta_u = Us - u_bar                                # about the weighted mean
     Z = np.vstack([delta_x.T, delta_u.T, np.ones((1, kk))])   # (8, kk)
-    Theta0 = np.hstack([np.zeros((3, 4)), np.eye(3), u_bar[:, None]])  # (3, 8)
+    r_bar = (Ys - Us).mean(axis=0)                      # the residual prior (docstring)
+    Theta0 = np.hstack([np.zeros((3, 4)), np.eye(3), (u_bar + r_bar)[:, None]])  # (3, 8)
     A = (Z * v) @ Z.T + cfg.gamma * np.eye(8)            # Z V Z^T + gamma I -- SPD, gamma > 0
     B = (Ys.T * v) @ Z.T + cfg.gamma * Theta0            # Y V Z^T + gamma Theta0
     Theta = np.linalg.solve(A, B.T).T                    # step 3 (eq. S19)

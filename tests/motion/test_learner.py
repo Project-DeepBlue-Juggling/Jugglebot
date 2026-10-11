@@ -29,12 +29,16 @@ from jugglebot.motion.skills import memory as mem
 def _reference_command(x, y_d, X, U, Y, cfg):
     """Plan § 2.5 as amended 2026-10-04 (learner module docstring): support
     gate on the joint metric, the k MOST RECENT support rows, the anchor on
-    the joint kernel, the fit on the STATE kernel only."""
+    the joint kernel, the fit on the STATE kernel only. As amended
+    2026-10-12: the seat-offset half of the state has its own bandwidth
+    ``h_seat``, and the ridge prior's intercept is ``u_bar`` plus the
+    window's unweighted mean residual."""
     n = X.shape[0]
     if n < cfg.k_min:
         return y_d.copy()
     h_y = np.asarray(cfg.h_y, dtype=float)
-    d2 = (((X - x) / cfg.h_x) ** 2).sum(axis=1) + (((Y - y_d) / h_y) ** 2).sum(axis=1)
+    h_x = np.array([cfg.h_x, cfg.h_x, cfg.h_seat, cfg.h_seat])
+    d2 = (((X - x) / h_x) ** 2).sum(axis=1) + (((Y - y_d) / h_y) ** 2).sum(axis=1)
     support = [i for i in range(n) if d2[i] <= cfg.support_d2]
     idx = np.array(support[max(0, len(support) - cfg.k):], dtype=int)
     if idx.size < cfg.k_min:
@@ -43,9 +47,10 @@ def _reference_command(x, y_d, X, U, Y, cfg):
     w = np.exp(-d2[idx])
     Xs, Us, Ys = X[idx], U[idx], Y[idx]
     u_bar = (w[:, None] * Us).sum(axis=0) / w.sum()
-    v = np.exp(-(((Xs - x) / cfg.h_x) ** 2).sum(axis=1))
+    v = np.exp(-(((Xs - x) / h_x) ** 2).sum(axis=1))
     Z = np.vstack([(Xs - x).T, (Us - u_bar).T, np.ones((1, kk))])
-    Theta0 = np.hstack([np.zeros((3, 4)), np.eye(3), u_bar[:, None]])
+    r_bar = np.mean(Ys - Us, axis=0)
+    Theta0 = np.hstack([np.zeros((3, 4)), np.eye(3), (u_bar + r_bar)[:, None]])
     sv = np.sqrt(v)
     # Weighted ridge toward Theta0 as one augmented least-squares solve per row
     # (sqrt(v)-scaled data rows plus sqrt(gamma)*(I | Theta0) prior rows).
@@ -307,6 +312,58 @@ def test_a_well_spread_neighbourhood_still_identifies_a_true_slope():
 
 
 # ---------------------------------------------------------------------------
+# Thin state support (2026-10-12, U1: sitting 7b's support collapse)
+# ---------------------------------------------------------------------------
+
+def _overflying_plant(seed, X_row, n=16):
+    """16 rows of a plant that flies 75 mm above its apex command (sitting
+    7b: u_apex 0.875 -> apex 0.95), commands already converged on y_d."""
+    rng = np.random.default_rng(seed)
+    U = np.array([0.0, 0.0, 0.875]) + rng.normal(scale=[1e-3, 1e-3, 2e-3], size=(n, 3))
+    Y = U + np.array([0.0, 0.0, 0.075]) + rng.normal(scale=[0.02, 0.02, 0.007], size=(n, 3))
+    return np.tile(X_row, (n, 1)), U, Y
+
+
+@pytest.mark.parametrize('seed', range(5))
+def test_thin_state_support_falls_back_on_the_window_residual_not_the_identity(seed):
+    """Every support row sits 25 mm from the query state: sum v = 16 e^-6.25
+    = 0.031 (sitting 7b row 465: 0.032), so the ridge carries the fit onto
+    its prior. The prior must be what those rows say the plant does (lands
+    75 mm above command), not "apex = command": the command stays at the
+    converged 0.875. Measured 2026-10-12 over seeds 0-4: 0.872-0.878; the
+    identity prior gave 0.888-0.892, the upward walk that put row 467 at
+    0.901 and its catch over the jerk limit."""
+    X, U, Y = _overflying_plant(seed, [0.025, 0.0, 0.0, 0.0])
+    y_d = np.array([0.0, 0.0, 0.95])
+    cfg = lr.LearnerConfig()
+    idx, _d2 = lr._neighbourhood(np.zeros(4), y_d, X, Y, cfg)
+    assert idx.size == 16, 'every row is inside the support gate'
+    u = lr.command(np.zeros(4), y_d, X, U, Y, cfg)
+    assert abs(u[2] - 0.875) < 0.005, u
+
+
+@pytest.mark.parametrize('seed', range(5))
+def test_the_seat_offset_does_not_partition_the_memory(seed):
+    """Rows at seat offset 0; a query from the far corner of the lateral
+    authority (-20, +20) mm must get the command a query at offset 0 gets
+    (pre-registered test on the real memory, 2026-10-12: no offset effect
+    above noise on any channel). Measured: identical to 1e-6 m. With the
+    pre-fix shared 10 mm bandwidth AND the identity prior, the corner query
+    jumped +39..+43 mm in apex; the residual prior alone (``h_seat`` back at
+    10 mm) holds it within 0.5 mm, so each fix is pinned on its own."""
+    X, U, Y = _overflying_plant(seed, [-0.0625, 0.0, 0.0, 0.0])
+    y_d = np.array([0.0, 0.0, 0.95])
+    centre = np.array([-0.0625, 0.0, 0.0, 0.0])
+    corner = np.array([-0.0625, 0.0, -0.02, 0.02])
+    u_centre = lr.command(centre, y_d, X, U, Y)
+    np.testing.assert_allclose(lr.command(corner, y_d, X, U, Y), u_centre,
+                               rtol=0.0, atol=1e-4)
+    shared = lr.LearnerConfig(h_seat=0.01)
+    u_shared = lr.command(corner, y_d, X, U, Y, shared)
+    assert abs(u_shared[2] - u_centre[2]) < 0.005, (u_shared, u_centre)
+
+
+# ---------------------------------------------------------------------------
 # Determinism
 # ---------------------------------------------------------------------------
 
@@ -417,7 +474,8 @@ def test_command_rejects_mismatched_row_counts():
 
 
 @pytest.mark.parametrize('field,value', [
-    ('k', 1), ('k_min', 0), ('h_x', 0.0), ('h_x', -1.0), ('gamma', 0.0),
+    ('k', 1), ('k_min', 0), ('h_x', 0.0), ('h_x', -1.0), ('h_seat', 0.0),
+    ('h_seat', -1.0), ('h_seat', float('inf')), ('gamma', 0.0),
     ('gamma', -1e-3), ('eta', 0.0), ('eta', -1.0),
 ])
 def test_learner_config_rejects_non_positive_values(field, value):
