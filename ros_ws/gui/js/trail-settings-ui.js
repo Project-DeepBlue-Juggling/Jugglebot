@@ -1,8 +1,9 @@
 /**
  * trail-settings-ui.js — the always-visible "Trail" length control at the bottom right of the 3D scene.
- * Mounted ONCE (main.js init) into #viewer-pane; bound both ways to trail-settings. It sits just above the
- * bottom command/replay-dock overlay: that overlay's height varies (one button row live, trackbar + transport
- * in replay), so a ResizeObserver mirrors it into --trail-bottom.
+ * Built ONCE (main.js init); bound both ways to trail-settings. ONE element, moved between two parents:
+ * outside replay it lives INSIDE #command-overlay (the live / lobby button bar), right-aligned on the buttons'
+ * row; in replay (#command-overlay carries .replay-active: the bar is the replay dock) it sits in #viewer-pane,
+ * bottom right, just above the dock (--trail-bottom mirrors the dock's height).
  *
  * Slider = [0,1] position via positionToMs/msToPosition (linear to 5 s, then logarithmic to the max).
  */
@@ -39,7 +40,7 @@ export function initTrailSettingsUi() {
     const maxLab = document.createElement('span');
     maxLab.className = 'scene-trail-max';
     box.append(label, slider, out, maxLab);
-    pane.appendChild(box);
+    const cmd = document.getElementById('command-overlay');
 
     // Stored request, but displayed clamped to the current max (a long request on a short recording shows
     // as the max; the stored value is untouched).
@@ -65,7 +66,22 @@ export function initTrailSettingsUi() {
     }
     onTailChange(show);
 
-    const cmd = document.getElementById('command-overlay');
+    // Placement: in the bar unless replay is active. The signal is the class lobby.js puts on the bar.
+    let inBar = null;
+    const place = () => {
+        const wantBar = !!cmd && !cmd.classList.contains('replay-active');
+        if (wantBar === inBar) return;
+        inBar = wantBar;
+        box.classList.toggle('in-bar', wantBar);
+        if (cmd) cmd.classList.toggle('trail-in-bar', wantBar);
+        if (wantBar) cmd.appendChild(box);
+        else pane.appendChild(box);
+    };
+    place();
+    if (cmd && typeof MutationObserver !== 'undefined') {
+        new MutationObserver(place).observe(cmd, { attributes: true, attributeFilter: ['class'] });
+    }
+    // Replay placement only: the dock's height varies (trackbar + transport), so mirror it into --trail-bottom.
     if (cmd && typeof ResizeObserver !== 'undefined') {
         const sync = () => box.style.setProperty('--trail-bottom', cmd.offsetHeight + 'px');
         sync();

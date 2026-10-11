@@ -4,15 +4,13 @@
  * createLobby({document, ros, mode, picker, toaster}) -> {update, dock, state}
  *
  * Visible when the rosbridge state is not 'connected' and replay is idle: the live command buttons
- * (direct children of #command-overlay) are hidden by CSS and the lobby ("Open recording…") sits in their place, with the "Not connected…" banner. While replay is OPENING /
+ * (direct children of #command-overlay) are hidden by CSS and the lobby ("Open recording…") sits in their place, (no "not connected" banner: the lobby alone says so). While replay is OPENING /
  * REPLAY the lobby hides and `#replay-dock` (a stable id; unit 2 fills it) owns the overlay region.
  * On 'connected' the live overlay returns. Also owns the header text (`REPLAY  <date>`) because the
  * live connection listener is suppressed while replay is active, and routes mode 'notice' to the toaster.
  */
 import { h, fill, ensure } from './dom.js';
 import { fmtDateTime, dateFromId } from './format.js';
-
-export const BANNER_TEXT = 'Not connected to the robot. Live commands are unavailable — you can still review a recording.';
 
 export function createLobby(deps) {
     const doc = deps.document;
@@ -22,7 +20,6 @@ export function createLobby(deps) {
     const viewerPane = doc.getElementById('viewer-pane') || (overlay && overlay.parentNode) || doc.body;
     const dock = ensure(doc, 'replay-dock', overlay, 'div', 'replay-dock');
     const lobbyEl = ensure(doc, 'replay-lobby', overlay, 'div', 'replay-lobby');
-    const banner = ensure(doc, 'replay-banner', viewerPane, 'div', 'replay-banner warn');
     const backendBanner = ensure(doc, 'replay-backend-banner', viewerPane, 'div', 'replay-banner err');
 
     let backendDown = false;
@@ -87,8 +84,6 @@ export function createLobby(deps) {
         }
         lobbyEl.hidden = !showLobby;
         dock.hidden = !active;
-        banner.textContent = BANNER_TEXT;
-        banner.hidden = !showLobby;
         if (showLobby) {
             refreshButtons();
             if (!lobbyShown) { lobbyShown = true; picker.probe(); }

@@ -53,12 +53,12 @@ def out(tmp_path_factory):
 
 def test_lobby_follows_connection_state(out):
     d = out["disconnected"]
-    assert d["lobby_hidden"] is False and d["banner_hidden"] is False and d["cls_lobby"] is True
-    assert d["banner"].startswith("Not connected to the robot. Live commands are unavailable")
+    assert d["lobby_hidden"] is False and d["cls_lobby"] is True
+    assert "banner" not in d and "banner_hidden" not in d      # the old "Not connected to the robot" banner is gone
     assert d["dock_hidden"] is True
     for k in ("connected",):
         c = out[k]
-        assert c["lobby_hidden"] is True and c["banner_hidden"] is True and c["cls_lobby"] is False
+        assert c["lobby_hidden"] is True and c["cls_lobby"] is False
     assert out["connecting"]["lobby_hidden"] is False      # not 'connected' -> still the lobby
     assert out["live_button_untouched"] is True            # hiding is CSS-only, the live buttons are not torn down
     assert out["probe_fetches"] >= 1                       # the lobby probes the backend once on show
@@ -69,7 +69,7 @@ def test_lobby_does_not_flash_on_cold_load(out):
     nothing shows while the first attempt is merely 'connecting'; only a disconnected EDGE shows the lobby."""
     for k in ("initial", "first_connecting"):
         d = out[k]
-        assert d["lobby_hidden"] is True and d["banner_hidden"] is True and d["cls_lobby"] is False, k
+        assert d["lobby_hidden"] is True and d["cls_lobby"] is False, k
     assert out["initial"]["probe_fetches"] == 0
 
 

@@ -90,3 +90,14 @@ def test_ball_history_is_a_scene_group_rendered_from_the_replay_playhead_only():
     assert 'rt === null ? 0 : rt' in s                       # live (null render time): the layer is told tail 0 and draws nothing
     w = _src('replay/wiring.js')
     assert 'createBallHistory' in w and 'getEffectiveTailMs' in w and 'historyLayer: getBallHistoryLayer' in w
+
+
+def test_trail_control_is_one_element_moved_between_bar_and_viewer_by_replay_class():
+    u = _src('trail-settings-ui.js')
+    assert len(re.findall(r"createElement\('div'\)", u)) == 1                   # one control, not two
+    assert "classList.contains('replay-active')" in u                            # lobby.js's replay signal
+    assert 'cmd.appendChild(box)' in u and 'pane.appendChild(box)' in u
+    assert '--trail-bottom' in u                                                 # replay placement still tracks the dock height
+    css = open(os.path.join(_GUI_JS, '..', 'css', 'viewer.css'), encoding='utf-8').read()
+    assert '.scene-trail-overlay.in-bar' in css and '#command-overlay.trail-in-bar' in css
+    assert 'Not connected to the robot' not in _src('replay/ui/lobby.js')

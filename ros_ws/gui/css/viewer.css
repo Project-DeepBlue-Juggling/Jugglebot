@@ -345,8 +345,9 @@
     opacity: 0.65;
 }
 
-/* Always-visible trail-length control, bottom right of the 3D scene, just above #command-overlay
-   (--trail-bottom mirrors that overlay's height: one button row live, trackbar + transport in replay). */
+/* Always-visible trail-length control. In replay: bottom right of the 3D scene, just above the replay dock
+   (--trail-bottom mirrors the dock's height). Otherwise (.in-bar): inside #command-overlay, right-aligned and
+   vertically centred on the button row; the bar reserves room (.trail-in-bar) so the buttons never sit under it. */
 .scene-trail-overlay {
     position: absolute;
     right: var(--gap);
@@ -384,3 +385,17 @@
     color: var(--text-muted);
     font-variant-numeric: tabular-nums;
 }
+
+/* The slider's width scales with the bar (30 %, 180..280 px) so a narrow pane keeps the live buttons on fewer rows
+   (fixed 280 px wrapped them to three rows at a 1200 px window). Padding and the box both resolve % against the bar. */
+#command-overlay { --trail-bar-w: clamp(180px, 30%, 280px); }
+#command-overlay.trail-in-bar { flex-wrap: wrap; padding-right: calc(var(--gap) + var(--trail-bar-w) + var(--gap-sm)); }
+.scene-trail-overlay.in-bar {
+    right: var(--gap);
+    bottom: auto;
+    top: 50%;
+    transform: translateY(-50%);
+    width: var(--trail-bar-w);
+    box-sizing: border-box;
+}
+.scene-trail-overlay.in-bar .scene-trail-slider { flex: 1 1 auto; min-width: 0; width: auto; }

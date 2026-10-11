@@ -119,7 +119,7 @@ const chipState = (row) => row.find((e) => e.className.split(/\s+/).includes('re
 
 // 1. lobby follows the connection state
 const snap = () => ({
-    lobby_hidden: q('replay-lobby').hidden, banner_hidden: q('replay-banner').hidden, banner: q('replay-banner').textContent,
+    lobby_hidden: q('replay-lobby').hidden,
     cls_lobby: overlay.classList.contains('replay-lobby-on'), dock_hidden: q('replay-dock').hidden,
 });
 // N2: the initial 'disconnected' default is NOT a failed connect: no lobby flash, no probe, on a cold page load

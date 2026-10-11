@@ -30,7 +30,6 @@
 }
 .replay-banner.warn { background: rgba(245,158,11,.12); border-color: var(--accent-amber); color: var(--accent-amber); }
 .replay-banner.err { background: rgba(239,68,68,.12); border-color: var(--accent-red); color: var(--accent-red); }
-#replay-backend-banner { top: 92px; }
 /* Follow the expanded state-machine strip exactly as #command-overlay and #connection-status do
    (state-minimap.css): inset by --minimap-width so the banner never sits under the opaque panel. */
 #viewer-pane.minimap-expanded .replay-banner { left: calc(var(--minimap-width) + var(--gap)); }
