@@ -29,9 +29,9 @@
  * Owner decision 2026-10-11: the Phase 5b "markers never extend past 5 s" rule is lifted in replay.  The near tier
  * still draws the last min(tail, 5 s) of everything; this tier overlaps it as thin lines under the ribbons, exactly as it
  * already does for balls.  Cost: the filtered decode now includes /mocap_data (~197 Hz x ~90 markers on the busy bag),
- * measured 2026-10-11 headless on the Jetson (tools/probes/replay_slot_load_timing.mjs): single loads take ~20-560 ms
- * with no consistent dependence on the topic filter (17 ms is the /balls DECODE alone), and the whole busy
- * bag fills in ~160 s at 715,702 vertices with nothing dropped.  The slot set reaches the layer at most once per `frame` tick
+ * measured 2026-10-11 headless on the Jetson (tools/probes/replay_lane_trace.mjs): ~150-190 ms of worker time per
+ * slot, queue waits <= 30 ms, and the whole busy bag (109 slots, 715,702 vertices, nothing dropped) fills in ~26 s
+ * (~160 s before ball-history-layer.js stopped re-uploading its whole buffer on every arrival).  The slot set reaches the layer at most once per `frame` tick
  * (rAF in the browser) after it changed.  No clock reads: pacing is event-driven.
  */
 
@@ -228,8 +228,9 @@ export function createBallHistory(opts) {
     }
     if (inflight !== null || paused()) return;
     // ONE load per slot carries both topics.  A balls-first two-sweep fill was built and withdrawn on measurement
-    // (2026-10-11, busy bag, Jetson headless): balls complete ~130 s vs ~160 s, but the whole fill 285 s vs 160 s, and
-    // single-load cost showed no consistent dependence on the topic filter (tools/probes/replay_slot_load_timing.mjs).
+    // (2026-10-11, busy bag, Jetson headless): balls complete ~130 s vs ~160 s, but the whole fill 285 s vs 160 s.  Those
+    // times were dominated by the layer's since-fixed whole-buffer re-uploads (tools/probes/replay_lane_trace.mjs); the
+    // two-sweep has not been re-measured since, and the one-load fill now takes ~26 s.
     const next = want.find((i) => !ring.has(i) && !failed.has(i));
     if (next === undefined) return;
     const my = ++token;

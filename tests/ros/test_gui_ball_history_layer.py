@@ -114,3 +114,19 @@ def test_cap_drops_oldest_marker_rows_before_any_ball(out):
     assert c["a"] == [7, 3, 1, 2, 0]    # cap 7 of 9: only the OLDEST slot's marker rows (2 segs) go; all 3 ball slots kept
     assert c["b"] == [3, 3, 0]          # cap 3: every marker row dropped (oldest first), the 3 ball segments survive
     assert c["c"] == [2, 2, 3, 1]       # cap 2: markers all gone, only then the oldest whole slot
+
+
+def test_new_slots_append_and_upload_only_themselves_and_match_a_scratch_build(out):
+    a = out["append"]
+    assert a["full"] == [1, 1, 1]                        # A builds; B and the OLDER C both append
+    assert a["seg"] == [3, 7, 11]                        # 3 intra each + the A->B join, then + C's 3 + the C->A join
+    # A's build allocates (whole-capacity first upload: 4096 main + 256 joins); then the new slot's 6 vertices + the joins
+    assert a["up"] == [4096 + 0, 6 + 256, 6 + 4]
+    # B's append leaves ONE element-unit range per attribute, starting after A's 6 vertices (none left from allocation)
+    assert a["ranges"] == {"pos": '[{"start":18,"count":18}]', "aT": '[{"start":6,"count":6}]'}
+    assert a["epoch"] == [10.0, 10.0]                    # an append keeps the epoch (C's aT is negative)
+    assert a["same_as_scratch"] and a["ref_segments"] == 11
+
+
+def test_an_eviction_rebuilds_and_re_bases_the_epoch(out):
+    assert out["append"]["evict"] == [2, 6, 9.75]          # C + B, no join (0.30 s gap); epoch moves 10.0 -> 9.75

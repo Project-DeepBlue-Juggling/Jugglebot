@@ -73,6 +73,9 @@ carries them.
     - `/mocap_data`-only loads took 159–529 ms.
   - **Suspected, unverified:** queueing behind other work on the shared low-priority lane, chiefly the chart digester
     that fills ±330 s of 1 s digests after an open or a seek. 17 ms is the `/balls` DECODE alone.
+    *(Pointer added 2026-10-11, ticket 09: also withdrawn. Queue waits were ≤ 30 ms; the main thread was blocked in
+    WebGL `bufferSubData` by the layer's whole-buffer re-uploads, and the load times above are that delay. See
+    [2026-10-11-gui-replay-far-tier-append-only-uploads](2026-10-11-gui-replay-far-tier-append-only-uploads.md).)*
   - **Phase 5b's "whole busy bag in ~8 s"** stays unexplained against the ~130 s balls sweep measured here.
   - **Follow-up:** a faster long-tail fill belongs with the deferred latency work (ticket 09). Measure the lane
     contention first, then decide between a second reader and a filtered-row cache.

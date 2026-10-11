@@ -79,7 +79,9 @@ the idle far tier scheduled a timer every frame.
   dropped; the screenshot shows the overlaid Ball Butler flights in per-ball colours, older ones fainter.
   *(Pointer added 2026-10-11, Phase 6: 50 slots is fewer than the bag's 109, and Phase 6's whole-bag fill took ~160 s
   with markers and ~130 s for a balls-only sweep, so this ~8 s is not a whole-recording figure;
-  see [2026-10-11-gui-replay-deep-links-and-marker-history](2026-10-11-gui-replay-deep-links-and-marker-history.md).)*
+  see [2026-10-11-gui-replay-deep-links-and-marker-history](2026-10-11-gui-replay-deep-links-and-marker-history.md).
+  Ticket 09 later traced those times to whole-buffer re-uploads; the busy-bag fill is now ~26 s:
+  [2026-10-11-gui-replay-far-tier-append-only-uploads](2026-10-11-gui-replay-far-tier-append-only-uploads.md).)*
 - After the audit fixes (`pytest tests/ros -q -k "gui or replay"`, run 2026-10-11): 514 passed, 1 skipped.
 - Browser re-smoke of the lazy buffers on the busy bag (run 2026-10-11): capacity 0 to 4,096 to 65,536 vertices for
   the whole recording (63,480 used), 0 after exit, no console errors, the same overlaid-flights picture.

@@ -6,9 +6,10 @@
  * on four DIFFERENT never-resident slots per row (a repeat on one slot would hit the source memo).
  * Each load reports {ms, balls_n, mocap_n} (messages returned).  Findings 2026-10-11, busy bag, slots 10..83: single
  * loads range ~20-560 ms with NO consistent dependence on the topic filter or on how many messages come back (a
- * /balls-only load with 1018 balls took 73 ms; empty /balls-only loads took 21-386 ms).  Suspected cause, unverified:
- * queueing behind other work on the shared low-priority lane (the chart digester); the 17 ms Phase 5b figure is the
- * /balls DECODE alone.
+ * /balls-only load with 1018 balls took 73 ms; empty /balls-only loads took 21-386 ms).  CAUSE (measured later the same
+ * day, replay_lane_trace.mjs): not the worker lane - the main thread was blocked in WebGL bufferSubData by the
+ * ball-history layer's whole-buffer re-uploads (software GL), so replies sat undelivered; these figures are that delay.
+ * The layer is append-only since; this probe's wall times are only meaningful while no long-tail fill is running.
  *
  * Needs: a GUI server and a headless Chromium with CDP, e.g. from the repo root
  *   /usr/bin/python3 ros_ws/gui/gui_server.py --port 8099 --rosbags-dir ~/Desktop/rosbags --overview-dir $PWD/temp/replay_overview &

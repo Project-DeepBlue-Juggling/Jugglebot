@@ -114,4 +114,33 @@ const mrow = (i, ball, mk) => {   // ball: [t,id,x,y,z][], mk: [t,labelIdx,x,y,z
     out.cap = { a: [sa.segments, sa.slots, sa.droppedMarkerSlots, sa.droppedMarkerSegments, sa.droppedSlots], b: [sb.segments, sb.droppedMarkerSlots, sb.droppedSlots],
         c: [sc.segments, sc.slots, sc.droppedMarkerSlots, sc.droppedSlots] };
 }
+{   // append-only (2026-10-11): rows matched by object; a new slot writes + uploads only itself (+ the small joins geometry);
+    // the drawn set equals a from-scratch build; an eviction rebuilds
+    const seq = (i, t0, x0) => row(i, [0, 1, 2, 3].map((k) => [t0 + 0.05 * k, 1, x0 + k, 0, 0]));   // 3 intra segments
+    const A = seq(1, 10.0, 10), B = seq(2, 10.2, 20), C = seq(0, 9.75, 0);   // C ends at 9.90: joins A (0.10); A ends 10.15 -> B 10.20 joins
+    const segsOf = (parent, layer) => {   // multiset of segments as "x0>x1@t0" (t absolute, ms)
+        const out2 = []; const ep = layer.stats().epoch;
+        for (const m of parent.children[0].children) {
+            const g = m.geometry, n = g.drawRange.count; if (!g.attributes.position) continue;
+            const P = g.attributes.position.array, T = g.attributes.aT.array;
+            for (let v = 0; v < n; v += 2) out2.push(`${Math.round(P[3 * v] * 1000)}>${Math.round(P[3 * v + 3] * 1000)}@${Math.round((T[v] + ep) * 1000)}`);
+        }
+        return out2.sort();
+    };
+    const [layer, parent] = mk(1000000);
+    layer.setSlots([A]); const s1 = layer.stats();
+    layer.setSlots([A, B]); const s2 = layer.stats();
+    const ranges = (name) => JSON.stringify(parent.children[0].children[0].geometry.attributes[name].updateRanges);
+    const r2 = { pos: ranges('position'), aT: ranges('aT') };   // nothing has rendered: pending ranges for this append only
+    layer.setSlots([B, C, A]); const s3 = layer.stats();
+    const [ref, refParent] = mk(1000000);
+    ref.setSlots([C, A, B]);
+    out.append = { full: [s1.fullUploads, s2.fullUploads, s3.fullUploads], seg: [s1.segments, s2.segments, s3.segments],
+        up: [s1.uploadedVertices, s2.uploadedVertices - s1.uploadedVertices, s3.uploadedVertices - s2.uploadedVertices],
+        epoch: [s1.epoch, s3.epoch], same_as_scratch: JSON.stringify(segsOf(parent, layer)) === JSON.stringify(segsOf(refParent, ref)),
+        ref_segments: ref.stats().segments, ranges: r2 };
+    layer.setSlots([C, B]);   // A evicted: rebuild, epoch re-based to C
+    const s4 = layer.stats();
+    out.append.evict = [s4.fullUploads, s4.segments, s4.epoch];
+}
 process.stdout.write(JSON.stringify(out));

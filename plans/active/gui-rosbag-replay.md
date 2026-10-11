@@ -346,9 +346,11 @@ will be particularly helpful to review throw consistency)."
   the playhead or older than the tail and fades alpha by age. The geometry is rebuilt only when slots arrive or leave
   (at most once per frame); per frame only uniforms change. Buffers are sized to the loaded flights (power of two from
   4096 vertices, cap 1,000,000) and released on exit, so a live session holds none. Busy bag (18 min): 63,480 vertices
-  for the whole recording; a `/balls`-only DECODE is 17 ms per slot against 331 ms for a full one, but a slot LOAD
-  measured ~20–560 ms on the Jetson with no consistent dependence on the topic filter (Phase 6,
-  `tools/probes/replay_slot_load_timing.mjs`, `2026-10-11-gui-replay-deep-links-and-marker-history.md`).
+  for the whole recording; a `/balls`-only DECODE is 17 ms per slot against 331 ms for a full one. Since ticket 09
+  (2026-10-11) the main buffer is append-only and uploads only the new slot (joins across slot boundaries live in a
+  small second geometry): the whole-buffer re-upload per arrival had blocked the main thread for ~2 min per busy-bag
+  fill under software GL; the fill is now ~26 s (`tools/probes/replay_lane_trace.mjs`,
+  `2026-10-11-gui-replay-far-tier-append-only-uploads.md`).
 
 ## Phase 6 — Deep links and long marker trails (owner decisions, 2026-10-11)
 
