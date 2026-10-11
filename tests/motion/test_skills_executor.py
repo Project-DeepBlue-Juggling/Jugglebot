@@ -5396,6 +5396,102 @@ def test_plan_columns_first_cycle_needs_a_throw_and_a_feed_catch(sites):
 
 
 # ---------------------------------------------------------------------------
+# Brief H (2026-10-11, bag 2026-10-11_11-27-53): a receive_tilt-pinned catch
+# only matches the arrival along the cup axis now (`unified_cycle.
+# _events_for`) -- before the fix the matched-velocity TARGET stayed the
+# raw arrival, so a level-pinned hop-entry feed catch still chased a hard
+# sideways arrival with the platform (89% of the jerk cap, ~4 Hz ring).
+# Mirrors `plan_columns_first_cycle`'s own construction exactly (same
+# THROW/CATCH terminal builders, same `_terminal_on_segment_clock` origin),
+# since that function itself discards the numeric peaks.
+# ---------------------------------------------------------------------------
+
+#: A1 -- the fed ball's measured touch-down (23-26 deg off vertical).
+_A1_ARRIVAL_MM_S = np.array([1279.0, 545.0, -3280.0])
+
+
+@pytest.fixture(scope='module')
+def a1_hop_fed_catch(limits_r5, sites_r5, geom):
+    """The hop-entry feed CATCH for A1's arrival -- apex 0.90 m, dwell
+    ``R5_DWELL_S``, separation ``R5_SEPARATION_MM``, the R5 catch-high
+    session limits (``limits_r5``) -- matching ``f_matrix.txt``'s FIX=1
+    VEL=1279,545,-3280 LAND=0,0 row (scratchpad, Brief H) exactly."""
+    p1, p2 = sites_r5
+    pattern = sc.Pattern(sites=(p1, p2), apex_m=0.90, dwell_s=R5_DWELL_S,
+                         n_throws=6, phantom_balls=(0,))
+    feed = sc.LandingPrior(pos_mm=p2.catch_site_mm(), vel_mm_s=_A1_ARRIVAL_MM_S,
+                           t_land_abs_s=T0_ABS)
+    schedule = sc.compile_columns(pattern, feed=feed, entry='hop')
+    dry = ex.SkillExecutor(schedule, ex._never_install)
+    throw_idx, throw_skill = next((i, s) for i, s in enumerate(schedule.skills)
+                                  if s.kind == sg.THROW)
+    feed_idx, feed_skill = next((i, s) for i, s in enumerate(schedule.skills)
+                               if s.landing_prior is not None)
+    seed = ex._rest_state_at(throw_skill.site.rest_site_mm())
+    throw_terminal = ex._terminal_on_segment_clock(
+        sg.THROW, dry._throw_terminal(throw_idx, throw_skill),
+        float(throw_skill.t_abs_s) - float(throw_skill.window_s))
+    seg1 = sg.plan_segment(sg.THROW, seed, throw_terminal, sg.SegmentConfig(),
+                           limits_r5, geom)
+    lp = feed_skill.landing_prior
+    landing = ex.Landing(pos_mm=lp.pos_mm, vel_mm_s=lp.vel_mm_s,
+                         t_land_abs_s=lp.t_land_abs_s)
+    catch_terminal = ex._terminal_on_segment_clock(
+        sg.CATCH, dry._catch_terminal(feed_idx, feed_skill, landing),
+        float(feed_skill.t_abs_s) - float(feed_skill.window_s))
+    return sg.plan_segment(sg.CATCH, seg1.release_state, catch_terminal,
+                           sg.SegmentConfig(), limits_r5, geom)
+
+
+def _cup_lateral_touchdown_to_release(seg):
+    """``(max |dxy| mm touchdown->release, |vxy| mm/s AT touchdown)`` of the
+    cup opening -- the same measurement ``f_replan.py``'s ``report()``
+    printed offline (Brief H scratchpad), 60 samples across the span."""
+    cp = seg.meta.cup_plan
+    ts = np.linspace(seg.event_t_s, seg.release_t_s, 60)
+    pos = np.array([np.asarray(cp.sample(t)[0]) * 1000.0 for t in ts])
+    d = pos[:, :2] - pos[0, :2]
+    _, v_td = cp.sample(seg.event_t_s)[:2]
+    v_td = np.asarray(v_td) * 1000.0
+    return float(np.max(np.hypot(*d.T))), float(np.hypot(v_td[0], v_td[1]))
+
+
+def test_a_level_pinned_hop_fed_catch_matches_a1s_arrival_axially_not_laterally(
+        a1_hop_fed_catch):
+    """2026-10-11 (bag 2026-10-11_11-27-53, ``columns_1ball_fed`` x4): before
+    the fix (measured through THIS construction against ``git show HEAD``
+    at the pre-fix commit) A1's arrival read cup |dxy| touchdown->release
+    10.71 mm and |vxy| at touchdown 320.97 mm/s -- within rounding of the
+    offline ``f_matrix.txt`` FIX=0 VEL=1279,545,-3280 LAND=0,0 row (10.32 mm
+    / 321 mm/s, a slightly different hop-entry construction) -- the legs
+    chasing a 23-26 deg sideways arrival. After: 0.215 mm / 9.52 mm/s.
+    Projecting the matched-velocity TARGET onto the pinned cup axis
+    (``tg.cup_axis(rx, ry)``, in ``unified_cycle._events_for``) collapses
+    both to near zero.
+
+    ``CatchMark`` must still report the RAW arrival -- it is built from
+    ``goals.catch_vel_mm_s`` directly (``unified_cycle._meta_for``), never
+    from the event the QP solves against."""
+    dxy, vxy_td = _cup_lateral_touchdown_to_release(a1_hop_fed_catch)
+    assert dxy <= 1.0, dxy
+    assert vxy_td <= 20.0, vxy_td
+    np.testing.assert_allclose(a1_hop_fed_catch.meta.catches[0].vel_mm_s,
+                               _A1_ARRIVAL_MM_S)
+
+
+def test_a_level_pinned_hop_fed_catch_keeps_leg_jerk_well_inside_the_cap(
+        a1_hop_fed_catch, limits_r5):
+    """Before the fix (git show HEAD at the pre-fix commit) this read peak
+    leg jerk 179118 mm/s^3, 89.6% of the 200000 cap -- matching the bag's
+    measured 89% and the offline ``f_matrix.txt`` FIX=0
+    VEL=1279,545,-3280 LAND=0,0 row (177898, 89%) within rounding. The
+    axial-only match reads 56056 (28.0%, FIX=1 same row 56209/28%)."""
+    jerk_frac = (a1_hop_fed_catch.meta.report.peak_leg_jerk_mmps3
+                / limits_r5.leg_jerk_mmps3)
+    assert jerk_frac <= 0.5, jerk_frac
+
+
+# ---------------------------------------------------------------------------
 # The two-ball association contract, executor half (2026-10-04)
 # ---------------------------------------------------------------------------
 #

@@ -4435,7 +4435,7 @@ def test_columns_bb_announcement_installs_the_fed_schedule(tmp_path):
 
 def test_columns_bb_announcement_refuses_an_uncatchable_feed(tmp_path):
     """R5 pre-throw feasibility (`_install_columns_schedule`, 2026-09-30):
-    an announced landing displaced 30 mm in x AWAY from A's site (R5
+    an announced landing displaced 60 mm in x AWAY from A's site (R5
     sitting 2, 2026-10-02: the default FED layout holds A at P2 and feeds
     P1 -- the cup must reverse against Ball Butler's own +x lateral
     arrival to match it at touch-down, so moving further FROM P2 only
@@ -4455,7 +4455,16 @@ def test_columns_bb_announcement_refuses_an_uncatchable_feed(tmp_path):
     the site" rule (2026-09-28) widens the margin versus the offline
     planner probe (`scratchpad/probe_feed_swap.py`), so this stays well
     past the LIMIT_VEL cliff the probe found at -10/-20 mm rather than
-    riming it."""
+    riming it.
+
+    **60 mm since 2026-10-11** (logbook `2026-10-11-skill-stack-r5-fed-
+    catch-lateral-ring`): the level-pinned feed catch now matches the
+    arrival along the cup axis only, so the legs no longer reverse
+    against Ball Butler's lateral arrival and the cliff moved out.
+    Re-probed through this test's own path (live 350/5000/200000, 2026-10-11,
+    `ex.plan_columns_first_cycle` wrapped to print its refusal): 0-35 mm plan
+    clean; 40 mm LIMIT_VEL 353.8 mm/s (101 %); 60 mm LIMIT_VEL 419.7 mm/s
+    (120 %), well past the cliff."""
     node, _client = _node_with_client()
     _columns_bb_started(node, tmp_path)
     bridge_schedule = node._executor.schedule
@@ -4466,7 +4475,7 @@ def test_columns_bb_announcement_refuses_an_uncatchable_feed(tmp_path):
     feed_site = next(s for s in sn.columns_sites(100.0) if s.name != a_name)
     ann = _bb_announcement(
         target_id=node._robot_name,
-        landing_mm=(float(feed_site.cup_mm[0]) - 30.0, 0.0, 830.0),
+        landing_mm=(float(feed_site.cup_mm[0]) - 60.0, 0.0, 830.0),
         landing_vel_mm_s=(1058.0, 475.0, -5507.0), throw_time_s=0.5,
         landing_time_s=5.0)
     node._on_announcement(ann)

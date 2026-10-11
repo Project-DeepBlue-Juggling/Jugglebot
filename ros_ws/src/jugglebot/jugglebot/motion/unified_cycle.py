@@ -467,7 +467,9 @@ class CycleGoals:
     #: The touch-down receive attitude (rx, ry) rad this CATCH is PINNED to,
     #: overriding the auto-computed ``tilt_to_receive(catch_vel_mm_s)`` at the
     #: catch knot only — banking stays on (:attr:`banking_enabled` is read
-    #: unchanged) and no lateral channel is slaved, unlike :attr:`hold_tilt`.
+    #: unchanged) and no lateral channel is HARD-slaved (no held-line
+    #: equality), unlike :attr:`hold_tilt`; the soft catch MATCH is projected
+    #: onto this axis (``_events_for`` -> ``CatchEvent.vel_target``, 2026-10-11).
     #: ``None`` (every pre-R5 CATCH) keeps the auto-banked receive tilt.
     #: R5's BB-fed columns feed catch is the one caller that sets it, to
     #: ``(0.0, 0.0)`` — measured (Block A, 2026-09-30, `logbook/2026-09-30-
@@ -1470,17 +1472,30 @@ def _events_for(kind: str, goals: CycleGoals):
     settle_m = None
     if has_catch:
         _require(goals, kind, 'catch_site_mm', 'catch_vel_mm_s')
-        # ``vel`` stays the RAW arrival: the QP projects it onto the held axis
+        # ``vel`` stays the RAW arrival: the QP projects it onto a HELD axis
         # itself (one ratio, the stroke's), so the projection is stated once,
         # where the rows that use it are written.
         axis = (None if goals.hold_tilt is None
                 else tg.cup_axis(float(goals.hold_tilt[0]),
                                  float(goals.hold_tilt[1])))
+        catch_vel_m_s = _vec3(goals.catch_vel_mm_s, 'catch_vel_mm_s') / 1000.0
+        vel_target = None
+        if goals.receive_tilt is not None:
+            # 2026-10-11 (bag 2026-10-11_11-27-53, columns_1ball_fed x4): a
+            # receive_tilt-pinned catch matched the RAW arrival's lateral
+            # velocity, so the legs chased a 23-26 deg fed arrival sideways at
+            # 89 % of the jerk cap, the platform rang ~4 Hz and the re-throw
+            # left it sliding ~70 mm/s. The pin is no held line (that is
+            # hold_tilt's equality, with its own seed preconditions); it only
+            # retargets the soft match onto the pinned cup axis. ``vel`` stays
+            # raw: the catch-runway gate decelerates the TRUE vertical speed.
+            recv_axis = tg.cup_axis(float(goals.receive_tilt[0]),
+                                    float(goals.receive_tilt[1]))
+            vel_target = recv_axis * float(np.dot(catch_vel_m_s, recv_axis))
         events.append(cc.CatchEvent(
             ball_id=int(goals.ball_id), t_s=goals.catch_time_s(),
             site=_vec3(goals.catch_site_mm, 'catch_site_mm') / 1000.0,
-            vel=_vec3(goals.catch_vel_mm_s, 'catch_vel_mm_s') / 1000.0,
-            axis=axis))
+            vel=catch_vel_m_s, axis=axis, vel_target=vel_target))
     if has_throw:
         _require(goals, kind, 'throw_site_mm', 'throw_target_mm', 'flight_s')
         events.append(cc.ThrowEvent(

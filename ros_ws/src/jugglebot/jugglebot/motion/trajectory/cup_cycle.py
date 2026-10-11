@@ -393,6 +393,14 @@ class CatchEvent:
     #: knot is the CAPTURE span, the platform tilting onto the line inside the
     #: window (R5 unit F-c), and is refused by name until it is built.
     held_from_k: int = 0
+    #: The velocity the soft catch MATCH chases (m/s), when it differs from the
+    #: observed arrival ``vel``.  ``None`` (every catch but a pinned one) matches
+    #: ``vel`` itself.  A ``receive_tilt``-pinned catch sets it to ``vel``
+    #: projected onto the pinned cup axis (``unified_cycle._events_for``,
+    #: 2026-10-11): a level pin must not ask the legs to chase a 23-26° fed
+    #: arrival sideways.  ``vel`` stays the raw arrival for everything structural
+    #: — the catch-runway gate decelerates the ball's TRUE vertical speed.
+    vel_target: Optional[np.ndarray] = None
 
 
 @dataclasses.dataclass
@@ -1045,9 +1053,11 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
 
         # Velocity-matched catch, split by morphology axis (soft, as in the sim).
         catch_vel = np.asarray(catch.vel, dtype=float)
+        match_vel = (catch_vel if catch.vel_target is None
+                     else np.asarray(catch.vel_target, dtype=float))
         lat_ratio = float(_cfg(cfg, 'catch_vel_ratio'))
-        v_target = np.array([lat_ratio * catch_vel[0], lat_ratio * catch_vel[1],
-                             z_ratio * catch_vel[2]])
+        v_target = np.array([lat_ratio * match_vel[0], lat_ratio * match_vel[1],
+                             z_ratio * match_vel[2]])
         v_weights = [float(_cfg(cfg, 'catch_vel_weight'))] * 2 \
             + [float(_cfg(cfg, 'catch_slider_vel_weight'))]
         if axis is None:
@@ -1065,7 +1075,7 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
             # left to ask for. The target is the arrival PROJECTED onto the held
             # axis, which is the only part of it the cup can meet without
             # translating the platform.
-            v_axial = float(np.dot(catch_vel, axis))
+            v_axial = float(np.dot(match_vel, axis))
             r_axial = np.zeros(nvar)
             for a in range(3):
                 r_axial[a * n:(a + 1) * n] = axis[a] * r_vtd
