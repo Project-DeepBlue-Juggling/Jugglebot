@@ -9,6 +9,7 @@
  * (timeline, zoom range). The engine is looked up lazily (`mode.engine()`): it does not exist while OPENING.
  */
 import { h } from './dom.js';
+import { buildLink, copyText } from './deeplink.js';
 import {
     fmtClock, frac, timeAt, clampRange, zoomAbout, dragToRange, renderOverview, MIN_SPAN, ZOOM_STEP,
 } from './overview.js';
@@ -98,6 +99,20 @@ export function createTrackbar(deps) {
     }
     function stepRec(n) { const e = engine(); if (e) e.step(n); }
     function toStart() { const e = engine(); if (e) e.seek(e.state().range.t0); }
+    /** "Copy link": origin + path + ?recording=<id>&t=<seconds from start> of the current playhead (never touches the address bar). */
+    async function copyLink() {
+        const e = engine(), src = mode.source && mode.source();
+        if (!e || !src || !src.id) return;
+        const win = doc.defaultView || globalThis;
+        const loc = win.location || {};
+        const url = buildLink(loc.origin || '', loc.pathname || '/', src.id, e.state().playhead - e.state().range.t0);
+        const ok = await copyText(doc, url, win.navigator);
+        if (ok) { if (deps.toaster) deps.toaster.show('Link copied: ' + url, 9000); return; }
+        // Both clipboard paths refused: the toast is not selectable (pointer-events: none), so hand the URL over in a
+        // prompt the operator can copy from by hand.
+        if (typeof win.prompt === 'function') win.prompt('Copy this replay link:', url);
+        else if (deps.toaster) deps.toaster.show('Copy failed. Link: ' + url, 9000);
+    }
     function toEnd() { const e = engine(); if (e) { const r = e.state().range; e.seek(clampT(r.t1, r)); } }
 
     function setView(v) {
@@ -218,6 +233,7 @@ export function createTrackbar(deps) {
             btn('rp-stepf', '|▶', 'Forward one sample (.)', () => stepRec(1)),
             btn('rp-ff', '▶▶', 'Fast-forward: speed ladder', () => ladder(1)),
             btn('rp-end', '▶|', 'End (End)', toEnd),
+            btn('rp-link', 'Copy link', 'Copy a link to this recording at the playhead', () => { copyLink(); }),
             btn('rp-exit', 'Exit replay', 'Leave replay', () => { mode.exitReplay('closed'); }),
             h(doc, 'span', { cls: 'rp-keys', text: 'Space play  ←/→ ±1 s  Shift ±10 s  , . sample  + − zoom  Esc reset' }),
         ]);
@@ -337,7 +353,7 @@ export function createTrackbar(deps) {
     sync();
 
     return {
-        mount, unmount, frame, handleKey, sync,
+        mount, unmount, frame, handleKey, sync, copyLink,
         mounted: () => isMounted,
         getView: () => view,
         dispose() { unmount(); if (unsubMode) unsubMode(); },

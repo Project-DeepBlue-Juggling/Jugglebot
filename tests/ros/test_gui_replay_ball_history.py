@@ -58,6 +58,7 @@ def test_fill_is_playhead_slot_then_backward_then_slack_and_every_load_is_a_filt
     assert f["order"] == [15, 14, 13, 12, 11, 10, 9, 8, 16]   # window [centre-60-10, centre+10] around slot 15
     assert f["all_lite"] is True and f["all_filtered"] is True
     assert f["status"]["slots"] == 9 and f["status"]["inflight"] is None
+    assert f["status"]["markerRows"] > 0
 
 
 def test_the_layer_gets_the_slot_set_once_per_frame_sorted(out):
@@ -110,3 +111,21 @@ def test_dispose_clears_the_layer_and_stops_work(out):
 def test_a_load_in_flight_across_a_far_retarget_is_ignored(out):
     c = out["cancel"]
     assert c["inflight"] == 15 and 15 not in (c["last"] or [])
+
+
+def test_labelled_markers_decimated_to_50ms_per_label_and_unlabelled_skipped(out):
+    m = out["markers"]
+    assert m["labels"] == ["Platform 1", "Ball Butler 2"]          # the empty label is never interned
+    assert m["mid_set"] == [0, 1]
+    assert m["mn"] == 2 * 200                                       # 100 Hz source -> 20 Hz per label over a 10 s slot
+    assert m["min_dt_per_label"] >= 0.05 - 1e-6
+    assert m["types"] == ["Float64Array", "Int32Array", "Float32Array"]
+    assert m["markerRows"] == 9 * 400
+
+
+def test_extract_rows_marker_edge_cases(out):
+    e = out["extract"]
+    assert e["labels"] == ["Platform 1", "Ball Butler 2"] and e["mn"] == 400 and e["n"] is True
+    assert e["mocap_only"] == {"n": 0, "mn": 400}                   # a markers-only chunk still yields a row
+    assert e["same_index"] == [0, 1]                                # label index is stable across slots (shared table)
+    assert e["none"] is None

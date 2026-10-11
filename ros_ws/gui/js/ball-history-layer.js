@@ -1,9 +1,11 @@
 /**
- * ball-history-layer.js - the far-tier ball flights (Phase 5b): thin lines for every loaded ball sample pair,
- * faded by age over the whole tail.  Pure Three.js, no DOM.
+ * ball-history-layer.js - the far-tier ball flights (Phase 5b) and labelled marker tracks (Phase 6): thin lines for every
+ * loaded ball / labelled-marker sample pair, faded by age over the whole tail.  Pure Three.js, no DOM.
  *
- *   const layer = createBallHistoryLayer(parent, {maxVertices, colourFn?});
- *   layer.setSlots(rows[])      rows = replay/ball-history.js slot rows {i, n, t:Float64Array(s), id, x, y, z (robot mm)}, any order;
+ *   const layer = createBallHistoryLayer(parent, {maxVertices, colourFn?, markerColourFn?});
+ *   layer.setSlots(rows[], labels?)  rows = replay/ball-history.js slot rows {i, n, t:Float64Array(s), id, x, y, z (robot mm)} plus
+ *                               the optional marker section {mn, mt, mid, mx, my, mz} (mid indexes `labels`, the interned label
+ *                               strings; colour = markerColourFn(label), default labelToColour), any order;
  *                               REBUILDS the buffers (allowed to cost; called at most once per frame, only when the set changed)
  *   layer.render(nowSec, tailMs)  uniforms ONLY (no buffer write, no allocation); hides the line when tailMs <= 0 or empty
  *   layer.clear()               drop everything
@@ -18,10 +20,15 @@
  * maxVertices is a CAP, not an allocation: the buffers are sized to the loaded flights (power of two, >= 4096
  * vertices, doubling as slots arrive) and released by clear(), so a live session or a short tail holds nothing and a
  * rebuild uploads only what is used (review 2026-10-11: an eager 28 MB allocation re-uploaded whole on every arrival).
- * Over the cap the OLDEST slots are dropped first and counted.
+ * Marker tracks join exactly like balls (own key space: a label index never joins a ball id) and are coloured per label by
+ * labelToColour(label), the same palette as their near-tier ribbons.
+ * Cap policy (the cap is shared by balls and markers; busy bag, 18 min: ~63k ball vertices + ~16 persistent labels x 20 Hz
+ * x 1080 s x 2 = ~690k marker vertices = ~755k < 1M, so the whole recording fits): over the cap the OLDEST slots' MARKER
+ * rows are dropped first (counted in droppedMarkerSlots / droppedMarkerSegments), keeping the balls, which are the throw-
+ * consistency signal; only if the balls alone still overflow are whole oldest slots dropped (droppedSlots), as before.
  */
 import * as THREE from 'three';
-import { ballColour } from './marker-palette.js';
+import { ballColour, labelToColour } from './marker-palette.js';
 
 export const MAX_GAP_S = 0.15;
 export const ALPHA_FLOOR = 0.15;
@@ -30,6 +37,7 @@ const MM_TO_M = 0.001;
 export function createBallHistoryLayer(parent, opts = {}) {
   const maxVertices = (opts.maxVertices | 0) & ~1 || 2;
   const colourFn = opts.colourFn || ballColour;
+  const markerColourFn = opts.markerColourFn || labelToColour;
   const group = new THREE.Group();
   group.name = 'ball-history';
   const MIN_CAP = 4096;
@@ -70,59 +78,79 @@ export function createBallHistoryLayer(parent, opts = {}) {
   parent.add(group);
 
   const tmpColor = new THREE.Color();
-  let epoch = 0, vertices = 0, segments = 0, slotsN = 0, droppedSlots = 0, droppedSegments = 0, rebuilds = 0;
+  let epoch = 0, vertices = 0, segments = 0, slotsN = 0, droppedSlots = 0, droppedSegments = 0, droppedMarkerSlots = 0, droppedMarkerSegments = 0, rebuilds = 0;
 
-  // Segment count of one slot given the previous sample per id (Map id -> t); updates `lastT`.
-  function countSlot(r, lastT) {
+  // Segment count of one stream (n samples of keys `ids` at times `ts`) given the previous sample per key (Map key -> t); updates `lastT`.
+  function countStream(n, ts, ids, lastT) {
     let s = 0;
-    for (let k = 0; k < r.n; k++) {
-      const id = r.id[k], p = lastT.get(id);
-      if (p !== undefined && r.t[k] - p <= MAX_GAP_S) s++;
-      lastT.set(id, r.t[k]);
+    for (let k = 0; k < n; k++) {
+      const id = ids[k], p = lastT.get(id);
+      if (p !== undefined && ts[k] - p <= MAX_GAP_S) s++;
+      lastT.set(id, ts[k]);
     }
     return s;
+  }
+  const t0Of = (r) => (r.n > 0 ? (r.mn > 0 ? Math.min(r.t[0], r.mt[0]) : r.t[0]) : r.mt[0]);
+
+  // Write one stream's segments from index v; returns the new v.  colourOf(key) -> 0xRRGGBB (cached per key by the caller).
+  function writeStream(n, ts, ids, xs, ys, zs, prev, colourCache, colourOf, v) {
+    const P = pos.array, T = at.array, C = col.array;
+    for (let k = 0; k < n; k++) {
+      const id = ids[k], t = ts[k];
+      const x = xs[k] * MM_TO_M, y = zs[k] * MM_TO_M, z = -ys[k] * MM_TO_M;
+      const p = prev.get(id);
+      if (p !== undefined && t - p[0] <= MAX_GAP_S && v + 2 <= capV) {
+        let c = colourCache.get(id);
+        if (c === undefined) { tmpColor.setHex(colourOf(id)); c = [tmpColor.r, tmpColor.g, tmpColor.b]; colourCache.set(id, c); }
+        for (let e = 0; e < 2; e++) {
+          const j = v + e;
+          P[3 * j] = e ? x : p[1]; P[3 * j + 1] = e ? y : p[2]; P[3 * j + 2] = e ? z : p[3];
+          T[j] = (e ? t : p[0]) - epoch;
+          C[3 * j] = c[0]; C[3 * j + 1] = c[1]; C[3 * j + 2] = c[2];
+        }
+        v += 2;
+      }
+      if (p === undefined) prev.set(id, [t, x, y, z]);
+      else { p[0] = t; p[1] = x; p[2] = y; p[3] = z; }
+    }
+    return v;
   }
 
   const layer = {
     group,
-    setSlots(rowsIn) {
+    setSlots(rowsIn, labels) {
       rebuilds++;
-      const rows = Array.from(rowsIn).filter((r) => r && r.n > 0).sort((a, b) => a.t[0] - b.t[0]);
-      // pass 1: per-slot segment counts (a join across a slot boundary belongs to the later slot)
-      const lastT = new Map();
-      const cnt = rows.map((r) => countSlot(r, lastT));
+      const lab = labels || [];
+      const rows = Array.from(rowsIn).filter((r) => r && ((r.n | 0) > 0 || (r.mn | 0) > 0)).map((r) => (r.mn > 0 ? r : Object.assign({}, r, { mn: 0 })))
+        .sort((a, b) => t0Of(a) - t0Of(b));
+      // pass 1: per-slot segment counts per stream (a join across a slot boundary belongs to the later slot)
+      const lastB = new Map(), lastM = new Map();
+      const cntB = rows.map((r) => (r.n > 0 ? countStream(r.n, r.t, r.id, lastB) : 0));
+      const cntM = rows.map((r) => (r.mn > 0 ? countStream(r.mn, r.mt, r.mid, lastM) : 0));
       let total = 0;
-      for (const c of cnt) total += c;
-      let first = 0;
+      for (let i = 0; i < rows.length; i++) total += cntB[i] + cntM[i];
       const cap = maxVertices >> 1;
-      droppedSlots = 0; droppedSegments = 0;
-      while (total > cap && first < rows.length) { total -= cnt[first]; droppedSegments += cnt[first]; first++; droppedSlots++; }
+      droppedSlots = 0; droppedSegments = 0; droppedMarkerSlots = 0; droppedMarkerSegments = 0;
+      let firstM = 0;   // marker rows of slots below firstM are dropped first
+      while (total > cap && firstM < rows.length) {
+        if (cntM[firstM] > 0) { total -= cntM[firstM]; droppedMarkerSegments += cntM[firstM]; droppedMarkerSlots++; cntM[firstM] = 0; }
+        firstM++;
+      }
+      let first = 0;
+      while (total > cap && first < rows.length) { total -= cntB[first] + cntM[first]; droppedSegments += cntB[first] + cntM[first]; first++; droppedSlots++; }
       const kept = rows.slice(first);
-      epoch = kept.length ? kept[0].t[0] : 0;
-      if (total === 0) { layer.clear(); return; }
+      epoch = kept.length ? t0Of(kept[0]) : 0;
+      if (total === 0) { const dm = droppedMarkerSlots, dms = droppedMarkerSegments, ds = droppedSlots, dg = droppedSegments; layer.clear(); droppedMarkerSlots = dm; droppedMarkerSegments = dms; droppedSlots = ds; droppedSegments = dg; return; }
       ensure(total * 2);
       // pass 2: write
-      const P = pos.array, T = at.array, C = col.array;
-      const prev = new Map();   // id -> [t, x, y, z] (Three metres) of the previous sample
+      const prevB = new Map(), prevM = new Map();   // key -> [t, x, y, z] (Three metres) of the previous sample
+      const colB = new Map(), colM = new Map();
+      const mColour = (li) => markerColourFn(lab[li]);
       let v = 0;
-      for (const r of kept) {
-        for (let k = 0; k < r.n; k++) {
-          const id = r.id[k], t = r.t[k];
-          const x = r.x[k] * MM_TO_M, y = r.z[k] * MM_TO_M, z = -r.y[k] * MM_TO_M;
-          const p = prev.get(id);
-          if (p !== undefined && t - p[0] <= MAX_GAP_S && v + 2 <= capV) {
-            tmpColor.setHex(colourFn(id));
-            for (let e = 0; e < 2; e++) {
-              const j = v + e;
-              P[3 * j] = e ? x : p[1]; P[3 * j + 1] = e ? y : p[2]; P[3 * j + 2] = e ? z : p[3];
-              T[j] = (e ? t : p[0]) - epoch;
-              C[3 * j] = tmpColor.r; C[3 * j + 1] = tmpColor.g; C[3 * j + 2] = tmpColor.b;
-            }
-            v += 2;
-          }
-          if (p === undefined) prev.set(id, [t, x, y, z]);
-          else { p[0] = t; p[1] = x; p[2] = y; p[3] = z; }
-        }
+      for (let ri = 0; ri < kept.length; ri++) {
+        const r = kept[ri];
+        if (r.n > 0) v = writeStream(r.n, r.t, r.id, r.x, r.y, r.z, prevB, colB, colourFn, v);
+        if (r.mn > 0 && first + ri >= firstM) v = writeStream(r.mn, r.mt, r.mid, r.mx, r.my, r.mz, prevM, colM, mColour, v);
       }
       vertices = v; segments = v >> 1; slotsN = kept.length;
       g.setDrawRange(0, v);
@@ -137,11 +165,11 @@ export function createBallHistoryLayer(parent, opts = {}) {
       return vertices;
     },
     clear() {
-      vertices = 0; segments = 0; slotsN = 0; droppedSlots = 0; droppedSegments = 0;
+      vertices = 0; segments = 0; slotsN = 0; droppedSlots = 0; droppedSegments = 0; droppedMarkerSlots = 0; droppedMarkerSegments = 0;
       if (capV > 0) allocate(0);           // release the buffers (CPU and GL)
       obj.visible = false;
     },
-    stats() { return { vertices, maxVertices, capacity: capV, segments, slots: slotsN, droppedSlots, droppedSegments, epoch, rebuilds }; },
+    stats() { return { vertices, maxVertices, capacity: capV, segments, slots: slotsN, droppedSlots, droppedSegments, droppedMarkerSlots, droppedMarkerSegments, epoch, rebuilds }; },
     dispose() { g.dispose(); mat.dispose(); parent.remove(group); },
   };
   return layer;

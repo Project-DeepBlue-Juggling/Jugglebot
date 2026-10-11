@@ -126,7 +126,7 @@ nested `Old naming scheme/` folder is out of scope.
 | 4 | Direct MCAP source: vendored @mcap/core + rosmsg2 bundle, decode in a module Web Worker over HTTP Range, McapSource behind the Source seam, hold-until-slot-0 open; backend = listing + Range + cached overview pass; converter cache deleted, convert.py kept as the test oracle | software-complete 2026-10-10 (`2026-10-10-gui-replay-direct-mcap-phase4.md`); gate pending; owner browser unverified |
 | 5 | Balls in the 3D scene with trails (live and replay), `tail_length_ms` input | software-complete 2026-10-11 (`2026-10-11-gui-replay-trails-phase5.md`; gate 6601 passed); owner live-throw check of D3 and a browser look pending |
 | 5b | Trail-length overlay (bottom right of the 3D scene), replay range up to the recording length, far-tier ball history | software-complete 2026-10-11 (`2026-10-11-gui-replay-trail-overlay-and-ball-history.md`) |
-| 6 | Hardening and fog: deep links `?recording=<id>&t=`, read-only minimap / juggle panel in replay | after 2–5; the session-buffer ceiling is moot (buffer removed 2026-10-10); replay residency is 8 slots / 10 s ahead |
+| 6 | Deep links `?recording=<id>&t=` + copy-link button; labelled marker trails follow the slider in replay (far tier). Skill state stays hidden; latency deferred | software-complete 2026-10-11 (`2026-10-11-gui-replay-deep-links-and-marker-history.md`); owner browser look + live D3 throw pending |
 
 ## Phase 1 — Backend (historical)
 
@@ -333,9 +333,10 @@ will be particularly helpful to review throw consistency)."
 - **Two tiers.** The NEAR tier (Phase 5's ribbons, markers and balls) draws `min(tail, 5 s)`: its rings, pool and
   rebuild cost are sized for 5 s, and minutes of marker history only smear. The FAR tier exists only in replay and only
   for balls, when the tail exceeds 5 s: every ball flight in `[p - tail, p]` as thin lines, faded by age over the whole
-  tail. Markers never extend past 5 s (owner can lift that later).
+  tail. Markers never extend past 5 s (owner can lift that later; LIFTED in Phase 6 for labelled markers).
 - **Far-tier data.** `js/replay/ball-history.js` loads `/balls` ONLY (a worker topic filter: no decode of other
-  topics) for the slots behind the playhead on the existing lite lane, nearest-first back from the playhead, paused while
+  topics; Phase 6 widened it to `/balls` + `/mocap_data` in one filtered load per slot, labelled markers kept at 50 ms
+  per label) for the slots behind the playhead on the existing lite lane, nearest-first back from the playhead, paused while
   playback buffers, a cache-resident chunk read in place. Its window is centred on a `centre` that re-targets to the
   playhead after a move of more than 10 s, so it loads and keeps `[centre - tail - 10 s, centre + 10 s]`, which always
   covers `[p - tail, p]`. Per slot it keeps compact typed rows (t, id, x, y, z, decimated to 10 ms per id). A filtered load is never memoised
@@ -345,12 +346,32 @@ will be particularly helpful to review throw consistency)."
   the playhead or older than the tail and fades alpha by age. The geometry is rebuilt only when slots arrive or leave
   (at most once per frame); per frame only uniforms change. Buffers are sized to the loaded flights (power of two from
   4096 vertices, cap 1,000,000) and released on exit, so a live session holds none. Busy bag (18 min): 63,480 vertices
-  for the whole recording; a `/balls`-only decode is 17 ms per slot against 331 ms for a full one.
+  for the whole recording; a `/balls`-only DECODE is 17 ms per slot against 331 ms for a full one, but a slot LOAD
+  measured ~20–560 ms on the Jetson with no consistent dependence on the topic filter (Phase 6,
+  `tools/probes/replay_slot_load_timing.mjs`, `2026-10-11-gui-replay-deep-links-and-marker-history.md`).
 
-## Phase 6 (outline)
-- The fog items on the map. Owner's remaining latency asks: the overview strip arrives only after the niced pass
-  (pre-compute overviews for all recordings in the background at service start), and slot buffering is serial (one
-  worker/reader; add a second reader for prefetch).
+## Phase 6 — Deep links and long marker trails (owner decisions, 2026-10-11)
+
+Map tickets 07–10 (`.scratch/gui-replay/issues/`).
+
+**Decisions.**
+- **Deep links (07).** `?recording=<id>&t=<t>`. `t` is either a bare number = seconds from the recording's start
+  (`t=83.4`) or `HH:MM:SS(.s)` = local wall-clock time of day (the trackbar's axis). The link lands PAUSED at `t`;
+  span, zoom and speed are not carried. Links are produced ONLY by a "copy link" button in the transport; the address
+  bar never updates on its own. While a live rosbridge session is connected the link is REFUSED with a notice (not
+  queued). A recording that does not exist opens the lobby with a notice; a `t` outside the recording clamps to it
+  with a notice.
+- **Marker trails follow the slider (10.2).** The Phase 5b cap ("markers never extend past 5 s") is lifted. Live is
+  unchanged (live max is 5 s). In replay above 5 s the far tier carries LABELLED mocap markers as well as balls,
+  decimated to one point per 50 ms per label, in the label's palette colour; unlabelled markers stay in the near tier
+  (their nearest-neighbour keys have 0.5 s memory, and the ball's own unlabelled marker would duplicate the ball line).
+- **Recorded skill state (08): stays HIDDEN.** The sitting bags carry no juggle/skill topic messages (the action
+  feedback topic records empty, `/skills/attempt` is not on the record list); a read-only display would need a
+  recorder change first.
+- **Latency (09): deferred by the owner** ("Latency is fine for now. We can revisit this once Phase 6 is complete"):
+  background overview pre-compute, a second prefetch reader and fast-pan lag are NOT in Phase 6.
+- **Still owed (10.1, 10.3):** a live throw to check the D3 40 mm duplicate-trail gate at the live throttles, and the
+  owner's first look at Phases 5/5b in Chrome on Win10.
 
 ## Testing Plan
 

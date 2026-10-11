@@ -9,6 +9,8 @@ import { createTrackbar } from './trackbar.js';
 import { createAbsent } from './absent.js';
 import { createFenceDom } from './fence-dom.js';
 import { createHide } from './hide.js';
+import { createDeepLink } from './deeplink.js';
+import { refusalMessage } from './format.js';
 import { setJugglePanelReplayHidden } from '../../juggle-panel.js';
 import * as ros from '../../ros-bridge.js';
 
@@ -23,12 +25,17 @@ export function initReplayUi(mode) {
     const picker = createPicker({ document: document_, fetch: (u, o) => fetch(u, o), mode });
     const lobby = createLobby({ document: document_, ros, mode, picker, toaster });
     const trackbar = createTrackbar({
-        document: document_, mode, dock: lobby.dock,
+        document: document_, mode, dock: lobby.dock, toaster,
         raf: { request: (cb) => requestAnimationFrame(cb), cancel: (id) => cancelAnimationFrame(id) },
     });
     const absent = createAbsent({ document: document_, mode });
     const fenceDom = createFenceDom({ document: document_, mode, MutationObserver: globalThis.MutationObserver });
     const hide = createHide({ document: document_, mode, setJuggleHidden: setJugglePanelReplayHidden });
-    ui = { toaster, picker, lobby, trackbar, absent, fenceDom, hide, mode, dock: lobby.dock };
+    const deepLink = createDeepLink({
+        search: document_.defaultView && document_.defaultView.location ? document_.defaultView.location.search : '',
+        ros, mode, toaster, refusalMessage,
+        list: async () => { const r = await fetch('/api/replay/recordings'); if (!r.ok) throw new Error('HTTP ' + r.status); const j = await r.json(); return (j.recordings || []).map((x) => x.id); },
+    });
+    ui = { deepLink, toaster, picker, lobby, trackbar, absent, fenceDom, hide, mode, dock: lobby.dock };
     return ui;
 }

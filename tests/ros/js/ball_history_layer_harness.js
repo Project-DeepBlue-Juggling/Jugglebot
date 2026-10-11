@@ -2,7 +2,7 @@
 // Sandbox: ./ball-history-layer.js ./marker-palette.js ./node_modules/three/. Prints one JSON object.
 import * as THREE from 'three';
 import { createBallHistoryLayer } from './ball-history-layer.js';
-import { ballColour } from './marker-palette.js';
+import { ballColour, labelToColour } from './marker-palette.js';
 
 const out = {};
 const row = (i, samples) => {   // samples: [t, id, x, y, z]
@@ -77,5 +77,41 @@ out.ctor = { odd_max: (() => { const [l] = mk(7); return l.stats().maxVertices; 
     const after = layer.stats().capacity, posLen = attr(parent, 'position').array.length;
     layer.clear();
     out.lazy = { before, after, posLen, cleared: layer.stats().capacity, hasPos: !!attr(parent, 'position') };
+}
+const mrow = (i, ball, mk) => {   // ball: [t,id,x,y,z][], mk: [t,labelIdx,x,y,z][]
+    const r = row(i, ball), n = mk.length;
+    Object.assign(r, { mn: n, mt: new Float64Array(n), mid: new Int32Array(n), mx: new Float32Array(n), my: new Float32Array(n), mz: new Float32Array(n) });
+    mk.forEach((s, k) => { r.mt[k] = s[0]; r.mid[k] = s[1]; r.mx[k] = s[2]; r.my[k] = s[3]; r.mz[k] = s[4]; });
+    return r;
+};
+{   // markers: own key space (label 1 never joins ball id 1), per-label palette colour, mapping like balls
+    const [layer, parent] = mk(64);
+    layer.setSlots([mrow(0, [[10.00, 1, 0, 0, 0], [10.05, 1, 1, 0, 0]], [[10.00, 1, 100, 0, 0], [10.05, 1, 200, 0, 0], [10.05, 0, 5, 0, 0]])], ['Platform 1', 'Ball Butler 2']);
+    const s = layer.stats();
+    const c = attr(parent, 'aColor').array, p = attr(parent, 'position').array;
+    const eq = (v, hex) => { const k = new THREE.Color().setHex(hex); return Math.abs(v[0] - k.r) < 1e-6 && Math.abs(v[1] - k.g) < 1e-6 && Math.abs(v[2] - k.b) < 1e-6; };
+    out.markers = { vertices: s.vertices, ball_colour: eq([c[0], c[1], c[2]], ballColour(1)), marker_colour: eq([c[6], c[7], c[8]], labelToColour('Ball Butler 2')),
+        marker_x: [Math.round(p[6] * 1000), Math.round(p[9] * 1000)], palette_differs: labelToColour('Ball Butler 2') !== ballColour(1) };
+}
+{   // marker-only slot works; markers sort/epoch with the balls; render hides at tail 0
+    const [layer] = mk(64);
+    layer.setSlots([mrow(0, [], [[5, 0, 0, 0, 0], [5.05, 0, 1, 0, 0]])], ['Base 1']);
+    out.marker_only = { segments: layer.stats().segments, epoch: layer.stats().epoch, r0: layer.render(5.1, 0), r5: layer.render(5.1, 5000) };
+}
+{   // cap policy: over the cap the OLDEST slots' MARKER rows go first, balls stay; only then whole slots
+    const ball = (t0) => [[t0, 1, 0, 0, 0], [t0 + 0.05, 1, 1, 0, 0]];                       // 1 segment
+    const mkr = (t0) => [[t0, 0, 0, 0, 0], [t0 + 0.05, 0, 1, 0, 0], [t0 + 0.10, 0, 2, 0, 0]];   // 2 segments
+    const slots = () => [mrow(0, ball(10), mkr(10)), mrow(1, ball(20), mkr(20)), mrow(2, ball(30), mkr(30))];   // 9 segments
+    const [a] = mk(14);   // cap 7 segments -> drop slot 0 + slot 1 marker rows (4) -> 5
+    a.setSlots(slots(), ['Base 1']);
+    const sa = a.stats();
+    const [b] = mk(6);    // cap 3: all marker rows dropped (3 balls segs = 3) fits
+    b.setSlots(slots(), ['Base 1']);
+    const sb = b.stats();
+    const [c] = mk(4);    // cap 2: markers all dropped, then the oldest ball slot too
+    c.setSlots(slots(), ['Base 1']);
+    const sc = c.stats();
+    out.cap = { a: [sa.segments, sa.slots, sa.droppedMarkerSlots, sa.droppedMarkerSegments, sa.droppedSlots], b: [sb.segments, sb.droppedMarkerSlots, sb.droppedSlots],
+        c: [sc.segments, sc.slots, sc.droppedMarkerSlots, sc.droppedSlots] };
 }
 process.stdout.write(JSON.stringify(out));

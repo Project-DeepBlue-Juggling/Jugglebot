@@ -77,6 +77,9 @@ the idle far tier scheduled a timer every frame.
 - Headless Chromium on the busy bag `2026-10-02_12-43-28` (run 2026-10-11): the overlay clears the replay dock (481 px
   against 501 px) in both themes; a whole-recording tail loads 50 slots and 63,480 vertices in about 8 s with nothing
   dropped; the screenshot shows the overlaid Ball Butler flights in per-ball colours, older ones fainter.
+  *(Pointer added 2026-10-11, Phase 6: 50 slots is fewer than the bag's 109, and Phase 6's whole-bag fill took ~160 s
+  with markers and ~130 s for a balls-only sweep, so this ~8 s is not a whole-recording figure;
+  see [2026-10-11-gui-replay-deep-links-and-marker-history](2026-10-11-gui-replay-deep-links-and-marker-history.md).)*
 - After the audit fixes (`pytest tests/ros -q -k "gui or replay"`, run 2026-10-11): 514 passed, 1 skipped.
 - Browser re-smoke of the lazy buffers on the busy bag (run 2026-10-11): capacity 0 to 4,096 to 65,536 vertices for
   the whole recording (63,480 used), 0 after exit, no console errors, the same overlaid-flights picture.

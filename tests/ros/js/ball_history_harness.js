@@ -2,7 +2,7 @@
 // shape the mcap worker delivers) with a fake source / engine / cache / layer. Prints one JSON object.
 // Sandbox: replay/{chunk,ball-history}.js + this file + package.json {"type":"module"}.
 const { buildColumns, chunkFromRecord } = await import('./replay/chunk.js');
-const { createBallHistory } = await import('./replay/ball-history.js');
+const { createBallHistory, extractRows } = await import('./replay/ball-history.js');
 
 const T0 = 1000, NSLOT = 20;
 // slot i: /balls at 200 Hz, ids 1 and 2 (ball 2 only in the second half) -> after 10 ms decimation 100 Hz per id
@@ -16,6 +16,14 @@ function ballsChunk(i, only) {
     }
     const c = buildColumns({ balls });
     const topics = { '/balls': { type: 'T', n: t.length, t: Float64Array.from(t), cols: c.cols, kinds: c.kinds } };
+    const mt = [], markers = [];   // /mocap_data at 100 Hz: two labelled markers (+ one unlabelled)
+    for (let k = 0; k < 1000; k++) {
+        mt.push(T0 + i * 10 + k * 0.01 + 0.002);
+        markers.push([{ label: 'Platform 1', position: { x: k, y: 1, z: 2 } }, { label: 'Ball Butler 2', position: { x: k, y: 3, z: 4 } },
+            { label: '', position: { x: k, y: 5, z: 6 } }]);
+    }
+    const cm = buildColumns({ markers });
+    topics['/mocap_data'] = { type: 'M', n: mt.length, t: Float64Array.from(mt), cols: cm.cols, kinds: cm.kinds };
     if (!only) topics['/other'] = { type: 'O', n: 1, t: Float64Array.from([T0 + i * 10 + 1]), ...buildColumns({ v: [1] }) };
     return chunkFromRecord({ i, t0: T0 + i * 10, t1: T0 + (i + 1) * 10, topics });
 }
@@ -53,7 +61,7 @@ function fakeCache() {
     return c;
 }
 function fakeLayer() {
-    const l = { calls: [], clears: 0, last: null, setSlots(rows) { l.calls.push(rows.map((r) => r.i)); l.last = rows; }, clear() { l.clears++; l.calls.push('clear'); } };
+    const l = { calls: [], clears: 0, last: null, labels: null, setSlots(rows, labels) { l.calls.push(rows.map((r) => r.i)); l.last = rows; l.labels = labels; }, clear() { l.clears++; l.calls.push('clear'); } };
     return l;
 }
 const mkQueue = () => { const q = []; return { q, fn: (f) => { q.push(f); } }; };
@@ -81,7 +89,7 @@ const out = {};
     const x = make(T0 + 150, 60000);
     await settle(x.d);
     out.fill = { order: x.src.log.map((e) => e.i), all_lite: x.src.log.every((e) => e.lite),
-        all_filtered: x.src.log.every((e) => e.topics && e.topics.length === 1 && e.topics[0] === '/balls'), status: x.h.status() };
+        all_filtered: x.src.log.every((e) => e.topics && e.topics.length === 2 && e.topics[0] === '/balls' && e.topics[1] === '/mocap_data'), status: x.h.status() };
     out.batched = { frames_queued: x.fr.q.length, calls_before_frame: x.layer.calls.length };
     x.flush();
     out.batched.calls = x.layer.calls.slice();
@@ -90,6 +98,10 @@ const out = {};
     out.decimation = { n: r0.n, ids: Array.from(new Set(r0.id)).sort(), mono: r0.t.every((t, k) => k === 0 || t >= r0.t[k - 1]),
         min_dt_per_id: (() => { const last = {}; let m = 1e9; for (let k = 0; k < r0.n; k++) { const id = r0.id[k]; if (id in last) m = Math.min(m, r0.t[k] - last[id]); last[id] = r0.t[k]; } return m; })(),
         types: [r0.t.constructor.name, r0.id.constructor.name, r0.x.constructor.name] };
+    out.markers = { mn: r0.mn, labels: x.layer.labels.slice(), mid_set: Array.from(new Set(r0.mid)).sort(),
+        types: [r0.mt.constructor.name, r0.mid.constructor.name, r0.mx.constructor.name],
+        min_dt_per_label: (() => { const last = {}; let m = 1e9; for (let k = 0; k < r0.mn; k++) { const id = r0.mid[k]; if (id in last) m = Math.min(m, r0.mt[k] - last[id]); last[id] = r0.mt[k]; } return m; })(),
+        markerRows: x.h.status().markerRows };
     out.fill.sorted_publish = x.layer.calls[0].every((v, k, a) => k === 0 || v > a[k - 1]);
 
     // 2. retarget threshold: <= 10 s no new work; > 10 s retargets (and evicts only outside [p-tail-10, p+10])
@@ -148,5 +160,14 @@ const out = {};
     await settle(x.d);
     x.src.gate = null; release(); await settle(x.d); x.flush();
     out.cancel = { inflight, slots: x.h.status().slots, last: x.layer.calls[x.layer.calls.length - 1] };
+}
+{   // extractRows: unlabelled skipped, a chunk with neither topic gives null, mocap-only chunk still yields a row
+    const full = ballsChunk(3, false);
+    const lt = { map: new Map(), list: [] };
+    const r = extractRows(3, full, lt);
+    const mocapOnly = { topics: { '/mocap_data': full.topics['/mocap_data'] } };
+    const rm = extractRows(3, mocapOnly, lt);
+    out.extract = { labels: lt.list, n: r.n > 0, mn: r.mn, mocap_only: rm ? { n: rm.n, mn: rm.mn } : null,
+        none: extractRows(3, { topics: { '/other': full.topics['/other'] } }, lt), same_index: Array.from(new Set(rm.mid)).sort() };
 }
 process.stdout.write(JSON.stringify(out));

@@ -95,3 +95,22 @@ def test_buffers_are_lazy_sized_to_the_data_and_released_on_clear(out):
     assert z["before"] == 0
     assert z["after"] == 8192 and z["posLen"] == 8192 * 3
     assert z["cleared"] == 0 and z["hasPos"] is False
+
+
+def test_markers_have_own_key_space_and_palette_colour(out):
+    m = out["markers"]
+    assert m["vertices"] == 4          # ball id 1 (1 seg) + label 1 (1 seg); label 0 has one sample (no seg): ids never cross-join
+    assert m["ball_colour"] is True and m["marker_colour"] is True and m["palette_differs"] is True
+    assert m["marker_x"] == [100, 200]
+
+
+def test_marker_only_slot_draws_and_hides_at_tail_zero(out):
+    m = out["marker_only"]
+    assert m["segments"] == 1 and m["epoch"] == 5 and m["r0"] == 0 and m["r5"] == 2
+
+
+def test_cap_drops_oldest_marker_rows_before_any_ball(out):
+    c = out["cap"]
+    assert c["a"] == [7, 3, 1, 2, 0]    # cap 7 of 9: only the OLDEST slot's marker rows (2 segs) go; all 3 ball slots kept
+    assert c["b"] == [3, 3, 0]          # cap 3: every marker row dropped (oldest first), the 3 ball segments survive
+    assert c["c"] == [2, 2, 3, 1]       # cap 2: markers all gone, only then the oldest whole slot
