@@ -1706,7 +1706,7 @@ def test_the_installer_propagates_seeded_post_release_from_the_response():
 # replaces, and the re-entry guard the fix's own reentrancy needs
 # ═════════════════════════════════════════════════════════════════════════════
 
-def test_install_client_and_tick_timer_share_a_reentrant_group():
+def test_tick_timer_is_reentrant_and_clients_are_off_the_pool_node():
     """The wiring pinned so a refactor cannot silently return to a plain,
     non-reentrant group — see `trajectory_node`'s identical pin
     (`test_only_the_hold_service_is_reentrant`)."""
@@ -1726,9 +1726,10 @@ def test_install_client_and_tick_timer_share_a_reentrant_group():
          patch.object(_MockNodeClass, 'create_timer', spy_timer):
         sn.SkillNode()
 
-    assert isinstance(captured.get('client_cbgroup'), ReentrantCallbackGroup)
+    # 2026-10-11: the clients moved to the dedicated helper node (own executor
+    # thread, default group); the tick timer stays reentrant.
+    assert captured.get('client_cbgroup') is None
     assert isinstance(captured.get('timer_cbgroup'), ReentrantCallbackGroup)
-    assert captured['client_cbgroup'] is captured['timer_cbgroup']
 
 
 def test_main_runs_a_multi_threaded_executor_not_plain_spin(monkeypatch):
@@ -5068,3 +5069,156 @@ def test_columns_1ball_fed_reload_true_arms_the_fed_choreography_with_empty_cup_
     assert node._reload_ctx.phase == 'await_bb_idle'
     assert node._reload_ctx.columns_pattern.phantom_balls == (0,)
     assert node._reload_ctx.bridge.skills[0].holds_ball is False
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# 2026-10-11 response starvation (sitting 7 re-fly): every waited client lives
+# on a dedicated helper node with its own executor thread; first end wins; the
+# columns feed swap declines after an END; the BB no-response text is neutral.
+# ═════════════════════════════════════════════════════════════════════════════
+
+def test_every_waited_client_is_created_on_the_dedicated_client_node():
+    """All five clients `_wait_future` blocks on must sit on the helper node
+    (spun by its own executor), never on the 4-thread pool's SkillNode: with
+    the pool's four threads all parked in blocking waits nobody could dispatch
+    the service responses (install + bb/throw_at_target both timed out at
+    2.0 s on 2026-10-11)."""
+    created = []
+    orig = _MockNodeClass.create_client
+
+    def spy(self, srv_type, name, **kw):
+        created.append((self, name))
+        return orig(self, srv_type, name, **kw)
+
+    with patch.object(_MockNodeClass, 'create_client', spy):
+        node = sn.SkillNode()
+    names = {n for _owner, n in created}
+    assert names == {'trajectory/install_segment', 'trajectory/go_to_pose',
+                     'trajectory/hold', 'bb/reload', 'bb/throw_at_target'}
+    assert all(owner is node._client_node for owner, _n in created)
+    assert node._client_node is not node
+
+
+def test_main_spins_the_client_node_on_its_own_executor_thread(monkeypatch):
+    spun = []
+
+    class _Rec:
+        def __init__(self, *a, **kw):
+            self.nodes = []
+            self.kw = kw
+
+        def add_node(self, n):
+            self.nodes.append(n)
+
+        def spin(self):
+            spun.append((threading.current_thread(), self))
+
+        def shutdown(self):
+            pass
+
+    monkeypatch.setattr(sn, 'MultiThreadedExecutor', _Rec)
+    monkeypatch.setattr(sn, 'SingleThreadedExecutor', _Rec)
+    monkeypatch.setattr(rclpy, 'init', lambda *a, **k: None)
+    monkeypatch.setattr(rclpy, 'shutdown', lambda *a, **k: None)
+    sn.main()
+    deadline = time.time() + 2.0
+    while len(spun) < 2 and time.time() < deadline:
+        time.sleep(0.01)
+    assert len(spun) == 2
+    by_exec = {ex_: th for th, ex_ in spun}
+    main_ex = next(e for e in by_exec if 'num_threads' in e.kw)
+    client_ex = next(e for e in by_exec if 'num_threads' not in e.kw)
+    assert main_ex.kw['num_threads'] == 4
+    assert len(client_ex.nodes) == 1 and client_ex.nodes[0]._name == 'skill_node_clients'
+    assert main_ex.nodes[0] is not client_ex.nodes[0]
+    # its own thread, not the main one
+    assert by_exec[client_ex] is not threading.main_thread()
+    assert by_exec[client_ex] is not by_exec[main_ex]
+
+
+def test_columns_feed_swap_declines_after_the_goal_ended(tmp_path):
+    """A feed compile that wins `_tick_lock` AFTER an END must never arm a
+    fresh executor: the ctx is still current but `_goal_end_code` is set."""
+    node, _client = _node_with_client(response=_response())
+    _columns_bb_started(node, tmp_path)
+    _finish_bridge(node)
+    ctx = node._reload_ctx
+    ann = _bb_announcement(
+        target_id=node._robot_name, landing_mm=(50.0, 0.0, 830.0),
+        landing_vel_mm_s=(0.0, 0.0, -3000.0), throw_time_s=0.5,
+        landing_time_s=5.0)
+    with node._reload_lock:
+        ctx.announced = True
+    assert node._goal_end_code == ''              # the bridge REST answered
+    node._goal_end_code = 'SERVICE_TIMEOUT'      # ended, ctx NOT cleared
+    bridge_executor = node._executor
+    node._install_announced_reload(ctx, ann)
+    assert node._executor is bridge_executor
+    assert node._goal_end_code == 'SERVICE_TIMEOUT'
+
+
+def test_columns_feed_swap_declines_over_a_refused_live_executor(tmp_path):
+    """The other form of an END (`_ended_code_for_swap`): the live executor
+    was refused (`attempt_ended`) but has not retired yet, so
+    `_goal_end_code` is still ''. Swapping over it would lose its end code
+    and arm a fresh executor behind it."""
+    node, _client = _node_with_client(response=_response())
+    _columns_bb_started(node, tmp_path)
+    _finish_bridge(node)
+    ctx = node._reload_ctx
+    ann = _bb_announcement(
+        target_id=node._robot_name, landing_mm=(50.0, 0.0, 830.0),
+        landing_vel_mm_s=(0.0, 0.0, -3000.0), throw_time_s=0.5,
+        landing_time_s=5.0)
+    with node._reload_lock:
+        ctx.announced = True
+    # The bridge executor has retired by now; stand in a refused, not yet
+    # retired one (the swap reads only these two fields).
+    import types
+    bridge_executor = types.SimpleNamespace(
+        attempt_ended=True, end_code='SERVICE_TIMEOUT', done=False)
+    node._executor = bridge_executor
+    assert node._goal_end_code == ''
+    node._install_announced_reload(ctx, ann)
+    assert node._executor is bridge_executor
+    assert node._ended_code_for_swap() == 'SERVICE_TIMEOUT'
+
+
+class _NoAnswerClient(_RecordingClient):
+    def call_async(self, request):
+        fut = super().call_async(request)
+        fut._is_bb = True
+        return fut
+
+
+def test_bb_no_response_text_is_neutral_and_first_end_wins(tmp_path):
+    node, _client = _node_with_client(response=_response())
+    node._params['plant_id'] = 'test_bb_noresp'
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    _prelevel_ready(node)
+    _reload_ready(node)
+    node._bb_throw_cli = _NoAnswerClient(response=None, ready=True)
+    orig_wait = node._wait_future
+    node._wait_future = (lambda fut, timeout_s=0.0:
+                         None if getattr(fut, '_is_bb', False)
+                         else orig_wait(fut))
+    seen = []
+    orig_end = node._end_attempt
+    node._end_attempt = lambda code, msg, **kw: (seen.append((code, msg)),
+                                                 orig_end(code, msg, **kw))
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_self_toss_goal(reload=True))
+    assert resp.success is True, resp.message
+    _bb_ready(node)
+    node._maybe_fire_reload_throw()
+    assert seen and seen[0][0] == 'ABORTED_BB_THROW_TIMEOUT'
+    msg = seen[0][1]
+    assert 'answered nothing' not in msg and 'silent' not in msg
+    assert 'may still have been executed' in msg
+
+    # first end wins: an earlier code is not overwritten (no live executor)
+    node._executor = None
+    node._goal_end_code = 'SERVICE_TIMEOUT'
+    orig_end('ABORTED_BB_THROW_TIMEOUT', 'later')
+    assert node._goal_end_code == 'SERVICE_TIMEOUT'

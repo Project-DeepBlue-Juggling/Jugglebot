@@ -1339,6 +1339,7 @@ _create_mock_module('rclpy.logging', {
 })
 _create_mock_module('rclpy.executors', {
     'MultiThreadedExecutor': _MockMultiThreadedExecutor,
+    'SingleThreadedExecutor': _MockMultiThreadedExecutor,
 })
 _create_mock_module('rclpy.time', {
     'Time': MockTime,

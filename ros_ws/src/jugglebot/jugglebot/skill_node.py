@@ -50,7 +50,7 @@ import rclpy
 from rclpy.action import ActionServer, CancelResponse, GoalResponse
 from rclpy.callback_groups import (MutuallyExclusiveCallbackGroup,
                                    ReentrantCallbackGroup)
-from rclpy.executors import MultiThreadedExecutor
+from rclpy.executors import MultiThreadedExecutor, SingleThreadedExecutor
 from rclpy.logging import LoggingSeverity
 from rclpy.node import Node
 
@@ -949,34 +949,53 @@ class SkillNode(Node):
         # still-busy tick a no-op tick rather than a second install.
         self._tick_lock = threading.Lock()
 
-        self._install_cli = self.create_client(
-            InstallSegment, 'trajectory/install_segment',
-            callback_group=self._cbgroup)
+        # ── every blocking-waited CLIENT lives on a dedicated helper node ──
+        # 2026-10-11 (sitting 7 re-fly): all four pool threads of `main`'s
+        # MultiThreadedExecutor were parked in blocking waits (`_wait_future`
+        # sleep-polls on the BB throw and the REST install, `_tick_lock`
+        # acquires in the announcement / feed compile, the Juggle action
+        # wait), so NO thread was left to dispatch the service RESPONSES:
+        # the install (planned in 82 ms) and bb/throw_at_target (answered in
+        # ~5 ms) both timed out at 2.0 s and the attempt ended SERVICE_TIMEOUT.
+        # The blocker count is NOT bounded (the Reentrant 25 ms tick timer
+        # takes another thread per fire while earlier ones block), so raising
+        # `num_threads` only moves the cliff, and Foxy lets any pool thread
+        # take any ready entity, so no callback group can reserve one. The
+        # fix is to take response delivery out of the pool: these clients sit
+        # on `self._client_node`, which `main` spins on its OWN
+        # single-threaded executor in a daemon thread. `_wait_future` keeps
+        # polling the (thread-safe) future unchanged. The helper's name does
+        # not matter to the servers; topic/service names are unchanged.
+        self._client_node = Node('skill_node_clients')
+
+        self._install_cli = self._client_node.create_client(
+            InstallSegment, 'trajectory/install_segment')
         # Shares the SAME reentrant group as the install client (item 7,
         # `_prelevel`): `_run_one_ball` runs on the node's default
         # (non-reentrant) service group and blocks in `_wait_future` waiting
         # for THIS client's response, exactly the shape `__init__`'s comment
         # above documents for the install client — a different group is what
         # lets the MultiThreadedExecutor process that response concurrently.
-        self._go_to_pose_cli = self.create_client(
-            GoToPose, 'trajectory/go_to_pose', callback_group=self._cbgroup)
+        # (Superseded 2026-10-11: ALL these clients are now on
+        # `self._client_node` with its own executor thread -- see above.)
+        self._go_to_pose_cli = self._client_node.create_client(
+            GoToPose, 'trajectory/go_to_pose')
         # Shares the SAME reentrant group too (Unit A, R3 first sitting,
         # 2026-09-13): `_maybe_hold_pending_event` blocks in `_wait_future`
         # for THIS client's response, called from `_on_tick` (already on the
         # group) and from `_stop_attempt` (the default group) -- the response
         # still needs the MultiThreadedExecutor to process it concurrently.
-        self._hold_cli = self.create_client(
-            Trigger, 'trajectory/hold', callback_group=self._cbgroup)
+        self._hold_cli = self._client_node.create_client(
+            Trigger, 'trajectory/hold')
         # R4 reload (brief step 1b): the SAME reason every other blocking
         # client on this node shares `self._cbgroup` (see the comment on
         # `_install_cli` above) — `_start_reload` blocks in `_wait_future`
         # for both, from the self-toss/hop Juggle goal's own default
         # (non-reentrant) group.
-        self._reload_cli = self.create_client(
-            Trigger, 'bb/reload', callback_group=self._cbgroup)
-        self._bb_throw_cli = self.create_client(
-            BallButlerThrow, 'bb/throw_at_target',
-            callback_group=self._cbgroup)
+        self._reload_cli = self._client_node.create_client(
+            Trigger, 'bb/reload')
+        self._bb_throw_cli = self._client_node.create_client(
+            BallButlerThrow, 'bb/throw_at_target')
 
         self._announce_pub = self.create_publisher(
             ThrowAnnouncement, 'throw_announcements', 10)
@@ -2133,6 +2152,24 @@ class SkillNode(Node):
                               else 'after', res.code, res.message))
         return False
 
+    def _ended_code_for_swap(self) -> str:
+        """The code of an END that already decided this goal, or ''.
+
+        Called under ``_tick_lock`` + ``_reload_lock`` by every reload
+        executor swap (2026-10-11, sitting 7 re-fly). ``_reload_ctx is ctx``
+        alone is not enough: ``threading.Lock`` is unfair, so a compile can
+        win the tick lock after an END and before ``_end_attempt`` clears the
+        ctx, and would arm a fresh executor behind a decided outcome. An END
+        shows up either as a retired executor's captured ``_goal_end_code``
+        or as a still-live executor with ``attempt_ended`` (which flips only
+        on a refusal -- ``SkillExecutor.done``'s docstring).
+        """
+        if self._goal_end_code:
+            return self._goal_end_code
+        if self._executor is not None and self._executor.attempt_ended:
+            return self._executor.end_code or 'ATTEMPT_ENDED'
+        return ''
+
     # ── the tick ────────────────────────────────────────────────────────
 
     def _end_attempt(self, end_code: str, message: str, *,
@@ -2184,6 +2221,13 @@ class SkillNode(Node):
                 # (`_log_attempt_end`) -- with THIS reason.
                 self._executor.end_message = message
                 executor_reports = True
+            elif self._goal_end_code:
+                # First end wins (2026-10-11): an earlier end (e.g.
+                # SERVICE_TIMEOUT) already decided the outcome; a later,
+                # derived label must not overwrite it.
+                self.get_logger().info(
+                    'END %s ignored: the attempt already ended %s'
+                    % (end_code, self._goal_end_code))
             else:
                 self._goal_end_code = end_code
             if force_hold:
@@ -2425,10 +2469,10 @@ class SkillNode(Node):
         if throw_resp is None:
             self._end_attempt(
                 'ABORTED_BB_THROW_TIMEOUT',
-                'reload refused: bb/throw_at_target did not answer in '
-                '%.1f s -- ball_butler_node itself answered nothing (a Ball '
-                'Butler firmware refusal would have answered REJECTED_BB)'
-                % (_SERVICE_WAIT_S,))
+                'reload refused: no response from bb/throw_at_target within '
+                '%.1f s (the request may still have been executed -- check '
+                "ball_butler_node's log; this node does not know whether "
+                'Ball Butler threw)' % (_SERVICE_WAIT_S,))
             return
         if not bool(throw_resp.success):
             # Same INVARIANTS.md row `_start_reload`'s bb/reload refusal
@@ -3963,7 +4007,12 @@ class SkillNode(Node):
                     % (_STOP_LOCK_WAIT_S,))
             try:
                 with self._reload_lock:
-                    installed = self._reload_ctx is ctx
+                    ended = self._ended_code_for_swap()
+                    installed = self._reload_ctx is ctx and not ended
+                    if ended:
+                        self.get_logger().info(
+                            'columns_1ball reload: declining the executor '
+                            'swap -- the attempt already ended (%s)' % (ended,))
                     if installed:
                         self._sched_refused_at_start = self._sched_refused
                         self._force_hold = False
@@ -4100,7 +4149,12 @@ class SkillNode(Node):
                 'swapping the executor without it' % (_STOP_LOCK_WAIT_S,))
         try:
             with self._reload_lock:
-                installed = self._reload_ctx is ctx
+                ended = self._ended_code_for_swap()
+                installed = self._reload_ctx is ctx and not ended
+                if ended:
+                    self.get_logger().info(
+                        'reload: declining the executor swap -- the attempt '
+                        'already ended (%s)' % (ended,))
                 if installed:
                     self._sched_refused_at_start = self._sched_refused
                     self._force_hold = False
@@ -4250,7 +4304,14 @@ class SkillNode(Node):
                 '-- swapping the executor without it' % (_STOP_LOCK_WAIT_S,))
         try:
             with self._reload_lock:
-                installed = self._reload_ctx is ctx
+                # 2026-10-11: also require the goal has NOT ended
+                # (`_ended_code_for_swap`).
+                ended = self._ended_code_for_swap()
+                installed = self._reload_ctx is ctx and not ended
+                if ended:
+                    self.get_logger().info(
+                        'columns feed: declining the executor swap -- the '
+                        'attempt already ended (%s)' % (ended,))
                 if installed:
                     self._sched_refused_at_start = self._sched_refused
                     self._force_hold = False
@@ -4693,19 +4754,40 @@ def main(args=None):
     # response, a blocked subscription) while `_juggle_goal` waits for one to
     # free up, which would delay every goal accept behind whatever the other
     # three threads are doing.
+    # 2026-10-11 (sitting 7 re-fly): FOUR is NOT enough on its own -- all four
+    # pool threads were blocked (tick polling the BB call, tick polling the
+    # REST install, the announcement callback waiting `_tick_lock`, the Juggle
+    # execute loop) and nobody could dispatch the service responses. The
+    # number of blockers is unbounded (the Reentrant 25 ms timer takes another
+    # thread per fire), so response delivery is moved OFF this pool: every
+    # waited client lives on `node._client_node`, spun below on its own
+    # SingleThreadedExecutor in a daemon thread. num_threads stays 4.
     executor = MultiThreadedExecutor(num_threads=4)
     executor.add_node(node)
+    client_executor = SingleThreadedExecutor()
+    client_executor.add_node(node._client_node)
+    client_thread = threading.Thread(
+        target=client_executor.spin, name='skill_node_clients', daemon=True)
+    client_thread.start()
     try:
         executor.spin()
     except KeyboardInterrupt:
         pass
     finally:
+        try:
+            client_executor.shutdown()
+        except Exception:  # noqa: BLE001 — shutdown must stay quiet
+            pass
         # Foxy destroys the node before the action server is garbage-collected;
         # ActionServer.__del__ then raises InvalidHandle at exit. Destroy it
         # first (a second destroy is harmless).
         try:
             node._juggle_action.destroy()
         except Exception:  # noqa: BLE001 — shutdown must stay quiet
+            pass
+        try:
+            node._client_node.destroy_node()
+        except Exception:  # noqa: BLE001
             pass
         node.destroy_node()
         if rclpy.ok():
