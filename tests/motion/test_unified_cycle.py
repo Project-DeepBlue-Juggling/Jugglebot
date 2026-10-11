@@ -1820,6 +1820,49 @@ def test_an_aim_past_the_usable_cone_refuses_as_TILT_PIN(limits, geom):
         assert 'throw aim' in excinfo.value.outcome()
 
 
+def test_events_for_projects_the_catch_velocity_onto_a_pinned_receive_tilt(
+        launch, limits, geom):
+    """2026-10-11 (bag 2026-10-11_11-27-53): ``_events_for`` builds the
+    ``CatchEvent`` the QP's matched-velocity term solves against. With
+    ``receive_tilt`` pinned, the event's ``vel_target`` (what the soft match
+    chases) is the raw arrival PROJECTED onto the pinned cup axis
+    (``tg.cup_axis(rx, ry)``) — for ``(0.0, 0.0)`` the axis is vertical, so it
+    keeps ``v_z`` and zeroes the lateral pair exactly — while ``vel`` stays the
+    RAW arrival, because the catch-runway gate must decelerate the ball's true
+    vertical speed (the audit's case: a tilted pin would otherwise shrink it).
+    Without ``receive_tilt`` there is no ``vel_target`` and the match chases
+    ``vel``. :class:`unified_cycle.CatchMark` (built from
+    ``goals.catch_vel_mm_s`` in ``_meta_for``, never from the event) keeps the
+    raw arrival — checked on a real ``LANDING`` plan."""
+    goals_pinned = _goals(receive_tilt=(0.0, 0.0))
+    events, _ = uc._events_for(uc.LANDING, goals_pinned)
+    catch_ev = next(e for e in events if isinstance(e, cc.CatchEvent))
+    np.testing.assert_allclose(catch_ev.vel_target[:2], [0.0, 0.0], atol=1e-12)
+    assert catch_ev.vel_target[2] == pytest.approx(CATCH_V_MM_S[2] / 1000.0)
+    np.testing.assert_allclose(catch_ev.vel, CATCH_V_MM_S / 1000.0)
+
+    tilted = (0.10, -0.05)
+    events_t, _ = uc._events_for(uc.LANDING, _goals(receive_tilt=tilted))
+    catch_t = next(e for e in events_t if isinstance(e, cc.CatchEvent))
+    n = tg.cup_axis(*tilted)
+    np.testing.assert_allclose(catch_t.vel, CATCH_V_MM_S / 1000.0)
+    np.testing.assert_allclose(
+        catch_t.vel_target, n * float(np.dot(CATCH_V_MM_S / 1000.0, n)))
+
+    goals_unpinned = _goals(receive_tilt=None)
+    events2, _ = uc._events_for(uc.LANDING, goals_unpinned)
+    catch_ev2 = next(e for e in events2 if isinstance(e, cc.CatchEvent))
+    np.testing.assert_allclose(catch_ev2.vel, CATCH_V_MM_S / 1000.0)
+    assert catch_ev2.vel_target is None
+
+    plan_a, meta_a = launch
+    state = uc.release_state_from_meta(meta_a, plan_a)
+    goals_landing = _goals(period_s=1.0, catch_frac=None, catch_t_s=0.6,
+                           receive_tilt=(0.0, 0.0))
+    _, meta = uc.plan_landing(goals_landing, state, limits, geom)
+    np.testing.assert_allclose(meta.catches[0].vel_mm_s, CATCH_V_MM_S)
+
+
 def test_goals_require_exactly_one_catch_time_form():
     """``catch_frac`` and ``catch_t_s`` are the same number twice; give one."""
     with pytest.raises(ValueError):
