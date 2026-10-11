@@ -857,6 +857,16 @@ class SkillNode(Node):
         # 17.6 mm plant scatter — two drops in 51), 20 mm was stable at both
         # apexes — 20 mm is the launch default; the box still admits 40.
         self.declare_parameter('learner_lateral_authority_mm', 20.0)
+        # How far (mm) a tracker CATCH re-aim may move the landing OUTWARD --
+        # away from the pattern's other site -- about the schedule's landing
+        # (executor.catch_outward_authority_m; the learner's lateral command
+        # and the hop's keep learner_lateral_authority_mm). 2026-10-12: an
+        # outward re-aim lengthens the next transit (+20 mm on 125 mm = +16 %)
+        # and 2 of the 2026-10-11 sitting's 3 LIMIT refusals were exactly that;
+        # offline replay (q_drive) passes with >= 2 % margin to 10 mm, fails
+        # at 20. Inward re-aims keep the full authority. >= the lateral
+        # authority = symmetric (no effect).
+        self.declare_parameter('catch_outward_authority_mm', 10.0)
         # How many re-solves one committed CATCH may spend re-aiming from later
         # fits (executor.resend_max_per_catch; 2 since 2026-09-18). 0 disables
         # re-aiming outright -- the A/B knob for a sitting: on 2026-09-18 16:16
@@ -1293,6 +1303,12 @@ class SkillNode(Node):
         if tracker_id is None:
             return None
         return self._balls.get(int(tracker_id))
+
+    def _catch_outward_authority_m(self) -> float:
+        """`catch_outward_authority_mm` in metres, floored at 0 (a negative
+        value is meaningless -- 'outward' is a magnitude bound)."""
+        return max(float(self.get_parameter(
+            'catch_outward_authority_mm').value), 0.0) / 1000.0
 
     def _catch_resend_max(self) -> int:
         """`catch_resend_max`, clamped to 0..5 with a WARN outside it -- a
@@ -3207,6 +3223,7 @@ class SkillNode(Node):
             learner=learner, boxes=boxes,
             lateral_authority_m=float(self.get_parameter(
                 'learner_lateral_authority_mm').value) / 1000.0,
+            catch_outward_authority_m=self._catch_outward_authority_m(),
             observer=self._ball_evidence, observations=self._observations,
             on_experience=self._bind_on_experience(memory),
             dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
@@ -3622,6 +3639,7 @@ class SkillNode(Node):
             learner=learner, boxes=boxes,
             lateral_authority_m=float(self.get_parameter(
                 'learner_lateral_authority_mm').value) / 1000.0,
+            catch_outward_authority_m=self._catch_outward_authority_m(),
             observer=self._ball_evidence, observations=self._observations,
             on_experience=self._bind_on_experience(memory),
             dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
@@ -3991,6 +4009,7 @@ class SkillNode(Node):
                 learner=learner, boxes=ctx.boxes,
                 lateral_authority_m=float(self.get_parameter(
                     'learner_lateral_authority_mm').value) / 1000.0,
+                catch_outward_authority_m=self._catch_outward_authority_m(),
                 observer=self._ball_evidence, observations=self._observations,
                 on_experience=self._bind_on_experience(ctx.memory),
                 dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
@@ -4128,6 +4147,7 @@ class SkillNode(Node):
             learner=learner, boxes=ctx.boxes,
             lateral_authority_m=float(self.get_parameter(
                 'learner_lateral_authority_mm').value) / 1000.0,
+            catch_outward_authority_m=self._catch_outward_authority_m(),
             observer=self._ball_evidence, observations=self._observations,
             on_experience=self._bind_on_experience(ctx.memory),
             dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
@@ -4287,6 +4307,7 @@ class SkillNode(Node):
             learner=learner, boxes=ctx.boxes,
             lateral_authority_m=float(self.get_parameter(
                 'learner_lateral_authority_mm').value) / 1000.0,
+            catch_outward_authority_m=self._catch_outward_authority_m(),
             observer=self._ball_evidence, observations=self._observations,
             on_experience=self._bind_on_experience(ctx.memory),
             dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,

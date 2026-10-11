@@ -1655,6 +1655,7 @@ class SkillExecutor:
                  resend_max_per_catch: int = 2,
                  learner=None, boxes=None,
                  lateral_authority_m: Optional[float] = None,
+                 catch_outward_authority_m: Optional[float] = None,
                  observer: Optional[Callable[[int, float], str]] = None,
                  on_experience: Optional[Callable[[Experience], None]] = None,
                  observations: Optional[Callable[[float], Observations]] = None,
@@ -1712,6 +1713,20 @@ class SkillExecutor:
         #: banking budget either way.
         self.lateral_authority_m = (None if lateral_authority_m is None
                                     else float(lateral_authority_m))
+        #: How far (m) a tracker CATCH aim may move the landing OUTWARD --
+        #: away from the pattern's other site -- about the schedule's landing
+        #: (:meth:`_clamp_lateral_to_schedule` only; the learner's THROW
+        #: command and the hop's share :attr:`lateral_authority_m` and never
+        #: read this). Inward moves keep the full lateral authority. ``None``
+        #: = symmetric (the pre-2026-10-12 behaviour); a one-site pattern has
+        #: no 'outward' and is symmetric whatever this is. Why asymmetric: an
+        #: outward catch re-aim LENGTHENS the transit to the next catch site
+        #: (+20 mm on a 125 mm columns transit = +16 %), and 2 of the 2026-10-11
+        #: sitting's 3 LIMIT refusals were that transit at the 350 mm/s / 5000
+        #: mm/s2 caps; an inward re-aim shortens it and costs nothing.
+        self.catch_outward_authority_m = (
+            None if catch_outward_authority_m is None
+            else abs(float(catch_outward_authority_m)))
         self.observer = observer
         self.on_experience = on_experience
         self.observations = observations
@@ -1844,10 +1859,11 @@ class SkillExecutor:
         50 mm off the site and back over ~12 throws. The learner's local
         affine fit already has the term for it: its regressor is
         ``Z = [delta_x; delta_u; 1]`` (``learner`` step 3), so a ``dy/dx``
-        slope is fitted from the same neighbours, and the state bandwidth
-        ``h_x = 0.01 m`` is shared with the site half — no new knob, no
-        ``LearnerConfig`` change, no memory-schema change (``x`` has been
-        4-wide since R3).
+        slope is fitted from the same neighbours — no memory-schema change
+        (``x`` has been 4-wide since R3). Since 2026-10-12 the offset half
+        has its own kernel bandwidth, ``LearnerConfig.h_seat = 1.0 m``, so it
+        no longer partitions the memory (the offset's effect on the outcome
+        tested within noise; ``learner`` module docstring).
 
         No ``learner`` ⇒ ``u = y_d`` exactly (R2 behaviour). Raises
         :class:`_NoAdmissibleCommand` when the learner's fit is non-finite,
@@ -2057,6 +2073,23 @@ class SkillExecutor:
             target_mm=self._commanded_target_mm(skill.target, (u_dy, u_apex)),
             flight_s=sch.flight_s(u_apex), t_release_s=float(skill.t_abs_s))
 
+    def _outward_unit(self, skill: Skill) -> Optional[np.ndarray]:
+        """Unit xy vector pointing from the pattern's OTHER site(s) toward
+        ``skill``'s site -- the direction a catch re-aim lengthens the transit
+        to the next catch. ``None`` for a one-site pattern (no 'outward') or
+        coincident sites."""
+        here = np.asarray(skill.site.cup_mm, dtype=float)[:2]
+        others = {}
+        for sk in self.schedule.skills:
+            if sk.kind in (THROW, CATCH) and sk.site.name != skill.site.name:
+                others[sk.site.name] = np.asarray(sk.site.cup_mm,
+                                                  dtype=float)[:2]
+        if not others:
+            return None
+        d = here - np.mean(list(others.values()), axis=0)
+        n = float(np.linalg.norm(d))
+        return d / n if n > 1e-6 else None
+
     def _clamp_lateral_to_schedule(self, idx: int, skill: Skill,
                                    landing: Landing) -> Landing:
         """Clamp ``landing``'s lateral (x, y) to within
@@ -2117,16 +2150,30 @@ class SkillExecutor:
         sched_xy = np.asarray(predicted.pos_mm, dtype=float)[:2]
         landing_xy = np.asarray(landing.pos_mm, dtype=float)[:2]
         offset = landing_xy - sched_xy
-        clamped_xy = sched_xy + np.clip(offset, -a_mm, a_mm)
+        clipped = np.clip(offset, -a_mm, a_mm)
+        out_u = self._outward_unit(skill)
+        out_mm = None
+        if self.catch_outward_authority_m is not None and out_u is not None:
+            out_mm = min(self.catch_outward_authority_m * 1000.0, a_mm)
+            along = float(np.dot(clipped, out_u))
+            if along > out_mm:
+                clipped = clipped - (along - out_mm) * out_u
+        clamped_xy = sched_xy + clipped
         bite_mm = np.abs(landing_xy - clamped_xy)
         key = (idx, 'AIM-LATERAL-CLAMPED')
         if float(np.max(bite_mm)) > 1.0 and key not in self._resend_notes:
             self._resend_notes.add(key)
             axis = int(np.argmax(np.abs(offset)))
+            if (out_mm is not None
+                    and float(np.dot(offset, out_u)) > out_mm + 1.0):
+                side = ('OUTWARD side, authority %.0f mm (inward %.0f mm)'
+                        % (out_mm, a_mm))
+            else:
+                side = 'authority %.0f mm' % a_mm
             self._pending_notes.append(
                 'AIM-LATERAL-CLAMPED skill %d: tracker landing %+.1f mm in '
-                '%s, catch keeps the schedule\'s site (authority %.0f mm)'
-                % (idx, offset[axis], 'xy'[axis], a_mm))
+                '%s, catch keeps the schedule\'s site (%s)'
+                % (idx, offset[axis], 'xy'[axis], side))
         pos_mm = np.array([clamped_xy[0], clamped_xy[1],
                           float(np.asarray(landing.pos_mm, dtype=float)[2])])
         return Landing(pos_mm=pos_mm, vel_mm_s=landing.vel_mm_s,
@@ -3325,8 +3372,19 @@ class SkillExecutor:
                 remaining.append(pend)
                 continue
             window = self.seat_window(pend.t_open_s, pend.t_close_s)
+            t_open_rel = pend.t_open_s - pend.t_land_scheduled_s
+            t_close_rel = pend.t_close_s - pend.t_land_scheduled_s
             if window is None:
-                continue                 # blind: no verdict, row dropped
+                # Blind: no verdict, row dropped -- but never silently (a
+                # missed catch that does not end the pattern, sitting 7b
+                # L1990, left no trace of why the rule abstained).
+                lines.append(
+                    '%.3f CATCH-EVIDENCE-BLIND the CATCH of %s (skill %d): '
+                    'the cup-sensor history does not cover [%+.2f, %+.2f] s '
+                    'of its scheduled landing -- no verdict, row dropped'
+                    % (t_abs_s, ball_label(pend.ball_id), pend.catch_idx,
+                       t_open_rel, t_close_rel))
+                continue
             span_s = pend.t_close_s - pend.t_open_s
             expected = 100.0 * span_s
             live = (expected <= 0.0
@@ -3334,7 +3392,26 @@ class SkillExecutor:
                       >= MISSED_CATCH_MIN_VALID_FRAC)
             live = live and float(window.max_gap_s) <= MISSED_CATCH_MAX_GAP_S
             if not live or window.n_seated > 0:
-                continue                 # confirmed, or not trustworthy
+                # Confirmed (a raw-SEATED sample vetoes), or not trustworthy
+                # (under-covered / gappy): no verdict, row dropped -- logged
+                # with the numbers so the abstention is attributable.
+                first = (
+                    '' if window.t_first_seated_s is None
+                    else ', first SEATED at %+.3f s from the window open'
+                    % (float(window.t_first_seated_s) - pend.t_open_s))
+                lines.append(
+                    '%.3f CATCH-EVIDENCE-ABSTAIN the CATCH of %s (skill %d): '
+                    '%s over [%+.2f, %+.2f] s of its scheduled landing -- '
+                    '%d valid of ~%.0f expected, %d SEATED, max gap %.0f ms'
+                    '%s -- no verdict, row dropped'
+                    % (t_abs_s, ball_label(pend.ball_id), pend.catch_idx,
+                       'window NOT LIVE' if not live
+                       else 'cup read SEATED (a catch, or a late-stamped '
+                            'sample of the previous ball)',
+                       t_open_rel, t_close_rel, window.n_valid, expected,
+                       window.n_seated, 1000.0 * float(window.max_gap_s),
+                       first))
+                continue
             self._pending_outcomes = [
                 p for p in self._pending_outcomes
                 if p.ball_id != pend.ball_id]

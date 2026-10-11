@@ -601,6 +601,17 @@ def test_the_learner_lateral_authority_parameter_defaults_to_twenty():
     assert node.get_parameter('learner_lateral_authority_mm').value == 20.0
 
 
+def test_the_catch_outward_authority_parameter_defaults_to_ten_and_plumbs():
+    """2026-10-12: outward tracker re-aims are capped at 10 mm (replay: passes
+    with >= 2 % margin to 10 mm, refuses at the symmetric 20 mm); the helper
+    returns metres and floors a negative value at 0."""
+    node, _client = _node_with_client()
+    assert node.get_parameter('catch_outward_authority_mm').value == 10.0
+    assert node._catch_outward_authority_m() == pytest.approx(0.010)
+    node._params['catch_outward_authority_mm'] = -5.0
+    assert node._catch_outward_authority_m() == 0.0
+
+
 def test_the_hold_tilt_max_deg_parameter_defaults_to_the_planner_ceiling():
     """R5 owner experiment (2026-09-30): unset, the reload's held-catch tilt
     cap is the planner's own ceiling (`tilt_geometry.MAX_TILT_DEG`, 12 deg) —

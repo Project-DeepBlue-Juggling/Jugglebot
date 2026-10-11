@@ -1321,6 +1321,83 @@ def test_lateral_authority_widens_the_clamp(sites):
     assert np.allclose(terminal.landing_mm[:2], sched_xy[:2] + np.array([0.0, 20.0]))
 
 
+def _outward_run(sites, offset_xy, outward_m, one_site=False,
+                 authority_m=0.020):
+    """Drive a CATCH at P1 (x = -50) thrown from P2 (x = +50): the other site
+    is P2, so OUTWARD at the catch is -x. ``offset_xy`` (mm) is the tracker
+    landing's offset from the schedule's (P1); returns ``(terminal, lines,
+    p1)``. ``one_site`` puts every skill at P1 (a self-toss shape: no 'other
+    site', so no outward)."""
+    p1, p2 = sites
+    sch = _schedule(sites)
+    thrower = p1 if one_site else p2
+    sch = dataclasses.replace(sch, skills=tuple(
+        dataclasses.replace(k, site=thrower) if k.kind == sg.THROW
+        else dataclasses.replace(k, site=p1) for k in sch.skills))
+    inst = _FakeInstaller()
+    sched_xy = p1.catch_site_mm()
+    tracked = _fit_landing(
+        pos_mm=sched_xy + np.array([offset_xy[0], offset_xy[1], 0.0]),
+        vel_mm_s=LAND_VEL, t_land_abs_s=sch.skills[1].t_abs_s)
+    x = ex.SkillExecutor(sch, inst, tracker=lambda b: tracked,
+                         lateral_authority_m=authority_m,
+                         catch_outward_authority_m=outward_m)
+    x.tick(sch.skills[0].dispatch_s())
+    lines = x.tick(sch.skills[1].dispatch_s())
+    return inst.calls[-1][1], lines, p1
+
+
+def test_catch_outward_reaim_is_clipped_to_the_outward_authority(sites):
+    """44.6 mm outward in x (away from P2) with a 10 mm outward authority
+    keeps 10 mm; y keeps its ordinary 20 mm clip; the note names the side."""
+    terminal, lines, p1 = _outward_run(sites, (-44.6, -30.0), 0.010)
+    assert np.allclose(terminal.landing_mm[:2],
+                       p1.catch_site_mm()[:2] + np.array([-10.0, -20.0]))
+    note = [l for l in lines if 'AIM-LATERAL-CLAMPED' in l]
+    assert len(note) == 1 and 'OUTWARD side, authority 10 mm' in note[0]
+    assert 'inward 20 mm' in note[0]
+
+
+def test_catch_inward_reaim_keeps_the_full_lateral_authority(sites):
+    """The same asymmetric clamp leaves the INWARD side at 20 mm."""
+    terminal, lines, p1 = _outward_run(sites, (44.6, 0.0), 0.010)
+    assert np.allclose(terminal.landing_mm[:2],
+                       p1.catch_site_mm()[:2] + np.array([20.0, 0.0]))
+    note = [l for l in lines if 'AIM-LATERAL-CLAMPED' in l]
+    assert len(note) == 1 and 'OUTWARD' not in note[0]
+    assert 'authority 20 mm' in note[0]
+
+
+def test_catch_outward_within_authority_is_untouched_and_silent(sites):
+    terminal, lines, p1 = _outward_run(sites, (-8.0, 0.0), 0.010)
+    assert np.allclose(terminal.landing_mm[:2],
+                       p1.catch_site_mm()[:2] + np.array([-8.0, 0.0]))
+    assert not any('AIM-LATERAL-CLAMPED' in l for l in lines)
+
+
+def test_catch_clamp_stays_symmetric_for_a_one_site_pattern(sites):
+    """No other site => no outward: 44.6 mm keeps the full 20 mm even with
+    a 10 mm outward authority configured."""
+    terminal, lines, p1 = _outward_run(sites, (-44.6, 0.0), 0.010,
+                                       one_site=True)
+    assert np.allclose(terminal.landing_mm[:2],
+                       p1.catch_site_mm()[:2] + np.array([-20.0, 0.0]))
+    assert not any('OUTWARD' in l for l in lines)
+
+
+def test_catch_outward_authority_none_is_the_symmetric_clamp(sites):
+    terminal, _lines, p1 = _outward_run(sites, (-44.6, 0.0), None)
+    assert np.allclose(terminal.landing_mm[:2],
+                       p1.catch_site_mm()[:2] + np.array([-20.0, 0.0]))
+
+
+def test_catch_outward_authority_never_exceeds_the_lateral_authority(sites):
+    """An outward authority wider than the lateral one is capped by it."""
+    terminal, _lines, p1 = _outward_run(sites, (-44.6, 0.0), 0.050)
+    assert np.allclose(terminal.landing_mm[:2],
+                       p1.catch_site_mm()[:2] + np.array([-20.0, 0.0]))
+
+
 def test_resend_declines_within_tolerance_against_the_clamped_landing(sites):
     """The re-send 'moved' test is against the CLAMPED landing: a later fit
     that only asks for a further LATERAL move the catch may not take has not
@@ -5092,8 +5169,8 @@ def test_the_learner_state_carries_the_release_offset_of_a_carried_throw():
     back as an opposite-sign landing error (the offset is flown back as
     lateral velocity; an 11 % fast launch over an 11 % longer flight delivers
     ~1.23x of it). The learner's local affine fit has a ``delta_x`` slope term
-    for exactly this (``learner`` step 3, ``Z = [delta_x; delta_u; 1]``) and
-    ``h_x`` is shared with the site half, so no new knob is needed."""
+    for exactly this (``learner`` step 3, ``Z = [delta_x; delta_u; 1]``); the
+    offset half's kernel bandwidth is ``LearnerConfig.h_seat`` (2026-10-12)."""
     sched, x, _rows = _offset_dispatch((0.0, 20.0, 0.0))
     site = sched.skills[1].site
     throw_idx = 1
@@ -5927,6 +6004,26 @@ def test_missed_catch_one_seated_sample_vetoes(sites):
 
     assert x.end_code != ex.MISSED_CATCH
     assert ex.MISSED_CATCH not in ''.join(lines)
+    # Never a silent abstention (sitting 7b L1990): the veto names its numbers.
+    assert 'CATCH-EVIDENCE-ABSTAIN' in ''.join(lines)
+    assert '1 SEATED' in ''.join(lines)
+
+
+def test_missed_catch_gappy_window_abstains_with_a_logged_reason(sites):
+    """A window with a gap wider than MISSED_CATCH_MAX_GAP_S is not LIVE:
+    no verdict, and the abstention is logged with the gap (sitting 7b L1990
+    left a missed catch that neither ended the pattern nor said why)."""
+    sch, _L, R, _t_land_a = _feed_catch_schedule(sites)
+    seat_window = lambda t0, t1: ex.SeatWindow(n_valid=int(round((t1 - t0) * 100)), n_seated=0,
+                                               max_gap_s=0.7)
+    t_decide = R + ex.MISSED_CATCH_CLOSE_AFTER_RELEASE_S \
+        + ex.MISSED_CATCH_DECIDE_LAG_S
+    x, lines, _exp = _drive_to_decision(sch, seat_window, t_decide + 0.1)
+
+    assert x.end_code != ex.MISSED_CATCH
+    text = ''.join(lines)
+    assert 'CATCH-EVIDENCE-ABSTAIN' in text
+    assert 'window NOT LIVE' in text and 'max gap 700 ms' in text
 
 
 def test_missed_catch_late_real_seat_is_not_a_miss(sites):
@@ -5957,6 +6054,7 @@ def test_missed_catch_blind_window_is_silent(sites):
 
     assert x.end_code != ex.MISSED_CATCH
     assert ex.MISSED_CATCH not in ''.join(lines)
+    assert 'CATCH-EVIDENCE-BLIND' in ''.join(lines)
 
 
 def test_missed_catch_never_arms_for_a_phantom_ball(sites):
