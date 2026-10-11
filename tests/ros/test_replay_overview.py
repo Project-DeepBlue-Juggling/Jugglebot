@@ -242,3 +242,17 @@ def test_failed_pass_is_500_with_the_error_and_sticks(tmp_path, monkeypatch):
         assert log.read_text().count("start") == 1
     finally:
         s.close()
+
+
+def test_listing_reports_ready_when_the_cache_is_valid_while_the_pass_is_still_running(srv):
+    # The pass os.replace()s its output before it exits; between the two the route already serves 200, so
+    # the listing must say "ready", not "computing" (load-flaked the 202->200 route test, 2026-10-11).
+    _put_bag(srv.root, A)
+    poll(srv, A)
+    with srv.backend._lock:
+        srv.backend._running = A
+    try:
+        assert srv.jreq("/api/replay/recordings")[1]["recordings"][0]["overview"] == "ready"
+    finally:
+        with srv.backend._lock:
+            srv.backend._running = None

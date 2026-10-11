@@ -165,6 +165,10 @@ class ReplayBackend:
             info = recordings.find_recording(self.rosbags_root, rid)
         if info is None:
             return "none"
+        # A valid cache wins over the running flag, as in _overview: the pass os.replace()s its output before
+        # it exits, so between the two the route already serves 200 while _running still names this id.
+        if self._cached_overview(info) is not None:
+            return "ready"
         with self._lock:
             if self._running == rid:
                 return "computing"
@@ -173,7 +177,7 @@ class ReplayBackend:
             f = self._failed.get(rid)
         if f is not None and f[:2] == (info["size_bytes"], info["mtime_ns"]):
             return "failed"
-        return "ready" if self._cached_overview(info) is not None else "none"
+        return "none"
 
     def _enqueue(self, info: Dict[str, Any]) -> str:
         """Queue ``info`` unless already queued/running; returns the 202 status word."""
