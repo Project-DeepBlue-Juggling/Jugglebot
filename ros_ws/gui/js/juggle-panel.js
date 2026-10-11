@@ -146,6 +146,37 @@ const FIELDS = {
 };
 const FIELD_KEYS = ['num_cycles', 'apex_m', 'separation_mm'];
 
+/**
+ * Per-pattern operating point the apex / separation fields are PRE-FILLED
+ * with whenever the pattern is selected (an operator edit after that wins
+ * until the pattern changes again).  Root cause (R5 sitting 7b): blank
+ * fields flew skill_node's single 0.9 m / 250 mm default and a typed value
+ * stuck across pattern switches, but the admissible box is swept at
+ * DIFFERENT points per pattern -- columns at 125 mm / apex 0.95 (its
+ * 0.875-0.925 band is empty), hop only at 250 mm, self-toss up to 0.95 --
+ * so inputs were refused (or columns_1ball silently flew 250 mm).
+ * `box` = the admissible_box.yaml pattern kind the point must sit inside;
+ * tests/ros/test_gui_juggle_defaults.py pins every row to the committed box.
+ */
+export const PATTERN_POINTS = {
+    self_toss:         { box: 'self_toss', apex_m: 0.9,  separation_mm: null },
+    hop:               { box: 'hop',       apex_m: 0.9,  separation_mm: 250 },
+    columns:           { box: 'columns',   apex_m: 0.95, separation_mm: 125 },
+    columns_1ball:     { box: 'columns',   apex_m: 0.95, separation_mm: 125 },
+    columns_1ball_fed: { box: 'columns',   apex_m: 0.95, separation_mm: 125 },
+};
+
+/** Overwrite apex/separation with pattern `value`'s certified point. */
+function applyPatternPoint(value) {
+    const pt = PATTERN_POINTS[value];
+    for (const k of ['apex_m', 'separation_mm']) {
+        const v = pt ? pt[k] : null;
+        const raw = v == null ? '' : String(v);
+        fields[k] = { raw, value: v == null ? null : v, error: null };
+        if (dom && dom.fields && dom.fields[k]) dom.fields[k].input.value = raw;
+    }
+}
+
 // Display-only stand-ins when the node's defaults are unknown: the diagram
 // needs SOME numbers to move.  They never reach a request, and every label
 // derived from them shows "?" instead of a number.
@@ -167,6 +198,7 @@ const gate = { connected: false, active: false, expanded: false, mainState: null
 const ui = { pattern: JUGGLE_PATTERNS[0].value, userReload: false };
 const fields = {};
 for (const k of FIELD_KEYS) fields[k] = { raw: '', value: null, error: null };
+applyPatternPoint(ui.pattern);
 
 /** skill_node's live parameters (display only — see the module header). */
 let defaults = null;            // { apex_m, separation_mm, dwell_s, n_throws, columns_feed_site } | null
@@ -911,12 +943,13 @@ export function buildJugglePanel(container) {
     const title = el('span', 'jp-title', 'Juggle');
     const clear = el('button', 'jp-clear', '↺ defaults');
     clear.type = 'button';
-    clear.title = 'Clear every typed value — blank fields fly skill_node\'s own parameters';
+    clear.title = 'Reset to the selected pattern\'s certified apex / separation (Throws goes blank = skill_node\'s n_throws)';
     clear.addEventListener('click', () => {
         for (const k of FIELD_KEYS) {
             fields[k] = { raw: '', value: null, error: null };
             dom.fields[k].input.value = '';
         }
+        applyPatternPoint(ui.pattern);   // back to the pattern's certified point
         sync();
     });
     const badge = el('span', 'badge jp-badge', '—');
@@ -932,7 +965,11 @@ export function buildJugglePanel(container) {
         opt.title = p.blurb;
         select.appendChild(opt);
     }
-    select.addEventListener('change', () => { ui.pattern = select.value; sync(); });
+    select.addEventListener('change', () => {
+        ui.pattern = select.value;
+        applyPatternPoint(ui.pattern);
+        sync();
+    });
     const reloadLabel = el('label', 'jp-reload');
     const reload = el('input');
     reload.type = 'checkbox';
@@ -1160,7 +1197,14 @@ function sync() {
     }
     const dwell = defaults && defaults.dwell_s != null ? defaults.dwell_s.toFixed(2) : '—';
     setText(dom.dwellVal, dwell);
-    const anyTyped = FIELD_KEYS.some((k) => fields[k].raw.trim() !== '');
+    const pt = PATTERN_POINTS[p.value] || {};
+    const anyTyped = FIELD_KEYS.some((k) => {
+        const raw = fields[k].raw.trim();
+        if (k === 'apex_m' || k === 'separation_mm') {
+            return raw !== (pt[k] == null ? '' : String(pt[k]));
+        }
+        return raw !== '';
+    });
     setHidden(dom.clear, !anyTyped);
 
     // Diagram (rebuilt only when what it draws changed).
