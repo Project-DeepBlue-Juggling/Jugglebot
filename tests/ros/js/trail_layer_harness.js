@@ -101,7 +101,7 @@ const live = (layer) => layer.stats().active;
     const r = {};
     r.default = settings.getTailMs();
     const seen = [];
-    const un = settings.onTailChange((v) => seen.push(v));
+    const un = settings.onTailChange((v) => seen.push(v.effectiveMs));
     r.set_1234 = settings.setTailMs(1234);
     r.set_neg = settings.setTailMs(-50);
     r.set_big = settings.setTailMs(99999);
@@ -117,5 +117,59 @@ const live = (layer) => layer.stats().active;
     globalThis.localStorage = { getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = v; } };
     settings.setTailMs(1700); r.stored = store['jugglebot-trail-tail-ms'];
     out.settings = r;
+}
+{   // range / effective / near / slider mapping
+    settings._resetForTest();
+    delete globalThis.localStorage;
+    const r = {};
+    const ev = [];
+    settings.onTailChange((e) => ev.push([e.effectiveMs, e.maxMs, e.storedMs]));
+    r.max0 = settings.getTailMaxMs();
+    settings.setTailMs(60000);
+    r.live = [settings.getTailMs(), settings.getEffectiveTailMs(), settings.getNearTailMs()];
+    settings.setTailMaxMs(1086000);                       // an 18:06 recording
+    r.long = [settings.getTailMs(), settings.getEffectiveTailMs(), settings.getNearTailMs()];
+    settings.setTailMaxMs(30000);                          // shrink: stored survives
+    r.shrunk = [settings.getTailMs(), settings.getEffectiveTailMs(), settings.getNearTailMs()];
+    settings.setTailMaxMs(30000);                          // no-op: no event
+    settings.setTailMaxMs(5000);
+    r.back = [settings.getTailMs(), settings.getEffectiveTailMs(), settings.getNearTailMs()];
+    settings.setTailMaxMs(1086000);                       // re-grow: request is back
+    r.regrown = settings.getEffectiveTailMs();
+    r.ev = ev.slice();
+    r.snap = [settings.snapMs(4949), settings.snapMs(5400), settings.snapMs(61200), settings.snapMs(-3), settings.snapMs('x')];
+    settings.setTailMaxMs(0); r.max_bad = settings.getTailMaxMs();
+    // stored persists across a shrink through storage
+    const store = {};
+    globalThis.localStorage = { getItem: (k) => (k in store ? store[k] : null), setItem: (k, v) => { store[k] = v; } };
+    settings.setTailMaxMs(1086000); settings.setTailMs(120000); settings.setTailMaxMs(5000);
+    r.persisted = store['jugglebot-trail-tail-ms'];
+    // slider mapping
+    const maps = {};
+    for (const max of [3000, 5000, 20000, 1086000, 3600000]) {
+        const pos = []; for (let i = 0; i <= 1000; i++) pos.push(settings.positionToMs(i / 1000, max));
+        let mono = true; for (let i = 1; i < pos.length; i++) if (pos[i] < pos[i - 1]) mono = false;
+        let worst = 0;
+        for (const ms of [0, 100, 800, 1000, 2500, 5000, 6000, 12000, 20000, 60000, 120000, 600000, max]) {
+            if (ms > max) continue;
+            const back = settings.positionToMs(settings.msToPosition(ms, max), max);
+            const rel = ms === 0 ? back : Math.abs(back - ms) / ms;
+            worst = Math.max(worst, rel);
+        }
+        maps[max] = { mono, first: pos[0], last: pos[1000], at600: settings.positionToMs(0.6, max), worst,
+                      posMax: settings.msToPosition(max, max), pos5: settings.msToPosition(5000, max) };
+    }
+    r.maps = maps;
+    r.fmt = [0, 800, 5000, 12000, 59600, 60000, 200000, 1086000, 7320000].map(settings.formatTail);
+    r.fmtMax = [5000, 1086000, 30000].map(settings.formatMax);
+    // the slider's right end on a non-round max reaches the whole max (no re-snap); a longer request is kept as asked
+    settings._resetForTest();
+    settings.setTailMaxMs(1081300);
+    settings.setTailMs(settings.getTailMaxMs());
+    r.wholeMax = [settings.getEffectiveTailMs(), settings.getTailMaxMs(), settings.msToPosition(settings.getEffectiveTailMs(), 1081300)];
+    settings.setTailMs(2000000);
+    r.longer = [settings.getTailMs(), settings.getEffectiveTailMs()];
+    settings._resetForTest();
+    out.settings2 = r;
 }
 console.log(JSON.stringify(out));

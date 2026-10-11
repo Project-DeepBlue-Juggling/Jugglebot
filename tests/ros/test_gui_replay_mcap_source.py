@@ -176,3 +176,15 @@ def test_lite_loads_use_their_own_lane_and_are_never_memoised(out):
     assert r["shared_with_inflight_full"] is True and r["posts5"] == ["load:5"]   # no second decode
     assert r["adopt7"]["same"] is True and r["adopt7"]["memoised"] is True and len(r["adopt7"]["posts"]) == 1
     assert r["range_error"] == "RangeError"
+
+
+def test_filtered_lite_loads_are_partial_private_and_never_adopted(out):
+    r = out[2]["filtered"]
+    assert r["topics_only"] == r["want_only"] and r["names_n"] > 1          # the worker decoded ONLY the requested topic
+    assert r["same_in_flight"] is True and r["fresh_each_time"] is True       # deduped per (slot, filter), in flight only
+    assert r["afterFilt"] == {"peek": None, "posts": 2, "normal": 0}          # never memoised
+    assert r["full_topics_n"] == r["names_n"] and r["full_memoised"] is True   # a later normal load decodes everything
+    assert r["filtered_after_full_is_full"] is True                           # a resident FULL chunk serves a filtered caller
+    assert r["adopt_full_inflight"] is True                                   # ... and so does an in-flight full load
+    assert r["normal_not_adopting"] is True and r["peek6_is_full"] is True    # the reverse never happens
+    assert len(r["posts6"]) == 2

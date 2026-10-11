@@ -24,8 +24,9 @@ import { createDigester } from './digest.js';
 import { indexLatestBefore } from './chunk.js';
 import { createReplayMode } from './mode.js';
 import { createTrailWindow } from './trail-window.js';
-import { getTrailFeed } from '../trails-scene.js';
-import { getTailMs, onTailChange } from '../trail-settings.js';
+import { createBallHistory } from './ball-history.js';
+import { getTrailFeed, getBallHistoryLayer } from '../trails-scene.js';
+import { getTailMs, getNearTailMs, getEffectiveTailMs, setTailMaxMs, onTailChange } from '../trail-settings.js';
 
 let singleton = null;
 
@@ -66,7 +67,8 @@ export function getReplayMode(mainApi, extra) {
         createEngine,
         createDigester,
         createTrailWindow,
-        trails: { feed: getTrailFeed, getTailMs, onTailChange },
+        createBallHistory,
+        trails: { feed: getTrailFeed, getTailMs, getNearTailMs, getEffectiveTailMs, setTailMaxMs, onTailChange, historyLayer: getBallHistoryLayer },
         indexLatestBefore,
         visibleSpanSec: extra.visibleSpanSec,
         raf: {

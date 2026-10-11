@@ -345,22 +345,42 @@
     opacity: 0.65;
 }
 
-.scene-trail-row {
-    display: grid;
-    grid-template-columns: 1fr 3.2em;
+/* Always-visible trail-length control, bottom right of the 3D scene, just above #command-overlay
+   (--trail-bottom mirrors that overlay's height: one button row live, trackbar + transport in replay). */
+.scene-trail-overlay {
+    position: absolute;
+    right: var(--gap);
+    bottom: calc(var(--trail-bottom, 56px) + var(--gap-sm));
+    z-index: 9;
+    display: flex;
     align-items: center;
     gap: 6px;
-    padding: 2px 4px;
+    background: var(--bg-overlay);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    padding: 4px 8px;
+    font-size: var(--font-size-xs);
+    color: var(--text-secondary);
+    backdrop-filter: blur(8px);
 }
 
+.scene-trail-label { font-size: var(--font-size-sm); }
+
 .scene-trail-slider {
-    width: 100%;
+    width: 150px;
+    margin: 0;
     accent-color: var(--accent, #3b82f6);
 }
 
 .scene-trail-readout {
-    font-size: var(--font-size-xs);
-    color: var(--text-secondary);
+    min-width: 3.6em;
     text-align: right;
+    color: var(--text-primary);
+    font-variant-numeric: tabular-nums;
+}
+
+.scene-trail-max {
+    min-width: 2.6em;
+    color: var(--text-muted);
     font-variant-numeric: tabular-nums;
 }

@@ -443,12 +443,56 @@ out.refusal_409 = { reason: r409, order_len: order.length, state: m2.state().mod
     const afterSeek = flog.slice();
     flog.length = 0;
     await mT.exitReplay('user');
-    out.trails = { afterEntry, preRoll, preRollBig, afterSeek, afterExit: flog, unsubTail, tailCbCleared: tailCb === null };
+    out.trails = { afterEntry, preRoll, preRollBig, afterSeek, afterExit: flog.slice(), unsubTail, tailCbCleared: tailCb === null };
     // a null feed (scene not initialised): no window, no throw
     const mN = createReplayMode(mkdeps({ clock: clockSpy, trails: { feed: () => null, getTailMs: () => 1000, onTailChange: () => () => {} }, createTrailWindow }));
     await mN.enterReplay({ kind: 'recording', id: 'x' });
     await mN.exitReplay('user');
     out.trails.nullFeedOk = true;
+    // range wiring: max = the recording duration on entry, 5000 on every exit path; near-tier getter preferred
+    const maxLog = [];
+    let nearMs = 3000, windowTail = null;
+    const trailsR = { feed: () => feed, getTailMs: () => 99999, getNearTailMs: () => nearMs, setTailMaxMs: (v) => maxLog.push(v),
+                      onTailChange: () => () => {} };
+    const mR = createReplayMode(mkdeps({ clock: clockSpy, trails: trailsR,
+        createTrailWindow: (o) => { windowTail = o.getTailMs(); return createTrailWindow(o); } }));
+    await mR.enterReplay({ kind: 'recording', id: 'x' });
+    const rng = mR.source().range();
+    out.trails.maxOnEntry = maxLog.slice(); out.trails.duration = (rng.t1 - rng.t0) * 1000; out.trails.windowTail = windowTail;
+    await mR.exitReplay('user');
+    out.trails.maxAfterExit = maxLog.slice();
+    // a failed entry (source throws on load) also restores
+    const maxLog2 = [];
+    const mF = createReplayMode(mkdeps({ clock: clockSpy, trails: { feed: () => feed, getTailMs: () => 1000, setTailMaxMs: (v) => maxLog2.push(v), onTailChange: () => () => {} },
+        createTrailWindow, createEngine: () => { throw new Error('boom'); } }));
+    try { await mF.enterReplay({ kind: 'recording', id: 'x' }); } catch (e) { /* expected */ }
+    out.trails.maxAfterFail = maxLog2.slice();
+}
+
+// far-tier ball history: created on entry with the EFFECTIVE tail getter + layer, playhead forwarded, disposed + layer cleared on exit
+{
+    const feed = { reset() {}, setRenderTime() {}, tick() {}, beginMocap() {}, marker() {}, endMocap() {}, beginBalls() {}, ball() {}, endBalls() {} };
+    const hlog = [], layer = { clear() { hlog.push('clear'); } };
+    let hopts = null;
+    const mkHist = (o) => { hopts = o; return { onPlayhead(p) { hlog.push('p'); }, dispose() { hlog.push('dispose'); } }; };
+    const trails = { feed: () => feed, getTailMs: () => 1000, getNearTailMs: () => 1000, getEffectiveTailMs: () => 123456, historyLayer: () => layer, onTailChange: () => () => {} };
+    const mH = createReplayMode(mkdeps({ clock: clockSpy, trails, createTrailWindow, createBallHistory: mkHist }));
+    await mH.enterReplay({ kind: 'recording', id: 'x' });
+    const created = !!hopts && hopts.getTailMs() === 123456 && hopts.layer === layer && hopts.engine === mH.engine() && typeof hopts.onTailChange === 'function';
+    await mH.engine().seek(T0 + 12);
+    await mH.exitReplay('user');
+    out.history = { created, log: hlog.slice() };
+    // absent = none: no createBallHistory, or no layer, or no effective-tail getter -> never created
+    let made = 0;
+    for (const t of [Object.assign({}, trails, { historyLayer: () => null }), Object.assign({}, trails, { getEffectiveTailMs: undefined })]) {
+        const m = createReplayMode(mkdeps({ clock: clockSpy, trails: t, createTrailWindow, createBallHistory: () => { made++; return { onPlayhead() {}, dispose() {} }; } }));
+        await m.enterReplay({ kind: 'recording', id: 'x' });
+        await m.exitReplay('user');
+    }
+    const mA = createReplayMode(mkdeps({ clock: clockSpy, trails, createTrailWindow }));
+    await mA.enterReplay({ kind: 'recording', id: 'x' });
+    await mA.exitReplay('user');
+    out.history.made_when_absent = made;
 }
 
 console.log(JSON.stringify(out));

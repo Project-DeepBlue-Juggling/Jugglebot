@@ -71,6 +71,16 @@ for (let i = 0; i < rec.slots; i++) {
   }
   res.slots.push({ i, t0: s.t0, t1: s.t1, topics, dropped: s.dropped });
 }
+// topic filter (far-tier ball history): only the named topic is decoded, unknown names decode nothing
+if (mode === 'file') {
+  const name = rec.names[0];
+  const f = await decodeSlot(rec, 0, [name]);
+  const g = await decodeSlot(rec, 0, ['/no/such/topic']);
+  const all = res.slots[0].topics[name];
+  res.filtered = { name, topics: Object.keys(f.topics), n: f.topics[name] ? f.topics[name].n : 0, full_n: all ? all.n : 0,
+    t_equal: !!all && !!f.topics[name] && JSON.stringify(Array.from(f.topics[name].t)) === JSON.stringify(all.t),
+    unknown_topics: Object.keys(g.topics) };
+}
 // latest-row spot checks: a rarely published topic far back, and a miss before the first message
 res.latest = {};
 for (const [topic, t] of [['/skills/attempt', rec.t0 + 34], ['/cone/catch_event', rec.t0 + 30], ['/skills/attempt', rec.t0 + 1]]) {

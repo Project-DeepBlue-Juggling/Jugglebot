@@ -7,6 +7,9 @@
  * spheres from feed.balls()). Live handlers in main.js and the replay columns
  * feeder both write into getTrailFeed(); this module only renders.
  *
+ * The far-tier ball history (js/ball-history-layer.js, fed by replay/ball-history.js) is a third scene group,
+ * 'Ball history', drawn only while a replay is active and the effective tail exceeds the near tier.
+ *
  * No allocation per frame: the sphere pool, the materials (one per colour,
  * cached) and the resolution vector are built once.
  */
@@ -15,7 +18,8 @@ import * as THREE from 'three';
 import { scene, renderer, sceneGroups, onFrame } from './viewer.js';
 import { createTrailLayer } from './trails.js';
 import { createTrailFeed } from './trail-feed.js';
-import { getTailMs } from './trail-settings.js';
+import { createBallHistoryLayer } from './ball-history-layer.js';
+import { getNearTailMs, getEffectiveTailMs } from './trail-settings.js';
 import { ballColour } from './marker-palette.js';
 
 const MAX_BALLS = 8;
@@ -24,7 +28,16 @@ const MAX_BALLS = 8;
 const BALL_RADIUS_M = 0.037;
 const MM_TO_M = 0.001;
 
+/**
+ * Far-tier vertex budget (2 per segment, 28 B per vertex -> 28 MB of attributes). Sizing, measured on the busy bag
+ * 2026-10-02_12-43-28 (18 min): 31,835 decimated /balls rows -> 31,740 segments -> 63,480 vertices, with balls in 50 of 108
+ * slots. The worst case this has to hold is a 20 min recording with THREE balls in flight the whole time at the 100 Hz/id
+ * decimation floor: 1200 s x 100 x 3 = 360k segments = 720k vertices; 1,000,000 leaves ~39 % headroom.
+ */
+export const HISTORY_MAX_VERTICES = 1000000;
+
 let layer = null;
+let history = null;
 let feed = null;
 let ballGroup = null;
 const spheres = [];
@@ -41,7 +54,10 @@ function materialFor(hex) {
 }
 
 function renderFrame() {
-    feed.render(getTailMs());
+    feed.render(getNearTailMs());
+    // Far tier: replay only (the feed's render time is the replay playhead; null while live -> nothing drawn).
+    const rt = feed.renderTimeSec();
+    history.render(rt === null ? 0 : rt, rt === null ? 0 : getEffectiveTailMs());
     const b = feed.balls();
     const n = b.n;
     for (let i = 0; i < MAX_BALLS; i++) {
@@ -68,6 +84,8 @@ export function initTrails() {
     });
     feed = createTrailFeed(layer);
     sceneGroups['Trails'] = layer.group;
+    history = createBallHistoryLayer(scene, { maxVertices: HISTORY_MAX_VERTICES });
+    sceneGroups['Ball history'] = history.group;
 
     ballGroup = new THREE.Group();
     ballGroup.name = 'balls';
@@ -86,5 +104,7 @@ export function initTrails() {
 
 /** @returns the trail feed, or null before initTrails(). */
 export function getTrailFeed() { return feed; }
+/** @returns the far-tier ball-history layer, or null before initTrails(). */
+export function getBallHistoryLayer() { return history; }
 /** @returns the trail layer (diagnostic: stats()), or null before initTrails(). */
 export function getTrailLayer() { return layer; }

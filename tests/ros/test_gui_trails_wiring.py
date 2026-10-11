@@ -67,4 +67,26 @@ def test_feed_reset_is_live_only_in_timeout_and_disconnect_blanking():
 def test_init_trails_follows_init_mocap_markers_and_ui_follows_camera_presets():
     src = _src('main.js')
     assert re.search(r'initMocapMarkers\(\);\s*initTrails\(\);', src)
-    assert re.search(r'initCameraPresets\(\);\s*initTrailSettingsUi\(\);', src)
+    assert re.search(r'initTrails\(\);\s*initTrailSettingsUi\(\);', src)
+    # the overlay is mounted once at init, no longer rebuilt inside the Scene dropdown
+    assert len(re.findall(r'initTrailSettingsUi\(\)', src)) == 1
+    assert not re.search(r'initCameraPresets\(\);\s*initTrailSettingsUi', src)
+
+
+def test_near_tier_consumers_and_mode_range_wiring():
+    assert 'feed.render(getNearTailMs())' in _src('trails-scene.js')
+    w = _src('replay/wiring.js')
+    assert re.search(r'trails: \{[^}]*getNearTailMs[^}]*setTailMaxMs', w)
+    m = _src('replay/mode.js')
+    assert 'D.trails.setTailMaxMs((rr.t1 - rr.t0) * 1000)' in m
+    assert 'D.trails.setTailMaxMs(5000)' in m and m.index('setTailMaxMs(5000)') < m.index('trailWin.dispose()')
+    assert 'getTailMs: D.trails.getNearTailMs || D.trails.getTailMs' in m
+
+
+def test_ball_history_is_a_scene_group_rendered_from_the_replay_playhead_only():
+    s = _src('trails-scene.js')
+    assert "sceneGroups['Ball history']" in s
+    assert 'feed.renderTimeSec()' in s and 'getEffectiveTailMs()' in s
+    assert 'rt === null ? 0 : rt' in s                       # live (null render time): the layer is told tail 0 and draws nothing
+    w = _src('replay/wiring.js')
+    assert 'createBallHistory' in w and 'getEffectiveTailMs' in w and 'historyLayer: getBallHistoryLayer' in w

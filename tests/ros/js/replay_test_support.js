@@ -79,6 +79,7 @@ export function fakeWorkerFactory(manifest, records, opts) {
             const r = records[msg.i];
             const tp = {};
             for (const name in r.topics) {
+              if (msg.lite && msg.topics && msg.topics.indexOf(name) < 0) continue;   // the worker's topic filter
               tp[name] = { type: r.topics[name].type, n: r.topics[name].n,
                 t: r.topics[name].t.slice(), cols: r.topics[name].cols, kinds: r.topics[name].kinds };
             }

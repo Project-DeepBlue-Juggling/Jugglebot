@@ -1,51 +1,74 @@
 /**
- * trail-settings-ui.js — "Trail length" slider row in the Scene menu dropdown,
- * bound both ways to trail-settings. Appended by main.js next to
- * initCameraPresets() (the dropdown is rebuilt there, so the row is rebuilt
- * with it; the previous row's listener is dropped first).
+ * trail-settings-ui.js — the always-visible "Trail" length control at the bottom right of the 3D scene.
+ * Mounted ONCE (main.js init) into #viewer-pane; bound both ways to trail-settings. It sits just above the
+ * bottom command/replay-dock overlay: that overlay's height varies (one button row live, trackbar + transport
+ * in replay), so a ResizeObserver mirrors it into --trail-bottom.
+ *
+ * Slider = [0,1] position via positionToMs/msToPosition (linear to 5 s, then logarithmic to the max).
  */
+import {
+    getEffectiveTailMs, getTailMaxMs, setTailMs, onTailChange, positionToMs, msToPosition, formatTail, formatMax,
+} from './trail-settings.js';
 
-import { getTailMs, setTailMs, onTailChange, TAIL_MIN_MS, TAIL_MAX_MS, TAIL_STEP_MS } from './trail-settings.js';
-
-let unsubscribe = null;
-
-function readout(ms) { return ms <= 0 ? 'off' : (ms / 1000).toFixed(1) + ' s'; }
+const STEPS = 1000;     // slider resolution
+let mounted = false;
 
 export function initTrailSettingsUi() {
-    const dropdown = document.getElementById('scene-menu-dropdown');
-    if (!dropdown) return;
-    if (unsubscribe) { unsubscribe(); unsubscribe = null; }
+    if (mounted) return;
+    const pane = document.getElementById('viewer-pane');
+    if (!pane) return;
+    mounted = true;
 
-    const section = document.createElement('div');
-    section.className = 'scene-menu-section';
+    const box = document.createElement('div');
+    box.id = 'trail-overlay';
+    box.className = 'scene-trail-overlay';
+    box.title = 'Marker / ball trail length (0 = off). Capped at the recording length in replay.';
 
-    const heading = document.createElement('div');
-    heading.className = 'scene-menu-heading';
-    heading.textContent = 'Trail length';
-    section.appendChild(heading);
-
-    const row = document.createElement('div');
-    row.className = 'scene-trail-row';
-
+    const label = document.createElement('span');
+    label.className = 'scene-trail-label';
+    label.textContent = 'Trail';
     const slider = document.createElement('input');
     slider.type = 'range';
     slider.className = 'scene-trail-slider';
-    slider.min = String(TAIL_MIN_MS);
-    slider.max = String(TAIL_MAX_MS);
-    slider.step = String(TAIL_STEP_MS);
-    slider.title = 'Marker / ball trail length (0 = off)';
+    slider.min = '0';
+    slider.max = String(STEPS);
+    slider.step = '1';
+    slider.setAttribute('aria-label', 'Trail length');
     const out = document.createElement('span');
     out.className = 'scene-trail-readout';
+    const maxLab = document.createElement('span');
+    maxLab.className = 'scene-trail-max';
+    box.append(label, slider, out, maxLab);
+    pane.appendChild(box);
 
-    const show = (ms) => { slider.value = String(ms); out.textContent = readout(ms); };
-    show(getTailMs());
+    // Stored request, but displayed clamped to the current max (a long request on a short recording shows
+    // as the max; the stored value is untouched).
+    const show = () => {
+        const max = getTailMaxMs();
+        const ms = getEffectiveTailMs();
+        slider.value = String(Math.round(msToPosition(ms, max) * STEPS));
+        out.textContent = formatTail(ms);
+        maxLab.textContent = formatMax(max);
+    };
+    show();
 
-    slider.addEventListener('input', () => { setTailMs(Number(slider.value)); });
-    slider.addEventListener('click', (ev) => ev.stopPropagation());
-    unsubscribe = onTailChange(show);
+    slider.addEventListener('input', () => {
+        const max = getTailMaxMs();
+        const pos = Number(slider.value) / STEPS;
+        // the slider's right end means "the whole max", whatever the snap
+        setTailMs(pos >= 1 ? max : positionToMs(pos, max));
+    });
+    // release returns keyboard focus to the page so the replay hotkeys (ignored while an input has focus) work again
+    slider.addEventListener('pointerup', () => slider.blur());
+    for (const ev of ['pointerdown', 'pointermove', 'pointerup', 'mousedown', 'click', 'dblclick', 'touchstart', 'wheel', 'contextmenu']) {
+        box.addEventListener(ev, (e) => e.stopPropagation(), { passive: true });
+    }
+    onTailChange(show);
 
-    row.appendChild(slider);
-    row.appendChild(out);
-    section.appendChild(row);
-    dropdown.appendChild(section);
+    const cmd = document.getElementById('command-overlay');
+    if (cmd && typeof ResizeObserver !== 'undefined') {
+        const sync = () => box.style.setProperty('--trail-bottom', cmd.offsetHeight + 'px');
+        sync();
+        new ResizeObserver(sync).observe(cmd);
+    }
 }

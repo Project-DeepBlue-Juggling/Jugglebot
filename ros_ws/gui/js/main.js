@@ -92,6 +92,7 @@ function init() {
     initBallButlerModel();
     initMocapMarkers();
     initTrails();
+    initTrailSettingsUi();
 
     // Register pickable meshes + wire the pick-to-flash bridge.  Models
     // init before this so their pickable lists are populated.
@@ -905,7 +906,6 @@ function initSceneMenu() {
         // Camera presets append below the scene-group toggles — run here
         // so they aren't wiped by the `dropdown.innerHTML = ''` above.
         initCameraPresets();
-        initTrailSettingsUi();
     }, 100);
 }
 

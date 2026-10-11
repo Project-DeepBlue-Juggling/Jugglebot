@@ -125,6 +125,7 @@ nested `Old naming scheme/` folder is out of scope.
 | 3 | Replay UI: lobby, picker, trackbar + transport + hotkeys, timeline overview, zoom; replay-only-while-disconnected gating | done 2026-10-10 (`2026-10-10-gui-replay-ui-phase3.md`); owner browser session held 2026-10-10, feedback in `2026-10-10-gui-replay-phase3-owner-feedback.md` |
 | 4 | Direct MCAP source: vendored @mcap/core + rosmsg2 bundle, decode in a module Web Worker over HTTP Range, McapSource behind the Source seam, hold-until-slot-0 open; backend = listing + Range + cached overview pass; converter cache deleted, convert.py kept as the test oracle | software-complete 2026-10-10 (`2026-10-10-gui-replay-direct-mcap-phase4.md`); gate pending; owner browser unverified |
 | 5 | Balls in the 3D scene with trails (live and replay), `tail_length_ms` input | software-complete 2026-10-11 (`2026-10-11-gui-replay-trails-phase5.md`; gate 6601 passed); owner live-throw check of D3 and a browser look pending |
+| 5b | Trail-length overlay (bottom right of the 3D scene), replay range up to the recording length, far-tier ball history | software-complete 2026-10-11 (`2026-10-11-gui-replay-trail-overlay-and-ball-history.md`) |
 | 6 | Hardening and fog: deep links `?recording=<id>&t=`, read-only minimap / juggle panel in replay | after 2–5; the session-buffer ceiling is moot (buffer removed 2026-10-10); replay residency is 8 slots / 10 s ahead |
 
 ## Phase 1 — Backend (historical)
@@ -316,6 +317,35 @@ are keyed by QTM label, unlabelled ones by nearest neighbour (80 mm gate, 0.5 s 
 **Tests.** Node harnesses in `tests/ros/js/` with pytest wrappers: the layer (ring wrap, decimation, fade release, no
 pool growth), the feed (D1-D3, label/NN keying), the trail window over real typed records from `loadRecords` (seek
 rebuild == forward append, reverse, incomplete-window rebuild on residency), the subscribe-set and policy pins.
+
+## Phase 5b — Trail length overlay and long ball history (owner ask, 2026-10-11)
+
+Owner, after Phase 5: "move the 'trail length' slider to be always visible ... down the bottom right of the 3D scene?
+The maximum value (5 s) should be visible, and ideally adjustable all the way up to the length of the recording (this
+will be particularly helpful to review throw consistency)."
+
+**Decisions.**
+- **Overlay.** The slider leaves the scene menu for an always-visible compact control at the bottom right of the 3D
+  scene (above the replay trackbar in replay), showing the value and the maximum.
+- **Range.** Live max 5 s (live has no stored history). Replay max = the recording's duration. The slider maps
+  non-linearly (fine steps to 5 s, then logarithmic to the max) so both 1 s and 15 min are reachable. The stored
+  value is the owner's request; the effective tail is `min(stored, current max)`.
+- **Two tiers.** The NEAR tier (Phase 5's ribbons, markers and balls) draws `min(tail, 5 s)`: its rings, pool and
+  rebuild cost are sized for 5 s, and minutes of marker history only smear. The FAR tier exists only in replay and only
+  for balls, when the tail exceeds 5 s: every ball flight in `[p - tail, p]` as thin lines, faded by age over the whole
+  tail. Markers never extend past 5 s (owner can lift that later).
+- **Far-tier data.** `js/replay/ball-history.js` loads `/balls` ONLY (a worker topic filter: no decode of other
+  topics) for the slots behind the playhead on the existing lite lane, nearest-first back from the playhead, paused while
+  playback buffers, a cache-resident chunk read in place. Its window is centred on a `centre` that re-targets to the
+  playhead after a move of more than 10 s, so it loads and keeps `[centre - tail - 10 s, centre + 10 s]`, which always
+  covers `[p - tail, p]`. Per slot it keeps compact typed rows (t, id, x, y, z, decimated to 10 ms per id). A filtered load is never memoised
+  or adopted as a full chunk.
+- **Far-tier rendering.** `js/ball-history-layer.js`: one `LineSegments` geometry holding every loaded sample pair of
+  the same id (gap <= 150 ms, D1), a per-vertex time attribute and the ball hue; the shader discards samples after
+  the playhead or older than the tail and fades alpha by age. The geometry is rebuilt only when slots arrive or leave
+  (at most once per frame); per frame only uniforms change. Buffers are sized to the loaded flights (power of two from
+  4096 vertices, cap 1,000,000) and released on exit, so a live session holds none. Busy bag (18 min): 63,480 vertices
+  for the whole recording; a `/balls`-only decode is 17 ms per slot against 331 ms for a full one.
 
 ## Phase 6 (outline)
 - The fog items on the map. Owner's remaining latency asks: the overview strip arrives only after the niced pass

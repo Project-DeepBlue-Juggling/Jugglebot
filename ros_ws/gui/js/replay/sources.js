@@ -5,8 +5,11 @@
  *   source.kind                      'recording'
  *   source.range()                   sync  {t0, t1, frontier}   (frontier = end of sealed data)
  *   source.chunkIndex(t) / bounds(i) sync
- *   source.load(i, {lite}?)          async Chunk | null; lite = low-priority far-tier load (digest.js): served after
- *                                    every normal load by the worker and NEVER memoised (far slots must not stay resident)
+ *   source.load(i, {lite, topics}?)  async Chunk | null; lite = low-priority far-tier load (digest.js): served after
+ *                                    every normal load by the worker and NEVER memoised (far slots must not stay resident).
+ *                                    lite + topics (ball-history.js): the worker decodes ONLY those topics; the result is a PARTIAL
+ *                                    chunk, so it is never memoised and never adopted by a normal load (a FULL chunk, resident or
+ *                                    in flight, may serve a filtered caller; the reverse never happens). Deduped per (slot, filter).
  *   source.window(t0, t1, topics?)   async Chunk[]
  *   source.latestBefore(t, topic)    async {t, msg} | null
  *   source.timeline()                async overview-shaped object, {partial:true,...} until the overview arrives
@@ -81,6 +84,7 @@ export function McapSource(opts) {
   const memo = new Map();      // i -> Chunk
   const inflight = new Map();  // i -> Promise<Chunk>
   const liteInflight = new Map(); // i -> Promise<Chunk> (lite loads: dedupe only, never memoised)
+  const filtInflight = new Map(); // 'i|topic,topic' -> Promise<partial Chunk> (filtered lite loads: dedupe only, never adopted)
 
   function emit() { for (const cb of Array.from(listeners)) cb(self.status()); }
 
@@ -181,6 +185,24 @@ export function McapSource(opts) {
         // A normal load already in flight serves a lite caller too; otherwise a lite lane message.
         const full = inflight.get(i);
         if (full) return full;
+        if (loadOpts.topics && loadOpts.topics.length) {
+          // Filtered: a full lite decode in flight also serves it; otherwise a private, partial decode.
+          const fl = liteInflight.get(i);
+          if (fl) return fl;
+          const key = i + '|' + loadOpts.topics.join(',');
+          let fp = filtInflight.get(key);
+          if (!fp) {
+            const want = loadOpts.topics.slice();
+            fp = (async () => {
+              const s = await send({ op: 'load', i, lite: true, topics: want });
+              for (const name in s.dropped) dropped[name] = (dropped[name] || 0) + s.dropped[name];
+              return chunkFromRecord(s);
+            })();
+            filtInflight.set(key, fp);
+            fp.then(() => filtInflight.delete(key), () => filtInflight.delete(key));
+          }
+          return fp;
+        }
         let lp = liteInflight.get(i);
         if (!lp) {
           lp = (async () => {

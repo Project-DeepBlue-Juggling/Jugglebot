@@ -36,4 +36,10 @@ for (let n = 0; n < 6; n++) { await tick(); stub.state.releaseAll(); }
 await Promise.all([a, b, c]);
 out.then_full_before_next_lite = stub.state.started.slice();
 out.reply_ops = posted.map((m) => m.op + ':' + (m.i === undefined ? '' : m.i));
+// the topic filter reaches decodeSlot only on a LITE load; a normal load ignores a stray `topics`
+stub.state.gated = false; stub.state.onlyArgs.length = 0;
+await h.handle({ op: 'load', req: 30, i: 1, lite: true, topics: ['/balls'] });
+await h.handle({ op: 'load', req: 31, i: 2, topics: ['/balls'] });
+await h.handle({ op: 'load', req: 32, i: 3, lite: true });
+out.only_args = stub.state.onlyArgs.slice();
 process.stdout.write(JSON.stringify(out));

@@ -196,3 +196,19 @@ def test_trails_dependency_creates_window_forwards_hooks_and_disposes(out):
     assert t["afterExit"] == ["R", "Snull"]                           # exit: reset + render time back to clock.now()
     assert t["unsubTail"] == 1 and t["tailCbCleared"]
     assert t["nullFeedOk"]
+
+
+def test_trails_max_is_recording_duration_and_restored_on_every_exit(out):
+    t = out["trails"]
+    assert t["maxOnEntry"] == [t["duration"]] and t["duration"] > 0
+    assert t["maxAfterExit"] == [t["duration"], 5000]
+    assert t["windowTail"] == 3000                    # the window gets the NEAR-tier getter
+    assert t["maxAfterFail"] == [5000]                # failed entry: exit path resets before any max was set
+
+
+def test_ball_history_is_created_with_the_effective_tail_forwarded_and_cleared_on_exit(out):
+    h = out["history"]
+    assert h["created"] is True
+    log = h["log"]
+    assert "p" in log and log[-2:] == ["dispose", "clear"]            # disposed, then its layer cleared
+    assert h["made_when_absent"] == 0                                  # needs createBallHistory + layer + effective-tail getter

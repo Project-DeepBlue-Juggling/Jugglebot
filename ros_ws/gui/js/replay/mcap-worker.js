@@ -5,8 +5,9 @@
 // Two lanes, still one reader: every message is served FIFO within its lane, and the normal lane is
 // always drained before the next LITE message starts ({op:'load', lite:true}: the digester's far-tier
 // loads, digest.js). A lite decode already running is not interrupted - playback waits at most one slot.
+// `topics` (lite loads only, ball-history.js): an array of topic names; the slot decodes ONLY those channels.
 //
-//   main -> worker: {op:'open', req, url} {op:'load', req, i, lite?} {op:'latest', req, topic, t} {op:'close'}
+//   main -> worker: {op:'open', req, url} {op:'load', req, i, lite?, topics?} {op:'latest', req, topic, t} {op:'close'}
 //   worker -> main: {op:'opened', req, t0, t1, slots, topics, skipped, chunkCount, size, etag, ms}
 //                   {op:'slot', req, i, t0, t1, topics:{"/x":{type,n,t,cols,kinds}}, dropped, bytes, ms}
 //                   {op:'latest', req, row:{t, flat}|null}
@@ -52,7 +53,7 @@ export function createWorkerHandler(deps) {
         });
       } else if (msg.op === 'load') {
         if (!rec) throw new RangeError('load before open');
-        const s = await decodeSlot(rec, msg.i);
+        const s = await decodeSlot(rec, msg.i, msg.lite && Array.isArray(msg.topics) ? msg.topics : undefined);
         const bufs = new Set();   // EVERY typed buffer moves (t, f64/u8 columns, CSR offsets/flat/leaves); only string/any arrays clone
         for (const name in s.topics) topicBuffers(s.topics[name], bufs);
         const transfer = [...bufs];

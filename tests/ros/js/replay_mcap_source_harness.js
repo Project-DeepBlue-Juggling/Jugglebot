@@ -209,4 +209,39 @@ const mk = (o) => McapSource(Object.assign({ id: 'rec', fetch: noNet, fileUrl: '
   src.close();
 }
 
+// ---- filtered lite loads (ball-history.js): partial chunk, own dedupe key, never memoised, never adopted ----
+{
+  const log = [];
+  const src = mk({ makeWorker: fakeWorkerFactory(manifest, records, { log }) });
+  await src.open();
+  const names = Object.keys(records[2].topics);
+  const only = names.find((n) => records[6].topics[n] && records[4].topics[n]);
+  const [fa, fb] = await Promise.all([src.load(2, { lite: true, topics: [only] }), src.load(2, { lite: true, topics: [only] })]);
+  const fc = await src.load(2, { lite: true, topics: [only] });
+  const afterFilt = { peek: src.peek(2), posts: log.filter((x) => x === 'loadlite:2').length, normal: log.filter((x) => x === 'load:2').length };
+  // a later NORMAL load decodes everything (does not adopt or reuse the partial chunk)
+  const full = await src.load(2);
+  // filtered caller during an in-flight normal load adopts the FULL chunk (no second decode)
+  const p4 = src.load(4);
+  const f4 = src.load(4, { lite: true, topics: [only] });
+  const [c4, c4f] = await Promise.all([p4, f4]);
+  // a normal load during an in-flight FILTERED load does NOT adopt it
+  const f6 = src.load(6, { lite: true, topics: [only] });
+  const n6 = src.load(6);
+  const [c6f, c6] = await Promise.all([f6, n6]);
+  // a memoised full chunk serves a filtered caller
+  const f2 = await src.load(2, { lite: true, topics: [only] });
+  out.filtered = {
+    topics_only: Object.keys(fa.topics), want_only: [only], names_n: names.length,
+    same_in_flight: fa === fb, fresh_each_time: fc !== fa, afterFilt,
+    full_topics_n: Object.keys(full.topics).length, full_memoised: src.peek(2) === full,
+    filtered_after_full_is_full: f2 === full,
+    adopt_full_inflight: c4 === c4f && log.filter((x) => x.endsWith(':4')).length === 1,
+    normal_not_adopting: c6 !== c6f && Object.keys(c6.topics).length === Object.keys(records[6].topics).length && Object.keys(records[6].topics).length > 1 && Object.keys(c6f.topics).length === 1,
+    posts6: log.filter((x) => x.endsWith(':6')),
+    peek6_is_full: src.peek(6) === c6,
+  };
+  src.close();
+}
+
 process.stdout.write(JSON.stringify(out));

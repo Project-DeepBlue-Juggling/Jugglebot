@@ -5,7 +5,7 @@
  *   const feed = createTrailFeed(layer, opts);
  *   feed.beginMocap(t); feed.marker(t, label, x, y, z); feed.endMocap(t);
  *   feed.beginBalls(t); feed.ball(t, id, status, x, y, z); feed.endBalls(t);
- *   feed.tick(t);  feed.setRenderTime(tSec | null);  feed.render(tailMs);
+ *   feed.tick(t);  feed.setRenderTime(tSec | null);  feed.renderTimeSec() -> tSec | null;  feed.render(tailMs);
  *   feed.balls();  feed.reset();
  *
  * Keys: marker = QTM label string; unlabelled marker = nearest-neighbour key
@@ -116,6 +116,7 @@ export function createTrailFeed(layer, opts = {}) {
             }
         },
         setRenderTime(t) { renderTime = t === null || t === undefined ? null : t; },
+        renderTimeSec() { return renderTime; },   // the replay playhead the trails render at; null while live
         render(tailMs) {
             const t = renderTime === null ? now() : renderTime;
             if (renderTime === null) feed.tick(t);

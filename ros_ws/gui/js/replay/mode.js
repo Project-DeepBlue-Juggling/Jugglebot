@@ -25,7 +25,8 @@
  *   links: {can(isUp), udp(isUp), hw(isUp)},
  *   resetForSeek(), blankDisconnectedState(), resetTrafficRings?(),
  *   makeRecordingSource(id), createCache(source), createDigester?({source, cache, engine, store}), createEngine(opts), indexLatestBefore,
- *   trails?: {feed() -> trail-feed|null, getTailMs(), onTailChange(cb)->unsub} + createTrailWindow(opts) (both or neither; absent = no trails),
+ *   trails?: {feed() -> trail-feed|null, getTailMs(), getNearTailMs()?, getEffectiveTailMs()?, setTailMaxMs(ms)?, historyLayer()?, onTailChange(cb)->unsub} + createTrailWindow(opts) (both or neither; absent = no trails),
+ *   createBallHistory?(opts) (far-tier ball flights beyond the near tail; needs trails.getEffectiveTailMs + trails.historyLayer; absent = none),
  *   visibleSpanSec?() (default 30), raf?: {request, cancel, hidden}, perfNow?()
  * }
  */
@@ -43,6 +44,8 @@ export function createReplayMode(deps) {
     let eng = null;
     let store = null;
     let trailWin = null;          // replay trail feeder (trail-window.js), optional D.trails
+    let ballHist = null;          // far-tier ball history (ball-history.js), optional D.createBallHistory
+    let histLayer = null;         // its scene layer, cleared on exit
     let digester = null;          // far-tier digester (digest.js), lives exactly as long as the replay
     let evSnap = null;
     let latchSnap = null;         // main.js latches saved at entry, restored at exit
@@ -189,7 +192,7 @@ export function createReplayMode(deps) {
             lastP = null;
             eng = D.createEngine({
                 source, cache, dispatch, clock: D.clock, preRollSec: D.trails
-                    ? () => Math.max(span(), +D.trails.getTailMs() / 1000 || 0)   // the seek's ensure also covers the trail tail
+                    ? () => Math.max(span(), +(D.trails.getNearTailMs || D.trails.getTailMs)() / 1000 || 0)   // the seek's ensure also covers the (near-tier) trail tail
                     : span,
                 hooks: {
                     onPlayhead(p) {
@@ -197,6 +200,7 @@ export function createReplayMode(deps) {
                         if (lastP !== null && p < lastP) D.events.trimEventsAfter(p);
                         lastP = p;
                         if (trailWin) trailWin.onPlayhead(p);
+                        if (ballHist) ballHist.onPlayhead(p);
                     },
                     onResetForSeek() {
                         D.resetForSeek();
@@ -206,11 +210,23 @@ export function createReplayMode(deps) {
                 },
             });
             if (D.trails) {
+                if (D.trails.setTailMaxMs) {   // the trail slider's range = the recording length (restored to 5 s in doExit)
+                    const rr = source.range();
+                    D.trails.setTailMaxMs((rr.t1 - rr.t0) * 1000);
+                }
                 const feed = D.trails.feed();
                 if (feed) {
                     feed.reset();   // live trails must not linger into the recording
                     trailWin = D.createTrailWindow({
-                        source, cache, feed, getTailMs: D.trails.getTailMs, onTailChange: D.trails.onTailChange,
+                        source, cache, feed, getTailMs: D.trails.getNearTailMs || D.trails.getTailMs, onTailChange: D.trails.onTailChange,
+                    });
+                }
+                const hl = D.createBallHistory && D.trails.getEffectiveTailMs && D.trails.historyLayer ? D.trails.historyLayer() : null;
+                if (hl) {
+                    histLayer = hl;
+                    ballHist = D.createBallHistory({
+                        source, cache, engine: eng, layer: hl, getTailMs: D.trails.getEffectiveTailMs, onTailChange: D.trails.onTailChange,
+                        frame: D.raf ? (fn) => { D.raf.request(fn); } : undefined,
                     });
                 }
             }
@@ -243,6 +259,9 @@ export function createReplayMode(deps) {
         residentRaf = null;
         unsubEng.forEach((u) => { try { u(); } catch (e) { /* ignore */ } });
         unsubEng = [];
+        if (D.trails && D.trails.setTailMaxMs) { try { D.trails.setTailMaxMs(5000); } catch (e) { console.error(e); } }
+        if (ballHist) { try { ballHist.dispose(); } catch (e) { console.error(e); } ballHist = null; }
+        if (histLayer) { try { histLayer.clear(); } catch (e) { console.error(e); } histLayer = null; }
         if (trailWin) { try { trailWin.dispose(); } catch (e) { console.error(e); } trailWin = null; }
         if (digester) { try { digester.dispose(); } catch (e) { console.error(e); } digester = null; }
         if (unsubCache) { unsubCache(); unsubCache = null; }

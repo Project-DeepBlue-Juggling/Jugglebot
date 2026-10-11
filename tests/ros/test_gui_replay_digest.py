@@ -48,12 +48,12 @@ pytestmark = pytest.mark.skipif(NODE is None, reason="node not installed")
 STUB_DECODE = """
 // Stub mcap-decode.js: slot decodes are gated by the harness (state.gated) and recorded in start order.
 export const state = {
-  started: [], gated: false, waiters: [],
+  started: [], onlyArgs: [], gated: false, waiters: [],
   releaseAll() { const w = state.waiters.splice(0); for (const r of w) r(); },
 };
 export async function openRecording() { return { t0: 0, t1: 1, slots: 100, topics: {}, skipped: {}, chunkCount: 1 }; }
-export async function decodeSlot(rec, i) {
-  state.started.push(i);
+export async function decodeSlot(rec, i, only) {
+  state.started.push(i); state.onlyArgs.push(only === undefined ? null : only);
   if (state.gated) await new Promise((r) => state.waiters.push(r));
   return { i, t0: i * 10, t1: i * 10 + 10, topics: {}, dropped: {}, bytes: 0 };
 }
@@ -190,3 +190,7 @@ def test_worker_does_not_preempt_a_running_lite_load_but_orders_the_next(out):
     ln = out["lane"]
     assert ln["running_lite_first"] == [5]
     assert ln["then_full_before_next_lite"] == [5, 1, 6]
+
+
+def test_worker_forwards_the_topic_filter_on_lite_loads_only(out):
+    assert out["lane"]["only_args"] == [["/balls"], None, None]

@@ -140,14 +140,18 @@ export function topicBuffers(topic, out = new Set()) {
 }
 
 // Decode slot i into {topics:{"/x":{type,n,t:Float64Array,cols,kinds}}, dropped, bytes}.
-export async function decodeSlot(rec, i) {
+// `only` (optional array of topic names): decode ONLY those topics' channels (the far-tier ball history reads /balls
+// alone); names the recording does not carry are ignored, so the reply may have no topics at all.
+export async function decodeSlot(rec, i, only) {
   if (!(i >= 0 && i < rec.slots)) throw new RangeError('slot ' + i + ' outside [0,' + rec.slots + ')');
   const lo = rec.t0Ns + BigInt(i) * SLOT_NS - MS_NS, hi = rec.t0Ns + BigInt(i + 1) * SLOT_NS + MS_NS;
   const span = slotSpan(rec, lo, hi);
   if (span && rec.readable.prefetch) await rec.readable.prefetch(span[0], span[1] - span[0]);
   const acc = {};
   const dropped = {};
-  for await (const m of rec.reader.readMessages({ topics: rec.names, startTime: lo, endTime: hi, validateCrcs: false })) {
+  const names = only ? rec.names.filter((n) => only.indexOf(n) >= 0) : rec.names;
+  if (only && names.length === 0) return { i, t0: rec.t0 + i * CHUNK_S, t1: rec.t0 + (i + 1) * CHUNK_S, topics: {}, dropped, bytes: 0 };
+  for await (const m of rec.reader.readMessages({ topics: names, startTime: lo, endTime: hi, validateCrcs: false })) {
     const d = rec.decoders.get(m.channelId);
     if (!d) continue;
     const t = Number(m.logTime) / 1e9;

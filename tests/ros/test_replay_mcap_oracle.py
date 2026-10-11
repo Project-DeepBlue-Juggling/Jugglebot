@@ -186,6 +186,12 @@ def test_js_decode_equals_python_oracle(world):
           % (n_slots, n_values, js["openMs"], js["decodeMs"]))
 
 
+def test_topic_filter_decodes_only_the_named_topic(world):
+    f = world["js"]["filtered"]
+    assert f["topics"] == [f["name"]] and f["n"] == f["full_n"] > 0 and f["t_equal"] is True
+    assert f["unknown_topics"] == []             # a filter naming nothing the bag carries decodes nothing
+
+
 def test_http_readable_equals_file_readable(world):
     js = _decode(world["sb"], world["bag"], world["tmp"] / "js_http.json", "http")
     assert _compare(world, js) > 0

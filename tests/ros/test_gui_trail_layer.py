@@ -90,7 +90,48 @@ def test_reset_backwards_tail0_and_coordinates(out):
 def test_settings_clamp_snap_default_and_no_storage(out):
     s = out["settings"]
     assert s["default"] == 1000 and s["no_storage"] is True
-    assert (s["set_1234"], s["set_neg"], s["set_big"], s["set_nan"], s["set_2500"]) == (1200, 0, 5000, 1000, 2500)
+    assert (s["set_1234"], s["set_neg"], s["set_big"], s["set_nan"], s["set_2500"]) == (1200, 0, 100000, 1000, 2500)
     assert s["seen"] == [1200, 0, 5000, 1000, 2500]    # unsubscribed before the 300 write
     assert s["throwing_set"] == 700
     assert s["stored"] == "1700"
+
+
+def test_settings_max_effective_near_and_listener_shape(out):
+    r = out["settings2"]
+    assert r["max0"] == 5000
+    assert r["live"] == [60000, 5000, 5000]           # stored survives, effective clamps to the live max
+    assert r["long"] == [60000, 60000, 5000]          # replay max: effective follows, NEAR tier stays 5 s
+    assert r["shrunk"] == [60000, 30000, 5000]
+    assert r["back"] == [60000, 5000, 5000]
+    assert r["regrown"] == 60000                      # the stored request returns on re-grow
+    # events fire on EFFECTIVE or MAX change only (setTailMs(60000) at live max 5000: effective 1000->5000;
+    # the repeated setTailMaxMs(30000) is silent), shape {effectiveMs, maxMs, storedMs}
+    assert r["ev"] == [[5000, 5000, 60000], [60000, 1086000, 60000], [30000, 30000, 60000],
+                       [5000, 5000, 60000], [60000, 1086000, 60000]]
+    assert r["snap"] == [4900, 5000, 60000, 0, 1000]
+    assert r["max_bad"] == 5000
+    assert r["persisted"] == "120000"
+
+
+def test_slider_mapping_monotonic_roundtrip_endpoints(out):
+    for max_ms, m in out["settings2"]["maps"].items():
+        assert m["mono"] is True, max_ms
+        assert m["first"] == 0 and m["last"] == int(max_ms), max_ms
+        assert m["worst"] < 0.06, (max_ms, m["worst"])        # within one snap step (>= 100 ms: 5 s steps at >60 s)
+        assert abs(m["posMax"] - 1.0) < 1e-9, max_ms
+    assert out["settings2"]["maps"]["20000"]["at600"] == 5000      # linear part ends at 60 % of travel
+    assert abs(out["settings2"]["maps"]["20000"]["pos5"] - 0.6) < 1e-9
+    assert out["settings2"]["maps"]["3000"]["at600"] == 1800       # max <= 5 s: linear throughout
+    assert out["settings2"]["maps"]["5000"]["at600"] == 3000
+
+
+def test_settings_formatting(out):
+    r = out["settings2"]
+    assert r["fmt"] == ["off", "0.8 s", "5.0 s", "12 s", "1:00", "1:00", "3:20", "18:06", "2:02:00"]
+    assert r["fmtMax"] == ["5 s", "18:06", "30 s"]
+
+
+def test_slider_right_end_reaches_the_whole_non_round_max(out):
+    # audit 2026-10-11: setTailMs used to re-snap 1,081,300 ms to 1,080,000 (tail 1.3 s short of the start)
+    assert out["settings2"]["wholeMax"] == [1081300, 1081300, 1]
+    assert out["settings2"]["longer"] == [2000000, 1081300]
