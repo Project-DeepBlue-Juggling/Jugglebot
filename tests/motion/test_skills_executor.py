@@ -2506,25 +2506,110 @@ def test_a_shadow_landed_throw_is_never_read_caught(sites):
     assert 'landed on the held ball' not in ordinary_outcome
 
 
-def test_an_entry_hop_throw_bypasses_the_learner_and_box_even_when_set(sites):
-    """The hop entry's THROW 0 (owner decision, 2026-10-05, R5 sitting-6
-    prep -- `scratchpad/s6/design.md` Decision 1): `u = y_d` exactly, no
-    learner, no box lookup -- the SAME bypass `shadow_landing` uses
-    (`_command_u`'s own docstring), proven here with a learner/box pair
-    that WOULD distort the command if either were consulted. The learner is
-    never even called (not merely discarded)."""
-    p1, _p2 = sites
+def _hop_setup(sites, learner, boxes=None, lateral_authority_m=None,
+               target_is_p2=True):
+    """A one-THROW hop schedule (release P1, target P2 -- the sitting-7 shape,
+    y_d = (0, APEX_M)) plus an executor wired with ``learner``/``boxes``."""
+    p1, p2 = sites
     sch = _single_throw_schedule(p1, ball_id=0, t_release=T0_ABS + LAUNCH_S)
-    hop_skill = dataclasses.replace(sch.skills[0], entry_hop=True)
+    hop_skill = dataclasses.replace(sch.skills[0], entry_hop=True,
+                                    target=p2 if target_is_p2 else p1)
     sch = dataclasses.replace(sch, skills=(hop_skill,))
     inst = _FakeInstaller()
+    x = ex.SkillExecutor(sch, inst, learner=learner, boxes=boxes,
+                         lateral_authority_m=lateral_authority_m)
+    lines = x.tick(sch.skills[0].dispatch_s())
+    return sch, inst, x, lines
+
+
+def test_an_entry_hop_throw_borrows_the_p1_column_correction(sites):
+    """Sitting 7 (bag 2026-10-11_15-14-11, owner decision 2026-10-11): the
+    bypassed hop flew apex 1.010-1.021 m against 0.95 (+38..+43 ms late,
+    P2 catch LIMIT_JERK 238-258k > 200k). The hop now queries the learner at
+    the release site's column context -- exactly the (x, y_d) a P1 column
+    throw uses -- and commands ``y_d + (u - y_d)``: the commanded apex equals
+    the column query's (0.871 for y_d 0.95), the lateral target stays at the
+    cross-site P2 catch point plus the lateral correction."""
+    p1, p2 = sites
+    learner = _FakeLearner(u=[0.0, -0.010, 0.871])
+    sch, inst, x, lines = _hop_setup(sites, learner)
+    assert len(learner.calls) == 1
+    qx, qy = learner.calls[0]
+    # same query a P1 column throw (release P1, zero offset) would make
+    assert np.allclose(qx, [p1.cup_mm[0] / 1000.0, p1.cup_mm[1] / 1000.0,
+                            0.0, 0.0])
+    assert np.allclose(qy, [0.0, 0.0, APEX_M])
+    _kind, terminal, _t, _b = inst.calls[0]
+    assert terminal.flight_s == pytest.approx(sc.flight_s(0.871), abs=1e-9)
+    assert terminal.flight_s != pytest.approx(sc.flight_s(APEX_M))
+    assert np.allclose(terminal.target_mm,
+                       p2.catch_site_mm() + np.array([0.0, -10.0, 0.0]))
+    assert any('HOP-COMMAND skill 0' in ln and 'no memory row' in ln
+               for ln in lines)
+
+
+def test_an_entry_hop_without_a_learner_commands_y_d(sites):
+    """No learner => ``u = y_d`` as before the 2026-10-11 change."""
+    _p1, p2 = sites
+    sch, inst, x, lines = _hop_setup(sites, None)
+    _kind, terminal, _t, _b = inst.calls[0]
+    assert np.allclose(terminal.target_mm, p2.catch_site_mm())
+    assert terminal.flight_s == pytest.approx(sc.flight_s(APEX_M))
+    assert not any('HOP-COMMAND' in ln for ln in lines)
+
+
+def test_an_entry_hop_falls_back_to_y_d_when_the_learner_fails(sites):
+    """A learner that raises (or returns non-finite) never refuses the hop:
+    it falls back to the old bypass ``u = y_d`` and notes it."""
+    _p1, p2 = sites
+    for learner in (_FakeLearner(raise_value_error=True),
+                    _FakeLearner(u=[0.0, 0.0, float('nan')])):
+        sch, inst, x, lines = _hop_setup(sites, learner)
+        _kind, terminal, _t, _b = inst.calls[0]
+        assert np.allclose(terminal.target_mm, p2.catch_site_mm())
+        assert terminal.flight_s == pytest.approx(sc.flight_s(APEX_M))
+        assert any('HOP-COMMAND' in ln and 'failed' in ln for ln in lines)
+
+
+def test_an_entry_hop_lateral_correction_is_clipped_to_the_authority(sites):
+    """The learner's lateral correction obeys ``lateral_authority_m`` (20 mm
+    live) about the hop's cross-site target."""
+    _p1, p2 = sites
+    learner = _FakeLearner(u=[0.080, -0.080, 0.871])
+    sch, inst, x, lines = _hop_setup(sites, learner, lateral_authority_m=0.020)
+    _kind, terminal, _t, _b = inst.calls[0]
+    assert np.allclose(terminal.target_mm,
+                       p2.catch_site_mm() + np.array([20.0, -20.0, 0.0]))
+    assert terminal.flight_s == pytest.approx(sc.flight_s(0.871), abs=1e-9)
+
+
+def test_an_entry_hop_apex_is_clipped_to_the_same_site_box(sites):
+    """The apex part is bounded by the (P1, P1) box's apex range; the hop's
+    cross-site lateral is not boxed."""
+    p1, _p2 = sites
+    learner = _FakeLearner(u=[0.5, 0.0, 5.0])
+    boxes = [_box(site_pair=(p1.name, p1.name), apex=(0.8, 1.0))]
+    sch, inst, x, lines = _hop_setup(sites, learner, boxes=boxes)
+    _kind, terminal, _t, _b = inst.calls[0]
+    assert terminal.flight_s == pytest.approx(sc.flight_s(1.0), abs=1e-9)
+    assert terminal.target_mm[0] == pytest.approx(
+        sites[1].catch_site_mm()[0] + 500.0)
+
+
+def test_a_shadow_landing_throw_still_bypasses_the_learner(sites):
+    """`shadow_landing` keeps its plain bypass (2026-10-11 change is hop only)."""
+    p1, p2 = sites
+    sch = _single_throw_schedule(p1, ball_id=0, t_release=T0_ABS + LAUNCH_S)
+    sk = dataclasses.replace(sch.skills[0], shadow_landing=True, target=p2)
+    sch = dataclasses.replace(sch, skills=(sk,))
+    inst = _FakeInstaller()
     learner = _FakeLearner(u=[0.5, 0.5, 5.0])
-    boxes = [_box(site_pair=(p1.name, p1.name))]
-    x = ex.SkillExecutor(sch, inst, learner=learner, boxes=boxes)
+    x = ex.SkillExecutor(sch, inst, learner=learner,
+                         boxes=[_box(site_pair=(p1.name, p1.name))])
     x.tick(sch.skills[0].dispatch_s())
     assert learner.calls == []
     _kind, terminal, _t, _b = inst.calls[0]
-    assert np.allclose(terminal.target_mm, p1.catch_site_mm())
+    assert np.allclose(terminal.target_mm, p2.catch_site_mm())
     assert terminal.flight_s == pytest.approx(sc.flight_s(APEX_M))
 
 
@@ -2554,8 +2639,11 @@ def test_an_entry_hop_throw_writes_no_memory_row_but_reports_normally(sites):
                         t_land_abs_s=t_land)
     inst = _FakeInstaller()
     experiences = []
+    # a correcting learner is wired (2026-10-11: the hop borrows its P1
+    # column correction read-only) -- it must still yield NO memory row.
     x = ex.SkillExecutor(hop_sch, inst, tracker=lambda b: land,
                          observer=lambda b, t: ex.CAUGHT_EVIDENCE,
+                         learner=_FakeLearner(u=[0.0, 0.0, 0.871]),
                          on_experience=experiences.append)
     t = hop_sch.skills[0].dispatch_s() - 0.01
     t_end = t_land + ex.CAUGHT_WINDOW_S + 0.05

@@ -92,6 +92,13 @@ def test_short_refusal(message, short):
     assert rp.short_refusal(message) == short
 
 
+def test_short_refusal_renders_the_leg_and_time():
+    msg = ("REJECTED_CYCLE_INFEASIBLE(LIMIT_JERK: peak leg jerk 237862 mm/s³ > "
+           "200000 (leg 4 at t=0.200 s on the gated plan's clock))")
+    assert rp.short_refusal(msg) == (
+        'LIMIT_JERK: leg jerk 238k > 200k mm/s³ (leg 4 @ +0.200 s)')
+
+
 def test_a_long_unstructured_refusal_is_cut():
     assert len(rp.short_refusal('x' * 400)) == 90
 

@@ -1875,6 +1875,19 @@ class SkillExecutor:
         here, not the catch's own possession reading (that is
         :meth:`_finalise_outcome` / :meth:`_report`'s concern, not this
         method's).
+
+        **The hop BORROWS the learner (owner decision, 2026-10-11, sitting
+        7).** Bag 2026-10-11_15-14-11 (two-ball ``columns``, 4/4 attempts):
+        the bypassed hop flew the plant's UNCORRECTED apex -- 1.010-1.021 m
+        against 0.95 (a 7-9 % overshoot), Ball 1 landed +38..+43 ms late, the
+        P2 catch (aimed at the tracker) squeezed its dwell and was refused
+        LIMIT_JERK at 238-258k against 200k. Learner-corrected P1 column
+        throws fly 0.94-0.97 (u_apex ~0.871 for y_d 0.95). So the hop now
+        does a READ-ONLY learner query at the release site's column context
+        (see :meth:`_hop_command`): the correction ``u - y_d`` a P1 column
+        throw would get is added to the hop's own ``y_d``. It still writes NO
+        memory row (the pooling argument above stands) and still bypasses the
+        cross-site box except for an apex-only clip to the same-site box.
         """
         if idx in self._u_cache:
             _x, u_dy, u_apex = self._u_cache[idx]
@@ -1887,8 +1900,12 @@ class SkillExecutor:
         x = np.array([float(site.cup_mm[0]) / 1000.0,
                      float(site.cup_mm[1]) / 1000.0,
                      float(off[0]), float(off[1])])
-        if shadow_landing or entry_hop:
+        if shadow_landing:
             u_dy, u_apex = dy, apex
+            self._u_cache[idx] = (x, u_dy, u_apex)
+            return u_dy, u_apex
+        if entry_hop:
+            u_dy, u_apex = self._hop_command(idx, site, dy, apex, x)
             self._u_cache[idx] = (x, u_dy, u_apex)
             return u_dy, u_apex
         # The box is looked up BEFORE the learner runs (finding 5, R3 audit,
@@ -1950,6 +1967,60 @@ class SkillExecutor:
         u_dy = np.asarray(u_dy, dtype=float).reshape(2)
         u_apex = float(u_apex)
         self._u_cache[idx] = (x, u_dy, u_apex)
+        return u_dy, u_apex
+
+    def _hop_command(self, idx: int, site, dy, apex, x):
+        """The hop entry's command: ``y_d`` plus the learner's P1 column
+        correction (read-only; see :meth:`_command_u`'s ``entry_hop`` note).
+
+        Frame check (2026-10-11): ``dy`` is a landing offset relative to the
+        TARGET site's catch point (:meth:`_commanded_target_mm`), and the hop's
+        ``y_d`` is ``(0, apex)`` exactly like a column throw's, so the query
+        ``learner.command(x, y_d)`` -- ``x`` = (release-site xy, zero seat
+        offset: the hop is released from rest, while a carried column throw
+        queries with its real seat offset) -- is a NEIGHBOURING question to a
+        column throw's from that site, and its ``delta = u - y_d`` is the same
+        quantity.
+
+        Lateral part: clipped to ``lateral_authority_m`` about ``dy`` (the hop's
+        cross-site lateral target stays where it is). Apex part: clipped to the
+        apex range of the SAME-site box (``(site, site)``) when one is
+        selectable, else unclipped (the hop was never boxed). A learner that
+        raises or returns non-finite falls back to ``u = y_d`` -- never a
+        refusal."""
+        if self.learner is None:
+            return dy, apex
+        y_d_si = np.array([dy[0], dy[1], apex])
+        try:
+            u = np.asarray(self.learner.command(x, y_d_si),
+                           dtype=float).reshape(3)
+            if not np.all(np.isfinite(u)):
+                raise ValueError('non-finite learner command')
+        except Exception as exc:  # fallback to the old bypass, never refuse
+            self._pending_notes.append(
+                'HOP-COMMAND skill %d: learner query failed (%s); '
+                'commanding y_d unchanged' % (idx, exc))
+            return dy, apex
+        d_dy = u[:2] - dy
+        if self.lateral_authority_m is not None:
+            a = abs(self.lateral_authority_m)
+            d_dy = np.clip(d_dy, -a, a)
+        u_dy = dy + d_dy
+        u_apex = float(u[2])
+        if self.boxes is not None:
+            box = adm.select(self.boxes, self.schedule.pattern,
+                             (site.name, site.name), apex,
+                             release_site_xy_mm=site.cup_mm[:2],
+                             target_site_xy_mm=site.cup_mm[:2])
+            if box is not None and not box.empty:
+                alo, ahi = box.apex_m
+                u_apex = min(max(u_apex, alo), ahi)
+        identity = abs(u_apex - apex) < 1e-9 and not np.any(d_dy)
+        self._pending_notes.append(
+            'HOP-COMMAND skill %d: %s column correction%s: apex '
+            '%.3f -> %.3f m, dy (%+.0f, %+.0f) mm (no memory row)'
+            % (idx, site.name, ' (identity -- no rows near)' if identity
+               else '', apex, u_apex, d_dy[0] * 1000.0, d_dy[1] * 1000.0))
         return u_dy, u_apex
 
     # ── terminals ──
