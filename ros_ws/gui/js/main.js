@@ -67,6 +67,8 @@ import { emitEvent, EVENT_TYPES } from './event-store.js';
 import { errorNames, formatAxisErrors } from './odrive-errors.js';
 import { initCommandHistory } from './command-history.js';
 import { initCameraPresets } from './camera-presets.js';
+import { initTrailSettingsUi } from './trail-settings-ui.js';
+import { initTrails, getTrailFeed } from './trails-scene.js';
 
 // ---- Latest data stores ----
 let latestCommandedLegs = null;  // leg_setpoint_echo data (6 legs, motor revs)
@@ -89,6 +91,7 @@ function init() {
     initStewartModel();
     initBallButlerModel();
     initMocapMarkers();
+    initTrails();
 
     // Register pickable meshes + wire the pick-to-flash bridge.  Models
     // init before this so their pickable lists are populated.
@@ -278,6 +281,9 @@ function onConnectionStateChange(state) {
  */
 export function blankDisconnectedState() {
     setRobotAxisStates([]);
+    // Live disconnect only: a replay seek runs this via resetForSeek and the replay
+    // trail window owns the trails there (D4).
+    if (!clock.isReplay()) { const f = getTrailFeed(); if (f) f.reset(); }
     // Drop the freshness latch so we don't claim "Stale" against
     // the *previous* session's clock when reconnect happens.
     lastRobotStateMs = 0;
@@ -389,6 +395,10 @@ function subscribeAll() {
 
     // Mocap data — markers + connection/alignment status (200Hz -> throttle to 20Hz = 50ms)
     ros.subscribe('mocap_data', 'jugglebot_interfaces/msg/MocapDataMulti', onMocapData, 50);
+
+    // Tracked balls — trails + ball spheres (published at the mocap frame rate while a ball is
+    // tracked, ~200Hz -> throttle to 50Hz = 20ms)
+    ros.subscribe('balls', 'jugglebot_interfaces/msg/BallStateArray', onBalls, 20);
 
     // Rigid body poses — for rendering coordinate axes (200Hz -> throttle to 20Hz = 50ms)
     ros.subscribe('rigid_body_poses', 'jugglebot_interfaces/msg/RigidBodyPoses', onRigidBodyPoses, 50);
@@ -710,6 +720,8 @@ function onMocapData(msg) {
         setMocapConnected(false);
         setMocapAligned(false);
         updateMocapMarkers([]); // clear markers when disconnected
+        // Live only: in replay the columns window owns the trails (D4).
+        if (!clock.isReplay()) { const f = getTrailFeed(); if (f) f.reset(); }
     }, MOCAP_CONN_TIMEOUT_MS);
 
     // Alignment flag from the message
@@ -718,6 +730,37 @@ function onMocapData(msg) {
     // Render markers in 3D viewer
     const markers = msg.markers || [];
     updateMocapMarkers(markers);
+
+    // Trails: live only. In replay this handler runs as a state-render dispatch and the columns
+    // feeder is the single trail writer (D4).
+    if (!clock.isReplay()) {
+        const feed = getTrailFeed();
+        if (feed) {
+            const t = clock.now() / 1000;
+            feed.beginMocap(t);
+            for (let i = 0; i < markers.length; i++) {
+                const m = markers[i];
+                feed.marker(t, m.label || '', m.position.x, m.position.y, m.position.z);
+            }
+            feed.endMocap(t);
+        }
+    }
+}
+
+function onBalls(msg) {
+    recordTopicMessage('balls');
+    // Live only (D4): replay's columns feeder writes the ball tracks.
+    if (clock.isReplay()) return;
+    const feed = getTrailFeed();
+    if (!feed) return;
+    const t = clock.now() / 1000;
+    const balls = msg.balls || [];
+    feed.beginBalls(t);
+    for (let i = 0; i < balls.length; i++) {
+        const b = balls[i];
+        feed.ball(t, b.id, b.status, b.position.x, b.position.y, b.position.z);
+    }
+    feed.endBalls(t);
 }
 
 function onRigidBodyPoses(msg) {
@@ -862,6 +905,7 @@ function initSceneMenu() {
         // Camera presets append below the scene-group toggles — run here
         // so they aren't wiped by the `dropdown.innerHTML = ''` above.
         initCameraPresets();
+        initTrailSettingsUi();
     }, 100);
 }
 
@@ -1119,7 +1163,7 @@ function applyFontSize(size) {
 const GUI_SUBSCRIBED_TOPICS = new Set([
     'robot_state', 'bb/heartbeat', 'orchestrator_state',
     'profile', 'link_status', 'udp_diag', 'clock_diag', 'hand_telemetry',
-    'mocap_data',
+    'mocap_data', 'balls',
     'rigid_body_poses',
     'leg_setpoint_echo', 'control_mode_topic', 'motion/diagnostics',
     'bb/calibration_result', 'bb/calibration_attempt', 'cone/heartbeat', 'cone/timing_result',

@@ -62,7 +62,7 @@ export const TOPIC_POLICY = Object.freeze({
     '/skills/attempt':        { cls: V, throttleMs: 0 },
     '/cone/timing_result':    { cls: V, throttleMs: 0 },
     '/cone/catch_event':      { cls: V, throttleMs: 0 },
-    '/balls':                 { cls: C, throttleMs: 0 },
+    '/balls':                 { cls: C, throttleMs: 20 },
 });
 
 /** @returns {string|null} the topic's class, null for an unknown topic. */

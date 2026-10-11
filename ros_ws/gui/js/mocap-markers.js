@@ -17,6 +17,7 @@
 import * as THREE from 'three';
 import { scene, sceneGroups, robotToThreeScaled } from './viewer.js';
 import { INITIAL_HEIGHT_MM } from './geometry-config.js';
+import { DEFAULT_COLOUR, labelToColour, labelToGroup } from './marker-palette.js';
 
 /** Three.js group containing the marker spheres */
 let markerGroup;
@@ -43,17 +44,6 @@ function residualToScale(residual) {
     return RESIDUAL_SCALE_MIN + t * (RESIDUAL_SCALE_MAX - RESIDUAL_SCALE_MIN);
 }
 
-/** Colour lookup by label prefix (ordered: longest prefix first for correct matching) */
-const COLOUR_MAP = [
-    { prefix: 'Catching_Cone', color: 0xa78bfa, group: 'Catching Cone' },
-    { prefix: 'Catching Cone', color: 0xa78bfa, group: 'Catching Cone' },
-    { prefix: 'Ball Butler', color: 0xeab308, group: 'Ball Butler' }, // yellow
-    { prefix: 'Platform',    color: 0x3b82f6, group: 'Platform' },    // blue
-    { prefix: 'Base',        color: 0xef4444, group: 'Base' },        // red
-    { prefix: 'Ball',        color: 0x22c55e, group: 'Ball' },        // green
-];
-const DEFAULT_COLOUR = 0xd1d5db; // light grey for unlabelled
-
 /** CSS colour strings matching COLOUR_MAP for the info box dots */
 const CSS_COLOURS = {
     'Catching Cone': '#a78bfa',
@@ -76,22 +66,6 @@ function getMaterial(colorHex) {
         }));
     }
     return materialCache.get(colorHex);
-}
-
-function labelToGroup(label) {
-    if (!label) return 'Unlabelled';
-    for (const entry of COLOUR_MAP) {
-        if (label.startsWith(entry.prefix)) return entry.group;
-    }
-    return 'Unlabelled';
-}
-
-function labelToColour(label) {
-    if (!label) return DEFAULT_COLOUR;
-    for (const entry of COLOUR_MAP) {
-        if (label.startsWith(entry.prefix)) return entry.color;
-    }
-    return DEFAULT_COLOUR;
 }
 
 // ---- Rigid body axes ----

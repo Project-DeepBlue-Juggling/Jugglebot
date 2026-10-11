@@ -23,6 +23,9 @@ import { createEngine } from './engine.js';
 import { createDigester } from './digest.js';
 import { indexLatestBefore } from './chunk.js';
 import { createReplayMode } from './mode.js';
+import { createTrailWindow } from './trail-window.js';
+import { getTrailFeed } from '../trails-scene.js';
+import { getTailMs, onTailChange } from '../trail-settings.js';
 
 let singleton = null;
 
@@ -62,6 +65,8 @@ export function getReplayMode(mainApi, extra) {
         createCache: (source) => createChunkCache({ source }),
         createEngine,
         createDigester,
+        createTrailWindow,
+        trails: { feed: getTrailFeed, getTailMs, onTailChange },
         indexLatestBefore,
         visibleSpanSec: extra.visibleSpanSec,
         raf: {

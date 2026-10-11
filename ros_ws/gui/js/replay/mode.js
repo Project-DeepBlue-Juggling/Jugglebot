@@ -25,6 +25,7 @@
  *   links: {can(isUp), udp(isUp), hw(isUp)},
  *   resetForSeek(), blankDisconnectedState(), resetTrafficRings?(),
  *   makeRecordingSource(id), createCache(source), createDigester?({source, cache, engine, store}), createEngine(opts), indexLatestBefore,
+ *   trails?: {feed() -> trail-feed|null, getTailMs(), onTailChange(cb)->unsub} + createTrailWindow(opts) (both or neither; absent = no trails),
  *   visibleSpanSec?() (default 30), raf?: {request, cancel, hidden}, perfNow?()
  * }
  */
@@ -41,6 +42,7 @@ export function createReplayMode(deps) {
     let cache = null;
     let eng = null;
     let store = null;
+    let trailWin = null;          // replay trail feeder (trail-window.js), optional D.trails
     let digester = null;          // far-tier digester (digest.js), lives exactly as long as the replay
     let evSnap = null;
     let latchSnap = null;         // main.js latches saved at entry, restored at exit
@@ -186,19 +188,32 @@ export function createReplayMode(deps) {
             D.resetForSeek();
             lastP = null;
             eng = D.createEngine({
-                source, cache, dispatch, clock: D.clock, preRollSec: span,
+                source, cache, dispatch, clock: D.clock, preRollSec: D.trails
+                    ? () => Math.max(span(), +D.trails.getTailMs() / 1000 || 0)   // the seek's ensure also covers the trail tail
+                    : span,
                 hooks: {
                     onPlayhead(p) {
                         D.charts.setPlayhead(p);
                         if (lastP !== null && p < lastP) D.events.trimEventsAfter(p);
                         lastP = p;
+                        if (trailWin) trailWin.onPlayhead(p);
                     },
                     onResetForSeek() {
                         D.resetForSeek();
                         if (D.resetTrafficRings) D.resetTrafficRings();
+                        if (trailWin) trailWin.onResetForSeek();
                     },
                 },
             });
+            if (D.trails) {
+                const feed = D.trails.feed();
+                if (feed) {
+                    feed.reset();   // live trails must not linger into the recording
+                    trailWin = D.createTrailWindow({
+                        source, cache, feed, getTailMs: D.trails.getTailMs, onTailChange: D.trails.onTailChange,
+                    });
+                }
+            }
             unsubCache = cache.onChange(syncResident);
             unsubEng = [
                 eng.on('state', () => { emit('state', snapshotState()); if (eng.state().mode !== 'paused') schedule(); }),
@@ -228,6 +243,7 @@ export function createReplayMode(deps) {
         residentRaf = null;
         unsubEng.forEach((u) => { try { u(); } catch (e) { /* ignore */ } });
         unsubEng = [];
+        if (trailWin) { try { trailWin.dispose(); } catch (e) { console.error(e); } trailWin = null; }
         if (digester) { try { digester.dispose(); } catch (e) { console.error(e); } digester = null; }
         if (unsubCache) { unsubCache(); unsubCache = null; }
         if (eng) { try { eng.dispose(); } catch (e) { console.error(e); } eng = null; }

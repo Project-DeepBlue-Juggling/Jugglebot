@@ -103,6 +103,7 @@ STATUS_FAILED = "failed"
 # (main.js subscribeAll()). Every topic the browser consumes live is converted.
 # Pinned by tests/ros/test_replay_allowlist.py against the JS source.
 SUBSCRIBED: Tuple[str, ...] = (
+    "/balls",                   # tracked balls: trails + ball spheres (the live subscription landed in Phase 5)
     "/bb/calibration_attempt",   # every sweep's outcome (keep-last-good, 2026-10-10); the result topic below carries only the calibration in force
     "/bb/calibration_result",
     "/bb/heartbeat",
@@ -123,11 +124,10 @@ SUBSCRIBED: Tuple[str, ...] = (
     "/udp_diag",
 )
 
-# Topics the replay plan adds to the GUI (map decisions 18 and 20: balls in the
-# 3D scene, cone catch ticks on the overview). The only extras the allowlist
-# test accepts beyond the live subscribe set.
+# Topics the replay plan adds to the GUI (map decision 20: cone catch ticks on
+# the overview; /balls, map decision 18, moved to SUBSCRIBED in Phase 5). The
+# only extras the allowlist test accepts beyond the live subscribe set.
 PLANNED: Tuple[str, ...] = (
-    "/balls",
     "/cone/catch_event",
 )
 

@@ -39,6 +39,7 @@ const { createChunkCache } = await import('./replay/cache.js');
 const { createEngine } = await import('./replay/engine.js');
 const { indexLatestBefore, buildColumns } = await import('./replay/chunk.js');
 const { createReplayMode } = await import('./replay/mode.js');
+const { createTrailWindow } = await import('./replay/trail-window.js');
 
 const tick = () => new Promise((r) => setImmediate(r));
 async function settle(n) { for (let i = 0; i < (n || 6); i++) await tick(); }
@@ -416,6 +417,38 @@ out.refusal_409 = { reason: r409, order_len: order.length, state: m2.state().mod
     const afterFrame = calls();
     await mR.exitReplay('user');
     out.resident_coalesce = { before_frame: beforeFrame - base, after_frame: afterFrame - base, pending_exit_clean: q.length === 0 };
+}
+
+// optional trails dependency: window created on entry (after a feed reset), hooks forwarded, preRoll covers the tail, exit disposes
+{
+    const flog = [];
+    const feed = {
+        reset() { flog.push('R'); }, setRenderTime(v) { flog.push('S' + v); }, tick() { flog.push('T'); },
+        beginMocap() {}, marker() {}, endMocap() {}, beginBalls() {}, ball() {}, endBalls() {},
+    };
+    let tailMs = 5000, tailCb = null, unsubTail = 0;
+    let engOpts = null;
+    const trails = { feed: () => feed, getTailMs: () => tailMs, onTailChange: (cb) => { tailCb = cb; return () => { unsubTail++; tailCb = null; }; } };
+    const mT = createReplayMode(mkdeps({
+        clock: clockSpy, trails, createTrailWindow,
+        createEngine: (o) => { engOpts = o; return createEngine(o); },
+    }));
+    await mT.enterReplay({ kind: 'recording', id: 'x' });
+    const eT = mT.engine();
+    const afterEntry = flog.slice();
+    const preRoll = engOpts.preRollSec();
+    tailMs = 60000; const preRollBig = engOpts.preRollSec(); tailMs = 5000;
+    flog.length = 0;
+    await eT.seek(T0 + 12);
+    const afterSeek = flog.slice();
+    flog.length = 0;
+    await mT.exitReplay('user');
+    out.trails = { afterEntry, preRoll, preRollBig, afterSeek, afterExit: flog, unsubTail, tailCbCleared: tailCb === null };
+    // a null feed (scene not initialised): no window, no throw
+    const mN = createReplayMode(mkdeps({ clock: clockSpy, trails: { feed: () => null, getTailMs: () => 1000, onTailChange: () => () => {} }, createTrailWindow }));
+    await mN.enterReplay({ kind: 'recording', id: 'x' });
+    await mN.exitReplay('user');
+    out.trails.nullFeedOk = true;
 }
 
 console.log(JSON.stringify(out));

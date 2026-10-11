@@ -3,7 +3,7 @@ title: GUI rosbag replay — one playhead over any MCAP recording
 created: 2026-10-10
 status: active
 owner: Harrison
-last_updated: 2026-10-10
+last_updated: 2026-10-11
 related_plan: two-ball-skill-stack.md
 related_code:
   - ros_ws/gui/replay/schema.py (the contract: chunk record, flatten rule, slot math, overview, allowlist)
@@ -28,8 +28,8 @@ the `Jugglebot-skills` worktree). Ticket 00 holds the 21 charting decisions,
 ticket 01 the decode / payload measurements, ticket 05 the backend decisions.
 Ticket 02 (engine and feed contract) was resolved 2026-10-10 and is Phase 2
 below. Ticket 03 (replay UI) was resolved 2026-10-10 and is Phase 3 below;
-Ticket 06 (direct MCAP) is Phase 4 below; **ticket 04 (3D trails prototype) is
-still open**: Phase 5 is an outline that its resolution will turn into a detailed phase.
+Ticket 06 (direct MCAP) is Phase 4 below; ticket 04 (3D trails prototype) was
+resolved 2026-10-10 and is Phase 5 below.
 
 ## Context
 
@@ -124,7 +124,7 @@ nested `Old naming scheme/` folder is out of scope.
 | 2 | Browser engine: feed over chunks (recording via the API; the session buffer was removed 2026-10-10), playhead clock, dispatch through the live handlers, seek semantics, prefetch, chart-store swap | software-complete 2026-10-10 (`81355621`…`ca4b6781`, merged to `skill-stack`); the real GUI calls `getReplayMode` only in Phase 3; the dev page was retired in Phase 3 |
 | 3 | Replay UI: lobby, picker, trackbar + transport + hotkeys, timeline overview, zoom; replay-only-while-disconnected gating | done 2026-10-10 (`2026-10-10-gui-replay-ui-phase3.md`); owner browser session held 2026-10-10, feedback in `2026-10-10-gui-replay-phase3-owner-feedback.md` |
 | 4 | Direct MCAP source: vendored @mcap/core + rosmsg2 bundle, decode in a module Web Worker over HTTP Range, McapSource behind the Source seam, hold-until-slot-0 open; backend = listing + Range + cached overview pass; converter cache deleted, convert.py kept as the test oracle | software-complete 2026-10-10 (`2026-10-10-gui-replay-direct-mcap-phase4.md`); gate pending; owner browser unverified |
-| 5 | Balls in the 3D scene with trails (live and replay), `tail_length_ms` input | **pending the owner's pick on ticket 04** (prototype `ros_ws/gui/test_replay_trails.html` built 2026-10-10, committed on skill-stack) |
+| 5 | Balls in the 3D scene with trails (live and replay), `tail_length_ms` input | software-complete 2026-10-11 (`2026-10-11-gui-replay-trails-phase5.md`; gate 6601 passed); owner live-throw check of D3 and a browser look pending |
 | 6 | Hardening and fog: deep links `?recording=<id>&t=`, read-only minimap / juggle panel in replay | after 2–5; the session-buffer ceiling is moot (buffer removed 2026-10-10); replay residency is 8 slots / 10 s ahead |
 
 ## Phase 1 — Backend (historical)
@@ -263,10 +263,64 @@ allowlist JS pin; vendored-bundle sha256; slot math pinned across main thread, w
 **Migration.** `rm -rf temp/replay_cache/`; reinstall the unit (new ExecStart, `--overview-dir`); module workers need
 Chrome/Edge 80+ or Firefox 114+.
 
-## Phases 5-6 (outline)
-- **Phase 5 balls and trails** (ticket 04, pending the owner's pick): `/balls` in the 3D scene, trails behind balls and
-  markers, `tail_length_ms`.
-- **Phase 6**: the fog items on the map. Owner's remaining latency asks: the overview strip arrives only after the niced pass (pre-compute overviews for all recordings in the background at service start), and slot buffering is serial (one worker/reader; add a second reader for prefetch).
+## Phase 5 — Balls and trails
+
+Settled by ticket 04 (owner on the prototype `ros_ws/gui/test_replay_trails.html`, 2026-10-10) plus four decisions the
+2026-10-11 survey forced (D1-D4 below; each names the fact that forced it).
+
+**Owner's picks (ticket 04).** Ring ribbon trail (custom shader, screen-space width), age shown by dimming AND thinning;
+marker trails in the GUI label colour (`mocap-markers.js` palette), ball trails a hue per ball id. `tail_length_ms`
+default 1000, range 0..5000 step 100, 0 = off, in the viewer settings beside the camera presets, live and replay.
+Replay feeds trails from a COLUMNS WINDOW: every seek, scrub and reverse step rebuilds `[p - tail, p]` of `/mocap_data`
+and `/balls` from the resident chunk columns at recorded rate; forward play appends `(p_prev, p]` from columns, ungated
+by speed. Ball key = `id`; a track ends when its id is absent from a `/balls` message and fades over the tail. Markers
+are keyed by QTM label, unlabelled ones by nearest neighbour (80 mm gate, 0.5 s memory), never by slot index.
+
+**Decisions forced by the survey (2026-10-11).**
+- **D1 Ball-track staleness end.** `ball_tracker_node` publishes `/balls` only while at least one ball is tracked, so the
+  last ball's track never sees a message without it. A ball track also ends, at its last sample time, when no `/balls`
+  message has arrived for `BALL_STALE_MS` = 150 ms (the tracker publishes once per mocap frame, about 200 Hz, while a ball
+  exists). Same rule live and in replay; the ball spheres hide on the same rule.
+- **D2 Per-track decimation to 10 ms.** `/mocap_data` is recorded at about 197 Hz (busy bag `2026-10-02_12-43-28`), so
+  a 5 s window at recorded rate overflows the prototype's 640-sample ring. A push closer than 10 ms after the track's
+  last accepted sample is skipped; capacity stays 640 (5 s x 100 Hz x 1.25).
+- **D3 Duplicate-trail rule.** The tracked balls are also unlabelled mocap markers. An unlabelled marker within 40 mm of
+  any live ball's latest position gets no trail (its sphere is still drawn). It takes no nearest-neighbour slot either.
+- **D4 One trail writer per mode.** Replay dispatches `/mocap_data` through the live handler (state-render), so the
+  handler's trail lines would double-feed. While `clock.isReplay()` the live handlers do not touch trails; the columns
+  feeder is the only writer and supplies the render time (the playhead; `scrub` never moves `clock.now()`).
+
+**Modules.**
+- `js/trails.js` — `createTrailLayer(parent, {capacity, maxTracks, getResolution})`, lifted from the prototype, ribbon
+  only, age mode both, end mode fade. Pure Three.js, no DOM, no allocation on push or render.
+- `js/trail-feed.js` — `createTrailFeed(layer, opts)`: the keying and policy shared by live and replay. Primitive-
+  argument API so the columns path never hydrates: `beginMocap(t)`, `marker(t, label, x, y, z)`, `endMocap(t)`,
+  `beginBalls(t)`, `ball(t, id, status, x, y, z)`, `endBalls(t)`, `tick(t)` (D1), `reset()` (layer + NN state + ball
+  state), `setRenderTime(tSec | null)` (null = `clock.now()`), `render(tailMs)`, `balls()` (the current ball list for
+  the spheres, read without allocation). D1-D3 live here.
+- `js/trail-settings.js` — `getTailMs()`, `setTailMs(ms)`, `onTailChange(cb)`; persisted per viewer in `localStorage`
+  (try/catch, default 1000).
+- `js/trails-scene.js` (browser only) — `initTrails()` builds the singleton layer and feed on the viewer scene, the
+  ball-sphere pool (8, hue per id, same palette as the trails), registers one `onFrame` render; `getTrailFeed()`.
+  The layer pool is 64 tracks: the busy bag carries 21 persistent marker tracks and peaks at 46 live at a 5 s tail
+  and 8x, so 32 dropped hundreds of pushes in the 2026-10-11 smoke.
+- `js/replay/trail-window.js` — `createTrailWindow({source, cache, feed, getTailMs})`: `onPlayhead(p)` (append for a
+  forward step no longer than the tail, otherwise rebuild), `onResetForSeek()` (forces a rebuild), a cache residency
+  listener (rebuild when the last window was incomplete), `dispose()`. Reads the typed CSR columns (`markers` leaves
+  `position.x|y|z`, `label`; `balls` leaves `id`, `status`, `position.x|y|z`), merging the two topics in time order.
+- `main.js` — `/balls` subscription (throttle 20 ms) with `onBalls`, trail lines in `onMocapData` (both skipped in
+  replay, D4); `schema.py` moves `/balls` from `PLANNED` to `SUBSCRIBED`.
+- `mode.js` — creates the trail window on entry, disposes it and resets the feed on exit; `preRollSec` becomes
+  `max(span, tail)` so a seek's ensure covers the tail.
+
+**Tests.** Node harnesses in `tests/ros/js/` with pytest wrappers: the layer (ring wrap, decimation, fade release, no
+pool growth), the feed (D1-D3, label/NN keying), the trail window over real typed records from `loadRecords` (seek
+rebuild == forward append, reverse, incomplete-window rebuild on residency), the subscribe-set and policy pins.
+
+## Phase 6 (outline)
+- The fog items on the map. Owner's remaining latency asks: the overview strip arrives only after the niced pass
+  (pre-compute overviews for all recordings in the background at service start), and slot buffering is serial (one
+  worker/reader; add a second reader for prefetch).
 
 ## Testing Plan
 

@@ -49,9 +49,9 @@ pytestmark = pytest.mark.skipif(NODE is None, reason="node not installed")
 def out(tmp_path_factory):
     sb = tmp_path_factory.mktemp("mode")
     (sb / "replay").mkdir()
-    for name in ("clock.js", "event-store.js", "ros-bridge.js"):
+    for name in ("clock.js", "event-store.js", "ros-bridge.js", "trail-feed.js", "marker-palette.js"):
         shutil.copy(JS / name, sb / name)
-    for name in ("chunk.js", "sources.js", "slot.js", "policy.js", "engine.js", "cache.js", "fence.js", "mode.js"):
+    for name in ("chunk.js", "sources.js", "slot.js", "policy.js", "engine.js", "cache.js", "fence.js", "mode.js", "trail-window.js"):
         shutil.copy(JS / "replay" / name, sb / "replay" / name)
     shutil.copy(HARNESS.parent / "replay_test_support.js", sb / "replay_test_support.js")
     shutil.copy(HARNESS, sb / "replay_mode_harness.js")
@@ -185,3 +185,14 @@ def test_resident_changes_rebuild_the_chart_store_once_per_frame(out):
     assert c["before_frame"] == 0          # slot arrivals alone never rebuild
     assert c["after_frame"] == 1           # the next frame rebuilds exactly once
     assert c["pending_exit_clean"] is True
+
+
+def test_trails_dependency_creates_window_forwards_hooks_and_disposes(out):
+    t = out["trails"]
+    assert t["afterEntry"][0] == "R"                                  # live trails cleared before the first playhead
+    assert any(x.startswith("S") and x != "Snull" for x in t["afterEntry"])  # the entry seek's onPlayhead reached the window
+    assert t["preRoll"] >= 5 and t["preRollBig"] >= 60                # the seek's ensure covers the tail
+    assert t["afterSeek"][0] == "R" and t["afterSeek"][-1].startswith("S")  # seek -> forced rebuild at the new playhead
+    assert t["afterExit"] == ["R", "Snull"]                           # exit: reset + render time back to clock.now()
+    assert t["unsubTail"] == 1 and t["tailCbCleared"]
+    assert t["nullFeedOk"]
