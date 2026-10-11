@@ -256,3 +256,31 @@ def test_listing_reports_ready_when_the_cache_is_valid_while_the_pass_is_still_r
     finally:
         with srv.backend._lock:
             srv.backend._running = None
+
+
+def test_a_pass_still_exiting_for_an_older_version_neither_reports_computing_nor_blocks_the_requeue(srv):
+    # The file changes while the previous pass is between os.replace() and clearing _running: the listing must
+    # say "none" (the stale cache is not ready, and nothing is computing THIS version), and a GET must queue the
+    # new version instead of answering "computing" for the old one (load-flaked the route test, 2026-10-11).
+    path = _put_bag(srv.root, A)
+    poll(srv, A)
+    st = os.stat(path)
+    old = (st.st_size, st.st_mtime_ns)
+    os.utime(path, (st.st_atime, st.st_mtime - 1000))
+    with srv.backend._lock:
+        srv.backend._running, srv.backend._running_ver = A, old
+        srv.backend._thread = object()   # no drain thread: the queue is inspected, not run
+    try:
+        assert srv.jreq("/api/replay/recordings")[1]["recordings"][0]["overview"] == "none"
+        code, j = srv.jreq(ov_url(A))
+        assert (code, j["status"]) == (202, "queued")
+        with srv.backend._lock:
+            assert list(srv.backend._queue) == [A]
+        with srv.backend._lock:
+            srv.backend._running_ver = None          # resolving: the same id with no version yet counts as computing
+        assert srv.jreq("/api/replay/recordings")[1]["recordings"][0]["overview"] == "computing"
+    finally:
+        with srv.backend._lock:
+            srv.backend._running = srv.backend._running_ver = None
+            srv.backend._queue.clear()
+            srv.backend._thread = None

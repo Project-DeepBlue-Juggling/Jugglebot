@@ -62,6 +62,7 @@ class ReplayBackend:
         self._lock = threading.Lock()
         self._queue = deque()          # recording ids waiting
         self._running = None           # id being computed
+        self._running_ver = None       # (size_bytes, mtime_ns) the pass is computing; None until it resolved the file
         self._failed = {}              # id -> (size_bytes, mtime_ns, error)
         self._thread = None
         self._valid_memo = {}          # overview path -> ((st_size, st_mtime_ns), doc head)
@@ -170,7 +171,7 @@ class ReplayBackend:
         if self._cached_overview(info) is not None:
             return "ready"
         with self._lock:
-            if self._running == rid:
+            if self._running_for(info):
                 return "computing"
             if rid in self._queue:
                 return "queued"
@@ -179,11 +180,18 @@ class ReplayBackend:
             return "failed"
         return "none"
 
+    def _running_for(self, info: Dict[str, Any]) -> bool:
+        """The running pass is computing THIS version of the file (caller holds the lock).  A pass still exiting
+        for an older version (the file changed meanwhile) is not: that version is "none"/queued, and it must queue."""
+        if self._running != info["id"]:
+            return False
+        return self._running_ver is None or self._running_ver == (info["size_bytes"], info["mtime_ns"])
+
     def _enqueue(self, info: Dict[str, Any]) -> str:
         """Queue ``info`` unless already queued/running; returns the 202 status word."""
         rid = info["id"]
         with self._lock:
-            if self._running == rid:
+            if self._running_for(info):
                 return "computing"
             if rid not in self._queue:
                 self._queue.append(rid)
@@ -198,14 +206,19 @@ class ReplayBackend:
             with self._lock:
                 if not self._queue:
                     self._running = None
+                    self._running_ver = None
                     self._thread = None  # under the lock, so _enqueue never trusts a dying thread
                     return
                 rid = self._queue.popleft()
                 self._running = rid
+                self._running_ver = None
             err = None
             info = None
             try:
                 info = recordings.find_recording(self.rosbags_root, rid)
+                if info is not None:
+                    with self._lock:
+                        self._running_ver = (info["size_bytes"], info["mtime_ns"])
                 err = "recording vanished" if info is None else self._run_pass(info)
             except Exception as exc:  # noqa: BLE001 - the queue must keep draining
                 err = "%s: %s" % (type(exc).__name__, exc)
@@ -215,6 +228,7 @@ class ReplayBackend:
                 elif info is not None:
                     self._failed[rid] = (info["size_bytes"], info["mtime_ns"], err)
                 self._running = None
+                self._running_ver = None
 
     def _run_pass(self, info: Dict[str, Any]) -> Optional[str]:
         """Run the niced venv pass; None on success, else an error string."""
