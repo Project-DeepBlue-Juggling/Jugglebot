@@ -320,6 +320,18 @@ class BallButlerNode(Node):
         # via the goal-response → result callback chain.
         self._throw_action = ActionClient(self, BallButlerThrowCmd, 'bb/throw')
 
+        # ── Throw CANCEL (bridge FW 30 / BB FW 9, 2026-10-13) ──
+        # `bb/cancel_throw` (served below) forwards to teensy_bridge_node's
+        # `bb/cancel` (BB_CANCEL RPC). This node is single-threaded, so the
+        # forward is async: the service answers at once and the bridge's verdict
+        # (CANCELLED / CANCEL_TOO_LATE / ...) is logged here when it arrives. A
+        # throw goal sent but not yet ACCEPTED by the bridge is not cancellable
+        # there yet (the bridge would answer NOTHING_PENDING and then throw), so
+        # a cancel in that window is DEFERRED to the goal's acceptance.
+        self._bb_cancel_cli = self.create_client(Trigger, 'bb/cancel')
+        self._throw_goals_unacked = 0
+        self._cancel_on_accept = False
+
         # ── Publisher: ThrowAnnouncement (own, not can_node's) ──
         # We send suppress_announcement=True on bb/throw so the bridge / can_node
         # skips its predict_throw-based announcement (which uses the platform
@@ -354,6 +366,8 @@ class BallButlerNode(Node):
         self.create_service(
             Trigger, 'bb/cancel_accuracy_calibration',
             self._svc_cancel_accuracy_calibration)
+        self.create_service(
+            Trigger, 'bb/cancel_throw', self._svc_cancel_throw)
 
         self.get_logger().info(
             'Ball Butler node up (aim correction '
@@ -582,8 +596,11 @@ class BallButlerNode(Node):
         # Fire-and-forget: don't block the throw pipeline on the result. The
         # firmware outcome (relayed CMD_RESULT) is logged when it arrives.
         send_future = self._throw_action.send_goal_async(goal)
+        if throw:
+            self._throw_goals_unacked += 1
         send_future.add_done_callback(
-            lambda fut, tid=target_id: self._on_throw_goal_response(fut, tid))
+            lambda fut, tid=target_id, counted=throw:
+                self._on_throw_goal_response(fut, tid, counted))
 
         if throw:
             self._publish_throw_announcement(
@@ -612,8 +629,20 @@ class BallButlerNode(Node):
 
     # ── bb/throw result chain (async, non-blocking — logs the firmware outcome) ──
 
-    def _on_throw_goal_response(self, future, target_id: str):
-        """Goal accepted/rejected by the bridge action server; chain to the result."""
+    def _on_throw_goal_response(self, future, target_id: str,
+                                counted: bool = False):
+        """Goal accepted/rejected by the bridge action server; chain to the result.
+
+        ``counted`` (a real throw, not an aim): this response closes the
+        not-yet-accepted window `bb/cancel_throw` defers across — a cancel
+        that arrived inside it is sent now if the goal was accepted, and
+        dropped if it was not (nothing will be thrown)."""
+        fire_deferred_cancel = False
+        if counted:
+            self._throw_goals_unacked = max(0, self._throw_goals_unacked - 1)
+            if self._throw_goals_unacked == 0 and self._cancel_on_accept:
+                self._cancel_on_accept = False
+                fire_deferred_cancel = True
         try:
             goal_handle = future.result()
         except Exception as e:  # noqa: BLE001
@@ -626,6 +655,59 @@ class BallButlerNode(Node):
             return
         goal_handle.get_result_async().add_done_callback(
             lambda fut, tid=target_id: self._on_throw_result(fut, tid))
+        if fire_deferred_cancel:
+            self._send_bb_cancel('deferred until the bridge accepted the throw')
+
+    # ── bb/cancel_throw (bridge FW 30 / BB FW 9) ──
+
+    def _svc_cancel_throw(self, request, response):
+        """bb/cancel_throw — cancel a Ball Butler throw that has not started
+        its wind-up (skill_node calls it whenever an attempt ends with a BB
+        throw still counting down). Answers at once: ``success`` means the
+        cancel was SENT (or deferred to the pending goal's acceptance), not
+        that BB dropped the throw — the bridge's `bb/cancel` verdict is logged
+        by `_on_bb_cancel_done`, and an aborted throw's own result arrives as
+        THROW_ABORTED_BY_HOST on `bb/throw_outcome`."""
+        if self._throw_goals_unacked > 0:
+            self._cancel_on_accept = True
+            response.success = True
+            response.message = ('cancel DEFERRED: the throw goal is not yet '
+                                'accepted by the bridge; bb/cancel fires on '
+                                'acceptance')
+            self.get_logger().info(f'bb/cancel_throw: {response.message}')
+            return response
+        if not self._send_bb_cancel('requested'):
+            response.success = False
+            response.message = ('bb/cancel unavailable (teensy_bridge_node '
+                                'down?) -- a pending throw will still fire')
+            self.get_logger().error(f'bb/cancel_throw: {response.message}')
+            return response
+        response.success = True
+        response.message = ('cancel sent (bb/cancel); the verdict follows in '
+                            "ball_butler_node's log")
+        return response
+
+    def _send_bb_cancel(self, why: str) -> bool:
+        """Fire `bb/cancel` asynchronously; False when the service is down."""
+        if not self._bb_cancel_cli.service_is_ready():
+            return False
+        self.get_logger().info(f'Throw cancel sent to the bridge ({why})')
+        self._bb_cancel_cli.call_async(Trigger.Request()).add_done_callback(
+            self._on_bb_cancel_done)
+        return True
+
+    def _on_bb_cancel_done(self, future):
+        """The bridge's bb/cancel verdict — ONE line, its own call site per
+        severity (Foxy rclpy)."""
+        try:
+            res = future.result()
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f'Throw cancel: bb/cancel call failed ({e})')
+            return
+        if res.success:
+            self.get_logger().info(f'Throw cancel: {res.message}')
+        else:
+            self.get_logger().error(f'Throw cancel FAILED: {res.message}')
 
     def _on_throw_result(self, future, target_id: str):
         """Firmware terminal outcome (relayed CMD_RESULT) — log it AND relay it.

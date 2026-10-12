@@ -612,6 +612,34 @@ def test_the_catch_outward_authority_parameter_defaults_to_ten_and_plumbs():
     assert node._catch_outward_authority_m() == 0.0
 
 
+def test_the_catch_inward_authority_parameter_defaults_to_35_and_plumbs():
+    """2026-10-13 (owner decision 3): inward catch aims -- the learner-
+    predicted prior and tracker re-aims -- may move 35 mm toward the other
+    site (sitting 7's P1 bias was +27 mm); the learner's throw command keeps
+    `learner_lateral_authority_mm`. Metres, floored at 0."""
+    node, _client = _node_with_client()
+    assert node.get_parameter('catch_inward_authority_mm').value == 35.0
+    assert node._catch_inward_authority_m() == pytest.approx(0.035)
+    node._params['catch_inward_authority_mm'] = -5.0
+    assert node._catch_inward_authority_m() == 0.0
+
+
+def test_the_executor_gets_the_inward_authority_and_a_forward_model():
+    """The started executor carries `catch_inward_authority_m` and a learner
+    exposing `predict` (the catch prior's forward model, 2026-10-13)."""
+    node, _client = _node_with_client()
+    node._on_traj_status(_status())
+    _prelevel_ready(node)
+    node._params['plant_id'] = 'test_inward_authority_plumbs'
+    resp = node._start_pattern(_self_toss_goal())
+    assert resp.success is True, resp.message
+    assert node._executor.catch_inward_authority_m == pytest.approx(0.035)
+    assert node._executor.lateral_authority_m == pytest.approx(0.020)
+    y_hat = node._executor.learner.predict(
+        np.zeros(4), np.array([0.001, 0.0, 0.9]), np.array([0.0, 0.0, 0.9]))
+    np.testing.assert_allclose(y_hat, [0.001, 0.0, 0.9])   # cold: identity
+
+
 def test_the_hold_tilt_max_deg_parameter_defaults_to_the_planner_ceiling():
     """R5 owner experiment (2026-09-30): unset, the reload's held-catch tilt
     cap is the planner's own ceiling (`tilt_geometry.MAX_TILT_DEG`, 12 deg) —
@@ -2493,7 +2521,8 @@ def test_a_latched_lane_refuses_the_next_goal(tmp_path):
     node._on_link_status(_latched_link_status(1435, latched=1))
     resp = _try_self_toss_start(node, tmp_path)
     assert resp.success is False
-    assert 'LATCHED' in resp.message and 'IDLE' in resp.message
+    assert 'LATCHED' in resp.message and 'auto' in resp.message
+    assert 'IDLE' not in resp.message
     assert node._executor is None
 
 
@@ -5171,8 +5200,11 @@ def test_every_waited_client_is_created_on_the_dedicated_client_node():
     with patch.object(_MockNodeClass, 'create_client', spy):
         node = sn.SkillNode()
     names = {n for _owner, n in created}
+    # + bb/cancel_throw (2026-10-13): never waited on, but on the helper node
+    # so its done-callback (the one cancel log line) runs on that executor.
     assert names == {'trajectory/install_segment', 'trajectory/go_to_pose',
-                     'trajectory/hold', 'bb/reload', 'bb/throw_at_target'}
+                     'trajectory/hold', 'bb/reload', 'bb/throw_at_target',
+                     'bb/cancel_throw', 'recover_lane'}
     assert all(owner is node._client_node for owner, _n in created)
     assert node._client_node is not node
 
@@ -5321,3 +5353,250 @@ def test_a_magazine_install_encodes_the_wire_and_reads_the_release_off_t_event()
     assert list(req.rest_site_mm) == [0.0, 0.0, 750.0]
     # a MAGAZINE's release IS its event, like a THROW's
     assert node._pending_event_mono == 50.0
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# R5 sitting 7 decision 5 (2026-10-13): an attempt that ENDS with a Ball
+# Butler throw still counting down cancels it (bb/cancel_throw), once.
+# ═════════════════════════════════════════════════════════════════════════════
+
+class _CancelClient(_RecordingClient):
+    """bb/cancel_throw stand-in: `_maybe_cancel_bb_throw` checks
+    `service_is_ready()` (never `wait_for_service` -- it must not block an
+    end path, the 40 Hz tick included)."""
+
+    def service_is_ready(self):
+        return self._ready
+
+
+def _cancel_client(node, *, ready=True, success=True,
+                   message='cancel sent (bb/cancel)'):
+    resp = Trigger.Response()
+    resp.success = success
+    resp.message = message
+    cli = _CancelClient(response=resp, ready=ready)
+    node._bb_cancel_cli = cli
+    return cli
+
+
+def test_bb_cancel_end_with_a_pending_bb_throw_cancels_it_once(tmp_path):
+    """The sitting-7 case: the attempt ends while Ball Butler's accepted
+    throw (3 s lead) is still counting down -> exactly ONE bb/cancel_throw,
+    however many end paths run afterwards."""
+    node, _client = _node_with_client(response=_response())
+    resp = _start_reload(node, tmp_path)
+    assert resp.success is True, resp.message
+    assert node._bb_pending_release_mono is not None
+    cancel = _cancel_client(node)
+    node._end_attempt('ABORTED_TEST', 'ABORTED_TEST')
+    assert len(cancel.calls) == 1
+    assert node._bb_pending_release_mono is None
+    node._maybe_cancel_bb_throw('AGAIN')
+    node._stop_attempt()
+    assert len(cancel.calls) == 1
+
+
+def test_bb_cancel_stop_during_the_reload_wait_cancels_the_pending_throw(tmp_path):
+    node, _client = _node_with_client(response=_response())
+    resp = _start_reload(node, tmp_path)
+    assert resp.success is True, resp.message
+    cancel = _cancel_client(node)
+    node._stop_attempt()
+    assert len(cancel.calls) == 1
+
+
+def test_bb_cancel_a_release_already_past_is_not_cancelled():
+    node, _client = _node_with_client(response=_response())
+    cancel = _cancel_client(node)
+    node._bb_pending_release_mono = time.perf_counter() - 0.05
+    node._maybe_cancel_bb_throw('MISSED_CATCH')
+    assert cancel.calls == []
+    assert node._bb_pending_release_mono is None
+
+
+def test_bb_cancel_no_pending_throw_sends_nothing():
+    node, _client = _node_with_client(response=_response())
+    cancel = _cancel_client(node)
+    node._end_attempt('ABORTED_TEST', 'ABORTED_TEST')
+    assert cancel.calls == []
+
+
+def test_bb_cancel_unavailable_service_neither_blocks_nor_raises(tmp_path):
+    node, _client = _node_with_client(response=_response())
+    resp = _start_reload(node, tmp_path)
+    assert resp.success is True, resp.message
+    cancel = _cancel_client(node, ready=False)
+    node._end_attempt('ABORTED_TEST', 'ABORTED_TEST')
+    assert cancel.calls == []
+    assert node._bb_pending_release_mono is None
+
+
+def test_bb_cancel_a_throw_call_overtaken_by_an_end_is_cancelled(tmp_path):
+    """The end ran (lane refusal) while `bb/throw_at_target` was in flight,
+    so its cancel found no record; the throw the call then reports ACCEPTED
+    is cancelled by `_fire_reload_throw` itself."""
+    node, _client = _node_with_client(response=_response())
+    node._on_link_status(_link_status(4))
+    _reload_armed_await_bb_idle(node, tmp_path)
+    _finish_bridge(node)
+    node._bb_throw_cli = _RacingThrowClient(
+        node, response=_bb_throw_response(success=True, throw_delay_s=6.8),
+        ready=True)
+    node._hold_cli = _hold_client()
+    cancel = _cancel_client(node)
+    _bb_ready(node)
+    node._on_tick()
+    assert node._goal_end_code == ex.HAND_LANE_REFUSED, node._goal_end_code
+    assert len(cancel.calls) == 1
+
+
+def test_bb_cancel_our_own_throw_aborted_by_host_does_not_end_an_attempt(tmp_path):
+    """THROW_ABORTED_BY_HOST is the echo of OUR cancel: never an end reason
+    (the attempt that sent it has already ended)."""
+    node, _client = _node_with_client(response=_response())
+    resp = _start_reload(node, tmp_path)
+    assert resp.success is True, resp.message
+    ctx = node._reload_ctx
+    node._on_bb_throw_outcome(
+        String(data='THROW_ABORTED_BY_HOST (axis=n/a, detail1=4200)'))
+    assert node._reload_ctx is ctx
+    assert node._goal_end_code == ''
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Unit C2 (2026-10-13): automatic lane-latch recovery triggers (bridge
+# `recover_lane`). T1 = after the lane-refused END's hold; T2 = no executor and
+# the latch bit up for 3 fresh samples. ONE call per latch episode.
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _recover_client(node, *, ready=True, success=True,
+                    message='lane recovery DONE'):
+    resp = Trigger.Response()
+    resp.success = success
+    resp.message = message
+    cli = _CancelClient(response=resp, ready=ready)
+    node._lane_recovery_cli = cli
+    return cli
+
+
+def _lane_status(latched, recovery='idle', stage='', sched_refused=100):
+    return DiagnosticStatus(values=[
+        KeyValue(key='fault_state', value='NONE'),
+        KeyValue(key='sched_refused', value=str(int(sched_refused))),
+        KeyValue(key='sched_hold_latched', value=str(int(latched))),
+        KeyValue(key='lane_recovery', value=recovery),
+        KeyValue(key='lane_recovery_stage', value=stage)])
+
+
+def test_t1_the_lane_refused_hold_then_requests_recovery_once():
+    node, _client = _node_with_client()
+    node._hold_cli = _hold_client()
+    cli = _recover_client(node)
+    node._force_hold = True
+    node._maybe_hold_pending_event('HAND_LANE_REFUSED')
+    assert len(node._hold_cli.calls) == 1
+    assert len(cli.calls) == 1
+    # a second forced end in the same latch episode does not call again
+    node._force_hold = True
+    node._maybe_hold_pending_event('HAND_LANE_REFUSED')
+    assert len(cli.calls) == 1
+
+
+def test_t1_without_the_service_falls_back_to_hold_only():
+    node, _client = _node_with_client()
+    node._hold_cli = _hold_client()
+    cli = _recover_client(node, ready=False)
+    node._force_hold = True
+    node._maybe_hold_pending_event('HAND_LANE_REFUSED')
+    assert len(node._hold_cli.calls) == 1                # today's behaviour
+    assert cli.calls == []
+    assert node._lane_cli_unavail_logged is True
+
+
+def test_t1_a_plain_pending_event_hold_does_not_request_recovery():
+    node, _client = _node_with_client()
+    node._hold_cli = _hold_client()
+    cli = _recover_client(node)
+    node._pending_event_mono = time.perf_counter() + 5.0
+    node._maybe_hold_pending_event('ABORTED_NO_RELEASE')
+    assert cli.calls == []
+
+
+def test_t2_fires_once_after_three_latched_samples_with_no_executor():
+    node, _client = _node_with_client()
+    cli = _recover_client(node)
+    node._on_link_status(_lane_status(1))
+    node._on_link_status(_lane_status(1))
+    assert cli.calls == []                               # only 2 samples
+    node._on_link_status(_lane_status(1))
+    assert len(cli.calls) == 1                           # the third
+    for _ in range(5):
+        node._on_link_status(_lane_status(1))
+    assert len(cli.calls) == 1                           # once per episode
+
+
+def test_t2_does_not_fire_while_an_executor_is_running():
+    node, _client = _node_with_client()
+    cli = _recover_client(node)
+    node._executor = MagicMock()
+    for _ in range(5):
+        node._on_link_status(_lane_status(1))
+    assert cli.calls == []
+
+
+def test_t2_does_not_refire_after_failed_until_the_bit_rises_again():
+    node, _client = _node_with_client()
+    cli = _recover_client(node, success=False, message='failed at stage arm')
+    for _ in range(3):
+        node._on_link_status(_lane_status(1))
+    assert len(cli.calls) == 1
+    for _ in range(10):                                  # still latched, failed
+        node._on_link_status(_lane_status(1, recovery='failed'))
+    assert len(cli.calls) == 1
+    node._on_link_status(_lane_status(0, recovery='failed'))   # bit falls
+    for _ in range(3):
+        node._on_link_status(_lane_status(1))            # next rise
+    assert len(cli.calls) == 2
+
+
+def test_t2_a_done_callback_logs_one_line_per_outcome():
+    node, _client = _node_with_client()
+    _recover_client(node, success=False, message='failed at stage arm')
+    errs = []
+    node._logger.error = errs.append
+    for _ in range(3):
+        node._on_link_status(_lane_status(1))
+    assert any('lane recovery' in m and 'FAILED' in m and 'DEACTIVATE' in m
+               for m in errs)
+
+
+def test_a_goal_is_refused_while_lane_recovery_is_in_progress(tmp_path):
+    node, _client = _node_with_client(response=_response())
+    node._params['plant_id'] = 'test_lane_recovery_busy'
+    node._on_link_status(_lane_status(1, recovery='in_progress', stage='rest'))
+    resp = _try_self_toss_start(node, tmp_path)
+    assert resp.success is False
+    assert 'lane recovery in progress (stage rest)' in resp.message
+    assert node._executor is None
+
+
+def test_a_failed_recovery_names_the_deactivate_fallback(tmp_path):
+    node, _client = _node_with_client(response=_response())
+    node._params['plant_id'] = 'test_lane_recovery_failed'
+    node._on_link_status(_lane_status(1, recovery='failed'))
+    resp = _try_self_toss_start(node, tmp_path)
+    assert resp.success is False
+    assert 'LATCHED' in resp.message and 'DEACTIVATE' in resp.message
+
+
+def test_the_hold_end_line_echoes_a_non_idle_lane_recovery():
+    node, _client = _node_with_client()
+    node._hold_cli = _hold_client()
+    _recover_client(node)
+    node._on_link_status(_lane_status(1, recovery='in_progress', stage='rest'))
+    node._force_hold = True
+    infos = []
+    node._logger.info = infos.append
+    node._maybe_hold_pending_event('HAND_LANE_REFUSED')
+    assert any('hold installed' in m and 'lane_recovery=in_progress' in m
+               for m in infos)

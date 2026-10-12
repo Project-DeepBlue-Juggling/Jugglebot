@@ -117,7 +117,7 @@ from typing import Tuple
 
 import numpy as np
 
-__all__ = ['LearnerConfig', 'command']
+__all__ = ['LearnerConfig', 'command', 'predict']
 
 
 @dataclasses.dataclass(frozen=True)
@@ -339,3 +339,60 @@ def command(x, y_d, X, U, Y, cfg: LearnerConfig = None) -> np.ndarray:
         raise ValueError('the learner command is not finite (%r) over %d '
                          'neighbourhood rows' % (u_star.tolist(), idx.size))
     return u_star
+
+
+def predict(x, u, X, U, Y, cfg: LearnerConfig = None, y_d=None) -> np.ndarray:
+    """The FORWARD model: where the plant is expected to land ``y_hat`` (3,)
+    -- landing xy offset, apex; SI, the same shape as a ``Y`` row -- when
+    commanded ``u`` from state ``x`` (2026-10-13, wave 2 unit A: the catch
+    prior is this, not ``y_d``, because the command that reaches the platform
+    is CLIPPED by the lateral authority and the admissible box and the ball
+    lands where the plant takes THAT command, not at the target).
+
+    Anchor choice. The fit is the SAME local affine fit ``(C, D, d)`` that
+    :func:`command` builds (:func:`_neighbourhood` + :func:`_local_fit`),
+    centred on the same query: state ``x`` and, for the support gate, the
+    target ``y_d`` the command was solving for. So the prediction is the
+    forward half of exactly the model that produced the throw's command:
+    ``y_hat = d + D (u - u_bar)`` (the ``C delta_x`` term is zero at the
+    query state). A caller that passes the throw's own ``y_d`` gets that
+    fit modulo rows appended since the command was computed. ``y_d=None``
+    centres the gate on ``u`` itself ("assume it lands where commanded" --
+    the gate is 3 bandwidths, 150 mm laterally, so the two choices select
+    the same rows unless the plant is biased by more than ~100 mm).
+
+    The A2 invariant holds unchanged: the neighbourhood and the fit weights
+    are :func:`command`'s, so no row is chosen or weighted by how close its
+    outcome came to anything.
+
+    Thin support (fewer than ``cfg.k_min`` rows in the memory or inside the
+    gate) returns a COPY of ``u`` -- the identity prior, "the plant does what
+    it is told" -- and never raises for it. A non-finite ``x``/``u``/``y_d``
+    or a non-finite fit still raises ``ValueError`` by name (the caller
+    decides its fallback; the executor falls back to ``y_d``).
+
+    Determinism: a pure function of its arguments.
+    """
+    if cfg is None:
+        cfg = LearnerConfig()
+    x = _vec(x, 4, 'x')
+    u = _vec(u, 3, 'u')
+    y_q = u if y_d is None else _vec(y_d, 3, 'y_d')
+    X = _leading_matrix(X, 4, 'X')
+    n = X.shape[0]
+    U = _matrix(U, n, 3, 'U')
+    Y = _matrix(Y, n, 3, 'Y')
+
+    if n < cfg.k_min:
+        return u.copy()
+    idx, d2 = _neighbourhood(x, y_q, X, Y, cfg)
+    if idx.size < cfg.k_min:
+        return u.copy()
+    u_bar, Theta = _local_fit(x, X[idx], U[idx], Y[idx], d2[idx], cfg)
+    D = Theta[:, 4:7]
+    d = Theta[:, 7]
+    y_hat = d + D @ (u - u_bar)
+    if not np.all(np.isfinite(y_hat)):
+        raise ValueError('the learner prediction is not finite (%r) over %d '
+                         'neighbourhood rows' % (y_hat.tolist(), idx.size))
+    return y_hat

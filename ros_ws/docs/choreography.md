@@ -310,10 +310,22 @@
 - **clients:** `orchestrator_node`
 - **type:** `std_srvs.srv.Trigger`
 
+### `bb/cancel`
+
+- **servers:** `teensy_bridge_node`
+- **clients:** `ball_butler_node`
+- **type:** `std_srvs.srv.Trigger`
+
 ### `bb/cancel_accuracy_calibration`
 
 - **servers:** `ball_butler_node`
 - **clients:** _none_
+- **type:** `std_srvs.srv.Trigger`
+
+### `bb/cancel_throw`
+
+- **servers:** `ball_butler_node`
+- **clients:** `skill_node`
 - **type:** `std_srvs.srv.Trigger`
 
 ### `bb/reload`
@@ -422,6 +434,12 @@
 
 - **servers:** `teensy_bridge_node`
 - **clients:** _none_
+- **type:** `std_srvs.srv.Trigger`
+
+### `recover_lane`
+
+- **servers:** `teensy_bridge_node`
+- **clients:** `skill_node`
 - **type:** `std_srvs.srv.Trigger`
 
 ### `set_hand_gains`

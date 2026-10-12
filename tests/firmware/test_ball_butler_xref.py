@@ -84,12 +84,13 @@ def test_invalid_throws_rejected_by_python_spec(yaw, pitch, speed):
 
 
 def test_state_command_ids_and_dlc():
-    """The payloadless reload/reset/calibrate commands match the firmware ids
-    (0x7D2/0x7D3/0x7D4) with dlc 0 (mirrors ball_butler_protocol.h encode_reload/
-    reset/calibrate_loc)."""
+    """The payloadless reload/reset/calibrate commands (0x7D2/0x7D3/0x7D4) and
+    the throw cancel (0x7D9, bridge FW 30) match the firmware ids with dlc 0 (mirrors ball_butler_protocol.h encode_reload/
+    reset/calibrate_loc/cancel)."""
     for cmd_id, expect in ((bb.RELOAD_CMD_ID, 0x7D2),
                            (bb.RESET_CMD_ID, 0x7D3),
-                           (bb.CALIBRATE_CMD_ID, 0x7D4)):
+                           (bb.CALIBRATE_CMD_ID, 0x7D4),
+                           (bb.CANCEL_CMD_ID, 0x7D9)):
         assert cmd_id == expect
         m = bb.encode_state_command(cmd_id)
         assert m.arbitration_id == expect and m.dlc == 0

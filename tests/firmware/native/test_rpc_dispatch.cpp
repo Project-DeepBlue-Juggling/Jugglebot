@@ -508,6 +508,23 @@ TEST_CASE("BB_RELOAD with BB absent → ERR_BUS_DOWN (presence gate, no CAN1)") 
   CHECK(g_bb_sent == 0);
 }
 
+TEST_CASE("BB_CANCEL (FW 30): BB present → one payloadless CANCEL_CMD on CAN1; absent → ERR_BUS_DOWN, nothing sent") {
+  reset_all();
+  bb_state.heartbeat_seen = true; bb_state.heartbeat_stale = false;
+  CHECK(call_noarg(RpcMethod::BB_CANCEL) == RpcStatus::OK);
+  REQUIRE(g_bb_sent == 1);
+  CHECK(g_bb_last.id == BallButlerCanId::CANCEL_CMD);
+  CHECK(g_bb_last.len == 0);
+  // The cancel must never outrank a throw queued beside it on CAN1: lower id
+  // wins arbitration, so THROW_CMD < CANCEL_CMD keeps "throw then cancel" order.
+  CHECK(BallButlerCanId::THROW_CMD < BallButlerCanId::CANCEL_CMD);
+
+  reset_all();
+  bb_state.heartbeat_seen = false;    // BB not present
+  CHECK(call_noarg(RpcMethod::BB_CANCEL) == RpcStatus::ERR_BUS_DOWN);
+  CHECK(g_bb_sent == 0);
+}
+
 // ── Ball Butler firmware-over-CAN routing + gate sampling (FW 21) ─────────────
 
 TEST_CASE("BB_FW_*: each method routes to its relay op with the gate sampled from bb_state") {

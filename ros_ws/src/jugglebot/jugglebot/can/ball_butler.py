@@ -19,6 +19,7 @@ HEARTBEAT_ID = proto.CAN_ID_BB_HEARTBEAT
 RELOAD_CMD_ID = proto.CAN_ID_BB_RELOAD_CMD
 RESET_CMD_ID = proto.CAN_ID_BB_RESET_CMD
 CALIBRATE_CMD_ID = proto.CAN_ID_BB_CALIBRATE_LOC_CMD
+CANCEL_CMD_ID = proto.CAN_ID_BB_CANCEL_CMD  # throw cancel (BB FW 9, bridge FW 30)
 YAW_ESTIMATE_ID = proto.CAN_ID_BB_YAW_ESTIMATE
 
 # Re-export enums from protocol_config
@@ -187,5 +188,5 @@ def encode_throw_command_at(yaw_rad: float, pitch_rad: float,
 
 
 def encode_state_command(cmd_id: int) -> can.Message:
-    """Encode a reload, reset, or calibrate command (no payload)."""
+    """Encode a reload, reset, calibrate or throw-cancel command (no payload)."""
     return can.Message(arbitration_id=cmd_id, data=[], dlc=0, is_extended_id=False)

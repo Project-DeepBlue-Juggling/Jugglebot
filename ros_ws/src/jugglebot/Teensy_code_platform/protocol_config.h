@@ -122,6 +122,7 @@ namespace BallButlerCanId {
   constexpr uint32_t FW_UPDATE_CMD = 0x7D6;
   constexpr uint32_t FW_UPDATE_REPLY = 0x7D7;
   constexpr uint32_t YAW_ESTIMATE = 0x7D8;
+  constexpr uint32_t CANCEL_CMD = 0x7D9;
 }
 
 // Catching Cone Teensy <-> Host
@@ -162,6 +163,7 @@ namespace BallButlerCommandType {
   constexpr uint8_t RELOAD = 1;
   constexpr uint8_t CALIBRATE = 2;
   constexpr uint8_t HOME = 3;
+  constexpr uint8_t CANCEL = 4;
 }
 
 // Command outcomes — CMD_RESULT byte 1 (shared base 0x00-0x0F + per-command ext >=0x20)
@@ -181,6 +183,9 @@ namespace BallButlerCommandOutcome {
   constexpr uint8_t THROW_REJECTED_PLANNER_EMPTY = 39;
   constexpr uint8_t THROW_REJECTED_ARM_FAIL = 40;
   constexpr uint8_t THROW_ABORTED_NOT_SETTLED = 41;
+  constexpr uint8_t THROW_ABORTED_BY_HOST = 42;
+  constexpr uint8_t CANCEL_NOTHING_PENDING = 43;
+  constexpr uint8_t CANCEL_TOO_LATE = 44;
 }
 
 // ==========================================================================

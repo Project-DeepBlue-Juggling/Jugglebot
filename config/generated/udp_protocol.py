@@ -79,6 +79,7 @@ class RpcMethod(IntEnum):
     BB_RELOAD = 65  # Ball Butler: send RELOAD_CMD on CAN1 (no payload)
     BB_RESET = 66  # Ball Butler: send RESET_CMD on CAN1 (no payload)
     BB_CALIBRATE_LOC = 67  # Ball Butler: send CALIBRATE_LOC_CMD on CAN1 (no payload)
+    BB_CANCEL = 68  # Ball Butler: send CANCEL_CMD on CAN1 (no payload) — abort a throw that has not started its wind-up
     GET_AXIS_VERSIONS = 80  # Pull cached raw Get_Version bytes + received bitmask
     TILT_READ = 81  # Relay: read Platform-Teensy inclinometer tilt
     STATE_READ = 82  # Relay: read Platform-Teensy RobotState (is_homed/level/pose)

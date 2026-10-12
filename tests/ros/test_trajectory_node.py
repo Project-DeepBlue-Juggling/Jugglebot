@@ -2497,3 +2497,98 @@ def test_warmup_failure_is_warned_not_raised(monkeypatch):
     warns = [m for lvl, m in node._logger.records if lvl == 'warning']
     assert len(warns) == 1 and 'solver exploded' in warns[0]
     assert node._active_plan is None             # still nothing installed
+
+
+# ── Unit C2 (2026-10-13): lane-latch / auto-recovery refusals ─────────────────
+# The firmware group holds a LATCHED streamed lane (sched_hold_latched=1) or the
+# bridge is running /recover_lane (lane_recovery=in_progress): every advancing
+# command is refused, the installed descent is never frozen, a hold is refused
+# ONLY while in progress, and reseed_from_measured is always open.
+
+def _lane_status(latched='0', recovery='idle', stage=''):
+    msg = _link_status('NONE')
+    msg.values += [KeyValue(key='sched_hold_latched', value=latched),
+                   KeyValue(key='lane_recovery', value=recovery),
+                   KeyValue(key='lane_recovery_stage', value=stage)]
+    return msg
+
+
+def _lane_node(**status):
+    node = _node()
+    node._on_robot_state(_robot_state())
+    node._on_control_mode(String(data='TRAJECTORY'))
+    node._on_link_status(_lane_status(**status))
+    return node
+
+
+def _lane_calls(node):
+    from jugglebot_interfaces.srv import InstallSegment
+    return {
+        'go_home': lambda: node._svc_go_home(Trigger.Request(),
+                                             Trigger.Response()),
+        'go_to_pose': lambda: node._svc_go_to_pose(
+            _go_to_pose_req(z=190.0, duration_s=2.0), GoToPose.Response()),
+        'timed_target': lambda: node._svc_timed_target(
+            _timed_req(node, z=185.0), TimedTarget.Response()),
+        'install_segment': lambda: node._svc_install_segment(
+            InstallSegment.Request(), InstallSegment.Response()),
+    }
+
+
+def _refused_text(resp):
+    assert not (getattr(resp, 'accepted', False) or getattr(resp, 'success', False))
+    return resp.message
+
+
+@pytest.mark.parametrize('name', ['go_home', 'go_to_pose', 'timed_target',
+                                  'install_segment'])
+def test_lane_latched_refuses_every_advancing_service(name):
+    node = _lane_node(latched='1')
+    msg = _refused_text(_lane_calls(node)[name]())
+    assert 'latched streamed lane' in msg and 'auto-recovery pending' in msg
+    assert 'lane_recovery=failed' in msg
+
+
+@pytest.mark.parametrize('name', ['go_home', 'go_to_pose', 'timed_target',
+                                  'install_segment'])
+def test_lane_recovery_in_progress_refuses_with_the_stage(name):
+    node = _lane_node(latched='1', recovery='in_progress', stage='converge')
+    msg = _refused_text(_lane_calls(node)[name]())
+    assert 'lane recovery in progress (stage converge)' in msg
+
+
+def test_a_clear_lane_does_not_refuse_go_home():
+    node = _lane_node(latched='0')
+    assert node._lane_frozen is False
+    assert 'lane' not in node._svc_go_home(Trigger.Request(),
+                                           Trigger.Response()).message
+
+
+def test_hold_is_refused_only_while_recovery_is_in_progress():
+    latched = _lane_node(latched='1')
+    resp = latched._svc_hold(Trigger.Request(), Trigger.Response())
+    assert 'lane recovery' not in resp.message          # T1's hold stays open
+    busy = _lane_node(latched='1', recovery='in_progress', stage='rest')
+    resp = busy._svc_hold(Trigger.Request(), Trigger.Response())
+    assert resp.success is False
+    assert 'lane recovery in progress (stage rest)' in resp.message
+
+
+def test_reseed_from_measured_is_allowed_during_a_lane_recovery():
+    node = _lane_node(latched='1', recovery='in_progress', stage='converge')
+    resp = node._svc_reseed_from_measured(Trigger.Request(), Trigger.Response())
+    assert 'lane recovery' not in resp.message
+
+
+def test_lane_frozen_drops_the_follower_target():
+    node = _follower_node()
+    node._on_link_status(_lane_status(latched='1'))
+    node._on_platform_pose(_platform_pose(x=10.0, publisher='SPACEMOUSE'))
+    assert node._follower_target is None                # intake dropped
+
+
+def test_lane_state_follows_the_keys():
+    node = _lane_node(latched='1', recovery='failed')
+    assert node._lane_frozen is True                    # latched, not recovering
+    node._on_link_status(_lane_status(latched='0', recovery='done'))
+    assert node._lane_frozen is False

@@ -766,6 +766,14 @@ class _MemoryLearner:
     def command(self, x, y_d):
         return self._memory.command(x, y_d, self._cfg)
 
+    def predict(self, x, u, y_d=None):
+        # 2026-10-13 (wave 2 unit A): the executor's catch prior is the
+        # learner's EXPECTED landing for the command it actually sent
+        # (``executor._learned_prior_landing``); without this the sim gate
+        # would keep aiming its catches at ``y_d`` and stop mirroring the
+        # live path. Same positional shape skill_node binds: (x, u, y_d).
+        return self._memory.predict(x, u, self._cfg, y_d=y_d)
+
 
 def _make_observer(plant):
     """``observer(ball_id, t_abs_s) -> EVIDENCE_SEATED/EMPTY`` from the

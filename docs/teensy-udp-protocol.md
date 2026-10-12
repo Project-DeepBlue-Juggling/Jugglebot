@@ -117,6 +117,7 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `BB_RELOAD` | 0x0041 | Ball Butler: send RELOAD_CMD on CAN1 (no payload) |
 | `BB_RESET` | 0x0042 | Ball Butler: send RESET_CMD on CAN1 (no payload) |
 | `BB_CALIBRATE_LOC` | 0x0043 | Ball Butler: send CALIBRATE_LOC_CMD on CAN1 (no payload) |
+| `BB_CANCEL` | 0x0044 | Ball Butler: send CANCEL_CMD on CAN1 (no payload) — abort a throw that has not started its wind-up |
 | `GET_AXIS_VERSIONS` | 0x0050 | Pull cached raw Get_Version bytes + received bitmask |
 | `TILT_READ` | 0x0051 | Relay: read Platform-Teensy inclinometer tilt |
 | `STATE_READ` | 0x0052 | Relay: read Platform-Teensy RobotState (is_homed/level/pose) |

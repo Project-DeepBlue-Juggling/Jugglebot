@@ -118,6 +118,8 @@ TEST_CASE("payloadless state commands: ids + len 0") {
   CHECK(CanBridge::BallButler::encode_reload().len == 0);
   CHECK(CanBridge::BallButler::encode_reset().id == BallButlerCanId::RESET_CMD);
   CHECK(CanBridge::BallButler::encode_calibrate_loc().id == BallButlerCanId::CALIBRATE_LOC_CMD);
+  CHECK(CanBridge::BallButler::encode_cancel().id == BallButlerCanId::CANCEL_CMD);
+  CHECK(CanBridge::BallButler::encode_cancel().len == 0);
 }
 
 int main(int argc, char** argv) {

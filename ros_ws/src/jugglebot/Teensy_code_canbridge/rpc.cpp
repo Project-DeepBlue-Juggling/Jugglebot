@@ -589,6 +589,13 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
       return send_bb_frame(BallButler::encode_reset());
     case RpcMethod::BB_CALIBRATE_LOC:
       return send_bb_frame(BallButler::encode_calibrate_loc());
+    case RpcMethod::BB_CANCEL:
+      // FW 30, ADDITIVE (an FW <= 29 board answers ERR_UNKNOWN_METHOD via the
+      // default below). Payloadless, presence-gated like BB_RESET: OK means the
+      // frame reached CAN1, NOT that a throw was cancelled — BB's own verdict
+      // (CANCEL OK / CANCEL_TOO_LATE / CANCEL_NOTHING_PENDING) comes back on
+      // CMD_RESULT. 0x7D9 loses arbitration to a THROW_CMD queued beside it.
+      return send_bb_frame(BallButler::encode_cancel());
 
     case RpcMethod::TIME_OF_DAY_QUERY:
       // The Teensy is the CLIENT for this method; it should never receive it as

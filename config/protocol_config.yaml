@@ -119,8 +119,16 @@ can_ids:
     # encoding.yaw_estimate.vel_res_dps counts | u16 sample age at TX (us, BB
     # monotonic, saturating). The bridge relays it as UDP BB_YAW_ESTIMATE paired with
     # BB_AXIS_ESTIMATES -> /bb/axis_estimates name bb_yaw. The 10 Hz heartbeat yaw is
-    # unchanged. Lowest-priority BB id: it never outranks ODrive control traffic.
+    # unchanged. Low-priority BB id (only CANCEL_CMD 0x7D9 is lower): it never outranks ODrive control traffic.
     YAW_ESTIMATE:     0x7D8
+    # Throw CANCEL (2026-10-13, R5 sitting 7 decision 5): host -> BB, payloadless.
+    # Aborts a queued/armed throw whose wind-up has not started (ball retained, BB
+    # back to IDLE); a no-op once the first wind-up frame is out. BB answers on
+    # CMD_RESULT with command_type CANCEL, and an aborted throw's own terminal
+    # CMD_RESULT is THROW_ABORTED_BY_HOST. Now the lowest-priority BB id: it can
+    # only follow a THROW_CMD queued alongside it (0x7D0 wins arbitration), never
+    # overtake it.
+    CANCEL_CMD:       0x7D9
 
   # Catching Cone Teensy <-> Host
   catching_cone:
@@ -166,6 +174,7 @@ ball_butler:
     RELOAD:       1
     CALIBRATE:    2
     HOME:         3
+    CANCEL:       4   # throw cancel (CANCEL_CMD 0x7D9); detail1 = ms to release at receipt
 
   # command_outcome — CMD_RESULT byte 1. A shared base enum (0x00-0x0F) reused by
   # every command, plus per-command extension values (>=0x20) carrying the specific
@@ -190,6 +199,15 @@ ball_butler:
     THROW_REJECTED_PLANNER_EMPTY:  0x27
     THROW_REJECTED_ARM_FAIL:       0x28
     THROW_ABORTED_NOT_SETTLED:     0x29
+    # The throw's terminal outcome when a host CANCEL_CMD (0x7D9) aborted it
+    # before wind-up: no frame sent, ball retained, BB back to IDLE. detail0 = -1;
+    # detail1 = ms that were left to the release instant.
+    THROW_ABORTED_BY_HOST:         0x2A
+    # CANCEL-specific reasons (command_type CANCEL). A cancel that aborted a
+    # throw answers OK (detail1 = ms left to release). detail1 = ms to release
+    # (negative = already past) for TOO_LATE, 0 for NOTHING_PENDING.
+    CANCEL_NOTHING_PENDING:        0x2B   # no throw queued or armed: nothing to cancel
+    CANCEL_TOO_LATE:               0x2C   # wind-up already started: the throw proceeds
 
 # =============================================================================
 # Catching Cone State Machine

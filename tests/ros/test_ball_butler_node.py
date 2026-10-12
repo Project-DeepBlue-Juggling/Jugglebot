@@ -713,3 +713,98 @@ class TestManualAim:
         aim_node.throw_outcome_pub.publish = published.append
         aim_node._on_aim_goal_response(fut)
         assert published == []
+
+
+# ── bb/cancel_throw (bridge FW 30 / BB FW 9, 2026-10-13) ─────────────────────
+
+class _CancelSpy:
+    """Records bb/cancel calls made through the node's client."""
+    def __init__(self, node, ready=True):
+        self.calls = []
+        cli = node._bb_cancel_cli
+        cli._ready = ready
+
+        def _call_async(request):
+            from tests.ros.conftest import MockFuture
+            self.calls.append(request)
+            return MockFuture()
+        cli.call_async = _call_async
+
+
+class _GoalHandle:
+    def __init__(self, accepted):
+        self.accepted = accepted
+
+    def get_result_async(self):
+        from tests.ros.conftest import MockFuture
+        return MockFuture()
+
+
+def _done_future(value):
+    from tests.ros.conftest import MockFuture
+    f = MockFuture()
+    f.set_result(value)
+    return f
+
+
+class TestCancelThrow:
+    def _trigger(self, node):
+        from std_srvs.srv import Trigger
+        return node._svc_cancel_throw(Trigger.Request(), Trigger.Response())
+
+    def test_no_pending_goal_forwards_to_bridge_at_once(self, node):
+        spy = _CancelSpy(node)
+        res = self._trigger(node)
+        assert res.success is True
+        assert len(spy.calls) == 1
+
+    def test_unavailable_bridge_service_is_a_failure(self, node):
+        spy = _CancelSpy(node, ready=False)
+        res = self._trigger(node)
+        assert res.success is False
+        assert 'unavailable' in res.message
+        assert spy.calls == []
+
+    def test_cancel_before_goal_acceptance_is_deferred_then_sent(self, node):
+        """A cancel while the throw goal is not yet accepted by the bridge is
+        deferred (the bridge would answer NOTHING_PENDING, then throw) and
+        sent the moment the goal is accepted."""
+        spy = _CancelSpy(node)
+        node._throw_goals_unacked = 1          # one throw goal in flight
+        res = self._trigger(node)
+        assert res.success is True and 'DEFERRED' in res.message
+        assert spy.calls == []
+        node._on_throw_goal_response(_done_future(_GoalHandle(True)), 'jb',
+                                     True)
+        assert len(spy.calls) == 1
+        assert node._cancel_on_accept is False
+        assert node._throw_goals_unacked == 0
+
+    def test_deferred_cancel_dropped_when_goal_refused(self, node):
+        spy = _CancelSpy(node)
+        node._throw_goals_unacked = 1
+        self._trigger(node)
+        node._on_throw_goal_response(_done_future(_GoalHandle(False)), 'jb',
+                                     True)
+        assert spy.calls == []                 # nothing will be thrown
+        assert node._cancel_on_accept is False
+
+    def test_aim_goal_response_does_not_consume_the_throw_window(self, node):
+        spy = _CancelSpy(node)
+        node._throw_goals_unacked = 1
+        self._trigger(node)
+        # An aim (counted=False) response must not fire the deferred cancel.
+        node._on_throw_goal_response(_done_future(_GoalHandle(True)), 'jb')
+        assert spy.calls == []
+        assert node._cancel_on_accept is True
+
+    def test_throw_dispatch_counts_unacked_goal(self, calibrated_node):
+        calibrated_node._on_rigid_bodies(_rigid_bodies({
+            'Catching_Cone': (1200.0, 400.0, 0.0),
+        }))
+        req = BallButlerThrow.Request()
+        req.target_name = 'Catching_Cone'
+        before = calibrated_node._throw_goals_unacked
+        res = calibrated_node._svc_throw_at_target(req, BallButlerThrow.Response())
+        assert res.success is True
+        assert calibrated_node._throw_goals_unacked == before + 1

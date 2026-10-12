@@ -6573,3 +6573,349 @@ def test_the_row_finalises_one_decide_lag_after_its_close_with_a_history(sites):
         assert len(experiences) == (0 if wired else 1), wired
         x.tick(close + ex.MISSED_CATCH_DECIDE_LAG_S + 0.005)
         assert len(experiences) == 1, wired
+
+
+# ---------------------------------------------------------------------------
+# The catch prior is the learner's FORWARD prediction of the command actually
+# sent, and the INWARD catch authority is split from the learner's (owner
+# decisions 2 + 3, 2026-10-13, wave 2 unit A). Sitting 7: P1 landed +27 mm
+# toward P2 because the columns box pinned the learner's lateral command, and
+# every catch without a converged fit (every hop catch among them) stayed on
+# the y_d prior.
+# ---------------------------------------------------------------------------
+
+from jugglebot.motion.skills import learner as lr  # noqa: E402
+from jugglebot.motion.skills import memory as mem  # noqa: E402
+
+
+class _PredictingLearner(_FakeLearner):
+    """:class:`_FakeLearner` plus a forward model: ``predict(x, u, y_d)``
+    returns a fixed ``y_hat`` (or raises), recording each call."""
+
+    def __init__(self, u=None, y_hat=None, predict_raises=False):
+        super().__init__(u=u)
+        self.y_hat = y_hat
+        self.predict_raises = predict_raises
+        self.predict_calls = []
+
+    def predict(self, x, u, y_d):
+        self.predict_calls.append(tuple(np.array(v, dtype=float)
+                                        for v in (x, u, y_d)))
+        if self.predict_raises:
+            raise ValueError('boom')
+        return np.array(self.y_hat, dtype=float)
+
+
+def _cross_schedule(sites, hop=False):
+    """THROW from P2 to P1 (or, ``hop``, an entry hop from P1 to P2), its
+    CATCH at the target, then a REST -- a two-site pattern, so the catch
+    site has an inward (toward the other site) and an outward side."""
+    p1, p2 = sites
+    sch = _schedule(sites)
+    rel, tgt = (p1, p2) if hop else (p2, p1)
+    throw = dataclasses.replace(sch.skills[0], site=rel, target=tgt,
+                                entry_hop=hop)
+    return dataclasses.replace(sch, skills=(
+        throw, dataclasses.replace(sch.skills[1], site=tgt),
+        dataclasses.replace(sch.skills[2], site=tgt)))
+
+
+def _run_catch(sch, **kwargs):
+    inst = _FakeInstaller()
+    x = ex.SkillExecutor(sch, inst, **kwargs)
+    lines = list(x.tick(sch.skills[0].dispatch_s()))
+    lines += x.tick(sch.skills[1].dispatch_s())
+    assert [c[0] for c in inst.calls] == [sg.THROW, sg.CATCH]
+    return inst.calls[1][1], lines, x
+
+
+def test_a_pinned_learner_memory_aims_the_catch_at_the_predicted_landing(
+        sites, tmp_path):
+    """(a) A REAL memory whose P2 rows were all commanded at the -4 mm pin
+    and landed +20 mm beyond it (toward the target's inward side). The
+    learner wants ~-17 mm, the 4 mm authority pins the sent command at -4,
+    and the dispatch prior is the predicted +16 mm -- not y_d."""
+    p1, p2 = sites
+    m = mem.Memory(str(tmp_path / 'plant' / 'memory.csv'))
+    x_p2 = np.array([p2.cup_mm[0] / 1000.0, p2.cup_mm[1] / 1000.0, 0.0, 0.0])
+    for i in range(16):
+        m.append(mem.Experience(
+            x=x_p2, u=np.array([-0.004, 0.0, APEX_M]),
+            y=np.array([0.016, 0.0, APEX_M]), t_abs_s=1e9 + i, ball_id=0,
+            caught=True))
+    cfg = lr.LearnerConfig()
+    learner = SimpleNamespace(
+        command=lambda x, y_d: m.command(x, y_d, cfg),
+        predict=lambda x, u, y_d: m.predict(x, u, cfg, y_d=y_d))
+    sch = _cross_schedule(sites)
+    terminal, lines, x = _run_catch(sch, learner=learner,
+                                    lateral_authority_m=0.004,
+                                    catch_inward_authority_m=0.035)
+    # the throw command really was pinned at -4 mm
+    _x, u_dy, _apex = x._u_cache[0]
+    assert u_dy[0] == pytest.approx(-0.004)
+    assert np.allclose(terminal.landing_mm[:2],
+                       p1.catch_site_mm()[:2] + np.array([16.0, 0.0]),
+                       atol=0.5)
+    assert terminal.t_land_s == pytest.approx(
+        float(sch.skills[0].t_abs_s) + sc.flight_s(APEX_M), abs=1e-3)
+    assert any('source=schedule:learned' in ln for ln in lines)
+
+
+def test_the_predicted_apex_moves_the_catch_time_and_inward_35_mm_passes(
+        sites):
+    """The prior carries the predicted APEX's flight time, and a +27 mm
+    inward prediction (sitting 7's P1 bias) passes the 35 mm inward clamp."""
+    p1, _p2 = sites
+    learner = _PredictingLearner(y_hat=[0.027, 0.0, APEX_M + 0.03])
+    sch = _cross_schedule(sites)
+    terminal, lines, _x = _run_catch(sch, learner=learner,
+                                     lateral_authority_m=0.020,
+                                     catch_outward_authority_m=0.010,
+                                     catch_inward_authority_m=0.035)
+    assert np.allclose(terminal.landing_mm[:2],
+                       p1.catch_site_mm()[:2] + np.array([27.0, 0.0]))
+    assert terminal.t_land_s == pytest.approx(
+        float(sch.skills[0].t_abs_s) + sc.flight_s(APEX_M + 0.03))
+    assert not any('AIM-LATERAL-CLAMPED' in ln for ln in lines)
+    # the forward model was asked about the command actually sent
+    (qx, qu, qyd), = learner.predict_calls
+    assert np.allclose(qu, [0.0, 0.0, APEX_M])
+    assert np.allclose(qyd, [0.0, 0.0, APEX_M])
+
+
+def test_without_the_inward_split_the_old_20_mm_cuts_the_prior(sites):
+    """The reason for the split: inward == lateral (None) clips +27 to 20."""
+    p1, _p2 = sites
+    learner = _PredictingLearner(y_hat=[0.027, 0.0, APEX_M])
+    terminal, lines, _x = _run_catch(_cross_schedule(sites), learner=learner,
+                                     lateral_authority_m=0.020)
+    assert np.allclose(terminal.landing_mm[:2],
+                       p1.catch_site_mm()[:2] + np.array([20.0, 0.0]))
+    assert any('AIM-LATERAL-CLAMPED' in ln and 'INWARD side' in ln
+               for ln in lines)
+
+
+@pytest.mark.parametrize('learner', [
+    None,
+    _FakeLearner(),                                   # no predict at all
+    _PredictingLearner(y_hat=[0.02, 0.0, APEX_M], predict_raises=True),
+    _PredictingLearner(y_hat=[np.nan, 0.0, APEX_M]),
+])
+def test_no_learner_prediction_keeps_the_y_d_prior(sites, learner):
+    """(b) No learner, a learner without ``predict``, a raising or
+    non-finite prediction: the y_d prior, labelled plain ``schedule``."""
+    p1, _p2 = sites
+    sch = _cross_schedule(sites)
+    terminal, lines, _x = _run_catch(sch, learner=learner,
+                                     lateral_authority_m=0.020,
+                                     catch_inward_authority_m=0.035)
+    assert np.allclose(terminal.landing_mm, p1.catch_site_mm())
+    assert terminal.t_land_s == pytest.approx(
+        float(sch.skills[0].t_abs_s) + sc.flight_s(APEX_M))
+    aim = [ln for ln in lines if 'CATCH-AIM' in ln]
+    assert len(aim) == 1 and 'source=schedule ' in aim[0]
+
+
+def test_an_announced_landing_prior_outranks_the_learner_prediction(sites):
+    """Ball Butler's announcement keeps its priority over the forward model."""
+    p1, _p2 = sites
+    sch = _cross_schedule(sites)
+    lp_pos = p1.catch_site_mm() + np.array([5.0, 0.0, 0.0])
+    lp = SimpleNamespace(pos_mm=lp_pos, vel_mm_s=LAND_VEL,
+                         t_land_abs_s=float(sch.skills[1].t_abs_s))
+    sch = dataclasses.replace(sch, skills=(
+        sch.skills[0], dataclasses.replace(sch.skills[1], landing_prior=lp),
+        sch.skills[2]))
+    learner = _PredictingLearner(y_hat=[0.027, 0.0, APEX_M])
+    terminal, lines, _x = _run_catch(sch, learner=learner,
+                                     catch_inward_authority_m=0.035)
+    assert np.allclose(terminal.landing_mm, lp_pos)
+    assert learner.predict_calls == []
+
+
+def test_inward_catch_reaim_clamps_at_35_mm_and_outward_stays_10(sites):
+    """(c) The tracker re-aim clamp: 50 mm inward keeps 35, 44.6 mm outward
+    keeps 10, the across axis keeps the 20 mm lateral authority."""
+    def run(offset):
+        p1, _p2 = sites
+        sch = _cross_schedule(sites)
+        tracked = _fit_landing(
+            pos_mm=p1.catch_site_mm() + np.array([offset[0], offset[1], 0.0]),
+            vel_mm_s=LAND_VEL, t_land_abs_s=sch.skills[1].t_abs_s)
+        terminal, lines, _x = _run_catch(
+            sch, tracker=lambda b: tracked, lateral_authority_m=0.020,
+            catch_outward_authority_m=0.010, catch_inward_authority_m=0.035)
+        return terminal.landing_mm[:2] - p1.catch_site_mm()[:2], lines
+
+    # P1 is at -x, P2 at +x: inward at P1 = +x, outward = -x.
+    d, lines = run((50.0, -30.0))
+    assert np.allclose(d, [35.0, -20.0])
+    note = [ln for ln in lines if 'AIM-LATERAL-CLAMPED' in ln]
+    assert len(note) == 1 and 'INWARD side, authority 35 mm' in note[0]
+    d, lines = run((-44.6, 0.0))
+    assert np.allclose(d, [-10.0, 0.0])
+    assert any('OUTWARD side, authority 10 mm (inward 35 mm)' in ln
+               for ln in lines)
+    d, lines = run((30.0, 0.0))
+    assert np.allclose(d, [30.0, 0.0])
+    assert not any('AIM-LATERAL-CLAMPED' in ln for ln in lines)
+
+
+def test_a_one_site_pattern_ignores_the_inward_authority(sites):
+    """A one-site pattern has no 'inward': the 20 mm per-axis box stands."""
+    p1, p2 = sites
+    sch = _schedule(sites)
+    sch = dataclasses.replace(sch, skills=tuple(
+        dataclasses.replace(k, site=p1) for k in sch.skills))
+    tracked = _fit_landing(
+        pos_mm=p1.catch_site_mm() + np.array([44.6, 0.0, 0.0]),
+        vel_mm_s=LAND_VEL, t_land_abs_s=sch.skills[1].t_abs_s)
+    terminal, _lines, _x = _run_catch(
+        sch, tracker=lambda b: tracked, lateral_authority_m=0.020,
+        catch_outward_authority_m=0.010, catch_inward_authority_m=0.035)
+    assert np.allclose(terminal.landing_mm[:2],
+                       p1.catch_site_mm()[:2] + np.array([20.0, 0.0]))
+
+
+def test_the_hop_catch_prior_uses_the_learner_prediction(sites):
+    """(d) The hop borrows the P1 learner read-only; its catch now asks the
+    same forward model, at the hop's own (x, u, y_d), instead of flying
+    open-loop on y_d (sitting 7: one hop catch missed 38 mm off)."""
+    p1, p2 = sites
+    learner = _PredictingLearner(u=[0.0, 0.0, 0.871],
+                                 y_hat=[-0.012, 0.004, APEX_M])
+    sch = _cross_schedule(sites, hop=True)
+    terminal, lines, _x = _run_catch(sch, learner=learner,
+                                     lateral_authority_m=0.020,
+                                     catch_inward_authority_m=0.035)
+    (qx, qu, qyd), = learner.predict_calls
+    assert np.allclose(qx, [p1.cup_mm[0] / 1000.0, p1.cup_mm[1] / 1000.0,
+                            0.0, 0.0])
+    assert np.allclose(qu, [0.0, 0.0, 0.871])
+    assert np.allclose(qyd, [0.0, 0.0, APEX_M])
+    # P2 at +x: -12 mm is INWARD there, inside 35 mm
+    assert np.allclose(terminal.landing_mm[:2],
+                       p2.catch_site_mm()[:2] + np.array([-12.0, 4.0]))
+    assert any('source=schedule:learned' in ln for ln in lines)
+
+
+def test_a_hop_whose_learner_query_failed_keeps_the_y_d_catch_prior(sites):
+    """The hop fell back to ``u = y_d``: its command did not come through
+    the learner, so the forward model is not asked about it."""
+    _p1, p2 = sites
+    learner = _PredictingLearner(y_hat=[-0.012, 0.0, APEX_M])
+    learner._raise = True
+    terminal, lines, _x = _run_catch(_cross_schedule(sites, hop=True),
+                                     learner=learner,
+                                     catch_inward_authority_m=0.035)
+    assert learner.predict_calls == []
+    assert np.allclose(terminal.landing_mm, p2.catch_site_mm())
+
+
+def test_schedule_aim_source_also_uses_the_learner_prediction(sites):
+    """The open-loop arm keeps its no-tracker rule but takes the better
+    prior; ``schedule_hand`` keeps y_d (its ratio rescales the y_d throw)."""
+    p1, _p2 = sites
+    learner = _PredictingLearner(y_hat=[0.010, 0.0, APEX_M])
+    terminal, lines, _x = _run_catch(
+        _cross_schedule(sites), learner=learner, tracker=_angry_tracker,
+        catch_aim_source=ex.AIM_SCHEDULE, catch_inward_authority_m=0.035)
+    assert np.allclose(terminal.landing_mm[:2],
+                       p1.catch_site_mm()[:2] + np.array([10.0, 0.0]))
+    assert any('source=schedule:learned' in ln for ln in lines)
+    learner = _PredictingLearner(y_hat=[0.010, 0.0, APEX_M])
+    terminal, _lines, _x = _run_catch(
+        _cross_schedule(sites), learner=learner, tracker=_angry_tracker,
+        catch_aim_source=ex.AIM_SCHEDULE_HAND, catch_inward_authority_m=0.035)
+    assert np.allclose(terminal.landing_mm, p1.catch_site_mm())
+    assert learner.predict_calls == []
+
+
+# ---------------------------------------------------------------------------
+# Unit A2 (2026-10-13): a refused LEARNED-prior CATCH dispatch falls back to
+# the schedule's y_d landing instead of ending the attempt.
+# ---------------------------------------------------------------------------
+
+def _refusal(code='REJECTED_CYCLE_INFEASIBLE'):
+    return ex.InstallResult(False, code, 'QP infeasible', 0.0)
+
+
+def _ok():
+    return ex.InstallResult(True, 'OK', 'ok', 0.0, splice_k=0)
+
+
+def _fallback_run(sites, verdicts, **kwargs):
+    sch = _cross_schedule(sites)
+    inst = _FakeInstaller(verdicts)
+    x = ex.SkillExecutor(
+        sch, inst, learner=_PredictingLearner(y_hat=[0.027, 0.0, APEX_M]),
+        lateral_authority_m=0.020, catch_inward_authority_m=0.035, **kwargs)
+    lines = list(x.tick(sch.skills[0].dispatch_s()))
+    lines += x.tick(sch.skills[1].dispatch_s())
+    return sch, inst, x, lines
+
+
+def test_a_refused_learned_prior_dispatch_falls_back_to_y_d(sites):
+    """(a) The learned-prior CATCH is refused, the y_d one accepted: the
+    CATCH is dispatched at y_d, the FALLBACK line appears once, and the
+    attempt continues."""
+    p1, _p2 = sites
+    sch, inst, x, lines = _fallback_run(
+        sites, [_ok(), _refusal(), _ok()], catch_aim_source=ex.AIM_SCHEDULE)
+    catches = [c for c in inst.calls if c[0] == sg.CATCH]
+    assert len(catches) == 2
+    assert np.allclose(catches[0][1].landing_mm[:2],
+                       p1.catch_site_mm()[:2] + np.array([27.0, 0.0]))
+    assert np.allclose(catches[1][1].landing_mm[:2], p1.catch_site_mm()[:2])
+    assert sum('CATCH-AIM-FALLBACK' in ln for ln in lines) == 1
+    assert any('CATCH-AIM skill' in ln and 'source=schedule ' in ln
+               for ln in lines)
+    assert not x.attempt_ended
+    assert 1 in x.dispatched
+    assert x._live_catch is not None
+
+
+def test_both_learned_and_y_d_refused_ends_with_the_second_code(sites):
+    """(b) Both refused: END with the SECOND refusal's code."""
+    _sch, inst, x, lines = _fallback_run(
+        sites, [_ok(), _refusal('REJECTED_CYCLE_INFEASIBLE'),
+                _refusal('REJECTED_WINDOW_TOO_SHORT')],
+        catch_aim_source=ex.AIM_SCHEDULE)
+    assert len([c for c in inst.calls if c[0] == sg.CATCH]) == 2
+    assert x.attempt_ended
+    assert x.end_code == 'REJECTED_WINDOW_TOO_SHORT'
+    assert any('END REJECTED_WINDOW_TOO_SHORT' in ln for ln in lines)
+
+
+def test_a_refused_tracker_fit_catch_is_not_retried(sites):
+    """(c) The tracker-fit source (step 1) is untouched: one refusal ends."""
+    sch = _cross_schedule(sites)
+    land = _fit_landing(pos_mm=sites[0].catch_site_mm(), vel_mm_s=LAND_VEL,
+                        t_land_abs_s=sch.skills[1].t_abs_s)
+    inst = _FakeInstaller([_ok(), _refusal()])
+    x = ex.SkillExecutor(sch, inst, tracker=_tracker(land),
+                         learner=_PredictingLearner(y_hat=[0.027, 0.0, APEX_M]))
+    x.tick(sch.skills[0].dispatch_s())
+    lines = x.tick(sch.skills[1].dispatch_s())
+    assert len([c for c in inst.calls if c[0] == sg.CATCH]) == 1
+    assert x.attempt_ended
+    assert not any('CATCH-AIM-FALLBACK' in ln for ln in lines)
+
+
+def test_a_non_aim_refusal_of_the_learned_prior_does_not_fall_back(sites):
+    """(d) A refusal the aim could not have caused (STALE_STATE, a timing
+    fence, a latched lane) is NOT retried at y_d: one CATCH install, the
+    attempt ends with THAT code, no FALLBACK line (audit 2026-10-13 --
+    the second solve after a state/timing refusal is one more refusal)."""
+    _sch, inst, x, lines = _fallback_run(
+        sites, [_ok(), _refusal("STALE_STATE"), _ok()],
+        catch_aim_source=ex.AIM_SCHEDULE)
+    assert len([c for c in inst.calls if c[0] == sg.CATCH]) == 1
+    assert x.attempt_ended
+    assert x.end_code == "STALE_STATE"
+    assert not any("CATCH-AIM-FALLBACK" in ln for ln in lines)
+    assert ex._aim_dependent_refusal("LIMIT_JERK")
+    assert ex._aim_dependent_refusal("REJECTED_CYCLE_INFEASIBLE")
+    assert not ex._aim_dependent_refusal("WINDOW_TOO_SHORT")
+    assert not ex._aim_dependent_refusal("")

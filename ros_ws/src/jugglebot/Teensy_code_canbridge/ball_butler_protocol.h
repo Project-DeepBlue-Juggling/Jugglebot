@@ -137,6 +137,11 @@ inline ODrive::CanFrame encode_reset() {
 inline ODrive::CanFrame encode_calibrate_loc() {
   ODrive::CanFrame f; f.id = BallButlerCanId::CALIBRATE_LOC_CMD; f.len = 0; return f;
 }
+// Throw CANCEL (FW 30): BB aborts a throw whose wind-up has not started
+// (ball retained, back to IDLE) and answers on CMD_RESULT command_type CANCEL.
+inline ODrive::CanFrame encode_cancel() {
+  ODrive::CanFrame f; f.id = BallButlerCanId::CANCEL_CMD;        f.len = 0; return f;
+}
 
 }  // namespace BallButler
 }  // namespace CanBridge

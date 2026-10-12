@@ -108,3 +108,7 @@ This is the same class as the 2026-09-23 kincal latch ("carried, not fixed"). It
 
 - Scoped, in an isolated worktree of HEAD plus only these hunks (2026-10-13), `pytest tests/ros/test_skill_node.py -k "lane or link_status or sched or refused"`: **41 passed**, including the four new latch tests.
 - Full gate: see the commit message's triple.
+
+## Follow-up
+
+The owner decisions listed under "Considered and not done here" were answered the same day by wave 2: `2026-10-13-skill-stack-r5-wave-2-after-sitting-7.md` (status open; the box-widening choice, the stall fix and the park-at-DONE question remain with the owner). This entry stays open for the same reason.

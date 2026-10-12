@@ -238,6 +238,14 @@ ENUMS = {
         ("BB_RELOAD",          0x0041, "Ball Butler: send RELOAD_CMD on CAN1 (no payload)"),
         ("BB_RESET",           0x0042, "Ball Butler: send RESET_CMD on CAN1 (no payload)"),
         ("BB_CALIBRATE_LOC",   0x0043, "Ball Butler: send CALIBRATE_LOC_CMD on CAN1 (no payload)"),
+        # ADDITIVE (2026-10-13, can-bridge FW 30 — no PROTOCOL_VERSION bump: no
+        # existing message changes, and an FW <= 29 board answers the unknown id
+        # through rpc.cpp's `default:` with ERR_UNKNOWN_METHOD, loudly; the host
+        # then reports the cancel as unavailable). R5 sitting 7 decision 5: an
+        # attempt that ENDS with a Ball Butler throw still counting down must be
+        # able to stop it — BB's countdown lives on BB (absolute release), so the
+        # cancel is a BB command, relayed like BB_RESET.
+        ("BB_CANCEL",          0x0044, "Ball Butler: send CANCEL_CMD on CAN1 (no payload) — abort a throw that has not started its wind-up"),
         # Reserved id block — the relay /
         # version / hand-traj seams that later work owns. Allocated in ONE pass so
         # parallel sessions cannot mint colliding ids. rpc.cpp dispatches these to

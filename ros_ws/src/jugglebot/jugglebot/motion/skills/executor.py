@@ -150,8 +150,8 @@ CATCH_DEADLINE_WINDOW_S = 0.278
 # (:meth:`SkillExecutor._catch_aim`), and no step of it ever WAITS.
 #
 #: Aim every catch from the tracker's CONVERGED ballistic fit, with the
-#: schedule's commanded landing (:meth:`_predicted_landing`) as the prior at
-#: dispatch and later fits refining the committed catch
+#: schedule's prior (:meth:`_prior_landing`: the learner's forward prediction
+#: of the command sent, else the ``y_d`` landing) at dispatch and later fits refining the committed catch
 #: (:meth:`_resend_live_catch`) until the freeze. **This is the LIVE default**
 #: (owner 2026-09-18) — ``skill_node``'s ``catch_aim_source`` parameter and
 #: this constructor both default to it.
@@ -167,6 +167,25 @@ AIM_SCHEDULE = 'schedule'
 AIM_SCHEDULE_HAND = 'schedule_hand'
 #: The whole vocabulary — ``skill_node`` validates its parameter against it.
 AIM_SOURCES = (AIM_SCHEDULE, AIM_SCHEDULE_HAND, AIM_TRACKER)
+#: NOT a selectable source (not in :data:`AIM_SOURCES`): the CATCH-AIM label
+#: of a schedule prior built from the learner's FORWARD prediction of the
+#: command actually sent (:meth:`SkillExecutor._prior_landing`, 2026-10-13),
+#: as against plain :data:`AIM_SCHEDULE` = the schedule's ``y_d`` landing (or
+#: Ball Butler's announced one). No whitespace, so the bag probes' ``source=
+#: (\S+)`` regexes read it whole.
+AIM_SCHEDULE_LEARNED = 'schedule:learned'
+
+
+def _aim_dependent_refusal(code) -> bool:
+    """True for a refusal the CATCH's AIM could have caused -- a limit or an
+    infeasible cycle -- and False for one it could not (timing fences such as
+    ``WINDOW_TOO_SHORT`` / ``SPLICE_TOO_LATE`` / ``ORIGIN_TOO_LATE``, a stale
+    state, a missing ball, a latched lane). The learned-prior fallback
+    (unit A2, 2026-10-13) re-dispatches at ``y_d`` only for the former: a
+    second solve after a timing or state refusal is one more refusal, later
+    (audit 2026-10-13)."""
+    c = str(code or '')
+    return c.startswith('LIMIT_') or 'INFEASIBLE' in c
 
 # ── Outcome capture (R3, plan § 2.5 step 6 / § 2.7) ─────────────────────────
 #
@@ -922,6 +941,9 @@ class _PendingOutcome:
     catch_idx: int = -1
     reaims: int = 0
     reaim_refused: str = ''
+    #: Code of the refused learned-prior dispatch this catch fell back from
+    #: (dispatched at y_d instead); '' when it never fell back.
+    aim_fallback: str = ''
     #: The columns Stop's cross-site last throw (owner decision D2,
     #: 2026-09-30, R5 rescope, E1') — read straight off
     #: :attr:`~jugglebot.motion.skills.schedule.Skill.shadow_landing` /
@@ -1680,6 +1702,7 @@ class SkillExecutor:
                  learner=None, boxes=None,
                  lateral_authority_m: Optional[float] = None,
                  catch_outward_authority_m: Optional[float] = None,
+                 catch_inward_authority_m: Optional[float] = None,
                  observer: Optional[Callable[[int, float], str]] = None,
                  on_experience: Optional[Callable[[Experience], None]] = None,
                  observations: Optional[Callable[[float], Observations]] = None,
@@ -1751,6 +1774,21 @@ class SkillExecutor:
         self.catch_outward_authority_m = (
             None if catch_outward_authority_m is None
             else abs(float(catch_outward_authority_m)))
+        #: How far (m) a CATCH aim -- the dispatch prior or a tracker re-aim
+        #: -- may move the landing INWARD, toward the pattern's other site,
+        #: about the schedule's ``y_d`` landing (:meth:`_clamp_lateral_to_
+        #: schedule` only; the learner's THROW command and the hop keep
+        #: :attr:`lateral_authority_m`). ``None`` = :attr:`lateral_authority_m`
+        #: (the pre-2026-10-13 behaviour); a one-site pattern has no 'inward'
+        #: and keeps :attr:`lateral_authority_m` whatever this is. Split from
+        #: the learner's authority 2026-10-13 (owner decision 3): sitting 7's
+        #: P1 landings sat +27 mm inward of ``y_d`` (the learner's command
+        #: pinned by the columns box), so a 20 mm clamp would cut the learner-
+        #: predicted prior (:meth:`_prior_landing`) short of where the ball
+        #: lands; an inward move SHORTENS the transit to the next catch.
+        self.catch_inward_authority_m = (
+            None if catch_inward_authority_m is None
+            else abs(float(catch_inward_authority_m)))
         self.observer = observer
         self.on_experience = on_experience
         self.observations = observations
@@ -1796,6 +1834,13 @@ class SkillExecutor:
         #: ``then_throw``) so a catch re-send's second, third, ... call reuses
         #: the first dispatch's command rather than recomputing it.
         self._u_cache = {}
+        #: The :attr:`_u_cache` keys whose command came from a LEARNER query
+        #: (the ordinary learner path, or the hop's read-only borrow) -- the
+        #: releases :meth:`_prior_landing` may ask the learner's forward
+        #: model about. A shadow landing, a hop whose query fell back, and
+        #: every command when no learner is wired stay out (their prior is
+        #: ``y_d``).
+        self._learned_u = set()
         #: Released balls awaiting outcome finalisation (:class:`_PendingOutcome`).
         self._pending_outcomes: List[_PendingOutcome] = []
         #: Accepted CATCHes awaiting their own :data:`MISSED_CATCH` verdict
@@ -1999,6 +2044,7 @@ class SkillExecutor:
                 a = abs(self.lateral_authority_m)
                 u_dy = np.asarray(dy, dtype=float) + np.clip(
                     u_dy - np.asarray(dy, dtype=float), -a, a)
+            self._learned_u.add(idx)
         if box is not None:
             try:
                 u_dy, u_apex = adm.clip((u_dy, u_apex), box)
@@ -2056,6 +2102,7 @@ class SkillExecutor:
                 alo, ahi = box.apex_m
                 u_apex = min(max(u_apex, alo), ahi)
         identity = abs(u_apex - apex) < 1e-9 and not np.any(d_dy)
+        self._learned_u.add(idx)
         self._pending_notes.append(
             'HOP-COMMAND skill %d: %s column correction%s: apex '
             '%.3f -> %.3f m, dy (%+.0f, %+.0f) mm (no memory row)'
@@ -2159,6 +2206,17 @@ class SkillExecutor:
         logic and its ``0.0``/``None`` special cases are unchanged; only the
         node's default input to it moved.
 
+        **Inward / outward / across (2026-10-13).** On a two-site pattern the
+        offset is split along the unit pointing away from the other site:
+        OUTWARD is capped at :attr:`catch_outward_authority_m`, INWARD at
+        :attr:`catch_inward_authority_m` (35 mm at launch, so the learner-
+        predicted prior of :meth:`_prior_landing` -- +27 mm inward at P1 in
+        sitting 7 -- passes), and the ACROSS part keeps
+        :attr:`lateral_authority_m` per axis. A one-site pattern keeps the
+        per-axis :attr:`lateral_authority_m` box. The clamp is centred on the
+        ``y_d`` landing (:meth:`_predicted_landing`), never on the learned
+        prior, so the authority is measured from the pattern's site.
+
         ``None`` (:attr:`lateral_authority_m` unset) or no schedule prior for
         this catch (:meth:`_predicted_landing` returns ``None`` — a ball
         thrown before ``t0``, the one catch the schedule cannot aim at all)
@@ -2174,28 +2232,42 @@ class SkillExecutor:
         sched_xy = np.asarray(predicted.pos_mm, dtype=float)[:2]
         landing_xy = np.asarray(landing.pos_mm, dtype=float)[:2]
         offset = landing_xy - sched_xy
-        clipped = np.clip(offset, -a_mm, a_mm)
         out_u = self._outward_unit(skill)
-        out_mm = None
-        if self.catch_outward_authority_m is not None and out_u is not None:
-            out_mm = min(self.catch_outward_authority_m * 1000.0, a_mm)
-            along = float(np.dot(clipped, out_u))
-            if along > out_mm:
-                clipped = clipped - (along - out_mm) * out_u
+        out_mm = in_mm = None
+        if out_u is None:
+            # One-site pattern: no 'inward'/'outward' -- today's per-axis box.
+            clipped = np.clip(offset, -a_mm, a_mm)
+        else:
+            # Two-site pattern (2026-10-13): split the offset along the
+            # outward unit and across it. ALONG: [-inward, +outward]; ACROSS:
+            # the lateral authority per axis (the banking budget). With the
+            # sites on one axis (every pattern flown) and inward == outward
+            # == lateral this is exactly the old per-axis box.
+            out_mm = (a_mm if self.catch_outward_authority_m is None
+                      else min(self.catch_outward_authority_m * 1000.0, a_mm))
+            in_mm = (a_mm if self.catch_inward_authority_m is None
+                     else self.catch_inward_authority_m * 1000.0)
+            along = float(np.dot(offset, out_u))
+            across = offset - along * out_u
+            clipped = (min(max(along, -in_mm), out_mm) * out_u
+                       + np.clip(across, -a_mm, a_mm))
         clamped_xy = sched_xy + clipped
         bite_mm = np.abs(landing_xy - clamped_xy)
         key = (idx, 'AIM-LATERAL-CLAMPED')
         if float(np.max(bite_mm)) > 1.0 and key not in self._resend_notes:
             self._resend_notes.add(key)
             axis = int(np.argmax(np.abs(offset)))
-            if (out_mm is not None
-                    and float(np.dot(offset, out_u)) > out_mm + 1.0):
+            along = None if out_u is None else float(np.dot(offset, out_u))
+            if along is not None and along > out_mm + 1.0:
                 side = ('OUTWARD side, authority %.0f mm (inward %.0f mm)'
-                        % (out_mm, a_mm))
+                        % (out_mm, in_mm))
+            elif along is not None and along < -in_mm - 1.0:
+                side = ('INWARD side, authority %.0f mm (outward %.0f mm)'
+                        % (in_mm, out_mm))
             else:
                 side = 'authority %.0f mm' % a_mm
             self._pending_notes.append(
-                'AIM-LATERAL-CLAMPED skill %d: tracker landing %+.1f mm in '
+                'AIM-LATERAL-CLAMPED skill %d: aim landing %+.1f mm in '
                 '%s, catch keeps the schedule\'s site (%s)'
                 % (idx, offset[axis], 'xy'[axis], side))
         pos_mm = np.array([clamped_xy[0], clamped_xy[1],
@@ -2434,6 +2506,15 @@ class SkillExecutor:
         actually sent, because the learner's whole job is to make its command
         land AT ``y_d``.
 
+        Since 2026-10-13 this is the REFERENCE, not the dispatch prior: the
+        centre :meth:`_clamp_lateral_to_schedule` clamps every aim about and
+        the landing :meth:`_valid_tracked_landing` gates a tracker estimate
+        against, plus the fallback prior. The dispatch prior itself is
+        :meth:`_prior_landing`, which prefers the learner's FORWARD
+        prediction of the (clipped) command actually sent -- the ball lands
+        where the plant takes that command, which is ``y_d`` only when the
+        clip did not bite.
+
         Position and time follow directly from ``y_d``; the arrival velocity
         is the no-drag ballistic arrival from the previous throw's release
         site to that landing over the flight the ``y_d`` APEX implies
@@ -2492,6 +2573,107 @@ class SkillExecutor:
         return Landing(pos_mm=pos_mm, vel_mm_s=vel_mm_s,
                        t_land_abs_s=t_release_s + flight_s)
 
+    def _prior_landing(self, idx: int, skill: Skill
+                       ) -> Tuple[Optional[Landing], str]:
+        """``(landing, aim_source)``: the DISPATCH prior for CATCH ``idx``
+        (:meth:`_catch_aim` step 2) -- :meth:`_learned_prior_landing` when it
+        has one (label :data:`AIM_SCHEDULE_LEARNED`), else the schedule's
+        ``y_d`` landing :meth:`_predicted_landing` (label :data:`AIM_SCHEDULE`;
+        Ball Butler's announced ``landing_prior`` is also this label and keeps
+        its priority). ``(None, '')`` only where :meth:`_predicted_landing` is
+        ``None`` too."""
+        learned = self._learned_prior_landing(idx, skill)
+        if learned is not None:
+            return learned, AIM_SCHEDULE_LEARNED
+        predicted = self._predicted_landing(idx, skill)
+        if predicted is None:
+            return None, ''
+        return predicted, AIM_SCHEDULE
+
+    def _learned_prior_landing(self, idx: int, skill: Skill
+                               ) -> Optional[Landing]:
+        """Where the learner's FORWARD model (``learner.predict``) expects
+        this ball to land from the command its previous release actually SENT
+        -- or ``None`` (the caller falls back to ``y_d``,
+        :meth:`_predicted_landing`).
+
+        Why not ``y_d`` (owner decision 2, 2026-10-13). The command that
+        reaches the platform is CLIPPED -- by :attr:`lateral_authority_m` and
+        the admissible box (:meth:`_command_u`) -- so a plant bias the
+        learner sees but may not command away lands the ball at ``y_d`` +
+        that residual, not at ``y_d``. Sitting 7: P1 landed +27 mm toward P2
+        (the learner's unclipped command was -24 mm, the columns box allowed
+        -4), every catch whose tracker fit never converged (28 in L2, every
+        hop-entry catch among them) stayed on the ``y_d`` prior, and every
+        landing < 30 mm off the aim was caught. The forward model is the same
+        local fit that produced the command (``learner.predict``'s
+        docstring), queried at the cached ``(x, u)`` of :attr:`_u_cache` --
+        no new per-throw state, only the :attr:`_learned_u` flag -- with
+        ``x[2:4]`` the LATEST release offset, as :meth:`_register_outcome`
+        writes the row. The hop entry borrowed the P1 learner (:meth:`_hop_
+        command`), so its catch asks the same model the same question.
+
+        Position: the predicted landing offset about the TARGET's catch point
+        (:meth:`_commanded_target_mm`, the memory's ``y`` frame); time:
+        ``t_release + flight_s(predicted apex)``, so ``t_land`` moves with the
+        apex the plant is expected to fly; the arrival velocity follows from
+        the release the plan uses exactly as :meth:`_predicted_landing`'s.
+
+        ``None`` for: an externally announced ball (``landing_prior`` keeps
+        priority), no learner or one without ``predict``, no previous release
+        in this schedule, a release whose command did not come through the
+        learner (a shadow landing, a hop whose query fell back), or any
+        failure or non-finite answer of the prediction.
+
+        Control-system walk-through (CLAUDE.md rule). At dispatch the prior
+        moves the CATCH terminal by the learner's predicted residual -- at
+        most :attr:`catch_inward_authority_m` (35 mm at launch) toward the
+        other site, :attr:`catch_outward_authority_m` away, because it passes
+        :meth:`_clamp_lateral_to_schedule` like every aim. The catch is still
+        a solved segment gated by the online ``validate_cycle`` (a prior the
+        limits cannot fly is refused as any aim is). A converged tracker fit
+        still outranks it at dispatch (:meth:`_catch_aim` step 1) and
+        re-aims it after (:meth:`_resend_live_catch`). The next throw
+        releases from the caught xy (:attr:`_carried_release_mm`), so the
+        learner's state ``x[2:4]`` carries the shift and
+        :meth:`_offset_flyback_mm` flies it back -- no new terminal kind, no
+        change to the beat or to the throw's own command.
+        """
+        if skill.landing_prior is not None or self.learner is None:
+            return None
+        predict = getattr(self.learner, 'predict', None)
+        if predict is None:
+            return None
+        prev = _previous_release(self.schedule, idx, skill.ball_id)
+        if prev is None:
+            return None
+        site, t_release_s, y_d, target, release_idx = prev
+        if release_idx not in self._learned_u or release_idx not in self._u_cache:
+            return None
+        x, u_dy, u_apex = self._u_cache[release_idx]
+        x = np.asarray(x, dtype=float).copy()
+        x[2:4] = self._release_offset_m(release_idx, site)
+        u = np.array([float(u_dy[0]), float(u_dy[1]), float(u_apex)])
+        dy = np.asarray(y_d[0], dtype=float).reshape(2)
+        y_d_si = np.array([dy[0], dy[1], float(y_d[1])])
+        try:
+            y_hat = np.asarray(predict(x, u, y_d_si), dtype=float).reshape(3)
+            if not np.all(np.isfinite(y_hat)):
+                return None
+            flight_s = float(sch.flight_s(float(y_hat[2])))
+            pos_mm = self._commanded_target_mm(
+                target, (y_hat[:2], float(y_hat[2])))
+            launch_vel = ballistics_bc.launch_velocity(
+                self._release_pos_mm(release_idx, site), pos_mm, flight_s)
+            vel_mm_s = ballistics_bc.arrival_velocity(launch_vel, flight_s)
+        except Exception:  # a prior that cannot be built falls back to y_d
+            return None
+        if not (math.isfinite(flight_s) and flight_s > 0.0
+                and np.all(np.isfinite(vel_mm_s))):
+            return None
+        return Landing(pos_mm=pos_mm, vel_mm_s=vel_mm_s,
+                       t_land_abs_s=float(t_release_s) + flight_s)
+
     def _catch_aim(self, idx: int, skill: Skill, t_abs_s: float):
         """``(landing, aim_source)`` for CATCH ``idx`` at dispatch time, per
         :attr:`catch_aim_source`. ``(None, '')`` means nothing can aim it yet
@@ -2506,9 +2688,12 @@ class SkillExecutor:
            seen the ball's ACTUAL release, and the release lags its knot by
            0.019-0.137 s throw to throw (2026-09-17), which the schedule
            cannot know and no learner can remove;
-        2. the schedule's commanded landing (:meth:`_predicted_landing`) —
-           the prior, available the instant this ball's previous release is
-           in this schedule, and what the machine is actually trying to do;
+        2. the prior (:meth:`_prior_landing`) — the learner's forward
+           prediction of the command actually sent when there is one
+           (:data:`AIM_SCHEDULE_LEARNED`, 2026-10-13), else the schedule's
+           ``y_d`` landing (:meth:`_predicted_landing`, :data:`AIM_SCHEDULE`)
+           — available the instant this ball's previous release is in this
+           schedule;
         3. an UNFITTED tracker landing (the Kalman fallback) — its crossing
            runs 0.06-0.20 s late and grows later through the descent, so it
            ranks BELOW the prior, but it is the only thing left for a ball
@@ -2534,9 +2719,9 @@ class SkillExecutor:
             tracked = self._tracked_landing(idx, skill)
             if tracked is not None and tracked.from_fit:
                 return tracked, AIM_TRACKER
-            predicted = self._predicted_landing(idx, skill)
-            if predicted is not None:
-                return predicted, AIM_SCHEDULE
+            prior, label = self._prior_landing(idx, skill)
+            if prior is not None:
+                return prior, label
             if tracked is not None:
                 return tracked, '%s (no converged fit)' % AIM_TRACKER
             return None, ''
@@ -2545,8 +2730,13 @@ class SkillExecutor:
             tracked = self._tracked_landing(idx, skill)
             return (tracked, AIM_TRACKER) if tracked is not None else (None, '')
         if self.catch_aim_source == AIM_SCHEDULE:
-            return predicted, AIM_SCHEDULE
-        # :data:`AIM_SCHEDULE_HAND`: the measured correction is applied to the
+            return self._prior_landing(idx, skill)
+        # :data:`AIM_SCHEDULE_HAND` keeps the ``y_d`` prior, NOT the learner's
+        # forward prediction: its measured ratio rescales the ``y_d`` throw
+        # (:meth:`_hand_corrected_landing`), and the learner's apex
+        # correction already models the same stroke overspeed -- stacking
+        # the two would count it twice.
+        # the measured correction is applied to the
         # DISPATCH itself whenever the stroke has already been measured by
         # then — which is the common case, because a catch dispatches after
         # its own ball's release. Re-aiming a catch that was just installed
@@ -3021,6 +3211,43 @@ class SkillExecutor:
                 'the scheduled start %.3f'
                 % (t_abs_s, idx, res.message,
                    float(skill.t_abs_s) - float(skill.window_s))], True)
+        fallback_aim = False
+        if (not res.accepted and skill.kind == CATCH
+                and aim_source == AIM_SCHEDULE_LEARNED
+                and _aim_dependent_refusal(res.code)):
+            # A refused LEARNED-prior dispatch falls back to the schedule's
+            # y_d landing instead of ending the attempt (unit A2,
+            # 2026-10-13). The prediction is a guess the QP may not be able
+            # to plan from the current state (e.g. a +57 mm / +0.09 s move);
+            # before the learned prior the dispatch went to y_d and the same
+            # move only reached `_resend_live_catch`, where a refusal is
+            # harmless. Control walk-through: a refusal leaves the active
+            # plan untouched, so the machine keeps streaming while the second
+            # solve runs (one extra 25-200 ms solve, ONLY on a refusal); the
+            # y_d terminal is built by the same `_catch_terminal` so the
+            # clamp, carried throw and window floor are identical, and
+            # `installer` re-measures the window against its own t_now, so a
+            # later install only shortens the window toward the floor, which
+            # refuses (and ends) rather than splicing late.
+            fb_landing = self._predicted_landing(idx, skill)
+            if fb_landing is not None:
+                try:
+                    fb_terminal = self._catch_terminal(idx, skill, fb_landing)
+                except _NoAdmissibleCommand:
+                    fb_terminal = None
+                if fb_terminal is not None:
+                    clamp_lines = clamp_lines + self._pending_notes
+                    self._pending_notes = []
+                    clamp_lines.append(
+                        '%.3f CATCH-AIM-FALLBACK skill %d: learned prior '
+                        '(%.1f, %.1f) mm refused %s — dispatching at y_d'
+                        % (t_abs_s, idx, terminal.landing_mm[0],
+                           terminal.landing_mm[1], res.code))
+                    refused_code = res.code
+                    terminal, aim_source = fb_terminal, AIM_SCHEDULE
+                    res = self.installer(skill.kind, terminal, t_abs_s,
+                                         ball_id=skill.ball_id)
+                    fallback_aim = True
         self.dispatched.add(idx)
         self.results.append((idx, skill, res))
         if not res.accepted:
@@ -3037,6 +3264,8 @@ class SkillExecutor:
             self._live_catch = (idx, terminal, t_abs_s)
             self._note_catch_aim(skill.ball_id, idx,
                                  _event_abs_s(CATCH, terminal))
+            if fallback_aim:
+                self._note_aim_fallback(idx, refused_code)
             lines.append(
                 '%.3f CATCH-AIM skill %d: source=%s landing=(%.1f, %.1f, '
                 '%.1f) mm t_land=%.3f%s'
@@ -3199,6 +3428,15 @@ class SkillExecutor:
         pend.catch_idx = int(catch_idx)
         if reaim:
             pend.reaims += 1
+
+    def _note_aim_fallback(self, catch_idx: int, code: str) -> None:
+        """Record that CATCH ``catch_idx`` was dispatched at the y_d landing
+        because its learned-prior dispatch was refused with ``code``. Rides
+        the pending row's ``aim_fallback`` for bag analysis; no learner row
+        reads it."""
+        for pend in self._pending_outcomes:
+            if pend.catch_idx == int(catch_idx):
+                pend.aim_fallback = str(code)
 
     def _note_reaim_refused(self, catch_idx: int, code: str) -> None:
         """Record a refused re-aim on the flight catch ``catch_idx`` meets

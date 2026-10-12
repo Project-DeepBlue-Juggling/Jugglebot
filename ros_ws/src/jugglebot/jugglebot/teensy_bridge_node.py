@@ -1062,6 +1062,55 @@ _RECOVER_MAX_RESEED_ATTEMPTS = 3
 _MANUAL_RECOVERY_HINT = ("manual recovery: disarm with set_setpoint_output=false, then "
                          "/clear_errors clears directly")
 
+
+class _ConvergeAborted(Exception):
+    """Unwinds ``_converge_command_onto_measured`` when its ``abort_check`` fires
+    (``/recover_lane``: a real fault, an operator cancel or the deviation escape)."""
+
+
+# ── /recover_lane: automatic recovery from a LATCHED streamed lane (2026-10-13) ──
+# Owner decision 4 of R5 sitting 7 (`logbook/2026-10-13-skill-stack-r5-sitting-7-
+# columns-pb.md`): a 45-57 ms Jetson stall latched the leg scheduled-playback group
+# (HeartbeatT2J flags bit 15); the firmware then refuses every non-continuous frame
+# and only a frame continuous with the held curve, or the out_en false→true ARM
+# EDGE, clears it (leg_interp.cpp:504-543, 891-902). The sequence is converge (the
+# `/recover` core, still ARMED) → rest → disarm → dwell → re-arm → confirm, with NO
+# CLEAR_ERRORS and NO hand park. While disarmed the firmware transmits nothing
+# (leg_interp.cpp:1512, the hand frame inside the same gate) and the ODrives hold
+# their last input (watchdog disabled, `config/ODrive config Files/odrive_pro_*`),
+# and the deviation/staleness guard is inert (fault_machine.cpp:440,450,503).
+# Escape: a leg whose live guard residual passes HALF the 1.0 rev MAX_DEVIATION
+# skips straight to the disarm — an abrupt disarm beats an E-STOP, which suppresses
+# output just as abruptly. Judgement value, not measured (design open question 2).
+_LANE_ESCAPE_DEV_REV = 0.5
+# Rest check after converge: every leg |vel| below 0.05 rev/s and the hand below
+# 0.2 rev/s on 3 consecutive FRESH telemetry samples, bounded at 1.0 s. Disarm only
+# with both groups at rest: a disarm under a moving hand freezes its ODrive input
+# mid-stroke (an abrupt stop). Judgement values, not measured.
+_LANE_REST_TIMEOUT_S = 1.0
+_LANE_REST_LEG_VEL_RPS = 0.05
+_LANE_REST_HAND_VEL_RPS = 0.2
+_LANE_REST_SAMPLES = 3
+# Disarm: firmware-confirmed (bit 3 drops) within 1.0 s, then a 0.2 s dwell = two
+# 10 Hz fault ticks, so the fault task gates out_en off and an ISR tick records it
+# (without that the false→true arm edge never fires and the latch survives).
+_LANE_DISARM_TIMEOUT_S = 1.0
+_LANE_DISARM_DWELL_S = 0.2
+# Re-arm: retried ONLY while another arm attempt holds `_arm_lock`; a precondition
+# refusal fails at once (it is the operator or a fault taking over).
+_LANE_ARM_TRIES = 3
+_LANE_ARM_RETRY_S = 0.2
+# Confirm: two consecutive FRESH heartbeats with bit 15 clear, fault NONE,
+# MPC_ACTIVE set and `sched_refused` unchanged. 1.0 s, not the design's 0.5 s: the
+# arm reaches the firmware on the next 10 Hz J2T heartbeat and comes back on a later
+# T2J one, so two clean T2J beats after the edge can take ~0.5 s on their own.
+_LANE_CONFIRM_TIMEOUT_S = 1.0
+_LANE_CONFIRM_HEARTBEATS = 2
+# The fallback every FAILED recovery names. It works from both end states (ARMED +
+# latched: deactivate disarms first; DISARMED: the normal A3 path, and ActiveHandler
+# re-arms on entry).
+_LANE_FALLBACK_HINT = 'DEACTIVATE → ACTIVATE (IDLE then TRAJECTORY in the GUI)'
+
 # ── Hand park: the RECOVERY way the hand leaves the stroke (2026-09-17/18) ──
 # CONTRACT (amended 2026-09-18 evening): A STREAMED LANE MAY HOME THE HAND ONLY
 # INSIDE THE FIRMWARE'S RESUME AND FOLLOW ENVELOPE — continuous from the knot
@@ -1685,6 +1734,22 @@ class TeensyBridgeNode(Node):
         self._bb_throw_event = threading.Event()
         self._bb_throw_active = False
         self._bb_throw_result = None   # (outcome:int, detail0:int, detail1:int)
+        # Throw CANCEL (bridge FW 30 / BB FW 9, 2026-10-13). `bb/cancel` sends
+        # BB_CANCEL and waits (bounded) for BB's CANCEL CMD_RESULT, stored here by
+        # _on_cmd_result. Two ordering guards against the cancel overtaking the
+        # throw it is meant to stop: a cancel that lands after a throw goal was
+        # ACCEPTED but before its BB_THROW RPC left this node sets
+        # _bb_cancel_requested and the execute callback refuses to dispatch; one
+        # that lands while that RPC is in flight waits for _bb_throw_rpc_done
+        # first, so THROW_CMD is on CAN1 before CANCEL_CMD. All under
+        # _bb_throw_lock except the events.
+        self._bb_cancel_event = threading.Event()
+        self._bb_cancel_waiting = False
+        self._bb_cancel_result = None  # (outcome:int, detail0:int, detail1:int)
+        self._bb_cancel_requested = False
+        self._bb_throw_dispatched = False
+        self._bb_throw_rpc_done = threading.Event()
+        self._bb_throw_rpc_done.set()
 
         # ── Platform-Teensy relay replies (PLATFORM_FRAME) ──
         # The relay READ RPCs (TILT_READ / STATE_READ) only TRIGGER a Platform
@@ -2117,6 +2182,13 @@ class TeensyBridgeNode(Node):
         self.create_service(Trigger, 'bb/reload',    self._svc_bb_reload)
         self.create_service(Trigger, 'bb/reset',     self._svc_bb_reset)
         self.create_service(Trigger, 'bb/calibrate', self._svc_bb_calibrate)
+        # Throw CANCEL (FW 30): its own ReentrantCallbackGroup because it waits —
+        # bounded — on BB's CANCEL CMD_RESULT and, in the in-flight case, on the
+        # throw's own RPC; it must never stall the 100 Hz timers in the default
+        # group, and it must run while the throw action's execute is blocked.
+        self._bb_cancel_cbgroup = ReentrantCallbackGroup()
+        self.create_service(Trigger, 'bb/cancel', self._svc_bb_cancel,
+                            callback_group=self._bb_cancel_cbgroup)
 
         # F4/Q2 — mocap_node's QTM view, the DATA-path half of bb/calibrate's
         # preconditions (see the module note above). Read-only: it feeds
@@ -2271,6 +2343,24 @@ class TeensyBridgeNode(Node):
         # lives in the Reentrant group, so without this two overlapping arms
         # could both pass the mpc_active check and double-start the ingest.
         self._arm_lock = threading.Lock()
+        # /recover_lane (2026-10-13). The lock makes a second call refuse instead
+        # of queueing; the Event is the CANCEL every other arm/disarm/fault entry
+        # point raises (`_cancel_lane_recovery`), checked at each checkpoint and
+        # inside `_arm_lock` before the re-arm, so the operator and a real fault
+        # always win. State + stage are published on /link_status
+        # (`lane_recovery` idle|in_progress|done|failed, `lane_recovery_stage`
+        # none|converge|rest|disarm|arm|confirm — the stage last entered).
+        self._lane_recovery_lock = threading.Lock()
+        self._lane_recovery_cancel = threading.Event()
+        self._lane_recovery_cancel_why = ''
+        self._lane_recovery = 'idle'
+        self._lane_recovery_stage = 'none'
+        # Instance-level so tests can shorten the bounded waits.
+        self._lane_rest_timeout_s = _LANE_REST_TIMEOUT_S
+        self._lane_disarm_timeout_s = _LANE_DISARM_TIMEOUT_S
+        self._lane_disarm_dwell_s = _LANE_DISARM_DWELL_S
+        self._lane_arm_retry_s = _LANE_ARM_RETRY_S
+        self._lane_confirm_timeout_s = _LANE_CONFIRM_TIMEOUT_S
         # ARMING_CONTRACT A1 — the boot-arm path is REMOVED. Arming at __init__
         # ran ZERO preconditions: nothing can legitimately stream at BOOT (the
         # workspace gate refuses to seed at STOW), so `enable_setpoint_output:=true`
@@ -2334,6 +2424,15 @@ class TeensyBridgeNode(Node):
             Trigger, 'trajectory/reseed_from_measured',
             callback_group=self._recover_cbgroup)
         self.create_service(Trigger, 'recover', self._svc_recover_logged,
+                            callback_group=self._recover_cbgroup)
+        # /recover_lane (2026-10-13): clears a LATCHED streamed lane (flags bit 15)
+        # without an operator DEACTIVATE → ACTIVATE. Same Reentrant group as
+        # /recover, for the same reasons: it blocks its thread for seconds on the
+        # shared converge core's reseed future, and the disarm service + telemetry
+        # timers it observes must keep running underneath it. Called by
+        # skill_node (after the lane-refused hold, or on a latch outside a goal)
+        # or by the operator directly. Logs its own stage/terminal lines.
+        self.create_service(Trigger, 'recover_lane', self._svc_recover_lane,
                             callback_group=self._recover_cbgroup)
         # clear_errors shares the /recover ReentrantCallbackGroup (F1, 2026-07-11).
         # WHY not the node-default MutuallyExclusiveCallbackGroup: the armed bare
@@ -2813,8 +2912,15 @@ class TeensyBridgeNode(Node):
             detail1 = int.from_bytes(data[4:6], 'little', signed=True)
         except Exception:  # noqa: BLE001
             return
+        if cmd_type == int(proto.BallButlerCommandType.CANCEL):
+            with self._bb_throw_lock:
+                if not self._bb_cancel_waiting:
+                    return  # no bb/cancel waiting — drop
+                self._bb_cancel_result = (outcome, detail0, detail1)
+            self._bb_cancel_event.set()
+            return
         if cmd_type != int(proto.BallButlerCommandType.THROW):
-            return  # only the throw consumes CMD_RESULT today
+            return  # the throw and the throw cancel are the only consumers
         with self._bb_throw_lock:
             if not self._bb_throw_active:
                 return  # no waiter — stale/duplicate frame, drop
@@ -4456,6 +4562,9 @@ class TeensyBridgeNode(Node):
 
     def _svc_set_setpoint_output(self, request, response):
         """SetBool: arm (true) / disarm (false) the 40 Hz setpoint downlink."""
+        # Both branches cancel a running /recover_lane: the operator or the
+        # orchestrator (its real-fault disarm and A2 arm come through here) wins.
+        self._cancel_lane_recovery('set_setpoint_output')
         if bool(request.data):
             ok, msg = self._arm_setpoint_output()
             response.success = ok
@@ -4673,7 +4782,7 @@ class TeensyBridgeNode(Node):
                                f'(> {tol} rev)')
         return True, ''
 
-    def _verify_streamed_u0_converged(self, tol, timeout_s) -> tuple:
+    def _verify_streamed_u0_converged(self, tol, timeout_s, abort_check=None) -> tuple:
         """Poll until the streamed u0 is within ``tol`` rev of every live encoder, or
         ``timeout_s`` elapses. Returns ``(ok, reason)`` (FIX 3).
 
@@ -4685,10 +4794,15 @@ class TeensyBridgeNode(Node):
         compares against — rather than re-reading the :5557 stream, so it never races
         the live setpoint-ingest thread during armed recovery. Reuses the same NaN-safe
         per-leg comparison as the arming pre-check (``_u0_within_encoder_tol``).
+
+        ``abort_check`` (``/recover_lane`` only; None everywhere else) is polled
+        each iteration and raises ``_ConvergeAborted`` to unwind the wait.
         """
         deadline = time.monotonic() + timeout_s
         last = 'no setpoint frame built yet'
         while True:
+            if abort_check is not None:
+                abort_check()
             u0 = self._sp_pump._prev_pos      # last accepted u0 (None until first send)
             with self._lock:
                 telem = self._latest_telemetry
@@ -4704,6 +4818,70 @@ class TeensyBridgeNode(Node):
             if time.monotonic() >= deadline:
                 return False, last
             time.sleep(0.02)
+
+    def _converge_command_onto_measured(self, abort_check=None) -> tuple:
+        """Steps 1-3 of ``/recover``, shared with ``/recover_lane`` (2026-10-13).
+
+        Ask trajectory_node for a PROFILED DESCENT onto the measured encoder
+        (``trajectory/reseed_from_measured``), then WAIT until the streamed u0 is
+        within ``_RECOVER_U0_TOL_REV`` of every live encoder, re-descending up to
+        ``_RECOVER_MAX_RESEED_ATTEMPTS`` times (see ``_svc_recover`` for why each
+        step exists). Fires nothing on the wire itself: no clear, no disarm.
+
+        Returns ``(ok, why, kind)``. ``kind`` is one of ``ok``, ``unavailable``
+        (the reseed service is not ready: trajectory_node down), ``timeout``,
+        ``error``, ``refused``, ``not_converged`` or ``aborted``. ``why`` is the
+        reason WITHOUT a caller-specific suffix, so ``/recover`` composes its
+        messages byte-identically to before the extraction. ``abort_check`` is
+        a callable that raises ``_ConvergeAborted(why)`` to stop early; it is
+        polled in both bounded waits. ``/recover`` passes None.
+        """
+        last_why = 'descent not yet attempted'
+        try:
+            for _attempt in range(_RECOVER_MAX_RESEED_ATTEMPTS):
+                # 1. (Re-)install a profiled descent onto the CURRENT measured
+                #    encoder. Re-sampling each attempt is load-bearing: a descent
+                #    onto a stale snapshot leaves u0 off the live (drifted)
+                #    encoder; a fresh reseed chases the settling leg.
+                if not self._reseed_client.service_is_ready():
+                    return (False, 'trajectory/reseed_from_measured unavailable '
+                            '(trajectory_node down)', 'unavailable')
+                try:
+                    future = self._reseed_client.call_async(Trigger.Request())
+                    deadline = time.monotonic() + _RECOVER_RESEED_TIMEOUT_S
+                    while not future.done() and time.monotonic() < deadline:
+                        if abort_check is not None:
+                            abort_check()
+                        time.sleep(0.02)
+                    if not future.done():
+                        return (False, 'trajectory_node reseed timed out '
+                                f'(> {_RECOVER_RESEED_TIMEOUT_S:.0f} s)', 'timeout')
+                    reseed = future.result()
+                except _ConvergeAborted:
+                    raise
+                except Exception as e:  # noqa: BLE001 — recovery must never crash the node
+                    return False, f'reseed call error: {e}', 'error'
+                if not getattr(reseed, 'success', False):
+                    # A reseed refusal (stale telemetry / not streaming) will not be
+                    # cured by retrying — refuse now rather than burn the budget.
+                    return (False, 'trajectory_node reseed refused: '
+                            f'{getattr(reseed, "message", "unknown")}', 'refused')
+                # 2. WAIT for the descent to walk u0 onto every LIVE encoder (it
+                #    collapses over ~0.5-3 s, not in one frame).
+                ok, last_why = self._verify_streamed_u0_converged(
+                    _RECOVER_U0_TOL_REV, self._recover_verify_timeout_s,
+                    abort_check=abort_check)
+                if ok:
+                    return True, '', 'ok'
+                # 3. Plateaued off the live encoder — loop to re-descend onto the
+                #    now-current encoder (bounded retries).
+        except _ConvergeAborted as e:
+            return False, str(e), 'aborted'
+        return (False,
+                'reseed done but the profiled descent did not converge u0 onto the '
+                f'encoder within {self._recover_verify_timeout_s:.1f}s × '
+                f'{_RECOVER_MAX_RESEED_ATTEMPTS} attempts ({last_why})',
+                'not_converged')
 
     def _svc_recover(self, req, res, *, park_hand=True):
         """``/recover`` (Trigger, FIX 3): one-call recovery from a latched Teensy guard.
@@ -4743,101 +4921,64 @@ class TeensyBridgeNode(Node):
         ball that may still be pinched. With ``park_hand=True`` (every service
         entry) a HELD hand jam is resumed instead (`_hand_jam_resume`).
         """
+        self._cancel_lane_recovery('recover')
         if park_hand and (self._hand_jam_hold or self._hand_jam_busy):
             return self._hand_jam_resume(res)
-        last_why = 'descent not yet attempted'
-        for _attempt in range(_RECOVER_MAX_RESEED_ATTEMPTS):
-            # 1. Ask trajectory_node to (re-)install a profiled descent onto the CURRENT
-            #    measured encoder. Re-sampling each attempt is load-bearing: a descent
-            #    onto a stale snapshot leaves u0 off the live (drifted) encoder; a fresh
-            #    reseed chases the settling leg (see _RECOVER_MAX_RESEED_ATTEMPTS).
-            if not self._reseed_client.service_is_ready():
-                # trajectory_node (the setpoint source) is DOWN — converge-first cannot
-                # help (nothing to install the descent, and no live stream to jolt at
-                # re-enable). Refusing here would strand the operator with a latched guard
-                # and no reachable converge path, so CLEAR DIRECTLY as the escape hatch,
-                # with a loud WARN (F5). This is the raw-clear behaviour the pre-reroute
-                # bare /clear_errors always had, now scoped to exactly the case where
-                # converge-first is impossible.
-                self.get_logger().warning(
-                    'trajectory/reseed_from_measured UNAVAILABLE (trajectory_node down) '
-                    '— converge-first impossible; clearing errors DIRECTLY (escape hatch)')
-                cok, cmsg, _ = self.teensy_clear_errors()
-                if cok:
-                    # The ODrive integrator re-wound gravity while the guard was
-                    # latched; restart the torque-FF ramp so the feedforward
-                    # re-enters over the configured window instead of stepping
-                    # (review 2026-07-14 — the wire is still in whatever arm
-                    # state it had at this point in the sequence; the
-                    # disarm-for-park comes AFTER, and a 1->0 edge does not
-                    # call reset() either, so neither of reset()'s 0->1
-                    # triggers fires on this path).
-                    self._sp_pump.restart_torque_ramp()
-                if not cok:
-                    res.success = False
-                    res.message = ('reseed unavailable AND direct CLEAR_ERRORS '
-                                   f'failed: {cmsg} — {_MANUAL_RECOVERY_HINT}')
-                    return res
-                # Same hand-park obligation as the converge-first path below —
-                # more so here: with trajectory_node down nothing is streaming
-                # the hand at all. Disarm-then-park (2026-09-23): the firmware
-                # rejects the op under an armed stream — see
-                # `_park_hand_disarmed`.
-                if not park_hand:
-                    res.success = True
-                    res.message = ('reseed unavailable — cleared DIRECTLY (escape '
-                                   f'hatch): {cmsg}; hand left to the caller')
-                    return res
-                pok, pmsg = self._park_hand_disarmed()
-                res.success = pok
-                res.message = (
-                    ('reseed unavailable (trajectory_node down) — cleared DIRECTLY '
-                     f'(escape hatch): {cmsg}, {pmsg}') if pok else
-                    ('reseed unavailable — cleared DIRECTLY (escape hatch) but '
-                     f'HAND NOT PARKED — {pmsg}; {_HAND_NOT_PARKED_HINT}'))
-                return res
-            try:
-                future = self._reseed_client.call_async(Trigger.Request())
-                deadline = time.monotonic() + _RECOVER_RESEED_TIMEOUT_S
-                while not future.done() and time.monotonic() < deadline:
-                    time.sleep(0.02)
-                if not future.done():
-                    res.success = False
-                    res.message = ('trajectory_node reseed timed out '
-                                   f'(> {_RECOVER_RESEED_TIMEOUT_S:.0f} s) — guard left '
-                                   f'latched; {_MANUAL_RECOVERY_HINT}')
-                    return res
-                reseed = future.result()
-            except Exception as e:  # noqa: BLE001 — recovery must never crash the node
+        # 1-3. Converge-first: the shared core (`_converge_command_onto_measured`,
+        #      extracted 2026-10-13 for `/recover_lane`; behaviour unchanged).
+        ok, why, kind = self._converge_command_onto_measured()
+        if kind == 'unavailable':
+            # trajectory_node (the setpoint source) is DOWN — converge-first cannot
+            # help (nothing to install the descent, and no live stream to jolt at
+            # re-enable). Refusing here would strand the operator with a latched guard
+            # and no reachable converge path, so CLEAR DIRECTLY as the escape hatch,
+            # with a loud WARN (F5). This is the raw-clear behaviour the pre-reroute
+            # bare /clear_errors always had, now scoped to exactly the case where
+            # converge-first is impossible.
+            self.get_logger().warning(
+                'trajectory/reseed_from_measured UNAVAILABLE (trajectory_node down) '
+                '— converge-first impossible; clearing errors DIRECTLY (escape hatch)')
+            cok, cmsg, _ = self.teensy_clear_errors()
+            if cok:
+                # The ODrive integrator re-wound gravity while the guard was
+                # latched; restart the torque-FF ramp so the feedforward
+                # re-enters over the configured window instead of stepping
+                # (review 2026-07-14 — the wire is still in whatever arm
+                # state it had at this point in the sequence; the
+                # disarm-for-park comes AFTER, and a 1->0 edge does not
+                # call reset() either, so neither of reset()'s 0->1
+                # triggers fires on this path).
+                self._sp_pump.restart_torque_ramp()
+            if not cok:
                 res.success = False
-                res.message = (f'reseed call error: {e} — guard left latched; '
-                               f'{_MANUAL_RECOVERY_HINT}')
+                res.message = ('reseed unavailable AND direct CLEAR_ERRORS '
+                               f'failed: {cmsg} — {_MANUAL_RECOVERY_HINT}')
                 return res
-            if not getattr(reseed, 'success', False):
-                # A reseed refusal (stale telemetry / not streaming) will not be cured
-                # by retrying — refuse now rather than burning the attempt budget.
-                res.success = False
-                res.message = (f'trajectory_node reseed refused: '
-                               f'{getattr(reseed, "message", "unknown")} — guard left '
-                               f'latched; {_MANUAL_RECOVERY_HINT}')
+            # Same hand-park obligation as the converge-first path below —
+            # more so here: with trajectory_node down nothing is streaming
+            # the hand at all. Disarm-then-park (2026-09-23): the firmware
+            # rejects the op under an armed stream — see
+            # `_park_hand_disarmed`.
+            if not park_hand:
+                res.success = True
+                res.message = ('reseed unavailable — cleared DIRECTLY (escape '
+                               f'hatch): {cmsg}; hand left to the caller')
                 return res
-
-            # 2. WAIT for the profiled descent to walk u0 onto every LIVE encoder BEFORE
-            #    clearing (it collapses over ~0.5-3 s, not in one frame).
-            ok, last_why = self._verify_streamed_u0_converged(
-                _RECOVER_U0_TOL_REV, self._recover_verify_timeout_s)
-            if ok:
-                break
-            # 3. Plateaued off the live encoder — the leg drifted during the descent.
-            #    Loop to re-descend onto the now-current encoder (bounded retries).
-        else:
-            res.success = False
+            pok, pmsg = self._park_hand_disarmed()
+            res.success = pok
             res.message = (
-                f'reseed done but the profiled descent did not converge u0 onto the '
-                f'encoder within {self._recover_verify_timeout_s:.1f}s × '
-                f'{_RECOVER_MAX_RESEED_ATTEMPTS} attempts ({last_why}) — refusing to '
-                f'clear (a clear now would re-latch); guard left latched; '
-                f'{_MANUAL_RECOVERY_HINT}')
+                ('reseed unavailable (trajectory_node down) — cleared DIRECTLY '
+                 f'(escape hatch): {cmsg}, {pmsg}') if pok else
+                ('reseed unavailable — cleared DIRECTLY (escape hatch) but '
+                 f'HAND NOT PARKED — {pmsg}; {_HAND_NOT_PARKED_HINT}'))
+            return res
+        if not ok:
+            res.success = False
+            if kind == 'not_converged':
+                res.message = (f'{why} — refusing to clear (a clear now would '
+                               f're-latch); guard left latched; {_MANUAL_RECOVERY_HINT}')
+            else:
+                res.message = f'{why} — guard left latched; {_MANUAL_RECOVERY_HINT}'
             return res
 
         # 4. Safe to clear now: u0 is within tol of every encoder.
@@ -4879,6 +5020,328 @@ class TeensyBridgeNode(Node):
         res.message = ('recovered: reseeded hold at measured, streamed u0 within '
                        f'{_RECOVER_U0_TOL_REV} rev of every encoder, CLEAR_ERRORS '
                        f'fired, {pmsg}')
+        return res
+
+    # ═══════════════════════════════════════════════════════════
+    # /recover_lane — automatic recovery from a latched streamed lane (2026-10-13)
+    # ═══════════════════════════════════════════════════════════
+
+    def _cancel_lane_recovery(self, who):
+        """Cancel a running ``/recover_lane`` (no-op when none runs: the next
+        recovery clears the Event at its start). Called by every other
+        arm/disarm/fault entry point, so the operator and a real fault win."""
+        self._lane_recovery_cancel_why = str(who)
+        self._lane_recovery_cancel.set()
+
+    def _lane_hb(self):
+        with self._lock:
+            return self._latest_heartbeat
+
+    @staticmethod
+    def _lane_latched(hb) -> bool:
+        return bool(int(hb.flags) & _T2J_FLAG_SCHED_HOLD_LATCHED)
+
+    def _lane_abort_reason(self):
+        """A reason to stop now (cancel or a real fault), else None."""
+        if self._lane_recovery_cancel.is_set():
+            return f'cancelled by {self._lane_recovery_cancel_why or "an operator action"}'
+        hb = self._lane_hb()
+        if hb is not None and int(hb.fault_state) != int(FaultState.NONE):
+            return (f'Teensy fault {_enum_name(FaultState, int(hb.fault_state))} '
+                    '(a real fault wins)')
+        return None
+
+    def _lane_stage(self, stage):
+        self._lane_recovery_stage = stage
+
+    def _lane_stage_log(self, text):
+        # One INFO call site (Foxy: one severity per call site).
+        self.get_logger().info(f'lane recovery: {text}')
+
+    def _lane_refuse(self, res, why):
+        """Entry refusal: no action taken, state unchanged."""
+        res.success = False
+        res.message = f'recover_lane refused: {why}'
+        self.get_logger().warning(res.message)
+        return res
+
+    def _lane_noop(self, res, why):
+        res.success = True
+        res.message = f'recover_lane: nothing to do — {why}'
+        self.get_logger().info(res.message)
+        return res
+
+    def _lane_fail(self, res, why, t0):
+        """Terminal FAILED: one ERROR line naming the stage, the wire state the
+        failure leaves and the operator fallback."""
+        self._lane_recovery = 'failed'
+        wire = 'ARMED' if self._mpc_active else 'DISARMED'
+        res.success = False
+        res.message = (f'lane recovery FAILED at {self._lane_recovery_stage} after '
+                       f'{time.monotonic() - t0:.1f} s: {why} (wire left {wire}) — '
+                       f'fallback: {_LANE_FALLBACK_HINT}')
+        self.get_logger().error(res.message)
+        return res
+
+    def _lane_sleep(self, seconds):
+        """Bounded dwell that still honours a cancel or a real fault."""
+        deadline = time.monotonic() + seconds
+        while True:
+            why = self._lane_abort_reason()
+            if why:
+                return why
+            left = deadline - time.monotonic()
+            if left <= 0:
+                return None
+            time.sleep(min(0.02, left))
+
+    def _lane_wait_rest(self):
+        """Every leg below _LANE_REST_LEG_VEL_RPS and the hand below
+        _LANE_REST_HAND_VEL_RPS on _LANE_REST_SAMPLES consecutive FRESH telemetry
+        samples. Returns ``(ok, why)``; a NaN velocity counts as moving."""
+        deadline = time.monotonic() + self._lane_rest_timeout_s
+        with self._lock:
+            gen = self._telemetry_gen
+        run = 0
+        last = 'no fresh telemetry'
+        while True:
+            why = self._lane_abort_reason()
+            if why:
+                return False, why
+            with self._lock:
+                g, tm = self._telemetry_gen, self._latest_telemetry
+            if g != gen and tm is not None:
+                gen = g
+                vel = [float(v) for v in tm.vel_rps]
+                legs = vel[:p.NUM_LEGS]
+                hand = vel[p.NUM_LEGS:p.NUM_LEGS + 1]
+                legs_ok = all(abs(v) < _LANE_REST_LEG_VEL_RPS for v in legs)
+                hand_ok = all(abs(v) < _LANE_REST_HAND_VEL_RPS for v in hand)
+                run = run + 1 if (legs_ok and hand_ok) else 0
+                if run >= _LANE_REST_SAMPLES:
+                    return True, ''
+                last = ('legs |vel| max {:.3f} rev/s, hand {} rev/s'.format(
+                    max((abs(v) for v in legs), default=0.0),
+                    f'{abs(hand[0]):.3f}' if hand else 'n/a'))
+            if time.monotonic() >= deadline:
+                return False, (f'not at rest within {self._lane_rest_timeout_s:.1f} s '
+                               f'({last}) — something else owns the motion')
+            time.sleep(0.01)
+
+    def _lane_confirm(self):
+        """Wait for _LANE_CONFIRM_HEARTBEATS consecutive FRESH heartbeats showing
+        bit 15 clear, fault NONE, MPC_ACTIVE set and ``sched_refused`` unchanged.
+        Heartbeats that still show the pre-edge state (bit 15 set or MPC_ACTIVE
+        not yet back) are waited through until the bound. Returns
+        ``(ok, kind, why)``: kind ``ok`` | ``fault`` | ``cancelled`` | ``latched``
+        | ``timeout``."""
+        deadline = time.monotonic() + self._lane_confirm_timeout_s
+        with self._lock:
+            gen = self._heartbeat_gen
+        run, refused = 0, None
+        last = 'no fresh heartbeat'
+        last_kind = 'timeout'
+        while True:
+            if self._lane_recovery_cancel.is_set():
+                return False, 'cancelled', self._lane_abort_reason()
+            with self._lock:
+                g, hb = self._heartbeat_gen, self._latest_heartbeat
+            if g != gen and hb is not None:
+                gen = g
+                if int(hb.fault_state) != int(FaultState.NONE):
+                    return False, 'fault', self._lane_abort_reason() or 'Teensy fault'
+                if self._lane_latched(hb):
+                    run, refused = 0, None
+                    last, last_kind = 'flags bit 15 (lane latch) still set', 'latched'
+                elif not (int(hb.flags) & _T2J_FLAG_MPC_ACTIVE):
+                    run, refused = 0, None
+                    last, last_kind = 'firmware not reporting MPC_ACTIVE', 'timeout'
+                elif refused is not None and int(hb.sched_refused) != refused:
+                    run, refused = 1, int(hb.sched_refused)
+                    last, last_kind = 'sched_refused still climbing', 'latched'
+                else:
+                    refused = int(hb.sched_refused)
+                    run += 1
+                    if run >= _LANE_CONFIRM_HEARTBEATS:
+                        return True, 'ok', ''
+            if time.monotonic() >= deadline:
+                return False, last_kind, (
+                    f'{last} after {self._lane_confirm_timeout_s:.1f} s')
+            time.sleep(0.01)
+
+    def _svc_recover_lane(self, req, res):
+        """``/recover_lane`` (Trigger): clear a LATCHED streamed lane (HeartbeatT2J
+        flags bit 15) without an operator DEACTIVATE → ACTIVATE.
+
+        Sequence (design `unitC_design.md` § 2; every wait bounded, ~1.5-4 s
+        nominal, ~15 s worst case):
+          0. entry — refuse a second call; no-op if not latched or not armed;
+             refuse with no action on a fault, a deactivate, a hand park or a
+             hand-jam hold;
+          1. converge (ARMED) — the `/recover` core: reseed a profiled descent
+             onto the measured encoder, wait for u0 within 0.03 rev. ESCAPE to
+             the disarm if any leg's live_deviation passes 0.5 rev;
+          2. rest — legs and hand still (a disarm freezes a moving hand). If bit
+             15 already cleared (a frame continuous with the held curve was
+             accepted), confirm and finish with no edge at all;
+          3. disarm + firmware confirmation + 0.2 s dwell (so the fault task gates
+             out_en off and an ISR tick records it);
+          4. re-arm through the normal preconditions, inside `_arm_lock` after a
+             last cancel check — the out_en false→true edge clears the latch and
+             slews both lanes from the live encoder (a no-op: u0 is within 0.03);
+          5. confirm — bit 15 clear on fresh heartbeats; if it is still set the
+             edge premise failed, so disarm again and fail.
+        NO CLEAR_ERRORS (nothing is in error, and a clear could mask a real fault
+        racing in) and NO hand park (the hand stays where its C2 stop left it;
+        the next goal's opening REST homes it inside the 2.5 rev/s envelope —
+        owner question 1 open). A real fault or a cancel aborts at any stage
+        without arming. Every FAILED names the stage, the wire state left and
+        the fallback ``_LANE_FALLBACK_HINT``.
+        """
+        if not self._lane_recovery_lock.acquire(blocking=False):
+            return self._lane_refuse(
+                res, f'lane recovery in progress (stage {self._lane_recovery_stage})')
+        try:
+            return self._recover_lane_locked(res)
+        finally:
+            self._lane_recovery_lock.release()
+
+    def _recover_lane_locked(self, res):
+        hb = self._lane_hb()
+        if hb is None:
+            return self._lane_refuse(res, 'no Teensy heartbeat yet')
+        if not self._lane_latched(hb):
+            return self._lane_noop(res, 'not latched (flags bit 15 clear)')
+        if not self._mpc_active:
+            return self._lane_noop(
+                res, 'not armed: the next arm edge clears the latch')
+        if int(hb.fault_state) != int(FaultState.NONE):
+            return self._lane_refuse(
+                res, f'Teensy fault {_enum_name(FaultState, int(hb.fault_state))} '
+                     'latched — /recover owns that')
+        if self._deactivate_in_progress:
+            return self._lane_refuse(res, 'deactivate in progress')
+        if self._recovery_park_in_progress:
+            return self._lane_refuse(res, 'hand park in progress')
+        if self._hand_jam_hold or self._hand_jam_busy:
+            return self._lane_refuse(
+                res, f'hand-jam recovery holds the hand ({self._hand_jam_status})')
+
+        t0 = time.monotonic()
+        self._lane_recovery_cancel.clear()
+        self._lane_recovery_cancel_why = ''
+        self._lane_recovery = 'in_progress'
+        escape = {}
+
+        def _abort():
+            why = self._lane_abort_reason()
+            if why:
+                raise _ConvergeAborted(why)
+            hb_ = self._lane_hb()
+            if hb_ is not None:
+                devs = [abs(float(d)) for d in list(hb_.live_deviation)[:p.NUM_LEGS]]
+                worst = max((d for d in devs if d == d), default=0.0)
+                if worst > _LANE_ESCAPE_DEV_REV:
+                    escape['dev'] = worst
+                    raise _ConvergeAborted(
+                        f'leg live_deviation {worst:.3f} rev > {_LANE_ESCAPE_DEV_REV} rev')
+
+        # 1. converge, still ARMED.
+        self._lane_stage('converge')
+        self._lane_stage_log('converge → reseeding a profiled descent onto the encoder')
+        ok, why, _kind = self._converge_command_onto_measured(abort_check=_abort)
+        if not ok and 'dev' not in escape:
+            return self._lane_fail(res, why, t0)
+        if 'dev' in escape:
+            self._lane_stage_log(f'converge → ESCAPE ({why}): disarming now')
+        else:
+            self._lane_stage_log(f'converge → u0 within {_RECOVER_U0_TOL_REV} rev')
+            done = self._lane_try_short_circuit()
+            if done is not None:
+                return self._lane_finish(res, done, t0)
+            # 2. rest.
+            self._lane_stage('rest')
+            ok, why = self._lane_wait_rest()
+            if not ok:
+                return self._lane_fail(res, why, t0)
+            self._lane_stage_log('rest → at rest')
+            done = self._lane_try_short_circuit()
+            if done is not None:
+                return self._lane_finish(res, done, t0)
+
+        # 3. disarm. Last check while the wire is still ARMED.
+        self._lane_stage('disarm')
+        why = self._lane_abort_reason()
+        if why:
+            return self._lane_fail(res, why, t0)
+        self._stop_setpoint_output()
+        if not self._wait_wire_disarmed(self._lane_disarm_timeout_s):
+            return self._lane_fail(
+                res, f'firmware did not report disarmed within '
+                     f'{self._lane_disarm_timeout_s:.1f} s', t0)
+        why = self._lane_sleep(self._lane_disarm_dwell_s)
+        if why:
+            return self._lane_fail(res, why, t0)
+        self._lane_stage_log('disarm → disarmed')
+
+        # 4. re-arm (retry only while another arm attempt holds the lock).
+        self._lane_stage('arm')
+        msg = 'an arm attempt is already in progress'
+        armed = False
+        for attempt in range(_LANE_ARM_TRIES):
+            if attempt:
+                why = self._lane_sleep(self._lane_arm_retry_s)
+                if why:
+                    return self._lane_fail(res, why, t0)
+            if not self._arm_lock.acquire(blocking=False):
+                continue
+            try:
+                why = self._lane_abort_reason()
+                if why:
+                    return self._lane_fail(res, why, t0)
+                armed, msg = self._arm_setpoint_output_locked()
+            finally:
+                self._arm_lock.release()
+            break
+        if not armed:
+            return self._lane_fail(res, f're-arm refused: {msg}', t0)
+        self._lane_stage_log('arm → re-armed')
+
+        # 5. confirm.
+        self._lane_stage('confirm')
+        ok, kind, why = self._lane_confirm()
+        if not ok:
+            if kind in ('latched', 'timeout'):
+                # The arm-edge premise failed: never leave an armed wire walking
+                # a latched lane's guard residual.
+                self._stop_setpoint_output()
+            return self._lane_fail(res, why, t0)
+        return self._lane_finish(res, 'latch cleared by the arm edge', t0)
+
+    def _lane_try_short_circuit(self):
+        """Bit 15 already clear while still ARMED (the firmware accepted a frame
+        continuous with the held curve): confirm and finish with no edge. Returns
+        the DONE detail, or None to continue the disarm path."""
+        hb = self._lane_hb()
+        if hb is None or self._lane_latched(hb):
+            return None
+        stage = self._lane_recovery_stage
+        self._lane_stage('confirm')
+        ok, _kind, _why = self._lane_confirm()
+        self._lane_stage(stage)
+        return 'latch cleared without an arm edge' if ok else None
+
+    def _lane_finish(self, res, detail, t0):
+        self._lane_recovery = 'done'
+        with self._lock:
+            tm = self._latest_telemetry
+        hand = 'unknown'
+        if tm is not None and len(tm.pos_rev) > p.NUM_LEGS:
+            hand = f'{float(tm.pos_rev[p.NUM_LEGS]):.2f}'
+        res.success = True
+        res.message = (f'lane recovery DONE in {time.monotonic() - t0:.1f} s — '
+                       f'{detail}, hand held at {hand} rev (next REST homes it)')
+        self.get_logger().warning(res.message)
         return res
 
     def _acquire_setpoint_source(self) -> tuple:
@@ -5677,6 +6140,13 @@ class TeensyBridgeNode(Node):
                     KeyValue(key='sched_hold_latched',
                              value=str(int(bool(int(hb.flags)
                                                 & _T2J_FLAG_SCHED_HOLD_LATCHED)))),
+                    # /recover_lane's progress (2026-10-13): idle|in_progress|
+                    # done|failed, and the stage last entered (none|converge|
+                    # rest|disarm|arm|confirm). trajectory_node and skill_node
+                    # refuse new motion while `in_progress`.
+                    KeyValue(key='lane_recovery', value=self._lane_recovery),
+                    KeyValue(key='lane_recovery_stage',
+                             value=self._lane_recovery_stage),
                     KeyValue(key='live_deviation',
                              value=','.join(f'{d:.4f}' for d in hb.live_deviation)),
                     KeyValue(key='max_dev_leg',
@@ -7022,6 +7492,7 @@ class TeensyBridgeNode(Node):
         the hand and the next schedule's opening REST plans the hand from the
         MEASURED, now parked, position.
         """
+        self._cancel_lane_recovery('hand park')
         was_armed = bool(self._mpc_active)
         self._recovery_park_in_progress = True
         try:
@@ -7125,6 +7596,7 @@ class TeensyBridgeNode(Node):
                 return None
             self._hand_jam_busy = True
             self._hand_jam_hold = True
+        self._cancel_lane_recovery('hand-jam recovery')
         self._hand_jam_rec = rec
         self._hand_jam_status = f'RUNNING:{rec.step.name}'
         if not resume:
@@ -7378,6 +7850,7 @@ class TeensyBridgeNode(Node):
         legs run on flash-default gains and the move fails safe (never reaches the
         target → ActivateMonitor timeout → FAILED).
         """
+        self._cancel_lane_recovery('activate')
         axes = [int(a) for a in axes]
         if not axes:
             return False, "no axes configured for activate"
@@ -7514,6 +7987,7 @@ class TeensyBridgeNode(Node):
         /activate). Without it the move fails safe (an errored or absent leg is
         rejected by the firmware; a stalled leg → DeactivateMonitor timeout).
         """
+        self._cancel_lane_recovery('deactivate')
         axes = [int(a) for a in axes]
         if not axes:
             return False, "no axes configured for deactivate"
@@ -7620,6 +8094,7 @@ class TeensyBridgeNode(Node):
     # ── ROS service handlers (existing-type subset) ───────────
 
     def _svc_clear_errors(self, req, res):
+        self._cancel_lane_recovery('clear_errors')
         if self._hand_jam_hold or self._hand_jam_busy:
             # A held hand jam: the operator's clear (the orchestrator's
             # clear_errors conduit lands here too) is its acknowledgement —
@@ -8349,10 +8824,15 @@ class TeensyBridgeNode(Node):
             self._bb_throw_active = True
             self._bb_throw_result = None
             self._bb_throw_event.clear()
+            self._bb_cancel_requested = False
+            self._bb_throw_dispatched = False
         return GoalResponse.ACCEPT
 
     def _bb_throw_cancel(self, goal_handle):
-        """Reject cancellation — a throw in flight has no firmware abort path."""
+        """Reject ACTION cancellation. A throw is cancelled through the
+        `bb/cancel` service (BB_CANCEL, bridge FW 30 / BB FW 9) instead: the
+        abort is then reported as this goal's own terminal CMD_RESULT
+        (THROW_ABORTED_BY_HOST), so the goal ends through the normal path."""
         return CancelResponse.REJECT
 
     def _bb_throw_execute(self, goal_handle):
@@ -8421,9 +8901,31 @@ class TeensyBridgeNode(Node):
             # (ERR_RELEASE_*); that name LEADS the message, because
             # ball_butler_node relays it on bb/throw_outcome and skill_node ends
             # the attempt on its leading token (REJECTED_BB(ERR_RELEASE_...)).
+            # A bb/cancel that landed between this goal's acceptance and here
+            # wins: nothing is sent (see the _bb_cancel_requested note in
+            # __init__). Otherwise mark the dispatch, so a later cancel waits for
+            # this RPC before sending its own frame.
+            with self._bb_throw_lock:
+                cancelled_before_dispatch = self._bb_cancel_requested
+                if not cancelled_before_dispatch:
+                    self._bb_throw_dispatched = True
+                    self._bb_throw_rpc_done.clear()
+            if cancelled_before_dispatch:
+                result.success = False
+                result.outcome = int(
+                    proto.BallButlerCommandOutcome.THROW_ABORTED_BY_HOST)
+                result.message = (
+                    'THROW_ABORTED_BY_HOST (axis=n/a, detail1=0) — bb/cancel '
+                    'arrived before dispatch; nothing was sent to BB')
+                self.get_logger().warn(f'bb/throw: {result.message}')
+                goal_handle.abort()
+                return result
             t_send_wall = time.time()
             t_send_mono = time.monotonic()
-            ok, m, blob = self._call_rpc(RpcMethod.BB_THROW, args)
+            try:
+                ok, m, blob = self._call_rpc(RpcMethod.BB_THROW, args)
+            finally:
+                self._bb_throw_rpc_done.set()
             rpc_ms = (time.monotonic() - t_send_mono) * 1e3
             host_lead_ms = (release_wall_s - t_send_wall) * 1e3
             if not ok:
@@ -8504,6 +9006,84 @@ class TeensyBridgeNode(Node):
         res.success = ok
         res.message = "Reset command sent." if ok else f"Reset failed: {m}"
         return self._log_service_outcome('bb/reset', res, quiet_success=True)
+
+    #: How long `bb/cancel` waits for BB's CANCEL CMD_RESULT once the RPC is
+    #: acked. BB answers from its CAN RX dispatch in the main loop (ms); 0.5 s
+    #: only has to separate "answered" from "BB FW <= 8 ignored the id".
+    _BB_CANCEL_RESULT_TIMEOUT_S = 0.5
+    #: Bound on waiting for an in-flight BB_THROW RPC before sending BB_CANCEL.
+    _BB_CANCEL_THROW_RPC_WAIT_S = 1.0
+
+    def _svc_bb_cancel(self, req, res):
+        """bb/cancel — BB_CANCEL RPC (bridge FW 30 / BB FW 9): abort a Ball
+        Butler throw whose wind-up has not started.
+
+        ``success`` answers ONE question — "is BB now guaranteed not to throw
+        the ball it was asked to?" — and the message LEADS with the verdict
+        token: ``CANCELLED`` (BB dropped the throw; detail = ms that were left
+        to the release; the throw goal itself ends THROW_ABORTED_BY_HOST),
+        ``CANCELLED_BEFORE_DISPATCH`` (the goal was stopped before BB_THROW
+        left this node), ``CANCEL_NOTHING_PENDING`` (BB had no throw) are
+        success; ``CANCEL_TOO_LATE`` (wind-up already started — the ball WILL
+        leave), ``NO_CANCEL_RESULT`` (no answer: BB FW <= 8 ignores the id)
+        and an RPC failure (ERR_UNKNOWN_METHOD = bridge FW <= 29,
+        ERR_BUS_DOWN = BB absent) are failure."""
+        with self._bb_throw_lock:
+            pre_dispatch = self._bb_throw_active and not self._bb_throw_dispatched
+            if pre_dispatch:
+                self._bb_cancel_requested = True
+            in_flight = self._bb_throw_active and self._bb_throw_dispatched
+        if pre_dispatch:
+            res.success = True
+            res.message = ('CANCELLED_BEFORE_DISPATCH: the throw goal was '
+                           'stopped before BB_THROW left this node; nothing '
+                           'reached BB')
+            return self._log_service_outcome('bb/cancel', res)
+        if in_flight:
+            # THROW_CMD must be on CAN1 before CANCEL_CMD, or BB answers
+            # NOTHING_PENDING and then throws.
+            self._bb_throw_rpc_done.wait(timeout=self._BB_CANCEL_THROW_RPC_WAIT_S)
+        with self._bb_throw_lock:
+            self._bb_cancel_result = None
+            self._bb_cancel_event.clear()
+            self._bb_cancel_waiting = True
+        try:
+            ok, m, _ = self._call_rpc(RpcMethod.BB_CANCEL, b"")
+            if not ok:
+                res.success = False
+                res.message = (f'Cancel failed: {m} (ERR_UNKNOWN_METHOD = '
+                               f'bridge FW <= 29; the throw, if any, will fire)')
+                return self._log_service_outcome('bb/cancel', res)
+            if not self._bb_cancel_event.wait(
+                    timeout=self._BB_CANCEL_RESULT_TIMEOUT_S):
+                res.success = False
+                res.message = (
+                    f'NO_CANCEL_RESULT: CANCEL_CMD reached CAN1 but BB sent no '
+                    f'CMD_RESULT within {self._BB_CANCEL_RESULT_TIMEOUT_S:.1f} s '
+                    f'(BB FW <= 8 ignores it; the throw, if any, will fire)')
+                return self._log_service_outcome('bb/cancel', res)
+            with self._bb_throw_lock:
+                outcome, _detail0, detail1 = self._bb_cancel_result
+        finally:
+            with self._bb_throw_lock:
+                self._bb_cancel_waiting = False
+        Outcome = proto.BallButlerCommandOutcome
+        if int(outcome) == int(Outcome.OK):
+            res.success = True
+            res.message = (f'CANCELLED: BB dropped the throw {int(detail1)} ms '
+                           f'before its release (ball retained, BB to IDLE)')
+        elif int(outcome) == int(Outcome.CANCEL_NOTHING_PENDING):
+            res.success = True
+            res.message = 'CANCEL_NOTHING_PENDING: BB had no throw queued or armed'
+        elif int(outcome) == int(Outcome.CANCEL_TOO_LATE):
+            res.success = False
+            res.message = (f'CANCEL_TOO_LATE: the wind-up had started '
+                           f'(release in {int(detail1)} ms) — the ball WILL leave')
+        else:
+            res.success = False
+            res.message = (f'CANCEL answered '
+                           f'{self._bb_outcome_text(outcome, _detail0, detail1)}')
+        return self._log_service_outcome('bb/cancel', res)
 
     def _svc_bb_calibrate(self, req, res):
         """bb/calibrate — BB_CALIBRATE_LOC RPC, gated on BB presence and QTM.

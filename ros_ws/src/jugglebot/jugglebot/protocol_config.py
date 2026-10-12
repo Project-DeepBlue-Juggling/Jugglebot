@@ -107,6 +107,7 @@ CAN_ID_BB_CMD_RESULT = 0x7D5
 CAN_ID_BB_FW_UPDATE_CMD = 0x7D6
 CAN_ID_BB_FW_UPDATE_REPLY = 0x7D7
 CAN_ID_BB_YAW_ESTIMATE = 0x7D8
+CAN_ID_BB_CANCEL_CMD = 0x7D9
 
 # Catching Cone Teensy <-> Host
 CAN_ID_CC_CATCH_EVENT = 0x7E0
@@ -140,6 +141,7 @@ class BallButlerCommandType(IntEnum):
     RELOAD = 1
     CALIBRATE = 2
     HOME = 3
+    CANCEL = 4
 
 # Command outcomes — CMD_RESULT byte 1 (shared base + per-command extensions)
 class BallButlerCommandOutcome(IntEnum):
@@ -158,6 +160,9 @@ class BallButlerCommandOutcome(IntEnum):
     THROW_REJECTED_PLANNER_EMPTY = 39
     THROW_REJECTED_ARM_FAIL = 40
     THROW_ABORTED_NOT_SETTLED = 41
+    THROW_ABORTED_BY_HOST = 42
+    CANCEL_NOTHING_PENDING = 43
+    CANCEL_TOO_LATE = 44
 
 # ============================================================================
 # Catching Cone State Machine

@@ -284,6 +284,7 @@ def test_method_arg_association_covers_all_commandable_methods():
     payloadless = {
         RpcMethod.NOP, RpcMethod.TIME_OF_DAY_QUERY,
         RpcMethod.BB_RELOAD, RpcMethod.BB_RESET, RpcMethod.BB_CALIBRATE_LOC,
+        RpcMethod.BB_CANCEL,
         RpcMethod.GET_AXIS_VERSIONS, RpcMethod.GET_BB_AXIS_VERSIONS,
         RpcMethod.GET_HAND_TORQUE_SCALE,
         RpcMethod.TILT_READ, RpcMethod.STATE_READ,

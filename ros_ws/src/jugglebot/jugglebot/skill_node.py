@@ -201,6 +201,10 @@ _TRAJ_STATUS_STALE_S = 1.0
 # is still latched (a latched lane refuses every streamed frame, ~40/s, so a
 # 10 Hz `/link_status` sees it rise on every publish). 1 s = ten publishes.
 _LANE_LATCH_RISE_WINDOW_S = 1.0
+#: T2 of the automatic lane-latch recovery (Unit C2): consecutive fresh
+#: `/link_status` samples (10 Hz -> 0.3 s) with the latch bit up and no
+#: executor running before `recover_lane` is requested.
+_LANE_AUTO_SAMPLES = 3
 #: The hand-telemetry staleness bound `_observations` and `tools/probes/
 #: possession_replay.py::_sensor` both read (the FSM's own copy died with
 #: `reload_coordinator_node.py` at R4, 2026-09-24 — this is now the one
@@ -729,6 +733,19 @@ class SkillNode(Node):
         # `_refuse_if_lane_latched` refuses a new goal on (R5 sitting 7).
         self._sched_hold_latched = -1
         self._sched_refused_rise_mono = 0.0
+        # Unit C2 -- automatic lane-latch recovery (bridge `/recover_lane`).
+        # `lane_recovery` / `lane_recovery_stage` mirror the bridge's
+        # `/link_status` keys (idle|in_progress|done|failed). ONE automatic
+        # call per latch episode: `_lane_auto_fired` is set by the call
+        # (T1 = after the lane-refused END's hold, T2 = no executor and the
+        # bit up for `_LANE_AUTO_SAMPLES` fresh samples) and re-armed ONLY
+        # when the bit next falls to 0, so a failed recovery never loops.
+        self._lane_recovery = 'idle'
+        self._lane_recovery_stage = ''
+        self._lane_latch_samples = 0
+        self._lane_auto_fired = False
+        self._lane_auto_lock = threading.Lock()
+        self._lane_cli_unavail_logged = False
         # Set by `_on_tick` when an END needs the machine HELD rather than
         # left to its rest tail (`executor.HAND_LANE_REFUSED`), cleared by
         # `_maybe_hold_pending_event` when it fires the hold — so the hold is
@@ -782,6 +799,13 @@ class SkillNode(Node):
         # group).
         self._reload_ctx = None
         self._reload_lock = threading.Lock()
+        # Ball Butler throw CANCEL (R5 sitting 7 decision 5, 2026-10-13): the
+        # perf_counter instant of the release of the last `bb/throw_at_target`
+        # Ball Butler accepted for this node, or None. Set by
+        # `_fire_reload_throw`, consumed (popped -- at most one cancel per
+        # dispatched throw) by `_maybe_cancel_bb_throw` on every attempt end.
+        self._bb_pending_release_mono = None
+        self._bb_cancel_lock = threading.Lock()
         # True from the moment `_on_announcement` swaps the reload schedule
         # in until that attempt ends (C3 widening, 2026-09-28): Ball
         # Butler's ThrowAnnouncement is published at DISPATCH (its Teensy's
@@ -894,6 +918,17 @@ class SkillNode(Node):
         # at 20. Inward re-aims keep the full authority. >= the lateral
         # authority = symmetric (no effect).
         self.declare_parameter('catch_outward_authority_mm', 10.0)
+        # How far (mm) a CATCH aim -- the dispatch prior or a tracker re-aim
+        # -- may move the landing INWARD, toward the pattern's other site,
+        # about the schedule's landing (executor.catch_inward_authority_m;
+        # the learner's lateral THROW command and the hop keep
+        # learner_lateral_authority_mm). Owner decision 2026-10-13: the
+        # catch prior is now the learner's forward prediction of the
+        # (box-clipped) command sent, and sitting 7's P1 landings sat +27 mm
+        # inward of y_d, so a 20 mm clamp would cut the prior short. Inward
+        # moves shorten the transit to the next catch. One-site patterns
+        # ignore it.
+        self.declare_parameter('catch_inward_authority_mm', 35.0)
         # How many re-solves one committed CATCH may spend re-aiming from later
         # fits (executor.resend_max_per_catch; 2 since 2026-09-18). 0 disables
         # re-aiming outright -- the A/B knob for a sitting: on 2026-09-18 16:16
@@ -1033,6 +1068,15 @@ class SkillNode(Node):
             Trigger, 'bb/reload')
         self._bb_throw_cli = self._client_node.create_client(
             BallButlerThrow, 'bb/throw_at_target')
+        # Never waited on (`_maybe_cancel_bb_throw` is fire-and-forget from
+        # the end paths, the tick included); its done-callback logs the line.
+        self._bb_cancel_cli = self._client_node.create_client(
+            Trigger, 'bb/cancel_throw')
+        # Fire-and-forget like the cancel (Unit C2): the bridge's automatic
+        # lane-latch recovery takes seconds, never waited on; its
+        # done-callback logs the ONE accepted/declined line.
+        self._lane_recovery_cli = self._client_node.create_client(
+            Trigger, 'recover_lane')
 
         self._announce_pub = self.create_publisher(
             ThrowAnnouncement, 'throw_announcements', 10)
@@ -1349,6 +1393,12 @@ class SkillNode(Node):
         return max(float(self.get_parameter(
             'catch_outward_authority_mm').value), 0.0) / 1000.0
 
+    def _catch_inward_authority_m(self) -> float:
+        """`catch_inward_authority_mm` in metres, floored at 0 (a magnitude
+        bound, like `catch_outward_authority_mm`)."""
+        return max(float(self.get_parameter(
+            'catch_inward_authority_mm').value), 0.0) / 1000.0
+
     def _catch_resend_max(self) -> int:
         """`catch_resend_max`, clamped to 0..5 with a WARN outside it -- a
         bound on a cost (solves per catch), never a policy, so an out-of-range
@@ -1555,6 +1605,12 @@ class SkillNode(Node):
         now = time.perf_counter()
         for kv in getattr(msg, 'values', ()):
             key = getattr(kv, 'key', '')
+            if key == 'lane_recovery':
+                self._lane_recovery = str(kv.value).strip() or 'idle'
+                continue
+            if key == 'lane_recovery_stage':
+                self._lane_recovery_stage = str(kv.value).strip()
+                continue
             if key == 'sched_hold_latched':
                 try:
                     self._sched_hold_latched = int(float(kv.value))
@@ -1571,6 +1627,66 @@ class SkillNode(Node):
                 self._sched_refused_rise_mono = now
             self._sched_refused = value
             self._sched_refused_mono = now
+        self._lane_latch_watch()
+
+    def _lane_latch_watch(self) -> None:
+        """T2 (Unit C2): one sample of the latch bit per `/link_status`.
+
+        Counts consecutive samples with the bit up; a latch with NO executor
+        running (go_home, GUI, a goal that already ended) is invisible to T1,
+        so after `_LANE_AUTO_SAMPLES` of them (~0.3 s at 10 Hz) ask the
+        bridge to recover it. The bit falling re-arms the once-per-episode
+        trigger. Never blocks (the request is `call_async`)."""
+        if self._sched_hold_latched != 1:
+            self._lane_latch_samples = 0
+            self._lane_auto_fired = False
+            return
+        self._lane_latch_samples += 1
+        if (self._lane_latch_samples >= _LANE_AUTO_SAMPLES
+                and self._executor is None):
+            self._request_lane_recovery('latch persisted %d samples with no '
+                                        'executor' % self._lane_latch_samples)
+
+    def _request_lane_recovery(self, why: str) -> bool:
+        """Ask the bridge to recover a latched lane -- at most ONCE per latch
+        episode (T1 and T2 share the flag). True when a request went out.
+
+        Service unavailable -> ONE error line and today's behaviour (hold
+        only). Never blocks: `call_async`, result logged by
+        `_on_lane_recovery_done`."""
+        with self._lane_auto_lock:
+            if self._lane_auto_fired or self._lane_recovery == 'in_progress':
+                return False
+            self._lane_auto_fired = True
+        if not self._lane_recovery_cli.service_is_ready():
+            if not self._lane_cli_unavail_logged:
+                self._lane_cli_unavail_logged = True
+                self.get_logger().error(
+                    'lane latched (%s) but recover_lane is unavailable -- '
+                    'hold only; DEACTIVATE then ACTIVATE (IDLE then '
+                    'TRAJECTORY in the GUI) to clear it' % why)
+            return False
+        future = self._lane_recovery_cli.call_async(Trigger.Request())
+        future.add_done_callback(
+            lambda fut, w=why: self._on_lane_recovery_done(fut, w))
+        return True
+
+    def _on_lane_recovery_done(self, future, why: str) -> None:
+        """The ONE line for a `_request_lane_recovery` call (one call site per
+        severity -- Foxy rclpy). `success` means the bridge ran (or declined)
+        the recovery; its stage lines are the bridge's own."""
+        try:
+            res = future.result()
+        except Exception as exc:                                  # noqa: BLE001
+            res = SimpleNamespace(success=False, message='call raised: %s' % (exc,))
+        if bool(getattr(res, 'success', False)):
+            self.get_logger().info(
+                'lane recovery (%s): %s' % (why, res.message))
+        else:
+            self.get_logger().error(
+                'lane recovery (%s) FAILED: %s -- fallback: DEACTIVATE then '
+                'ACTIVATE (IDLE then TRAJECTORY in the GUI)'
+                % (why, res.message))
 
     def _hand_lane_refused(self, now: float) -> bool:
         """Has the firmware refused a streamed lane (legs or hand -- the
@@ -1695,6 +1811,10 @@ class SkillNode(Node):
         fire."""
         token = str(getattr(msg, 'data', '')).split(' ', 1)[0]
         if token == proto.BallButlerCommandOutcome.OK.name:
+            return
+        if token == proto.BallButlerCommandOutcome.THROW_ABORTED_BY_HOST.name:
+            # Our OWN cancel (`_maybe_cancel_bb_throw`), sent because the
+            # attempt had already ended -- never a reason to end one.
             return
         retry_ctx = None
         with self._reload_lock:
@@ -2178,8 +2298,17 @@ class SkillNode(Node):
                 'END %s: trajectory/hold failed (%s)'
                 % (end_code, '' if resp is None else resp.message))
             return
-        self.get_logger().info(
-            'END %s: hold installed — %s' % (end_code, why))
+        if self._lane_recovery != 'idle':
+            self.get_logger().info(
+                'END %s: hold installed — %s (lane_recovery=%s)'
+                % (end_code, why, self._lane_recovery))
+        else:
+            self.get_logger().info(
+                'END %s: hold installed — %s' % (end_code, why))
+        if forced:
+            # T1: the lane-refused END has stopped the walk; ask the bridge
+            # to clear the latch (once per episode, fire-and-forget).
+            self._request_lane_recovery('END %s' % end_code)
 
     def _stop_with_rest(self, end_code: str, executor) -> bool:
         """Stop a pending release with a REST spliced into the running plan
@@ -2243,6 +2372,62 @@ class SkillNode(Node):
         return ''
 
     # ── the tick ────────────────────────────────────────────────────────
+
+    def _maybe_cancel_bb_throw(self, end_code: str) -> None:
+        """Cancel a Ball Butler throw this node dispatched whose release is
+        still ahead (R5 sitting 7 decision 5, 2026-10-13): an attempt ended
+        (lane latch) 0.5 s after a 6.8 s-lead `bb/throw_at_target`, and BB
+        threw at the frozen platform 6.8 s later because its countdown could
+        not be aborted. Called from EVERY end path -- `_end_attempt`,
+        `_on_tick`'s ended-executor branch (every tick until it retires,
+        hence the pop), `_stop_attempt` -- and from `_fire_reload_throw` when
+        the throw's own response lost the race to an end.
+
+        At most ONE cancel per dispatched throw (the record is popped under
+        `_bb_cancel_lock`). A release already in the past is not cancelled
+        (the ball has left, or BB refused and said so on `bb/throw_outcome`).
+        Fire-and-forget: the request goes out on `_client_node`'s own
+        executor thread and `_on_bb_cancel_done` logs the ONE result line,
+        so no end path (the 40 Hz tick included) ever blocks on it. BB drops
+        a throw only before its wind-up starts (~0.6 s before release); a
+        later cancel answers CANCEL_TOO_LATE and the ball comes."""
+        with self._bb_cancel_lock:
+            release_mono = self._bb_pending_release_mono
+            self._bb_pending_release_mono = None
+        if release_mono is None:
+            return
+        left_s = release_mono - time.perf_counter()
+        if left_s <= 0.0:
+            return
+        if not self._bb_cancel_cli.service_is_ready():
+            self.get_logger().error(
+                'END %s: Ball Butler throw still pending (release in %.2f s) '
+                'but bb/cancel_throw is unavailable -- the ball WILL come'
+                % (end_code, left_s))
+            return
+        future = self._bb_cancel_cli.call_async(Trigger.Request())
+        future.add_done_callback(
+            lambda fut, code=end_code, left=left_s:
+                self._on_bb_cancel_done(fut, code, left))
+
+    def _on_bb_cancel_done(self, future, end_code: str, left_s: float) -> None:
+        """The ONE line for a `_maybe_cancel_bb_throw` request (one call site
+        per severity -- Foxy rclpy). ``success`` is ball_butler_node's: the
+        cancel was SENT (or deferred to the goal's acceptance); BB's own
+        verdict is that node's next line."""
+        try:
+            res = future.result()
+        except Exception as exc:                                  # noqa: BLE001
+            res = SimpleNamespace(success=False, message='call raised: %s' % (exc,))
+        if bool(getattr(res, 'success', False)):
+            self.get_logger().info(
+                'END %s: Ball Butler throw cancel (release was %.2f s away): %s'
+                % (end_code, left_s, res.message))
+        else:
+            self.get_logger().error(
+                'END %s: Ball Butler throw cancel FAILED (release %.2f s '
+                'away) -- the ball may still come: %s'
+                % (end_code, left_s, res.message))
 
     def _end_attempt(self, end_code: str, message: str, *,
                      force_hold: bool = False) -> None:
@@ -2321,6 +2506,7 @@ class SkillNode(Node):
             if got_lock:
                 self._tick_lock.release()
         self._maybe_hold_pending_event(end_code)
+        self._maybe_cancel_bb_throw(end_code)
         if not executor_reports:
             severity, text = rp.end_line(
                 self._attempt_label or 'attempt', end_code,
@@ -2530,6 +2716,15 @@ class SkillNode(Node):
             ctx.deadline_mono = deadline_mono
 
         throw_resp = self._wait_future(self._bb_throw_cli.call_async(req))
+        # Record the pending release BEFORE any end path below can run: an
+        # accepted throw, or an unanswered one (it may still have executed --
+        # a cancel answered NOTHING_PENDING costs nothing). Not a refusal.
+        if throw_resp is None or bool(throw_resp.success):
+            pending_delay_s = (float(throw_resp.throw_delay_s)
+                               if throw_resp is not None else float(delay_s))
+            with self._bb_cancel_lock:
+                self._bb_pending_release_mono = (
+                    time.perf_counter() + pending_delay_s)
         if not self._still_current(ctx):
             # Overtaken while blocked: another path (a `sched_refused` bump
             # via `_check_reload_lane_refused`, a Stop, the timeout) already
@@ -2537,6 +2732,9 @@ class SkillNode(Node):
             # `_end_attempt` would write `_goal_end_code` a second time and
             # the Juggle result would lose the reason that actually stopped
             # the machine (2026-09-28 audit). The hold that path armed stays.
+            # That end ran its cancel BEFORE this throw was recorded, so the
+            # throw it overtook is cancelled here.
+            self._maybe_cancel_bb_throw('ENDED_DURING_BB_DISPATCH')
             return
         if throw_resp is None:
             self._end_attempt(
@@ -2648,6 +2846,7 @@ class SkillNode(Node):
             self._tick_lock.release()
         if stop_code is not None:
             self._maybe_hold_pending_event(stop_code, executor=stop_executor)
+            self._maybe_cancel_bb_throw(stop_code)
         self._maybe_signal_goal_done()
 
     def _frame_offset_mm(self):
@@ -2775,6 +2974,12 @@ class SkillNode(Node):
         if (self._sched_refused_mono <= 0.0
                 or (now - self._sched_refused_mono) >= _TRAJ_STATUS_STALE_S):
             return None
+        if self._lane_recovery == 'in_progress':
+            response.success = False
+            response.message = (
+                'refused: lane recovery in progress (stage %s) -- retry in a '
+                'few seconds' % (self._lane_recovery_stage or '?'))
+            return response
         latched = self._sched_hold_latched == 1
         rising = (self._sched_refused_rise_mono > 0.0
                   and (now - self._sched_refused_rise_mono)
@@ -2784,10 +2989,13 @@ class SkillNode(Node):
         response.success = False
         response.message = (
             'refused: the firmware is holding a LATCHED streamed lane (%s) -- '
-            'it clears only on a disarm/arm edge: put the robot in IDLE, then '
-            'back to TRAJECTORY, and start again'
+            'automatic recovery is pending (lane_recovery=%s); retry in a few '
+            'seconds%s'
             % ('sched_hold_latched set' if latched else
-               'sched_refused still rising'))
+               'sched_refused still rising', self._lane_recovery,
+               ' -- recovery FAILED: DEACTIVATE then ACTIVATE (IDLE then '
+               'TRAJECTORY in the GUI)' if self._lane_recovery == 'failed'
+               else ''))
         return response
 
     #: Pattern names the Juggle goal accepts — `schedule.Schedule.pattern`'s
@@ -3316,7 +3524,9 @@ class SkillNode(Node):
 
         learner_cfg = lr.LearnerConfig()
         learner = SimpleNamespace(
-            command=lambda x, y_d: memory.command(x, y_d, learner_cfg))
+            command=lambda x, y_d: memory.command(x, y_d, learner_cfg),
+            predict=lambda x, u, y_d: memory.predict(
+                x, u, learner_cfg, y_d=y_d))
         self._sched_refused_at_start = self._sched_refused
         self._force_hold = False
         self._hold_forced_code = ''
@@ -3329,6 +3539,7 @@ class SkillNode(Node):
             lateral_authority_m=float(self.get_parameter(
                 'learner_lateral_authority_mm').value) / 1000.0,
             catch_outward_authority_m=self._catch_outward_authority_m(),
+            catch_inward_authority_m=self._catch_inward_authority_m(),
             observer=self._ball_evidence, observations=self._observations,
             on_experience=self._bind_on_experience(memory),
             dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
@@ -3721,7 +3932,9 @@ class SkillNode(Node):
 
         learner_cfg = lr.LearnerConfig()
         learner = SimpleNamespace(
-            command=lambda x, y_d: memory.command(x, y_d, learner_cfg))
+            command=lambda x, y_d: memory.command(x, y_d, learner_cfg),
+            predict=lambda x, u, y_d: memory.predict(
+                x, u, learner_cfg, y_d=y_d))
 
         # A new schedule reuses small ball ids: drop any flight latch an
         # earlier (possibly early-ended) attempt left for them, so a catch
@@ -3745,6 +3958,7 @@ class SkillNode(Node):
             lateral_authority_m=float(self.get_parameter(
                 'learner_lateral_authority_mm').value) / 1000.0,
             catch_outward_authority_m=self._catch_outward_authority_m(),
+            catch_inward_authority_m=self._catch_inward_authority_m(),
             observer=self._ball_evidence, observations=self._observations,
             on_experience=self._bind_on_experience(memory),
             dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
@@ -4286,7 +4500,9 @@ class SkillNode(Node):
                 self._advance_correlation_locked(self._now_s())
             learner_cfg = lr.LearnerConfig()
             learner = SimpleNamespace(
-                command=lambda x, y_d: ctx.memory.command(x, y_d, learner_cfg))
+                command=lambda x, y_d: ctx.memory.command(x, y_d, learner_cfg),
+                predict=lambda x, u, y_d: ctx.memory.predict(
+                    x, u, learner_cfg, y_d=y_d))
             executor = SkillExecutor(
                 schedule, self._installer, tracker=self._tracker,
                 catch_aim_source=self._catch_aim_source(),
@@ -4296,6 +4512,7 @@ class SkillNode(Node):
                 lateral_authority_m=float(self.get_parameter(
                     'learner_lateral_authority_mm').value) / 1000.0,
                 catch_outward_authority_m=self._catch_outward_authority_m(),
+                catch_inward_authority_m=self._catch_inward_authority_m(),
                 observer=self._ball_evidence, observations=self._observations,
                 on_experience=self._bind_on_experience(ctx.memory),
                 dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
@@ -4424,7 +4641,9 @@ class SkillNode(Node):
 
         learner_cfg = lr.LearnerConfig()
         learner = SimpleNamespace(
-            command=lambda x, y_d: ctx.memory.command(x, y_d, learner_cfg))
+            command=lambda x, y_d: ctx.memory.command(x, y_d, learner_cfg),
+            predict=lambda x, u, y_d: ctx.memory.predict(
+                x, u, learner_cfg, y_d=y_d))
         executor = SkillExecutor(
             schedule, self._installer, tracker=self._tracker,
             catch_aim_source=self._catch_aim_source(),
@@ -4434,6 +4653,7 @@ class SkillNode(Node):
             lateral_authority_m=float(self.get_parameter(
                 'learner_lateral_authority_mm').value) / 1000.0,
             catch_outward_authority_m=self._catch_outward_authority_m(),
+            catch_inward_authority_m=self._catch_inward_authority_m(),
             observer=self._ball_evidence, observations=self._observations,
             on_experience=self._bind_on_experience(ctx.memory),
             dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
@@ -4584,7 +4804,9 @@ class SkillNode(Node):
 
         learner_cfg = lr.LearnerConfig()
         learner = SimpleNamespace(
-            command=lambda x, y_d: ctx.memory.command(x, y_d, learner_cfg))
+            command=lambda x, y_d: ctx.memory.command(x, y_d, learner_cfg),
+            predict=lambda x, u, y_d: ctx.memory.predict(
+                x, u, learner_cfg, y_d=y_d))
         executor = SkillExecutor(
             schedule, self._installer, tracker=self._tracker,
             catch_aim_source=self._catch_aim_source(),
@@ -4594,6 +4816,7 @@ class SkillNode(Node):
             lateral_authority_m=float(self.get_parameter(
                 'learner_lateral_authority_mm').value) / 1000.0,
             catch_outward_authority_m=self._catch_outward_authority_m(),
+            catch_inward_authority_m=self._catch_inward_authority_m(),
             observer=self._ball_evidence, observations=self._observations,
             on_experience=self._bind_on_experience(ctx.memory),
             dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
@@ -4757,10 +4980,11 @@ class SkillNode(Node):
                     was_reloading = self._reload_ctx is not None
                     self._reload_ctx = None
                 message = (
-                    'reload wait cancelled -- BB\'s own countdown cannot be '
-                    'aborted and the ball may still come; the platform is '
-                    'at rest under the aim point' if was_reloading else
-                    'no attempt was running')
+                    'reload wait cancelled -- BB\'s countdown cannot be '
+                    'aborted once its wind-up starts, so a still-pending '
+                    'throw is sent bb/cancel_throw (see the cancel line); the '
+                    'platform is at rest under the aim point' if was_reloading
+                    else 'no attempt was running')
         finally:
             if got_lock:
                 self._tick_lock.release()
@@ -4770,6 +4994,8 @@ class SkillNode(Node):
             # abort, called here outside the tick lock so a blocked
             # `trajectory/hold` round trip cannot stall ticking.
             self._maybe_hold_pending_event('STOPPED')
+        # Any stop, the executor-less reload/feed wait included.
+        self._maybe_cancel_bb_throw('STOPPED')
         self.get_logger().info(message)
         return SimpleNamespace(success=True, message=message)
 

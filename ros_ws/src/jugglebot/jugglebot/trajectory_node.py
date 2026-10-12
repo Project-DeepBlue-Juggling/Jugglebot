@@ -726,6 +726,15 @@ class TrajectoryNode(Node):
         # _on_control_mode), read on the emitter thread (_post_publish_planning); a
         # plain bool is GIL-atomic across the one-writer/one-reader split.
         self._guard_frozen = False
+        # Streamed-lane latch (Unit C2). The firmware group holds a LATCHED lane
+        # (/link_status sched_hold_latched=1) and/or the bridge is running its
+        # automatic /recover_lane (lane_recovery=in_progress). Both refuse every
+        # advancing command (a plan that keeps walking walks the guard residual while
+        # the legs never move) but NEVER freeze the installed descent, and
+        # reseed_from_measured stays open (it is the recovery's own step 1).
+        self._lane_latched = False
+        self._lane_recovery = 'idle'
+        self._lane_recovery_stage = ''
         self._current_mode = ''
         # ── Arming contract (A5, see ARMING_CONTRACT.md) ──────────
         # The wire's arming state, mirrored from /link_status 'mpc_active'.
@@ -1418,7 +1427,7 @@ class TrajectoryNode(Node):
         # chasing the latest SpaceMouse target and re-diverge u0 the instant a clear
         # released the latch. The installed descent itself advances u0 (that IS the
         # command-space collapse); it is the re-planning, not the emitter, that freezes.
-        if self._guard_frozen:
+        if self._guard_frozen or self._lane_frozen:
             return
         if self._pending_stop:
             self._retry_pending_stop(now)
@@ -1955,6 +1964,13 @@ class TrajectoryNode(Node):
         # has no way to know its frames are being dropped: a disarmed bridge
         # holds no :5557 subscription, so the drop is invisible end-to-end).
         self._wire_armed = self._kv_get(msg.values, 'mpc_active', '0') == '1'
+        # Unit C2 — lane latch / auto-recovery mirror (single writer: this callback).
+        self._lane_latched = self._kv_get(
+            msg.values, 'sched_hold_latched', '0').strip() == '1'
+        self._lane_recovery = self._kv_get(
+            msg.values, 'lane_recovery', 'idle').strip() or 'idle'
+        self._lane_recovery_stage = self._kv_get(
+            msg.values, 'lane_recovery_stage', '').strip()
         with self._plan_lock:
             streaming = self._streaming and self._seeded
         should_freeze = latched and streaming
@@ -2011,6 +2027,22 @@ class TrajectoryNode(Node):
             '(froze in place; see node log)')
         return response
 
+    @property
+    def _lane_frozen(self) -> bool:
+        """True while the streamed lane is latched or the bridge is recovering it."""
+        return self._lane_latched or self._lane_recovery == 'in_progress'
+
+    def _lane_frozen_msg(self) -> str:
+        """Refusal text for an advancing command during a lane latch ('' if none)."""
+        if self._lane_recovery == 'in_progress':
+            return ("refused: lane recovery in progress (stage "
+                    f"{self._lane_recovery_stage or '?'})")
+        if self._lane_latched:
+            return ("refused: the firmware is holding a latched streamed lane — "
+                    "auto-recovery pending; if lane_recovery=failed, DEACTIVATE "
+                    "then ACTIVATE (IDLE then TRAJECTORY in the GUI)")
+        return ''
+
     def _guard_frozen_msg(self) -> str:
         """Uniform reject text for an advancing command refused during a guard latch."""
         return ("Teensy guard latched (E-STOP) — command advancement is frozen at "
@@ -2037,6 +2069,11 @@ class TrajectoryNode(Node):
             return
         # FIX 1 — a latched guard freezes command advancement; drop fresh SpaceMouse
         # targets (WARN throttled) so u0 does not chase them onto suppressed legs.
+        if self._lane_frozen:
+            self.get_logger().warning(
+                "streamed lane latched / recovering — ignoring SpaceMouse target "
+                "(holding)", throttle_duration_sec=1.0)
+            return
         if self._guard_frozen:
             self.get_logger().warning(
                 "Teensy guard latched — ignoring SpaceMouse target (holding at "
@@ -2811,6 +2848,14 @@ class TrajectoryNode(Node):
                 'in a follower mode the input stream would supersede this within '
                 'one tick — exit the mode (graceful stop) instead')
             return response
+        if self._lane_recovery == 'in_progress':
+            # Only while recovering: a hold would replace the converging descent and
+            # the bridge's step 1 would time out. While merely latched a hold stays
+            # allowed -- it is how skill_node stops the walk (T1).
+            response.success = False
+            response.message = self._lane_frozen_msg()
+            self.get_logger().error(f"hold refused: {response.message}")
+            return response
         if not self._seeded:
             response.success = False
             response.message = 'not streaming/seeded — cannot hold'
@@ -2864,6 +2909,11 @@ class TrajectoryNode(Node):
             response.success = False
             response.message = self._guard_frozen_msg()
             self.get_logger().error(f"go_home refused: {response.message}")
+            return response
+        if self._lane_frozen:
+            response.success = False
+            response.message = self._lane_frozen_msg()
+            self.get_logger().error(f"go_home refused (lane): {response.message}")
             return response
         if self._current_mode in _FOLLOWER_MODES:
             response.success = False
@@ -2990,6 +3040,13 @@ class TrajectoryNode(Node):
             response.accepted = False
             response.code = _GUARD_LATCHED
             response.message = self._guard_frozen_msg()
+            self._last_rejection = response.message
+            self.get_logger().error(response.message)
+            return response
+        if self._lane_frozen:
+            response.accepted = False
+            response.code = _GUARD_LATCHED
+            response.message = self._lane_frozen_msg()
             self._last_rejection = response.message
             self.get_logger().error(response.message)
             return response
@@ -3481,6 +3538,13 @@ class TrajectoryNode(Node):
             response.accepted = False
             response.code = _GUARD_LATCHED
             response.message = self._guard_frozen_msg()
+            self._last_rejection = response.message
+            self.get_logger().error(response.message)
+            return response
+        if self._lane_frozen:
+            response.accepted = False
+            response.code = _GUARD_LATCHED
+            response.message = self._lane_frozen_msg()
             self._last_rejection = response.message
             self.get_logger().error(response.message)
             return response
@@ -4257,6 +4321,9 @@ class TrajectoryNode(Node):
         if self._guard_frozen:
             return self._reject_segment(response, _GUARD_LATCHED,
                                         self._guard_frozen_msg(), t_wall)
+        if self._lane_frozen:
+            return self._reject_segment(response, _GUARD_LATCHED,
+                                        self._lane_frozen_msg(), t_wall)
         if self._current_mode != _MOVE_MODE:
             return self._reject_segment(
                 response, feas.WRONG_MODE,

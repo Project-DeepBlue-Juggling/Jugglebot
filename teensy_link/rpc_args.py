@@ -59,7 +59,7 @@ __all__ = [
     "encode_sdo_read", "encode_sdo_write", "encode_state_write",
     "decode_hand_cmd_echo",
     "encode_bb_throw", "ResultBbThrow", "decode_bb_throw_result", "encode_bb_reload", "encode_bb_reset",
-    "encode_bb_calibrate_loc",
+    "encode_bb_calibrate_loc", "encode_bb_cancel",
     "decode_time_of_day_result", "ResultAxisVersions",
     "ResultBbAxisVersions", "decode_bb_axis_versions_result", "BB_FIRST_NODE",
     "encode_axis_versions_result", "decode_axis_versions_result",
@@ -557,7 +557,13 @@ FW_OP_INFO = 0x05
 #: ids 273 / 272, EndpointId::odrive_s1_0_6_11) and zeroes that node's
 #: set_input_pos vel_ff/tor_ff while a reply mismatches bb_hand_tor/bb_hand_vel
 #: (USB-serial warning only; no wire change on the BB<->bridge link).
-BB_FW_VERSION_EXPECTED = 8
+#: 9 (2026-10-13) = throw CANCEL: CANCEL_CMD (CAN1 0x7D9, payloadless) aborts a
+#: queued/armed throw whose first wind-up frame has not been sent (ball
+#: retained, back to IDLE; the throw's terminal CMD_RESULT is
+#: THROW_ABORTED_BY_HOST) and answers CMD_RESULT command_type CANCEL (OK /
+#: CANCEL_TOO_LATE / CANCEL_NOTHING_PENDING). Additive: an FW 8 board ignores
+#: the id (no CMD_RESULT), so the host's cancel times out instead of answering.
+BB_FW_VERSION_EXPECTED = 9
 
 
 def decode_platform_fw_reply(data: bytes):
@@ -834,7 +840,11 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # (ERR_RELEASE_PAST / _TOO_SOON / _TOO_FAR) and returns ResultBbThrow.lead_us.
 # A WIRE change: PROTOCOL_VERSION 9 -> 10, so an FW 28 board is DARK to this
 # host (and vice versa) until the lockstep flash.
-EXPECTED_BRIDGE_FW_VERSION = 29
+# 29 -> 30 (2026-10-13): BB throw cancel. One ADDITIVE RpcMethod BB_CANCEL
+# (0x44, payloadless, presence-gated like BB_RESET) sends CANCEL_CMD 0x7D9 on
+# CAN1. No wire change to any existing message; PROTOCOL_VERSION stays 10; an
+# FW 29 board answers BB_CANCEL with ERR_UNKNOWN_METHOD.
+EXPECTED_BRIDGE_FW_VERSION = 30
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────
@@ -889,6 +899,13 @@ def encode_bb_calibrate_loc() -> bytes:
     return b""
 
 
+def encode_bb_cancel() -> bytes:
+    """BB_CANCEL: payloadless throw cancel (bridge FW 30, BB FW 9). The RPC's OK
+    means the frame reached CAN1; BB's verdict arrives on CMD_RESULT
+    (command_type CANCEL)."""
+    return b""
+
+
 # Method → arg-dataclass association (introspection / tests).
 METHOD = {
     RpcMethod.SET_AXIS_STATE: ArgAxisState,
@@ -918,7 +935,7 @@ METHOD = {
     RpcMethod.BB_FW_DATA: ArgPlatformFwData,
     RpcMethod.BB_FW_VERIFY: ArgPlatformFwVerify,
     RpcMethod.HAND_MOVE_TO: ArgHandMoveTo,         # FW 26, deferred reply
-    # BB_RELOAD/RESET/CALIBRATE_LOC are payloadless — no entry (matches NOP).
+    # BB_RELOAD/RESET/CALIBRATE_LOC/CANCEL are payloadless — no entry (matches NOP).
     # TILT_READ/STATE_READ are payloadless too (reply arrives as a PLATFORM_FRAME).
     # PLATFORM_FW_COMMIT is payloadless too — no entry (matches NOP).
     # BB_FW_COMMIT / BB_FW_INFO are payloadless too — no entry.

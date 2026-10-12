@@ -839,3 +839,159 @@ def test_robot_state_bb_fault_visible_but_not_leg_fatal():
         assert msg.has_undervoltage is False
     finally:
         _teardown(teensy, client, node)
+
+
+# ── bb/cancel (BB_CANCEL, bridge FW 30 / BB FW 9, 2026-10-13) ────────────────
+
+def _cancel_handler(teensy, box, outcome, detail1=0, also_throw=False):
+    """BB_CANCEL auto-responder: records the args and, like BB FW 9, relays
+    the throw's own THROW_ABORTED_BY_HOST (when it aborted one) and then the
+    cancel's CMD_RESULT (command_type CANCEL)."""
+    def handler(req_id, args):
+        box['args'] = args
+        if also_throw:
+            _inject_cmd_result(
+                teensy, cmd_type=int(BallButlerCommandType.THROW),
+                outcome=int(BallButlerCommandOutcome.THROW_ABORTED_BY_HOST),
+                detail0=-1, detail1=detail1)
+        _inject_cmd_result(
+            teensy, cmd_type=int(BallButlerCommandType.CANCEL),
+            outcome=int(outcome), detail0=-1, detail1=detail1)
+        return (int(RpcStatus.OK), b"")
+    teensy.on_rpc(int(RpcMethod.BB_CANCEL), handler)
+
+
+def test_bb_cancel_sends_payloadless_rpc_and_reports_cancelled():
+    teensy, client, node = _node()
+    try:
+        _send_heartbeat(teensy)
+        assert _wait_until(lambda: node._latest_heartbeat is not None)
+        box = {}
+        _cancel_handler(teensy, box, BallButlerCommandOutcome.OK, detail1=4200)
+        res = node._svc_bb_cancel(Trigger.Request(), Trigger.Response())
+        assert box['args'] == b""
+        assert res.success is True
+        assert res.message.startswith('CANCELLED:') and '4200 ms' in res.message
+        assert node._bb_cancel_waiting is False
+    finally:
+        _teardown(teensy, client, node)
+
+
+@pytest.mark.parametrize('outcome, ok, token', [
+    (BallButlerCommandOutcome.CANCEL_NOTHING_PENDING, True, 'CANCEL_NOTHING_PENDING'),
+    (BallButlerCommandOutcome.CANCEL_TOO_LATE, False, 'CANCEL_TOO_LATE'),
+])
+def test_bb_cancel_verdict_tokens(outcome, ok, token):
+    """success answers "is BB now guaranteed not to throw?": nothing pending
+    is a yes, a wind-up already started is a NO."""
+    teensy, client, node = _node()
+    try:
+        _send_heartbeat(teensy)
+        assert _wait_until(lambda: node._latest_heartbeat is not None)
+        _cancel_handler(teensy, {}, outcome, detail1=300)
+        res = node._svc_bb_cancel(Trigger.Request(), Trigger.Response())
+        assert res.success is ok
+        assert res.message.startswith(token)
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_bb_cancel_without_cmd_result_is_a_named_failure():
+    """BB FW <= 8 ignores 0x7D9: the RPC acks (frame on CAN1) but no CANCEL
+    CMD_RESULT comes — a bounded wait, then NO_CANCEL_RESULT, never a hang."""
+    teensy, client, node = _node()
+    try:
+        _send_heartbeat(teensy)
+        assert _wait_until(lambda: node._latest_heartbeat is not None)
+        _capture(teensy, RpcMethod.BB_CANCEL)
+        node._BB_CANCEL_RESULT_TIMEOUT_S = 0.05
+        res = node._svc_bb_cancel(Trigger.Request(), Trigger.Response())
+        assert res.success is False
+        assert res.message.startswith('NO_CANCEL_RESULT')
+        assert node._bb_cancel_waiting is False
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_bb_cancel_old_bridge_unknown_method_is_failure():
+    """An FW <= 29 bridge answers BB_CANCEL with ERR_UNKNOWN_METHOD."""
+    teensy, client, node = _node()
+    try:
+        _send_heartbeat(teensy)
+        assert _wait_until(lambda: node._latest_heartbeat is not None)
+        _capture(teensy, RpcMethod.BB_CANCEL,
+                 status=int(RpcStatus.ERR_UNKNOWN_METHOD))
+        res = node._svc_bb_cancel(Trigger.Request(), Trigger.Response())
+        assert res.success is False
+        assert 'ERR_UNKNOWN_METHOD' in res.message
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_bb_cancel_before_dispatch_stops_the_throw_on_this_node():
+    """A cancel between goal acceptance and the BB_THROW dispatch must win:
+    nothing reaches the bridge for either method, and the goal ends
+    THROW_ABORTED_BY_HOST (sending BB_CANCEL first would be answered
+    NOTHING_PENDING and the throw would follow)."""
+    teensy, client, node = _node()
+    try:
+        _send_heartbeat(teensy)
+        assert _wait_until(lambda: node._latest_heartbeat is not None)
+        throw_box = _capture(teensy, RpcMethod.BB_THROW)
+        cancel_box = _capture(teensy, RpcMethod.BB_CANCEL)
+        goal = _throw_goal()
+        assert node._bb_throw_goal(goal) == GoalResponse.ACCEPT
+        res = node._svc_bb_cancel(Trigger.Request(), Trigger.Response())
+        assert res.success is True
+        assert res.message.startswith('CANCELLED_BEFORE_DISPATCH')
+        handle = _FakeGoalHandle(goal)
+        result = node._bb_throw_execute(handle)
+        assert result.success is False
+        assert result.outcome == int(
+            BallButlerCommandOutcome.THROW_ABORTED_BY_HOST)
+        assert result.message.startswith('THROW_ABORTED_BY_HOST')
+        assert handle.aborted is True
+        assert throw_box == {} and cancel_box == {}
+        assert node._bb_throw_active is False
+        # The next goal starts clean (the flag is per goal).
+        assert node._bb_throw_goal(_throw_goal()) == GoalResponse.ACCEPT
+        assert node._bb_cancel_requested is False
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_bb_cancel_aborts_an_outstanding_throw_end_to_end():
+    """The sitting-7 case: a throw is dispatched and awaiting BB's terminal
+    CMD_RESULT; bb/cancel sends BB_CANCEL, BB (FW 9) answers the throw with
+    THROW_ABORTED_BY_HOST and the cancel with OK — the throw goal ends with
+    that code and the service reports CANCELLED."""
+    import threading
+    teensy, client, node = _node()
+    try:
+        _send_heartbeat(teensy)
+        assert _wait_until(lambda: node._latest_heartbeat is not None)
+        _capture(teensy, RpcMethod.BB_THROW,
+                 result=p.ResultBbThrow(lead_us=6_800_000).pack())
+        _cancel_handler(teensy, {}, BallButlerCommandOutcome.OK,
+                        detail1=6300, also_throw=True)
+        goal = _throw_goal(release_wall_s=time.time() + 6.8)
+        assert node._bb_throw_goal(goal) == GoalResponse.ACCEPT
+        handle = _FakeGoalHandle(goal)
+        out = {}
+        t = threading.Thread(
+            target=lambda: out.setdefault('r', node._bb_throw_execute(handle)))
+        t.start()
+        assert _wait_until(lambda: node._bb_throw_dispatched
+                           and node._bb_throw_rpc_done.is_set())
+        res = node._svc_bb_cancel(Trigger.Request(), Trigger.Response())
+        t.join(timeout=5.0)
+        assert not t.is_alive()
+        assert res.success is True and res.message.startswith('CANCELLED:')
+        result = out['r']
+        assert result.success is False
+        assert result.outcome == int(
+            BallButlerCommandOutcome.THROW_ABORTED_BY_HOST)
+        assert result.message.startswith('THROW_ABORTED_BY_HOST')
+        assert handle.aborted is True
+    finally:
+        _teardown(teensy, client, node)

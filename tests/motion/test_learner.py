@@ -710,3 +710,105 @@ def test_a_pre_apex_flight_time_memory_is_REFUSED_not_reinterpreted(tmp_path):
                       '1789540417.3557081,0,True\n')
     with pytest.raises(ValueError, match='quarantine'):
         mem.Memory(str(path))
+
+
+# ===========================================================================
+# learner.predict / Memory.predict -- the FORWARD model (2026-10-13, wave 2
+# unit A): the catch prior is where the plant lands from the command that was
+# actually SENT (clipped), not the target y_d.
+# ===========================================================================
+
+_P1_X = np.array([-0.0625, 0.0, 0.0, 0.0])
+
+
+def _biased_rows(n, u_rows, bias=(0.020, 0.0, 0.0), seed=0, noise=0.0):
+    """``n`` rows at P1 whose landing is the command plus a constant ``bias``
+    (m), oldest-first; ``u_rows(i)`` gives row ``i``'s command."""
+    rng = np.random.default_rng(seed)
+    X = np.tile(_P1_X, (n, 1))
+    U = np.array([u_rows(i) for i in range(n)], dtype=float)
+    Y = U + np.asarray(bias) + noise * rng.standard_normal((n, 3))
+    return X, U, Y
+
+
+def test_predict_on_an_empty_memory_is_the_identity_prior():
+    u = np.array([0.004, -0.002, 0.87])
+    y_hat = lr.predict(_P1_X, u, np.zeros((0, 4)), np.zeros((0, 3)),
+                       np.zeros((0, 3)))
+    np.testing.assert_array_equal(y_hat, u)
+    y_hat[0] = 99.0                                   # a COPY
+    assert u[0] == 0.004
+
+
+def test_predict_below_k_min_support_is_the_identity_prior_and_never_raises():
+    cfg = lr.LearnerConfig()
+    X, U, Y = _biased_rows(cfg.k_min - 1, lambda i: [0.0, 0.0, 0.87])
+    u = np.array([0.0, 0.0, 0.87])
+    np.testing.assert_array_equal(lr.predict(_P1_X, u, X, U, Y, cfg), u)
+    # Rows present but all at another site: outside the gate -> identity.
+    X2, U2, Y2 = _biased_rows(8, lambda i: [0.0, 0.0, 0.87])
+    X2[:, 0] = +0.0625
+    np.testing.assert_array_equal(lr.predict(_P1_X, u, X2, U2, Y2, cfg), u)
+
+
+def test_predict_a_constant_x_bias_lands_the_command_plus_the_bias():
+    """Spread commands, every landing +20 mm in x: the forward model says
+    ``u + 20 mm`` for a command inside the spread."""
+    X, U, Y = _biased_rows(
+        16, lambda i: [0.001 * (i % 5 - 2), 0.001 * (i % 3 - 1),
+                       0.87 + 0.002 * (i % 4 - 1.5)])
+    u = np.array([0.001, 0.0, 0.87])
+    y_hat = lr.predict(_P1_X, u, X, U, Y, y_d=np.array([0.0, 0.0, 0.95]))
+    np.testing.assert_allclose(y_hat, u + np.array([0.020, 0.0, 0.0]),
+                               atol=5e-4)
+
+
+def test_predict_a_pinned_command_predicts_the_pinned_landing_not_y_d():
+    """Sitting 7's P1 shape: the learner wants -24 mm but the box pins the
+    lateral command at its -4 mm edge, so every row has ``u_x = -4 mm`` and
+    the ball lands +20 mm beyond it. The forward model predicts the PINNED
+    landing (+16 mm), which is what the catch must aim at -- not y_d (0)."""
+    X, U, Y = _biased_rows(16, lambda i: [-0.004, 0.0, 0.871])
+    y_d = np.array([0.0, 0.0, 0.95])
+    Y[:, 2] = 0.95                               # the apex is learned
+    u = np.array([-0.004, 0.0, 0.871])
+    y_hat = lr.predict(_P1_X, u, X, U, Y, y_d=y_d)
+    np.testing.assert_allclose(y_hat, [0.016, 0.0, 0.95], atol=5e-4)
+    assert abs(y_hat[0] - y_d[0]) > 0.015
+    # The command the learner WANTS (unclipped) is well beyond the pin.
+    u_want = lr.command(_P1_X, y_d, X, U, Y)
+    assert u_want[0] < -0.010
+
+
+def test_predict_is_the_forward_half_of_the_commands_own_fit():
+    """With a well-spread noisy memory, ``predict`` at the learner's own
+    (unclipped) command lands close to the target it was solving for --
+    the two are the same local model (eq. 21's ridge leaves a small gap)."""
+    X, U, Y = _biased_rows(
+        16, lambda i: [0.003 * (i % 5 - 2), 0.003 * (i % 3 - 1),
+                       0.87 + 0.01 * (i % 4 - 1.5)],
+        bias=(0.012, -0.006, 0.08), seed=7, noise=0.002)
+    y_d = np.array([0.0, 0.0, 0.95])
+    u = lr.command(_P1_X, y_d, X, U, Y)
+    y_hat = lr.predict(_P1_X, u, X, U, Y, y_d=y_d)
+    np.testing.assert_allclose(y_hat, y_d, atol=0.006)
+
+
+def test_predict_rejects_a_non_finite_command():
+    with pytest.raises(ValueError, match='u'):
+        lr.predict(_P1_X, [np.nan, 0.0, 0.9], np.zeros((0, 4)),
+                   np.zeros((0, 3)), np.zeros((0, 3)))
+
+
+def test_memory_predict_delegates_to_learner(tmp_path):
+    m = mem.Memory(str(tmp_path / 'plant4' / 'memory.csv'))
+    X, U, Y = _biased_rows(6, lambda i: [0.001 * i, 0.0, 0.87 + 0.001 * i])
+    for i in range(6):
+        m.append(mem.Experience(x=X[i], u=U[i], y=Y[i],
+                                t_abs_s=1_700_000_000.0 + i, ball_id=0,
+                                caught=True))
+    u = np.array([0.002, 0.0, 0.872])
+    y_d = np.array([0.0, 0.0, 0.89])
+    np.testing.assert_array_equal(
+        m.predict(_P1_X, u, y_d=y_d),
+        lr.predict(_P1_X, u, *m.arrays(), lr.LearnerConfig(), y_d=y_d))

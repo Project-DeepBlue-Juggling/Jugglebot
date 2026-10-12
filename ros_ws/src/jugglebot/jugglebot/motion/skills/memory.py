@@ -299,3 +299,12 @@ class Memory:
         if cfg is None:
             cfg = lr.LearnerConfig()
         return lr.command(x, y_d, self._X, self._U, self._Y, cfg)
+
+    def predict(self, x, u, cfg: lr.LearnerConfig = None,
+                y_d=None) -> np.ndarray:
+        """``learner.predict`` over this memory's current arrays: the landing
+        (xy offset, apex; SI) the plant is expected to deliver for command
+        ``u`` from state ``x`` -- ``u`` itself below the learner's support."""
+        if cfg is None:
+            cfg = lr.LearnerConfig()
+        return lr.predict(x, u, self._X, self._U, self._Y, cfg, y_d=y_d)

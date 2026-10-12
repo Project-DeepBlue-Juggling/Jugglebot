@@ -79,6 +79,7 @@ namespace RpcMethod {
   constexpr uint16_t BB_RELOAD = 0x0041u;  // Ball Butler: send RELOAD_CMD on CAN1 (no payload)
   constexpr uint16_t BB_RESET = 0x0042u;  // Ball Butler: send RESET_CMD on CAN1 (no payload)
   constexpr uint16_t BB_CALIBRATE_LOC = 0x0043u;  // Ball Butler: send CALIBRATE_LOC_CMD on CAN1 (no payload)
+  constexpr uint16_t BB_CANCEL = 0x0044u;  // Ball Butler: send CANCEL_CMD on CAN1 (no payload) — abort a throw that has not started its wind-up
   constexpr uint16_t GET_AXIS_VERSIONS = 0x0050u;  // Pull cached raw Get_Version bytes + received bitmask
   constexpr uint16_t TILT_READ = 0x0051u;  // Relay: read Platform-Teensy inclinometer tilt
   constexpr uint16_t STATE_READ = 0x0052u;  // Relay: read Platform-Teensy RobotState (is_homed/level/pose)
