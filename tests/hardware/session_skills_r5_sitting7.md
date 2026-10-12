@@ -33,18 +33,33 @@ at the P2 catch of Ball 1 (238-258k > 200k) + 1 `ABORTED_BB_THROW_TIMEOUT`. Caus
 hop now borrows the learner's P1 column correction read-only). Re-fly § 4 (rows 25-28) on the new build; §§ 2-3 passed on the first attempt and need only the row-4 hash check. The
 Row 4 carries the re-swept box hash.
 
-**Operator runs every motion command; Claude never does.** No firmware change expected this
-sitting unless the fix touches the bridge.
+**SECOND RE-FLY NOTE (2026-10-12; first re-fly 2026-10-11 evening, bag `2026-10-11_22-15-28`: two-ball columns to 9
+throws).** What changed since, and what to watch (logbook entries dated 2026-10-12):
+- **Ball Butler's release time is absolute end to end** (bridge **FW 29, PROTOCOL_VERSION 10**, flashed 2026-10-12): Jetson
+  latency no longer moves the release. Expect the feeds to arrive EARLY by the mean dispatch latency (<= ~50 ms, unmeasured)
+  until `BB_RELEASE_PUSH_LAG_S` is re-centred from the new per-throw line: `grep 'bb/throw C1:' <launch.log>`. Run §§ 2-3
+  first; if fed catches meet the ball early or high, stop and send Claude the launch.log path. A `REJECTED_BB(ERR_RELEASE_*)`
+  on every throw means the bridge lost its time sync.
+- **Learner:** the release offset no longer partitions memory, and thin support falls back on the site's residual, not
+  "apex = command" (sitting 7b's 0.891/0.901 outliers replay to 0.874).
+- **Outward catch re-aims capped at 10 mm** (`catch_outward_authority_mm`, inward stays 20); look for `OUTWARD side` in
+  AIM-LATERAL-CLAMPED lines. `:=5` is the conservative launch override.
+- **New log lines** `CATCH-EVIDENCE-ABSTAIN` / `CATCH-EVIDENCE-BLIND`: a missed catch that does not end the pattern now
+  says why.
+- **GUI:** the juggle panel pre-fills apex/separation per pattern; restart `jugglebot-gui.service` and hard-reload first.
+- Leg current stays 15 A (owner, 2026-10-12).
+
+**Operator runs every motion command; Claude never does.** The bridge was flashed to FW 29 before this re-fly (2026-10-12).
 
 ## 0. Pre-sitting (no ROS, any time)
 
 | # | Step | Expect |
 |---|---|---|
 | 1 | `cd ~/Desktop/Jugglebot-skills && git fetch && git status -sb && git log --oneline -1` | On `skill-stack`, in sync, at or after the commit that added this sheet. |
-| 2 | `cd ros_ws && colcon build --packages-select jugglebot && source install/setup.bash` | Done by Claude after the commit; repeat only if HEAD moved. |
-| 3 | FW check: can-bridge should answer FW 28 (`EXPECTED_BRIDGE_FW_VERSION = 28`, `teensy_link/rpc_args.py:829`; flashed over USB 2026-10-10 00:01, logbook `2026-10-09-bb-stamped-yaw-100hz.md`) — up from FW 27 at sitting 6. | `BRIDGE_FW_CHECK: OK — can-bridge v28 [install_skew=0]` at launch (row 8). A v27 answer is reported as a skew, not refused — flag it, don't stop on it alone. |
+| 2 | `cd ros_ws && colcon build --packages-select jugglebot_interfaces jugglebot && source install/setup.bash` | Done by Claude after the commit; repeat only if HEAD moved. **Both packages** since 2026-10-12 (the BB throw action goal changed; an old install gets every throw refused "Throw arg encode failed"). |
+| 3 | FW check: can-bridge should answer **FW 29 / PROTOCOL_VERSION 10** (`EXPECTED_BRIDGE_FW_VERSION = 29`, `teensy_link/rpc_args.py`; flashed 2026-10-12, logbook `2026-10-12-skill-stack-r5-bb-absolute-release-time.md`). A protocol-9 host or the MAIN checkout (proto 6) is dark against this board. | `BRIDGE_FW_CHECK: OK — can-bridge v29` at launch (row 10). A link that never comes up = protocol mismatch: check the branch and the colcon build. |
 | 4 | `grep -n 'gate_hash\|swept_at' config/generated/admissible_box.yaml` | `gate_hash: 5072c89d4ddc` (was `f974f9463a75`), `swept_at: '2026-10-11'` — re-swept for the hop-command change (`executor.py` and `feasibility.py` are gated); the fed-catch re-sweep was content-identical to the 2026-10-09 box (`1cd76c2d3c4a`, `01b6cc69`) — this one (S10b) is content-identical too. The columns apex ceiling stays 1.047 m at the 830 plane. |
-| 5 | `ls temp/learn/jugglebot/memory.csv.catch_plane_migrated && wc -l temp/learn/jugglebot/memory.csv` | Migration marker present (from the 930-plane sitting; rows are release-relative so the 830 reversion needed no second migration per `4757e6b9`'s message). **408 rows + header** (up from 390 at sitting 6 — verified 2026-10-11). Keep `plant_id jugglebot`. |
+| 5 | `ls temp/learn/jugglebot/memory.csv.catch_plane_migrated && wc -l temp/learn/jugglebot/memory.csv` | Migration marker present (from the 930-plane sitting; rows are release-relative so the 830 reversion needed no second migration per `4757e6b9`'s message). **506 rows + header** (408 before the first attempt; grown by sittings 7 and 7b — verified 2026-10-12). No migration for the 2026-10-12 learner change (state and CSV format unchanged). Keep `plant_id jugglebot`. |
 | 6 | Ball Butler calibration spot check: the owner verified it 2026-10-11 by catching-cone successes (no logbook entry yet for that specific check — the latest *committed* calibration state is `01b6cc69` 2026-10-09, hand offset `s` re-fit, and the `bb-yaw-gauge-repin`/`bb-base-frame` chain through 2026-10-10, `df5bf161`/`a5653e99`). Confirm BB is powered, homed, and the GUI's BB ghost-dot overlay tracks a real throw before trusting any fed-feed row. | BB tracks; no `BB_STALE`/estimate-fault in the GUI panel. |
 | 7 | `./run_tests.sh --full` (required this sitting — any change under `controller/` or `sim/`, and this is a hardware sitting) | Green, or a RED read against `git status`/`git stash list` per the nightly-vs-working-tree rule. Cite (date, command, result). |
 | 8 | `tools/nightly_ticker.sh check --who "sitting 7"` | `CLAIMED GREEN`, or a `LOWERED …` line only (read nothing further if lowered), or a `RED` you have read and attributed. |
@@ -54,7 +69,7 @@ sitting unless the fix touches the bridge.
 | # | Step | Expect |
 |---|---|---|
 | 9 | Launch, GUI up, bag recording. `level` FIRST. | `/gravity_offset` published. |
-| 10 | Read the bridge's startup lines | `BRIDGE_FW_CHECK: OK — can-bridge v28`. |
+| 10 | Read the bridge's startup lines | `BRIDGE_FW_CHECK: OK — can-bridge v29`. |
 | 11 | `ros2 param set /trajectory_node level_trim_deg "[0.0945, 0.3678]"` (carried over from sitting 6; `level_trim_deg` still declared in `trajectory_node.py`) | Trim logged once. |
 | 12 | Read the limits back without changing them: `ros2 service call /trajectory/set_limits jugglebot_interfaces/srv/SetTrajectoryLimits "{leg_vel_limit_mmps: 0.0, leg_acc_limit_mmps2: 0.0, leg_jerk_limit_mmps3: 0.0}"` | `applied_*` 350 / 5000 / 200000. |
 | 13 | GUI: confirm leg current and ODrive FET-temperature telemetry are visible for legs 1/2 before any motion (the 15 A clamp and thermal watch below depend on seeing these live, not reconstructed from a bag afterward). | Current and temp panels populated at rest. |

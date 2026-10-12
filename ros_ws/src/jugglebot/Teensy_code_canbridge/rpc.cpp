@@ -9,6 +9,7 @@
 #include "odrive_protocol.h"
 #include "ball_butler_protocol.h"
 #include "ball_butler_state.h"
+#include "time_base.h"          // now_wall_us() — the BB_THROW release-lead gate
 #include "can_buses.h"
 #include "axis_state.h"   // commanded-mode / shipped-limit record
 #include "fault_machine.h"
@@ -554,11 +555,33 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
       // Range-check BEFORE building the frame — refuses a malformed throw
       // before CAN1 sees a byte. Mirrors
       // ball_butler.py:98-105 ValueError raises.
-      if (!BallButler::throw_args_valid(a.yaw_rad, a.pitch_rad,
-                                        a.speed_mps, a.delay_s))
+      if (!BallButler::throw_args_valid(a.yaw_rad, a.pitch_rad, a.speed_mps))
         return RpcStatus::ERR_BAD_ARGS;
+      // Aim/track (speed 0): BB routes it to requestTracking and ignores the
+      // time, so the bridge stamps its own now (byte-identical to the FW ≤ 28
+      // delay-0 aim) — the lead gate is for throws only.
+      const uint64_t now_us = now_wall_us();
+      if (a.speed_mps == 0.0f)
+        return send_bb_frame(BallButler::encode_throw(
+            a.yaw_rad, a.pitch_rad, 0.0f, now_us));
+      // A throw carries its ABSOLUTE release instant (FW 29). Refuse — never
+      // re-time — one that is gone, too close for BB, or past BB's 16-bit
+      // epoch-ms window; nothing reaches CAN1 on a refusal. The lead rides
+      // back in ResultBbThrow (on the refusals too) for the host's C1 log.
+      int32_t lead_us = 0;   // a local: a packed member cannot bind to int32_t&
+      const BallButler::ReleaseVerdict v =
+          BallButler::check_release(a.release_wall_us, now_us, lead_us);
+      JbUdp::RpcArgs::ResultBbThrow r{};
+      r.lead_us = lead_us;
+      memcpy(result, &r, sizeof(r)); res_len = sizeof(r);
+      switch (v) {
+        case BallButler::ReleaseVerdict::PAST:     return RpcStatus::ERR_RELEASE_PAST;
+        case BallButler::ReleaseVerdict::TOO_SOON: return RpcStatus::ERR_RELEASE_TOO_SOON;
+        case BallButler::ReleaseVerdict::TOO_FAR:  return RpcStatus::ERR_RELEASE_TOO_FAR;
+        case BallButler::ReleaseVerdict::OK:       break;
+      }
       return send_bb_frame(BallButler::encode_throw(
-          a.yaw_rad, a.pitch_rad, a.speed_mps, a.delay_s));
+          a.yaw_rad, a.pitch_rad, a.speed_mps, a.release_wall_us));
     }
     case RpcMethod::BB_RELOAD:
       return send_bb_frame(BallButler::encode_reload());

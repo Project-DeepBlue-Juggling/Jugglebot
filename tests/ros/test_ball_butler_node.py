@@ -129,15 +129,22 @@ class TestSuccessPath:
         assert bb_goal.yaw_angle_rad == pytest.approx(res.yaw_rad)
         assert bb_goal.pitch_angle_rad == pytest.approx(res.pitch_rad)
         assert bb_goal.throw_speed == pytest.approx(res.throw_speed_mps)
-        # The firmware throw_time is pulled EARLIER than the announced delay by
-        # the constant command->release actuator latency, so the ball actually
-        # leaves at the announced time (res.throw_delay_s itself is unchanged).
+        # The release is ABSOLUTE (PROTOCOL_VERSION 10) and pulled EARLIER than
+        # the announced delay by the constant command->release actuator latency,
+        # so the ball actually leaves at the announced time (res.throw_delay_s
+        # itself is unchanged). It is computed from the SAME `now` the
+        # announcement is stamped with: release = ann.throw_time - push lag -
+        # latency, exactly — dispatch latency can no longer separate them.
         import jugglebot.hardware_config as hw
+        from jugglebot.ball_butler_node import BB_RELEASE_PUSH_LAG_S
         release_latency_s = hw.BB_OP_THROW_RELEASE_LATENCY_MS / 1000.0
         assert release_latency_s > 0.0
-        assert bb_goal.throw_time == pytest.approx(
-            res.throw_delay_s - release_latency_s
-        )
+        assert not hasattr(bb_goal, 'throw_time')     # the relative field is gone
+        ann = calibrated_node.throw_announcement_pub.published[-1]
+        assert bb_goal.release_wall_s == pytest.approx(
+            ann.throw_time / 1e9 - BB_RELEASE_PUSH_LAG_S - release_latency_s, abs=1e-9)
+        assert bb_goal.release_wall_s == pytest.approx(
+            res.throw_delay_s - release_latency_s)    # MockClock now == 0
         assert bb_goal.suppress_announcement is True
 
     def test_publishes_throw_announcement_with_solver_landing_geometry(self, calibrated_node):
@@ -277,7 +284,7 @@ class TestPointTargetExtension:
         assert res.success is True
         assert len(sent_goals) == 1
         assert sent_goals[0].throw_speed == pytest.approx(0.0)   # aim-only: no ball flies
-        assert sent_goals[0].throw_time == pytest.approx(0.0)
+        assert sent_goals[0].release_wall_s == pytest.approx(0.0)
         # No ThrowAnnouncement for an aim-only command (nothing to catch).
         assert len(calibrated_node.throw_announcement_pub.published) == 0
 

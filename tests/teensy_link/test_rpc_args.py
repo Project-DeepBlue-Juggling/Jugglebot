@@ -118,15 +118,29 @@ def test_float_fields_roundtrip_f32():
 # ── Ball Butler ─────────────────────────────────────────────────────
 
 def test_bb_throw_exact_bytes():
+    # PROTOCOL_VERSION 10: the 4th field is the ABSOLUTE release (u64 µs on the
+    # shared wall clock), not the old relative f32 delay_s. Layout '<fffQ', 20 B.
+    rel = 1_760_000_000_123_456
     blob = ra.encode_bb_throw(yaw_rad=0.5, pitch_rad=0.3,
-                              speed_mps=3.0, delay_s=0.1)
-    assert blob == struct.pack('<ffff', 0.5, 0.3, 3.0, 0.1)
-    assert len(blob) == 16
+                              speed_mps=3.0, release_wall_us=rel)
+    assert blob == struct.pack('<fffQ', 0.5, 0.3, 3.0, rel)
+    assert len(blob) == 20
     a = ArgBbThrow.unpack(blob)
     assert a.yaw_rad == pytest.approx(0.5, rel=1e-6)
     assert a.pitch_rad == pytest.approx(0.3, rel=1e-6)
     assert a.speed_mps == pytest.approx(3.0, rel=1e-6)
-    assert a.delay_s == pytest.approx(0.1, rel=1e-6)
+    assert a.release_wall_us == rel                     # exact: no float rounding
+
+
+@pytest.mark.parametrize('bad', [-1, 1.5])
+def test_bb_throw_rejects_unpackable_release(bad):
+    with pytest.raises(ValueError):
+        ra.encode_bb_throw(0.0, 0.5, 3.0, bad)
+
+
+def test_bb_throw_result_roundtrip():
+    blob = struct.pack('<i', -12_345)
+    assert ra.decode_bb_throw_result(blob).lead_us == -12_345
 
 
 def test_state_write_exact_bytes():

@@ -8,7 +8,15 @@
 float32 yaw_angle_rad      # yaw angle (rad), -pi..pi
 float32 pitch_angle_rad    # pitch angle (rad), 0..pi/2
 float32 throw_speed        # throw speed (m/s), 0..6.5
-float32 throw_time         # absolute throw time (s) in the shared time base, 0..65.5
+float64 release_wall_s     # ABSOLUTE release instant: epoch seconds on the shared wall clock
+                           # (Jetson CLOCK_REALTIME = the ROS clock = the can-bridge's
+                           # now_wall_us anchor). Computed ONCE by the caller from the same
+                           # `now` its announcement is stamped with, so dispatch latency
+                           # spends lead margin, never timing. The bridge refuses a release
+                           # whose lead at receipt is <= 0, < 0.7 s or > 30 s by name
+                           # (ERR_RELEASE_PAST / _TOO_SOON / _TOO_FAR). 0 for an aim
+                           # (throw_speed 0). Replaced the relative `throw_time` 2026-10-12
+                           # (PROTOCOL_VERSION 10).
 bool suppress_announcement # opt out of can_node's auto ThrowAnnouncement (dead on this
                            # path; retained for parity with the retired service)
 ---

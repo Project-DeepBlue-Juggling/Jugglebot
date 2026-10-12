@@ -23,6 +23,8 @@ build_paired_node — same pattern as test_teensy_bridge_node_rpc.py.
 
 from __future__ import annotations
 
+import time
+
 import pytest
 
 from teensy_link import (
@@ -434,14 +436,25 @@ def _inject_cmd_result(teensy, *, cmd_type, outcome, detail0=0, detail1=0):
     teensy.send_to_jetson(int(MsgType.CMD_RESULT), cf.pack())
 
 
-def _throw_goal(yaw=0.1, pitch=0.5, speed=3.0, throw_time=1.0):
+def _throw_goal(yaw=0.1, pitch=0.5, speed=3.0, release_wall_s=None):
+    """``release_wall_s`` is ABSOLUTE (PROTOCOL_VERSION 10); default = 1 s
+    from now on the wall clock the bridge shares."""
     g = BallButlerThrowCmd.Goal()
     g.yaw_angle_rad = yaw
     g.pitch_angle_rad = pitch
     g.throw_speed = speed
-    g.throw_time = throw_time
+    g.release_wall_s = (time.time() + 1.0) if release_wall_s is None else release_wall_s
     g.suppress_announcement = False
     return g
+
+
+class _LogRecorder:
+    """Stand-in for node.get_logger(): records (severity, message)."""
+    def __init__(self):
+        self.lines = []
+
+    def __getattr__(self, sev):
+        return lambda msg, *a, **k: self.lines.append((sev, str(msg)))
 
 
 class _FakeGoalHandle:
@@ -483,12 +496,12 @@ def test_bb_throw_action_aim_only_dispatches_without_awaiting():
         _send_heartbeat(teensy)
         assert _wait_until(lambda: node._latest_heartbeat is not None)
         box = _capture(teensy, RpcMethod.BB_THROW)   # acks OK, injects no CMD_RESULT
-        goal = _throw_goal(yaw=0.2, pitch=0.6, speed=0.0, throw_time=0.0)
+        goal = _throw_goal(yaw=0.2, pitch=0.6, speed=0.0, release_wall_s=0.0)
         assert node._bb_throw_goal(goal) == GoalResponse.ACCEPT
         assert node._bb_throw_active is False        # slot not consumed
         handle = _FakeGoalHandle(goal)
         result = node._bb_throw_execute(handle)
-        assert box['args'] == rpc_args.encode_bb_throw(0.2, 0.6, 0.0, 0.0)
+        assert box['args'] == rpc_args.encode_bb_throw(0.2, 0.6, 0.0, 0)
         assert result.success is True
         assert handle.succeeded is True
         assert node._bb_throw_active is False
@@ -512,16 +525,25 @@ def test_bb_throw_action_success_via_cmd_result():
                 cmd_type=int(BallButlerCommandType.THROW),
                 outcome=int(BallButlerCommandOutcome.OK),
                 detail0=-1)
-            return (int(RpcStatus.OK), b"")
+            return (int(RpcStatus.OK), p.ResultBbThrow(lead_us=987_000).pack())
 
         teensy.on_rpc(int(RpcMethod.BB_THROW), handler)
 
-        goal = _throw_goal(yaw=0.1, pitch=0.5, speed=3.0, throw_time=1.0)
+        goal = _throw_goal(yaw=0.1, pitch=0.5, speed=3.0)
         assert node._bb_throw_goal(goal) == GoalResponse.ACCEPT
         handle = _FakeGoalHandle(goal)
+        log = _LogRecorder()
+        node.get_logger = lambda: log
         result = node._bb_throw_execute(handle)
 
-        assert box['args'] == rpc_args.encode_bb_throw(0.1, 0.5, 3.0, 1.0)
+        # The goal's ABSOLUTE release goes on the wire verbatim (µs) — never
+        # re-derived from this node's clock at dispatch.
+        assert box['args'] == rpc_args.encode_bb_throw(
+            0.1, 0.5, 3.0, int(round(goal.release_wall_s * 1e6)))
+        # C1: one line per dispatched throw, carrying the bridge's lead.
+        c1 = [m for sev, m in log.lines if m.startswith('bb/throw C1:')]
+        assert len(c1) == 1 and '987.0 ms at bridge receipt' in c1[0]
+        assert ('release_wall=%.6f' % goal.release_wall_s) in c1[0]
         assert result.success is True
         assert result.outcome == int(BallButlerCommandOutcome.OK)
         assert handle.succeeded is True
@@ -583,6 +605,54 @@ def test_bb_throw_action_dispatch_failure_aborts_without_waiting():
         _teardown(teensy, client, node)
 
 
+@pytest.mark.parametrize('status', ['ERR_RELEASE_PAST', 'ERR_RELEASE_TOO_SOON',
+                                    'ERR_RELEASE_TOO_FAR'])
+def test_bb_throw_action_release_refusal_is_named_and_aborts(status):
+    """The bridge's absolute-release lead gate (FW 29) refuses by NAME; the
+    status LEADS the result message (skill_node ends on that leading token as
+    REJECTED_BB(<status>)), the goal aborts at once and no CMD_RESULT is
+    awaited — nothing was sent to BB."""
+    teensy, client, node = _node()
+    try:
+        _send_heartbeat(teensy)
+        assert _wait_until(lambda: node._latest_heartbeat is not None)
+        _capture(teensy, RpcMethod.BB_THROW, status=int(getattr(RpcStatus, status)),
+                 result=p.ResultBbThrow(lead_us=-5_000).pack())
+        node._BB_THROW_RESULT_MARGIN_S = 30.0   # a wait would hang the test
+        goal = _throw_goal()
+        assert node._bb_throw_goal(goal) == GoalResponse.ACCEPT
+        handle = _FakeGoalHandle(goal)
+        result = node._bb_throw_execute(handle)
+        assert result.success is False
+        assert result.outcome == int(BallButlerCommandOutcome.REJECTED)
+        assert result.message.split(' ', 1)[0] == status
+        assert handle.aborted is True
+        assert node._bb_throw_active is False
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_bb_throw_action_refuses_a_throw_without_an_epoch_release():
+    """A throw whose release_wall_s is 0 / NaN (a caller still speaking the
+    relative protocol, or an unset field) is refused before any RPC — it can
+    never become a silent "throw now"."""
+    teensy, client, node = _node()
+    try:
+        _send_heartbeat(teensy)
+        assert _wait_until(lambda: node._latest_heartbeat is not None)
+        for bad in (0.0, float('nan'), -1.0):
+            box = _capture(teensy, RpcMethod.BB_THROW)
+            goal = _throw_goal(release_wall_s=bad)
+            assert node._bb_throw_goal(goal) == GoalResponse.ACCEPT
+            handle = _FakeGoalHandle(goal)
+            result = node._bb_throw_execute(handle)
+            assert result.success is False
+            assert 'encode failed' in result.message
+            assert 'args' not in box
+    finally:
+        _teardown(teensy, client, node)
+
+
 def test_bb_throw_action_times_out_when_firmware_silent():
     """BB acks the RPC but never emits a CMD_RESULT → the action times out
     (doesn't hang) with a TIMEOUT outcome and aborts the goal."""
@@ -592,7 +662,7 @@ def test_bb_throw_action_times_out_when_firmware_silent():
         assert _wait_until(lambda: node._latest_heartbeat is not None)
         _capture(teensy, RpcMethod.BB_THROW)   # acks OK, injects no CMD_RESULT
         node._BB_THROW_RESULT_MARGIN_S = 0.2   # keep the test fast
-        goal = _throw_goal(throw_time=0.0)
+        goal = _throw_goal(release_wall_s=time.time())
         assert node._bb_throw_goal(goal) == GoalResponse.ACCEPT
         handle = _FakeGoalHandle(goal)
         result = node._bb_throw_execute(handle)

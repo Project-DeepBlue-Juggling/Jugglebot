@@ -52,6 +52,8 @@ from udp_protocol import (  # noqa: E402, F401
     LINK_LOST_MISSES,
     HEARTBEAT_TORQUE_CLAMP_SHIFT,  # HeartbeatT2J.flags bit offset of TORQUE_CLAMP_MASK (bits 8-13)
     HEARTBEAT_HB_STALE_SHIFT,  # HeartbeatT2J.flags bit offset of HB_STALE_MASK (bits 16-22, FW 23)
+    BB_RELEASE_MIN_LEAD_US,  # BB_THROW absolute-release lead window at bridge receipt (FW 29)
+    BB_RELEASE_MAX_LEAD_US,
     # Enums
     MsgType,
     RpcMethod,
@@ -133,6 +135,7 @@ from udp_protocol import (  # noqa: E402, F401
     ResultBbAxisVersions,  # GET_BB_AXIS_VERSIONS result blob (FW 20, additive)
     ArgHandMoveTo,  # HAND_MOVE_TO args (FW 26, additive)
     ResultHandMoveTo,  # HAND_MOVE_TO deferred-reply result blob (FW 26)
+    ResultBbThrow,     # BB_THROW result blob: release lead at bridge receipt (FW 29)
     ResultHandTorqueScale,  # GET_HAND_TORQUE_SCALE result blob (FW 22, additive)
     ArgPlatformFwBegin,  # PLATFORM_FW_BEGIN — Platform firmware-over-CAN (2026-09-09)
     ArgPlatformFwData,  # PLATFORM_FW_DATA

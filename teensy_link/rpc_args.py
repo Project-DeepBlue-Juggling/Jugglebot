@@ -37,6 +37,7 @@ from .protocol import (
     ResultHandTorqueScale,
     ArgHandMoveTo,
     ResultHandMoveTo,
+    ResultBbThrow,
     ArgPlatformFwBegin,
     ArgPlatformFwData,
     ArgPlatformFwVerify,
@@ -57,7 +58,7 @@ __all__ = [
     "encode_encoder_search", "encode_home", "encode_activate", "encode_deactivate",
     "encode_sdo_read", "encode_sdo_write", "encode_state_write",
     "decode_hand_cmd_echo",
-    "encode_bb_throw", "encode_bb_reload", "encode_bb_reset",
+    "encode_bb_throw", "ResultBbThrow", "decode_bb_throw_result", "encode_bb_reload", "encode_bb_reset",
     "encode_bb_calibrate_loc",
     "decode_time_of_day_result", "ResultAxisVersions",
     "ResultBbAxisVersions", "decode_bb_axis_versions_result", "BB_FIRST_NODE",
@@ -826,7 +827,14 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # t_bridge_us; the host pairs them into /bb/axis_estimates name bb_yaw. No wire
 # change to any existing message; PROTOCOL_VERSION stays 9; an FW 27 board just
 # never sends 0x93 (the topic keeps its two-name shape).
-EXPECTED_BRIDGE_FW_VERSION = 28
+# 28 -> 29 (2026-10-12): BB absolute release. BB_THROW carries
+# ArgBbThrow.release_wall_us (absolute, the shared wall clock) instead of the
+# relative delay_s the bridge added to its clock ON RECEIPT; the bridge refuses
+# a release whose lead at receipt is <= 0 / < 0.7 s / > 30 s by name
+# (ERR_RELEASE_PAST / _TOO_SOON / _TOO_FAR) and returns ResultBbThrow.lead_us.
+# A WIRE change: PROTOCOL_VERSION 9 -> 10, so an FW 28 board is DARK to this
+# host (and vice versa) until the lockstep flash.
+EXPECTED_BRIDGE_FW_VERSION = 29
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────
@@ -836,12 +844,34 @@ EXPECTED_BRIDGE_FW_VERSION = 28
 # args either (caller sends b"" — matches the NOP shape).
 
 def encode_bb_throw(yaw_rad: float, pitch_rad: float,
-                    speed_mps: float, delay_s: float) -> bytes:
-    """BB_THROW: typed throw command. Firmware validates ranges and returns
-    ERR_BAD_ARGS for malformed throws (yaw outside [-pi, pi), pitch outside
-    [0, pi/2], speed > 6.5535, delay > 65.535)."""
+                    speed_mps: float, release_wall_us: int) -> bytes:
+    """BB_THROW: typed throw command with an ABSOLUTE release instant
+    (PROTOCOL_VERSION 10, can-bridge FW 29).
+
+    ``release_wall_us`` is the release on the shared wall clock — µs since the
+    epoch, Jetson CLOCK_REALTIME (the clock the bridge's ``now_wall_us`` is
+    anchored to by TIME_OF_DAY_QUERY). It replaces the FW ≤ 28 relative
+    ``delay_s``, which the bridge turned absolute ON RECEIPT, so Jetson
+    dispatch latency moved the release 1:1. Ignored for an aim
+    (``speed_mps == 0``; send 0).
+
+    The firmware is the validator: ERR_BAD_ARGS for yaw outside [-pi, pi),
+    pitch outside [0, pi/2] or speed > 6.5535, and the named refusals
+    ERR_RELEASE_PAST / ERR_RELEASE_TOO_SOON / ERR_RELEASE_TOO_FAR when the
+    lead at receipt is <= 0, < BB_RELEASE_MIN_LEAD_US or >
+    BB_RELEASE_MAX_LEAD_US. This encoder only rejects what cannot be packed
+    (a negative or non-integral release)."""
+    rel = int(release_wall_us)
+    if rel < 0 or rel != release_wall_us:
+        raise ValueError(f"release_wall_us must be a non-negative integer, got {release_wall_us!r}")
     return ArgBbThrow(yaw_rad=float(yaw_rad), pitch_rad=float(pitch_rad),
-                      speed_mps=float(speed_mps), delay_s=float(delay_s)).pack()
+                      speed_mps=float(speed_mps), release_wall_us=rel).pack()
+
+
+def decode_bb_throw_result(blob: bytes) -> ResultBbThrow:
+    """Decode a BB_THROW result blob (exact-size unpack): the release lead the
+    bridge measured on receipt (µs)."""
+    return ResultBbThrow.unpack(blob)
 
 
 def encode_bb_reload() -> bytes:

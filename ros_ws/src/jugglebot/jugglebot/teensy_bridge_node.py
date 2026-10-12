@@ -47,6 +47,7 @@ from __future__ import annotations
 import hashlib
 import math
 import os
+import re
 import struct
 import threading
 import time
@@ -5918,6 +5919,13 @@ class TeensyBridgeNode(Node):
         except RpcError as e:
             return False, self._annotate_rpc_error(str(e)), b""
 
+    @staticmethod
+    def _rpc_status_token(message: str) -> str:
+        """The RpcStatus NAME inside a ``_call_rpc`` failure message
+        (``RpcError`` renders ``"<METHOD>: <STATUS> ..."``); '' if absent."""
+        hit = re.search(r'\b(ERR_[A-Z_]+)\b', message or '')
+        return hit.group(1) if hit else ''
+
     def _annotate_rpc_error(self, message: str) -> str:
         """Disambiguate ERR_BUS_DOWN, which the firmware overloads three ways.
 
@@ -8293,7 +8301,7 @@ class TeensyBridgeNode(Node):
         except Exception as e:  # noqa: BLE001
             self.get_logger().error(f"Cone heartbeat publish error: {e}")
 
-    # Extra wait (s) past throw_time before the action times out a result. Covers
+    # Extra wait (s) past the release instant before the action times out a result. Covers
     # the wind-up + release + the streamer completing and the firmware emitting OK.
     _BB_THROW_RESULT_MARGIN_S = 5.0
 
@@ -8351,8 +8359,10 @@ class TeensyBridgeNode(Node):
         # not touch the single-throw slot (see goal_callback).
         if float(req.throw_speed) == 0.0:
             try:
+                # An aim carries no release instant: the bridge stamps its own
+                # now (FW 29), so the field is sent as 0 whatever the goal says.
                 args = rpc_args.encode_bb_throw(
-                    req.yaw_angle_rad, req.pitch_angle_rad, 0.0, req.throw_time)
+                    req.yaw_angle_rad, req.pitch_angle_rad, 0.0, 0)
             except Exception as e:  # noqa: BLE001
                 result.success = False
                 result.outcome = int(proto.BallButlerCommandOutcome.REJECTED)
@@ -8372,10 +8382,19 @@ class TeensyBridgeNode(Node):
             return result
 
         try:
+            # The release is ABSOLUTE (PROTOCOL_VERSION 10, bridge FW 29): the
+            # caller computed it once, on the shared wall clock, from the same
+            # `now` its ThrowAnnouncement carries. Nothing here re-times it —
+            # this node's executor latency and the UDP hop spend lead margin
+            # only (they used to move the release 1:1, logbook 2026-10-12).
+            release_wall_s = float(req.release_wall_s)
             try:
+                if not (math.isfinite(release_wall_s) and release_wall_s > 0.0):
+                    raise ValueError(f"release_wall_s={release_wall_s!r} is not an epoch instant")
+                release_wall_us = int(round(release_wall_s * 1e6))
                 args = rpc_args.encode_bb_throw(
                     req.yaw_angle_rad, req.pitch_angle_rad,
-                    req.throw_speed, req.throw_time)
+                    req.throw_speed, release_wall_us)
             except Exception as e:  # noqa: BLE001 (Python-side range check failure)
                 result.success = False
                 result.outcome = int(proto.BallButlerCommandOutcome.REJECTED)
@@ -8383,18 +8402,50 @@ class TeensyBridgeNode(Node):
                 goal_handle.abort()
                 return result
 
-            # Dispatch. A failed RPC means the bridge couldn't queue the frame
-            # (BB not present) — no CMD_RESULT will ever come, so abort now.
-            ok, m, _ = self._call_rpc(RpcMethod.BB_THROW, args)
+            # Dispatch. A failed RPC means the bridge did not queue the frame —
+            # no CMD_RESULT will ever come, so abort now. The bridge's own lead
+            # gate refuses a release that is gone / too close / too far BY NAME
+            # (ERR_RELEASE_*); that name LEADS the message, because
+            # ball_butler_node relays it on bb/throw_outcome and skill_node ends
+            # the attempt on its leading token (REJECTED_BB(ERR_RELEASE_...)).
+            t_send_wall = time.time()
+            t_send_mono = time.monotonic()
+            ok, m, blob = self._call_rpc(RpcMethod.BB_THROW, args)
+            rpc_ms = (time.monotonic() - t_send_mono) * 1e3
+            host_lead_ms = (release_wall_s - t_send_wall) * 1e3
             if not ok:
                 result.success = False
                 result.outcome = int(proto.BallButlerCommandOutcome.REJECTED)
-                result.message = f"Throw dispatch failed (BB unreachable?): {m}"
+                status = self._rpc_status_token(m)
+                if status.startswith('ERR_RELEASE_'):
+                    result.message = (
+                        f"{status} (lead {host_lead_ms:.0f} ms at host send; bridge "
+                        f"window {p.BB_RELEASE_MIN_LEAD_US / 1e3:.0f}.."
+                        f"{p.BB_RELEASE_MAX_LEAD_US / 1e3:.0f} ms) — the bridge "
+                        f"refused the absolute release; nothing was sent to BB")
+                else:
+                    result.message = f"Throw dispatch failed (BB unreachable?): {m}"
+                self.get_logger().warn(f'bb/throw: {result.message}')
                 goal_handle.abort()
                 return result
+            # C1 (logbook 2026-10-12): one line per dispatched throw — the host
+            # send instant against the absolute release, and the lead the bridge
+            # measured on receipt. host_lead − bridge_lead ≈ the one-way hop; the
+            # announcement-to-send latency is release − send − (delay − 44 ms)
+            # joined against the bag's ThrowAnnouncement stamp.
+            try:
+                bridge_lead_ms = rpc_args.decode_bb_throw_result(blob).lead_us / 1e3
+                bridge_txt = f'{bridge_lead_ms:.1f} ms'
+            except Exception:  # noqa: BLE001 — an old/short blob: log what we have
+                bridge_txt = 'n/a'
+            self.get_logger().info(
+                f'bb/throw C1: release lead {host_lead_ms:.1f} ms at host send, '
+                f'{bridge_txt} at bridge receipt (rpc {rpc_ms:.1f} ms) '
+                f'send_wall={t_send_wall:.6f} release_wall={release_wall_s:.6f}')
 
             # Await the firmware's terminal outcome (set on the RX thread).
-            timeout_s = max(float(req.throw_time), 0.0) + self._BB_THROW_RESULT_MARGIN_S
+            timeout_s = (max(release_wall_s - time.time(), 0.0)
+                         + self._BB_THROW_RESULT_MARGIN_S)
             if not self._bb_throw_event.wait(timeout=timeout_s):
                 result.success = False
                 result.outcome = int(proto.BallButlerCommandOutcome.TIMEOUT)

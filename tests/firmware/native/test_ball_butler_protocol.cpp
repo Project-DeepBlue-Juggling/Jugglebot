@@ -9,10 +9,10 @@
 //  from the AUTHORITATIVE ball_butler.py (byte-for-byte) and independently checks
 //  that BOTH sides REJECT the same invalid throws.
 //
-//  throw_time (bytes 6-7) depends on now_wall_us(); the driver defines a settable
-//  fixed clock and the golden carries wall_us, so the Python reproduction pins the
-//  same instant (integer-ms-aligned wall_us → C++ µs→ms integer-divide agrees with
-//  Python's float path exactly).
+//  throw_time (bytes 6-7) is the ABSOLUTE release's epoch-ms low 16 bits (FW 29,
+//  PROTOCOL_VERSION 10 — encode_throw takes release_wall_us and never reads the
+//  clock); the golden carries release_wall_us and the Python reproduction
+//  (ball_butler.encode_throw_command_at) floors µs→ms exactly as the C++ does.
 // =============================================================================
 
 #define DOCTEST_CONFIG_IMPLEMENT
@@ -38,12 +38,12 @@ using namespace CanBridge;
 
 // The golden table (VALID rows only — byte-parity). Integer-ms wall_us + values
 // whose float32/float64 scaling agrees, so the Python reproduction matches all 8B.
-struct ThrowRow { float yaw, pitch, speed, delay; uint64_t wall_us; };
+struct ThrowRow { float yaw, pitch, speed; uint64_t release_wall_us; };
 static ThrowRow throw_rows[] = {
-  {0.0f,  0.0f, 0.0f, 0.0f, 0ULL},
-  {0.5f,  0.5f, 1.0f, 0.1f, 1700000000000ULL},
-  {-0.5f, 0.3f, 3.0f, 0.25f, 1700000000000ULL},
-  {1.0f,  1.2f, 6.5f, 1.0f, 1700000000000ULL},
+  {0.0f,  0.0f, 0.0f, 0ULL},
+  {0.5f,  0.5f, 1.0f, 1700000000100000ULL},
+  {-0.5f, 0.3f, 3.0f, 1700000000250000ULL},
+  {1.0f,  1.2f, 6.5f, 1700000001000999ULL},   // sub-ms part floors away
 };
 static constexpr int N_THROW = (int)(sizeof(throw_rows) / sizeof(throw_rows[0]));
 
@@ -53,14 +53,13 @@ static void emit_golden(const char* path) {
   fprintf(fp, "[\n");
   for (int i = 0; i < N_THROW; ++i) {
     const ThrowRow& r = throw_rows[i];
-    g_wall_us = r.wall_us;
-    const auto f = CanBridge::BallButler::encode_throw(r.yaw, r.pitch, r.speed, r.delay);
+    const auto f = CanBridge::BallButler::encode_throw(r.yaw, r.pitch, r.speed, r.release_wall_us);
     char hex[17] = {0};
     for (int b = 0; b < f.len; ++b) snprintf(hex + b * 2, 3, "%02x", f.buf[b]);
     fprintf(fp,
-      "  {\"yaw\": %.9g, \"pitch\": %.9g, \"speed\": %.9g, \"delay\": %.9g, "
-      "\"wall_us\": %llu, \"id\": %u, \"len\": %u, \"data\": \"%s\"}%s\n",
-      r.yaw, r.pitch, r.speed, r.delay, (unsigned long long)r.wall_us,
+      "  {\"yaw\": %.9g, \"pitch\": %.9g, \"speed\": %.9g, "
+      "\"release_wall_us\": %llu, \"id\": %u, \"len\": %u, \"data\": \"%s\"}%s\n",
+      r.yaw, r.pitch, r.speed, (unsigned long long)r.release_wall_us,
       f.id, f.len, hex, i + 1 < N_THROW ? "," : "");
   }
   fprintf(fp, "]\n");
@@ -70,8 +69,8 @@ static void emit_golden(const char* path) {
 // ── Self-checks ───────────────────────────────────────────────────────────────
 
 TEST_CASE("encode_throw: id 0x7D0, len 8, byte offsets + scaling") {
-  g_wall_us = 1700000000000ULL;
-  const auto f = CanBridge::BallButler::encode_throw(0.5f, 0.5f, 1.0f, 0.1f);
+  g_wall_us = 999ULL;   // encode_throw must NOT read the clock (FW 29)
+  const auto f = CanBridge::BallButler::encode_throw(0.5f, 0.5f, 1.0f, 1700000000100000ULL);
   CHECK(f.id == BallButlerCanId::THROW_CMD);
   CHECK(f.len == 8);
   int16_t yaw; uint16_t pitch, speed;
@@ -79,21 +78,39 @@ TEST_CASE("encode_throw: id 0x7D0, len 8, byte offsets + scaling") {
   CHECK(yaw == (int16_t)(0.5f * CanBridge::BallButler::YAW_SCALE));
   CHECK(pitch == (uint16_t)(0.5f * CanBridge::BallButler::PITCH_SCALE));
   CHECK(speed == (uint16_t)(1.0f * CanBridge::BallButler::SPEED_SCALE));   // 10000
+  uint16_t tt; memcpy(&tt, &f.buf[6], 2);
+  CHECK(tt == (uint16_t)((1700000000100ULL) & 0xFFFFULL));
+}
+
+TEST_CASE("check_release: PAST / TOO_SOON / OK / TOO_FAR at the bounds, lead saturated") {
+  using CanBridge::BallButler::check_release;
+  using V = CanBridge::BallButler::ReleaseVerdict;
+  const uint64_t now = 1700000000000000ULL;
+  const int64_t MIN = CanBridge::BallButler::RELEASE_MIN_LEAD_US;
+  const int64_t MAX = CanBridge::BallButler::RELEASE_MAX_LEAD_US;
+  int32_t lead = 0;
+  CHECK(check_release(now - 5, now, lead) == V::PAST);      CHECK(lead == -5);
+  CHECK(check_release(now, now, lead) == V::PAST);          CHECK(lead == 0);
+  CHECK(check_release(now + MIN - 1, now, lead) == V::TOO_SOON);
+  CHECK(check_release(now + MIN, now, lead) == V::OK);      CHECK(lead == (int32_t)MIN);
+  CHECK(check_release(now + MAX, now, lead) == V::OK);
+  CHECK(check_release(now + MAX + 1, now, lead) == V::TOO_FAR);
+  CHECK(check_release(0, now, lead) == V::PAST);            CHECK(lead == INT32_MIN);
+  CHECK(check_release(now + 4000000000ULL, now, lead) == V::TOO_FAR);  CHECK(lead == INT32_MAX);
 }
 
 TEST_CASE("throw_args_valid accepts in-range and rejects each out-of-range + NaN/Inf") {
-  CHECK(CanBridge::BallButler::throw_args_valid(0.0f, 0.5f, 3.0f, 0.1f));
-  CHECK(CanBridge::BallButler::throw_args_valid(-3.14f, 0.0f, 0.0f, 0.0f));
+  CHECK(CanBridge::BallButler::throw_args_valid(0.0f, 0.5f, 3.0f));
+  CHECK(CanBridge::BallButler::throw_args_valid(-3.14f, 0.0f, 0.0f));
   // yaw == +pi is the EXCLUSIVE upper bound → reject.
-  CHECK_FALSE(CanBridge::BallButler::throw_args_valid(CanBridge::BallButler::YAW_MAX_RAD, 0.5f, 3.0f, 0.1f));
-  CHECK_FALSE(CanBridge::BallButler::throw_args_valid(4.0f, 0.5f, 3.0f, 0.1f));      // yaw over
-  CHECK_FALSE(CanBridge::BallButler::throw_args_valid(0.0f, 2.0f, 3.0f, 0.1f));      // pitch over
-  CHECK_FALSE(CanBridge::BallButler::throw_args_valid(0.0f, -0.1f, 3.0f, 0.1f));     // pitch under
-  CHECK_FALSE(CanBridge::BallButler::throw_args_valid(0.0f, 0.5f, 100.0f, 0.1f));    // speed over
-  CHECK_FALSE(CanBridge::BallButler::throw_args_valid(0.0f, 0.5f, 3.0f, 100.0f));    // delay over
+  CHECK_FALSE(CanBridge::BallButler::throw_args_valid(CanBridge::BallButler::YAW_MAX_RAD, 0.5f, 3.0f));
+  CHECK_FALSE(CanBridge::BallButler::throw_args_valid(4.0f, 0.5f, 3.0f));      // yaw over
+  CHECK_FALSE(CanBridge::BallButler::throw_args_valid(0.0f, 2.0f, 3.0f));      // pitch over
+  CHECK_FALSE(CanBridge::BallButler::throw_args_valid(0.0f, -0.1f, 3.0f));     // pitch under
+  CHECK_FALSE(CanBridge::BallButler::throw_args_valid(0.0f, 0.5f, 100.0f));    // speed over
   const float nan = nanf(""), inf = INFINITY;
-  CHECK_FALSE(CanBridge::BallButler::throw_args_valid(nan, 0.5f, 3.0f, 0.1f));       // NaN
-  CHECK_FALSE(CanBridge::BallButler::throw_args_valid(0.0f, inf, 3.0f, 0.1f));       // Inf
+  CHECK_FALSE(CanBridge::BallButler::throw_args_valid(nan, 0.5f, 3.0f));       // NaN
+  CHECK_FALSE(CanBridge::BallButler::throw_args_valid(0.0f, inf, 3.0f));       // Inf
 }
 
 TEST_CASE("payloadless state commands: ids + len 0") {

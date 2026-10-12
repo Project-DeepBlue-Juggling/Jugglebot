@@ -671,7 +671,7 @@ class _BallButlerThrowCmdGoal:
         self.yaw_angle_rad = 0.0
         self.pitch_angle_rad = 0.0
         self.throw_speed = 0.0
-        self.throw_time = 0.0
+        self.release_wall_s = 0.0   # absolute epoch s (PROTOCOL_VERSION 10)
         self.suppress_announcement = False
 
 

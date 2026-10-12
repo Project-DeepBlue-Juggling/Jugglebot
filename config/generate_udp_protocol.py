@@ -104,7 +104,19 @@ class Message:
 # ───────────────────────────────────────────────────────────────────────────
 
 CONSTANTS = [
-    ("PROTOCOL_VERSION", 9,      "u8",  "Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic; 5→6: 2026-09-01 Setpoint widens 6→7 — index 6 = hand — and gains the v1[7] exact-knot-velocity array, unified-7dof-planner Phase 2; 6→7: 2026-09-11 skill-stack R1 — HAND_TRAJ_CMD/HAND_SOURCE_SET/ERR_HAND_SOURCE removed, HeartbeatT2J bit 6 retired, BridgeTxDiag hand_ops counters removed; 7→8: 2026-09-14 hand C2 (can-bridge FW 22) — Setpoint GROWS 208→240 B: v2[7] (exact u2-knot velocity, flags bit4 HAS_V2) + hand_ff_gain (K, clamped [0,1.5] at ingest), flags bit5 HAS_SCHED plays the frame on its t_origin_us stamp instead of on UDP arrival; HeartbeatT2J GROWS by the scheduled-playback promotion-continuity diagnostics and flags bits 14 HAND_TORQUE_CLAMP / 15 SCHED_HOLD_LATCHED. Growing a struct is as incompatible as shrinking one: darkness against any FW ≤ 21 board is the INTENDED failure. Removing message types and shrinking a struct are incompatible wire changes: darkness against any FW ≤ 20 board is the INTENDED failure. TOTAL LINK DARKNESS against any FW ≤ 16 board until the lockstep Phase 3 flash — loud and fail-closed by design) 8→9: 2026-09-15 axis-silence watchdog (can-bridge FW 23) — HeartbeatT2J GROWS by can_fault_leg/can_fault_age_ms/can_fault_count (the CAN_BUS_DOWN trip latch: WHICH leg went silent, how stale it was, how many trips this boot) and gains flags bits 16-22 HB_STALE_MASK (per-axis ODrive heartbeat staleness at CAN_HEARTBEAT_STALE_US = 0.5 s, report-only); CacheDiag GROWS by hb_frames[7], the per-axis heartbeat-frame census beside enc_frames. Both structs grow, so this is an incompatible wire change: darkness against any FW ≤ 22 board is the INTENDED failure."),
+    ("PROTOCOL_VERSION", 10,     "u8",  "Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic; 5→6: 2026-09-01 Setpoint widens 6→7 — index 6 = hand — and gains the v1[7] exact-knot-velocity array, unified-7dof-planner Phase 2; 6→7: 2026-09-11 skill-stack R1 — HAND_TRAJ_CMD/HAND_SOURCE_SET/ERR_HAND_SOURCE removed, HeartbeatT2J bit 6 retired, BridgeTxDiag hand_ops counters removed; 7→8: 2026-09-14 hand C2 (can-bridge FW 22) — Setpoint GROWS 208→240 B: v2[7] (exact u2-knot velocity, flags bit4 HAS_V2) + hand_ff_gain (K, clamped [0,1.5] at ingest), flags bit5 HAS_SCHED plays the frame on its t_origin_us stamp instead of on UDP arrival; HeartbeatT2J GROWS by the scheduled-playback promotion-continuity diagnostics and flags bits 14 HAND_TORQUE_CLAMP / 15 SCHED_HOLD_LATCHED. Growing a struct is as incompatible as shrinking one: darkness against any FW ≤ 21 board is the INTENDED failure. Removing message types and shrinking a struct are incompatible wire changes: darkness against any FW ≤ 20 board is the INTENDED failure. TOTAL LINK DARKNESS against any FW ≤ 16 board until the lockstep Phase 3 flash — loud and fail-closed by design) 8→9: 2026-09-15 axis-silence watchdog (can-bridge FW 23) — HeartbeatT2J GROWS by can_fault_leg/can_fault_age_ms/can_fault_count (the CAN_BUS_DOWN trip latch: WHICH leg went silent, how stale it was, how many trips this boot) and gains flags bits 16-22 HB_STALE_MASK (per-axis ODrive heartbeat staleness at CAN_HEARTBEAT_STALE_US = 0.5 s, report-only); CacheDiag GROWS by hb_frames[7], the per-axis heartbeat-frame census beside enc_frames. Both structs grow, so this is an incompatible wire change: darkness against any FW ≤ 22 board is the INTENDED failure. 9→10: 2026-10-12 BB absolute release (can-bridge FW 29) — ArgBbThrow.delay_s (f32, relative, converted to absolute ON RECEIPT, so Jetson dispatch latency moved the release 1:1) is replaced by release_wall_us (u64, absolute, the bridge wall clock = Jetson CLOCK_REALTIME), the arg GROWS 16→20 B, BB_THROW gains ResultBbThrow (lead at receipt) and three named refusals ERR_RELEASE_PAST/TOO_SOON/TOO_FAR. A delay_s read as an epoch would throw at the wrong instant, so darkness against any FW ≤ 28 board is the INTENDED failure."),
+    # BB_THROW absolute-release lead bounds (2026-10-12, PROTOCOL_VERSION 10). The
+    # can-bridge refuses a release whose lead at receipt (release_wall_us −
+    # now_wall_us) is outside [MIN, MAX] with a NAMED status, before CAN1 sees a
+    # byte. MIN = Ball Butler's hard floor: hand wind-up 0.6 s
+    # (BallButler AxisSettleCfg::WINDUP_DURATION_S) + BB_OP_SCHEDULE_MARGIN_S
+    # 0.1 s — any shorter lead is THROW_REJECTED_CANT_MAKE_LEAD at BB whatever the
+    # settle. MAX = inside BB's low-16-bit epoch-ms reconstruction window: BB
+    # reads bytes 6-7 as the nearest instant in (now − 32.768 s, now + 32.767 s]
+    # (CanInterface.cpp HOST_THROW_CMD decode), so a lead past 32.767 s would be
+    # decoded as a time in the PAST; 30 s leaves 2.7 s for bridge↔BB clock offset.
+    ("BB_RELEASE_MIN_LEAD_US", 700000,   "u32", "BB_THROW: refuse a release closer than this at bridge receipt (ERR_RELEASE_TOO_SOON); BB wind-up 0.6 s + schedule margin 0.1 s"),
+    ("BB_RELEASE_MAX_LEAD_US", 30000000, "u32", "BB_THROW: refuse a release further than this at bridge receipt (ERR_RELEASE_TOO_FAR); BB's 16-bit epoch-ms wrap is ±32.768 s"),
     ("MAGIC",            0x4A42, "u16", '"JB" little-endian preamble (bytes 0x42 0x4A)'),
     ("HEADER_SIZE",      8,      "u16", "Bytes before payload"),
     ("CRC_SIZE",         2,      "u16", "Trailing CRC-16 bytes"),
@@ -320,6 +332,12 @@ ENUMS = {
         # HOLE: 0x0007 (ERR_HAND_SOURCE) removed at PROTOCOL_VERSION 7
         # (2026-09-11, skill-stack R1) with the hand-mastery latch it described.
         # Never reuse the value — a stale host decodes it by name.
+        # BB_THROW absolute-release refusals (PROTOCOL_VERSION 10, FW 29): the
+        # release instant, checked against the bridge wall clock at receipt.
+        # Nothing is sent to CAN1 on any of them (no silent "throw now").
+        ("ERR_RELEASE_PAST",     0x0008, "BB_THROW refused: release_wall_us is at or before the bridge's now"),
+        ("ERR_RELEASE_TOO_SOON", 0x0009, "BB_THROW refused: release lead < BB_RELEASE_MIN_LEAD_US"),
+        ("ERR_RELEASE_TOO_FAR",  0x000A, "BB_THROW refused: release lead > BB_RELEASE_MAX_LEAD_US"),
     ],
     "LinkState": [
         ("INIT",     0, "Ethernet up, no Jetson heartbeat yet"),
@@ -1704,7 +1722,14 @@ RPC_ARGS = [
         Field("yaw_rad",   "f32", 1, "Yaw angle in radians [-pi, pi)"),
         Field("pitch_rad", "f32", 1, "Pitch angle in radians [0, pi/2]"),
         Field("speed_mps", "f32", 1, "Throw speed in m/s [0, 6.5535]"),
-        Field("delay_s",   "f32", 1, "Relative delay before throw (s) [0, 65.535]"),
+        Field("release_wall_us", "u64", 1, "ABSOLUTE release instant (us, the bridge wall clock = Jetson CLOCK_REALTIME); lead at receipt must be in [BB_RELEASE_MIN_LEAD_US, BB_RELEASE_MAX_LEAD_US]. Ignored (the bridge stamps now) when speed_mps == 0 (aim/track)"),
+    ]),
+    # BB_THROW result (PROTOCOL_VERSION 10): the release lead the bridge measured
+    # on receipt, on OK. The host's C1 log reads it: (host-computed lead −
+    # lead_us) is the Jetson→bridge dispatch latency, which no longer moves the
+    # release — it only spends lead margin.
+    RpcArg("ResultBbThrow", "BB_THROW (result)", [
+        Field("lead_us", "i32", 1, "release_wall_us − bridge now_wall_us at receipt (us), saturated to i32"),
     ]),
     # STATE_WRITE carries the WHOLE Platform-Teensy RobotState (the can-bridge is
     # the sole writer and does read-modify-write through its cache, so a homing

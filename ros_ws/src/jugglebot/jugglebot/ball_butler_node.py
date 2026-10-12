@@ -87,10 +87,20 @@ _G_MMPS2 = hw.GRAVITY_MPS2 * 1000.0
 # throw_time precedes the physical release by 5-55 ms -- the ball is still
 # being PUSHED at > g by the cup"), not the actuator latency
 # `hw.BB_OP_THROW_RELEASE_LATENCY_MS` already compensates for at dispatch
-# (goal.throw_time, above) -- this is a second, additive, unmodeled term.
+# (goal.release_wall_s, below) -- this is a second, additive, unmodeled term.
 # Individually noisy (the release-detection window is only 14-47 ms wide per
 # feed) but stable in aggregate. Re-measure with
 # `tools/probes/feed_catch_bag_probe.py --bag <bag> --log <launch.log>`.
+#
+# ⚠ RE-CENTRE AFTER THE FIRST ABSOLUTE-RELEASE SITTING (2026-10-12): this 37 ms
+# was measured while the release was relative-on-receipt, so it CONTAINS the
+# mean Jetson->bridge dispatch latency (announcement `now` -> bridge receipt).
+# With the absolute release (bridge FW 29) that mean no longer delays the
+# release, so the ball now leaves EARLIER by it and this constant reads late by
+# the same amount. Not measurable from the existing bags (no send/receipt
+# stamp); the per-throw `bb/throw C1:` line in launch.log now measures it.
+# Separately, the 2026-10-11 free-fall tail fit says the 52 ms sum reads ~10 ms
+# late already (BB_drift_report: ~42 ms would centre it).
 BB_RELEASE_PUSH_LAG_S = 0.037
 
 # Same sitting/bag: the flight itself runs +14.7 ms (stdev 30.7 ms, n=14)
@@ -531,7 +541,24 @@ class BallButlerNode(Node):
         # release_latency_s here — the two act on different things (the dispatch instant
         # vs. the announcement's belief), so there is no double-counting.
         release_latency_s = hw.BB_OP_THROW_RELEASE_LATENCY_MS / 1000.0
-        goal.throw_time = float(max(0.0, delay_s - release_latency_s)) if throw else 0.0
+        # ABSOLUTE release (2026-10-12, can-bridge FW 29 / PROTOCOL_VERSION 10):
+        # the release instant is computed ONCE, here, from the same `now` the
+        # ThrowAnnouncement below is stamped with, and carried absolute through
+        # the action, the RPC and the bridge to BB. Until then the goal carried
+        # the RELATIVE `delay_s - latency` and the can-bridge added it to its
+        # clock ON RECEIPT, so every ms of dispatch latency (DDS goal + accept,
+        # teensy_bridge_node's executor under load, UDP) moved the release 1:1 —
+        # 14-22 ms sd of release jitter (logbook
+        # 2026-10-12-skill-stack-r5-bb-feed-no-drift-release-jitter.md). Now that
+        # latency spends lead margin only; the bridge refuses (by name, never
+        # re-times) a release that is gone, < 0.7 s or > 30 s away at receipt.
+        # Clock domain: the ROS clock (no sim time) is CLOCK_REALTIME, the same
+        # clock the bridge's now_wall_us is anchored to (TIME_OF_DAY_QUERY ←
+        # teensy_link.tod_server's time.time()).
+        now = self.get_clock().now()
+        goal.release_wall_s = (
+            now.nanoseconds * 1e-9 + max(0.0, delay_s - release_latency_s)
+            if throw else 0.0)
         # Suppress the predict_throw-based announcement (platform default catch
         # height); we publish our own using the solver's actual target z + ToF.
         goal.suppress_announcement = True
@@ -547,6 +574,7 @@ class BallButlerNode(Node):
                 target_global_mm=(x_g, y_g, z_g),
                 sol=sol,
                 delay_s=delay_s,
+                now=now,
             )
 
         correction_note = ''
@@ -669,7 +697,7 @@ class BallButlerNode(Node):
         goal.yaw_angle_rad = math.radians(yaw)
         goal.pitch_angle_rad = math.radians(pitch)
         goal.throw_speed = 0.0          # speed 0 = aim/track, no ball leaves
-        goal.throw_time = 0.0
+        goal.release_wall_s = 0.0       # an aim has no release (the bridge stamps now)
         goal.suppress_announcement = True
         # Own done-callback, NOT _on_throw_goal_response: an aim renewed at 1 Hz
         # must not publish on bb/throw_outcome, whose consumers read it as a
@@ -805,7 +833,8 @@ class BallButlerNode(Node):
 
     def _publish_throw_announcement(self, target_name: str,
                                     target_global_mm: Tuple[float, float, float],
-                                    sol: ThrowSolution, delay_s: float) -> None:
+                                    sol: ThrowSolution, delay_s: float,
+                                    now: Optional[rclpy.time.Time] = None) -> None:
         """Publish a ThrowAnnouncement with solver-correct landing geometry.
 
         Unlike can_node's predict_throw-based announcement (which uses the
@@ -834,7 +863,10 @@ class BallButlerNode(Node):
         # ball's true expected timing, not the bare command/physics instants.
         # `sol.tof_s` itself (ann.predicted_tof_sec below) is left as the raw
         # solver prediction -- only the two derived clock fields move.
-        now = self.get_clock().now()
+        # `now` is the instant the goal's absolute release was computed from
+        # (_throw_at_global_point), so the announcement and the release share it.
+        if now is None:
+            now = self.get_clock().now()
         throw_time = now + rclpy.time.Duration(
             seconds=delay_s + BB_RELEASE_PUSH_LAG_S)
         landing_time = throw_time + rclpy.time.Duration(

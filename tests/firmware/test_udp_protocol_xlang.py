@@ -248,7 +248,13 @@ def test_protocol_version_frozen(gen, proto):
     Bumping it is an INCOMPATIBLE-wire change that requires reflashing the whole
     fleet — this makes the bump deliberate and keeps all three artifacts in lockstep."""
     spec_ver = _spec_const(gen, "PROTOCOL_VERSION")
-    assert spec_ver == 9, (   # 8→9: axis-silence watchdog (can-bridge FW 23, 2026-09-15) —
+    assert spec_ver == 10, (  # 9→10: BB absolute release (can-bridge FW 29, 2026-10-12) —
+                              # ArgBbThrow.delay_s (f32, relative-on-receipt) became
+                              # release_wall_us (u64, absolute) and BB_THROW gained
+                              # ResultBbThrow + ERR_RELEASE_PAST/TOO_SOON/TOO_FAR; a
+                              # delay read as an epoch throws at the wrong instant ⇒
+                              # incompatible; darkness vs any FW ≤ 28 board is intended.
+                              # 8→9: axis-silence watchdog (can-bridge FW 23, 2026-09-15) —
                               # HeartbeatT2J GROWS by the CAN_BUS_DOWN trip latch
                               # (can_fault_leg/age_ms/count) + flags bits 16-22
                               # HB_STALE_MASK; CacheDiag GROWS by hb_frames[7]. The
@@ -506,7 +512,12 @@ def test_wire_layout_frozen(gen):
     # /bb/axis_estimates name bb_yaw. No existing message changed, so
     # PROTOCOL_VERSION stays 9; an old host ignores 0x93. Previous digest:
     #   1b70c6cfaf9bab68ae25c66753de991ac9a10c7a5528fe4a8c537732a1db92bc
-    _EXPECTED = "681bd26e16941f4b55ae8ba83741af1f674510b175f762d862399169339f5250"
+    # Re-pinned for the INCOMPATIBLE BB absolute release (2026-10-12, can-bridge
+    # FW 29, PROTOCOL_VERSION 9→10): ArgBbThrow's 4th field delay_s (f32,
+    # relative) became release_wall_us (u64, absolute) — 16→20 B — and
+    # ResultBbThrow (i32 lead_us, 4 B) was added. Previous digest:
+    #   681bd26e16941f4b55ae8ba83741af1f674510b175f762d862399169339f5250
+    _EXPECTED = "2d9d7b7b0183535b6b486f49dba457cf2c09785126846bc4b8b0345eed946f8a"
     assert digest == _EXPECTED, (
         "The UDP wire LAYOUT changed (a message/arg field layout, a framed MsgType "
         "value, or a framing constant). If INCOMPATIBLE, bump PROTOCOL_VERSION. Either "

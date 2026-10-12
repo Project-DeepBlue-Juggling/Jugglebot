@@ -403,17 +403,102 @@ TEST_CASE("HOME / ACTIVATE / DEACTIVATE route to their *_request with the axis")
 
 TEST_CASE("BB_THROW: range-check rejects before CAN1; in-range + BB present sends one CAN1 frame") {
   reset_all();
+  fake_set_clock(1700000000000000ULL, 0);
   // Out-of-range speed → ERR_BAD_ARGS, no CAN1 traffic (even before the presence gate).
-  ArgBbThrow bad{}; bad.yaw_rad = 0.0f; bad.pitch_rad = 0.5f; bad.speed_mps = 100.0f; bad.delay_s = 0.1f;
+  ArgBbThrow bad{}; bad.yaw_rad = 0.0f; bad.pitch_rad = 0.5f; bad.speed_mps = 100.0f;
+  bad.release_wall_us = 1700000000000000ULL + 2000000ULL;
   CHECK(call(RpcMethod::BB_THROW, bad) == RpcStatus::ERR_BAD_ARGS);
   CHECK(g_bb_sent == 0);
   // In-range + BB present → one CAN1 frame on the THROW id.
   reset_all();
+  fake_set_clock(1700000000000000ULL, 0);
   bb_state.heartbeat_seen = true; bb_state.heartbeat_stale = false;
-  ArgBbThrow ok{}; ok.yaw_rad = 0.0f; ok.pitch_rad = 0.5f; ok.speed_mps = 3.0f; ok.delay_s = 0.1f;
+  ArgBbThrow ok{}; ok.yaw_rad = 0.0f; ok.pitch_rad = 0.5f; ok.speed_mps = 3.0f;
+  ok.release_wall_us = 1700000000000000ULL + 2000000ULL;
   CHECK(call(RpcMethod::BB_THROW, ok) == RpcStatus::OK);
   CHECK(g_bb_sent == 1);
   CHECK(g_bb_last.id == BallButlerCanId::THROW_CMD);
+}
+
+// FW 29 / PROTOCOL_VERSION 10: the release is ABSOLUTE and the bridge is its lead
+// gate. The frame's bytes 6-7 are the release's epoch-ms low 16 bits — NOT
+// receipt + anything — so a late RPC cannot move the release; and a release that
+// is gone, too close for BB, or past BB's ±32.768 s decode is REFUSED by name with
+// nothing on CAN1 (no silent "throw now").
+static uint16_t call_bb_throw(const ArgBbThrow& a, int32_t& lead_us, uint16_t& res_len) {
+  uint8_t result[64]; res_len = 0;
+  const uint16_t st = Rpc::dispatch(RpcMethod::BB_THROW, reinterpret_cast<const uint8_t*>(&a),
+                                    sizeof(a), result, res_len);
+  lead_us = 0;
+  if (res_len == sizeof(JbUdp::RpcArgs::ResultBbThrow)) memcpy(&lead_us, result, 4);
+  return st;
+}
+
+TEST_CASE("BB_THROW absolute release: bytes 6-7 are the release epoch-ms, independent of receipt time") {
+  const uint64_t T = 1700000000123000ULL;            // the release (us, integer ms)
+  const uint16_t want = (uint16_t)((T / 1000ULL) & 0xFFFFULL);
+  for (uint64_t receipt_lag_us : {2500000ULL, 2480000ULL, 2400000ULL}) {   // 20 / 100 ms late
+    reset_all();
+    bb_state.heartbeat_seen = true; bb_state.heartbeat_stale = false;
+    fake_set_clock(T - receipt_lag_us, 0);
+    ArgBbThrow a{}; a.yaw_rad = 0.1f; a.pitch_rad = 0.5f; a.speed_mps = 3.0f; a.release_wall_us = T;
+    int32_t lead = 0; uint16_t rl = 0;
+    CHECK(call_bb_throw(a, lead, rl) == RpcStatus::OK);
+    CHECK(rl == sizeof(JbUdp::RpcArgs::ResultBbThrow));
+    CHECK(lead == (int32_t)receipt_lag_us);
+    REQUIRE(g_bb_sent == 1);
+    uint16_t tt; memcpy(&tt, &g_bb_last.buf[6], 2);
+    CHECK(tt == want);
+  }
+}
+
+TEST_CASE("BB_THROW absolute release: PAST / TOO_SOON / TOO_FAR refused by name, nothing on CAN1") {
+  const uint64_t now = 1700000000000000ULL;
+  struct Row { int64_t lead_us; uint16_t want; };
+  const Row rows[] = {
+    {-1000,                                   RpcStatus::ERR_RELEASE_PAST},
+    {0,                                       RpcStatus::ERR_RELEASE_PAST},
+    {1,                                       RpcStatus::ERR_RELEASE_TOO_SOON},
+    {(int64_t)BB_RELEASE_MIN_LEAD_US - 1,     RpcStatus::ERR_RELEASE_TOO_SOON},
+    {(int64_t)BB_RELEASE_MIN_LEAD_US,         RpcStatus::OK},
+    {(int64_t)BB_RELEASE_MAX_LEAD_US,         RpcStatus::OK},
+    {(int64_t)BB_RELEASE_MAX_LEAD_US + 1,     RpcStatus::ERR_RELEASE_TOO_FAR},
+    {40000000,                                RpcStatus::ERR_RELEASE_TOO_FAR},  // would wrap at BB
+  };
+  for (const Row& r : rows) {
+    reset_all();
+    bb_state.heartbeat_seen = true; bb_state.heartbeat_stale = false;
+    fake_set_clock(now, 0);
+    ArgBbThrow a{}; a.yaw_rad = 0.0f; a.pitch_rad = 0.5f; a.speed_mps = 3.0f;
+    a.release_wall_us = (uint64_t)((int64_t)now + r.lead_us);
+    int32_t lead = 0; uint16_t rl = 0;
+    CHECK(call_bb_throw(a, lead, rl) == r.want);
+    CHECK(lead == (int32_t)r.lead_us);              // the lead rides back on refusals too
+    CHECK(g_bb_sent == (r.want == RpcStatus::OK ? 1 : 0));
+  }
+  // A release 0 (an unset field) against a synced epoch clock is PAST, never "now".
+  reset_all();
+  bb_state.heartbeat_seen = true; bb_state.heartbeat_stale = false;
+  fake_set_clock(now, 0);
+  ArgBbThrow z{}; z.yaw_rad = 0.0f; z.pitch_rad = 0.5f; z.speed_mps = 3.0f; z.release_wall_us = 0;
+  int32_t lead = 0; uint16_t rl = 0;
+  CHECK(call_bb_throw(z, lead, rl) == RpcStatus::ERR_RELEASE_PAST);
+  CHECK(lead == INT32_MIN);                          // saturated, not wrapped
+  CHECK(g_bb_sent == 0);
+}
+
+TEST_CASE("BB_THROW aim (speed 0) ignores release_wall_us and stamps the bridge's now") {
+  reset_all();
+  bb_state.heartbeat_seen = true; bb_state.heartbeat_stale = false;
+  const uint64_t now = 1700000000777000ULL;
+  fake_set_clock(now, 0);
+  ArgBbThrow a{}; a.yaw_rad = 0.2f; a.pitch_rad = 0.6f; a.speed_mps = 0.0f; a.release_wall_us = 0;
+  int32_t lead = 0; uint16_t rl = 0;
+  CHECK(call_bb_throw(a, lead, rl) == RpcStatus::OK);
+  CHECK(rl == 0);
+  REQUIRE(g_bb_sent == 1);
+  uint16_t tt; memcpy(&tt, &g_bb_last.buf[6], 2);
+  CHECK(tt == (uint16_t)((now / 1000ULL) & 0xFFFFULL));
 }
 
 TEST_CASE("BB_RELOAD with BB absent → ERR_BUS_DOWN (presence gate, no CAN1)") {
@@ -552,7 +637,9 @@ TEST_CASE("the BB relay acks a DEFERRED CAN1 frame OK, charged to TxCls::RPC") {
   reset_all();
   bb_state.heartbeat_seen = true; bb_state.heartbeat_stale = false;
   g_bb_result = TxResult::DEFERRED;      // CAN1 mailbox busy: queued, transmits in order
-  ArgBbThrow a{}; a.yaw_rad = 0.0f; a.pitch_rad = 0.5f; a.speed_mps = 3.0f; a.delay_s = 0.1f;
+  fake_set_clock(1700000000000000ULL, 0);
+  ArgBbThrow a{}; a.yaw_rad = 0.0f; a.pitch_rad = 0.5f; a.speed_mps = 3.0f;
+  a.release_wall_us = 1700000000000000ULL + 2000000ULL;
 
   CHECK(call(RpcMethod::BB_THROW, a) == RpcStatus::OK);
   CHECK(g_bb_sent == 1);
@@ -563,6 +650,7 @@ TEST_CASE("the BB relay acks a DEFERRED CAN1 frame OK, charged to TxCls::RPC") {
   // still ERR_TIMEOUT, so the client still retries the one case that needs it.
   reset_all();
   bb_state.heartbeat_seen = true; bb_state.heartbeat_stale = false;
+  fake_set_clock(1700000000000000ULL, 0);
   g_bb_send_ok = false;                  // → TxResult::FAILED
   CHECK(call(RpcMethod::BB_THROW, a) == RpcStatus::ERR_TIMEOUT);
 }

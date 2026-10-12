@@ -63,7 +63,9 @@ def test_method_id_is_generated_and_shared_with_the_firmware():
 
 
 def test_protocol_version_is_unchanged_by_the_additive_method():
-    assert int(p.PROTOCOL_VERSION) == 9
+    # HAND_MOVE_TO itself bumped nothing (it landed at 9). The 9→10 bump is the
+    # later BB absolute release (ArgBbThrow.release_wall_us, FW 29, 2026-10-12).
+    assert int(p.PROTOCOL_VERSION) == 10
 
 
 def test_arg_blob_exact_bytes():

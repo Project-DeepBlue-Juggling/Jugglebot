@@ -9,7 +9,9 @@
 namespace JbUdp {
 
 // ── Constants ──────────────────────────────────────────────────────────
-constexpr uint8_t PROTOCOL_VERSION = 9u;  // Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic; 5→6: 2026-09-01 Setpoint widens 6→7 — index 6 = hand — and gains the v1[7] exact-knot-velocity array, unified-7dof-planner Phase 2; 6→7: 2026-09-11 skill-stack R1 — HAND_TRAJ_CMD/HAND_SOURCE_SET/ERR_HAND_SOURCE removed, HeartbeatT2J bit 6 retired, BridgeTxDiag hand_ops counters removed; 7→8: 2026-09-14 hand C2 (can-bridge FW 22) — Setpoint GROWS 208→240 B: v2[7] (exact u2-knot velocity, flags bit4 HAS_V2) + hand_ff_gain (K, clamped [0,1.5] at ingest), flags bit5 HAS_SCHED plays the frame on its t_origin_us stamp instead of on UDP arrival; HeartbeatT2J GROWS by the scheduled-playback promotion-continuity diagnostics and flags bits 14 HAND_TORQUE_CLAMP / 15 SCHED_HOLD_LATCHED. Growing a struct is as incompatible as shrinking one: darkness against any FW ≤ 21 board is the INTENDED failure. Removing message types and shrinking a struct are incompatible wire changes: darkness against any FW ≤ 20 board is the INTENDED failure. TOTAL LINK DARKNESS against any FW ≤ 16 board until the lockstep Phase 3 flash — loud and fail-closed by design) 8→9: 2026-09-15 axis-silence watchdog (can-bridge FW 23) — HeartbeatT2J GROWS by can_fault_leg/can_fault_age_ms/can_fault_count (the CAN_BUS_DOWN trip latch: WHICH leg went silent, how stale it was, how many trips this boot) and gains flags bits 16-22 HB_STALE_MASK (per-axis ODrive heartbeat staleness at CAN_HEARTBEAT_STALE_US = 0.5 s, report-only); CacheDiag GROWS by hb_frames[7], the per-axis heartbeat-frame census beside enc_frames. Both structs grow, so this is an incompatible wire change: darkness against any FW ≤ 22 board is the INTENDED failure.
+constexpr uint8_t PROTOCOL_VERSION = 10u;  // Bumped on any incompatible wire change (4→5: 2026-07-31 Profile gains the 3rd CAN slot can3_* — cone traffic; 5→6: 2026-09-01 Setpoint widens 6→7 — index 6 = hand — and gains the v1[7] exact-knot-velocity array, unified-7dof-planner Phase 2; 6→7: 2026-09-11 skill-stack R1 — HAND_TRAJ_CMD/HAND_SOURCE_SET/ERR_HAND_SOURCE removed, HeartbeatT2J bit 6 retired, BridgeTxDiag hand_ops counters removed; 7→8: 2026-09-14 hand C2 (can-bridge FW 22) — Setpoint GROWS 208→240 B: v2[7] (exact u2-knot velocity, flags bit4 HAS_V2) + hand_ff_gain (K, clamped [0,1.5] at ingest), flags bit5 HAS_SCHED plays the frame on its t_origin_us stamp instead of on UDP arrival; HeartbeatT2J GROWS by the scheduled-playback promotion-continuity diagnostics and flags bits 14 HAND_TORQUE_CLAMP / 15 SCHED_HOLD_LATCHED. Growing a struct is as incompatible as shrinking one: darkness against any FW ≤ 21 board is the INTENDED failure. Removing message types and shrinking a struct are incompatible wire changes: darkness against any FW ≤ 20 board is the INTENDED failure. TOTAL LINK DARKNESS against any FW ≤ 16 board until the lockstep Phase 3 flash — loud and fail-closed by design) 8→9: 2026-09-15 axis-silence watchdog (can-bridge FW 23) — HeartbeatT2J GROWS by can_fault_leg/can_fault_age_ms/can_fault_count (the CAN_BUS_DOWN trip latch: WHICH leg went silent, how stale it was, how many trips this boot) and gains flags bits 16-22 HB_STALE_MASK (per-axis ODrive heartbeat staleness at CAN_HEARTBEAT_STALE_US = 0.5 s, report-only); CacheDiag GROWS by hb_frames[7], the per-axis heartbeat-frame census beside enc_frames. Both structs grow, so this is an incompatible wire change: darkness against any FW ≤ 22 board is the INTENDED failure. 9→10: 2026-10-12 BB absolute release (can-bridge FW 29) — ArgBbThrow.delay_s (f32, relative, converted to absolute ON RECEIPT, so Jetson dispatch latency moved the release 1:1) is replaced by release_wall_us (u64, absolute, the bridge wall clock = Jetson CLOCK_REALTIME), the arg GROWS 16→20 B, BB_THROW gains ResultBbThrow (lead at receipt) and three named refusals ERR_RELEASE_PAST/TOO_SOON/TOO_FAR. A delay_s read as an epoch would throw at the wrong instant, so darkness against any FW ≤ 28 board is the INTENDED failure.
+constexpr uint32_t BB_RELEASE_MIN_LEAD_US = 700000u;  // BB_THROW: refuse a release closer than this at bridge receipt (ERR_RELEASE_TOO_SOON); BB wind-up 0.6 s + schedule margin 0.1 s
+constexpr uint32_t BB_RELEASE_MAX_LEAD_US = 30000000u;  // BB_THROW: refuse a release further than this at bridge receipt (ERR_RELEASE_TOO_FAR); BB's 16-bit epoch-ms wrap is ±32.768 s
 constexpr uint16_t MAGIC = 0x4A42u;  // "JB" little-endian preamble (bytes 0x42 0x4A)
 constexpr uint16_t HEADER_SIZE = 8u;  // Bytes before payload
 constexpr uint16_t CRC_SIZE = 2u;  // Trailing CRC-16 bytes
@@ -102,6 +104,9 @@ namespace RpcStatus {
   constexpr uint16_t ERR_TIMEOUT = 0x0004u;  // Downstream CAN op timed out
   constexpr uint16_t ERR_REJECTED = 0x0005u;  // Refused by a safety gate
   constexpr uint16_t ERR_NOT_IMPL = 0x0006u;  // Method not implemented in this firmware revision
+  constexpr uint16_t ERR_RELEASE_PAST = 0x0008u;  // BB_THROW refused: release_wall_us is at or before the bridge's now
+  constexpr uint16_t ERR_RELEASE_TOO_SOON = 0x0009u;  // BB_THROW refused: release lead < BB_RELEASE_MIN_LEAD_US
+  constexpr uint16_t ERR_RELEASE_TOO_FAR = 0x000Au;  // BB_THROW refused: release lead > BB_RELEASE_MAX_LEAD_US
 }
 namespace LinkState {
   constexpr uint8_t INIT = 0u;  // Ethernet up, no Jetson heartbeat yet
@@ -625,9 +630,14 @@ struct ArgBbThrow {
   float yaw_rad;  // Yaw angle in radians [-pi, pi)
   float pitch_rad;  // Pitch angle in radians [0, pi/2]
   float speed_mps;  // Throw speed in m/s [0, 6.5535]
-  float delay_s;  // Relative delay before throw (s) [0, 65.535]
+  uint64_t release_wall_us;  // ABSOLUTE release instant (us, the bridge wall clock = Jetson CLOCK_REALTIME); lead at receipt must be in [BB_RELEASE_MIN_LEAD_US, BB_RELEASE_MAX_LEAD_US]. Ignored (the bridge stamps now) when speed_mps == 0 (aim/track)
 };
-static_assert(sizeof(ArgBbThrow) == 16, "ArgBbThrow size drift");
+static_assert(sizeof(ArgBbThrow) == 20, "ArgBbThrow size drift");
+// ResultBbThrow (BB_THROW (result))
+struct ResultBbThrow {
+  int32_t lead_us;  // release_wall_us − bridge now_wall_us at receipt (us), saturated to i32
+};
+static_assert(sizeof(ResultBbThrow) == 4, "ResultBbThrow size drift");
 // ArgRobotState (STATE_WRITE)
 struct ArgRobotState {
   uint8_t is_homed;  // Legs+hand homing complete
@@ -669,7 +679,8 @@ constexpr uint16_t RESULT_BB_AXIS_VERSIONS_SIZE = 17u;
 constexpr uint16_t RESULT_HAND_TORQUE_SCALE_SIZE = 16u;
 constexpr uint16_t ARG_HAND_MOVE_TO_SIZE = 9u;
 constexpr uint16_t RESULT_HAND_MOVE_TO_SIZE = 20u;
-constexpr uint16_t ARG_BB_THROW_SIZE = 16u;
+constexpr uint16_t ARG_BB_THROW_SIZE = 20u;
+constexpr uint16_t RESULT_BB_THROW_SIZE = 4u;
 constexpr uint16_t ARG_ROBOT_STATE_SIZE = 10u;
 constexpr uint16_t ARG_PLATFORM_FW_BEGIN_SIZE = 4u;
 constexpr uint16_t ARG_PLATFORM_FW_DATA_SIZE = 8u;

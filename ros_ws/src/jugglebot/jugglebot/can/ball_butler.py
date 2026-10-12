@@ -150,6 +150,42 @@ def encode_throw_command(yaw_rad: float, pitch_rad: float,
                        dlc=8, is_extended_id=False)
 
 
+def encode_throw_command_at(yaw_rad: float, pitch_rad: float,
+                            speed_mps: float, release_wall_us: int) -> can.Message:
+    """Encode a throw command for an ABSOLUTE release instant (the spec of the
+    can-bridge's FW 29 ``ball_butler_protocol.h encode_throw``).
+
+    ``release_wall_us`` is the release on the shared wall clock (µs since the
+    epoch, Jetson CLOCK_REALTIME); bytes 6-7 carry its epoch-ms low 16 bits,
+    floored (``release_wall_us // 1000``) exactly as the C++ integer divide.
+    The lead-time gate (past / < 0.7 s / > 30 s) is NOT here: it is the
+    bridge's ``check_release``, the one enforcement point, pinned by the
+    native rpc-dispatch tests. The angle/speed checks mirror
+    ``throw_args_valid``.
+    """
+    for name, val in [('yaw', yaw_rad), ('pitch', pitch_rad),
+                      ('speed', speed_mps)]:
+        if not math.isfinite(val):
+            raise ValueError(f"{name} is {val} (must be finite)")
+    if not (-math.pi <= yaw_rad < math.pi):
+        raise ValueError(f"Yaw {yaw_rad:.3f} rad outside [-π, π]")
+    if not (0 <= pitch_rad <= math.pi / 2):
+        raise ValueError(f"Pitch {pitch_rad:.3f} rad outside [0, π/2]")
+    if not (0 <= speed_mps <= 6.5535):
+        raise ValueError(f"Speed {speed_mps:.2f} m/s outside [0, 6.5535]")
+    if int(release_wall_us) < 0:
+        raise ValueError(f"release_wall_us {release_wall_us} is negative")
+
+    data = struct.pack('<hHHH',
+                       int(yaw_rad * 32768.0 / math.pi),
+                       int(pitch_rad * 65536.0 / math.pi),
+                       int(speed_mps * 10000.0),
+                       (int(release_wall_us) // 1000) & 0xFFFF)
+
+    return can.Message(arbitration_id=THROW_CMD_ID, data=data,
+                       dlc=8, is_extended_id=False)
+
+
 def encode_state_command(cmd_id: int) -> can.Message:
     """Encode a reload, reset, or calibrate command (no payload)."""
     return can.Message(arbitration_id=cmd_id, data=[], dlc=0, is_extended_id=False)
