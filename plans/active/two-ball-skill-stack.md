@@ -1385,9 +1385,10 @@ the rung's tests passing or a handoff file in the scratchpad.
   150 Hz finite-difference rate estimate dithering past a 3.0°/s gate) fixed by BB firmware FW 5
   (settled = position error inside 1.0° for the last 15 samples AND rate ≤ 12°/s AND in-band
   now) plus a Jetson-side retry-once on the literal `THROW_ABORTED_NOT_SETTLED` token.
-  **Landing-timing and lateral-bias constants**: `BB_RELEASE_PUSH_LAG_S = 0.037` s and
-  `BB_FLIGHT_BIAS_S = 0.015` s folded into Ball Butler's announced landing (+52 ms total, applied
-  once, at the publisher); the +27/+11 mm lateral bias traces to BB's aim affine
+  **Landing-timing and lateral-bias constants**: `BB_RELEASE_PUSH_LAG_S` and `BB_FLIGHT_BIAS_S`
+  folded into Ball Butler's announced landing, applied once, at the publisher (0.037 + 0.015 s
+  = +52 ms here; re-centred to 0.001 + 0.000 s on 2026-10-12 after the absolute BB release,
+  logbook `2026-10-12-skill-stack-r5-bb-feed-recentre-after-absolute-release`); the +27/+11 mm lateral bias traces to BB's aim affine
   (`throw_affine_correction.json`, fitted 2026-06-09 at a BB pose now 10.3° of yaw stale) — fix
   is re-running BB's accuracy volley (`bb/start_accuracy_calibration`) and refitting the affine
   offline before the next sitting's reload/columns blocks. Runsheet:

@@ -203,17 +203,30 @@ class TestSuccessPath:
 
 
 class TestReleaseLagCorrection:
-    """R5 day-1 bag decomposition (2026-09-30, 14 flown BB-feed reload throws,
-    bag ~/Desktop/rosbags/2026-09-30_16-20-05, see
-    tools/probes/feed_catch_bag_probe.py and feed_timing_report.md): raw
-    mocap shows the ball's physical release running +37.2 ms after the
-    announced throw_time (push-phase lag, flight_fit.py's documented 5-55 ms
-    note) and the flight itself running +14.7 ms longer than the predicted
-    ToF -- individually noisy, but the sum lands the ball +51.9 ms late
-    against the schedule's committed landing epoch, stdev only 15.4 ms. Both
-    biases are applied in ball_butler_node's published ThrowAnnouncement
-    only; skill_node.py's `_install_announced_reload` reads throw_time/
-    landing_time verbatim and is not corrected again."""
+    """The announcement timing bias. `throw_time = now + delay + BB_RELEASE_PUSH_LAG_S`
+    and `landing_time = throw_time + tof + BB_FLIGHT_BIAS_S`, and both are applied
+    only in ball_butler_node's published ThrowAnnouncement. skill_node.py's
+    `_install_announced_reload` reads throw_time/landing_time verbatim and does
+    not correct them again.
+
+    Re-centred 2026-10-12 on the first absolute-release sitting (bridge FW 29,
+    bag ~/Desktop/rosbags/2026-10-12_23-24-02, n=17). With the old 0.037 + 0.015,
+    the free-fall arrival at the catch plane was 50.6 ms early (sd 2.2 ms). The
+    per-throw `bb/throw C1:` lines measure the dispatch latency the old 37 ms
+    contained (it no longer delays the release) at 35.7 ms; the remaining
+    ~15 ms is flight. New sum: 0.001 s. See the comment at the constants."""
+
+    def test_constants_pinned_to_the_2026_10_12_free_fall_recentre(self):
+        # A pin, not a physics check. The sum is what the schedule-pinned feed
+        # catch sees: replaying the 2026-10-12 bag with it gives arrival -
+        # landing_time = +0.4 ms (sd 2.2, n=17), against -50.6 ms at the old
+        # 0.052. Change it only from a fresh free-fall-fit measurement, and
+        # update the comment at the constants with the (bag, n, mean, sd).
+        from jugglebot.ball_butler_node import (
+            BB_FLIGHT_BIAS_S, BB_RELEASE_PUSH_LAG_S)
+        assert BB_RELEASE_PUSH_LAG_S == pytest.approx(0.001, abs=1e-9)
+        assert BB_FLIGHT_BIAS_S == pytest.approx(0.000, abs=1e-9)
+        assert BB_RELEASE_PUSH_LAG_S + BB_FLIGHT_BIAS_S == pytest.approx(0.001, abs=1e-9)
 
     def test_throw_time_and_landing_time_include_measured_bias(self, calibrated_node):
         from jugglebot.ball_butler_node import (

@@ -77,44 +77,59 @@ _DEFAULT_THROW_DELAY_S = 2.5
 # Gravity (mm/s²) — for landing-velocity decay in published ThrowAnnouncement.
 _G_MMPS2 = hw.GRAVITY_MPS2 * 1000.0
 
-# Measured announcement bias (R5 day-1 sitting, 2026-09-30, 14 flown BB-feed
-# reload throws, bag ~/Desktop/rosbags/2026-09-30_16-20-05): the announced
-# `throw_time` above is `now + delay_s` -- the INTENDED command instant --
-# but raw mocap (unlabelled-marker free-fall fit, not the tracker's Kalman
-# state, which itself lags 60-200 ms per flight_fit.py) shows the ball's
-# PHYSICAL release running +37.2 ms (stdev 36.4 ms, n=14) after that. This is
-# the push-phase lag flight_fit.py already documents ("the announced
-# throw_time precedes the physical release by 5-55 ms -- the ball is still
-# being PUSHED at > g by the cup"), not the actuator latency
-# `hw.BB_OP_THROW_RELEASE_LATENCY_MS` already compensates for at dispatch
-# (goal.release_wall_s, below) -- this is a second, additive, unmodeled term.
-# Individually noisy (the release-detection window is only 14-47 ms wide per
-# feed) but stable in aggregate. Re-measure with
-# `tools/probes/feed_catch_bag_probe.py --bag <bag> --log <launch.log>`.
+# Announcement timing bias. `throw_time = now + delay_s + BB_RELEASE_PUSH_LAG_S`
+# and `landing_time = throw_time + sol.tof_s + BB_FLIGHT_BIAS_S` (below), where
+# `now` is the instant the goal's absolute release is computed from. The feed
+# catch is schedule-pinned to `landing_time`, so the SUM of the two constants
+# is the load-bearing number: it must make `landing_time` the ball's real
+# arrival at the catch plane.
 #
-# ⚠ RE-CENTRE AFTER THE FIRST ABSOLUTE-RELEASE SITTING (2026-10-12): this 37 ms
-# was measured while the release was relative-on-receipt, so it CONTAINS the
-# mean Jetson->bridge dispatch latency (announcement `now` -> bridge receipt).
-# With the absolute release (bridge FW 29) that mean no longer delays the
-# release, so the ball now leaves EARLIER by it and this constant reads late by
-# the same amount. Not measurable from the existing bags (no send/receipt
-# stamp); the per-throw `bb/throw C1:` line in launch.log now measures it.
-# Separately, the 2026-10-11 free-fall tail fit says the 52 ms sum reads ~10 ms
-# late already (BB_drift_report: ~42 ms would centre it).
-BB_RELEASE_PUSH_LAG_S = 0.037
+# RE-CENTRED 2026-10-12 on the first absolute-release sitting (bridge FW 29,
+# bag ~/Desktop/rosbags/2026-10-12_23-24-02, launch.log
+# ~/.ros/log/2026-10-12-23-24-01-939035-jetson-3607045, n=17 BB throws).
+# Measurement: the free-fall fit of the last ~0.25 s of raw unlabelled mocap,
+# extrapolated to the catch plane. It does NOT use the 830 mm crossing that
+# feed_catch_bag_probe.py reports, because that crossing includes cup contact.
+# With the old 0.037 + 0.015 the ball arrived 50.6 ms EARLY against
+# `landing_time` (sd 2.2 ms, n=17, range -54.6..-46.5). Two parts:
+#   - Dispatch latency, now removed from the release. Before FW 29 the bridge
+#     timed the release relative to its RECEIPT, so the old 37 ms contained the
+#     mean announcement-`now` -> bridge-receipt latency. The per-throw
+#     `bb/throw C1:` lines measure that latency at 35.7 ms (sd 14.1, range
+#     20.6-61.0, n=17). The release is now absolute, so that latency no longer
+#     delays it. BB_RELEASE_PUSH_LAG_S therefore goes 0.037 - 0.036 = 0.001.
+#     BB's hand-stroke landmark (3.5 rev crossing) now sits 3.9 ms before the
+#     commanded release_wall, sd 2.6 ms (the old relative path's sd was
+#     14-22 ms).
+#   - Flight: the remaining 14.9 ms. About 10 ms of it was already present
+#     before FW 29: the 2026-10-11 free-fall fits read 10.5-10.9 ms early, and
+#     the 2026-09-30 decomposition used the probe's contact-biased crossing.
+#     The other ~5 ms comes from this sitting's lower flight (apex 2481 mm
+#     against 2502 mm on 2026-10-11; hand stroke to arrival 931 ms against
+#     938 ms). Sitting-to-sitting spread in that stroke-to-arrival time is
+#     about +-5 ms (933-943 ms over the three 2026-10-11 sittings), which is
+#     the expected residual for the next sitting. BB_FLIGHT_BIAS_S therefore
+#     goes 0.015 - 0.015 = 0.000.
+# Sum 0.001 s (was 0.052). Replaying this bag gives arrival - landing_time =
+# +0.4 ms, sd 2.2 ms, n=17.
+# Do not read BB_RELEASE_PUSH_LAG_S as the physical release instant. On the
+# hand-velocity peak, BB's ball leaves about 40 ms before now + delay_s,
+# because `hw.BB_OP_THROW_RELEASE_LATENCY_MS` (44 ms, cone-measured through
+# the old relative path) also contained dispatch latency. That leaves the
+# split between these two constants unidentified; only the sum is measured.
+# Re-measure with the free-fall fit (2026-10-12 BB_drift_report method), not
+# with the probe's 830 mm crossing.
+BB_RELEASE_PUSH_LAG_S = 0.001
 
-# Same sitting/bag: the flight itself runs +14.7 ms (stdev 30.7 ms, n=14)
-# longer than the solver's predicted ToF (`sol.tof_s`, unchanged below --
-# this constant is a residual OBSERVED bias on top of the physics
-# prediction, not a correction to the physics itself). Individually noisy
-# like the term above, but the two SUM tightly: landing (raw-mocap crossing
-# of the catch plane) lands +51.9 ms late against the schedule's committed
-# landing epoch, stdev only 15.4 ms across all 14 feeds -- see
-# `feed_timing_report.md`'s Decomposition section (reproduced by the same
-# probe). BB_RELEASE_PUSH_LAG_S + BB_FLIGHT_BIAS_S = 0.052 s is applied
-# entirely here, in the node that PUBLISHES the announcement; skill_node.py
-# consumes `throw_time`/`landing_time` verbatim and is not corrected again.
-BB_FLIGHT_BIAS_S = 0.015
+# See BB_RELEASE_PUSH_LAG_S above: the residual flight bias, re-centred
+# 2026-10-12 to 0.000 from 0.015. The 0.015 came from the 2026-09-30 probe
+# decomposition (+14.7 ms, sd 30.7, n=14), which timed the 830 mm crossing
+# including cup contact. `sol.tof_s` is published unchanged as
+# `predicted_tof_sec`; only the two derived clock fields move. Both constants
+# are applied here, in the node that PUBLISHES the announcement. skill_node.py
+# consumes `throw_time`/`landing_time` verbatim and does not correct them
+# again.
+BB_FLIGHT_BIAS_S = 0.000
 
 # Default location of the 2D affine correction matrix (BB-local frame).
 # The file maps desired-landing → commanded-target so that, when run
@@ -534,12 +549,14 @@ class BallButlerNode(Node):
         # true arrival (now + delay_s + tof) — after compensation the actual release
         # lands at now + delay_s, so the announcement is correct. The latency is constant
         # across the workspace (no range/speed/pitch dependence), so one value suffices.
-        # As of 2026-09-30 this is not exact: even after this compensation the ball's
-        # physical release still measures ~37 ms after now + delay_s on average (14 feeds,
-        # raw mocap). That residual is corrected in the announcement's throw_time /
-        # landing_time only (BB_RELEASE_PUSH_LAG_S / BB_FLIGHT_BIAS_S), not by widening
-        # release_latency_s here — the two act on different things (the dispatch instant
-        # vs. the announcement's belief), so there is no double-counting.
+        # This is not exact. The 44 ms was measured through the old relative-on-receipt
+        # path, so it contains that era's dispatch latency. With the absolute release
+        # (FW 29), BB's hand peaks ~40 ms before now + delay_s (2026-10-12 bag). The
+        # announcement absorbs the residual (BB_RELEASE_PUSH_LAG_S / BB_FLIGHT_BIAS_S,
+        # re-centred 2026-10-12 so landing_time predicts the measured arrival). It is
+        # not absorbed by changing release_latency_s here: that value is shared with
+        # the firmware headers, and the two act on different things (the dispatch
+        # instant vs. the announcement's belief), so there is no double-counting.
         release_latency_s = hw.BB_OP_THROW_RELEASE_LATENCY_MS / 1000.0
         # ABSOLUTE release (2026-10-12, can-bridge FW 29 / PROTOCOL_VERSION 10):
         # the release instant is computed ONCE, here, from the same `now` the
