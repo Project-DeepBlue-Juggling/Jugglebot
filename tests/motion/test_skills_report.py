@@ -85,8 +85,8 @@ def test_a_throw_released_on_time_reads_zero_release_error():
      'admitting inequality 174 (working set size 14))',
      'INFEASIBLE: QP infeasible: unbounded dual step admitting inequality 174 '
      '(working set size 14)'),
-    ('the firmware refused the streamed hand lane and is holding the hand',
-     'the firmware refused the streamed hand lane and is holding the hand'),
+    ('the firmware refused a streamed lane (legs or hand) and is holding it',
+     'the firmware refused a streamed lane (legs or hand) and is holding it'),
 ])
 def test_short_refusal(message, short):
     assert rp.short_refusal(message) == short

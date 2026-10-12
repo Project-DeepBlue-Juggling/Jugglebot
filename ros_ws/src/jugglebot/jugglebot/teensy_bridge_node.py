@@ -820,6 +820,12 @@ _T2J_CONE_HEALTH_SHIFT = 4
 # there), so surfacing it is backward-compatible with an unflashed bridge.
 _T2J_TORQUE_CLAMP_MASK = int(p.HeartbeatT2JFlags.TORQUE_CLAMP_MASK)
 _T2J_TORQUE_CLAMP_SHIFT = int(p.HEARTBEAT_TORQUE_CLAMP_SHIFT)
+# Bit 15: a scheduled lane group (legs or hand) is in the LATCHED hold — its
+# cover exhausted, it ran the C2 stop, and it refused a discontinuous resume
+# while armed (leg_interp.cpp `sched_apply`). Clears only on an accepted
+# continuous promotion or the next disarm/arm edge. On the wire since FW 22,
+# surfaced 2026-10-13 after R5 sitting 7's latch went unread by every node.
+_T2J_FLAG_SCHED_HOLD_LATCHED = int(p.HeartbeatT2JFlags.SCHED_HOLD_LATCHED)
 
 # Bits 16-22 carry the report-only per-axis ODrive heartbeat-staleness mask
 # (bit 16+i = axis i's CAN heartbeat older than CAN_HEARTBEAT_STALE_US = 0.5 s;
@@ -5664,6 +5670,13 @@ class TeensyBridgeNode(Node):
                     KeyValue(key='sched_stops', value=str(int(hb.sched_stops))),
                     KeyValue(key='sched_refused',
                              value=str(int(hb.sched_refused))),
+                    # The latch itself (flags bit 15), not just its counter:
+                    # `sched_refused` keeps climbing one per refused frame,
+                    # but only this bit says the latch is STILL set — what
+                    # skill_node's goal-start refusal reads (R5 sitting 7).
+                    KeyValue(key='sched_hold_latched',
+                             value=str(int(bool(int(hb.flags)
+                                                & _T2J_FLAG_SCHED_HOLD_LATCHED)))),
                     KeyValue(key='live_deviation',
                              value=','.join(f'{d:.4f}' for d in hb.live_deviation)),
                     KeyValue(key='max_dev_leg',

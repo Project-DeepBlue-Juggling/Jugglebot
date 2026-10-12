@@ -338,6 +338,14 @@ ABORTED_MODE_CHANGED = 'ABORTED_MODE_CHANGED'
 #: 2.5 rev guard band is ~1 s away, and the counter reaches this code within one
 #: 10 Hz ``/link_status`` publish -- so the hold lands with most of the band
 #: unspent.
+#:
+#: ⚠ The name is historical: ``sched_refused`` is ONE counter shared by the leg
+#: and hand groups, so this code fires on EITHER lane. R5 sitting 7
+#: (2026-10-13, bag ``2026-10-13_00-18-46``) was the LEG group: a ~45 ms Jetson
+#: stream stall exhausted both groups' cover mid-throw, the near-still hand
+#: resumed inside its 0.05 rev tolerance, the legs (0.4 rev/s against
+#: ``SCHED_RESUME_TOL_VEL`` 0.3 rps) were refused and latched until the next
+#: disarm/arm edge -- and the hand-less hold then stopped the hand itself.
 HAND_LANE_REFUSED = 'HAND_LANE_REFUSED'
 
 #: No evidence the ball left by ``t_release + RELEASE_GRACE_S`` -- the throw
@@ -2820,12 +2828,12 @@ class SkillExecutor:
                 # the walk (see HAND_LANE_REFUSED).
                 self.attempt_ended = True
                 self.end_code = HAND_LANE_REFUSED
-                self.end_message = ('the firmware refused the streamed hand '
-                                    'lane and is holding the hand')
+                self.end_message = ('the firmware refused a streamed lane '
+                                    '(legs or hand) and is holding it')
                 lines.append(
-                    '%.3f END %s: the firmware refused the streamed hand lane '
-                    '(sched_refused moved) and is HOLDING the hand — hold the '
-                    'plan before the refused command walks into '
+                    '%.3f END %s: the firmware refused a streamed lane (legs '
+                    'or hand; sched_refused moved) and is HOLDING it — hold '
+                    'the plan before the refused command walks into '
                     'MAX_DEVIATION' % (t_abs_s, HAND_LANE_REFUSED))
             else:
                 for idx, skill in enumerate(self.schedule.skills):

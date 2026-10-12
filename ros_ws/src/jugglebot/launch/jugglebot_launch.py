@@ -446,7 +446,16 @@ def generate_launch_description():
         # run's launch.log could not answer anything about the planner.
         # 'both' = the screen (stdout too, as before) AND launch.log.
         output='both',
-        parameters=[{'pre_release_hold_s': pre_release_hold_s}],
+        # level_trim_deg: the residual level lean measured at R5 sitting 4
+        # (31 self-tosses, tools/probes/level_vs_ballfit.py, wire convention,
+        # logbook/2026-10-04-skill-stack-r5-sitting-4.md § 3). A launch
+        # default since 2026-10-13: it was a per-sitting `ros2 param set`
+        # runsheet row, and sitting 7's relaunch silently dropped it — the
+        # P1 columns throws then landed +30 mm toward P2 (n=28) against +14
+        # with it applied (sitting 7b, n=22). `ros2 param set` still
+        # overrides it live; [0.0, 0.0] turns it off for an A/B.
+        parameters=[{'pre_release_hold_s': pre_release_hold_s,
+                     'level_trim_deg': [0.0945, 0.3678]}],
         # THE node the cap exists for: it owns BOTH the planner (plan_cycle) and
         # the 40 Hz emitter thread the can-bridge's 250 ms SETPOINT_STALE watchdog
         # watches, so an uncapped BLAS pool here starves the wire from inside the

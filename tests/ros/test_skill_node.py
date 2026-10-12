@@ -2468,6 +2468,71 @@ def test_a_bridge_that_never_publishes_the_counter_changes_nothing(tmp_path):
     assert node._observations(0.0).hand_lane_refused is False
 
 
+# ── R5 sitting 7 (2026-10-13): no new goal while a lane is LATCHED ──────────
+# A stream stall latched the LEG lane mid-throw; the latch clears only on a
+# disarm/arm edge, so the next goal dispatched Ball Butler and ended 0.5 s
+# later on the same latch. `_start_pattern` now refuses up front.
+
+def _latched_link_status(sched_refused, latched):
+    return DiagnosticStatus(values=[
+        KeyValue(key='fault_state', value='NONE'),
+        KeyValue(key='sched_refused', value=str(int(sched_refused))),
+        KeyValue(key='sched_hold_latched', value=str(int(latched)))])
+
+
+def _try_self_toss_start(node, tmp_path):
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    _prelevel_ready(node)
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)):
+        return node._start_pattern(_self_toss_goal())
+
+
+def test_a_latched_lane_refuses_the_next_goal(tmp_path):
+    node, _client = _node_with_client(response=_response())
+    node._params['plant_id'] = 'test_lane_latched_bit'
+    node._on_link_status(_latched_link_status(1435, latched=1))
+    resp = _try_self_toss_start(node, tmp_path)
+    assert resp.success is False
+    assert 'LATCHED' in resp.message and 'IDLE' in resp.message
+    assert node._executor is None
+
+
+def test_a_still_rising_counter_refuses_without_the_bit(tmp_path):
+    """An older bridge node (no `sched_hold_latched` key): a counter that rose
+    on the last publish is the latch refusing every frame."""
+    node, _client = _node_with_client(response=_response())
+    node._params['plant_id'] = 'test_lane_latched_rising'
+    node._on_link_status(_link_status(788))
+    node._on_link_status(_link_status(805))
+    resp = _try_self_toss_start(node, tmp_path)
+    assert resp.success is False
+    assert 'still rising' in resp.message
+    assert node._executor is None
+
+
+def test_an_old_rise_with_the_bit_clear_is_history(tmp_path):
+    """The latch cleared at the disarm/arm edge (bit 0) and the counter froze:
+    a rise older than the window must not block the next goal."""
+    node, _client = _node_with_client(response=_response())
+    node._params['plant_id'] = 'test_lane_latched_history'
+    node._on_link_status(_latched_link_status(1438, latched=1))
+    node._on_link_status(_latched_link_status(1439, latched=0))
+    node._sched_refused_rise_mono -= sn._LANE_LATCH_RISE_WINDOW_S + 0.1
+    node._on_link_status(_latched_link_status(1439, latched=0))
+    resp = _try_self_toss_start(node, tmp_path)
+    assert resp.success is True, resp.message
+
+
+def test_a_stale_link_status_does_not_refuse_the_goal(tmp_path):
+    """Unobserved is not a refusal (`_hand_lane_refused`'s own choice)."""
+    node, _client = _node_with_client(response=_response())
+    node._params['plant_id'] = 'test_lane_latched_stale'
+    node._on_link_status(_latched_link_status(1435, latched=1))
+    node._sched_refused_mono -= sn._TRAJ_STATUS_STALE_S + 0.1
+    resp = _try_self_toss_start(node, tmp_path)
+    assert resp.success is True, resp.message
+
+
 # ═════════════════════════════════════════════════════════════════════════════
 # session-start mocap-vs-commanded frame check (plan cup-contact-contract.md § 1)
 # ═════════════════════════════════════════════════════════════════════════════

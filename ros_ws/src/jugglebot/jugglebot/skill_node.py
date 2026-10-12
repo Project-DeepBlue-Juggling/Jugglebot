@@ -197,6 +197,10 @@ _MOCAP_STALE_S = 0.5
 #: itself is 5 Hz; also the freshness window for `trajectory/commanded_position`,
 #: same as `_live_commanded_position` there).
 _TRAJ_STATUS_STALE_S = 1.0
+# `_refuse_if_lane_latched`: a `sched_refused` rise this recent means a lane
+# is still latched (a latched lane refuses every streamed frame, ~40/s, so a
+# 10 Hz `/link_status` sees it rise on every publish). 1 s = ten publishes.
+_LANE_LATCH_RISE_WINDOW_S = 1.0
 #: The hand-telemetry staleness bound `_observations` and `tools/probes/
 #: possession_replay.py::_sensor` both read (the FSM's own copy died with
 #: `reload_coordinator_node.py` at R4, 2026-09-24 — this is now the one
@@ -719,6 +723,12 @@ class SkillNode(Node):
         self._sched_refused = -1
         self._sched_refused_mono = 0.0
         self._sched_refused_at_start = -1
+        # The latch itself (`/link_status` `sched_hold_latched`, heartbeat
+        # flags bit 15; -1 = never observed) and when `sched_refused` last
+        # ROSE (perf_counter; 0.0 = never seen to rise) -- the two facts
+        # `_refuse_if_lane_latched` refuses a new goal on (R5 sitting 7).
+        self._sched_hold_latched = -1
+        self._sched_refused_rise_mono = 0.0
         # Set by `_on_tick` when an END needs the machine HELD rather than
         # left to its rest tail (`executor.HAND_LANE_REFUSED`), cleared by
         # `_maybe_hold_pending_event` when it fires the hold — so the hold is
@@ -1542,18 +1552,29 @@ class SkillNode(Node):
         behind the lane SIZING (`_opening_rest_period`), not the only thing
         keeping the hand inside the envelope.
         """
+        now = time.perf_counter()
         for kv in getattr(msg, 'values', ()):
-            if getattr(kv, 'key', '') != 'sched_refused':
+            key = getattr(kv, 'key', '')
+            if key == 'sched_hold_latched':
+                try:
+                    self._sched_hold_latched = int(float(kv.value))
+                except (TypeError, ValueError):
+                    pass
+                continue
+            if key != 'sched_refused':
                 continue
             try:
-                self._sched_refused = int(float(kv.value))
+                value = int(float(kv.value))
             except (TypeError, ValueError):
-                return
-            self._sched_refused_mono = time.perf_counter()
-            return
+                continue
+            if 0 <= self._sched_refused < value:
+                self._sched_refused_rise_mono = now
+            self._sched_refused = value
+            self._sched_refused_mono = now
 
     def _hand_lane_refused(self, now: float) -> bool:
-        """Has the firmware refused a streamed hand lane since this attempt
+        """Has the firmware refused a streamed lane (legs or hand -- the
+        counter is shared) since this attempt
         started? ``_sched_refused`` past the latched baseline, on a FRESH
         sample. Staleness is not itself a refusal — a stale `/link_status`
         means the bridge stopped publishing, which the ladder's own
@@ -2121,7 +2142,7 @@ class SkillNode(Node):
         TWO reasons to hold, one op. The second is ``_force_hold``, set by
         `_on_tick` on an ``executor.HAND_LANE_REFUSED`` END (2026-09-18):
         there the streaming plan's rest tail is NOT a safe end, because the
-        firmware is HOLDING the hand rather than following it and every knot
+        firmware is HOLDING a lane (legs or hand) rather than following it and every knot
         the plan walks on widens the deviation the guard measures. The hold is
         the fix precisely because ``trajectory/hold`` installs a HAND-LESS
         plan: no further hand frame reaches the wire, so the refused command
@@ -2141,7 +2162,7 @@ class SkillNode(Node):
                 self._pending_event_mono = 0.0
             if not (forced or pending):
                 return
-        why = ('the firmware is holding a REFUSED hand lane' if forced
+        why = ('the firmware is holding a REFUSED lane (legs or hand)' if forced
                else '1 pending event(s) cancelled')
         if not forced and self._stop_with_rest(
                 end_code, self._executor if executor is None else executor):
@@ -2397,8 +2418,8 @@ class SkillNode(Node):
             return
         self._end_attempt(
             ex.HAND_LANE_REFUSED,
-            'the firmware refused the streamed hand lane (sched_refused '
-            'moved) during a reload wait and is HOLDING the hand -- '
+            'the firmware refused a streamed lane (legs or hand; '
+            'sched_refused moved) during a reload wait and is HOLDING it -- '
             'holding the plan before the refused command walks into '
             'MAX_DEVIATION', force_hold=True)
 
@@ -2733,6 +2754,42 @@ class SkillNode(Node):
                             'jugglebot/juggle goal first')
         return response
 
+    def _refuse_if_lane_latched(self, response):
+        """``response`` refused when the firmware is HOLDING a latched
+        scheduled lane, or ``None`` (the caller may proceed).
+
+        R5 sitting 7 (2026-10-13): a Jetson stream stall latched the LEG
+        lane mid-throw; the attempt ended, but the latch only clears on a
+        disarm/arm edge, so the operator's next goal was accepted, dispatched
+        Ball Butler (whose countdown cannot be aborted), and ended 0.5 s
+        later on the same latch -- BB then threw at a frozen robot. Refused
+        here, before any segment or `bb/throw_at_target`, on either fact on a
+        FRESH `/link_status`: the latch bit (bridge >= the 2026-10-13
+        publish), or `sched_refused` having risen within
+        `_LANE_LATCH_RISE_WINDOW_S` (a latched lane refuses every frame,
+        so the counter climbs ~40/s; works against an older bridge node).
+        A stale or never-seen `/link_status` does not refuse -- the same
+        "unobserved is not a refusal" choice as `_hand_lane_refused`.
+        """
+        now = time.perf_counter()
+        if (self._sched_refused_mono <= 0.0
+                or (now - self._sched_refused_mono) >= _TRAJ_STATUS_STALE_S):
+            return None
+        latched = self._sched_hold_latched == 1
+        rising = (self._sched_refused_rise_mono > 0.0
+                  and (now - self._sched_refused_rise_mono)
+                  < _LANE_LATCH_RISE_WINDOW_S)
+        if not (latched or rising):
+            return None
+        response.success = False
+        response.message = (
+            'refused: the firmware is holding a LATCHED streamed lane (%s) -- '
+            'it clears only on a disarm/arm edge: put the robot in IDLE, then '
+            'back to TRAJECTORY, and start again'
+            % ('sched_hold_latched set' if latched else
+               'sched_refused still rising'))
+        return response
+
     #: Pattern names the Juggle goal accepts — `schedule.Schedule.pattern`'s
     #: own set (R4 owner decision D1), plus B2's ``columns_1ball`` (columns
     #: motion flown with one real ball — `_run_columns_1ball`) and R5
@@ -2789,6 +2846,10 @@ class SkillNode(Node):
                          % (ball_label(0), ball_label(1))))
         refused = self._refuse_if_running(SimpleNamespace(success=None,
                                                           message=None))
+        if refused is not None:
+            return refused
+        refused = self._refuse_if_lane_latched(SimpleNamespace(success=None,
+                                                               message=None))
         if refused is not None:
             return refused
 
