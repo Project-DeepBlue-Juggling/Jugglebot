@@ -588,6 +588,7 @@ class InstallSegment:
         KIND_THROW = 0
         KIND_CATCH = 1
         KIND_REST = 2
+        KIND_MAGAZINE = 3
 
         def __init__(self):
             self.kind = 0

@@ -184,6 +184,10 @@ setJugglePanelTransport({
             const relay = $('s-relay').value;
             log('call ' + name + '  data="' + req.data + '"  (relay ' + relay + ')');
             if (relay === 'timeout') return new Promise(() => {});
+            if (req.data === 'magazine') {   // exact token; fake MAGAZINE_MISS 400 ms later
+                setTimeout(() => attempt('MAGAZINE_MISS', { outcome: 'THROWN', dx_mm: '-12.3', dy_mm: '4.5', dt_ms: '8', n_samples: '14' }, 'MAGAZINE miss: dx=-12.3 dy=4.5 mm (elbow frame)'), 400);
+                return Promise.resolve({ success: true, message: 'Magazine throw dispatched.' });
+            }
             if (relay === 'reject') {
                 return Promise.resolve({ success: false, message: "juggle request refused: unknown token 'apex=0.8' (expected key=value from apex_m, separation_mm, num_cycles)" });
             }

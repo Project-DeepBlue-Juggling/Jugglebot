@@ -39,7 +39,7 @@ from rcl_interfaces.msg import SetParametersResult
 from std_msgs.msg import Float64
 from sensor_msgs.msg import JointState
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
-from geometry_msgs.msg import Point, TransformStamped
+from geometry_msgs.msg import Point, PoseStamped, TransformStamped
 from jugglebot_interfaces.msg import (
     MocapDataMulti,
     MocapDataSingle,
@@ -237,6 +237,28 @@ MARKER_FAST_PATH = _marker_fast_is_safe()
 _make_marker = _marker_fast if MARKER_FAST_PATH else _marker_checked
 
 
+def _rotation_to_quat(R):
+    """Unit quaternion (x, y, z, w), w >= 0, of a proper rotation matrix."""
+    R = np.asarray(R, dtype=float)
+    tr = R[0, 0] + R[1, 1] + R[2, 2]
+    if tr > 0.0:
+        s = 2.0 * math.sqrt(tr + 1.0)
+        q = ((R[2, 1] - R[1, 2]) / s, (R[0, 2] - R[2, 0]) / s, (R[1, 0] - R[0, 1]) / s, 0.25 * s)
+    elif R[0, 0] >= R[1, 1] and R[0, 0] >= R[2, 2]:
+        s = 2.0 * math.sqrt(1.0 + R[0, 0] - R[1, 1] - R[2, 2])
+        q = (0.25 * s, (R[0, 1] + R[1, 0]) / s, (R[0, 2] + R[2, 0]) / s, (R[2, 1] - R[1, 2]) / s)
+    elif R[1, 1] >= R[2, 2]:
+        s = 2.0 * math.sqrt(1.0 + R[1, 1] - R[0, 0] - R[2, 2])
+        q = ((R[0, 1] + R[1, 0]) / s, 0.25 * s, (R[1, 2] + R[2, 1]) / s, (R[0, 2] - R[2, 0]) / s)
+    else:
+        s = 2.0 * math.sqrt(1.0 + R[2, 2] - R[0, 0] - R[1, 1])
+        q = ((R[0, 2] + R[2, 0]) / s, (R[1, 2] + R[2, 1]) / s, 0.25 * s, (R[1, 0] - R[0, 1]) / s)
+    q = np.array(q) / np.linalg.norm(q)
+    if q[3] < 0:
+        q = -q
+    return float(q[0]), float(q[1]), float(q[2]), float(q[3])
+
+
 def _set_stamp(stamp, ns):
     """Write ROS time ``ns`` into a builtin_interfaces/Time field."""
     stamp.sec = int(ns // 1_000_000_000)
@@ -291,6 +313,16 @@ class MocapNode(Node):
         self.pub_calibration_attempt = self.create_publisher(
             BallButlerCalibrationResult, 'bb/calibration_attempt', latched_qos
         )
+        # Live base-marker frame pose for the magazine throw (skill_node maps the
+        # elbow-frame target through it). geometry_msgs/PoseStamped, latched:
+        # position = origin (marker C) in WORLD **mm** (same units as
+        # rigid_body_poses), orientation = quaternion of R_base_to_world (columns =
+        # base x, y, z in world), header.stamp = ROS time of the newest frame in the
+        # pose window (so consumers can gate freshness), frame_id 'world'. The
+        # template residual has no field in this type and is not published.
+        self.pub_base_frame_pose = self.create_publisher(
+            PoseStamped, 'bb/base_frame_pose', latched_qos
+        )
         #: The last SUCCESSFUL result this process published (None until one),
         #: and when it was accepted (ISO-8601 UTC, seconds).
         self._last_good_calibration: BallButlerCalibrationResult | None = None
@@ -334,6 +366,7 @@ class MocapNode(Node):
         # doctrine), and this one *acts* — it publishes failures and unlatches
         # collection state.
         self.create_timer(MOCAP_STATUS_PERIOD_S, self._check_calibration_health)
+        self.create_timer(1.0, self._publish_base_frame_pose)
 
         # ── BB heartbeat subscription ─────────────────────────────────────
         self.create_subscription(
@@ -484,6 +517,30 @@ class MocapNode(Node):
     # ──────────────────────────────────────────────────────────────────────
     #  Publishing
     # ──────────────────────────────────────────────────────────────────────
+
+    def _publish_base_frame_pose(self):
+        """``bb/base_frame_pose`` @ 1 Hz (latched): the running base-frame pose.
+        Silent while the monitor has no pose. Pure compute on the monitor's
+        buffer; no I/O."""
+        if self._base_monitor is None:
+            return
+        try:
+            pose = self._base_monitor.pose()
+            if pose is None:
+                return
+            msg = PoseStamped()
+            _set_stamp(msg.header.stamp, int(pose.t_span_s[1] * 1e9))
+            msg.header.frame_id = 'world'
+            msg.pose.position.x = float(pose.origin_mm[0])
+            msg.pose.position.y = float(pose.origin_mm[1])
+            msg.pose.position.z = float(pose.origin_mm[2])
+            qx, qy, qz, qw = _rotation_to_quat(pose.R)
+            msg.pose.orientation.x, msg.pose.orientation.y = qx, qy
+            msg.pose.orientation.z, msg.pose.orientation.w = qz, qw
+            self.pub_base_frame_pose.publish(msg)
+        except Exception as e:
+            self.get_logger().error(f'Error publishing base frame pose: {e}',
+                                    throttle_duration_sec=5.0)
 
     def _report_base_frame_once(self):
         """Once per process, when the running estimate first has a pose: one

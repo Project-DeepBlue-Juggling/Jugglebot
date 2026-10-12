@@ -55,7 +55,8 @@ from rclpy.logging import LoggingSeverity
 from rclpy.node import Node
 
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
-from geometry_msgs.msg import Point, Pose, Quaternion, Vector3
+from geometry_msgs.msg import Point, Pose, PoseStamped, Quaternion, Vector3
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from jugglebot_interfaces.action import Juggle
@@ -93,8 +94,11 @@ from jugglebot.motion.skills.schedule import (LEAD_S,
                                               home_hand_bounds,
                                               schedule_has_shadow_landing,
                                               transit_s)
+from jugglebot.motion.skills import magazine_target as mt
+from jugglebot.motion.skills.magazine_throw import MAGAZINE, MagazineTerminal
 from jugglebot.motion.skills.segments import CATCH, REST, THROW
 from jugglebot.motion.skills.sites import (CATCH_CUP_Z_MM, REST_CUP_Z_MM,
+                                           RELEASE_CUP_Z_MM,
                                            REST_HAND_REV, Site, columns_sites)
 from jugglebot.motion.tilt_map import find_repo_root
 from jugglebot.motion.trajectory import ballistics_bc
@@ -130,7 +134,8 @@ _ADMISSIBLE_BOX_PATH = (os.path.join(_REPO_ROOT, 'config', 'generated',
 # discipline as trajectory_node's `_SEGMENT_KINDS`.
 _WIRE_KIND = {THROW: InstallSegment.Request.KIND_THROW,
              CATCH: InstallSegment.Request.KIND_CATCH,
-             REST: InstallSegment.Request.KIND_REST}
+             REST: InstallSegment.Request.KIND_REST,
+             MAGAZINE: InstallSegment.Request.KIND_MAGAZINE}
 
 #: How long a synchronous `trajectory/install_segment` call waits for its
 #: answer. Mirrors `reload_coordinator_node._call_plan_cycle`'s flat bound: the
@@ -823,6 +828,10 @@ class SkillNode(Node):
         #: the operator's lines (`_start_pattern`).
         self._goal_reports = []
         self._attempt_label = ''
+        # Magazine program state (U2c): the latest bb/base_frame_pose
+        # (origin_mm, R, stamp_ros_s) and the live miss-report context.
+        self._bb_base_pose = None
+        self._magazine_ctx = None
 
         self.declare_parameter('apex_m', _DEFAULT_APEX_M)
         self.declare_parameter('separation_mm', _DEFAULT_SEPARATION_MM)
@@ -857,6 +866,14 @@ class SkillNode(Node):
         # 17.6 mm plant scatter — two drops in 51), 20 mm was stable at both
         # apexes — 20 mm is the launch default; the box still admits 40.
         self.declare_parameter('learner_lateral_authority_mm', 20.0)
+        # The magazine program (U2c): '' = magazine_target.default_config_path()
+        # (config/bb_magazine.yaml, re-read per request), the oldest
+        # bb/base_frame_pose it will map a target through, and the lead
+        # (s) from request to release -- must clear
+        # magazine_throw's MAGAZINE_WINDOW minimum (~1.11 s).
+        self.declare_parameter('magazine_config_path', '')
+        self.declare_parameter('magazine_base_frame_max_age_s', 60.0)
+        self.declare_parameter('magazine_release_lead_s', 1.3)
         # How far (mm) a tracker CATCH re-aim may move the landing OUTWARD --
         # away from the pattern's other site -- about the schedule's landing
         # (executor.catch_outward_authority_m; the learner's lateral command
@@ -1081,6 +1098,18 @@ class SkillNode(Node):
         # exactly this).
         self.create_subscription(
             String, 'bb/throw_outcome', self._on_bb_throw_outcome, 10,
+            callback_group=self._sub_cbgroup)
+
+        # Magazine program (U2c): the latched base-marker frame pose
+        # (mocap_node: position = elbow C in world mm, orientation =
+        # R_base_to_world) and a second /balls reader for the miss report.
+        self.create_subscription(
+            PoseStamped, 'bb/base_frame_pose', self._on_base_frame_pose,
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                       durability=DurabilityPolicy.TRANSIENT_LOCAL),
+            callback_group=self._sub_cbgroup)
+        self.create_subscription(
+            BallStateArray, 'balls', self._on_magazine_balls, 10,
             callback_group=self._sub_cbgroup)
 
         self.create_service(Trigger, 'skills/check', self._svc_check)
@@ -1861,6 +1890,12 @@ class SkillNode(Node):
             req.site_mm = [float(v) for v in terminal.site_mm]
             req.target_mm = [float(v) for v in terminal.target_mm]
             req.flight_s = float(terminal.flight_s)
+        elif kind == MAGAZINE:
+            req.t_event_s = float(terminal.t_release_s)
+            req.site_mm = [float(v) for v in terminal.release_site_mm]
+            req.target_mm = [float(v) for v in terminal.target_mm]
+            req.flight_s = float(terminal.flight_s)
+            req.rest_site_mm = [float(v) for v in terminal.rest_site_mm]
         elif kind == CATCH:
             req.t_event_s = float(terminal.t_land_s)
             req.site_mm = [float(v) for v in terminal.landing_mm]
@@ -1903,7 +1938,7 @@ class SkillNode(Node):
         # THROW included, so reading it here announced NOTHING for a
         # standalone throw: five single self-tosses on 2026-09-13 ended
         # NO_LANDING with a CONFIRMED track and a valid landing in /balls).
-        release_mono = (float(resp.t_event_mono) if kind == THROW
+        release_mono = (float(resp.t_event_mono) if kind in (THROW, MAGAZINE)
                         else float(resp.t_release_mono))
         # Unit A (R3 first sitting, 2026-09-13, L1): the SAME instant, kept
         # as the streaming plan's own future event -- a THROW's release, or
@@ -2687,7 +2722,11 @@ class SkillNode(Node):
         `_reload_ctx` exists (see its `__init__` comment)."""
         with self._reload_lock:
             reloading = self._reload_ctx is not None
-        if self._executor is None and not reloading:
+        # A magazine throw runs without a SkillExecutor (one rest-terminal
+        # segment, then a timer collecting the miss report), so it is
+        # "running" until _magazine_finish clears its context.
+        if (self._executor is None and not reloading
+                and self._magazine_ctx is None):
             return None
         response.success = False
         response.message = ('an attempt is already running — cancel the '
@@ -2706,7 +2745,7 @@ class SkillNode(Node):
     #: ``phantom_a`` paragraph), so this tuple names two more GOAL-facing
     #: strings than `Schedule.pattern` has values.
     _PATTERNS = ('self_toss', 'hop', 'columns', 'columns_1ball',
-                'columns_1ball_fed')
+                'columns_1ball_fed', 'magazine')
 
     def _start_pattern(self, goal) -> SimpleNamespace:
         """The Juggle goal's shared no-motion refusal ladder + schedule
@@ -2787,6 +2826,11 @@ class SkillNode(Node):
         elif pattern == 'columns_1ball':
             result = self._run_columns_1ball(apex_m, separation_mm, dwell_s,
                                              n_throws, reload)
+        elif pattern == 'magazine':
+            # One formulaic throw at Ball Butler's magazine (U2c): no
+            # executor, so the goal is armed (and ended) by the miss-report
+            # timer, not by `_maybe_signal_goal_done`.
+            result = self._run_magazine()
         else:
             result = self._run_one_ball(pattern, apex_m, separation_mm,
                                         dwell_s, n_throws, reload)
@@ -2796,7 +2840,7 @@ class SkillNode(Node):
         result.attempt = dict(pattern=pattern, n_throws=n_throws,
                               reload=reload, apex_m=apex_m,
                               separation_mm=separation_mm)
-        if result.success:
+        if result.success and pattern != 'magazine':
             # The attempt is installed now -- from here `_maybe_signal_goal_
             # done` may end the goal (see `_goal_armed`'s `__init__` comment).
             with self._reload_lock:
@@ -3657,6 +3701,187 @@ class SkillNode(Node):
                 frame_offset_mm=self._frame_offset_mm(),
                 extra=('(%s)' % ' -> '.join(st.name for st in sites)
                        if len(sites) > 1 else '')))
+
+    # ── the magazine program (U2c) ──────────────────────────────────────
+    #
+    # ONE formulaic throw at Ball Butler's magazine: no SkillExecutor (a
+    # one-segment "schedule" has no catch, no learner row and no dispatch
+    # sequencing to add -- the installer is called directly, the SAME
+    # `_installer` the executor would be handed). The goal ends from a timer
+    # (`_magazine_poll`) once the flight window has closed, because with no
+    # executor `_maybe_signal_goal_done` has nothing to wait for.
+
+    def _on_base_frame_pose(self, msg) -> None:
+        """Cache the latched ``bb/base_frame_pose`` (mocap_node: position =
+        marker C in world mm, orientation = R_base_to_world, stamp = newest
+        frame time). Pure compute, no I/O."""
+        try:
+            q = msg.pose.orientation
+            R = mt.quat_to_rotation(q.x, q.y, q.z, q.w)
+            p = msg.pose.position
+            stamp = float(msg.header.stamp.sec) + float(msg.header.stamp.nanosec) * 1e-9
+            self._bb_base_pose = (np.array([p.x, p.y, p.z], dtype=float), R, stamp)
+        except (ValueError, AttributeError, TypeError):
+            self._bb_base_pose = None
+
+    def _on_magazine_balls(self, msg) -> None:
+        """Collect the released ball's tracked positions for the miss report
+        (only while a magazine attempt is live; ids that existed at install
+        are not the thrown ball)."""
+        ctx = self._magazine_ctx
+        if ctx is None or not ctx['collecting']:
+            return
+        for b in msg.balls:
+            bid = int(b.id)
+            if bid in ctx['preexisting']:
+                continue
+            t = float(b.header.stamp.sec) + float(b.header.stamp.nanosec) * 1e-9
+            if t < ctx['t_rel'] - 0.2 or t > ctx['t_end']:
+                continue
+            ctx['samples'].setdefault(bid, []).append(
+                (t, float(b.position.x), float(b.position.y), float(b.position.z)))
+
+    def _run_magazine(self) -> SimpleNamespace:
+        """The ``magazine`` branch of :meth:`_start_pattern` (after its common
+        refusal ladder). Each refusal is a named code in the message; the
+        config is re-read per request (a small file; goal-callback context,
+        not the tick). Installs ONE MAGAZINE segment from the platform's
+        current rest site; the planner's refusal (e.g. WORKSPACE at an
+        unreachable target) is returned verbatim."""
+        def refuse(text):
+            self.get_logger().debug(text)
+            return SimpleNamespace(success=False, message=text)
+
+        if self._magazine_ctx is not None:
+            return refuse('an attempt is already running — cancel the '
+                          'jugglebot/juggle goal first')
+        now_ros = self._now_s()
+        base = self._bb_base_pose
+        max_age = float(self.get_parameter('magazine_base_frame_max_age_s').value)
+        if base is None:
+            return refuse('MAGAZINE_BASE_FRAME_STALE: no bb/base_frame_pose has '
+                          'been received (is mocap_node up and the base '
+                          'markers visible?)')
+        age = now_ros - base[2]
+        if not age <= max_age:
+            return refuse('MAGAZINE_BASE_FRAME_STALE: the base frame pose is '
+                          '%.1f s old (limit %.1f s)' % (age, max_age))
+        path = str(self.get_parameter('magazine_config_path').value) \
+            or mt.default_config_path()
+        try:
+            cfg = mt.load_magazine_config(path)
+        except (ValueError, OSError) as exc:
+            msg = str(exc)
+            return refuse(msg if msg.startswith('MAGAZINE_CONFIG')
+                          else 'MAGAZINE_CONFIG: %s' % (msg,))
+        codes = precondition_refusals(self._observations(now_ros), launch=True)
+        if codes:
+            return refuse('magazine refused: %s' % (', '.join(codes),))
+        frame_err = self._frame_check_error()
+        if frame_err:
+            return refuse('magazine refused: %s' % (frame_err,))
+        live = self._live_commanded_position(time.perf_counter())
+        if live is None:
+            return refuse('magazine refused: trajectory/commanded_position is '
+                          'stale — the rest site is unknown')
+        off = self._mocap_to_schedule_mm
+        off_xy = (0.0, 0.0) if off is None else (float(off[0]), float(off[1]))
+        origin, R, _ = base
+        p_plan = mt.base_to_plan_mm(cfg.target_base_mm, R, origin, off_xy)
+        p_world = mt.base_to_world_mm(cfg.target_base_mm, R, origin)
+
+        prelevel_err = self._prelevel()
+        if prelevel_err:
+            return refuse('magazine refused: %s' % (prelevel_err,))
+
+        lead = float(self.get_parameter('magazine_release_lead_s').value)
+        now_ros = self._now_s()
+        t_rel = now_ros + lead
+        terminal = MagazineTerminal(
+            target_mm=p_plan, flight_s=cfg.flight_s, t_release_s=t_rel,
+            release_site_mm=np.array([live[0], live[1], RELEASE_CUP_Z_MM]),
+            rest_site_mm=np.array([live[0], live[1], REST_CUP_Z_MM]))
+        preexisting = frozenset(int(b.id) for b in self._raw_balls)
+        res = self._installer(MAGAZINE, terminal, now_ros, ball_id=0)
+        if not res.accepted:
+            return refuse('magazine refused: %s: %s' % (res.code, res.message))
+        # The actual (knot-quantised) release, when the wire gave one.
+        rel_ros = t_rel
+        mono = float(self._pending_event_mono)
+        if mono > 0.0:
+            cand = self._now_s() + (mono - time.perf_counter())
+            if abs(cand - t_rel) < 0.5:
+                rel_ros = cand
+        t_end = rel_ros + cfg.flight_s + 0.3
+        self._magazine_ctx = dict(
+            cfg=cfg, R=R, origin=origin, off_xy=off_xy, p_plan=p_plan,
+            t_rel=rel_ros, t_end=t_end, samples={}, preexisting=preexisting,
+            collecting=True, timer=None)
+        self._magazine_ctx['timer'] = self.create_timer(
+            0.1, self._magazine_poll, callback_group=self._sub_cbgroup)
+        msg = ('magazine accepted: target base %s mm, world %s mm, plan %s mm, '
+               'flight %.2f s, release in %.2f s (t=%.3f)'
+               % (np.round(cfg.target_base_mm, 1).tolist(),
+                  np.round(p_world, 1).tolist(), np.round(p_plan, 1).tolist(),
+                  cfg.flight_s, rel_ros - now_ros, rel_ros))
+        self.get_logger().info('MAGAZINE ' + msg)
+        return SimpleNamespace(success=True, message=msg)
+
+    def _magazine_poll(self) -> None:
+        ctx = self._magazine_ctx
+        if ctx is None or self._now_s() < ctx['t_end']:
+            return
+        ctx['collecting'] = False
+        self._magazine_finish(ctx)
+
+    def _magazine_miss(self, ctx):
+        """``(ok, text, fields)``: the miss in the elbow frame from the
+        collected samples (`magazine_target.fit_descending_crossing`)."""
+        if not ctx['samples']:
+            return False, 'NO_TRACK: no ball track appeared after the release', {}
+        bid = max(ctx['samples'], key=lambda k: len(ctx['samples'][k]))
+        arr = np.array(sorted(ctx['samples'][bid]), dtype=float)
+        pos = arr[:, 1:4].copy()
+        pos[:, 0] -= ctx['off_xy'][0]
+        pos[:, 1] -= ctx['off_xy'][1]
+        tz = float(ctx['p_plan'][2])
+        keep = pos[:, 2] > tz - 30.0
+        try:
+            fit = mt.fit_descending_crossing(
+                arr[keep, 0], pos[keep], tz, t_from_s=ctx['t_rel'] + 0.05)
+        except ValueError as exc:
+            return False, 'NO_TRACK: %s' % (exc,), {}
+        cross = np.array([fit.xy_mm[0], fit.xy_mm[1], tz])
+        miss = (mt.plan_to_base_mm(cross, ctx['R'], ctx['origin'], ctx['off_xy'])
+                - np.asarray(ctx['cfg'].target_base_mm, dtype=float))
+        dt_ms = (fit.t_cross_s - (ctx['t_rel'] + ctx['cfg'].flight_s)) * 1e3
+        text = ('MAGAZINE miss: dx=%+.0f dy=%+.0f mm (elbow frame), crossing '
+                'time vs predicted %+.0f ms, %d samples'
+                % (miss[0], miss[1], dt_ms, fit.n_samples))
+        return True, text, dict(dx_mm='%.1f' % miss[0], dy_mm='%.1f' % miss[1],
+                                dt_ms='%.1f' % dt_ms, n_samples=str(fit.n_samples))
+
+    def _magazine_finish(self, ctx) -> None:
+        """End the goal: THROWN, one throw, none caught, per_throw = the miss."""
+        timer = ctx.get('timer')
+        if timer is not None:
+            self.destroy_timer(timer)
+        ok, text, fields = self._magazine_miss(ctx)
+        self.get_logger().info(text if ok else 'MAGAZINE ' + text)
+        self._publish_attempt_event('MAGAZINE_MISS', text, DiagnosticStatus.OK
+                                    if ok else DiagnosticStatus.WARN,
+                                    outcome='THROWN' if ok else 'NO_TRACK',
+                                    **fields)
+        self._goal_outcome_lines = [text]
+        self._goal_reports = [rp.ThrowReport(
+            throw_no=1, n_throws=1, ball_id=0, caught=False, row=False,
+            no_row_reason='magazine', apex_m=None, landing_err_mm=None,
+            release_err_s=None, arrival_err_s=None, seat_s=None)]
+        self._goal_end_code = 'THROWN'
+        self._magazine_ctx = None
+        with self._reload_lock:
+            self._goal_armed = True
+            self._goal_done_event.set()
 
     def _start_reload(self, response, *, site: Site, lift_s: float,
                       boxes, memory: Memory,
@@ -4575,7 +4800,7 @@ class SkillNode(Node):
         end_code = self._goal_end_code
         outcome = 'STOPPED' if end_code == 'STOPPED' else (end_code or 'COMPLETED')
         result.outcome = outcome
-        result.success = bool(outcome == 'COMPLETED')
+        result.success = bool(outcome in ('COMPLETED', 'THROWN'))
         # From the ThrowReports, never by parsing log text; `per_throw` is
         # each throw's operator line.
         result.throws, result.caught = rp.summarise(self._goal_reports)

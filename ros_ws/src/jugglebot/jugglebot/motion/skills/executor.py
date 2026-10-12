@@ -34,6 +34,7 @@ from jugglebot import ball_possession as bp
 from jugglebot.motion import unified_cycle as uc
 from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.skills import admissible as adm
+from jugglebot.motion.skills import magazine_throw as mt
 from jugglebot.motion.skills import segments as sg
 from jugglebot.motion.skills import schedule as sch
 from jugglebot.motion.skills.report import ThrowReport, release_error_s
@@ -1153,7 +1154,7 @@ def _event_abs_s(kind: str, terminal) -> float:
     segment's origin, and rebuilds the terminal with the relative value.  Doing
     it anywhere else would mean two clocks in one dataclass.
     """
-    if kind == THROW:
+    if kind in (THROW, mt.MAGAZINE):
         return float(terminal.t_release_s)
     if kind == CATCH:
         return float(terminal.t_land_s)
@@ -1168,7 +1169,7 @@ def _terminal_on_segment_clock(kind: str, terminal, t_origin_s: float):
     ``t_origin_s``.  Raises ``ValueError`` (from the terminal's own validation)
     when the event is at or before the origin — converted by the caller."""
     t_rel = _event_abs_s(kind, terminal) - float(t_origin_s)
-    if kind == THROW:
+    if kind in (THROW, mt.MAGAZINE):
         return dataclasses.replace(terminal, t_release_s=t_rel)
     if kind == CATCH:
         # A catch-with-throw carries a SECOND instant, and it rides the same
@@ -1402,6 +1403,16 @@ def install_segment(record: Optional[PlanRecord],
     lead_s = float(lead_s)
     fresh = record is None or (t_now_s + lead_s) >= record.end_s
     post_release = False
+    if not fresh and (kind == mt.MAGAZINE or record.meta.kind == mt.MAGAZINE):
+        # The magazine throw is formulaic from a STOPPED machine and its meta
+        # has no `cup_plan` to splice against (`magazine_throw` module
+        # docstring) — nothing splices onto it and it splices onto nothing.
+        return record, InstallResult(
+            False, mt.MAGAZINE_NEEDS_REST,
+            'a MAGAZINE throw is planned from rest and nothing splices onto '
+            'one; the installed %s plan runs until %.3f s (now %.3f s + %.3f s '
+            'lead) — wait for its terminal rest'
+            % (record.meta.kind, record.end_s, t_now_s, lead_s), 0.0), None
 
     try:
         if fresh:
@@ -1454,9 +1465,14 @@ def install_segment(record: Optional[PlanRecord],
                     if post_release
                     else uc.state_at_knot(record.plan, record.meta, k_s))
 
-        seg = sg.plan_segment(
-            kind, seed, _terminal_on_segment_clock(kind, terminal, t_origin),
-            cfg, limits, geom, warm_start=warm_start)
+        if kind == mt.MAGAZINE:
+            seg = mt.plan_magazine(
+                seed, _terminal_on_segment_clock(kind, terminal, t_origin),
+                cfg, limits, geom)
+        else:
+            seg = sg.plan_segment(
+                kind, seed, _terminal_on_segment_clock(kind, terminal, t_origin),
+                cfg, limits, geom, warm_start=warm_start)
 
         if fresh:
             # The seed is sound regardless of how long the solve took (see the

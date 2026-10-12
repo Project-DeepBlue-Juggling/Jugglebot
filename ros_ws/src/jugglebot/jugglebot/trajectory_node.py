@@ -130,6 +130,7 @@ from jugglebot.motion.trajectory import planner
 from jugglebot.motion import unified_cycle as uc
 from jugglebot.motion.trajectory.cycle_plan import CyclePlan
 from jugglebot.motion.skills import executor as sk_exec
+from jugglebot.motion.skills import magazine_throw as sk_magazine
 from jugglebot.motion.skills import segments as sk_seg
 from jugglebot.motion.skills.schedule import ball_label
 
@@ -4134,7 +4135,8 @@ class TrajectoryNode(Node):
     #: kind string, in wire-constant order (0, 1, 2). Built once at import time
     #: from the srv's own constant NAMES rather than restated as bare ints, so a
     #: renumbering of one side is a KeyError here instead of a silent mismatch.
-    _SEGMENT_KINDS = (sk_seg.THROW, sk_seg.CATCH, sk_seg.REST)
+    _SEGMENT_KINDS = (sk_seg.THROW, sk_seg.CATCH, sk_seg.REST,
+                      sk_magazine.MAGAZINE)
 
     def _reject_segment(self, response, code: str, message: str, t_wall: float):
         """Fill ``response`` with a refusal. The ACTIVE PLAN IS UNTOUCHED.
@@ -4191,6 +4193,13 @@ class TrajectoryNode(Node):
                 target_mm=np.asarray(request.target_mm, dtype=float),
                 flight_s=float(request.flight_s),
                 t_release_s=float(t_event_perf))
+        if kind == sk_magazine.MAGAZINE:
+            return sk_magazine.MagazineTerminal(
+                target_mm=np.asarray(request.target_mm, dtype=float),
+                flight_s=float(request.flight_s),
+                t_release_s=float(t_event_perf),
+                release_site_mm=np.asarray(request.site_mm, dtype=float),
+                rest_site_mm=np.asarray(request.rest_site_mm, dtype=float))
         if kind == sk_seg.CATCH:
             then_throw = None
             if t_release_perf > 0.0:

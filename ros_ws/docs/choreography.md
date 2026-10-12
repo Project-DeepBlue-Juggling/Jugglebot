@@ -43,6 +43,12 @@
 - **subscribers:** `mocap_node`
 - **type:** `sensor_msgs.msg.JointState`
 
+### `bb/base_frame_pose`
+
+- **publishers:** `mocap_node`
+- **subscribers:** `skill_node`
+- **type:** `geometry_msgs.msg.PoseStamped`
+
 ### `bb/calibration_attempt`
 
 - **publishers:** `mocap_node`

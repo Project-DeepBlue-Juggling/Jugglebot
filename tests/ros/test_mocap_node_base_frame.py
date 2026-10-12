@@ -458,3 +458,35 @@ def test_a_base_frame_pool_outlier_is_excluded_and_counted_in_the_message(tmp_pa
     assert math.degrees(msg.yaw_offset_rad) == pytest.approx(bf.wrap_deg(H0 + KAPPA), abs=2e-3)
     pool = json.loads((tmp_path / 'base.json').read_text())['pool']
     assert pool['n_total'] == 12 and pool['n_kept'] == 11 and len(pool['outliers']) == 1
+
+
+# ── bb/base_frame_pose publisher (magazine throw) ────────────────────────────
+
+def test_base_frame_pose_is_published_in_mm_with_the_rotation_quaternion(tmp_path):
+    node = _node(tmp_path)
+    node.pub_base_frame_pose = MagicMock()
+    node._publish_base_frame_pose()                       # no pose yet: silent
+    node.pub_base_frame_pose.publish.assert_not_called()
+    for t, pts in _base_frames():
+        node._base_monitor.update(t, pts)
+    node._publish_base_frame_pose()
+    node.pub_base_frame_pose.publish.assert_called_once()
+    msg = node.pub_base_frame_pose.publish.call_args[0][0]
+    pose = node._base_monitor.pose()
+    assert np.allclose([msg.pose.position.x, msg.pose.position.y, msg.pose.position.z],
+                       pose.origin_mm) and abs(msg.pose.position.x - O0[0]) < 1.0   # mm
+    q = msg.pose.orientation
+    x, y, z, w = q.x, q.y, q.z, q.w
+    R = np.array([[1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w)],
+                  [2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w)],
+                  [2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]])
+    assert np.allclose(R, pose.R, atol=1e-9)
+    assert (msg.header.stamp.sec + msg.header.stamp.nanosec * 1e-9) == pytest.approx(pose.t_span_s[1])
+
+
+def test_base_frame_pose_publisher_is_a_1hz_timer_and_survives_no_monitor(tmp_path):
+    node = _node(tmp_path)
+    node._base_monitor = None
+    node.pub_base_frame_pose = MagicMock()
+    node._publish_base_frame_pose()
+    node.pub_base_frame_pose.publish.assert_not_called()

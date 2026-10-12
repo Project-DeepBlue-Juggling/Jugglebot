@@ -4903,7 +4903,9 @@ def test_every_pattern_entry_opens_on_a_rest(tmp_path, pattern, reload):
                                                          first.kind))
     covered = {'self_toss', 'hop', 'columns', 'columns_1ball',
                'columns_1ball_fed'}
-    assert set(sn.SkillNode._PATTERNS) == covered
+    # 'magazine' has no schedule (one MAGAZINE segment from rest; its own
+    # tests are tests/ros/test_skill_node_magazine.py).
+    assert set(sn.SkillNode._PATTERNS) - {'magazine'} == covered
 
 
 def test_columns_1ball_reload_true_starts_the_plain_reload_choreography(
@@ -5233,3 +5235,24 @@ def test_bb_no_response_text_is_neutral_and_first_end_wins(tmp_path):
     node._goal_end_code = 'SERVICE_TIMEOUT'
     orig_end('ABORTED_BB_THROW_TIMEOUT', 'later')
     assert node._goal_end_code == 'SERVICE_TIMEOUT'
+
+
+def test_a_magazine_install_encodes_the_wire_and_reads_the_release_off_t_event():
+    from jugglebot.motion.skills import magazine_throw as mt
+    node, client = _node_with_client(
+        response=_response(t_event_mono=50.0, t_release_mono=0.0))
+    terminal = mt.MagazineTerminal(
+        target_mm=np.array([900.0, -300.0, 750.0]), flight_s=0.9,
+        t_release_s=100.0, release_site_mm=np.array([10.0, 20.0, 780.0]),
+        rest_site_mm=np.array([0.0, 0.0, 750.0]))
+    result = node._installer(mt.MAGAZINE, terminal, 100.0, ball_id=0)
+    assert result.accepted is True
+    req = client.calls[0]
+    assert req.kind == InstallSegment.Request.KIND_MAGAZINE
+    assert req.t_event_s == 100.0
+    assert list(req.site_mm) == [10.0, 20.0, 780.0]
+    assert list(req.target_mm) == [900.0, -300.0, 750.0]
+    assert req.flight_s == pytest.approx(0.9)
+    assert list(req.rest_site_mm) == [0.0, 0.0, 750.0]
+    # a MAGAZINE's release IS its event, like a THROW's
+    assert node._pending_event_mono == 50.0

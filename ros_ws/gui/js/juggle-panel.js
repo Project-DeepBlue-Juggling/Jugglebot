@@ -212,6 +212,7 @@ let cooldownTimer = null;
 let transient = null;           // { text, cls } — dispatch/stop ack line
 let transientTimer = null;
 let running = null;             // juggle_start fields + t0, until juggle_end
+let magazineMiss = null;        // { text, cls } — latest MAGAZINE_MISS, until the next dispatch
 let last = null;                // { kind: 'end'|'refused', ... }
 let crossCheck = null;          // { pattern, typed, reload, t }
 let warn = null;                // stale-relay mismatch text
@@ -428,13 +429,14 @@ function armTransientClear() {
 
 /** Why Start is unavailable right now, or null.  Order = what the operator
  *  must fix first. */
-function startGateReason(p) {
+function startGateReason(p, ignoreFields) {
     if (!gate.connected) return 'rosbridge disconnected';
     if (!gate.active) {
         return 'Start is available only in ACTIVE'
             + (gate.mainState && gate.mainState !== 'ACTIVE' ? ' (now ' + gate.mainState + ')' : '');
     }
     if (busy) return 'Juggle dispatched — waiting for the attempt…';
+    if (ignoreFields) return null;   // magazine: apex/separation/num_cycles do not apply
     const err = firstFieldError(p);
     if (err) return 'Fix ' + err;
     return null;
@@ -445,12 +447,26 @@ function onStartConfirm() {
     // Re-check at CONFIRM time (holdToConfirm re-checks .disabled, but the
     // gate inputs may have moved since the last render).
     if (startGateReason(p)) return;
-    const data = buildRequestData(p);
+    dispatchJuggle(buildRequestData(p), {
+        pattern: p.value, typed: typedOverrides(p), reload: effectiveReload(p), t: Date.now(), // wall-clock: command path
+    });
+}
+
+/** Request string of the "Throw to magazine" button — exactly this token, no
+ *  fields: coordinates come from config/bb_magazine.yaml on the robot. */
+export const MAGAZINE_REQUEST = 'magazine';
+
+function onMagazineConfirm() {
+    if (startGateReason(null, true)) return;
+    magazineMiss = null;
+    dispatchJuggle(MAGAZINE_REQUEST, null);   // no pattern/override cross-check applies
+}
+
+/** Shared Start / magazine dispatch (one latch, one cooldown, one ack path). */
+function dispatchJuggle(data, cc) {
     busy = true;
     warn = null;
-    crossCheck = {
-        pattern: p.value, typed: typedOverrides(p), reload: effectiveReload(p), t: Date.now(), // wall-clock: command path
-    };
+    crossCheck = cc;
     setTransient('Dispatching ' + data + '…', '');
     // No Event Log entry here: skill_node announces the attempt on
     // skills/attempt (minimapOnSkillAttempt), for this button and a terminal
@@ -519,7 +535,13 @@ export function jugglePanelOnSkillAttempt(msg) {
     const f = {};
     for (const v of (msg.values || [])) f[v.key] = v.value;
     const now = clock.now();
-    if (msg.name === 'juggle_start') {
+    if (msg.name === 'MAGAZINE_MISS') {
+        // fields: outcome, dx_mm, dy_mm, dt_ms, n_samples; message = the text.
+        const ok = f.outcome === 'THROWN' && f.dx_mm != null && f.dy_mm != null;
+        magazineMiss = ok
+            ? { text: 'Magazine miss: dx ' + f.dx_mm + ' mm, dy ' + f.dy_mm + ' mm (elbow frame)', cls: 'ok' }
+            : { text: 'Magazine: ' + (String(msg.message || '') || f.outcome || 'NO_TRACK'), cls: 'err' };
+    } else if (msg.name === 'juggle_start') {
         running = {
             pattern: f.pattern, n: f.n_throws, reload: f.reload === '1',
             apex: f.apex_m, sep: f.separation_mm, t0: now,
@@ -1019,6 +1041,11 @@ export function buildJugglePanel(container) {
     start.type = 'button';
     start.disabled = true;
     holdToConfirm(start, onStartConfirm, HOLD_MS);
+    const magazine = el('button', 'cmd-btn hold-fillable btn-juggle jp-magazine', 'Throw to magazine');
+    magazine.id = 'juggle-magazine';
+    magazine.type = 'button';
+    magazine.disabled = true;
+    holdToConfirm(magazine, onMagazineConfirm, HOLD_MS);
     const stop = el('button', 'cmd-btn jp-stop', 'Stop');
     stop.id = 'juggle-stop';
     stop.type = 'button';
@@ -1026,7 +1053,7 @@ export function buildJugglePanel(container) {
     stop.addEventListener('click', onStopClick);
     const status = el('div', 'jp-status');
     status.id = 'juggle-status';
-    actions.append(start, stop, status);
+    actions.append(start, magazine, stop, status);
 
     const summary = el('div', 'jp-summary');
     const attempt = el('div', 'jp-attempt');
@@ -1040,7 +1067,7 @@ export function buildJugglePanel(container) {
         root: container, title, clear, badge, select, reload, reloadLabel,
         svg: diag.svg, diagTitle: diag.title, diagStatic: diag.stat, hand: diag.hand,
         handStem: diag.handStem, balls: diag.balls, speedT: diag.speedT,
-        fields: fieldDom, dwellVal, timing, start, stop, status, summary, attempt, warn: warnEl,
+        fields: fieldDom, dwellVal, timing, start, magazine, stop, status, summary, attempt, warn: warnEl,
     };
     document.addEventListener('visibilitychange', ensureAnim);
     sync();
@@ -1241,6 +1268,9 @@ function sync() {
     // Stop is gated on connection alone — it must stay reachable even while
     // Start's own cooldown is latched (that cooldown is about NOT double-
     // dispatching a start, never about blocking a stop).
+    const magReason = startGateReason(p, true);
+    setDisabled(dom.magazine, !!magReason);
+    setTitle(dom.magazine, magReason || ('hold to confirm — throws one ball to the magazine\nsends: ' + MAGAZINE_REQUEST));
     setDisabled(dom.stop, !gate.connected);
     setTitle(dom.stop, gate.connected ? 'ends the running attempt immediately' : 'rosbridge disconnected');
 
@@ -1248,6 +1278,7 @@ function sync() {
     // else exactly what Start will send.
     let st;
     if (transient) st = { text: transient.text, cls: transient.cls };
+    else if (magazineMiss) st = magazineMiss;
     else if (reason) st = { text: reason, cls: 'muted' };
     else st = { text: '→ ' + data, cls: 'preview' };
     setText(dom.status, st.text);

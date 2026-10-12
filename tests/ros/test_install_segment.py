@@ -1336,3 +1336,57 @@ def test_an_untouched_request_decodes_no_tilt_even_though_rosidl_zero_fills_the_
     req3.rest_tilt_set = True
     req3.rest_tilt_rad = [float('nan'), 0.0]
     assert node._segment_terminal_from_request('REST', req3, 10.0).tilt is None
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# MAGAZINE (KIND_MAGAZINE = 3): the wire decodes to a MagazineTerminal
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _magazine_req(t_event_s, site=(10.0, 20.0, 780.0), target=(900.0, -300.0, 750.0),
+                  flight_s=0.9, rest=(0.0, 0.0, 750.0)):
+    req = InstallSegment.Request()
+    req.kind = req.KIND_MAGAZINE
+    req.t_event_s = float(t_event_s)
+    req.site_mm = list(site)
+    req.target_mm = list(target)
+    req.flight_s = float(flight_s)
+    req.rest_site_mm = list(rest)
+    return req
+
+
+def test_magazine_request_decodes_to_a_magazine_terminal():
+    from jugglebot.motion.skills import magazine_throw as mt
+    assert InstallSegment.Request.KIND_MAGAZINE == 3
+    assert tn.TrajectoryNode._SEGMENT_KINDS[3] == mt.MAGAZINE
+    node = _perf_node()
+    terminal = node._segment_terminal_from_request(
+        mt.MAGAZINE, _magazine_req(12.0), 12.0)
+    assert isinstance(terminal, mt.MagazineTerminal)
+    assert terminal.t_release_s == 12.0
+    assert terminal.flight_s == pytest.approx(0.9)
+    assert list(terminal.release_site_mm) == [10.0, 20.0, 780.0]
+    assert list(terminal.target_mm) == [900.0, -300.0, 750.0]
+    assert list(terminal.rest_site_mm) == [0.0, 0.0, 750.0]
+
+
+def test_magazine_request_reaches_executor_with_kind_magazine(monkeypatch):
+    from jugglebot.motion.skills import magazine_throw as mt
+    seen = {}
+
+    def _fake_install(record, seed, kind, terminal, t_now, **kw):
+        seen['kind'] = kind
+        seen['terminal'] = terminal
+        return None, SimpleNamespace(accepted=False, code='MAGAZINE_UNREACHABLE',
+                                     message='stub'), None
+
+    monkeypatch.setattr(tn.sk_exec, 'install_segment', _fake_install)
+    node = _perf_node()
+    with _frozen_perf() as at:
+        resp = node._svc_install_segment(_magazine_req(at + 1.5),
+                                         InstallSegment.Response())
+    assert resp.accepted is False
+    assert resp.code == 'MAGAZINE_UNREACHABLE'
+    assert seen['kind'] == mt.MAGAZINE
+    assert isinstance(seen['terminal'], mt.MagazineTerminal)
+    # the ROS->perf crossing is the same one THROW gets (offset is zero here)
+    assert seen['terminal'].t_release_s == pytest.approx(at + 1.5)

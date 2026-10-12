@@ -7,6 +7,8 @@
 uint8 KIND_THROW=0
 uint8 KIND_CATCH=1
 uint8 KIND_REST=2
+# MAGAZINE reuses site_mm (release site), target_mm, flight_s, t_event_s (= the release instant) and rest_site_mm.
+uint8 KIND_MAGAZINE=3
 uint8 kind
 uint32 ball_id
 float64 t_event_s              # THE EVENT INSTANT on the shared wall clock (seconds, ROS clock domain): release / landing / at-rest-by

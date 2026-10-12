@@ -1,0 +1,12 @@
+# config/bb_magazine.yaml — Ball Butler magazine-throw target.
+#
+# Coordinates are in Ball Butler's BASE-MARKER ("elbow") frame, mm: origin = corner
+# marker C, x = C->E (long edge), y = toward S (short edge), z = plane normal up
+# (right-handed) — bb_base_frame.canonical_base_frame. skill_node maps it into JB's
+# plan frame with the LIVE base-frame pose from mocap_node (topic bb/base_frame_pose).
+#
+# Read PER REQUEST: edit this file, then re-request `magazine`. Deliberately NOT part of
+# hardware_config.yaml: the admissible-box gate hashes the generated hardware_config.py,
+# so any edit there would invalidate the committed box. Not generated, not box-gated.
+target_base_mm: [550.0, 300.0, 750.0]   # elbow frame: x long edge, y short edge, z up (RHS)
+flight_s: 0.90                          # ball time of flight release -> target
