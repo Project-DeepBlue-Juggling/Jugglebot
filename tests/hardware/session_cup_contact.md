@@ -3,7 +3,7 @@
 > **FLOWN and CLOSED OUT 2026-09-23.** Block A 2026-09-22 (`logbook/2026-09-23-cup-contact-first-sitting.md`),
 > § 9 z-sweep and Block B 2026-09-23 (`logbook/2026-09-23-block-b-lateral-learner-and-hand-endstop-push.md`).
 > The plan is archived; this sheet is kept as the record of what was flown and is not a live
-> runsheet. The next sheet is R4's (`plans/active/two-ball-skill-stack.md`).
+> runsheet. The next sheet is R4's (`plans/archived/two-ball-skill-stack.md`).
 
 First flight of `plans/archived/cup-contact-contract.md` (implemented 2026-09-21, commit
 `2cc8631`, logbook `2026-09-20-cup-contact-contract-implemented.md`). Same machine, site,

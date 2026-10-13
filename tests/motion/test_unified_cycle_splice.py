@@ -31,7 +31,7 @@ documents, not a defect here.
 
 Unmarked and parallel-safe: pure planner code, no filesystem, no ports.
 
-Plan: ``plans/active/two-ball-skill-stack.md`` § 2.4 (R2 unit D1).
+Plan: ``plans/archived/two-ball-skill-stack.md`` § 2.4 (R2 unit D1).
 """
 
 from __future__ import annotations

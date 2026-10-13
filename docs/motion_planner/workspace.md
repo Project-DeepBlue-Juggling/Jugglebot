@@ -1,5 +1,8 @@
 # Workspace Safety
 
+!!! note "Status (2026-10-13)"
+    The limit math on this page is CURRENT. `workspace.py` is imported by `trajectory/feasibility.py` (the `trajectory_node` gates) and by the parked `motor_guard.py`. References to the MPC solver and a 50 Hz motor-guard check are historical (MPC removed 2026-09-01, tag `mpc-final`).
+
 This page covers how the motion planner keeps the platform within safe operating limits — leg extension bounds, singularity avoidance, and fault detection.
 
 **Source file:** [workspace.py](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/ros_ws/src/jugglebot/jugglebot/motion/workspace.py) (~300 lines)
@@ -8,8 +11,8 @@ This page covers how the motion planner keeps the platform within safe operating
 
 The workspace safety system operates at two levels:
 
-1. **Planning time** — The MPC solver enforces workspace constraints as part of its optimization, ensuring all planned trajectories satisfy leg extension and condition number limits.
-2. **Runtime** — The [motor guard](control_loop.md) checks workspace limits on every MPC command arrival (50 Hz) and E-stops if the platform exceeds hard limits.
+1. **Planning time** — `trajectory_node`'s feasibility gates (`trajectory/feasibility.py`) reject any segment that violates leg extension or condition number limits before it is installed.
+2. **Runtime** — The can-bridge Teensy's `MAX_DEVIATION` guard is the leg-path safety authority. (Historically, MPC enforced these constraints and the [motor guard](control_loop.md) checked them at 50 Hz; `motor_guard.py` is now a parked fallback, not the safety layer.)
 
 Both levels use the same margin constants, so a trajectory that passes feasibility will not trigger runtime limits under normal conditions.
 
@@ -145,7 +148,7 @@ Used during Phase 1 to characterize the workspace. Results: 929/1944 poses reach
 
 ## Motor Command Safety
 
-In addition to workspace limits, the motor guard enforces a set of runtime safety checks — max-deviation against actual motor feedback, overspeed detection, staleness checks, and NaN rejection. These are documented separately in [Motor Command Safety](safety.md).
+In addition to workspace limits, the live leg path has runtime safety checks on the can-bridge Teensy — max-deviation against actual motor feedback, staleness and the fault machine — documented in [CAN Bridge Safety Mechanisms](../can_bridge/safety.md). The parked `motor_guard.py` keeps the same class of checks (max-deviation, overspeed, staleness, NaN rejection) as per-commit tests; see [Motor Guard (parked)](control_loop.md).
 
 ## Agreement Between Planning and Runtime
 

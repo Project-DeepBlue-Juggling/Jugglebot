@@ -4,7 +4,7 @@ WHY THIS IS A PER-COMMIT GATE AND NOT A NIGHTLY CHARACTERISATION
 ----------------------------------------------------------------
 The skill stack gates every segment it is about to dispatch, at dispatch time:
 ``validate_cycle`` is a RUNTIME assert on six legs and the hand, not a
-planning-time luxury (``plans/active/two-ball-skill-stack.md`` § 2.6 pins
+planning-time luxury (``plans/archived/two-ball-skill-stack.md`` § 2.6 pins
 **< 10 ms per 40-knot segment**).  A budget that is only measured nightly cannot
 fail the commit that breaks it, and a gate that has drifted back over the budget
 is a gate a future session will be tempted to skip on the hot path — which is how

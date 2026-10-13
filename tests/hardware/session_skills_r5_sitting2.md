@@ -12,7 +12,7 @@
 > proposed fixes (U0-U3, none landed): `logbook/2026-10-02-skill-stack-r5-sitting-2.md`. Results
 > below (§ 11).
 
-Skill-stack R5 (`plans/active/two-ball-skill-stack.md` § R5, "Owner decisions (2026-09-30
+Skill-stack R5 (`plans/archived/two-ball-skill-stack.md` § R5, "Owner decisions (2026-09-30
 evening)"). Same machine as `session_skills_r5.md` (sitting 1) and, behind it,
 `session_skills_r4.md` — **those sheets stay the reference for everything this one does not
 restate** (QTM preconditions, bring-up rows, the guard/`/recover`/hand-homing recovery flow, the

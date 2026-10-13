@@ -195,7 +195,7 @@ def test_rodrigues_quarter_turn_about_z():
 # ---------------------------------------------------------------------------
 
 # TossMotionSource state-machine tests (and the module itself) were deleted
-# 2026-09-09, R0 dead-layer deletion (plans/active/two-ball-skill-stack.md
+# 2026-09-09, R0 dead-layer deletion (plans/archived/two-ball-skill-stack.md
 # § 6) — controller/toss_motion_source.py had no non-test importer outside
 # its own tests.
 

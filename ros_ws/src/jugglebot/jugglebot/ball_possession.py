@@ -1266,7 +1266,7 @@ def describe(verdict: PossessionVerdict, tol_mm: float) -> Tuple[str, str]:
 
 # ── Toss-record schema, the announced-ball latch, sensor edges/label and the
 #    corpus join (moved verbatim from toss_record.py, 2026-09-13 R3-f1 — the
-#    learning-stack deletion; plans/active/two-ball-skill-stack.md § 4 R3) ──
+#    learning-stack deletion; plans/archived/two-ball-skill-stack.md § 4 R3) ──
 #
 # latch_announced_ball, FlightLatch/advance_flight_latches/flight_in_progress,
 # SensorSample, edges, poll_dt_steps_ms/poll_dt_ms_median

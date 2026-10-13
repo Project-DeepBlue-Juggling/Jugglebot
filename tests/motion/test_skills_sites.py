@@ -3,7 +3,7 @@
 Unmarked and parallel-safe: pure arithmetic, nothing touches the filesystem or
 a shared clock.
 
-Plan: ``plans/active/two-ball-skill-stack.md`` § 2.2.
+Plan: ``plans/archived/two-ball-skill-stack.md`` § 2.2.
 """
 
 from __future__ import annotations

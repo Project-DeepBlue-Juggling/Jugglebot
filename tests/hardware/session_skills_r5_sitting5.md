@@ -1,6 +1,6 @@
 # R5 hardware runsheet, sitting 5 — the fed half alone, then fed columns with the misses ending early
 
-Skill-stack R5 (`plans/active/two-ball-skill-stack.md` § R5). Same machine as sittings 1-4
+Skill-stack R5 (`plans/archived/two-ball-skill-stack.md` § R5). Same machine as sittings 1-4
 (`session_skills_r5.md` … `session_skills_r5_sitting4.md` stay the reference for everything this
 sheet does not restate: QTM preconditions, the guard/`/recover`/hand-homing recovery flow, the
 refusal-code table, the carried watch items). Driver: `jugglebot/juggle` action, patterns

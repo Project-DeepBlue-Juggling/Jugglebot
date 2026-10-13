@@ -1,6 +1,6 @@
 # R5 hardware runsheet, sitting 3 — the swapped-layout BB-fed columns gate
 
-Skill-stack R5 (`plans/active/two-ball-skill-stack.md` § R5). Same machine as sitting 1
+Skill-stack R5 (`plans/archived/two-ball-skill-stack.md` § R5). Same machine as sitting 1
 (`session_skills_r5.md`) and sitting 2 (`session_skills_r5_sitting2.md`) — those sheets stay the
 reference for everything this one does not restate (QTM preconditions, the guard/`/recover`/
 hand-homing recovery flow, the full refusal-code table, the carried R4/R5 watch items). Driver:

@@ -1,5 +1,8 @@
 # Hardware Analysis & Engineering Logbook
 
+!!! note "Status (2026-10-13)"
+    The rosbag/MCAP analysis path is CURRENT (`sim/analysis/diagnose.py` does live rosbag analysis). The MPC-CSV path is historical: its CSV producer is gone, though the analysis code was kept in full at R0.
+
 The analysis subsystem provides tools for diagnosing hardware test sessions, comparing before/after results, searching past investigations, and maintaining a structured engineering logbook.
 
 ## Architecture
@@ -58,7 +61,7 @@ Hardware test session (CSV + rosbag)
 
 ### Telemetry Data
 
-MPC telemetry CSVs contain 55 fields recorded at 40 Hz:
+(Historical: the MPC CSV producer was removed 2026-09-01.) MPC telemetry CSVs contain 55 fields recorded at 40 Hz:
 
 - **Pose**: reference and actual 6-DoF (x, y, z, rx, ry, rz)
 - **Legs**: commanded and actual extension per leg (mm), leg velocities

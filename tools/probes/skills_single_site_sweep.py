@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Skill-stack R3 sizing, SINGLE-SITE cycle: THROW(P1) -> CATCH(P1) -> REST.
 
-R3 flies one site, repeated (plan `plans/active/two-ball-skill-stack.md` R3
+R3 flies one site, repeated (plan `plans/archived/two-ball-skill-stack.md` R3
 section). This harness drives the REAL install chain --
 ``segments.plan_segment`` (cup QP -> tilt -> decompose -> gate) through
 ``executor.install_segment`` -- with a perfect analytic tracker and no plant,

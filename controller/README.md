@@ -9,7 +9,7 @@ the ROS2 hardware stack (`ros_ws/`). No ROS2 imports, no CasADi.
 | `feasibility.py` | Segment feasibility for the K1–K6 reference contract |
 | `hermite.py` | Quintic / Hermite interpolation with accel and jerk integrals |
 | `plant.py` | `PlantInterface` / `PlantState` — the plant contract |
-| `target.py` | `TargetSource` / `TargetCommand` / `ReferenceEvent` |
+| `target.py` | `ReferenceEvent`, `make_feasible_events` (K1–K6 enforcement point) |
 | `telemetry.py` | `TelemetryLogger`, `StepRecord`, CSV round-trip |
 
 Normative documents: `PLANT_INTERFACE_CONTRACT.md`,
@@ -19,11 +19,18 @@ Normative documents: `PLANT_INTERFACE_CONTRACT.md`,
 
 `scheduler.py` (+ `SCHEDULER_CONTRACT.md`), `zmq_target.py`,
 `toss_motion_source.py` and `catch_optimizer.py` were deleted (R0 dead-layer
-deletion, `plans/active/two-ball-skill-stack.md` § 6) — each had no
+deletion, `plans/archived/two-ball-skill-stack.md` § 6) — each had no
 non-test importer left after the 2026-09-01 MPC chain removal below.
-`target.py` is retained: `sim/input/toss_loop.py` (kept — the census found a
-live importer, `sim/viz/reference_plot.py`) still imports `ReferenceEvent`
-from it. See `logbook/2026-09-09-skill-stack-r0-dead-layer-deletion.md`.
+`target.py` lost its target-SOURCE half on 2026-10-13 (skill-stack R6
+close-out, `2026-10-13-skill-stack-r6-close-out.md`): `TargetCommand`,
+`TargetSource`, `StaticTargetSource`, `AutoSequenceTargetSource`,
+`WaypointTargetSource`, `sample_ref_fn`, `compute_stretch_ms` and
+`is_warm_start_invalidating`. What remains is the reference-event layer
+(`ReferenceEvent`, `make_feasible_events`, `flat_target_to_events`): `ReferenceEvent` is
+imported by `sim/input/toss_loop.py`; `make_feasible_events` has no live caller outside
+`tests/sim/test_make_feasible_events.py` (owner decision pending on whether K1-K6 retire
+into the robot's segment gates, `motion/trajectory/feasibility.py`). See
+`logbook/2026-09-09-skill-stack-r0-dead-layer-deletion.md`.
 
 ## Removed: the MPC chain (2026-09-01)
 

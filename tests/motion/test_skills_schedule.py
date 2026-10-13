@@ -4,7 +4,7 @@ Unmarked and parallel-safe: pure arithmetic, nothing touches the filesystem or
 a shared clock (``t_abs_s`` is just a float here — the CAN wall clock is the
 executor's concern, not this module's).
 
-Plan: ``plans/active/two-ball-skill-stack.md`` § 2.4.
+Plan: ``plans/archived/two-ball-skill-stack.md`` § 2.4.
 """
 
 from __future__ import annotations

@@ -1,6 +1,6 @@
 # Jugglebot Documentation
 
-Jugglebot is a 6-DoF Stewart platform robot with ball-catching capabilities. It uses string-driven linear actuators controlled by ODrive motor controllers, with a Jetson running ROS2 for high-level coordination and a standalone Python process for real-time motion control.
+Jugglebot is a 6-DoF Stewart platform robot with ball-catching capabilities. It uses string-driven linear actuators controlled by ODrive motor controllers, with a Jetson running ROS2 for high-level coordination and a skill-stack planner whose segments the can-bridge Teensy interpolates at 500 Hz.
 
 ## Documentation Sections
 
@@ -8,18 +8,15 @@ Jugglebot is a 6-DoF Stewart platform robot with ball-catching capabilities. It 
 
 The motion planner controls the **Stewart platform** (the 6-leg parallel mechanism). It does not cover the Ball Butler subsystem or the linear throw axis, which have their own independent control paths.
 
-Complete technical documentation for the motion planning and control subsystem, covering:
+The live chain is `skill_node` -> `trajectory/install_segment` -> `trajectory_node` -> ZMQ :5557 -> `teensy_bridge_node` -> can-bridge Teensy.
 
-- **[Architecture](motion_planner/architecture.md)** — System design, data flow, and control philosophy
+- **[Overview](motion_planner/index.md)** — the skill stack, status and history
+- **[Architecture](motion_planner/architecture.md)** — processes, IPC, CAN side, timing, invariants
 - **[Kinematics](motion_planner/kinematics.md)** — Stewart platform geometry, inverse/forward kinematics, Jacobian
 - **[Dynamics](motion_planner/dynamics.md)** — Gravity compensation, inertia feedforward, force decomposition
-- **[Trajectory Planning](motion_planner/trajectory.md)** — Quintic polynomial generation, feasibility checking, dynamic targets (historical — MPC now handles trajectory planning)
-- **[Workspace Safety](motion_planner/workspace.md)** — Limit enforcement, singularity avoidance, fault detection
-- **[Motor Command Safety](motion_planner/safety.md)** — Max-deviation check, motor feedback gating, defense-in-depth fault checks
-- **[Motor Guard](motion_planner/control_loop.md)** — The 500 Hz interpolator + safety monitor, operating modes, IPC layer
-- **[System Integration](motion_planner/integration.md)** — ROS2 bridge, CAN interface, full system startup
-- **[Operations Guide](motion_planner/operations.md)** — Running tests, tuning gains, extending the system
-- **[Validation Results](motion_planner/results.md)** — Summary of hardware test outcomes
+- **[Workspace Safety](motion_planner/workspace.md)** — Limit enforcement, singularity avoidance
+- **[Motor Guard (parked)](motion_planner/control_loop.md)** — the parked fallback and Hermite xref twin
+- **[Validation Results](motion_planner/results.md)** — historical hardware test outcomes
 
 ### [CAN Bridge](can_bridge/index.md) — Teensy 4.1 Hardware Offload
 
@@ -32,15 +29,9 @@ It talks to the Jetson over UDP/Ethernet and owns three isolated CAN buses
 - **[Control Flow](can_bridge/control.md)** — the 40 Hz→500 Hz leg interpolation ladder and the hand's separate relay path
 - **[Safety Mechanisms](can_bridge/safety.md)** — staleness watchdogs, the E-STOP fault machine, and CAN bus health monitoring
 
-### Simulation MPC (REMOVED 2026-09-01, historical)
+### History
 
-The CasADi/IPOPT receding-horizon MPC described here was deleted 2026-09-01
-— dormant since 2026-08-01 and superseded by the unified 7-DoF planner. The
-final implementation is preserved at git tag `mpc-final`; see
-`logbook/2026-09-01-mpc-chain-removed.md`. Its documentation pages
-(`docs/sim_mpc/`) were deleted 2026-09-09 (R0 dead-layer deletion,
-`plans/active/two-ball-skill-stack.md` § 6) along with the mkdocs nav
-section that linked them.
+The CasADi/IPOPT MPC was removed 2026-09-01 (git tag `mpc-final`); the FSM stack was deleted 2026-09-24 (tag `fsm-final`).
 
 ### [Hardware Analysis](analysis/index.md) -- Diagnosis & Engineering Logbook
 
@@ -53,29 +44,13 @@ Tools for diagnosing hardware test sessions, comparing before/after results, and
 
 ```
 Jugglebot/
-├── config/                     # Code-generated protocol & hardware constants
-│   ├── jugglebot_protocol.yaml
-│   ├── hardware_config.yaml
-│   └── generate_config.py
-├── ros_ws/src/jugglebot/       # ROS2 workspace
-│   └── jugglebot/
-│       ├── can/                # CAN bus interface (bus, odrive, ball_butler)
-│       ├── motion/             # Motion planner (pure Python, no ROS2)
-│       ├── can_node.py         # ROS2 CAN interface node
-│       ├── orchestrator_node.py
-│       └── state_machine.py
-├── controller/                 # Reference/telemetry layer (portable, no ROS2, no MuJoCo)
-│   └── target.py               # TargetCommand + TargetSource protocol
+├── config/                     # hardware_config.yaml -> generated constants
+├── controller/                 # shared motion primitives (ballistics, feasibility, hermite, plant)
+├── teensy_link/                # can-bridge UDP transport (root package, not installed into ROS)
+├── ros_ws/src/jugglebot/       # ROS2 package: skill_node, trajectory_node, teensy_bridge_node, mocap_node, motion/, tracking/
 ├── sim/                        # MuJoCo simulation
-│   ├── plant/                  # MuJoCo + hardware plant interfaces
-│   ├── hand/                   # Hand coordination, catch/throw trajectories
-│   ├── input/                  # Input adapters (scripted, interactive, ZMQ)
-│   ├── viz/                    # Telemetry logging, horizon renderer, dashboard
-│   ├── model/                  # MJCF model + generator
-│   ├── analysis/               # Hardware diagnosis, comparison, reporting
-│   └── main.py                 # Entry point + 50 Hz MPC loop
 ├── logbook/                    # Engineering logbook (investigation entries)
-├── tools/                      # Standalone hardware test harnesses
-├── docs/                       # This documentation
-└── MOTION_PLANNER_PLAN.md      # Historical development plan & test log
+├── plans/                      # active / parked / archived plans
+├── tools/                      # utilities and probes
+└── docs/                       # This documentation
 ```

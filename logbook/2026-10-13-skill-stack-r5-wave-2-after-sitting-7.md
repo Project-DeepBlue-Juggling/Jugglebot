@@ -2,7 +2,7 @@
 title: R5 wave 2 after sitting 7 - the catch prior is the learner's expected landing, the lane recovers itself, BB throws can be cancelled; the columns box stays [-4,+2] mm (owner choice pending) and the 45 ms stall is the planner sharing the emitter's interpreter
 type: investigation
 date: 2026-10-13
-status: open
+status: tuned
 phase: "two-ball-skill-stack — R5 (two-ball columns)"
 related_plan: two-ball-skill-stack.md
 related:
@@ -186,3 +186,5 @@ All 2026-10-13; scoped runs by the units, in their own worktrees at 39908f80 + t
 7. Not done: `report.py` lacks `aim_fallback`; the cancel hooks for clear_errors, hand park and hand-jam are untested one-liners; a GUI button for `bb/cancel`; renaming `HAND_LANE_REFUSED` to `LANE_REFUSED`.
 
 **Follow-up (2026-10-13 evening).** Wave 3 (`2026-10-13-skill-stack-r5-wave-3-expected-landing-box-and-solver-worker.md`) answered the open items. (1) Box: the owner chose option 4; the box now bounds the learner's expected landing, values and gate hash unchanged. (2) Stall: the owner chose to move the solve out of the emitter's interpreter (a worker process); `SCHED_GRACE_S` and `EMIT_LEAD_KNOTS` untouched. (3) Hand park at recovery DONE: no, it stays where it stopped. (4) The hop entry counts as "BB initiates". (5) The dress rehearsal is approved and is now `tools/probes/lane_latch_rehearsal.py` (runsheet rows 17a-17d). (6) BB FW 9 was flashed 20:09 (8 -> 9); the cancel latency and TOO_LATE rungs (19, 20) still need a live BB. (7) Not done, unchanged: `report.py` lacks `aim_fallback`, the untested cancel hooks, the GUI `bb/cancel` button, the `HAND_LANE_REFUSED` rename. This entry stays open because item 7 is open and sitting 8 verifies the rest. First flight 2026-10-13 22:29: the cancel fired on every BB throw at dispatch, because the announcement's executor swap was read as an end (and the resulting `THROW_ABORTED_BY_HOST` was ignored, so JB caught a phantom); fixed, see `2026-10-13-skill-stack-r5-bb-throw-self-cancel-and-phantom-catch.md`.
+
+**Follow-up (2026-10-13 night).** Sitting 8 met the R5 gate (`2026-10-13-skill-stack-r5-sitting-8-gate-met.md`); the learner-predicted prior, the 35 mm re-aim, the trim default and the BB cancel path were verified in flight (14/14 BB throws, 0 self-cancels). The lane-latch auto-recovery was NOT exercised (no latch occurred; `lane_recovery` 0); its rehearsal is pending, and the remaining items are rows in `plans/active/skill-stack-dress-rehearsals-and-residue.md` § 2.

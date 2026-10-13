@@ -1,6 +1,6 @@
 # R5 hardware runsheet, sitting 8 — learner-predicted catch prior, lane auto-recovery, BB cancel, the 30-consecutive gate
 
-Skill-stack R5 (`plans/active/two-ball-skill-stack.md` § R5). Same machine as sittings 1-7
+Skill-stack R5 (`plans/archived/two-ball-skill-stack.md` § R5). Same machine as sittings 1-7
 (`session_skills_r5_sitting7.md` and earlier stay the reference for everything this sheet does not
 restate: QTM preconditions, the guard/`/recover`/hand-homing recovery flow, the refusal-code table,
 the hand-jam bench check, the fed block's probes). Driver: `jugglebot/juggle` action, pattern
@@ -102,3 +102,30 @@ Shell prefix `P` = `bash -c 'source /opt/ros/foxy/setup.bash && source ~/Desktop
 | 32 | Record the pre-power full gate as (date, command, result) from row 7. | |
 | 32a | **Stall verification (wave 3, open verification step 2).** From the bag/`/trajectory_status`, report `max_emit_gap_ms` p99 and max over the whole run, the `solve`/`plan` split from row 22, and the worker's RSS at the end (`ps -o rss`) next to row 10a's. | Target p99 < 30 ms and max < 35 ms against L2's 34.3 / 45.7 ms; a worker RSS far above ~80 MB is a finding. |
 | 33 | Log the sitting; update plan § R5 Outcome. | |
+
+## 6. Results (2026-10-13 night)
+
+Bag `~/Desktop/rosbags/2026-10-13_23-12-50_2-Ball-32-Catches`; launch.log `~/.ros/log/2026-10-13-23-12-50-197471-jetson-3905591/launch.log`. Entry: `logbook/2026-10-13-skill-stack-r5-sitting-8-gate-met.md`.
+
+| # | Result |
+|---|---|
+| 7 | PASS: 2026-10-13 23:04, `./run_tests.sh --full`, parallel 6981 passed, 9 skipped, 1 xfailed in 353.57 s; serial 7 passed in 27.72 s (`temp/logs/gate_bbfix_20261013.log`) |
+| 8 | Not recorded in the sitting evidence |
+| 10 | `BRIDGE_FW_CHECK: OK - can-bridge v30 [install_skew=0]`; Platform v7; ODrive checks PASSED |
+| 10a | Worker READY (L83, `blas_threads=1`); RSS not logged anywhere |
+| 11 | `level_trim_deg = [+0.0945, +0.3678]` from the launch default (L35) |
+| 12 | Limits not read back in the launch log; refusals quote leg acc 5000, leg jerk 200000, hand acc 3900 |
+| 16b | Covered live, not as a separate rehearsal: the 23:14:26 warm-up reload and 13 later dispatches; 14/14 flew, 0 `ENDED_DURING_BB_DISPATCH`, 0 `THROW_ABORTED_BY_HOST` |
+| 21 | Fed attempts 1-10 ran n=10 (attempt 1 columns_1ball_fed): streak 5, 5, 5, 0, 10, 4, 4, 11, 0, 10 |
+| 22 / 22a | Tallies: `AIM-LATERAL-CLAMPED` 79, `BOX-EXPECTED-LANDING` 137 (18 UNMET), `CATCH-AIM-FALLBACK` 1, `BOX-FORWARD-CLIP` 0, `lane_recovery`/`sched_hold_latched`/`SOLVER_UNAVAIL` 0, `REJECTED_BB(` 0, `ENDED_DURING_BB_DISPATCH` 0, "answered after the announcement swapped" 2 |
+| 23 | NOT reproduced: probe median feed miss (-6.8, -8.6) mm, r 12.9 mm, 10/11 seated before 0.20 s |
+| 24 | LIMIT_ACC x1 (attempt 3), LIMIT_JERK 0, HAND_LIMIT_C2 0 as ENDs; resend refusals LIMIT_ACC 12, LIMIT_JERK 8, INFEASIBLE 6 |
+| 25 | **GATE MET:** attempt 11 (n=32), 32 consecutive catches (feed + throws 1-31), node verdict 31/32; curve 5, 5, 5, 0, 10, 4, 4, 11, 0, 10, 32, 9 |
+| 29 | `throw_outcome_bag_probe.py`: 131 flights, 125 caught / 6 not, agrees with every node miss it can score; `missed_catch_fixture.py` not run (no CLI) |
+| 30 | `memory_backup_20261013_sitting8.csv`, 633 lines; rows 535 -> 632 (+97) |
+| 31 | Paths above |
+| 32 | Same as row 7 |
+| 32a | `max_emit_gap_ms` p99 29.94 ms (MET overall, 32.5 in the gate attempt), max 47.04 ms (NOT MET, < 35); solve p50 103.7 / p99 192.2 / max 357.1 ms; worker RSS not logged |
+
+Rows 17a-20 NOT RUN (owner, time) -> `tests/hardware/session_skill_stack_rehearsals.md`.
+Row 33: done: this section + the entry.

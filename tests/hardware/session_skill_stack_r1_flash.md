@@ -13,7 +13,7 @@
 > re-run this sheet as-is; a future R1-class reflash should start from the R2
 > runbook when it exists.
 
-Skill-stack R1 (`plans/active/two-ball-skill-stack.md` § 4 R1, entry
+Skill-stack R1 (`plans/archived/two-ball-skill-stack.md` § 4 R1, entry
 `logbook/2026-09-11-skill-stack-r1-one-hand-master.md`). Everything here is run
 by the operator. Every number carries its source in the linked entry.
 

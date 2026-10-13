@@ -71,6 +71,7 @@ next touches that plan, not a mechanical edit. The vocabulary going forward is
 | 2026-09-11 | [hand-geometry-correction.md](hand-geometry-correction.md) | superseded | Hand geometry correction — the measured linear gain replaces the "just 'cuz" factor |
 | 2026-09-23 | [cup-contact-contract.md](cup-contact-contract.md) | completed | Cup-contact contract — banking defined only under seating force, the cup never falls away from a ball, lateral aim unpinned (flown 2026-09-22/23; residue carried to two-ball-skill-stack § 0) |
 | 2026-10-11 | [gui-rosbag-replay.md](gui-rosbag-replay.md) | completed | GUI rosbag replay — one playhead over any MCAP recording |
+| 2026-10-14 | [two-ball-skill-stack.md](two-ball-skill-stack.md) | completed | Two-ball skill stack — schedule-driven throw/catch skills, one hand master, memory-based learning |
 
 ## Where the other plans are
 

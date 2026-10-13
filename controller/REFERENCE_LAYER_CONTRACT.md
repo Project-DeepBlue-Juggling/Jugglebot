@@ -1,17 +1,18 @@
 # Reference-Layer Contract (K1–K6)
 
 This document is the **normative specification** of the reference-feasibility
-contract every ``TargetSource`` in the MPC pipeline must satisfy.  It exists
-so that new sources (future scheduler variants, juggling choreography, GUI
-input paths, etc.) can be implemented without reintroducing the failure
-modes that the W1–W11 cycle structurally eliminated.
+contract (K1–K6) that any producer of a ``ReferenceEvent`` list must satisfy.
+The single enforcement point is ``make_feasible_events`` in
+``controller/target.py``.
+
+Status (2026-10-13): the MPC pipeline and its `TargetSource` producers were deleted (MPC chain 2026-09-01, tag `mpc-final`; the target-source classes, `TargetCommand` and the W5 helper 2026-10-13 at the skill-stack R6 close-out). The contract and its enforcement point remain, but `make_feasible_events` currently has no live caller outside its tests (`tests/sim/test_make_feasible_events.py`); the sim toss loop (`sim/input/toss_loop.py`) imports only `ReferenceEvent` and builds its events by hand. Whether K1-K6 stay enforced here or retire into the robot's segment gates is an open owner decision (`plans/active/skill-stack-dress-rehearsals-and-residue.md` § 2). The robot's segment gates live in `jugglebot/motion/trajectory/feasibility.py` and apply the same bound classes.
 
 ## Background
 
-The MPC consumes a *reference trajectory* — a time-indexed list of
-``ReferenceEvent`` objects (see ``controller/target.py``).  The reference is
-not a free parameter: it is the MPC's demand signal, and the MPC is only as
-well-behaved as the reference permits.
+The MPC consumed a *reference trajectory* — a time-indexed list of
+``ReferenceEvent`` objects (see ``controller/target.py``).  The reference was
+not a free parameter: it was the MPC's demand signal, and the MPC was only as
+well-behaved as the reference permitted.
 
 Pre-W1, references were built by each source independently with no shared
 feasibility contract.  This produced a family of failures:
@@ -31,7 +32,7 @@ The K1–K6 invariants below close that entire class of failures.
 
 ## The Invariants
 
-Every ``ReferenceEvent`` list emitted by a ``TargetSource`` must satisfy:
+Every ``ReferenceEvent`` list emitted by a producer must satisfy:
 
 ### K1 — Kinematic continuity
 
@@ -115,7 +116,7 @@ problem).
 
 All six invariants are enforced in one place:
 [controller/target.py:make_feasible_events](target.py).
-Every ``TargetSource`` calls this function (directly or via the
+Every producer of a reference list must call this function (the deleted MPC-era sources did; today only the feasibility tests do) — directly or via the
 ``flat_target_to_events`` wrapper) at the boundary where it emits events.
 
 Signature:
@@ -142,6 +143,8 @@ Returns:
 
 ## Stretch policy
 
+*Partly historical (2026-10-13): `make_feasible_events` still stretches exactly as described here; the `ZmqTargetSource` warning publisher, the `TargetFeedback` messages and the source-side cached events named below were deleted with the MPC chain (code at tag `mpc-final`).*
+
 When K2 or K3 would be violated with the caller's requested ``arrival_time``,
 ``make_feasible_events`` **stretches** the segment duration until the
 interior peak velocity and acceleration fall inside their bounds.  A binary
@@ -154,6 +157,8 @@ search finds the smallest stretch ratio that satisfies both bounds.
   delay.  See `ZmqTargetSource._maybe_publish_stretch_warning`.
 
 ## Catch-path exception (``no_stretch=True``)
+
+*Partly historical (2026-10-13): `make_feasible_events` still honours `no_stretch=True` exactly as described; the `ZmqTargetSource` cached-events behaviour named below was deleted with the MPC chain (code at tag `mpc-final`).*
 
 Catch targets have hard arrival deadlines — the ball arrives when physics
 says.  Silently stretching a catch's arrival_time would make the platform
@@ -176,6 +181,8 @@ This is the policy agreed in the [2026-04-19 Day-2 discussion](../logbook/2026-0
 
 ## Warm-start invalidation (W5)
 
+*Historical (MPC-era, deleted 2026-10-13): the symbols below no longer exist; kept because the failure modes they describe are the reason K1-K6 are shaped as they are. Code at tag `mpc-final`.*
+
 When consecutive distinct targets produce a **structurally different**
 reference, the MPC's warm-start from the previous solve is unlikely to be
 useful.  ``TargetCommand.warm_start_valid`` is a one-tick hint from the
@@ -197,7 +204,9 @@ implements this predicate; built-in sources (``StaticTargetSource``,
 ``WaypointTargetSource``, ``AutoSequenceTargetSource``, ``ZmqTargetSource``)
 all use it.  Custom sources SHOULD.
 
-## Implementing a new ``TargetSource``
+## Implementing a new producer (historical TargetSource example)
+
+*Historical (MPC-era, deleted 2026-10-13): the symbols below no longer exist; kept because the failure modes they describe are the reason K1-K6 are shaped as they are. Code at tag `mpc-final`.*
 
 Template:
 
@@ -266,6 +275,8 @@ Caveats:
 
 ## Diagnosis
 
+*Historical (MPC-era, deleted 2026-10-13): the symbols below no longer exist; kept because the failure modes they describe are the reason K1-K6 are shaped as they are. Code at tag `mpc-final`.*
+
 > Note: the Tier-1 fallback rewrite (logbook
 > [2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md](../logbook/2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md))
 > restructured how the fallback chain protects against ref shifts:
@@ -312,7 +323,7 @@ touches the reference layer should close it** — either by making the bounds
 mandatory (and fixing the two call sites) or by stating, here, why an unbounded
 reference is legitimate on those paths.
 
-Scope note: MPC is operationally dormant, so this is not currently on a hardware
+Scope note: the MPC chain was deleted (2026-09-01, tag `mpc-final`), so this is not on a hardware
 command path. That is a reason it has not bitten, not a reason it is safe.
 
 ## Related

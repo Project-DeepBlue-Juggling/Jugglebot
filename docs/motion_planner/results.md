@@ -1,5 +1,8 @@
 # Validation Results
 
+!!! note "Historical (2026-10-13)"
+    Historical validation record of the 2026 MPC-era programme (phases 1–7), kept as a record. The skill-stack results live in the logbook (`logbook/INDEX.md`, entries tagged `hardware-sitting`) and in `plans/archived/two-ball-skill-stack.md`.
+
 This page summarises the key hardware test results from each development phase. The full test log with detailed notes is in [`MOTION_PLANNER_PLAN.md`](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/MOTION_PLANNER_PLAN.md).
 
 ## Phase 1: Kinematics (Offline)

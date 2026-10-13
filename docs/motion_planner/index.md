@@ -1,104 +1,53 @@
-# Motion Planner Overview
+# Motion planning — the skill stack (2026-10)
 
-!!! info "Scope: Stewart Platform Only"
-    This motion planner controls the **Stewart platform** — the 6-leg parallel mechanism. It does not cover the Ball Butler subsystem or the linear throw axis, which are controlled independently. The throw axis is treated as a static payload for dynamics purposes (its mass is included in the platform inertia model).
+> **Status.** The CasADi/IPOPT MPC chain was removed 2026-09-01 (final implementation at git tag `mpc-final`).
+> The unified 7-DoF ring and the FSM toss/reload choreography were deleted 2026-09-24 (tag `fsm-final`).
+> The live planner is a schedule-driven skill stack: skills dispatched on the shared CAN wall clock, rest-terminal segments, one hand master.
 
-The motion system is responsible for commanding the Stewart platform's six leg actuators. The MPC solver (50 Hz) plans trajectories for all input modes; the motor guard (500 Hz) interpolates between MPC commands and validates them against motor feedback before forwarding to the ODrive motor controllers over CAN bus.
+## Scope
 
-## Design Principles
+This section covers the Stewart platform's motion path on the Jetson and the math under it (kinematics, dynamics, workspace). The CAN-bridge firmware has its own section: [CAN Bridge](../can_bridge/index.md). Ball Butler (the launcher) has an independent control path.
 
-**Pure Python, no ROS2 in the core.** The motion modules (`motion/`, `controller/`) have zero ROS2 dependency. This keeps the motor guard deterministic and testable without a ROS2 environment. Bridge nodes translate between ROS2 topics and ZeroMQ IPC.
-
-**MPC is the sole motion planner.** All input modes (spacemouse, GUI, shell, catch coordinator) set target poses that the MPC tracks. The MPC outputs pre-computed motor commands — the motor guard does not compute IK, dynamics, or trajectories.
-
-**Position control with feedforward.** The ODrive controllers run cascaded PID at 8 kHz. The system provides three values per leg each cycle:
-
-| Field | Source | Purpose |
-|---|---|---|
-| `input_pos` | MPC solver (symbolic IK constraints) | Where the leg should be |
-| `vel_ff` | HardwarePlant (finite-difference of MPC extensions) | How fast it should be moving |
-| `torque_ff` | HardwarePlant (Newton-Euler dynamics model) | What force is needed (gravity + inertia) |
-
-The dynamics model is expressed through feedforward, not feedback. The ODrive's PID only corrects for modelling errors and disturbances.
-
-**Safety first.** There is only one robot. The motor guard validates every command against motor feedback (max-deviation, overspeed, workspace limits). The system fails safe — a stale position command holds position rather than continuing to apply force.
-
-## Module Map
+## Live data path
 
 ```
-controller/                    MPC solver (portable, no ROS2, no MuJoCo)
-├── mpc.py                     MPCController (CasADi/IPOPT, symbolic IK)
-├── params.py                  Tuning parameters
-└── target.py                  TargetCommand + TargetSource protocol
-
-motion/                        Motor guard + motion primitives
-├── motor_guard.py             500 Hz interpolator + safety monitor
-├── ipc.py                     ZeroMQ PUB/SUB inter-process communication
-├── geometry.py                Load Stewart platform dimensions from config
-├── ik_solver.py               Position/velocity/acceleration inverse kinematics + FK
-├── conversions.py             mm <-> rev, force <-> torque unit conversions
-├── dynamics.py                Gravity wrench, inertia wrench, feedforward torques
-├── workspace.py               Workspace limit checking, singularity monitoring
-└── motor_commands.py          Cartesian → motor command mapping
+skill_node  (schedule -> THROW / CATCH / REST skills, learner)
+   | ROS service trajectory/install_segment
+trajectory_node  (segment solve in a WORKER PROCESS; 40 Hz emitter thread)
+   | ZMQ :5557 (msgpack)
+teensy_bridge_node  (SetpointPump -> UDP)
+   |
+can-bridge Teensy  (500 Hz Hermite interpolation, MAX_DEVIATION guard)
+   |
+leg ODrives 0-5  +  hand ODrive 6 (streamed lane, one master)
 ```
 
-External:
+Details, processes and timing: [Architecture](architecture.md).
 
-- `tools/*.py` — Standalone hardware test harnesses that bypass ROS2
+## Segments and feasibility
 
-!!! note "Removed 2026-09-01"
-    `motion_bridge_node.py`, `mpc_bridge_node.py` and
-    `controller/hardware_plant.py` were deleted with the MPC chain. They are at
-    git tag `mpc-final`; see `logbook/2026-09-01-mpc-chain-removed.md`.
+Every segment is rest-terminal and is planned from the live state at the splice knot, so the joined trajectory is C2 there. A segment is installed only if it passes the K1-K6 reference-feasibility contract (`controller/REFERENCE_LAYER_CONTRACT.md`) and lies inside the admissible box (`config/generated/admissible_box.yaml`, produced by `tools/admissible_sweep.py`). An infeasible segment is refused with the gate's code and the attempt ends on the previous segment's rest tail.
 
-## Data Flow Summary
+## Learner
 
-```
-                          ROS2 Input Sources
-                     (spacemouse, GUI, shell, catch)
-                              |
-                    mpc_bridge_node.py  (ZMQ :5558)
-                              |
-                    +---------+---------+
-                    | MPC solver (50 Hz)|
-                    | CasADi/IPOPT      |
-                    | symbolic IK       |
-                    +---------+---------+
-                              |
-                    HardwarePlant (vel_ff, torque_ff)
-                              |
-                        ZMQ :5557
-                              |
-                    +---------+---------+
-                    | motor_guard (500Hz)|
-                    | quadratic interp  |
-                    | safety checks     |
-                    +---------+---------+
-                              |
-                    (pos, vel_ff, torque_ff)
-                              |
-                    motion_bridge_node  (ZMQ :5556)
-                              |
-                         can_node.py
-                              |
-                        CAN bus → ODrives
-```
+The throw command is the commanded landing plus apex, chosen by a memory-based learner (identity prior with no data; local-linear fit over remembered throws). The catch is aimed from the tracker's ballistic fit (`tracking/flight_fit.py`). Source: `plans/archived/two-ball-skill-stack.md` sections 2.4-2.6.
 
-## Quick Links
+## Perception and outcome
 
-| Topic | Page | Key Question Answered |
-|---|---|---|
-| [Architecture](architecture.md) | How the system is structured | How do the pieces fit together? |
-| [Kinematics](kinematics.md) | Geometry, IK, FK, Jacobian | How does a platform pose become leg lengths? |
-| [Dynamics](dynamics.md) | Gravity, inertia, feedforward | How are motor torques computed? |
-| [Trajectory](trajectory.md) | Quintic polynomials, feasibility | How were smooth motions planned? (historical — MPC now handles this) |
-| [Workspace](workspace.md) | Limits, singularity avoidance | How does the system stay safe? |
-| [Motor Command Safety](safety.md) | Max-deviation, feedback gating, fault checks | How are dangerous commands prevented? |
-| [Motor Guard](control_loop.md) | 500 Hz process, modes, IPC | What happens every 2 ms? |
-| [Integration](integration.md) | ROS2 bridges, CAN, startup | How does it connect to the rest of the robot? |
-| [Operations](operations.md) | Testing, tuning, extending | How do I work with this system? |
-| [Results](results.md) | Hardware validation data | How well does it actually work? |
+Perception is QTM mocap via `mocap_node` (about 300 frames/s) feeding the ball tracker, plus the hand's cup ball sensor for possession. The observed landing of each throw becomes one learner row; no observation means no row and the attempt ends.
 
-## Development History
+## Safety
 
-The motion planner was developed in 8 phases, each with explicit exit criteria and graduated hardware exposure. The full development narrative, including all test results and decisions, is preserved in [`MOTION_PLANNER_PLAN.md`](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/MOTION_PLANNER_PLAN.md) at the repository root. The subsequent MPC-native refactor is documented in [`MPC_NATIVE_REFACTOR_PLAN.md`](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/refactor/MPC_NATIVE_REFACTOR_PLAN.md). This documentation describes the system as it exists now; the plan documents record how it got here.
+The leg-path safety authority is the can-bridge Teensy's `MAX_DEVIATION` guard and fault machine; nothing on the Jetson is in that loop. The Jetson-side gates (feasibility, the admissible box) keep plans sane but are not safety. See [CAN Bridge safety](../can_bridge/safety.md) and [control flow](../can_bridge/control.md).
+
+## What is still on this site
+
+- [Kinematics](kinematics.md), [Dynamics](dynamics.md), [Workspace](workspace.md): current math.
+- [Validation Results](results.md): historical record of earlier hardware tests.
+- [Motor Guard (parked)](control_loop.md): the parked `motor_guard.py` and its Hermite twin role.
+
+## History
+
+- Tag `mpc-final`: the MPC chain, see `logbook/2026-09-01-mpc-chain-removed.md`.
+- Tag `fsm-final`: the FSM stack, see `logbook/2026-09-24-skill-stack-r4-fsm-deletion.md`.
+- The design and its rungs: `plans/archived/two-ball-skill-stack.md`.

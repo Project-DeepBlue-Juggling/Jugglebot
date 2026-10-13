@@ -456,7 +456,7 @@ class TestScenario04_PeakAccelExceedsBandwidth:
 
 
 class TestScenario05_StepDiscontinuityAtArrival:
-    """Scenario 5: ref step-discontinuity (ZmqTargetSource pre-Bundle-A — fixed)."""
+    """Scenario 5: ref step-discontinuity (ZmqTargetSource pre-Bundle-A (deleted 2026-10-13) — fixed)."""
 
     def test_k1_anchor_prepended_if_caller_forgot(self):
         """If the caller passes a target-only event (no plant anchor), K1
@@ -502,7 +502,7 @@ class TestScenario05_StepDiscontinuityAtArrival:
 
 
 class TestScenario06_WarmStartIncompatibility:
-    """Scenario 6: addressed by W5 (warm_start_valid on TargetCommand) — not W1.
+    """Scenario 6: addressed by W5 (warm_start_valid on TargetCommand (deleted 2026-10-13)) — not W1.
     Here we verify W1 at least doesn't paper over a big direction change."""
 
     def test_big_direction_change_events_are_feasible(self):

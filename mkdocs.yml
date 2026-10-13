@@ -55,13 +55,9 @@ nav:
     - Architecture: motion_planner/architecture.md
     - Kinematics: motion_planner/kinematics.md
     - Dynamics: motion_planner/dynamics.md
-    - Trajectory Planning: motion_planner/trajectory.md
     - Workspace Safety: motion_planner/workspace.md
-    - Motor Command Safety: motion_planner/safety.md
-    - Motor Guard: motion_planner/control_loop.md
-    - System Integration: motion_planner/integration.md
-    - Operations Guide: motion_planner/operations.md
-    - Validation Results: motion_planner/results.md
+    - Motor Guard (parked): motion_planner/control_loop.md
+    - Validation Results (historical): motion_planner/results.md
   - CAN Bridge:
     - Overview: can_bridge/index.md
     - Control Flow: can_bridge/control.md

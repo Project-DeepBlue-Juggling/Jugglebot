@@ -10,7 +10,7 @@ WHY THIS EXISTS
 whatever the Platform Teensy's INCLINOMETER reads during `level` — not
 necessarily level with respect to true gravity. A U2 investigation (R5
 sitting 3, 2026-10-02 — see
-``plans/active/two-ball-skill-stack.md``) found a small, repeatable residual:
+``plans/archived/two-ball-skill-stack.md``) found a small, repeatable residual:
 across two live sittings and the R4 gate bag, self-tosses land biased toward
 +y, and the platform's own encoder-FK attitude at release leans
 (+0.07, +0.30) deg / (+0.07, +0.23) deg / (-0.02, +0.13) deg against gravity's

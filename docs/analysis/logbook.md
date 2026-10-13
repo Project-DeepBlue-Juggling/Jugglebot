@@ -44,7 +44,7 @@ The primary workflow for hardware issues. Orchestrates a 9-step gated pipeline:
 For non-hardware changes (refactors, features, optimizations):
 
 ```
-/log refactor Extract MPC orchestration from sim/ into controller/
+/log refactor Extract the skill-stack R5 sittings into a shared report helper
 /log bugfix Fix race condition in IPC handshake
 /log feature Add dashboard auto-reconnect
 /log --from-commits a32bf27,3a3381f     # Retroactive logging
@@ -184,7 +184,7 @@ The logbook entry contains the full arc: symptoms observed, hypotheses considere
 Analyses a diagnosis report and proposes 1-3 actionable fixes:
 
 - Searches logbook for **prior art** before proposing
-- Traces the full data path (MPC solver -> runner -> plant -> IPC -> motor_guard -> CAN)
+- Traces the full data path (skill_node -> trajectory_node -> teensy_bridge_node -> can-bridge Teensy)
 - Assesses **risk** and **control-system implications**
 - Specifies which hardware re-test to run
 

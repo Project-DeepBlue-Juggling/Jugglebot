@@ -2,7 +2,7 @@
 title: R5 sitting 7 - two-ball columns PB 15 catches; misses are a +x launch lean (trim lost on relaunch) the learner cannot correct inside the columns box, and the "hand stopped" was a latched LEG lane
 type: investigation
 date: 2026-10-13
-status: open
+status: resolved
 phase: "two-ball-skill-stack — R5 (two-ball columns)"
 related_plan: two-ball-skill-stack.md
 related:
@@ -112,3 +112,5 @@ This is the same class as the 2026-09-23 kincal latch ("carried, not fixed"). It
 ## Follow-up
 
 The owner decisions listed under "Considered and not done here" were answered the same day by wave 2: `2026-10-13-skill-stack-r5-wave-2-after-sitting-7.md` (status open; the box-widening choice, the stall fix and the park-at-DONE question remain with the owner). This entry stays open for the same reason.
+
+**Follow-up (2026-10-13 night).** Sitting 8 met the R5 gate (`2026-10-13-skill-stack-r5-sitting-8-gate-met.md`); this entry waited on the box choice, the stall fix and park-at-DONE: all three were decided (option 4 and the solver worker landed in wave 3, no park at DONE) and sitting 8 flew them; the remaining items are rows in `plans/active/skill-stack-dress-rehearsals-and-residue.md` § 2.

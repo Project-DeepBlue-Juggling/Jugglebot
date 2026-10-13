@@ -1,6 +1,6 @@
 # R5 hardware runsheet, sitting 6 — Ball 2 caught in a parked cup (hop entry), every catch high
 
-Skill-stack R5 (`plans/active/two-ball-skill-stack.md` § R5). Same machine as sittings 1-5
+Skill-stack R5 (`plans/archived/two-ball-skill-stack.md` § R5). Same machine as sittings 1-5
 (`session_skills_r5.md` … `session_skills_r5_sitting5.md` stay the reference for everything this
 sheet does not restate: QTM preconditions, the guard/`/recover`/hand-homing recovery flow, the
 refusal-code table, the hand-jam bench check). Driver: `jugglebot/juggle` action, patterns

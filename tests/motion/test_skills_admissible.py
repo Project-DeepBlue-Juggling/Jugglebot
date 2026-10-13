@@ -6,7 +6,7 @@ one end-to-end case runs the REAL sweep (``tools/admissible_sweep.py``) on a
 tiny 2x2 grid -- module-scoped, ~10 QP solves, the same shape
 ``tests/motion/test_skills_segments.py`` uses for its own real-solve fixtures.
 
-Plan: ``plans/active/two-ball-skill-stack.md`` § 2.6.
+Plan: ``plans/archived/two-ball-skill-stack.md`` § 2.6.
 """
 
 from __future__ import annotations

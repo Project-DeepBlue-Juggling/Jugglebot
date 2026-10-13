@@ -1083,7 +1083,7 @@ jugglebot_spacemouse:
 # ============================================================
 # 8. Teensy Trajectory
 #    R1 (2026-09-11): Trajectory.h and the stroke-engine profile this section
-#    used to feed are DELETED (plans/active/two-ball-skill-stack.md § 4 R1).
+#    used to feed are DELETED (plans/archived/two-ball-skill-stack.md § 4 R1).
 #    What remains holds the hand's PHYSICAL limits — event-velocity bounds,
 #    inertias, decel authority — that C-HAND-2/C-HAND-3 and the unified path
 #    still gate on. The spool-gain pair (hand_spool_radius_m,

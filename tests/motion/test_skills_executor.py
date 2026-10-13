@@ -45,7 +45,7 @@ the end-to-end schedules' installs — (date, command, result) 2026-09-28,
 Unmarked and parallel-safe: pure Python, no filesystem, no ports, no clock
 measurement (every "now" below is a number this file chooses).
 
-Plan: ``plans/active/two-ball-skill-stack.md`` § 2.4 (R2 unit D1).
+Plan: ``plans/archived/two-ball-skill-stack.md`` § 2.4 (R2 unit D1).
 """
 
 from __future__ import annotations

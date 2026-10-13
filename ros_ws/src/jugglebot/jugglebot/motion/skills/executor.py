@@ -4772,7 +4772,7 @@ def plan_columns_first_cycle(schedule: Schedule, limits, *,
                              cfg: Optional[SegmentConfig] = None
                              ) -> Optional[str]:
     """Pre-throw feasibility check for a Ball-Butler-fed columns start (R5,
-    2026-09-30, ``plans/active/two-ball-skill-stack.md`` § R5 "carried from
+    2026-09-30, ``plans/archived/two-ball-skill-stack.md`` § R5 "carried from
     R4" / the R5 day-1 announcement gap).
 
     ``schedule`` is a ``schedule.compile_columns(pattern, feed=...)`` result

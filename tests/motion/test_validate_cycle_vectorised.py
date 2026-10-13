@@ -7,7 +7,7 @@ stack gates every ≤ 40-knot segment with it before the segment is dispatched o
 CAN wall clock.  R2 replaced its per-sample Python loop with a batched numpy chain
 because the loop cost ~2.5 ms/knot (probe 2026-09-11) — ~157 ms on the 1.4 s
 reference cycle, ~88 % of a ``plan_cycle`` call — and the plan pins < 10 ms per
-40-knot segment (``plans/active/two-ball-skill-stack.md`` § 2.6).
+40-knot segment (``plans/archived/two-ball-skill-stack.md`` § 2.6).
 
 A faster gate that quietly ACCEPTS a plan the old one refused is the one failure
 this change must not ship.  So the old implementation is kept here VERBATIM,

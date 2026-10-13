@@ -1,6 +1,6 @@
 # Skill-stack invariant checklist (R0)
 
-What this is: every physical fact the machine currently refuses to violate, with the ONE place it is enforced and the ONE test that fails without it. It is the net under `plans/active/two-ball-skill-stack.md` — the FSM choreography is hollowed out at R4 and the Platform Teensy stroke engine deleted at R1, and an invariant that is not on this list dies with the code it was hiding in.
+What this is: every physical fact the machine currently refuses to violate, with the ONE place it is enforced and the ONE test that fails without it. It is the net under `plans/archived/two-ball-skill-stack.md` — the FSM choreography is hollowed out at R4 and the Platform Teensy stroke engine deleted at R1, and an invariant that is not on this list dies with the code it was hiding in.
 **THE RULE: a code deletion at any rung MUST first check every row that names the deleted path.** A row named by a deleted file is either re-enforced somewhere in the same rung (`PORT`) or is deliberately not an invariant (`RETIRE`, with the reason stated in the row). No third option, and never "we'll re-add it later".
 Row vocabulary — `ID`: the existing contract ID where one exists, else `I-<layer>-<n>`. `Invariant`: one normative sentence, one physical fact. `Enforcement`: the one place it is checked (`path::symbol`, or `firmware: file::fn`). `Test`: the one test that fails without it, or `NONE — gap`. `Fate`: `KEEP` / `PORT@R<n>` / `RETIRE@R<n>` (with a reason).
 

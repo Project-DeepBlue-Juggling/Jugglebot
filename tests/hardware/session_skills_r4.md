@@ -5,7 +5,7 @@
 > human-lobbed columns start) — this sheet stays the reference for its
 > bring-up, dress-rehearsal and recovery rows, unchanged.
 
-Skill-stack R4 (`plans/active/two-ball-skill-stack.md` § R4). Same machine as
+Skill-stack R4 (`plans/archived/two-ball-skill-stack.md` § R4). Same machine as
 `session_skills_r3.md` and `session_cup_contact.md` — **those two sheets stay
 the reference for everything this one does not restate** (QTM preconditions,
 bring-up rows 11–20, the guard/`/recover`/hand-homing recovery flow, the

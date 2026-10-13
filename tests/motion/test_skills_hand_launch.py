@@ -25,7 +25,7 @@ Ground truth: the measured hand overspeed of the 2026-09-15 sitting, bag
 
 Unmarked and parallel-safe: pure Python, no clock, no filesystem, no ports.
 
-Plan: ``plans/active/two-ball-skill-stack.md`` § 2.5 (catch aim source).
+Plan: ``plans/archived/two-ball-skill-stack.md`` § 2.5 (catch aim source).
 """
 
 from __future__ import annotations

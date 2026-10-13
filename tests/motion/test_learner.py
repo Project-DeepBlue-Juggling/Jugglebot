@@ -4,7 +4,7 @@
 Unmarked and parallel-safe: pure arithmetic plus file I/O confined to
 ``tmp_path``, nothing touches a shared path or a shared clock.
 
-Plan: ``plans/active/two-ball-skill-stack.md`` § 2.2 / § 2.5. Hyperparameters:
+Plan: ``plans/archived/two-ball-skill-stack.md`` § 2.2 / § 2.5. Hyperparameters:
 owner decision 2026-09-13 (probe 2, ``probe_learner.py``, logbook slug
 ``2026-09-13-skill-stack-r3-learner-single-site``).
 """

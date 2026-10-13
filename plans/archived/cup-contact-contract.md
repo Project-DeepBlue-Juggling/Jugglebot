@@ -48,7 +48,7 @@ their gates and tests, the two-sided knot sampling, the session-start frame chec
 mocap-to-schedule subtraction, and lateral authority unpinned to a 20 mm launch default.
 Flown: Block A 2026-09-22 (τ holds, 87/87), the § 9 z-sweep and Block B 2026-09-23 (the lateral
 learner works). Closed because both § 5 criteria were met on hardware (owner, 2026-09-23).
-Residue re-homed to `plans/active/two-ball-skill-stack.md` § 0 ("Carried in from"): the
+Residue re-homed to `plans/archived/two-ball-skill-stack.md` § 0 ("Carried in from"): the
 frame-offset lever arm and the base-shim remedy, the hand recovery park's unresolved upper-stop
 push, the stale-encoder latches, contact-window re-sends, the `LIMIT_JERK` re-send rate, the
 seam tilt-rate pin and the QP/gate wall-clock bar. Entries: 2026-09-20, 2026-09-21,

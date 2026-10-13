@@ -2,7 +2,7 @@
 title: R5 first flight after wave 3 - every Ball Butler throw was cancelled by skill_node at dispatch (the announcement's swap was read as an end) and JB then caught a phantom; BB calibration refused BB_IN_BASE_MOVED
 type: investigation
 date: 2026-10-13
-status: open
+status: tuned
 phase: "two-ball-skill-stack — R5 (two-ball columns)"
 related_plan: two-ball-skill-stack.md
 related:
@@ -90,3 +90,5 @@ Full gate: see the commit message's triple. Live verification is runsheet row 16
 - BB yaw-homing repeatability: owner check is re-home / power-cycle BB, one sweep; delta-kappa ~0 means homing, still +0.28 deg means physical.
 - Aim-correction refit if the first fed landing is more than 10 mm off (`tools/probes/feed_lateral_miss.py`).
 - Sitting 8 verifies the BB dispatch path live (runsheet row 16b).
+
+**Follow-up (2026-10-13 night).** Sitting 8 met the R5 gate (`2026-10-13-skill-stack-r5-sitting-8-gate-met.md`) and verified the BB dispatch path live: 14/14 throws dispatched, 0 `ENDED_DURING_BB_DISPATCH`, 0 `THROW_ABORTED_BY_HOST`. F1-F4, the mocap finalisation worker, the BB yaw-homing check and the aim-correction refit trigger stay carried; the remaining items are rows in `plans/active/skill-stack-dress-rehearsals-and-residue.md` § 2.

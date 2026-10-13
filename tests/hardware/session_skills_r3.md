@@ -1,7 +1,7 @@
 # R3 hardware gate — single-site self-toss, learner on
 
 Skill-stack R3's first-ever powered attempt with a learner running on this
-machine (`plans/active/two-ball-skill-stack.md` § 0 / R3: *"the first rung a
+machine (`plans/archived/two-ball-skill-stack.md` § 0 / R3: *"the first rung a
 learner ever runs on this machine"*). Same shape as `session_skills_r2_plan_gate.md`
 (that sheet stays live only for re-running its row 17 margin check, see § 1
 below) but this one **throws a real ball**. Driver:

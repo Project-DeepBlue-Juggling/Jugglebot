@@ -45,22 +45,6 @@ SEPARATION_MS = 10.0           # max post-contact ball–cup separation
 REACH_ENVELOPE_MM = 80.0       # sim-established reliable reach
 
 
-def travel_mm(samples) -> float:
-    """Max centroid excursion (mm) from the first sample of a position window."""
-    if len(samples) < 2:
-        return 0.0
-    arr = np.asarray(samples)
-    return float(np.max(np.linalg.norm(arr - arr[0], axis=1)))
-
-
-def tilt_change_deg(rot_samples) -> float:
-    """Max rot-vec excursion (deg) from the first sample of a rotation window."""
-    if len(rot_samples) < 2:
-        return 0.0
-    arr = np.asarray(rot_samples)
-    return float(np.degrees(np.max(np.linalg.norm(arr - arr[0], axis=1))))
-
-
 class ViewerHook:
     """Optional interactive MuJoCo viewer for watching gate runs.
 

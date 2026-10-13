@@ -1,6 +1,6 @@
 # R5 hardware runsheet — the 4° cup, the fused reload, and the human-lobbed columns start
 
-Skill-stack R5 (`plans/active/two-ball-skill-stack.md` § R5, re-scoped 2026-09-30). Same
+Skill-stack R5 (`plans/archived/two-ball-skill-stack.md` § R5, re-scoped 2026-09-30). Same
 machine as `session_skills_r4.md` — **that sheet stays the reference for everything this one
 does not restate** (QTM preconditions, bring-up rows, the guard/`/recover`/hand-homing recovery
 flow, the R4 watch items carried below). Driver: `jugglebot/juggle` action, patterns
@@ -62,7 +62,7 @@ arriving ~8° off the cup axis — rather than the ~0° a 12° hold nearly achie
 no rebound. Block A (§ 4) runs 4°, then re-flies 8° and 12° as controls on the SAME sitting so
 the comparison is same-day, same-geometry.
 
-**D1 (columns start)**, verbatim from `plans/active/two-ball-skill-stack.md` § R5: *"Start =
+**D1 (columns start)**, verbatim from `plans/archived/two-ball-skill-stack.md` § R5: *"Start =
 Ball-Butler-initiated from BB's CURRENT position, as a re-attitude programme inside R5: fuse the
 held-axis catch, the re-orientation and the throw into ONE QP window (and, if that is not
 enough, the post-release transit + tilt approach into it); ramp the session limits toward the

@@ -7,7 +7,7 @@
 > Analysis, fixes and the next sheet: `logbook/2026-10-04-skill-stack-r5-sitting-4.md`,
 > `session_skills_r5_sitting5.md`. Superseded.
 
-Skill-stack R5 (`plans/active/two-ball-skill-stack.md` § R5). Same machine as sittings 1-3
+Skill-stack R5 (`plans/archived/two-ball-skill-stack.md` § R5). Same machine as sittings 1-3
 (`session_skills_r5.md`, `session_skills_r5_sitting2.md`, `session_skills_r5_sitting3.md` stay the
 reference for everything this sheet does not restate: QTM preconditions, the guard/`/recover`/
 hand-homing recovery flow, the refusal-code table, the carried watch items). Driver:

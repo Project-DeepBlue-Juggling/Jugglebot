@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Skill-stack R2 sizing sweep — which columns schedules the REAL QP + gate accept.
 
-Plan ``plans/active/two-ball-skill-stack.md`` § 4 R2 "Sizing probe": before any
+Plan ``plans/archived/two-ball-skill-stack.md`` § 4 R2 "Sizing probe": before any
 session limit or apex/separation threshold is written down, sweep
 
     apex ∈ {1.0, 1.3, 1.5} m × separation ∈ {80, 100} mm × leg jerk ∈ {30k, 60k, 100k}

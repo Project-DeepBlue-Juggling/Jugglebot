@@ -7,7 +7,7 @@ and each is ~0.1-0.4 s. Unmarked and parallel-safe: no filesystem, no shared
 clock, no wall-clock assertion (that shape is ``test_unified_cycle_budget.py``,
 which is ``serial`` for that reason).
 
-Plan: ``plans/active/two-ball-skill-stack.md`` § 2.2.
+Plan: ``plans/archived/two-ball-skill-stack.md`` § 2.2.
 """
 
 from __future__ import annotations

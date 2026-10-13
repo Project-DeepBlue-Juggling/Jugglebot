@@ -1,5 +1,8 @@
 # Diagnosis Tools
 
+!!! note "Status (2026-10-13)"
+    The rosbag/MCAP path is CURRENT. The MPC-CSV path is historical: the CSV producer is gone, the analysis code was kept in full at R0; `sim/analysis/diagnose.py` does live rosbag analysis.
+
 ## Session Diagnosis (`/diagnose`)
 
 Analyse MPC telemetry CSVs and rosbag (MCAP) recordings from hardware test sessions.
@@ -150,7 +153,7 @@ active  -->  fixed (kept for regression detection)
 |------|----------------|----------------|
 | `oscillation` | Command chatter ratio, amplitude growth | `chatter_threshold`, `amplitude_growing` |
 | `discontinuity` | Single-step jumps in commanded/actual extension | `field`, `threshold_mm` |
-| `solve_time` | Consecutive MPC budget violations | `max_consecutive_violations` |
+| `solve_time` | Consecutive MPC budget violations (historical: MPC removed 2026-09-01) | `max_consecutive_violations` |
 | `per_leg_tracking` | One leg tracking significantly worse than median | `leg`, `rms_ratio_vs_median` |
 | `solve_status_pattern` | Specific solve status strings (e.g., cold_hold) | `pattern` |
 | `ros2_log_pattern` | ROS2 log message patterns | `pattern`, `level` |
@@ -164,7 +167,7 @@ As of 2026-04-01:
 | VEL_FF_BUG | critical | fixed | Velocity feedforward semantic mismatch |
 | COLD_HOLD_STROKE_MIN | critical | fixed | Cold-hold fallback to stroke minimum |
 | ASSIGNMENT_ORDER | critical | fixed | Assignment-order bug in feedforward |
-| MPC_STALENESS | high | active | Solve time exceeding 24ms budget |
+| MPC_STALENESS | high | active | Solve time exceeding 24ms budget (historical: MPC-era) |
 | LEG2_TRACKING | medium | active | Leg 2 consistently worst tracker |
 | CAN_BUS_WATCHDOG | high | persistent | CAN bus watchdog restore |
 | ODRIVE_DISARM | critical | persistent | ODrive axis disarmed in CLOSED_LOOP |

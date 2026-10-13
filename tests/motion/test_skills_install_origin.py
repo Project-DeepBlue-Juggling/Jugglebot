@@ -1,5 +1,5 @@
 """``motion/skills/executor.install_segment`` — the FRESH-origin lateness fix
-(R4 sitting-1 follow-up, unit C-exec, 2026-09-28, ``plans/active/
+(R4 sitting-1 follow-up, unit C-exec, 2026-09-28, ``plans/archived/
 two-ball-skill-stack.md`` § 6).
 
 ``install_segment``'s fresh-origin branch sets ``t0 = t_now_s`` BEFORE the

@@ -9,6 +9,8 @@
     reference to the solver or to `HardwarePlant` below is historical and resolves
     only at git tag **`mpc-final`**. See `logbook/2026-09-01-mpc-chain-removed.md`.
 
+    **Status (2026-10-13):** the Newton–Euler feedforward model on this page is CURRENT. Its live importer is `motion/torque_ff.py`, which feeds the `trajectory_node` emitter's leg torque feedforward (gravity FF ships enabled; Kt 0.0570, see below). Mentions of `HardwarePlant` / MPC are historical.
+
 This page covers how the motion planner computes motor torques from the physics of the system — gravity, platform inertia, and reflected motor inertia.
 
 ## Are these torques actually sent to the motors?
@@ -180,7 +182,7 @@ where $\ddot{q}_{\text{motor}}$ is the motor angular acceleration (rad/s²), com
 
 **Function:** `compute_full_feedforward_torques(pos, rot, twist, accel, geom, params)` → 6 motor torques (Nm)
 
-This is the top-level function called by `HardwarePlant.set_pose()` on every MPC command. It combines all three components:
+This is the top-level function called (historically) by `HardwarePlant.set_pose()` on every MPC command; today it is reached through `motion/torque_ff.py` from the `trajectory_node` emitter. It combines all three components:
 
 ```
 1. Compute gravity wrench → W_gravity

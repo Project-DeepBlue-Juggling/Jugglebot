@@ -1637,7 +1637,7 @@ def test_an_inverted_retention_interval_answers_unknown_not_rejected():
 
 # ══════════════════════════════════════════════════════════════════════════
 # Moved from tests/motion/test_toss_record.py (2026-09-13, R3-f1 — the
-# learning-stack deletion; plans/active/two-ball-skill-stack.md § 4 R3).
+# learning-stack deletion; plans/archived/two-ball-skill-stack.md § 4 R3).
 # Only the tests of the symbols that moved WITH them (schema/FIELDS, the
 # announced-ball latch, sensor edges/poll cadence, label_from_sensor, join).
 # encode/decode/validate and their tests did NOT move — those functions

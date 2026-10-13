@@ -39,7 +39,8 @@ gate, 20 throws x 5 seeds, 300/5000/200k, hand 3500): the 100 mm hop uses the
 whole 5000 mm/s^2 budget, so a landing scatter >= 0.5 % (~18 mm) is refused
 by the gate before motion (0 drops in every case); 80 mm passes 3/5 seeds at
 0.5 %; 60 mm passes 5/5 at 0.5 % and fails at 1 %.  That table is the R4/R5
-separation-vs-scatter sizing input; ``--throw-noise-frac`` re-runs it.
+separation-vs-scatter sizing input; the ``--throw-noise-frac`` flag that
+re-ran it was deleted 2026-10-13 (set ``cfg.noise`` to re-run).
 **Learner**: OFF at R2 -- every THROW carries the identity
 prior (``schedule.compile_columns``'s ``y_d=(zeros(2), apex_m)``), so
 ``executor._throw_terminal`` always aims at the commanded landing.  **Sites**:
@@ -3222,10 +3223,6 @@ def main(argv=None) -> int:
                    help='--learn only: throws to collect per seed (default: '
                         'the operating point, 25; R5 columns\' own gate '
                         'criterion wants >= 30, plan § R5)')
-    p.add_argument('--throw-noise-frac', type=float, default=None,
-                   help='per-component release-velocity scatter as a fraction of '
-                        'the release speed (default 0.0: an exact release; the '
-                        'module docstring carries the separation-vs-scatter table)')
     p.add_argument('--catch-aim-source', choices=ex.AIM_SOURCES,
                    default=ex.AIM_TRACKER,
                    help='where a CATCH is aimed from: tracker (the LIVE '
@@ -3429,9 +3426,6 @@ def main(argv=None) -> int:
         cfg.separation_mm = float(args.separation_mm)
     if args.apex_m is not None:
         cfg.apex_m = float(args.apex_m)
-    if args.throw_noise_frac is not None:
-        cfg.noise = NoiseConfig(bb_throw_noise_frac=float(args.throw_noise_frac),
-                                tracking_noise_mm=cfg.noise.tracking_noise_mm)
 
     rep = run_gate(cfg, viewer_speed=(args.viewer_speed if args.viewer
                                       else None))

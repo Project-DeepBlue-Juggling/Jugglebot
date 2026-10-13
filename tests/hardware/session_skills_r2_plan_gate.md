@@ -8,7 +8,7 @@
 > sitting. The robot is powered and activated but **never moves**: the wire stays
 > disarmed the whole time.
 
-Skill-stack R2's hardware gate, closed by the third sitting above (`plans/active/two-ball-skill-stack.md` § 4
+Skill-stack R2's hardware gate, closed by the third sitting above (`plans/archived/two-ball-skill-stack.md` § 4
 R2: *"per-skill plan < 50 ms measured on the Jetson with the launch up and a bag
 recording"*). Entry: `logbook/2026-09-12-skill-stack-r2-skills-schedule-stream.md`.
 Everything here is run by the operator. Driver:

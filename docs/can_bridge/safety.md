@@ -6,7 +6,7 @@
 - [`leg_interp.cpp`](../../ros_ws/src/jugglebot/Teensy_code_canbridge/leg_interp.cpp) — lead/stroke clamps, NaN/Inf rejection
 - [`can_buses.cpp`](../../ros_ws/src/jugglebot/Teensy_code_canbridge/can_buses.cpp) — per-bus health classification
 - [`canbridge_config.h`](../../ros_ws/src/jugglebot/Teensy_code_canbridge/canbridge_config.h) — every threshold cited below
-- [`docs/motion_planner/safety.md`](../motion_planner/safety.md) — the historical Jetson-side (`motor_guard.py`/`can_node.py`) version of this same logic, which the firmware below ports
+- [`docs/motion_planner/control_loop.md`](../motion_planner/control_loop.md) — the parked Jetson-side `motor_guard.py`, the pre-cutover twin of this logic (the MPC-era `motion_planner/safety.md` page was deleted 2026-10-13; history at tag `mpc-final`)
 
 This firmware is a port of `can_node.py`'s fault-handling
 (`_handle_error`/`_watchdog_check`/`_fault_response`) and `motor_guard.py`'s

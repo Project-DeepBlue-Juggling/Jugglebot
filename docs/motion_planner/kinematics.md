@@ -9,6 +9,8 @@
     below is historical and resolves only at git tag **`mpc-final`**. See
     `logbook/2026-09-01-mpc-chain-removed.md`.
 
+    **Status (2026-10-13):** the math and conventions on this page are CURRENT (Jacobian convention, mm/rad units, normalisation by `plat_radius_mm`). Every mention of MPC / `HardwarePlant` is historical. Live consumers: `trajectory_node` (segment solve, workspace gates) and `skill_node`.
+
 This page covers how platform poses are converted to leg lengths (inverse kinematics), how velocities and accelerations are mapped through the Jacobian, and how leg lengths can be converted back to poses (forward kinematics).
 
 **Source files:**
@@ -149,7 +151,7 @@ Given 6 leg extensions, find the platform pose. This is an iterative solution us
 4. Update the guess using the Jacobian: $\Delta\mathbf{x} = \mathbf{J}^{-1} \cdot \Delta\mathbf{q}$
 5. Repeat until the residual is accepted, or 50 iterations have been spent
 
-FK is used for validation (IK → FK round-trip tests) and by `HardwarePlant.get_state()` to convert encoder positions to a Cartesian platform pose for MPC feedback.
+FK is used for validation (IK → FK round-trip tests) and (historically, before the MPC chain was removed 2026-09-01) by `HardwarePlant.get_state()` to convert encoder positions to a Cartesian platform pose for MPC feedback; today it serves `trajectory_node`'s segment solve and `skill_node`.
 
 ### Convergence criterion
 

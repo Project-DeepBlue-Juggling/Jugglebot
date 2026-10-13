@@ -1,6 +1,6 @@
 """The hand has exactly ONE master — a source scan over both firmware images.
 
-INVARIANT (skill-stack R1, ``plans/active/two-ball-skill-stack.md`` § 4 R1,
+INVARIANT (skill-stack R1, ``plans/archived/two-ball-skill-stack.md`` § 4 R1,
 I-FW-15):
 
     **At every instant, exactly one piece of code may write a motion command to

@@ -1,4 +1,4 @@
-"""The skill stack's home (``plans/active/two-ball-skill-stack.md`` § 2.2).
+"""The skill stack's home (``plans/archived/two-ball-skill-stack.md`` § 2.2).
 
 Deliberately EMPTY until R2, when ``sites``, ``schedule``, ``segments`` and
 ``admissible`` land here as pure Python (no ROS imports). The package exists

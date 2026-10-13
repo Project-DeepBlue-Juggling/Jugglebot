@@ -14,7 +14,7 @@ The offline optimiser (``juggle_optimizer``), the open-loop player
 (``player``), the master event schedule (``timeline``), the periodic
 platform-pose trajectory (``trajectory``) and the oval pattern spec
 (``pattern``) were deleted 2026-09-09 (R0 dead-layer deletion,
-``plans/active/two-ball-skill-stack.md`` § 6) along with their consumer,
+``plans/archived/two-ball-skill-stack.md`` § 6) along with their consumer,
 ``sim/juggle_demo.py`` — the offline demo they served is superseded by the
 online loop (``sim/juggle_online.py``).
 

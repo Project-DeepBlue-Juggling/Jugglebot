@@ -3,7 +3,7 @@
 Validates:
   - TossLoopController._build_ref_events: correct event construction
     across all cycle phases (approach, flight, hold, transition)
-  - ContinuousThrowCatchSource: ref_events pass-through to TargetCommand
+  - ContinuousThrowCatchSource: ref_events pass-through to TargetCommand (deleted 2026-10-13)
 
 The MPC-integration class (multi-event references consumed by
 ``MPCController.solve()``) was removed 2026-09-01 with the MPC chain;
