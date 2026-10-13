@@ -55,17 +55,17 @@ class Srv:
         self.t = threading.Thread(target=self.server.serve_forever, daemon=True)
         self.t.start()
 
-    def req(self, path, method="GET", headers=None):
+    def req(self, path, method="GET", headers=None, data=None):
         r = urllib.request.Request("http://127.0.0.1:{}{}".format(self.port, path),
-                                   method=method, headers=headers or {})
+                                   method=method, headers=headers or {}, data=data)
         try:
             with urllib.request.urlopen(r, timeout=10) as resp:
                 return resp.status, resp.headers, resp.read()
         except urllib.error.HTTPError as e:
             return e.code, e.headers, e.read()
 
-    def jreq(self, path, method="GET", headers=None):
-        code, _h, body = self.req(path, method, headers)
+    def jreq(self, path, method="GET", headers=None, data=None):
+        code, _h, body = self.req(path, method, headers, data)
         return code, json.loads(body.decode())
 
     def close(self):

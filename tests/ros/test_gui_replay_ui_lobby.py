@@ -181,3 +181,20 @@ def test_header_status_and_toast(out):
     a = out["header_after"]
     assert a["text"] == "Disconnected" and a["dot"] == "status-dot disconnected" and a["lobby_hidden"] is False
     assert out["toasts"] == ["Replay ended: rosbridge connected"] and out["toasts_after_timer"] == 0
+
+
+def test_lobby_has_no_hidden_buttons_note(out):
+    """2026-10-13: the "Home / Level / Activate are hidden while disconnected" note was removed (owner ask)."""
+    assert out["lobby_text"] == "Open recording…"
+
+
+def test_picker_rename(out):
+    r = out["rename"]
+    assert r["pencil_live"] is False and r["pencil_rich"] is True           # an in-progress bag cannot be renamed
+    assert r["editing"] == "r_rich" and r["input_present"] is True
+    assert r["choose_while_editing"] is False                               # a stray row click does not open a bag
+    assert r["fail_result"] is None and "already exists" in r["fail_msg"] and r["still_editing"] == "r_rich"
+    assert r["ok_result"] == "r_rich_mine" and r["editing_after"] is None
+    assert r["calls"][-1] == {"id": "r_rich", "method": "POST", "body": {"name": "mine"}}
+    assert "r_rich_mine" in r["after_keys"] and "r_rich" not in r["after_keys"]   # the list reloaded
+    assert r["cancelled"] is None

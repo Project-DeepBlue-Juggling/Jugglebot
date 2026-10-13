@@ -17,7 +17,14 @@ try:  # package import (tests, ``-m replay.x``)
 except ImportError:  # pragma: no cover - flat import
     import schema  # type: ignore
 
-ID_RE = re.compile(r"[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2}").fullmatch
+# A recording id is its folder name: the rosbag2 start timestamp, optionally followed by a user-chosen
+# name (``rename``). The timestamp prefix is kept on rename so the newest-first sort and the date
+# fallback still work, and other tools still recognise the folder.
+_TS = r"[0-9]{4}-[0-9]{2}-[0-9]{2}_[0-9]{2}-[0-9]{2}-[0-9]{2}"
+NAME_MAX = 80
+ID_RE = re.compile(_TS + r"(?:_[A-Za-z0-9][A-Za-z0-9._-]{0,%d})?" % (NAME_MAX - 1)).fullmatch
+_TS_RE = re.compile(_TS)
+_SLUG_BAD = re.compile(r"[^A-Za-z0-9._-]+")
 MCAP_MAGIC = b"\x89MCAP0\r\n"
 IN_PROGRESS_WINDOW_S = 10.0
 
@@ -134,6 +141,78 @@ def _metadata_cached(path: str) -> Dict[str, Any]:
             _meta_memo.clear()
         _meta_memo[key] = val
     return dict(val)
+
+
+def slugify(name: str) -> str:
+    """User text -> the filename-safe suffix: runs of other characters become '-', '_'-runs collapse,
+    leading/trailing separators are dropped. '' means "back to the bare timestamp"."""
+    s = _SLUG_BAD.sub("-", name.strip())
+    s = re.sub(r"-{2,}", "-", s)
+    s = re.sub(r"_{2,}", "_", s)
+    return s.strip("-_.")[:NAME_MAX].rstrip("-_.")
+
+
+class RenameError(Exception):
+    def __init__(self, code: int, reason: str, message: str) -> None:
+        super().__init__(message)
+        self.code = code
+        self.reason = reason
+
+
+def rename_recording(rosbags_root: str, recording_id: str, name: str) -> str:
+    """Rename recording ``recording_id`` to ``<timestamp>_<slug(name)>`` (or the bare timestamp for an empty
+    name): the folder, the .mcap inside it (when it carries the old id as its prefix, as rosbag2 writes it)
+    and the .mcap's filename in metadata.yaml, so ``ros2 bag play`` still opens it. Returns the new id.
+
+    Order is mcap -> metadata.yaml -> folder, each step undone if a later one fails, so a failure leaves the
+    recording as it was."""
+    info = find_recording(rosbags_root, recording_id)
+    if info is None:
+        raise RenameError(404, "unknown", "unknown recording")
+    if info["in_progress"]:
+        raise RenameError(409, "recording_in_progress", "the recording is still being written")
+    slug = slugify(name if isinstance(name, str) else "")
+    new_id = recording_id[:19] + ("_" + slug if slug else "")
+    if not valid_id(new_id):
+        raise RenameError(400, "bad_name", "name is not usable as a filename")
+    if new_id == recording_id:
+        return new_id
+    old_dir = os.path.join(rosbags_root, recording_id)
+    new_dir = os.path.join(rosbags_root, new_id)
+    if os.path.lexists(new_dir):
+        raise RenameError(409, "exists", "a recording named %s already exists" % new_id)
+
+    old_mcap = os.path.basename(info["path"])
+    new_mcap = new_id + old_mcap[len(recording_id):] if old_mcap.startswith(recording_id) else old_mcap
+    meta = os.path.join(old_dir, "metadata.yaml")
+    meta_text = None
+    if new_mcap != old_mcap:
+        if os.path.lexists(os.path.join(old_dir, new_mcap)):
+            raise RenameError(409, "exists", "%s already exists in the recording folder" % new_mcap)
+        try:
+            with open(meta, "r", encoding="utf-8") as f:
+                meta_text = f.read()
+        except FileNotFoundError:
+            meta_text = None
+        os.rename(info["path"], os.path.join(old_dir, new_mcap))
+    try:
+        if meta_text is not None and old_mcap in meta_text:
+            tmp = meta + ".rename-tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                f.write(meta_text.replace(old_mcap, new_mcap))
+            os.replace(tmp, meta)
+        try:
+            os.rename(old_dir, new_dir)
+        except OSError:
+            if meta_text is not None and old_mcap in meta_text:
+                with open(meta, "w", encoding="utf-8") as f:
+                    f.write(meta_text)
+            raise
+    except OSError:
+        if new_mcap != old_mcap:
+            os.rename(os.path.join(old_dir, new_mcap), info["path"])
+        raise
+    return new_id
 
 
 def find_recording(rosbags_root: str, recording_id: str,

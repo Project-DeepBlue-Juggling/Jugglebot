@@ -33,7 +33,7 @@ export function createLobby(deps) {
         btnOpen = h(doc, 'button', { cls: 'replay-btn', id: 'replay-btn-open', text: 'Open recording…', on: { click: () => {
             if (!btnOpen.disabled) picker.open();
         } } });
-        fill(lobbyEl, [btnOpen, h(doc, 'span', { cls: 'replay-note', text: 'Home / Level / Activate are hidden while disconnected' })]);
+        fill(lobbyEl, [btnOpen]);
     }
 
     function refreshButtons() {

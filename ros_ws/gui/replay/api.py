@@ -23,6 +23,7 @@ except ImportError:  # pragma: no cover - flat import
 
 PREFIX = "/api/replay/"
 CORS = "*"
+RENAME_BODY_MAX = 4096
 BLOCK = 1 << 20  # file bodies stream in 1 MiB blocks
 EXPOSE = "Content-Range, ETag, Accept-Ranges, X-Replay-Reason"
 _RANGE_RE = re.compile(r"^bytes=(\d*)-(\d*)$")
@@ -107,6 +108,7 @@ class ReplayBackend:
         #   GET       recordings
         #   GET|HEAD  recordings/<id>/file       (Range)
         #   GET       recordings/<id>/overview
+        #   POST      recordings/<id>/rename       {"name": "..."} -> {"id": <new id>}; "" = bare timestamp
         parts = path[len(PREFIX):].split("/")
         try:
             if parts == ["recordings"] and method == "GET":
@@ -119,6 +121,8 @@ class ReplayBackend:
                     self._file(handler, rid)
                 elif action == "overview" and method == "GET":
                     self._overview(handler, rid)
+                elif action == "rename" and method == "POST":
+                    self._rename(handler, rid)
                 else:
                     self._json(handler, 404, {"error": "not found"})
             else:
@@ -255,6 +259,52 @@ class ReplayBackend:
             rows.append(row)
         self._json(handler, 200, {"recordings": rows,
                                   "overview_available": self.worker_available})
+
+    def _rename(self, handler: Any, rid: str) -> None:
+        try:
+            n = int(handler.headers.get("Content-Length") or 0)
+        except ValueError:
+            n = -1
+        if n < 0 or n > RENAME_BODY_MAX:
+            self._json(handler, 400, {"error": "bad body", "reason": "bad_name"})
+            return
+        try:
+            body = json.loads(handler.rfile.read(n).decode("utf-8") or "null")
+        except (UnicodeDecodeError, ValueError):
+            body = None
+        if not isinstance(body, dict) or not isinstance(body.get("name"), str):
+            self._json(handler, 400, {"error": 'body must be {"name": "<text>"}', "reason": "bad_name"})
+            return
+        # The overview pass holds the bag open and writes its cache under the id: wait for it to finish.
+        with self._lock:
+            busy = self._running == rid or rid in self._queue
+        if busy:
+            self._json(handler, 409, {"error": "the timeline overview is being computed; try again shortly",
+                                      "reason": "overview_busy"})
+            return
+        try:
+            new_id = recordings.rename_recording(self.rosbags_root, rid, body["name"])
+        except recordings.RenameError as exc:
+            self._json(handler, exc.code, {"error": str(exc), "reason": exc.reason})
+            return
+        except OSError as exc:
+            self._json(handler, 500, {"error": "rename failed: %s" % exc, "reason": "os_error"})
+            return
+        if new_id != rid:
+            self._move_overview(rid, new_id)
+        self._json(handler, 200, {"id": new_id, "old_id": rid})
+
+    def _move_overview(self, old: str, new: str) -> None:
+        """Carry the cached overview (and a remembered failure) over to the new id; best effort - a miss only
+        means the overview is recomputed on the next open."""
+        try:
+            os.replace(self._ov_path(old), self._ov_path(new))
+        except OSError:
+            pass
+        with self._lock:
+            f = self._failed.pop(old, None)
+            if f is not None:
+                self._failed[new] = f
 
     def _overview(self, handler: Any, rid: str) -> None:
         info = recordings.find_recording(self.rosbags_root, rid)

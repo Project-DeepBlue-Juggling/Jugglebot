@@ -8,7 +8,6 @@
 #command-overlay.replay-active > .cmd-btn { display: none; }
 .replay-lobby { display: flex; align-items: center; gap: var(--gap-sm); }
 .replay-dock { flex: 1 1 auto; min-width: 0; }
-.replay-note { color: var(--text-muted); font-size: var(--font-size-xs); }
 
 .replay-btn {
     padding: 6px 16px;
@@ -67,7 +66,21 @@
 .replay-pk-row.opening { opacity: .8; cursor: progress; }
 .replay-pk-row.empty { cursor: default; display: block; color: var(--text-muted); }
 .replay-pk-when b { display: block; font-weight: 600; }
-.replay-pk-when span { color: var(--text-muted); font-size: var(--font-size-xs); }
+.replay-pk-when span { color: var(--text-muted); font-size: var(--font-size-xs); word-break: break-all; }
+.replay-pk-rename {
+    margin-left: 4px; padding: 0 4px; border: none; background: none; color: var(--text-muted);
+    font: inherit; font-size: var(--font-size-xs); cursor: pointer; opacity: .6;
+}
+.replay-pk-row:hover .replay-pk-rename { opacity: 1; }
+.replay-pk-rename:hover { color: var(--accent-cyan); }
+.replay-pk-row.editing { cursor: default; }
+.replay-pk-edit { grid-column: 1 / -1; display: flex; align-items: center; gap: 6px; }
+.replay-pk-edit .replay-btn { padding: 3px 10px; }
+.replay-pk-ts { color: var(--text-muted); }
+#replay-pk-rename-input {
+    flex: 1; min-width: 0; background: var(--bg-primary); color: var(--text-primary); border: 1px solid var(--accent-cyan);
+    border-radius: var(--border-radius-sm); padding: 4px 8px; font-family: var(--font-mono); font-size: var(--font-size-sm);
+}
 .replay-picker .mono { font-family: var(--font-mono); }
 .replay-chips { display: flex; flex-wrap: wrap; gap: 3px; }
 .replay-chip {

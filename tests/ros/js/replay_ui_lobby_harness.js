@@ -74,7 +74,7 @@ const REC = (id, startSec, extra) => Object.assign({
     duration_s: 100, message_count: 10, start_ns: startSec * 1e9, topics: ALL4, overview: 'none',
 }, extra || {});
 const T0 = 1791532600;
-let listing, fetchLog = [], failList = false;
+let listing, fetchLog = [], failList = false, renameCalls = [], renameReply = null;
 const resetListing = () => {
     listing = {
         recordings: [
@@ -95,6 +95,14 @@ const fetchFn = (url, opt) => {
     fetchLog.push(url);
     if (failList) return Promise.reject(new Error('ECONNREFUSED'));
     if (url === '/api/replay/recordings') return jres(listing);
+    const rn = /^\/api\/replay\/recordings\/([^/]+)\/rename$/.exec(url);
+    if (rn) {
+        renameCalls.push({ id: decodeURIComponent(rn[1]), method: opt && opt.method, body: JSON.parse(opt.body) });
+        if (renameReply) return jres(renameReply, false);
+        const newId = 'r_rich_' + JSON.parse(opt.body).name;
+        listing.recordings.find((r) => r.id === decodeURIComponent(rn[1])).id = newId;
+        return jres({ id: newId, old_id: rn[1] });
+    }
     return jres({}, false);
 };
 const settle = async () => { for (let i = 0; i < 60; i++) await new Promise((r) => setImmediate(r)); };
@@ -133,6 +141,7 @@ out.live_button_untouched = liveBtn.hidden === false;
 out.probe_fetches = fetchLog.filter((u) => u === '/api/replay/recordings').length;
 
 out.session_btn_absent = !q('replay-btn-session');
+out.lobby_text = q('replay-lobby').textContent;
 
 // 3. picker list states
 await picker.open(); await settle();
@@ -218,6 +227,30 @@ picker.close(); out.double_open = { first: n1, second: n2, after_close: (docList
     picker.close();
 }
 out.non_listing_fetches = fetchLog.filter((u) => u !== '/api/replay/recordings').length;   // no manifest / status enrichment, ever
+
+// 10. rename: pencil -> inline box -> POST -> list reload; in-progress rows have no pencil; failure keeps the box
+await picker.open(); await settle();
+const pencil = (k) => rowByKey(k).find((e) => e.className === 'replay-pk-rename')[0] || null;
+out.rename = { pencil_live: !!pencil('r_live'), pencil_rich: !!pencil('r_rich') };
+pencil('r_rich').listeners.click[0]({ target: pencil('r_rich'), stopPropagation() {} });
+out.rename.editing = picker.model().editing;
+out.rename.input_present = !!q('replay-pk-rename-input');
+out.rename.choose_while_editing = await picker.choose('r_complete');
+renameReply = { error: 'a recording named x already exists' };
+picker.setRenameValue('dup');
+out.rename.fail_result = await picker.commitRename();
+out.rename.fail_msg = q('replay-pk-msg').textContent;
+out.rename.still_editing = picker.model().editing;
+renameReply = null;
+picker.setRenameValue('mine');
+out.rename.ok_result = await picker.commitRename(); await settle();
+out.rename.calls = renameCalls;
+out.rename.after_keys = picker.model().rows.map((r) => r.key);
+out.rename.after_label = picker.model().rows.find((r) => r.key === 'r_rich_mine').label;
+out.rename.editing_after = picker.model().editing;
+picker.startRename('r_old'); picker.cancelRename();
+out.rename.cancelled = picker.model().editing;
+picker.close();
 
 console.log(JSON.stringify(out));
 process.exit(0);

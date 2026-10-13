@@ -58,6 +58,12 @@ export function fmtDateTime(epochSec) {
         + p2(d.getHours()) + ':' + p2(d.getMinutes()) + ':' + p2(d.getSeconds());
 }
 
+/** The user-chosen name after the timestamp in a renamed recording id ('YYYY-MM-DD_HH-MM-SS_<name>'), or ''. */
+export function nameFromId(id) {
+    const m = /^\d{4}-\d{2}-\d{2}_\d{2}-\d{2}-\d{2}_(.+)$/.exec(id || '');
+    return m ? m[1] : '';
+}
+
 /** 'YYYY-MM-DD_HH-MM-SS' (rosbag folder name) -> 'YYYY-MM-DD HH:MM:SS' or null. */
 export function dateFromId(id) {
     const m = /^(\d{4}-\d{2}-\d{2})[_ T](\d{2})[-:](\d{2})[-:](\d{2})/.exec(id || '');
@@ -90,7 +96,7 @@ function topicSet(topics) {
  * Build the picker rows.
  * @param {object|null} listing  GET /api/replay/recordings body (or null)
  * @param {string} filter text over date + id + topic names
- * @returns {object[]} rows: {key, kind, id, when, name, duration, size, topicCount, chips, state,
+ * @returns {object[]} rows: {key, kind, id, when, name, label, duration, size, topicCount, chips, state,
  *   selectable, first, haystack}; `state` is 'ready' | 'noindex' | 'inprogress'
  */
 export function buildRows(listing, filter) {
@@ -105,7 +111,7 @@ export function buildRows(listing, filter) {
         const when = (startOk(r) ? fmtDateTime(rowStart(r)) : (dateFromId(r.id) || r.id));
         rows.push({
             key: r.id, kind: 'recording', id: r.id, first: false, selectable: state === 'ready',
-            when, name: r.id,
+            when, name: r.id, label: nameFromId(r.id),
             duration: noIndex ? null : fmtDuration(r.duration_s), noIndex,
             size: fmtSize(r.size_bytes),
             topicCount: topics ? topics.size : null,
