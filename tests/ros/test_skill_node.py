@@ -5451,17 +5451,249 @@ def test_bb_cancel_a_throw_call_overtaken_by_an_end_is_cancelled(tmp_path):
     assert len(cancel.calls) == 1
 
 
-def test_bb_cancel_our_own_throw_aborted_by_host_does_not_end_an_attempt(tmp_path):
-    """THROW_ABORTED_BY_HOST is the echo of OUR cancel: never an end reason
-    (the attempt that sent it has already ended)."""
+def _throw_call_delivers(node, throw_client, on_call):
+    """Wrap ``throw_client.call_async`` so ``on_call()`` runs INSIDE the
+    blocking `bb/throw_at_target` round trip -- ball_butler_node publishes
+    the ThrowAnnouncement synchronously inside that service handler, so
+    the announcement (and the executor swap it drives) lands BEFORE the
+    reply on the robot (2026-10-13 22:29 launch, every attempt)."""
+    orig_call_async = throw_client.call_async
+
+    def _call_async(request):
+        on_call()
+        return orig_call_async(request)
+    throw_client.call_async = _call_async
+
+
+def test_bb_cancel_announcement_swap_during_the_throw_call_does_not_cancel_it(tmp_path):
+    """THE 2026-10-13 22:29 bug: the announcement's swap retires `_reload_ctx`
+    during the throw call -- the NORMAL success ordering -- and the reply's
+    overtaken branch read "ctx no longer current" as "the attempt ended" and
+    cancelled the throw it had just dispatched (`END ENDED_DURING_BB_DISPATCH`,
+    BB `THROW_ABORTED_BY_HOST`), then JB caught a phantom. The swap case must
+    send NO cancel and leave the pending release recorded for a real end."""
+    node, _client = _node_with_client(response=_response())
+    throw_client = _reload_armed_await_bb_idle(node, tmp_path)
+    ann = _bb_announcement(
+        target_id=node._robot_name, landing_mm=(-50.0, 0.0, sn.CATCH_CUP_Z_MM),
+        landing_vel_mm_s=(1200.0, 0.0, -2500.0), throw_time_s=2.0,
+        landing_time_s=2.7)
+    _throw_call_delivers(node, throw_client, lambda: node._on_announcement(ann))
+    cancel = _cancel_client(node)
+    _bb_ready(node)
+    node._maybe_fire_reload_throw()
+    assert len(throw_client.calls) == 1
+    assert node._reload_ctx is None
+    assert node._executor is not None and not node._executor.attempt_ended
+    assert node._reload_throw_inflight is True
+    assert cancel.calls == []
+    assert node._bb_pending_release_mono is not None
+    assert node._goal_end_code == ''
+    # A REAL end afterwards still cancels the (still pending) throw, once.
+    node._stop_attempt()
+    assert len(cancel.calls) == 1
+
+
+def test_bb_cancel_columns_feed_swap_during_the_throw_call_does_not_cancel_it(tmp_path):
+    """The columns sibling: ball B's Ball Butler feed goes through the SAME
+    `_fire_reload_throw`, and `_install_columns_schedule`'s swap clears the
+    ctx the same way -- two-ball columns with BB feeds must not cancel its
+    own feed either."""
+    node, _client = _node_with_client()
+    node._params['plant_id'] = 'test_columns_race_' + str(id(node))
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    _reload_client, throw_client = _reload_ready(node)
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
+                      _good_box_path(tmp_path, columns=True)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_columns_goal(reload=True, separation_mm=100.0))
+    assert resp.success is True, resp.message
+    ctx = node._reload_ctx
+    aim = ctx.aim_site.cup_mm
+    ann = _bb_announcement(
+        target_id=node._robot_name, landing_mm=tuple(float(v) for v in aim),
+        landing_vel_mm_s=(0.0, 0.0, -3000.0), throw_time_s=0.5,
+        landing_time_s=5.0)
+    _throw_call_delivers(node, throw_client, lambda: node._on_announcement(ann))
+    cancel = _cancel_client(node)
+    _bb_ready(node)
+    node._maybe_fire_reload_throw()
+    assert len(throw_client.calls) == 1
+    assert node._reload_ctx is None
+    assert node._executor is not None
+    assert node._executor.schedule.pattern == 'columns'
+    assert not node._executor.attempt_ended
+    assert cancel.calls == []
+    assert node._goal_end_code == ''
+
+
+def test_bb_cancel_a_stop_during_the_throw_round_trip_cancels_exactly_once(tmp_path):
+    """The true overtaken case the wave-2 cancel was written for: a Stop
+    lands while `bb/throw_at_target` is in flight (no announcement yet), its
+    own cancel finds nothing recorded, so the reply's branch cancels -- once."""
+    node, _client = _node_with_client(response=_response())
+    throw_client = _reload_armed_await_bb_idle(node, tmp_path)
+    _finish_bridge(node)
+    assert node._executor is None
+    _throw_call_delivers(node, throw_client, node._stop_attempt)
+    cancel = _cancel_client(node)
+    _bb_ready(node)
+    node._maybe_fire_reload_throw()
+    assert node._reload_ctx is None
+    assert len(cancel.calls) == 1
+    node._stop_attempt()
+    node._on_tick()
+    assert len(cancel.calls) == 1
+
+
+def test_bb_cancel_an_end_that_wins_the_compile_cancels_exactly_once(tmp_path):
+    """Case (iii): the announcement CLAIMS the ctx, a Stop lands while the
+    schedule compiles, the swap declines -- all still inside the throw call.
+    The Stop's cancel ran before the release was recorded, so the reply's
+    overtaken branch is the ONE path that cancels."""
+    node, _client = _node_with_client(response=_response())
+    throw_client = _reload_armed_await_bb_idle(node, tmp_path)
+    _finish_bridge(node)
+    ann = _bb_announcement(
+        target_id=node._robot_name, landing_mm=(-50.0, 0.0, sn.CATCH_CUP_Z_MM),
+        landing_vel_mm_s=(1200.0, 0.0, -2500.0), throw_time_s=2.0,
+        landing_time_s=2.7)
+    real_compile = sn.compile_reload
+
+    def _compile_then_stop(*a, **kw):
+        sched = real_compile(*a, **kw)
+        node._stop_attempt()
+        return sched
+    _throw_call_delivers(node, throw_client, lambda: node._on_announcement(ann))
+    cancel = _cancel_client(node)
+    _bb_ready(node)
+    with patch.object(sn, 'compile_reload', _compile_then_stop):
+        node._maybe_fire_reload_throw()
+    assert node._executor is None          # the swap declined
+    assert node._reload_ctx is None
+    assert len(cancel.calls) == 1
+    node._on_tick()
+    assert len(cancel.calls) == 1
+
+
+def _announced_reload_live(node, tmp_path):
+    """A reload whose announcement has swapped the real schedule in (bridge
+    retired first), with a recording cancel client attached."""
+    resp = _start_reload(node, tmp_path)
+    assert resp.success is True, resp.message
+    _finish_bridge(node)
+    ann = _bb_announcement(
+        target_id=node._robot_name, landing_mm=(-50.0, 0.0, sn.CATCH_CUP_Z_MM),
+        landing_vel_mm_s=(1200.0, 0.0, -2500.0), throw_time_s=2.0,
+        landing_time_s=2.7)
+    node._on_announcement(ann)
+    assert node._reload_ctx is None
+    assert node._executor is not None and not node._executor.attempt_ended
+    return _cancel_client(node)
+
+
+def test_bb_throw_aborted_by_host_ends_a_live_announced_attempt(tmp_path):
+    """Phantom-catch guard: a NOT-thrown verdict -- THROW_ABORTED_BY_HOST
+    included -- for the throw a LIVE announced executor is waiting on ends
+    the attempt, so JB never dispatches a CATCH for a ball that will not
+    come (2026-10-13 22:29: REST -> CATCH -> REST against an empty sky).
+    The throw is already dead, so no cancel is sent for it."""
+    node, client = _node_with_client(response=_response())
+    cancel = _announced_reload_live(node, tmp_path)
+    executor = node._executor
+    catch = next(s for s in executor.schedule.skills if s.kind == sn.CATCH)
+    node._on_bb_throw_outcome(
+        String(data='THROW_ABORTED_BY_HOST (axis=n/a, detail1=2940)'))
+    assert executor.attempt_ended is True
+    assert executor.end_code == 'REJECTED_BB(THROW_ABORTED_BY_HOST)'
+    assert node._reload_throw_inflight is False
+    assert cancel.calls == []
+    n_before = len(client.calls)
+    executor.tick(catch.dispatch_s())
+    assert [r for r in client.calls[n_before:]
+            if r.kind == InstallSegment.Request.KIND_CATCH] == []
+
+
+def test_bb_throw_aborted_by_host_ends_a_live_pre_announcement_wait(tmp_path):
+    """The same verdict before any announcement (a deferred cancel answered
+    CANCELLED_BEFORE_DISPATCH, or an operator cancel): nothing will be
+    announced, so waiting out ABORTED_NO_ANNOUNCEMENT is waiting for nothing."""
     node, _client = _node_with_client(response=_response())
     resp = _start_reload(node, tmp_path)
     assert resp.success is True, resp.message
-    ctx = node._reload_ctx
+    assert node._reload_ctx.phase == 'await_announcement'
     node._on_bb_throw_outcome(
         String(data='THROW_ABORTED_BY_HOST (axis=n/a, detail1=4200)'))
-    assert node._reload_ctx is ctx
+    assert node._reload_ctx is None
+    node._on_tick()
+    assert node._goal_end_code == 'REJECTED_BB(THROW_ABORTED_BY_HOST)'
+
+
+def test_bb_throw_aborted_by_host_on_an_idle_node_is_ignored():
+    """(a) Nothing running: a stray BY_HOST (a manual cancel, a calibration
+    throw) touches nothing."""
+    node, _client = _node_with_client(response=_response())
+    cancel = _cancel_client(node)
+    node._on_bb_throw_outcome(
+        String(data='THROW_ABORTED_BY_HOST (axis=n/a, detail1=2940)'))
     assert node._goal_end_code == ''
+    assert node._reload_ctx is None and node._executor is None
+    assert cancel.calls == []
+
+
+def test_bb_throw_aborted_by_host_before_this_attempt_threw_is_ignored(tmp_path):
+    """(b) A reload still in `await_bb_idle` has asked Ball Butler for
+    nothing yet -- a BY_HOST cannot be about its ball."""
+    node, _client = _node_with_client(response=_response())
+    _reload_armed_await_bb_idle(node, tmp_path)
+    ctx = node._reload_ctx
+    executor = node._executor
+    cancel = _cancel_client(node)
+    node._on_bb_throw_outcome(
+        String(data='THROW_ABORTED_BY_HOST (axis=n/a, detail1=2940)'))
+    assert node._reload_ctx is ctx and ctx.phase == 'await_bb_idle'
+    assert node._executor is executor
+    assert node._goal_end_code == ''
+    assert cancel.calls == []
+
+
+def test_bb_throw_aborted_by_host_on_a_tracker_fed_columns_attempt_is_ignored(tmp_path):
+    """(c) A TRACKER-fed columns attempt (`reload=False`) also arms
+    `_reload_throw_inflight` at its swap, but never sent
+    `bb/throw_at_target` -- a BY_HOST is not about its ball and must not
+    end it `REJECTED_BB(THROW_ABORTED_BY_HOST)` (audit 2026-10-13)."""
+    node, _client = _node_with_client()
+    _columns_fed(node, tmp_path, plant_id='test_columns_tracker_byhost')
+    executor = node._executor
+    assert node._reload_throw_inflight is True
+    cancel = _cancel_client(node)
+    node._on_bb_throw_outcome(
+        String(data='THROW_ABORTED_BY_HOST (axis=n/a, detail1=2940)'))
+    assert node._executor is executor and not executor.attempt_ended
+    assert node._goal_end_code == ''
+    assert cancel.calls == []
+
+
+def test_bb_cancel_our_own_throw_aborted_by_host_after_the_end_is_ignored(tmp_path):
+    """THROW_ABORTED_BY_HOST after the attempt ALREADY ended is the echo of
+    OUR cancel: never a second end, never a relabel."""
+    node, _client = _node_with_client(response=_response())
+    cancel = _announced_reload_live(node, tmp_path)
+    executor = node._executor
+    node._stop_attempt()
+    assert len(cancel.calls) == 1
+    node._on_bb_throw_outcome(
+        String(data='THROW_ABORTED_BY_HOST (axis=n/a, detail1=2940)'))
+    assert executor.end_code == 'STOPPED'
+    # Pre-announcement flavour: the end path cleared the ctx.
+    node2, _c2 = _node_with_client(response=_response())
+    resp = _start_reload(node2, tmp_path)
+    assert resp.success is True, resp.message
+    node2._end_attempt('ABORTED_TEST', 'ABORTED_TEST')
+    node2._on_tick()
+    node2._on_bb_throw_outcome(
+        String(data='THROW_ABORTED_BY_HOST (axis=n/a, detail1=4200)'))
+    assert node2._goal_end_code == 'ABORTED_TEST'
 
 
 # ═════════════════════════════════════════════════════════════════════════════

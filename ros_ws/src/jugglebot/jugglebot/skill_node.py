@@ -818,6 +818,19 @@ class SkillNode(Node):
         # ctx was popped. Cleared with the attempt (`_end_attempt`, the
         # tick's `done` branch) and re-armed by `_start_reload`.
         self._reload_throw_inflight = False
+        # True once THIS attempt has sent `bb/throw_at_target` (2026-10-13
+        # audit): `_reload_throw_inflight` alone is also armed by a
+        # TRACKER-fed columns swap that never asked Ball Butler for
+        # anything, so the phantom-catch guard (`_bb_throw_awaited_live`)
+        # gates on both. Set by `_fire_reload_throw` under `_reload_lock`
+        # just before its round trip (the NOT_SETTLED re-fire keeps it);
+        # survives the executor swap (the ctx is retired there, hence
+        # node-level); cleared wherever `_reload_throw_inflight` is reset to
+        # False -- ctx creation (`_run_columns`, `_start_reload`),
+        # `_end_attempt`, and `_on_tick`'s executor retirement (there only
+        # once no ctx is armed: the bridge REST retires mid-wait). Guarded
+        # by `_reload_lock`.
+        self._bb_throw_dispatched = False
         # Ball Butler's own latest heartbeat (C1) — cached here, never
         # blocking: `_maybe_fire_reload_throw` reads it every tick, and
         # `_check_reload_timeout`'s `ABORTED_BB_NOT_READY` names whatever it
@@ -1818,19 +1831,39 @@ class SkillNode(Node):
         round trip clears `_reload_ctx` (`_stop_attempt`), so
         `_fire_reload_throw`'s existing `_still_current(ctx)` guard makes
         the stale retry a no-op, same as it already does for the first
-        fire."""
+        fire.
+
+        ``THROW_ABORTED_BY_HOST`` (2026-10-13, phantom-catch guard): BB
+        dropped the throw on a host cancel. It is ignored ONLY when no
+        attempt waiting on that ball is still live (`_bb_throw_awaited_live`
+        false) -- the echo of our own `_maybe_cancel_bb_throw` on an end
+        path, which always makes its end visible before sending the
+        cancel. Arriving while such an attempt IS live, it ends it
+        ``REJECTED_BB(THROW_ABORTED_BY_HOST)`` like any other NOT-thrown
+        verdict, so JB never runs a CATCH for a ball that will not come.
+        Every acted-on verdict also drops `_bb_pending_release_mono`: the
+        throw is already dead, nothing is left to cancel."""
         token = str(getattr(msg, 'data', '')).split(' ', 1)[0]
         if token == proto.BallButlerCommandOutcome.OK.name:
             return
-        if token == proto.BallButlerCommandOutcome.THROW_ABORTED_BY_HOST.name:
-            # Our OWN cancel (`_maybe_cancel_bb_throw`), sent because the
-            # attempt had already ended -- never a reason to end one.
-            return
+        by_host = (token
+                   == proto.BallButlerCommandOutcome.THROW_ABORTED_BY_HOST.name)
         retry_ctx = None
         with self._reload_lock:
             ctx = self._reload_ctx
             reloading = ((ctx is not None and ctx.phase == 'await_announcement')
                          or self._reload_throw_inflight)
+            # Phantom-catch guard (2026-10-13 22:29 launch): BY_HOST is
+            # ignored ONLY as the echo of an end that already happened (our
+            # own `_maybe_cancel_bb_throw` on an end path -- every end path
+            # makes its end visible here before it sends the cancel). While
+            # an attempt waiting on that ball is still live, BY_HOST is a
+            # NOT-thrown verdict like any other: the ball is not coming, so
+            # the attempt ends below instead of running its CATCH against an
+            # empty sky (the owner watched REST -> CATCH -> REST run on
+            # after every cancelled throw).
+            if by_host and not self._bb_throw_awaited_live():
+                return
             if (ctx is not None and ctx.phase == 'await_announcement'
                     and token
                     == proto.BallButlerCommandOutcome.THROW_ABORTED_NOT_SETTLED.name
@@ -1840,6 +1873,13 @@ class SkillNode(Node):
                 retry_ctx = ctx
         if not reloading:
             return
+        # A NOT-thrown verdict: the dispatched throw is dead (aborted,
+        # refused, or dropped on a cancel), so nothing is left for an end
+        # path's `_maybe_cancel_bb_throw` to cancel -- drop the record
+        # rather than send BB a cancel for a throw it already discarded. The
+        # NOT_SETTLED retry below records its own fresh release.
+        with self._bb_cancel_lock:
+            self._bb_pending_release_mono = None
         if retry_ctx is not None:
             self.get_logger().debug(
                 'reload: THROW_ABORTED_NOT_SETTLED -- retrying '
@@ -2391,7 +2431,9 @@ class SkillNode(Node):
         not be aborted. Called from EVERY end path -- `_end_attempt`,
         `_on_tick`'s ended-executor branch (every tick until it retires,
         hence the pop), `_stop_attempt` -- and from `_fire_reload_throw` when
-        the throw's own response lost the race to an end.
+        the throw's own response lost the race to an end, and not when the
+        announcement's schedule swap retired the ctx
+        (`_swapped_in_and_live`).
 
         At most ONE cancel per dispatched throw (the record is popped under
         `_bb_cancel_lock`). A release already in the past is not cancelled
@@ -2512,6 +2554,7 @@ class SkillNode(Node):
             with self._reload_lock:
                 self._reload_ctx = None
                 self._reload_throw_inflight = False
+                self._bb_throw_dispatched = False
         finally:
             if got_lock:
                 self._tick_lock.release()
@@ -2644,6 +2687,46 @@ class SkillNode(Node):
             ctx.phase = 'firing'
         self._fire_reload_throw(ctx)
 
+    def _swapped_in_and_live(self, ctx) -> bool:
+        """True when ``ctx`` stopped being current because ITS announcement
+        swapped the compiled executor in (``ctx.installed_executor``, set by
+        the three swaps under both locks) and that attempt has NOT ended
+        since: the executor is still the live one, `_reload_throw_inflight`
+        still armed (every end path clears it, or the executor's retirement
+        does), and no END decided the goal (`_ended_code_for_swap`). False
+        for every other way a ctx stops being current -- a Stop / timeout /
+        refused lane / compile refusal clears it without installing
+        anything. Read under `_reload_lock` only: `_fire_reload_throw` runs
+        on a tick thread that does NOT hold `_tick_lock` (`_on_tick` calls
+        it before acquiring), and every field read here is written before
+        the writer's own `_maybe_cancel_bb_throw`, which is all the
+        exactly-one-cancel argument needs."""
+        with self._reload_lock:
+            installed = getattr(ctx, 'installed_executor', None)
+            return (installed is not None
+                    and self._executor is installed
+                    and self._reload_throw_inflight
+                    and not self._ended_code_for_swap())
+
+    def _bb_throw_awaited_live(self) -> bool:
+        """True while an attempt that is WAITING ON Ball Butler's ball is
+        live and has not ended -- either still in the pre-announcement
+        wait (`_reload_ctx` in ``await_announcement``) or with the announced
+        executor swapped in (`_reload_throw_inflight` AND
+        `_bb_throw_dispatched` -- a tracker-fed columns swap arms the former
+        without ever asking Ball Butler for a throw) -- and no END has
+        decided the goal (`_ended_code_for_swap`). The phantom-catch
+        guard's predicate (`_on_bb_throw_outcome`): a NOT-thrown verdict
+        arriving while this holds ends the attempt; one arriving after it
+        stops holding is the echo of an end that already happened. Caller
+        holds `_reload_lock`."""
+        if self._ended_code_for_swap():
+            return False
+        ctx = self._reload_ctx
+        if ctx is not None and ctx.phase == 'await_announcement':
+            return True
+        return bool(self._reload_throw_inflight and self._bb_throw_dispatched)
+
     def _still_current(self, ctx) -> bool:
         """True while ``ctx`` is still THE reload context -- the guard every
         blocking step of `_fire_reload_throw` re-checks before it ends the
@@ -2724,6 +2807,9 @@ class SkillNode(Node):
         with self._reload_lock:
             ctx.phase = 'await_announcement'
             ctx.deadline_mono = deadline_mono
+            # This attempt has now asked Ball Butler for a throw: the
+            # phantom-catch guard may attribute a BY_HOST verdict to it.
+            self._bb_throw_dispatched = True
 
         throw_resp = self._wait_future(self._bb_throw_cli.call_async(req))
         # Record the pending release BEFORE any end path below can run: an
@@ -2736,14 +2822,37 @@ class SkillNode(Node):
                 self._bb_pending_release_mono = (
                     time.perf_counter() + pending_delay_s)
         if not self._still_current(ctx):
-            # Overtaken while blocked: another path (a `sched_refused` bump
-            # via `_check_reload_lane_refused`, a Stop, the timeout) already
-            # ended THIS attempt. With the bridge executor retired,
-            # `_end_attempt` would write `_goal_end_code` a second time and
-            # the Juggle result would lose the reason that actually stopped
-            # the machine (2026-09-28 audit). The hold that path armed stays.
-            # That end ran its cancel BEFORE this throw was recorded, so the
-            # throw it overtook is cancelled here.
+            # "ctx no longer current" has TWO causes, and only one is an end
+            # (2026-10-13 22:29 launch: every Ball Butler throw cancelled the
+            # instant it was dispatched, then JB caught a phantom):
+            #
+            # (a) the announcement's executor SWAP retired the ctx. Ball
+            #     Butler publishes its ThrowAnnouncement synchronously inside
+            #     the `bb/throw_at_target` handler, so this is the NORMAL
+            #     success ordering -- the attempt is live, the throw is ours,
+            #     and the release just recorded stays pending for whichever
+            #     real end comes later. Nothing to do.
+            # (b) another path (a `sched_refused` bump via
+            #     `_check_reload_lane_refused`, a Stop, the timeout, a compile
+            #     refusal) ENDED this attempt while we were blocked. With the
+            #     bridge executor retired, `_end_attempt` would write
+            #     `_goal_end_code` a second time and the Juggle result would
+            #     lose the reason that actually stopped the machine
+            #     (2026-09-28 audit), so no second END here; the hold that
+            #     path armed stays. If that end ran its cancel BEFORE this
+            #     throw was recorded it found nothing to cancel, so the throw
+            #     it overtook is cancelled here (at most once: the record is
+            #     popped, so an end that ran AFTER the record already took it).
+            #
+            # Exactly one path cancels: the record above is written BEFORE
+            # this check, and every end path makes its end visible to
+            # `_swapped_in_and_live` BEFORE it calls `_maybe_cancel_bb_throw`.
+            if self._swapped_in_and_live(ctx):
+                self.get_logger().debug(
+                    'reload: bb/throw_at_target answered after the '
+                    'announcement swapped the schedule in -- the attempt is '
+                    'live, the throw stays pending')
+                return
             self._maybe_cancel_bb_throw('ENDED_DURING_BB_DISPATCH')
             return
         if throw_resp is None:
@@ -2852,6 +2961,12 @@ class SkillNode(Node):
                     self._executor = None
                     with self._reload_lock:
                         self._reload_throw_inflight = False
+                        # Not while a reload/feed wait is still armed: the
+                        # bridge REST's own executor retires mid-wait (C5b),
+                        # possibly AFTER the throw was dispatched, and the
+                        # announced executor has yet to swap in.
+                        if self._reload_ctx is None:
+                            self._bb_throw_dispatched = False
         finally:
             self._tick_lock.release()
         if stop_code is not None:
@@ -3363,6 +3478,7 @@ class SkillNode(Node):
             seat_window=self._seat_window)
         with self._reload_lock:
             self._reload_throw_inflight = False
+            self._bb_throw_dispatched = False
             self._reload_ctx = SimpleNamespace(
                 kind='columns', phase='await_feed', pattern=None,
                 columns_pattern=pattern, boxes=boxes, memory=memory,
@@ -4436,6 +4552,7 @@ class SkillNode(Node):
         # the one AFTER BB's own reload/check cycle, never the one before it.
         with self._reload_lock:
             self._reload_throw_inflight = False
+            self._bb_throw_dispatched = False
             self._reload_ctx = SimpleNamespace(
                 kind=kind, phase='await_bb_idle', pattern=pattern,
                 columns_pattern=columns_pattern, boxes=boxes,
@@ -4646,6 +4763,8 @@ class SkillNode(Node):
                         self._force_hold = False
                         self._hold_forced_code = ''
                         self._executor = executor
+                        # `_swapped_in_and_live`: THIS swap retired the ctx.
+                        ctx.installed_executor = executor
                         self._reload_ctx = None
                         self._reload_throw_inflight = True
             finally:
@@ -4794,6 +4913,8 @@ class SkillNode(Node):
                     self._force_hold = False
                     self._hold_forced_code = ''
                     self._executor = executor
+                    # `_swapped_in_and_live`: THIS swap retired the ctx.
+                    ctx.installed_executor = executor
                     self._reload_ctx = None
                     self._reload_throw_inflight = True
         finally:
@@ -4957,6 +5078,8 @@ class SkillNode(Node):
                     self._force_hold = False
                     self._hold_forced_code = ''
                     self._executor = executor
+                    # `_swapped_in_and_live`: THIS swap retired the ctx.
+                    ctx.installed_executor = executor
                     self._reload_ctx = None
                     self._reload_throw_inflight = True
         finally:
