@@ -242,5 +242,7 @@ export function httpReadable(url, { fetch: f = globalThis.fetch } = {}) {
       spans.push({ off, buf: await range(off, len) });
       while (spans.length > 2) spans.shift();
     },
+    /** The recording was renamed: later requests go to `u`. The bytes (and so the ETag) are unchanged. */
+    setUrl(u) { url = u; },
   };
 }

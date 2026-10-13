@@ -8,6 +8,7 @@
 // `topics` (lite loads only, ball-history.js): an array of topic names; the slot decodes ONLY those channels.
 //
 //   main -> worker: {op:'open', req, url} {op:'load', req, i, lite?, topics?} {op:'latest', req, topic, t} {op:'close'}
+//                   {op:'retarget', url} (the recording was renamed: later byte requests use `url`; not queued, no reply)
 //   worker -> main: {op:'opened', req, t0, t1, slots, topics, skipped, chunkCount, size, etag, ms}
 //                   {op:'slot', req, i, t0, t1, topics:{"/x":{type,n,t,cols,kinds}}, dropped, bytes, ms}
 //                   {op:'latest', req, row:{t, flat}|null}
@@ -29,6 +30,7 @@ export function createWorkerHandler(deps) {
   const allowlist = deps.allowlist || ALLOWLIST;
   const now = deps.now || (() => (typeof performance !== 'undefined' ? performance.now() : Date.now()));   // wall-clock: decode timing diagnostics (ms) for the worker's replies, not recorded time
   let rec = null;
+  let readable = null;
   const hi = [];   // normal lane (open / load / latest / close)
   const lo = [];   // lite lane (low-priority far-tier loads)
   let draining = false;
@@ -43,7 +45,7 @@ export function createWorkerHandler(deps) {
     const t0 = now();
     try {
       if (msg.op === 'open') {
-        const readable = deps.makeReadable(msg.url);
+        readable = deps.makeReadable(msg.url);
         rec = await openRecording(readable, allowlist);
         const size = Number(await readable.size());
         deps.post({
@@ -65,7 +67,7 @@ export function createWorkerHandler(deps) {
         if (!rec) throw new RangeError('latest before open');
         deps.post({ op: 'latest', req: msg.req, row: await latestRow(rec, msg.topic, msg.t) });
       } else if (msg.op === 'close') {
-        rec = null;
+        rec = null; readable = null;
       }
     } catch (e) {
       fail(msg.req, e);
@@ -84,6 +86,8 @@ export function createWorkerHandler(deps) {
 
   return {
     handle(msg) {
+        // Out of band: a rename must not wait behind queued slot loads (the server answers the old URL meanwhile).
+        if (msg.op === 'retarget') { if (readable && readable.setUrl) readable.setUrl(msg.url); return Promise.resolve(); }
       const p = new Promise((done) => { (msg.op === 'load' && msg.lite ? lo : hi).push({ msg, done }); });
       // Start on a microtask so messages posted in the same tick are ordered by LANE, not arrival.
       if (!draining) { draining = true; Promise.resolve().then(drain); }

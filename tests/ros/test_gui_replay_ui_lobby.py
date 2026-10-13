@@ -41,7 +41,7 @@ pytestmark = pytest.mark.skipif(NODE is None, reason="node not installed")
 def out(tmp_path_factory):
     sb = tmp_path_factory.mktemp("uilobby")
     (sb / "replay" / "ui").mkdir(parents=True)
-    for name in ("dom.js", "format.js", "toast.js", "picker.js", "lobby.js"):
+    for name in ("dom.js", "format.js", "rename.js", "toast.js", "picker.js", "lobby.js"):
         shutil.copy(UI / name, sb / "replay" / "ui" / name)
     shutil.copy(HARNESS, sb / "replay_ui_lobby_harness.js")
     (sb / "package.json").write_text('{"type": "module"}\n')
@@ -198,3 +198,12 @@ def test_picker_rename(out):
     assert r["calls"][-1] == {"id": "r_rich", "method": "POST", "body": {"name": "mine"}}
     assert "r_rich_mine" in r["after_keys"] and "r_rich" not in r["after_keys"]   # the list reloaded
     assert r["cancelled"] is None
+
+
+def test_name_is_the_row_headline(out):
+    """Owner ask 2026-10-13: names are rare, so a named recording shows its name as the row's headline."""
+    h = out["headline"]
+    assert h["named"][0] == "three-ball-PB" and "named" in h["named_cls"].split()
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", h["named"][1])
+    assert h["plain"][1] == "(unnamed)" and "named" not in h["plain_cls"].split()
+    assert h["filter_spaced"] == ["2026-10-01_10-00-00_three-ball-PB"]   # "three ball" finds "three-ball"

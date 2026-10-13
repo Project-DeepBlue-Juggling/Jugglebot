@@ -16,6 +16,7 @@
  *   source.status()                  sync  {state, chunksDone, chunksTotal}  (a recording is always 'complete')
  *   source.onChange(cb)              -> unsubscribe
  *   source.peek(i)                   sync  resident chunk or null (tiny scan-back memo; cache.js owns playback residency)
+ *   source.retarget(id)              sync  the recording was renamed on disk: `id` and every later request follow it
  *
  * Chunk shape: see chunk.js. Times are wall-clock seconds.
  *
@@ -61,8 +62,12 @@ function topicRow(ch, topic, t) {
  *   answers with the mcap-worker.js protocol. fileUrl overrides the Range URL (tests).
  */
 export function McapSource(opts) {
-  const base = (opts.baseUrl === undefined ? '/api/replay' : opts.baseUrl) +
-    '/recordings/' + encodeURIComponent(opts.id);
+  const root = opts.baseUrl === undefined ? '/api/replay' : opts.baseUrl;
+  let base = root + '/recordings/' + encodeURIComponent(opts.id);
+  const fileUrl = () => {
+    const path = base + '/file';
+    return typeof location !== 'undefined' ? new URL(path, location.href).href : path;
+  };
   const doFetch = opts.fetch;
   const pollMs = opts.overviewPollMs === undefined ? 2000 : opts.overviewPollMs;
   const timers = opts.timers || globalThis;
@@ -157,9 +162,7 @@ export function McapSource(opts) {
       worker = opts.makeWorker();
       worker.onmessage = onMessage;
       worker.onerror = (e) => failAll(refusal('decode', 'replay worker failed: ' + (e && e.message)));
-      const path = base + '/file';
-      const url = opts.fileUrl || (typeof location !== 'undefined' ? new URL(path, location.href).href : path);
-      const o = await send({ op: 'open', url });
+      const o = await send({ op: 'open', url: opts.fileUrl || fileUrl() });
       t0 = o.t0; t1 = o.t1; slots = o.slots;
       topics = o.topics || {}; skipped = o.skipped || {};
       pollOverview(0);   // the first GET enqueues the pass; not awaited, open never waits on it
@@ -176,6 +179,14 @@ export function McapSource(opts) {
     bounds(i) { return [(t0 || 0) + i * CHUNK_S, (t0 || 0) + (i + 1) * CHUNK_S]; },
 
     peek(i) { return memo.get(i) || null; },
+
+    retarget(newId) {
+      if (!newId || newId === self.id) return;
+      self.id = newId;
+      base = root + '/recordings/' + encodeURIComponent(newId);
+      if (worker && !closed && !opts.fileUrl) worker.postMessage({ op: 'retarget', url: fileUrl() });
+      emit();
+    },
 
     async load(i, loadOpts) {
       if (!(i >= 0 && i < slots)) throw new RangeError('chunk ' + i + ' outside [0,' + slots + ')');

@@ -17,6 +17,7 @@
  */
 import { h, fill } from './dom.js';
 import { buildRows, stateCell, refusalMessage } from './format.js';
+import { postRename } from './rename.js';
 
 const OVERVIEW_NOTE = 'Timeline overview unavailable (the overview worker is not running). Recordings still open; only the overview strip is missing.';
 
@@ -146,11 +147,11 @@ export function createPicker(deps) {
         const chips = r.chips.map((c) => h(doc, 'span', { cls: 'replay-chip' + (c.missing ? ' missing' : ''), text: c.label,
             title: c.missing ? 'not in this recording' : '' }));
         return h(doc, 'div', { cls, attrs: { 'data-key': r.key }, on: { click: () => { choose(r.key); } } }, [
-            h(doc, 'div', { cls: 'replay-pk-when' }, [
-                h(doc, 'b', { text: r.when }),
-                r.name ? h(doc, 'span', { text: r.name }) : null,
+            h(doc, 'div', { cls: 'replay-pk-when' + (r.label ? ' named' : '') }, [
+                h(doc, 'b', { text: r.label || r.when }),
                 r.state === 'inprogress' ? null : h(doc, 'button', { cls: 'replay-pk-rename', text: '✎', title: 'Rename recording',
                     attrs: { 'aria-label': 'Rename ' + r.id }, on: { click: (e) => { if (e && e.stopPropagation) e.stopPropagation(); startRename(r.key); } } }),
+                h(doc, 'span', { text: r.label ? r.when : '(unnamed)' }),
             ]),
             h(doc, 'span', { cls: 'mono replay-pk-dur', text: r.duration === null ? '?' : r.duration }),
             h(doc, 'span', { cls: 'mono', text: r.size }),
@@ -222,13 +223,7 @@ export function createPicker(deps) {
         renaming = true; message = ''; render();
         let newId = null;
         try {
-            const res = await fetchFn(base + '/recordings/' + encodeURIComponent(id) + '/rename', {
-                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ name: editValue }),
-            });
-            let j = {};
-            try { j = await res.json(); } catch (e) { j = {}; }
-            if (!res.ok) throw new Error(j.error || ('HTTP ' + res.status));
-            newId = j.id;
+            newId = await postRename(fetchFn, id, editValue, base);
         } catch (e) {
             renaming = false;
             message = 'Rename failed: ' + (e && e.message ? e.message : e);

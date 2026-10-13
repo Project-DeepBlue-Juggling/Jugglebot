@@ -1,7 +1,10 @@
 /**
  * trackbar.js — replay trackbar + transport + hotkeys (layout A, docked in #replay-dock).
  *
- * createTrackbar({document, mode, dock, raf?}) -> {mount, unmount, mounted, frame, handleKey, ...}
+ * createTrackbar({document, mode, dock, raf?, toaster?, fetch?}) -> {mount, unmount, mounted, frame, handleKey, rename, ...}
+ *
+ * Beside "Exit replay": the open recording's name and a ✎ that renames it in place (rename.js; the source then
+ * retargets to the new id, so playback, Copy link and the overview poll carry on under the new name).
  *
  * Mounted while the mode is OPENING/REPLAY (mode 'state' events), unmounted on exit. One rAF loop reads
  * `engine.state()` and moves the playhead / frontier / readouts, writing a style or text only when its
@@ -10,6 +13,8 @@
  */
 import { h } from './dom.js';
 import { buildLink, copyText } from './deeplink.js';
+import { nameFromId } from './format.js';
+import { postRename } from './rename.js';
 import {
     fmtClock, frac, timeAt, clampRange, zoomAbout, dragToRange, renderOverview, MIN_SPAN, ZOOM_STEP,
 } from './overview.js';
@@ -69,7 +74,8 @@ export function createTrackbar(deps) {
     let unsubSrc = null;                          // source.onChange -> re-read a partial timeline at once (no 200-frame wait)
     let frameNo = 0, tlRetryAt = 0;               // frame-count backoff for /overview retries (no wall clock)
     let drawnKey = '';
-    const cache = { head: '', play: '', el: '', speed: '', mode: '', zoom: '', date: '', pbtn: '' };
+    const cache = { head: '', play: '', el: '', speed: '', mode: '', zoom: '', date: '', pbtn: '', name: '' };
+    let editingName = false, renaming = false;
     let dragging = null;                          // {kind:'bar', rest, rested, t} | {kind:'ov', fa}
     let pendingScrub = null;                      // latest bar-drag time, flushed once per frame (latest wins)
     let lastFull = { t0: 0, t1: 0 };
@@ -113,6 +119,38 @@ export function createTrackbar(deps) {
         if (typeof win.prompt === 'function') win.prompt('Copy this replay link:', url);
         else if (deps.toaster) deps.toaster.show('Copy failed. Link: ' + url, 9000);
     }
+    // ---------------- rename (beside Exit replay) ----------------
+    function showNameEdit(on) {
+        editingName = on;
+        els.nameView.hidden = on;
+        els.nameEdit.hidden = !on;
+        if (on) {
+            const src = mode.source && mode.source();
+            els.nameInput.value = src && src.id ? nameFromId(src.id) : '';
+            els.nameInput.disabled = false;
+            if (els.nameInput.focus) els.nameInput.focus();
+            if (els.nameInput.select) els.nameInput.select();
+        }
+    }
+    /** Rename the open recording to `name` ('' = bare timestamp). @returns {Promise<string|null>} new id or null */
+    async function rename(name) {
+        const src = mode.source && mode.source();
+        if (renaming || !src || !src.id) return null;
+        renaming = true;
+        els.nameInput.disabled = true; els.nameSave.textContent = 'renaming…';
+        let newId = null;
+        try {
+            newId = await postRename(deps.fetch || globalThis.fetch, src.id, name);
+            if (src.retarget) src.retarget(newId);
+        } catch (e) {
+            if (deps.toaster) deps.toaster.show('Rename failed: ' + (e && e.message ? e.message : e), 9000);
+        }
+        renaming = false;
+        els.nameInput.disabled = false; els.nameSave.textContent = 'save';
+        if (newId !== null) { showNameEdit(false); cache.name = ''; if (isMounted) frame(); }
+        return newId;
+    }
+
     function toEnd() { const e = engine(); if (e) { const r = e.state().range; e.seek(clampT(r.t1, r)); } }
 
     function setView(v) {
@@ -210,6 +248,20 @@ export function createTrackbar(deps) {
     function build() {
         const btn = (id, text, title, fn) => h(doc, 'button', { cls: 'replay-btn rp-btn', id, text, title, on: { click: fn } });
         const bPlay = btn('rp-play', 'Play', 'Play / pause (Space)', togglePlay);
+        const nameInput = h(doc, 'input', { id: 'rp-name-input', attrs: { type: 'text', maxlength: '80', placeholder: 'name (blank = timestamp only)' },
+            on: { keydown: (e) => {
+                if (e.key === 'Enter') { rename(nameInput.value); }
+                else if (e.key === 'Escape') { if (e.stopPropagation) e.stopPropagation(); if (!renaming) showNameEdit(false); }
+            } } });
+        const nameSave = btn('rp-name-save', 'save', 'Rename the recording on disk', () => { rename(nameInput.value); });
+        const nameLabel = h(doc, 'span', { cls: 'rp-name', id: 'rp-name' });
+        const nameView = h(doc, 'span', { cls: 'rp-name-view' }, [
+            nameLabel,
+            btn('rp-rename', '✎', 'Rename this recording', () => showNameEdit(true)),
+        ]);
+        const nameEdit = h(doc, 'span', { cls: 'rp-name-edit', hidden: true }, [
+            nameInput, nameSave, btn('rp-name-cancel', 'cancel', '', () => { if (!renaming) showNameEdit(false); }),
+        ]);
         els = {
             date: h(doc, 'span', { cls: 'rp-date' }),
             play: h(doc, 'span', { cls: 'rp-clock', id: 'rp-clock' }),
@@ -218,6 +270,7 @@ export function createTrackbar(deps) {
             buf: h(doc, 'span', { cls: 'rp-buffering', id: 'rp-buffering', text: 'buffering', hidden: true }),
             zoomtag: h(doc, 'span', { cls: 'rp-zoomtag', id: 'rp-zoomtag' }),
             pbtn: bPlay,
+            nameView, nameEdit, nameInput, nameSave, name: nameLabel,
             head: h(doc, 'div', { cls: 'rp-playhead' }),
             sel: h(doc, 'div', { cls: 'rp-sel', hidden: true }),
         };
@@ -235,6 +288,7 @@ export function createTrackbar(deps) {
             btn('rp-end', '▶|', 'End (End)', toEnd),
             btn('rp-link', 'Copy link', 'Copy a link to this recording at the playhead', () => { copyLink(); }),
             btn('rp-exit', 'Exit replay', 'Leave replay', () => { mode.exitReplay('closed'); }),
+            nameView, nameEdit,
             h(doc, 'span', { cls: 'rp-keys', text: 'Space play  ←/→ ±1 s  Shift ±10 s  , . sample  + − zoom  Esc reset' }),
         ]);
         root = h(doc, 'div', { cls: 'rp-tb', id: 'rp-tb' }, [head, els.bar, els.ov, ctl]);
@@ -299,6 +353,13 @@ export function createTrackbar(deps) {
         }
         const date = fmtDate(r.t0);
         if (date !== cache.date) { cache.date = date; els.date.textContent = date; }
+        const src = mode.source && mode.source();
+        const nm = src && src.id ? (nameFromId(src.id) || 'unnamed') : '';
+        if (nm !== cache.name) {
+            cache.name = nm;
+            els.name.textContent = nm;
+            els.name.className = 'rp-name' + (nm === 'unnamed' ? ' unnamed' : '');
+        }
         const zt = view ? fmtClock(view.v0) + ' – ' + fmtClock(view.v1) + '  (Esc resets)' : '';
         if (zt !== cache.zoom) { cache.zoom = zt; els.zoomtag.textContent = zt; }
         // overview: once per (timeline, view, full range); a partial timeline (the source is still polling /overview) is re-read, rate-limited
@@ -326,6 +387,7 @@ export function createTrackbar(deps) {
         isMounted = true;
         timeline = null; drawnKey = ''; view = null; tlToken++; frameNo = 0; tlRetryAt = 0;
         for (const k of Object.keys(cache)) cache[k] = '';
+        if (editingName && !renaming) showNameEdit(false);
         doc.addEventListener('keydown', onKeyCapture, true);
         doc.addEventListener('mousemove', onMove);
         doc.addEventListener('mouseup', onUp);
@@ -353,7 +415,7 @@ export function createTrackbar(deps) {
     sync();
 
     return {
-        mount, unmount, frame, handleKey, sync, copyLink,
+        mount, unmount, frame, handleKey, sync, copyLink, rename, editName: showNameEdit,
         mounted: () => isMounted,
         getView: () => view,
         dispose() { unmount(); if (unsubMode) unsubMode(); },

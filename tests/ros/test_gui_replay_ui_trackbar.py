@@ -40,7 +40,7 @@ pytestmark = pytest.mark.skipif(NODE is None, reason="node not installed")
 def out(tmp_path_factory):
     sb = tmp_path_factory.mktemp("uitrackbar")
     (sb / "replay" / "ui").mkdir(parents=True)
-    for name in ("dom.js", "overview.js", "deeplink.js", "trackbar.js"):
+    for name in ("dom.js", "format.js", "rename.js", "overview.js", "deeplink.js", "trackbar.js"):
         shutil.copy(UI / name, sb / "replay" / "ui" / name)
     shutil.copy(HARNESS, sb / "replay_ui_trackbar_harness.js")
     (sb / "package.json").write_text('{"type": "module"}\n')

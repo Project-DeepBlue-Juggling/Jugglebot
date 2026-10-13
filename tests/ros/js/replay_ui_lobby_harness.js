@@ -252,5 +252,18 @@ picker.startRename('r_old'); picker.cancelRename();
 out.rename.cancelled = picker.model().editing;
 picker.close();
 
+// 11. a named recording's name is the row's headline; unnamed rows keep the date with "(unnamed)" under it
+listing.recordings.push(REC('2026-10-01_10-00-00_three-ball-PB', T0 + 7000));
+await picker.open(); await settle();
+{
+    const cell = (k) => rowByKey(k).children[0];
+    const named = cell('2026-10-01_10-00-00_three-ball-PB'), plain = cell('r_complete');
+    const txt = (c) => c.children.filter((x) => x.tag !== 'button').map((x) => x.textContent);
+    out.headline = { named: txt(named), named_cls: named.className, plain: txt(plain), plain_cls: plain.className };
+    picker.setFilter('three ball'); out.headline.filter_spaced = picker.model().rows.map((r) => r.key);
+    picker.setFilter('');
+}
+picker.close();
+
 console.log(JSON.stringify(out));
 process.exit(0);

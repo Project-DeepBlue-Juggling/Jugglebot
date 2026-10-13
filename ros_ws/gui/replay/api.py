@@ -67,6 +67,10 @@ class ReplayBackend:
         self._failed = {}              # id -> (size_bytes, mtime_ns, error)
         self._thread = None
         self._valid_memo = {}          # overview path -> ((st_size, st_mtime_ns), doc head)
+        # Renames made through this server: old id -> new id. A recording open in a browser keeps
+        # reading under its old URL until it retargets (and requests already in flight land after the
+        # rename), so the file and overview routes follow these for ids that no longer exist on disk.
+        self._aliases = {}
 
     def _probe_worker(self) -> bool:
         if not self.worker_python or not os.path.exists(self.worker_python):
@@ -130,6 +134,19 @@ class ReplayBackend:
         except (BrokenPipeError, ConnectionResetError):
             pass
         return True
+
+    def _resolve(self, rid: str) -> Optional[Dict[str, Any]]:
+        """The recording ``rid`` names now: itself if it exists, else where a rename here moved it."""
+        for _ in range(16):   # a chain of renames; bounded so a cycle can never spin
+            info = recordings.find_recording(self.rosbags_root, rid)
+            if info is not None:
+                return info
+            with self._lock:
+                nxt = self._aliases.get(rid)
+            if nxt is None:
+                return None
+            rid = nxt
+        return None
 
     # ---- overview cache + queue --------------------------------------
     def _ov_path(self, rid: str) -> str:
@@ -223,16 +240,29 @@ class ReplayBackend:
                 if info is not None:
                     with self._lock:
                         self._running_ver = (info["size_bytes"], info["mtime_ns"])
-                err = "recording vanished" if info is None else self._run_pass(info)
+                if info is None:
+                    err = "recording vanished"
+                elif self._cached_overview(info) is None:   # e.g. queued twice across a rename
+                    err = self._run_pass(info)
             except Exception as exc:  # noqa: BLE001 - the queue must keep draining
                 err = "%s: %s" % (type(exc).__name__, exc)
             with self._lock:
+                cur = self._running   # a rename during the pass re-pointed this at the new id
+                self._running = None
+                self._running_ver = None
+                if cur != rid:
+                    # The pass wrote under the id it started with; its failure is most likely the bag
+                    # moving before the pass opened it, so it is not remembered: the next poll requeues.
+                    if err is None:
+                        try:
+                            os.replace(self._ov_path(rid), self._ov_path(cur))
+                        except OSError:
+                            pass
+                    continue
                 if err is None:
                     self._failed.pop(rid, None)
                 elif info is not None:
                     self._failed[rid] = (info["size_bytes"], info["mtime_ns"], err)
-                self._running = None
-                self._running_ver = None
 
     def _run_pass(self, info: Dict[str, Any]) -> Optional[str]:
         """Run the niced venv pass; None on success, else an error string."""
@@ -275,13 +305,11 @@ class ReplayBackend:
         if not isinstance(body, dict) or not isinstance(body.get("name"), str):
             self._json(handler, 400, {"error": 'body must be {"name": "<text>"}', "reason": "bad_name"})
             return
-        # The overview pass holds the bag open and writes its cache under the id: wait for it to finish.
-        with self._lock:
-            busy = self._running == rid or rid in self._queue
-        if busy:
-            self._json(handler, 409, {"error": "the timeline overview is being computed; try again shortly",
-                                      "reason": "overview_busy"})
+        info = self._resolve(rid)
+        if info is None:
+            self._json(handler, 404, {"error": "unknown recording", "reason": "unknown"})
             return
+        rid = info["id"]
         try:
             new_id = recordings.rename_recording(self.rosbags_root, rid, body["name"])
         except recordings.RenameError as exc:
@@ -291,26 +319,33 @@ class ReplayBackend:
             self._json(handler, 500, {"error": "rename failed: %s" % exc, "reason": "os_error"})
             return
         if new_id != rid:
-            self._move_overview(rid, new_id)
+            self._renamed(rid, new_id)
         self._json(handler, 200, {"id": new_id, "old_id": rid})
 
-    def _move_overview(self, old: str, new: str) -> None:
-        """Carry the cached overview (and a remembered failure) over to the new id; best effort - a miss only
-        means the overview is recomputed on the next open."""
+    def _renamed(self, old: str, new: str) -> None:
+        """Carry every piece of per-id state over to the new id: the cached overview, a remembered failure, a
+        queued or running overview pass (the pass finishing re-files its output, _drain), and the alias."""
+        with self._lock:
+            self._aliases.pop(new, None)
+            self._aliases[old] = new
+            f = self._failed.pop(old, None)
+            if f is not None:
+                self._failed[new] = f
+            self._queue = deque(new if q == old else q for q in self._queue)
+            if self._running == old:
+                self._running = new
+                return   # the pass is still writing old.json; _drain moves it
         try:
             os.replace(self._ov_path(old), self._ov_path(new))
         except OSError:
             pass
-        with self._lock:
-            f = self._failed.pop(old, None)
-            if f is not None:
-                self._failed[new] = f
 
     def _overview(self, handler: Any, rid: str) -> None:
-        info = recordings.find_recording(self.rosbags_root, rid)
+        info = self._resolve(rid)
         if info is None:
             self._json(handler, 404, {"error": "unknown recording"})
             return
+        rid = info["id"]
         if info["in_progress"]:
             self._refuse(handler, "recording_in_progress")
             return
@@ -339,7 +374,7 @@ class ReplayBackend:
                    extra={"X-Replay-Reason": reason, "Access-Control-Expose-Headers": EXPOSE})
 
     def _file(self, handler: Any, rid: str) -> None:
-        info = recordings.find_recording(self.rosbags_root, rid)
+        info = self._resolve(rid)
         if info is None:
             self._json(handler, 404, {"error": "unknown recording"})
             return

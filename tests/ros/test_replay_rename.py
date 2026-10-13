@@ -129,3 +129,78 @@ def test_valid_id_accepts_named_recordings(rid, ok):
 ])
 def test_slugify(text, slug):
     assert recordings.slugify(text) == slug
+
+
+# ---- renaming the recording that is OPEN in a browser (owner ask 2026-10-13) ----
+
+def test_old_id_keeps_serving_after_a_rename(srv):
+    """A browser streaming the bag still holds the old URL (and requests already in flight land after the rename):
+    the file and overview routes follow the rename, with the same ETag (a rename keeps size + mtime)."""
+    make_bag(srv.root, A)
+    code0, h0, _b = srv.req("/api/replay/recordings/{}/file".format(A), method="HEAD")
+    new = rename(srv, A, "x")[1]["id"]
+    code, h, body = srv.req("/api/replay/recordings/{}/file".format(A), headers={"Range": "bytes=0-7", "If-Match": h0["ETag"]})
+    assert code0 == 200 and code == 206 and body == b"\x89MCAP0\r\n" and h["ETag"] == h0["ETag"]
+    assert srv.req("/api/replay/recordings/{}/overview".format(A))[0] == 503     # resolves (no worker here), not 404
+    # a chain of renames, and back to the bare timestamp, all still resolve; the listing shows only the real one
+    assert rename(srv, A, "y")[1]["id"] == A + "_y"                              # renaming by a stale id works too
+    assert srv.req("/api/replay/recordings/{}/file".format(new), method="HEAD")[0] == 200
+    assert rename(srv, A + "_y", "")[1]["id"] == A
+    for rid in (A, new, A + "_y"):
+        assert srv.req("/api/replay/recordings/{}/file".format(rid), method="HEAD")[0] == 200, rid
+    assert [r["id"] for r in srv.jreq("/api/replay/recordings")[1]["recordings"]] == [A]
+
+
+def test_unknown_old_ids_still_404(srv):
+    make_bag(srv.root, A)
+    assert srv.req("/api/replay/recordings/{}_never/file".format(A), method="HEAD")[0] == 404
+
+
+def test_rename_during_an_overview_pass_carries_its_state(srv):
+    """Opening a bag queues its overview pass, so a rename while it is queued or running must not be refused:
+    a queued id is re-pointed, a running pass is re-pointed and its output re-filed under the new id."""
+    b = srv.backend
+    make_bag(srv.root, A)
+    other = "2026-10-02_10-00-00"
+    make_bag(srv.root, other)
+    with b._lock:
+        b._queue.extend([other, A])
+    code, j = rename(srv, A, "queued")
+    assert code == 200
+    with b._lock:
+        assert list(b._queue) == [other, A + "_queued"]
+        b._queue.clear()
+    # running: _drain's bookkeeping, driven by hand with a fake pass that writes under the starting id
+    q = A + "_queued"
+    os.makedirs(b.overview_dir, exist_ok=True)
+    started = []
+
+    def fake_pass(info):
+        started.append(info["id"])
+        rename(srv, info["id"], "running")            # the owner renames mid-pass
+        assert b.overview_state(A + "_running") == "computing"
+        with open(b._ov_path(info["id"]), "w") as f:
+            f.write("{}")
+        return None
+    b._run_pass = fake_pass
+    b._cached_overview = lambda info: None if not os.path.exists(b._ov_path(info["id"])) else b"{}"
+    with b._lock:
+        b._queue.append(q)
+    b._drain()
+    assert started == [q]
+    assert os.listdir(b.overview_dir) == [A + "_running.json"]   # re-filed under the new id
+    assert b._running is None and not b._failed
+
+
+def test_failed_pass_across_a_rename_is_not_remembered(srv):
+    b = srv.backend
+    make_bag(srv.root, A)
+
+    def failing_pass(info):
+        rename(srv, info["id"], "moved")
+        return "bag vanished under the pass"
+    b._run_pass = failing_pass
+    with b._lock:
+        b._queue.append(A)
+    b._drain()
+    assert not b._failed and b.overview_state(A + "_moved") == "none"   # the next poll simply requeues

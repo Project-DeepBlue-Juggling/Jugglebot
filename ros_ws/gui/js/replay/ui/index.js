@@ -25,7 +25,7 @@ export function initReplayUi(mode) {
     const picker = createPicker({ document: document_, fetch: (u, o) => fetch(u, o), mode });
     const lobby = createLobby({ document: document_, ros, mode, picker, toaster });
     const trackbar = createTrackbar({
-        document: document_, mode, dock: lobby.dock, toaster,
+        document: document_, mode, dock: lobby.dock, toaster, fetch: (u, o) => fetch(u, o),
         raf: { request: (cb) => requestAnimationFrame(cb), cancel: (id) => cancelAnimationFrame(id) },
     });
     const absent = createAbsent({ document: document_, mode });

@@ -116,7 +116,9 @@ export function buildRows(listing, filter) {
             size: fmtSize(r.size_bytes),
             topicCount: topics ? topics.size : null,
             chips, state,
-            haystack: (when + ' ' + r.id + ' ' + (topics ? Array.from(topics).join(' ') : '')).toLowerCase(),
+            // the name twice: as typed in a filter ("three ball") and as stored ("three-ball")
+            haystack: (when + ' ' + r.id + ' ' + nameFromId(r.id).replace(/[-_]/g, ' ') + ' '
+                + (topics ? Array.from(topics).join(' ') : '')).toLowerCase(),
         });
     }
     const f = (filter || '').trim().toLowerCase();
