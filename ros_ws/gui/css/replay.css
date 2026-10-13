@@ -117,6 +117,17 @@
 .rp-clock { font-family: var(--font-mono); font-size: var(--font-size-lg); color: var(--accent-cyan); }
 .rp-elapsed { font-family: var(--font-mono); color: var(--text-secondary); }
 .rp-speed { font-family: var(--font-mono); padding: 1px 8px; border: 1px solid var(--accent-cyan); color: var(--accent-cyan); border-radius: 9999px; }
+/* Speed presets: open above the pill on hover. The menu's padding-bottom bridges the gap so the pointer can
+   travel from the pill into the menu without dropping :hover. */
+.rp-speed-wrap { position: relative; display: inline-block; cursor: default; }
+.rp-speed-menu { display: none; position: absolute; bottom: 100%; left: 50%; transform: translateX(-50%);
+    padding-bottom: 4px; z-index: 20; flex-direction: column; gap: 2px; }
+.rp-speed-wrap:hover .rp-speed-menu { display: flex; }
+.rp-speed-opt { font-family: var(--font-mono); font-size: var(--font-size-sm); padding: 2px 10px; min-width: 52px;
+    background: var(--bg-card); color: var(--text-secondary); border: 1px solid var(--border-color);
+    border-radius: 9999px; cursor: pointer; white-space: nowrap; }
+.rp-speed-opt:hover { color: var(--accent-cyan); border-color: var(--accent-cyan); }
+.rp-speed-opt.on { color: var(--bg-primary); background: var(--accent-cyan); border-color: var(--accent-cyan); }
 .rp-buffering { color: var(--accent-amber); font-size: var(--font-size-xs); }
 .rp-zoomtag { margin-left: auto; color: var(--text-muted); font-size: var(--font-size-xs); font-family: var(--font-mono); }
 .rp-bar { position: relative; height: 14px; background: var(--bg-primary); border: 1px solid var(--border-color);

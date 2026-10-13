@@ -37,6 +37,9 @@ export function nextSpeed(cur, dir) {
     return -LADDER[up];
 }
 
+/** The speed pill's hover menu, top to bottom as it opens above the pill (all on the engine's ladder). */
+export const SPEED_MENU = [2, 1, 0.5, -0.5, -1, -2];
+
 /** A failing / partial /overview is retried no more often than every this many frames. */
 const TL_RETRY_FRAMES = 200;
 /** A bar drag whose pointer rests this many frames (~150 ms at 60 Hz) runs the full seek once. */
@@ -101,6 +104,12 @@ export function createTrackbar(deps) {
     function ladder(dir) {
         const e = engine(); if (!e) return;
         e.setSpeed(nextSpeed(e.state().speed, dir));
+        e.play();
+    }
+    /** A speed-menu pick: like FF / RW, it sets the speed and plays. */
+    function pickSpeed(x) {
+        const e = engine(); if (!e) return;
+        e.setSpeed(x);
         e.play();
     }
     function stepRec(n) { const e = engine(); if (e) e.step(n); }
@@ -266,7 +275,10 @@ export function createTrackbar(deps) {
             date: h(doc, 'span', { cls: 'rp-date' }),
             play: h(doc, 'span', { cls: 'rp-clock', id: 'rp-clock' }),
             el: h(doc, 'span', { cls: 'rp-elapsed', id: 'rp-elapsed' }),
-            speed: h(doc, 'span', { cls: 'rp-speed', id: 'rp-speed' }),
+            speed: h(doc, 'span', { cls: 'rp-speed', id: 'rp-speed', title: 'Playback speed (hover for presets)' }),
+            speedOpts: SPEED_MENU.map((x) => h(doc, 'button', {
+                cls: 'rp-speed-opt', id: 'rp-speed-' + String(x).replace('-', 'm'), text: fmtSpeed(x), on: { click: () => pickSpeed(x) },
+            })),
             buf: h(doc, 'span', { cls: 'rp-buffering', id: 'rp-buffering', text: 'buffering', hidden: true }),
             zoomtag: h(doc, 'span', { cls: 'rp-zoomtag', id: 'rp-zoomtag' }),
             pbtn: bPlay,
@@ -277,7 +289,11 @@ export function createTrackbar(deps) {
         els.bar = h(doc, 'div', { cls: 'rp-bar', id: 'rp-bar', on: { mousedown: onBarDown } }, [els.head]);
         els.ovStrip = h(doc, 'div', { cls: 'rp-ov-strip' });
         els.ov = h(doc, 'div', { cls: 'rp-ov', id: 'rp-ov', on: { mousedown: onOvDown, dblclick: resetZoom } }, [els.ovStrip, els.sel]);
-        const head = h(doc, 'div', { cls: 'rp-head' }, [els.date, els.play, els.el, els.speed, els.buf, els.zoomtag]);
+        // The pill + its preset menu; the menu opens above the pill on hover (CSS, .rp-speed-wrap:hover).
+        const speedWrap = h(doc, 'span', { cls: 'rp-speed-wrap' }, [
+            els.speed, h(doc, 'span', { cls: 'rp-speed-menu' }, els.speedOpts),
+        ]);
+        const head = h(doc, 'div', { cls: 'rp-head' }, [els.date, els.play, els.el, speedWrap, els.buf, els.zoomtag]);
         const ctl = h(doc, 'div', { cls: 'rp-ctl' }, [
             btn('rp-home', '|◀', 'Start (Home)', toStart),
             btn('rp-rw', '◀◀', 'Rewind: reverse speed ladder', () => ladder(-1)),
@@ -343,7 +359,10 @@ export function createTrackbar(deps) {
         const elapsed = fmtMMSS(s.playhead - r.t0) + ' / ' + (r.t1 > r.t0 ? fmtMMSS(r.t1 - r.t0) : '?');
         if (elapsed !== cache.el) { cache.el = elapsed; els.el.textContent = elapsed; }
         const sp = fmtSpeed(s.speed);
-        if (sp !== cache.speed) { cache.speed = sp; els.speed.textContent = sp; }
+        if (sp !== cache.speed) {
+            cache.speed = sp; els.speed.textContent = sp;
+            for (let i = 0; i < SPEED_MENU.length; i++) els.speedOpts[i].className = 'rp-speed-opt' + (SPEED_MENU[i] === s.speed ? ' on' : '');
+        }
         const m = s.mode;
         if (m !== cache.mode) {
             cache.mode = m;
