@@ -99,6 +99,14 @@ def test_speed_ladder_and_reverse(out):
     assert lad["rw_click"] == ["setSpeed:-1", "play"]
 
 
+
+def test_speed_pill_hover_menu(out):
+    m = out["speed_menu"]
+    assert m["labels"] == ["\u00d72", "\u00d71", "\u00d70.5", "-\u00d70.5", "-\u00d71", "-\u00d72"]
+    assert m["on"] == ["rp-speed-m0.5"]                         # the current speed is highlighted
+    assert m["in_wrap"] == 1                                    # the pill sits inside the hover wrapper
+    assert m["pick_m2"] == ["setSpeed:-2", "play"] and m["pick_05"] == ["setSpeed:0.5", "play"]
+
 def test_hotkeys_map_to_calls_and_space_prevents_default(out):
     k = out["keys"]
     assert k["space_play"] == {"calls": ["play"], "prevented": True}

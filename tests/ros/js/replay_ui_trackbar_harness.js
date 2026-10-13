@@ -117,6 +117,16 @@ out.ladder = {
     ff_click: (() => { state.speed = 1; return click('rp-ff'); })(), rw_click: (() => { state.speed = 1; return click('rp-rw'); })(),
 };
 
+// ---- speed pill hover menu ----
+state.speed = -0.5; tb.frame();
+out.speed_menu = {
+    labels: dock.find((e) => e.className.startsWith('rp-speed-opt')).map((e) => e.textContent),
+    on: dock.find((e) => e.className === 'rp-speed-opt on').map((e) => e.id),
+    in_wrap: dock.find((e) => e.className === 'rp-speed-wrap')[0].find((e) => e.id === 'rp-speed').length,
+    pick_m2: click('rp-speed-m2'), pick_05: click('rp-speed-0.5'),
+};
+state.speed = 1; tb.frame();
+
 // ---- hotkeys ----
 const key = (k, o) => { calls = []; const ev = keyEv(k, o); const handled = emitDoc('keydown', ev); return { calls: calls.map((c) => c.map((x) => (typeof x === 'number' && x > 1e8 ? +(x - T0).toFixed(3) : x)).join(':')), prevented: ev.prevented }; };
 state.playhead = T0 + 50; state.mode = 'paused';
