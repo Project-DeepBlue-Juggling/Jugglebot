@@ -4,9 +4,11 @@ Given a target landing ``y_d``, the current state ``x`` and a memory of past
 (``x``, ``u``, ``y``) rows, :func:`command` returns the next commanded
 ``u`` -- a local, kernel-weighted affine correction of the identity prior
 ``u = y_d`` (paper arXiv:2608.26800v2, eq. 17, S18/S19, 21). This module is
-the closed form only: it does not clip into an :class:`AdmissibleBox` (that
-is the executor's job, via ``admissible.clip``) and it does not touch a
-memory's storage (that is ``memory.Memory``).
+the closed form only: it does not apply an :class:`AdmissibleBox` (that is
+the executor's job -- since 2026-10-13 the box bounds the EXPECTED landing,
+:func:`predict` of the sent command, via :func:`local_model`; the apex is
+still clipped as a command) and it does not touch a memory's storage (that
+is ``memory.Memory``).
 
 Centring (paper eq. S18, verbatim, confirmed by the R3 hyperparameter probe
 -- the plan text alone does not state it): ``delta_x_i = x_i - x`` is about
@@ -76,7 +78,9 @@ Failure modes of this law, enumerated:
 * **Outliers inside the gate** (closer than 3 h_y = 150 mm lateral / 0.3 m
   apex) carry full fit weight: one row moves ``d`` by up to ~150/k mm for k
   throws. The apex band, the quarantine convention, the lateral authority
-  clip and the admissible box bound what reaches the platform.
+  clip and the admissible box (on the EXPECTED landing laterally, on the
+  command for the apex -- executor, 2026-10-13) bound what reaches the
+  platform.
 * **Gate asymmetry.** The gate is centred on ``y_d``, so a plant biased by
   ~3 bandwidths loses its tail rows on one side. That is the cold-start
   regime in which the old kernel's weights (< e^-9 each against gamma)
@@ -296,9 +300,10 @@ def _local_fit(x, Xs, Us, Ys, d2s, cfg: LearnerConfig):
 
 def command(x, y_d, X, U, Y, cfg: LearnerConfig = None) -> np.ndarray:
     """The next commanded ``u`` (3,) -- plan § 2.5 steps 1-4 as amended in the
-    module docstring (step 5, clipping into the
+    module docstring (step 5, applying the
     :class:`~jugglebot.motion.skills.admissible.AdmissibleBox`, is the
-    caller's job).
+    caller's job -- since 2026-10-13 it bounds the EXPECTED landing laterally,
+    via :func:`local_model`, and the apex command).
 
     ``x`` (4,) is the query state (site xy, seat-offset xy); ``y_d`` (3,) the
     target (landing xy, apex); ``X``/``U``/``Y`` are ``(n, 4)``/``(n, 3)``/
@@ -346,8 +351,10 @@ def predict(x, u, X, U, Y, cfg: LearnerConfig = None, y_d=None) -> np.ndarray:
     -- landing xy offset, apex; SI, the same shape as a ``Y`` row -- when
     commanded ``u`` from state ``x`` (2026-10-13, wave 2 unit A: the catch
     prior is this, not ``y_d``, because the command that reaches the platform
-    is CLIPPED by the lateral authority and the admissible box and the ball
-    lands where the plant takes THAT command, not at the target).
+    is bounded by the lateral authority and the admissible box -- which
+    since 2026-10-13 bounds THIS prediction laterally, so the two agree --
+    and the ball lands where the plant takes THAT command, not at the
+    target).
 
     Anchor choice. The fit is the SAME local affine fit ``(C, D, d)`` that
     :func:`command` builds (:func:`_neighbourhood` + :func:`_local_fit`),
@@ -396,3 +403,46 @@ def predict(x, u, X, U, Y, cfg: LearnerConfig = None, y_d=None) -> np.ndarray:
         raise ValueError('the learner prediction is not finite (%r) over %d '
                          'neighbourhood rows' % (y_hat.tolist(), idx.size))
     return y_hat
+
+
+def local_model(x, y_d, X, U, Y, cfg: LearnerConfig = None):
+    """The local affine model ``(u_bar, D, d)`` that :func:`command` and
+    :func:`predict` both use at query ``(x, y_d)`` -- or ``None`` on thin
+    support (fewer than ``cfg.k_min`` rows in the memory or inside the gate,
+    where both of those return the identity prior).
+
+    ``y_hat(u) = d + D (u - u_bar)`` is exactly :func:`predict` ``(x, u,
+    ..., y_d=y_d)``; ``D`` (3, 3) is ``Theta[:, 4:7]``, ``d`` (3,) is
+    ``Theta[:, 7]``. Exposed (2026-10-13, wave 3 unit H) so the executor can
+    bound the EXPECTED landing by the admissible box: it clips ``y_hat`` into
+    the box and pulls the command back through the EXACT inverse of the
+    lateral block of ``D`` -- not :func:`command`'s ``eta``-damped step, which
+    by construction never reaches the box edge. Same neighbourhood and fit
+    weights as :func:`command` (:func:`_neighbourhood`, :func:`_local_fit`),
+    so the A2 invariant holds unchanged.
+
+    Returns copies the caller may mutate. Raises ``ValueError`` on a
+    non-finite input or fit (as :func:`command` does). Determinism: a pure
+    function of its arguments.
+    """
+    if cfg is None:
+        cfg = LearnerConfig()
+    x = _vec(x, 4, 'x')
+    y_d = _vec(y_d, 3, 'y_d')
+    X = _leading_matrix(X, 4, 'X')
+    n = X.shape[0]
+    U = _matrix(U, n, 3, 'U')
+    Y = _matrix(Y, n, 3, 'Y')
+
+    if n < cfg.k_min:
+        return None
+    idx, d2 = _neighbourhood(x, y_d, X, Y, cfg)
+    if idx.size < cfg.k_min:
+        return None
+    u_bar, Theta = _local_fit(x, X[idx], U[idx], Y[idx], d2[idx], cfg)
+    D = Theta[:, 4:7].copy()
+    d = Theta[:, 7].copy()
+    if not (np.all(np.isfinite(D)) and np.all(np.isfinite(d))):
+        raise ValueError('the learner local model is not finite over %d '
+                         'neighbourhood rows' % (idx.size,))
+    return np.asarray(u_bar, dtype=float).copy(), D, d

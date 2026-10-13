@@ -1390,3 +1390,290 @@ def test_magazine_request_reaches_executor_with_kind_magazine(monkeypatch):
     assert isinstance(seen['terminal'], mt.MagazineTerminal)
     # the ROS->perf crossing is the same one THROW gets (offset is zero here)
     assert seen['terminal'].t_release_s == pytest.approx(at + 1.5)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# The segment SOLVER seam (wave 3, unit I2: the solve runs in a worker process)
+#
+# `TrajectoryNode(segment_solver=...)` injects a FAKE here -- no process is ever
+# spawned by these tests.  What they pin is the node's side of the contract:
+# refusal mapping, the deadline it ships, the reply-transit guard, lifecycle
+# hooks, and that the shipped default is the worker (never the test double).
+# ═════════════════════════════════════════════════════════════════════════════
+from jugglebot.motion.skills import solver_worker as sk_solver  # noqa: E402
+
+
+class _FakeSolver:
+    """Records every request; answers via ``reply_fn(req) -> SegmentSolveReply``
+    (default: the real in-process solve, so a chain can be built)."""
+
+    pid = None
+
+    def __init__(self, reply_fn=None):
+        self.requests = []
+        self.health_polls = 0
+        self.closed = 0
+        self._inner = sk_solver.InProcessSegmentSolver()
+        self._reply_fn = reply_fn
+
+    def solve(self, req):
+        self.requests.append(req)
+        if self._reply_fn is not None:
+            return self._reply_fn(req, self._inner)
+        return self._inner.solve(req)
+
+    def poll_health(self):
+        self.health_polls += 1
+
+    def close(self, timeout_s=1.0):
+        self.closed += 1
+
+
+def _solver_node(solver):
+    return _perf_node(segment_solver=solver)
+
+
+def test_the_shipped_default_segment_solver_is_the_worker_not_the_double(
+        monkeypatch):
+    """The autouse fixture swaps the factory for the in-process double in this
+    directory; production must still build the WORKER, or the emitter shares an
+    interpreter with the 60-206 ms solve again (sitting 7: 45-57 ms stalls)."""
+    monkeypatch.undo()          # drop `in_process_segment_solver`
+    assert tn._default_segment_solver_factory is sk_solver.WorkerSegmentSolver
+    assert tn.SOLVER_UNAVAILABLE == sk_solver.SOLVER_UNAVAILABLE
+
+
+def test_the_test_fixture_really_replaces_the_factory_in_this_directory():
+    node = _cycle_node()
+    assert isinstance(node._segment_solver, sk_solver.InProcessSegmentSolver)
+
+
+def test_solver_unavailable_surfaces_by_name_and_is_not_aim_dependent():
+    solver = _FakeSolver(lambda req, _inner: sk_solver._refusal(
+        req.seq, sk_solver.SOLVER_UNAVAILABLE, 'worker starting'))
+    node = _solver_node(solver)
+    with _frozen_perf() as at:
+        resp = node._svc_install_segment(_throw_req(at + 0.6),
+                                         InstallSegment.Response())
+    assert resp.accepted is False
+    assert resp.code == 'SOLVER_UNAVAILABLE'
+    assert 'worker starting' in resp.message
+    # The client executor must NOT re-dispatch a learned-prior fallback on it.
+    assert sk_exec._aim_dependent_refusal(resp.code) is False
+    assert node._cycle is None
+
+
+def _slow_return(clock_jump_s):
+    """A solver whose reply 'arrives' ``clock_jump_s`` after the executor's own
+    lateness check passed: the real solve runs at the frozen clock, then the
+    clock the node reads jumps (``_frozen_perf``'s exit restores the real one)."""
+    def _fn(req, inner):
+        rep = inner.solve(req)
+        now = time.perf_counter()
+        time.perf_counter = lambda: now + clock_jump_s
+        return rep
+    return _fn
+
+
+def test_a_reply_that_outran_the_wire_in_transit_is_refused_not_installed():
+    """A fresh origin: the executor accepted at the frozen clock, then the
+    reply took 10 s to arrive (SIGSTOP-class).  The node re-checks the same
+    arithmetic at its own clock: ORIGIN_TOO_LATE, nothing installed."""
+    node = _solver_node(_FakeSolver(_slow_return(10.0)))
+    before = node._active_plan
+    with _frozen_perf() as at:
+        resp = node._svc_install_segment(_throw_req(at + 0.6),
+                                         InstallSegment.Response())
+    assert resp.accepted is False
+    assert resp.code == sk_exec.ORIGIN_TOO_LATE
+    assert 'reply transit' in resp.message
+    assert node._active_plan is before and node._cycle is None
+
+
+def test_a_stalled_node_refuses_a_fresh_rest_whose_origin_was_rebased_upstream():
+    """A fresh REST's origin is set at the WORKER's clock; a node stalled after
+    the reply (SIGSTOP / GC) must not install it."""
+    def _fn(req, inner):
+        rep = inner.solve(req)
+        now = time.perf_counter()
+        rep = dataclasses.replace(
+            rep, t_inst_s=now + sk_solver.REPLY_TRANSIT_ALLOW_S)
+        time.perf_counter = lambda: now + 0.5
+        return rep
+    node = _solver_node(_FakeSolver(_fn))
+    before = node._active_plan
+    with _frozen_perf() as at:
+        resp = node._svc_install_segment(_rest_req(at + 0.5),
+                                         InstallSegment.Response())
+    assert resp.accepted is False
+    assert resp.code == sk_exec.ORIGIN_TOO_LATE
+    assert 'reply transit' in resp.message
+    assert node._active_plan is before and node._cycle is None
+
+
+def test_a_normally_timed_fresh_rest_still_installs_under_the_stall_fence():
+    def _fn(req, inner):
+        rep = inner.solve(req)
+        now = time.perf_counter()
+        rep = dataclasses.replace(
+            rep, t_inst_s=now + sk_solver.REPLY_TRANSIT_ALLOW_S)
+        time.perf_counter = lambda: now + 0.009
+        return rep
+    node = _solver_node(_FakeSolver(_fn))
+    with _frozen_perf() as at:
+        resp = node._svc_install_segment(_rest_req(at + 0.5),
+                                         InstallSegment.Response())
+    assert resp.accepted is True, resp.message
+
+
+def test_a_normal_transit_delay_inside_the_wire_margin_still_installs():
+    """The guard must not refuse the real thing: a few ms of transit + splice
+    work (measured 6-9 ms) is far inside the 3-knot wire read margin."""
+    node = _solver_node(_FakeSolver(_slow_return(0.010)))
+    with _frozen_perf() as at:
+        resp = node._svc_install_segment(_throw_req(at + 0.6),
+                                         InstallSegment.Response())
+    assert resp.accepted is True, resp.message
+
+
+def test_a_late_reply_on_a_splice_is_refused_splice_too_late_and_the_record_stays():
+    node = _solver_node(_FakeSolver())
+    with _frozen_perf() as at:
+        r1 = node._svc_install_segment(_throw_req(at + 0.6),
+                                       InstallSegment.Response())
+        assert r1.accepted is True, r1.message
+        plan1, meta1, _t0 = node._cycle
+        origin = at - 0.2
+        node._cycle = (plan1, meta1, origin)
+        node._plan_t0 = origin
+        _refresh(node)
+        node._segment_solver = _FakeSolver(_slow_return(0.4))
+        # The telemetry-continuity check (a harness clock jump reads as drift
+        # against the unmoved mock robot_state) runs BEFORE the transit guard;
+        # neutralise it so THIS test reaches the guard it pins.
+        node._install_continuity_ok = lambda *a, **k: True
+        r2 = node._svc_install_segment(_catch_req(at + 0.7),
+                                       InstallSegment.Response())
+    assert r2.accepted is False
+    assert r2.code == sk_exec.SPLICE_TOO_LATE, r2.message
+    assert 'reply transit' in r2.message
+    assert node._active_plan is plan1
+    assert node._cycle[0] is plan1 and node._cycle[1] is meta1
+    assert node._cycle[2] == origin
+
+
+def test_a_missed_wire_deadline_maps_to_the_timing_code_the_fresh_predicate_implies():
+    late = lambda req, _inner: sk_solver._refusal(  # noqa: E731
+        req.seq, sk_solver.SKIPPED_LATE, 'deadline passed')
+    node = _solver_node(_FakeSolver(late))
+    with _frozen_perf() as at:
+        fresh_resp = node._svc_install_segment(_throw_req(at + 0.6),
+                                               InstallSegment.Response())
+        assert fresh_resp.accepted is False
+        assert fresh_resp.code == sk_exec.ORIGIN_TOO_LATE
+        assert 'wire deadline' in fresh_resp.message
+        rest_resp = node._svc_install_segment(_rest_req(at + 0.5),
+                                              InstallSegment.Response())
+        assert rest_resp.code == 'SOLVER_UNAVAILABLE'
+
+        # A SPLICE: install a real THROW first, then miss the CATCH's deadline.
+        node2 = _solver_node(_FakeSolver())
+        r1 = node2._svc_install_segment(_throw_req(at + 0.6),
+                                        InstallSegment.Response())
+        assert r1.accepted is True, r1.message
+        plan1, meta1, _ = node2._cycle
+        node2._cycle = (plan1, meta1, at - 0.2)
+        node2._plan_t0 = at - 0.2
+        _refresh(node2)
+        node2._segment_solver = _FakeSolver(late)
+        splice = node2._svc_install_segment(_catch_req(at + 0.7),
+                                            InstallSegment.Response())
+    assert splice.code == sk_exec.SPLICE_TOO_LATE
+    assert 'wire deadline' in splice.message
+    assert node2._active_plan is plan1
+
+
+def test_the_request_carries_every_input_and_the_per_kind_deadline():
+    solver = _FakeSolver()
+    node = _solver_node(solver)
+    with _frozen_perf() as at:
+        node._svc_install_segment(_throw_req(at + 0.6), InstallSegment.Response())
+        node._svc_install_segment(_rest_req(at + 0.5), InstallSegment.Response())
+    throw_req, rest_req = solver.requests[0], solver.requests[1]
+    assert throw_req.seq < rest_req.seq
+    assert throw_req.deadline_s == pytest.approx(
+        at + sk_exec.LEAD_S + float(hw.JB_TRAJ_KNOT_DT_S))
+    assert rest_req.deadline_s == pytest.approx(
+        at + sk_solver.SOLVER_REST_DEADLINE_S)
+    assert throw_req.kind == sk_seg.THROW and rest_req.kind == sk_seg.REST
+    # Live-mutable inputs travel per call, by the node's CURRENT binding.
+    assert throw_req.limits is node._limits and throw_req.geom is node._geom
+    assert throw_req.cfg is node._segment_cfg
+    assert throw_req.lead_s == node._segment_lead_s
+    assert throw_req.reserve_fresh_lead is True
+
+
+def test_the_node_carries_the_replys_warm_start_and_release():
+    sentinel = object()
+    solver = _FakeSolver(lambda req, inner: dataclasses.replace(
+        inner.solve(req), warm_start=sentinel))
+    node = _solver_node(solver)
+    with _frozen_perf() as at:
+        resp = node._svc_install_segment(_throw_req(at + 0.6),
+                                         InstallSegment.Response())
+    assert resp.accepted is True, resp.message
+    assert node._segment_warm_start is sentinel
+
+
+def test_status_timer_polls_solver_health_and_shutdown_closes_it():
+    solver = _FakeSolver()
+    node = _solver_node(solver)
+    node._publish_status()
+    node._publish_status()
+    assert solver.health_polls == 2
+    node.on_shutdown()
+    assert solver.closed == 1
+
+
+def test_the_planner_warm_up_also_warms_the_worker_through_the_seam(monkeypatch):
+    """A solver with a pid is a SEPARATE process: warming only this interpreter
+    would claim a warm planner while the first live install pays the cold
+    penalty.  The REST goes through `solve`, is dropped, installs nothing."""
+    solver = _FakeSolver()
+    solver.pid = 4242
+    solver.wait_ready = lambda timeout_s=10.0: True
+    node = _solver_node(solver)
+    monkeypatch.setattr(tn.uc, 'plan_cycle', lambda *a, **kw: (None, None))
+    node._warm_planner_once()
+    assert [r.kind for r in solver.requests] == [sk_seg.REST]
+    assert node._cycle is None and node._active_plan is not None  # seed hold only
+
+
+def test_a_fresh_throw_installs_through_the_real_worker_process(monkeypatch):
+    """End to end on the SHIPPED default: the node builds a real
+    ``WorkerSegmentSolver`` (a spawned planner process), and one THROW goes
+    ship -> solve in the worker -> reply -> transit guard -> ``_install``.
+    Everything the in-process double cannot see: spawn/exec, env and sys.path
+    inheritance, pickling of the real request/reply, the cross-process clock."""
+    monkeypatch.undo()          # drop `in_process_segment_solver`: default factory
+    node = _perf_node()
+    try:
+        assert isinstance(node._segment_solver, sk_solver.WorkerSegmentSolver)
+        assert node._segment_solver.wait_ready(20.0), 'worker never became READY'
+        # A real wall-clock solve can be legitimately late on a loaded box (the
+        # gate runs 4 workers; a 175 ms fresh-origin budget is real): retry ONLY
+        # the timing refusal, a few times -- any other refusal fails at once.
+        for _attempt in range(4):
+            _refresh(node)
+            at = time.perf_counter()
+            resp = node._svc_install_segment(_throw_req(at + 0.8),
+                                             InstallSegment.Response())
+            if resp.code != sk_exec.ORIGIN_TOO_LATE:
+                break
+        assert resp.accepted is True, resp.message
+        assert resp.code == feas.OK
+        assert isinstance(node._active_plan, CyclePlan)
+        assert node._cycle is not None and node._cycle[0] is node._active_plan
+    finally:
+        node.on_shutdown()
+        assert node._segment_solver.pid is None or node._segment_solver.state != 'READY'

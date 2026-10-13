@@ -177,7 +177,7 @@ own diff against it before reporting. A finding against a value is a defect.
 |---|---|---|
 | Regularised memory-based learner | kNN in (state, target) space, weighted local linear fit regularised to a prior, one damped step; prior = identity because the command is the desired landing | **Direct.** Replaces the critical-point ILC, the trim/cal/record stack and their artifacts |
 | Orchestrator on a global wall clock | Skills dispatched at absolute times; overruns never delay the schedule; planning once at skill onset | **Direct.** Replaces the FSM choreography and the planner-owned ring beat |
-| Mutually reachable set | Offline per-joint polytope constraining transition states; no runtime gate | **In shape.** An offline-swept admissible box on the *command*, plus limits inside the QP; the per-knot gate leaves the beat path |
+| Mutually reachable set | Offline per-joint polytope constraining transition states; no runtime gate | **In shape.** An offline-swept admissible box on the learner's *expected landing* (on the command itself only below the learner's support; owner rule 2026-10-13, wave 3), plus limits inside the QP; the per-knot gate leaves the beat path |
 | Catch-at-rest skills joined by a jerk-limited generator | Each skill a Ruckig segment between (q, q̇, q̈) states | **Not for the platform.** The platform is band-limited and jerk-bound, so it moves continuously through catch and throw; the cup QP's whole-segment shape stays |
 
 ### 1.2 What this machine dictates
@@ -294,7 +294,7 @@ Pattern (columns: sites P1, P2; apex h; beat β)                                
    │ compile → Schedule: absolute wall-clock list of Skill(kind, ball, site, t_abs)
    ▼
 skill_node (the paper's Orchestrator + Skill Executor; one thread, no solve on the emitter)
-   THROW  x ← (site, seat offset of the caught ball); u ← Learner(x, y_d, Memory); u ← clip(AdmissibleBox)
+   THROW  x ← (site, seat offset of the caught ball); u ← Learner(x, y_d, Memory); u ← clip_expected_landing(AdmissibleBox) (apex: command clip)
           → install_segment(THROW, ball, site, u, t_abs)
    CATCH  terminal ← tracker landing (pos, vel, t_land) for the ball, re-sent on each update until t_land − 0.1 s
           → install_segment(CATCH, ball, site, landing, t_land)
@@ -384,7 +384,12 @@ Given target y_d, state x and memory D = {(xᵢ, uᵢ, yᵢ)}:
 3. Θ* = [C D d] = (Y W Zᵀ + γ Θ₀)(Z W Zᵀ + γ I)⁻¹ with Z = [δx; δu; 1],
    Θ₀ = [0, I, ū], γ = 0.001 (paper eq. S19).
 4. u* = ū + (DᵀD + η I)⁻¹ Dᵀ (y_d − d), η = 0.3 (paper eq. 21).
-5. u = clip(u*, AdmissibleBox); an empty box at this site refuses the skill.
+5. u = clip(u*, AdmissibleBox) on the EXPECTED landing (owner rule 2026-10-13, wave 3):
+   the lateral authority bounds u*; the box bounds ŷ = d + D (u − ū), and a u whose ŷ
+   lies outside the box is pulled back through Dxy⁻¹ until ŷ sits on the box edge (below
+   the learner's support ŷ = u, so this is the plain command clip); the apex is still
+   clipped as a command (the hand envelope is on the commanded release speed). An empty
+   box at this site refuses the skill. `executor._forward_clip_xy`.
 6. After the throw, the observed y is appended as one row. No observation → no
    row, and the attempt ends (paper § 2A).
 
@@ -1337,9 +1342,10 @@ the rung's tests passing or a handoff file in the scratchpad.
   CONSECUTIVE catches within one attempt, not 30 cumulative** (a cycle is 2 catches, § 2.4, so
   five consecutive cycles was met by sitting 7's 15-catch PB; `num_cycles` counts THROWS, so a
   gate attempt needs `num_cycles` >= 32). The hop entry (Ball 1 thrown from the feed site, BB
-  feeds Ball 2 into the running pattern, default since 2026-10-05) is taken to satisfy "BB
-  initiates" — assumed, not yet confirmed by the owner.
+  feeds Ball 2 into the running pattern, default since 2026-10-05) satisfies "BB
+  initiates" — owner ruling 2026-10-13 (evening): "Yes, it does."
 - **2026-10-13 wave 2:** see `logbook/2026-10-13-skill-stack-r5-wave-2-after-sitting-7.md` (learner-predicted catch prior, lane auto-recovery, BB throw cancel, box diagnosis; runsheet `tests/hardware/session_skills_r5_sitting8.md`).
+- **2026-10-13 wave 3:** see `logbook/2026-10-13-skill-stack-r5-wave-3-expected-landing-box-and-solver-worker.md` (box bounds the expected landing, segment solve in a worker process, lane-latch rehearsal probe, BB FW 9 flashed).
 - **Outcome (software, 2026-09-30).** Entry `logbook/2026-09-30-skill-stack-r5-columns-bb-start.md`
   (ten agent units, Sonnet by default, Opus for the two QP units). Landed on `skill-stack`: the
   fused held-catch → re-level → throw window for the reload (`CatchEvent.held_from_k`,

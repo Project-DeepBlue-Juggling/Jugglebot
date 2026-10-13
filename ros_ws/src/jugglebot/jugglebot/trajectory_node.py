@@ -71,6 +71,7 @@ from __future__ import annotations
 import dataclasses
 import math
 import os
+import sys
 import threading
 import time
 
@@ -132,6 +133,7 @@ from jugglebot.motion.trajectory.cycle_plan import CyclePlan
 from jugglebot.motion.skills import executor as sk_exec
 from jugglebot.motion.skills import magazine_throw as sk_magazine
 from jugglebot.motion.skills import segments as sk_seg
+from jugglebot.motion.skills import solver_worker as sk_solver
 from jugglebot.motion.skills.schedule import ball_label
 
 # The control mode in which explicit move services (go_to_pose) are accepted. In
@@ -243,6 +245,7 @@ _NO_LIVE_CATCH = 'NO_LIVE_CATCH'
 #   wasted that could have been saved — the solve was already committed — and the
 #   hold keeps the wire.
 _SUPERSEDED_BY_HOLD = 'SUPERSEDED_BY_HOLD'
+
 #   SEGMENT_OWNED — the active CyclePlan was installed by
 #   `trajectory/install_segment`, i.e. the SKILL STACK owns this interval, and a
 #   `catch/dynamic_target` re-aim of it is refused before any solve.
@@ -268,6 +271,21 @@ _SUPERSEDED_BY_HOLD = 'SUPERSEDED_BY_HOLD'
 #   legacy path keeps its re-aim exactly as before: the code fires only when the
 #   owner is `_OWNER_SEGMENT`.
 _SEGMENT_OWNED = 'SEGMENT_OWNED'
+
+#: Refusal code when the segment-solver worker cannot answer (starting, dead,
+#: hung, wrong tree, down after its one restart).  Defined in
+#: ``motion/skills/solver_worker.py`` (pure Python); re-exported here so the
+#: node's callers name it from the module that returns it.  NOT aim-dependent:
+#: ``executor._aim_dependent_refusal`` is False for it.
+SOLVER_UNAVAILABLE = sk_solver.SOLVER_UNAVAILABLE
+
+#: How ``TrajectoryNode`` builds its segment solver when none is injected.
+#: PRODUCTION IS THE WORKER PROCESS: ``install_segment``'s 60-206 ms solve must
+#: never share an interpreter with the 40 Hz emitter (sitting 7: it starved the
+#: emitter 45-57 ms and latched a lane).  ``tests/ros/conftest.py`` monkeypatches
+#: THIS NAME to the in-process test double; a test pins that the shipped value
+#: is ``WorkerSegmentSolver`` so the double can never become the default.
+_default_segment_solver_factory = sk_solver.WorkerSegmentSolver
 
 #: ``_cycle_owner`` values — which install path owns the ACTIVE ``CyclePlan``.
 _OWNER_CYCLE = 'cycle'        # trajectory/plan_cycle (superseded FSM path)
@@ -488,7 +506,8 @@ class TrajectoryNode(Node):
     """
 
     def __init__(self, *, geom: StewartGeometry | None = None,
-                 command_pub_factory=None, start_emitter: bool = True):
+                 command_pub_factory=None, start_emitter: bool = True,
+                 segment_solver=None):
         super().__init__('trajectory_node')
         # Record everything, show little (operator console phase 2; see
         # skill_node's __init__): per-install detail -- accepted/refused
@@ -1092,6 +1111,20 @@ class TrajectoryNode(Node):
         self._warmup_timer = self.create_timer(
             _PLANNER_WARMUP_DELAY_S, self._warm_planner_once)
 
+        # ── Segment solver (install_segment's planner process) ──
+        # Built BEFORE the emitter starts: the worker's spawn is a 0.6 ms
+        # posix_spawn (no fork of this multithreaded process) and it becomes READY
+        # ~0.33 s later; installs before that are refused SOLVER_UNAVAILABLE
+        # ("worker starting"), never solved in-process.  `segment_solver` is the
+        # test seam (any object with solve/poll_health/close).
+        self._solve_seq = 0
+        self._segment_solver = (
+            segment_solver if segment_solver is not None
+            else _default_segment_solver_factory(
+                python=sys.executable, sys_path=list(sys.path), env=None,
+                log=self._solver_log,
+                expected_executor_file=sk_exec.__file__))
+
         if start_emitter:
             self._start_emitter()
 
@@ -1115,6 +1148,19 @@ class TrajectoryNode(Node):
         self.get_logger().debug(
             f"trajectory_node up: stream modes={sorted(self._stream_modes)}, "
             f"go_home={self._go_home_duration_s}s")
+
+    def _solver_log(self, level: str, msg: str) -> None:
+        """The segment solver's log sink.  ONE severity per call site (Foxy's
+        rclpy raises ValueError if a call site's severity changes), hence three
+        branches rather than ``getattr(logger, level)``.  READY (pid, executor
+        file, BLAS threads) arrives here at INFO from the solver; a BLAS count
+        other than 1 arrives at WARNING."""
+        if level == 'error':
+            self.get_logger().error(msg)
+        elif level == 'warning':
+            self.get_logger().warning(msg)
+        else:
+            self.get_logger().info(msg)
 
     # ═══════════════════════════════════════════════════════════
     # Planner warm-up (one-shot, at node start)
@@ -1212,7 +1258,54 @@ class TrajectoryNode(Node):
         self.get_logger().info(
             'planner warm-up done (%.0f ms) — first plan solves at full speed'
             % (elapsed * 1e3,))
+        self._warm_segment_solver()
         return elapsed
+
+    def _warm_segment_solver(self) -> None:
+        """Warm the segment-solver WORKER through the same seam live installs use.
+
+        The ``plan_cycle`` pass above warms THIS interpreter, which no longer runs
+        ``install_segment``; the worker is a separate process with its own ~5 ms
+        cold penalty.  One throwaway REST from a synthetic rest state is solved
+        THERE, its reply is dropped, and nothing is installed (``_install`` is
+        never reached, ``self._cycle`` is untouched, no wire-visible effect).
+        Skipped for a solver with no pid (the in-process test double shares this
+        interpreter, already warm).  A failure is swallowed with a WARN: it only
+        costs the first live install its margin.
+        """
+        solver = self._segment_solver
+        if getattr(solver, 'pid', None) is None:
+            return
+        try:
+            wait_ready = getattr(solver, 'wait_ready', None)
+            if wait_ready is not None:
+                wait_ready(5.0)
+            cfg = uc.cr.RealizeConfig()
+            hand_rev = uc.hand_rev_for_cup_z(uc.SETTLE_CUP_Z_MM, cfg)
+            pose = np.array([0.0, 0.0, float(cfg.active_z_mm), 0.0, 0.0, 0.0])
+            cup = uc.cup_state_from_platform(pose, hand_rev, cfg)
+            now = time.perf_counter()
+            self._solve_seq += 1
+            reply = solver.solve(sk_solver.SegmentSolveRequest(
+                seq=self._solve_seq, record=None,
+                seed_rest=uc.CycleState.at_rest(pose, hand_rev, cfg),
+                kind=sk_seg.REST,
+                terminal=sk_seg.RestTerminal(
+                    rest_site_mm=np.array([cup[0] + _PLANNER_WARMUP_DX_MM,
+                                           cup[1], cup[2]]),
+                    t_rest_s=now + _PLANNER_WARMUP_PERIOD_S),
+                t_now_s=now, lead_s=self._segment_lead_s,
+                cfg=self._segment_cfg, limits=self._limits, geom=self._geom,
+                warm_start=None, reserve_fresh_lead=False,
+                deadline_s=now + 10.0))
+            unavailable = (reply.result.code == SOLVER_UNAVAILABLE)
+            detail = reply.result.message
+        except Exception as exc:  # noqa: BLE001 — a warm-up must never stop the node
+            unavailable, detail = True, str(exc)
+        if unavailable:
+            self.get_logger().warning(
+                'segment-solver warm-up did not run (%s) — the first live '
+                'install pays the worker cold-solve cost (~5 ms)' % (detail,))
 
     # ═══════════════════════════════════════════════════════════
     # Emitter thread (dedicated; absolute-deadline 40 Hz)
@@ -4480,16 +4573,44 @@ class TrajectoryNode(Node):
         # knot 0's boundary conditions (the held rest, zero rate, zero cubic
         # accel), so the wire keeps carrying the rest it already carried and
         # the plan starts on the grid at `t0` (see `install_segment`).
-        new_record, result, seg = sk_exec.install_segment(
-            record, seed_rest, kind, terminal, t_now_s,
+        #
+        # THE SOLVE RUNS IN THE WORKER PROCESS (`self._segment_solver`), every
+        # input shipped by value (live-mutable `cfg`/`limits` reach the next
+        # install by construction).  `deadline_s` is the instant after which a
+        # result is useless: THROW/CATCH `t_wall + lead_s + dt` (past it the
+        # executor's own arithmetic refuses with certainty, so waiting can only
+        # buy a refusal), REST `t_wall + SOLVER_REST_DEADLINE_S`.  The executor's
+        # post-solve lateness read happens IN the worker, +REPLY_TRANSIT_ALLOW_S;
+        # `reply.t_inst_s` carries that instant back for the transit check below.
+        if kind == sk_seg.REST:
+            deadline_s = t_wall + sk_solver.SOLVER_REST_DEADLINE_S
+        else:
+            deadline_s = (t_wall + self._segment_lead_s
+                          + float(hw.JB_TRAJ_KNOT_DT_S))
+        self._solve_seq += 1
+        reply = self._segment_solver.solve(sk_solver.SegmentSolveRequest(
+            seq=self._solve_seq, record=record, seed_rest=seed_rest,
+            kind=kind, terminal=terminal, t_now_s=t_now_s,
             lead_s=self._segment_lead_s, cfg=self._segment_cfg,
             limits=self._limits, geom=self._geom,
             warm_start=self._segment_warm_start,
-            t_install_s=time.perf_counter, reserve_fresh_lead=True)
+            reserve_fresh_lead=True, deadline_s=deadline_s))
+        new_record, result = reply.new_record, reply.result
 
         if not result.accepted:
-            return self._reject_segment(response, result.code, result.message,
-                                        t_wall)
+            code, message = result.code, result.message
+            if code == sk_solver.SKIPPED_LATE:
+                # The wire deadline passed with no answer: the same physical
+                # fact as a late solve, under the timing code the node's own
+                # `fresh` predicate implies (a REST has no event to be late for
+                # -> the solver is simply not answering).
+                if kind == sk_seg.REST:
+                    code = SOLVER_UNAVAILABLE
+                else:
+                    code = (sk_exec.ORIGIN_TOO_LATE if fresh
+                            else sk_exec.SPLICE_TOO_LATE)
+                message = 'solver did not answer by the wire deadline'
+            return self._reject_segment(response, code, message, t_wall)
         if self._hold_superseded(epoch0):
             return self._reject_segment(
                 response, _SUPERSEDED_BY_HOLD,
@@ -4502,6 +4623,32 @@ class TrajectoryNode(Node):
                 response, feas.STALE_STATE,
                 'commanded state moved during planning (%s) — retry'
                 % (self._continuity_detail,), t_wall)
+        # REPLY-TRANSIT GUARD (the one guard the process split adds).
+        # In-process, the executor's post-solve wire check and `_install` ran
+        # microseconds apart.  Now `splice_at`, the reply's pickle, the pipe and
+        # the unpickle sit between them -- MEASURED 2026-10-13 at 6-9 ms after
+        # the worker's lateness read (real CATCH, 34 ms solve), more than the
+        # 3 ms `reply.t_inst_s` allowance, which would refuse EVERY real
+        # splice.  So the node re-evaluates the executor's own arithmetic
+        # (`install_segment`: `k_s > floor((t - t0)/dt) + WIRE_READ_KNOTS`;
+        # a reserved fresh origin is the same rule with k_s = 0) at ITS clock
+        # immediately before `_install`: refuse iff the wire could already be
+        # past the splice knot.  One control cycle (dt 25 ms): the emitter keeps
+        # sampling the OLD record through the solve; a plan is spliced only while
+        # its first new knot is still > WIRE_READ_KNOTS (75 ms) ahead of the wire
+        # at the install instant, so the wire never sees a late splice.  A
+        # SIGSTOPped node (lane-latch rehearsal) wakes to a reply seconds late
+        # and refuses here -- fail closed.  A fresh REST gets its own stall fence
+        # (see `_reply_outran_wire`): its origin is rebased at the WORKER's clock.
+        if self._reply_outran_wire(new_record, result, kind, fresh,
+                                   reply.t_inst_s):
+            return self._reject_segment(
+                response,
+                sk_exec.ORIGIN_TOO_LATE if fresh else sk_exec.SPLICE_TOO_LATE,
+                'reply transit outran the wire deadline — the first new knot '
+                'is no longer %d knots ahead of the wire; nothing installed'
+                % (sk_exec.WIRE_READ_KNOTS,),
+                t_wall)
         if not self._install(new_record.plan, t0=new_record.t0_s,
                              require_epoch=epoch0,
                              cycle=(new_record.plan, new_record.meta,
@@ -4513,24 +4660,55 @@ class TrajectoryNode(Node):
                 'a trajectory/hold landed while this install_segment was '
                 'solving — the segment it plans was cancelled; the hold keeps '
                 'the wire', t_wall)
-        self._segment_warm_start = seg.warm_start
+        self._segment_warm_start = reply.warm_start
         # The carried release's wall-clock instant, off the SAME segment the
         # accepted install just planned (`seg.release_t_s` — None for every
         # shape but a CATCH-with-throw): the identical `splice_k*dt + segment
         # time` sum `result.event_t_s` uses above, applied to the second event
         # a catch-with-throw segment carries.
         t_release_mono = 0.0
-        if seg.release_t_s is not None:
+        if reply.release_t_s is not None:
             dt = float(new_record.plan.dt)
             t_release_mono = (float(new_record.t0_s)
                               + float(result.splice_k) * dt
-                              + float(seg.release_t_s))
+                              + float(reply.release_t_s))
         return self._accept_segment(response, kind, int(request.ball_id),
                                     new_record, result, t_wall,
-                                    t_release_mono=t_release_mono)
+                                    t_release_mono=t_release_mono,
+                                    solve_s=float(reply.solve_s))
+
+    @staticmethod
+    def _reply_outran_wire(new_record, result, kind, fresh,
+                           t_inst_s=math.inf) -> bool:
+        """The executor's lateness arithmetic, at the NODE's clock (see the
+        reply-transit guard in ``_svc_install_segment``).
+
+        A fresh REST has no k_s rule (the full ``k_s = 0`` test at the node's
+        later clock would refuse every fresh REST: its origin is the dispatch
+        instant, or the worker's ``t_inst + WIRE_READ_KNOTS*dt`` when the solve
+        outran it, so ``t0`` is at or behind ``now`` by construction).  Its fence
+        is a STALL test instead: refuse iff the node reads the reply more than
+        half the reserved wire-read margin (``0.5*WIRE_READ_KNOTS*dt`` = 37.5 ms)
+        after the worker's own clock read (``t_inst_s - REPLY_TRANSIT_ALLOW_S``).
+        Normal transit + splice work measured 6-9 ms; a SIGSTOP / long GC /
+        descheduling is seconds-to-tens-of-ms and would otherwise install a REST
+        whose rebased origin is already in the past.  ``inf`` (in-process
+        double) never trips it.
+        """
+        dt = float(new_record.plan.dt)
+        if fresh and kind == sk_seg.REST:
+            if not math.isfinite(t_inst_s):
+                return False
+            stall_s = (time.perf_counter()
+                       - (t_inst_s - sk_solver.REPLY_TRANSIT_ALLOW_S))
+            return stall_s > 0.5 * sk_exec.WIRE_READ_KNOTS * dt
+        k_s = 0 if fresh else int(result.splice_k)
+        k_wire = (int(math.floor((time.perf_counter() - new_record.t0_s) / dt))
+                  + sk_exec.WIRE_READ_KNOTS)
+        return k_s <= k_wire
 
     def _accept_segment(self, response, kind, ball_id, record, result, t_wall,
-                        t_release_mono: float = 0.0):
+                        t_release_mono: float = 0.0, solve_s: float = 0.0):
         """Fill ``response`` from an INSTALLED segment. Mirrors ``_accept_cycle``."""
         response.accepted = True
         response.code = feas.OK
@@ -4548,9 +4726,9 @@ class TrajectoryNode(Node):
         self._cycle_plan_wall_ms = response.plan_wall_ms
         self.get_logger().debug(
             'install_segment %s %s: splice_k=%d, plan %.1f ms, event tau '
-            '%.3f s'
+            '%.3f s, solve %.1f ms'
             % (kind, ball_label(ball_id), response.splice_k, response.plan_wall_ms,
-               float(result.event_t_s)))
+               float(result.event_t_s), solve_s * 1e3))
         return response
 
     # ═══════════════════════════════════════════════════════════
@@ -4558,6 +4736,9 @@ class TrajectoryNode(Node):
     # ═══════════════════════════════════════════════════════════
 
     def _publish_status(self):
+        # Non-blocking worker health (reap a dead / kill a hung worker, take
+        # READY); never raises into the status timer.
+        self._segment_solver.poll_health()
         with self._plan_lock:
             plan = self._active_plan
             t0 = self._plan_t0
@@ -4723,6 +4904,9 @@ class TrajectoryNode(Node):
 
     def on_shutdown(self):
         self.get_logger().info("Shutting down trajectory_node...")
+        # Worker first: STOP -> SIGTERM -> SIGKILL, bounded (~1 s), so no
+        # orphaned planner outlives the node.
+        self._segment_solver.close()
         self._emit_stop.set()
         if self._emit_thread is not None and self._emit_thread.is_alive():
             self._emit_thread.join(timeout=1.0)

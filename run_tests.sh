@@ -27,7 +27,14 @@
 # is unmarked and stays per-commit. Those three were the entire default serial
 # phase until 2026-09-04, when tests/motion/test_unified_cycle_budget.py joined it
 # (`serial`, NOT `nightly`: the unified planner's <= 50 ms per-cycle budget has to
-# fail the commit that breaks it). The guard below still handles an empty phase 2.
+# fail the commit that breaks it); tests/motion/test_validate_cycle_budget.py
+# followed on 2026-09-12 (the vectorised gate's < 10 ms runtime) and
+# tests/motion/test_solver_worker_lateness.py on 2026-10-13 (the segment solve
+# runs in a worker process so the 40 Hz emitter is never starved: the test
+# asserts emitter-grid lateness p99 < 5 ms through the worker AND that the same
+# solve in-process starves the grid — a wall-clock contract that has to fail the
+# commit that puts the solve back on the emitter's interpreter). The guard below
+# still handles an empty phase 2.
 #
 # `--full` is MANDATORY before any hardware sitting and at plan-phase closure,
 # and pre-commit for any change under controller/ or sim/ (CLAUDE.md).

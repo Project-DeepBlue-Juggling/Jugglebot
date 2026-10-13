@@ -308,3 +308,13 @@ class Memory:
         if cfg is None:
             cfg = lr.LearnerConfig()
         return lr.predict(x, u, self._X, self._U, self._Y, cfg, y_d=y_d)
+
+    def local_model(self, x, y_d, cfg: lr.LearnerConfig = None):
+        """``learner.local_model`` over this memory's current arrays: the
+        local affine fit ``(u_bar, D, d)`` behind ``command``/``predict`` at
+        query state ``x`` and target ``y_d``, or ``None`` below the learner's
+        support (2026-10-13, wave 3 unit H: the executor runs the admissible
+        box on the fit's EXPECTED landing, not on the command)."""
+        if cfg is None:
+            cfg = lr.LearnerConfig()
+        return lr.local_model(x, y_d, self._X, self._U, self._Y, cfg)

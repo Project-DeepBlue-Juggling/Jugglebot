@@ -3526,7 +3526,9 @@ class SkillNode(Node):
         learner = SimpleNamespace(
             command=lambda x, y_d: memory.command(x, y_d, learner_cfg),
             predict=lambda x, u, y_d: memory.predict(
-                x, u, learner_cfg, y_d=y_d))
+                x, u, learner_cfg, y_d=y_d),
+            local_model=lambda x, y_d: memory.local_model(
+                x, y_d, learner_cfg))
         self._sched_refused_at_start = self._sched_refused
         self._force_hold = False
         self._hold_forced_code = ''
@@ -3934,7 +3936,9 @@ class SkillNode(Node):
         learner = SimpleNamespace(
             command=lambda x, y_d: memory.command(x, y_d, learner_cfg),
             predict=lambda x, u, y_d: memory.predict(
-                x, u, learner_cfg, y_d=y_d))
+                x, u, learner_cfg, y_d=y_d),
+            local_model=lambda x, y_d: memory.local_model(
+                x, y_d, learner_cfg))
 
         # A new schedule reuses small ball ids: drop any flight latch an
         # earlier (possibly early-ended) attempt left for them, so a catch
@@ -4502,7 +4506,9 @@ class SkillNode(Node):
             learner = SimpleNamespace(
                 command=lambda x, y_d: ctx.memory.command(x, y_d, learner_cfg),
                 predict=lambda x, u, y_d: ctx.memory.predict(
-                    x, u, learner_cfg, y_d=y_d))
+                    x, u, learner_cfg, y_d=y_d),
+                local_model=lambda x, y_d: ctx.memory.local_model(
+                    x, y_d, learner_cfg))
             executor = SkillExecutor(
                 schedule, self._installer, tracker=self._tracker,
                 catch_aim_source=self._catch_aim_source(),
@@ -4643,7 +4649,9 @@ class SkillNode(Node):
         learner = SimpleNamespace(
             command=lambda x, y_d: ctx.memory.command(x, y_d, learner_cfg),
             predict=lambda x, u, y_d: ctx.memory.predict(
-                x, u, learner_cfg, y_d=y_d))
+                x, u, learner_cfg, y_d=y_d),
+            local_model=lambda x, y_d: ctx.memory.local_model(
+                x, y_d, learner_cfg))
         executor = SkillExecutor(
             schedule, self._installer, tracker=self._tracker,
             catch_aim_source=self._catch_aim_source(),
@@ -4806,7 +4814,9 @@ class SkillNode(Node):
         learner = SimpleNamespace(
             command=lambda x, y_d: ctx.memory.command(x, y_d, learner_cfg),
             predict=lambda x, u, y_d: ctx.memory.predict(
-                x, u, learner_cfg, y_d=y_d))
+                x, u, learner_cfg, y_d=y_d),
+            local_model=lambda x, y_d: ctx.memory.local_model(
+                x, y_d, learner_cfg))
         executor = SkillExecutor(
             schedule, self._installer, tracker=self._tracker,
             catch_aim_source=self._catch_aim_source(),

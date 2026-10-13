@@ -6919,3 +6919,206 @@ def test_a_non_aim_refusal_of_the_learned_prior_does_not_fall_back(sites):
     assert ex._aim_dependent_refusal("REJECTED_CYCLE_INFEASIBLE")
     assert not ex._aim_dependent_refusal("WINDOW_TOO_SHORT")
     assert not ex._aim_dependent_refusal("")
+
+
+# ---------------------------------------------------------------------------
+# Wave 3 unit H (owner rule, 2026-10-13): the admissible box bounds the
+# learner's EXPECTED landing laterally, not its lateral command. A learner
+# here is an exact AFFINE plant model ``y = d + D (u - u_bar)`` exposing the
+# same three entries skill_node binds (command / predict / local_model), so
+# every number below is closed-form. Throw: P1, y_d = (0, 0, APEX_M); box
+# x in [-4, +2] mm (the columns P1 box's x range), y wide, apex wide.
+# ---------------------------------------------------------------------------
+
+_ETA = lr.LearnerConfig().eta
+_COLUMNS_X_BOX = ((-0.004, 0.002), (-0.05, 0.05))
+
+
+class _AffineLearner:
+    def __init__(self, D, d, u_bar=(0.0, 0.0, APEX_M), local_model=True):
+        self.u_bar = np.asarray(u_bar, dtype=float)
+        self.D = np.asarray(D, dtype=float)
+        self.d = np.asarray(d, dtype=float)
+        if not local_model:
+            self.local_model = None
+
+    def command(self, x, y_d):
+        D = self.D
+        return self.u_bar + np.linalg.solve(
+            D.T @ D + _ETA * np.eye(3), D.T @ (np.asarray(y_d) - self.d))
+
+    def predict(self, x, u, y_d=None):
+        return self.d + self.D @ (np.asarray(u, dtype=float) - self.u_bar)
+
+    def local_model(self, x, y_d):
+        return self.u_bar.copy(), self.D.copy(), self.d.copy()
+
+
+def _lean_d(dx_m, dy_m=0.0, dapex=0.0):
+    return np.array([dx_m, dy_m, APEX_M + dapex])
+
+
+def _forward_clip_run(sites, learner, authority_m=0.020, xy=_COLUMNS_X_BOX,
+                      apex=(0.3, 1.5), y_d_xy=None):
+    sch = _schedule(sites)
+    if y_d_xy is not None:
+        sch = dataclasses.replace(sch, skills=(dataclasses.replace(
+            sch.skills[0], y_d=(np.asarray(y_d_xy, dtype=float), APEX_M)),)
+            + tuple(sch.skills[1:]))
+    inst = _FakeInstaller()
+    boxes = [_box(xy=xy, apex=apex, site_pair=(sites[0].name, sites[0].name))]
+    x = ex.SkillExecutor(sch, inst, learner=learner, boxes=boxes,
+                         lateral_authority_m=authority_m)
+    lines = list(x.tick(sch.skills[0].dispatch_s()))
+    lines += x.tick(sch.skills[0].dispatch_s() + 0.001)   # a re-tick: no repeats
+    assert inst.calls and inst.calls[0][0] == sg.THROW
+    _x, u_dy, u_apex = x._u_cache[0]
+    return np.asarray(u_dy), float(u_apex), lines, inst.calls[0][1], x
+
+
+def _today_command_clip(learner, authority_m, xy):
+    """The pre-2026-10-13 rule, for the explicit before/after contrast."""
+    u = learner.command(None, np.array([0.0, 0.0, APEX_M]))
+    u_xy = np.clip(u[:2], -authority_m, authority_m)
+    return np.array([np.clip(u_xy[0], *xy[0]), np.clip(u_xy[1], *xy[1])])
+
+
+def test_box_forward_clip_identity_learner_is_todays_command_clip(sites):
+    """Thin support (``local_model`` -> None, command = y_d): an in-box y_d
+    passes, no BOX lines."""
+    learner = SimpleNamespace(
+        command=lambda x, y_d: np.array(y_d, dtype=float),
+        predict=lambda x, u, y_d: np.array(u, dtype=float),
+        local_model=lambda x, y_d: None)
+    u_dy, u_apex, lines, _t, _x = _forward_clip_run(sites, learner)
+    assert np.allclose(u_dy, [0.0, 0.0]) and u_apex == pytest.approx(APEX_M)
+    assert not any('BOX-' in ln for ln in lines)
+
+
+def test_box_forward_clip_y_d_outside_the_box_is_clipped_as_today(sites):
+    """The feed-aim shape: y_d = +20 mm, identity (thin) learner -> +2 mm,
+    exactly the command clip."""
+    learner = SimpleNamespace(
+        command=lambda x, y_d: np.array(y_d, dtype=float),
+        predict=lambda x, u, y_d: np.array(u, dtype=float),
+        local_model=lambda x, y_d: None)
+    u_dy, _a, lines, _t, _x = _forward_clip_run(sites, learner,
+                                                y_d_xy=(0.020, 0.0))
+    assert u_dy == pytest.approx([0.002, 0.0])
+    assert not any('BOX-' in ln for ln in lines)
+
+
+def test_box_forward_clip_sitting_7_lean_keeps_the_authority_command(sites):
+    """d = +27 mm lean, authority 20: the learner wants -22.5, the authority
+    gives -20, the expected landing +7 mm is outside [-4, +2], the authority
+    binds -> the command STAYS -20 (today's rule clipped it to -4), one
+    UNMET line, no refusal."""
+    learner = _AffineLearner(np.eye(3), _lean_d(0.027))
+    assert learner.command(None, [0, 0, APEX_M])[0] == pytest.approx(
+        -0.027 / (1.0 + _ETA))
+    u_dy, _a, lines, terminal, x = _forward_clip_run(sites, learner)
+    assert u_dy == pytest.approx([-0.020, 0.0])
+    assert _today_command_clip(learner, 0.020, _COLUMNS_X_BOX) == \
+        pytest.approx([-0.004, 0.0])
+    assert not x.attempt_ended
+    want = sites[0].catch_site_mm() + np.array([-20.0, 0.0, 0.0])
+    assert np.allclose(terminal.target_mm, want)
+    unmet = [ln for ln in lines if 'BOX-EXPECTED-LANDING-UNMET' in ln]
+    assert len(unmet) == 1 and 'y_hat=(+7.0, +0.0) mm' in unmet[0]
+
+
+def test_box_forward_clip_inside_prediction_passes_the_command(sites):
+    """d = +10 mm: u* = -8.3 mm, y_hat = +1.7 mm inside -> unchanged (today:
+    -4 mm). The apex is still COMMAND-clipped: a fit landing 60 mm low asks
+    for +50 mm of apex, the box's apex ceiling APEX_M holds it."""
+    learner = _AffineLearner(np.eye(3), _lean_d(0.010, dapex=-0.060))
+    u_star = learner.command(None, [0, 0, APEX_M])
+    u_dy, u_apex, lines, terminal, _x = _forward_clip_run(
+        sites, learner, apex=(0.3, APEX_M))
+    assert u_dy == pytest.approx(u_star[:2])
+    assert u_dy[0] == pytest.approx(-0.010 / 1.2)
+    assert _today_command_clip(learner, 0.020, _COLUMNS_X_BOX)[0] == \
+        pytest.approx(-0.004)
+    assert u_star[2] == pytest.approx(APEX_M + 0.050)
+    assert u_apex == pytest.approx(APEX_M)
+    assert terminal.flight_s == pytest.approx(sc.flight_s(APEX_M))
+    inside = [ln for ln in lines if 'BOX-EXPECTED-LANDING' in ln]
+    assert len(inside) == 1 and 'inside' in inside[0]
+
+
+def test_box_forward_clip_pulls_the_expected_landing_onto_the_edge(sites):
+    """Authority room (40 mm), a COUPLED lateral gain and an apex coupling:
+    the pulled-back command puts predict(x, u') exactly on the x edge."""
+    D = np.array([[1.2, 0.1, 0.02], [0.05, 0.9, 0.0], [0.0, 0.0, 1.0]])
+    learner = _AffineLearner(D, _lean_d(0.027, 0.003))
+    u_dy, u_apex, lines, _t, _x = _forward_clip_run(sites, learner,
+                                                    authority_m=0.040)
+    y_new = learner.predict(None, [u_dy[0], u_dy[1], u_apex])
+    assert y_new[0] == pytest.approx(0.002, abs=1e-9)
+    # the damped command alone stopped short of the edge
+    u_star = learner.command(None, [0, 0, APEX_M])
+    assert learner.predict(None, u_star)[0] > 0.002
+    assert np.all(np.abs(u_dy) <= 0.040 + 1e-12)
+    edge = [ln for ln in lines if 'BOX-EXPECTED-LANDING' in ln]
+    assert len(edge) == 1 and 'on the box edge' in edge[0]
+
+
+def test_box_forward_clip_reapplies_the_authority_after_the_pull_back(sites):
+    """Same plant, 25 mm authority: the edge needs ~-26.7 mm, the authority
+    re-clips it to -25 and the landing stays outside (UNMET)."""
+    D = np.eye(3)
+    learner = _AffineLearner(D, _lean_d(0.0287))
+    u_dy, _a, lines, _t, _x = _forward_clip_run(sites, learner,
+                                                authority_m=0.025)
+    assert u_dy[0] == pytest.approx(-0.025)
+    assert any('BOX-EXPECTED-LANDING-UNMET' in ln for ln in lines)
+
+
+def test_box_forward_clip_ill_conditioned_gain_falls_back(sites):
+    """A fit that says the landing barely responds (gain 0.1 < floor 0.5) is
+    not inverted: the command clip, BOX-FORWARD-CLIP-FALLBACK once."""
+    D = np.diag([0.1, 0.1, 1.0])
+    learner = _AffineLearner(D, _lean_d(0.027))
+    u_dy, _a, lines, _t, _x = _forward_clip_run(sites, learner)
+    assert u_dy == pytest.approx([-0.004, 0.0])
+    fb = [ln for ln in lines if 'BOX-FORWARD-CLIP-FALLBACK' in ln]
+    assert len(fb) == 1 and 'below the floor' in fb[0]
+    assert ex.BOX_FORWARD_GAIN_FLOOR == 0.5
+
+
+def test_box_forward_clip_without_local_model_warns_and_clips_command(sites):
+    learner = SimpleNamespace(
+        command=_AffineLearner(np.eye(3), _lean_d(0.027)).command,
+        predict=lambda x, u, y_d: np.array(u, dtype=float))
+    u_dy, _a, lines, _t, _x = _forward_clip_run(sites, learner)
+    assert u_dy == pytest.approx([-0.004, 0.0])
+    warn = [ln for ln in lines if 'BOX-FORWARD-CLIP-UNAVAILABLE' in ln]
+    assert len(warn) == 1 and '(WARN)' in warn[0]
+
+
+def test_box_forward_clip_with_a_real_memory_matches_predict(sites, tmp_path):
+    """End to end on a REAL ``memory.Memory`` biased +27 mm: the pulled-back
+    command's ``learner.predict`` sits on the box edge (40 mm authority)."""
+    p1 = sites[0]
+    m = mem.Memory(str(tmp_path / 'plant' / 'memory.csv'))
+    x_p1 = np.array([p1.cup_mm[0] / 1000.0, p1.cup_mm[1] / 1000.0, 0.0, 0.0])
+    rng = np.random.default_rng(0)
+    for i in range(16):
+        u = np.array([rng.uniform(-0.03, 0.0), rng.uniform(-0.01, 0.01),
+                      APEX_M])
+        m.append(mem.Experience(x=x_p1, u=u, y=u + np.array([0.027, 0, 0]),
+                                t_abs_s=1e9 + i, ball_id=0, caught=True))
+    cfg = lr.LearnerConfig()
+    X, U, Y = m.arrays()
+    learner = SimpleNamespace(
+        command=lambda x, y_d: m.command(x, y_d, cfg),
+        predict=lambda x, u, y_d: m.predict(x, u, cfg, y_d=y_d),
+        local_model=lambda x, y_d: lr.local_model(x, y_d, *m.arrays(), cfg))
+    u_dy, u_apex, lines, _t, x = _forward_clip_run(sites, learner,
+                                                   authority_m=0.040)
+    xq = x._u_cache[0][0]
+    y_hat = m.predict(xq, [u_dy[0], u_dy[1], u_apex], cfg,
+                      y_d=[0.0, 0.0, APEX_M])
+    assert y_hat[0] == pytest.approx(0.002, abs=1e-9)   # the +x edge
+    assert -0.05 <= y_hat[1] <= 0.05
+    assert any('on the box edge' in ln for ln in lines)

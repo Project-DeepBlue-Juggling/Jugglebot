@@ -1416,6 +1416,28 @@ def no_tilt_calibration(monkeypatch):
     monkeypatch.setenv(TILT_MAP_ENV, _NO_TILT_CAL)
 
 
+@pytest.fixture(autouse=True)
+def in_process_segment_solver(monkeypatch):
+    """Every `tests/ros` TrajectoryNode solves `install_segment` IN-PROCESS.
+
+    Production builds a `WorkerSegmentSolver` (a spawned planner process) so the
+    60-206 ms solve never starves the 40 Hz emitter.  Spawning a worker per
+    constructed node would make this directory slow and would hide every
+    `monkeypatch(tn.sk_exec, 'install_segment', ...)` and `time.perf_counter`
+    freeze in a child process, so the node's factory name is pointed at the
+    test double, which looks both up at CALL time (existing monkeypatches keep
+    their meaning).  The double REINSTATES the starvation by design -- a test in
+    `test_install_segment.py` pins that the shipped default is the worker, so
+    this fixture can never become production behaviour.  Modelled on
+    `no_tilt_calibration` above.  Tests wanting a custom solver pass
+    `TrajectoryNode(segment_solver=...)`, which bypasses the factory.
+    """
+    from jugglebot import trajectory_node as tn
+    from jugglebot.motion.skills.solver_worker import InProcessSegmentSolver
+    monkeypatch.setattr(tn, '_default_segment_solver_factory',
+                        lambda **_kw: InProcessSegmentSolver())
+
+
 @pytest.fixture
 def motor_state_single():
     """Fresh MotorStateSingle mock instance."""

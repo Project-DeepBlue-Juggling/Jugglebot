@@ -774,6 +774,12 @@ class _MemoryLearner:
         # live path. Same positional shape skill_node binds: (x, u, y_d).
         return self._memory.predict(x, u, self._cfg, y_d=y_d)
 
+    def local_model(self, x, y_d):
+        # 2026-10-13 (wave 3 unit H): the admissible box bounds the learner's
+        # EXPECTED landing (``executor._forward_clip_xy``), so the sim gate's
+        # learner exposes the same local fit skill_node binds.
+        return self._memory.local_model(x, y_d, self._cfg)
+
 
 def _make_observer(plant):
     """``observer(ball_id, t_abs_s) -> EVIDENCE_SEATED/EMPTY`` from the

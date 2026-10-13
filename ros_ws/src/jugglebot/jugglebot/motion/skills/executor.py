@@ -624,6 +624,22 @@ TRACKED_LANDING_TIME_BAND_S = RELEASE_FIT_TOL_S
 #: have had to throw away.
 TRACKED_LANDING_LATERAL_IDENTITY_MM = 200.0
 
+#: Floor on the lateral gain of the learner's local fit below which the
+#: admissible box is NOT pulled back through it
+#: (:meth:`SkillExecutor._forward_clip_xy`, wave 3 unit H, 2026-10-13): the
+#: smallest eigenvalue of the SYMMETRIC part of the fit's 2x2 xy block of
+#: ``D = d y_hat / d u``. The identity prior is 1.0 (the plant lands where
+#: told); every bias measured on this plant is an OFFSET ``d`` (sitting 7: P1
+#: +27 mm), not a gain. A fit claiming the landing moves less than half as
+#: far as the command is outside anything measured, and inverting it would
+#: turn each mm of landing error into > 2 mm of command; a sign-flipped or
+#: strongly rotated block (where the symmetric part goes non-positive) is not
+#: inverted at all. ``lambda_min(sym) >= floor`` also bounds the smallest
+#: singular value from below (``|D v| >= v^T D v / |v|``), so the pull-back
+#: step is at most ``1 / floor`` = 2x the landing excess. Below it the box
+#: falls back to clipping the COMMAND (the pre-2026-10-13 rule).
+BOX_FORWARD_GAIN_FLOOR = 0.5
+
 
 def tracked_landing_band_s(beat_s: Optional[float]) -> float:
     """The landing-time band (s) for a schedule with release spacing
@@ -1656,7 +1672,9 @@ class SkillExecutor:
     **R3: the learner, the admissible box, and outcome capture — all optional.**
     ``learner`` (an object exposing ``command(x, y_d) -> (3,)``, e.g. a
     ``memory.Memory`` bound to its ``LearnerConfig`` via a lambda at the call
-    site) and ``boxes`` (a SEQUENCE of :class:`~jugglebot.motion.skills.
+    site; optionally ``predict(x, u, y_d)`` for the catch prior and
+    ``local_model(x, y_d) -> (u_bar, D, d) | None`` so the box bounds the
+    EXPECTED landing, :meth:`_forward_clip_xy`) and ``boxes`` (a SEQUENCE of :class:`~jugglebot.motion.skills.
     admissible.AdmissibleBox` — ``admissible.load``'s own return shape,
     selected by ``(site pair, apex band)`` via ``admissible.select`` rather
     than a ``{site_pair: box}`` dict, so a box swept for one apex can never
@@ -1934,6 +1952,29 @@ class SkillExecutor:
         no longer partitions the memory (the offset's effect on the outcome
         tested within noise; ``learner`` module docstring).
 
+        **What the box bounds (owner rule, 2026-10-13, wave 3 unit H).** With
+        a learner, the admissible box bounds the EXPECTED landing laterally,
+        not the lateral command: the authority-clipped command is run through
+        the learner's own forward model (``learner.local_model``, the fit
+        that produced it) and only if THAT prediction leaves the box is the
+        command pulled back -- through the exact inverse of the fit's lateral
+        gain -- until the prediction sits on the box edge
+        (:meth:`_forward_clip_xy`). Why: the box was swept on the CATCH
+        transit to the landing (legs 1/2 hit the acceleration limit 0.1 s
+        into it at +-15 mm), so it is where the ball goes that the box must
+        bound; clipping the command instead turned sitting 7's -20 mm
+        correction for a +27 mm lean into -4 mm, the ball landed ~+23 mm and
+        the catch re-aimed past the outward authority into LIMIT_*. The
+        APEX is still clipped as a COMMAND: the box's ``apex_m`` is the band
+        of COMMANDED flight times whose launch passed the hand envelope
+        (C-HAND-3, ``throw_envelope`` in the sweep -- a bound on the
+        commanded release speed), and the plant's apex response about that
+        command is what the sweep's flight-fraction rungs
+        (``--single-flight-frac``, -20..+10 %) cover. What changes on the
+        wire: only the throw's lateral launch velocity, bounded by
+        :attr:`lateral_authority_m` (20 mm over a ~0.86 s flight, ~25 mm/s).
+        Without a learner the box clips ``y_d`` exactly as before.
+
         No ``learner`` ⇒ ``u = y_d`` exactly (R2 behaviour). Raises
         :class:`_NoAdmissibleCommand` when the learner's fit is non-finite,
         or no swept box covers ``(site.name, target.name)`` at the DESIRED
@@ -2047,13 +2088,164 @@ class SkillExecutor:
             self._learned_u.add(idx)
         if box is not None:
             try:
-                u_dy, u_apex = adm.clip((u_dy, u_apex), box)
+                u_dy_cmd_clip, u_apex = adm.clip((u_dy, u_apex), box)
             except adm.AdmissibleError as exc:
                 raise _NoAdmissibleCommand(str(exc)) from exc
+            # APEX: the box still clips the COMMAND (see the docstring's
+            # "What the box bounds" note). LATERAL: with a learner, the box
+            # bounds the EXPECTED landing (owner, 2026-10-13).
+            if self.learner is None:
+                u_dy = u_dy_cmd_clip
+            else:
+                u_dy = self._forward_clip_xy(
+                    idx, x, y_d_si, dy, u_dy, u_apex, box, u_dy_cmd_clip)
         u_dy = np.asarray(u_dy, dtype=float).reshape(2)
         u_apex = float(u_apex)
         self._u_cache[idx] = (x, u_dy, u_apex)
         return u_dy, u_apex
+
+    def _box_note_once(self, idx: int, reason: str, line: str) -> None:
+        """Queue ``line`` once per ``(idx, reason)`` (the shared
+        :attr:`_resend_notes` set, as ``AIM-LATERAL-CLAMPED``)."""
+        key = (idx, reason)
+        if key in self._resend_notes:
+            return
+        self._resend_notes.add(key)
+        self._pending_notes.append(line)
+
+    def _forward_clip_xy(self, idx: int, x, y_d_si, dy, u_dy, u_apex, box,
+                         u_dy_cmd_clip) -> np.ndarray:
+        """The LATERAL command after the admissible box is applied to the
+        learner's EXPECTED landing (owner rule, 2026-10-13: "run the aim
+        through the learner's own prediction of where the ball will land and
+        clip that"). ``u_dy`` arrives authority-clipped about ``dy``;
+        ``u_apex`` is already the box-clipped apex command (the forward model
+        is evaluated at the apex actually sent, so the xy prediction carries
+        the fit's apex coupling ``D[:2, 2]`` exactly).
+
+        1. ``learner.local_model(x, y_d)`` -> ``(u_bar, D, d)``, the SAME fit
+           ``learner.command``/``predict`` use; ``y_hat = d + D (u - u_bar)``.
+           Thin support (``None``) is the identity prior, ``y_hat = u``, so
+           clipping ``y_hat`` IS clipping ``u``: the command clip, no line.
+        2. ``y_hat_xy`` inside ``box.landing_xy_m`` -> ``u_dy`` passes
+           UNCHANGED (``BOX-EXPECTED-LANDING ... inside``).
+        3. Else ``y_clip`` = ``y_hat_xy`` clipped into the box and
+           ``u' = u_dy + Dxy^-1 (y_clip - y_hat_xy)`` -- the EXACT inverse of
+           the fit's 2x2 lateral block (the learner's ``eta``-damped step
+           never reaches the edge), refused below
+           :data:`BOX_FORWARD_GAIN_FLOOR` -> the command clip
+           (``BOX-FORWARD-CLIP-FALLBACK``).
+        4. The lateral authority is RE-APPLIED to ``u'``, per axis, as the
+           band ``[dy - a, dy + a]`` WIDENED to include the box's own range
+           (the command clip's result was always accepted, whatever its
+           distance from ``dy``, so a desired landing outside the box keeps
+           exactly today's reach). If the authority binds, the expected
+           landing stays OUTSIDE the box and the command is ACCEPTED
+           (``BOX-EXPECTED-LANDING-UNMET``) -- never a refusal: the catch's
+           own authority and the live ``validate_cycle`` gate still bound the
+           catch the box was swept on.
+
+        A learner without ``local_model`` (an older namespace) gets the
+        command clip and one ``BOX-FORWARD-CLIP-UNAVAILABLE`` line per skill
+        (marked WARN in its text: skill_node logs executor lines at one
+        severity). A fit that raises or is non-finite falls back the same
+        way (``BOX-FORWARD-CLIP-FALLBACK``) -- ``learner.command`` already
+        succeeded on that fit, so this is defensive only.
+        """
+        u_dy = np.asarray(u_dy, dtype=float).reshape(2)
+        cmd_clip = np.asarray(u_dy_cmd_clip, dtype=float).reshape(2)
+        (xlo, xhi), (ylo, yhi) = box.landing_xy_m
+        lo = np.array([float(xlo), float(ylo)])
+        hi = np.array([float(xhi), float(yhi)])
+        local_model = getattr(self.learner, 'local_model', None)
+        if local_model is None:
+            self._box_note_once(
+                idx, 'BOX-FORWARD-CLIP-UNAVAILABLE',
+                'BOX-FORWARD-CLIP-UNAVAILABLE skill %d (WARN): the learner has '
+                'no local_model -- the box clips the COMMAND (%+.1f, %+.1f) -> '
+                '(%+.1f, %+.1f) mm, not the expected landing'
+                % (idx, u_dy[0] * 1e3, u_dy[1] * 1e3,
+                   cmd_clip[0] * 1e3, cmd_clip[1] * 1e3))
+            return cmd_clip
+
+        def _fallback(why):
+            self._box_note_once(
+                idx, 'BOX-FORWARD-CLIP-FALLBACK',
+                'BOX-FORWARD-CLIP-FALLBACK skill %d: %s -- the box clips the '
+                'COMMAND (%+.1f, %+.1f) -> (%+.1f, %+.1f) mm'
+                % (idx, why, u_dy[0] * 1e3, u_dy[1] * 1e3,
+                   cmd_clip[0] * 1e3, cmd_clip[1] * 1e3))
+            return cmd_clip
+
+        try:
+            fit = local_model(x, y_d_si)
+        except Exception as exc:  # defensive: command() ran on this fit
+            return _fallback('local model failed (%s)' % (exc,))
+        if fit is None:   # thin support: identity, y_hat = u
+            return cmd_clip
+        u_bar, D, d = (np.asarray(v, dtype=float) for v in fit)
+        u_bar = u_bar.reshape(3)
+        D = D.reshape(3, 3)
+        d = d.reshape(3)
+
+        def _y_hat_xy(u_xy):
+            u3 = np.array([u_xy[0], u_xy[1], float(u_apex)])
+            return d[:2] + D[:2, :] @ (u3 - u_bar)
+
+        y_hat = _y_hat_xy(u_dy)
+        if not np.all(np.isfinite(y_hat)):
+            return _fallback('non-finite expected landing')
+        tol = 1e-9
+        if np.all(y_hat >= lo - tol) and np.all(y_hat <= hi + tol):
+            self._box_note_once(
+                idx, 'BOX-EXPECTED-LANDING',
+                'BOX-EXPECTED-LANDING skill %d: u=(%+.1f, %+.1f) mm '
+                'y_hat=(%+.1f, %+.1f) mm inside box x[%+.1f, %+.1f] '
+                'y[%+.1f, %+.1f] mm -- command unchanged'
+                % (idx, u_dy[0] * 1e3, u_dy[1] * 1e3, y_hat[0] * 1e3,
+                   y_hat[1] * 1e3, lo[0] * 1e3, hi[0] * 1e3, lo[1] * 1e3,
+                   hi[1] * 1e3))
+            return u_dy
+        Dxy = D[:2, :2]
+        gain = float(np.min(np.linalg.eigvalsh(0.5 * (Dxy + Dxy.T))))
+        if not (math.isfinite(gain) and gain >= BOX_FORWARD_GAIN_FLOOR):
+            return _fallback('the fit\'s lateral gain %.3f is below the floor '
+                             '%.2f (expected landing (%+.1f, %+.1f) mm)'
+                             % (gain, BOX_FORWARD_GAIN_FLOOR, y_hat[0] * 1e3,
+                                y_hat[1] * 1e3))
+        y_clip = np.minimum(np.maximum(y_hat, lo), hi)
+        u_new = u_dy + np.linalg.solve(Dxy, y_clip - y_hat)
+        if self.lateral_authority_m is not None:
+            a = abs(self.lateral_authority_m)
+            dyv = np.asarray(dy, dtype=float).reshape(2)
+            band_lo = np.minimum(dyv - a, lo)
+            band_hi = np.maximum(dyv + a, hi)
+            u_new = np.minimum(np.maximum(u_new, band_lo), band_hi)
+        y_new = _y_hat_xy(u_new)
+        if np.all(y_new >= lo - tol) and np.all(y_new <= hi + tol):
+            self._box_note_once(
+                idx, 'BOX-EXPECTED-LANDING',
+                'BOX-EXPECTED-LANDING skill %d: u=(%+.1f, %+.1f) -> '
+                '(%+.1f, %+.1f) mm puts y_hat (%+.1f, %+.1f) -> (%+.1f, '
+                '%+.1f) mm on the box edge'
+                % (idx, u_dy[0] * 1e3, u_dy[1] * 1e3, u_new[0] * 1e3,
+                   u_new[1] * 1e3, y_hat[0] * 1e3, y_hat[1] * 1e3,
+                   y_new[0] * 1e3, y_new[1] * 1e3))
+        else:
+            self._box_note_once(
+                idx, 'BOX-EXPECTED-LANDING-UNMET',
+                'BOX-EXPECTED-LANDING-UNMET skill %d: u=(%+.1f, %+.1f) mm '
+                '(authority %s mm about y_d (%+.1f, %+.1f) mm) leaves '
+                'y_hat=(%+.1f, %+.1f) mm outside box x[%+.1f, %+.1f] '
+                'y[%+.1f, %+.1f] mm -- command accepted, the catch gate '
+                'decides'
+                % (idx, u_new[0] * 1e3, u_new[1] * 1e3,
+                   ('none' if self.lateral_authority_m is None else
+                    '%.1f' % (abs(self.lateral_authority_m) * 1e3)),
+                   float(dy[0]) * 1e3, float(dy[1]) * 1e3, y_new[0] * 1e3,
+                   y_new[1] * 1e3, lo[0] * 1e3, hi[0] * 1e3, lo[1] * 1e3,
+                   hi[1] * 1e3))
+        return u_new
 
     def _hop_command(self, idx: int, site, dy, apex, x):
         """The hop entry's command: ``y_d`` plus the learner's P1 column
@@ -2598,10 +2790,11 @@ class SkillExecutor:
         :meth:`_predicted_landing`).
 
         Why not ``y_d`` (owner decision 2, 2026-10-13). The command that
-        reaches the platform is CLIPPED -- by :attr:`lateral_authority_m` and
-        the admissible box (:meth:`_command_u`) -- so a plant bias the
-        learner sees but may not command away lands the ball at ``y_d`` +
-        that residual, not at ``y_d``. Sitting 7: P1 landed +27 mm toward P2
+        reaches the platform is BOUNDED -- by :attr:`lateral_authority_m`,
+        and the admissible box on the apex (and, since 2026-10-13, on this
+        very prediction laterally; :meth:`_forward_clip_xy`) -- so a plant
+        bias the learner sees but may not command away lands the ball at
+        ``y_d`` + that residual, not at ``y_d``. Sitting 7: P1 landed +27 mm toward P2
         (the learner's unclipped command was -24 mm, the columns box allowed
         -4), every catch whose tracker fit never converged (28 in L2, every
         hop-entry catch among them) stayed on the ``y_d`` prior, and every

@@ -812,3 +812,56 @@ def test_memory_predict_delegates_to_learner(tmp_path):
     np.testing.assert_array_equal(
         m.predict(_P1_X, u, y_d=y_d),
         lr.predict(_P1_X, u, *m.arrays(), lr.LearnerConfig(), y_d=y_d))
+
+
+# ---------------------------------------------------------------------------
+# local_model (wave 3 unit H, 2026-10-13): the fit command/predict share,
+# exposed so the executor can bound the EXPECTED landing by the box.
+# ---------------------------------------------------------------------------
+
+def _affine_memory(n=24, seed=3):
+    """A synthetic AFFINE plant ``y = A u + b`` around one state."""
+    rng = np.random.default_rng(seed)
+    A = np.array([[1.1, 0.05, 0.0], [-0.03, 0.95, 0.0], [0.0, 0.0, 1.05]])
+    b = np.array([0.027, -0.004, -0.06])
+    x = np.array([-0.0625, 0.0, 0.0, 0.0])
+    U = np.column_stack([rng.uniform(-0.03, 0.01, n), rng.uniform(-0.01, 0.01, n),
+                         rng.uniform(0.85, 0.95, n)])
+    Y = U @ A.T + b
+    X = np.tile(x, (n, 1))
+    return x, X, U, Y
+
+
+def test_local_model_is_the_fit_command_and_predict_use():
+    x, X, U, Y = _affine_memory()
+    cfg = lr.LearnerConfig()
+    y_d = np.array([0.0, 0.0, 0.9])
+    u_bar, D, d = lr.local_model(x, y_d, X, U, Y, cfg)
+    # predict == d + D (u - u_bar), for the command and an arbitrary u
+    u_star = lr.command(x, y_d, X, U, Y, cfg)
+    for u in (u_star, np.array([-0.02, 0.005, 0.88])):
+        assert np.allclose(lr.predict(x, u, X, U, Y, cfg, y_d=y_d),
+                           d + D @ (u - u_bar), atol=1e-12)
+    # command is the eta-damped step on the same fit
+    want = u_bar + np.linalg.solve(D.T @ D + cfg.eta * np.eye(3),
+                                   D.T @ (y_d - d))
+    assert np.allclose(u_star, want, atol=1e-12)
+    # ... which does NOT reach y_d; the exact inverse of the same fit does
+    assert np.abs(lr.predict(x, u_star, X, U, Y, cfg, y_d=y_d) - y_d).max() > 1e-3
+    u_exact = u_bar + np.linalg.solve(D, y_d - d)
+    assert np.allclose(lr.predict(x, u_exact, X, U, Y, cfg, y_d=y_d), y_d,
+                       atol=1e-12)
+
+
+def test_local_model_thin_support_is_none():
+    cfg = lr.LearnerConfig()
+    x = np.zeros(4)
+    y_d = np.array([0.0, 0.0, 0.9])
+    assert lr.local_model(x, y_d, np.zeros((0, 4)), np.zeros((0, 3)),
+                          np.zeros((0, 3)), cfg) is None
+    # rows far outside the support gate: also thin (command/predict identity)
+    X = np.zeros((5, 4))
+    U = np.tile([0.0, 0.0, 0.9], (5, 1))
+    Y = U + np.array([1.0, 0.0, 0.0])          # 1 m off: outside the gate
+    assert lr.local_model(x, y_d, X, U, Y, cfg) is None
+    assert np.array_equal(lr.command(x, y_d, X, U, Y, cfg), y_d)
