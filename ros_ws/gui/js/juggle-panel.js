@@ -462,7 +462,19 @@ function onMagazineConfirm() {
     dispatchJuggle(MAGAZINE_REQUEST, null);   // no pattern/override cross-check applies
 }
 
-/** Shared Start / magazine dispatch (one latch, one cooldown, one ack path). */
+/** Request string of the "Reload" button — exactly this token: Ball Butler
+ *  feeds one ball, Jugglebot catches it and settles back to its level rest at
+ *  P1 with the ball seated, nothing thrown (SkillNode._run_reload_only).  The
+ *  feed half of the magazine tuning loop; "Throw to magazine" is the other. */
+export const RELOAD_REQUEST = 'reload';
+
+function onReloadConfirm() {
+    if (startGateReason(null, true)) return;
+    magazineMiss = null;
+    dispatchJuggle(RELOAD_REQUEST, null);     // no pattern/override cross-check applies
+}
+
+/** Shared Start / reload / magazine dispatch (one latch, one cooldown, one ack path). */
 function dispatchJuggle(data, cc) {
     busy = true;
     warn = null;
@@ -1046,6 +1058,11 @@ export function buildJugglePanel(container) {
     magazine.type = 'button';
     magazine.disabled = true;
     holdToConfirm(magazine, onMagazineConfirm, HOLD_MS);
+    const reloadBtn = el('button', 'cmd-btn hold-fillable btn-juggle jp-reload-btn', 'Reload');
+    reloadBtn.id = 'juggle-reload-btn';
+    reloadBtn.type = 'button';
+    reloadBtn.disabled = true;
+    holdToConfirm(reloadBtn, onReloadConfirm, HOLD_MS);
     const stop = el('button', 'cmd-btn jp-stop', 'Stop');
     stop.id = 'juggle-stop';
     stop.type = 'button';
@@ -1053,7 +1070,7 @@ export function buildJugglePanel(container) {
     stop.addEventListener('click', onStopClick);
     const status = el('div', 'jp-status');
     status.id = 'juggle-status';
-    actions.append(start, magazine, stop, status);
+    actions.append(start, reloadBtn, magazine, stop, status);
 
     const summary = el('div', 'jp-summary');
     const attempt = el('div', 'jp-attempt');
@@ -1067,7 +1084,7 @@ export function buildJugglePanel(container) {
         root: container, title, clear, badge, select, reload, reloadLabel,
         svg: diag.svg, diagTitle: diag.title, diagStatic: diag.stat, hand: diag.hand,
         handStem: diag.handStem, balls: diag.balls, speedT: diag.speedT,
-        fields: fieldDom, dwellVal, timing, start, magazine, stop, status, summary, attempt, warn: warnEl,
+        fields: fieldDom, dwellVal, timing, start, reloadBtn, magazine, stop, status, summary, attempt, warn: warnEl,
     };
     document.addEventListener('visibilitychange', ensureAnim);
     sync();
@@ -1271,6 +1288,8 @@ function sync() {
     const magReason = startGateReason(p, true);
     setDisabled(dom.magazine, !!magReason);
     setTitle(dom.magazine, magReason || ('hold to confirm — throws one ball to the magazine\nsends: ' + MAGAZINE_REQUEST));
+    setDisabled(dom.reloadBtn, !!magReason);
+    setTitle(dom.reloadBtn, magReason || ('hold to confirm — Ball Butler feeds one ball; caught and held at the level rest, nothing thrown\nsends: ' + RELOAD_REQUEST));
     setDisabled(dom.stop, !gate.connected);
     setTitle(dom.stop, gate.connected ? 'ends the running attempt immediately' : 'rosbridge disconnected');
 

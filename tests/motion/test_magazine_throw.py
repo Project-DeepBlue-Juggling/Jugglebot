@@ -2,14 +2,13 @@
 
 The throw is formulaic — no cup QP — so these pin the properties that make it
 safe to stream: it is gated by ``validate_cycle`` at the passed limits, it
-starts and ends at rest, the hand is C2 by construction, the release the meta
-announces reproduces the ballistic, the heave is used only when the hand cannot
-reach, and the refusals carry their named codes through
+starts and ends at rest, the platform is STATIONARY through the stroke (no
+heave — owner decision 2026-10-13), the hand is C2 by construction, the
+release the meta announces reproduces the ballistic, and the refusals carry
+their named codes (with the operator advice) through
 ``executor.install_segment``.
 """
 from __future__ import annotations
-
-import math
 
 import numpy as np
 import pytest
@@ -32,7 +31,10 @@ REST = np.array([0.0, 0.0, uc.SETTLE_CUP_Z_MM])
 #: A hand-only target: ~4 m/s, small lateral (6 deg aim).
 EASY_TARGET = np.array([300.0, 100.0, 1100.0])
 EASY_FLIGHT_S = 0.75
-#: The real magazine (plan frame, mm) — needs the heave.
+#: Near the hand cap, at the tilt ceiling (probe 2026-10-13: 5.16 m/s, 11.9 deg).
+HARD_TARGET = np.array([-754.0, -372.0, 1792.0])
+HARD_FLIGHT_S = 0.79
+#: The real magazine (plan frame, mm): out of the hand's reach at any flight.
 MAG_TARGET = np.array([-1256.0, -620.0, 2413.0])
 
 
@@ -72,123 +74,133 @@ def _knot_acc_jumps(p, v, h):
     return np.abs(a_end[:-1] - a_start[1:])
 
 
+def _landing(site, vel, T):
+    return site + vel * T + np.array([0.0, 0.0, -0.5 * G * T * T])
+
+
 @pytest.mark.parametrize('correction', [None, 'offset'])
 def test_reachable_throw_passes_the_gate_rest_to_rest(limits, geom, correction):
     corr = (levelling.correction_from_offset(0.0117, -0.004)
             if correction else None)
     seed = _rest_state(REST, corr)
     seg = mt.plan_magazine(seed, _terminal(), sg.SegmentConfig(), limits, geom)
-    plan, meta = seg.plan, seg.meta
-    assert seg.kind == mt.MAGAZINE
-    assert meta.report.ok
-    # Starts exactly at the seed, at rest.
-    np.testing.assert_array_equal(plan.pose[0], seed.pose)
-    assert plan.hand_rev[0] == seed.hand_rev
-    assert np.max(np.abs(plan.pose_vel[0])) == 0.0 and plan.hand_vel_rps[0] == 0.0
-    # Ends at rest: zero velocity, level in gravity, hand parked at the rest site.
-    assert np.max(np.abs(plan.pose_vel[-1])) < 1e-9
+    assert seg.kind == mt.MAGAZINE and seg.meta.kind == mt.MAGAZINE
+    assert seg.meta.report.ok
+    plan = seg.plan
+    # Knot 0 is the seed's own float; the end is a stopped, level rest.
+    np.testing.assert_allclose(plan.pose[0], seed.pose)
+    assert plan.hand_rev[0] == pytest.approx(seed.hand_rev)
+    assert np.all(np.abs(plan.pose_vel[-1]) < 1e-9)
     assert abs(plan.hand_vel_rps[-1]) < 1e-9
-    end_tilt_g = uc._tilt_to_gravity(plan.pose[-1, 3:5], corr)
-    assert np.max(np.abs(end_tilt_g)) < 1e-9
-    np.testing.assert_allclose(
-        mt.rigid_cup_state(plan.pose[-1], plan.hand_rev[-1], [0.0, 0.0, 1.0]),
-        REST, atol=1e-6)
-    # C2 hand (and pose) by construction: no acceleration jump at any knot.
-    h = float(plan.dt)
-    assert _knot_acc_jumps(plan.hand_rev, plan.hand_vel_rps, h).max() < 1e-6
-    for i in range(3):
-        assert _knot_acc_jumps(plan.pose[:, i], plan.pose_vel[:, i], h).max() < 1e-6
-    # The release tilt is the gravity-referenced aim, re-expressed into the plan
-    # frame the way unified_cycle._realize does it (``_tilts_to_plan``).  The
-    # round trip is exact only to the dropped second-order ``rz`` term
-    # (``_tilts_to_plan`` docstring: worst axis change 1.276e-4 rad over the
-    # whole regime), so that is the tolerance, not float precision.
-    k = int(round(seg.event_t_s / h))
+    assert np.max(np.abs(uc._tilt_to_gravity(plan.pose[-1, 3:5], corr))) < 1e-9
+    # The release tilt is the gravity-referenced aim in the plan frame
+    # (`_tilts_to_plan`; exact to the dropped second-order rz term).
+    k = int(round(seg.event_t_s / float(plan.dt)))
     np.testing.assert_allclose(uc._tilt_to_gravity(plan.pose[k, 3:5], corr),
-                               meta.throw_tilt, atol=1.3e-4)
-    if corr is not None:   # ... and it is NOT the uncorrected tilt (0.67 deg off)
-        assert np.max(np.abs(plan.pose[k, 3:5] - meta.throw_tilt)) > 3e-3
+                               seg.meta.throw_tilt, atol=1.3e-4)
+    if corr is not None:
+        assert np.max(np.abs(plan.pose[k, 3:5] - seg.meta.throw_tilt)) > 3e-3
+    np.testing.assert_allclose(plan.pose[-1, :2], REST[:2], atol=1e-6)
+    assert plan.pose[-1, 2] == pytest.approx(cr.RealizeConfig().active_z_mm)
+    assert plan.hand_rev[-1] == pytest.approx(uc.hand_rev_for_cup_z(REST[2]), abs=1e-6)
+    # C2 by construction, on every channel.
+    h = float(plan.dt)
+    for ch in range(6):
+        assert np.max(_knot_acc_jumps(plan.pose[:, ch], plan.pose_vel[:, ch], h)) < 1e-6
+    assert np.max(_knot_acc_jumps(plan.hand_rev, plan.hand_vel_rps, h)) < 1e-6
+    # The hand stroke stays inside its clip, with the top margin.
+    assert np.max(plan.hand_rev) < float(mt.fz.HAND_STROKE_MAX_REV)
+    # The release instant is the segment's event, segment-relative.
+    assert seg.event_t_s == pytest.approx(seg.meta.releases[-1].t_s)
+    assert seg.event_t_s == pytest.approx(1.3, abs=0.03)
 
 
-def _landing(site, vel, T):
-    return site + vel * T + 0.5 * np.array([0.0, 0.0, -G]) * T * T
+def test_the_platform_is_stationary_through_the_stroke(limits):
+    """No heave (owner, 2026-10-13): every pose channel is at rest from the
+    stroke's start to the post-release hold; the hand alone makes the speed."""
+    d = mt.design_magazine(_rest_state(REST), _terminal(HARD_TARGET, HARD_FLIGHT_S),
+                           limits)
+    plan = d.plan
+    h = float(plan.dt)
+    k_t = d.k_release
+    # Find the stroke start: the last knot before the release where the hand is still.
+    k_hs = max(k for k in range(k_t) if abs(plan.hand_vel_rps[k]) < 1e-12)
+    k_end = k_t + 1 + uc.post_release_hold_knots()
+    assert np.all(np.abs(plan.pose_vel[k_hs:k_end + 1]) < 1e-9)
+    assert np.all(np.abs(np.diff(plan.pose[k_hs:k_end + 1], axis=0)) < 1e-9)
+    assert d.hand_rel_rps * mt.MM_PER_REV == pytest.approx(
+        np.linalg.norm(d.design_vel_mm_s), rel=1e-9)
+    assert d.hand_rel_rps <= d.hand_cap_rps * (1.0 + 1e-9)
+    assert d.tilt_deg <= 12.0 + 1e-9
+    assert d.t_release_s == pytest.approx(k_t * h, abs=h)
 
 
 def test_release_in_meta_reproduces_the_ballistic(limits, geom):
-    """The announced release is the RIGID-body cup's (the IK rotates about the
-    platform centre, which rides with the heave) and it lands on the target."""
     seg = mt.plan_magazine(_rest_state(REST), _terminal(), sg.SegmentConfig(),
                            limits, geom)
     rel = seg.meta.releases[-1]
-    assert seg.event_t_s == rel.t_s == seg.meta.t_release_s
-    np.testing.assert_array_equal(seg.takeoff_vel_mm_s, rel.vel_mm_s)
-    assert np.linalg.norm(_landing(rel.site_mm, rel.vel_mm_s, rel.flight_s)
-                          - EASY_TARGET) < 1.0
-    # ... and the release really is ON the plan, through the rigid cup.
-    axis = tg.cup_axis(*rel.tilt)
-    pose, twist, _ = seg.plan.state_at(rel.t_s)
-    rev, rps = seg.plan.hand_at(rel.t_s)
-    np.testing.assert_allclose(mt.rigid_cup_state(pose, rev, axis),
-                               rel.site_mm, atol=1e-6)
-    np.testing.assert_allclose(mt.rigid_cup_velocity(twist, rps, axis),
-                               rel.vel_mm_s, atol=1e-6)
-    np.testing.assert_allclose(rel.site_mm, SITE, atol=1e-6)
-    # The requested release instant is honoured to within half a knot.
-    assert abs(rel.t_s - 1.3) <= 0.5 * float(seg.plan.dt) + 1e-9
+    land = _landing(rel.site_mm, rel.vel_mm_s, rel.flight_s)
+    assert np.linalg.norm(land - EASY_TARGET) < 1.0
+    np.testing.assert_allclose(rel.target_mm, EASY_TARGET)
+    np.testing.assert_allclose(seg.takeoff_vel_mm_s, rel.vel_mm_s)
+    # The release site is the requested one (the platform sits at the active
+    # z with the hand bottom chosen for it), and the release is mid-span at
+    # the instant the cup's axial acceleration reaches -g a_z.
+    assert np.linalg.norm(rel.site_mm - SITE) < 1.0
+    _, rps = seg.plan.hand_at(rel.t_s)
+    assert rps * mt.MM_PER_REV == pytest.approx(np.linalg.norm(rel.vel_mm_s), rel=1e-9)
 
 
 @pytest.mark.parametrize('target, flight_s', [
-    (np.array([200.0, 0.0, 2400.0]), 0.9),     # heave along a 1.6 deg axis
-    (MAG_TARGET, 0.9),                          # heave + the 12 deg cap's lean
+    (EASY_TARGET, EASY_FLIGHT_S), (HARD_TARGET, HARD_FLIGHT_S),
 ])
-def test_heave_assisted_rigid_release_hits_the_target(limits, target, flight_s):
-    """At nonzero heave the rigid release still lands within 1 mm, and the
-    repo map's (fixed tilt centre) disagreement is reported, not designed in."""
+def test_rigid_release_agrees_with_the_repo_cup_map_to_its_model_gap(limits, target,
+                                                                     flight_s):
+    """The meta carries the RIGID cup (the IK's truth); the repo map's
+    ``cup_velocity_from_platform`` is a different model (its lateral term is
+    ``a_xy / (2 - a_z)``, ~2 % under at 12 deg). With the platform stationary
+    the two agree to that model gap — nothing larger hides in the knots."""
     d = mt.design_magazine(_rest_state(REST), _terminal(target, flight_s), limits)
-    assert d.heave_mm_s > 100.0
-    assert np.linalg.norm(_landing(d.release_site_mm, d.release_vel_mm_s,
-                                   flight_s) - target) < 1.0
-    np.testing.assert_allclose(d.release_vel_mm_s, d.design_vel_mm_s, atol=1e-6)
-    gap = d.repo_minus_rigid_vel_mm_s
-    assert gap.shape == (3,) and np.all(np.isfinite(gap))
-    assert math.isfinite(d.repo_minus_rigid_landing_mm)
-    assert d.repo_minus_rigid_landing_mm == pytest.approx(np.linalg.norm(
-        _landing(d.release_site_mm + d.repo_minus_rigid_site_mm,
-                 d.release_vel_mm_s + gap, flight_s) - target))
-    if d.tilt_deg > 5.0:
-        # Heave at a real tilt: the fixed-centre map reads it as axial slider
-        # travel, ~a_xy * u_z of lateral velocity off the rigid truth.
-        assert np.linalg.norm(gap[:2]) > 50.0
+    pose_r, twist_r, _ = d.plan.state_at(d.t_release_s)
+    rev_r, rps_r = d.plan.hand_at(d.t_release_s)
+    assert np.all(np.abs(twist_r) < 1e-9)
+    v_repo = uc.cup_velocity_from_platform(pose_r, twist_r, rev_r, rps_r)
+    s_repo = uc.cup_state_from_platform(pose_r, rev_r)
+    speed = np.linalg.norm(d.release_vel_mm_s)
+    assert np.linalg.norm(v_repo - d.release_vel_mm_s) < 0.006 * speed
+    assert np.linalg.norm(s_repo - d.release_site_mm) < 1.0
 
 
-def test_heave_only_when_the_hand_cannot_reach(limits):
-    easy = mt.design_magazine(_rest_state(REST), _terminal(), limits)
-    assert easy.hand_rel_rps < easy.hand_cap_rps
-    assert easy.heave_mm_s == pytest.approx(0.0, abs=1e-9)
-    hard = mt.design_magazine(_rest_state(REST), _terminal(MAG_TARGET, 0.9),
-                              limits)
-    assert hard.hand_rel_rps == pytest.approx(hard.hand_cap_rps, rel=1e-9)
-    assert hard.heave_mm_s > 100.0
-    assert hard.tilt_deg <= 12.0 + 1e-9
+def test_unreachable_target_refuses_with_the_speed_and_least_speed_flight(limits, geom):
+    with pytest.raises(uc.CycleInfeasible) as err:
+        mt.plan_magazine(_rest_state(REST), _terminal(MAG_TARGET, 1.1),
+                         sg.SegmentConfig(), limits, geom)
+    assert err.value.code == mt.MAGAZINE_UNREACHABLE
+    text = err.value.reasons[0]
+    assert 'hand cap is 5.2' in text and 'least-speed flight' in text
+    assert err.value.outcome().startswith(uc.OUTCOME_CODE + '(' + mt.MAGAZINE_UNREACHABLE)
 
 
-def test_real_magazine_target_refuses_at_session_limits(limits, geom):
+def test_aim_past_the_tilt_ceiling_refuses_naming_a_flight_that_fits(limits, geom):
     with pytest.raises(uc.CycleInfeasible) as err:
         mt.plan_magazine(_rest_state(REST), _terminal(MAG_TARGET, 0.9),
                          sg.SegmentConfig(), limits, geom)
-    code = err.value.code
-    assert code in ('WORKSPACE', 'LIMIT_VEL', 'LIMIT_ACC', 'LIMIT_JERK',
-                    'STEP_BOUND', 'TOO_FAST'), code
-    assert err.value.outcome().startswith(uc.OUTCOME_CODE + '(' + code)
-
-
-def test_aim_past_the_tilt_ceiling_refuses(limits, geom):
-    # 2 m sideways in 0.5 s: ~4 m/s of lateral against ~2.6 m/s of vertical.
-    far = np.array([2000.0, 0.0, 900.0])
-    with pytest.raises(uc.CycleInfeasible) as err:
-        mt.plan_magazine(_rest_state(REST), _terminal(far, 0.5),
-                         sg.SegmentConfig(), limits, geom)
     assert err.value.code == mt.MAGAZINE_TILT
+    assert 'a flight of 1.02 s aims inside it' in err.value.reasons[0]
+    # 2 m sideways in 0.5 s: no flight time brings it inside 12 deg from here.
+    best = mt.least_speed_flight(SITE, np.array([2000.0, 0.0, 900.0]))
+    assert best is not None and best[0] > 1.3   # only a long, slow lob fits
+
+
+def test_least_speed_flight_is_the_slowest_take_off_inside_the_ceiling():
+    T, speed = mt.least_speed_flight(SITE, EASY_TARGET)
+    v = mt.takeoff_velocity(SITE, EASY_TARGET, T)
+    assert speed == pytest.approx(np.linalg.norm(v))
+    assert mt.aim_deg(v) <= 12.0
+    for T2 in (T - 0.1, T + 0.1):
+        v2 = mt.takeoff_velocity(SITE, EASY_TARGET, T2)
+        if mt.aim_deg(v2) <= 12.0:
+            assert np.linalg.norm(v2) >= speed - 1e-9
 
 
 def test_moving_seed_and_early_release_refuse(limits, geom):
@@ -205,6 +217,19 @@ def test_moving_seed_and_early_release_refuse(limits, geom):
     assert err.value.code == mt.MAGAZINE_WINDOW
 
 
+def test_gate_refusals_carry_their_own_code(limits, geom):
+    """A shape the hand can make but the legs cannot follow at the session
+    limits is refused by ``validate_cycle``'s own code, never flown."""
+    tight = TrajectoryLimits.from_config(hw).with_session_limits(
+        leg_vel_mmps=60.0, leg_acc_mmps2=5000.0, leg_jerk_mmps3=200000.0,
+        hand_acc_rps2=3900.0)
+    with pytest.raises(uc.CycleInfeasible) as err:
+        mt.plan_magazine(_rest_state(REST), _terminal(HARD_TARGET, HARD_FLIGHT_S),
+                         sg.SegmentConfig(), tight, geom)
+    assert err.value.code in ('LIMIT_VEL', 'LIMIT_ACC', 'LIMIT_JERK', 'STEP_BOUND',
+                              'WORKSPACE', 'TOO_FAST'), err.value.code
+
+
 def test_install_segment_fresh_origin_only(limits, geom):
     t_now = 50.0
     term = _terminal(t_release_s=t_now + 1.3)          # ABSOLUTE, like THROW
@@ -213,31 +238,8 @@ def test_install_segment_fresh_origin_only(limits, geom):
     assert res.accepted, res.message
     assert seg.kind == mt.MAGAZINE and res.splice_k == 0
     assert res.event_t_s == pytest.approx(seg.meta.t_release_s)
-    assert abs(rec.t0_s + res.event_t_s - (t_now + 1.3)) <= 0.0125 + 1e-9
-    # The same request while that plan is still moving is refused, untouched.
-    rec2, res2, seg2 = ex.install_segment(rec, None, mt.MAGAZINE,
-                                          _terminal(t_release_s=t_now + 2.5),
-                                          t_now + 0.5, limits=limits, geom=geom)
+    # Any splice onto a MAGAZINE record is refused: its meta has no cup plan.
+    rec2, res2, _ = ex.install_segment(rec, None, sg.REST,
+                                       sg.RestTerminal(rest_site_mm=REST, t_rest_s=t_now + 3.0),
+                                       t_now + 0.5, limits=limits, geom=geom)
     assert not res2.accepted and res2.code == mt.MAGAZINE_NEEDS_REST
-    assert rec2 is rec and seg2 is None
-    # ... and NOTHING splices onto a running MAGAZINE record (its meta has no
-    # cup_plan for splice_at): a REST inside it refuses the same way.
-    rec3, res3r, seg3 = ex.install_segment(
-        rec, None, sg.REST, sg.RestTerminal(rest_site_mm=REST,
-                                            t_rest_s=t_now + 2.5),
-        t_now + 0.5, limits=limits, geom=geom)
-    assert not res3r.accepted and res3r.code == mt.MAGAZINE_NEEDS_REST
-    assert rec3 is rec and seg3 is None
-    assert rec.meta.kind == mt.MAGAZINE
-    # Once it has ended, a fresh-origin install from its terminal rest is fine.
-    _, res4, _ = ex.install_segment(
-        rec, None, sg.REST, sg.RestTerminal(rest_site_mm=REST,
-                                            t_rest_s=rec.end_s + 1.0),
-        rec.end_s + 0.1, limits=limits, geom=geom)
-    assert res4.accepted, res4.message
-    # A planner refusal surfaces as a refusing InstallResult, never an exception.
-    _, res3, _ = ex.install_segment(None, _rest_state(REST), mt.MAGAZINE,
-                                    _terminal(MAG_TARGET, 0.9, t_now + 1.3),
-                                    t_now, limits=limits, geom=geom)
-    assert not res3.accepted and res3.code != 'OK'
-    assert math.isfinite(res3.plan_wall_s)

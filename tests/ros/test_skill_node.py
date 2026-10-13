@@ -4965,6 +4965,7 @@ def test_columns_1ball_reload_false_opens_on_a_rest_from_the_activate_park(
     ('columns', False), ('columns', True),
     ('columns_1ball', False), ('columns_1ball', True),
     ('columns_1ball_fed', True),
+    ('reload', True),
 ])
 def test_every_pattern_entry_opens_on_a_rest(tmp_path, pattern, reload):
     """THE START-STATE CONTRACT (R5 sitting 6, 2026-10-05): whatever a Juggle
@@ -4996,7 +4997,7 @@ def test_every_pattern_entry_opens_on_a_rest(tmp_path, pattern, reload):
         '%s reload=%s puts a %s on the machine first' % (pattern, reload,
                                                          first.kind))
     covered = {'self_toss', 'hop', 'columns', 'columns_1ball',
-               'columns_1ball_fed'}
+               'columns_1ball_fed', 'reload'}
     # 'magazine' has no schedule (one MAGAZINE segment from rest; its own
     # tests are tests/ros/test_skill_node_magazine.py).
     assert set(sn.SkillNode._PATTERNS) - {'magazine'} == covered

@@ -908,6 +908,16 @@ class SkillNode(Node):
         self.declare_parameter('magazine_config_path', '')
         self.declare_parameter('magazine_base_frame_max_age_s', 60.0)
         self.declare_parameter('magazine_release_lead_s', 1.3)
+        # The console's on-the-fly target nudge (owner ask, 2026-10-13): a
+        # non-zero triple (elbow frame, mm) / a positive flight REPLACES the
+        # yaml's value for every following magazine request —
+        #   ros2 param set /skill_node magazine_target_base_mm "[560.0, 300.0, 750.0]"
+        #   ros2 param set /skill_node magazine_flight_s 0.8
+        # — read per request like the file. The all-zero / 0.0 defaults mean
+        # "the file's value" (`magazine_target.with_overrides`). The yaml
+        # stays the persistent record: the final numbers belong back in it.
+        self.declare_parameter('magazine_target_base_mm', [0.0, 0.0, 0.0])
+        self.declare_parameter('magazine_flight_s', 0.0)
         # How far (mm) a tracker CATCH re-aim may move the landing OUTWARD --
         # away from the pattern's other site -- about the schedule's landing
         # (executor.catch_outward_authority_m; the learner's lateral command
@@ -3008,9 +3018,14 @@ class SkillNode(Node):
     #: has no 'columns_1ball'/'columns_1ball_fed' kind, and none is swept —
     #: see `_run_columns_1ball`'s docstring and `_run_columns`'s own
     #: ``phantom_a`` paragraph), so this tuple names two more GOAL-facing
-    #: strings than `Schedule.pattern` has values.
+    #: strings than `Schedule.pattern` has values. ``magazine`` (one
+    #: formulaic throw at Ball Butler's magazine, `_run_magazine`) and
+    #: ``reload`` (Ball Butler feeds one ball, caught and held at the level
+    #: rest, no throw — `_run_reload_only`, 2026-10-13) are the two halves
+    #: of the magazine -> BB -> JB -> magazine tuning loop; neither has a
+    #: box of its own (nothing the learner commands flies in either).
     _PATTERNS = ('self_toss', 'hop', 'columns', 'columns_1ball',
-                'columns_1ball_fed', 'magazine')
+                'columns_1ball_fed', 'magazine', 'reload')
 
     def _start_pattern(self, goal) -> SimpleNamespace:
         """The Juggle goal's shared no-motion refusal ladder + schedule
@@ -3033,6 +3048,12 @@ class SkillNode(Node):
                 message=('refused: pattern %r is not one of %s'
                          % (pattern, self._PATTERNS)))
         reload = bool(getattr(goal, 'reload', False))
+        if pattern == 'reload':
+            # The reload-only pattern IS a Ball Butler feed whatever the
+            # goal's flag said (the GUI's "Reload" button sends the bare
+            # token): recorded as reload=True on the attempt, not on the
+            # label (which would read "reload (reload)").
+            reload = True
         # R5 (owner decision D3, 2026-09-30): the "columns until R5" refusal
         # is LIFTED — `reload=True` on a columns goal now means "ball B
         # comes from Ball Butler" (`_run_columns` routes it through
@@ -3081,7 +3102,8 @@ class SkillNode(Node):
         with self._reload_lock:
             self._goal_armed = False
             self._goal_done_event.clear()
-        self._attempt_label = pattern + (' (reload)' if reload else '')
+        self._attempt_label = pattern + (' (reload)' if reload and pattern != 'reload'
+                                         else '')
 
         if pattern == 'columns':
             result = self._run_columns(apex_m, separation_mm, dwell_s,
@@ -3100,6 +3122,8 @@ class SkillNode(Node):
             # executor, so the goal is armed (and ended) by the miss-report
             # timer, not by `_maybe_signal_goal_done`.
             result = self._run_magazine()
+        elif pattern == 'reload':
+            result = self._run_reload_only(dwell_s)
         else:
             result = self._run_one_ball(pattern, apex_m, separation_mm,
                                         dwell_s, n_throws, reload)
@@ -4047,12 +4071,22 @@ class SkillNode(Node):
                           '%.1f s old (limit %.1f s)' % (age, max_age))
         path = str(self.get_parameter('magazine_config_path').value) \
             or mt.default_config_path()
+        p_target = self.get_parameter('magazine_target_base_mm').value
+        p_flight = self.get_parameter('magazine_flight_s').value
         try:
             cfg = mt.load_magazine_config(path)
-        except (ValueError, OSError) as exc:
+            cfg = mt.with_overrides(cfg, target_base_mm=p_target,
+                                    flight_s=p_flight)
+        except (ValueError, OSError, TypeError) as exc:
             msg = str(exc)
             return refuse(msg if msg.startswith('MAGAZINE_CONFIG')
                           else 'MAGAZINE_CONFIG: %s' % (msg,))
+        t_param = list(p_target or [])
+        target_src = ('param magazine_target_base_mm'
+                      if len(t_param) == 3 and any(float(v) != 0.0 for v in t_param)
+                      else path)
+        flight_src = ('param magazine_flight_s'
+                      if float(p_flight or 0.0) != 0.0 else path)
         codes = precondition_refusals(self._observations(now_ros), launch=True)
         if codes:
             return refuse('magazine refused: %s' % (', '.join(codes),))
@@ -4098,11 +4132,11 @@ class SkillNode(Node):
             collecting=True, timer=None)
         self._magazine_ctx['timer'] = self.create_timer(
             0.1, self._magazine_poll, callback_group=self._sub_cbgroup)
-        msg = ('magazine accepted: target base %s mm, world %s mm, plan %s mm, '
-               'flight %.2f s, release in %.2f s (t=%.3f)'
-               % (np.round(cfg.target_base_mm, 1).tolist(),
+        msg = ('magazine accepted: target base %s mm (%s), world %s mm, plan '
+               '%s mm, flight %.2f s (%s), release in %.2f s (t=%.3f)'
+               % (np.round(cfg.target_base_mm, 1).tolist(), target_src,
                   np.round(p_world, 1).tolist(), np.round(p_plan, 1).tolist(),
-                  cfg.flight_s, rel_ros - now_ros, rel_ros))
+                  cfg.flight_s, flight_src, rel_ros - now_ros, rel_ros))
         self.get_logger().info('MAGAZINE ' + msg)
         return SimpleNamespace(success=True, message=msg)
 
@@ -4161,6 +4195,72 @@ class SkillNode(Node):
         with self._reload_lock:
             self._goal_armed = True
             self._goal_done_event.set()
+
+    def _run_reload_only(self, dwell_s: float) -> SimpleNamespace:
+        """The ``reload`` branch of :meth:`_start_pattern` (owner ask,
+        2026-10-13, the GUI's plain "Reload" button): Ball Butler feeds one
+        ball, Jugglebot catches it and settles back to the level rest at
+        P1 — hand home, ball seated — and the attempt ends there, nothing
+        thrown. The feed half of the magazine -> BB -> JB -> magazine
+        tuning loop (`_run_magazine` is the other half; it plans from
+        exactly the rest this leaves).
+
+        The SAME choreography as a ``self_toss`` reload (`_start_reload`'s
+        bridge REST -> `bb/reload` -> `bb/throw_at_target` ->
+        `compile_reload` from Ball Butler's announcement), with
+        ``n_throws=0`` so the compiled schedule ends at its DECAY REST
+        (`schedule.compile_reload`). What `_run_one_ball` checks for its
+        throws does NOT apply — no admissible-box coverage or apex check,
+        no site-xy pin — because nothing the learner commands flies; the
+        boxes and memory still ride the ctx because
+        `_install_announced_reload` builds every reload executor with them
+        (never consulted without a THROW). Same order otherwise: every
+        no-motion refusal, then the opening-REST sizing, the frame check,
+        and `_prelevel` as the last thing before the bridge streams."""
+        if _ADMISSIBLE_BOX_PATH is None:
+            msg = ('cannot find the repo root from %r — the admissible box '
+                   '/ memory paths cannot be resolved' % (__file__,))
+            self.get_logger().debug(msg)
+            return SimpleNamespace(success=False, message=msg)
+        plant_id = str(self.get_parameter('plant_id').value)
+        sites = (Site(_DEFAULT_SITE_NAME,
+                      np.array([_DEFAULT_SITE_X_MM, _DEFAULT_SITE_Y_MM,
+                                CATCH_CUP_Z_MM])),)
+        pattern = OneBallPattern(
+            sites=sites, apex_m=float(self.get_parameter('apex_m').value),
+            dwell_s=dwell_s, n_throws=0)
+        try:
+            boxes = adm.load(_ADMISSIBLE_BOX_PATH)
+        except adm.AdmissibleError as exc:
+            msg = 'admissible box refused: %s' % (exc,)
+            self.get_logger().debug(msg)
+            return SimpleNamespace(success=False, message=msg)
+        try:
+            memory = Memory(memory_path(_REPO_ROOT, plant_id))
+        except (ValueError, OSError, csv.Error) as exc:
+            msg = 'memory refused: %s' % (exc,)
+            self.get_logger().debug(msg)
+            return SimpleNamespace(success=False, message=msg)
+        lift_s, lift_err = self._opening_rest_period()
+        if lift_err:
+            msg = 'reload refused: %s' % (lift_err,)
+            self.get_logger().debug(msg)
+            return SimpleNamespace(success=False, message=msg)
+        pattern = dataclasses.replace(pattern, floor_lift_s=lift_s)
+        frame_err = self._frame_check_error()
+        if frame_err:
+            msg = 'reload refused: %s' % (frame_err,)
+            self.get_logger().debug(msg)
+            return SimpleNamespace(success=False, message=msg)
+        prelevel_err = self._prelevel()
+        if prelevel_err:
+            msg = 'reload refused: %s' % (prelevel_err,)
+            self.get_logger().debug(msg)
+            return SimpleNamespace(success=False, message=msg)
+        return self._start_reload(
+            SimpleNamespace(success=None, message=None), site=sites[0],
+            lift_s=float(pattern.floor_lift_s), pattern=pattern,
+            boxes=boxes, memory=memory)
 
     def _start_reload(self, response, *, site: Site, lift_s: float,
                       boxes, memory: Memory,

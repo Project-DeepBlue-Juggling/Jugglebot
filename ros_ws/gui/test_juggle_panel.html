@@ -184,6 +184,11 @@ setJugglePanelTransport({
             const relay = $('s-relay').value;
             log('call ' + name + '  data="' + req.data + '"  (relay ' + relay + ')');
             if (relay === 'timeout') return new Promise(() => {});
+            if (req.data === 'reload') {     // exact token; a fed catch, nothing thrown
+                setTimeout(() => attempt('juggle_start', { pattern: 'reload', n_throws: '0', reload: '1', apex_m: '0.900', separation_mm: '250.0' }, 'reload started'), 300);
+                setTimeout(() => attempt('juggle_end', { pattern: 'reload', outcome: 'COMPLETED', throws: '0', caught: '0' }, 'COMPLETED'), 2500);
+                return Promise.resolve({ success: true, message: 'Reload dispatched.' });
+            }
             if (req.data === 'magazine') {   // exact token; fake MAGAZINE_MISS 400 ms later
                 setTimeout(() => attempt('MAGAZINE_MISS', { outcome: 'THROWN', dx_mm: '-12.3', dy_mm: '4.5', dt_ms: '8', n_samples: '14' }, 'MAGAZINE miss: dx=-12.3 dy=4.5 mm (elbow frame)'), 400);
                 return Promise.resolve({ success: true, message: 'Magazine throw dispatched.' });

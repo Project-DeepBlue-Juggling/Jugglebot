@@ -125,3 +125,35 @@ def test_quat_to_rotation_round_trips_mocap_node_quaternion():
     R = np.array([[c, -s, 0], [s, c, 0], [0, 0, 1.0]])
     q = (0.0, 0.0, np.sin(0.2), np.cos(0.2))
     np.testing.assert_allclose(quat_to_rotation(*q), R, atol=1e-12)
+
+
+# ── with_overrides (the console's on-the-fly nudge, 2026-10-13) ────────────
+
+def _cfg():
+    return mt.MagazineConfig(target_base_mm=np.array([550.0, 300.0, 750.0]),
+                             flight_s=0.9, source_path='x.yaml')
+
+
+def test_overrides_unset_sentinels_keep_the_file_values():
+    for t, f in ((None, None), ([0.0, 0.0, 0.0], 0.0), ([0, 0, 0], None), ([], 0.0)):
+        cfg = mt.with_overrides(_cfg(), target_base_mm=t, flight_s=f)
+        np.testing.assert_array_equal(cfg.target_base_mm, [550.0, 300.0, 750.0])
+        assert cfg.flight_s == 0.9 and cfg.source_path == 'x.yaml'
+
+
+def test_overrides_replace_the_file_values_independently():
+    cfg = mt.with_overrides(_cfg(), target_base_mm=[560.0, 290.0, 0.0], flight_s=None)
+    np.testing.assert_array_equal(cfg.target_base_mm, [560.0, 290.0, 0.0])
+    assert cfg.flight_s == 0.9
+    cfg = mt.with_overrides(_cfg(), target_base_mm=None, flight_s=1.1)
+    np.testing.assert_array_equal(cfg.target_base_mm, [550.0, 300.0, 750.0])
+    assert cfg.flight_s == 1.1
+
+
+@pytest.mark.parametrize('t, f', [
+    ([1.0, 2.0], None), ([1.0, 2.0, float('nan')], None), (['a', 1, 2], None),
+    (None, 0.4), (None, 1.31), (None, float('nan')),
+])
+def test_overrides_are_validated_like_the_file(t, f):
+    with pytest.raises(ValueError, match='MAGAZINE_CONFIG'):
+        mt.with_overrides(_cfg(), target_base_mm=t, flight_s=f)

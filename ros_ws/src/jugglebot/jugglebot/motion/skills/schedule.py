@@ -1495,7 +1495,9 @@ def compile_reload(landing_mm, landing_vel_mm_s, t_land_abs_s: float,
     point already is on the (degenerate, vertical) axis) —
     **-> the one-ball pattern's own throws** from that level rest
     (:func:`_append_one_ball_pattern` — the SAME tail :func:`compile_one_ball`
-    builds; one compiler body, not two, plan § 0).
+    builds; one compiler body, not two, plan § 0) — or, with
+    ``pattern.n_throws == 0`` (the RELOAD-ONLY attempt, 2026-10-13), nothing:
+    the schedule ends at the DECAY REST with the fed ball seated.
 
     **Why the reload CATCH is a FRESH origin, not a splice** — mirrors
     :func:`compile_one_ball`'s "Why THROW 0 lands at floor_lift_s +
@@ -1618,11 +1620,21 @@ def compile_reload(landing_mm, landing_vel_mm_s, t_land_abs_s: float,
                         rest_tilt=(0.0, 0.0)))
 
     n = int(pattern.n_throws)
-    if n < 1:
-        raise ValueError('n_throws must be >= 1, got %r' % (pattern.n_throws,))
-    skills, t_f, period = _append_one_ball_pattern(
-        skills, decay_end_rel, pattern.sites, pattern.apex_m, pattern.dwell_s,
-        n, pattern.launch_s, pattern.rest_tail_s)
+    if n < 0:
+        raise ValueError('n_throws must be >= 0, got %r' % (pattern.n_throws,))
+    if n == 0:
+        # RELOAD ONLY (owner ask, 2026-10-13: the GUI's plain "Reload" button,
+        # the feed half of the magazine -> BB -> JB -> magazine loop): the
+        # schedule ENDS at the DECAY REST — level at the site, hand home, the
+        # fed ball seated — and nothing is thrown. `compile_one_ball` keeps
+        # refusing 0 (a one-ball pattern with no throw is nothing); only the
+        # reload has a meaningful zero-throw form. No flight/beat: nothing
+        # flies.
+        t_f, period = 0.0, 0.0
+    else:
+        skills, t_f, period = _append_one_ball_pattern(
+            skills, decay_end_rel, pattern.sites, pattern.apex_m,
+            pattern.dwell_s, n, pattern.launch_s, pattern.rest_tail_s)
 
     skills = _assign_leads(skills)
     _check_dispatch_monotone(skills)

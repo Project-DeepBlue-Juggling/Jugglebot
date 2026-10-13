@@ -49,20 +49,58 @@ def load_magazine_config(path: str) -> MagazineConfig:
     for key in ('target_base_mm', 'flight_s'):
         if key not in raw:
             raise _bad(f'{path} missing {key}')
-    t = raw['target_base_mm']
-    if not isinstance(t, (list, tuple)) or len(t) != 3 or \
-            any(isinstance(v, bool) or not isinstance(v, (int, float)) for v in t):
+    return MagazineConfig(target_base_mm=_valid_target(raw['target_base_mm']),
+                          flight_s=_valid_flight(raw['flight_s']),
+                          source_path=str(path))
+
+
+def _valid_target(t) -> np.ndarray:
+    if not isinstance(t, (list, tuple, np.ndarray)) or len(t) != 3 or \
+            any(isinstance(v, bool) or not isinstance(v, (int, float, np.floating, np.integer))
+                for v in t):
         raise _bad('target_base_mm must be a list of 3 numbers')
     target = np.array([float(v) for v in t])
     if not np.all(np.isfinite(target)):
         raise _bad(f'target_base_mm not finite: {t}')
-    fs = raw['flight_s']
-    if isinstance(fs, bool) or not isinstance(fs, (int, float)) or not math.isfinite(float(fs)):
+    return target
+
+
+def _valid_flight(fs) -> float:
+    if isinstance(fs, bool) or not isinstance(fs, (int, float, np.floating, np.integer)) \
+            or not math.isfinite(float(fs)):
         raise _bad(f'flight_s must be a finite number, got {fs!r}')
     fs = float(fs)
     if not (FLIGHT_S_MIN <= fs <= FLIGHT_S_MAX):
         raise _bad(f'flight_s {fs} outside [{FLIGHT_S_MIN}, {FLIGHT_S_MAX}] s')
-    return MagazineConfig(target_base_mm=target, flight_s=fs, source_path=str(path))
+    return fs
+
+
+def with_overrides(cfg: MagazineConfig, target_base_mm=None,
+                   flight_s=None) -> MagazineConfig:
+    """``cfg`` with the session's on-the-fly overrides applied (owner ask,
+    2026-10-13: nudge the target from the console between throws without
+    editing the file) — skill_node's ``magazine_target_base_mm`` /
+    ``magazine_flight_s`` parameters.  ``None``, an all-zero triple and a
+    ``0.0`` flight are the parameters' "unset" sentinels (the same "0 => the
+    node's default" spelling every Juggle goal field uses) and keep the
+    file's value; anything else REPLACES it, validated exactly like the
+    file (``ValueError('MAGAZINE_CONFIG: ...')``).  The file stays the
+    persistent record: the final numbers belong back in it."""
+    target = cfg.target_base_mm
+    fs = cfg.flight_s
+    if target_base_mm is not None:
+        t = list(target_base_mm)
+        unset = len(t) == 0 or (len(t) == 3 and all(
+            isinstance(v, (int, float, np.floating, np.integer))
+            and not isinstance(v, bool) and float(v) == 0.0 for v in t))
+        if not unset:
+            target = _valid_target(t)
+    if flight_s is not None and not (
+            isinstance(flight_s, (int, float, np.floating, np.integer))
+            and not isinstance(flight_s, bool) and float(flight_s) == 0.0):
+        fs = _valid_flight(flight_s)
+    return MagazineConfig(target_base_mm=target, flight_s=fs,
+                          source_path=cfg.source_path)
 
 
 def _v3(p) -> np.ndarray:

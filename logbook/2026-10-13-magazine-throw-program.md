@@ -98,6 +98,8 @@ The owner wants a magazine → BB → JB → magazine loop, so that BB's feed th
 
 ## Outcome
 
+**Superseded the same day** by `2026-10-13-magazine-throw-hand-only-and-reload-button.md`: the owner withdrew the platform heave ("too risky, asking too much of the legs, for little benefit"), so the generator is hand-only from that entry on and the heave rows below are history — the stroke-geometry "next unit" never starts.
+
 Gate verdicts by design at 350/5000/200k (heave rows identical at 1000/6500/140k):
 
 | design | gate |

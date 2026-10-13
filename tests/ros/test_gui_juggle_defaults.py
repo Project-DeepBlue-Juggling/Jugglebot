@@ -65,3 +65,15 @@ def test_magazine_button_sends_exact_token_and_reuses_start_dispatch():
     assert "msg.name === 'MAGAZINE_MISS'" in JS
     # gate: connection + ACTIVE + not busy, field errors ignored
     assert "startGateReason(null, true)" in JS and "if (ignoreFields) return null;" in JS
+
+
+def test_reload_button_sends_exact_token_and_shares_the_magazine_gate():
+    """The plain "Reload" button (2026-10-13): Ball Butler feeds, Jugglebot
+    catches and holds — the bare `reload` token, not a pattern row, gated and
+    dispatched exactly like the magazine button (hold-to-confirm, one latch)."""
+    assert "export const RELOAD_REQUEST = 'reload';" in JS
+    assert "dispatchJuggle(RELOAD_REQUEST, null)" in JS
+    assert "holdToConfirm(reloadBtn, onReloadConfirm, HOLD_MS)" in JS
+    assert "setDisabled(dom.reloadBtn, !!magReason);" in JS
+    assert "value: 'reload'" not in JS and len(PATTERNS) == 5
+    assert "actions.append(start, reloadBtn, magazine, stop, status);" in JS

@@ -1622,10 +1622,12 @@ def test_compile_reload_refuses_an_announcement_with_no_room_to_plan_against(sit
         sc.compile_reload(landing_mm, landing_vel, t0 + 0.5, pattern, t0)
 
 
-def test_compile_reload_rejects_a_non_positive_n_throws(site):
+def test_compile_reload_rejects_a_negative_n_throws(site):
+    """Zero is the RELOAD-ONLY form since 2026-10-13 (its own tests below);
+    a negative count is still nonsense."""
     landing_mm, landing_vel, t_land_abs, pattern, t0 = _reload_args(
         site, n_throws=1)
-    pattern = dataclasses.replace(pattern, n_throws=0)
+    pattern = dataclasses.replace(pattern, n_throws=-1)
     with pytest.raises(ValueError, match='n_throws'):
         sc.compile_reload(landing_mm, landing_vel, t_land_abs, pattern, t0)
 
@@ -1816,3 +1818,31 @@ def test_phantom_feed_prior_is_a_vertical_arrival_at_the_aim_site_one_transit_af
 def test_phantom_feed_prior_refuses_a_pattern_without_the_phantom(cols):
     with pytest.raises(ValueError, match='phantom_balls'):
         sc.phantom_feed_prior(_pattern(cols), cols[1], 0.0)
+
+
+# ── compile_reload with n_throws == 0: the RELOAD-ONLY attempt (2026-10-13) ──
+
+def test_compile_reload_zero_throws_ends_at_the_decay_rest_holding_the_ball(site):
+    """The GUI's plain "Reload" button: Ball Butler feeds, the catch lands,
+    the DECAY REST levels the platform with the ball seated — and that is the
+    whole schedule. Same three leading skills as every reload, nothing after."""
+    landing_mm, landing_vel, t_land_abs, pattern, t0 = _reload_args(site, n_throws=0)
+    schedule = sc.compile_reload(landing_mm, landing_vel, t_land_abs, pattern, t0)
+    kinds = [s.kind for s in schedule.skills]
+    assert kinds == [sc.REST, sc.CATCH, sc.REST]
+    full = sc.compile_reload(*_reload_args(site, n_throws=3))
+    for mine, theirs in zip(schedule.skills, full.skills[:3]):
+        assert (mine.kind, mine.t_abs_s, mine.window_s, mine.holds_ball,
+                mine.lead_s, mine.rest_tilt, mine.hold_tilt) == (
+            theirs.kind, theirs.t_abs_s, theirs.window_s, theirs.holds_ball,
+            theirs.lead_s, theirs.rest_tilt, theirs.hold_tilt)
+    decay = schedule.skills[-1]
+    assert decay.rest_tilt == (0.0, 0.0) and decay.holds_ball is True
+    assert schedule.flight_s == 0.0 and schedule.beat_s == 0.0
+    assert schedule.pattern == 'self_toss'
+
+
+def test_compile_one_ball_still_refuses_zero_throws(site):
+    _, _, _, pattern, _ = _reload_args(site, n_throws=0)
+    with pytest.raises(ValueError, match='n_throws must be >= 1'):
+        sc.compile_one_ball(pattern, t0_abs_s=0.0)

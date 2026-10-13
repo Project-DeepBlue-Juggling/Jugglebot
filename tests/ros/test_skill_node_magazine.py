@@ -174,3 +174,33 @@ def test_too_few_samples_is_no_track(tmp_path):
     ctx['samples'] = {}
     ok, text, _ = node._magazine_miss(ctx)
     assert not ok and text.startswith('NO_TRACK')
+
+
+# ── the console's on-the-fly target nudge (2026-10-13) ────────────────────────
+
+def test_param_override_replaces_the_file_target_and_flight(tmp_path):
+    node, client, R = _setup(tmp_path)
+    _param(node, 'magazine_target_base_mm', [560.0, 290.0, 700.0])
+    _param(node, 'magazine_flight_s', 1.1)
+    calls = []
+    node._installer = lambda kind, term, t, *, ball_id: (
+        calls.append(term) or sn.InstallResult(True, 'OK', 'ok', 0.0))
+    res = node._start_pattern(_goal('magazine'))
+    assert res.success, res.message
+    want = mt.base_to_plan_mm([560, 290, 700], R, [2000, -500, 100], (0, 0))
+    np.testing.assert_allclose(calls[0].target_mm, want)
+    assert calls[0].flight_s == pytest.approx(1.1)
+    assert 'param magazine_target_base_mm' in res.message
+    assert 'param magazine_flight_s' in res.message
+    np.testing.assert_allclose(node._magazine_ctx['cfg'].target_base_mm, [560, 290, 700])
+
+
+def test_param_override_defaults_keep_the_file_and_a_bad_override_refuses(tmp_path):
+    node, client, R = _setup(tmp_path)
+    node._installer = lambda kind, term, t, *, ball_id: sn.InstallResult(True, 'OK', 'ok', 0.0)
+    res = node._start_pattern(_goal('magazine'))
+    assert res.success and 'param magazine_' not in res.message
+    node._magazine_ctx = None
+    _param(node, 'magazine_flight_s', 0.3)       # outside [0.5, 1.3]
+    res = node._start_pattern(_goal('magazine'))
+    assert not res.success and res.message.startswith('MAGAZINE_CONFIG')
