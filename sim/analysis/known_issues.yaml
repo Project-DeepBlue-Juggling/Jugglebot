@@ -7,12 +7,11 @@
 # For the full narrative (symptoms, discussion, fix, outcome), see the
 # linked logbook entry.  This file stays lean and machine-focused.
 #
-# HISTORICAL SIGNATURES (2026-09-01): the MPC chain was removed (see
-# logbook/2026-09-01-mpc-chain-removed.md; git tag `mpc-final`).  MPC_* entries
-# and any `reference:` naming controller/{mpc,params,runner,hardware_plant}.py
-# are RETAINED DELIBERATELY -- this is a catalogue for reading ARCHIVED
-# telemetry, and the recorded mpc_*.csv logs did not change when their producer
-# went away.  Those references resolve at the tag, not on this branch.
+# HISTORICAL SIGNATURES: fixed entries naming MPC-era code (2026-09-01 removal,
+# git tag `mpc-final`) are kept as regression records.  Signatures that read
+# MPC-only signals (solver status, solve time, IPOPT iterations, plant
+# collapse) were deleted 2026-10-14 with the analyses that detected them; the
+# narrative lives on in the linked logbook entries.
 #
 # Fields:
 #   id:            unique identifier (UPPER_SNAKE_CASE)
@@ -58,8 +57,6 @@ issues:
       - type: discontinuity
         field: cmd_ext
         threshold_mm: 100.0
-      - type: solve_status_pattern
-        pattern: "cold_hold"
     fix: "cold_hold now holds at q_cur when available."
 
   - id: ASSIGNMENT_ORDER
@@ -106,99 +103,6 @@ issues:
   # -----------------------------------------------------------------------
   # Active issues (need investigation or fix)
   # -----------------------------------------------------------------------
-
-  - id: MPC_STALENESS
-    name: "MPC solve time exceeding budget"
-    severity: high
-    status: active
-    description: >
-      MPC solver takes too long, causing the motor guard to receive stale
-      commands.  At 40 Hz the budget is ~24ms.  3+ consecutive violations
-      risk triggering the motor guard's staleness E-stop (200ms timeout).
-    signatures:
-      - type: solve_time
-        max_consecutive_violations: 3
-    fix: >
-      Reduce horizon length, increase max_cpu_time, ensure warm-start is
-      working, or check for thermal throttling on Jetson.
-    reference: "controller/params.py"
-
-  - id: MPC_OVERSHOOT_SATURATION
-    name: "MPC NLP saturation when plant overshoots the ref"
-    severity: medium
-    status: fixed
-    fixed_date: "2026-04-20"
-    logbook_entry: "2026-04-20-k1-k6-reference-feasibility-resolution.md"
-    description: >
-      At move-start, when the plant is carrying residual motion or starts off
-      the commanded initial pose, actual extension can lead cmd extension by
-      10+ mm while the reference is still accelerating.  IPOPT is asked to
-      unwind the overshoot against an accelerating ref within a 24 ms budget
-      and bails out before completing one iteration (ipopt_iter==0), so the
-      Tier-1 fallback (logbook
-      2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md) emits a
-      linear cmd-stream extrapolation `cmd = 2·prev_u − prev_prev_u`
-      (workspace-clamped, rate-limited) and the plant continues at the
-      cmd-stream's recent velocity until the solver recovers, with a 500 ms
-      escalation to `cold_hold(q_cur)` as the time-bounded safety net.
-      Signature-wise this is distinct from generic MPC_STALENESS:
-      consecutive timeouts PLUS an overshoot direction PLUS a still-moving
-      ref.  Fix target is the ref source, not the solver — prepend a
-      warm-up Hermite segment from (current plant pose, current twist) on
-      move transitions so the NLP is never asked to reverse the plant
-      against an accelerating ref.  Safety-wise benign with the cmd-stream
-      extrapolation + 500 ms cold_hold escalation, but it creates a
-      multi-hundred-ms tracking hole that matters for dynamic juggling.
-    signatures:
-      - type: overshoot_saturation
-        zero_iter_run_min: 10
-        ext_lead_mm: 10.0
-    fix: >
-      On each new move / target update, inject a synthetic ReferenceEvent at
-      t=t_now carrying the current plant pose and twist. Clamp injected twist
-      to ±v_max to guard against noisy FK-derived velocity. See controller/
-      zmq_target.py and controller/target.py.
-    reference: "controller/mpc.py"
-
-  - id: PLANT_TELEMETRY_COLLAPSE
-    name: "Plant telemetry collapse (motors lost torque, feedback frozen)"
-    severity: high
-    status: active
-    logbook_entry: "2026-04-18-move5-overshoot-stall-and-plant-collapse.md"
-    description: >
-      A two-phase signature: (1) >=5 legs show abs(leg_vel) > 1.5*v_max in the
-      same sample — uncommanded motion consistent with motors unarming and
-      legs free-falling under platform weight; followed within ~500 ms by
-      (2) a run of >=20 consecutive samples where every actual_ext_i reads
-      exactly 0.0 — the stale/empty-payload sentinel the HardwarePlant ZMQ
-      SUB hands back when the feedback publisher dies.
-
-      Upstream cause is exogenous to the MPC: the operator Ctrl+C'd the
-      ROS2 launch (motor_guard dies, legs fall, mpc_bridge_node dies), or
-      the CAN bus dropped, or a power-supply fault.  The HardwarePlant
-      telemetry-staleness E-stop (commit 17a239c) does NOT currently halt
-      run_mpc.py — it only publishes a ZMQ mode message — so the MPC
-      process keeps writing CSV rows against zero-sentinel feedback for
-      whatever remains of its duration, producing a ghost solve-loop.
-
-      When detected, diagnose.py truncates aggregate metrics (tracking,
-      solve_times, workspace, steady_state, etc.) to the pre-collapse slice
-      and downgrades downstream flags to info.  Without this, post-collapse
-      noise dominates the session metrics and healthy runs can be
-      misclassified as FAIL (see logbook entry for the Move 5 case).
-    signatures:
-      - type: plant_collapse
-        vmax_ratio: 1.5
-        legs_min: 5
-        zero_run_min: 20
-        window_s: 0.5
-    fix: >
-      Fix is runtime-side, not analysis-side. Add an estop_requested flag on
-      HardwarePlant (flipped inside estop()) and make run_mpc.py / runner.py
-      break their loop cleanly when it's set. Also detect persistent stale
-      contents (telemetry fresh-looking but unchanging) as a separate trigger
-      for estop. See Bundle B in logbook entry.
-    reference: "controller/hardware_plant.py"
 
   - id: LEG2_TRACKING
     name: "Leg 2 consistently worst tracker"
@@ -293,7 +197,7 @@ issues:
         level: ["ERROR"]
     fix: >
       Investigate large step source: unit mismatch, stale command after
-      mode transition, or MPC solver divergence.
+      mode transition, or a control-loop divergence.
 
   - id: FIRMWARE_MISMATCH
     name: "ODrive firmware version mismatch"
@@ -338,21 +242,8 @@ issues:
       - type: orchestrator_fault_after_motor_error
         within_ms: 500
     fix: >
-      Not a fault — expected behaviour.  Investigate the PRE-E-stop MPC /
+      Not a fault — expected behaviour.  Investigate the PRE-E-stop
       plant behaviour; that is the real failure that prompted the operator
       to intervene.  Do NOT flag the E-stop, STOW-drop, or cascading motor
       errors as independent issues.
     reference: "sim/analysis/diagnose.py:detect_estop_event"
-
-  - id: TIMING_FIRST_SAMPLE
-    name: "First-sample cold-start solve spike"
-    severity: low
-    status: known
-    description: >
-      The first MPC solve is always slower due to CasADi JIT compilation
-      and IPOPT warm-start initialisation.  Expected behaviour.
-    signatures:
-      - type: solve_time_spike
-        sample_index: 0
-        threshold_ms: 15.0
-    fix: "Expected behaviour.  No action needed unless it exceeds ~50ms."

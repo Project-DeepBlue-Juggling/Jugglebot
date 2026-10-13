@@ -1,4 +1,4 @@
-"""Telemetry logging and plotting for the MPC harness.
+"""Telemetry logging and plotting for the sim step loop.
 
 Provides a structured per-step log record (StepRecord), a TelemetryLogger that
 accumulates records and writes CSV, and plotting utilities for post-hoc analysis.
@@ -18,7 +18,7 @@ import numpy as np
 
 @dataclass
 class StepRecord:
-    """One row of telemetry, captured each MPC step (40 Hz)."""
+    """One row of telemetry, captured each control step (40 Hz)."""
 
     time: float = 0.0  # simulation time (s)
 
@@ -110,7 +110,7 @@ class StepRecord:
     throw_phase: str = ""
     catches_total: int = 0
 
-    # MPC diagnostics (populated from Phase 2 onward)
+    # Solver diagnostics (legacy columns; zero unless a caller fills them)
     solve_time_ms: float = 0.0
     solve_status: str = "n/a"
     cost: float = 0.0
@@ -121,21 +121,21 @@ class StepRecord:
     tracking_error_deg: float = 0.0
 
     # Overhead verification (optional, zero when not populated)
-    overhead_ms: float = 0.0           # non-solve overhead per MPC step
+    overhead_ms: float = 0.0           # non-solve overhead per step
     fk_iterations: int = 0             # FK Newton-Raphson iterations
     ff_torque_max_Nm: float = 0.0      # max feedforward torque magnitude
     ipopt_iter: int = 0                # IPOPT iteration count per solve
 
     # Per-segment overhead breakdown (attributes overhead_ms to specific
-    # phases of the MPC loop).  Populated by the hardware/sim runner;
+    # phases of the step loop).  Populated by the hardware/sim runner;
     # zero when not measured.  Their sum approximates overhead_ms modulo
     # measurement skew.
     t_getstate_ms: float = 0.0         # plant.get_state() (ZMQ drain + FK + Jacobian)
     t_target_ms: float = 0.0           # source.update + on_target_override
-    t_solve_setup_ms: float = 0.0      # mpc_solve wrapper minus solve_time_ms (ref build, param pack, warm-start shift)
+    t_solve_setup_ms: float = 0.0      # solve wrapper minus solve_time_ms (ref build, param pack, warm-start shift)
     t_hooks_ms: float = 0.0            # on_post_solve + on_pre_command (e.g. feedforward dynamics)
     t_cmd_ms: float = 0.0              # plant.command (ZMQ send)
-    t_log_ms: float = 0.0              # log_mpc_step (record build + logger.append + dashboard broadcast)
+    t_log_ms: float = 0.0              # log step (record build + logger.append + dashboard broadcast)
     gc_ms: float = 0.0                 # time spent in Python GC callbacks during this tick
     zmq_drain_count: int = 0           # messages drained from telemetry SUB in get_state
 
@@ -669,7 +669,7 @@ def plot_tracking(records: Sequence[StepRecord], show: bool = True) -> None:
 
 
 def plot_solve_times(records: Sequence[StepRecord], show: bool = True) -> None:
-    """Histogram of MPC solve times."""
+    """Histogram of solve times."""
     import matplotlib.pyplot as plt
 
     times_ms = [r.solve_time_ms for r in records if r.solve_time_ms > 0]
@@ -682,7 +682,7 @@ def plot_solve_times(records: Sequence[StepRecord], show: bool = True) -> None:
     ax.axvline(20.0, color='r', linestyle='--', label='20 ms budget')
     ax.set_xlabel('Solve time (ms)')
     ax.set_ylabel('Count')
-    ax.set_title('MPC Solve Time Distribution')
+    ax.set_title('Solve Time Distribution')
     ax.legend()
     ax.grid(True, alpha=0.3)
     fig.tight_layout()

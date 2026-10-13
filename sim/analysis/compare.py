@@ -150,10 +150,6 @@ def compute_gap_metrics(
             'sim_hw_peak_diff': float(np.max(np.abs(sim_v - hw_v))),
         }
 
-    # Solve times (hardware only — sim solve times are on a different machine)
-    hw_solve = _extract_array(hw_records, 'solve_time_ms')
-    sim_solve = _extract_array(sim_records, 'solve_time_ms')
-
     return {
         'sim_rms_mm': sim_rms_mm,
         'hw_rms_mm': hw_rms_mm,
@@ -166,10 +162,6 @@ def compute_gap_metrics(
         'gap_rms_mm': float(np.sqrt(np.mean(gap_mm**2))),
         'gap_peak_mm': float(np.max(gap_mm)),
         'per_dof': per_dof,
-        'hw_solve_p50_ms': float(np.median(hw_solve)) if len(hw_solve) > 0 else 0,
-        'hw_solve_p95_ms': float(np.percentile(hw_solve, 95)) if len(hw_solve) > 0 else 0,
-        'sim_solve_p50_ms': float(np.median(sim_solve)) if len(sim_solve) > 0 else 0,
-        'sim_solve_p95_ms': float(np.percentile(sim_solve, 95)) if len(sim_solve) > 0 else 0,
         'n_sim_steps': len(sim_records),
         'n_hw_steps': len(hw_records),
         'common_duration_s': float(t_common[-1] - t_common[0]) if len(t_common) > 0 else 0,
@@ -207,13 +199,6 @@ def print_gap_report(metrics: dict, threshold_pct: float = 30.0) -> bool:
     print(f"  {'DoF':<15s} {'RMS diff':>10s} {'Peak diff':>10s}")
     for label, dof_m in metrics['per_dof'].items():
         print(f"  {label:<15s} {dof_m['sim_hw_rms_diff']:>10.4f} {dof_m['sim_hw_peak_diff']:>10.4f}")
-    print()
-
-    print("  SOLVE TIMES")
-    print("  " + "-" * 40)
-    print(f"  {'':>12s} {'p50 (ms)':>10s} {'p95 (ms)':>10s}")
-    print(f"  {'Sim':>12s} {metrics['sim_solve_p50_ms']:>10.2f} {metrics['sim_solve_p95_ms']:>10.2f}")
-    print(f"  {'Hardware':>12s} {metrics['hw_solve_p50_ms']:>10.2f} {metrics['hw_solve_p95_ms']:>10.2f}")
     print()
 
     # Pass/fail: sim should predict hardware tracking error within threshold_pct
@@ -283,7 +268,7 @@ def print_tau_report(taus: dict) -> None:
     agg = taus['aggregate']
     if not np.isnan(agg):
         print(f"\n  Aggregate tau: {agg*1000:.1f} ms")
-        print(f"  Recommended MPCParams.tau = {agg:.4f}")
+        print(f"  Aggregate tau (s) = {agg:.4f}")
     else:
         print("\n  Could not estimate tau (insufficient dynamic data)")
     print()
@@ -370,36 +355,12 @@ def plot_comparison(
     axes3[-1, 1].set_xlabel('Time (s)')
     fig3.tight_layout()
 
-    # --- Figure 4: Solve times ---
-    fig4, (ax4a, ax4b) = plt.subplots(1, 2, figsize=(14, 4))
-    fig4.suptitle('MPC Solve Times', fontsize=14)
-
-    sim_solve = _extract_array(sim_records, 'solve_time_ms')
-    hw_solve = _extract_array(hw_records, 'solve_time_ms')
-
-    for ax, data, label, color in [(ax4a, sim_solve, 'Sim', 'steelblue'),
-                                    (ax4b, hw_solve, 'Hardware', 'indianred')]:
-        valid = data[data > 0]
-        if len(valid) > 0:
-            ax.hist(valid, bins=40, edgecolor='black', alpha=0.7, color=color)
-            ax.axvline(20.0, color='red', linestyle='--', label='20 ms budget')
-            ax.set_xlabel('Solve time (ms)')
-            ax.set_ylabel('Count')
-            ax.set_title(f'{label} (p50={np.median(valid):.1f}, p95={np.percentile(valid, 95):.1f} ms)')
-            ax.legend(fontsize=8)
-            ax.grid(True, alpha=0.3)
-        else:
-            ax.text(0.5, 0.5, 'No data', ha='center', va='center', transform=ax.transAxes)
-            ax.set_title(label)
-    fig4.tight_layout()
-
     if save_path:
         base, ext = os.path.splitext(save_path)
         fig1.savefig(f'{base}_pose{ext}', dpi=150, bbox_inches='tight')
         fig2.savefig(f'{base}_error{ext}', dpi=150, bbox_inches='tight')
         fig3.savefig(f'{base}_legs{ext}', dpi=150, bbox_inches='tight')
-        fig4.savefig(f'{base}_solve{ext}', dpi=150, bbox_inches='tight')
-        print(f"  Figures saved: {base}_{{pose,error,legs,solve}}{ext}")
+        print(f"  Figures saved: {base}_{{pose,error,legs}}{ext}")
 
     if show:
         plt.show()

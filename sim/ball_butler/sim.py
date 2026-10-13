@@ -25,10 +25,17 @@ import yaml
 
 import sys
 
-from sim.hand.coordinator import BallSpawn
 
-# Gravity in mm/s² (same as hand.ballistics)
+# Gravity in mm/s² (same as controller.ballistics)
 _GRAVITY_MMS2 = 9806.0
+
+
+@dataclass
+class BallSpawn:
+    """Ball spawn parameters for a scripted test sequence."""
+    position_mm: np.ndarray      # (3,) world frame spawn position
+    velocity_mms: np.ndarray     # (3,) spawn velocity
+    spawn_time: float            # absolute sim time to spawn the ball
 
 
 # ---------------------------------------------------------------------------

@@ -6,7 +6,7 @@ structured analysis tables.  No external dependencies beyond stdlib.
 
 Usage (typically called from diagnose.py):
     from sim.analysis.report_html import generate_html_report
-    path = generate_html_report(result, "temp/logs/mpc_20260401_152048_report.html")
+    path = generate_html_report(result, "temp/logs/sim_20260401_152048_report.html")
 """
 
 from __future__ import annotations
@@ -166,7 +166,6 @@ def generate_html_report(result: Dict[str, Any], output_path: str) -> str:
     plots = result.get('plots', {})
     flags = result.get('flags', [])
     tracking = result.get('tracking', {})
-    solve = result.get('solve_times', {})
     osc = result.get('oscillation', {})
     disc = result.get('discontinuities', {})
     ws = result.get('workspace', {})
@@ -231,37 +230,6 @@ def generate_html_report(result: Dict[str, Any], output_path: str) -> str:
 
         parts.append(_plot_img(plots, 'legs'))
         parts.append(_plot_img(plots, 'tracking'))
-
-    # --- MPC Solver ---
-    if solve and solve.get('n_valid', 0) > 0:
-        parts.append('<h2>MPC Solver</h2>')
-        parts.append('<div class="stat-grid">')
-        for label, key, dec in [
-            ('p50', 'p50_ms', 1), ('p95', 'p95_ms', 1),
-            ('p99', 'p99_ms', 1), ('Max', 'max_ms', 1),
-            ('Budget', 'budget_ms', 0),
-            ('Violations', 'budget_violations', 0),
-            ('Violation %', 'budget_violation_pct', 1),
-            ('First sample', 'first_sample_ms', 1),
-        ]:
-            val = solve.get(key)
-            suffix = 'ms' if 'ms' in key else ''
-            suffix = '%' if 'pct' in key else suffix
-            parts.append(
-                f'<div class="stat-box">'
-                f'<div class="label">{label}</div>'
-                f'<div class="value">{_fmt(val, dec)}{suffix}</div>'
-                f'</div>'
-            )
-        parts.append('</div>')
-
-        consec = solve.get('max_consecutive_violations', 0)
-        if consec >= 3:
-            parts.append(
-                f'<p><strong>Max consecutive violations:</strong> {consec}</p>'
-            )
-
-        parts.append(_plot_img(plots, 'solver'))
 
     # --- Stability ---
     parts.append('<h2>Stability</h2>')

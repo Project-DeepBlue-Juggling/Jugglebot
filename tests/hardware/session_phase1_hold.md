@@ -137,7 +137,7 @@ ros2 service call /set_setpoint_output std_srvs/srv/SetBool "{data: true}"
 ```
 
 The bridge runs the arming preconditions before enabling: (a) Teensy link up +
-fresh heartbeat; (b) a fresh `mpccmd` frame on :5557 within 0.5 s; (c) that
+fresh heartbeat; (b) a fresh `setpoint` frame on :5557 within 0.5 s; (c) that
 frame's `u0` within **0.25 rev** (half the firmware 0.5 rev MAX_DEVIATION
 backstop) of every leg's live `pos_estimate`. Only then does it stream-then-arm.
 

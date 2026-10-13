@@ -198,22 +198,3 @@ def test_rodrigues_quarter_turn_about_z():
 # 2026-09-09, R0 dead-layer deletion (plans/archived/two-ball-skill-stack.md
 # § 6) — controller/toss_motion_source.py had no non-test importer outside
 # its own tests.
-
-
-def test_sim_hand_ballistics_reexports_match_controller():
-    """sim/hand/ballistics.py must re-export the same symbols with identical
-    numerics — this was the compat contract when we extracted the pure-math
-    bits to controller/."""
-    from sim.hand import ballistics as sim_ballistics
-    from controller import ballistics as ctl_ballistics
-
-    assert sim_ballistics.compute_launch_velocity is (
-        ctl_ballistics.compute_launch_velocity)
-    assert sim_ballistics.compute_arrival_velocity is (
-        ctl_ballistics.compute_arrival_velocity)
-    assert sim_ballistics.compute_orientation is (
-        ctl_ballistics.compute_orientation)
-    assert sim_ballistics.rodrigues is ctl_ballistics.rodrigues
-    # Legacy underscored names preserved.
-    assert sim_ballistics._GRAVITY_MMS2 == ctl_ballistics.GRAVITY_MMS2
-    assert sim_ballistics._TILT_LIMIT_RAD == ctl_ballistics.TILT_LIMIT_RAD

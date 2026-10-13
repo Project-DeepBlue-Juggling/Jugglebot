@@ -91,10 +91,10 @@ def _pump_ff(ramp_frames: int = 0, **kw):
 
 
 def _cmd(torque_Nm=None, u0_scale: float = 1.0):
-    """A minimal, pump-acceptable mpc_cmd dict at the active pose."""
+    """A minimal, pump-acceptable setpoint_cmd dict at the active pose."""
     ext = np.asarray(hw.JB_OP_ACTIVATE_POSITION_REVS) / np.asarray(hw.GEOM_MM_TO_REV)
     msg = {
-        'type': 'mpc_cmd',
+        'type': 'setpoint_cmd',
         'ext_mm': list(ext),
         'motor_rev': [float(r) * u0_scale for r in hw.JB_OP_ACTIVATE_POSITION_REVS],
         'vel_mm_s': [0.0] * 6,

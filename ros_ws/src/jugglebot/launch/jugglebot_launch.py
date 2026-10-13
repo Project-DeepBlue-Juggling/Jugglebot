@@ -513,7 +513,7 @@ def generate_launch_description():
     # path is trajectory_node -> :5557 -> teensy_bridge_node -> the can-bridge
     # Teensy, which does its own 500 Hz interpolation, and the guard's :5556
     # output "simply goes unconsumed" (teensy_bridge_node.py, the
-    # _MpcCommandSetpointSource docstring). The GUI migrated off it too
+    # _SetpointCommandSource docstring). The GUI migrated off it too
     # (ros_ws/gui/js/main.js:417).
     #
     # SAFETY AUTHORITY on the leg path is the Teensy-side MAX_DEVIATION guard,

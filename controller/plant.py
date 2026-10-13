@@ -5,9 +5,7 @@ or simulated plant. The one live implementation is ``MuJoCoPlant``, which steps
 a MuJoCo simulation (``sim/plant/mujoco_plant.py``).
 
 ``HardwarePlant`` — the ZMQ/CAN implementation that spoke to ``motor_guard`` —
-was removed 2026-09-01 with the rest of the MPC chain (dormant since
-2026-08-01, superseded by the unified 7-DoF planner as the per-cycle
-replanner). It is preserved at git tag ``mpc-final``; see
+was removed 2026-09-01 with the rest of the MPC chain. It is preserved at git tag ``mpc-final``; see
 ``logbook/2026-09-01-mpc-chain-removed.md``. The contract below is unchanged
 and still binds any future implementation.
 
@@ -104,13 +102,13 @@ class PlantInterface(ABC):
         ----------
         leg_extensions_mm : (6,) ndarray — STOW-relative extensions in mm
         vel_mm_s : (6,) ndarray or None — forward-looking command velocity
-            (mm/s).  When provided by the MPC, this is preferred over the
+            (mm/s).  When provided by the caller, this is preferred over the
             backward-difference computed from consecutive commands.
-        cmd_next_mm : (6,) ndarray or None — MPC's predicted next-step
+        cmd_next_mm : (6,) ndarray or None — caller's predicted next-step
             command (u[1]).  When provided, the motor guard interpolates
             between the current command and this waypoint instead of
             extrapolating.  None falls back to Taylor extrapolation.
-        cmd_next2_mm : (6,) ndarray or None — MPC's predicted step-after-
+        cmd_next2_mm : (6,) ndarray or None — caller's predicted step-after-
             next command (u[2]).  Used with cmd_next_mm to make Hermite
             interpolation C1-continuous across segment boundaries.
         """

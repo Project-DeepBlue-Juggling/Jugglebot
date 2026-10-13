@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Diagnostic plot generation for /diagnose.
 
-Generates matplotlib plots from MPC telemetry CSVs, annotated with anomalies
+Generates matplotlib plots from telemetry CSVs, annotated with anomalies
 detected by the diagnosis engine.  Each plot is saved as a PNG next to the
 source CSV.
 
@@ -29,7 +29,7 @@ from sim.viz.telemetry import StepRecord  # noqa: E402
 # ---------------------------------------------------------------------------
 
 PLOT_CATEGORIES = [
-    'legs', 'pose', 'tracking', 'solver',
+    'legs', 'pose', 'tracking',
     'velocity', 'hand', 'workspace', 'chatter',
 ]
 
@@ -37,9 +37,6 @@ PLOT_CATEGORIES = [
 STROKE_MIN_MM = 5.0
 STROKE_MAX_MM = 275.0
 STROKE_SOFT_MARGIN_MM = 15.0
-
-# MPC budget line (ms)
-DEFAULT_BUDGET_MS = 24.0
 
 # Shared styling
 _GRID_ALPHA = 0.3
@@ -79,7 +76,7 @@ def _save_and_close(fig: Any, path: str, dpi: int) -> None:
 
 def auto_select_plots(analysis_result: Dict[str, Any]) -> List[str]:
     """Pick relevant plot categories based on analysis flags."""
-    selected = ['legs', 'tracking', 'solver']  # always included
+    selected = ['legs', 'tracking']  # always included
 
     flags = analysis_result.get('flags', [])
     flag_messages = ' '.join(f.get('message', '') for f in flags)
@@ -196,51 +193,6 @@ def _plot_tracking(records: Sequence[StepRecord], analysis: Dict, path: str, dpi
     ax2.plot(times, ori_err, 'tab:blue', linewidth=1)
     ax2.set_ylabel('Orientation error (deg)')
     ax2.set_xlabel('Time (s)')
-    ax2.grid(True, alpha=_GRID_ALPHA)
-
-    fig.tight_layout()
-    _save_and_close(fig, path, dpi)
-
-
-def _plot_solver(records: Sequence[StepRecord], analysis: Dict, path: str, dpi: int) -> None:
-    """Solve time timeseries + histogram with budget line."""
-    times = _times(records)
-    solve_ms = _extract(records, 'solve_time_ms')
-    budget = analysis.get('solve_times', {}).get('budget_ms', DEFAULT_BUDGET_MS)
-
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
-    fig.suptitle('MPC Solver Performance', fontsize=13)
-
-    # Timeseries: color violations red
-    within = solve_ms <= budget
-    ax1.scatter(times[within], solve_ms[within], s=6, color='tab:blue', alpha=0.7, label='within budget')
-    if np.any(~within):
-        ax1.scatter(times[~within], solve_ms[~within], s=12, color='tab:red', alpha=0.9,
-                    marker='x', label='over budget')
-    ax1.axhline(budget, color='red', linestyle='--', alpha=0.6, label=f'budget ({budget:.0f} ms)')
-    ax1.set_xlabel('Time (s)')
-    ax1.set_ylabel('Solve time (ms)')
-    ax1.legend(fontsize=7)
-    ax1.grid(True, alpha=_GRID_ALPHA)
-
-    # Histogram
-    valid = solve_ms[solve_ms > 0]
-    if len(valid) > 0:
-        ax2.hist(valid, bins=min(50, max(10, len(valid) // 5)), edgecolor='black', alpha=0.7)
-        ax2.axvline(budget, color='red', linestyle='--', label=f'budget ({budget:.0f} ms)')
-
-        # Annotate percentiles
-        st = analysis.get('solve_times', {})
-        if st.get('p50_ms'):
-            ax2.axvline(st['p50_ms'], color='green', linestyle=':', alpha=0.7,
-                        label=f'p50={st["p50_ms"]:.1f}ms')
-        if st.get('p95_ms'):
-            ax2.axvline(st['p95_ms'], color='orange', linestyle=':', alpha=0.7,
-                        label=f'p95={st["p95_ms"]:.1f}ms')
-
-    ax2.set_xlabel('Solve time (ms)')
-    ax2.set_ylabel('Count')
-    ax2.legend(fontsize=7)
     ax2.grid(True, alpha=_GRID_ALPHA)
 
     fig.tight_layout()
@@ -372,7 +324,6 @@ _PLOT_FUNCS = {
     'legs': _plot_legs,
     'pose': _plot_pose,
     'tracking': _plot_tracking,
-    'solver': _plot_solver,
     'velocity': _plot_velocity,
     'hand': _plot_hand,
     'workspace': _plot_workspace,
@@ -396,7 +347,7 @@ def generate_diagnostic_plots(
     analysis_result : dict
         Output of analyse_csv() + generate_flags().
     output_prefix : str
-        Path prefix for PNGs, e.g. "temp/logs/mpc_20260401_153529".
+        Path prefix for PNGs, e.g. "temp/logs/sim_20260401_153529".
         Each plot appends "_{category}.png".
     categories : list of str, optional
         Which plots to generate.  None = auto-select based on flags.

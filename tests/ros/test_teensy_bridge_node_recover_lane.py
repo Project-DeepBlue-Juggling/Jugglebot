@@ -309,12 +309,12 @@ def test_reseed_unavailable_fails_armed_never_clears(rig):
 
 
 def test_arm_refused_fails_disarmed_and_names_fallback(rig):
-    r = rig(arm_result=(False, 'no mpccmd frame on :5557 within 0.5 s — is '
+    r = rig(arm_result=(False, 'no setpoint frame on :5557 within 0.5 s — is '
                                'trajectory_node running and streaming?'))
     res = r.recover()
     assert res.success is False
     assert r.node._lane_recovery_stage == 'arm'
-    assert 're-arm refused: no mpccmd frame' in res.message
+    assert 're-arm refused: no setpoint frame' in res.message
     assert 'wire left DISARMED' in res.message
     assert 'DEACTIVATE → ACTIVATE (IDLE then TRAJECTORY in the GUI)' in res.message
     assert r.node._mpc_active is False

@@ -1,21 +1,21 @@
-"""Pack 40 Hz MPC commands into Teensy-side knot Setpoint frames, with a per-step
+"""Pack 40 Hz setpoint commands into Teensy-side knot Setpoint frames, with a per-step
 VELOCITY gate (see the contract block in ``SetpointPump.__init__``).
 
 Pure logic — no ROS, no ZMQ, no UDP. The bridge node owns the transport (ZMQ
-ingress from the MPC on :5557, UDP egress to the Teensy, the dedicated ingest
+ingress from trajectory_node on :5557, UDP egress to the Teensy, the dedicated ingest
 thread); :class:`SetpointPump` owns the **safety-critical** packing + per-step
 clamp so they can be unit-tested in isolation.
 
 **The Jetson-relay→Teensy-side switch.** Historically this pump consumed
 ``motor_guard``'s *already-interpolated* 500 Hz telemetry (:5556, ``flags=0``,
 the **Jetson-relay path**) and the Teensy ran in Mode-2 pass-through while motor_guard's
-500 Hz Hermite stayed on the Jetson. This pump re-points it at the **40 Hz MPC command
-stream** (:5557, ``TOPIC_MPC_CMD``, ``make_mpc_command``) and emits **Teensy-side knots**
+500 Hz Hermite stayed on the Jetson. This pump re-points it at the **40 Hz setpoint command
+stream** (:5557, ``TOPIC_SETPOINT_CMD``, ``make_setpoint_command``) and emits **Teensy-side knots**
 (``u0``/``u1``/``u2`` + ``v0``, ``flags`` carrying ``HAS_U1``/``HAS_U2``) so the
 Teensy's 500 Hz cubic-Hermite interpolator (``leg_interp.cpp`` Mode 1) does the
 interpolation — the migration's headline benefit, finally realised. motor_guard
-leaves the leg path entirely; leg safety becomes **MPC (coupled workspace) + the
-Teensy fault machine** (per-leg stroke / deviation / MPC-staleness E-STOP /
+leaves the leg path entirely; leg safety becomes **the trajectory planner's (coupled workspace) gates + the
+Teensy fault machine** (per-leg stroke / deviation / command-staleness E-STOP /
 deferred-stow — all bench-validated). See
 ``logbook/2026-06-25-phase11-u4-production-cutover.md``.
 
@@ -23,7 +23,7 @@ The 7-channel v6 frame (2026-09-01, unified-7dof-planner Phase 2)
 -----------------------------------------------------------------
 The wire ``Setpoint`` carries **7 lanes** (legs 0..5 + hand at index 6) and a
 new ``v1`` f32[7] array — the exact velocity at the ``u1`` knot — behind flag
-bit 3 ``HAS_V1``. This pump fills them from six new OPTIONAL ``mpc_cmd`` keys:
+bit 3 ``HAS_V1``. This pump fills them from six new OPTIONAL ``setpoint_cmd`` keys:
 
   * ``hand_rev`` / ``hand_vel_rps`` / ``hand_next_rev`` / ``hand_next2_rev``
     → ``u0[6]`` / ``v0[6]`` / ``u1[6]`` / ``u2[6]``. **ODrive-convention
@@ -293,7 +293,7 @@ class SetpointPump:
 
     Args:
         mm_to_rev: per-leg mm→motor-rev scale (``hardware_config.GEOM_MM_TO_REV``).
-            Injected because the pump now derives motor-rev knots from the MPC's
+            Injected because the pump now derives motor-rev knots from the command's
             mm-space command fields (``ext_mm``/``cmd_next_mm``/``vel_mm_s``);
             kept as a constructor arg (not a per-build param or a
             ``jugglebot.motion`` import) so the module stays pure.
@@ -539,7 +539,7 @@ class SetpointPump:
 
         Robust to a malformed message: a scalar / non-sequence ``seq`` or a
         ``None`` / non-numeric element returns ``(None, reason)`` rather than
-        raising, so one bad MPC frame is a REJECT (surfaced + counted), never a
+        raising, so one bad command frame is a REJECT (surfaced + counted), never a
         crash of the setpoint thread.
 
         Returns ``(values_list, None)`` on success or ``(None, reason)``.
@@ -581,7 +581,7 @@ class SetpointPump:
 
     def build(self, cmd: dict, t_origin_us: int
               ) -> Tuple[Optional[Setpoint], Optional[str]]:
-        """Validate + pack one 40 Hz MPC command (:5557 ``mpc_cmd`` dict).
+        """Validate + pack one 40 Hz setpoint command (:5557 ``setpoint_cmd`` dict).
 
         Returns ``(setpoint, reject_reason)``:
           * ``(Setpoint, None)`` — a safe Teensy-side knot frame to send.
@@ -635,7 +635,7 @@ class SetpointPump:
                     'hand keys without a position command '
                     '(motor_rev/ext_mm both absent)')
                 return None, self.last_reject_reason
-            # No position command in this message (e.g. a non-mpc_cmd frame that
+            # No position command in this message (e.g. a non-setpoint_cmd frame that
             # slipped the topic filter). Nothing to command — skip, not a fault.
             self.frames_skipped += 1
             return None, None
@@ -670,7 +670,7 @@ class SetpointPump:
         # discontinuous-FF transient that bootstrapped the 2026-05-08 5 Hz platform
         # limit cycle. Rejecting instead leaves the firmware holding the last good
         # setpoint AND its torque (continuous), and if the condition persists the
-        # 250 ms MPC-staleness E-STOP fires — loud and safe.
+        # 250 ms command-staleness E-STOP fires — loud and safe.
         tq_true = None
         if self.torque_ff_enabled:
             tq = cmd.get('torque_Nm')

@@ -1,20 +1,25 @@
 # -*- coding: utf-8 -*-
 """Hardware diagnosis analysis engine.
 
-Reads MPC telemetry CSVs and rosbag (MCAP) recordings to produce a structured
-JSON diagnostic report.  Designed to be invoked by the /diagnose Claude Code
-slash command, which interprets the output and presents it to the user.
+Reads rosbag (MCAP) recordings, ROS2 launch logs and (optionally) a sim
+telemetry CSV to produce a structured JSON diagnostic report.  Designed to be
+invoked by the /diagnose Claude Code slash command, which interprets the
+output and presents it to the user.
 
 Primary data sources:
-  - MPC telemetry CSV (temp/logs/mpc_*.csv) — 55-field StepRecord at 40 Hz
-  - Rosbag MCAP (~/Desktop/rosbags/<timestamp>/) — 19 ROS2 topics recorded
-    automatically by the launch file
+  - Rosbag MCAP (~/Desktop/rosbags/<timestamp>/) — ROS2 topics recorded
+    automatically by the launch file (the live hardware path)
+  - Optional telemetry CSV (temp/logs/*.csv) — 55-field StepRecord at 40 Hz,
+    written by sim/main.py; only the pose/velocity/extension columns that
+    producer fills are analysed (tracking, oscillation, discontinuities,
+    motion onset, workspace, steady state, hold phase, command spectrum)
 
 Note: ROS2 Foxy does NOT write per-node text log files (that's Humble+).
 The --ros-log-dir option is retained for forward compatibility but is not
 part of the standard diagnosis workflow.
 
 Usage:
+    python sim/analysis/diagnose.py --rosbag <path> --json
     python sim/analysis/diagnose.py <csv_path> --json
     python sim/analysis/diagnose.py <csv_path> --rosbag <path> --json
     python sim/analysis/diagnose.py <csv_path> --ros-log-dir <path> --json  (optional)
@@ -61,9 +66,6 @@ STROKE_MIN_MM = 5.0
 STROKE_MAX_MM = 275.0
 STROKE_SOFT_MARGIN_MM = 15.0
 
-# MPC solve budget (ms) — at 40 Hz
-DEFAULT_BUDGET_MS = 24.0
-
 # Oscillation detection
 CHATTER_THRESHOLD = 0.5          # ratio of sign changes / samples
 AMPLITUDE_GROWTH_WINDOW = 10     # samples for envelope regression
@@ -78,33 +80,6 @@ STEADY_STATE_RMS_THRESHOLD_MM = 0.5
 
 # Reference change detection (mm for position, rad for orientation)
 REF_CHANGE_THRESHOLD = 0.01
-
-# Plant telemetry collapse detection.
-#
-# HISTORICAL SURFACE (2026-09-01): the MPC chain that produced these logs was
-# removed — see logbook/2026-09-01-mpc-chain-removed.md, git tag `mpc-final`.
-# The MPC-era patterns below are RETAINED DELIBERATELY: this is a log analyser,
-# and the archived `mpc_*.csv` telemetry it reads did not change when the
-# producer went away.  Nothing here imports the deleted modules.
-#
-# v_max mirrored the old controller.params.MPCParams.max_leg_vel_mmps (the rate
-# cap the MPC enforced), now a literal below.
-# Free-fall signature: all 6 legs retract together at mean speed beyond the
-# rate cap (the controller couldn't command that profile, so it's uncommanded).
-# The "all legs exactly 0.0" sentinel is what HardwarePlant's ZMQ SUB handed
-# back when telemetry stopped flowing.
-V_MAX_MM_S = 140.0
-PLANT_COLLAPSE_MEAN_SPEED_MM_S = V_MAX_MM_S  # mean(|leg_vel|) across 6 legs
-PLANT_COLLAPSE_SAME_SIGN_MIN = 5             # at least this many legs moving same direction
-PLANT_COLLAPSE_ZERO_RUN_MIN = 20             # consecutive all-zero-extension steps
-PLANT_COLLAPSE_WINDOW_S = 0.5                # overspeed must precede zero-run within this window
-
-# Overshoot-induced NLP saturation detection.  Signature: IPOPT hits the
-# CPU cap before finishing one iteration while the plant pose is far from
-# the reference and the reference is still moving.  Distinct from generic
-# MPC_STALENESS (which has no overshoot context).
-OVERSHOOT_ZERO_ITER_RUN_MIN = 10         # consecutive ipopt_iter==0 steps
-OVERSHOOT_TRACKING_ERR_MM = 10.0         # tracking_error_mm must exceed this in the run
 
 # Hold-phase quiescence detection.  Identifies the longest run in which the
 # reference pose is stationary, skips a settling period, then reports per-leg
@@ -123,16 +98,8 @@ assert HOLD_MAX_TAIL_S >= HOLD_MIN_TAIL_S, (
 HOLD_ASYMMETRY_WARN = 1.5                # worst/quietest ratio > this triggers a flag
 HOLD_LEG_STD_WARN_UM = 20.0              # per-leg act_std above this triggers a flag
 
-# MPC loop overhead (dt minus solve_time) analysis.  Used to separate
-# solver-induced latency from other causes (GC pauses, interpreter
-# housekeeping, logging, ZMQ drain surges).
-OVERHEAD_ISOLATED_RATIO = 3.0            # spike >= this × local neighbourhood
-OVERHEAD_NEIGHBOUR_WINDOW = 5            # ticks on each side for neighbourhood mean
-OVERHEAD_MIN_MS_FOR_SPIKE = 15.0         # floor: ignore below this absolute level
-OVERHEAD_BUDGET_MS = 10.0                # typical well-behaved overhead ceiling
-
 # cmd_ext spectral content during hold.  If >HF_ENERGY_WARN_PCT of the cmd
-# energy sits above 10 Hz, flag it so the operator doesn't mistake MPC
+# energy sits above 10 Hz, flag it so the operator doesn't mistake command
 # numerical-noise-floor jitter for a bug.
 CMD_SPECTRAL_HF_HZ = 10.0
 CMD_SPECTRAL_MID_HZ = 2.0
@@ -193,7 +160,7 @@ def _load_motor_params() -> Dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# MPC CSV analysis
+# Telemetry CSV analysis
 # ---------------------------------------------------------------------------
 
 def _extract(records: List[StepRecord], attr: str) -> np.ndarray:
@@ -248,146 +215,26 @@ def analyse_tracking(records: List[StepRecord]) -> Dict[str, Any]:
     }
 
 
-def analyse_solve_times(records: List[StepRecord],
-                        budget_ms: float = DEFAULT_BUDGET_MS) -> Dict[str, Any]:
-    """MPC solve time distribution analysis."""
-    solve_ms = _extract(records, 'solve_time_ms')
-    valid = solve_ms[solve_ms > 0]
-
-    if len(valid) == 0:
-        return {'n_valid': 0}
-
-    # Budget violations
-    violations = valid > budget_ms
-    # Consecutive violations
-    max_consecutive = 0
-    current_run = 0
-    for v in violations:
-        if v:
-            current_run += 1
-            max_consecutive = max(max_consecutive, current_run)
-        else:
-            current_run = 0
-
-    return {
-        'n_valid': int(len(valid)),
-        'p50_ms': round(float(np.median(valid)), 2),
-        'p95_ms': round(float(np.percentile(valid, 95)), 2),
-        'p99_ms': round(float(np.percentile(valid, 99)), 2),
-        'max_ms': round(float(np.max(valid)), 2),
-        'budget_ms': budget_ms,
-        'budget_violations': int(np.sum(violations)),
-        'budget_violation_pct': round(float(np.mean(violations) * 100), 2),
-        'max_consecutive_violations': max_consecutive,
-        'first_sample_ms': round(float(valid[0]), 2) if len(valid) > 0 else 0,
-    }
-
-
-def analyse_solver_status(records: List[StepRecord]) -> Dict[str, Any]:
-    """Tally the MPC solver-status column — the richer signal than solve time alone.
-
-    A solve can land under the time budget and still be a fallback/hold (e.g.
-    Maximum_CpuTime_Exceeded that IPOPT returned slightly under the cap), or
-    land over budget and still be a successful solve.  The `solve_status`
-    column captures what the solver ACTUALLY returned each step:
-
-      - 'Solve_Succeeded' / 'Solved_To_Acceptable_Level' — good solve
-      - 'fallback(<reason>)'  — applied shifted warm-start (previous trajectory)
-      - 'hold(<reason>)'      — held previous command (degraded fallback)
-      - 'cold_hold(<reason>)' — first-solve failure; held at q_cur
-
-    This is the structured equivalent of the MPC stdout 'solve failed' log
-    lines, but per-step and already in the CSV — no stdout tee required.
-    """
-    if not records:
-        return {'total': 0}
-
-    statuses = [r.solve_status or 'n/a' for r in records]
-    from collections import Counter
-    by_status = Counter(statuses)
-
-    total = len(statuses)
-    succeeded = sum(1 for s in statuses
-                    if s in ('Solve_Succeeded', 'Solved_To_Acceptable_Level'))
-
-    def _classify(s: str) -> str:
-        if s.startswith('hold('):
-            return 'hold'
-        if s.startswith('cold_hold('):
-            return 'cold_hold'
-        if s.startswith('fallback('):
-            return 'fallback'
-        if s in ('Solve_Succeeded', 'Solved_To_Acceptable_Level'):
-            return 'success'
-        return 'other'
-
-    class_counts = Counter(_classify(s) for s in statuses)
-
-    # Consecutive non-success runs (any non-success)
-    max_consec_nonsuccess = 0
-    cur = 0
-    for s in statuses:
-        if _classify(s) != 'success':
-            cur += 1
-            max_consec_nonsuccess = max(max_consec_nonsuccess, cur)
-        else:
-            cur = 0
-
-    # Consecutive timeouts (hold/fallback/cold_hold with Maximum_CpuTime_Exceeded)
-    def _is_timeout(s: str) -> bool:
-        return 'Maximum_CpuTime_Exceeded' in s and _classify(s) != 'success'
-
-    max_consec_timeout = 0
-    cur = 0
-    timeout_total = 0
-    for s in statuses:
-        if _is_timeout(s):
-            cur += 1
-            timeout_total += 1
-            max_consec_timeout = max(max_consec_timeout, cur)
-        else:
-            cur = 0
-
-    # Other (non-timeout) failure reasons — surface them for investigation
-    other_reasons: Dict[str, int] = {}
-    for s, n in by_status.items():
-        if _classify(s) != 'success' and not _is_timeout(s):
-            other_reasons[s] = n
-
-    return {
-        'total': total,
-        'succeeded': succeeded,
-        'success_rate_pct': round(100.0 * succeeded / total, 2) if total else 0.0,
-        'by_class': dict(class_counts),
-        'by_status': dict(by_status),
-        'timeout_total': timeout_total,
-        'timeout_pct': round(100.0 * timeout_total / total, 2) if total else 0.0,
-        'max_consecutive_non_success': max_consec_nonsuccess,
-        'max_consecutive_timeout': max_consec_timeout,
-        'other_failure_reasons': other_reasons,
-    }
-
-
 def analyse_oscillation(records: List[StepRecord]) -> Dict[str, Any]:
     """Detect oscillation via chatter ratio (sign changes in command deltas).
 
     Two noise sources are filtered before the sign-change count:
 
-    1. **Sub-LSB float noise.**  On a steady-state hold the MPC's cmd_ext
-       values drift by microns at every tick — a float-rounding signature
-       of the IPOPT solver, not physical oscillation.  ``np.sign`` promotes
+    1. **Sub-LSB float noise.**  On a steady-state hold the commanded cmd_ext
+       values can drift by microns at every tick — a float-rounding signature
+       of the command generator, not physical oscillation.  ``np.sign`` promotes
        any tiny non-zero delta to ±1 and ~half of those flip signs,
        producing a spurious chatter ratio near 0.5 on clean holds.  The
-       motor guard's dead-band (``1 / (enc_cpr * mm_to_rev)`` — see
-       controller/hardware_plant.py) filters these before CAN transmit,
-       so they are not physically observable.  We apply the same floor:
+       drive's encoder dead-band (``1 / (enc_cpr * mm_to_rev)``) filters these
+       before CAN transmit, so they are not physically observable.  We apply
+       the same floor:
        deltas with |Δ| below ``_CHATTER_MIN_DELTA_MM`` are treated as
        "no change" and excluded from both the numerator (sign changes)
        and denominator (non-zero delta count).
 
-    2. **Scheduled-GC inter-tick gaps.**  The MPC loop's W5 scheduled
-       ``gc.collect(2)`` produces a ~149 ms wall-clock gap once per 30 s
-       (see logbook 2026-04-23-hot-loop-zero-allocation-contract).  The
+    2. **Scheduled-GC inter-tick gaps.**  A scheduled
+       ``gc.collect(2)`` in the producing loop produces a ~149 ms wall-clock gap
+       once per 30 s (see logbook 2026-04-23-hot-loop-zero-allocation-contract).  The
        associated delta can be large (motion accumulated during the gap),
        which would corrupt the amplitude_growing slope fit.  Samples with
        ``dt > 5× median`` are masked out before the envelope regression.
@@ -399,7 +246,7 @@ def analyse_oscillation(records: List[StepRecord]) -> Dict[str, Any]:
     """
     # Chatter magnitude floor.  One encoder LSB on a typical leg is
     # ~1 / (8192 counts/rev × 8 rev/mm) ≈ 15 µm; 10 µm sits just under
-    # that, capturing sub-LSB solver noise while leaving any genuinely
+    # that, capturing sub-LSB command noise while leaving any genuinely
     # physical oscillation (even at encoder resolution) above the floor.
     # Hard-coded here rather than pulling from hardware_config to keep
     # sim/analysis/ independent of ros_ws/.  If enc_cpr or mm_to_rev
@@ -587,7 +434,7 @@ def analyse_motion_onset(records: List[StepRecord]) -> Dict[str, Any]:
 
         # Build list of ramp-onset indices (into cmd_vel / cmd_vel_smooth).
         # Case A: the session starts with cmd already ramping — the preceding
-        # hold happened before the MPC logger came up.  Treat sample 0 as an
+        # hold happened before the telemetry logger came up.  Treat sample 0 as an
         # implicit onset.  Case B: mid-session hold→ramp transitions with a
         # sustained preceding hold of >= MOTION_ONSET_PREHOLD_SAMPLES.
         onset_indices: List[int] = []
@@ -838,188 +685,6 @@ def analyse_torques(records: List[StepRecord]) -> Dict[str, Any]:
     }
 
 
-def analyse_plant_collapse(records: List[StepRecord]) -> Dict[str, Any]:
-    """Detect a plant collapse + stale-telemetry event in the CSV.
-
-    Signature (both conditions required, second following the first within
-    PLANT_COLLAPSE_WINDOW_S):
-      1. A step where mean(|leg_vel|) across the 6 legs exceeds
-         PLANT_COLLAPSE_MEAN_SPEED_MM_S AND at least
-         PLANT_COLLAPSE_SAME_SIGN_MIN legs share the same direction of
-         motion — i.e., the platform is falling/rising uncommanded at a
-         speed the MPC rate cap would not have produced.
-      2. A run of >= PLANT_COLLAPSE_ZERO_RUN_MIN consecutive steps where
-         every actual_ext_i == 0.0 — the sentinel/empty payload the
-         HardwarePlant ZMQ SUB hands back when the feedback publisher dies.
-
-    When matched, everything at or after the overspeed timestamp is
-    downstream of an exogenous failure (operator Ctrl+C on the launch,
-    motor guard crash, CAN disconnect) and must not be conflated with MPC
-    solver misbehaviour.  See logbook entry
-    2026-04-18-move5-overshoot-stall-and-plant-collapse.md.
-    """
-    n = len(records)
-    if n < PLANT_COLLAPSE_ZERO_RUN_MIN:
-        return {'detected': False}
-
-    times = _extract(records, 'time')
-    leg_vels = np.stack(
-        [_extract(records, f'leg_vel_{i}') for i in range(6)], axis=1)     # (n, 6)
-    actual_exts = np.stack(
-        [_extract(records, f'actual_ext_{i}') for i in range(6)], axis=1)  # (n, 6)
-
-    mean_speed = np.mean(np.abs(leg_vels), axis=1)                         # (n,)
-    # Count legs moving "forward" (>0) vs "backward" (<0); treat exact zeros
-    # as neutral so a single stalled leg doesn't kill the signature.
-    n_pos = np.sum(leg_vels > 0, axis=1)
-    n_neg = np.sum(leg_vels < 0, axis=1)
-    same_sign_legs = np.maximum(n_pos, n_neg)                              # (n,)
-
-    overspeed_mask = (
-        (mean_speed > PLANT_COLLAPSE_MEAN_SPEED_MM_S) &
-        (same_sign_legs >= PLANT_COLLAPSE_SAME_SIGN_MIN)
-    )                                                                       # (n,)
-
-    # All-zero-extension rows (exact zeros — the sentinel, not near-zero)
-    zero_mask = np.all(actual_exts == 0.0, axis=1)                         # (n,)
-
-    # Find runs of >= PLANT_COLLAPSE_ZERO_RUN_MIN consecutive zero rows
-    runs = []
-    run_start = None
-    for i, z in enumerate(zero_mask):
-        if z:
-            if run_start is None:
-                run_start = i
-        else:
-            if run_start is not None:
-                if i - run_start >= PLANT_COLLAPSE_ZERO_RUN_MIN:
-                    runs.append((run_start, i - 1))
-                run_start = None
-    if run_start is not None and n - run_start >= PLANT_COLLAPSE_ZERO_RUN_MIN:
-        runs.append((run_start, n - 1))
-
-    if not runs:
-        return {'detected': False}
-
-    # Pair the first qualifying zero-run with a preceding overspeed event
-    overspeed_idx = np.flatnonzero(overspeed_mask)
-    for zero_start, zero_end in runs:
-        t_zero = float(times[zero_start])
-        # Most recent overspeed step strictly before the zero-run start
-        preceding = overspeed_idx[overspeed_idx < zero_start]
-        if preceding.size == 0:
-            continue
-        t_overspeed = float(times[preceding[-1]])
-        if t_zero - t_overspeed > PLANT_COLLAPSE_WINDOW_S:
-            continue
-        # Match.
-        overspeed_step = int(preceding[-1])
-        return {
-            'detected': True,
-            'overspeed_step': overspeed_step,
-            'overspeed_time_s': round(t_overspeed, 4),
-            'zero_run_start_step': int(zero_start),
-            'zero_run_start_time_s': round(t_zero, 4),
-            'zero_run_length': int(zero_end - zero_start + 1),
-            'peak_mean_leg_speed_mmps': round(float(np.max(mean_speed)), 1),
-            'peak_abs_leg_vel_mmps': round(float(np.max(np.abs(leg_vels))), 1),
-            'overspeed_threshold_mmps': round(PLANT_COLLAPSE_MEAN_SPEED_MM_S, 1),
-        }
-
-    return {'detected': False}
-
-
-def analyse_overshoot_saturation(records: List[StepRecord]) -> Dict[str, Any]:
-    """Detect overshoot-induced NLP saturation.
-
-    Signature (all three required over a window of >= OVERSHOOT_ZERO_ITER_RUN_MIN
-    consecutive steps):
-      1. `ipopt_iter == 0` on every step — IPOPT hits the CPU cap before
-         completing one iteration, signalled by the fallback status
-         codes (`fallback`, `fallback_extrap`, `fallback_hold`,
-         `cold_hold`; substring detection downstream is unchanged —
-         uses the `'fallback'` / `'hold'` / `'cold_hold'` keywords).
-      2. `tracking_error_mm` exceeds OVERSHOOT_TRACKING_ERR_MM — the plant
-         pose is far from the reference pose during the run.
-      3. The reference is still changing (ref_delta > REF_CHANGE_THRESHOLD)
-         somewhere in the window — otherwise this is a hold, not an
-         overshoot/settle failure.
-
-    Distinct from the generic MPC_STALENESS known-issue: that one fires on
-    any consecutive-timeout run.  Overshoot saturation additionally
-    requires pose-level tracking error with a moving ref, which points to
-    a specific fix (ref-from-current-plant-state on move boundaries — see
-    logbook entry 2026-04-18-move5-overshoot-stall-and-plant-collapse.md,
-    option (b)).
-
-    Note: tracking_error_mm is the magnitude of |actual_pose - ref_pose|
-    over the position DOFs; we do not infer direction here (the interesting
-    direction — plant ahead of ref — is a human-side interpretation, not
-    what triggers the detector).
-    """
-    n = len(records)
-    if n < OVERSHOOT_ZERO_ITER_RUN_MIN:
-        return {'detected': False, 'events': []}
-
-    times = _extract(records, 'time')
-    ipopt_iters = _extract(records, 'ipopt_iter').astype(int)
-    tracking_err = _extract(records, 'tracking_error_mm')
-
-    # Reference motion indicator (same weighting as analyse_steady_state)
-    ref_x = _extract(records, 'ref_pose_x')
-    ref_y = _extract(records, 'ref_pose_y')
-    ref_z = _extract(records, 'ref_pose_z')
-    ref_rx = _extract(records, 'ref_pose_rx')
-    ref_ry = _extract(records, 'ref_pose_ry')
-    ref_rz = _extract(records, 'ref_pose_rz')
-    ref_delta = (np.abs(np.diff(ref_x)) + np.abs(np.diff(ref_y)) +
-                 np.abs(np.diff(ref_z)) + np.abs(np.diff(ref_rx)) * 1000 +
-                 np.abs(np.diff(ref_ry)) * 1000 + np.abs(np.diff(ref_rz)) * 1000)
-    # Pad to length n so indexing matches; step i's ref motion is delta[i-1]
-    ref_moving = np.concatenate(([False], ref_delta > REF_CHANGE_THRESHOLD))  # (n,)
-
-    # Walk the record, gather runs that satisfy (1)+(2); mark those that also
-    # meet (3) somewhere inside the run.
-    events = []
-    run_start = None
-    for i in range(n):
-        cond = ((ipopt_iters[i] == 0) and
-                (tracking_err[i] > OVERSHOOT_TRACKING_ERR_MM))
-        if cond:
-            if run_start is None:
-                run_start = i
-        else:
-            if run_start is not None and (i - run_start) >= OVERSHOOT_ZERO_ITER_RUN_MIN:
-                if np.any(ref_moving[run_start:i]):
-                    events.append({
-                        'start_step': int(run_start),
-                        'end_step': int(i - 1),
-                        'length': int(i - run_start),
-                        'start_time_s': round(float(times[run_start]), 4),
-                        'end_time_s': round(float(times[i - 1]), 4),
-                        'peak_tracking_err_mm': round(
-                            float(np.max(tracking_err[run_start:i])), 2),
-                    })
-            run_start = None
-    if run_start is not None and (n - run_start) >= OVERSHOOT_ZERO_ITER_RUN_MIN:
-        if np.any(ref_moving[run_start:n]):
-            events.append({
-                'start_step': int(run_start),
-                'end_step': int(n - 1),
-                'length': int(n - run_start),
-                'start_time_s': round(float(times[run_start]), 4),
-                'end_time_s': round(float(times[n - 1]), 4),
-                'peak_tracking_err_mm': round(
-                    float(np.max(tracking_err[run_start:n])), 2),
-            })
-
-    return {
-        'detected': bool(events),
-        'events': events,
-        'max_consecutive': int(max((e['length'] for e in events), default=0)),
-    }
-
-
 def _find_longest_hold_window(records: List[StepRecord]) -> Optional[Tuple[int, int]]:
     """Return (start_idx, end_idx_exclusive) of the longest reference-static run.
 
@@ -1161,98 +826,13 @@ def analyse_hold_phase(records: List[StepRecord]) -> Dict[str, Any]:
     }
 
 
-def analyse_overhead(records: List[StepRecord]) -> Dict[str, Any]:
-    """MPC loop overhead = dt − solve_time per tick.
-
-    Separates solver time from everything else in the control loop (GC pause,
-    interpreter housekeeping, ZMQ drain, logging).  Flags "isolated spikes" —
-    single ticks whose overhead is >= OVERHEAD_ISOLATED_RATIO × its local
-    neighbourhood mean, which is the characteristic GC-pause signature.
-    """
-    n = len(records)
-    if n < 3:
-        return {'n_valid': 0}
-    times = _extract(records, 'time')
-    solve_ms = _extract(records, 'solve_time_ms')
-    # dt[i] is the interval between step i and step i+1; we attribute the
-    # overhead it reveals to step i+1 (the one that was served late).
-    dt_ms = np.diff(times) * 1000.0
-    overhead_ms = dt_ms - solve_ms[1:]
-    # Clamp negatives (numerical, or solve_time logged after dt end) to 0.
-    overhead_ms = np.clip(overhead_ms, 0.0, None)
-    if len(overhead_ms) == 0:
-        return {'n_valid': 0}
-
-    p50 = float(np.median(overhead_ms))
-    p95 = float(np.percentile(overhead_ms, 95))
-    p99 = float(np.percentile(overhead_ms, 99))
-    max_oh = float(np.max(overhead_ms))
-    above_budget = overhead_ms > OVERHEAD_BUDGET_MS
-    above_count = int(np.sum(above_budget))
-
-    # Isolated-spike detection: at each tick i with overhead >= floor, compare
-    # to the MEDIAN of the surrounding window (excluding i and its ±1
-    # neighbours).  Use the median, not the mean, so a cluster of adjacent
-    # spikes can't pull up its own baseline — a ±5 window that contains 3
-    # adjacent spikes will have a mean dragged up enough to suppress the
-    # whole cluster, while the median stays at the ambient level and the
-    # cluster is correctly flagged.  The ±1 gap further blunts leakage from
-    # dt-alignment jitter around a single pause.  The absolute floor
-    # (OVERHEAD_BASELINE_FLOOR_MS) prevents a perfectly quiet neighbourhood
-    # from producing infinite ratios and flagging every tick above the
-    # spike floor.
-    OVERHEAD_BASELINE_FLOOR_MS = 1.0
-    spikes = []
-    w = OVERHEAD_NEIGHBOUR_WINDOW
-    for i in range(len(overhead_ms)):
-        if overhead_ms[i] < OVERHEAD_MIN_MS_FOR_SPIKE:
-            continue
-        lo = max(0, i - w)
-        hi = min(len(overhead_ms), i + w + 1)
-        # Exclude i-1, i, i+1 from the neighbourhood.
-        left = overhead_ms[lo:max(lo, i - 1)]
-        right = overhead_ms[min(hi, i + 2):hi]
-        neighbours = np.concatenate([left, right])
-        if len(neighbours) == 0:
-            continue
-        neigh_median = float(np.median(neighbours))
-        baseline_for_ratio = max(neigh_median, OVERHEAD_BASELINE_FLOOR_MS)
-        ratio = overhead_ms[i] / baseline_for_ratio
-        if ratio < OVERHEAD_ISOLATED_RATIO:
-            continue
-        spikes.append({
-            'sample_idx': int(i + 1),               # back to record index
-            'time_s': round(float(times[i + 1]), 4),
-            'overhead_ms': round(float(overhead_ms[i]), 2),
-            'solve_ms': round(float(solve_ms[i + 1]), 2),
-            # Keep the key name 'neighbour_mean_ms' for schema stability; the
-            # value is a median, which is the robust baseline we actually use.
-            'neighbour_mean_ms': round(neigh_median, 2),
-            'ratio': round(float(ratio), 1),
-            'signature': 'GC_PAUSE_CANDIDATE',
-        })
-
-    return {
-        'n_valid': int(len(overhead_ms)),
-        'p50_ms': round(p50, 2),
-        'p95_ms': round(p95, 2),
-        'p99_ms': round(p99, 2),
-        'max_ms': round(max_oh, 2),
-        'above_budget_count': above_count,
-        'above_budget_pct': round(100.0 * above_count / len(overhead_ms), 2),
-        'budget_ms': OVERHEAD_BUDGET_MS,
-        'isolated_spikes': spikes,
-        'isolated_spike_count': len(spikes),
-    }
-
-
 def analyse_cmd_spectral(records: List[StepRecord]) -> Dict[str, Any]:
     """FFT cmd_ext during the longest hold to expose HF numerical noise.
 
     Bins the energy into three bands (low/mid/HF) and reports the peak
     frequency per leg.  Above HF_ENERGY_WARN_PCT of energy in the HF band
-    triggers a flag — usually "MPC numerical noise floor" (IPOPT variance
-    between solves showing up in cmd_ext).
+    triggers a flag — usually a numerical noise floor in the command
+    stream showing up in cmd_ext.
     """
     n = len(records)
     if n < 32:
@@ -1338,17 +918,8 @@ def analyse_cmd_spectral(records: List[StepRecord]) -> Dict[str, Any]:
     }
 
 
-def analyse_csv(records: List[StepRecord],
-                budget_ms: float = DEFAULT_BUDGET_MS) -> Dict[str, Any]:
-    """Run all MPC CSV analyses and return combined results.
-
-    When a plant telemetry collapse is detected mid-run, aggregate analyses
-    (tracking, solve_times, workspace, steady_state, etc.) are computed on
-    the pre-collapse slice only. Including post-collapse steps would fold
-    zero-sentinel feedback and ghost solve-loop activity into the numbers
-    and make a healthy run look like a failure (the Move 5 experience).
-    The collapse detection itself always runs on the full record set.
-    """
+def analyse_csv(records: List[StepRecord]) -> Dict[str, Any]:
+    """Run all telemetry CSV analyses and return combined results."""
     n = len(records)
     if n == 0:
         return {'error': 'Empty CSV'}
@@ -1358,37 +929,20 @@ def analyse_csv(records: List[StepRecord],
     dt_values = np.diff(times)
     dt_median = float(np.median(dt_values)) if len(dt_values) > 0 else 0
 
-    # Run collapse detection on the full record set first.
-    collapse = analyse_plant_collapse(records)
-
-    # If a collapse was detected, analyse the aggregate metrics on the
-    # pre-collapse slice only. Anything at/after the overspeed step is
-    # downstream of an exogenous failure and must not contaminate the numbers.
-    if collapse.get('detected'):
-        cut = int(collapse['overspeed_step'])
-        analysed_records = records[:cut] if cut > 0 else records
-    else:
-        analysed_records = records
-
     return {
         'n_samples': n,
-        'analysed_samples': len(analysed_records),
+        'analysed_samples': n,
         'duration_s': round(duration, 3),
         'dt_median_ms': round(dt_median * 1000, 2),
-        'tracking': analyse_tracking(analysed_records),
-        'solve_times': analyse_solve_times(analysed_records, budget_ms),
-        'solver_status': analyse_solver_status(analysed_records),
-        'oscillation': analyse_oscillation(analysed_records),
-        'discontinuities': analyse_discontinuities(analysed_records),
-        'workspace': analyse_workspace(analysed_records),
-        'steady_state': analyse_steady_state(analysed_records),
-        'torques': analyse_torques(analysed_records),
-        'plant_collapse': collapse,
-        'overshoot_saturation': analyse_overshoot_saturation(analysed_records),
-        'hold_phase': analyse_hold_phase(analysed_records),
-        'overhead': analyse_overhead(analysed_records),
-        'cmd_spectral': analyse_cmd_spectral(analysed_records),
-        'motion_onset': analyse_motion_onset(analysed_records),
+        'tracking': analyse_tracking(records),
+        'oscillation': analyse_oscillation(records),
+        'discontinuities': analyse_discontinuities(records),
+        'workspace': analyse_workspace(records),
+        'steady_state': analyse_steady_state(records),
+        'torques': analyse_torques(records),
+        'hold_phase': analyse_hold_phase(records),
+        'cmd_spectral': analyse_cmd_spectral(records),
+        'motion_onset': analyse_motion_onset(records),
     }
 
 
@@ -1425,7 +979,7 @@ _INTERESTING_PATTERNS = [
     # Workspace limits
     (re.compile(r'(?i)workspace.*limit|WORKSPACE'), 'workspace'),
     # Mode changes
-    (re.compile(r'MPC mode|MPC session|control mode|Control mode'), 'mode'),
+    (re.compile(r'control mode|Control mode'), 'mode'),
     # Motor guard
     (re.compile(r'Motor guard|motor guard'), 'motor_guard'),
     # Homing
@@ -1528,21 +1082,11 @@ def parse_ros2_log_dir(log_dir: str) -> Dict[str, Any]:
         level_counts[e.level] += 1
         category_counts[e.category] += 1
 
-    # Look for session start marker
-    session_csv = None
-    for e in all_events:
-        if 'MPC session started:' in e.message:
-            # Extract CSV filename
-            match = re.search(r'MPC session started:\s*(\S+)', e.message)
-            if match:
-                session_csv = match.group(1)
-
     return {
         'n_log_files': len(log_files),
         'n_events': len(all_events),
         'level_counts': dict(level_counts),
         'category_counts': dict(category_counts),
-        'session_csv': session_csv,
         'events': [e.to_dict() for e in all_events],
     }
 
@@ -1862,152 +1406,27 @@ def detect_estop_event(
 
 
 # ---------------------------------------------------------------------------
-# Companion MPC stdout log (optional)
-# ---------------------------------------------------------------------------
-
-# Regex catalogue for interesting MPC stdout lines — extends the structured
-# per-step signal in `solve_status` with session-level context (solver
-# initialisation, final summary, FK warnings, etc.) that only appears in
-# stdout.
-_MPC_STDOUT_PATTERNS = [
-    (re.compile(r'MPC solve failed \((\d+) consecutive\): '
-                r'(?P<reason>\S+)\s*\((?P<ms>[\d.]+)\s*ms\)'),
-     'solve_failed'),
-    (re.compile(r'FK did not converge'), 'fk_did_not_converge'),
-    (re.compile(r'MPC controller initialised\s+\((?P<config>.*?)\)'),
-     'mpc_init'),
-    (re.compile(r'Final tracking error:\s+(?P<pos>[\d.]+)\s*mm,\s*'
-                r'(?P<ori>[\d.]+)\s*deg'),
-     'final_tracking'),
-    (re.compile(r'Solve time:\s+mean=(?P<mean>[\d.]+)\s*ms,\s+'
-                r'max=(?P<max>[\d.]+)\s*ms,\s+p95=(?P<p95>[\d.]+)\s*ms'),
-     'solve_summary'),
-    (re.compile(r'HardwarePlant:\s+(?P<msg>.*)'), 'hardware_plant'),
-    (re.compile(r'TargetFeedbackPub:\s+(?P<msg>.*)'), 'target_feedback_pub'),
-    (re.compile(r'Logging to:\s+(?P<path>\S+)'), 'logging_to'),
-]
-
-
-def _parse_companion_stdout_log(csv_path: str) -> Dict[str, Any]:
-    """Parse an MPC stdout log co-located with the CSV, if present.
-
-    Looks for either `<csv_stem>.log` or `<csv_stem>.stdout.log` next to the
-    telemetry CSV.  Returns a structured summary of matched lines plus the
-    raw line count.  Unmatched lines are reported as `unmatched_lines` count
-    (not stored verbatim, to keep JSON output small).
-
-    Historical: the MPC-era logs this parses were captured with
-    `python run_mpc.py --pose ... 2>&1 | tee temp/logs/mpc_<ts>.log`
-    (run_mpc.py removed 2026-09-01; tag `mpc-final`).
-    """
-    csv_dir = os.path.dirname(csv_path) or '.'
-    stem = os.path.basename(csv_path)
-    if stem.lower().endswith('.csv'):
-        stem = stem[:-4]
-
-    candidates = [
-        os.path.join(csv_dir, f'{stem}.log'),
-        os.path.join(csv_dir, f'{stem}.stdout.log'),
-    ]
-    log_path = next((p for p in candidates if os.path.isfile(p)), None)
-    if log_path is None:
-        return {'available': False,
-                'searched': candidates,
-                'hint': ("No companion stdout log beside this CSV. Capture one "
-                         "by teeing the producing process's stdout to "
-                         "`temp/logs/<csv_stem>.log`. (MPC-era logs used "
-                         "run_mpc.py, removed 2026-09-01 — tag `mpc-final`.)")}
-
-    result: Dict[str, Any] = {
-        'available': True,
-        'path': log_path,
-        'total_lines': 0,
-        'unmatched_lines': 0,
-        'events': {},   # category -> count
-        'solve_failures': {},  # reason -> count
-        'max_consecutive_solve_failures': 0,
-        'fk_non_convergences': 0,
-        'mpc_config': None,
-        'final_tracking': None,
-        'solve_summary': None,
-        'excerpts': [],  # first occurrence per category (human-readable)
-    }
-
-    try:
-        with open(log_path, 'r', errors='replace') as f:
-            for line in f:
-                result['total_lines'] += 1
-                matched = False
-                for rx, cat in _MPC_STDOUT_PATTERNS:
-                    m = rx.search(line)
-                    if not m:
-                        continue
-                    matched = True
-                    result['events'][cat] = result['events'].get(cat, 0) + 1
-                    if cat == 'solve_failed':
-                        reason = m.group('reason')
-                        result['solve_failures'][reason] = (
-                            result['solve_failures'].get(reason, 0) + 1)
-                        try:
-                            n_consec = int(m.group(1))
-                            result['max_consecutive_solve_failures'] = max(
-                                result['max_consecutive_solve_failures'],
-                                n_consec)
-                        except (TypeError, ValueError):
-                            pass
-                    elif cat == 'fk_did_not_converge':
-                        result['fk_non_convergences'] += 1
-                    elif cat == 'mpc_init' and result['mpc_config'] is None:
-                        result['mpc_config'] = m.group('config')
-                    elif cat == 'final_tracking':
-                        result['final_tracking'] = {
-                            'pos_mm': float(m.group('pos')),
-                            'ori_deg': float(m.group('ori')),
-                        }
-                    elif cat == 'solve_summary':
-                        result['solve_summary'] = {
-                            'mean_ms': float(m.group('mean')),
-                            'max_ms': float(m.group('max')),
-                            'p95_ms': float(m.group('p95')),
-                        }
-                    # Capture first excerpt per category for human context
-                    if not any(e['category'] == cat for e in result['excerpts']):
-                        result['excerpts'].append({
-                            'category': cat,
-                            'line': line.rstrip(),
-                        })
-                    break
-                if not matched:
-                    result['unmatched_lines'] += 1
-    except Exception as e:
-        result['error'] = f'Failed to read stdout log: {e}'
-
-    return result
-
-
-# ---------------------------------------------------------------------------
 # Cross-source correlation
 # ---------------------------------------------------------------------------
 
 def correlate_sources(csv_result: Dict[str, Any],
                       ros2_result: Optional[Dict[str, Any]],
                       time_window_s: float = 0.5) -> List[Dict[str, Any]]:
-    """Find temporal coincidences between MPC anomalies and ROS2 events.
+    """Find temporal coincidences between telemetry anomalies and ROS2 events.
 
-    For now, this correlates MPC discontinuities and solve time spikes with
-    ROS2 error-level events.  Returns a list of correlated findings.
+    For now, this collects telemetry discontinuities alongside ROS2 error-level events.  Returns a list of correlated findings.
     """
     if ros2_result is None or 'events' not in ros2_result:
         return []
 
     correlations = []
 
-    # Collect MPC anomaly timestamps
-    mpc_anomalies = []
+    # Collect telemetry anomaly timestamps
+    telemetry_anomalies = []
     for jump in csv_result.get('discontinuities', {}).get('cmd_jumps', []):
-        mpc_anomalies.append((jump['time_s'], f"cmd discontinuity leg {jump['leg']}: {jump['magnitude_mm']:.1f}mm"))
+        telemetry_anomalies.append((jump['time_s'], f"cmd discontinuity leg {jump['leg']}: {jump['magnitude_mm']:.1f}mm"))
     for jump in csv_result.get('discontinuities', {}).get('actual_jumps', []):
-        mpc_anomalies.append((jump['time_s'], f"actual discontinuity leg {jump['leg']}: {jump['magnitude_mm']:.1f}mm"))
+        telemetry_anomalies.append((jump['time_s'], f"actual discontinuity leg {jump['leg']}: {jump['magnitude_mm']:.1f}mm"))
 
     # Collect ROS2 error events with timestamps
     ros2_errors = []
@@ -2016,7 +1435,7 @@ def correlate_sources(csv_result: Dict[str, Any],
             ros2_errors.append((event['timestamp'], event['node'], event['message']))
 
     # Simple temporal correlation (within time_window_s)
-    # Note: MPC time is relative (starts at 0), ROS2 timestamps are absolute.
+    # Note: telemetry time is relative (starts at 0), ROS2 timestamps are absolute.
     # Without a shared clock reference, correlation relies on relative timing
     # between events within each source.  The slash command can refine this
     # using the session start marker timestamp.
@@ -2034,8 +1453,6 @@ def generate_flags(result: Dict[str, Any]) -> List[Dict[str, Any]]:
     flags = []
 
     tracking = result.get('tracking', {})
-    solve = result.get('solve_times', {})
-    status = result.get('solver_status', {})
     osc = result.get('oscillation', {})
     disc = result.get('discontinuities', {})
     ws = result.get('workspace', {})
@@ -2045,73 +1462,12 @@ def generate_flags(result: Dict[str, Any]) -> List[Dict[str, Any]]:
     if tracking.get('worst_leg_ratio', 0) > WORST_LEG_RATIO_THRESHOLD:
         flags.append({
             'severity': 'warning',
-            'source': 'mpc',
+            'source': 'telemetry',
             'message': (f"Leg {tracking['worst_leg']} tracking "
                         f"{tracking['worst_leg_ratio']:.1f}x worse than median "
                         f"(RMS {tracking['per_leg'][tracking['worst_leg']]['rms_mm']:.3f}mm "
                         f"vs median {tracking['median_leg_rms_mm']:.3f}mm)"),
         })
-
-    # Solve time flags
-    if solve.get('first_sample_ms', 0) > 15.0:
-        flags.append({
-            'severity': 'info',
-            'source': 'mpc',
-            'message': f"First-sample cold solve: {solve['first_sample_ms']:.1f}ms (expected JIT warmup)",
-        })
-
-    if solve.get('max_consecutive_violations', 0) >= 3:
-        flags.append({
-            'severity': 'error',
-            'source': 'mpc',
-            'message': (f"MPC solve budget exceeded: {solve['max_consecutive_violations']} "
-                        f"consecutive violations > {solve['budget_ms']:.0f}ms "
-                        f"(max {solve['max_ms']:.1f}ms)"),
-        })
-    elif solve.get('budget_violations', 0) > 0:
-        flags.append({
-            'severity': 'warning',
-            'source': 'mpc',
-            'message': (f"MPC solve budget exceeded {solve['budget_violations']} times "
-                        f"({solve['budget_violation_pct']:.1f}%, max {solve['max_ms']:.1f}ms)"),
-        })
-
-    # Solver-status flags — richer than solve-time alone.  A solve can finish
-    # under the time cap yet still be a fallback (IPOPT terminated with
-    # Maximum_CpuTime_Exceeded at ~cap ms).  `status` counts what IPOPT
-    # actually returned per step.
-    if status.get('total', 0) > 0:
-        timeout_pct = status.get('timeout_pct', 0.0)
-        success_pct = status.get('success_rate_pct', 100.0)
-        max_consec_timeout = status.get('max_consecutive_timeout', 0)
-        other_reasons = status.get('other_failure_reasons', {})
-
-        if timeout_pct >= 50.0:
-            flags.append({
-                'severity': 'error',
-                'source': 'mpc',
-                'message': (f"MPC solver saturated: {timeout_pct:.1f}% of steps "
-                            f"timed out (Maximum_CpuTime_Exceeded), "
-                            f"success rate {success_pct:.1f}%, "
-                            f"max {max_consec_timeout} consecutive timeouts"),
-            })
-        elif timeout_pct >= 10.0 or max_consec_timeout >= 5:
-            flags.append({
-                'severity': 'warning',
-                'source': 'mpc',
-                'message': (f"MPC solver timeouts: {timeout_pct:.1f}% of steps, "
-                            f"max {max_consec_timeout} consecutive "
-                            f"(success rate {success_pct:.1f}%)"),
-            })
-
-        if other_reasons:
-            # Non-timeout failure reasons (numerical issues, infeasibility, etc.)
-            reason_summary = ', '.join(f"{k}×{v}" for k, v in other_reasons.items())
-            flags.append({
-                'severity': 'warning',
-                'source': 'mpc',
-                'message': f"Non-timeout solver failures: {reason_summary}",
-            })
 
     # Oscillation flags
     if osc.get('detected', False):
@@ -2120,16 +1476,16 @@ def generate_flags(result: Dict[str, Any]) -> List[Dict[str, Any]]:
                         if c > CHATTER_THRESHOLD)
         if osc.get('amplitude_growing', False):
             msg += " (AMPLITUDE GROWING — possible instability)"
-            flags.append({'severity': 'error', 'source': 'mpc', 'message': msg})
+            flags.append({'severity': 'error', 'source': 'telemetry', 'message': msg})
         else:
-            flags.append({'severity': 'warning', 'source': 'mpc', 'message': msg})
+            flags.append({'severity': 'warning', 'source': 'telemetry', 'message': msg})
 
     # Discontinuity flags (include time_s so post-E-stop tagging can downgrade
     # STOW-drop discontinuities caused by the operator's E-stop)
     for jump in disc.get('cmd_jumps', []):
         flags.append({
             'severity': 'error',
-            'source': 'mpc',
+            'source': 'telemetry',
             'time_s': jump['time_s'],
             'message': (f"Command discontinuity: leg {jump['leg']} jumped "
                         f"{jump['magnitude_mm']:.1f}mm at t={jump['time_s']:.3f}s"),
@@ -2139,14 +1495,14 @@ def generate_flags(result: Dict[str, Any]) -> List[Dict[str, Any]]:
     if ws.get('margin_to_lower_mm', 999) < STROKE_SOFT_MARGIN_MM:
         flags.append({
             'severity': 'warning',
-            'source': 'mpc',
+            'source': 'telemetry',
             'message': (f"Near lower stroke limit: {ws['margin_to_lower_mm']:.1f}mm margin "
                         f"(min extension {ws['min_extension_mm']:.1f}mm)"),
         })
     if ws.get('margin_to_upper_mm', 999) < STROKE_SOFT_MARGIN_MM:
         flags.append({
             'severity': 'warning',
-            'source': 'mpc',
+            'source': 'telemetry',
             'message': (f"Near upper stroke limit: {ws['margin_to_upper_mm']:.1f}mm margin "
                         f"(max extension {ws['max_extension_mm']:.1f}mm)"),
         })
@@ -2161,7 +1517,7 @@ def generate_flags(result: Dict[str, Any]) -> List[Dict[str, Any]]:
         if hold_is_trustworthy:
             flags.append({
                 'severity': 'warning',
-                'source': 'mpc',
+                'source': 'telemetry',
                 'message': (f"High steady-state error: {ss['ss_rms_mm']:.3f}mm RMS "
                             f"(threshold {STEADY_STATE_RMS_THRESHOLD_MM}mm, "
                             f"hold window {hold.get('duration_s', 0):.1f}s)"),
@@ -2179,7 +1535,7 @@ def generate_flags(result: Dict[str, Any]) -> List[Dict[str, Any]]:
         if asym > HOLD_ASYMMETRY_WARN:
             flags.append({
                 'severity': 'warning',
-                'source': 'mpc',
+                'source': 'telemetry',
                 'message': (f"Hold-phase asymmetry: leg {worst_leg} "
                             f"{worst_std:.1f}um stdev vs leg {quietest_leg} "
                             f"{quietest_std:.1f}um ({asym:.1f}x) — candidate "
@@ -2188,40 +1544,23 @@ def generate_flags(result: Dict[str, Any]) -> List[Dict[str, Any]]:
         if worst_std > HOLD_LEG_STD_WARN_UM:
             flags.append({
                 'severity': 'warning',
-                'source': 'mpc',
+                'source': 'telemetry',
                 'message': (f"Leg {worst_leg} hold-phase noise "
                             f"{worst_std:.1f}um stdev "
                             f"(above {HOLD_LEG_STD_WARN_UM:.0f}um threshold) "
                             f"over {hold.get('duration_s', 0):.1f}s hold window"),
             })
 
-    # Overhead isolated-spike detection (non-solve latency pops).  These are
-    # the GC-pause / interpreter-housekeeping signature: single tick with
-    # overhead >> its neighbours AND a short solve.
-    oh = result.get('overhead', {}) or {}
-    if oh.get('isolated_spike_count', 0) > 0:
-        n_spikes = oh['isolated_spike_count']
-        max_spike = max((s['overhead_ms'] for s in oh['isolated_spikes']),
-                        default=0.0)
-        first_spike_t = oh['isolated_spikes'][0]['time_s']
-        flags.append({
-            'severity': 'warning',
-            'source': 'mpc',
-            'message': (f"{n_spikes} isolated MPC overhead spike(s): "
-                        f"max {max_spike:.1f}ms, first at t={first_spike_t:.3f}s "
-                        f"(candidate GC pause — inspect vs solve_time)"),
-        })
-
-    # Cmd-spectral HF energy (MPC numerical noise floor visible in cmd_ext).
+    # Cmd-spectral HF energy (numerical noise floor visible in cmd_ext).
     spec = result.get('cmd_spectral', {}) or {}
     if spec.get('detected') and spec.get('hf_pct_max', 0.0) > HF_ENERGY_WARN_PCT:
         band = spec.get('band_hf_hz', [10.0, 20.0])
         flags.append({
             'severity': 'info',
-            'source': 'mpc',
+            'source': 'telemetry',
             'message': (f"Cmd has {spec['hf_pct_max']:.0f}% of energy in "
                         f"{band[0]:.1f}-{band[1]:.1f}Hz band during hold "
-                        f"(MPC numerical noise floor — visible in pos_setpoint, "
+                        f"(command noise floor — visible in pos_setpoint, "
                         f"below mechanical bandwidth)"),
         })
 
@@ -2244,7 +1583,7 @@ def generate_flags(result: Dict[str, Any]) -> List[Dict[str, Any]]:
             if severity is not None:
                 flags.append({
                     'severity': severity,
-                    'source': 'mpc',
+                    'source': 'telemetry',
                     'time_s': worst_event['onset_time_s'],
                     'message': (
                         f"Motion-onset dead-time: worst leg {worst_ms:.0f}ms "
@@ -2256,50 +1595,6 @@ def generate_flags(result: Dict[str, Any]) -> List[Dict[str, Any]]:
                         f"over {agg.get('total_onsets_detected', 0)} onsets — "
                         f"stick-slip / backlash signature"),
                 })
-
-    # Plant telemetry collapse — exogenous failure (motor guard death, CAN loss,
-    # operator killing the launch).  Emit at error severity with time_s set to
-    # the overspeed event; _tag_post_event_flags will downgrade everything after
-    # it so MPC-side flags are not blamed.
-    collapse = result.get('plant_collapse', {})
-    if collapse.get('detected'):
-        flags.append({
-            'severity': 'error',
-            'source': 'plant',
-            'time_s': collapse['overspeed_time_s'],
-            'plant_collapse_event': True,
-            'message': (
-                f"Plant telemetry collapse: uncommanded overspeed "
-                f"(peak {collapse['peak_abs_leg_vel_mmps']:.0f} mm/s "
-                f">{collapse['overspeed_threshold_mmps']:.0f} threshold) "
-                f"at t={collapse['overspeed_time_s']:.3f}s, followed by "
-                f"{collapse['zero_run_length']}-step zero-extension sentinel "
-                f"from t={collapse['zero_run_start_time_s']:.3f}s — "
-                f"exogenous failure, downstream MPC flags are consequences."),
-        })
-
-    # Overshoot-induced NLP saturation — distinct from generic MPC_STALENESS.
-    # Fires when IPOPT spends every ms on solve setup without completing one
-    # iteration while the plant is ahead of cmd and ref is still moving.
-    # Warning severity: the Tier-1 fallback (cmd-stream extrapolation with
-    # 500 ms cold_hold escalation; logbook
-    # 2026-05-20-hold-extrap-positive-feedback-chaotic-motion.md) keeps
-    # this safe, but it IS a tracking hole that matters for dynamic motion.
-    overshoot = result.get('overshoot_saturation', {})
-    if overshoot.get('detected'):
-        ev0 = overshoot['events'][0]
-        n_events = len(overshoot['events'])
-        flags.append({
-            'severity': 'warning',
-            'source': 'mpc',
-            'time_s': ev0['start_time_s'],
-            'message': (
-                f"MPC overshoot saturation: "
-                f"{overshoot['max_consecutive']} consecutive ipopt_iter=0 "
-                f"steps with tracking err peak {ev0['peak_tracking_err_mm']:.1f}mm "
-                f"while ref still moving, starting t={ev0['start_time_s']:.3f}s"
-                + (f" ({n_events} events total)" if n_events > 1 else "")),
-        })
 
     # ROS2 flags
     ros2 = result.get('ros2_events_summary') or {}
@@ -2330,14 +1625,14 @@ def generate_flags(result: Dict[str, Any]) -> List[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 def _parse_csv_start_time_s(csv_path: str) -> Optional[float]:
-    """Extract wall-clock start time (unix seconds) from an mpc_<YYYYMMDD>_<HHMMSS>.csv.
+    """Extract wall-clock start time (unix seconds) from a ``<prefix>_<YYYYMMDD>_<HHMMSS>.csv``.
 
     Returns None if the filename doesn't match.  Used to align CSV relative
     time (t=0 at session start) with rosbag absolute time.
     """
     import re as _re
     from datetime import datetime as _dt
-    m = _re.search(r'mpc_(\d{8})_(\d{6})', os.path.basename(csv_path))
+    m = _re.search(r'_(\d{8})_(\d{6})', os.path.basename(csv_path))
     if not m:
         return None
     try:
@@ -2350,7 +1645,7 @@ def _estop_csv_time_s(rosbag_result: Dict[str, Any],
                       csv_path: str) -> Optional[float]:
     """Translate the E-stop's rosbag-relative time into CSV-relative time.
 
-    CSV time starts at 0 when the MPC session begins; rosbag time starts at 0
+    CSV time starts at 0 when the session begins; rosbag time starts at 0
     when recording began.  Alignment comes from the CSV filename timestamp
     (wall-clock session start) minus the rosbag start time.  Returns None if
     an E-stop wasn't detected or alignment isn't possible.
@@ -2374,97 +1669,78 @@ def _estop_csv_time_s(rosbag_result: Dict[str, Any],
 
 def _tag_post_event_flags(flags: List[Dict[str, Any]],
                           estop_csv_t: Optional[float],
-                          estop_bag_t: Optional[float],
-                          collapse_csv_t: Optional[float] = None) -> None:
-    """Mark flags that occur at or after an E-stop or plant-collapse event
-    as downstream consequences.
+                          estop_bag_t: Optional[float]) -> None:
+    """Mark flags that occur at or after an E-stop as downstream consequences.
 
-    Downstream flags are tagged with `post_estop: True` (for E-stop) or
-    `post_collapse: True` (for plant-telemetry collapse) and downgraded to
-    'info' severity with an explanatory prefix.  Rationale: the triggering
-    event collapses the bus / kills telemetry, which causes commanded STOW
-    drops, motor disarms, tracking blowups, zero-sentinel feedback, etc.
-    These are consequences of the exogenous failure, not independent faults.
+    Downstream flags are tagged with `post_estop: True` and downgraded to
+    'info' severity with an explanatory prefix.  Rationale: the E-stop
+    collapses the bus, which causes commanded STOW drops, motor disarms,
+    tracking blowups, etc.  These are consequences of the operator's
+    intervention, not independent faults.
 
-    The event whose flag itself carries `estop_event` or `plant_collapse_event`
-    is exempt from downgrading — we keep it at its original severity so it
-    remains visible as the trigger.
+    The flag carrying `estop_event` is exempt from downgrading — it stays at
+    its original severity so it remains visible as the trigger.
     """
-    if (estop_csv_t is None and estop_bag_t is None
-            and collapse_csv_t is None):
+    if estop_csv_t is None and estop_bag_t is None:
         return
 
-    # 20ms ≈ 1 MPC step; absorbs the sub-step granularity of the trigger time.
+    # 20 ms ~ one 40 Hz step; absorbs the sub-step granularity of the trigger time.
     TOL = 0.020
 
-    def _after_event(flag: Dict[str, Any]) -> Optional[str]:
-        """Return the event kind that already happened, or None."""
+    def _after_estop(flag: Dict[str, Any]) -> bool:
         t = flag.get('time_s')
         if t is None:
-            return None
-        src = flag.get('source', 'mpc')
-        # Plant collapse is always in CSV time — applies to any mpc/plant source.
-        if (collapse_csv_t is not None
-                and src in ('mpc', 'plant')
-                and t >= collapse_csv_t - TOL):
-            return 'collapse'
+            return False
+        src = flag.get('source', 'telemetry')
         # E-stop comes from the rosbag; 'rosbag' flags use bag time, others CSV.
-        if src == 'mpc' and estop_csv_t is not None and t >= estop_csv_t - TOL:
-            return 'estop'
+        if src == 'telemetry' and estop_csv_t is not None and t >= estop_csv_t - TOL:
+            return True
         if src == 'rosbag' and estop_bag_t is not None and t >= estop_bag_t - TOL:
-            return 'estop'
-        return None
+            return True
+        return False
 
     for f in flags:
-        # Never downgrade the trigger-marker flag itself.
-        if f.get('estop_event') or f.get('plant_collapse_event'):
+        if f.get('estop_event'):
             continue
-        kind = _after_event(f)
-        if kind is None:
+        if not _after_estop(f):
             continue
         f['original_severity'] = f.get('severity')
         f['severity'] = 'info'
-        if kind == 'collapse':
-            f['post_collapse'] = True
-            f['message'] = f"[post-collapse downstream] {f['message']}"
-        else:
-            f['post_estop'] = True
-            f['message'] = f"[post-E-stop downstream] {f['message']}"
+        f['post_estop'] = True
+        f['message'] = f"[post-E-stop downstream] {f['message']}"
 
 
-# Back-compat alias — keep the old name callable.
-def _tag_post_estop_flags(flags: List[Dict[str, Any]],
-                          estop_csv_t: Optional[float],
-                          estop_bag_t: Optional[float]) -> None:
-    _tag_post_event_flags(flags, estop_csv_t, estop_bag_t, collapse_csv_t=None)
-
-
-def run_diagnosis(csv_path: str,
+def run_diagnosis(csv_path: Optional[str] = None,
                   ros_log_dir: Optional[str] = None,
                   rosbag_path: Optional[str] = None,
-                  budget_ms: float = DEFAULT_BUDGET_MS,
                   plots: Any = None) -> Dict[str, Any]:
     """Run full diagnosis and return structured result.
 
+    csv_path is optional: a rosbag-only run (the live hardware path) skips the
+    telemetry-CSV analyses entirely.  At least one of csv_path / rosbag_path /
+    ros_log_dir should be given.
+
     plots: None=no plots, 'auto'=auto-select, list of str=specific categories.
     """
-    result = {
-        'file': os.path.basename(csv_path),
-        'source': 'hardware' if 'hardware' in csv_path.lower() else 'unknown',
-    }  # type: Dict[str, Any]
+    if csv_path:
+        result = {
+            'file': os.path.basename(csv_path),
+            'source': 'hardware' if 'hardware' in csv_path.lower() else 'unknown',
+        }  # type: Dict[str, Any]
+    else:
+        bag_name = (os.path.basename(os.path.normpath(rosbag_path))
+                    if rosbag_path else None)
+        if bag_name is None and ros_log_dir:
+            bag_name = os.path.basename(os.path.normpath(ros_log_dir))
+        result = {'file': bag_name, 'source': 'rosbag' if rosbag_path else 'ros_log'}
 
-    # Detect source from filename
-    basename = os.path.basename(csv_path)
-    if basename.startswith('mpc_'):
-        result['source'] = 'mpc'
-
-    # MPC CSV analysis
-    records = load_csv(csv_path)
-    csv_result = analyse_csv(records, budget_ms)
-    result.update(csv_result)
-
-    # Optional: companion MPC stdout log
-    result['mpc_stdout'] = _parse_companion_stdout_log(csv_path)
+    # Telemetry CSV analysis (optional)
+    records = []  # type: List[StepRecord]
+    csv_result = {}  # type: Dict[str, Any]
+    if csv_path:
+        records = load_csv(csv_path)
+        csv_result = analyse_csv(records)
+        result.update(csv_result)
 
     # ROS2 log analysis
     if ros_log_dir:
@@ -2500,7 +1776,8 @@ def run_diagnosis(csv_path: str,
     # E-stop alignment: translate bag time to CSV time for downstream tagging
     rosbag_res = result.get('rosbag') or {}
     estop = (rosbag_res.get('estop') or {}) if isinstance(rosbag_res, dict) else {}
-    estop_csv_t = _estop_csv_time_s(rosbag_res, csv_path) if estop.get('detected') else None
+    estop_csv_t = (_estop_csv_time_s(rosbag_res, csv_path)
+                   if (estop.get('detected') and csv_path) else None)
     estop_bag_t = estop.get('bag_time_s') if estop.get('detected') else None
     result['estop_alignment'] = {
         'detected': bool(estop.get('detected')),
@@ -2512,16 +1789,10 @@ def run_diagnosis(csv_path: str,
     # Generate flags (attach time_s where applicable so we can tag downstream)
     flags = generate_flags(result)
 
-    # Tag post-E-stop and post-plant-collapse flags as downstream consequences.
-    # A plant collapse (operator killed the launch, motor_guard died, CAN lost)
-    # produces the same kind of cascading downstream noise an E-stop does:
-    # tracking blowups, workspace-margin trips, MPC solver timeouts against
-    # stale feedback. Without this tagging, the MPC flags steal the blame.
-    collapse = (result.get('plant_collapse') or {})
-    collapse_csv_t = (collapse.get('overspeed_time_s')
-                      if collapse.get('detected') else None)
-    _tag_post_event_flags(flags, estop_csv_t, estop_bag_t,
-                          collapse_csv_t=collapse_csv_t)
+    # Tag post-E-stop flags as downstream consequences: the E-stop collapses
+    # the bus and produces cascading tracking blowups / workspace trips that
+    # are not independent faults.
+    _tag_post_event_flags(flags, estop_csv_t, estop_bag_t)
 
     # Add an info-severity marker for the E-stop itself (not a fault — pilot
     # intervention).  Place it first so it reads at the top of the flag list
@@ -2547,7 +1818,7 @@ def run_diagnosis(csv_path: str,
 
     # Generate diagnostic plots (if requested)
     # plots=None => no plots, 'auto' => auto-select, list => specific categories
-    if plots is not None:
+    if plots is not None and csv_path:
         prefix = csv_path
         if prefix.lower().endswith('.csv'):
             prefix = prefix[:-4]
@@ -2565,18 +1836,18 @@ def run_diagnosis(csv_path: str,
 def main():
     parser = argparse.ArgumentParser(
         description='Hardware diagnosis analysis engine')
-    parser.add_argument('csv_path', help='Path to MPC telemetry CSV')
+    parser.add_argument('csv_path', nargs='?', default=None,
+                        help='Optional path to a sim telemetry CSV '
+                             '(omit for a rosbag-only run)')
     parser.add_argument('--ros-log-dir', default=None,
                         help='Path to ROS2 session log directory')
     parser.add_argument('--rosbag', default=None,
                         help='Path to rosbag (MCAP) recording directory')
-    parser.add_argument('--budget-ms', type=float, default=DEFAULT_BUDGET_MS,
-                        help=f'MPC solve budget in ms (default: {DEFAULT_BUDGET_MS})')
     parser.add_argument('--json', action='store_true',
                         help='Output structured JSON (for slash command consumption)')
     parser.add_argument('--plots', default=None, metavar='CATEGORIES',
                         help='Generate plots: "auto", "all", "none", or '
-                             'comma-separated list (e.g. legs,solver,tracking)')
+                             'comma-separated list (e.g. legs,tracking,workspace)')
     parser.add_argument('--html', action='store_true', default=True,
                         help='Generate interactive HTML report (default: on)')
     parser.add_argument('--no-html', dest='html', action='store_false',
@@ -2584,6 +1855,14 @@ def main():
     parser.add_argument('--static-plots', action='store_true', default=False,
                         help='Use static matplotlib PNGs instead of interactive Plotly')
     args = parser.parse_args()
+
+    if not (args.csv_path or args.rosbag or args.ros_log_dir):
+        parser.error('give a telemetry CSV, --rosbag, or --ros-log-dir')
+
+    # Plots / HTML reports are built from CSV records; a rosbag-only run has none.
+    if not args.csv_path:
+        args.html = False
+        args.plots = None
 
     # --html implies --plots auto (unless user explicitly passed --plots)
     if args.html and args.plots is None:
@@ -2607,12 +1886,11 @@ def main():
         csv_path=args.csv_path,
         ros_log_dir=args.ros_log_dir,
         rosbag_path=args.rosbag,
-        budget_ms=args.budget_ms,
         plots=plot_cats if use_static else None,
     )
 
     # Generate HTML report
-    if args.html and plot_cats is not None:
+    if args.html and plot_cats is not None and args.csv_path:
         html_prefix = args.csv_path
         if html_prefix.lower().endswith('.csv'):
             html_prefix = html_prefix[:-4]
@@ -2643,8 +1921,7 @@ def main():
                     csv_path=args.csv_path,
                     ros_log_dir=args.ros_log_dir,
                     rosbag_path=args.rosbag,
-                    budget_ms=args.budget_ms,
-                    plots=plot_cats,
+                                plots=plot_cats,
                 )
                 from sim.analysis.report_html import generate_html_report
                 html_path = generate_html_report(result, html_path)
@@ -2660,9 +1937,13 @@ def main():
         print(f"\n{'=' * 70}")
         print(f"  HARDWARE DIAGNOSIS: {result['file']}")
         print(f"{'=' * 70}")
-        print(f"  Samples: {result['n_samples']}, "
-              f"Duration: {result['duration_s']:.1f}s, "
-              f"dt: {result['dt_median_ms']:.1f}ms")
+        if 'n_samples' in result:
+            print(f"  Samples: {result['n_samples']}, "
+                  f"Duration: {result['duration_s']:.1f}s, "
+                  f"dt: {result['dt_median_ms']:.1f}ms")
+        rb = result.get('rosbag') or {}
+        if rb:
+            print(f"  Rosbag: available={rb.get('available')}")
         print()
 
         t = result.get('tracking', {})
@@ -2670,11 +1951,6 @@ def main():
             print(f"  TRACKING: pos RMS={t['position_rms_mm']:.3f}mm, "
                   f"peak={t['position_peak_mm']:.3f}mm, "
                   f"worst leg={t['worst_leg']} ({t['worst_leg_ratio']:.1f}x)")
-
-        s = result.get('solve_times', {})
-        if s.get('n_valid', 0) > 0:
-            print(f"  SOLVE: p50={s['p50_ms']:.1f}ms, p95={s['p95_ms']:.1f}ms, "
-                  f"max={s['max_ms']:.1f}ms, violations={s['budget_violations']}")
 
         print()
         flags = result.get('flags', [])

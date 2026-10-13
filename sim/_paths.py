@@ -18,9 +18,8 @@ Division of responsibility:
   ``sim.*`` / ``controller.*`` / ``jugglebot.*`` and rely on their caller
   (an entry script, or ``tests/conftest.py``) having bootstrapped.
 
-**Dual-role modules count as entry scripts.**  ``sim/analysis/*``,
-``sim/viz/reference_plot.py`` and ``sim/tools/verify_motor_commands.py`` are
-both importable libraries and ``python -m``-able CLIs, so they call
+**Dual-role modules count as entry scripts.**  ``sim/analysis/*`` is both an
+importable library and ``python -m``-able CLIs, so it calls
 ``bootstrap_paths()`` at module scope — a library import therefore mutates
 ``sys.path``.  That is deliberate and harmless (the call is idempotent and
 installs exactly the roots ``tests/conftest.py`` already installed), but it

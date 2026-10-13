@@ -1,7 +1,7 @@
 """Setpoint-downlink tests for teensy_bridge_node.
 
 The setpoint downlink now drains the 40 Hz MPC command
-stream (:5557 ``make_mpc_command`` dict) and packs Teensy-side knots. The headline
+stream (:5557 ``make_setpoint_command`` dict) and packs Teensy-side knots. The headline
 assertions are the SAFETY gates:
   * default-disabled (no setpoint thread, mpc_active=0, no SETPOINT frames);
   * mpc_active flips the J→T heartbeat flag only on explicit enable;
@@ -45,9 +45,9 @@ class _FakeSource:
 
 
 def _cmd(motor_rev, vel=None, cmd_next=None, cmd_next2=None):
-    """A :5557 mpc_cmd-style dict (Teensy-side knot source) — motor_rev is used as u0."""
+    """A :5557 setpoint_cmd-style dict (Teensy-side knot source) — motor_rev is used as u0."""
     d = {
-        'type': 'mpc_cmd',
+        'type': 'setpoint_cmd',
         'motor_rev': list(motor_rev),
         'vel_mm_s': list(vel if vel is not None else [0.0] * 6),
     }
@@ -315,7 +315,7 @@ def test_process_setpoint_contains_send_oserror():
 
 def test_no_position_command_sends_nothing():
     """A frame with no position command (no motor_rev/ext_mm) is skipped, not a
-    fault — e.g. a non-mpc_cmd message that slipped the :5557 topic filter."""
+    fault — e.g. a non-setpoint_cmd message that slipped the :5557 topic filter."""
     teensy, client, node = _node()
     try:
         node._mpc_active = True
@@ -449,7 +449,7 @@ def test_echo_carries_packed_u0_from_ext_mm():
     try:
         node._mpc_active = True
         ext = [1.0, 1.1, 1.2, 1.3, 1.4, 1.5]
-        node._process_setpoint({'type': 'mpc_cmd', 'ext_mm': list(ext),
+        node._process_setpoint({'type': 'setpoint_cmd', 'ext_mm': list(ext),
                                 'vel_mm_s': [0.0] * 6})
         node._publish_leg_setpoint_echo()
         msg = node.leg_setpoint_echo_pub.published[-1]
@@ -487,7 +487,7 @@ def test_echo_stash_survives_send_oserror():
 
 # ── Runtime arming service (set_setpoint_output) ──────────────
 # The production arming flow (fixes the arm-before-stream trap): true requires
-# (a) link up + fresh heartbeat, (b) a fresh mpccmd frame on :5557 within 0.5 s,
+# (a) link up + fresh heartbeat, (b) a fresh setpoint frame on :5557 within 0.5 s,
 # (c) that frame's u0 within 0.25 rev of every leg's live pos_estimate. Then
 # stream-then-arm. false disarms cleanly.
 
@@ -522,14 +522,14 @@ def test_arm_rejected_when_link_down():
 
 
 def test_arm_rejected_when_no_stream():
-    """Link up + telemetry, but no mpccmd frame on :5557 ⇒ refuse to arm."""
+    """Link up + telemetry, but no setpoint frame on :5557 ⇒ refuse to arm."""
     teensy, client, node = _node()
     try:
         _bring_link_and_telem_up(teensy, node)
         node._injected_setpoint_source = _FakeSource([])    # no frames
         resp = _arm(node)
         assert resp.success is False
-        assert 'mpccmd' in resp.message.lower() or '0.5' in resp.message
+        assert 'setpoint' in resp.message.lower() or '0.5' in resp.message
         assert node._mpc_active is False
     finally:
         _teardown(teensy, client, node)
@@ -679,27 +679,27 @@ def test_arm_and_disarm_paths():
 
 
 def test_mpc_command_zmq_source_decodes_real_wire_format():
-    """The real _MpcCommandSetpointSource decodes the MPC command stream's actual
+    """The real _SetpointCommandSource decodes the MPC command stream's actual
     ZMQ msgpack wire format ([topic, msgpack(dict, use_bin_type=True)]) and
-    filters on the 'mpccmd' topic — the one integration point the fake-source
+    filters on the 'setpoint' topic — the one integration point the fake-source
     tests don't cover. Uses a real PUB on a NON-production port; resends in a
     loop to beat PUB/SUB slow-joiner."""
     import zmq
     import msgpack
-    from jugglebot.teensy_bridge_node import _MpcCommandSetpointSource
+    from jugglebot.teensy_bridge_node import _SetpointCommandSource
 
     addr = 'tcp://127.0.0.1:5599'  # NOT the production :5557
     ctx = zmq.Context()
     pub = ctx.socket(zmq.PUB)
     pub.bind(addr)
-    src = _MpcCommandSetpointSource(addr=addr, topic=b'mpccmd')
+    src = _SetpointCommandSource(addr=addr, topic=b'setpoint')
     try:
-        payload = {'type': 'mpc_cmd',
+        payload = {'type': 'setpoint_cmd',
                    'ext_mm': [10.0] * 6, 'pose_6dof': [0.0] * 6,
                    'motor_rev': [0.1, 0.2, 0.3, 0.4, 0.5, 0.6],
                    'vel_mm_s': [1.0] * 6, 'cmd_next_mm': [11.0] * 6}
-        wire = [b'mpccmd', msgpack.packb(payload, use_bin_type=True)]
-        # A non-mpccmd frame on the same port (e.g. fallback-enable) must NOT be
+        wire = [b'setpoint', msgpack.packb(payload, use_bin_type=True)]
+        # A non-setpoint frame on the same port (e.g. fallback-enable) must NOT be
         # delivered — the topic SUBSCRIBE filters it out.
         other = [b'other', msgpack.packb({'type': 'x'}, use_bin_type=True)]
         got = None
@@ -709,8 +709,8 @@ def test_mpc_command_zmq_source_decodes_real_wire_format():
             pub.send_multipart(wire)          # resend until SUB connects
             time.sleep(0.02)
             got = src.recv_latest()
-        assert got is not None, "source never decoded an mpc_cmd frame"
-        assert got['type'] == 'mpc_cmd'
+        assert got is not None, "source never decoded an setpoint_cmd frame"
+        assert got['type'] == 'setpoint_cmd'
         assert got['motor_rev'] == [0.1, 0.2, 0.3, 0.4, 0.5, 0.6]
         # drain-to-latest: returns None once the queue is empty.
         assert src.recv_latest() is None

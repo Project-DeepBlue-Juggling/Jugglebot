@@ -44,7 +44,7 @@ from jugglebot.motion.friction_ff_params import (
 from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.ipc import (
     TOPIC_MODE,
-    TOPIC_MPC_CMD,
+    TOPIC_SETPOINT_CMD,
     TOPIC_MOTOR_FB,
     MotorGuardIPC,
 )
@@ -244,12 +244,12 @@ class MotorGuard:
         self._mpc_segment_T: float = 0.025  # nominal MPC fine step (s)
 
         # Raw MPC command fields (for workspace/condition checks)
-        self._mpc_cmd_ext_mm = np.zeros(6)
-        self._mpc_cmd_pose_6dof = np.zeros(6)
-        self._mpc_cmd_vel_mm_s = np.zeros(6)
-        self._mpc_cmd_seq = -1
-        self._has_mpc_cmd = False
-        self._mpc_cmd_timestamp = 0.0
+        self._setpoint_cmd_ext_mm = np.zeros(6)
+        self._setpoint_cmd_pose_6dof = np.zeros(6)
+        self._setpoint_cmd_vel_mm_s = np.zeros(6)
+        self._setpoint_cmd_seq = -1
+        self._has_setpoint_cmd = False
+        self._setpoint_cmd_timestamp = 0.0
 
         # Finite-difference state for vel_ff computation
         self._mpc_prev_ext_mm: np.ndarray | None = None
@@ -419,9 +419,9 @@ class MotorGuard:
             self._check_safety()
 
             # 3. Interpolate and send if enabled
-            if self.mode == GuardMode.ENABLED and self._has_mpc_cmd:
+            if self.mode == GuardMode.ENABLED and self._has_setpoint_cmd:
                 self._interpolate_and_send(dt_actual)
-            elif self.mode == GuardMode.ENABLED and not self._has_mpc_cmd:
+            elif self.mode == GuardMode.ENABLED and not self._has_setpoint_cmd:
                 # Publish feedback-only telemetry so the MPC plant can
                 # read the actual motor state before sending its first
                 # command.  Without this, get_state() returns zeros and
@@ -450,7 +450,7 @@ class MotorGuard:
     def _process_ipc(self) -> None:
         """Read and dispatch all pending IPC messages."""
         for topic, msg in self.ipc.recv_all():
-            if topic == TOPIC_MPC_CMD:
+            if topic == TOPIC_SETPOINT_CMD:
                 self._on_mpc_command(msg)
             elif topic == TOPIC_MODE:
                 self._on_mode_command(msg)
@@ -472,11 +472,11 @@ class MotorGuard:
             ext = np.array(msg['ext_mm'], dtype=float)
             pose = np.array(msg['pose_6dof'], dtype=float)
             if ext.shape != (6,) or pose.shape != (6,):
-                logger.warning(f"Malformed mpc_cmd: ext shape {ext.shape}, "
+                logger.warning(f"Malformed setpoint_cmd: ext shape {ext.shape}, "
                                f"pose shape {pose.shape}")
                 return
         except (KeyError, TypeError, ValueError) as e:
-            logger.warning(f"Malformed mpc_cmd message, ignoring: {e}")
+            logger.warning(f"Malformed setpoint_cmd message, ignoring: {e}")
             return
 
         # --- NaN/Inf check ---
@@ -514,12 +514,12 @@ class MotorGuard:
             acc_mm_s2 = np.zeros(6)
 
         # --- Store raw command state ---
-        self._mpc_cmd_ext_mm = ext
-        self._mpc_cmd_pose_6dof = pose
-        self._mpc_cmd_seq = msg.get('seq', -1)
+        self._setpoint_cmd_ext_mm = ext
+        self._setpoint_cmd_pose_6dof = pose
+        self._setpoint_cmd_seq = msg.get('seq', -1)
         t_now = time.perf_counter()
-        self._mpc_cmd_timestamp = t_now
-        self._has_mpc_cmd = True
+        self._setpoint_cmd_timestamp = t_now
+        self._has_setpoint_cmd = True
 
         # --- Compute vel_ff ---
         # Prefer sender-provided velocity (computed with deterministic MPC dt,
@@ -528,12 +528,12 @@ class MotorGuard:
         if vel_raw is not None:
             vel_arr = np.array(vel_raw, dtype=float)
             if np.all(np.isfinite(vel_arr)):
-                self._mpc_cmd_vel_mm_s = vel_arr
+                self._setpoint_cmd_vel_mm_s = vel_arr
             else:
-                self._mpc_cmd_vel_mm_s = self._finite_diff_velocity(
+                self._setpoint_cmd_vel_mm_s = self._finite_diff_velocity(
                     ext, t_now)
         else:
-            self._mpc_cmd_vel_mm_s = self._finite_diff_velocity(ext, t_now)
+            self._setpoint_cmd_vel_mm_s = self._finite_diff_velocity(ext, t_now)
 
         prev_ts = self._mpc_prev_timestamp  # capture before overwrite (for jerk)
         self._mpc_prev_ext_mm = ext.copy()
@@ -587,7 +587,7 @@ class MotorGuard:
             self._mpc_base_pos_rev = ext * self.geom.mm_to_rev
 
         self._mpc_base_vel_rps = leg_velocities_to_motor_velocities(
-            self._mpc_cmd_vel_mm_s, self.geom)
+            self._setpoint_cmd_vel_mm_s, self.geom)
         # Acceleration: same linear conversion as velocity (mm_to_rev is constant)
         self._mpc_base_accel_rps2 = acc_mm_s2 * self.geom.mm_to_rev
         self._mpc_base_torque_Nm = torque_Nm.copy()
@@ -646,9 +646,9 @@ class MotorGuard:
             if self.mode == GuardMode.DISABLED:
                 self.mode = GuardMode.ENABLED
                 self._fault_state = None
-                self._has_mpc_cmd = False
+                self._has_setpoint_cmd = False
                 self._mpc_prev_ext_mm = None
-                self._mpc_cmd_timestamp = time.perf_counter()
+                self._setpoint_cmd_timestamp = time.perf_counter()
                 logger.info(f"Motor guard ENABLED (source={source})")
             elif self.mode == GuardMode.ENABLED:
                 # Already enabled — no-op.  The bridge always sends
@@ -870,11 +870,11 @@ class MotorGuard:
             return
 
         # --- MPC command staleness ---
-        if self._has_mpc_cmd:
-            mpc_age = time.perf_counter() - self._mpc_cmd_timestamp
+        if self._has_setpoint_cmd:
+            mpc_age = time.perf_counter() - self._setpoint_cmd_timestamp
             if mpc_age > MPC_CMD_STALENESS_S:
                 self._trigger_estop(
-                    f'mpc_cmd_stale: {mpc_age:.3f}s since last command')
+                    f'setpoint_cmd_stale: {mpc_age:.3f}s since last command')
                 logger.error(
                     f"MPC command stale ({mpc_age:.3f}s > "
                     f"{MPC_CMD_STALENESS_S}s) -- E-STOP")
@@ -1217,7 +1217,7 @@ class MotorGuard:
 
     def _reset_mpc_state(self) -> None:
         """Reset all MPC pass-through state."""
-        self._has_mpc_cmd = False
+        self._has_setpoint_cmd = False
         self._mpc_prev_ext_mm = None
         self._mpc_prev_accel_rps2 = None
         self._mpc_base_jerk_rps3 = np.zeros(6)

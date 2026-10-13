@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
 """Live observer for the MVP trajectory generator's 40 Hz :5557 knot stream.
 
-READ-ONLY. Opens a ZMQ SUB on ``tcp://127.0.0.1:5557`` (topic ``mpccmd``) — it
+READ-ONLY. Opens a ZMQ SUB on ``tcp://127.0.0.1:5557`` (topic ``setpoint``) — it
 **connects**, never binds, and never sends anything on any wire — so it cannot
 command a motor and coexists with the live ``trajectory_node``.
-Decodes each ``make_mpc_command`` frame and prints the observed stream rate, the
+Decodes each ``make_setpoint_command`` frame and prints the observed stream rate, the
 per-leg ``u0`` (= ``motor_rev``), the max per-knot leg ``|Δu0|`` step, and — for
 a 7-channel unified-cycle stream — the hand lane (``u0[6]``, printed only when
 the frame carries ``HAS_HAND``), so an operator can confirm during an arming
@@ -66,7 +66,7 @@ def _out_dir() -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument('--addr', default='tcp://127.0.0.1:5557')
-    ap.add_argument('--topic', default='mpccmd')
+    ap.add_argument('--topic', default='setpoint')
     ap.add_argument('--duration', type=float, default=0.0,
                     help='seconds to observe (0 = until Ctrl-C)')
     args = ap.parse_args()

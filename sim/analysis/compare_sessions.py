@@ -1,7 +1,7 @@
 # -*- coding: utf-8 -*-
 """Hardware session comparison tool.
 
-Compares two MPC telemetry sessions (before/after a fix) and produces:
+Compares two telemetry sessions (before/after a fix) and produces:
   1. A structured delta table showing metric changes
   2. An optional interactive Plotly HTML report with dual-trace overlays
 
@@ -112,8 +112,6 @@ def compare_sessions(csv_a: str, csv_b: str,
     # Extract key metrics from both
     tracking_a = result_a.get('tracking', {})
     tracking_b = result_b.get('tracking', {})
-    solve_a = result_a.get('solve_times', {})
-    solve_b = result_b.get('solve_times', {})
     osc_a = result_a.get('oscillation', {})
     osc_b = result_b.get('oscillation', {})
     disc_a = result_a.get('discontinuities', {})
@@ -165,20 +163,6 @@ def compare_sessions(csv_a: str, csv_b: str,
     add_row('Worst leg ratio',
             tracking_a.get('worst_leg_ratio', 0),
             tracking_b.get('worst_leg_ratio', 0), 'x', '.1f')
-
-    # Solve times
-    add_row('Solve time p50 (ms)',
-            solve_a.get('p50_ms', 0),
-            solve_b.get('p50_ms', 0), '', '.1f')
-    add_row('Solve time p95 (ms)',
-            solve_a.get('p95_ms', 0),
-            solve_b.get('p95_ms', 0), '', '.1f')
-    add_row('Solve time max (ms)',
-            solve_a.get('max_ms', 0),
-            solve_b.get('max_ms', 0), '', '.1f')
-    add_row('Budget violations (%)',
-            solve_a.get('budget_violation_pct', 0),
-            solve_b.get('budget_violation_pct', 0), '%', '.1f')
 
     # Discontinuities
     n_disc_a = len(disc_a.get('cmd_jumps', []))
@@ -477,35 +461,6 @@ def generate_comparison_html(csv_a: str, csv_b: str,
         height=500, template='plotly_white',
     )
 
-    # --- Figure 3: Solve times histogram ---
-    fig_solve = go.Figure()
-
-    solve_a = _extract_array(records_a, 'solve_time_ms')
-    solve_b = _extract_array(records_b, 'solve_time_ms')
-    valid_a = solve_a[solve_a > 0]
-    valid_b = solve_b[solve_b > 0]
-
-    if len(valid_a) > 0:
-        fig_solve.add_trace(go.Histogram(
-            x=valid_a, name=label_a,
-            marker_color='steelblue', opacity=0.6, nbinsx=40,
-        ))
-    if len(valid_b) > 0:
-        fig_solve.add_trace(go.Histogram(
-            x=valid_b, name=label_b,
-            marker_color='indianred', opacity=0.6, nbinsx=40,
-        ))
-
-    fig_solve.add_vline(x=24.0, line_dash='dash', line_color='red',
-                        annotation_text='24ms budget')
-    fig_solve.update_layout(
-        title=f'Solve Time Distribution: {label_a} vs {label_b}',
-        xaxis_title='Solve time (ms)',
-        yaxis_title='Count',
-        barmode='overlay',
-        height=400, template='plotly_white',
-    )
-
     # --- Combine into single HTML ---
     html_parts = [
         '<html><head>',
@@ -519,8 +474,6 @@ def generate_comparison_html(csv_a: str, csv_b: str,
         fig_legs.to_html(full_html=False, include_plotlyjs='cdn'),
         '</div><div class="section">',
         fig_tracking.to_html(full_html=False, include_plotlyjs=False),
-        '</div><div class="section">',
-        fig_solve.to_html(full_html=False, include_plotlyjs=False),
         '</div>',
         '</body></html>',
     ]
@@ -537,7 +490,7 @@ def generate_comparison_html(csv_a: str, csv_b: str,
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Compare two MPC telemetry sessions (before/after)')
+        description='Compare two telemetry sessions (before/after)')
     parser.add_argument('csv_a', help='Path to the "before" CSV')
     parser.add_argument('csv_b', help='Path to the "after" CSV')
     parser.add_argument('--labels', nargs=2, metavar=('BEFORE', 'AFTER'),

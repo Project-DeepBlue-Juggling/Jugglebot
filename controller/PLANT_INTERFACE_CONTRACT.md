@@ -3,7 +3,7 @@
 This document is the **normative specification** of the invariants that
 every implementation of [PlantInterface (controller/plant.py)](plant.py)
 — and every consumer of one — must satisfy.  It is the structural sibling
-of the K1–K6 [REFERENCE_LAYER_CONTRACT.md](REFERENCE_LAYER_CONTRACT.md) — the
+of the K1–K6 reference-layer contract (`REFERENCE_LAYER_CONTRACT.md`, retired 2026-10-14) — the
 S1–S6 `SCHEDULER_CONTRACT.md` sibling was deleted 2026-09-09 along with
 `controller/scheduler.py` (R0 dead-layer deletion, no non-test importer left
 after the MPC chain removal) — and uses the same RFC 2119 normative language
@@ -523,11 +523,11 @@ If a ``PlantInterface``-related symptom surfaces in a session log:
 
 ## Related
 
-- [REFERENCE_LAYER_CONTRACT.md](REFERENCE_LAYER_CONTRACT.md) — K1–K6
-  reference-feasibility contract.  Orthogonal to this contract:
-  K1–K6 governs *what* trajectory the MPC tracks; P1–P4 governs the
-  *interface* through which the MPC reads plant state and writes
-  commands.
+- `REFERENCE_LAYER_CONTRACT.md` (K1–K6 reference-feasibility contract) was
+  retired 2026-10-14 (nothing live called its enforcement point).  It was
+  orthogonal to this contract: K1–K6 governed *what* trajectory was tracked;
+  P1–P4 govern the *interface* through which a controller reads plant state
+  and writes commands.
 - `SCHEDULER_CONTRACT.md` (S1–S6 scheduler contract) was deleted
   2026-09-09 along with ``controller/scheduler.py`` — no non-test importer
   remained after the MPC chain removal. This paragraph's `τ_grace`

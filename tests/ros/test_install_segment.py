@@ -1153,8 +1153,8 @@ def test_every_rest_terminal_field_is_wire_mapped_or_excluded():
 def test_TI1_seven_channel_frames_reach_the_wire_and_the_flags_fall():
     """T-I1: trajectory_node -> real :5557 -> teensy_bridge_node -> loopback UDP.
 
-    Every hop is production code: the real ``MpcCommandPub`` (ephemeral port),
-    the real ``_MpcCommandSetpointSource`` decoder, the real ``SetpointPump``,
+    Every hop is production code: the real ``SetpointCommandPub`` (ephemeral port),
+    the real ``_SetpointCommandSource`` decoder, the real ``SetpointPump``,
     the real v6 ``Setpoint`` encoding, and a real UDP socket. What is pinned:
 
     * while a ``CyclePlan`` is installed (here, via ``install_segment``), every
@@ -1169,18 +1169,18 @@ def test_TI1_seven_channel_frames_reach_the_wire_and_the_flags_fall():
     import zmq
     from teensy_link import MsgType
     from teensy_link.protocol import Setpoint
-    from jugglebot.motion.ipc import MpcCommandPub
-    from jugglebot.teensy_bridge_node import _MpcCommandSetpointSource
+    from jugglebot.motion.ipc import SetpointCommandPub
+    from jugglebot.teensy_bridge_node import _SetpointCommandSource
     from teensy_link.setpoint_pump import (
         FLAG_HAS_HAND, FLAG_HAS_SCHED, FLAG_HAS_V1)
     from tests.ros._bridge_harness import _build_paired_node, _teardown
 
-    pub = MpcCommandPub(addr='tcp://127.0.0.1:0')
+    pub = SetpointCommandPub(addr='tcp://127.0.0.1:0')
     addr = pub._pub.getsockopt_string(zmq.LAST_ENDPOINT)
     traj = _perf_node(command_pub_factory=lambda: pub)
     traj._pub = pub                       # emitter thread not started; wire by hand
     teensy, client, bridge = _build_paired_node()
-    src = _MpcCommandSetpointSource(addr=addr)
+    src = _SetpointCommandSource(addr=addr)
     try:
         # Frozen for the install call ONLY (restored before the real ZMQ/
         # thread dance below needs a live clock): 2026-09-28 (unit C-exec)

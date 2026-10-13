@@ -4,7 +4,7 @@ Generates ``flags=0x3`` :class:`Setpoint` frames (``u0``/``u1``/``u2``
 lookahead knots + ``v0`` velocity feedforward) for a **single** target leg axis,
 so the Teensy's 40 Hz-knot cubic-Hermite interpolator (``leg_interp.cpp`` Mode 1)
 can be exercised on hardware with a **known, bounded** command — fully decoupled
-from ``motor_guard`` / the MPC / the Stribeck friction-FF. This is
+from ``motor_guard`` / the trajectory emitter / the Stribeck friction-FF. This is
 the *synthetic Teensy-side* path used by ``tests/hardware/teensy_setpoint_bench.py``; the
 deployed production bridge is untouched and still forwards ``motor_guard``'s
 500 Hz output with ``flags=0`` (the Jetson-relay path, ``setpoint_pump.py``).
@@ -35,7 +35,7 @@ present-axis scoping).
 NB the velocity feedforward ``v0`` has a small step at the approach→sinusoid
 handover (the ease arrives at zero velocity; the sinusoid departs at
 ``amplitude·2π·freq``). Position is continuous. A ``v0`` step between frames is
-exactly what the interp absorbs every 40 Hz cycle in normal MPC operation, so it
+exactly what the interp absorbs every 40 Hz cycle in normal 40 Hz operation, so it
 is not a discontinuity the leg can feel — but it is why the operator runs the
 *hold* stage (``amplitude=0``, fully smooth) before the sinusoid.
 
@@ -56,7 +56,7 @@ from .protocol import Setpoint
 # is usable standalone; the bench driver passes the authoritative per-axis stroke
 # bounds. SEG_T must equal the firmware's compile-time SEGMENT_T_S or the knot
 # lookahead won't line up with the interp's `s = dt / SEG_T`.
-DEFAULT_SEG_T_S = 0.025          # SEGMENT_T_S (the 40 Hz MPC fine step)
+DEFAULT_SEG_T_S = 0.025          # SEGMENT_T_S (the 40 Hz emitter fine step)
 DEFAULT_MAX_STEP_REV = 0.10      # MAX_LEAD_REV (canbridge_config.h:236) — a single
                                  # knot may never command a step the firmware
                                  # lead-clamp would reject. Was 0.15 (the

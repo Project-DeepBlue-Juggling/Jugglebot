@@ -6,12 +6,8 @@ was ``run_mpc.py``'s ``--toss-motion`` path, removed 2026-09-01 with the MPC
 chain — tag ``mpc-final``. The geometry is caller-agnostic and is now consumed
 by ``sim/`` and the toss planner.)
 
-The symbols here were originally defined inside ``sim/hand/ballistics.py``
-but are equally applicable to the hardware layer (they are plain ballistics
-with no simulation-specific behaviour). ``sim/hand/ballistics.py`` now
-re-exports ``compute_launch_velocity``, ``compute_arrival_velocity``,
-``compute_orientation``, and ``rodrigues`` from here; hand-specific helpers
-(``compute_hand_offset_mm``) stay in the sim module.
+The symbols here were originally defined in the sim's hand package (retired
+2026-10-14) but are plain ballistics with no simulation-specific behaviour.
 """
 
 from __future__ import annotations

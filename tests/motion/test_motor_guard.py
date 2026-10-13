@@ -29,10 +29,10 @@ from jugglebot.motion.conversions import (
 from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.ipc import (
     TOPIC_MODE,
-    TOPIC_MPC_CMD,
+    TOPIC_SETPOINT_CMD,
     TOPIC_MOTOR_FB,
     make_mode_command,
-    make_mpc_command,
+    make_setpoint_command,
 )
 from jugglebot.motion.motor_guard import (
     EXTRAP_DECAY_DT_S,
@@ -110,7 +110,7 @@ def _enable(guard: MotorGuard, ipc: MockIPC, source: str = 'MPC') -> None:
     guard._process_ipc()
 
 
-def _inject_mpc_cmd(ipc: MockIPC, ext_mm=None, pose_6dof=None,
+def _inject_setpoint_cmd(ipc: MockIPC, ext_mm=None, pose_6dof=None,
                      vel_mm_s=None, acc_mm_s2=None, torque_Nm=None,
                      seq=0, motor_rev=None) -> None:
     """Inject an MPC command message."""
@@ -118,12 +118,12 @@ def _inject_mpc_cmd(ipc: MockIPC, ext_mm=None, pose_6dof=None,
         ext_mm = [140.0] * 6  # mid-stroke (STOW-relative)
     if pose_6dof is None:
         pose_6dof = [0.0, 0.0, 50.0, 0.0, 0.0, 0.0]
-    msg = make_mpc_command(
+    msg = make_setpoint_command(
         ext_mm=ext_mm, pose_6dof=pose_6dof,
         motor_rev=motor_rev, vel_mm_s=vel_mm_s,
         acc_mm_s2=acc_mm_s2,
         torque_Nm=torque_Nm, seq=seq)
-    ipc.inject(TOPIC_MPC_CMD, msg)
+    ipc.inject(TOPIC_SETPOINT_CMD, msg)
 
 
 def _inject_motor_feedback(ipc: MockIPC, pos_rev, vel_rps=None,
@@ -349,7 +349,7 @@ def test_mpc_enable():
     _enable(guard, ipc)
 
     assert guard.mode == GuardMode.ENABLED
-    assert not guard._has_mpc_cmd
+    assert not guard._has_setpoint_cmd
     print("  [PASS] test_mpc_enable")
 
 
@@ -364,7 +364,7 @@ def test_mpc_command_flow():
 
     ext_mm = [100.0, 110.0, 120.0, 130.0, 140.0, 150.0]
     _provide_matching_feedback(guard, ipc, ext_mm=ext_mm)
-    _inject_mpc_cmd(ipc, ext_mm=ext_mm)
+    _inject_setpoint_cmd(ipc, ext_mm=ext_mm)
     guard._process_ipc()
 
     # Run one interpolation cycle
@@ -389,19 +389,19 @@ def test_mpc_staleness_estop():
     _enable(guard, ipc)
 
     _provide_matching_feedback(guard, ipc)
-    _inject_mpc_cmd(ipc)
+    _inject_setpoint_cmd(ipc)
     guard._process_ipc()
     guard._interpolate_and_send(guard.dt_target)
 
     assert guard.mode == GuardMode.ENABLED
 
     # Backdate timestamp to simulate staleness
-    guard._mpc_cmd_timestamp = time.perf_counter() - MPC_CMD_STALENESS_S - 0.01
+    guard._setpoint_cmd_timestamp = time.perf_counter() - MPC_CMD_STALENESS_S - 0.01
 
     guard._check_safety()
 
     assert guard.mode == GuardMode.ESTOP
-    assert 'mpc_cmd_stale' in (guard._fault_state or '')
+    assert 'setpoint_cmd_stale' in (guard._fault_state or '')
     print("  [PASS] test_mpc_staleness_estop")
 
 
@@ -414,17 +414,17 @@ def test_disable_clears_state():
     guard, ipc = _make_guard()
     _enable(guard, ipc)
     _provide_matching_feedback(guard, ipc)
-    _inject_mpc_cmd(ipc)
+    _inject_setpoint_cmd(ipc)
     guard._process_ipc()
 
     assert guard.mode == GuardMode.ENABLED
-    assert guard._has_mpc_cmd
+    assert guard._has_setpoint_cmd
 
     ipc.inject(TOPIC_MODE, make_mode_command('disable'))
     guard._process_ipc()
 
     assert guard.mode == GuardMode.DISABLED
-    assert not guard._has_mpc_cmd
+    assert not guard._has_setpoint_cmd
     print("  [PASS] test_disable_clears_state")
 
 
@@ -440,7 +440,7 @@ def test_workspace_hard_limit_estops():
     # Command extensions well beyond stroke (hard limit is ~275mm)
     ext_mm = [290.0] * 6
     _provide_matching_feedback(guard, ipc, ext_mm=ext_mm)
-    _inject_mpc_cmd(ipc, ext_mm=ext_mm, pose_6dof=[0, 0, 200, 0, 0, 0])
+    _inject_setpoint_cmd(ipc, ext_mm=ext_mm, pose_6dof=[0, 0, 200, 0, 0, 0])
     guard._process_ipc()
 
     assert guard.mode == GuardMode.ESTOP
@@ -461,7 +461,7 @@ def test_torque_passthrough():
     torque_Nm = [0.1, -0.1, 0.05, -0.05, 0.02, -0.02]
 
     _provide_matching_feedback(guard, ipc, ext_mm=ext_mm)
-    _inject_mpc_cmd(ipc, ext_mm=ext_mm, torque_Nm=torque_Nm)
+    _inject_setpoint_cmd(ipc, ext_mm=ext_mm, torque_Nm=torque_Nm)
     guard._process_ipc()
 
     np.testing.assert_allclose(
@@ -480,7 +480,7 @@ def test_zeros_when_no_feedforward():
 
     ext_mm = [140.0] * 6
     _provide_matching_feedback(guard, ipc, ext_mm=ext_mm)
-    _inject_mpc_cmd(ipc, ext_mm=ext_mm)  # no torque
+    _inject_setpoint_cmd(ipc, ext_mm=ext_mm)  # no torque
     guard._process_ipc()
 
     np.testing.assert_allclose(guard._mpc_base_torque_Nm, 0.0, atol=1e-10)
@@ -496,7 +496,7 @@ def test_no_feedback_suppresses():
     guard, ipc = _make_guard()
     _enable(guard, ipc)
 
-    _inject_mpc_cmd(ipc)
+    _inject_setpoint_cmd(ipc)
     guard._process_ipc()
 
     ipc.sent_telemetry.clear()
@@ -517,7 +517,7 @@ def test_stale_feedback_suppresses():
     _enable(guard, ipc)
 
     _provide_matching_feedback(guard, ipc)
-    _inject_mpc_cmd(ipc)
+    _inject_setpoint_cmd(ipc)
     guard._process_ipc()
 
     # Backdate feedback timestamp to simulate staleness (200ms old)
@@ -545,7 +545,7 @@ def test_motor_overspeed():
     vel_rps = [0.0] * 6
     vel_rps[3] = MAX_MOTOR_VEL_RPS + 1.0
     _inject_motor_feedback(ipc, pos_rev, vel_rps)
-    _inject_mpc_cmd(ipc)
+    _inject_setpoint_cmd(ipc)
     guard._process_ipc()
 
     guard._check_safety()
@@ -573,7 +573,7 @@ def test_max_deviation_estop():
     ext_target = revs_to_extensions_mm(
         np.full(6, 2.0 + MAX_DEVIATION_REV + 0.1), guard.geom)
     motor_rev_target = (2.0 + MAX_DEVIATION_REV + 0.1)
-    _inject_mpc_cmd(
+    _inject_setpoint_cmd(
         ipc, ext_mm=ext_target.tolist(),
         motor_rev=[motor_rev_target] * 6,
         pose_6dof=[0, 0, 50, 0, 0, 0])
@@ -598,11 +598,11 @@ def test_nan_rejection():
     guard._process_ipc()
 
     ext_nan = [140.0, float('nan'), 140.0, 140.0, 140.0, 140.0]
-    _inject_mpc_cmd(ipc, ext_mm=ext_nan)
+    _inject_setpoint_cmd(ipc, ext_mm=ext_nan)
     guard._process_ipc()
 
-    # Command should be rejected — _has_mpc_cmd remains False
-    assert not guard._has_mpc_cmd
+    # Command should be rejected — _has_setpoint_cmd remains False
+    assert not guard._has_setpoint_cmd
     assert guard.mode == GuardMode.ENABLED  # no E-stop, just rejection
     print("  [PASS] test_nan_rejection")
 
@@ -622,7 +622,7 @@ def test_nan_feedback_rejection():
 
     # Provide valid feedback first, then corrupt it
     _provide_matching_feedback(guard, ipc)
-    _inject_mpc_cmd(ipc)
+    _inject_setpoint_cmd(ipc)
     guard._process_ipc()
     assert guard._has_motor_fb
 
@@ -672,28 +672,28 @@ def test_vel_ff_finite_difference():
     ext_mm_2 = [145.0] * 6  # +5mm on all legs
 
     _provide_matching_feedback(guard, ipc, ext_mm=ext_mm_1)
-    _inject_mpc_cmd(ipc, ext_mm=ext_mm_1)
+    _inject_setpoint_cmd(ipc, ext_mm=ext_mm_1)
     guard._process_ipc()
 
     # Small delay to get a measurable dt
     time.sleep(0.02)
 
-    _inject_mpc_cmd(ipc, ext_mm=ext_mm_2, seq=1)
+    _inject_setpoint_cmd(ipc, ext_mm=ext_mm_2, seq=1)
     guard._process_ipc()
 
     # vel_ff should be positive (extensions increasing)
-    assert np.all(guard._mpc_cmd_vel_mm_s > 0), \
-        f"Expected positive vel, got {guard._mpc_cmd_vel_mm_s}"
+    assert np.all(guard._setpoint_cmd_vel_mm_s > 0), \
+        f"Expected positive vel, got {guard._setpoint_cmd_vel_mm_s}"
 
     # vel_ff magnitude: ~5mm / 0.02s = ~250 mm/s (rough)
     expected_vel = 5.0 / 0.02  # approximate
     np.testing.assert_allclose(
-        guard._mpc_cmd_vel_mm_s, expected_vel, rtol=0.5,
+        guard._setpoint_cmd_vel_mm_s, expected_vel, rtol=0.5,
         err_msg="vel_ff finite-difference is too far off")
 
     # Verify it's converted to motor velocity (rps)
     expected_rps = leg_velocities_to_motor_velocities(
-        guard._mpc_cmd_vel_mm_s, guard.geom)
+        guard._setpoint_cmd_vel_mm_s, guard.geom)
     np.testing.assert_allclose(
         guard._mpc_base_vel_rps, expected_rps, atol=1e-6)
 
@@ -713,7 +713,7 @@ def test_vel_ff_sender_preferred():
     ext_mm_2 = [145.0] * 6  # +5mm
 
     _provide_matching_feedback(guard, ipc, ext_mm=ext_mm_1)
-    _inject_mpc_cmd(ipc, ext_mm=ext_mm_1)
+    _inject_setpoint_cmd(ipc, ext_mm=ext_mm_1)
     guard._process_ipc()
 
     time.sleep(0.02)
@@ -721,12 +721,12 @@ def test_vel_ff_sender_preferred():
     # Sender provides an explicit velocity that differs from what
     # finite-difference would compute (~250 mm/s).
     sender_vel = [100.0] * 6
-    _inject_mpc_cmd(ipc, ext_mm=ext_mm_2, vel_mm_s=sender_vel, seq=1)
+    _inject_setpoint_cmd(ipc, ext_mm=ext_mm_2, vel_mm_s=sender_vel, seq=1)
     guard._process_ipc()
 
     # Guard should use the sender value, not the finite-difference
     np.testing.assert_allclose(
-        guard._mpc_cmd_vel_mm_s, sender_vel, atol=1e-9,
+        guard._setpoint_cmd_vel_mm_s, sender_vel, atol=1e-9,
         err_msg="Guard should prefer sender-provided velocity")
 
     print("  [PASS] test_vel_ff_sender_preferred")
@@ -745,21 +745,21 @@ def test_vel_ff_nan_sender_fallback():
     ext_mm_2 = [145.0] * 6
 
     _provide_matching_feedback(guard, ipc, ext_mm=ext_mm_1)
-    _inject_mpc_cmd(ipc, ext_mm=ext_mm_1)
+    _inject_setpoint_cmd(ipc, ext_mm=ext_mm_1)
     guard._process_ipc()
 
     time.sleep(0.02)
 
     # Sender provides NaN velocity — guard should fall back to finite-diff
     nan_vel = [float('nan')] * 6
-    _inject_mpc_cmd(ipc, ext_mm=ext_mm_2, vel_mm_s=nan_vel, seq=1)
+    _inject_setpoint_cmd(ipc, ext_mm=ext_mm_2, vel_mm_s=nan_vel, seq=1)
     guard._process_ipc()
 
     # Should NOT be NaN — finite-difference fallback should produce ~250 mm/s
-    assert np.all(np.isfinite(guard._mpc_cmd_vel_mm_s)), \
-        f"Expected finite vel, got {guard._mpc_cmd_vel_mm_s}"
-    assert np.all(guard._mpc_cmd_vel_mm_s > 0), \
-        f"Expected positive vel from finite-diff fallback, got {guard._mpc_cmd_vel_mm_s}"
+    assert np.all(np.isfinite(guard._setpoint_cmd_vel_mm_s)), \
+        f"Expected finite vel, got {guard._setpoint_cmd_vel_mm_s}"
+    assert np.all(guard._setpoint_cmd_vel_mm_s > 0), \
+        f"Expected positive vel from finite-diff fallback, got {guard._setpoint_cmd_vel_mm_s}"
 
     print("  [PASS] test_vel_ff_nan_sender_fallback")
 
@@ -774,7 +774,7 @@ def test_ipc_heartbeat_estop():
     _enable(guard, ipc)
 
     _provide_matching_feedback(guard, ipc)
-    _inject_mpc_cmd(ipc)
+    _inject_setpoint_cmd(ipc)
     guard._process_ipc()
 
     # Simulate heartbeat loss by backdating the IPC timestamp
@@ -799,7 +799,7 @@ def test_interpolation_output():
     ext_mm = [140.0] * 6
     torque_Nm = [0.05] * 6
     _provide_matching_feedback(guard, ipc, ext_mm=ext_mm)
-    _inject_mpc_cmd(ipc, ext_mm=ext_mm, torque_Nm=torque_Nm)
+    _inject_setpoint_cmd(ipc, ext_mm=ext_mm, torque_Nm=torque_Nm)
     guard._process_ipc()
 
     ipc.sent_telemetry.clear()
@@ -833,12 +833,12 @@ def test_normal_interpolation_unchanged():
     _provide_matching_feedback(guard, ipc, ext_mm=ext_mm)
 
     # Two commands to establish velocity via finite-difference
-    _inject_mpc_cmd(ipc, ext_mm=ext_mm)
+    _inject_setpoint_cmd(ipc, ext_mm=ext_mm)
     guard._process_ipc()
     time.sleep(0.02)
     ext_mm_2 = [150.0] * 6
     _provide_matching_feedback(guard, ipc, ext_mm=ext_mm_2)
-    _inject_mpc_cmd(ipc, ext_mm=ext_mm_2, seq=1)
+    _inject_setpoint_cmd(ipc, ext_mm=ext_mm_2, seq=1)
     guard._process_ipc()
 
     # Backdate by 20ms (well within 40ms normal window)
@@ -872,7 +872,7 @@ def test_extrapolation_vel_decays():
 
     ext_mm = [140.0] * 6
     _provide_matching_feedback(guard, ipc, ext_mm=ext_mm)
-    _inject_mpc_cmd(ipc, ext_mm=ext_mm)
+    _inject_setpoint_cmd(ipc, ext_mm=ext_mm)
     guard._process_ipc()
 
     # Set a known velocity
@@ -909,7 +909,7 @@ def test_extrapolation_hold_after_decay():
 
     ext_mm = [140.0] * 6
     _provide_matching_feedback(guard, ipc, ext_mm=ext_mm)
-    _inject_mpc_cmd(ipc, ext_mm=ext_mm)
+    _inject_setpoint_cmd(ipc, ext_mm=ext_mm)
     guard._process_ipc()
 
     base_pos = guard._mpc_base_pos_rev.copy()
@@ -963,7 +963,7 @@ def test_extrapolation_bounded():
 
     ext_mm = [140.0] * 6
     _provide_matching_feedback(guard, ipc, ext_mm=ext_mm)
-    _inject_mpc_cmd(ipc, ext_mm=ext_mm)
+    _inject_setpoint_cmd(ipc, ext_mm=ext_mm)
     guard._process_ipc()
 
     base_pos = guard._mpc_base_pos_rev.copy()
@@ -1014,7 +1014,7 @@ def test_stroke_clamp():
 
     ext_mm = [140.0] * 6
     _provide_matching_feedback(guard, ipc, ext_mm=ext_mm)
-    _inject_mpc_cmd(ipc, ext_mm=ext_mm)
+    _inject_setpoint_cmd(ipc, ext_mm=ext_mm)
     guard._process_ipc()
 
     # Set absurdly high velocity to force position past stroke limits
@@ -1074,10 +1074,10 @@ def test_enable_idempotent():
     # Inject an MPC command so the guard has live MPC state
     ext_mm = [100.0, 110.0, 120.0, 130.0, 140.0, 150.0]
     _provide_matching_feedback(guard, ipc, ext_mm=ext_mm)
-    _inject_mpc_cmd(ipc, ext_mm=ext_mm)
+    _inject_setpoint_cmd(ipc, ext_mm=ext_mm)
     guard._process_ipc()
 
-    assert guard._has_mpc_cmd
+    assert guard._has_setpoint_cmd
     prev_ext = guard._mpc_prev_ext_mm.copy()
 
     # Send another enable — must be a no-op
@@ -1085,7 +1085,7 @@ def test_enable_idempotent():
     guard._process_ipc()
 
     assert guard.mode == GuardMode.ENABLED
-    assert guard._has_mpc_cmd, "enable-when-ENABLED must not clear _has_mpc_cmd"
+    assert guard._has_setpoint_cmd, "enable-when-ENABLED must not clear _has_setpoint_cmd"
     assert guard._mpc_prev_ext_mm is not None, \
         "enable-when-ENABLED must not clear _mpc_prev_ext_mm"
     np.testing.assert_array_equal(guard._mpc_prev_ext_mm, prev_ext)
@@ -1105,10 +1105,10 @@ def test_bridge_disable_enable_clears_state():
     # Inject an MPC command so the guard has live MPC state
     ext_mm = [100.0, 110.0, 120.0, 130.0, 140.0, 150.0]
     _provide_matching_feedback(guard, ipc, ext_mm=ext_mm)
-    _inject_mpc_cmd(ipc, ext_mm=ext_mm)
+    _inject_setpoint_cmd(ipc, ext_mm=ext_mm)
     guard._process_ipc()
 
-    assert guard._has_mpc_cmd
+    assert guard._has_setpoint_cmd
 
     # Bridge sequence: disable then enable
     ipc.inject(TOPIC_MODE, make_mode_command('disable'))
@@ -1116,8 +1116,8 @@ def test_bridge_disable_enable_clears_state():
     guard._process_ipc()
 
     assert guard.mode == GuardMode.ENABLED
-    assert not guard._has_mpc_cmd, \
-        "disable+enable must clear _has_mpc_cmd"
+    assert not guard._has_setpoint_cmd, \
+        "disable+enable must clear _has_setpoint_cmd"
     assert guard._mpc_prev_ext_mm is None, \
         "disable+enable must clear _mpc_prev_ext_mm"
 
@@ -1140,7 +1140,7 @@ def test_stroke_clamp_workspace_status():
 
     ext_mm = [140.0] * 6
     _provide_matching_feedback(guard, ipc, ext_mm=ext_mm)
-    _inject_mpc_cmd(ipc, ext_mm=ext_mm)
+    _inject_setpoint_cmd(ipc, ext_mm=ext_mm)
     guard._process_ipc()
 
     # Confirm workspace status is OK before clamping
@@ -1193,13 +1193,13 @@ def test_cubic_interpolation_with_jerk():
     _provide_matching_feedback(guard, ipc, ext_mm=ext_mm)
 
     # Command 1: zero velocity, zero acceleration
-    _inject_mpc_cmd(ipc, ext_mm=ext_mm, vel_mm_s=[0.0]*6, acc_mm_s2=[0.0]*6, seq=0)
+    _inject_setpoint_cmd(ipc, ext_mm=ext_mm, vel_mm_s=[0.0]*6, acc_mm_s2=[0.0]*6, seq=0)
     guard._process_ipc()
 
     # Command 2: same position, zero velocity, acceleration = 1000 mm/s^2
     time.sleep(0.02)
     _provide_matching_feedback(guard, ipc, ext_mm=ext_mm)
-    _inject_mpc_cmd(ipc, ext_mm=ext_mm, vel_mm_s=[0.0]*6,
+    _inject_setpoint_cmd(ipc, ext_mm=ext_mm, vel_mm_s=[0.0]*6,
                      acc_mm_s2=[1000.0]*6, seq=1)
     guard._process_ipc()
 
@@ -1207,7 +1207,7 @@ def test_cubic_interpolation_with_jerk():
     # This gives jerk ≈ (2000-1000)/0.02 = 50000 mm/s^3 (raw)
     time.sleep(0.02)
     _provide_matching_feedback(guard, ipc, ext_mm=ext_mm)
-    _inject_mpc_cmd(ipc, ext_mm=ext_mm, vel_mm_s=[0.0]*6,
+    _inject_setpoint_cmd(ipc, ext_mm=ext_mm, vel_mm_s=[0.0]*6,
                      acc_mm_s2=[2000.0]*6, seq=2)
     guard._process_ipc()
 
@@ -1255,7 +1255,7 @@ def test_jerk_zero_on_first_command():
 
     ext_mm = [140.0] * 6
     _provide_matching_feedback(guard, ipc, ext_mm=ext_mm)
-    _inject_mpc_cmd(ipc, ext_mm=ext_mm, acc_mm_s2=[500.0]*6, seq=0)
+    _inject_setpoint_cmd(ipc, ext_mm=ext_mm, acc_mm_s2=[500.0]*6, seq=0)
     guard._process_ipc()
 
     np.testing.assert_array_equal(
@@ -1278,15 +1278,15 @@ def test_jerk_reset_on_disable():
     _provide_matching_feedback(guard, ipc, ext_mm=ext_mm)
 
     # Build up jerk state with 3 commands
-    _inject_mpc_cmd(ipc, ext_mm=ext_mm, acc_mm_s2=[0.0]*6, seq=0)
+    _inject_setpoint_cmd(ipc, ext_mm=ext_mm, acc_mm_s2=[0.0]*6, seq=0)
     guard._process_ipc()
     time.sleep(0.02)
     _provide_matching_feedback(guard, ipc, ext_mm=ext_mm)
-    _inject_mpc_cmd(ipc, ext_mm=ext_mm, acc_mm_s2=[1000.0]*6, seq=1)
+    _inject_setpoint_cmd(ipc, ext_mm=ext_mm, acc_mm_s2=[1000.0]*6, seq=1)
     guard._process_ipc()
     time.sleep(0.02)
     _provide_matching_feedback(guard, ipc, ext_mm=ext_mm)
-    _inject_mpc_cmd(ipc, ext_mm=ext_mm, acc_mm_s2=[2000.0]*6, seq=2)
+    _inject_setpoint_cmd(ipc, ext_mm=ext_mm, acc_mm_s2=[2000.0]*6, seq=2)
     guard._process_ipc()
 
     # Verify jerk is non-zero
@@ -1328,17 +1328,17 @@ def test_decay_boundary_continuity():
     _provide_matching_feedback(guard, ipc, ext_mm=ext_mm)
 
     # Build up jerk with 3 commands of increasing acceleration
-    _inject_mpc_cmd(ipc, ext_mm=ext_mm, vel_mm_s=[100.0]*6,
+    _inject_setpoint_cmd(ipc, ext_mm=ext_mm, vel_mm_s=[100.0]*6,
                      acc_mm_s2=[0.0]*6, seq=0)
     guard._process_ipc()
     time.sleep(0.02)
     _provide_matching_feedback(guard, ipc, ext_mm=ext_mm)
-    _inject_mpc_cmd(ipc, ext_mm=ext_mm, vel_mm_s=[100.0]*6,
+    _inject_setpoint_cmd(ipc, ext_mm=ext_mm, vel_mm_s=[100.0]*6,
                      acc_mm_s2=[1000.0]*6, seq=1)
     guard._process_ipc()
     time.sleep(0.02)
     _provide_matching_feedback(guard, ipc, ext_mm=ext_mm)
-    _inject_mpc_cmd(ipc, ext_mm=ext_mm, vel_mm_s=[100.0]*6,
+    _inject_setpoint_cmd(ipc, ext_mm=ext_mm, vel_mm_s=[100.0]*6,
                      acc_mm_s2=[2000.0]*6, seq=2)
     guard._process_ipc()
 
@@ -1378,17 +1378,17 @@ def test_decay_boundary_continuity():
 # Hermite interpolation tests (cmd_next)
 # ---------------------------------------------------------------------------
 
-def _inject_mpc_cmd_with_next(ipc, ext_mm, cmd_next_mm, pose_6dof=None,
+def _inject_setpoint_cmd_with_next(ipc, ext_mm, cmd_next_mm, pose_6dof=None,
                                vel_mm_s=None, seq=0, cmd_next2_mm=None):
     """Inject an MPC command with cmd_next_mm (and optional cmd_next2_mm)."""
     if pose_6dof is None:
         pose_6dof = [0.0, 0.0, 50.0, 0.0, 0.0, 0.0]
-    msg = make_mpc_command(
+    msg = make_setpoint_command(
         ext_mm=ext_mm, pose_6dof=pose_6dof,
         vel_mm_s=vel_mm_s, seq=seq,
         cmd_next_mm=cmd_next_mm,
         cmd_next2_mm=cmd_next2_mm)
-    ipc.inject(TOPIC_MPC_CMD, msg)
+    ipc.inject(TOPIC_SETPOINT_CMD, msg)
 
 
 def test_hermite_interpolation_with_cmd_next():
@@ -1406,7 +1406,7 @@ def test_hermite_interpolation_with_cmd_next():
     vel = [v / 0.025 for v in [5.0] * 6]  # chord velocity = (145-140)/0.025
 
     _provide_matching_feedback(guard, ipc, ext_mm=ext_0)
-    _inject_mpc_cmd_with_next(ipc, ext_mm=ext_0, cmd_next_mm=ext_1,
+    _inject_setpoint_cmd_with_next(ipc, ext_mm=ext_0, cmd_next_mm=ext_1,
                                vel_mm_s=vel, seq=0)
     guard._process_ipc()
 
@@ -1458,7 +1458,7 @@ def test_hermite_no_overshoot():
     chord_vel = [(150.0 - 140.0) / 0.025] * 6
 
     _provide_matching_feedback(guard, ipc, ext_mm=ext_0)
-    _inject_mpc_cmd_with_next(ipc, ext_mm=ext_0, cmd_next_mm=ext_1,
+    _inject_setpoint_cmd_with_next(ipc, ext_mm=ext_0, cmd_next_mm=ext_1,
                                vel_mm_s=chord_vel, seq=0)
     guard._process_ipc()
 
@@ -1489,7 +1489,7 @@ def test_hermite_late_mpc_clamps_at_endpoint():
     chord_vel = [(150.0 - 140.0) / 0.025] * 6
 
     _provide_matching_feedback(guard, ipc, ext_mm=ext_0)
-    _inject_mpc_cmd_with_next(ipc, ext_mm=ext_0, cmd_next_mm=ext_1,
+    _inject_setpoint_cmd_with_next(ipc, ext_mm=ext_0, cmd_next_mm=ext_1,
                                vel_mm_s=chord_vel, seq=0)
     guard._process_ipc()
 
@@ -1512,7 +1512,7 @@ def test_hermite_fallback_when_cmd_next_absent():
 
     ext_mm = [140.0] * 6
     _provide_matching_feedback(guard, ipc, ext_mm=ext_mm)
-    _inject_mpc_cmd(ipc, ext_mm=ext_mm, vel_mm_s=[100.0]*6, seq=0)
+    _inject_setpoint_cmd(ipc, ext_mm=ext_mm, vel_mm_s=[100.0]*6, seq=0)
     guard._process_ipc()
 
     assert guard._mpc_next_pos_rev is None, \
@@ -1537,7 +1537,7 @@ def test_hermite_cmd_next_nan_rejected():
     _provide_matching_feedback(guard, ipc, ext_mm=ext_mm)
 
     bad_next = [145.0, 145.0, float('nan'), 145.0, 145.0, 145.0]
-    _inject_mpc_cmd_with_next(ipc, ext_mm=ext_mm, cmd_next_mm=bad_next,
+    _inject_setpoint_cmd_with_next(ipc, ext_mm=ext_mm, cmd_next_mm=bad_next,
                                vel_mm_s=[100.0]*6, seq=0)
     guard._process_ipc()
 
@@ -1554,7 +1554,7 @@ def test_hermite_cleared_on_disable():
 
     ext_mm = [140.0] * 6
     _provide_matching_feedback(guard, ipc, ext_mm=ext_mm)
-    _inject_mpc_cmd_with_next(ipc, ext_mm=ext_mm,
+    _inject_setpoint_cmd_with_next(ipc, ext_mm=ext_mm,
                                cmd_next_mm=[145.0]*6,
                                vel_mm_s=[200.0]*6, seq=0)
     guard._process_ipc()
@@ -1584,7 +1584,7 @@ def test_hermite_direction_reversal():
     chord_vel_1 = [(150.0 - 140.0) / 0.025] * 6
 
     _provide_matching_feedback(guard, ipc, ext_mm=ext_0)
-    _inject_mpc_cmd_with_next(ipc, ext_mm=ext_0, cmd_next_mm=ext_1,
+    _inject_setpoint_cmd_with_next(ipc, ext_mm=ext_0, cmd_next_mm=ext_1,
                                vel_mm_s=chord_vel_1, seq=0)
     guard._process_ipc()
 
@@ -1603,7 +1603,7 @@ def test_hermite_direction_reversal():
     ext_2 = [142.0] * 6
     chord_vel_2 = [(142.0 - 150.0) / 0.025] * 6
     _provide_matching_feedback(guard, ipc, ext_mm=ext_1)
-    _inject_mpc_cmd_with_next(ipc, ext_mm=ext_1, cmd_next_mm=ext_2,
+    _inject_setpoint_cmd_with_next(ipc, ext_mm=ext_1, cmd_next_mm=ext_2,
                                vel_mm_s=chord_vel_2, seq=1)
     guard._process_ipc()
 
@@ -1641,7 +1641,7 @@ def test_c1_continuity_across_segment_boundary():
     v0_rps = [(142.0 - 140.0) / T] * 6  # will be chord of (u0,u1)
 
     _provide_matching_feedback(guard, ipc, ext_mm=u0)
-    _inject_mpc_cmd_with_next(ipc, ext_mm=u0, cmd_next_mm=u1,
+    _inject_setpoint_cmd_with_next(ipc, ext_mm=u0, cmd_next_mm=u1,
                                cmd_next2_mm=u2, vel_mm_s=v0_rps, seq=0)
     guard._process_ipc()
     assert guard._mpc_next2_pos_rev is not None
@@ -1658,7 +1658,7 @@ def test_c1_continuity_across_segment_boundary():
     new_v0_rps = [(145.0 - 142.0) / T] * 6
 
     _provide_matching_feedback(guard, ipc, ext_mm=u1)
-    _inject_mpc_cmd_with_next(ipc, ext_mm=u1, cmd_next_mm=u2,
+    _inject_setpoint_cmd_with_next(ipc, ext_mm=u1, cmd_next_mm=u2,
                                cmd_next2_mm=u3, vel_mm_s=new_v0_rps, seq=1)
     guard._process_ipc()
 
@@ -1687,7 +1687,7 @@ def test_c1_without_cmd_next2_falls_back_to_chord():
     chord_vel_rps = [(145.0 - 140.0) / T] * 6
 
     _provide_matching_feedback(guard, ipc, ext_mm=u0)
-    _inject_mpc_cmd_with_next(ipc, ext_mm=u0, cmd_next_mm=u1,
+    _inject_setpoint_cmd_with_next(ipc, ext_mm=u0, cmd_next_mm=u1,
                                vel_mm_s=chord_vel_rps, seq=0)
     guard._process_ipc()
 
@@ -1722,7 +1722,7 @@ def test_c1_cmd_next2_nan_rejected():
     chord_vel_rps = [(145.0 - 140.0) / T] * 6
 
     _provide_matching_feedback(guard, ipc, ext_mm=u0)
-    _inject_mpc_cmd_with_next(ipc, ext_mm=u0, cmd_next_mm=u1,
+    _inject_setpoint_cmd_with_next(ipc, ext_mm=u0, cmd_next_mm=u1,
                                cmd_next2_mm=bad_u2,
                                vel_mm_s=chord_vel_rps, seq=0)
     guard._process_ipc()
@@ -1745,11 +1745,11 @@ def test_c1_cmd_next2_ignored_without_cmd_next():
 
     _provide_matching_feedback(guard, ipc, ext_mm=u0)
     # Send cmd_next2_mm but NOT cmd_next_mm
-    msg = make_mpc_command(
+    msg = make_setpoint_command(
         ext_mm=u0, pose_6dof=[0.0, 0.0, 50.0, 0.0, 0.0, 0.0],
         vel_mm_s=[0.0]*6, seq=0,
         cmd_next2_mm=u2)
-    ipc.inject(TOPIC_MPC_CMD, msg)
+    ipc.inject(TOPIC_SETPOINT_CMD, msg)
     guard._process_ipc()
 
     assert guard._mpc_next_pos_rev is None
@@ -1765,7 +1765,7 @@ def test_c1_cleared_on_disable():
     _enable(guard, ipc)
 
     _provide_matching_feedback(guard, ipc, ext_mm=[140.0]*6)
-    _inject_mpc_cmd_with_next(ipc, ext_mm=[140.0]*6,
+    _inject_setpoint_cmd_with_next(ipc, ext_mm=[140.0]*6,
                                cmd_next_mm=[142.0]*6,
                                cmd_next2_mm=[145.0]*6,
                                vel_mm_s=[80.0]*6, seq=0)
@@ -1818,7 +1818,7 @@ def test_stale_feedback_warning_first_then_aggregated(monkeypatch):
     guard, ipc = _make_guard()
     _enable(guard, ipc)
     _provide_matching_feedback(guard, ipc)
-    _inject_mpc_cmd(ipc)
+    _inject_setpoint_cmd(ipc)
     guard._process_ipc()
 
     monkeypatch.setattr(_mg_mod, 'logger', MagicMock())
@@ -1841,7 +1841,7 @@ def test_stale_episode_resets_on_fresh_feedback(monkeypatch):
     guard, ipc = _make_guard()
     _enable(guard, ipc)
     _provide_matching_feedback(guard, ipc)
-    _inject_mpc_cmd(ipc)
+    _inject_setpoint_cmd(ipc)
     guard._process_ipc()
 
     monkeypatch.setattr(_mg_mod, 'logger', MagicMock())
@@ -1866,7 +1866,7 @@ def test_stroke_clamp_warning_first_then_aggregated(monkeypatch):
     _enable(guard, ipc)
     ext_mm = [140.0] * 6
     _provide_matching_feedback(guard, ipc, ext_mm=ext_mm)
-    _inject_mpc_cmd(ipc, ext_mm=ext_mm)
+    _inject_setpoint_cmd(ipc, ext_mm=ext_mm)
     guard._process_ipc()
 
     monkeypatch.setattr(_mg_mod, 'logger', MagicMock())

@@ -52,7 +52,7 @@ path itself, and production always supplies `u1`, so those fields are not
 load-bearing for continuity in normal operation.
 
 !!! note "A genuine C2 (quintic) scheme does exist — elsewhere"
-    `controller/hermite.py` and `controller/target.py` use quintic (C2)
+    `controller/hermite.py` uses quintic (C2)
     Hermite interpolation to splice the MPC's *reference* trajectory across
     catch/throw/return events, matching position, velocity, **and**
     acceleration at event boundaries (`controller/scheduler.py`, the third

@@ -1,4 +1,4 @@
-"""Tests for ballistic utilities (sim/hand/ballistics.py).
+"""Tests for ballistic utilities (controller/ballistics.py).
 
 Tests inverse ballistics, orientation computation, and hand offset.
 """
@@ -8,11 +8,10 @@ from __future__ import annotations
 import pytest
 import numpy as np
 
-from sim.hand.ballistics import (
+from controller.ballistics import (
     compute_launch_velocity,
     compute_arrival_velocity,
     compute_orientation,
-    compute_hand_offset_mm,
     rodrigues,
 )
 
@@ -119,27 +118,6 @@ class TestOrientation:
         # Axis should be perpendicular to both ref and d_hat
         assert abs(np.dot(axis, ref)) < 1e-6
         assert abs(np.dot(axis, d_hat)) < 1e-6
-
-
-class TestHandOffset:
-    """Tests for compute_hand_offset_mm.
-
-    offset = HAND_AXIS_BOTTOM_OFFSET + hand_pos + BALL_SEAT_OFFSET
-           = -129.0 + hand_pos + 44.4
-    """
-
-    def test_at_home(self):
-        """Hand at 0mm → offset = -129 + 0 + 44.4 = -84.6 mm."""
-        assert compute_hand_offset_mm(0.0) == pytest.approx(-84.6)
-
-    def test_at_prime(self):
-        """Hand at prime (~323mm) → offset = -129 + 323 + 44.4 = 238.4 mm."""
-        assert compute_hand_offset_mm(323.0) == pytest.approx(238.4)
-
-    def test_at_throw_release(self):
-        """Correct for typical x2 position."""
-        # At x2 ~207mm (from 3 m/s throw), offset = -129 + 207 + 44.4 = 122.4mm
-        assert compute_hand_offset_mm(207.0) == pytest.approx(122.4)
 
 
 class TestRodrigues:

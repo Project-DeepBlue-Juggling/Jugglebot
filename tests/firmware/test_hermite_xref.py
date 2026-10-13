@@ -91,7 +91,7 @@ def test_beta_pump_knots_match_motor_guard():
     pump = SetpointPump(mm_to_rev=geom.mm_to_rev)
 
     # ── Path 1: motor_rev present, synthetic +0.5 rev offset, full lookahead ──
-    msg = {'type': 'mpc_cmd', 'ext_mm': ext, 'pose_6dof': pose,
+    msg = {'type': 'setpoint_cmd', 'ext_mm': ext, 'pose_6dof': pose,
            'motor_rev': ext * mm + 0.5, 'vel_mm_s': vel,
            'cmd_next_mm': nxt, 'cmd_next2_mm': nxt2,
            'torque_Nm': np.zeros(6), 'acc_mm_s2': np.zeros(6), 'seq': 1}
@@ -109,7 +109,7 @@ def test_beta_pump_knots_match_motor_guard():
 
     # ── Path 2: ext-fallback (no motor_rev) ──
     pump.reset()
-    msg2 = {'type': 'mpc_cmd', 'ext_mm': ext, 'pose_6dof': pose,
+    msg2 = {'type': 'setpoint_cmd', 'ext_mm': ext, 'pose_6dof': pose,
             'vel_mm_s': vel, 'cmd_next_mm': nxt, 'cmd_next2_mm': nxt2,
             'torque_Nm': np.zeros(6), 'acc_mm_s2': np.zeros(6), 'seq': 1}
     g2 = _guard_base(msg2)
@@ -119,7 +119,7 @@ def test_beta_pump_knots_match_motor_guard():
 
     # ── Path 3: cmd_next2 absent → guard clears _mpc_next2_pos_rev, pump HAS_U2 ──
     pump.reset()
-    msg3 = {'type': 'mpc_cmd', 'ext_mm': ext, 'pose_6dof': pose,
+    msg3 = {'type': 'setpoint_cmd', 'ext_mm': ext, 'pose_6dof': pose,
             'motor_rev': ext * mm, 'vel_mm_s': vel, 'cmd_next_mm': nxt, 'seq': 1}
     g3 = _guard_base(msg3)
     sp3, _ = pump.build(msg3, t_origin_us=1)
@@ -132,7 +132,7 @@ def test_beta_pump_knots_match_motor_guard():
     # clears _mpc_next_pos_rev otherwise; the pump's exact-length gate must match
     # (a non-(6,) lookahead falls back to Taylor, not silently first-6).
     pump.reset()
-    msg4 = {'type': 'mpc_cmd', 'ext_mm': ext, 'pose_6dof': pose,
+    msg4 = {'type': 'setpoint_cmd', 'ext_mm': ext, 'pose_6dof': pose,
             'motor_rev': ext * mm, 'vel_mm_s': vel,
             'cmd_next_mm': list(nxt) + [9.9], 'seq': 1}   # 7 elements
     g4 = _guard_base(msg4)
@@ -172,7 +172,7 @@ def test_pump_hand_lane_rides_the_xref_knots_without_touching_the_guard():
     vel_next = (nxt2 - nxt) / 0.025
     pose = [0.0, 0.0, 170.0, 0.0, 0.0, 0.0]
 
-    base = {'type': 'mpc_cmd', 'ext_mm': ext, 'pose_6dof': pose,
+    base = {'type': 'setpoint_cmd', 'ext_mm': ext, 'pose_6dof': pose,
             'motor_rev': ext * mm, 'vel_mm_s': vel,
             'cmd_next_mm': nxt, 'cmd_next2_mm': nxt2,
             'vel_next_mm_s': vel_next,

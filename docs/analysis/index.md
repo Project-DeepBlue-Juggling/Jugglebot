@@ -1,7 +1,7 @@
 # Hardware Analysis & Engineering Logbook
 
-!!! note "Status (2026-10-13)"
-    The rosbag/MCAP analysis path is CURRENT (`sim/analysis/diagnose.py` does live rosbag analysis). The MPC-CSV path is historical: its CSV producer is gone, though the analysis code was kept in full at R0.
+!!! note "Status (2026-10-14)"
+    The rosbag/MCAP analysis path is CURRENT (`sim/analysis/diagnose.py --rosbag <dir>` does live rosbag analysis). The MPC-only telemetry analyses were deleted 2026-10-14; the telemetry-CSV path covers only what `sim/main.py` fills.
 
 The analysis subsystem provides tools for diagnosing hardware test sessions, comparing before/after results, searching past investigations, and maintaining a structured engineering logbook.
 
@@ -9,7 +9,7 @@ The analysis subsystem provides tools for diagnosing hardware test sessions, com
 
 ```
 sim/analysis/
-  diagnose.py            MPC telemetry + rosbag analysis engine
+  diagnose.py            rosbag + launch-log + telemetry analysis engine
   compare_sessions.py    Side-by-side session comparison (before/after)
   logbook_search.py      Search logbook by symptoms for prior art
   compare.py             Sim-vs-hardware accuracy comparison
@@ -61,19 +61,19 @@ Hardware test session (CSV + rosbag)
 
 ### Telemetry Data
 
-(Historical: the MPC CSV producer was removed 2026-09-01.) MPC telemetry CSVs contain 55 fields recorded at 40 Hz:
+Telemetry CSVs (written by `sim/main.py`) contain 55 fields recorded at 40 Hz; the analyses read these:
 
 - **Pose**: reference and actual 6-DoF (x, y, z, rx, ry, rz)
 - **Legs**: commanded and actual extension per leg (mm), leg velocities
-- **Solver**: solve time (ms), solve status, cost, constraint violation, IPOPT iterations
 - **Tracking**: position error (mm), orientation error (deg)
-- **Dynamics**: feedforward torques, overhead timing
+
+The remaining columns (solver status, solve time, IPOPT iterations, loop-overhead timing) were populated only by the removed MPC runner (tag `mpc-final`) and are no longer analysed.
 
 ### Known Issues Catalog
 
 `sim/analysis/known_issues.yaml` is a machine-readable signature catalog. Each entry has:
 
-- **Detection signatures** with thresholds (oscillation chatter ratio, discontinuity magnitude, solve time violations)
+- **Detection signatures** with thresholds (oscillation chatter ratio, discontinuity magnitude, ROS2 log patterns)
 - **Status tracking**: `fixed` (kept for regression detection), `active`, `persistent`, `known`
 - **Logbook references** linking to the full investigation narrative
 

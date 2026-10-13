@@ -28,10 +28,10 @@ from jugglebot.motion.friction_ff_params import FrictionFFParams
 from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.ipc import (
     TOPIC_MODE,
-    TOPIC_MPC_CMD,
+    TOPIC_SETPOINT_CMD,
     TOPIC_MOTOR_FB,
     make_mode_command,
-    make_mpc_command,
+    make_setpoint_command,
 )
 from jugglebot.motion.motor_guard import (
     MAX_EXTRAP_DT_S,
@@ -443,7 +443,7 @@ def test_friction_ff_clamped_leg_zeros():
         'vel': [0.0] * 6,
         'cur': [0.0] * 6,
     })
-    ipc.inject(TOPIC_MPC_CMD, make_mpc_command(
+    ipc.inject(TOPIC_SETPOINT_CMD, make_setpoint_command(
         ext_mm=ext_mm, pose_6dof=[0.0, 0.0, 50.0, 0.0, 0.0, 0.0],
         torque_Nm=[0.04] * 6, seq=0))
     guard._process_ipc()
@@ -497,7 +497,7 @@ def test_friction_ff_additive_with_dynamics_torque():
     # Known fake MPC dynamics torque — distinct per leg so a uniform
     # friction-FF couldn't masquerade as a passthrough.
     base_torque = [0.040, -0.030, 0.020, -0.010, 0.025, -0.035]
-    ipc.inject(TOPIC_MPC_CMD, make_mpc_command(
+    ipc.inject(TOPIC_SETPOINT_CMD, make_setpoint_command(
         ext_mm=ext_mm, pose_6dof=[0.0, 0.0, 50.0, 0.0, 0.0, 0.0],
         vel_mm_s=[100.0] * 6,    # nonzero so friction FF is active
         torque_Nm=base_torque, seq=0))
@@ -540,7 +540,7 @@ def test_friction_ff_lead_clamped_leg_passes_torque_ff():
         'vel': [0.0] * 6,
         'cur': [0.0] * 6,
     })
-    ipc.inject(TOPIC_MPC_CMD, make_mpc_command(
+    ipc.inject(TOPIC_SETPOINT_CMD, make_setpoint_command(
         ext_mm=ext_mm, pose_6dof=[0.0, 0.0, 50.0, 0.0, 0.0, 0.0],
         vel_mm_s=[100.0] * 6,
         seq=0))

@@ -10,7 +10,7 @@ Where this sits in the chain
 ----------------------------
 ``TrajectoryPlan.state_at(τ)``
   → :class:`LegTorqueFeedforward` (here)      — TRUE Nm, extension-positive
-  → ``make_mpc_command(torque_Nm=…)`` on :5557
+  → ``make_setpoint_command(torque_Nm=…)`` on :5557
   → ``teensy_link.setpoint_pump.SetpointPump`` — **clamp, Kt wire
     scale, ramp** (the single safety enforcement point; see that module)
   → UDP ``Setpoint.torque_ff``

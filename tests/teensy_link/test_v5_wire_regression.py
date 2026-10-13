@@ -4,7 +4,7 @@
 2aaaae1 (2026-09-01, the last pre-v6 checkout) by
 ``tools/probes/capture_v5_wire_fixtures.py`` — READ-ONLY ground truth, never
 regenerate it (the capture script refuses to run post-v6 by design). Each case
-replays recorded ``mpc_cmd`` dicts through a recorded pump configuration and
+replays recorded ``setpoint_cmd`` dicts through a recorded pump configuration and
 pins the exact v5 ``Setpoint`` payload and full UDP frame bytes.
 
 What this file asserts:
@@ -173,7 +173,7 @@ def test_v6_frame_is_undecodable_as_v5_by_construction():
     # so the "fail-closed in BOTH directions" claim rests on bytes, not prose.
     sp_pump = SetpointPump(mm_to_rev=(1.0,) * 6)
     sp, reason = sp_pump.build(
-        {'type': 'mpc_cmd', 'motor_rev': [0.1] * 6, 'vel_mm_s': [0.0] * 6},
+        {'type': 'setpoint_cmd', 'motor_rev': [0.1] * 6, 'vel_mm_s': [0.0] * 6},
         t_origin_us=1)
     assert reason is None
     frame = p.encode_frame(int(p.MsgType.SETPOINT), 1, sp.pack())

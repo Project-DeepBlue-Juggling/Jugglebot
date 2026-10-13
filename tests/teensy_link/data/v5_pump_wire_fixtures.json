@@ -36,7 +36,7 @@
       "frames": [
         {
           "cmd": {
-            "type": "mpc_cmd",
+            "type": "setpoint_cmd",
             "seq": 17,
             "ext_mm": [
               154.46,
@@ -109,7 +109,7 @@
       "frames": [
         {
           "cmd": {
-            "type": "mpc_cmd",
+            "type": "setpoint_cmd",
             "seq": 18,
             "ext_mm": [
               150.0,
@@ -174,7 +174,7 @@
       "frames": [
         {
           "cmd": {
-            "type": "mpc_cmd",
+            "type": "setpoint_cmd",
             "seq": 19,
             "motor_rev": [
               2.1907,
@@ -223,7 +223,7 @@
       "frames": [
         {
           "cmd": {
-            "type": "mpc_cmd",
+            "type": "setpoint_cmd",
             "seq": 100,
             "motor_rev": [
               2.1907,
@@ -274,7 +274,7 @@
         },
         {
           "cmd": {
-            "type": "mpc_cmd",
+            "type": "setpoint_cmd",
             "seq": 101,
             "motor_rev": [
               2.2407,
@@ -325,7 +325,7 @@
         },
         {
           "cmd": {
-            "type": "mpc_cmd",
+            "type": "setpoint_cmd",
             "seq": 102,
             "motor_rev": [
               2.2907,
@@ -376,7 +376,7 @@
         },
         {
           "cmd": {
-            "type": "mpc_cmd",
+            "type": "setpoint_cmd",
             "seq": 103,
             "motor_rev": [
               2.3407,
@@ -427,7 +427,7 @@
         },
         {
           "cmd": {
-            "type": "mpc_cmd",
+            "type": "setpoint_cmd",
             "seq": 104,
             "motor_rev": [
               2.3907,
@@ -500,7 +500,7 @@
       "frames": [
         {
           "cmd": {
-            "type": "mpc_cmd",
+            "type": "setpoint_cmd",
             "seq": 200,
             "motor_rev": [
               2.1907,
@@ -543,7 +543,7 @@
         },
         {
           "cmd": {
-            "type": "mpc_cmd",
+            "type": "setpoint_cmd",
             "seq": 201,
             "motor_rev": [
               2.1507,
@@ -586,7 +586,7 @@
         },
         {
           "cmd": {
-            "type": "mpc_cmd",
+            "type": "setpoint_cmd",
             "seq": 202,
             "motor_rev": [
               2.1107,
@@ -629,7 +629,7 @@
         },
         {
           "cmd": {
-            "type": "mpc_cmd",
+            "type": "setpoint_cmd",
             "seq": 203,
             "motor_rev": [
               2.0707,
@@ -689,7 +689,7 @@
       "frames": [
         {
           "cmd": {
-            "type": "mpc_cmd",
+            "type": "setpoint_cmd",
             "ext_mm": [
               154.4567457695431,
               154.4563849969495,

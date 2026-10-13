@@ -11,10 +11,34 @@ from jugglebot import hardware_config as hw
 
 from sim.ball_butler.sim import (
     BallButlerSim, BallButlerConfig,
-    _yaw_solve, _solve_throw, _GRAVITY_MMS2,
+    _yaw_solve, _solve_throw, _GRAVITY_MMS2, BallSpawn,
 )
-from sim.hand.coordinator import BallSpawn
-from sim.input.scripted import _ball_landing, _compute_catch_target
+
+
+def _ball_landing(spawn_pos_mm, spawn_vel_mms, target_z_mm):
+    """Descending-crossing of ``target_z_mm`` by a drag-free ball.
+
+    Inlined oracle (was ``sim.input.scripted._ball_landing``, retired
+    2026-10-14 with the MPC-era sim island).  Returns
+    (flight_time_s, landing_pos_mm, landing_vel_mms).
+    """
+    g = _GRAVITY_MMS2
+    a, b, c = -0.5 * g, spawn_vel_mms[2], spawn_pos_mm[2] - target_z_mm
+    disc = b ** 2 - 4 * a * c
+    if disc < 0:
+        raise ValueError("Ball never reaches target Z")
+    roots = [(-b + np.sqrt(disc)) / (2 * a), (-b - np.sqrt(disc)) / (2 * a)]
+    cands = [t for t in roots if t > 0 and (b - g * t) < 0]
+    if not cands:
+        raise ValueError("Ball never descends through target Z")
+    t = min(cands)
+    pos = np.array(spawn_pos_mm, dtype=float)
+    pos[0] += spawn_vel_mms[0] * t
+    pos[1] += spawn_vel_mms[1] * t
+    pos[2] = target_z_mm
+    vel = np.array(spawn_vel_mms, dtype=float)
+    vel[2] -= g * t
+    return float(t), pos, vel
 
 
 # ---------------------------------------------------------------------------
@@ -316,20 +340,17 @@ class TestConvenience:
 # ===================================================================
 
 class TestEndToEnd:
-    def test_bb_spawn_to_catch_target(self):
-        """BallSpawn from BB → _compute_catch_target → valid DynamicTarget."""
+    def test_bb_spawn_lands_near_jugglebot(self):
+        """BallSpawn from BB descends through the catch plane near the aim
+        point, within a sane flight time."""
         bb = _make_bb()
         spawn = bb.throw_at_jugglebot(spawn_time=0.5)
-        target, ball = _compute_catch_target(
-            spawn.position_mm, spawn.velocity_mms, spawn.spawn_time)
-        # Target should have a reasonable pose
-        assert target.pose_6dof.shape == (6,)
-        # XY should be near zero (we aimed at centre)
-        assert abs(target.pose_6dof[0]) < 100.0
-        assert abs(target.pose_6dof[1]) < 100.0
-        # Arrival time should be positive and reasonable
-        assert target.arrival_time > spawn.spawn_time
-        assert target.arrival_time < spawn.spawn_time + 3.0
+        t, land, _ = _ball_landing(spawn.position_mm, spawn.velocity_mms,
+                                   _CATCH_Z)
+        # We aimed at centre.
+        assert abs(land[0]) < 100.0
+        assert abs(land[1]) < 100.0
+        assert 0.0 < t < 3.0
 
 
 # ===================================================================

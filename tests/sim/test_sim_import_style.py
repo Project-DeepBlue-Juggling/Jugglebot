@@ -33,10 +33,8 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
 #: the one hole through which the dual-identity class could re-open.
 #: ``tools`` is deliberately absent: ``tools.*`` is a real repo-root package.
 _SIM_TOP_LEVEL = frozenset({
-    'analysis', 'ball', 'ball_butler', 'gate_common', 'hand',
-    'input', 'juggle_bb_catch', 'juggle_catch', 'juggle_noise',
-    'juggle_online', 'juggle_planner', 'juggle_selfcatch', 'juggle_throw',
-    'juggle_tilt', 'model', 'plant', 'reload_gate', 'toss_gate', 'viz',
+    'analysis', 'ball', 'ball_butler', 'gate_common',
+    'juggle_noise', 'juggle_tilt', 'model', 'plant', 'reload_gate', 'toss_gate', 'viz',
 })
 
 #: Directories scanned.  attic/ is frozen history; ros_ws is a separate root.
@@ -106,8 +104,8 @@ def test_sim_library_modules_do_not_mutate_sys_path():
 
     An entry script is identified by its call to ``bootstrap_paths()`` — the
     single blessed mutation.  Anything else re-deriving roots by hand is how
-    the four roots drifted apart in the first place (``sim/viz/reference_plot``
-    had a fifth, wrong, root; ``tools/probes/juggle_fastcatch`` was missing
+    the four roots drifted apart in the first place (a retired viz script
+    once had a fifth, wrong, root; ``tools/probes/juggle_fastcatch`` was missing
     ``config/generated`` and only worked because the plant self-bootstrapped).
     """
     offenders = []
@@ -196,7 +194,7 @@ def test_no_dual_module_identity_in_the_test_session():
         '`import sim` resolved to %s, not the real package — tests/sim is '
         'shadowing it' % _sim_pkg.__file__)
 
-    for canonical, legacy in (('sim.hand.ballistics', 'hand.ballistics'),
+    for canonical, legacy in (('sim.ball_butler.sim', 'ball_butler.sim'),
                               ('sim.viz.telemetry', 'viz.telemetry'),
                               ('sim.plant.interface', 'plant.interface')):
         mod = importlib.import_module(canonical)

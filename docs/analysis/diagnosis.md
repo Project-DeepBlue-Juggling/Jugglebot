@@ -1,17 +1,17 @@
 # Diagnosis Tools
 
-!!! note "Status (2026-10-13)"
-    The rosbag/MCAP path is CURRENT. The MPC-CSV path is historical: the CSV producer is gone, the analysis code was kept in full at R0; `sim/analysis/diagnose.py` does live rosbag analysis.
+!!! note "Status (2026-10-14)"
+    The rosbag/MCAP path is CURRENT: `sim/analysis/diagnose.py --rosbag <dir>` needs no CSV. The telemetry-CSV analyses cover only the columns `sim/main.py` still fills; the MPC-only analyses (solve times, solver status, plant collapse, overshoot saturation, loop overhead) and the MPC stdout-log parser were deleted 2026-10-14 (the implementation is at git tag `mpc-final`).
 
 ## Session Diagnosis (`/diagnose`)
 
-Analyse MPC telemetry CSVs and rosbag (MCAP) recordings from hardware test sessions.
+Analyse rosbag (MCAP) recordings from hardware test sessions, plus an optional sim telemetry CSV.
 
 ### Usage
 
 ```
 /diagnose                          # Analyse most recent unanalysed session
-/diagnose mpc_20260401_143845.csv  # Analyse a specific session
+/diagnose sim_20260401_143845.csv  # Analyse a specific telemetry session
 /diagnose --all-new                # Analyse all unanalysed sessions
 /diagnose --compare <a> <b>        # Compare two sessions side-by-side
 ```
@@ -23,27 +23,33 @@ The core engine (`sim/analysis/diagnose.py`) runs these analyses:
 | Function | What it checks |
 |----------|---------------|
 | `analyse_tracking()` | Per-leg + aggregate tracking error (RMS, peak, mean) |
-| `analyse_solve_times()` | Solver performance (p50/p95/p99, budget violations, consecutive violations) |
 | `analyse_oscillation()` | Chatter ratio detection, amplitude growth (sign-change analysis) |
 | `analyse_discontinuities()` | Single-step command/actual jumps exceeding thresholds |
 | `analyse_workspace()` | Stroke usage and margins to hard limits |
 | `analyse_steady_state()` | Transient vs steady-state segmentation, settling time |
 | `analyse_torques()` | Feedforward torque statistics |
+| `analyse_hold_phase()` | Per-leg noise during the longest ref-static tail |
+| `analyse_cmd_spectral()` | Command spectrum during hold |
+| `analyse_motion_onset()` | Dead-time between command ramp-onset and first motion |
+| `analyse_rosbag()` | Live rosbag path: trajectory moves, E-stop detection, state / mode / motor-error timelines |
 
 ### Standalone Usage
 
 The analysis engine can be run directly without the slash command:
 
 ```bash
-# JSON output (for programmatic use)
-python sim/analysis/diagnose.py temp/logs/mpc_20260401_143845.csv --json
+# Rosbag only (the live hardware path; no CSV needed)
+python sim/analysis/diagnose.py --rosbag ~/Desktop/rosbags/2026-04-01_14-37-59 --json
+
+# Telemetry CSV, JSON output (for programmatic use)
+python sim/analysis/diagnose.py temp/logs/sim_20260401_143845.csv --json
 
 # With rosbag correlation
-python sim/analysis/diagnose.py temp/logs/mpc_20260401_143845.csv \
+python sim/analysis/diagnose.py temp/logs/sim_20260401_143845.csv \
     --rosbag ~/Desktop/rosbags/2026-04-01_14-37-59 --json
 
 # With interactive Plotly report
-python sim/analysis/diagnose.py temp/logs/mpc_20260401_143845.csv --plots auto
+python sim/analysis/diagnose.py temp/logs/sim_20260401_143845.csv --plots auto
 ```
 
 ### Verdict Criteria
@@ -54,14 +60,13 @@ python sim/analysis/diagnose.py temp/logs/mpc_20260401_143845.csv --plots auto
 
 ### Interactive Reports
 
-Diagnosis generates interactive HTML reports (Plotly) with 8 plot categories:
+Diagnosis generates interactive HTML reports (Plotly) with 7 plot categories:
 
 | Category | Content |
 |----------|---------|
 | `legs` | Commanded vs actual extension per leg (3x2 grid) |
 | `pose` | Reference vs actual 6-DoF pose |
 | `tracking` | Position + orientation error over time |
-| `solver` | Solve time distribution vs 24ms budget |
 | `velocity` | Leg velocity per step |
 | `hand` | Hand position and velocity |
 | `workspace` | Stroke usage vs limits |
@@ -78,7 +83,7 @@ Compare two hardware sessions side-by-side to answer: *"Did my fix actually impr
 ### Usage
 
 ```
-/diagnose --compare mpc_20260401_143845.csv mpc_20260401_152048.csv
+/diagnose --compare sim_20260401_143845.csv sim_20260401_152048.csv
 ```
 
 ### Output
@@ -86,18 +91,16 @@ Compare two hardware sessions side-by-side to answer: *"Did my fix actually impr
 A delta table showing key metrics with improvement/regression indicators:
 
 ```
-  SESSION COMPARISON: mpc_20260401_143845.csv vs mpc_20260401_152048.csv
+  SESSION COMPARISON: sim_20260401_143845.csv vs sim_20260401_152048.csv
 
   Metric                     Before          After              Delta
   -------------------------- --------------- --------------- ---------
   Tracking RMS (mm)              2.341           0.187       92% down (improved)
-  Solve time p50 (ms)           24.8            22.1         11% down (improved)
-  Budget violations (%)         89%             12%          77% down (improved)
   Command discontinuities        4               0           resolved
   Verdict                       FAIL            PASS         improved
 ```
 
-An interactive Plotly HTML report is also generated with dual-trace overlays (session A in blue, session B in red) for legs, tracking error, and solve times.
+An interactive Plotly HTML report is also generated with dual-trace overlays (session A in blue, session B in red) for legs and tracking error.
 
 ### Standalone Usage
 
@@ -153,9 +156,7 @@ active  -->  fixed (kept for regression detection)
 |------|----------------|----------------|
 | `oscillation` | Command chatter ratio, amplitude growth | `chatter_threshold`, `amplitude_growing` |
 | `discontinuity` | Single-step jumps in commanded/actual extension | `field`, `threshold_mm` |
-| `solve_time` | Consecutive MPC budget violations (historical: MPC removed 2026-09-01) | `max_consecutive_violations` |
 | `per_leg_tracking` | One leg tracking significantly worse than median | `leg`, `rms_ratio_vs_median` |
-| `solve_status_pattern` | Specific solve status strings (e.g., cold_hold) | `pattern` |
 | `ros2_log_pattern` | ROS2 log message patterns | `pattern`, `level` |
 
 ### Current Issues
@@ -167,7 +168,6 @@ As of 2026-04-01:
 | VEL_FF_BUG | critical | fixed | Velocity feedforward semantic mismatch |
 | COLD_HOLD_STROKE_MIN | critical | fixed | Cold-hold fallback to stroke minimum |
 | ASSIGNMENT_ORDER | critical | fixed | Assignment-order bug in feedforward |
-| MPC_STALENESS | high | active | Solve time exceeding 24ms budget (historical: MPC-era) |
 | LEG2_TRACKING | medium | active | Leg 2 consistently worst tracker |
 | CAN_BUS_WATCHDOG | high | persistent | CAN bus watchdog restore |
 | ODRIVE_DISARM | critical | persistent | ODrive axis disarmed in CLOSED_LOOP |
@@ -180,7 +180,7 @@ As of 2026-04-01:
 
 ```json
 {
-  "mpc_20260401_143845.csv": {
+  "sim_20260401_143845.csv": {
     "analyzed": true,
     "last_analyzed": "2026-04-01T15:05:00Z",
     "verdict": "FAIL",

@@ -55,7 +55,7 @@ def _go_to_pose_req(x=0.0, y=0.0, z=170.0, duration_s=0.0, lean_gain=0.0):
 
 
 class _CapturePub:
-    """Fake MpcCommandPub: records sent frames + send timestamps (no ZMQ)."""
+    """Fake SetpointCommandPub: records sent frames + send timestamps (no ZMQ)."""
 
     def __init__(self):
         self.frames = []

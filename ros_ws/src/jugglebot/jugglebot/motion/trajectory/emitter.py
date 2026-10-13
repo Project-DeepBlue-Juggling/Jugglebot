@@ -1,8 +1,8 @@
-"""KnotEmitter — samples a plan and assembles one ``make_mpc_command`` frame.
+"""KnotEmitter — samples a plan and assembles one ``make_setpoint_command`` frame.
 
 Each 40 Hz tick, the emitter samples the active plan at ``(tau, tau+dt, tau+2·dt)``
 (``dt`` = 25 ms, the fixed firmware ``SEGMENT_T_S``), runs the IK chain on each
-sample, and assembles the exact ``make_mpc_command`` field set ``HardwarePlant``
+sample, and assembles the exact ``make_setpoint_command`` field set ``HardwarePlant``
 sent before it was removed 2026-09-01 (tag mpc-final) — so the whole validated
 :5557 → ``SetpointPump`` → Teensy-Hermite chain accepts our frames unchanged
 (the "emitter envelope is byte-compatible with ``HardwarePlant`` by
@@ -58,7 +58,7 @@ lookahead discipline as the legs (τ, τ+dt, τ+2·dt):
 
 Legacy plans (no ``hand_at``) emit NONE of the eight new keys — the frame is
 byte-identical to the pre-Phase-2 emitter (pinned against the captured v5
-fixtures), and ``make_mpc_command``'s absent-when-None rule scrubs any stale
+fixtures), and ``make_setpoint_command``'s absent-when-None rule scrubs any stale
 hand key from a reused ``out=`` dict when the active plan stops carrying a
 hand track mid-stream.
 
@@ -78,7 +78,7 @@ off-knot sample stamped with no play-time authority of its own. Now
 samples ``plan.state_at`` at exactly the ``tau`` it is given — the lead and
 the epoch stamp are the caller's concern, not this one's.
 
-Pure Python + numpy (imports ``jugglebot.motion.ipc.make_mpc_command`` for the
+Pure Python + numpy (imports ``jugglebot.motion.ipc.make_setpoint_command`` for the
 exact field set — a pure dict builder, no ZMQ/UDP transport). No repo-root imports.
 """
 
@@ -93,14 +93,14 @@ from jugglebot.motion.ik_solver import (
     rotvec_to_rot_matrix,
     twist_to_leg_velocities,
 )
-from jugglebot.motion.ipc import make_mpc_command
+from jugglebot.motion.ipc import make_setpoint_command
 from jugglebot.motion.torque_ff import LegTorqueFeedforward
 
 KNOT_DT_S = 0.025    # fixed 40 Hz knot spacing (firmware SEGMENT_T_S)
 
 
 class KnotEmitter:
-    """Stateless (per-frame) sampler: plan + time → ``make_mpc_command`` dict.
+    """Stateless (per-frame) sampler: plan + time → ``make_setpoint_command`` dict.
 
     Args:
         geom: :class:`StewartGeometry`.
@@ -128,7 +128,7 @@ class KnotEmitter:
 
     def frame(self, plan, tau: float, seq: int, *, out: dict | None = None,
               knot_epoch_us: int | None = None) -> dict:
-        """Build one ``make_mpc_command`` dict for plan time ``tau`` (seconds).
+        """Build one ``make_setpoint_command`` dict for plan time ``tau`` (seconds).
 
         ``tau`` is the time since the active plan was installed, i.e. this
         frame's u0 knot is plan time ``tau`` — the CALLER (``trajectory_node``)
@@ -166,7 +166,7 @@ class KnotEmitter:
 
         # ── 7th channel: only for a plan that carries a hand track (the
         # CyclePlan contract). Legacy plans emit NO hand keys — the None
-        # defaults below make make_mpc_command scrub them from a reused out=
+        # defaults below make make_setpoint_command scrub them from a reused out=
         # dict, so a stale hand key can never leak into a legacy frame.
         #
         # Exact leg v1 / v2 (the u1- and u2-knot extension rates, one matvec
@@ -205,7 +205,7 @@ class KnotEmitter:
                 hand_acc_rps2=h0_acc,
             )
 
-        return make_mpc_command(
+        return make_setpoint_command(
             ext_mm=ext0,
             pose_6dof=np.asarray(pose0, dtype=float),
             motor_rev=motor_rev,

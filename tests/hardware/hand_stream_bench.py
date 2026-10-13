@@ -1057,7 +1057,7 @@ def main():
             if hand_override is not None:
                 hp = hp1 = hp2 = hand_override
                 hv = hv1 = 0.0
-            cmd = {'type': 'mpc_cmd', 'seq': 0,
+            cmd = {'type': 'setpoint_cmd', 'seq': 0,
                    'ext_mm': leg_ext, 'pose_6dof': [0.0, 0.0, 170.0, 0.0, 0.0, 0.0],
                    'motor_rev': leg_rev, 'vel_mm_s': [0.0] * 6,
                    'cmd_next_mm': leg_ext, 'cmd_next2_mm': leg_ext,

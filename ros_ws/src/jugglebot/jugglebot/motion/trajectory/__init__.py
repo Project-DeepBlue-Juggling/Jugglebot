@@ -15,7 +15,7 @@ Public surface (Phase 1):
   * :class:`QuinticSegment`, :class:`TrajectoryPlan`, :func:`HoldPlan`.
   * :mod:`planner` constructors (all gate through :func:`feasibility.validate`).
   * :class:`FeasibilityReport`, :class:`TrajectoryInfeasible`.
-  * :class:`KnotEmitter` — plan sample → ``make_mpc_command`` frame.
+  * :class:`KnotEmitter` — plan sample → ``make_setpoint_command`` frame.
 """
 
 from __future__ import annotations

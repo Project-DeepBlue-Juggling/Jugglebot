@@ -174,7 +174,7 @@ automatically once Phase 0's tooling exists.
 
 `dynamics.torque_ff_learned: false` + codegen; profile store/loader; attach
 at install; `KnotEmitter.frame` adds the sampled trim into `torque_ff`
-before `make_mpc_command` (emitter.py:106-118 region). Tests: pump-acceptance
+before `make_setpoint_command` (renamed from `make_mpc_command` 2026-10-14; emitter.py:106-118 region). Tests: pump-acceptance
 invariant (frames with trim are accepted by a real `SetpointPump`),
 clamp-budget property (model + trim ≤ pump clamp at battery dynamics),
 byte-identical-OFF, key-miss ⇒ exact zeros, and a

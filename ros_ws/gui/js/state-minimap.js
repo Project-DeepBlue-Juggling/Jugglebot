@@ -1089,7 +1089,7 @@ function computeAction(s) {
             return {
                 key: 'arm', visible: true, label: 'Arm Setpoints',
                 title: 'set_setpoint_output true — stream-then-arm; the bridge verifies a ' +
-                    'fresh mpccmd frame + u0 within tolerance (_arm_setpoint_output, teensy_bridge_node.py:1654-1810)',
+                    'fresh setpoint frame + u0 within tolerance (_arm_setpoint_output, teensy_bridge_node.py:1654-1810)',
                 plan: () => mkPlan('Arm setpoints', [
                     svcStep('set_setpoint_output', SETBOOL, { data: true },
                         T_SVC_SETPOINT, 'abort', 'arm the 40 Hz setpoint downlink', true),

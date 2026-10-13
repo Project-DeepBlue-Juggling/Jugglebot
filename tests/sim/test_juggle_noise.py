@@ -10,7 +10,24 @@ import numpy as np
 import pytest
 
 from sim.juggle_noise import NoiseConfig, JuggleNoise, BallisticEstimator
-from sim.juggle_planner.juggle_planner import GRAVITY, ballistic_touchdown
+
+
+GRAVITY = np.array([0.0, 0.0, -9.806])
+
+
+def ballistic_touchdown(pos, vel, touchdown_height):
+    """Descending-root touch-down (t, pos, vel) of a ball under GRAVITY.
+
+    Local oracle: the former ``sim.juggle_planner`` helper was deleted with the
+    MPC-era demo cluster (2026-10-14); only this test used it.
+    """
+    pos = np.asarray(pos, dtype=float)
+    vel = np.asarray(vel, dtype=float)
+    g = GRAVITY[2]
+    disc = max(vel[2] * vel[2] / g**2 - 2.0 * (pos[2] - touchdown_height) / g, 0.0)
+    t_td = -vel[2] / g + np.sqrt(disc)
+    return (float(t_td), pos + vel * t_td + 0.5 * GRAVITY * t_td**2,
+            vel + GRAVITY * t_td)
 
 
 # ---- NoiseConfig defaults (the §3 knobs) --------------------------------

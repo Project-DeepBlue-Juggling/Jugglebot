@@ -1,7 +1,7 @@
 """Unit tests for teensy_link/setpoint_pump.py.
 
 The pump now consumes the 40 Hz MPC command
-stream (:5557 ``make_mpc_command`` dict) and emits Teensy-side knots (u0/u1/u2 + v0,
+stream (:5557 ``make_setpoint_command`` dict) and emits Teensy-side knots (u0/u1/u2 + v0,
 flags carrying HAS_U1/HAS_U2, torque_ff=0). These are the safety-critical
 packing + per-step gate, tested in isolation (no ROS, no ZMQ, no UDP).
 
@@ -34,8 +34,8 @@ def _pump(max_step_rev=0.3):
 
 
 def _cmd(ext=None, motor_rev=None, vel=None, cmd_next=None, cmd_next2=None):
-    """Build a :5557 mpc_cmd-style dict (only the fields the pump reads)."""
-    d = {'type': 'mpc_cmd'}
+    """Build a :5557 setpoint_cmd-style dict (only the fields the pump reads)."""
+    d = {'type': 'setpoint_cmd'}
     if ext is not None:
         d['ext_mm'] = list(ext)
     if motor_rev is not None:
@@ -210,7 +210,7 @@ def test_overlong_cmd_next_clears_flag():
 
 
 def test_no_position_command_skipped_not_rejected():
-    """Neither motor_rev nor ext_mm — nothing to command (e.g. a non-mpc_cmd
+    """Neither motor_rev nor ext_mm — nothing to command (e.g. a non-setpoint_cmd
     frame). Skip silently, NOT a fault."""
     pump = _pump()
     sp, reason = pump.build({'type': 'other', 'vel_mm_s': [0.0] * 6},
@@ -264,7 +264,7 @@ def test_reset_clears_prior():
 def test_build_rejects_scalar_motor_rev_without_raising():
     pump = _pump()
     sp, reason = pump.build(
-        {'type': 'mpc_cmd', 'motor_rev': 2.5, 'vel_mm_s': [0.0] * 6}, 0)
+        {'type': 'setpoint_cmd', 'motor_rev': 2.5, 'vel_mm_s': [0.0] * 6}, 0)
     assert sp is None and reason is not None      # rejected, NOT raised
     assert pump.frames_rejected == 1
 
@@ -274,7 +274,7 @@ def test_build_rejects_none_element_without_raising():
     mr = [0.0] * 6
     mr[2] = None
     sp, reason = pump.build(
-        {'type': 'mpc_cmd', 'motor_rev': mr, 'vel_mm_s': [0.0] * 6}, 0)
+        {'type': 'setpoint_cmd', 'motor_rev': mr, 'vel_mm_s': [0.0] * 6}, 0)
     assert sp is None and 'non-numeric' in reason
     assert pump.frames_rejected == 1
 
@@ -282,7 +282,7 @@ def test_build_rejects_none_element_without_raising():
 def test_build_rejects_string_field_without_raising():
     pump = _pump()
     sp, reason = pump.build(
-        {'type': 'mpc_cmd', 'motor_rev': ['x'] * 6, 'vel_mm_s': [0.0] * 6}, 0)
+        {'type': 'setpoint_cmd', 'motor_rev': ['x'] * 6, 'vel_mm_s': [0.0] * 6}, 0)
     assert sp is None and reason is not None
 
 
@@ -293,7 +293,7 @@ def test_bad_lookahead_clears_flag_without_raising():
     cn = [1.0] * 6
     cn[0] = None
     sp, reason = pump.build(
-        {'type': 'mpc_cmd', 'motor_rev': [0.0] * 6, 'vel_mm_s': [0.0] * 6,
+        {'type': 'setpoint_cmd', 'motor_rev': [0.0] * 6, 'vel_mm_s': [0.0] * 6,
          'cmd_next_mm': cn}, 0)
     assert reason is None and sp is not None
     assert not (sp.flags & FLAG_HAS_U1)
@@ -506,7 +506,7 @@ def test_hand_keys_without_position_command_rejects():
     ext_mm both absent) are an incoherent producer, not an idle tick — a loud
     counted reject, never the silent frames_skipped exit."""
     pump = _pump()
-    cmd = {'type': 'mpc_cmd', 'vel_mm_s': [0.0] * 6}
+    cmd = {'type': 'setpoint_cmd', 'vel_mm_s': [0.0] * 6}
     cmd.update(_HAND)
     sp, reason = pump.build(cmd, t_origin_us=1)
     assert sp is None and 'without a position command' in reason

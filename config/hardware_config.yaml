@@ -1200,9 +1200,9 @@ teensy_trajectory:
   # IS IT SAFE AS-IS? Yes. x3 = 9.9594 rev sits 0.84 rev (26.6 mm) BELOW the 10.8 rev
   # hard stop, so the profile never commands into metal. What 0.355 no longer means
   # is "the physical stroke"; the 20 mm `stroke_margin_m` insets it describes were
-  # already fictional in the firmware's frame (see sim/hand/trajectory.py's note —
-  # the sim CENTRES the stroke in the travel, the firmware starts it at encoder
-  # zero). Treat this as a TUNED PROFILE PARAMETER whose units happen to be metres.
+  # already fictional in the firmware's frame (the MPC-era sim/hand/trajectory.py,
+  # deleted 2026-10-14, CENTRED the stroke in the travel; the firmware starts it
+  # at encoder zero). Treat this as a TUNED PROFILE PARAMETER whose units happen to be metres.
   hand_stroke_m: 0.355                  # Throw-profile basis {m} — NOT the physical stroke.
   stroke_margin_m: 0.02                 # Safety margin at ends of stroke {m}
   # R1 (2026-09-11): end_profile_hold_s, sample_rate_hz, quintic_s2_max,

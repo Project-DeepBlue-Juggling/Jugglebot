@@ -8,7 +8,7 @@ byte-exactness (T-R1 / T-U7 / T-U8 of
 ``plans/archived/unified-7dof-planner.md`` § 5):
 
 1. **Pump wire fixtures** (``tests/teensy_link/data/v5_pump_wire_fixtures.json``)
-   — representative :5557 ``mpc_cmd`` dicts driven through the real
+   — representative :5557 ``setpoint_cmd`` dicts driven through the real
    ``teensy_link.setpoint_pump.SetpointPump`` and the real codec
    (``teensy_link.protocol``): the 156-byte v5 ``Setpoint`` payload AND the
    full ``encode_frame`` UDP frame (header + payload + CRC-16), both as hex,
@@ -189,7 +189,7 @@ def capture_pump_fixtures() -> dict:
     # (a) full Mode-1 frame: motor_rev + vel + both lookaheads, flags 0x3.
     pump = SetpointPump(**default_args)
     cmd = {
-        'type': 'mpc_cmd', 'seq': 17,
+        'type': 'setpoint_cmd', 'seq': 17,
         'ext_mm': list(EXT_MM_A),
         'motor_rev': list(MOTOR_REV_A),
         'vel_mm_s': list(VEL_MM_S_A),
@@ -210,7 +210,7 @@ def capture_pump_fixtures() -> dict:
     # (b) ext_mm fallback: no motor_rev → u0 = ext_mm × mm_to_rev.
     pump = SetpointPump(**default_args)
     cmd = {
-        'type': 'mpc_cmd', 'seq': 18,
+        'type': 'setpoint_cmd', 'seq': 18,
         'ext_mm': [150.0, 151.25, 149.5, 150.75, 152.0, 148.875],
         'vel_mm_s': [5.0, 5.0, -5.0, 0.5, -0.5, 0.0],
         'cmd_next_mm': [150.2, 151.35, 149.3, 150.85, 151.9, 148.975],
@@ -229,7 +229,7 @@ def capture_pump_fixtures() -> dict:
     # (c) no-lookahead frame: motor_rev + vel only, flags 0x0 (Mode-2 Taylor).
     pump = SetpointPump(**default_args)
     cmd = {
-        'type': 'mpc_cmd', 'seq': 19,
+        'type': 'setpoint_cmd', 'seq': 19,
         'motor_rev': list(MOTOR_REV_A),
         'vel_mm_s': list(VEL_MM_S_A),
     }
@@ -257,7 +257,7 @@ def capture_pump_fixtures() -> dict:
         nxt = [round((mr[i] + 0.0007) / MM_TO_REV[i], 6) for i in range(6)]
         nxt2 = [round((mr[i] + 0.0014) / MM_TO_REV[i], 6) for i in range(6)]
         cmd = {
-            'type': 'mpc_cmd', 'seq': 100 + k,
+            'type': 'setpoint_cmd', 'seq': 100 + k,
             'motor_rev': mr,
             'vel_mm_s': [2.0, -2.0, 2.0, -2.0, 2.0, -2.0],
             'cmd_next_mm': nxt,
@@ -285,7 +285,7 @@ def capture_pump_fixtures() -> dict:
         mr = [round(v - 0.04 * k, 6) for v in MOTOR_REV_A]
         nxt = [round((mr[i] - 0.0005) / MM_TO_REV[i], 6) for i in range(6)]
         cmd = {
-            'type': 'mpc_cmd', 'seq': 200 + k,
+            'type': 'setpoint_cmd', 'seq': 200 + k,
             'motor_rev': mr,
             'vel_mm_s': [-1.5, 1.5, -1.5, 1.5, -1.5, 1.5],
             'cmd_next_mm': nxt,
@@ -311,7 +311,7 @@ def capture_pump_fixtures() -> dict:
     emit = KnotEmitter(geom)
     hold_frame = emit.frame(HoldPlan(np.array([0.0, 0.0, 170.0,
                                                0.0, 0.0, 0.0])), 0.0, 0)
-    _, blob = ipc._pack(ipc.TOPIC_MPC_CMD, hold_frame)
+    _, blob = ipc._pack(ipc.TOPIC_SETPOINT_CMD, hold_frame)
     wire_cmd = msgpack.unpackb(blob, raw=False)
     pump = SetpointPump(mm_to_rev=live_mm,
                         max_step_rev=float(hw.JB_OP_MAX_POSITION_STEP_REV))
@@ -357,7 +357,7 @@ def capture_emitter_fixtures() -> dict:
 
     def _emit_hex(plan, tau: float, seq: int) -> dict:
         frame = emit.frame(plan, tau, seq)
-        topic, blob = ipc._pack(ipc.TOPIC_MPC_CMD, frame)
+        topic, blob = ipc._pack(ipc.TOPIC_SETPOINT_CMD, frame)
         return {
             'tau': repr(float(tau)),        # repr round-trips the exact float
             'seq': seq,
@@ -416,7 +416,7 @@ def capture_emitter_fixtures() -> dict:
         'captured_date': CAPTURED_DATE,
         'command': EMIT_COMMAND,
         'msgpack_note': ("msgpack_hex is frames[1] of jugglebot.motion.ipc."
-                         "_pack(TOPIC_MPC_CMD, KnotEmitter.frame(plan, tau, "
+                         "_pack(TOPIC_SETPOINT_CMD, KnotEmitter.frame(plan, tau, "
                          "seq)) — it pins dict key ORDER and exact float "
                          "BITS, the byte-identity T-U8/T-R1 assert. taus and "
                          "total_duration are stored as repr() so the exact "

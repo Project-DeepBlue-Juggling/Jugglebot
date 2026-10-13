@@ -135,7 +135,7 @@ class MuJoCoPlant(PlantInterface):
         # ``tests/sim/test_mjcf_drift.py`` keeps them agreeing.)
         #
         # ``_hand_prime_mm`` is the top of the sim's stroke = where
-        # ``sim/hand/trajectory.py``'s catch trajectory takes its first sample,
+        # the retired sim catch trajectory's first sample (the sim hand package, removed 2026-10-14),
         # so parking here makes a catch-from-rest a true no-op.  It read
         # ``9.858 * 2π * 5.21`` until 2026-08-21: the pre-Phase-3 prime, and with
         # the wrong gain (no ``LINEAR_GAIN_FACTOR``).  Derived now from

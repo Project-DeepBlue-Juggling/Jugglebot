@@ -2,18 +2,18 @@
 
 The Jetson-side replacement for ``run_mpc.py``'s hot path (Phase 1 of
 ``plans/archived/mvp-trajectory-bringup.md``). A dedicated 40 Hz emitter thread
-streams ``make_mpc_command`` knot frames on ZMQ :5557 — the exact seam
-``HardwarePlant`` used — which ``teensy_bridge_node``'s ``_MpcCommandSetpointSource``
+streams ``make_setpoint_command`` knot frames on ZMQ :5557 — the exact seam
+``HardwarePlant`` used — which ``teensy_bridge_node``'s ``_SetpointCommandSource``
 consumes unchanged, feeding ``SetpointPump`` → the can-hub Teensy's 500 Hz
 Hermite. Phase 1 streams only a **hold**: the platform holds the pose measured from
 ``robot_state`` telemetry, so the first commanded ``u0`` lands inside both the
 pump's 0.3 rev step gate and the firmware's 1.0 rev MAX_DEVIATION backstop.
 
-Design (mirrors the validated 40 Hz MPC path's discipline):
+Design (mirrors the discipline of the earlier validated 40 Hz command path):
   * **Dedicated emitter thread** (not an rclpy timer): absolute-deadline 40 Hz
     loop on ``perf_counter``; the ZMQ PUB is bound **inside** the thread. Being
-    the sole binder of :5557 is the MPC/trajectory mutual-exclusion interlock — a
-    bind failure means ``run_mpc.py`` is running, and the emitter refuses to start
+    the sole binder of :5557 is the single-producer interlock — a
+    bind failure means another process already publishes :5557, and the emitter refuses to start
     (loud error), rather than fighting over the wire.
   * **Always has a plan** — a ``HoldPlan`` once seeded — so stream gaps never
     approach the 250 ms staleness E-STOP (10× margin at 25 ms knots).
@@ -113,7 +113,7 @@ from jugglebot.motion.ik_solver import (
     rotvec_to_rot_matrix,
     twist_to_leg_velocities,
 )
-from jugglebot.motion.ipc import MpcCommandPub
+from jugglebot.motion.ipc import SetpointCommandPub
 from jugglebot.motion import blas_threads
 from jugglebot.motion import levelling
 from jugglebot.motion import tilt_map
@@ -499,7 +499,7 @@ class TrajectoryNode(Node):
     Args:
         geom: injected :class:`StewartGeometry` (tests); built from config if None.
         command_pub_factory: zero-arg callable returning a PUB with ``send(dict)`` /
-            ``close()`` (tests inject a capturing fake); ``MpcCommandPub`` if None.
+            ``close()`` (tests inject a capturing fake); ``SetpointCommandPub`` if None.
         start_emitter: start the 40 Hz emitter thread in ``__init__`` (production).
             Tests pass ``False`` and drive ``_emit_once`` / the seeding + services
             directly.
@@ -551,9 +551,9 @@ class TrajectoryNode(Node):
         # catch/dynamic_target pose is STOW-relative — the SAME frame as the trajectory
         # pose convention (0 = the stow plane at GEOM_INITIAL_HEIGHT, ~170 = active):
         # the coordinator subtracts GEOM_INITIAL_HEIGHT from the world-frame intercept,
-        # and the wire historically forwarded VERBATIM into the (stow-relative) MPC
+        # and the wire historically forwarded VERBATIM into the (stow-relative) wire
         # frame. Hardware-verified 2026-07-23: this node's previous "+ active_z lift"
-        # (which assumed an active-relative wire per a false premise about the MPC
+        # (which assumed an active-relative wire per a false premise about the wire
         # convention) double-counted the active height, commanding z ≈ 341 mm and
         # driving every catch reach out of stroke (leg hard max 275 mm) — the Phase-7
         # pre-registered open question, answered. No z conversion happens here anymore.
@@ -1022,13 +1022,13 @@ class TrajectoryNode(Node):
         self.diagnostics_pub = self.create_publisher(
             DiagnosticStatus, 'trajectory/diagnostics', 10)
         # Accept/reject feedback for timed/catch targets — catch_coordinator_node
-        # consumes this in place of the dormant MPC process's ZMQ :5559 feedback
+        # consumes this in place of the retired MPC-chain ZMQ :5559 feedback
         # (blacklist semantics preserved).
         self.target_feedback_pub = self.create_publisher(
             TargetFeedback, 'trajectory/target_feedback', 10)
         # Feedforward leg torques on leg_torques_diagnostic — the SAME topic name,
         # Float64MultiArray type and semantic (6 leg values, TRUE Nm, extension-
-        # positive) that motion_bridge_node publishes on the MPC path, so the
+        # positive) that motion_bridge_node published on the retired MPC path, so the
         # rosbag record list / GUI / any consumer see identical data regardless of
         # which producer is live (the two paths are mutually exclusive on :5557).
         # Two publishers on one topic is fine in ROS2 as long as the types match.
@@ -1322,10 +1322,10 @@ class TrajectoryNode(Node):
         # ⇒ something else already owns :5557; refuse to start rather than fight
         # the wire. (Until 2026-09-01 that "something else" was run_mpc.py, now
         # deleted — so a failure here is a stale trajectory_node or a stray
-        # process, not the MPC.)
+        # process.)
         try:
             self._pub = (self._pub_factory() if self._pub_factory is not None
-                         else MpcCommandPub())
+                         else SetpointCommandPub())
         except Exception as e:  # noqa: BLE001
             self.get_logger().error(
                 "trajectory_node: could not bind the :5557 command PUB "

@@ -1125,7 +1125,7 @@ _LANE_FALLBACK_HINT = 'DEACTIVATE → ACTIVATE (IDLE then TRAJECTORY in the GUI)
 # two callers — guard-latch recovery, which DISARMS the wire, parks and reports
 # (`_park_hand_disarmed`: `_svc_recover` both paths and the armed `/clear_errors`
 # fallback, 2026-09-23), and the operator's `/park_hand` (which REFUSES an
-# off-band hand on an ARMED wire: the firmware's MPC-stream interlock rejects
+# off-band hand on an ARMED wire: the firmware's command-stream interlock rejects
 # the op, and a live lane would drag the parked axis back to its last knot). The 2026-09-18 first
 # answer — a blocking `/park_hand` before every schedule plus a park-band
 # precondition in `skill_node` — is DELETED: the band was measured against the
@@ -1242,19 +1242,19 @@ def _enum_name(enum_cls, value: int) -> str:
         return f"v{value}"
 
 
-class _MpcCommandSetpointSource:
-    """SUB-only connection to the MPC command PUB (tcp://127.0.0.1:5557).
+class _SetpointCommandSource:
+    """SUB-only connection to the setpoint command PUB (trajectory_node) (tcp://127.0.0.1:5557).
 
     **The Jetson-relay→Teensy-side switch.** Previously this read motor_guard's
     *already-interpolated* 500 Hz telemetry on :5556 (the Jetson-relay path); it now reads
-    the **40 Hz MPC command stream** on :5557 (``ipc.MPC_COMMAND_ADDR``,
-    ``ipc.TOPIC_MPC_CMD``) — the same ``make_mpc_command`` dicts motor_guard
+    the **40 Hz setpoint command stream** on :5557 (``ipc.SETPOINT_COMMAND_ADDR``,
+    ``ipc.TOPIC_SETPOINT_CMD``) — the same ``make_setpoint_command`` dicts motor_guard
     consumes — so the Teensy does the 500 Hz interpolation (Teensy-side path). motor_guard
     leaves the leg path; its :5556 output simply goes unconsumed.
 
-    Subscribes to the ``mpccmd`` topic specifically (not ``b''``): :5557 also
+    Subscribes to the ``setpoint`` topic specifically (not ``b''``): :5557 also
     carried the HardwarePlant fallback-enable message, which is not a setpoint
-    (HardwarePlant was removed 2026-09-01, tag mpc-final; the topic filter stays
+    (HardwarePlant was removed with the MPC chain 2026-09-01, tag mpc-final; the topic filter stays
     because it is the correct thing to do regardless).
 
     Deliberately does NOT reuse ``jugglebot.motion.ipc.BridgeIPC`` (that BINDS the
@@ -1263,14 +1263,14 @@ class _MpcCommandSetpointSource:
     BindIPC reuse is still wrong for other reasons below) and does NOT import
     ``ipc`` at module scope (``ipc``
     imports zmq/msgpack eagerly; the address/topic literals below mirror
-    ``ipc.MPC_COMMAND_ADDR`` / ``ipc.TOPIC_MPC_CMD``). Mirrors BridgeIPC's SUB
+    ``ipc.SETPOINT_COMMAND_ADDR`` / ``ipc.TOPIC_SETPOINT_CMD``). Mirrors BridgeIPC's SUB
     tuning (RCVHWM=2 + drain-to-latest) and the msgpack wire format
     (``[topic, msgpack(dict)]``). zmq/msgpack are imported lazily so a read-only
     / setpoint-disabled bridge has no hard dependency on them.
     """
 
     def __init__(self, addr: str = 'tcp://127.0.0.1:5557',
-                 topic: bytes = b'mpccmd'):   # = ipc.MPC_COMMAND_ADDR / TOPIC_MPC_CMD
+                 topic: bytes = b'setpoint'):   # = ipc.SETPOINT_COMMAND_ADDR / TOPIC_SETPOINT_CMD
         import zmq  # lazy — only when setpoint output is enabled
         self._zmq = zmq
         import msgpack
@@ -1281,11 +1281,11 @@ class _MpcCommandSetpointSource:
         self._sub.setsockopt(zmq.RECONNECT_IVL_MAX, 200)
         self._sub.setsockopt(zmq.RCVHWM, 2)                # bounded queue
         self._sub.connect(addr)
-        self._sub.setsockopt(zmq.SUBSCRIBE, topic)         # mpc_cmd frames only
+        self._sub.setsockopt(zmq.SUBSCRIBE, topic)         # setpoint_cmd frames only
         self._sub.setsockopt(zmq.RCVTIMEO, 0)              # non-blocking
 
     def recv_latest(self) -> dict | None:
-        """Drain the SUB and return the latest MPC command dict, or None."""
+        """Drain the SUB and return the latest setpoint command dict, or None."""
         latest = None
         while True:
             try:
@@ -2364,7 +2364,7 @@ class TeensyBridgeNode(Node):
         # ARMING_CONTRACT A1 — the boot-arm path is REMOVED. Arming at __init__
         # ran ZERO preconditions: nothing can legitimately stream at BOOT (the
         # workspace gate refuses to seed at STOW), so `enable_setpoint_output:=true`
-        # armed onto a silent :5557 and the firmware MPC-staleness watchdog
+        # armed onto a silent :5557 and the firmware command-staleness watchdog
         # latched within one guard tick — every leg command then refused
         # (reconfirmed live 2026-07-15 21:32). The ONLY arming path is the
         # runtime service below, whose stream-then-arm pre-check is the
@@ -2385,7 +2385,7 @@ class TeensyBridgeNode(Node):
         # ── Runtime arming service (fixes the arm-before-stream trap) ──
         # The documented PRODUCTION arming flow (the launch parameter stays for
         # bench use). On true: require (a) Teensy link up + fresh heartbeat, (b) a
-        # fresh mpccmd frame on :5557 within 0.5 s, (c) that frame's u0 within
+        # fresh setpoint frame on :5557 within 0.5 s, (c) that frame's u0 within
         # _ARM_U0_TOL_REV (0.25 rev, a quarter of the firmware 1.0 rev MAX_DEVIATION backstop) of
         # every leg's live pos_estimate — THEN stream-then-arm (start the thread, set
         # mpc_active=1). This is the pattern validated in
@@ -4066,7 +4066,7 @@ class TeensyBridgeNode(Node):
                 # gate can't wedge after a firmware stow. During the loss the firmware
                 # may have stowed the legs to ~0 rev, but the pump's _prev_pos still
                 # holds the pre-loss active pose (~2.2 rev) — so the first
-                # post-reconnect MPC frame would fail the 0.3 rev step gate FOREVER
+                # post-reconnect command frame would fail the 0.3 rev step gate FOREVER
                 # (reject loop until a node restart). reset() drops _prev_pos so the
                 # next frame is accepted; the firmware MAX_DEVIATION gate remains the
                 # complementary command-vs-encoder layer (setpoint_pump's documented
@@ -4490,17 +4490,17 @@ class TeensyBridgeNode(Node):
         Called ONLY from _arm_setpoint_output after its preconditions pass
         (ARMING_CONTRACT A1; the zero-precondition __init__ boot-arm is removed).
         ``setpoint_source`` may be injected (tests); otherwise a real
-        ``_MpcCommandSetpointSource`` is created — a ZMQ SUB on the **:5557**
-        command stream (``mpccmd``), which trajectory_node publishes and the
+        ``_SetpointCommandSource`` is created — a ZMQ SUB on the **:5557**
+        command stream (``setpoint``), which trajectory_node publishes and the
         Teensy interpolates. It is NOT motor_guard's :5556 telemetry: that was
         the pre-cutover Jetson-relay path, and motor_guard has not been on the
-        leg path since (see the ``_MpcCommandSetpointSource`` docstring above,
+        leg path since (see the ``_SetpointCommandSource`` docstring above,
         and the launch file — motor_guard stopped launching 2026-08-01).
         """
         if setpoint_source is not None:
             self._sp_source = setpoint_source
         else:
-            self._sp_source = _MpcCommandSetpointSource()
+            self._sp_source = _SetpointCommandSource()
         # Set mpc_active BEFORE starting the thread so the first tick it drains
         # is not silently dropped by the mpc_active gate (and so the Teensy is
         # told we are driving before any setpoint can flow).
@@ -4647,7 +4647,7 @@ class TeensyBridgeNode(Node):
             return False, (f'hand-jam recovery holds the hand ({self._hand_jam_status}) '
                            f'— refuse to arm; /recover first')
 
-        # (b) a fresh mpccmd frame on :5557 within 0.5 s (is trajectory_node up?).
+        # (b) a fresh setpoint frame on :5557 within 0.5 s (is trajectory_node up?).
         source, created_here = self._acquire_setpoint_source()
         if source is None:
             return False, 'could not open the :5557 setpoint source'
@@ -4662,7 +4662,7 @@ class TeensyBridgeNode(Node):
             if frame is None:
                 if created_here:
                     source.close()
-                return False, ('no mpccmd frame on :5557 within 0.5 s — is '
+                return False, ('no setpoint frame on :5557 within 0.5 s — is '
                                'trajectory_node running and streaming?')
 
             # Derive u0 exactly as the production pump would (rejects a malformed
@@ -4683,7 +4683,7 @@ class TeensyBridgeNode(Node):
             if sp is None:
                 if created_here:
                     source.close()
-                return False, (f'mpccmd frame not pump-acceptable: '
+                return False, (f'setpoint frame not pump-acceptable: '
                                f'{reason or "no position command"}')
             u0 = sp.u0
 
@@ -5001,7 +5001,7 @@ class TeensyBridgeNode(Node):
         # wherever the stroke was, and nothing downstream can walk it home
         # inside the lead authority. Park it here, on the profiled firmware
         # path, before any schedule can stream it. See _HAND_PARK_BAND_REV.
-        # Disarm-then-park (2026-09-23): the firmware's MPC-stream interlock
+        # Disarm-then-park (2026-09-23): the firmware's command-stream interlock
         # rejected every armed park before — see `_park_hand_disarmed`.
         if not park_hand:
             res.success = True
@@ -5348,7 +5348,7 @@ class TeensyBridgeNode(Node):
         """Return ``(source, created_here)`` for the arming check.
 
         Reuses an injected source (tests) or an already-open one; otherwise opens a
-        fresh ``_MpcCommandSetpointSource`` (SUB on :5557), flagged so a failed arm
+        fresh ``_SetpointCommandSource`` (SUB on :5557), flagged so a failed arm
         closes it (no leak). A source opened here becomes the production ingest
         source only on a successful arm (``_start_setpoint_output`` adopts it).
         """
@@ -5357,13 +5357,13 @@ class TeensyBridgeNode(Node):
         if self._injected_setpoint_source is not None:
             return self._injected_setpoint_source, False
         try:
-            return _MpcCommandSetpointSource(), True
+            return _SetpointCommandSource(), True
         except Exception as e:  # noqa: BLE001
             self.get_logger().error(f"could not open :5557 setpoint source: {e}")
             return None, False
 
     def _setpoint_loop(self):
-        """Dedicated thread: drain the 40 Hz MPC command → pack Teensy-side knots → gate → send."""
+        """Dedicated thread: drain the 40 Hz setpoint command → pack Teensy-side knots → gate → send."""
         while not self._sp_stop.is_set():
             try:
                 cmd = self._sp_source.recv_latest()
@@ -5374,12 +5374,12 @@ class TeensyBridgeNode(Node):
             if cmd is not None:
                 self._process_setpoint(cmd)
             else:
-                # ~1 kHz idle poll (the MPC command stream arrives at 40 Hz; the
+                # ~1 kHz idle poll (the setpoint command stream arrives at 40 Hz; the
                 # Teensy interpolates to 500 Hz from the knots).
                 self._sp_stop.wait(0.001)
 
     def _process_setpoint(self, cmd: dict):
-        """Pack one 40 Hz MPC command into a Teensy-side knot Setpoint frame, gate it, send.
+        """Pack one 40 Hz setpoint command into a Teensy-side knot Setpoint frame, gate it, send.
 
         SAFETY gates, in order:
           1. mpc_active must be set (operator opt-in). Belt-and-suspenders — the
@@ -5479,7 +5479,7 @@ class TeensyBridgeNode(Node):
         both are printed, joined with ' | '.
 
         Returns '' when no leg-specific cause is identifiable (e.g. a bus-level
-        CAN_BUS_DOWN or an MPC-staleness fault) so the message stays honest rather
+        CAN_BUS_DOWN or an command-staleness fault) so the message stays honest rather
         than guessing a leg.
         """
         with self._lock:
@@ -7372,7 +7372,7 @@ class TeensyBridgeNode(Node):
         inside the 10 Hz fault task's own tick is how the 2026-09-18 park lost
         the race. No wait is spent when nothing is latched (the operator path).
 
-        REFUSES on an ARMED wire, every caller. The firmware's MPC-stream
+        REFUSES on an ARMED wire, every caller. The firmware's command-stream
         interlock rejects a cold-start op while ``s_mpc_active`` is set
         (``leg_activate.cpp:129``, ``ERR_REJECTED``) — a single-axis ACTIVATE
         must not co-drive an ODrive the 500 Hz stream commands. Until
@@ -7467,7 +7467,7 @@ class TeensyBridgeNode(Node):
         the hand through `_park_hand`, and leave the wire DISARMED. Returns
         ``(ok, message)``; the message says what the wire state is.
 
-        Why the disarm: the firmware's MPC-stream interlock rejects the park's
+        Why the disarm: the firmware's command-stream interlock rejects the park's
         single-axis ACTIVATE while ``s_mpc_active`` is set
         (``leg_activate.cpp:129``) — see `_park_hand`'s docstring for the four
         logged refusals that proved it. Disarming here is safe for the same
@@ -9288,7 +9288,7 @@ class TeensyBridgeNode(Node):
             except Exception:  # noqa: BLE001
                 self._mpc_active = False
         # 2. SETTLE + 3. STOW over the still-live link (RX + heartbeat threads keep
-        # the telemetry cache + DEACTIVATE RPC alive; MPC is quiesced above so no
+        # the telemetry cache + DEACTIVATE RPC alive; the setpoint stream is quiesced above so no
         # setpoint fights the descent). The settle is gated on actually stowing so a
         # stow-disabled node (unit tests) tears down instantly.
         if self._stow_on_shutdown:

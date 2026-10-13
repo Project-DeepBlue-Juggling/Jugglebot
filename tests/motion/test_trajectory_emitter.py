@@ -116,10 +116,10 @@ def test_emitted_frame_packs_and_roundtrips():
     geom = _geom()
     emit = KnotEmitter(geom)
     frame = emit.frame(HoldPlan(NEUTRAL), 0.0, 7)
-    topic, blob = ipc._pack(ipc.TOPIC_MPC_CMD, frame)
-    assert topic == ipc.TOPIC_MPC_CMD
+    topic, blob = ipc._pack(ipc.TOPIC_SETPOINT_CMD, frame)
+    assert topic == ipc.TOPIC_SETPOINT_CMD
     decoded = msgpack.unpackb(blob, raw=False)
-    assert decoded['type'] == 'mpc_cmd'
+    assert decoded['type'] == 'setpoint_cmd'
     assert decoded['seq'] == 7
     # ndarrays become plain lists on the wire (the _ndarray_default handler).
     assert isinstance(decoded['motor_rev'], list) and len(decoded['motor_rev']) == 6
@@ -206,7 +206,7 @@ def test_legacy_frames_byte_identical_to_v5_capture():
             assert 'vel_next_mm_s' in frame and 'vel_next2_mm_s' in frame
             frame = {k: v for k, v in frame.items()
                      if k not in ('vel_next_mm_s', 'vel_next2_mm_s')}
-            topic, blob = ipc._pack(ipc.TOPIC_MPC_CMD, frame)
+            topic, blob = ipc._pack(ipc.TOPIC_SETPOINT_CMD, frame)
             assert (topic.decode() if isinstance(topic, bytes)
                     else topic) == fr['topic']
             assert blob.hex() == fr['msgpack_hex'], (
@@ -334,7 +334,7 @@ def test_every_cycle_plan_frame_pump_accepted_with_hand_flags():
 
 
 def test_out_reuse_scrubs_stale_hand_keys():
-    """make_mpc_command's absent-when-None rule under out= reuse: a hand frame
+    """make_setpoint_command's absent-when-None rule under out= reuse: a hand frame
     followed by a legacy frame into the SAME dict must leave no hand key
     behind, and the reused-dict legacy bytes must equal a fresh-dict build."""
     plan = _cycle_plan()
@@ -359,10 +359,10 @@ def test_out_reuse_scrubs_stale_hand_keys():
     # under out= reuse the key is PRESENT with a null value, which a bare
     # out=None fresh build never carries. That divergence is a pre-existing,
     # deliberate property of every legacy-optional field (see the
-    # make_mpc_command docstring); this test's OWN invariant is scrubbing —
+    # make_setpoint_command docstring); this test's OWN invariant is scrubbing —
     # so hold the schema fixed on both sides and let scrubbing be the only
     # variable.
-    _, blob_reused = ipc._pack(ipc.TOPIC_MPC_CMD, frame)
-    _, blob_fresh = ipc._pack(ipc.TOPIC_MPC_CMD,
+    _, blob_reused = ipc._pack(ipc.TOPIC_SETPOINT_CMD, frame)
+    _, blob_fresh = ipc._pack(ipc.TOPIC_SETPOINT_CMD,
                               KnotEmitter(_geom()).frame(hold, 0.0, 1, out={}))
     assert blob_reused == blob_fresh

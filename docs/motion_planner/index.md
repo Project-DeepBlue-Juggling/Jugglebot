@@ -26,7 +26,7 @@ Details, processes and timing: [Architecture](architecture.md).
 
 ## Segments and feasibility
 
-Every segment is rest-terminal and is planned from the live state at the splice knot, so the joined trajectory is C2 there. A segment is installed only if it passes the K1-K6 reference-feasibility contract (`controller/REFERENCE_LAYER_CONTRACT.md`) and lies inside the admissible box (`config/generated/admissible_box.yaml`, produced by `tools/admissible_sweep.py`). An infeasible segment is refused with the gate's code and the attempt ends on the previous segment's rest tail.
+Every segment is rest-terminal and is planned from the live state at the splice knot, so the joined trajectory is C2 there. A segment is installed only if it passes the robot's segment gates (`ros_ws/src/jugglebot/jugglebot/motion/trajectory/feasibility.py`; invariants in `ros_ws/src/jugglebot/jugglebot/motion/skills/INVARIANTS.md`) and lies inside the admissible box (`config/generated/admissible_box.yaml`, produced by `tools/admissible_sweep.py`). An infeasible segment is refused with the gate's code and the attempt ends on the previous segment's rest tail.
 
 ## Learner
 

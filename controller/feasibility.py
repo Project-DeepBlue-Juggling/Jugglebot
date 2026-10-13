@@ -1,7 +1,9 @@
 """Closed-form peak-velocity / peak-acceleration bounds for quintic Hermite segments.
 
-Used by ``make_feasible_events`` in :mod:`controller.target` to enforce the K2/K3
-reference-feasibility invariants (see ``controller/REFERENCE_LAYER_CONTRACT.md``).
+Pure math, no enforcement. Its one consumer is ``tests/motion/test_trajectory_quintic.py``,
+where it is the oracle for the robot's ``motion/trajectory/quintic.py`` (which copies it).
+The K1-K6 enforcement point that once called it was retired 2026-10-14; the robot's
+segment gates (``motion/trajectory/feasibility.py``) carry the same bound classes.
 
 The quintic Hermite basis interpolates position, velocity, and acceleration at
 both segment endpoints.  For a segment over duration ``T`` with boundary
@@ -32,10 +34,7 @@ from __future__ import annotations
 import numpy as np
 
 
-# Bumped manually whenever the closed-form quintic peak-vel / peak-acc math
-# changes.  See ``controller/target.py::_REFERENCE_LAYER_VERSION`` for the
-# AOT-hash rationale; the two constants are hashed together by
-# ``controller/mpc.py::_nlp_source_hash``.
+# Bumped manually whenever the closed-form quintic peak-vel / peak-acc math changes.
 _FEASIBILITY_VERSION = 1
 
 
@@ -164,10 +163,9 @@ def quintic_peak_vel_per_axis(p0, v0, a0, p1, v1, a1, T):
     Raises ``ValueError`` when ``T <= 0`` — the quintic peak-velocity
     formula is mathematically undefined for non-positive durations
     (the per-axis scaling divides by T; ``T=0`` produces NaN, ``T<0``
-    produces sign-flipped nonsense).  Production callers
-    (``flat_target_to_events`` at ``target.py:196-200``) already
-    pre-validate against ``arrival_time <= t_now``; this is
-    defense-in-depth at the math primitive.  See Plan 2 Phase 7
+    produces sign-flipped nonsense).  The retired
+    ``flat_target_to_events`` caller pre-validated ``arrival_time <= t_now``;
+    this is defense-in-depth at the math primitive.  See Plan 2 Phase 7
     bugfix (logbook 2026-05-12-tier3a-fuzz-bugfix.md, Bug C).
     """
     if T <= 0:

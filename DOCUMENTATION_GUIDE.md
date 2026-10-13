@@ -93,8 +93,8 @@ subtree:
   `--preview` convention that all harnesses must follow).
 - **`<subsystem>/<CONTRACT_NAME>.md`** — normative contracts that the code
   in that subtree must satisfy. Example:
-  [controller/REFERENCE_LAYER_CONTRACT.md](controller/REFERENCE_LAYER_CONTRACT.md)
-  (the K1–K6 reference-layer invariants).
+  [ros_ws/src/jugglebot/jugglebot/motion/skills/INVARIANTS.md](ros_ws/src/jugglebot/jugglebot/motion/skills/INVARIANTS.md)
+  (the skill-stack invariants).
 
 **When to use:** the content is a *rule* or *convention* scoped to one
 subtree and changes together with that subtree. If a human editing that
@@ -553,7 +553,7 @@ if you don't know them:
   note at the top of `plans/archived/INDEX.md`, which lists them rather than
   silently normalising them.
 
-- **The `controller/REFERENCE_LAYER_CONTRACT.md` pattern is reserved for
+- **The `motion/skills/INVARIANTS.md` pattern is reserved for
   normative specs.** Don't create new `ALLCAPS.md` files for general notes;
   prefer [docs/](docs/) or [logbook/](logbook/).
 

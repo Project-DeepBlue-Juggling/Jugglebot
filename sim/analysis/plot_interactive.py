@@ -2,7 +2,7 @@
 """Interactive diagnostic report generation using Plotly.
 
 Generates a single self-contained HTML file with interactive plots
-(zoom, pan, hover, legend toggle) and summary tables from MPC telemetry.
+(zoom, pan, hover, legend toggle) and summary tables from telemetry.
 
 Usage (standalone):
     python sim/analysis/plot_interactive.py <csv_path> [--categories all]
@@ -45,7 +45,6 @@ from sim.analysis.plot_diagnosis import (  # noqa: E402
     STROKE_MIN_MM,
     STROKE_MAX_MM,
     STROKE_SOFT_MARGIN_MM,
-    DEFAULT_BUDGET_MS,
 )
 
 # ---------------------------------------------------------------------------
@@ -64,7 +63,6 @@ def _times(records: Sequence[StepRecord]) -> np.ndarray:
 _CMD_COLOR = '#1f77b4'    # blue
 _ACTUAL_COLOR = '#d62728'  # red
 _REF_COLOR = '#1f77b4'    # blue
-_BUDGET_COLOR = '#d62728'  # red
 
 # ---------------------------------------------------------------------------
 # Individual plot functions — each returns a go.Figure
@@ -172,60 +170,6 @@ def _plot_tracking(records: Sequence[StepRecord], analysis: Dict) -> go.Figure:
     fig.update_yaxes(title_text='deg', row=2, col=1)
     fig.update_xaxes(title_text='Time (s)', row=2, col=1)
     fig.update_layout(title='Tracking Error', height=500)
-    return fig
-
-
-def _plot_solver(records: Sequence[StepRecord], analysis: Dict) -> go.Figure:
-    """Solve time timeseries + histogram with budget line."""
-    times = _times(records)
-    solve_ms = _extract(records, 'solve_time_ms')
-    budget = analysis.get('solve_times', {}).get('budget_ms', DEFAULT_BUDGET_MS)
-    st = analysis.get('solve_times', {})
-
-    fig = make_subplots(rows=1, cols=2,
-                        subplot_titles=['Solve Time Timeline', 'Distribution'],
-                        column_widths=[0.65, 0.35])
-
-    # Timeline with budget violations highlighted
-    within = solve_ms <= budget
-    fig.add_trace(go.Scatter(
-        x=times[within], y=solve_ms[within], mode='markers',
-        marker=dict(size=4, color=_CMD_COLOR, opacity=0.7),
-        name='within budget'), row=1, col=1)
-
-    if np.any(~within):
-        fig.add_trace(go.Scatter(
-            x=times[~within], y=solve_ms[~within], mode='markers',
-            marker=dict(size=6, color=_ACTUAL_COLOR, symbol='x', opacity=0.9),
-            name='over budget'), row=1, col=1)
-
-    fig.add_hline(y=budget, line_dash='dash', line_color='red', opacity=0.6,
-                  annotation_text=f'budget ({budget:.0f}ms)', row=1, col=1)
-
-    # Histogram
-    valid = solve_ms[solve_ms > 0]
-    if len(valid) > 0:
-        fig.add_trace(go.Histogram(
-            x=valid, nbinsx=min(50, max(10, len(valid) // 5)),
-            marker_color=_CMD_COLOR, opacity=0.7, name='solve times',
-            showlegend=False), row=1, col=2)
-
-        fig.add_vline(x=budget, line_dash='dash', line_color='red',
-                      opacity=0.6, row=1, col=2)
-        if st.get('p50_ms'):
-            fig.add_vline(x=st['p50_ms'], line_dash='dot', line_color='green',
-                          opacity=0.7, annotation_text=f'p50={st["p50_ms"]:.1f}',
-                          row=1, col=2)
-        if st.get('p95_ms'):
-            fig.add_vline(x=st['p95_ms'], line_dash='dot', line_color='orange',
-                          opacity=0.7, annotation_text=f'p95={st["p95_ms"]:.1f}',
-                          row=1, col=2)
-
-    fig.update_xaxes(title_text='Time (s)', row=1, col=1)
-    fig.update_yaxes(title_text='Solve time (ms)', row=1, col=1)
-    fig.update_xaxes(title_text='Solve time (ms)', row=1, col=2)
-    fig.update_yaxes(title_text='Count', row=1, col=2)
-    fig.update_layout(title='MPC Solver Performance', height=400)
     return fig
 
 
@@ -415,19 +359,6 @@ def _tracking_table(tracking: Dict) -> str:
             f'<tbody>{"".join(rows)}</tbody></table>')
 
 
-def _solver_summary(solve_times: Dict) -> str:
-    if not solve_times:
-        return ''
-    return (f'<div class="stats">'
-            f'<span>p50: <b>{solve_times.get("p50_ms", 0):.1f}</b>ms</span>'
-            f'<span>p95: <b>{solve_times.get("p95_ms", 0):.1f}</b>ms</span>'
-            f'<span>p99: <b>{solve_times.get("p99_ms", 0):.1f}</b>ms</span>'
-            f'<span>max: <b>{solve_times.get("max_ms", 0):.1f}</b>ms</span>'
-            f'<span>violations: <b>{solve_times.get("budget_violations", 0)}</b>'
-            f' ({solve_times.get("violation_pct", 0):.1f}%)</span>'
-            f'</div>')
-
-
 # ---------------------------------------------------------------------------
 # Report assembly
 # ---------------------------------------------------------------------------
@@ -467,7 +398,6 @@ def _build_html(result: Dict, figures: Dict[str, go.Figure]) -> str:
     n_samples = result.get('n_samples', 0)
     flags = result.get('flags', [])
     tracking = result.get('tracking', {})
-    solve_times = result.get('solve_times', {})
 
     # Build plot HTML divs
     plot_divs = []
@@ -509,11 +439,6 @@ def _build_html(result: Dict, figures: Dict[str, go.Figure]) -> str:
 </div>
 
 <div class="section">
-  <h2>Solver Performance</h2>
-  {_solver_summary(solve_times)}
-</div>
-
-<div class="section">
   <h2>Diagnostic Plots</h2>
   {plots_html}
 </div>
@@ -530,7 +455,6 @@ _PLOT_FUNCS = {
     'legs': _plot_legs,
     'pose': _plot_pose,
     'tracking': _plot_tracking,
-    'solver': _plot_solver,
     'velocity': _plot_velocity,
     'hand': _plot_hand,
     'workspace': _plot_workspace,
@@ -684,27 +608,6 @@ def generate_comparison_report(
         fig.update_layout(title=f'Tracking Error — {name_a} vs {name_b}', height=500)
         figures['tracking'] = fig
 
-    # Solver comparison
-    if 'solver' in categories:
-        fig = make_subplots(rows=1, cols=2,
-                            subplot_titles=['Session A Timeline', 'Session B Timeline'],
-                            column_widths=[0.5, 0.5])
-        solve_a = _extract(records_a, 'solve_time_ms')
-        solve_b = _extract(records_b, 'solve_time_ms')
-        budget = result_a.get('solve_times', {}).get('budget_ms', DEFAULT_BUDGET_MS)
-
-        fig.add_trace(go.Scatter(x=times_a, y=solve_a, mode='markers',
-                                 marker=dict(size=4, color=_ACTUAL_COLOR, opacity=0.7),
-                                 name=name_a), row=1, col=1)
-        fig.add_trace(go.Scatter(x=times_b, y=solve_b, mode='markers',
-                                 marker=dict(size=4, color='#2ca02c', opacity=0.7),
-                                 name=name_b), row=1, col=2)
-        fig.add_hline(y=budget, line_dash='dash', line_color='red', opacity=0.6)
-        fig.update_yaxes(title_text='ms', row=1, col=1)
-        fig.update_yaxes(title_text='ms', row=1, col=2)
-        fig.update_layout(title=f'Solver Performance — {name_a} vs {name_b}', height=400)
-        figures['solver'] = fig
-
     # Apply dark theme
     for fig in figures.values():
         fig.update_layout(
@@ -759,7 +662,7 @@ if __name__ == '__main__':
     import json
 
     parser = argparse.ArgumentParser(description='Generate interactive diagnostic report')
-    parser.add_argument('csv_path', help='Path to MPC telemetry CSV')
+    parser.add_argument('csv_path', help='Path to telemetry CSV')
     parser.add_argument('--compare', default=None, metavar='CSV_B',
                         help='Compare against a second CSV (overlay both sessions)')
     parser.add_argument('--categories', default='auto',

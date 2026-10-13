@@ -495,7 +495,7 @@ class ActiveHandler(StateHandler):
     mode is published, this handler ARMS the setpoint wire ('arm_setpoints' →
     the bridge's stream-then-arm pre-check) with bounded retries — the producer
     needs ~100-300 ms to seed its hold after the mode publish, so the first
-    attempt(s) may legitimately be refused with "no mpccmd frame". Persistent
+    attempt(s) may legitimately be refused with "no setpoint frame". Persistent
     refusal is a real fault, loudly.
     """
 

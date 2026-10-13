@@ -3,7 +3,7 @@
 
 Drives BOTH the production `MotorGuard._interpolate_and_send` and the C++-target
 `TeensyLegInterp.tick` (teensy_interp.py) through identical inputs — a recorded
-MPC command stream plus synthetic cases covering all three ladder modes — and
+40 Hz setpoint command stream plus synthetic cases covering all three ladder modes — and
 reports the maximum per-tick commanded-position divergence. Acceptance: < 1e-6 rev
 (the interpolator port's acceptance criterion).
 
@@ -42,7 +42,7 @@ from teensy_interp import TeensyLegInterp, NUM_LEGS  # noqa: E402
 
 TICK_DT = 0.002        # 500 Hz
 MPC_DT = 0.025         # 40 Hz
-SUBTICKS = 12          # ~24 ms of sub-ticks per MPC segment (< MPC_DT, so Hermite stays in-segment)
+SUBTICKS = 12          # ~24 ms of sub-ticks per command segment (< MPC_DT, so Hermite stays in-segment)
 
 
 class _Clock:
@@ -86,7 +86,7 @@ def _copy_base_into_guard(guard, port, t_latch):
                                 if port.next2_pos is not None else None)
     guard._mpc_base_timestamp = t_latch
     guard._mpc_segment_T = 0.025
-    guard._has_mpc_cmd = True
+    guard._has_setpoint_cmd = True
 
 
 def _step_compare(guard, port, clock, t_now, fb):
@@ -108,7 +108,7 @@ def _step_compare(guard, port, clock, t_now, fb):
 
 
 def run_recorded_xref(csv_path):
-    """Replay a recorded MPC cmd_ext stream through both interpolators."""
+    """Replay a recorded cmd_ext command stream through both interpolators."""
     guard, geom = _make_guard()
     mm_to_rev = np.array(geom.mm_to_rev)
     port = TeensyLegInterp(guard._stroke_min_rev, guard._stroke_max_rev)
@@ -137,7 +137,7 @@ def run_recorded_xref(csv_path):
             u0 = (np.array(rows[k][0]) * mm_to_rev).tolist()
             u1 = (np.array(rows[k + 1][0]) * mm_to_rev).tolist()
             u2 = (np.array(rows[k + 2][0]) * mm_to_rev).tolist()
-            # MPC velocity: chord (u1-u0)/MPC_DT in mm/s → motor rev/s via the
+            # Command velocity: chord (u1-u0)/MPC_DT in mm/s → motor rev/s via the
             # production conversion (matches what hardware_plant would supply).
             vel_mm_s = ((np.array(rows[k + 1][0]) - np.array(rows[k][0])) / MPC_DT)
             v0 = np.array(leg_velocities_to_motor_velocities(vel_mm_s, geom)).tolist()

@@ -8,8 +8,8 @@ fix-proposer agent before proposing new fixes.
 No pyyaml dependency — uses simple string parsing for frontmatter.
 
 Usage:
-    python sim/analysis/logbook_search.py --flags '["oscillation"]' --subsystems '["mpc"]'
-    python sim/analysis/logbook_search.py --flags '["discontinuity", "solve_time"]'
+    python sim/analysis/logbook_search.py --flags '["oscillation"]' --subsystems '["tracking"]'
+    python sim/analysis/logbook_search.py --flags '["discontinuity", "workspace"]'
     python sim/analysis/logbook_search.py --issue-ids '["VEL_FF_BUG"]'
 """
 
@@ -41,7 +41,6 @@ REQUIRED_FRONT_MATTER = ('title', 'type', 'date', 'status')
 _FLAG_TYPE_PATTERNS = {
     'oscillation': re.compile(r'(?i)oscillat|chatter'),
     'discontinuity': re.compile(r'(?i)discontinuit|jump'),
-    'solve_time': re.compile(r'(?i)solve.*budget|solve.*time|staleness'),
     'tracking': re.compile(r'(?i)tracking.*error|steady.state.*error'),
     'workspace': re.compile(r'(?i)workspace|stroke.*limit'),
     'torque': re.compile(r'(?i)torque|feedforward'),
@@ -269,9 +268,8 @@ def find_similar(
     # (based on known_issues.yaml signature types)
     _ISSUE_FLAG_TYPES = {
         'VEL_FF_BUG': {'oscillation'},
-        'COLD_HOLD_STROKE_MIN': {'discontinuity', 'solve_time'},
+        'COLD_HOLD_STROKE_MIN': {'discontinuity'},
         'ASSIGNMENT_ORDER': {'discontinuity'},
-        'MPC_STALENESS': {'solve_time'},
         'LEG2_TRACKING': {'tracking'},
         'CAN_BUS_WATCHDOG': {'ros2_log'},
         'ODRIVE_DISARM': {'ros2_log'},
@@ -279,7 +277,6 @@ def find_similar(
         'MOTOR_FEEDBACK_STALE': {'ros2_log'},
         'CAN_STEP_REJECT': {'ros2_log'},
         'FIRMWARE_MISMATCH': {'ros2_log'},
-        'TIMING_FIRST_SAMPLE': {'solve_time'},
     }
 
     matches = []
@@ -349,11 +346,11 @@ def main():
         description='Search logbook for past investigations with similar symptoms')
     parser.add_argument('--flags', type=str, default='[]',
                         help='JSON array of flag type strings '
-                             '(oscillation, discontinuity, solve_time, '
+                             '(oscillation, discontinuity, workspace, '
                              'tracking, workspace, torque)')
     parser.add_argument('--subsystems', type=str, default='[]',
                         help='JSON array of subsystem tag strings '
-                             '(mpc, controller, motion, can, tracking, etc.)')
+                             '(controller, motion, can, tracking, etc.)')
     parser.add_argument('--issue-ids', type=str, default='[]',
                         help='JSON array of known_issues.yaml IDs '
                              '(e.g., VEL_FF_BUG)')

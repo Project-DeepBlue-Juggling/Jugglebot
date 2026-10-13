@@ -172,7 +172,7 @@ def quintic_jerk_integral(
     """Analytical integral of squared jerk over a quintic Hermite segment.
 
     Used by the catch height optimizer to score candidate catch poses by
-    platform effort without running the MPC.
+    platform effort cheaply, without a solve.
 
     For the quintic polynomial p(s) with normalised time s = t/T, the jerk
     is d³p/dt³ = p'''(s) / T³.  The integral ∫₀ᵀ ||j(t)||² dt can be

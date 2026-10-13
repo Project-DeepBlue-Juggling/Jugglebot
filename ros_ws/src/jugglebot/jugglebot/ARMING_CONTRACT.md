@@ -2,8 +2,9 @@
 
 **Status: NORMATIVE.** The code enforces these invariants; changing the behaviour
 means changing this document first, then rippling the change through the
-enforcement points and the tests. Pattern per
-`controller/REFERENCE_LAYER_CONTRACT.md` (K1–K6).
+enforcement points and the tests. Pattern per the K1–K6
+`REFERENCE_LAYER_CONTRACT.md` (retired 2026-10-14; the pattern lives on in
+`motion/skills/INVARIANTS.md`).
 
 ## The problem this closes
 
@@ -33,7 +34,7 @@ work (2026-07-15) hit three distinct doors into that hole:
 
 - **A1 — stream-before-arm.** `mpc_active` goes 0→1 **only** through
   `teensy_bridge_node._arm_setpoint_output`'s preconditions: fresh Teensy
-  heartbeat + link not latched, guard fault NOT latched, a fresh mpccmd frame on
+  heartbeat + link not latched, guard fault NOT latched, a fresh setpoint frame on
   :5557 within 0.5 s, that frame pump-acceptable, its `u0` within
   0.25 rev of every live encoder, no deactivate descent in flight, and no
   guard-recovery hand park in flight (`_recovery_park_in_progress`, 2026-09-23:
