@@ -466,6 +466,42 @@ def _columns_feed_aim_site(feed_site: Site, a_site: Site,
                np.array([xy[0], xy[1], float(feed_site.cup_mm[2])]))
 
 
+#: Patterns whose attempt OPENS with the Ball Butler reload catch WHATEVER the
+#: goal's `reload` flag says: the bare GUI "Reload" token, and
+#: `columns_1ball_fed` (ball A is phantom, so `_run_columns` builds its bridge
+#: with ``holds_ball=not phantom_a`` = False; `_start_pattern` refuses its
+#: `reload=False` before this rule is consulted).
+_ACCEPT_EMPTY_ALWAYS = ('reload', 'columns_1ball_fed')
+#: Patterns whose attempt OPENS by throwing a HELD ball WHATEVER the `reload`
+#: flag says: `columns` (`_run_columns`'s bridge holds ball A,
+#: ``holds_ball=not phantom_a`` = True under BOTH `columns_entry` values, and
+#: Ball Butler's feed of ball B lands AFTER ball A's throw, into the then-empty
+#: cup) and `magazine` (one throw of the held ball, no reload path).
+_ACCEPT_SEATED_ALWAYS = ('columns', 'magazine')
+
+
+def accept_cup_requirement(pattern: str, reload: bool) -> str:
+    """The cup state an attempt's FIRST skill needs, as the possession
+    evidence value the goal-ACCEPT check (`SkillNode._accept_possession_
+    refusal`, owner ask 2026-10-14) compares the debounced sensor against:
+    :data:`ball_possession.EVIDENCE_EMPTY` when it opens with the Ball Butler
+    reload catch, :data:`ball_possession.EVIDENCE_SEATED` when it opens by
+    throwing a held ball.
+
+    The rest of the table (`self_toss`, `hop`, `columns_1ball`) follows the
+    flag: `reload=True` routes through `_start_reload` with its default
+    ``holds_ball=False`` (REST -> held-axis CATCH -> REST -> pattern), so the
+    cup must be EMPTY; `reload=False` opens with THROW 0 of a held ball. Keyed
+    on (pattern, reload) only -- `columns_entry` does not change the answer
+    (hop and transit both bridge with ``holds_ball=not phantom_a``)."""
+    if pattern in _ACCEPT_EMPTY_ALWAYS:
+        return ball_possession.EVIDENCE_EMPTY
+    if pattern in _ACCEPT_SEATED_ALWAYS:
+        return ball_possession.EVIDENCE_SEATED
+    return (ball_possession.EVIDENCE_EMPTY if reload
+            else ball_possession.EVIDENCE_SEATED)
+
+
 @dataclasses.dataclass(frozen=True)
 class FrameCheckResult:
     """The session-start mocap-Platform-vs-commanded-position offset (plan
@@ -3196,6 +3232,16 @@ class SkillNode(Node):
                                                                message=None))
         if refused is not None:
             return refused
+        # Cup possession at ACCEPT (owner ask 2026-10-14; sitting 8 attempt
+        # 4): the debounced cup evidence must match the attempt's FIRST skill
+        # -- EMPTY for a reload catch, SEATED for a throw of a held ball.
+        # After the running/lane refusals (they keep their own reason),
+        # BEFORE the bookkeeping reset below (a refused goal never touches a
+        # previous goal's unread result) and before the per-pattern dispatch
+        # (`_start_reload` asks Ball Butler -- a refused goal never does).
+        possession_msg = self._accept_possession_refusal(pattern, reload)
+        if possession_msg is not None:
+            return SimpleNamespace(success=False, message=possession_msg)
 
         apex_m = (float(goal.apex_m) or float(self.get_parameter('apex_m').value))
         separation_mm = (float(goal.separation_mm)
@@ -3725,6 +3771,64 @@ class SkillNode(Node):
                 >= _HAND_STATE_STALE_S):
             return None
         return float(self._hand_pos_meas)
+
+    def _cup_state(self):
+        """``(evidence, age_s, why_unknown)`` -- the cup as the goal-ACCEPT
+        possession check (and `skills/check`'s ``cup:`` line) sees it: the
+        DEBOUNCED `ball_held` (`_possession_evidence_stable`, a state
+        question -- the raw bit chatters while the hand moves, see
+        `_on_hand_telemetry`), forced to UNKNOWN when `/hand_telemetry` is
+        absent or older than `_HAND_STATE_STALE_S` (the SAME freshness window
+        `_observations`' ``hand_fresh`` uses). ``age_s`` is ``None`` before
+        the first sample; ``why_unknown`` is ``''`` unless UNKNOWN."""
+        if self._hand_telemetry_mono <= 0.0:
+            return (ball_possession.EVIDENCE_UNKNOWN, None,
+                    'no /hand_telemetry received yet')
+        age_s = time.perf_counter() - self._hand_telemetry_mono
+        if age_s >= _HAND_STATE_STALE_S:
+            return (ball_possession.EVIDENCE_UNKNOWN, age_s,
+                    '/hand_telemetry stale (age %d ms >= %d ms)'
+                    % (round(age_s * 1e3), round(_HAND_STATE_STALE_S * 1e3)))
+        evidence = self._possession_evidence_stable
+        if evidence == ball_possession.EVIDENCE_UNKNOWN:
+            return (evidence, age_s, 'the hand ball sensor cannot answer '
+                    '(ball_held_valid false)')
+        return evidence, age_s, ''
+
+    def _accept_possession_refusal(self, pattern: str,
+                                   reload: bool) -> Optional[str]:
+        """The goal-ACCEPT possession check (owner ask, 2026-10-14; sitting 8
+        attempt 4): the cup's debounced evidence must match what the
+        attempt's FIRST skill needs (`accept_cup_requirement`), checked before
+        any motion and before any Ball Butler dispatch. Returns the refusal
+        message (code first, then the plain reason) or ``None`` to pass.
+
+        A dead or stale sensor REFUSES (`REJECTED_BALL_UNKNOWN`), it does not
+        pass -- the launch-time ladder's philosophy (`executor.
+        precondition_refusals`), which stays as the second line at every
+        THROW."""
+        need = accept_cup_requirement(pattern, reload)
+        label = pattern + (' (reload)' if reload and pattern != 'reload'
+                           else '')
+        evidence, _age_s, why = self._cup_state()
+        if evidence == ball_possession.EVIDENCE_UNKNOWN:
+            return ('%s -- refused: cup state unknown, %s; %s needs the cup '
+                    '%s at start, so nothing moves and Ball Butler is not '
+                    'asked' % (ex.REJECTED_BALL_UNKNOWN, why, label, need))
+        if (need == ball_possession.EVIDENCE_EMPTY
+                and evidence == ball_possession.EVIDENCE_SEATED):
+            return ('%s -- refused: ball already in hand -- %s opens with the '
+                    'Ball Butler reload catch; empty the cup (or run a '
+                    'throwing pattern) first'
+                    % (ex.REJECTED_BALL_IN_HAND, label))
+        if (need == ball_possession.EVIDENCE_SEATED
+                and evidence == ball_possession.EVIDENCE_EMPTY):
+            return ('%s -- refused: no ball in hand -- %s opens by throwing a '
+                    'held ball%s; seat a ball in the cup first'
+                    % (ex.REJECTED_NO_BALL, label,
+                       (' (Ball Butler feeds the other ball only after that '
+                        'throw)' if reload and pattern == 'columns' else '')))
+        return None
 
     def _opening_rest_period(self):
         """``(period_s, why_not)`` for the opening REST that HOMES THE HAND —
@@ -5364,6 +5468,17 @@ class SkillNode(Node):
             lines.append('ladder REFUSED: %s' % (', '.join(codes),))
         else:
             lines.append('ladder OK')
+        # The cup as the goal-ACCEPT possession check sees it (owner ask,
+        # 2026-10-14): REPORTED, not gated here -- whether SEATED or EMPTY is
+        # right depends on the pattern (`accept_cup_requirement`); the
+        # ladder line above already carries UNKNOWN/NO_BALL for a throw.
+        cup_evidence, cup_age_s, cup_why = self._cup_state()
+        if cup_age_s is None:
+            lines.append('cup: %s (no /hand_telemetry yet)' % (cup_evidence,))
+        else:
+            lines.append('cup: %s (age %d ms)%s'
+                         % (cup_evidence, round(cup_age_s * 1e3),
+                            (' -- %s' % (cup_why,)) if cup_why else ''))
         # The hand's POSITION is REPORTED, never gated (2026-09-16): a hand
         # away from home is a thing the opening REST carries there, and the
         # rehearsal's job is to let the operator SEE it — and now also SEE the

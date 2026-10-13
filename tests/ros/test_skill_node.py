@@ -2364,9 +2364,14 @@ def test_the_homing_rest_is_refused_when_the_hand_position_is_unread():
 
     resp = node._start_pattern(_self_toss_goal())
     assert resp.success is False
-    assert 'hand_telemetry is stale or absent' in resp.message
+    # Since 2026-10-14 the goal-ACCEPT possession check meets a stale hand
+    # first (an unread hand is an unread CUP too); the sizing guard itself
+    # is still pinned directly below.
+    assert 'REJECTED_BALL_UNKNOWN' in resp.message and 'stale' in resp.message
     assert node._executor is None
     assert prelevel.calls == [], 'moved the platform on an unread hand'
+    _period, why_not = node._opening_rest_period()
+    assert 'hand_telemetry is stale or absent' in why_not
 
 
 def test_the_sized_rest_is_logged_with_its_own_peaks():
@@ -3009,7 +3014,10 @@ def _start_reload(node, tmp_path, **reload_kw):
     # which doesn't -- so a tick must see `in_trajectory_mode=True` or
     # `SkillExecutor.tick`'s very first check ends the attempt
     # `ABORTED_MODE_CHANGED` before the bridge REST ever dispatches.
-    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    # `seated=False`: a reload's first skill is the Ball Butler catch, so the
+    # goal-ACCEPT possession check (2026-10-14) needs an EMPTY cup.
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
+             seated=False)
     _prelevel_ready(node)
     _reload_ready(node, **reload_kw)
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
@@ -3037,7 +3045,8 @@ def _finish_bridge(node):
 def test_reload_installs_the_bridge_rest_then_calls_bb_reload_and_throw(tmp_path):
     node, _client = _node_with_client(response=_response())
     node._params['plant_id'] = 'test_reload_bridge'
-    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
+             seated=False)  # a reload opens with the catch: EMPTY cup
     prelevel_client = _prelevel_ready(node)
     reload_client, throw_client = _reload_ready(node)
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
@@ -3092,7 +3101,8 @@ def test_reload_with_a_ball_already_in_hand_skips_bb_reload(tmp_path):
     skill_node): `len(reload_client.calls) == 1`."""
     node, _client = _node_with_client(response=_response())
     node._params['plant_id'] = 'test_reload_ball_in_hand'
-    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
+             seated=False)  # a reload opens with the catch: EMPTY cup
     _prelevel_ready(node)
     reload_client, throw_client = _reload_ready(node)
     _bb_ready(node, after_check=False)          # BB idle, ball in hand, fresh
@@ -3118,7 +3128,8 @@ def test_reload_does_not_fire_on_the_idle_from_before_the_ball_check(tmp_path):
     committed ready gate had no left-IDLE term, so it fired on the first IDLE."""
     node, _client = _node_with_client(response=_response())
     node._params['plant_id'] = 'test_reload_race'
-    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
+             seated=False)  # a reload opens with the catch: EMPTY cup
     _prelevel_ready(node)
     reload_client, throw_client = _reload_ready(node)
     _bb_ready(node, ball_in_hand=False, after_check=False)   # empty hand
@@ -3146,7 +3157,8 @@ def test_a_stale_bb_heartbeat_is_not_evidence_of_a_ball(tmp_path):
     skill_node): `AttributeError` -- no heartbeat age was kept at all."""
     node, _client = _node_with_client(response=_response())
     node._params['plant_id'] = 'test_reload_stale_hb'
-    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
+             seated=False)  # a reload opens with the catch: EMPTY cup
     _prelevel_ready(node)
     reload_client, throw_client = _reload_ready(node)
     _bb_ready(node, after_check=False)
@@ -3502,7 +3514,8 @@ def _reload_armed_await_bb_idle(node, tmp_path):
     `await_announcement` for every OTHER test's sake) -- for the C1 tests
     that are about this phase itself."""
     node._params['plant_id'] = 'test_c1_' + str(id(node))
-    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
+             seated=False)  # a reload opens with the catch: EMPTY cup
     _prelevel_ready(node)
     reload_client, throw_client = _reload_ready(node)
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
@@ -3880,6 +3893,7 @@ def test_c4_after_a_bb_refusal_ends_the_next_goal_is_not_refused(tmp_path):
     node._on_tick()          # retires the ended bridge executor
     assert node._executor is None
     assert node._reload_ctx is None
+    _cup(node, seated=True)   # a self-toss throws a held ball (accept check)
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp2 = node._start_pattern(_self_toss_goal())
@@ -4669,7 +4683,8 @@ def test_columns_feed_bb_bias_mm_leaves_self_toss_reload_untouched(tmp_path):
     node, _client = _node_with_client(response=_response())
     node._params['plant_id'] = 'test_reload_bridge_bias'
     node.set_parameters([_MockParameter([29.0, 25.0], name='columns_feed_bb_bias_mm')])
-    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
+             seated=False)  # a reload opens with the catch: EMPTY cup
     _prelevel_ready(node)
     _reload_client, throw_client = _reload_ready(node)
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
@@ -4694,7 +4709,8 @@ def test_columns_feed_bb_bias_mm_leaves_columns_1ball_reload_untouched(tmp_path)
     node, _client = _node_with_client()
     node._params['plant_id'] = 'test_columns_1ball_reload_bias_' + str(id(node))
     node.set_parameters([_MockParameter([29.0, 25.0], name='columns_feed_bb_bias_mm')])
-    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
+             seated=False)  # a reload opens with the catch: EMPTY cup
     _reload_client, throw_client = _reload_ready(node)
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
                       _good_box_path(tmp_path, columns=True)), \
@@ -4980,7 +4996,10 @@ def test_every_pattern_entry_opens_on_a_rest(tmp_path, pattern, reload):
     assert fails when `_PATTERNS` grows without this list growing with it."""
     node, _client = _node_with_client()
     node._params['plant_id'] = 'test_opens_on_rest_%s_%s' % (pattern, id(node))
-    _freshen(node, pos_meas=0.0, pos_cmd=0.0)      # the ACTIVATE park hand
+    # the ACTIVATE park hand, cup as the accept possession check needs it
+    _freshen(node, pos_meas=0.0, pos_cmd=0.0,
+             seated=(sn.accept_cup_requirement(pattern, reload)
+                     == ball_possession.EVIDENCE_SEATED))
     _prelevel_ready(node)       # self_toss/hop pre-level; unused by columns
     if reload:
         _reload_ready(node)
@@ -5012,7 +5031,8 @@ def test_columns_1ball_reload_true_starts_the_plain_reload_choreography(
     arrives)."""
     node, _client = _node_with_client()
     node._params['plant_id'] = 'test_columns_1ball_reload_' + str(id(node))
-    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
+             seated=False)  # a reload opens with the catch: EMPTY cup
     reload_client, throw_client = _reload_ready(node)
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
                       _good_box_path(tmp_path, columns=True)), \
@@ -5041,7 +5061,8 @@ def test_columns_1ball_announcement_installs_the_merged_schedule(tmp_path):
     (REST/CATCH/REST) then the columns tail, phantom B included."""
     node, _client = _node_with_client()
     node._params['plant_id'] = 'test_columns_1ball_announce_' + str(id(node))
-    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
+             seated=False)  # a reload opens with the catch: EMPTY cup
     _reload_ready(node)
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
                       _good_box_path(tmp_path, columns=True)), \
@@ -5164,7 +5185,8 @@ def test_columns_1ball_fed_reload_true_arms_the_fed_choreography_with_empty_cup_
     the phantom."""
     node, _client = _node_with_client()
     node._params['plant_id'] = 'test_columns_1ball_fed_reload_' + str(id(node))
-    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
+             seated=False)  # a reload opens with the catch: EMPTY cup
     _reload_ready(node)
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
                       _good_box_path(tmp_path, columns=True)), \
@@ -5305,7 +5327,8 @@ class _NoAnswerClient(_RecordingClient):
 def test_bb_no_response_text_is_neutral_and_first_end_wins(tmp_path):
     node, _client = _node_with_client(response=_response())
     node._params['plant_id'] = 'test_bb_noresp'
-    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
+             seated=False)  # a reload opens with the catch: EMPTY cup
     _prelevel_ready(node)
     _reload_ready(node)
     node._bb_throw_cli = _NoAnswerClient(response=None, ready=True)
@@ -5833,3 +5856,240 @@ def test_the_hold_end_line_echoes_a_non_idle_lane_recovery():
     node._maybe_hold_pending_event('HAND_LANE_REFUSED')
     assert any('hold installed' in m and 'lane_recovery=in_progress' in m
                for m in infos)
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# cup-possession precondition at goal ACCEPT (owner ask 2026-10-14; sitting 8
+# attempt 4: a columns reload goal accepted with an EMPTY cup dispatched Ball
+# Butler, and BB threw at an unattended platform 5.4 s later)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _cup(node, *, seated=True, valid=True):
+    """A FRESH `/hand_telemetry` sample with the cup's DEBOUNCED (and raw)
+    possession bit set -- the accept check reads the debounced one."""
+    node._on_hand_telemetry(HandTelemetryMessage(
+        pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
+        ball_held=seated, ball_held_raw=seated, ball_held_valid=valid))
+
+
+def _assert_no_bb_and_no_motion(node, reload_client, throw_client):
+    assert reload_client.calls == []
+    assert throw_client.calls == []
+    assert node._reload_ctx is None
+    assert node._executor is None
+
+
+def test_accept_possession_reload_with_a_seated_cup_is_refused_ball_in_hand():
+    """The owner's ask, verbatim case: a plain RELOAD with a ball already in
+    the cup is refused at accept -- no `bb/reload`, no `bb/throw_at_target`,
+    nothing installed."""
+    node, _client = _node_with_client()
+    reload_client, throw_client = _reload_ready(node)
+    _cup(node, seated=True)
+    resp = node._start_pattern(_goal('reload'))
+    assert resp.success is False
+    assert ex.REJECTED_BALL_IN_HAND in resp.message
+    assert 'ball already in hand' in resp.message
+    assert 'reload' in resp.message
+    _assert_no_bb_and_no_motion(node, reload_client, throw_client)
+
+
+def test_accept_possession_self_toss_reload_with_a_seated_cup_is_refused(
+        tmp_path):
+    node, _client = _node_with_client()
+    reload_client, throw_client = _reload_ready(node)
+    _cup(node, seated=True)
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_self_toss_goal(reload=True))
+    assert resp.success is False
+    assert ex.REJECTED_BALL_IN_HAND in resp.message
+    assert 'ball already in hand' in resp.message
+    _assert_no_bb_and_no_motion(node, reload_client, throw_client)
+
+
+def test_accept_possession_self_toss_reload_with_an_empty_cup_is_accepted(
+        tmp_path):
+    node, _client = _node_with_client()
+    resp = _start_reload(node, tmp_path)        # the helper empties the cup
+    assert resp.success is True, resp.message
+    assert len(node._bb_throw_cli.calls) == 1
+
+
+def test_accept_possession_columns_reload_hop_with_an_empty_cup_is_refused_before_bb(
+        tmp_path):
+    """THE ATTEMPT-4 REGRESSION (sitting 8, 2026-10-13): under the hop entry
+    the attempt's first skill THROWS ball A, so an empty cup must refuse
+    REJECTED_NO_BALL at accept -- BEFORE `bb/reload`/`bb/throw_at_target`
+    are ever asked (the launch-time ladder refused 5.4 s later, too late to
+    stop Ball Butler)."""
+    node, _client = _node_with_client()
+    node.set_parameters([_MockParameter('hop', name='columns_entry')])
+    reload_client, throw_client = _reload_ready(node)
+    _cup(node, seated=False)
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
+                      _good_box_path(tmp_path, columns=True)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_columns_goal(reload=True,
+                                                 separation_mm=100.0))
+    assert resp.success is False
+    assert ex.REJECTED_NO_BALL in resp.message
+    assert 'ball already in hand' not in resp.message
+    _bb_ready(node)
+    node._maybe_fire_reload_throw()
+    _assert_no_bb_and_no_motion(node, reload_client, throw_client)
+
+
+def test_accept_possession_columns_reload_hop_with_a_seated_cup_dispatches_bb(
+        tmp_path):
+    """Ball B's feed lands AFTER ball A's throw, into the then-empty cup --
+    so a SEATED cup is exactly what a fed columns attempt needs and must NOT
+    read as "ball already in hand"; Ball Butler is dispatched as before."""
+    node, _client = _node_with_client()
+    node.set_parameters([_MockParameter('hop', name='columns_entry')])
+    _cup(node, seated=True)
+    _columns_bb_started(node, tmp_path)         # asserts the accept itself
+    assert len(node._bb_throw_cli.calls) == 1
+
+
+def test_accept_possession_columns_reload_transit_needs_a_seated_cup_too(
+        tmp_path):
+    """`columns_entry='transit'`'s bridge holds ball A at its own site
+    (`holds_ball=not phantom_a` -- the same argument as hop), so it needs
+    the same SEATED cup."""
+    node, _client = _node_with_client()             # helper pins 'transit'
+    reload_client, throw_client = _reload_ready(node)
+    _cup(node, seated=False)
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
+                      _good_box_path(tmp_path, columns=True)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_columns_goal(reload=True,
+                                                 separation_mm=100.0))
+    assert resp.success is False
+    assert ex.REJECTED_NO_BALL in resp.message
+    _assert_no_bb_and_no_motion(node, reload_client, throw_client)
+
+
+def test_accept_possession_columns_1ball_fed_with_a_seated_cup_is_refused():
+    node, _client = _node_with_client()
+    reload_client, throw_client = _reload_ready(node)
+    _cup(node, seated=True)
+    resp = node._start_pattern(_columns_1ball_fed_goal(separation_mm=100.0,
+                                                       reload=True))
+    assert resp.success is False
+    assert ex.REJECTED_BALL_IN_HAND in resp.message
+    _assert_no_bb_and_no_motion(node, reload_client, throw_client)
+
+
+@pytest.mark.parametrize('pattern,reload', [
+    ('magazine', False), ('columns', False), ('self_toss', False),
+    ('hop', False), ('columns_1ball', False)])
+def test_accept_possession_a_throw_first_attempt_with_an_empty_cup_is_refused(
+        pattern, reload):
+    node, _client = _node_with_client()
+    reload_client, throw_client = _reload_ready(node)
+    _cup(node, seated=False)
+    resp = node._start_pattern(_goal(pattern, reload=reload))
+    assert resp.success is False
+    assert ex.REJECTED_NO_BALL in resp.message
+    _assert_no_bb_and_no_motion(node, reload_client, throw_client)
+
+
+@pytest.mark.parametrize('pattern,reload,need', [
+    ('reload', False, 'EMPTY'), ('reload', True, 'EMPTY'),
+    ('self_toss', True, 'EMPTY'), ('hop', True, 'EMPTY'),
+    ('columns_1ball', True, 'EMPTY'), ('columns_1ball_fed', True, 'EMPTY'),
+    ('columns', True, 'SEATED'), ('columns', False, 'SEATED'),
+    ('self_toss', False, 'SEATED'), ('hop', False, 'SEATED'),
+    ('columns_1ball', False, 'SEATED'), ('magazine', False, 'SEATED')])
+def test_accept_possession_rule_table(pattern, reload, need):
+    assert sn.accept_cup_requirement(pattern, reload) == getattr(
+        ball_possession, 'EVIDENCE_' + need)
+
+
+def test_accept_possession_rule_table_covers_every_pattern():
+    for pattern in sn.SkillNode._PATTERNS:
+        for reload in (False, True):
+            assert sn.accept_cup_requirement(pattern, reload) in (
+                ball_possession.EVIDENCE_SEATED, ball_possession.EVIDENCE_EMPTY)
+
+
+@pytest.mark.parametrize('pattern,reload', [
+    ('reload', False), ('columns', True), ('magazine', False)])
+def test_accept_possession_a_blind_sensor_is_refused_ball_unknown(pattern,
+                                                                   reload):
+    node, _client = _node_with_client()
+    reload_client, throw_client = _reload_ready(node)
+    _cup(node, seated=True, valid=False)
+    resp = node._start_pattern(_goal(pattern, reload=reload))
+    assert resp.success is False
+    assert ex.REJECTED_BALL_UNKNOWN in resp.message
+    assert 'sensor' in resp.message
+    _assert_no_bb_and_no_motion(node, reload_client, throw_client)
+
+
+def test_accept_possession_stale_hand_telemetry_is_refused_ball_unknown():
+    node, _client = _node_with_client()
+    reload_client, throw_client = _reload_ready(node)
+    _cup(node, seated=False)
+    node._hand_telemetry_mono -= sn._HAND_STATE_STALE_S + 0.2
+    resp = node._start_pattern(_goal('reload'))
+    assert resp.success is False
+    assert ex.REJECTED_BALL_UNKNOWN in resp.message
+    assert 'stale' in resp.message and 'ms' in resp.message
+    _assert_no_bb_and_no_motion(node, reload_client, throw_client)
+
+
+def test_accept_possession_no_hand_telemetry_yet_is_refused_ball_unknown():
+    node, _client = _node_with_client(hand=False)
+    reload_client, throw_client = _reload_ready(node)
+    resp = node._start_pattern(_goal('reload'))
+    assert resp.success is False
+    assert ex.REJECTED_BALL_UNKNOWN in resp.message
+    assert 'no /hand_telemetry' in resp.message
+    _assert_no_bb_and_no_motion(node, reload_client, throw_client)
+
+
+def test_accept_possession_a_running_attempt_keeps_its_own_reason(tmp_path):
+    """The check sits AFTER `_refuse_if_running`: a goal sent while an attempt
+    runs is refused for THAT, not for the cup the running attempt holds."""
+    node, _client = _node_with_client()
+    _start_reload(node, tmp_path)
+    _cup(node, seated=True)
+    resp = node._start_pattern(_goal('reload'))
+    assert resp.success is False
+    assert ex.REJECTED_BALL_IN_HAND not in resp.message
+
+
+def test_accept_possession_refusal_leaves_the_previous_result_untouched():
+    """The check runs BEFORE the per-goal bookkeeping reset, so a goal
+    refused for the cup never clears a previous goal's still-unread
+    result."""
+    node, _client = _node_with_client()
+    _reload_ready(node)
+    node._goal_outcome_lines = ['previous OUTCOME line']
+    node._goal_reports = ['previous report']
+    node._goal_end_code = 'PREVIOUS_END'
+    node._attempt_label = 'previous'
+    _cup(node, seated=True)
+    resp = node._start_pattern(_goal('reload'))
+    assert resp.success is False
+    assert node._goal_outcome_lines == ['previous OUTCOME line']
+    assert node._goal_reports == ['previous report']
+    assert node._goal_end_code == 'PREVIOUS_END'
+    assert node._attempt_label == 'previous'
+
+
+@pytest.mark.parametrize('seated,valid,word', [
+    (True, True, 'SEATED'), (False, True, 'EMPTY'), (True, False, 'UNKNOWN')])
+def test_accept_possession_check_reports_the_cup_line(seated, valid, word):
+    node, _client = _node_with_client()
+    _cup(node, seated=seated, valid=valid)
+    resp = node._svc_check(Trigger.Request(), Trigger.Response())
+    assert ('cup: %s (age ' % (word,)) in resp.message
+
+
+def test_accept_possession_check_reports_unknown_with_no_hand_telemetry():
+    node, _client = _node_with_client(hand=False)
+    resp = node._svc_check(Trigger.Request(), Trigger.Response())
+    assert 'cup: UNKNOWN (no /hand_telemetry yet)' in resp.message

@@ -24,7 +24,8 @@ import jugglebot.skill_node as sn
 
 def _start(node, tmp_path):
     node._params['plant_id'] = 'test_reload_only_' + str(id(node))
-    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
+             seated=False)   # accept possession check: a reload needs an EMPTY cup
     _prelevel_ready(node)
     reload_client, throw_client = _reload_ready(node)
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
@@ -90,7 +91,8 @@ def test_reload_only_skips_the_throw_only_box_coverage_check(tmp_path):
     node2, _client2 = _node_with_client(response=_response())
     node2._params['apex_m'] = 0.3
     node2._params['plant_id'] = 'test_reload_only_contrast_' + str(id(node2))
-    _freshen(node2, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    _freshen(node2, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
+             seated=False)
     _prelevel_ready(node2)
     _reload_ready(node2)
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \

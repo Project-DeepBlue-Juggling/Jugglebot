@@ -335,6 +335,12 @@ REJECTED_HAND_STALE = 'REJECTED_HAND_STALE'
 #: ``logbook/2026-09-16-hand-park-refusal-retired-rest-homes-the-hand.md``.
 REJECTED_BALL_UNKNOWN = 'REJECTED_BALL_UNKNOWN'
 REJECTED_NO_BALL = 'REJECTED_NO_BALL'
+#: ACCEPT-time only (never minted by :func:`precondition_refusals`): a goal
+#: whose FIRST skill is the Ball Butler reload catch found the cup observed
+#: SEATED -- ``skill_node._start_pattern``'s possession check (owner ask,
+#: 2026-10-14), which also uses ``REJECTED_NO_BALL`` / ``REJECTED_BALL_UNKNOWN``
+#: at accept.  See ``INVARIANTS.md``.
+REJECTED_BALL_IN_HAND = 'REJECTED_BALL_IN_HAND'
 #: Leaving the streaming mode that owns the platform mid-attempt -- the rest
 #: tail already streaming is the safe end (``reload_sequencer.py:340-366``'s
 #: ``obs.control_mode != RELOAD_CONTROL_MODE`` -> ``self._abort('MODE_CHANGED')``).
@@ -693,7 +699,10 @@ class Observations:
       fresh status (C-LEVEL-1.O) -- ``REJECTED_NOT_LEVELLED``.
     * ``ball_evidence`` -- one of :data:`bp.EVIDENCE_SEATED` /
       :data:`bp.EVIDENCE_EMPTY` / :data:`bp.EVIDENCE_UNKNOWN` -- launch-only
-      ``REJECTED_BALL_UNKNOWN`` / ``REJECTED_NO_BALL``.
+      ``REJECTED_BALL_UNKNOWN`` / ``REJECTED_NO_BALL``.  (The goal-ACCEPT
+      mirror, ``skill_node._start_pattern``, reads the same debounced
+      evidence and adds :data:`REJECTED_BALL_IN_HAND` for an attempt that
+      opens with the reload catch; this ladder is the second line.)
     * ``in_trajectory_mode`` -- checked every tick while an attempt runs, not
       only at dispatch -- ``ABORTED_MODE_CHANGED``.
     * ``hand_lane_refused`` -- likewise every tick, never at dispatch alone:
