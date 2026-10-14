@@ -94,10 +94,28 @@ def out(tmp_path_factory):
     return {"main": _run(sb, "replay_digest_harness.js", chunks), "lane": _run(sb, "replay_digest_lane_harness.js")}
 
 
+def _node_check_as_module(path):
+    """``node --check`` of ``path`` as an ES module, independent of whatever
+    ``package.json`` node would find walking UP from the GUI tree (2026-10-15:
+    a stray ``~/package.json`` of ``{}`` made node parse these files as
+    CommonJS and fail on ``import``; ``ros_ws/gui`` itself may not carry a
+    ``package.json`` -- ``test_gui_geometry.TestLegacyFilesRemoved`` pins its
+    absence). ``--check`` only parses, so a copy next to a ``{"type":
+    "module"}`` marker is the file's own verdict."""
+    import shutil
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        (Path(td) / "package.json").write_text('{"type": "module"}\n')
+        dst = Path(td) / Path(path).name
+        shutil.copy(str(path), str(dst))
+        return subprocess.run([NODE, "--check", str(dst)],
+                              stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+
+
 def test_node_check_modules():
     for rel in ("js/replay/digest.js", "js/replay/chart-store.js", "js/replay/mcap-worker.js", "js/replay/sources.js",
                 "js/replay/cache.js"):
-        r = subprocess.run([NODE, "--check", str(GUI / rel)], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        r = _node_check_as_module(GUI / rel)
         assert r.returncode == 0, (rel, r.stderr.decode())
 
 
