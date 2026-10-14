@@ -1,7 +1,7 @@
 ---
 title: Learned Feedforward Residuals — Batch ILC on the Leg Torque Channel
 created: 2026-07-24
-status: parked   # 2026-08-15 — gates G-A (bridge-temporal closure + latency monitor), G-B (accel-FF concluded; that plan is itself parked) and G-C (stale-hold decay flashed) are all open; no implementation before they clear, per this plan's own rule.
+status: superseded   # closed 2026-10-14: see Archival note
 related_logbook:
   - 2026-07-18-teensy-uptime-tracking-degradation.md
   - 2026-05-08-friction-ff-platform-limit-cycle.md
@@ -12,7 +12,18 @@ related_code:
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/emitter.py::KnotEmitter.frame
   - ros_ws/src/jugglebot/jugglebot/motion/torque_ff.py::LegTorqueFeedforward
   - controller/teensy_link/setpoint_pump.py::SetpointPump
+archived: 2026-10-14
 ---
+
+## Archival note (2026-10-14)
+
+Board cleared at the close of the skill-stack arc, 2026-10-14 (owner decision): the parked plans are archived with the active ones. Archived `superseded`.
+
+**What landed:** Nothing implemented. `dynamics.torque_ff_learned`, the residual telemetry channel and the profile store/loader do not exist anywhere in the tree (grep for `torque_ff_learned` finds nothing outside the plan). Its gates G-B (accel-FF concluded, see `accel-ff-inertia.md`) and G-C (firmware stale-hold decay flashed) never cleared. The 2026-10-14 rename note about `make_setpoint_command` (formerly `make_mpc_command`) is kept in the body. Declined, not superseded by code.
+
+**What the problem still is:** Repeatable leg tracking residuals are left by the model-based torque feedforward; the plan proposed a batch ILC trim, keyed per move, added into `torque_ff` on the leg torque channel and shipped dormant.
+
+**Would revive it:** **G-B and G-C, both open.** G-B: the accel-FF arc is concluded — shipped enabled *or* dormant, either is fine, what matters is that the model baseline is FROZEN before learning starts. G-C: firmware stale-hold torque decay is flashed (same flash bundle as accel-FF T1.1 — no new firmware work). Note the ordering this implies: G-B depends on `plans/archived/accel-ff-inertia.md`, which is itself parked, so this plan cannot unpark first. On resume, re-key the learner's healthy-bag filter off `latency_monitor` / `leak` rather than `uptime_ms` — G-A's closure made uptime a non-predictor
 
 # Learned Feedforward Residuals — Batch ILC on the Leg Torque Channel
 
@@ -32,7 +43,7 @@ new feedback loop in the hot path**. The two closed tuning arcs point here:
 the leg gain hunt concluded tracking is a *feedforward* problem (gains are for
 disturbance rejection; `plans/active/leg-gain-tuning-methodology.md`), and the
 model-based FF chain (gravity shipped, platform-inertia planned in
-`plans/parked/accel-ff-inertia.md`) can only capture what the model contains.
+`plans/archived/accel-ff-inertia.md`) can only capture what the model contains.
 What it structurally cannot capture — the ±1.5 A/leg friction/hysteresis
 band, pose-dependent non-inertial load ("half the measured heaviness"),
 per-leg asymmetries (leg 2 heavy in x, leg 0 in y) — is *repeatable* along a

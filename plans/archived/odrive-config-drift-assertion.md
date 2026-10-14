@@ -1,16 +1,7 @@
 ---
 title: ODrive config-drift assertion — an automatic control for NVM drift
 created: 2026-08-18
-status: active   # 2026-08-18 — the assumed transport does not exist. A CAN/SDO read
-                 # has NO response path to the Jetson (rpc.cpp:249-257,
-                 # can_buses.cpp:248-262) and the hand is refused SDO_READ outright
-                 # (udp_protocol.h:593-608), so nothing can be built as specified
-                 # without a can-bridge firmware change + flash, which is unauthorised.
-                 # USB is ruled out on evidence (drives are not on USB at run time),
-                 # so CAN3 is the only permanent path and firmware is the only route
-                 # to an AUTOMATIC control. Parked on ONE owner decision: is automatic
-                 # drift detection worth a firmware chapter + flash, or is the manual
-                 # Option C tool enough? Resume at Phase 0.
+status: superseded   # closed 2026-10-14 unimplemented-or-partial: see Archival note
 related_logbook:
   - 2026-08-10-hand-drive-braking-clamp-diagnosis.md
   - 2026-08-18-hand-torque-clamp-removed.md
@@ -22,7 +13,18 @@ related_code:
   - tools/odrive_fleet_reflash.py::flatten_config
   - tools/odrive_fleet_reflash.py::diff_flat
   - ros_ws/src/jugglebot/jugglebot/teensy_bridge_node.py::_version_check_poll
+archived: 2026-10-14
 ---
+
+## Archival note (2026-10-14)
+
+Board cleared at the close of the skill-stack arc, 2026-10-14 (owner decision). Archived `superseded`; declined or left unfinished, not superseded by code unless stated.
+
+**What landed:** Nothing implemented. No launch-time ODrive register assertion exists: `rpc.cpp` still has the one-way `SDO_READ` (axis 6 refused), no can-bridge firmware chapter was started, and nothing in `teensy_bridge_node.py` or `tools/` compares live ODrive registers to `config/ODrive config Files/`. Declined, not superseded by code.
+
+**What the problem still is:** ODrive NVM safety registers can drift silently (the hand's `torque_soft_min` sat at -10.00 A for weeks and cost a multi-day diagnosis arc), and the only check is a manual pre-flight step (bench row H7.0c) that went unrun. Still real.
+
+**Would revive it:** another silent ODrive config drift costing a diagnosis arc, or any can-bridge firmware chapter that already adds a response path for SDO reads (the plan's Option A then becomes cheap); design in the plan is complete from Phase 0.
 
 # ODrive config-drift assertion
 

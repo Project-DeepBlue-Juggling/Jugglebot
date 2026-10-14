@@ -1,6 +1,6 @@
 # Skill-stack dress rehearsals — lane-latch recovery, hand-stroke stop, BB cancel (carried out of R5 sitting 8)
 
-Plan: `plans/active/skill-stack-dress-rehearsals-and-residue.md`. These are rows 17a-20 of
+Plan: `plans/archived/skill-stack-dress-rehearsals-and-residue.md`. These are rows 17a-20 of
 `tests/hardware/session_skills_r5_sitting8.md`, which the owner skipped for time on 2026-10-13 (the
 R5 gate itself was met that day). **Row numbers 17a-20 are kept so cross-references in the logbook stay
 true.** Pre-flight rows are renumbered 1..n.
@@ -66,4 +66,4 @@ Why no `<flags>` placeholder: on 2026-10-14 the literal `<flags>` was pasted and
 |---|---|---|
 | 28 | GUI Deactivate; stop launch and bag. | Robot stows. |
 | 31 | Record bag path(s) and launch.log path(s): `~/Desktop/rosbags/<id>`, `~/.ros/log/<run>/launch.log`; keep `temp/probes/lane_latch_rehearsal_<ts>.json`. | |
-| 33 | Log the sitting as a logbook entry; record the four rungs in `plans/active/skill-stack-dress-rehearsals-and-residue.md` § 3. | |
+| 33 | Log the sitting as a logbook entry; record the four rungs in `plans/archived/skill-stack-dress-rehearsals-and-residue.md` § 3. | |

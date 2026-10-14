@@ -1,7 +1,7 @@
 # Bench session — unified-7DOF bus headroom + leg-bus frame-drop A/B
 
 Phase 0, probe 3 of `plans/archived/unified-7dof-planner.md`, run jointly with
-workstream B of `plans/active/leg-bus-frame-drops.md` § 4.1.
+workstream B of `plans/archived/leg-bus-frame-drops.md` § 4.1.
 
 ## Purpose
 

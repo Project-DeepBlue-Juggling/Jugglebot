@@ -25,12 +25,6 @@ rows).
 
 | Plan | Status | Last touched | Scope |
 |------|--------|--------------|-------|
-| [skill-stack-dress-rehearsals-and-residue.md](skill-stack-dress-rehearsals-and-residue.md) | active | 2026-10-13 | **The R5 dress rehearsals sitting 8 skipped, plus the residue of the R5 arc.** Four rungs schedulable 2026-10-14 (lane-latch probe dry run, real-fault lane recovery, hand-stroke STOP/CONT, BB cancel + CANCEL_TOO_LATE; runsheet `tests/hardware/session_skill_stack_rehearsals.md`). § 2 carries every open item from `plans/archived/two-ball-skill-stack.md` (archived at R6) and its wave entries, each with the trigger that would make it worth doing. |
-| [columns-tracking-ff-and-shaping.md](columns-tracking-ff-and-shaping.md) | active | 2026-10-05 | **Inertial torque FF, then planner-integrated input shaping, for columns hops.** Phase 0 measures first (the 3 Hz mode is unconfirmed; leg 4 saturates every hop for an unknown reason); then one firmware sitting (stale-hold torque decay, clamp raise to ~0.27 Nm), enablement with a box re-sweep, a pre-registered hardware A/B, residual characterisation, and shaping only if the residual justifies it. Absorbs the intent of the parked accel-FF inertia plan. |
-| [kinematic-calibration.md](kinematic-calibration.md) | active | 2026-09-23 | **Fit the Stewart geometry to a mocap pose sweep (owner design, 2026-09-23).** The Platform sits ~8.5 mm laterally from its command in the QTM (= Base) frame, growing with height (0.77° lever arm) — model-geometry error in a hand-built FDM machine, not a frame artefact. Remedy is a parametric calibration (48 geometry params + 3 body-registration angles, CAD prior, freeze-what-data-can't-pin), NOT a mocap pose-servo — that returns only if the pre-registered path-dependence test reads RANDOM (> 1 mm within-direction). Two-part: node geometry once, the six leg zero-offsets re-fitted per session (homing repeatability unmeasured). Sweep: reachable set inside ±300 mm x/y, z 100–250, ≤ 30 min. Done = hold-out ≤ 1 mm RMS / ≤ 2 mm max / ≤ 0.1°, then the frame check reads ≤ 1–2 mm at every z and the landing subtraction retires. Prerequisite for learner z authority; does NOT block skill-stack R4. ✅ **GEOMETRY APPLIED 2026-09-27** (§ 6 step 5: fitted nodes/L0/mm_to_rev, 574.3 → 578.2, tilt map retired, box re-swept, gate hash now covers the geometry); NEXT = the sitting in `tests/hardware/session_kincal_apply.md`: `level` FIRST, tilt-map recapture, then the flying frame check (step 7) |
-| [odrive-config-drift-assertion.md](odrive-config-drift-assertion.md) | active | 2026-08-21 | **UNPARKED 2026-08-21 — the owner decision that was its only gate has been made.** A launch-time assertion that the live ODrives' safety registers still match the committed snapshots in `config/ODrive config Files/`. Motivated by a real incident: the hand's `torque_soft_min` sat at -10.00 A for weeks, cost a multi-day diagnosis arc, and was found by a pre-registered guess — while the one manual pre-flight written for exactly this check (bench row H7.0c, "takes 30 s") went unrun. **Blocked on nothing; needs a can-bridge FIRMWARE chapter**, because `teensy_sdo_read` is one-way (`rpc.cpp:249-257` returns an empty blob, `can_buses.cpp:248-262` discards every TxSdo but the hand ball sensor's, and axis 6 is refused `SDO_READ` outright). USB was ruled out on evidence — the drives are maintenance-plugged only. Owner chose the firmware route (**Option A**) over a `tools/` CLI on 2026-08-18, because a runbook step is precisely what already failed. Design is complete in the plan: 18-register set with per-register failure modes, UNKNOWN-is-never-PASS verdicts, the `Get_Version` gate that closes the wrong-endpoint hazard (a wrong id ANSWERS PLAUSIBLY), a <=126 round-trip bound inside cold start and never during the 500 Hz stream, and float32-quantise-then-compare-exactly rather than a tolerance band. ⚠ Sequencing: `test_bridge_fw_version_xref.py` pins `FW_VERSION` to `EXPECTED_BRIDGE_FW_VERSION`, so the bump and the flash must be one session |
-| [bridge-clock-frequency-discipline.md](bridge-clock-frequency-discipline.md) | active | 2026-08-15 | Bridge clock rate discipline for µs-stable time across a multi-hour session — the authoritative design reference, now **UNBLOCKED and independently schedulable**. The bridge-temporal arc that sequenced it closed and archived 2026-08-15, so its ordering constraint (no frequency estimator trained through a drifting transport) is **SATISFIED**. Phase 1's instrument already ships on the wire as `CLOCK_DIAG` (FW 11) and is bagged, so Phase 1 is capture-and-analyse rather than build; **Phase 2 was already DELIVERED** as the arc's midpoint-stamped TOD responder (superseding this plan's kernel-RX-only sketch, which flips the sign of the server-processing term rather than deleting it); Phases 3–5 (PI frequency servo, min-RTT anchor gating, holdover retune) are what remain. New input for Phase 1: the FlexCAN capture clock was measured 2026-08-15 running slow against `micros64()` at a **load-dependent** ≈230 ppm idle / ≈580–670 ppm streaming, mechanism unexplained — record bus load alongside ppm |
-| [leg-bus-frame-drops.md](leg-bus-frame-drops.md) | proposed | 2026-08-15 | **DRAFT PROPOSAL, nothing implemented; workstream A touches the LIVE leg path.** Per-axis encoder-frame drops on the leg bus — the amplifier input that SURVIVED the bridge-temporal closure. Characterised 2026-08-15 across seven bags: 1–3 s single-axis episodes (ax1 19–88 frames/s, cache age 76–95 ms, leg-1 lead pinned at exactly `MAX_LEAD_REV` for 3+ samples, 41 rail-saturated; ax4 39 frames, 96 ms, lead 4.89 mm vs 0.82–1.51 on peers — the concrete candidate for the reported Y roughness), gated by the **500 Hz setpoint stream and NOT by uptime** (~10 % of streaming windows, **0/232 idle**; rate 1.8–5.0/s with no uptime trend, 15.2 h reads 3.7), victim axis random w.r.t. mechanical load, and **present on fresh firmware** (3 episodes in 50 s in the fresh-reflash bag). Localised to frames that never reached the bridge's CAN peripheral (encoder deficit vs `can1_rx` deficit r = 0.62, slope 0.82; every in-bridge and on-wire counter zero, ACK errors identically zero ⇒ nothing was transmitted-and-unacknowledged). Two workstreams: **(A) the amplifier fix** — an anchor-AGE-aware lead clamp, which WORKS here where the archived content-freshness draft could not, because a genuine dropout means no cache write at all so `pos_timestamp_us` really ages (salvage: that draft's enforcement-point analysis, `MAX_DEVIATION`/stroke-clamp interactions, ISR access discipline, and the velocity-extrapolated anchor at 0.160 → 0.000 over-budget freezes); **(B) the source fix** — the ODrive-TX-suppression hypothesis, with a cheap A/B whose **arm 1 needs no firmware** (disable unused ODrive cyclic messages; arm 2 — halve the leg command rate for one battery bag — does need a companion build, `INTERP_RATE_HZ` 500→250. If the drop rate scales with bridge TX rate, convicted) and the SDO-readable ODrive CAN TX-drop counter as the direct convictor. Sequenced B-then-A; blocked on owner decisions A1–A3. **Weak arm flown 2026-08-30 — does not convict, hypothesis alive** (see § 4.1 note) |
 | [leg-gain-tuning-methodology.md](leg-gain-tuning-methodology.md) | reference | 2026-07-16 | Leg PID tuning methodology. The **gain hunt closed 2026-07-13** (40/0.20/0.32 ships, gains FROZEN); the document stays active as the normative procedure for any future tuning round |
 
 ## Orchestration prompts
@@ -53,13 +47,13 @@ active.
 
 ## Recently parked
 
-Six plans moved to `plans/parked/` on 2026-08-16 — the same six parked in place
-on 2026-08-15, now given their own directory so this board carries only
-schedulable work. Each keeps its `status: parked` note and gains a row in
-`plans/parked/INDEX.md` naming **what would unpark it**. Two of the six are
-worth knowing about even while parked: the 2026-07 refactor programme's
-**§ Standing coordination rules stays LIVE process text**, and the levelling
-contract carries an **open int16 offset-truncation defect** with no other owner.
+None. The parked board was emptied 2026-10-14 at the close of the skill-stack
+arc: the five plans it held were archived (see `plans/archived/INDEX.md`, rows
+dated 2026-10-14), each with an archival note naming what would revive it. Two
+things from that set stay live even though their plans are archived: the
+2026-07 refactor programme's **§ Standing coordination rules remain process
+text**, and the levelling contract's **int16 offset-truncation defect is still
+OPEN** with no other owner — both are read in their archived plans.
 
 ## Recently archived
 
@@ -67,9 +61,8 @@ contract carries an **open int16 offset-truncation defect** with no other owner.
 (`plans/archived/two-ball-skill-stack.md`; `completed: 2026-10-13`). R0-R6 all
 done: the R5 hardware gate was met at sitting 8 (32 consecutive catches in one
 attempt, 14/14 Ball Butler feeds) and R6 deleted the MPC-era residue and
-rewrote `docs/motion_planner`. Final gate: `./run_tests.sh --full`, run 2026-10-14 00:18-00:24 (`temp/logs/gate_r6_final_20261014.log`): **PASS — 6992 passed, 9 skipped, 1 xfailed in 354.37 s (parallel), serial 7 passed in 27.46 s**. Open residue (dress
-rehearsals, box widening, sitting-8 findings, magazine program) lives in
-`skill-stack-dress-rehearsals-and-residue.md`.
+rewrote `docs/motion_planner`. Final gate: `./run_tests.sh --full`, run 2026-10-14 00:18-00:24 (`temp/logs/gate_r6_final_20261014.log`): **PASS — 6992 passed, 9 skipped, 1 xfailed in 354.37 s (parallel), serial 7 passed in 27.46 s** (the xfail, the juggle strict xfail, was deleted 2026-10-14 in 6e4a0bab; the 2026-10-14 22:19 gate was 6630 passed, 9 skipped, serial 4 passed, zero xfails). The dress rehearsals were flown 2026-10-14 and the residue plan is archived too: open residue (box widening, sitting-8 findings, magazine program) lives in its § 2, unscheduled,
+`../archived/skill-stack-dress-rehearsals-and-residue.md`.
 
 **operator-observability** was archived `completed` on **2026-08-25**
 (`plans/archived/operator-observability.md`). All four features — F3 ODrive
@@ -105,10 +98,10 @@ bridge-temporal trustworthiness arc (**COMPLETE** on its latency half: P0/P1/P2,
 S1/S2/S3 and P3, firmware 11 through 14, root cause convicted and fixed, both
 deliverables of the 2026-07-24 closure contract satisfied; the clock half hands
 back to
-[bridge-clock-frequency-discipline.md](bridge-clock-frequency-discipline.md))
+[plans/archived/bridge-clock-frequency-discipline.md](../archived/bridge-clock-frequency-discipline.md))
 and the lead-clamp content-freshness draft (**SUPERSEDED**, never implemented —
 its content-freeze premise was disproved by the delay-line localisation, and its
-salvage is re-homed in [leg-bus-frame-drops.md](leg-bus-frame-drops.md))). Each
+salvage is re-homed in [plans/archived/leg-bus-frame-drops.md](../archived/leg-bus-frame-drops.md))). Each
 carries an "Archival note" section explaining what shipped, why it closed, and
 where any residue was re-homed.
 

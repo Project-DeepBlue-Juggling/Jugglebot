@@ -1,7 +1,7 @@
 ---
 title: Columns tracking — inertial torque feedforward, then planner-integrated input shaping
 created: 2026-10-05
-status: active
+status: superseded   # closed 2026-10-14 unimplemented-or-partial: see Archival note
 owner: Harrison
 last_updated: 2026-10-05
 related_plan: two-ball-skill-stack.md
@@ -12,7 +12,18 @@ related_code:
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/emitter.py::KnotEmitter
   - ros_ws/src/jugglebot/Teensy_code_canbridge/leg_interp.cpp
   - ros_ws/src/jugglebot/jugglebot/motion/skills/ (segments, schedule, admissible)
+archived: 2026-10-14
 ---
+
+## Archival note (2026-10-14)
+
+Board cleared at the close of the skill-stack arc, 2026-10-14 (owner decision). Archived `superseded`; declined or left unfinished, not superseded by code unless stated.
+
+**What landed:** Nothing implemented. No phase ran: `dynamics.torque_ff_platform_inertia` is still `false` in `config/hardware_config.yaml`, no stale-hold torque-decay or clamp-raise firmware landed, and no shaping code exists in `motion/`. Its Phase 0 premise (leg 4's 10 A-clamp saturation) was a calibration issue, gone after the owner's leg FULL_CALIBRATION_SEQUENCE 2026-10-06, and the leg current clamp rose 10 -> 15 A (R5). Declined, not superseded by code.
+
+**What the problem still is:** Columns hops (and any fast transit) show a tracking residual that inertial torque feedforward and then planner-integrated input shaping might remove; whether the 3 Hz mode and the residual are real is still unmeasured (Phase 0 never ran).
+
+**Would revive it:** a measured tracking residual on the live skill-stack hops that costs catches, or the accel-FF prerequisite (firmware stale-hold torque decay) being scheduled; start again at Phase 0 (measure first) and reconcile with the parked `accel-ff-inertia.md`.
 
 # Columns tracking: inertial FF, then input shaping
 

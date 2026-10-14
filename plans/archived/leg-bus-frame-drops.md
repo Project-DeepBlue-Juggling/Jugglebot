@@ -1,7 +1,7 @@
 ---
 title: Leg-bus per-axis frame drops — the surviving lead-clamp amplifier, and its source
 created: 2026-08-15
-status: proposed   # out of DOCUMENTATION_GUIDE 2.6's active|completed|superseded vocabulary, used deliberately for a document nobody has approved yet (same convention the archived lead-clamp draft used); promote to `active` on approval
+status: superseded   # closed 2026-10-14 unimplemented-or-partial: see Archival note
 owner: harrison
 last_updated: 2026-08-15
 related_logbook:
@@ -18,7 +18,18 @@ related_code:
   - ros_ws/src/jugglebot/Teensy_code_canbridge/axis_state.h::snapshot_pos_vel
   - ros_ws/src/jugglebot/Teensy_code_canbridge/fault_machine.cpp::evaluate_guard
   - ros_ws/src/jugglebot/Teensy_code_canbridge/can_buses.cpp
+archived: 2026-10-14
 ---
+
+## Archival note (2026-10-14)
+
+Board cleared at the close of the skill-stack arc, 2026-10-14 (owner decision). Archived `superseded`; declined or left unfinished, not superseded by code unless stated.
+
+**What landed:** Nothing implemented (it was a never-approved DRAFT PROPOSAL): no anchor-age-aware lead clamp in `leg_interp.cpp` (still the fixed `MAX_LEAD_REV`), and the source-fix A/B was not flown beyond the 2026-08-30 weak arm, which did not convict. Declined, not superseded by code.
+
+**What the problem still is:** Per-axis encoder-frame drops on the leg bus (1-3 s single-axis episodes, ~10 % of streaming windows) leave a stale anchor that the lead clamp amplifies; candidate cause of Y roughness on one leg. The skill-stack R5 gate was met with the problem present, so it has not blocked catches.
+
+**Would revive it:** leg-tracking roughness or a MAX_DEVIATION trip traced to a stale-anchor episode, or a firmware chapter on `leg_interp.cpp` already open; then start with workstream B's no-firmware arm 1 and the plan's decisions A1-A3.
 
 # Leg-bus per-axis frame drops
 
@@ -278,7 +289,7 @@ session is already degraded. The new `latency_monitor` row is the natural home.
 - The ring-leak delay line and its lag normaliser — closed 2026-08-15.
 - The load-dependent FlexCAN capture-clock rate error (≈230 ppm idle, ≈580–670 ppm
   streaming) — recorded as an open question against the clock plan
-  (`plans/active/bridge-clock-frequency-discipline.md`), not this one, though both
+  (`plans/archived/bridge-clock-frequency-discipline.md`), not this one, though both
   are load-correlated bus phenomena and a common cause is not excluded.
 - The leg-0 SPINOUT encoder discontinuity — hardware, addressed by the operator's
   2026-08-15 encoder re-seat, tracked in the closure entry's Open Questions.

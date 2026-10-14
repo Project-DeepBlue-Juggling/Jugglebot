@@ -1,7 +1,7 @@
 ---
 title: Levelling-frame contract — one gravity correction, applied to every pose request
 created: 2026-07-25
-status: parked   # 2026-08-15 — contract C-LEVEL-1/1.O shipped; Phase 4 residue = LVL-2 (~30 s of robot time, bundle with a catch sitting) and one OPEN DEFECT with no other owner: the Platform Teensy truncates the persisted offset to int16 milliradians (the STATE_WRITE int16 encode, Teensy_code_platform.ino:443-444; 0.0264° measured / 0.0573° worst-case per axis against the ±0.05° band, and LVL-3 is structurally blind to it) — address at the next levelling touch. The third residue item, the LG-3 reachability decision, is DISCHARGED 2026-08-16 (logbook/2026-08-16-levelling-complete-ownership-resolved.md): the state IS reachable, Route A = restart trajectory_node alone after `level`, so LG-3 now costs robot time, not paper.
+status: completed   # closed 2026-10-14: see Archival note
 related_logbook:
   - 2026-07-26-levelling-frame-contract.md
   - 2026-07-25-levelling-frame-enumeration.md
@@ -18,7 +18,18 @@ related_code:
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/planner.py::build_catch
   - ros_ws/src/jugglebot/jugglebot/toss_sequencer.py::_step_checking
   - ros_ws/src/jugglebot/jugglebot/orchestrator_node.py
+archived: 2026-10-14
 ---
+
+## Archival note (2026-10-14)
+
+Board cleared at the close of the skill-stack arc, 2026-10-14 (owner decision): the parked plans are archived with the active ones. Archived `completed`.
+
+**What landed:** Contract C-LEVEL-1/1.O shipped and is live (`motion/levelling.py`, `trajectory_node` pose paths, `tests/motion/test_levelling.py`; Phases 0-3 and the LVL-1/LVL-3/LVL-4, LG-1/2/4/5 validation passed 2026-07-27). Archived `completed` for the contract; the Phase 4 residue was NOT done: LVL-2 (return-to-neutral install path after `go_home`, ~30 s of robot time) never run, LG-3 never scored on hardware (reachability settled by Route A, 2026-08-16), and the Platform Teensy int16-milliradian truncation of the persisted offset (`Teensy_code_platform.ino`, `int16_t x = int16_t(s.pose_offset_tiltX * 1000.f)`, 0.0264 deg measured / 0.0573 deg worst case per axis against the +-0.05 deg band) is still OPEN. Left unfinished by owner decision, not fixed.
+
+**What the problem still is:** A single gravity/levelling correction must be applied identically to every pose request path; what remains is one quantisation defect in the persisted offset that LVL-3 is structurally blind to, plus ~30 s of unrun hardware validation.
+
+**Would revive it:** **No single gate — two independent triggers remain, either of which unparks its own item.** (1) LVL-2 needs only ~30 s of robot time, so it unparks at the next catch sitting it can be bundled into. (2) One OPEN DEFECT with no other owner: the Platform Teensy truncates the persisted offset to int16 milliradians (`Teensy_code_platform.ino:443-444`; 0.0264° measured / 0.0573° worst-case per axis against the ±0.05° band, and LVL-3 is structurally blind to it) — the plan's instruction is to address it at the next levelling touch, so any levelling work at all unparks that item. A **third** trigger, the LG-3 reachability decision, was **DISCHARGED 2026-08-16** (`logbook/2026-08-16-levelling-complete-ownership-resolved.md`): the state is reachable — `level`, then restart `trajectory_node` alone — so LG-3 is now robot time bundled with (1), not a gate anyone is waiting on
 
 # Plan — Levelling-frame contract
 

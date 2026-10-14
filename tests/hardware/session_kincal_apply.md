@@ -1,6 +1,6 @@
 # Kinematic-calibration apply — first sitting on the fitted geometry
 
-`plans/active/kinematic-calibration.md` § 6 steps 5–7. The IK geometry changed
+`plans/archived/kinematic-calibration.md` § 6 steps 5–7. The IK geometry changed
 on 2026-09-27 (logbook `2026-09-23-kinematic-calibration-design-and-fit-tool.md`
 § "2026-09-27: applied"). **Nothing physical changed; the only firmware flash is the
 can-bridge stroke-clamp regeneration (FW 24, item 6 below).** This sitting re-levels the machine under the new geometry, recaptures

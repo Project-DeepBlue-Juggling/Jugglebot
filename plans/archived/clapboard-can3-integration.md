@@ -1,9 +1,19 @@
 ---
 title: Electronic Clapboard over CAN3 — Jetson + can-bridge Teensy integration
 created: 2026-08-16
-status: parked
-parked: 2026-08-18
+status: superseded   # closed 2026-10-14: see Archival note
+archived: 2026-10-14
 ---
+
+## Archival note (2026-10-14)
+
+Board cleared at the close of the skill-stack arc, 2026-10-14 (owner decision): the parked plans are archived with the active ones. Archived `superseded`.
+
+**What landed:** Not on this branch. The work lives on `2026-08_clapboard-can3` (pushed to origin) and that branch STAYS as the record: Phases 0-4 implemented and self-audited there, Phase 6 committed but never gated, Phase 5 (bench soak) never run, and its FW 15 was never flashed. **The final whole-diff audit never ran** (the agent hit a usage limit), so the seams between phases are unverified. The physical blocker: the bridge's CAN3 analog drive path has a load-dependent hardware fault and the Jugglebot loom was moved to CAN2 (cone on CAN3); the clapboard sits on the cone bus, so it needs that repair. Declined, not superseded by code.
+
+**What the problem still is:** An electronic clapboard (separate repo) on the cone bus in place of the Catching Cone: a labelled slate to camera plus a 50 ms sync flash timestamped against the bridge's time-sync master.
+
+**Would revive it:** **No technical gate — unparking is an owner scheduling decision.** Nothing is blocked and no prerequisite is outstanding. When it resumes: `git worktree add ~/Desktop/Jugglebot-clapboard 2026-08_clapboard-can3`, then read `plans/active/PROMPT-clapboard-resume.md` **on that branch** — it is the resume vehicle. Two things must happen before any new code: (1) run the final whole-diff audit that never ran, against the nine named hazard checks the prompt lists, chief among them that `s_cone_last_rx_us` is still written unconditionally in `on_cone_rx` (gating it silently closes the TX presence gate and stops time-sync); (2) put the one open cross-repo question to the owner — the clapboard's non-normative handoff doc asks for a `PROTOCOL_VERSION` bump that the plan declines, assessed as correct against the normative spec but never confirmed, and a wrong answer takes the UDP link dark in both directions
 
 # Electronic Clapboard over CAN3
 

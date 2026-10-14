@@ -630,4 +630,4 @@ the current stack depends on Phases 1–5; revive from here if the 3-D sim
 dashboard is wanted.
 
 Moved out of `plans/active/` by the 2026-07 refactor programme
-(`plans/parked/refactor-2026-07.md` § Phase 1, item 5).
+(`plans/archived/refactor-2026-07.md` § Phase 1, item 5).

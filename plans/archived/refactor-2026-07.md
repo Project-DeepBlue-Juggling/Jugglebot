@@ -1,3 +1,20 @@
+---
+title: Refactor programme - 2026-07
+created: 2026-07-31
+status: completed   # closed 2026-10-14: see Archival note
+archived: 2026-10-14
+---
+
+## Archival note (2026-10-14)
+
+Board cleared at the close of the skill-stack arc, 2026-10-14 (owner decision): the parked plans are archived with the active ones. Archived `completed`.
+
+**What landed:** Phases 0-4 landed 2026-07-31..08-01 (zero-risk slice, process changes, nightly runner + test tiering, MPC dormancy -> later deletion, `teensy_link` to the repo root; hardware-confirmed), Phase 5 (config freshness) and Phase 6 (structural cleanups) PARTIALLY landed, Phase 7 CAN3 residue partly done. Archived `completed` rather than `superseded` because the programme's headline arc (ERR_TIMEOUT, closed 2026-08-09) and the structural moves CLAUDE.md depends on all landed; what is left is owner decisions and unscheduled slices, listed below, which are abandoned with the board clearing. **Its Standing coordination rules section remains useful process text**; CLAUDE.md's two citations now point here at `plans/archived/`.
+
+**What the problem still is:** Open items at archival: loader unification (`friction_ff_params.py`, per-consumer resolution order must be preserved), tracked-media policy (`experimenting/` ~180 MB, `simulations/` ~48 MB tracked), the deferred CAN3 re-plug probe, Phase 5 item 1 for the remaining nodes, Phase 6 trajectory_node request-validation thinning and teensy_bridge_node split.
+
+**Would revive it:** **Owner decisions, not events.** Three are named — loader unification, tracked-media policy, and the deferred re-plug probe (that one additionally gated on the CAN3 hardware repair) — plus two unscheduled structural refactors (Phase 5 items 1/3, Phase 6 later slices). It unparks the moment the owner schedules any of them. ⚠ **§ Standing coordination rules stays LIVE process text regardless of the parked status** — read it while the plan is parked, do not treat the whole file as dormant
+
 # Refactor programme — 2026-07
 
 **Status:** parked 2026-08-15 (moved into `plans/parked/` 2026-08-16 when the

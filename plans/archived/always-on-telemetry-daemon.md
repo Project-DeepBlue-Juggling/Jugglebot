@@ -392,4 +392,4 @@ this plan was written to close. Revive from here if a ROS2-independent live feed
 is wanted.
 
 Moved out of `plans/active/` by the 2026-07 refactor programme
-(`plans/parked/refactor-2026-07.md` § Phase 1, item 5).
+(`plans/archived/refactor-2026-07.md` § Phase 1, item 5).

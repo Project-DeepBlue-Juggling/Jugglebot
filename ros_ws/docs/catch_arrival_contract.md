@@ -17,7 +17,7 @@
 > boxed by `max_tilt_deg` (`cup_realize.tilt_schedule` → `TILT_PIN`), and the
 > cup itself is protected on touchdown by the cup-contact contract (C-CUP-2,
 > `motion/trajectory/feasibility.py::_cup_contact_floor_check`,
-> `plans/active/cup-contact-contract.md`). The schedule's own lateral site is
+> `plans/archived/cup-contact-contract.md`). The schedule's own lateral site is
 > protected separately by C-CATCH-2's lateral authority clamp
 > (`motion/skills/executor.py::SkillExecutor._clamp_lateral_to_schedule`).
 > The rest of this document describes the legacy mechanism `build_catch`

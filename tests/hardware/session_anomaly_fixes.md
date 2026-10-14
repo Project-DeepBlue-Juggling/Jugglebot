@@ -2230,7 +2230,7 @@ validates the velocity-continuous `makeSmoothMove` would confound the two.
 > **2** (the first `go_home` after a `level` is a real 2.77 mm move) are
 > **unaffected and still correct**.
 
-**Plan**: `plans/parked/levelling-frame-contract.md` § Phases 1–2
+**Plan**: `plans/archived/levelling-frame-contract.md` § Phases 1–2
 **Contract**: `ros_ws/docs/levelling_frame.md` (**C-LEVEL-1**)
 **What landed**: `trajectory_node` applied the gravity-levelling correction on
 two of its six external pose-ingest surfaces and not the other four, so *"level"
@@ -3075,7 +3075,7 @@ In this order, cheapest first:
 
 ## Section LVLGATE — `levelling-frame-contract` Phase 3 (`REJECTED_NOT_LEVELLED`)
 
-**Plan**: `plans/parked/levelling-frame-contract.md` § Phase 3
+**Plan**: `plans/archived/levelling-frame-contract.md` § Phase 3
 **Contract**: `ros_ws/docs/levelling_frame.md` (**C-LEVEL-1.O**, the
 observability half)
 **Supersedes two forward references in § Section LVL**: CHECK LVL-1 says

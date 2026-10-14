@@ -1,6 +1,6 @@
 ---
 title: Bridge Clock — Frequency/Rate Discipline for µs-Stable Time over Hours
-status: active
+status: superseded   # closed 2026-10-14 unimplemented-or-partial: see Archival note
 owner: harrison
 created: 2026-06-17
 related_logbook:
@@ -14,7 +14,18 @@ related_code:
   - ros_ws/src/jugglebot/Teensy_code_canbridge/time_sync_master.cpp::on_tod_response / time_sync_step
   - ros_ws/src/jugglebot/Teensy_code_canbridge/udp_link.cpp::udp_note_rtt
   - ros_ws/src/jugglebot/jugglebot/teensy_bridge_node.py  # Jetson-side TOD-RPC responder (CLOCK_REALTIME stamp)
+archived: 2026-10-14
 ---
+
+## Archival note (2026-10-14)
+
+Board cleared at the close of the skill-stack arc, 2026-10-14 (owner decision). Archived `superseded`; declined or left unfinished, not superseded by code unless stated.
+
+**What landed:** Phase 2 was delivered earlier by the bridge-temporal arc (midpoint-stamped TOD responder), and Phase 1's instrument ships as `CLOCK_DIAG` (`freq_ppb` in `time_base.cpp`, FW 11+), which is diagnostic only. Phases 3-5 (PI frequency servo in `set_wall_anchor`/`now_wall_us`, min-RTT anchor gating, holdover retune) were NOT implemented: the offset loop is still the type-1 IIR (`TIME_OFFSET_IIR_SHIFT`). Declined, not superseded by code.
+
+**What the problem still is:** The wall clock is offset-only, holding a few ms over a session rather than microseconds; the FlexCAN capture clock was measured running slow by a load-dependent ~230-670 ppm. Inside the +/-10-20 ms throw budget, and the plan itself called it a robustness investment, not a blocker. Still real but not hurting.
+
+**Would revive it:** a throw/catch timing error traced to wall-clock drift over a multi-hour session, or a tighter timing budget than +/-10 ms; Phase 1 then needs only a capture-and-analyse of the existing `CLOCK_DIAG` bags with bus load recorded.
 
 > **2026-06-17 status:** Not started. This plan is a *robustness investment*, not a
 > blocker. With the 2026-06-16 step-on-jump + freshness fix (`set_wall_anchor`

@@ -2,7 +2,7 @@
 title: Possession precondition at goal accept - the cup must match what the first skill needs, or the goal is refused before any Ball Butler dispatch
 type: investigation
 date: 2026-10-14
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack — residue (post-R6)"
 related_plan: skill-stack-dress-rehearsals-and-residue.md
 related:
@@ -61,6 +61,6 @@ Owner ask (2026-10-14): acknowledge the state of Jugglebot's ball before each at
 - Regression pinned: `test_accept_possession_columns_reload_hop_with_an_empty_cup_is_refused_before_bb` (attempt 4). Existing reload-path fixtures now empty the cup first.
 
 ## Open
-- Not yet flown: rehearsal row 21 verifies it live (empty cup accepted, seated cup refused, no motion).
+- Flown (2026-10-14 ~21:59; runsheet row 21 from the GUI; launch.log `2026-10-14-21-56-45`): cup EMPTY `{pattern: reload}` accepted (`Throw at jugglebot`, line 538); cup SEATED `{pattern: reload}` refused `REJECTED_BALL_IN_HAND` (lines 574 and 588), no BB throw, no motion; cup EMPTY `{pattern: columns, reload: true}` refused `REJECTED_NO_BALL` (line 620) before any Throw line. PASSED. See `2026-10-14-skill-stack-dress-rehearsals-flown.md`.
 - Rehearsal rows 16/18/19 were re-worded for the check: row 18 now runs WITH the seated ball (the throw lands uncaught on the platform), and rows 19-21 need an empty cup (remove the row-18 ball first).
 - Expectation as built for the hop entry's `transit` branch: SEATED, same as `hop` - not separately flown.

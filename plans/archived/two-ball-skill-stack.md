@@ -156,7 +156,7 @@ own diff against it before reporting. A finding against a value is a defect.
     (2026-09-23 — instruments now stay live through a park; recover a high hand with a
     hand on the E-stop; re-home the hand before the next sitting); (2) hand
     `MAX_DEVIATION` latches from stale-encoder bursts at the throw onset (three now;
-    `plans/active/leg-bus-frame-drops.md`); (3) catch re-sends whose splice seed lands
+    `plans/archived/leg-bus-frame-drops.md`); (3) catch re-sends whose splice seed lands
     inside the contact window are refused `CUP_CONTACT_ACC` after the solve — skip them
     before it (**CLOSED at R4, 2026-09-23: declined before the solve, `executor._resend_declined`**); (4) 16 of 23 re-send refusals on 2026-09-22 were `LIMIT_JERK`;
     (5) **the seam tilt-RATE pin** — `start_tilt` pins a splice seam's tilt value but not
@@ -952,7 +952,7 @@ the rung's tests passing or a handoff file in the scratchpad.
   5.4 rev/s while the firmware recovery slew caps it at 1 rev/s — carried item
   (f) above, now with its mechanism), and one WARN per heartbeat-dropout
   episode (the dropouts are real single-axis frame loss, owned by
-  `plans/active/leg-bus-frame-drops.md`). **Carried:** the tracker aim at the
+  `plans/archived/leg-bus-frame-drops.md`). **Carried:** the tracker aim at the
   CATCH dispatch instant (0.12 s after the throw) still runs on the KF
   fallback — **RESOLVED 2026-09-18** by the ordered aim (fit > schedule >
   filter): the KF can no longer aim a catch that has a schedule prior, and
@@ -1177,7 +1177,7 @@ the rung's tests passing or a handoff file in the scratchpad.
   (1) the hop box: at the R4 geometry it admitted apex 0.85–0.90 m only (no
   flight-fraction ladder for the hop) — a plant more than ~5 % fast in apex
   plateaus out of band (the sim's +11 % model does); **re-swept 2026-09-27 under the
-  kinematic-calibration geometry** (`plans/active/kinematic-calibration.md`, gate hash
+  kinematic-calibration geometry** (`plans/archived/kinematic-calibration.md`, gate hash
   `7f76f68d4943` (superseded 2026-09-28 by **`3fda47b2ad5b`**: the 50 ms post-release hold re-swept the boxes twice, bit-identical; the hop's x bound AWAY from the far site halved — P1→P2 x [−10, +2] mm was [−20, +2], P2→P1 x [−1, +10] was [−0.5, +20]; y ±20 mm, apex 0.85–0.95 m, and every self-toss/columns box unchanged; superseded again 2026-09-28 evening by **`bf095653d422`**: the hold now keeps the launch line, two sweeps bit-identical, only P2→P1 x moved to [−0.5, +10]) after the 2026-09-27 FW 24 stroke-clamp commit `043158e`; bounds unchanged from `3059cc1`): the apex band opened to 0.85–0.95 but the x bound TOWARD the
   far site collapsed — P1→P2 x [−20, +2] mm, P2→P1 x [−0.5, +20] mm (y ±20 kept) — so
   the learner has essentially no lateral authority in the hop's own direction; the
@@ -1533,7 +1533,7 @@ the rung's tests passing or a handoff file in the scratchpad.
 
 - **Sitting 8 (2026-10-13 night, bag `2026-10-13_23-12-50_2-Ball-32-Catches`) — GATE MET.** Ball Butler initiated (hop entry, owner ruling), five consecutive cycles were met at sitting 7, and attempt 11 of 12 fed attempts caught **32 consecutively** (the BB feed catch + throws 1–31; node verdict `31/32`; throw 32 is the pattern's final throw, not caught by design) against the 30 required.
   Learning curve (catches before the first miss, feed included): 5, 5, 5, 0, 10, 4, 4, 11, 0, 10, **32**, 9. Feed quality: 14/14 BB throws flew (`/bb/throw_outcome` all OK), 0 `ENDED_DURING_BB_DISPATCH`, 0 `THROW_ABORTED_BY_HOST`; feed seated in 11 of 12 (median miss (-6.8, -8.6) mm, r 12.9 mm); the owner saw smooth feeds.
-  Ranked findings, each carried to `plans/active/skill-stack-dress-rehearsals-and-residue.md` § 2, none fixed: 5 `SPLICE_TOO_LATE` self-ends in 19 goals (0.23–0.26 s request-to-refusal, no emitter stall at any of them); the hop-entry accept does not check the cup (attempt 4: REJECTED_NO_BALL after BB was committed, CANCEL_TOO_LATE); 4 empty-cup MISSED_CATCH after a refused or skipped re-aim; 6 of 31 gate throws with no learner row; a 24 ms release step at gate throw 24; `max_emit_gap` max 47.0 ms against the < 35 ms target (p99 29.94 met); a hand jam ending the last attempt.
+  Ranked findings, each carried to `plans/archived/skill-stack-dress-rehearsals-and-residue.md` § 2, none fixed: 5 `SPLICE_TOO_LATE` self-ends in 19 goals (0.23–0.26 s request-to-refusal, no emitter stall at any of them); the hop-entry accept does not check the cup (attempt 4: REJECTED_NO_BALL after BB was committed, CANCEL_TOO_LATE); 4 empty-cup MISSED_CATCH after a refused or skipped re-aim; 6 of 31 gate throws with no learner row; a 24 ms release step at gate throw 24; `max_emit_gap` max 47.0 ms against the < 35 ms target (p99 29.94 met); a hand jam ending the last attempt.
   Pre-sitting gate: 2026-10-13 23:04, `./run_tests.sh --full`, parallel 6981 passed, 9 skipped, 1 xfailed; serial 7 passed; PASS. Entry: `2026-10-13-skill-stack-r5-sitting-8-gate-met.md`. The § 2 dress rehearsals (runsheet rows 17a–20) were not run and moved to the same plan.
 
 ### R6 — Close-out
@@ -1624,7 +1624,7 @@ Archived `completed` (`completed: 2026-10-13`). Filename unchanged.
 
 **Why it closed.** The R5 gate was met at sitting 8 and R6 is done. The R6 census found R5 left nothing dead; the deletion was the MPC-era residue R0 missed.
 
-**Residue re-homed** in `plans/active/skill-stack-dress-rehearsals-and-residue.md`: § 1 the four dress rehearsals (lane-latch probe dry run, real-fault lane recovery, hand-stroke STOP/CONT, BB cancel + CANCEL_TOO_LATE); § 2 the residue table (box widening, 10 % jitter-margin class, sitting-8 ranked findings SPLICE_TOO_LATE / hop-entry cup check / emitter gap / release step / hand jam, BB drift checks C1-C4, unused msgs/srv, `transit` rollback, `sim/juggle_*` demos, and the rest). The magazine program's two open entries (`2026-10-13-magazine-throw-program`, `2026-10-13-magazine-throw-hand-only-and-reload-button`) and the 2026-09-16 banking entry (`2026-09-16-banking-saturates-on-small-lateral-offsets`) are carried there too; all keep `related_plan: two-ball-skill-stack.md`, which still resolves.
+**Residue re-homed** in `plans/archived/skill-stack-dress-rehearsals-and-residue.md`: § 1 the four dress rehearsals (lane-latch probe dry run, real-fault lane recovery, hand-stroke STOP/CONT, BB cancel + CANCEL_TOO_LATE); § 2 the residue table (box widening, 10 % jitter-margin class, sitting-8 ranked findings SPLICE_TOO_LATE / hop-entry cup check / emitter gap / release step / hand jam, BB drift checks C1-C4, unused msgs/srv, `transit` rollback, `sim/juggle_*` demos, and the rest). The magazine program's two open entries (`2026-10-13-magazine-throw-program`, `2026-10-13-magazine-throw-hand-only-and-reload-button`) and the 2026-09-16 banking entry (`2026-09-16-banking-saturates-on-small-lateral-offsets`) are carried there too; all keep `related_plan: two-ball-skill-stack.md`, which still resolves.
 
 **Residual xfail** (frontmatter `residual_xfails:`): `tests/sim/test_juggle_selfcatch_nightly.py:75` `test_column_selfcatch_sustains_ten_cycles`, `strict=True`. Reason: "Rung-2b MAKE-OR-BREAK: pure column self-catch does NOT sustain (loop gain > 1)... see logbook/2026-07-01-rung2b-selfcatch-column-divergence.md. Flip to XPASS if a future approach sustains >= 10." Classification: DOCUMENTED PERMANENT (logbook-referenced; pre-dates the skill stack, not introduced by this plan; nightly tier). Surface to the owner for explicit acknowledgement; consider retiring with the `sim/juggle_*` demos. No other `xfail(...)` in `tests/` outside `tests/archived`.
 

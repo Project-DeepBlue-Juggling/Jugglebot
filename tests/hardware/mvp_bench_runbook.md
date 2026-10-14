@@ -127,7 +127,7 @@ The operator has confirmed two independent changes as a result:
 
 **⚡ 2026-07-16 evening update (after the raised-limit run validated: bag
 `2026-07-16_17-38-15` ramped vel 100→200→280 mm/s, 22 moves, zero latches —
-inventoried in `plans/parked/accel-ff-inertia.md`):**
+inventoried in `plans/archived/accel-ff-inertia.md`):**
 the ODrive leg `vel_limit` is now **12.0 rev/s ≈ 846 mm/s** and the
 `set_limits` ceilings are OPENED to **5000 / 5000 / 200000** (vel mm/s /
 acc mm/s² / jerk mm/s³) — the ceilings are now *administrative*, deliberately
@@ -447,7 +447,7 @@ auto-tracks whatever threshold the firmware trips at):
   overrode the shipped lean — the default is now `-1.0` (defer to config).
   **Unshaped ±150 traverses at jerk 30000 are OUT of the trackable envelope,
   not marginal** — treat any unshaped hot-lateral latch as expected until the
-  accel-FF chapter lands (`plans/parked/accel-ff-inertia.md`); see
+  accel-FF chapter lands (`plans/archived/accel-ff-inertia.md`); see
   `logbook/2026-07-17-wobble-latch-unshaped-traverse.md`. The lean A/B
   resolved KEEP (`lean_gain 0.6` default; jerk criterion met at 0.3–0.6).
   **Working point (1000, 5000, 30000) + lean 0.6 persisted to YAML

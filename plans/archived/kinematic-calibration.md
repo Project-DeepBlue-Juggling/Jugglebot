@@ -1,7 +1,7 @@
 ---
 title: Kinematic calibration — fit the Stewart geometry to a mocap pose sweep
 created: 2026-09-23
-status: active
+status: superseded   # closed 2026-10-14 unimplemented-or-partial: see Archival note
 owner: Harrison
 last_updated: 2026-09-27
 related_plan: two-ball-skill-stack.md
@@ -14,7 +14,18 @@ related_code:
   - tests/hardware/kincal_capture.py (the capture, § 5 — not yet written)
   - ros_ws/src/jugglebot/jugglebot/motion/ik_solver.py::pose_to_leg_lengths (the model being calibrated)
   - ros_ws/src/jugglebot/jugglebot/skill_node.py::_frame_offset_check (the landing subtraction this plan retires)
+archived: 2026-10-14
 ---
+
+## Archival note (2026-10-14)
+
+Board cleared at the close of the skill-stack arc, 2026-10-14 (owner decision). Archived `superseded`; declined or left unfinished, not superseded by code unless stated.
+
+**What landed:** Partly landed, then closed unfinished: § 6 steps 1-5 are done. `tools/kincal_fit.py`, `tests/hardware/kincal_capture.py` and the runsheet `tests/hardware/session_kincal_apply.md` exist; the sweep was flown 2026-09-27; the fitted geometry (nodes, per-leg L0, `mm_to_rev`, STOW 574.3 -> 578.2) was applied to `config/hardware_config.yaml` (commit 3059cc13), the tilt map retired and the admissible box re-swept. NOT done: step 6 (tilt-map recapture after `level`) and step 7 (the flying frame check that is the plan's acceptance test), so `_frame_offset_check` in `skill_node.py` and its landing subtraction are NOT retired. Status is `superseded` only because the vocabulary has no `partial`: the geometry shipped, the acceptance did not.
+
+**What the problem still is:** The Platform sat ~8.5 mm laterally off its command in the QTM frame, growing with height; the fitted geometry cut hold-out error from 12.3 mm to 1.08 mm RMS, but the on-robot frame check has never confirmed it at every z.
+
+**Would revive it:** a flying sitting where the session-start frame check reads > 1-2 mm at some z (then run steps 6-7 of `tests/hardware/session_kincal_apply.md`), or the learner needing z authority.
 
 # Kinematic calibration
 

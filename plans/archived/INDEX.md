@@ -72,6 +72,17 @@ next touches that plan, not a mechanical edit. The vocabulary going forward is
 | 2026-09-23 | [cup-contact-contract.md](cup-contact-contract.md) | completed | Cup-contact contract — banking defined only under seating force, the cup never falls away from a ball, lateral aim unpinned (flown 2026-09-22/23; residue carried to two-ball-skill-stack § 0) |
 | 2026-10-11 | [gui-rosbag-replay.md](gui-rosbag-replay.md) | completed | GUI rosbag replay — one playhead over any MCAP recording |
 | 2026-10-14 | [two-ball-skill-stack.md](two-ball-skill-stack.md) | completed | Two-ball skill stack — schedule-driven throw/catch skills, one hand master, memory-based learning |
+| 2026-10-14 | [skill-stack-dress-rehearsals-and-residue.md](skill-stack-dress-rehearsals-and-residue.md) | completed | Skill-stack dress rehearsals and R5 residue — rehearsals flown 2026-10-14 (lane-latch auto-recovery, BB cancel and possession refusals passed; hand-stroke stop and late cancel unverified by owner decision). OPEN, unscheduled, in its § 2: `SPLICE_TOO_LATE` self-ends (5 ends at sitting 8, 3 of the 12 fed attempts) and the 47 ms emit-gap max (< 35 ms target unmet) |
+| 2026-10-14 | [bridge-clock-frequency-discipline.md](bridge-clock-frequency-discipline.md) | superseded | Bridge Clock — Frequency/Rate Discipline for µs-Stable Time over Hours |
+| 2026-10-14 | [columns-tracking-ff-and-shaping.md](columns-tracking-ff-and-shaping.md) | superseded | Columns tracking — inertial torque feedforward, then planner-integrated input shaping |
+| 2026-10-14 | [kinematic-calibration.md](kinematic-calibration.md) | superseded | Kinematic calibration — fit the Stewart geometry to a mocap pose sweep |
+| 2026-10-14 | [leg-bus-frame-drops.md](leg-bus-frame-drops.md) | superseded | Leg-bus per-axis frame drops — the surviving lead-clamp amplifier, and its source |
+| 2026-10-14 | [odrive-config-drift-assertion.md](odrive-config-drift-assertion.md) | superseded | ODrive config-drift assertion — an automatic control for NVM drift |
+| 2026-10-14 | [accel-ff-inertia.md](accel-ff-inertia.md) | superseded | Inertia-aware acceleration feedforward for lateral platform moves |
+| 2026-10-14 | [clapboard-can3-integration.md](clapboard-can3-integration.md) | superseded | Electronic Clapboard over CAN3 (work stays on branch `2026-08_clapboard-can3`) |
+| 2026-10-14 | [learned-ff-residuals.md](learned-ff-residuals.md) | superseded | Learned feedforward residuals — batch ILC on the leg torque channel |
+| 2026-10-14 | [levelling-frame-contract.md](levelling-frame-contract.md) | completed | Levelling-frame contract — one gravity correction on every pose request (Phase 4 residue left open) |
+| 2026-10-14 | [refactor-2026-07.md](refactor-2026-07.md) | completed | Refactor programme 2026-07 (Phases 0-4 landed, 5-7 partial) |
 
 ## Where the other plans are
 
