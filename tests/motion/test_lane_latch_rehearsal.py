@@ -131,14 +131,119 @@ def test_freeze_150_refused_and_defaults_ok():
     assert m.check_args(m.parse_args([])) == []
     assert m.check_args(m.parse_args(['--freeze-ms', '150']))
     assert not m.check_args(m.parse_args(['--freeze-ms', '149']))
-    assert m.check_args(m.parse_args(['--freeze-ms', '100', '--at-ms', '450']))
+    assert m.check_args(m.parse_args(['--freeze-ms', '100', '--at-ms', '1100']))
     assert m.main(['--freeze-ms', '250']) == 2
 
 
 def test_default_move_exceeds_resume_tolerance_on_some_leg():
     pytest.importorskip('numpy')
-    peak = m.leg_peak_rps(40.0, 0.5)
+    a = m.parse_args([])
+    assert (a.dx_mm, a.move_s, a.at_ms) == (50.0, 1.2, 450.0)
+    peak = m.leg_peak_rps(a.dx_mm, a.move_s)
     assert len(peak) == 6
     assert max(peak) > m.RESUME_TOL_VEL_LEG_RPS
-    assert max(peak) == pytest.approx(0.77, abs=0.05)    # measured 2026-10-13
-    assert max(m.leg_peak_rps(5.0, 0.5)) < m.RESUME_TOL_VEL_LEG_RPS
+    assert max(peak) == pytest.approx(0.40, abs=0.03)    # measured 2026-10-14
+    assert max(m.leg_peak_rps(5.0, 1.2)) < m.RESUME_TOL_VEL_LEG_RPS
+
+
+# Samples shaped like the 2026-10-14 21:58:43 live record (50 mm / 1.2 s, 100 ms freeze).
+TONIGHT = [
+    S(2.092, 0, 'idle', 'none', 0.0114, ref=0), S(2.192, 0, 'idle', 'none', 0.0146, ref=0),
+    S(2.292, 0, 'idle', 'none', 0.0344, ref=0), S(2.392, 1, 'idle', 'none', 0.0596, ref=3),
+    S(2.492, 1, 'idle', 'none', 0.1008, ref=7), S(2.593, 1, 'idle', 'none', 0.1288, ref=10),
+    S(2.695, 1, 'in_progress', 'converge', 0.1577, ref=14),
+    S(2.795, 1, 'in_progress', 'converge', 0.1412, ref=18),
+    S(2.891, 1, 'in_progress', 'disarm', 0.0006, ref=23),
+    S(2.992, 1, 'in_progress', 'disarm', 0.0011, ref=24),
+    S(3.091, 1, 'in_progress', 'disarm', 0.0013, ref=24),
+    S(3.197, 1, 'in_progress', 'confirm', 0.0016, ref=24),
+    S(3.295, 0, 'in_progress', 'confirm', 0.0020, ref=24),
+    S(3.393, 0, 'done', 'confirm', 0.0013, ref=24),
+    S(3.494, 0, 'done', 'confirm', 0.0013, ref=24),
+]
+
+
+def test_tonights_record_all_pass_or_info():
+    rows = m.build_verdict(TONIGHT, RUN)
+    assert all(r['status'] in ('PASS', 'INFO') for r in rows), m.format_table(rows)
+    assert m.exit_code(rows) == 0
+    pk = [r for r in rows if r['expectation'].startswith('peak live_deviation')][0]
+    assert pk['status'] == 'INFO'
+    assert 'max 0.1577 rev at t=2.69' in pk['evidence']
+    assert 'bridge escape 0.5, firmware trip 1.0' in pk['evidence']
+
+
+def test_peak_while_latched_fails_at_bridge_escape():
+    s = [dict(x) for x in TONIGHT]
+    s[6]['live_dev'] = 0.5
+    rows = m.build_verdict(s, RUN)
+    pk = [r for r in rows if r['expectation'].startswith('peak live_deviation')][0]
+    assert pk['status'] == 'FAIL'
+    s[6]['live_dev'] = 0.49
+    rows = m.build_verdict(s, RUN)
+    assert [r for r in rows if r['expectation'].startswith('peak live_deviation')][0]['status'] == 'INFO'
+
+
+def test_recovery_window_deviation_fails_only_inside_the_window():
+    s = [dict(x) for x in TONIGHT]
+    s[11]['live_dev'] = 0.12                 # confirm stage, inside converge-done -> DONE
+    rows = m.build_verdict(s, RUN)
+    r = [r for r in rows if r['expectation'].startswith('live_deviation <=')][0]
+    assert r['status'] == 'FAIL' and '0.1200' in r['evidence']
+    s = [dict(x) for x in TONIGHT]
+    s[7]['live_dev'] = 0.9                   # still converging: the latched-peak row owns it
+    rows = m.build_verdict(s, RUN)
+    assert [r for r in rows if r['expectation'].startswith('live_deviation <=')][0]['status'] == 'PASS'
+
+
+def test_no_latch_skips_recovery_window_row():
+    rows = m.build_verdict([S(i * 0.1) for i in range(30)], RUN)
+    by_ = {r['expectation'].split(' (')[0]: r for r in rows}
+    assert [r for r in rows if r['expectation'].startswith('live_deviation <=')][0]['status'] == 'SKIPPED'
+    assert [r for r in rows if r['expectation'].startswith('peak live_deviation')][0]['status'] == 'SKIPPED'
+    assert by_ and m.exit_code(rows) == 1
+
+
+def test_refused_move_skips_everything_with_reason_and_hint():
+    msg = ('TOO_FAST TOO_FAST: requested duration 0.500s < minimal feasible 0.822s '
+           'for this move at the current limits (planned 0.00 s)')
+    run = dict(RUN, move_accepted=False, move_msg=msg, freeze_actual_ms=None,
+               home_accepted=None)
+    rows = m.build_verdict([S(i * 0.1) for i in range(20)], run)
+    assert rows[0]['status'] == 'FAIL'
+    assert 're-run with --move-s >= 1.02' in rows[0]['evidence']
+    rest = {r['expectation']: r for r in rows[1:]}
+    for k in ('freeze bounded (CONT sent)', 'bit 15 (sched_hold_latched) rose',
+              'bit 15 cleared at the end', m.LIVE_DEV_PEAK_NAME,
+              m.LIVE_DEV_RECOVERY_NAME):
+        assert rest[k]['status'] == 'SKIPPED' and rest[k]['evidence'] == 'move refused'
+    assert not any('did not latch' in r['evidence'] for r in rows)
+    assert not any(r['status'] == 'FAIL' for r in rows[1:])
+    assert m.exit_code(rows) == 1
+
+
+def test_no_freeze_observation_pass_checks_deviation():
+    run = dict(RUN, no_freeze=True, freeze_actual_ms=None)
+    obs = lambda rows: [r for r in rows if r['expectation'].startswith('live_deviation <=')]
+    clean = [S(i * 0.1, dev=0.0166 if i == 30 else 0.005) for i in range(56)]
+    rows = m.build_verdict(clean, run)
+    assert len(obs(rows)) == 1 and obs(rows)[0]['status'] == 'PASS'
+    assert obs(rows)[0]['evidence'] == 'max 0.0166 rev over 56 samples'
+    assert not any(r['expectation'].startswith('peak live_deviation') for r in rows)
+    assert m.exit_code(rows) == 0
+    bad = [dict(x) for x in clean]
+    bad[10]['live_dev'] = 0.2
+    rows = m.build_verdict(bad, run)
+    assert obs(rows)[0]['status'] == 'FAIL' and m.exit_code(rows) == 1
+    rows = m.build_verdict([S(0.0, dev=None)], run)
+    assert obs(rows)[0]['status'] == 'FAIL' and 'no live_deviation' in obs(rows)[0]['evidence']
+
+
+def test_peak_row_sees_pre_latch_spike():
+    s = [dict(x) for x in TONIGHT]
+    first = next(i for i, x in enumerate(s) if x['bit15'])
+    assert first > 0
+    s[first - 1]['live_dev'] = 0.6           # spike BEFORE bit 15 rose
+    rows = m.build_verdict(s, RUN)
+    pk = [r for r in rows if r['expectation'].startswith('peak live_deviation')][0]
+    assert pk['status'] == 'FAIL' and '0.6000' in pk['evidence']

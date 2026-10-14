@@ -26,17 +26,18 @@ NONE, before balls. Run the observation-only pass first:
     bash -c '... same ... python3 tools/probes/lane_latch_rehearsal.py'
 
 Options: ``--freeze-ms 100`` (refused >= 150: SETPOINT_STALE is 250 ms),
-``--at-ms 250`` (into the move), ``--dx-mm 40``, ``--move-s 0.5``,
+``--at-ms 450`` (into the move), ``--dx-mm 50``, ``--move-s 1.2``,
 ``--no-freeze`` (everything except SIGSTOP/SIGCONT), ``--out <json>``
 (default ``temp/probes/lane_latch_rehearsal_<ts>.json``).
 
 Leg-speed check (the latch needs legs moving at the resume): a quintic
-point-to-point move peaks at 1.875 x its mean speed, 40 mm / 0.5 s -> mean
-80 mm/s, peak 150 mm/s. ``leg_peak_rps`` projects that through the Stewart
+point-to-point move peaks at 1.875 x its mean speed, 50 mm / 1.2 s -> mean
+41.7 mm/s, peak 78 mm/s (40 mm / 0.5 s is REFUSED by the planner as TOO_FAST,
+minimal feasible 0.822-0.823 s at the current leg limits). ``leg_peak_rps`` projects that through the Stewart
 Jacobian at the ACTIVE pose (z = 170) and ``mm_to_rev``; the pre-flight
 REFUSES a dx/move-s that does not exceed 0.3 rps on at least one leg (so a
 rehearsal can never "pass" by not latching). Measured value at the defaults
-is printed by the pre-flight and pinned by the test.
+(0.25 0.40 0.40 0.25 0.15 0.15 rps, 2026-10-14) is printed by the pre-flight and pinned by the test.
 
 SAFETY. The script sends exactly ONE ``trajectory/go_to_pose`` and ONE
 ``trajectory/go_home`` and nothing else: never ``/recover``, ``/recover_lane``,
@@ -55,6 +56,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import signal
 import sys
 import time
@@ -70,7 +72,10 @@ FREEZE_MAX_MS = 150.0            # refuse >= this (leaves 100 ms margin to STALE
 COVER_MS = 70.0                  # SCHED_COVER 50 + SCHED_GRACE_S 20
 IN_PROGRESS_WITHIN_S = 1.0       # latch rise -> lane_recovery in_progress
 DONE_WITHIN_S = 10.0             # latch rise -> done
-MAX_LIVE_DEV_REV = 0.1
+MAX_LIVE_DEV_REV = 0.1           # through the recovery (converge done -> DONE)
+LANE_ESCAPE_DEV_REV = 0.5        # teensy_bridge_node._LANE_ESCAPE_DEV_REV (early disarm)
+MAX_DEVIATION_REV = 1.0          # canbridge_config.h MAX_DEVIATION_REV (firmware E-STOP)
+CONVERGED_DEV_REV = 0.05         # live_dev below this = converge stage done
 WATCH_S = 20.0
 STAGES = ('converge', 'rest', 'disarm', 'arm', 'confirm')
 FAULT_TEXT = 'real-fault path: run /recover (DEACTIVATE then ACTIVATE), then re-run'
@@ -81,9 +86,9 @@ NO_LATCH_TEXT = 'the freeze did not latch: lengthen --freeze-ms or --dx-mm'
 def parse_args(argv):
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--freeze-ms', type=float, default=100.0)
-    ap.add_argument('--at-ms', type=float, default=250.0)
-    ap.add_argument('--dx-mm', type=float, default=40.0)
-    ap.add_argument('--move-s', type=float, default=0.5)
+    ap.add_argument('--at-ms', type=float, default=450.0)
+    ap.add_argument('--dx-mm', type=float, default=50.0)
+    ap.add_argument('--move-s', type=float, default=1.2)
     ap.add_argument('--no-freeze', action='store_true')
     ap.add_argument('--out', default=None)
     return ap.parse_args(argv)
@@ -176,6 +181,76 @@ def _row(name, status, evidence):
     return {'expectation': name, 'status': status, 'evidence': evidence}
 
 
+LIVE_DEV_PEAK_NAME = ('peak live_deviation while latched (remaining travel on '
+                      'the refused stream)')
+LIVE_DEV_RECOVERY_NAME = ('live_deviation <= %.2f rev through the recovery '
+                          '(converge done -> DONE)' % MAX_LIVE_DEV_REV)
+
+
+def _recovery_start(samples):
+    """Index of the first in_progress sample whose live_dev < 0.05 rev (converge
+    done) or whose stage is past converge; None when there is no such sample."""
+    for k, s in enumerate(samples):
+        if s.get('lane_recovery') != 'in_progress':
+            continue
+        d = s.get('live_dev')
+        past = s.get('stage') in STAGES and s['stage'] != 'converge'
+        if past or (d is not None and d < CONVERGED_DEV_REV):
+            return k
+    return None
+
+
+LIVE_DEV_OBS_NAME = ('live_deviation <= %.2f rev (observation pass, no latch)'
+                     % MAX_LIVE_DEV_REV)
+
+
+def _observation_dev_row(samples):
+    win = [s for s in samples if s.get('live_dev') is not None]
+    if not win:
+        return _row(LIVE_DEV_OBS_NAME, 'FAIL', 'no live_deviation samples')
+    pk = max(win, key=lambda s: s['live_dev'])
+    return _row(LIVE_DEV_OBS_NAME,
+                'PASS' if pk['live_dev'] <= MAX_LIVE_DEV_REV else 'FAIL',
+                'max %.4f rev over %d samples' % (pk['live_dev'], len(win)))
+
+
+def _peak_dev_row(samples):
+    """While latched the Jetson keeps emitting the quintic to a lane the firmware
+    holds still, so deviation = remaining travel (grew to 0.158 rev on 2026-10-14)
+    -- expected, not a fault; only a value near the bridge escape matters."""
+    if not any(s.get('bit15') for s in samples):
+        return _row(LIVE_DEV_PEAK_NAME, 'SKIPPED', 'no latched samples')
+    start = _recovery_start(samples)
+    pre = samples if start is None else samples[:start]
+    lat = [s for s in pre if s.get('live_dev') is not None]
+    if not lat:
+        return _row(LIVE_DEV_PEAK_NAME, 'SKIPPED', 'no live_deviation samples')
+    pk = max(lat, key=lambda s: s['live_dev'])
+    return _row(LIVE_DEV_PEAK_NAME,
+                'FAIL' if pk['live_dev'] >= LANE_ESCAPE_DEV_REV else 'INFO',
+                'max %.4f rev at t=%.2f; bridge escape %.1f, firmware trip %.1f'
+                % (pk['live_dev'], pk['t'], LANE_ESCAPE_DEV_REV, MAX_DEVIATION_REV))
+
+
+def _recovery_dev_row(samples):
+    """Window: first in_progress sample whose live_dev < 0.05 rev (converge
+    done) or whose stage is past converge, to the last 'done' sample."""
+    start = _recovery_start(samples)
+    if start is None:
+        return _row(LIVE_DEV_RECOVERY_NAME, 'SKIPPED', 'no recovery window (no latch)')
+    end = max((k for k, s in enumerate(samples) if s.get('lane_recovery') == 'done'),
+              default=len(samples) - 1)
+    win = [s for s in samples[start:end + 1] if s.get('live_dev') is not None]
+    if not win:
+        return _row(LIVE_DEV_RECOVERY_NAME, 'FAIL', 'no live_deviation samples')
+    pk = max(win, key=lambda s: s['live_dev'])
+    return _row(LIVE_DEV_RECOVERY_NAME,
+                'PASS' if pk['live_dev'] <= MAX_LIVE_DEV_REV else 'FAIL',
+                'max %.4f rev at t=%.2f over %d samples (t=%.2f..%.2f)'
+                % (pk['live_dev'], pk['t'], len(win), samples[start]['t'],
+                   samples[end]['t']))
+
+
 def build_verdict(samples, run):
     """Every expectation as a row. samples: time-ordered dicts {t, bit15 (0/1),
     lane_recovery, stage, live_dev (float|None), fault_state, sched_refused (int)}.
@@ -183,9 +258,30 @@ def build_verdict(samples, run):
     home_msg, t_freeze_end}."""
     rows = []
     no_freeze = run.get('no_freeze', False)
-    rows.append(_row('go_to_pose accepted',
-                     'PASS' if run.get('move_accepted') else 'FAIL',
-                     run.get('move_msg', '')))
+    refused = not run.get('move_accepted')
+    ev = run.get('move_msg', '')
+    m_min = re.search(r'minimal feasible (\d+\.\d+)\s*s', ev)
+    if refused and m_min:
+        ev += ' -- re-run with --move-s >= %.2f' % (float(m_min.group(1)) + 0.2)
+    rows.append(_row('go_to_pose accepted', 'FAIL' if refused else 'PASS', ev))
+    if refused:
+        # Nothing moved, so nothing was frozen and nothing can latch: every
+        # downstream row is SKIPPED (not "freeze did not latch").
+        why = 'move refused'
+        for nm in ('freeze bounded (CONT sent)', 'bit 15 (sched_hold_latched) rose',
+                   'recovery in_progress within %.1f s' % IN_PROGRESS_WITHIN_S,
+                   'stages in order', 'recovery done within %.0f s' % DONE_WITHIN_S,
+                   'bit 15 cleared at the end', LIVE_DEV_PEAK_NAME,
+                   LIVE_DEV_RECOVERY_NAME):
+            rows.append(_row(nm, 'SKIPPED', why))
+        faults = sorted({s.get('fault_state') for s in samples} - {'NONE'})
+        rows.append(_row('fault_state unchanged (NONE throughout)',
+                         'FAIL' if faults else 'PASS',
+                         ('left NONE: %s -- %s' % (','.join(map(str, faults)),
+                                                   FAULT_TEXT)) if faults
+                         else 'NONE in all %d samples' % len(samples)))
+        rows.append(_row('go_home accepted afterwards', 'SKIPPED', 'not attempted'))
+        return rows
     fa = run.get('freeze_actual_ms')
     if no_freeze:
         rows.append(_row('freeze bounded (CONT sent)', 'SKIPPED', '--no-freeze'))
@@ -264,14 +360,11 @@ def build_verdict(samples, run):
                          'FAIL' if last.get('bit15') else 'PASS',
                          'final sched_hold_latched=%d' % int(last.get('bit15', 0))))
 
-    devs = [s['live_dev'] for s in samples if s.get('live_dev') is not None]
-    if devs:
-        rows.append(_row('live_deviation never above %.2f rev' % MAX_LIVE_DEV_REV,
-                         'PASS' if max(devs) <= MAX_LIVE_DEV_REV else 'FAIL',
-                         'max %.4f rev over %d samples' % (max(devs), len(devs))))
+    if no_freeze:
+        rows.append(_observation_dev_row(samples))
     else:
-        rows.append(_row('live_deviation never above %.2f rev' % MAX_LIVE_DEV_REV,
-                         'FAIL', 'no live_deviation samples'))
+        rows.append(_peak_dev_row(samples))
+        rows.append(_recovery_dev_row(samples))
     rows.append(_row('fault_state unchanged (NONE throughout)',
                      'FAIL' if faults else 'PASS',
                      ('left NONE: %s -- %s' % (','.join(map(str, faults)), FAULT_TEXT))

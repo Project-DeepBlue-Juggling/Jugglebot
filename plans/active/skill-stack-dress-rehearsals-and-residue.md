@@ -3,13 +3,14 @@ title: Skill-stack dress rehearsals and R5 residue
 created: 2026-10-13
 status: active
 owner: Harrison
-last_updated: 2026-10-13
+last_updated: 2026-10-14
 related_logbook:
   - 2026-10-13-skill-stack-r5-wave-2-after-sitting-7.md
   - 2026-10-13-skill-stack-r5-wave-3-expected-landing-box-and-solver-worker.md
   - 2026-10-13-skill-stack-r5-bb-throw-self-cancel-and-phantom-catch.md
   - 2026-10-13-skill-stack-r5-sitting-7-columns-pb.md
   - 2026-10-13-skill-stack-r5-sitting-8-gate-met.md
+  - 2026-10-14-skill-stack-dress-rehearsals-flown.md
 related_code:
   - tools/probes/lane_latch_rehearsal.py
   - tests/hardware/session_skill_stack_rehearsals.md
@@ -31,7 +32,7 @@ make each item worth doing (§ 2).
 **If your physical intuition disagrees with the framing - the fault injection, leaving the hand where
 it stopped, the cancel timing - that's load-bearing signal, say so before starting.**
 
-## 1. Dress rehearsals (tomorrow)
+## 1. Dress rehearsals (flown 2026-10-14: rungs 1, 2, 4 passed; rung 3 and row 20 unverified by decision)
 
 Runsheet: `tests/hardware/session_skill_stack_rehearsals.md` (rows keep their sitting-8 numbers
 17a-20). Operator runs every motion command; Claude never does; Claude flashes the bridge.
@@ -42,10 +43,10 @@ only for rung 4's fed attempt, and only BB's, which must never throw at the canc
 
 | Rung | Runsheet rows | What it proves | Owner OK | Pass | If it fails |
 |---|---|---|---|---|---|
-| 1. Lane-latch probe dry run | 17a | The probe's ROS/OS layer (first ever run) and the pre-flight refusal reporting work, with NO signal sent and no latch. | not needed (no fault) | Pre-flight passes; go_to_pose, "no spurious latch", live_deviation, fault_state, go_home PASS; recovery rows SKIPPED; exit 0. | A pre-flight REFUSED line lists every failed precondition; fix all, re-run. A probe bug is a probe fix, not a robot finding. |
-| 2. Lane-latch recovery, real fault | 17b-17d | The auto-recovery (`/recover_lane`, wave 2) converges a REAL latched lane: stages converge>rest>disarm>arm>confirm, DONE in 10 s, bit 15 cleared, no leg step, fault_state NONE. | OK'd in writing 2026-10-13 evening; **re-confirm aloud before 17b** (it injects the real fault mechanism on purpose) | Exit 0, all rows PASS; JSON in `temp/probes/lane_latch_rehearsal_<ts>.json`; 17d bag check flat across disarm/arm. | 17c's reading: "freeze did not latch" -> `--freeze-ms 140` or `--dx-mm 50`; `lane_recovery=failed` -> read the stage, DEACTIVATE/ACTIVATE, stop and report; fault_state left NONE -> real-fault path, `/recover`, do not re-run until understood. A FAIL blocks the lane-recovery claim; `/recover` stays the fallback. |
-| 3. Hand-stroke STOP/CONT | 18 | A hand stopped 100 ms mid-stroke STAYS where it stopped (no park at DONE, owner ruling), the next goal's opening REST homes it, goals during `in_progress` are refused naming the stage. | OK'd in writing 2026-10-13 evening | As the row. Manual, `kill -STOP/-CONT` on the one `trajectory_node` pid. | Hand moves after DONE or a goal is accepted mid-recovery: stop, report; do not patch from the sitting. |
-| 4. BB cancel + CANCEL_TOO_LATE | 19, 20 | Cancel before the ~0.6 s wind-up throws NOTHING and leaves the goal result unpoisoned; a late stop reports `CANCEL_TOO_LATE` and the throw completes. | not recorded: ask before the first fed attempt | ONE `bb/cancel` line leading `CANCELLED` (row 19); `CANCEL_TOO_LATE` with `detail1` ms recorded (row 20). | `NO_CANCEL_RESULT` = BB is on FW 8: do NOT continue with a ball loaded; re-flash. A thrown ball after `CANCELLED`: stop, read ball_butler_node. |
+| 1. Lane-latch probe dry run | 17a | The probe's ROS/OS layer (first ever run) and the pre-flight refusal reporting work, with NO signal sent and no latch. | not needed (no fault) | Pre-flight passes; go_to_pose, "no spurious latch", the observation-pass `live_deviation <= 0.10 rev` row, fault_state, go_home PASS; the freeze/latch/recovery rows SKIPPED; exit 0. | A pre-flight REFUSED line lists every failed precondition; fix all, re-run. A probe bug is a probe fix, not a robot finding. **OUTCOME 2026-10-14: PASSED (21:58:03, 17a, `--no-freeze --dx-mm 50 --move-s 1.2 --at-ms 450`; exit 0; `temp/probes/lane_latch_rehearsal_20261014_215803.json`). The first two runs (21:48) at the old 40 mm / 0.5 s defaults were refused `TOO_FAST`, see § 2.** |
+| 2. Lane-latch recovery, real fault | 17b-17d | The auto-recovery (`/recover_lane`, wave 2) converges a REAL latched lane: stages converge>rest>disarm>arm>confirm, DONE in 10 s, bit 15 cleared, no leg step, fault_state NONE. | OK'd in writing 2026-10-13 evening; **re-confirm aloud before 17b** (it injects the real fault mechanism on purpose) | Exit 0, all rows PASS; JSON in `temp/probes/lane_latch_rehearsal_<ts>.json`; 17d bag check flat across disarm/arm. | 17c's reading: "freeze did not latch" -> `--freeze-ms 140`, `--dx-mm 60` or a shorter `--move-s` (>= the printed minimal feasible + 0.2) (flags go INSIDE the quotes); `lane_recovery=failed` -> read the stage, DEACTIVATE/ACTIVATE, stop and report; fault_state left NONE -> real-fault path, `/recover`, do not re-run until understood. A FAIL blocks the lane-recovery claim; `/recover` stays the fallback. **OUTCOME 2026-10-14: PASSED on a REAL latch (21:58:43, 17b; `_215843.json`; launch.log `2026-10-14-21-56-45-798357-jetson-4154869`: `lane recovery DONE in 0.7 s`; bag `2026-10-14_21-56-45` 17d: no leg step). The probe's one FAIL was its own deviation expectation (wrong window), not the robot.** |
+| 3. Hand-stroke STOP/CONT | 18 | A hand stopped 100 ms mid-stroke STAYS where it stopped (no park at DONE, owner ruling), the next goal's opening REST homes it, goals during `in_progress` are refused naming the stage. | OK'd in writing 2026-10-13 evening | As the row. Manual, `kill -STOP/-CONT` on the one `trajectory_node` pid. | Hand moves after DONE or a goal is accepted mid-recovery: stop, report; do not patch from the sitting. **OUTCOME 2026-10-14: UNVERIFIED BY DECISION (owner): a manual STOP/CONT inside a sub-second stroke is not reliably doable by hand. Fallbacks that stand: `/recover` (DEACTIVATE then ACTIVATE), E-stop. Would verify: automate the SIGSTOP timing in the probe.** |
+| 4. BB cancel + CANCEL_TOO_LATE | 19, 20 | Cancel before the ~0.6 s wind-up throws NOTHING and leaves the goal result unpoisoned; a late stop reports `CANCEL_TOO_LATE` and the throw completes. | flown 2026-10-14 (owner at the sitting) | ONE `bb/cancel` line leading `CANCELLED` (row 19); `CANCEL_TOO_LATE` with `detail1` ms recorded (row 20). | `NO_CANCEL_RESULT` = BB is on FW 8: do NOT continue with a ball loaded; re-flash. A thrown ball after `CANCELLED`: stop, read ball_butler_node. **OUTCOME 2026-10-14: row 19 PASSED (launch.log 21-56-45 lines 474-479: `CANCELLED`, 1807 ms before release, no ball thrown); row 20 UNVERIFIED BY DECISION (needs a stop inside the ~0.6 s wind-up; would verify with a scripted late `juggle_stop`). Row 21 (possession refusals) PASSED the same night, lines 538/574/588/620.** |
 
 ## 2. Residue carried from the R5 arc
 
@@ -53,7 +54,8 @@ Sizes: S under an hour, M a session, L a unit of design.
 
 | Item | Source | Trigger | Size | Notes |
 |---|---|---|---|---|
-| Park the hand at recovery DONE? | wave-2 open 3 (`2026-10-13-skill-stack-r5-wave-2-after-sitting-7.md`) | none | - | **DECIDED, not open:** owner ruling, no park; it stays where it stopped, the next opening REST homes it. Verified by rung 3. |
+| lane_latch_rehearsal probe: defaults refused TOO_FAST at the current limits; deviation expectation measured the wrong window | first live runs 2026-10-14 (21:48 REFUSED twice; 17b live_deviation FAIL 0.1577 rev) | none | - | **FIXED 2026-10-14** (defaults 50 mm / 1.2 s / freeze at 450 ms; peak-while-latched INFO row + recovery-window row). See `2026-10-14-skill-stack-dress-rehearsals-flown.md`. |
+| Park the hand at recovery DONE? | wave-2 open 3 (`2026-10-13-skill-stack-r5-wave-2-after-sitting-7.md`) | none | - | **DECIDED, not open:** owner ruling, no park; it stays where it stopped, the next opening REST homes it. Rung 3 (hand-stroke) is UNVERIFIED BY DECISION 2026-10-14; the ruling stands on the owner's word and the 17b recovery (hand held at -0.01 rev, next REST homes it). |
 | `report.py` lacks `aim_fallback` | wave-2 open 7 | next time a CATCH-AIM-FALLBACK tally is wanted in a report | S | |
 | Untested cancel hooks (clear_errors, hand park, hand-jam one-liners) | wave-2 open 7 | any change near those paths, or rung 4 passing | S | tests, not behaviour |
 | GUI button for `bb/cancel` | wave-2 open 7 | operator asks | S | the service exists |
@@ -87,6 +89,8 @@ Sizes: S under an hour, M a session, L a unit of design.
 | `columns_entry='transit'` rollback value; `sim/juggle_*` MPC-era rung demos (CasADi); least-referenced probes (`teensy_can3_telem`, `skill_node_response_starvation_probe`, `juggle_*`, `hand_poll_cadence_census`, `hand_cascade_ff_model`) | R6 census 2026-10-13 | owner decision: retire `transit` once the hop entry has flown another sitting; archive (not delete) the probes to `tools/probes/archived/`; **juggle/xfail part DONE 2026-10-14** (cluster and its xfail test deleted, 8 probes archived; see `2026-10-14-mpc-residue-retired.md`; `juggle_noise`/`juggle_tilt` kept); the `transit` and remaining probe-archiving parts stand | S | the plan's § 6 ledger said the `juggle_*` cluster was R0 work; `sim/juggle_planner/` survived because tests and probes import it |
 
 ## 3. Done means
+
+Status 2026-10-14: the four rungs are recorded in `2026-10-14-skill-stack-dress-rehearsals-flown.md` (rungs 1, 2, 4-row-19 passed; rung 3 and row 20 unverified by decision).
 
 The four rehearsal rungs are recorded in a logbook entry with their JSON and launch.log evidence; each
 § 2 row is either done (logbook pointer), parked with a gate in `plans/parked/`, or dropped by the owner.
