@@ -1264,7 +1264,8 @@ def _snap_to_release(meta: uc.CycleMeta, k_s: int,
     throw of the ball now in flight splices at the previous release
     (``schedule.compile_columns``), so the first knot ``lead_s`` ahead of the
     solve is the release knot, one of the ``n_detach`` after it, or — when the
-    skill took the handoff lead and dispatched early — a knot or two before it.
+    skill took the handoff lead and dispatched early — up to
+    ``HANDOFF_LEAD_EXTRA_KNOTS`` (4 since 2026-10-14) knots before it.
     Snapping to
     ``k_rel`` and seeding POST-RELEASE (the same floats
     :func:`~jugglebot.motion.unified_cycle.release_state_from_meta` hands a
@@ -1313,6 +1314,39 @@ def _snap_to_release(meta: uc.CycleMeta, k_s: int,
     if k_s <= k_rel + n_detach:
         return k_rel, True
     return k_s, False
+
+
+def splice_knot_for(record: PlanRecord, kind: str, terminal,
+                    t_now_s: float, lead_s: float) -> Tuple[int, bool]:
+    """``(k_s, seeded_post_release)`` — the splice knot :func:`install_segment`
+    will splice a THROW/CATCH at, computed BEFORE the solve.
+
+    The one spelling of the splice branch's knot arithmetic: the first knot
+    ``lead_s`` ahead of ``t_now_s`` (``unified_cycle.splice_knot``), then
+    :func:`_snap_to_release` against the last release the head carries before
+    the segment's own event.  ``install_segment`` calls it, and so does
+    ``trajectory_node`` to set how long it waits for the worker (2026-10-14:
+    a pinned handoff's wire cliff is the RELEASE knot's, not ``t_now + lead_s``
+    — see :func:`splice_cliff_s`).  Pure arithmetic on the record; no solve.
+    """
+    dt = float(record.plan.dt)
+    t0 = float(record.t0_s)
+    k_s = uc.splice_knot(record.meta, float(t_now_s) - t0, lead_s)
+    event_k = int(math.floor((_event_abs_s(kind, terminal) - t0) / dt))
+    return _snap_to_release(record.meta, k_s, dt, event_k)
+
+
+def splice_cliff_s(record: PlanRecord, k_s: int) -> float:
+    """The instant (perf clock) from which a splice at ``k_s`` is refused
+    ``SPLICE_TOO_LATE``: ``t0 + (k_s - WIRE_READ_KNOTS) * dt``.
+
+    :func:`install_segment` refuses iff ``k_s <= floor((t_inst - t0)/dt) +
+    WIRE_READ_KNOTS``, i.e. iff ``t_inst >= `` this instant — the same
+    inequality solved for the clock, so a caller that waits on a solve can
+    stop waiting exactly where a reply could no longer be accepted.
+    """
+    return (float(record.t0_s)
+            + (int(k_s) - WIRE_READ_KNOTS) * float(record.plan.dt))
 
 
 def install_segment(record: Optional[PlanRecord],
@@ -1501,11 +1535,9 @@ def install_segment(record: Optional[PlanRecord],
                            MIN_WINDOW_S), 0.0), None
         else:
             dt = float(record.plan.dt)
-            tau = t_now_s - float(record.t0_s)
-            k_s = uc.splice_knot(record.meta, tau, lead_s)
             t0 = float(record.t0_s)
-            event_k = int(math.floor((_event_abs_s(kind, terminal) - t0) / dt))
-            k_s, post_release = _snap_to_release(record.meta, k_s, dt, event_k)
+            k_s, post_release = splice_knot_for(record, kind, terminal,
+                                                t_now_s, lead_s)
             t_origin = t0 + k_s * dt
             window_s = _event_abs_s(kind, terminal) - t_origin
             if window_s < MIN_WINDOW_S - 1e-12:
@@ -1999,8 +2031,8 @@ class SkillExecutor:
         measured for this segment shape).
 
         ``entry_hop`` (owner decision, 2026-10-05, R5 sitting-6 prep): a fed
-        columns schedule's HOP ENTRY (THROW 0, released from the feed site —
-        ``schedule.compile_columns(entry='hop')``) gets the SAME bypass as
+        columns schedule's HOP ENTRY (THROW 0, released from the feed site)
+        gets the SAME bypass as
         ``shadow_landing`` for the SAME structural reason — this is a
         cross-site throw, so the box swept for SAME-site throws does not
         apply, and a cross throw from the feed site would pool with that

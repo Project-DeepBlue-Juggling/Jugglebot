@@ -469,17 +469,19 @@ def test_an_early_dispatch_still_splices_at_the_release(
         T0_ABS + LAUNCH_S + FLIGHT_S - (T0_ABS + k_rel * dt), abs=1e-9)
 
 
-def test_the_handoff_budget_is_eight_knots_and_the_knot_past_it_refuses(
+def test_the_handoff_budget_is_ten_knots_and_the_knot_past_it_refuses(
         throw_record, limits, geom, sites):
     """The lead IS the solve budget, and this is where it runs out.
 
-    A handoff dispatches ``HANDOFF_LEAD_KNOTS`` (11) ahead of a splice knot the
-    head pins, and the wire has read ``WIRE_READ_KNOTS`` (3) past the install
-    instant, so the solve may take ``(11 - 3)·dt`` = 200 ms.  The measured solve
-    is 26–34 ms on the idle Jetson (``temp/probes/skills_segment_run2.md``,
-    2026-09-12) and 40–134 ms under sitting load (2026-09-18, n = 51, p95
-    113 ms) — 150 ms still installs; 210 ms is past the budget and is refused
-    rather than written under the emitter.  The
+    A handoff dispatches ``HANDOFF_LEAD_KNOTS`` (13 since 2026-10-14; 11
+    before) ahead of a splice knot the head pins, and the wire has read
+    ``WIRE_READ_KNOTS`` (3) past the install instant, so the solve may take
+    ``(13 - 3)·dt`` = 250 ms.  The measured solve is 26–34 ms on the idle
+    Jetson (``temp/probes/skills_segment_run2.md``, 2026-09-12) and 40–134 ms
+    under sitting load (2026-09-18, n = 51, p95 113 ms); accepted handoff
+    installs on 2026-10-14 reached 223-231 ms dispatch-to-install, which is
+    what moved the budget from 200 ms — 240 ms now installs; 260 ms is past
+    the budget and is refused rather than written under the emitter.  The
     lateness is INJECTED (``t_install_s``), so this measures the rule and never
     the box's load.
     """
@@ -489,7 +491,7 @@ def test_the_handoff_budget_is_eight_knots_and_the_knot_past_it_refuses(
     t_land = t_release + FLIGHT_S
     t_now = t_release - ex.HANDOFF_LEAD_S
     budget_s = (ex.HANDOFF_LEAD_KNOTS - ex.WIRE_READ_KNOTS) * DT
-    assert budget_s == pytest.approx(0.200)
+    assert budget_s == pytest.approx(0.250)
 
     def _install(solve_s):
         return ex.install_segment(
@@ -497,16 +499,16 @@ def test_the_handoff_budget_is_eight_knots_and_the_knot_past_it_refuses(
             _catch_throw_terminal(p2, t_land, t_land + 0.30), t_now,
             limits=limits, geom=geom, t_install_s=t_now + solve_s)
 
-    _rec, ok, seg = _install(0.150)
+    _rec, ok, seg = _install(0.240)
     assert ok.accepted, ok.message
     assert ok.seeded_post_release is True and seg is not None
 
-    unchanged, late, seg_late = _install(0.210)
+    unchanged, late, seg_late = _install(0.260)
     assert not late.accepted
     assert late.code == ex.SPLICE_TOO_LATE
     assert late.splice_k == -1 and seg_late is None
     assert unchanged is record
-    assert 'budget 0.200 s' in late.message
+    assert 'budget 0.250 s' in late.message
 
 
 # ---------------------------------------------------------------------------
@@ -5481,7 +5483,7 @@ _BBFED_ARRIVAL_MM_S = np.array([1058.0, 475.0, -5507.0])
 
 
 def _bbfed_schedule(sites, dx_mm: float = 0.0, dy_mm: float = 0.0,
-                    entry: str = 'transit'):
+                    hop_entry: bool = False):
     """A `compile_columns(feed=...)` schedule at the R5 operating point (apex
     ~0.9 m, dwell 0.30 s, 6 throws), BB's real arrival landing at P2 offset
     by `(dx_mm, dy_mm)` -- the announced-landing displacement Ball Butler's
@@ -5492,7 +5494,7 @@ def _bbfed_schedule(sites, dx_mm: float = 0.0, dy_mm: float = 0.0,
     landing_mm = p2.catch_site_mm() + np.array([dx_mm, dy_mm, 0.0])
     feed = sc.LandingPrior(pos_mm=landing_mm, vel_mm_s=_BBFED_ARRIVAL_MM_S,
                            t_land_abs_s=T0_ABS)
-    return sc.compile_columns(pattern, feed=feed, entry=entry)
+    return sc.compile_columns(pattern, feed=feed, hop_entry=hop_entry)
 
 
 def test_plan_columns_first_cycle_accepts_the_nominal_bb_feed(
@@ -5538,7 +5540,7 @@ def test_plan_columns_first_cycle_accepts_the_hop_entry(limits, geom, sites):
     parks ball A, straight into the level-pinned feed CATCH at the SAME
     site -- no transit needed at all, so this plans at least as cleanly as
     the nominal (undisplaced) transit-entry case above."""
-    schedule = _bbfed_schedule(sites, entry='hop')
+    schedule = _bbfed_schedule(sites, hop_entry=True)
     throw0 = next(s for s in schedule.skills if s.kind == sg.THROW)
     p1, p2 = sites
     assert throw0.entry_hop is True
@@ -5586,7 +5588,7 @@ def a1_hop_fed_catch(limits_r5, sites_r5, geom):
                          n_throws=6, phantom_balls=(0,))
     feed = sc.LandingPrior(pos_mm=p2.catch_site_mm(), vel_mm_s=_A1_ARRIVAL_MM_S,
                            t_land_abs_s=T0_ABS)
-    schedule = sc.compile_columns(pattern, feed=feed, entry='hop')
+    schedule = sc.compile_columns(pattern, feed=feed, hop_entry=True)
     dry = ex.SkillExecutor(schedule, ex._never_install)
     throw_idx, throw_skill = next((i, s) for i, s in enumerate(schedule.skills)
                                   if s.kind == sg.THROW)

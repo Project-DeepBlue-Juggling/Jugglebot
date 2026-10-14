@@ -1677,3 +1677,120 @@ def test_a_fresh_throw_installs_through_the_real_worker_process(monkeypatch):
     finally:
         node.on_shutdown()
         assert node._segment_solver.pid is None or node._segment_solver.state != 'READY'
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# The node's wait follows a PINNED splice's cliff (2026-10-14, SPLICE_TOO_LATE)
+#
+# A CATCH-with-throw dispatched HANDOFF_LEAD_S before the release the head
+# carries splices AT that release knot (`executor._snap_to_release`), so its
+# result stays useful until `t0 + (k_rel - WIRE_READ_KNOTS)*dt`, which can lie
+# past the default `t_wall + LEAD_S + dt` (250 ms).  The fake below honours
+# `req.deadline_s` the way `WorkerSegmentSolver._await` does, so the deadline
+# the node ships is what decides.
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _deadline_honouring(solve_s):
+    """The real in-process solve at the frozen clock, then the clock jumps to
+    ``t_wall + solve_s``; past ``req.deadline_s`` the answer is the client's
+    own SKIPPED_LATE (``WorkerSegmentSolver._late``)."""
+    def _fn(req, inner):
+        t_wall = time.perf_counter()
+        rep = inner.solve(req)
+        time.perf_counter = lambda: t_wall + solve_s
+        if t_wall + solve_s > req.deadline_s:
+            return sk_solver._refusal(
+                req.seq, sk_solver.SKIPPED_LATE,
+                'solver did not answer by the wire deadline (no reply in time)')
+        return rep
+    return _fn
+
+
+def _pinned_handoff(solve_s, early_s=0.010):
+    """Install a THROW, re-anchor its origin so the CATCH-with-throw's dispatch
+    sits ``HANDOFF_LEAD_S + early_s`` before the release knot (``early_s``
+    models the up-to-one-knot quantisation between the release instant and the
+    knot grid, i.e. a cliff past 250 ms), then request the catch through a
+    solver that takes ``solve_s``.  Returns ``(node, resp, k_rel, at, origin,
+    solver, debug_lines)``."""
+    node = _solver_node(_FakeSolver())
+    dt = float(hw.JB_TRAJ_KNOT_DT_S)
+    with _frozen_perf() as at:
+        r1 = node._svc_install_segment(_throw_req(at + 1.0),
+                                       InstallSegment.Response())
+        assert r1.accepted is True, r1.message
+        plan1, meta1, _t0 = node._cycle
+        k_rel = int(round(float(meta1.releases[0].t_s) / dt))
+        origin = at - (k_rel * dt - (sk_exec.HANDOFF_LEAD_S + early_s))
+        node._cycle = (plan1, meta1, origin)
+        node._plan_t0 = origin
+        _refresh(node)
+        solver = _FakeSolver(_deadline_honouring(solve_s))
+        node._segment_solver = solver
+        # The harness clock jump reads as drift against the unmoved mock
+        # robot_state; neutralise it so the timing path is what is tested.
+        node._install_continuity_ok = lambda *a, **k: True
+        lines = []
+        node._logger.debug = lambda msg, **kw: lines.append(msg)
+        t_rel = origin + k_rel * dt
+        resp = node._svc_install_segment(
+            _catch_throw_req(t_rel + 0.4, t_rel + 0.9),
+            InstallSegment.Response())
+    return node, resp, k_rel, at, origin, solver, lines
+
+
+def test_a_pinned_handoff_catch_slower_than_the_default_wait_still_installs():
+    """Solve 255 ms: past the default `t_wall + LEAD_S + dt` (250 ms) the node
+    used to stop waiting at, inside the pinned cliff (260 ms).  Before
+    2026-10-14 this was 'solver did not answer by the wire deadline'."""
+    dt = float(hw.JB_TRAJ_KNOT_DT_S)
+    node, resp, k_rel, at, origin, solver, _ = _pinned_handoff(0.255)
+    cliff = origin + (k_rel - sk_exec.WIRE_READ_KNOTS) * dt
+    assert cliff - at == pytest.approx(0.260)
+    req = solver.requests[-1]
+    assert req.deadline_s == pytest.approx(
+        cliff - sk_solver.REPLY_TRANSIT_ALLOW_S)
+    assert req.deadline_s > at + sk_exec.LEAD_S + dt
+    assert resp.accepted is True, resp.message
+    assert resp.splice_k == k_rel and resp.seeded_post_release is True
+
+
+def test_a_pinned_handoff_catch_past_its_cliff_is_refused_with_its_timing_logged():
+    """Solve 262 ms: past the pinned cliff less the transit allowance.  Same
+    refusal as before 2026-10-14 (SPLICE_TOO_LATE, nothing installed), and the
+    DEBUG refusal line now carries the timing that was invisible in the
+    sitting logs: which check refused, the deadline, k_s and k_wire."""
+    node, resp, k_rel, at, origin, _solver, lines = _pinned_handoff(0.262)
+    assert resp.accepted is False
+    assert resp.code == sk_exec.SPLICE_TOO_LATE, resp.message
+    assert 'wire deadline' in resp.message
+    assert node._cycle[2] == origin           # the head is untouched
+    assert resp.plan_wall_ms == pytest.approx(262.0)
+    refused = [m for m in lines if m.startswith('install_segment refused')]
+    assert len(refused) == 1
+    line = refused[0]
+    assert 'check=node-wait' in line
+    assert 'deadline +257.0 ms' in line
+    assert 'k_s %d' % (k_rel,) in line
+    assert 'cliff +260.0 ms' in line
+    assert 'k_wire@node' in line
+
+
+def test_an_unpinned_splice_keeps_the_default_wait():
+    """A plain CATCH (no release before its event to pin it) splices at the
+    first knot LEAD_S ahead, whose cliff is inside `t_wall + LEAD_S + dt`:
+    the shipped deadline is the default, unchanged."""
+    solver = _FakeSolver()
+    node = _solver_node(solver)
+    with _frozen_perf() as at:
+        r1 = node._svc_install_segment(_throw_req(at + 0.6),
+                                       InstallSegment.Response())
+        assert r1.accepted is True, r1.message
+        plan1, meta1, _ = node._cycle
+        node._cycle = (plan1, meta1, at - 0.2)
+        node._plan_t0 = at - 0.2
+        _refresh(node)
+        node._svc_install_segment(_catch_req(at + 0.7),
+                                  InstallSegment.Response())
+    assert solver.requests[-1].deadline_s == pytest.approx(
+        at + sk_exec.LEAD_S + float(hw.JB_TRAJ_KNOT_DT_S))

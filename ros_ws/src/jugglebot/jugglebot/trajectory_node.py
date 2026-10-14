@@ -4295,11 +4295,18 @@ class TrajectoryNode(Node):
     _SEGMENT_KINDS = (sk_seg.THROW, sk_seg.CATCH, sk_seg.REST,
                       sk_magazine.MAGAZINE)
 
-    def _reject_segment(self, response, code: str, message: str, t_wall: float):
+    def _reject_segment(self, response, code: str, message: str, t_wall: float,
+                        timing: str = ''):
         """Fill ``response`` with a refusal. The ACTIVE PLAN IS UNTOUCHED.
 
         The exact twin of ``_reject_cycle`` for the segment service — see that
         method's docstring for why a refusal never leaves partial state.
+
+        ``timing`` (2026-10-14, :meth:`_refusal_timing`) rides on the same
+        DEBUG line for a refusal that happened AFTER a solve was sent: before
+        it, a refused solve's duration, the wire knot and the deadline were
+        invisible in the log, and sitting 8's 0.23-0.26 s request-to-refusal
+        was misread as the solve time.
         """
         response.accepted = False
         response.code = str(code)
@@ -4310,8 +4317,53 @@ class TrajectoryNode(Node):
         # skill_node, the only caller, reports every refusal it gets -- as a
         # refused re-aim on its throw line, or as the attempt's END line --
         # so this is the record's copy, not a second screen line.
-        self.get_logger().debug('install_segment refused: %s' % (message,))
+        self.get_logger().debug('install_segment refused: %s%s'
+                                % (message,
+                                   (' [%s]' % (timing,)) if timing else ''))
         return response
+
+    @staticmethod
+    def _refusal_timing(check: str, reply, t_wall: float, deadline_s: float,
+                        record, splice_k, fresh: bool) -> str:
+        """One-line timing of a post-solve refusal, for the DEBUG log.
+
+        ``check`` names which test refused: ``node-wait`` (no reply by
+        ``deadline_s``), ``transit`` (the node's re-check of the executor's
+        arithmetic at its own clock), ``worker:<code>`` (the executor's verdict
+        in the worker, the lateness test included).  Times are ms after
+        ``t_wall`` (service entry).  ``k_wire`` is the executor's
+        ``floor((t - t0)/dt) + WIRE_READ_KNOTS``, at the worker's
+        ``reply.t_inst_s`` (``t_inst``; absent when the worker never answered
+        or for the in-process double) and at the node's clock now; ``k_s`` is
+        the splice knot (the pre-solve
+        ``splice_knot_for`` value when the reply carries none).
+        """
+        now = time.perf_counter()
+        t_inst = float(getattr(reply, 't_inst_s', math.inf))
+        solve_s = float(getattr(reply, 'solve_s', 0.0))
+        parts = ['check=%s' % (check,),
+                 ('solve n/a (no reply)' if check == 'node-wait'
+                  else 'solve %.1f ms' % (solve_s * 1e3,)),
+                 'plan %.1f ms' % ((now - t_wall) * 1e3,),
+                 ('t_inst +%.1f ms' % ((t_inst - t_wall) * 1e3,)
+                  if math.isfinite(t_inst) else 't_inst n/a'),
+                 'deadline +%.1f ms' % ((deadline_s - t_wall) * 1e3,)]
+        if record is not None and not fresh:
+            dt = float(record.plan.dt)
+
+            def _k_wire(t):
+                return (int(math.floor((t - float(record.t0_s)) / dt))
+                        + sk_exec.WIRE_READ_KNOTS)
+            parts.append('k_s %s' % ('?' if splice_k is None else int(splice_k)))
+            if math.isfinite(t_inst):
+                parts.append('k_wire@worker %d' % (_k_wire(t_inst),))
+            parts.append('k_wire@node %d' % (_k_wire(now),))
+            if splice_k is not None:
+                parts.append('cliff +%.1f ms' % (
+                    (sk_exec.splice_cliff_s(record, splice_k) - t_wall) * 1e3,))
+        elif fresh:
+            parts.append('fresh origin')
+        return ', '.join(parts)
 
     def _segment_terminal_from_request(self, kind: str, request, t_event_perf: float,
                                        t_release_perf: float = 0.0):
@@ -4577,16 +4629,42 @@ class TrajectoryNode(Node):
         # THE SOLVE RUNS IN THE WORKER PROCESS (`self._segment_solver`), every
         # input shipped by value (live-mutable `cfg`/`limits` reach the next
         # install by construction).  `deadline_s` is the instant after which a
-        # result is useless: THROW/CATCH `t_wall + lead_s + dt` (past it the
-        # executor's own arithmetic refuses with certainty, so waiting can only
-        # buy a refusal), REST `t_wall + SOLVER_REST_DEADLINE_S`.  The executor's
-        # post-solve lateness read happens IN the worker, +REPLY_TRANSIT_ALLOW_S;
-        # `reply.t_inst_s` carries that instant back for the transit check below.
+        # result is useless: THROW/CATCH `t_wall + lead_s + dt`, REST
+        # `t_wall + SOLVER_REST_DEADLINE_S`.  The executor's post-solve lateness
+        # read happens IN the worker, +REPLY_TRANSIT_ALLOW_S; `reply.t_inst_s`
+        # carries that instant back for the transit check below.
+        #
+        # PINNED SPLICE (2026-10-14): a CATCH that follows a release splices AT
+        # that release knot whatever its dispatch instant
+        # (`executor._snap_to_release`), and the schedule dispatches it
+        # HANDOFF_LEAD_S early to buy solve time for exactly that reason -- so
+        # its wire cliff is `t0 + (k_rel - WIRE_READ_KNOTS)*dt`, not
+        # `t_wall + lead_s + dt`.  The node computes the executor's own splice
+        # knot BEFORE the solve (`splice_knot_for`, the same helper the worker
+        # runs on the same inputs) and waits until the LATER of the two, the
+        # cliff term less REPLY_TRANSIT_ALLOW_S (the worker's own early read), so
+        # it never waits past the instant the executor itself would refuse.  An
+        # unpinned splice's cliff (`k_s` = first knot >= t_now + LEAD_S) is
+        # 150-175 ms out, inside the default, so only a pinned splice can move
+        # it.  Fresh origins keep the default.
+        splice_k_pre = None
         if kind == sk_seg.REST:
             deadline_s = t_wall + sk_solver.SOLVER_REST_DEADLINE_S
         else:
             deadline_s = (t_wall + self._segment_lead_s
                           + float(hw.JB_TRAJ_KNOT_DT_S))
+            if not fresh and kind in (sk_seg.THROW, sk_seg.CATCH):
+                try:
+                    splice_k_pre, _post = sk_exec.splice_knot_for(
+                        record, kind, terminal, t_now_s, self._segment_lead_s)
+                except Exception:   # noqa: BLE001 - the worker re-derives
+                    # it and answers any error as a refusal; keep the default
+                    splice_k_pre = None
+                if splice_k_pre is not None:
+                    deadline_s = max(
+                        deadline_s,
+                        sk_exec.splice_cliff_s(record, splice_k_pre)
+                        - sk_solver.REPLY_TRANSIT_ALLOW_S)
         self._solve_seq += 1
         reply = self._segment_solver.solve(sk_solver.SegmentSolveRequest(
             seq=self._solve_seq, record=record, seed_rest=seed_rest,
@@ -4610,7 +4688,14 @@ class TrajectoryNode(Node):
                     code = (sk_exec.ORIGIN_TOO_LATE if fresh
                             else sk_exec.SPLICE_TOO_LATE)
                 message = 'solver did not answer by the wire deadline'
-            return self._reject_segment(response, code, message, t_wall)
+                check = 'node-wait'
+            else:
+                check = 'worker:%s' % (code,)
+            return self._reject_segment(
+                response, code, message, t_wall,
+                timing=self._refusal_timing(
+                    check, reply, t_wall, deadline_s, record,
+                    splice_k_pre, fresh))
         if self._hold_superseded(epoch0):
             return self._reject_segment(
                 response, _SUPERSEDED_BY_HOLD,
@@ -4648,7 +4733,10 @@ class TrajectoryNode(Node):
                 'reply transit outran the wire deadline — the first new knot '
                 'is no longer %d knots ahead of the wire; nothing installed'
                 % (sk_exec.WIRE_READ_KNOTS,),
-                t_wall)
+                t_wall,
+                timing=self._refusal_timing(
+                    'transit', reply, t_wall, deadline_s, new_record,
+                    None if fresh else int(result.splice_k), fresh))
         if not self._install(new_record.plan, t0=new_record.t0_s,
                              require_epoch=epoch0,
                              cycle=(new_record.plan, new_record.meta,
