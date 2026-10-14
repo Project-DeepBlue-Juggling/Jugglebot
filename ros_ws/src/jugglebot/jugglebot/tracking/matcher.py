@@ -11,7 +11,9 @@ and reads results out.
 """
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Tuple
+import logging
+from collections import deque
+from typing import Callable, Deque, Dict, List, Optional, Tuple
 
 import numpy as np
 
@@ -19,6 +21,8 @@ from .ball import Ball, BallStatus, TrackingConfidence, TERMINAL_STATUSES
 from .ballistics import GRAVITY_MMPS2, predict_landing_state
 from .flight_fit import FlightFit
 from .kalman import KalmanFilter
+
+_LOG = logging.getLogger(__name__)
 
 
 def parse_label_prefixes(raw) -> Tuple[str, ...]:
@@ -106,6 +110,14 @@ class BallTracker:
         flight_fit_min_samples: int = 12,
         flight_fit_residual_mm: float = 12.0,
         flight_fit_freeze_above_plane_mm: float = 250.0,
+        announced_release_lead_s: float = 0.10,
+        announced_speed_ratio: Tuple[float, float] = (0.4, 1.8),
+        announced_min_direction_cos: float = 0.5,
+        announced_motion_steps: int = 2,
+        demote_still_speed_mmps: float = 500.0,
+        demote_still_s: float = 0.060,
+        demote_min_predicted_speed_mmps: float = 2000.0,
+        debug_log: Optional[Callable[[str], None]] = None,
     ):
         self.dt = dt
         #: Wall time of the previous processed frame -- the Kalman predict steps by
@@ -142,6 +154,66 @@ class BallTracker:
         # sphere admits none.  Identity exclusion is still the primary
         # defence; the sphere is the second one.
         self.announced_gate_mm = announced_gate_mm
+
+        # --- Announced-ball MOTION test (2026-10-14) ---
+        # The sphere alone confirmed every Ball Butler feed of the 2026-10-14
+        # two-ball columns sessions on a STATIC Ball Butler body marker:
+        # `Ball Butler - 1,2,3,4,6,7` (labels deliberately eligible, see
+        # above) sit 78-142 mm from BB's announced start in every frame, the
+        # nearest (#7, about (-884,-350,1720)) won 0.02-0.04 s after
+        # throw_time on 5/5 feeds read, and the gravity-fixed fit then took a
+        # point at rest at z=1720 for an apex: `time_at_land` 0.34-0.36 s
+        # before the announced landing, landing xy ~700 mm off. Meanwhile the
+        # real ball had left BB's hand ~0.05-0.1 s BEFORE the announced
+        # throw_time, faster than announced, and sat 230-380 mm from the
+        # analytic position for the whole visible flight -- outside the
+        # 200 mm sphere, so it was never a candidate at all.
+        # (See the 2026-10-14 two-ball columns sessions entry.)
+        #
+        # So a candidate must now be CONSISTENT WITH THE ANNOUNCED FLIGHT
+        # over consecutive frames, not merely near it on one frame:
+        #  - gate radius `announced_gate_mm + |v_pred(t)| * lead_s`: a
+        #    release that leads (or lags) the announced instant by up to
+        #    `lead_s` displaces the ball ~|v| * lead_s along its path;
+        #  - candidate history starts `lead_s` BEFORE throw_time (the ball is
+        #    already moving in the hand), confirmation only at/after it;
+        #  - motion: the marker's frame-to-frame continuation must move at
+        #    [lo, hi] x |v_pred(t)| roughly along v_pred (cos >=
+        #    `announced_min_direction_cos`) for `announced_motion_steps`
+        #    consecutive steps. A static marker can never confirm an
+        #    announcement that expects > ~1 m/s.
+        self.announced_release_lead_s = float(announced_release_lead_s)
+        self.announced_speed_ratio = (float(announced_speed_ratio[0]),
+                                      float(announced_speed_ratio[1]))
+        self.announced_min_direction_cos = float(announced_min_direction_cos)
+        self.announced_motion_steps = int(announced_motion_steps)
+        # Safety net for a wrong confirmation that slips through: a CONFIRMED
+        # announced ball whose matched RAW marker moves slower than
+        # `demote_still_speed_mmps` for longer than `demote_still_s` while
+        # the announcement predicts > `demote_min_predicted_speed_mmps` is
+        # released back to ANNOUNCED and that marker position is excluded for
+        # that announcement. Raw marker, not KF velocity: the KF velocity is
+        # seeded from the announcement and decays toward a static marker's
+        # zero over far more than 60 ms. Only before the announced landing
+        # (less 0.1 s), so a ball resting in the cup is never demoted.
+        self.demote_still_speed_mmps = float(demote_still_speed_mmps)
+        self.demote_still_s = float(demote_still_s)
+        self.demote_min_predicted_speed_mmps = float(demote_min_predicted_speed_mmps)
+        self._debug_log: Callable[[str], None] = (
+            debug_log if debug_log is not None else _LOG.debug)
+        # Per ANNOUNCED ball: last frame's gated candidates as
+        # (frame time, [(position, consecutive passing steps)]).
+        self._candidate_history: Dict[int, Tuple[float, List[Tuple[np.ndarray, int]]]] = {}
+        # Per announced ball: marker positions released by a demotion.
+        self._excluded_positions: Dict[int, List[np.ndarray]] = {}
+        # Per CONFIRMED announced ball: (t, raw marker) where its current
+        # "still" interval began.
+        self._still_anchor: Dict[int, Tuple[float, np.ndarray]] = {}
+        # Per announced ball: the announcement's landing time (demotion window).
+        self._announced_landing_time: Dict[int, float] = {}
+        #: Last identity decisions (confirm / demote), newest last -- for tests
+        #: and offline probes; the same text goes to `debug_log`.
+        self.identity_events: Deque[dict] = deque(maxlen=64)
 
         # Marker labels whose prefix means "this marker is bolted to the
         # machine, it can never be a ball".  Everything else — including
@@ -270,6 +342,7 @@ class BallTracker:
             np.array(initial_velocity, dtype=np.float64),
             throw_time,
         )
+        self._announced_landing_time[ball_id] = float(ball.landing_time)
         return ball_id
 
     def eligible_markers(
@@ -416,6 +489,11 @@ class BallTracker:
                     best_dist = dist
                     best_idx = idx
 
+            if best_idx is not None and self._check_still_confirmed(
+                    ball_id, ball, current_time, markers[best_idx]):
+                # Demoted: the marker is free for other balls this frame, and
+                # this ball rejoins the ANNOUNCED gate from the next frame on.
+                continue
             if best_idx is not None:
                 kf.update(markers[best_idx])
                 used.add(best_idx)
@@ -469,58 +547,117 @@ class BallTracker:
             init_pos[2] + init_vel[2] * dt - 0.5 * GRAVITY_MMPS2 * dt * dt,
         ])
 
+    def _expected_announced_velocity(self, ball_id: int, current_time: float) -> Optional[np.ndarray]:
+        """Analytical velocity of an announced ball at ``current_time``; the
+        announced ``v0`` itself before ``throw_time`` (no backward gravity)."""
+        ann = self._announcement_states.get(ball_id)
+        if ann is None:
+            return None
+        _, init_vel, throw_time = ann
+        dt = max(current_time - throw_time, 0.0)
+        return np.array([init_vel[0], init_vel[1],
+                         init_vel[2] - GRAVITY_MMPS2 * dt])
+
     def _match_announced_balls(
         self,
         markers: List[np.ndarray],
         current_time: float,
         used: set,
     ) -> set:
-        """Promote an ANNOUNCED ball to CONFIRMED from the marker nearest its
-        expected ballistic position.
+        """Promote an ANNOUNCED ball to CONFIRMED from a marker that MOVES WITH
+        the announced flight.
 
-        The gate is a single sphere of radius ``announced_gate_mm`` centred on
-        the announcement's *analytical* ballistic prediction for
-        ``current_time`` — not on the Kalman filter's position.  The KF
-        advances by a fixed ``self.dt`` per call, so on any frame stream whose
-        real period differs from ``dt`` its clock drifts away from wall clock
-        (the 2026-09-15 bag delivers ~186 Hz against ``dt`` = 5 ms, i.e. ~7 %
-        slow, which is hundreds of mm of z error half a second into a
-        1.5 m throw).  The analytical prediction has no such drift.
+        Gate centre: the announcement's *analytical* ballistic prediction for
+        ``current_time`` (the announced start before ``throw_time``) -- not the
+        Kalman filter's position. The KF advanced by a fixed ``self.dt`` per
+        call until 2026-09-18, and on any frame stream whose real period
+        differs from ``dt`` its clock drifted away from wall clock (the
+        2026-09-15 bag: ~186 Hz against 5 ms); the analytic centre cannot.
 
-        There is deliberately no height floor here.  The pre-2026-09-15 gate
-        skipped any marker below ``landing_z + min_height_above_landing_mm``
-        (880 mm), and the ball marker sits in the cup at 717–742 mm right
-        through the announced throw instant — so the floor discarded the one
-        true candidate at exactly the frame the gate first ran.  Identity
-        exclusion (:meth:`eligible_markers`) is what keeps machine markers
-        out; a height floor cannot tell a ball from a platform marker anyway.
+        Gate radius: ``announced_gate_mm + |v_pred| * announced_release_lead_s``
+        -- a sphere, as before (2026-09-15: platform markers 204.6-220.7 mm
+        from the cup sit in a +-200 mm box's corners), widened along the
+        flight by the release-timing allowance (2026-10-14: the BB ball sat
+        230-380 mm from the analytic position for its whole flight).
+
+        Motion test (2026-10-14, see ``__init__``): each gated marker is
+        continued from the nearest marker gated on the previous frame; the
+        step must move at ``announced_speed_ratio`` x ``|v_pred|`` roughly
+        along ``v_pred``, and only a candidate with
+        ``announced_motion_steps`` consecutive passing steps can confirm --
+        nearest to the gate centre among those. History is gathered from
+        ``announced_release_lead_s`` before ``throw_time``, so a ball already
+        moving at the announced instant (every JB self-toss: ~3.8 m/s at
+        throw_time on 2026-10-14) confirms on the first in-flight frame,
+        exactly as before.
+
+        There is deliberately no height floor here (2026-09-15: the ball sat
+        in the cup at 717-742 mm, under the old 880 mm floor, through the
+        announced throw instant). Identity exclusion (:meth:`eligible_markers`)
+        keeps the robot's own markers out; the motion test keeps every other
+        static marker out.
         """
+        lo, hi = self.announced_speed_ratio
         for ball_id, ball in self._balls.items():
-            if ball.status != BallStatus.IN_FLIGHT:
-                continue
             if ball.tracking != TrackingConfidence.ANNOUNCED:
+                continue
+            in_flight = ball.status == BallStatus.IN_FLIGHT
+            pre_window = (ball.status == BallStatus.TO_BE_THROWN
+                          and current_time >= ball.throw_time - self.announced_release_lead_s)
+            if not (in_flight or pre_window):
                 continue
 
             kf = self._filters.get(ball_id)
             if kf is None:
                 continue
 
+            ann = self._announcement_states.get(ball_id)
             predicted_pos = self._expected_announced_position(
-                ball_id, current_time, fallback=kf.position)
-            threshold = self.announced_gate_mm
+                ball_id, current_time,
+                fallback=(ann[0] if ann is not None else kf.position))
+            v_pred = self._expected_announced_velocity(ball_id, current_time)
+            if v_pred is None:
+                v_pred = kf.velocity
+            speed_pred = float(np.linalg.norm(v_pred))
+            threshold = self.announced_gate_mm + speed_pred * self.announced_release_lead_s
+            excluded = self._excluded_positions.get(ball_id, ())
 
-            best_idx = None
-            best_dist = float("inf")
+            prev = self._candidate_history.get(ball_id)
+            prev_dt = None
+            if prev is not None:
+                prev_dt = current_time - prev[0]
+                # A gap of more than a few frames breaks "consecutive".
+                if not (0.0 < prev_dt <= 4.0 * self.dt + 0.02):
+                    prev, prev_dt = None, None
 
+            gated: List[Tuple[np.ndarray, int]] = []
+            best = None   # (dist, idx, pos, speed, streak)
             for idx, mpos in enumerate(markers):
                 if idx in used:
                     continue
-                dist = np.linalg.norm(mpos - predicted_pos)
-                if dist <= threshold and dist < best_dist:
-                    best_dist = dist
-                    best_idx = idx
+                dist = float(np.linalg.norm(mpos - predicted_pos))
+                if dist > threshold:
+                    continue
+                if any(np.linalg.norm(mpos - e) < 20.0 for e in excluded):
+                    continue
+                streak, speed = 0, 0.0
+                if prev is not None and prev[1]:
+                    p_prev, s_prev = min(prev[1], key=lambda c: float(np.linalg.norm(mpos - c[0])))
+                    step = mpos - p_prev
+                    speed = float(np.linalg.norm(step)) / prev_dt
+                    cos = (float(np.dot(step, v_pred)) / (float(np.linalg.norm(step)) * speed_pred)
+                           if speed > 0.0 and speed_pred > 0.0 else -1.0)
+                    if (lo * speed_pred <= speed <= hi * speed_pred
+                            and cos >= self.announced_min_direction_cos):
+                        streak = s_prev + 1
+                gated.append((np.array(mpos, dtype=np.float64), streak))
+                if (in_flight and streak >= self.announced_motion_steps
+                        and (best is None or dist < best[0])):
+                    best = (dist, idx, mpos, speed, streak)
+            self._candidate_history[ball_id] = (float(current_time), gated)
 
-            if best_idx is not None:
+            if best is not None:
+                dist, best_idx, mpos, speed, streak = best
                 # Match found — promote to CONFIRMED
                 kf.update(markers[best_idx])
                 used.add(best_idx)
@@ -532,13 +669,77 @@ class BallTracker:
                 ball.velocity = kf.velocity
                 ball.timestamp = current_time
                 self._update_landing_prediction(ball, from_filter=True)
+                self._candidate_history.pop(ball_id, None)
+                self._still_anchor[ball_id] = (float(current_time), np.array(mpos, dtype=np.float64))
+                self._note_identity(
+                    'confirm', ball_id, current_time, mpos, speed, speed_pred,
+                    'steps %d, %.0f mm from expected (gate %.0f)' % (streak, dist, threshold))
                 # Kill any parabolic marker tracks near this marker to
                 # prevent duplicate detection of the same physical ball
                 self._kill_tracks_near(markers[best_idx])
-            else:
+            elif in_flight:
                 ball.frames_without_measurement += 1
 
         return used
+
+    def _check_still_confirmed(self, ball_id: int, ball: Ball, current_time: float,
+                               marker: np.ndarray) -> bool:
+        """Demote a CONFIRMED announced ball whose raw marker has stood still
+        while the announcement says it should be flying fast. Returns True if
+        the ball was demoted (see ``__init__`` for the rule and why)."""
+        if ball_id not in self._announcement_states:
+            return False      # human-throw track: no announcement to compare
+        anchor = self._still_anchor.get(ball_id)
+        if anchor is None:
+            self._still_anchor[ball_id] = (float(current_time), np.array(marker, dtype=np.float64))
+            return False
+        t_a, p_a = anchor
+        span = current_time - t_a
+        moved = float(np.linalg.norm(marker - p_a))
+        if moved > self.demote_still_speed_mmps * span + 3.0:
+            self._still_anchor[ball_id] = (float(current_time), np.array(marker, dtype=np.float64))
+            return False
+        if span <= self.demote_still_s:
+            return False
+        t_land = self._announced_landing_time.get(ball_id, 0.0)
+        if not current_time < t_land - 0.1:
+            return False
+        v_pred = self._expected_announced_velocity(ball_id, current_time)
+        speed_pred = float(np.linalg.norm(v_pred)) if v_pred is not None else 0.0
+        if speed_pred <= self.demote_min_predicted_speed_mmps:
+            return False
+        # Release: back to ANNOUNCED, seeded from the analytic state again.
+        p_pred = self._expected_announced_position(ball_id, current_time, fallback=marker)
+        kf = self._filters[ball_id]
+        kf.initialize_from_state(p_pred, v_pred, position_cov=500.0, velocity_cov=500.0)
+        ball.tracking = TrackingConfidence.ANNOUNCED
+        ball.position = kf.position
+        ball.velocity = kf.velocity
+        ball.timestamp = current_time
+        self._flight_fits.pop(ball_id, None)
+        self._still_anchor.pop(ball_id, None)
+        self._candidate_history.pop(ball_id, None)
+        self._excluded_positions.setdefault(ball_id, []).append(np.array(marker, dtype=np.float64))
+        self._update_landing_prediction(ball)
+        self._note_identity(
+            'demote', ball_id, current_time, marker, moved / span if span > 0 else 0.0,
+            speed_pred, 'still %.0f ms' % (span * 1e3))
+        return True
+
+    def _note_identity(self, kind: str, ball_id: int, current_time: float,
+                       marker: np.ndarray, speed: float, speed_pred: float, extra: str):
+        """One DEBUG line per confirmation / demotion (never per frame)."""
+        ball = self._balls.get(ball_id)
+        dt_throw = current_time - ball.throw_time if ball is not None else float('nan')
+        ev = dict(kind=kind, ball_id=ball_id, t=float(current_time), dt_throw=float(dt_throw),
+                  marker=np.array(marker, dtype=np.float64), speed=float(speed),
+                  speed_pred=float(speed_pred))
+        self.identity_events.append(ev)
+        self._debug_log(
+            'tracker %s ball %d (%s): marker (%.0f,%.0f,%.0f) at %.0f mm/s vs announced %.0f mm/s, '
+            '%s, %+.3f s from throw_time' % (
+                kind, ball_id, ball.source if ball is not None else '?',
+                marker[0], marker[1], marker[2], speed, speed_pred, extra, dt_throw))
 
     # ------------------------------------------------------------------
     # Internal: Parabolic motion detection (human throw path)
@@ -777,6 +978,10 @@ class BallTracker:
             self._filters.pop(ball_id, None)
             self._announcement_states.pop(ball_id, None)
             self._flight_fits.pop(ball_id, None)
+            self._candidate_history.pop(ball_id, None)
+            self._excluded_positions.pop(ball_id, None)
+            self._still_anchor.pop(ball_id, None)
+            self._announced_landing_time.pop(ball_id, None)
 
     # ------------------------------------------------------------------
     # Internal: Landing prediction

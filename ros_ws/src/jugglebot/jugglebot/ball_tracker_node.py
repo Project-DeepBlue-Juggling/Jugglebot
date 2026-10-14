@@ -89,6 +89,10 @@ class BallTrackerNode(Node):
             flight_fit_min_samples=hw.TRACKING_FLIGHT_FIT_MIN_SAMPLES,
             flight_fit_residual_mm=hw.TRACKING_FLIGHT_FIT_RESIDUAL_MM,
             flight_fit_freeze_above_plane_mm=hw.TRACKING_FLIGHT_FIT_FREEZE_ABOVE_PLANE_MM,
+            # One DEBUG line per announced-ball confirmation / demotion
+            # (matcher, 2026-10-14): python-logging DEBUG does not reach
+            # launch.log under rclpy, the node's own logger does.
+            debug_log=self.get_logger().debug,
         )
         # Live-updatable (mirrors `teensy_bridge_node`'s
         # `hand_torque_ff_gain` pattern, `_on_set_parameters`): the tracker's
