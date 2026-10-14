@@ -26,6 +26,7 @@ rows).
 | Plan | Status | Last touched | Scope |
 |------|--------|--------------|-------|
 | [leg-gain-tuning-methodology.md](leg-gain-tuning-methodology.md) | reference | 2026-07-16 | Leg PID tuning methodology. The **gain hunt closed 2026-07-13** (40/0.20/0.32 ships, gains FROZEN); the document stays active as the normative procedure for any future tuning round |
+| [bb-calibration-one-attempt.md](bb-calibration-one-attempt.md) | active | 2026-10-14 | Ball Butler mocap calibration accepted on the first sweep every time: replay-characterise the gates, invert them to advisory, and measure the robot frame in software instead of by manual QTM re-alignment |
 
 ## Orchestration prompts
 
