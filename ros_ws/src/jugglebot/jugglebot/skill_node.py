@@ -474,7 +474,7 @@ def _columns_feed_aim_site(feed_site: Site, a_site: Site,
 _ACCEPT_EMPTY_ALWAYS = ('reload', 'columns_1ball_fed')
 #: Patterns whose attempt OPENS by throwing a HELD ball WHATEVER the `reload`
 #: flag says: `columns` (`_run_columns`'s bridge holds ball A,
-#: ``holds_ball=not phantom_a`` = True under BOTH `columns_entry` values, and
+#: ``holds_ball=not phantom_a`` = True, and
 #: Ball Butler's feed of ball B lands AFTER ball A's throw, into the then-empty
 #: cup) and `magazine` (one throw of the held ball, no reload path).
 _ACCEPT_SEATED_ALWAYS = ('columns', 'magazine')
@@ -492,8 +492,7 @@ def accept_cup_requirement(pattern: str, reload: bool) -> str:
     flag: `reload=True` routes through `_start_reload` with its default
     ``holds_ball=False`` (REST -> held-axis CATCH -> REST -> pattern), so the
     cup must be EMPTY; `reload=False` opens with THROW 0 of a held ball. Keyed
-    on (pattern, reload) only -- `columns_entry` does not change the answer
-    (hop and transit both bridge with ``holds_ball=not phantom_a``)."""
+    on (pattern, reload) only."""
     if pattern in _ACCEPT_EMPTY_ALWAYS:
         return ball_possession.EVIDENCE_EMPTY
     if pattern in _ACCEPT_SEATED_ALWAYS:
@@ -718,6 +717,13 @@ class SkillNode(Node):
         self._traj_status_mono = 0.0
         self._mocap_mono = 0.0
         self._hand_telemetry_mono = 0.0
+        # the ONLY clock the hand-telemetry freshness family reads (stamp in
+        # `_on_hand_telemetry`, the ladder's `hand_fresh`, the accept-time cup
+        # check) -- injectable so a test fixture can freeze it; a loaded test
+        # run must not be able to age a fixture's sample past
+        # `_HAND_STATE_STALE_S` (load flake 2026-10-15,
+        # test_skill_node_resend_param).
+        self._hand_clock = time.perf_counter
         self._hand_pos_meas = 0.0
         self._hand_pos_cmd = 0.0
         # The hand's launch-speed ratio source for `catch_aim_source` =
@@ -783,7 +789,7 @@ class SkillNode(Node):
         self._lane_auto_lock = threading.Lock()
         self._lane_cli_unavail_logged = False
         # Set by `_on_tick` when an END needs the machine HELD rather than
-        # left to its rest tail (`executor.HAND_LANE_REFUSED`), cleared by
+        # left to its rest tail (`executor.LANE_REFUSED`), cleared by
         # `_maybe_hold_pending_event` when it fires the hold — so the hold is
         # fired exactly once per attempt, not once per tick.
         self._force_hold = False
@@ -828,7 +834,7 @@ class SkillNode(Node):
         # that window, and the state `_check_reload_lane_refused` watches
         # `hand_lane_refused` against once the executor that would
         # ordinarily have caught it is already gone (C5b: the 2026-09-27
-        # sitting's guard latch fired with NO `HAND_LANE_REFUSED` END ever
+        # sitting's guard latch fired with NO `LANE_REFUSED` END ever
         # logged, because nothing was left ticking to produce one). Guarded
         # by `_reload_lock` (read on the tick's 40 Hz cadence, written from
         # the service thread, the tick, and the subscription's own callback
@@ -1040,23 +1046,21 @@ class SkillNode(Node):
         # hop/self_toss are untouched -- Ball Butler's bias there is folded
         # into the ordinary tracker-fit catch, not a schedule-frame prior.
         self.declare_parameter('columns_feed_bb_bias_mm', [0.0, 0.0])
-        # The fed columns entry (owner decision, 2026-10-05, R5 sitting-6
-        # prep -- `scratchpad/s6/design.md` Decision 1, `schedule.
-        # compile_columns`'s own ``entry`` kwarg): 'hop' parks ball A at the
-        # FEED site through the opening REST and THROW 0 releases it FROM
-        # THERE, cross-site, to ball A's own site -- the cup is already at
-        # the feed site for the feed catch instead of having to transit
-        # there after the launch (measured, bag 2026-10-05_16-42-57: 13/21
-        # `columns_1ball_fed` runs under the old 'transit' entry never even
-        # reached the feed catch window). 'transit' keeps the pre-R5 entry
-        # (bridge holds ball A at its OWN site, THROW 0 a self-toss there)
-        # -- kept for A/B comparison and rollback. Read ONCE, at goal start
-        # (`_run_columns`), not re-read mid-attempt. Applies to the fed
-        # paths of `columns` and `columns_1ball_fed` only (`_run_columns`'s
+        # The fed columns entry is always the HOP entry (owner decision,
+        # 2026-10-05, R5 sitting-6 prep -- `schedule.compile_columns`): ball A
+        # is parked at the FEED site through the opening REST and THROW 0
+        # releases it FROM THERE, cross-site, to ball A's own site -- the cup
+        # is already at the feed site for the feed catch instead of having to
+        # transit there after the launch (measured, bag 2026-10-05_16-42-57:
+        # 13/21 `columns_1ball_fed` runs under the old transit entry never
+        # even reached the feed catch window). Applies to the fed paths of
+        # `columns` and `columns_1ball_fed` only (`_run_columns`'s
         # `reload=True` Ball-Butler path and its `reload=False` tracker-feed
         # branch); `columns_1ball` (`_run_columns_1ball`, its own reload
         # into a parked cup, no feed) is untouched.
-        self.declare_parameter('columns_entry', 'hop')
+        # The 'transit' entry (pre-R5 self-toss) was retired 2026-10-14 after
+        # the hop entry met the R5 gate at sitting 8; `columns_entry` no
+        # longer exists.
 
         # ── the install client + tick timer share ONE reentrant group ──────
         # Fixed 2026-09-13 (found by reading, never exercised live): `main`
@@ -1178,7 +1182,7 @@ class SkillNode(Node):
             self._on_commanded_position, 10, callback_group=self._sub_cbgroup)
         # The bridge's own 10 Hz link diagnostic, for ONE key: `sched_refused`,
         # the firmware's count of streamed lanes it REFUSED and is now holding
-        # (`executor.HAND_LANE_REFUSED`). Read HERE rather than routed through
+        # (`executor.LANE_REFUSED`). Read HERE rather than routed through
         # `trajectory/status`: the counter is a BRIDGE fact that only this
         # node acts on, the decider is one hop from the publisher instead of
         # two (10 Hz, not the status timer's 5), and it needs no new field on
@@ -1546,19 +1550,6 @@ class SkillNode(Node):
                 'using [%.3f, %.3f]' % (raw, bx, by))
         return (bx, by)
 
-    def _columns_entry(self) -> str:
-        """`columns_entry`, clamped to ``('hop', 'transit')`` with a WARN
-        and 'hop' outside it -- same shape as `_columns_feed_site_name`.
-        Read ONCE per attempt, at `_run_columns`'s own start -- see that
-        parameter's own docstring for what each value does."""
-        value = str(self.get_parameter('columns_entry').value)
-        if value not in ('hop', 'transit'):
-            self.get_logger().warn(
-                "columns_entry=%r is not one of ('hop', 'transit') -- using "
-                "'hop'" % (value,))
-            return 'hop'
-        return value
-
     def _catch_aim_source(self) -> str:
         """The validated ``catch_aim_source`` parameter. An unknown value
         falls back to the LIVE default (:data:`executor.AIM_TRACKER`) with an
@@ -1651,7 +1642,7 @@ class SkillNode(Node):
         streamed lane's promotion and LATCHED the hold instead — after which
         the guard measures the refused command against the encoder and the
         deviation grows with every knot the plan walks on
-        (``executor.HAND_LANE_REFUSED``, and ``leg_interp.cpp:497-520`` /
+        (``executor.LANE_REFUSED``, and ``leg_interp.cpp:497-520`` /
         ``:1226-1228`` for the firmware's side of it).
 
         Absent or unparseable key -> the cache is left UNOBSERVED (-1), which
@@ -1942,7 +1933,7 @@ class SkillNode(Node):
         consumes."""
         self._hand_pos_meas = float(getattr(msg, 'pos_meas', 0.0))
         self._hand_pos_cmd = float(getattr(msg, 'pos_cmd', 0.0))
-        self._hand_telemetry_mono = time.perf_counter()
+        self._hand_telemetry_mono = self._hand_clock()
         # The launch-ratio monitor's sample, stamped on the ROS WALL clock
         # (the clock the schedule's release instants live on — a perf stamp
         # would not be comparable with one). Arrival time, not a bridge
@@ -2017,7 +2008,7 @@ class SkillNode(Node):
         in_trajectory_mode = bool(status_fresh
                                   and self._traj_status.mode == 'TRAJECTORY')
         hand_fresh = (self._hand_telemetry_mono > 0.0
-                     and (now - self._hand_telemetry_mono)
+                     and (self._hand_clock() - self._hand_telemetry_mono)
                      < _HAND_STATE_STALE_S)
         # NO hand-POSITION predicate here (RETIRED 2026-09-16, owner
         # decision). `REJECTED_HAND_NOT_PARKED` used to be built from
@@ -2346,7 +2337,7 @@ class SkillNode(Node):
         case below never tries a REST.
 
         TWO reasons to hold, one op. The second is ``_force_hold``, set by
-        `_on_tick` on an ``executor.HAND_LANE_REFUSED`` END (2026-09-18):
+        `_on_tick` on an ``executor.LANE_REFUSED`` END (2026-09-18):
         there the streaming plan's rest tail is NOT a safe end, because the
         firmware is HOLDING a lane (legs or hand) rather than following it and every knot
         the plan walks on widens the deviation the guard measures. The hold is
@@ -2539,7 +2530,7 @@ class SkillNode(Node):
         HERE, directly — the same thing the pre-C1 `_check_reload_timeout`
         already did for `ABORTED_NO_ANNOUNCEMENT`, now the general case.
 
-        `force_hold`, like `_on_tick`'s own `HAND_LANE_REFUSED` branch: the
+        `force_hold`, like `_on_tick`'s own `LANE_REFUSED` branch: the
         streaming plan's rest tail is not a safe end when the firmware is
         HOLDING a refused hand lane rather than following it — every knot
         the plan walks on widens the deviation the guard measures, so the
@@ -2578,7 +2569,7 @@ class SkillNode(Node):
             if force_hold:
                 with self._pending_lock:
                     self._force_hold = True
-                # `_on_tick`'s own inline HAND_LANE_REFUSED branch arms
+                # `_on_tick`'s own inline LANE_REFUSED branch arms
                 # `_force_hold` again on the SAME tick if the executor above
                 # was still alive (its `attempt_ended` check runs right
                 # after this method returns, inside the SAME `_on_tick`
@@ -2668,7 +2659,7 @@ class SkillNode(Node):
 
     def _check_reload_lane_refused(self) -> None:
         """C5b (2026-09-28): the 2026-09-27 22:37 sitting's guard latch
-        fired with NO `HAND_LANE_REFUSED` END ever logged. Root cause: the
+        fired with NO `LANE_REFUSED` END ever logged. Root cause: the
         reload bridge (`compile_reload_wait`) is a ONE-skill schedule, and
         `SkillExecutor.done` is "every skill dispatched" — true the INSTANT
         the REST is sent to `trajectory/install_segment`, not once it has
@@ -2684,7 +2675,7 @@ class SkillNode(Node):
         Runs every tick while `_reload_ctx` is armed (ANY phase — the
         bridge REST or its rest tail is what is physically streaming for
         the whole reload wait, not only `await_bb_idle`), independent of
-        `self._executor`: the same fail-closed fact `HAND_LANE_REFUSED`
+        `self._executor`: the same fail-closed fact `LANE_REFUSED`
         already names, checked at the one place still watching once the
         bridge's own executor has retired."""
         with self._reload_lock:
@@ -2692,7 +2683,7 @@ class SkillNode(Node):
         if not reloading or not self._hand_lane_refused(time.perf_counter()):
             return
         self._end_attempt(
-            ex.HAND_LANE_REFUSED,
+            ex.LANE_REFUSED,
             'the firmware refused a streamed lane (legs or hand; '
             'sched_refused moved) during a reload wait and is HOLDING it -- '
             'holding the plan before the refused command walks into '
@@ -2965,11 +2956,11 @@ class SkillNode(Node):
                 # line is the operator's one line for that throw.
                 self._drain_reports(self._executor)
                 if self._executor.attempt_ended:
-                    if (self._executor.end_code == ex.HAND_LANE_REFUSED
+                    if (self._executor.end_code == ex.LANE_REFUSED
                             and not self._hold_forced_code):
                         # Armed once per attempt (the flag below), consumed by
                         # `_maybe_hold_pending_event` on the same call.
-                        self._hold_forced_code = ex.HAND_LANE_REFUSED
+                        self._hold_forced_code = ex.LANE_REFUSED
                         with self._pending_lock:
                             self._force_hold = True
                     stop_code = self._executor.end_code
@@ -3360,16 +3351,14 @@ class SkillNode(Node):
         the way the ordinary ``columns`` pattern's ``reload=False`` branch
         does).
 
-        ``columns_entry`` (owner decision, 2026-10-05, R5 sitting-6 prep):
-        read ONCE, here, before either branch below. ``'hop'`` (the
-        parameter's default) parks ball A at the FEED site through the
-        bridge REST and has THROW 0 release it cross-site, from there --
-        the cup is already parked for the feed catch instead of having to
-        transit there after the launch (``schedule.compile_columns``'s own
-        ``entry='hop'`` docstring has the full mechanism and the measured
-        reason). ``'transit'`` keeps the pre-R5 self-toss entry (bridge
-        holds ball A at ITS OWN site) byte-for-byte, for A/B comparison and
-        rollback.
+        The HOP entry (owner decision, 2026-10-05, R5 sitting-6 prep) parks
+        ball A at the FEED site through the bridge REST and has THROW 0
+        release it cross-site, from there -- the cup is already parked for
+        the feed catch instead of having to transit there after the launch
+        (``schedule.compile_columns``'s docstring has the full mechanism and
+        the measured reason). The 'transit' entry (pre-R5 self-toss) was
+        retired 2026-10-14 after the hop entry met the R5 gate at sitting 8;
+        `columns_entry` no longer exists.
         """
         if _ADMISSIBLE_BOX_PATH is None:
             msg = ('cannot find the repo root from %r -- the admissible box '
@@ -3387,23 +3376,18 @@ class SkillNode(Node):
         else:
             feed_site, a_site = sites[1], sites[0]
         # The hop entry (owner decision, 2026-10-05, R5 sitting-6 prep --
-        # `columns_entry`'s own docstring, `schedule.compile_columns`'s
-        # `entry` kwarg): read ONCE, here, at goal start. Under 'hop' the
-        # bridge REST parks at the FEED site (not `a_site`) and Ball
-        # Butler's aim is the UN-walked feed site -- the
-        # `columns_feed_aim_toward_a_mm` walk existed only because the
-        # TRANSIT entry's catch reversed the cup against Ball Butler's own
-        # +x arrival; the hop entry never makes that reversal, and walking
-        # it anyway would cost 10 mm of ball-ball clearance for nothing.
-        entry = self._columns_entry()
-        bridge_site = feed_site if entry == 'hop' else a_site
-        feed_aim_site = _columns_feed_aim_site(
-            feed_site, a_site,
-            (0.0 if entry == 'hop' else self._columns_feed_aim_toward_a_mm()))
+        # `schedule.compile_columns`): the bridge REST parks at the FEED
+        # site (not `a_site`) and Ball Butler's aim is the UN-walked feed
+        # site -- the `columns_feed_aim_toward_a_mm` walk existed only
+        # because the retired transit entry's catch reversed the cup against
+        # Ball Butler's own +x arrival; the hop entry never makes that
+        # reversal, and walking it anyway would cost 10 mm of ball-ball
+        # clearance for nothing.
+        bridge_site = feed_site
+        feed_aim_site = _columns_feed_aim_site(feed_site, a_site, 0.0)
         entry_tag = ('hop entry: %s thrown from %s to %s, cup parked for '
                     '%s -- ' % (ball_label(0), feed_site.name, a_site.name,
-                                ball_label(1))
-                    if entry == 'hop' else '')
+                                ball_label(1)))
         try:
             pattern = Pattern(sites=(a_site, feed_site), apex_m=apex_m,
                              dwell_s=dwell_s, n_throws=n_throws,
@@ -3478,13 +3462,12 @@ class SkillNode(Node):
             # `_columns_feed_aim_site`'s own docstring) instead of `a_site`.
             # B2: `holds_ball=not phantom_a` — ball A's cup is empty by
             # design when it is the phantom. `site=bridge_site` — the feed
-            # site under the hop entry, ball A's own site under transit
-            # (see `entry`'s own comment above).
+            # site (the hop entry, see the comment above).
             return self._start_reload(
                 SimpleNamespace(success=None, message=None), site=bridge_site,
                 lift_s=lift_s, boxes=boxes, memory=memory, kind='columns',
                 aim_site=feed_aim_site, columns_pattern=pattern,
-                holds_ball=not phantom_a, entry=entry)
+                holds_ball=not phantom_a)
 
         # No Ball Butler round trip at all (the interim human-lob
         # sittings): arm the bridge + FEED WAIT directly. Same t0 idiom as
@@ -3529,7 +3512,6 @@ class SkillNode(Node):
                 kind='columns', phase='await_feed', pattern=None,
                 columns_pattern=pattern, boxes=boxes, memory=memory,
                 site=bridge_site, aim_site=feed_aim_site, bridge=bridge,
-                entry=entry,
                 reload_sent=False, bb_left_idle=False, announced=False,
                 lead_deficit_logged=False,
                 deadline_mono=(time.perf_counter()
@@ -3767,7 +3749,7 @@ class SkillNode(Node):
         ``None`` — fail-closed, the same cache-plus-freshness shape
         `_live_commanded_position` uses for the platform."""
         if (self._hand_telemetry_mono <= 0.0
-                or (time.perf_counter() - self._hand_telemetry_mono)
+                or (self._hand_clock() - self._hand_telemetry_mono)
                 >= _HAND_STATE_STALE_S):
             return None
         return float(self._hand_pos_meas)
@@ -3784,7 +3766,7 @@ class SkillNode(Node):
         if self._hand_telemetry_mono <= 0.0:
             return (ball_possession.EVIDENCE_UNKNOWN, None,
                     'no /hand_telemetry received yet')
-        age_s = time.perf_counter() - self._hand_telemetry_mono
+        age_s = self._hand_clock() - self._hand_telemetry_mono
         if age_s >= _HAND_STATE_STALE_S:
             return (ball_possession.EVIDENCE_UNKNOWN, age_s,
                     '/hand_telemetry stale (age %d ms >= %d ms)'
@@ -4488,8 +4470,7 @@ class SkillNode(Node):
                       kind: str = 'reload',
                       aim_site: Optional[Site] = None,
                       columns_pattern: Optional[Pattern] = None,
-                      holds_ball: bool = False,
-                      entry: str = 'transit'):
+                      holds_ball: bool = False):
         """R4 reload start path (owner decision D4; C1/C4 rework,
         2026-09-28): installs the opening-REST-only bridge
         (`schedule.compile_reload_wait` — homes the hand, holds level at
@@ -4529,14 +4510,6 @@ class SkillNode(Node):
         reload's own pre-R5 behaviour (``aim_site = site``,
         ``holds_ball = False``) so this call is byte-for-byte unchanged
         for `kind='reload'`.
-
-        ``entry`` (owner decision, 2026-10-05, R5 sitting-6 prep): carried
-        onto the ctx unchanged, for `_install_columns_schedule` to pass to
-        `compile_columns`. Meaningless for `kind != 'columns'` (`'transit'`
-        default, never read there); `_run_columns` has already folded it
-        into ``site``/``aim_site`` by the time it calls here, so this
-        parameter exists only so the compiled SCHEDULE later matches the
-        bridge REST this call already committed to.
 
         C4: once the bridge `SkillExecutor` below is constructed, the
         machine has a COMMITTED, already-ticking plan (the 40 Hz timer
@@ -4670,10 +4643,6 @@ class SkillNode(Node):
                 # (harmless for every other kind, which never reads it)
                 # rather than threaded through as a second parameter.
                 lift_s=float(lift_s),
-                # The hop entry (2026-10-05): carried for
-                # `_install_columns_schedule` -- meaningless for
-                # `kind != 'columns'` (default 'transit', never read there).
-                entry=entry,
                 # R5 (2026-09-30, `not_settled_report.md` Q4 option (d)):
                 # armed False, flips True the first time
                 # `_on_bb_throw_outcome` retries a `THROW_ABORTED_NOT_SETTLED`
@@ -4687,7 +4656,7 @@ class SkillNode(Node):
         # with that method's).
         entry_tag = ('hop entry: %s held at %s, thrown cross-site at the '
                     'feed -- ' % (ball_label(0), site.name)
-                    if kind == 'columns' and entry == 'hop' else '')
+                    if kind == 'columns' else '')
         response.message = (
             '%s%s -- awaiting Ball Butler ready (IDLE, ball in hand, '
             'connected) within %.1f s'
@@ -5049,10 +5018,9 @@ class SkillNode(Node):
             % (hold_deg, cap_deg, n_after, '' if n_after == 1 else 's'))
 
     def _install_columns_schedule(self, ctx, feed: LandingPrior) -> None:
-        """Compile ``compile_columns(ctx.columns_pattern, feed=feed,
-        entry=ctx.entry)`` and install it for ``ctx`` -- the columns
-        counterpart of `_install_announced_reload`'s reload compile-then-
-        swap tail (R5, owner decision D1, 2026-09-30), sharing its
+        """Compile ``compile_columns(..., feed=feed, hop_entry=True)`` and
+        install it for ``ctx`` -- the columns counterpart of
+        `_install_announced_reload`'s reload compile-then-swap tail (R5, owner decision D1, 2026-09-30), sharing its
         claim-then-swap shape exactly (the 2026-09-29 race fix: the caller
         claims ``ctx`` BEFORE this runs, and the swap below installs only if
         the claim is still current -- a Stop, the deadline or a refused hand
@@ -5068,12 +5036,11 @@ class SkillNode(Node):
         resolve it differently (a fresh, unlatched `FlightLatch` search for
         the announcement path vs. a KNOWN tracker id for the tracker path).
 
-        ``ctx.entry`` (owner decision, 2026-10-05, R5 sitting-6 prep): set
-        by `_run_columns`/`_start_reload` at goal start, read straight
-        through to `compile_columns` -- the bridge REST this ctx's own
-        schedule already committed to (`_run_columns`'s ``bridge_site``)
-        must match the entry the COMPILED schedule assumes, or THROW 0
-        would be planned from a site the cup never actually rested at.
+        A fed `compile_columns` is always the hop entry (owner decision,
+        2026-10-05; the transit entry was retired 2026-10-14): the bridge
+        REST this ctx's own schedule already committed to (`_run_columns`'s
+        ``bridge_site``, the feed site) matches the site the compiled
+        schedule plans THROW 0 from.
         """
         # B2 (`columns_1ball_fed`): ball A's cup may be phantom-empty
         # (`ctx.columns_pattern.phantom_balls`) rather than actually
@@ -5084,7 +5051,7 @@ class SkillNode(Node):
                    else 'holding %s' % (ball_label(0),))
         try:
             schedule = compile_columns(ctx.columns_pattern, feed=feed,
-                                       entry=ctx.entry)
+                                       hop_entry=True)
         except ValueError as exc:
             # The claim already holds `_reload_ctx`, so this attempt must be
             # ended here, not left to time out.
@@ -5206,9 +5173,9 @@ class SkillNode(Node):
                           feed.pos_mm[0], feed.pos_mm[1], feed.pos_mm[2],
                           float(feed.t_land_abs_s) - now))
         self.get_logger().info(
-            'columns feed accepted (%s entry): %s lands in %.2f s -- '
+            'columns feed accepted (hop entry): %s lands in %.2f s -- '
             'catching it, then %d throw%s'
-            % (ctx.entry, ball_label(1), float(feed.t_land_abs_s) - now,
+            % (ball_label(1), float(feed.t_land_abs_s) - now,
                n_after, '' if n_after == 1 else 's'))
 
     def _bind_on_experience(self, memory: Memory):

@@ -185,6 +185,9 @@ def _hand_at(node, rev=sn.REST_HAND_REV, ball_held=True):
         ball_held=ball_held, ball_held_raw=ball_held, ball_held_valid=True))
 
 
+_HAND_CLOCK_FROZEN_S = 1.0e6
+
+
 def _node_with_client(response=None, ready=True, hand=True, frame=True):
     """``frame=True`` (the default since 2026-09-21, the unpinning of
     `learner_lateral_authority_mm` 0 -> 40): give the node a ready,
@@ -204,6 +207,8 @@ def _node_with_client(response=None, ready=True, hand=True, frame=True):
     default AND a test's own frame data would blend two sets of samples into
     one averaged offset — never what either party intended."""
     node = sn.SkillNode()
+    # frozen hand clock: a loaded run cannot age the fixture's sample (2026-10-15)
+    node._hand_clock = lambda: _HAND_CLOCK_FROZEN_S
     client = _RecordingClient(response=response, ready=ready)
     node._install_cli = client
     # The live session limits the box was swept at (`_status()`: 300/5000/
@@ -217,17 +222,6 @@ def _node_with_client(response=None, ready=True, hand=True, frame=True):
         _hand_at(node)
     if frame:
         _frame_ready(node)
-    # The hop entry (owner decision, 2026-10-05, R5 sitting-6 prep):
-    # `columns_entry`'s LIVE default flipped to 'hop', but this whole file's
-    # pre-existing fed-columns test surface (`ctx.site`/`ctx.aim_site`
-    # numeric assertions, the `columns_feed_aim_toward_a_mm` walk) was built
-    # against the pre-R5 self-toss entry -- pinning 'transit' HERE, in the
-    # one shared construction helper, means that surface needs no per-test
-    # changes. A test ABOUT the hop entry itself overrides this back
-    # explicitly (`node.set_parameters([_MockParameter('hop', name=
-    # 'columns_entry')])`); a test about the bare DECLARED default
-    # constructs its own `sn.SkillNode()` instead of using this helper.
-    node.set_parameters([_MockParameter('transit', name='columns_entry')])
     return node, client
 
 
@@ -348,7 +342,7 @@ def _columns_fed(node, tmp_path, *, plant_id):
     # bound check's own centre (`_maybe_resolve_columns_feed`), so the
     # landing must be near THAT point now, not P2.
     node._on_balls(BallStateArray(balls=[
-        _ball(7, status=1, tracking=1, x=-39.0, y=-2.0, z=800.0,
+        _ball(7, status=1, tracking=1, x=-49.0, y=-2.0, z=800.0,
              vz=-3000.0, sec=0, nanosec=int((lead_needed + 1.0) * 1e9),
              landing_from_fit=True)]))
     assert node._reload_ctx is None
@@ -683,9 +677,9 @@ def test_columns_feed_site_defaults_to_p1():
 
 def test_columns_feed_site_p2_restores_the_flown_layout(tmp_path):
     """`columns_feed_site='P2'` restores the OLD (2026-09-30..10-02) layout
-    -- A at P1, feed at P2 -- for an A/B comparison; the aim is still
-    walked `columns_feed_aim_toward_a_mm` TOWARD A's site, now P1, so it
-    lands at P2 - 20 = (+30, 0), not P2 itself."""
+    -- A at P1, feed at P2 -- for an A/B comparison. Hop entry (the only
+    entry): the bridge parks at the FEED site P2 and the aim is the
+    un-walked feed site (+50, 0)."""
     node, _client = _node_with_client()
     node._params['plant_id'] = 'test_columns_feed_site_p2'
     node.set_parameters([_MockParameter('P2', name='columns_feed_site')])
@@ -696,10 +690,9 @@ def test_columns_feed_site_p2_restores_the_flown_layout(tmp_path):
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         assert (node._juggle_goal(_columns_goal(reload=True, separation_mm=100.0))
                == sn.GoalResponse.ACCEPT)
-    assert node._reload_ctx.site.name == 'P1'
+    assert node._reload_ctx.site.name == 'P2'
     assert node._reload_ctx.aim_site.name == 'P2'
-    # 10 mm toward A since 2026-10-04 (was 20: x = 30).
-    assert node._reload_ctx.aim_site.cup_mm[:2] == pytest.approx([40.0, 0.0])
+    assert node._reload_ctx.aim_site.cup_mm[:2] == pytest.approx([50.0, 0.0])
 
 
 def test_columns_feed_site_rejects_an_unknown_value():
@@ -766,28 +759,9 @@ def test_columns_feed_bb_bias_mm_rejects_a_malformed_value():
 
 
 # ---------------------------------------------------------------------------
-# R5 sitting 6 prep (owner decision, 2026-10-05): the HOP ENTRY --
-# `columns_entry`. `scratchpad/s6/design.md` Decision 1. Most fed-columns
-# tests in this file go through `_node_with_client`, which pins
-# `columns_entry='transit'` so that large pre-existing surface (built
-# against the pre-R5 entry) needs no per-test changes -- see that helper's
-# own comment. The tests below exercise `columns_entry` itself.
-
-def test_columns_entry_declared_default_is_hop():
-    """The ROS parameter's own declared default -- a BARE node, not
-    `_node_with_client`'s helper (which pins 'transit' for this file's
-    pre-existing fed-columns surface)."""
-    node = sn.SkillNode()
-    assert node.get_parameter('columns_entry').value == 'hop'
-    assert node._columns_entry() == 'hop'
-
-
-def test_columns_entry_rejects_an_unknown_value():
-    """Same WARN-and-fallback shape as `_columns_feed_site_name`."""
-    node, _client = _node_with_client()
-    node.set_parameters([_MockParameter('sideways', name='columns_entry')])
-    assert node._columns_entry() == 'hop'
-
+# R5 sitting 6 prep (owner decision, 2026-10-05): the HOP ENTRY -- the only
+# fed-columns entry. The pre-R5 'transit' entry and its `columns_entry`
+# parameter were retired 2026-10-14.
 
 def test_columns_entry_hop_bridge_rest_holds_at_the_feed_site(tmp_path):
     """Hop entry, the reload=False (tracker-feed) branch, default layout
@@ -796,7 +770,6 @@ def test_columns_entry_hop_bridge_rest_holds_at_the_feed_site(tmp_path):
     UN-walked feed site (the 10 mm walk toward A exists only to counter the
     TRANSIT entry's catch reversal, which the hop entry never makes)."""
     node, _client = _node_with_client()
-    node.set_parameters([_MockParameter('hop', name='columns_entry')])
     node._params['plant_id'] = 'test_columns_entry_hop_bridge'
     _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
@@ -804,30 +777,9 @@ def test_columns_entry_hop_bridge_rest_holds_at_the_feed_site(tmp_path):
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_columns_goal(reload=False, separation_mm=100.0))
     assert resp.success is True, resp.message
-    assert node._reload_ctx.entry == 'hop'
     assert node._reload_ctx.site.name == 'P1'
     assert node._reload_ctx.aim_site.name == 'P1'
     assert node._reload_ctx.aim_site.cup_mm[:2] == pytest.approx([-50.0, 0.0])
-
-
-def test_columns_entry_transit_reproduces_todays_bridge_and_aim(tmp_path):
-    """'transit' keeps the pre-R5 entry byte-for-byte: bridge REST at ball
-    A's own site, Ball Butler's aim walked `columns_feed_aim_toward_a_mm`
-    toward it -- pinned here explicitly (every other fed-columns test in
-    this file gets it implicitly, via `_node_with_client`'s own pin)."""
-    node, _client = _node_with_client()
-    node.set_parameters([_MockParameter('transit', name='columns_entry')])
-    node._params['plant_id'] = 'test_columns_entry_transit_bridge'
-    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_columns_goal(reload=False, separation_mm=100.0))
-    assert resp.success is True, resp.message
-    assert node._reload_ctx.entry == 'transit'
-    assert node._reload_ctx.site.name == 'P2'
-    assert node._reload_ctx.aim_site.name == 'P1'
-    assert node._reload_ctx.aim_site.cup_mm[:2] == pytest.approx([-40.0, 0.0])
 
 
 def test_columns_entry_hop_bb_request_aims_at_the_unwalked_feed_site_plus_bias(
@@ -839,7 +791,6 @@ def test_columns_entry_hop_bb_request_aims_at_the_unwalked_feed_site_plus_bias(
     `entry` branch of its own)."""
     node, _client = _node_with_client()
     node.set_parameters([
-        _MockParameter('hop', name='columns_entry'),
         _MockParameter([29.0, 25.0], name='columns_feed_bb_bias_mm')])
     _columns_bb_started(node, tmp_path)
     assert node._reload_ctx.site.name == 'P1'
@@ -848,6 +799,23 @@ def test_columns_entry_hop_bb_request_aims_at_the_unwalked_feed_site_plus_bias(
     throw_req = node._bb_throw_cli.calls[0]
     assert throw_req.target_point_global_mm.x == pytest.approx(float(aim[0]) - 29.0)
     assert throw_req.target_point_global_mm.y == pytest.approx(float(aim[1]) - 25.0)
+
+
+def test_the_installed_fed_columns_schedule_marks_throw_0_as_the_hop_entry(
+        tmp_path):
+    """`_install_columns_schedule` must pass ``hop_entry=True`` to
+    `compile_columns` (its committed default is the parked, non-hop entry),
+    or THROW 0 of the live fed schedule silently loses ``entry_hop``.
+    2026-10-15: the transit retirement dropped the argument and the committed
+    default is the parked entry; this pins the live hop entry at the node,
+    where the schedule-level tests cannot see it."""
+    node, _client = _node_with_client()
+    _columns_fed(node, tmp_path, plant_id='test_columns_installed_hop_flag')
+    skills = node._executor.schedule.skills
+    throws = [s for s in skills if s.kind == sc.THROW]
+    assert throws, 'the installed schedule has no THROW at all'
+    assert skills[0].kind == sc.THROW and skills[0].entry_hop is True
+    assert [i for i, s in enumerate(skills) if s.entry_hop] == [0]
 
 
 def test_self_toss_refuses_an_uncovered_apex_before_any_motion(tmp_path):
@@ -2135,7 +2103,7 @@ def test_a_refused_stop_rest_tries_the_next_then_the_legacy_hold():
 
 
 def test_a_refused_hand_lane_holds_without_trying_a_rest():
-    """The forced hold (HAND_LANE_REFUSED) stays the HAND-LESS legacy hold:
+    """The forced hold (LANE_REFUSED) stays the HAND-LESS legacy hold:
     the firmware is holding a refused hand lane, and a REST carries a hand
     track that would keep walking the deviation the guard measures."""
     from jugglebot.motion.skills.segments import RestTerminal
@@ -2146,8 +2114,8 @@ def test_a_refused_hand_lane_holds_without_trying_a_rest():
     node._force_hold = True
     _ending_executor(node, [('before', RestTerminal(
         rest_site_mm=[0.0, 0.0, 750.0], t_rest_s=10.0))],
-        end_code='HAND_LANE_REFUSED')
-    node._hold_forced_code = 'HAND_LANE_REFUSED'
+        end_code='LANE_REFUSED')
+    node._hold_forced_code = 'LANE_REFUSED'
 
     node._on_tick()
 
@@ -2462,7 +2430,7 @@ def test_a_sched_refused_bump_ends_the_attempt_and_installs_the_hold(tmp_path):
     node._on_tick()
 
     assert execu.attempt_ended is True
-    assert execu.end_code == ex.HAND_LANE_REFUSED
+    assert execu.end_code == ex.LANE_REFUSED
     assert len(hold.calls) == 1
     # Once per attempt, not once per tick.
     node._on_tick()
@@ -3608,7 +3576,7 @@ class _RacingThrowClient(_RecordingClient):
 def test_c1_a_throw_call_overtaken_by_a_lane_refusal_does_not_overwrite_the_end_code(tmp_path):
     """`_fire_reload_throw` blocks in `wait_for_service`/`_wait_future` without
     `_reload_lock`; `_check_reload_lane_refused` runs on every tick and can end
-    the attempt `HAND_LANE_REFUSED` (force_hold) in that window. When the stale
+    the attempt `LANE_REFUSED` (force_hold) in that window. When the stale
     call then returns a failure it must NOT call `_end_attempt` again: with the
     bridge executor already retired, that second call overwrites
     `_goal_end_code` and the Juggle result loses the E-stop-preventing reason
@@ -3632,7 +3600,7 @@ def test_c1_a_throw_call_overtaken_by_a_lane_refusal_does_not_overwrite_the_end_
     _bb_ready(node)
     node._on_tick()
     assert node._reload_ctx is None
-    assert node._goal_end_code == ex.HAND_LANE_REFUSED, node._goal_end_code
+    assert node._goal_end_code == ex.LANE_REFUSED, node._goal_end_code
     assert len(hold.calls) == 1
 
 
@@ -3913,7 +3881,7 @@ def test_c5b_lane_refused_during_a_reload_wait_ends_and_holds_even_after_the_bri
     dispatches -- long before the REST has physically settled (measured:
     6.42 s of hand-homing in the field). With no executor left,
     `hand_lane_refused` was never read again for the rest of that move, and
-    the field guard latched with NO `HAND_LANE_REFUSED` END ever logged.
+    the field guard latched with NO `LANE_REFUSED` END ever logged.
     `_check_reload_lane_refused` is the fix: it watches `_reload_ctx`
     directly, independent of `self._executor`."""
     node, _client = _node_with_client(response=_response())
@@ -3935,7 +3903,7 @@ def test_c5b_lane_refused_during_a_reload_wait_ends_and_holds_even_after_the_bri
     assert node._reload_ctx is None
     assert len(hold.calls) == 1
     assert node._executor is None
-    assert node._goal_end_code == ex.HAND_LANE_REFUSED
+    assert node._goal_end_code == ex.LANE_REFUSED
 
 
 def test_c5b_lane_refused_before_the_bridge_ever_dispatches_holds_only_once(tmp_path):
@@ -3943,7 +3911,7 @@ def test_c5b_lane_refused_before_the_bridge_ever_dispatches_holds_only_once(tmp_
     ticked yet) exercises a SECOND path to the same hold:
     `_check_reload_lane_refused` (via `_end_attempt`, `force_hold=True`)
     marks the executor `attempt_ended` and fires the hold, then `_on_tick`'s
-    OWN inline `HAND_LANE_REFUSED` branch (later in the SAME tick, once it
+    OWN inline `LANE_REFUSED` branch (later in the SAME tick, once it
     finds `self._executor.attempt_ended` already true) must not fire a
     SECOND one -- `_end_attempt` sets `_hold_forced_code` for exactly this
     reason."""
@@ -3960,7 +3928,7 @@ def test_c5b_lane_refused_before_the_bridge_ever_dispatches_holds_only_once(tmp_
 
     assert len(hold.calls) == 1
     assert node._executor is None
-    assert node._goal_end_code == ex.HAND_LANE_REFUSED
+    assert node._goal_end_code == ex.LANE_REFUSED
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -4026,9 +3994,10 @@ class TestJuggleAction:
         assert node._reload_ctx.kind == 'columns'
         assert node._reload_ctx.phase == 'await_bb_idle'
         assert node._reload_ctx.aim_site.name == 'P1'
+        # Hop entry: un-walked feed site, and the bridge parks AT it.
         assert node._reload_ctx.aim_site.cup_mm[:2] == pytest.approx(
-            [-40.0, 0.0])  # 10 mm toward A since 2026-10-04 (was 20: -30)
-        assert node._reload_ctx.site.name == 'P2'
+            [-50.0, 0.0])
+        assert node._reload_ctx.site.name == 'P1'
 
     def test_cancel_callback_always_accepts(self):
         node, _client = _node_with_client()
@@ -4553,52 +4522,46 @@ def test_columns_bb_announcement_installs_the_fed_schedule(tmp_path):
     assert first.ball_id == 1
 
 
-def test_columns_bb_announcement_refuses_an_uncatchable_feed(tmp_path):
-    """R5 pre-throw feasibility (`_install_columns_schedule`, 2026-09-30):
-    an announced landing displaced 60 mm in x AWAY from A's site (R5
-    sitting 2, 2026-10-02: the default FED layout holds A at P2 and feeds
-    P1 -- the cup must reverse against Ball Butler's own +x lateral
-    arrival to match it at touch-down, so moving further FROM P2 only
-    makes that worse) cannot be planned (`executor.plan_columns_first_
-    cycle` refuses LIMIT_VEL, matching `test_plan_columns_first_cycle_
-    refuses_a_feed_displaced_toward_the_far_site` in
-    ``test_skills_executor.py``). Ends ``REJECTED_COLUMNS_FEED_
-    UNCATCHABLE`` -- no executor swap (the bridge REST the two-phase
-    start already installed keeps streaming) and no THROW is ever
-    dispatched (the mocked ``trajectory/install_segment`` client sees
-    nothing).
-
-    **30 mm past the feed SITE (P1, x = -80), not the 20 mm the aim is
-    walked to** -- the undisplaced feed site itself already refuses
-    LIMIT_ACC (101 %, `_run_columns`'s own docstring), and the real
-    `SkillExecutor._catch_terminal`'s "release rides the caught xy, not
-    the site" rule (2026-09-28) widens the margin versus the offline
-    planner probe (`scratchpad/probe_feed_swap.py`), so this stays well
-    past the LIMIT_VEL cliff the probe found at -10/-20 mm rather than
-    riming it.
-
-    **60 mm since 2026-10-11** (logbook `2026-10-11-skill-stack-r5-fed-
-    catch-lateral-ring`): the level-pinned feed catch now matches the
-    arrival along the cup axis only, so the legs no longer reverse
-    against Ball Butler's lateral arrival and the cliff moved out.
-    Re-probed through this test's own path (live 350/5000/200000, 2026-10-11,
-    `ex.plan_columns_first_cycle` wrapped to print its refusal): 0-35 mm plan
-    clean; 40 mm LIMIT_VEL 353.8 mm/s (101 %); 60 mm LIMIT_VEL 419.7 mm/s
-    (120 %), well past the cliff."""
-    node, _client = _node_with_client()
-    _columns_bb_started(node, tmp_path)
-    bridge_schedule = node._executor.schedule
-    # `node._reload_ctx.site` is A's held site; the feed site is the OTHER
-    # of the two named `columns_sites` (`ctx.aim_site` keeps the feed
-    # site's name but sits AT the aim offset, not the site itself).
-    a_name = node._reload_ctx.site.name
-    feed_site = next(s for s in sn.columns_sites(100.0) if s.name != a_name)
+def _announce_displaced_feed(node, dx_mm):
+    """Announce a Ball Butler landing `dx_mm` in x from the feed site."""
+    feed_site = node._reload_ctx.site     # hop: the bridge parks AT the feed site
     ann = _bb_announcement(
         target_id=node._robot_name,
-        landing_mm=(float(feed_site.cup_mm[0]) - 60.0, 0.0, 830.0),
+        landing_mm=(float(feed_site.cup_mm[0]) + dx_mm, 0.0, 830.0),
         landing_vel_mm_s=(1058.0, 475.0, -5507.0), throw_time_s=0.5,
         landing_time_s=5.0)
     node._on_announcement(ann)
+
+
+def test_columns_bb_announcement_refuses_an_uncatchable_feed(tmp_path):
+    """The claim-then-swap tail's refusal CONTRACT
+    (`_install_columns_schedule`): when the columns compile refuses the
+    announced feed, the attempt ends cleanly -- the bridge schedule stays
+    (no executor swap), `_reload_ctx` is released, no THROW (or anything)
+    reaches the installer, and the compile's own reason text reaches the
+    end message. Driven DETERMINISTICALLY by making `compile_columns`
+    raise, not by a geometry pin.
+
+    Why not geometry: the old -80 mm pin ("refuses LIMIT_VEL") was measured
+    2026-10-14 while the live call was silently compiling with the parked
+    entry (`hop_entry=False`). Probe 2026-10-15 under the real hop entry
+    (`hop_entry=True`; scratch pytest driving `_on_announcement` with
+    `landing_vel=(1058, 475, -5507)`, landing x offset from the feed site):
+    -80, +60, +80, +100 mm SWAP (accepted); -100, -110, -120, -150, -200,
+    -250, -300, -350, -400 and +200, +250, +300, +400 mm refuse
+    `REJECTED_CYCLE_INFEASIBLE(INFEASIBLE: QP infeasible: unbounded ...)`;
+    +120 mm refuses LIMIT_ACC; +150/+180 mm refuse LIMIT_VEL (386/496 mm/s).
+    `compile_columns` itself accepts every displacement in -400..+400 mm;
+    all those refusals are the later `plan_columns_first_cycle` check
+    (`REJECTED_COLUMNS_FEED_UNCATCHABLE`), pinned geometrically in
+    `test_columns_bb_announcement_refuses_a_feed_landing_far_outside_reach`.
+    """
+    node, _client = _node_with_client()
+    _columns_bb_started(node, tmp_path)
+    bridge_schedule = node._executor.schedule
+    with patch.object(sn, 'compile_columns',
+                      side_effect=ValueError('uncatchable feed (probe)')):
+        _announce_displaced_feed(node, 0.0)
     assert node._reload_ctx is None
     assert node._executor is not None
     assert node._executor.schedule is bridge_schedule   # no swap happened
@@ -4608,8 +4571,31 @@ def test_columns_bb_announcement_refuses_an_uncatchable_feed(tmp_path):
     # `_end_attempt` marks IT ended (`_end_attempt`'s own docstring) rather
     # than `_goal_end_code` directly.
     assert node._executor.attempt_ended is True
+    assert node._executor.end_code == 'REJECTED_COLUMNS_UNSCHEDULABLE'
+    assert 'uncatchable feed (probe)' in node._executor.end_message
+
+
+def test_columns_bb_announcement_refuses_a_feed_landing_far_outside_reach(
+        tmp_path):
+    """Geometry pin for the pre-throw feasibility check
+    (`plan_columns_first_cycle` -> `REJECTED_COLUMNS_FEED_UNCATCHABLE`):
+    a landing 250 mm outward (-x, away from A's site) of the feed site.
+    Pinned in the MIDDLE of the refusing region, not at a cliff: probe
+    2026-10-15 (hop entry, sweep in the docstring of `..._refuses_an_
+    uncatchable_feed`) -- every offset from -100 to -400 mm refuses
+    `REJECTED_CYCLE_INFEASIBLE(INFEASIBLE: QP infeasible: unbounded)`,
+    while -80 mm still plans."""
+    node, _client = _node_with_client()
+    _columns_bb_started(node, tmp_path)
+    bridge_schedule = node._executor.schedule
+    _announce_displaced_feed(node, -250.0)
+    assert node._reload_ctx is None
+    assert node._executor.schedule is bridge_schedule
+    assert _client.calls == []
+    assert node._executor.attempt_ended is True
     assert node._executor.end_code == 'REJECTED_COLUMNS_FEED_UNCATCHABLE'
-    assert 'LIMIT_VEL' in node._executor.end_message
+    assert 'REJECTED_CYCLE_INFEASIBLE' in node._executor.end_message
+    assert 'QP infeasible' in node._executor.end_message
 
 
 def test_columns_bb_announcement_at_the_aim_point_still_installs(tmp_path):
@@ -5470,7 +5456,7 @@ def test_bb_cancel_a_throw_call_overtaken_by_an_end_is_cancelled(tmp_path):
     cancel = _cancel_client(node)
     _bb_ready(node)
     node._on_tick()
-    assert node._goal_end_code == ex.HAND_LANE_REFUSED, node._goal_end_code
+    assert node._goal_end_code == ex.LANE_REFUSED, node._goal_end_code
     assert len(cancel.calls) == 1
 
 
@@ -5749,12 +5735,12 @@ def test_t1_the_lane_refused_hold_then_requests_recovery_once():
     node._hold_cli = _hold_client()
     cli = _recover_client(node)
     node._force_hold = True
-    node._maybe_hold_pending_event('HAND_LANE_REFUSED')
+    node._maybe_hold_pending_event('LANE_REFUSED')
     assert len(node._hold_cli.calls) == 1
     assert len(cli.calls) == 1
     # a second forced end in the same latch episode does not call again
     node._force_hold = True
-    node._maybe_hold_pending_event('HAND_LANE_REFUSED')
+    node._maybe_hold_pending_event('LANE_REFUSED')
     assert len(cli.calls) == 1
 
 
@@ -5763,7 +5749,7 @@ def test_t1_without_the_service_falls_back_to_hold_only():
     node._hold_cli = _hold_client()
     cli = _recover_client(node, ready=False)
     node._force_hold = True
-    node._maybe_hold_pending_event('HAND_LANE_REFUSED')
+    node._maybe_hold_pending_event('LANE_REFUSED')
     assert len(node._hold_cli.calls) == 1                # today's behaviour
     assert cli.calls == []
     assert node._lane_cli_unavail_logged is True
@@ -5853,7 +5839,7 @@ def test_the_hold_end_line_echoes_a_non_idle_lane_recovery():
     node._force_hold = True
     infos = []
     node._logger.info = infos.append
-    node._maybe_hold_pending_event('HAND_LANE_REFUSED')
+    node._maybe_hold_pending_event('LANE_REFUSED')
     assert any('hold installed' in m and 'lane_recovery=in_progress' in m
                for m in infos)
 
@@ -5924,7 +5910,6 @@ def test_accept_possession_columns_reload_hop_with_an_empty_cup_is_refused_befor
     are ever asked (the launch-time ladder refused 5.4 s later, too late to
     stop Ball Butler)."""
     node, _client = _node_with_client()
-    node.set_parameters([_MockParameter('hop', name='columns_entry')])
     reload_client, throw_client = _reload_ready(node)
     _cup(node, seated=False)
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
@@ -5946,28 +5931,9 @@ def test_accept_possession_columns_reload_hop_with_a_seated_cup_dispatches_bb(
     so a SEATED cup is exactly what a fed columns attempt needs and must NOT
     read as "ball already in hand"; Ball Butler is dispatched as before."""
     node, _client = _node_with_client()
-    node.set_parameters([_MockParameter('hop', name='columns_entry')])
     _cup(node, seated=True)
     _columns_bb_started(node, tmp_path)         # asserts the accept itself
     assert len(node._bb_throw_cli.calls) == 1
-
-
-def test_accept_possession_columns_reload_transit_needs_a_seated_cup_too(
-        tmp_path):
-    """`columns_entry='transit'`'s bridge holds ball A at its own site
-    (`holds_ball=not phantom_a` -- the same argument as hop), so it needs
-    the same SEATED cup."""
-    node, _client = _node_with_client()             # helper pins 'transit'
-    reload_client, throw_client = _reload_ready(node)
-    _cup(node, seated=False)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_columns_goal(reload=True,
-                                                 separation_mm=100.0))
-    assert resp.success is False
-    assert ex.REJECTED_NO_BALL in resp.message
-    _assert_no_bb_and_no_motion(node, reload_client, throw_client)
 
 
 def test_accept_possession_columns_1ball_fed_with_a_seated_cup_is_refused():
@@ -6026,6 +5992,19 @@ def test_accept_possession_a_blind_sensor_is_refused_ball_unknown(pattern,
     assert ex.REJECTED_BALL_UNKNOWN in resp.message
     assert 'sensor' in resp.message
     _assert_no_bb_and_no_motion(node, reload_client, throw_client)
+
+
+def test_a_slow_test_run_cannot_age_the_fixture_sample_past_the_accept_check():
+    """The accept-time cup check ages the last /hand_telemetry sample on the
+    hand clock against `_HAND_STATE_STALE_S`; on a loaded box the real clock
+    aged the fixture's seated sample stale before `_start_pattern`, refusing
+    REJECTED_BALL_UNKNOWN. probe 2026-10-15: failed before the clock
+    injection, passes after."""
+    node, _client = _node_with_client()
+    time.sleep(sn._HAND_STATE_STALE_S + 0.1)
+    resp = node._start_pattern(_flown_columns_goal())
+    assert ex.REJECTED_BALL_UNKNOWN not in resp.message
+    assert node._executor is not None
 
 
 def test_accept_possession_stale_hand_telemetry_is_refused_ball_unknown():

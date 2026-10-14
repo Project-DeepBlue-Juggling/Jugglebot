@@ -35,7 +35,7 @@ from jugglebot.motion.trajectory import ballistics_bc as bal      # noqa: E402
 
 import sim.skills_gate as sg                                      # noqa: E402
 from sim import stream_chain                                      # noqa: E402
-from sim.juggle_noise import BallisticEstimator                   # noqa: E402
+from sim.ball.noise import BallisticEstimator                   # noqa: E402
 from sim.skills_gate import (                                     # noqa: E402
     MIRROR_TOL_HAND_REV, MIRROR_TOL_LEG_REV, SkillsGate,
     SkillsGateConfig, SelfTossGateConfig, _WANT_FLAGS,

@@ -1,5 +1,7 @@
 """Hardware-faithful noise model for the online juggle (plan §3, cross-cutting).
 
+(History: was ``sim/juggle_noise.py`` until 2026-10-15.)
+
 Two independent, seed-reproducible noise sources, on by default, exposed as
 config knobs so any rung can sweep or disable them. Every rung's acceptance must
 hold *under* the noise.

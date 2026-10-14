@@ -1,4 +1,4 @@
-"""Unit tests for the §3 hardware-faithful noise model (``sim.juggle_noise``).
+"""Unit tests for the §3 hardware-faithful noise model (``sim.ball.noise``).
 
 Plan: plans/archived/bb-online-juggle-tilt-rearchitecture.md §3 (cross-cutting
 noise) + Phase 1 / Rung 1. Two independent, seed-reproducible noise sources
@@ -9,7 +9,7 @@ observations back into a smooth (pos, vel) for re-planning.
 import numpy as np
 import pytest
 
-from sim.juggle_noise import NoiseConfig, JuggleNoise, BallisticEstimator
+from sim.ball.noise import NoiseConfig, JuggleNoise, BallisticEstimator
 
 
 GRAVITY = np.array([0.0, 0.0, -9.806])

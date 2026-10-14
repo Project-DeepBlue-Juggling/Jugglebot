@@ -102,12 +102,6 @@ class BallButlerHeartbeatMsg:
 
 
 @dataclass
-class CanTrafficReportMessage:
-    received_count: int = 0
-    report_interval: int = 0
-
-
-@dataclass
 class CatchEventMsg:
     header: object = field(default_factory=lambda: MagicMock())
     catch_time: object = None
@@ -156,16 +150,6 @@ class HandTelemetryMessage:
 
 
 @dataclass
-class LegsTargetReachedMessage:
-    leg0_has_arrived: bool = False
-    leg1_has_arrived: bool = False
-    leg2_has_arrived: bool = False
-    leg3_has_arrived: bool = False
-    leg4_has_arrived: bool = False
-    leg5_has_arrived: bool = False
-
-
-@dataclass
 class RobotState:
     timestamp: object = None
     motor_states: list = field(default_factory=list)
@@ -191,13 +175,6 @@ class SetMotorVelCurrLimitsMessage:
     legs_curr_limit: float = 0.0
     hand_vel_limit: float = 0.0
     hand_curr_limit: float = 0.0
-
-
-@dataclass
-class SetTrapTrajLimitsMessage:
-    trap_vel_limit: float = 0.0
-    trap_acc_limit: float = 0.0
-    trap_dec_limit: float = 0.0
 
 
 @dataclass
@@ -520,12 +497,6 @@ GetTiltReadingService = _make_service(
 )
 ODriveCommandService = _make_service(
     req_fields={'command': ''},
-    resp_fields={'success': False, 'message': ''},
-)
-SendBallButlerCommand = _make_service(
-    req_fields={'yaw_angle_rad': 0.0, 'pitch_angle_rad': 0.0,
-                'throw_speed': 0.0, 'throw_time': 0.0,
-                'suppress_announcement': False},
     resp_fields={'success': False, 'message': ''},
 )
 BallButlerThrow = _make_service(
@@ -1045,19 +1016,16 @@ _create_mock_module('jugglebot_interfaces.msg', {
     'MotorStateSingle': MotorStateSingle,
     'BallButlerCalibrationResult': BallButlerCalibrationResult,
     'BallButlerHeartbeat': BallButlerHeartbeatMsg,
-    'CanTrafficReportMessage': CanTrafficReportMessage,
     'CatchEvent': CatchEventMsg,
     'CatchingConeHeartbeat': CatchingConeHeartbeatMsg,
     'CatchTimingResult': CatchTimingResultMsg,
     'HandTelemetryMessage': HandTelemetryMessage,
-    'LegsTargetReachedMessage': LegsTargetReachedMessage,
     'MocapDataMulti': MocapDataMulti,
     'MocapDataSingle': MocapDataSingle,
     'RigidBodyPose': RigidBodyPose,
     'RigidBodyPoses': RigidBodyPoses,
     'RobotState': RobotState,
     'SetMotorVelCurrLimitsMessage': SetMotorVelCurrLimitsMessage,
-    'SetTrapTrajLimitsMessage': SetTrapTrajLimitsMessage,
     'ThrowAnnouncement': ThrowAnnouncement,
     'TrajectoryStatus': TrajectoryStatus,
     'PlatformPoseCommand': PlatformPoseCommand,
@@ -1070,7 +1038,6 @@ _create_mock_module('jugglebot_interfaces.srv', {
     'ActivateOrDeactivate': ActivateOrDeactivate,
     'GetTiltReadingService': GetTiltReadingService,
     'ODriveCommandService': ODriveCommandService,
-    'SendBallButlerCommand': SendBallButlerCommand,
     'SetFloat': SetFloat,
     'SetHandGains': SetHandGains,
     'SetString': SetString,

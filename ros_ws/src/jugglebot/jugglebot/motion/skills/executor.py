@@ -371,7 +371,9 @@ ABORTED_MODE_CHANGED = 'ABORTED_MODE_CHANGED'
 #: resumed inside its 0.05 rev tolerance, the legs (0.4 rev/s against
 #: ``SCHED_RESUME_TOL_VEL`` 0.3 rps) were refused and latched until the next
 #: disarm/arm edge -- and the hand-less hold then stopped the hand itself.
-HAND_LANE_REFUSED = 'HAND_LANE_REFUSED'
+#: (Was ``HAND_LANE_REFUSED`` until 2026-10-15: the firmware refuses a
+#: streamed lane, legs or hand; the string value changed with the name.)
+LANE_REFUSED = 'LANE_REFUSED'
 
 #: No evidence the ball left by ``t_release + RELEASE_GRACE_S`` -- the throw
 #: produces no learner row (``toss_sequencer.py::_step_throwing``'s
@@ -708,7 +710,7 @@ class Observations:
     * ``hand_lane_refused`` -- likewise every tick, never at dispatch alone:
       the firmware's ``sched_refused`` counter has moved since this attempt
       started (``teensy_bridge_node`` publishes it on ``/link_status``) --
-      :data:`HAND_LANE_REFUSED`.  Defaults False, so a caller that cannot
+      :data:`LANE_REFUSED`.  Defaults False, so a caller that cannot
       observe the counter keeps the pre-2026-09-18 behaviour exactly.
     """
 
@@ -3249,16 +3251,16 @@ class SkillExecutor:
                 # following the lane at all — it is holding, and every knot
                 # the plan walks on widens the gap the guard measures. The
                 # caller's END path installs the hand-less hold that stops
-                # the walk (see HAND_LANE_REFUSED).
+                # the walk (see LANE_REFUSED).
                 self.attempt_ended = True
-                self.end_code = HAND_LANE_REFUSED
+                self.end_code = LANE_REFUSED
                 self.end_message = ('the firmware refused a streamed lane '
                                     '(legs or hand) and is holding it')
                 lines.append(
                     '%.3f END %s: the firmware refused a streamed lane (legs '
                     'or hand; sched_refused moved) and is HOLDING it — hold '
                     'the plan before the refused command walks into '
-                    'MAX_DEVIATION' % (t_abs_s, HAND_LANE_REFUSED))
+                    'MAX_DEVIATION' % (t_abs_s, LANE_REFUSED))
             else:
                 for idx, skill in enumerate(self.schedule.skills):
                     if idx in self.dispatched:

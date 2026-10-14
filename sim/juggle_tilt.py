@@ -1,4 +1,7 @@
 """Tilt-aimed cup geometry for the online juggle re-architecture (Rung 1+).
+Name kept on purpose (2026-10-15): the box-gated tilt_geometry.py and
+cup_realize.py cite this file as their ported source, and a gated-file edit
+means a box re-sweep.
 
 The level-platform decoupling (``sim.juggle_online.realize``) forced every
 lateral cup motion onto the band-limited platform *translation*. The

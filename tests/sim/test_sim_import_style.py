@@ -34,7 +34,7 @@ _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(
 #: ``tools`` is deliberately absent: ``tools.*`` is a real repo-root package.
 _SIM_TOP_LEVEL = frozenset({
     'analysis', 'ball', 'ball_butler', 'gate_common',
-    'juggle_noise', 'juggle_tilt', 'model', 'plant', 'reload_gate', 'toss_gate', 'viz',
+    'juggle_tilt', 'model', 'plant', 'reload_gate', 'toss_gate', 'viz',
 })
 
 #: Directories scanned.  attic/ is frozen history; ros_ws is a separate root.

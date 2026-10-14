@@ -3125,7 +3125,7 @@ def test_mode_change_mid_attempt_aborts_and_stops_further_dispatch(sites):
 
 
 def test_a_refused_hand_lane_ends_the_attempt_and_stops_dispatch(sites):
-    """``HAND_LANE_REFUSED`` (2026-09-18): the firmware refused the streamed
+    """``LANE_REFUSED`` (2026-09-18): the firmware refused the streamed
     lane's promotion and is HOLDING the hand, so the rest tail is NOT a safe
     end — every knot the plan walks on widens the deviation the guard measures.
     Read every tick, like the mode check, and never at dispatch alone: the
@@ -3143,8 +3143,8 @@ def test_a_refused_hand_lane_ends_the_attempt_and_stops_dispatch(sites):
 
     state['refused'] = True
     lines = x.tick(sch.skills[0].dispatch_s() + 0.05)
-    assert x.attempt_ended and x.end_code == ex.HAND_LANE_REFUSED
-    assert ex.HAND_LANE_REFUSED in lines[0]
+    assert x.attempt_ended and x.end_code == ex.LANE_REFUSED
+    assert ex.LANE_REFUSED in lines[0]
     assert 'sched_refused' in lines[0]
 
     # Nothing further dispatches, including the already-due CATCH.
