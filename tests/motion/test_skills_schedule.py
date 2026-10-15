@@ -172,30 +172,8 @@ def test_the_leads_are_knot_multiples_of_the_one_grid():
     assert sc.HANDOFF_LEAD_KNOTS > sc.LEAD_KNOTS
 
 
-def test_the_handoff_lead_buys_four_knots_and_the_live_schedules_stay_monotone():
-    """``HANDOFF_LEAD_EXTRA_KNOTS`` = 4 (2026-10-14; 2 since 2026-09-18).
-
-    Why 4: accepted handoff-CATCH installs on the 2026-10-14 rehearsal
-    sessions and sitting 8 reached 223-231 ms dispatch-to-install (p90
-    188-198), and the seven attempt-ending ``SPLICE_TOO_LATE``s replied
-    215-272 ms after dispatch — the right tail of the same distribution
-    against a 200 ms budget (2.7-5.1 % per first-CATCH dispatch).  4 extra
-    knots make the pinned budget ``(13 - 3)·dt`` = 250 ms.
-
-    What it costs: every pinned CATCH dispatches 50 ms earlier, so the gap
-    to the skill before it shrinks.  At the live operating point (apex
-    0.95 m, sep 125 mm, dwell 0.27 s) both compilers must stay dispatch-
-    monotone with at least 0.25 s between consecutive dispatches (probe
-    2026-10-14: min gap 0.300 s at 4 extra knots, 0.250 s at 6), so the
-    worker — one request in flight — has finished the previous install
-    before the next is sent (handoff installs top out at ~231 ms).
-    """
-    assert sc.HANDOFF_LEAD_EXTRA_KNOTS == 4
-    assert sc.HANDOFF_LEAD_S == pytest.approx(
-        13 * float(hw.JB_TRAJ_KNOT_DT_S))
-    sites = st.columns_sites(125.0)
-    pattern = sc.Pattern(sites=sites, apex_m=0.95, dwell_s=0.27, n_throws=10)
-    builds = (
+def _live_builds(sites, pattern):
+    return (
         sc.compile_columns(pattern, t0_abs_s=10.0),
         sc.compile_columns(pattern, feed=_feed_for(sites, pattern),
                            hop_entry=True),
@@ -203,11 +181,52 @@ def test_the_handoff_lead_buys_four_knots_and_the_live_schedules_stay_monotone()
                                               dwell_s=0.27, n_throws=10),
                             10.0),
     )
-    for schedule in builds:
+
+
+def test_the_handoff_lead_buys_eight_knots_and_the_live_schedules_stay_monotone():
+    """``HANDOFF_LEAD_EXTRA_KNOTS`` = 8 (2026-10-16; 4 since 2026-10-14; 2
+    since 2026-09-18).
+
+    Why 8 (``plans/active/handoff-solve-chaining.md`` § 0.4): the replay of
+    the recorded SPLICE_TOO_LATE failures had margins of 13/28 ms at 4 extra
+    knots and 113/128 ms at 8; the pinned budget is ``(17 - 3)*dt`` = 350 ms.
+
+    What it costs: every pinned CATCH dispatches 100 ms earlier than at 4, so
+    the gap to the skill before it shrinks to 0.200 s (law pinned in
+    ``test_the_handoff_min_gap_is_400_ms_less_a_knot_per_extra_knot``).  At
+    the live operating point (apex 0.95 m, sep 125 mm, dwell 0.27 s) both
+    compilers must stay dispatch-monotone with at least 0.20 s between
+    consecutive dispatches; the skill_node tick queues a due CATCH behind its
+    predecessor's install.
+    """
+    assert sc.HANDOFF_LEAD_EXTRA_KNOTS == 8
+    assert sc.HANDOFF_LEAD_S == pytest.approx(
+        17 * float(hw.JB_TRAJ_KNOT_DT_S))
+    sites = st.columns_sites(125.0)
+    pattern = sc.Pattern(sites=sites, apex_m=0.95, dwell_s=0.27, n_throws=10)
+    for schedule in _live_builds(sites, pattern):
         assert any(s.lead_s == sc.HANDOFF_LEAD_S for s in schedule.skills)
         disp = [s.dispatch_s() for s in schedule.skills]
         gaps = [b - a for a, b in zip(disp, disp[1:])]
-        assert min(gaps) >= 0.25 - 1e-9, (schedule.pattern, min(gaps))
+        assert min(gaps) >= 0.20 - 1e-9, (schedule.pattern, min(gaps))
+
+
+def test_the_handoff_min_gap_is_400_ms_less_a_knot_per_extra_knot(monkeypatch):
+    """Min dispatch gap == 0.400 - 0.025*EXTRA for EXTRA in 2..10 at apex
+    0.95 / dwell 0.27 / sep 125, to 1e-6 s (not the brief's 1e-9: the hardware
+    knot dt is a float32 constant, 0.025 +- 1e-8 per knot) (the leads are module-level derived constants,
+    so each EXTRA is installed by patching ``HANDOFF_LEAD_S``)."""
+    dt = float(hw.JB_TRAJ_KNOT_DT_S)
+    sites = st.columns_sites(125.0)
+    pattern = sc.Pattern(sites=sites, apex_m=0.95, dwell_s=0.27, n_throws=10)
+    for extra in range(2, 11):
+        monkeypatch.setattr(sc, 'HANDOFF_LEAD_S',
+                            (sc.LEAD_KNOTS + extra) * dt)
+        for schedule in _live_builds(sites, pattern):
+            disp = [s.dispatch_s() for s in schedule.skills]
+            gaps = [b - a for a, b in zip(disp, disp[1:])]
+            assert min(gaps) == pytest.approx(0.400 - 0.025 * extra,
+                                              abs=1e-6), (extra, min(gaps))
 
 
 def test_the_splice_budget_covers_the_measured_loaded_solve():

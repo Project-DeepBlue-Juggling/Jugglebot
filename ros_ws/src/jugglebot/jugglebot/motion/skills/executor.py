@@ -45,7 +45,8 @@ from jugglebot.motion.skills.schedule import (HANDOFF_LEAD_KNOTS,
                                                HANDOFF_LEAD_S, LEAD_KNOTS,
                                                LEAD_S, MIN_WINDOW_KNOTS,
                                                MIN_WINDOW_S, WIRE_READ_KNOTS,
-                                               Schedule, Skill, ball_label)
+                                               Schedule, Skill, ball_label,
+                                               _release_instants)
 from jugglebot.motion.skills.segments import (CATCH, REST, THROW, CatchTerminal,
                                               RestTerminal, Segment,
                                               SegmentConfig, ThrowAfterCatch,
@@ -113,6 +114,21 @@ CATCH_FREEZE_S = LEAD_S + float(hw.JB_TRAJ_KNOT_DT_S)
 #: refuse ``CUP_CONTACT_ACC`` — paying it is a wasted 40-130 ms on the
 #: orchestrator thread for a result the timing alone already predicts.
 CUP_CONTACT_WINDOW_LEAD_S = float(hw.JB_TRAJ_CUP_CONTACT_WINDOW_LEAD_S)
+
+#: The smallest budget a SNAPPED (pinned) live re-send may be fired with:
+#: ``cliff_est - t`` where ``cliff_est = t_rel - WIRE_READ_KNOTS*dt - dt/2`` is
+#: the instant after which an install cannot reach the wire before the pinned
+#: release knot.  It is the RAW path's minimum budget, ``LEAD_S -
+#: WIRE_READ_KNOTS*dt`` (0.150 s today; the raw path's budget is in
+#: ``[this, this + dt)``).  Rule: never decline onto a path with no more
+#: budget.  Declining a pinned re-send hands the catch to the raw path, whose
+#: refusal is equally TERMINAL (it spends the catch's only re-aim), so a floor
+#: above the raw minimum would discard pinned re-sends in favour of a path
+#: with less budget.  Above this floor the pinned path is at least as good on
+#: budget AND keeps the seam at the release.  A pre-declined re-aim
+#: (``PINNED-BUDGET``) is not spent (plans/active/handoff-solve-chaining.md
+#: P1b).
+RESEND_PINNED_BUDGET_FLOOR_S = LEAD_S - WIRE_READ_KNOTS * float(hw.JB_TRAJ_KNOT_DT_S)
 
 #: How long an UNDISPATCHED CATCH is willing to wait for its own ball to show
 #: up on the tracker before the attempt ends ``NO_LANDING`` (owner decision
@@ -1267,7 +1283,7 @@ def _snap_to_release(meta: uc.CycleMeta, k_s: int,
     (``schedule.compile_columns``), so the first knot ``lead_s`` ahead of the
     solve is the release knot, one of the ``n_detach`` after it, or — when the
     skill took the handoff lead and dispatched early — up to
-    ``HANDOFF_LEAD_EXTRA_KNOTS`` (4 since 2026-10-14) knots before it.
+    ``HANDOFF_LEAD_EXTRA_KNOTS`` (8 since 2026-10-16) knots before it.
     Snapping to
     ``k_rel`` and seeding POST-RELEASE (the same floats
     :func:`~jugglebot.motion.unified_cycle.release_state_from_meta` hands a
@@ -4655,11 +4671,69 @@ class SkillExecutor:
         return (t_land_abs_s - (t_abs_s + float(skill.lead_s))
                 < MIN_WINDOW_S - 1e-12)
 
+    def _resend_splice_instant(self, idx: int, t_abs_s: float,
+                               t_land_abs_s: float):
+        """``(t_s, snapped, t_rel, maybe_snapped)`` — where a live re-send dispatched at
+        ``t_abs_s`` for a touch-down at ``t_land_abs_s`` really splices, as
+        the node will compute it (``_snap_to_release`` then the raw knot).
+
+        ``t_rel`` is the last release instant BEFORE this catch's landing among
+        the schedule's EARLIER skills (``schedule._release_instants``; for a
+        handoff catch it equals ``skill.t_abs_s - skill.window_s``), or
+        ``None`` when there is none.  Inside the snap band
+        (``t + LEAD_S <= t_rel + n_detach*dt - dt/2``) the splice is pinned to
+        the release, ``t_s = t_rel``; otherwise it is the raw
+        ``t + LEAD_S``.  The module :data:`LEAD_S` is used, never
+        ``skill.lead_s`` (the handoff lead is a FIRST-dispatch budget; the
+        node's re-send knot is ``LEAD_S`` ahead).  The ``- dt/2`` errs toward
+        "raw", whose fences are later and tighter: the executor ticks on the
+        ROS clock, the wire on ``perf_counter``, so ``k_rel`` itself cannot be
+        reproduced to better than dt/2.
+
+        ``maybe_snapped`` is the same test with ``+ dt/2`` (the node MAY still
+        snap).  The asymmetry is deliberate: the window fences err toward raw
+        (``snapped``), but the PINNED-BUDGET decline must err toward pinned
+        (``maybe_snapped``), since in the ambiguous half-knot a re-send that
+        the node snaps goes out with ~0.11 s and is refused terminally.
+
+        The schedule's release instant matches the node's ``k_rel`` only when
+        that earlier release was installed; if it was refused the node splices
+        raw while this models snapped, and the effect is a spurious
+        PINNED-BUDGET decline or an early window, never a wrong install."""
+        raw = float(t_abs_s) + LEAD_S
+        t_rel = None
+        for sk in self.schedule.skills[:idx]:
+            for r in _release_instants(sk):
+                if r < float(t_land_abs_s) and (t_rel is None or r > t_rel):
+                    t_rel = float(r)
+        if t_rel is None:
+            return raw, False, None, False
+        dt = float(hw.JB_TRAJ_KNOT_DT_S)
+        edge = t_rel + uc.detach_knots() * dt
+        maybe = raw <= edge + dt / 2.0
+        if raw <= edge - dt / 2.0:
+            return t_rel, True, t_rel, maybe
+        return raw, False, t_rel, maybe
+
     def _resend_live_catch(self, t_abs_s: float) -> List[str]:
         """Re-aim the committed CATCH from a LATER converged fit — the step
         that makes :data:`AIM_TRACKER` worth having, because the prior the
         catch was dispatched on cannot know this throw's release slip
         (0.019-0.137 s, 2026-09-17) and the fit can.
+
+        **Fences re-keyed on the real splice instant (P1b, 2026-10).**  The
+        MIN_WINDOW and CONTACT-WINDOW fences used to measure the splice as
+        ``t + skill.lead_s``.  For a handoff catch that is
+        :data:`HANDOFF_LEAD_S`, which is neither where a snapped re-send
+        splices (the release knot) nor what the node's raw knot uses
+        (:data:`LEAD_S`); measured 2026-10-15, at 8 extra knots the old fences
+        closed the window ~40 ms after a p50 first install and never after a
+        slow one.  Both now take :meth:`_resend_splice_instant` ``t_s``, and a
+        new NON-terminal ``PINNED-BUDGET`` pre-decline stops a snapped
+        re-send with less than :data:`RESEND_PINNED_BUDGET_FLOOR_S` (the raw
+        path's minimum budget, so the decline never lands on a path with less)
+        to the cliff (it would be refused ``SPLICE_TOO_LATE`` and spend the catch's
+        only re-aim).  After the snap band the raw path is unchanged.
 
         Six fences, one physical fact each (the sixth, 2026-09-20: a refused
         re-solve ends re-aiming for that catch -- see the refused branch). Two are TIMING and unchanged
@@ -4687,8 +4761,9 @@ class SkillExecutor:
             return []
         if t_abs_s - t_last < self.resend_min_interval_s:
             return []
-        if (float(terminal.t_land_s) - (t_abs_s + float(skill.lead_s))
-                < MIN_WINDOW_S - 1e-12):
+        t_s, snapped, t_rel, _maybe = self._resend_splice_instant(
+            idx, t_abs_s, float(terminal.t_land_s))
+        if float(terminal.t_land_s) - t_s < MIN_WINDOW_S - 1e-12:
             self._live_catch = None
             return []
         landing = self._tracked_landing(idx, skill)
@@ -4723,10 +4798,27 @@ class SkillExecutor:
         # re-solve with no runway left to reach the `CUP_CONTACT_ACC` floor
         # from whatever state the re-aim seeds, so the solve can only refuse
         # it (see :data:`CUP_CONTACT_WINDOW_LEAD_S`).
-        if (t_abs_s + float(skill.lead_s)
-                >= float(clamped.t_land_abs_s) - CUP_CONTACT_WINDOW_LEAD_S):
+        t_s, snapped, t_rel, maybe_snapped = self._resend_splice_instant(
+            idx, t_abs_s, float(clamped.t_land_abs_s))
+        if t_s >= float(clamped.t_land_abs_s) - CUP_CONTACT_WINDOW_LEAD_S:
             return clamp_lines + self._resend_declined(
                 t_abs_s, idx, 'CONTACT-WINDOW', moved_mm, moved_s)
+        # PINNED-BUDGET (non-terminal): a SNAPPED re-send splices at the
+        # release knot, so its solve budget is the time left to the cliff
+        # (the last instant an install still beats the wire to that knot),
+        # not the free-standing 150 ms.  Below the raw path's minimum budget
+        # (RESEND_PINNED_BUDGET_FLOOR_S) it would be refused SPLICE_TOO_LATE
+        # and that refusal ends re-aiming; declining costs nothing — no cap
+        # count, `_live_catch` kept, the raw path after the snap band is
+        # still open.  Tested on `maybe_snapped` (the half-knot the node may
+        # still snap in), the window fences above on `snapped`.
+        if maybe_snapped:
+            cliff_est = (float(t_rel)
+                         - WIRE_READ_KNOTS * float(hw.JB_TRAJ_KNOT_DT_S)
+                         - float(hw.JB_TRAJ_KNOT_DT_S) / 2.0)
+            if cliff_est - t_abs_s < RESEND_PINNED_BUDGET_FLOOR_S - 1e-12:
+                return clamp_lines + self._resend_declined(
+                    t_abs_s, idx, 'PINNED-BUDGET', moved_mm, moved_s)
         new_terminal = self._catch_terminal(idx, skill, landing)
         clamp_lines += self._pending_notes
         self._pending_notes = []

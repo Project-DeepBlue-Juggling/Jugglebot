@@ -128,11 +128,10 @@ re-send is snapped while `t + 0.225 <= 0.625`, i.e. `t <= 0.400`.
 | first-install budget | 250 ms | 300 ms | 350 ms |
 | fit available at dispatch (P0) | 45 % | 10 % | 5 % |
 | first install done (p50) | 0.389 | 0.339 | 0.289 |
-| pinned re-aim open (floor 190 ms -> `t <= 0.310`) | never | never | 0.289-0.310 |
+| pinned re-aim open (floor 150 ms -> `t <= 0.350`) | never | never | 0.289-0.350 |
 | raw re-aim (`t > 0.400`, 150 ms budget) open until CONTACT-WINDOW `t + 0.225 >= 0.755` | 0.400-0.530 | 0.400-0.530 | 0.400-0.530 |
 
-At 8, the pinned re-aim runs from first-install end to the floor; P0's per-catch budget is >= 190 ms for 75 %.
-From 0.310 to 0.400 a re-send is pre-declined, not spent. After that the raw path re-aims as today, with a 150 ms
+At 8, the pinned re-aim runs from first-install end to the floor; P0's per-catch budget is >= 190 ms for 75 % (shipped floor: 150 ms). From 0.350 to 0.400 a re-send is pre-declined, not spent. After that the raw path re-aims as today, with a 150 ms
 budget, tight against tracker-aim solves (p50 126-146). Without P1b the window closes at 0.330, and a near-cliff
 pinned re-send is terminal.
 
@@ -165,7 +164,8 @@ For each recorded handoff catch at leads 4/6/8 it reported:
 Above it, unrecoverable prior-aimed catches would outnumber the self-ends removed. Outcome: (a) passes at 6 and 8,
 (b) fails at every lead. The owner overrode toward 8 + P1b (§ 0.4).
 
-**P1a - the lead change (8).** Slug `2026-10-XX-handoff-lead-8-knots`.
+**P1 (P1a + P1b) - IMPLEMENTED 2026-10-16, not yet flown** (one commit, slug `2026-10-16-handoff-lead-8-knots-and-snap-aware-resend-fences`).
+**P1a - the lead change (8).** Slug `2026-10-16-handoff-lead-8-knots-and-snap-aware-resend-fences`.
 - `schedule.py:126` 4 -> 8, with the docstring history (2 -> 4 -> 8, the § 0.4 numbers).
 - Fix 1's fixed-wait literal.
 - `tests/ros/test_install_segment.py` :1743/:1759 re-pinned to the 8-knot cliff.
@@ -175,7 +175,7 @@ Above it, unrecoverable prior-aimed catches would outnumber the self-ends remove
 - Gate: `handoff_replay.py --extra 8` (0 SPLICE_TOO_LATE, worst margin >= 25 ms), then `./run_tests.sh`.
 
 **P1b - snap-aware re-aim fences** (`SkillExecutor._resend_live_catch`, executor.py ~4688-4727).
-Slug `2026-10-XX-handoff-snap-aware-resend-fences`.
+Slug `2026-10-16-handoff-lead-8-knots-and-snap-aware-resend-fences`.
 - **The real splice instant `t_s(t)`**, computed as the node will compute it:
   - `t_rel` is the last release instant BEFORE this catch's landing among the schedule's earlier skills. Use
     `schedule._release_instants` (a THROW's `t_abs_s`; a CATCH's `then_throw.t_release_abs_s`), which is the same
@@ -194,10 +194,11 @@ Slug `2026-10-XX-handoff-snap-aware-resend-fences`.
   - Both keep today's terminal / non-terminal character.
 - **New pre-decline:** `PINNED-BUDGET`, non-terminal. It does not count toward the cap, does not clear
   `_live_catch`, and logs once per catch through `_resend_declined`.
-  - Fires when the re-send is snapped and `cliff - t < RESEND_PINNED_BUDGET_FLOOR_S` = **0.190 s**.
-  - Why 0.190: it is the tracker-aim p90. A pinned re-send fired below it is refused `SPLICE_TOO_LATE`, and so
-    spends the catch's only re-aim, more than ~10 % of the time. A re-aim that is declined can still be tried on
-    the raw path; one that is spent cannot.
+  - Fires when the re-send is snapped and `cliff - t < RESEND_PINNED_BUDGET_FLOOR_S` = `LEAD_S - WIRE_READ_KNOTS*dt` = **0.150 s**.
+  - Why 0.150: it is the raw path's minimum budget (raw budget is in [0.150, 0.175)). Declining hands the catch to
+    the raw path, whose refusal is equally terminal, so never decline onto a path with no more budget. Above the
+    floor the pinned path is at least as good on budget and keeps the seam at the release.
+  - Tested on `maybe_snapped` (`+ dt/2`, node may still snap); window fences stay on `snapped` (`- dt/2`).
 - **After the band:** the raw path at `t + LEAD_S` with the free-standing 150 ms budget, exactly as today.
 - **Tests** (`tests/motion/test_skills_executor.py`):
   - `test_a_pinned_resend_window_opens_at_first_install_end_and_closes_at_the_floor[4|6|8]`
@@ -273,7 +274,7 @@ C2 node contract + async dispatch (slug `...-handoff-chain-contract`).
 - **A re-aim refused on limits is still terminal** (`LIMIT_*`, 2026-09-20 rule). P1b only stops spending the re-aim
   on a refusal the executor could predict (the budget). About 16 % of catches have no fit before the cliff at any
   lead.
-- **The 38 ms cliff bias is unexplained** (§ 0.4). If the true cliff is earlier than the derived one, the 190 ms
+- **The 38 ms cliff bias is unexplained** (§ 0.4). If the true cliff is earlier than the derived one, the 150 ms
   floor is optimistic by that much. This is resolved in P1/P2 before trusting the table.
 - **§ 2.C only:** a wrong-head install (I-CHAIN-1), Foxy thread-pool exhaustion (semaphore 2), and async END
   timing.

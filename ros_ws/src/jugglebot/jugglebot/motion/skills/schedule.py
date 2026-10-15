@@ -94,7 +94,7 @@ LEAD_S = LEAD_KNOTS * float(hw.JB_TRAJ_KNOT_DT_S)
 #: The DISPATCH lead of a skill whose segment FOLLOWS a release (every CATCH in
 #: the columns pattern, with or without ``then_throw``).
 #:
-#: :data:`LEAD_KNOTS` + 4 = 13 knots = 0.325 s, i.e. 10 knots = 250 ms of solve
+#: :data:`LEAD_KNOTS` + 8 = 17 knots = 0.425 s, i.e. 14 knots = 350 ms of solve
 #: budget (plus up to one knot of quantisation).  Derived from
 #: :data:`LEAD_KNOTS` (it was a literal 8 against a 6-knot LEAD_KNOTS until
 #: 2026-09-18) so that the two leads move TOGETHER: the extra knots are the
@@ -110,20 +110,31 @@ LEAD_S = LEAD_KNOTS * float(hw.JB_TRAJ_KNOT_DT_S)
 #: follow a release has no such pin — its splice knot tracks its dispatch — so
 #: it keeps :data:`LEAD_S` and its :data:`SOLVE_BUDGET_KNOTS` budget.
 #:
-#: History: 2 extra knots (2026-09-18 -> 2026-10-14, 200 ms of budget).
+#: History: 2 extra knots (2026-09-18 -> 2026-10-14, 200 ms of budget); 4
+#: (2026-10-14 -> 2026-10-16, Fix 1, 250 ms); 8 since 2026-10-16 (350 ms).
 #: MEASURED 2026-10-14 (two rehearsal sessions + sitting 8's log): accepted
 #: handoff-CATCH installs (dispatch stamp -> install) p50 137-139 / p90
 #: 188-198 / max 223-231 ms; the seven attempt-ending ``SPLICE_TOO_LATE``s had
 #: their reply 215-272 ms after the stamp — the right tail of the SAME
 #: distribution, not a regression — at 2.7-5.1 % per first-CATCH dispatch,
-#: i.e. a 40-80 % chance of one self-end in a 30-catch attempt.  4 extra knots
+#: i.e. a 40-80 % chance of one self-end in a 30-catch attempt.  At the time, 4 extra knots
 #: (+50 ms) covers the measured tail.  The cost is the gap between consecutive
 #: dispatches: ``compile_columns`` / ``compile_one_ball`` at apex 0.95 m, sep
 #: 125 mm, dwell 0.27 s stay dispatch-monotone for 2..8 extra knots, minimum
-#: gap 0.350 s at 2, 0.300 s at 4, 0.250 s at 6 (probe 2026-10-14).  It does NOT
-#: touch :data:`LEAD_S`, so ``CATCH_FREEZE_S`` and the re-aim window are
-#: unchanged.
-HANDOFF_LEAD_EXTRA_KNOTS = 4
+#: gap 0.350 s at 2, 0.300 s at 4, 0.250 s at 6, 0.200 s at 8 (probe 2026-10-14).
+#: :data:`LEAD_S` and ``CATCH_FREEZE_S`` are untouched; the re-aim fences are now
+#: keyed on the real splice instant (executor P1b, 2026-10-16).
+#:
+#: 8 extra knots (2026-10-16, ``plans/active/handoff-solve-chaining.md`` § 0.4):
+#: the replay of the recorded SPLICE_TOO_LATE failures had margins of 13/28 ms
+#: at 4 and 113/128 ms at 8; the accepted installs' minima were 50/150 ms; the
+#: share of catches whose live fit was still unconverged at dispatch fell from
+#: 45 % to 5 %, and the pinned re-aim (P1b) carries the correction the earlier
+#: dispatch costs.  The minimum dispatch gap follows the law
+#: ``0.400 - 0.025 * EXTRA`` s (0.200 s at 8; 0.300 s at 4).  The skill_node
+#: tick QUEUES a due CATCH behind its predecessor's install (no stale read),
+#: costing at most 31 ms of budget at the minimum gap.
+HANDOFF_LEAD_EXTRA_KNOTS = 8
 HANDOFF_LEAD_KNOTS = LEAD_KNOTS + HANDOFF_LEAD_EXTRA_KNOTS
 
 #: Seconds, derived.
@@ -718,8 +729,8 @@ def _assign_leads(skills):
     already carries splices AT that release knot whatever its dispatch instant
     (``executor._snap_to_release``), so its seam cannot move and the extra lead
     is pure solve budget: it gets :data:`HANDOFF_LEAD_S`
-    (:data:`SOLVE_BUDGET_KNOTS` + :data:`HANDOFF_LEAD_EXTRA_KNOTS` = 10 knots of
-    budget since 2026-10-14).  Every other segment's splice knot tracks its own dispatch —
+    (:data:`SOLVE_BUDGET_KNOTS` + :data:`HANDOFF_LEAD_EXTRA_KNOTS` = 14 knots of
+    budget since 2026-10-16).  Every other segment's splice knot tracks its own dispatch —
     dispatch it earlier and it simply splices earlier — so it gets
     :data:`LEAD_S` and the bare :data:`SOLVE_BUDGET_KNOTS` (6 knots).
 

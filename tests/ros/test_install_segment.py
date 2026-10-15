@@ -1740,13 +1740,17 @@ def _pinned_handoff(solve_s, early_s=0.010):
 
 
 def test_a_pinned_handoff_catch_slower_than_the_default_wait_still_installs():
-    """Solve 255 ms: past the default `t_wall + LEAD_S + dt` (250 ms) the node
-    used to stop waiting at, inside the pinned cliff (260 ms).  Before
-    2026-10-14 this was 'solver did not answer by the wire deadline'."""
+    """Solve 355 ms: past the default `t_wall + LEAD_S + dt` (250 ms) the node
+    used to stop waiting at, inside the pinned cliff.  Before 2026-10-14 this
+    was 'solver did not answer by the wire deadline'.
+
+    Re-pinned 2026-10-16 for 8 extra knots: cliff - dispatch =
+    (HANDOFF_LEAD_KNOTS 17 - WIRE_READ_KNOTS 3)*25 ms + 10 ms quantisation =
+    360 ms; the node waits to cliff - 3 ms = 357 ms, so 355 ms installs."""
     dt = float(hw.JB_TRAJ_KNOT_DT_S)
-    node, resp, k_rel, at, origin, solver, _ = _pinned_handoff(0.255)
+    node, resp, k_rel, at, origin, solver, _ = _pinned_handoff(0.355)
     cliff = origin + (k_rel - sk_exec.WIRE_READ_KNOTS) * dt
-    assert cliff - at == pytest.approx(0.260)
+    assert cliff - at == pytest.approx(0.360)
     req = solver.requests[-1]
     assert req.deadline_s == pytest.approx(
         cliff - sk_solver.REPLY_TRANSIT_ALLOW_S)
@@ -1756,23 +1760,24 @@ def test_a_pinned_handoff_catch_slower_than_the_default_wait_still_installs():
 
 
 def test_a_pinned_handoff_catch_past_its_cliff_is_refused_with_its_timing_logged():
-    """Solve 262 ms: past the pinned cliff less the transit allowance.  Same
+    """Solve 362 ms (8-knot cliff 360 ms, deadline 357 ms; was 262 ms at 4
+    knots): past the pinned cliff less the transit allowance.  Same
     refusal as before 2026-10-14 (SPLICE_TOO_LATE, nothing installed), and the
     DEBUG refusal line now carries the timing that was invisible in the
     sitting logs: which check refused, the deadline, k_s and k_wire."""
-    node, resp, k_rel, at, origin, _solver, lines = _pinned_handoff(0.262)
+    node, resp, k_rel, at, origin, _solver, lines = _pinned_handoff(0.362)
     assert resp.accepted is False
     assert resp.code == sk_exec.SPLICE_TOO_LATE, resp.message
     assert 'wire deadline' in resp.message
     assert node._cycle[2] == origin           # the head is untouched
-    assert resp.plan_wall_ms == pytest.approx(262.0)
+    assert resp.plan_wall_ms == pytest.approx(362.0)
     refused = [m for m in lines if m.startswith('install_segment refused')]
     assert len(refused) == 1
     line = refused[0]
     assert 'check=node-wait' in line
-    assert 'deadline +257.0 ms' in line
+    assert 'deadline +357.0 ms' in line
     assert 'k_s %d' % (k_rel,) in line
-    assert 'cliff +260.0 ms' in line
+    assert 'cliff +360.0 ms' in line
     assert 'k_wire@node' in line
 
 

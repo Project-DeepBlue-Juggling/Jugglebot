@@ -71,6 +71,13 @@ import numpy as np
 DT = 0.025
 WIRE_READ_KNOTS = 3
 L0 = 0.275
+# New-fence model (plans/active/handoff-solve-chaining.md P1b); mirrors
+# schedule.LEAD_S (9 knots) and unified_cycle.detach_knots() -- hard-coded
+# because the probe is stdlib+numpy.
+LEAD_S = 9 * DT
+# Mirrors executor.RESEND_PINNED_BUDGET_FLOOR_S (the raw path's minimum budget).
+RESEND_FLOOR_S = LEAD_S - WIRE_READ_KNOTS * DT
+N_DETACH = 2
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parents[1]
 OUT = ROOT / 'temp' / 'probes' / 'handoff_replay'
@@ -247,6 +254,16 @@ def main():
                     Ip = start + Pp
                     Rr = max(r['F'], Ip)
                     r.setdefault('budget', {})[L] = r['C'] - Rr
+                    # New fences: the executor's cliff estimate is dt/2 earlier
+                    # than C; t_rel = R = C + WIRE_READ_KNOTS*dt.  A re-send at
+                    # t=Rr is PINNED while t + LEAD_S <= t_rel + n*dt - dt/2,
+                    # and then needs budget_est >= the floor; past the band it
+                    # takes the raw path (not a pinned budget at all).
+                    t_rel = r['C'] + WIRE_READ_KNOTS * DT
+                    snapped = Rr + LEAD_S <= t_rel + N_DETACH * DT - DT / 2
+                    b_est = r['C'] - DT / 2 - Rr
+                    r.setdefault('pinned_firable', {})[L] = bool(snapped and b_est >= RESEND_FLOOR_S - 1e-9)
+                    r.setdefault('raw_path', {})[L] = bool(not snapped)
         # refusals: modelled with C - D and the reply offset
         for e in ends:
             same = [r for r in ho if r['goal'] == e['goal']]
@@ -273,18 +290,22 @@ def main():
         w = csv.writer(fh)
         w.writerow(['sess', 'kind', 'goal', 'skill', 'D', 'T_install_or_refusal', 'P_or_offset_ms', 'splice_k',
                     'C_minus_D_ms', 'aim_src', 'F_minus_D_ms'] + ['margin_ms_L%.3f' % L for L in allL]
-                   + ['fit_avail_L%.3f' % L for L in allL] + ['reaim_budget_ms_L%.3f' % L for L in leads])
+                   + ['fit_avail_L%.3f' % L for L in allL] + ['reaim_budget_ms_L%.3f' % L for L in leads]
+                   + ['reaim_firable_new_fences_L%.3f' % L for L in leads])
         for r in rows:
             w.writerow([r['sess'], 'accepted', r['goal'], r['skill'], '%.3f' % r['D'], '%.3f' % r['T'], '%.1f' % (r['P'] * 1e3),
                         r['k'], '%.0f' % ((r['C'] - r['D']) * 1e3), r.get('src', ''),
                         '' if r['F'] is None else '%.0f' % ((r['F'] - r['D']) * 1e3)]
                        + ['%.0f' % (r['margin'][L] * 1e3) for L in allL]
                        + ['' if r['fav'][L] is None else int(r['fav'][L]) for L in allL]
-                       + ['%.0f' % (r['budget'][L] * 1e3) if L in r.get('budget', {}) else '' for L in leads])
+                       + ['%.0f' % (r['budget'][L] * 1e3) if L in r.get('budget', {}) else '' for L in leads]
+                       + [('' if L not in r.get('budget', {}) else
+                           ('pinned' if r['pinned_firable'][L] else ('raw' if r['raw_path'][L] else 'declined')))
+                          for L in leads])
         for e in refus:
             w.writerow([e['sess'], 'refused-resend' if e['resend'] else 'refused-END', e['goal'], e['skill'], '%.3f' % e['D'],
                         '%.3f' % e['Tref'], '%.0f' % (e['off'] * 1e3), '', '%.0f' % (e['cd'] * 1e3), '', '']
-                       + ['%.0f' % (e['margin'][L] * 1e3) for L in allL] + [''] * (len(allL) + len(leads)))
+                       + ['%.0f' % (e['margin'][L] * 1e3) for L in allL] + [''] * (len(allL) + 2 * len(leads)))
 
     def stat(v):
         v = [x * 1e3 for x in v]
@@ -335,6 +356,19 @@ def main():
             md.append('| %s | %.3f | %d (%d with F before the cliff) | %.0f | %.0f | %.0f | %.0f | %.0f%% | %.0f%% | %.0f%% |' % (
                 t, L, len(vall), len(v), pct(v, 5), pct(v, 25), pct(v, 50), pct(v, 75),
                 *[100 * np.mean([x >= th for x in vall]) for th in (126, 146, 190)]))
+    md += ['', '## 3b. Re-aim fence model, P1b (window open from first-install end while t_s(t) passes both fences and budget >= %.0f ms)' % (RESEND_FLOOR_S * 1e3), '',
+           'Column `reaim_firable_new_fences` in handoff_catches.csv: pinned = the re-send at max(F, first-install end) is inside the snap band with cliff_est - t >= floor (cliff_est = C - dt/2); raw = it falls past the band (raw path, 150 ms free-standing budget, not counted as pinned-firable); declined = PINNED-BUDGET pre-decline.', '',
+           '| sess | L | n (fit late at L) | pinned-firable | share | raw path | PINNED-BUDGET declined | old budget>=190 (C-based) |', '|---|---|---|---|---|---|---|---|']
+    for t, g in groups:
+        for L in leads:
+            gg = [r for r in g if L in r.get('budget', {})]
+            if not gg:
+                continue
+            nf = sum(r['pinned_firable'][L] for r in gg)
+            nr = sum(r['raw_path'][L] for r in gg)
+            nd = len(gg) - nf - nr
+            no = sum(r['budget'][L] * 1e3 >= 190 for r in gg)
+            md.append('| %s | %.3f | %d | %d | %.0f%% | %d | %d | %d |' % (t, L, len(gg), nf, 100.0 * nf / len(gg), nr, nd, no))
     md += ['', '## 4. Caveats', '',
            '* Solve duration P is replayed unchanged; real P rises with a tracker aim (+~40 ms) and the new node waits to the pinned cliff instead of 250 ms.',
            '* Cliff C is derived assuming the CATCH event tau sits at the aim t_land; the constant bias this implies (R-D 0.313 vs 0.275 nominal) is unexplained by the logs.',

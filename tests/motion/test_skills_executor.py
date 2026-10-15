@@ -469,18 +469,18 @@ def test_an_early_dispatch_still_splices_at_the_release(
         T0_ABS + LAUNCH_S + FLIGHT_S - (T0_ABS + k_rel * dt), abs=1e-9)
 
 
-def test_the_handoff_budget_is_ten_knots_and_the_knot_past_it_refuses(
+def test_the_handoff_budget_is_the_lead_less_the_wire_read_and_the_knot_past_it_refuses(
         throw_record, limits, geom, sites):
     """The lead IS the solve budget, and this is where it runs out.
 
-    A handoff dispatches ``HANDOFF_LEAD_KNOTS`` (13 since 2026-10-14; 11
-    before) ahead of a splice knot the head pins, and the wire has read
-    ``WIRE_READ_KNOTS`` (3) past the install instant, so the solve may take
-    ``(13 - 3)·dt`` = 250 ms.  The measured solve is 26–34 ms on the idle
+    A handoff dispatches ``HANDOFF_LEAD_KNOTS`` (17 since P1a, 2026-10; 13
+    from 2026-10-14; 11 before) ahead of a splice knot the head pins, and the
+    wire has read ``WIRE_READ_KNOTS`` (3) past the install instant, so the
+    solve may take ``(17 - 3)·dt`` = 350 ms.  The measured solve is 26–34 ms on the idle
     Jetson (``temp/probes/skills_segment_run2.md``, 2026-09-12) and 40–134 ms
     under sitting load (2026-09-18, n = 51, p95 113 ms); accepted handoff
     installs on 2026-10-14 reached 223-231 ms dispatch-to-install, which is
-    what moved the budget from 200 ms — 240 ms now installs; 260 ms is past
+    what moved the budget from 200 ms — 340 ms now installs; 360 ms is past
     the budget and is refused rather than written under the emitter.  The
     lateness is INJECTED (``t_install_s``), so this measures the rule and never
     the box's load.
@@ -491,7 +491,7 @@ def test_the_handoff_budget_is_ten_knots_and_the_knot_past_it_refuses(
     t_land = t_release + FLIGHT_S
     t_now = t_release - ex.HANDOFF_LEAD_S
     budget_s = (ex.HANDOFF_LEAD_KNOTS - ex.WIRE_READ_KNOTS) * DT
-    assert budget_s == pytest.approx(0.250)
+    assert budget_s == pytest.approx(0.350)
 
     def _install(solve_s):
         return ex.install_segment(
@@ -499,16 +499,16 @@ def test_the_handoff_budget_is_ten_knots_and_the_knot_past_it_refuses(
             _catch_throw_terminal(p2, t_land, t_land + 0.30), t_now,
             limits=limits, geom=geom, t_install_s=t_now + solve_s)
 
-    _rec, ok, seg = _install(0.240)
+    _rec, ok, seg = _install(0.340)
     assert ok.accepted, ok.message
     assert ok.seeded_post_release is True and seg is not None
 
-    unchanged, late, seg_late = _install(0.260)
+    unchanged, late, seg_late = _install(0.360)
     assert not late.accepted
     assert late.code == ex.SPLICE_TOO_LATE
     assert late.splice_k == -1 and seg_late is None
     assert unchanged is record
-    assert 'budget 0.250 s' in late.message
+    assert 'budget 0.350 s' in late.message
 
 
 # ---------------------------------------------------------------------------
@@ -7124,3 +7124,193 @@ def test_box_forward_clip_with_a_real_memory_matches_predict(sites, tmp_path):
     assert y_hat[0] == pytest.approx(0.002, abs=1e-9)   # the +x edge
     assert -0.05 <= y_hat[1] <= 0.05
     assert any('on the box edge' in ln for ln in lines)
+
+
+# ---------------------------------------------------------------------------
+# P1b (handoff-solve-chaining): the live re-send fences model the node's
+# splice arithmetic -- snap-aware MIN_WINDOW / CONTACT-WINDOW and the
+# non-terminal PINNED-BUDGET pre-decline
+# ---------------------------------------------------------------------------
+
+_DT = float(hw.JB_TRAJ_KNOT_DT_S)
+_HANDOFF_T_REL = T0_ABS + 1.0      # the earlier throw's release instant
+_HANDOFF_FLIGHT_S = 0.305          # release -> this catch's touch-down
+
+
+def _handoff_catch_rig(sites, extra_knots):
+    """THROW released at ``_HANDOFF_T_REL`` then a handoff CATCH (window base
+    == that release) whose ``lead_s`` is the handoff lead for ``extra_knots``
+    (``LEAD_KNOTS + extra``).  Returns ``(executor, installer, box, catch,
+    t_land, committed, moved)`` with the catch ALREADY dispatched on
+    ``committed``; set ``box['landing'] = moved`` to ask for a re-aim."""
+    p1, p2 = sites
+    t_rel = _HANDOFF_T_REL
+    t_land = t_rel + _HANDOFF_FLIGHT_S
+    lead = (sc.LEAD_KNOTS + extra_knots) * _DT
+    skills = (
+        Skill(kind=sg.THROW, ball_id=0, site=p1, t_abs_s=t_rel,
+              window_s=LAUNCH_S, y_d=(np.zeros(2), APEX_M), target=p1),
+        Skill(kind=sg.CATCH, ball_id=1, site=p2, t_abs_s=t_land,   # the other ball: no
+              window_s=_HANDOFF_FLIGHT_S, lead_s=lead),   # schedule prior, fit aims it
+    )
+    sch = Schedule(pattern='self_toss', skills=skills, flight_s=FLIGHT_S,
+                   beat_s=0.578, transit_s=_HANDOFF_FLIGHT_S, dwell_s=0.30,
+                   t0_abs_s=T0_ABS)
+    committed = _fit_landing(pos_mm=p2.catch_site_mm(), vel_mm_s=LAND_VEL,
+                             t_land_abs_s=t_land)
+    moved = _fit_landing(pos_mm=p2.catch_site_mm() + np.array([50.0, 0.0, 0.0]),
+                         vel_mm_s=LAND_VEL, t_land_abs_s=t_land)
+    box = {'landing': committed}
+    inst = _FakeInstaller()
+    x = ex.SkillExecutor(sch, inst, tracker=lambda b: box['landing'])
+    x.tick(sch.skills[0].dispatch_s())
+    x.tick(sch.skills[1].dispatch_s())
+    assert len(inst.calls) == 2 and x._live_catch is not None
+    return x, inst, box, sch.skills[1], t_land, committed, moved
+
+
+def _pinned_budget(t):
+    """``cliff_est - t`` exactly as the executor models it."""
+    return (_HANDOFF_T_REL - sc.WIRE_READ_KNOTS * _DT - _DT / 2.0) - t
+
+
+@pytest.mark.parametrize('extra', [4, 6, 8])
+def test_a_pinned_resend_window_opens_at_first_install_end_and_closes_at_the_floor(
+        sites, monkeypatch, extra):
+    """Plan P1b / § 1.3.  A first install ends ``dispatch + 0.139 s`` (p50);
+    the pinned re-aim window is then open exactly while the budget to the
+    estimated cliff is >= :data:`ex.RESEND_PINNED_BUDGET_FLOOR_S` -- at 4 and
+    6 extra knots the p50 first install ends AFTER the floor (never open), at
+    8 it opens at first-install end and closes at the floor.  Each grid
+    point is a fresh executor so one re-send cannot spend the next."""
+    monkeypatch.setattr(sc, 'HANDOFF_LEAD_EXTRA_KNOTS', extra)
+    assert ex.RESEND_PINNED_BUDGET_FLOOR_S == pytest.approx(
+        sc.LEAD_S - sc.WIRE_READ_KNOTS * _DT)
+    lead = (sc.LEAD_KNOTS + sc.HANDOFF_LEAD_EXTRA_KNOTS) * _DT
+    t_dispatch = _HANDOFF_T_REL - lead
+    t_install_end = t_dispatch + 0.139
+    n_detach = uc.detach_knots()
+    band_end = _HANDOFF_T_REL + n_detach * _DT - _DT / 2.0 - sc.LEAD_S
+    fired = []
+    declined = []
+    for i in range(0, 120):
+        t = t_dispatch + 0.0025 * i
+        if t >= band_end:
+            break
+        x, inst, box, _c, _tl, _co, moved = _handoff_catch_rig(sites, extra)
+        box['landing'] = moved
+        n0 = len(inst.calls)
+        lines = x.tick(t)
+        if len(inst.calls) > n0:
+            fired.append(t)
+        elif any('PINNED-BUDGET' in ln for ln in lines):
+            declined.append(t)
+    in_window = [t for t in fired if t >= t_install_end - 1e-9]
+    if extra == 8:
+        assert in_window, 'the pinned window must be open after a p50 install'
+        assert min(in_window) == pytest.approx(t_install_end, abs=0.0026)
+        assert all(_pinned_budget(t) >= ex.RESEND_PINNED_BUDGET_FLOOR_S - 1e-9
+                   for t in fired)
+        # closes at the floor: the first declined grid point is the first
+        # one with budget < floor.
+        assert declined
+        assert min(declined) > max(fired)
+        assert _pinned_budget(min(declined)) < ex.RESEND_PINNED_BUDGET_FLOOR_S
+        assert (_pinned_budget(max(fired))
+                >= ex.RESEND_PINNED_BUDGET_FLOOR_S - 1e-9)
+    else:
+        # at 4 / 6 the floor passes before the p50 first install ends.
+        assert not in_window
+        assert all(t < t_install_end for t in fired)
+
+
+def test_the_pinned_budget_decline_is_not_terminal(sites):
+    """A PINNED-BUDGET pre-decline spends nothing: no installer call, no cap
+    count, ``_live_catch`` kept, one log line -- and a later RAW re-send (past
+    the snap band) still fires."""
+    x, inst, box, catch, t_land, committed, moved = _handoff_catch_rig(sites, 8)
+    box['landing'] = moved
+    n0 = len(inst.calls)
+    t_decl = (_HANDOFF_T_REL - sc.WIRE_READ_KNOTS * _DT - _DT / 2.0
+              - ex.RESEND_PINNED_BUDGET_FLOOR_S + 0.010)
+    assert _pinned_budget(t_decl) < ex.RESEND_PINNED_BUDGET_FLOOR_S
+    lines = x.tick(t_decl)
+    assert len(inst.calls) == n0
+    assert len([ln for ln in lines if 'RESEND-SKIPPED PINNED-BUDGET' in ln]) == 1
+    assert x._live_catch is not None
+    assert x._resend_counts.get(1, 0) == 0
+    # Once per catch: the same reason is not logged again.
+    assert not any('PINNED-BUDGET' in ln for ln in x.tick(t_decl + 0.03))
+    assert len(inst.calls) == n0
+    # Past the snap band the raw path fires.
+    t_raw = _HANDOFF_T_REL - 0.10
+    assert x._resend_splice_instant(1, t_raw, t_land)[1] is False
+    x.tick(t_raw)
+    assert len(inst.calls) == n0 + 1
+    assert x._resend_counts[1] == 1
+
+
+def test_the_ambiguous_half_knot_declines_pinned_budget(sites):
+    """Finding 5.  In the half-knot where the model says raw but the node may
+    still snap (``edge - dt/2 < t + LEAD_S <= edge + dt/2``), a re-send with
+    budget below the floor is declined PINNED-BUDGET (non-terminal); one
+    knot later (``t + LEAD_S > edge + dt/2``) it splices raw and fires."""
+    x, inst, box, catch, t_land, _c, moved = _handoff_catch_rig(sites, 8)
+    box['landing'] = moved
+    edge = _HANDOFF_T_REL + uc.detach_knots() * _DT
+    t_amb = edge - sc.LEAD_S          # raw == edge: inside the ambiguous half
+    t_s, snapped, _tr, maybe = x._resend_splice_instant(1, t_amb, t_land)
+    assert snapped is False and maybe is True
+    assert _pinned_budget(t_amb) < ex.RESEND_PINNED_BUDGET_FLOOR_S
+    n0 = len(inst.calls)
+    lines = x.tick(t_amb)
+    assert len(inst.calls) == n0
+    assert len([ln for ln in lines if 'PINNED-BUDGET' in ln]) == 1
+    assert x._live_catch is not None and x._resend_counts.get(1, 0) == 0
+    t_next = t_amb + _DT              # raw > edge + dt/2: genuinely raw
+    _t, snapped2, _tr, maybe2 = x._resend_splice_instant(1, t_next, t_land)
+    assert snapped2 is False and maybe2 is False
+    x.tick(t_next)
+    assert len(inst.calls) == n0 + 1
+
+
+def test_a_resend_after_the_snap_band_splices_raw(sites):
+    """Past the band the splice instant is ``t + LEAD_S`` (not the release),
+    unsnapped, with the free-standing raw fences: it fires with 0.18 s of
+    window and no PINNED-BUDGET line."""
+    x, inst, box, catch, t_land, _c, moved = _handoff_catch_rig(sites, 8)
+    box['landing'] = moved
+    t = _HANDOFF_T_REL - 0.10
+    t_s, snapped, t_rel, _mb = x._resend_splice_instant(1, t, t_land)
+    assert snapped is False
+    assert t_s == pytest.approx(t + sc.LEAD_S)
+    assert t_rel == pytest.approx(_HANDOFF_T_REL)
+    # and inside the band it is pinned to the release.
+    t_in = _HANDOFF_T_REL - 0.2
+    t_s_in, snapped_in, _, _mb = x._resend_splice_instant(1, t_in, t_land)
+    assert snapped_in is True and t_s_in == pytest.approx(_HANDOFF_T_REL)
+    n0 = len(inst.calls)
+    lines = x.tick(t)
+    assert len(inst.calls) == n0 + 1
+    assert not any('PINNED-BUDGET' in ln for ln in lines)
+
+
+def test_the_fences_use_LEAD_S_not_the_handoff_lead(sites):
+    """The fences are keyed on the module ``LEAD_S``, never ``skill.lead_s``.
+    At ``t = t_rel - 0.10`` the old arithmetic (``t + 0.425``) lands 0.02 s
+    PAST the touch-down and would end re-aiming; the node's raw knot is
+    ``t + LEAD_S`` and has 0.18 s of window.  Also pins the helper's
+    ``t_rel`` to ``skill.t_abs_s - skill.window_s`` for a handoff catch."""
+    x, inst, box, catch, t_land, _c, moved = _handoff_catch_rig(sites, 8)
+    assert float(catch.lead_s) == pytest.approx((sc.LEAD_KNOTS + 8) * _DT)
+    assert float(catch.lead_s) != pytest.approx(sc.LEAD_S)
+    _ts, _sn, t_rel, _mb = x._resend_splice_instant(
+        1, _HANDOFF_T_REL, t_land)
+    assert t_rel == pytest.approx(float(catch.t_abs_s) - float(catch.window_s))
+    box['landing'] = moved
+    t = _HANDOFF_T_REL - 0.10
+    assert t + float(catch.lead_s) > t_land      # the old fence would end it
+    n0 = len(inst.calls)
+    x.tick(t)
+    assert len(inst.calls) == n0 + 1
+    assert x._live_catch is not None
