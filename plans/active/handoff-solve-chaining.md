@@ -216,7 +216,7 @@ Slug `2026-10-16-handoff-lead-8-knots-and-snap-aware-resend-fences`.
 - **Also in P1, or P2 if the logs are needed:** resolve the 38 ms cliff bias (§ 0.4) from `_refusal_timing`
   lines.
 
-**P2 - dress rehearsal row + close-out.** Slug `2026-10-XX-handoff-lead-rehearsed`. A runsheet row for the next
+**P2 - dress rehearsal row + close-out: RUNSHEET WRITTEN 2026-10-16; to fly** (`tests/hardware/session_skill_stack_rehearsals.md` § 1b, rows 23-29; no goal-level validate-only path exists, so row 24 is the offline monotone check). Slug `2026-10-XX-handoff-lead-rehearsed`. A runsheet row for the next
 sitting, run on the LOADED Jetson, validate-only against the live `/robot_state`, with all refusals reported at
 once: schedules at 8 compile monotone; the `CATCH-AIM` source mix is logged; RESEND lines show `splice_k == k_rel`
 inside the band and `PINNED-BUDGET` declines are non-terminal. Flown: zero handoff `SPLICE_TOO_LATE` ENDs. Then
