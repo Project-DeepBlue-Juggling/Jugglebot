@@ -187,8 +187,9 @@ def test_sweep_mode_world_gate_still_refuses_a_qtm_shift_and_names_it(tmp_path):
     yaw2, pos2 = _bb_world(h=H0 + 0.4)                 # QTM turned 0.4°: BB-in-base unchanged
     msg = _sweep(node, yaw2, pos2, base=(H0 + 0.4, O0))
     assert not msg.success and msg.message.startswith('CALIBRATION_INCONSISTENT')
-    assert msg.message.endswith('base frame: BB unmoved, QTM frame shifted')
-    assert len(msg.message) <= 240
+    assert msg.message.split(' · sweep ')[0].endswith('base frame: BB unmoved, QTM frame shifted')
+    import jugglebot.mocap_node as mn
+    assert len(msg.message) <= mn.MAX_CALIBRATION_FAILURE_CHARS
 
 
 def test_sweep_mode_does_not_pool_a_sweep_the_base_frame_disagrees_with(tmp_path):

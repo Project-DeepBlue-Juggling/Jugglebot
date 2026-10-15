@@ -10,6 +10,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import re
 import numpy as np
 
 from geometry_msgs.msg import Point
@@ -146,7 +147,13 @@ def test_calibration_failure_is_one_error_line(tmp_path):
     node._calib_data = {0: [np.zeros(3)]}
     with patch.object(mn, 'run_calibration', side_effect=ValueError('Circle centres deviate')):
         node._on_bb_heartbeat(_hb(BallButlerStates.IDLE))
-    assert log.at('ERROR') == ['BB calibration FAILED: Circle centres deviate']
+    # One ERROR line: the reason, then the sweep-kinematics suffix every attempt
+    # text carries since Phase 0 of bb-calibration-one-attempt (2026-10-15):
+    # ' · sweep <start>→<end>° <dur> s, lag <±x.x ms|n/a>' (bb_calibration.sweep_suffix).
+    errors = log.at('ERROR')
+    assert len(errors) == 1
+    assert errors[0].startswith('BB calibration FAILED: Circle centres deviate · sweep ')
+    assert re.search(r' · sweep -?\d+\.\d→-?\d+\.\d° \d+\.\d s, lag (n/a|[+-]\d+\.\d ms)$', errors[0])
 
 
 def test_dropout_invalidation_is_one_error_line():

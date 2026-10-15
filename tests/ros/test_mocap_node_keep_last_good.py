@@ -153,7 +153,7 @@ def test_every_failure_kind_after_a_success_is_discarded(tmp_path):
     node._calib_start_mono -= 1000.0
     node._check_calibration_health()
     assert node.pub_calibration.published == [good]
-    codes = [m.message.split(':')[0] for m in node.pub_calibration_attempt.published[1:]]
+    codes = [m.message.split(' · sweep ')[0].split(':')[0] for m in node.pub_calibration_attempt.published[1:]]
     assert codes == ['CONSTELLATION_TOO_FEW_FRAMES', 'BB entered ERROR state during calibration',
                      'QTM_DROPOUT_MID_SWEEP', 'CALIBRATION_TIMEOUT']
     assert not any(m.success for m in node.pub_calibration_attempt.published[1:])
@@ -234,14 +234,15 @@ def test_inconsistent_failure_is_one_short_line_with_the_decisive_numbers(tmp_pa
     _sweep(node, _result(0.95))
     log = _rec(node)
     _sweep(node, _result(0.56))
-    msg = node.pub_calibration_attempt.published[-1].message
+    full = node.pub_calibration_attempt.published[-1].message
+    msg = full.split(' · sweep ')[0]
     # Limit 3·√(σ_new² + σ_ref²) with both σ 0.05 (the reference's σ comes from the
     # state file written by the first sweep): 0.212°, not the 0.15° floor.
     assert msg == ('CALIBRATION_INCONSISTENT: Δyaw -0.390° exceeds ±0.212° vs 0.950° '
                    f'(accepted {node._last_good_at[:19]}) — set bb_moved:=true if BB or '
                    'QTM moved')
     errors = _at(log, 'error')
-    assert errors == [f'BB calibration FAILED: {msg} (kept the calibration from '
+    assert errors == [f'BB calibration FAILED: {full} (kept the calibration from '
                       f'{node._last_good_at})']
     assert len(errors[0]) < 250 and '\n' not in errors[0]
     assert 'sweep estimator' not in msg and 'sweep estimator' not in errors[0]
@@ -251,7 +252,7 @@ def test_inconsistent_failure_is_one_short_line_with_the_decisive_numbers(tmp_pa
 def test_inconsistent_against_the_state_file_names_its_acceptance_time(tmp_path):
     node, _ = _node(tmp_path, _ref(0.926))
     _sweep(node, _result(0.56, pos=[POS[0] + 1.6, POS[1], POS[2]]))
-    msg = node.pub_calibration_attempt.published[-1].message
+    msg = node.pub_calibration_attempt.published[-1].message.split(' · sweep ')[0]
     assert msg == ('CALIBRATION_INCONSISTENT: Δyaw -0.366° exceeds ±0.150°, axis point moved '
                    '1.60 mm > 1.5 mm vs 0.926° (accepted 2026-10-09T13:24:52) — set '
                    'bb_moved:=true if BB or QTM moved')

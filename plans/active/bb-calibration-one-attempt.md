@@ -3,7 +3,7 @@ title: Ball Butler calibration is a one-attempt process, every time
 status: active
 owner: harrison
 created: 2026-10-14
-last_updated: 2026-10-14
+last_updated: 2026-10-15
 related_logbook:
   - 2026-10-14-bb-calibration-one-attempt-investigation.md
 related_code:
@@ -23,8 +23,10 @@ Owner intent, verbatim: **"BB calibration is a one-attempt process, every
 time."**
 
 Since the last calibration code change (b37faf8f, 2026-10-11 00:59) there were
-42 sweep starts, 17 accepted and 25 refused. A BB power cycle and a QTM
-re-alignment are the only events in the window. Nothing physical on BB, its
+42 sweep starts, 17 accepted and 25 refused. A BB power cycle, a QTM
+re-alignment and a BB firmware flash (8 to 9, 2026-10-13 20:09, CANCEL_CMD
+only; the diff touches no yaw, sweep or reporting code, checked 2026-10-15)
+are the only events in the window. Nothing physical on BB, its
 shelf or its markers was touched. Every history-gate refusal was a false
 positive. The evidence is in the related logbook entry.
 
@@ -67,7 +69,11 @@ Evidence for each is in the entry. Labels match its census.
   at most.
 - **Measure the robot frame in software.** No manual QTM re-alignment to
   Jugglebot's base. No assumption that mocap origin equals robot base.
-- **`bb_moved` is retired as a gate input.**
+- **`bb_moved` is deleted** (owner, 2026-10-15: "no particular desire to keep
+  it around"). Not kept as an epoch command. The parameter, its arming
+  message, the override branches in both gates and the pool reset go in
+  Phase 1, with the launch-file and runsheet references.
+- **The hardware pin of the kappa step stays in Phase 0** (owner, 2026-10-15).
 
 Also fixed by the owner: BB's yaw encoder is absolute, and BB's shelf is
 room-fixed while Jugglebot is not.
@@ -92,22 +98,50 @@ Deliverable:
 - Cross-sitting distributions of kappa, yaw, axis point, yaw-source lag and
   template residual. These set every advisory band used in Phases 1 and 2.
   No band is taken from one sitting's sigma.
-- **Hardware pin of the kappa step (P7).** In one launch, alternate sweeps
-  to the old end (about 126 deg) and the new end (about 121 deg), three
-  each. Then do three BB power cycles, each followed by a park reading and a
-  sweep. Log the sweep end angle and fitted lag in the attempt message (not
-  recorded today). Decision criterion: if kappa follows the sweep range, the
-  band is widened to cover it and the range becomes a recorded field. If it
-  does not, the band stays as characterised and the mechanism stays "QTM
-  systematics" in the entry.
+- **Pin of the kappa step (P7), redesigned 2026-10-15.** The sweep end is
+  not commandable: BB firmware drives the yaw to a compile-time 120 deg
+  target and reverses at the first sample past 119 deg, so the recorded
+  maximum is overshoot (hardware_config.h CALIB_MAX_YAW_DEG, StateMachine
+  handleCalibrating_). From 2026-10-13 22:00 the overshoot shrank from 4 to 8
+  deg to 0 to 3 deg at the top and from about 1 deg to none at the return,
+  with the start yaw unchanged and the peak speed about 2 deg/s lower: the
+  sweep dynamics changed at the power cycle, and with them the pose range
+  the solver samples. The pin is therefore in two parts.
+  1. **Offline, Phase 0 (this unit).** The replay harness re-solves every
+     pre-step sweep with its frames clipped to the post-step yaw range
+     (about 0 to 119 deg) and reports kappa(full) minus kappa(clipped) per
+     sweep. Criterion: if clipping moves kappa by about +0.25 deg (the
+     observed step, SD 0.03), the mechanism is pose-mix dependence of the
+     fit (QTM reconstruction systematics at the shelf), the band covers it
+     and the sweep range becomes a recorded field. If clipping moves kappa
+     by less than 0.1 deg, the pose mix is not the mechanism and "not BB"
+     in the entry is downgraded to "unresolved": a physical change at BB
+     coincident with the power cycle (encoder magnet seat, yaw mount,
+     supply state changing the drive dynamics) becomes the leading
+     candidate.
+  2. **Hardware, the session stop point** (runsheet
+     `tests/hardware/session_bb_kappa_pin.md`). Three BB power cycles, each
+     followed by a park reading and two sweeps (pair mean vs pair mean
+     resolves 0.13 deg; one vs one only 0.19), with the attempt message now
+     recording the sweep start, end, duration and fitted lag. Criterion: a
+     pair-mean kappa change across a power cycle of more than 0.20 deg (the
+     within-epoch band, Phase 0), with
+     the overshoot also changing, says the drive dynamics and kappa move
+     together and the next step is a BB-side physical check. No change
+     says the power cycle itself is innocent. A runtime sweep-end parameter
+     in BB firmware would allow the range test on hardware; that is the
+     owner's call in the BB repo and only worth it if part 1 is
+     inconclusive.
 
 Files likely touched: new `tools/probes/bb_calibration_replay.py`;
 `bb_calibration.py` (log end angle and lag only); `tests/ros/test_bb_*.py`
 (replay fixture).
 
-Pinned by: replay probe output committed under `temp/probes/` plus a test
-that loads a small recorded-sweep fixture and asserts the distribution
-summary code.
+Pinned by: the replay's fidelity and summary tables in the Phase 0 logbook
+entry (run output stays under gitignored `temp/probes/`), a committed
+one-sweep fixture in `tools/probes/data/` with its `--emit-fixture` recipe,
+and a test that re-solves the fixture and asserts the distribution summary
+code.
 
 Gate: bands published in the logbook with the (date, command, result)
 triple; owner reviews the band before Phase 1 consumes it.
@@ -132,8 +166,9 @@ Deliverable:
   remedy.
 - The console prints startup state: pool n, `base_ref`, template path,
   pose and yaw source.
-- `bb_moved` stops gating. It remains only as an explicit "start a new
-  epoch" command if the owner wants one.
+- `bb_moved` is deleted outright: parameter, arming log line, both gate
+  override branches, the pool reset, and every launch-file, GUI and runsheet
+  reference (grep first, count to zero after).
 - A rehearsal row for the calibration rung is added to the `tests/hardware`
   runsheet (dress-rehearse rule).
 
@@ -236,7 +271,7 @@ column still lands.
 
 | Phase | Status | Date | Note |
 |-------|--------|------|------|
-| 0 Characterise | not started | - | design-bearing (bands) |
+| 0 Characterise | code done, hardware pin owed | 2026-10-15 | bands published in the Phase 0 entry; pin part 1 (offline) done: pose mix EXCLUDED; part 2 = runsheet tests/hardware/session_bb_kappa_pin.md |
 | 1 Gate inversion and operator surface | not started | - | needs Phase 0 bands |
 | 2 Template residual | not started | - | parallel with 3 after Phase 1 |
 | 3 Robot frame in software | not started | - | design-bearing; after Phase 1 |

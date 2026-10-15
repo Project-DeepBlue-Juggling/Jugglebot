@@ -1304,6 +1304,45 @@ def stamped_yaw_samples_from_joint_state(msg) -> list:
     return out
 
 
+def sweep_kinematics(yaw_samples) -> Optional[dict]:
+    """Start/end angle, span and duration of a sweep from ``[(t_s, yaw_deg)]``.
+
+    ``end_deg`` is the extreme yaw reached (the sample of largest magnitude,
+    signed): 121.3 for the 0 -> ~121 -> 0 operator sweep. ``duration_s`` spans
+    the whole window. Non-finite samples are ignored; None when none remain.
+    """
+    rows = []
+    for r in (yaw_samples or ()):
+        t, v = float(r[0]), float(r[1])
+        if math.isfinite(t) and math.isfinite(v):
+            rows.append((t, v))
+    if not rows:
+        return None
+    rows.sort(key=lambda r: r[0])
+    vals = [v for _, v in rows]
+    return {
+        'start_deg': vals[0],
+        'end_deg': max(vals, key=abs),
+        'span_deg': max(vals) - min(vals),
+        'duration_s': rows[-1][0] - rows[0][0],
+        'n_samples': len(rows),
+    }
+
+
+def sweep_suffix(yaw_samples, lag_s: Optional[float] = None) -> str:
+    """`` · sweep <start>→<end>° <dur> s, lag <±x.x> ms`` ('' without samples).
+
+    Appended to every attempt message on bb/calibration_attempt; ``lag n/a``
+    when no estimate (a refusal before the lag fit).
+    """
+    k = sweep_kinematics(yaw_samples)
+    if k is None:
+        return ''
+    lag = 'lag n/a' if lag_s is None else f'lag {lag_s * 1e3:+.1f} ms'
+    return (f" · sweep {k['start_deg']:.1f}→{k['end_deg']:.1f}° "
+            f"{k['duration_s']:.1f} s, {lag}")
+
+
 @dataclass
 class SweepYawEstimate:
     """BB's yaw offset and axis point from one calibration window."""
@@ -1330,6 +1369,10 @@ class SweepYawEstimate:
     frame_clock_off_grid: Optional[float] = None
     #: The window-mean pair statistic (diagnostic; the gate reads the pose-binned ``template_residual_mm``).
     template_residual_window_mm: float = float('nan')
+    #: Extreme yaw reached in the sweep (deg, signed); nan when no samples.
+    sweep_end_deg: float = float('nan')
+    sweep_start_deg: float = float('nan')
+    sweep_duration_s: float = float('nan')
 
     def summary(self) -> str:
         """One-line description for the result message."""
@@ -1346,7 +1389,9 @@ class SweepYawEstimate:
                 f'stale) over {self.n_moving} moving samples '
                 f'(residual {self.lag_residual_rms_deg:.2f}° RMS), '
                 f'σ {self.yaw_offset_std_deg:.3f}° (formal {self.formal_se_deg:.3f}° ⊕ '
-                f'repeatability {self.repeatability_deg:.3f}°)')
+                f'repeatability {self.repeatability_deg:.3f}°), '
+                f'sweep {self.sweep_start_deg:.1f}→{self.sweep_end_deg:.1f}° '
+                f'in {self.sweep_duration_s:.1f} s')
 
 
 def estimate_sweep_yaw_offset(
@@ -1445,7 +1490,11 @@ def estimate_sweep_yaw_offset(
     rep = float(template.repeatability_deg)
     offset_deg = fit.phi_raw_deg + template.gauge_shift_deg
     org = track.origin[moving]
+    kin = sweep_kinematics(yaw_samples) or {}
     return SweepYawEstimate(
+        sweep_end_deg=kin.get('end_deg', float('nan')),
+        sweep_start_deg=kin.get('start_deg', float('nan')),
+        sweep_duration_s=kin.get('duration_s', float('nan')),
         yaw_offset_rad=wrap_pi(math.radians(offset_deg)),
         yaw_offset_std_deg=math.sqrt(fit.formal_se_deg ** 2 + rep ** 2),
         formal_se_deg=fit.formal_se_deg, repeatability_deg=rep,

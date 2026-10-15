@@ -62,7 +62,7 @@ from .bb_calibration import (
     run_calibration, CalibrationResult, MIN_ARC_DEG,
     BB_MARKER_COUNT, BB_YAW_ANCHOR_INDEX,
     load_marker_template, check_calibration_consistency,
-    stamped_yaw_samples_from_joint_state,
+    stamped_yaw_samples_from_joint_state, sweep_suffix,
 )
 from .bb_base_frame import (
     BaseFrameMonitor, KappaRecord, BASE_MAX_RESIDUAL_MM, DEFAULT_MIN_POOLED_SWEEPS,
@@ -130,8 +130,12 @@ DEFAULT_BB_YAW_SOURCE = 'auto'
 #: truncates with an ellipsis and logs the full text at DEBUG) — a safety net:
 #: every reason the node produces fits without truncation
 #: (tests/ros/test_mocap_node_keep_last_good.py). The 2026-10-09 live failure
-#: line was ~900 characters.
-MAX_CALIBRATION_FAILURE_CHARS = 240
+#: line was ~900 characters. The bound covers the whole published text: the
+#: sweep-kinematics suffix (``bb_calibration.sweep_suffix``, ~45 chars) is
+#: reserved first and the reason truncated to what is left, so the suffix
+#: always survives (raised 240 -> 300 when the suffix landed, so no existing
+#: reason loses room).
+MAX_CALIBRATION_FAILURE_CHARS = 300
 
 #: BB base-marker frame (2026-10-10, ``jugglebot.bb_base_frame``): four fixed
 #: markers on BB's shelf, posed by geometry among every marker but BB's own
@@ -397,6 +401,8 @@ class MocapNode(Node):
         self._calib_last_frame_ns = None
         self._calib_yaw_samples: list = []
         self._calib_stamped_yaw: list = []
+        #: Fitted yaw-source lag (s) of the current finalize; None until the estimator ran.
+        self._calib_lag_s = None
         #: Every distinct frame's base-candidate markers in the window (all but
         #: BB's own, labelled or not: bb_base_frame.base_candidate_points).
         self._calib_base_points: list = []
@@ -792,6 +798,7 @@ class MocapNode(Node):
         self._calib_last_frame_ns = None
         self._calib_yaw_samples = []
         self._calib_stamped_yaw = []
+        self._calib_lag_s = None
         self._calib_base_points = []
         self._calib_last_base_ns = None
 
@@ -984,6 +991,7 @@ class MocapNode(Node):
             self._calib_last_frame_ns = None
             self._calib_yaw_samples = []
             self._calib_stamped_yaw = []
+            self._calib_lag_s = None
             self._calib_base_points = []
             self._calib_last_base_ns = None
             self.get_logger().info('BB calibration started, collecting marker data')
@@ -1102,6 +1110,8 @@ class MocapNode(Node):
             self.get_logger().debug(f'Calibration solver rejected the sweep: {e}')
             self._publish_calibration_failure(str(e))
             return
+        if result.yaw_estimate is not None:
+            self._calib_lag_s = float(result.yaw_estimate.lag_s)
         if result.yaw_method != 'constellation':  # defensive: never publish the anchor value
             self._publish_calibration_failure(
                 f'internal: yaw offset came from the {result.yaw_method!r} estimator')
@@ -1480,6 +1490,17 @@ class MocapNode(Node):
                 'the next calibration is gated against the previous reference')
         return now.strftime('%Y-%m-%dT%H:%M:%SZ')
 
+    def _attempt_suffix(self) -> str:
+        """Sweep-kinematics suffix for the attempt text, from the yaw samples
+        the estimator used (stamped when selected, else heartbeat)."""
+        requested = str(self.get_parameter('bb_yaw_source').value)
+        if (requested != 'heartbeat'
+                and len(self._calib_stamped_yaw) >= MIN_STAMPED_YAW_SAMPLES):
+            samples = self._calib_stamped_yaw
+        else:
+            samples = self._calib_yaw_samples
+        return sweep_suffix(samples, self._calib_lag_s)
+
     def _publish_calibration_result(self, result: CalibrationResult,
                                     message: str = 'Calibration successful',
                                     accepted_at: str = ''):
@@ -1487,7 +1508,7 @@ class MocapNode(Node):
         and is the latest attempt (bb/calibration_attempt)."""
         msg = BallButlerCalibrationResult()
         msg.success = True
-        msg.message = message
+        msg.message = message + self._attempt_suffix()
         msg.position_mm.x = float(result.bb_position_mm[0])
         msg.position_mm.y = float(result.bb_position_mm[1])
         msg.position_mm.z = float(result.bb_position_mm[2])
@@ -1516,9 +1537,12 @@ class MocapNode(Node):
         cut) — the one enforcement point for the short-message contract.
         """
         reason = ' '.join(str(reason).split())
-        if len(reason) > MAX_CALIBRATION_FAILURE_CHARS:
+        suffix = self._attempt_suffix()
+        room = MAX_CALIBRATION_FAILURE_CHARS - len(suffix)
+        if len(reason) > room:
             self.get_logger().debug(f'Calibration failure (full text): {reason}')
-            reason = reason[:MAX_CALIBRATION_FAILURE_CHARS - 1].rstrip() + '…'
+            reason = reason[:room - 1].rstrip() + '…'
+        reason += suffix
         msg = BallButlerCalibrationResult()
         msg.success = False
         msg.message = reason
