@@ -118,15 +118,32 @@ class BallTracker:
         demote_still_s: float = 0.060,
         demote_min_predicted_speed_mmps: float = 2000.0,
         debug_log: Optional[Callable[[str], None]] = None,
+        max_frame_gap_s: float = 0.10,
     ):
         self.dt = dt
         #: Wall time of the previous processed frame -- the Kalman predict steps by
         #: the MEASURED interval, not the nominal ``dt`` (2026-09-18): the bags run
         #: at ~192 Hz (5.2 ms) against a 5.0 ms nominal, so a nominal step ran the
         #: filter clock 4 % slow and its state drifted behind the ball through
-        #: every flight. Clamped to [0.4, 4] x nominal so a dropped frame or a
+        #: every flight. Clamped to [0.4 x nominal, ``max_frame_gap_s``] so a
         #: replay restart never becomes one giant leap.
         self._last_frame_time: Optional[float] = None
+        #: Longest frame-to-frame interval the filters step by in one predict
+        #: (and the longest gap that still counts as "consecutive" for the
+        #: announced-ball motion test). Was 4 x nominal (20 ms) until
+        #: 2026-10-16: the live node processes only ~1/3 of QTM's ~290 Hz
+        #: frames under sitting load, its processed-frame gaps reach 30-60 ms
+        #: during a flight, and a CONFIRMED filter that stepped only 20 ms
+        #: across a 36 ms gap was left (gap - 20 ms) x |v| ~ 65 mm behind the
+        #: ball at 4 m/s -- outside the 50 mm association gate, after which it
+        #: coasted parallel to the ball, never re-associated, and fed the
+        #: flight fit nothing (2026-10-16 sitting: 39 of 191 self-tosses
+        #: confirmed but never fitted in the production-faithful replay).
+        #: Frames carry QTM's capture time since 2026-09-20, so the measured
+        #: gap IS the interval the ball flew; the gravity-exact predict over
+        #: it is right. See logbook
+        #: 2026-10-16-tracker-flight-fit-late-since-matcher-fix.
+        self.max_frame_gap_s = float(max(max_frame_gap_s, 4.0 * dt))
         self.landing_z = landing_z
         self.match_threshold_base_mm = match_threshold_base_mm
         self.gate_radius_mm = gate_radius_mm
@@ -430,14 +447,15 @@ class BallTracker:
 
     def _frame_dt(self, current_time: float) -> float:
         """The interval the Kalman filters step by on this frame: the measured
-        gap to the previous frame, clamped to ``[0.4, 4] x self.dt``; the
-        nominal ``dt`` on the first frame or a non-advancing clock."""
+        gap to the previous frame, clamped to ``[0.4 x self.dt,
+        self.max_frame_gap_s]``; the nominal ``dt`` on the first frame or a
+        non-advancing clock."""
         if self._last_frame_time is None:
             return float(self.dt)
         gap = float(current_time) - self._last_frame_time
         if not gap > 0.0:
             return float(self.dt)
-        return float(min(max(gap, 0.4 * self.dt), 4.0 * self.dt))
+        return float(min(max(gap, 0.4 * self.dt), self.max_frame_gap_s))
 
     @property
     def active_balls(self) -> List[Ball]:
@@ -626,8 +644,10 @@ class BallTracker:
             prev_dt = None
             if prev is not None:
                 prev_dt = current_time - prev[0]
-                # A gap of more than a few frames breaks "consecutive".
-                if not (0.0 < prev_dt <= 4.0 * self.dt + 0.02):
+                # A gap longer than the filters may step across breaks
+                # "consecutive" (dropped frames under load are not a break:
+                # the step's speed is measured over the real interval).
+                if not (0.0 < prev_dt <= self.max_frame_gap_s):
                     prev, prev_dt = None, None
 
             gated: List[Tuple[np.ndarray, int]] = []
