@@ -2,7 +2,7 @@
 title: "mocap_node's 30-52 % frame-loss bursts are the BB calibration sweep's post-processing (run_calibration + estimate_base_pose, 4.3-7.2 s) running synchronously inside the bb/heartbeat callback on the single-threaded executor; drops = 300 Hz x solve time - 150 queued frames to within 15 frames on 13 of the 14 solved sweeps of the five named launches (the 14th, 16:23, is 16 off); no burst at idle, at goal accept or during juggling; the tracker's ~1/3 frame share is NOT this; fix options for the owner, none built"
 type: investigation
 date: 2026-10-16
-status: open
+status: resolved
 phase: "tracker fit latency (follow-up to handoff-solve-chaining P2)"
 related_plan: handoff-solve-chaining.md
 related:
@@ -139,6 +139,8 @@ alarm costs more than a one-line change. Item 5 needs a CPU log (`pidstat`/`mpst
 2026-10-10 entry) the next time it happens. It is n = 1 and was not chased.
 
 ## Fix
+
+**Resolved 2026-10-16 by option A (owner): `2026-10-16-mocap-calibration-solve-off-executor.md`** (worker-thread solve, executor-thread apply; hardware receipt row 30b of `tests/hardware/session_skill_stack_rehearsals.md`). Original text follows.
 
 None. The diagnosis is clear, but the fix needs a design decision (in-flight overlap rule, snapshot seam) and
 touches a function another live branch is editing. The owner decides between A/B/C. The hardware rehearsal for A:

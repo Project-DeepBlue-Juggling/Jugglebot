@@ -37,7 +37,7 @@ def _node(tmp_path, state=None, template=True):
     iface = MagicMock()
     iface.is_receiving.return_value = True
     with patch.object(mn, 'MocapInterface', return_value=iface):
-        node = mn.MocapNode()
+        node = mn.MocapNode(solve_inline=True)
     path = tmp_path / 'last_accepted.json'
     if state is not None:
         path.write_text(json.dumps(state))
@@ -99,7 +99,7 @@ def _rec(node):
 def test_node_loads_the_shipped_template():
     import jugglebot.mocap_node as mn
     with patch.object(mn, 'MocapInterface', return_value=MagicMock()):
-        node = mn.MocapNode()
+        node = mn.MocapNode(solve_inline=True)
     t = node._marker_template
     assert t is not None and len(t.points_mm) == 7
     # Re-pinned 2026-10-11 from landings (0.208 - 0.179; template gauge.repinned_on).

@@ -65,7 +65,7 @@ def _node(tmp_path, *, n_seed=10, state=None, base_state=None):
     iface = MagicMock()
     iface.is_receiving.return_value = True
     with patch.object(mn, 'MocapInterface', return_value=iface):
-        node = mn.MocapNode()
+        node = mn.MocapNode(solve_inline=True)
     node._params['bb_calibration_state_file'] = str(tmp_path / 'last.json')
     node._params['bb_base_frame_state_file'] = str(tmp_path / 'base.json')
     if state is not None:
@@ -147,7 +147,7 @@ def test_the_startup_state_line_is_logged_once_at_init_and_names_the_pool(tmp_pa
     iface = MagicMock()
     with patch.object(mn, 'MocapInterface', return_value=iface), \
             patch.object(mn.MocapNode, '_log_startup_state') as startup:
-        mn.MocapNode()
+        mn.MocapNode(solve_inline=True)
     startup.assert_called_once_with()
     node = _node(tmp_path)                            # 10 seed records -> epoch 0
     lines = _rec(node)
@@ -162,7 +162,7 @@ def test_the_committed_resource_loads_in_the_node(tmp_path):
     import jugglebot.mocap_node as mn
     iface = MagicMock()
     with patch.object(mn, 'MocapInterface', return_value=iface):
-        node = mn.MocapNode()
+        node = mn.MocapNode(solve_inline=True)
     assert node._base_model is not None and len(node._base_model.records) >= 5
     assert node._base_monitor is not None
 

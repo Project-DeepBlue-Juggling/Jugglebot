@@ -59,7 +59,7 @@ def _mocap_node(tmp_path=None, last_accepted_deg=1.78):
     iface = MagicMock()
     iface.is_receiving.return_value = True
     with patch.object(mn, 'MocapInterface', return_value=iface):
-        node = mn.MocapNode()
+        node = mn.MocapNode(solve_inline=True)
     if tmp_path is not None:
         state = tmp_path / 'last_accepted.json'
         state.write_text(json.dumps({'yaw_offset_deg': last_accepted_deg,

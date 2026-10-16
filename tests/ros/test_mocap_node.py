@@ -74,7 +74,7 @@ def _fake_iface(*, receiving=True, aligned=True, synced=True, markers=None,
 def _make_node(iface):
     import jugglebot.mocap_node as mn
     with patch.object(mn, 'MocapInterface', return_value=iface):
-        return mn.MocapNode()
+        return mn.MocapNode(solve_inline=True)
 
 
 @pytest.fixture

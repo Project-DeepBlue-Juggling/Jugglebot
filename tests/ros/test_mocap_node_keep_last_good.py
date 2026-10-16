@@ -52,7 +52,7 @@ def _node(tmp_path, state=None, state_name='last_accepted.json'):
     iface = MagicMock()
     iface.is_receiving.return_value = True
     with patch.object(mn, 'MocapInterface', return_value=iface):
-        node = mn.MocapNode()
+        node = mn.MocapNode(solve_inline=True)
     path = tmp_path / state_name
     if state is not None:
         path.write_text(json.dumps(state) if isinstance(state, dict) else state)

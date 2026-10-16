@@ -51,6 +51,7 @@ from jugglebot_interfaces.msg import (
 import tf2_ros
 
 from .mocap_interface import FRAME_QUEUE_MAXLEN, MocapInterface
+from .calibration_solve_worker import CalibrationSolveWorker
 from jugglebot.protocol_config import (
     BallButlerStates,
     MOCAP_ALIGNMENT_POS_THRESH_MM,
@@ -83,6 +84,17 @@ except ImportError:  # pragma: no cover - outside a ROS install
 #: cycles before they refuse, slow enough to be free next to the per-frame marker
 #: path.
 MOCAP_STATUS_PERIOD_S = 0.2
+
+#: Period of the executor-thread timer that APPLIES finished calibration
+#: solves (state, files, publishes, log lines). The solve itself runs on the
+#: ``CalibrationSolveWorker`` thread (logbook
+#: 2026-10-16-mocap-calibration-solve-off-executor), so this bounds the
+#: result's extra latency: 0-0.1 s after a ~4 s solve, on a static BB.
+CALIBRATION_APPLY_PERIOD_S = 0.1
+
+#: Bounded join of the solve thread at node shutdown; an unfinished solve's
+#: result is dropped (the thread is a daemon).
+CALIBRATION_SOLVE_JOIN_TIMEOUT_S = 1.0
 
 #: Wall-clock cap on one CALIBRATING collection window (Q5c). BB's own sweep is
 #: a few seconds; anything past a minute means the heartbeat is wedged at
@@ -256,8 +268,67 @@ def _set_stamp(stamp, ns):
 # for the yaw offset) are single-sourced from bb_calibration.
 
 
+@dataclasses.dataclass(frozen=True)
+class _SweepSnapshot:
+    """One ended sweep's solve inputs, COPIED on the executor thread at the
+    exit edge (the next sweep's start edge rebinds every ``_calib_*`` list,
+    and the collectors append to them). The worker reads only this."""
+    calib_data: dict            # marker index -> list of (3,) arrays (lists copied)
+    yaw_readings: list
+    frames: list
+    yaw_samples: list           # the source the estimator fits
+    yaw_source: str             # 'stamped' | 'heartbeat'
+    suffix_samples: list        # what _attempt_suffix would have read
+    template: object            # the body template (immutable after init)
+    base_points: list
+    base_template_mm: object    # None when the base-frame model is off
+    pitch_z_offset_mm: float
+
+
+@dataclasses.dataclass(frozen=True)
+class _SweepSolve:
+    """The worker's product: the calibration (or the solver's refusal text)
+    and, for a constellation result with a base model, this window's base
+    pose (or the estimator's refusal text)."""
+    result: object = None       # CalibrationResult | None
+    solver_error: str = ''
+    base_pose: object = None
+    base_error: str = ''
+
+
+def _solve_sweep(snap: _SweepSnapshot) -> _SweepSolve:
+    """The expensive part of a calibration, on the WORKER thread: pure, reads
+    only ``snap``. ``run_calibration`` and ``estimate_base_pose`` are looked
+    up in this module so tests that patch them here still take effect."""
+    try:
+        result = run_calibration(
+            calibration_data=snap.calib_data,
+            yaw_readings_deg=snap.yaw_readings,
+            pitch_z_offset_mm=snap.pitch_z_offset_mm,
+            marker_frames=snap.frames,
+            yaw_samples=snap.yaw_samples,
+            template=snap.template,
+            yaw_source=snap.yaw_source,
+        )
+    except ValueError as e:
+        return _SweepSolve(solver_error=str(e))
+    if result.yaw_method != 'constellation' or snap.base_template_mm is None:
+        return _SweepSolve(result=result)
+    try:
+        return _SweepSolve(result=result,
+                           base_pose=estimate_base_pose(snap.base_points,
+                                                        snap.base_template_mm))
+    except ValueError as e:
+        return _SweepSolve(result=result, base_error=str(e))
+
+
 class MocapNode(Node):
-    def __init__(self):
+    def __init__(self, *, solve_inline: bool = False):
+        """``solve_inline=True`` (tests only) runs the calibration solve
+        synchronously at the sweep's exit edge and applies it before the
+        heartbeat callback returns -- the pre-2026-10-16 timing, so tests can
+        patch the solver around that one call. The live node solves on the
+        ``CalibrationSolveWorker`` thread."""
         super().__init__('mocap_node')
 
         # ── Mocap interface (pure-Python, runs its own asyncio thread) ────
@@ -353,6 +424,10 @@ class MocapNode(Node):
         # collection state.
         self.create_timer(MOCAP_STATUS_PERIOD_S, self._check_calibration_health)
         self.create_timer(1.0, self._publish_base_frame_pose)
+        # The calibration solve runs OFF this executor (calibration_solve_worker:
+        # the invariant and its four rules); this timer applies its outcomes.
+        self._calib_solver = CalibrationSolveWorker(_solve_sweep, inline=solve_inline)
+        self.create_timer(CALIBRATION_APPLY_PERIOD_S, self._apply_calibration_outcomes)
 
         # ── BB heartbeat subscription ─────────────────────────────────────
         self.create_subscription(
@@ -383,8 +458,6 @@ class MocapNode(Node):
         self._calib_last_frame_ns = None
         self._calib_yaw_samples: list = []
         self._calib_stamped_yaw: list = []
-        #: Fitted yaw-source lag (s) of the current finalize; None until the estimator ran.
-        self._calib_lag_s = None
         #: Every distinct frame's base-candidate markers in the window (all but
         #: BB's own, labelled or not: bb_base_frame.base_candidate_points).
         self._calib_base_points: list = []
@@ -758,7 +831,6 @@ class MocapNode(Node):
         self._calib_last_frame_ns = None
         self._calib_yaw_samples = []
         self._calib_stamped_yaw = []
-        self._calib_lag_s = None
         self._calib_base_points = []
         self._calib_last_base_ns = None
 
@@ -951,7 +1023,6 @@ class MocapNode(Node):
             self._calib_last_frame_ns = None
             self._calib_yaw_samples = []
             self._calib_stamped_yaw = []
-            self._calib_lag_s = None
             self._calib_base_points = []
             self._calib_last_base_ns = None
             self.get_logger().info('BB calibration started, collecting marker data')
@@ -1018,7 +1089,10 @@ class MocapNode(Node):
             self._calib_frames.append((stamp_ns * 1e-9, np.array(frame)))
 
     def _finalize_calibration(self):
-        """Run the calibration pipeline and publish the result."""
+        """Exit edge of a valid sweep, on the EXECUTOR thread: the cheap
+        refusals, then a COPY of the window's inputs handed to the solve
+        worker. Returns at once; ``_apply_calibration_outcomes`` publishes the
+        result (logbook 2026-10-16-mocap-calibration-solve-off-executor)."""
         total_pts = sum(len(v) for v in self._calib_data.values())
         if total_pts == 0:
             self._publish_calibration_failure('No marker data collected')
@@ -1056,25 +1130,69 @@ class MocapNode(Node):
             yaw_samples, yaw_source = self._calib_stamped_yaw, 'stamped'
         else:
             yaw_samples, yaw_source = self._calib_yaw_samples, 'heartbeat'
-        try:
-            result: CalibrationResult = run_calibration(
-                calibration_data=self._calib_data,
-                yaw_readings_deg=self._calib_yaw_readings,
-                pitch_z_offset_mm=hw.BB_GEOM_PITCH_Z_OFFSET_MM,
-                marker_frames=self._calib_frames,
-                yaw_samples=yaw_samples,
-                template=self._marker_template,
-                yaw_source=yaw_source,
-            )
-        except ValueError as e:
-            self.get_logger().debug(f'Calibration solver rejected the sweep: {e}')
-            self._publish_calibration_failure(str(e))
+        suffix_samples = (self._calib_stamped_yaw
+                          if requested != 'heartbeat' and have_stamped
+                          else self._calib_yaw_samples)
+        snap = _SweepSnapshot(
+            calib_data={i: list(v) for i, v in self._calib_data.items()},
+            yaw_readings=list(self._calib_yaw_readings),
+            frames=list(self._calib_frames),
+            yaw_samples=list(yaw_samples),
+            yaw_source=yaw_source,
+            suffix_samples=list(suffix_samples),
+            template=self._marker_template,
+            base_points=list(self._calib_base_points),
+            base_template_mm=(None if self._base_model is None
+                              else self._base_model.template_mm),
+            pitch_z_offset_mm=hw.BB_GEOM_PITCH_Z_OFFSET_MM,
+        )
+        if not self._calib_solver.submit(snap):
+            return                              # shutting down: dropped (rule 2)
+        if self._calib_solver.inline:
+            self._apply_calibration_outcomes()
+
+    def _apply_calibration_outcomes(self):
+        """Executor-thread timer: apply every finished solve, oldest first,
+        exactly once (``CalibrationSolveWorker.drain`` hands each out once)."""
+        for outcome in self._calib_solver.drain():
+            try:
+                self._apply_one_outcome(outcome)
+            except Exception as exc:
+                # One bad outcome must not lose the rest of the drained batch.
+                self.get_logger().error(
+                    f'BB calibration apply failed: {type(exc).__name__}: {exc}')
+
+    def _apply_one_outcome(self, outcome):
+        snap = outcome.job
+        if outcome.error is not None:
+            # Rule 3: the solve raised. One line, nothing persisted, the
+            # calibration in force kept; the worker and the stream live on.
+            self._publish_calibration_failure(
+                f'CALIBRATION_SOLVE_ERROR: {outcome.error}',
+                suffix=sweep_suffix(snap.suffix_samples, None))
             return
-        if result.yaw_estimate is not None:
-            self._calib_lag_s = float(result.yaw_estimate.lag_s)
+        self.get_logger().debug(
+            f'Calibration solve took {outcome.solve_s:.2f} s off the executor')
+        self._apply_sweep_solve(snap, outcome.value)
+
+    def _apply_sweep_solve(self, snap: _SweepSnapshot, solve: _SweepSolve):
+        """Everything that followed the solve when it ran inline, in the same
+        order, reading the sweep's inputs from ``snap`` (never ``_calib_*``:
+        a new sweep may already be collecting)."""
+        if solve.result is None:
+            self.get_logger().debug(
+                f'Calibration solver rejected the sweep: {solve.solver_error}')
+            self._publish_calibration_failure(
+                solve.solver_error, suffix=sweep_suffix(snap.suffix_samples, None))
+            return
+        result: CalibrationResult = solve.result
+        lag_s = (None if result.yaw_estimate is None
+                 else float(result.yaw_estimate.lag_s))
+        suffix = sweep_suffix(snap.suffix_samples, lag_s)
         if result.yaw_method != 'constellation':  # defensive: never publish the anchor value
             self._publish_calibration_failure(
-                f'internal: yaw offset came from the {result.yaw_method!r} estimator')
+                f'internal: yaw offset came from the {result.yaw_method!r} estimator',
+                suffix=suffix)
             return
 
         # ── Base-marker frame + history: ADVISORY only (nothing below refuses) ──
@@ -1089,7 +1207,7 @@ class MocapNode(Node):
                     f'arc-fit cross-check ({arc[0]:.2f}, {arc[1]:.2f}, {arc[2]:.2f}) mm, '
                     f'{float(np.linalg.norm(np.asarray(arc[:2]) - result.bb_position_mm[:2])):.2f} mm '
                     'from the body-model axis point in x/y')
-        view = self._base_frame_view(result)
+        view = self._base_frame_view(result, snap, solve)
         summary = f'{est.summary()}; {arc_note}'
         if view['pose'] is not None:
             summary += (f'; {view["pose"].summary()}; BB-in-base κ {view["kappa"]:+.4f}°, '
@@ -1128,7 +1246,7 @@ class MocapNode(Node):
             est.template_residual_mm, est.lag_s * 1e3,
             None if ref_error else reference,
             None if base_adv is None else base_adv.same_world_epoch,
-            yaw_source=yaw_source)
+            yaw_source=snap.yaw_source)
         if reference is None and not ref_error:
             self.get_logger().warn(
                 'BB calibration: no reference calibration exists (no state file) — this '
@@ -1176,7 +1294,7 @@ class MocapNode(Node):
             for idx, m in sorted(result.marker_metrics.items())
             if m.status == 'outcast')
         result_message = (f'Calibration successful (accepted {accepted_at}) · {body}{outcasts}')
-        outcome = f'BB calibrated: {body}{outcasts}{self._attempt_suffix()}'
+        outcome = f'BB calibrated: {body}{outcasts}{suffix}'
         # One severity per call site (Foxy rclpy raises ValueError otherwise).
         if advisory_flags:
             self.get_logger().warn(outcome)
@@ -1201,7 +1319,7 @@ class MocapNode(Node):
                 self.get_logger().warn(f'Marker {idx + 1}: {m.status} — {m.reason}')
 
         # Publish on latched topic
-        self._publish_calibration_result(result, result_message, accepted_at)
+        self._publish_calibration_result(result, result_message, accepted_at, suffix=suffix)
 
     # ──────────────────────────────────────────────────────────────────────
     #  Base-marker frame
@@ -1265,27 +1383,28 @@ class MocapNode(Node):
             f'last accepted {last}, yaw source '
             f'{self.get_parameter("bb_yaw_source").value}')
 
-    def _base_frame_view(self, result) -> dict:
-        """This window's base pose and the sweep's BB-in-base constants, plus
-        the kappa pool state. Every key is present; ``pose`` None (with
-        ``error``) when the base frame is off or not seen."""
+    def _base_frame_view(self, result, snap: _SweepSnapshot, solve: _SweepSolve) -> dict:
+        """This window's base pose (estimated on the worker: ``solve``) and the
+        sweep's BB-in-base constants, plus the kappa pool state. Every key is
+        present; ``pose`` None (with ``error``) when the base frame is off or
+        not seen."""
         state, state_error = self._load_state()
         view = {'pose': None, 'error': '', 'kappa': None, 'p_b': None,
                 'state': state, 'state_error': state_error, 'from_monitor': False}
         if self._base_model is None:
             view['error'] = f'BASE_FRAME_MODEL_MISSING: {self._base_model_error}'
             return view
-        T = self._base_model.template_mm
-        try:
-            view['pose'] = estimate_base_pose(self._calib_base_points, T)
-        except ValueError as e:
-            view['error'] = str(e)
-            # A window that missed the base may use the running estimate.
+        if solve.base_pose is not None:
+            view['pose'] = solve.base_pose
+        else:
+            view['error'] = solve.base_error
+            # A window that missed the base may use the running estimate (read
+            # here, on the executor: the monitor is fed by the drain timer).
             last = self._base_monitor_last_t
             pose = self._base_monitor.pose(last) if self._base_monitor is not None else None
             if pose is not None and last is not None and \
-                    self._calib_base_points and \
-                    self._calib_base_points[-1][0] - pose.t_span_s[1] <= BASE_MONITOR_MAX_AGE_S:
+                    snap.base_points and \
+                    snap.base_points[-1][0] - pose.t_span_s[1] <= BASE_MONITOR_MAX_AGE_S:
                 view['pose'], view['from_monitor'] = pose, True
         if view['pose'] is not None:
             view['kappa'], view['p_b'] = bb_in_base(
@@ -1364,24 +1483,26 @@ class MocapNode(Node):
         return now.strftime('%Y-%m-%dT%H:%M:%SZ')
 
     def _attempt_suffix(self) -> str:
-        """Sweep-kinematics suffix for the attempt text, from the yaw samples
-        the estimator used (stamped when selected, else heartbeat)."""
+        """Sweep-kinematics suffix for the attempt text, from the LIVE
+        window's yaw samples the estimator would use (stamped when selected,
+        else heartbeat). For failures raised during collection or at the exit
+        edge; a solved sweep's suffix comes from its snapshot."""
         requested = str(self.get_parameter('bb_yaw_source').value)
         if (requested != 'heartbeat'
                 and len(self._calib_stamped_yaw) >= MIN_STAMPED_YAW_SAMPLES):
             samples = self._calib_stamped_yaw
         else:
             samples = self._calib_yaw_samples
-        return sweep_suffix(samples, self._calib_lag_s)
+        return sweep_suffix(samples, None)
 
     def _publish_calibration_result(self, result: CalibrationResult,
                                     message: str = 'Calibration successful',
-                                    accepted_at: str = ''):
+                                    accepted_at: str = '', suffix: str | None = None):
         """A success replaces the calibration in force (bb/calibration_result)
         and is the latest attempt (bb/calibration_attempt)."""
         msg = BallButlerCalibrationResult()
         msg.success = True
-        msg.message = message + self._attempt_suffix()
+        msg.message = message + (self._attempt_suffix() if suffix is None else suffix)
         msg.position_mm.x = float(result.bb_position_mm[0])
         msg.position_mm.y = float(result.bb_position_mm[1])
         msg.position_mm.z = float(result.bb_position_mm[2])
@@ -1394,7 +1515,7 @@ class MocapNode(Node):
         self._last_good_at = accepted_at
         self.get_logger().debug('Published calibration result on bb/calibration_result')
 
-    def _publish_calibration_failure(self, reason: str):
+    def _publish_calibration_failure(self, reason: str, suffix: str | None = None):
         """Report a failed sweep: ONE short line, and never over a success.
 
         The failure always goes to ``bb/calibration_attempt``. It goes to the
@@ -1410,7 +1531,8 @@ class MocapNode(Node):
         cut) — the one enforcement point for the short-message contract.
         """
         reason = ' '.join(str(reason).split())
-        suffix = self._attempt_suffix()
+        if suffix is None:
+            suffix = self._attempt_suffix()
         room = MAX_CALIBRATION_FAILURE_CHARS - len(suffix)
         if len(reason) > room:
             self.get_logger().debug(f'Calibration failure (full text): {reason}')
@@ -1433,6 +1555,10 @@ class MocapNode(Node):
     # ──────────────────────────────────────────────────────────────────────
 
     def on_shutdown(self):
+        # Rule 2: a solve still in flight is joined (bounded) and its result dropped.
+        if not self._calib_solver.stop(CALIBRATION_SOLVE_JOIN_TIMEOUT_S):
+            self.get_logger().warn(
+                'BB calibration solve still running at shutdown: result dropped')
         self.mocap.stop()
         self.destroy_node()
 
