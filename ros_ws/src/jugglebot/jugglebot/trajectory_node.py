@@ -131,6 +131,7 @@ from jugglebot.motion.trajectory import planner
 from jugglebot.motion import unified_cycle as uc
 from jugglebot.motion.trajectory.cycle_plan import CyclePlan
 from jugglebot.motion.trajectory.stream_handoff import StreamHandoff
+from jugglebot.motion.skills import bump as sk_bump
 from jugglebot.motion.skills import executor as sk_exec
 from jugglebot.motion.skills import magazine_throw as sk_magazine
 from jugglebot.motion.skills import schedule as sk_sched
@@ -2819,7 +2820,7 @@ class TrajectoryNode(Node):
     def _install(self, plan, *, t0=None, require_follower_mode=False,
                  require_epoch=None, bump_epoch=False, cycle=_UNSET,
                  cycle_owner=_UNSET, reset_replans=False,
-                 stream_handoff=False) -> bool:
+                 stream_handoff=False, precondition=None) -> bool:
         """Install ``plan`` as the active plan. Returns True iff it was installed.
 
         ``t0`` overrides the plan-time origin (default: ``perf_counter()`` at
@@ -2873,12 +2874,21 @@ class TrajectoryNode(Node):
         leaves it False and so RETIRES any pending handoff: a stop seeded from
         ``_current_state`` -- the stream view, i.e. the moving REST tail --
         takes the wire from where it really is, and wins.
+
+        ``precondition`` (I-CATCH-5 bump, 2026-10-16): a zero-argument callable
+        evaluated UNDER the same ``_plan_lock`` acquisition, after the epoch
+        check; a falsy return drops the install (False, plan untouched). The
+        catch bump's apply-time checks (record identity, no pending handoff,
+        ``k_b > k_wire`` at the swap instant) ride it so nothing can move the
+        wire between the check and the swap.
         """
         now = t0 if t0 is not None else time.perf_counter()
         with self._plan_lock:
             if require_follower_mode and self._current_mode not in _FOLLOWER_MODES:
                 return False
             if require_epoch is not None and self._install_epoch != require_epoch:
+                return False
+            if precondition is not None and not precondition():
                 return False
             handoff = None
             if stream_handoff and now > time.perf_counter():
@@ -4540,6 +4550,13 @@ class TrajectoryNode(Node):
         response.duration_s = 0.0
         response.seeded_post_release = False
         response.t_release_mono = 0.0
+        # KIND_BUMP (I-CATCH-5): every guard refusal below is TERMINAL for a
+        # bump (the attempt is ending; a 40 Hz retry would only spam this
+        # service); `_svc_bump_catch` sets its own outcomes explicitly.
+        is_bump = int(request.kind) == int(InstallSegment.Request.KIND_BUMP)
+        response.terminal = bool(is_bump)
+        response.release_offset_xy_mm = [0.0, 0.0]
+        response.launch_bias_xy_mm_s = [0.0, 0.0]
 
         if self._guard_frozen:
             return self._reject_segment(response, _GUARD_LATCHED,
@@ -4560,6 +4577,8 @@ class TrajectoryNode(Node):
             return self._reject_segment(
                 response, feas.STALE_STATE,
                 'robot_state telemetry stale — cannot install a segment', t_wall)
+        if is_bump:
+            return self._svc_bump_catch(request, response, t_wall, epoch0)
         try:
             kind = self._SEGMENT_KINDS[int(request.kind)]
         except (IndexError, ValueError, TypeError):
@@ -4891,6 +4910,185 @@ class TrajectoryNode(Node):
                                     new_record, result, t_wall,
                                     t_release_mono=t_release_mono,
                                     solve_s=float(reply.solve_s))
+
+    def _svc_bump_catch(self, request, response, t_wall: float, epoch0):
+        """``KIND_BUMP``: re-aim the ACTIVE record's catch as a platform-xy
+        bump (I-CATCH-5, ``motion/skills/bump.py``) — no solve, same ``t0``,
+        hand arrays untouched. Reached only past the install guard ladder
+        (guard latch, lane latch, mode, seeded, telemetry fresh).
+
+        The 40 Hz walk (written before the code, CLAUDE.md)
+        ----------------------------------------------------
+        Clocks: the request's ``t_dispatch_s`` / ``t_event_s`` are ROS-clock
+        instants, crossed to ``perf_counter`` through ``_ros_to_perf_offset``
+        (the one crossing every install uses).  Knot ``k`` of the record is due
+        on the wire at ``t0 + k·dt``; the emitter ships up to
+        ``WIRE_READ_KNOTS`` (3) knots ahead, so at instant ``t`` the wire may
+        hold knots ``<= k_wire(t) = floor((t - t0)/dt) + 3``.
+
+        1. Dispatch (executor tick, instant ``t_d``): ``k_wire(t_d)`` is the
+           last knot the wire can have read; ``k_b = k_wire(t_d) + 2``.
+        2. Service entry (this method, ``t_s >= t_d``, the ~2-10 ms of DDS
+           transit): ``bump.bump_record`` refuses ``SPLICE_TOO_LATE``
+           (non-terminal, record untouched) if ``k_b <= k_wire(t_s)`` — i.e.
+           the transit already cost two knots — else builds the bumped plan:
+           knots ``0..k_b`` bit-identical (asserted there), first changed knot
+           ``k_b + 1``, gated by ``validate_cycle`` at ``self._limits``.  The
+           compute runs OUTSIDE ``_plan_lock`` (the emitter keeps streaming
+           the unbumped record meanwhile; it is the same plan object, so
+           nothing it reads changes).
+        3. Swap (``_install`` under ``_plan_lock``, instant ``t_w``): the
+           precondition re-checks, in the same acquisition, that the record is
+           still the active one (identity: a hold / stop / backstop freeze in
+           between wins), that no StreamHandoff is pending (``BUMP_HANDOFF``),
+           and ``k_b > k_wire(t_w)`` (``SPLICE_TOO_LATE`` again, at the true
+           swap instant).  Then ``_active_plan`` = the bumped plan with the
+           SAME ``t0``; the record tuple is rewritten in the same acquisition.
+        4. Next emitter ticks: the emitter samples ``(plan, t0)`` from
+           ``_stream_plan_locked`` — now the bumped plan.  Every knot it can
+           newly ship is ``> k_wire(t_w)``; knots ``<= k_b`` (which includes
+           everything already shipped, and at least one more) are identical
+           to what it shipped before, so neither the position nor the velocity
+           feed-forward steps at the swap.  The first knot that differs,
+           ``k_b + 1``, carries ``pose + b`` and ``pose_vel + ḃ`` (exact
+           derivative); the Teensy's 500 Hz Hermite through it is C1, its
+           acceleration/jerk are what the gate measured.  The hand lane reads
+           ``hand_rev`` / ``hand_vel_rps`` — the same values (asserted here).
+
+        StreamHandoff (I-INSTALL-1): while a fresh-origin install's handoff is
+        pending the wire is playing the SOURCE record, not ``_active_plan``,
+        and the bump would edit a plan the wire has not started — refused
+        ``BUMP_HANDOFF``, non-terminal (the handoff completes at its origin,
+        within a lead; the executor retries on its next tick).  The swap
+        passes ``stream_handoff=False`` (the origin is in the past anyway).
+
+        Timing on a refusal: :meth:`_refusal_timing` is NOT used — there is no
+        solve, no worker reply and no splice cliff.  A bump refusal's DEBUG
+        line carries ``check=bump:<code>, plan X ms, k_b, k_wire@dispatch,
+        k_wire@node, dispatch->entry +Y ms`` (:meth:`_bump_timing`).
+        """
+        off = float(self._ros_to_perf_offset)
+        t_catch = float(request.t_event_s) + off
+        t_disp = float(request.t_dispatch_s) + off
+        delta = np.asarray(request.bump_delta_xy_mm, dtype=float).reshape(2)
+
+        def reject(code, terminal, message, res=None, rec_t0=None, dt=None):
+            response.terminal = bool(terminal)
+            if res is not None:
+                response.splice_k = int(res.k_b)
+                response.release_offset_xy_mm = [
+                    float(v) for v in res.release_offset_xy_mm]
+                response.launch_bias_xy_mm_s = [
+                    float(v) for v in res.launch_bias_xy_mm_s]
+            timing = ''
+            if rec_t0 is not None:
+                timing = self._bump_timing(code, t_wall, t_disp, rec_t0, dt,
+                                           None if res is None else res.k_b)
+            return self._reject_segment(response, code, message, t_wall,
+                                        timing=timing)
+
+        with self._plan_lock:
+            cycle = self._cycle
+            active = self._active_plan
+            stream, _st0 = self._stream_plan_locked()
+        if (cycle is None or cycle[0] is not active
+                or not isinstance(active, CyclePlan)):
+            return reject(sk_bump.BUMP_NO_RECORD, True,
+                          'bump: no active segment record to bump')
+        plan, meta, t0 = cycle
+        dt = float(plan.dt)
+        if stream is not active:
+            return reject(sk_bump.BUMP_HANDOFF, False,
+                          'bump: a StreamHandoff is pending — the wire is not '
+                          'yet playing the record this catch is in',
+                          rec_t0=t0, dt=dt)
+        t_c_plan = t_catch - float(t0)
+        if not any(abs(float(cm.t_s) - t_c_plan) <= dt / 2.0
+                   for cm in meta.catches):
+            return reject(sk_bump.BUMP_NO_RECORD, True,
+                          'bump: the active record holds no catch at %.3f s '
+                          '(plan clock)' % (t_c_plan,), rec_t0=t0, dt=dt)
+        res, _k_wire = sk_bump.bump_record(
+            plan, meta, float(t0), t_disp, delta, t_catch, self._limits,
+            self._geom, t_apply_s=time.perf_counter())
+        if not res.accepted:
+            return reject(res.code, res.terminal, 'bump declined: %s'
+                          % (res.message,), res=res, rec_t0=t0, dt=dt)
+        # I-CATCH-5: the hand lane is never touched by a bump.
+        assert np.array_equal(res.plan.hand_rev, plan.hand_rev)
+        assert np.array_equal(res.plan.hand_vel_rps, plan.hand_vel_rps)
+        why = []
+
+        def still_ok():
+            # Under `_plan_lock` (via `_install`): identity, handoff, k_wire.
+            if self._active_plan is not plan or self._cycle is not cycle:
+                why.append((sk_bump.BUMP_NO_RECORD, True,
+                            'bump: the record was superseded while the bump '
+                            'was computed'))
+                return False
+            h = self._handoff
+            if h is not None and h.head is self._active_plan:
+                why.append((sk_bump.BUMP_HANDOFF, False,
+                            'bump: a StreamHandoff appeared before the swap'))
+                return False
+            k_now = sk_bump.k_wire_at(float(t0), time.perf_counter(), dt)
+            if int(res.k_b) <= k_now:
+                why.append((sk_bump.BUMP_SPLICE_TOO_LATE, False,
+                            'bump: k_b %d <= k_wire %d at the swap'
+                            % (int(res.k_b), k_now)))
+                return False
+            return True
+
+        if not self._install(res.plan, t0=float(t0), require_epoch=epoch0,
+                             cycle=(res.plan, res.meta, float(t0)),
+                             cycle_owner=_OWNER_SEGMENT, reset_replans=True,
+                             stream_handoff=False, precondition=still_ok):
+            if why:
+                code, terminal, msg = why[0]
+                return reject(code, terminal, msg, res=res, rec_t0=t0, dt=dt)
+            return reject(_SUPERSEDED_BY_HOLD, True,
+                          'a trajectory/hold landed while the bump was '
+                          'computed — the hold keeps the wire', res=res)
+        # `_install` cleared the predicted peaks; write the bumped record's
+        # (res.report is the validate_cycle report of the bumped plan), AFTER it.
+        self._last_peak_vel_mmps = res.report.peak_leg_vel_mmps
+        self._last_peak_acc_mmps2 = res.report.peak_leg_acc_mmps2
+        self._last_peak_jerk_mmps3 = res.report.peak_leg_jerk_mmps3
+        response.accepted = True
+        response.code = feas.OK
+        response.terminal = False
+        response.message = str(res.message) + self._wire_state_suffix()
+        response.splice_k = int(res.k_b)
+        response.t0_mono = float(t0)
+        response.t_event_mono = float(t_catch)
+        response.duration_s = float(res.plan.total_duration)
+        rel = [float(r.t_s) for r in res.meta.releases if float(r.t_s) > t_c_plan]
+        response.t_release_mono = (float(t0) + min(rel)) if rel else 0.0
+        response.release_offset_xy_mm = [float(v)
+                                         for v in res.release_offset_xy_mm]
+        response.launch_bias_xy_mm_s = [float(v) for v in res.launch_bias_xy_mm_s]
+        response.plan_wall_ms = (time.perf_counter() - t_wall) * 1e3
+        self._cycle_plan_wall_ms = response.plan_wall_ms
+        self.get_logger().debug(
+            'install_segment BUMP %s: k_b=%d, plan %.1f ms, %s'
+            % (ball_label(int(request.ball_id)), int(res.k_b),
+               response.plan_wall_ms, res.message))
+        return response
+
+    @staticmethod
+    def _bump_timing(code, t_wall, t_disp, t0, dt, k_b) -> str:
+        """The bump's refusal timing line (see :meth:`_svc_bump_catch`)."""
+        now = time.perf_counter()
+        parts = ['check=bump:%s' % (code,),
+                 'plan %.1f ms' % ((now - t_wall) * 1e3,)]
+        if k_b is not None:
+            parts.append('k_b %d' % (int(k_b),))
+        parts.append('k_wire@dispatch %d'
+                     % (sk_bump.k_wire_at(float(t0), t_disp, float(dt)),))
+        parts.append('k_wire@node %d'
+                     % (sk_bump.k_wire_at(float(t0), now, float(dt)),))
+        parts.append('dispatch->entry +%.1f ms' % ((t_wall - t_disp) * 1e3,))
+        return ', '.join(parts)
 
     @staticmethod
     def _reply_outran_wire(new_record, result, kind, fresh,

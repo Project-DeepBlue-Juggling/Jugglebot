@@ -9,7 +9,11 @@ session limits.  Prints to stdout only.  The hand arrays are never touched.
 Shapes (all zero, with zero velocity/acceleration, through ``k_b`` = re-send
 + ``--lead-knots``):
 
-  * ``--retarget`` (THE DESIGN, ``retarget_profile``): quintic ramp to delta
+  * ``--retarget`` (THE DESIGN): calls the PRODUCTION enforcement point
+    ``jugglebot.motion.skills.bump.apply_catch_bump`` (I-CATCH-5; one
+    implementation since 2026-10-16 G1, the probe's own copy deleted) with
+    k_b knot-aligned at floor(t/dt) + ``--lead-knots`` and the 50 mm/s launch
+    bound (``--no-launch-bound`` lifts it).  Shape: quintic ramp to delta
     ending ``--hold-s`` before the catch; held through the carried release
     with a lateral velocity ramp over the carry to
     ``v_b = -delta/(T_f + T_a/2 + pre_s)`` (exact retarget including the drift
@@ -33,6 +37,7 @@ sys.path[:0] = [ROOT, os.path.join(ROOT, 'ros_ws', 'src', 'jugglebot'), os.path.
 from jugglebot.motion import unified_cycle as uc  # noqa: E402
 from jugglebot.motion.trajectory import feasibility as fz  # noqa: E402
 from jugglebot.motion.trajectory.cycle_plan import CyclePlan  # noqa: E402
+from jugglebot.motion.skills import bump  # noqa: E402
 
 
 def _q5(u):
@@ -74,67 +79,11 @@ def bumped(plan, b, bd, k0=0, k1=None):
 
 HOLD_THROUGH = False
 RETARGET = False
+LEAD_KNOTS = bump.BUMP_LEAD_KNOTS
+LAUNCH_BOUND = bump.BUMP_MAX_LAUNCH_LATERAL_MM_S
+LEGACY_START = False
 CHECK = []  # filled with per-case b(t_rel)/b(t_end) facts when --check
 G_MM = 9810.0
-
-
-def _vel_ramp(t, t_a, T, v):
-    """Position/velocity of a quintic VELOCITY ramp 0 -> v over [t_a, t_a+T]
-    (C2 in velocity, so C3 in position), continued at constant v after it."""
-    u = np.clip((np.asarray(t, float) - t_a) / T, 0.0, 1.0)
-    pos = T * (2.5 * u**4 - 3 * u**5 + u**6) + np.maximum(np.asarray(t, float) - (t_a + T), 0.0)
-    vel = 10 * u**3 - 15 * u**4 + 6 * u**5
-    return pos[:, None] * v[None, :], vel[:, None] * v[None, :]
-
-
-def _rest_quintic(t, t_d, t_e, p0, v0):
-    """Per-axis quintic from (p0, v0, a=0) at ``t_d`` to (0, 0, 0) at ``t_e``,
-    zero after ``t_e``: the post-release re-centre (the ball has left)."""
-    T = t_e - t_d
-    A = np.array([[T**3, T**4, T**5], [3*T**2, 4*T**3, 5*T**4], [6*T, 12*T**2, 20*T**3]])
-    tau = np.clip(np.asarray(t, float) - t_d, 0.0, T)
-    pos = np.zeros((len(tau), len(p0))); vel = np.zeros_like(pos)
-    for ax in range(len(p0)):
-        c3, c4, c5 = np.linalg.solve(A, [-p0[ax] - v0[ax]*T, -v0[ax], 0.0])
-        pos[:, ax] = p0[ax] + v0[ax]*tau + c3*tau**3 + c4*tau**4 + c5*tau**5
-        vel[:, ax] = v0[ax] + 3*c3*tau**2 + 4*c4*tau**3 + 5*c5*tau**4
-    return pos, vel
-
-
-def retarget_parts(delta, t_c, t_rel, pre_s, flight_s):
-    """(v_b, b_rel): the launch-velocity bias and the realised offset at release.
-
-    The velocity ramp 0 -> v_b runs over the carry ``[t_c, t_rel - pre_s]``
-    (T_a) and v_b is held through the pre-release hold, so the cup drifts
-    ``v_b*(T_a/2 + pre_s)`` before release.  Exact retarget (landing offset 0):
-    ``b_rel + v_b*T_f = 0`` with ``b_rel = delta + v_b*(T_a/2 + pre_s)``, so
-    ``v_b = -delta / (T_f + T_a/2 + pre_s)``."""
-    T_a = (t_rel - pre_s) - t_c
-    v_b = -np.asarray(delta, float) / (flight_s + T_a / 2.0 + pre_s)
-    return v_b, np.asarray(delta, float) + v_b * (T_a / 2.0 + pre_s)
-
-
-def retarget_profile(t, t_s, t_in_end, t_c, t_rel, pre_s, post_s, t_end, flight_s, delta):
-    """Held-through-release bump that RETARGETS the carried throw (W1-corrected
-    2026-10-16): ramp in to delta by ``t_in_end``; over the carry a quintic
-    lateral VELOCITY ramp to ``v_b`` (:func:`retarget_parts`, which accounts
-    for the drift it causes), constant through the pre/post-release hold (no
-    added acceleration across the detach cone); after the post-release hold a
-    rest-to-rest quintic brings the offset AND its velocity back to zero by the
-    record's last knot, so the rest-terminal is the plan's own rest site."""
-    delta = np.asarray(delta, float)
-    b, bd = bump_profile(t, t_s, t_in_end, None, None, delta)
-    v_b, _ = retarget_parts(delta, t_c, t_rel, pre_s, flight_s)
-    T_a = (t_rel - pre_s) - t_c
-    p1, v1 = _vel_ramp(t, t_c, T_a, v_b)
-    b, bd = b + p1, bd + v1
-    t_d = t_rel + post_s
-    tt = np.asarray(t, float)
-    after = tt >= t_d - 1e-12
-    p_d = delta + v_b * (T_a / 2.0 + pre_s + post_s)
-    q, qd = _rest_quintic(tt, t_d, t_end, p_d, v_b)
-    b[after] = q[after]; bd[after] = qd[after]
-    return b, bd
 
 
 def try_bump(rec, t_abs, t_c_abs, delta, limits, geom, lead_s, hold_s):
@@ -146,36 +95,40 @@ def try_bump(rec, t_abs, t_c_abs, delta, limits, geom, lead_s, hold_s):
     t_in_end = t_c - hold_s
     rel_after = [float(r.t_s) for r in m.releases if float(r.t_s) > t_c + 1e-9]
     if RETARGET and rel_after:
-        t_rel = min(rel_after)
-        rm = [r for r in m.releases if abs(float(r.t_s) - t_rel) < 1e-9][0]
-        flight = float(rm.flight_s)
-        pre_s = uc.pre_release_hold_knots() * dt; post_s = uc.post_release_hold_knots() * dt
-        t_end = float(p.t[-1])
-        if (t_rel - pre_s - t_c < 2 * dt or t_c - hold_s - t_s < 2 * dt
-                or t_end - (t_rel + post_s) < 2 * dt):
-            return 'WINDOW', 'retarget'
-        b, bd = retarget_profile(p.t, t_s, t_c - hold_s, t_c, t_rel, pre_s, post_s,
-                                 t_end, flight, np.asarray(delta, float))
-        if CHECK:
-            v_b, b_rel_cf = retarget_parts(delta, t_c, t_rel, pre_s, flight)
-            k_rel = int(round(t_rel / dt))
-            CHECK.append(dict(delta=list(map(float, delta)), b_rel=b[k_rel].tolist(),
-                              b_rel_closed=b_rel_cf.tolist(), v_rel=bd[k_rel].tolist(),
-                              land_off=(b[k_rel] + bd[k_rel] * flight).tolist(),
-                              b_end=b[-1].tolist(), v_end=bd[-1].tolist(),
-                              flight=flight, t_c=t_c, t_rel=t_rel, t_end=t_end))
-        k_s = int(math.floor(t_s / dt))
-        k0, k1 = max(0, k_s - 4), p.n_knots - 1
-        z = np.zeros_like(b)
-        base = fz.validate_cycle(bumped(p, z, z, k0, k1), limits, geom)
-        if base.code != 'OK':
-            return 'BASE_' + base.code, base
-        rep = fz.validate_cycle(bumped(p, b, bd, k0, k1), limits, geom)
-        if rep.code != 'OK':
-            tv = rep.peak_leg_t_s
-            ph = '?' if tv is None else ('in' if tv + k0 * dt <= t_c else ('carry' if tv + k0 * dt <= t_rel + post_s else 'settle'))
-            return rep.code + '@' + ph, rep
-        return 'OK', rep
+        # THE DESIGN: one implementation, the production enforcement point
+        # (motion/skills/bump.py::apply_catch_bump, I-CATCH-5).  k_b is knot-
+        # aligned there (floor(t/dt) + lead knots), so the ramp may start up to
+        # one knot earlier than this probe's old continuous t + lead.
+        k_wire = int(math.floor((t_abs - t0) / dt)) + LEAD_KNOTS - bump.BUMP_EXTRA_KNOTS
+        res = bump.apply_catch_bump(p, m, k_wire, np.asarray(delta, float), t_c,
+                                    limits, geom, pre_hold_s=hold_s,
+                                    max_launch_lateral_mm_s=LAUNCH_BOUND,
+                                    t_ramp_start_s=(t_abs - t0 + lead_s) if LEGACY_START else None)
+        if CHECK and res.accepted and len(CHECK) == 1:
+            rm = [r for r in m.releases if float(r.t_s) > t_c + 1e-9][0]
+            k_rel = int(round(float(rm.t_s) / dt))
+            db = res.plan.pose[:, 0:2] - p.pose[:, 0:2]
+            dv = res.plan.pose_vel[:, 0:2] - p.pose_vel[:, 0:2]
+            CHECK.append(dict(delta=list(map(float, delta)), b_rel=db[k_rel].tolist(),
+                              b_rel_closed=res.release_offset_xy_mm.tolist(),
+                              v_rel=dv[k_rel].tolist(),
+                              land_off=(res.release_offset_xy_mm
+                                        + res.launch_bias_xy_mm_s * float(rm.flight_s)).tolist(),
+                              b_end=db[-1].tolist(), v_end=dv[-1].tolist(),
+                              hand_identical=bool(np.array_equal(res.plan.hand_rev, p.hand_rev)
+                                                  and np.array_equal(res.plan.hand_vel_rps, p.hand_vel_rps)),
+                              k_b=res.k_b, flight=float(rm.flight_s), t_c=t_c,
+                              t_rel=float(rm.t_s), t_end=float(p.t[-1])))
+        if res.accepted:
+            return 'OK', res
+        if res.code in (bump.BUMP_FREEZE, bump.BUMP_NO_CARRY):
+            return 'WINDOW', res
+        if res.code == bump.BUMP_LAUNCH:
+            return res.code, res
+        tv = res.report.peak_leg_t_s if res.report is not None else None
+        k0 = max(0, res.k_b - bump.BUMP_GATE_CONTEXT_KNOTS)
+        ph = '?' if tv is None else ('in' if tv + k0 * dt <= t_c else ('carry' if tv + k0 * dt <= float(min(rel_after)) + uc.post_release_hold_knots() * dt else 'settle'))
+        return res.code + '@' + ph, res
     if HOLD_THROUGH:
         rel_after = []
     if rel_after:
@@ -218,7 +171,13 @@ def main(argv=None):
                     help='never ramp out: the following throw is shifted by delta too')
     ap.add_argument('--retarget', action='store_true', help='hold through release and retarget the carried throw by a lateral launch velocity -delta/flight')
     ap.add_argument('--check', action='store_true', help='print b(t_rel), the landing offset and b(t_end) for the first retarget case')
+    ap.add_argument('--no-launch-bound', action='store_true', help='disable the 50 mm/s retarget launch bound (reproduces the pre-decision design row)')
+    ap.add_argument('--legacy-start', action='store_true', help='ramp from the pre-production continuous t + lead (reproduces the design row) instead of the knot-aligned k_b')
     a = ap.parse_args(argv)
+    global LEAD_KNOTS, LAUNCH_BOUND, LEGACY_START
+    LEGACY_START = a.legacy_start
+    LEAD_KNOTS = a.lead_knots
+    LAUNCH_BOUND = float('inf') if a.no_launch_bound else bump.BUMP_MAX_LAUNCH_LATERAL_MM_S
     global HOLD_THROUGH
     HOLD_THROUGH = a.hold_through
     global RETARGET

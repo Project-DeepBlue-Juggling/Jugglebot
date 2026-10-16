@@ -6072,3 +6072,58 @@ def test_accept_possession_check_reports_unknown_with_no_hand_telemetry():
     node, _client = _node_with_client(hand=False)
     resp = node._svc_check(Trigger.Request(), Trigger.Response())
     assert 'cup: UNKNOWN (no /hand_telemetry yet)' in resp.message
+
+
+# ── The late catch re-aim BUMP: per-pattern switch + the service bumper (G2) ──
+
+def test_the_catch_bump_is_on_for_a_columns_goal(tmp_path):
+    from jugglebot.motion.skills import bump as sk_bump
+    node, _client = _node_with_client()
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
+                      _good_box_path(tmp_path, columns=True)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        assert node._start_pattern(
+            _columns_goal(separation_mm=100.0)).success is True
+    assert node._executor.catch_bump_enabled is True
+    assert node._executor.bumper == node._bumper
+    assert sk_bump.bump_enabled_for('columns_1ball_fed') is True
+
+
+@pytest.mark.parametrize('goal_name', ['self_toss', 'hop', 'reload'])
+def test_the_catch_bump_is_off_for_self_toss_hop_and_reload(tmp_path, goal_name):
+    if goal_name == 'reload':
+        node, _c = _node_with_client(response=_response(t_release_mono=50.0))
+        node._on_traj_status(_status())
+        _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
+                 seated=False)
+        _prelevel_ready(node)
+        _reload_ready(node)
+        goal = _self_toss_goal(reload=True)
+        box = _good_box_path(tmp_path)
+    else:
+        node, _c = _node_with_client(response=_response(t_release_mono=50.0))
+        node._on_traj_status(_status())
+        _prelevel_ready(node)
+        goal = _self_toss_goal() if goal_name == 'self_toss' else _hop_goal()
+        box = _good_box_path(tmp_path, hop=(goal_name == 'hop'))
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', box), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(goal)
+    assert resp.success is True, resp.message
+    assert node._executor.catch_bump_enabled is False
+
+
+def test_the_bumper_sends_kind_bump_and_maps_the_reply():
+    node, client = _node_with_client(response=_response(
+        accepted=False, code='LIMIT_ACC', terminal=False, splice_k=42,
+        release_offset_xy_mm=[1.5, -2.0], launch_bias_xy_mm_s=[3.0, 4.0]))
+    res = node._bumper(1, 0, (20.0, -5.0), 101.25, 100.8)
+    req = client.calls[-1]
+    req = req[0] if isinstance(req, tuple) else req
+    assert req.kind == InstallSegment.Request.KIND_BUMP
+    assert req.t_event_s == 101.25 and req.t_dispatch_s == 100.8
+    assert list(req.bump_delta_xy_mm) == [20.0, -5.0]
+    assert (res.accepted, res.code, res.terminal, res.k_b) == (
+        False, 'LIMIT_ACC', False, 42)
+    assert np.allclose(res.release_offset_xy_mm, (1.5, -2.0))
+    assert np.allclose(res.launch_bias_xy_mm_s, (3.0, 4.0))

@@ -117,6 +117,7 @@ from jugglebot.motion.trajectory import TrajectoryLimits           # noqa: E402
 from jugglebot.motion.trajectory import ballistics_bc as bal       # noqa: E402
 from jugglebot.motion import unified_cycle as uc                   # noqa: E402
 from jugglebot.motion.skills import admissible as adm              # noqa: E402
+from jugglebot.motion.skills import bump as bmp                    # noqa: E402
 from jugglebot.motion.skills import learner as lr                  # noqa: E402
 from jugglebot.motion.skills import memory as mem                  # noqa: E402
 from jugglebot.motion.skills import schedule as sk                 # noqa: E402
@@ -659,6 +660,72 @@ def _make_installer(ictx: _InstallCtx, seg_cfg, limits, geom, *,
                         on_release(int(ball_id), t_rel)
         return result
     return installer
+
+
+#: Process-wide tally of the sim bumper's outcomes (I-CATCH-5 evidence):
+#: ``{'accepted': n, 'declined': {code: n}}``.  Printed in the gate's summary
+#: lines; ``reset_bump_stats()`` zeroes it (tests do, before a trial).
+BUMP_STATS = {'accepted': 0, 'declined': {}}
+
+
+def reset_bump_stats() -> None:
+    BUMP_STATS['accepted'] = 0
+    BUMP_STATS['declined'] = {}
+
+
+def bump_stats_total() -> int:
+    return BUMP_STATS['accepted'] + sum(BUMP_STATS['declined'].values())
+
+
+def _bump_stats_line() -> str:
+    dec = BUMP_STATS['declined']
+    return 'bump: %d accepted, %d declined%s' % (
+        BUMP_STATS['accepted'], sum(dec.values()),
+        (' (' + ', '.join('%s %d' % kv for kv in sorted(dec.items())) + ')')
+        if dec else '')
+
+
+def _make_bumper(ictx: _InstallCtx, limits, geom):
+    """The sim gate's bump apply half (I-CATCH-5, G2): ``bump.bump_record`` over
+    ``ictx``'s live record — the same pure function ``trajectory_node``'s
+    ``KIND_BUMP`` runs on the robot.  The sim has no transit, so the apply
+    instant IS the dispatch instant.  On accept the record is swapped (same
+    ``t0``) and the carried release's pending entry follows the bumped plan:
+    site + ``b(t_rel)``, takeoff + ``v_b`` (xy) — what the bumped cup does."""
+    def bumper(idx, ball_id, delta_xy_mm, t_catch_abs_s, t_dispatch_s):
+        rec = ictx.record
+        if rec is None:
+            return bmp.BumpResult(False, bmp.BUMP_NO_RECORD, True,
+                                  'no record', -1,
+                                  delta_xy_mm=np.asarray(delta_xy_mm, float))
+        res, _k = bmp.bump_record(rec.plan, rec.meta, rec.t0_s, t_dispatch_s,
+                                  delta_xy_mm, t_catch_abs_s, limits, geom,
+                                  t_apply_s=t_dispatch_s)
+        if res.accepted:
+            BUMP_STATS['accepted'] += 1
+        else:
+            BUMP_STATS['declined'][res.code] = (
+                BUMP_STATS['declined'].get(res.code, 0) + 1)
+        if res.accepted:
+            ictx.record = dataclasses.replace(rec, plan=res.plan, meta=res.meta)
+            for i, pr in enumerate(ictx.pending_releases):
+                if pr[1] == ball_id and pr[0] > float(t_catch_abs_s):
+                    take = np.asarray(pr[2], dtype=float).copy()
+                    site = np.asarray(pr[3], dtype=float).copy()
+                    take[:2] += res.launch_bias_xy_mm_s
+                    site[:2] += res.release_offset_xy_mm
+                    ictx.pending_releases[i] = (pr[0], pr[1], take, site, pr[4])
+                    break
+        return res
+    return bumper
+
+
+def _bump_kwargs(sched, ictx: _InstallCtx, limits, geom) -> dict:
+    """``SkillExecutor`` kwargs for the bump: the switch keyed on the
+    schedule's own label (``'columns'`` for both columns compilers — the robot
+    keys on the goal name, ``bump.BUMP_ENABLED_PATTERNS``) and the bumper."""
+    return dict(catch_bump_enabled=bmp.bump_enabled_for(sched.pattern),
+                bumper=_make_bumper(ictx, limits, geom))
 
 
 # ---------------------------------------------------------------------------
@@ -1267,6 +1334,7 @@ class SkillsGate:
         installer = _make_installer(ictx, self.seg_cfg, self.limits, geom)
         executor = ex.SkillExecutor(
             sched, installer, tracker=tracker,
+            **_bump_kwargs(sched, ictx, self.limits, geom),
             catch_aim_source=self.cfg.catch_aim_source,
             dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
 
@@ -1656,6 +1724,7 @@ class SkillsGate:
         learner = _MemoryLearner(memory, learner_cfg)
         executor = ex.SkillExecutor(
             sched, installer, tracker=identity.tracker,
+            **_bump_kwargs(sched, ictx, self.limits, geom),
             catch_aim_source=self.cfg.catch_aim_source,
             learner=learner, boxes=boxes,
             observer=observer, on_experience=lambda exp: (
@@ -2098,6 +2167,7 @@ class SkillsGate:
         observer = _make_observer(plant)
         executor = ex.SkillExecutor(
             sched, installer, tracker=identity.tracker,
+            **_bump_kwargs(sched, ictx, self.limits, geom),
             catch_aim_source=self.cfg.catch_aim_source,
             learner=learner, boxes=None, resend_max_per_catch=0,
             observer=observer,
@@ -2606,6 +2676,7 @@ class SkillsGate:
         observer = _make_observer(plant)
         executor = ex.SkillExecutor(
             sched, installer, tracker=identity.tracker,
+            **_bump_kwargs(sched, ictx, self.limits, geom),
             catch_aim_source=self.cfg.catch_aim_source,
             learner=learner, boxes=None, resend_max_per_catch=0,
             observer=observer,
@@ -2915,6 +2986,7 @@ class SkillsGate:
         # no longer move a reload catch's window.
         executor = ex.SkillExecutor(
             sched, installer, tracker=tracker,
+            **_bump_kwargs(sched, ictx, self.limits, geom),
             catch_aim_source=self.cfg.catch_aim_source,
             observer=observer, observations=observations,
             dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
@@ -3137,6 +3209,7 @@ def _print_reload_table(rep: dict) -> None:
     print('[skills_gate_reload] %s  (wall %.1f s over %d seed(s))  -> %s'
           % ('PASS' if rep['passed'] else 'FAIL', rep['wall_s'],
              len(rep['seeds']), rep.get('report_path')))
+    print('[skills_gate_reload] %s' % _bump_stats_line())
 
 
 def _print_learn_table(rep: dict) -> None:
@@ -3173,6 +3246,7 @@ def _print_learn_table(rep: dict) -> None:
     print('[skills_gate_learn] %s  (wall %.1f s over %d seed(s))'
           % ('PASS' if rep['passed'] else 'FAIL', rep['wall_s'],
              len(rep['seeds'])))
+    print('[skills_gate_learn] %s' % _bump_stats_line())
 
 
 def _print_table(rep: dict) -> None:
@@ -3192,6 +3266,7 @@ def _print_table(rep: dict) -> None:
     print('[skills_gate] %s  (wall %.1f s over %d seed(s))  -> %s'
           % ('PASS' if rep['passed'] else 'FAIL', rep['wall_s'],
              len(rep['seeds']), rep.get('report_path')))
+    print('[skills_gate] %s' % _bump_stats_line())
 
 
 def main(argv=None) -> int:

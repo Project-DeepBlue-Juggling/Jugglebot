@@ -560,6 +560,7 @@ class InstallSegment:
         KIND_CATCH = 1
         KIND_REST = 2
         KIND_MAGAZINE = 3
+        KIND_BUMP = 4
 
         def __init__(self):
             self.kind = 0
@@ -593,12 +594,18 @@ class InstallSegment:
             self.receive_tilt_rad = [0.0, 0.0]
             self.rest_tilt_set = False
             self.rest_tilt_rad = [0.0, 0.0]
+            # KIND_BUMP (I-CATCH-5, 2026-10-16).
+            self.bump_delta_xy_mm = [0.0, 0.0]
+            self.t_dispatch_s = 0.0
 
     Response = _make_service(
         resp_fields={'accepted': False, 'code': '', 'message': '',
                      'plan_wall_ms': 0.0, 'splice_k': -1, 't0_mono': 0.0,
                      't_event_mono': 0.0, 'duration_s': 0.0,
-                     'seeded_post_release': False, 't_release_mono': 0.0}).Response
+                     'seeded_post_release': False, 't_release_mono': 0.0,
+                     'terminal': False,
+                     'release_offset_xy_mm': [0.0, 0.0],
+                     'launch_bias_xy_mm_s': [0.0, 0.0]}).Response
 
 
 class TimedTarget:

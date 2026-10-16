@@ -2124,3 +2124,193 @@ def test_an_unpinned_splice_keeps_the_default_wait():
                                   InstallSegment.Response())
     assert solver.requests[-1].deadline_s == pytest.approx(
         at + sk_exec.LEAD_S + float(hw.JB_TRAJ_KNOT_DT_S))
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# KIND_BUMP — the late catch re-aim bump on the active record (I-CATCH-5, G2)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _bump_node_and_record(at):
+    """A node streaming a THROW -> CATCH-with-throw record (the G1 fixture's
+    columns geometry) whose catch is 0.45 s after ``at`` (perf clock)."""
+    from jugglebot.motion.skills import sites as si
+    from jugglebot.motion.trajectory.limits import TrajectoryLimits
+    from tests.motion import test_skills_bump as tb
+    node = _perf_node()
+    node._limits = TrajectoryLimits.from_config(hw).with_session_limits(
+        leg_vel_mmps=350.0, leg_acc_mmps2=5000.0, leg_jerk_mmps3=200000.0,
+        hand_acc_rps2=3900.0)
+    p1, p2 = si.columns_sites(100.0)
+    t_land = at + 0.45
+    t_rel0 = t_land - tb.FLIGHT_S
+    rec, res, _ = sk_exec.install_segment(
+        None, tb._rest_state(p1.rest_site_mm()), sk_seg.THROW,
+        sk_seg.ThrowTerminal(site_mm=p1.throw_site_mm(), target_mm=p1.catch_site_mm(),
+                             flight_s=tb.FLIGHT_S, t_release_s=t_rel0),
+        t_rel0 - tb.LAUNCH_S, limits=node._limits, geom=node._geom)
+    assert res.accepted, res.message
+    term = sk_seg.CatchTerminal(
+        landing_mm=p2.catch_site_mm(), landing_vel_mm_s=tb.LAND_VEL,
+        t_land_s=t_land, rest_site_mm=p2.rest_site_mm(),
+        then_throw=sk_seg.ThrowAfterCatch(t_release_s=t_land + tb.DWELL_S,
+                                          site_mm=p2.throw_site_mm(),
+                                          target_mm=p2.catch_site_mm(),
+                                          flight_s=tb.FLIGHT_S))
+    rec, res, _ = sk_exec.install_segment(rec, None, sk_seg.CATCH, term,
+                                          t_rel0 - sk_exec.LEAD_S,
+                                          limits=node._limits, geom=node._geom)
+    assert res.accepted, res.message
+    with node._plan_lock:
+        node._active_plan = rec.plan
+        node._plan_t0 = rec.t0_s
+        node._cycle = (rec.plan, rec.meta, rec.t0_s)
+        node._handoff = None
+    return node, rec, t_land
+
+
+def _bump_req(t_land, t_dispatch, delta=(20.0, 0.0)):
+    req = InstallSegment.Request()
+    req.kind = req.KIND_BUMP
+    req.t_event_s = float(t_land)
+    req.t_dispatch_s = float(t_dispatch)
+    req.bump_delta_xy_mm = [float(delta[0]), float(delta[1])]
+    return req
+
+
+def test_a_bump_installs_on_the_active_record_with_the_same_t0():
+    from jugglebot.motion.skills import bump as sk_bump
+    with _frozen_perf() as at:
+        node, rec, t_land = _bump_node_and_record(at)
+        _refresh(node)
+        resp = node._svc_install_segment(_bump_req(t_land, at),
+                                         InstallSegment.Response())
+    assert resp.accepted, (resp.code, resp.message)
+    assert resp.terminal is False and resp.code == 'OK'
+    new = node._active_plan
+    assert new is not rec.plan and node._cycle[0] is new
+    assert node._plan_t0 == rec.t0_s and node._cycle[2] == rec.t0_s
+    assert node._cycle_owner == tn._OWNER_SEGMENT and node._handoff is None
+    k_b = sk_bump.k_wire_at(rec.t0_s, at, rec.plan.dt) + sk_bump.BUMP_EXTRA_KNOTS
+    assert resp.splice_k == k_b
+    # Every knot the wire may have read, and k_b, bit-identical; k_b+1 moved.
+    assert np.array_equal(new.pose[:k_b + 1], rec.plan.pose[:k_b + 1])
+    assert np.array_equal(new.pose_vel[:k_b + 1], rec.plan.pose_vel[:k_b + 1])
+    assert not np.array_equal(new.pose[k_b + 1:], rec.plan.pose[k_b + 1:])
+    # The hand lane is untouched.
+    assert np.array_equal(new.hand_rev, rec.plan.hand_rev)
+    assert np.array_equal(new.hand_vel_rps, rec.plan.hand_vel_rps)
+    b_rel = np.asarray(resp.release_offset_xy_mm)
+    assert 0.0 < float(np.hypot(*b_rel)) < 20.0
+    assert float(np.hypot(*resp.launch_bias_xy_mm_s)) <= sk_bump.BUMP_MAX_LAUNCH_LATERAL_MM_S
+    assert resp.t_release_mono > t_land
+    # `_install` clears the predicted peaks; the bump writes the bumped plan's
+    # report AFTER it (so /trajectory/status and /diagnose are not 0.0).
+    assert node._last_peak_vel_mmps > 0.0
+    assert node._last_peak_acc_mmps2 > 0.0
+    assert node._last_peak_jerk_mmps3 > 0.0
+
+
+def _record_unchanged(node, rec):
+    assert node._active_plan is rec.plan
+    assert node._cycle[0] is rec.plan and node._cycle[2] == rec.t0_s
+    assert node._plan_t0 == rec.t0_s
+
+
+def test_a_clock_that_passes_k_b_during_the_compute_is_splice_too_late_at_the_swap():
+    """The swap-time k_wire re-check (under `_plan_lock`): the entry check
+    passed, then the clock moves past k_b before `_install` -> non-terminal
+    SPLICE_TOO_LATE, record untouched."""
+    from jugglebot.motion.skills import bump as sk_bump
+    real = sk_bump.bump_record
+    with _frozen_perf() as at:
+        node, rec, t_land = _bump_node_and_record(at)
+        _refresh(node)
+
+        def slow(*a, **k):
+            out = real(*a, **k)
+            time.perf_counter = lambda: at + 0.5   # restored by _frozen_perf
+            return out
+        sk_bump.bump_record = slow
+        try:
+            resp = node._svc_install_segment(_bump_req(t_land, at),
+                                             InstallSegment.Response())
+        finally:
+            sk_bump.bump_record = real
+        time.perf_counter = lambda: at
+    assert not resp.accepted and resp.code == sk_exec.SPLICE_TOO_LATE
+    assert resp.terminal is False
+    _record_unchanged(node, rec)
+
+
+def test_a_record_superseded_during_the_compute_is_a_terminal_no_record():
+    from jugglebot.motion.skills import bump as sk_bump
+    real = sk_bump.bump_record
+    with _frozen_perf() as at:
+        node, rec, t_land = _bump_node_and_record(at)
+        _refresh(node)
+        other = object()
+
+        def swap(*a, **k):
+            out = real(*a, **k)
+            node._active_plan = other      # a hold/stop landed meanwhile
+            return out
+        sk_bump.bump_record = swap
+        try:
+            resp = node._svc_install_segment(_bump_req(t_land, at),
+                                             InstallSegment.Response())
+        finally:
+            sk_bump.bump_record = real
+    assert not resp.accepted and resp.code == 'BUMP-NO-RECORD'
+    assert resp.terminal is True
+    assert node._active_plan is other and node._cycle[0] is rec.plan
+    assert node._plan_t0 == rec.t0_s
+
+
+def test_install_with_a_false_precondition_leaves_the_record_untouched():
+    with _frozen_perf() as at:
+        node, rec, _t_land = _bump_node_and_record(at)
+        cycle = node._cycle
+        ok = node._install(rec.plan, t0=rec.t0_s + 1.0, cycle=cycle,
+                           cycle_owner=tn._OWNER_SEGMENT,
+                           precondition=lambda: False)
+    assert ok is False
+    assert node._cycle is cycle
+    _record_unchanged(node, rec)
+
+
+def test_a_bump_is_refused_while_a_stream_handoff_is_pending():
+    from jugglebot.motion.trajectory.stream_handoff import StreamHandoff
+    with _frozen_perf() as at:
+        node, rec, t_land = _bump_node_and_record(at)
+        _refresh(node)
+        with node._plan_lock:
+            node._handoff = StreamHandoff(rec.plan, at - 1.0, rec.plan,
+                                          rec.t0_s)
+        resp = node._svc_install_segment(_bump_req(t_land, at),
+                                         InstallSegment.Response())
+    assert not resp.accepted and resp.code == 'BUMP_HANDOFF'
+    assert resp.terminal is False
+    assert node._active_plan is rec.plan and node._handoff is not None
+
+
+def test_a_late_bump_apply_is_a_non_terminal_splice_too_late():
+    """Dispatched 4 knots before the service saw it: k_b = k_wire(dispatch) +
+    2 <= k_wire(now) — refused SPLICE_TOO_LATE, non-terminal, record kept."""
+    with _frozen_perf() as at:
+        node, rec, t_land = _bump_node_and_record(at)
+        _refresh(node)
+        resp = node._svc_install_segment(_bump_req(t_land, at - 0.100),
+                                         InstallSegment.Response())
+    assert not resp.accepted and resp.code == sk_exec.SPLICE_TOO_LATE
+    assert resp.terminal is False
+    assert node._active_plan is rec.plan and node._cycle[0] is rec.plan
+
+
+def test_a_bump_with_no_matching_catch_in_the_record_is_terminal():
+    with _frozen_perf() as at:
+        node, rec, t_land = _bump_node_and_record(at)
+        _refresh(node)
+        resp = node._svc_install_segment(_bump_req(t_land + 0.2, at),
+                                         InstallSegment.Response())
+    assert not resp.accepted and resp.code == 'BUMP-NO-RECORD'
+    assert resp.terminal is True and node._active_plan is rec.plan

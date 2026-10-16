@@ -86,8 +86,10 @@ def test_the_kind_enum_matches_the_srv():
     CATCH was meant, on real hardware.
     """
     e = _srv_kind_enums()
+    # KIND_BUMP=4 since 2026-10-16 (the late catch re-aim bump, I-CATCH-5); the
+    # bench never sends one, so it mirrors only the three segment kinds below.
     assert e == {'KIND_THROW': 0, 'KIND_CATCH': 1, 'KIND_REST': 2,
-                 'KIND_MAGAZINE': 3}
+                 'KIND_MAGAZINE': 3, 'KIND_BUMP': 4}
     assert (spb.KIND_THROW, spb.KIND_CATCH, spb.KIND_REST) == (
         e['KIND_THROW'], e['KIND_CATCH'], e['KIND_REST'])
     assert spb._WIRE_KIND == {sg.THROW: e['KIND_THROW'], sg.CATCH: e['KIND_CATCH'],

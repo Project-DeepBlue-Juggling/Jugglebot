@@ -71,6 +71,7 @@ import jugglebot.protocol_config as proto
 from jugglebot import ball_possession
 from jugglebot.motion import blas_threads
 from jugglebot.motion.skills import admissible as adm
+from jugglebot.motion.skills import bump as sk_bump
 from jugglebot.motion.skills import executor as ex
 from jugglebot.motion.skills import learner as lr
 from jugglebot.motion.skills import report as rp
@@ -911,6 +912,8 @@ class SkillNode(Node):
         # Read and written only under `_reload_lock`, with the event's
         # clear/set, so a tick cannot act on a stale arm.
         self._goal_armed = False
+        #: The goal's catch-bump switch (`_start_pattern`, `sk_bump.bump_enabled_for`).
+        self._bump_enabled = False
         self._goal_end_code = ''
         self._goal_outcome_lines = []
         #: The attempt's ThrowReports (the result's counts) and its name on
@@ -2175,6 +2178,44 @@ class SkillNode(Node):
                              ball_id=ball_id)
         return result
 
+    def _bump_kwargs(self) -> dict:
+        """``SkillExecutor`` kwargs for the catch bump: the goal's per-pattern
+        switch (``_start_pattern``) and the service-backed bumper."""
+        return dict(catch_bump_enabled=bool(getattr(self, '_bump_enabled', False)),
+                    bumper=self._bumper)
+
+    def _bumper(self, idx, ball_id, delta_xy_mm, t_catch_abs_s,
+                t_dispatch_s) -> 'sk_bump.BumpResult':
+        """The executor's bump apply half on hardware: ``KIND_BUMP`` on
+        ``trajectory/install_segment`` (the node holds the record).  A dead
+        service is a TERMINAL decline (the catch keeps its committed aim)."""
+        delta = np.asarray(delta_xy_mm, dtype=float).reshape(2)
+        req = InstallSegment.Request()
+        req.kind = InstallSegment.Request.KIND_BUMP
+        req.ball_id = int(ball_id)
+        req.t_event_s = float(t_catch_abs_s)
+        req.t_dispatch_s = float(t_dispatch_s)
+        req.bump_delta_xy_mm = [float(delta[0]), float(delta[1])]
+        if not self._install_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
+            self.get_logger().error('trajectory/install_segment unavailable')
+            return sk_bump.BumpResult(False, 'SERVICE_UNAVAILABLE', True,
+                                      'trajectory/install_segment unavailable',
+                                      -1, delta_xy_mm=delta)
+        resp = self._wait_future(self._install_cli.call_async(req))
+        if resp is None:
+            return sk_bump.BumpResult(
+                False, 'SERVICE_TIMEOUT', True,
+                'trajectory/install_segment did not answer in %.1f s'
+                % (_SERVICE_WAIT_S,), -1, delta_xy_mm=delta)
+        return sk_bump.BumpResult(
+            bool(resp.accepted), str(resp.code),
+            bool(resp.terminal) and not bool(resp.accepted), str(resp.message),
+            int(resp.splice_k), delta_xy_mm=delta,
+            release_offset_xy_mm=np.asarray(resp.release_offset_xy_mm,
+                                            dtype=float).reshape(2),
+            launch_bias_xy_mm_s=np.asarray(resp.launch_bias_xy_mm_s,
+                                           dtype=float).reshape(2))
+
     @staticmethod
     def _release_physics(kind, terminal):
         """``(release_abs_s, site_mm, target_mm, flight_s)`` for the ball
@@ -3260,6 +3301,10 @@ class SkillNode(Node):
             self._goal_done_event.clear()
         self._attempt_label = pattern + (' (reload)' if reload and pattern != 'reload'
                                          else '')
+        # The late catch re-aim BUMP's per-pattern switch (I-CATCH-5, owner
+        # 2026-10-16): fixed at goal accept for every executor this attempt
+        # builds (`_bump_kwargs`) — the columns family only.
+        self._bump_enabled = sk_bump.bump_enabled_for(pattern)
 
         if pattern == 'columns':
             result = self._run_columns(apex_m, separation_mm, dwell_s,
@@ -3503,6 +3548,7 @@ class SkillNode(Node):
         self._hold_forced_code = ''
         self._executor = SkillExecutor(
             bridge, self._installer, tracker=self._tracker,
+            **self._bump_kwargs(),
             catch_aim_source=self._catch_aim_source(),
             resend_max_per_catch=self._catch_resend_max(),
             launch_ratio=self._launch_ratio,
@@ -3706,6 +3752,7 @@ class SkillNode(Node):
         self._hold_forced_code = ''
         self._executor = SkillExecutor(
             schedule, self._installer, tracker=self._tracker,
+            **self._bump_kwargs(),
             catch_aim_source=self._catch_aim_source(),
             resend_max_per_catch=self._catch_resend_max(),
             launch_ratio=self._launch_ratio,
@@ -4185,6 +4232,7 @@ class SkillNode(Node):
         self._hold_forced_code = ''
         self._executor = SkillExecutor(
             schedule, self._installer, tracker=self._tracker,
+            **self._bump_kwargs(),
             catch_aim_source=self._catch_aim_source(),
             resend_max_per_catch=self._catch_resend_max(),
             launch_ratio=self._launch_ratio,
@@ -4562,6 +4610,7 @@ class SkillNode(Node):
         self._hold_forced_code = ''
         self._executor = SkillExecutor(
             bridge, self._installer, tracker=self._tracker,
+            **self._bump_kwargs(),
             catch_aim_source=self._catch_aim_source(),
             resend_max_per_catch=self._catch_resend_max(),
             launch_ratio=self._launch_ratio,
@@ -4805,6 +4854,7 @@ class SkillNode(Node):
                     x, y_d, learner_cfg))
             executor = SkillExecutor(
                 schedule, self._installer, tracker=self._tracker,
+                **self._bump_kwargs(),
                 catch_aim_source=self._catch_aim_source(),
                 resend_max_per_catch=self._catch_resend_max(),
                 launch_ratio=self._launch_ratio,
@@ -4950,6 +5000,7 @@ class SkillNode(Node):
                 x, y_d, learner_cfg))
         executor = SkillExecutor(
             schedule, self._installer, tracker=self._tracker,
+            **self._bump_kwargs(),
             catch_aim_source=self._catch_aim_source(),
             resend_max_per_catch=self._catch_resend_max(),
             launch_ratio=self._launch_ratio,
@@ -5115,6 +5166,7 @@ class SkillNode(Node):
                 x, y_d, learner_cfg))
         executor = SkillExecutor(
             schedule, self._installer, tracker=self._tracker,
+            **self._bump_kwargs(),
             catch_aim_source=self._catch_aim_source(),
             resend_max_per_catch=self._catch_resend_max(),
             launch_ratio=self._launch_ratio,

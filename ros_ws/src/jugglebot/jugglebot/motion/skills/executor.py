@@ -34,6 +34,7 @@ from jugglebot import ball_possession as bp
 from jugglebot.motion import unified_cycle as uc
 from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.skills import admissible as adm
+from jugglebot.motion.skills import bump as bmp
 from jugglebot.motion.skills import magazine_throw as mt
 from jugglebot.motion.skills import segments as sg
 from jugglebot.motion.skills import schedule as sch
@@ -1796,8 +1797,27 @@ class SkillExecutor:
                  observations: Optional[Callable[[float], Observations]] = None,
                  dispatch_lookahead_s: float = 0.0,
                  seat_window: Optional[Callable[[float, float],
-                                                Optional[SeatWindow]]] = None):
+                                                Optional[SeatWindow]]] = None,
+                 catch_bump_enabled: bool = False,
+                 bumper: Optional[Callable[..., 'bmp.BumpResult']] = None):
         self.schedule = schedule
+        #: The late catch re-aim BUMP (I-CATCH-5, :mod:`.bump`) — OFF unless the
+        #: caller enables it for a pattern in ``bump.BUMP_ENABLED_PATTERNS``
+        #: (columns family only, owner 2026-10-16; hop/reload stay off until a
+        #: matching-record capture passes the replay).  Live (G2): past the snap
+        #: band :meth:`_resend_live_catch` routes a carried catch's re-aim to
+        #: :attr:`bumper` instead of the raw re-solve.
+        self.catch_bump_enabled = bool(catch_bump_enabled)
+        #: ``bumper(idx, ball_id, delta_xy_mm, t_catch_abs_s, t_dispatch_s) ->
+        #: bump.BumpResult`` — the apply half of a bump, on whoever holds the
+        #: record: ``trajectory/install_segment`` ``KIND_BUMP`` on hardware
+        #: (``skill_node._bumper``), :func:`bump.bump_record` over the local
+        #: record in the sim gate.  ``None`` = the bump path is off whatever
+        #: :attr:`catch_bump_enabled` says (the executor has no record).
+        self.bumper = bumper
+        #: ``idx -> |Δ|`` of the last gate-refused (BUMP-WINDOW) bump: a retry
+        #: waits until the fitted Δ has shrunk by :attr:`resend_pos_tol_mm`.
+        self._bump_refused_mm = {}
         self.installer = installer
         self.tracker = tracker
         if catch_aim_source not in AIM_SOURCES:
@@ -4767,6 +4787,27 @@ class SkillExecutor:
             return []
         idx, terminal, t_last = self._live_catch
         skill = self.schedule.skills[idx]
+        # THE BUMP ROUTE (I-CATCH-5, G2 2026-10-16), decided BEFORE the
+        # catch_freeze_s return below: that fence (t_c - 0.25 s) belongs to
+        # the re-solve path and would otherwise pre-empt the bump's own,
+        # later BUMP-FREEZE (t_c - 0.225 s).  The route is taken only (a)
+        # with the bump on and a bumper wired, (b) OUTSIDE the snap band
+        # (`maybe_snapped` False — inside it the pinned re-solve stays, with
+        # its PINNED-BUDGET decline), and (c) for a catch that CARRIES a
+        # throw.  (c) is the BUMP-NO-CARRY decision: the attempt's last
+        # catch carries no release, so the bump (which retargets the carried
+        # release) has nothing to retarget, while a plain-catch re-solve is
+        # the easier problem (the 87 refusals of 2026-10-16 were all
+        # catch-with-throw) and a refused one costs nothing further — no
+        # later catch depends on it.  So it keeps today's raw path.
+        if (self.catch_bump_enabled and self.bumper is not None
+                and terminal.then_throw is not None):
+            _t_s, _sn, _t_rel, maybe = self._resend_splice_instant(
+                idx, t_abs_s, float(terminal.t_land_s))
+            if not maybe:
+                if t_abs_s - t_last < self.resend_min_interval_s:
+                    return []
+                return self._bump_live_catch(t_abs_s)
         if t_abs_s >= float(terminal.t_land_s) - self.catch_freeze_s:
             self._live_catch = None
             return []
@@ -4877,6 +4918,184 @@ class SkillExecutor:
         return ['%.3f RESEND-SKIPPED %s skill %d: the tracker landing is '
                 '%.1f mm / %+.3f s from the committed aim'
                 % (t_abs_s, reason, idx, moved_mm, moved_s)]
+
+
+    # ── late catch re-aim BUMP (I-CATCH-5; pure layer, G1 2026-10-16) ──────
+
+    def catch_bump(self, plan: CyclePlan, meta: uc.CycleMeta, t0_s: float,
+                   t_abs_s: float, limits, geom,
+                   landing: Optional[Landing] = None) -> 'CatchBumpDecision':
+        """Decide and compute a post-band re-aim of the LIVE catch as a bump on
+        the installed record ``(plan, meta, t0_s)`` dispatched at ``t_abs_s``
+        — WITHOUT mutating the executor (:meth:`commit_catch_bump` does).
+
+        Fences (plan § 2): the per-pattern switch (:attr:`catch_bump_enabled`),
+        NO-CONVERGED-FIT, the lateral clamp (Δ is the CLAMPED landing's xy
+        minus the committed one), WITHIN-TOLERANCE on |Δ| (xy only: a timing
+        move is absorbed by the 0.050 s pre-hold), CAP-SPENT (accepted re-aims
+        only), BUMP-FREEZE (terminal, past ``t_c - BUMP_FREEZE_LEAD_S`` =
+        0.225 s; it replaces CONTACT-WINDOW, MIN_WINDOW and
+        :attr:`catch_freeze_s` on this path), and the BUMP-WINDOW retry rule (a
+        gate-refused Δ is retried only once it has shrunk by
+        :attr:`resend_pos_tol_mm`).  PINNED-BUDGET stays the snapped path's.
+        ``k_wire`` comes from ``t_abs_s`` exactly as the node computes it.
+
+        This form applies over a record the CALLER holds (tests, probes); the
+        live path is :meth:`_bump_live_catch`, which applies through
+        :attr:`bumper`.  Both run the same fences (:meth:`_catch_bump_decide`).
+        """
+        def apply(_idx, _ball_id, delta, t_c_abs, t_dispatch):
+            return bmp.bump_record(plan, meta, t0_s, t_dispatch, delta, t_c_abs,
+                                   limits, geom)[0]
+        return self._catch_bump_decide(t_abs_s, apply, landing)
+
+    def _bump_live_catch(self, t_abs_s: float) -> List[str]:
+        """The live bump: fences, then :attr:`bumper`, then commit.  One
+        decision per call; the lines are ``BUMP skill N: ...`` or (once per
+        catch and code) ``BUMP-DECLINED <code> skill N: ...``."""
+        # Not appended to :attr:`results` (its consumers read InstallResult
+        # fields); the BUMP / BUMP-DECLINED lines are the record.
+        decision = self._catch_bump_decide(t_abs_s, self.bumper, None)
+        return self.commit_catch_bump(decision, t_abs_s)
+
+    def _catch_bump_decide(self, t_abs_s: float, apply,
+                           landing: Optional[Landing]) -> 'CatchBumpDecision':
+        """The fences of :meth:`catch_bump`; ``apply(idx, ball_id, delta,
+        t_catch_abs_s, t_dispatch_s) -> BumpResult`` is called only once
+        every fence has passed."""
+        def out(reason, terminal=False, result=None, delta=None, moved_mm=0.0,
+                moved_s=0.0, release_mm=None, landing_xy=None):
+            notes, self._pending_notes = self._pending_notes, []
+            return CatchBumpDecision(
+                idx=idx, reason=reason, terminal=terminal, result=result,
+                delta_xy_mm=np.zeros(2) if delta is None else delta,
+                moved_mm=moved_mm, moved_s=moved_s, release_mm=release_mm,
+                landing_xy_mm=landing_xy, notes=tuple(notes))
+        idx = -1
+        if self._live_catch is None:
+            return out('NO-LIVE-CATCH')
+        idx, terminal, _t_last = self._live_catch
+        if not self.catch_bump_enabled:
+            return out('BUMP-OFF')
+        skill = self.schedule.skills[idx]
+        if landing is None:
+            landing = self._tracked_landing(idx, skill)
+        if landing is None:
+            return out('NO-LANDING')
+        if not landing.from_fit:
+            return out('NO-CONVERGED-FIT')
+        clamped = self._clamp_lateral_to_schedule(idx, skill, landing)
+        delta = (np.asarray(clamped.pos_mm, dtype=float)[:2]
+                 - np.asarray(terminal.landing_mm, dtype=float)[:2])
+        moved_mm = float(np.max(np.abs(delta)))
+        moved_s = float(clamped.t_land_abs_s) - float(terminal.t_land_s)
+        kw = dict(delta=delta, moved_mm=moved_mm, moved_s=moved_s)
+        if moved_mm <= self.resend_pos_tol_mm:
+            return out('WITHIN-TOLERANCE', **kw)
+        if self._resend_counts.get(idx, 0) >= self.resend_max_per_catch:
+            return out('CAP-SPENT', **kw)
+        t_c_abs = float(terminal.t_land_s)
+        if t_abs_s > t_c_abs - bmp.BUMP_FREEZE_LEAD_S + 1e-12:
+            return out(bmp.BUMP_FREEZE, terminal=True, **kw)
+        last = self._bump_refused_mm.get(idx)
+        d_norm = float(np.hypot(delta[0], delta[1]))
+        if last is not None and d_norm > last - self.resend_pos_tol_mm:
+            return out('BUMP-WINDOW', **kw)
+        res = apply(idx, skill.ball_id, delta, t_c_abs, t_abs_s)
+        if not res.accepted:
+            # Terminal codes and the non-gate retries pass through by name; a
+            # gate refusal (LIMIT_*, ...) is BUMP-WINDOW (shrink-retry rule).
+            reason = res.code if (res.terminal or res.code == bmp.BUMP_LAUNCH
+                                  or res.code in bmp.BUMP_RETRY_CODES) \
+                else 'BUMP-WINDOW'
+            return out(reason, terminal=res.terminal, result=res, **kw)
+        base = self._carried_release_mm.get(idx)
+        release_mm = None
+        if base is not None:
+            release_mm = np.asarray(base, dtype=float) + np.array(
+                [res.release_offset_xy_mm[0], res.release_offset_xy_mm[1], 0.0])
+        return out('OK', result=res, release_mm=release_mm,
+                   landing_xy=np.asarray(clamped.pos_mm, dtype=float)[:2], **kw)
+
+    def commit_catch_bump(self, decision: 'CatchBumpDecision',
+                          t_abs_s: float) -> List[str]:
+        """Apply a :meth:`catch_bump` decision AFTER the node installed (or
+        refused) it: an accepted bump spends one re-aim, records the REALISED
+        release (caught xy + ``b(t_rel)``, never + Δ) in
+        :attr:`_carried_release_mm` — so the learner row's ``x[2:4]``
+        (:meth:`_release_offset_m`) carries the release that actually happens
+        — and moves the live terminal's landing/release xy; a BUMP-WINDOW
+        remembers |Δ| for the retry rule; a terminal decline ends re-aiming."""
+        idx = decision.idx
+        lines = list(decision.notes)
+        if decision.reason == 'OK':
+            _i, terminal, _t = self._live_catch
+            self._resend_counts[idx] = self._resend_counts.get(idx, 0) + 1
+            self._bump_refused_mm.pop(idx, None)
+            landing_mm = np.asarray(terminal.landing_mm, dtype=float).copy()
+            landing_mm[:2] = decision.landing_xy_mm
+            tt = terminal.then_throw
+            if decision.release_mm is not None:
+                self._carried_release_mm[idx] = decision.release_mm
+                if tt is not None:
+                    tt = dataclasses.replace(tt, site_mm=decision.release_mm)
+            new_terminal = dataclasses.replace(terminal, landing_mm=landing_mm,
+                                               then_throw=tt)
+            self._live_catch = (idx, new_terminal, t_abs_s)
+            self._note_catch_aim(self.schedule.skills[idx].ball_id, idx,
+                                 float(new_terminal.t_land_s), reaim=True)
+            r = decision.result
+            b_rel = np.asarray(r.release_offset_xy_mm, dtype=float)
+            v_b = np.asarray(r.launch_bias_xy_mm_s, dtype=float)
+            return lines + ['%.3f BUMP skill %d: the fit moved the landing '
+                            '%.1f mm / %+.3f s (re-aim %d of %d), installed '
+                            'b(t_rel) %.1f mm, v_b %.1f mm/s — %s'
+                            % (t_abs_s, idx, decision.moved_mm, decision.moved_s,
+                               self._resend_counts[idx],
+                               self.resend_max_per_catch,
+                               float(np.hypot(b_rel[0], b_rel[1])),
+                               float(np.hypot(v_b[0], v_b[1])), r.message)]
+        if decision.reason in ('NO-LIVE-CATCH', 'BUMP-OFF', 'NO-LANDING'):
+            return lines
+        if decision.terminal:
+            self._live_catch = None
+            if decision.result is not None:
+                self._note_reaim_refused(idx, decision.reason)
+        elif (decision.reason in ('BUMP-WINDOW', bmp.BUMP_LAUNCH)
+              and decision.result is not None):
+            # BUMP-LAUNCH joins the shrink rule: |v_b| is linear in delta at
+            # fixed timing, so the same delta can only be refused again.
+            self._bump_refused_mm[idx] = float(np.hypot(*decision.delta_xy_mm))
+        key = (idx, 'BUMP:' + decision.reason)
+        if key in self._resend_notes:
+            return lines
+        self._resend_notes.add(key)
+        detail = ('' if decision.result is None
+                  else ' — %s' % (decision.result.message,))
+        return lines + ['%.3f BUMP-DECLINED %s skill %d: the tracker landing is '
+                        '%.1f mm / %+.3f s from the committed aim%s%s'
+                        % (t_abs_s, decision.reason, idx, decision.moved_mm,
+                           decision.moved_s,
+                           '; no further re-aim for this catch'
+                           if decision.terminal else '', detail)]
+
+
+@dataclasses.dataclass(frozen=True)
+class CatchBumpDecision:
+    """:meth:`SkillExecutor.catch_bump`'s answer — what G2's node request
+    carries back.  ``reason`` is ``'OK'`` or the fence / gate code;
+    ``release_mm`` is the realised release position on accept."""
+
+    idx: int
+    reason: str
+    terminal: bool
+    result: Optional[bmp.BumpResult]
+    delta_xy_mm: np.ndarray
+    moved_mm: float
+    moved_s: float
+    release_mm: Optional[np.ndarray] = None
+    landing_xy_mm: Optional[np.ndarray] = None
+    notes: Tuple[str, ...] = ()
 
 
 # ─────────────────────────────────────────────────────────────────────────────
