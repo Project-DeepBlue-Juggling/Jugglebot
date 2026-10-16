@@ -1,12 +1,14 @@
-"""mocap_node and the BB base-marker frame (2026-10-10).
+"""mocap_node and the BB base-marker frame (2026-10-10; advisory since 2026-10-16).
 
-``bb_pose_source``: ``sweep`` (world gate unchanged, base frame a
-diagnostic + pool input), ``base_frame`` (published pose = this window's base
-pose ∘ pooled BB-in-base constants, gated in the base frame), ``auto`` (base
-frame once the pool has ``bb_base_min_sweeps`` and the base is seen).
+The sweep's own yaw / axis point are always the published output. The base
+frame, when seen, yields kappa (BB-in-base yaw) for the epoch bookkeeping: a
+kappa within the band of the current epoch extends it, a larger one opens (or
+rejoins) an epoch and is flagged KAPPA_EXCURSION - never a refusal. No base
+(or an unreadable pool) is an advisory line and the sweep is still accepted.
 The solver is mocked (as in test_mocap_node_keep_last_good); the base frame's
 unlabelled markers are synthetic frames fed to the window.
-See logbook/2026-10-10-bb-base-marker-frame.md.
+See logbook/2026-10-10-bb-base-marker-frame.md and
+plans/active/bb-calibration-one-attempt.md.
 """
 from __future__ import annotations
 
@@ -58,7 +60,7 @@ def _records(n, kappa=KAPPA, sd=0.04, seed=1):
                            base_heading_deg=H0) for k in ks]
 
 
-def _node(tmp_path, *, pose_source='sweep', n_seed=10, state=None, base_state=None):
+def _node(tmp_path, *, n_seed=10, state=None, base_state=None):
     import jugglebot.mocap_node as mn
     iface = MagicMock()
     iface.is_receiving.return_value = True
@@ -66,7 +68,6 @@ def _node(tmp_path, *, pose_source='sweep', n_seed=10, state=None, base_state=No
         node = mn.MocapNode()
     node._params['bb_calibration_state_file'] = str(tmp_path / 'last.json')
     node._params['bb_base_frame_state_file'] = str(tmp_path / 'base.json')
-    node._params['bb_pose_source'] = pose_source
     if state is not None:
         (tmp_path / 'last.json').write_text(json.dumps(state))
     if base_state is not None:
@@ -94,7 +95,7 @@ def _result(yaw_deg, pos, std=0.07):
         yaw_offset_rad=math.radians(yaw_deg), yaw_offset_std_deg=std,
         yaw_span_deg=123.0, marker_metrics={}, yaw_method='constellation',
         anchor_yaw_offset_rad=None,
-        yaw_estimate=SimpleNamespace(lag_s=0.078, template_residual_mm=0.25,
+        yaw_estimate=SimpleNamespace(lag_s=0.008, template_residual_mm=0.25,
                                      yaw_source='heartbeat', n_frames=850,
                                      summary=lambda: 'sweep estimator: (summary)'))
 
@@ -133,19 +134,28 @@ def _base_records(tmp_path):
 
 # ── Parameters ──────────────────────────────────────────────────────────────
 
-def test_default_pose_source_is_auto_and_an_invalid_value_is_refused(tmp_path):
-    """``auto`` since the second sitting with the frame (2026-10-10 13:45) read
-    κ within 0.024° of the build's reference (1.3 combined SE)."""
-    import jugglebot.mocap_node as mn
-    assert mn.DEFAULT_BB_POSE_SOURCE == 'auto'
+def test_no_pose_source_or_moved_parameter_is_declared(tmp_path):
     node = _node(tmp_path)
-    node._params.pop('bb_pose_source')
-    node.declare_parameter('bb_pose_source', mn.DEFAULT_BB_POSE_SOURCE)
-    assert node.get_parameter('bb_pose_source').value == 'auto'
-    bad = node._on_set_parameters([SimpleNamespace(name='bb_pose_source', value='landings')])
-    assert not bad.successful and 'bb_pose_source' in bad.reason
-    ok = node._on_set_parameters([SimpleNamespace(name='bb_pose_source', value='auto')])
-    assert ok.successful
+    for name in ('bb_moved', 'bb_pose_source', 'bb_base_min_sweeps'):
+        assert name not in node._params
+    for name in ('bb_base_frame_file', 'bb_base_frame_state_file', 'bb_yaw_source'):
+        assert name in node._params
+
+
+def test_the_startup_state_line_is_logged_once_at_init_and_names_the_pool(tmp_path):
+    import jugglebot.mocap_node as mn
+    iface = MagicMock()
+    with patch.object(mn, 'MocapInterface', return_value=iface), \
+            patch.object(mn.MocapNode, '_log_startup_state') as startup:
+        mn.MocapNode()
+    startup.assert_called_once_with()
+    node = _node(tmp_path)                            # 10 seed records -> epoch 0
+    lines = _rec(node)
+    node._log_startup_state()
+    info = [m for lv, m in lines if lv == 'info']
+    assert len(info) == 1 and info[0].startswith('BB calibration state: template ')
+    assert 'base model on' in info[0] and 'pool 10 records in 1 epochs (current K0 median 179.5' in info[0]
+    assert 'n 10)' in info[0] and 'last accepted none' in info[0] and 'yaw source auto' in info[0]
 
 
 def test_the_committed_resource_loads_in_the_node(tmp_path):
@@ -157,128 +167,88 @@ def test_the_committed_resource_loads_in_the_node(tmp_path):
     assert node._base_monitor is not None
 
 
-# ── sweep (default) ─────────────────────────────────────────────────────────
+# ── the sweep is published; the base frame is advisory ──────────────────────
 
-def test_sweep_mode_publishes_the_sweep_and_pools_a_consistent_sweep(tmp_path):
+def test_a_consistent_sweep_is_published_and_pooled_in_the_current_epoch(tmp_path):
     node = _node(tmp_path)
     yaw, pos = _bb_world()
     msg = _sweep(node, yaw + 0.02, pos, base=(H0, O0))
     assert msg.success
     assert math.degrees(msg.yaw_offset_rad) == pytest.approx(yaw + 0.02)
-    recs = _base_records(tmp_path)
+    base = json.loads((tmp_path / 'base.json').read_text())
+    recs = base['records']
     assert len(recs) == 11 and recs[-1]['kappa_deg'] == pytest.approx(KAPPA + 0.02, abs=1e-3)
+    assert recs[-1]['epoch'] == 0 and len(base['epochs']) == 1
     st = json.loads((tmp_path / 'last.json').read_text())
     assert st['pose_source'] == 'sweep' and st['kappa_deg'] == pytest.approx(KAPPA + 0.02, abs=1e-3)
+    assert st['epoch'] == 0 and st['advisory_flags'] == []
+    assert 'kappa 179.' in msg.message and '(epoch K0' in msg.message and 'ADVISORY' not in msg.message
 
 
-def test_sweep_mode_without_the_base_is_todays_behaviour(tmp_path):
+def test_a_kappa_031_off_the_current_epoch_is_accepted_and_opens_a_new_epoch(tmp_path):
+    """Was BB_IN_BASE_MOVED (a refusal). The 2026-10-14 day-to-day step is 0.25-0.31 deg."""
     node = _node(tmp_path)
+    lines = _rec(node)
     yaw, pos = _bb_world()
-    assert _sweep(node, yaw, pos).success
-    assert not (tmp_path / 'base.json').exists()
+    msg = _sweep(node, yaw + 0.31, pos, base=(H0, O0))
+    assert msg.success
+    assert math.degrees(msg.yaw_offset_rad) == pytest.approx(yaw + 0.31)   # the sweep's own value
+    assert 'KAPPA_EXCURSION' not in msg.message          # the flag name is persisted, the LINE is shown
+    assert 'opened epoch K1' in msg.message and 'ADVISORY' in msg.message
+    base = json.loads((tmp_path / 'base.json').read_text())
+    assert [e['id'] for e in base['epochs']] == [0, 1] and len(base['records']) == 11
+    assert base['records'][-1]['epoch'] == 1 and base['epochs'][1]['n'] == 1
     st = json.loads((tmp_path / 'last.json').read_text())
-    assert st['base_frame'] is None and st['kappa_deg'] is None
+    assert st['epoch'] == 1 and 'KAPPA_EXCURSION' in st['advisory_flags']
+    outcome = [m for lv, m in lines if lv == 'warn' and m.startswith('BB calibrated: ')]
+    assert len(outcome) == 1 and not [m for lv, m in lines if lv == 'info' and 'BB calibrated' in m]
 
 
-def test_sweep_mode_world_gate_still_refuses_a_qtm_shift_and_names_it(tmp_path):
+def test_a_qtm_frame_shift_is_accepted_and_reported_not_refused(tmp_path):
     yaw, pos = _bb_world()
     node = _node(tmp_path, state={'yaw_offset_deg': yaw, 'yaw_offset_std_deg': 0.07,
                                   'position_mm': list(pos), 'accepted_at': '2026-10-10T01:26:55'})
-    yaw2, pos2 = _bb_world(h=H0 + 0.4)                 # QTM turned 0.4°: BB-in-base unchanged
+    yaw2, pos2 = _bb_world(h=H0 + 0.4)                 # QTM turned 0.4 deg: BB-in-base unchanged
     msg = _sweep(node, yaw2, pos2, base=(H0 + 0.4, O0))
-    assert not msg.success and msg.message.startswith('CALIBRATION_INCONSISTENT')
-    assert msg.message.split(' · sweep ')[0].endswith('base frame: BB unmoved, QTM frame shifted')
-    import jugglebot.mocap_node as mn
-    assert len(msg.message) <= mn.MAX_CALIBRATION_FAILURE_CHARS
+    assert msg.success and 'QTM frame moved since the last sweep' in msg.message
+    assert math.degrees(msg.yaw_offset_rad) == pytest.approx(yaw2)
+    flags = json.loads((tmp_path / 'last.json').read_text())['advisory_flags']
+    assert 'QTM_FRAME_SHIFT' in flags and 'YAW_SHIFT' not in flags   # world deltas not comparable
+    assert 'KAPPA_EXCURSION' not in flags
 
 
-def test_sweep_mode_does_not_pool_a_sweep_the_base_frame_disagrees_with(tmp_path):
+def test_a_window_without_the_base_is_accepted_and_not_pooled(tmp_path):
     node = _node(tmp_path)
-    lines = _rec(node)
-    yaw, pos = _bb_world()
-    assert _sweep(node, yaw + 0.4, pos, base=(H0, O0)).success     # world gate: no reference
-    assert not (tmp_path / 'base.json').exists()
-    assert any('BB_IN_BASE_MOVED' in m and 'not pooled' in m for lv, m in lines if lv == 'warn')
-
-
-# ── base_frame ──────────────────────────────────────────────────────────────
-
-def test_base_frame_mode_publishes_base_pose_composed_with_the_pool(tmp_path):
-    node = _node(tmp_path, pose_source='base_frame')
-    yaw, pos = _bb_world()
-    msg = _sweep(node, yaw + 0.05, pos + [0.1, 0, 0], base=(H0, O0))
-    assert msg.success
-    # pool = 10 records at mean KAPPA + this sweep at KAPPA + 0.05
-    expect = bf.wrap_deg(H0 + KAPPA + 0.05 / 11)
-    assert math.degrees(msg.yaw_offset_rad) == pytest.approx(expect, abs=2e-3)
-    assert msg.yaw_offset_std_deg < 0.07
-    assert 'pose source base_frame' in msg.message and 'vs sweep' in msg.message
-    st = json.loads((tmp_path / 'last.json').read_text())
-    assert st['pose_source'] == 'base_frame' and st['method'] == 'base_frame'
-    assert st['sweep_yaw_offset_deg'] == pytest.approx(yaw + 0.05)
-    base = json.loads((tmp_path / 'base.json').read_text())
-    assert len(base['records']) == 11
-    assert base['base_ref']['heading_deg'] == pytest.approx(H0, abs=0.01)
-    assert node.pub_calibration.published[-1] is msg
-
-
-def test_base_frame_mode_accepts_a_qtm_frame_shift_and_reports_it(tmp_path):
-    yaw, pos = _bb_world()
-    node = _node(tmp_path, pose_source='base_frame',
-                 state={'yaw_offset_deg': yaw, 'yaw_offset_std_deg': 0.07,
-                        'position_mm': list(pos), 'accepted_at': '2026-10-10T01:26:55'})
-    lines = _rec(node)
-    shift = np.array([1.0, -0.6, 0.2])
-    yaw2, pos2 = _bb_world(h=H0 + 0.4, o=O0 + shift)
-    msg = _sweep(node, yaw2, pos2, base=(H0 + 0.4, O0 + shift))
-    assert msg.success
-    assert math.degrees(msg.yaw_offset_rad) == pytest.approx(yaw2, abs=2e-3)
-    assert np.allclose([msg.position_mm.x, msg.position_mm.y, msg.position_mm.z], pos2, atol=0.05)
-    assert any('QTM frame shift' in m for lv, m in lines if lv == 'warn')
-
-
-def test_base_frame_mode_refuses_a_bb_move_on_the_shelf_unless_bb_moved(tmp_path):
-    node = _node(tmp_path, pose_source='base_frame')
-    yaw, pos = _bb_world()
-    msg = _sweep(node, yaw + 0.4, pos, base=(H0, O0))
-    assert not msg.success and msg.message.startswith('BB_IN_BASE_MOVED')
-    assert not (tmp_path / 'base.json').exists() and not (tmp_path / 'last.json').exists()
-    node._on_set_parameters([SimpleNamespace(name='bb_moved', value=True)])
-    node._params['bb_moved'] = True
-    msg = _sweep(node, yaw + 0.4, pos, base=(H0, O0))
-    assert msg.success and 'bb_moved override' in msg.message
-    assert len(_base_records(tmp_path)) == 1                 # a new pool
-    assert math.degrees(msg.yaw_offset_rad) == pytest.approx(yaw + 0.4, abs=2e-3)
-    assert node._bb_moved_armed is False                     # one-shot consumed
-    assert not _sweep(node, yaw, pos, base=(H0, O0)).success  # the old κ is gone
-
-
-def test_base_frame_mode_refuses_when_the_base_is_not_seen(tmp_path):
-    node = _node(tmp_path, pose_source='base_frame')
     yaw, pos = _bb_world()
     msg = _sweep(node, yaw, pos)
-    assert not msg.success and msg.message.startswith('BASE_FRAME_NOT_SEEN')
-    assert 'set it to auto or sweep' in msg.message and len(msg.message) <= 240
+    assert msg.success and 'shelf base not seen: kappa not pooled' in msg.message
+    assert not (tmp_path / 'base.json').exists()
+    st = json.loads((tmp_path / 'last.json').read_text())
+    assert st['base_frame'] is None and st['kappa_deg'] is None and st['epoch'] is None
+    assert 'BASE_NOT_SEEN' in st['advisory_flags']
 
 
-def test_base_frame_mode_refuses_without_a_model(tmp_path):
-    node = _node(tmp_path, pose_source='base_frame')
+def test_without_a_base_model_the_sweep_is_still_accepted(tmp_path):
+    node = _node(tmp_path)
     node._base_model, node._base_model_error = None, 'BB base frame not found (x.json)'
     yaw, pos = _bb_world()
     msg = _sweep(node, yaw, pos, base=(H0, O0))
-    assert not msg.success and msg.message.startswith('BASE_FRAME_MODEL_MISSING')
+    assert msg.success and 'kappa not pooled' in msg.message
 
 
-def test_base_frame_mode_refuses_an_unreadable_base_state(tmp_path):
-    node = _node(tmp_path, pose_source='base_frame')
+def test_an_unreadable_base_state_is_an_advisory_line_and_a_fresh_file_is_written(tmp_path):
+    node = _node(tmp_path)
     (tmp_path / 'base.json').write_text('{not json')
     yaw, pos = _bb_world()
     msg = _sweep(node, yaw, pos, base=(H0, O0))
-    assert not msg.success and msg.message.startswith('BASE_FRAME_STATE_UNREADABLE')
+    assert msg.success and 'history unavailable: base.json: JSONDecodeError' in msg.message
+    fresh = json.loads((tmp_path / 'base.json').read_text())
+    assert fresh['schema'] == 2 and len(fresh['records']) == 11       # seed + this sweep
+    assert list(tmp_path.glob('base.json.*.bak')), 'the corrupt file was not backed up'
 
 
 def test_a_window_without_the_base_uses_the_running_estimate(tmp_path):
-    node = _node(tmp_path, pose_source='base_frame')
+    node = _node(tmp_path)
     for t, P in _base_frames(n=40):
         node._base_monitor.update(t, P)
     node._base_monitor_last_t = 100.4
@@ -292,43 +262,16 @@ def test_a_window_without_the_base_uses_the_running_estimate(tmp_path):
     assert node.pub_calibration_attempt.published[-1].success
 
 
-# ── auto ────────────────────────────────────────────────────────────────────
-
-def test_auto_uses_the_base_frame_only_with_enough_pooled_sweeps_and_the_base_seen(tmp_path):
-    yaw, pos = _bb_world()
-    node = _node(_dir(tmp_path, 'a'), pose_source='auto', n_seed=3)
-    msg = _sweep(node, yaw + 0.05, pos, base=(H0, O0))
-    assert msg.success and 'pose source base_frame' not in msg.message     # pool 3 < 5: sweep
-    msg = _sweep(node, yaw + 0.05, pos, base=(H0, O0))                     # pool 4 → still sweep
-    assert 'pose source base_frame' not in msg.message
-    msg = _sweep(node, yaw + 0.05, pos, base=(H0, O0))                     # pool 5 → base frame
-    assert 'pose source base_frame' in msg.message
-    msg = _sweep(node, yaw, pos)                                           # base unseen → sweep
-    assert msg.success and 'pose source base_frame' not in msg.message
-    assert math.degrees(msg.yaw_offset_rad) == pytest.approx(yaw)
-
-
 # ── Persistence and gauge ───────────────────────────────────────────────────
 
 def test_a_fresh_node_pools_from_the_state_file_not_the_seed(tmp_path):
-    node = _node(tmp_path, pose_source='base_frame', n_seed=10)
+    node = _node(tmp_path, n_seed=10)
     yaw, pos = _bb_world()
     _sweep(node, yaw, pos, base=(H0, O0))
-    node2 = _node(tmp_path, pose_source='base_frame', n_seed=2)   # a different seed
-    view = node2._base_frame_view(_result(yaw, pos))
-    assert len(view['records']) == 11 and view['pooled'].n == 11
-    assert view['base_ref']['heading_deg'] == pytest.approx(H0, abs=0.01)
-
-
-def test_a_re_pinned_gauge_moves_the_base_frame_offset_by_the_same_delta(tmp_path):
-    yaw, pos = _bb_world()
-    a = _node(_dir(tmp_path, 'a'), pose_source='base_frame')
-    b = _node(_dir(tmp_path, 'b'), pose_source='base_frame')
-    b._marker_template.pinned_yaw_offset_deg = PIN + 0.06    # settle_yaw_gauge: δ = +0.06
-    ya = math.degrees(_sweep(a, yaw, pos, base=(H0, O0)).yaw_offset_rad)
-    # the sweep itself would also read +0.06 under the new pin
-    yb = math.degrees(_sweep(b, yaw + 0.06, pos, base=(H0, O0)).yaw_offset_rad)
-    assert yb - ya == pytest.approx(0.06, abs=1e-6)
+    node2 = _node(tmp_path, n_seed=2)                  # a different seed
+    state, err = node2._load_state()
+    assert not err and len(state['records']) == 11
+    assert state['base_ref']['heading_deg'] == pytest.approx(H0, abs=0.01)
 
 
 # ── Collection, the running estimate and its report ─────────────────────────
@@ -378,87 +321,6 @@ def test_labelled_base_markers_reach_the_window_and_bbs_own_do_not(tmp_path):
     assert pts.shape == (4, 3) and np.allclose(np.sort(pts, axis=0), np.sort(P, axis=0))
     pose = bf.estimate_base_pose(node._calib_base_points, NOM, min_frames=50)
     assert pose.heading_deg == pytest.approx(H0, abs=1e-6)
-
-
-# ── Failure messages that name the real cause ───────────────────────────────
-
-def _err_lines(lines):
-    return [m for lv, m in lines if lv == 'error' and m.startswith('BB calibration FAILED')]
-
-
-def test_auto_without_the_base_leads_the_refusal_with_the_base_not_bb_moved(tmp_path):
-    """14:10: two base markers labelled, the base not seen, ``auto`` fell back
-    to the sweep and the owner's routine QTM transform tripped the world gate
-    with 'set bb_moved:=true'. The cause to fix is the base's visibility."""
-    yaw, pos = _bb_world()
-    node = _node(tmp_path, pose_source='auto')
-    lines = _rec(node)
-    good = _sweep(node, yaw, pos, base=(H0, O0))            # base seen: base_frame path
-    assert good.success and 'pose source base_frame' in good.message
-    yaw2, pos2 = _bb_world(h=H0 + 0.41, o=O0 + [25.0, -18.0, 5.0])   # QTM re-transformed
-    msg = _sweep(node, yaw2, pos2)                           # ... and the base not seen
-    assert not msg.success
-    assert msg.message.startswith('BASE_FRAME_NOT_SEEN: 0 of 0 frames posed the base markers')
-    assert 'check QTM sees the 4 shelf markers' in msg.message
-    assert 'world gate also refused: Δyaw +0.41°, Δaxis' in msg.message
-    assert 'bb_moved' not in msg.message
-    assert len(msg.message) <= 240 and not msg.message.endswith('…')
-    err = _err_lines(lines)[-1]
-    assert err.endswith(f'(kept the calibration from {node._last_good_at})')
-    assert any('the base frame was not seen' in m for lv, m in lines if lv == 'warn')
-    assert node.pub_calibration.published[-1] is good       # keep-last-good holds
-
-
-def test_the_base_led_message_fits_the_cap_with_the_longest_not_seen_reason(tmp_path):
-    import jugglebot.mocap_node as mn
-    yaw, pos = _bb_world()
-    node = _node(tmp_path, pose_source='auto',
-                 state={'yaw_offset_deg': yaw, 'yaw_offset_std_deg': 0.07,
-                        'position_mm': list(pos), 'accepted_at': '2026-10-10T01:26:55'})
-    # the median-disagreement variant, with five-digit counts
-    node._calib_base_points = []
-    view = {'pose': None, 'pooled': node._base_frame_view(_result(yaw, pos))['pooled'],
-            'error': 'BASE_FRAME_NOT_SEEN: 49 of 99999 posed base frames agree with their '
-                     'median (need 50)'}
-    assert node._base_expected('auto', view)
-    yaw2, pos2 = _bb_world(h=H0 - 12.345, o=O0 + [999.0, -999.0, 99.0])
-    with patch.object(mn, 'estimate_base_pose', side_effect=ValueError(view['error'])):
-        msg = _sweep(node, yaw2, pos2)
-    assert msg.message.startswith('BASE_FRAME_NOT_SEEN: 49 of 99999')
-    assert len(msg.message) <= mn.MAX_CALIBRATION_FAILURE_CHARS and not msg.message.endswith('…')
-
-
-def test_bb_moved_stays_the_advice_when_the_base_would_not_have_decided(tmp_path):
-    """Pool below bb_base_min_sweeps (auto would have used the sweep anyway), or
-    no base model: the world gate's own message, bb_moved advice included."""
-    yaw, pos = _bb_world()
-    ref = {'yaw_offset_deg': yaw, 'yaw_offset_std_deg': 0.07, 'position_mm': list(pos),
-           'accepted_at': '2026-10-10T01:26:55'}
-    yaw2, pos2 = _bb_world(h=H0 + 0.41)
-    node = _node(_dir(tmp_path, 'a'), pose_source='auto', n_seed=3, state=ref)
-    msg = _sweep(node, yaw2, pos2)
-    assert msg.message.startswith('CALIBRATION_INCONSISTENT') and 'bb_moved:=true' in msg.message
-    node = _node(_dir(tmp_path, 'b'), pose_source='auto', state=ref)
-    node._base_model, node._base_model_error = None, 'BB base frame not found (x.json)'
-    msg = _sweep(node, yaw2, pos2)
-    assert msg.message.startswith('CALIBRATION_INCONSISTENT') and 'bb_moved:=true' in msg.message
-    node = _node(_dir(tmp_path, 'c'), pose_source='sweep', state=ref)
-    msg = _sweep(node, yaw2, pos2)
-    assert msg.message.startswith('CALIBRATION_INCONSISTENT') and 'bb_moved:=true' in msg.message
-
-
-def test_a_base_frame_pool_outlier_is_excluded_and_counted_in_the_message(tmp_path):
-    """The robust pool in the node: a seeded outlier is excluded from the
-    published κ and counted on the outcome line."""
-    yaw, pos = _bb_world()
-    node = _node(tmp_path, pose_source='base_frame')
-    node._base_model.records.append(bf.KappaRecord(
-        kappa_deg=KAPPA + 0.5, sigma_deg=0.07, axis_point_b_mm=tuple(P_B), pin_deg=PIN))
-    msg = _sweep(node, yaw, pos, base=(H0, O0))
-    assert msg.success and '1 outliers excluded' in msg.message
-    assert math.degrees(msg.yaw_offset_rad) == pytest.approx(bf.wrap_deg(H0 + KAPPA), abs=2e-3)
-    pool = json.loads((tmp_path / 'base.json').read_text())['pool']
-    assert pool['n_total'] == 12 and pool['n_kept'] == 11 and len(pool['outliers']) == 1
 
 
 # ── bb/base_frame_pose publisher (magazine throw) ────────────────────────────

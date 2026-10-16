@@ -36,9 +36,13 @@ import pytest
 from jugglebot import bb_calibration as bc
 from jugglebot.bb_calibration import (
     CONSTELLATION_MATCH_TOL_MM,
-    GATE_MIN_DEG,
+    LAG_ADVISORY_MS,
+    TEMPLATE_RESIDUAL_ADVISORY_MM,
+    YAW_ADVISORY_DEG,
     MarkerTemplate,
-    check_calibration_consistency,
+    assess_sweep_vs_reference,
+    SweepAdvisory,
+    format_outcome_body,
     estimate_sweep_yaw_offset,
     fit_yaw_latency,
     load_marker_template,
@@ -343,12 +347,12 @@ def test_pose_dependent_reconstruction_error_does_not_read_as_a_moved_marker():
     mean of a pair past the 0.5 mm gate; the pose-binned median does not."""
     frames, samples = _pose_band_error(*_synth(seed=40, labelled=True), 4, 5, 3.0)
     est = estimate_sweep_yaw_offset(frames, samples, _tmpl())
-    assert est.template_residual_window_mm > bc.GATE_MAX_RESIDUAL_MM
+    assert est.template_residual_window_mm > 0.5
     assert est.template_residual_mm < 0.15
     assert 'window mean' in est.summary()
-    v = check_calibration_consistency(0.3, 0.05, BB_POS, est.template_residual_mm,
-                                      {'yaw_offset_deg': 0.3, 'position_mm': list(BB_POS)})
-    assert v.accepted
+    v = assess_sweep_vs_reference(0.3, 0.05, BB_POS, est.template_residual_mm, 0.0,
+                                  {'yaw_offset_deg': 0.3, 'position_mm': list(BB_POS)}, True)
+    assert 'TEMPLATE_RESIDUAL' not in v.flags
 
 
 def test_a_marker_moved_on_bb_reads_the_same_binned_or_window_mean():
@@ -357,12 +361,11 @@ def test_a_marker_moved_on_bb_reads_the_same_binned_or_window_mean():
     along it) is refused by the gate whichever statistic is read."""
     frames, samples = _synth(seed=41, displace=(4, np.array([0.8, 0.0, 0.0])))
     est = estimate_sweep_yaw_offset(frames, samples, _tmpl())
-    assert est.template_residual_mm > bc.GATE_MAX_RESIDUAL_MM
+    assert est.template_residual_mm > 0.5
     assert est.template_residual_mm == pytest.approx(est.template_residual_window_mm, abs=0.05)
-    v = check_calibration_consistency(0.3, 0.05, BB_POS, est.template_residual_mm,
-                                      {'yaw_offset_deg': 0.3, 'position_mm': list(BB_POS)},
-                                      bb_moved=True)
-    assert not v.accepted and v.message.startswith('TEMPLATE_RESIDUAL')
+    v = assess_sweep_vs_reference(0.3, 0.05, BB_POS, 0.95, 0.0,
+                                  {'yaw_offset_deg': 0.3, 'position_mm': list(BB_POS)}, True)
+    assert 'TEMPLATE_RESIDUAL' in v.flags       # the advisory band is exercised below
 
 
 def test_template_residual_falls_back_to_the_window_mean_with_too_few_pose_bins():
@@ -429,56 +432,81 @@ def test_canonical_yaw_leaves_a_signed_unwrapped_series_unchanged():
 REF = {'yaw_offset_deg': 0.6, 'position_mm': list(BB_POS)}
 
 
-def test_gate_without_reference_accepts_and_says_so():
-    v = check_calibration_consistency(5.0, 0.05, BB_POS, 0.2, None)
-    assert v.accepted and v.no_reference
+def _assess(yaw, pos=BB_POS, res=0.3, lag=3.0, ref=REF, same=True, std=0.05):
+    return assess_sweep_vs_reference(yaw, std, pos, res, lag, ref, same)
 
 
-def test_gate_accepts_within_the_threshold():
-    v = check_calibration_consistency(0.7, 0.04, BB_POS + [0.5, 0, 0], 0.3, REF)
-    assert v.accepted and not v.overridden and v.threshold_deg == GATE_MIN_DEG
+def test_advisory_without_reference_reports_no_delta_and_flags_nothing():
+    v = _assess(5.0, ref=None, same=None)
+    assert v.delta_deg is None and v.axis_shift_mm is None and v.flags == [] and v.lines == []
 
 
-def test_gate_threshold_is_three_sigma_when_that_is_larger():
-    assert check_calibration_consistency(0.85, 0.1, BB_POS, 0.3, REF).accepted
-    assert not check_calibration_consistency(0.95, 0.1, BB_POS, 0.3, REF).accepted
+def test_yaw_advisory_fires_at_band_plus_epsilon_and_not_below():
+    eps = 1e-3
+    v = _assess(0.6 + YAW_ADVISORY_DEG - eps)
+    assert v.flags == [] and v.delta_deg == pytest.approx(YAW_ADVISORY_DEG - eps)
+    v = _assess(0.6 + YAW_ADVISORY_DEG + eps)
+    assert v.flags == ['YAW_SHIFT'] and len(v.lines) == 1 and len(v.lines[0]) <= 90
+    assert _assess(0.6 - YAW_ADVISORY_DEG - eps).flags == ['YAW_SHIFT']      # signed delta, both ways
 
 
-def test_gate_threshold_combines_both_sigmas():
-    """The limit is 3·√(σ_new² + σ_ref²): with σ 0.1 on both sides it is
-    0.424°, not 0.3°. A reference without a σ is treated as exact."""
-    ref = dict(REF, yaw_offset_std_deg=0.1)
-    v = check_calibration_consistency(0.95, 0.1, BB_POS, 0.3, ref)
-    assert v.accepted and abs(v.threshold_deg - 3 * math.hypot(0.1, 0.1)) < 1e-9
-    assert not check_calibration_consistency(1.05, 0.1, BB_POS, 0.3, ref).accepted
-    assert not check_calibration_consistency(0.95, 0.1, BB_POS, 0.3, REF).accepted
+def test_yaw_advisory_band_does_not_scale_with_sigma():
+    """Root cause C2: a cross-session band scaled by one sitting's sigma. 0.25 deg is
+    flagged at sigma 0.05 and at sigma 0.5 alike."""
+    assert _assess(0.85, std=0.05).flags == _assess(0.85, std=0.5).flags == ['YAW_SHIFT']
 
 
-def test_gate_accepts_the_sweep_pair_it_refused_on_2026_10_09():
-    """Bag 2026-10-09_23-49-07 replayed with the fix: sweep 1 +0.4124° ±0.047 as
-    the reference, sweep 2 +0.6095° ±0.063 (Δ 0.197°) was refused at
-    max(3·0.063, 0.15) = 0.189°; with both σ the limit is 0.236°."""
-    ref = {'yaw_offset_deg': 0.4124, 'yaw_offset_std_deg': 0.047, 'position_mm': list(BB_POS)}
-    v = check_calibration_consistency(0.6095, 0.063, BB_POS, 0.3, ref)
-    assert v.accepted and 0.23 < v.threshold_deg < 0.24
+def test_yaw_delta_is_not_judged_when_the_qtm_frame_moved_or_is_unknown():
+    v = _assess(1.6, same=False)
+    assert v.flags == [] and v.delta_deg == pytest.approx(1.0) and 'QTM frame moved' in v.lines[0]
+    v = _assess(1.6, same=None)
+    assert v.flags == [] and '(frame unknown)' in v.lines[0]
 
 
-def test_gate_refuses_yaw_axis_and_residual():
-    assert 'yaw' in check_calibration_consistency(0.8, 0.04, BB_POS, 0.3, REF).message
-    v = check_calibration_consistency(0.6, 0.04, BB_POS + [0, 1.6, 0], 0.3, REF)
-    assert not v.accepted and 'axis point' in v.message
-    v = check_calibration_consistency(0.6, 0.04, BB_POS, 0.51, REF, bb_moved=True)
-    assert not v.accepted and v.message.startswith('TEMPLATE_RESIDUAL')
+def test_axis_shift_is_reported_never_flagged():
+    v = _assess(0.6, pos=BB_POS + [0, 25.0, 0])
+    assert v.axis_shift_mm == pytest.approx(25.0) and v.flags == []
 
 
-def test_gate_override_accepts_and_says_so():
-    v = check_calibration_consistency(3.0, 0.04, BB_POS + [5, 0, 0], 0.3, REF, bb_moved=True)
-    assert v.accepted and v.overridden and 'bb_moved' in v.message
+def test_template_residual_and_lag_advisories_at_band_plus_and_minus_epsilon():
+    assert _assess(0.6, res=TEMPLATE_RESIDUAL_ADVISORY_MM - 0.01).flags == []
+    v = _assess(0.6, res=TEMPLATE_RESIDUAL_ADVISORY_MM + 0.01)
+    assert v.flags == ['TEMPLATE_RESIDUAL'] and 're-wand QTM if this persists' in v.lines[0]
+    assert _assess(0.6, lag=LAG_ADVISORY_MS - 0.1).flags == []
+    assert _assess(0.6, lag=LAG_ADVISORY_MS + 0.1).flags == ['LAG']
+    assert _assess(0.6, lag=-LAG_ADVISORY_MS - 0.1).flags == ['LAG']
 
 
-def test_gate_wraps_angles():
+def test_advisory_wraps_angles():
     ref = {'yaw_offset_deg': -179.95, 'position_mm': list(BB_POS)}
-    assert check_calibration_consistency(179.95, 0.02, BB_POS, 0.1, ref).accepted
+    v = _assess(179.95, ref=ref)
+    assert v.delta_deg == pytest.approx(-0.1, abs=1e-6) and v.flags == []
+
+
+def test_removed_gate_names_are_gone():
+    for name in ('check_calibration_consistency', 'GateVerdict', 'GATE_N_SIGMA', 'GATE_MIN_DEG',
+                 'GATE_MAX_AXIS_SHIFT_MM', 'GATE_MAX_RESIDUAL_MM'):
+        assert not hasattr(bc, name)
+
+
+def test_format_outcome_body_is_one_line_with_advisory_only_when_flagged():
+    from jugglebot import bb_base_frame as bf
+    clean = _assess(0.6)
+    pooled = {'kappa_deg': 179.59, 'epoch_id': 2, 'delta_deg': 0.01, 'n': 32}
+    base_adv = SimpleNamespace(delta_axis_mm=0.1, lines=[])
+    body = format_outcome_body(0.52, 0.03, [100.0, 200.0, 300.0], 0.6, 0.43, 3.1, clean,
+                               base_adv, pooled)
+    assert '\n' not in body and 'ADVISORY' not in body and not body.startswith('BB calibrated')
+    assert body == ('yaw +0.52\u00b0 \u00b10.03, axis (100, 200, 300) mm, tilt 0.6\u00b0, template 0.43 mm, '
+                    'lag +3.1 ms \u00b7 kappa 179.59\u00b0 (epoch K2 +0.01\u00b0, n 32), p_b \u03940.1 mm')
+    flagged = _assess(1.5, res=1.0)
+    base_adv2 = SimpleNamespace(delta_axis_mm=None, lines=['kappa +0.31 deg from epoch K0: opened epoch K1'])
+    body = format_outcome_body(1.5, 0.03, BB_POS, 0.6, 1.0, 3.1, flagged, base_adv2, pooled)
+    assert '\n' not in body and body.count(' \u00b7 ADVISORY: ') == 1
+    tail = body.split(' \u00b7 ADVISORY: ')[1]
+    assert tail.count('; ') == 2 and 'opened epoch K1' in tail and 're-wand' in tail
+    # without base numbers it still renders
+    assert '\n' not in format_outcome_body(0.5, 0.03, BB_POS, 0.6, 0.4, 3.1, clean)
 
 
 # ── run_calibration: the constellation path ─────────────────────────────────
@@ -589,3 +617,28 @@ def test_shipped_template_matches_itself_at_any_yaw_and_subset():
             m = match_template(sub[::-1], p)
             assert m is not None and len(m.pairs) == len(p) - 1
             assert abs(math.degrees(wrap_pi(m.theta_rad - math.radians(yaw)))) < 1e-6
+
+
+def test_assess_sweep_lag_is_judged_for_the_stamped_source_only():
+    """A heartbeat-sourced sweep carries the heartbeat path's own latency; the 13 ms
+    band was characterised on stamped sweeps only (Phase 0 entry), so heartbeat lag
+    is neither flagged nor given a line (the sweep suffix shows it)."""
+    kw = dict(new_offset_deg=0.5, new_std_deg=0.05, new_position_mm=[0.0, 0.0, 0.0],
+              template_residual_mm=0.4, reference=None, same_world_epoch=None)
+    hb = assess_sweep_vs_reference(lag_ms=80.0, yaw_source='heartbeat', **kw)
+    assert hb.flags == [] and hb.lines == []        # the sweep suffix still shows the lag
+    st = assess_sweep_vs_reference(lag_ms=80.0, yaw_source='stamped', **kw)
+    assert st.flags == ['LAG']
+    assert assess_sweep_vs_reference(lag_ms=80.0, **kw).flags == ['LAG']   # default = stamped
+
+
+def test_format_outcome_body_names_an_opened_or_rejoined_epoch():
+    adv = SweepAdvisory(None, None, [], [])
+    base = dict(yaw_deg=0.5, yaw_std_deg=0.03, position_mm=[1.0, 2.0, 3.0], tilt_deg=0.6,
+                template_residual_mm=0.43, lag_ms=3.1, sweep_advisory=adv)
+    opened = format_outcome_body(pooled={'kappa_deg': 179.8, 'epoch_id': 1, 'delta_deg': 0.30,
+                                         'n': 1, 'opened': True, 'rejoined': False}, **base)
+    assert '(epoch K1 opened, n 1)' in opened and '+0.30' not in opened
+    rejoined = format_outcome_body(pooled={'kappa_deg': 179.3, 'epoch_id': 0, 'delta_deg': -0.31,
+                                           'n': 7, 'opened': False, 'rejoined': True}, **base)
+    assert '(epoch K0 rejoined, n 7)' in rejoined

@@ -36,7 +36,7 @@ tags:
 
 ## Summary
 
-Phase 0 of `plans/active/bb-calibration-one-attempt.md`. Three deliverables: (1) a replay harness that re-runs the node's calibration code on the recorded bags and reproduces what the node logged; (2) cross-sitting distributions and advisory bands for Phase 1; (3) the attempt-message fields the hardware pin needs. The pin's offline part is done and it **excludes the pose-mix explanation of the kappa step** (hypothesis withdrawn, § Discussion). The mechanism of the 0.3 deg step is therefore UNRESOLVED; the hardware part (runsheet `tests/hardware/session_bb_kappa_pin.md`) is owed, so the entry stays `open`. The throw cross-check is negative: the landing bias has another owner. No gate logic or threshold changed in this entry.
+Phase 0 of `plans/active/bb-calibration-one-attempt.md`. Three deliverables: (1) a replay harness that re-runs the node's calibration code on the recorded bags and reproduces what the node logged; (2) cross-sitting distributions and advisory bands for Phase 1; (3) the attempt-message fields the hardware pin needs. The pin's offline part is done and it **excludes the pose-mix explanation of the kappa step** (hypothesis withdrawn, § Discussion). The mechanism of the 0.3 deg step was left UNRESOLVED at the 2026-10-15 commit; on 2026-10-16 the owner's answers and a re-read of the replay moved it to reconstruction drift on a 562 h old QTM wand calibration as the leading candidate, the power-cycle pin was dropped (its runsheet deleted) and the first Phase 1 sweep after the re-wand is the remaining reading (§ Open Questions). The entry stays `open` for that reading and the node stall. The throw cross-check is negative: the landing bias has another owner. No gate logic or threshold changed in this entry.
 
 ## Symptoms
 
@@ -108,6 +108,8 @@ Nine post-step sweeps refuse CIRCLE_CENTRES once clipped (an arc too short for t
 **Why the bands are stated the way they are.** One rule for every band: band = max(3 x the relevant SD, 1.25 x the largest observed intrinsic-good excursion), rounded up. The relevant SD is the spread of sitting MEANS within the epoch the advisory compares against, never one sitting's per-sweep sigma (the old 0.09 deg floor was 2 x within-sitting sigma). The 1.25 x max term makes ~all recorded intrinsic-good sweeps fall inside, which is the owner's intent: none of the 23 false positives fires. The kappa band existed in two readings until D came back: if clipping had moved kappa by ~+0.25 deg the step would be a measurement artefact and the band would need to cover it (+-0.45 deg vs the whole pool); D chose the other branch, so the recommended reading is +-0.20 deg vs the current kappa epoch's median, and the +-0.45 deg whole-pool band is kept as the rejected alternative. A real 2 mm bump at r ~143 mm is 0.80 deg, 4.0 x the recommended band.
 
 **Why the throw cross-check is negative and what that frees the plan from (F).** Calibration error at the level the bands describe predicts 0.4-2.8 mm lateral landing shift; the observed launch-to-launch differences are 8-20 mm in range and 3.4-8.1 mm lateral, and a yaw error cannot move range at all. The plan therefore claims no throw-side meaning for the bands (mm at the catch per degree of kappa stays unquantified) and does not try to fix the landing bias by calibration.
+
+**2026-10-16 update.** Candidate 1 and the physical candidates fall away on the owner's answers (BB and its frame are bolted to the shelf and nothing was touched; BB sits on the main motor PSU, so every session boundary is a power cycle and kappa survived all but one) and on the flat shelf tilt in world (0.90-1.04 deg over the window). The reconstruction candidate (3) is now the leading one: QTM's wand calibration was 562 h old across the window and was re-wanded 2026-10-16. Not proven; the first post-re-wand sweep tests it (see Open Questions, "Mechanism, 2026-10-16 reading").
 
 **Fixture tolerances.** The committed fixture stores frames rounded to 4 decimals; the re-solve test asserts 1e-5 deg class tolerances, 3-4 orders below any gate, so rounding cannot flip a verdict.
 
@@ -194,10 +196,23 @@ Replay fidelity (§ A) and the clip experiment (§ D) are the (2026-10-15, comma
 
 Open. Done: harness, bands, attempt-message fields, pin part 1 (offline: pose mix EXCLUDED). Owed: pin part 2 on hardware. Phase 1 (gate inversion, kappa epochs, `bb_moved` deletion) consumes the band table above. Plan status row: "code done, hardware pin owed".
 
+2026-10-16: pin re-scoped (power-cycle sitting dropped, runsheet deleted); QTM re-wanded 2026-10-16; Phase 1 started 2026-10-16.
+
 ## Open Questions
 
-- Hardware pin part 2 (`tests/hardware/session_bb_kappa_pin.md`): does kappa step across a BB power cycle? Candidates 1-3 above.
-- Owner: how was BB power-cycled on 10-13 (switch on BB's body? cable?); was anything touched near BB or the shelf 10-14 20:54-21:00; does QTM's calibration report show a residual change on 10-13?
-- The ~28 s node-side stall of 10-11 15:14 sweep 1: what blocked the node 10 s after launch (the bag cannot show it)?
-- The 10-14 20:54 transient: physical (in-sitting drift) or measurement?
-- Who owns the per-launch landing bias (8-20 mm range)?
+- Hardware pin part 2 (`tests/hardware/session_bb_kappa_pin.md`, deleted 2026-10-16): DROPPED (owner, 2026-10-16, on recommendation). Every session boundary is already a BB power cycle (BB is on the main motor PSU) and kappa survived all but one of them; Phase 1's hardware acceptance (first sweep of ten consecutive sittings) is ten more. Replaced by (i) the owner's QTM check, done, and (ii) the first Phase 1 sweep read as in the mechanism bullet below. The runsheet was removed with `git rm`.
+- Owner questions: ANSWERED 2026-10-15 evening. BB is powered from the MAIN motor PSU, so whenever Jugglebot's motors are unpowered BB is unpowered (BB also has its own E-stop); on 10-13 it was simply powered off normally, with no contact. Neither BB nor the shelf was moved. Neither BB nor its frame can move (both fixed to the shelf); the shelf itself can rock a little about an axis roughly parallel to world x but tends to settle in the same position. Nothing was touched near BB 10-14 20:54-21:00. QTM's calibration report: the owner did not think it showed a change (from memory, not checked at the time). QTM, 2026-10-16: the wand calibration was 562 h old (about 2026-09-22), so the whole 10-10..14 window ran on an 18-23 day old calibration; the owner re-wanded QTM on 2026-10-16. QTM's own residual for the BB body was 0.30 mm before and 0.23 mm after.
+- Mechanism, 2026-10-16 reading (replay run 20261015-104816, `sweeps.csv`, intrinsic-accepted sweeps with the base seen, sitting medians):
+
+  | at the step, 10-13 00:18 -> 22:00 | before | after |
+  |---|---|---|
+  | kappa (deg) | 179.271 | 179.554 |
+  | shelf heading in world (deg) | -177.308 | -177.258 |
+  | shelf tilt in world (deg) | 0.919 | 0.922 |
+  | BB template residual (mm) | 0.413 | 0.807 |
+  | shelf marker (base) residual (mm) | 0.098 | 0.333 |
+
+  Over the whole window the shelf tilt in world stayed flat at 0.90-1.04 deg (no rock settled anywhere new); the BB template residual went 0.26 mm (10-10 noon) -> 0.4-0.8 mm (10-13/14), i.e. tripled; the fitted BB axis tilt drifted 0.93 -> 0.50 deg against a flat shelf, which a bolted BB cannot do physically; kappa held to under 0.05 deg across every OTHER session boundary in the window (each one a power cycle). A power cycle is not a sufficient cause; the physical candidates fall away on the owner's answers and the flat shelf tilt; the data LEAN toward 3D reconstruction drift at the shelf. Not proven. The test is the FIRST SWEEP after the 2026-10-16 re-wand: BB template residual back near 0.26 mm with kappa moving off the K2 median (179.59 deg) says reconstruction owned the step; kappa staying on K2 with the residual down says something else at the shelf. Phase 1 does not depend on the answer.
+- The ~28 s node-side stall of 10-11 15:14 sweep 1: what blocked the node 10 s after launch (the bag cannot show it)? Unchanged.
+- The 10-14 20:54 transient: physical or measurement? The owner touched nothing; with the shelf markers steady and that sitting's template residual at 0.48-0.50 mm, measurement is the leading reading.
+- Who owns the per-launch landing bias (8-20 mm range)? Unchanged.

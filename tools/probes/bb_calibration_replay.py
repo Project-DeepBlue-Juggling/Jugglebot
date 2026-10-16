@@ -5,24 +5,27 @@ What it replays
     Each operator yaw sweep (heartbeat state CALIBRATING -> not CALIBRATING) found in
     ~/Desktop/rosbags/2026-10-1[0-4]_*, through the SAME functions ``mocap_node`` calls, with
     the SAME inputs rebuilt from the bag (/mocap_data, /bb/heartbeat, /bb/axis_estimates):
-    ``bb_calibration.run_calibration`` (template fit, lag fit, axis fit, yaw offset),
-    ``bb_base_frame.estimate_base_pose`` / ``bb_in_base`` / ``pool_kappa`` /
-    ``check_base_frame_consistency`` and ``bb_calibration.check_calibration_consistency``.
-    The node's gate STATE (the kappa pool + base_ref of bb_base_frame_state.json, and the
-    world-gate reference of bb_calibration_last_accepted.json) is simulated in MEMORY,
-    chronologically across bags, with the node's own persistence rules; nothing under
-    ~/bb_calibration_sessions is read or written.
+    ``bb_calibration.run_calibration`` (template fit, lag fit, axis fit, yaw offset), then the
+    Phase 1 path in the node's order: ``bb_base_frame.estimate_base_pose`` / ``bb_in_base`` /
+    ``assess_base_frame`` / ``append_record``, ``bb_calibration.assess_sweep_vs_reference`` and
+    ``format_outcome_body``. The node's state (the schema-2 kappa-epoch state of
+    bb_base_frame_state.json and the last-accepted reference) is simulated in MEMORY,
+    chronologically across bags; nothing under ~/bb_calibration_sessions is read or written.
 
-    Each sweep gets two verdicts: ``verdict_current`` (what the node's gates say, in sequence)
-    and ``verdict_intrinsic`` (history-free checks only: the ValueErrors of run_calibration /
-    estimate_sweep_yaw_offset incl. CONSTELLATION_RESIDUAL at 1.0 mm; never delta-kappa, delta-yaw,
-    delta-axis or the 0.5 mm template-residual gate). ``advisory_*`` columns are the history
-    distances the intrinsic verdict ignores.
+    Phase 1 never refuses on history: ``verdict_p1`` is ACCEPTED or the solver's own refusal
+    class (it equals ``verdict_intrinsic`` by construction; both columns are kept so the table
+    reads). The history distances are ADVISORIES: ``advisory_flags`` (';'-joined),
+    ``epoch_id`` / ``epoch_opened`` / ``epoch_rejoined``, ``delta_kappa_deg``,
+    ``delta_yaw_deg``, ``same_world_epoch`` and the node's ``outcome_line``. The Phase 0 replay
+    simulated the 2026-10-11..15 gates (``verdict_current``, retired); that fidelity result (38/39
+    verdicts, 185/185 measurements) is recorded in the Phase 0 logbook entry and the gates no
+    longer exist in the library.
 
 Fidelity contract
     For the sweeps the node logged (~/.ros/log/<launch>/launch.log), the replayed yaw offset,
-    kappa, template residual, lag, sigma and the verdict are compared with the logged values
-    (tolerances in TOL). A mismatch is reported, never tuned away.
+    kappa, template residual, lag and sigma are compared with the logged values (tolerances in
+    TOL; ``match_measure``). A mismatch is reported, never tuned away. ``logged_class`` is the
+    OLD node's verdict, kept as the historical column the Phase 1 table is read against.
 
 Provenance
     logbook/2026-10-14-bb-calibration-one-attempt-investigation.md;
@@ -37,13 +40,15 @@ Differences from the node that cannot be removed offline (listed in summary.md a
     * QTM_DROPOUT_MID_SWEEP (is_receiving) cannot be evaluated; only the 60 s timeout is;
     * the running BaseFrameMonitor (fallback pose when a window misses the base) is fed at its
       0.2 s cadence only from 40 s before a sweep, not from process start;
+    * the last-accepted reference and the epoch state start from the bb_base_frame.json seed
+      records, not from the node's files on the day (the persisted files are not in the bags);
     * accepted_at stamps are the sweep's end time, not datetime.now() (not read by any gate).
 
 Usage
     source ~/Desktop/PDJ_venv/venv/bin/activate
     python tools/probes/bb_calibration_replay.py [-v] [--bags GLOB] [--sweep BAG:IDX]
-        [--bb-yaw-source auto|stamped|heartbeat] [--bb-pose-source auto|sweep|base_frame]
-        [--ros-log-dir DIR] [--no-bb-moved] [--state-json PATH]
+        [--bb-yaw-source auto|stamped|heartbeat]
+        [--ros-log-dir DIR] [--state-json PATH]
         [--emit-fixture BAG:IDX --out PATH]
 """
 from __future__ import annotations
@@ -68,13 +73,13 @@ sys.path.insert(0, os.path.join(REPO, 'ros_ws', 'src', 'jugglebot'))
 from jugglebot.protocol_config import BallButlerStates  # noqa: E402
 import jugglebot.hardware_config as hw  # noqa: E402
 from jugglebot.bb_calibration import (  # noqa: E402
-    run_calibration, load_marker_template, check_calibration_consistency,
+    run_calibration, load_marker_template, assess_sweep_vs_reference, format_outcome_body,
     stamped_yaw_samples_from_joint_state, BB_MARKER_COUNT, sweep_kinematics,
 )
 from jugglebot.bb_base_frame import (  # noqa: E402
-    BaseFrameMonitor, KappaRecord, BASE_MAX_RESIDUAL_MM, DEFAULT_MIN_POOLED_SWEEPS,
-    base_candidate_points, bb_in_base, check_base_frame_consistency, compose_bb_pose,
-    estimate_base_pose, kappa_sweep_sd_deg, load_base_frame, pool_kappa, MAX_POOLED_RECORDS,
+    BaseFrameMonitor, KappaRecord, append_record, assess_base_frame,
+    base_candidate_points, bb_in_base, current_epoch_id, estimate_base_pose,
+    kappa_sweep_sd_deg, load_base_frame, seed_base_state,
 )
 
 #: Node constants mirrored from mocap_node.py (asserted against the module text in --selfcheck).
@@ -144,9 +149,9 @@ def refusal_class(text):
 
 
 def parse_launch_logs(ros_log_dir):
-    """(sweeps, arms): the node's logged sweeps 2026-10-10..14 and every 'bb_moved armed' time.
+    """The node's logged sweeps (Phase 0 node, 2026-10-11..14).
     Launches 2026-10-11..14 only (the 10-10 launches ran older code: scored mismatches there are version, not fidelity). A sweep: t_start, outcome, refusal_class, and the numbers of its 'Yaw offset' DEBUG line."""
-    sweeps, arms = [], []
+    sweeps = []
     for lp in sorted(glob.glob(os.path.join(ros_log_dir, '2026-10-1[1-4]-*', 'launch.log'))):
         ld = os.path.basename(os.path.dirname(lp))
         cur = None
@@ -156,8 +161,6 @@ def parse_launch_logs(ros_log_dir):
             if not m or m.group(4) != 'mocap_node':
                 continue
             t, msg = float(m.group(1)), m.group(5)
-            if 'bb_moved armed' in msg:
-                arms.append(t)
             if 'BB calibration started' in msg:
                 idx += 1
                 cur = {'launch': ld, 'idx_in_launch': idx, 't_start': t, 'outcome': None,
@@ -179,37 +182,37 @@ def parse_launch_logs(ros_log_dir):
             elif 'BB calibration FAILED' in msg:
                 body = msg.split('FAILED: ', 1)[1]
                 cur['outcome'], cur['class'] = 'REFUSED', refusal_class(body)
-    return sweeps, arms
+    return sweeps
 
 
 # ───────────────────────────── node simulation ─────────────────────────────
 
 class GateState:
-    """The two persisted states, in memory: kappa pool + base_ref, and the world reference."""
+    """The node's persisted state, in memory: the schema-2 kappa-epoch state (records, base_ref,
+    epochs) and the last-accepted reference the world advisory compares with."""
 
     def __init__(self, base_model, snapshot=None):
-        self.records = list(base_model.records)
-        self.base_ref = base_model.base_ref
+        recs, ref = list(base_model.records), base_model.base_ref
         self.world_ref = None          # {'yaw_offset_deg', 'yaw_offset_std_deg', 'position_mm', 'accepted_at'}
         if snapshot:
             bs = snapshot.get('base_state')
             if bs:
-                self.records = [KappaRecord.from_dict(r) for r in bs['records']]
-                self.base_ref = bs.get('base_ref') or self.base_ref
+                recs = [KappaRecord.from_dict(r) for r in bs['records']]
+                ref = bs.get('base_ref') or ref
             self.world_ref = snapshot.get('accepted') or None
+        self.state = seed_base_state(recs, ref)
 
     def dump(self):
-        return {'records': [r.to_dict() for r in self.records], 'base_ref': self.base_ref,
-                'world_ref': self.world_ref}
+        return {'records': [r.to_dict() for r in self.state['records']],
+                'epochs': copy.deepcopy(self.state['epochs']),
+                'base_ref': self.state['base_ref'], 'world_ref': self.world_ref}
 
 
 class NodeSim:
     """One node process (one bag): the calibration window state machine and the finalise path."""
 
-    def __init__(self, args, template, base_model, gate, bb_moved_arms):
+    def __init__(self, args, template, base_model, gate):
         self.args, self.template, self.base_model, self.gate = args, template, base_model, gate
-        self.bb_moved_arms = sorted(bb_moved_arms)     # unix s, this launch
-        self.bb_moved_armed = False
         self.last_state = None
         self.calibrating = False
         self.blocked = False
@@ -235,13 +238,7 @@ class NodeSim:
         self.last_base_ns = None
 
     # -- events ------------------------------------------------------------
-    def _arm_until(self, t):
-        while self.bb_moved_arms and self.bb_moved_arms[0] <= t:
-            self.bb_moved_arms.pop(0)
-            self.bb_moved_armed = True
-
     def heartbeat(self, t, state, yaw):
-        self._arm_until(t)
         previous = self.last_state
         if state != self.last_state:
             self.last_state = state
@@ -331,7 +328,7 @@ class NodeSim:
     def _blank_row(self, t_end):
         return {'t_start': self.t_start, 't_start_iso': iso(self.t_start),
                 'duration_s': t_end - self.t_start, 'n_frames': len(self.frames),
-                'n_stamped': len(self.stamped), 'bb_moved_applied': False}
+                'n_stamped': len(self.stamped)}
 
     def _kin_fields(self, row, samples):
         k = sweep_kinematics(samples)
@@ -344,8 +341,7 @@ class NodeSim:
         src = self.stamped if len(self.stamped) >= MIN_STAMPED_YAW_SAMPLES else self.yaw_samples
         self._kin_fields(row, src)
         cls = refusal_class(text) if ':' in text else text
-        row.update(verdict_current=cls, verdict_current_text=text,
-                   verdict_intrinsic=cls, yaw_source='n/a')
+        row.update(verdict_p1=cls, verdict_text=text, verdict_intrinsic=cls, yaw_source='n/a')
         self.rows.append(row)
 
     def _finalize(self, t_end):
@@ -361,10 +357,8 @@ class NodeSim:
                'yaw_readings_deg': list(self.yaw_readings),
                'calibration_data': {str(i): [r4(p) for p in v] for i, v in self.calib_data.items()},
                'base_points': [(t, r4(p)) for t, p in self.base_points],
-               'params': {'bb_yaw_source': a.bb_yaw_source, 'bb_pose_source': a.bb_pose_source,
-                          'bb_base_min_sweeps': DEFAULT_MIN_POOLED_SWEEPS,
-                          'pitch_z_offset_mm': hw.BB_GEOM_PITCH_Z_OFFSET_MM,
-                          'bb_moved_armed': self.bb_moved_armed},
+               'params': {'bb_yaw_source': a.bb_yaw_source,
+                          'pitch_z_offset_mm': hw.BB_GEOM_PITCH_Z_OFFSET_MM},
                'state_before': gate_before}
         if not self.keep_capture:
             cap = None
@@ -425,75 +419,73 @@ class NodeSim:
             sweep_end_deg=est.sweep_end_deg, sweep_start_deg=est.sweep_start_deg,
             verdict_intrinsic='ACCEPTED')
 
-        bb_moved = self.bb_moved_armed
-        row['bb_moved_applied'] = bool(bb_moved)
-        view = self._base_frame_view(result)
-        row['base_seen'] = view['pose'] is not None
-        if view['pose'] is not None:
-            bp = view['pose']
-            row.update(base_origin_mm=[float(v) for v in bp.origin_mm], base_heading_deg=bp.heading_deg,
-                       base_tilt_deg=bp.tilt_deg, base_residual_mm=bp.residual_mm,
-                       base_n_frames=bp.n_frames, kappa_deg=view['kappa'],
-                       p_b_mm=[float(v) for v in view['p_b']])
-        row['pool_n_before'] = None if view['pooled'] is None else view['pooled'].n
-        if view['pooled'] is not None:
-            row['pooled_kappa_deg'], row['pooled_se_deg'] = view['pooled'].kappa_deg, view['pooled'].se_deg
-        pose_source = self._resolve_pose_source(a.bb_pose_source, view)
-        row['pose_source'] = pose_source
+        return self.phase1(row, cap, result, t_end)
+
+    def phase1(self, row, cap, result, t_end):
+        """The node's Phase 1 flow after a successful run_calibration, on the in-memory state:
+        base-frame view -> assess_base_frame -> assess_sweep_vs_reference -> append_record ->
+        format_outcome_body. Never refuses."""
+        est = result.yaw_estimate
         yaw_deg = math.degrees(result.yaw_offset_rad)
+        state = self.gate.state
+        view = self._base_frame_view(result)
+        pose = view['pose']
+        row['base_seen'] = pose is not None
+        if pose is not None:
+            row.update(base_origin_mm=[float(v) for v in pose.origin_mm], base_heading_deg=pose.heading_deg,
+                       base_tilt_deg=pose.tilt_deg, base_residual_mm=pose.residual_mm,
+                       base_n_frames=pose.n_frames, kappa_deg=view['kappa'],
+                       p_b_mm=[float(v) for v in view['p_b']])
+        cur = current_epoch_id(state)
+        cur_e = next((e for e in state['epochs'] if e['id'] == cur), None)
+        row['pool_n_before'] = None if cur_e is None else cur_e['n']
+        row['pooled_kappa_deg'] = None if cur_e is None else cur_e['median_kappa_deg']
+        row['pose_source'] = 'base_frame' if pose is not None else 'sweep'
 
-        # advisory (history) distances, computed whichever gate decides
-        if view['pose'] is not None and view['pooled'] is not None:
-            row['advisory_dkappa_deg'] = float(
-                wrap_deg(view['kappa'] - view['pooled'].kappa_deg))
-        wref = self.gate.world_ref
-        if wref:
-            row['advisory_dyaw_deg'] = float(wrap_deg(yaw_deg - wref['yaw_offset_deg']))
-            row['advisory_daxis_mm'] = float(np.linalg.norm(
-                np.asarray(result.bb_position_mm) - np.asarray(wref['position_mm'])))
-
-        if pose_source == 'base_frame':
-            bv = check_base_frame_consistency(
-                view['kappa'], kappa_sweep_sd_deg(est.yaw_source), view['p_b'], view['pose'],
-                view['pooled'], self.gate.base_ref, bb_moved=bb_moved)
-            if not bv.accepted:
-                return self._finish(row, cap, bv.message, refusal_class(bv.message))
-            if bv.overridden:
-                self.bb_moved_armed = False
-            records = self._pool_records(view, result, bv.reset_pool, t_end)
-            pooled = pool_kappa(records, self.template.pinned_yaw_offset_deg,
-                                self.template.repeatability_deg)
-            yaw_b, pos_b = compose_bb_pose(view['pose'], pooled.kappa_deg, pooled.axis_point_b_mm)
-            sigma_b = math.hypot(pooled.se_deg, view['pose'].heading_se_deg)
-            self._persist_base(records, view['pose'], t_end)
-            self._persist_world(yaw_b, sigma_b, pos_b, t_end)
-            return self._finish(row, cap, 'ACCEPTED ' + bv.message, 'ACCEPTED')
-        # world / sweep path
-        verdict = check_calibration_consistency(
+        adv = None
+        if pose is not None:
+            adv = assess_base_frame(view['kappa'], kappa_sweep_sd_deg(est.yaw_source), view['p_b'],
+                                    pose, state,
+                                    float(self.template.pinned_yaw_offset_deg))
+        same = None if adv is None else adv.same_world_epoch
+        ref = self._world_reference()
+        sw = assess_sweep_vs_reference(
             yaw_deg, result.yaw_offset_std_deg, result.bb_position_mm, est.template_residual_mm,
-            self._world_reference(), bb_moved=bb_moved,
-            reference_label='accepted ' + str((wref or {}).get('accepted_at', '?'))[:19])
-        bverdict = None
-        if view['pose'] is not None:
-            bverdict = check_base_frame_consistency(
-                view['kappa'], kappa_sweep_sd_deg(est.yaw_source), view['p_b'], view['pose'],
-                view['pooled'], self.gate.base_ref, bb_moved=bb_moved and verdict.accepted)
-        if not verdict.accepted:
-            msg = verdict.message
-            if msg.startswith('CALIBRATION_INCONSISTENT') and self._base_expected(a.bb_pose_source, view):
-                msg = (f'{view["error"]} — check QTM sees the 4 shelf markers; world gate also '
-                       f'refused: Δyaw {verdict.delta_deg:+.2f}°')
-            return self._finish(row, cap, msg, refusal_class(msg))
-        if self.bb_moved_armed and verdict.overridden:
-            self.bb_moved_armed = False
-        if bverdict is not None and bverdict.accepted:
-            self._persist_base(self._pool_records(view, result, bverdict.reset_pool, t_end),
-                               view['pose'], t_end)
+            est.lag_s * 1e3, ref, same, yaw_source=est.yaw_source)
+        pooled_info = None
+        if adv is not None and adv.pooled:
+            rec = KappaRecord(
+                kappa_deg=float(view['kappa']), sigma_deg=float(result.yaw_offset_std_deg),
+                axis_point_b_mm=tuple(float(v) for v in view['p_b']),
+                pin_deg=float(self.template.pinned_yaw_offset_deg), accepted_at=iso(t_end),
+                yaw_offset_deg=yaw_deg, base_heading_deg=float(pose.heading_deg),
+                source=f'mocap_node ({est.yaw_source})')
+            new = append_record(state, rec, adv.assignment, float(self.template.pinned_yaw_offset_deg))
+            new['base_ref'] = {'origin_mm': [float(v) for v in pose.origin_mm],
+                               'heading_deg': float(pose.heading_deg), 'accepted_at': iso(t_end)}
+            self.gate.state = new
+            e = next(e for e in new['epochs'] if e['id'] == adv.assignment.epoch_id)
+            pooled_info = {'kappa_deg': e['median_kappa_deg'], 'epoch_id': e['id'],
+                           'delta_deg': adv.delta_kappa_deg, 'n': e['n'],
+                           'opened': bool(adv.assignment.opened),
+                           'rejoined': bool(adv.assignment.rejoined)}
+            row.update(epoch_id=adv.assignment.epoch_id, epoch_opened=bool(adv.assignment.opened),
+                       epoch_rejoined=bool(adv.assignment.rejoined))
+        else:
+            row.update(epoch_id=None, epoch_opened=False, epoch_rejoined=False)
         self._persist_world(yaw_deg, result.yaw_offset_std_deg, result.bb_position_mm, t_end)
-        return self._finish(row, cap, 'ACCEPTED ' + verdict.message, 'ACCEPTED')
+        flags = list(sw.flags) + ([] if adv is None else list(adv.flags))
+        row.update(delta_kappa_deg=None if adv is None else adv.delta_kappa_deg,
+                   delta_axis_b_mm=None if adv is None else adv.delta_axis_mm,
+                   delta_yaw_deg=sw.delta_deg, axis_shift_mm=sw.axis_shift_mm,
+                   same_world_epoch=same, advisory_flags=';'.join(flags))
+        row['outcome_line'] = format_outcome_body(
+            yaw_deg, result.yaw_offset_std_deg, result.bb_position_mm, result.axis_tilt_deg,
+            est.template_residual_mm, est.lag_s * 1e3, sw, adv, pooled_info)
+        return self._finish(row, cap, 'ACCEPTED ' + row['outcome_line'], 'ACCEPTED')
 
     def _finish(self, row, cap, text, cls):
-        row['verdict_current'], row['verdict_current_text'] = cls, text
+        row['verdict_p1'], row['verdict_text'] = cls, text
         row.setdefault('verdict_intrinsic', cls)
         row.setdefault('yaw_source', 'n/a')
         # an intrinsic refusal keeps its class; a history refusal is intrinsically ACCEPTED
@@ -505,7 +497,7 @@ class NodeSim:
 
     # -- base-frame helpers (mirrors of the node's private methods) ---------
     def _base_frame_view(self, result):
-        view = {'pose': None, 'error': '', 'kappa': None, 'p_b': None, 'pooled': None,
+        view = {'pose': None, 'error': '', 'kappa': None, 'p_b': None,
                 'from_monitor': False}
         T = self.base_model.template_mm
         try:
@@ -517,46 +509,10 @@ class NodeSim:
             if pose is not None and last is not None and self.base_points and \
                     self.base_points[-1][0] - pose.t_span_s[1] <= BASE_MONITOR_MAX_AGE_S:
                 view['pose'], view['from_monitor'] = pose, True
-        tpl = self.template
-        view['pooled'] = pool_kappa(self.gate.records, tpl.pinned_yaw_offset_deg, tpl.repeatability_deg)
         if view['pose'] is not None:
             view['kappa'], view['p_b'] = bb_in_base(
                 view['pose'], math.degrees(result.yaw_offset_rad), result.bb_position_mm)
         return view
-
-    def _resolve_pose_source(self, requested, view):
-        if requested == 'sweep':
-            return 'sweep'
-        if requested == 'base_frame':
-            return 'base_frame' if view['pose'] is not None else 'sweep'
-        n = 0 if view['pooled'] is None else view['pooled'].n
-        if view['pose'] is None or view['pose'].residual_mm > BASE_MAX_RESIDUAL_MM \
-                or n < DEFAULT_MIN_POOLED_SWEEPS:
-            return 'sweep'
-        return 'base_frame'
-
-    def _base_expected(self, requested, view):
-        if requested not in ('auto', 'base_frame'):
-            return False
-        if view['pose'] is not None or not view['error'].startswith('BASE_FRAME_NOT_SEEN'):
-            return False
-        n = 0 if view['pooled'] is None else view['pooled'].n
-        return n >= DEFAULT_MIN_POOLED_SWEEPS
-
-    def _pool_records(self, view, result, reset, t_end):
-        rec = KappaRecord(
-            kappa_deg=float(view['kappa']), sigma_deg=float(result.yaw_offset_std_deg),
-            axis_point_b_mm=tuple(float(v) for v in view['p_b']),
-            pin_deg=float(self.template.pinned_yaw_offset_deg), accepted_at=iso(t_end),
-            yaw_offset_deg=math.degrees(result.yaw_offset_rad),
-            base_heading_deg=float(view['pose'].heading_deg),
-            source=f'mocap_node ({result.yaw_estimate.yaw_source})')
-        return ([] if reset else list(self.gate.records)) + [rec]
-
-    def _persist_base(self, records, pose, t_end):
-        self.gate.records = list(records)[-MAX_POOLED_RECORDS:]
-        self.gate.base_ref = {'origin_mm': [float(v) for v in pose.origin_mm],
-                              'heading_deg': float(pose.heading_deg), 'accepted_at': iso(t_end)}
 
     def _persist_world(self, yaw_deg, std, pos, t_end):
         self.gate.world_ref = {'yaw_offset_deg': float(yaw_deg), 'yaw_offset_std_deg': float(std),
@@ -610,7 +566,7 @@ def jsonable(o):
 
 # ───────────────────────────── driver ─────────────────────────────
 
-def replay_bag(bag_dir, args, template, base_model, gate, arms, want_capture, capture_idx=None):
+def replay_bag(bag_dir, args, template, base_model, gate, want_capture, capture_idx=None):
     path = bag_mcap(bag_dir)
     if path is None:
         return [], None
@@ -635,9 +591,7 @@ def replay_bag(bag_dir, args, template, base_model, gate, arms, want_capture, ca
         else:
             merged.append([w0, w1])
     ev = read_events(path, merged) if merged else iter(())
-    t0, t1 = hb[0][0], hb[-1][0]
-    bag_arms = [a for a in arms if t0 - 5 <= a <= t1 + 5]
-    sim = NodeSim(args, template, base_model, gate, bag_arms)
+    sim = NodeSim(args, template, base_model, gate)
     sim.keep_capture = want_capture
     sim.capture_idx = capture_idx
     # merge heartbeats and window events by log_time
@@ -709,10 +663,11 @@ def write_outputs(outdir, rows, unmatched, args, elapsed):
             'axis_point_mm', 'arc_position_mm', 'axis_tilt_deg', 'arc_span_deg', 'sweep_end_deg',
             'sweep_start_deg', 'n_direction_changes', 'base_seen', 'base_origin_mm',
             'base_heading_deg', 'base_tilt_deg', 'base_residual_mm', 'base_n_frames', 'kappa_deg',
-            'p_b_mm', 'pool_n_before', 'pooled_kappa_deg', 'pooled_se_deg', 'pose_source',
-            'verdict_current', 'verdict_current_text', 'verdict_intrinsic', 'advisory_dkappa_deg',
-            'advisory_dyaw_deg', 'advisory_daxis_mm', 'bb_moved_applied', 'logged_outcome',
-            'logged_class', 'logged_pool_n', 'match_measure', 'match_verdict', 'clip_yaw_deg', 'n_frames_clip_in']
+            'p_b_mm', 'pool_n_before', 'pooled_kappa_deg', 'pose_source',
+            'verdict_p1', 'verdict_text', 'verdict_intrinsic', 'epoch_id', 'epoch_opened',
+            'epoch_rejoined', 'delta_kappa_deg', 'delta_axis_b_mm', 'delta_yaw_deg', 'axis_shift_mm',
+            'same_world_epoch', 'advisory_flags', 'outcome_line', 'logged_outcome',
+            'logged_class', 'logged_pool_n', 'match_measure', 'clip_yaw_deg', 'n_frames_clip_in']
     for r in rows:
         L = r.get('logged')
         cmp_ = compare(r)
@@ -720,7 +675,6 @@ def write_outputs(outdir, rows, unmatched, args, elapsed):
         r['logged_class'] = None if L is None else L.get('class')
         r['logged_pool_n'] = None if L is None else L.get('gate_pooled_n')
         r['match_measure'] = None if L is None else all(c[4] for c in cmp_)
-        r['match_verdict'] = None if L is None else (r['verdict_current'] == L.get('class'))
     with open(os.path.join(outdir, 'sweeps.csv'), 'w', newline='') as fh:
         w = csv.writer(fh)
         w.writerow(cols)
@@ -732,7 +686,7 @@ def write_outputs(outdir, rows, unmatched, args, elapsed):
 
     # fidelity
     scored = [r for r in rows if r.get('logged') is not None]
-    n_meas = n_meas_ok = n_ver_ok = 0
+    n_meas = n_meas_ok = 0
     lines = ['# Fidelity: replay vs the node\'s logged values', '',
              'Tolerances: ' + ', '.join(f'{k} {v}' for k, v in TOL.items()), '',
              '| sweep | field | logged | replayed | delta | match |', '|---|---|---|---|---|---|']
@@ -746,19 +700,11 @@ def write_outputs(outdir, rows, unmatched, args, elapsed):
             if not ok:
                 mism.append((name, lf, lv, rv, d))
         L = r['logged']
-        vok = r['verdict_current'] == L.get('class')
-        n_ver_ok += vok
-        lines.append(f'| {name} | verdict | {L.get("class")} | {r["verdict_current"]} | | '
-                     f'{"ok" if vok else "MISMATCH"} |')
-        if not vok:
-            mism.append((name, 'verdict', L.get('class'), r['verdict_current'], None))
-        if L.get('gate_pooled_n') is not None:
-            pn = r.get('pool_n_before')
-            lines.append(f'| {name} | pool n (info) | {L["gate_pooled_n"]} | {pn} | | '
-                         f'{"ok" if pn == L["gate_pooled_n"] else "differs"} |')
+        lines.append(f'| {name} | logged verdict (Phase 0 node, info) | {L.get("class")} | '
+                     f'{r["verdict_p1"]} (Phase 1) | | info |')
     n_sw = len(scored)
     sweeps_all_ok = sum(1 for r in scored if r['match_measure'])
-    score = (f'{n_meas_ok} of {n_meas} measurements match, {n_ver_ok} of {n_sw} verdicts match '
+    score = (f'{n_meas_ok} of {n_meas} measurements match '
              f'({sweeps_all_ok} of {n_sw} sweeps match on every measurement; '
              f'{len(unmatched)} logged sweeps have no bag)')
     lines += ['', '**' + score + '**', '', '## Mismatches', '']
@@ -771,22 +717,51 @@ def write_outputs(outdir, rows, unmatched, args, elapsed):
     refused = [r for r in scored if r['logged'].get('class') != 'ACCEPTED']
     intr_acc = sum(1 for r in refused if r['verdict_intrinsic'] == 'ACCEPTED')
     S = ['# BB calibration replay summary', '', f'Run {iso(time.time())}, {elapsed:.0f} s; '
-         f'args: yaw_source={args.bb_yaw_source} pose_source={args.bb_pose_source} '
-         f'bb_moved={"off" if args.no_bb_moved else "on"} clip_yaw_deg={args.clip_yaw_deg}', '', '**' + score + '**', '',
-         '## Per bag: starts / accepted / refused (current) / accepted (intrinsic)', '',
-         '| bag | starts | current ACC | current REF | intrinsic ACC |', '|---|---|---|---|---|']
+         f'args: yaw_source={args.bb_yaw_source} clip_yaw_deg={args.clip_yaw_deg}', '', '**' + score + '**', '',
+         '## Per bag: starts / accepted / refused (Phase 1) / flagged', '',
+         '| bag | starts | P1 ACC | P1 REF | flagged |', '|---|---|---|---|---|']
     bags = sorted({r['bag'] for r in rows})
     for b in bags:
         rs = [r for r in rows if r['bag'] == b]
-        S.append(f'| {b} | {len(rs)} | {sum(r["verdict_current"] == "ACCEPTED" for r in rs)} | '
-                 f'{sum(r["verdict_current"] != "ACCEPTED" for r in rs)} | '
-                 f'{sum(r["verdict_intrinsic"] == "ACCEPTED" for r in rs)} |')
-    S += ['', f'**The {len(refused)} logged-refused sweeps under verdict_intrinsic: {intr_acc} accepted '
-          f'({len(refused) - intr_acc} still refused).**', '',
-          '| sweep | logged class | intrinsic | note |', '|---|---|---|---|']
-    for r in refused:
-        S.append(f'| {r["bag"]}#{r["sweep_idx"]} | {r["logged"].get("class")} | {r["verdict_intrinsic"]} | '
-                 f'{(r["verdict_current_text"] or "")[:90]} |')
+        S.append(f'| {b} | {len(rs)} | {sum(r["verdict_p1"] == "ACCEPTED" for r in rs)} | '
+                 f'{sum(r["verdict_p1"] != "ACCEPTED" for r in rs)} | '
+                 f'{sum(bool(r.get("advisory_flags")) for r in rs)} |')
+    S += ['', '## Phase 1 verdict table', '',
+          f'**Of the {len(refused)} logged-refused sweeps (Phase 0 node), {intr_acc} are ACCEPTED under Phase 1 '
+          f'({len(refused) - intr_acc} still refused by the solver).**', '',
+          '| sweep | logged class -> Phase 1 | flags | epoch | note |', '|---|---|---|---|---|']
+    for r in sorted(scored, key=lambda r: r['t_start']):
+        L = r['logged']
+        ep = '' if r.get('epoch_id') is None else (
+            f'K{r["epoch_id"]}' + (' OPENED' if r.get('epoch_opened') else '')
+            + (' REJOINED' if r.get('epoch_rejoined') else ''))
+        S.append(f'| {r["bag"]}#{r["sweep_idx"]} | {L.get("class")} -> {r["verdict_p1"]} | '
+                 f'{r.get("advisory_flags") or "-"} | {ep} | {(r.get("verdict_text") or "")[:80]} |')
+    unlogged = [r for r in rows if r.get('logged') is None]
+    if unlogged:
+        S += ['', f'{len(unlogged)} replayed sweeps have no logged counterpart (10-10 launch logs not read, '
+              'or the node did not log them):', '',
+              '| sweep | Phase 1 | flags | epoch |', '|---|---|---|---|']
+        for r in sorted(unlogged, key=lambda r: r['t_start']):
+            ep = '' if r.get('epoch_id') is None else (
+                f'K{r["epoch_id"]}' + (' OPENED' if r.get('epoch_opened') else '')
+                + (' REJOINED' if r.get('epoch_rejoined') else ''))
+            S.append(f'| {r["bag"]}#{r["sweep_idx"]} | {r["verdict_p1"]} | {r.get("advisory_flags") or "-"} | {ep} |')
+    from collections import Counter
+    hist = Counter(f for r in rows for f in (r.get('advisory_flags') or '').split(';') if f)
+    n_acc = sum(r['verdict_p1'] == 'ACCEPTED' for r in rows)
+    S += ['', '### Totals', '',
+          f'- replayed sweeps: {len(rows)}; Phase 1 ACCEPTED {n_acc}, refused {len(rows) - n_acc} '
+          f'({dict(Counter(r["verdict_p1"] for r in rows if r["verdict_p1"] != "ACCEPTED"))})',
+          f'- flagged sweeps: {sum(bool(r.get("advisory_flags")) for r in rows)}; flags histogram: '
+          f'{dict(sorted(hist.items())) or "none"}',
+          '- epochs opened: ' + (', '.join(
+              f'K{r["epoch_id"]} at {r["bag"]}#{r["sweep_idx"]} ({r.get("t_start_iso")})'
+              for r in sorted(rows, key=lambda r: r['t_start']) if r.get('epoch_opened')) or 'none'),
+          '- epochs rejoined: ' + (', '.join(
+              f'K{r["epoch_id"]} at {r["bag"]}#{r["sweep_idx"]}'
+              for r in sorted(rows, key=lambda r: r['t_start']) if r.get('epoch_rejoined')) or 'none'),
+          '']
     # sweep_end per launch around 10-13 22:00 (AEDT, UTC+11)
     cut = datetime.datetime(2026, 10, 13, 22, 0, tzinfo=datetime.timezone(datetime.timedelta(hours=11))).timestamp()
     S += ['', '## sweep_end_deg (max yaw reached) per bag, before/after 2026-10-13 22:00 AEDT', '',
@@ -814,10 +789,8 @@ def main():
                     help='experiment: solve only the part of each sweep whose BB yaw is in [LO, HI]')
     ap.add_argument('--sweep', help='BAG:IDX to replay one sweep (state is built from prior sweeps of that bag only)')
     ap.add_argument('--ros-log-dir', default=os.path.expanduser('~/.ros/log'))
-    ap.add_argument('--no-bb-moved', action='store_true')
     ap.add_argument('--state-json', help='snapshot {"base_state": {...}, "accepted": {...}} to start from')
     ap.add_argument('--bb-yaw-source', default='auto', choices=('auto', 'stamped', 'heartbeat'))
-    ap.add_argument('--bb-pose-source', default='auto', choices=('auto', 'sweep', 'base_frame'))
     ap.add_argument('--emit-fixture', metavar='BAG:IDX')
     ap.add_argument('--out', help='fixture output path (with --emit-fixture)')
     ap.add_argument('-v', '--verbose', action='store_true')
@@ -828,9 +801,7 @@ def main():
     base_model = load_base_frame(os.path.join(RES_DIR, 'bb_base_frame.json'))
     snap = json.load(open(args.state_json)) if args.state_json else None
     gate = GateState(base_model, snap)
-    logged, arms = parse_launch_logs(args.ros_log_dir)
-    if args.no_bb_moved:
-        arms = []
+    logged = parse_launch_logs(args.ros_log_dir)
     want = (args.emit_fixture.rsplit(':', 1) if args.emit_fixture else None)
     only = (args.sweep.rsplit(':', 1) if args.sweep else None)
 
@@ -841,7 +812,7 @@ def main():
         name = os.path.basename(bd)
         cap_this = bool(want and want[0] == name)
         t0 = time.time()
-        r, cap = replay_bag(bd, args, template, base_model, gate, arms, cap_this,
+        r, cap = replay_bag(bd, args, template, base_model, gate, cap_this,
                             int(want[1]) if want else None)
         rows += r
         print(f'{name}: {len(r)} sweeps ({time.time() - t0:.0f} s)', flush=True)
@@ -850,10 +821,10 @@ def main():
             fixture = cap
         if args.verbose:
             for x in r:
-                print(f'  #{x["sweep_idx"]} {x["t_start_iso"]} {x["verdict_current"]} '
+                print(f'  #{x["sweep_idx"]} {x["t_start_iso"]} {x["verdict_p1"]} '
                       f'yaw {fmt(x.get("yaw_offset_deg"))} kappa {fmt(x.get("kappa_deg"))} '
                       f'res {fmt(x.get("template_residual_mm"), 2)} end {fmt(x.get("sweep_end_deg"), 1)} '
-                      f'n_dir {x.get("n_direction_changes")} | {x["verdict_current_text"][:100]}')
+                      f'n_dir {x.get("n_direction_changes")} | {x["verdict_text"][:100]} | {x.get("advisory_flags", "")}')
     unmatched = match_logged(rows, logged)
     if only:
         rows = [r for r in rows if r['bag'] == only[0] and r['sweep_idx'] == int(only[1])]

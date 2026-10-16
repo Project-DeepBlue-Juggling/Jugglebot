@@ -55,7 +55,7 @@ def test_replay_cli_parses_emit_fixture(monkeypatch, tmp_path, capsys):
     def fake_write(outdir, rows, unmatched, args, elapsed):
         seen['args'] = args
         return 'score', 0, 0
-    monkeypatch.setattr(R, 'parse_launch_logs', lambda d: ([], []))
+    monkeypatch.setattr(R, 'parse_launch_logs', lambda d: [])
     monkeypatch.setattr(R, 'write_outputs', fake_write)
     monkeypatch.setattr(sys, 'argv', ['bb_calibration_replay.py', '--bags', str(tmp_path / 'none*'),
                                       '--emit-fixture', 'some_bag:3', '--out', str(tmp_path / 'f.json')])
@@ -94,6 +94,59 @@ def test_fixture_resolves_to_recorded_outputs(fixture):
     assert pose.residual_mm == pytest.approx(row['base_residual_mm'], abs=1e-4)
     assert kappa == pytest.approx(row['kappa_deg'], abs=1e-5)
     assert p_b == pytest.approx(np.asarray(row['p_b_mm']), abs=1e-3)
+
+
+# ---------------------------------------------------------------- (a2) Phase 1 path: bumped BB
+
+def _phase1(fixture, rot_deg):
+    """The fixture sweep through the replay's Phase 1 path (``NodeSim.phase1``: assess_base_frame ->
+    assess_sweep_vs_reference -> append_record -> format_outcome_body) against an in-memory state holding ONE
+    epoch at the fixture's own recorded kappa. ``rot_deg`` rotates every BB marker position about the vertical
+    through the fitted axis point (the 2 mm bump of the Phase 0 entry = 0.80 deg)."""
+    import argparse
+    inp, row = fixture['inputs'], fixture['row']
+    template = R.load_marker_template(os.path.join(R.RES_DIR, 'bb_marker_template.json'))
+    base_model = R.load_base_frame(os.path.join(R.RES_DIR, 'bb_base_frame.json'))
+    c, sn = math.cos(math.radians(rot_deg)), math.sin(math.radians(rot_deg))
+    ax = np.asarray(row['axis_point_mm'], float)
+
+    def rot(p):
+        p = np.array(p, float)
+        d = p[:2] - ax[:2]
+        out = p.copy()
+        out[0], out[1] = ax[0] + c * d[0] - sn * d[1], ax[1] + sn * d[0] + c * d[1]
+        return out
+    res = R.run_calibration(
+        calibration_data={int(k): [rot(p) for p in v] for k, v in inp['calibration_data'].items()},
+        yaw_readings_deg=inp['yaw_readings_deg'], pitch_z_offset_mm=inp['params']['pitch_z_offset_mm'],
+        marker_frames=[(t, np.array([rot(q) for q in np.array(p)])) for t, p in inp['marker_frames']],
+        yaw_samples=[tuple(x) for x in inp['stamped_yaw']], template=template, yaw_source='stamped')
+    gate = R.GateState(base_model)
+    seed = R.KappaRecord(kappa_deg=row['kappa_deg'], sigma_deg=0.04, axis_point_b_mm=tuple(row['p_b_mm']),
+                         pin_deg=template.pinned_yaw_offset_deg, accepted_at='2026-10-10T00:00:00Z')
+    gate.state = R.seed_base_state([seed], None)
+    sim = R.NodeSim(argparse.Namespace(bb_yaw_source='auto', clip=None), template, base_model, gate)
+    sim.t_start = 0.0
+    sim.base_points = [(t, np.array(p)) for t, p in inp['base_points']]
+    out = {'t_start': 0.0}
+    sim.phase1(out, None, res, 1.0)
+    return out, gate
+
+
+def test_phase1_bumped_bb_opens_epoch_but_unbumped_is_silent(fixture):
+    """A 2 mm bump of the BB (0.80 deg of kappa) is ACCEPTED with KAPPA_EXCURSION and a NEW epoch; the same
+    sweep unrotated against the same state carries no flag and stays in the epoch (nothing refuses on history)."""
+    quiet, g0 = _phase1(fixture, 0.0)
+    assert quiet['advisory_flags'] == '' and quiet['epoch_opened'] is False
+    assert quiet['epoch_id'] == 0 and len(g0.state['epochs']) == 1
+    assert abs(quiet['delta_kappa_deg']) < 1e-3
+
+    bumped, g1 = _phase1(fixture, 0.80)
+    assert 'KAPPA_EXCURSION' in bumped['advisory_flags'].split(';')
+    assert bumped['epoch_opened'] is True and bumped['epoch_id'] == 1
+    assert abs(abs(bumped['delta_kappa_deg']) - 0.80) < 0.01
+    assert len(g1.state['epochs']) == 2 and len(g1.state['records']) == 2
+    assert 'ADVISORY' in bumped['outcome_line'] and 'K1' in bumped['outcome_line']
 
 
 # ---------------------------------------------------------------- (b) bands

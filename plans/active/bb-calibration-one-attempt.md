@@ -3,9 +3,10 @@ title: Ball Butler calibration is a one-attempt process, every time
 status: active
 owner: harrison
 created: 2026-10-14
-last_updated: 2026-10-15
+last_updated: 2026-10-16
 related_logbook:
   - 2026-10-14-bb-calibration-one-attempt-investigation.md
+  - 2026-10-16-bb-calibration-phase1-gate-inversion.md
 related_code:
   - ros_ws/src/jugglebot/jugglebot/bb_calibration.py
   - ros_ws/src/jugglebot/jugglebot/bb_base_frame.py
@@ -26,7 +27,7 @@ Since the last calibration code change (b37faf8f, 2026-10-11 00:59) there were
 42 sweep starts, 17 accepted and 25 refused. A BB power cycle, a QTM
 re-alignment and a BB firmware flash (8 to 9, 2026-10-13 20:09, CANCEL_CMD
 only; the diff touches no yaw, sweep or reporting code, checked 2026-10-15)
-are the only events in the window. Nothing physical on BB, its
+are the only events in the window, and QTM's wand calibration was 562 h old across the window (re-wanded 2026-10-16). Nothing physical on BB, its
 shelf or its markers was touched. Every history-gate refusal was a false
 positive. The evidence is in the related logbook entry.
 
@@ -45,8 +46,12 @@ Acceptance, in order:
 Evidence for each is in the entry. Labels match its census.
 
 - **C1.** Kappa (BB yaw offset in the shelf base frame) stepped +0.25 deg
-  between 2026-10-13 00:18 and 22:00. The cause is solver-side and
-  pose-dependent QTM reconstruction at the shelf, not BB and not the encoder.
+  between 2026-10-13 00:18 and 22:00. Leading candidate
+  (2026-10-16) = 3D reconstruction drift at the shelf on a wand calibration
+  18-23 days old across the window (BB template residual 0.26 -> 0.4-0.8 mm);
+  NOT the sweep pose mix (clip experiment, Phase 0 entry § D), not the
+  encoder, not a power cycle (every session boundary is one), not the shelf
+  (tilt in world flat).
 - **C2.** The kappa gate limit sat at its 0.09 deg floor. It was built from a
   per-sweep sigma measured in one sitting. Cross-sitting repeatability was
   never characterised.
@@ -119,19 +124,19 @@ Deliverable:
      coincident with the power cycle (encoder magnet seat, yaw mount,
      supply state changing the drive dynamics) becomes the leading
      candidate.
-  2. **Hardware, the session stop point** (runsheet
-     `tests/hardware/session_bb_kappa_pin.md`). Three BB power cycles, each
-     followed by a park reading and two sweeps (pair mean vs pair mean
-     resolves 0.13 deg; one vs one only 0.19), with the attempt message now
-     recording the sweep start, end, duration and fitted lag. Criterion: a
-     pair-mean kappa change across a power cycle of more than 0.20 deg (the
-     within-epoch band, Phase 0), with
-     the overshoot also changing, says the drive dynamics and kappa move
-     together and the next step is a BB-side physical check. No change
-     says the power cycle itself is innocent. A runtime sweep-end parameter
-     in BB firmware would allow the range test on hardware; that is the
-     owner's call in the BB repo and only worth it if part 1 is
-     inconclusive.
+  2. **Hardware: re-scoped 2026-10-16 (owner).** The three-power-cycle
+     sitting is dropped: every session boundary is already a power cycle (BB
+     is on the main motor PSU) and kappa survived all but one of them, and
+     Phase 1's acceptance (first sweep of ten consecutive sittings) is ten
+     more. Replaced by (i) the owner's QTM check, done (wand calibration 562 h
+     old, re-wanded 2026-10-16; QTM's BB residual 0.30 -> 0.23 mm) and (ii)
+     the first Phase 1 sweep after the re-wand: BB template residual back
+     near 0.26 mm with kappa moving off the 179.59 deg level (Phase 0's K2;
+     the node labels it K0 on the migrated live state) says
+     reconstruction owned the step; kappa staying at 179.59 with the residual
+     down says something else at the shelf. The decision criterion stays
+     0.20 deg (the within-epoch band). A runtime sweep-end parameter in BB
+     firmware remains the owner's call in the BB repo and is not needed.
 
 Files likely touched: new `tools/probes/bb_calibration_replay.py`;
 `bb_calibration.py` (log end angle and lag only); `tests/ros/test_bb_*.py`
@@ -158,9 +163,16 @@ Deliverable:
 - Kappa vs pool, yaw vs last accepted and template residual vs 0.50 mm
   become advisory lines.
 - The pool is kept in epochs and never discarded, with a file backup on
-  every write. With fewer than 5 records the base path still outputs the
-  sweep's kappa and skips the comparison. There is no mode switch on pool
-  size.
+  every write. The sweep's own yaw offset and axis point are always the
+  output; the base frame only yields kappa for the epoch advisory. There is
+  no mode switch on pool size, and the `bb_pose_source` and
+  `bb_base_min_sweeps` parameters are deleted with `bb_moved`.
+- Kappa epochs: a sweep joins the nearest epoch whose median is within 0.20
+  deg of its kappa (the current epoch first), else opens a new one; nothing
+  is ever discarded and the state file is backed up on every write.
+- Advisory bands are the Phase 0 table (Delta kappa 0.20 deg, Delta yaw 0.20
+  deg within a world epoch, Delta p_b 1.0 mm, template residual 0.90 mm with
+  the 1.0 mm hard cap kept, |lag| 13 ms; world axis point information only).
 - One outcome line per attempt reports every advisory at once, in plain
   language. A refusal names an operator action only when that action is the
   remedy.
@@ -253,8 +265,12 @@ column still lands.
 ## 4. Risks and what this plan does NOT do
 
 - No change to BB firmware. No claim about the kappa-step mechanism beyond
-  the entry; Phase 0 pins it on hardware but the plan does not depend on the
-  answer.
+  the entry; Phase 0 narrowed it to reconstruction drift as the leading
+  candidate, the first Phase 1 sweep reads the 2026-10-16 re-wand, and the
+  plan does not depend on the answer.
+- QTM wand-calibration age is a known input now: the template-residual
+  advisory is the live indicator and a re-wand is the remedy it names when
+  the residual exceeds its band.
 - Removing history gates also removes protection against a genuinely bumped
   BB. Mitigation: the advisory line still prints, and the throw learner
   absorbs a 0.25 deg error (about 4 mm at 1 m). The R5 gate was met under
@@ -271,7 +287,7 @@ column still lands.
 
 | Phase | Status | Date | Note |
 |-------|--------|------|------|
-| 0 Characterise | code done, hardware pin owed | 2026-10-15 | bands published in the Phase 0 entry; pin part 1 (offline) done: pose mix EXCLUDED; part 2 = runsheet tests/hardware/session_bb_kappa_pin.md |
-| 1 Gate inversion and operator surface | not started | - | needs Phase 0 bands |
+| 0 Characterise | done | 2026-10-16 | bands published in the Phase 0 entry; pose mix excluded; the power-cycle pin dropped (every session is one), replaced by the 2026-10-16 QTM re-wand + the first Phase 1 sweep |
+| 1 Gate inversion and operator surface | code done, hardware acceptance owed | 2026-10-16 | replay: 23 of 24 logged refusals accepted; first sweep of ten sittings is the gate; needs merge into skill-stack + colcon build |
 | 2 Template residual | not started | - | parallel with 3 after Phase 1 |
 | 3 Robot frame in software | not started | - | design-bearing; after Phase 1 |

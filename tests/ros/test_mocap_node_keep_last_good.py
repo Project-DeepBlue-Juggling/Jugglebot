@@ -32,7 +32,6 @@ import numpy as np
 import pytest
 
 from jugglebot.protocol_config import BallButlerStates
-from jugglebot.bb_calibration import check_calibration_consistency
 
 POS = [-975.75, -389.5, 1735.0]
 
@@ -58,11 +57,7 @@ def _node(tmp_path, state=None, state_name='last_accepted.json'):
     if state is not None:
         path.write_text(json.dumps(state) if isinstance(state, dict) else state)
     node._params['bb_calibration_state_file'] = str(path)
-    # These tests pin the WORLD gate: pose source sweep, and a private base
-    # pool (never the live ~/bb_calibration_sessions state). Under the default
-    # auto with the seeded pool, a window without the base leads its refusal
-    # with BASE_FRAME_NOT_SEEN (tests/ros/test_mocap_node_base_frame.py).
-    node._params['bb_pose_source'] = 'sweep'
+    # A private base pool (never the live ~/bb_calibration_sessions state).
     node._params['bb_base_frame_state_file'] = str(tmp_path / 'base_state.json')
     return node, path
 
@@ -121,16 +116,16 @@ def _at(lines, level):
 
 def test_a_failed_sweep_after_a_success_leaves_the_latched_result_alone(tmp_path):
     node, path = _node(tmp_path, _ref(0.926))
-    _sweep(node, _result(0.95))                         # inside ±0.150°: accepted
+    _sweep(node, _result(0.95))                         # accepted
     good = node.pub_calibration.published[-1]
     assert good.success
     state_before = path.read_text()
 
-    _sweep(node, _result(0.56))                         # Δ -0.366°: refused
+    _sweep(node, error=ValueError('CONSTELLATION_RESIDUAL: marker 5 sits 1.62 mm off the constellation'))   # solver refusal
     assert node.pub_calibration.published == [good], \
         'a failure was published over the success on the latched topic'
     attempt = node.pub_calibration_attempt.published[-1]
-    assert not attempt.success and attempt.message.startswith('CALIBRATION_INCONSISTENT')
+    assert not attempt.success and attempt.message.startswith('CONSTELLATION_RESIDUAL')
     assert path.read_text() == state_before            # state file untouched
 
 
@@ -171,7 +166,7 @@ def test_a_later_success_replaces_the_calibration_and_clears_the_attempt(tmp_pat
     and a success replaces the calibration in force (no hang, no stale lock)."""
     node, _ = _node(tmp_path, _ref(0.926))
     _sweep(node, _result(0.95))
-    _sweep(node, _result(0.56))                         # refused, discarded
+    _sweep(node, error=ValueError('CONSTELLATION_RESIDUAL: marker 5 sits 1.62 mm off the constellation'))   # refused, discarded
     assert node._calibrating is False and node._calib_blocked is False
     _sweep(node, _result(0.93))
     assert [m.success for m in node.pub_calibration.published] == [True, True]
@@ -192,7 +187,7 @@ def test_a_restarted_consumer_receives_the_success_not_the_failure(tmp_path):
     from jugglebot.ball_butler_node import BallButlerNode
     node, _ = _node(tmp_path, _ref(0.926))
     _sweep(node, _result(0.95, pos=[-975.0, -389.0, 1735.0]))   # 0.9 mm: accepted
-    _sweep(node, _result(0.56))                         # refused
+    _sweep(node, error=ValueError('CONSTELLATION_RESIDUAL: marker 5 sits 1.62 mm off the constellation'))   # refused
     replayed = node.pub_calibration.published[-1]       # what depth-1 latching replays
     fresh = BallButlerNode()
     fresh._on_bb_calibration(replayed)
@@ -210,7 +205,7 @@ def test_a_running_consumer_keeps_its_calibration_through_a_failure(tmp_path):
     _sweep(node, _result(0.9))
     for m in node.pub_calibration.published:
         bb._on_bb_calibration(m)
-    _sweep(node, _result(0.9, tres=0.9))                # TEMPLATE_RESIDUAL refusal
+    _sweep(node, error=ValueError('CONSTELLATION_RESIDUAL: marker 5 sits 1.62 mm off the constellation'))   # refusal
     for m in node.pub_calibration_attempt.published:    # even a consumer of every outcome
         bb._on_bb_calibration(m)
     assert bb._bb_position_mm == pytest.approx(tuple(POS))
@@ -229,33 +224,18 @@ def test_success_message_carries_its_acceptance_time(tmp_path):
 
 # ── The short failure line ──────────────────────────────────────────────────
 
-def test_inconsistent_failure_is_one_short_line_with_the_decisive_numbers(tmp_path):
+def test_solver_failure_is_one_short_line_and_the_estimator_detail_stays_at_debug(tmp_path):
     node, _ = _node(tmp_path, _ref(0.926))
     _sweep(node, _result(0.95))
     log = _rec(node)
-    _sweep(node, _result(0.56))
+    _sweep(node, error=ValueError('CONSTELLATION_RESIDUAL: marker 5 sits 1.62 mm off the constellation'))
     full = node.pub_calibration_attempt.published[-1].message
     msg = full.split(' · sweep ')[0]
-    # Limit 3·√(σ_new² + σ_ref²) with both σ 0.05 (the reference's σ comes from the
-    # state file written by the first sweep): 0.212°, not the 0.15° floor.
-    assert msg == ('CALIBRATION_INCONSISTENT: Δyaw -0.390° exceeds ±0.212° vs 0.950° '
-                   f'(accepted {node._last_good_at[:19]}) — set bb_moved:=true if BB or '
-                   'QTM moved')
+    assert msg == 'CONSTELLATION_RESIDUAL: marker 5 sits 1.62 mm off the constellation'
     errors = _at(log, 'error')
     assert errors == [f'BB calibration FAILED: {full} (kept the calibration from '
                       f'{node._last_good_at})']
     assert len(errors[0]) < 250 and '\n' not in errors[0]
-    assert 'sweep estimator' not in msg and 'sweep estimator' not in errors[0]
-    assert any('sweep estimator' in m for m in _at(log, 'debug'))
-
-
-def test_inconsistent_against_the_state_file_names_its_acceptance_time(tmp_path):
-    node, _ = _node(tmp_path, _ref(0.926))
-    _sweep(node, _result(0.56, pos=[POS[0] + 1.6, POS[1], POS[2]]))
-    msg = node.pub_calibration_attempt.published[-1].message.split(' · sweep ')[0]
-    assert msg == ('CALIBRATION_INCONSISTENT: Δyaw -0.366° exceeds ±0.150°, axis point moved '
-                   '1.60 mm > 1.5 mm vs 0.926° (accepted 2026-10-09T13:24:52) — set '
-                   'bb_moved:=true if BB or QTM moved')
 
 
 def _within_bound(msg):
@@ -264,17 +244,12 @@ def _within_bound(msg):
     assert len(msg) <= mn.MAX_CALIBRATION_FAILURE_CHARS, (len(msg), msg)
 
 
-@pytest.mark.parametrize('case', ['template', 'unreadable', 'timeout', 'dropout',
+@pytest.mark.parametrize('case', ['timeout', 'dropout',
                                   'error_state', 'no_data', 'anchor'])
 def test_node_failure_reasons_fit_the_bound(tmp_path, case):
     node, path = _node(tmp_path, _ref(0.926),
                        state_name='a_rather_long_state_file_name_for_bb_calibration.json')
-    if case == 'template':
-        _sweep(node, _result(0.926, tres=0.71))
-    elif case == 'unreadable':
-        path.write_text('{not json')
-        _sweep(node, _result(0.926))
-    elif case == 'timeout':
+    if case == 'timeout':
         node._on_bb_heartbeat(_hb(BallButlerStates.CALIBRATING))
         node._calib_start_mono -= 1000.0
         node._check_calibration_health()
@@ -295,21 +270,6 @@ def test_node_failure_reasons_fit_the_bound(tmp_path, case):
     msg = node.pub_calibration_attempt.published[-1]
     assert not msg.success
     _within_bound(msg.message)
-    if case == 'unreadable':
-        assert msg.message.startswith('CALIBRATION_STATE_UNREADABLE: '
-                                      'a_rather_long_state_file_name_for_bb_calibration.json: '
-                                      'JSONDecodeError')
-
-
-def test_gate_refusals_fit_the_bound():
-    ref = _ref(0.926)
-    label = 'accepted 2026-10-09T13:24:52'
-    for v in (check_calibration_consistency(-179.0, 0.4, [p + 30 for p in POS], 0.3, ref,
-                                            reference_label=label),
-              check_calibration_consistency(0.926, 0.05, POS, 0.99, ref, bb_moved=True,
-                                            reference_label=label)):
-        assert not v.accepted
-        _within_bound(v.message)
 
 
 def test_estimator_refusals_fit_the_bound():

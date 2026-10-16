@@ -4,14 +4,16 @@ Why. QTM's world frame moves between sittings (0.3–1.5 mm, non-rigidly) and is
 occasionally recalibrated, while BB itself is bolted to a shelf and does not
 move. The sweep estimator (:mod:`jugglebot.bb_calibration`) measures BB in the
 WORLD frame, so every QTM shift reads as a BB move: the consistency gate
-refuses it, or (with ``bb_moved``) accepts it with no way to tell "QTM moved"
+refuses it, or accepts it with no way to tell "QTM moved"
 from "BB moved". Four markers fastened to the shelf (the base frame) are
 static in BB's frame; posing them every sitting separates the two:
 
     BB-in-base   (κ, p_b)   constant while BB and the base stay on the shelf
     base-in-world (h, o, R)  changes when QTM's frame changes
 
-and the published BB world pose is their composition (:func:`compose_bb_pose`).
+and :func:`compose_bb_pose` is the inverse of :func:`bb_in_base` (kept for tests
+and tools; since Phase 1 the published BB pose is always the sweep's own, and
+kappa feeds only the epoch advisory).
 
 Geometry (owner's nominal, 3D-printed, fastened to the shelf). Four coplanar
 markers in an L: corner C; short span C–S, |CS| = 115 mm; long span C–M–E
@@ -56,9 +58,14 @@ See ``logbook/2026-10-10-bb-base-marker-frame.md``.
 
 from __future__ import annotations
 
+import dataclasses
 import itertools
 import json
 import math
+import os
+import re
+import shutil
+import time
 from collections import deque
 from dataclasses import dataclass, field
 from typing import Optional
@@ -106,25 +113,24 @@ BASE_OUTLIER_DEG = 0.05
 #: Block length (s) for the standard error of the static mean: frame noise is
 #: correlated over tenths of a second, so SE = SD(block means)/√n_blocks.
 BASE_SE_BLOCK_S = 2.0
-#: Base template residual gate (mm): the largest |observed − as-built| pair
-#: distance (window mean). Above it a base marker moved or the frame was
-#: knocked: rebuild the base frame (bb_moved does not override).
-#: 2026-10-10: ≤ 0.035 mm SD per pair, mean 0 by construction.
+#: Base template residual (mm): the largest |observed - as-built| pair distance
+#: (window mean). Above it the base frame's pose is not trusted: the sweep's kappa
+#: is NOT pooled and NOT judged (flag BASE_FRAME_RESIDUAL; never a refusal).
+#: 2026-10-10: <= 0.035 mm SD per pair, mean 0 by construction.
 BASE_MAX_RESIDUAL_MM = 0.5
-#: Base-in-world change vs the stored base pose above which it is reported as
-#: a QTM frame shift (it is accepted either way).
-BASE_SHIFT_REPORT_MM = 0.2
-BASE_SHIFT_REPORT_DEG = 0.01
-#: BB-in-base gate: |Δκ| > max(N·√(σ_src² + SE_pool²), MIN) or |Δp_b| > MAX,
-#: Δκ against the ROBUST pooled κ (:func:`pool_kappa`). σ_src is the measured
-#: per-sweep κ scatter of the new sweep's yaw source (KAPPA_SWEEP_SD_DEG), not
-#: the sweep's published σ (which over-states it: 0.036–0.045° stamped,
-#: 0.07–0.09° heartbeat). MIN 0.09° = 3 × the stamped per-sweep SD; it was
-#: 0.15° (the world gate's floor) until 2026-10-10, which let two sweeps
-#: +0.07–0.09° off into the pool (logbook 2026-10-10-bb-base-frame-robustness).
-KAPPA_GATE_N_SIGMA = 3.0
-KAPPA_GATE_MIN_DEG = 0.09
-BB_IN_BASE_MAX_SHIFT_MM = 1.5
+#: Advisory bands. Fixed numbers: scaling a cross-session band by one sitting's
+#: sigma was root cause C2 (logbook 2026-10-15-bb-calibration-phase0-characterise,
+#: "Advisory bands (input to Phase 1)"). None of them refuses a sweep.
+#: kappa epoch half-width (deg): the day-to-day kappa step is ~0.25-0.31 deg, one
+#: sitting's spread ~0.03 deg (Phase 0 entry, section "Advisory bands").
+KAPPA_EPOCH_BAND_DEG = 0.20
+#: BB-in-base axis-point shift (mm) vs the assigned epoch's median (Phase 0 entry,
+#: section "Advisory bands").
+BB_IN_BASE_SHIFT_ADVISORY_MM = 1.0
+#: Base-in-world shift vs base_ref beyond either = the QTM frame moved (Phase 0
+#: entry, section "Advisory bands"; QTM re-alignment steps were >2 mm / >0.05 deg).
+WORLD_EPOCH_SHIFT_MM = 2.0
+WORLD_EPOCH_SHIFT_DEG = 0.05
 #: Per-sweep κ SD by yaw source (deg), measured 2026-10-10: stamped 0.030°
 #: (13:45 sitting, 8 sweeps), heartbeat 0.050° (12:26 sitting, 10 live sweeps).
 #: An unknown source gets the larger.
@@ -144,9 +150,7 @@ KAPPA_POOL_MIN_GROUP = 5
 #: QTM rigid-body names of BB's own yaw-stage markers (labels ``<body> - i``):
 #: the only markers the base identifier does not search (they turn with yaw).
 BB_MARKER_BODIES = ('Ball Butler', 'Ball_Butler')
-#: Pooled sweeps the ``auto`` pose source needs before it uses the base frame.
-DEFAULT_MIN_POOLED_SWEEPS = 5
-#: Records kept in the pool (oldest dropped): ~a week of sittings.
+#: Raw records kept PER EPOCH (oldest dropped; they survive in the state backups).
 MAX_POOLED_RECORDS = 200
 
 
@@ -505,6 +509,7 @@ class KappaRecord:
     yaw_offset_deg: float = float('nan')     # the sweep's world value (published gauge)
     base_heading_deg: float = float('nan')
     source: str = ''
+    epoch: int = 0              # kappa epoch id (state schema 2; not in the resource)
 
     def to_dict(self) -> dict:
         return {'kappa_deg': self.kappa_deg, 'sigma_deg': self.sigma_deg,
@@ -520,7 +525,7 @@ class KappaRecord:
                    pin_deg=float(d['pin_deg']), accepted_at=str(d.get('accepted_at', '')),
                    yaw_offset_deg=float(d.get('yaw_offset_deg', float('nan'))),
                    base_heading_deg=float(d.get('base_heading_deg', float('nan'))),
-                   source=str(d.get('source', '')))
+                   source=str(d.get('source', '')), epoch=int(d.get('epoch', 0)))
 
 
 @dataclass
@@ -653,10 +658,50 @@ def load_base_frame(path: str) -> BaseFrameModel:
                           source=path, base_ref=ref)
 
 
+def _corrected_kappas(recs, pin_now_deg: float):
+    """Each record's kappa moved to ``pin_now_deg`` (kappa + pin_now - pin_rec, the
+    :func:`pool_kappa` convention), unwrapped about the first."""
+    recs = list(recs)
+    k0 = recs[0].kappa_deg + pin_now_deg - recs[0].pin_deg
+    return np.array([k0 + wrap_deg(r.kappa_deg + pin_now_deg - r.pin_deg - k0) for r in recs])
+
+
+def _epoch_summary(recs, pin_now_deg: Optional[float] = None) -> dict:
+    """{n, median_kappa_deg, sd_deg, pin_deg, median_axis_point_b_mm} of
+    KappaRecords. ``median_kappa_deg`` is stated AT ``pin_deg`` (= ``pin_now_deg``,
+    else the newest record's pin): each record's kappa is first moved to that pin,
+    because kappas measured under different template gauges are not comparable."""
+    recs = list(recs)
+    pin = float(recs[-1].pin_deg if pin_now_deg is None else pin_now_deg)
+    ks = _corrected_kappas(recs, pin)
+    pb = np.array([r.axis_point_b_mm for r in recs], dtype=float)
+    return {'n': len(recs), 'median_kappa_deg': wrap_deg(float(np.median(ks))),
+            'sd_deg': float(ks.std(ddof=1)) if len(ks) > 1 else 0.0,
+            'pin_deg': pin,
+            'median_axis_point_b_mm': [float(v) for v in np.median(pb, axis=0)]}
+
+
+def _new_epoch(epoch_id: int, opened_at: str, reason: str, recs,
+               pin_now_deg: Optional[float] = None) -> dict:
+    d = {'id': int(epoch_id), 'opened_at': opened_at, 'reason': reason}
+    d.update(_epoch_summary(recs, pin_now_deg))
+    return d
+
+
+def seed_base_state(records, base_ref) -> dict:
+    """A fresh state: every record in epoch 0 (reason 'seed'), e.g. from the
+    resource's records. No records: no epochs (the first sweep opens epoch 0)."""
+    recs = [dataclasses.replace(r, epoch=0) for r in records]
+    epochs = [_new_epoch(0, recs[0].accepted_at, 'seed', recs)] if recs else []
+    return {'records': recs, 'base_ref': base_ref, 'epochs': epochs}
+
+
 def load_base_state(path: str):
-    """Runtime state ``{'records': [...], 'base_ref': {...}}`` or None if the
-    file does not exist. Raises (OSError, ValueError, KeyError, TypeError) if
-    unreadable — the caller decides."""
+    """Runtime state ``{'records': [KappaRecord], 'base_ref': {...} | None,
+    'epochs': [dict]}`` or None if the file does not exist (the caller seeds it,
+    :func:`seed_base_state`). Reads schema 1 (every record -> epoch 0, reason
+    'migrated') and schema 2. Raises (OSError, ValueError, KeyError, TypeError)
+    if unreadable - the caller decides."""
     try:
         with open(path, 'r') as f:
             data = json.load(f)
@@ -668,7 +713,25 @@ def load_base_state(path: str):
         ref = {'origin_mm': [float(v) for v in ref['origin_mm']],
                'heading_deg': float(ref['heading_deg']),
                'accepted_at': str(ref.get('accepted_at', ''))}
-    return {'records': recs, 'base_ref': ref}
+    schema = data.get('schema')
+    if schema == 1:
+        recs = [dataclasses.replace(r, epoch=0) for r in recs]
+        epochs = [_new_epoch(0, recs[0].accepted_at, 'migrated', recs)] if recs else []
+    elif schema == 2:
+        epochs = []
+        for e in data['epochs']:
+            epochs.append({'id': int(e['id']), 'opened_at': str(e.get('opened_at', '')),
+                           'reason': str(e.get('reason', '')), 'n': int(e['n']),
+                           'median_kappa_deg': float(e['median_kappa_deg']),
+                           'sd_deg': float(e['sd_deg']),
+                           **({'pin_deg': float(e['pin_deg'])} if 'pin_deg' in e else {}),
+                           'median_axis_point_b_mm': [float(v) for v in e['median_axis_point_b_mm']]})
+        ids = {e['id'] for e in epochs}
+        if any(r.epoch not in ids for r in recs):
+            raise ValueError('BB base state: a record names an epoch with no summary')
+    else:
+        raise ValueError(f'BB base state {path}: schema {schema!r}, need 1 or 2')
+    return {'records': recs, 'base_ref': ref, 'epochs': epochs}
 
 
 def pool_summary(records, pooled: Optional[PooledKappa]) -> Optional[dict]:
@@ -690,101 +753,254 @@ def pool_summary(records, pooled: Optional[PooledKappa]) -> Optional[dict]:
                      f'{KAPPA_SWEEP_SD_DEG}) — bb_base_frame.kappa_outliers')}
 
 
-def base_state_to_json(records, base_ref, pin_now_deg: Optional[float] = None,
+def current_epoch_id(state) -> Optional[int]:
+    """The epoch of the newest record (None for a state with no records)."""
+    return state['records'][-1].epoch if state['records'] else None
+
+
+def epoch_median_at_pin(state, epoch: dict, pin_now_deg: float) -> float:
+    """An epoch's median kappa at the CURRENT pin. From its held raw records, each
+    moved to ``pin_now_deg``; with none held (per-epoch cap) its stored summary
+    moved by pin_now - summary pin. A summary with no ``pin_deg`` (written before
+    the key existed) is taken at the pin of the epoch's newest record, else at
+    ``pin_now_deg`` (no correction)."""
+    held = [r for r in state['records'] if r.epoch == epoch['id']]
+    if held:
+        return wrap_deg(float(np.median(_corrected_kappas(held, pin_now_deg))))
+    pin_rec = epoch.get('pin_deg')
+    if pin_rec is None:
+        pin_rec = pin_now_deg
+    return wrap_deg(epoch['median_kappa_deg'] + pin_now_deg - float(pin_rec))
+
+
+def _epoch_by_id(state, epoch_id) -> Optional[dict]:
+    for e in state['epochs']:
+        if e['id'] == epoch_id:
+            return e
+    return None
+
+
+def _restate_at_pin(state, epoch: dict, pin_now_deg: float) -> dict:
+    """The epoch summary with its median stated at ``pin_now_deg`` (``pin_deg`` set)."""
+    return dict(epoch, median_kappa_deg=epoch_median_at_pin(state, epoch, pin_now_deg),
+                pin_deg=float(pin_now_deg))
+
+
+def base_state_to_json(state, pin_now_deg: Optional[float] = None,
                        repeatability_deg: float = 0.0) -> dict:
-    """The state file: the newest MAX_POOLED_RECORDS records, kept whole
-    (outliers included: the exclusion is recomputed at every pooling), and —
-    given the current pin — the derived pool summary (:func:`pool_summary`)."""
-    recs = list(records)[-MAX_POOLED_RECORDS:]
-    out = {'schema': 1,
-           'description': 'mocap_node runtime state for the BB base-marker frame: the pooled '
-                          'BB-in-base records (κ per accepted sweep) and the last base pose in '
-                          'the world. Seeded from resources/bb_base_frame.json; '
+    """The state file, schema 2: every epoch summary (never removed), the raw
+    records (each tagged with its epoch; at most MAX_POOLED_RECORDS per epoch,
+    kept whole - outliers included), base_ref, and - given the current pin - the
+    derived ``pool`` of the CURRENT epoch (:func:`pool_summary`; ignored on read).
+    Given the current pin, every epoch summary's median is written AT that pin
+    (its ``pin_deg``); without it the summaries are written as held."""
+    recs = list(state['records'])
+    out = {'schema': 2,
+           'description': 'mocap_node runtime state for the BB base-marker frame: kappa epochs '
+                          '(one summary each, never removed), the BB-in-base records (kappa per '
+                          'sweep, each tagged with its epoch) and the last base pose in the '
+                          'world. Seeded from resources/bb_base_frame.json; '
                           'tools/bb_base_frame_build.py --from-state folds it back. '
-                          '"pool" is derived (the robust pool of these records).',
-           'records': [r.to_dict() for r in recs],
-           'base_ref': base_ref}
+                          '"pool" is derived (the robust pool of the current epoch).',
+           'epochs': [dict(e) for e in state['epochs']],
+           'records': [dict(r.to_dict(), epoch=r.epoch) for r in recs],
+           'base_ref': state['base_ref']}
+    cur = current_epoch_id(state)
     if pin_now_deg is not None:
-        out['pool'] = pool_summary(recs, pool_kappa(recs, pin_now_deg, repeatability_deg))
+        out['epochs'] = [_restate_at_pin(state, e, pin_now_deg) for e in state['epochs']]
+    if pin_now_deg is not None and cur is not None:
+        cur_recs = [r for r in recs if r.epoch == cur]
+        out['pool'] = pool_summary(cur_recs, pool_kappa(cur_recs, pin_now_deg, repeatability_deg))
     return out
 
 
+#: Timestamped copies of the state file kept next to it (newest N).
+STATE_BACKUPS_KEPT = 20
+_BAK_RE = re.compile(r'\.(\d{8}-\d{6})(?:\.(\d+))?\.bak$')
+
+
+def _prune_backups(path: str, keep: int = STATE_BACKUPS_KEPT) -> None:
+    base = os.path.basename(path)
+    found = []
+    for name in os.listdir(os.path.dirname(os.path.abspath(path))):
+        if name.startswith(base + '.'):
+            m = _BAK_RE.fullmatch(name[len(base):])
+            if m:
+                found.append(((m.group(1), int(m.group(2) or 0)), name))
+    found.sort()
+    for _, name in found[:-keep] if keep > 0 else found:
+        try:
+            os.remove(os.path.join(os.path.dirname(os.path.abspath(path)), name))
+        except OSError:
+            pass
+
+
+def write_base_state(path: str, state, pin_now_deg: Optional[float] = None,
+                     repeatability_deg: float = 0.0) -> None:
+    """THE ONLY writer of the state file. The existing file is first copied to
+    ``<path>.<YYYYmmdd-HHMMSS>.bak`` (newest STATE_BACKUPS_KEPT kept), then the new
+    one is written to a .tmp and os.replace'd. Nothing here removes a record or an
+    epoch beyond the per-epoch MAX_POOLED_RECORDS cap, and the dropped ones
+    survive in the backups."""
+    d = os.path.dirname(os.path.abspath(path))
+    os.makedirs(d, exist_ok=True)
+    if os.path.exists(path):
+        stamp = time.strftime('%Y%m%d-%H%M%S')
+        # Same-second writes: number above the highest existing one (pruning
+        # deletes the low ones, so "first free" would reuse a name and break order).
+        base = os.path.basename(path)
+        seqs = []
+        for name in os.listdir(d):
+            m = _BAK_RE.fullmatch(name[len(base):]) if name.startswith(base + '.') else None
+            if m and m.group(1) == stamp:
+                seqs.append(int(m.group(2) or 0) + 1)
+        bak = f'{path}.{stamp}.bak' if not seqs else f'{path}.{stamp}.{max(seqs)}.bak'
+        shutil.copy2(path, bak)
+    tmp = path + '.tmp'
+    with open(tmp, 'w') as f:
+        json.dump(base_state_to_json(state, pin_now_deg, repeatability_deg), f, indent=1)
+    os.replace(tmp, path)
+    _prune_backups(path)
+
+
 # ---------------------------------------------------------------------------
-#  Gate
+#  Kappa epochs and the advisory (nothing here refuses a sweep)
 # ---------------------------------------------------------------------------
 
 @dataclass
-class BaseGateVerdict:
-    accepted: bool
-    message: str
-    delta_kappa_deg: float = 0.0
-    threshold_deg: float = 0.0
-    axis_shift_mm: float = 0.0
-    base_shift_mm: float = 0.0          # base-in-world origin change vs base_ref
-    base_shift_deg: float = 0.0         # base heading change vs base_ref
-    qtm_shift: bool = False             # base-in-world changed (reported, accepted)
-    reset_pool: bool = False            # bb_moved: this sweep starts a new pool
-    overridden: bool = False
-    no_reference: bool = False
+class EpochAssignment:
+    epoch_id: int
+    opened: bool                      # a new epoch was opened for this sweep
+    rejoined: bool                    # an earlier (non-current) epoch was rejoined
+    delta_vs_current_deg: float       # kappa - the CURRENT epoch's median, before assignment
+    current_epoch_id_before: Optional[int]
+    median_before: Optional[float]    # that median (None with no epochs)
+    reason: str = 'excursion'         # of a newly opened epoch ('seed' for the very first)
 
 
-def check_base_frame_consistency(
-    kappa_deg: float, sigma_deg: float, axis_point_b_mm, base: BasePose,
-    pooled: Optional[PooledKappa], base_ref: Optional[dict], bb_moved: bool = False,
-    n_sigma: float = KAPPA_GATE_N_SIGMA, min_deg: float = KAPPA_GATE_MIN_DEG,
-    max_axis_shift_mm: float = BB_IN_BASE_MAX_SHIFT_MM,
-    max_residual_mm: float = BASE_MAX_RESIDUAL_MM,
-) -> BaseGateVerdict:
-    """Gate a sweep in the base frame. ``sigma_deg`` is the new sweep's
-    per-sweep κ scatter (:func:`kappa_sweep_sd_deg` of its yaw source).
+def assign_epoch(kappa_deg: float, state, pin_now_deg: float,
+                 band_deg: float = KAPPA_EPOCH_BAND_DEG) -> EpochAssignment:
+    """Which kappa epoch a sweep belongs to. Within ``band_deg`` of the CURRENT
+    epoch's median -> that epoch. Else the nearest OTHER epoch within the band ->
+    rejoin it (it becomes current, being newest). Else a new epoch (excursion).
+    Flip-flop: 179.27 (K0), 179.59 opens K1, 179.27 again rejoins K0, not K2.
+    The comparison runs on every sweep (a one-record epoch's median is that
+    record). ``kappa_deg`` is at ``pin_now_deg``; every epoch median is moved to
+    that pin first (:func:`epoch_median_at_pin`), so a re-pin from landings does
+    not look like a kappa excursion. Pure: the state is not changed
+    (:func:`append_record` does that)."""
+    cur = current_epoch_id(state)
+    cur_e = _epoch_by_id(state, cur) if cur is not None else None
+    if cur_e is None:
+        nxt = 1 + max((e['id'] for e in state['epochs']), default=-1)
+        return EpochAssignment(nxt, True, False, 0.0, None, None, reason='seed')
+    med = epoch_median_at_pin(state, cur_e, pin_now_deg)
+    d = wrap_deg(kappa_deg - med)
+    if abs(d) <= band_deg:
+        return EpochAssignment(cur, False, False, d, cur, med)
+    others = [(abs(wrap_deg(kappa_deg - epoch_median_at_pin(state, e, pin_now_deg))), e['id'])
+              for e in state['epochs'] if e['id'] != cur]
+    others = [o for o in others if o[0] <= band_deg]
+    if others:
+        return EpochAssignment(min(others)[1], False, True, d, cur, med)
+    nxt = 1 + max(e['id'] for e in state['epochs'])
+    return EpochAssignment(nxt, True, False, d, cur, med)
 
-    BB-in-base (invariant to QTM frame shifts) is compared with the pool: a
-    change means BB or the base frame moved ON THE SHELF — refused
-    (``BB_IN_BASE_MOVED``) unless ``bb_moved``, which starts a new pool.
-    Base-in-world is compared with ``base_ref``: a change means QTM's frame
-    moved — reported as the frame shift and accepted. A base template residual
-    above ``max_residual_mm`` refuses (``BASE_FRAME_RESIDUAL``: a base marker
-    moved or the frame was knocked; rebuild the base frame — bb_moved does not
-    override). No pool: accepted (it seeds one)."""
-    shift_mm = shift_deg = 0.0
-    qtm = False
-    if base_ref is not None:
-        shift_mm = float(np.linalg.norm(base.origin_mm - np.asarray(base_ref['origin_mm'], float)))
-        shift_deg = wrap_deg(base.heading_deg - float(base_ref['heading_deg']))
-        qtm = shift_mm > BASE_SHIFT_REPORT_MM or abs(shift_deg) > BASE_SHIFT_REPORT_DEG
-    frame_note = (f'; QTM frame shift: base moved {shift_mm:.2f} mm, {shift_deg:+.3f}° in the '
-                  'world (accepted)' if qtm else '')
-    if base.residual_mm > max_residual_mm:
-        return BaseGateVerdict(
-            False, f'BASE_FRAME_RESIDUAL: a base marker sits {base.residual_mm:.2f} mm off the '
-                   f'base template > {max_residual_mm:.2f} mm — the base frame was knocked or a '
-                   'marker moved; rebuild bb_base_frame.json (bb_moved does not override this)',
-            base_shift_mm=shift_mm, base_shift_deg=shift_deg, qtm_shift=qtm)
-    if pooled is None:
-        return BaseGateVerdict(True, f'base gate: no pooled BB-in-base constant — this sweep '
-                                     f'seeds it{frame_note}', base_shift_mm=shift_mm,
-                               base_shift_deg=shift_deg, qtm_shift=qtm, no_reference=True)
-    dk = wrap_deg(kappa_deg - pooled.kappa_deg)
-    thr = max(n_sigma * math.hypot(sigma_deg, pooled.se_deg), min_deg)
-    da = float(np.linalg.norm(np.asarray(axis_point_b_mm, float) - pooled.axis_point_b_mm))
-    head = (f'base gate: Δκ {dk:+.3f}° (limit ±{thr:.3f}°), Δp_b {da:.2f} mm vs the pooled '
-            f'BB-in-base ({pooled.count_note()})')
-    bad = []
-    if abs(dk) > thr:
-        bad.append(f'Δκ {dk:+.3f}° exceeds ±{thr:.3f}°')
-    if da > max_axis_shift_mm:
-        bad.append(f'axis point moved {da:.2f} mm > {max_axis_shift_mm:.1f} mm in the base frame')
-    if not bad:
-        return BaseGateVerdict(True, f'{head} ok{frame_note}', dk, thr, da, shift_mm, shift_deg, qtm)
-    if bb_moved:
-        return BaseGateVerdict(True, f'{head} — BB-in-base changed, ACCEPTED on the bb_moved '
-                                     f'override (new pool; refit the aim correction){frame_note}',
-                               dk, thr, da, shift_mm, shift_deg, qtm, reset_pool=True,
-                               overridden=True)
-    return BaseGateVerdict(
-        False, f'BB_IN_BASE_MOVED: {", ".join(bad)} (pooled {pooled.count_note()}) — BB or the '
-               'base frame moved on the shelf; set bb_moved:=true if BB was moved',
-        dk, thr, da, shift_mm, shift_deg, qtm)
+
+def append_record(state, record: KappaRecord, assignment: EpochAssignment,
+                  pin_now_deg: float) -> dict:
+    """The only growth path: a NEW state with ``record`` appended in the assigned
+    epoch (opened if the assignment says so), that epoch's summary refreshed, and
+    the epoch's raw records capped at MAX_POOLED_RECORDS (oldest dropped; they
+    survive in the backups). Epoch summaries are never removed; the refreshed one
+    is stated at ``pin_now_deg``."""
+    rec = dataclasses.replace(record, epoch=assignment.epoch_id)
+    recs = list(state['records']) + [rec]
+    epochs = [dict(e) for e in state['epochs']]
+    eid = assignment.epoch_id
+    prior_n = next((e['n'] for e in epochs if e['id'] == eid), 0)
+    mine = [r for r in recs if r.epoch == eid]
+    if len(mine) > MAX_POOLED_RECORDS:
+        drop = mine[0]
+        recs = [r for r in recs if r is not drop]
+        mine = mine[1:]
+    summ = _epoch_summary(mine, pin_now_deg)
+    summ['n'] = prior_n + 1                     # sweeps ever assigned, not just held
+    for i, e in enumerate(epochs):
+        if e['id'] == eid:
+            epochs[i] = dict(e, **summ)
+            break
+    else:
+        epochs.append(_new_epoch(eid, rec.accepted_at, assignment.reason, mine, pin_now_deg))
+        epochs[-1]['n'] = 1
+    return {'records': recs, 'base_ref': state['base_ref'], 'epochs': epochs}
+
+
+@dataclass
+class BaseAdvisory:
+    pooled: bool                              # False: BASE_FRAME_RESIDUAL, nothing pooled/judged
+    assignment: Optional[EpochAssignment]
+    delta_kappa_deg: Optional[float]          # vs the current epoch median, before assignment
+    delta_axis_mm: Optional[float]            # p_b vs the assigned (else previous current) epoch
+    base_shift_mm: Optional[float]            # base origin vs base_ref (None without one)
+    base_shift_deg: Optional[float]
+    same_world_epoch: Optional[bool]          # not shifted; None without base_ref
+    flags: list = field(default_factory=list)
+    lines: list = field(default_factory=list)
+
+
+def assess_base_frame(kappa_deg: float, sigma_deg: float, axis_point_b_mm, base: BasePose,
+                      state, pin_now_deg: float) -> BaseAdvisory:
+    """Advisory for a sweep in the base frame. NEVER refuses; pure (the state is
+    not mutated - the caller then does :func:`append_record` +
+    :func:`write_base_state`). ``kappa_deg`` is at ``pin_now_deg`` (the template
+    gauge current for this sweep); epochs are compared at that pin. ``sigma_deg`` is the sweep's per-sweep kappa scatter
+    (informational; the bands are fixed numbers).
+
+    Flags: BASE_FRAME_RESIDUAL (the shelf-marker fit is poor: kappa not pooled, not
+    judged), KAPPA_EXCURSION (|delta kappa| > KAPPA_EPOCH_BAND_DEG vs the current
+    epoch: the line says which epoch was opened or rejoined), BB_IN_BASE_SHIFT
+    (|delta p_b| > BB_IN_BASE_SHIFT_ADVISORY_MM), QTM_FRAME_SHIFT (base moved
+    beyond WORLD_EPOCH_SHIFT_MM / _DEG vs base_ref)."""
+    flags: list = []
+    lines: list = []
+    shift_mm = shift_deg = same = None
+    ref = state.get('base_ref')
+    if ref is not None:
+        shift_mm = float(np.linalg.norm(base.origin_mm - np.asarray(ref['origin_mm'], float)))
+        shift_deg = wrap_deg(base.heading_deg - float(ref['heading_deg']))
+        same = not (shift_mm > WORLD_EPOCH_SHIFT_MM or abs(shift_deg) > WORLD_EPOCH_SHIFT_DEG)
+        if not same:
+            flags.append('QTM_FRAME_SHIFT')
+            lines.append(f'QTM frame moved since the last sweep ({shift_mm:.1f} mm, '
+                         f'{shift_deg:+.2f} deg); world deltas are not comparable')
+    if base.residual_mm > BASE_MAX_RESIDUAL_MM:
+        flags.append('BASE_FRAME_RESIDUAL')
+        lines.insert(0, f'shelf markers fit {base.residual_mm:.2f} mm (> {BASE_MAX_RESIDUAL_MM:.1f}), '
+                        'base kappa not used - check QTM sees the 4 shelf markers')
+        return BaseAdvisory(False, None, None, None, shift_mm, shift_deg, same, flags, lines)
+    asg = assign_epoch(kappa_deg, state, pin_now_deg)
+    dk = asg.delta_vs_current_deg if asg.median_before is not None else None
+    ref_e = _epoch_by_id(state, asg.epoch_id) or (
+        _epoch_by_id(state, asg.current_epoch_id_before)
+        if asg.current_epoch_id_before is not None else None)
+    da = None
+    if ref_e is not None:
+        da = float(np.linalg.norm(np.asarray(axis_point_b_mm, float)
+                                  - np.asarray(ref_e['median_axis_point_b_mm'], float)))
+    if asg.opened and asg.median_before is not None:
+        flags.append('KAPPA_EXCURSION')
+        lines.append(f'kappa {dk:+.2f} deg from epoch K{asg.current_epoch_id_before}: '
+                     f'opened epoch K{asg.epoch_id}')
+    elif asg.rejoined:
+        flags.append('KAPPA_EXCURSION')
+        lines.append(f'kappa {dk:+.2f} deg from epoch K{asg.current_epoch_id_before}: '
+                     f'rejoined epoch K{asg.epoch_id}')
+    if da is not None and da > BB_IN_BASE_SHIFT_ADVISORY_MM:
+        flags.append('BB_IN_BASE_SHIFT')
+        lines.append(f'BB axis point moved {da:.1f} mm in the base frame '
+                     f'(advisory > {BB_IN_BASE_SHIFT_ADVISORY_MM:.1f})')
+    return BaseAdvisory(True, asg, dk, da, shift_mm, shift_deg, same, flags, lines)
 
 
 # ---------------------------------------------------------------------------
