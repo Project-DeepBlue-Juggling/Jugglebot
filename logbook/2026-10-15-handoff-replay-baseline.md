@@ -2,7 +2,7 @@
 title: "Handoff-catch SPLICE_TOO_LATE: offline replay of 299 recorded handoff catches sizes the lead - Fix 1's 250 ms leaves 13-28 ms on the recorded failures, 8 extra knots leaves 113 ms, but any longer lead moves nearly every catch onto the prior so the pinned re-aim (and its mis-keyed fences) carries the correction"
 type: investigation
 date: 2026-10-15
-status: open
+status: resolved
 phase: "handoff-solve-chaining — Phase 0 (replay baseline)"
 related_plan: handoff-solve-chaining.md
 related:

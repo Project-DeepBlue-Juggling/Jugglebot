@@ -2,8 +2,8 @@
 title: "Handoff-catch SPLICE_TOO_LATE: handoff lead 13 -> 17 knots (350 ms of solve budget, 113 ms over the worst recorded reply) and the catch re-aim fences re-keyed on the real splice instant so the pinned re-aim carries the correction the earlier dispatch costs; the PINNED-BUDGET floor is the raw path's own minimum budget, not the solve p90"
 type: feature
 date: 2026-10-16
-status: in-progress
-phase: "handoff-solve-chaining — P1 (implemented, not yet flown)"
+status: resolved
+phase: "handoff-solve-chaining — P1 (flown 2026-10-16, see the P2 entry)"
 related_plan: handoff-solve-chaining.md
 related:
   - 2026-10-15-handoff-replay-baseline.md

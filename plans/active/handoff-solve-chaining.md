@@ -70,8 +70,10 @@ for apex 0.80-1.10, dwell 0.27/0.50, sep 125/150, columns and one-ball), which i
   identified as first-dispatch, non-RESEND CATCHes whose scheduled release minus dispatch is > 0.29 s.
 - **Cliff derivation.** The cliff is derived as `t0 + (K - 3)*dt` from the logged splice knot. The nominal
   `D + 0.200` was contradicted by accepted installs landing 0.223-0.231 s after dispatch. The derived cliff sits at
-  about `D + 0.238`, and that **38 ms bias against nominal is UNEXPLAINED**. Resolving it from Fix 1's
-  `_refusal_timing` lines is a P1/P2 item.
+  about `D + 0.238`. **RESOLVED at P2 (2026-10-16):** the node's own `cliff +X ms` fields over 67 refusals put the
+  real cliff +0 to +25 ms (median +21) past nominal — the ceil-to-knot quantisation of the splice knot, never
+  negative, so every nominal budget here is a lower bound; the probe's own derivation reads +27 ms on the same data, so the
+  lead-13 38 ms was that derivation within one knot of the node's arithmetic, not a clock offset.
 - **Sanity at the recorded lead.** 0 negative accepted margins (one of -0.4 ms is rounding); 11 of the 12 END
   refusals come out negative.
 - **First-install margin, min/median.** On the 12 ENDs: 13/28 ms at 0.325 s (upper bounds for the two no-answer
@@ -164,7 +166,7 @@ For each recorded handoff catch at leads 4/6/8 it reported:
 Above it, unrecoverable prior-aimed catches would outnumber the self-ends removed. Outcome: (a) passes at 6 and 8,
 (b) fails at every lead. The owner overrode toward 8 + P1b (§ 0.4).
 
-**P1 (P1a + P1b) - IMPLEMENTED 2026-10-16, not yet flown** (one commit, slug `2026-10-16-handoff-lead-8-knots-and-snap-aware-resend-fences`).
+**P1 (P1a + P1b) - IMPLEMENTED 2026-10-16, FLOWN 2026-10-16 (P2)** (one commit, slug `2026-10-16-handoff-lead-8-knots-and-snap-aware-resend-fences`).
 **P1a - the lead change (8).** Slug `2026-10-16-handoff-lead-8-knots-and-snap-aware-resend-fences`.
 - `schedule.py:126` 4 -> 8, with the docstring history (2 -> 4 -> 8, the § 0.4 numbers).
 - Fix 1's fixed-wait literal.
@@ -216,11 +218,11 @@ Slug `2026-10-16-handoff-lead-8-knots-and-snap-aware-resend-fences`.
 - **Also in P1, or P2 if the logs are needed:** resolve the 38 ms cliff bias (§ 0.4) from `_refusal_timing`
   lines.
 
-**P2 - dress rehearsal row + close-out: RUNSHEET WRITTEN 2026-10-16; to fly** (`tests/hardware/session_skill_stack_rehearsals.md` § 1b, rows 23-29; no goal-level validate-only path exists, so row 24 is the offline monotone check). Slug `2026-10-XX-handoff-lead-rehearsed`. A runsheet row for the next
-sitting, run on the LOADED Jetson, validate-only against the live `/robot_state`, with all refusals reported at
-once: schedules at 8 compile monotone; the `CATCH-AIM` source mix is logged; RESEND lines show `splice_k == k_rel`
-inside the band and `PINNED-BUDGET` declines are non-terminal. Flown: zero handoff `SPLICE_TOO_LATE` ENDs. Then
-the closing entry and `/archive-plan`, or § 2.C.
+**P2 - dress rehearsal row + close-out: FLOWN 2026-10-16 10:50, TARGET MET** (zero handoff `SPLICE_TOO_LATE` ENDs in 17 attempts / 175 handoff catches, worst first-install margin 70 ms, three installs over Fix 1's budget; § 2.C's trigger did not fire; rows 23-29 read retrospectively in `logbook/2026-10-16-handoff-lead-flown-zero-splice-too-late-tracker-fit-late.md` — the tracker fit arrived ~90 ms later than in the recorded sessions, so the first aim was the prior on 175/175 and only 30 re-aims installed; follow-ups in § 4). The runsheet (rows 23-29) was written for the loaded Jetson with all refusals reported at once; the operator did
+not run rows 26-29 live, so every read is retrospective from the launch log and the bag. Read: schedules compiled
+monotone (row 24, offline), the `CATCH-AIM` source mix 175/175 prior, every installed re-send `splice_k == k_rel`,
+`PINNED-BUDGET` declined at most once per catch and never followed by a budget END, zero handoff `SPLICE_TOO_LATE`
+ENDs. Next: `/archive-plan`.
 
 ### 2.C CONDITIONAL - worker chaining + pipelining + async dispatch
 
@@ -273,9 +275,9 @@ C2 node contract + async dispatch (slug `...-handoff-chain-contract`).
   Re-aims, catch evidence and the mode / lane-refused observation wait with it. The emitter is unaffected.
 - **A re-aim refused on limits is still terminal** (`LIMIT_*`, 2026-09-20 rule). P1b only stops spending the re-aim
   on a refusal the executor could predict (the budget). About 16 % of catches have no fit before the cliff at any
-  lead.
-- **The 38 ms cliff bias is unexplained** (§ 0.4). If the true cliff is earlier than the derived one, the 150 ms
-  floor is optimistic by that much. This is resolved in P1/P2 before trusting the table.
+  lead in the recorded sessions (48 % at the 2026-10-16 sitting, see § 4).
+- **The cliff bias is resolved (P2, § 0.4):** +0 to +25 ms of knot quantisation, never negative, so the 150 ms
+  floor and the budget table are lower bounds.
 - **§ 2.C only:** a wrong-head install (I-CHAIN-1), Foxy thread-pool exhaustion (semaphore 2), and async END
   timing.
 
@@ -288,12 +290,25 @@ C2 node contract + async dispatch (slug `...-handoff-chain-contract`).
   - `stage_wall_s` on the install log line.
 - The cheap late re-aim: a jerk-bounded cup-xy bump on the installed tail.
 
+
+**Recorded at P2 (2026-10-16), not this rung's to do:**
+- **Tracker fit latency since the matcher fix 5974d8c3** (first flown today): jugglebot-throw fits converged 540 ms
+  before landing at the median vs 630-645 in S1/S2/S8, p10 142 vs 566, and 36 % of flights never converged (vs
+  13-23 %); `TRACKER-IDENTITY-REFUSED` 51 vs 12-15 per session; learner rows 64 % of catches vs 85 %. Confirmation
+  itself is 2-3 steps, so the delay is downstream of it. Bag `~/Desktop/rosbags/2026-10-16_10-50-42`.
+- **A fresh-origin lead for the reload THROW:** `LEAD_S` gives it 150 ms; today's THROW plans ran 44-165 ms (recorded
+  41-88) and one attempt ended `ORIGIN_TOO_LATE` on 188 ms. Same class as this rung; a per-kind lead in
+  `_assign_leads`, replayed first.
+- **The raw-path re-aim after the snap band never installs** (53 fired, 53 refused on `LIMIT_*`/`INFEASIBLE`, 0
+  installed): a re-send at D + 0.30 s splices 100 ms after the release knot with ~240 ms to cup contact. It is
+  spent on a terminal refusal; a physics fence (or a non-terminal limit refusal for raw re-sends) would keep the
+  re-aim count honest. Harmless to the catch today.
+
 ## 5. Done means
 
 - P0: done 2026-10-15 (§ 0.4); recorded in the P0 logbook entry.
-- P1a: (date, `handoff_replay.py --extra 8`, **0 SPLICE_TOO_LATE, worst margin >= 25 ms**).
-- P1b: (date, `handoff_replay.py` with the fence model, the § 1.3 / § 0.4 budget table reproduced).
-- P1 close: (date, `./run_tests.sh --full`, counts); the 38 ms bias resolved or carried to P2 with a reason.
-- P2: the rehearsal row run with every check reported; the sitting's handoff `SPLICE_TOO_LATE` ENDs counted
-  (target 0) and its re-aim source mix logged; the closing entry; then `/archive-plan`, or § 2.C if its trigger
-  fired.
+- P1a: done 2026-10-16 (`handoff_replay.py --extra 8`: 0 SPLICE_TOO_LATE, worst recorded failure +113 ms; P1 entry).
+- P1b: done 2026-10-16 (fence model reproduced the § 1.3 / § 0.4 table; P1 entry).
+- P1 close: done 2026-10-16 (`./run_tests.sh --full`, counts in the P1 entry); the 38 ms bias carried to P2 and resolved there (§ 0.4).
+- P2: DONE 2026-10-16 — rows 23-29 read (retrospectively), 0 handoff `SPLICE_TOO_LATE` ENDs of 175, source mix
+  175/175 prior, 30 re-aims installed; closing entry written; § 2.C's trigger did not fire. Next: `/archive-plan`.
