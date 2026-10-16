@@ -20,6 +20,7 @@ from __future__ import annotations
 import json
 import math
 import os
+import re
 import sys
 
 import numpy as np
@@ -98,10 +99,11 @@ def test_fixture_resolves_to_recorded_outputs(fixture):
 
 # ---------------------------------------------------------------- (a2) Phase 1 path: bumped BB
 
-def _phase1(fixture, rot_deg):
+def _phase1(fixture, rot_deg, n_records=1):
     """The fixture sweep through the replay's Phase 1 path (``NodeSim.phase1``: assess_base_frame ->
     assess_sweep_vs_reference -> append_record -> format_outcome_body) against an in-memory state holding ONE
-    epoch at the fixture's own recorded kappa. ``rot_deg`` rotates every BB marker position about the vertical
+    epoch at the fixture's own recorded kappa, seeded with ``n_records`` identical records (0 = empty pool).
+    ``rot_deg`` rotates every BB marker position about the vertical
     through the fitted axis point (the 2 mm bump of the Phase 0 entry = 0.80 deg)."""
     import argparse
     inp, row = fixture['inputs'], fixture['row']
@@ -122,14 +124,16 @@ def _phase1(fixture, rot_deg):
         marker_frames=[(t, np.array([rot(q) for q in np.array(p)])) for t, p in inp['marker_frames']],
         yaw_samples=[tuple(x) for x in inp['stamped_yaw']], template=template, yaw_source='stamped')
     gate = R.GateState(base_model)
-    seed = R.KappaRecord(kappa_deg=row['kappa_deg'], sigma_deg=0.04, axis_point_b_mm=tuple(row['p_b_mm']),
-                         pin_deg=template.pinned_yaw_offset_deg, accepted_at='2026-10-10T00:00:00Z')
-    gate.state = R.seed_base_state([seed], None)
+    seeds = [R.KappaRecord(kappa_deg=row['kappa_deg'], sigma_deg=0.04, axis_point_b_mm=tuple(row['p_b_mm']),
+                           pin_deg=template.pinned_yaw_offset_deg, accepted_at='2026-10-10T00:00:00Z')
+             for _ in range(n_records)]
+    gate.state = R.seed_base_state(seeds, None)
     sim = R.NodeSim(argparse.Namespace(bb_yaw_source='auto', clip=None), template, base_model, gate)
     sim.t_start = 0.0
     sim.base_points = [(t, np.array(p)) for t, p in inp['base_points']]
     out = {'t_start': 0.0}
     sim.phase1(out, None, res, 1.0)
+    out['template_residual_mm'] = res.yaw_estimate.template_residual_mm   # the solver's, for the callers
     return out, gate
 
 
@@ -198,3 +202,155 @@ def test_bands_summarise_grouping_and_exclusion():
     ye = out['quantities']['yaw_offset_deg']['epochs']['per_epoch']
     assert ye['W0']['sweeps']['mean'] == pytest.approx(0.37) and ye['W0']['sweeps']['n'] == 6
     assert ye['W1']['sweeps']['mean'] == pytest.approx(1.71) and ye['W1']['sweeps']['n'] == 2
+
+
+# ---------------------------------------------------------------- (a3) Phase 1: pool-size independence
+
+@pytest.mark.parametrize('n_records', [0, 1, 5, 50])
+def test_template_residual_verdict_is_independent_of_pool_size(fixture, monkeypatch, n_records):
+    """Pins plan Phase 2 'the same data gives the same residual verdict on any pool size'. The fixture's template
+    residual is ~0.3 mm (the row value), under the shipped 0.90 mm TEMPLATE_RESIDUAL advisory band, so no pool of
+    0/1/5/50 seeded kappa records may flag it: the residual is a property of the sweep, never of the history.
+    With the band patched to 0.25 mm (below the residual) EVERY pool size must flag it and the outcome line must
+    carry 'template residual'."""
+    import jugglebot.bb_calibration as BC
+    row = fixture['row']
+    out, _ = _phase1(fixture, 0.0, n_records)
+    assert out['template_residual_mm'] == pytest.approx(row['template_residual_mm'], abs=3e-5)
+    assert 0.2 < row['template_residual_mm'] < 0.4
+    assert 'TEMPLATE_RESIDUAL' not in out['advisory_flags'].split(';')
+    monkeypatch.setattr(BC, 'TEMPLATE_RESIDUAL_ADVISORY_MM', 0.25)
+    tight, _ = _phase1(fixture, 0.0, n_records)
+    assert tight['template_residual_mm'] == out['template_residual_mm']
+    assert 'TEMPLATE_RESIDUAL' in tight['advisory_flags'].split(';')
+    assert 'template residual' in tight['outcome_line']
+
+
+# ---------------------------------------------------------------- (a4) Phase 2 measurements
+
+def _solve_fixture(fixture, marker_frames=None):
+    """Production solve of the fixture -> (inputs, template, frames, yaw, result, track)."""
+    inp = fixture['inputs']
+    template = R.load_marker_template(os.path.join(R.RES_DIR, 'bb_marker_template.json'))
+    frames = [(t, np.array(p)) for t, p in (marker_frames or inp['marker_frames'])]
+    yaw = [tuple(x) for x in inp['stamped_yaw']]
+    res = R.run_calibration(
+        calibration_data={int(k): [np.array(p) for p in v] for k, v in inp['calibration_data'].items()},
+        yaw_readings_deg=inp['yaw_readings_deg'], pitch_z_offset_mm=inp['params']['pitch_z_offset_mm'],
+        marker_frames=frames, yaw_samples=yaw, template=template, yaw_source='stamped')
+    return inp, template, frames, yaw, res, R.track_constellation(frames, template)
+
+
+def test_phase2_marker_stats_on_fixture(fixture):
+    """The Phase 2 measurements on the fixture sweep (a 2026-10-10 sweep). Measured 2026-10-16 on this fixture (recorded for the reader; the assertions below are bounds, not these values):
+    label fractions Q1..Q7 = 0.82 1.00 0.59 1.00 0.45 0.88 0.72; per-marker vis 0.79 0.99 0.91 1.00 0.67 0.89
+    0.61, rms 0.54-0.85 mm; worst pair Q1-Q4 0.2895 mm (equal to the solver's template residual: it IS that
+    statistic, by pair); out/ret yaw 0.318 / 0.293 deg against the production 0.284 deg (split 0.024 deg)."""
+    inp, template, frames, yaw, res, trk = _solve_fixture(fixture)
+    est, row = res.yaw_estimate, fixture['row']
+    ct = {int(k): [1] * len(v) for k, v in inp['calibration_data'].items()}
+    fr = R.marker_label_fractions(ct, len(frames))
+    assert len(fr) == 7 and all(0.0 <= f <= 1.0 for f in fr) and max(fr) >= 0.9
+    mask = R.moving_mask(trk, yaw, est.lag_s)
+    ms = R.marker_fit_stats(trk, mask)
+    assert len(ms) == 7
+    for m in ms:
+        assert 0.0 <= m['vis'] <= 1.0
+        if math.isfinite(m['rms_mm']):
+            assert m['rms_mm'] < 1.0
+    name, val = R.worst_pair(trk, mask)
+    assert re.fullmatch(r'Q[1-7]-Q[1-7]', name)
+    assert val == pytest.approx(est.template_residual_mm, abs=1e-6)       # the SAME statistic
+    assert val == pytest.approx(row['template_residual_mm'], abs=3e-5)    # and the recorded row (4-dp input rounding)
+    yo, yr = R.yaw_by_direction(trk, yaw, template, est.lag_s, est.phi_raw_deg)
+    prod = math.degrees(res.yaw_offset_rad)
+    assert abs(R.wrap_deg(yo - prod)) < 0.25 and abs(R.wrap_deg(yr - prod)) < 0.25
+    assert abs(R.wrap_deg(yo - yr)) < 0.25
+
+
+def _window_all(frames, extra=None):
+    """window_all rows for the fixture frames: the BB points get placeholder labels 'Ball Butler - i' (the
+    fixture keeps no per-point labels), plus ``extra`` {stamp: xyz} as UNLABELLED points."""
+    out = []
+    for t, p in frames:
+        p = np.asarray(p, float)
+        labels = ['Ball Butler - %d' % (i + 1) for i in range(len(p))]
+        pts = p
+        if extra and t in extra:
+            pts = np.vstack([p, np.asarray(extra[t], float).reshape(-1, 3)])
+            labels = labels + [''] * (len(pts) - len(p))
+        out.append((t, labels, pts.astype(np.float32)))
+    return out
+
+
+def test_labelfree_pickup_recovers_an_unlabelled_marker_and_ignores_shelf_points(fixture):
+    """Mechanism test for the label-free pickup, a case the 2026-10-16 bags never showed (0 of ~80k near-axis
+    unlabelled points were BB markers). (i) The extra unlabelled pool = the fixture's shelf markers: the
+    label-free solve equals the production yaw within 1e-3 deg and no pool point is within 3 mm of a posed BB
+    marker. (ii) QTM2 (index 1, labelled ~100 %) is stripped from every labelled frame (the point nearest the
+    posed QTM2, within 3 mm) and put in the unlabelled pool: the labelled-only solve on the stripped frames
+    still succeeds, and the label-free solve on stripped + pool recovers QTM2 (visibility back within 0.02)
+    and the original yaw within 5e-3 deg."""
+    inp, template, frames, yaw, res, trk = _solve_fixture(fixture)
+    est = res.yaw_estimate
+    prod = math.degrees(res.yaw_offset_rad)
+    posed = {float(t): (Rm, o) for t, Rm, o in zip(trk.t, trk.R, trk.origin)}
+    ax = est.axis_point_mm
+    mask = R.moving_mask(trk, yaw, est.lag_s)
+    vis0 = [m['vis'] for m in R.marker_fit_stats(trk, mask)]
+
+    # (i) shelf markers as the unlabelled pool (radius large enough to include them: they must still be ignored)
+    shelf = {float(t): np.array(p) for t, p in inp['base_points']}
+    wa = _window_all(frames, extra=shelf)
+    lf, st = R.labelfree_frames(wa, -1e18, 1e18, ax, 1e6, posed, template.points_mm)
+    assert st['n_unlab'] > 0 and st['n_within_3mm'] == 0
+    v = R.solve_variant(lf, yaw, 'stamped', template)
+    assert not isinstance(v, str)
+    assert abs(R.wrap_deg(math.degrees(v[0].yaw_offset_rad) - prod)) < 1e-3
+
+    # (ii) strip QTM2 from every frame and put it in the unlabelled pool
+    stripped, pool = [], {}
+    for t, p in frames:
+        Rm, o = posed[float(t)] if float(t) in posed else (None, None)
+        if Rm is None:
+            stripped.append((t, p))
+            continue
+        q2 = o + Rm @ template.points_mm[1]
+        d = np.linalg.norm(p - q2, axis=1)
+        j = int(np.argmin(d))
+        if d[j] <= 3.0:
+            pool[t] = p[j]
+            p = np.delete(p, j, axis=0)
+        stripped.append((t, p))
+    assert len(pool) > 0.9 * len(frames)
+    assert not isinstance(R.solve_variant(stripped, yaw, 'stamped', template), str)
+    wa2 = [(t, ['Ball Butler - %d' % (i + 1) for i in range(len(p))], np.asarray(p, np.float32)) for t, p in stripped]
+    wa2 = [(t, lab + ([''] if t in pool else []),
+            np.vstack([pts, np.asarray(pool[t], np.float32).reshape(1, 3)]) if t in pool else pts)
+           for t, lab, pts in wa2]
+    lf2, st2 = R.labelfree_frames(wa2, -1e18, 1e18, ax, R.LABELFREE_RADIUS_MM, posed, template.points_mm)
+    assert st2['n_within_3mm'] > 0.9 * len(frames)        # these ARE BB markers the labels missed
+    out2 = R.solve_variant(lf2, yaw, 'stamped', template)
+    assert not isinstance(out2, str)
+    est2, trk2 = out2
+    vis2 = [m['vis'] for m in R.marker_fit_stats(trk2, R.moving_mask(trk2, yaw, est2.lag_s))]
+    assert abs(vis2[1] - vis0[1]) < 0.02
+    assert abs(R.wrap_deg(math.degrees(est2.yaw_offset_rad) - prod)) < 5e-3
+
+
+def test_replay_cli_parses_subset_and_loo(monkeypatch, tmp_path):
+    """main() parses --subset 1,2,4,6,7 and --loo (empty bag glob: main() returns 0 after the faked write_outputs captures args)."""
+    seen = {}
+
+    def fake_write(outdir, rows, unmatched, args, elapsed):
+        seen['args'] = args
+        return 'score', 0, 0
+    monkeypatch.setattr(R, 'parse_launch_logs', lambda d: [])
+    monkeypatch.setattr(R, 'write_outputs', fake_write)
+    monkeypatch.setattr(sys, 'argv', ['bb_calibration_replay.py', '--bags', str(tmp_path / 'none*'),
+                                      '--subset', '1,2,4,6,7', '--loo'])
+    assert R.main() == 0
+    assert seen['args'].subset == '1,2,4,6,7' and seen['args'].loo is True
+    monkeypatch.setattr(sys, 'argv', ['bb_calibration_replay.py', '--bags', str(tmp_path / 'none*')])
+    assert R.main() == 0
+    assert seen['args'].subset is None and seen['args'].loo is False
