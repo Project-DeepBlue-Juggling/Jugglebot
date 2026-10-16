@@ -61,8 +61,13 @@ Evidence for each is in the entry. Labels match its census.
   the BB firmware reads the encoder absolutely with a constant zero (nothing
   stored or homed). **Not BB's power-up state (A/B 2026-10-16 evening,
   entry `2026-10-16-bb-calibration-power-cycle-ab.md`): kappa held 179.27 deg
-  across two BB-only cycles of 72 s and 86 min; the step happens between
-  sittings.** Next discriminator: a whole-stack power cycle with BB untouched.
+  across two BB-only cycles of 72 s and 86 min.** **The level is correlated with
+  ambient temperature (same entry § E, every sitting 10-10 to 10-16 with a
+  temperature): 15.5-17.2 C reads 179.55-179.64, 19.7-22.9 C reads
+  179.22-179.40, no resolvable slope inside either cluster; a correlation with
+  about two independent transitions, no controlled test yet.** Next discriminators: BB's yaw at a hard limit cold and warm (no
+  mocap); a dummy constellation next to BB. Readings ledger:
+  `ros_ws/docs/bb_calibration_readings.md`.
   Also NOT the sweep pose mix (clip experiment, Phase 0 entry § D), not the
   encoder's firmware, not the shelf (tilt in world flat).
 - **C2.** The kappa gate limit sat at its 0.09 deg floor. It was built from a
@@ -277,14 +282,18 @@ see below).
 179.27 deg (all 14 sweeps 179.22-179.38, the refused ones solved with the cap
 lifted) across a BB-only off of 72 s and one of 86 min with QTM, the frame
 and the room untouched, so the step is not a power-up state of the yaw stage
-and the mechanism stays open (next discriminator: a whole-stack power cycle
-with BB untouched). The 86 min off deformed the marker constellation (pair
+and the mechanism stays open (next discriminators: BB's yaw at a hard limit cold
+and warm; a dummy constellation next to BB). The 86 min off deformed the marker constellation (pair
 Q3-Q6 0.1 to 0.35 to 1.2 mm across the two events, geometric, not
 reconstruction); 7 of the 8 sweeps after it were refused CONSTELLATION_RESIDUAL
 and the launch restart was not causal. Owner's next: inspect the Q3 and Q6
-posts; the next sitting's first sweep discriminates physical from thermal;
+posts (done: rigid); the next sitting's first sweep reads the current state;
 the template builder is uncommitted and gone (rebuild is the owner's call).
-Tally 4 of 10.
+Tally 4 of 10. Late addendum (entry § E): kappa's level is correlated with ambient
+temperature as a threshold between 17.2 and 19.7 C (correlation, no
+controlled test yet), and the deformation is set at
+BB power-on, not by temperature; both tabulated in the readings ledger
+`ros_ws/docs/bb_calibration_readings.md`.
 
 ### Phase 3 - Robot frame measured in software (P4)
 
@@ -337,7 +346,7 @@ column still lands.
 - No change to BB firmware. No claim about the kappa-step mechanism beyond
   the entries; the 2026-10-16 first sweep excluded reconstruction drift and
   Phase 2 excluded labelling, the template, timing and firmware (the step is
-  at BB and not BB's power-up state (A/B 2026-10-16 evening), mechanism open: next discriminator is a whole-stack power cycle with BB untouched), and the plan does not
+  at BB and not BB's power-up state (A/B 2026-10-16 evening), level correlated with ambient temperature (entry § E); next discriminators are BB's yaw at a hard limit cold and warm and a dummy constellation next to BB), and the plan does not
   depend on the answer.
 - QTM wand-calibration age is hygiene (562 h old across the window); it is
   NOT a kappa fix (the 2026-10-16 re-wand did not move kappa) and the
