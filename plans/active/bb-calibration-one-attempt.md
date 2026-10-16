@@ -8,6 +8,7 @@ related_logbook:
   - 2026-10-14-bb-calibration-one-attempt-investigation.md
   - 2026-10-16-bb-calibration-phase1-gate-inversion.md
   - 2026-10-16-bb-calibration-phase2-template-residual.md
+  - 2026-10-16-bb-calibration-power-cycle-ab.md
 related_code:
   - ros_ws/src/jugglebot/jugglebot/bb_calibration.py
   - ros_ws/src/jugglebot/jugglebot/bb_base_frame.py
@@ -58,7 +59,10 @@ Evidence for each is in the entry. Labels match its census.
   subset, leave-one-out and label-free refit keeps the step on 75 sweeps of 22
   sittings, both sweep legs carry it, the axis point moved under 0.5 mm, and
   the BB firmware reads the encoder absolutely with a constant zero (nothing
-  stored or homed). Next: the owner's BB-only power-cycle A/B (Phase 2 entry).
+  stored or homed). **Not BB's power-up state (A/B 2026-10-16 evening,
+  entry `2026-10-16-bb-calibration-power-cycle-ab.md`): kappa held 179.27 deg
+  across two BB-only cycles of 72 s and 86 min; the step happens between
+  sittings.** Next discriminator: a whole-stack power cycle with BB untouched.
   Also NOT the sweep pose mix (clip experiment, Phase 0 entry § D), not the
   encoder's firmware, not the shelf (tilt in world flat).
 - **C2.** The kappa gate limit sat at its 0.09 deg floor. It was built from a
@@ -263,9 +267,24 @@ tools/probes/bb_calibration_replay.py --subset 1,2,4,6,7 -v`, 2026-10-16, run
 23 of 24 logged refusals accepted, the circle-centres sweep refused; the
 subset-kappa table is the entry's § B. Owner decisions carried forward
 unchanged: acceptance 2 wording; whether BB was powered off between 10:58
-and 15:05 on 10-16. Next for the mechanism: the owner's BB-only power-cycle
-A/B within one launch (entry § Open Questions). Phase 3 cleared to start, in
-parallel with the acceptance-2 tally (3 of 10).
+and 15:05 on 10-16. The owner's BB-only power-cycle A/B has since been run
+(result paragraph below). Phase 3 cleared to start, in parallel with the
+acceptance-2 tally (3 of 10 at that point; 4 of 10 after the evening sitting,
+see below).
+
+**Power-cycle A/B result (2026-10-16 evening, entry
+`logbook/2026-10-16-bb-calibration-power-cycle-ab.md`):** kappa held at
+179.27 deg (all 14 sweeps 179.22-179.38, the refused ones solved with the cap
+lifted) across a BB-only off of 72 s and one of 86 min with QTM, the frame
+and the room untouched, so the step is not a power-up state of the yaw stage
+and the mechanism stays open (next discriminator: a whole-stack power cycle
+with BB untouched). The 86 min off deformed the marker constellation (pair
+Q3-Q6 0.1 to 0.35 to 1.2 mm across the two events, geometric, not
+reconstruction); 7 of the 8 sweeps after it were refused CONSTELLATION_RESIDUAL
+and the launch restart was not causal. Owner's next: inspect the Q3 and Q6
+posts; the next sitting's first sweep discriminates physical from thermal;
+the template builder is uncommitted and gone (rebuild is the owner's call).
+Tally 4 of 10.
 
 ### Phase 3 - Robot frame measured in software (P4)
 
@@ -318,7 +337,7 @@ column still lands.
 - No change to BB firmware. No claim about the kappa-step mechanism beyond
   the entries; the 2026-10-16 first sweep excluded reconstruction drift and
   Phase 2 excluded labelling, the template, timing and firmware (the step is
-  at BB, mechanism open: owner's power-cycle A/B), and the plan does not
+  at BB and not BB's power-up state (A/B 2026-10-16 evening), mechanism open: next discriminator is a whole-stack power cycle with BB untouched), and the plan does not
   depend on the answer.
 - QTM wand-calibration age is hygiene (562 h old across the window); it is
   NOT a kappa fix (the 2026-10-16 re-wand did not move kappa) and the
@@ -340,6 +359,6 @@ column still lands.
 | Phase | Status | Date | Note |
 |-------|--------|------|------|
 | 0 Characterise | done | 2026-10-16 | bands published in the Phase 0 entry; pose mix excluded; the power-cycle pin dropped (every session is one), replaced by the 2026-10-16 QTM re-wand + the first Phase 1 sweep |
-| 1 Gate inversion and operator surface | code live, R1-R4 passed, tally 3 of 10 (15:08, 16:10, 16:23; pending acceptance rewording) | 2026-10-16 | merged c115743d; mechanism: at BB (Phase 2) |
-| 2 Template residual | done | 2026-10-16 | controlled pair + 75 sweeps of 22 sittings: the step is at BB (every subset, leave-one-out and label-free refit keeps it; firmware excluded); no pickup, no re-fit, one statistic kept (reference 0.18-0.46 mm, pool-size pin); owner's power-cycle A/B next |
+| 1 Gate inversion and operator surface | code live, R1-R4 passed, tally 4 of 10 (15:08, 16:10, 16:23, 20:30; the 22:01 first sweep refused on a true residual; pending acceptance rewording) | 2026-10-16 | merged c115743d; mechanism: at BB (Phase 2), not its power-up state (A/B) |
+| 2 Template residual | done | 2026-10-16 | controlled pair + 75 sweeps of 22 sittings: the step is at BB (every subset, leave-one-out and label-free refit keeps it; firmware excluded); no pickup, no re-fit, one statistic kept (reference 0.18-0.46 mm, pool-size pin); A/B done 2026-10-16 evening: kappa held across two BB-only cycles (not a power-up state); the 86 min off deformed Q3-Q6 to 1.2 mm, calibration refuses until addressed (entry `2026-10-16-bb-calibration-power-cycle-ab.md`) |
 | 3 Robot frame in software | not started | - | design-bearing; after Phase 1 |

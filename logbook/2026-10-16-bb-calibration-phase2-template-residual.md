@@ -142,7 +142,7 @@ The harness now scores the 10-16 launches against the node's logged values. On t
 
 True now: the kappa step is measured to be at BB and not in labelling, the template, reconstruction, timing or firmware; the owner's hardware step is defined (§ Open Questions); label-free pickup is a recorded null with a standing check in the replay; the template residual is one statistic with a documented reference level and a pool-size pin.
 
-NOT true: the mechanism at BB is not identified (owner's A/B next); plan acceptance 2's wording is still the owner's pending decision; the Phase 1 question whether BB was powered off between 10:58 and 15:05 on 10-16 is unanswered.
+NOT true: the mechanism at BB is not identified (the owner's BB-only A/B was run the same evening: not a power-up state, see `2026-10-16-bb-calibration-power-cycle-ab.md`); plan acceptance 2's wording is still the owner's pending decision; the Phase 1 question whether BB was powered off between 10:58 and 15:05 on 10-16 is unanswered.
 
 ## Withdrawn claims
 
@@ -150,7 +150,7 @@ NOT true: the mechanism at BB is not identified (owner's A/B next); plan accepta
 
 ## Open Questions
 
-- The BB mechanism. Owner decision 2026-10-16: (1) the firmware question is answered above (no); (2) a BB-only power-cycle A/B within one launch, QTM untouched: N sweeps, cycle only BB's supply, N more, repeated two or three times. Kappa jumping only across cycles pins a power-up state of the yaw stage; kappa holding across cycles and stepping only between sittings points at something that happens between sessions. The owner's check of the encoder magnet seat, the yaw stage on its shaft and the marker carrier follows from the result.
+- The BB mechanism. Owner decision 2026-10-16: (1) the firmware question is answered above (no); (2) a BB-only power-cycle A/B within one launch, QTM untouched: N sweeps, cycle only BB's supply, N more, repeated two or three times. Kappa jumping only across cycles pins a power-up state of the yaw stage; kappa holding across cycles and stepping only between sittings points at something that happens between sessions. The owner's check of the encoder magnet seat, the yaw stage on its shaft and the marker carrier follows from the result. **Done 2026-10-16 evening (`2026-10-16-bb-calibration-power-cycle-ab.md`): kappa held 179.27 deg across two BB-only cycles (72 s, 86 min); not a power-up state. The 86 min off deformed the constellation instead (Q3-Q6 1.2 mm, calibration refuses).**
 - Was BB powered off between 10:58 and 15:05 on 2026-10-16 (Phase 1 question, unchanged)?
 - Kappa moved 179.34 -> 179.24 between the 16:10 and 16:23 sittings, 13 minutes and one power cycle apart, and both late sittings' lag read -11.4 / -11.9 ms against +0.6 to +5.4 ms earlier in the day (a per-launch quantity). Within-day motion at the 0.1 deg level is inside the band; the A/B needs enough sweeps per leg to separate 0.1 from 0.3.
 - Acceptance 2 wording (plan § 0): owner decision pending, unchanged. The 16:10 and 16:23 sweeps are accepted with no override and no action, kappa +0.07 and -0.04 deg inside K1's band: tally 3 of 10 under either wording.
