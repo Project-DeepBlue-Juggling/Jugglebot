@@ -3,7 +3,7 @@
 
 What it replays
     Each operator yaw sweep (heartbeat state CALIBRATING -> not CALIBRATING) found in
-    ~/Desktop/rosbags/2026-10-1[0-4]_*, through the SAME functions ``mocap_node`` calls, with
+    ~/Desktop/rosbags/2026-10-1[0-6]_*, through the SAME functions ``mocap_node`` calls, with
     the SAME inputs rebuilt from the bag (/mocap_data, /bb/heartbeat, /bb/axis_estimates):
     ``bb_calibration.run_calibration`` (template fit, lag fit, axis fit, yaw offset), then the
     Phase 1 path in the node's order: ``bb_base_frame.estimate_base_pose`` / ``bb_in_base`` /
@@ -20,6 +20,22 @@ What it replays
     simulated the 2026-10-11..15 gates (``verdict_current``, retired); that fidelity result (38/39
     verdicts, 185/185 measurements) is recorded in the Phase 0 logbook entry and the gates no
     longer exist in the library.
+
+Phase 2 columns (the 2026-10-16 controlled-pair measurement, now standing; sweeps.csv / summary.md)
+    Labelling: ``label_frac`` (7: fraction of window frames in which QTM labelled 'Ball Butler - i'),
+    ``rest_n_frames`` / ``rest_label_frac`` / ``rest_pair_err_max_mm`` / ``rest_unlab_near_axis_per_frame`` (the
+    15 s before the sweep). Fit: ``marker_vis`` / ``marker_rms_mm`` / ``marker_body_mean_mm`` (7, 7, 7x3),
+    ``worst_pair`` / ``worst_pair_mm`` (the solver's template residual, by pair). Label-free pickup:
+    ``yaw_labelfree_deg`` / ``kappa_labelfree_deg`` / ``template_residual_labelfree_mm`` / ``labelfree_matched`` /
+    ``labelfree_marker_vis`` / ``labelfree_unlab_per_frame`` / ``labelfree_n_unlab`` / ``labelfree_n_within_3mm`` /
+    ``labelfree_p05_min_dist_mm`` (one extra solve per sweep on EVERY marker, labelled or not, within
+    LABELFREE_RADIUS_MM of the fitted axis). Direction split: ``yaw_out_deg`` / ``yaw_ret_deg`` /
+    ``kappa_out_deg`` / ``kappa_ret_deg``. Shelf: ``base_pair_err_mm`` (C-M, C-E, C-S, M-E, M-S, E-S). Opt-in
+    flags: ``--subset 1,2,4,6,7`` (``subset``, ``yaw_subset_deg``, ``kappa_subset_deg``,
+    ``template_residual_subset_mm``) and ``--loo`` (``yaw_loo_deg`` / ``kappa_loo_deg``, 7 refits per sweep). A
+    refused variant stores its refusal class in the yaw column. The label-free pickup is a standing NULL check:
+    the 2026-10-16 measurement found nothing to pick up (0 of ~80k unlabelled near-axis points were BB markers),
+    and a non-zero ``labelfree_n_within_3mm`` is what would change that.
 
 Fidelity contract
     For the sweeps the node logged (~/.ros/log/<launch>/launch.log), the replayed yaw offset,
@@ -49,14 +65,16 @@ Usage
     python tools/probes/bb_calibration_replay.py [-v] [--bags GLOB] [--sweep BAG:IDX]
         [--bb-yaw-source auto|stamped|heartbeat]
         [--ros-log-dir DIR] [--state-json PATH]
-        [--emit-fixture BAG:IDX --out PATH]
+        [--subset 1,2,4,6,7] [--loo] [--emit-fixture BAG:IDX --out PATH]
 """
 from __future__ import annotations
 
 import argparse
 import copy
 import csv
+import dataclasses
 import datetime
+import itertools
 import glob
 import json
 import math
@@ -75,11 +93,12 @@ import jugglebot.hardware_config as hw  # noqa: E402
 from jugglebot.bb_calibration import (  # noqa: E402
     run_calibration, load_marker_template, assess_sweep_vs_reference, format_outcome_body,
     stamped_yaw_samples_from_joint_state, BB_MARKER_COUNT, sweep_kinematics,
+    SWEEP_MIN_SPEED_DEG_S, canonical_yaw_deg, estimate_sweep_yaw_offset, track_constellation,
 )
 from jugglebot.bb_base_frame import (  # noqa: E402
     BaseFrameMonitor, KappaRecord, append_record, assess_base_frame,
     base_candidate_points, bb_in_base, current_epoch_id, estimate_base_pose,
-    kappa_sweep_sd_deg, load_base_frame, seed_base_state,
+    kappa_sweep_sd_deg, load_base_frame, seed_base_state, track_base_frame,
 )
 
 #: Node constants mirrored from mocap_node.py (asserted against the module text in --selfcheck).
@@ -88,10 +107,23 @@ CALIBRATION_TIMEOUT_S = 60.0
 BASE_MONITOR_PERIOD_S = 0.2
 BASE_MONITOR_MAX_AGE_S = 30.0
 MONITOR_PRE_S = 40.0
+#: Phase 2: rest-pose look-back before a sweep (s) and the label-free pickup radius about the fitted axis (mm).
+REST_SPAN_S = 15.0
+LABELFREE_RADIUS_MM = 250.0
 
 #: Fidelity tolerances (replay brief).
 TOL = {'yaw_offset_deg': 0.002, 'kappa_deg': 0.002, 'template_residual_mm': 0.005,
        'yaw_lag_ms': 0.5, 'sigma_deg': 0.002}
+
+#: Phase 2 columns (see the module docstring).
+PHASE2_COLS = [
+    'label_frac', 'marker_vis', 'marker_rms_mm', 'marker_body_mean_mm', 'worst_pair', 'worst_pair_mm',
+    'yaw_labelfree_deg', 'template_residual_labelfree_mm', 'labelfree_matched', 'labelfree_marker_vis',
+    'labelfree_unlab_per_frame', 'labelfree_n_unlab', 'labelfree_n_within_3mm', 'labelfree_p05_min_dist_mm',
+    'yaw_out_deg', 'yaw_ret_deg', 'rest_n_frames', 'rest_label_frac', 'rest_pair_err_max_mm',
+    'rest_unlab_near_axis_per_frame', 'subset', 'yaw_subset_deg', 'template_residual_subset_mm', 'yaw_loo_deg',
+    'kappa_labelfree_deg', 'kappa_out_deg', 'kappa_ret_deg', 'kappa_subset_deg', 'kappa_loo_deg',
+    'base_pair_err_mm']
 
 RES_DIR = os.path.join(REPO, 'ros_ws', 'src', 'jugglebot', 'resources')
 BAG_ROOT = os.path.expanduser('~/Desktop/rosbags')
@@ -149,10 +181,12 @@ def refusal_class(text):
 
 
 def parse_launch_logs(ros_log_dir):
-    """The node's logged sweeps (Phase 0 node, 2026-10-11..14).
-    Launches 2026-10-11..14 only (the 10-10 launches ran older code: scored mismatches there are version, not fidelity). A sweep: t_start, outcome, refusal_class, and the numbers of its 'Yaw offset' DEBUG line."""
+    """The node's logged sweeps (2026-10-11..16 launches; the 10-16 launches, 15:07:58 Phase 1 code and 16:10:37,
+    log the same 'Yaw offset (sweep)' DEBUG line).
+    Launches 2026-10-11..16 only (the 10-10 launches ran older code: scored mismatches there are version, not
+    fidelity). A sweep: t_start, outcome, refusal_class, and the numbers of its 'Yaw offset' DEBUG line."""
     sweeps = []
-    for lp in sorted(glob.glob(os.path.join(ros_log_dir, '2026-10-1[1-4]-*', 'launch.log'))):
+    for lp in sorted(glob.glob(os.path.join(ros_log_dir, '2026-10-1[1-6]-*', 'launch.log'))):
         ld = os.path.basename(os.path.dirname(lp))
         cur = None
         idx = 0
@@ -222,6 +256,8 @@ class NodeSim:
         self.monitor = BaseFrameMonitor(base_model.template_mm)
         self.monitor_last_t = None
         self.rows = []
+        self.recent_all = []           # Phase 2: rolling REST_SPAN_S + 2 s of every marker of every frame
+        self._last_all_ns = None
         self.capture = None            # raw-input capture of the most recent sweep
         self.keep_capture = False
         self.capture_idx = None        # 1-based sweep number in this bag to capture (None: last)
@@ -236,6 +272,8 @@ class NodeSim:
         self.stamped = []
         self.base_points = []
         self.last_base_ns = None
+        self.window_all = []           # Phase 2: (stamp_s, labels, xyz) of EVERY marker, while calibrating
+        self.rest_snapshot = []
 
     # -- events ------------------------------------------------------------
     def heartbeat(self, t, state, yaw):
@@ -248,7 +286,9 @@ class NodeSim:
             self.calibrating = True
             self.invalid = None
             self.t_start = t
+            rest = list(self.recent_all)
             self.reset_window()
+            self.rest_snapshot = rest
             self.calib_data = {i: [] for i in range(BB_MARKER_COUNT)}
             self.calib_times = {i: [] for i in range(BB_MARKER_COUNT)}
         if self.calibrating and self.invalid is None:
@@ -287,6 +327,20 @@ class NodeSim:
         frame_ns = stamp_ns if stamp_ns > 0 else None
         labelled, unlabelled = [], []
         bb_rows = [None] * BB_MARKER_COUNT
+        if frame_ns is not None and frame_ns != self._last_all_ns:
+            self._last_all_ns = frame_ns
+            fr = (frame_ns * 1e-9, [mk.label or '' for mk in d.markers],
+                  np.array([(mk.position.x, mk.position.y, mk.position.z) for mk in d.markers],
+                           dtype=np.float32).reshape(-1, 3))
+            self.recent_all.append(fr)
+            lo = fr[0] - (REST_SPAN_S + 2.0)
+            k = 0
+            while k < len(self.recent_all) and self.recent_all[k][0] < lo:
+                k += 1
+            if k:
+                del self.recent_all[:k]
+            if self.calibrating and self.invalid is None:
+                self.window_all.append(fr)
         for mk in d.markers:
             p = mk.position
             lab = mk.label
@@ -418,6 +472,8 @@ class NodeSim:
             arc_span_deg=(float(np.median(arcs)) if arcs else None),
             sweep_end_deg=est.sweep_end_deg, sweep_start_deg=est.sweep_start_deg,
             verdict_intrinsic='ACCEPTED')
+        self._solve_frames = frames
+        self.phase2_yaw(row, result, yaw_samples, yaw_source, t_end)
 
         return self.phase1(row, cap, result, t_end)
 
@@ -436,6 +492,15 @@ class NodeSim:
                        base_tilt_deg=pose.tilt_deg, base_residual_mm=pose.residual_mm,
                        base_n_frames=pose.n_frames, kappa_deg=view['kappa'],
                        p_b_mm=[float(v) for v in view['p_b']])
+            h = pose.heading_deg
+            for col, src in (('kappa_labelfree_deg', 'yaw_labelfree_deg'), ('kappa_out_deg', 'yaw_out_deg'),
+                             ('kappa_ret_deg', 'yaw_ret_deg'), ('kappa_subset_deg', 'yaw_subset_deg')):
+                v = row.get(src)
+                row[col] = wrap_deg(v - h) if isinstance(v, float) else None
+            if 'yaw_loo_deg' in row:
+                row['kappa_loo_deg'] = [wrap_deg(v - h) if isinstance(v, float) else None
+                                        for v in row['yaw_loo_deg']]
+            row['base_pair_err_mm'] = base_pair_errors(self.base_points, self.base_model.template_mm)
         cur = current_epoch_id(state)
         cur_e = next((e for e in state['epochs'] if e['id'] == cur), None)
         row['pool_n_before'] = None if cur_e is None else cur_e['n']
@@ -495,6 +560,75 @@ class NodeSim:
             self.capture = {'inputs': cap, 'row': row}
         self.rows.append(row)
 
+    # -- Phase 2 columns -----------------------------------------------------
+    def phase2_yaw(self, row, result, yaw_samples, yaw_source, t_end):
+        """Fill the YAW-level Phase 2 columns (labelling, per-marker residuals, label-free pickup, the direction
+        split, rest-pose statistics, optional subset / leave-one-out refits). Never raises: a refused variant
+        stores its refusal class in the yaw column."""
+        a, tpl = self.args, self.template
+        est = result.yaw_estimate
+        frames = self._solve_frames
+        K = len(tpl.points_mm)
+        row['label_frac'] = marker_label_fractions(self.calib_times, len(self.frames))
+        trk = track_constellation(frames, tpl)
+        mask = moving_mask(trk, yaw_samples, est.lag_s)
+        ms = marker_fit_stats(trk, mask)
+        row['marker_vis'] = [m['vis'] for m in ms]
+        row['marker_rms_mm'] = [_fin(m['rms_mm']) for m in ms]
+        row['marker_body_mean_mm'] = [[_fin(v) for v in m['body_mean_mm']] for m in ms]
+        wp, wv = worst_pair(trk, mask)
+        row['worst_pair'], row['worst_pair_mm'] = wp, wv
+        # label-free pickup: every marker (any label or none) within the radius of the fitted axis point
+        posed = {float(t): (Rm, o) for t, Rm, o in zip(trk.t, trk.R, trk.origin)}
+        window_all = self.window_all
+        if a.clip is not None:
+            window_all = [f for f in window_all if self._inside_clip(f[0], yaw_samples)]
+        lf_frames, st = labelfree_frames(window_all, self.t_start, t_end, est.axis_point_mm,
+                                         LABELFREE_RADIUS_MM, posed, tpl.points_mm)
+        row.update(labelfree_unlab_per_frame=st['unlab_per_frame'], labelfree_n_unlab=st['n_unlab'],
+                   labelfree_n_within_3mm=st['n_within_3mm'], labelfree_p05_min_dist_mm=st['p05_min_dist_mm'])
+        lf = solve_variant(lf_frames, yaw_samples, yaw_source, tpl)
+        if isinstance(lf, str):
+            row.update(yaw_labelfree_deg=lf, template_residual_labelfree_mm=None, labelfree_matched=None,
+                       labelfree_marker_vis=None)
+        else:
+            lest, ltrk = lf
+            row.update(yaw_labelfree_deg=math.degrees(lest.yaw_offset_rad),
+                       template_residual_labelfree_mm=lest.template_residual_mm,
+                       labelfree_matched='%s-%s' % (lest.matched_min, lest.matched_max),
+                       labelfree_marker_vis=[m['vis'] for m in marker_fit_stats(
+                           ltrk, moving_mask(ltrk, yaw_samples, lest.lag_s))])
+        # direction split
+        yo, yr = yaw_by_direction(trk, yaw_samples, tpl, est.lag_s, est.phi_raw_deg)
+        row['yaw_out_deg'], row['yaw_ret_deg'] = yo, yr
+        # rest pose
+        rs = rest_stats(self.rest_snapshot, self.t_start, tpl, est.axis_point_mm)
+        row.update(rest_n_frames=rs['n_frames'], rest_label_frac=rs['label_frac'],
+                   rest_pair_err_max_mm=rs['pair_err_max_mm'],
+                   rest_unlab_near_axis_per_frame=rs['unlab_near_axis_per_frame'])
+        sub = getattr(a, 'subset', None)
+        if sub:
+            idx = [int(i) - 1 for i in sub.split(',')]
+            v = solve_variant(frames, yaw_samples, yaw_source, sub_template(tpl, idx))
+            row['subset'] = sub
+            if isinstance(v, str):
+                row['yaw_subset_deg'], row['template_residual_subset_mm'] = v, None
+            else:
+                row['yaw_subset_deg'] = math.degrees(v[0].yaw_offset_rad)
+                row['template_residual_subset_mm'] = v[0].template_residual_mm
+        if getattr(a, 'loo', False):
+            loo = []
+            for k in range(K):
+                v = solve_variant(frames, yaw_samples, yaw_source,
+                                  sub_template(tpl, [i for i in range(K) if i != k]))
+                loo.append(None if isinstance(v, str) else math.degrees(v[0].yaw_offset_rad))
+            row['yaw_loo_deg'] = loo
+
+    def _inside_clip(self, t, yaw_samples):
+        lo, hi = self.args.clip
+        ys = sorted(yaw_samples)
+        return lo <= float(np.interp(t, [x[0] for x in ys], [x[1] for x in ys])) <= hi
+
     # -- base-frame helpers (mirrors of the node's private methods) ---------
     def _base_frame_view(self, result):
         view = {'pose': None, 'error': '', 'kappa': None, 'p_b': None,
@@ -552,6 +686,182 @@ def direction_changes(samples, min_speed=5.0, win=0.25):
     v[ok] = (y[j[ok]] - y[ok]) / np.maximum(t[j[ok]] - t[ok], 1e-6)
     sg = np.sign(v[np.abs(v) >= min_speed])
     return int(np.count_nonzero(np.diff(sg) != 0)) if len(sg) > 1 else 0
+
+
+def _fin(v):
+    """nan/inf -> None so the JSON columns stay valid."""
+    return float(v) if v is not None and math.isfinite(v) else None
+
+
+# ───────────────────────────── Phase 2 measurements (pure; tests call them on the fixture) ─────────────────────────────
+
+def moving_mask(track, yaw_samples, lag_s):
+    """The solver's moving mask: track frames whose yaw rate at (t + lag) exceeds SWEEP_MIN_SPEED_DEG_S."""
+    ys = np.array(sorted((float(t), float(v)) for t, v in yaw_samples)).reshape(-1, 2)
+    w = np.gradient(canonical_yaw_deg(ys[:, 1]), ys[:, 0])
+    return np.abs(np.interp(track.t + lag_s, ys[:, 0], w)) > SWEEP_MIN_SPEED_DEG_S
+
+
+def marker_label_fractions(calib_times, n_frames):
+    """Per QTM index: fraction of the window's distinct frames in which 'Ball Butler - i' was labelled."""
+    return [len(calib_times.get(i, ())) / max(n_frames, 1) for i in range(BB_MARKER_COUNT)]
+
+
+def marker_fit_stats(track, mask):
+    """Per template marker over the frames in mask: visibility (fraction of posed frames matched), RMS 3D
+    residual (mm) and the mean residual vector in the BODY frame (mm); a systematic body-frame offset is a
+    template error for that marker. Dicts {'vis', 'rms_mm', 'body_mean_mm': [x, y, z], 'n'}."""
+    T = track.template_mm
+    out = []
+    Rm, om, Pm = track.R[mask], track.origin[mask], track.points[mask]
+    for k in range(len(T)):
+        posed = om + np.einsum('nij,j->ni', Rm, T[k])
+        e = Pm[:, k] - posed
+        ok = np.all(np.isfinite(e), axis=1)
+        if ok.sum() == 0:
+            out.append({'vis': 0.0, 'rms_mm': float('nan'), 'body_mean_mm': [float('nan')] * 3, 'n': 0})
+            continue
+        eb = np.einsum('nji,nj->ni', Rm[ok], e[ok])            # R^T e
+        out.append({'vis': float(ok.mean()), 'rms_mm': float(np.sqrt(np.mean(np.sum(e[ok] ** 2, axis=1)))),
+                    'body_mean_mm': [float(v) for v in eb.mean(axis=0)], 'n': int(ok.sum())})
+    return out
+
+
+def worst_pair(track, mask):
+    """('Qa-Qb', |pose-binned separation error| mm) of the worst marker pair: the SAME statistic as the
+    solver's template residual (1-based QTM indices)."""
+    ap = np.abs(track.pair_residual_pose_binned_mm(mask))
+    if not np.any(np.isfinite(ap)):
+        return None, None
+    a, b = np.unravel_index(np.nanargmax(np.where(np.isfinite(ap), ap, -1)), ap.shape)
+    return 'Q%d-Q%d' % (a + 1, b + 1), float(ap[a, b])
+
+
+def labelfree_frames(window_all, t0, t1, axis_mm, radius_mm, posed, template_mm=None):
+    """Label-free pickup: per window frame, EVERY marker (any label or none) within radius_mm of axis_mm.
+    window_all: [(stamp_s, labels, xyz (n,3))]. posed: {stamp: (R, origin)} of the production track. Returns
+    (frames [(t, (n,3))], stats). stats: unlab_per_frame (unlabelled near-axis points per posed frame),
+    n_unlab, n_other_labelled (near-axis points with a non-BB label), n_within_3mm / p05_min_dist_mm (for each
+    UNLABELLED near-axis point, its min distance to the production track's posed template markers at that
+    stamp: within 3 mm would be a BB marker QTM failed to label; needs template_mm (K,3), the body-frame
+    template the track was fitted with)."""
+    ax = np.asarray(axis_mm, float)
+    frames, dmins = [], []
+    n_unlab = n_other = n_seen = 0
+    for stamp, labels, xyz in window_all:
+        if stamp is None or not (t0 <= stamp <= t1):
+            continue
+        xyz = np.asarray(xyz, float).reshape(-1, 3)
+        ok = np.all(np.isfinite(xyz), axis=1)
+        near = ok & (np.linalg.norm(xyz - ax, axis=1) <= radius_mm)
+        pz = posed.get(stamp) if posed else None
+        if pz is not None:
+            n_seen += 1
+        if not near.any():
+            continue
+        for i in np.flatnonzero(near):
+            lab = labels[i]
+            if lab.startswith('Ball Butler - '):
+                continue
+            if lab:
+                n_other += 1
+                continue
+            n_unlab += 1
+            if pz is not None and template_mm is not None:
+                Rm, o = pz
+                tw = np.asarray(template_mm, float) @ Rm.T + o
+                dmins.append(float(np.min(np.linalg.norm(tw - xyz[i], axis=1))))
+        frames.append((stamp, xyz[near]))
+    dm = np.array(dmins)
+    return frames, {'unlab_per_frame': n_unlab / max(n_seen or len(frames), 1), 'n_unlab': n_unlab,
+                    'n_other_labelled': n_other, 'n_within_3mm': int(np.count_nonzero(dm <= 3.0)),
+                    'p05_min_dist_mm': float(np.percentile(dm, 5)) if dm.size else None}
+
+
+def yaw_by_direction(track, yaw_samples, template, lag_s, phi_raw_deg):
+    """(yaw_out_deg, yaw_ret_deg): the yaw offset from the OUT (yaw rising) and RETURN (yaw falling) halves of
+    the sweep alone, at the production lag, in the PINNED gauge (phi + gauge_shift, wrapped like the solver).
+    phi per moving yaw sample = theta(t - lag) - y - E(y), branch-aligned to phi_raw_deg. None if a half is empty."""
+    ys = np.array(sorted((float(t), float(v)) for t, v in yaw_samples)).reshape(-1, 2)
+    y = canonical_yaw_deg(ys[:, 1])
+    w = np.gradient(y, ys[:, 0])
+    th = track.theta_deg
+    tq = ys[:, 0] - lag_s
+    ok = ((tq >= track.t[0]) & (tq <= track.t[-1]) & (np.abs(w) > SWEEP_MIN_SPEED_DEG_S)
+          & (y >= template.e_valid_yaw_deg[0]) & (y <= template.e_valid_yaw_deg[1]))
+    phi = np.interp(tq, track.t, th) - y - template.e_deg(y)
+    phi = phi - np.round((phi - phi_raw_deg) / 360.0) * 360.0
+    res = []
+    for sel in (ok & (w > 0), ok & (w < 0)):
+        res.append(wrap_deg(float(phi[sel].mean()) + template.gauge_shift_deg) if sel.any() else None)
+    return res[0], res[1]
+
+
+def sub_template(template, idx):
+    """The template restricted to marker indices idx (0-based)."""
+    idx = list(idx)
+    return dataclasses.replace(template, points_mm=template.points_mm[idx],
+                               names=tuple(template.names[i] for i in idx))
+
+
+def solve_variant(frames, yaw_samples, yaw_source, template):
+    """One track + estimate_sweep_yaw_offset on arbitrary frames/template. Returns (estimate, track), or the
+    refusal class string when the solver refuses."""
+    try:
+        trk = track_constellation(frames, template)
+        est = estimate_sweep_yaw_offset(frames, yaw_samples, template, yaw_source=yaw_source, track=trk)
+    except ValueError as e:
+        return refusal_class(str(e))
+    return est, trk
+
+
+def rest_stats(recent_all, t_start, template, axis_mm, span_s=REST_SPAN_S, radius_mm=LABELFREE_RADIUS_MM):
+    """Rest pose (the span_s before the sweep start, up to 0.5 s before): {'n_frames', 'label_frac' (per QTM
+    index), 'pair_err_max_mm' (max |mean separation error vs the template| over labelled pairs),
+    'unlab_near_axis_per_frame'}."""
+    K = len(template.points_mm)
+    T = template.points_mm
+    dT = np.linalg.norm(T[:, None] - T[None], axis=2)
+    ax = np.asarray(axis_mm, float)
+    n_fr, lab_cnt, nu_tot = 0, np.zeros(K), 0
+    pair_err = {}
+    for stamp, labels, xyz in recent_all:
+        if stamp is None or not (t_start - span_s <= stamp < t_start - 0.5):
+            continue
+        n_fr += 1
+        xyz = np.asarray(xyz, float).reshape(-1, 3)
+        rows = {}
+        for i, lab in enumerate(labels):
+            if not np.all(np.isfinite(xyz[i])):
+                continue
+            m = re.fullmatch(r'Ball Butler - (\d+)', lab)
+            if m and 1 <= int(m.group(1)) <= K:
+                rows[int(m.group(1)) - 1] = xyz[i]
+                lab_cnt[int(m.group(1)) - 1] += 1
+            elif not lab and np.linalg.norm(xyz[i] - ax) <= radius_mm:
+                nu_tot += 1
+        for p, q in itertools.combinations(sorted(rows), 2):
+            pair_err.setdefault((p, q), []).append(np.linalg.norm(rows[p] - rows[q]) - dT[p, q])
+    errs = [abs(float(np.mean(v))) for v in pair_err.values()]
+    return {'n_frames': n_fr, 'label_frac': (lab_cnt / max(n_fr, 1)).tolist(),
+            'pair_err_max_mm': max(errs) if errs else None, 'unlab_near_axis_per_frame': nu_tot / max(n_fr, 1)}
+
+
+def base_pair_errors(base_points, base_template):
+    """Mean observed - template separation (mm) of the shelf marker pairs over the window, in the order
+    C-M, C-E, C-S, M-E, M-S, E-S; None for a pair never seen / no track."""
+    TB = np.asarray(base_template, float)
+    dT = np.linalg.norm(TB[:, None] - TB[None], axis=2)
+    try:
+        bt = track_base_frame(base_points, TB)
+    except ValueError:
+        return [None] * 6
+    out = []
+    for a, b in itertools.combinations(range(4), 2):
+        d = np.linalg.norm(bt.points[:, a] - bt.points[:, b], axis=1)
+        d = d[np.isfinite(d)]
+        out.append(float(d.mean()) - float(dT[a, b]) if d.size else None)
+    return out
 
 
 def jsonable(o):
@@ -667,7 +977,7 @@ def write_outputs(outdir, rows, unmatched, args, elapsed):
             'verdict_p1', 'verdict_text', 'verdict_intrinsic', 'epoch_id', 'epoch_opened',
             'epoch_rejoined', 'delta_kappa_deg', 'delta_axis_b_mm', 'delta_yaw_deg', 'axis_shift_mm',
             'same_world_epoch', 'advisory_flags', 'outcome_line', 'logged_outcome',
-            'logged_class', 'logged_pool_n', 'match_measure', 'clip_yaw_deg', 'n_frames_clip_in']
+            'logged_class', 'logged_pool_n', 'match_measure', 'clip_yaw_deg', 'n_frames_clip_in'] + PHASE2_COLS
     for r in rows:
         L = r.get('logged')
         cmp_ = compare(r)
@@ -777,13 +1087,66 @@ def write_outputs(outdir, rows, unmatched, args, elapsed):
              and abs(r['sweep_end_deg']) > 30]
         if v:
             S.append(f'| ALL {side} | {len(v)} | {np.mean(v):.2f} | {min(v):.2f} | {max(v):.2f} | {side} |')
+    S += phase2_summary(rows)
     open(os.path.join(outdir, 'summary.md'), 'w').write('\n'.join(S) + '\n')
     return score, intr_acc, len(refused)
 
 
+def phase2_summary(rows):
+    """summary.md section '## Phase 2: labelling, per-marker residuals, refit variants'."""
+    K = BB_MARKER_COUNT
+    p2 = sorted((r for r in rows if r.get('label_frac') is not None), key=lambda r: r['t_start'])
+    S = ['', '## Phase 2: labelling, per-marker residuals, refit variants', '']
+    if not p2:
+        return S + ['No sweep reached the Phase 2 measurements.']
+    q = ' | '.join('Q%d' % (i + 1) for i in range(K))
+    tag = lambda r: '%s#%s' % (r['bag'], r['sweep_idx'])
+    f2 = lambda v: 'n/a' if v is None else '%.2f' % v
+    S += ['### Label coverage (fraction of frames labelled "Ball Butler - i": window, then 15 s rest before)', '',
+          '| sweep | src | n frames | ' + q + ' | rest: ' + ' | '.join('Q%d' % (i + 1) for i in range(K)) + ' |',
+          '|---|---|---|' + '---|' * (2 * K)]
+    for r in p2:
+        S.append('| %s | %s | %s | %s | %s |' % (
+            tag(r), r.get('yaw_source'), r.get('n_frames'), ' | '.join(f2(v) for v in r['label_frac']),
+            ' | '.join(f2(v) for v in (r.get('rest_label_frac') or [None] * K))))
+    S += ['', '### Kappa variants (deg) and template residuals (mm)', '',
+          '| sweep | kappa | label-free | out | ret | subset | template residual | LF residual |',
+          '|---|---|---|---|---|---|---|---|']
+    f3 = lambda v: 'n/a' if v is None else ('%.3f' % v if isinstance(v, float) else str(v))
+    for r in p2:
+        lf = r.get('kappa_labelfree_deg')
+        if lf is None and isinstance(r.get('yaw_labelfree_deg'), str):
+            lf = r['yaw_labelfree_deg']
+        sb = r.get('kappa_subset_deg')
+        if sb is None and isinstance(r.get('yaw_subset_deg'), str):
+            sb = r['yaw_subset_deg']
+        S.append('| %s | %s | %s | %s | %s | %s | %s | %s |' % (
+            tag(r), f3(r.get('kappa_deg')), f3(lf), f3(r.get('kappa_out_deg')), f3(r.get('kappa_ret_deg')),
+            f3(sb), f3(r.get('template_residual_mm')), f3(r.get('template_residual_labelfree_mm'))))
+    n_pts = sum(r.get('labelfree_n_unlab') or 0 for r in p2)
+    n3 = sum(r.get('labelfree_n_within_3mm') or 0 for r in p2)
+    ident = 0
+    for r in p2:
+        lv = r.get('labelfree_marker_vis')
+        if lv is not None and all(abs(a - b) <= 0.005 for a, b in zip(lv, r['marker_vis'])):
+            ident += 1
+    S += ['', 'label-free pickup: %d unlabelled near-axis points over %d sweeps, %d within 3 mm of a posed BB '
+          'marker; per-marker visibility identical with and without pickup in %d of %d sweeps '
+          '(a standing null check: the 2026-10-16 measurement found nothing to pick up)'
+          % (n_pts, len(p2), n3, ident, len(p2)), '',
+          '### Per-marker body-frame mean residual (x, y, z mm; a systematic offset is a template error)', '',
+          '| sweep | ' + q + ' |', '|---|' + '---|' * K]
+    for r in p2:
+        cells = []
+        for m in r['marker_body_mean_mm']:
+            cells.append('(' + ', '.join('n/a' if v is None else '%.2f' % v for v in m) + ')')
+        S.append('| %s | %s |' % (tag(r), ' | '.join(cells)))
+    return S + ['']
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('--bags', nargs='+', default=[os.path.join(BAG_ROOT, '2026-10-1[0-4]*')],
+    ap.add_argument('--bags', nargs='+', default=[os.path.join(BAG_ROOT, '2026-10-1[0-6]*')],
                     help='one or more bag-dir globs')
     ap.add_argument('--clip-yaw-deg', metavar='LO:HI',
                     help='experiment: solve only the part of each sweep whose BB yaw is in [LO, HI]')
@@ -791,6 +1154,10 @@ def main():
     ap.add_argument('--ros-log-dir', default=os.path.expanduser('~/.ros/log'))
     ap.add_argument('--state-json', help='snapshot {"base_state": {...}, "accepted": {...}} to start from')
     ap.add_argument('--bb-yaw-source', default='auto', choices=('auto', 'stamped', 'heartbeat'))
+    ap.add_argument('--subset', metavar='I,J,..', help='Phase 2: also refit on this subset of 1-based QTM indices '
+                    '(e.g. 1,2,4,6,7); adds subset / yaw_subset_deg / kappa_subset_deg columns')
+    ap.add_argument('--loo', action='store_true',
+                    help='Phase 2: leave-one-marker-out refits (7 extra solves per sweep): yaw_loo_deg / kappa_loo_deg')
     ap.add_argument('--emit-fixture', metavar='BAG:IDX')
     ap.add_argument('--out', help='fixture output path (with --emit-fixture)')
     ap.add_argument('-v', '--verbose', action='store_true')

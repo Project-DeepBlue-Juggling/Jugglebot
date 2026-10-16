@@ -768,7 +768,11 @@ MOCAP_CLOCK_GRID_TOL = 0.125
 #: Yaw delta vs the reference (deg).
 YAW_ADVISORY_DEG = 0.20
 #: Template residual (mm). The solver's CONSTELLATION_MAX_RESIDUAL_MM (1.0) stays
-#: the hard cap; a 562 h old wand calibration tripled this residual (2026-10-16).
+#: the hard cap. Reference level 0.18-0.46 mm under one wand calibration (the three
+#: 2026-10-16 sittings; 0.18-0.76 mm over 21 sittings): it tracks per-sitting QTM
+#: reconstruction at the shelf, is carried by marker Q3's pairs, and is independent
+#: of the kappa level; a re-wand sets a new level rather than restoring an old one
+#: (logbook 2026-10-16-bb-calibration-phase2-template-residual).
 TEMPLATE_RESIDUAL_ADVISORY_MM = 0.90
 #: Mocap-to-yaw lag (ms) above which it is flagged (Phase 0 entry, "Advisory bands").
 LAG_ADVISORY_MS = 13.0
@@ -1561,10 +1565,10 @@ def assess_sweep_vs_reference(
             lines.append(f'yaw {delta:+.2f} deg vs the last sweep (advisory > {YAW_ADVISORY_DEG:.2f})')
     if template_residual_mm > TEMPLATE_RESIDUAL_ADVISORY_MM:
         flags.append('TEMPLATE_RESIDUAL')
-        # No remedy is named: the 2026-10-16 sitting showed a re-wand does not move
-        # this residual back (0.35-0.46 mm under one fresh wand calibration), and
-        # a line must never name an operator action that is not the remedy.
-        # Phase 2 of the bb-calibration plan owns the labelling/template question.
+        # No remedy is named: the residual is per-sitting QTM reconstruction quality
+        # (0.18-0.46 mm under one fresh wand calibration; Phase 2 entry, 2026-10-16),
+        # nothing at the console changes it, and a line must never name an operator
+        # action that is not the remedy.
         lines.append(f'template residual {template_residual_mm:.2f} mm '
                      f'(> {TEMPLATE_RESIDUAL_ADVISORY_MM:.2f})')
     if yaw_source != 'heartbeat' and abs(lag_ms) > LAG_ADVISORY_MS:

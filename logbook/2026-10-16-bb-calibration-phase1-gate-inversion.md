@@ -167,9 +167,9 @@ First hardware sitting under Phase 1 (launch 15:07, source: launch.log of that l
 
 ## Open Questions
 
-- The two-state kappa (179.27 <-> 179.58, steps +0.31 on 10-13 and -0.33 on 10-16): BB state versus a per-session labelling/template artefact. Decided by Phase 2's controlled-pair measurement (10:51 vs 15:08 bags: common marker subset, label-free pickup).
+- The two-state kappa (179.27 <-> 179.58, steps +0.31 on 10-13 and -0.33 on 10-16): BB state versus a per-session labelling/template artefact. Decided by Phase 2's controlled-pair measurement (10:51 vs 15:08 bags: common marker subset, label-free pickup). **Decided 2026-10-16 evening (`2026-10-16-bb-calibration-phase2-template-residual.md`): at BB.** Every subset, leave-one-out and label-free refit keeps the step on 74 sweeps; both sweep legs carry it; firmware excluded (absolute encoder, constant zero). Note the 16:10 sweep read a third level, 179.34.
 - Was BB powered off between 10:58 and 15:05 on 2026-10-16? Owner question; confirms or breaks the session-boundary reading.
-- The mocap node's QTM frame-queue drops (31-64 % after every sweep and at idle, since 10-13): cause unknown, not Phase 1's.
+- The mocap node's QTM frame-queue drops (31-64 % after every sweep and at idle, since 10-13): cause unknown, not Phase 1's. Diagnosed 2026-10-16 evening by the parallel skill-stack session: the calibration solve runs synchronously in the heartbeat callback and starves the drain timer (its entry `2026-10-16-mocap-frame-queue-starvation`); the "at idle" reading did not reproduce in the logs.
 - The ~28 s node stall of 10-11 15:14 sweep 1: what blocked the node? Unchanged.
 - The 10-14 20:54 transient (physical or measurement; measurement leading). Under Phase 1 it is a rejoin-capable advisory, not a refusal.
 - The `_drain` / `_ov_path` race in the GUI replay overview (above): owner decision whether to reopen that closed arc.

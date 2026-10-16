@@ -7,6 +7,7 @@ last_updated: 2026-10-16
 related_logbook:
   - 2026-10-14-bb-calibration-one-attempt-investigation.md
   - 2026-10-16-bb-calibration-phase1-gate-inversion.md
+  - 2026-10-16-bb-calibration-phase2-template-residual.md
 related_code:
   - ros_ws/src/jugglebot/jugglebot/bb_calibration.py
   - ros_ws/src/jugglebot/jugglebot/bb_base_frame.py
@@ -53,10 +54,13 @@ Evidence for each is in the entry. Labels match its census.
   cause (2026-10-16): two-state kappa, +0.31 deg on 10-13 and -0.33 deg on
   10-16, both between sittings, QTM reconstruction and the wand calibration
   EXCLUDED 2026-10-16 (the 10:51 and 15:08 sweeps share one calibration and
-  one frame); BB state at power-up vs a per-session labelling/template
-  artefact is decided by Phase 2. Also NOT the sweep pose mix (clip experiment, Phase 0 entry § D), not the
-  encoder, not a power cycle (every session boundary is one), not the shelf
-  (tilt in world flat).
+  one frame). **Decided by Phase 2 (2026-10-16 evening): at BB.** Every marker
+  subset, leave-one-out and label-free refit keeps the step on 75 sweeps of 22
+  sittings, both sweep legs carry it, the axis point moved under 0.5 mm, and
+  the BB firmware reads the encoder absolutely with a constant zero (nothing
+  stored or homed). Next: the owner's BB-only power-cycle A/B (Phase 2 entry).
+  Also NOT the sweep pose mix (clip experiment, Phase 0 entry § D), not the
+  encoder's firmware, not the shelf (tilt in world flat).
 - **C2.** The kappa gate limit sat at its 0.09 deg floor. It was built from a
   per-sweep sigma measured in one sitting. Cross-sitting repeatability was
   never characterised.
@@ -235,6 +239,34 @@ Gate: replay still accepts the 25; the 0.52 to 0.76 mm sweeps appear as
 advisories, not refusals; the controlled-pair result, with the subset-kappa
 table, in the Phase 2 entry.
 
+**Outcome (2026-10-16 evening): done.** Entry
+`logbook/2026-10-16-bb-calibration-phase2-template-residual.md`. The step is
+at BB: every marker subset, leave-one-out and label-free refit keeps it on 75
+sweeps of 22 sittings, both sweep legs carry it, the axis point moved under
+0.5 mm, and the BB firmware reads the encoder absolutely with a constant zero
+(read for the owner). Label-free pickup is a null result (pair: 0 of ~80k
+near-axis unlabelled points are BB markers; all bags 46 of 587k, kappa effect
+at most 0.014 deg), so nothing lands in the node; no template re-fit (the
+per-marker body-frame residuals flip sign between sittings); the residual
+stays one statistic (pose-binned max over pairs, band 0.90 / cap 1.0
+unchanged) with reference level 0.18-0.46 mm under one wand calibration and
+a pool-size pin. No production behaviour changes: replay-harness columns,
+tests, comments and docs only. Tests: baseline `./run_tests.sh` (2026-10-16,
+log `temp/logs/run_tests_baseline_phase2.log`) 6666 passed, 11 skipped +
+serial 4 passed; `./run_tests.sh --full` (2026-10-16, log
+`temp/logs/run_tests_full_phase2.log`) 6672 passed, 1 failed, 11 skipped in
+321.62 s + serial 7 passed in 28.40 s, the failure the known GUI replay load
+flake (`pytest tests/ros/test_replay_overview.py -q` alone, 2026-10-16: 11
+passed in 22.06 s); +7 test cases. Replay (`python
+tools/probes/bb_calibration_replay.py --subset 1,2,4,6,7 -v`, 2026-10-16, run
+`temp/probes/bb_calibration_replay/20261016-181127`): 90 sweeps, 82 accepted,
+23 of 24 logged refusals accepted, the circle-centres sweep refused; the
+subset-kappa table is the entry's § B. Owner decisions carried forward
+unchanged: acceptance 2 wording; whether BB was powered off between 10:58
+and 15:05 on 10-16. Next for the mechanism: the owner's BB-only power-cycle
+A/B within one launch (entry § Open Questions). Phase 3 cleared to start, in
+parallel with the acceptance-2 tally (3 of 10).
+
 ### Phase 3 - Robot frame measured in software (P4)
 
 Deliverable:
@@ -284,9 +316,10 @@ column still lands.
 ## 4. Risks and what this plan does NOT do
 
 - No change to BB firmware. No claim about the kappa-step mechanism beyond
-  the entry; the 2026-10-16 first sweep excluded reconstruction drift (two-state
-  kappa, BB state vs labelling artefact open), and the plan does not depend
-  on the answer.
+  the entries; the 2026-10-16 first sweep excluded reconstruction drift and
+  Phase 2 excluded labelling, the template, timing and firmware (the step is
+  at BB, mechanism open: owner's power-cycle A/B), and the plan does not
+  depend on the answer.
 - QTM wand-calibration age is hygiene (562 h old across the window); it is
   NOT a kappa fix (the 2026-10-16 re-wand did not move kappa) and the
   advisory names no remedy.
@@ -307,6 +340,6 @@ column still lands.
 | Phase | Status | Date | Note |
 |-------|--------|------|------|
 | 0 Characterise | done | 2026-10-16 | bands published in the Phase 0 entry; pose mix excluded; the power-cycle pin dropped (every session is one), replaced by the 2026-10-16 QTM re-wand + the first Phase 1 sweep |
-| 1 Gate inversion and operator surface | code live, R1-R4 passed, tally 1 of 10 (pending acceptance rewording) | 2026-10-16 | merged c115743d; mechanism: two-state kappa, QTM excluded |
-| 2 Template residual | ready to start | 2026-10-16 | controlled pair 10:51 vs 15:08 first; parallel with the tally |
+| 1 Gate inversion and operator surface | code live, R1-R4 passed, tally 3 of 10 (15:08, 16:10, 16:23; pending acceptance rewording) | 2026-10-16 | merged c115743d; mechanism: at BB (Phase 2) |
+| 2 Template residual | done | 2026-10-16 | controlled pair + 75 sweeps of 22 sittings: the step is at BB (every subset, leave-one-out and label-free refit keeps it; firmware excluded); no pickup, no re-fit, one statistic kept (reference 0.18-0.46 mm, pool-size pin); owner's power-cycle A/B next |
 | 3 Robot frame in software | not started | - | design-bearing; after Phase 1 |
