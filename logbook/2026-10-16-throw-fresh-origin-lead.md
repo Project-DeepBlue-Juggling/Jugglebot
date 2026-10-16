@@ -2,8 +2,8 @@
 title: "Launch/reload THROW fresh-origin lead 9 -> 13 knots (150 -> 250 ms of solve budget, 62 ms over the 188 ms refused solve), with one per-kind lead (schedule.install_lead_s) read by the schedule, install_segment and trajectory_node so the origin, window and release do not move"
 type: feature
 date: 2026-10-16
-status: in-progress
-phase: "throw-fresh-origin-lead - implementation (not flown)"
+status: resolved
+phase: "throw-fresh-origin-lead - implemented and first flown 2026-10-16 16:10"
 related_plan: throw-fresh-origin-lead.md
 related:
   - 2026-10-16-handoff-lead-flown-zero-splice-too-late-tracker-fit-late.md
@@ -131,5 +131,5 @@ A first CATCH dispatched at `t0 - 0.025` splices into the THROW (same `t0`, `spl
   - The worker test's reference now passes the request's own `lead_s`.
   - `pytest tests/sim/test_skills_gate.py tests/motion/test_solver_worker.py -q -p no:cacheprovider -n 4`: 45 passed in 530 s.
 - **I-INSTALL-1 scoped tests, 2026-10-16.** `pytest tests/ros/test_trajectory_node.py tests/ros/test_trajectory_tilt_map.py tests/ros/test_levelling_frame.py tests/ros/test_unified_cycle_levelling.py tests/motion/test_skills_executor.py tests/motion/test_skills_install_origin.py tests/ros/test_skills_plan_bench.py -q -p no:cacheprovider -n 4`: 561 passed in 391 s. `pytest tests/ros/test_install_segment.py tests/sim/test_logbook_front_matter.py tests/sim/test_plans_index.py -q -p no:cacheprovider -n 3`: 147 passed, 2 skipped, 1 failed. The failure is `test_a_fresh_throw_installs_through_the_real_worker_process` ("solver did not answer by the wire deadline", four tries). It is load-flaky both serially and under `-n` (the auditor saw it fail 2 of 3 serial runs at load 7-12, same "solver did not answer by the wire deadline") and fails identically on the unmodified HEAD (bde285ae) under load, so it is not a regression of this change. Reachability note (audit): `_live_cup_accel_mm_s2` reads the head view (tau < 0 while a handoff is pending), but no compiler dispatches a moving-seeded fresh REST between THROW 0's install and its t0 (a CATCH splices; the closing REST waits two rest tails past touch-down), so it is documented, not guarded.
-- **Full gate.** `./run_tests.sh --full` has not been run yet. It is still required before commit.
-- **Hardware.** Not flown. See rehearsal § 1b row 30.
+- **Full gate, 2026-10-16.** `./run_tests.sh --full` on the branch rebased onto skill-stack 763d5b0c: 6666 passed, 11 skipped in 319.42 s; serial tail 7 passed. Landed as 205c527c.
+- **Hardware, first flown 2026-10-16 16:10** (launch `~/.ros/log/2026-10-16-16-10-37-689586-jetson-1220502`, bag `~/Desktop/rosbags/2026-10-16_16-10-37`; install built 15:55 carries `class StreamHandoff`). One fresh THROW at the new lead (the `columns_1ball_fed` reload, skill 0): `fresh origin: THROW over 0.700 s from rest, origin +0.325 s after dispatch (solve 0.028 s of a 0.250 s budget)`; zero `ORIGIN_TOO_LATE`, zero `STALE_STATE` in the log. Bag `/leg_setpoint_echo` (25 ms samples) around that THROW: max per-sample leg step 0.0060 rev dispatch -> install (the REST tail), **0.0000 rev install -> t0 and 0.0000 rev across t0 +-30 ms**, 0.0293 rev once the THROW plays (its own motion). Row 30 PASS on a sample of one; the hop pattern's two THROWs were splices, not fresh origins.

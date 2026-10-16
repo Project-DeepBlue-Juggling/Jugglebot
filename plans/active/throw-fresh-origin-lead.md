@@ -59,10 +59,6 @@ The REST-tail step (THROW 0 installs while the REST it follows still streams; th
 
 ## 5. Done means
 
-- `./run_tests.sh --full` is green. It covers `sim/skills_gate.py` through the `install_segment` default.
-- Rehearsal row 30 (`tests/hardware/session_skill_stack_rehearsals.md` § 1b) is flown:
-  - the install receipt `FRESH_THROW_LEAD_EXTRA_KNOTS = 4`;
-  - every launch THROW reads `origin +0.325 s ... of a 0.250 s budget`, with an unchanged plan duration;
-  - zero `ORIGIN_TOO_LATE` and zero `STALE_STATE` at THROW 0 across one sitting;
-  - no leg/hand step at THROW 0's install or origin in the bag (`/leg_setpoint_echo`).
-- A closing logbook entry is written, then this plan is archived.
+- DONE 2026-10-16: `./run_tests.sh --full` green (6666 passed, 11 skipped; serial 7), landed 205c527c. It covers `sim/skills_gate.py` through the `install_segment` default.
+- DONE 2026-10-16 16:10 (first flight, n = 1 fresh THROW): row 30 read from log + bag — origin +0.325 s, solve 0.028 of 0.250 s, zero ORIGIN_TOO_LATE / STALE_STATE, leg step 0.0000 rev install -> t0 and across t0 (details in the entry). A second sitting with several reload THROWs would make it n > 1.
+- The entry carries the flown read (2026-10-16); archive at the next /archive-plan pass.

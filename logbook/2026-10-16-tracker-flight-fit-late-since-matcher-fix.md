@@ -145,6 +145,17 @@ at a fixed lower rate while processing every frame, or move the matcher into the
 (3) lower QTM's frame rate toward the tracker's 200 Hz nominal. Each changes a different thing; none is in this
 entry.
 
+## First flight, 2026-10-16 16:10 (small sample)
+
+Launch `~/.ros/log/2026-10-16-16-10-37-689586-jetson-1220502` (install built 15:55 carries `max_frame_gap_s`): 12 handoff catches
+(two 4-throw hops at apex 0.90, one `columns_1ball_fed`), 10 caught. First converged-fit event BEFORE landing p10/p50/p90 =
+586/617/646 ms with 2 of 12 catches never getting one, against 443/539/610 ms and 84 of 191 in the morning sitting and
+630-645 ms in S1/S2/S8 — the fit is back where it was. The one mocap loss burst of the launch (36.0 % of frames over
+11 s, `frame queue full: starved for over 0.5 s`) ended 40 s before the first attempt, so these catches ran on a clean
+frame stream; the burst itself is the open item above. The correction still did not land: in the hop pattern the fit
+arrives ~0.6 s before landing but 0.7 s after dispatch, past the snap band, and every raw-path re-aim was refused
+(`HAND_LIMIT_C2` x5, `LIMIT_JERK` x3); in the columns attempt both pinned re-aims installed (fired at D + 126 / 142 ms).
+
 ## Verification
 
 All commands run 2026-10-16 from the repo root with the project venv; probe outputs under
