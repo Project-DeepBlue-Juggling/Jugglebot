@@ -209,7 +209,7 @@ def test_bands_summarise_grouping_and_exclusion():
 @pytest.mark.parametrize('n_records', [0, 1, 5, 50])
 def test_template_residual_verdict_is_independent_of_pool_size(fixture, monkeypatch, n_records):
     """Pins plan Phase 2 'the same data gives the same residual verdict on any pool size'. The fixture's template
-    residual is ~0.3 mm (the row value), under the shipped 0.90 mm TEMPLATE_RESIDUAL advisory band, so no pool of
+    residual is ~0.3 mm (the row value), under the shipped 1.0 mm TEMPLATE_RESIDUAL advisory band, so no pool of
     0/1/5/50 seeded kappa records may flag it: the residual is a property of the sweep, never of the history.
     With the band patched to 0.25 mm (below the residual) EVERY pool size must flag it and the outcome line must
     carry 'template residual'."""

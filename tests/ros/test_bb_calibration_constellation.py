@@ -37,6 +37,7 @@ from jugglebot import bb_calibration as bc
 from jugglebot.bb_calibration import (
     CONSTELLATION_MATCH_TOL_MM,
     LAG_ADVISORY_MS,
+    CONSTELLATION_MAX_RESIDUAL_MM,
     TEMPLATE_RESIDUAL_ADVISORY_MM,
     YAW_ADVISORY_DEG,
     MarkerTemplate,
@@ -318,9 +319,42 @@ def test_too_few_matched_markers_fails_loudly():
 
 
 def test_a_moved_marker_fails_loudly_rather_than_biasing():
-    frames, samples = _synth(seed=14, displace=(4, np.array([1.6, 0.0, 0.0])))
+    """Recipe probed 2026-10-17 against the 1.5 mm cap: marker 4 moved 2.5 mm along x
+    on _synth(seed=14) reads a template residual of 2.48 mm (the old 1.6 mm recipe
+    reads 1.58 mm, only 0.08 above the cap, so it was retired; 4.0 mm reads 0.005 mm
+    because the pose fit absorbs it, so do not raise it further)."""
+    frames, samples = _synth(seed=14, displace=(4, np.array([2.5, 0.0, 0.0])))
     with pytest.raises(ValueError, match='CONSTELLATION_RESIDUAL'):
         estimate_sweep_yaw_offset(frames, samples, _tmpl())
+
+
+def test_a_residual_inside_the_advisory_to_cap_band_is_accepted_flagged_and_bounded():
+    """The contract test for CONSTELLATION_MAX_RESIDUAL_MM = 1.5 / TEMPLATE_RESIDUAL_ADVISORY_MM = 1.0
+    (owner decision 2026-10-17; logbook 2026-10-17-bb-calibration-residual-cap-1p5; record
+    temp/probes/bb_calibration_replay/20261017-cap-evidence/REPORT.md).
+
+    Why 1.5: on 89 real sweeps (2026-10-10..16) kappa deviation does not grow with the residual to
+    1.25 mm (slope -0.022 +/- 0.016 deg/mm), and injecting displacements into the real solver gives a
+    yaw bias linear in displacement, worst 0.155 deg per mm of residual, so the worst single-sweep
+    bias admitted is 0.155 x 1.5 = 0.23 deg. The 2026-10-16 deformed state (1.14-1.25 mm) was being
+    refused at the old 1.0 cap while its kappa stayed inside the sitting's scatter.
+
+    Recipe probed 2026-10-17 on _synth(seed=14): marker 4 moved 1.2 mm along x reads a residual of
+    1.184 mm (1.1 -> 1.085, 1.3 -> 1.283) and shifts the yaw offset by -0.094 deg against the
+    undisplaced solve (0.30058 deg). The bound asserted is 0.25 deg (0.23 worst case plus margin)."""
+    frames, samples = _synth(seed=14)
+    base = estimate_sweep_yaw_offset(frames, samples, _tmpl())
+    frames, samples = _synth(seed=14, displace=(4, np.array([1.2, 0.0, 0.0])))
+    est = estimate_sweep_yaw_offset(frames, samples, _tmpl())
+    assert TEMPLATE_RESIDUAL_ADVISORY_MM < est.template_residual_mm < CONSTELLATION_MAX_RESIDUAL_MM
+    assert est.template_residual_mm == pytest.approx(1.184, abs=0.02)
+    dyaw = math.degrees(est.yaw_offset_rad - base.yaw_offset_rad)
+    assert abs(dyaw) < 0.25
+    assert dyaw == pytest.approx(-0.094, abs=0.02)
+    v = assess_sweep_vs_reference(math.degrees(est.yaw_offset_rad), 0.05, BB_POS,
+                                  est.template_residual_mm, 0.0,
+                                  {'yaw_offset_deg': math.degrees(est.yaw_offset_rad), 'position_mm': list(BB_POS)}, True)
+    assert 'TEMPLATE_RESIDUAL' in v.flags
 
 
 def _pose_band_error(frames, samples, index, partner, error_mm, band_deg=(15.0, 50.0)):
@@ -358,12 +392,12 @@ def test_pose_dependent_reconstruction_error_does_not_read_as_a_moved_marker():
 def test_a_marker_moved_on_bb_reads_the_same_binned_or_window_mean():
     """A real displacement shifts its pairs at every pose, so the median over
     pose bins keeps it: 0.8 mm along body x on marker 4 (pair 4–5 nearly
-    along it) is refused by the gate whichever statistic is read."""
+    along it) reads the same on either statistic."""
     frames, samples = _synth(seed=41, displace=(4, np.array([0.8, 0.0, 0.0])))
     est = estimate_sweep_yaw_offset(frames, samples, _tmpl())
     assert est.template_residual_mm > 0.5
     assert est.template_residual_mm == pytest.approx(est.template_residual_window_mm, abs=0.05)
-    v = assess_sweep_vs_reference(0.3, 0.05, BB_POS, 0.95, 0.0,
+    v = assess_sweep_vs_reference(0.3, 0.05, BB_POS, TEMPLATE_RESIDUAL_ADVISORY_MM + 0.05, 0.0,
                                   {'yaw_offset_deg': 0.3, 'position_mm': list(BB_POS)}, True)
     assert 'TEMPLATE_RESIDUAL' in v.flags       # the advisory band is exercised below
 
@@ -471,7 +505,7 @@ def test_axis_shift_is_reported_never_flagged():
 def test_template_residual_and_lag_advisories_at_band_plus_and_minus_epsilon():
     assert _assess(0.6, res=TEMPLATE_RESIDUAL_ADVISORY_MM - 0.01).flags == []
     v = _assess(0.6, res=TEMPLATE_RESIDUAL_ADVISORY_MM + 0.01)
-    assert v.flags == ['TEMPLATE_RESIDUAL'] and v.lines[0].startswith('template residual 0.9')
+    assert v.flags == ['TEMPLATE_RESIDUAL'] and v.lines[0].startswith(f'template residual {TEMPLATE_RESIDUAL_ADVISORY_MM + 0.01:.2f}')
     assert 're-wand' not in v.lines[0]        # no remedy is named: none is established (2026-10-16 sitting)
     assert _assess(0.6, lag=LAG_ADVISORY_MS - 0.1).flags == []
     assert _assess(0.6, lag=LAG_ADVISORY_MS + 0.1).flags == ['LAG']
@@ -500,9 +534,9 @@ def test_format_outcome_body_is_one_line_with_advisory_only_when_flagged():
     assert '\n' not in body and 'ADVISORY' not in body and not body.startswith('BB calibrated')
     assert body == ('yaw +0.52\u00b0 \u00b10.03, axis (100, 200, 300) mm, tilt 0.6\u00b0, template 0.43 mm, '
                     'lag +3.1 ms \u00b7 kappa 179.59\u00b0 (epoch K2 +0.01\u00b0, n 32), p_b \u03940.1 mm')
-    flagged = _assess(1.5, res=1.0)
+    flagged = _assess(1.5, res=TEMPLATE_RESIDUAL_ADVISORY_MM + 0.2)
     base_adv2 = SimpleNamespace(delta_axis_mm=None, lines=['kappa +0.31 deg from epoch K0: opened epoch K1'])
-    body = format_outcome_body(1.5, 0.03, BB_POS, 0.6, 1.0, 3.1, flagged, base_adv2, pooled)
+    body = format_outcome_body(1.5, 0.03, BB_POS, 0.6, TEMPLATE_RESIDUAL_ADVISORY_MM + 0.2, 3.1, flagged, base_adv2, pooled)
     assert '\n' not in body and body.count(' \u00b7 ADVISORY: ') == 1
     tail = body.split(' \u00b7 ADVISORY: ')[1]
     assert tail.count('; ') == 2 and 'opened epoch K1' in tail and 'template residual' in tail

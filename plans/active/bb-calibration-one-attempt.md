@@ -3,12 +3,13 @@ title: Ball Butler calibration is a one-attempt process, every time
 status: active
 owner: harrison
 created: 2026-10-14
-last_updated: 2026-10-16
+last_updated: 2026-10-17
 related_logbook:
   - 2026-10-14-bb-calibration-one-attempt-investigation.md
   - 2026-10-16-bb-calibration-phase1-gate-inversion.md
   - 2026-10-16-bb-calibration-phase2-template-residual.md
   - 2026-10-16-bb-calibration-power-cycle-ab.md
+  - 2026-10-17-bb-calibration-residual-cap-1p5.md
 related_code:
   - ros_ws/src/jugglebot/jugglebot/bb_calibration.py
   - ros_ws/src/jugglebot/jugglebot/bb_base_frame.py
@@ -178,7 +179,7 @@ Deliverable:
 
 - Hard refusals only for intrinsic sweep quality, decided without history:
   CONSTELLATION_MIN_FRAMES, TOO_FEW_MOVING, LAG_AT_EDGE, MOCAP_CLOCK, axis
-  consensus, CONSTELLATION_RESIDUAL at 1.0 mm.
+  consensus, CONSTELLATION_RESIDUAL cap (was advisory 0.90 / cap 1.0; advisory 1.0, cap 1.5 since 2026-10-17, entry 2026-10-17-bb-calibration-residual-cap-1p5).
 - Kappa vs pool, yaw vs last accepted and template residual vs 0.50 mm
   become advisory lines.
 - The pool is kept in epochs and never discarded, with a file backup on
@@ -191,7 +192,7 @@ Deliverable:
   is ever discarded and the state file is backed up on every write.
 - Advisory bands are the Phase 0 table (Delta kappa 0.20 deg, Delta yaw 0.20
   deg within a world epoch, Delta p_b 1.0 mm, template residual 0.90 mm with
-  the 1.0 mm hard cap kept, |lag| 13 ms; world axis point information only).
+  the hard cap (was advisory 0.90 / cap 1.0; advisory 1.0, cap 1.5 since 2026-10-17, entry 2026-10-17-bb-calibration-residual-cap-1p5), |lag| 13 ms; world axis point information only).
 - One outcome line per attempt reports every advisory at once, in plain
   language. A refusal names an operator action only when that action is the
   remedy.
@@ -227,7 +228,7 @@ Deliverable:
   of the encoder and yaw mount. Then the same across every bag.
 - One path and one statistic for the template residual. Reference level
   0.35-0.46 mm post-re-wand (not 0.26); advisory band 0.90 and hard cap
-  1.0 mm unchanged; no remedy named until one is established.
+  the hard cap (was advisory 0.90 / cap 1.0; advisory 1.0, cap 1.5 since 2026-10-17, entry 2026-10-17-bb-calibration-residual-cap-1p5); no remedy named until one is established.
 - Why the shelf-marker residual against the as-built template went
   0.004 -> 0.30-0.35 mm and did not recover after the re-wand (Phase 3
   builds the robot frame on those markers).
@@ -257,8 +258,7 @@ sweeps of 22 sittings, both sweep legs carry it, the axis point moved under
 near-axis unlabelled points are BB markers; all bags 46 of 587k, kappa effect
 at most 0.014 deg), so nothing lands in the node; no template re-fit (the
 per-marker body-frame residuals flip sign between sittings); the residual
-stays one statistic (pose-binned max over pairs, band 0.90 / cap 1.0
-unchanged) with reference level 0.18-0.46 mm under one wand calibration and
+stays one statistic (pose-binned max over pairs, band and cap (was advisory 0.90 / cap 1.0; advisory 1.0, cap 1.5 since 2026-10-17, entry 2026-10-17-bb-calibration-residual-cap-1p5)) with reference level 0.18-0.46 mm under one wand calibration and
 a pool-size pin. No production behaviour changes: replay-harness columns,
 tests, comments and docs only. Tests: baseline `./run_tests.sh` (2026-10-16,
 log `temp/logs/run_tests_baseline_phase2.log`) 6666 passed, 11 skipped +
@@ -294,6 +294,17 @@ temperature as a threshold between 17.2 and 19.7 C (correlation, no
 controlled test yet), and the deformation is set at
 BB power-on, not by temperature; both tabulated in the readings ledger
 `ros_ws/docs/bb_calibration_readings.md`.
+
+**Residual cap raised (2026-10-17, owner decision, entry
+`logbook/2026-10-17-bb-calibration-residual-cap-1p5.md`):** the template-residual
+cap 1.0 -> 1.5 mm and the advisory 0.90 -> 1.0 mm. Evidence (record
+`temp/probes/bb_calibration_replay/20261017-cap-evidence/`): on 89 real sweeps
+kappa deviation does not grow with the residual to 1.25 mm (slope -0.022 +/-
+0.016 deg/mm); injection into the real solver gives a yaw bias of at most
+0.155 deg per mm of residual, so the worst single-sweep bias at the cap is
+0.23 deg; vertical marker modes are invisible to any cap. The 10-16 22:00
+state is now accepted with the TEMPLATE_RESIDUAL advisory. The kappa-epoch
+advisory (0.20 deg) is the second line.
 
 ### Phase 3 - Robot frame measured in software (P4)
 
@@ -369,5 +380,5 @@ column still lands.
 |-------|--------|------|------|
 | 0 Characterise | done | 2026-10-16 | bands published in the Phase 0 entry; pose mix excluded; the power-cycle pin dropped (every session is one), replaced by the 2026-10-16 QTM re-wand + the first Phase 1 sweep |
 | 1 Gate inversion and operator surface | code live, R1-R4 passed, tally 4 of 10 (15:08, 16:10, 16:23, 20:30; the 22:01 first sweep refused on a true residual; pending acceptance rewording) | 2026-10-16 | merged c115743d; mechanism: at BB (Phase 2), not its power-up state (A/B) |
-| 2 Template residual | done | 2026-10-16 | controlled pair + 75 sweeps of 22 sittings: the step is at BB (every subset, leave-one-out and label-free refit keeps it; firmware excluded); no pickup, no re-fit, one statistic kept (reference 0.18-0.46 mm, pool-size pin); A/B done 2026-10-16 evening: kappa held across two BB-only cycles (not a power-up state); the 86 min off deformed Q3-Q6 to 1.2 mm, calibration refuses until addressed (entry `2026-10-16-bb-calibration-power-cycle-ab.md`) |
+| 2 Template residual | done | 2026-10-16 | controlled pair + 75 sweeps of 22 sittings: the step is at BB (every subset, leave-one-out and label-free refit keeps it; firmware excluded); no pickup, no re-fit, one statistic kept (reference 0.18-0.46 mm, pool-size pin); A/B done 2026-10-16 evening: kappa held across two BB-only cycles (not a power-up state); the 86 min off deformed Q3-Q6 to 1.2 mm, calibration refused until addressed (entry `2026-10-16-bb-calibration-power-cycle-ab.md`); cap 1.0 -> 1.5 mm / advisory 0.90 -> 1.0 mm 2026-10-17 on measured evidence (entry `2026-10-17-bb-calibration-residual-cap-1p5.md`) |
 | 3 Robot frame in software | not started | - | design-bearing; after Phase 1 |

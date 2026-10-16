@@ -43,6 +43,8 @@ the entries). Temperatures are medians over the sweep windows (+/- 30 s);
 in whatever world frame QTM had at the time (re-aligned 10-11, 10-12, 10-14
 and 10-16 15:11); kappa is frame-invariant.
 
+Note (2026-10-17): the 2026-10-16 22:01 row's refusals were under the 1.0 mm cap; the cap is 1.5 mm (advisory 1.0) from 2026-10-17.
+
 | sitting (local) | sweeps acc/ref | kappa med (range) | epoch | template res med (max) | worst pair | shelf res | shelf heading | lag ms med | legs motor C | legs FET C | hand FET C | BB hand FET / motor C |
 |---|---|---|---|---|---|---|---|---|---|---|---|---|
 | 2026-10-10 00:24 | 0/7 (7 CONSTELLATION_) | - | - | - (-) | - | - | - | - | 22.5 | 31.9 | 33.5 | 29.3 / 27.6 |
@@ -118,6 +120,18 @@ is set at BB power-on and holds within a sitting.
 3. **Kappa does not follow the deformation.** Tonight the deformation ran
    -0.05 to +1.2 mm while kappa stayed at 179.27 +/- 0.05.
 
+## Findings (2026-10-17)
+
+4. **Template-residual cap evidence (decision: cap 1.5 mm, advisory 1.0 mm, owner, 2026-10-17).**
+   Across 89 real sweeps kappa deviation from the sitting reference does not
+   grow with the residual up to 1.25 mm (signed slope -0.022 +/- 0.016
+   deg/mm). Injection into the real solver (1589 solves) gives a yaw bias
+   linear in displacement, worst 0.155 deg per mm of residual (Q3 vertical),
+   so the worst admitted bias at the cap is 0.23 deg. Vertical modes are
+   invisible to the residual (Q5 -z: residual flat at 0.33 mm out to 3 mm
+   displacement, bias 0.077 deg). Entry
+   `2026-10-17-bb-calibration-residual-cap-1p5.md`.
+
 ## Hypotheses register
 
 | # | mechanism | for | against | discriminator |
@@ -144,6 +158,10 @@ timing (direction split above); reconstruction noise (QTM residuals).
   each. 20:30-22:03: the BB-only power-cycle A/B (per-event rows above);
   QTM, frame and room untouched; the 20:30 bag deleted after extraction,
   its calibration windows under the run's `extract/`.
+- 2026-10-17: no sitting. Residual cap raised to 1.5 mm (advisory 1.0). The next
+  sitting's first sweep reads whether the Q3-Q6 deformation persists; a residual
+  between 1.0 and 1.5 now arrives as an accepted sweep with a TEMPLATE_RESIDUAL
+  advisory, so read the outcome line, not a refusal.
 
 ## Entries
 
@@ -152,4 +170,5 @@ timing (direction split above); reconstruction noise (QTM residuals).
 - `logbook/2026-10-16-bb-calibration-phase1-gate-inversion.md` (gate, first two-state reading)
 - `logbook/2026-10-16-bb-calibration-phase2-template-residual.md` (the step is at BB, not labelling)
 - `logbook/2026-10-16-bb-calibration-power-cycle-ab.md` (not a power-up state; the deformation; this ledger's first rows)
+- `logbook/2026-10-17-bb-calibration-residual-cap-1p5.md` (cap 1.5 / advisory 1.0 on measured evidence)
 - plan: `plans/active/bb-calibration-one-attempt.md`

@@ -280,7 +280,8 @@ def test_estimator_refusals_fit_the_bound():
     cases = [
         (dict(seed=12), dict(), slice(0, 150), 'CONSTELLATION_TOO_FEW_FRAMES'),
         (dict(seed=13, keep=[0, 3]), dict(), None, 'CONSTELLATION_TOO_FEW_MARKERS'),
-        (dict(seed=14, displace=(4, np.array([1.6, 0.0, 0.0]))), dict(), None,
+        # 2.5 mm along x reads a 2.48 mm residual (probed 2026-10-17), clearly above the 1.5 mm cap
+        (dict(seed=14, displace=(4, np.array([2.5, 0.0, 0.0]))), dict(), None,
          'CONSTELLATION_RESIDUAL'),
         (dict(seed=15, lag=0.33), dict(yaw_source='stamped'), None, 'CONSTELLATION_LAG_AT_EDGE'),
         (dict(seed=16, rate=100.0, lag=0.004, units=1.0 / 360.0), dict(yaw_source='stamped'),

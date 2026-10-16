@@ -53,7 +53,9 @@ BAG_UTC_OFFSET_H = 11.0  # bag names are local AEDT (UTC+11 from 2026-10-04)
 # --- physics used to translate bands into "what a bump looks like" ----------------------------
 BUMP_MM = 2.0                # a real knock of BB, at the marker radius
 MARKER_RADIUS_MM = 143.0
-TEMPLATE_HARD_CAP_MM = 1.0   # CONSTELLATION_RESIDUAL hard refusal (stays); the advisory sits under it     # ~mean BB marker radius about the yaw axis (2 mm there ~= 0.8 deg)
+# ~mean BB marker radius about the yaw axis (2 mm there ~= 0.8 deg)
+TEMPLATE_HARD_CAP_MM = 1.5   # shipped value, bb_calibration.py, since 2026-10-17 (entry 2026-10-17-bb-calibration-residual-cap-1p5)
+TEMPLATE_ADVISORY_MM = 1.0   # shipped value, bb_calibration.py, since 2026-10-17 (entry 2026-10-17-bb-calibration-residual-cap-1p5)
 
 # Fidelity exclusions (replay fidelity.md): sweeps whose replayed verdict does NOT reproduce the
 # node's logged verdict are left out of every band. Key (bag, sweep_idx) -> reason.
@@ -360,7 +362,7 @@ def propose_bands(s: Dict[str, Any]) -> List[Dict[str, Any]]:
         raw = max(3.0 * (sd or 0.0), 1.25 * mx)
         b = _ceil_to(raw, step)
         if cap is not None and b > cap:
-            note = "%s; rule gave %.2f, clamped under the hard cap to %.2f" % (note, b, cap)
+            note = "%s; rule gave %.2f, clamped at the shipped advisory to %.2f" % (note, b, cap)
             b = cap
         cin, n = _coverage(vals, b)
         bands.append({"advisory": name, "unit": unit, "band": b, "sd": sd, "sd_label": sd_label,
@@ -399,11 +401,11 @@ def propose_bands(s: Dict[str, Any]) -> List[Dict[str, Any]]:
          _abs_vals(adv, "dp_b_pool"), 0.25, BUMP_MM,
          "frame-free position check; survives QTM re-alignment")
     tr = q["template_residual_mm"]
-    band("template residual (advisory level; 1.0 mm hard cap stays)", "mm",
+    band("template residual (advisory level; 1.5 mm hard cap)", "mm",
          tr["cross_sitting"]["sd"], "cross-sitting SD of sitting means",
          [r["template_residual_mm"] for r in s["_rows"]], 0.05, None,
          "absolute level, not a delta; band = advisory threshold",
-         cap=TEMPLATE_HARD_CAP_MM - 0.1)
+         cap=TEMPLATE_ADVISORY_MM)
     lg = q["lag_ms"]
     lag_abs = [abs(r["lag_ms"]) for r in s["_rows"] if r["lag_ms"] is not None]
     band("|lag| (yaw source vs mocap)", "ms", lg["cross_sitting"]["sd"],

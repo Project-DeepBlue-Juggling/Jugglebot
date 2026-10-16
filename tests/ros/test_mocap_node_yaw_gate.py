@@ -140,18 +140,18 @@ def test_a_large_yaw_and_axis_disagreement_is_accepted_not_refused(tmp_path):
 
 def test_template_residual_is_advisory_to_the_cap_and_the_solver_refuses_above_it(tmp_path):
     node, _ = _node(tmp_path, _ref(0.6))
-    _, msg = _calibrate(node, _result(0.6, tres=0.95))
+    _, msg = _calibrate(node, _result(0.6, tres=1.2))
     assert msg.success
-    assert 'template 0.95 mm' in msg.message and 'ADVISORY' in msg.message
+    assert 'template 1.20 mm' in msg.message and 'ADVISORY' in msg.message
     assert 'TEMPLATE_RESIDUAL' in json.loads((tmp_path / 'last_accepted.json').read_text())['advisory_flags']
-    # Above CONSTELLATION_MAX_RESIDUAL_MM (1.0) the SOLVER refuses; its recipe
+    # Above CONSTELLATION_MAX_RESIDUAL_MM (1.5) the SOLVER refuses; its recipe
     # (a displaced marker) is test_bb_calibration_constellation.py / keep_last_good's
     # test_estimator_refusals_fit_the_bound - the node only relays the text.
     import jugglebot.mocap_node as mn
     node._on_bb_heartbeat(_hb(BallButlerStates.CALIBRATING))
     node._calib_data = {0: [np.zeros(3)]}
     with patch.object(mn, 'run_calibration',
-                      side_effect=ValueError('CONSTELLATION_RESIDUAL: marker 5 sits 1.05 mm off')):
+                      side_effect=ValueError('CONSTELLATION_RESIDUAL: marker 5 sits 1.55 mm off')):
         node._on_bb_heartbeat(_hb(BallButlerStates.IDLE))
     att = node.pub_calibration_attempt.published[-1]
     assert not att.success and att.message.startswith('CONSTELLATION_RESIDUAL')

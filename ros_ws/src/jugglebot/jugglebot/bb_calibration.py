@@ -704,11 +704,30 @@ CONSTELLATION_MIN_FRAMES = 200
 #: on 26 sweeps of four sittings; a displacement injected to bias the yaw by
 #: 0.1 deg reads 0.5-1.7 mm on it, as on the window mean (logbook
 #: 2026-10-10-bb-template-residual-coverage). A pair seen in fewer than
-#: TEMPLATE_RESIDUAL_MIN_BINS bins keeps its window mean. Above
-#: CONSTELLATION_MAX_RESIDUAL_MM the estimate FAILS (the template no
-#: longer describes BB); above TEMPLATE_RESIDUAL_ADVISORY_MM (0.90 mm) the
-#: sweep is flagged TEMPLATE_RESIDUAL (advisory only, Phase 1).
-CONSTELLATION_MAX_RESIDUAL_MM = 1.0
+#: TEMPLATE_RESIDUAL_MIN_BINS bins keeps its window mean.
+#:
+#: CAP: above CONSTELLATION_MAX_RESIDUAL_MM = 1.5 the estimate FAILS (the
+#: template no longer describes BB); above TEMPLATE_RESIDUAL_ADVISORY_MM (1.0)
+#: the sweep is flagged TEMPLATE_RESIDUAL (advisory only). What 1.5 bounds:
+#: injecting displacements into the real solver (1589 solves on 7 real sweeps)
+#: gives a yaw bias linear in displacement, worst 0.155 deg per mm of residual
+#: (Q3 vertical), so the worst single-sweep bias admitted is 0.155 x 1.5 =
+#: 0.23 deg (0.219 deg was the largest any injection produced under the cap).
+#: What it does NOT catch: vertical modes (Q5 moved -z leaves the residual flat
+#: at 0.33 mm to 3 mm displacement, bias 0.077 deg), so no cap value is a 0.1
+#: deg guarantee. Empirically kappa deviation does not grow with the residual
+#: up to 1.25 mm on 89 real sweeps (slope -0.022 +/- 0.016 deg/mm). History:
+#: the cap was 1.0 until 2026-10-17; the 2026-10-16 22:00 deformed state read
+#: 1.14-1.25 mm and refused 7 of 8 sweeps while its kappa stayed inside the
+#: sitting's scatter (worst 0.10 deg); 1.5 refuses 0 of those 89 sweeps.
+#: The evidence report called 1.5 "not defensible against the 0.20 deg band"
+#: (worst case <= 0.20 deg only for a cap <= 1.29 mm; it recommended 1.25 mm
+#: with a 0.65 advisory); the owner accepted that exposure 2026-10-17 because
+#: the only observed deformation mode costs <= 0.06 deg at 1.5 mm.
+#: Owner decision 2026-10-17; record
+#: temp/probes/bb_calibration_replay/20261017-cap-evidence/REPORT.md, logbook
+#: 2026-10-17-bb-calibration-residual-cap-1p5.
+CONSTELLATION_MAX_RESIDUAL_MM = 1.5
 #: Pose bin width (deg of posed body yaw) of the template residual.
 TEMPLATE_RESIDUAL_BIN_DEG = 15.0
 #: Fewest frames for a pose bin to enter a pair's median.
@@ -767,13 +786,16 @@ MOCAP_CLOCK_GRID_TOL = 0.125
 #: logbook 2026-10-15-bb-calibration-phase0-characterise, "Advisory bands".
 #: Yaw delta vs the reference (deg).
 YAW_ADVISORY_DEG = 0.20
-#: Template residual (mm). The solver's CONSTELLATION_MAX_RESIDUAL_MM (1.0) stays
-#: the hard cap. Reference level 0.18-0.46 mm under one wand calibration (the three
-#: 2026-10-16 sittings; 0.18-0.76 mm over 21 sittings): it tracks per-sitting QTM
-#: reconstruction at the shelf, is carried by marker Q3's pairs, and is independent
-#: of the kappa level; a re-wand sets a new level rather than restoring an old one
-#: (logbook 2026-10-16-bb-calibration-phase2-template-residual).
-TEMPLATE_RESIDUAL_ADVISORY_MM = 0.90
+#: Template residual (mm). The solver's CONSTELLATION_MAX_RESIDUAL_MM (1.5, see
+#: its comment for the evidence) stays the hard cap. 1.0 sits above every clean
+#: sitting's reference range (sitting references 0.18-0.46 mm under one wand calibration
+#: (the three 2026-10-16 sittings); the largest single clean sweep on record
+#: 0.87 mm (2026-10-13 22:00); 0.65 would
+#: have flagged 16 of 89 sweeps and was rejected as noise). The level tracks
+#: per-sitting QTM reconstruction at the shelf, is carried by marker Q3's pairs,
+#: and is independent of the kappa level; a re-wand sets a new level rather than
+#: restoring an old one (logbook 2026-10-16-bb-calibration-phase2-template-residual).
+TEMPLATE_RESIDUAL_ADVISORY_MM = 1.0
 #: Mocap-to-yaw lag (ms) above which it is flagged (Phase 0 entry, "Advisory bands").
 LAG_ADVISORY_MS = 13.0
 

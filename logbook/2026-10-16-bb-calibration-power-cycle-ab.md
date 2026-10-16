@@ -101,6 +101,8 @@ No overlap, and no resolvable slope inside either cluster: 15.5 C and 17.2 C bot
 
 4. **The cap is doing its job; do not relax it.** The one acceptance at 0.89 mm was the edge of the band, not a recovery (0.89 is also just under the 0.90 advisory, by 0.01, so no advisory fired). Letting 1.2 mm through would fit a rigid template to a non-rigid constellation; the cap-lifted kappas show the yaw bias is small tonight (within 0.1 deg of the accepted sweeps) but that is not a property to rely on. The Phase 2 reference level 0.18-0.46 mm remains the healthy range.
 
+   Addendum 2026-10-17: superseded by measurement - cap 1.5 / advisory 1.0, see 2026-10-17-bb-calibration-residual-cap-1p5.
+
 5. **The template builder is gone.** The template's provenance names `temp/bbyaw/sweep/build1_template.py .. build4_write.py` in the `Jugglebot-bbyaw` worktree, uncommitted; that worktree and its `temp/` no longer exist. A rebuild (Generalised Procrustes over labelled frames, yaw-balanced at 40 frames per 2 deg bin, parked frames excluded) is a small unit with the harness's tracking already in place, but rebuilding to a deformed geometry is the owner's decision against fixing the posts, and the gauge pin, E(y) and the repeatability travel with the template.
 
 6. **Control-system implications: none.** No code changed. The refusals leave the node on the 2026-10-16T11:02:34Z calibration (kappa 179.27), which is the sitting's own level.
