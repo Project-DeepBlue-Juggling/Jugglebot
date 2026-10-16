@@ -71,7 +71,7 @@ import numpy as np
 DT = 0.025
 WIRE_READ_KNOTS = 3
 L0 = 0.275
-# New-fence model (plans/active/handoff-solve-chaining.md P1b); mirrors
+# New-fence model (plans/archived/handoff-solve-chaining.md P1b); mirrors
 # schedule.LEAD_S (9 knots) and unified_cycle.detach_knots() -- hard-coded
 # because the probe is stdlib+numpy.
 LEAD_S = 9 * DT

@@ -125,7 +125,7 @@ LEAD_S = LEAD_KNOTS * float(hw.JB_TRAJ_KNOT_DT_S)
 #: :data:`LEAD_S` and ``CATCH_FREEZE_S`` are untouched; the re-aim fences are now
 #: keyed on the real splice instant (executor P1b, 2026-10-16).
 #:
-#: 8 extra knots (2026-10-16, ``plans/active/handoff-solve-chaining.md`` § 0.4):
+#: 8 extra knots (2026-10-16, ``plans/archived/handoff-solve-chaining.md`` § 0.4):
 #: the replay of the recorded SPLICE_TOO_LATE failures had margins of 13/28 ms
 #: at 4 and 113/128 ms at 8; the accepted installs' minima were 50/150 ms; the
 #: share of catches whose live fit was still unconverged at dispatch fell from

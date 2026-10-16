@@ -187,7 +187,7 @@ def test_the_handoff_lead_buys_eight_knots_and_the_live_schedules_stay_monotone(
     """``HANDOFF_LEAD_EXTRA_KNOTS`` = 8 (2026-10-16; 4 since 2026-10-14; 2
     since 2026-09-18).
 
-    Why 8 (``plans/active/handoff-solve-chaining.md`` § 0.4): the replay of
+    Why 8 (``plans/archived/handoff-solve-chaining.md`` § 0.4): the replay of
     the recorded SPLICE_TOO_LATE failures had margins of 13/28 ms at 4 extra
     knots and 113/128 ms at 8; the pinned budget is ``(17 - 3)*dt`` = 350 ms.
 

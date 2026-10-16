@@ -27,7 +27,6 @@ rows).
 |------|--------|--------------|-------|
 | [leg-gain-tuning-methodology.md](leg-gain-tuning-methodology.md) | reference | 2026-07-16 | Leg PID tuning methodology. The **gain hunt closed 2026-07-13** (40/0.20/0.32 ships, gains FROZEN); the document stays active as the normative procedure for any future tuning round |
 | [bb-calibration-one-attempt.md](bb-calibration-one-attempt.md) | active | 2026-10-14 | Ball Butler mocap calibration accepted on the first sweep every time: replay-characterise the gates, invert them to advisory, and measure the robot frame in software instead of by manual QTM re-alignment |
-| [handoff-solve-chaining.md](handoff-solve-chaining.md) | active | 2026-10-15 | Zero `SPLICE_TOO_LATE` self-ends on the recorded timings: handoff lead 4 -> 8 extra knots (Phase 0 replay done 2026-10-15) plus snap-aware re-aim fences so the pinned re-aim is the late adjustment; worker solve chaining (`PREDECESSOR_NOT_INSTALLED` contract) kept as a conditional phase with a written trigger |
 
 ## Orchestration prompts
 

@@ -126,7 +126,7 @@ CUP_CONTACT_WINDOW_LEAD_S = float(hw.JB_TRAJ_CUP_CONTACT_WINDOW_LEAD_S)
 #: above the raw minimum would discard pinned re-sends in favour of a path
 #: with less budget.  Above this floor the pinned path is at least as good on
 #: budget AND keeps the seam at the release.  A pre-declined re-aim
-#: (``PINNED-BUDGET``) is not spent (plans/active/handoff-solve-chaining.md
+#: (``PINNED-BUDGET``) is not spent (plans/archived/handoff-solve-chaining.md
 #: P1b).
 RESEND_PINNED_BUDGET_FLOOR_S = LEAD_S - WIRE_READ_KNOTS * float(hw.JB_TRAJ_KNOT_DT_S)
 

@@ -1,9 +1,11 @@
 ---
 title: Handoff-catch SPLICE_TOO_LATE - a longer pinned lead, the pinned re-aim as the late adjustment (solve chaining conditional)
 created: 2026-10-15
-status: active
+status: completed
+completed: 2026-10-16
+archived: 2026-10-16
 owner: harrison
-last_updated: 2026-10-15
+last_updated: 2026-10-16
 related_logbook:
   - 2026-10-14-two-ball-columns-sessions-why-attempts-end.md
 related_code:
@@ -312,3 +314,17 @@ C2 node contract + async dispatch (slug `...-handoff-chain-contract`).
 - P1 close: done 2026-10-16 (`./run_tests.sh --full`, counts in the P1 entry); the 38 ms bias carried to P2 and resolved there (§ 0.4).
 - P2: DONE 2026-10-16 — rows 23-29 read (retrospectively), 0 handoff `SPLICE_TOO_LATE` ENDs of 175, source mix
   175/175 prior, 30 re-aims installed; closing entry written; § 2.C's trigger did not fire. Next: `/archive-plan`.
+
+## Archival note (2026-10-16)
+
+**Shipped:** `HANDOFF_LEAD_EXTRA_KNOTS` 4 -> 8 (handoff lead 17 knots, 350 ms of first-install solve budget; min dispatch
+gap 0.200 s at the columns point) and the catch re-aim fences re-keyed on the real splice instant with the non-terminal
+`PINNED-BUDGET` decline (floor = the raw path's own 0.150 s; invariant I-CATCH-4). Commits 1f4a3cd0 (P0), ecc21d68 (P1),
+466878eb (P2 runsheet), 3b3b90d0 (P2 close). **Why it closed:** flown 2026-10-16 10:50 — zero handoff `SPLICE_TOO_LATE`
+ENDs in 17 attempts / 175 handoff catches, worst first-install margin 70 ms, three installs over Fix 1's budget; the cliff
+bias is knot quantisation (+0..+25 ms). § 2.C (worker chaining) never triggered and is archived here as the recorded design.
+**Residue re-homed:** the three § 4 follow-ups found at P2 — the tracker flight fit converging ~90 ms later since the matcher
+fix 5974d8c3, a fresh-origin lead for the reload THROW (one `ORIGIN_TOO_LATE` on 188 ms), and the raw-path re-aim that never
+installs after the snap band — are opened as their own work (2026-10-16 evening, Opus units on branches
+`tracker-fit-latency` and `throw-fresh-lead`; the raw-path fence deferred until the tracker fix shows whether it matters).
+The sitting read-out is `logbook/2026-10-16-handoff-lead-flown-zero-splice-too-late-tracker-fit-late.md`.
