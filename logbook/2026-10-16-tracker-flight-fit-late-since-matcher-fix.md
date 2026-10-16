@@ -134,12 +134,11 @@ count self-tosses only. Separately, ~30 S16 self-tosses never confirm at all, ev
 either matcher (a different set from the "36/191 never fitted" of Diagnosis item 1, which counts flights that
 never got a fit); that class is open and undiagnosed, next step = replay one at full rate and read the
 `tracker confirm` / `NO-CONVERGED-FIT` lines. **Not yet flown; takes effect after colcon build + launch restart.**
-**Still open:** the node's frame starvation (the remaining ~190 ms of p50 against full
-rate). A peer session's BB-calibration sitting analysis (2026-10-16, not measured here) found mocap_node
-logging "frame queue full" drops of 31-64 % of QTM frames after every calibration sweep and at idle, present in
-the 2026-10-13 and 10-14 logs too, so the drop may sit upstream in mocap_node's frame queue rather than in
-ball_tracker_node's own CPU; the next step is to read the mocap_node "frame queue full" lines against the
-/balls publish share before profiling the tracker. Options, for the owner: (1) find what took the CPU on 2026-10-16 (profile the live node under a sitting's
+**Still open:** ball_tracker_node's frame starvation (the remaining ~190 ms of p50 against full
+rate). CORRECTED 2026-10-16 evening (`2026-10-16-mocap-frame-queue-starvation.md`): mocap_node's own 30-52 % loss
+bursts are the BB calibration sweep's post-processing running synchronously in its heartbeat callback (4.3-7.2 s
+after every sweep, never at idle and never overlapping a flight); while juggling mocap_node publishes ~299 frames/s,
+so the tracker's ~1/3 share is lost DOWNSTREAM, in ball_tracker_node itself, and stays open there. Options, for the owner: (1) find what took the CPU on 2026-10-16 (profile the live node under a sitting's
 load; check the solver worker's niceness/affinity); (2) cut the node's per-frame rclpy cost (publish `/balls`
 at a fixed lower rate while processing every frame, or move the matcher into the mocap interface's process);
 (3) lower QTM's frame rate toward the tracker's 200 Hz nominal. Each changes a different thing; none is in this
