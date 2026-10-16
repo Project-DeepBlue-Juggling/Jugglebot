@@ -1,7 +1,9 @@
 ---
 title: The launch/reload THROW's fresh-origin lead - 9 -> 13 knots (150 -> 250 ms of solve budget), one per-kind lead at both ends
 created: 2026-10-16
-status: active
+status: completed
+completed: 2026-10-16
+archived: 2026-10-16
 owner: harrison
 last_updated: 2026-10-16
 related_logbook:
@@ -60,5 +62,9 @@ The REST-tail step (THROW 0 installs while the REST it follows still streams; th
 ## 5. Done means
 
 - DONE 2026-10-16: `./run_tests.sh --full` green (6666 passed, 11 skipped; serial 7), landed 205c527c. It covers `sim/skills_gate.py` through the `install_segment` default.
-- DONE 2026-10-16 16:10 (first flight, n = 1 fresh THROW): row 30 read from log + bag — origin +0.325 s, solve 0.028 of 0.250 s, zero ORIGIN_TOO_LATE / STALE_STATE, leg step 0.0000 rev install -> t0 and across t0 (details in the entry). A second sitting with several reload THROWs would make it n > 1.
-- The entry carries the flown read (2026-10-16); archive at the next /archive-plan pass.
+- DONE 2026-10-16: row 30 read from log + bag over two sittings, n = 10 fresh THROWs at origin +0.325 s (16:10: one, solve 0.028 s; 16:23: nine, solves 0.062-0.167 s of 0.250 s — the 0.167 s one would have been refused at the old 150 ms budget), 9 of 9 and 1 of 1 accepted, zero ORIGIN_TOO_LATE / STALE_STATE; bag leg step 0.0000 rev dispatch -> install -> t0 and across t0 on all ten (details in the entry).
+- DONE: the entry carries both flown reads; archived 2026-10-16.
+
+## Archival note (2026-10-16)
+
+**Shipped (205c527c):** `FRESH_THROW_LEAD_EXTRA_KNOTS = 4` (THROW lead 13 knots, 250 ms of solve budget) selected by one function `schedule.install_lead_s(kind)` at both ends (dispatch lead and reserved origin), and I-INSTALL-1: a fresh-origin install streams the running record to its origin t0 (`TrajectoryNode._stream_plan_locked` / `StreamHandoff`), so the wire no longer steps at install (0.040 rev at 9 knots before; 0 at any lead after). **Why it closed:** full gate green at 205c527c; flown 2026-10-16 16:10 and 16:23 — 10 of 10 fresh THROWs accepted (solves 0.028-0.167 s of 0.250 s), zero ORIGIN_TOO_LATE / STALE_STATE, zero leg step at install or t0 in both bags. **Residue:** none of this plan's. The second sitting's other ends (ABORTED_NO_RELEASE x4, MISSED_CATCH, LIMIT_ACC, ABORTED_MODE_CHANGED) are hand- and catch-side and belong to the late re-aim and hand-release work, not here. Owner decision 2026-10-16: emitter fix + 13 knots over 12 or 13 knots alone. Entry `logbook/2026-10-16-throw-fresh-origin-lead.md`.

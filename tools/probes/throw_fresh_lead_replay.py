@@ -1,5 +1,5 @@
 """Offline replay of recorded fresh-THROW solve times against candidate THROW
-leads (2026-10-16, ``plans/active/throw-fresh-origin-lead.md``).
+leads (2026-10-16, ``plans/archived/throw-fresh-origin-lead.md``).
 
 A fresh THROW's origin sits ``lead`` after its dispatch and
 ``executor.install_segment`` refuses it ``ORIGIN_TOO_LATE`` once the solve
