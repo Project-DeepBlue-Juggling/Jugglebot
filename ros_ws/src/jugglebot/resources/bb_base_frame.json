@@ -1,6 +1,6 @@
 {
   "schema": 1,
-  "description": "Ball Butler base-marker frame: four coplanar markers fastened to BB's shelf (no QTM label; identified by geometry), their as-built coordinates, and BB's pose in that frame pooled over accepted sweeps. mocap_node composes this sitting's base pose with these constants (bb_pose_source base_frame / auto). jugglebot/bb_base_frame.py.",
+  "description": "Ball Butler base-marker frame: four coplanar markers fastened to BB's shelf (no QTM label; identified by geometry), their as-built coordinates, and BB's pose in that frame pooled over accepted sweeps. mocap_node uses these constants to express each accepted sweep's BB pose in the base frame (kappa) for the epoch advisory; the sweep itself is the output. jugglebot/bb_base_frame.py.",
   "frame": "Base frame, mm: origin C (the L's corner); z the marker plane's normal, pointing up; x along C->E with its normal component removed; y = z x x (S on +y). Heading = angle of the posed x axis projected on world xy.",
   "nominal": {
     "cs_mm": 115.0,

@@ -706,8 +706,8 @@ CONSTELLATION_MIN_FRAMES = 200
 #: 2026-10-10-bb-template-residual-coverage). A pair seen in fewer than
 #: TEMPLATE_RESIDUAL_MIN_BINS bins keeps its window mean. Above
 #: CONSTELLATION_MAX_RESIDUAL_MM the estimate FAILS (the template no
-#: longer describes BB); above GATE_MAX_RESIDUAL_MM a calibration with a
-#: reference is refused by the gate.
+#: longer describes BB); above TEMPLATE_RESIDUAL_ADVISORY_MM (0.90 mm) the
+#: sweep is flagged TEMPLATE_RESIDUAL (advisory only, Phase 1).
 CONSTELLATION_MAX_RESIDUAL_MM = 1.0
 #: Pose bin width (deg of posed body yaw) of the template residual.
 TEMPLATE_RESIDUAL_BIN_DEG = 15.0
@@ -762,11 +762,16 @@ MOCAP_CLOCK_MIN_INTERVALS = 50
 #: Grid tolerance, as a fraction of the frame period.
 MOCAP_CLOCK_GRID_TOL = 0.125
 
-#: Consistency gate (see :func:`check_calibration_consistency`).
-GATE_N_SIGMA = 3.0
-GATE_MIN_DEG = 0.15
-GATE_MAX_AXIS_SHIFT_MM = 1.5
-GATE_MAX_RESIDUAL_MM = 0.5
+#: Advisory bands of :func:`assess_sweep_vs_reference` (nothing here refuses a
+#: sweep; the solver's own hard refusals are untouched). Fixed numbers, from
+#: logbook 2026-10-15-bb-calibration-phase0-characterise, "Advisory bands".
+#: Yaw delta vs the reference (deg).
+YAW_ADVISORY_DEG = 0.20
+#: Template residual (mm). The solver's CONSTELLATION_MAX_RESIDUAL_MM (1.0) stays
+#: the hard cap; a 562 h old wand calibration tripled this residual (2026-10-16).
+TEMPLATE_RESIDUAL_ADVISORY_MM = 0.90
+#: Mocap-to-yaw lag (ms) above which it is flagged (Phase 0 entry, "Advisory bands").
+LAG_ADVISORY_MS = 13.0
 
 
 @dataclass
@@ -1304,6 +1309,45 @@ def stamped_yaw_samples_from_joint_state(msg) -> list:
     return out
 
 
+def sweep_kinematics(yaw_samples) -> Optional[dict]:
+    """Start/end angle, span and duration of a sweep from ``[(t_s, yaw_deg)]``.
+
+    ``end_deg`` is the extreme yaw reached (the sample of largest magnitude,
+    signed): 121.3 for the 0 -> ~121 -> 0 operator sweep. ``duration_s`` spans
+    the whole window. Non-finite samples are ignored; None when none remain.
+    """
+    rows = []
+    for r in (yaw_samples or ()):
+        t, v = float(r[0]), float(r[1])
+        if math.isfinite(t) and math.isfinite(v):
+            rows.append((t, v))
+    if not rows:
+        return None
+    rows.sort(key=lambda r: r[0])
+    vals = [v for _, v in rows]
+    return {
+        'start_deg': vals[0],
+        'end_deg': max(vals, key=abs),
+        'span_deg': max(vals) - min(vals),
+        'duration_s': rows[-1][0] - rows[0][0],
+        'n_samples': len(rows),
+    }
+
+
+def sweep_suffix(yaw_samples, lag_s: Optional[float] = None) -> str:
+    """`` · sweep <start>→<end>° <dur> s, lag <±x.x> ms`` ('' without samples).
+
+    Appended to every attempt message on bb/calibration_attempt; ``lag n/a``
+    when no estimate (a refusal before the lag fit).
+    """
+    k = sweep_kinematics(yaw_samples)
+    if k is None:
+        return ''
+    lag = 'lag n/a' if lag_s is None else f'lag {lag_s * 1e3:+.1f} ms'
+    return (f" · sweep {k['start_deg']:.1f}→{k['end_deg']:.1f}° "
+            f"{k['duration_s']:.1f} s, {lag}")
+
+
 @dataclass
 class SweepYawEstimate:
     """BB's yaw offset and axis point from one calibration window."""
@@ -1330,6 +1374,10 @@ class SweepYawEstimate:
     frame_clock_off_grid: Optional[float] = None
     #: The window-mean pair statistic (diagnostic; the gate reads the pose-binned ``template_residual_mm``).
     template_residual_window_mm: float = float('nan')
+    #: Extreme yaw reached in the sweep (deg, signed); nan when no samples.
+    sweep_end_deg: float = float('nan')
+    sweep_start_deg: float = float('nan')
+    sweep_duration_s: float = float('nan')
 
     def summary(self) -> str:
         """One-line description for the result message."""
@@ -1346,7 +1394,9 @@ class SweepYawEstimate:
                 f'stale) over {self.n_moving} moving samples '
                 f'(residual {self.lag_residual_rms_deg:.2f}° RMS), '
                 f'σ {self.yaw_offset_std_deg:.3f}° (formal {self.formal_se_deg:.3f}° ⊕ '
-                f'repeatability {self.repeatability_deg:.3f}°)')
+                f'repeatability {self.repeatability_deg:.3f}°), '
+                f'sweep {self.sweep_start_deg:.1f}→{self.sweep_end_deg:.1f}° '
+                f'in {self.sweep_duration_s:.1f} s')
 
 
 def estimate_sweep_yaw_offset(
@@ -1445,7 +1495,11 @@ def estimate_sweep_yaw_offset(
     rep = float(template.repeatability_deg)
     offset_deg = fit.phi_raw_deg + template.gauge_shift_deg
     org = track.origin[moving]
+    kin = sweep_kinematics(yaw_samples) or {}
     return SweepYawEstimate(
+        sweep_end_deg=kin.get('end_deg', float('nan')),
+        sweep_start_deg=kin.get('start_deg', float('nan')),
+        sweep_duration_s=kin.get('duration_s', float('nan')),
         yaw_offset_rad=wrap_pi(math.radians(offset_deg)),
         yaw_offset_std_deg=math.sqrt(fit.formal_se_deg ** 2 + rep ** 2),
         formal_se_deg=fit.formal_se_deg, repeatability_deg=rep,
@@ -1462,92 +1516,90 @@ def estimate_sweep_yaw_offset(
 
 
 @dataclass
-class GateVerdict:
-    accepted: bool
-    message: str
-    delta_deg: float = 0.0
-    threshold_deg: float = 0.0
-    axis_shift_mm: float = 0.0
-    overridden: bool = False
-    no_reference: bool = False
+class SweepAdvisory:
+    delta_deg: Optional[float]          # new yaw - reference yaw (None without a reference)
+    axis_shift_mm: Optional[float]      # |new axis point - reference| (3D; None without one)
+    flags: list = field(default_factory=list)
+    lines: list = field(default_factory=list)
 
 
-def check_calibration_consistency(
+def assess_sweep_vs_reference(
     new_offset_deg: float,
     new_std_deg: float,
     new_position_mm,
     template_residual_mm: float,
+    lag_ms: float,
     reference: Optional[dict],
-    bb_moved: bool = False,
-    reference_label: str = 'last accepted',
-    n_sigma: float = GATE_N_SIGMA,
-    min_deg: float = GATE_MIN_DEG,
-    max_axis_shift_mm: float = GATE_MAX_AXIS_SHIFT_MM,
-    max_residual_mm: float = GATE_MAX_RESIDUAL_MM,
-) -> GateVerdict:
-    """Refuse a calibration that disagrees with the last accepted one while BB
-    is not declared moved.
+    same_world_epoch: Optional[bool],
+    yaw_source: str = 'stamped',
+) -> SweepAdvisory:
+    """Advisory comparison of a sweep with the last accepted one. NEVER refuses.
 
-    ``reference``: the last accepted calibration ({'yaw_offset_deg',
-    'position_mm'}) or None. With no reference the calibration is accepted
-    (``no_reference`` set; the caller logs a WARN) — there is nothing to
-    compare against, and the template's pin is NOT used as one.
+    ``reference``: {'yaw_offset_deg', 'position_mm'} or None (delta and axis shift
+    are then None). Flags: YAW_SHIFT only when ``same_world_epoch`` is True and
+    |delta yaw| > YAW_ADVISORY_DEG (False: the QTM frame moved, so the delta is not
+    comparable - a line says so; None: the delta is reported as "(frame unknown)");
+    TEMPLATE_RESIDUAL above TEMPLATE_RESIDUAL_ADVISORY_MM; LAG above
+    LAG_ADVISORY_MS for the STAMPED yaw source only - the band was characterised on
+    71 stamped sweeps (Phase 0 entry) and the heartbeat path carries its own
+    latency, so a heartbeat-sourced lag is not judged (the sweep suffix still
+    shows it). The world axis-point shift is reported, never flagged."""
+    flags: list = []
+    lines: list = []
+    delta = shift = None
+    if reference is not None:
+        delta = math.degrees(wrap_pi(math.radians(new_offset_deg - float(reference['yaw_offset_deg']))))
+        ref_pos = reference.get('position_mm')
+        if ref_pos is not None:
+            shift = float(np.linalg.norm(np.asarray(new_position_mm, float) - np.asarray(ref_pos, float)))
+        if same_world_epoch is False:
+            lines.append(f'yaw {delta:+.2f} deg vs the last sweep is not comparable: the QTM frame moved')
+        elif same_world_epoch is None:
+            lines.append(f'yaw {delta:+.2f} deg vs the last sweep (frame unknown)')
+        elif abs(delta) > YAW_ADVISORY_DEG:
+            flags.append('YAW_SHIFT')
+            lines.append(f'yaw {delta:+.2f} deg vs the last sweep (advisory > {YAW_ADVISORY_DEG:.2f})')
+    if template_residual_mm > TEMPLATE_RESIDUAL_ADVISORY_MM:
+        flags.append('TEMPLATE_RESIDUAL')
+        lines.append(f'template residual {template_residual_mm:.2f} mm '
+                     f'(> {TEMPLATE_RESIDUAL_ADVISORY_MM:.2f}), re-wand QTM if this persists')
+    if yaw_source != 'heartbeat' and abs(lag_ms) > LAG_ADVISORY_MS:
+        flags.append('LAG')
+        lines.append(f'lag {lag_ms:+.1f} ms (> {LAG_ADVISORY_MS:.0f})')
+    return SweepAdvisory(delta, shift, flags, lines)
 
-    With a reference, refused when |Δyaw| > max(n_sigma·√(σ_new² + σ_ref²),
-    min_deg), or |Δaxis point| > ``max_axis_shift_mm`` (3D), or the template
-    residual > ``max_residual_mm``. Both estimates carry their own σ
-    (``yaw_offset_std_deg``; the reference's as persisted, 0 if absent): the
-    difference of two independent sweeps spreads √2 wider than one, and a
-    limit of 3σ_new alone refused a good pair in bag 2026-10-09_23-49-07
-    (Δ 0.197° against 0.189°, both sweeps ±0.05–0.06°; logbook
-    2026-10-09-bb-calibration-heartbeat-yaw-wrap). ``bb_moved`` — the operator's statement that BB moved
-    OR that QTM was recalibrated (either changes the frame; one override
-    resets the reference) — accepts a yaw/axis change; it does not excuse a
-    template residual (a marker that moved on BB needs a new template, not a
-    new reference).
-    """
-    if reference is None:
-        return GateVerdict(True, 'gate: no reference calibration — accepted and '
-                                 'persisted as the reference', no_reference=True)
-    ref_yaw = float(reference['yaw_offset_deg'])
-    delta = math.degrees(wrap_pi(math.radians(new_offset_deg - ref_yaw)))
-    ref_std = float(reference.get('yaw_offset_std_deg') or 0.0)
-    thr = max(n_sigma * math.hypot(float(new_std_deg), ref_std), min_deg)
-    ref_pos = reference.get('position_mm')
-    shift = (float(np.linalg.norm(np.asarray(new_position_mm, float) - np.asarray(ref_pos, float)))
-             if ref_pos is not None else 0.0)
-    head = (f'gate: Δyaw {delta:+.3f}° (limit ±{thr:.3f}°), Δaxis {shift:.2f} mm '
-            f'(limit {max_axis_shift_mm:.1f} mm) vs {reference_label} {ref_yaw:.3f}°')
-    if template_residual_mm > max_residual_mm:
-        return GateVerdict(
-            False,
-            f'TEMPLATE_RESIDUAL: a BB marker sits {template_residual_mm:.2f} mm off the '
-            f'template > {max_residual_mm:.2f} mm — a marker moved on BB; rebuild the '
-            'template (bb_moved does not override this)',
-            delta, thr, shift)
-    problems = []
-    if abs(delta) > thr:
-        problems.append('yaw')
-    if shift > max_axis_shift_mm:
-        problems.append('axis point')
-    # The refusal's operator line: the code and the decisive numbers only
-    # (the estimator detail is the caller's DEBUG). Wording, not logic.
-    exceeded = []
-    if 'yaw' in problems:
-        exceeded.append(f'Δyaw {delta:+.3f}° exceeds ±{thr:.3f}°')
-    if 'axis point' in problems:
-        exceeded.append(f'axis point moved {shift:.2f} mm > {max_axis_shift_mm:.1f} mm')
-    if not problems:
-        return GateVerdict(True, f'{head} ok', delta, thr, shift)
-    if bb_moved:
-        return GateVerdict(True, f'{head} — {" and ".join(problems)} changed, ACCEPTED on '
-                                 'the bb_moved override (new reference; refit the aim '
-                                 'correction)', delta, thr, shift, overridden=True)
-    return GateVerdict(
-        False,
-        f'CALIBRATION_INCONSISTENT: {", ".join(exceeded)} vs {ref_yaw:.3f}° '
-        f'({reference_label}) — set bb_moved:=true if BB or QTM moved',
-        delta, thr, shift)
+
+def format_outcome_body(
+    yaw_deg: float, yaw_std_deg: float, position_mm, tilt_deg: float,
+    template_residual_mm: float, lag_ms: float,
+    sweep_advisory: SweepAdvisory, base_advisory=None, pooled: Optional[dict] = None,
+) -> str:
+    """ONE line (no newline, no prefix) for the operator console: the estimate, the
+    pooled numbers, and - only when a flag is set - ` · ADVISORY: <line>; <line>`.
+
+    ``base_advisory``: a bb_base_frame.BaseAdvisory or None; ``pooled``: optional
+    {'kappa_deg', 'epoch_id', 'delta_deg', 'n', 'opened', 'rejoined'} of the assigned
+    epoch AFTER the append ('delta_deg' is vs the epoch that was current before the
+    sweep; it is shown only when the sweep stayed in that epoch). The node prepends 'BB calibrated: ' and appends the sweep suffix."""
+    x, y, z = (float(v) for v in position_mm)
+    body = (f'yaw {yaw_deg:+.2f}\u00b0 \u00b1{yaw_std_deg:.2f}, axis ({x:.0f}, {y:.0f}, {z:.0f}) mm, '
+            f'tilt {tilt_deg:.1f}\u00b0, template {template_residual_mm:.2f} mm, lag {lag_ms:+.1f} ms')
+    if pooled is not None:
+        ep = f"epoch K{pooled['epoch_id']}"
+        if pooled.get('opened'):
+            tag = f"{ep} opened, n {pooled['n']}"
+        elif pooled.get('rejoined'):
+            tag = f"{ep} rejoined, n {pooled['n']}"
+        else:
+            tag = f"{ep} {pooled['delta_deg']:+.2f}\u00b0, n {pooled['n']}"
+        body += f" \u00b7 kappa {pooled['kappa_deg']:.2f}\u00b0 ({tag})"
+        if base_advisory is not None and base_advisory.delta_axis_mm is not None:
+            body += f', p_b \u0394{base_advisory.delta_axis_mm:.1f} mm'
+    adv = list(sweep_advisory.lines) + (list(base_advisory.lines) if base_advisory else [])
+    if adv:
+        body += ' \u00b7 ADVISORY: ' + '; '.join(adv)
+    return ' '.join(body.split())
+
 
 # ---------------------------------------------------------------------------
 #  High-level calibration result

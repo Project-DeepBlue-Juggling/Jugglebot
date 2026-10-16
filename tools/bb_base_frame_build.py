@@ -12,6 +12,9 @@ Two sources:
                       deployed gauge (the node's own numbers, not an offline replay).
   --from-state FILE   fold mocap_node's runtime pool (bb_base_frame_state.json)
                       into the resource's records (the as-built template is kept).
+                      Only the CURRENT kappa epoch is folded: the state keeps
+                      every epoch (schema 2) and folding a stepped history
+                      into one pool would give a bimodal seed.
 
 Needs the PDJ venv for --bag (mcap_ros2):
     ~/Desktop/PDJ_venv/venv/bin/python -I tools/bb_base_frame_build.py --bag B.mcap [--out F] [--dry-run]
@@ -150,8 +153,9 @@ def resource_json(as_built, recs, pin_deg, repeat_deg, pin_sd, provenance):
         'description': ('Ball Butler base-marker frame: four coplanar markers fastened to BB\'s '
                         'shelf (no QTM label; identified by geometry), their as-built '
                         'coordinates, and BB\'s pose in that frame pooled over accepted sweeps. '
-                        'mocap_node composes this sitting\'s base pose with these constants '
-                        '(bb_pose_source base_frame / auto). jugglebot/bb_base_frame.py.'),
+                        'mocap_node uses these constants to express each accepted sweep\'s '
+                        'BB pose in the base frame (kappa) for the epoch advisory; the sweep '
+                        'itself is the output. jugglebot/bb_base_frame.py.'),
         'frame': ('Base frame, mm: origin C (the L\'s corner); z the marker plane\'s normal, '
                   'pointing up; x along C->E with its normal component removed; y = z x x '
                   '(S on +y). Heading = angle of the posed x axis projected on world xy.'),
@@ -216,7 +220,9 @@ def main(argv=None):
         if state is None:
             sys.exit(f'{a.from_state} does not exist')
         as_built = old['as_built']
-        recs = state['records']
+        cur = bf.current_epoch_id(state)
+        recs = [r for r in state['records'] if r.epoch == cur]
+        print(f'folding epoch K{cur}: {len(recs)} of {len(state["records"])} records')
         prov = dict(old.get('provenance', {}))
         prov['updated'] = (f'{now} by tools/bb_base_frame_build.py --from-state '
                            f'{os.path.basename(a.from_state)} ({len(recs)} records)')
