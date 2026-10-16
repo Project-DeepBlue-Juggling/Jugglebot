@@ -20,8 +20,7 @@ invented. Where a plan states no gate, the row says so plainly.
 
 | Plan | Parked | Why parked | What would unpark it |
 |------|--------|------------|----------------------|
-
-*(Empty: the board was cleared 2026-10-14; the five parked plans were archived — see `plans/archived/INDEX.md`.)*
+| [bb-marker-never-matched-advisory.md](bb-marker-never-matched-advisory.md) | 2026-10-17 | A template marker displaced beyond the 3 mm match tolerance drops out of the fit silently (only an unflagged `matched_min`); leave-one-out bounds the accuracy cost at <= 0.09 deg, so it is a reporting gap, and there is no evidence of such an event | Any one of: a sitting's first-sweep template residual > 1.3 mm; a BB marker post found loose, bent or re-seated; a sweep with `matched_max` < 7 while all 7 BB markers are visible at rest; the node gains any other per-marker check (do both at once) |
 
 ## Where the other plans are
 

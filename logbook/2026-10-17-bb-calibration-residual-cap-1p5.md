@@ -102,7 +102,7 @@ The 22:00-state sweeps would now be accepted with the TEMPLATE_RESIDUAL advisory
 
 ## Open Questions
 
-- (a) A marker displaced beyond the 3 mm match tolerance is probably unmatched and the fit proceeds on the rest (the implementer saw a 4.0 mm displacement read 0.005 mm residual; mechanism inferred from `CONSTELLATION_MATCH_TOL_MM = 3.0`, NOT verified). A matched-count drop is reported (`matched_min`) but not flagged.
+- (a) Verified 2026-10-17 by reading the solver: matching is label-free and geometric, so a marker displaced beyond `CONSTELLATION_MATCH_TOL_MM` = 3 mm is never assigned and the fit proceeds on the remaining markers (floor `CONSTELLATION_MIN_MATCHED` = 3); the only trace is the unflagged `matched_min`-`matched_max` range. Accuracy cost is bounded by the Phase 2 leave-one-out at <= 0.09 deg of kappa for any single marker, so this is a reporting gap; parked: `plans/parked/bb-marker-never-matched-advisory.md` (triggers in its INDEX row).
 - (b) The vertical-mode detection gap: an axis-tilt or per-marker z check would close it; not scheduled.
 - (c) Whether the deformation persists is read by the next sitting's first sweep.
 - (d) The hardware cause (ledger hypotheses H4-H6) is still open.
