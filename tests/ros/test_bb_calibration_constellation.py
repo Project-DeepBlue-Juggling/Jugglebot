@@ -471,7 +471,8 @@ def test_axis_shift_is_reported_never_flagged():
 def test_template_residual_and_lag_advisories_at_band_plus_and_minus_epsilon():
     assert _assess(0.6, res=TEMPLATE_RESIDUAL_ADVISORY_MM - 0.01).flags == []
     v = _assess(0.6, res=TEMPLATE_RESIDUAL_ADVISORY_MM + 0.01)
-    assert v.flags == ['TEMPLATE_RESIDUAL'] and 're-wand QTM if this persists' in v.lines[0]
+    assert v.flags == ['TEMPLATE_RESIDUAL'] and v.lines[0].startswith('template residual 0.9')
+    assert 're-wand' not in v.lines[0]        # no remedy is named: none is established (2026-10-16 sitting)
     assert _assess(0.6, lag=LAG_ADVISORY_MS - 0.1).flags == []
     assert _assess(0.6, lag=LAG_ADVISORY_MS + 0.1).flags == ['LAG']
     assert _assess(0.6, lag=-LAG_ADVISORY_MS - 0.1).flags == ['LAG']
@@ -504,7 +505,7 @@ def test_format_outcome_body_is_one_line_with_advisory_only_when_flagged():
     body = format_outcome_body(1.5, 0.03, BB_POS, 0.6, 1.0, 3.1, flagged, base_adv2, pooled)
     assert '\n' not in body and body.count(' \u00b7 ADVISORY: ') == 1
     tail = body.split(' \u00b7 ADVISORY: ')[1]
-    assert tail.count('; ') == 2 and 'opened epoch K1' in tail and 're-wand' in tail
+    assert tail.count('; ') == 2 and 'opened epoch K1' in tail and 'template residual' in tail
     # without base numbers it still renders
     assert '\n' not in format_outcome_body(0.5, 0.03, BB_POS, 0.6, 0.4, 3.1, clean)
 

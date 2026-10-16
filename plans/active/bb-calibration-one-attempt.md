@@ -39,17 +39,22 @@ Acceptance, in order:
    and the 7.9 s circle-centres sweep) are judged on their data, not forced.
 2. **Hardware.** The first sweep of each of ten consecutive sittings is
    accepted with no override, and its kappa and yaw lie inside the band
-   characterised in Phase 0.
+   characterised in Phase 0 (owner decision pending 2026-10-16: reword to
+   'accepted with no override and no operator action; kappa inside its
+   epoch's band; any KAPPA_EXCURSION recorded with its cause' - the
+   2026-10-16 first sweep legitimately opened a new epoch).
 
 ## 1. Root causes being closed
 
 Evidence for each is in the entry. Labels match its census.
 
-- **C1.** Kappa (BB yaw offset in the shelf base frame) stepped +0.25 deg
-  between 2026-10-13 00:18 and 22:00. Leading candidate
-  (2026-10-16) = 3D reconstruction drift at the shelf on a wand calibration
-  18-23 days old across the window (BB template residual 0.26 -> 0.4-0.8 mm);
-  NOT the sweep pose mix (clip experiment, Phase 0 entry § D), not the
+- **C1.** Kappa (BB yaw offset in the shelf base frame) stepped about +0.3 deg
+  (+0.25 in the console census, +0.31 in the replay) between 2026-10-13 00:18 and 22:00. Leading candidate
+  cause (2026-10-16): two-state kappa, +0.31 deg on 10-13 and -0.33 deg on
+  10-16, both between sittings, QTM reconstruction and the wand calibration
+  EXCLUDED 2026-10-16 (the 10:51 and 15:08 sweeps share one calibration and
+  one frame); BB state at power-up vs a per-session labelling/template
+  artefact is decided by Phase 2. Also NOT the sweep pose mix (clip experiment, Phase 0 entry § D), not the
   encoder, not a power cycle (every session boundary is one), not the shelf
   (tilt in world flat).
 - **C2.** The kappa gate limit sat at its 0.09 deg floor. It was built from a
@@ -130,7 +135,8 @@ Deliverable:
      Phase 1's acceptance (first sweep of ten consecutive sittings) is ten
      more. Replaced by (i) the owner's QTM check, done (wand calibration 562 h
      old, re-wanded 2026-10-16; QTM's BB residual 0.30 -> 0.23 mm) and (ii)
-     the first Phase 1 sweep after the re-wand: BB template residual back
+     the first Phase 1 sweep after the re-wand (read 2026-10-16: see the
+     Phase 1 entry; the re-wand was not the cause): BB template residual back
      near 0.26 mm with kappa moving off the 179.59 deg level (Phase 0's K2;
      the node labels it K0 on the migrated live state) says
      reconstruction owned the step; kappa staying at 179.59 with the residual
@@ -198,13 +204,25 @@ Gate: `./run_tests.sh --full`, plus the replay verdict table in the logbook.
 
 Deliverable:
 
-- One path and one statistic for the template residual. It is advisory at
-  the Phase 0 band and capped hard at 1.0 mm.
+- Controlled-pair measurement first: the 2026-10-16 10:51 and 15:08 bags
+  (one wand calibration, one world frame, kappa 179.57 vs 179.26): which of
+  the 7 BB markers are labelled, the per-marker residuals, and kappa refitted
+  on the marker subset common to all sittings and with label-free marker
+  pickup (all visible markers near BB matched to the template, labelled or
+  not). Kappa collapsing to one value = labelling/template artefact, Phase 2
+  fixes it in software; kappa keeping two levels = BB, owner hardware check
+  of the encoder and yaw mount. Then the same across every bag.
+- One path and one statistic for the template residual. Reference level
+  0.35-0.46 mm post-re-wand (not 0.26); advisory band 0.90 and hard cap
+  1.0 mm unchanged; no remedy named until one is established.
+- Why the shelf-marker residual against the as-built template went
+  0.004 -> 0.30-0.35 mm and did not recover after the re-wand (Phase 3
+  builds the robot frame on those markers).
 - A labelling and coverage investigation, as a logbook entry with a
   recommendation: why only 5 of 7 BB markers label at rest (QTM3 in 4 bags,
   QTM5 never), why rest pair separations vary 0.5 to 4 mm bag to bag, and
-  whether a QTM rigid-body definition for BB makes labelling robust. Any
-  QTM-side change is the owner's to make.
+  whether label-free pickup on our side makes labelling robust (owner
+  question 2026-10-16). Any QTM-side change is the owner's to make.
 
 Files likely touched: `bb_calibration.py`, `resources/bb_marker_template.json`
 (only if the investigation justifies re-fitting; pose-sampling coverage
@@ -214,7 +232,8 @@ Pinned by: a test that the same data gives the same residual verdict on any
 pool size, and the replay.
 
 Gate: replay still accepts the 25; the 0.52 to 0.76 mm sweeps appear as
-advisories, not refusals.
+advisories, not refusals; the controlled-pair result, with the subset-kappa
+table, in the Phase 2 entry.
 
 ### Phase 3 - Robot frame measured in software (P4)
 
@@ -265,12 +284,12 @@ column still lands.
 ## 4. Risks and what this plan does NOT do
 
 - No change to BB firmware. No claim about the kappa-step mechanism beyond
-  the entry; Phase 0 narrowed it to reconstruction drift as the leading
-  candidate, the first Phase 1 sweep reads the 2026-10-16 re-wand, and the
-  plan does not depend on the answer.
-- QTM wand-calibration age is a known input now: the template-residual
-  advisory is the live indicator and a re-wand is the remedy it names when
-  the residual exceeds its band.
+  the entry; the 2026-10-16 first sweep excluded reconstruction drift (two-state
+  kappa, BB state vs labelling artefact open), and the plan does not depend
+  on the answer.
+- QTM wand-calibration age is hygiene (562 h old across the window); it is
+  NOT a kappa fix (the 2026-10-16 re-wand did not move kappa) and the
+  advisory names no remedy.
 - Removing history gates also removes protection against a genuinely bumped
   BB. Mitigation: the advisory line still prints, and the throw learner
   absorbs a 0.25 deg error (about 4 mm at 1 m). The R5 gate was met under
@@ -288,6 +307,6 @@ column still lands.
 | Phase | Status | Date | Note |
 |-------|--------|------|------|
 | 0 Characterise | done | 2026-10-16 | bands published in the Phase 0 entry; pose mix excluded; the power-cycle pin dropped (every session is one), replaced by the 2026-10-16 QTM re-wand + the first Phase 1 sweep |
-| 1 Gate inversion and operator surface | code done, hardware acceptance owed | 2026-10-16 | replay: 23 of 24 logged refusals accepted; first sweep of ten sittings is the gate; needs merge into skill-stack + colcon build |
-| 2 Template residual | not started | - | parallel with 3 after Phase 1 |
+| 1 Gate inversion and operator surface | code live, R1-R4 passed, tally 1 of 10 (pending acceptance rewording) | 2026-10-16 | merged c115743d; mechanism: two-state kappa, QTM excluded |
+| 2 Template residual | ready to start | 2026-10-16 | controlled pair 10:51 vs 15:08 first; parallel with the tally |
 | 3 Robot frame in software | not started | - | design-bearing; after Phase 1 |

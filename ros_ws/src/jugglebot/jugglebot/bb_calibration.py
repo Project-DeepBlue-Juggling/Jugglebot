@@ -1561,8 +1561,12 @@ def assess_sweep_vs_reference(
             lines.append(f'yaw {delta:+.2f} deg vs the last sweep (advisory > {YAW_ADVISORY_DEG:.2f})')
     if template_residual_mm > TEMPLATE_RESIDUAL_ADVISORY_MM:
         flags.append('TEMPLATE_RESIDUAL')
+        # No remedy is named: the 2026-10-16 sitting showed a re-wand does not move
+        # this residual back (0.35-0.46 mm under one fresh wand calibration), and
+        # a line must never name an operator action that is not the remedy.
+        # Phase 2 of the bb-calibration plan owns the labelling/template question.
         lines.append(f'template residual {template_residual_mm:.2f} mm '
-                     f'(> {TEMPLATE_RESIDUAL_ADVISORY_MM:.2f}), re-wand QTM if this persists')
+                     f'(> {TEMPLATE_RESIDUAL_ADVISORY_MM:.2f})')
     if yaw_source != 'heartbeat' and abs(lag_ms) > LAG_ADVISORY_MS:
         flags.append('LAG')
         lines.append(f'lag {lag_ms:+.1f} ms (> {LAG_ADVISORY_MS:.0f})')
