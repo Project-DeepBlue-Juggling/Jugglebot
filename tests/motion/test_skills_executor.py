@@ -6317,7 +6317,11 @@ def _rest_then_throw_schedule(sites, throw_due_with_the_rest=False):
     rest_start = T0_ABS + 1.0
     rest = Skill(kind=sg.REST, ball_id=0, site=p1, t_abs_s=rest_start + 1.0,
                  window_s=1.0)
-    t_throw = (rest_start + LAUNCH_S if throw_due_with_the_rest
+    # `+ (FRESH_THROW_LEAD_S - LEAD_S)`: the THROW dispatches by its own
+    # 13-knot lead since 2026-10-16, so this keeps its dispatch ON the REST's
+    # (both due on the same ticks) rather than ahead of it.
+    t_throw = (rest_start + LAUNCH_S + (ex.FRESH_THROW_LEAD_S - ex.LEAD_S)
+               if throw_due_with_the_rest
                else rest_start + 1.0 + LAUNCH_S)
     throw = Skill(kind=sg.THROW, ball_id=0, site=p1, t_abs_s=t_throw,
                   window_s=LAUNCH_S, y_d=(np.zeros(2), APEX_M), target=p1)

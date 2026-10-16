@@ -130,8 +130,10 @@ from jugglebot.motion.trajectory import feasibility as feas
 from jugglebot.motion.trajectory import planner
 from jugglebot.motion import unified_cycle as uc
 from jugglebot.motion.trajectory.cycle_plan import CyclePlan
+from jugglebot.motion.trajectory.stream_handoff import StreamHandoff
 from jugglebot.motion.skills import executor as sk_exec
 from jugglebot.motion.skills import magazine_throw as sk_magazine
+from jugglebot.motion.skills import schedule as sk_sched
 from jugglebot.motion.skills import segments as sk_seg
 from jugglebot.motion.skills import solver_worker as sk_solver
 from jugglebot.motion.skills.schedule import ball_label
@@ -735,6 +737,16 @@ class TrajectoryNode(Node):
         self._plan_lock = threading.Lock()
         self._active_plan = None          # current TrajectoryPlan (None until seeded)
         self._plan_t0 = None              # perf_counter at install (plan-time origin)
+        # I-INSTALL-1 (2026-10-16): the STREAMING view of a future-origin
+        # install -- a StreamHandoff(source = what the wire was playing,
+        # head = `_active_plan`) while the head's origin is still ahead, else
+        # None. `_active_plan` stays the PLANNING head (every splice, re-aim,
+        # status and refusal reader); the wire reads `_stream_plan_locked()`.
+        # Written only by `_install` (and lazily cleared by the emitter once
+        # the origin has passed); bound to its head by identity, so any
+        # direct `_active_plan` assignment (the emitter's backstop freeze, the
+        # escalation hold) drops it without a write here.
+        self._handoff = None
         self._seeded = False              # a real telemetry seed has been installed
         self._streaming = False           # current mode is a streaming mode
         # FIX 1 — Teensy guard-latch freeze. Set True on the RISING edge of a latched
@@ -918,6 +930,8 @@ class TrajectoryNode(Node):
         # release records the hold it was planned with (ReleaseMark), which is
         # what the splice guard reads -- never this config.
         self.add_on_set_parameters_callback(self._on_set_parameters)
+        # The GENERAL lead -- the warm-up REST's only. `_svc_install_segment`
+        # derives each install's lead per kind (`schedule.install_lead_s`).
         self._segment_lead_s = sk_exec.LEAD_S
         # The previous accepted Segment's QP working set — CARRIED, not cached
         # (owner decision, brief_D2_ros_shell.md § B): one attribute, overwritten
@@ -1410,8 +1424,8 @@ class TrajectoryNode(Node):
         self._last_emit_mono = t_wake
 
         with self._plan_lock:
-            plan = self._active_plan
-            t0 = self._plan_t0
+            head = self._active_plan
+            plan, t0 = self._stream_plan_locked()
             streaming = self._streaming and self._seeded
             mode = self._current_mode
         if not streaming or plan is None or t0 is None:
@@ -1428,6 +1442,13 @@ class TrajectoryNode(Node):
         knot_epoch_us = self._perf_to_epoch_us(knot_time)
         frame = self._emitter.frame(plan, tau, self._seq,
                                     knot_epoch_us=knot_epoch_us)
+        if plan is not head and tau > 2.0 * self._limits.knot_dt_s:
+            # I-INSTALL-1: every sample this and later frames take (u0..u2)
+            # is past the head's origin, so the handoff view is spent. Drop it
+            # only if it is still the one this frame sampled.
+            with self._plan_lock:
+                if self._handoff is plan:
+                    self._handoff = None
         motor_rev = np.asarray(frame['motor_rev'], dtype=float)
 
         # Defence-in-depth per-knot step bound (the gate should already prevent
@@ -1490,7 +1511,11 @@ class TrajectoryNode(Node):
         # can swap the active plan (and reset the accumulators) between the frame
         # sample above and this call, and a stale frame must not contaminate the new
         # move's realized window (the install-straddle finding).
-        self._track_realized_peaks(frame, plan)
+        # While a StreamHandoff is pending the frame samples the RUNNING record,
+        # not the new head: skip, so the new move's realized peaks are not seeded
+        # with the REST tail (/diagnose observability only).
+        if plan is head:
+            self._track_realized_peaks(frame, head)
 
         # ── Post-publish planning: pending-stop retry then follower replan ──
         # Bounded (A4 max_iters, contained exceptions) so the worst block stays far
@@ -2763,16 +2788,38 @@ class TrajectoryNode(Node):
         is the "why not" a future reader would otherwise have to re-derive.
         """
         with self._plan_lock:
-            plan = self._active_plan
-            t0 = self._plan_t0
+            plan, t0 = self._stream_plan_locked()
         if plan is None or t0 is None:
             return (self._neutral_pose.copy(), np.zeros(6), np.zeros(6))
         now = time.perf_counter() if at_mono is None else float(at_mono)
         return plan.state_at(now - t0)
 
+    def _stream_plan_locked(self):
+        """``(plan, t0)`` the WIRE plays -- caller holds ``_plan_lock``.
+
+        I-INSTALL-1 (``motion/skills/INVARIANTS.md``), its one enforcement
+        point: a fresh-origin install never pre-empts the running record before
+        its origin. While ``_install`` has left a :class:`StreamHandoff` bound
+        to the CURRENT head this returns it (the running record until the
+        head's ``t0``, the head from it); otherwise the head itself. Readers:
+        the emitter (``_emit_once``), ``_current_state`` and
+        ``_commanded_hand_state`` -- i.e. everything that asks "what is the
+        machine being commanded to" (graceful stops, holds, guard descents, the
+        install-continuity guard and every live seed). Everything that PLANS
+        reads ``_active_plan`` / ``_cycle`` instead (the next splice, re-aims,
+        ``_refusal_timing``, ``/trajectory/status``). The identity bind means a
+        direct ``_active_plan`` assignment (backstop freeze, escalation hold)
+        retires the handoff with no extra write.
+        """
+        h = self._handoff
+        if h is not None and h.head is self._active_plan:
+            return h, self._plan_t0
+        return self._active_plan, self._plan_t0
+
     def _install(self, plan, *, t0=None, require_follower_mode=False,
                  require_epoch=None, bump_epoch=False, cycle=_UNSET,
-                 cycle_owner=_UNSET, reset_replans=False) -> bool:
+                 cycle_owner=_UNSET, reset_replans=False,
+                 stream_handoff=False) -> bool:
         """Install ``plan`` as the active plan. Returns True iff it was installed.
 
         ``t0`` overrides the plan-time origin (default: ``perf_counter()`` at
@@ -2814,6 +2861,18 @@ class TrajectoryNode(Node):
 
         ``cycle`` defaults to a sentinel rather than ``None`` because ``None`` is a
         meaningful value here (a non-cycle install clears the record).
+
+        ``stream_handoff`` (I-INSTALL-1, 2026-10-16): when True AND the origin
+        ``t0`` is still in the future at the install instant, the wire keeps
+        playing what it was playing (``_stream_plan_locked`` before this
+        install -- the running record, or a pending handoff a splice re-wraps)
+        until ``t0`` and switches to ``plan`` there; ``plan`` is the planning
+        head from now. Only ``_svc_install_segment`` passes it, for its
+        reserved-lead fresh origins and for splices. Every other install
+        (holds, graceful stops, guard descents, go_to_pose, the follower)
+        leaves it False and so RETIRES any pending handoff: a stop seeded from
+        ``_current_state`` -- the stream view, i.e. the moving REST tail --
+        takes the wire from where it really is, and wins.
         """
         now = t0 if t0 is not None else time.perf_counter()
         with self._plan_lock:
@@ -2821,6 +2880,12 @@ class TrajectoryNode(Node):
                 return False
             if require_epoch is not None and self._install_epoch != require_epoch:
                 return False
+            handoff = None
+            if stream_handoff and now > time.perf_counter():
+                src, src_t0 = self._stream_plan_locked()
+                if src is not None and src_t0 is not None:
+                    handoff = StreamHandoff(src, src_t0, plan, now)
+            self._handoff = handoff
             self._active_plan = plan
             self._plan_t0 = now
             # New plan ⇒ fresh realized-peak window (per-move tracking). Reset the
@@ -3416,7 +3481,8 @@ class TrajectoryNode(Node):
         ros_sec = float(ros_time.sec) + float(ros_time.nanosec) * 1e-9
         return ros_sec + self._ros_to_perf_offset
 
-    def _install_continuity_ok(self, plan, tau: float = 0.0) -> bool:
+    def _install_continuity_ok(self, plan, tau: float = 0.0,
+                               at_mono=None) -> bool:
         """True iff ``plan`` at ``tau`` still matches the live commanded state — on
         the LEGS (in motor_rev, the pump's units) and, when the plan carries one, on
         the HAND.
@@ -3436,6 +3502,12 @@ class TrajectoryNode(Node):
         bit-identical to what is already streaming and whose t = 0 is therefore in
         the past). Comparing a same-origin re-install at 0.0 would measure the whole
         elapsed window as "drift" and refuse every chain.
+
+        ``at_mono`` is the instant the LIVE side is read at (default now). The
+        skill stack's handed-over installs (I-INSTALL-1) pass the new origin
+        ``t0``: the wire switches there, so the step that matters is the
+        running record's state AT ``t0`` against knot 0, not its state at the
+        install instant (which it keeps playing through).
 
         **The hand term (plan Phase 4).** Until the unified cycle there was one
         commanded channel and a pose check covered it. A ``CyclePlan`` swap also
@@ -3480,7 +3552,7 @@ class TrajectoryNode(Node):
         """
         self._continuity_detail = ''
         plan_pose, plan_twist, _ = plan.state_at(tau)
-        live_pose, live_twist, _ = self._current_state()
+        live_pose, live_twist, _ = self._current_state(at_mono=at_mono)
         drift = float(np.max(np.abs(
             self._pose_to_motor_rev(plan_pose)
             - self._pose_to_motor_rev(live_pose))))
@@ -3501,7 +3573,7 @@ class TrajectoryNode(Node):
         hand_at = getattr(plan, 'hand_at', None)
         if hand_at is None:
             return True
-        reference, ref_vel = self._commanded_hand_state()
+        reference, ref_vel = self._commanded_hand_state(at_mono=at_mono)
         if reference is None:
             # Neither commanded nor measured: nothing to be continuous WITH. Refuse
             # rather than wave it through — installing a hand track blind is exactly
@@ -3523,7 +3595,9 @@ class TrajectoryNode(Node):
         # rather than a commanded velocity, so charging a plan against it would
         # refuse the first cycle install of every session for a sensor reason.
         with self._plan_lock:
-            live_hand_track = getattr(self._active_plan, 'hand_at', None) is not None
+            # Same view as the reference/drift reads above (the wire's plan).
+            live_hand_track = getattr(self._stream_plan_locked()[0], 'hand_at',
+                                      None) is not None
         if not live_hand_track:
             return True
         hand_vel_bound = (0.25 * feas.STEP_BOUND_MARGIN
@@ -3790,7 +3864,7 @@ class TrajectoryNode(Node):
         instant it describes, moving or not.
         """
         with self._plan_lock:
-            plan, t0 = self._active_plan, self._plan_t0
+            plan, t0 = self._stream_plan_locked()
         hand_at = getattr(plan, 'hand_at', None)
         if hand_at is not None and t0 is not None:
             now = time.perf_counter() if at_mono is None else float(at_mono)
@@ -3881,6 +3955,10 @@ class TrajectoryNode(Node):
           would simply stop knot 0 being the machine EXACTLY, which is the pin
           that landed today.)
         """
+        # I-INSTALL-1 reachability (audit 2026-10-16): this reads the HEAD view, so
+        # tau < 0 while a handoff is pending. Unreachable: only a fresh REST seeds
+        # here moving, and no compiler dispatches one between THROW 0's install and
+        # its t0 (a CATCH splices; the closing REST waits two rest tails past touch-down).
         with self._plan_lock:
             active, t0 = self._active_plan, self._plan_t0
         record = self._cycle
@@ -4518,7 +4596,19 @@ class TrajectoryNode(Node):
         # fresh branch needs the node to build a seed at all, and building one
         # (`_cycle_start_state`) verifies rest and costs the E8 tilt lookup.
         seed_rest = None
-        fresh = record is None or (t_now_s + self._segment_lead_s) >= record.end_s
+        # The lead this install reserves is PER KIND (2026-10-16,
+        # `schedule.install_lead_s`): FRESH_THROW_LEAD_S (13 knots, 250 ms of
+        # solve budget) for a THROW, LEAD_S (9 knots, 150 ms) otherwise. It
+        # must be the SAME number the schedule dispatched the skill by
+        # (`Skill.dispatch_s = t_abs - window - lead`): the reserved origin
+        # `t_now + lead` then lands on the skill's own splice base and the
+        # planned window is the schedule's. A node-side LEAD_S under a
+        # schedule-side 13-knot lead would plan the THROW over window + 0.1 s
+        # (the release would not move, the origin would) -- the 2026-10-02
+        # class `reserve_fresh_lead` closed. The request carries no lead, so
+        # both ends derive it from the kind through one function.
+        lead_s = sk_sched.install_lead_s(kind)
+        fresh = record is None or (t_now_s + lead_s) >= record.end_s
         if fresh:
             # `record` STILL STREAMING at this instant (`t_now_s <
             # record.end_s`) is the one `fresh` sub-case the LIVE at-rest test
@@ -4593,7 +4683,8 @@ class TrajectoryNode(Node):
             # t0 snapping (C2FF spec, 2026-09-14): a FRESH origin installs
             # `install_segment`'s `t0 = t_now_s` verbatim for a REST, and
             # `t0 = t_now_s + lead_s` for a THROW/CATCH (`reserve_fresh_lead`
-            # below, 2026-10-02 — `lead_s` is LEAD_KNOTS whole knots, so the
+            # below, 2026-10-02 — `lead_s` is whole knots, LEAD_KNOTS or
+            # FRESH_THROW_LEAD_KNOTS for a THROW, so the
             # origin stays on the grid), so snapping the FIRST un-emitted grid
             # knot in HERE is the one
             # place that origin is ever set for this (hand-carrying) install
@@ -4620,11 +4711,11 @@ class TrajectoryNode(Node):
         # `reserve_fresh_lead=True` (2026-10-02, R5 sitting 2): an
         # event-bearing fresh origin gets the dispatch lead the schedule
         # reserved — origin `t_now + lead_s`, the splice's SOLVE_BUDGET, no
-        # skipped knot. Between this install and that origin `_emit_once`
-        # samples `plan.state_at(tau < 0)`, which a CyclePlan answers with
-        # knot 0's boundary conditions (the held rest, zero rate, zero cubic
-        # accel), so the wire keeps carrying the rest it already carried and
-        # the plan starts on the grid at `t0` (see `install_segment`).
+        # skipped knot. Between this install and that origin the wire keeps
+        # playing the RUNNING record (I-INSTALL-1, `_stream_plan_locked`; until
+        # 2026-10-16 it played the new plan's knot 0 from install, which cut a
+        # still-moving REST short and stepped onto its terminal rest), and the
+        # plan starts on the grid at `t0` (see `install_segment`).
         #
         # THE SOLVE RUNS IN THE WORKER PROCESS (`self._segment_solver`), every
         # input shipped by value (live-mutable `cfg`/`limits` reach the next
@@ -4651,12 +4742,12 @@ class TrajectoryNode(Node):
         if kind == sk_seg.REST:
             deadline_s = t_wall + sk_solver.SOLVER_REST_DEADLINE_S
         else:
-            deadline_s = (t_wall + self._segment_lead_s
+            deadline_s = (t_wall + lead_s
                           + float(hw.JB_TRAJ_KNOT_DT_S))
             if not fresh and kind in (sk_seg.THROW, sk_seg.CATCH):
                 try:
                     splice_k_pre, _post = sk_exec.splice_knot_for(
-                        record, kind, terminal, t_now_s, self._segment_lead_s)
+                        record, kind, terminal, t_now_s, lead_s)
                 except Exception:   # noqa: BLE001 - the worker re-derives
                     # it and answers any error as a refusal; keep the default
                     splice_k_pre = None
@@ -4669,7 +4760,7 @@ class TrajectoryNode(Node):
         reply = self._segment_solver.solve(sk_solver.SegmentSolveRequest(
             seq=self._solve_seq, record=record, seed_rest=seed_rest,
             kind=kind, terminal=terminal, t_now_s=t_now_s,
-            lead_s=self._segment_lead_s, cfg=self._segment_cfg,
+            lead_s=lead_s, cfg=self._segment_cfg,
             limits=self._limits, geom=self._geom,
             warm_start=self._segment_warm_start,
             reserve_fresh_lead=True, deadline_s=deadline_s))
@@ -4702,8 +4793,43 @@ class TrajectoryNode(Node):
                 'a trajectory/hold landed while this install_segment was '
                 'solving — the segment it plans was cancelled; the hold keeps '
                 'the wire', t_wall)
-        tau_now = 0.0 if fresh else (time.perf_counter() - new_record.t0_s)
-        if not self._install_continuity_ok(new_record.plan, tau_now):
+        # I-INSTALL-1 (2026-10-16): every install here except a fresh REST
+        # hands the wire over AT ITS ORIGIN, not at install (`_install`'s
+        # `stream_handoff`): the running record plays on to `t0`. So the
+        # continuity question is asked at `max(now, t0)` -- for a reserved-lead
+        # fresh origin that is `t0` itself: does the running record (the
+        # stream view, `_current_state(at_mono=t0)`) arrive EXACTLY on this
+        # plan's knot 0? A rest-terminal record that ends by `t0` does, with
+        # zero step by construction; one that does not (a hold/stop/move
+        # landed meanwhile, or a record that will not reach its own terminal
+        # by `t0`) still refuses STALE_STATE. A splice before its head's
+        # origin compares at `t0` too, where its pre-splice head is
+        # bit-identical to the head it replaces. A fresh REST keeps the
+        # install-instant check: its origin is now and it takes the machine
+        # from its live state.
+        stream_handoff = not (fresh and kind == sk_seg.REST)
+        if stream_handoff:
+            # fresh: exactly `t0` (a late origin is the reply-transit guard's
+            # ORIGIN_TOO_LATE below, not a continuity question); splice: the
+            # later of now and its head's origin.
+            at_check = (float(new_record.t0_s) if fresh else
+                        max(time.perf_counter(), float(new_record.t0_s)))
+            tau_now = at_check - float(new_record.t0_s)
+        else:
+            at_check, tau_now = None, 0.0
+        if (fresh and stream_handoff and record is not None
+                and float(new_record.t0_s) < record.end_s - 1e-9):
+            # Not reachable from the schedule's compilers (`fresh` already
+            # implies `t_now + lead >= record.end_s` and the grid snap only
+            # moves the origin later); refused rather than truncating a
+            # running record mid-motion at the switch.
+            return self._reject_segment(
+                response, feas.STALE_STATE,
+                'fresh origin %.4f s precedes the running record\'s end '
+                '%.4f s — the switch would truncate it'
+                % (float(new_record.t0_s), record.end_s), t_wall)
+        if not self._install_continuity_ok(new_record.plan, tau_now,
+                                           at_mono=at_check):
             return self._reject_segment(
                 response, feas.STALE_STATE,
                 'commanded state moved during planning (%s) — retry'
@@ -4742,7 +4868,8 @@ class TrajectoryNode(Node):
                              cycle=(new_record.plan, new_record.meta,
                                     new_record.t0_s),
                              cycle_owner=_OWNER_SEGMENT,
-                             reset_replans=True):
+                             reset_replans=True,
+                             stream_handoff=stream_handoff):
             return self._reject_segment(
                 response, _SUPERSEDED_BY_HOLD,
                 'a trajectory/hold landed while this install_segment was '

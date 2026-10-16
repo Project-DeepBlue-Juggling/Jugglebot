@@ -41,7 +41,9 @@ from jugglebot.motion.skills.report import ThrowReport, release_error_s
 from jugglebot.motion.skills.sites import CATCH_CUP_Z_MM, RELEASE_CUP_Z_MM
 from jugglebot.motion.skills.memory import (APEX_RATIO_BAND, Experience,
                                             apex_in_band)
-from jugglebot.motion.skills.schedule import (HANDOFF_LEAD_KNOTS,
+from jugglebot.motion.skills.schedule import (FRESH_THROW_LEAD_KNOTS,
+                                               FRESH_THROW_LEAD_S,
+                                               HANDOFF_LEAD_KNOTS,
                                                HANDOFF_LEAD_S, LEAD_KNOTS,
                                                LEAD_S, MIN_WINDOW_KNOTS,
                                                MIN_WINDOW_S, WIRE_READ_KNOTS,
@@ -86,6 +88,7 @@ NO_ADMISSIBLE_COMMAND = 'NO_ADMISSIBLE_COMMAND'
 
 #: The wire-read budget — :data:`LEAD_KNOTS`, :data:`LEAD_S`,
 #: :data:`WIRE_READ_KNOTS`, :data:`HANDOFF_LEAD_KNOTS`, :data:`HANDOFF_LEAD_S`,
+#: :data:`FRESH_THROW_LEAD_KNOTS`, :data:`FRESH_THROW_LEAD_S`,
 #: :data:`MIN_WINDOW_KNOTS` and :data:`MIN_WINDOW_S` — is DEFINED in
 #: ``skills.schedule`` and imported above, because a skill states its own
 #: dispatch lead (``Skill.lead_s``) and ``schedule`` may not import this module.
@@ -1370,7 +1373,7 @@ def splice_cliff_s(record: PlanRecord, k_s: int) -> float:
 def install_segment(record: Optional[PlanRecord],
                     seed_rest: Optional[uc.CycleState],
                     kind: str, terminal, t_now_s: float, *,
-                    lead_s: float = LEAD_S,
+                    lead_s: Optional[float] = None,
                     cfg: Optional[SegmentConfig] = None,
                     limits=None, geom=None, warm_start=None,
                     t_install_s: Union[None, float, Callable[[], float]] = None,
@@ -1442,7 +1445,11 @@ def install_segment(record: Optional[PlanRecord],
       ``k_s = 0`` on that origin — ``0 <= floor((t_inst - t0)/dt) +
       WIRE_READ_KNOTS`` — so the solve budget is ``lead_s - WIRE_READ_KNOTS·dt``
       = :data:`~jugglebot.motion.skills.schedule.SOLVE_BUDGET_KNOTS` knots
-      (150 ms at ``LEAD_S``), the same budget every splice has;
+      (150 ms at ``LEAD_S``), the same budget every splice has — and 250 ms
+      for a THROW, whose default ``lead_s`` is
+      :data:`~jugglebot.motion.skills.schedule.FRESH_THROW_LEAD_S` since
+      2026-10-16 (``schedule.install_lead_s``: the schedule dispatches a THROW
+      by the same lead, so ``t0`` is still the skill's own splice base);
     * between the install and ``t0`` the machine HOLDS: ``CyclePlan.state_at``
       / ``hand_at`` / ``hand_accel_at`` return knot 0's boundary conditions
       for ``t <= 0`` (``cycle_plan.py`` ``_locate``), and knot 0 of a plan
@@ -1507,7 +1514,11 @@ def install_segment(record: Optional[PlanRecord],
     """
     cfg = SegmentConfig() if cfg is None else cfg
     t_now_s = float(t_now_s)
-    lead_s = float(lead_s)
+    # `None` = the per-kind rule (`schedule.install_lead_s`: FRESH_THROW_LEAD_S
+    # for a THROW, LEAD_S otherwise) -- the SAME number the schedule
+    # dispatched the skill by, so the reserved origin lands on the skill's own
+    # splice base and the planned window is the schedule's (2026-10-16).
+    lead_s = (sch.install_lead_s(kind) if lead_s is None else float(lead_s))
     fresh = record is None or (t_now_s + lead_s) >= record.end_s
     post_release = False
     if not fresh and (kind == mt.MAGAZINE or record.meta.kind == mt.MAGAZINE):

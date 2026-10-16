@@ -175,7 +175,7 @@ Above it, unrecoverable prior-aimed catches would outnumber the self-ends remove
 - `tests/ros/test_install_segment.py` :1743/:1759 re-pinned to the 8-knot cliff.
 - `tests/ros/test_skills_plan_bench.py:175` renamed and re-pinned.
 - `tests/motion/test_skills_schedule.py`: the monotone cases unchanged, plus
-  `test_the_handoff_min_gap_is_400_ms_less_a_knot_per_extra_knot`.
+  `test_the_handoff_min_gap_is_400_ms_less_a_knot_per_extra_knot` (renamed `..._500_ms_...` 2026-10-16 when THROW 0 took the 13-knot lead, `throw-fresh-origin-lead.md`).
 - Gate: `handoff_replay.py --extra 8` (0 SPLICE_TOO_LATE, worst margin >= 25 ms), then `./run_tests.sh`.
 
 **P1b - snap-aware re-aim fences** (`SkillExecutor._resend_live_catch`, executor.py ~4688-4727).

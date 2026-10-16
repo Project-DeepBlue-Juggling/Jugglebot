@@ -80,7 +80,7 @@ from jugglebot.motion.skills.executor import (InstallResult, Landing,
                                               precondition_refusals)
 from jugglebot.motion.skills.hand_launch import HandLaunchMonitor
 from jugglebot.motion.skills.memory import Memory, memory_path
-from jugglebot.motion.skills.schedule import (LEAD_S,
+from jugglebot.motion.skills.schedule import (FRESH_THROW_LEAD_S, LEAD_S,
                                               LandingPrior, OneBallPattern,
                                               Pattern, PRETILT_S,
                                               ball_label,
@@ -1339,9 +1339,9 @@ class SkillNode(Node):
            provenance).
 
         A candidate that passes those three but whose landing is too SOON
-        (less than ``transit_s + launch_s + LEAD_S`` + one tick away —
-        `compile_columns`'s own initial-CATCH window plus the schedule's
-        general dispatch lead plus one tick of scheduling margin, the same
+        (less than ``transit_s + launch_s + FRESH_THROW_LEAD_S`` + one tick
+        away — `compile_columns`'s own initial-CATCH window plus THROW 0's
+        dispatch lead plus one tick of scheduling margin, the same
         margin `_run_one_ball`'s own t0 idiom leaves) cannot be scheduled at
         all: the feed is logged ONCE (not resolved) and the wait continues,
         in case a human throws again.
@@ -1360,7 +1360,11 @@ class SkillNode(Node):
         now = self._now_s()
         pattern = ctx.columns_pattern
         tau = transit_s(flight_s(pattern.apex_m), pattern.dwell_s)
-        lead_needed_s = tau + float(pattern.launch_s) + LEAD_S + (1.0 / _TICK_HZ)
+        # FRESH_THROW_LEAD_S, not LEAD_S (2026-10-16): THROW 0 is the
+        # schedule's FIRST dispatch, `t_land - tau - launch_s -
+        # FRESH_THROW_LEAD_S`, and the THROW now dispatches by its own lead.
+        lead_needed_s = (tau + float(pattern.launch_s) + FRESH_THROW_LEAD_S
+                         + (1.0 / _TICK_HZ))
         margin_s = (float(landing.t_land_abs_s) - now) - lead_needed_s
         if margin_s < 0.0:
             if not getattr(ctx, 'lead_deficit_logged', False):
@@ -1370,7 +1374,7 @@ class SkillNode(Node):
                     '%.3f + lead %.3f + one tick) -- still waiting'
                     % (ball_label(ball_id), float(landing.t_land_abs_s) - now,
                        -margin_s, lead_needed_s, tau, float(pattern.launch_s),
-                       LEAD_S))
+                       FRESH_THROW_LEAD_S))
                 with self._reload_lock:
                     if self._reload_ctx is ctx:
                         ctx.lead_deficit_logged = True

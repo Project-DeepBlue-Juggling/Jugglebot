@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import contextlib
 import dataclasses
+import math
 import time
 from types import SimpleNamespace
 
@@ -210,10 +211,11 @@ def _perf_node(**kw):
 def test_throw_from_rest_accepts_at_a_fresh_origin():
     """The live path reserves the dispatch lead for an event-bearing fresh
     origin (``install_segment(..., reserve_fresh_lead=True)``, 2026-10-02):
-    ``t0`` is the grid-aligned request instant PLUS ``LEAD_S``, not the
+    ``t0`` is the grid-aligned request instant PLUS the THROW's reserved
+    lead (``FRESH_THROW_LEAD_S``, 0.325 s since 2026-10-16), not the
     request instant — pinned with an ABSOLUTE one-knot tolerance because a
     bare ``approx(at)`` on a large ``perf_counter`` value has a relative
-    tolerance wider than the 0.225 s it must tell apart."""
+    tolerance wider than the 0.325 s it must tell apart."""
     node = _perf_node()
     with _frozen_perf() as at:
         resp = node._svc_install_segment(_throw_req(at + 0.6),
@@ -221,9 +223,12 @@ def test_throw_from_rest_accepts_at_a_fresh_origin():
     assert resp.accepted is True, resp.message
     assert resp.code == feas.OK
     assert resp.splice_k == 0
-    # t0 = the node's grid-aligned request instant + LEAD_S: within one knot
-    # of `at + LEAD_S` (the grid alignment is the node's, not this test's).
-    assert resp.t0_mono - sk_exec.LEAD_S == pytest.approx(
+    # t0 = the node's grid-aligned request instant + the THROW's reserved
+    # lead (FRESH_THROW_LEAD_S, 13 knots since 2026-10-16 -- the lead the
+    # schedule dispatches a THROW by): within one knot of `at + lead` (the
+    # grid alignment is the node's, not this test's).
+    assert sk_exec.FRESH_THROW_LEAD_S == pytest.approx(0.325)
+    assert resp.t0_mono - sk_exec.FRESH_THROW_LEAD_S == pytest.approx(
         at, abs=float(hw.JB_TRAJ_KNOT_DT_S) + 1e-9)
     # The release is still the requested absolute instant, to the knot the
     # planner places it on.
@@ -264,7 +269,8 @@ def test_a_rest_segment_accepts_at_a_fresh_origin():
 def test_a_fresh_throw_installs_while_the_previous_rest_is_still_streaming():
     """A REST to a different cup height (hand moving, platform untouched) is
     installed over 1.0 s; a THROW is then dispatched 0.2 s into it — inside
-    the 0.225 s reserved lead of the REST's own end (`fresh` fires), and the
+    the THROW's 0.325 s reserved lead (FRESH_THROW_LEAD_S since 2026-10-16;
+    0.225 s before) of the REST's own end (`fresh` fires), and the
     REST's own plan is still short of ITS end (0.2 s < 1.0 s duration) when
     this handler runs, so the record is provably still streaming. The
     install must ACCEPT: the seed is the REST's TERMINAL rest (exact zero
@@ -357,35 +363,346 @@ def test_a_fresh_rest_while_the_previous_rest_still_streams_seeds_from_the_live_
         % (hand_after - hand_before))
 
 
-def test_a_fresh_throw_refuses_when_the_streaming_rest_has_drifted_too_far():
-    """The new seeding leans on `fresh`'s own `t0 >= record.end_s`; it does
-    not, by itself, bound how far the COMMANDED state can be from the
-    terminal rest at the install instant — only `install_segment`'s existing
-    post-solve `_install_continuity_ok` does (unchanged by this fix, the same
-    guard a SPLICE already relies on with no separate live check of its
-    own). A REST fast enough to still be 150 mm / several rev/s from its own
-    terminal site with only the reserved lead left before its end is refused
-    there: `STALE_STATE`, "commanded state moved during planning" — the hand
-    POSITION drift (> 1.0 rev), not the retired live-velocity rest bound."""
+def _fast_rest_then_fresh_throw(during_solve=None):
+    """A 900 mm REST (fast enough to be ~150 mm / several rev/s from its own
+    terminal with 0.225 s left), then a fresh THROW dispatched at ``rest_end -
+    0.225`` -- inside the THROW's 0.325 s lead, so ``fresh`` fires and the
+    THROW's origin lands 0.1 s AFTER the REST ends. ``during_solve(node)``
+    runs inside the solve (the executor seam the in-process solver double
+    looks up at call time). Returns ``(node, resp2, rest_plan, rest_t0, t2)``."""
     node = _perf_node()
     with _frozen_perf() as at:
         resp = node._svc_install_segment(_rest_req(at + 0.5, rest_z=900.0),
                                          InstallSegment.Response())
         assert resp.accepted is True, resp.message
+    rest_plan, _meta, rest_t0 = node._cycle
     rest_end = resp.t0_mono + resp.duration_s
+    real_perf, real_install = time.perf_counter, tn.sk_exec.install_segment
 
-    real_perf = time.perf_counter
+    def hooked(*args, **kwargs):
+        if during_solve is not None:
+            during_solve(node)
+        return real_install(*args, **kwargs)
+
     t2 = rest_end - 0.225
     time.perf_counter = lambda: t2
+    tn.sk_exec.install_segment = hooked
     try:
         _refresh(node)
         resp2 = node._svc_install_segment(_throw_req(t2 + 0.6),
                                           InstallSegment.Response())
     finally:
         time.perf_counter = real_perf
+        tn.sk_exec.install_segment = real_install
+    return node, resp2, rest_plan, rest_t0, t2
+
+
+def _legs(node, pose):
+    return node._pose_to_motor_rev(pose)
+
+
+def test_a_fresh_throw_on_a_fast_rest_tail_streams_the_tail_to_its_origin():
+    """I-INSTALL-1. Until 2026-10-16 this case REFUSED ``STALE_STATE``: the
+    install swapped the wire onto the THROW's knot 0 (the REST's terminal
+    rest), a step of > 1.0 rev of hand from the still-moving tail, and only
+    ``_install_continuity_ok`` stood between it and the pump. With the
+    handoff the REST plays on to the THROW's origin, so nothing steps and
+    the install is ACCEPTED (the step was the HAND's, the 900 mm REST's legs
+    barely move): the continuity guard now asks whether the
+    running REST ARRIVES on knot 0 by ``t0`` (it does -- rest-terminal by
+    construction, plan § 0). The planning head is the THROW from install;
+    the stream view (``_current_state``) is the REST until ``t0``."""
+    node, resp2, rest_plan, rest_t0, t2 = _fast_rest_then_fresh_throw()
+    assert resp2.accepted is True, resp2.message
+    t0 = resp2.t0_mono
+    assert t0 > rest_t0 + rest_plan.total_duration        # holds the rest between
+    view, _ = node._stream_plan_locked()
+    assert isinstance(view, tn.StreamHandoff)
+    assert view.head is node._active_plan is node._cycle[0]
+    # at the install instant the wire is still on the moving REST tail ...
+    np.testing.assert_allclose(
+        _legs(node, node._current_state(at_mono=t2)[0]),
+        _legs(node, rest_plan.state_at(t2 - rest_t0)[0]), atol=1e-12)
+    hand_tail = rest_plan.hand_at(t2 - rest_t0)[0]
+    assert node._commanded_hand_state(at_mono=t2)[0] == pytest.approx(
+        hand_tail, abs=1e-12)
+    knot0_hand = node._active_plan.hand_at(0.0)[0]
+    # the hand step the pre-fix install would have put on the wire
+    assert abs(hand_tail - knot0_hand) > 1.0
+    # ... and just before t0 the stream is exactly the THROW's knot 0
+    np.testing.assert_allclose(
+        _legs(node, node._current_state(at_mono=t0 - 1e-9)[0]),
+        _legs(node, node._active_plan.state_at(0.0)[0]), atol=1e-9)
+    assert node._commanded_hand_state(at_mono=t0 - 1e-9)[0] == pytest.approx(
+        knot0_hand, abs=1e-9)
+
+
+def test_a_stop_landing_during_a_fresh_throw_solve_still_refuses_stale_state():
+    """The guard half of I-INSTALL-1: the continuity question moves to ``t0``
+    but still fires when the running record will NOT arrive on knot 0. A
+    graceful stop installed while the THROW solves (seeded off the moving
+    REST tail, decelerating IN PLACE) leaves the wire ~150 mm short of the
+    REST terminal the THROW was seeded from -> ``STALE_STATE``."""
+    node, resp2, _rp, _rt0, _t2 = _fast_rest_then_fresh_throw(
+        during_solve=lambda n: n._install_graceful_stop('test'))
     assert resp2.accepted is False
     assert resp2.code == feas.STALE_STATE
     assert 'commanded state moved during planning' in resp2.message
+
+
+def test_a_direct_active_plan_assignment_retires_the_handoff_by_identity():
+    """I-INSTALL-1: the handoff is bound to its head plan by identity, so the
+    emitter's backstop freeze (a bare ``_active_plan`` / ``_plan_t0``
+    assignment, copied from ``_emit_once``) drops it with no extra write."""
+    node, resp2, _rp, _rt0, t2 = _fast_rest_then_fresh_throw()
+    assert resp2.accepted is True, resp2.message
+    with node._plan_lock:
+        assert node._handoff is not None
+        assert node._stream_plan_locked()[0] is node._handoff
+        pose = node._last_pose
+        node._active_plan = tn.HoldPlan(pose)
+        node._plan_t0 = t2
+        assert node._stream_plan_locked()[0] is node._active_plan
+
+
+def test_a_fresh_origin_before_the_running_records_end_refuses_stale_state(
+        monkeypatch):
+    """I-INSTALL-1 fence (``_svc_install_segment``): a solver reply whose
+    origin precedes the running record's end would truncate it at the switch."""
+    node = _perf_node()
+    with _frozen_perf() as at:
+        resp = node._svc_install_segment(_rest_req(at + 0.5, rest_z=900.0),
+                                         InstallSegment.Response())
+        assert resp.accepted is True, resp.message
+    record = node._cycle[0], node._cycle[1], node._cycle[2]
+    rest_end = resp.t0_mono + resp.duration_s
+    real_solve = node._segment_solver.solve
+
+    def early(req):
+        reply = real_solve(req)
+        nr = dataclasses.replace(reply.new_record,
+                                 t0_s=rest_end - 0.05)
+        return dataclasses.replace(reply, new_record=nr)
+
+    monkeypatch.setattr(node._segment_solver, 'solve', early)
+    real_perf = time.perf_counter
+    time.perf_counter = lambda: rest_end - 0.225
+    try:
+        _refresh(node)
+        resp2 = node._svc_install_segment(_throw_req(rest_end + 0.375),
+                                          InstallSegment.Response())
+    finally:
+        time.perf_counter = real_perf
+    assert record is not None
+    assert resp2.accepted is False
+    assert resp2.code == feas.STALE_STATE
+    assert "precedes the running record's end" in resp2.message
+
+
+def test_a_graceful_stop_between_install_and_origin_wins_from_the_live_tail():
+    """A graceful stop requested after the THROW installed but before its
+    origin RETIRES the handoff and takes the wire from where it really is --
+    the REST tail (the stream view), not the THROW's knot 0 -- so it neither
+    steps nor lets the THROW start."""
+    node, resp2, rest_plan, rest_t0, t2 = _fast_rest_then_fresh_throw()
+    assert resp2.accepted is True, resp2.message
+    t3 = t2 + 0.05
+    assert t3 < resp2.t0_mono
+    real_perf = time.perf_counter
+    time.perf_counter = lambda: t3
+    try:
+        node._install_graceful_stop('test')
+        stop = node._active_plan
+        assert not isinstance(stop, CyclePlan) and node._cycle is None
+        view, _ = node._stream_plan_locked()
+        assert view is stop                       # handoff retired
+        np.testing.assert_allclose(
+            _legs(node, stop.state_at(0.0)[0]),
+            _legs(node, rest_plan.state_at(t3 - rest_t0)[0]), atol=1e-6)
+    finally:
+        time.perf_counter = real_perf
+
+
+def test_a_catch_dispatched_before_the_throw_origin_splices_into_the_throw():
+    """The planning head is the new record FROM INSTALL: the columns' first
+    CATCH dispatches 0.300 s after THROW 0, before THROW 0's origin, and must
+    splice into the THROW record (same origin), while the wire keeps playing
+    the REST until that origin (the splice re-wraps the pending handoff)."""
+    from jugglebot.motion.skills import schedule as sc
+    from jugglebot.motion.skills import sites as st
+    site = st.columns_sites(125.0)[0]
+    sched = sc.compile_reload_wait(site, sc.FLOOR_LIFT_S, 0.0, holds_ball=True)
+    node = _perf_node()
+    resp2, tail = _schedule_rest_then_throw_at(
+        node, sched.skills[0], site, sc.FRESH_THROW_LEAD_S, 0.0)
+    assert resp2.accepted is True, resp2.message
+    rest_plan, rest_t0 = tail['rest']
+    throw_t0 = resp2.t0_mono
+    t3 = throw_t0 - 0.025
+    t_release = resp2.t_event_mono
+    real_perf = time.perf_counter
+    time.perf_counter = lambda: t3
+    try:
+        _refresh(node)
+        req = _catch_req(t_release + 0.857)
+        req.site_mm = [float(v) for v in site.catch_site_mm()]
+        req.rest_site_mm = [float(v) for v in site.rest_site_mm()]
+        resp3 = node._svc_install_segment(req, InstallSegment.Response())
+        assert resp3.accepted is True, resp3.message
+        assert resp3.t0_mono == throw_t0          # spliced: the THROW's origin
+        assert resp3.splice_k > 0
+        view, _ = node._stream_plan_locked()
+        assert isinstance(view, tn.StreamHandoff)
+        assert view.head is node._active_plan is node._cycle[0]
+        np.testing.assert_allclose(
+            _legs(node, node._current_state()[0]),
+            _legs(node, rest_plan.state_at(t3 - rest_t0)[0]), atol=1e-12)
+    finally:
+        time.perf_counter = real_perf
+
+
+def _schedule_rest_then_throw_at(node, rest_skill, site, lead_s,
+                                 hand_start_rev):
+    """Install ``rest_skill`` (a REST the schedule compilers build) fresh,
+    then dispatch a launch THROW at ``rest_end - lead_s + 1e-3`` -- one ms
+    after the instant the THROW's ``fresh`` test first fires, i.e. the most
+    REST tail the THROW can ever take over (the frozen clock makes the solve
+    free, so the install lands at dispatch). Returns ``(resp2, tail)``:
+    ``tail`` is the step the install puts on the wire, measured the way
+    ``_install_continuity_ok`` measures it -- the streaming REST's commanded
+    state at the install instant against its terminal rest (= the THROW's
+    knot 0, which the emitter plays from install to ``t0``)."""
+    node._on_robot_state(_robot_state(hand_rev=hand_start_rev))
+    with _frozen_perf() as at:
+        req = _rest_req(at + rest_skill.window_s)
+        req.rest_site_mm = [float(v) for v in rest_skill.site.rest_site_mm()]
+        resp = node._svc_install_segment(req, InstallSegment.Response())
+        assert resp.accepted is True, resp.message
+    rest_end = resp.t0_mono + resp.duration_s
+    rest_plan, _meta, rest_t0 = node._cycle
+    t2 = rest_end - lead_s + 1e-3
+    pose_now, twist_now, _ = rest_plan.state_at(t2 - rest_t0)
+    pose_end, _tw, _ = rest_plan.state_at(rest_end - rest_t0)
+    hand_now, hand_vel_now = rest_plan.hand_at(t2 - rest_t0)
+    hand_end, _hv = rest_plan.hand_at(rest_end - rest_t0)
+    tail = {
+        'leg_rev': float(np.max(np.abs(node._pose_to_motor_rev(pose_now)
+                                       - node._pose_to_motor_rev(pose_end)))),
+        'leg_rev_s': float(np.max(np.abs(
+            node._pose_twist_to_motor_rev_s(pose_now, twist_now)))),
+        'hand_rev': abs(float(hand_now) - float(hand_end)),
+        'hand_rev_s': abs(float(hand_vel_now)),
+    }
+    real_perf = time.perf_counter
+    time.perf_counter = lambda: t2
+    try:
+        node._on_robot_state(_robot_state(hand_rev=float(hand_end)))
+        req2 = _throw_req(t2 + lead_s + 0.4)
+        req2.site_mm = [float(v) for v in site.throw_site_mm()]
+        req2.target_mm = [float(v) for v in site.catch_site_mm()]
+        req2.flight_s = 0.857
+        resp2 = node._svc_install_segment(req2, InstallSegment.Response())
+    finally:
+        time.perf_counter = real_perf
+    tail['wire'] = (_wire_trace(node, t2, resp2.t0_mono + 4 * float(
+        hw.JB_TRAJ_KNOT_DT_S)) if resp2.accepted else [])
+    tail['rest'] = (rest_plan, rest_t0)
+    return resp2, tail
+
+
+def _wire_trace(node, t_from, t_to):
+    """Drive the REAL emitter (``_emit_once``) tick by tick, clock frozen at
+    each grid tick, for every lead knot ``T`` in ``[t_from, t_to]``; returns
+    ``[(T, motor_rev, hand_rev)]`` as shipped. ``T = t_k + L*dt`` (the C2FF
+    emit lead) -- the instant each frame's u0 plays at."""
+    dt = float(hw.JB_TRAJ_KNOT_DT_S)
+    lead = float(hw.JB_TRAJ_EMIT_LEAD_KNOTS) * dt
+    cap = SimpleNamespace(frames=[])
+    cap.send = cap.frames.append
+    cap.close = lambda: None
+    node._pub = cap
+    real_perf = time.perf_counter
+    out = []
+    k = int(math.ceil((t_from - lead) / dt))
+    try:
+        while k * dt + lead <= t_to + 1e-9:
+            tick = k * dt
+            time.perf_counter = lambda: tick
+            n0 = len(cap.frames)
+            node._emit_once(tick)
+            if len(cap.frames) > n0:
+                f = cap.frames[-1]
+                out.append((tick + lead, np.asarray(f['motor_rev'], float),
+                            f.get('hand_rev')))
+            k += 1
+    finally:
+        time.perf_counter = real_perf
+    return out
+
+
+def test_a_launch_throw_at_the_fresh_throw_lead_takes_over_the_opening_lift_tail():
+    """I-INSTALL-1 (2026-10-16): THROW 0 dispatches ``FRESH_THROW_LEAD_S``
+    (13 knots) before the REST it follows ends, so its install lands while
+    that REST is still streaming its last 0.325 s (less the solve). The wire
+    must play that REST tail on to the THROW's origin ``t0`` and switch
+    THERE -- never step onto the REST's terminal rest at install.
+
+    Pinned on the REAL shape THROW 0 follows in ``compile_rest_columns`` /
+    the fed-columns bridge: ``compile_reload_wait``'s opening REST from the
+    ACTIVATE park (hand 0.0 rev) onto columns site P1 over ``FLOOR_LIFT_S``,
+    worst case (zero solve: dispatch at ``rest_end - lead + 1 ms``, so the
+    whole lead of tail is still to play). Driver: the REAL handler, then the
+    REAL emitter ticked on the grid with the clock frozen per tick
+    (``_wire_trace``) from the install to ``t0 + 4`` knots.
+
+    MEASURED 2026-10-16 (``-s``) -- ``tail`` is the step the pre-fix emitter
+    put on the wire at install (the REST's commanded state there vs its
+    terminal rest = the THROW's knot 0): 0.0403 / 0.0512 / 0.0550 rev at
+    9 / 12 / 13 knots (67 / 85 / 92 % of the 0.06 rev guard). With the
+    handoff the largest per-knot leg change anywhere in the trace is the
+    REST's own tail motion, and the change across the switch knot is 0.
+    A DECAY REST (tilt decay after a reload catch) is NOT covered here."""
+    from jugglebot.motion.skills import schedule as sc
+    from jugglebot.motion.skills import sites as st
+    site = st.columns_sites(125.0)[0]
+    sched = sc.compile_reload_wait(site, sc.FLOOR_LIFT_S, 0.0, holds_ball=True)
+    hand_start = 0.0
+    rest_skill = sched.skills[0]
+    dt = float(hw.JB_TRAJ_KNOT_DT_S)
+    for knots in (sc.LEAD_KNOTS, 12, sc.FRESH_THROW_LEAD_KNOTS):
+        lead = knots * dt
+        node = _perf_node()
+        resp2, tail = _schedule_rest_then_throw_at(
+            node, rest_skill, site, lead, hand_start)
+        assert resp2.accepted is True, resp2.message
+        rest_plan, rest_t0 = tail['rest']
+        wire = tail['wire']
+        t0 = resp2.t0_mono
+        pre = [w for w in wire if w[0] < t0 - 1e-9]
+        post = [w for w in wire if w[0] >= t0 - 1e-9]
+        assert pre and post
+        # (a) before t0 the wire is the REST, exactly (no knot-0 pre-emption)
+        for T, rev, hand in pre:
+            want = node._pose_to_motor_rev(rest_plan.state_at(T - rest_t0)[0])
+            np.testing.assert_allclose(rev, want, atol=1e-9)
+            assert hand == pytest.approx(rest_plan.hand_at(T - rest_t0)[0],
+                                         abs=1e-9)
+        # (b) the switch knot carries no step: last REST frame -> knot 0
+        switch_leg = float(np.max(np.abs(post[0][1] - pre[-1][1])))
+        switch_hand = abs(float(post[0][2]) - float(pre[-1][2]))
+        steps = [float(np.max(np.abs(b[1] - a[1])))
+                 for a, b in zip(wire, wire[1:])]
+        print('lead %d knots: old install step leg %.4f rev, hand %.4f rev | '
+              'switch leg %.2e rev, hand %.2e rev; max per-knot leg %.4f rev '
+              '(%d tail frames, t0-first %.3f, t0-T_last_pre %.3f)' % (
+                  knots, tail['leg_rev'], tail['hand_rev'], switch_leg,
+                  switch_hand, max(steps), len(pre), t0 - wire[0][0], t0 - pre[-1][0]))
+        assert switch_leg < 1e-3
+        assert switch_hand < 1e-3
+        # the ONLY leg motion before t0 is the REST's own, knot to knot
+        assert max(steps[:len(pre)]) < tail['leg_rev']
+        # the head is the THROW from install (planning readers see it)
+        assert node._cycle[0] is node._active_plan
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -1194,7 +1511,10 @@ def test_TI1_seven_channel_frames_reach_the_wire_and_the_flags_fall():
         # freezes the clock for exactly this reason; this one predates the
         # lateness check and never needed to.
         with _frozen_perf() as at:
-            resp = traj._svc_install_segment(_throw_req(at + 0.6),
+            # at + 0.7: the 0.375 s window this test was sized on, from the
+            # THROW's 13-knot reserved origin (0.6 s on the 9-knot LEAD_S
+            # until 2026-10-16).
+            resp = traj._svc_install_segment(_throw_req(at + 0.7),
                                              InstallSegment.Response())
         assert resp.accepted is True, resp.message
         plan, _meta, t0 = traj._cycle
@@ -1601,15 +1921,20 @@ def test_the_request_carries_every_input_and_the_per_kind_deadline():
         node._svc_install_segment(_rest_req(at + 0.5), InstallSegment.Response())
     throw_req, rest_req = solver.requests[0], solver.requests[1]
     assert throw_req.seq < rest_req.seq
+    # The THROW's deadline and lead are the THROW lead (2026-10-16): the node
+    # derives it per kind from `schedule.install_lead_s`, the SAME function
+    # the schedule dispatched the skill by, so the origin lands on the
+    # skill's splice base; the REST keeps the general lead.
     assert throw_req.deadline_s == pytest.approx(
-        at + sk_exec.LEAD_S + float(hw.JB_TRAJ_KNOT_DT_S))
+        at + sk_exec.FRESH_THROW_LEAD_S + float(hw.JB_TRAJ_KNOT_DT_S))
     assert rest_req.deadline_s == pytest.approx(
         at + sk_solver.SOLVER_REST_DEADLINE_S)
     assert throw_req.kind == sk_seg.THROW and rest_req.kind == sk_seg.REST
     # Live-mutable inputs travel per call, by the node's CURRENT binding.
     assert throw_req.limits is node._limits and throw_req.geom is node._geom
     assert throw_req.cfg is node._segment_cfg
-    assert throw_req.lead_s == node._segment_lead_s
+    assert throw_req.lead_s == sk_exec.FRESH_THROW_LEAD_S
+    assert rest_req.lead_s == sk_exec.LEAD_S == node._segment_lead_s
     assert throw_req.reserve_fresh_lead is True
 
 

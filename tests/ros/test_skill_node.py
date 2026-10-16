@@ -328,7 +328,7 @@ def _columns_fed(node, tmp_path, *, plant_id):
     pattern = sn.Pattern(sites=sn.columns_sites(100.0), apex_m=0.9,
                          dwell_s=0.30, n_throws=3)
     tau = sn.transit_s(sn.flight_s(pattern.apex_m), pattern.dwell_s)
-    lead_needed = tau + pattern.launch_s + sn.LEAD_S + (1.0 / sn._TICK_HZ)
+    lead_needed = tau + pattern.launch_s + sn.FRESH_THROW_LEAD_S + (1.0 / sn._TICK_HZ)
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
                       _good_box_path(tmp_path, columns=True)), \
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
@@ -4730,7 +4730,7 @@ def test_columns_tracker_feed_resolves_an_unannounced_landing_near_the_aim_point
     pattern = sn.Pattern(sites=sn.columns_sites(100.0), apex_m=0.9,
                          dwell_s=0.30, n_throws=3)
     tau = sn.transit_s(sn.flight_s(pattern.apex_m), pattern.dwell_s)
-    lead_needed = tau + pattern.launch_s + sn.LEAD_S + (1.0 / sn._TICK_HZ)
+    lead_needed = tau + pattern.launch_s + sn.FRESH_THROW_LEAD_S + (1.0 / sn._TICK_HZ)
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
                       _good_box_path(tmp_path, columns=True)), \
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
