@@ -893,24 +893,22 @@ def test_juggle_pattern_name_maps_cli_spelling_to_the_wire_name(
 
 
 def test_build_parser_accepts_hop_and_the_new_via_action_options():
-    """``--pattern hop`` plus the new ``--via-action``/``--separation-mm``/
-    ``--reload`` flags this unit added for :func:`spb.run_live_action` --
+    """``--pattern hop`` plus the new ``--via-action``/``--separation-mm``
+    flags this unit added for :func:`spb.run_live_action` --
     a pure argparse check, no ROS."""
     args = spb.build_parser().parse_args([
         '--via-action', '--pattern', 'hop', '--separation-mm', '80',
-        '--reload', '--n-throws', '4'])
+        '--n-throws', '4'])
     assert args.via_action is True
     assert args.pattern == 'hop'
     assert args.separation_mm == 80.0
-    assert args.reload is True
     assert args.n_throws == 4
 
 
-def test_build_parser_separation_mm_and_reload_default_to_off():
+def test_build_parser_separation_mm_defaults_to_off():
     args = spb.build_parser().parse_args([])
     assert args.via_action is False
     assert args.separation_mm == 0.0
-    assert args.reload is False
 
 
 def test_main_refuses_hop_pattern_without_via_action(capsys):

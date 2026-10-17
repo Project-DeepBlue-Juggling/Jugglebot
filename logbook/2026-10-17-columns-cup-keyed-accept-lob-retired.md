@@ -1,5 +1,5 @@
 ---
-title: "Columns P1: accept rule keyed on (pattern, cup evidence), human-lob columns feed retired"
+title: "Columns P1 + P2: accept rule keyed on (pattern, cup evidence), human-lob columns feed retired"
 type: refactor
 date: 2026-10-17
 status: in-progress
@@ -10,6 +10,18 @@ files_changed:
   - ros_ws/src/jugglebot/jugglebot/motion/skills/INVARIANTS.md
   - tests/hardware/session_skill_stack_rehearsals.md
   - tests/ros/test_skill_node.py
+  - ros_ws/src/jugglebot_interfaces/action/Juggle.action
+  - ros_ws/src/jugglebot/jugglebot/orchestrator_node.py
+  - ros_ws/src/jugglebot/jugglebot/motion/skills/schedule.py
+  - ros_ws/gui/js/juggle-panel.js
+  - ros_ws/gui/css/juggle-panel.css
+  - ros_ws/gui/test_juggle_panel.html
+  - tests/hardware/skills_plan_bench.py
+  - tests/ros/conftest.py
+  - tests/ros/test_orchestrator_node.py
+  - tests/ros/test_gui_juggle_defaults.py
+  - tests/ros/test_skill_node_reload_only.py
+  - tests/ros/test_skills_plan_bench.py
   - logbook/2026-10-17-columns-cup-keyed-accept-lob-retired.md
 subsystem:
   - skills
@@ -38,6 +50,16 @@ D2) is gone. Columns is Ball-Butler-fed only.
 - 2026-10-17, `pytest tests/ros/ -q -p no:cacheprovider`: 3114 passed, 2 skipped in 537 s.
 - Full gate (`./run_tests.sh --full`, run 2026-10-17): **6716 passed, 9 skipped in 305.80 s** (parallel phase) + **7 passed in 27.87 s** (serial tail), exit 0.
 
+## Phase 2 (same day)
+
+- Interface: `bool reload` deleted from `ros_ws/src/jugglebot_interfaces/action/Juggle.action` (interface rebuild; a FULL launch restart is required before the next sitting). `orchestrator_node._parse_juggle_request` now refuses a `reload` token after the pattern as an unknown token; the bare `reload` PATTERN still dispatches. Bench `--reload` and the fake goal's reload field removed.
+- GUI (`juggle-panel.js`): the "Reload first" checkbox, `effectiveReload`/`reloadRequired` and the request-string `reload` token are gone. A cup PREVIEW line (`#juggle-cup-preview`, strings in exported `CUP_PREVIEW`) reads the existing ball-held pill that `panels.js` drives from `/hand_telemetry` (no second subscription): "cup EMPTY: Ball Butler loads first" / "cup SEATED: throw first" / "cup UNKNOWN: will be refused", with fixed-requirement text for reload, columns_1ball_fed and magazine. The node's decision stays the authority; the preview is advisory.
+- Diagram: lob branch/arrow removed, `m.feed` became `m.feeds[]` (columns SEATED = B, EMPTY = A then B, "BB x2"); three dead lob CSS rules deleted. The mock harness takes `?cup=held|empty|unknown`.
+- Rehearsal rows 19/21/22 drop `reload: true`; historical sitting records untouched. Stale `reload=True/False` docstrings in `schedule.py`, `skill_node.py` and `test_skill_node.py` reworded.
+- Verification (P2): scoped, run 2026-10-17, `pytest tests/ros/test_orchestrator_node.py tests/ros/test_skill_node.py tests/ros/test_skill_node_reload_only.py tests/ros/test_skills_plan_bench.py -q -p no:cacheprovider`: **510 passed in 44.70 s**; `pytest tests/ros/test_gui_juggle_defaults.py -q`: **6 passed**.
+- Full gate (P2, `./run_tests.sh --full`, run 2026-10-17 after the audit fixes): **6716 passed, 9 skipped in 307.14 s** (parallel phase) + **7 passed in 27.43 s** (serial tail), exit 0.
+- Build (`colcon build --packages-select jugglebot_interfaces jugglebot`, run 2026-10-17, launch down): 2 packages finished in 1 min 55 s, exit 0. FULL launch restart required before the next sitting (Juggle.action changed). Open GUI tabs need a hard refresh after the restart (a stale tab sending `,reload` is refused as an unknown token).
+
 ## Outcome
 
-P1 code landed; P2 (interface removal) and P3 (two-feed chain) remain.
+P1 and P2 code landed; P3 (two-feed chain) remains.

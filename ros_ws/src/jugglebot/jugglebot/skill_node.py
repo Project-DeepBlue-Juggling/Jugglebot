@@ -22,8 +22,8 @@ pre-level the platform (``_prelevel``, the same gravity-level rest
 lift to) and wire the R3 precondition ladder (``executor.Observations`` /
 ``precondition_refusals``) through ``_observations``/``_ball_evidence``; a
 an EMPTY cup (`accept_cup_decision`) opens the attempt with the Ball Butler
-reload (``_start_reload``) before its own throws; the goal's ``reload`` field
-is ignored. Cancelling the goal ends the current attempt
+reload (``_start_reload``) before its own throws; the goal has no reload flag;
+the cup decides. Cancelling the goal ends the current attempt
 (``_stop_attempt``, the former stop-service body unchanged) — every
 segment is rest-terminal (``segments``' invariant), so ending an attempt
 needs no motion command of its own: whatever is streaming already ends at
@@ -3102,7 +3102,7 @@ class SkillNode(Node):
         # Cup decision at ACCEPT (owner ask 2026-10-14; cup-keyed 2026-10-17):
         # the debounced cup evidence picks the attempt's FIRST skill (EMPTY ->
         # Ball Butler reload catch, SEATED -> throw of the held ball) and
-        # refuses what no first skill fits. the action's `reload` field is IGNORED: the
+        # refuses what no first skill fits. the goal has no reload flag: the
         # derived `reload` below is the only one. After the running/lane
         # refusals (they keep their own reason), BEFORE the bookkeeping reset
         # below and before the per-pattern dispatch (`_start_reload` asks
@@ -3381,7 +3381,7 @@ class SkillNode(Node):
         columns schedule begin (`schedule.compile_reload_columns`,
         `_install_announced_reload`'s own branch) -- NOT the fed columns
         start (`_run_columns`, which feeds ball B).
-        SEATED (``reload=False``) compiles the whole schedule at once --
+        SEATED (throw first) compiles the whole schedule at once --
         `_run_one_ball`'s own non-reload shape, ball A assumed already
         held in the cup: an opening REST that homes the hand, levels the
         platform and carries the cup to ball A's site, then the columns
@@ -3938,8 +3938,8 @@ class SkillNode(Node):
         # shared with the ordinary self-toss/hop (same site(s)/pattern, same
         # box + memory) — only how the schedule gets COMPILED differs,
         # because the reload's real schedule cannot be built until Ball
-        # Butler's announcement supplies the receive tilt. `reload` is the
-        # Juggle goal's own flag (the deleted per-node reload parameter it replaced is
+        # Butler's announcement supplies the receive tilt. `reload` is derived
+        # from the cup decision (`_accept_cup_decision`) (the deleted per-node reload parameter it replaced is
         # deleted — one path, plan § 0).
         if reload:
             return self._start_reload(

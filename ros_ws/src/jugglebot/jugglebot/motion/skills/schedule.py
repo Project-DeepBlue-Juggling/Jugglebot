@@ -1520,7 +1520,7 @@ def compile_reload_wait(site: Site, floor_lift_s: float,
     self-toss opening REST (which assumes an operator has already placed a
     ball), nothing is in the cup while BB's throw is still pending.
 
-    ``SkillNode._run_one_ball`` (a Juggle goal with ``reload=True``) installs this
+    ``SkillNode._run_one_ball`` (a Juggle goal whose cup is EMPTY) installs this
     schedule, then calls ``bb/reload`` + ``bb/throw_at_target``; the hand
     is already homing while that round trip is in flight. On the
     announcement, ``SkillNode._on_announcement`` compiles the real
@@ -1786,7 +1786,7 @@ def compile_reload_columns(landing_mm, landing_vel_mm_s, t_land_abs_s: float,
                            t0_abs_s: float,
                            max_tilt_deg: float = tg.MAX_TILT_DEG) -> Schedule:
     """B2's ``columns_1ball`` reload start (``SkillNode._run_columns_1ball``,
-    ``reload=True``) — owner's words: "A is fed, held, then the pattern
+    cup EMPTY) — owner's words: "A is fed, held, then the pattern
     starts". Ball Butler's reload choreography for ball A — PRE-TILT REST
     -> held-tilt CATCH -> DECAY REST — hands off into the COLUMNS schedule
     (:func:`compile_columns`, ball A self-tossing from ``columns_pattern.
@@ -1867,7 +1867,7 @@ def compile_reload_columns(landing_mm, landing_vel_mm_s, t_land_abs_s: float,
 
 def compile_rest_columns(columns_pattern: Pattern, aim_site: Site,
                          lift_s: float, t0_abs_s: float) -> Schedule:
-    """``columns_1ball`` with ``reload=False`` (``SkillNode._run_columns_1ball``):
+    """``columns_1ball`` with a SEATED cup (``SkillNode._run_columns_1ball``):
     an OPENING REST, then the columns schedule. Ball A is already seated in
     the cup (an operator placed it); the REST homes the hand, levels the
     platform and carries the cup onto ball A's site, so THROW 0 is planned

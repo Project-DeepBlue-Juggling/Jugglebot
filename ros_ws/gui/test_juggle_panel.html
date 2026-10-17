@@ -13,7 +13,7 @@
   Every control is also a URL parameter, for headless screenshots:
     ?conn=1&active=1&compact=0&theme=dark&font=14&width=420
     &defaults=ok|fail|slow&relay=ok|old|reject|refuse|timeout
-    &pattern=columns&reload=1&apex=0.8&sep=&n=6
+    &cup=held|empty|unknown&pattern=columns&apex=0.8&sep=&n=6
     &scene=running|ended|aborted|refused|dispatch|invalid
 -->
 <head>
@@ -73,6 +73,7 @@
 </style>
 </head>
 <body>
+<span id="flag-ball-held-pill" class="flag-ball-pill unknown" style="position:fixed;top:2px;right:2px;font-size:10px">UNKNOWN</span>
 <div id="h-app">
   <div id="h-minimap">
     <div id="minimap-header"><span class="minimap-title">State Machine</span><span id="minimap-chevron">▾</span></div>
@@ -158,7 +159,7 @@ function attempt(name, values, message) {
 function resolved(data, honourFields) {
     const parts = data.split(',');
     const d = nodeDefaults();
-    const r = { pattern: parts[0], n_throws: d.n_throws, reload: parts[1] === 'reload' ? '1' : '0',
+    const r = { pattern: parts[0], n_throws: d.n_throws, reload: (parts[0] === 'reload' || parts[0] === 'columns_1ball_fed' || $('flag-ball-held-pill').classList.contains('empty')) ? '1' : '0',
         apex_m: d.apex_m.toFixed(3), separation_mm: d.separation_mm.toFixed(1) };
     if (honourFields) for (const t of parts.slice(1)) {
         const [k, v] = t.split('=');
@@ -285,9 +286,13 @@ function holdStart() {
     setTimeout(() => b.dispatchEvent(new PointerEvent('pointerup', { button: 0, bubbles: true })), 900);
 }
 
+{ // cup state: mock of panels.js updateBallHeld (HELD / EMPTY / UNKNOWN)
+    const c = q.get('cup') || 'unknown', pill = $('flag-ball-held-pill');
+    pill.className = 'flag-ball-pill ' + (c === 'held' ? 'held' : c === 'empty' ? 'empty' : 'unknown');
+    pill.textContent = c === 'held' ? 'HELD' : c === 'empty' ? 'EMPTY' : 'UNKNOWN';
+}
 render();
 if (q.get('pattern')) setPattern(q.get('pattern'));
-if (q.get('reload') === '1') { const r = $('juggle-reload'); r.checked = true; r.dispatchEvent(new Event('change')); }
 if (q.get('apex')) type('juggle-apex-m', q.get('apex'));
 if (q.get('sep')) type('juggle-separation-mm', q.get('sep'));
 if (q.get('n')) type('juggle-num-cycles', q.get('n'));
@@ -296,7 +301,7 @@ const scene = q.get('scene');
 setTimeout(() => {
     const pat = $('juggle-pattern').value;
     if (scene === 'running') {
-        attempt('juggle_start', resolved(pat + ($('juggle-reload').checked ? ',reload' : ''), false), 'accepted');
+        attempt('juggle_start', resolved(pat, false), 'accepted');
     } else if (scene === 'ended') {
         attempt('juggle_start', resolved(pat, false), 'accepted');
         attempt('juggle_end', { pattern: pat, outcome: 'COMPLETED', throws: 6, caught: 5 });

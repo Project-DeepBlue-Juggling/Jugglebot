@@ -77,3 +77,26 @@ def test_reload_button_sends_exact_token_and_shares_the_magazine_gate():
     assert "setDisabled(dom.reloadBtn, !!magReason);" in JS
     assert "value: 'reload'" not in JS and len(PATTERNS) == 5
     assert "actions.append(start, reloadBtn, magazine, stop, status);" in JS
+
+
+def test_no_reload_flag_on_wire_and_cup_preview_exists():
+    """P2 (columns-empty-cup-two-feed D3/D4): the skill node decides reload-first
+    from the cup sensor, so the request builder never emits a `reload` token
+    after the pattern (the orchestrator refuses it) and the 'Reload first'
+    checkbox / lob drawing are gone.  The bare `reload` PATTERN stays."""
+    for dead in ("userReload", "effectiveReload", "reloadRequired", 'juggle-reload"',
+                 "m.lob", "jp-arrow-lob", "hand lob", "Reload first", "parts.push('reload')"):
+        assert dead not in JS, dead
+    body = re.search(r"function buildRequestData\(p\) \{(.*?)\n\}", JS, re.S).group(1)
+    assert "reload" not in body.replace("No `reload` token", "")
+    # the cup preview strings exist for all three states plus the fixed requirements
+    for text in ("cup EMPTY: Ball Butler loads first", "cup SEATED: throw first",
+                 "cup UNKNOWN: will be refused", "needs an empty cup",
+                 "needs an empty cup (ball A phantom)", "needs a ball in the cup"):
+        assert text in JS, text
+    # columns + EMPTY is refused by the node until P3; the preview must say so
+    assert "TWO_FEED_LANDED = false" in JS
+    assert "cup EMPTY: will be refused (two-feed chain not landed)" in JS and "columnsEmptyRefused" in JS
+    assert "TWO_FEED_LANDED" in re.search(r"function cupPreviewText\(p, cup\) \{(.*?)\n\}", JS, re.S).group(1)
+    # classification is read from the shared ball-in-hand pill, not re-subscribed
+    assert "flag-ball-held-pill" in JS and "ros.subscribe" not in JS

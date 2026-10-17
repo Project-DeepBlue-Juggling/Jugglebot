@@ -684,7 +684,6 @@ class _JuggleGoal:
         self.apex_m = 0.0
         self.separation_mm = 0.0
         self.num_cycles = 0
-        self.reload = False
 
 
 class _JuggleResult:

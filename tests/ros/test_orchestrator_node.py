@@ -1066,7 +1066,7 @@ class TestJuggleRelay:
     SetString relay (rosbridge on Foxy has no action transport) — R4 owner
     decision D3, replaces the retired GUI reload-relay service). The
     relay dispatches ONE Juggle goal fire-and-forget, parsed from
-    ``<pattern>[,reload][,apex_m=<f>][,separation_mm=<f>][,num_cycles=<n>]``;
+    ``<pattern>[,apex_m=<f>][,separation_mm=<f>][,num_cycles=<n>]``;
     skill_node owns preconditions + the outcome. See
     orchestrator_node._svc_juggle_request / _svc_juggle_stop."""
 
@@ -1098,8 +1098,7 @@ class TestJuggleRelay:
 
     def test_goal_carries_the_parsed_pattern_and_zero_sentinels(self, orch):
         """apex_m/separation_mm/num_cycles 0 (0 => skill_node's own launch
-        default; the numeric default is NEVER encoded here or in the GUI),
-        reload False when the request carries no ``,reload`` suffix."""
+        default; the numeric default is NEVER encoded here or in the GUI)."""
         captured = {}
 
         def _spy_send(goal):
@@ -1115,22 +1114,19 @@ class TestJuggleRelay:
         assert goal.apex_m == 0.0
         assert goal.separation_mm == 0.0
         assert goal.num_cycles == 0
-        assert goal.reload is False
 
-    def test_goal_carries_the_reload_flag(self, orch):
-        captured = {}
-
-        def _spy_send(goal):
-            captured['goal'] = goal
-            return MockFuture()
-
-        orch._juggle_client._server_ready = True
-        orch._juggle_client.send_goal_async = _spy_send
-        orch._svc_juggle_request(_set_string_req('self_toss,reload'),
-                                 SetString.Response())
-        goal = captured['goal']
-        assert goal.pattern == 'self_toss'
-        assert goal.reload is True
+    def test_reload_pattern_parses_and_a_reload_token_after_it_is_refused(self, orch):
+        """The bare ``reload`` PATTERN stays; the retired flag token after a
+        pattern is an unknown token like any other (P2: the goal field is gone)."""
+        res, sent = self._dispatch(orch, 'reload')
+        assert res.success is True
+        assert sent[0].pattern == 'reload'
+        for data in ('columns,reload', 'self_toss,reload',
+                     'hop,num_cycles=3,reload'):
+            res, sent = self._dispatch(orch, data)
+            assert res.success is False
+            assert 'unknown token' in res.message
+            assert sent == []
 
     def _dispatch(self, orch, data):
         """Send ``data`` through the relay; return (response, goals sent)."""
@@ -1150,25 +1146,23 @@ class TestJuggleRelay:
         """The Juggle panel's typed values reach the goal verbatim; skill_node
         (not the relay) decides whether they are admissible."""
         res, sent = self._dispatch(
-            orch, 'columns,reload,apex_m=0.8,separation_mm=125,num_cycles=6')
+            orch, 'columns,apex_m=0.8,separation_mm=125,num_cycles=6')
         assert res.success is True
         (goal,) = sent
         assert goal.pattern == 'columns'
-        assert goal.reload is True
         assert goal.apex_m == 0.8
         assert goal.separation_mm == 125.0
         assert goal.num_cycles == 6
         assert isinstance(goal.num_cycles, int)
 
     def test_tokens_after_the_pattern_may_come_in_any_order(self, orch):
-        """``reload`` is a token like any other, not a fixed second slot —
-        and the fields the request omits keep their 0 sentinel."""
-        res, sent = self._dispatch(orch, 'hop,num_cycles=3,reload')
+        """The numeric tokens are not a fixed order —
+        and the field the request omits keeps its 0 sentinel."""
+        res, sent = self._dispatch(orch, 'hop,num_cycles=3,apex_m=0.7')
         assert res.success is True
         (goal,) = sent
-        assert goal.reload is True
         assert goal.num_cycles == 3
-        assert goal.apex_m == 0.0
+        assert goal.apex_m == 0.7
         assert goal.separation_mm == 0.0
 
     def test_an_explicit_zero_is_the_node_default_sentinel(self, orch):

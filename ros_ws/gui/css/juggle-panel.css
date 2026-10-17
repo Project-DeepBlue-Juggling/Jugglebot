@@ -129,8 +129,7 @@
     cursor: pointer;
     user-select: none;
 }
-.jp-reload input { accent-color: var(--jp-feed); cursor: inherit; }
-.jp-reload.forced { color: var(--jp-feed); cursor: not-allowed; }
+.jp-reload.forced { color: var(--jp-feed); }
 
 /* ---- Diagram + fields ---- */
 
@@ -353,7 +352,6 @@
 .jp-apex-word   { font-size: 6.5px; }
 .jp-apex-label.override { fill: var(--accent-blue) !important; font-weight: 600; }
 .jp-feed-label  { font-size: 6.5px; fill: var(--jp-feed) !important; }
-.jp-feed-label.lob { fill: var(--text-muted) !important; }
 .jp-speed {
     font-size: 6.5px;
     cursor: pointer;
@@ -406,6 +404,4 @@
     stroke-width: 0.9;
     stroke-dasharray: 3 2;
 }
-.jp-feed.lob { stroke: var(--text-muted); }
 .jp-arrowhead { fill: var(--jp-feed); }
-.jp-arrowhead.lob { fill: var(--text-muted); }
