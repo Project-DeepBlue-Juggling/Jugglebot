@@ -21,8 +21,9 @@ pre-level the platform (``_prelevel``, the same gravity-level rest
 ``reload_coordinator_node._unified_prelevel`` brings the session-start floor
 lift to) and wire the R3 precondition ladder (``executor.Observations`` /
 ``precondition_refusals``) through ``_observations``/``_ball_evidence``; a
-``reload=True`` goal opens with the Ball Butler reload (``_start_reload``)
-before its own throws. Cancelling the goal ends the current attempt
+an EMPTY cup (`accept_cup_decision`) opens the attempt with the Ball Butler
+reload (``_start_reload``) before its own throws; the goal's ``reload`` field
+is ignored. Cancelling the goal ends the current attempt
 (``_stop_attempt``, the former stop-service body unchanged) — every
 segment is rest-terminal (``segments``' invariant), so ending an attempt
 needs no motion command of its own: whatever is streaming already ends at
@@ -369,34 +370,6 @@ RELOAD_BB_READY_TIMEOUT_S = 3.0
 #: platform rests level under the aim point, the safe place to wait.
 RELOAD_BB_FETCH_TIMEOUT_S = 10.0
 
-#: R5 feed-triggered columns start (owner decision D1, 2026-09-30): the box
-#: an UN-ANNOUNCED tracker landing must fall inside, relative to the feed's
-#: aim site, to be accepted as ball B's arrival -- the transit catch's own
-#: reach, per unit B's admissible-box origin table (brief_S2.md,
-#: 2026-09-30 -- this unit reuses the number rather than re-deriving it,
-#: since re-sweeping the box is out of scope here): tighter on x (10 mm)
-#: than on y (20 mm), asymmetric because the catch-with-throw chain's own
-#: margin is asymmetric there (unlike `tools/admissible_sweep.OFFSETS_MM`'s
-#: symmetric +-20 mm grid, which is the box's SWEEP resolution, not this
-#: bound).
-COLUMNS_FEED_BOUND_X_MM = 10.0
-COLUMNS_FEED_BOUND_Y_MM = 20.0
-
-#: R5 feed-triggered columns start: how long `_run_columns`'s FEED WAIT
-#: keeps listening for an UN-ANNOUNCED tracker landing (`reload=False`, the
-#: interim human-lob sittings -- no Ball Butler round trip at all) before
-#: giving up. Ball Butler's own throw-delay floor (`_BB_THROW_DELAY_FLOOR_S`
-#: = 2.5 s, BB's pitch-settle floor) and its own ready/fetch ceiling
-#: (`RELOAD_BB_READY_TIMEOUT_S` + `RELOAD_BB_FETCH_TIMEOUT_S` = 13 s) both
-#: bound a MACHINE round trip; a human operator watching for the "feed
-#: armed" line, picking up a ball and throwing it is not a hardware-timed
-#: quantity, so this is a considered policy ceiling rather than a
-#: measurement -- set to roughly 2x BB's own worst-case round trip so a
-#: deliberate but unhurried throw is never cut off mid-wind-up, and finite
-#: so a forgotten feed still ends the attempt through the bridge's own safe
-#: rest tail rather than hanging forever.
-COLUMNS_TRACKER_FEED_DEADLINE_S = 30.0
-
 #: A Ball Butler heartbeat older than this is not evidence of BB's state (the
 #: bridge publishes it at 10 Hz, measured 2026-09-28: 0.100 s median period),
 #: so neither the "ball already in hand, skip bb/reload" decision nor the
@@ -467,39 +440,43 @@ def _columns_feed_aim_site(feed_site: Site, a_site: Site,
                np.array([xy[0], xy[1], float(feed_site.cup_mm[2])]))
 
 
-#: Patterns whose attempt OPENS with the Ball Butler reload catch WHATEVER the
-#: goal's `reload` flag says: the bare GUI "Reload" token, and
-#: `columns_1ball_fed` (ball A is phantom, so `_run_columns` builds its bridge
-#: with ``holds_ball=not phantom_a`` = False; `_start_pattern` refuses its
-#: `reload=False` before this rule is consulted).
-_ACCEPT_EMPTY_ALWAYS = ('reload', 'columns_1ball_fed')
-#: Patterns whose attempt OPENS by throwing a HELD ball WHATEVER the `reload`
-#: flag says: `columns` (`_run_columns`'s bridge holds ball A,
-#: ``holds_ball=not phantom_a`` = True, and
-#: Ball Butler's feed of ball B lands AFTER ball A's throw, into the then-empty
-#: cup) and `magazine` (one throw of the held ball, no reload path).
-_ACCEPT_SEATED_ALWAYS = ('columns', 'magazine')
+#: Cup-keyed accept rule (plan `columns-empty-cup-two-feed.md` D3, 2026-10-17):
+#: (pattern, debounced cup evidence) -> decision. UNKNOWN is
+#: `REJECTED_BALL_UNKNOWN` for EVERY pattern (handled before the lookup). The
+#: operator no longer forces "reload first": the cup decides.
+RELOAD_FIRST = 'reload_first'
+THROW_FIRST = 'throw_first'
+_E = ball_possession.EVIDENCE_EMPTY
+_S = ball_possession.EVIDENCE_SEATED
+_CUP_RULE = {
+    'self_toss': {_E: RELOAD_FIRST, _S: THROW_FIRST},
+    'hop': {_E: RELOAD_FIRST, _S: THROW_FIRST},
+    'columns_1ball': {_E: RELOAD_FIRST, _S: THROW_FIRST},
+    # P3: the EMPTY cell becomes RELOAD_FIRST when the two-feed chain lands
+    # (BB feeds A as a catch-only reload, then B). Until then it is refused.
+    'columns': {_E: ex.REJECTED_NO_BALL, _S: THROW_FIRST},
+    # A is phantom, B is BB-fed: needs an EMPTY cup.
+    'columns_1ball_fed': {_E: RELOAD_FIRST, _S: ex.REJECTED_BALL_IN_HAND},
+    'reload': {_E: RELOAD_FIRST, _S: ex.REJECTED_BALL_IN_HAND},
+    'magazine': {_E: ex.REJECTED_NO_BALL, _S: THROW_FIRST},
+}
 
 
-def accept_cup_requirement(pattern: str, reload: bool) -> str:
-    """The cup state an attempt's FIRST skill needs, as the possession
-    evidence value the goal-ACCEPT check (`SkillNode._accept_possession_
-    refusal`, owner ask 2026-10-14) compares the debounced sensor against:
-    :data:`ball_possession.EVIDENCE_EMPTY` when it opens with the Ball Butler
-    reload catch, :data:`ball_possession.EVIDENCE_SEATED` when it opens by
-    throwing a held ball.
-
-    The rest of the table (`self_toss`, `hop`, `columns_1ball`) follows the
-    flag: `reload=True` routes through `_start_reload` with its default
-    ``holds_ball=False`` (REST -> held-axis CATCH -> REST -> pattern), so the
-    cup must be EMPTY; `reload=False` opens with THROW 0 of a held ball. Keyed
-    on (pattern, reload) only."""
-    if pattern in _ACCEPT_EMPTY_ALWAYS:
-        return ball_possession.EVIDENCE_EMPTY
-    if pattern in _ACCEPT_SEATED_ALWAYS:
-        return ball_possession.EVIDENCE_SEATED
-    return (ball_possession.EVIDENCE_EMPTY if reload
-            else ball_possession.EVIDENCE_SEATED)
+def accept_cup_decision(pattern: str, evidence: str) -> Tuple[Optional[str], bool]:
+    """``(refusal_code, reload)`` for a goal-ACCEPT given the debounced cup
+    ``evidence`` (`SkillNode._accept_cup_decision` supplies it).
+    ``refusal_code`` is an ``ex.REJECTED_*`` code or ``None`` to pass;
+    ``reload`` is True when the attempt OPENS with the Ball Butler reload catch
+    (decision RELOAD_FIRST), False for THROW_FIRST (and for any refusal).
+    UNKNOWN evidence refuses every pattern with `REJECTED_BALL_UNKNOWN`."""
+    if evidence == ball_possession.EVIDENCE_UNKNOWN:
+        return ex.REJECTED_BALL_UNKNOWN, False
+    decision = _CUP_RULE[pattern][evidence]
+    if decision == RELOAD_FIRST:
+        return None, True
+    if decision == THROW_FIRST:
+        return None, False
+    return decision, False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1058,8 +1035,7 @@ class SkillNode(Node):
         # 13/21 `columns_1ball_fed` runs under the old transit entry never
         # even reached the feed catch window). Applies to the fed paths of
         # `columns` and `columns_1ball_fed` only (`_run_columns`'s
-        # `reload=True` Ball-Butler path and its `reload=False` tracker-feed
-        # branch); `columns_1ball` (`_run_columns_1ball`, its own reload
+        # Ball-Butler-fed path); `columns_1ball` (`_run_columns_1ball`, its own reload
         # into a parked cup, no feed) is untouched.
         # The 'transit' entry (pre-R5 self-toss) was retired 2026-10-14 after
         # the hop entry met the R5 gate at sitting 8; `columns_entry` no
@@ -1292,120 +1268,12 @@ class SkillNode(Node):
                 t_land_abs_s=t_land,
                 from_fit=bool(b.landing_from_fit))
         self._advance_correlation()
-        # R5 (owner decision D1, 2026-09-30): the columns FEED WAIT's
-        # tracker path -- an UN-ANNOUNCED ball's own converged landing can
-        # resolve the wait, same as a Ball Butler announcement does
-        # (`_on_announcement`). Cheap to check on every idle tick (a dict
-        # read under `_reload_lock`) and a no-op whenever no columns feed is
-        # armed, so this runs unconditionally rather than threading a flag
-        # through every `/balls` publisher.
-        with self._reload_lock:
-            ctx = self._reload_ctx
-            waiting = (ctx is not None and ctx.kind == 'columns'
-                      and not getattr(ctx, 'announced', False))
-        if waiting:
-            for ball_id, landing in self._balls.items():
-                if self._maybe_resolve_columns_feed(ctx, ball_id, landing):
-                    break
 
     def _now_s(self) -> float:
         """Now, in ROS epoch seconds — the clock the announcements' own
         ``throw_time`` is on, and therefore the only clock a "has this release
         happened?" comparison may use (`_advance_correlation`, `_tracker`)."""
         return float(self.get_clock().now().nanoseconds) * 1e-9
-
-    def _maybe_resolve_columns_feed(self, ctx, ball_id: int,
-                                    landing: Landing) -> bool:
-        """R5 (owner decision D1, 2026-09-30): the columns FEED WAIT's
-        tracker path -- an UN-ANNOUNCED ball's own converged landing
-        resolves ``ctx`` exactly like `_on_announcement` resolves it for a
-        Ball Butler throw (claim first, install only if the claim is still
-        current), for the interim sittings with no Ball Butler round trip
-        at all (a human lob). Returns True once ``ctx`` is claimed (whether
-        or not the compile that follows succeeds) -- the caller's loop over
-        ``self._balls`` stops there, since only one ball can resolve one
-        feed.
-
-        Three physical facts gate acceptance, checked BEFORE the claim (a
-        candidate that fails one of these leaves the wait armed for the
-        NEXT ``/balls`` snapshot):
-
-        1. ``landing.from_fit`` — a Kalman PREDICTION, not the CAUGHT dead-
-           reckoning artefact `ball_possession`'s own module docstring
-           describes; an un-converged or CAUGHT-frozen landing is not
-           evidence of where a real ball is headed.
-        2. Descending (``vel_mm_s[2] < 0``) — a ball already past its apex,
-           not one still rising past the aim site's height on its way up.
-        3. Within :data:`COLUMNS_FEED_BOUND_X_MM` / :data:`
-           COLUMNS_FEED_BOUND_Y_MM` of ``ctx.aim_site`` — the transit
-           catch's own reach (see the constants' own docstring for the
-           provenance).
-
-        A candidate that passes those three but whose landing is too SOON
-        (less than ``transit_s + launch_s + FRESH_THROW_LEAD_S`` + one tick
-        away — `compile_columns`'s own initial-CATCH window plus THROW 0's
-        dispatch lead plus one tick of scheduling margin, the same
-        margin `_run_one_ball`'s own t0 idiom leaves) cannot be scheduled at
-        all: the feed is logged ONCE (not resolved) and the wait continues,
-        in case a human throws again.
-        """
-        if not bool(landing.from_fit):
-            return False
-        if not float(landing.vel_mm_s[2]) < 0.0:
-            return False
-        aim = ctx.aim_site.cup_mm
-        dx_mm = abs(float(landing.pos_mm[0]) - float(aim[0]))
-        dy_mm = abs(float(landing.pos_mm[1]) - float(aim[1]))
-        if (dx_mm > COLUMNS_FEED_BOUND_X_MM
-                or dy_mm > COLUMNS_FEED_BOUND_Y_MM):
-            return False
-
-        now = self._now_s()
-        pattern = ctx.columns_pattern
-        tau = transit_s(flight_s(pattern.apex_m), pattern.dwell_s)
-        # FRESH_THROW_LEAD_S, not LEAD_S (2026-10-16): THROW 0 is the
-        # schedule's FIRST dispatch, `t_land - tau - launch_s -
-        # FRESH_THROW_LEAD_S`, and the THROW now dispatches by its own lead.
-        lead_needed_s = (tau + float(pattern.launch_s) + FRESH_THROW_LEAD_S
-                         + (1.0 / _TICK_HZ))
-        margin_s = (float(landing.t_land_abs_s) - now) - lead_needed_s
-        if margin_s < 0.0:
-            if not getattr(ctx, 'lead_deficit_logged', False):
-                self.get_logger().info(
-                    'columns feed: %s lands in %.3f s, %.3f s short of '
-                    'the %.3f s the transit catch needs (tau %.3f + launch '
-                    '%.3f + lead %.3f + one tick) -- still waiting'
-                    % (ball_label(ball_id), float(landing.t_land_abs_s) - now,
-                       -margin_s, lead_needed_s, tau, float(pattern.launch_s),
-                       FRESH_THROW_LEAD_S))
-                with self._reload_lock:
-                    if self._reload_ctx is ctx:
-                        ctx.lead_deficit_logged = True
-            return False
-
-        with self._reload_lock:
-            claimed = (self._reload_ctx is ctx
-                      and not getattr(ctx, 'announced', False))
-            if claimed:
-                ctx.announced = True
-        if not claimed:
-            return False
-        # The tracker id is ALREADY KNOWN here (it is literally how this
-        # ball was found), so the correlation is a direct fact, not a
-        # `FlightLatch` search over an unknown release -- unlike the
-        # announcement path (`_install_announced_reload`), which never
-        # learns the tracker id until `advance_correlation` finds it.
-        with self._correlation_lock:
-            self._correlation[1] = (FlightLatch(t_release_s=now,
-                                                announced_id=int(ball_id)),)
-        feed = LandingPrior(pos_mm=landing.pos_mm, vel_mm_s=landing.vel_mm_s,
-                            t_land_abs_s=landing.t_land_abs_s)
-        self.get_logger().debug(
-            'columns feed: un-announced %s accepted (dx %.1f mm, dy '
-            '%.1f mm of %s, margin %.3f s)'
-            % (ball_label(ball_id), dx_mm, dy_mm, ctx.aim_site.name, margin_s))
-        self._install_columns_schedule(ctx, feed)
-        return True
 
     def _advance_correlation(self) -> None:
         """Refine every live schedule-ball-id -> tracker-id correlation
@@ -1414,7 +1282,7 @@ class SkillNode(Node):
         ``jugglebot.ball_possession`` owns the RULE — an identity latch
         resolves only to the track minted for its own announcement
         (`match_announced_track`: source + throw_time), a legacy latch
-        (the human-lob feed, id already known) keeps `latch_announced_ball`
+        (id already known) keeps `latch_announced_ball`
         (shared with `reload_coordinator_node`'s FSM latch), and
         `advance_correlation` runs every per-release queue at once against
         ONE claimed set; this method owns the per-schedule-ball-id state the
@@ -2655,17 +2523,13 @@ class SkillNode(Node):
         `THROW_REJECTED_BAD_STATE` x5 was exactly BB not being IDLE yet).
         `await_announcement` (armed once `bb/throw_at_target` is accepted)
         times out `ABORTED_NO_ANNOUNCEMENT`, unchanged from the pre-C1
-        code. A THIRD phase, `await_feed` (R5, owner decision D1,
-        2026-09-30 — `_run_columns`'s columns-only, no-Ball-Butler wait for
-        an un-announced tracker landing), times out
-        `ABORTED_NO_COLUMNS_FEED` — its own code, because nothing here was
-        ever asked of Ball Butler for this ctx to name. Never fires during
+        code. Never fires during
         `firing` — `_maybe_fire_reload_throw`'s own blocking round trip is
         still using this SAME `ctx`, and yanking it out from under that
         call would leave a throw request answered by nothing. Nor on a
-        context an announcement/feed has CLAIMED (`ctx.announced`,
-        2026-09-29): it did arrive, and `_on_announcement` /
-        `_maybe_resolve_columns_feed` alone resolve the claim (install the
+        context an announcement has CLAIMED (`ctx.announced`,
+        2026-09-29): it did arrive, and `_on_announcement` alone resolves
+        the claim (install the
         schedule, or end the attempt naming why)."""
         timed_out_phase = None
         with self._reload_lock:
@@ -2680,7 +2544,7 @@ class SkillNode(Node):
         # `_end_attempt` also clears `_reload_ctx` (already `None` here —
         # harmless, `with self._reload_lock: self._reload_ctx = None` twice
         # is idempotent) and captures `_goal_end_code` the same way for
-        # every phase, so one call covers all three.
+        # every phase, so one call covers both.
         if timed_out_phase == 'await_bb_idle':
             self._end_attempt(
                 'ABORTED_BB_NOT_READY(%s, ball_in_hand=%s)'
@@ -2688,12 +2552,6 @@ class SkillNode(Node):
                 'Ball Butler never reported ready (IDLE, ball in hand, '
                 'connected) within the deadline -- the platform is at rest '
                 'under the aim point (the bridge REST\'s rest tail)')
-        elif timed_out_phase == 'await_feed':
-            self._end_attempt(
-                'ABORTED_NO_COLUMNS_FEED',
-                'no tracker landing resolved the columns feed within the '
-                'deadline -- the platform is at rest holding %s (the '
-                'bridge REST\'s rest tail)' % (ball_label(0),))
         else:
             self._end_attempt(
                 'ABORTED_NO_ANNOUNCEMENT',
@@ -2785,8 +2643,7 @@ class SkillNode(Node):
         live and has not ended -- either still in the pre-announcement
         wait (`_reload_ctx` in ``await_announcement``) or with the announced
         executor swapped in (`_reload_throw_inflight` AND
-        `_bb_throw_dispatched` -- a tracker-fed columns swap arms the former
-        without ever asking Ball Butler for a throw) -- and no END has
+        `_bb_throw_dispatched`) -- and no END has
         decided the goal (`_ended_code_for_swap`). The phantom-catch
         guard's predicate (`_on_bb_throw_outcome`): a NOT-thrown verdict
         arriving while this holds ends the attempt; one arriving after it
@@ -3234,32 +3091,6 @@ class SkillNode(Node):
                 success=False,
                 message=('refused: pattern %r is not one of %s'
                          % (pattern, self._PATTERNS)))
-        reload = bool(getattr(goal, 'reload', False))
-        if pattern == 'reload':
-            # The reload-only pattern IS a Ball Butler feed whatever the
-            # goal's flag said (the GUI's "Reload" button sends the bare
-            # token): recorded as reload=True on the attempt, not on the
-            # label (which would read "reload (reload)").
-            reload = True
-        # R5 (owner decision D3, 2026-09-30): the "columns until R5" refusal
-        # is LIFTED — `reload=True` on a columns goal now means "ball B
-        # comes from Ball Butler" (`_run_columns` routes it through
-        # `_start_reload`'s BB choreography, aim site P2).
-        #
-        # B2 (R5 sitting 4): `columns_1ball_fed` has no ball A to fall back
-        # on for the ordinary `columns` pattern's `reload=False` human-lob
-        # path (`_run_columns`'s own no-Ball-Butler branch still arms a
-        # bridge "holding" a ball that, here, does not exist) -- Ball
-        # Butler is the ONLY feed this mode has. Refused here, explicitly,
-        # rather than silently arming a tracker-only wait that can never be
-        # satisfied by a non-existent ball A.
-        if pattern == 'columns_1ball_fed' and not reload:
-            return SimpleNamespace(
-                success=False,
-                message=('columns_1ball_fed refused: reload=False -- %s '
-                         'is phantom in this pattern, so Ball Butler is '
-                         'the ONLY feed for %s; pass reload=True'
-                         % (ball_label(0), ball_label(1))))
         refused = self._refuse_if_running(SimpleNamespace(success=None,
                                                           message=None))
         if refused is not None:
@@ -3268,16 +3099,17 @@ class SkillNode(Node):
                                                                message=None))
         if refused is not None:
             return refused
-        # Cup possession at ACCEPT (owner ask 2026-10-14; sitting 8 attempt
-        # 4): the debounced cup evidence must match the attempt's FIRST skill
-        # -- EMPTY for a reload catch, SEATED for a throw of a held ball.
-        # After the running/lane refusals (they keep their own reason),
-        # BEFORE the bookkeeping reset below (a refused goal never touches a
-        # previous goal's unread result) and before the per-pattern dispatch
-        # (`_start_reload` asks Ball Butler -- a refused goal never does).
-        possession_msg = self._accept_possession_refusal(pattern, reload)
-        if possession_msg is not None:
-            return SimpleNamespace(success=False, message=possession_msg)
+        # Cup decision at ACCEPT (owner ask 2026-10-14; cup-keyed 2026-10-17):
+        # the debounced cup evidence picks the attempt's FIRST skill (EMPTY ->
+        # Ball Butler reload catch, SEATED -> throw of the held ball) and
+        # refuses what no first skill fits. the action's `reload` field is IGNORED: the
+        # derived `reload` below is the only one. After the running/lane
+        # refusals (they keep their own reason), BEFORE the bookkeeping reset
+        # below and before the per-pattern dispatch (`_start_reload` asks
+        # Ball Butler -- a refused goal never does).
+        cup_msg, reload = self._accept_cup_decision(pattern)
+        if cup_msg is not None:
+            return SimpleNamespace(success=False, message=cup_msg)
 
         apex_m = (float(goal.apex_m) or float(self.get_parameter('apex_m').value))
         separation_mm = (float(goal.separation_mm)
@@ -3308,13 +3140,14 @@ class SkillNode(Node):
 
         if pattern == 'columns':
             result = self._run_columns(apex_m, separation_mm, dwell_s,
-                                       n_throws, reload)
+                                       n_throws, reload_a=reload)
         elif pattern == 'columns_1ball_fed':
-            # Always `reload=True` -- the refusal above already rejected
-            # `reload=False` for this pattern, so `reload` is True here by
-            # construction, not re-derived from the goal a second time.
+            # `reload` is True here by construction (the cup rule: EMPTY ->
+            # RELOAD_FIRST, SEATED refused), so ball A is phantom and ball B
+            # is the BB feed.
             result = self._run_columns(apex_m, separation_mm, dwell_s,
-                                       n_throws, True, phantom_a=True)
+                                       n_throws, reload_a=False,
+                                       phantom_a=True)
         elif pattern == 'columns_1ball':
             result = self._run_columns_1ball(apex_m, separation_mm, dwell_s,
                                              n_throws, reload)
@@ -3343,7 +3176,8 @@ class SkillNode(Node):
 
     def _run_columns(self, apex_m: float, separation_mm: float,
                      dwell_s: float, n_throws: int,
-                     reload: bool, phantom_a: bool = False) -> SimpleNamespace:
+                     reload_a: bool = False,
+                     phantom_a: bool = False) -> SimpleNamespace:
         """The ``columns`` branch of :meth:`_start_pattern` — R5's
         feed-triggered two-phase start (owner decision D1, 2026-09-30),
         replacing the R2-R4 body that refused outright (`_hand_home_error`,
@@ -3351,13 +3185,14 @@ class SkillNode(Node):
         holds_ball=True)`, `_start_reload`'s own bridge shape) homes the
         hand and lifts the cup onto ball A's site holding ball A, then a
         FEED WAIT for ball B's real arrival at the feed site — a Ball
-        Butler `ThrowAnnouncement` (``reload=True``, routed through
-        `_start_reload`'s own BB choreography, generalised by
-        ``kind='columns'``) or the tracker's own converged fit of an
-        un-announced landing (``reload=False``, `_maybe_resolve_columns_feed`
-        via `_on_balls` — armed either way, since a human backup lob is
-        always a valid feed regardless of whether Ball Butler was also
-        asked). On resolution, `_install_columns_schedule` compiles
+        Butler `ThrowAnnouncement` (routed through `_start_reload`'s own BB
+        choreography, generalised by ``kind='columns'``). Columns is
+        Ball-Butler-fed ONLY (plan `columns-empty-cup-two-feed.md` D2,
+        2026-10-17: the human-lob / tracker-landing feed is retired).
+        ``reload_a`` (ball A itself reloaded by BB first, the empty-cup
+        start) is P3 of that plan and not yet implemented: the accept rule
+        refuses it, so it never arrives here ``True``.
+        On resolution, `_install_columns_schedule` compiles
         ``compile_columns(pattern, feed=...)`` and swaps the executor.
 
         Which `columns_sites` site holds A and which is fed is
@@ -3393,12 +3228,7 @@ class SkillNode(Node):
         ``Pattern`` carries ``phantom_balls=(0,)`` so every downstream
         phantom enforcement point (``schedule.Schedule.is_phantom``'s own
         three call sites, plus the precondition ladder and the D3 survivor
-        policy in ``executor.py``) applies to it. Only reached with
-        ``reload=True`` -- `_start_pattern` refuses ``reload=False`` for
-        this pattern outright, because Ball Butler is the ONLY feed this
-        mode has (there is no ball A to fall back on for a human-lob feed
-        the way the ordinary ``columns`` pattern's ``reload=False`` branch
-        does).
+        policy in ``executor.py``) applies to it. Ball Butler is the ONLY feed (columns has no other since D2).
 
         The HOP entry (owner decision, 2026-10-05, R5 sitting-6 prep) parks
         ball A at the FEED site through the bridge REST and has THROW 0
@@ -3500,93 +3330,23 @@ class SkillNode(Node):
             self._correlation.pop(0, None)
             self._correlation.pop(1, None)
 
-        if reload:
-            # D3's lift (owner decision, 2026-09-30): `reload=True` on a
-            # columns goal means "ball B comes from Ball Butler" — the SAME
-            # bridge-then-BB-round-trip choreography `_start_reload` runs
-            # for the one-ball reload, generalised (`kind='columns'`)
-            # rather than duplicated: bridge holds at `a_site` WITH ball A
-            # (`holds_ball=True`), BB is asked to aim at `feed_aim_site`
-            # (R5 sitting 2: the feed site, walked toward A's site —
-            # `_columns_feed_aim_site`'s own docstring) instead of `a_site`.
-            # B2: `holds_ball=not phantom_a` — ball A's cup is empty by
-            # design when it is the phantom. `site=bridge_site` — the feed
-            # site (the hop entry, see the comment above).
-            return self._start_reload(
-                SimpleNamespace(success=None, message=None), site=bridge_site,
-                lift_s=lift_s, boxes=boxes, memory=memory, kind='columns',
-                aim_site=feed_aim_site, columns_pattern=pattern,
-                holds_ball=not phantom_a)
-
-        # No Ball Butler round trip at all (the interim human-lob
-        # sittings): arm the bridge + FEED WAIT directly. Same t0 idiom as
-        # `_start_reload`'s own bridge compile (probe, then shift so the
-        # first dispatch lands at/after "now"). `holds_ball=not phantom_a`,
-        # same as the reload branch above -- `_start_pattern` never reaches
-        # here with `phantom_a=True` (it refuses `reload=False` for
-        # `columns_1ball_fed` outright), but a direct caller gets the
-        # correct bridge regardless.
-        now = self.get_clock().now().nanoseconds / 1e9
-        try:
-            probe = compile_reload_wait(bridge_site, lift_s, now,
-                                        holds_ball=not phantom_a)
-            deficit = now - probe.skills[0].dispatch_s()
-            # + _DISPATCH_LOOKAHEAD_S: the executor dispatches that far ahead
-            # of its tick, so without it the first skill would go out on
-            # the start tick itself rather than one tick after it.
-            t0 = (now + max(deficit, 0.0) + (1.0 / _TICK_HZ)
-                  + _DISPATCH_LOOKAHEAD_S)
-            bridge = compile_reload_wait(bridge_site, lift_s, t0,
-                                         holds_ball=not phantom_a)
-        except ValueError as exc:
-            msg = 'columns bridge schedule refused: %s' % (exc,)
-            self.get_logger().debug(msg)
-            return SimpleNamespace(success=False, message=msg)
-
-        self._sched_refused_at_start = self._sched_refused
-        self._force_hold = False
-        self._hold_forced_code = ''
-        self._executor = SkillExecutor(
-            bridge, self._installer, tracker=self._tracker,
-            **self._bump_kwargs(),
-            catch_aim_source=self._catch_aim_source(),
-            resend_max_per_catch=self._catch_resend_max(),
-            launch_ratio=self._launch_ratio,
-            observer=self._ball_evidence, observations=self._observations,
-            dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
-            seat_window=self._seat_window)
-        with self._reload_lock:
-            self._reload_throw_inflight = False
-            self._bb_throw_dispatched = False
-            self._reload_ctx = SimpleNamespace(
-                kind='columns', phase='await_feed', pattern=None,
-                columns_pattern=pattern, boxes=boxes, memory=memory,
-                site=bridge_site, aim_site=feed_aim_site, bridge=bridge,
-                reload_sent=False, bb_left_idle=False, announced=False,
-                lead_deficit_logged=False,
-                deadline_mono=(time.perf_counter()
-                              + COLUMNS_TRACKER_FEED_DEADLINE_S))
-        msg = ('%scolumns feed armed: waiting up to %.1f s for a tracker '
-              'landing near %s (reload=False, no Ball Butler round trip)'
-              % (entry_tag, COLUMNS_TRACKER_FEED_DEADLINE_S,
-                 feed_aim_site.name))
-        self.get_logger().debug(msg)
-        return SimpleNamespace(
-            success=True, message=msg,
-            start_line=(
-                ('%s started: %s%s phantom -- Jugglebot\'s own strokes '
-                 'fly empty; waiting up to %.1f s for %s to land near '
-                 '%s · memory %d rows'
-                 % (self._attempt_label or 'columns', entry_tag,
-                    ball_label(0), COLUMNS_TRACKER_FEED_DEADLINE_S,
-                    ball_label(1), feed_aim_site.name, len(memory)))
-                if phantom_a else
-                ('%s started: %sbridge REST holds %s at %s -- waiting up '
-                 'to %.1f s for %s to land near %s · memory %d rows'
-                 % (self._attempt_label or 'columns', entry_tag,
-                    ball_label(0), bridge_site.name,
-                    COLUMNS_TRACKER_FEED_DEADLINE_S,
-                    ball_label(1), feed_aim_site.name, len(memory)))))
+        if reload_a:
+            # P3 (the empty-cup two-feed chain) is not implemented; the
+            # accept rule (`accept_cup_decision`) refuses columns EMPTY, so
+            # this is unreachable from `_start_pattern`.
+            raise AssertionError('columns reload_a=True needs the two-feed '
+                                 'chain (plan columns-empty-cup-two-feed P3)')
+        # Ball B comes from Ball Butler: the bridge-then-BB-round-trip
+        # choreography `_start_reload` runs for the one-ball reload,
+        # generalised (`kind='columns'`): bridge holds at the feed site WITH
+        # ball A (`holds_ball=not phantom_a` -- ball A's cup is empty by
+        # design when it is the phantom), BB is asked to aim at
+        # `feed_aim_site`.
+        return self._start_reload(
+            SimpleNamespace(success=None, message=None), site=bridge_site,
+            lift_s=lift_s, boxes=boxes, memory=memory, kind='columns',
+            aim_site=feed_aim_site, columns_pattern=pattern,
+            holds_ball=not phantom_a)
 
     def _run_columns_1ball(self, apex_m: float, separation_mm: float,
                            dwell_s: float, n_throws: int,
@@ -3613,15 +3373,15 @@ class SkillNode(Node):
         always labels its own `Schedule.pattern` 'columns', phantom or not
         (the box-lookup contract `SkillExecutor._command_u` reads).
 
-        Start: ``reload=True`` reuses the self-toss reload choreography
+        Start: the derived ``reload`` (EMPTY cup) reuses the self-toss reload choreography
         verbatim for ball A ALONE (`_start_reload`, ``kind='columns_1ball'``)
         -- Ball Butler feeds and the robot catches ball A exactly as a
         plain self-toss reload would, and only once that reload's own
         DECAY REST leaves ball A resting, level, at its site does the
         columns schedule begin (`schedule.compile_reload_columns`,
         `_install_announced_reload`'s own branch) -- NOT the fed columns
-        start (`_run_columns`'s own ``reload=True``, which feeds ball B).
-        ``reload=False`` compiles the whole schedule at once --
+        start (`_run_columns`, which feeds ball B).
+        SEATED (``reload=False``) compiles the whole schedule at once --
         `_run_one_ball`'s own non-reload shape, ball A assumed already
         held in the cup: an opening REST that homes the hand, levels the
         platform and carries the cup to ball A's site, then the columns
@@ -3828,40 +3588,41 @@ class SkillNode(Node):
                     '(ball_held_valid false)')
         return evidence, age_s, ''
 
-    def _accept_possession_refusal(self, pattern: str,
-                                   reload: bool) -> Optional[str]:
-        """The goal-ACCEPT possession check (owner ask, 2026-10-14; sitting 8
-        attempt 4): the cup's debounced evidence must match what the
-        attempt's FIRST skill needs (`accept_cup_requirement`), checked before
-        any motion and before any Ball Butler dispatch. Returns the refusal
-        message (code first, then the plain reason) or ``None`` to pass.
+    def _accept_cup_decision(self, pattern: str) -> Tuple[Optional[str], bool]:
+        """The goal-ACCEPT cup check (owner ask 2026-10-14; cup-keyed since
+        2026-10-17): ``(refusal_message | None, reload)``. The cup's debounced
+        evidence goes through :func:`accept_cup_decision`; ``reload`` is the
+        DERIVED "attempt opens with the Ball Butler reload catch" flag. Checked
+        before any motion and before any Ball Butler dispatch.
 
         A dead or stale sensor REFUSES (`REJECTED_BALL_UNKNOWN`), it does not
         pass -- the launch-time ladder's philosophy (`executor.
         precondition_refusals`), which stays as the second line at every
         THROW."""
-        need = accept_cup_requirement(pattern, reload)
-        label = pattern + (' (reload)' if reload and pattern != 'reload'
-                           else '')
         evidence, _age_s, why = self._cup_state()
-        if evidence == ball_possession.EVIDENCE_UNKNOWN:
-            return ('%s -- refused: cup state unknown, %s; %s needs the cup '
-                    '%s at start, so nothing moves and Ball Butler is not '
-                    'asked' % (ex.REJECTED_BALL_UNKNOWN, why, label, need))
-        if (need == ball_possession.EVIDENCE_EMPTY
-                and evidence == ball_possession.EVIDENCE_SEATED):
+        code, reload = accept_cup_decision(pattern, evidence)
+        if code is None:
+            return None, reload
+        if code == ex.REJECTED_BALL_UNKNOWN:
+            return ('%s -- refused: cup state unknown, %s; %s needs a known '
+                    'cup state at start, so nothing moves and Ball Butler is '
+                    'not asked' % (code, why, pattern)), False
+        if code == ex.REJECTED_BALL_IN_HAND:
             return ('%s -- refused: ball already in hand -- %s opens with the '
-                    'Ball Butler reload catch; empty the cup (or run a '
-                    'throwing pattern) first'
-                    % (ex.REJECTED_BALL_IN_HAND, label))
-        if (need == ball_possession.EVIDENCE_SEATED
-                and evidence == ball_possession.EVIDENCE_EMPTY):
+                    'Ball Butler reload catch and needs an EMPTY cup; empty '
+                    'the cup (or run a throwing pattern) first'
+                    % (code, pattern)), False
+        if code == ex.REJECTED_NO_BALL:
+            if pattern == 'columns':
+                # P3: removed when the two-feed chain lands.
+                return ('%s -- refused: no ball in hand -- the empty-cup '
+                        'columns start (Ball Butler feeds A, then B) lands '
+                        'with the two-feed chain; seat a ball in the cup '
+                        'first' % (code,)), False
             return ('%s -- refused: no ball in hand -- %s opens by throwing a '
-                    'held ball%s; seat a ball in the cup first'
-                    % (ex.REJECTED_NO_BALL, label,
-                       (' (Ball Butler feeds the other ball only after that '
-                        'throw)' if reload and pattern == 'columns' else '')))
-        return None
+                    'held ball; seat a ball in the cup first'
+                    % (code, pattern)), False
+        raise AssertionError('unmapped cup decision %r' % (code,))
 
     def _opening_rest_period(self):
         """``(period_s, why_not)`` for the opening REST that HOMES THE HAND —
@@ -4912,9 +4673,8 @@ class SkillNode(Node):
 
         # R5 (owner decision D1, 2026-09-30): a columns feed arriving as a
         # Ball Butler announcement compiles `compile_columns`, not
-        # `compile_reload` -- `_install_columns_schedule` is the shared
-        # compile-then-swap tail both feed sources (this one and
-        # `_maybe_resolve_columns_feed`'s tracker path) call once the
+        # `compile_reload` -- `_install_columns_schedule` is the compile-then-swap
+        # tail it calls once the
         # correlation for ball B (schedule id 1, `compile_columns`'s own
         # convention) is set. Same FlightLatch rule `_maybe_announce`
         # applies to our own releases -- a fresh, unlatched latch, not
@@ -5082,10 +4842,8 @@ class SkillNode(Node):
         lane that ended the attempt during the compile wins and the
         compiled schedule is dropped, unchanged from the reload path).
 
-        Called from BOTH feed sources -- `_install_announced_reload`'s
-        columns branch (a Ball Butler announcement) and
-        `_maybe_resolve_columns_feed` (an un-announced tracker landing) --
-        once the caller has already set ``self._correlation[1]`` for ball B
+        Called from `_install_announced_reload`'s columns branch (a Ball
+        Butler announcement) once the caller has already set ``self._correlation[1]`` for ball B
         by whichever means that source supports (see each caller): this
         method does not touch correlation itself, because the two sources
         resolve it differently (a fresh, unlatched `FlightLatch` search for
@@ -5319,8 +5077,7 @@ class SkillNode(Node):
                 # `_reload_ctx` armed, so `_maybe_signal_goal_done` (which
                 # needs BOTH cleared) never fired and the Juggle goal hung
                 # until the wait's own deadline ended it with the wrong code
-                # (30 s / ABORTED_NO_COLUMNS_FEED for a columns feed wait,
-                # 4.6 s for a reload). Clear it here, under the same lock the
+                # (the wait's own deadline, e.g. 4.6 s for a reload). Clear it here, under the same lock the
                 # readers take, exactly as the no-executor branch does.
                 with self._reload_lock:
                     if self._reload_ctx is not None:
@@ -5493,7 +5250,7 @@ class SkillNode(Node):
             lines.append('ladder OK')
         # The cup as the goal-ACCEPT possession check sees it (owner ask,
         # 2026-10-14): REPORTED, not gated here -- whether SEATED or EMPTY is
-        # right depends on the pattern (`accept_cup_requirement`); the
+        # right depends on the pattern (`accept_cup_decision`); the
         # ladder line above already carries UNKNOWN/NO_BALL for a throw.
         cup_evidence, cup_age_s, cup_why = self._cup_state()
         if cup_age_s is None:
