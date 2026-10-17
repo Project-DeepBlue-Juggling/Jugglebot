@@ -92,7 +92,15 @@ Ball Butler/hand_sensor_pcb_rail/fp-info-cache
 !/.claude/commands/
 !/.claude/agents/
 !/.claude/workflows/
-temp/
+temp/*
+# The skill-stack learner memory is the one runtime artifact under temp/ that is
+# tracked: it is the robot's accumulated learning and had no off-box copy.
+# Commit it at sitting close-out, not mid-sitting.
+!temp/learn/
+temp/learn/*
+!temp/learn/jugglebot/
+temp/learn/jugglebot/*
+!temp/learn/jugglebot/memory.csv
 
 # MuJoCo generated log (appears on GLFW/headless errors)
 MUJOCO_LOG.TXT
