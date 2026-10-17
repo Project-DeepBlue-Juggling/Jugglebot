@@ -200,7 +200,7 @@ tests/ and docs/) before and after; record counts in the logbook.
 - **Docs:** INV:119/120 clauses -> "keyed on (pattern, cup evidence)"; INV:58 I-PLAN-8 tests clause; rehearsal doc
   `tests/hardware/session_skill_stack_rehearsals.md` rows 21-22; logbook (reload field semantics, old-bag caveat).
 - **Gate:** `./run_tests.sh --full` (change under `ros_ws` skill stack; full tier per CLAUDE.md for hardware sittings).
-- **Risk:** low-medium (lob gone; SEATED columns always calls BB). **Status: not started.**
+- **Risk:** low-medium (lob gone; SEATED columns always calls BB). **Status: DONE 2026-10-17 (9eed91c1; full gate 6716 passed + serial 7, exit 0).**
 ### P2 - D4 interface removal
 - **Scope:** `Juggle.action`, orchestrator parse, GUI checkbox + cup preview + diagram, bench, conftest, panel harness.
   Interface rebuild + FULL launch restart.
@@ -210,7 +210,7 @@ tests/ and docs/) before and after; record counts in the logbook.
 - **Docs:** `Juggle.action` comments; rehearsal rows 18-22 drop `reload: true` from goal literals (row 22 "SEATED for
   columns (either reload)" rewritten). One `/audit --unstaged` at the end of P2 covers P1+P2 (O3).
 - **Gate:** `./run_tests.sh --full`; `colcon build` of `jugglebot_interfaces` + `jugglebot`.
-- **Risk:** low. **Status: not started.**
+- **Risk:** low. **Status: DONE 2026-10-17 (4cccece2; interfaces rebuilt, FULL launch restart + GUI hard-refresh owed; `TWO_FEED_LANDED = false` in juggle-panel.js until P3; audit P1+P2 applied).**
 ### P3 - the two-feed chain
 - **Scope:** sim probe (§ 5 i) FIRST; then `_run_columns` split, `_start_columns_feed`, `_start_reload(then_columns,
   chain_ctx)`, the three phases, `_resolve_chain_on_retire`, `_maybe_advance_chain`, the `_on_announcement` claim
