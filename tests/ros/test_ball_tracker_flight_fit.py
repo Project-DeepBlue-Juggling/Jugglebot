@@ -94,7 +94,10 @@ class TestFallbackBeforeConvergence:
         not None/zero — the fit only changes which path wins once it has
         converged."""
         tracker = _make_tracker(flight_fit_min_samples=12)
-        bid, _ = _announce_and_fly(tracker, n_frames=3)
+        # 5 frames, not 3 (2026-10-14): with no pre-throw frames the
+        # announced-ball motion test needs 2 steps before it confirms, so
+        # frames 1-2 build history, 3 confirms, 4-5 feed the fit (< 12).
+        bid, _ = _announce_and_fly(tracker, n_frames=5)
         ball = tracker.get_ball(bid)
         assert ball.tracking == TrackingConfidence.CONFIRMED
         assert ball.landing_time > 0

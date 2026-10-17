@@ -86,8 +86,10 @@ def test_the_kind_enum_matches_the_srv():
     CATCH was meant, on real hardware.
     """
     e = _srv_kind_enums()
+    # KIND_BUMP=4 since 2026-10-16 (the late catch re-aim bump, I-CATCH-5); the
+    # bench never sends one, so it mirrors only the three segment kinds below.
     assert e == {'KIND_THROW': 0, 'KIND_CATCH': 1, 'KIND_REST': 2,
-                 'KIND_MAGAZINE': 3}
+                 'KIND_MAGAZINE': 3, 'KIND_BUMP': 4}
     assert (spb.KIND_THROW, spb.KIND_CATCH, spb.KIND_REST) == (
         e['KIND_THROW'], e['KIND_CATCH'], e['KIND_REST'])
     assert spb._WIRE_KIND == {sg.THROW: e['KIND_THROW'], sg.CATCH: e['KIND_CATCH'],
@@ -95,10 +97,14 @@ def test_the_kind_enum_matches_the_srv():
 
 
 def test_the_splice_budgets_equal_the_schedule_constant_arithmetic():
-    """200.0 ms / 150.0 ms, derived from ``schedule``'s own knot budget — never
+    """350.0 ms / 150.0 ms, derived from ``schedule``'s own knot budget — never
     a restated literal.
 
-    Was 125 / 75 ms until 2026-09-18, when the budget was re-sized on the
+    The handoff budget was 250 ms from 2026-10-14 to 2026-10-16, when
+    ``HANDOFF_LEAD_EXTRA_KNOTS`` went 4 -> 8 (350 ms).  It was 200 ms from 2026-09-18 to 2026-10-14, when
+    ``schedule.HANDOFF_LEAD_EXTRA_KNOTS`` went 2 -> 4 (accepted handoff
+    installs reached 223-231 ms; the attempt-ending ``SPLICE_TOO_LATE``s were
+    that distribution's tail).  Was 125 / 75 ms until 2026-09-18, when the budget was re-sized on the
     LOADED robot (``schedule.SOLVE_BUDGET_KNOTS``: CATCH solves to 134.2 ms
     max, and 16 of 23 catch attempts had refused ``SPLICE_TOO_LATE``).  The
     literals stay pinned here so the bench's printed gate can never drift from
@@ -107,7 +113,7 @@ def test_the_splice_budgets_equal_the_schedule_constant_arithmetic():
     assert dt == pytest.approx(0.025)
     assert spb.G2_HANDOFF_BUDGET_MS == pytest.approx(
         (sc.HANDOFF_LEAD_KNOTS - sc.WIRE_READ_KNOTS) * dt * 1e3)
-    assert spb.G2_HANDOFF_BUDGET_MS == pytest.approx(200.0)
+    assert spb.G2_HANDOFF_BUDGET_MS == pytest.approx(350.0)
     assert spb.G2_UNPINNED_BUDGET_MS == pytest.approx(
         (sc.LEAD_KNOTS - sc.WIRE_READ_KNOTS) * dt * 1e3)
     assert spb.G2_UNPINNED_BUDGET_MS == pytest.approx(150.0)
@@ -887,24 +893,22 @@ def test_juggle_pattern_name_maps_cli_spelling_to_the_wire_name(
 
 
 def test_build_parser_accepts_hop_and_the_new_via_action_options():
-    """``--pattern hop`` plus the new ``--via-action``/``--separation-mm``/
-    ``--reload`` flags this unit added for :func:`spb.run_live_action` --
+    """``--pattern hop`` plus the new ``--via-action``/``--separation-mm``
+    flags this unit added for :func:`spb.run_live_action` --
     a pure argparse check, no ROS."""
     args = spb.build_parser().parse_args([
         '--via-action', '--pattern', 'hop', '--separation-mm', '80',
-        '--reload', '--n-throws', '4'])
+        '--n-throws', '4'])
     assert args.via_action is True
     assert args.pattern == 'hop'
     assert args.separation_mm == 80.0
-    assert args.reload is True
     assert args.n_throws == 4
 
 
-def test_build_parser_separation_mm_and_reload_default_to_off():
+def test_build_parser_separation_mm_defaults_to_off():
     args = spb.build_parser().parse_args([])
     assert args.via_action is False
     assert args.separation_mm == 0.0
-    assert args.reload is False
 
 
 def test_main_refuses_hop_pattern_without_via_action(capsys):

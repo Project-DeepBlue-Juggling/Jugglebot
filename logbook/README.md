@@ -252,7 +252,7 @@ This is the worked example behind CLAUDE.md's rule that a "docs-only, so no
 tests needed" exemption must name the tests that read the path you changed *and*
 trace what they assert. Trace the coverage; never infer it from a passing count.
 (Hardening `logbook_search` to warn-on-skip and validate front matter is a
-tracked item in `plans/parked/refactor-2026-07.md` Phase 6.)
+tracked item in `plans/archived/refactor-2026-07.md` Phase 6.)
 
 ## Interactive Diagnosis Reports
 

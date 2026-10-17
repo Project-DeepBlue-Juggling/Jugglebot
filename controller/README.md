@@ -42,7 +42,7 @@ close-out, `2026-10-13-skill-stack-r6-close-out.md`): `TargetCommand`,
 `run_mpc.py`, the ROS2 `motion_bridge_node` / `mpc_bridge_node`, `sim/main.py`'s
 `--mpc` modes and the `HOT_LOOP_CONTRACT.md` / `DIAG_SCHEMA_CONTRACT.md`
 normative docs were deleted outright. The chain had been operationally dormant
-since 2026-08-01 (`plans/parked/refactor-2026-07.md` Phase 3, which parked it
+since 2026-08-01 (`plans/archived/refactor-2026-07.md` Phase 3, which parked it
 with a revival path), and the unified 7-DoF planner that landed 2026-09-01
 (`plans/archived/unified-7dof-planner.md`) is the lower-rate replanner that
 parking preserved the option for — so the revival path is retired, not deferred.

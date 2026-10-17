@@ -1033,7 +1033,7 @@ at 5.8 h and 15.2 h of uptime (`logbook/2026-08-15-fw14-validated-arc-closed.md`
 The § 9 framing was right — this document was a *mitigation of a consequence*, and
 the consequence did not survive its cause's removal.
 
-**Where the salvage lives: `plans/active/leg-bus-frame-drops.md`.** The validation
+**Where the salvage lives: `plans/archived/leg-bus-frame-drops.md`.** The validation
 battery found a *different*, real input to the same amplifier — per-axis leg-bus
 frame drops, gated by the 500 Hz setpoint stream rather than by uptime, present on
 fresh firmware too. The crucial reframing that makes the salvage usable: under the

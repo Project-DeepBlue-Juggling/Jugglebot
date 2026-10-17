@@ -417,4 +417,4 @@ unchanged as the record of what was proposed versus what actually shipped.
 Last content edit 2026-07-10 (`cf8728b`).
 
 Moved out of `plans/active/` by the 2026-07 refactor programme
-(`plans/parked/refactor-2026-07.md` § Phase 1, item 5).
+(`plans/archived/refactor-2026-07.md` § Phase 1, item 5).

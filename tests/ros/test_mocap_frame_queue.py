@@ -104,7 +104,7 @@ def _receive(iface, fn, *, late_ms=2.0, base_ns=5_000_000_000, drift_ppm=0.0, **
 def _node(iface):
     import jugglebot.mocap_node as mn
     with patch.object(mn, 'MocapInterface', return_value=iface):
-        node = mn.MocapNode()
+        node = mn.MocapNode(solve_inline=True)
     node._logger = RecLogger()
     return node
 

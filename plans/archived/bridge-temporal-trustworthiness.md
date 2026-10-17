@@ -34,12 +34,12 @@ archived: 2026-08-15
 # Bridge Temporal Trustworthiness
 
 **Branch:** `mvp-trajectory-bringup`
-**Absorbs:** `plans/parked/refactor-2026-07.md` § Phase 7's remaining bullet
+**Absorbs:** `plans/archived/refactor-2026-07.md` § Phase 7's remaining bullet
 *"Bridge-uptime tracking-lag reboot-isolation experiment (pre-registered;
 calendar cost is real — the degraded cell needs a multi-hour soak)"*. That
 bullet is satisfied by this arc's S1; `refactor-2026-07.md` is not edited by
 this plan.
-**Sequences:** `plans/active/bridge-clock-frequency-discipline.md`, which stays
+**Sequences:** `plans/archived/bridge-clock-frequency-discipline.md`, which stays
 the authoritative design document for the clock half. Its Phase 1 → this arc's
 P1, its Phase 2 → this arc's P2 (with one superseding correction, § P2), its
 Phases 3–5 → this arc's P4. No design content is duplicated here.
@@ -113,7 +113,7 @@ occupancy not uplinked.
 
 ### Half 2 — clock precision (the designed-but-unstarted half)
 
-`plans/active/bridge-clock-frequency-discipline.md` makes the bridge a
+`plans/archived/bridge-clock-frequency-discipline.md` makes the bridge a
 disciplined oscillator: the servo in `time_base.cpp::set_wall_anchor` is
 offset-only (type-1), so a constant crystal rate error leaves a steady-state
 phase bias of order `D·τ` (≈4.8 ms at 10 ppm with τ ≈ 480 s), and the *thermal
@@ -771,11 +771,11 @@ holdover < a few µs/min).
 4. **Clock**: `bridge-clock-frequency-discipline.md`'s acceptance criteria are
    met; that plan is then archived via `/archive-plan`.
 5. **Downstream unblocks, named**: the accel-FF premise re-derivation
-   (`plans/parked/accel-ff-inertia.md`), the retime-ON revisit, and
-   `plans/parked/learned-ff-residuals.md` gate **G-A** (which reads, in that
+   (`plans/archived/accel-ff-inertia.md`), the retime-ON revisit, and
+   `plans/archived/learned-ff-residuals.md` gate **G-A** (which reads, in that
    plan's own words, "the 2026-07-18 uptime-lag investigation is closed —
    reboot isolation experiment run, fix + continuous latency monitor landed").
-   `plans/parked/refactor-2026-07.md` § Phase 7's "bridge-uptime lag
+   `plans/archived/refactor-2026-07.md` § Phase 7's "bridge-uptime lag
    experiment" bullet is satisfied by S1.
 6. **The reboot-before-every-session workaround is retired** — the standing
    memory rule exists only because the drift does.
@@ -817,12 +817,12 @@ holdover < a few µs/min).
 - `logbook/2026-08-02-err-timeout-attribution-instrumentation.md` — the
   additive-MsgType discipline (0x8D / 0x8E) this arc's FW 11 reuses, and the
   ship-the-host-decode-with-the-unflashed-firmware precedent.
-- `plans/active/bridge-clock-frequency-discipline.md` — authoritative design for
+- `plans/archived/bridge-clock-frequency-discipline.md` — authoritative design for
   the clock half; its Phase 1 → P1, Phase 2 → P2 (superseded sketch, see § P2),
   Phases 3–5 → P4.
-- `plans/parked/learned-ff-residuals.md` § Prerequisite gates — gate G-A, and
+- `plans/archived/learned-ff-residuals.md` § Prerequisite gates — gate G-A, and
   its Phase-0 extractor whose Gate 0 is the 2026-07-18 lag table.
-- `plans/parked/refactor-2026-07.md` § Phase 7 — the absorbed bullet.
+- `plans/archived/refactor-2026-07.md` § Phase 7 — the absorbed bullet.
 - `ros_ws/src/jugglebot/Teensy_code_canbridge/canbridge_config.h` line 44 — the
   `FW_VERSION` changelog constant; FW 11 and FW 12 append their entries there.
 
@@ -831,7 +831,7 @@ holdover < a few µs/min).
 ## Archival note (2026-08-15)
 
 **Archived COMPLETE on the latency half — the half this arc was created to close.
-The clock half hands back to `plans/active/bridge-clock-frequency-discipline.md`,
+The clock half hands back to `plans/archived/bridge-clock-frequency-discipline.md`,
 which was always its authoritative design document and stays active and
 independently schedulable.**
 
@@ -894,14 +894,14 @@ reboot-before-every-session workaround is **retired** across the runbooks.
 
 ### What it hands off
 
-- **P4, the clock servo → `plans/active/bridge-clock-frequency-discipline.md`
+- **P4, the clock servo → `plans/archived/bridge-clock-frequency-discipline.md`
   Phases 3–5.** Its **P4-after-P3 ordering constraint is now SATISFIED**: a
   frequency estimator will no longer train through a drifting, possibly asymmetric
   transport. That plan's Phase 1 instrument already exists on the wire as
   `CLOCK_DIAG`, and its Phase 2 was delivered here as P2 (with the midpoint
   correction). Min-RTT anchor gating remains its standing defence against any
   *future* transport asymmetry, independent of this arc's outcome.
-- **The frame-drop follow-on → `plans/active/leg-bus-frame-drops.md`.** The
+- **The frame-drop follow-on → `plans/archived/leg-bus-frame-drops.md`.** The
   validation battery characterised per-axis encoder-frame drops that are gated by
   the 500 Hz setpoint stream, not by uptime, and that pre-date FW 14. They are a
   *different* input to the same lead-clamp amplifier, and — unlike the delay line —
@@ -913,8 +913,8 @@ reboot-before-every-session workaround is **retired** across the runbooks.
   anchor are salvaged into the frame-drop plan.
 - **Downstream premises now re-derivable on a healthy plant**: the 0.5→1.0 rev
   guard raise, the 2.2–2.7 rev/s chase ceiling, the retime-model OFF decision, the
-  accel-FF sizing premise (`plans/parked/accel-ff-inertia.md`), and
-  `plans/parked/learned-ff-residuals.md` gate **G-A**, which is now CLEARED.
+  accel-FF sizing premise (`plans/archived/accel-ff-inertia.md`), and
+  `plans/archived/learned-ff-residuals.md` gate **G-A**, which is now CLEARED.
 - **One residue that is code, not documentation**:
   `tests/hardware/toss_cal_grid.py`'s `R7` refusal (`UPTIME_ABORT_MS`, 30 min) and
   `tests/hardware/tilt_cal_grid.py`'s matching WARN still gate on bridge uptime.

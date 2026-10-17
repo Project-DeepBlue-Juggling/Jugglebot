@@ -21,7 +21,7 @@ catch point still sliding against the ball, and met it 31-64 mm off centre. The 
 `columns_1ball` feeds into a PARKED cup were caught 3 of 3 at the same 11-12° arrival. Two owner
 decisions follow:
 
-1. **Hop entry** (`skill_node` parameter `columns_entry`, default `hop`): Jugglebot starts at the
+1. **Hop entry** (`skill_node` parameter `columns_entry`, default `hop`; parameter retired 2026-10-14, hop is the only entry): Jugglebot starts at the
    FEED site P1 holding Ball 1, throws it ACROSS to P2 (a 125 mm hop, same apex and timing as the
    old first throw), and stays parked at P1 for Ball 2, which lands ~0.30 s later. The transit
    happens after the feed is caught, as the same move Ball 1's half already flies. Everything after
@@ -81,7 +81,7 @@ ran without it: row 9 still applies.
 | 9 | `ros2 param set /trajectory_node level_trim_deg "[0.0945, 0.3678]"` | Trim logged once (as sitting 5). |
 | 10 | Read the limits back without changing them: `ros2 service call /trajectory/set_limits jugglebot_interfaces/srv/SetTrajectoryLimits "{leg_vel_limit_mmps: 0.0, leg_acc_limit_mmps2: 0.0, leg_jerk_limit_mmps3: 0.0}"` | `applied_*` 350 / 5000 / 200000. |
 | 11 | `ros2 service call /hand_jam_dry_run std_srvs/srv/Trigger` | `hand_jam: ARMED; enabled=True …` (the recovery passed sitting 5's bench check twice; no bench check this sitting). |
-| 12 | `ros2 param set /skill_node catch_resend_max 0`; `ros2 param get /skill_node columns_entry` | Set; `hop`. |
+| 12 | `ros2 param set /skill_node catch_resend_max 0`; `ros2 param get /skill_node columns_entry` | Set; `hop` (param retired 2026-10-14). |
 | 13 | `ros2 param get /skill_node columns_feed_bb_bias_mm` | `[0.0, 0.0]` — the measurement arm for § 3 (sitting 5's numbers were taken against a moving cup at the old plane and do not carry over). |
 | 14 | Seat a ball; `ros2 service call skills/check std_srvs/srv/Trigger` | `ladder OK`, `frame check OK`, `box OK` for the columns pairs at the 0.95 band. |
 

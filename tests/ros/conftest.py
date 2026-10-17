@@ -102,12 +102,6 @@ class BallButlerHeartbeatMsg:
 
 
 @dataclass
-class CanTrafficReportMessage:
-    received_count: int = 0
-    report_interval: int = 0
-
-
-@dataclass
 class CatchEventMsg:
     header: object = field(default_factory=lambda: MagicMock())
     catch_time: object = None
@@ -156,16 +150,6 @@ class HandTelemetryMessage:
 
 
 @dataclass
-class LegsTargetReachedMessage:
-    leg0_has_arrived: bool = False
-    leg1_has_arrived: bool = False
-    leg2_has_arrived: bool = False
-    leg3_has_arrived: bool = False
-    leg4_has_arrived: bool = False
-    leg5_has_arrived: bool = False
-
-
-@dataclass
 class RobotState:
     timestamp: object = None
     motor_states: list = field(default_factory=list)
@@ -191,13 +175,6 @@ class SetMotorVelCurrLimitsMessage:
     legs_curr_limit: float = 0.0
     hand_vel_limit: float = 0.0
     hand_curr_limit: float = 0.0
-
-
-@dataclass
-class SetTrapTrajLimitsMessage:
-    trap_vel_limit: float = 0.0
-    trap_acc_limit: float = 0.0
-    trap_dec_limit: float = 0.0
 
 
 @dataclass
@@ -522,12 +499,6 @@ ODriveCommandService = _make_service(
     req_fields={'command': ''},
     resp_fields={'success': False, 'message': ''},
 )
-SendBallButlerCommand = _make_service(
-    req_fields={'yaw_angle_rad': 0.0, 'pitch_angle_rad': 0.0,
-                'throw_speed': 0.0, 'throw_time': 0.0,
-                'suppress_announcement': False},
-    resp_fields={'success': False, 'message': ''},
-)
 BallButlerThrow = _make_service(
     req_fields={'target_name': '', 'throw_delay_s': 0.0,
                 # Phase-7 point-target extension (default-zero preserves name callers).
@@ -589,6 +560,7 @@ class InstallSegment:
         KIND_CATCH = 1
         KIND_REST = 2
         KIND_MAGAZINE = 3
+        KIND_BUMP = 4
 
         def __init__(self):
             self.kind = 0
@@ -622,12 +594,18 @@ class InstallSegment:
             self.receive_tilt_rad = [0.0, 0.0]
             self.rest_tilt_set = False
             self.rest_tilt_rad = [0.0, 0.0]
+            # KIND_BUMP (I-CATCH-5, 2026-10-16).
+            self.bump_delta_xy_mm = [0.0, 0.0]
+            self.t_dispatch_s = 0.0
 
     Response = _make_service(
         resp_fields={'accepted': False, 'code': '', 'message': '',
                      'plan_wall_ms': 0.0, 'splice_k': -1, 't0_mono': 0.0,
                      't_event_mono': 0.0, 'duration_s': 0.0,
-                     'seeded_post_release': False, 't_release_mono': 0.0}).Response
+                     'seeded_post_release': False, 't_release_mono': 0.0,
+                     'terminal': False,
+                     'release_offset_xy_mm': [0.0, 0.0],
+                     'launch_bias_xy_mm_s': [0.0, 0.0]}).Response
 
 
 class TimedTarget:
@@ -706,7 +684,6 @@ class _JuggleGoal:
         self.apex_m = 0.0
         self.separation_mm = 0.0
         self.num_cycles = 0
-        self.reload = False
 
 
 class _JuggleResult:
@@ -1045,19 +1022,16 @@ _create_mock_module('jugglebot_interfaces.msg', {
     'MotorStateSingle': MotorStateSingle,
     'BallButlerCalibrationResult': BallButlerCalibrationResult,
     'BallButlerHeartbeat': BallButlerHeartbeatMsg,
-    'CanTrafficReportMessage': CanTrafficReportMessage,
     'CatchEvent': CatchEventMsg,
     'CatchingConeHeartbeat': CatchingConeHeartbeatMsg,
     'CatchTimingResult': CatchTimingResultMsg,
     'HandTelemetryMessage': HandTelemetryMessage,
-    'LegsTargetReachedMessage': LegsTargetReachedMessage,
     'MocapDataMulti': MocapDataMulti,
     'MocapDataSingle': MocapDataSingle,
     'RigidBodyPose': RigidBodyPose,
     'RigidBodyPoses': RigidBodyPoses,
     'RobotState': RobotState,
     'SetMotorVelCurrLimitsMessage': SetMotorVelCurrLimitsMessage,
-    'SetTrapTrajLimitsMessage': SetTrapTrajLimitsMessage,
     'ThrowAnnouncement': ThrowAnnouncement,
     'TrajectoryStatus': TrajectoryStatus,
     'PlatformPoseCommand': PlatformPoseCommand,
@@ -1070,7 +1044,6 @@ _create_mock_module('jugglebot_interfaces.srv', {
     'ActivateOrDeactivate': ActivateOrDeactivate,
     'GetTiltReadingService': GetTiltReadingService,
     'ODriveCommandService': ODriveCommandService,
-    'SendBallButlerCommand': SendBallButlerCommand,
     'SetFloat': SetFloat,
     'SetHandGains': SetHandGains,
     'SetString': SetString,

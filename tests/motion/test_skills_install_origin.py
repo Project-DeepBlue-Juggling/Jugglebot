@@ -174,6 +174,11 @@ LEAD_S = ex.LEAD_S
 #: i.e. ``schedule.SOLVE_BUDGET_KNOTS`` knots (0.150 s) — the SAME budget a
 #: splice has.
 BUDGET_S = LEAD_S - WIRE_MARGIN_S
+#: A THROW reserves its own, longer lead (2026-10-16,
+#: ``schedule.install_lead_s``): 13 knots, so 10 knots = 0.250 s of solve —
+#: sized on the 2026-10-16 sitting's 188 ms refused fresh THROW (+62 ms).
+THROW_LEAD_S = ex.FRESH_THROW_LEAD_S
+THROW_BUDGET_S = THROW_LEAD_S - WIRE_MARGIN_S
 #: The schedule's own first-throw window (``Pattern.launch_s``).
 LAUNCH_S = 0.4
 FLIGHT_S = 0.857
@@ -192,11 +197,11 @@ def _throw_terminal(t_release_abs):
 def _reserved_throw(limits, geom, solve_s, *, reserve=True):
     """A THROW dispatched the way the schedule dispatches one
     (``Skill.dispatch_s = t_abs - window - lead``): ``t_now = T0_ABS`` and the
-    release at ``T0_ABS + LAUNCH_S + LEAD_S``, with the solve's lateness
+    release at ``T0_ABS + LAUNCH_S + THROW_LEAD_S``, with the solve's lateness
     INJECTED through ``t_install_s`` (never measured — this pins the rule)."""
     return ex.install_segment(
         None, _rest_state(_SITE.rest_site_mm()), sg.THROW,
-        _throw_terminal(T0_ABS + LAUNCH_S + LEAD_S), T0_ABS,
+        _throw_terminal(T0_ABS + LAUNCH_S + THROW_LEAD_S), T0_ABS,
         limits=limits, geom=geom, t_install_s=T0_ABS + solve_s,
         reserve_fresh_lead=reserve)
 
@@ -206,8 +211,8 @@ def test_a_solve_the_default_rule_refuses_installs_with_the_lead_reserved(
     """The sitting's numbers: a 0.10 s solve is past today's 0.075 s wire
     margin (the DEFAULT rule refuses it ``ORIGIN_TOO_LATE`` — the defect) but
     inside the 0.150 s budget a reserved origin has, so it installs with
-    ``t0 = t_now + LEAD_S`` and the release still at its absolute instant."""
-    assert 0.10 > WIRE_MARGIN_S and 0.10 < BUDGET_S
+    ``t0 = t_now + THROW_LEAD_S`` and the release still at its absolute instant."""
+    assert 0.10 > WIRE_MARGIN_S and 0.10 < THROW_BUDGET_S
     _rec, res_default, _seg = _reserved_throw(limits, geom, 0.10,
                                               reserve=False)
     assert res_default.code == ex.ORIGIN_TOO_LATE, res_default.message
@@ -215,15 +220,15 @@ def test_a_solve_the_default_rule_refuses_installs_with_the_lead_reserved(
     rec, res, seg = _reserved_throw(limits, geom, 0.10)
     assert res.accepted, res.message
     assert res.splice_k == 0
-    assert res.t0_s == pytest.approx(T0_ABS + LEAD_S, abs=1e-12)
+    assert res.t0_s == pytest.approx(T0_ABS + THROW_LEAD_S, abs=1e-12)
     assert rec.t0_s == res.t0_s
     # The event did not move: release = t0 + event tau = the absolute instant.
     assert res.t0_s + res.event_t_s == pytest.approx(
-        T0_ABS + LAUNCH_S + LEAD_S, abs=1e-9)
+        T0_ABS + LAUNCH_S + THROW_LEAD_S, abs=1e-9)
     assert rec.t0_s + float(rec.meta.releases[0].t_s) == pytest.approx(
-        T0_ABS + LAUNCH_S + LEAD_S, abs=1e-9)
+        T0_ABS + LAUNCH_S + THROW_LEAD_S, abs=1e-9)
     assert res.message.startswith('fresh origin:')
-    assert '%.3f s budget' % BUDGET_S in res.message, res.message
+    assert '%.3f s budget' % THROW_BUDGET_S in res.message, res.message
     assert seg.kind == sg.THROW
 
 
@@ -236,16 +241,19 @@ def test_the_reserved_window_is_the_schedules_window_not_window_plus_lead(
     rec_d, res_d, _ = _reserved_throw(limits, geom, 0.0, reserve=False)
     rec_r, res_r, _ = _reserved_throw(limits, geom, 0.0)
     assert res_d.accepted and res_r.accepted, (res_d.message, res_r.message)
-    assert res_d.event_t_s == pytest.approx(LAUNCH_S + LEAD_S)
+    assert res_d.event_t_s == pytest.approx(LAUNCH_S + THROW_LEAD_S)
     assert res_r.event_t_s == pytest.approx(LAUNCH_S)
     assert (rec_d.plan.total_duration - rec_r.plan.total_duration
-            == pytest.approx(LEAD_S, abs=1e-9))
+            == pytest.approx(THROW_LEAD_S, abs=1e-9))
 
 
 @pytest.mark.parametrize('solve_s, accepted', [
-    (BUDGET_S - 1e-3, True),
-    (BUDGET_S, False),            # knot 0 is exactly on the wire-read horizon
-    (BUDGET_S + 0.034, False),    # the sitting's worst refused solve, + budget
+    (THROW_BUDGET_S - 1e-3, True),
+    # knot 0 on the wire-read horizon (+1e-9: at T0_ABS = 100 the float
+    # quotient (t_inst - t0)/dt lands a hair either side of -3)
+    (THROW_BUDGET_S + 1e-9, False),
+    (0.188, True),                # 2026-10-16: refused at 9 knots, inside 13
+    (THROW_BUDGET_S + 0.034, False),
 ])
 def test_a_reserved_fresh_throw_refuses_only_past_the_budget(
         limits, geom, solve_s, accepted):
@@ -256,12 +264,12 @@ def test_a_reserved_fresh_throw_refuses_only_past_the_budget(
     rec, res, seg = _reserved_throw(limits, geom, solve_s)
     assert res.accepted is accepted, res.message
     if accepted:
-        assert res.t0_s == pytest.approx(T0_ABS + LEAD_S, abs=1e-12)
+        assert res.t0_s == pytest.approx(T0_ABS + THROW_LEAD_S, abs=1e-12)
         return
     assert res.code == ex.ORIGIN_TOO_LATE, res.message
     assert rec is None and seg is None
     assert '%.3f' % solve_s in res.message
-    assert '%.3f s solve budget' % BUDGET_S in res.message, res.message
+    assert '%.3f s solve budget' % THROW_BUDGET_S in res.message, res.message
 
 
 def test_a_reserved_fresh_catch_installs_lead_after_dispatch(limits, geom):
@@ -283,7 +291,7 @@ def test_a_reserved_window_under_the_floor_is_refused_before_the_solve(
     window the gate cannot measure."""
     rec, res, seg = ex.install_segment(
         None, _rest_state(_SITE.rest_site_mm()), sg.THROW,
-        _throw_terminal(T0_ABS + LEAD_S + 0.05), T0_ABS,
+        _throw_terminal(T0_ABS + THROW_LEAD_S + 0.05), T0_ABS,
         limits=limits, geom=geom, t_install_s=T0_ABS,
         reserve_fresh_lead=True)
     assert res.code == ex.WINDOW_TOO_SHORT, res.message

@@ -1,23 +1,21 @@
-"""mocap_node's calibration consistency gate, its bb_moved override and the
-estimator inputs it collects (2026-10-09, sweep estimator).
+"""mocap_node's calibration history is ADVISORY (2026-10-16) and the estimator
+inputs it collects (2026-10-09, sweep estimator).
 
-* With NO state file the first calibration is accepted, persisted and logged
-  at WARN (there is no reference; the template's pin is not one).
-* Afterwards a calibration is refused when |Δyaw| > max(3·√(σ_new² + σ_ref²), 0.15°), the axis
-  point moved > 1.5 mm, or the template residual > 0.5 mm, unless the
-  one-shot ``bb_moved`` (BB moved or QTM recalibrated) is armed — which does
-  not excuse the residual.
-* An unreadable state file refuses (never a silent fallback) unless
-  ``bb_moved`` is armed.
+* Nothing about the last accepted calibration refuses a sweep: a yaw / axis /
+  template-residual disagreement is a flag on the outcome line (the replay of
+  the refused sweeps of 2026-10-11..14 showed every history-gate refusal was a
+  false positive); an unreadable state file is a "history unavailable" line and
+  is replaced by a fresh one. Only the solver (CONSTELLATION_*) refuses.
 * The solver gets mocap frames at their QTM stamps (one per distinct stamp)
   and yaw samples on the ROS clock. The yaw source follows ``bb_yaw_source``
-  (2026-10-10): ``auto`` by default — the stamped ``bb_yaw`` (degrees) on
+  (2026-10-10): ``auto`` by default - the stamped ``bb_yaw`` (degrees) on
   bb/axis_estimates when enough samples arrived, else the heartbeat (the
   two-joint message of older firmware); ``stamped`` insists on it (refused
   when absent); ``heartbeat`` ignores it. See
   ``logbook/2026-10-10-bb-yaw-offset-spread-stamped-source.md``.
 
-See ``logbook/2026-10-09-bb-constellation-yaw-offset.md``.
+See ``logbook/2026-10-09-bb-constellation-yaw-offset.md`` and
+``plans/active/bb-calibration-one-attempt.md``.
 """
 from __future__ import annotations
 
@@ -39,16 +37,12 @@ def _node(tmp_path, state=None, template=True):
     iface = MagicMock()
     iface.is_receiving.return_value = True
     with patch.object(mn, 'MocapInterface', return_value=iface):
-        node = mn.MocapNode()
+        node = mn.MocapNode(solve_inline=True)
     path = tmp_path / 'last_accepted.json'
     if state is not None:
         path.write_text(json.dumps(state))
     node._params['bb_calibration_state_file'] = str(path)
-    # These tests pin the WORLD gate: pose source sweep, and a private base
-    # pool (never the live ~/bb_calibration_sessions state). Under the default
-    # auto with the seeded pool, a window without the base leads its refusal
-    # with BASE_FRAME_NOT_SEEN (tests/ros/test_mocap_node_base_frame.py).
-    node._params['bb_pose_source'] = 'sweep'
+    # A private base pool (never the live ~/bb_calibration_sessions state).
     node._params['bb_base_frame_state_file'] = str(tmp_path / 'base_state.json')
     if not template:
         node._marker_template = None
@@ -105,7 +99,7 @@ def _rec(node):
 def test_node_loads_the_shipped_template():
     import jugglebot.mocap_node as mn
     with patch.object(mn, 'MocapInterface', return_value=MagicMock()):
-        node = mn.MocapNode()
+        node = mn.MocapNode(solve_inline=True)
     t = node._marker_template
     assert t is not None and len(t.points_mm) == 7
     # Re-pinned 2026-10-11 from landings (0.208 - 0.179; template gauge.repinned_on).
@@ -116,7 +110,7 @@ def test_first_calibration_without_a_reference_is_accepted_persisted_and_warned(
     node, path = _node(tmp_path)
     log = _rec(node)
     _, msg = _calibrate(node, _result(5.0))      # far from any pin: not compared
-    assert msg.success and 'no reference' in msg.message
+    assert msg.success
     assert json.loads(path.read_text())['yaw_offset_deg'] == pytest.approx(5.0)
     warns = [m for lv, m in log if lv == 'warn']
     assert any('no reference calibration exists' in m for m in warns)
@@ -125,66 +119,61 @@ def test_first_calibration_without_a_reference_is_accepted_persisted_and_warned(
 def test_consistent_calibration_is_accepted_and_persisted(tmp_path):
     node, path = _node(tmp_path, _ref(0.6))
     _, msg = _calibrate(node, _result(0.70))
-    assert msg.success and 'sweep estimator' in msg.message and 'gate' in msg.message
+    assert msg.success and 'yaw +0.70\u00b0' in msg.message
     st = json.loads(path.read_text())
     assert st['yaw_offset_deg'] == pytest.approx(0.70)
     assert st['position_mm'] == pytest.approx(POS)
     assert st['lag_ms'] == pytest.approx(82.0) and st['yaw_source'] == 'heartbeat'
+    assert st['pose_source'] == 'sweep' and st['kappa_deg'] is None
+    assert 'epoch' in st and 'BASE_NOT_SEEN' in st['advisory_flags']
 
 
-def test_inconsistent_yaw_is_refused_and_not_persisted(tmp_path):
+def test_a_large_yaw_and_axis_disagreement_is_accepted_not_refused(tmp_path):
+    """Was CALIBRATION_INCONSISTENT. The history is advisory; the sweep's own
+    values are persisted and published."""
     node, path = _node(tmp_path, _ref(0.6))
-    _, msg = _calibrate(node, _result(0.85))     # 0.25° > max(3·0.06, 0.15)
-    assert not msg.success and msg.message.startswith('CALIBRATION_INCONSISTENT')
-    assert json.loads(path.read_text())['yaw_offset_deg'] == pytest.approx(0.6)
-
-
-def test_gate_limit_uses_the_state_files_sigma(tmp_path):
-    """The same Δ 0.25° that is refused against a σ-less reference passes when
-    the state file carries σ_ref = 0.06: limit 3·√(0.06² + 0.06²) = 0.255°. The
-    node must hand the gate the file's yaw_offset_std_deg (it did not, 2026-10-10)."""
-    node, path = _node(tmp_path, dict(_ref(0.6), yaw_offset_std_deg=0.06))
-    _, msg = _calibrate(node, _result(0.85, std=0.06))
-    assert msg.success and 'limit ±0.255°' in msg.message
-    assert json.loads(path.read_text())['yaw_offset_deg'] == pytest.approx(0.85)
-
-
-def test_moved_axis_point_is_refused(tmp_path):
-    node, _ = _node(tmp_path, _ref(0.6))
-    _, msg = _calibrate(node, _result(0.6, pos=[POS[0] + 1.6, POS[1], POS[2]]))
-    assert not msg.success and 'axis point' in msg.message
-
-
-def test_template_residual_is_refused_even_with_bb_moved(tmp_path):
-    node, _ = _node(tmp_path, _ref(0.6))
-    node._on_set_parameters([SimpleNamespace(name='bb_moved', value=True)])
-    _, msg = _calibrate(node, _result(0.6, tres=0.7))
-    assert not msg.success and msg.message.startswith('TEMPLATE_RESIDUAL')
-
-
-def test_bb_moved_override_is_one_shot_and_resets_the_reference(tmp_path):
-    node, path = _node(tmp_path, _ref(0.6))
-    node._on_set_parameters([SimpleNamespace(name='bb_moved', value=True)])
     _, msg = _calibrate(node, _result(3.0, pos=[POS[0] + 5, POS[1], POS[2]]))
-    assert msg.success and 'bb_moved override' in msg.message
-    assert json.loads(path.read_text())['yaw_offset_deg'] == pytest.approx(3.0)
-    # consumed: the next disagreeing calibration is gated against the NEW reference
-    _, msg = _calibrate(node, _result(0.6))
-    assert not msg.success and 'CALIBRATION_INCONSISTENT' in msg.message
-    _, msg = _calibrate(node, _result(3.05, pos=[POS[0] + 5, POS[1], POS[2]]))
     assert msg.success
+    assert json.loads(path.read_text())['yaw_offset_deg'] == pytest.approx(3.0)
+    assert node.pub_calibration.published[-1].success
 
 
-def test_corrupt_state_file_refuses_unless_bb_moved(tmp_path):
+def test_template_residual_is_advisory_to_the_cap_and_the_solver_refuses_above_it(tmp_path):
+    node, _ = _node(tmp_path, _ref(0.6))
+    _, msg = _calibrate(node, _result(0.6, tres=1.2))
+    assert msg.success
+    assert 'template 1.20 mm' in msg.message and 'ADVISORY' in msg.message
+    assert 'TEMPLATE_RESIDUAL' in json.loads((tmp_path / 'last_accepted.json').read_text())['advisory_flags']
+    # Above CONSTELLATION_MAX_RESIDUAL_MM (1.5) the SOLVER refuses; its recipe
+    # (a displaced marker) is test_bb_calibration_constellation.py / keep_last_good's
+    # test_estimator_refusals_fit_the_bound - the node only relays the text.
+    import jugglebot.mocap_node as mn
+    node._on_bb_heartbeat(_hb(BallButlerStates.CALIBRATING))
+    node._calib_data = {0: [np.zeros(3)]}
+    with patch.object(mn, 'run_calibration',
+                      side_effect=ValueError('CONSTELLATION_RESIDUAL: marker 5 sits 1.55 mm off')):
+        node._on_bb_heartbeat(_hb(BallButlerStates.IDLE))
+    att = node.pub_calibration_attempt.published[-1]
+    assert not att.success and att.message.startswith('CONSTELLATION_RESIDUAL')
+
+
+def test_corrupt_state_file_is_an_advisory_line_and_a_fresh_file_is_written(tmp_path):
     node, path = _node(tmp_path)
     path.write_text('{not json')
     _, msg = _calibrate(node, _result(0.6))
-    assert not msg.success and msg.message.startswith('CALIBRATION_STATE_UNREADABLE')
-    node._on_set_parameters([SimpleNamespace(name='bb_moved', value=True)])
-    _, msg = _calibrate(node, _result(0.6))
-    assert msg.success
+    assert msg.success and 'history unavailable: last_accepted.json: JSONDecodeError' in msg.message
     assert json.loads(path.read_text())['yaw_offset_deg'] == pytest.approx(0.6)
-    assert not node._bb_moved_armed
+
+
+def test_the_retired_parameters_are_gone(tmp_path):
+    node, _ = _node(tmp_path)
+    assert 'bb_yaw_source' in node._params            # declare_parameter lands here
+    for name in ('bb_moved', 'bb_pose_source', 'bb_base_min_sweeps'):
+        assert name not in node._params
+    import inspect
+    import jugglebot.mocap_node as mn
+    src = inspect.getsource(mn)
+    assert 'bb_moved' not in src and 'bb_pose_source' not in src and 'bb_base_min_sweeps' not in src
 
 
 def test_missing_template_refuses_the_calibration(tmp_path):

@@ -185,6 +185,9 @@ def _hand_at(node, rev=sn.REST_HAND_REV, ball_held=True):
         ball_held=ball_held, ball_held_raw=ball_held, ball_held_valid=True))
 
 
+_HAND_CLOCK_FROZEN_S = 1.0e6
+
+
 def _node_with_client(response=None, ready=True, hand=True, frame=True):
     """``frame=True`` (the default since 2026-09-21, the unpinning of
     `learner_lateral_authority_mm` 0 -> 40): give the node a ready,
@@ -204,6 +207,8 @@ def _node_with_client(response=None, ready=True, hand=True, frame=True):
     default AND a test's own frame data would blend two sets of samples into
     one averaged offset — never what either party intended."""
     node = sn.SkillNode()
+    # frozen hand clock: a loaded run cannot age the fixture's sample (2026-10-15)
+    node._hand_clock = lambda: _HAND_CLOCK_FROZEN_S
     client = _RecordingClient(response=response, ready=ready)
     node._install_cli = client
     # The live session limits the box was swept at (`_status()`: 300/5000/
@@ -217,17 +222,6 @@ def _node_with_client(response=None, ready=True, hand=True, frame=True):
         _hand_at(node)
     if frame:
         _frame_ready(node)
-    # The hop entry (owner decision, 2026-10-05, R5 sitting-6 prep):
-    # `columns_entry`'s LIVE default flipped to 'hop', but this whole file's
-    # pre-existing fed-columns test surface (`ctx.site`/`ctx.aim_site`
-    # numeric assertions, the `columns_feed_aim_toward_a_mm` walk) was built
-    # against the pre-R5 self-toss entry -- pinning 'transit' HERE, in the
-    # one shared construction helper, means that surface needs no per-test
-    # changes. A test ABOUT the hop entry itself overrides this back
-    # explicitly (`node.set_parameters([_MockParameter('hop', name=
-    # 'columns_entry')])`); a test about the bare DECLARED default
-    # constructs its own `sn.SkillNode()` instead of using this helper.
-    node.set_parameters([_MockParameter('transit', name='columns_entry')])
     return node, client
 
 
@@ -319,38 +313,22 @@ def test_node_starts_idle():
 
 
 def _columns_fed(node, tmp_path, *, plant_id):
-    """Start a columns attempt (R5, ``reload=False``) and resolve the FEED
-    WAIT with a converged tracker landing comfortably inside the lead
-    bound, so ``node._executor`` ends up holding the REAL
-    ``compile_columns`` schedule rather than the two-phase start's opening
-    bridge — the steady state a test that asserts on the compiled
-    schedule's own shape needs. Mirrors
-    `test_columns_tracker_feed_resolves_an_unannounced_landing_near_the_aim_point`
-    exactly (brief_S2.md item 2's own recipe), just factored out for reuse
-    by tests that came from BEFORE the two-phase start existed and only
-    care about the compiled schedule, not the feed machinery itself."""
-    node._params['plant_id'] = plant_id
-    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
-    pattern = sn.Pattern(sites=sn.columns_sites(100.0), apex_m=0.9,
-                         dwell_s=0.30, n_throws=3)
-    tau = sn.transit_s(sn.flight_s(pattern.apex_m), pattern.dwell_s)
-    lead_needed = tau + pattern.launch_s + sn.LEAD_S + (1.0 / sn._TICK_HZ)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_columns_goal(reload=False,
-                                                  separation_mm=100.0))
-    assert resp.success is True, resp.message
-    # R5 sitting 2 (2026-10-02): the default FED layout holds ball A at P2
-    # and feeds P1, Ball Butler's aim walked toward P2 -- 20 mm (x = -30)
-    # until 2026-10-04, 10 mm (x = -40) since (sitting 3: the 20 mm aim
-    # spent 17 of the 26 mm of column clearance). `ctx.aim_site` is the
-    # bound check's own centre (`_maybe_resolve_columns_feed`), so the
-    # landing must be near THAT point now, not P2.
-    node._on_balls(BallStateArray(balls=[
-        _ball(7, status=1, tracking=1, x=-39.0, y=-2.0, z=800.0,
-             vz=-3000.0, sec=0, nanosec=int((lead_needed + 1.0) * 1e9),
-             landing_from_fit=True)]))
+    """Start a columns attempt the way the live path does (cup SEATED -> ball
+    B is fed by Ball Butler, no flag; the human-lob / tracker feed was
+    retired 2026-10-17, P1 of `columns-empty-cup-two-feed.md`) and resolve
+    the BB wait with a fake `ThrowAnnouncement` naming a landing at the aim
+    point, so ``node._executor`` ends up holding the REAL ``compile_columns``
+    schedule rather than the opening bridge -- the steady state a test that
+    asserts on the compiled schedule's own shape needs. Built on
+    `_columns_bb_started` + `_on_announcement`, exactly like
+    `test_columns_bb_announcement_installs_the_fed_schedule`."""
+    resp = _columns_bb_started(node, tmp_path, plant_id=plant_id)
+    aim = node._reload_ctx.aim_site.cup_mm
+    node._on_announcement(_bb_announcement(
+        target_id=node._robot_name,
+        landing_mm=tuple(float(v) for v in aim),
+        landing_vel_mm_s=(0.0, 0.0, -3000.0), throw_time_s=0.5,
+        landing_time_s=5.0))
     assert node._reload_ctx is None
     assert node._executor is not None
     return resp
@@ -381,6 +359,7 @@ def test_a_second_start_while_running_is_refused(tmp_path):
 
 def test_stop_ends_the_attempt(tmp_path):
     node, _client = _node_with_client()
+    _reload_ready(node)
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
                       _good_box_path(tmp_path, columns=True)), \
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
@@ -683,9 +662,9 @@ def test_columns_feed_site_defaults_to_p1():
 
 def test_columns_feed_site_p2_restores_the_flown_layout(tmp_path):
     """`columns_feed_site='P2'` restores the OLD (2026-09-30..10-02) layout
-    -- A at P1, feed at P2 -- for an A/B comparison; the aim is still
-    walked `columns_feed_aim_toward_a_mm` TOWARD A's site, now P1, so it
-    lands at P2 - 20 = (+30, 0), not P2 itself."""
+    -- A at P1, feed at P2 -- for an A/B comparison. Hop entry (the only
+    entry): the bridge parks at the FEED site P2 and the aim is the
+    un-walked feed site (+50, 0)."""
     node, _client = _node_with_client()
     node._params['plant_id'] = 'test_columns_feed_site_p2'
     node.set_parameters([_MockParameter('P2', name='columns_feed_site')])
@@ -694,12 +673,11 @@ def test_columns_feed_site_p2_restores_the_flown_layout(tmp_path):
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
                       _good_box_path(tmp_path, columns=True)), \
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        assert (node._juggle_goal(_columns_goal(reload=True, separation_mm=100.0))
+        assert (node._juggle_goal(_columns_goal(separation_mm=100.0))
                == sn.GoalResponse.ACCEPT)
-    assert node._reload_ctx.site.name == 'P1'
+    assert node._reload_ctx.site.name == 'P2'
     assert node._reload_ctx.aim_site.name == 'P2'
-    # 10 mm toward A since 2026-10-04 (was 20: x = 30).
-    assert node._reload_ctx.aim_site.cup_mm[:2] == pytest.approx([40.0, 0.0])
+    assert node._reload_ctx.aim_site.cup_mm[:2] == pytest.approx([50.0, 0.0])
 
 
 def test_columns_feed_site_rejects_an_unknown_value():
@@ -766,80 +744,39 @@ def test_columns_feed_bb_bias_mm_rejects_a_malformed_value():
 
 
 # ---------------------------------------------------------------------------
-# R5 sitting 6 prep (owner decision, 2026-10-05): the HOP ENTRY --
-# `columns_entry`. `scratchpad/s6/design.md` Decision 1. Most fed-columns
-# tests in this file go through `_node_with_client`, which pins
-# `columns_entry='transit'` so that large pre-existing surface (built
-# against the pre-R5 entry) needs no per-test changes -- see that helper's
-# own comment. The tests below exercise `columns_entry` itself.
-
-def test_columns_entry_declared_default_is_hop():
-    """The ROS parameter's own declared default -- a BARE node, not
-    `_node_with_client`'s helper (which pins 'transit' for this file's
-    pre-existing fed-columns surface)."""
-    node = sn.SkillNode()
-    assert node.get_parameter('columns_entry').value == 'hop'
-    assert node._columns_entry() == 'hop'
-
-
-def test_columns_entry_rejects_an_unknown_value():
-    """Same WARN-and-fallback shape as `_columns_feed_site_name`."""
-    node, _client = _node_with_client()
-    node.set_parameters([_MockParameter('sideways', name='columns_entry')])
-    assert node._columns_entry() == 'hop'
-
+# R5 sitting 6 prep (owner decision, 2026-10-05): the HOP ENTRY -- the only
+# fed-columns entry. The pre-R5 'transit' entry and its `columns_entry`
+# parameter were retired 2026-10-14.
 
 def test_columns_entry_hop_bridge_rest_holds_at_the_feed_site(tmp_path):
-    """Hop entry, the reload=False (tracker-feed) branch, default layout
+    """Hop entry, the SEATED-cup (Ball Butler feeds B) branch, default layout
     (`columns_feed_site='P1'`: feed P1, A P2): the bridge REST parks at the
     FEED site, not ball A's own site, and Ball Butler's aim is the
     UN-walked feed site (the 10 mm walk toward A exists only to counter the
     TRANSIT entry's catch reversal, which the hop entry never makes)."""
     node, _client = _node_with_client()
-    node.set_parameters([_MockParameter('hop', name='columns_entry')])
+    _reload_ready(node)
     node._params['plant_id'] = 'test_columns_entry_hop_bridge'
     _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
                       _good_box_path(tmp_path, columns=True)), \
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_columns_goal(reload=False, separation_mm=100.0))
+        resp = node._start_pattern(_columns_goal(separation_mm=100.0))
     assert resp.success is True, resp.message
-    assert node._reload_ctx.entry == 'hop'
     assert node._reload_ctx.site.name == 'P1'
     assert node._reload_ctx.aim_site.name == 'P1'
     assert node._reload_ctx.aim_site.cup_mm[:2] == pytest.approx([-50.0, 0.0])
 
 
-def test_columns_entry_transit_reproduces_todays_bridge_and_aim(tmp_path):
-    """'transit' keeps the pre-R5 entry byte-for-byte: bridge REST at ball
-    A's own site, Ball Butler's aim walked `columns_feed_aim_toward_a_mm`
-    toward it -- pinned here explicitly (every other fed-columns test in
-    this file gets it implicitly, via `_node_with_client`'s own pin)."""
-    node, _client = _node_with_client()
-    node.set_parameters([_MockParameter('transit', name='columns_entry')])
-    node._params['plant_id'] = 'test_columns_entry_transit_bridge'
-    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_columns_goal(reload=False, separation_mm=100.0))
-    assert resp.success is True, resp.message
-    assert node._reload_ctx.entry == 'transit'
-    assert node._reload_ctx.site.name == 'P2'
-    assert node._reload_ctx.aim_site.name == 'P1'
-    assert node._reload_ctx.aim_site.cup_mm[:2] == pytest.approx([-40.0, 0.0])
-
-
 def test_columns_entry_hop_bb_request_aims_at_the_unwalked_feed_site_plus_bias(
         tmp_path):
-    """The reload=True Ball Butler path: under the hop entry the request
+    """The cup-EMPTY Ball Butler path: under the hop entry the request
     point is the UN-walked feed site (not walked toward A), with
     `columns_feed_bb_bias_mm` still applied on top exactly as under
     transit (`_fire_reload_throw` reads `ctx.aim_site` generically, with no
     `entry` branch of its own)."""
     node, _client = _node_with_client()
     node.set_parameters([
-        _MockParameter('hop', name='columns_entry'),
         _MockParameter([29.0, 25.0], name='columns_feed_bb_bias_mm')])
     _columns_bb_started(node, tmp_path)
     assert node._reload_ctx.site.name == 'P1'
@@ -848,6 +785,23 @@ def test_columns_entry_hop_bb_request_aims_at_the_unwalked_feed_site_plus_bias(
     throw_req = node._bb_throw_cli.calls[0]
     assert throw_req.target_point_global_mm.x == pytest.approx(float(aim[0]) - 29.0)
     assert throw_req.target_point_global_mm.y == pytest.approx(float(aim[1]) - 25.0)
+
+
+def test_the_installed_fed_columns_schedule_marks_throw_0_as_the_hop_entry(
+        tmp_path):
+    """`_install_columns_schedule` must pass ``hop_entry=True`` to
+    `compile_columns` (its committed default is the parked, non-hop entry),
+    or THROW 0 of the live fed schedule silently loses ``entry_hop``.
+    2026-10-15: the transit retirement dropped the argument and the committed
+    default is the parked entry; this pins the live hop entry at the node,
+    where the schedule-level tests cannot see it."""
+    node, _client = _node_with_client()
+    _columns_fed(node, tmp_path, plant_id='test_columns_installed_hop_flag')
+    skills = node._executor.schedule.skills
+    throws = [s for s in skills if s.kind == sc.THROW]
+    assert throws, 'the installed schedule has no THROW at all'
+    assert skills[0].kind == sc.THROW and skills[0].entry_hop is True
+    assert [i for i, s in enumerate(skills) if s.entry_hop] == [0]
 
 
 def test_self_toss_refuses_an_uncovered_apex_before_any_motion(tmp_path):
@@ -1020,6 +974,7 @@ def test_the_tick_dispatches_the_opening_rest_bridge_through_the_mocked_client()
     REST with the schedule's own instant.  Before R5 the first skill was the
     launch THROW and the test asserted its flight time; a REST has none."""
     node, client = _node_with_client(response=_response())
+    _reload_ready(node)
     _freshen(node)
     assert node._start_pattern(_flown_columns_goal()).success is True
     bridge = node._executor.schedule.skills[0]
@@ -1045,6 +1000,7 @@ def test_a_refusal_ends_the_attempt(tmp_path):
     node, _client = _node_with_client(
         response=_response(accepted=False, code='WRONG_MODE',
                           message='not in TRAJECTORY mode'))
+    _reload_ready(node)
     _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
                       _good_box_path(tmp_path, columns=True)), \
@@ -1685,6 +1641,7 @@ def test_installer_reports_service_unavailable():
     the tick ends `ABORTED_MODE_CHANGED` before the installer is ever asked —
     the end code this test is about is the installer's own."""
     node, _client = _node_with_client(ready=False)
+    _reload_ready(node)
     _freshen(node)
     node._start_pattern(_flown_columns_goal())
     first = node._executor.schedule.skills[0]
@@ -1847,6 +1804,7 @@ def test_stop_waits_for_an_in_progress_tick(tmp_path):
     `_STOP_LOCK_WAIT_S` — otherwise it can race a tick mid-`_dispatch` on the
     timer thread."""
     node, _c = _node_with_client()
+    _reload_ready(node)
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
                       _good_box_path(tmp_path, columns=True)), \
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
@@ -2135,7 +2093,7 @@ def test_a_refused_stop_rest_tries_the_next_then_the_legacy_hold():
 
 
 def test_a_refused_hand_lane_holds_without_trying_a_rest():
-    """The forced hold (HAND_LANE_REFUSED) stays the HAND-LESS legacy hold:
+    """The forced hold (LANE_REFUSED) stays the HAND-LESS legacy hold:
     the firmware is holding a refused hand lane, and a REST carries a hand
     track that would keep walking the deviation the guard measures."""
     from jugglebot.motion.skills.segments import RestTerminal
@@ -2146,8 +2104,8 @@ def test_a_refused_hand_lane_holds_without_trying_a_rest():
     node._force_hold = True
     _ending_executor(node, [('before', RestTerminal(
         rest_site_mm=[0.0, 0.0, 750.0], t_rest_s=10.0))],
-        end_code='HAND_LANE_REFUSED')
-    node._hold_forced_code = 'HAND_LANE_REFUSED'
+        end_code='LANE_REFUSED')
+    node._hold_forced_code = 'LANE_REFUSED'
 
     node._on_tick()
 
@@ -2462,7 +2420,7 @@ def test_a_sched_refused_bump_ends_the_attempt_and_installs_the_hold(tmp_path):
     node._on_tick()
 
     assert execu.attempt_ended is True
-    assert execu.end_code == ex.HAND_LANE_REFUSED
+    assert execu.end_code == ex.LANE_REFUSED
     assert len(hold.calls) == 1
     # Once per attempt, not once per tick.
     node._on_tick()
@@ -2992,7 +2950,7 @@ def _bb_ready(node, *, state=None, ball_in_hand=True, connected=True,
 
 
 def _start_reload(node, tmp_path, **reload_kw):
-    """Drive `node` through the full R4 reload start path (a `reload=True`
+    """Drive `node` through the full R4 reload start path (an EMPTY-cup
     Juggle goal, the shared refusal chain wired ready, both BB clients
     succeeding by default) and return the goal-accept result.
 
@@ -3022,7 +2980,7 @@ def _start_reload(node, tmp_path, **reload_kw):
     _reload_ready(node, **reload_kw)
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_self_toss_goal(reload=True))
+        resp = node._start_pattern(_self_toss_goal())
     if (resp.success and node._reload_ctx is not None
             and node._reload_ctx.phase == 'await_bb_idle'):
         _bb_ready(node)
@@ -3051,7 +3009,7 @@ def test_reload_installs_the_bridge_rest_then_calls_bb_reload_and_throw(tmp_path
     reload_client, throw_client = _reload_ready(node)
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_self_toss_goal(reload=True))
+        resp = node._start_pattern(_self_toss_goal())
     assert resp.success is True, resp.message
     # C1 (2026-09-28): bb/reload is asked BEFORE bb/throw_at_target, but the
     # throw is NOT asked inline any more -- `_start_pattern` only arms
@@ -3108,7 +3066,7 @@ def test_reload_with_a_ball_already_in_hand_skips_bb_reload(tmp_path):
     _bb_ready(node, after_check=False)          # BB idle, ball in hand, fresh
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_self_toss_goal(reload=True))
+        resp = node._start_pattern(_self_toss_goal())
     assert resp.success is True, resp.message
     assert reload_client.calls == []
     assert 'bb/reload skipped' in resp.message
@@ -3135,7 +3093,7 @@ def test_reload_does_not_fire_on_the_idle_from_before_the_ball_check(tmp_path):
     _bb_ready(node, ball_in_hand=False, after_check=False)   # empty hand
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_self_toss_goal(reload=True))
+        resp = node._start_pattern(_self_toss_goal())
     assert resp.success is True, resp.message
     assert len(reload_client.calls) == 1
     assert node._reload_ctx.deadline_mono - time.perf_counter() > 5.0
@@ -3165,7 +3123,7 @@ def test_a_stale_bb_heartbeat_is_not_evidence_of_a_ball(tmp_path):
     node._bb_heartbeat_mono -= sn._BB_HEARTBEAT_FRESH_S + 0.1
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_self_toss_goal(reload=True))
+        resp = node._start_pattern(_self_toss_goal())
     assert resp.success is True, resp.message
     assert len(reload_client.calls) == 1
     node._reload_ctx.bb_left_idle = True
@@ -3520,7 +3478,7 @@ def _reload_armed_await_bb_idle(node, tmp_path):
     reload_client, throw_client = _reload_ready(node)
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_self_toss_goal(reload=True))
+        resp = node._start_pattern(_self_toss_goal())
     assert resp.success is True, resp.message
     assert node._reload_ctx is not None
     assert node._reload_ctx.phase == 'await_bb_idle'
@@ -3608,7 +3566,7 @@ class _RacingThrowClient(_RecordingClient):
 def test_c1_a_throw_call_overtaken_by_a_lane_refusal_does_not_overwrite_the_end_code(tmp_path):
     """`_fire_reload_throw` blocks in `wait_for_service`/`_wait_future` without
     `_reload_lock`; `_check_reload_lane_refused` runs on every tick and can end
-    the attempt `HAND_LANE_REFUSED` (force_hold) in that window. When the stale
+    the attempt `LANE_REFUSED` (force_hold) in that window. When the stale
     call then returns a failure it must NOT call `_end_attempt` again: with the
     bridge executor already retired, that second call overwrites
     `_goal_end_code` and the Juggle result loses the E-stop-preventing reason
@@ -3632,7 +3590,7 @@ def test_c1_a_throw_call_overtaken_by_a_lane_refusal_does_not_overwrite_the_end_
     _bb_ready(node)
     node._on_tick()
     assert node._reload_ctx is None
-    assert node._goal_end_code == ex.HAND_LANE_REFUSED, node._goal_end_code
+    assert node._goal_end_code == ex.LANE_REFUSED, node._goal_end_code
     assert len(hold.calls) == 1
 
 
@@ -3913,7 +3871,7 @@ def test_c5b_lane_refused_during_a_reload_wait_ends_and_holds_even_after_the_bri
     dispatches -- long before the REST has physically settled (measured:
     6.42 s of hand-homing in the field). With no executor left,
     `hand_lane_refused` was never read again for the rest of that move, and
-    the field guard latched with NO `HAND_LANE_REFUSED` END ever logged.
+    the field guard latched with NO `LANE_REFUSED` END ever logged.
     `_check_reload_lane_refused` is the fix: it watches `_reload_ctx`
     directly, independent of `self._executor`."""
     node, _client = _node_with_client(response=_response())
@@ -3935,7 +3893,7 @@ def test_c5b_lane_refused_during_a_reload_wait_ends_and_holds_even_after_the_bri
     assert node._reload_ctx is None
     assert len(hold.calls) == 1
     assert node._executor is None
-    assert node._goal_end_code == ex.HAND_LANE_REFUSED
+    assert node._goal_end_code == ex.LANE_REFUSED
 
 
 def test_c5b_lane_refused_before_the_bridge_ever_dispatches_holds_only_once(tmp_path):
@@ -3943,7 +3901,7 @@ def test_c5b_lane_refused_before_the_bridge_ever_dispatches_holds_only_once(tmp_
     ticked yet) exercises a SECOND path to the same hold:
     `_check_reload_lane_refused` (via `_end_attempt`, `force_hold=True`)
     marks the executor `attempt_ended` and fires the hold, then `_on_tick`'s
-    OWN inline `HAND_LANE_REFUSED` branch (later in the SAME tick, once it
+    OWN inline `LANE_REFUSED` branch (later in the SAME tick, once it
     finds `self._executor.attempt_ended` already true) must not fire a
     SECOND one -- `_end_attempt` sets `_hold_forced_code` for exactly this
     reason."""
@@ -3960,7 +3918,7 @@ def test_c5b_lane_refused_before_the_bridge_ever_dispatches_holds_only_once(tmp_
 
     assert len(hold.calls) == 1
     assert node._executor is None
-    assert node._goal_end_code == ex.HAND_LANE_REFUSED
+    assert node._goal_end_code == ex.LANE_REFUSED
 
 
 # ═════════════════════════════════════════════════════════════════════════════
@@ -3999,7 +3957,7 @@ class TestJuggleAction:
                    == sn.GoalResponse.REJECT)
 
     def test_columns_with_reload_is_lifted_at_r5(self, tmp_path):
-        """R5 (owner decision D3, 2026-09-30): `reload=True` on a columns
+        """R5 (owner decision D3, 2026-09-30): an EMPTY cup on a columns
         goal is no longer refused -- it ACCEPTS and arms the BB
         choreography (`await_bb_idle`), same as a reload='self_toss'
         goal.
@@ -4019,16 +3977,17 @@ class TestJuggleAction:
         with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
                           _good_box_path(tmp_path, columns=True)), \
              patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-            assert (node._juggle_goal(_columns_goal(reload=True, separation_mm=100.0))
+            assert (node._juggle_goal(_columns_goal(separation_mm=100.0))
                    == sn.GoalResponse.ACCEPT)
         assert node._executor is not None
         assert node._reload_ctx is not None
         assert node._reload_ctx.kind == 'columns'
         assert node._reload_ctx.phase == 'await_bb_idle'
         assert node._reload_ctx.aim_site.name == 'P1'
+        # Hop entry: un-walked feed site, and the bridge parks AT it.
         assert node._reload_ctx.aim_site.cup_mm[:2] == pytest.approx(
-            [-40.0, 0.0])  # 10 mm toward A since 2026-10-04 (was 20: -30)
-        assert node._reload_ctx.site.name == 'P2'
+            [-50.0, 0.0])
+        assert node._reload_ctx.site.name == 'P1'
 
     def test_cancel_callback_always_accepts(self):
         node, _client = _node_with_client()
@@ -4043,14 +4002,14 @@ class TestJuggleAction:
 
         Uses self_toss, not columns (R5): `_maybe_signal_goal_done` requires
         BOTH `_executor is None` AND `_reload_ctx is None`, but a
-        `reload=False` columns start leaves `_reload_ctx` armed for the FEED
+        SEATED-cup columns start leaves `_reload_ctx` armed for the FEED
         WAIT, and `_stop_attempt` only clears `_reload_ctx` on its
         "no executor yet" branch -- the bridge executor is still live here,
         so it never does. `_goal_done_event` then never fires and
         `_juggle_execute` (called synchronously below, no thread) blocks
         forever. Confirmed empirically (2026-09-30) -- not this unit's fix
         (no production-code edits), flagged in the handoff. self_toss with
-        `reload=False` (the default) never touches `_reload_ctx`."""
+        a SEATED cup (throw first) never touches `_reload_ctx`."""
         node, _client = _node_with_client()
         _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
         _prelevel_ready(node)
@@ -4082,6 +4041,7 @@ class TestJuggleAction:
         window. Here the tick runs from inside the frame check, which both
         start paths call before installing."""
         node, _client = _node_with_client()
+        _reload_ready(node)
         _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
         _prelevel_ready(node)
         real_frame_check = node._frame_check_error
@@ -4163,7 +4123,7 @@ class TestJuggleAction:
                           'throws': '0', 'caught': '0'}
 
     def test_execute_publishes_feedback_and_honours_a_live_cancel(self, tmp_path):
-        """Uses self_toss, not columns (R5): a `reload=False` columns start
+        """Uses self_toss, not columns (R5): a SEATED-cup columns start
         leaves `_reload_ctx` armed for the FEED WAIT even once the opening
         bridge's own executor ends/retires (`_stop_attempt` only clears
         `_reload_ctx` on the "no executor yet" branch — the bridge executor
@@ -4174,7 +4134,7 @@ class TestJuggleAction:
         returns even after `attempt_ended` goes True and a `_on_tick()`
         retires the executor. Not this unit's fix (no production-code
         edits) — flagged in the handoff for the main session. self_toss
-        with `reload=False` (the default) never touches `_reload_ctx` at
+        with a SEATED cup (throw first) never touches `_reload_ctx` at
         all, so it exercises the exact same `_juggle_execute` cancel path
         this test is actually about."""
         node, _client = _node_with_client()
@@ -4331,6 +4291,7 @@ class TestOperatorLines:
 
     def test_an_accepted_goal_is_one_start_line(self, tmp_path):
         node, _client = _node_with_client()
+        _reload_ready(node)
         info = []
         node.get_logger().info = info.append
         with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
@@ -4350,8 +4311,8 @@ class TestOperatorLines:
         assert len(errors) == 1 and 'REJECTED' in errors[0], errors
 
     def test_each_throw_is_one_line_and_the_result_counts_reports(self, tmp_path):
-        """Uses self_toss, not columns (R5): with `reload=False` (the
-        default) columns' `_reload_ctx` stays armed for the FEED WAIT past
+        """Uses self_toss, not columns (R5): with a SEATED cup (throw
+        first) columns' `_reload_ctx` stays armed for the FEED WAIT past
         `_stop_attempt` (the bridge executor is still live, so
         `_stop_attempt` takes the branch that never clears `_reload_ctx`),
         which makes `_log_attempt_end` return early (its own docstring:
@@ -4362,7 +4323,7 @@ class TestOperatorLines:
         (`_maybe_signal_goal_done` needs `_reload_ctx is None` too).
         Confirmed empirically (2026-09-30) -- not this unit's fix (no
         production-code edits), flagged in the handoff. self_toss with
-        `reload=False` never touches `_reload_ctx`."""
+        a SEATED cup never touches `_reload_ctx`."""
         from jugglebot.motion.skills import report as rp
         node, _client = _node_with_client()
         _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
@@ -4390,6 +4351,7 @@ class TestOperatorLines:
 
     def test_ending_a_live_attempt_leaves_its_one_line_to_retirement(self, tmp_path):
         node, _client = _node_with_client()
+        _reload_ready(node)
         with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
                           _good_box_path(tmp_path, columns=True)), \
              patch.object(sn, '_REPO_ROOT', str(tmp_path)):
@@ -4509,17 +4471,18 @@ def test_startup_ready_line_carries_the_blas_count(monkeypatch):
 # R5 (owner decision D1, 2026-09-30): the feed-triggered columns start
 # ═════════════════════════════════════════════════════════════════════════════
 
-def _columns_bb_started(node, tmp_path):
+def _columns_bb_started(node, tmp_path, plant_id=None):
     """Drive `node` to `_reload_ctx.phase == 'await_announcement'` for a
-    columns goal (`reload=True`): bridge installed, BB ready, throw fired --
+    columns goal (cup SEATED -> ball B is BB-fed; the goal's `reload` token
+    is ignored since 2026-10-17): bridge installed, BB ready, throw fired --
     mirrors `_start_reload`'s own helper shape for the one-ball reload."""
-    node._params['plant_id'] = 'test_columns_feed_' + str(id(node))
+    node._params['plant_id'] = plant_id or ('test_columns_feed_' + str(id(node)))
     _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
     _reload_ready(node)
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
                       _good_box_path(tmp_path, columns=True)), \
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_columns_goal(reload=True, separation_mm=100.0))
+        resp = node._start_pattern(_columns_goal(separation_mm=100.0))
     assert resp.success is True, resp.message
     _bb_ready(node)
     node._maybe_fire_reload_throw()
@@ -4553,52 +4516,46 @@ def test_columns_bb_announcement_installs_the_fed_schedule(tmp_path):
     assert first.ball_id == 1
 
 
-def test_columns_bb_announcement_refuses_an_uncatchable_feed(tmp_path):
-    """R5 pre-throw feasibility (`_install_columns_schedule`, 2026-09-30):
-    an announced landing displaced 60 mm in x AWAY from A's site (R5
-    sitting 2, 2026-10-02: the default FED layout holds A at P2 and feeds
-    P1 -- the cup must reverse against Ball Butler's own +x lateral
-    arrival to match it at touch-down, so moving further FROM P2 only
-    makes that worse) cannot be planned (`executor.plan_columns_first_
-    cycle` refuses LIMIT_VEL, matching `test_plan_columns_first_cycle_
-    refuses_a_feed_displaced_toward_the_far_site` in
-    ``test_skills_executor.py``). Ends ``REJECTED_COLUMNS_FEED_
-    UNCATCHABLE`` -- no executor swap (the bridge REST the two-phase
-    start already installed keeps streaming) and no THROW is ever
-    dispatched (the mocked ``trajectory/install_segment`` client sees
-    nothing).
-
-    **30 mm past the feed SITE (P1, x = -80), not the 20 mm the aim is
-    walked to** -- the undisplaced feed site itself already refuses
-    LIMIT_ACC (101 %, `_run_columns`'s own docstring), and the real
-    `SkillExecutor._catch_terminal`'s "release rides the caught xy, not
-    the site" rule (2026-09-28) widens the margin versus the offline
-    planner probe (`scratchpad/probe_feed_swap.py`), so this stays well
-    past the LIMIT_VEL cliff the probe found at -10/-20 mm rather than
-    riming it.
-
-    **60 mm since 2026-10-11** (logbook `2026-10-11-skill-stack-r5-fed-
-    catch-lateral-ring`): the level-pinned feed catch now matches the
-    arrival along the cup axis only, so the legs no longer reverse
-    against Ball Butler's lateral arrival and the cliff moved out.
-    Re-probed through this test's own path (live 350/5000/200000, 2026-10-11,
-    `ex.plan_columns_first_cycle` wrapped to print its refusal): 0-35 mm plan
-    clean; 40 mm LIMIT_VEL 353.8 mm/s (101 %); 60 mm LIMIT_VEL 419.7 mm/s
-    (120 %), well past the cliff."""
-    node, _client = _node_with_client()
-    _columns_bb_started(node, tmp_path)
-    bridge_schedule = node._executor.schedule
-    # `node._reload_ctx.site` is A's held site; the feed site is the OTHER
-    # of the two named `columns_sites` (`ctx.aim_site` keeps the feed
-    # site's name but sits AT the aim offset, not the site itself).
-    a_name = node._reload_ctx.site.name
-    feed_site = next(s for s in sn.columns_sites(100.0) if s.name != a_name)
+def _announce_displaced_feed(node, dx_mm):
+    """Announce a Ball Butler landing `dx_mm` in x from the feed site."""
+    feed_site = node._reload_ctx.site     # hop: the bridge parks AT the feed site
     ann = _bb_announcement(
         target_id=node._robot_name,
-        landing_mm=(float(feed_site.cup_mm[0]) - 60.0, 0.0, 830.0),
+        landing_mm=(float(feed_site.cup_mm[0]) + dx_mm, 0.0, 830.0),
         landing_vel_mm_s=(1058.0, 475.0, -5507.0), throw_time_s=0.5,
         landing_time_s=5.0)
     node._on_announcement(ann)
+
+
+def test_columns_bb_announcement_refuses_an_uncatchable_feed(tmp_path):
+    """The claim-then-swap tail's refusal CONTRACT
+    (`_install_columns_schedule`): when the columns compile refuses the
+    announced feed, the attempt ends cleanly -- the bridge schedule stays
+    (no executor swap), `_reload_ctx` is released, no THROW (or anything)
+    reaches the installer, and the compile's own reason text reaches the
+    end message. Driven DETERMINISTICALLY by making `compile_columns`
+    raise, not by a geometry pin.
+
+    Why not geometry: the old -80 mm pin ("refuses LIMIT_VEL") was measured
+    2026-10-14 while the live call was silently compiling with the parked
+    entry (`hop_entry=False`). Probe 2026-10-15 under the real hop entry
+    (`hop_entry=True`; scratch pytest driving `_on_announcement` with
+    `landing_vel=(1058, 475, -5507)`, landing x offset from the feed site):
+    -80, +60, +80, +100 mm SWAP (accepted); -100, -110, -120, -150, -200,
+    -250, -300, -350, -400 and +200, +250, +300, +400 mm refuse
+    `REJECTED_CYCLE_INFEASIBLE(INFEASIBLE: QP infeasible: unbounded ...)`;
+    +120 mm refuses LIMIT_ACC; +150/+180 mm refuse LIMIT_VEL (386/496 mm/s).
+    `compile_columns` itself accepts every displacement in -400..+400 mm;
+    all those refusals are the later `plan_columns_first_cycle` check
+    (`REJECTED_COLUMNS_FEED_UNCATCHABLE`), pinned geometrically in
+    `test_columns_bb_announcement_refuses_a_feed_landing_far_outside_reach`.
+    """
+    node, _client = _node_with_client()
+    _columns_bb_started(node, tmp_path)
+    bridge_schedule = node._executor.schedule
+    with patch.object(sn, 'compile_columns',
+                      side_effect=ValueError('uncatchable feed (probe)')):
+        _announce_displaced_feed(node, 0.0)
     assert node._reload_ctx is None
     assert node._executor is not None
     assert node._executor.schedule is bridge_schedule   # no swap happened
@@ -4608,8 +4565,31 @@ def test_columns_bb_announcement_refuses_an_uncatchable_feed(tmp_path):
     # `_end_attempt` marks IT ended (`_end_attempt`'s own docstring) rather
     # than `_goal_end_code` directly.
     assert node._executor.attempt_ended is True
+    assert node._executor.end_code == 'REJECTED_COLUMNS_UNSCHEDULABLE'
+    assert 'uncatchable feed (probe)' in node._executor.end_message
+
+
+def test_columns_bb_announcement_refuses_a_feed_landing_far_outside_reach(
+        tmp_path):
+    """Geometry pin for the pre-throw feasibility check
+    (`plan_columns_first_cycle` -> `REJECTED_COLUMNS_FEED_UNCATCHABLE`):
+    a landing 250 mm outward (-x, away from A's site) of the feed site.
+    Pinned in the MIDDLE of the refusing region, not at a cliff: probe
+    2026-10-15 (hop entry, sweep in the docstring of `..._refuses_an_
+    uncatchable_feed`) -- every offset from -100 to -400 mm refuses
+    `REJECTED_CYCLE_INFEASIBLE(INFEASIBLE: QP infeasible: unbounded)`,
+    while -80 mm still plans."""
+    node, _client = _node_with_client()
+    _columns_bb_started(node, tmp_path)
+    bridge_schedule = node._executor.schedule
+    _announce_displaced_feed(node, -250.0)
+    assert node._reload_ctx is None
+    assert node._executor.schedule is bridge_schedule
+    assert _client.calls == []
+    assert node._executor.attempt_ended is True
     assert node._executor.end_code == 'REJECTED_COLUMNS_FEED_UNCATCHABLE'
-    assert 'LIMIT_VEL' in node._executor.end_message
+    assert 'REJECTED_CYCLE_INFEASIBLE' in node._executor.end_message
+    assert 'QP infeasible' in node._executor.end_message
 
 
 def test_columns_bb_announcement_at_the_aim_point_still_installs(tmp_path):
@@ -4689,7 +4669,7 @@ def test_columns_feed_bb_bias_mm_leaves_self_toss_reload_untouched(tmp_path):
     _reload_client, throw_client = _reload_ready(node)
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_self_toss_goal(reload=True))
+        resp = node._start_pattern(_self_toss_goal())
     assert resp.success is True, resp.message
     bridge_rest = node._executor.schedule.skills[0]
     node._executor.tick(bridge_rest.dispatch_s())
@@ -4715,8 +4695,7 @@ def test_columns_feed_bb_bias_mm_leaves_columns_1ball_reload_untouched(tmp_path)
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
                       _good_box_path(tmp_path, columns=True)), \
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_columns_1ball_goal(separation_mm=100.0,
-                                                       reload=True))
+        resp = node._start_pattern(_columns_1ball_goal(separation_mm=100.0))
     assert resp.success is True, resp.message
     a_site = node._reload_ctx.site
     _bb_ready(node)
@@ -4726,103 +4705,6 @@ def test_columns_feed_bb_bias_mm_leaves_columns_1ball_reload_untouched(tmp_path)
         float(a_site.catch_site_mm()[0]))
     assert throw_req.target_point_global_mm.y == pytest.approx(
         float(a_site.catch_site_mm()[1]))
-
-
-def test_columns_tracker_feed_resolves_an_unannounced_landing_near_the_aim_point(
-        tmp_path):
-    """The tracker path (brief_S2.md item 2, ``reload=False`` -- no Ball
-    Butler round trip at all): an un-announced, converged, descending
-    landing within the feed bound of the feed AIM POINT resolves the FEED
-    WAIT the same way, through `_on_balls`. R5 sitting 2 (2026-10-02): the
-    default FED layout holds ball A at P2 and feeds P1, aim walked 20 mm
-    toward P2 (x = -30, `ctx.aim_site` -- the bound check's own centre,
-    `_maybe_resolve_columns_feed`) -- the OLD default fed P2 directly (x =
-    50), which is why this landing moved too."""
-    node, _client = _node_with_client()
-    node._params['plant_id'] = 'test_columns_tracker_feed'
-    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
-    pattern = sn.Pattern(sites=sn.columns_sites(100.0), apex_m=0.9,
-                         dwell_s=0.30, n_throws=3)
-    tau = sn.transit_s(sn.flight_s(pattern.apex_m), pattern.dwell_s)
-    lead_needed = tau + pattern.launch_s + sn.LEAD_S + (1.0 / sn._TICK_HZ)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_columns_goal(reload=False, separation_mm=100.0))
-    assert resp.success is True, resp.message
-    assert node._reload_ctx.kind == 'columns'
-    assert node._reload_ctx.phase == 'await_feed'
-    aim = node._reload_ctx.aim_site.cup_mm
-    node._on_balls(BallStateArray(balls=[
-        _ball(7, status=1, tracking=1, x=float(aim[0]) + 1.0,
-             y=float(aim[1]) - 2.0, z=800.0,
-             vz=-3000.0, sec=0, nanosec=int((lead_needed + 1.0) * 1e9),
-             landing_from_fit=True)]))
-    assert node._reload_ctx is None
-    assert node._executor is not None
-    assert node._executor.schedule.pattern == 'columns'
-    assert node._correlation.get(1) == (
-        sn.FlightLatch(t_release_s=0.0, announced_id=7),)
-
-
-def test_columns_tracker_feed_ignores_a_landing_outside_the_bound(tmp_path):
-    node, _client = _node_with_client()
-    node._params['plant_id'] = 'test_columns_tracker_feed_bound'
-    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_columns_goal(reload=False, separation_mm=100.0))
-    assert resp.success is True, resp.message
-    aim = node._reload_ctx.aim_site.cup_mm
-    node._on_balls(BallStateArray(balls=[
-        _ball(7, status=1, tracking=1,
-             x=float(aim[0]) + sn.COLUMNS_FEED_BOUND_X_MM + 5.0,
-             y=float(aim[1]), z=800.0, vz=-3000.0, sec=100,
-             landing_from_fit=True)]))
-    assert node._reload_ctx is not None
-    assert node._reload_ctx.phase == 'await_feed'
-    assert node._executor.schedule.pattern != 'columns'
-
-
-def test_columns_tracker_feed_lead_deficit_is_logged_once(tmp_path):
-    """A landing that fails the lead is logged ONCE with the deficit and the
-    wait continues (brief_S2.md item 2)."""
-    node, _client = _node_with_client()
-    node._params['plant_id'] = 'test_columns_lead_deficit'
-    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_columns_goal(reload=False, separation_mm=100.0))
-    assert resp.success is True, resp.message
-    rec = _rec_logger(node)
-    aim = node._reload_ctx.aim_site.cup_mm
-    too_soon = _ball(7, status=1, tracking=1, x=float(aim[0]), y=float(aim[1]),
-                     z=800.0, vz=-3000.0, sec=0, nanosec=1,
-                     landing_from_fit=True)
-    node._on_balls(BallStateArray(balls=[too_soon]))
-    node._on_balls(BallStateArray(balls=[too_soon]))
-    deficit_lines = [m for s, m in rec.lines
-                     if s == 'INFO' and 'short of' in m]
-    assert len(deficit_lines) == 1
-    assert node._reload_ctx is not None
-    assert node._reload_ctx.phase == 'await_feed'
-
-
-def test_columns_feed_wait_times_out_aborted_no_columns_feed(tmp_path):
-    node, _client = _node_with_client()
-    node._params['plant_id'] = 'test_columns_feed_timeout'
-    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_columns_goal(reload=False, separation_mm=100.0))
-    assert resp.success is True, resp.message
-    node._reload_ctx.deadline_mono = time.perf_counter() - 1.0
-    node._on_tick()
-    assert node._reload_ctx is None
-    assert node._goal_end_code == 'ABORTED_NO_COLUMNS_FEED'
 
 
 def test_a_stop_during_the_columns_bb_feed_compile_wins(tmp_path):
@@ -4854,59 +4736,6 @@ def test_a_stop_during_the_columns_bb_feed_compile_wins(tmp_path):
 
 
 
-def test_a_stop_during_the_columns_feed_wait_clears_the_reload_ctx_too(tmp_path):
-    """Production gap flagged by unit T (handoff_T.md, R5, 2026-09-30): a
-    `reload=False` columns start arms the opening REST BRIDGE (`_executor`,
-    the ``phase='await_feed'`` bridge from `_run_columns`) AND `_reload_ctx`
-    together. Before the fix, `_stop_attempt`'s executor-live branch only
-    ended the bridge's attempt -- it never touched `_reload_ctx` -- so
-    `_maybe_signal_goal_done` (`executor is None AND reload_ctx is None`)
-    could never fire even once the bridge retired on its next tick, and
-    `_juggle_execute`'s wait hung until the feed wait's own 30 s deadline
-    (`COLUMNS_TRACKER_FEED_DEADLINE_S`) ended it with the wrong code
-    (`ABORTED_NO_COLUMNS_FEED`) instead of `STOPPED`.
-
-    Calls `_stop_attempt()` immediately after the start -- `node._executor`
-    is still the live, undispatched bridge (mirrors `test_stop_ends_the_
-    attempt`'s own "not retired by `_stop_attempt` itself" step, not
-    `_columns_fed`, which ticks the feed to resolution first) -- then
-    retires it with exactly one `_on_tick()` (the ordinary next-cycle path,
-    same as `test_stop_ends_the_attempt`), which is what actually calls
-    `_maybe_signal_goal_done` in production."""
-    node, _client = _node_with_client()
-    node._params['plant_id'] = 'test_stop_during_columns_feed_wait'
-    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_columns_goal(reload=False,
-                                                  separation_mm=100.0))
-    assert resp.success is True, resp.message
-    assert node._executor is not None
-    assert node._reload_ctx is not None
-    assert node._reload_ctx.phase == 'await_feed'
-
-    stop_resp = node._stop_attempt()
-    assert stop_resp.success is True
-    assert node._reload_ctx is None
-    assert 'the feed/reload wait is cancelled too' in stop_resp.message
-    # Not discarded by `_stop_attempt` itself (its own docstring) -- still
-    # the same bridge object, just ended.
-    assert node._executor is not None
-    assert node._executor.attempt_ended is True
-    assert node._executor.end_code == 'STOPPED'
-    assert node._goal_done_event.is_set() is False
-
-    node._on_tick()    # the ordinary next-cycle retirement + goal-done signal
-    assert node._executor is None
-    assert node._goal_done_event.is_set() is True
-
-
-# ---------------------------------------------------------------------------
-# B2: `columns_1ball` — columns motion with ball A real, ball B a phantom
-# (plan handoff, 2026-10-04)
-# ---------------------------------------------------------------------------
-
 def _columns_1ball_goal(**overrides):
     return _goal('columns_1ball', **overrides)
 
@@ -4917,7 +4746,7 @@ def test_columns_1ball_is_one_of_the_patterns_the_juggle_goal_accepts():
 
 def test_columns_1ball_reload_false_compiles_a_phantom_schedule_immediately(
         tmp_path):
-    """Unlike plain `columns` (which arms a FEED WAIT), `reload=False` here
+    """Unlike plain `columns` (which arms a FEED WAIT), a SEATED cup here
     compiles the whole schedule straight away (`compile_rest_columns`: an
     opening REST, then `compile_columns`) -- A is assumed already held,
     `_run_one_ball`'s own non-reload shape -- and ball A ends up real at P2,
@@ -4929,8 +4758,7 @@ def test_columns_1ball_reload_false_compiles_a_phantom_schedule_immediately(
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
                       _good_box_path(tmp_path, columns=True)), \
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_columns_1ball_goal(separation_mm=100.0,
-                                                       reload=False))
+        resp = node._start_pattern(_columns_1ball_goal(separation_mm=100.0))
     assert resp.success is True, resp.message
     assert node._reload_ctx is None       # no feed wait armed -- no real B
     assert node._executor is not None
@@ -4959,8 +4787,7 @@ def test_columns_1ball_reload_false_opens_on_a_rest_from_the_activate_park(
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
                       _good_box_path(tmp_path, columns=True)), \
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_columns_1ball_goal(separation_mm=100.0,
-                                                       reload=False))
+        resp = node._start_pattern(_columns_1ball_goal(separation_mm=100.0))
     assert resp.success is True, resp.message
     schedule = node._executor.schedule
     rest0 = schedule.skills[0]
@@ -4975,46 +4802,47 @@ def test_columns_1ball_reload_false_opens_on_a_rest_from_the_activate_park(
     assert rest0.dispatch_s() >= now
 
 
-@pytest.mark.parametrize('pattern,reload', [
-    ('self_toss', False), ('self_toss', True),
-    ('hop', False), ('hop', True),
-    ('columns', False), ('columns', True),
-    ('columns_1ball', False), ('columns_1ball', True),
-    ('columns_1ball_fed', True),
-    ('reload', True),
-])
-def test_every_pattern_entry_opens_on_a_rest(tmp_path, pattern, reload):
+#: Every ACCEPTED (pattern, cup) cell of the cup-keyed rule table
+#: (`_CUP_RULE`, 2026-10-17). `magazine` has no schedule (own tests:
+#: tests/ros/test_skill_node_magazine.py).
+_ACCEPTED_CUP_CELLS = [
+    (pattern, ev) for pattern, row in sn._CUP_RULE.items()
+    if pattern != 'magazine'
+    for ev, decision in row.items()
+    if decision in (sn.RELOAD_FIRST, sn.THROW_FIRST)]
+
+
+@pytest.mark.parametrize('pattern,evidence', _ACCEPTED_CUP_CELLS)
+def test_every_pattern_entry_opens_on_a_rest(tmp_path, pattern, evidence):
     """THE START-STATE CONTRACT (R5 sitting 6, 2026-10-05): whatever a Juggle
     goal starts, the first skill it puts on the machine is a REST -- the one
     skill that may be planned from wherever the machine is (parked hand,
     off-site, tilted) and that leaves it level, homed and at the site, which
     is the only start every gate (the sim gate, the box sweep) certifies a
-    THROW or CATCH from. `columns_1ball` with `reload=False` was the one
+    THROW or CATCH from. `columns_1ball` with a SEATED cup was the one
     entry that broke it, and it cost a sitting: 9 attempts, 0 throws.
 
-    Parametrised over every `(pattern, reload)` the node accepts; the last
+    Parametrised over every `(pattern, cup evidence)` cell the node accepts
+    (the operator's `reload` flag is gone: the cup decides); the last
     assert fails when `_PATTERNS` grows without this list growing with it."""
     node, _client = _node_with_client()
     node._params['plant_id'] = 'test_opens_on_rest_%s_%s' % (pattern, id(node))
     # the ACTIVATE park hand, cup as the accept possession check needs it
     _freshen(node, pos_meas=0.0, pos_cmd=0.0,
-             seated=(sn.accept_cup_requirement(pattern, reload)
-                     == ball_possession.EVIDENCE_SEATED))
+             seated=(evidence == ball_possession.EVIDENCE_SEATED))
     _prelevel_ready(node)       # self_toss/hop pre-level; unused by columns
-    if reload:
-        _reload_ready(node)
+    _reload_ready(node)         # a SEATED columns / an EMPTY cup uses BB
     # the fixture's hop boxes are the 250 mm sweep's; the others sit at 100 mm
     separation_mm = 250.0 if pattern == 'hop' else 100.0
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
                       _good_box_path(tmp_path, hop=True, columns=True)), \
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_goal(pattern, separation_mm=separation_mm,
-                                         reload=reload))
+        resp = node._start_pattern(_goal(pattern, separation_mm=separation_mm))
     assert resp.success is True, resp.message
     first = node._executor.schedule.skills[0]
     assert first.kind == 'REST', (
-        '%s reload=%s puts a %s on the machine first' % (pattern, reload,
-                                                         first.kind))
+        '%s with a %s cup puts a %s on the machine first' % (pattern, evidence,
+                                                             first.kind))
     covered = {'self_toss', 'hop', 'columns', 'columns_1ball',
                'columns_1ball_fed', 'reload'}
     # 'magazine' has no schedule (one MAGAZINE segment from rest; its own
@@ -5024,7 +4852,7 @@ def test_every_pattern_entry_opens_on_a_rest(tmp_path, pattern, reload):
 
 def test_columns_1ball_reload_true_starts_the_plain_reload_choreography(
         tmp_path):
-    """`reload=True` reuses the self-toss reload verbatim for ball A ALONE
+    """An EMPTY cup reuses the self-toss reload verbatim for ball A ALONE
     -- `kind='columns_1ball'` on the ctx, not `kind='columns'` (that one
     feeds ball B) -- and asks Ball Butler to throw at A's OWN site, not a
     feed-aim-walked point (there is nothing to walk toward; B never
@@ -5037,8 +4865,7 @@ def test_columns_1ball_reload_true_starts_the_plain_reload_choreography(
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
                       _good_box_path(tmp_path, columns=True)), \
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_columns_1ball_goal(separation_mm=100.0,
-                                                       reload=True))
+        resp = node._start_pattern(_columns_1ball_goal(separation_mm=100.0))
     assert resp.success is True, resp.message
     assert node._reload_ctx is not None
     assert node._reload_ctx.kind == 'columns_1ball'
@@ -5067,8 +4894,7 @@ def test_columns_1ball_announcement_installs_the_merged_schedule(tmp_path):
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
                       _good_box_path(tmp_path, columns=True)), \
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_columns_1ball_goal(separation_mm=100.0,
-                                                       reload=True))
+        resp = node._start_pattern(_columns_1ball_goal(separation_mm=100.0))
     assert resp.success is True, resp.message
     a_site = node._reload_ctx.site
     _bb_ready(node)
@@ -5120,7 +4946,6 @@ def test_columns_1balls_phantom_first_visit_never_refuses_no_ball_or_no_release(
                       _good_box_path(tmp_path, columns=True)), \
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
         resp = node._start_pattern(_columns_1ball_goal(separation_mm=100.0,
-                                                       reload=False,
                                                        num_cycles=2))
     assert resp.success is True, resp.message
     executor = node._executor
@@ -5162,12 +4987,11 @@ def test_columns_1ball_fed_is_one_of_the_patterns_the_juggle_goal_accepts():
 def test_columns_1ball_fed_refuses_reload_false():
     """Unlike plain `columns`, this pattern has no ball A to fall back on
     for a human-lob feed -- Ball Butler is the ONLY feed for ball B, so
-    `reload=False` is refused outright rather than silently arming a
+    A SEATED cup is refused outright rather than silently arming a
     tracker-only wait that can never be satisfied."""
     node, _client = _node_with_client()
     node._params['plant_id'] = 'test_columns_1ball_fed_refuse_' + str(id(node))
-    resp = node._start_pattern(_columns_1ball_fed_goal(separation_mm=100.0,
-                                                       reload=False))
+    resp = node._start_pattern(_columns_1ball_fed_goal(separation_mm=100.0))
     assert resp.success is False
     assert 'reload' in resp.message
     assert node._executor is None
@@ -5176,7 +5000,7 @@ def test_columns_1ball_fed_refuses_reload_false():
 
 def test_columns_1ball_fed_reload_true_arms_the_fed_choreography_with_empty_cup_bridge(
         tmp_path):
-    """`reload=True` routes through the SAME `kind='columns'` BB-feed
+    """An EMPTY cup routes through the SAME `kind='columns'` BB-feed
     choreography the plain `columns` pattern uses (`_run_columns`'s own
     `phantom_a` paragraph) -- not `columns_1ball`'s own `kind='columns_
     1ball'` reload (that one reloads ball A itself; here ball A never
@@ -5191,8 +5015,7 @@ def test_columns_1ball_fed_reload_true_arms_the_fed_choreography_with_empty_cup_
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
                       _good_box_path(tmp_path, columns=True)), \
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_columns_1ball_fed_goal(separation_mm=100.0,
-                                                           reload=True))
+        resp = node._start_pattern(_columns_1ball_fed_goal(separation_mm=100.0))
     assert resp.success is True, resp.message
     assert node._reload_ctx is not None
     assert node._reload_ctx.kind == 'columns'
@@ -5342,7 +5165,7 @@ def test_bb_no_response_text_is_neutral_and_first_end_wins(tmp_path):
                                                  orig_end(code, msg, **kw))
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_self_toss_goal(reload=True))
+        resp = node._start_pattern(_self_toss_goal())
     assert resp.success is True, resp.message
     _bb_ready(node)
     node._maybe_fire_reload_throw()
@@ -5470,7 +5293,7 @@ def test_bb_cancel_a_throw_call_overtaken_by_an_end_is_cancelled(tmp_path):
     cancel = _cancel_client(node)
     _bb_ready(node)
     node._on_tick()
-    assert node._goal_end_code == ex.HAND_LANE_REFUSED, node._goal_end_code
+    assert node._goal_end_code == ex.LANE_REFUSED, node._goal_end_code
     assert len(cancel.calls) == 1
 
 
@@ -5529,7 +5352,7 @@ def test_bb_cancel_columns_feed_swap_during_the_throw_call_does_not_cancel_it(tm
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
                       _good_box_path(tmp_path, columns=True)), \
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_columns_goal(reload=True, separation_mm=100.0))
+        resp = node._start_pattern(_columns_goal(separation_mm=100.0))
     assert resp.success is True, resp.message
     ctx = node._reload_ctx
     aim = ctx.aim_site.cup_mm
@@ -5680,23 +5503,6 @@ def test_bb_throw_aborted_by_host_before_this_attempt_threw_is_ignored(tmp_path)
     assert cancel.calls == []
 
 
-def test_bb_throw_aborted_by_host_on_a_tracker_fed_columns_attempt_is_ignored(tmp_path):
-    """(c) A TRACKER-fed columns attempt (`reload=False`) also arms
-    `_reload_throw_inflight` at its swap, but never sent
-    `bb/throw_at_target` -- a BY_HOST is not about its ball and must not
-    end it `REJECTED_BB(THROW_ABORTED_BY_HOST)` (audit 2026-10-13)."""
-    node, _client = _node_with_client()
-    _columns_fed(node, tmp_path, plant_id='test_columns_tracker_byhost')
-    executor = node._executor
-    assert node._reload_throw_inflight is True
-    cancel = _cancel_client(node)
-    node._on_bb_throw_outcome(
-        String(data='THROW_ABORTED_BY_HOST (axis=n/a, detail1=2940)'))
-    assert node._executor is executor and not executor.attempt_ended
-    assert node._goal_end_code == ''
-    assert cancel.calls == []
-
-
 def test_bb_cancel_our_own_throw_aborted_by_host_after_the_end_is_ignored(tmp_path):
     """THROW_ABORTED_BY_HOST after the attempt ALREADY ended is the echo of
     OUR cancel: never a second end, never a relabel."""
@@ -5749,12 +5555,12 @@ def test_t1_the_lane_refused_hold_then_requests_recovery_once():
     node._hold_cli = _hold_client()
     cli = _recover_client(node)
     node._force_hold = True
-    node._maybe_hold_pending_event('HAND_LANE_REFUSED')
+    node._maybe_hold_pending_event('LANE_REFUSED')
     assert len(node._hold_cli.calls) == 1
     assert len(cli.calls) == 1
     # a second forced end in the same latch episode does not call again
     node._force_hold = True
-    node._maybe_hold_pending_event('HAND_LANE_REFUSED')
+    node._maybe_hold_pending_event('LANE_REFUSED')
     assert len(cli.calls) == 1
 
 
@@ -5763,7 +5569,7 @@ def test_t1_without_the_service_falls_back_to_hold_only():
     node._hold_cli = _hold_client()
     cli = _recover_client(node, ready=False)
     node._force_hold = True
-    node._maybe_hold_pending_event('HAND_LANE_REFUSED')
+    node._maybe_hold_pending_event('LANE_REFUSED')
     assert len(node._hold_cli.calls) == 1                # today's behaviour
     assert cli.calls == []
     assert node._lane_cli_unavail_logged is True
@@ -5853,7 +5659,7 @@ def test_the_hold_end_line_echoes_a_non_idle_lane_recovery():
     node._force_hold = True
     infos = []
     node._logger.info = infos.append
-    node._maybe_hold_pending_event('HAND_LANE_REFUSED')
+    node._maybe_hold_pending_event('LANE_REFUSED')
     assert any('hold installed' in m and 'lane_recovery=in_progress' in m
                for m in infos)
 
@@ -5894,20 +5700,6 @@ def test_accept_possession_reload_with_a_seated_cup_is_refused_ball_in_hand():
     _assert_no_bb_and_no_motion(node, reload_client, throw_client)
 
 
-def test_accept_possession_self_toss_reload_with_a_seated_cup_is_refused(
-        tmp_path):
-    node, _client = _node_with_client()
-    reload_client, throw_client = _reload_ready(node)
-    _cup(node, seated=True)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_self_toss_goal(reload=True))
-    assert resp.success is False
-    assert ex.REJECTED_BALL_IN_HAND in resp.message
-    assert 'ball already in hand' in resp.message
-    _assert_no_bb_and_no_motion(node, reload_client, throw_client)
-
-
 def test_accept_possession_self_toss_reload_with_an_empty_cup_is_accepted(
         tmp_path):
     node, _client = _node_with_client()
@@ -5916,102 +5708,151 @@ def test_accept_possession_self_toss_reload_with_an_empty_cup_is_accepted(
     assert len(node._bb_throw_cli.calls) == 1
 
 
-def test_accept_possession_columns_reload_hop_with_an_empty_cup_is_refused_before_bb(
-        tmp_path):
-    """THE ATTEMPT-4 REGRESSION (sitting 8, 2026-10-13): under the hop entry
-    the attempt's first skill THROWS ball A, so an empty cup must refuse
-    REJECTED_NO_BALL at accept -- BEFORE `bb/reload`/`bb/throw_at_target`
-    are ever asked (the launch-time ladder refused 5.4 s later, too late to
-    stop Ball Butler)."""
-    node, _client = _node_with_client()
-    node.set_parameters([_MockParameter('hop', name='columns_entry')])
-    reload_client, throw_client = _reload_ready(node)
-    _cup(node, seated=False)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_columns_goal(reload=True,
-                                                 separation_mm=100.0))
-    assert resp.success is False
-    assert ex.REJECTED_NO_BALL in resp.message
-    assert 'ball already in hand' not in resp.message
-    _bb_ready(node)
-    node._maybe_fire_reload_throw()
-    _assert_no_bb_and_no_motion(node, reload_client, throw_client)
-
-
-def test_accept_possession_columns_reload_hop_with_a_seated_cup_dispatches_bb(
-        tmp_path):
-    """Ball B's feed lands AFTER ball A's throw, into the then-empty cup --
-    so a SEATED cup is exactly what a fed columns attempt needs and must NOT
-    read as "ball already in hand"; Ball Butler is dispatched as before."""
-    node, _client = _node_with_client()
-    node.set_parameters([_MockParameter('hop', name='columns_entry')])
-    _cup(node, seated=True)
-    _columns_bb_started(node, tmp_path)         # asserts the accept itself
-    assert len(node._bb_throw_cli.calls) == 1
-
-
-def test_accept_possession_columns_reload_transit_needs_a_seated_cup_too(
-        tmp_path):
-    """`columns_entry='transit'`'s bridge holds ball A at its own site
-    (`holds_ball=not phantom_a` -- the same argument as hop), so it needs
-    the same SEATED cup."""
-    node, _client = _node_with_client()             # helper pins 'transit'
-    reload_client, throw_client = _reload_ready(node)
-    _cup(node, seated=False)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, columns=True)), \
-         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_columns_goal(reload=True,
-                                                 separation_mm=100.0))
-    assert resp.success is False
-    assert ex.REJECTED_NO_BALL in resp.message
-    _assert_no_bb_and_no_motion(node, reload_client, throw_client)
-
-
 def test_accept_possession_columns_1ball_fed_with_a_seated_cup_is_refused():
     node, _client = _node_with_client()
     reload_client, throw_client = _reload_ready(node)
     _cup(node, seated=True)
-    resp = node._start_pattern(_columns_1ball_fed_goal(separation_mm=100.0,
-                                                       reload=True))
+    resp = node._start_pattern(_columns_1ball_fed_goal(separation_mm=100.0))
     assert resp.success is False
     assert ex.REJECTED_BALL_IN_HAND in resp.message
     _assert_no_bb_and_no_motion(node, reload_client, throw_client)
 
 
-@pytest.mark.parametrize('pattern,reload', [
-    ('magazine', False), ('columns', False), ('self_toss', False),
-    ('hop', False), ('columns_1ball', False)])
-def test_accept_possession_a_throw_first_attempt_with_an_empty_cup_is_refused(
-        pattern, reload):
+def test_accept_possession_self_toss_with_a_seated_cup_throws_first_whatever_the_flag(
+        tmp_path):
+    """Cup-keyed (2026-10-17): a SEATED cup makes self_toss throw-first --
+    accepted, no Ball Butler dispatch, reload='0'. (Formerly an operator `reload` flag + SEATED
+    was REJECTED_BALL_IN_HAND; the cup sensor decides now.)"""
+    node, _client = _node_with_client()
+    reload_client, throw_client = _reload_ready(node)
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
+             seated=True)
+    _prelevel_ready(node)
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        assert (node._juggle_goal(_self_toss_goal())
+                == sn.GoalResponse.ACCEPT)
+    assert node._reload_ctx is None
+    assert reload_client.calls == [] and throw_client.calls == []
+    [(name, _msg, values)] = TestJuggleAction._attempt_events(node)
+    assert name == sn.ATTEMPT_START and values['reload'] == '0'
+
+
+@pytest.mark.parametrize('pattern', ['self_toss', 'hop', 'columns_1ball'])
+def test_accept_possession_an_empty_cup_makes_a_throwing_pattern_reload_first(
+        tmp_path, pattern):
+    """Cup-keyed (2026-10-17): an EMPTY cup on self_toss / hop / columns_1ball
+    is no longer refused -- the attempt opens with the Ball Butler reload
+    catch: label ends ' (reload)', the start event says reload='1', and the
+    BB path is armed."""
+    node, _client = _node_with_client()
+    reload_client, throw_client = _reload_ready(node)
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
+             seated=False)
+    _prelevel_ready(node)
+    node._params['plant_id'] = 'test_empty_reload_first_%s_%s' % (pattern,
+                                                                  id(node))
+    separation_mm = 250.0 if pattern == 'hop' else 100.0
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
+                      _good_box_path(tmp_path, hop=True, columns=True)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        assert (node._juggle_goal(_goal(pattern, separation_mm=separation_mm))
+                == sn.GoalResponse.ACCEPT)
+    assert node._attempt_label.endswith(' (reload)'), node._attempt_label
+    [(name, _msg, values)] = TestJuggleAction._attempt_events(node)
+    assert name == sn.ATTEMPT_START and values['reload'] == '1'
+    assert node._reload_ctx is not None            # the BB path is armed
+
+
+def test_accept_possession_magazine_with_an_empty_cup_is_refused():
     node, _client = _node_with_client()
     reload_client, throw_client = _reload_ready(node)
     _cup(node, seated=False)
-    resp = node._start_pattern(_goal(pattern, reload=reload))
+    resp = node._start_pattern(_goal('magazine'))
     assert resp.success is False
     assert ex.REJECTED_NO_BALL in resp.message
     _assert_no_bb_and_no_motion(node, reload_client, throw_client)
 
 
-@pytest.mark.parametrize('pattern,reload,need', [
-    ('reload', False, 'EMPTY'), ('reload', True, 'EMPTY'),
-    ('self_toss', True, 'EMPTY'), ('hop', True, 'EMPTY'),
-    ('columns_1ball', True, 'EMPTY'), ('columns_1ball_fed', True, 'EMPTY'),
-    ('columns', True, 'SEATED'), ('columns', False, 'SEATED'),
-    ('self_toss', False, 'SEATED'), ('hop', False, 'SEATED'),
-    ('columns_1ball', False, 'SEATED'), ('magazine', False, 'SEATED')])
-def test_accept_possession_rule_table(pattern, reload, need):
-    assert sn.accept_cup_requirement(pattern, reload) == getattr(
-        ball_possession, 'EVIDENCE_' + need)
+def test_accept_columns_seated_feeds_b_from_bb_without_a_flag(tmp_path):
+    """A SEATED cup is exactly what a fed columns attempt needs (A held, B fed
+    after A's throw): accepted with the goal's reload False, Ball Butler
+    dispatched once."""
+    node, _client = _node_with_client()
+    _cup(node, seated=True)
+    resp = _columns_bb_started(node, tmp_path)
+    assert resp.success is True
+    assert len(node._bb_throw_cli.calls) == 1
+    assert node._reload_ctx.kind == 'columns'
 
 
-def test_accept_possession_rule_table_covers_every_pattern():
+def test_accept_columns_empty_cup_is_refused_no_ball_until_p3(tmp_path):
+    """P1 only: columns + EMPTY is `REJECTED_NO_BALL` naming the two-feed
+    chain that will accept it (P3); Ball Butler is never asked. The ATTEMPT-4
+    regression (an empty cup must never reach `bb/throw_at_target` as a
+    THROWING start) stays pinned."""
+    node, _client = _node_with_client()
+    reload_client, throw_client = _reload_ready(node)
+    _cup(node, seated=False)
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
+                      _good_box_path(tmp_path, columns=True)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_columns_goal(separation_mm=100.0))
+    assert resp.success is False
+    assert ex.REJECTED_NO_BALL in resp.message
+    assert 'two-feed chain' in resp.message
+    _bb_ready(node)
+    node._maybe_fire_reload_throw()
+    _assert_no_bb_and_no_motion(node, reload_client, throw_client)
+
+
+_EVIDENCES = (ball_possession.EVIDENCE_EMPTY, ball_possession.EVIDENCE_SEATED,
+              ball_possession.EVIDENCE_UNKNOWN)
+
+
+def _expected_cup_decision(pattern, evidence):
+    if evidence == ball_possession.EVIDENCE_UNKNOWN:
+        return ex.REJECTED_BALL_UNKNOWN, False
+    decision = sn._CUP_RULE[pattern][evidence]
+    if decision == sn.RELOAD_FIRST:
+        return None, True
+    if decision == sn.THROW_FIRST:
+        return None, False
+    return decision, False
+
+
+@pytest.mark.parametrize('evidence', _EVIDENCES)
+@pytest.mark.parametrize('pattern', sorted(sn._CUP_RULE))
+def test_accept_cup_decision_table(pattern, evidence):
+    """`(pattern, cup evidence) -> (refusal code | None, reload)` for all 7
+    patterns x {EMPTY, SEATED, UNKNOWN}, per plan `columns-empty-cup-two-feed`
+    § 2 (columns EMPTY is REJECTED_NO_BALL in P1; the one cell P3 flips)."""
+    assert sn.accept_cup_decision(pattern, evidence) == _expected_cup_decision(
+        pattern, evidence)
+
+
+def test_accept_cup_decision_table_pins_the_plan_cells():
+    E, S = ball_possession.EVIDENCE_EMPTY, ball_possession.EVIDENCE_SEATED
+    d = sn.accept_cup_decision
+    for p in ('self_toss', 'hop', 'columns_1ball'):
+        assert d(p, E) == (None, True) and d(p, S) == (None, False)
+    assert d('columns', E) == (ex.REJECTED_NO_BALL, False)     # P3 flips this
+    assert d('columns', S) == (None, False)
+    assert d('columns_1ball_fed', E) == (None, True)
+    assert d('columns_1ball_fed', S) == (ex.REJECTED_BALL_IN_HAND, False)
+    assert d('reload', E) == (None, True)
+    assert d('reload', S) == (ex.REJECTED_BALL_IN_HAND, False)
+    assert d('magazine', E) == (ex.REJECTED_NO_BALL, False)
+    assert d('magazine', S) == (None, False)
+
+
+def test_accept_cup_decision_table_covers_every_pattern():
+    assert set(sn._CUP_RULE) == set(sn.SkillNode._PATTERNS)
     for pattern in sn.SkillNode._PATTERNS:
-        for reload in (False, True):
-            assert sn.accept_cup_requirement(pattern, reload) in (
-                ball_possession.EVIDENCE_SEATED, ball_possession.EVIDENCE_EMPTY)
+        for evidence in _EVIDENCES:
+            code, reload = sn.accept_cup_decision(pattern, evidence)
+            assert code is None or code.startswith('REJECTED_')
+            assert reload in (True, False)
 
 
 @pytest.mark.parametrize('pattern,reload', [
@@ -6021,11 +5862,24 @@ def test_accept_possession_a_blind_sensor_is_refused_ball_unknown(pattern,
     node, _client = _node_with_client()
     reload_client, throw_client = _reload_ready(node)
     _cup(node, seated=True, valid=False)
-    resp = node._start_pattern(_goal(pattern, reload=reload))
+    resp = node._start_pattern(_goal(pattern))
     assert resp.success is False
     assert ex.REJECTED_BALL_UNKNOWN in resp.message
     assert 'sensor' in resp.message
     _assert_no_bb_and_no_motion(node, reload_client, throw_client)
+
+
+def test_a_slow_test_run_cannot_age_the_fixture_sample_past_the_accept_check():
+    """The accept-time cup check ages the last /hand_telemetry sample on the
+    hand clock against `_HAND_STATE_STALE_S`; on a loaded box the real clock
+    aged the fixture's seated sample stale before `_start_pattern`, refusing
+    REJECTED_BALL_UNKNOWN. probe 2026-10-15: failed before the clock
+    injection, passes after."""
+    node, _client = _node_with_client()
+    time.sleep(sn._HAND_STATE_STALE_S + 0.1)
+    resp = node._start_pattern(_flown_columns_goal())
+    assert ex.REJECTED_BALL_UNKNOWN not in resp.message
+    assert node._executor is not None
 
 
 def test_accept_possession_stale_hand_telemetry_is_refused_ball_unknown():
@@ -6093,3 +5947,58 @@ def test_accept_possession_check_reports_unknown_with_no_hand_telemetry():
     node, _client = _node_with_client(hand=False)
     resp = node._svc_check(Trigger.Request(), Trigger.Response())
     assert 'cup: UNKNOWN (no /hand_telemetry yet)' in resp.message
+
+
+# ── The late catch re-aim BUMP: per-pattern switch + the service bumper (G2) ──
+
+def test_the_catch_bump_is_on_for_a_columns_goal(tmp_path):
+    from jugglebot.motion.skills import bump as sk_bump
+    node, _client = _node_with_client()
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
+                      _good_box_path(tmp_path, columns=True)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        assert node._start_pattern(
+            _columns_goal(separation_mm=100.0)).success is True
+    assert node._executor.catch_bump_enabled is True
+    assert node._executor.bumper == node._bumper
+    assert sk_bump.bump_enabled_for('columns_1ball_fed') is True
+
+
+@pytest.mark.parametrize('goal_name', ['self_toss', 'hop', 'reload'])
+def test_the_catch_bump_is_off_for_self_toss_hop_and_reload(tmp_path, goal_name):
+    if goal_name == 'reload':
+        node, _c = _node_with_client(response=_response(t_release_mono=50.0))
+        node._on_traj_status(_status())
+        _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
+                 seated=False)
+        _prelevel_ready(node)
+        _reload_ready(node)
+        goal = _self_toss_goal()
+        box = _good_box_path(tmp_path)
+    else:
+        node, _c = _node_with_client(response=_response(t_release_mono=50.0))
+        node._on_traj_status(_status())
+        _prelevel_ready(node)
+        goal = _self_toss_goal() if goal_name == 'self_toss' else _hop_goal()
+        box = _good_box_path(tmp_path, hop=(goal_name == 'hop'))
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', box), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(goal)
+    assert resp.success is True, resp.message
+    assert node._executor.catch_bump_enabled is False
+
+
+def test_the_bumper_sends_kind_bump_and_maps_the_reply():
+    node, client = _node_with_client(response=_response(
+        accepted=False, code='LIMIT_ACC', terminal=False, splice_k=42,
+        release_offset_xy_mm=[1.5, -2.0], launch_bias_xy_mm_s=[3.0, 4.0]))
+    res = node._bumper(1, 0, (20.0, -5.0), 101.25, 100.8)
+    req = client.calls[-1]
+    req = req[0] if isinstance(req, tuple) else req
+    assert req.kind == InstallSegment.Request.KIND_BUMP
+    assert req.t_event_s == 101.25 and req.t_dispatch_s == 100.8
+    assert list(req.bump_delta_xy_mm) == [20.0, -5.0]
+    assert (res.accepted, res.code, res.terminal, res.k_b) == (
+        False, 'LIMIT_ACC', False, 42)
+    assert np.allclose(res.release_offset_xy_mm, (1.5, -2.0))
+    assert np.allclose(res.launch_bias_xy_mm_s, (3.0, 4.0))

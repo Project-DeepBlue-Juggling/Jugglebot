@@ -34,6 +34,7 @@ from jugglebot import ball_possession as bp
 from jugglebot.motion import unified_cycle as uc
 from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.skills import admissible as adm
+from jugglebot.motion.skills import bump as bmp
 from jugglebot.motion.skills import magazine_throw as mt
 from jugglebot.motion.skills import segments as sg
 from jugglebot.motion.skills import schedule as sch
@@ -41,11 +42,14 @@ from jugglebot.motion.skills.report import ThrowReport, release_error_s
 from jugglebot.motion.skills.sites import CATCH_CUP_Z_MM, RELEASE_CUP_Z_MM
 from jugglebot.motion.skills.memory import (APEX_RATIO_BAND, Experience,
                                             apex_in_band)
-from jugglebot.motion.skills.schedule import (HANDOFF_LEAD_KNOTS,
+from jugglebot.motion.skills.schedule import (FRESH_THROW_LEAD_KNOTS,
+                                               FRESH_THROW_LEAD_S,
+                                               HANDOFF_LEAD_KNOTS,
                                                HANDOFF_LEAD_S, LEAD_KNOTS,
                                                LEAD_S, MIN_WINDOW_KNOTS,
                                                MIN_WINDOW_S, WIRE_READ_KNOTS,
-                                               Schedule, Skill, ball_label)
+                                               Schedule, Skill, ball_label,
+                                               _release_instants)
 from jugglebot.motion.skills.segments import (CATCH, REST, THROW, CatchTerminal,
                                               RestTerminal, Segment,
                                               SegmentConfig, ThrowAfterCatch,
@@ -85,6 +89,7 @@ NO_ADMISSIBLE_COMMAND = 'NO_ADMISSIBLE_COMMAND'
 
 #: The wire-read budget — :data:`LEAD_KNOTS`, :data:`LEAD_S`,
 #: :data:`WIRE_READ_KNOTS`, :data:`HANDOFF_LEAD_KNOTS`, :data:`HANDOFF_LEAD_S`,
+#: :data:`FRESH_THROW_LEAD_KNOTS`, :data:`FRESH_THROW_LEAD_S`,
 #: :data:`MIN_WINDOW_KNOTS` and :data:`MIN_WINDOW_S` — is DEFINED in
 #: ``skills.schedule`` and imported above, because a skill states its own
 #: dispatch lead (``Skill.lead_s``) and ``schedule`` may not import this module.
@@ -113,6 +118,21 @@ CATCH_FREEZE_S = LEAD_S + float(hw.JB_TRAJ_KNOT_DT_S)
 #: refuse ``CUP_CONTACT_ACC`` — paying it is a wasted 40-130 ms on the
 #: orchestrator thread for a result the timing alone already predicts.
 CUP_CONTACT_WINDOW_LEAD_S = float(hw.JB_TRAJ_CUP_CONTACT_WINDOW_LEAD_S)
+
+#: The smallest budget a SNAPPED (pinned) live re-send may be fired with:
+#: ``cliff_est - t`` where ``cliff_est = t_rel - WIRE_READ_KNOTS*dt - dt/2`` is
+#: the instant after which an install cannot reach the wire before the pinned
+#: release knot.  It is the RAW path's minimum budget, ``LEAD_S -
+#: WIRE_READ_KNOTS*dt`` (0.150 s today; the raw path's budget is in
+#: ``[this, this + dt)``).  Rule: never decline onto a path with no more
+#: budget.  Declining a pinned re-send hands the catch to the raw path, whose
+#: refusal is equally TERMINAL (it spends the catch's only re-aim), so a floor
+#: above the raw minimum would discard pinned re-sends in favour of a path
+#: with less budget.  Above this floor the pinned path is at least as good on
+#: budget AND keeps the seam at the release.  A pre-declined re-aim
+#: (``PINNED-BUDGET``) is not spent (plans/archived/handoff-solve-chaining.md
+#: P1b).
+RESEND_PINNED_BUDGET_FLOOR_S = LEAD_S - WIRE_READ_KNOTS * float(hw.JB_TRAJ_KNOT_DT_S)
 
 #: How long an UNDISPATCHED CATCH is willing to wait for its own ball to show
 #: up on the tracker before the attempt ends ``NO_LANDING`` (owner decision
@@ -371,7 +391,9 @@ ABORTED_MODE_CHANGED = 'ABORTED_MODE_CHANGED'
 #: resumed inside its 0.05 rev tolerance, the legs (0.4 rev/s against
 #: ``SCHED_RESUME_TOL_VEL`` 0.3 rps) were refused and latched until the next
 #: disarm/arm edge -- and the hand-less hold then stopped the hand itself.
-HAND_LANE_REFUSED = 'HAND_LANE_REFUSED'
+#: (Was ``HAND_LANE_REFUSED`` until 2026-10-15: the firmware refuses a
+#: streamed lane, legs or hand; the string value changed with the name.)
+LANE_REFUSED = 'LANE_REFUSED'
 
 #: No evidence the ball left by ``t_release + RELEASE_GRACE_S`` -- the throw
 #: produces no learner row (``toss_sequencer.py::_step_throwing``'s
@@ -708,7 +730,7 @@ class Observations:
     * ``hand_lane_refused`` -- likewise every tick, never at dispatch alone:
       the firmware's ``sched_refused`` counter has moved since this attempt
       started (``teensy_bridge_node`` publishes it on ``/link_status``) --
-      :data:`HAND_LANE_REFUSED`.  Defaults False, so a caller that cannot
+      :data:`LANE_REFUSED`.  Defaults False, so a caller that cannot
       observe the counter keeps the pre-2026-09-18 behaviour exactly.
     """
 
@@ -1264,7 +1286,8 @@ def _snap_to_release(meta: uc.CycleMeta, k_s: int,
     throw of the ball now in flight splices at the previous release
     (``schedule.compile_columns``), so the first knot ``lead_s`` ahead of the
     solve is the release knot, one of the ``n_detach`` after it, or — when the
-    skill took the handoff lead and dispatched early — a knot or two before it.
+    skill took the handoff lead and dispatched early — up to
+    ``HANDOFF_LEAD_EXTRA_KNOTS`` (8 since 2026-10-16) knots before it.
     Snapping to
     ``k_rel`` and seeding POST-RELEASE (the same floats
     :func:`~jugglebot.motion.unified_cycle.release_state_from_meta` hands a
@@ -1315,10 +1338,43 @@ def _snap_to_release(meta: uc.CycleMeta, k_s: int,
     return k_s, False
 
 
+def splice_knot_for(record: PlanRecord, kind: str, terminal,
+                    t_now_s: float, lead_s: float) -> Tuple[int, bool]:
+    """``(k_s, seeded_post_release)`` — the splice knot :func:`install_segment`
+    will splice a THROW/CATCH at, computed BEFORE the solve.
+
+    The one spelling of the splice branch's knot arithmetic: the first knot
+    ``lead_s`` ahead of ``t_now_s`` (``unified_cycle.splice_knot``), then
+    :func:`_snap_to_release` against the last release the head carries before
+    the segment's own event.  ``install_segment`` calls it, and so does
+    ``trajectory_node`` to set how long it waits for the worker (2026-10-14:
+    a pinned handoff's wire cliff is the RELEASE knot's, not ``t_now + lead_s``
+    — see :func:`splice_cliff_s`).  Pure arithmetic on the record; no solve.
+    """
+    dt = float(record.plan.dt)
+    t0 = float(record.t0_s)
+    k_s = uc.splice_knot(record.meta, float(t_now_s) - t0, lead_s)
+    event_k = int(math.floor((_event_abs_s(kind, terminal) - t0) / dt))
+    return _snap_to_release(record.meta, k_s, dt, event_k)
+
+
+def splice_cliff_s(record: PlanRecord, k_s: int) -> float:
+    """The instant (perf clock) from which a splice at ``k_s`` is refused
+    ``SPLICE_TOO_LATE``: ``t0 + (k_s - WIRE_READ_KNOTS) * dt``.
+
+    :func:`install_segment` refuses iff ``k_s <= floor((t_inst - t0)/dt) +
+    WIRE_READ_KNOTS``, i.e. iff ``t_inst >= `` this instant — the same
+    inequality solved for the clock, so a caller that waits on a solve can
+    stop waiting exactly where a reply could no longer be accepted.
+    """
+    return (float(record.t0_s)
+            + (int(k_s) - WIRE_READ_KNOTS) * float(record.plan.dt))
+
+
 def install_segment(record: Optional[PlanRecord],
                     seed_rest: Optional[uc.CycleState],
                     kind: str, terminal, t_now_s: float, *,
-                    lead_s: float = LEAD_S,
+                    lead_s: Optional[float] = None,
                     cfg: Optional[SegmentConfig] = None,
                     limits=None, geom=None, warm_start=None,
                     t_install_s: Union[None, float, Callable[[], float]] = None,
@@ -1390,7 +1446,11 @@ def install_segment(record: Optional[PlanRecord],
       ``k_s = 0`` on that origin — ``0 <= floor((t_inst - t0)/dt) +
       WIRE_READ_KNOTS`` — so the solve budget is ``lead_s - WIRE_READ_KNOTS·dt``
       = :data:`~jugglebot.motion.skills.schedule.SOLVE_BUDGET_KNOTS` knots
-      (150 ms at ``LEAD_S``), the same budget every splice has;
+      (150 ms at ``LEAD_S``), the same budget every splice has — and 250 ms
+      for a THROW, whose default ``lead_s`` is
+      :data:`~jugglebot.motion.skills.schedule.FRESH_THROW_LEAD_S` since
+      2026-10-16 (``schedule.install_lead_s``: the schedule dispatches a THROW
+      by the same lead, so ``t0`` is still the skill's own splice base);
     * between the install and ``t0`` the machine HOLDS: ``CyclePlan.state_at``
       / ``hand_at`` / ``hand_accel_at`` return knot 0's boundary conditions
       for ``t <= 0`` (``cycle_plan.py`` ``_locate``), and knot 0 of a plan
@@ -1455,7 +1515,11 @@ def install_segment(record: Optional[PlanRecord],
     """
     cfg = SegmentConfig() if cfg is None else cfg
     t_now_s = float(t_now_s)
-    lead_s = float(lead_s)
+    # `None` = the per-kind rule (`schedule.install_lead_s`: FRESH_THROW_LEAD_S
+    # for a THROW, LEAD_S otherwise) -- the SAME number the schedule
+    # dispatched the skill by, so the reserved origin lands on the skill's own
+    # splice base and the planned window is the schedule's (2026-10-16).
+    lead_s = (sch.install_lead_s(kind) if lead_s is None else float(lead_s))
     fresh = record is None or (t_now_s + lead_s) >= record.end_s
     post_release = False
     if not fresh and (kind == mt.MAGAZINE or record.meta.kind == mt.MAGAZINE):
@@ -1501,11 +1565,9 @@ def install_segment(record: Optional[PlanRecord],
                            MIN_WINDOW_S), 0.0), None
         else:
             dt = float(record.plan.dt)
-            tau = t_now_s - float(record.t0_s)
-            k_s = uc.splice_knot(record.meta, tau, lead_s)
             t0 = float(record.t0_s)
-            event_k = int(math.floor((_event_abs_s(kind, terminal) - t0) / dt))
-            k_s, post_release = _snap_to_release(record.meta, k_s, dt, event_k)
+            k_s, post_release = splice_knot_for(record, kind, terminal,
+                                                t_now_s, lead_s)
             t_origin = t0 + k_s * dt
             window_s = _event_abs_s(kind, terminal) - t_origin
             if window_s < MIN_WINDOW_S - 1e-12:
@@ -1735,8 +1797,27 @@ class SkillExecutor:
                  observations: Optional[Callable[[float], Observations]] = None,
                  dispatch_lookahead_s: float = 0.0,
                  seat_window: Optional[Callable[[float, float],
-                                                Optional[SeatWindow]]] = None):
+                                                Optional[SeatWindow]]] = None,
+                 catch_bump_enabled: bool = False,
+                 bumper: Optional[Callable[..., 'bmp.BumpResult']] = None):
         self.schedule = schedule
+        #: The late catch re-aim BUMP (I-CATCH-5, :mod:`.bump`) — OFF unless the
+        #: caller enables it for a pattern in ``bump.BUMP_ENABLED_PATTERNS``
+        #: (columns family only, owner 2026-10-16; hop/reload stay off until a
+        #: matching-record capture passes the replay).  Live (G2): past the snap
+        #: band :meth:`_resend_live_catch` routes a carried catch's re-aim to
+        #: :attr:`bumper` instead of the raw re-solve.
+        self.catch_bump_enabled = bool(catch_bump_enabled)
+        #: ``bumper(idx, ball_id, delta_xy_mm, t_catch_abs_s, t_dispatch_s) ->
+        #: bump.BumpResult`` — the apply half of a bump, on whoever holds the
+        #: record: ``trajectory/install_segment`` ``KIND_BUMP`` on hardware
+        #: (``skill_node._bumper``), :func:`bump.bump_record` over the local
+        #: record in the sim gate.  ``None`` = the bump path is off whatever
+        #: :attr:`catch_bump_enabled` says (the executor has no record).
+        self.bumper = bumper
+        #: ``idx -> |Δ|`` of the last gate-refused (BUMP-WINDOW) bump: a retry
+        #: waits until the fitted Δ has shrunk by :attr:`resend_pos_tol_mm`.
+        self._bump_refused_mm = {}
         self.installer = installer
         self.tracker = tracker
         if catch_aim_source not in AIM_SOURCES:
@@ -1999,8 +2080,8 @@ class SkillExecutor:
         measured for this segment shape).
 
         ``entry_hop`` (owner decision, 2026-10-05, R5 sitting-6 prep): a fed
-        columns schedule's HOP ENTRY (THROW 0, released from the feed site —
-        ``schedule.compile_columns(entry='hop')``) gets the SAME bypass as
+        columns schedule's HOP ENTRY (THROW 0, released from the feed site)
+        gets the SAME bypass as
         ``shadow_landing`` for the SAME structural reason — this is a
         cross-site throw, so the box swept for SAME-site throws does not
         apply, and a cross throw from the feed site would pool with that
@@ -3217,16 +3298,16 @@ class SkillExecutor:
                 # following the lane at all — it is holding, and every knot
                 # the plan walks on widens the gap the guard measures. The
                 # caller's END path installs the hand-less hold that stops
-                # the walk (see HAND_LANE_REFUSED).
+                # the walk (see LANE_REFUSED).
                 self.attempt_ended = True
-                self.end_code = HAND_LANE_REFUSED
+                self.end_code = LANE_REFUSED
                 self.end_message = ('the firmware refused a streamed lane '
                                     '(legs or hand) and is holding it')
                 lines.append(
                     '%.3f END %s: the firmware refused a streamed lane (legs '
                     'or hand; sched_refused moved) and is HOLDING it — hold '
                     'the plan before the refused command walks into '
-                    'MAX_DEVIATION' % (t_abs_s, HAND_LANE_REFUSED))
+                    'MAX_DEVIATION' % (t_abs_s, LANE_REFUSED))
             else:
                 for idx, skill in enumerate(self.schedule.skills):
                     if idx in self.dispatched:
@@ -4621,11 +4702,69 @@ class SkillExecutor:
         return (t_land_abs_s - (t_abs_s + float(skill.lead_s))
                 < MIN_WINDOW_S - 1e-12)
 
+    def _resend_splice_instant(self, idx: int, t_abs_s: float,
+                               t_land_abs_s: float):
+        """``(t_s, snapped, t_rel, maybe_snapped)`` — where a live re-send dispatched at
+        ``t_abs_s`` for a touch-down at ``t_land_abs_s`` really splices, as
+        the node will compute it (``_snap_to_release`` then the raw knot).
+
+        ``t_rel`` is the last release instant BEFORE this catch's landing among
+        the schedule's EARLIER skills (``schedule._release_instants``; for a
+        handoff catch it equals ``skill.t_abs_s - skill.window_s``), or
+        ``None`` when there is none.  Inside the snap band
+        (``t + LEAD_S <= t_rel + n_detach*dt - dt/2``) the splice is pinned to
+        the release, ``t_s = t_rel``; otherwise it is the raw
+        ``t + LEAD_S``.  The module :data:`LEAD_S` is used, never
+        ``skill.lead_s`` (the handoff lead is a FIRST-dispatch budget; the
+        node's re-send knot is ``LEAD_S`` ahead).  The ``- dt/2`` errs toward
+        "raw", whose fences are later and tighter: the executor ticks on the
+        ROS clock, the wire on ``perf_counter``, so ``k_rel`` itself cannot be
+        reproduced to better than dt/2.
+
+        ``maybe_snapped`` is the same test with ``+ dt/2`` (the node MAY still
+        snap).  The asymmetry is deliberate: the window fences err toward raw
+        (``snapped``), but the PINNED-BUDGET decline must err toward pinned
+        (``maybe_snapped``), since in the ambiguous half-knot a re-send that
+        the node snaps goes out with ~0.11 s and is refused terminally.
+
+        The schedule's release instant matches the node's ``k_rel`` only when
+        that earlier release was installed; if it was refused the node splices
+        raw while this models snapped, and the effect is a spurious
+        PINNED-BUDGET decline or an early window, never a wrong install."""
+        raw = float(t_abs_s) + LEAD_S
+        t_rel = None
+        for sk in self.schedule.skills[:idx]:
+            for r in _release_instants(sk):
+                if r < float(t_land_abs_s) and (t_rel is None or r > t_rel):
+                    t_rel = float(r)
+        if t_rel is None:
+            return raw, False, None, False
+        dt = float(hw.JB_TRAJ_KNOT_DT_S)
+        edge = t_rel + uc.detach_knots() * dt
+        maybe = raw <= edge + dt / 2.0
+        if raw <= edge - dt / 2.0:
+            return t_rel, True, t_rel, maybe
+        return raw, False, t_rel, maybe
+
     def _resend_live_catch(self, t_abs_s: float) -> List[str]:
         """Re-aim the committed CATCH from a LATER converged fit — the step
         that makes :data:`AIM_TRACKER` worth having, because the prior the
         catch was dispatched on cannot know this throw's release slip
         (0.019-0.137 s, 2026-09-17) and the fit can.
+
+        **Fences re-keyed on the real splice instant (P1b, 2026-10).**  The
+        MIN_WINDOW and CONTACT-WINDOW fences used to measure the splice as
+        ``t + skill.lead_s``.  For a handoff catch that is
+        :data:`HANDOFF_LEAD_S`, which is neither where a snapped re-send
+        splices (the release knot) nor what the node's raw knot uses
+        (:data:`LEAD_S`); measured 2026-10-15, at 8 extra knots the old fences
+        closed the window ~40 ms after a p50 first install and never after a
+        slow one.  Both now take :meth:`_resend_splice_instant` ``t_s``, and a
+        new NON-terminal ``PINNED-BUDGET`` pre-decline stops a snapped
+        re-send with less than :data:`RESEND_PINNED_BUDGET_FLOOR_S` (the raw
+        path's minimum budget, so the decline never lands on a path with less)
+        to the cliff (it would be refused ``SPLICE_TOO_LATE`` and spend the catch's
+        only re-aim).  After the snap band the raw path is unchanged.
 
         Six fences, one physical fact each (the sixth, 2026-09-20: a refused
         re-solve ends re-aiming for that catch -- see the refused branch). Two are TIMING and unchanged
@@ -4648,13 +4787,35 @@ class SkillExecutor:
             return []
         idx, terminal, t_last = self._live_catch
         skill = self.schedule.skills[idx]
+        # THE BUMP ROUTE (I-CATCH-5, G2 2026-10-16), decided BEFORE the
+        # catch_freeze_s return below: that fence (t_c - 0.25 s) belongs to
+        # the re-solve path and would otherwise pre-empt the bump's own,
+        # later BUMP-FREEZE (t_c - 0.225 s).  The route is taken only (a)
+        # with the bump on and a bumper wired, (b) OUTSIDE the snap band
+        # (`maybe_snapped` False — inside it the pinned re-solve stays, with
+        # its PINNED-BUDGET decline), and (c) for a catch that CARRIES a
+        # throw.  (c) is the BUMP-NO-CARRY decision: the attempt's last
+        # catch carries no release, so the bump (which retargets the carried
+        # release) has nothing to retarget, while a plain-catch re-solve is
+        # the easier problem (the 87 refusals of 2026-10-16 were all
+        # catch-with-throw) and a refused one costs nothing further — no
+        # later catch depends on it.  So it keeps today's raw path.
+        if (self.catch_bump_enabled and self.bumper is not None
+                and terminal.then_throw is not None):
+            _t_s, _sn, _t_rel, maybe = self._resend_splice_instant(
+                idx, t_abs_s, float(terminal.t_land_s))
+            if not maybe:
+                if t_abs_s - t_last < self.resend_min_interval_s:
+                    return []
+                return self._bump_live_catch(t_abs_s)
         if t_abs_s >= float(terminal.t_land_s) - self.catch_freeze_s:
             self._live_catch = None
             return []
         if t_abs_s - t_last < self.resend_min_interval_s:
             return []
-        if (float(terminal.t_land_s) - (t_abs_s + float(skill.lead_s))
-                < MIN_WINDOW_S - 1e-12):
+        t_s, snapped, t_rel, _maybe = self._resend_splice_instant(
+            idx, t_abs_s, float(terminal.t_land_s))
+        if float(terminal.t_land_s) - t_s < MIN_WINDOW_S - 1e-12:
             self._live_catch = None
             return []
         landing = self._tracked_landing(idx, skill)
@@ -4689,10 +4850,27 @@ class SkillExecutor:
         # re-solve with no runway left to reach the `CUP_CONTACT_ACC` floor
         # from whatever state the re-aim seeds, so the solve can only refuse
         # it (see :data:`CUP_CONTACT_WINDOW_LEAD_S`).
-        if (t_abs_s + float(skill.lead_s)
-                >= float(clamped.t_land_abs_s) - CUP_CONTACT_WINDOW_LEAD_S):
+        t_s, snapped, t_rel, maybe_snapped = self._resend_splice_instant(
+            idx, t_abs_s, float(clamped.t_land_abs_s))
+        if t_s >= float(clamped.t_land_abs_s) - CUP_CONTACT_WINDOW_LEAD_S:
             return clamp_lines + self._resend_declined(
                 t_abs_s, idx, 'CONTACT-WINDOW', moved_mm, moved_s)
+        # PINNED-BUDGET (non-terminal): a SNAPPED re-send splices at the
+        # release knot, so its solve budget is the time left to the cliff
+        # (the last instant an install still beats the wire to that knot),
+        # not the free-standing 150 ms.  Below the raw path's minimum budget
+        # (RESEND_PINNED_BUDGET_FLOOR_S) it would be refused SPLICE_TOO_LATE
+        # and that refusal ends re-aiming; declining costs nothing — no cap
+        # count, `_live_catch` kept, the raw path after the snap band is
+        # still open.  Tested on `maybe_snapped` (the half-knot the node may
+        # still snap in), the window fences above on `snapped`.
+        if maybe_snapped:
+            cliff_est = (float(t_rel)
+                         - WIRE_READ_KNOTS * float(hw.JB_TRAJ_KNOT_DT_S)
+                         - float(hw.JB_TRAJ_KNOT_DT_S) / 2.0)
+            if cliff_est - t_abs_s < RESEND_PINNED_BUDGET_FLOOR_S - 1e-12:
+                return clamp_lines + self._resend_declined(
+                    t_abs_s, idx, 'PINNED-BUDGET', moved_mm, moved_s)
         new_terminal = self._catch_terminal(idx, skill, landing)
         clamp_lines += self._pending_notes
         self._pending_notes = []
@@ -4740,6 +4918,184 @@ class SkillExecutor:
         return ['%.3f RESEND-SKIPPED %s skill %d: the tracker landing is '
                 '%.1f mm / %+.3f s from the committed aim'
                 % (t_abs_s, reason, idx, moved_mm, moved_s)]
+
+
+    # ── late catch re-aim BUMP (I-CATCH-5; pure layer, G1 2026-10-16) ──────
+
+    def catch_bump(self, plan: CyclePlan, meta: uc.CycleMeta, t0_s: float,
+                   t_abs_s: float, limits, geom,
+                   landing: Optional[Landing] = None) -> 'CatchBumpDecision':
+        """Decide and compute a post-band re-aim of the LIVE catch as a bump on
+        the installed record ``(plan, meta, t0_s)`` dispatched at ``t_abs_s``
+        — WITHOUT mutating the executor (:meth:`commit_catch_bump` does).
+
+        Fences (plan § 2): the per-pattern switch (:attr:`catch_bump_enabled`),
+        NO-CONVERGED-FIT, the lateral clamp (Δ is the CLAMPED landing's xy
+        minus the committed one), WITHIN-TOLERANCE on |Δ| (xy only: a timing
+        move is absorbed by the 0.050 s pre-hold), CAP-SPENT (accepted re-aims
+        only), BUMP-FREEZE (terminal, past ``t_c - BUMP_FREEZE_LEAD_S`` =
+        0.225 s; it replaces CONTACT-WINDOW, MIN_WINDOW and
+        :attr:`catch_freeze_s` on this path), and the BUMP-WINDOW retry rule (a
+        gate-refused Δ is retried only once it has shrunk by
+        :attr:`resend_pos_tol_mm`).  PINNED-BUDGET stays the snapped path's.
+        ``k_wire`` comes from ``t_abs_s`` exactly as the node computes it.
+
+        This form applies over a record the CALLER holds (tests, probes); the
+        live path is :meth:`_bump_live_catch`, which applies through
+        :attr:`bumper`.  Both run the same fences (:meth:`_catch_bump_decide`).
+        """
+        def apply(_idx, _ball_id, delta, t_c_abs, t_dispatch):
+            return bmp.bump_record(plan, meta, t0_s, t_dispatch, delta, t_c_abs,
+                                   limits, geom)[0]
+        return self._catch_bump_decide(t_abs_s, apply, landing)
+
+    def _bump_live_catch(self, t_abs_s: float) -> List[str]:
+        """The live bump: fences, then :attr:`bumper`, then commit.  One
+        decision per call; the lines are ``BUMP skill N: ...`` or (once per
+        catch and code) ``BUMP-DECLINED <code> skill N: ...``."""
+        # Not appended to :attr:`results` (its consumers read InstallResult
+        # fields); the BUMP / BUMP-DECLINED lines are the record.
+        decision = self._catch_bump_decide(t_abs_s, self.bumper, None)
+        return self.commit_catch_bump(decision, t_abs_s)
+
+    def _catch_bump_decide(self, t_abs_s: float, apply,
+                           landing: Optional[Landing]) -> 'CatchBumpDecision':
+        """The fences of :meth:`catch_bump`; ``apply(idx, ball_id, delta,
+        t_catch_abs_s, t_dispatch_s) -> BumpResult`` is called only once
+        every fence has passed."""
+        def out(reason, terminal=False, result=None, delta=None, moved_mm=0.0,
+                moved_s=0.0, release_mm=None, landing_xy=None):
+            notes, self._pending_notes = self._pending_notes, []
+            return CatchBumpDecision(
+                idx=idx, reason=reason, terminal=terminal, result=result,
+                delta_xy_mm=np.zeros(2) if delta is None else delta,
+                moved_mm=moved_mm, moved_s=moved_s, release_mm=release_mm,
+                landing_xy_mm=landing_xy, notes=tuple(notes))
+        idx = -1
+        if self._live_catch is None:
+            return out('NO-LIVE-CATCH')
+        idx, terminal, _t_last = self._live_catch
+        if not self.catch_bump_enabled:
+            return out('BUMP-OFF')
+        skill = self.schedule.skills[idx]
+        if landing is None:
+            landing = self._tracked_landing(idx, skill)
+        if landing is None:
+            return out('NO-LANDING')
+        if not landing.from_fit:
+            return out('NO-CONVERGED-FIT')
+        clamped = self._clamp_lateral_to_schedule(idx, skill, landing)
+        delta = (np.asarray(clamped.pos_mm, dtype=float)[:2]
+                 - np.asarray(terminal.landing_mm, dtype=float)[:2])
+        moved_mm = float(np.max(np.abs(delta)))
+        moved_s = float(clamped.t_land_abs_s) - float(terminal.t_land_s)
+        kw = dict(delta=delta, moved_mm=moved_mm, moved_s=moved_s)
+        if moved_mm <= self.resend_pos_tol_mm:
+            return out('WITHIN-TOLERANCE', **kw)
+        if self._resend_counts.get(idx, 0) >= self.resend_max_per_catch:
+            return out('CAP-SPENT', **kw)
+        t_c_abs = float(terminal.t_land_s)
+        if t_abs_s > t_c_abs - bmp.BUMP_FREEZE_LEAD_S + 1e-12:
+            return out(bmp.BUMP_FREEZE, terminal=True, **kw)
+        last = self._bump_refused_mm.get(idx)
+        d_norm = float(np.hypot(delta[0], delta[1]))
+        if last is not None and d_norm > last - self.resend_pos_tol_mm:
+            return out('BUMP-WINDOW', **kw)
+        res = apply(idx, skill.ball_id, delta, t_c_abs, t_abs_s)
+        if not res.accepted:
+            # Terminal codes and the non-gate retries pass through by name; a
+            # gate refusal (LIMIT_*, ...) is BUMP-WINDOW (shrink-retry rule).
+            reason = res.code if (res.terminal or res.code == bmp.BUMP_LAUNCH
+                                  or res.code in bmp.BUMP_RETRY_CODES) \
+                else 'BUMP-WINDOW'
+            return out(reason, terminal=res.terminal, result=res, **kw)
+        base = self._carried_release_mm.get(idx)
+        release_mm = None
+        if base is not None:
+            release_mm = np.asarray(base, dtype=float) + np.array(
+                [res.release_offset_xy_mm[0], res.release_offset_xy_mm[1], 0.0])
+        return out('OK', result=res, release_mm=release_mm,
+                   landing_xy=np.asarray(clamped.pos_mm, dtype=float)[:2], **kw)
+
+    def commit_catch_bump(self, decision: 'CatchBumpDecision',
+                          t_abs_s: float) -> List[str]:
+        """Apply a :meth:`catch_bump` decision AFTER the node installed (or
+        refused) it: an accepted bump spends one re-aim, records the REALISED
+        release (caught xy + ``b(t_rel)``, never + Δ) in
+        :attr:`_carried_release_mm` — so the learner row's ``x[2:4]``
+        (:meth:`_release_offset_m`) carries the release that actually happens
+        — and moves the live terminal's landing/release xy; a BUMP-WINDOW
+        remembers |Δ| for the retry rule; a terminal decline ends re-aiming."""
+        idx = decision.idx
+        lines = list(decision.notes)
+        if decision.reason == 'OK':
+            _i, terminal, _t = self._live_catch
+            self._resend_counts[idx] = self._resend_counts.get(idx, 0) + 1
+            self._bump_refused_mm.pop(idx, None)
+            landing_mm = np.asarray(terminal.landing_mm, dtype=float).copy()
+            landing_mm[:2] = decision.landing_xy_mm
+            tt = terminal.then_throw
+            if decision.release_mm is not None:
+                self._carried_release_mm[idx] = decision.release_mm
+                if tt is not None:
+                    tt = dataclasses.replace(tt, site_mm=decision.release_mm)
+            new_terminal = dataclasses.replace(terminal, landing_mm=landing_mm,
+                                               then_throw=tt)
+            self._live_catch = (idx, new_terminal, t_abs_s)
+            self._note_catch_aim(self.schedule.skills[idx].ball_id, idx,
+                                 float(new_terminal.t_land_s), reaim=True)
+            r = decision.result
+            b_rel = np.asarray(r.release_offset_xy_mm, dtype=float)
+            v_b = np.asarray(r.launch_bias_xy_mm_s, dtype=float)
+            return lines + ['%.3f BUMP skill %d: the fit moved the landing '
+                            '%.1f mm / %+.3f s (re-aim %d of %d), installed '
+                            'b(t_rel) %.1f mm, v_b %.1f mm/s — %s'
+                            % (t_abs_s, idx, decision.moved_mm, decision.moved_s,
+                               self._resend_counts[idx],
+                               self.resend_max_per_catch,
+                               float(np.hypot(b_rel[0], b_rel[1])),
+                               float(np.hypot(v_b[0], v_b[1])), r.message)]
+        if decision.reason in ('NO-LIVE-CATCH', 'BUMP-OFF', 'NO-LANDING'):
+            return lines
+        if decision.terminal:
+            self._live_catch = None
+            if decision.result is not None:
+                self._note_reaim_refused(idx, decision.reason)
+        elif (decision.reason in ('BUMP-WINDOW', bmp.BUMP_LAUNCH)
+              and decision.result is not None):
+            # BUMP-LAUNCH joins the shrink rule: |v_b| is linear in delta at
+            # fixed timing, so the same delta can only be refused again.
+            self._bump_refused_mm[idx] = float(np.hypot(*decision.delta_xy_mm))
+        key = (idx, 'BUMP:' + decision.reason)
+        if key in self._resend_notes:
+            return lines
+        self._resend_notes.add(key)
+        detail = ('' if decision.result is None
+                  else ' — %s' % (decision.result.message,))
+        return lines + ['%.3f BUMP-DECLINED %s skill %d: the tracker landing is '
+                        '%.1f mm / %+.3f s from the committed aim%s%s'
+                        % (t_abs_s, decision.reason, idx, decision.moved_mm,
+                           decision.moved_s,
+                           '; no further re-aim for this catch'
+                           if decision.terminal else '', detail)]
+
+
+@dataclasses.dataclass(frozen=True)
+class CatchBumpDecision:
+    """:meth:`SkillExecutor.catch_bump`'s answer — what G2's node request
+    carries back.  ``reason`` is ``'OK'`` or the fence / gate code;
+    ``release_mm`` is the realised release position on accept."""
+
+    idx: int
+    reason: str
+    terminal: bool
+    result: Optional[bmp.BumpResult]
+    delta_xy_mm: np.ndarray
+    moved_mm: float
+    moved_s: float
+    release_mm: Optional[np.ndarray] = None
+    landing_xy_mm: Optional[np.ndarray] = None
+    notes: Tuple[str, ...] = ()
 
 
 # ─────────────────────────────────────────────────────────────────────────────

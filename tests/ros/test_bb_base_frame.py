@@ -280,7 +280,7 @@ def test_robust_pool_excludes_a_stamped_outlier_counts_it_and_keeps_the_record()
     assert bf.pool_kappa(recs[:12], 0.208).count_note() == 'n 12'
     summary = bf.pool_summary(recs, p)
     assert [o['index'] for o in summary['outliers']] == [12] and summary['n_total'] == 13
-    state = bf.base_state_to_json(recs, None, 0.208, 0.0308)
+    state = bf.base_state_to_json(bf.seed_base_state(recs, None), 0.208, 0.0308)
     assert len(state['records']) == 13 and state['pool']['n_kept'] == 12
 
 
@@ -313,66 +313,186 @@ def test_pool_wraps_at_180_and_a_small_pool_never_claims_better_than_its_sigma()
     assert q.sd_deg == 0.0 and q.se_deg == pytest.approx(0.08 / math.sqrt(2))
 
 
-# ── Gate semantics ──────────────────────────────────────────────────────────
+# ── Kappa epochs, backup-on-write, advisory ────────────────────────────────
 
-def _pooled(k=179.49, n=10, se=0.016, pb=(177.54, 148.86, 76.71)):
-    return bf.PooledKappa(kappa_deg=k, sd_deg=0.05, se_deg=se, n=n,
-                          axis_point_b_mm=np.array(pb), axis_point_sd_mm=np.zeros(3))
+PB = (177.54, 148.86, 76.71)
+
+
+def _krec(k, at='2026-10-10T00:00:00Z', pb=PB, pin=0.208):
+    return bf.KappaRecord(kappa_deg=k, sigma_deg=0.05, axis_point_b_mm=pb, pin_deg=pin,
+                          accepted_at=at, source='mocap_node (stamped)')
 
 
 REF = {'origin_mm': list(O0), 'heading_deg': bf.heading_deg(R0),
        'accepted_at': '2026-10-10T01:26:55'}
 
 
-def test_gate_a_qtm_frame_shift_is_reported_and_accepted():
-    base = _pose_from(_rot(0.30) @ R0, O0 + [1.0, 0.5, 0.0])
-    v = bf.check_base_frame_consistency(179.50, 0.07, (177.6, 148.8, 76.7), base, _pooled(), REF)
-    assert v.accepted and v.qtm_shift and not v.overridden
-    assert v.base_shift_deg == pytest.approx(0.30, abs=1e-6)
-    assert v.base_shift_mm == pytest.approx(math.hypot(1.0, 0.5))
-    assert 'QTM frame shift' in v.message
+def _state(ks=(179.27, 179.28, 179.26), ref=REF):
+    return bf.seed_base_state([_krec(k) for k in ks], ref)
 
 
-def test_gate_a_bb_in_base_change_is_refused_unless_bb_moved():
+def _grow(state, k, pb=PB, at='2026-10-11T00:00:00Z', pin=0.208):
+    a = bf.assign_epoch(k, state, pin)
+    return bf.append_record(state, _krec(k, at, pb, pin), a, pin), a
+
+
+def test_seed_makes_epoch_0_and_an_empty_state_has_none():
+    st = _state()
+    assert [e['id'] for e in st['epochs']] == [0] and st['epochs'][0]['reason'] == 'seed'
+    assert st['epochs'][0]['n'] == 3
+    assert st['epochs'][0]['median_kappa_deg'] == pytest.approx(179.27)
+    empty = bf.seed_base_state([], None)
+    a = bf.assign_epoch(179.4, empty, 0.208)
+    assert a.opened and a.epoch_id == 0 and a.median_before is None and a.reason == 'seed'
+    st2 = bf.append_record(empty, _krec(179.4), a, 0.208)
+    assert st2['epochs'][0]['reason'] == 'seed' and st2['epochs'][0]['n'] == 1
+
+
+def test_schema_1_state_migrates_into_epoch_0(tmp_path):
+    p = tmp_path / 'state.json'
+    recs = [_krec(179.27).to_dict(), _krec(179.29).to_dict()]
+    p.write_text(json.dumps({'schema': 1, 'records': recs, 'base_ref': REF, 'pool': {}}))
+    st = bf.load_base_state(str(p))
+    assert [r.epoch for r in st['records']] == [0, 0]
+    assert st['epochs'][0]['reason'] == 'migrated' and st['epochs'][0]['n'] == 2
+    assert st['base_ref']['heading_deg'] == REF['heading_deg']
+    assert bf.load_base_state(str(tmp_path / 'nope.json')) is None
+
+
+def test_assign_epoch_within_band_stays_and_band_edge_is_the_constant():
+    st = _state()
+    a = bf.assign_epoch(179.27 + bf.KAPPA_EPOCH_BAND_DEG - 1e-6, st, 0.208)
+    assert not a.opened and not a.rejoined and a.epoch_id == 0
+    a = bf.assign_epoch(179.27 + bf.KAPPA_EPOCH_BAND_DEG + 1e-6, st, 0.208)
+    assert a.opened and a.epoch_id == 1 and a.current_epoch_id_before == 0
+    assert a.delta_vs_current_deg == pytest.approx(0.2, abs=1e-5) and a.median_before == pytest.approx(179.27)
+
+
+def test_one_record_epoch_has_its_record_as_median_and_flip_flop_rejoins_k0():
+    st = _state()
+    st, a1 = _grow(st, 179.59)
+    assert a1.opened and a1.epoch_id == 1
+    assert st['epochs'][1]['median_kappa_deg'] == pytest.approx(179.59) and st['epochs'][1]['n'] == 1
+    assert bf.current_epoch_id(st) == 1
+    st, a2 = _grow(st, 179.27)          # back to K0's value: rejoin, not K2
+    assert a2.rejoined and not a2.opened and a2.epoch_id == 0
+    assert bf.current_epoch_id(st) == 0 and len(st['epochs']) == 2
+    st, a3 = _grow(st, 179.59)          # and out again: rejoin K1
+    assert a3.rejoined and a3.epoch_id == 1 and len(st['epochs']) == 2
+
+
+def test_assign_epoch_wraps_at_180():
+    st = bf.seed_base_state([_krec(179.95), _krec(-179.95)], None)
+    assert not bf.assign_epoch(-179.99, st, 0.208).opened
+
+
+def test_per_epoch_cap_drops_the_oldest_of_that_epoch_only(monkeypatch):
+    monkeypatch.setattr(bf, 'MAX_POOLED_RECORDS', 4)
+    st = _state((179.27, 179.27))
+    st, _ = _grow(st, 179.80)           # K1, one record
+    st, _ = _grow(st, 179.27)           # back in K0 (3 records)
+    for i in range(3):
+        st, _ = _grow(st, 179.27 + 0.01 * i)
+    k0 = [r for r in st['records'] if r.epoch == 0]
+    assert len(k0) == 4 and k0[0].kappa_deg != 179.27 or len(k0) == 4
+    assert len([r for r in st['records'] if r.epoch == 1]) == 1
+    assert st['epochs'][0]['n'] == 2 + 1 + 3          # cumulative, not held
+
+
+def test_an_excursion_grows_epochs_and_records_and_never_removes_any(tmp_path):
+    p = str(tmp_path / 'state.json')
+    st = _state()
+    bf.write_base_state(p, st)
+    n_rec, n_ep = len(st['records']), len(st['epochs'])
+    st, a = _grow(st, 179.60)
+    assert a.opened and len(st['epochs']) == n_ep + 1 and len(st['records']) == n_rec + 1
+    before = open(p, 'rb').read()
+    bf.write_base_state(p, st, pin_now_deg=0.208)
+    back = bf.load_base_state(p)
+    assert len(back['epochs']) == 2 and len(back['records']) == n_rec + 1
+    assert [r.epoch for r in back['records']] == [0, 0, 0, 1]
+    data = json.load(open(p))
+    assert data['schema'] == 2 and data['pool']['n_total'] == 1      # current epoch only
+    baks = [f for f in os.listdir(tmp_path) if f.endswith('.bak')]
+    assert len(baks) == 1 and open(tmp_path / baks[0], 'rb').read() == before
+
+
+def test_backups_are_pruned_to_the_newest_20(tmp_path):
+    p = str(tmp_path / 'state.json')
+    st = _state()
+    for i in range(27):
+        st = dict(st, base_ref=dict(REF, accepted_at=f'w{i:02d}'))
+        bf.write_base_state(p, st)
+    baks = sorted(f for f in os.listdir(tmp_path) if f.endswith('.bak'))
+    assert len(baks) == 20
+    # the newest backup holds the state before the last write (w25)
+    def key(f):
+        m = bf._BAK_RE.fullmatch(f[len('state.json'):])
+        return (m.group(1), int(m.group(2) or 0))
+    newest = max(baks, key=key)
+    assert 'w25' in open(tmp_path / newest).read()
+    assert not (tmp_path / 'state.json.tmp').exists()
+
+
+def _adv(base_pose, k=179.27, pb=PB, state=None, pin=0.208):
+    return bf.assess_base_frame(k, 0.03, pb, base_pose, state or _state(), pin)
+
+
+def test_advisory_clean_sweep_has_no_flags_and_does_not_mutate_state():
+    st = _state()
+    n = len(st['records'])
+    adv = _adv(_pose_from(R0, O0), 179.28, state=st)
+    assert adv.pooled and adv.flags == [] and adv.lines == [] and adv.same_world_epoch is True
+    assert adv.assignment.epoch_id == 0 and adv.delta_kappa_deg == pytest.approx(0.01, abs=1e-6)
+    assert len(st['records']) == n
+
+
+def test_advisory_kappa_excursion_at_band_plus_and_minus_epsilon():
     base = _pose_from(R0, O0)
-    v = bf.check_base_frame_consistency(179.85, 0.07, (177.54, 148.86, 76.71), base, _pooled(), REF)
-    assert not v.accepted and v.message.startswith('BB_IN_BASE_MOVED')
-    v = bf.check_base_frame_consistency(179.49, 0.07, (179.54, 148.86, 76.71), base, _pooled(), REF)
-    assert not v.accepted and 'axis point moved 2.00 mm' in v.message
-    v = bf.check_base_frame_consistency(179.85, 0.07, (177.54, 148.86, 76.71), base, _pooled(), REF,
-                                        bb_moved=True)
-    assert v.accepted and v.reset_pool and v.overridden
-    assert len(v.message) < 240
+    eps = 1e-3
+    assert 'KAPPA_EXCURSION' not in _adv(base, 179.27 + bf.KAPPA_EPOCH_BAND_DEG - eps).flags
+    adv = _adv(base, 179.27 + bf.KAPPA_EPOCH_BAND_DEG + eps)
+    assert 'KAPPA_EXCURSION' in adv.flags and adv.assignment.opened
+    assert 'opened epoch K1' in ' '.join(adv.lines) and all(len(l) <= 90 for l in adv.lines)
+    st, _ = _grow(_state(), 179.60)
+    adv = _adv(base, 179.27, state=st)
+    assert 'KAPPA_EXCURSION' in adv.flags and 'rejoined epoch K0' in ' '.join(adv.lines)
 
 
-def test_gate_limit_is_combined_sigma_with_a_0_09_floor():
-    """max(3·√(σ_src² + SE²), 0.09°): 0.15° (the world gate's floor) until
-    2026-10-10, which let a stamped sweep +0.09° off into the pool."""
-    assert bf.KAPPA_GATE_MIN_DEG == 0.09
+def test_advisory_bb_in_base_shift_at_band_plus_and_minus_epsilon():
     base = _pose_from(R0, O0)
-    hb = bf.kappa_sweep_sd_deg('heartbeat')
-    v = bf.check_base_frame_consistency(179.63, hb, (177.54, 148.86, 76.71), base, _pooled(), REF)
-    assert v.threshold_deg == pytest.approx(3 * math.hypot(0.05, 0.016))
-    assert v.accepted        # Δ 0.14 < 0.158
-    st = bf.kappa_sweep_sd_deg('stamped')
-    v = bf.check_base_frame_consistency(179.57, st, (177.54, 148.86, 76.71), base,
-                                        _pooled(se=0.005), REF)
-    assert v.threshold_deg == pytest.approx(3 * math.hypot(0.03, 0.005)) and v.accepted
-    v = bf.check_base_frame_consistency(179.59, 0.01, (177.54, 148.86, 76.71), base,
-                                        _pooled(se=0.005), REF)
-    assert v.threshold_deg == pytest.approx(0.09) and not v.accepted     # Δ 0.10 > 0.09
-    assert v.message.startswith('BB_IN_BASE_MOVED') and 'bb_moved:=true' in v.message
+    eps = 0.01
+    ok = (PB[0] + bf.BB_IN_BASE_SHIFT_ADVISORY_MM - eps, PB[1], PB[2])
+    bad = (PB[0] + bf.BB_IN_BASE_SHIFT_ADVISORY_MM + eps, PB[1], PB[2])
+    assert 'BB_IN_BASE_SHIFT' not in _adv(base, pb=ok).flags
+    adv = _adv(base, pb=bad)
+    assert 'BB_IN_BASE_SHIFT' in adv.flags and adv.delta_axis_mm == pytest.approx(1.01)
 
 
-def test_gate_a_knocked_base_refuses_even_with_bb_moved_and_no_pool_seeds():
+def test_advisory_qtm_frame_shift_at_band_plus_and_minus_epsilon():
+    for dmm, flag in ((bf.WORLD_EPOCH_SHIFT_MM - 0.01, False), (bf.WORLD_EPOCH_SHIFT_MM + 0.01, True)):
+        adv = _adv(_pose_from(R0, O0 + [dmm, 0.0, 0.0]))
+        assert ('QTM_FRAME_SHIFT' in adv.flags) is flag and adv.same_world_epoch is (not flag)
+    for ddeg, flag in ((bf.WORLD_EPOCH_SHIFT_DEG - 0.002, False), (bf.WORLD_EPOCH_SHIFT_DEG + 0.002, True)):
+        adv = _adv(_pose_from(_rot(ddeg) @ R0, O0))
+        assert ('QTM_FRAME_SHIFT' in adv.flags) is flag
+    assert _adv(_pose_from(R0, O0), state=_state(ref=None)).same_world_epoch is None
+
+
+def test_advisory_poor_shelf_fit_does_not_pool_and_never_refuses():
     base = _pose_from(R0, O0)
-    base.residual_mm = 0.8
-    v = bf.check_base_frame_consistency(179.49, 0.07, (177.54, 148.86, 76.71), base, _pooled(),
-                                        REF, bb_moved=True)
-    assert not v.accepted and v.message.startswith('BASE_FRAME_RESIDUAL')
-    base.residual_mm = 0.02
-    v = bf.check_base_frame_consistency(179.49, 0.07, (177.54, 148.86, 76.71), base, None, None)
-    assert v.accepted and v.no_reference and not v.qtm_shift
+    base.residual_mm = bf.BASE_MAX_RESIDUAL_MM - 0.01
+    assert _adv(base).pooled
+    base.residual_mm = bf.BASE_MAX_RESIDUAL_MM + 0.01
+    adv = _adv(base, 179.90)
+    assert not adv.pooled and adv.assignment is None and 'BASE_FRAME_RESIDUAL' in adv.flags
+    assert 'check QTM sees the 4 shelf markers' in adv.lines[0] and 'KAPPA_EXCURSION' not in adv.flags
+
+
+def test_removed_gate_names_are_gone():
+    for name in ('check_base_frame_consistency', 'BaseGateVerdict', 'KAPPA_GATE_N_SIGMA',
+                 'KAPPA_GATE_MIN_DEG', 'BB_IN_BASE_MAX_SHIFT_MM'):
+        assert not hasattr(bf, name)
 
 
 # ── Monitor ─────────────────────────────────────────────────────────────────
@@ -430,3 +550,37 @@ def test_committed_pool_excludes_exactly_the_two_suspect_stamped_sweeps():
     assert [model.records[i].accepted_at for i in p.outliers] == [
         '2026-10-10T02:47:06Z', '2026-10-10T03:11:24Z']
     assert p.kappa_deg == pytest.approx(179.4974, abs=1e-4)
+
+
+def test_epochs_compare_in_pin_corrected_kappa_seed_at_one_pin_sweep_at_another():
+    """Seed at pin 0.208 (raw K), a sweep at pin 0.029 with raw K - 0.179 is the SAME
+    physical kappa: same epoch, delta ~ 0 (the replay's spurious-K1 bug compared raw)."""
+    st = _state((179.50, 179.51, 179.49))
+    a = bf.assign_epoch(179.50 - 0.179, st, 0.029)
+    assert not a.opened and not a.rejoined and a.epoch_id == 0
+    assert a.delta_vs_current_deg == pytest.approx(0.0, abs=1e-6)
+    st2 = bf.append_record(st, _krec(179.50 - 0.179, pin=0.029), a, 0.029)
+    e = st2['epochs'][0]
+    assert e['pin_deg'] == pytest.approx(0.029)
+    assert e['median_kappa_deg'] == pytest.approx(179.50 - 0.179, abs=1e-6)
+
+
+def test_a_repin_between_sittings_is_not_a_kappa_excursion(tmp_path):
+    base_pose = _pose_from(R0, O0)
+    p = str(tmp_path / 'state.json')
+    st = _state()
+    bf.write_base_state(p, st, pin_now_deg=0.208)
+    back = bf.load_base_state(p)
+    assert back['epochs'][0]['pin_deg'] == pytest.approx(0.208)
+    adv = bf.assess_base_frame(179.27 - 0.179, 0.03, PB, base_pose, back, 0.029)
+    assert 'KAPPA_EXCURSION' not in adv.flags and not adv.assignment.opened
+    assert adv.delta_kappa_deg == pytest.approx(0.0, abs=1e-6)
+    # re-stated at the new pin on write, even with no records held for the epoch
+    bf.write_base_state(p, dict(back, records=[]), pin_now_deg=0.029)
+    assert json.load(open(p))['epochs'][0]['median_kappa_deg'] == pytest.approx(179.27 - 0.179)
+
+
+def test_a_true_excursion_at_one_pin_still_opens_an_epoch_after_a_repin():
+    st = _state()
+    a = bf.assign_epoch(179.27 - 0.179 + 0.30, st, 0.029)
+    assert a.opened and a.delta_vs_current_deg == pytest.approx(0.30, abs=1e-6)

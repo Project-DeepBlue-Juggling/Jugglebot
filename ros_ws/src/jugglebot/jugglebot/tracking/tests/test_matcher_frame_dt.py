@@ -61,4 +61,8 @@ def test_the_measured_interval_is_clamped_and_the_first_frame_is_nominal():
     tracker._last_frame_time = 10.0
     assert tracker._frame_dt(10.0) == 0.005                  # non-advancing clock
     assert tracker._frame_dt(10.0 + 0.0005) == 0.4 * 0.005   # a burst: floored
-    assert tracker._frame_dt(10.0 + 0.5) == 4.0 * 0.005      # a dropout: capped
+    # a dropped run of frames is stepped across at its real length (the live
+    # node skips ~2/3 of QTM's frames under load, 2026-10-16) ...
+    assert tracker._frame_dt(10.0 + 0.036) == pytest.approx(0.036)
+    # ... and only a real dropout / replay restart is capped
+    assert tracker._frame_dt(10.0 + 0.5) == tracker.max_frame_gap_s == 0.10

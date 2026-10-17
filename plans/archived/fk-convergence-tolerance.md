@@ -17,7 +17,7 @@ archived: 2026-08-15
 **Covers:** fix item 7 from the 2026-07-25 self-toss anomaly investigation.
 Deliberately small — it is separated from the sibling plans to keep rollback
 granularity, not because it is large.
-**Sibling plans:** `plans/parked/levelling-frame-contract.md` (items 1–2),
+**Sibling plans:** `plans/archived/levelling-frame-contract.md` (items 1–2),
 `plans/archived/hand-command-continuity.md` (3–6),
 `plans/archived/catch-reach-degenerate-overshoot.md` (8).
 

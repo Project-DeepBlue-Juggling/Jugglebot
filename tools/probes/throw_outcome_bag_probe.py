@@ -9,7 +9,7 @@ For every machine self-toss (a ``/throw_announcements`` with
 
 1. Fits a **known-gravity parabola** to the raw ``/mocap_data`` unlabelled
    marker positions over the ball's free-flight window (least squares via
-   ``sim.juggle_noise.BallisticEstimator`` — the one estimator this probe
+   ``sim.ball.noise.BallisticEstimator`` — the one estimator this probe
    uses; it is not re-implemented here) and reports the ANALYTIC crossing of
    two planes: ``z = CATCH_CUP_Z_MM`` (``motion/skills/sites.py``, imported
    not restated — the skill stack's ONE catch plane, and what the tracker has
@@ -84,7 +84,7 @@ makes that identity exact rather than approximate.
 
 REUSE, NOT REIMPLEMENTATION
 ----------------------------
-* ``sim.juggle_noise.BallisticEstimator`` — the ONE gravity-parabola fit.
+* ``sim.ball.noise.BallisticEstimator`` — the ONE gravity-parabola fit.
 * ``jugglebot.motion.trajectory.ballistics_bc.arrival_state_at_z`` —
   candidates (e)/(e')'s re-projection; the same boundary-condition solver
   ``sim/skills_gate.py``'s tracker calls.
@@ -122,7 +122,7 @@ _ROS_PKG = os.path.join(_REPO, 'ros_ws', 'src', 'jugglebot')
 sys.path.insert(0, _ROS_PKG)
 sys.path.insert(0, _REPO)
 
-from sim.juggle_noise import BallisticEstimator                 # noqa: E402
+from sim.ball.noise import BallisticEstimator                 # noqa: E402
 from jugglebot.motion.trajectory.ballistics_bc import (          # noqa: E402
     arrival_state_at_z)
 from jugglebot.motion.skills.executor import CATCH_FREEZE_S      # noqa: E402

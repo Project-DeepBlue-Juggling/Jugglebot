@@ -1520,10 +1520,9 @@ def run_live_action(args) -> int:
         goal.apex_m = float(args.apex_m)
         goal.separation_mm = float(args.separation_mm)
         goal.num_cycles = int(args.n_throws or 0)      # 0 => node default
-        goal.reload = bool(args.reload)
-        print('goal: pattern=%s apex_m=%.3f separation_mm=%.1f num_cycles=%d '
-              'reload=%s' % (goal.pattern, goal.apex_m, goal.separation_mm,
-                             goal.num_cycles, goal.reload))
+        print('goal: pattern=%s apex_m=%.3f separation_mm=%.1f num_cycles=%d'
+              % (goal.pattern, goal.apex_m, goal.separation_mm,
+                 goal.num_cycles))
 
         def on_feedback(feedback_msg):
             fb = feedback_msg.feedback
@@ -1692,10 +1691,6 @@ def build_parser():
                          "the node's own separation_mm param (Juggle.action's "
                          'own sentinel -- ignored by every other mode, which '
                          'use :data:`SEPARATION_MM` instead)')
-    ap.add_argument('--reload', action='store_true',
-                    help='--via-action only: open with the Ball Butler '
-                         "reload before the pattern's own throws. columns + "
-                         'reload is REFUSED by skill_node until R5.')
     ap.add_argument('--label', default=None,
                     help="output label (default 'loaded'; 'rehearse' is forced "
                          "in --rehearse)")

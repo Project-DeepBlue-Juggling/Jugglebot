@@ -9,6 +9,13 @@ uint8 KIND_CATCH=1
 uint8 KIND_REST=2
 # MAGAZINE reuses site_mm (release site), target_mm, flight_s, t_event_s (= the release instant) and rest_site_mm.
 uint8 KIND_MAGAZINE=3
+# BUMP (I-CATCH-5, motion/skills/bump.py, 2026-10-16): NOT a segment. Re-aim the ACTIVE
+# record's catch at t_event_s (its committed landing, wall clock) by bump_delta_xy_mm as a
+# platform-xy offset on the installed plan; ball_id = the catch's ball; nothing is solved,
+# t0 is kept, the hand arrays are untouched. On the SAME service (not a second one) so it
+# shares the one install path's guard ladder, hold epoch and mutually-exclusive callback
+# group: a bump can never interleave with a segment solve on the same record.
+uint8 KIND_BUMP=4
 uint8 kind
 uint32 ball_id
 float64 t_event_s              # THE EVENT INSTANT on the shared wall clock (seconds, ROS clock domain): release / landing / at-rest-by
@@ -32,6 +39,8 @@ bool receive_tilt_set          # CATCH only: receive_tilt_rad is given
 float64[2] receive_tilt_rad    # CATCH only: the level touch-down attitude this catch is PINNED to (R5, `Skill.receive_tilt`) — the BB-fed columns feed catch's auto-banked `tilt_to_receive` override; mutually exclusive with hold_tilt_set (CycleGoals validates); unset = the auto-banked default
 bool rest_tilt_set             # REST only: rest_tilt_rad is given
 float64[2] rest_tilt_rad       # REST only: the attitude (rx, ry) this REST ends at (R4 reload's PRE-TILT / DECAY REST)
+float64[2] bump_delta_xy_mm    # BUMP only: the CLAMPED landing's xy minus the committed one (mm, platform frame)
+float64 t_dispatch_s           # BUMP only: the executor's dispatch instant (wall clock); k_wire = floor((t - t0)/dt) + WIRE_READ_KNOTS is derived from it, exactly as the executor did
 ---
 bool accepted
 string code                    # OK, or the refusal code: the layer's own (SPLICE_TOO_LATE, WINDOW_TOO_SHORT, STALE_STATE, WRONG_MODE, GUARD_LATCHED, SUPERSEDED_BY_HOLD, IN_MOTION) or the bare CycleInfeasible subcode (LIMIT_JERK, TILT_PIN, HAND_STROKE, ...); `message` carries the full REJECTED_CYCLE_INFEASIBLE(...) text
@@ -43,3 +52,7 @@ float64 t_event_mono
 float64 duration_s
 bool seeded_post_release       # True when the splice snapped into a release's detach cone and was seeded POST-RELEASE (executor._snap_to_release)
 float64 t_release_mono         # the carried release's wall-clock instant (0.0 when the segment carries no release)
+# BUMP replies: splice_k carries k_b (the last knot guaranteed unchanged); t0_mono the KEPT origin.
+bool terminal                  # BUMP only: a decline that ends bumping for this catch (BUMP-FREEZE, BUMP-NO-CARRY, a guard/mode/record refusal)
+float64[2] release_offset_xy_mm  # BUMP only: the realised release offset b(t_rel), mm (what the learner row records, never delta)
+float64[2] launch_bias_xy_mm_s   # BUMP only: the lateral launch-velocity bias v_b, mm/s

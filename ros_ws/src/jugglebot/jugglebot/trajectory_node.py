@@ -130,8 +130,11 @@ from jugglebot.motion.trajectory import feasibility as feas
 from jugglebot.motion.trajectory import planner
 from jugglebot.motion import unified_cycle as uc
 from jugglebot.motion.trajectory.cycle_plan import CyclePlan
+from jugglebot.motion.trajectory.stream_handoff import StreamHandoff
+from jugglebot.motion.skills import bump as sk_bump
 from jugglebot.motion.skills import executor as sk_exec
 from jugglebot.motion.skills import magazine_throw as sk_magazine
+from jugglebot.motion.skills import schedule as sk_sched
 from jugglebot.motion.skills import segments as sk_seg
 from jugglebot.motion.skills import solver_worker as sk_solver
 from jugglebot.motion.skills.schedule import ball_label
@@ -735,6 +738,16 @@ class TrajectoryNode(Node):
         self._plan_lock = threading.Lock()
         self._active_plan = None          # current TrajectoryPlan (None until seeded)
         self._plan_t0 = None              # perf_counter at install (plan-time origin)
+        # I-INSTALL-1 (2026-10-16): the STREAMING view of a future-origin
+        # install -- a StreamHandoff(source = what the wire was playing,
+        # head = `_active_plan`) while the head's origin is still ahead, else
+        # None. `_active_plan` stays the PLANNING head (every splice, re-aim,
+        # status and refusal reader); the wire reads `_stream_plan_locked()`.
+        # Written only by `_install` (and lazily cleared by the emitter once
+        # the origin has passed); bound to its head by identity, so any
+        # direct `_active_plan` assignment (the emitter's backstop freeze, the
+        # escalation hold) drops it without a write here.
+        self._handoff = None
         self._seeded = False              # a real telemetry seed has been installed
         self._streaming = False           # current mode is a streaming mode
         # FIX 1 — Teensy guard-latch freeze. Set True on the RISING edge of a latched
@@ -918,6 +931,8 @@ class TrajectoryNode(Node):
         # release records the hold it was planned with (ReleaseMark), which is
         # what the splice guard reads -- never this config.
         self.add_on_set_parameters_callback(self._on_set_parameters)
+        # The GENERAL lead -- the warm-up REST's only. `_svc_install_segment`
+        # derives each install's lead per kind (`schedule.install_lead_s`).
         self._segment_lead_s = sk_exec.LEAD_S
         # The previous accepted Segment's QP working set — CARRIED, not cached
         # (owner decision, brief_D2_ros_shell.md § B): one attribute, overwritten
@@ -1410,8 +1425,8 @@ class TrajectoryNode(Node):
         self._last_emit_mono = t_wake
 
         with self._plan_lock:
-            plan = self._active_plan
-            t0 = self._plan_t0
+            head = self._active_plan
+            plan, t0 = self._stream_plan_locked()
             streaming = self._streaming and self._seeded
             mode = self._current_mode
         if not streaming or plan is None or t0 is None:
@@ -1428,6 +1443,13 @@ class TrajectoryNode(Node):
         knot_epoch_us = self._perf_to_epoch_us(knot_time)
         frame = self._emitter.frame(plan, tau, self._seq,
                                     knot_epoch_us=knot_epoch_us)
+        if plan is not head and tau > 2.0 * self._limits.knot_dt_s:
+            # I-INSTALL-1: every sample this and later frames take (u0..u2)
+            # is past the head's origin, so the handoff view is spent. Drop it
+            # only if it is still the one this frame sampled.
+            with self._plan_lock:
+                if self._handoff is plan:
+                    self._handoff = None
         motor_rev = np.asarray(frame['motor_rev'], dtype=float)
 
         # Defence-in-depth per-knot step bound (the gate should already prevent
@@ -1490,7 +1512,11 @@ class TrajectoryNode(Node):
         # can swap the active plan (and reset the accumulators) between the frame
         # sample above and this call, and a stale frame must not contaminate the new
         # move's realized window (the install-straddle finding).
-        self._track_realized_peaks(frame, plan)
+        # While a StreamHandoff is pending the frame samples the RUNNING record,
+        # not the new head: skip, so the new move's realized peaks are not seeded
+        # with the REST tail (/diagnose observability only).
+        if plan is head:
+            self._track_realized_peaks(frame, head)
 
         # ── Post-publish planning: pending-stop retry then follower replan ──
         # Bounded (A4 max_iters, contained exceptions) so the worst block stays far
@@ -2763,16 +2789,38 @@ class TrajectoryNode(Node):
         is the "why not" a future reader would otherwise have to re-derive.
         """
         with self._plan_lock:
-            plan = self._active_plan
-            t0 = self._plan_t0
+            plan, t0 = self._stream_plan_locked()
         if plan is None or t0 is None:
             return (self._neutral_pose.copy(), np.zeros(6), np.zeros(6))
         now = time.perf_counter() if at_mono is None else float(at_mono)
         return plan.state_at(now - t0)
 
+    def _stream_plan_locked(self):
+        """``(plan, t0)`` the WIRE plays -- caller holds ``_plan_lock``.
+
+        I-INSTALL-1 (``motion/skills/INVARIANTS.md``), its one enforcement
+        point: a fresh-origin install never pre-empts the running record before
+        its origin. While ``_install`` has left a :class:`StreamHandoff` bound
+        to the CURRENT head this returns it (the running record until the
+        head's ``t0``, the head from it); otherwise the head itself. Readers:
+        the emitter (``_emit_once``), ``_current_state`` and
+        ``_commanded_hand_state`` -- i.e. everything that asks "what is the
+        machine being commanded to" (graceful stops, holds, guard descents, the
+        install-continuity guard and every live seed). Everything that PLANS
+        reads ``_active_plan`` / ``_cycle`` instead (the next splice, re-aims,
+        ``_refusal_timing``, ``/trajectory/status``). The identity bind means a
+        direct ``_active_plan`` assignment (backstop freeze, escalation hold)
+        retires the handoff with no extra write.
+        """
+        h = self._handoff
+        if h is not None and h.head is self._active_plan:
+            return h, self._plan_t0
+        return self._active_plan, self._plan_t0
+
     def _install(self, plan, *, t0=None, require_follower_mode=False,
                  require_epoch=None, bump_epoch=False, cycle=_UNSET,
-                 cycle_owner=_UNSET, reset_replans=False) -> bool:
+                 cycle_owner=_UNSET, reset_replans=False,
+                 stream_handoff=False, precondition=None) -> bool:
         """Install ``plan`` as the active plan. Returns True iff it was installed.
 
         ``t0`` overrides the plan-time origin (default: ``perf_counter()`` at
@@ -2814,6 +2862,25 @@ class TrajectoryNode(Node):
 
         ``cycle`` defaults to a sentinel rather than ``None`` because ``None`` is a
         meaningful value here (a non-cycle install clears the record).
+
+        ``stream_handoff`` (I-INSTALL-1, 2026-10-16): when True AND the origin
+        ``t0`` is still in the future at the install instant, the wire keeps
+        playing what it was playing (``_stream_plan_locked`` before this
+        install -- the running record, or a pending handoff a splice re-wraps)
+        until ``t0`` and switches to ``plan`` there; ``plan`` is the planning
+        head from now. Only ``_svc_install_segment`` passes it, for its
+        reserved-lead fresh origins and for splices. Every other install
+        (holds, graceful stops, guard descents, go_to_pose, the follower)
+        leaves it False and so RETIRES any pending handoff: a stop seeded from
+        ``_current_state`` -- the stream view, i.e. the moving REST tail --
+        takes the wire from where it really is, and wins.
+
+        ``precondition`` (I-CATCH-5 bump, 2026-10-16): a zero-argument callable
+        evaluated UNDER the same ``_plan_lock`` acquisition, after the epoch
+        check; a falsy return drops the install (False, plan untouched). The
+        catch bump's apply-time checks (record identity, no pending handoff,
+        ``k_b > k_wire`` at the swap instant) ride it so nothing can move the
+        wire between the check and the swap.
         """
         now = t0 if t0 is not None else time.perf_counter()
         with self._plan_lock:
@@ -2821,6 +2888,14 @@ class TrajectoryNode(Node):
                 return False
             if require_epoch is not None and self._install_epoch != require_epoch:
                 return False
+            if precondition is not None and not precondition():
+                return False
+            handoff = None
+            if stream_handoff and now > time.perf_counter():
+                src, src_t0 = self._stream_plan_locked()
+                if src is not None and src_t0 is not None:
+                    handoff = StreamHandoff(src, src_t0, plan, now)
+            self._handoff = handoff
             self._active_plan = plan
             self._plan_t0 = now
             # New plan ⇒ fresh realized-peak window (per-move tracking). Reset the
@@ -3416,7 +3491,8 @@ class TrajectoryNode(Node):
         ros_sec = float(ros_time.sec) + float(ros_time.nanosec) * 1e-9
         return ros_sec + self._ros_to_perf_offset
 
-    def _install_continuity_ok(self, plan, tau: float = 0.0) -> bool:
+    def _install_continuity_ok(self, plan, tau: float = 0.0,
+                               at_mono=None) -> bool:
         """True iff ``plan`` at ``tau`` still matches the live commanded state — on
         the LEGS (in motor_rev, the pump's units) and, when the plan carries one, on
         the HAND.
@@ -3436,6 +3512,12 @@ class TrajectoryNode(Node):
         bit-identical to what is already streaming and whose t = 0 is therefore in
         the past). Comparing a same-origin re-install at 0.0 would measure the whole
         elapsed window as "drift" and refuse every chain.
+
+        ``at_mono`` is the instant the LIVE side is read at (default now). The
+        skill stack's handed-over installs (I-INSTALL-1) pass the new origin
+        ``t0``: the wire switches there, so the step that matters is the
+        running record's state AT ``t0`` against knot 0, not its state at the
+        install instant (which it keeps playing through).
 
         **The hand term (plan Phase 4).** Until the unified cycle there was one
         commanded channel and a pose check covered it. A ``CyclePlan`` swap also
@@ -3480,7 +3562,7 @@ class TrajectoryNode(Node):
         """
         self._continuity_detail = ''
         plan_pose, plan_twist, _ = plan.state_at(tau)
-        live_pose, live_twist, _ = self._current_state()
+        live_pose, live_twist, _ = self._current_state(at_mono=at_mono)
         drift = float(np.max(np.abs(
             self._pose_to_motor_rev(plan_pose)
             - self._pose_to_motor_rev(live_pose))))
@@ -3501,7 +3583,7 @@ class TrajectoryNode(Node):
         hand_at = getattr(plan, 'hand_at', None)
         if hand_at is None:
             return True
-        reference, ref_vel = self._commanded_hand_state()
+        reference, ref_vel = self._commanded_hand_state(at_mono=at_mono)
         if reference is None:
             # Neither commanded nor measured: nothing to be continuous WITH. Refuse
             # rather than wave it through — installing a hand track blind is exactly
@@ -3523,7 +3605,9 @@ class TrajectoryNode(Node):
         # rather than a commanded velocity, so charging a plan against it would
         # refuse the first cycle install of every session for a sensor reason.
         with self._plan_lock:
-            live_hand_track = getattr(self._active_plan, 'hand_at', None) is not None
+            # Same view as the reference/drift reads above (the wire's plan).
+            live_hand_track = getattr(self._stream_plan_locked()[0], 'hand_at',
+                                      None) is not None
         if not live_hand_track:
             return True
         hand_vel_bound = (0.25 * feas.STEP_BOUND_MARGIN
@@ -3790,7 +3874,7 @@ class TrajectoryNode(Node):
         instant it describes, moving or not.
         """
         with self._plan_lock:
-            plan, t0 = self._active_plan, self._plan_t0
+            plan, t0 = self._stream_plan_locked()
         hand_at = getattr(plan, 'hand_at', None)
         if hand_at is not None and t0 is not None:
             now = time.perf_counter() if at_mono is None else float(at_mono)
@@ -3881,6 +3965,10 @@ class TrajectoryNode(Node):
           would simply stop knot 0 being the machine EXACTLY, which is the pin
           that landed today.)
         """
+        # I-INSTALL-1 reachability (audit 2026-10-16): this reads the HEAD view, so
+        # tau < 0 while a handoff is pending. Unreachable: only a fresh REST seeds
+        # here moving, and no compiler dispatches one between THROW 0's install and
+        # its t0 (a CATCH splices; the closing REST waits two rest tails past touch-down).
         with self._plan_lock:
             active, t0 = self._active_plan, self._plan_t0
         record = self._cycle
@@ -4295,11 +4383,18 @@ class TrajectoryNode(Node):
     _SEGMENT_KINDS = (sk_seg.THROW, sk_seg.CATCH, sk_seg.REST,
                       sk_magazine.MAGAZINE)
 
-    def _reject_segment(self, response, code: str, message: str, t_wall: float):
+    def _reject_segment(self, response, code: str, message: str, t_wall: float,
+                        timing: str = ''):
         """Fill ``response`` with a refusal. The ACTIVE PLAN IS UNTOUCHED.
 
         The exact twin of ``_reject_cycle`` for the segment service — see that
         method's docstring for why a refusal never leaves partial state.
+
+        ``timing`` (2026-10-14, :meth:`_refusal_timing`) rides on the same
+        DEBUG line for a refusal that happened AFTER a solve was sent: before
+        it, a refused solve's duration, the wire knot and the deadline were
+        invisible in the log, and sitting 8's 0.23-0.26 s request-to-refusal
+        was misread as the solve time.
         """
         response.accepted = False
         response.code = str(code)
@@ -4310,8 +4405,53 @@ class TrajectoryNode(Node):
         # skill_node, the only caller, reports every refusal it gets -- as a
         # refused re-aim on its throw line, or as the attempt's END line --
         # so this is the record's copy, not a second screen line.
-        self.get_logger().debug('install_segment refused: %s' % (message,))
+        self.get_logger().debug('install_segment refused: %s%s'
+                                % (message,
+                                   (' [%s]' % (timing,)) if timing else ''))
         return response
+
+    @staticmethod
+    def _refusal_timing(check: str, reply, t_wall: float, deadline_s: float,
+                        record, splice_k, fresh: bool) -> str:
+        """One-line timing of a post-solve refusal, for the DEBUG log.
+
+        ``check`` names which test refused: ``node-wait`` (no reply by
+        ``deadline_s``), ``transit`` (the node's re-check of the executor's
+        arithmetic at its own clock), ``worker:<code>`` (the executor's verdict
+        in the worker, the lateness test included).  Times are ms after
+        ``t_wall`` (service entry).  ``k_wire`` is the executor's
+        ``floor((t - t0)/dt) + WIRE_READ_KNOTS``, at the worker's
+        ``reply.t_inst_s`` (``t_inst``; absent when the worker never answered
+        or for the in-process double) and at the node's clock now; ``k_s`` is
+        the splice knot (the pre-solve
+        ``splice_knot_for`` value when the reply carries none).
+        """
+        now = time.perf_counter()
+        t_inst = float(getattr(reply, 't_inst_s', math.inf))
+        solve_s = float(getattr(reply, 'solve_s', 0.0))
+        parts = ['check=%s' % (check,),
+                 ('solve n/a (no reply)' if check == 'node-wait'
+                  else 'solve %.1f ms' % (solve_s * 1e3,)),
+                 'plan %.1f ms' % ((now - t_wall) * 1e3,),
+                 ('t_inst +%.1f ms' % ((t_inst - t_wall) * 1e3,)
+                  if math.isfinite(t_inst) else 't_inst n/a'),
+                 'deadline +%.1f ms' % ((deadline_s - t_wall) * 1e3,)]
+        if record is not None and not fresh:
+            dt = float(record.plan.dt)
+
+            def _k_wire(t):
+                return (int(math.floor((t - float(record.t0_s)) / dt))
+                        + sk_exec.WIRE_READ_KNOTS)
+            parts.append('k_s %s' % ('?' if splice_k is None else int(splice_k)))
+            if math.isfinite(t_inst):
+                parts.append('k_wire@worker %d' % (_k_wire(t_inst),))
+            parts.append('k_wire@node %d' % (_k_wire(now),))
+            if splice_k is not None:
+                parts.append('cliff +%.1f ms' % (
+                    (sk_exec.splice_cliff_s(record, splice_k) - t_wall) * 1e3,))
+        elif fresh:
+            parts.append('fresh origin')
+        return ', '.join(parts)
 
     def _segment_terminal_from_request(self, kind: str, request, t_event_perf: float,
                                        t_release_perf: float = 0.0):
@@ -4410,6 +4550,13 @@ class TrajectoryNode(Node):
         response.duration_s = 0.0
         response.seeded_post_release = False
         response.t_release_mono = 0.0
+        # KIND_BUMP (I-CATCH-5): every guard refusal below is TERMINAL for a
+        # bump (the attempt is ending; a 40 Hz retry would only spam this
+        # service); `_svc_bump_catch` sets its own outcomes explicitly.
+        is_bump = int(request.kind) == int(InstallSegment.Request.KIND_BUMP)
+        response.terminal = bool(is_bump)
+        response.release_offset_xy_mm = [0.0, 0.0]
+        response.launch_bias_xy_mm_s = [0.0, 0.0]
 
         if self._guard_frozen:
             return self._reject_segment(response, _GUARD_LATCHED,
@@ -4430,6 +4577,8 @@ class TrajectoryNode(Node):
             return self._reject_segment(
                 response, feas.STALE_STATE,
                 'robot_state telemetry stale — cannot install a segment', t_wall)
+        if is_bump:
+            return self._svc_bump_catch(request, response, t_wall, epoch0)
         try:
             kind = self._SEGMENT_KINDS[int(request.kind)]
         except (IndexError, ValueError, TypeError):
@@ -4466,7 +4615,19 @@ class TrajectoryNode(Node):
         # fresh branch needs the node to build a seed at all, and building one
         # (`_cycle_start_state`) verifies rest and costs the E8 tilt lookup.
         seed_rest = None
-        fresh = record is None or (t_now_s + self._segment_lead_s) >= record.end_s
+        # The lead this install reserves is PER KIND (2026-10-16,
+        # `schedule.install_lead_s`): FRESH_THROW_LEAD_S (13 knots, 250 ms of
+        # solve budget) for a THROW, LEAD_S (9 knots, 150 ms) otherwise. It
+        # must be the SAME number the schedule dispatched the skill by
+        # (`Skill.dispatch_s = t_abs - window - lead`): the reserved origin
+        # `t_now + lead` then lands on the skill's own splice base and the
+        # planned window is the schedule's. A node-side LEAD_S under a
+        # schedule-side 13-knot lead would plan the THROW over window + 0.1 s
+        # (the release would not move, the origin would) -- the 2026-10-02
+        # class `reserve_fresh_lead` closed. The request carries no lead, so
+        # both ends derive it from the kind through one function.
+        lead_s = sk_sched.install_lead_s(kind)
+        fresh = record is None or (t_now_s + lead_s) >= record.end_s
         if fresh:
             # `record` STILL STREAMING at this instant (`t_now_s <
             # record.end_s`) is the one `fresh` sub-case the LIVE at-rest test
@@ -4541,7 +4702,8 @@ class TrajectoryNode(Node):
             # t0 snapping (C2FF spec, 2026-09-14): a FRESH origin installs
             # `install_segment`'s `t0 = t_now_s` verbatim for a REST, and
             # `t0 = t_now_s + lead_s` for a THROW/CATCH (`reserve_fresh_lead`
-            # below, 2026-10-02 — `lead_s` is LEAD_KNOTS whole knots, so the
+            # below, 2026-10-02 — `lead_s` is whole knots, LEAD_KNOTS or
+            # FRESH_THROW_LEAD_KNOTS for a THROW, so the
             # origin stays on the grid), so snapping the FIRST un-emitted grid
             # knot in HERE is the one
             # place that origin is ever set for this (hand-carrying) install
@@ -4568,30 +4730,56 @@ class TrajectoryNode(Node):
         # `reserve_fresh_lead=True` (2026-10-02, R5 sitting 2): an
         # event-bearing fresh origin gets the dispatch lead the schedule
         # reserved — origin `t_now + lead_s`, the splice's SOLVE_BUDGET, no
-        # skipped knot. Between this install and that origin `_emit_once`
-        # samples `plan.state_at(tau < 0)`, which a CyclePlan answers with
-        # knot 0's boundary conditions (the held rest, zero rate, zero cubic
-        # accel), so the wire keeps carrying the rest it already carried and
-        # the plan starts on the grid at `t0` (see `install_segment`).
+        # skipped knot. Between this install and that origin the wire keeps
+        # playing the RUNNING record (I-INSTALL-1, `_stream_plan_locked`; until
+        # 2026-10-16 it played the new plan's knot 0 from install, which cut a
+        # still-moving REST short and stepped onto its terminal rest), and the
+        # plan starts on the grid at `t0` (see `install_segment`).
         #
         # THE SOLVE RUNS IN THE WORKER PROCESS (`self._segment_solver`), every
         # input shipped by value (live-mutable `cfg`/`limits` reach the next
         # install by construction).  `deadline_s` is the instant after which a
-        # result is useless: THROW/CATCH `t_wall + lead_s + dt` (past it the
-        # executor's own arithmetic refuses with certainty, so waiting can only
-        # buy a refusal), REST `t_wall + SOLVER_REST_DEADLINE_S`.  The executor's
-        # post-solve lateness read happens IN the worker, +REPLY_TRANSIT_ALLOW_S;
-        # `reply.t_inst_s` carries that instant back for the transit check below.
+        # result is useless: THROW/CATCH `t_wall + lead_s + dt`, REST
+        # `t_wall + SOLVER_REST_DEADLINE_S`.  The executor's post-solve lateness
+        # read happens IN the worker, +REPLY_TRANSIT_ALLOW_S; `reply.t_inst_s`
+        # carries that instant back for the transit check below.
+        #
+        # PINNED SPLICE (2026-10-14): a CATCH that follows a release splices AT
+        # that release knot whatever its dispatch instant
+        # (`executor._snap_to_release`), and the schedule dispatches it
+        # HANDOFF_LEAD_S early to buy solve time for exactly that reason -- so
+        # its wire cliff is `t0 + (k_rel - WIRE_READ_KNOTS)*dt`, not
+        # `t_wall + lead_s + dt`.  The node computes the executor's own splice
+        # knot BEFORE the solve (`splice_knot_for`, the same helper the worker
+        # runs on the same inputs) and waits until the LATER of the two, the
+        # cliff term less REPLY_TRANSIT_ALLOW_S (the worker's own early read), so
+        # it never waits past the instant the executor itself would refuse.  An
+        # unpinned splice's cliff (`k_s` = first knot >= t_now + LEAD_S) is
+        # 150-175 ms out, inside the default, so only a pinned splice can move
+        # it.  Fresh origins keep the default.
+        splice_k_pre = None
         if kind == sk_seg.REST:
             deadline_s = t_wall + sk_solver.SOLVER_REST_DEADLINE_S
         else:
-            deadline_s = (t_wall + self._segment_lead_s
+            deadline_s = (t_wall + lead_s
                           + float(hw.JB_TRAJ_KNOT_DT_S))
+            if not fresh and kind in (sk_seg.THROW, sk_seg.CATCH):
+                try:
+                    splice_k_pre, _post = sk_exec.splice_knot_for(
+                        record, kind, terminal, t_now_s, lead_s)
+                except Exception:   # noqa: BLE001 - the worker re-derives
+                    # it and answers any error as a refusal; keep the default
+                    splice_k_pre = None
+                if splice_k_pre is not None:
+                    deadline_s = max(
+                        deadline_s,
+                        sk_exec.splice_cliff_s(record, splice_k_pre)
+                        - sk_solver.REPLY_TRANSIT_ALLOW_S)
         self._solve_seq += 1
         reply = self._segment_solver.solve(sk_solver.SegmentSolveRequest(
             seq=self._solve_seq, record=record, seed_rest=seed_rest,
             kind=kind, terminal=terminal, t_now_s=t_now_s,
-            lead_s=self._segment_lead_s, cfg=self._segment_cfg,
+            lead_s=lead_s, cfg=self._segment_cfg,
             limits=self._limits, geom=self._geom,
             warm_start=self._segment_warm_start,
             reserve_fresh_lead=True, deadline_s=deadline_s))
@@ -4610,15 +4798,57 @@ class TrajectoryNode(Node):
                     code = (sk_exec.ORIGIN_TOO_LATE if fresh
                             else sk_exec.SPLICE_TOO_LATE)
                 message = 'solver did not answer by the wire deadline'
-            return self._reject_segment(response, code, message, t_wall)
+                check = 'node-wait'
+            else:
+                check = 'worker:%s' % (code,)
+            return self._reject_segment(
+                response, code, message, t_wall,
+                timing=self._refusal_timing(
+                    check, reply, t_wall, deadline_s, record,
+                    splice_k_pre, fresh))
         if self._hold_superseded(epoch0):
             return self._reject_segment(
                 response, _SUPERSEDED_BY_HOLD,
                 'a trajectory/hold landed while this install_segment was '
                 'solving — the segment it plans was cancelled; the hold keeps '
                 'the wire', t_wall)
-        tau_now = 0.0 if fresh else (time.perf_counter() - new_record.t0_s)
-        if not self._install_continuity_ok(new_record.plan, tau_now):
+        # I-INSTALL-1 (2026-10-16): every install here except a fresh REST
+        # hands the wire over AT ITS ORIGIN, not at install (`_install`'s
+        # `stream_handoff`): the running record plays on to `t0`. So the
+        # continuity question is asked at `max(now, t0)` -- for a reserved-lead
+        # fresh origin that is `t0` itself: does the running record (the
+        # stream view, `_current_state(at_mono=t0)`) arrive EXACTLY on this
+        # plan's knot 0? A rest-terminal record that ends by `t0` does, with
+        # zero step by construction; one that does not (a hold/stop/move
+        # landed meanwhile, or a record that will not reach its own terminal
+        # by `t0`) still refuses STALE_STATE. A splice before its head's
+        # origin compares at `t0` too, where its pre-splice head is
+        # bit-identical to the head it replaces. A fresh REST keeps the
+        # install-instant check: its origin is now and it takes the machine
+        # from its live state.
+        stream_handoff = not (fresh and kind == sk_seg.REST)
+        if stream_handoff:
+            # fresh: exactly `t0` (a late origin is the reply-transit guard's
+            # ORIGIN_TOO_LATE below, not a continuity question); splice: the
+            # later of now and its head's origin.
+            at_check = (float(new_record.t0_s) if fresh else
+                        max(time.perf_counter(), float(new_record.t0_s)))
+            tau_now = at_check - float(new_record.t0_s)
+        else:
+            at_check, tau_now = None, 0.0
+        if (fresh and stream_handoff and record is not None
+                and float(new_record.t0_s) < record.end_s - 1e-9):
+            # Not reachable from the schedule's compilers (`fresh` already
+            # implies `t_now + lead >= record.end_s` and the grid snap only
+            # moves the origin later); refused rather than truncating a
+            # running record mid-motion at the switch.
+            return self._reject_segment(
+                response, feas.STALE_STATE,
+                'fresh origin %.4f s precedes the running record\'s end '
+                '%.4f s — the switch would truncate it'
+                % (float(new_record.t0_s), record.end_s), t_wall)
+        if not self._install_continuity_ok(new_record.plan, tau_now,
+                                           at_mono=at_check):
             return self._reject_segment(
                 response, feas.STALE_STATE,
                 'commanded state moved during planning (%s) — retry'
@@ -4648,13 +4878,17 @@ class TrajectoryNode(Node):
                 'reply transit outran the wire deadline — the first new knot '
                 'is no longer %d knots ahead of the wire; nothing installed'
                 % (sk_exec.WIRE_READ_KNOTS,),
-                t_wall)
+                t_wall,
+                timing=self._refusal_timing(
+                    'transit', reply, t_wall, deadline_s, new_record,
+                    None if fresh else int(result.splice_k), fresh))
         if not self._install(new_record.plan, t0=new_record.t0_s,
                              require_epoch=epoch0,
                              cycle=(new_record.plan, new_record.meta,
                                     new_record.t0_s),
                              cycle_owner=_OWNER_SEGMENT,
-                             reset_replans=True):
+                             reset_replans=True,
+                             stream_handoff=stream_handoff):
             return self._reject_segment(
                 response, _SUPERSEDED_BY_HOLD,
                 'a trajectory/hold landed while this install_segment was '
@@ -4676,6 +4910,185 @@ class TrajectoryNode(Node):
                                     new_record, result, t_wall,
                                     t_release_mono=t_release_mono,
                                     solve_s=float(reply.solve_s))
+
+    def _svc_bump_catch(self, request, response, t_wall: float, epoch0):
+        """``KIND_BUMP``: re-aim the ACTIVE record's catch as a platform-xy
+        bump (I-CATCH-5, ``motion/skills/bump.py``) — no solve, same ``t0``,
+        hand arrays untouched. Reached only past the install guard ladder
+        (guard latch, lane latch, mode, seeded, telemetry fresh).
+
+        The 40 Hz walk (written before the code, CLAUDE.md)
+        ----------------------------------------------------
+        Clocks: the request's ``t_dispatch_s`` / ``t_event_s`` are ROS-clock
+        instants, crossed to ``perf_counter`` through ``_ros_to_perf_offset``
+        (the one crossing every install uses).  Knot ``k`` of the record is due
+        on the wire at ``t0 + k·dt``; the emitter ships up to
+        ``WIRE_READ_KNOTS`` (3) knots ahead, so at instant ``t`` the wire may
+        hold knots ``<= k_wire(t) = floor((t - t0)/dt) + 3``.
+
+        1. Dispatch (executor tick, instant ``t_d``): ``k_wire(t_d)`` is the
+           last knot the wire can have read; ``k_b = k_wire(t_d) + 2``.
+        2. Service entry (this method, ``t_s >= t_d``, the ~2-10 ms of DDS
+           transit): ``bump.bump_record`` refuses ``SPLICE_TOO_LATE``
+           (non-terminal, record untouched) if ``k_b <= k_wire(t_s)`` — i.e.
+           the transit already cost two knots — else builds the bumped plan:
+           knots ``0..k_b`` bit-identical (asserted there), first changed knot
+           ``k_b + 1``, gated by ``validate_cycle`` at ``self._limits``.  The
+           compute runs OUTSIDE ``_plan_lock`` (the emitter keeps streaming
+           the unbumped record meanwhile; it is the same plan object, so
+           nothing it reads changes).
+        3. Swap (``_install`` under ``_plan_lock``, instant ``t_w``): the
+           precondition re-checks, in the same acquisition, that the record is
+           still the active one (identity: a hold / stop / backstop freeze in
+           between wins), that no StreamHandoff is pending (``BUMP_HANDOFF``),
+           and ``k_b > k_wire(t_w)`` (``SPLICE_TOO_LATE`` again, at the true
+           swap instant).  Then ``_active_plan`` = the bumped plan with the
+           SAME ``t0``; the record tuple is rewritten in the same acquisition.
+        4. Next emitter ticks: the emitter samples ``(plan, t0)`` from
+           ``_stream_plan_locked`` — now the bumped plan.  Every knot it can
+           newly ship is ``> k_wire(t_w)``; knots ``<= k_b`` (which includes
+           everything already shipped, and at least one more) are identical
+           to what it shipped before, so neither the position nor the velocity
+           feed-forward steps at the swap.  The first knot that differs,
+           ``k_b + 1``, carries ``pose + b`` and ``pose_vel + ḃ`` (exact
+           derivative); the Teensy's 500 Hz Hermite through it is C1, its
+           acceleration/jerk are what the gate measured.  The hand lane reads
+           ``hand_rev`` / ``hand_vel_rps`` — the same values (asserted here).
+
+        StreamHandoff (I-INSTALL-1): while a fresh-origin install's handoff is
+        pending the wire is playing the SOURCE record, not ``_active_plan``,
+        and the bump would edit a plan the wire has not started — refused
+        ``BUMP_HANDOFF``, non-terminal (the handoff completes at its origin,
+        within a lead; the executor retries on its next tick).  The swap
+        passes ``stream_handoff=False`` (the origin is in the past anyway).
+
+        Timing on a refusal: :meth:`_refusal_timing` is NOT used — there is no
+        solve, no worker reply and no splice cliff.  A bump refusal's DEBUG
+        line carries ``check=bump:<code>, plan X ms, k_b, k_wire@dispatch,
+        k_wire@node, dispatch->entry +Y ms`` (:meth:`_bump_timing`).
+        """
+        off = float(self._ros_to_perf_offset)
+        t_catch = float(request.t_event_s) + off
+        t_disp = float(request.t_dispatch_s) + off
+        delta = np.asarray(request.bump_delta_xy_mm, dtype=float).reshape(2)
+
+        def reject(code, terminal, message, res=None, rec_t0=None, dt=None):
+            response.terminal = bool(terminal)
+            if res is not None:
+                response.splice_k = int(res.k_b)
+                response.release_offset_xy_mm = [
+                    float(v) for v in res.release_offset_xy_mm]
+                response.launch_bias_xy_mm_s = [
+                    float(v) for v in res.launch_bias_xy_mm_s]
+            timing = ''
+            if rec_t0 is not None:
+                timing = self._bump_timing(code, t_wall, t_disp, rec_t0, dt,
+                                           None if res is None else res.k_b)
+            return self._reject_segment(response, code, message, t_wall,
+                                        timing=timing)
+
+        with self._plan_lock:
+            cycle = self._cycle
+            active = self._active_plan
+            stream, _st0 = self._stream_plan_locked()
+        if (cycle is None or cycle[0] is not active
+                or not isinstance(active, CyclePlan)):
+            return reject(sk_bump.BUMP_NO_RECORD, True,
+                          'bump: no active segment record to bump')
+        plan, meta, t0 = cycle
+        dt = float(plan.dt)
+        if stream is not active:
+            return reject(sk_bump.BUMP_HANDOFF, False,
+                          'bump: a StreamHandoff is pending — the wire is not '
+                          'yet playing the record this catch is in',
+                          rec_t0=t0, dt=dt)
+        t_c_plan = t_catch - float(t0)
+        if not any(abs(float(cm.t_s) - t_c_plan) <= dt / 2.0
+                   for cm in meta.catches):
+            return reject(sk_bump.BUMP_NO_RECORD, True,
+                          'bump: the active record holds no catch at %.3f s '
+                          '(plan clock)' % (t_c_plan,), rec_t0=t0, dt=dt)
+        res, _k_wire = sk_bump.bump_record(
+            plan, meta, float(t0), t_disp, delta, t_catch, self._limits,
+            self._geom, t_apply_s=time.perf_counter())
+        if not res.accepted:
+            return reject(res.code, res.terminal, 'bump declined: %s'
+                          % (res.message,), res=res, rec_t0=t0, dt=dt)
+        # I-CATCH-5: the hand lane is never touched by a bump.
+        assert np.array_equal(res.plan.hand_rev, plan.hand_rev)
+        assert np.array_equal(res.plan.hand_vel_rps, plan.hand_vel_rps)
+        why = []
+
+        def still_ok():
+            # Under `_plan_lock` (via `_install`): identity, handoff, k_wire.
+            if self._active_plan is not plan or self._cycle is not cycle:
+                why.append((sk_bump.BUMP_NO_RECORD, True,
+                            'bump: the record was superseded while the bump '
+                            'was computed'))
+                return False
+            h = self._handoff
+            if h is not None and h.head is self._active_plan:
+                why.append((sk_bump.BUMP_HANDOFF, False,
+                            'bump: a StreamHandoff appeared before the swap'))
+                return False
+            k_now = sk_bump.k_wire_at(float(t0), time.perf_counter(), dt)
+            if int(res.k_b) <= k_now:
+                why.append((sk_bump.BUMP_SPLICE_TOO_LATE, False,
+                            'bump: k_b %d <= k_wire %d at the swap'
+                            % (int(res.k_b), k_now)))
+                return False
+            return True
+
+        if not self._install(res.plan, t0=float(t0), require_epoch=epoch0,
+                             cycle=(res.plan, res.meta, float(t0)),
+                             cycle_owner=_OWNER_SEGMENT, reset_replans=True,
+                             stream_handoff=False, precondition=still_ok):
+            if why:
+                code, terminal, msg = why[0]
+                return reject(code, terminal, msg, res=res, rec_t0=t0, dt=dt)
+            return reject(_SUPERSEDED_BY_HOLD, True,
+                          'a trajectory/hold landed while the bump was '
+                          'computed — the hold keeps the wire', res=res)
+        # `_install` cleared the predicted peaks; write the bumped record's
+        # (res.report is the validate_cycle report of the bumped plan), AFTER it.
+        self._last_peak_vel_mmps = res.report.peak_leg_vel_mmps
+        self._last_peak_acc_mmps2 = res.report.peak_leg_acc_mmps2
+        self._last_peak_jerk_mmps3 = res.report.peak_leg_jerk_mmps3
+        response.accepted = True
+        response.code = feas.OK
+        response.terminal = False
+        response.message = str(res.message) + self._wire_state_suffix()
+        response.splice_k = int(res.k_b)
+        response.t0_mono = float(t0)
+        response.t_event_mono = float(t_catch)
+        response.duration_s = float(res.plan.total_duration)
+        rel = [float(r.t_s) for r in res.meta.releases if float(r.t_s) > t_c_plan]
+        response.t_release_mono = (float(t0) + min(rel)) if rel else 0.0
+        response.release_offset_xy_mm = [float(v)
+                                         for v in res.release_offset_xy_mm]
+        response.launch_bias_xy_mm_s = [float(v) for v in res.launch_bias_xy_mm_s]
+        response.plan_wall_ms = (time.perf_counter() - t_wall) * 1e3
+        self._cycle_plan_wall_ms = response.plan_wall_ms
+        self.get_logger().debug(
+            'install_segment BUMP %s: k_b=%d, plan %.1f ms, %s'
+            % (ball_label(int(request.ball_id)), int(res.k_b),
+               response.plan_wall_ms, res.message))
+        return response
+
+    @staticmethod
+    def _bump_timing(code, t_wall, t_disp, t0, dt, k_b) -> str:
+        """The bump's refusal timing line (see :meth:`_svc_bump_catch`)."""
+        now = time.perf_counter()
+        parts = ['check=bump:%s' % (code,),
+                 'plan %.1f ms' % ((now - t_wall) * 1e3,)]
+        if k_b is not None:
+            parts.append('k_b %d' % (int(k_b),))
+        parts.append('k_wire@dispatch %d'
+                     % (sk_bump.k_wire_at(float(t0), t_disp, float(dt)),))
+        parts.append('k_wire@node %d'
+                     % (sk_bump.k_wire_at(float(t0), now, float(dt)),))
+        parts.append('dispatch->entry +%.1f ms' % ((t_wall - t_disp) * 1e3,))
+        return ', '.join(parts)
 
     @staticmethod
     def _reply_outran_wire(new_record, result, kind, fresh,

@@ -176,4 +176,4 @@ top of this plan was superseded by the rev-derived prime
 (`logbook/2026-07-26-hand-prime-rev-derived.md`).
 
 Moved out of `plans/active/` by the 2026-07 refactor programme
-(`plans/parked/refactor-2026-07.md` § Phase 1, item 5).
+(`plans/archived/refactor-2026-07.md` § Phase 1, item 5).

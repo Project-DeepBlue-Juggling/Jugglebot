@@ -16,7 +16,7 @@
  * jugglebot/juggle action — rosbridge on Foxy has no action transport):
  *
  *     jugglebot/juggle_request  (jugglebot_interfaces/srv/SetString)
- *     data = <pattern>[,reload][,apex_m=<f>][,separation_mm=<f>][,num_cycles=<int>]
+ *     data = <pattern>[,apex_m=<f>][,separation_mm=<f>][,num_cycles=<int>]
  *
  * THE GUI NEVER ENCODES A LAUNCH DEFAULT.  A blank field sends nothing; the
  * relay then fills the goal field with 0, and 0 is skill_node's "use my own
@@ -27,14 +27,19 @@
  * overridden by the GUI's stale copy, and a relaunch with a new default
  * would keep flying the old one from any tab left open.
  *
- * Two compatibility rules for a robot still running the PRE-2026-10-04
- * relay (it only checks `parts[1] == 'reload'` and drops everything else):
- *   1. `reload` is always emitted immediately after the pattern, so the old
- *      relay still gets reload right.
- *   2. Cross-check: the next skills/attempt juggle_start after our dispatch
- *      carries the RESOLVED request; any operator-typed value it does not
- *      match raises an amber warning (the old relay silently flies the node
- *      defaults instead of the typed values — the fix is a colcon build).
+ * There is NO reload flag on the wire (P2, plans/active/columns-empty-cup-two-feed.md
+ * D3/D4): the skill node decides from the cup sensor (EMPTY -> Ball Butler
+ * loads first, SEATED -> throw first, UNKNOWN -> refused) and the orchestrator
+ * refuses a `reload` token after the pattern.  Only the bare `reload` PATTERN
+ * (the Reload button) is sent.  The panel shows a CUP PREVIEW of the node's
+ * decision, read from the ball-in-hand pill panels.js drives from
+ * /hand_telemetry; the node is the authority and the skills/attempt
+ * juggle_start `reload` field confirms what it did.
+ *
+ * Cross-check: the next skills/attempt juggle_start after our dispatch
+ * carries the RESOLVED request; any operator-typed value it does not match
+ * raises an amber warning (a stale relay silently flies the node defaults
+ * instead of the typed values — the fix is a colcon build).
  *
  * Dwell is NOT a goal field: it is skill_node's `dwell_s` parameter and the
  * admissible box is swept AT that dwell (a different live dwell is
@@ -96,7 +101,7 @@ const SVG_NS = 'http://www.w3.org/2000/svg';
  *   kind     'one' = compile_one_ball (self_toss / hop), 'columns' =
  *            compile_columns, flown by _run_columns / _run_columns_1ball
  *   phantom  schedule ball id flown motion-only (Pattern.phantom_balls)
- *   reloadRequired  the relay/skill_node refuse reload=False
+ *   cupNeed  'empty' = the accept rule needs an EMPTY cup (fixed requirement)
  */
 export const JUGGLE_PATTERNS = [
     { value: 'self_toss', label: 'Self-toss', kind: 'one', sites: 1, phantom: null,
@@ -108,16 +113,15 @@ export const JUGGLE_PATTERNS = [
       blurb: 'Two balls, each rising and falling in its own column; the one hand ' +
              'alternates sites (throw, transit, catch + throw).' },
     // B2: columns motion flown with one real ball (a phantom at the other
-    // site) -- same apex_m/separation_mm/reload fields as Columns
+    // site) -- same apex_m/separation_mm fields as Columns
     // (SkillNode._run_columns_1ball).
     { value: 'columns_1ball', label: 'Columns (1 ball)', kind: 'columns', sites: 2, phantom: 1,
       blurb: 'Columns motion with Ball 1 real; Ball 2 is a phantom (motion only).' },
     // B2, R5 sitting 4: the OTHER half -- ball A phantom (Jugglebot's own
-    // strokes fly empty), ball B real and fed by Ball Butler. reload=True
-    // is required (SkillNode._start_pattern refuses reload=False for this
-    // pattern) (SkillNode._run_columns(..., phantom_a=True)).
+    // strokes fly empty), ball B real and fed by Ball Butler.  Needs an EMPTY
+    // cup at accept (SkillNode._run_columns(..., phantom_a=True)).
     { value: 'columns_1ball_fed', label: 'Columns (1 ball, fed)', kind: 'columns', sites: 2,
-      phantom: 0, reloadRequired: true,
+      phantom: 0, cupNeed: 'empty',
       blurb: 'Columns motion with Ball 1 a phantom; Ball 2 is real and fed by Ball Butler.' },
 ];
 
@@ -195,7 +199,7 @@ let transport = {
 // render, and a rAF loop started for a panel that is about to be collapsed
 // would run one wasted frame.
 const gate = { connected: false, active: false, expanded: false, mainState: null };
-const ui = { pattern: JUGGLE_PATTERNS[0].value, userReload: false };
+const ui = { pattern: JUGGLE_PATTERNS[0].value, };
 const fields = {};
 for (const k of FIELD_KEYS) fields[k] = { raw: '', value: null, error: null };
 applyPatternPoint(ui.pattern);
@@ -214,7 +218,7 @@ let transientTimer = null;
 let running = null;             // juggle_start fields + t0, until juggle_end
 let magazineMiss = null;        // { text, cls } — latest MAGAZINE_MISS, until the next dispatch
 let last = null;                // { kind: 'end'|'refused', ... }
-let crossCheck = null;          // { pattern, typed, reload, t }
+let crossCheck = null;          // { pattern, typed, t }
 let warn = null;                // stale-relay mismatch text
 
 let speed = 0.5;
@@ -317,8 +321,48 @@ function fieldApplies(key, p) {
     return !(key === 'separation_mm' && p.sites === 1);
 }
 
-function effectiveReload(p) {
-    return !!(p.reloadRequired || ui.userReload);
+/**
+ * Cup state for the PREVIEW: the ball-in-hand pill (#flag-ball-held-pill) is
+ * written by panels.js updateBallHeld() from /hand_telemetry with the
+ * authoritative classification (HELD / EMPTY / UNKNOWN, UNKNOWN never EMPTY),
+ * so reading its class reuses that single subscription and rule.  No pill (or
+ * no message yet) reads as unknown.  Returns 'seated' | 'empty' | 'unknown'.
+ */
+export function cupState() {
+    if (typeof document === 'undefined') return 'unknown';
+    const pill = document.getElementById('flag-ball-held-pill');
+    if (!pill) return 'unknown';
+    if (pill.classList.contains('held')) return 'seated';
+    if (pill.classList.contains('empty')) return 'empty';
+    return 'unknown';
+}
+
+// P3 of plans/active/columns-empty-cup-two-feed.md flips this when the skill node accepts
+// columns on an EMPTY cup; until then the node refuses REJECTED_NO_BALL.
+const TWO_FEED_LANDED = false;
+
+/** Preview strings (the node's decision is the authority). */
+export const CUP_PREVIEW = {
+    empty: 'cup EMPTY: Ball Butler loads first',
+    seated: 'cup SEATED: throw first',
+    unknown: 'cup UNKNOWN: will be refused',
+    needsEmpty: 'needs an empty cup',
+    needsEmptyPhantom: 'needs an empty cup (ball A phantom)',
+    needsBall: 'needs a ball in the cup',
+    columnsEmptyRefused: 'cup EMPTY: will be refused (two-feed chain not landed)',
+};
+
+function cupPreviewText(p, cup) {
+    if (p.value === 'reload') return CUP_PREVIEW.needsEmpty;
+    if (p.value === 'magazine') return CUP_PREVIEW.needsBall;
+    if (p.cupNeed === 'empty') return CUP_PREVIEW.needsEmptyPhantom;
+    if (p.value === 'columns' && cup === 'empty' && !TWO_FEED_LANDED) return CUP_PREVIEW.columnsEmptyRefused;
+    return CUP_PREVIEW[cup];
+}
+
+/** Does the node load ball 0 first (one-ball patterns, cup EMPTY)? */
+function reloadFirst(p, cup) {
+    return p.kind === 'one' || p.value === 'columns_1ball' ? cup === 'empty' : false;
 }
 
 /** The operator-typed overrides that WILL be sent for the selected pattern. */
@@ -338,9 +382,8 @@ function firstFieldError(p) {
 }
 
 function buildRequestData(p) {
-    // `reload` immediately after the pattern (old-relay compatibility rule 1).
+    // No `reload` token: the skill node decides from the cup sensor.
     const parts = [p.value];
-    if (effectiveReload(p)) parts.push('reload');
     const typed = typedOverrides(p);
     if (typed.apex_m != null) parts.push('apex_m=' + wireNum(typed.apex_m, false));
     if (typed.separation_mm != null) parts.push('separation_mm=' + wireNum(typed.separation_mm, false));
@@ -448,7 +491,7 @@ function onStartConfirm() {
     // gate inputs may have moved since the last render).
     if (startGateReason(p)) return;
     dispatchJuggle(buildRequestData(p), {
-        pattern: p.value, typed: typedOverrides(p), reload: effectiveReload(p), t: Date.now(), // wall-clock: command path
+        pattern: p.value, typed: typedOverrides(p), t: Date.now(), // wall-clock: command path
     });
 }
 
@@ -595,7 +638,6 @@ function checkResolved(f, now) {
     if (t.num_cycles != null && parseInt(f.n_throws, 10) !== t.num_cycles) {
         misses.push(f.n_throws + ' throws (asked ' + t.num_cycles + ')');
     }
-    if (cc.reload && f.reload !== '1') misses.push('without reload (asked reload)');
     if (misses.length) {
         warn = '⚠ Node flew ' + misses.join(', ') + ' — relay out of date? colcon build + relaunch';
     }
@@ -640,26 +682,25 @@ function buildModel(p) {
     const apex = apexKnown ? effective('apex_m') : NOMINAL.apex_m;
     const dwell = dwellKnown ? defaults.dwell_s : NOMINAL.dwell_s;
     const sep = sepKnown ? effective('separation_mm') : NOMINAL.separation_mm;
-    const reload = effectiveReload(p);
-
+    const cup = cupState();
     const hs = HALF_SEP_PX * clamp(sep / 250, 0.55, 1.2);
     const P1 = CX - hs, P2 = CX + hs;
     const apexPx = APEX_PX_MAX * clamp(apex, 0.35, 1.2) / 1.2;
     const m = {
-        p, apex, dwell, sep, apexKnown, dwellKnown, sepKnown, reload,
+        p, apex, dwell, sep, apexKnown, dwellKnown, sepKnown, cup,
         tf: flightS(apex), apexPx, apexY: RIM_Y - BALL_R - apexPx,
-        sites: [], balls: [], feed: null, lob: null,
+        sites: [], balls: [], feeds: [],
     };
     if (p.sites === 1) {
         const x = CX - 8;
         m.sites = [{ x, name: 'site' }];
         m.balls = [{ id: 0, x, phantom: false }];
-        if (reload) m.feed = { x, ball: 0 };
+        if (reloadFirst(p, cup)) m.feeds.push({ x, ball: 0 });
     } else {
         m.sites = [{ x: P1, name: 'P1' }, { x: P2, name: 'P2' }];
         if (p.kind === 'one') {
             m.balls = [{ id: 0, x: P1, phantom: false }];   // hop starts at P1
-            if (reload) m.feed = { x: P1, ball: 0 };
+            if (reloadFirst(p, cup)) m.feeds.push({ x: P1, ball: 0 });
         } else {
             const feedName = defaults && defaults.columns_feed_site === 'P2' ? 'P2' : 'P1';
             const feedX = feedName === 'P1' ? P1 : P2;
@@ -669,16 +710,15 @@ function buildModel(p) {
                 { id: 1, x: feedX, phantom: p.phantom === 1 },
             ];
             if (p.value === 'columns_1ball') {
-                // Its reload is the self-toss choreography for ball A ALONE
+                // Cup EMPTY: the self-toss choreography for ball A ALONE
                 // (_run_columns_1ball); nothing is fed at the phantom's site.
-                if (reload) m.feed = { x: aX, ball: 0 };
-            } else if (reload) {
-                m.feed = { x: feedX, ball: 1 };
-            } else {
-                // Plain columns without Ball Butler: ball B is a human lob
-                // onto the feed site (the tracker resolves the un-announced
-                // landing, _maybe_resolve_columns_feed).
-                m.lob = { x: feedX, ball: 1 };
+                if (reloadFirst(p, cup)) m.feeds.push({ x: aX, ball: 0 });
+            } else if (p.value === 'columns_1ball_fed') {
+                m.feeds.push({ x: feedX, ball: 1 });            // feed B
+            } else if (cup === 'seated') {
+                m.feeds.push({ x: feedX, ball: 1 });            // throw first, feed B
+            } else if (cup === 'empty' && TWO_FEED_LANDED) {
+                m.feeds.push({ x: aX, ball: 0 }, { x: feedX, ball: 1 });  // feed A then B
             }
         }
     }
@@ -686,7 +726,7 @@ function buildModel(p) {
 }
 
 function diagramKeyOf(p) {
-    return [p.value, effectiveReload(p) ? 1 : 0, effective('apex_m'), effective('separation_mm'),
+    return [p.value, cupState(), effective('apex_m'), effective('separation_mm'),
         defaults ? defaults.dwell_s : '', defaults ? defaults.columns_feed_site : ''].join('|');
 }
 
@@ -706,7 +746,7 @@ function rebuildDiagram(p) {
     for (const b of m.balls) {
         svgEl('circle', { cx: lx + 3, cy: 6, r: 2.8 }, ballCls(b) + ' legend', g);
         const txt = 'Ball ' + (b.id + 1) + (b.phantom ? ' phantom'
-            : (m.feed && m.feed.ball === b.id) || (m.lob && m.lob.ball === b.id) ? ' fed' : '');
+            : m.feeds.some((f) => f.ball === b.id) ? ' fed' : '');
         const t = svgEl('text', { x: lx + 8, y: 8.6 }, 'jp-legend', g);
         t.textContent = txt;
         lx += 13 + txt.length * 4.0;
@@ -756,30 +796,25 @@ function rebuildDiagram(p) {
         }
     }
 
-    // Ball Butler glyph + feed arc, or the human lob.
-    if (m.feed) {
+    // Ball Butler glyph + one feed arc per fed ball.
+    if (m.feeds.length) {
         const bb = svgEl('g', {}, 'jp-bb', g);
         svgEl('rect', { x: 5, y: BASE_Y - 6, width: 15, height: 6, rx: 1.5 }, 'jp-bb-base', bb);
         svgEl('rect', { x: 9, y: BASE_Y - 15, width: 7, height: 9, rx: 1.5 }, 'jp-bb-body', bb);
         svgEl('line', { x1: 12.5, y1: BASE_Y - 13, x2: BB_ARM.x, y2: BB_ARM.y }, 'jp-bb-arm', bb);
         const bt = svgEl('text', { x: 12.5, y: 101, 'text-anchor': 'middle' }, 'jp-site-label', g);
         bt.textContent = 'BB';
-        const ex = m.feed.x, ey = top - 1;
-        const cy = Math.min(ay, BB_ARM.y) - 16;
-        svgEl('path', {
-            d: 'M ' + BB_ARM.x + ' ' + BB_ARM.y + ' Q ' + (BB_ARM.x + ex) / 2 + ' ' + cy
-                + ' ' + ex + ' ' + ey,
-        }, 'jp-feed', g).setAttribute('marker-end', 'url(#jp-arrow)');
+        m.feeds.forEach((fd, k) => {
+            const ex = fd.x, ey = top - 1;
+            const cy = Math.min(ay, BB_ARM.y) - 16 - 10 * k;
+            svgEl('path', {
+                d: 'M ' + BB_ARM.x + ' ' + BB_ARM.y + ' Q ' + (BB_ARM.x + ex) / 2 + ' ' + cy
+                    + ' ' + ex + ' ' + ey,
+            }, 'jp-feed', g).setAttribute('marker-end', 'url(#jp-arrow)');
+        });
         const ft = svgEl('text', { x: BB_ARM.x - 3, y: BB_ARM.y - 3, 'text-anchor': 'end' },
             'jp-feed-label', g);
-        ft.textContent = 'feed';
-    } else if (m.lob) {
-        const ex = m.lob.x, ey = top - 1;
-        svgEl('path', {
-            d: 'M 4 ' + (ay + 8) + ' Q ' + (4 + ex) / 2 + ' ' + (ay - 10) + ' ' + ex + ' ' + ey,
-        }, 'jp-feed lob', g).setAttribute('marker-end', 'url(#jp-arrow-lob)');
-        const ft = svgEl('text', { x: 4, y: ay + 16 }, 'jp-feed-label lob', g);
-        ft.textContent = 'hand lob';
+        ft.textContent = m.feeds.length > 1 ? 'BB x2' : 'feed';
     }
 
     // Dynamic elements: only as many balls as the pattern has.
@@ -917,7 +952,7 @@ function buildDiagram() {
     }, 'jp-diagram');
     const title = svgEl('title', {}, null, svg);
     const defs = svgEl('defs', {}, null, svg);
-    for (const [id, cls] of [['jp-arrow', 'jp-arrowhead'], ['jp-arrow-lob', 'jp-arrowhead lob']]) {
+    for (const [id, cls] of [['jp-arrow', 'jp-arrowhead']]) {
         const mk = svgEl('marker', {
             id, viewBox: '0 0 6 6', refX: 5, refY: 3, markerWidth: 5, markerHeight: 5,
             orient: 'auto-start-reverse',
@@ -1004,18 +1039,10 @@ export function buildJugglePanel(container) {
         applyPatternPoint(ui.pattern);
         sync();
     });
-    const reloadLabel = el('label', 'jp-reload');
-    const reload = el('input');
-    reload.type = 'checkbox';
-    reload.id = 'juggle-reload';
-    reload.addEventListener('change', () => {
-        // Only the operator's OWN choice is remembered; a pattern that forces
-        // reload doesn't overwrite it, so switching back restores it.
-        if (!patternOf(ui.pattern).reloadRequired) ui.userReload = reload.checked;
-        sync();
-    });
-    reloadLabel.append(reload, document.createTextNode('Reload first'));
-    row.append(select, reloadLabel);
+    // Cup preview (not a control): the node decides from the cup sensor.
+    const cupPreview = el('span', 'jp-reload jp-cup-preview');
+    cupPreview.id = 'juggle-cup-preview';
+    row.append(select, cupPreview);
 
     const main = el('div', 'jp-main');
     const diag = buildDiagram();
@@ -1081,7 +1108,7 @@ export function buildJugglePanel(container) {
     container.append(head, row, main, timing, summary, actions, attempt, warnEl);
 
     dom = {
-        root: container, title, clear, badge, select, reload, reloadLabel,
+        root: container, title, clear, badge, select, cupPreview,
         svg: diag.svg, diagTitle: diag.title, diagStatic: diag.stat, hand: diag.hand,
         handStem: diag.handStem, balls: diag.balls, speedT: diag.speedT,
         fields: fieldDom, dwellVal, timing, start, reloadBtn, magazine, stop, status, summary, attempt, warn: warnEl,
@@ -1199,23 +1226,23 @@ function attemptView() {
 function sync() {
     if (!dom) return;
     const p = patternOf(ui.pattern);
-    const reload = effectiveReload(p);
+    const cup = cupState();
 
-    // Compact (minimap collapsed): pattern, reload, Start/Stop, status and
+    // Compact (minimap collapsed): pattern, cup preview, Start/Stop, status and
     // an overrides summary — typed values must never be HIDDEN while they
     // would still be sent.
     dom.root.classList.toggle('jp-compact', !gate.expanded);
 
-    // Pattern + reload.
+    // Pattern + cup preview.
     if (dom.select.value !== p.value) dom.select.value = p.value;
     setTitle(dom.select, p.blurb);
-    if (dom.reload.checked !== reload) dom.reload.checked = reload;
-    setDisabled(dom.reload, !!p.reloadRequired);
-    setTitle(dom.reloadLabel, p.reloadRequired
-        ? 'Required for ' + p.label + ': Ball 2 is the only real ball and Ball Butler is its '
-          + 'only feed (the relay refuses it without reload)'
-        : 'Open the attempt with a Ball Butler feed throw');
-    dom.reloadLabel.classList.toggle('forced', !!p.reloadRequired);
+    const pv = '(preview) ' + cupPreviewText(p, cup);
+    if (dom.cupPreview.textContent !== pv) dom.cupPreview.textContent = pv;
+    setTitle(dom.cupPreview, 'Preview only: the skill node decides from the cup sensor at accept '
+        + '(EMPTY: Ball Butler loads first; SEATED: throw first; UNKNOWN: refused). '
+        + 'The attempt line confirms what it did.');
+    dom.cupPreview.classList.toggle('forced', cup === 'unknown' && !p.cupNeed
+        && p.value !== 'reload' && p.value !== 'magazine');
 
     // Fields.
     for (const k of FIELD_KEYS) {

@@ -97,5 +97,5 @@ def test_reload_only_skips_the_throw_only_box_coverage_check(tmp_path):
     _reload_ready(node2)
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)), \
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp2 = node2._start_pattern(_goal('self_toss', reload=True))
+        resp2 = node2._start_pattern(_goal('self_toss'))
     assert resp2.success is False and 'admissible box' in resp2.message

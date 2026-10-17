@@ -123,7 +123,8 @@ def test_a_real_throw_then_catch_round_trips_identically_to_in_process(
     assert rep.seq == 1 and rep.result.accepted, rep.result.message
     new_ref, res_ref, seg_ref = ex.install_segment(
         None, rq.seed_rest, rq.kind, rq.terminal, rq.t_now_s, limits=limits,
-        geom=geom)
+        geom=geom, lead_s=rq.lead_s)   # the request's own lead, not the
+    # per-kind default (THROW = FRESH_THROW_LEAD_S since 2026-10-16)
     assert rep.result.accepted == res_ref.accepted
     for name in ('code', 'splice_k', 't0_s', 'event_t_s', 'seeded_post_release'):
         assert getattr(rep.result, name) == getattr(res_ref, name), name
@@ -137,7 +138,8 @@ def test_a_real_throw_then_catch_round_trips_identically_to_in_process(
     rep2 = solver.solve(rq2)
     assert rep2.seq == 2 and rep2.result.accepted, rep2.result.message
     new2, res2, seg2 = ex.install_segment(
-        new_ref, None, rq2.kind, rq2.terminal, rq2.t_now_s, limits=limits,
+        new_ref, None, rq2.kind, rq2.terminal, rq2.t_now_s, lead_s=rq2.lead_s,
+        limits=limits,
         geom=geom, warm_start=seg_ref.warm_start)
     assert res2.accepted
     assert rep2.result.splice_k == res2.splice_k

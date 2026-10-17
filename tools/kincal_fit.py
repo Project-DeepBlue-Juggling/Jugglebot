@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Kinematic calibration fit — the Stewart geometry from a mocap pose sweep.
 
-Plan: ``plans/active/kinematic-calibration.md`` (the design, its decisions and
+Plan: ``plans/archived/kinematic-calibration.md`` (the design, its decisions and
 its pass criteria; §§ referenced below are that plan's).
 
 What it fits
@@ -748,7 +748,7 @@ def analyse(cap: Capture, *, sigma_mm: float = DEFAULT_SIGMA_MM,
 def render_report(a: dict, capture_path: str) -> str:
     L = ['# Kinematic calibration fit — %s' % os.path.basename(capture_path), '',
          'Mode **%s**, generated %s by `tools/kincal_fit.py`. Plan: '
-         '`plans/active/kinematic-calibration.md`.' % (a['mode'], a['generated']),
+         '`plans/archived/kinematic-calibration.md`.' % (a['mode'], a['generated']),
          '', '**Overall: %s**' % ('PASS' if a['pass'] else 'NOT PASSED'), '']
     L += ['## Criteria (§ 8)', '', '| criterion | result |', '|---|---|']
     for k, v in a['criteria'].items():
@@ -848,7 +848,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
               encoding='utf-8') as fh:
         fh.write('# PROPOSED by tools/kincal_fit.py from %s — NOT applied.\n'
                  '# Applying it is a deliberate commit '
-                 '(plans/active/kinematic-calibration.md § 6 step 5).\n'
+                 '(plans/archived/kinematic-calibration.md § 6 step 5).\n'
                  % os.path.basename(args.capture))
         yaml.safe_dump({'capture': os.path.basename(args.capture),
                         'mode': a['mode'], 'pass': a['pass'],

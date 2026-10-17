@@ -74,7 +74,7 @@ throws).** What changed since, and what to watch (logbook entries dated 2026-10-
 | 12 | Read the limits back without changing them: `ros2 service call /trajectory/set_limits jugglebot_interfaces/srv/SetTrajectoryLimits "{leg_vel_limit_mmps: 0.0, leg_acc_limit_mmps2: 0.0, leg_jerk_limit_mmps3: 0.0}"` | `applied_*` 350 / 5000 / 200000. |
 | 13 | GUI: confirm leg current and ODrive FET-temperature telemetry are visible for legs 1/2 before any motion (the 15 A clamp and thermal watch below depend on seeing these live, not reconstructed from a bag afterward). | Current and temp panels populated at rest. |
 | 14 | `ros2 service call /hand_jam_dry_run std_srvs/srv/Trigger` | `hand_jam: ARMED; enabled=True …` (passed sitting 5's bench check twice; no bench check this sitting). |
-| 15 | `ros2 param set /skill_node catch_resend_max 0`; `ros2 param get /skill_node columns_entry` | Set; `hop` (default, unchanged — `skill_node.py:928`). |
+| 15 | `ros2 param set /skill_node catch_resend_max 0`; `ros2 param get /skill_node columns_entry` | Set; `hop` (param retired 2026-10-14; default, unchanged — `skill_node.py:928`). |
 | 16 | `ros2 param get /skill_node columns_feed_bb_bias_mm` | `[0.0, 0.0]` (ROS params don't persist across a fresh launch). Measured at the first attempt: n=8, median (+4.2, -0.8) mm — optional to set (row 23). |
 | 17 | Seat a ball; `ros2 service call skills/check std_srvs/srv/Trigger` | `ladder OK`, `frame check OK`, `box OK` for the columns pairs at apex 0.95 m (the columns apex ceiling is back at 1.047 m at the 830 plane — see row 4). |
 

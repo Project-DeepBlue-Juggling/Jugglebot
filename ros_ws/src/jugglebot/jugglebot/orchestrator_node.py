@@ -338,8 +338,8 @@ class OrchestratorNode(Node):
 
     @staticmethod
     def _parse_juggle_request(data):
-        """``<pattern>[,reload][,apex_m=<f>][,separation_mm=<f>][,num_cycles=<n>]``
-        → ``(pattern, reload, {field: value})``, or raise ValueError naming
+        """``<pattern>[,apex_m=<f>][,separation_mm=<f>][,num_cycles=<n>]``
+        → ``(pattern, {field: value})``, or raise ValueError naming
         the offending token.  Tokens after the pattern may come in any order.
 
         Strict on purpose: an unknown or malformed token REFUSES the request
@@ -352,12 +352,8 @@ class OrchestratorNode(Node):
         pattern = parts[0]
         if not pattern:
             raise ValueError('no pattern')
-        reload_ = False
         values = {}
         for tok in parts[1:]:
-            if tok == 'reload':
-                reload_ = True
-                continue
             key, sep, raw = tok.partition('=')
             key = key.strip()
             parse = _JUGGLE_NUMERIC_FIELDS.get(key)
@@ -374,13 +370,13 @@ class OrchestratorNode(Node):
                 raise ValueError('%s=%r must be finite and >= 0'
                                  % (key, raw.strip()))
             values[key] = value
-        return pattern, reload_, values
+        return pattern, values
 
     def _svc_juggle_request(self, req, res):
         """Relay a GUI juggle request to jugglebot/juggle (fire-and-forget
         ACK). ``req.data`` is
-        ``<pattern>[,reload][,apex_m=<f>][,separation_mm=<f>][,num_cycles=<n>]``
-        (e.g. ``'hop,reload'``, ``'columns,num_cycles=6,apex_m=0.8'``) — the
+        ``<pattern>[,apex_m=<f>][,separation_mm=<f>][,num_cycles=<n>]``
+        (e.g. ``'hop,num_cycles=4'``, ``'columns,num_cycles=6,apex_m=0.8'``) — the
         GUI's own encoding (juggle-panel.js), never a second place that names
         the launch defaults: every numeric goal field the request does not
         name carries its own "0 => the node's parameter" sentinel."""
@@ -391,7 +387,7 @@ class OrchestratorNode(Node):
                 'Juggle request received but jugglebot/juggle server is not ready.')
             return res
         try:
-            pattern, reload_, values = self._parse_juggle_request(req.data)
+            pattern, values = self._parse_juggle_request(req.data)
         except ValueError as e:
             res.success = False
             res.message = 'juggle request refused: %s in %r' % (e, req.data)
@@ -402,17 +398,16 @@ class OrchestratorNode(Node):
         goal.apex_m = float(values.get('apex_m', 0.0))
         goal.separation_mm = float(values.get('separation_mm', 0.0))
         goal.num_cycles = int(values.get('num_cycles', 0))
-        goal.reload = reload_
         send_future = self._juggle_client.send_goal_async(goal)
         send_future.add_done_callback(self._on_juggle_goal_response)
         overrides = ''.join(', %s=%s' % kv for kv in sorted(values.items()))
         res.success = True
         res.message = (
-            f'Juggle dispatched (pattern={pattern!r}, reload={reload_}{overrides}).')
+            f'Juggle dispatched (pattern={pattern!r}{overrides}).')
         # skill_node (the action server) prints the attempt's start line.
         self.get_logger().debug(
             'Juggle requested via jugglebot/juggle_request — goal dispatched '
-            f'(pattern={pattern!r}, reload={reload_}{overrides}).')
+            f'(pattern={pattern!r}{overrides}).')
         return res
 
     def _svc_juggle_stop(self, req, res):

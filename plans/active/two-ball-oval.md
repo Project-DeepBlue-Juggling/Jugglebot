@@ -120,6 +120,9 @@ and whether this cup can carry a ball 150 mm in 0.30 s is what the plan finds ou
 sim gate. `cup-contact-contract.md` (archived) holds C-CUP-1/2/3; C-CUP-4 extends it. The open
 2026-09-16 banking-saturation defect is P2 here. `skill-stack-dress-rehearsals-and-residue.md`
 keeps the columns residue (SPLICE_TOO_LATE, emit gap); the columns canary at P4 reads against it.
+`columns-empty-cup-two-feed.md` (active) owns the cup-keyed accept rule every oval goal passes
+through; `bb-calibration-one-attempt.md` (active) owns the calibration sweep the runsheet's row 6a
+reads.
 
 ## 2. Architecture
 
@@ -202,8 +205,9 @@ with the cup parked, the feed caught PARKED at T (LEVEL pin + axial-only match),
 after one dwell, cup transits to C, steady from ball 1's catch; carried over unchanged:
 announcement-authoritative landing time, THROW 0 at `t_land − τ`, the 2.5 s delay floor,
 `columns_feed_bb_bias_mm`, phantom-catch guard, cancel-on-end; dropped: the hop's learner/box
-bypass and the toward-A offset. Exit: the second-to-last catch at C is a standalone HELD catch
-and the last throw lands on it.
+bypass and the toward-A offset. Accept is cup-keyed as for `columns` (SEATED → throw first;
+EMPTY → RELOAD_FIRST only once that plan's two-feed chain lands, refused until then). Exit: the
+second-to-last catch at C is a standalone HELD catch and the last throw lands on it.
 
 ## 3. Implementation Phase Summary
 
@@ -243,7 +247,11 @@ Paths under `ros_ws/src/jugglebot/jugglebot/`.
   comment (20°, 0.5 g, 50 %); skid has NO threshold — the 100 mm/s that covered every
   measured cell is a comment-level reference for reading the log line, never a refusal.
 - **Node and GUI**: `skill_node._PATTERNS` + `_run_one_ball` dispatch for `oval_1ball(_fed)`
-  (fed = `_start_reload(site=sites[0])`, no entry code); `skills/check` prints the oval box;
+  (fed = `_start_reload(site=sites[0])`, no entry code); rows in the cup-keyed accept table
+  `_CUP_RULE` (`columns-empty-cup-two-feed.md` D3, 2026-10-17 — the goal carries no reload
+  flag, the debounced cup evidence picks the first skill): `oval_1ball` as `hop` (EMPTY →
+  RELOAD_FIRST, SEATED → THROW_FIRST), `oval_1ball_fed` as `columns_1ball_fed` (EMPTY →
+  RELOAD_FIRST, SEATED → `REJECTED_BALL_IN_HAND`); `skills/check` prints the oval box;
   `ros_ws/gui/js/juggle-panel.js` list entry; `sim/skills_gate.py` label + `_sites_for`.
 - **Docs**: `motion/skills/INVARIANTS.md` rows C-CUP-4, the learner-key caveat, the narrowed
   translation rule; `docs/motion_planner` pattern table.

@@ -22,7 +22,7 @@ Static TF:
 
 from __future__ import annotations
 
-import copy
+import dataclasses
 import datetime
 import json
 import math
@@ -51,6 +51,7 @@ from jugglebot_interfaces.msg import (
 import tf2_ros
 
 from .mocap_interface import FRAME_QUEUE_MAXLEN, MocapInterface
+from .calibration_solve_worker import CalibrationSolveWorker
 from jugglebot.protocol_config import (
     BallButlerStates,
     MOCAP_ALIGNMENT_POS_THRESH_MM,
@@ -61,14 +62,14 @@ from jugglebot import mocap_status as mocap_st
 from .bb_calibration import (
     run_calibration, CalibrationResult, MIN_ARC_DEG,
     BB_MARKER_COUNT, BB_YAW_ANCHOR_INDEX,
-    load_marker_template, check_calibration_consistency,
-    stamped_yaw_samples_from_joint_state,
+    load_marker_template, assess_sweep_vs_reference, format_outcome_body,
+    stamped_yaw_samples_from_joint_state, sweep_suffix,
 )
 from .bb_base_frame import (
-    BaseFrameMonitor, KappaRecord, BASE_MAX_RESIDUAL_MM, DEFAULT_MIN_POOLED_SWEEPS,
-    base_candidate_points, base_state_to_json, bb_in_base, check_base_frame_consistency,
-    compose_bb_pose, estimate_base_pose, kappa_sweep_sd_deg, load_base_frame, load_base_state,
-    pool_kappa,
+    BaseFrameMonitor, KappaRecord, append_record, assess_base_frame,
+    base_candidate_points, bb_in_base, current_epoch_id,
+    estimate_base_pose, kappa_sweep_sd_deg, load_base_frame, load_base_state,
+    seed_base_state, write_base_state, epoch_median_at_pin,
 )
 
 try:
@@ -83,6 +84,17 @@ except ImportError:  # pragma: no cover - outside a ROS install
 #: cycles before they refuse, slow enough to be free next to the per-frame marker
 #: path.
 MOCAP_STATUS_PERIOD_S = 0.2
+
+#: Period of the executor-thread timer that APPLIES finished calibration
+#: solves (state, files, publishes, log lines). The solve itself runs on the
+#: ``CalibrationSolveWorker`` thread (logbook
+#: 2026-10-16-mocap-calibration-solve-off-executor), so this bounds the
+#: result's extra latency: 0-0.1 s after a ~4 s solve, on a static BB.
+CALIBRATION_APPLY_PERIOD_S = 0.1
+
+#: Bounded join of the solve thread at node shutdown; an unfinished solve's
+#: result is dropped (the thread is a daemon).
+CALIBRATION_SOLVE_JOIN_TIMEOUT_S = 1.0
 
 #: Wall-clock cap on one CALIBRATING collection window (Q5c). BB's own sweep is
 #: a few seconds; anything past a minute means the heartbeat is wedged at
@@ -130,8 +142,12 @@ DEFAULT_BB_YAW_SOURCE = 'auto'
 #: truncates with an ellipsis and logs the full text at DEBUG) — a safety net:
 #: every reason the node produces fits without truncation
 #: (tests/ros/test_mocap_node_keep_last_good.py). The 2026-10-09 live failure
-#: line was ~900 characters.
-MAX_CALIBRATION_FAILURE_CHARS = 240
+#: line was ~900 characters. The bound covers the whole published text: the
+#: sweep-kinematics suffix (``bb_calibration.sweep_suffix``, ~45 chars) is
+#: reserved first and the reason truncated to what is left, so the suffix
+#: always survives (raised 240 -> 300 when the suffix landed, so no existing
+#: reason loses room).
+MAX_CALIBRATION_FAILURE_CHARS = 300
 
 #: BB base-marker frame (2026-10-10, ``jugglebot.bb_base_frame``): four fixed
 #: markers on BB's shelf, posed by geometry among every marker but BB's own
@@ -141,24 +157,6 @@ MAX_CALIBRATION_FAILURE_CHARS = 240
 DEFAULT_BASE_FRAME_FILE = 'bb_base_frame.json'
 DEFAULT_BASE_FRAME_STATE_FILE = os.path.join(
     os.path.expanduser('~'), 'bb_calibration_sessions', 'bb_base_frame_state.json')
-#: ``bb_pose_source``: what the published BB world pose comes from.
-#: ``sweep`` — the sweep estimator's world pose, gated in the world
-#: (unchanged); the base frame, when seen, is a diagnostic and each accepted
-#: sweep consistent with it extends the BB-in-base pool. ``base_frame`` — this
-#: window's base pose composed with the pooled BB-in-base constants, gated in
-#: the base frame (a QTM frame shift is reported and accepted; a BB-in-base
-#: change is refused unless bb_moved); refused when the base is not seen.
-#: ``auto`` — base_frame once the pool has ``bb_base_min_sweeps`` sweeps and the
-#: base is seen with a residual inside BASE_MAX_RESIDUAL_MM, else sweep.
-#: Default ``auto`` since 2026-10-10 13:45: the second sitting with the frame
-#: (8 sweeps, stamped yaw, all accepted) read κ = +179.515° ± 0.011° against
-#: the build's +179.491° ± 0.016° (Δ 0.024°, 1.3 combined SE, inside the 0.05°
-#: criterion for a BB-vs-base QTM warp) with the base heading shifted only
-#: +0.003° and the origin 0.7 mm — BB-in-base holds across sittings, so the
-#: base path (≈ 0.01° per sitting) replaces the sweep's own 0.03–0.05° value
-#: whenever the base is seen (logbook 2026-10-10-bb-base-marker-frame).
-BB_POSE_SOURCES = ('sweep', 'base_frame', 'auto')
-DEFAULT_BB_POSE_SOURCE = 'auto'
 #: Cadence (s) of the slow running base-pose estimate fed from the per-frame path.
 BASE_MONITOR_PERIOD_S = 0.2
 #: A window that does not see the base may use the running estimate if its
@@ -270,8 +268,67 @@ def _set_stamp(stamp, ns):
 # for the yaw offset) are single-sourced from bb_calibration.
 
 
+@dataclasses.dataclass(frozen=True)
+class _SweepSnapshot:
+    """One ended sweep's solve inputs, COPIED on the executor thread at the
+    exit edge (the next sweep's start edge rebinds every ``_calib_*`` list,
+    and the collectors append to them). The worker reads only this."""
+    calib_data: dict            # marker index -> list of (3,) arrays (lists copied)
+    yaw_readings: list
+    frames: list
+    yaw_samples: list           # the source the estimator fits
+    yaw_source: str             # 'stamped' | 'heartbeat'
+    suffix_samples: list        # what _attempt_suffix would have read
+    template: object            # the body template (immutable after init)
+    base_points: list
+    base_template_mm: object    # None when the base-frame model is off
+    pitch_z_offset_mm: float
+
+
+@dataclasses.dataclass(frozen=True)
+class _SweepSolve:
+    """The worker's product: the calibration (or the solver's refusal text)
+    and, for a constellation result with a base model, this window's base
+    pose (or the estimator's refusal text)."""
+    result: object = None       # CalibrationResult | None
+    solver_error: str = ''
+    base_pose: object = None
+    base_error: str = ''
+
+
+def _solve_sweep(snap: _SweepSnapshot) -> _SweepSolve:
+    """The expensive part of a calibration, on the WORKER thread: pure, reads
+    only ``snap``. ``run_calibration`` and ``estimate_base_pose`` are looked
+    up in this module so tests that patch them here still take effect."""
+    try:
+        result = run_calibration(
+            calibration_data=snap.calib_data,
+            yaw_readings_deg=snap.yaw_readings,
+            pitch_z_offset_mm=snap.pitch_z_offset_mm,
+            marker_frames=snap.frames,
+            yaw_samples=snap.yaw_samples,
+            template=snap.template,
+            yaw_source=snap.yaw_source,
+        )
+    except ValueError as e:
+        return _SweepSolve(solver_error=str(e))
+    if result.yaw_method != 'constellation' or snap.base_template_mm is None:
+        return _SweepSolve(result=result)
+    try:
+        return _SweepSolve(result=result,
+                           base_pose=estimate_base_pose(snap.base_points,
+                                                        snap.base_template_mm))
+    except ValueError as e:
+        return _SweepSolve(result=result, base_error=str(e))
+
+
 class MocapNode(Node):
-    def __init__(self):
+    def __init__(self, *, solve_inline: bool = False):
+        """``solve_inline=True`` (tests only) runs the calibration solve
+        synchronously at the sweep's exit edge and applies it before the
+        heartbeat callback returns -- the pre-2026-10-16 timing, so tests can
+        patch the solver around that one call. The live node solves on the
+        ``CalibrationSolveWorker`` thread."""
         super().__init__('mocap_node')
 
         # ── Mocap interface (pure-Python, runs its own asyncio thread) ────
@@ -367,6 +424,10 @@ class MocapNode(Node):
         # collection state.
         self.create_timer(MOCAP_STATUS_PERIOD_S, self._check_calibration_health)
         self.create_timer(1.0, self._publish_base_frame_pose)
+        # The calibration solve runs OFF this executor (calibration_solve_worker:
+        # the invariant and its four rules); this timer applies its outcomes.
+        self._calib_solver = CalibrationSolveWorker(_solve_sweep, inline=solve_inline)
+        self.create_timer(CALIBRATION_APPLY_PERIOD_S, self._apply_calibration_outcomes)
 
         # ── BB heartbeat subscription ─────────────────────────────────────
         self.create_subscription(
@@ -404,24 +465,12 @@ class MocapNode(Node):
         self.create_subscription(
             JointState, 'bb/axis_estimates', self._on_bb_axis_estimates, 50)
 
-        # ── Body template + consistency gate (2026-10-09) ─────────────────
-        # bb_moved: the operator's explicit statement that BB was physically
-        # moved OR that QTM was recalibrated — either changes the frame, and
-        # the rotating markers alone cannot tell the two apart — so a
-        # calibration that disagrees with the last accepted one is real and
-        # becomes the new reference. ONE-SHOT: it arms the next calibration
-        # only, and is re-armed by setting it true again (a parameter left true
-        # must not disable the gate for good). Either event also invalidates
-        # the aim correction (throw_affine_correction.json): refit it.
+        # ── Body template + advisory history (2026-10-16: nothing here refuses) ──
         self.declare_parameter('bb_marker_template_file', DEFAULT_MARKER_TEMPLATE_FILE)
         self.declare_parameter('bb_calibration_state_file', DEFAULT_CALIBRATION_STATE_FILE)
-        self.declare_parameter('bb_moved', False)
         self.declare_parameter('bb_yaw_source', DEFAULT_BB_YAW_SOURCE)
-        self.declare_parameter('bb_pose_source', DEFAULT_BB_POSE_SOURCE)
         self.declare_parameter('bb_base_frame_file', DEFAULT_BASE_FRAME_FILE)
         self.declare_parameter('bb_base_frame_state_file', DEFAULT_BASE_FRAME_STATE_FILE)
-        self.declare_parameter('bb_base_min_sweeps', DEFAULT_MIN_POOLED_SWEEPS)
-        self._bb_moved_armed = bool(self.get_parameter('bb_moved').value)
         self.add_on_set_parameters_callback(self._on_set_parameters)
         self._marker_template = None
         self._marker_template_error = ''
@@ -433,6 +482,7 @@ class MocapNode(Node):
         self._base_monitor_last_t = None
         self._base_reported = False
         self._load_base_frame(str(self.get_parameter('bb_base_frame_file').value))
+        self._log_startup_state()
 
         self.get_logger().info('Mocap node up (QTM connects in the background)')
 
@@ -442,18 +492,6 @@ class MocapNode(Node):
                 return SetParametersResult(
                     successful=False,
                     reason=f'bb_yaw_source must be one of {", ".join(BB_YAW_SOURCES)}')
-            if p.name == 'bb_pose_source' and p.value not in BB_POSE_SOURCES:
-                return SetParametersResult(
-                    successful=False,
-                    reason=f'bb_pose_source must be one of {", ".join(BB_POSE_SOURCES)}')
-        for p in params:
-            if p.name == 'bb_moved':
-                self._bb_moved_armed = bool(p.value)
-                if self._bb_moved_armed:
-                    self.get_logger().warn(
-                        'bb_moved armed: the next BB calibration may move the yaw '
-                        'frame / axis point past the consistency gate and becomes the '
-                        'reference (BB moved or QTM recalibrated; refit the aim correction)')
         return SetParametersResult(successful=True)
 
     @staticmethod
@@ -507,7 +545,7 @@ class MocapNode(Node):
                                           f'({os.path.basename(path)}: {type(e).__name__})')
         if self._base_model is None:
             self.get_logger().warn(f'{self._base_model_error} — base-marker frame off '
-                                   '(bb_pose_source sweep only)')
+                                   '(kappa is not pooled)')
             return
         self._base_monitor = BaseFrameMonitor(self._base_model.template_mm)
         self.get_logger().debug(
@@ -552,7 +590,8 @@ class MocapNode(Node):
         if pose is None:
             return
         self._base_reported = True
-        _, ref, err = self._base_state()
+        state, err = self._load_state()
+        ref = state['base_ref']
         note = ''
         if ref is not None:
             d_mm = float(np.linalg.norm(pose.origin_mm - np.asarray(ref['origin_mm'], float)))
@@ -1050,7 +1089,10 @@ class MocapNode(Node):
             self._calib_frames.append((stamp_ns * 1e-9, np.array(frame)))
 
     def _finalize_calibration(self):
-        """Run the calibration pipeline and publish the result."""
+        """Exit edge of a valid sweep, on the EXECUTOR thread: the cheap
+        refusals, then a COPY of the window's inputs handed to the solve
+        worker. Returns at once; ``_apply_calibration_outcomes`` publishes the
+        result (logbook 2026-10-16-mocap-calibration-solve-off-executor)."""
         total_pts = sum(len(v) for v in self._calib_data.values())
         if total_pts == 0:
             self._publish_calibration_failure('No marker data collected')
@@ -1088,41 +1130,76 @@ class MocapNode(Node):
             yaw_samples, yaw_source = self._calib_stamped_yaw, 'stamped'
         else:
             yaw_samples, yaw_source = self._calib_yaw_samples, 'heartbeat'
-        try:
-            result: CalibrationResult = run_calibration(
-                calibration_data=self._calib_data,
-                yaw_readings_deg=self._calib_yaw_readings,
-                pitch_z_offset_mm=hw.BB_GEOM_PITCH_Z_OFFSET_MM,
-                marker_frames=self._calib_frames,
-                yaw_samples=yaw_samples,
-                template=self._marker_template,
-                yaw_source=yaw_source,
-            )
-        except ValueError as e:
-            self.get_logger().debug(f'Calibration solver rejected the sweep: {e}')
-            self._publish_calibration_failure(str(e))
+        suffix_samples = (self._calib_stamped_yaw
+                          if requested != 'heartbeat' and have_stamped
+                          else self._calib_yaw_samples)
+        snap = _SweepSnapshot(
+            calib_data={i: list(v) for i, v in self._calib_data.items()},
+            yaw_readings=list(self._calib_yaw_readings),
+            frames=list(self._calib_frames),
+            yaw_samples=list(yaw_samples),
+            yaw_source=yaw_source,
+            suffix_samples=list(suffix_samples),
+            template=self._marker_template,
+            base_points=list(self._calib_base_points),
+            base_template_mm=(None if self._base_model is None
+                              else self._base_model.template_mm),
+            pitch_z_offset_mm=hw.BB_GEOM_PITCH_Z_OFFSET_MM,
+        )
+        if not self._calib_solver.submit(snap):
+            return                              # shutting down: dropped (rule 2)
+        if self._calib_solver.inline:
+            self._apply_calibration_outcomes()
+
+    def _apply_calibration_outcomes(self):
+        """Executor-thread timer: apply every finished solve, oldest first,
+        exactly once (``CalibrationSolveWorker.drain`` hands each out once)."""
+        for outcome in self._calib_solver.drain():
+            try:
+                self._apply_one_outcome(outcome)
+            except Exception as exc:
+                # One bad outcome must not lose the rest of the drained batch.
+                self.get_logger().error(
+                    f'BB calibration apply failed: {type(exc).__name__}: {exc}')
+
+    def _apply_one_outcome(self, outcome):
+        snap = outcome.job
+        if outcome.error is not None:
+            # Rule 3: the solve raised. One line, nothing persisted, the
+            # calibration in force kept; the worker and the stream live on.
+            self._publish_calibration_failure(
+                f'CALIBRATION_SOLVE_ERROR: {outcome.error}',
+                suffix=sweep_suffix(snap.suffix_samples, None))
             return
+        self.get_logger().debug(
+            f'Calibration solve took {outcome.solve_s:.2f} s off the executor')
+        self._apply_sweep_solve(snap, outcome.value)
+
+    def _apply_sweep_solve(self, snap: _SweepSnapshot, solve: _SweepSolve):
+        """Everything that followed the solve when it ran inline, in the same
+        order, reading the sweep's inputs from ``snap`` (never ``_calib_*``:
+        a new sweep may already be collecting)."""
+        if solve.result is None:
+            self.get_logger().debug(
+                f'Calibration solver rejected the sweep: {solve.solver_error}')
+            self._publish_calibration_failure(
+                solve.solver_error, suffix=sweep_suffix(snap.suffix_samples, None))
+            return
+        result: CalibrationResult = solve.result
+        lag_s = (None if result.yaw_estimate is None
+                 else float(result.yaw_estimate.lag_s))
+        suffix = sweep_suffix(snap.suffix_samples, lag_s)
         if result.yaw_method != 'constellation':  # defensive: never publish the anchor value
             self._publish_calibration_failure(
-                f'internal: yaw offset came from the {result.yaw_method!r} estimator')
+                f'internal: yaw offset came from the {result.yaw_method!r} estimator',
+                suffix=suffix)
             return
 
-        # ── Base-marker frame: this window's base pose, BB-in-base, mode ───
-        bb_moved = self._bb_moved_armed       # captured before any gate consumes it
-        view = self._base_frame_view(result)
-        requested_pose = str(self.get_parameter('bb_pose_source').value)
-        if requested_pose not in BB_POSE_SOURCES:
-            self._publish_calibration_failure(
-                f'BB_POSE_SOURCE_INVALID: bb_pose_source {requested_pose!r} is not one of '
-                f'{", ".join(BB_POSE_SOURCES)}')
-            return
-        pose_source, refusal = self._resolve_pose_source(requested_pose, view, bb_moved)
-        if pose_source is None:
-            self.get_logger().debug(f'Refused sweep ({refusal}): {result.yaw_estimate.summary()}')
-            self._publish_calibration_failure(refusal)
-            return
-
-        # ── Consistency gate ──────────────────────────────────────────────
+        # ── Base-marker frame + history: ADVISORY only (nothing below refuses) ──
+        # The sweep's own yaw offset and axis point are ALWAYS the published
+        # output. The base frame yields kappa for the epoch bookkeeping; the
+        # last accepted calibration yields the yaw/axis deltas. A flag is a
+        # line on the outcome (and WARN severity), never a refusal.
         yaw_deg = math.degrees(result.yaw_offset_rad)
         est = result.yaw_estimate
         arc = result.arc_position_mm
@@ -1130,149 +1207,99 @@ class MocapNode(Node):
                     f'arc-fit cross-check ({arc[0]:.2f}, {arc[1]:.2f}, {arc[2]:.2f}) mm, '
                     f'{float(np.linalg.norm(np.asarray(arc[:2]) - result.bb_position_mm[:2])):.2f} mm '
                     'from the body-model axis point in x/y')
+        view = self._base_frame_view(result, snap, solve)
         summary = f'{est.summary()}; {arc_note}'
         if view['pose'] is not None:
             summary += (f'; {view["pose"].summary()}; BB-in-base κ {view["kappa"]:+.4f}°, '
                         f'p_b ({view["p_b"][0]:.2f}, {view["p_b"][1]:.2f}, {view["p_b"][2]:.2f}) mm')
         elif view['error']:
             summary += f'; base frame: {view["error"]}'
-        published = result
-        base_verdict = None
         anchor = ('n/a' if result.anchor_yaw_offset_rad is None
                   else f'{math.degrees(result.anchor_yaw_offset_rad):+.3f}°')
-        if pose_source == 'base_frame':
-            base_verdict = check_base_frame_consistency(
-                view['kappa'], kappa_sweep_sd_deg(est.yaw_source), view['p_b'], view['pose'],
-                view['pooled'], view['base_ref'], bb_moved=bb_moved)
-            self.get_logger().debug(
-                f'Yaw offset (sweep) {yaw_deg:+.4f}° — {summary}; retired anchor estimator '
-                f'on the same sweep {anchor}; {base_verdict.message}')
-            if not base_verdict.accepted:
-                self._publish_calibration_failure(base_verdict.message)
-                return
-            if base_verdict.overridden:
-                self._bb_moved_armed = False   # one-shot: consumed by this calibration
-            if base_verdict.qtm_shift:
-                self.get_logger().warn(
-                    f'BB base frame moved {base_verdict.base_shift_mm:.2f} mm, '
-                    f'{base_verdict.base_shift_deg:+.3f}° in the world since '
-                    f'{view["base_ref"].get("accepted_at", "?")[:19]}: QTM frame shift, '
-                    'BB-in-base unchanged — accepted')
-            records = self._pool_records(view, result, base_verdict.reset_pool)
-            pooled = pool_kappa(records, self._marker_template.pinned_yaw_offset_deg,
-                                self._marker_template.repeatability_deg)
-            yaw_b, pos_b = compose_bb_pose(view['pose'], pooled.kappa_deg, pooled.axis_point_b_mm)
-            sigma_b = math.hypot(pooled.se_deg, view['pose'].heading_se_deg)
-            published = copy.copy(result)
-            published.yaw_offset_rad = math.radians(yaw_b)
-            published.yaw_offset_std_deg = sigma_b
-            published.bb_position_mm = np.asarray(pos_b, dtype=float)
-            published.yaw_method = 'base_frame'
-            gate_message = (f'{base_verdict.message} · pose source base_frame: {yaw_b:+.4f}° '
-                            f'±{sigma_b:.3f}° (κ {pooled.kappa_deg:+.4f}°, {pooled.count_note()}) vs '
-                            f'sweep {yaw_deg:+.4f}° (Δ {yaw_b - yaw_deg:+.3f}°), axis point '
-                            f'{float(np.linalg.norm(pos_b - result.bb_position_mm)):.2f} mm '
-                            'from the sweep\'s')
-            self._persist_base_state(records, view['pose'])
+        self.get_logger().debug(
+            f'Yaw offset (sweep) {yaw_deg:+.4f}° — {summary}; retired anchor estimator '
+            f'on the same sweep {anchor}')
+
+        node_flags: list = []
+        node_lines: list = []
+        state, state_error = view['state'], view['state_error']
+        if state_error:
+            node_flags.append('HISTORY_UNAVAILABLE')
+            node_lines.append(f'history unavailable: {state_error}')
+        base_adv = None
+        pooled_info = None
+        pooled = False
+        if view['pose'] is not None:
+            base_adv = assess_base_frame(
+                view['kappa'], kappa_sweep_sd_deg(est.yaw_source), view['p_b'],
+                view['pose'], state, self._marker_template.pinned_yaw_offset_deg)
+            pooled = base_adv.pooled
         else:
-            reference, ref_label, ref_error = self._gate_reference()
-            if ref_error and not bb_moved:
-                # A corrupt state file must not silently disable the gate. The
-                # estimator detail is DEBUG; the failure is one short line.
-                self.get_logger().debug(f'Refused sweep: {summary}')
-                self._publish_calibration_failure(
-                    f'CALIBRATION_STATE_UNREADABLE: {ref_error} — fix or delete it, or '
-                    'set bb_moved:=true')
-                return
-            if ref_error:
-                self.get_logger().warn(
-                    f'BB calibration state unreadable ({ref_error}); bb_moved:=true makes '
-                    'this calibration the new reference')
-            verdict = check_calibration_consistency(
-                yaw_deg, result.yaw_offset_std_deg, result.bb_position_mm,
-                est.template_residual_mm, None if ref_error else reference,
-                bb_moved=bb_moved, reference_label=ref_label)
-            # The base frame, when seen, judges the same sweep in its own frame:
-            # a diagnostic here (the world gate decides), and the pool's input.
-            if view['pose'] is not None and view['state_error']:
-                self.get_logger().warn(f'BB base frame state unreadable ({view["state_error"]}) '
-                                       '— this sweep is not pooled')
-            elif view['pose'] is not None:
-                base_verdict = check_base_frame_consistency(
-                    view['kappa'], kappa_sweep_sd_deg(est.yaw_source), view['p_b'], view['pose'],
-                    view['pooled'], view['base_ref'], bb_moved=bb_moved and verdict.accepted)
-            self.get_logger().debug(
-                f'Yaw offset {yaw_deg:+.4f}° — {summary}; retired anchor estimator '
-                f'on the same sweep {anchor}; {verdict.message}'
-                + ('' if base_verdict is None else f'; {base_verdict.message}'))
-            if not verdict.accepted:
-                message = verdict.message
-                if message.startswith('CALIBRATION_INCONSISTENT') and \
-                        self._base_expected(requested_pose, view):
-                    # The base frame would have decided this sweep and was not
-                    # seen: THAT is the cause to fix (restore the base view),
-                    # not bb_moved — the world gate's numbers follow as context.
-                    message = (f'{view["error"]} — check QTM sees the 4 shelf markers '
-                               '(occluded? taken into the Ball Butler body?); world gate also '
-                               'refused: Δyaw '
-                               f'{verdict.delta_deg:+.2f}°, Δaxis {verdict.axis_shift_mm:.1f} mm')
-                elif (base_verdict is not None and base_verdict.accepted
-                        and not base_verdict.no_reference and base_verdict.qtm_shift
-                        and message.startswith('CALIBRATION_INCONSISTENT')):
-                    # Short hint (the failure line is bounded): the base frame
-                    # says BB did not move — QTM's frame did.
-                    message += ' · base frame: BB unmoved, QTM frame shifted'
-                self._publish_calibration_failure(message)
-                return
-            if verdict.no_reference:
-                self.get_logger().warn(
-                    'BB calibration: no reference calibration exists (no state file) — this '
-                    'one is accepted unchecked and becomes the reference. Validate it against '
-                    'landings before trusting the aim')
-            if self._bb_moved_armed and (verdict.overridden or ref_error):
-                self._bb_moved_armed = False   # one-shot: consumed by this calibration
-            gate_message = verdict.message
-            if base_verdict is not None:
-                if base_verdict.accepted:
-                    self._persist_base_state(
-                        self._pool_records(view, result, base_verdict.reset_pool), view['pose'])
-                else:
-                    self.get_logger().warn(f'BB base frame: {base_verdict.message} — this '
-                                           'sweep is not pooled')
-        accepted_at = self._persist_accepted(published, gate_message, extra={
-            'pose_source': pose_source,
+            node_flags.append('BASE_NOT_SEEN')
+            node_lines.append('shelf base not seen: kappa not pooled')
+        reference, _ref_label, ref_error = self._gate_reference()
+        if ref_error:
+            node_flags.append('HISTORY_UNAVAILABLE')
+            node_lines.append(f'history unavailable: {ref_error}')
+        sweep_adv = assess_sweep_vs_reference(
+            yaw_deg, result.yaw_offset_std_deg, result.bb_position_mm,
+            est.template_residual_mm, est.lag_s * 1e3,
+            None if ref_error else reference,
+            None if base_adv is None else base_adv.same_world_epoch,
+            yaw_source=snap.yaw_source)
+        if reference is None and not ref_error:
+            self.get_logger().warn(
+                'BB calibration: no reference calibration exists (no state file) — this '
+                'one is accepted unchecked and becomes the reference. Validate it against '
+                'landings before trusting the aim')
+        if pooled:
+            asg = base_adv.assignment
+            new_state = append_record(state, self._kappa_record(view, result), asg,
+                                    self._marker_template.pinned_yaw_offset_deg)
+            ref = {'origin_mm': [float(v) for v in view['pose'].origin_mm],
+                   'heading_deg': float(view['pose'].heading_deg),
+                   'accepted_at': datetime.datetime.now(datetime.timezone.utc).isoformat()}
+            new_state = dict(new_state, base_ref=ref)
+            self._write_state(new_state)
+            ep = next(e for e in new_state['epochs'] if e['id'] == asg.epoch_id)
+            pooled_info = {'kappa_deg': ep['median_kappa_deg'], 'epoch_id': asg.epoch_id,
+                           'delta_deg': (0.0 if base_adv.delta_kappa_deg is None
+                                         else base_adv.delta_kappa_deg),
+                           'n': ep['n'], 'opened': asg.opened, 'rejoined': asg.rejoined}
+        else:
+            if view['pose'] is not None:       # BASE_FRAME_RESIDUAL: judged nothing
+                self.get_logger().debug('Base frame residual too high: kappa not pooled')
+            # Nothing to pool, but a corrupt/missing file is replaced by a fresh
+            # one (the library backs the old one up) so the next sweep has history.
+            if state_error:
+                self._write_state(state)
+        advisory_flags = (list(sweep_adv.flags) + list(node_flags)
+                          + (list(base_adv.flags) if base_adv is not None else []))
+        sweep_adv = dataclasses.replace(
+            sweep_adv, lines=list(sweep_adv.lines) + node_lines)
+        body = format_outcome_body(
+            yaw_deg, result.yaw_offset_std_deg, result.bb_position_mm, result.axis_tilt_deg,
+            est.template_residual_mm, est.lag_s * 1e3, sweep_adv, base_adv, pooled_info)
+        accepted_at = self._persist_accepted(result, body, extra={
+            'pose_source': 'sweep',
             'sweep_yaw_offset_deg': yaw_deg,
             'sweep_position_mm': [float(v) for v in result.bb_position_mm],
             'base_frame': None if view['pose'] is None else view['pose'].to_dict(),
-            'kappa_deg': view['kappa'],
+            'kappa_deg': view['kappa'] if pooled else None,
+            'epoch': None if pooled_info is None else pooled_info['epoch_id'],
+            'advisory_flags': advisory_flags,
         })
-        result_message = (f'Calibration successful (accepted {accepted_at}) · {summary} · '
-                          f'{gate_message}')
-        result = published
-
-        # One operator line; the detail (axis direction, per-marker fits) is DEBUG.
-        # BB's own reported yaw span is encoder-derived, so unlike the per-marker
-        # arc_span it is not inflated by QTM marker noise (MIN_ARC_DEG was set
-        # from it, 2026-08-25).
-        # An outcast (a marker the consensus excluded, bb_calibration
-        # MIN_AGREEING_MARKERS) is named on the outcome line itself: the
-        # calibration stands, but a marker that keeps turning up here is a
-        # physical fault to go and look at.
-        pos = result.bb_position_mm
         outcasts = ''.join(
             f' · outcast Marker {idx + 1} ({m.distance_from_axis_mm:.2f} mm off axis)'
             for idx, m in sorted(result.marker_metrics.items())
             if m.status == 'outcast')
-        source_note = ('' if pose_source != 'base_frame' else
-                       f' · base frame (sweep {yaw_deg:+.2f}°)')
-        self.get_logger().info(
-            f'BB calibrated: pos ({pos[0]:.0f}, {pos[1]:.0f}, {pos[2]:.0f}) mm '
-            f'· axis tilt {result.axis_tilt_deg:.2f}° '
-            f'· yaw offset {math.degrees(result.yaw_offset_rad):+.2f}° '
-            f'±{result.yaw_offset_std_deg:.2f}° '
-            f'(lag {result.yaw_estimate.lag_s * 1e3:.0f} ms, gate ok){source_note} '
-            f'· swept {result.yaw_span_deg:.0f}°{outcasts}'
-        )
+        result_message = (f'Calibration successful (accepted {accepted_at}) · {body}{outcasts}')
+        outcome = f'BB calibrated: {body}{outcasts}{suffix}'
+        # One severity per call site (Foxy rclpy raises ValueError otherwise).
+        if advisory_flags:
+            self.get_logger().warn(outcome)
+        else:
+            self.get_logger().info(outcome)
         self.get_logger().debug(
             f'Axis direction: ({result.axis_direction[0]:.4f}, '
             f'{result.axis_direction[1]:.4f}, {result.axis_direction[2]:.4f}); '
@@ -1292,106 +1319,100 @@ class MocapNode(Node):
                 self.get_logger().warn(f'Marker {idx + 1}: {m.status} — {m.reason}')
 
         # Publish on latched topic
-        self._publish_calibration_result(result, result_message, accepted_at)
+        self._publish_calibration_result(result, result_message, accepted_at, suffix=suffix)
 
     # ──────────────────────────────────────────────────────────────────────
     #  Base-marker frame
     # ──────────────────────────────────────────────────────────────────────
 
-    def _base_state(self):
-        """(records, base_ref, error) of the base-frame pool: the state file,
-        or the resource's seed when there is none. ``error`` names an
-        unreadable state file (records/base_ref are then the seed)."""
+    def _load_state(self):
+        """(state, error) of the kappa pool: the state file, or the resource's
+        seed when there is none. ``error`` names an unreadable state file (the
+        state is then the seed; the caller reports it as an advisory line and
+        the next write replaces the file, backing the old one up)."""
         model = self._base_model
-        seed = (list(model.records), model.base_ref) if model is not None else ([], None)
         path = str(self.get_parameter('bb_base_frame_state_file').value)
+        seed = (seed_base_state(model.records, model.base_ref) if model is not None
+                else seed_base_state([], None))
         try:
             state = load_base_state(path)
         except (OSError, ValueError, KeyError, TypeError) as e:
             self.get_logger().debug(f'BB base frame state unreadable ({path}): {e!r}')
-            return seed[0], seed[1], f'{os.path.basename(path)}: {type(e).__name__}'
+            return seed, f'{os.path.basename(path)}: {type(e).__name__}'
         if state is None:
-            return seed[0], seed[1], ''
-        return state['records'], state['base_ref'] or seed[1], ''
+            return seed, ''
+        if state['base_ref'] is None:
+            state['base_ref'] = seed['base_ref']
+        return state, ''
 
-    def _base_frame_view(self, result) -> dict:
-        """This window's base pose and the sweep's BB-in-base constants, plus
-        the pool as it stands. Every key is present; ``pose`` None (with
-        ``error``) when the base frame is off or not seen."""
-        view = {'pose': None, 'error': '', 'kappa': None, 'p_b': None, 'records': [],
-                'pooled': None, 'base_ref': None, 'state_error': '', 'from_monitor': False}
+    def _write_state(self, state):
+        path = str(self.get_parameter('bb_base_frame_state_file').value)
+        tpl = self._marker_template
+        try:
+            write_base_state(path, state, tpl.pinned_yaw_offset_deg, tpl.repeatability_deg)
+        except OSError as e:
+            self.get_logger().error(f'Could not persist the BB base frame pool to {path}: {e}')
+
+    def _log_startup_state(self):
+        """ONE INFO line at init: what history this process starts with."""
+        tpl = self._marker_template
+        tpl_txt = ('none' if tpl is None else
+                   f'{os.path.basename(str(tpl.source))} ({len(tpl.points_mm)} markers)')
+        state, err = self._load_state()
+        eid = current_epoch_id(state)
+        ep = next((e for e in state['epochs'] if e['id'] == eid), None)
+        if err:
+            pool = f'state unreadable ({err})'
+        elif ep is None:
+            pool = 'pool 0 records in 0 epochs'
+        else:
+            med = (ep['median_kappa_deg'] if tpl is None else
+                   epoch_median_at_pin(state, ep, tpl.pinned_yaw_offset_deg))
+            pool = (f'pool {len(state["records"])} records in {len(state["epochs"])} epochs '
+                    f'(current K{eid} median {med:.2f}° n {ep["n"]})')
+        ref, _label, ref_err = self._gate_reference()
+        if ref_err:
+            last = f'unreadable ({ref_err})'
+        elif ref is None:
+            last = 'none'
+        else:
+            last = f'{_label.replace("accepted ", "")} yaw {ref["yaw_offset_deg"]:+.2f}°'
+        self.get_logger().info(
+            f'BB calibration state: template {tpl_txt}, '
+            f'base model {"on" if self._base_model is not None else "off"}, {pool}, '
+            f'last accepted {last}, yaw source '
+            f'{self.get_parameter("bb_yaw_source").value}')
+
+    def _base_frame_view(self, result, snap: _SweepSnapshot, solve: _SweepSolve) -> dict:
+        """This window's base pose (estimated on the worker: ``solve``) and the
+        sweep's BB-in-base constants, plus the kappa pool state. Every key is
+        present; ``pose`` None (with ``error``) when the base frame is off or
+        not seen."""
+        state, state_error = self._load_state()
+        view = {'pose': None, 'error': '', 'kappa': None, 'p_b': None,
+                'state': state, 'state_error': state_error, 'from_monitor': False}
         if self._base_model is None:
             view['error'] = f'BASE_FRAME_MODEL_MISSING: {self._base_model_error}'
             return view
-        T = self._base_model.template_mm
-        try:
-            view['pose'] = estimate_base_pose(self._calib_base_points, T)
-        except ValueError as e:
-            view['error'] = str(e)
-            # A window that missed the base may use the running estimate.
+        if solve.base_pose is not None:
+            view['pose'] = solve.base_pose
+        else:
+            view['error'] = solve.base_error
+            # A window that missed the base may use the running estimate (read
+            # here, on the executor: the monitor is fed by the drain timer).
             last = self._base_monitor_last_t
             pose = self._base_monitor.pose(last) if self._base_monitor is not None else None
             if pose is not None and last is not None and \
-                    self._calib_base_points and \
-                    self._calib_base_points[-1][0] - pose.t_span_s[1] <= BASE_MONITOR_MAX_AGE_S:
+                    snap.base_points and \
+                    snap.base_points[-1][0] - pose.t_span_s[1] <= BASE_MONITOR_MAX_AGE_S:
                 view['pose'], view['from_monitor'] = pose, True
-        records, base_ref, err = self._base_state()
-        view['records'], view['base_ref'], view['state_error'] = records, base_ref, err
-        tpl = self._marker_template
-        view['pooled'] = pool_kappa(records, tpl.pinned_yaw_offset_deg, tpl.repeatability_deg)
         if view['pose'] is not None:
             view['kappa'], view['p_b'] = bb_in_base(
                 view['pose'], math.degrees(result.yaw_offset_rad), result.bb_position_mm)
         return view
 
-    def _resolve_pose_source(self, requested: str, view: dict, bb_moved: bool):
-        """(pose source, '') — or (None, refusal) when ``base_frame`` was asked
-        for and cannot be had. ``auto`` falls back to the sweep, saying why at DEBUG."""
-        if requested == 'sweep':
-            return 'sweep', ''
-        problem = ''
-        if view['pose'] is None:
-            problem = view['error'] or 'BASE_FRAME_NOT_SEEN'
-        elif view['state_error'] and not bb_moved:
-            problem = (f'BASE_FRAME_STATE_UNREADABLE: {view["state_error"]} — fix or delete it, '
-                       'or set bb_moved:=true')
-        if requested == 'base_frame':
-            if not problem:
-                return 'base_frame', ''
-            if problem.startswith(('BASE_FRAME_NOT_SEEN', 'BASE_FRAME_MODEL_MISSING')):
-                problem += ' — bb_pose_source is base_frame; set it to auto or sweep'
-            return None, problem
-        n = 0 if view['pooled'] is None else view['pooled'].n
-        need = int(self.get_parameter('bb_base_min_sweeps').value)
-        if not problem and view['pose'].residual_mm > BASE_MAX_RESIDUAL_MM:
-            problem = f'base residual {view["pose"].residual_mm:.2f} mm'
-        if not problem and n < need:
-            problem = f'{n} pooled sweeps < {need}'
-        if problem:
-            if self._base_expected(requested, view):
-                # Not silent: the pose source the operator relies on is gone.
-                self.get_logger().warn(f'bb_pose_source auto: the base frame was not seen — this '
-                                       f'sweep falls back to the world gate ({problem})')
-            else:
-                self.get_logger().debug(f'bb_pose_source auto: sweep ({problem})')
-            return 'sweep', ''
-        return 'base_frame', ''
-
-    def _base_expected(self, requested: str, view: dict) -> bool:
-        """True when the base frame would have posed this sweep — pose source
-        auto/base_frame, the model loaded, the pool at ``bb_base_min_sweeps`` —
-        but the window did not see it (BASE_FRAME_NOT_SEEN). Then the missing
-        base, not a BB move, is the cause to name."""
-        if requested not in ('auto', 'base_frame') or self._base_model is None:
-            return False
-        if view['pose'] is not None or not view['error'].startswith('BASE_FRAME_NOT_SEEN'):
-            return False
-        n = 0 if view['pooled'] is None else view['pooled'].n
-        return n >= int(self.get_parameter('bb_base_min_sweeps').value)
-
-    def _pool_records(self, view: dict, result, reset: bool) -> list:
-        """The pool with this accepted sweep appended (a new pool on reset)."""
-        rec = KappaRecord(
+    def _kappa_record(self, view: dict, result) -> KappaRecord:
+        return KappaRecord(
             kappa_deg=float(view['kappa']), sigma_deg=float(result.yaw_offset_std_deg),
             axis_point_b_mm=tuple(float(v) for v in view['p_b']),
             pin_deg=float(self._marker_template.pinned_yaw_offset_deg),
@@ -1399,30 +1420,11 @@ class MocapNode(Node):
             yaw_offset_deg=math.degrees(result.yaw_offset_rad),
             base_heading_deg=float(view['pose'].heading_deg),
             source=f'mocap_node ({result.yaw_estimate.yaw_source})')
-        return ([] if reset else list(view['records'])) + [rec]
-
-    def _persist_base_state(self, records: list, pose):
-        """Write the pool and this sitting's base pose (atomically)."""
-        path = str(self.get_parameter('bb_base_frame_state_file').value)
-        ref = {'origin_mm': [float(v) for v in pose.origin_mm],
-               'heading_deg': float(pose.heading_deg),
-               'accepted_at': datetime.datetime.now(datetime.timezone.utc).isoformat()}
-        try:
-            os.makedirs(os.path.dirname(path) or '.', exist_ok=True)
-            tmp = path + '.tmp'
-            with open(tmp, 'w') as f:
-                tpl = self._marker_template
-                json.dump(base_state_to_json(records, ref, tpl.pinned_yaw_offset_deg,
-                                             tpl.repeatability_deg), f, indent=2)
-            os.replace(tmp, path)
-        except OSError as e:
-            self.get_logger().error(f'Could not persist the BB base frame pool to {path}: {e}')
 
     def _gate_reference(self):
         """(reference, label, error) for the gate: the last accepted calibration
         from the state file, or (None, '', '') if there is no file. An
-        unreadable file returns its error (the caller refuses unless bb_moved
-        is armed) — never a silent fallback."""
+        unreadable file returns its error (an advisory line, never a refusal)."""
         path = str(self.get_parameter('bb_calibration_state_file').value)
         try:
             with open(path, 'r') as f:
@@ -1480,14 +1482,27 @@ class MocapNode(Node):
                 'the next calibration is gated against the previous reference')
         return now.strftime('%Y-%m-%dT%H:%M:%SZ')
 
+    def _attempt_suffix(self) -> str:
+        """Sweep-kinematics suffix for the attempt text, from the LIVE
+        window's yaw samples the estimator would use (stamped when selected,
+        else heartbeat). For failures raised during collection or at the exit
+        edge; a solved sweep's suffix comes from its snapshot."""
+        requested = str(self.get_parameter('bb_yaw_source').value)
+        if (requested != 'heartbeat'
+                and len(self._calib_stamped_yaw) >= MIN_STAMPED_YAW_SAMPLES):
+            samples = self._calib_stamped_yaw
+        else:
+            samples = self._calib_yaw_samples
+        return sweep_suffix(samples, None)
+
     def _publish_calibration_result(self, result: CalibrationResult,
                                     message: str = 'Calibration successful',
-                                    accepted_at: str = ''):
+                                    accepted_at: str = '', suffix: str | None = None):
         """A success replaces the calibration in force (bb/calibration_result)
         and is the latest attempt (bb/calibration_attempt)."""
         msg = BallButlerCalibrationResult()
         msg.success = True
-        msg.message = message
+        msg.message = message + (self._attempt_suffix() if suffix is None else suffix)
         msg.position_mm.x = float(result.bb_position_mm[0])
         msg.position_mm.y = float(result.bb_position_mm[1])
         msg.position_mm.z = float(result.bb_position_mm[2])
@@ -1500,7 +1515,7 @@ class MocapNode(Node):
         self._last_good_at = accepted_at
         self.get_logger().debug('Published calibration result on bb/calibration_result')
 
-    def _publish_calibration_failure(self, reason: str):
+    def _publish_calibration_failure(self, reason: str, suffix: str | None = None):
         """Report a failed sweep: ONE short line, and never over a success.
 
         The failure always goes to ``bb/calibration_attempt``. It goes to the
@@ -1516,9 +1531,13 @@ class MocapNode(Node):
         cut) — the one enforcement point for the short-message contract.
         """
         reason = ' '.join(str(reason).split())
-        if len(reason) > MAX_CALIBRATION_FAILURE_CHARS:
+        if suffix is None:
+            suffix = self._attempt_suffix()
+        room = MAX_CALIBRATION_FAILURE_CHARS - len(suffix)
+        if len(reason) > room:
             self.get_logger().debug(f'Calibration failure (full text): {reason}')
-            reason = reason[:MAX_CALIBRATION_FAILURE_CHARS - 1].rstrip() + '…'
+            reason = reason[:room - 1].rstrip() + '…'
+        reason += suffix
         msg = BallButlerCalibrationResult()
         msg.success = False
         msg.message = reason
@@ -1536,6 +1555,10 @@ class MocapNode(Node):
     # ──────────────────────────────────────────────────────────────────────
 
     def on_shutdown(self):
+        # Rule 2: a solve still in flight is joined (bounded) and its result dropped.
+        if not self._calib_solver.stop(CALIBRATION_SOLVE_JOIN_TIMEOUT_S):
+            self.get_logger().warn(
+                'BB calibration solve still running at shutdown: result dropped')
         self.mocap.stop()
         self.destroy_node()
 

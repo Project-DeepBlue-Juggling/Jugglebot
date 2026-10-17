@@ -79,6 +79,25 @@ def _ballistic(pos0, vel0, t):
     ])
 
 
+def _gate_radius(tracker, t):
+    """The announced gate's radius at ``t`` (2026-10-14): the 200 mm sphere
+    widened by ``|v_pred| * announced_release_lead_s``."""
+    v = TOSS_VEL - np.array([0.0, 0.0, GRAVITY_MMPS2 * max(t, 0.0)])
+    return (tracker.announced_gate_mm
+            + float(np.linalg.norm(v)) * tracker.announced_release_lead_s)
+
+
+def _fly_offset(tracker, offset_dir, offset_of_t, t_end, label='Ball Butler - 1'):
+    """Feed a MOVING marker at ``offset_of_t(t) * offset_dir`` from the
+    expected position for the 3 frames ending at ``t_end`` -- the announced
+    gate's motion test (2026-10-14) needs 2 consecutive moving steps."""
+    for k in (2, 1, 0):
+        t = t_end - k * DT
+        marker = (_ballistic(CUP, TOSS_VEL, t)
+                  + offset_of_t(t) * np.asarray(offset_dir, dtype=float))
+        tracker.process_frame([marker], t, [label])
+
+
 def _announce(tracker, throw_time=0.0):
     return tracker.handle_announcement(
         initial_position=CUP.copy(),
@@ -124,13 +143,19 @@ class TestLabelledBallIsSeen:
         """The floor discarded the one true candidate at the throw instant.
 
         At `throw_time` the ball is still in the cup at ~742 mm, far below the
-        old `landing_z + 50` = 880 mm floor. There is no floor now.
+        old `landing_z + 50` = 880 mm floor. There is no floor now. Since
+        2026-10-14 the ball must also be MOVING with the stroke (as it is: the
+        2026-10-14 JB self-tosses rose 798 -> 824 -> 851 mm across the throw
+        instant at ~3.8 m/s), so it rises through the frames before the
+        throw instant and confirms on the first in-flight frame.
         """
         tracker = _make_tracker()
         bid = _announce(tracker)
-        in_cup = np.array([-45.0, 6.0, 742.0])
-        assert in_cup[2] < LANDING_Z + 50.0, 'fixture must sit under the old floor'
-        tracker.process_frame([in_cup], 0.0, ['Ball Butler - 1'])
+        for k in (3, 2, 1, 0):
+            t = -k * DT
+            in_cup = np.array([-45.0, 6.0, 742.0 - 3500.0 * k * DT])
+            assert in_cup[2] < LANDING_Z + 50.0, 'fixture must sit under the old floor'
+            tracker.process_frame([in_cup], t, ['Ball Butler - 1'])
         assert tracker.get_ball(bid).tracking == TrackingConfidence.CONFIRMED
 
 
@@ -199,16 +224,21 @@ class TestExclusionIsByRigidBodyMembership:
         re-parked, or a new BB-labelled marker appeared, inside the gate. Since
         BB labels are deliberately eligible, the only thing separating the ball
         from such a marker is nearest-wins — so pin it.
+
+        Since 2026-10-14 a static rig marker cannot confirm at all (motion
+        test), so the rig here is made to MOVE with the flight 150 mm out --
+        the worst case -- and nearest-wins still has to pick the ball.
         """
         tracker = _make_tracker()
         bid = _announce(tracker)
-        t = 10 * DT
-        expected = _ballistic(CUP, TOSS_VEL, t)
-        ball = expected + np.array([10.0, 0.0, 0.0])          # 10 mm out
-        rig_in_gate = expected + np.array([0.0, 0.0, 150.0])  # 150 mm out
-        # Order the rig FIRST so a first-match-wins bug would fail this.
-        tracker.process_frame([rig_in_gate, ball], t,
-                              ['Ball Butler - 4', 'Ball Butler - 1'])
+        for k in (2, 1, 0):
+            t = (10 - k) * DT
+            expected = _ballistic(CUP, TOSS_VEL, t)
+            ball = expected + np.array([10.0, 0.0, 0.0])          # 10 mm out
+            rig_in_gate = expected + np.array([0.0, 0.0, 150.0])  # 150 mm out
+            # Order the rig FIRST so a first-match-wins bug would fail this.
+            tracker.process_frame([rig_in_gate, ball], t,
+                                  ['Ball Butler - 4', 'Ball Butler - 1'])
         b = tracker.get_ball(bid)
         assert b.tracking == TrackingConfidence.CONFIRMED
         # The filter must have been updated toward the BALL, not the rig marker.
@@ -223,34 +253,38 @@ class TestExclusionIsByRigidBodyMembership:
 
 class TestExpectedPositionSphere:
 
-    @pytest.mark.parametrize('offset_mm,should_match', [
-        (0.0, True),
-        (150.0, True),
-        (199.0, True),
-        (201.0, False),
-        (400.0, False),
+    @pytest.mark.parametrize('offset,should_match', [
+        # (fixed mm, fraction of the radius, extra mm) -- the radius is
+        # 200 mm + |v_pred| x 0.10 s since 2026-10-14 (~460 mm here)
+        ((0.0, 0.0, 0.0), True),
+        ((150.0, 0.0, 0.0), True),
+        ((0.0, 1.0, -1.0), True),
+        ((0.0, 1.0, 1.0), False),
+        ((0.0, 2.0, 0.0), False),
     ])
-    def test_gate_is_a_sphere_around_the_expected_position(self, offset_mm, should_match):
+    def test_gate_is_a_sphere_around_the_expected_position(self, offset, should_match):
         tracker = _make_tracker()
         bid = _announce(tracker)
-        t = 10 * DT
-        expected = _ballistic(CUP, TOSS_VEL, t)
-        marker = expected + np.array([offset_mm, 0.0, 0.0])
-        tracker.process_frame([marker], t, ['Ball Butler - 1'])
+        fixed, frac, extra = offset
+        _fly_offset(tracker, [1.0, 0.0, 0.0],
+                    lambda t: fixed + frac * _gate_radius(tracker, t) + extra,
+                    10 * DT)
         confirmed = tracker.get_ball(bid).tracking == TrackingConfidence.CONFIRMED
         assert confirmed is should_match
 
     def test_gate_is_a_sphere_not_a_box(self):
-        """A corner marker 200 mm out on every axis (|d| = 346 mm) must NOT match.
+        """A corner marker 0.7 x radius out on every axis (|d| = 1.21 x radius)
+        must NOT match, though each axis alone is inside.
 
         This is the case that separates the two shapes, and the reason the sphere
-        was chosen: three platform markers live in that corner region.
+        was chosen: three platform markers live in that corner region (at the
+        2026-09-15 200 mm radius; the radius has grown with the release-timing
+        allowance since 2026-10-14, so the corner is scaled with it).
         """
         tracker = _make_tracker()
         bid = _announce(tracker)
-        t = 10 * DT
-        corner = _ballistic(CUP, TOSS_VEL, t) + np.array([195.0, 195.0, 195.0])
-        tracker.process_frame([corner], t, ['Ball Butler - 1'])
+        _fly_offset(tracker, [1.0, 1.0, 1.0],
+                    lambda t: 0.7 * _gate_radius(tracker, t), 10 * DT)
         assert tracker.get_ball(bid).tracking == TrackingConfidence.ANNOUNCED
 
     def test_gate_centre_is_analytic_not_the_kalman_clock(self):

@@ -10,6 +10,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
+import re
 import numpy as np
 
 from geometry_msgs.msg import Point
@@ -58,7 +59,7 @@ def _mocap_node(tmp_path=None, last_accepted_deg=1.78):
     iface = MagicMock()
     iface.is_receiving.return_value = True
     with patch.object(mn, 'MocapInterface', return_value=iface):
-        node = mn.MocapNode()
+        node = mn.MocapNode(solve_inline=True)
     if tmp_path is not None:
         state = tmp_path / 'last_accepted.json'
         state.write_text(json.dumps({'yaw_offset_deg': last_accepted_deg,
@@ -66,10 +67,6 @@ def _mocap_node(tmp_path=None, last_accepted_deg=1.78):
                                      'accepted_at': 'test'}))
         node._params['bb_calibration_state_file'] = str(state)
         node._params['bb_base_frame_state_file'] = str(tmp_path / 'base_state.json')
-    # The world-gate path's console (pose source sweep): under the default auto
-    # with the seeded base pool, a window without the base adds a WARN line
-    # (tests/ros/test_mocap_node_base_frame.py).
-    node._params['bb_pose_source'] = 'sweep'
     return node
 
 
@@ -106,12 +103,16 @@ def test_calibration_success_is_one_info_line(tmp_path):
     node._calib_data = {0: [np.zeros(3)]}
     with patch.object(mn, 'run_calibration', return_value=_fake_result()):
         node._on_bb_heartbeat(_hb(BallButlerStates.IDLE))
-    info = log.at('INFO')
-    assert len(info) == 2, info
-    assert 'started' in info[0]
-    assert info[1] == ('BB calibrated: pos (-1019, -435, 1738) mm · axis tilt 0.62° '
-                       '· yaw offset +1.78° ±0.02° (lag 83 ms, gate ok) · swept 119°')
-    assert not log.at('WARN') and not log.at('ERROR')
+    # ONE outcome line (a window without the shelf base carries the
+    # not-pooled advisory, so it is a WARN: one severity per call site).
+    assert log.at('INFO') == ['BB calibration started, collecting marker data']
+    warn = log.at('WARN')
+    assert len(warn) == 1, warn
+    assert warn[0].startswith('BB calibrated: yaw +1.78° ±0.02, axis (-1019, -435, 1738) mm, '
+                              'tilt 0.6°, template 0.30 mm, lag +83.2 ms')
+    assert 'shelf base not seen: kappa not pooled' in warn[0]
+    assert ' · sweep ' in warn[0] and warn[0].count(' · sweep ') == 1   # suffix last
+    assert not log.at('ERROR')
 
 
 def test_calibration_outcast_is_named_on_the_success_line(tmp_path):
@@ -129,12 +130,10 @@ def test_calibration_outcast_is_named_on_the_success_line(tmp_path):
         reason='circle centre 4.98 mm from the axis the other 6 markers agree on')
     with patch.object(mn, 'run_calibration', return_value=result):
         node._on_bb_heartbeat(_hb(BallButlerStates.IDLE))
-    assert log.at('INFO')[1] == (
-        'BB calibrated: pos (-1019, -435, 1738) mm · axis tilt 0.62° '
-        '· yaw offset +1.78° ±0.02° (lag 83 ms, gate ok) · swept 119° '
-        '· outcast Marker 2 (4.98 mm off axis)')
-    assert log.at('WARN') == ['Marker 2: outcast — circle centre 4.98 mm from '
-                              'the axis the other 6 markers agree on']
+    outcome = [m for m in log.at('WARN') if m.startswith('BB calibrated: ')]
+    assert len(outcome) == 1 and ' · outcast Marker 2 (4.98 mm off axis) · sweep ' in outcome[0]
+    assert ('Marker 2: outcast — circle centre 4.98 mm from '
+            'the axis the other 6 markers agree on') in log.at('WARN')
     assert not log.at('ERROR')
 
 
@@ -146,7 +145,13 @@ def test_calibration_failure_is_one_error_line(tmp_path):
     node._calib_data = {0: [np.zeros(3)]}
     with patch.object(mn, 'run_calibration', side_effect=ValueError('Circle centres deviate')):
         node._on_bb_heartbeat(_hb(BallButlerStates.IDLE))
-    assert log.at('ERROR') == ['BB calibration FAILED: Circle centres deviate']
+    # One ERROR line: the reason, then the sweep-kinematics suffix every attempt
+    # text carries since Phase 0 of bb-calibration-one-attempt (2026-10-15):
+    # ' · sweep <start>→<end>° <dur> s, lag <±x.x ms|n/a>' (bb_calibration.sweep_suffix).
+    errors = log.at('ERROR')
+    assert len(errors) == 1
+    assert errors[0].startswith('BB calibration FAILED: Circle centres deviate · sweep ')
+    assert re.search(r' · sweep -?\d+\.\d→-?\d+\.\d° \d+\.\d s, lag (n/a|[+-]\d+\.\d ms)$', errors[0])
 
 
 def test_dropout_invalidation_is_one_error_line():

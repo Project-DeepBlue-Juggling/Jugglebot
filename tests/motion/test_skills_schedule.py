@@ -143,10 +143,49 @@ def test_skill_dispatch_s_subtracts_window_and_its_own_lead():
     site = st.Site('P1', np.array([0.0, 0.0, 830.0]))
     skill = sc.Skill(kind=sc.THROW, ball_id=0, site=site, t_abs_s=10.0,
                      window_s=0.4)
-    assert skill.lead_s == sc.LEAD_S
-    assert skill.dispatch_s() == pytest.approx(10.0 - 0.4 - sc.LEAD_S)
+    # A THROW's default lead is the THROW lead (2026-10-16).
+    assert skill.lead_s == sc.FRESH_THROW_LEAD_S
+    assert skill.dispatch_s() == pytest.approx(10.0 - 0.4 - sc.FRESH_THROW_LEAD_S)
     early = dataclasses.replace(skill, lead_s=sc.HANDOFF_LEAD_S)
     assert early.dispatch_s() == pytest.approx(10.0 - 0.4 - sc.HANDOFF_LEAD_S)
+
+
+def test_a_throw_dispatches_and_reserves_the_13_knot_fresh_throw_lead():
+    """THE contract test for the THROW's fresh-origin budget (2026-10-16).
+
+    2026-10-16 10:50 sitting: the first columns attempt ended
+    ``ORIGIN_TOO_LATE`` at THROW 0 on a 188 ms solve against the 150 ms budget
+    of the 9-knot ``LEAD_S``.  Replay of five launch logs 2026-10-13..16
+    (``tools/probes/throw_fresh_lead_replay.py``, n=62 fresh THROWs): 21-140
+    ms accepted + that 188 ms refusal.  13 knots leave ``(13 - 3) * dt`` =
+    250 ms, 62 ms over the worst.
+
+    The lead must be ONE number at both ends: the schedule's dispatch lead
+    (``Skill.dispatch_s``) and the executor's reserved origin (``t_now +
+    lead``) — any difference becomes window (the 2026-10-02 class).  Both
+    read :func:`install_lead_s`; a CATCH/REST keeps ``LEAD_S``.
+    """
+    dt = float(hw.JB_TRAJ_KNOT_DT_S)
+    assert sc.FRESH_THROW_LEAD_KNOTS == 13
+    assert sc.FRESH_THROW_LEAD_S == pytest.approx(13 * dt)
+    budget_s = (sc.FRESH_THROW_LEAD_KNOTS - sc.WIRE_READ_KNOTS) * dt
+    assert budget_s == pytest.approx(0.250)
+    assert budget_s >= 0.188 + 0.025
+    assert sc.install_lead_s(sc.THROW) == sc.FRESH_THROW_LEAD_S
+    for kind in (sc.CATCH, sc.REST):
+        assert sc.install_lead_s(kind) == sc.LEAD_S
+    # The executor's default reserves the same per-kind lead.
+    import inspect
+    from jugglebot.motion.skills import executor as ex
+    assert inspect.signature(ex.install_segment).parameters[
+        'lead_s'].default is None
+    # Every compiled launch THROW dispatches by it; its window is unchanged.
+    site = st.Site('P1', np.array([0.0, 0.0, 830.0]))
+    sched = sc.compile_one_ball(_self_pattern(site, n_throws=2), t0_abs_s=0.0)
+    throw0 = [k for k in sched.skills if k.kind == sc.THROW][0]
+    assert throw0.lead_s == sc.FRESH_THROW_LEAD_S
+    assert throw0.dispatch_s() == pytest.approx(
+        throw0.t_abs_s - throw0.window_s - sc.FRESH_THROW_LEAD_S)
 
 
 def test_skill_rejects_a_negative_lead():
@@ -170,6 +209,74 @@ def test_the_leads_are_knot_multiples_of_the_one_grid():
     assert (sc.HANDOFF_LEAD_KNOTS
             == sc.LEAD_KNOTS + sc.HANDOFF_LEAD_EXTRA_KNOTS)
     assert sc.HANDOFF_LEAD_KNOTS > sc.LEAD_KNOTS
+
+
+def _live_builds(sites, pattern):
+    return (
+        sc.compile_columns(pattern, t0_abs_s=10.0),
+        sc.compile_columns(pattern, feed=_feed_for(sites, pattern),
+                           hop_entry=True),
+        sc.compile_one_ball(sc.OneBallPattern(sites=sites, apex_m=0.95,
+                                              dwell_s=0.27, n_throws=10),
+                            10.0),
+    )
+
+
+def test_the_handoff_lead_buys_eight_knots_and_the_live_schedules_stay_monotone():
+    """``HANDOFF_LEAD_EXTRA_KNOTS`` = 8 (2026-10-16; 4 since 2026-10-14; 2
+    since 2026-09-18).
+
+    Why 8 (``plans/archived/handoff-solve-chaining.md`` § 0.4): the replay of
+    the recorded SPLICE_TOO_LATE failures had margins of 13/28 ms at 4 extra
+    knots and 113/128 ms at 8; the pinned budget is ``(17 - 3)*dt`` = 350 ms.
+
+    What it costs: every pinned CATCH dispatches 100 ms earlier than at 4, so
+    the gap to the skill before it shrank to 0.200 s — 0.300 s since THROW 0
+    took the 13-knot ``FRESH_THROW_LEAD_S`` (2026-10-16; law pinned in
+    ``test_the_handoff_min_gap_is_500_ms_less_a_knot_per_extra_knot``).  At
+    the live operating point (apex 0.95 m, sep 125 mm, dwell 0.27 s) both
+    compilers must stay dispatch-monotone with at least 0.20 s between
+    consecutive dispatches; the skill_node tick queues a due CATCH behind its
+    predecessor's install.
+    """
+    assert sc.HANDOFF_LEAD_EXTRA_KNOTS == 8
+    assert sc.HANDOFF_LEAD_S == pytest.approx(
+        17 * float(hw.JB_TRAJ_KNOT_DT_S))
+    sites = st.columns_sites(125.0)
+    pattern = sc.Pattern(sites=sites, apex_m=0.95, dwell_s=0.27, n_throws=10)
+    for schedule in _live_builds(sites, pattern):
+        assert any(s.lead_s == sc.HANDOFF_LEAD_S for s in schedule.skills)
+        disp = [s.dispatch_s() for s in schedule.skills]
+        gaps = [b - a for a, b in zip(disp, disp[1:])]
+        assert min(gaps) >= 0.20 - 1e-9, (schedule.pattern, min(gaps))
+
+
+def test_the_handoff_min_gap_is_500_ms_less_a_knot_per_extra_knot(monkeypatch):
+    """The binding gap is THROW 0 -> the first (handoff) CATCH: ``launch_s +
+    FRESH_THROW_LEAD_S - HANDOFF_LEAD_S`` = 0.400 + 0.025*FRESH_THROW_EXTRA -
+    0.025*EXTRA, i.e. 0.500 - 0.025*EXTRA since 2026-10-16 (0.400 - ... while
+    THROW 0 dispatched on LEAD_S).  At 8 that is 0.300 s, which also covers
+    THROW 0's whole 0.250 s solve budget, so the first CATCH never queues
+    behind the launch install.
+
+    Min dispatch gap == 0.500 - 0.025*EXTRA for EXTRA in 2..10 at apex
+    0.95 / dwell 0.27 / sep 125, to 1e-6 s (not the brief's 1e-9: the hardware
+    knot dt is a float32 constant, 0.025 +- 1e-8 per knot) (the leads are module-level derived constants,
+    so each EXTRA is installed by patching ``HANDOFF_LEAD_S``)."""
+    dt = float(hw.JB_TRAJ_KNOT_DT_S)
+    sites = st.columns_sites(125.0)
+    pattern = sc.Pattern(sites=sites, apex_m=0.95, dwell_s=0.27, n_throws=10)
+    for extra in range(2, 11):
+        monkeypatch.setattr(sc, 'HANDOFF_LEAD_S',
+                            (sc.LEAD_KNOTS + extra) * dt)
+        for schedule in _live_builds(sites, pattern):
+            disp = [s.dispatch_s() for s in schedule.skills]
+            gaps = [b - a for a, b in zip(disp, disp[1:])]
+            want = (0.400 + 0.025 * sc.FRESH_THROW_LEAD_EXTRA_KNOTS
+                    - 0.025 * extra)
+            assert want == pytest.approx(0.500 - 0.025 * extra)
+            assert min(gaps) == pytest.approx(want, abs=1e-6), (extra,
+                                                                min(gaps))
 
 
 def test_the_splice_budget_covers_the_measured_loaded_solve():
@@ -633,7 +740,9 @@ def test_compile_columns_without_feed_no_skill_carries_receive_tilt(cols):
 
 # ---------------------------------------------------------------------------
 # R5 sitting 6 prep (owner decision, 2026-10-05): the HOP ENTRY --
-# `compile_columns(..., entry='hop')`. `scratchpad/s6/design.md` Decision 1.
+# `compile_columns(..., hop_entry=True)`. `scratchpad/s6/design.md` Decision 1.
+# The `entry='transit'` selector was retired 2026-10-14; `hop_entry=False` is
+# just the plain self-toss THROW 0 (the free-`t0_abs_s` / one-ball shape).
 
 def _feed_for(cols, pattern, t_land_offset=500.0):
     tau = sc.transit_s(sc.flight_s(pattern.apex_m), pattern.dwell_s)
@@ -641,35 +750,11 @@ def _feed_for(cols, pattern, t_land_offset=500.0):
                            t_land_abs_s=1_700_000_000.0 + t_land_offset + tau)
 
 
-def test_compile_columns_default_entry_is_transit(cols):
-    """Existing callers/tests that never pass ``entry`` get the pre-R5
-    self-toss entry, unchanged -- the schedule-level default is
-    ``'transit'``, not ``'hop'`` (``skill_node``'s own ROS parameter
-    defaults to ``'hop'``, a DIFFERENT layer -- see that parameter's own
-    docstring)."""
-    pattern = _pattern(cols, n_throws=3)
-    feed = _feed_for(cols, pattern)
-    default = sc.compile_columns(pattern, feed=feed)
-    transit = sc.compile_columns(pattern, feed=feed, entry='transit')
-    assert [_skill_motion_fingerprint(s) for s in default.skills] == [
-        _skill_motion_fingerprint(s) for s in transit.skills]
-    throw0 = default.skills[0]
-    assert throw0.kind == sc.THROW and throw0.entry_hop is False
-    assert throw0.site.name == cols[0].name
-
-
 def test_compile_columns_entry_hop_requires_feed(cols):
     """A free-``t0_abs_s`` schedule has no real feed ball to park THROW 0
     for."""
     with pytest.raises(ValueError, match='feed'):
-        sc.compile_columns(_pattern(cols), t0_abs_s=10.0, entry='hop')
-
-
-def test_compile_columns_rejects_an_unknown_entry(cols):
-    pattern = _pattern(cols)
-    feed = _feed_for(cols, pattern)
-    with pytest.raises(ValueError, match='entry'):
-        sc.compile_columns(pattern, feed=feed, entry='sideways')
+        sc.compile_columns(_pattern(cols), t0_abs_s=10.0, hop_entry=True)
 
 
 def test_compile_columns_hop_throw0_released_at_the_feed_site(cols):
@@ -679,7 +764,7 @@ def test_compile_columns_hop_throw0_released_at_the_feed_site(cols):
     ``t0``."""
     pattern = _pattern(cols, n_throws=3)
     feed = _feed_for(cols, pattern)
-    hop = sc.compile_columns(pattern, feed=feed, entry='hop')
+    hop = sc.compile_columns(pattern, feed=feed, hop_entry=True)
     throw0 = hop.skills[0]
     assert throw0.kind == sc.THROW
     assert throw0.ball_id == 0
@@ -690,16 +775,16 @@ def test_compile_columns_hop_throw0_released_at_the_feed_site(cols):
     assert throw0.y_d[1] == pytest.approx(pattern.apex_m)
 
 
-def test_compile_columns_hop_vs_transit_identical_except_throw0(cols):
-    """Hop and transit schedules compiled from the SAME feed are identical
+def test_compile_columns_hop_vs_self_toss_identical_except_throw0(cols):
+    """Hop and plain self-toss (`hop_entry=False`) schedules compiled from the SAME feed are identical
     except THROW 0's ``site``/``entry_hop`` -- every event time, every other
     skill's site, the folds, the leads, the Stop and the closing REST are
     all untouched (``compile_columns``'s own docstring: "Every other skill
     ... is IDENTICAL")."""
     pattern = _pattern(cols, n_throws=4)
     feed = _feed_for(cols, pattern)
-    hop = sc.compile_columns(pattern, feed=feed, entry='hop')
-    transit = sc.compile_columns(pattern, feed=feed, entry='transit')
+    hop = sc.compile_columns(pattern, feed=feed, hop_entry=True)
+    transit = sc.compile_columns(pattern, feed=feed, hop_entry=False)
     assert len(hop.skills) == len(transit.skills)
     throw0_hop, throw0_transit = hop.skills[0], transit.skills[0]
     assert throw0_hop.kind == sc.THROW and throw0_transit.kind == sc.THROW
@@ -728,7 +813,7 @@ def test_compile_columns_hop_catch_after_throw0_lands_at_as_own_site(cols):
     ``i=2`` is ball A's self-toss from the SAME site)."""
     pattern = _pattern(cols, n_throws=4)
     feed = _feed_for(cols, pattern)
-    hop = sc.compile_columns(pattern, feed=feed, entry='hop')
+    hop = sc.compile_columns(pattern, feed=feed, hop_entry=True)
     ball0_catches = [s for s in hop.skills
                     if s.kind == sc.CATCH and s.ball_id == 0]
     assert ball0_catches
@@ -738,10 +823,10 @@ def test_compile_columns_hop_catch_after_throw0_lands_at_as_own_site(cols):
 
 def test_compile_columns_1ball_fed_phantom_a_hop_throw0_is_entry_hop(cols):
     """``columns_1ball_fed`` (ball A a phantom) hops exactly like a real
-    ball A -- ``phantom_balls`` and ``entry`` are orthogonal knobs."""
+    ball A -- ``phantom_balls`` and ``hop_entry`` are orthogonal knobs."""
     pattern = _pattern(cols, n_throws=3, phantom_balls=(0,))
     feed = _feed_for(cols, pattern)
-    hop = sc.compile_columns(pattern, feed=feed, entry='hop')
+    hop = sc.compile_columns(pattern, feed=feed, hop_entry=True)
     throw0 = hop.skills[0]
     assert throw0.kind == sc.THROW and throw0.ball_id == 0
     assert throw0.entry_hop is True
@@ -882,7 +967,9 @@ def test_every_catch_carries_the_handoff_lead_and_the_throw_and_rest_do_not(cols
     """
     schedule = sc.compile_columns(_pattern(cols, n_throws=4), t0_abs_s=10.0)
     got = [(s.kind, s.lead_s) for s in schedule.skills]
-    assert got[0] == (sc.THROW, sc.LEAD_S)
+    # The launch THROW dispatches by the THROW lead (2026-10-16), the SAME
+    # number the executor reserves for it (``install_lead_s``).
+    assert got[0] == (sc.THROW, sc.FRESH_THROW_LEAD_S)
     assert got[-1] == (sc.REST, sc.LEAD_S)
     assert all(lead == sc.HANDOFF_LEAD_S for kind, lead in got[1:-1]
                if kind == sc.CATCH)
@@ -1068,7 +1155,7 @@ def test_compile_one_ball_every_catch_carries_the_handoff_lead(site):
     rests = [s for s in schedule.skills if s.kind == sc.REST]
     throw0 = [s for s in schedule.skills if s.kind == sc.THROW][0]
     assert catches and all(c.lead_s == sc.HANDOFF_LEAD_S for c in catches)
-    assert throw0.lead_s == sc.LEAD_S
+    assert throw0.lead_s == sc.FRESH_THROW_LEAD_S
     assert all(r.lead_s == sc.LEAD_S for r in rests)
 
 
@@ -1144,20 +1231,25 @@ def test_one_site_one_ball_schedule_matches_the_pre_r4_compile_self_toss(site):
     assert schedule.dwell_s == 0.3
     assert schedule.t0_abs_s == 1789263419.5
     # (kind, ball_id, site, t_abs_s, window_s, lead_s, carried_release_t_abs_s)
+    # The CATCH rows' lead is ``sc.HANDOFF_LEAD_S`` (0.275 s when captured,
+    # 0.325 s since 2026-10-14): a dispatch lead, not a schedule instant, so
+    # it is read from the constant rather than pinned as the captured literal.
     expected = [
         (sc.REST, 0, 'P1', 1789263421.0, 1.5, 0.225, None),
-        (sc.THROW, 0, 'P1', 1789263421.4, 0.4, 0.225, None),
-        (sc.CATCH, 0, 'P1', 1789263422.2568805, 0.8568805868963759, 0.275,
+        # THROW 0's lead: 0.225 s when captured, sc.FRESH_THROW_LEAD_S
+        # (0.325 s) since 2026-10-16 — a dispatch lead, not an instant.
+        (sc.THROW, 0, 'P1', 1789263421.4, 0.4, sc.FRESH_THROW_LEAD_S, None),
+        (sc.CATCH, 0, 'P1', 1789263422.2568805, 0.8568805868963759, sc.HANDOFF_LEAD_S,
          1789263422.5568805),
-        (sc.CATCH, 0, 'P1', 1789263423.4137611, 0.8568805868963759, 0.275,
+        (sc.CATCH, 0, 'P1', 1789263423.4137611, 0.8568805868963759, sc.HANDOFF_LEAD_S,
          1789263423.713761),
-        (sc.CATCH, 0, 'P1', 1789263424.5706418, 0.8568805868963759, 0.275,
+        (sc.CATCH, 0, 'P1', 1789263424.5706418, 0.8568805868963759, sc.HANDOFF_LEAD_S,
          1789263424.8706417),
-        (sc.CATCH, 0, 'P1', 1789263425.7275224, 0.8568805868963759, 0.275,
+        (sc.CATCH, 0, 'P1', 1789263425.7275224, 0.8568805868963759, sc.HANDOFF_LEAD_S,
          1789263426.0275223),
-        (sc.CATCH, 0, 'P1', 1789263426.884403, 0.8568805868963759, 0.275,
+        (sc.CATCH, 0, 'P1', 1789263426.884403, 0.8568805868963759, sc.HANDOFF_LEAD_S,
          1789263427.184403),
-        (sc.CATCH, 0, 'P1', 1789263428.0412836, 0.8568805868963759, 0.275,
+        (sc.CATCH, 0, 'P1', 1789263428.0412836, 0.8568805868963759, sc.HANDOFF_LEAD_S,
          None),
         # The closing REST: two tails after the last touch-down (the captured
         # pre-R4 value, 1789263428.6412835) plus REST_FRESH_MARGIN_S (2 knots,

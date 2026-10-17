@@ -94,10 +94,11 @@ LEAD_S = LEAD_KNOTS * float(hw.JB_TRAJ_KNOT_DT_S)
 #: The DISPATCH lead of a skill whose segment FOLLOWS a release (every CATCH in
 #: the columns pattern, with or without ``then_throw``).
 #:
-#: :data:`LEAD_KNOTS` + 2 = 11 knots = 0.275 s, i.e. 8 knots = 200 ms of solve
-#: budget.  Derived from :data:`LEAD_KNOTS` (it was a literal 8 against a
-#: 6-knot LEAD_KNOTS until 2026-09-18) so that the two leads move TOGETHER: the
-#: two extra knots are the only fact this constant adds, and holding the gap
+#: :data:`LEAD_KNOTS` + 8 = 17 knots = 0.425 s, i.e. 14 knots = 350 ms of solve
+#: budget (plus up to one knot of quantisation).  Derived from
+#: :data:`LEAD_KNOTS` (it was a literal 8 against a 6-knot LEAD_KNOTS until
+#: 2026-09-18) so that the two leads move TOGETHER: the extra knots are the
+#: only fact this constant adds, and holding the gap
 #: fixed keeps every dispatch instant in a compiled schedule shifted by the
 #: same amount, which is what leaves ``compile_columns``'s dispatch-monotonicity
 #: check exactly as much margin as it had.  It can exceed :data:`LEAD_KNOTS`
@@ -108,11 +109,86 @@ LEAD_S = LEAD_KNOTS * float(hw.JB_TRAJ_KNOT_DT_S)
 #: nor re-solves the ball that has already left the cup.  A skill that does NOT
 #: follow a release has no such pin — its splice knot tracks its dispatch — so
 #: it keeps :data:`LEAD_S` and its :data:`SOLVE_BUDGET_KNOTS` budget.
-HANDOFF_LEAD_EXTRA_KNOTS = 2
+#:
+#: History: 2 extra knots (2026-09-18 -> 2026-10-14, 200 ms of budget); 4
+#: (2026-10-14 -> 2026-10-16, Fix 1, 250 ms); 8 since 2026-10-16 (350 ms).
+#: MEASURED 2026-10-14 (two rehearsal sessions + sitting 8's log): accepted
+#: handoff-CATCH installs (dispatch stamp -> install) p50 137-139 / p90
+#: 188-198 / max 223-231 ms; the seven attempt-ending ``SPLICE_TOO_LATE``s had
+#: their reply 215-272 ms after the stamp — the right tail of the SAME
+#: distribution, not a regression — at 2.7-5.1 % per first-CATCH dispatch,
+#: i.e. a 40-80 % chance of one self-end in a 30-catch attempt.  At the time, 4 extra knots
+#: (+50 ms) covers the measured tail.  The cost is the gap between consecutive
+#: dispatches: ``compile_columns`` / ``compile_one_ball`` at apex 0.95 m, sep
+#: 125 mm, dwell 0.27 s stay dispatch-monotone for 2..8 extra knots, minimum
+#: gap 0.350 s at 2, 0.300 s at 4, 0.250 s at 6, 0.200 s at 8 (probe 2026-10-14).
+#: :data:`LEAD_S` and ``CATCH_FREEZE_S`` are untouched; the re-aim fences are now
+#: keyed on the real splice instant (executor P1b, 2026-10-16).
+#:
+#: 8 extra knots (2026-10-16, ``plans/archived/handoff-solve-chaining.md`` § 0.4):
+#: the replay of the recorded SPLICE_TOO_LATE failures had margins of 13/28 ms
+#: at 4 and 113/128 ms at 8; the accepted installs' minima were 50/150 ms; the
+#: share of catches whose live fit was still unconverged at dispatch fell from
+#: 45 % to 5 %, and the pinned re-aim (P1b) carries the correction the earlier
+#: dispatch costs.  The minimum dispatch gap follows the law
+#: ``0.400 - 0.025 * EXTRA`` s (0.200 s at 8; 0.300 s at 4) — the THROW 0 ->
+#: first-CATCH gap, so ``0.500 - 0.025 * EXTRA`` (0.300 s at 8) since THROW 0
+#: took :data:`FRESH_THROW_LEAD_S` (2026-10-16).  The skill_node
+#: tick QUEUES a due CATCH behind its predecessor's install (no stale read),
+#: costing at most 31 ms of budget at the minimum gap.
+HANDOFF_LEAD_EXTRA_KNOTS = 8
 HANDOFF_LEAD_KNOTS = LEAD_KNOTS + HANDOFF_LEAD_EXTRA_KNOTS
 
 #: Seconds, derived.
 HANDOFF_LEAD_S = HANDOFF_LEAD_KNOTS * float(hw.JB_TRAJ_KNOT_DT_S)
+
+#: The DISPATCH lead of a THROW skill that does NOT follow a release — the
+#: launch THROW of every pattern (a fresh origin from rest, or a splice onto a
+#: REST's tail) — and the lead ``install_segment`` reserves for every THROW
+#: install (:func:`install_lead_s`).
+#:
+#: :data:`LEAD_KNOTS` + 4 = 13 knots = 0.325 s, i.e. 10 knots = 250 ms of solve
+#: budget (``executor``'s ``ORIGIN_TOO_LATE`` refuses once the solve has run
+#: ``lead - WIRE_READ_KNOTS * dt``).  Root cause it closes: a fresh THROW's
+#: origin is ``t_now + lead`` and its release is an ABSOLUTE instant, so a
+#: solve past the budget cannot be absorbed by sliding the origin (a REST can,
+#: a THROW cannot) — it ends the attempt.  2026-10-16 10:50 sitting: the first
+#: columns attempt ended ``ORIGIN_TOO_LATE`` at skill 0 on a 188 ms solve
+#: against the 150 ms :data:`LEAD_S` budget, on a box loaded by a parallel
+#: session.  MEASURED (``tools/probes/throw_fresh_lead_replay.py`` over the
+#: five launch logs 2026-10-13..16, executor ``t_inst - t_now``, n=62): 21-86
+#: ms in the four earlier sessions, 22-140 ms accepted + the 188 ms refusal
+#: on 2026-10-16; at 13 knots the worst recorded solve keeps 62 ms of margin.
+#:
+#: Why a THROW can take the extra knots for free while a CATCH cannot: the
+#: cost of a :data:`SOLVE_BUDGET_KNOTS` knot is paid in the catch RE-AIM
+#: window (``CATCH_FREEZE_S``) and the splice seam moving; a THROW has no
+#: re-aim, and because the schedule dispatches it ``FRESH_THROW_LEAD_S``
+#: before its splice base AND the executor reserves the same lead, the origin
+#: (``t_abs - window``), the planned window and the release instant are all
+#: unchanged — only the dispatch moves 100 ms earlier and the machine holds
+#: the rest it already held 100 ms longer.  THE TWO MUST BE ONE NUMBER: a
+#: schedule lead larger than the reserved lead would plan the THROW over
+#: ``window + difference`` (the 2026-10-02 defect ``reserve_fresh_lead``
+#: closed), a smaller one would cut the window.  Hence one function,
+#: :func:`install_lead_s`, read by :func:`_assign_leads`, by
+#: ``executor.install_segment``'s default and by ``trajectory_node``.
+#: :data:`LEAD_S` (CATCH/REST/MAGAZINE) and ``CATCH_FREEZE_S`` are untouched.
+FRESH_THROW_LEAD_EXTRA_KNOTS = 4
+FRESH_THROW_LEAD_KNOTS = LEAD_KNOTS + FRESH_THROW_LEAD_EXTRA_KNOTS
+
+#: Seconds, derived.
+FRESH_THROW_LEAD_S = FRESH_THROW_LEAD_KNOTS * float(hw.JB_TRAJ_KNOT_DT_S)
+
+
+def install_lead_s(kind: str) -> float:
+    """The lead an install of ``kind`` reserves between its dispatch and the
+    earliest knot it may plan on: :data:`FRESH_THROW_LEAD_S` for a THROW,
+    :data:`LEAD_S` for everything else.  The ONE spelling of the per-kind
+    rule — the schedule's dispatch lead for a skill that does not follow a
+    release (:func:`_assign_leads`) and the executor's reserved origin must be
+    the same number (see :data:`FRESH_THROW_LEAD_S`)."""
+    return FRESH_THROW_LEAD_S if kind == THROW else LEAD_S
 
 
 def flight_s(apex_m: float) -> float:
@@ -424,7 +500,7 @@ class Skill:
     #: pattern — instead of a self-toss from ``sites[0]``, so the cup is
     #: already parked at the feed site for the feed catch rather than having
     #: to transit there after the launch. Set by :func:`compile_columns`
-    #: (``entry='hop'``) on THROW 0 only; every other throw is an ordinary
+    #: (a fed schedule) on THROW 0 only; every other throw is an ordinary
     #: self-toss. Mutually exclusive with ``shadow_landing`` (THROW 0 can
     #: never be the columns Stop's cross-site last throw — that needs
     #: ``n_throws >= 2`` and ``i == n - 1``, never ``i == 0``). The
@@ -437,8 +513,10 @@ class Skill:
     entry_hop: bool = False
     #: Seconds between this skill's DISPATCH and its splice base
     #: (``t_abs_s - window_s``).  :func:`compile_columns` sets it per skill;
-    #: the default is the general :data:`LEAD_S`.
-    lead_s: float = LEAD_S
+    #: the default (``None``) is the kind's own :func:`install_lead_s` — the
+    #: lead the executor reserves for the same install, so a hand-built Skill
+    #: cannot dispatch by one lead and be planned by another.
+    lead_s: Optional[float] = None
 
     def __post_init__(self):
         if self.kind not in KINDS:
@@ -479,6 +557,8 @@ class Skill:
                               % (self.kind,))
         if not float(self.window_s) > 0.0:
             raise ValueError('window_s must be > 0, got %r' % (self.window_s,))
+        if self.lead_s is None:
+            object.__setattr__(self, 'lead_s', install_lead_s(self.kind))
         if not float(self.lead_s) >= 0.0:
             raise ValueError('lead_s must be >= 0, got %r' % (self.lead_s,))
 
@@ -703,15 +783,19 @@ def _assign_leads(skills):
     already carries splices AT that release knot whatever its dispatch instant
     (``executor._snap_to_release``), so its seam cannot move and the extra lead
     is pure solve budget: it gets :data:`HANDOFF_LEAD_S`
-    (:data:`SOLVE_BUDGET_KNOTS` + :data:`HANDOFF_LEAD_EXTRA_KNOTS` = 8 knots of
-    budget).  Every other segment's splice knot tracks its own dispatch —
+    (:data:`SOLVE_BUDGET_KNOTS` + :data:`HANDOFF_LEAD_EXTRA_KNOTS` = 14 knots of
+    budget since 2026-10-16).  Every other segment's splice knot tracks its own dispatch —
     dispatch it earlier and it simply splices earlier — so it gets
-    :data:`LEAD_S` and the bare :data:`SOLVE_BUDGET_KNOTS` (6 knots).
+    :func:`install_lead_s` — :data:`LEAD_S` and the bare
+    :data:`SOLVE_BUDGET_KNOTS` (6 knots), or :data:`FRESH_THROW_LEAD_S` (10
+    knots of budget since 2026-10-16) for a THROW, the lead the executor
+    reserves for the same install.
 
     In the columns pattern this makes every CATCH a handoff (its base IS the
     previous release — see :func:`compile_columns`) and leaves the launch THROW
-    (a fresh origin from rest) and the REST (dispatched a tail after the last
-    touch-down, with no release between) on the general lead.  The rule is
+    (a fresh origin from rest, on :data:`FRESH_THROW_LEAD_S`) and the REST
+    (dispatched a tail after the last touch-down, with no release between) on
+    the general lead.  The rule is
     stated on the SEGMENT's geometry, not on the kind, so a pattern that puts a
     standalone catch after a throw gets the handoff lead too.
     """
@@ -722,7 +806,8 @@ def _assign_leads(skills):
         follows_release = (last_release_s is not None
                            and base <= last_release_s + 1e-9)
         out.append(dataclasses.replace(
-            sk, lead_s=(HANDOFF_LEAD_S if follows_release else LEAD_S)))
+            sk, lead_s=(HANDOFF_LEAD_S if follows_release
+                        else install_lead_s(sk.kind))))
         for t_rel in _release_instants(sk):
             last_release_s = (t_rel if last_release_s is None
                               else max(last_release_s, t_rel))
@@ -754,7 +839,7 @@ def schedule_has_shadow_landing(schedule: Schedule) -> bool:
 
 def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
                     feed: Optional[LandingPrior] = None,
-                    entry: str = 'transit') -> Schedule:
+                    hop_entry: bool = False) -> Schedule:
     """The columns pattern's schedule (plan § 1.2 / § 2.4).
 
     **Exactly one of ``t0_abs_s``/``feed`` (R5, owner decision D1,
@@ -832,7 +917,7 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
     ``executor.SkillExecutor._command_u``.
 
     **The HOP ENTRY (owner decision, 2026-10-05, R5 sitting-6 prep —
-    ``entry='hop'``).** A fed schedule's pre-R5 entry parks
+    every fed schedule).** The pre-R5 fed entry parked
     ball A at ``sites[0]`` and throws it there (THROW 0, a self-toss) while
     ball B is still falling toward ``sites[1]`` — so the cup has to TRANSIT
     from ``sites[0]`` to ``sites[1]`` between the launch and the feed catch,
@@ -846,17 +931,21 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
     changes; the catch that follows it, and everything else in the
     schedule, keeps landing at ``sites[0]`` exactly as before). The cup is
     therefore already parked at ``sites[1]`` and simply stays there for the
-    feed catch, instead of arriving mid-transit. ``entry='hop'`` requires
+    feed catch, instead of arriving mid-transit. ``hop_entry=True`` requires
     ``feed is not None`` — a free-``t0_abs_s`` schedule has no real feed
     ball to park for, so there is nothing for the hop to buy — and raises
-    ``ValueError`` otherwise. The feed CATCH keeps ``receive_tilt=(0.0,
+    ``ValueError`` otherwise. The default ``hop_entry=False`` is NOT a
+    selectable "entry": it is the plain self-toss THROW 0 that the
+    free-``t0_abs_s`` compiles and ``columns_1ball``'s phantom-fed tail
+    (:func:`compile_reload_columns`/:func:`compile_rest_columns`, which feed
+    a synthetic prior into a cup already parked at ball A's own site) have
+    always used. The feed CATCH keeps ``receive_tilt=(0.0,
     0.0)`` unchanged (the level-pinned touch-down attitude, independent of
     which entry parked the cup there). THROW 0 carries
     :attr:`Skill.entry_hop` under the hop entry (see that attribute for the
-    executor-side bypass); ``entry='transit'`` reproduces the pre-R5
-    self-toss entry exactly (kept for A/B comparison and rollback) and
-    never sets ``entry_hop`` on any skill, so every pre-existing caller
-    (which does not pass ``entry`` at all) is byte-for-byte unchanged.
+    executor-side bypass). The 'transit' entry (pre-R5
+    self-toss) was retired as a ``skill_node`` choice 2026-10-14 after the hop entry met the R5 gate at
+    sitting 8; ``columns_entry`` no longer exists.
 
     **Every same-site (CATCH, THROW) pair of one ball is emitted as ONE CATCH
     skill carrying ``then_throw``** (:func:`_fold_catch_throw_pairs`), so the
@@ -876,19 +965,17 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
     post-release — the ring's own handoff, with the ball that just left the cup
     keeping its detach cone.  That splice knot is therefore pinned by the HEAD
     and not by the dispatch, which is why every such skill carries
-    :data:`HANDOFF_LEAD_S` (:func:`_assign_leads`) and spends the extra two
-    knots on the solve rather than on moving the seam.
+    :data:`HANDOFF_LEAD_S` (:func:`_assign_leads`) and spends the
+    :data:`HANDOFF_LEAD_EXTRA_KNOTS` extra knots on the solve rather than on moving the seam.
     """
     if (t0_abs_s is None) == (feed is None):
         raise ValueError(
             'compile_columns takes exactly one of t0_abs_s (a free clock '
             'instant) or feed (R5: ball B\'s observed arrival, from which '
             't0 is derived) — got t0_abs_s=%r feed=%r' % (t0_abs_s, feed))
-    if entry not in ('hop', 'transit'):
-        raise ValueError("entry must be 'hop' or 'transit', got %r" % (entry,))
-    if entry == 'hop' and feed is None:
+    if hop_entry and feed is None:
         raise ValueError(
-            "entry='hop' requires feed (a free-t0_abs_s schedule has no "
+            "hop_entry=True requires feed (a free-t0_abs_s schedule has no "
             "real feed ball to park THROW 0 for)")
     t_f = flight_s(pattern.apex_m)
     beta = beat_s(t_f, pattern.dwell_s)
@@ -963,13 +1050,13 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
         is_stop_throw = (i == n - 1 and n >= 2)
         target_i = sites2[n % 2] if is_stop_throw else site_i
         # The hop entry (owner decision, 2026-10-05 — see the docstring):
-        # THROW 0 only, and only under `entry='hop'`. It is released from
+        # THROW 0 only, and only for a fed schedule (`hop_entry`). It is released from
         # the FEED site (`sites2[1]`) rather than its own self-toss site
         # (`site_i`, still `sites2[0]` here) -- `target_i` is untouched by
         # this (it is already `site_i` == `sites2[0]` for i == 0, since
         # `is_stop_throw` can never be True at i == 0), so the ball still
         # lands at `sites[0]` exactly as the self-toss entry would.
-        is_hop_throw = (entry == 'hop' and i == 0)
+        is_hop_throw = (hop_entry and i == 0)
         release_site_i = sites2[1] if is_hop_throw else site_i
         throw_sk = Skill(kind=THROW, ball_id=ball_i, site=release_site_i,
                          t_abs_s=t_throw, window_s=window,
@@ -1267,10 +1354,12 @@ def compile_one_ball(pattern: OneBallPattern, t0_abs_s: float) -> Schedule:
     carries no extra tail, so ``record.end_s`` is exactly the terminal's event
     time regardless of dispatch jitter). THROW 0 must dispatch no earlier than
     that: with ``t_abs_s = floor_lift_s + launch_s``, ``window_s = launch_s``
-    and the general :data:`LEAD_S`, ``THROW 0.dispatch_s() = floor_lift_s -
-    LEAD_S``, so ``install_segment``'s fresh test (``t_now + lead >=
-    record.end_s``) reads ``(floor_lift_s - LEAD_S) + LEAD_S >= floor_lift_s``
-    — true by construction, not by margin. Putting THROW 0 at ``floor_lift_s``
+    and the THROW lead :data:`FRESH_THROW_LEAD_S` (``L`` below; the general
+    :data:`LEAD_S` until 2026-10-16), ``THROW 0.dispatch_s() = floor_lift_s -
+    L``, so ``install_segment``'s fresh test (``t_now + lead >=
+    record.end_s``, with the SAME ``L`` — :func:`install_lead_s`) reads
+    ``(floor_lift_s - L) + L >= floor_lift_s`` — true by construction, not by
+    margin, whatever ``L`` is, as long as the two agree. Putting THROW 0 at ``floor_lift_s``
     itself would dispatch it while the lift is still mid-settle and force a
     SPLICE onto a plan that has not reached the floor yet.
     """
@@ -1431,7 +1520,7 @@ def compile_reload_wait(site: Site, floor_lift_s: float,
     self-toss opening REST (which assumes an operator has already placed a
     ball), nothing is in the cup while BB's throw is still pending.
 
-    ``SkillNode._run_one_ball`` (a Juggle goal with ``reload=True``) installs this
+    ``SkillNode._run_one_ball`` (a Juggle goal whose cup is EMPTY) installs this
     schedule, then calls ``bb/reload`` + ``bb/throw_at_target``; the hand
     is already homing while that round trip is in flight. On the
     announcement, ``SkillNode._on_announcement`` compiles the real
@@ -1697,7 +1786,7 @@ def compile_reload_columns(landing_mm, landing_vel_mm_s, t_land_abs_s: float,
                            t0_abs_s: float,
                            max_tilt_deg: float = tg.MAX_TILT_DEG) -> Schedule:
     """B2's ``columns_1ball`` reload start (``SkillNode._run_columns_1ball``,
-    ``reload=True``) — owner's words: "A is fed, held, then the pattern
+    cup EMPTY) — owner's words: "A is fed, held, then the pattern
     starts". Ball Butler's reload choreography for ball A — PRE-TILT REST
     -> held-tilt CATCH -> DECAY REST — hands off into the COLUMNS schedule
     (:func:`compile_columns`, ball A self-tossing from ``columns_pattern.
@@ -1727,7 +1816,8 @@ def compile_reload_columns(landing_mm, landing_vel_mm_s, t_land_abs_s: float,
     MEASURED (probe, 2026-10-04, default apex/dwell/launch_s): the DECAY
     REST's dispatch lands 0.6 s before the columns schedule's own THROW 0
     dispatch (:data:`DECAY_S` 1.0 s vs. the pattern's ``launch_s`` 0.4 s) —
-    comfortable margin. :func:`_check_dispatch_monotone` runs again below
+    comfortable margin (0.1 s less since THROW 0 took the 13-knot
+    :data:`FRESH_THROW_LEAD_S`, 2026-10-16). :func:`_check_dispatch_monotone` runs again below
     over the COMBINED list regardless (never assumed from that one
     measurement), so a non-default ``launch_s`` — or a future change to
     either constant — gets the same hard refusal every other compiler gives
@@ -1777,7 +1867,7 @@ def compile_reload_columns(landing_mm, landing_vel_mm_s, t_land_abs_s: float,
 
 def compile_rest_columns(columns_pattern: Pattern, aim_site: Site,
                          lift_s: float, t0_abs_s: float) -> Schedule:
-    """``columns_1ball`` with ``reload=False`` (``SkillNode._run_columns_1ball``):
+    """``columns_1ball`` with a SEATED cup (``SkillNode._run_columns_1ball``):
     an OPENING REST, then the columns schedule. Ball A is already seated in
     the cup (an operator placed it); the REST homes the hand, levels the
     platform and carries the cup onto ball A's site, so THROW 0 is planned

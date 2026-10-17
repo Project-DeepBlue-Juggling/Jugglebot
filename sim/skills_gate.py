@@ -117,6 +117,7 @@ from jugglebot.motion.trajectory import TrajectoryLimits           # noqa: E402
 from jugglebot.motion.trajectory import ballistics_bc as bal       # noqa: E402
 from jugglebot.motion import unified_cycle as uc                   # noqa: E402
 from jugglebot.motion.skills import admissible as adm              # noqa: E402
+from jugglebot.motion.skills import bump as bmp                    # noqa: E402
 from jugglebot.motion.skills import learner as lr                  # noqa: E402
 from jugglebot.motion.skills import memory as mem                  # noqa: E402
 from jugglebot.motion.skills import schedule as sk                 # noqa: E402
@@ -132,7 +133,7 @@ from teensy_link.setpoint_pump import (                            # noqa: E402
 )
 
 from sim.plant.mujoco_plant import MuJoCoPlant                     # noqa: E402
-from sim.juggle_noise import BallisticEstimator, JuggleNoise, NoiseConfig  # noqa: E402
+from sim.ball.noise import BallisticEstimator, JuggleNoise, NoiseConfig  # noqa: E402
 
 #: ``skill_node._DISPATCH_LOOKAHEAD_S``, mirrored (2026-10-02): the node's
 #: executors dispatch this far ahead of their tick (one 40 Hz orchestrator
@@ -661,6 +662,72 @@ def _make_installer(ictx: _InstallCtx, seg_cfg, limits, geom, *,
     return installer
 
 
+#: Process-wide tally of the sim bumper's outcomes (I-CATCH-5 evidence):
+#: ``{'accepted': n, 'declined': {code: n}}``.  Printed in the gate's summary
+#: lines; ``reset_bump_stats()`` zeroes it (tests do, before a trial).
+BUMP_STATS = {'accepted': 0, 'declined': {}}
+
+
+def reset_bump_stats() -> None:
+    BUMP_STATS['accepted'] = 0
+    BUMP_STATS['declined'] = {}
+
+
+def bump_stats_total() -> int:
+    return BUMP_STATS['accepted'] + sum(BUMP_STATS['declined'].values())
+
+
+def _bump_stats_line() -> str:
+    dec = BUMP_STATS['declined']
+    return 'bump: %d accepted, %d declined%s' % (
+        BUMP_STATS['accepted'], sum(dec.values()),
+        (' (' + ', '.join('%s %d' % kv for kv in sorted(dec.items())) + ')')
+        if dec else '')
+
+
+def _make_bumper(ictx: _InstallCtx, limits, geom):
+    """The sim gate's bump apply half (I-CATCH-5, G2): ``bump.bump_record`` over
+    ``ictx``'s live record — the same pure function ``trajectory_node``'s
+    ``KIND_BUMP`` runs on the robot.  The sim has no transit, so the apply
+    instant IS the dispatch instant.  On accept the record is swapped (same
+    ``t0``) and the carried release's pending entry follows the bumped plan:
+    site + ``b(t_rel)``, takeoff + ``v_b`` (xy) — what the bumped cup does."""
+    def bumper(idx, ball_id, delta_xy_mm, t_catch_abs_s, t_dispatch_s):
+        rec = ictx.record
+        if rec is None:
+            return bmp.BumpResult(False, bmp.BUMP_NO_RECORD, True,
+                                  'no record', -1,
+                                  delta_xy_mm=np.asarray(delta_xy_mm, float))
+        res, _k = bmp.bump_record(rec.plan, rec.meta, rec.t0_s, t_dispatch_s,
+                                  delta_xy_mm, t_catch_abs_s, limits, geom,
+                                  t_apply_s=t_dispatch_s)
+        if res.accepted:
+            BUMP_STATS['accepted'] += 1
+        else:
+            BUMP_STATS['declined'][res.code] = (
+                BUMP_STATS['declined'].get(res.code, 0) + 1)
+        if res.accepted:
+            ictx.record = dataclasses.replace(rec, plan=res.plan, meta=res.meta)
+            for i, pr in enumerate(ictx.pending_releases):
+                if pr[1] == ball_id and pr[0] > float(t_catch_abs_s):
+                    take = np.asarray(pr[2], dtype=float).copy()
+                    site = np.asarray(pr[3], dtype=float).copy()
+                    take[:2] += res.launch_bias_xy_mm_s
+                    site[:2] += res.release_offset_xy_mm
+                    ictx.pending_releases[i] = (pr[0], pr[1], take, site, pr[4])
+                    break
+        return res
+    return bumper
+
+
+def _bump_kwargs(sched, ictx: _InstallCtx, limits, geom) -> dict:
+    """``SkillExecutor`` kwargs for the bump: the switch keyed on the
+    schedule's own label (``'columns'`` for both columns compilers — the robot
+    keys on the goal name, ``bump.BUMP_ENABLED_PATTERNS``) and the bumper."""
+    return dict(catch_bump_enabled=bmp.bump_enabled_for(sched.pattern),
+                bumper=_make_bumper(ictx, limits, geom))
+
+
 # ---------------------------------------------------------------------------
 # R3 — sim validation of the learner (plan § 4 R3 "Sim validation")
 # ---------------------------------------------------------------------------
@@ -931,17 +998,13 @@ class SelfTossGateConfig:
     #: `run_columns_attempt`'s own paragraph on this field for the exact
     #: split). Ignored outside a FEED trial.
     feed_bb_bias_mm: Tuple[float, float] = (0.0, 0.0)
-    #: The fed columns entry (owner decision, 2026-10-05, R5 sitting-6 prep)
-    #: -- mirrors `skill_node.SkillNode`'s own `columns_entry`: 'hop' (the
-    #: default) spawns Jugglebot already parked at the feed site holding
-    #: ball A (or empty, for a one-ball-fed trial), and THROW 0 releases it
-    #: cross-site from there (`schedule.compile_columns(entry='hop')`).
-    #: 'transit' reproduces the pre-R5 self-toss entry (held at ball A's own
-    #: site) bit-for-bit, for A/B comparison. Ignored outside a FEED trial
-    #: (`feed_angle_deg`/`feed_speed_mmps` both set) -- a vertical-spawn
-    #: trial has no feed to park for, same gate `compile_columns` itself
-    #: enforces.
-    columns_entry: str = 'hop'
+    #: The fed columns entry is always HOP (owner decision, 2026-10-05, R5
+    #: sitting-6 prep): a FEED trial spawns Jugglebot already parked at the
+    #: feed site holding ball A (or empty, for a one-ball-fed trial), and
+    #: THROW 0 releases it cross-site from there
+    #: (`schedule.compile_columns(hop_entry=True)`). A vertical-spawn trial
+    #: (no `feed_angle_deg`/`feed_speed_mmps`) has no feed to park for. The
+    #: 'transit' entry and this `columns_entry` knob were retired 2026-10-14.
 
     #: Which correlation rule :class:`_IdentityTracker` applies (2026-10-04,
     #: U1 "two-ball association" fix). ``'fixed'`` (the default): identity
@@ -1271,6 +1334,7 @@ class SkillsGate:
         installer = _make_installer(ictx, self.seg_cfg, self.limits, geom)
         executor = ex.SkillExecutor(
             sched, installer, tracker=tracker,
+            **_bump_kwargs(sched, ictx, self.limits, geom),
             catch_aim_source=self.cfg.catch_aim_source,
             dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
 
@@ -1660,6 +1724,7 @@ class SkillsGate:
         learner = _MemoryLearner(memory, learner_cfg)
         executor = ex.SkillExecutor(
             sched, installer, tracker=identity.tracker,
+            **_bump_kwargs(sched, ictx, self.limits, geom),
             catch_aim_source=self.cfg.catch_aim_source,
             learner=learner, boxes=boxes,
             observer=observer, on_experience=lambda exp: (
@@ -1890,15 +1955,15 @@ class SkillsGate:
         verdict this feeds (:meth:`run_columns_1ball_fed_seed`) counts ball
         B alone with no extra filtering needed.
 
-        ``cfg.columns_entry`` (owner decision, 2026-10-05, R5 sitting-6
-        prep): inside a FEED trial only, ``'hop'`` (the default) spawns
+        The hop entry (owner decision, 2026-10-05, R5 sitting-6 prep;
+        'transit' retired 2026-10-14): inside a FEED trial only, spawns
         Jugglebot already AT the feed site (``rest0`` is ``feed_site``'s own
         rest, not ``a_site``'s) holding ball A (or empty, ``phantom_a``) and
-        compiles the schedule with ``compile_columns(..., entry='hop')`` --
+        compiles the schedule with ``compile_columns(..., hop_entry=True)`` --
         mirroring ``SkillNode._run_columns``'s own hop entry bit for bit,
         including the un-walked Ball-Butler-equivalent aim point.
-        ``'transit'`` reproduces the pre-R5 vertical-spawn-trial shape
-        (``rest0`` at ``a_site``, a self-toss THROW 0) exactly.
+        A non-FEED (vertical-spawn) trial keeps ``rest0`` at ``a_site`` with
+        a self-toss THROW 0.
         """
         cfg: SelfTossGateConfig = self.cfg
         plant = self.plant
@@ -1929,14 +1994,11 @@ class SkillsGate:
                 'phantom_a requires feed_mode (feed_angle_deg/feed_speed_mmps '
                 'both set) -- a vertical, un-fed spawn leaves ball B with '
                 'nothing real to catch')
-        if cfg.columns_entry not in ('hop', 'transit'):
-            raise ValueError("cfg.columns_entry must be 'hop' or 'transit', "
-                             'got %r' % (cfg.columns_entry,))
         # The hop entry (owner decision, 2026-10-05, R5 sitting-6 prep):
-        # ignored outside a FEED trial -- the vertical spawn below never
-        # reads it, `compile_columns` itself refuses `entry='hop'` without a
+        # FEED trials only -- the vertical spawn below never reads it,
+        # `compile_columns` itself refuses `hop_entry=True` without a
         # `feed`. Mirrors `SkillNode._run_columns`'s own `bridge_site`.
-        hop_entry = feed_mode and cfg.columns_entry == 'hop'
+        hop_entry = feed_mode
 
         rest0 = self._rest_state(feed_site if hop_entry else a_site)
         pose0 = np.asarray(rest0.pose, dtype=float)
@@ -2055,8 +2117,7 @@ class SkillsGate:
             feed = sk.LandingPrior(pos_mm=land_pos, vel_mm_s=land_vel,
                                    t_land_abs_s=t_land_abs_s)
             sched = sk.compile_columns(
-                pattern, feed=feed,
-                entry=('hop' if hop_entry else 'transit'))
+                pattern, feed=feed, hop_entry=hop_entry)
 
         ball_state = {
             # B2 (`columns_1ball_fed`): the SAME inert shape
@@ -2106,6 +2167,7 @@ class SkillsGate:
         observer = _make_observer(plant)
         executor = ex.SkillExecutor(
             sched, installer, tracker=identity.tracker,
+            **_bump_kwargs(sched, ictx, self.limits, geom),
             catch_aim_source=self.cfg.catch_aim_source,
             learner=learner, boxes=None, resend_max_per_catch=0,
             observer=observer,
@@ -2178,9 +2240,8 @@ class SkillsGate:
         # Sized `remaining + 1` with the hop entry, an attempt nets one row
         # short and every later attempt (2 throws: hop + Stop) nets zero --
         # 60 attempts, longest 29, MEASURED 2026-10-05 on the first hop runs.
-        hop_entry = (not (cfg.feed_angle_deg is None
-                          and cfg.feed_speed_mmps is None)
-                     and cfg.columns_entry == 'hop')
+        hop_entry = not (cfg.feed_angle_deg is None
+                         and cfg.feed_speed_mmps is None)
         rowless = 2 if hop_entry else 1
         while len(throws) < cfg.target_throws and attempts < cfg.max_attempts:
             remaining = cfg.target_throws - len(throws)
@@ -2615,6 +2676,7 @@ class SkillsGate:
         observer = _make_observer(plant)
         executor = ex.SkillExecutor(
             sched, installer, tracker=identity.tracker,
+            **_bump_kwargs(sched, ictx, self.limits, geom),
             catch_aim_source=self.cfg.catch_aim_source,
             learner=learner, boxes=None, resend_max_per_catch=0,
             observer=observer,
@@ -2924,6 +2986,7 @@ class SkillsGate:
         # no longer move a reload catch's window.
         executor = ex.SkillExecutor(
             sched, installer, tracker=tracker,
+            **_bump_kwargs(sched, ictx, self.limits, geom),
             catch_aim_source=self.cfg.catch_aim_source,
             observer=observer, observations=observations,
             dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)
@@ -3146,6 +3209,7 @@ def _print_reload_table(rep: dict) -> None:
     print('[skills_gate_reload] %s  (wall %.1f s over %d seed(s))  -> %s'
           % ('PASS' if rep['passed'] else 'FAIL', rep['wall_s'],
              len(rep['seeds']), rep.get('report_path')))
+    print('[skills_gate_reload] %s' % _bump_stats_line())
 
 
 def _print_learn_table(rep: dict) -> None:
@@ -3182,6 +3246,7 @@ def _print_learn_table(rep: dict) -> None:
     print('[skills_gate_learn] %s  (wall %.1f s over %d seed(s))'
           % ('PASS' if rep['passed'] else 'FAIL', rep['wall_s'],
              len(rep['seeds'])))
+    print('[skills_gate_learn] %s' % _bump_stats_line())
 
 
 def _print_table(rep: dict) -> None:
@@ -3201,6 +3266,7 @@ def _print_table(rep: dict) -> None:
     print('[skills_gate] %s  (wall %.1f s over %d seed(s))  -> %s'
           % ('PASS' if rep['passed'] else 'FAIL', rep['wall_s'],
              len(rep['seeds']), rep.get('report_path')))
+    print('[skills_gate] %s' % _bump_stats_line())
 
 
 def main(argv=None) -> int:
@@ -3291,17 +3357,6 @@ def main(argv=None) -> int:
                         'columns_feed_bb_bias_mm cancels (default [0.0, '
                         '0.0]: no behaviour change; measured 2026-10-04: '
                         '[29.0, 25.0])')
-    p.add_argument('--columns-entry', choices=('hop', 'transit'), default=None,
-                   help='--learn --pattern columns, --feed-angle-deg only '
-                        '(owner decision, 2026-10-05, R5 sitting-6 prep): '
-                        'SelfTossGateConfig.columns_entry -- \'hop\' (the '
-                        'default) spawns Jugglebot already parked at the '
-                        'feed site holding ball A (or empty, --one-ball-fed) '
-                        'and THROW 0 releases it cross-site from there '
-                        "(schedule.compile_columns(entry='hop')); 'transit' "
-                        "reproduces the pre-R5 self-toss entry (held at "
-                        "ball A's own site) bit-for-bit. Ignored outside a "
-                        'FEED trial.')
     p.add_argument('--correlator', choices=('fixed', 'head'), default=None,
                    help='--learn only: which tracker-correlation rule '
                         '_IdentityTracker applies. \'fixed\' (the default): '
@@ -3396,8 +3451,6 @@ def main(argv=None) -> int:
         if args.bb_bias_mm is not None:
             lcfg.feed_bb_bias_mm = (float(args.bb_bias_mm[0]),
                                     float(args.bb_bias_mm[1]))
-        if args.columns_entry is not None:
-            lcfg.columns_entry = str(args.columns_entry)
         if args.correlator is not None:
             lcfg.correlator = str(args.correlator)
         if args.dwell_s is not None:

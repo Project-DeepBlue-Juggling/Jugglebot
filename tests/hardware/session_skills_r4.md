@@ -343,13 +343,12 @@ keep the bag). Two R4-specific notes:
 
 ## 9. Carried watch items (plan § 0, physical operating point)
 
-This sitting can observe all six of the items `plans/active/
-two-ball-skill-stack.md` § 0 carried in from the cup-contact contract:
+This sitting can observe all six of the items `plans/archived/two-ball-skill-stack.md` § 0 carried in from the cup-contact contract:
 
 1. **Hand recovery park's upper-stop push** — unresolved, on watch (§ 1 row
    6, § 8).
 2. **Hand `MAX_DEVIATION` latches from stale-encoder bursts at throw onset**
-   — three so far; `plans/active/leg-bus-frame-drops.md`. Note the axis and
+   — three so far; `plans/archived/leg-bus-frame-drops.md`. Note the axis and
    the attempt phase if one fires.
 3. **Contact-window re-send skip** — landed this unit (D6, "watch 3"); a
    `CUP_CONTACT_ACC` refusal firing anyway (§ 7) is the observable that it

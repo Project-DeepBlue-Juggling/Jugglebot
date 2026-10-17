@@ -152,7 +152,7 @@ exist to catch precisely this.
 ## The enumerated ingest sites
 
 `E` = external ⇒ corrected exactly once. `D` = derived ⇒ never corrected.
-Table A of `plans/parked/levelling-frame-contract.md` § Phase 0 — Outcome carries
+Table A of `plans/archived/levelling-frame-contract.md` § Phase 0 — Outcome carries
 the full nine `D` rows and the four direct plan installs; the `E` rows are
 normative and are reproduced here.
 

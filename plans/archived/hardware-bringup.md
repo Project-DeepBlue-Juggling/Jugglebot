@@ -456,7 +456,7 @@ motions). Phases 4–7 (moderate motions, tau calibration, dynamic trajectories,
 production path) were never executed as written: platform control moved off the
 `run_mpc.py` entry point onto the trajectory-node streaming path tracked by
 `plans/archived/mvp-trajectory-bringup.md`, and the MPC is being parked
-operationally (`plans/parked/refactor-2026-07.md` § Phase 3). The residual
+operationally (`plans/archived/refactor-2026-07.md` § Phase 3). The residual
 hardware obligations still tracked against this plan — T-H-T2b-1 / T-H-T2a-1
 CAN-loss and cascade validation — were discharged 2026-05-18
 (`logbook/2026-05-18-hardware-bringup-t2b1-t2a1-cascade-validation.md`).
@@ -466,4 +466,4 @@ end is a bringup-era record, not a live source of truth: current limits live in
 `config/hardware_config.yaml`.
 
 Moved out of `plans/active/` by the 2026-07 refactor programme
-(`plans/parked/refactor-2026-07.md` § Phase 1, item 5).
+(`plans/archived/refactor-2026-07.md` § Phase 1, item 5).

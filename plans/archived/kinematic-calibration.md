@@ -1,0 +1,323 @@
+---
+title: Kinematic calibration — fit the Stewart geometry to a mocap pose sweep
+created: 2026-09-23
+status: superseded   # closed 2026-10-14 unimplemented-or-partial: see Archival note
+owner: Harrison
+last_updated: 2026-09-27
+related_plan: two-ball-skill-stack.md
+related_config:
+  - config/hardware_config.yaml → jugglebot_geometry.{base_nodes_mm, init_plat_nodes_mm, initial_height_mm, init_leg_lengths_mm, mm_to_rev} (written only at § 6 step 5, by a deliberate commit)
+  - config/tilt_calibration.yaml (recaptured after the geometry lands, § 6 step 6)
+  - config/generated/admissible_box.yaml (re-swept after the geometry lands — coordinate with the skill-stack session, § 7)
+related_code:
+  - tools/kincal_fit.py (the fit, § 4)
+  - tests/hardware/kincal_capture.py (the capture, § 5 — not yet written)
+  - ros_ws/src/jugglebot/jugglebot/motion/ik_solver.py::pose_to_leg_lengths (the model being calibrated)
+  - ros_ws/src/jugglebot/jugglebot/skill_node.py::_frame_offset_check (the landing subtraction this plan retires)
+archived: 2026-10-14
+---
+
+## Archival note (2026-10-14)
+
+Board cleared at the close of the skill-stack arc, 2026-10-14 (owner decision). Archived `superseded`; declined or left unfinished, not superseded by code unless stated.
+
+**What landed:** Partly landed, then closed unfinished: § 6 steps 1-5 are done. `tools/kincal_fit.py`, `tests/hardware/kincal_capture.py` and the runsheet `tests/hardware/session_kincal_apply.md` exist; the sweep was flown 2026-09-27; the fitted geometry (nodes, per-leg L0, `mm_to_rev`, STOW 574.3 -> 578.2) was applied to `config/hardware_config.yaml` (commit 3059cc13), the tilt map retired and the admissible box re-swept. NOT done: step 6 (tilt-map recapture after `level`) and step 7 (the flying frame check that is the plan's acceptance test), so `_frame_offset_check` in `skill_node.py` and its landing subtraction are NOT retired. Status is `superseded` only because the vocabulary has no `partial`: the geometry shipped, the acceptance did not.
+
+**What the problem still is:** The Platform sat ~8.5 mm laterally off its command in the QTM frame, growing with height; the fitted geometry cut hold-out error from 12.3 mm to 1.08 mm RMS, but the on-robot frame check has never confirmed it at every z.
+
+**Would revive it:** a flying sitting where the session-start frame check reads > 1-2 mm at some z (then run steps 6-7 of `tests/hardware/session_kincal_apply.md`), or the learner needing z authority.
+
+# Kinematic calibration
+
+Design settled with the owner in one grilling session, 2026-09-23. **Every decision
+below is the owner's, recorded as agreed.** § 9 lists the questions and answers in order.
+
+## 0. Why
+
+At the 2026-09-22/23 sittings the mocap `Platform` body sat about 8.5 mm laterally from
+the commanded pose. The error was stable to 0.03 mm and grew with commanded height:
+the § 9 z-sweep measured 0.77°, a lever arm about a pivot about 170 mm above the base
+plane. The QTM global frame **is** the Base frame (the owner transforms global onto the
+`Base` body, which is defined from markers in CNC'd holes, with pairs aligned exactly on
+x and y). So the frame is not the problem. The platform really is somewhere other than
+where the model says. Two other facts point at the model's geometry:
+
+- the mocap origin sat **7 mm above the commanded centre**, and that origin is trusted:
+  it was placed at the leg-joint centroid with the owner's jig;
+- the robot is hand-built from FDM parts.
+
+The error model is therefore **(B) kinematic-model geometry error**, not a frame
+definition error (A) and not dynamic error (C). § 3 is the pre-registered test that
+separates B from C.
+
+What already exists covers **attitude only**. `config/tilt_calibration.yaml` is a 5×5
+residual-tilt map at z = 170 mm. It is applied once per plan at the seed pose
+(`trajectory_node.py`, `correction_for_pose` → `levelling_correction`). No code has ever
+corrected platform *position*. The session-start frame check (`skill_node._frame_offset_check`)
+subtracts one measured offset from tracker landings. That is scaffolding: a single
+constant measured at rest at one height, blind to z and to anything path-dependent. It
+**stays until this plan's § 8 criteria are met on a flying sitting**, because it fails
+closed and only moves the learner's aim.
+
+This plan is a **prerequisite for giving the learner z authority**, which is when a
+model correct only at z = 170 stops being tolerable. It does **not** block
+two-ball-skill-stack R4.
+
+## 1. Remedy — decided
+
+**A parametric kinematic calibration, with no runtime controller.** Fit the model's
+geometry to data and write it into `hardware_config.yaml`. The IK is then right
+everywhere, and the feasibility gate, the admissible box and the flown path all use one
+geometry.
+
+Rejected, and why:
+
+- **A pose-offset controller that servos mocap pose back to target** (the owner's
+  opening idea). It would correct a static geometric error with a dynamic loop. A mocap
+  loop around the 40 Hz leg path is too slow to act inside a throw stroke. It would also
+  add a mocap-dependent feedback path (marker swaps, occlusion, latency) to the leg
+  command, where the only safety authority is the Teensy `MAX_DEVIATION` guard. It comes
+  back **only** under § 3's RANDOM verdict.
+- **A bigger residual map over x, y, z and tilt.** A 3-D-plus workspace needs hundreds of
+  nodes. Interpolation kinks in the map's gradient become leg jerk on a moving path, and
+  `LIMIT_JERK` is already the dominant refusal. A correction applied outside the IK also
+  means the gate checks leg lengths other than the ones commanded. A residual map is
+  allowed only for what the parametric fit leaves above § 8.
+
+## 2. Measurement model — decided
+
+The model the fit adjusts is exactly the IK: `ℓ_i = |c + R·p_i − b_i|`, and extension
+`ℓ_i − L0_i` equals motor revolutions divided by `mm_to_rev_i`.
+
+- **Fit leg-space.** The IK of the *mocap-measured* pose must reproduce the
+  *encoder-measured* leg revolutions. Measured revolutions, not commanded ones, so servo
+  tracking error never enters the calibration, and no forward kinematics sits inside the
+  fit.
+- **Position = the mocap `Platform` body origin**, trusted as the leg-joint centroid (it
+  was placed with the owner's jig). The jig itself can no longer be fitted, because later
+  components block it, and it is not needed.
+- **Attitude = the mocap body attitude × a fitted registration rotation** (3 parameters).
+  The body's axes were set parallel to global at definition time, which baked in whatever
+  physical attitude the platform had then.
+- **Zero attitude is defined by the leg-joint pattern** (owner, Q14). The platform nodes'
+  centroid is pinned at the origin and their net rotation at zero (six linear gauge
+  constraints), so the registration rotation is identifiable. Gravity-level remains the
+  job of `level` plus the tilt map.
+- **Parameters (Q16):** 18 base-node coordinates, 18 platform-node coordinates, 6 leg zero
+  lengths `L0_i`, 6 leg scales `mm_to_rev_i`, and 3 registration angles, all pulled weakly
+  toward CAD. Any parameter the data cannot pin down (posterior sd > 1 mm, or the
+  equivalent for scale and angle) is **frozen at CAD and refitted**, and the report names
+  it and says why.
+
+## 3. Path-dependence — thresholds pre-registered (owner, Q10)
+
+About 10 poses are each approached from two opposite directions, twice per direction.
+Spread is measured on the mocap position at arrival.
+
+| Verdict | Condition | Consequence |
+|---|---|---|
+| STATIC | overall spread ≤ 1 mm | The parametric fit is the whole remedy |
+| DIRECTIONAL | spread > 1 mm, within-direction ≤ 1 mm | Backlash: handled in path planning (for example, a final approach from a fixed direction). **Measured 2026-09-27: 3 of 10 groups, 1.2–1.5 mm. Owner: record it, do not act until flying shows that it matters.** |
+| RANDOM | within-direction spread > 1 mm | A slow mocap-trim outer loop becomes justified; the owner's controller design is reopened |
+
+## 4. Homing — two-part calibration (owner, Q17 + Q20)
+
+Homing repeatability has **never been measured** and may be worse than 1 mm. The
+calibration therefore splits in two:
+
+- **Once:** the full sweep fits the node coordinates and scales. These are fixed hardware.
+- **Every session:** a short mocap check after homing (6–10 poses, under a minute) re-fits
+  **only the six `L0_i`**, using the same fit code with everything else held
+  (`--offsets-only`). It becomes a session-start row next to the frame check. If homing
+  proves ≤ 1 mm, this step shrinks to a verification.
+
+The full-sweep capture measures homing directly: a 10-pose subset before a re-home, the
+same subset after it. Verdict threshold ≤ 1 mm, on both the mocap arrival spread and the
+per-leg `ΔL0`.
+
+## 5. Sweep — decided (owner, Q11 + Q12)
+
+- **Region:** inside ±300 mm in x/y and z = 100–250 mm, **clipped to the reachable set**,
+  filling about 90 % of the reachable radius at each z, with poses weighted toward the
+  edge (legs near the ends of their stroke separate the parameters best). Reachable
+  radius, level, with 5 mm stroke margin (current IK, probe 2026-09-23): 330–365 mm at
+  z = 100, 245–275 mm at z = 170, 115–135 mm at z = 250. At 6° tilt: 260–340, 210–245,
+  65–80 mm. The ±300 mm corners (424 mm) are out everywhere.
+- **Content:** about 5 z-levels × about 25 poses, **every pose tilted** (±6°, up to
+  ±10° where reachable; § 5.1 says why). About
+  10 poses are held out and never fitted. About 10 poses get the § 3 two-direction
+  repeats. A 10-pose subset gets the § 4 re-home repeat.
+- **Budget:** up to 30 minutes of motion (owner). The hand is parked and disarmed.
+  Profiled moves go through the normal path, with a dwell at each pose. No throwing.
+- **Tooling:** capture and fit are separate tools, both scripted (owner, Q8). The capture
+  follows the pattern of `tests/hardware/tilt_cal_grid.py`: a pose-list dry-run against
+  the IK, and a rehearsal on the loaded Jetson before the robot moves (CLAUDE.md). Output
+  goes to `temp/`. It writes the fit's input CSV (the format is the docstring of
+  `tools/kincal_fit.py`).
+
+### 5.1 What the synthetic proof says about the sweep (2026-09-23, `tests/sim/test_kincal_fit.py`)
+
+The fit was tested on a known geometry error: every group perturbed, 0.1 mm mocap
+noise, 64 tilted poses. Pose-space recovery is solid: hold-out error went from 10.6 mm
+RMS under the config geometry to 0.15–0.19 mm RMS. Parameter-level recovery is **not**
+exact, and the capture design has to allow for two weak directions:
+
+- **Registration tilt vs the six L0.** A constant tilt of the joint pattern changes each
+  leg's length by a near-constant amount across a stroke-limited sweep. Its posterior sd
+  was 0.18° with half the poses tilted, 0.11° with every pose tilted ±6°, and 0.075° at
+  ±10°. At the 0.1° threshold it usually **freezes at zero**, and the six L0 absorb it.
+  **This departs from Q14 in one respect:** a frozen tilt means zero attitude, in tilt, is
+  the mocap body's rather than the joint pattern's (yaw stays joint-pattern). It is
+  benign: a constant attitude offset is exactly what `level` absorbs, and pose-space
+  accuracy is unaffected. **The capture should tilt every pose, as far as reach allows.**
+- **Each L0 vs its base node's z.** Both act along a near-vertical leg. The fit freezes
+  some base z coordinates or trades them against L0 (errors of about 1 mm at parameter
+  level). The posterior sd reports this honestly (errors stay within about 2.6σ).
+
+## 6. Sequence
+
+1. **Fit tool** (`tools/kincal_fit.py`): tested offline on synthetic data with a known
+   geometry error. **Done 2026-09-23.**
+2. **Capture tool** (`tests/hardware/kincal_capture.py`): pose generator, dry-run,
+   rehearsal. **Done 2026-09-23:** seed 1 gives 185 dwells, 18.8 min, 0 refusals
+   under the production move gate. A `--check` mode is the § 4 per-session check.
+   `mocap_node` publishes the Platform body's z shifted down by `initial_height_mm`;
+   the tool adds it back and stores the capture in the Base frame, because step 5
+   changes that constant.
+3. **Sitting:** the full sweep, the two-direction repeats and the re-home repeat.
+   **Done 2026-09-27** (third attempt): `temp/logs/kincal_sweep_20260927_143217.csv`,
+   166 rows, 19 poses skipped by the stillness gate.
+4. **Fit** plus the report: the § 3 and § 4 verdicts, and § 8's criteria on the hold-out
+   set. The tool proposes a geometry YAML. **It never writes `hardware_config.yaml`.**
+   **Run 2026-09-27; owner ACCEPTED it for apply despite the narrow § 8 misses** (§ 8
+   note).
+   - § 3 DIRECTIONAL: 3 of 10 groups at 1.2–1.5 mm, within-direction ≤ 0.8 mm.
+   - § 4 PASS: 0.73 mm.
+   - § 8 hold-out 1.08 mm RMS (**FAIL**, ≤ 1) and 1.77 mm max (pass), against
+     12.3 mm under the config geometry. Attitude 0.20° (**FAIL**, ≤ 0.1).
+   - Nodes up to 6.4 mm from CAD (**FAIL**, ≤ 5). Every node sits 1–6 mm radially
+     inward.
+
+   The numbers are in the logbook
+   (`2026-09-23-kinematic-calibration-design-and-fit-tool.md`, § 2026-09-27).
+5. **Apply** by a deliberate commit. No firmware flash: the firmware headers carry the
+   geometry constants but no firmware code reads them (checked 2026-09-23). **Owner
+   approved this procedure on 2026-09-27, to run in a fresh session. Done 2026-09-27**
+   (logbook `2026-09-23-kinematic-calibration-design-and-fit-tool.md` § "2026-09-27:
+   applied"; runsheet `tests/hardware/session_kincal_apply.md`). Three things the
+   procedure below did not anticipate: the MuJoCo model `sim/model/jugglebot.xml` is a
+   committed generated artifact and was regenerated; the level pose at zero lift is
+   now unreachable through the IK (legs 5/6 at −5 mm), so a sim test pose moved to a
+   10 mm lift; and the admissible-box gate hash now covers the generated
+   `hardware_config.py` (R4 session's ask), so a geometry change forces a re-sweep
+   instead of relying on § 7 being remembered. And the class the "grep for 574.3"
+   instruction could not see: DERIVED literals — `CUP_TILT_CENTER_Z_MM = 744.3`
+   (574.3 + 170) in the planner's lever arithmetic and `CUP_Z_BASE_MM = 659.6`
+   (744.3 − 84.7) in `cup_realize` and the sim — each 3.9 mm short under the new
+   height; both now derive from the config (logbook § "What the full suite found").
+   The can-bridge firmware's `STROKE_MIN/MAX_REV` backstop (hand-captured under the
+   old `mm_to_rev`, ~0.7 % off) is now GENERATED from the YAML
+   (`leg_hard_margin_mm`) into `hardware_config.h`; can-bridge **FW 24 flashed
+   2026-09-27**, identity read back, no wire change.
+   1. Edit `config/hardware_config.yaml` `jugglebot_geometry` from
+      `temp/reports/kincal/kincal_sweep_20260927_143217/proposed_geometry.yaml`:
+      - `base_nodes_mm`: x/y fitted, z held at 0
+      - `init_plat_nodes_mm`: the fitted z values are ±2.9 mm; grep for any consumer
+        that assumes platform z = 0
+      - `init_leg_lengths_mm`: the fitted `L0_i`
+      - `mm_to_rev`: fitted
+      - `initial_height_mm`: 574.3 → **578.2**, the FK z of all-zero revolutions. That
+        STOW pose is also (−3.6, −7.7) mm off-axis and tilted 0.88° about x.
+
+      Rewrite the "DERIVED from geometry … at STOW" comment block. `reg.z` (−0.28°,
+      the mocap Platform body's yaw against the joint pattern) matters only for mocap
+      comparisons: record it in the comment and do not apply it.
+   2. **Retire `config/tilt_calibration.yaml`** (`git rm`) in the same commit. It was
+      captured against the old geometry, so keeping it would correct that part twice.
+      It applies whenever ANY levelling offset is loaded, including the persisted one
+      pushed at boot (`trajectory_node._active_tilt_map`). An absent file is the
+      documented C-LEVEL-1 fallback.
+   3. `python config/generate_config.py`. Grep every consumer of the geometry and of
+      574.3: the sim hard-codes it in `sim/hand/planner.py`, `sim/input/scripted.py`
+      and `sim/input/toss_loop.py`; `tests/sim/test_model.py:204` asserts it;
+      `ros_ws/gui/js/geometry-config.js` holds it. Then run `./run_tests.sh --full`
+      (the change reaches `sim/`).
+   4. Box re-sweep (§ 7): **message the R4 session (`jugglebot-skills-24`) first.**
+      Ask whether it folds this into its own re-sweep or has this session run
+      `python tools/admissible_sweep.py --site-pairs all --single-apex 0.5 0.6 0.7 0.8
+      0.9` twice (~34 min each) and diff the two runs.
+   5. `colcon build`, then commit and push. Then write a runsheet for the next sitting:
+      home → activate → **`level` FIRST**, before anything else (see below) → the
+      tilt-map recapture (step 6) → the flying acceptance check (step 7).
+
+   **Why `level` must come first.** The inclinometer offset is measured with the
+   platform commanded level, so it has been absorbing the old IK's tilt error: 0.80°
+   about x, persisted on the Platform Teensy, against a fitted STOW tilt of 0.88°. It
+   is re-pushed at every boot and re-measured only by `level`
+   (`orchestrator_node.py:453–462`, `:684–691`). Under the new geometry the stale
+   offset tilts every commanded pose by ~0.8° until someone re-levels. The persisted
+   offset records nothing about which geometry it was measured under. Binding it to a
+   geometry fingerprint would need a Platform Teensy change: noted, not scheduled.
+6. **Recapture the tilt map.** The current map was measured against the current geometry,
+   so part of it is the same error the fit removes; keeping it would correct that part
+   twice. It should come back much smaller.
+7. **Flying sitting:** the frame check at every z is the acceptance test (§ 8). Then
+   retire the landing subtraction.
+
+## 7. Coordination with the skill-stack session (agreed 2026-09-23 with the R4 session)
+
+- The plan file and its `plans/active/INDEX.md` row land together, in one step
+  (`tests/sim/test_plans_index.py`).
+- A new test file lands only once it is green. The gate and the nightly run against the
+  shared working tree.
+- The `logbook/INDEX.md` row is added only in this plan's own commit, **below** any R4
+  rows.
+- **The `hardware_config.yaml` geometry edit waits until R4 has committed, and the R4
+  session is told first.** It changes the admissible-box gate hash, and R4 re-sweeps at
+  its phase end, so the two re-sweeps can be folded into one.
+
+## 8. Done means (owner, Q15)
+
+- Hold-out position residual **≤ 1 mm RMS and ≤ 2 mm max**; attitude **≤ 0.1°**.
+- Every fitted node within about **5 mm of CAD** (physically plausible).
+- § 3 and § 4 verdicts recorded.
+- On the next flying sitting, the session-start frame check reads **≤ 1–2 mm at every z**.
+  Then the landing subtraction is retired.
+
+**2026-09-27 (owner): the first sweep is accepted despite missing three criteria
+narrowly.**
+
+| Criterion | Measured | Limit |
+|---|---|---|
+| Hold-out position RMS | 1.08 mm | ≤ 1 mm |
+| Hold-out attitude | 0.20° | ≤ 0.1° |
+| Nodes from CAD | 6.4 mm | ≤ 5 mm |
+
+- **RMS and attitude sit at or below the machine's repeatability.** Direction-dependent
+  spread reaches 1.5 mm, and mocap attitude repeats only to 0.13°. No static geometry can
+  meet those two limits.
+- **The node miss is a uniform shift, not scatter.** Every node sits about 1 % radially
+  inward. The owner confirms this is plausible: the ball-joint centres are inboard of the
+  CAD attachment points on FDM-printed parts. The owner also confirms the ~0.75 %-low leg
+  scales: the spools are FDM-printed, and the string diameter was only roughly measured.
+- **The flying frame check above remains the acceptance test.**
+
+## 9. Decision record (grilling session, 2026-09-23)
+
+| # | Question | Decision |
+|---|---|---|
+| Q1–Q3 | Frame vs plant; urgency; static vs drift | QTM = Base (CNC'd markers). Not urgent, but should be done properly: subtraction is scaffolding. The owner suspects pose/path dependence, so it is measured (§ 3) rather than assumed |
+| Q4 | Inclinometer's 0.4° spread between reads | Out of scope (related, separate) |
+| Q5 | Base body definition | CNC'd holes, x/y-aligned marker pairs. Frame-definition error (A) is unlikely |
+| Q6 | A no-throw attribution sitting first | Yes; it became the § 5 sweep |
+| Q7 | Landing subtraction meanwhile | Keep until § 8 |
+| Q8 | Parametric calibration vs residual map | Parametric, automated, capture and fit as separate steps |
+| Q9/Q13 | Platform body registration | Origin at the jig point (trusted); arbitrary markers for attitude; jig no longer fittable |
+| Q10 | Path-dependence thresholds | § 3 table as proposed |
+| Q11/Q12 | Sweep extent | ±300 mm x/y, z 100–250, clipped to reachable; up to 30 min |
+| Q14 | Zero-attitude convention | The leg-joint pattern; registration fitted; tilt map recaptured after the geometry lands |
+| Q15 | Pass criteria | § 8 |
+| Q16 | Parameter set | Full set with a CAD prior, freeze-and-refit what the data cannot pin down. **Amended 2026-09-27 (owner):** the six base-joint heights are held at CAD, never fitted. Each is near-degenerate with its leg's L0, and the machined base is far closer to CAD than the hand-built legs. The freeze now reads the posterior sd at the assumed noise, scaled down by a quiet fit but never up by a misfit. |
+| Q17/Q20 | Homing repeatability | Unmeasured; two-part calibration (§ 4) |
+| Q18 | Plumb bob | Deferred. Only needed if the ball-flight fit's 0.38° z-vs-gravity bias still shows in landings after this plan |
+| Q19 | Plan placement | This file; a prerequisite for z authority, not an R4 blocker |
