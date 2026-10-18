@@ -3,9 +3,10 @@ title: Two-ball oval — two balls in one hand, every throw carried back in the 
 created: 2026-10-17
 status: active
 owner: Harrison
-last_updated: 2026-10-17
+last_updated: 2026-10-18
 related_logbook:
   - 2026-10-17-two-ball-oval-plan-written.md
+  - 2026-10-18-two-ball-oval-p1-oval-pattern-dispatchable.md
 related_config:
   - config/hardware_config.yaml → trajectory_op.leg_acc_ceiling_mmps2 (5000 → 10000 at P4, decision 53)
   - config/hardware_config.yaml → trajectory_op.leg_{vel,acc,jerk}_limit_* (350/5000/200000 → 600/8000/200000 at P4, decision 54)
@@ -52,7 +53,7 @@ and whether this cup can carry a ball 150 mm in 0.30 s is what the plan finds ou
   3900 rev/s² 0.7 % under the measured C-HAND-2 authority) and is OUT.
 - Cup: spherical base R 35, cone to the Ø 85 rim, ball Ø 75 seats on the cone ring; a rigid
   frictionless ball stays centred for any required specific force within **55°** of the cup
-  axis. C-CUP-4 (§ 2.4) keeps the planned force inside 20° of the prescribed axis, 35° of margin.
+  axis. C-CUP-4 (§ 2.4) keeps the planned force inside 30° of the prescribed axis as a CHECK (25° of margin; amended 2026-10-18, 20° is the P3 shaper target).
 - Measured offline (production planner, two runs byte-identical per probe): the one-ball oval
   plans at today's limits 350/5000/200k from dwell 0.40 at 150 mm; the two-ball oval at dwell
   0.30 plans only under the pose-level carry planner at 600/8000/200k, apex 1.0 (leg jerk 194k,
@@ -71,7 +72,7 @@ and whether this cup can carry a ball 150 mm in 0.30 s is what the plan finds ou
   BB-fed starts only (hand starts out); gate 30 consecutive; out of scope = cup/hand hardware,
   BB firmware, mocap, three balls, two hands; the shake test is scrapped (the first rung is the
   carry's first real test); "parallel ovals" is the named backup destination if the carry fails.
-- **Geometry (4, 10, 11, 16, 18, 37, 47, 57):** separation ≥ 150 mm, work up from 150; 55° cup
+- **Geometry (4, 10, 11, 16, 18, 37, 47, 57)** (16 amended 2026-10-18, see Amendments)**:** separation ≥ 150 mm, work up from 150; 55° cup
   cone; one-ball oval first; first rung = 150 mm / dwell 0.50 s / apex 0.95 m at today's limits,
   no limits or box-size change before it; sites symmetric `columns_sites(150)` with fixed roles;
   **T = P1 (x = −75, nearest BB), C = P2 (x = +75)** — JB throws away from BB; 175 mm out.
@@ -81,12 +82,12 @@ and whether this cup can carry a ball 150 mm in 0.30 s is what the plan finds ou
   under principle (a) (loaded-span request = the sweep; C-CUP-1's per-instant rule applies to
   the free cup only); seated-carry constraint = QP rows (shaper) AND realised-plan check;
   never-stop principle recorded with its lever (free seam dz state) and its caveat.
-- **Catch (28b, 40, 48):** the level program with a receive-pin TILT hold
+- **Catch (28b, 40, 48)** (48 amended 2026-10-18)**:** the level program with a receive-pin TILT hold
   `[k_td − h_catch_pre, k_td + h_catch_post]`, no lateral slaving; throw pin held `[n−2, n]`;
-  skid LOGGED only; closing speed REFUSES below 50 % of the 0.7× match target; the BB feed
+  skid LOGGED only; closing speed REFUSES below 20 % of the 0.7× match target; the BB feed
   catch keeps the program each rung already flies (reload held-axis at one ball, columns LEVEL
   pin + axial-only match at two balls).
-- **Contract (29–31, 35):** C-CUP-4 — 20° axis-relative cone + `a_z + g ≥ 0.5 g` on every
+- **Contract (29–31, 35)** (29–31 amended 2026-10-18)**:** C-CUP-4 — 20° axis-relative cone + `a_z + g ≥ 0.5 g` on every
   interior loaded knot of every pattern; check in P1, QP rows in P3; codes `CUP_SEATING_CONE`
   / `CUP_SEATING_FLOOR`; `INVARIANTS.md` entry.
 - **Planner (23, 24, 32, 36, 58):** the oval pattern is P1 because nothing live dispatches a
@@ -95,7 +96,7 @@ and whether this cup can carry a ball 150 mm in 0.30 s is what the plan finds ou
   h_pre 2 / h_catch_pre 2 / h_catch_post 1 / w 10 with one Phase-3 re-tune (the catch holds may
   go to zero); the seam-dz lever is a P3 ablation that ships only with the release-state
   composition; a null result closes decision 33.
-- **Software shape (34, 38, 39, 41–45, 49):** phases P1–P5 with a hardware rung between each;
+- **Software shape (34, 38, 39, 41–45, 49)** (38, 39, 44 amended 2026-10-18)**:** phases P1–P5 with a hardware rung between each;
   `workspace_xy_m` stays the plant constant with one accept-time refusal (|site xy| + box
   half-extent + 20 mm ≤ workspace, mirrored in the sweep); box labels `oval_1ball` / `oval`,
   fed variants share the sibling box, `dwell_s` joins the `select()` key, dwell stays a node
@@ -107,12 +108,33 @@ and whether this cup can carry a ball 150 mm in 0.30 s is what the plan finds ou
 - **Entry / exit (46, 50, 51):** BB feeds T; the two-ball entry is fed columns' hop-entry shape
   verbatim (parked LEVEL feed catch at T, self-tossed after one dwell, cup transits to C, steady
   oval from ball 1's catch), first throw a LEARNED throw, timing machinery carried over
-  unchanged; exit = the columns Stop (held catch at C, last ball lands on it).
+  unchanged; exit = the columns Stop (held catch at C, last ball lands on it; NOT landed in P1, see the P1 Outcome).
 - **Limits (5, 13, 52–56):** two-ball point apex 1.0 at 600/8000/200k, jerk untouched; only
   `leg_acc_ceiling_mmps2` moves (5000 → 10000); one working-point move at P4 start with the box
   re-swept (oval + columns cells, same commit); leg current 15 → 30 A in that commit; ramp
   sitting = five columns canary attempts, then the one-ball oval at 0.40 (the 0.40 rung IS the
   ramp).
+
+- **Amendments, P1 (owner 2026-10-18; originals above stay for the record; measured origin per line;
+  full record `logbook/2026-10-18-two-ball-oval-p1-oval-pattern-dispatchable.md`):**
+  - *16* — first rung dwell 0.50 → **0.65**: the dispatched plan carries the R4 pre-release hold (0.100 s =
+    4 knots); 0.50 reads 32.1°, 0.60 21.5°, 0.65 passes, 0.70 14.9°. The probe's 18.7° was a hold-less plan
+    nothing dispatches. Ladder 0.65 → 0.50 → 0.40 → 0.30; P3's shaper earns 0.50 back.
+  - *29–31* — C-CUP-4 check **30° / 0.30 g on every pattern** (20° / 0.5 g stays the P3 shaper TARGET): at
+    20° / 0.5 g the check refused flown patterns (250 mm hop with landing offset 28.7° / 0.320 g; reload
+    held-axis feed catch 20.0–20.2°). Estimator = the REALISED cup-opening acceleration, not the QP's
+    (18.7° vs 26.6° on one plan). "Columns passes trivially" withdrawn: it passes (the 1.3° / 0.02 g margin is the HOP's, 28.7° / 0.320 g vs 30° / 0.30 g; columns' own margin is unmeasured, the sim-gate columns point at dwell 0.25 or 0.30 is refused while 0.27 passes).
+  - *38* — workspace rule `|site xy| + box half-extent ≤ workspace_xy_m`, **no 20 mm margin** (125 + 20 + 20
+    refused the flown columns and hop); code `REJECTED_SITE_OUTSIDE_WORKSPACE`, every pattern.
+  - *39* — `dwell_s` a REQUIRED `select` / `describe_miss` keyword; `check_limits` validates file-level limits.
+  - *44* — "shared `plant_id`" → oval sittings use a **separate `plant_id`**: T = P1 = (−75, 0) is the same
+    `x[0:2]` as every columns / self_toss P1 row and `h_seat` does not separate them.
+  - *48* — `CATCH_CLOSING_SPEED` 50 % → 25 % → **20 %** of the 0.7× target, held-axis catches exempt (cup stationary
+    at touch-down by design). Achieved ratios: p50 0.58 over 479 windows, columns cells 0.44–0.48, BB feed
+    0.42, hop landing 0.47–0.49, hop carry 0.349, near-hard capture 0.114, the oval 0.533. Origin of 20 %: the lowest catch ratio ever flown and installed is the sitting-6 (2026-10-06) high catch at the historical 930 mm plane (arrival −5520 mm/s, realised −960 vs target −3864 mm/s = 0.248), replayed by `tests/ros/test_install_segment.py` (pinned at 930 mm on purpose); 0.20 sits below it with margin and 1.75× above the 0.114 near-hard capture catch; the first re-base to 0.25 refused that replay.
+  - *P1 wording* — box: EVERY cell re-swept (`feasibility.py` is in the gate hash), values-equal pin; executor:
+    eight sites plus the settle rest, Stop 'after' rest, BUMP-CARRIED fence; Stop mid-carry declines 'before'
+    (`STOP-BEFORE-CARRIED`): on a carried fold the Stop offers only the 'after' rest, the throw completes, the cup rests at T, the ball is NOT caught (as hop today). Decision 57 (175 mm out) stands; the CHECK no longer refuses it (21.4°).
 
 ### 1.4 Relationship to other plans
 
@@ -151,20 +173,21 @@ Prescribed tilt series on STEADY: sweep (seam pin → receive pin) / HOLD the re
 throw pin over `[n − h_pre, n]`. The lateral channel is free through the catch (the carry's
 reversal runs through touch-down). Two realised-plan checks at the catch knot, beside
 `CUP_CONTACT_ACC` in `feasibility.py`: `CATCH_CLOSING_SPEED` refuses when the realised axial cup
-speed at touch-down is below 50 % of the match target (0.7 × arrival speed along the receive
-axis) — the unrefused −345 mm/s near-hard catch of the capture-span probe is the failure it
+speed at touch-down is below 20 % of the match target (0.7 × arrival speed along the receive
+axis; 50 %, then 25 %, then 20 %, amended 2026-10-18, held-axis catches exempt) — the unrefused −345 mm/s near-hard catch of the capture-span probe (ratio 0.114) is the failure it
 closes; `CATCH_SKID` is a logged cross-axis cup velocity at touch-down, no threshold.
 
 ### 2.4 C-CUP-4, the seated carry (normative)
 
 On every interior loaded knot (touch-down + 1 … release − 1) of every pattern, the cup's planned
-specific force lies inside a 20° cone about the PRESCRIBED cup axis (inscribed 8-gon) AND
-`a_z + g ≥ 0.5 g`. Shaper: inequality rows in `cup_cycle._assemble` after the C-CUP-2 block (cup
+specific force lies inside a cone about the PRESCRIBED cup axis (inscribed 8-gon) AND
+`a_z + g ≥ g·f`. **Check thresholds (2026-10-18): 30° / 0.30 g; the shaper TARGET is 20° / 0.5 g** (P3). Shaper: inequality rows in `cup_cycle._assemble` after the C-CUP-2 block (cup
 xyz jerk are the variables, hand inside cup z; no column index moves, warm-start key preserved).
 Check: the realised-plan residual re-measured beside `feasibility._cup_contact_floor_check` in
-`validate_cycle`, codes `CUP_SEATING_CONE` / `CUP_SEATING_FLOOR`. Columns passes trivially;
-175 mm (seats only to 30°) is refused, by design. The check lands in P1 (the as-is bag gets the
-residual metric; the first-rung cell passes at 17.8°), the rows in P3.
+`validate_cycle` on the REALISED plan's cup-opening acceleration, codes `CUP_SEATING_CONE` / `CUP_SEATING_FLOOR`.
+Columns passes (the 1.3° / 0.02 g margin is the HOP's, 28.7° / 0.320 g; columns' own margin is unmeasured, and the sim-gate columns point at dwell 0.25 or 0.30 is refused while 0.27 passes); 175 mm (21.4°) is no longer refused by the check, only by decision 57.
+The check lands in P1 (the as-is bag gets the residual metric; the dispatched rung-1 cell, dwell 0.65, passes
+with its 0.100 s pre-release hold, reading 17.8°; 18.68° is the hold-less number, a plan nothing dispatches), the rows in P3.
 
 ### 2.5 Pose-level carry planner, behind `level | pose`
 
@@ -181,14 +204,14 @@ platform's release velocity.
 
 `PATTERNS` gains `oval_1ball` and `oval`; `oval_1ball_fed` / `oval_fed` use the sibling box;
 `dwell_s` joins the `select()` key so the ladder's cells (0.50 / 0.40 / 0.30) coexist in one
-YAML; `dwell_s` stays a node parameter, refused on mismatch naming the field. One accept-time
+YAML (the ladder is now 0.65 / 0.50 / 0.40 / 0.30); `dwell_s` is a required `select` keyword and stays a node parameter, refused on mismatch naming the field. One accept-time
 refusal (new `REJECTED_` code) and the same check in `tools/admissible_sweep.py`: |site xy| +
-box half-extent + `WORKSPACE_MARGIN_MM` (new constant, 20) ≤ `workspace_xy_m`. The sweep records per cell the
+box half-extent ≤ `workspace_xy_m` (no margin constant; code `REJECTED_SITE_OUTSIDE_WORKSPACE`, amended 2026-10-18). The sweep records per cell the
 seating residual, the closing-speed ratio and the skid.
 
 ### 2.7 Learner, release and aim
 
-Shared `plant_id`; memory rows keyed by the release site xy (T); the catch offset stays in the
+Oval sittings use a SEPARATE `plant_id` (amended 2026-10-18); memory rows keyed by the release site xy (T); the catch offset stays in the
 learner state `x[2:4]` (it shapes the carry's entry) but no longer shifts the release or the
 flyback. A carried throw releases at T exactly: the planner carries from the actual landing to
 T. The aim is computed from the planned release toward the landing target; release-position
@@ -207,13 +230,13 @@ announcement-authoritative landing time, THROW 0 at `t_land − τ`, the 2.5 s d
 `columns_feed_bb_bias_mm`, phantom-catch guard, cancel-on-end; dropped: the hop's learner/box
 bypass and the toward-A offset. Accept is cup-keyed as for `columns` (SEATED → throw first;
 EMPTY → RELOAD_FIRST only once that plan's two-feed chain lands, refused until then). Exit: the
-second-to-last catch at C is a standalone HELD catch and the last throw lands on it.
+second-to-last catch at C is a standalone HELD catch and the last throw lands on it (P5; P1's Stop does not do this).
 
 ## 3. Implementation Phase Summary
 
 | Phase | Lands | Hardware rung that gates the next phase | Status | Date |
 |---|---|---|---|---|
-| P1 | The oval pattern dispatchable: `oval_1ball(_fed)`, fixed roles, cross-site fold, executor threading, codes, box cell at dwell 0.50, C-CUP-4 check, GUI, sim label, tests | **Rung 1** (`session_oval_rung1.md`): 150 / 0.50 / 0.95 at today's limits, as-is banking — go/no-go on the carry | NOT STARTED | |
+| P1 | The oval pattern dispatchable: `oval_1ball(_fed)`, fixed roles, cross-site fold, executor threading, codes, box cell at dwell 0.65, C-CUP-4 check, GUI, sim label, tests | **Rung 1** (`session_oval_rung1.md`): 150 / 0.65 / 0.95 at today's limits, as-is banking — go/no-go on the carry | COMPLETE | 2026-10-18 |
 | P2 | Banking leak fix (principle a) | Rung 1 re-flown = the leak-fixed column | NOT STARTED | |
 | P3 | Pose-level carry planner behind `level \| pose`, C-CUP-4 rows, knob re-tune, cycle budget, seam-dz ablation | Rung 1 re-flown = the swept column → decision 24 gate; columns re-gated if the mode flips | NOT STARTED | |
 | P4 | Working point 600/8000/200k, acc ceiling 10000, 30 A, box re-sweep (oval + columns), one-ball cells at 0.40 / 0.30 | Ramp sitting (five columns canary, one-ball oval at 0.40), then one-ball at 0.30 | NOT STARTED | |
@@ -225,7 +248,7 @@ backup destination is a fresh effort).
 
 ## 4. Implementation Phases (detailed)
 
-### P1 — The oval pattern dispatchable — NOT STARTED
+### P1 — The oval pattern dispatchable — COMPLETE 2026-10-18
 
 Paths under `ros_ws/src/jugglebot/jugglebot/`.
 - **Compiler** (`motion/skills/schedule.py`): `OneBallPattern.roles`; the two site/target lines of
@@ -238,13 +261,17 @@ Paths under `ros_ws/src/jugglebot/jugglebot/`.
   `_previous_release`; `_release_pos_mm`; `_register_outcome`; `_outward_unit`. The 2026-09-28
   docstring narrows per § 2.7.
 - **Box** (`motion/skills/admissible.py`, `tools/admissible_sweep.py`): labels, dwell in the key,
-  the workspace-margin refusal, oval sweep function (chain = the folded window), the cell
-  `oval_1ball` / (P1, P2) / 150 mm / apex band covering 0.95 / dwell 0.50 / 350-5000-200000 /
-  hand 3900, swept twice bit-identical with BLAS at one thread; columns cells untouched.
+  the workspace refusal (no margin), oval sweep function (chain = the folded window), the cell
+  `oval_1ball` / (P1, P2) / 150 mm / apex band covering 0.95 / dwell 0.65 / 350-5000-200000 /
+  hand 3900, swept twice bit-identical with BLAS at one thread. **Full re-sweep, every cell**
+  (single / hop / columns / oval, same commit): `feasibility.py` is in the box gate hash, so "columns cells
+  byte-unchanged" was impossible; `tests/motion/test_skills_admissible.py::test_the_oval_resweep_changed_only_the_stamp_and_added_one_oval_cell`
+  pins that the pre-existing cells' VALUES equal `tests/fixtures/admissible_box_pre_oval.yaml` (only
+  `gate_hash` / `swept_at` may differ).
 - **Checks** (`motion/trajectory/feasibility.py`): C-CUP-4 realised-plan check beside
   `_cup_contact_floor_check` with `CUP_SEATING_CONE` / `CUP_SEATING_FLOOR`; `CATCH_CLOSING_SPEED`;
   the `CATCH_SKID` diagnostic line. Thresholds are named constants with their origin in the
-  comment (20°, 0.5 g, 50 %); skid has NO threshold — the 100 mm/s that covered every
+  comment (30°, 0.30 g, 20 %; the 20° / 0.5 g shaper target is recorded in the same comment); skid has NO threshold — the 100 mm/s that covered every
   measured cell is a comment-level reference for reading the log line, never a refusal.
 - **Node and GUI**: `skill_node._PATTERNS` + `_run_one_ball` dispatch for `oval_1ball(_fed)`
   (fed = `_start_reload(site=sites[0])`, no entry code); rows in the cup-keyed accept table
@@ -253,11 +280,10 @@ Paths under `ros_ws/src/jugglebot/jugglebot/`.
   RELOAD_FIRST, SEATED → THROW_FIRST), `oval_1ball_fed` as `columns_1ball_fed` (EMPTY →
   RELOAD_FIRST, SEATED → `REJECTED_BALL_IN_HAND`); `skills/check` prints the oval box;
   `ros_ws/gui/js/juggle-panel.js` list entry; `sim/skills_gate.py` label + `_sites_for`.
-- **Docs**: `motion/skills/INVARIANTS.md` rows C-CUP-4, the learner-key caveat, the narrowed
-  translation rule; `docs/motion_planner` pattern table.
-- **Tests**: `tests/motion/test_skills_{schedule,admissible,executor,sites}.py`,
-  `tests/ros/test_skills_plan_bench.py`, `tests/ros/test_skill_node.py`,
-  `tests/sim/test_skills_gate.py` (§ 5).
+- **Docs**: `INVARIANTS.md` rows (C-CUP-4, closing speed, skid, translation rule, learner key, Stop decline,
+  dwell key); the archived `cup-contact-contract.md` carries a one-line pointer; `docs/motion_planner` has no pattern table.
+- **Tests**: new `tests/motion/test_skills_oval.py` (fold + executor); the checks' tests in
+  `tests/motion/test_validate_cycle.py` beside `CUP_CONTACT_ACC`; table-shaped tests grow in place.
 - **Gate**: merge `skill-stack` into `two-ball-oval` first (the live stack flies from
   `skill-stack`, 35 commits ahead at 2026-10-17: the BB-calibration phases, the handoff and
   splice fixes, the calibration ledger the runsheet reads); `./run_tests.sh --full` green;
@@ -265,6 +291,9 @@ Paths under `ros_ws/src/jugglebot/jugglebot/`.
   rows 16b/16c). **GO** = a 30-cycle attempt completes with the hand ball sensor's seat bit
   continuous through every carry (runsheet rows 22a/25); **NO-GO** = the ball leaves the cup
   in the same carry region twice (row 26). Outcome recorded in the runsheet § 6 and § 3 here.
+- **Outcome (2026-10-18):** commits 7ae390cb (code, tests, fixtures, box, logbook, INVARIANTS) + the plan/runsheet commit that follows it; gate `./run_tests.sh --full` 2026-10-18 parallel 6792 passed / 9 skipped / 1 failed (a GUI replay-overview thread race, untouched code, 3/3 green in isolation) + serial 7 passed (logbook Verification); box re-sweep
+  sweep 2026-10-18 `temp/sweeps/sweep_P1.sh` (four invocations: single/hop/columns at dwell 0.27, oval at 0.65 - 150 mm, apex 0.95 +/- 0.025 - all at 350/5000/200000/hand 3900, BLAS one thread), each run twice, `cmp` IDENTICAL for all four; merged single->hop->columns->oval; gate_hash 606b53e3912f (first merge 20436164b087 at the 25 % closing threshold; re-swept after the 20 % re-base with every cell identical, four files cmp IDENTICAL again), swept_at 2026-10-18, 20 cells, merged-file md5 5e2ea1b3ba8a1b75718c78b5d3035096; hop and columns cells value-identical to the pre-oval snapshot, self_toss cells shrunk (see Tradeoffs). The dispatched carry reads 32.1° at dwell 0.50 (pre-release hold), so rung 1 flies
+  at 0.65. Rung 1 cleared to fly; P2 starts after its outcome is logged. Open residue: oval Stop exit: REST+CATCH pair at C (decision 51), not landed in P1.
 
 ### P2 — Banking leak fix — NOT STARTED
 
@@ -324,10 +353,10 @@ rise. Gate: rung 1 re-flown as the leak-fixed column (same runsheet, column 2 of
 - **Unit (per commit)**: fixed roles produce T → C for every throw and inherit into
   `compile_reload`; the cross-site fold yields one window with `release_site` = T and the
   executor's release xy = T (not the caught xy); memory rows key on T; box `select()` refuses a
-  dwell mismatch naming `dwell_s` and the workspace-margin refusal fires at |site| + half-extent
-  + 20 > workspace; C-CUP-4 check: a fixture plan with a loaded knot outside the 20° cone refuses
-  `CUP_SEATING_CONE`, one below 0.5 g refuses `CUP_SEATING_FLOOR`, columns passes; the closing-
-  speed check refuses the −345 mm/s fixture and passes −1742; P3: the QP rows hold the realised
+  dwell mismatch naming `dwell_s` and the workspace refusal fires at |site| + half-extent
+  > workspace (equality passes); C-CUP-4 check (re-based 30° / 0.30 g): the 175 mm and dwell-0.40 stored windows
+  PASS at 30° (P3 shaper-target pins; the cone refusal is pinned by `test_rung1_through_the_production_segment_path_refuses_the_cone`, 32.1°), a 10 mm bump refuses `CUP_SEATING_FLOOR`, columns passes; the closing-
+  speed check (20 %) refuses the −345 mm/s fixture and passes −1742; P3: the QP rows hold the realised
   residual ≤ 20° at the box cells, `level` mode output is unchanged for columns (bit-exact against
   the pre-P3 box hash), cycle-budget tests green at the slowest cell.
 - **Sim gate** (`sim/skills_gate.py`, nightly tier where it runs long): `oval_1ball` and `oval`
@@ -346,7 +375,7 @@ rise. Gate: rung 1 re-flown as the leak-fixed column (same runsheet, column 2 of
   twice in one region, FET > 60 °C, a leg on the current clamp > 50 ms, lane recovery failed) are
   in the runsheet. 30 A is the owner's number (~30 A judged safe 2026-10-12); the 0.40 rung's bag
   is the measurement. The hand cap 3900 is NOT raisable.
-- **Non-obvious choices**: symmetric sites (every one-sided probe placement produced edge
+- **Non-obvious choices**: the first rung flies at dwell 0.65 (pre-release hold; P3 earns 0.50 back); symmetric sites (every one-sided probe placement produced edge
   artefacts); the catch stays level because the capture span is infeasible at two balls (probe,
   two runs); the mode switch exists so decision 24's as-is column stays producible; dwell is a
   parameter, not a goal field, so a box swept at one dwell refuses the other by name.
@@ -358,29 +387,13 @@ rise. Gate: rung 1 re-flown as the leak-fixed column (same runsheet, column 2 of
 
 ## 7. Vocabulary
 
-- *Oval* — the two-ball one-hand pattern where every throw goes T → C and the ball returns in
-  the cup ("two in one hand, circles"). Not columns, not a hop.
-- *Throw site* T / *catch site* C — the two event sites with fixed roles (in columns every
-  site is both). T = P1 (near BB), C = P2.
-- *Carry* — the loaded cup transit C → T inside the dwell. *Empty transit* τ — T → C unloaded.
-- *Dwell* d — touch-down to release; holds the carry. *Beat* — the steady window.
-- *Bank* — tilting the cup so apparent gravity stays along its axis (C-CUP-1); *sweep* — the
-  carry bank, the smooth tilt path between the two event tilts; *banking leak* — leg jerk spent
-  by a per-instant banking request that delivers no bank (P2).
-- *Event tilt* — the catch tilt (against the arrival) and the throw tilt (along the release);
-  *receive-pin hold* / *throw-pin hold* — the knots over which the prescribed tilt is held.
-- *Seating cone* — the half-angle (55°) within which the cup's force keeps the ball centred;
-  *residual* — the angle between the planned specific force and the prescribed cup axis at a
-  knot; *C-CUP-4* — residual ≤ 20° and `a_z + g ≥ 0.5 g` on interior loaded knots.
-- *Skid* — the ball's lateral slide at a catch whose cup does not match the arrival's lateral
-  velocity (logged). *Closing speed* — the cup's axial speed at touch-down against the match
-  target (refused below 50 %).
-- *Centroid loop* / *free z band* — the platform centroid's own x–z path as planning variables;
-  *pose-level carry planner* — the `pose` mode of `cup_cycle`; *seam dz* — the platform's z
-  velocity carried across a release seam (P3 ablation).
-- *Circulation* — which site throws and which catches, i.e. toward or away from Ball Butler.
-- *Entry* — the fed opening from BB's announcement to the first steady segment; *parked feed
-  catch* — a feed caught with the cup already at the site (the only kind flown); *transit feed
-  catch* — a feed met by a moving cup (the 2026-10-05 0/6 condition, never flown).
-- *One-ball oval* — the hop with fixed roles: throw T → C, catch at C, carry C → T; the first
-  rung. *Ramp* — the P4 sitting that first flies the new working point.
+- *Oval* — two balls in one hand, every throw T → C; *one-ball oval* — the hop with fixed roles (first
+  rung). *T* / *C* — throw site (P1, near BB) / catch site (P2). *Carry* — loaded cup transit C → T in the
+  dwell; *empty transit* τ — T → C. *Sweep* — the carry bank between the event tilts; *banking leak* — leg
+  jerk spent on a bank request that delivers none (P2).
+- *Residual* — angle between planned specific force and prescribed cup axis; *C-CUP-4* — check 30° /
+  `a_z + g ≥ 0.30 g` (P3 target 20° / 0.5 g). *Skid* — lateral cup velocity at touch-down (logged).
+  *Closing speed* — axial cup speed at touch-down vs the match target (refused below 20 %).
+- *Pose-level carry planner* — the `pose` mode of `cup_cycle`; *seam dz* — platform z velocity across a
+  release seam (P3). *Parked feed catch* — feed caught with the cup already at the site. *Ramp* — the P4
+  sitting that first flies the new working point.

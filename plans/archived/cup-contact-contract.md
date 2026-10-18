@@ -162,6 +162,8 @@ offset instead of jumping between discrete branches.
 | C-CUP-2 (the gate) | `feasibility.validate_cycle` | new named refusal `CUP_CONTACT_ACC` next to `LIMIT_ACC`/`LIMIT_JERK`, computed from the plan's cup acceleration over the window; reported with every other refusal (the "report every refusal at once" rule) |
 | C-CUP-3 | `cup_realize._accel_bounded_schedule`'s widen loop, `_tilt_leg_jerk_mmps3` | the exit test is the MEASURED per-knot composite leg jerk (`_tilt_leg_jerk_mmps3`, the discrete-Leibniz expansion of the tilt channel's contribution — arm term + platform-rotation term + the cup's own v_z/a_z/j_z cross terms), not a static lever: owner decision 2026-09-20 (§ 6) after the fitted 2.1× lever constant measured 1.15–2.4× loose on R3 fixtures and 6.3× too SMALL on the `test_unified_cycle` STEADY ring. The loop searches floor-first then bisects with real-valued (non-`ceil`) widths onto the cap so the schedule sits AT the budget, not under it by a whole search step. `_tilt_jerk_lever_mm`'s analytic estimate survives only to size how many widen attempts the bisection needs, and as the fallback for a duck-typed plan with no `pos`/`vel`/`jerk`. |
 
+C-CUP-4 (2026-10-18) is defined in motion/skills/INVARIANTS.md
+
 Constants `ε`, `κ`, `τ` live in `config/hardware_config.yaml` (trajectory section) →
 generated; one definition each. `gate_hash` (sha256 of `feasibility.py` + `segments.py`)
 CHANGES: every admissible box is re-swept with `tools/admissible_sweep.py` at the launch
