@@ -39,7 +39,7 @@ Hardware-bearing: **if your physical intuition disagrees with § 1 timing or the
 - **O1** BB REFILLS ON ITS OWN after a throw (~5-10 s). The node does not command the fetch but MUST wait for BB ready
   (heartbeat fresh, IDLE, ball_in_hand) before commanding the second feed throw. The gate deadline is a NEW constant
   `COLUMNS_CHAIN_BB_REFILL_TIMEOUT_S` (proposal 15 s), probed on hardware (§ 5) before a test pins its value.
-- **O2** Ball A's held-tilt reload catch is AT THE FEED SITE (x = -62.5 at sep 125), so the second bridge REST is a
+- **O2** Ball A's held-tilt reload catch is AT THE FEED SITE (x = -125 at the live sep 250; the earlier "-62.5 at sep 125" was the wrong number), so the second bridge REST is a
   pure hold. The sim probe (§ 5) is the FIRST P3 task; if it refuses, fall back to the proven reload site (-50, 0) +
   held-ball bridge transit and tell the owner.
 - **O3** P1 and P2 land as TWO commits, same session, ONE `/audit --unstaged` at the end of P2. P3 is its own session.
@@ -156,7 +156,7 @@ Panel shows the cup from `/hand_telemetry` (panels.js:323-377) as a PREVIEW ("cu
 | Pattern | EMPTY | SEATED | Notes |
 |---|---|---|---|
 | `self_toss`, `hop`, `columns_1ball` | reload first | throw first | was `EMPTY if reload else SEATED` |
-| `columns` | reload A, then feed B (P3); **P1 only: `REJECTED_NO_BALL` "lands with the two-feed chain"** | B fed at once | was SEATED always |
+| `columns` | reload A, then feed B (P3); **RELOAD_FIRST since P3 (was `REJECTED_NO_BALL` in P1/P2)** | B fed at once | was SEATED always |
 | `columns_1ball_fed` | reload first (A phantom, B fed) | `REJECTED_BALL_IN_HAND` | reload=False refusal deleted |
 | `reload` | BB catch only | `REJECTED_BALL_IN_HAND` | unchanged |
 | `magazine` | `REJECTED_NO_BALL` | throw first | unchanged |
@@ -210,7 +210,7 @@ tests/ and docs/) before and after; record counts in the logbook.
 - **Docs:** `Juggle.action` comments; rehearsal rows 18-22 drop `reload: true` from goal literals (row 22 "SEATED for
   columns (either reload)" rewritten). One `/audit --unstaged` at the end of P2 covers P1+P2 (O3).
 - **Gate:** `./run_tests.sh --full`; `colcon build` of `jugglebot_interfaces` + `jugglebot`.
-- **Risk:** low. **Status: DONE 2026-10-17 (4cccece2; interfaces rebuilt, FULL launch restart + GUI hard-refresh owed; `TWO_FEED_LANDED = false` in juggle-panel.js until P3; audit P1+P2 applied).**
+- **Risk:** low. **Status: DONE 2026-10-17 (4cccece2; interfaces rebuilt, FULL launch restart + GUI hard-refresh owed; `TWO_FEED_LANDED = false` in juggle-panel.js until P3 (flipped true at P3); audit P1+P2 applied).**
 ### P3 - the two-feed chain
 - **Scope:** sim probe (§ 5 i) FIRST; then `_run_columns` split, `_start_columns_feed`, `_start_reload(then_columns,
   chain_ctx)`, the three phases, `_resolve_chain_on_retire`, `_maybe_advance_chain`, the `_on_announcement` claim
@@ -230,14 +230,14 @@ tests/ and docs/) before and after; record counts in the logbook.
   certifies each half, not the join; the join, phases and Stop races are mocked-ROS only (blind to choreography). The first
   hardware sitting is the join's real gate: columns, cup EMPTY, `num_cycles` 1-2, bag recorded, dress-rehearsed on the
   loaded Jetson first.
-- **Risk:** HIGH (live hardware path, unmeasured refill, new catch xy, new Stop races). **Status: not started.**
+- **Risk:** HIGH (live hardware path, unmeasured refill, new catch xy, new Stop races). **Status: code landed 2026-10-17/18 (audit W1 exception wrapper + W2 guarded latch pops applied, 18 chain tests), NOT FLOWN: first sitting = rehearsal rows 32-34, measure the BB refill time** (first sitting = rehearsal rows 32-34; refill constant still provisional).
 
 ## 5. Probes
 
 - **(i) Sim reload at the feed site:** `SkillsGate.run_reload_attempt(site=columns_sites(125)[0])`
   (sim/skills_gate.py:2888), seeds 0-4, before any P3 test asserts the reload at the feed site. Refusal -> O2 fallback
   (reload site (-50, 0) + held-ball bridge transit), tell the owner. One-off in `/tmp/probe_*.py` unless reused, then
-  `tools/probes/`.
+  `tools/probes/`. **RESULT 2026-10-17: accepted and caught 5/5 seeds at x = -50, -62.5 and -125 (the live feed site is x = -125 at sep 250, not -62.5); the site has no effect, O2 holds, no fallback. Output `temp/probes/reload_at_feed_site.json`.**
 - **(ii) Hardware BB refill time:** empty BB hand after a throw -> time from throw to heartbeat IDLE + ball_in_hand, N >= 10
   throws, log max and p95; pin `COLUMNS_CHAIN_BB_REFILL_TIMEOUT_S` (proposal 15 s) with margin over the max, then write the
   test. Decision rule: if max refill > 12 s, raise the constant rather than shorten the gate; if refill is unbounded, stop
@@ -245,4 +245,6 @@ tests/ and docs/) before and after; record counts in the logbook.
 
 ## 6. Open residue
 
-None yet.
+- **Sim reload gate `LIMIT_JERK` regression (found 2026-10-17, BISECTED 2026-10-17 to `08ec3fe6` 2026-09-30, the R5 columns feed-catch commit; good at `8364808c` 2026-09-24, 5/5 makes 2 per seed, dwell 0.30 s; after it the scenario gets 1 make, dwell 0.27 s and `LIMIT_JERK` in the continuation throws, catch itself fine; no config/limit change in that commit; hardware flew R5 cleanly after it, so this reads as sim-scenario drift, owner to decide whether to fix or re-baseline):** the stock `python sim/skills_gate.py --reload --seeds 0 1 2 3 4` is FAIL at HEAD 4cd33254 (seeds 0, 2, 3, 4 `LIMIT_JERK` in the continuation throws AFTER the catch; seed 1 PASS; docstring says it once passed 5/5; not pinned by any test; predates P1/P2). Not a P3 blocker: A's reload is catch-only (`n_throws=0`).
+- Refill constant `COLUMNS_CHAIN_BB_REFILL_TIMEOUT_S = 15.0` provisional until rehearsal row 32 measures it.
+- **Latent 'firing'-phase hang (pre-existing, audit 2026-10-18):** `_maybe_fire_reload_throw` sets `ctx.phase='firing'` (skipped by `_check_reload_timeout`) and calls the BB throw outside any try, the same shape W1 fixed for 'chaining'. Not new to this plan; fix when the reload path is next opened.

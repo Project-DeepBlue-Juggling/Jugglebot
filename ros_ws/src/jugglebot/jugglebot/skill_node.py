@@ -370,6 +370,17 @@ RELOAD_BB_READY_TIMEOUT_S = 3.0
 #: platform rests level under the aim point, the safe place to wait.
 RELOAD_BB_FETCH_TIMEOUT_S = 10.0
 
+#: Columns two-feed chain (plan `columns-empty-cup-two-feed.md` P3, owner
+#: decision O1, 2026-10-17): how long the chain gate (`_maybe_advance_chain`,
+#: phase ``await_chain_gate``) waits after ball A's reload executor retires
+#: cleanly for ball A to be SEATED, its DECAY REST to have ended, and Ball
+#: Butler to be ready again (heartbeat fresh, connected, IDLE, ball in hand)
+#: before the attempt ends (`_check_reload_timeout`). PROVISIONAL: the owner
+#: says BB auto-refills in ~5-10 s after a throw, but no bag has measured it;
+#: the first P3 sitting measures it (plan § 5 probe ii) -- raise this if the
+#: max refill measured there exceeds 12 s. Not a test-pinned value yet.
+COLUMNS_CHAIN_BB_REFILL_TIMEOUT_S = 15.0
+
 #: A Ball Butler heartbeat older than this is not evidence of BB's state (the
 #: bridge publishes it at 10 Hz, measured 2026-09-28: 0.100 s median period),
 #: so neither the "ball already in hand, skip bb/reload" decision nor the
@@ -452,9 +463,9 @@ _CUP_RULE = {
     'self_toss': {_E: RELOAD_FIRST, _S: THROW_FIRST},
     'hop': {_E: RELOAD_FIRST, _S: THROW_FIRST},
     'columns_1ball': {_E: RELOAD_FIRST, _S: THROW_FIRST},
-    # P3: the EMPTY cell becomes RELOAD_FIRST when the two-feed chain lands
-    # (BB feeds A as a catch-only reload, then B). Until then it is refused.
-    'columns': {_E: ex.REJECTED_NO_BALL, _S: THROW_FIRST},
+    # EMPTY: the two-feed chain (P3) -- BB feeds A as a catch-only reload,
+    # then B (`_run_columns`, `_maybe_advance_chain`).
+    'columns': {_E: RELOAD_FIRST, _S: THROW_FIRST},
     # A is phantom, B is BB-fed: needs an EMPTY cup.
     'columns_1ball_fed': {_E: RELOAD_FIRST, _S: ex.REJECTED_BALL_IN_HAND},
     'reload': {_E: RELOAD_FIRST, _S: ex.REJECTED_BALL_IN_HAND},
@@ -800,9 +811,30 @@ class SkillNode(Node):
         #                         accepted, not read as "no reload awaiting
         #                         one" (the OLD code armed AFTER the call
         #                         returned and dropped exactly this).
+        # Columns two-feed chain (plan `columns-empty-cup-two-feed.md` P3,
+        # 2026-10-17; cup EMPTY at a `columns` accept): ball A's reload ctx
+        # carries `then_columns` (the plan `_run_columns` built), and its
+        # executor swap REPLACES it with a second object,
+        # `kind='columns_chain'` (fields: phase, announced=True,
+        # then_columns, a_executor, decay_end_abs, deadline_mono), whose
+        # own three phases are:
+        #   'await_reload_a'    — armed by `_install_announced_reload` at A's
+        #                         swap; A's executor is live; never times
+        #                         out (deadline inf), never claimable.
+        #   'await_chain_gate'  — `_resolve_chain_on_retire` on A's CLEAN
+        #                         retire (an ended A clears the ctx);
+        #                         `_maybe_advance_chain` waits for A's DECAY
+        #                         REST end + cup SEATED + BB ready, deadline
+        #                         `COLUMNS_CHAIN_BB_REFILL_TIMEOUT_S`.
+        #   'chaining'          — `_maybe_advance_chain` is running
+        #                         `_start_columns_feed(..., chain_ctx=ctx)`,
+        #                         which replaces this ctx with ball B's own
+        #                         'await_bb_idle' ctx only if it is still
+        #                         current (skipped by the timeout, like
+        #                         'firing').
         # Cleared by whichever of `_on_announcement` / `_check_reload_timeout`
         # / `_check_reload_lane_refused` / `_on_bb_throw_outcome` ends the
-        # wait first. The bridge REST's own `SkillExecutor` routinely
+        # wait first (and `_stop_attempt` / `_end_attempt`, in any phase). The bridge REST's own `SkillExecutor` routinely
         # retires itself (`_executor` -> `None`) WHILE this is still armed —
         # a one-skill schedule is "done" (fully dispatched) the instant it
         # is sent to `trajectory/install_segment`, long before it has
@@ -2534,8 +2566,14 @@ class SkillNode(Node):
         timed_out_phase = None
         with self._reload_lock:
             ctx = self._reload_ctx
-            if (ctx is not None and ctx.phase != 'firing'
-                    and not getattr(ctx, 'announced', False)
+            # Columns chain (P3): 'chaining' is skipped like 'firing' (its
+            # blocking step still holds this ctx); 'await_chain_gate' is
+            # timed out although `announced` (A's claim) is set;
+            # 'await_reload_a' never times out (announced, deadline inf --
+            # A's own executor is live and ends itself).
+            if (ctx is not None and ctx.phase not in ('firing', 'chaining')
+                    and (ctx.phase == 'await_chain_gate'
+                         or not getattr(ctx, 'announced', False))
                     and time.perf_counter() >= ctx.deadline_mono):
                 self._reload_ctx = None
                 timed_out_phase = ctx.phase
@@ -2545,7 +2583,32 @@ class SkillNode(Node):
         # harmless, `with self._reload_lock: self._reload_ctx = None` twice
         # is idempotent) and captures `_goal_end_code` the same way for
         # every phase, so one call covers both.
-        if timed_out_phase == 'await_bb_idle':
+        if timed_out_phase == 'await_chain_gate':
+            # Name the ONE physical fact that held the gate shut, cup first
+            # (a cup that never read SEATED is ball A's fault, not BB's).
+            evidence = self._cup_state()[0]
+            if evidence == ball_possession.EVIDENCE_UNKNOWN:
+                self._end_attempt(
+                    ex.REJECTED_BALL_UNKNOWN,
+                    'columns chain: the cup state stayed UNKNOWN after %s\'s '
+                    'reload -- %s is not fed; the platform rests at the feed '
+                    'site' % (ball_label(0), ball_label(1)))
+            elif evidence == ball_possession.EVIDENCE_EMPTY:
+                self._end_attempt(
+                    ex.REJECTED_NO_BALL,
+                    'columns chain: the cup reads EMPTY after %s\'s reload '
+                    '-- %s is not fed; the platform rests at the feed site'
+                    % (ball_label(0), ball_label(1)))
+            else:
+                self._end_attempt(
+                    'ABORTED_BB_NOT_READY(%s, ball_in_hand=%s)'
+                    % (self._bb_state_name(), bool(self._bb_ball_in_hand)),
+                    'columns chain: Ball Butler never reported ready again '
+                    '(IDLE, ball in hand, connected) within %.0f s of %s\'s '
+                    'reload -- %s is not fed; %s rests seated at the feed '
+                    'site' % (COLUMNS_CHAIN_BB_REFILL_TIMEOUT_S, ball_label(0),
+                              ball_label(1), ball_label(0)))
+        elif timed_out_phase == 'await_bb_idle':
             self._end_attempt(
                 'ABORTED_BB_NOT_READY(%s, ball_in_hand=%s)'
                 % (self._bb_state_name(), bool(self._bb_ball_in_hand)),
@@ -2616,6 +2679,115 @@ class SkillNode(Node):
                 return
             ctx.phase = 'firing'
         self._fire_reload_throw(ctx)
+
+    def _chain_guarded(self, chain_ctx, apply, what: str) -> bool:
+        """Run ``apply()`` under ``_tick_lock`` + ``_reload_lock`` only while
+        ``chain_ctx`` is still THE reload context and no END decided the goal
+        (`_ended_code_for_swap`) -- the columns chain's own copy of the
+        reload executor swaps' guard (plan `columns-empty-cup-two-feed.md`
+        P3). True when applied; False drops the chain step (a Stop, timeout,
+        refused lane or other END already took the attempt and must not be
+        resurrected by a step the tick started before it landed)."""
+        got_lock = self._tick_lock.acquire(timeout=_STOP_LOCK_WAIT_S)
+        if not got_lock:
+            self.get_logger().warning(
+                'columns chain: could not acquire the tick lock within %.1f s '
+                '-- installing %s without it' % (_STOP_LOCK_WAIT_S, what))
+        try:
+            with self._reload_lock:
+                ended = self._ended_code_for_swap()
+                current = self._reload_ctx is chain_ctx and not ended
+                if current:
+                    apply()
+        finally:
+            if got_lock:
+                self._tick_lock.release()
+        if not current:
+            self.get_logger().info(
+                'columns chain: %s dropped -- the attempt already ended (%s)'
+                % (what, ended or 'stopped, timed out or refused'))
+        return current
+
+    def _resolve_chain_on_retire(self, executor) -> None:
+        """Ball A's reload executor retired (`_on_tick`'s ``done`` block,
+        under ``_tick_lock``, BEFORE `_log_attempt_end`): a columns chain ctx
+        in ``await_reload_a`` either ENDS with it (an ``end_code`` -- a
+        missed catch, a refused lane, a Stop: the attempt is over, Ball
+        Butler is never asked for B) or opens the chain GATE
+        (``await_chain_gate``, deadline `COLUMNS_CHAIN_BB_REFILL_TIMEOUT_S`
+        from now). No-op for every other ctx/executor."""
+        with self._reload_lock:
+            ctx = self._reload_ctx
+            if (ctx is None or getattr(ctx, 'kind', '') != 'columns_chain'
+                    or ctx.phase != 'await_reload_a'
+                    or ctx.a_executor is not executor):
+                return
+            if executor.end_code:
+                self._reload_ctx = None
+                return
+            ctx.phase = 'await_chain_gate'
+            ctx.deadline_mono = (time.perf_counter()
+                                 + COLUMNS_CHAIN_BB_REFILL_TIMEOUT_S)
+        self.get_logger().info(
+            'columns: %s reloaded -- waiting for it to settle and for Ball '
+            'Butler to refill (up to %.0f s), then feeding %s'
+            % (ball_label(0), COLUMNS_CHAIN_BB_REFILL_TIMEOUT_S, ball_label(1)))
+
+    def _chain_gate_open(self, ctx) -> bool:
+        """The columns chain GATE (plan P3 § 1.2), caller holds
+        ``_reload_lock``: ball A's DECAY REST has ended (``now >=
+        ctx.decay_end_abs``, node clock), the debounced cup reads SEATED,
+        and Ball Butler is ready for B -- heartbeat fresh, connected, IDLE,
+        ball in hand (it refills on its own after A's throw, ~5-10 s, owner
+        O1). A's clean retire is implied by the phase."""
+        now = self.get_clock().now().nanoseconds / 1e9
+        return (now >= ctx.decay_end_abs
+                and self._cup_state()[0] == ball_possession.EVIDENCE_SEATED
+                and self._bb_heartbeat_fresh() and self._bb_connected
+                and self._bb_state == int(proto.BallButlerStates.IDLE)
+                and bool(self._bb_ball_in_hand))
+
+    def _maybe_advance_chain(self) -> None:
+        """The columns chain's tick step (next to `_maybe_fire_reload_throw`):
+        once the gate opens (`_chain_gate_open`), mark the ctx ``chaining``
+        under ``_reload_lock`` (a concurrent reentrant tick must not start
+        the step twice; `_check_reload_timeout` skips it) and run the SAME
+        tail the SEATED path runs, `_start_columns_feed(ctx.then_columns,
+        chain_ctx=ctx)`, OUTSIDE the lock (it may block on ``bb/reload``).
+        A step a Stop overtook is dropped inside `_start_reload`; a bridge
+        compile refusal with the chain still current ends the attempt."""
+        with self._reload_lock:
+            ctx = self._reload_ctx
+            if (ctx is None or getattr(ctx, 'kind', '') != 'columns_chain'
+                    or ctx.phase != 'await_chain_gate'
+                    or self._ended_code_for_swap()
+                    or not self._chain_gate_open(ctx)):
+                return
+            ctx.phase = 'chaining'
+        try:
+            res = self._start_columns_feed(ctx.then_columns, chain_ctx=ctx)
+        except Exception as exc:  # noqa: BLE001 -- 'chaining' is skipped by
+            # `_check_reload_timeout`, so an escape here would hang the goal.
+            self.get_logger().error(
+                'columns chain: unexpected error feeding %s: %r\n%s'
+                % (ball_label(1), exc, traceback.format_exc()))
+            if self._still_current(ctx) and not self._ended_code_for_swap():
+                self._end_attempt(
+                    'ABORTED_RELOAD_ERROR(%s)' % type(exc).__name__,
+                    'columns chain: %r while feeding %s -- %s rests at the '
+                    'feed site (the DECAY REST terminal)'
+                    % (exc, ball_label(1), ball_label(0)))
+            return
+        if res.success:
+            self.get_logger().info(
+                'columns: %s seated, Ball Butler ready -- feeding %s (%s)'
+                % (ball_label(0), ball_label(1), res.message))
+            return
+        if self._still_current(ctx):
+            self._end_attempt(
+                'REJECTED_COLUMNS_UNSCHEDULABLE',
+                'columns chain: %s -- %s is held seated at rest at the feed '
+                'site (the DECAY REST terminal)' % (res.message, ball_label(0)))
 
     def _swapped_in_and_live(self, ctx) -> bool:
         """True when ``ctx`` stopped being current because ITS announcement
@@ -2824,8 +2996,9 @@ class SkillNode(Node):
         of the R2 behaviour, not a change to it.
 
         Services the R4 reload (`_check_reload_timeout`, then
-        `_check_reload_lane_refused`, then `_maybe_fire_reload_throw`)
-        FIRST, unconditionally, in that order: all three read/write only
+        `_check_reload_lane_refused`, then `_maybe_fire_reload_throw`, then
+        the columns chain's `_maybe_advance_chain`)
+        FIRST, unconditionally, in that order: all four read/write only
         `_reload_ctx` under `_reload_lock`, not `_executor`/`_tick_lock`, so
         none may be skipped when the tick lock is busy or `_executor` is
         `None` — exactly the state for most of a reload wait (see
@@ -2837,6 +3010,7 @@ class SkillNode(Node):
         self._check_reload_timeout()
         self._check_reload_lane_refused()
         self._maybe_fire_reload_throw()
+        self._maybe_advance_chain()
         if not self._tick_lock.acquire(blocking=False):
             return
         # The stop an ended attempt may need runs AFTER the lock is released
@@ -2886,6 +3060,11 @@ class SkillNode(Node):
                     # ONLY on these named paths, so reading it straight is
                     # equivalent for every pre-D3 path and correct for D3.
                     self._goal_end_code = self._executor.end_code
+                    # Columns two-feed chain (P3): ball A's clean retire
+                    # opens the chain gate (ctx stays armed, so the line
+                    # below stays silent and the goal stays running); an
+                    # ended A clears the ctx so the line below reports it.
+                    self._resolve_chain_on_retire(self._executor)
                     self._log_attempt_end(self._executor)
                     self._executor = None
                     with self._reload_lock:
@@ -3189,11 +3368,31 @@ class SkillNode(Node):
         choreography, generalised by ``kind='columns'``). Columns is
         Ball-Butler-fed ONLY (plan `columns-empty-cup-two-feed.md` D2,
         2026-10-17: the human-lob / tracker-landing feed is retired).
-        ``reload_a`` (ball A itself reloaded by BB first, the empty-cup
-        start) is P3 of that plan and not yet implemented: the accept rule
-        refuses it, so it never arrives here ``True``.
         On resolution, `_install_columns_schedule` compiles
         ``compile_columns(pattern, feed=...)`` and swaps the executor.
+
+        TWO INSTALLS, ONE SHARED TAIL (plan `columns-empty-cup-two-feed.md`
+        P3, owner decision D1, 2026-10-17). Everything above the motion is
+        the no-motion ladder below; what follows it is packed into ONE
+        ``plan`` and handed to `_start_columns_feed`, the single tail both
+        cup states reach:
+
+        * ``reload_a`` False (cup SEATED, and ``columns_1ball_fed``): the
+          tail runs at once -- bridge REST holding A at the feed site, Ball
+          Butler feeds B.
+        * ``reload_a`` True (cup EMPTY): ball A is first fed by Ball Butler
+          as a catch-only RELOAD -- `_run_reload_only`'s own flow
+          (`_prelevel`, then `_start_reload(kind='reload')`, PRE-TILT REST,
+          held-tilt CATCH, DECAY REST, ends seated and level) at
+          ``a_reload_site`` (the FEED site, owner decision O2) -- with
+          ``then_columns=plan`` riding the ctx. A's executor swap arms a
+          ``kind='columns_chain'`` ctx (`_install_announced_reload`); A's
+          clean retire opens the chain GATE (`_resolve_chain_on_retire`);
+          the tick (`_maybe_advance_chain`) calls the SAME
+          `_start_columns_feed(plan, chain_ctx=ctx)` once A's DECAY REST has
+          ended, the cup reads SEATED and Ball Butler is ready again. One
+          up-front schedule is impossible: B's timing is only known from
+          B's own announcement.
 
         Which `columns_sites` site holds A and which is fed is
         `columns_feed_site` (R5 sitting 2, owner decision, 2026-10-02): the
@@ -3330,23 +3529,65 @@ class SkillNode(Node):
             self._correlation.pop(0, None)
             self._correlation.pop(1, None)
 
-        if reload_a:
-            # P3 (the empty-cup two-feed chain) is not implemented; the
-            # accept rule (`accept_cup_decision`) refuses columns EMPTY, so
-            # this is unreachable from `_start_pattern`.
-            raise AssertionError('columns reload_a=True needs the two-feed '
-                                 'chain (plan columns-empty-cup-two-feed P3)')
-        # Ball B comes from Ball Butler: the bridge-then-BB-round-trip
-        # choreography `_start_reload` runs for the one-ball reload,
-        # generalised (`kind='columns'`): bridge holds at the feed site WITH
-        # ball A (`holds_ball=not phantom_a` -- ball A's cup is empty by
-        # design when it is the phantom), BB is asked to aim at
-        # `feed_aim_site`.
-        return self._start_reload(
-            SimpleNamespace(success=None, message=None), site=bridge_site,
-            lift_s=lift_s, boxes=boxes, memory=memory, kind='columns',
+        # Everything the shared tail (`_start_columns_feed`) needs, built
+        # ONCE here so the SEATED path and the two-feed chain cannot drift.
+        plan = SimpleNamespace(
+            site=bridge_site, lift_s=lift_s, boxes=boxes, memory=memory,
             aim_site=feed_aim_site, columns_pattern=pattern,
-            holds_ball=not phantom_a)
+            holds_ball=not phantom_a, entry_tag=entry_tag)
+        if not reload_a:
+            return self._start_columns_feed(plan)
+
+        # Cup EMPTY (P3 two-feed chain): ball A first, as a catch-only
+        # reload -- `_run_reload_only`'s own tail (`_prelevel` as the last
+        # thing before the bridge streams, then `_start_reload`).
+        # Ball A's reload catch site. Owner decision O2 (2026-10-17): the
+        # FEED site, so the chain's bridge REST for B is a pure hold at the
+        # same xy as A's DECAY REST terminal. O2 FALLBACK (if the sim probe
+        # refuses the held-tilt catch there): the proven reload site,
+        #     a_reload_site = Site(_DEFAULT_SITE_NAME, np.array(
+        #         [_DEFAULT_SITE_X_MM, _DEFAULT_SITE_Y_MM, CATCH_CUP_Z_MM]))
+        # and B's bridge REST (`compile_reload_wait`, fresh origin,
+        # holds_ball=True) becomes a held-ball transit to the feed site.
+        a_reload_site = bridge_site
+        prelevel_err = self._prelevel()
+        if prelevel_err:
+            msg = 'columns refused: %s' % (prelevel_err,)
+            self.get_logger().debug(msg)
+            return SimpleNamespace(success=False, message=msg)
+        try:
+            a_pattern = OneBallPattern(
+                sites=(a_reload_site,), apex_m=apex_m, dwell_s=dwell_s,
+                n_throws=0, floor_lift_s=lift_s)
+        except ValueError as exc:
+            msg = 'columns refused: ball A reload pattern: %s' % (exc,)
+            self.get_logger().debug(msg)
+            return SimpleNamespace(success=False, message=msg)
+        return self._start_reload(
+            SimpleNamespace(success=None, message=None), site=a_reload_site,
+            lift_s=lift_s, pattern=a_pattern, boxes=boxes, memory=memory,
+            kind='reload', then_columns=plan)
+
+    def _start_columns_feed(self, plan, *, chain_ctx=None):
+        """The ONE tail of a ``columns`` start (plan
+        `columns-empty-cup-two-feed.md` A3): ball B comes from Ball Butler
+        through the bridge-then-BB-round-trip choreography `_start_reload`
+        runs for the one-ball reload, generalised (``kind='columns'``): the
+        bridge holds at the feed site WITH ball A (``holds_ball=not
+        phantom_a`` -- A's cup is empty by design when it is the phantom),
+        BB is asked to aim at ``plan.aim_site``.
+
+        Called by `_run_columns` at ACCEPT (cup SEATED, ``chain_ctx=None``)
+        and by `_maybe_advance_chain` from the tick once ball A's reload has
+        retired cleanly and the chain gate passed (``chain_ctx`` = the
+        ``columns_chain`` ctx in phase ``chaining``) -- the same arguments
+        either way, from the one ``plan`` `_run_columns` built."""
+        return self._start_reload(
+            SimpleNamespace(success=None, message=None), site=plan.site,
+            lift_s=plan.lift_s, boxes=plan.boxes, memory=plan.memory,
+            kind='columns', aim_site=plan.aim_site,
+            columns_pattern=plan.columns_pattern,
+            holds_ball=plan.holds_ball, chain_ctx=chain_ctx)
 
     def _run_columns_1ball(self, apex_m: float, separation_mm: float,
                            dwell_s: float, n_throws: int,
@@ -3613,12 +3854,6 @@ class SkillNode(Node):
                     'the cup (or run a throwing pattern) first'
                     % (code, pattern)), False
         if code == ex.REJECTED_NO_BALL:
-            if pattern == 'columns':
-                # P3: removed when the two-feed chain lands.
-                return ('%s -- refused: no ball in hand -- the empty-cup '
-                        'columns start (Ball Butler feeds A, then B) lands '
-                        'with the two-feed chain; seat a ball in the cup '
-                        'first' % (code,)), False
             return ('%s -- refused: no ball in hand -- %s opens by throwing a '
                     'held ball; seat a ball in the cup first'
                     % (code, pattern)), False
@@ -4283,7 +4518,8 @@ class SkillNode(Node):
                       kind: str = 'reload',
                       aim_site: Optional[Site] = None,
                       columns_pattern: Optional[Pattern] = None,
-                      holds_ball: bool = False):
+                      holds_ball: bool = False,
+                      then_columns=None, chain_ctx=None):
         """R4 reload start path (owner decision D4; C1/C4 rework,
         2026-09-28): installs the opening-REST-only bridge
         (`schedule.compile_reload_wait` — homes the hand, holds level at
@@ -4337,6 +4573,20 @@ class SkillNode(Node):
         `_check_reload_lane_refused`, `_on_bb_throw_outcome`) — one
         enforcement point, not a second copy of "reject vs end" logic per
         call site.
+
+        Columns two-feed chain (plan `columns-empty-cup-two-feed.md` P3,
+        2026-10-17). ``then_columns`` (the ``plan`` `_run_columns` built, or
+        ``None``) rides the ctx: ball A's reload executor swap reads it to
+        arm the chain instead of retiring the ctx
+        (`_install_announced_reload`). ``chain_ctx`` is set only by
+        `_maybe_advance_chain` (the tick, mid-attempt, no goal to reject):
+        the bridge executor install AND the new ctx arming then each happen
+        under ``_tick_lock`` + ``_reload_lock`` ONLY while ``self.
+        _reload_ctx is chain_ctx`` and no END decided the goal
+        (`_ended_code_for_swap`); otherwise the result is DROPPED -- a Stop
+        that landed during the chain step is never resurrected. With
+        ``chain_ctx=None`` (every accept-path call) the behaviour is the
+        pre-P3 one, unchanged.
         """
         aim_site = site if aim_site is None else aim_site
         now = self.get_clock().now().nanoseconds / 1e9
@@ -4363,21 +4613,54 @@ class SkillNode(Node):
             self.get_logger().debug(response.message)
             return response
 
-        with self._correlation_lock:
-            self._correlation.pop(0, None)
-            self._correlation.pop(1, None)
-        self._sched_refused_at_start = self._sched_refused
-        self._force_hold = False
-        self._hold_forced_code = ''
-        self._executor = SkillExecutor(
-            bridge, self._installer, tracker=self._tracker,
-            **self._bump_kwargs(),
-            catch_aim_source=self._catch_aim_source(),
-            resend_max_per_catch=self._catch_resend_max(),
-            launch_ratio=self._launch_ratio,
-            observer=self._ball_evidence, observations=self._observations,
-            dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
-            seat_window=self._seat_window)
+        if chain_ctx is None:
+            with self._correlation_lock:
+                self._correlation.pop(0, None)
+                self._correlation.pop(1, None)
+            self._sched_refused_at_start = self._sched_refused
+            self._force_hold = False
+            self._hold_forced_code = ''
+            self._executor = SkillExecutor(
+                bridge, self._installer, tracker=self._tracker,
+                **self._bump_kwargs(),
+                catch_aim_source=self._catch_aim_source(),
+                resend_max_per_catch=self._catch_resend_max(),
+                launch_ratio=self._launch_ratio,
+                observer=self._ball_evidence, observations=self._observations,
+                dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
+                seat_window=self._seat_window)
+        else:
+            bridge_executor = SkillExecutor(
+                bridge, self._installer, tracker=self._tracker,
+                **self._bump_kwargs(),
+                catch_aim_source=self._catch_aim_source(),
+                resend_max_per_catch=self._catch_resend_max(),
+                launch_ratio=self._launch_ratio,
+                observer=self._ball_evidence, observations=self._observations,
+                dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
+                seat_window=self._seat_window)
+
+            def _install_bridge():
+                with self._correlation_lock:
+                    self._correlation.pop(0, None)
+                    self._correlation.pop(1, None)
+                self._sched_refused_at_start = self._sched_refused
+                self._force_hold = False
+                self._hold_forced_code = ''
+                self._executor = bridge_executor
+            if not self._chain_guarded(chain_ctx, _install_bridge,
+                                       'the bridge REST for %s'
+                                       % (ball_label(1),)):
+                response.success = False
+                response.message = ('columns chain: dropped -- the attempt '
+                                    'ended before the bridge REST installed')
+                return response
+
+        def end_unless_dropped(code, msg):
+            # A chain step a Stop / END already overtook ends nothing more
+            # (the first END wins); an accept-path call always ends.
+            if chain_ctx is None or self._still_current(chain_ctx):
+                self._end_attempt(code, msg)
 
         # From HERE ON (C4): the bridge REST is a committed physical fact.
         # A refusal below ACCEPTS the goal and ends the attempt through
@@ -4398,7 +4681,7 @@ class SkillNode(Node):
         else:
             if not self._reload_cli.wait_for_service(timeout_sec=_SERVICE_WAIT_S):
                 msg = 'reload refused: bb/reload unavailable'
-                self._end_attempt('ABORTED_BB_RELOAD_UNAVAILABLE', msg)
+                end_unless_dropped('ABORTED_BB_RELOAD_UNAVAILABLE', msg)
                 response.success = True
                 response.message = (
                     msg + ' -- the bridge REST already streaming is the safe '
@@ -4409,7 +4692,7 @@ class SkillNode(Node):
             if reload_resp is None:
                 msg = ('reload refused: bb/reload did not answer in %.1f s'
                       % (_SERVICE_WAIT_S,))
-                self._end_attempt('ABORTED_BB_RELOAD_TIMEOUT', msg)
+                end_unless_dropped('ABORTED_BB_RELOAD_TIMEOUT', msg)
                 response.success = True
                 response.message = (
                     msg + ' -- the bridge REST already streaming is the safe '
@@ -4421,7 +4704,7 @@ class SkillNode(Node):
                 # abort — `reload_resp.message` is BB's own diagnostic sentence
                 # (`teensy_bridge_node._svc_bb_reload`), unedited.
                 end_code = 'REJECTED_BB(%s)' % (reload_resp.message,)
-                self._end_attempt(end_code, end_code)
+                end_unless_dropped(end_code, end_code)
                 response.success = True
                 response.message = (
                     end_code + ' -- the bridge REST already streaming is the '
@@ -4441,15 +4724,16 @@ class SkillNode(Node):
         # `reload_sent` makes the gate also require `bb_left_idle` (set by
         # `_on_bb_heartbeat`): after a `bb/reload` the IDLE that counts is
         # the one AFTER BB's own reload/check cycle, never the one before it.
-        with self._reload_lock:
-            self._reload_throw_inflight = False
-            self._bb_throw_dispatched = False
-            self._reload_ctx = SimpleNamespace(
+        new_ctx = SimpleNamespace(
                 kind=kind, phase='await_bb_idle', pattern=pattern,
                 columns_pattern=columns_pattern, boxes=boxes,
                 memory=memory, site=site, aim_site=aim_site, bridge=bridge,
                 reload_sent=reload_sent, bb_left_idle=False,
                 announced=False,
+                # P3 two-feed chain: the columns plan ball A's reload hands
+                # off to (`_install_announced_reload` arms the chain from
+                # it), or None.
+                then_columns=then_columns,
                 # B2 (`kind='columns_1ball'`): `_install_announced_reload`'s
                 # own branch needs this bridge REST's lift period again to
                 # build `compile_reload_columns`'s throwaway lead-in pattern
@@ -4463,6 +4747,21 @@ class SkillNode(Node):
                 # for THIS attempt -- the retry-once gate.
                 not_settled_retried=False,
                 deadline_mono=time.perf_counter() + ready_timeout_s)
+
+        def _arm_ctx():
+            self._reload_throw_inflight = False
+            self._bb_throw_dispatched = False
+            self._reload_ctx = new_ctx
+        if chain_ctx is None:
+            with self._reload_lock:
+                _arm_ctx()
+        elif not self._chain_guarded(chain_ctx, _arm_ctx,
+                                     'the Ball Butler wait for %s'
+                                     % (ball_label(1),)):
+            response.success = False
+            response.message = ('columns chain: dropped -- the attempt ended '
+                                'before the Ball Butler wait armed')
+            return response
         response.success = True
         # The hop entry's own name, `kind='columns'` only (`_run_columns`'s
         # own `entry_tag` -- restated here rather than threaded through as a
@@ -4516,7 +4815,14 @@ class SkillNode(Node):
             return
         with self._reload_lock:
             ctx = self._reload_ctx
-            claimed = ctx is not None and not getattr(ctx, 'announced', False)
+            # Only a ctx actually WAITING for an announcement (P3, 2026-10-17):
+            # a late ball-A announcement must not be claimed by ball B's
+            # `await_bb_idle` ctx, nor by the columns chain ctx. The phase is
+            # set BEFORE `bb/throw_at_target` is invoked (C2), so an
+            # announcement published inside that call still claims.
+            claimed = (ctx is not None
+                       and ctx.phase == 'await_announcement'
+                       and not getattr(ctx, 'announced', False))
             if claimed:
                 ctx.announced = True
         if not claimed:
@@ -4803,7 +5109,21 @@ class SkillNode(Node):
                     self._executor = executor
                     # `_swapped_in_and_live`: THIS swap retired the ctx.
                     ctx.installed_executor = executor
-                    self._reload_ctx = None
+                    if getattr(ctx, 'then_columns', None) is not None:
+                        # Columns two-feed chain (P3): ball A's reload is
+                        # live; the attempt is NOT over at its retire. The
+                        # chain ctx keeps `_maybe_signal_goal_done`,
+                        # `_log_attempt_end` and `_refuse_if_running`
+                        # reading the attempt as running, and cannot be
+                        # claimed by an announcement (phase, `announced`).
+                        self._reload_ctx = SimpleNamespace(
+                            kind='columns_chain', phase='await_reload_a',
+                            announced=True, then_columns=ctx.then_columns,
+                            a_executor=executor,
+                            decay_end_abs=float(schedule.skills[-1].t_abs_s),
+                            deadline_mono=math.inf)
+                    else:
+                        self._reload_ctx = None
                     self._reload_throw_inflight = True
         finally:
             if got_lock:

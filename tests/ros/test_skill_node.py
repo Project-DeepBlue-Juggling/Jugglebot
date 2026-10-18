@@ -5786,24 +5786,37 @@ def test_accept_columns_seated_feeds_b_from_bb_without_a_flag(tmp_path):
     assert node._reload_ctx.kind == 'columns'
 
 
-def test_accept_columns_empty_cup_is_refused_no_ball_until_p3(tmp_path):
-    """P1 only: columns + EMPTY is `REJECTED_NO_BALL` naming the two-feed
-    chain that will accept it (P3); Ball Butler is never asked. The ATTEMPT-4
-    regression (an empty cup must never reach `bb/throw_at_target` as a
-    THROWING start) stays pinned."""
-    node, _client = _node_with_client()
+def test_accept_columns_empty_cup_opens_with_the_reload_of_a(tmp_path):
+    """P3 (2026-10-17): columns + EMPTY is accepted -- the attempt opens with
+    the Ball Butler reload of ball A at the columns FEED site (the shared
+    tail's bridge site, not the legacy (-50, 0) reload site): label ends
+    ' (reload)', the start event says reload='1', pre-level was reached, and
+    the BB reload path is armed with kind 'reload' (the chain follows)."""
+    node, _client = _node_with_client(response=_response())
     reload_client, throw_client = _reload_ready(node)
-    _cup(node, seated=False)
+    prelevel = _prelevel_ready(node)
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
+             seated=False)
+    node._params['plant_id'] = 'test_columns_empty_a_%s' % id(node)
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
                       _good_box_path(tmp_path, columns=True)), \
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_columns_goal(separation_mm=100.0))
-    assert resp.success is False
-    assert ex.REJECTED_NO_BALL in resp.message
-    assert 'two-feed chain' in resp.message
-    _bb_ready(node)
-    node._maybe_fire_reload_throw()
-    _assert_no_bb_and_no_motion(node, reload_client, throw_client)
+        assert (node._juggle_goal(_columns_goal(separation_mm=100.0))
+                == sn.GoalResponse.ACCEPT)
+    assert node._attempt_label.endswith(' (reload)'), node._attempt_label
+    [(name, _msg, values)] = TestJuggleAction._attempt_events(node)
+    assert name == sn.ATTEMPT_START and values['reload'] == '1'
+    assert len(prelevel.calls) == 1                     # _prelevel reached
+    ctx = node._reload_ctx
+    assert ctx is not None and ctx.kind == 'reload'
+    assert ctx.then_columns is not None
+    feed_site = ctx.then_columns.site
+    np.testing.assert_allclose(ctx.site.cup_mm, feed_site.cup_mm)
+    # (the fixture's 100 mm layout puts the feed site P1 at x = -50, which
+    # coincides with the legacy reload site; the identity above is the pin)
+    assert len(reload_client.calls) == 1                # bb/reload asked
+    assert node._executor is not None
+    assert node._executor.schedule.skills[0].kind == 'REST'
 
 
 _EVIDENCES = (ball_possession.EVIDENCE_EMPTY, ball_possession.EVIDENCE_SEATED,
@@ -5826,7 +5839,7 @@ def _expected_cup_decision(pattern, evidence):
 def test_accept_cup_decision_table(pattern, evidence):
     """`(pattern, cup evidence) -> (refusal code | None, reload)` for all 7
     patterns x {EMPTY, SEATED, UNKNOWN}, per plan `columns-empty-cup-two-feed`
-    § 2 (columns EMPTY is REJECTED_NO_BALL in P1; the one cell P3 flips)."""
+    § 2 (columns EMPTY is reload-first since P3)."""
     assert sn.accept_cup_decision(pattern, evidence) == _expected_cup_decision(
         pattern, evidence)
 
@@ -5836,7 +5849,7 @@ def test_accept_cup_decision_table_pins_the_plan_cells():
     d = sn.accept_cup_decision
     for p in ('self_toss', 'hop', 'columns_1ball'):
         assert d(p, E) == (None, True) and d(p, S) == (None, False)
-    assert d('columns', E) == (ex.REJECTED_NO_BALL, False)     # P3 flips this
+    assert d('columns', E) == (None, True)     # P3: reload A, then feed B
     assert d('columns', S) == (None, False)
     assert d('columns_1ball_fed', E) == (None, True)
     assert d('columns_1ball_fed', S) == (ex.REJECTED_BALL_IN_HAND, False)
@@ -6002,3 +6015,439 @@ def test_the_bumper_sends_kind_bump_and_maps_the_reply():
         False, 'LIMIT_ACC', False, 42)
     assert np.allclose(res.release_offset_xy_mm, (1.5, -2.0))
     assert np.allclose(res.launch_bias_xy_mm_s, (3.0, 4.0))
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# P3 of plans/active/columns-empty-cup-two-feed.md (2026-10-17): the columns
+# two-feed chain. EMPTY cup -> Ball Butler reloads ball A at the feed site,
+# then (gate: DECAY REST ended, cup SEATED, BB IDLE with a ball after its own
+# refill) the SEATED columns tail feeds ball B. Mocked-ROS only: these pin
+# the phases and the Stop/timeout races, blind to choreography (plan § 4 P3).
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _chain_a_started(node, tmp_path, plan_capture=None):
+    """EMPTY-cup columns goal accepted into the A reload and BB's throw for A
+    fired: `_reload_ctx` is the kind-'reload' ctx in `await_announcement`."""
+    node._params['plant_id'] = 'test_columns_chain_%s' % id(node)
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
+             seated=False)
+    _prelevel_ready(node)
+    _reload_ready(node)
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
+                      _good_box_path(tmp_path, columns=True)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(_columns_goal(separation_mm=100.0))
+    assert resp.success is True, resp.message
+    assert node._reload_ctx.kind == 'reload'
+    assert node._reload_ctx.phase == 'await_bb_idle'
+    _bb_ready(node)
+    node._maybe_fire_reload_throw()
+    assert node._reload_ctx.phase == 'await_announcement'
+    return resp
+
+
+def _announce_at(node, site, *, throw_time_s=2.0, landing_time_s=2.7):
+    node._on_announcement(_bb_announcement(
+        target_id=node._robot_name,
+        landing_mm=(float(site.cup_mm[0]), float(site.cup_mm[1]),
+                    sn.CATCH_CUP_Z_MM),
+        landing_vel_mm_s=(1200.0, 0.0, -2500.0),
+        throw_time_s=throw_time_s, landing_time_s=landing_time_s))
+
+
+def _chain_a_swapped(node, tmp_path):
+    """..., then A's bridge REST dispatched/retired and A's announcement
+    swapped the reload schedule in: the chain ctx is armed."""
+    _chain_a_started(node, tmp_path)
+    _finish_bridge(node)
+    assert node._executor is None
+    _announce_at(node, node._reload_ctx.site)
+    return node._reload_ctx
+
+
+def _retire_a(node, end_code=''):
+    """Retire A's live reload executor on the next tick with ``end_code``
+    ('' = every skill dispatched cleanly). `done` is a property of the real
+    executor; patched on the class for the one tick so the REAL executor
+    object (the ctx's `a_executor` identity) is what retires."""
+    from unittest.mock import PropertyMock
+    execu = node._executor
+    assert execu is not None
+    execu.end_code = end_code
+    execu.attempt_ended = bool(end_code)
+    with patch.object(type(execu), 'done', new_callable=PropertyMock,
+                      return_value=True):
+        node._on_tick()
+    assert node._executor is None
+
+
+def _chain_at_gate(node, tmp_path):
+    ctx = _chain_a_swapped(node, tmp_path)
+    _retire_a(node)
+    assert node._reload_ctx is ctx and ctx.phase == 'await_chain_gate'
+    return ctx
+
+
+def _open_chain_gate(node, ctx):
+    _cup(node, seated=True)
+    ctx.decay_end_abs = -1.0          # the mock ROS clock reads 0.0
+    _bb_ready(node)                   # IDLE + ball_in_hand + connected
+
+
+def test_columns_empty_cup_a_swap_arms_the_chain_ctx_not_none(tmp_path):
+    node, _client = _node_with_client(response=_response())
+    _chain_a_started(node, tmp_path)
+    _finish_bridge(node)
+    plan = node._reload_ctx.then_columns
+    _announce_at(node, node._reload_ctx.site)
+    ctx = node._reload_ctx
+    assert ctx is not None
+    assert ctx.kind == 'columns_chain' and ctx.phase == 'await_reload_a'
+    assert ctx.then_columns is plan
+    live = node._executor
+    assert live is not None and ctx.a_executor is live
+    last_rest = live.schedule.skills[-1]
+    assert last_rest.kind == 'REST'
+    assert ctx.decay_end_abs == pytest.approx(float(last_rest.t_abs_s))
+    assert [s.kind for s in live.schedule.skills][:3] == ['REST', 'CATCH', 'REST']
+
+
+def test_columns_chain_waits_for_decay_end_cup_seated_and_bb_idle_with_ball(
+        tmp_path):
+    node, _client = _node_with_client(response=_response())
+    ctx = _chain_at_gate(node, tmp_path)
+    reload_client = node._reload_cli
+    calls = []
+    real = node._start_columns_feed
+    node._start_columns_feed = lambda *a, **k: calls.append(1) or real(*a, **k)
+
+    def shut(label):
+        node._on_tick()
+        assert node._reload_ctx is ctx and ctx.phase == 'await_chain_gate', label
+        assert calls == [], label
+
+    # everything else true, but the DECAY REST has not ended (now 0 < end)
+    assert ctx.decay_end_abs > 0.0
+    _cup(node, seated=True)
+    _bb_ready(node)
+    shut('decay not ended')
+    ctx.decay_end_abs = -1.0
+    _cup(node, seated=False)
+    shut('cup EMPTY')
+    _cup(node, seated=True)
+    _bb_ready(node, state=sn.proto.BallButlerStates.CHECKING_BALL,
+              ball_in_hand=True)
+    shut('BB not IDLE')
+    _bb_ready(node, ball_in_hand=False)
+    shut('BB IDLE without a ball')
+    _bb_ready(node, ball_in_hand=True, connected=False)
+    shut('BB not connected')
+    _bb_ready(node)
+    node._on_tick()
+    assert len(calls) == 1                       # all hold -> opens
+    assert node._reload_ctx is not ctx           # B's await ctx replaced it
+    assert node._reload_ctx.kind == 'columns'
+
+
+def _assert_plans_equal(a, b):
+    assert set(vars(a)) == set(vars(b))
+    for k in vars(a):
+        va, vb = getattr(a, k), getattr(b, k)
+        if k == 'memory':
+            assert type(va) is type(vb)          # a fresh learner memory each
+            continue
+        if isinstance(va, np.ndarray) or hasattr(va, 'cup_mm'):
+            if hasattr(va, 'cup_mm'):
+                np.testing.assert_allclose(va.cup_mm, vb.cup_mm, err_msg=k)
+                assert va.name == vb.name, k
+            else:
+                np.testing.assert_allclose(va, vb, err_msg=k)
+            continue
+        try:
+            same = bool(va == vb)
+        except ValueError:      # dataclasses holding ndarrays (Site, patterns)
+            same = repr(va) == repr(vb)
+        assert same, k
+
+
+def test_columns_chain_runs_the_seated_columns_tail(tmp_path):
+    """The chain calls the SAME `_start_columns_feed` with a plan equal field
+    by field to the one the SEATED path builds for the same goal."""
+    seated_node, _c = _node_with_client(response=_response())
+    seen_seated = []
+    real = seated_node._start_columns_feed
+    seated_node._start_columns_feed = (
+        lambda plan, **k: seen_seated.append(plan) or real(plan, **k))
+    seated_node._params['plant_id'] = 'test_columns_tail_seated'
+    _freshen(seated_node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+    _reload_ready(seated_node)
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
+                      _good_box_path(tmp_path, columns=True)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = seated_node._start_pattern(_columns_goal(separation_mm=100.0))
+    assert resp.success is True, resp.message
+    assert len(seen_seated) == 1
+
+    node, _client = _node_with_client(response=_response())
+    ctx = _chain_at_gate(node, tmp_path)
+    seen = []
+    real = node._start_columns_feed
+    node._start_columns_feed = (
+        lambda plan, **k: seen.append((plan, k)) or real(plan, **k))
+    _open_chain_gate(node, ctx)
+    node._on_tick()
+    assert len(seen) == 1
+    plan, kw = seen[0]
+    assert plan is ctx.then_columns and kw == {'chain_ctx': ctx}
+    assert plan.holds_ball is True
+    _assert_plans_equal(plan, seen_seated[0])
+
+
+def _chain_b_announced(node, tmp_path):
+    ctx = _chain_at_gate(node, tmp_path)
+    _open_chain_gate(node, ctx)
+    node._on_tick()
+    b_ctx = node._reload_ctx
+    assert b_ctx.kind == 'columns' and b_ctx.phase == 'await_bb_idle'
+    return ctx, b_ctx
+
+
+def test_columns_chain_second_announcement_latches_ball_1_and_installs_compile_columns(
+        tmp_path):
+    node, _client = _node_with_client(response=_response())
+    ctx, b_ctx = _chain_b_announced(node, tmp_path)
+    assert len(node._reload_cli.calls) == 1      # bb/reload only for A (B's
+    #                                              hand already holds a ball)
+    node._correlation.pop(0, None)               # A's flight is long landed
+    node._maybe_fire_reload_throw()              # BB already IDLE + ball
+    assert node._reload_ctx.phase == 'await_announcement'
+    assert len(node._bb_throw_cli.calls) == 2    # A's throw + B's
+    aim = b_ctx.aim_site.cup_mm
+    node._on_announcement(_bb_announcement(
+        target_id=node._robot_name,
+        landing_mm=tuple(float(v) for v in aim),
+        landing_vel_mm_s=(0.0, 0.0, -3000.0), throw_time_s=0.5,
+        landing_time_s=5.0))
+    assert node._reload_ctx is None
+    assert node._executor is not None
+    assert node._executor.schedule.pattern == 'columns'
+    catches = [s for s in node._executor.schedule.skills if s.kind == sn.CATCH]
+    first = min(catches, key=lambda s: s.t_abs_s)
+    assert first.ball_id == 1
+    assert first.landing_prior.t_land_abs_s == pytest.approx(5.0)
+    assert 1 in node._correlation and len(node._correlation[1]) == 1
+    assert 0 not in node._correlation
+
+
+def test_columns_chain_a_missed_catch_ends_without_asking_bb_again(tmp_path):
+    node, _client = _node_with_client(response=_response())
+    _chain_a_swapped(node, tmp_path)
+    _retire_a(node, end_code=ex.MISSED_CATCH)
+    assert node._reload_ctx is None
+    assert node._goal_end_code == ex.MISSED_CATCH
+    # nothing further can start B: cup seated + BB ready changes nothing
+    _cup(node, seated=True)
+    _bb_ready(node)
+    node._on_tick()
+    node._maybe_advance_chain()
+    assert node._executor is None and node._reload_ctx is None
+    assert len(node._bb_throw_cli.calls) == 1
+    assert len(node._reload_cli.calls) == 1
+
+
+def test_columns_chain_an_empty_cup_at_the_gate_is_rejected_no_ball(tmp_path):
+    node, _client = _node_with_client(response=_response())
+    ctx = _chain_at_gate(node, tmp_path)
+    _cup(node, seated=False)
+    ctx.deadline_mono = time.perf_counter() - 1.0
+    node._on_tick()
+    assert node._reload_ctx is None
+    assert node._goal_end_code == ex.REJECTED_NO_BALL
+    assert len(node._bb_throw_cli.calls) == 1
+
+
+def test_columns_chain_gate_timeout_names_bb_state(tmp_path):
+    node, _client = _node_with_client(response=_response())
+    ctx = _chain_at_gate(node, tmp_path)
+    _cup(node, seated=True)
+    _bb_ready(node, state=sn.proto.BallButlerStates.CHECKING_BALL,
+              ball_in_hand=False)
+    # the deadline armed at A's retire is COLUMNS_CHAIN_BB_REFILL_TIMEOUT_S out
+    assert (ctx.deadline_mono - time.perf_counter()
+            == pytest.approx(sn.COLUMNS_CHAIN_BB_REFILL_TIMEOUT_S, abs=2.0))
+    node._on_tick()
+    assert node._reload_ctx is ctx               # not yet
+    ctx.deadline_mono = time.perf_counter() - 1.0
+    node._on_tick()
+    assert node._reload_ctx is None
+    assert node._goal_end_code == (
+        'ABORTED_BB_NOT_READY(CHECKING_BALL, ball_in_hand=False)')
+    assert len(node._bb_throw_cli.calls) == 1
+
+
+def test_columns_chain_gate_timeout_with_unknown_cup_is_ball_unknown(tmp_path):
+    node, _client = _node_with_client(response=_response())
+    ctx = _chain_at_gate(node, tmp_path)
+    _cup(node, seated=True, valid=False)
+    ctx.deadline_mono = time.perf_counter() - 1.0
+    node._on_tick()
+    assert node._reload_ctx is None
+    assert node._goal_end_code == ex.REJECTED_BALL_UNKNOWN
+
+
+def test_columns_chain_stop_during_chaining_does_not_resurrect(tmp_path):
+    """A Stop that lands between the gate marking the ctx 'chaining' (lock
+    released) and `_start_columns_feed` returning: the bridge executor and
+    B's ctx are DROPPED by `_chain_guarded`, never installed over the Stop."""
+    node, _client = _node_with_client(response=_response())
+    ctx = _chain_at_gate(node, tmp_path)
+    _open_chain_gate(node, ctx)
+    real = node._start_columns_feed
+
+    ran = []
+
+    def stop_then_feed(plan, **kw):
+        ran.append(1)
+        assert ctx.phase == 'chaining'
+        node._stop_attempt()
+        return real(plan, **kw)
+
+    node._start_columns_feed = stop_then_feed
+    node._on_tick()
+    assert ran == [1]
+    assert node._executor is None
+    assert node._reload_ctx is None
+    assert len(node._bb_throw_cli.calls) == 1        # A's only
+    node._on_tick()
+    node._maybe_signal_goal_done()
+    assert node._goal_done_event.is_set()
+    assert node._executor is None and node._reload_ctx is None
+    assert len(node._bb_throw_cli.calls) == 1
+
+
+def test_columns_chain_stop_at_the_gate_never_asks_bb_for_b(tmp_path):
+    node, _client = _node_with_client(response=_response())
+    ctx = _chain_at_gate(node, tmp_path)
+    node._stop_attempt()
+    assert node._reload_ctx is None
+    _open_chain_gate(node, ctx)
+    node._on_tick()
+    node._maybe_advance_chain()
+    assert node._executor is None and node._reload_ctx is None
+    assert len(node._bb_throw_cli.calls) == 1
+    assert len(node._reload_cli.calls) == 1
+    node._maybe_signal_goal_done()
+    assert node._goal_done_event.is_set()
+
+
+def test_columns_chain_late_a_announcement_during_b_await_bb_idle_is_not_claimed(
+        tmp_path):
+    node, _client = _node_with_client(response=_response())
+    ctx, b_ctx = _chain_b_announced(node, tmp_path)
+    assert b_ctx.phase == 'await_bb_idle'
+    executor = node._executor
+    _announce_at(node, b_ctx.site)                   # a late announcement
+    assert node._reload_ctx is b_ctx
+    assert b_ctx.phase == 'await_bb_idle'
+    assert getattr(b_ctx, 'announced', False) is False
+    assert node._executor is executor
+
+
+def test_columns_chain_by_host_between_feeds_is_ignored(tmp_path):
+    node, _client = _node_with_client(response=_response())
+    ctx = _chain_at_gate(node, tmp_path)
+    for token in ('THROW_ABORTED_BY_HOST', 'THROW_ABORTED_NOT_SETTLED (axis=1)'):
+        node._on_bb_throw_outcome(String(data=token))
+    assert node._reload_ctx is ctx and ctx.phase == 'await_chain_gate'
+    assert node._executor is None
+    assert node._goal_end_code in ('', None)
+    assert len(node._bb_throw_cli.calls) == 1
+
+
+def test_columns_chain_a_foreign_executor_retiring_does_not_open_the_gate(
+        tmp_path):
+    node, _client = _node_with_client(response=_response())
+    ctx = _chain_a_swapped(node, tmp_path)
+    assert ctx.phase == 'await_reload_a'
+    ctx.a_executor = object()
+    _retire_a(node)
+    assert node._reload_ctx is ctx
+    assert ctx.phase == 'await_reload_a'
+
+
+def test_columns_chain_await_reload_a_never_times_out(tmp_path):
+    node, _client = _node_with_client(response=_response())
+    ctx = _chain_a_swapped(node, tmp_path)
+    assert ctx.phase == 'await_reload_a'
+    far = time.perf_counter() + 10.0 * sn.COLUMNS_CHAIN_BB_REFILL_TIMEOUT_S
+    with patch.object(sn.time, 'perf_counter', return_value=far):
+        node._check_reload_timeout()
+    assert node._reload_ctx is ctx and ctx.phase == 'await_reload_a'
+    assert node._goal_end_code in (None, '')
+
+
+def test_columns_chain_chaining_phase_is_skipped_by_the_timeout_check(
+        tmp_path):
+    node, _client = _node_with_client(response=_response())
+    ctx = _chain_at_gate(node, tmp_path)
+    ctx.phase = 'chaining'
+    ctx.deadline_mono = time.perf_counter() - 100.0
+    node._check_reload_timeout()
+    assert node._reload_ctx is ctx and ctx.phase == 'chaining'
+    assert node._goal_end_code in (None, '')
+
+
+def test_columns_chain_stop_between_the_two_guarded_steps_drops_the_arming(
+        tmp_path):
+    """Stop lands after the bridge executor is installed (guarded step 1) but
+    before B's Ball Butler wait is armed (guarded step 2)."""
+    node, _client = _node_with_client(response=_response())
+    ctx = _chain_at_gate(node, tmp_path)
+    _open_chain_gate(node, ctx)
+    real = node._bb_heartbeat_fresh
+    fired = []
+
+    def stop_once_bridge_installed(*a, **kw):
+        if node._executor is not None and not fired:
+            fired.append(1)
+            node._stop_attempt()
+        return real(*a, **kw)
+
+    node._bb_heartbeat_fresh = stop_once_bridge_installed
+    node._on_tick()
+    assert fired == [1]
+    assert node._reload_ctx is None
+    execu = node._executor
+    assert execu is None or getattr(execu, 'stopped', True) or execu.done
+    assert len(node._bb_throw_cli.calls) == 1
+
+
+def test_columns_chain_bridge_compile_refusal_ends_rejected_columns_unschedulable(
+        tmp_path):
+    node, _client = _node_with_client(response=_response())
+    ctx = _chain_at_gate(node, tmp_path)
+    _open_chain_gate(node, ctx)
+
+    def boom(*a, **kw):
+        raise ValueError('forced compile refusal')
+
+    with patch.object(sn, 'compile_reload_wait', boom):
+        node._on_tick()
+    assert node._reload_ctx is None
+    assert node._goal_end_code == 'REJECTED_COLUMNS_UNSCHEDULABLE'
+
+
+def test_columns_chain_feed_step_exception_ends_the_attempt_instead_of_hanging(
+        tmp_path):
+    node, _client = _node_with_client(response=_response())
+    ctx = _chain_at_gate(node, tmp_path)
+    _open_chain_gate(node, ctx)
+
+    def boom(*a, **kw):
+        raise RuntimeError('forced feed-step failure')
+
+    node._start_columns_feed = boom
+    node._on_tick()
+    assert node._goal_end_code == 'ABORTED_RELOAD_ERROR(RuntimeError)'
+    assert node._reload_ctx is None
+    assert node._executor is None
