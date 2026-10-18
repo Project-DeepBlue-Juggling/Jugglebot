@@ -395,6 +395,15 @@ class ThenThrow:
     #: (:meth:`~jugglebot.motion.skills.executor.SkillExecutor._command_u`)
     #: and its outcome bookkeeping read, no inference from schedule shape.
     shadow_landing: bool = False
+    #: Where the carried throw is RELEASED when that is not the catch's own
+    #: site (the one-ball oval, plan two-ball-oval § 2.2: CATCH at C, carry
+    #: C -> T, THROW at T).  ``None`` = the catch site (every same-site fold,
+    #: hop/self_toss/columns included).  Read through :meth:`release_site_or`.
+    release_site: Optional[Site] = None
+
+    def release_site_or(self, catch_site: Site) -> Site:
+        """The release site: :attr:`release_site`, else ``catch_site``."""
+        return self.release_site if self.release_site is not None else catch_site
 
     def __post_init__(self):
         if not np.isfinite(float(self.t_release_abs_s)):
@@ -409,6 +418,10 @@ class ThenThrow:
                               % (self.y_d[1],))
         if not isinstance(self.target, Site):
             raise ValueError('target must be a Site, got %r' % (self.target,))
+        if self.release_site is not None and not isinstance(
+                self.release_site, Site):
+            raise ValueError('release_site must be a Site or None, got %r'
+                              % (self.release_site,))
 
 
 @dataclasses.dataclass(frozen=True)
@@ -635,7 +648,8 @@ class Schedule:
     dwell_s: float
     t0_abs_s: float
     #: Which compiler built this schedule — ``'columns'``
-    #: (:func:`compile_columns`), ``'self_toss'`` or ``'hop'``
+    #: (:func:`compile_columns`), ``'self_toss'``, ``'hop'`` or ``'oval_1ball'``
+    #: (the fixed-role one-ball oval, ``OneBallPattern.roles='fixed'``)
     #: (:func:`compile_one_ball`, one or two sites — R4, owner decision D1
     #: 2026-09-23).  ``compile_reload`` (R4, owner decision D4 2026-09-23)
     #: fills this with ``'self_toss'``/``'hop'`` too, NOT a third label — its
@@ -724,8 +738,14 @@ def _check_window(name: str, window_s: float) -> None:
                float(hw.JB_TRAJ_KNOT_DT_S)))
 
 
-def _fold_catch_throw_pairs(skills, dwell_s: float):
+def _fold_catch_throw_pairs(skills, dwell_s: float, fixed_roles: bool = False):
     """Fold every same-site (CATCH, THROW) pair of ONE ball into one CATCH.
+
+    ``fixed_roles`` (the one-ball oval, ``OneBallPattern.roles='fixed'``)
+    folds ACROSS sites too: the CATCH at C carries the THROW at T, and the
+    folded :class:`ThenThrow` records ``release_site`` = the THROW's site (the
+    folded skill keeps the CATCH site as ``.site``).  Same-site folds leave
+    ``release_site`` None.
 
     The event TABLE is unchanged — the ball is still caught at ``t_land`` and
     still released at ``t_land + dwell``.  What changes is how many segments
@@ -747,7 +767,7 @@ def _fold_catch_throw_pairs(skills, dwell_s: float):
         for j in range(i + 1, len(skills)):
             other = skills[j]
             if (other.kind == THROW and other.ball_id == sk.ball_id
-                    and other.site is sk.site
+                    and (fixed_roles or other.site is sk.site)
                     and abs(other.t_abs_s - (sk.t_abs_s + dwell_s)) <= 1e-9):
                 pair = (j, other)
                 break
@@ -758,7 +778,8 @@ def _fold_catch_throw_pairs(skills, dwell_s: float):
         folded.add(j)
         out.append(dataclasses.replace(sk, then_throw=ThenThrow(
             t_release_abs_s=throw.t_abs_s, y_d=throw.y_d, target=throw.target,
-            shadow_landing=throw.shadow_landing)))
+            shadow_landing=throw.shadow_landing,
+            release_site=(None if throw.site is sk.site else throw.site))))
     return out
 
 
@@ -1269,8 +1290,21 @@ class OneBallPattern:
     #: (:data:`FLOOR_LIFT_S`), which is also what every offline test and the
     #: sim gate get.
     floor_lift_s: float = FLOOR_LIFT_S
+    #: ``'alternate'`` = today's hop/self_toss (throw ``i`` from
+    #: ``sites[i % n]`` to ``sites[(i+1) % n]``).  ``'fixed'`` = the one-ball
+    #: oval (plan two-ball-oval § 2.1): EVERY throw from ``sites[0]`` (T) to
+    #: ``sites[1]`` (C), the loaded cup carried C -> T; needs exactly 2 sites.
+    roles: str = 'alternate'
 
     def __post_init__(self):
+        if self.roles not in ('alternate', 'fixed'):
+            raise ValueError(
+                "roles must be 'alternate' or 'fixed', got %r"
+                % (self.roles,))
+        if self.roles == 'fixed' and len(self.sites) != 2:
+            raise ValueError(
+                "roles='fixed' needs exactly 2 sites (T, C), got %d"
+                % (len(self.sites),))
         if len(self.sites) not in (1, 2):
             raise ValueError(
                 'OneBallPattern takes 1 or 2 sites, got %d — no third site '
@@ -1282,6 +1316,14 @@ class OneBallPattern:
                 'both lifts the cup onto the site and homes the hand, and '
                 'FLOOR_LIFT_S is the measured minimum for the lift alone'
                 % (self.floor_lift_s, FLOOR_LIFT_S))
+
+
+def _one_ball_label(pattern: OneBallPattern) -> str:
+    """The ONE place a one-ball pattern's :attr:`Schedule.pattern` is named
+    (``compile_one_ball`` and ``compile_reload`` both)."""
+    if pattern.roles == 'fixed':
+        return 'oval_1ball'
+    return 'self_toss' if len(pattern.sites) == 1 else 'hop'
 
 
 def compile_one_ball(pattern: OneBallPattern, t0_abs_s: float) -> Schedule:
@@ -1366,7 +1408,6 @@ def compile_one_ball(pattern: OneBallPattern, t0_abs_s: float) -> Schedule:
     n = int(pattern.n_throws)
     if n < 1:
         raise ValueError('n_throws must be >= 1, got %r' % (pattern.n_throws,))
-    n_sites = len(pattern.sites)
 
     # THE SCHEDULE IS BUILT ON ITS OWN CLOCK AND SHIFTED TO t0_abs_s ONCE, AT
     # THE END — see the identical note in compile_columns for why (ROS-epoch
@@ -1387,7 +1428,8 @@ def compile_one_ball(pattern: OneBallPattern, t0_abs_s: float) -> Schedule:
     # included.
     skills, t_f, period = _append_one_ball_pattern(
         skills, t0_rel + lift_s, pattern.sites, pattern.apex_m,
-        pattern.dwell_s, n, pattern.launch_s, pattern.rest_tail_s)
+        pattern.dwell_s, n, pattern.launch_s, pattern.rest_tail_s,
+        pattern.roles)
 
     skills = _assign_leads(skills)
     _check_dispatch_monotone(skills)
@@ -1396,12 +1438,12 @@ def compile_one_ball(pattern: OneBallPattern, t0_abs_s: float) -> Schedule:
     skills = [_shifted(s, t0) for s in skills]
     return Schedule(skills=tuple(skills), flight_s=t_f, beat_s=period,
                     transit_s=t_f, dwell_s=float(pattern.dwell_s), t0_abs_s=t0,
-                    pattern=('self_toss' if n_sites == 1 else 'hop'))
+                    pattern=_one_ball_label(pattern))
 
 
 def _append_one_ball_pattern(skills, rest_end_t_rel: float, sites, apex_m: float,
                              dwell_s: float, n_throws: int, launch_s: float,
-                             rest_tail_s: float):
+                             rest_tail_s: float, roles: str = 'alternate'):
     """Append the one-ball pattern's THROW/CATCH events to ``skills`` (already
     ending in a REST at ``rest_end_t_rel``, on the SAME relative clock),
     fold same-site (CATCH, THROW) pairs, and append the closing REST.
@@ -1432,8 +1474,11 @@ def _append_one_ball_pattern(skills, rest_end_t_rel: float, sites, apex_m: float
     _check_window('CATCH (the full flight to the target site)', t_f)
 
     for i in range(n):
-        site_i = sites[i % n_sites]
-        target_i = sites[(i + 1) % n_sites]
+        if roles == 'fixed':
+            site_i, target_i = sites[0], sites[1]
+        else:
+            site_i = sites[i % n_sites]
+            target_i = sites[(i + 1) % n_sites]
         t_throw = float(rest_end_t_rel) + float(launch_s) + float(i) * period
         window = launch_s if i == 0 else dwell_s
         skills.append(Skill(kind=THROW, ball_id=0, site=site_i,
@@ -1448,7 +1493,8 @@ def _append_one_ball_pattern(skills, rest_end_t_rel: float, sites, apex_m: float
                             t_abs_s=t_throw + t_f, window_s=t_f))
 
     skills.sort(key=lambda s: s.t_abs_s)
-    skills = _fold_catch_throw_pairs(skills, float(dwell_s))
+    skills = _fold_catch_throw_pairs(skills, float(dwell_s),
+                                     fixed_roles=(roles == 'fixed'))
 
     catches = [s for s in skills if s.kind == CATCH]
     last_catch = max(catches, key=lambda s: s.t_abs_s)
@@ -1723,7 +1769,8 @@ def compile_reload(landing_mm, landing_vel_mm_s, t_land_abs_s: float,
     else:
         skills, t_f, period = _append_one_ball_pattern(
             skills, decay_end_rel, pattern.sites, pattern.apex_m,
-            pattern.dwell_s, n, pattern.launch_s, pattern.rest_tail_s)
+            pattern.dwell_s, n, pattern.launch_s, pattern.rest_tail_s,
+            pattern.roles)
 
     skills = _assign_leads(skills)
     _check_dispatch_monotone(skills)
@@ -1732,11 +1779,10 @@ def compile_reload(landing_mm, landing_vel_mm_s, t_land_abs_s: float,
     skills = [_shifted(s, t0) for s in skills]
     # NOT a 'reload' label — see the field docstring on `Schedule.pattern`:
     # every THROW this schedule dispatches is kinematically an ordinary
-    # self-toss/hop throw, and that is the box actually swept.
-    n_sites = len(pattern.sites)
+    # self-toss/hop throw (or, fixed-role, the oval_1ball box), and that is the box actually swept.
     return Schedule(skills=tuple(skills), flight_s=t_f, beat_s=period,
                     transit_s=t_f, dwell_s=float(pattern.dwell_s), t0_abs_s=t0,
-                    pattern=('self_toss' if n_sites == 1 else 'hop'))
+                    pattern=_one_ball_label(pattern))
 
 
 def phantom_feed_prior(pattern: Pattern, aim_site: Site,

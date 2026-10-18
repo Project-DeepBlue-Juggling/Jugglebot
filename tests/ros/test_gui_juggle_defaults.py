@@ -33,7 +33,7 @@ def _points():
 
 
 def test_every_panel_pattern_has_a_point():
-    assert set(_points()) == set(PATTERNS) and len(PATTERNS) == 5
+    assert set(_points()) == set(PATTERNS) and len(PATTERNS) == 7
 
 
 def test_points_sit_inside_the_committed_box():
@@ -61,7 +61,7 @@ def test_magazine_button_sends_exact_token_and_reuses_start_dispatch():
     assert "export const MAGAZINE_REQUEST = 'magazine';" in JS
     assert "dispatchJuggle(MAGAZINE_REQUEST, null)" in JS
     assert "holdToConfirm(magazine, onMagazineConfirm, HOLD_MS)" in JS
-    assert "value: 'magazine'" not in JS and len(PATTERNS) == 5
+    assert "value: 'magazine'" not in JS and len(PATTERNS) == 7
     assert "msg.name === 'MAGAZINE_MISS'" in JS
     # gate: connection + ACTIVE + not busy, field errors ignored
     assert "startGateReason(null, true)" in JS and "if (ignoreFields) return null;" in JS
@@ -75,7 +75,7 @@ def test_reload_button_sends_exact_token_and_shares_the_magazine_gate():
     assert "dispatchJuggle(RELOAD_REQUEST, null)" in JS
     assert "holdToConfirm(reloadBtn, onReloadConfirm, HOLD_MS)" in JS
     assert "setDisabled(dom.reloadBtn, !!magReason);" in JS
-    assert "value: 'reload'" not in JS and len(PATTERNS) == 5
+    assert "value: 'reload'" not in JS and len(PATTERNS) == 7
     assert "actions.append(start, reloadBtn, magazine, stop, status);" in JS
 
 

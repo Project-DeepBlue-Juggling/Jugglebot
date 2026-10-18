@@ -262,7 +262,7 @@ def test_an_accepted_executor_bump_records_the_realised_release_not_delta(
     x, box, _land = _live(sites, limits, geom)
     rec = box['rec']
     site = x.schedule.skills[1].site
-    x0 = x._release_offset_m(1, site).copy()
+    x0 = x._seat_offset_m(1).copy()
     rel0 = x._carried_release_mm[1].copy()
     moved = ex.Landing(pos_mm=sites[1].catch_site_mm() + np.array([20.0, 0.0, 0.0]),
                        vel_mm_s=LAND_VEL, t_land_abs_s=T_LAND, from_fit=True)
@@ -278,7 +278,7 @@ def test_an_accepted_executor_bump_records_the_realised_release_not_delta(
     assert np.allclose(x._carried_release_mm[1][:2] - rel0[:2], b_rel, atol=1e-9)
     assert not np.allclose(b_rel, d.delta_xy_mm)
     # The learner row's x[2:4] is the release offset the bumped plan executes.
-    assert np.allclose(x._release_offset_m(1, site) - x0, b_rel / 1000.0, atol=1e-12)
+    assert np.allclose(x._seat_offset_m(1) - x0, b_rel / 1000.0, atol=1e-12)
     assert x._resend_counts[1] == 1
     assert np.allclose(x._live_catch[1].landing_mm[:2],
                        sites[1].catch_site_mm()[:2] + (20.0, 0.0))
@@ -353,7 +353,7 @@ def test_past_the_snap_band_a_carried_catch_reaim_reaches_the_bumper(
     t = T_LAND - 0.45
     assert not x._resend_splice_instant(1, t, T_LAND)[3], 'must be past the band'
     site = x.schedule.skills[1].site
-    x0 = x._release_offset_m(1, site).copy()
+    x0 = x._seat_offset_m(1).copy()
     rec0 = box['rec']
     lines = x._resend_live_catch(t)
     assert calls == {'bump': 1, 'install': 0}, calls
@@ -361,7 +361,7 @@ def test_past_the_snap_band_a_carried_catch_reaim_reaches_the_bumper(
                and 'v_b' in ln for ln in lines), lines
     assert box['rec'] is not rec0 and box['rec'].t0_s == rec0.t0_s
     # The learner row's x[2:4] moves by the REALISED b(t_rel), not by delta.
-    moved = (x._release_offset_m(1, site) - x0) * 1000.0
+    moved = (x._seat_offset_m(1) - x0) * 1000.0
     assert 0.0 < float(np.hypot(*moved)) < 20.0 - 1e-6
     assert x._resend_counts[1] == 1
 

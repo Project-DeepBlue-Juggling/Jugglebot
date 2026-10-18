@@ -103,7 +103,8 @@ from jugglebot.motion.trajectory import cup_cycle as cc
 from jugglebot.motion.trajectory import cup_realize as cr
 from jugglebot.motion.trajectory import feasibility as fz
 from jugglebot.motion.trajectory import tilt_geometry as tg
-from jugglebot.motion.trajectory.cycle_plan import CyclePlan
+from jugglebot.motion.trajectory.cycle_plan import (
+    CatchEvidence, CyclePlan, shift_catch_evidence)
 from jugglebot.outcome_detail import bound_msg
 
 #: Hand rev/m — measured (``jugglebot_geometry.hand_mm_per_rev``), not the
@@ -2103,8 +2104,22 @@ def _realize(kind, cup, goals, state, limits, geom, rcfg, *, t_wall,
     # C-CUP-2: the contact window is a fact the QP established about the ball;
     # ``decompose`` only reshapes the trajectory and does not carry it, so it is
     # passed across explicitly here.  Drop it and the gate goes vacuous.
+    #
+    # CATCH_CLOSING_SPEED / CATCH_SKID judge the realised cup at the interpolated
+    # touch-down against the ball's arrival, and the gate sees only the plan —
+    # so the same facts the CatchMark below records ride ON the plan.
+    evidence = None
+    if int(cup.catch_k) >= 0:
+        evidence = (CatchEvidence(
+            knot=int(cup.catch_k), t_s=float(goals.catch_time_s()),
+            vel_mm_s=_vec3(goals.catch_vel_mm_s, 'catch_vel_mm_s'),
+            axis=tg.cup_axis(*np.asarray(recv, dtype=float)[:2]),
+            program=('held_axis' if goals.hold_tilt is not None
+                     else 'level_pin' if goals.receive_tilt is not None
+                     else 'match')),)
     plan = CyclePlan.from_realized(
-        realized, contact_knots=getattr(cup, 'contact_knots', None))
+        realized, contact_knots=getattr(cup, 'contact_knots', None),
+        catch_evidence=evidence)
     meta = _meta_for(kind, plan, cup, goals, tilts, recv, throw_tilt,
                      limits, geom, t_wall=t_wall, stages=stages,
                      correction=correction)
@@ -2357,6 +2372,12 @@ def _seam_velocity(cup_joined, tilts_joined, k_s: int, limits):
     return realized.pose_vel[1].copy(), float(realized.slider_vel_rev_s[1])
 
 
+def _join_evidence(ev_a, ev_b):
+    """The two windows' catch records on one clock, or ``None``."""
+    out = tuple(ev_a or ()) + tuple(ev_b or ())
+    return out or None
+
+
 def _concat_plans(plan_a: CyclePlan, plan_b: CyclePlan, catch_k: int,
                   seam_vel=(None, None)) -> CyclePlan:
     """``plan_a`` then ``plan_b`` with ``plan_b``'s duplicate first knot dropped.
@@ -2383,7 +2404,13 @@ def _concat_plans(plan_a: CyclePlan, plan_b: CyclePlan, catch_k: int,
         # last knot, dropped as the duplicate).
         contact_knots=_join_contact(
             _shift_contact(plan_a.contact_knots, 0, n_joint),
-            _shift_contact(plan_b.contact_knots, n_a - 1, n_joint)))
+            _shift_contact(plan_b.contact_knots, n_a - 1, n_joint)),
+        # EVERY catch rides the joined plan (``catch_k`` is only the first), on
+        # the joint clock like the contact windows.
+        catch_evidence=_join_evidence(
+            shift_catch_evidence(plan_a.catch_evidence, 0, plan_a.dt, n_joint),
+            shift_catch_evidence(plan_b.catch_evidence, n_a - 1, plan_a.dt,
+                                 n_joint)))
 
 
 def _concat_cup(cup_a, cup_b, dt, catch_k):
@@ -2494,6 +2521,9 @@ def _gate_view(plan: CyclePlan, k_from: int) -> CyclePlan:
                      catch_k=(ck - k_from if ck >= k_from else -1),
                      contact_knots=_shift_contact(
                          plan.contact_knots, -k_from,
+                         int(plan.n_knots) - k_from),
+                     catch_evidence=shift_catch_evidence(
+                         plan.catch_evidence, -k_from, plan.dt,
                          int(plan.n_knots) - k_from))
 
 
@@ -2947,7 +2977,9 @@ def _head_view(plan: CyclePlan, meta: CycleMeta,
                      hand_vel_rps=plan.hand_vel_rps[:n_head], dt=dt,
                      catch_k=(ck if 0 <= ck <= k_s else -1),
                      contact_knots=_shift_contact(plan.contact_knots, 0,
-                                                  n_head))
+                                                  n_head),
+                     catch_evidence=shift_catch_evidence(
+                         plan.catch_evidence, 0, dt, n_head))
     t_head = k_s * dt
     # Half a knot of tolerance on the release instant for the same float reason
     # the retired `replan_tail` documented at its nominated-catch bound: a

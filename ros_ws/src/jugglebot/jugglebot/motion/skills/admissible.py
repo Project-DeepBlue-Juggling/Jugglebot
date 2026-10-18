@@ -54,7 +54,8 @@ import yaml
 __all__ = [
     'AdmissibleBox', 'AdmissibleError', 'LimitsMismatch',
     'MARGIN_FRAC', 'PATTERNS', 'clip', 'dump', 'load', 'check_limits',
-    'describe_miss', 'gate_hash', 'select',
+    'describe_miss', 'gate_hash', 'select', 'check_site_workspace',
+    'SITE_OUTSIDE_WORKSPACE_REASON',
 ]
 
 #: The skill patterns an admissible box may be swept for (R4,
@@ -64,7 +65,24 @@ __all__ = [
 #: transit lands it at, baked into the swept segment (see the module
 #: docstring's "Why" #1); 'hop' is the genuinely cross-site case, release
 #: site name != target site name.
-PATTERNS = ('self_toss', 'hop', 'columns')
+#:
+#: 'oval_1ball' / 'oval' (two-ball-oval P1, owner decision 2026-10-18): the
+#: folded fixed-role window (transit T->C, catch at C, carry C->T, throw at T);
+#: site_pair is the cross-site (T, C) like 'hop'. 'oval' (two balls) is
+#: reserved so the vocabulary is complete; no 'oval' cell exists before P5.
+#: The FED variants ('oval_1ball_fed', 'columns_1ball_fed') own no label: the
+#: caller passes the sibling's box label to :func:`select` (skill_node does so
+#: today for 'columns_1ball_fed' -> 'columns'), so there is one path.
+PATTERNS = ('self_toss', 'hop', 'columns', 'oval_1ball', 'oval')
+
+#: Workspace rule (decision 38, AMENDED 2026-10-18 by the owner): for every
+#: site, ``|site xy| + box half-extent <= workspace_xy_m`` -- NO margin. The
+#: original 20 mm margin refused the columns and hop operating points
+#: (125 mm sites, 20 mm half-extent = 145 <= 150 mm), which fly today.
+
+#: Accept-time refusal text for :func:`check_site_workspace` (the node unit
+#: adds the executor-family code constant REJECTED_SITE_OUTSIDE_WORKSPACE).
+SITE_OUTSIDE_WORKSPACE_REASON = 'site outside workspace'
 
 #: Every grid point in the box must clear the session limit by this fraction
 #: before it is admitted -- 10% headroom above the swept operating point for
@@ -317,9 +335,17 @@ def clip(u, box: AdmissibleBox):
     return np.array([cx, cy]), ca
 
 
+def _dwell_matches(box: AdmissibleBox, dwell_s: float) -> bool:
+    """True when ``box`` was swept at exactly ``dwell_s`` (an unstamped box
+    matches nothing)."""
+    return box.dwell_s is not None and math.isclose(
+        float(box.dwell_s), float(dwell_s), rel_tol=1e-9, abs_tol=1e-9)
+
+
 def select(boxes: List[AdmissibleBox], pattern: str, site_pair: Tuple[str, str],
           apex_m: float, *, release_site_xy_mm: Tuple[float, float],
-          target_site_xy_mm: Tuple[float, float]) -> Optional[AdmissibleBox]:
+          target_site_xy_mm: Tuple[float, float],
+          dwell_s: float) -> Optional[AdmissibleBox]:
     """The box in ``boxes`` whose ``pattern`` matches ``pattern``, whose
     ``site_pair`` matches ``site_pair``, whose ``apex_band_m`` contains
     ``apex_m`` (inclusive, 1e-9 m tolerance), and whose ``release_site_xy_mm``
@@ -331,8 +357,13 @@ def select(boxes: List[AdmissibleBox], pattern: str, site_pair: Tuple[str, str],
     apex clipped up to it) or some OTHER geometry's box (R4: a hop swept at
     250 mm separation silently applied to a 100 mm schedule -- a box carries
     no site geometry of its own, so the caller's live sites are the only
-    check). Pattern, then site pair, then xy, then apex band -- the same
-    four-key lookup :meth:`AdmissibleBox` is keyed by."""
+    check). Pattern, then site pair, then xy, then apex band -- and
+    ``dwell_s`` (two-ball-oval P1): a box matches only the dwell it was swept
+    at (1e-9 relative), so the ladder's 0.50 / 0.40 / 0.30 cells coexist in
+    one file. ``dwell_s`` is REQUIRED (no default: a caller that forgets it
+    would silently select another dwell's box); an unstamped box
+    (``dwell_s is None``) matches no dwell. A miss on dwell alone is named by
+    :func:`describe_miss`."""
     tol = 1e-9
     xy_tol_mm = 1e-6
     pair = tuple(site_pair)
@@ -340,6 +371,8 @@ def select(boxes: List[AdmissibleBox], pattern: str, site_pair: Tuple[str, str],
     tgt_x, tgt_y = float(target_site_xy_mm[0]), float(target_site_xy_mm[1])
     for box in boxes:
         if box.pattern != pattern or box.site_pair != pair:
+            continue
+        if not _dwell_matches(box, dwell_s):
             continue
         if (abs(box.release_site_xy_mm[0] - rel_x) > xy_tol_mm
                 or abs(box.release_site_xy_mm[1] - rel_y) > xy_tol_mm
@@ -355,7 +388,8 @@ def select(boxes: List[AdmissibleBox], pattern: str, site_pair: Tuple[str, str],
 def describe_miss(boxes: List[AdmissibleBox], pattern: str,
                   site_pair: Tuple[str, str], apex_m: float, *,
                   release_site_xy_mm: Tuple[float, float],
-                  target_site_xy_mm: Tuple[float, float]) -> str:
+                  target_site_xy_mm: Tuple[float, float],
+                  dwell_s: float) -> str:
     """Plain-language reason :func:`select` returned ``None`` for these exact
     arguments -- for an operator-facing refusal message, not for control flow.
 
@@ -371,6 +405,11 @@ def describe_miss(boxes: List[AdmissibleBox], pattern: str,
     2. No box for this ``(pattern, site_pair)`` covers ``apex_m`` at all,
        regardless of site xy -- reported with whatever bands were swept for
        this pair (if any), so the operator knows what apex range to ask for.
+
+    A third, reported FIRST (two-ball-oval P1): a box matches on everything
+    except ``dwell_s`` -- the message names ``dwell_s``, the live value and
+    the swept dwell(s), so the operator sets the node parameter or
+    re-sweeps rather than chasing an apex or separation that is fine.
     """
     xy_tol_mm = 1e-6
     tol = 1e-9
@@ -379,6 +418,34 @@ def describe_miss(boxes: List[AdmissibleBox], pattern: str,
     rel_x, rel_y = float(release_site_xy_mm[0]), float(release_site_xy_mm[1])
     tgt_x, tgt_y = float(target_site_xy_mm[0]), float(target_site_xy_mm[1])
     same_pair = [b for b in boxes if b.pattern == pattern and b.site_pair == pair]
+    wrong_dwell = []
+    for box in same_pair:
+        if _dwell_matches(box, dwell_s):
+            continue
+        lo, hi = box.apex_band_m
+        if (lo - tol <= apex <= hi + tol
+                and abs(box.release_site_xy_mm[0] - rel_x) <= xy_tol_mm
+                and abs(box.release_site_xy_mm[1] - rel_y) <= xy_tol_mm
+                and abs(box.target_site_xy_mm[0] - tgt_x) <= xy_tol_mm
+                and abs(box.target_site_xy_mm[1] - tgt_y) <= xy_tol_mm):
+            wrong_dwell.append(box.dwell_s)
+    same_pair_dwell = [b for b in same_pair if _dwell_matches(b, dwell_s)]
+    if wrong_dwell and not any(
+            b.apex_band_m[0] - tol <= apex <= b.apex_band_m[1] + tol
+            and abs(b.release_site_xy_mm[0] - rel_x) <= xy_tol_mm
+            and abs(b.release_site_xy_mm[1] - rel_y) <= xy_tol_mm
+            and abs(b.target_site_xy_mm[0] - tgt_x) <= xy_tol_mm
+            and abs(b.target_site_xy_mm[1] - tgt_y) <= xy_tol_mm
+            for b in same_pair_dwell):
+        return (
+            'dwell_s: the live dwell is %r s but the box covering this '
+            'request was swept at dwell_s=%s s -- set the node dwell_s '
+            'parameter to a swept value, or re-sweep for this dwell '
+            '(tools/admissible_sweep.py --dwell-s)'
+            % (float(dwell_s), ', '.join(
+                'unstamped' if d is None else '%r' % (d,)
+                for d in sorted(wrong_dwell, key=lambda d: -1.0 if d is None else d))))
+    same_pair = same_pair_dwell
     for box in same_pair:
         lo, hi = box.apex_band_m
         if not (lo - tol <= apex <= hi + tol):
@@ -423,22 +490,23 @@ def _apex_bands_overlap(a: Tuple[float, float], b: Tuple[float, float]) -> bool:
 
 def _refuse_overlapping_apex_bands(boxes: List[AdmissibleBox], error_cls) -> None:
     """Refuse (raising ``error_cls``) when two boxes share a
-    ``(pattern, site_pair)`` and their ``apex_band_m`` ranges overlap --
+    ``(pattern, site_pair, dwell_s)`` and their ``apex_band_m`` ranges overlap --
     ambiguous at :func:`select` time, so it is a contract violation in
     whatever built the file, not a tie for the caller to break. Keyed on
     pattern too (R4): a 'hop' and a 'columns' box may legitimately share a
     ``site_pair`` of ``(P1, P1)`` / ``(P2, P2)`` at overlapping apex bands --
     :func:`select` never confuses them, so this must not refuse them either."""
-    by_key: Dict[Tuple[str, Tuple[str, str]], List[Tuple[float, float]]] = {}
+    by_key: Dict[tuple, List[Tuple[float, float]]] = {}
     for box in boxes:
-        key = (box.pattern, box.site_pair)
+        key = (box.pattern, box.site_pair, box.dwell_s)
         for band in by_key.get(key, ()):
             if _apex_bands_overlap(band, box.apex_band_m):
                 raise error_cls(
-                    'two boxes for pattern %r site pair %r have overlapping '
-                    'apex_band_m %r and %r -- select() could not resolve '
-                    'which one a command in the overlap belongs to'
-                    % (box.pattern, box.site_pair, band, box.apex_band_m))
+                    'two boxes for pattern %r site pair %r dwell_s %r have '
+                    'overlapping apex_band_m %r and %r -- select() could not '
+                    'resolve which one a command in the overlap belongs to'
+                    % (box.pattern, box.site_pair, box.dwell_s, band,
+                       box.apex_band_m))
         by_key.setdefault(key, []).append(box.apex_band_m)
 
 
@@ -452,8 +520,8 @@ def _limits_dict(limits) -> Dict[str, float]:
     }
 
 
-def check_limits(boxes: List[AdmissibleBox], limits, *, check_gate: bool = True,
-                 dwell_s: Optional[float] = None) -> None:
+def check_limits(boxes: List[AdmissibleBox], limits, *,
+                 check_gate: bool = True) -> None:
     """Refuse ``boxes`` against the LIVE session ``limits`` AND the live gate.
 
     ``limits`` is a ``TrajectoryLimits`` (or anything exposing the same
@@ -466,14 +534,12 @@ def check_limits(boxes: List[AdmissibleBox], limits, *, check_gate: bool = True,
     (a working-tree edit to a gated file mid-session must not fail every
     caller that does not care).
 
-    ``dwell_s`` (R5, D4, 2026-09-30): the LIVE session dwell, e.g.
-    ``schedule.Pattern.dwell_s`` / ``skill_node``'s own ``dwell_s`` parameter.
-    ``None`` (the default) skips the dwell check entirely -- a caller that
-    does not know its dwell (``tests/hardware/skills_plan_bench.py``) keeps
-    its behaviour; ``skill_node.py``'s three call sites pass the live
-    ``dwell_s`` (same rung, 2026-09-30). When given, a box whose
-    ``dwell_s`` is ``None`` (unstamped) OR numerically different is refused
-    naming ``'dwell_s'`` -- the same treatment ``leg_vel_mmps`` etc. get.
+    FILE-LEVEL limits and gate only. The live dwell is NOT checked here
+    (two-ball-oval P1, 2026-10-18): cells at different dwells (0.27 today,
+    0.50 / 0.40 / 0.30 on the oval ladder) coexist in one file, so a
+    whole-file dwell check fails every live dwell. The dwell is checked
+    against the SELECTED cell, by :func:`select` / :func:`describe_miss`
+    (``dwell_s`` is part of the key), which names ``dwell_s`` on a miss.
     """
     live = _limits_dict(limits)
     live_hash = gate_hash() if check_gate else None
@@ -488,16 +554,6 @@ def check_limits(boxes: List[AdmissibleBox], limits, *, check_gate: bool = True,
                     'config/generated/admissible_box.yaml (tools/'
                     'admissible_sweep.py)' % (box.site_pair, key, swept_val,
                                               live_val))
-        if dwell_s is not None:
-            live_dwell = float(dwell_s)
-            if box.dwell_s is None or not math.isclose(
-                    float(box.dwell_s), live_dwell, rel_tol=1e-9, abs_tol=1e-9):
-                raise LimitsMismatch(
-                    'admissible box for site pair %r was swept with '
-                    'dwell_s=%r but the live session dwell is %r -- '
-                    'regenerate config/generated/admissible_box.yaml (tools/'
-                    'admissible_sweep.py --dwell-s %.4f)'
-                    % (box.site_pair, box.dwell_s, live_dwell, live_dwell))
         if check_gate and box.gate_hash != live_hash:
             raise LimitsMismatch(
                 'admissible box for site pair %r was swept against '
@@ -505,6 +561,41 @@ def check_limits(boxes: List[AdmissibleBox], limits, *, check_gate: bool = True,
                 'hashes to %r -- regenerate config/generated/admissible_box.yaml '
                 '(tools/admissible_sweep.py)'
                 % (box.site_pair, box.gate_hash, live_hash))
+
+
+def check_site_workspace(sites, box: AdmissibleBox,
+                         workspace_xy_m: float) -> Optional[str]:
+    """Refusal reason when a site cannot host ``box`` inside the cup-cycle
+    workspace, else ``None`` (decision 38, amended 2026-10-18: no margin).
+
+    For each site, ``|site xy| + half-extent`` must stay
+    within ``workspace_xy_m * 1000`` (exact equality passes). ``sites`` are
+    objects with ``cup_mm`` (xy in mm, as :mod:`sites`) or plain (x, y)
+    pairs; the half-extent is the larger half-width of the box's landing_xy_m
+    (0 for an empty box -- a throw clipped to nothing never reaches it). The
+    SAME function is called at accept and per cell by the sweep.
+    """
+    limit_mm = float(workspace_xy_m) * 1000.0
+    (xlo, xhi), (ylo, yhi) = box.landing_xy_m
+    if box.empty:
+        half_mm = 0.0
+    else:
+        half_mm = 1000.0 * max(abs(float(xlo)), abs(float(xhi)),
+                               abs(float(ylo)), abs(float(yhi)))
+    for site in sites:
+        xy = getattr(site, 'cup_mm', site)
+        reach = math.hypot(float(xy[0]), float(xy[1]))
+        need = reach + half_mm
+        # 1e-9: float equality at the bound (equality passes, decision 38).
+        if need > limit_mm + 1e-9:
+            name = getattr(site, 'name', None)
+            return (
+                '%s: site %s at |xy| %.1f mm + box half-extent %.1f mm = '
+                '%.1f mm exceeds the workspace bound %.1f mm'
+                % (SITE_OUTSIDE_WORKSPACE_REASON,
+                   name if name is not None else '(%.1f, %.1f)' % (xy[0], xy[1]),
+                   reach, half_mm, need, limit_mm))
+    return None
 
 
 def dump(path: str, boxes: List[AdmissibleBox]) -> None:
@@ -637,9 +728,8 @@ def load(path: str) -> List[AdmissibleBox]:
         # docstring). Unlike `pattern` / the site-xy fields (refused outright
         # by `_REQUIRED_BOX_R4`), an unstamped dwell is not silently
         # reinterpreted as some default dwell -- it stays `None`, and
-        # `check_limits(..., dwell_s=<live>)` refuses a `None` box exactly
-        # like a numeric mismatch when the live dwell actually matters to
-        # the caller.
+        # `select(...)` matches NO dwell for an unstamped box (it is refused
+        # like a numeric mismatch); `check_limits` no longer takes `dwell_s`.
         raw_dwell = raw.get('dwell_s')
         dwell = float(raw_dwell) if raw_dwell is not None else None
         out.append(AdmissibleBox(

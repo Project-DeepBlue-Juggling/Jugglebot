@@ -495,19 +495,16 @@ def test_the_attempt_loop_dispatches_the_whole_schedule_pre_position_first(
                           'max_emit_gap_ms': None})
         return res
 
-    # The UNFED two-ball start (`build_schedule`'s `t0_abs_s` path: ball B's
-    # first catch at the NOMINAL site, auto-banked) is 6 % over the jerk
-    # limit at the sitting-4 geometry (separation 125: MEASURED 2026-10-04,
-    # 212 379 mm/s^3 against 200 000 -- the same number the one-ball trial
-    # hit before its first catch took the fed start's aim point). Nothing
-    # flies that start -- a two-ball start is always FED, and the fed start's
-    # aim-walked, level-pinned first catch passes 5/5 at 125 -- so this loop
-    # smoke keeps the geometry the unfed schedule is feasible at (the R2
-    # point: separation 100, dwell 0.30; the dwell-0.25 Stop fold is 3-13 %
-    # over the jerk limit in this jitter-free virtual run). It tests the
-    # loop, not the geometry.
-    unfed_separation_mm = 100.0
-    unfed_dwell_s = 0.30
+    # Geometry is incidental to this loop smoke (it tests dispatch order, not
+    # the geometry), so it flies the committed columns cell: separation 125 mm,
+    # dwell 0.27 s.  The old R2 point (100 mm / 0.30) reads 33-36 deg of catch
+    # tilt residual and the realised-plan seating check refuses it
+    # CUP_SEATING_CONE (30 deg); 125 mm with dwell 0.25 or 0.30 is refused the
+    # same way (measured 2026-10-18, both start times), and 125 / 0.27 passes
+    # both.  The UNFED start (ball B's first catch at the NOMINAL site) is
+    # never flown -- a two-ball start is FED.
+    unfed_separation_mm = 125.0
+    unfed_dwell_s = 0.27
     sites = si.columns_sites(unfed_separation_mm)
     pre_terminal = sg.RestTerminal(rest_site_mm=sites[0].rest_site_mm(),
                                    t_rest_s=now_fn() + 1.0)

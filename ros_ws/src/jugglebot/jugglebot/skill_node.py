@@ -105,6 +105,7 @@ from jugglebot.motion.skills.sites import (CATCH_CUP_Z_MM, REST_CUP_Z_MM,
 from jugglebot.motion.tilt_map import find_repo_root
 from jugglebot.motion.trajectory import ballistics_bc
 from jugglebot.motion.trajectory import tilt_geometry as tg
+from jugglebot.motion.trajectory import cup_cycle
 from jugglebot.motion.trajectory.limits import TrajectoryLimits
 from jugglebot.ball_possession import (
     FlightLatch, advance_correlation, announced_source, flight_in_progress,
@@ -457,6 +458,11 @@ _CUP_RULE = {
     'columns': {_E: ex.REJECTED_NO_BALL, _S: THROW_FIRST},
     # A is phantom, B is BB-fed: needs an EMPTY cup.
     'columns_1ball_fed': {_E: RELOAD_FIRST, _S: ex.REJECTED_BALL_IN_HAND},
+    # The one-ball oval (plan two-ball-oval § 2.8): the entry is the ordinary
+    # reload -> decay rest -> launch, so the rows are hop's and
+    # columns_1ball_fed's.
+    'oval_1ball': {_E: RELOAD_FIRST, _S: THROW_FIRST},
+    'oval_1ball_fed': {_E: RELOAD_FIRST, _S: ex.REJECTED_BALL_IN_HAND},
     'reload': {_E: RELOAD_FIRST, _S: ex.REJECTED_BALL_IN_HAND},
     'magazine': {_E: ex.REJECTED_NO_BALL, _S: THROW_FIRST},
 }
@@ -2325,7 +2331,14 @@ class SkillNode(Node):
         if executor is None:
             return False
         now = self.get_clock().now().nanoseconds / 1e9
-        for label, terminal in executor.stop_terminals(now):
+        stops = executor.stop_terminals(now)
+        if executor.stop_before_declined:
+            # One severity per call site (Foxy rclpy). Tells the operator why
+            # only the 'after' REST is on offer for a carried throw.
+            self.get_logger().info(
+                'END %s: no REST before the next release (%s) -- the carried '
+                'throw completes' % (end_code, executor.stop_before_declined))
+        for label, terminal in stops:
             res = self._installer(REST, terminal, now, ball_id=0)
             if res.accepted:
                 self.get_logger().info(
@@ -3068,8 +3081,15 @@ class SkillNode(Node):
     #: rest, no throw — `_run_reload_only`, 2026-10-13) are the two halves
     #: of the magazine -> BB -> JB -> magazine tuning loop; neither has a
     #: box of its own (nothing the learner commands flies in either).
+    #: ``oval_1ball`` / ``oval_1ball_fed`` (the fixed-role one-ball oval,
+    #: ``OneBallPattern(roles='fixed')`` on the columns sites, T = sites[0]
+    #: near Ball Butler) share the box label ``oval_1ball``
+    #: (``_run_one_ball``); the fed variant is the same attempt that accepts
+    #: only an EMPTY cup (its reload-first opening is the ordinary
+    #: ``_start_reload`` -- no entry-specific code).
     _PATTERNS = ('self_toss', 'hop', 'columns', 'columns_1ball',
-                'columns_1ball_fed', 'magazine', 'reload')
+                'columns_1ball_fed', 'oval_1ball', 'oval_1ball_fed',
+                'magazine', 'reload')
 
     def _start_pattern(self, goal) -> SimpleNamespace:
         """The Juggle goal's shared no-motion refusal ladder + schedule
@@ -3278,24 +3298,17 @@ class SkillNode(Node):
 
         try:
             boxes = adm.load(_ADMISSIBLE_BOX_PATH)
-            adm.check_limits(boxes, self._live_limits(), dwell_s=dwell_s)
+            adm.check_limits(boxes, self._live_limits())
         except adm.AdmissibleError as exc:
             msg = 'admissible box refused: %s' % (exc,)
             self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
 
-        missing = []
-        for site in sites:
-            xy = (float(site.cup_mm[0]), float(site.cup_mm[1]))
-            if adm.select(boxes, 'columns', (site.name, site.name), apex_m,
-                         release_site_xy_mm=xy, target_site_xy_mm=xy) is None:
-                reason = adm.describe_miss(
-                    boxes, 'columns', (site.name, site.name), apex_m,
-                    release_site_xy_mm=xy, target_site_xy_mm=xy)
-                missing.append('%r: %s' % ((site.name, site.name), reason))
-        if missing:
-            msg = ('columns refused: no admissible box covers site pair(s) '
-                  '-- %s' % ('; '.join(missing)))
+        msg = self._box_coverage_refusal(
+            boxes, 'columns',
+            [((site.name, site.name), site.cup_mm[:2], site.cup_mm[:2],
+              (site,)) for site in sites], apex_m, dwell_s, what='columns')
+        if msg:
             self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
 
@@ -3414,24 +3427,17 @@ class SkillNode(Node):
 
         try:
             boxes = adm.load(_ADMISSIBLE_BOX_PATH)
-            adm.check_limits(boxes, self._live_limits(), dwell_s=dwell_s)
+            adm.check_limits(boxes, self._live_limits())
         except adm.AdmissibleError as exc:
             msg = 'admissible box refused: %s' % (exc,)
             self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
 
-        missing = []
-        for site in sites:
-            xy = (float(site.cup_mm[0]), float(site.cup_mm[1]))
-            if adm.select(boxes, 'columns', (site.name, site.name), apex_m,
-                         release_site_xy_mm=xy, target_site_xy_mm=xy) is None:
-                reason = adm.describe_miss(
-                    boxes, 'columns', (site.name, site.name), apex_m,
-                    release_site_xy_mm=xy, target_site_xy_mm=xy)
-                missing.append('%r: %s' % ((site.name, site.name), reason))
-        if missing:
-            msg = ('columns_1ball refused: no admissible box covers site '
-                  'pair(s) -- %s' % ('; '.join(missing)))
+        msg = self._box_coverage_refusal(
+            boxes, 'columns',
+            [((site.name, site.name), site.cup_mm[:2], site.cup_mm[:2],
+              (site,)) for site in sites], apex_m, dwell_s, what='columns_1ball')
+        if msg:
             self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
 
@@ -3793,12 +3799,51 @@ class SkillNode(Node):
             time.sleep(min(1.0 / _TICK_HZ, max(0.0, end_at - time.perf_counter())))
         return ''
 
+    def _box_coverage_refusal(self, boxes, label: str, items, apex_m: float,
+                              dwell_s: float, what: str = None) -> str:
+        """One accept-time message naming EVERY box refusal at once, or ''.
+
+        ``items`` = ``(pair, release_xy_mm, target_xy_mm, sites)``. Two
+        refusals, both collected before returning: no box covers the request
+        (``adm.describe_miss`` names the cause, ``dwell_s`` included) and a
+        site that cannot host the selected box inside the cup-cycle workspace
+        (``adm.check_site_workspace``, ``REJECTED_SITE_OUTSIDE_WORKSPACE``,
+        plan two-ball-oval § 2.6). The workspace bound is
+        ``CupCycleConfig().workspace_xy_m`` -- the config the planner and the
+        sweep read."""
+        what = what or label
+        workspace_xy_m = cup_cycle.CupCycleConfig().workspace_xy_m
+        missing, outside = [], []
+        for pair, rel, tgt, pair_sites in items:
+            rel = (float(rel[0]), float(rel[1]))
+            tgt = (float(tgt[0]), float(tgt[1]))
+            box = adm.select(boxes, label, pair, apex_m,
+                             release_site_xy_mm=rel, target_site_xy_mm=tgt,
+                             dwell_s=dwell_s)
+            if box is None:
+                missing.append('%r: %s' % (pair, adm.describe_miss(
+                    boxes, label, pair, apex_m, release_site_xy_mm=rel,
+                    target_site_xy_mm=tgt, dwell_s=dwell_s)))
+                continue
+            reason = adm.check_site_workspace(pair_sites, box, workspace_xy_m)
+            if reason:
+                outside.append('%r: %s' % (pair, reason))
+        parts = []
+        if missing:
+            parts.append('%s refused: no admissible box covers site pair(s) '
+                         '-- %s' % (what, '; '.join(missing)))
+        if outside:
+            parts.append('%s refused: %s -- %s'
+                         % (what, ex.REJECTED_SITE_OUTSIDE_WORKSPACE,
+                            '; '.join(outside)))
+        return '; '.join(parts)
+
     def _run_one_ball(self, kind: str, apex_m: float, separation_mm: float,
                       dwell_s: float, n_throws: int,
                       reload: bool) -> SimpleNamespace:
         """The ``self_toss``/``hop`` branch of :meth:`_start_pattern` (R4,
         generalises the deleted self-toss-start Trigger service to
-        ``kind in ('self_toss', 'hop')`` — one site for ``self_toss``, the
+        ``kind in ('self_toss', 'hop', 'oval_1ball', 'oval_1ball_fed')`` — one site for ``self_toss``, the
         two :func:`~jugglebot.motion.skills.sites.columns_sites` sites for
         ``hop``, same compiler either way
         (:func:`~jugglebot.motion.skills.schedule.compile_one_ball`)):
@@ -3843,12 +3888,18 @@ class SkillNode(Node):
                 return SimpleNamespace(success=False, message=msg)
             sites = (Site(_DEFAULT_SITE_NAME,
                           np.array([site_x_mm, site_y_mm, CATCH_CUP_Z_MM])),)
-        else:  # 'hop'
+        else:  # 'hop' / 'oval_1ball' / 'oval_1ball_fed'
             sites = columns_sites(separation_mm)
+        # The box label: the fed oval flies the same cell as the plain one
+        # (the caller passes the sibling's label, as columns_1ball_fed does
+        # 'columns'). sites[0] = T (near Ball Butler), sites[1] = C.
+        is_oval = kind in ('oval_1ball', 'oval_1ball_fed')
+        box_kind = 'oval_1ball' if is_oval else kind
 
         try:
             pattern = OneBallPattern(sites=sites, apex_m=apex_m,
-                                     dwell_s=dwell_s, n_throws=n_throws)
+                                     dwell_s=dwell_s, n_throws=n_throws,
+                                     roles='fixed' if is_oval else 'alternate')
         except ValueError as exc:
             msg = '%s pattern refused: %s' % (kind, exc)
             self.get_logger().debug(msg)
@@ -3856,7 +3907,7 @@ class SkillNode(Node):
 
         try:
             boxes = adm.load(_ADMISSIBLE_BOX_PATH)
-            adm.check_limits(boxes, self._live_limits(), dwell_s=dwell_s)
+            adm.check_limits(boxes, self._live_limits())
         except adm.AdmissibleError as exc:
             msg = 'admissible box refused: %s' % (exc,)
             self.get_logger().debug(msg)
@@ -3869,25 +3920,20 @@ class SkillNode(Node):
         # direction the ball actually crosses, `compile_one_ball`'s own
         # release/target rule — `sites[i % n]` -> `sites[(i+1) % n]`).
         n_sites = len(sites)
-        pairs = sorted({(sites[i % n_sites].name, sites[(i + 1) % n_sites].name)
-                       for i in range(n_sites)})
-        by_name = {s.name: s for s in sites}
-        missing = []
-        for pair in pairs:
-            release_xy = (float(by_name[pair[0]].cup_mm[0]),
-                         float(by_name[pair[0]].cup_mm[1]))
-            target_xy = (float(by_name[pair[1]].cup_mm[0]),
-                        float(by_name[pair[1]].cup_mm[1]))
-            if adm.select(boxes, kind, pair, apex_m,
-                         release_site_xy_mm=release_xy,
-                         target_site_xy_mm=target_xy) is None:
-                reason = adm.describe_miss(boxes, kind, pair, apex_m,
-                                           release_site_xy_mm=release_xy,
-                                           target_site_xy_mm=target_xy)
-                missing.append('%r: %s' % (pair, reason))
-        if missing:
-            msg = ('%s refused: no admissible box covers site pair(s) -- %s'
-                  % (kind, '; '.join(missing)))
+        if is_oval:
+            # Fixed roles: every throw T -> C, one box pair (the C -> T
+            # direction is never flown).
+            pairs = [(sites[0].name, sites[1].name)]
+        else:
+            pairs = sorted({(sites[i % n_sites].name,
+                             sites[(i + 1) % n_sites].name)
+                            for i in range(n_sites)})
+        by_name = {s_.name: s_ for s_ in sites}
+        items = [(pair, by_name[pair[0]].cup_mm[:2], by_name[pair[1]].cup_mm[:2],
+                  (by_name[pair[0]], by_name[pair[1]])) for pair in pairs]
+        msg = self._box_coverage_refusal(boxes, box_kind, items, apex_m,
+                                         dwell_s, what=kind)
+        if msg:
             self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
 
@@ -5313,9 +5359,7 @@ class SkillNode(Node):
         else:
             try:
                 boxes = adm.load(_ADMISSIBLE_BOX_PATH)
-                adm.check_limits(boxes, self._live_limits(),
-                                 dwell_s=float(
-                                     self.get_parameter('dwell_s').value))
+                adm.check_limits(boxes, self._live_limits())
             except adm.AdmissibleError as exc:
                 ok = False
                 lines.append('box REFUSED: %s' % (exc,))
@@ -5329,15 +5373,22 @@ class SkillNode(Node):
                             '%.2f-%.2f' % (lo, hi) for lo, hi in sorted(bands)))
                         for p, bands in sorted(by_pair.items())]
                 check_apex_m = float(self.get_parameter('apex_m').value)
+                check_dwell_s = float(self.get_parameter('dwell_s').value)
                 pair = (_DEFAULT_SITE_NAME, _DEFAULT_SITE_NAME)
                 default_xy = (_DEFAULT_SITE_X_MM, _DEFAULT_SITE_Y_MM)
                 if adm.select(boxes, 'self_toss', pair, check_apex_m,
                               release_site_xy_mm=default_xy,
-                              target_site_xy_mm=default_xy) is None:
+                              target_site_xy_mm=default_xy,
+                              dwell_s=check_dwell_s) is None:
                     ok = False
                     lines.append(
-                        'box REFUSED: no box covers %r at apex %.3f m (%s)'
-                        % (pair, check_apex_m, '; '.join(parts)))
+                        'box REFUSED: no box covers %r at apex %.3f m (%s): %s'
+                        % (pair, check_apex_m, '; '.join(parts),
+                           adm.describe_miss(
+                               boxes, 'self_toss', pair, check_apex_m,
+                               release_site_xy_mm=default_xy,
+                               target_site_xy_mm=default_xy,
+                               dwell_s=check_dwell_s)))
                 else:
                     lines.append('box OK: %s' % ('; '.join(parts),))
                 # The HOP's boxes at the node's separation, both directions —
@@ -5356,15 +5407,63 @@ class SkillNode(Node):
                         if adm.select(boxes, 'hop', (a.name, b.name),
                                       check_apex_m,
                                       release_site_xy_mm=a.cup_mm[:2],
-                                      target_site_xy_mm=b.cup_mm[:2]) is None:
+                                      target_site_xy_mm=b.cup_mm[:2],
+                                      dwell_s=check_dwell_s) is None:
                             ok = False
                             lines.append(
                                 'hop box REFUSED: no hop box covers %s->%s at '
-                                'separation %.1f mm, apex %.3f m'
-                                % (a.name, b.name, sep_mm, check_apex_m))
+                                'separation %.1f mm, apex %.3f m: %s'
+                                % (a.name, b.name, sep_mm, check_apex_m,
+                                   adm.describe_miss(
+                                       boxes, 'hop', (a.name, b.name),
+                                       check_apex_m,
+                                       release_site_xy_mm=a.cup_mm[:2],
+                                       target_site_xy_mm=b.cup_mm[:2],
+                                       dwell_s=check_dwell_s)))
                         else:
                             lines.append('hop box OK: %s->%s at %.1f mm'
                                          % (a.name, b.name, sep_mm))
+                    # The one-ball OVAL's box (fixed roles: T -> C only), same
+                    # key a goal is judged by, plus the accept-time workspace
+                    # rule. Informational when no oval cell is swept: the
+                    # pattern is optional and a missing cell must not fail
+                    # the check of a node that never flies it.
+                    t_site, c_site = hop_sites[0], hop_sites[1]
+                    oval_box = adm.select(
+                        boxes, 'oval_1ball', (t_site.name, c_site.name),
+                        check_apex_m, release_site_xy_mm=t_site.cup_mm[:2],
+                        target_site_xy_mm=c_site.cup_mm[:2],
+                        dwell_s=check_dwell_s)
+                    if oval_box is None:
+                        lines.append(
+                            'oval box not swept: no oval_1ball box covers '
+                            '%s->%s at separation %.1f mm, apex %.3f m, '
+                            'dwell %.3f s (informational): %s'
+                            % (t_site.name, c_site.name, sep_mm,
+                               check_apex_m, check_dwell_s,
+                               adm.describe_miss(
+                                   boxes, 'oval_1ball',
+                                   (t_site.name, c_site.name), check_apex_m,
+                                   release_site_xy_mm=t_site.cup_mm[:2],
+                                   target_site_xy_mm=c_site.cup_mm[:2],
+                                   dwell_s=check_dwell_s)))
+                    else:
+                        ws_reason = adm.check_site_workspace(
+                            (t_site, c_site), oval_box,
+                            cup_cycle.CupCycleConfig().workspace_xy_m)
+                        lines.append(
+                            'oval box OK: oval_1ball %s->%s at %.1f mm, apex '
+                            '%.2f-%.2f m, dwell %.3f s'
+                            % (t_site.name, c_site.name, sep_mm,
+                               oval_box.apex_band_m[0], oval_box.apex_band_m[1],
+                               check_dwell_s))
+                        if ws_reason:
+                            ok = False
+                            lines.append('oval box REFUSED: %s: %s'
+                                         % (ex.REJECTED_SITE_OUTSIDE_WORKSPACE,
+                                            ws_reason))
+                        else:
+                            lines.append('oval workspace OK')
         site_x_mm = float(self.get_parameter('site_x_mm').value)
         site_y_mm = float(self.get_parameter('site_y_mm').value)
         if (abs(site_x_mm - _DEFAULT_SITE_X_MM) > 1e-9

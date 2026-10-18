@@ -92,7 +92,7 @@ from jugglebot.motion.trajectory import cup_cycle as cc
 from jugglebot.motion.trajectory import cup_realize as cr
 from jugglebot.motion.trajectory import feasibility as feas
 from jugglebot.motion.trajectory import tilt_geometry as tg
-from jugglebot.motion.trajectory.cycle_plan import CyclePlan
+from jugglebot.motion.trajectory.cycle_plan import CatchEvidence, CyclePlan
 from jugglebot.motion.skills import sites as st
 from jugglebot.outcome_detail import base_outcome, outcome_subcode
 
@@ -140,11 +140,22 @@ def _held(hand_rev, hand_vel_rps, *, dt=DT, catch_k=-1):
     whole point of the shape.
     """
     hand_rev = np.asarray(hand_rev, dtype=float)
+    hand_vel_rps = np.asarray(hand_vel_rps, dtype=float)
     n = hand_rev.shape[0]
+    # A plan with a catch must carry its catch evidence (validate_cycle REFUSES
+    # one without).  These runway plans are hand-only: the ball arrives at the
+    # velocity that makes the cup's own axial speed exactly the match target
+    # (ratio 1.0), so CATCH_CLOSING_SPEED is silent and the runway stays the
+    # only gate under test.
+    ev = None
+    if catch_k >= 0:
+        v_cup = hand_vel_rps[catch_k] * 1000.0 / float(hw.HAND_REV_PER_M)
+        ev = (CatchEvidence(catch_k, catch_k * dt,
+                            np.array([0.0, 0.0, v_cup / feas.CATCH_MATCH_FRAC]),
+                            np.array([0.0, 0.0, 1.0]), 'match'),)
     return CyclePlan(pose=np.tile(NEUTRAL, (n, 1)), pose_vel=np.zeros((n, 6)),
-                     hand_rev=hand_rev,
-                     hand_vel_rps=np.asarray(hand_vel_rps, dtype=float),
-                     dt=dt, catch_k=catch_k)
+                     hand_rev=hand_rev, hand_vel_rps=hand_vel_rps,
+                     dt=dt, catch_k=catch_k, catch_evidence=ev)
 
 
 # ── the clean end-to-end cycle ───────────────────────────────────────────────
@@ -196,7 +207,12 @@ def _clean_cycle():
     rcfg = cr.RealizeConfig(banking_enabled=False)
     tilts = cr.tilt_schedule(cup, np.zeros(2), np.zeros(2), rcfg)
     realized = cr.decompose(cup, tilts, rcfg)
-    return cup, realized, CyclePlan.from_realized(realized)
+    # The catch the cup QP planned: touch-down at period*0.55 against the ball
+    # arrival velocity it was given, level receive axis (zero tilts above).
+    ev = (CatchEvidence(int(cup.catch_k), period_s * 0.55,
+                        np.array([0.10, -0.05, -2.5]) * 1000.0,
+                        np.array([0.0, 0.0, 1.0]), 'match'),)
+    return cup, realized, CyclePlan.from_realized(realized, catch_evidence=ev)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -1572,3 +1588,363 @@ def test_a_knot_side_jerk_refusal_names_the_knot_leg_and_time(geom, side):
     # the independent reference reproduces the gate's own jerk value too
     assert _independent_peak_leg_and_time(plan, geom, 'jerk')[2] * \
         feas._VALIDATE_JERK_MARGIN == pytest.approx(two_sided, rel=1e-6)
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Realised-plan catch / seating checks (plan two-ball-oval 2.3, 2.4):
+# CATCH_CLOSING_SPEED, CATCH_SKID (diagnostic), CUP_SEATING_CONE / _FLOOR
+# ═══════════════════════════════════════════════════════════════════════════
+
+import dataclasses
+import functools
+import os
+
+from jugglebot.motion import unified_cycle as _uc
+_FIX = os.path.join(os.path.dirname(__file__), '..', 'fixtures', 'cup_catch_plans')
+_G = 9806.65 / 1000.0                                     # m/s^2, probe value 9.806
+_OVAL_LIMITS = (350.0, 5000.0, 200e3, 3900.0)             # leg vel/acc/jerk, hand acc
+
+
+def _oval_limits(leg_vel=350.0, leg_acc=5000.0, leg_jerk=200e3, hand_acc=3900.0):
+    """The sizing sweep's unclamped session limits (``skills_sizing_sweep._limits``
+    with ``unclamped=True``): the YAML ceilings are bypassed, the C-HAND-2 pair is not."""
+    base = TrajectoryLimits.from_config(hw).with_session_limits(
+        hand_acc_rps2=float(hand_acc))
+    return dataclasses.replace(base, leg_vel_mmps=float(leg_vel),
+                               leg_acc_mmps2=float(leg_acc),
+                               leg_jerk_mmps3=float(leg_jerk))
+
+
+def _load_fixture(name):
+    z = np.load(os.path.join(_FIX, name + '.npz'))
+    ck = tuple((int(a), int(b)) for a, b in np.atleast_2d(z['contact_knots']))
+    ev = CatchEvidence(int(z['catch_k']), float(z['t_td']),
+                       np.asarray(z['arrival_vel_mm_s'], dtype=float),
+                       tg.cup_axis(*np.asarray(z['receive_tilt'], dtype=float)),
+                       str(z['program']))
+    return CyclePlan(z['pose'], z['pose_vel'], z['hand_rev'], z['hand_vel_rps'],
+                     float(z['dt']), catch_k=int(z['catch_k']), contact_knots=ck,
+                     catch_evidence=(ev,))
+
+
+@functools.lru_cache(maxsize=1)
+def _rung1_window():
+    """The rung-1 one-ball oval window, regenerated from PRODUCTION code.
+
+    Recipe (the wayfinder probe's ``t1_cell.py`` chain; ``_plan_catch_throw``
+    calls the same ``plan_steady`` with the same CycleGoals fields): sites
+    ``columns_sites(150)`` xy, throw z 860 / catch z 830 / settle
+    ``SETTLE_CUP_Z_MM`` / rest z 750; apex 0.95 m, dwell 0.50 s, limits
+    350/5000/200000 + hand 3900 (unclamped); ``plan_launch`` at the first of
+    (0.40, 0.50, 0.60, 0.80) s that solves, then three ``plan_steady`` windows
+    (period flight+dwell, throw P1 -> target P2, catch at P2 at t=flight with
+    the ballistic arrival velocity) chained with ``extend``; the THIRD window
+    is returned (the converged one).  ``(plan, meta)``.
+    """
+    s1, s2 = st.columns_sites(150.0)
+    sites = [np.asarray(s1.cup_mm, float)[:2], np.asarray(s2.cup_mm, float)[:2]]
+    limits = _oval_limits()
+    geom = StewartGeometry()
+    cfg = _uc.build_realize_config(limits)
+    flight = 2.0 * np.sqrt(2.0 * 0.95 / 9.806)
+    period = flight + 0.50
+    thr = [np.array([*s, 860.0]) for s in sites]
+    cat = [np.array([*s, 830.0]) for s in sites]
+    settle = [np.array([*s, _uc.SETTLE_CUP_Z_MM]) for s in sites]
+    slider = 750.0 - float(cfg.cup_z_base_mm)
+    rev = (slider - float(cfg.slider_rev_zero_mm)) / 1000.0 * hw.HAND_REV_PER_M
+    rest = _uc.CycleState.at_rest(
+        np.array([sites[0][0], sites[0][1], float(cfg.active_z_mm), 0, 0, 0]),
+        rev, cfg)
+    plan = meta = None
+    for lp in (0.40, 0.50, 0.60, 0.80):
+        try:
+            plan, meta = _uc.plan_launch(
+                _uc.CycleGoals(period_s=lp, throw_site_mm=thr[0],
+                               throw_target_mm=thr[1], flight_s=flight,
+                               settle_site_mm=settle[0]), rest, limits, geom)
+            break
+        except _uc.CycleInfeasible:
+            continue
+    assert plan is not None
+    win = None
+    for _ in range(3):
+        cv = ballistics_bc.arrival_velocity(meta.release_vel_mm_s, flight)
+        win = _uc.plan_steady(
+            _uc.CycleGoals(period_s=period, throw_site_mm=thr[0],
+                           throw_target_mm=thr[1], flight_s=flight,
+                           catch_site_mm=cat[1], catch_vel_mm_s=cv,
+                           catch_t_s=flight),
+            _uc.release_state_from_meta(meta, plan), limits, geom)
+        plan, meta = _uc.extend(plan, meta, win[0], win[1], limits, geom)
+    return win
+
+
+def _validate_oval(plan, geom, limits=None):
+    return feas.validate_cycle(plan, limits or _oval_limits(), geom)
+
+
+def test_catch_closing_speed_refuses_the_capture_span_near_hard_catch(geom):
+    """The -345 mm/s unrefused near-hard catch of the 2026-10-17 capture-span probe.
+
+    Recipe: ``fx_proto_capture.npz`` (wayfinder prototype pose-QP, arm
+    'capture'; see its README) is the REALISED plan.  Realised axial cup speed
+    at the interpolated touch-down is -345 mm/s against a match target of
+    0.7 x the arrival speed along the receive axis (-3024): ratio 0.114, under
+    the 0.20 refusal (decision 48, amended 2026-10-18).  Before the check the production gate
+    accepted this plan.
+    """
+    rep = _validate_oval(_load_fixture('fx_proto_capture'), geom)
+    assert rep.code == feas.CATCH_CLOSING_SPEED, (rep.code, rep.reasons)
+    assert rep.catch_closing_ratio == pytest.approx(0.114, abs=0.005)
+    assert any('knot 161' in r for r in rep.reasons), rep.reasons
+
+
+def test_catch_closing_speed_passes_the_pose_arm(geom):
+    """Same cell, arm 'pose' (-1742 mm/s, ratio 0.575): above the 0.20 refusal."""
+    rep = _validate_oval(_load_fixture('fx_proto_pose'), geom)
+    assert rep.code == 'OK', (rep.code, rep.reasons)
+    assert rep.catch_closing_ratio == pytest.approx(0.575, abs=0.005)
+
+
+def test_rung1_holdless_raw_chain_reads_the_pinned_values(geom):
+    """Rung 1 (150 mm / dwell 0.50 / apex 0.95 / 350-5000-200000 / hand 3900),
+    regenerated from production (``_rung1_window``): PASSES, and the report
+    carries the readings the sweep records: max seating residual 18.68 deg
+    (< 30), min a_z+g 0.837 g (> 0.30), closing ratio 0.533 (> 0.20), skid
+    ~9 mm/s (logged only).  NOTE this is the HOLD-LESS raw chain (no
+    ``pre_release_hold``): the production segment path reads 32.1 deg and is
+    refused (``test_rung1_through_the_production_segment_path_refuses_the_cone``)."""
+    plan, _meta = _rung1_window()
+    assert plan.catch_k == 35
+    rep = _validate_oval(plan, geom)
+    assert rep.code == 'OK', (rep.code, rep.reasons)
+    assert rep.max_cup_seating_deg == pytest.approx(18.68, abs=0.05)
+    assert rep.min_cup_seating_az_g == pytest.approx(0.837, abs=0.002)
+    assert rep.catch_closing_ratio == pytest.approx(0.533, abs=0.005)
+    assert rep.catch_skid_mmps == pytest.approx(9.3, abs=1.5)
+
+
+@pytest.mark.parametrize('name, deg', [('fx_sep175', 21.44), ('fx_dwell040', 24.41)])
+def test_the_p3_target_fixtures_pass_the_rebased_cone(geom, name, deg):
+    """The 175 mm (21.44 deg) and dwell-0.40 (24.41 deg) production windows
+    refused the plan's 20 deg cone; the check is re-based to 30 deg (owner
+    decision 2026-10-18, above the hop's 28.7 deg), so they PASS - kept as pins
+    because they still document the P3 shaper target (20 deg): a P3 QP that
+    holds them inside 20 deg is measured against these numbers."""
+    rep = _validate_oval(_load_fixture(name), geom)
+    assert rep.code == 'OK', (rep.code, rep.reasons)
+    assert rep.max_cup_seating_deg == pytest.approx(deg, abs=0.05)
+    assert deg > 20.0                       # still above the P3 target
+    assert rep.min_cup_seating_az_g > 0.5
+
+
+def _oval_carry_segment(dwell_s):
+    """The rung-1 oval carry through the PRODUCTION segment path (the same
+    ``segments._plan_catch_throw`` terminal the executor dispatches, default
+    ``SegmentConfig()`` = 0.100 s pre-release hold).  Recipe: sites
+    ``columns_sites(150)``, apex 0.95, limits 350/5000/200000 + hand 3900; a
+    LAUNCH P1 -> P2, then the CATCH at P2 (z 830, ballistic arrival, t = flight)
+    that carries to a throw RELEASED AT P1 (``site_mm=thr1``: catch at one
+    site, release at the other = the oval carry C(+75) -> T(-75) in ``dwell_s``).
+    Returns ``(plan, limits)``; raises ``CycleInfeasible`` when refused.
+    Origin: scratchpad diag32 (report_diag32.md)."""
+    from jugglebot.motion.skills import segments as sg
+    p1, p2 = st.columns_sites(150.0)
+    limits = _oval_limits()
+    geom = StewartGeometry()
+    cfg = sg.SegmentConfig()
+    rcfg = cr.RealizeConfig()
+    flight = 2.0 * np.sqrt(2.0 * 0.95 / 9.806)
+    rest_mm = np.array([*np.asarray(p1.cup_mm, float)[:2], 750.0])
+    slider = rest_mm[2] - rcfg.cup_z_base_mm
+    rev = (slider - rcfg.slider_rev_zero_mm) / 1000.0 * cr.HAND_REV_PER_M
+    seed = _uc.CycleState.at_rest(
+        np.array([rest_mm[0], rest_mm[1], rcfg.active_z_mm, 0, 0, 0]), rev, rcfg)
+    thr1 = np.array([*np.asarray(p1.cup_mm, float)[:2], 860.0])
+    thr2 = np.array([*np.asarray(p2.cup_mm, float)[:2], 860.0])
+    cat2 = np.array([*np.asarray(p2.cup_mm, float)[:2], 830.0])
+    la, lm = _uc.plan_launch(
+        _uc.CycleGoals(period_s=0.4, throw_site_mm=thr1, throw_target_mm=thr2,
+                       flight_s=flight), seed, limits, geom)
+    after = _uc.release_state_from_meta(lm, la)
+    arrival = ballistics_bc.arrival_velocity(lm.release_vel_mm_s, flight)
+    term = sg.CatchTerminal(
+        landing_mm=cat2, landing_vel_mm_s=arrival, t_land_s=flight,
+        rest_site_mm=np.array([*np.asarray(p2.cup_mm, float)[:2],
+                               _uc.SETTLE_CUP_Z_MM]),
+        then_throw=sg.ThrowAfterCatch(t_release_s=flight + dwell_s, site_mm=thr1,
+                                      target_mm=thr2, flight_s=flight))
+    return sg.plan_segment(sg.CATCH, after, term, cfg, limits, geom), limits
+
+
+def test_rung1_through_the_production_segment_path_refuses_the_cone():
+    """C-CUP-4 cone, the real refusal: the rung-1 cell (150 mm / apex 0.95 /
+    dwell 0.50 / 350-5000-200000 / hand 3900) through the production segment
+    path with the DEFAULT 0.100 s pre-release hold reads 32.1 deg at knot 49
+    (report_diag32: the hold squeezes the 150 mm carry into 0.375 s; the raw
+    chain's 18.68 deg is a hold-less plan nothing dispatches).  Refused at
+    planning with CUP_SEATING_CONE and NOTHING else (floor reads 0.82 g, closing
+    ratio passes)."""
+    with pytest.raises(_uc.CycleInfeasible) as ei:
+        _oval_carry_segment(0.50)
+    e = ei.value
+    assert e.code == feas.CUP_SEATING_CONE, (e.code, str(e))
+    rep = e.report
+    assert rep.max_cup_seating_deg == pytest.approx(32.1, abs=0.1)
+    assert rep.min_cup_seating_az_g == pytest.approx(0.82, abs=0.01)
+    assert len(rep.reasons) == 1 and 'knot 49' in rep.reasons[0], rep.reasons
+
+
+def test_cup_seating_floor_reason_is_appended_beside_contact_acc(geom):
+    """C-CUP-4 floor (a_z+g >= 0.30 g, re-based 2026-10-18) vs C-CUP-2's
+    CUP_CONTACT_ACC.  Recipe: the rung-1 window with a 10 mm cosine bump on pose
+    z over 6 knots centred on knot 44 (analytic derivative added to pose_vel),
+    loose leg/hand limits: the centred C-CUP-4 reading is 0.227 g (< 0.30) and
+    CUP_CONTACT_ACC fires FIRST (code).  A fixture where the seating floor is the
+    ONLY refusal does not exist on the z channel (scan over 2..20 knots x 4..30
+    mm: every perturbation that reads < 0.30 g centred also trips the one-sided
+    reading) and tilt-channel bumps barely move a_z+g (0.62 g at 17 deg of tilt
+    bump, STEP_BOUND first).  So this pins what the re-base leaves: the floor
+    REASON is still appended beside the winning code (every refusal at once),
+    and ``_cup_seating_check`` names it alone."""
+    plan, _ = _rung1_window()
+    pose, pvel = plan.pose.copy(), plan.pose_vel.copy()
+    dt = plan.dt
+    amp, width = 10.0, 6 * plan.dt
+    t = (np.arange(plan.n_knots) - 44) * dt + width / 2.0
+    m = (t >= 0.0) & (t <= width)
+    th = 2.0 * np.pi * t / width
+    pose[m, 2] += amp * (1.0 - np.cos(th[m])) / 2.0
+    pvel[m, 2] += amp * np.sin(th[m]) * np.pi / width
+    bumped = CyclePlan(pose, pvel, plan.hand_rev, plan.hand_vel_rps, dt,
+                       catch_k=plan.catch_k, contact_knots=plan.contact_knots,
+                       catch_evidence=plan.catch_evidence)
+    loose = _oval_limits(1e5, 1e8, 1e10, 1e7)
+    rep = _validate_oval(bumped, geom, loose)
+    assert rep.code == feas.CUP_CONTACT_ACC, (rep.code, rep.reasons)
+    assert rep.min_cup_seating_az_g == pytest.approx(0.227, abs=0.01)
+    assert any('C-CUP-4' in r and 'a_z+g' in r for r in rep.reasons), rep.reasons
+    _deg, _azg, cone_r, floor_r = feas._cup_seating_check(bumped)
+    assert floor_r is not None and 'floor 0.30 g' in floor_r and cone_r is None
+
+
+def test_the_unbumped_rung1_window_is_clear_of_the_floor(geom):
+    """Counterpart: the unperturbed window reads 0.837 g, far above 0.30 g."""
+    plan, _ = _rung1_window()
+    _deg, azg, _c, floor_r = feas._cup_seating_check(plan)
+    assert floor_r is None and azg == pytest.approx(0.837, abs=0.002)
+
+
+def test_a_held_axis_catch_is_exempt_from_the_closing_speed_by_name(geom):
+    """Held-axis programs (``goals.hold_tilt``) keep the cup stationary through
+    touch-down by design (ratio -0.006 measured).  The capture fixture (ratio
+    0.114, refused as 'level_pin') is re-labelled 'held_axis': NOT refused, the
+    ratio is not reported, the report SAYS it was exempt, and the skid is still
+    recorded."""
+    plan = _load_fixture('fx_proto_capture')
+    held = CyclePlan(plan.pose, plan.pose_vel, plan.hand_rev, plan.hand_vel_rps,
+                     plan.dt, catch_k=plan.catch_k, contact_knots=plan.contact_knots,
+                     catch_evidence=tuple(e._replace(program='held_axis')
+                                          for e in plan.catch_evidence))
+    rep = _validate_oval(held, geom)
+    assert rep.code == 'OK', (rep.code, rep.reasons)
+    assert rep.catch_closing_exempt is True and rep.catch_closing_ratio is None
+    assert rep.catch_skid_mmps is not None
+
+
+def test_an_unknown_catch_program_is_a_constructor_error():
+    """The program is a closed vocabulary: a typo must not silently disarm (or
+    arm) the exemption."""
+    plan = _load_fixture('fx_proto_pose')
+    bad = plan.catch_evidence[0]._replace(program='held')
+    with pytest.raises(ValueError, match='program'):
+        CyclePlan(plan.pose, plan.pose_vel, plan.hand_rev, plan.hand_vel_rps,
+                  plan.dt, catch_k=plan.catch_k, contact_knots=plan.contact_knots,
+                  catch_evidence=(bad,))
+
+
+def test_a_plan_with_a_catch_but_no_evidence_is_refused_by_name(geom):
+    """No silent skip: a plan with ``catch_k >= 0`` and no catch evidence is
+    refused CATCH_CLOSING_SPEED ("catch evidence missing") - the failure mode is a
+    constructor that re-indexes a plan and drops the records."""
+    plan, _ = _rung1_window()
+    bare = CyclePlan(plan.pose, plan.pose_vel, plan.hand_rev, plan.hand_vel_rps,
+                     plan.dt, catch_k=plan.catch_k,
+                     contact_knots=plan.contact_knots)
+    rep = _validate_oval(bare, geom)
+    assert rep.code == feas.CATCH_CLOSING_SPEED, (rep.code, rep.reasons)
+    assert any('catch evidence missing' in r for r in rep.reasons), rep.reasons
+
+
+def test_catch_match_frac_matches_the_planners_own():
+    """The gate's 0.7 IS the catch program's ratio (restated, not imported - the
+    gate does not import its planner; same pin as the runway margin)."""
+    cfg = cc.CupCycleConfig()
+    assert feas.CATCH_MATCH_FRAC == cfg.catch_slider_vel_ratio == cfg.catch_vel_ratio
+
+
+def test_a_columns_catch_carry_throw_window_passes_both_checks(geom):
+    """Columns passes C-CUP-4 and the closing-speed check trivially (plan 2.4).
+
+    Recipe (production ``segments.plan_segment``, the columns CATCH that carries
+    the next same-site throw): sites ``columns_sites(150)``; a LAUNCH from P1
+    aimed at P2 (apex 0.95 m) gives the post-release state; the CATCH lands the
+    ballistic arrival at P2 at the flight time and throws back from P2 to P1
+    after a 0.50 s dwell; limits 350/5000/200000 + hand 3900.  Planning gates the
+    window through ``validate_cycle`` (a refusal would raise), and the stored
+    gate result is re-read here for the recorded readings.
+    """
+    from jugglebot.motion.skills import segments as sg
+    p1, p2 = st.columns_sites(150.0)
+    limits = _oval_limits()
+    cfg = sg.SegmentConfig()
+    rcfg = cr.RealizeConfig()
+    flight = 2.0 * np.sqrt(2.0 * 0.95 / 9.806)
+    rest_mm = np.array([*np.asarray(p1.cup_mm, float)[:2], 750.0])
+    slider = rest_mm[2] - rcfg.cup_z_base_mm
+    rev = (slider - rcfg.slider_rev_zero_mm) / 1000.0 * cr.HAND_REV_PER_M
+    seed = _uc.CycleState.at_rest(
+        np.array([rest_mm[0], rest_mm[1], rcfg.active_z_mm, 0, 0, 0]), rev, rcfg)
+    thr1 = np.array([*np.asarray(p1.cup_mm, float)[:2], 860.0])
+    thr2 = np.array([*np.asarray(p2.cup_mm, float)[:2], 860.0])
+    cat2 = np.array([*np.asarray(p2.cup_mm, float)[:2], 830.0])
+    la, lm = _uc.plan_launch(
+        _uc.CycleGoals(period_s=0.4, throw_site_mm=thr1, throw_target_mm=thr2,
+                       flight_s=flight), seed, limits, geom)
+    after = _uc.release_state_from_meta(lm, la)
+    arrival = ballistics_bc.arrival_velocity(lm.release_vel_mm_s, flight)
+    term = sg.CatchTerminal(
+        landing_mm=cat2, landing_vel_mm_s=arrival, t_land_s=flight,
+        rest_site_mm=np.array([*np.asarray(p2.cup_mm, float)[:2],
+                               _uc.SETTLE_CUP_Z_MM]),
+        then_throw=sg.ThrowAfterCatch(t_release_s=flight + 0.50, site_mm=thr2,
+                                      target_mm=thr1, flight_s=flight))
+    seg = sg.plan_segment(sg.CATCH, after, term, cfg, limits, geom)
+    rep = feas.validate_cycle(seg.plan, limits, geom)
+    assert rep.code == 'OK', (rep.code, rep.reasons)
+    assert rep.max_cup_seating_deg is not None
+    assert rep.max_cup_seating_deg <= feas.CUP_SEATING_CONE_DEG
+    assert rep.min_cup_seating_az_g >= feas.CUP_SEATING_FLOOR_G
+    assert rep.catch_closing_ratio >= feas.CATCH_CLOSING_SPEED_MIN_FRAC
+
+
+def test_batched_cup_geometry_is_the_planners_own():
+    """The gate's vectorised cup axis / cup-opening map equal the planner's scalar
+    ones (``tilt_geometry.cup_axis``, ``unified_cycle.cup_state_from_platform``)
+    to float precision over a spread of tilts (incl. 0), z and hand revs - the only
+    thing that stops the budget-driven second copy drifting."""
+    rng = np.random.default_rng(7)
+    n = 40
+    pose = np.column_stack([rng.uniform(-60, 60, n), rng.uniform(-60, 60, n),
+                            rng.uniform(-30, 30, n) + float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM),
+                            rng.uniform(-0.2, 0.2, n), rng.uniform(-0.2, 0.2, n),
+                            np.zeros(n)])
+    pose[0, 3:5] = 0.0
+    hand = rng.uniform(0.5, 9.0, n)
+    ax = feas._cup_axes_batch(pose[:, 3], pose[:, 4])
+    pos = feas._cup_positions_batch(pose, hand)
+    for i in range(n):
+        assert np.allclose(ax[i], tg.cup_axis(pose[i, 3], pose[i, 4]), atol=1e-12)
+        assert np.allclose(pos[i], _uc.cup_state_from_platform(pose[i], hand[i]),
+                           atol=1e-9)

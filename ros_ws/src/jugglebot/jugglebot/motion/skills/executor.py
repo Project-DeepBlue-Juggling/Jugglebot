@@ -361,6 +361,10 @@ REJECTED_NO_BALL = 'REJECTED_NO_BALL'
 #: 2026-10-14), which also uses ``REJECTED_NO_BALL`` / ``REJECTED_BALL_UNKNOWN``
 #: at accept.  See ``INVARIANTS.md``.
 REJECTED_BALL_IN_HAND = 'REJECTED_BALL_IN_HAND'
+#: A site of the pattern is outside the reachable workspace (decision 38 /
+#: plan two-ball-oval § 2.6); the reason text is
+#: ``admissible.SITE_OUTSIDE_WORKSPACE_REASON``. Raised by the node unit.
+REJECTED_SITE_OUTSIDE_WORKSPACE = 'REJECTED_SITE_OUTSIDE_WORKSPACE'
 #: Leaving the streaming mode that owns the platform mid-attempt -- the rest
 #: tail already streaming is the safe end (``reload_sequencer.py:340-366``'s
 #: ``obs.control_mode != RELOAD_CONTROL_MODE`` -> ``self._abort('MODE_CHANGED')``).
@@ -576,6 +580,13 @@ SEAT_AFTER_RELEASE_S = MISSED_CATCH_CLOSE_AFTER_RELEASE_S
 #: live ``pre_release_hold_s`` can refuse 'before' near that edge, and the stop
 #: then takes the 'after' REST.
 STOP_BEFORE_MARGIN_S = 0.05
+
+#: Why :meth:`SkillExecutor.stop_terminals` offers no 'before' REST: the next
+#: pending release is a CARRIED fold's (the fixed-role oval), and a Stop
+#: pressed mid-carry lets the throw complete rather than freezing a loaded cup
+#: partway through the carry (owner 2026-10-18, plan two-ball-oval decision
+#: 51). Held in :attr:`SkillExecutor.stop_before_declined`.
+STOP_BEFORE_CARRIED = 'STOP-BEFORE-CARRIED'
 #: The stop REST's second choice: at rest this long AFTER the next pending
 #: release. Its splice snaps to that release and is seeded post-release (the
 #: cup is empty by then), so the throw runs but nothing after it does.
@@ -1146,6 +1157,24 @@ class InstallResult:
     seeded_post_release: bool = False
 
 
+def release_site_of(skill: Skill):
+    """The site the cup is at when ``skill`` releases (or, for a non-releasing
+    skill, rests): a CATCH carrying a cross-site throw releases at
+    ``then_throw.release_site`` (the fixed-role one-ball oval: catch at C, carry
+    C -> T, release at T); every other skill at its own ``site``.
+    Byte-identical (the same object) for every same-site pattern."""
+    tt = skill.then_throw
+    if skill.kind == CATCH and tt is not None:
+        return tt.release_site_or(skill.site)
+    return skill.site
+
+
+def _is_carried(skill: Skill) -> bool:
+    """True for a fold whose release site is not its catch site (identity, as
+    the fold gate uses ``is``): the cup is CARRIED between catch and release."""
+    return release_site_of(skill) is not skill.site
+
+
 def _previous_release(schedule: Schedule, idx: int, ball_id: int):
     """``(release_site, t_release_abs_s, y_d, target, release_idx)`` of the last
     release of ``ball_id`` strictly before ``schedule.skills[idx]`` -- a THROW
@@ -1171,7 +1200,8 @@ def _previous_release(schedule: Schedule, idx: int, ball_id: int):
             return sk.site, float(sk.t_abs_s), sk.y_d, sk.target, j
         if sk.kind == CATCH and sk.then_throw is not None:
             tt = sk.then_throw
-            return sk.site, float(tt.t_release_abs_s), tt.y_d, tt.target, j
+            return (release_site_of(sk), float(tt.t_release_abs_s), tt.y_d,
+                    tt.target, j)
     return None
 
 
@@ -1975,6 +2005,14 @@ class SkillExecutor:
         #: catch fly from the SAME release point the plan uses. A plain THROW
         #: is never recorded here: it releases at its site.
         self._carried_release_mm = {}
+        #: ``catch idx -> the clamped landing xy`` of a CARRIED fold's latest
+        #: :meth:`_catch_terminal` call (the carry's entry; the release is
+        #: pinned at the release site). Read by :meth:`_seat_offset_m` for the
+        #: learner state ``x[2:4]``. Empty for every same-site pattern.
+        self._carried_catch_xy_mm = {}
+        #: Why :meth:`stop_terminals` left its 'before' REST out on the last
+        #: call (:data:`STOP_BEFORE_CARRIED`), else ``None``.
+        self.stop_before_declined = None
         #: Lines queued by :meth:`_clamp_lateral_to_schedule` (via
         #: :meth:`_catch_terminal`), drained by whichever caller fired it
         #: (dispatch, :meth:`_resend_live_catch`,
@@ -2008,7 +2046,7 @@ class SkillExecutor:
     # ── the R3 command: learner + admissible box, computed once per throw ──
 
     def _command_u(self, idx: int, site, target, y_d,
-                   release_offset_m=None,
+                   seat_offset_m=None,
                    shadow_landing: bool = False,
                    entry_hop: bool = False) -> Tuple[np.ndarray, float]:
         """The commanded ``u = (landing_xy_m, apex_m)`` for the ball this
@@ -2018,7 +2056,7 @@ class SkillExecutor:
 
         ``x = (site xy in m, release offset xy in m)`` — ``memory.Experience``
         has always defined the second half as "the seat-offset xy of the ball
-        just caught", and ``release_offset_m`` is now that quantity, measured:
+        just caught", and ``seat_offset_m`` is now that quantity, measured:
         a CATCH's carried throw releases from where the ball was CAUGHT
         (:meth:`_catch_terminal`, 2026-09-28), so ``release_xy - site_xy`` is
         exactly how far off its nominal site this release happens. A plain
@@ -2111,8 +2149,8 @@ class SkillExecutor:
         dy, apex = y_d
         dy = np.asarray(dy, dtype=float).reshape(2)
         apex = float(apex)
-        off = (np.zeros(2) if release_offset_m is None
-              else np.asarray(release_offset_m, dtype=float).reshape(2))
+        off = (np.zeros(2) if seat_offset_m is None
+              else np.asarray(seat_offset_m, dtype=float).reshape(2))
         x = np.array([float(site.cup_mm[0]) / 1000.0,
                      float(site.cup_mm[1]) / 1000.0,
                      float(off[0]), float(off[1])])
@@ -2146,13 +2184,15 @@ class SkillExecutor:
             box = adm.select(self.boxes, self.schedule.pattern,
                              (site.name, target.name), apex,
                              release_site_xy_mm=site.cup_mm[:2],
-                             target_site_xy_mm=target.cup_mm[:2])
+                             target_site_xy_mm=target.cup_mm[:2],
+                             dwell_s=self.schedule.dwell_s)
             if self.learner is not None and box is None:
                 reason = adm.describe_miss(
                     self.boxes, self.schedule.pattern,
                     (site.name, target.name), apex,
                     release_site_xy_mm=site.cup_mm[:2],
-                    target_site_xy_mm=target.cup_mm[:2])
+                    target_site_xy_mm=target.cup_mm[:2],
+                    dwell_s=self.schedule.dwell_s)
                 raise _NoAdmissibleCommand(
                     'no admissible box covers pattern %r site pair %r: %s — '
                     'a learner command may not reach the platform unclipped'
@@ -2379,7 +2419,8 @@ class SkillExecutor:
             box = adm.select(self.boxes, self.schedule.pattern,
                              (site.name, site.name), apex,
                              release_site_xy_mm=site.cup_mm[:2],
-                             target_site_xy_mm=site.cup_mm[:2])
+                             target_site_xy_mm=site.cup_mm[:2],
+                             dwell_s=self.schedule.dwell_s)
             if box is not None and not box.empty:
                 alo, ahi = box.apex_m
                 u_apex = min(max(u_apex, alo), ahi)
@@ -2434,9 +2475,13 @@ class SkillExecutor:
         here = np.asarray(skill.site.cup_mm, dtype=float)[:2]
         others = {}
         for sk in self.schedule.skills:
-            if sk.kind in (THROW, CATCH) and sk.site.name != skill.site.name:
-                others[sk.site.name] = np.asarray(sk.site.cup_mm,
-                                                  dtype=float)[:2]
+            if sk.kind not in (THROW, CATCH):
+                continue
+            # A folded CATCH's release site counts: outward is away from where
+            # the loaded carry ends, whether or not a standalone THROW survives.
+            for s_ in (sk.site, release_site_of(sk)):
+                if s_.name != skill.site.name:
+                    others[s_.name] = np.asarray(s_.cup_mm, dtype=float)[:2]
         if not others:
             return None
         d = here - np.mean(list(others.values()), axis=0)
@@ -2570,9 +2615,11 @@ class SkillExecutor:
         is :meth:`_command_u`'s, cached under THIS catch's ``idx`` — a re-send
         calls this again and gets the SAME command back.
 
-        **The release POSITION is where the ball was CAUGHT, not the site**
-        (owner 2026-09-28). The physical rule: the platform does not translate
-        while it holds a ball between a catch and the release that follows it.
+        **A cup that is not carried does not translate** (owner 2026-09-28,
+        narrowed 2026-10-17 for the oval, plan two-ball-oval § 2.7). On a
+        SAME-SITE fold the release POSITION is where the ball was CAUGHT, not
+        the site: the platform does not translate while it holds a ball
+        between a catch and the release that follows it.
         Measured — at the 2026-09-27 22:37 R4 sitting every throw that
         followed a laterally re-aimed catch missed by +32..+114 mm in y and
         the chains dropped. With the release pinned to the site, the plan
@@ -2595,6 +2642,15 @@ class SkillExecutor:
         catch's ``idx`` (:attr:`_carried_release_mm`) so the priors built for
         the NEXT catch fly from the release the plan actually uses
         (:meth:`_release_pos_mm`).
+
+        On a CROSS-SITE fold (``then_throw.release_site`` set, fixed-role
+        patterns) the translation IS the carry: the release is at
+        ``release_site`` EXACTLY, the planner carries the ball from the clamped
+        landing to it under C-CUP-4, the aim is computed from that planned
+        release toward the landing target (no fly-back:
+        :meth:`_offset_flyback_mm` is zero), the catch offset stays in the
+        learner state ``x[2:4]`` (:meth:`_seat_offset_m`) -- it shapes the
+        carry's entry -- and the release-position error is a diagnostic only.
 
         **Measured cost, 2026-09-28** (``sim/skills_gate.py --learn --pattern
         self_toss``, seeds 0-4): the release position is now a function of the
@@ -2641,20 +2697,27 @@ class SkillExecutor:
             # the ball's arrival point. Recorded BEFORE the command is asked
             # for, because how far this release sits off its site is half of
             # the learner's state vector (:meth:`_command_u`'s ``x[2:4]``).
-            release_mm = np.array([float(landing.pos_mm[0]),
-                                   float(landing.pos_mm[1]),
-                                   float(skill.site.throw_site_mm()[2])])
+            rel_site = release_site_of(skill)
+            if rel_site is skill.site:
+                release_mm = np.array([float(landing.pos_mm[0]),
+                                       float(landing.pos_mm[1]),
+                                       float(rel_site.throw_site_mm()[2])])
+            else:
+                # CARRIED fold: the release is AT the release site exactly,
+                # whatever the landing; the catch offset is the carry's entry.
+                release_mm = np.asarray(rel_site.throw_site_mm(), dtype=float)
+                self._carried_catch_xy_mm[idx] = np.asarray(
+                    landing.pos_mm, dtype=float)[:2].copy()
             self._carried_release_mm[idx] = release_mm
             u_dy, u_apex = self._command_u(
-                idx, skill.site, tt.target, tt.y_d,
-                release_offset_m=self._release_offset_m(idx, skill.site),
+                idx, rel_site, tt.target, tt.y_d,
+                seat_offset_m=self._seat_offset_m(idx),
                 shadow_landing=tt.shadow_landing)
             then_throw = ThrowAfterCatch(
                 t_release_s=float(tt.t_release_abs_s),
                 site_mm=release_mm,
                 target_mm=(self._commanded_target_mm(tt.target, (u_dy, u_apex))
-                           + self._offset_flyback_mm(idx, skill.site,
-                                                     tt.y_d, u_apex)),
+                           + self._offset_flyback_mm(idx, tt.y_d, u_apex)),
                 flight_s=sch.flight_s(u_apex))
         if skill.rest_site_mm is not None:
             # HELD-AXIS CATCH (R4 reload): `skill.rest_site_mm` was computed
@@ -2673,7 +2736,7 @@ class SkillExecutor:
             rest_mm = sg.hold_axis_site(landing.pos_mm, skill.hold_tilt,
                                         float(skill.rest_site_mm[2]))
         else:
-            rest_mm = skill.site.rest_site_mm()
+            rest_mm = release_site_of(skill).rest_site_mm()
         return CatchTerminal(landing_mm=landing.pos_mm,
                              landing_vel_mm_s=landing.vel_mm_s,
                              t_land_s=float(landing.t_land_abs_s),
@@ -2692,7 +2755,7 @@ class SkillExecutor:
         return RestTerminal(rest_site_mm=rest_mm, t_rest_s=float(skill.t_abs_s),
                             tilt=skill.rest_tilt, holds_ball=skill.holds_ball)
 
-    def _release_pos_mm(self, release_idx: int, release_site) -> np.ndarray:
+    def _release_pos_mm(self, release_idx: int) -> np.ndarray:
         """Where the ball released by ``schedule.skills[release_idx]`` actually
         leaves the cup — the ONE place that question is answered, so every
         ballistic prior built on a release uses the release the PLAN uses.
@@ -2715,9 +2778,11 @@ class SkillExecutor:
         recorded = self._carried_release_mm.get(release_idx)
         if recorded is not None:
             return np.asarray(recorded, dtype=float)
-        return np.asarray(release_site.throw_site_mm(), dtype=float)
+        return np.asarray(
+            release_site_of(self.schedule.skills[release_idx]).throw_site_mm(),
+            dtype=float)
 
-    def _offset_flyback_mm(self, idx: int, site, y_d, u_apex: float) -> np.ndarray:
+    def _offset_flyback_mm(self, idx: int, y_d, u_apex: float) -> np.ndarray:
         """The aim shift (mm, z = 0) that makes a carried release's offset fly
         back EXACTLY, so the learner never sees it.
 
@@ -2753,7 +2818,7 @@ class SkillExecutor:
         ``g`` is clamped to [0.5, 2.0]: outside that band the apex command
         is not a plant gain but a refusal in the making (the box clips it),
         and a wild ``1/g`` must not steer the aim."""
-        r_mm = self._release_offset_m(idx, site) * 1000.0
+        r_mm = self._release_offset_m(idx) * 1000.0
         if float(np.max(np.abs(r_mm))) == 0.0:
             return np.zeros(3)
         apex_d = float(y_d[1])
@@ -2762,22 +2827,33 @@ class SkillExecutor:
         k = 1.0 - 1.0 / g
         return np.array([r_mm[0] * k, r_mm[1] * k, 0.0])
 
-    def _release_offset_m(self, idx: int, site) -> np.ndarray:
-        """How far the release planned for skill ``idx`` sits off ``site``,
-        in METRES — the learner state ``x[2:4]`` (``memory.Experience``'s
-        "seat-offset xy of the ball just caught", measured since 2026-09-28).
-
-        ``(0, 0)`` when nothing is recorded for ``idx``: a plain THROW, or a
-        catch whose terminal has not been built yet. One conversion, read by
-        both the learner QUERY (:meth:`_command_u`, at dispatch) and the row
-        that learns from it (:meth:`_register_outcome`), so the two can never
-        describe the same release differently.
-        """
+    def _release_offset_m(self, idx: int) -> np.ndarray:
+        """How far the release planned for skill ``idx`` sits off its RELEASE
+        site, in METRES -- what :meth:`_offset_flyback_mm` flies back. ``(0, 0)``
+        when nothing is recorded (a plain THROW, a catch not yet built) and
+        EXACTLY zero for a carried fold, whose release is pinned at its site."""
         recorded = self._carried_release_mm.get(idx)
         if recorded is None:
             return np.zeros(2)
         return ((np.asarray(recorded, dtype=float)[:2]
-                 - np.asarray(site.cup_mm, dtype=float)[:2]) / 1000.0)
+                 - np.asarray(release_site_of(self.schedule.skills[idx]).cup_mm,
+                              dtype=float)[:2]) / 1000.0)
+
+    def _seat_offset_m(self, idx: int) -> np.ndarray:
+        """The learner state ``x[2:4]`` for skill ``idx``, in METRES
+        (``memory.Experience``'s "seat-offset xy of the ball just caught"): a
+        same-site fold's recorded release minus its site (today's quantity,
+        bump included), a CARRIED fold's clamped landing minus its CATCH site
+        (the carry's entry state). One conversion, read by the learner QUERY
+        (:meth:`_command_u`), the forward prior and the row
+        (:meth:`_register_outcome`), so they cannot disagree."""
+        sk = self.schedule.skills[idx]
+        rec = (self._carried_catch_xy_mm.get(idx) if _is_carried(sk)
+               else self._carried_release_mm.get(idx))
+        if rec is None:
+            return np.zeros(2)
+        return ((np.asarray(rec, dtype=float)[:2]
+                 - np.asarray(sk.site.cup_mm, dtype=float)[:2]) / 1000.0)
 
     def _predicted_landing(self, idx: int, skill: Skill) -> Optional[Landing]:
         """The PREDICTED landing for a catch-with-throw that must dispatch at
@@ -2850,7 +2926,7 @@ class SkillExecutor:
         pos_mm = self._commanded_target_mm(target, y_d)
         flight_s = sch.flight_s(float(y_d[1]))
         launch_vel = ballistics_bc.launch_velocity(
-            self._release_pos_mm(release_idx, site), pos_mm, flight_s)
+            self._release_pos_mm(release_idx), pos_mm, flight_s)
         vel_mm_s = ballistics_bc.arrival_velocity(launch_vel, flight_s)
         return Landing(pos_mm=pos_mm, vel_mm_s=vel_mm_s,
                        t_land_abs_s=t_release_s + flight_s)
@@ -2935,7 +3011,7 @@ class SkillExecutor:
             return None
         x, u_dy, u_apex = self._u_cache[release_idx]
         x = np.asarray(x, dtype=float).copy()
-        x[2:4] = self._release_offset_m(release_idx, site)
+        x[2:4] = self._seat_offset_m(release_idx)
         u = np.array([float(u_dy[0]), float(u_dy[1]), float(u_apex)])
         dy = np.asarray(y_d[0], dtype=float).reshape(2)
         y_d_si = np.array([dy[0], dy[1], float(y_d[1])])
@@ -2947,7 +3023,7 @@ class SkillExecutor:
             pos_mm = self._commanded_target_mm(
                 target, (y_hat[:2], float(y_hat[2])))
             launch_vel = ballistics_bc.launch_velocity(
-                self._release_pos_mm(release_idx, site), pos_mm, flight_s)
+                self._release_pos_mm(release_idx), pos_mm, flight_s)
             vel_mm_s = ballistics_bc.arrival_velocity(launch_vel, flight_s)
         except Exception:  # a prior that cannot be built falls back to y_d
             return None
@@ -3133,7 +3209,7 @@ class SkillExecutor:
         site, t_release_s, y_d, target, release_idx = prev
         pos_mm = self._commanded_target_mm(target, y_d)
         flight_s = sch.flight_s(float(y_d[1]))
-        release_pos = self._release_pos_mm(release_idx, site)
+        release_pos = self._release_pos_mm(release_idx)
         launch_vel = ballistics_bc.launch_velocity(
             release_pos, pos_mm, flight_s)
         rx, ry = tg.tilt_to_throw(launch_vel)
@@ -3622,7 +3698,7 @@ class SkillExecutor:
         # A COPY: the cache holds the state the learner was queried with and
         # must keep saying so.
         x = np.asarray(x, dtype=float).copy()
-        x[2:4] = self._release_offset_m(idx, skill.site)
+        x[2:4] = self._seat_offset_m(idx)
         target_xy_mm = np.asarray(target.catch_site_mm(), dtype=float)[:2]
         self._n_registered += 1
         t_land_scheduled = t_release + sch.flight_s(u_apex)
@@ -3635,7 +3711,7 @@ class SkillExecutor:
             t_seat_close_s=_seat_close(self.schedule, skill.ball_id,
                                        t_land_scheduled, t_next_release),
             throw_no=self._n_registered,
-            release_z_mm=float(skill.site.throw_site_mm()[2]),
+            release_z_mm=float(release_site_of(skill).throw_site_mm()[2]),
             shadow_landing=shadow_landing, entry_hop=entry_hop))
 
     def _register_catch(self, idx: int, skill: Skill,
@@ -3756,7 +3832,9 @@ class SkillExecutor:
         method on the executor because only the executor knows which skills
         are on the machine and which release each carries.
 
-        The site is the skill's own ``site.rest_site_mm()``, level. Only a
+        The site is :func:`release_site_of` the skill, ``.rest_site_mm()``,
+        level. A CARRIED fold (the oval) offers no 'before': the Stop lets
+        the throw complete (:data:`STOP_BEFORE_CARRIED`, owner 2026-10-18). Only a
         THROW or a CATCH carrying a throw is ever chosen, and neither carries
         a ``rest_site_mm`` override today: the R4 reload's held-axis CATCH,
         the one skill that does, is a plain catch, and its pattern's first
@@ -3778,10 +3856,17 @@ class SkillExecutor:
         if not pending:
             return []
         t_rel, idx = min(pending)
-        rest_mm = self.schedule.skills[idx].site.rest_site_mm()
+        sk_rel = self.schedule.skills[idx]
+        rest_mm = release_site_of(sk_rel).rest_site_mm()
         stops = []
         t_before = t_rel - STOP_BEFORE_MARGIN_S
-        if t_before - (float(t_now_s) + LEAD_S) >= MIN_WINDOW_S:
+        self.stop_before_declined = None
+        if _is_carried(sk_rel):
+            # Owner 2026-10-18: a Stop mid-carry lets the throw complete; only
+            # the 'after' rest is offered (cup rests at T, ball NOT caught, as
+            # hop today). A held catch at C is a separate unit.
+            self.stop_before_declined = STOP_BEFORE_CARRIED
+        elif t_before - (float(t_now_s) + LEAD_S) >= MIN_WINDOW_S:
             stops.append(('before', RestTerminal(
                 rest_site_mm=rest_mm, t_rest_s=t_before, holds_ball=True)))
         stops.append(('after', RestTerminal(
@@ -4978,6 +5063,11 @@ class SkillExecutor:
         if not self.catch_bump_enabled:
             return out('BUMP-OFF')
         skill = self.schedule.skills[idx]
+        if _is_carried(skill):
+            # The release is pinned at the release site (owner): b(t_rel)
+            # would move it. bump_enabled_for('oval_1ball') is already False;
+            # this is the terminal fence if a caller enables it anyway.
+            return out('BUMP-CARRIED', terminal=True)
         if landing is None:
             landing = self._tracked_landing(idx, skill)
         if landing is None:
@@ -5023,7 +5113,7 @@ class SkillExecutor:
         refused) it: an accepted bump spends one re-aim, records the REALISED
         release (caught xy + ``b(t_rel)``, never + Δ) in
         :attr:`_carried_release_mm` — so the learner row's ``x[2:4]``
-        (:meth:`_release_offset_m`) carries the release that actually happens
+        (:meth:`_seat_offset_m`) carries the release that actually happens
         — and moves the live terminal's landing/release xy; a BUMP-WINDOW
         remembers |Δ| for the retry rule; a terminal decline ends re-aiming."""
         idx = decision.idx

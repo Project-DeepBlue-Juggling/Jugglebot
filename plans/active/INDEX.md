@@ -30,6 +30,7 @@ rows).
 | [bb-calibration-one-attempt.md](bb-calibration-one-attempt.md) | active | 2026-10-14 | Ball Butler mocap calibration accepted on the first sweep every time: replay-characterise the gates, invert them to advisory, and measure the robot frame in software instead of by manual QTM re-alignment |
 | [late-catch-reaim-bump.md](late-catch-reaim-bump.md) | active | 2026-10-16 | The late catch re-aim (past the snap band) as a platform-xy bump on the installed plan, held through the carried release with a retargeting launch velocity, instead of the raw mid-swing re-solve that was refused 87/87 on 2026-10-16; offline 87 % installable (columns, worst-case direction); design + probe, implementation next |
 | [columns-empty-cup-two-feed.md](columns-empty-cup-two-feed.md) | active | 2026-10-17 | Two-ball `columns` accepts an EMPTY cup (Ball Butler feeds ball A as a catch-only reload, then ball B, chained automatically), the accept rule becomes cup-keyed for every reloadable pattern, and the `bool reload` flag / 'Reload first' checkbox / human-lob columns feed are retired; P1 accept + lob retirement, P2 interface removal, P3 the two-feed chain (hardware-bearing, not started) |
+| [box-sweep-same-site-fidelity.md](box-sweep-same-site-fidelity.md) | active | 2026-10-18 | Make the box sweep plan what the executor dispatches for same-site families (release at the caught xy with the aim shift, not a cup flyback), which shrank the self_toss landing box on 2026-10-18; re-sweep twice bit-identical and re-pin |
 
 ## Orchestration prompts
 

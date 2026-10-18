@@ -50,6 +50,8 @@ _GATE_HASH = ab.gate_hash()
 #: xy's physical meaning); the ``select`` xy-matching tests pass explicit
 #: ``release_site_xy_mm`` / ``target_site_xy_mm`` on both sides.
 _DEFAULT_XY_MM = (-50.0, 50.0)
+#: The dwell the fixture boxes are stamped at (``select`` matches it exactly).
+_DWELL_S = 0.27
 
 
 def _box(**overrides):
@@ -58,7 +60,8 @@ def _box(**overrides):
         landing_xy_m=((-0.02, 0.02), (-0.01, 0.01)), apex_m=(0.87, 0.93),
         pattern='hop', release_site_xy_mm=_DEFAULT_XY_MM,
         target_site_xy_mm=_DEFAULT_XY_MM,
-        limits=dict(_LIMITS_DICT), gate_hash=_GATE_HASH, swept_at='2026-09-12')
+        limits=dict(_LIMITS_DICT), gate_hash=_GATE_HASH, swept_at='2026-09-12',
+        dwell_s=_DWELL_S)
     kwargs.update(overrides)
     return ab.AdmissibleBox(**kwargs)
 
@@ -70,7 +73,7 @@ def _empty_box(**overrides):
         apex_m=(float('nan'), float('nan')), pattern='hop',
         release_site_xy_mm=_DEFAULT_XY_MM, target_site_xy_mm=_DEFAULT_XY_MM,
         limits=dict(_LIMITS_DICT),
-        gate_hash=_GATE_HASH, swept_at='2026-09-12')
+        gate_hash=_GATE_HASH, swept_at='2026-09-12', dwell_s=_DWELL_S)
     kwargs.update(overrides)
     return ab.AdmissibleBox(**kwargs)
 
@@ -228,29 +231,191 @@ def test_box_rejects_a_non_positive_dwell_s():
         _box(dwell_s=-0.1)
 
 
-def test_check_limits_passes_when_the_dwell_matches():
-    ab.check_limits([_box(dwell_s=0.30)], _live_limits(), dwell_s=0.30)
+def test_check_limits_no_longer_takes_a_dwell_and_passes_cells_at_mixed_dwells():
+    """two-ball-oval P1 (2026-10-18): cells at different dwells coexist in one
+    file (0.27 today, the oval ladder's 0.50 / 0.40 / 0.30), so ``check_limits``
+    validates the shared file-level limits + gate ONLY. The old whole-file
+    dwell check refused every live dwell once two dwells shared a file; the
+    dwell is checked against the SELECTED cell (``select`` / ``describe_miss``)."""
+    boxes = [_box(dwell_s=0.27), _box(dwell_s=0.50, pattern='oval_1ball',
+                                      apex_band_m=(0.9, 1.0)),
+             _box(dwell_s=None, pattern='columns', site_pair=('P1', 'P1'))]
+    ab.check_limits(boxes, _live_limits())
+    with pytest.raises(TypeError):
+        ab.check_limits(boxes, _live_limits(), dwell_s=0.27)
 
 
-def test_check_limits_refuses_on_a_dwell_mismatch():
-    with pytest.raises(ab.LimitsMismatch, match='dwell_s'):
-        ab.check_limits([_box(dwell_s=0.30)], _live_limits(), dwell_s=0.20)
+def test_select_refuses_a_cell_swept_at_another_dwell_and_describe_miss_names_dwell_s():
+    """The ladder's cells coexist; a live dwell of 0.50 against a 0.27 cell is
+    a miss, and the refusal text names the FIELD and both values."""
+    box = _box(pattern='oval_1ball', dwell_s=0.27)
+    assert _sel([box], 'oval_1ball', ('P1', 'P2'), 0.90, dwell_s=0.27) is box
+    assert _sel([box], 'oval_1ball', ('P1', 'P2'), 0.90, dwell_s=0.50) is None
+    msg = ab.describe_miss([box], 'oval_1ball', ('P1', 'P2'), 0.90,
+                           release_site_xy_mm=_DEFAULT_XY_MM,
+                           target_site_xy_mm=_DEFAULT_XY_MM, dwell_s=0.50)
+    assert 'dwell_s' in msg and '0.5' in msg and '0.27' in msg
+    # Apex / separation causes must NOT be blamed when only the dwell differs.
+    assert 'separation_mm' not in msg and 'outside the range' not in msg
 
 
-def test_check_limits_refuses_an_unstamped_dwell_against_a_live_one():
-    """A box that never carried a dwell_s (None) is treated exactly like a
-    numeric mismatch when the caller actually cares about the live dwell --
-    it is not silently assumed to match."""
-    with pytest.raises(ab.LimitsMismatch, match='dwell_s'):
-        ab.check_limits([_box(dwell_s=None)], _live_limits(), dwell_s=0.30)
+def test_select_picks_the_cell_at_the_live_dwell_among_coexisting_dwells():
+    """0.50 / 0.40 / 0.30 cells at one site pair and apex band: the overlap
+    refusal keys on dwell too, so the file loads, and select returns each."""
+    cells = [_box(pattern='oval_1ball', dwell_s=d) for d in (0.50, 0.40, 0.30)]
+    for c in cells:
+        assert _sel(cells, 'oval_1ball', ('P1', 'P2'), 0.90,
+                    dwell_s=c.dwell_s) is c
 
 
-def test_check_limits_skips_the_dwell_check_when_not_given():
-    """The default (`dwell_s=None` on the call) is a no-op -- every EXISTING
-    caller (skill_node.py's two call sites, tests/hardware/skills_plan_bench.py)
-    keeps working unchanged until it is wired to pass its own live dwell."""
-    ab.check_limits([_box(dwell_s=None)], _live_limits())
-    ab.check_limits([_box(dwell_s=0.20)], _live_limits())
+def test_select_treats_an_unstamped_box_as_matching_no_dwell():
+    box = _box(dwell_s=None)
+    assert _sel([box], 'hop', ('P1', 'P2'), 0.90, dwell_s=0.27) is None
+    msg = ab.describe_miss([box], 'hop', ('P1', 'P2'), 0.90,
+                           release_site_xy_mm=_DEFAULT_XY_MM,
+                           target_site_xy_mm=_DEFAULT_XY_MM, dwell_s=0.27)
+    assert 'dwell_s' in msg and 'unstamped' in msg
+
+
+def test_select_requires_dwell_s():
+    with pytest.raises(TypeError):
+        ab.select([_box()], 'hop', ('P1', 'P2'), 0.90,
+                  release_site_xy_mm=_DEFAULT_XY_MM,
+                  target_site_xy_mm=_DEFAULT_XY_MM)
+
+
+def test_vocabulary_includes_the_oval_labels():
+    assert 'oval_1ball' in ab.PATTERNS and 'oval' in ab.PATTERNS
+    _box(pattern='oval_1ball')
+    _box(pattern='oval')
+
+
+# -- workspace rule (decision 38, amended 2026-10-18: no margin) --------------
+
+def _ws_box(half_m):
+    return _box(pattern='oval_1ball', landing_xy_m=((-half_m, half_m),
+                                                    (-half_m, half_m)))
+
+
+def test_the_workspace_margin_constant_is_gone():
+    # decision 38 amended 2026-10-18: |site xy| + half-extent <= bound, no margin.
+    assert not hasattr(ab, 'WORKSPACE_MARGIN_MM')
+    assert 'WORKSPACE_MARGIN_MM' not in ab.__all__
+
+
+def test_site_workspace_fires_above_the_bound_and_not_at_equality():
+    # |site| 75 + half-extent 75 = 150 mm == bound 0.150 m: passes.
+    at = _ws_box(0.075)
+    assert ab.check_site_workspace([(75.0, 0.0)], at, 0.150) is None
+    # one more half-extent mm: 151 > 150 -> refused, naming the site.
+    over = _ws_box(0.076)
+    reason = ab.check_site_workspace([(75.0, 0.0)], over, 0.150)
+    assert reason is not None and 'workspace' in reason
+    assert '151.0' in reason and 'margin' not in reason and '150.0' in reason
+
+
+def test_site_workspace_uses_the_xy_norm_and_checks_every_site():
+    # (60, 80) has |xy| 100: 100 + 50 = 150 -> ok; the second site
+    # (100, 0) + 50 = 150 ok; (101, 0) = 151 -> refused.
+    box = _ws_box(0.050)
+    assert ab.check_site_workspace([(60.0, 80.0), (100.0, 0.0)], box, 0.150) is None
+    assert ab.check_site_workspace([(60.0, 80.0), (101.0, 0.0)], box, 0.150) is not None
+
+
+def test_site_workspace_reads_cup_mm_off_a_site_object():
+    from jugglebot.motion.skills import sites as st
+    p1, p2 = st.columns_sites(150.0)
+    assert ab.check_site_workspace((p1, p2), _ws_box(0.020), 0.150) is None
+    reason = ab.check_site_workspace((p1, p2), _ws_box(0.080), 0.150)
+    assert reason is not None and 'P1' in reason
+
+
+def test_site_workspace_empty_box_has_zero_half_extent():
+    assert ab.check_site_workspace([(150.0, 0.0)], _empty_box(), 0.150) is None
+    assert ab.check_site_workspace([(151.0, 0.0)], _empty_box(), 0.150) is not None
+
+
+def test_site_workspace_columns_and_hop_operating_points_pass():
+    # 125 mm sites with the committed 20 mm half-extent: 145 <= 150 (they fly).
+    assert ab.check_site_workspace([(125.0, 0.0), (-125.0, 0.0)],
+                                   _ws_box(0.020), 0.150) is None
+    # 135 + 20 = 155 refuses.
+    assert ab.check_site_workspace([(135.0, 0.0)], _ws_box(0.020), 0.150) is not None
+
+
+# -- the committed box vs the pre-oval snapshot -------------------------------
+
+_PRE_OVAL_SNAPSHOT = os.path.join(_REPO, 'tests', 'fixtures',
+                                  'admissible_box_pre_oval.yaml')
+
+
+@pytest.mark.skipif(not os.path.exists(_PRE_OVAL_SNAPSHOT),
+                    reason='tests/fixtures/admissible_box_pre_oval.yaml absent '
+                           '(the orchestrator snapshots HEAD\'s box before the '
+                           'oval re-sweep)')
+def test_oval_resweep_pins_hop_columns_identical_self_toss_changed_one_oval_cell():
+    """Owner ruling 2026-10-18 pins the re-swept box exactly.
+
+    hop (8) and columns (6) cells are value-equal to the pre-oval snapshot on
+    every key (NaN-safe: columns has unswept NaN windows).  The five self_toss
+    cells equal the snapshot on every key EXCEPT ``landing_xy_m``, whose swept
+    values are hard-coded below (old -> new ``landing_xy_m``, [x],[y] in m, by
+    apex band: 0.45-0.55 [-.03,.03],[-.03,.03] -> [-.02,.02],[-.02,.02];
+    0.55-0.65 [-.04,.03],[-.04,.03] -> [-.03,.03],[-.02,.02]; 0.65-0.75
+    (cell 3) [-.04,.03],[-.04,.03] -> [-.04,.04],[-.03,.03], a WIDENING of x
+    upper 0.03 -> 0.04, one grid step, owner-accepted: the sweep tool gained the
+    carry-window metric path and the settle-at-release-site rule since the
+    2026-10-09 box; 0.75-0.85 and 0.85-0.95 [-.04,.03],[-.04,.03] ->
+    [-.03,.03],[-.02,.02]).  The shrunk edges shrank because the sweep's same-site offset cell plans a loaded cup
+    FLYBACK from the offset landing to the throw site; its lateral
+    acceleration at the first post-touch-down knot (vertical support only
+    0.70 g) reads C-CUP-4 residual of ~1 deg per mm of offset (20 mm -> 21,
+    30 mm -> 30, 40 mm -> 38; cone 30), while the executor never dispatches
+    that flyback (it releases at the caught xy and shifts the aim).  Accepted
+    as is; fidelity follow-up: plans/active/box-sweep-same-site-fidelity.md.
+    Plus exactly one oval_1ball cell at dwell 0.65, 20 cells in all."""
+    import math
+    import yaml as _y
+    with open(_PRE_OVAL_SNAPSHOT) as fh:
+        old = _y.safe_load(fh)
+    with open(_COMMITTED_BOX) as fh:
+        new = _y.safe_load(fh)
+    assert new['limits'] == old['limits']
+
+    def _same(x, y):
+        if isinstance(x, float) and isinstance(y, float):
+            return (math.isnan(x) and math.isnan(y)) or x == y
+        if isinstance(x, (list, tuple)) and isinstance(y, (list, tuple)):
+            return len(x) == len(y) and all(_same(i, j) for i, j in zip(x, y))
+        if isinstance(x, dict) and isinstance(y, dict):
+            return x.keys() == y.keys() and all(_same(x[k], y[k]) for k in x)
+        return x == y
+
+    new_other = [b for b in new['boxes'] if b['pattern'] != 'oval_1ball']
+    assert len(old['boxes']) == len(new_other)
+    swept_st = [[[-0.02, 0.02], [-0.02, 0.02]],
+                [[-0.03, 0.03], [-0.02, 0.02]],
+                [[-0.04, 0.04], [-0.03, 0.03]],
+                [[-0.03, 0.03], [-0.02, 0.02]],
+                [[-0.03, 0.03], [-0.02, 0.02]]]
+    n_st = n_hop = n_col = 0
+    for a, b in zip(old['boxes'], new_other):
+        if b['pattern'] == 'self_toss':
+            assert _same({k: v for k, v in a.items() if k != 'landing_xy_m'},
+                         {k: v for k, v in b.items() if k != 'landing_xy_m'}), (a, b)
+            assert b['landing_xy_m'] == swept_st[n_st]
+            n_st += 1
+        else:
+            assert _same(a, b), 'box values moved: %r -> %r' % (a, b)
+            n_hop += b['pattern'] == 'hop'
+            n_col += b['pattern'] == 'columns'
+    assert (n_st, n_hop, n_col) == (5, 8, 6)
+    ovals = [b for b in new['boxes'] if b['pattern'] == 'oval_1ball']
+    assert len(ovals) == 1
+    assert ovals[0]['dwell_s'] == pytest.approx(0.65)
+    assert ovals[0]['release_site_xy_mm'] == [-75.0, 0.0]
+    assert ovals[0]['target_site_xy_mm'] == [75.0, 0.0]
+    assert len(new['boxes']) == 20
 
 
 def test_dump_refuses_a_mix_of_provenance(tmp_path):
@@ -357,9 +522,9 @@ def test_load_refuses_a_box_missing_apex_m():
 # select
 # ---------------------------------------------------------------------------
 
-def _sel(boxes, pattern, pair, apex, xy=_DEFAULT_XY_MM):
+def _sel(boxes, pattern, pair, apex, xy=_DEFAULT_XY_MM, dwell_s=_DWELL_S):
     return ab.select(boxes, pattern, pair, apex, release_site_xy_mm=xy,
-                     target_site_xy_mm=xy)
+                     target_site_xy_mm=xy, dwell_s=dwell_s)
 
 
 def test_select_hits_a_box_covering_the_apex():
@@ -400,10 +565,12 @@ def test_select_misses_when_the_live_site_xy_does_not_match_the_swept_xy():
     box = _box(site_pair=('P1', 'P2'), apex_band_m=(0.85, 0.95), pattern='hop',
               release_site_xy_mm=(-125.0, 0.0), target_site_xy_mm=(125.0, 0.0))
     hit = ab.select([box], 'hop', ('P1', 'P2'), 0.90,
-                    release_site_xy_mm=(-125.0, 0.0), target_site_xy_mm=(125.0, 0.0))
+                    release_site_xy_mm=(-125.0, 0.0), target_site_xy_mm=(125.0, 0.0),
+                    dwell_s=_DWELL_S)
     assert hit is box
     miss = ab.select([box], 'hop', ('P1', 'P2'), 0.90,
-                     release_site_xy_mm=(-50.0, 0.0), target_site_xy_mm=(50.0, 0.0))
+                     release_site_xy_mm=(-50.0, 0.0), target_site_xy_mm=(50.0, 0.0),
+                     dwell_s=_DWELL_S)
     assert miss is None
 
 
@@ -505,8 +672,14 @@ def sweep_mod():
 
 
 #: The session limits ``tiny_sweep`` is pinned at (see its docstring).
-_TINY_SWEEP_LIMITS = dict(leg_vel_mmps=300.0, leg_acc_mmps2=5000.0,
-                          leg_jerk_mmps3=150000.0)
+#: RE-BASELINED 2026-10-18 (two-ball-oval checks re-base: cone 30 deg, floor
+#: 0.3 g): the old 300/5000/150000 + 100 mm + apex 0.85 + dwell 0.30 grid reads
+#: 37.8 deg of carry seating (CUP_SEATING_CONE) at every offset, and at 300 mm/s
+#: the flown columns point (125 mm, apex 0.95, dwell 0.27) refuses LIMIT_VEL /
+#: LIMIT_JERK. The fixture now freezes the FLOWN point: columns 125 mm, apex
+#: 0.95, dwell 0.27, 350/5000/200000 (probe 2026-10-18: all 3x3 offsets pass).
+_TINY_SWEEP_LIMITS = dict(leg_vel_mmps=350.0, leg_acc_mmps2=5000.0,
+                          leg_jerk_mmps3=200000.0)
 
 #: ``tiny_sweep`` characterises the R2/R3 LIMITS point and must keep doing so
 #: even though ``sites.CATCH_CUP_Z_MM`` moved away for a day (plan R5 sitting
@@ -559,9 +732,9 @@ def tiny_sweep(sweep_mod):
     mp.setattr(st.Site.catch_site_mm, '__defaults__', (_TINY_SWEEP_CATCH_Z_MM,))
     mp.setattr(st, 'CATCH_CUP_Z_MM', _TINY_SWEEP_CATCH_Z_MM)
     try:
-        site0, site1 = st.columns_sites(100.0)
+        site0, site1 = st.columns_sites(125.0)
         boxes, rows = sweep_mod.sweep(
-            apexes_m=(0.85,), offsets_mm=(-5.0, 0.0, 5.0), dwell_s=0.30,
+            apexes_m=(0.95,), offsets_mm=(-5.0, 0.0, 5.0), dwell_s=0.27,
             leg_vel=_TINY_SWEEP_LIMITS['leg_vel_mmps'],
             leg_acc=_TINY_SWEEP_LIMITS['leg_acc_mmps2'],
             leg_jerk=_TINY_SWEEP_LIMITS['leg_jerk_mmps3'],
@@ -628,16 +801,16 @@ def test_tiny_sweep_produces_one_box_inside_the_swept_grid(tiny_sweep):
     assert box.pattern == 'columns'
     assert box.site_pair == ('P2', 'P2')
     assert box.release_site_xy_mm == box.target_site_xy_mm
-    assert not box.empty, 'apex 0.85 m must admit at least the identity-' \
+    assert not box.empty, 'apex 0.95 m must admit at least the identity-' \
                           'prior (0, 0) command at the default pre-release hold'
     (xlo, xhi), (ylo, yhi) = box.landing_xy_m
-    # x is pinned at 0 in this tiny grid (+/-5 mm x refuses) -- only y widens.
-    assert xlo == pytest.approx(0.0) and xhi == pytest.approx(0.0)
-    assert -0.005 - 1e-9 <= ylo <= yhi <= 0.005 + 1e-9
+    # The flown point admits the whole +/-5 mm grid (probe 2026-10-18).
+    assert -0.005 - 1e-9 <= xlo <= 0.0 <= xhi <= 0.005 + 1e-9
+    assert -0.005 - 1e-9 <= ylo <= 0.0 <= yhi <= 0.005 + 1e-9
     alo, ahi = box.apex_m
-    # Only ONE apex (0.85 m) is in this tiny grid, so the band is a point.
-    assert alo == pytest.approx(0.85) and ahi == pytest.approx(0.85)
-    assert box.dwell_s == pytest.approx(0.30)
+    # Only ONE apex (0.95 m) is in this tiny grid, so the band is a point.
+    assert alo == pytest.approx(0.95) and ahi == pytest.approx(0.95)
+    assert box.dwell_s == pytest.approx(0.27)
     # Every row actually reached a verdict -- the grid ran, not merely built.
     assert len(rows) >= 6
 
@@ -664,6 +837,48 @@ def test_tiny_sweep_yaml_round_trips_and_validates(tmp_path, tiny_sweep,
 def tiny_hop_sweep(sweep_mod):
     return sweep_mod.hop_sweep(apexes_m=(0.90,), offsets_mm=(-10.0, 0.0),
                                separation_mm=250.0)
+
+
+def _oval_rung1_cell(sweep_mod, dwell_s):
+    """The rung-1 oval centre cell through the sweep's own production chain
+    (apex 0.95, 150 mm, 350/5000/200k, hand 3900, zero offset)."""
+    geom = sweep_mod.StewartGeometry()
+    limits = sweep_mod._limits(350.0, 5000.0, 200000.0, 3900.0)
+    cfg = sweep_mod.sg.SegmentConfig()
+    t, c = st.columns_sites(150.0)
+    flight = sweep_mod.sc.flight_s(0.95)
+    cs, rs, ts = sweep_mod._oval_window(t, c, 0.95, dwell_s)
+    ok, code, seed, tk = sweep_mod._hop_throw_cell(
+        rs, cs, flight, sweep_mod.SINGLE_SITE_LAUNCH_S, limits, geom, cfg)
+    assert ok, code
+    return sweep_mod._folded_catch_cell(
+        cs, rs, ts, seed, tk, flight, dwell_s, (0.0, 0.0), limits, geom, cfg,
+        pattern_flight_s=flight)
+
+
+def test_oval_cell_settles_at_the_release_site_so_no_limit_vel(sweep_mod):
+    """Box-fix item 3 (2026-10-18): the sweep's settle tail goes to the
+    RELEASE site's rest (what the executor dispatches), not 150 mm back to C
+    in rest_tail_s (that read LIMIT_VEL 447.8 > 350 at this cell)."""
+    ok, code, _reports = _oval_rung1_cell(sweep_mod, 0.65)
+    assert ok and code == 'OK', code
+
+
+def test_oval_cell_records_the_carry_seating_not_the_standalone_catch(sweep_mod):
+    """Box-fix item 4: the recorded seating comes from the judged carry window
+    (17.8 deg at the rung-1 cell), not the ~2 deg standalone catch at C."""
+    ok, code, reports = _oval_rung1_cell(sweep_mod, 0.65)
+    assert ok, code
+    m = sweep_mod._cell_metrics(reports)
+    assert m['seating_deg'] is not None and m['seating_deg'] >= 10.0, m
+    assert m['seating_az_g'] is not None and m['closing_ratio'] is not None
+
+
+def test_oval_sweep_default_dwell_is_the_rung1_cell_dwell(sweep_mod):
+    import inspect
+    assert sweep_mod.OVAL_DWELL_S == 0.65
+    assert (inspect.signature(sweep_mod.oval_sweep).parameters['dwell_s'].default
+            == 0.65)
 
 
 def test_tiny_hop_sweep_produces_a_hop_box_both_directions_containing_the_origin(
@@ -1021,7 +1236,7 @@ def test_describe_miss_names_an_apex_outside_every_swept_band():
     swept, and does not blame the site positions."""
     msg = ab.describe_miss([_box()], 'hop', ('P1', 'P2'), 1.10,
                            release_site_xy_mm=_DEFAULT_XY_MM,
-                           target_site_xy_mm=_DEFAULT_XY_MM)
+                           target_site_xy_mm=_DEFAULT_XY_MM, dwell_s=_DWELL_S)
     assert 'outside the range' in msg
     assert '0.850-0.950 m' in msg
     assert 'separation_mm' not in msg
@@ -1033,7 +1248,7 @@ def test_describe_miss_names_a_site_separation_mismatch():
     sites are not the swept ones -- both separations are named."""
     msg = ab.describe_miss([_box()], 'hop', ('P1', 'P2'), 0.90,
                            release_site_xy_mm=(-50.0, 0.0),
-                           target_site_xy_mm=(50.0, 0.0))
+                           target_site_xy_mm=(50.0, 0.0), dwell_s=_DWELL_S)
     assert 'IS covered' in msg and 'separation_mm' in msg
     assert '100.0 mm apart' in msg
 

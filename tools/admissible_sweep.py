@@ -64,6 +64,10 @@ Usage (venv)::
     python tools/admissible_sweep.py --site-pairs single \
         --single-apex 0.5 0.6 0.7 0.8 0.9
     python tools/admissible_sweep.py --site-pairs hop --hop-separation-mm 250
+    # The one-ball oval (two-ball-oval P1): its OWN invocation (own dwell, own
+    # separation), merged with the other families' files -- never part of 'all'
+    python tools/admissible_sweep.py --site-pairs oval --dwell-s 0.65 \
+        --oval-separation-mm 150 --oval-apex 0.95 --single-apex-halfwidth 0.025
 
 Deterministic (``tests/motion/test_unified_cycle.py::
 test_planning_is_deterministic``); run twice and diff the YAML before quoting
@@ -97,6 +101,14 @@ import sys
 import time
 from typing import Dict, List, Optional, Sequence, Tuple
 
+# Pin BLAS to ONE thread IN CODE, before numpy is imported (two-ball-oval P1,
+# 2026-10-18): the sweep is only bit-identical run to run with single-threaded
+# BLAS (2026-09-27 rule above), and that must not depend on the operator
+# remembering the env vars. Forced (not setdefault): a stray OMP_NUM_THREADS=4
+# in the shell would otherwise silently break the determinism cmp.
+for _blas_var in ('OPENBLAS_NUM_THREADS', 'OMP_NUM_THREADS', 'MKL_NUM_THREADS'):
+    os.environ[_blas_var] = '1'
+
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 for _p in (_ROOT, os.path.join(_ROOT, 'ros_ws', 'src', 'jugglebot')):
     if _p not in sys.path:
@@ -108,7 +120,9 @@ import jugglebot.hardware_config as hw                                 # noqa: E
 from jugglebot.motion import unified_cycle as uc                       # noqa: E402
 from jugglebot.motion.geometry import StewartGeometry                  # noqa: E402
 from jugglebot.motion.trajectory import ballistics_bc as bal           # noqa: E402
+from jugglebot.motion.trajectory import cup_cycle as cc                # noqa: E402
 from jugglebot.motion.trajectory import cup_realize as cr              # noqa: E402
+from jugglebot.motion.trajectory import feasibility as fz              # noqa: E402
 from jugglebot.motion.trajectory import throw_envelope                 # noqa: E402
 from jugglebot.motion.trajectory.limits import TrajectoryLimits        # noqa: E402
 from jugglebot.motion.skills import admissible as ab                   # noqa: E402
@@ -276,6 +290,18 @@ def _catch_cell(to_site, release_seed, takeoff_vel_mm_s, flight_s: float,
                 limits: TrajectoryLimits, geom, cfg):
     """Plan + gate the CATCH for one landing offset (mm, relative to
     ``to_site``). Returns ``(ok, code)``."""
+    ok, code, _report = _catch_cell_report(
+        to_site, release_seed, takeoff_vel_mm_s, flight_s, tau_s, offset_mm,
+        limits, geom, cfg)
+    return ok, code
+
+
+def _catch_cell_report(to_site, release_seed, takeoff_vel_mm_s, flight_s: float,
+                       tau_s: float, offset_mm: Tuple[float, float],
+                       limits: TrajectoryLimits, geom, cfg):
+    """:func:`_catch_cell`'s one body: ``(ok, code, report)``, ``report`` the
+    segment's ``FeasibilityReport`` (the refusing gate's report, if it carried
+    one, on a ``CycleInfeasible``)."""
     landing_mm = to_site.catch_site_mm() + np.array(
         [float(offset_mm[0]), float(offset_mm[1]), 0.0])
     v_arrival = bal.arrival_velocity(takeoff_vel_mm_s, flight_s)
@@ -284,10 +310,10 @@ def _catch_cell(to_site, release_seed, takeoff_vel_mm_s, flight_s: float,
     try:
         segment = sg.plan_segment(sg.CATCH, release_seed, terminal, cfg, limits, geom)
     except uc.CycleInfeasible as exc:
-        return False, exc.code
+        return False, exc.code, exc.report
     if not _within_margin(segment.meta.report, limits):
-        return False, 'MARGIN'
-    return True, 'OK'
+        return False, 'MARGIN', segment.meta.report
+    return True, 'OK', segment.meta.report
 
 
 def _chained_catch_cell(site, release_seed, takeoff_vel_mm_s, flight_s: float,
@@ -462,7 +488,9 @@ def _hop_catch_cell(from_site, to_site, release_seed, takeoff_vel_mm_s,
     then one more :func:`_catch_cell` at ``from_site`` for that carried
     throw -- the command ``u`` (the landing offset) applies to BOTH legs,
     exactly as :func:`_chained_catch_cell` applies it to a same-site chain's
-    steady state.  Returns ``(ok, code)``.
+    steady state.  Returns ``(ok, code)``.  A thin wrapper over
+    :func:`_folded_catch_cell` (catch at ``to_site``, release at ``to_site``,
+    land at ``from_site``) -- the one body the one-ball oval shares.
 
     **``pattern_flight_s`` vs ``flight_s`` (R5, 2026-09-30 fix, same split as
     :func:`_chained_catch_cell`).** ``flight_s`` (commanded, a possible ladder
@@ -473,37 +501,75 @@ def _hop_catch_cell(from_site, to_site, release_seed, takeoff_vel_mm_s,
     every arrival velocity (both this catch's and the final :func:`_catch_cell`'s)
     -- the schedule's own beat, which does not move with the command.
     """
+    ok, code, _reports = _folded_catch_cell(
+        to_site, to_site, from_site, release_seed, takeoff_vel_mm_s,
+        flight_s, dwell_s, offset_mm, limits, geom, cfg,
+        pattern_flight_s=pattern_flight_s)
+    return ok, code
+
+
+def _folded_catch_cell(catch_site, release_site, target_site, release_seed,
+                       takeoff_vel_mm_s, flight_s: float, dwell_s: float,
+                       offset_mm: Tuple[float, float],
+                       limits: TrajectoryLimits, geom, cfg,
+                       pattern_flight_s: Optional[float] = None):
+    """The folded steady window: CATCH at ``catch_site`` carrying
+    ``then_throw`` released at ``release_site`` toward ``target_site``, then
+    one :func:`_catch_cell` at ``target_site`` for that carried throw.
+    Returns ``(ok, code, reports)`` -- ``reports`` the (up to two)
+    ``FeasibilityReport``s of the segments that were planned, refused ones
+    included when the gate carried one, for the oval's per-cell metrics.
+
+    Hop: ``(to, to, from)`` -- release where it caught. Oval: ``(C, T, C)`` --
+    the carry C -> T is INSIDE the folded catch window and the throw lands
+    back on C (``ThenThrow.release_site``, plan two-ball-oval § 2.2).
+    """
     Tp = float(pattern_flight_s) if pattern_flight_s is not None else float(flight_s)
-    landing_mm = to_site.catch_site_mm() + np.array(
+    landing_mm = catch_site.catch_site_mm() + np.array(
         [float(offset_mm[0]), float(offset_mm[1]), 0.0])
     v_arrival = bal.arrival_velocity(takeoff_vel_mm_s, Tp)
     t_release = Tp + float(dwell_s)
-    target_back_mm = from_site.throw_site_mm() + np.array(
+    target_back_mm = target_site.throw_site_mm() + np.array(
         [float(offset_mm[0]), float(offset_mm[1]), 0.0])
     then_throw = sg.ThrowAfterCatch(t_release_s=t_release,
-                                    site_mm=to_site.throw_site_mm(),
+                                    site_mm=release_site.throw_site_mm(),
                                     target_mm=target_back_mm, flight_s=float(flight_s))
     terminal = sg.CatchTerminal(landing_mm=landing_mm, landing_vel_mm_s=v_arrival,
                                 t_land_s=Tp,
-                                rest_site_mm=to_site.rest_site_mm(),
+                                # The executor settles at the RELEASE site
+                                # (`release_site_of(skill).rest_site_mm()`,
+                                # executor `_catch_terminal`): for a carried
+                                # fold (oval, release T != catch C) the tail
+                                # runs release -> T's rest, not 150 mm back to
+                                # C in rest_tail_s (that read LIMIT_VEL 448
+                                # at the rung-1 cell). Same-site folds (hop,
+                                # columns) have release == catch: unchanged.
+                                rest_site_mm=release_site.rest_site_mm(),
                                 then_throw=then_throw)
     try:
         segment = sg.plan_segment(sg.CATCH, release_seed, terminal, cfg, limits, geom)
     except uc.CycleInfeasible as exc:
-        return False, exc.code
+        return False, exc.code, [exc.report]
     if not _within_margin(segment.meta.report, limits):
-        return False, 'MARGIN'
+        return False, 'MARGIN', [segment.meta.report]
     # `Segment.release_state` (2026-09-30): the raw re-solve this replaced
     # omitted the hold knots and crashed run 1 of the R5 sweep on a seed the
     # production solve had accepted (`HAND_LIMIT_ACC` 3553 > 3500).
+    # The extended plan's own `meta.report` drops the seating fields (the
+    # merge of the head window with the settle tail keeps only peaks), so the
+    # JUDGED window's metrics are re-read by validating the extended plan
+    # itself (it carries the catch evidence and the carry window). A cell that
+    # passed above was already admitted by exactly this gate.
+    window_report = fz.validate_cycle(segment.plan, limits, geom)
     next_release_seed = segment.release_state
     next_takeoff = segment.takeoff_vel_mm_s
-    ok2, code2 = _catch_cell(from_site, next_release_seed, next_takeoff,
-                             Tp, Tp, offset_mm,
-                             limits, geom, cfg)
+    ok2, code2, report2 = _catch_cell_report(
+        target_site, next_release_seed, next_takeoff, Tp, Tp, offset_mm,
+        limits, geom, cfg)
+    reports = [window_report, report2]
     if not ok2:
-        return False, 'CHAIN_CATCH:%s' % code2
-    return True, 'OK'
+        return False, 'CHAIN_CATCH:%s' % code2, reports
+    return True, 'OK', reports
 
 
 def _max_rectangle(xs: Sequence[float], ys: Sequence[float], pass_fn,
@@ -969,6 +1035,208 @@ def hop_sweep(*, apexes_m: Sequence[float] = HOP_APEXES_M,
     return boxes, rows
 
 
+#: The one-ball oval's rung-1 geometry/dwell (two-ball-oval P1, plan § 2.6):
+#: T = P1 and C = P2 of ``columns_sites(150)``, dwell 0.65 s (decision 16
+#: AMENDED 2026-10-18: at 0.50 s the production pre-release hold makes the
+#: carry read 32.1 deg > the cone -- report_diag32; 0.65 is the lowest 0.05
+#: step that passes, the bisection is in report_box_fix). The dwell is a
+#: KEY of the cell (``admissible.select`` matches it exactly), so the oval is
+#: swept in its OWN invocation (``--site-pairs oval --dwell-s 0.65``) and merged
+#: with the other families' files the way the S8 re-sweep merged its three.
+OVAL_SEPARATION_MM = 150.0
+OVAL_APEXES_M = (0.95,)
+OVAL_DWELL_S = 0.65
+
+
+def _cell_metrics(reports) -> Dict[str, Optional[float]]:
+    """The per-cell C-CUP-4 / catch metrics, worst over ``reports`` (the
+    ``FeasibilityReport``s of the cell's catch segments): max seating residual
+    (deg), min ``(a_z + g)/g``, min closing-speed ratio, max skid (mm/s).
+    Read through ``getattr`` so a report that predates a field yields ``None``
+    rather than crashing the sweep; a ``None`` field is skipped."""
+    out: Dict[str, Optional[float]] = {}
+    for key, attr, pick in (
+            ('seating_deg', 'max_cup_seating_deg', max),
+            ('seating_az_g', 'min_cup_seating_az_g', min),
+            ('closing_ratio', 'catch_closing_ratio', min),
+            ('skid_mmps', 'catch_skid_mmps', max)):
+        vals = [getattr(r, attr, None) for r in reports if r is not None]
+        vals = [float(v) for v in vals if v is not None]
+        out[key] = round(pick(vals), 4) if vals else None
+    return out
+
+
+def _oval_window(site_t, site_c, apex_m: float, dwell_s: float):
+    """``(catch_site, release_site, target_site)`` of the folded oval window,
+    READ from the production compiler (``OneBallPattern(roles='fixed')`` +
+    the fold in ``compile_one_ball``) rather than assumed, so a compiler change
+    to who catches / releases / lands where breaks this sweep loudly instead of
+    sweeping a window the executor no longer dispatches."""
+    pattern = sc.OneBallPattern(sites=(site_t, site_c), apex_m=float(apex_m),
+                                dwell_s=float(dwell_s), n_throws=3, roles='fixed')
+    schedule = sc.compile_one_ball(pattern, t0_abs_s=0.0)
+    folded = [sk for sk in schedule.skills
+              if sk.kind == sc.CATCH and sk.then_throw is not None]
+    if not folded:
+        raise RuntimeError('oval compile produced no folded CATCH+then_throw')
+    sk = folded[0]
+    tt = sk.then_throw
+    release_site = tt.release_site_or(sk.site)
+    if not (sk.site is site_c and release_site is site_t and tt.target is site_c
+            and abs(tt.t_release_abs_s - (sk.t_abs_s + float(dwell_s))) <= 1e-9
+            and schedule.pattern == 'oval_1ball'):
+        raise RuntimeError(
+            'oval compile folded a window this sweep does not model: catch %s '
+            'release %s target %s pattern %s' % (
+                sk.site.name, release_site.name, tt.target.name,
+                schedule.pattern))
+    return sk.site, release_site, tt.target
+
+
+def oval_sweep(*, apexes_m: Sequence[float] = OVAL_APEXES_M,
+               offsets_mm: Sequence[float] = OFFSETS_MM,
+               dwell_s: float = OVAL_DWELL_S,
+               separation_mm: float = OVAL_SEPARATION_MM,
+               leg_vel: float = LEG_VEL_MMPS, leg_acc: float = LEG_ACC_MMPS2,
+               leg_jerk: float = LEG_JERK_MMPS3, hand_acc: float = HAND_ACC_RPS2,
+               launch_s: float = SINGLE_SITE_LAUNCH_S,
+               center_apex_m: Optional[float] = None,
+               pattern_flight_s: Optional[float] = None,
+               workspace_xy_m: Optional[float] = None, log=print
+               ) -> Tuple[List['ab.AdmissibleBox'], List[Dict]]:
+    """The one-ball OVAL sweep (two-ball-oval P1, plan §§ 2.2 / 2.6): one box,
+    ``pattern='oval_1ball'``, ``site_pair=(T, C)`` = ``(P1, P2)`` of
+    ``columns_sites(separation_mm)``, release xy = T, target xy = C.
+
+    The chain is the FOLDED window (:func:`_oval_window` reads it from the
+    production compiler): THROW from rest at T toward C (:func:`_hop_throw_cell`),
+    then CATCH at C -- the empty transit T -> C inside its window -- carrying
+    the throw released at T and landing on C (:func:`_folded_catch_cell`,
+    release site = T), then the standalone CATCH at C of that throw. The
+    landing offset applies to every leg, as in the hop.
+
+    Per cell the row records pass/fail + code AND the seating residual (deg),
+    min ``(a_z + g)/g``, closing-speed ratio and skid (mm/s) read off the
+    segment reports (:func:`_cell_metrics`), refused cells included. The
+    workspace refusal (decision 38, amended 2026-10-18: no margin) is the SAME function the node
+    calls (``admissible.check_site_workspace``), applied per cell with that
+    cell's offset as the half-extent, against ``workspace_xy_m`` (default the
+    cup-cycle planner's own bound).
+    """
+    geom = StewartGeometry()
+    limits = _limits(leg_vel, leg_acc, leg_jerk, hand_acc)
+    cfg = sg.SegmentConfig()
+    ws_m = (float(workspace_xy_m) if workspace_xy_m is not None
+            else float(cc.CupCycleConfig().workspace_xy_m))
+    site_t, site_c = st.columns_sites(separation_mm)
+    flights = [sc.flight_s(a) for a in apexes_m]
+    apex_band = (min(float(a) for a in apexes_m), max(float(a) for a in apexes_m))
+    center_apex = (float(center_apex_m) if center_apex_m is not None
+                   else sorted(float(a) for a in apexes_m)[len(apexes_m) // 2])
+    center_flight = sc.flight_s(center_apex)
+    ghash = ab.gate_hash()
+    swept_at = _dt.date.today().isoformat()
+    limits_dict = dict(leg_vel_mmps=float(leg_vel), leg_acc_mmps2=float(leg_acc),
+                       leg_jerk_mmps3=float(leg_jerk), hand_acc_rps2=float(hand_acc))
+    xy_t = (float(site_t.cup_mm[0]), float(site_t.cup_mm[1]))
+    xy_c = (float(site_c.cup_mm[0]), float(site_c.cup_mm[1]))
+
+    def _cell_box(dx, dy):
+        half_m = max(abs(dx), abs(dy)) / 1000.0
+        return ab.AdmissibleBox(
+            site_pair=(site_t.name, site_c.name), apex_band_m=apex_band,
+            landing_xy_m=((-half_m, half_m), (-half_m, half_m)),
+            apex_m=(0.0, 1.0), pattern='oval_1ball', release_site_xy_mm=xy_t,
+            target_site_xy_mm=xy_c, limits=limits_dict, gate_hash=ghash,
+            swept_at=swept_at, dwell_s=float(dwell_s))
+
+    rows: List[Dict] = []
+    pass_grid = {}   # (flight, dx, dy) -> bool
+    cell_metrics = {}
+    for T in flights:
+        t0 = time.perf_counter()
+        Tp = float(pattern_flight_s) if pattern_flight_s is not None else T
+        catch_site, release_site, target_site = _oval_window(
+            site_t, site_c, sc.apex_m(Tp), dwell_s)
+        ok, code, release_seed, takeoff = _hop_throw_cell(
+            release_site, catch_site, Tp, launch_s, limits, geom, cfg)
+        row = dict(site_pair=(site_t.name, site_c.name), flight_s=round(T, 4),
+                   offset_mm=None, ok=ok,
+                   code=('THROW:%s' % code) if not ok else 'THROW:OK',
+                   wall_s=round(time.perf_counter() - t0, 3))
+        rows.append(row)
+        log(row)
+        if not ok:
+            for dx in offsets_mm:
+                for dy in offsets_mm:
+                    pass_grid[(T, dx, dy)] = False
+            continue
+        for dx in offsets_mm:
+            for dy in offsets_mm:
+                t1 = time.perf_counter()
+                lok, lcode, _seed, _takeoff = _hop_throw_cell(
+                    release_site, catch_site, T, launch_s, limits, geom, cfg,
+                    offset_mm=(dx, dy))
+                reports: list = []
+                if lok:
+                    cok, ccode, reports = _folded_catch_cell(
+                        catch_site, release_site, target_site, release_seed,
+                        takeoff, T, dwell_s, (dx, dy), limits, geom, cfg,
+                        pattern_flight_s=Tp)
+                else:
+                    cok, ccode = False, 'LAUNCH:%s' % lcode
+                if cok:
+                    reason = ab.check_site_workspace(
+                        (site_t, site_c), _cell_box(dx, dy), ws_m)
+                    if reason is not None:
+                        cok, ccode = False, ab.SITE_OUTSIDE_WORKSPACE_REASON
+                metrics = _cell_metrics(reports)
+                pass_grid[(T, dx, dy)] = cok
+                cell_metrics[(T, dx, dy)] = metrics
+                rows.append(dict(site_pair=(site_t.name, site_c.name),
+                                 flight_s=round(T, 4), offset_mm=(dx, dy),
+                                 ok=cok, code=ccode,
+                                 wall_s=round(time.perf_counter() - t1, 3),
+                                 **metrics))
+                log(rows[-1])
+
+    flight_band, rect = _flight_band_and_rect(flights, offsets_mm, pass_grid,
+                                              center_flight)
+    if flight_band is None:
+        log({'site_pair': (site_t.name, site_c.name), 'WARNING':
+             'the CENTRE flight %.4f s fails at zero offset -- the owner '
+             'operating point itself is refused, not merely a margin edge'
+             % center_flight})
+    if rect is None:
+        landing_xy = ((float('nan'), float('nan')), (float('nan'), float('nan')))
+        apex_bounds = (float('nan'), float('nan'))
+    else:
+        xlo, xhi, ylo, yhi = rect
+        landing_xy = ((xlo / 1000.0, xhi / 1000.0), (ylo / 1000.0, yhi / 1000.0))
+        apex_bounds = (sc.apex_m(flight_band[0]), sc.apex_m(flight_band[1]))
+        # The worst of every metric over the cells the box actually admits.
+        inside = [m for (T, dx, dy), m in cell_metrics.items()
+                  if flight_band[0] <= T <= flight_band[1]
+                  and xlo <= dx <= xhi and ylo <= dy <= yhi]
+        worst: Dict[str, Optional[float]] = {}
+        for key, pick in (('seating_deg', max), ('seating_az_g', min),
+                          ('closing_ratio', min), ('skid_mmps', max)):
+            vals = [m[key] for m in inside if m[key] is not None]
+            worst[key] = pick(vals) if vals else None
+        log({'site_pair': (site_t.name, site_c.name), 'BOX_WORST_METRICS': worst})
+        rows.append(dict(site_pair=(site_t.name, site_c.name),
+                         box_worst_metrics=worst))
+    box = ab.AdmissibleBox(
+        site_pair=(site_t.name, site_c.name), apex_band_m=apex_band,
+        landing_xy_m=landing_xy, apex_m=apex_bounds, pattern='oval_1ball',
+        release_site_xy_mm=xy_t, target_site_xy_mm=xy_c, limits=limits_dict,
+        gate_hash=ghash, swept_at=swept_at, dwell_s=float(dwell_s))
+    final = ab.check_site_workspace((site_t, site_c), box, ws_m)
+    if final is not None:
+        log({'site_pair': (site_t.name, site_c.name), 'WARNING': final})
+    return [box], rows
+
+
 def _apex_bands_overlap(a: Tuple[float, float], b: Tuple[float, float]) -> bool:
     """True when ``a`` and ``b`` share more than a boundary point (1e-9 m
     tolerance) -- mirrors ``admissible._apex_bands_overlap``: two bands that
@@ -1066,10 +1334,17 @@ def _single_apex_boxes(apexes_m: Sequence[float], *, flight_frac: Sequence[float
                 separation_mm=separation_mm, leg_vel=leg_vel, leg_acc=leg_acc,
                 leg_jerk=leg_jerk, hand_acc=hand_acc, center_apex_m=float(a),
                 pattern_flight_s=centre, log=log)
+        elif pattern == 'oval_1ball':
+            oval_apexes = [sc.apex_m(t) for t in flights]
+            a_boxes, a_rows = oval_sweep(
+                apexes_m=oval_apexes, offsets_mm=offsets_mm, dwell_s=dwell_s,
+                separation_mm=separation_mm, leg_vel=leg_vel, leg_acc=leg_acc,
+                leg_jerk=leg_jerk, hand_acc=hand_acc, center_apex_m=float(a),
+                pattern_flight_s=centre, log=log)
         else:
             raise ValueError(
-                "pattern must be one of 'self_toss'/'columns'/'hop', got %r"
-                % (pattern,))
+                "pattern must be one of 'self_toss'/'columns'/'hop'/"
+                "'oval_1ball', got %r" % (pattern,))
         h = float(halfwidth_m)
         for box in a_boxes:
             boxes.append(dataclasses.replace(
@@ -1106,7 +1381,8 @@ def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--out', default=_DEFAULT_OUT)
     ap.add_argument('--quiet', action='store_true')
-    ap.add_argument('--site-pairs', choices=('columns', 'single', 'hop', 'all'),
+    ap.add_argument('--site-pairs',
+                    choices=('columns', 'single', 'hop', 'oval', 'all'),
                     default='all',
                     help='which boxes to sweep: the two columns orderings, '
                          'the R3 single-site self-toss pair, the R4 '
@@ -1157,16 +1433,30 @@ def main(argv=None) -> int:
     ap.add_argument('--single-site-xy', type=_xy, default=None,
                     help='"x,y" mm of the single site; default P1 = '
                          'sites.columns_sites(--separation-mm)[0]')
-    ap.add_argument('--dwell-s', type=float, default=DWELL_S)
+    ap.add_argument('--dwell-s', type=float, default=None,
+                    help='landing dwell (s); default %.2f, or %.2f for '
+                         '--site-pairs oval (the rung-1 cell)'
+                         % (DWELL_S, OVAL_DWELL_S))
     ap.add_argument('--separation-mm', type=float, default=SEPARATION_MM)
     ap.add_argument('--hop-separation-mm', type=float, default=HOP_SEPARATION_MM,
                     help='R4 hop-pair separation (mm); independent of '
                          '--separation-mm, which stays the columns cell\'s')
+    ap.add_argument('--oval-separation-mm', type=float, default=OVAL_SEPARATION_MM,
+                    help='one-ball oval T-C separation (mm); used by '
+                         '--site-pairs oval only (NOT part of "all": the '
+                         'oval cell has its own dwell, so it is swept in its '
+                         'own invocation and merged)')
+    ap.add_argument('--oval-apex', type=float, nargs='+',
+                    default=list(OVAL_APEXES_M),
+                    help='--site-pairs oval: one box per apex (m), band '
+                         '+/- --single-apex-halfwidth')
     ap.add_argument('--leg-vel', type=float, default=LEG_VEL_MMPS)
     ap.add_argument('--leg-acc', type=float, default=LEG_ACC_MMPS2)
     ap.add_argument('--leg-jerk', type=float, default=LEG_JERK_MMPS3)
     ap.add_argument('--hand-acc', type=float, default=HAND_ACC_RPS2)
     args = ap.parse_args(argv)
+    if args.dwell_s is None:
+        args.dwell_s = OVAL_DWELL_S if args.site_pairs == 'oval' else DWELL_S
     if args.single_apex is not None:
         _refuse_overlapping_single_apex_bands(
             args.single_apex, args.single_apex_halfwidth, ap)
@@ -1206,6 +1496,15 @@ def main(argv=None) -> int:
                 leg_acc=args.leg_acc, leg_jerk=args.leg_jerk, hand_acc=args.hand_acc,
                 log=log)
         boxes.extend(hboxes)
+    if args.site_pairs == 'oval':
+        oboxes, _rows = _single_apex_boxes(
+            args.oval_apex, flight_frac=args.single_flight_frac,
+            halfwidth_m=args.single_apex_halfwidth,
+            offsets_mm=args.offsets_mm, dwell_s=args.dwell_s,
+            separation_mm=args.oval_separation_mm, leg_vel=args.leg_vel,
+            leg_acc=args.leg_acc, leg_jerk=args.leg_jerk,
+            hand_acc=args.hand_acc, pattern='oval_1ball', log=log)
+        boxes.extend(oboxes)
     if args.site_pairs in ('single', 'all'):
         if args.single_site_xy is not None:
             sx, sy = args.single_site_xy

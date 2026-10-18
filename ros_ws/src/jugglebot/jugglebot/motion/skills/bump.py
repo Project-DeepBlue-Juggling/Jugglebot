@@ -98,7 +98,7 @@ import jugglebot.hardware_config as hw
 from jugglebot.motion import unified_cycle as uc
 from jugglebot.motion.skills.schedule import WIRE_READ_KNOTS
 from jugglebot.motion.trajectory import feasibility as fz
-from jugglebot.motion.trajectory.cycle_plan import CyclePlan
+from jugglebot.motion.trajectory.cycle_plan import CyclePlan, shift_catch_evidence
 
 #: Knots past the wire's read horizon at dispatch before the first knot the bump
 #: may change is ``k_b + 1``: ``k_b = k_wire + 2`` (the 25-50 ms install
@@ -248,7 +248,9 @@ def _plan_slice(pose, pose_vel, plan: CyclePlan, k0: int, k1: int) -> CyclePlan:
     sl = slice(k0, k1 + 1)
     return CyclePlan(pose[sl], pose_vel[sl], plan.hand_rev[sl],
                      plan.hand_vel_rps[sl], plan.dt, catch_k=catch_k,
-                     contact_knots=ck)
+                     contact_knots=ck,
+                     catch_evidence=shift_catch_evidence(
+                         plan.catch_evidence, -k0, plan.dt, k1 - k0 + 1))
 
 
 def _bumped_meta(meta: uc.CycleMeta, i_rel: int, i_catch: Optional[int],
@@ -366,7 +368,8 @@ def apply_catch_bump(plan: CyclePlan, meta: uc.CycleMeta, k_wire: int,
                        report=rep, release_offset_xy_mm=b_rel,
                        launch_bias_xy_mm_s=v_b)
     new_plan = CyclePlan(pose, pose_vel, plan.hand_rev, plan.hand_vel_rps, dt,
-                         catch_k=plan.catch_k, contact_knots=plan.contact_knots)
+                         catch_k=plan.catch_k, contact_knots=plan.contact_knots,
+                         catch_evidence=plan.catch_evidence)
     # The bumped catch's mark: the touch-down nearest t_c within half a knot
     # (t_c is the caller's committed landing; the mark is the interpolated one).
     near = [(abs(float(cm.t_s) - t_c), i) for i, cm in enumerate(meta.catches)

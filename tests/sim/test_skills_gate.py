@@ -484,7 +484,8 @@ def test_a_small_hop_learner_run_commands_below_the_old_apex_floor():
     from jugglebot.motion.skills import admissible as adm
     boxes = sg._load_admissible_boxes()
     box = adm.select(boxes, 'hop', ('P1', 'P2'), cfg.apex_m,
-                     release_site_xy_mm=(-125.0, 0.0), target_site_xy_mm=(125.0, 0.0))
+                     release_site_xy_mm=(-125.0, 0.0), target_site_xy_mm=(125.0, 0.0),
+                     dwell_s=cfg.dwell_s)
     assert box is not None and not box.empty
     lo, hi = box.apex_m
     commanded = [t['u'][2] for t in res['throws']]
@@ -492,6 +493,64 @@ def test_a_small_hop_learner_run_commands_below_the_old_apex_floor():
     assert all(lo - 1e-9 <= u <= hi + 1e-9 for u in commanded), (commanded, lo, hi)
     print('HOP-SMALL-RUN entered_band=%r throws_to_band_apex=%r min_u_apex=%.4f box=(%.3f, %.3f)'
           % (res['entered_band'], res['throws_to_band_apex'], min(commanded), lo, hi))
+
+
+# ── Two-ball-oval P1: the fixed-role one-ball oval ──────────────────────────
+
+def _small_oval_run(tmp_path, monkeypatch):
+    """The hop learner run's shape (5 throws, band-entry 5, 15 attempts) on
+    ``pattern='oval_1ball'`` at the rung-1 separation (150 mm).  The tmp dir
+    the gate makes for its memory is pinned to ``tmp_path`` so the test can
+    read the learner's rows back."""
+    mem_dir = tmp_path / 'oval_mem'
+    mem_dir.mkdir()
+    monkeypatch.setattr(sg.tempfile, 'mkdtemp', lambda *a, **k: str(mem_dir))
+    cfg = SelfTossGateConfig(pattern='oval_1ball', separation_mm=150.0,
+                             dwell_s=0.65, apex_m=0.95,
+                             target_throws=5, band_entry_throws=5,
+                             max_attempts=15)
+    return cfg, SkillsGate(cfg).run_self_toss_seed(0, policy='A'), mem_dir
+
+
+def test_oval_1ball_schedule_is_every_throw_from_T_and_every_catch_at_C():
+    """The compiled choreography the gate flies: fixed roles, ONE folded
+    window per cycle (a CATCH at C carrying the next THROW from T), the
+    schedule labelled 'oval_1ball' (the box key the executor reads)."""
+    cfg = SelfTossGateConfig(pattern='oval_1ball', separation_mm=150.0)
+    t_site, c_site = sg._sites_for(cfg)
+    assert (t_site.name, c_site.name) == ('P1', 'P2')
+    pat = sk.OneBallPattern(sites=(t_site, c_site), apex_m=0.95, dwell_s=0.65,
+                            n_throws=5, roles='fixed')
+    sched = sk.compile_one_ball(pat, 0.0)
+    assert sched.pattern == 'oval_1ball'
+    throws = [k for k in sched.skills if k.kind == 'THROW']
+    catches = [k for k in sched.skills if k.kind == 'CATCH']
+    folded = [k for k in catches if k.then_throw is not None]
+    assert all(k.site is t_site for k in throws)
+    assert all(k.site is c_site for k in catches)
+    assert all(k.then_throw.release_site is t_site for k in folded)
+    assert len(throws) == 1 and len(folded) == 5 - 1       # one window per cycle
+    assert len(sched.skills) == 5 + 3                      # REST + n catch/throw + REST
+
+
+def test_a_small_oval_learner_run_flies_the_choreography_and_keys_memory_on_T(
+        tmp_path, monkeypatch):
+    """Accept code path: ``compile_one_ball(roles='fixed')`` -> executor box
+    key ('oval_1ball', (P1, P2)) -> carried release at T.  The learner's
+    memory rows' x[0:2] is T's xy (the release site), never C's.  If this
+    fails for an executor reason (box key miss on the committed YAML before
+    the oval cell is swept, release at the caught xy) the failure text is
+    the report -- nothing is mocked around it."""
+    cfg, res, mem_dir = _small_oval_run(tmp_path, monkeypatch)
+    assert res['pattern'] == 'oval_1ball'
+    assert res['separation_mm'] == pytest.approx(150.0)
+    assert res['n_throws_collected'] == 5, (res['end_codes'], res['refusals'])
+    assert res['drops'] == 0 and res['makes'] == 5
+    from jugglebot.motion.skills import memory as mem
+    t_xy_m = np.asarray(sg._sites_for(cfg)[0].cup_mm[:2], dtype=float) / 1000.0
+    memory = mem.Memory(str(mem_dir / 'memory.csv'))
+    assert len(memory) >= 5
+    assert np.allclose(memory._X[:, :2], t_xy_m, atol=1e-6), memory._X[:, :2]
 
 
 # ── R5: the columns learner run (Unit G, plan § R5) ─────────────────────────
@@ -722,7 +781,7 @@ def test_columns_feed_ball_1_arrives_at_the_requested_speed_and_angle():
 # ball) -- the negative control below.
 
 def _small_fed_columns_run(correlator):
-    cfg = SelfTossGateConfig(pattern='columns', apex_m=0.9,
+    cfg = SelfTossGateConfig(pattern='columns', apex_m=0.95, separation_mm=125.0,
                              feed_angle_deg=11.9, feed_speed_mmps=5600.0,
                              target_throws=4, band_entry_throws=4,
                              max_attempts=1, correlator=correlator)
@@ -846,7 +905,8 @@ def test_a_resend_supersedes_its_own_pending_release(monkeypatch):
 # ---------------------------------------------------------------------------
 
 def _small_one_ball_columns_run(reload=False):
-    cfg = SelfTossGateConfig(pattern='columns', apex_m=0.9, target_throws=4,
+    cfg = SelfTossGateConfig(pattern='columns', apex_m=0.95, separation_mm=125.0,
+                             target_throws=4,
                              band_entry_throws=4, max_attempts=3,
                              one_ball=True, one_ball_reload=reload)
     return cfg, SkillsGate(cfg).run_columns_1ball_seed(0, reload=reload)
@@ -894,7 +954,16 @@ def test_the_one_ball_columns_phantom_produces_no_learner_rows_or_announcement()
     not the operating point."""
     throws_out: list = []
     announced: list = []
-    gate = SkillsGate(SelfTossGateConfig(pattern='columns', apex_m=0.95))
+    # The committed columns cell (125 mm / apex 0.95 / dwell 0.27 / limits
+    # 350-5000-200000 / hand 3900 -- the config's own defaults but the
+    # separation) and the gate's OWN noise (cfg.noise: BB throw noise 0).  This
+    # direct attempt has no retry, and the earlier ``NoiseConfig()`` default
+    # (2 % BB throw noise) lands the 125 mm throw 40-190 mm off, so the catch
+    # aim ends INFEASIBLE / LIMIT_VEL (measured 2026-10-18, seeds 0-4); the
+    # 100 mm point this used to fly reads 33-36 deg of catch tilt residual,
+    # past CUP_SEATING_CONE (30 deg).
+    cfg = SelfTossGateConfig(pattern='columns', apex_m=0.95, separation_mm=125.0)
+    gate = SkillsGate(cfg)
     monkeypatch_target = sg._IdentityTracker.announce
     try:
         def spying_announce(self, ball_id, t_release_s, **kw):
@@ -905,7 +974,7 @@ def test_the_one_ball_columns_phantom_produces_no_learner_rows_or_announcement()
             sg.os.path.join(sg.tempfile.mkdtemp(), 'memory.csv'))
         end_code, loop, ictx, b_skills = gate.run_columns_1ball_attempt(
             n_throws=4, memory=tmp_memory, learner_cfg=sg.lr.LearnerConfig(),
-            noise=sg.JuggleNoise(sg.NoiseConfig(), seed=0),
+            noise=sg.JuggleNoise(cfg.noise, seed=0),
             throws_out=throws_out)
     finally:
         sg._IdentityTracker.announce = monkeypatch_target
@@ -926,7 +995,8 @@ def test_the_one_ball_columns_phantom_produces_no_learner_rows_or_announcement()
 # ---------------------------------------------------------------------------
 
 def _small_one_ball_fed_columns_run():
-    cfg = SelfTossGateConfig(pattern='columns', apex_m=0.9, target_throws=4,
+    cfg = SelfTossGateConfig(pattern='columns', apex_m=0.95, separation_mm=125.0,
+                             target_throws=4,
                              band_entry_throws=4, max_attempts=3,
                              one_ball_fed=True, feed_angle_deg=11.9,
                              feed_speed_mmps=5600.0)

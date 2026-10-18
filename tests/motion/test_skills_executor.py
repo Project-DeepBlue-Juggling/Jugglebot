@@ -1548,7 +1548,8 @@ def _box(xy=((-0.05, 0.05), (-0.05, 0.05)), apex=(0.3, 1.5), empty=False,
         target_site_xy_mm=target_xy_mm,
         limits={'leg_vel_mmps': 1.0, 'leg_acc_mmps2': 1.0,
                'leg_jerk_mmps3': 1.0, 'hand_acc_rps2': 1.0},
-        gate_hash='0123456789ab', swept_at='2026-09-13')
+        gate_hash='0123456789ab', swept_at='2026-09-13',
+        dwell_s=0.30)   # the dwell every schedule in this file compiles at
 
 
 def _schedule_with_then_throw(sites):
@@ -1642,8 +1643,7 @@ def test_a_catch_with_throw_computes_u_once_and_a_resend_reuses_it(sites):
     first_then_throw = inst.calls[-1][1].then_throw
     assert first_then_throw is not None
     first_target = first_then_throw.target_mm.copy()
-    first_shift = x._offset_flyback_mm(1, sch.skills[1].site,
-                                       sch.skills[1].then_throw.y_d, FLIGHT_S)
+    first_shift = x._offset_flyback_mm(1, sch.skills[1].then_throw.y_d, FLIGHT_S)
 
     box['landing'] = _fit_landing(pos_mm=land0.pos_mm + np.array([12.0, 0, 0]),
                                 vel_mm_s=LAND_VEL,
@@ -1655,8 +1655,7 @@ def test_a_catch_with_throw_computes_u_once_and_a_resend_reuses_it(sites):
     # pre-compensation of the re-derived release offset (`_offset_flyback_mm`,
     # 2026-09-28): the re-send moved the release, so the shift that makes that
     # offset fly back exactly moves with it. Everything else is identical.
-    shift = (x._offset_flyback_mm(1, sch.skills[1].site,
-                                  sch.skills[1].then_throw.y_d, FLIGHT_S)
+    shift = (x._offset_flyback_mm(1, sch.skills[1].then_throw.y_d, FLIGHT_S)
              - first_shift)
     np.testing.assert_allclose(resent_then_throw.target_mm, first_target + shift,
                                atol=1e-9)
@@ -4513,7 +4512,7 @@ def test_hand_corrected_landing_reduces_to_the_old_formula_for_a_vertical_throw(
         sch, catch_idx, catch_skill.ball_id)
     pos_mm = x._commanded_target_mm(target, y_d)
     flight_s = sc.flight_s(float(y_d[1]))
-    release_pos = x._release_pos_mm(release_idx, site)
+    release_pos = x._release_pos_mm(release_idx)
     launch_vel = ballistics_bc.launch_velocity(release_pos, pos_mm, flight_s)
     assert abs(launch_vel[0]) < 1e-9 and abs(launch_vel[1]) < 1e-9  # vertical
     old_vel = launch_vel * r
@@ -4534,7 +4533,7 @@ def _hand_corrected_reference(x, sch, catch_idx, catch_skill, r):
         sch, catch_idx, catch_skill.ball_id)
     pos_mm = x._commanded_target_mm(target, y_d)
     flight_s = sc.flight_s(float(y_d[1]))
-    release_pos = x._release_pos_mm(release_idx, site)
+    release_pos = x._release_pos_mm(release_idx)
     launch_vel = ballistics_bc.launch_velocity(release_pos, pos_mm, flight_s)
     rx, ry = tg.tilt_to_throw(launch_vel)
     axis = tg.cup_axis(rx, ry)
@@ -5132,17 +5131,18 @@ def test_a_landing_on_the_site_leaves_the_carried_release_bit_identical(
 # The release offset IS the learner state x[2:4] (unit A follow-up, 2026-09-28)
 # ---------------------------------------------------------------------------
 
-def _offset_dispatch(landing_offset_mm, authority_m=0.020):
+def _offset_dispatch(landing_offset_mm, authority_m=0.020, sites=None,
+                     roles='alternate', boxes=None, learner=None):
     """Dispatch a two-throw self-toss against a FAKE installer with every
     tracker landing offset by ``landing_offset_mm``; return
     ``(schedule, executor, rows)`` with ``rows`` the Experience sink.
 
     No solves: what is under test is the STATE the learner is queried with and
     the state the row carries, both of which are executor policy."""
-    site = si.columns_sites(SEPARATION_MM)[0]
+    sites = (si.columns_sites(SEPARATION_MM)[0],) if sites is None else sites
     sched = sc.compile_one_ball(
-        sc.OneBallPattern(sites=(site,), apex_m=0.9, dwell_s=0.30,
-                          n_throws=2), t0_abs_s=T0_ABS)
+        sc.OneBallPattern(sites=tuple(sites), apex_m=0.9, dwell_s=0.30,
+                          n_throws=2, roles=roles), t0_abs_s=T0_ABS)
     offset = np.asarray(landing_offset_mm, dtype=float)
     landings = {}
     for i, sk in enumerate(sched.skills):
@@ -5155,7 +5155,7 @@ def _offset_dispatch(landing_offset_mm, authority_m=0.020):
         sched, _FakeInstaller(),
         tracker=lambda ball_id: landings[min(landings)],
         catch_aim_source=ex.AIM_TRACKER, lateral_authority_m=authority_m,
-        on_experience=rows.append)
+        on_experience=rows.append, boxes=boxes, learner=learner)
     for sk in sched.skills:
         x.tick(sk.dispatch_s())
     return sched, x, rows
@@ -5241,13 +5241,14 @@ def test_a_landing_on_the_site_leaves_the_learner_state_bit_identical():
 # learner's own apex ratio (main session, 2026-09-28, after unit A's gate rows)
 # ---------------------------------------------------------------------------
 
-def _offset_dispatch_with_apex_gain(landing_offset_mm, u_apex):
+def _offset_dispatch_with_apex_gain(landing_offset_mm, u_apex, sites=None,
+                                    roles='alternate'):
     """As ``_offset_dispatch`` but with a fake learner that commands ``u_apex``
     for every throw (a plant that throws ``apex_d / u_apex`` high)."""
-    site = si.columns_sites(SEPARATION_MM)[0]
+    sites = (si.columns_sites(SEPARATION_MM)[0],) if sites is None else sites
     sched = sc.compile_one_ball(
-        sc.OneBallPattern(sites=(site,), apex_m=0.9, dwell_s=0.30,
-                          n_throws=2), t0_abs_s=T0_ABS)
+        sc.OneBallPattern(sites=tuple(sites), apex_m=0.9, dwell_s=0.30,
+                          n_throws=2, roles=roles), t0_abs_s=T0_ABS)
     offset = np.asarray(landing_offset_mm, dtype=float)
     landings = {}
     for i, sk in enumerate(sched.skills):

@@ -51,7 +51,7 @@ Pure Python + numpy.  No ROS2 / repo-root imports.
 
 from __future__ import annotations
 
-from typing import Optional, Tuple
+from typing import NamedTuple, Optional, Tuple
 
 import numpy as np
 
@@ -89,6 +89,64 @@ def _hermite(p0, v0, p1, v1, h: float, s: float):
     e11 = 6.0 * s - 2.0
     acc = (e00 * p0 + e01 * p1) / (h * h) + (e10 * v0 + e11 * v1) / h
     return pos, vel, acc
+
+
+class CatchEvidence(NamedTuple):
+    """One catch's touch-down facts, carried ON the plan for ``validate_cycle``.
+
+    ``CATCH_CLOSING_SPEED`` / ``CATCH_SKID`` (``feasibility``) judge the REALISED
+    cup at the INTERPOLATED touch-down against the ball's arrival, and a
+    ``CyclePlan`` is just knot arrays: the ball's arrival velocity, the
+    sub-knot touch-down time and the receive axis lived only on
+    ``unified_cycle.CycleMeta``, which the gate never receives.  Carrying them
+    here keeps ``validate_cycle``'s signature unchanged and gives every caller
+    (plan_window, extend, splice head, gate views, the bump) the one check.
+
+    ``knot``  — the knot at/just before touch-down (``cup.catch_k``);
+    ``t_s``   — the interpolated touch-down on THIS plan's clock;
+    ``vel_mm_s`` — the ball's arrival velocity at the cup (3 floats), mm/s;
+    ``program`` — 'held_axis' | 'level_pin' | 'match' (field comment below);
+    ``axis``  — the receive cup axis (3 floats), ``tilt_geometry.cup_axis(*receive_tilt)``
+    (``CyclePlan`` normalises both to tuples of floats).
+    """
+    knot: int
+    t_s: float
+    vel_mm_s: tuple
+    axis: tuple
+    #: which catch program built the record: ``'held_axis'`` (``goals.hold_tilt``
+    #: set - stationary cup at touch-down by design, exempt from
+    #: CATCH_CLOSING_SPEED), ``'level_pin'`` (``goals.receive_tilt`` set) or
+    #: ``'match'`` (neither).  See ``CATCH_PROGRAMS``.
+    program: str
+
+
+CATCH_PROGRAMS = ('held_axis', 'level_pin', 'match')
+
+
+def _checked_program(program):
+    if program not in CATCH_PROGRAMS:
+        raise ValueError("CatchEvidence.program %r not in %r" % (program, CATCH_PROGRAMS))
+    return program
+
+
+def shift_catch_evidence(evidence, shift_knots: int, dt: float, n_knots: int):
+    """``evidence`` re-indexed by ``shift_knots`` and clipped to ``[0, n_knots-1]``.
+
+    The twin of ``unified_cycle._shift_contact`` for the catch records: every
+    path that re-indexes a plan (extend, head, gate view, bump slice) must move
+    the records with the knots, or the catch checks silently disarm.  A record
+    whose knot leaves the plan is dropped (its window is not this plan's to
+    judge).  Returns ``None`` when nothing survives.
+    """
+    if not evidence:
+        return None
+    out = []
+    for e in evidence:
+        k = int(e.knot) + int(shift_knots)
+        if 0 <= k <= int(n_knots) - 1:
+            out.append(CatchEvidence(k, float(e.t_s) + int(shift_knots) * float(dt),
+                                     e.vel_mm_s, e.axis, e.program))
+    return tuple(out) or None
 
 
 def _checked_contact_knots(contact_knots, n_knots: int):
@@ -171,14 +229,21 @@ class CyclePlan(TrajectoryPlan):
         splice) must carry the field across, shifted and clipped to its own knot
         indices.  A constructor that drops it silently disarms the one gate that
         stands between a diving cup and a ball on the floor.
+    catch_evidence : tuple of :class:`CatchEvidence`, optional
+        One record per catch ON this plan (a joined plan has several; ``catch_k``
+        is only the FIRST).  ``validate_cycle`` REFUSES a plan with a catch
+        (``catch_k >= 0``) and no records (``CATCH_CLOSING_SPEED``, "catch
+        evidence missing") — never skips — so every constructor that re-indexes
+        a plan must carry them (:func:`shift_catch_evidence`).
     """
 
     __slots__ = ('pose', 'pose_vel', 'hand_rev', 'hand_vel_rps', 'dt',
-                 'n_knots', 't', 'catch_k', 'contact_knots')
+                 'n_knots', 't', 'catch_k', 'contact_knots', 'catch_evidence')
 
     def __init__(self, pose, pose_vel, hand_rev, hand_vel_rps, dt,
                  catch_k: int = -1,
-                 contact_knots: Optional[Tuple] = None):
+                 contact_knots: Optional[Tuple] = None,
+                 catch_evidence: Optional[Tuple] = None):
         p = np.asarray(pose, dtype=float)
         pv = np.asarray(pose_vel, dtype=float)
         hr = np.asarray(hand_rev, dtype=float).reshape(-1)
@@ -216,6 +281,14 @@ class CyclePlan(TrajectoryPlan):
         self.n_knots = n
         self.catch_k = int(catch_k)
         self.contact_knots = _checked_contact_knots(contact_knots, n)
+        # Plain floats/tuples, not arrays: plans are compared with ``==`` field by
+        # field (the solver-worker round-trip pin) and pickled across processes.
+        self.catch_evidence = (tuple(
+            CatchEvidence(int(e.knot), float(e.t_s),
+                          tuple(float(x) for x in e.vel_mm_s),
+                          tuple(float(x) for x in e.axis),
+                          _checked_program(e.program))
+            for e in catch_evidence) if catch_evidence else None)
         self.t = np.arange(n, dtype=float) * dt
         self.total_duration = (n - 1) * dt
 
@@ -223,7 +296,8 @@ class CyclePlan(TrajectoryPlan):
 
     @classmethod
     def from_realized(cls, realized, *,
-                      contact_knots: Optional[Tuple] = None
+                      contact_knots: Optional[Tuple] = None,
+                      catch_evidence: Optional[Tuple] = None
                       ) -> 'CyclePlan':
         """Build from anything with :class:`cup_realize.RealizedCycle`'s fields.
 
@@ -242,7 +316,8 @@ class CyclePlan(TrajectoryPlan):
                    dt=realized.dt,
                    catch_k=getattr(realized, 'catch_k', -1),
                    contact_knots=(getattr(realized, 'contact_knots', None)
-                                  if contact_knots is None else contact_knots))
+                                  if contact_knots is None else contact_knots),
+                   catch_evidence=catch_evidence)
 
     # ── TrajectoryPlan surface ──
 

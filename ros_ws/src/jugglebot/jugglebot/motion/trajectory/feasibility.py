@@ -59,6 +59,7 @@ from jugglebot.motion.trajectory.cup_realize import (
     CUP_Z_BASE_MM,
     SLIDER_REV_ZERO_MM,
 )
+from jugglebot.motion.trajectory import tilt_geometry as _tg
 from jugglebot.motion.trajectory.tilt_geometry import CUP_TILT_CENTER_Z_MM
 from jugglebot.motion.trajectory.shaping import _ShapedPlan, batched_shaped_states
 from jugglebot.motion.workspace import (
@@ -101,6 +102,74 @@ HAND_LIMIT_C2 = 'HAND_LIMIT_C2'
 # every other one here, so ``outcome_detail.base_outcome`` round-trips it and the
 # numbers live in ``reasons``.
 CUP_CONTACT_ACC = 'CUP_CONTACT_ACC'
+
+# ── the realised-plan catch / seating checks (plan two-ball-oval 2.3, 2.4) ────
+# Bare codes like every other here (``outcome_detail.base_outcome`` round-trips
+# them; the numbers live in ``reasons``).
+#
+# C-CUP-4, the SEATED carry.  Over the interior loaded knots (touch-down + 1 ..
+# last contact knot) the cup's REALISED specific force ``a - g`` must stay
+# inside ``CUP_SEATING_CONE_DEG`` of the PRESCRIBED cup axis and keep
+# ``a_z + g >= CUP_SEATING_FLOOR_G * g``.
+#
+# Origins (RE-BASED 2026-10-18, owner decision 1): 30 deg / 0.30 g sit just above
+# the worst residual of a pattern that FLIES today - the 250 mm hop with a landing
+# offset reads 28.7 deg and 0.320 g mid-carry (report_refusals, executor
+# hop_catch_releases_from_the_caught_position), the reload's held-axis feed catch
+# 20.2 deg.  THE MARGIN IS THIN: 1.3 deg over the hop's cone, 0.02 g under its
+# floor - a hop that reads worse than that is refused, deliberately, by name.
+# The plan's 20 deg / 0.5 g (an 8-gon inscribed in the 55 deg cup cone, decision
+# 29, 2026-10-17) was written before those readings existed; it is the P3
+# SHAPER's target (the QP rows that will hold a carry inside it), NOT this check's
+# refusal line.  The rung-1 cell at dwell 0.50 through the production segment
+# path (default 0.100 s pre-release hold) reads 32.1 deg and IS refused here
+# (the raw chain's 18.68 deg was a hold-less plan nothing dispatches; logbook
+# 2026-10-18-two-ball-oval-p1-oval-pattern-dispatchable).
+#
+# The 0.30 g floor sits BELOW the 0.7 g ``CUP_CONTACT_ACC`` floor on purpose:
+# C-CUP-2 is the FREE cup's contact floor (a one-sided Hermite reading over the
+# contact window), C-CUP-4 is the SEATED carry's (centred reading, ball pressed
+# into the cup).  The two estimators differ through the tilt / opening term, so
+# a tilt-channel perturbation can read < 0.30 g on C-CUP-4 while passing C-CUP-2.
+CUP_SEATING_CONE = 'CUP_SEATING_CONE'
+CUP_SEATING_FLOOR = 'CUP_SEATING_FLOOR'
+CUP_SEATING_CONE_DEG = 30.0
+CUP_SEATING_FLOOR_G = 0.30
+# Numerical slack on both seating comparisons (g, and deg).  A planner that
+# holds the floor ACTIVE lands on it to solver precision, not exactly: the
+# prototype capture plan's QP rows read a_z+g = 0.49999999999725 g (2.7e-12 g
+# under) on the realised plan, 2026-10-17.  1e-6 is six orders above that and
+# six below any physical difference; it is a float-equality guard, not a margin.
+_SEATING_EPS = 1.0e-6
+
+# CATCH_CLOSING_SPEED: at touch-down the REALISED axial cup speed (along the
+# receive axis, at the interpolated touch-down) must be >= CATCH_CLOSING_SPEED_MIN_FRAC
+# of the match target ``CATCH_MATCH_FRAC x`` the ball's arrival speed along that
+# axis.  Origin (owner decisions 2026-10-18; decision 48's 50 % amended twice the
+# same day): 0.20 sits below the lowest ratio of a catch that was INSTALLED AND
+# FLOWN - the sitting-6 (2026-10-06) high catch at the historical 930 mm plane,
+# arrival -5520 mm/s, realised -960 vs target -3864 mm/s = 0.248 (replayed by
+# tests/ros/test_install_segment.py, pinned at 930 mm on purpose) - below the
+# hop carry 0.349, the committed columns cells 0.44-0.48 and the BB feed 0.42,
+# and 1.75x above the 0.114 near-hard capture-span catch of the 2026-10-17
+# probe that this check closes.  (A first re-base to 0.25 refused the sitting-6
+# replay at 0.248; the margin above 0.114 is the number that matters.)
+# HELD-AXIS catches (``CatchEvidence.program == 'held_axis'``: ``goals.hold_tilt``
+# set) are EXEMPT by name - the cup is stationary at touch-down by design (the
+# platform holds one attitude through the catch; ratio ~ 0, -0.006 measured), so
+# a closing speed is not what that program promises.  Evidence that is MISSING is
+# still refused by name.
+# CATCH_MATCH_FRAC is the catch program's own 0.7 (cup_cycle.CupCycleConfig
+# catch_vel_ratio / catch_slider_vel_ratio defaults), RESTATED here because the
+# gate does not import its planner (layering, as CATCH_RUNWAY_MARGIN_M); the test
+# test_catch_match_frac_matches_the_planners_own pins the two.
+#
+# CATCH_SKID is the cross-axis cup speed at touch-down: a DIAGNOSTIC on the report,
+# no threshold (100 mm/s covered every measured cell; reference for reading the
+# number, never a refusal).
+CATCH_CLOSING_SPEED = 'CATCH_CLOSING_SPEED'
+CATCH_CLOSING_SPEED_MIN_FRAC = 0.20
+CATCH_MATCH_FRAC = 0.7
 
 # The per-knot |Δu0| bound is enforced with a 20 % safety margin below the pump's
 # hard step gate, so the gate rejects a step-heavy move BEFORE it reaches the pump
@@ -230,6 +299,24 @@ class FeasibilityReport:
     #: — C-CUP-2's measured quantity. ``None`` when the plan carries no contact
     #: window (the gate is vacuous) and on every gate but :func:`validate_cycle`.
     min_cup_acc_z_mmps2: 'float | None' = None
+    #: C-CUP-4's measured quantities over the interior loaded knots of every
+    #: catch window (:func:`_cup_seating_check`): the worst angle (deg) between
+    #: the realised cup specific force ``a - g`` and the prescribed cup axis, and
+    #: the lowest ``(a_z + g) / g``.  ``None`` when the plan has no catch window
+    #: (vacuous) and on every gate but :func:`validate_cycle`.  The admissible
+    #: sweep records them per cell.
+    max_cup_seating_deg: 'float | None' = None
+    min_cup_seating_az_g: 'float | None' = None
+    #: The WORST (lowest) realised-axial-cup-speed / match-target ratio over the
+    #: plan's catches (:func:`_catch_checks`; refused below
+    #: ``CATCH_CLOSING_SPEED_MIN_FRAC``) and the largest cross-axis cup speed at
+    #: touch-down in mm/s (``CATCH_SKID`` - a diagnostic with NO threshold).
+    catch_closing_ratio: 'float | None' = None
+    catch_skid_mmps: 'float | None' = None
+    #: True when a catch on the plan is a ``'held_axis'`` program (exempt from
+    #: CATCH_CLOSING_SPEED by name, owner decision 2026-10-18): its ratio is not in
+    #: ``catch_closing_ratio``.
+    catch_closing_exempt: bool = False
     # |a_right - a_left| at the worst interior hand knot (C2FF spec,
     # 2026-09-14) — zero on every gate but validate_cycle, and zero there too
     # for a plan with < 3 knots (no interior knot to measure).
@@ -1273,6 +1360,189 @@ def _cup_contact_floor_check(cycle_plan):
            -CUP_CONTACT_ACC_FLOOR_G, n_violating, n_checked, ranges_str))
 
 
+def _cup_axes_batch(rx, ry):
+    """``tilt_geometry.cup_axis`` over arrays: the rotvec ``[rx, ry, 0]`` applied to
+    +z (Rodrigues with ``k.z = 0``): ``(ry*s, -rx*s, cos t)``, ``t = |(rx, ry)|``,
+    ``s = sin(t)/t``.  Pinned to the scalar by
+    ``test_batched_cup_geometry_is_the_planners_own``."""
+    t = np.hypot(rx, ry)
+    s = np.sinc(t / np.pi)
+    return np.stack([ry * s, -rx * s, np.cos(t)], axis=-1)
+
+
+def _cup_positions_batch(pose, hand_rev):
+    """Cup-opening positions (mm, (n, 3)) for pose rows + hand revs - the exact
+    inverse map ``unified_cycle.cup_state_from_platform`` implements at its default
+    ``RealizeConfig``, over arrays.  A second copy of the map, because the gate
+    budget (``test_validate_cycle_budget.py``, 10 ms) cannot afford 3 scalar calls
+    per interior knot (2.8 ms measured 2026-10-18); the two are pinned equal by
+    ``test_batched_cup_geometry_is_the_planners_own``."""
+    a = _cup_axes_batch(pose[:, 3], pose[:, 4])
+    slider = hand_rev * _CUP_MM_PER_HAND_REV + float(SLIDER_REV_ZERO_MM)
+    dz = pose[:, 2] - float(hw.JB_OP_DEFAULT_ACTIVE_Z_MM)
+    c_z = float(CUP_TILT_CENTER_Z_MM)
+    cup_z = (slider + dz + float(CUP_Z_BASE_MM) + c_z * (1.0 - a[:, 2])) / (2.0 - a[:, 2])
+    arm = cup_z - c_z
+    return np.stack([pose[:, 0] + arm * a[:, 0], pose[:, 1] + arm * a[:, 1], cup_z],
+                    axis=-1)
+
+
+def _cup_seating_check(cycle_plan):
+    """``(max_resid_deg, min_az_g, cone_reason, floor_reason)`` - C-CUP-4's gate half.
+
+    On every INTERIOR loaded knot of every catch window - ``catch_k + 1`` ..
+    the window's last contact knot (the contact range opens 5 knots BEFORE
+    touch-down, so the range start is NOT the loaded start; the catch record's
+    own knot is) - the cup's REALISED specific force ``a - g`` must lie within
+    ``CUP_SEATING_CONE_DEG`` of the PRESCRIBED cup axis
+    (``tilt_geometry.cup_axis(pose[k, 3], pose[k, 4])``) and keep
+    ``a_z + g >= CUP_SEATING_FLOOR_G * g`` (origins at the constants).
+
+    **The estimator, and why it is this one.**  ``a`` is the centred second
+    difference of the REALISED plan's cup-opening position at the knots - the
+    plan the machine will stream, not the QP's planned acceleration.  The two
+    differ by up to 8 deg at the window's first loaded knot (measured 2026-10-17 on
+    the rung-1 window: 18.68 deg realised vs 26.6 deg QP), and only the realised
+    reading is the plan's "realised-plan residual".  A one-sided Hermite
+    acceleration is not used for the lateral part because the cup xy is a
+    nonlinear function of pose, tilt and slider; the centred difference is
+    its knot-average.  The last knot of a plan has no right neighbour, so a
+    window that ends on the plan's last knot is judged to its second-to-last.
+
+    Windows with no catch record (a launch, a held-at-start window) have no
+    touch-down to start the loaded span from and are not judged here.
+    """
+    ev = getattr(cycle_plan, 'catch_evidence', None)
+    ck = getattr(cycle_plan, 'contact_knots', None)
+    if not ev or not ck:
+        return None, None, None, None
+    n = int(cycle_plan.n_knots)
+    knots = set()
+    for e in ev:
+        for k0, k1 in ck:
+            if int(k0) <= int(e.knot) <= int(k1):
+                knots.update(range(int(e.knot) + 1, min(int(k1), n - 2) + 1))
+    if not knots:
+        return None, None, None, None
+    ks = np.array(sorted(knots))
+    h = float(cycle_plan.dt)
+    # centred second difference of the realised cup-opening position, one pass
+    lo, hi = int(ks[0]) - 1, int(ks[-1]) + 1
+    pose = np.asarray(cycle_plan.pose[lo:hi + 1], dtype=float)
+    cup = _cup_positions_batch(pose, np.asarray(cycle_plan.hand_rev[lo:hi + 1],
+                                                dtype=float))
+    spec_full = np.zeros_like(cup)
+    spec_full[1:-1] = (cup[2:] - 2.0 * cup[1:-1] + cup[:-2]) / (h * h)
+    spec_full[:, 2] += GRAVITY_MMS2                    # a - g (g = -z)
+    spec = spec_full[ks - lo]
+    axes = _cup_axes_batch(np.asarray(cycle_plan.pose[ks, 3], dtype=float),
+                           np.asarray(cycle_plan.pose[ks, 4], dtype=float))
+    cosang = np.clip(np.einsum('ij,ij->i', spec, axes)
+                     / np.linalg.norm(spec, axis=1), -1.0, 1.0)
+    deg = np.degrees(np.arccos(cosang))
+    az_g = spec[:, 2] / GRAVITY_MMS2
+    jd = int(np.argmax(deg))
+    jf = int(np.argmin(az_g))
+    cone_reason = floor_reason = None
+    if deg[jd] > CUP_SEATING_CONE_DEG + _SEATING_EPS:
+        bad = deg > CUP_SEATING_CONE_DEG + _SEATING_EPS
+        cone_reason = (
+            "cup seating (C-CUP-4): realised specific force %.1f deg off the "
+            "prescribed cup axis at knot %d > cone %.0f deg - %d/%d interior "
+            "loaded knots outside it; the ball would skid on the cup wall. "
+            "The cone is re-based 2026-10-18 above the 250 mm hop's 28.7 deg; "
+            "the plan's 20 deg (decision 29) is the P3 shaper target."
+            % (float(deg[jd]), int(ks[jd]), CUP_SEATING_CONE_DEG,
+               int(bad.sum()), int(ks.size)))
+    if az_g[jf] < CUP_SEATING_FLOOR_G - _SEATING_EPS:
+        bad = az_g < CUP_SEATING_FLOOR_G - _SEATING_EPS
+        floor_reason = (
+            "cup seating (C-CUP-4): a_z+g %.3f g at knot %d < floor %.2f g - "
+            "%d/%d interior loaded knots below it; the cup is dropping away "
+            "from a seated ball (the carry's floor, below C-CUP-2's 0.7 g "
+            "free-cup contact floor; re-based 2026-10-18 below the hop's 0.320 g)."
+            % (float(az_g[jf]), int(ks[jf]), CUP_SEATING_FLOOR_G,
+               int(bad.sum()), int(ks.size)))
+    return float(deg[jd]), float(az_g[jf]), cone_reason, floor_reason
+
+
+def _catch_checks(cycle_plan):
+    """``(min_closing_ratio, max_skid_mmps, reason)`` - CATCH_CLOSING_SPEED / CATCH_SKID.
+
+    For each catch record on the plan, at the INTERPOLATED touch-down
+    (``state_at`` / ``hand_at`` at ``t_s`` - a knot central difference is wrong by
+    up to 4x: -538 vs -345 mm/s on the capture-span fixture) the realised cup
+    velocity ``v`` is split along the receive axis ``u``:
+
+    * axial ``v.u`` against the match target ``CATCH_MATCH_FRAC x`` the ball's
+      arrival speed along ``u``; REFUSED below ``CATCH_CLOSING_SPEED_MIN_FRAC`` of
+      it (ratio = axial / target);
+    * skid ``|v - (v.u)u|`` - recorded, never refused.
+
+    A ``'held_axis'`` record (``CatchEvidence.program``) is exempt from the
+    closing-speed refusal (its skid is still recorded); every other program is
+    judged.  A plan with a catch (``catch_k >= 0``) and no records is REFUSED by name
+    ("catch evidence missing"), never skipped: a constructor that re-indexes a
+    plan and drops them must not turn the check off.
+    """
+    ev = getattr(cycle_plan, 'catch_evidence', None)
+    if not ev:
+        if int(getattr(cycle_plan, 'catch_k', -1)) >= 0:
+            return None, None, (
+                "catch closing speed: catch evidence missing - the plan has a "
+                "catch at knot %d but carries no arrival velocity / touch-down "
+                "time / receive axis, so the closing speed cannot be judged; a "
+                "constructor dropped CyclePlan.catch_evidence."
+                % int(cycle_plan.catch_k))
+        return None, None, None
+    from jugglebot.motion.unified_cycle import cup_state_from_platform
+    total = float(cycle_plan.total_duration)
+    d = 1.0e-4
+    ratios, skids, reasons = [], [], []
+    for e in ev:
+        t = float(e.t_s)
+        t1 = min(t + d, total * (1.0 - 1e-12))
+        t0 = t - d
+        pts = []
+        for tt in (t0, t1):
+            pose, _, _ = cycle_plan.state_at(tt)
+            rev, _ = cycle_plan.hand_at(tt)
+            pts.append(cup_state_from_platform(pose, rev))
+        v = (pts[1] - pts[0]) / (t1 - t0)
+        u = np.asarray(e.axis, dtype=float)
+        u = u / np.linalg.norm(u)
+        axial = float(v @ u)
+        skid = float(np.linalg.norm(v - axial * u))
+        target = CATCH_MATCH_FRAC * float(np.asarray(e.vel_mm_s, dtype=float) @ u)
+        skids.append(skid)
+        if getattr(e, 'program', 'match') == 'held_axis':
+            # EXEMPT by name (CATCH_CLOSING_SPEED comment): stationary cup at
+            # touch-down by design.  The skid above is still recorded.
+            continue
+        if abs(target) < 1e-6:
+            continue
+        ratio = axial / target
+        ratios.append(ratio)
+        if ratio < CATCH_CLOSING_SPEED_MIN_FRAC:
+            reasons.append(
+                "catch closing speed: realised axial cup speed %.0f mm/s at "
+                "touch-down (knot %d, t=%.3f s) is %.2f of the match target "
+                "%.0f mm/s (%.1f x arrival along the receive axis) < %.2f - a "
+                "near-hard catch; skid %.0f mm/s (logged, no threshold: "
+                "100 mm/s covered every measured cell)."
+                % (axial, int(e.knot), t, ratio, target, CATCH_MATCH_FRAC,
+                   CATCH_CLOSING_SPEED_MIN_FRAC, skid))
+    return (min(ratios) if ratios else None, max(skids) if skids else None,
+            '; '.join(reasons) if reasons else None)
+
+
+def _catch_seating_reasons(cycle_plan):
+    """The seating + closing-speed reasons alone, for the early geometry returns."""
+    _, _, cone, floor = _cup_seating_check(cycle_plan)
+    _, _, closing = _catch_checks(cycle_plan)
+    return [r for r in (floor, cone, closing) if r is not None]
+
+
 def validate_cycle(cycle_plan, limits, geom, *,
                    samples_per_knot: int = _CYCLE_SAMPLES_PER_KNOT,
                    runway_margin_rev: float = CATCH_RUNWAY_MARGIN_REV
@@ -1461,11 +1731,13 @@ def validate_cycle(cycle_plan, limits, geom, *,
         # only the reason list gains a line, exactly as the full-ladder pass
         # does below for every other code.
         _, _early_contact_reason = _cup_contact_floor_check(cycle_plan)
+        _early_catch_reasons = _catch_seating_reasons(cycle_plan)
         if stroke_bad[first]:
             reasons = [_hand_stroke_reason(float(hand_revs[first]), t_fail,
                                            stroke_min)]
             if _early_contact_reason is not None:
                 reasons.append(_early_contact_reason)
+            reasons.extend(_early_catch_reasons)
             return FeasibilityReport(
                 ok=False, code=HAND_STROKE,
                 reasons=reasons,
@@ -1481,6 +1753,7 @@ def validate_cycle(cycle_plan, limits, geom, *,
                        % (j, ext[first, j], t_fail) for j in bad]
             if _early_contact_reason is not None:
                 reasons.append(_early_contact_reason)
+            reasons.extend(_early_catch_reasons)
             return FeasibilityReport(
                 ok=False, code=WORKSPACE,
                 reasons=reasons,
@@ -1492,6 +1765,7 @@ def validate_cycle(cycle_plan, limits, geom, *,
                    "pose." % (t_fail, conds[first], wlimits.cond_hard)]
         if _early_contact_reason is not None:
             reasons.append(_early_contact_reason)
+        reasons.extend(_early_catch_reasons)
         return FeasibilityReport(
             ok=False, code=UNREACHABLE,
             reasons=reasons,
@@ -1694,6 +1968,9 @@ def validate_cycle(cycle_plan, limits, geom, *,
     # window) — computed BEFORE the ladder so its reason can be reported
     # alongside whichever code wins, not instead of it.
     min_cup_acc_z, cup_contact_reason = _cup_contact_floor_check(cycle_plan)
+    (max_seat_deg, min_seat_az_g, seat_cone_reason,
+     seat_floor_reason) = _cup_seating_check(cycle_plan)
+    closing_ratio, skid_mmps, closing_reason = _catch_checks(cycle_plan)
     code = OK
     reasons: list = []
     peak_leg_index = None
@@ -1797,13 +2074,35 @@ def validate_cycle(cycle_plan, limits, geom, *,
         # sittings).
         code = CUP_CONTACT_ACC
         reasons = [cup_contact_reason]
+    elif seat_floor_reason is not None:
+        # The realised-plan catch / seating checks (two-ball-oval 2.3, 2.4) rank
+        # with CUP_CONTACT_ACC: each says the machine CAN execute the plan and
+        # the ball will not stay where the contract needs it.  Floor before cone
+        # before closing speed (a cup that drops away is the worse fact); the
+        # reasons of the losers are appended below, as for every code.
+        code = CUP_SEATING_FLOOR
+        reasons = [seat_floor_reason]
+    elif seat_cone_reason is not None:
+        code = CUP_SEATING_CONE
+        reasons = [seat_cone_reason]
+    elif closing_reason is not None:
+        code = CATCH_CLOSING_SPEED
+        reasons = [closing_reason]
 
-    if cup_contact_reason is not None and code != CUP_CONTACT_ACC:
-        reasons = list(reasons) + [cup_contact_reason]
+    # Every cup-side refusal rides along whichever code won (the UH-3 rule).
+    _cup_reasons = [r for r in (cup_contact_reason, seat_floor_reason,
+                                seat_cone_reason, closing_reason)
+                    if r is not None and r not in reasons]
+    if _cup_reasons:
+        reasons = list(reasons) + _cup_reasons
 
     return FeasibilityReport(
         ok=(code == OK), code=code, reasons=reasons,
         min_cup_acc_z_mmps2=min_cup_acc_z,
+        max_cup_seating_deg=max_seat_deg, min_cup_seating_az_g=min_seat_az_g,
+        catch_closing_ratio=closing_ratio, catch_skid_mmps=skid_mmps,
+        catch_closing_exempt=any(getattr(e, 'program', 'match') == 'held_axis'
+                                 for e in (getattr(cycle_plan, 'catch_evidence', None) or ())),
         peak_leg_vel_mmps=peak_vel, peak_leg_acc_mmps2=peak_acc,
         peak_leg_jerk_mmps3=peak_jerk, peak_leg_ext_mm=peak_ext,
         peak_step_rev=peak_step, peak_hand_rev=peak_hand_rev,

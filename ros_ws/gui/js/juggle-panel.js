@@ -123,6 +123,15 @@ export const JUGGLE_PATTERNS = [
     { value: 'columns_1ball_fed', label: 'Columns (1 ball, fed)', kind: 'columns', sites: 2,
       phantom: 0, cupNeed: 'empty',
       blurb: 'Columns motion with Ball 1 a phantom; Ball 2 is real and fed by Ball Butler.' },
+    // Two-ball-oval P1: ONE ball, fixed roles -- every throw from T (P1, near
+    // Ball Butler), every catch at C (P2), carried between (SkillNode._run_one_ball).
+    { value: 'oval_1ball', label: 'Oval (1 ball)', kind: 'one', sites: 2, phantom: null,
+      blurb: 'One ball thrown from the near site and caught at the far one, the ' +
+             'hand carrying it back before the next throw.' },
+    // Same oval, entered by a Ball Butler feed at T: needs an EMPTY cup.
+    { value: 'oval_1ball_fed', label: 'Oval (1 ball, fed)', kind: 'one', sites: 2, phantom: null,
+      cupNeed: 'empty',
+      blurb: 'The oval with Ball Butler feeding the first ball at the near site.' },
 ];
 
 /**
@@ -168,6 +177,8 @@ export const PATTERN_POINTS = {
     columns:           { box: 'columns',   apex_m: 0.95, separation_mm: 125 },
     columns_1ball:     { box: 'columns',   apex_m: 0.95, separation_mm: 125 },
     columns_1ball_fed: { box: 'columns',   apex_m: 0.95, separation_mm: 125 },
+    oval_1ball:        { box: 'oval_1ball', apex_m: 0.95, separation_mm: 150 },
+    oval_1ball_fed:    { box: 'oval_1ball', apex_m: 0.95, separation_mm: 150 },
 };
 
 /** Overwrite apex/separation with pattern `value`'s certified point. */
@@ -353,7 +364,7 @@ export const CUP_PREVIEW = {
 };
 
 function cupPreviewText(p, cup) {
-    if (p.value === 'reload') return CUP_PREVIEW.needsEmpty;
+    if (p.value === 'reload' || p.value === 'oval_1ball_fed') return CUP_PREVIEW.needsEmpty;
     if (p.value === 'magazine') return CUP_PREVIEW.needsBall;
     if (p.cupNeed === 'empty') return CUP_PREVIEW.needsEmptyPhantom;
     if (p.value === 'columns' && cup === 'empty' && !TWO_FEED_LANDED) return CUP_PREVIEW.columnsEmptyRefused;

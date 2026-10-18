@@ -745,6 +745,16 @@ def _bump_kwargs(sched, ictx: _InstallCtx, limits, geom) -> dict:
 #: a second site definition.
 _SELF_TOSS_SEPARATION_MM = 100.0
 
+#: The rung-1 oval's site separation (plan two-ball-oval decision 18): the
+#: oval box is swept at this separation.
+_OVAL_SEPARATION_MM = 150.0
+
+#: The rung-1 oval's dwell (decision 16 amended 2026-10-18): the oval box cell
+#: is swept at 0.65 s -- at 0.50 s the production pre-release hold makes the
+#: carry read 32.1 deg against the 30 deg cone. ``--learn --pattern oval_1ball``
+#: plans at it unless ``--dwell-s`` overrides.
+_OVAL_DWELL_S = 0.65
+
 #: The R4 hop operating point's separation -- P1/P2 = (+-125, 0) mm, matching
 #: the 'hop' boxes swept into ``config/generated/admissible_box.yaml`` (site
 #: pair ``(P1, P2)``/``(P2, P1)``, ``release_site_xy_mm``/``target_site_xy_mm``
@@ -1059,12 +1069,15 @@ def _sites_for(cfg: 'SelfTossGateConfig') -> tuple:
     Raises on any other ``pattern`` -- there is no site tuple to fall back to
     (plan § 0: no fallback modes)."""
     s0, s1 = sites.columns_sites(cfg.separation_mm)
-    if cfg.pattern == 'hop':
+    if cfg.pattern in ('hop', 'oval_1ball'):
+        # 'oval_1ball' (plan two-ball-oval): the same two columns sites, but
+        # fixed roles -- sites[0] is T (every throw), sites[1] is C (every
+        # catch); `OneBallPattern(roles='fixed')` at the construction sites.
         return (s0, s1)
     if cfg.pattern == 'self_toss':
         return (s0,)
-    raise ValueError("cfg.pattern must be 'self_toss' or 'hop', got %r"
-                     % (cfg.pattern,))
+    raise ValueError("cfg.pattern must be 'self_toss', 'hop' or 'oval_1ball', "
+                     "got %r" % (cfg.pattern,))
 
 
 def _load_admissible_boxes(path: str = None) -> list:
@@ -1706,8 +1719,10 @@ class SkillsGate:
         plant.ball_manager.ball(0).spawn_in_hand()
         t0_abs_s = float(plant.data.time)
 
-        pattern = sk.OneBallPattern(sites=tuple(pattern_sites), apex_m=cfg.apex_m,
-                                    dwell_s=cfg.dwell_s, n_throws=n_throws)
+        pattern = sk.OneBallPattern(
+            sites=tuple(pattern_sites), apex_m=cfg.apex_m,
+            dwell_s=cfg.dwell_s, n_throws=n_throws,
+            roles='fixed' if cfg.pattern == 'oval_1ball' else 'alternate')
         sched = sk.compile_one_ball(pattern, t0_abs_s)
 
         ball_state = {0: dict(estimator=BallisticEstimator(bal.G_VEC_MMS2),
@@ -1907,9 +1922,12 @@ class SkillsGate:
         genuinely bad command is caught by the PLANNER's own refusal, not
         silently clipped into a box nobody swept. ``resend_max_per_catch=0``
         for this two-site pattern (owner decision 2026-09-29): a catch
-        re-send releases from the RE-AIMED cup position
-        (``executor._catch_terminal``), and the fly-back that needs carries
-        a lateral offset the OTHER site's own throw was never sized for --
+        re-send of an ordinary (non-carried) pair releases from the RE-AIMED
+        cup position (``executor._catch_terminal``), and the fly-back that
+        needs carries a lateral offset the OTHER site's own throw was never
+        sized for. (A CARRIED release -- the oval -- is the opposite case: a
+        re-send never moves it, the release stays at T, so this setting is
+        kept there for uniformity, not for that reason.) --
         ``_make_installer``'s pending-release note on why appending (not
         superseding) walked the learner gate 50 mm off-site once release
         followed catch.
@@ -2955,9 +2973,16 @@ class SkillsGate:
         spawn_t_abs_s = t_land_abs_s - flight_lead_s
         pending_spawn = (spawn_t_abs_s, spawn_pos, spawn_vel, 0)
 
-        pattern = sk.OneBallPattern(sites=(site,), apex_m=self.cfg.apex_m,
-                                    dwell_s=self.cfg.dwell_s,
-                                    n_throws=n_throws)
+        if self.cfg.pattern == 'oval_1ball':
+            # The oval's reload entry feeds T (sites[0]); the pattern still
+            # carries both sites, fixed roles.
+            pattern = sk.OneBallPattern(
+                sites=_sites_for(self.cfg), apex_m=self.cfg.apex_m,
+                dwell_s=self.cfg.dwell_s, n_throws=n_throws, roles='fixed')
+        else:
+            pattern = sk.OneBallPattern(sites=(site,), apex_m=self.cfg.apex_m,
+                                        dwell_s=self.cfg.dwell_s,
+                                        n_throws=n_throws)
         sched = sk.compile_reload(land_pos, land_vel, t_land_abs_s, pattern,
                                   t0_abs_s)
 
@@ -3301,7 +3326,7 @@ def main(argv=None) -> int:
                    help='run the R3/R4/R5 sim-validation learner run (plan '
                         '§ 4 R3; R4 Unit U7a; R5 Unit G) instead of the R2 '
                         'identity-prior columns gate')
-    p.add_argument('--pattern', choices=('self_toss', 'hop', 'columns'),
+    p.add_argument('--pattern', choices=('self_toss', 'hop', 'columns', 'oval_1ball'),
                    default='self_toss',
                    help='--learn only: self_toss (R3, 1 site, P1), hop '
                         '(R4, 2 sites, P1<->P2, Unit U7a) or columns (R5, '
@@ -3429,6 +3454,7 @@ def main(argv=None) -> int:
             p.error('--bb-bias-mm only applies with --feed-angle-deg/'
                      '--feed-speed-mmps set')
         default_sep = (_HOP_SEPARATION_MM if args.pattern == 'hop'
+                      else _OVAL_SEPARATION_MM if args.pattern == 'oval_1ball'
                       else _SELF_TOSS_SEPARATION_MM)
         separation_mm = (float(args.separation_mm)
                          if args.separation_mm is not None else default_sep)
@@ -3455,6 +3481,8 @@ def main(argv=None) -> int:
             lcfg.correlator = str(args.correlator)
         if args.dwell_s is not None:
             lcfg.dwell_s = float(args.dwell_s)
+        elif args.pattern == 'oval_1ball':
+            lcfg.dwell_s = _OVAL_DWELL_S
         if args.one_ball:
             lcfg.one_ball = True
         if args.one_ball_reload:

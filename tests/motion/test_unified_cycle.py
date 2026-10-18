@@ -755,7 +755,8 @@ def _injected(plan, channel, k, delta):
     else:
         arrays[channel][k] += delta
     return CyclePlan(arrays['pose'], arrays['pose_vel'], arrays['hand_rev'],
-                     arrays['hand_vel_rps'], plan.dt, plan.catch_k)
+                     arrays['hand_vel_rps'], plan.dt, plan.catch_k,
+                     catch_evidence=plan.catch_evidence)
 
 
 def _measured_reach(plan, k, limits, geom):
@@ -2872,6 +2873,22 @@ def test_a_held_attitude_LANDING_is_deterministic(limits, geom):
     b, _ = uc.plan_landing(_u2_landing_goals(tilt), seed, limits, geom)
     for ch in ('pose', 'hand_rev'):
         assert np.array_equal(getattr(a, ch), getattr(b, ch)), ch
+
+
+def test_the_catch_evidence_names_its_program(limits, geom, launch):
+    """``plan_window`` stamps ``CatchEvidence.program`` from the goals: hold_tilt
+    -> 'held_axis' (exempt from CATCH_CLOSING_SPEED), receive_tilt ->
+    'level_pin', neither -> 'match'.  A mislabelled held-axis catch would be
+    refused closing speed (ratio -0.006); a mislabelled other would escape it."""
+    tilt = _u2_tilt()
+    seed = _u2_tilted_rest(tilt, _u2_on_axis(tilt, REST_MM[2]))
+    held, _ = uc.plan_landing(_u2_landing_goals(tilt), seed, limits, geom)
+    assert [e.program for e in held.catch_evidence] == ['held_axis']
+    state = uc.release_state_from_meta(launch[1], launch[0])
+    for kw, want in ((dict(receive_tilt=(0.0, 0.0)), 'level_pin'), ({}, 'match')):
+        g = _goals(period_s=1.0, catch_frac=None, catch_t_s=0.6, **kw)
+        plan, _ = uc.plan_landing(g, state, limits, geom)
+        assert [e.program for e in plan.catch_evidence] == [want]
 
 
 def test_a_seed_off_the_held_attitude_refuses_TILT_PIN(limits, geom):

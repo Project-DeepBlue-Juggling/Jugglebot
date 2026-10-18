@@ -155,6 +155,16 @@ def columns_sites(separation_mm: float) -> Tuple[Site, Site]:
     ``logbook/2026-10-02-skill-stack-r5-sitting-2.md``).
     Symmetric about the platform origin so a session is centred rather than
     biased to one side.
+
+    **Roles are a property of the PATTERN, not of the site pair**
+    (``schedule.OneBallPattern.roles``, two-ball-oval P1, 2026-10-18). The pair
+    is returned as ``(sites[0], sites[1])`` and each pattern reads them its own
+    way: the alternating patterns (hop, columns) use both as throw and catch
+    sites in turn; the fixed-role OVAL (``roles='fixed'``, schedule label
+    ``oval_1ball``) reads ``sites[0]`` = ``P1`` as the THROW site T (nearest
+    Ball Butler, which feeds it) and ``sites[1]`` = ``P2`` as the CATCH site C:
+    every throw leaves T for C and every catch is at C, the loaded cup carrying
+    the ball C -> T inside the dwell.
     """
     if not float(separation_mm) > 0.0:
         raise ValueError('separation_mm must be > 0, got %r' % (separation_mm,))
