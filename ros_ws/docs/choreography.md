@@ -212,6 +212,12 @@
 - **subscribers:** _none_
 - **type:** `diagnostic_msgs.msg.DiagnosticStatus`
 
+### `robot_frame`
+
+- **publishers:** `mocap_node`
+- **subscribers:** `ball_tracker_node`, `skill_node`
+- **type:** `geometry_msgs.msg.PoseStamped`
+
 ### `robot_state`
 
 - **publishers:** `teensy_bridge_node`

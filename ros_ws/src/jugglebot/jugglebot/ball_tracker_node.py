@@ -22,7 +22,8 @@ from jugglebot_interfaces.msg import (
     BallStateArray,
     BallState,
 )
-from geometry_msgs.msg import Point, Vector3
+from geometry_msgs.msg import Point, PoseStamped, Vector3
+from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from builtin_interfaces.msg import Time
 
 import jugglebot.hardware_config as hw
@@ -30,6 +31,7 @@ from jugglebot.motion.skills import sites
 from jugglebot.tracking.matcher import BallTracker, parse_label_prefixes
 from jugglebot.tracking.ball import Ball
 from jugglebot.ball_possession import announced_source, require_identity_fields
+from jugglebot.robot_frame import RobotFrame
 
 
 class BallTrackerNode(Node):
@@ -55,7 +57,20 @@ class BallTrackerNode(Node):
         # catch plane moves with it (accepted by the owner; R4 re-points the
         # coordinator's copies at this same definition, plan § "Key
         # architectural boundaries").
-        self._landing_z = float(sites.CATCH_CUP_Z_MM)
+        #
+        # Phase 3 (bb-calibration-one-attempt): that number is a ROBOT-FRAME
+        # height. The tracker itself stays in the mocap (world) frame -- gravity
+        # is along world -z there -- so the plane it is handed is the WORLD z of
+        # the robot-frame point (0, 0, z_robot), from the latched `robot_frame`
+        # topic (see `_on_robot_frame`). Declared parameter `landing_z_mm` (the
+        # robot-frame z) overrides the config default.
+        self.declare_parameter('landing_z_mm', float(sites.CATCH_CUP_Z_MM))
+        self._landing_z_robot = float(
+            self.get_parameter('landing_z_mm').value)
+        # Before any `robot_frame` arrives the plane is the robot-frame number
+        # itself (identity transform) -- today's behaviour.
+        self._landing_z = self._landing_z_robot
+        self._robot_frame = None
 
         # R5 (brief_S.md step 2, 2026-09-30): a declared node parameter, not
         # just the config default baked into the constructor -- the R5 lob
@@ -106,6 +121,14 @@ class BallTrackerNode(Node):
             MocapDataMulti, 'mocap_data', self._on_mocap, 10)
         self._announcement_sub = self.create_subscription(
             ThrowAnnouncement, 'throw_announcements', self._on_announcement, 10)
+        # mocap_node's latched robot-frame fit (TRANSIENT_LOCAL depth 1).
+        self._robot_frame_sub = self.create_subscription(
+            PoseStamped, 'robot_frame', self._on_robot_frame,
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                       durability=DurabilityPolicy.TRANSIENT_LOCAL))
+        self.get_logger().debug(
+            "landing plane: no robot_frame yet, using robot z "
+            f"{self._landing_z_robot:.1f} mm as world z (identity)")
 
         # Publisher
         self._balls_pub = self.create_publisher(BallStateArray, 'balls', 10)
@@ -299,6 +322,48 @@ class BallTrackerNode(Node):
 
         return msg
 
+    def _on_robot_frame(self, msg: PoseStamped):
+        """Re-derive the tracker's landing plane from the robot frame.
+
+        The plane is a horizontal WORLD plane through the robot-frame point
+        (0, 0, z_robot): ``(R @ (0,0,z) + t)[2]``. A real plane through the
+        robot frame is tilted by the (sub-degree) rotation of R; across the
+        +-125 mm columns sites a 1 degree tilt moves the true plane by
+        ~2 mm, well inside the 20 mm landing threshold, so a horizontal plane
+        is kept (the tracker's ballistics are z-only). Identity -> bit-for-bit
+        today's number. One INFO per change over 0.5 mm, never per message.
+        """
+        p, q = msg.pose.position, msg.pose.orientation
+        try:
+            frame = RobotFrame.from_pose(
+                (p.x, p.y, p.z), (q.x, q.y, q.z, q.w))
+        except ValueError as exc:
+            self.get_logger().warning(
+                f"robot_frame ignored (bad pose: {exc}); landing plane "
+                f"stays at world z {self._landing_z:.1f} mm")
+            return
+        self._robot_frame = frame
+        self._apply_landing_plane()
+
+    def _apply_landing_plane(self):
+        frame = self._robot_frame
+        if frame is None:
+            z_world = self._landing_z_robot
+        else:
+            z_world = float(frame.to_world((0.0, 0.0, self._landing_z_robot))[2])
+        if not np.isfinite(z_world):
+            return
+        old = self._landing_z
+        self._landing_z = z_world
+        self._tracker.landing_z = z_world
+        if frame is not None and abs(z_world - old) > 0.5:
+            yaw = float(np.degrees(np.arctan2(frame.R[1, 0], frame.R[0, 0])))
+            self.get_logger().info(
+                f"landing plane: robot z {self._landing_z_robot:.1f} mm -> "
+                f"world z {z_world:.1f} mm (robot frame origin "
+                f"({frame.t[0]:.1f}, {frame.t[1]:.1f}, {frame.t[2]:.1f}) mm, "
+                f"yaw {yaw:.2f} deg)")
+
     def _on_set_parameters(self, params):
         """ROS2 param-set live-update hook (R5, mirrors
         `teensy_bridge_node._on_set_parameters`'s pattern): only
@@ -311,6 +376,10 @@ class BallTrackerNode(Node):
         event), never per frame.
         """
         for param in params:
+            if param.name == 'landing_z_mm':
+                self._landing_z_robot = float(param.value)
+                self._apply_landing_plane()
+                continue
             if param.name != 'detect_human_throws':
                 continue
             value = bool(param.value)

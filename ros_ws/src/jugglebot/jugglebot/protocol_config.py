@@ -223,10 +223,3 @@ ENDPOINT_ODRIVE_S1_0_6_11_FW_VERSION_MINOR = 11
 ENDPOINT_ODRIVE_S1_0_6_11_FW_VERSION_REVISION = 12
 ENDPOINT_ODRIVE_S1_0_6_11_HW_VERSION_MAJOR = 6
 ENDPOINT_ODRIVE_S1_0_6_11_HW_VERSION_MINOR = 7
-
-# ============================================================================
-# Motion Capture Alignment
-# ============================================================================
-
-MOCAP_ALIGNMENT_POS_THRESH_MM = 2000.0
-MOCAP_ALIGNMENT_ROT_THRESH_DEG = 180.0

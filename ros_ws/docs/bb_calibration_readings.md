@@ -132,6 +132,14 @@ is set at BB power-on and holds within a sitting.
    displacement, bias 0.077 deg). Entry
    `2026-10-17-bb-calibration-residual-cap-1p5.md`.
 
+5. **Robot frame measured in software (Phase 3, 2026-10-19, code landed, NOT flown).**
+   From Phase 3 the Jugglebot (robot) frame is fitted by `mocap_node` from the
+   labelled `Base - 1..7` markers and published as `robot_frame`; QTM is no
+   longer re-aligned to the base. The sweep calibration and the shelf frame
+   stay in QTM world, so rows above are unchanged. A shift of the Jugglebot
+   frame in the world therefore no longer appears in this ledger as a QTM
+   re-alignment. Entry `2026-10-19-bb-calibration-phase3-robot-frame.md`.
+
 ## Hypotheses register
 
 | # | mechanism | for | against | discriminator |

@@ -103,6 +103,7 @@ from jugglebot.motion.skills.sites import (CATCH_CUP_Z_MM, REST_CUP_Z_MM,
                                            RELEASE_CUP_Z_MM,
                                            REST_HAND_REV, Site, columns_sites)
 from jugglebot.motion.tilt_map import find_repo_root
+from jugglebot.robot_frame import RobotFrame, rotation_angle_deg
 from jugglebot.motion.trajectory import ballistics_bc
 from jugglebot.motion.trajectory import tilt_geometry as tg
 from jugglebot.motion.trajectory import cup_cycle
@@ -245,6 +246,23 @@ _SEAT_WINDOW_HIST_S = 2.0
 #: base-to-platform offset and is deliberately not part of this check (it is
 #: a lateral-authority question, plan § 1).
 #:
+#: SUPERSEDED IN PART 2026-10-19 (bb-calibration-one-attempt § Phase 3, the
+#: robot frame measured in software): the paragraph above held only while QTM
+#: world WAS the robot frame by hand alignment. `mocap_node` now fits the
+#: robot frame from the robot's labelled base markers and publishes it latched
+#: on `robot_frame` (``p_world = R p_robot + t``; `jugglebot.robot_frame`).
+#: The Platform body is therefore buffered as a WORLD point -- x/y as
+#: published, z plus `hw.GEOM_INITIAL_HEIGHT_MM` (the only shift
+#: `mocap_interface` applies to a non-base body) -- and transformed world ->
+#: robot frame with the attempt's SNAPSHOT `(R, t)` before the commanded x/y
+#: is subtracted; z is then dropped exactly as before. The commanded position
+#: was always robot-frame. With the exact identity transform every number is
+#: bit-for-bit what the paragraph above describes. The SAME snapshot carries
+#: every tracker landing and Ball Butler announcement world -> robot
+#: (`_on_balls`, `_install_announced_reload`, the magazine), every outgoing
+#: Ball Butler aim robot -> world (`_mocap_aim_point_mm`), and this node's own
+#: throw announcements robot -> world (`_maybe_announce`).
+#:
 #: WHAT THE OFFSET IS (2026-09-22 sitting, analysed 2026-09-23,
 #: `logbook/2026-09-23-cup-contact-first-sitting.md`): with QTM re-aligned to
 #: the base the Platform body sat (-1.56, -8.53) mm from the command with a
@@ -290,6 +308,12 @@ _FRAME_CHECK_REST_TOL_MM = 1.0
 #: a healthy 1.0 s window carries ~200 samples; 20 is a generous floor under
 #: drops.
 _FRAME_CHECK_MIN_SAMPLES = 20
+#: A `robot_frame` received more than this long ago WARNS once per attempt at
+#: the snapshot and does NOT refuse (owner, 2026-10-19): mocap_node publishes
+#: the frame latched, and a frame that has not changed means the robot has
+#: not moved unless someone moved it. Only "never received this launch"
+#: refuses (`REJECTED_ROBOT_FRAME_UNKNOWN`).
+_ROBOT_FRAME_STALE_WARN_S = 10.0
 
 #: the two-site pattern parameter defaults: apex 0.9 m and dwell 0.30 s are the
 #: owner's R2 operating point (2026-09-12); separation 250 mm is the owner's
@@ -415,19 +439,36 @@ def _wire_tilt_out(tilt):
     return True, [float(tilt[0]), float(tilt[1])]
 
 
-def _mocap_aim_point_mm(site: Site, z_mm: float, offset_mm):
-    """The inverse of `SkillNode._on_balls`'s subtraction (R4 reload, brief
-    step 1b): a tracker LANDING has the measured mocap-to-schedule offset
+def _mocap_aim_point_mm(site: Site, z_mm: float, offset_mm,
+                        frame: Optional[RobotFrame] = None, bias_mm=None):
+    """The inverse of `SkillNode._on_balls`'s transform (R4 reload, brief
+    step 1b; robot frame since 2026-10-19): a tracker LANDING is carried
+    world -> robot frame and then has the measured Platform offset
     SUBTRACTED to reach the schedule frame, so an OUTGOING aim point —
-    ``bb/throw_at_target``'s ``target_point_global_mm``, which Ball Butler
-    resolves against the mocap graph — needs the SAME offset ADDED back.
+    ``bb/throw_at_target``'s ``target_point_global_mm``, a WORLD point that
+    Ball Butler resolves against its own (world) calibration — is built in
+    the robot frame as ``site + offset - bias`` at height ``z_mm`` and then
+    carried robot -> world with ``frame.to_world``.
+
     ``offset_mm`` is ``SkillNode._mocap_to_schedule_mm`` (``None`` before the
     first evaluable frame check — treated as ``(0, 0)``, the same fallback
-    `_on_balls` uses)."""
+    `_on_balls` uses). ``bias_mm`` is the columns feed's measured Ball Butler
+    landing bias (`SkillNode._columns_feed_bb_bias_mm`, robot-frame xy by
+    construction) — subtracted IN THE ROBOT FRAME, before ``to_world``: a
+    translation commutes with the transform only when R is the identity.
+    ``frame`` ``None`` is the identity (exact: the input comes back bit for
+    bit)."""
     dx, dy = (0.0, 0.0) if offset_mm is None else (float(offset_mm[0]),
                                                     float(offset_mm[1]))
-    return (float(site.cup_mm[0]) + dx, float(site.cup_mm[1]) + dy,
-           float(z_mm))
+    x = float(site.cup_mm[0]) + dx
+    y = float(site.cup_mm[1]) + dy
+    if bias_mm is not None:
+        x -= float(bias_mm[0])
+        y -= float(bias_mm[1])
+    if frame is None or frame.is_identity():
+        return (x, y, float(z_mm))
+    w = frame.to_world((x, y, float(z_mm)))
+    return (float(w[0]), float(w[1]), float(w[2]))
 
 
 def _columns_feed_aim_site(feed_site: Site, a_site: Site,
@@ -671,7 +712,7 @@ class SkillNode(Node):
         # ring of `(wall arrival time, valid, raw, held)`, one entry per
         # `_on_hand_telemetry` callback, read by `_seat_window`. 2 s of
         # history at this topic's rate (bounded by `maxlen`, same
-        # no-growth-once-full contract as `_platform_mocap_xy` above) is
+        # no-growth-once-full contract as `_platform_mocap_xyz` below) is
         # comfortably past the widest MISSED_CATCH window this plan arc
         # uses (L + 0.50 s).
         self._hand_telemetry_hist = collections.deque(maxlen=400)
@@ -736,14 +777,17 @@ class SkillNode(Node):
         self._commanded_pos_mono = 0.0
         # Session-start mocap-vs-commanded frame check (`_frame_check`, plan
         # `cup-contact-contract.md` § 1): bounded, time-stamped
-        # ``(mono_s, x_mm, y_mm)`` buffers of the mocap `Platform` body and
-        # the commanded position, fed by `_on_mocap` / `_on_commanded_position`
+        # ``(mono_s, x_mm, y_mm, z_world_mm)`` of the mocap `Platform` body
+        # (a WORLD point: z has `mocap_interface`'s platform shift added back,
+        # so the frame check can carry it world -> robot frame, 2026-10-19)
+        # and ``(mono_s, x_mm, y_mm)`` of the commanded position (robot
+        # frame), fed by `_on_mocap` / `_on_commanded_position`
         # respectively. `maxlen` bounds worst-case memory — no allocation
         # growth once full (`collections.deque`'s own contract) — sized well
         # above each topic's nominal rate over `_FRAME_CHECK_WINDOW_S`:
         # `rigid_body_poses` at `hw.TRACKING_MOCAP_DT_S` (200 Hz) and
         # `commanded_position` on the 5 Hz status timer.
-        self._platform_mocap_xy = collections.deque(maxlen=400)
+        self._platform_mocap_xyz = collections.deque(maxlen=400)
         self._commanded_xy_hist = collections.deque(maxlen=40)
         # The measured mocap-to-schedule offset ``(dx_mm, dy_mm)`` the last
         # evaluable frame check produced (`_frame_check_error`), or ``None``
@@ -752,8 +796,22 @@ class SkillNode(Node):
         # "relative to where the cup really is" (see the frame-offset note on
         # `_FRAME_CHECK_WINDOW_S`). Never zeroed on a cannot-evaluate result
         # -- the last good measurement is better than none -- only replaced
-        # by a fresh evaluable one.
+        # by a fresh evaluable one. Measured IN THE ROBOT FRAME since
+        # 2026-10-19 (the Platform body is carried through the snapshot
+        # below first).
         self._mocap_to_schedule_mm = None
+        # The robot frame (bb-calibration-one-attempt § Phase 3): the latest
+        # latched `robot_frame` from mocap_node (`_on_robot_frame`, a
+        # `RobotFrame`, ``None`` until one arrives this launch -- the ladder's
+        # `robot_frame_known`) and its receive time on `time.perf_counter()`.
+        # `_attempt_robot_frame` is the SNAPSHOT an attempt uses, taken at the
+        # session-start frame check (`_frame_check_error`) and never touched
+        # while an attempt runs, so a mid-attempt `robot_frame` update cannot
+        # move a landing or an aim. ``None`` (no snapshot yet) reads as the
+        # identity -- only between attempts; a goal cannot start without one.
+        self._robot_frame = None
+        self._robot_frame_mono = 0.0
+        self._attempt_robot_frame = None
         # `/link_status`'s `sched_refused` — the FIRMWARE's count of streamed
         # lanes it refused and is now HOLDING (`_on_link_status`), and the
         # value latched when the running attempt started. `hand_lane_refused`
@@ -1245,6 +1303,15 @@ class SkillNode(Node):
         self.create_subscription(
             BallStateArray, 'balls', self._on_magazine_balls, 10,
             callback_group=self._sub_cbgroup)
+        # The robot frame (bb-calibration-one-attempt § Phase 3): mocap_node's
+        # latched fit of the robot's base markers -- position = robot origin
+        # in world mm, orientation = R robot -> world. Published only while
+        # the fit is OK; same latched QoS as `bb/base_frame_pose`.
+        self.create_subscription(
+            PoseStamped, 'robot_frame', self._on_robot_frame,
+            QoSProfile(depth=1, reliability=ReliabilityPolicy.RELIABLE,
+                       durability=DurabilityPolicy.TRANSIENT_LOCAL),
+            callback_group=self._sub_cbgroup)
 
         self.create_service(Trigger, 'skills/check', self._svc_check)
 
@@ -1286,26 +1353,81 @@ class SkillNode(Node):
         tracker callable. Mirrors `catch_coordinator_node._msg_to_ball`'s
         field reads.
 
-        THE one point where the tracker's (mocap) frame becomes the
-        schedule's: the session-start offset `_mocap_to_schedule_mm` is
-        subtracted from the landing xy here, so the executor's catch aim and
-        the learner's outcome row both see a landing relative to the cup's
-        real position (frame-offset note on `_FRAME_CHECK_WINDOW_S`). z and
-        velocity are untouched (the offset is lateral, plan § 1)."""
+        THE one point where the tracker's (mocap, WORLD) frame becomes the
+        schedule's: the landing is carried world -> robot frame with the
+        attempt's SNAPSHOT `(R, t)` (`_world_to_schedule`; velocity rotates
+        only), THEN the session-start offset `_mocap_to_schedule_mm` --
+        measured in the robot frame -- is subtracted from its xy, so the
+        executor's catch aim and the learner's outcome row both see a landing
+        relative to the cup's real position (frame-offset note on
+        `_FRAME_CHECK_WINDOW_S`). With no snapshot yet (between launches and
+        the first goal accept / `skills/check`) the transform is the identity
+        -- a goal cannot start without a snapshot (the ladder refuses
+        `REJECTED_ROBOT_FRAME_UNKNOWN`), so nothing aims on such a landing."""
         self._raw_balls = list(msg.balls)
-        off = self._mocap_to_schedule_mm
-        dx, dy = (0.0, 0.0) if off is None else (float(off[0]), float(off[1]))
         for b in msg.balls:
             t_land = float(b.time_at_land.sec) + float(b.time_at_land.nanosec) * 1e-9
+            pos_mm, vel_mm_s = self._world_to_schedule(
+                (b.landing_position.x, b.landing_position.y,
+                 b.landing_position.z),
+                (b.landing_velocity.x, b.landing_velocity.y,
+                 b.landing_velocity.z))
             self._balls[int(b.id)] = Landing(
-                pos_mm=np.array([b.landing_position.x - dx,
-                                 b.landing_position.y - dy,
-                                 b.landing_position.z], dtype=float),
-                vel_mm_s=np.array([b.landing_velocity.x, b.landing_velocity.y,
-                                   b.landing_velocity.z], dtype=float),
-                t_land_abs_s=t_land,
+                pos_mm=pos_mm, vel_mm_s=vel_mm_s, t_land_abs_s=t_land,
                 from_fit=bool(b.landing_from_fit))
         self._advance_correlation()
+
+    def _snapshot_frame(self) -> RobotFrame:
+        """The attempt's frozen robot frame, or the identity before any
+        snapshot (see `_attempt_robot_frame` in `__init__`)."""
+        frame = self._attempt_robot_frame
+        return RobotFrame.IDENTITY if frame is None else frame
+
+    def _world_to_schedule(self, pos_world, vel_world):
+        """``(pos_mm, vel_mm_s)`` float arrays: a WORLD landing (tracker or
+        Ball Butler announcement) in the schedule frame -- world -> robot
+        frame with the snapshot (`RobotFrame.to_robot`; the velocity rotates
+        only, `vel_to_robot`), then the robot-frame Platform offset
+        `_mocap_to_schedule_mm` subtracted from x/y (z and velocity carry no
+        offset: it is lateral, plan § 1). With the exact identity snapshot
+        the result is bit-for-bit the pre-2026-10-19 ``(x - dx, y - dy, z)``."""
+        frame = self._snapshot_frame()
+        p = frame.to_robot(np.array([float(pos_world[0]), float(pos_world[1]),
+                                     float(pos_world[2])], dtype=float))
+        v = frame.vel_to_robot(np.array([float(vel_world[0]),
+                                         float(vel_world[1]),
+                                         float(vel_world[2])], dtype=float))
+        off = self._mocap_to_schedule_mm
+        dx, dy = (0.0, 0.0) if off is None else (float(off[0]), float(off[1]))
+        pos_mm = np.array([p[0] - dx, p[1] - dy, p[2]], dtype=float)
+        return pos_mm, np.array(v, dtype=float)
+
+    def _on_robot_frame(self, msg) -> None:
+        """Cache the latched ``robot_frame`` (mocap_node: position = robot
+        origin in world mm, orientation = R robot -> world, published only
+        while its fit is OK). Pure compute, no I/O. A malformed pose (zero or
+        non-finite quaternion / position) is dropped and the previous frame
+        kept -- a bad message is not evidence the robot moved."""
+        try:
+            p = msg.pose.position
+            q = msg.pose.orientation
+            stamp_ns = None
+            try:
+                stamp_ns = (int(msg.header.stamp.sec) * 1000000000
+                            + int(msg.header.stamp.nanosec))
+            except (AttributeError, TypeError, ValueError):
+                stamp_ns = None
+            frame = RobotFrame.from_pose(
+                (float(p.x), float(p.y), float(p.z)),
+                (float(q.x), float(q.y), float(q.z), float(q.w)),
+                stamp_ns=stamp_ns)
+        except (ValueError, AttributeError, TypeError) as exc:
+            self.get_logger().warning(
+                'robot_frame message DROPPED (%s) -- keeping the previous '
+                'frame' % (exc,))
+            return
+        self._robot_frame = frame
+        self._robot_frame_mono = time.perf_counter()
 
     def _now_s(self) -> float:
         """Now, in ROS epoch seconds — the clock the announcements' own
@@ -1504,17 +1626,24 @@ class SkillNode(Node):
     def _on_mocap(self, msg) -> None:
         """`rigid_body_poses` freshness (the R3 ladder's `mocap_fresh`, item
         6 — is the mocap graph publishing AT ALL) PLUS a bounded buffer of
-        the `Platform` body's xy (plan `cup-contact-contract.md` § 1, the
-        session-start frame check) — the one per-body read this node makes,
-        mirroring `reload_coordinator_node`'s toss positioning cross-check
-        (`_on_mocap` there): store AS PUBLISHED, x/y unconverted (see the
-        frame/units note on `_FRAME_CHECK_WINDOW_S`)."""
+        the `Platform` body's position (plan `cup-contact-contract.md` § 1,
+        the session-start frame check) — the one per-body read this node
+        makes, mirroring `reload_coordinator_node`'s toss positioning
+        cross-check (`_on_mocap` there). Stored as a WORLD point: x/y as
+        published, z with `mocap_interface`'s platform shift
+        (`hw.GEOM_INITIAL_HEIGHT_MM`, subtracted from every non-base body)
+        added back, so `_frame_check` can carry it world -> robot frame
+        through the attempt's snapshot (frame/units note on
+        `_FRAME_CHECK_WINDOW_S`, 2026-10-19). No transform here: the snapshot
+        is chosen at the check, not at receive."""
         now = time.perf_counter()
         self._mocap_mono = now
         for body in msg.bodies:
             if body.name == 'Platform':
                 p = body.pose.pose.position
-                self._platform_mocap_xy.append((now, float(p.x), float(p.y)))
+                self._platform_mocap_xyz.append(
+                    (now, float(p.x), float(p.y),
+                     float(p.z) + float(hw.GEOM_INITIAL_HEIGHT_MM)))
                 break
 
     def _on_commanded_position(self, msg) -> None:
@@ -1534,7 +1663,7 @@ class SkillNode(Node):
         self._commanded_pos_mono = now
         # Session-start frame check's own at-rest window (plan
         # `cup-contact-contract.md` § 1) — xy only, same buffer shape as
-        # `_platform_mocap_xy`.
+        # `_platform_mocap_xyz` (xy only: the command is robot-frame already).
         self._commanded_xy_hist.append((now, p[0], p[1]))
 
     def _live_commanded_position(self, now: float):
@@ -1949,7 +2078,8 @@ class SkillNode(Node):
             mocap_fresh=mocap_fresh, hand_fresh=hand_fresh,
             levelled=levelled, ball_evidence=self._possession_evidence_stable,
             in_trajectory_mode=in_trajectory_mode,
-            hand_lane_refused=self._hand_lane_refused(now))
+            hand_lane_refused=self._hand_lane_refused(now),
+            robot_frame_known=self._robot_frame is not None)
 
     def _ball_evidence(self, ball_id: int, t_abs_s: float) -> str:
         """The executor's ``observer`` callable (item 6): the live possession
@@ -2202,6 +2332,19 @@ class SkillNode(Node):
         self._announced_release_s[int(ball_id)] = release_abs_s
         vel = ballistics_bc.launch_velocity(site_mm, target_mm, flight_s_)
         lv = ballistics_bc.arrival_velocity(vel, flight_s_)
+        # The announcement is a WORLD message (frame_id 'world'; the tracker
+        # seeds its track from it against world detections), the physics
+        # above is schedule (robot) frame: carry positions robot -> world and
+        # rotate velocities with the attempt's snapshot (2026-10-19). The
+        # Platform offset is NOT added (unchanged from before the robot
+        # frame: the announcement never carried it); the exact identity
+        # returns every value bit for bit.
+        frame = self._snapshot_frame()
+        if not frame.is_identity():
+            site_mm = frame.to_world(site_mm)
+            target_mm = frame.to_world(target_mm)
+            vel = frame.vel_to_world(vel)
+            lv = frame.vel_to_world(lv)
         now_perf = time.perf_counter()
         now_ros = self.get_clock().now()
         delta_s = float(t_release_mono) - now_perf
@@ -2878,20 +3021,25 @@ class SkillNode(Node):
         pretilt_margin_s = PRETILT_S if ctx.kind == 'reload' else 0.0
         delay_s = max(bridge_end_abs - now + pretilt_margin_s + LEAD_S,
                      _BB_THROW_DELAY_FLOOR_S)
+        # B4 (columns only): walk Ball Butler's own request BACK by its
+        # measured landing bias (`bias = landing - request`) so its landing
+        # error cancels -- `columns_feed_bb_bias_mm`'s own docstring. The
+        # bias is robot-frame xy, so it is subtracted IN THE ROBOT FRAME,
+        # before `_mocap_aim_point_mm` carries the aim robot -> world with
+        # the attempt's snapshot (until 2026-10-19 it was subtracted after,
+        # in the mocap frame -- the same thing only while R is the identity).
+        bias = (self._columns_feed_bb_bias_mm() if ctx.kind == 'columns'
+                else None)
+        frame = self._snapshot_frame()
         aim_x, aim_y, aim_z = _mocap_aim_point_mm(
-            ctx.aim_site, CATCH_CUP_Z_MM, self._mocap_to_schedule_mm)
-        if ctx.kind == 'columns':
-            # B4: walk Ball Butler's own request BACK by its measured
-            # landing bias (`bias = landing - request`) so its landing
-            # error cancels -- `columns_feed_bb_bias_mm`'s own docstring.
-            # A pure translation either side of `_mocap_aim_point_mm`
-            # commutes (both frames share the same x/y axes, only the
-            # origin differs), so subtracting here (mocap frame) is the
-            # same correction as subtracting in `ctx.aim_site`'s own
-            # schedule frame.
-            bias_x, bias_y = self._columns_feed_bb_bias_mm()
-            aim_x -= bias_x
-            aim_y -= bias_y
+            ctx.aim_site, CATCH_CUP_Z_MM, self._mocap_to_schedule_mm,
+            frame=frame, bias_mm=bias)
+        if not frame.is_identity():
+            self.get_logger().debug(
+                'BB aim: robot frame (%.1f, %.1f, %.1f) mm -> world (%.1f, '
+                '%.1f, %.1f) mm' % (
+                    *frame.to_robot((aim_x, aim_y, aim_z)).tolist(),
+                    aim_x, aim_y, aim_z))
         req = BallButlerThrow.Request()
         req.use_target_point = True
         req.target_name = self._robot_name
@@ -3924,10 +4072,74 @@ class SkillNode(Node):
         (`_frame_offset_check`) — the node-side half of the session-start
         mocap-vs-commanded frame check (plan `cup-contact-contract.md`
         § 1). Read-only, no motion, safe to call from either start path
-        before anything moves."""
-        return _frame_offset_check(tuple(self._platform_mocap_xy),
+        before anything moves.
+
+        Each buffered Platform sample is a WORLD point and is carried world
+        -> robot frame with the attempt's snapshot (`_snapshot_frame`, the
+        identity before one exists) BEFORE the pure check subtracts the
+        commanded (robot-frame) xy; the pure check itself is unchanged and
+        still sees ``(mono_s, x_mm, y_mm)``. The exact identity returns the
+        published x/y bit for bit."""
+        samples = tuple(self._platform_mocap_xyz)
+        frame = self._snapshot_frame()
+        if samples and not frame.is_identity():
+            xyz = frame.to_robot(np.array([s_[1:4] for s_ in samples],
+                                          dtype=float))
+            platform = tuple((s_[0], float(r[0]), float(r[1]))
+                             for s_, r in zip(samples, xyz))
+        else:
+            platform = tuple((s_[0], s_[1], s_[2]) for s_ in samples)
+        return _frame_offset_check(platform,
                                    tuple(self._commanded_xy_hist),
                                    time.perf_counter())
+
+    def _attempt_running(self) -> bool:
+        """True while an attempt holds the node -- the same three facts
+        `_refuse_if_running` refuses on (an executor, a reload wait, a
+        magazine throw)."""
+        with self._reload_lock:
+            reloading = self._reload_ctx is not None
+        return (self._executor is not None or reloading
+                or self._magazine_ctx is not None)
+
+    def _snapshot_robot_frame(self) -> str:
+        """Freeze the robot frame for the attempt about to start (owner
+        decision 4, bb-calibration-one-attempt § Phase 3): copy the latest
+        `robot_frame` into `_attempt_robot_frame` -- BEFORE the Platform-offset
+        evaluation, which is measured through it. ``''`` on success, else the
+        `REJECTED_ROBOT_FRAME_UNKNOWN` refusal (no `robot_frame` this launch:
+        ALWAYS refuses, any authority).
+
+        Never re-snapshots while an attempt runs (`_attempt_running`): a
+        `skills/check` dry run mid-attempt reports against the attempt's own
+        frozen frame instead of moving it. A frame received more than
+        `_ROBOT_FRAME_STALE_WARN_S` ago WARNS (once per snapshot, i.e. once
+        per attempt) and does not refuse."""
+        frame = self._robot_frame
+        if frame is None:
+            return ('%s: no robot_frame received this launch -- mocap_node '
+                    'publishes it only while its fit of the robot\'s base '
+                    'markers (Base - 1..7) is OK; check those markers are '
+                    'visible and labelled, then retry'
+                    % (ex.REJECTED_ROBOT_FRAME_UNKNOWN,))
+        if self._attempt_running():
+            return ''
+        self._attempt_robot_frame = frame
+        age_s = time.perf_counter() - self._robot_frame_mono
+        yaw_deg = math.degrees(math.atan2(float(frame.R[1, 0]),
+                                          float(frame.R[0, 0])))
+        self.get_logger().debug(
+            'robot frame snapshotted for this attempt: origin (%.1f, %.1f, '
+            '%.1f) mm, yaw %+.3f deg, tilt+yaw %.3f deg, rms %.2f mm, age '
+            '%.1f s' % (float(frame.t[0]), float(frame.t[1]),
+                        float(frame.t[2]), yaw_deg,
+                        rotation_angle_deg(frame.R), float(frame.rms_mm),
+                        age_s))
+        if age_s > _ROBOT_FRAME_STALE_WARN_S:
+            self.get_logger().warning(
+                'robot frame is %.0f s old; the robot has not moved unless '
+                'someone moved it' % (age_s,))
+        return ''
 
     def _frame_check_error(self) -> str:
         """The session-start frame check (plan `cup-contact-contract.md`
@@ -3950,7 +4162,17 @@ class SkillNode(Node):
         authority, since the learner rows and the OUTCOME lines are written
         at authority 0 too and must mean the same thing either way. An
         over-limit or cannot-evaluate result leaves the previous correction
-        in place (a stale good number beats none) and says so."""
+        in place (a stale good number beats none) and says so.
+
+        FIRST (2026-10-19) the robot frame is snapshotted for the attempt
+        (`_snapshot_robot_frame`); no `robot_frame` this launch returns the
+        `REJECTED_ROBOT_FRAME_UNKNOWN` refusal at ANY authority, before the
+        offset is evaluated (the offset is measured through the snapshot, so
+        it has no meaning without one)."""
+        frame_err = self._snapshot_robot_frame()
+        if frame_err:
+            self.get_logger().debug('frame check: %s' % (frame_err,))
+            return frame_err
         result = self._frame_check()
         if result.evaluable:
             self.get_logger().debug('frame check: %s' % (result.detail,))
@@ -3987,8 +4209,10 @@ class SkillNode(Node):
                     % (result.detail, authority_mm))
         if not result.within_limit:
             return ('REJECTED_FRAME_OFFSET: %s — an offset this large is a '
-                    'wrong base alignment, not the lever arm: re-align QTM to '
-                    'the base, or start with learner_lateral_authority_mm:=0'
+                    'wrong base alignment, not the lever arm: check '
+                    "mocap_node's 'Robot frame OK' line and the QTM Platform "
+                    'body definition, or start with '
+                    'learner_lateral_authority_mm:=0'
                     % (result.detail,))
         return ''
 
@@ -4396,8 +4620,14 @@ class SkillNode(Node):
         off = self._mocap_to_schedule_mm
         off_xy = (0.0, 0.0) if off is None else (float(off[0]), float(off[1]))
         origin, R, _ = base
-        p_plan = mt.base_to_plan_mm(cfg.target_base_mm, R, origin, off_xy)
+        # The shelf base frame is WORLD (mocap_node, owner decision 1): the
+        # target goes shelf-base -> world -> robot frame (the attempt's
+        # snapshot), then minus the robot-frame Platform offset. With the
+        # identity snapshot this is `mt.base_to_plan_mm` bit for bit.
+        frame = self._snapshot_frame()
         p_world = mt.base_to_world_mm(cfg.target_base_mm, R, origin)
+        p_plan = (np.asarray(frame.to_robot(p_world), dtype=float)
+                  - np.array([off_xy[0], off_xy[1], 0.0]))
 
         prelevel_err = self._prelevel()
         if prelevel_err:
@@ -4424,6 +4654,7 @@ class SkillNode(Node):
         t_end = rel_ros + cfg.flight_s + 0.3
         self._magazine_ctx = dict(
             cfg=cfg, R=R, origin=origin, off_xy=off_xy, p_plan=p_plan,
+            frame=frame,
             t_rel=rel_ros, t_end=t_end, samples={}, preexisting=preexisting,
             collecting=True, timer=None)
         self._magazine_ctx['timer'] = self.create_timer(
@@ -4450,7 +4681,10 @@ class SkillNode(Node):
             return False, 'NO_TRACK: no ball track appeared after the release', {}
         bid = max(ctx['samples'], key=lambda k: len(ctx['samples'][k]))
         arr = np.array(sorted(ctx['samples'][bid]), dtype=float)
-        pos = arr[:, 1:4].copy()
+        # World samples -> robot frame (the attempt's snapshot, frozen in the
+        # ctx at accept) -> minus the Platform offset: the plan frame.
+        frame = ctx.get('frame') or RobotFrame.IDENTITY
+        pos = np.array(frame.to_robot(arr[:, 1:4]), dtype=float).copy()
         pos[:, 0] -= ctx['off_xy'][0]
         pos[:, 1] -= ctx['off_xy'][1]
         tz = float(ctx['p_plan'][2])
@@ -4461,8 +4695,15 @@ class SkillNode(Node):
         except ValueError as exc:
             return False, 'NO_TRACK: %s' % (exc,), {}
         cross = np.array([fit.xy_mm[0], fit.xy_mm[1], tz])
-        miss = (mt.plan_to_base_mm(cross, ctx['R'], ctx['origin'], ctx['off_xy'])
-                - np.asarray(ctx['cfg'].target_base_mm, dtype=float))
+        if frame.is_identity():
+            cross_base = mt.plan_to_base_mm(cross, ctx['R'], ctx['origin'],
+                                            ctx['off_xy'])
+        else:
+            cross_world = frame.to_world(
+                cross + np.array([ctx['off_xy'][0], ctx['off_xy'][1], 0.0]))
+            cross_base = mt.world_to_base_mm(cross_world, ctx['R'],
+                                             ctx['origin'])
+        miss = cross_base - np.asarray(ctx['cfg'].target_base_mm, dtype=float)
         dt_ms = (fit.t_cross_s - (ctx['t_rel'] + ctx['cfg'].flight_s)) * 1e3
         text = ('MAGAZINE miss: dx=%+.0f dy=%+.0f mm (elbow frame), crossing '
                 'time vs predicted %+.0f ms, %d samples'
@@ -4902,20 +5143,17 @@ class SkillNode(Node):
         if the claim is still current at the install (see the swap below).
         Every path out of here resolves the claim or leaves it to a Stop /
         refused hand lane / BB refusal that already ended the attempt."""
-        # THE JOIN: `_on_balls` subtracts the measured mocap-to-schedule
-        # offset from a tracker LANDING to reach the schedule frame (see
-        # that method's docstring) -- the announcement's landing is the
-        # SAME physical fact (BB's own predicted touch-down), read off the
-        # SAME mocap-tagged frame, so it gets the SAME correction. Velocity
-        # is untouched, as `_on_balls` leaves it.
-        off = self._mocap_to_schedule_mm
-        dx, dy = (0.0, 0.0) if off is None else (float(off[0]), float(off[1]))
-        landing_mm = np.array([msg.landing_position.x - dx,
-                               msg.landing_position.y - dy,
-                               msg.landing_position.z], dtype=float)
-        landing_vel_mm_s = np.array([msg.landing_velocity.x,
-                                     msg.landing_velocity.y,
-                                     msg.landing_velocity.z], dtype=float)
+        # THE JOIN: `_on_balls` carries a tracker LANDING world -> robot
+        # frame (the attempt's snapshot) and subtracts the robot-frame
+        # Platform offset to reach the schedule frame (see that method's
+        # docstring) -- the announcement's landing is the SAME physical fact
+        # (BB's own predicted touch-down, a WORLD point), so it gets the SAME
+        # transform through the same helper. Velocity rotates only.
+        landing_mm, landing_vel_mm_s = self._world_to_schedule(
+            (msg.landing_position.x, msg.landing_position.y,
+             msg.landing_position.z),
+            (msg.landing_velocity.x, msg.landing_velocity.y,
+             msg.landing_velocity.z))
         t_land_abs_s = (float(msg.landing_time.sec)
                         + float(msg.landing_time.nanosec) * 1e-9)
         throw_time_s = (float(msg.throw_time.sec)

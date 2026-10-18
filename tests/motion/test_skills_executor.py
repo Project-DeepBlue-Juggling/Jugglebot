@@ -2909,6 +2909,7 @@ def _single_catch_schedule(site, ball_id, t_land):
 
 @pytest.mark.parametrize('field, value, code', [
     ('mocap_fresh', False, 'REJECTED_MOCAP_STALE'),
+    ('robot_frame_known', False, 'REJECTED_ROBOT_FRAME_UNKNOWN'),
     ('levelled', False, 'REJECTED_NOT_LEVELLED'),
     ('hand_fresh', False, 'REJECTED_HAND_STALE'),
     ('ball_evidence', bp.EVIDENCE_UNKNOWN, 'REJECTED_BALL_UNKNOWN'),
@@ -2955,19 +2956,20 @@ def test_a_phantom_throw_dispatches_on_an_empty_cup_with_no_ball_evidence_refusa
 
 def test_a_fully_failing_observation_reports_every_row_at_once(sites):
     """The runsheet rehearsal reports every refusal together (Workflow Rules:
-    "make gates report every refusal at once"): the log line names all four
+    "make gates report every refusal at once"): the log line names all five
     applicable codes even though only the first (dependency order) ends the
     attempt."""
     p1, _p2 = sites
     sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
     inst = _FakeInstaller()
-    obs = _obs(mocap_fresh=False, hand_fresh=False,
+    obs = _obs(mocap_fresh=False, hand_fresh=False, robot_frame_known=False,
                levelled=False, ball_evidence=bp.EVIDENCE_UNKNOWN)
     x = ex.SkillExecutor(sch, inst, observations=lambda t: obs)
     lines = x.tick(sch.skills[0].dispatch_s())
 
     assert x.end_code == ex.REJECTED_MOCAP_STALE
-    for code in (ex.REJECTED_MOCAP_STALE, ex.REJECTED_NOT_LEVELLED,
+    for code in (ex.REJECTED_MOCAP_STALE, ex.REJECTED_ROBOT_FRAME_UNKNOWN,
+                ex.REJECTED_NOT_LEVELLED,
                 ex.REJECTED_HAND_STALE, ex.REJECTED_BALL_UNKNOWN):
         assert code in lines[0]
     assert ex.REJECTED_NO_BALL not in lines[0]     # UNKNOWN, not EMPTY
@@ -2986,6 +2988,16 @@ def test_precondition_refusals_direct_order_and_launch_gate():
         ex.REJECTED_MOCAP_STALE, ex.REJECTED_NOT_LEVELLED,
         ex.REJECTED_HAND_STALE]
     assert ex.precondition_refusals(_obs(), launch=True) == []
+    # The robot-frame row sits right after the mocap row and, like it, is
+    # dropped for a REST (a REST does not aim).
+    no_frame = _obs(mocap_fresh=False, robot_frame_known=False,
+                    levelled=False)
+    assert ex.precondition_refusals(no_frame, launch=False) == [
+        ex.REJECTED_MOCAP_STALE, ex.REJECTED_ROBOT_FRAME_UNKNOWN,
+        ex.REJECTED_NOT_LEVELLED]
+    assert ex.precondition_refusals(no_frame, launch=False,
+                                    skip_mocap=True) == [
+        ex.REJECTED_NOT_LEVELLED]
 
 
 def test_a_catch_only_checks_the_non_launch_rows(sites):

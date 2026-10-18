@@ -339,6 +339,14 @@ CAUGHT_EVIDENCE = bp.EVIDENCE_SEATED
 # physical fact, in the SAME dependency order -- see :func:`precondition_refusals`
 # and :meth:`SkillExecutor._dispatch`.
 REJECTED_MOCAP_STALE = 'REJECTED_MOCAP_STALE'
+#: No ``robot_frame`` has been received this launch (bb-calibration-one-attempt
+#: § Phase 3, owner 2026-10-19): the robot frame is MEASURED in software from
+#: the robot's labelled base markers (``jugglebot.robot_frame``), and every
+#: tracker landing, Ball Butler aim point and the Platform offset are
+#: transformed through it -- with no frame there is no honest way to say where
+#: a world-frame landing sits relative to the cup. Refuses at ANY learner
+#: authority (an authority-0 attempt still catches on those landings).
+REJECTED_ROBOT_FRAME_UNKNOWN = 'REJECTED_ROBOT_FRAME_UNKNOWN'
 REJECTED_NOT_LEVELLED = 'REJECTED_NOT_LEVELLED'
 REJECTED_HAND_STALE = 'REJECTED_HAND_STALE'
 #: ``REJECTED_HAND_NOT_PARKED`` WAS here and is RETIRED (owner decision,
@@ -727,6 +735,12 @@ class Observations:
     robot". Each field is one row of ``INVARIANTS.md`` § 8:
 
     * ``mocap_fresh`` -- ``REJECTED_MOCAP_STALE``.
+    * ``robot_frame_known`` -- a ``robot_frame`` message has been received
+      this launch (sticky: never cleared once known; age is a WARN in the
+      node, not a refusal) -- :data:`REJECTED_ROBOT_FRAME_UNKNOWN`.  Defaults
+      True so a caller with no QTM at all (the MuJoCo sim gate, where world
+      IS the robot frame by construction) keeps its behaviour; the ROS shell
+      (``skill_node._observations``) always supplies it.
     * ``hand_fresh`` -- ``REJECTED_HAND_STALE``.
     * ``levelled`` -- ``trajectory_node``'s ``gravity_correction_loaded`` on a
       fresh status (C-LEVEL-1.O) -- ``REJECTED_NOT_LEVELLED``.
@@ -751,6 +765,7 @@ class Observations:
     ball_evidence: str
     in_trajectory_mode: bool
     hand_lane_refused: bool = False
+    robot_frame_known: bool = True
 
 
 def precondition_refusals(obs: Observations, *, launch: bool,
@@ -788,11 +803,15 @@ def precondition_refusals(obs: Observations, *, launch: bool,
     :meth:`SkillExecutor._dispatch`): the schedule's CLOSING REST splices onto
     the live plan the same way a CATCH does and needs none of these facts.
     ``skip_mocap`` drops ``REJECTED_MOCAP_STALE`` for a REST specifically: a
-    REST does not aim, so a stale mocap graph is not a fact it needs.
+    REST does not aim, so a stale mocap graph is not a fact it needs; it drops
+    ``REJECTED_ROBOT_FRAME_UNKNOWN`` for the same reason (the robot frame only
+    transforms aims and landings).
     """
     codes = []
     if not skip_mocap and not obs.mocap_fresh:
         codes.append(REJECTED_MOCAP_STALE)
+    if not skip_mocap and not obs.robot_frame_known:
+        codes.append(REJECTED_ROBOT_FRAME_UNKNOWN)
     if not obs.levelled:
         codes.append(REJECTED_NOT_LEVELLED)
     if not obs.hand_fresh:

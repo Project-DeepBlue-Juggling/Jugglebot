@@ -52,11 +52,7 @@ import tf2_ros
 
 from .mocap_interface import FRAME_QUEUE_MAXLEN, MocapInterface
 from .calibration_solve_worker import CalibrationSolveWorker
-from jugglebot.protocol_config import (
-    BallButlerStates,
-    MOCAP_ALIGNMENT_POS_THRESH_MM,
-    MOCAP_ALIGNMENT_ROT_THRESH_DEG,
-)
+from jugglebot.protocol_config import BallButlerStates
 import jugglebot.hardware_config as hw
 from jugglebot import mocap_status as mocap_st
 from .bb_calibration import (
@@ -64,6 +60,9 @@ from .bb_calibration import (
     BB_MARKER_COUNT, BB_YAW_ANCHOR_INDEX,
     load_marker_template, assess_sweep_vs_reference, format_outcome_body,
     stamped_yaw_samples_from_joint_state, sweep_suffix,
+)
+from .robot_frame import (
+    RobotFrameTracker, load_robot_frame_template,
 )
 from .bb_base_frame import (
     BaseFrameMonitor, KappaRecord, append_record, assess_base_frame,
@@ -155,6 +154,19 @@ MAX_CALIBRATION_FAILURE_CHARS = 300
 #: holds their as-built coordinates and the seed BB-in-base records; the state
 #: file holds the node's running pool (seeded from the resource when absent).
 DEFAULT_BASE_FRAME_FILE = 'bb_base_frame.json'
+#: The robot-base marker template (robot_frame.py), learned once from the
+#: kincal bag and frozen under resources/.
+DEFAULT_ROBOT_FRAME_FILE = 'jugglebot_robot_frame.json'
+#: The robot-frame fit is fed this often (the shelf base frame's cadence).
+ROBOT_FRAME_PERIOD_S = 0.2
+#: A new ``robot_frame`` is published when the running frame moved this far
+#: from the last published one (latched, so no heartbeat is needed).
+ROBOT_FRAME_PUBLISH_MM = 0.2
+ROBOT_FRAME_PUBLISH_DEG = 0.005
+#: An unchanged running frame is re-published this often (a latched heartbeat):
+#: skill_node measures the frame's age from RECEIVE time and WARNs past 10 s,
+#: so the age must measure a LIVE fit, not "time since it last moved".
+ROBOT_FRAME_REPUBLISH_S = 5.0
 DEFAULT_BASE_FRAME_STATE_FILE = os.path.join(
     os.path.expanduser('~'), 'bb_calibration_sessions', 'bb_base_frame_state.json')
 #: Cadence (s) of the slow running base-pose estimate fed from the per-frame path.
@@ -341,12 +353,11 @@ class MocapNode(Node):
         # Platform Z offset comes directly from hardware_config — no service needed.
         platform_z_mm = hw.GEOM_INITIAL_HEIGHT_MM
         self.mocap.set_base_to_platform_offset(platform_z_mm)
-        self.mocap.set_alignment_thresholds(
-            MOCAP_ALIGNMENT_POS_THRESH_MM, MOCAP_ALIGNMENT_ROT_THRESH_DEG
-        )
         self.mocap.ready_to_publish = True
 
         # ── Static TF: world → platform_start ─────────────────────────────
+        # Re-broadcast with the robot frame applied whenever `robot_frame` changes.
+        self._platform_z_mm = platform_z_mm
         self.static_tf_broadcaster = tf2_ros.StaticTransformBroadcaster(self)
         self._broadcast_platform_start_tf(platform_z_mm)
 
@@ -379,6 +390,14 @@ class MocapNode(Node):
         # template residual has no field in this type and is not published.
         self.pub_base_frame_pose = self.create_publisher(
             PoseStamped, 'bb/base_frame_pose', latched_qos
+        )
+        # The robot frame (robot_frame.py): Jugglebot's base frame measured from
+        # the labelled `Base - n` markers, as a pose in WORLD mm. PoseStamped,
+        # latched, header.frame_id 'world', header.stamp = the newest frame time
+        # used; position = robot origin in world, orientation = R_robot_to_world.
+        # Published on first fit and on change (> 0.2 mm / 0.005 deg).
+        self.pub_robot_frame = self.create_publisher(
+            PoseStamped, 'robot_frame', latched_qos
         )
         #: The last SUCCESSFUL result this process published (None until one),
         #: and when it was accepted (ISO-8601 UTC, seconds).
@@ -482,6 +501,13 @@ class MocapNode(Node):
         self._base_monitor_last_t = None
         self._base_reported = False
         self._load_base_frame(str(self.get_parameter('bb_base_frame_file').value))
+        self.declare_parameter('robot_frame_file', DEFAULT_ROBOT_FRAME_FILE)
+        self._robot_tracker = None
+        self._robot_last_t = None            # newest frame time fed (s)
+        self._robot_published = None         # last RobotFrame published
+        self._robot_pub_t = None             # frame time of that publish (s)
+        self._robot_ok_prev = None           # last fit state logged (None = never)
+        self._load_robot_frame(str(self.get_parameter('robot_frame_file').value))
         self._log_startup_state()
 
         self.get_logger().info('Mocap node up (QTM connects in the background)')
@@ -579,6 +605,87 @@ class MocapNode(Node):
         except Exception as e:
             self.get_logger().error(f'Error publishing base frame pose: {e}',
                                     throttle_duration_sec=5.0)
+
+    def _load_robot_frame(self, name: str):
+        """Load the robot-frame template. Missing or unreadable: ONE error and
+        the robot frame stays unknown (nothing else in this node depends on it)."""
+        path = self._resolve_resource(name)
+        if path is None:
+            self.get_logger().error(
+                f'Robot frame template not found ({name}) — robot frame UNKNOWN; '
+                'skills will refuse (REJECTED_ROBOT_FRAME_UNKNOWN)')
+            return
+        try:
+            template = load_robot_frame_template(path)
+        except ValueError as e:
+            self.get_logger().error(
+                f'Robot frame template unreadable ({path}): {e} — robot frame UNKNOWN')
+            return
+        self._robot_tracker = RobotFrameTracker(template)
+        self.get_logger().debug(
+            f'Robot frame: {len(template.labels)}-marker template from {path}')
+
+    def _robot_feed_due(self, frame_ros_ns) -> bool:
+        """Whether _feed_robot_frame would fit this frame: once per
+        ROBOT_FRAME_PERIOD_S (the per-frame cost is this comparison)."""
+        if self._robot_tracker is None or frame_ros_ns is None:
+            return False
+        return (self._robot_last_t is None
+                or frame_ros_ns * 1e-9 - self._robot_last_t >= ROBOT_FRAME_PERIOD_S)
+
+    def _feed_robot_frame(self, labelled, frame_ros_ns):
+        """Fit the robot frame to a frame's labelled Base markers (5 Hz), set the
+        interface's aligned flag from the fit, log transitions, and publish the
+        running frame when it is new or moved."""
+        self._robot_last_t = frame_ros_ns * 1e-9
+        tr = self._robot_tracker
+        tr.feed(labelled, frame_ros_ns)
+        st = tr.status()
+        # State = the tracker's RUNNING frame (window semantics), not the last
+        # single fit: one bad feed among good ones changes nothing.
+        cur = tr.current()
+        ok = cur is not None
+        self.mocap.set_aligned(ok)
+        if ok != self._robot_ok_prev:
+            first_state = self._robot_ok_prev is None
+            self._robot_ok_prev = ok
+            if ok:
+                yaw = math.degrees(math.atan2(cur.R[1, 0], cur.R[0, 0]))
+                self.get_logger().info(
+                    f'Robot frame OK: rms {st["rms_mm"]:.2f} mm, {st["n_matched"]} markers, '
+                    f'origin ({cur.t[0]:.1f}, {cur.t[1]:.1f}, {cur.t[2]:.1f}) mm, '
+                    f'yaw {yaw:.2f} deg')
+            elif first_state:
+                # Never fitted yet this launch: said once at INFO (a launch with
+                # the Base markers out of view is a status fact, not a loss);
+                # the skills/check refusal names it to the operator.
+                self.get_logger().info(f'Robot frame not seen yet: {st["reason"]}')
+            else:
+                self.get_logger().warn(f'Robot frame UNKNOWN: {st["reason"]}')
+        if cur is None:
+            return
+        last = self._robot_published
+        if (last is None
+                or cur.moved_from(last, ROBOT_FRAME_PUBLISH_MM, ROBOT_FRAME_PUBLISH_DEG)
+                or self._robot_pub_t is None
+                or frame_ros_ns * 1e-9 - self._robot_pub_t >= ROBOT_FRAME_REPUBLISH_S):
+            self._publish_robot_frame(cur, frame_ros_ns)
+
+    def _publish_robot_frame(self, frame, stamp_ns):
+        msg = PoseStamped()
+        _set_stamp(msg.header.stamp, int(frame.stamp_ns if frame.stamp_ns is not None
+                                         else stamp_ns))
+        msg.header.frame_id = 'world'
+        msg.pose.position.x = float(frame.t[0])
+        msg.pose.position.y = float(frame.t[1])
+        msg.pose.position.z = float(frame.t[2])
+        qx, qy, qz, qw = frame.quaternion_xyzw()
+        msg.pose.orientation.x, msg.pose.orientation.y = qx, qy
+        msg.pose.orientation.z, msg.pose.orientation.w = qz, qw
+        self.pub_robot_frame.publish(msg)
+        self._robot_published = frame
+        self._robot_pub_t = stamp_ns * 1e-9
+        self._broadcast_platform_start_tf(self._platform_z_mm, frame)
 
     def _report_base_frame_once(self):
         """Once per process, when the running estimate first has a pose: one
@@ -727,6 +834,7 @@ class MocapNode(Node):
             receiving = bool(self.mocap.is_receiving())
             count, marker3 = self._bb_marker_visibility()
             aligned = bool(self.mocap.is_aligned)
+            rf = self._robot_frame_status_values()
             synced = bool(self.mocap.get_qtm_sync_status().get('synced', False))
 
             msg = DiagnosticStatus()
@@ -747,11 +855,34 @@ class MocapNode(Node):
                          value='1' if marker3 else '0'),
                 KeyValue(key=mocap_st.KEY_ALIGNED, value='1' if aligned else '0'),
                 KeyValue(key=mocap_st.KEY_QTM_SYNCED, value='1' if synced else '0'),
-            ]
+            ] + rf
             self.pub_mocap_status.publish(msg)
         except Exception as e:
             self.get_logger().error(f'Error publishing mocap status: {e}',
                                     throttle_duration_sec=5.0)
+
+    def _robot_frame_status_values(self):
+        """The robot-frame KeyValues of mocap/status (a snapshot of the tracker)."""
+        tr = self._robot_tracker
+        if tr is None:
+            st = {'ok': False, 'rms_mm': None, 'n_matched': 0,
+                  'reason': 'NO_TEMPLATE', 'age_s': None}
+        else:
+            try:
+                now_ns = int(self.get_clock().now().nanoseconds)
+            except Exception:
+                now_ns = None
+            st = tr.status(now_ns)
+            st['ok'] = tr.current() is not None     # same meaning as the pill
+        return [
+            KeyValue(key=mocap_st.KEY_ROBOT_FRAME_OK, value='1' if st['ok'] else '0'),
+            KeyValue(key=mocap_st.KEY_ROBOT_FRAME_RMS_MM,
+                     value='' if st['rms_mm'] is None else f'{st["rms_mm"]:.3f}'),
+            KeyValue(key=mocap_st.KEY_ROBOT_FRAME_N_MATCHED, value=str(int(st['n_matched']))),
+            KeyValue(key=mocap_st.KEY_ROBOT_FRAME_AGE_S,
+                     value='' if st['age_s'] is None else f'{st["age_s"]:.2f}'),
+            KeyValue(key=mocap_st.KEY_ROBOT_FRAME_REASON, value=str(st['reason'])),
+        ]
 
     def _check_calibration_health(self):
         """Invalidate a collection window that has gone bad (Q5b / Q5c).
@@ -917,15 +1048,20 @@ class MocapNode(Node):
             self.get_logger().error(f'Error tracking the BB base frame: {e}',
                                     throttle_duration_sec=5.0)
 
+        try:
+            if self._robot_feed_due(frame_ros_ns):
+                self._feed_robot_frame(labelled, frame_ros_ns)
+        except Exception as e:
+            self.get_logger().error(f'Error fitting the robot frame: {e}',
+                                    throttle_duration_sec=5.0)
+
         # ── Rigid bodies ──────────────────────────────────────────────
-        # Publishing is intentionally NOT gated on base alignment. is_aligned
-        # only flips True while the "Base" rigid body is in view; when Base is
-        # moved out of the test area (e.g. the distance-sweep campaign) or sits
-        # far off the QTM origin, gating here would suppress /rigid_body_poses
-        # entirely — including the Catching_Cone target the thrower needs — and
-        # silently block every throw. Alignment is still computed and surfaced
-        # via MocapDataMulti.aligned (plus a misalignment warning) for the GUI;
-        # it is informational, not a hard gate on rigid-body publishing.
+        # Publishing is intentionally NOT gated on the robot frame. Gating here
+        # would suppress /rigid_body_poses entirely — including the
+        # Catching_Cone target the thrower needs — and silently block every
+        # throw. The fit's state is surfaced via MocapDataMulti.aligned (= robot
+        # frame known) and mocap/status; it is informational, not a gate here.
+        # Body poses stay in QTM WORLD coordinates; consumers apply `robot_frame`.
         # Stamps as before the frame queue: the message at publish time, each
         # pose at its frame's receive time.
         try:
@@ -982,18 +1118,35 @@ class MocapNode(Node):
     #  Static TF
     # ──────────────────────────────────────────────────────────────────────
 
-    def _broadcast_platform_start_tf(self, z_offset_mm: float):
+    def _broadcast_platform_start_tf(self, z_offset_mm: float, frame=None):
+        """world -> platform_start: the robot frame (R, t) applied to the
+        point (0, 0, z_offset); the identity version before any fit.
+
+        For VISUALISATION only. Poses on ``rigid_body_poses`` are published in
+        WORLD xy (z shifted) under frame_id 'platform_start'; this TF
+        (R @ (0, 0, z0) + t, rotation R) must NOT be applied to those poses by
+        a tf2 consumer (none exists today)."""
         t = TransformStamped()
         t.header.stamp = self.get_clock().now().to_msg()
         t.header.frame_id = 'world'
         t.child_frame_id = 'platform_start'
-        t.transform.translation.x = 0.0
-        t.transform.translation.y = 0.0
-        t.transform.translation.z = z_offset_mm
-        t.transform.rotation.w = 1.0
+        if frame is None:
+            t.transform.translation.x = 0.0
+            t.transform.translation.y = 0.0
+            t.transform.translation.z = z_offset_mm
+            t.transform.rotation.w = 1.0
+        else:
+            p = frame.to_world([0.0, 0.0, z_offset_mm])
+            t.transform.translation.x = float(p[0])
+            t.transform.translation.y = float(p[1])
+            t.transform.translation.z = float(p[2])
+            qx, qy, qz, qw = frame.quaternion_xyzw()
+            t.transform.rotation.x, t.transform.rotation.y = qx, qy
+            t.transform.rotation.z, t.transform.rotation.w = qz, qw
         self.static_tf_broadcaster.sendTransform(t)
         self.get_logger().debug(
-            f'Broadcast static tf: world -> platform_start (z_offset={z_offset_mm:.1f} mm)'
+            f'Broadcast static tf: world -> platform_start (z_offset={z_offset_mm:.1f} mm'
+            f'{"" if frame is None else ", robot frame applied"})'
         )
 
     # ──────────────────────────────────────────────────────────────────────

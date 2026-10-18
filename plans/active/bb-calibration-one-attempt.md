@@ -3,13 +3,14 @@ title: Ball Butler calibration is a one-attempt process, every time
 status: active
 owner: harrison
 created: 2026-10-14
-last_updated: 2026-10-17
+last_updated: 2026-10-19
 related_logbook:
   - 2026-10-14-bb-calibration-one-attempt-investigation.md
   - 2026-10-16-bb-calibration-phase1-gate-inversion.md
   - 2026-10-16-bb-calibration-phase2-template-residual.md
   - 2026-10-16-bb-calibration-power-cycle-ab.md
   - 2026-10-17-bb-calibration-residual-cap-1p5.md
+  - 2026-10-19-bb-calibration-phase3-robot-frame.md
 related_code:
   - ros_ws/src/jugglebot/jugglebot/bb_calibration.py
   - ros_ws/src/jugglebot/jugglebot/bb_base_frame.py
@@ -17,6 +18,7 @@ related_code:
   - ros_ws/src/jugglebot/jugglebot/mocap_interface.py
   - ros_ws/src/jugglebot/jugglebot/skill_node.py
   - ros_ws/src/jugglebot/jugglebot/ball_tracker_node.py
+  - ros_ws/src/jugglebot/jugglebot/robot_frame.py
 ---
 
 # Ball Butler calibration is a one-attempt process, every time
@@ -308,25 +310,48 @@ advisory (0.20 deg) is the second line.
 
 ### Phase 3 - Robot frame measured in software (P4)
 
-Deliverable:
+Deliverable (original intent): `mocap_node` measures the Jugglebot robot
+frame from the labelled "Base - 1..7" markers instead of relying on manual
+QTM re-alignment, and the consumers are expressed through it; the world-frame
+consistency gate and the Base alignment check (2000 mm / 180 deg, never fires)
+are retired.
 
-- `mocap_node` fits the Jugglebot Base rigid body (the labelled
-  "Base - 1..7" markers) at session start and tracks it. It publishes
-  T_world to base.
-- Consumers are re-expressed in the base frame: BB aim xy (`skill_node.py`),
-  stow plane z 578.2 (`mocap_interface.py`, static TF in `mocap_node.py`),
-  landing plane z 830 (`ball_tracker_node.py`), the Platform offset as a full
-  rigid transform, and `columns_feed_bb_bias_mm`.
-- The world-frame consistency gate is retired. The Base alignment check
-  (2000 mm / 180 deg thresholds, never fires) is replaced by a real
-  rigid-body fit-residual check.
-- **Artefact migration, once:** `bb_calibration_last_accepted.json`;
-  `bb_base_frame_state.json` (`base_ref`, per-record world yaw);
-  `resources/bb_base_frame.json` (`base_pose_at_build`); the template gauge
-  pin (landing-derived); `throw_affine_correction.json` (disabled);
-  `columns_feed_bb_bias_mm`. Learner memory is release-relative and needs no
-  migration.
-- The manual QTM re-alignment step is removed from the runsheets.
+Decided 2026-10-19 (owner; entry `2026-10-19-bb-calibration-phase3-robot-frame.md`):
+
+- **The BB side stays in QTM world; only the robot side is transformed.** The
+  sweep calibration, `bb_base_frame.py`, `bb/base_frame_pose`,
+  `bb/calibration_result`, the affine correction, the gauge pin,
+  `ball_butler_node` and `bb/throw_at_target` are NOT touched. Two join points
+  carry the transform: `skill_node` (landings, BB aim points, the Platform
+  frame check, the magazine) and the `ball_tracker_node` landing plane.
+- **The robot frame IS the kincal frame** (QTM global of bag
+  2026-09-27_14-31-13). The marker template shape is learned from the freshest
+  bag, registered once into that frame and frozen in
+  `resources/jugglebot_robot_frame.json`. New pure module `robot_frame.py`;
+  latched topic `robot_frame` (PoseStamped, frame_id `world`).
+- **A robot frame never received this launch always refuses**
+  (a later loss of the markers warns and reuses the frame, owner decision 6;
+  `REJECTED_ROBOT_FRAME_UNKNOWN`, executor ladder row, any learner
+  authority). The transform is **frozen per attempt** (snapshotted at the
+  session-start frame check); the tracker plane follows the latched topic live.
+- **Fit guard:** RMS cap 1.0 mm (the 0.66 mm template residual in the 10-16
+  bags is per-wand-calibration QTM scatter, the markers have not moved), at
+  least 4 markers, and a **tilt-vs-build cap of 0.2 deg** instead of a
+  per-marker cap (the markers are nearly coplanar, so a single-marker residual
+  cap does not bound the tilt).
+- `mocap_interface` is unchanged (world xy, z shift kept); `aligned` is now
+  the fit status; the QTM Base-body alignment check, its setters and the
+  `mocap_alignment` constants are retired.
+- **No artefact migration is needed:** the BB side stays in QTM world, so
+  `bb_calibration_last_accepted.json`, `bb_base_frame_state.json`,
+  `resources/bb_base_frame.json`, the gauge pin and
+  `throw_affine_correction.json` keep their frame; `columns_feed_bb_bias_mm`
+  is robot-frame by construction; learner memory is release-relative.
+- The manual QTM re-alignment step is removed from the LIVE runsheets (rows
+  rewritten 2026-10-19; Phase 1 R4 retired).
+
+Status: code landed 2026-10-19, NOT flown. Dress rehearsal and the hardware
+check are owed (rehearsal rows 35-38).
 
 Control analysis required before code (CLAUDE.md): which setpoints change
 frame, whether the Platform offset step at session start can produce a
@@ -334,18 +359,15 @@ discontinuity at the 40 Hz planner, and a walk through one cycle with the
 transform applied. When the rigid transform is identity (frame already
 aligned), every output must equal today's bit for bit.
 
-Files likely touched: `mocap_node.py`, `mocap_interface.py`, `skill_node.py`,
-`ball_tracker_node.py`, `bb_calibration.py`, `bb_base_frame.py`, the
-resources JSONs, `tests/ros/test_bb_*.py`, `tests/ros/test_mocap_node_*.py`,
-`tests/sim/test_skills_gate.py`.
-
-Pinned by:
-
-- Identity-transform test: outputs equal today's.
-- Rotated and translated QTM frame test: every aim, catch site and plane is
-  invariant.
-- A bag replay across the 2026-10-10 23:32 frame re-definition with no
-  override.
+Pinned by: `tests/ros/test_robot_frame.py` (fit, identity bit-exact,
+refusals), `tests/ros/test_robot_frame_resource.py`,
+`tests/ros/test_mocap_node_robot_frame.py`,
+`tests/ros/test_skill_node_robot_frame.py` (identity bit-exact on five paths,
+rotated/translated frame invariance, refusal at authority 0 and 40, freeze),
+`tests/ros/test_ball_tracker_robot_frame.py`, and the bag probe
+`tools/probes/robot_frame_bag_check.py` across the 2026-10-10 re-definition
+(the two bags this plan named carry no `Base - n` labels, so the replay used
+10-10_14-13-18 and 10-11_11-27-53).
 
 Gate: `./run_tests.sh --full`; dress rehearsal on the loaded Jetson against
 the live `/robot_state` before any powered sitting. Hardware check: move
@@ -381,4 +403,4 @@ column still lands.
 | 0 Characterise | done | 2026-10-16 | bands published in the Phase 0 entry; pose mix excluded; the power-cycle pin dropped (every session is one), replaced by the 2026-10-16 QTM re-wand + the first Phase 1 sweep |
 | 1 Gate inversion and operator surface | code live, R1-R4 passed, tally 4 of 10 (15:08, 16:10, 16:23, 20:30; the 22:01 first sweep refused on a true residual; pending acceptance rewording) | 2026-10-16 | merged c115743d; mechanism: at BB (Phase 2), not its power-up state (A/B) |
 | 2 Template residual | done | 2026-10-16 | controlled pair + 75 sweeps of 22 sittings: the step is at BB (every subset, leave-one-out and label-free refit keeps it; firmware excluded); no pickup, no re-fit, one statistic kept (reference 0.18-0.46 mm, pool-size pin); A/B done 2026-10-16 evening: kappa held across two BB-only cycles (not a power-up state); the 86 min off deformed Q3-Q6 to 1.2 mm, calibration refused until addressed (entry `2026-10-16-bb-calibration-power-cycle-ab.md`); cap 1.0 -> 1.5 mm / advisory 0.90 -> 1.0 mm 2026-10-17 on measured evidence (entry `2026-10-17-bb-calibration-residual-cap-1p5.md`) |
-| 3 Robot frame in software | not started | - | design-bearing; after Phase 1 |
+| 3 Robot frame in software | code landed, NOT flown; dress rehearsal + hardware check owed (rehearsal rows 35-38) | 2026-10-19 | BB side stays in QTM world, robot side transformed at two join points; kincal frame; a frame never received this launch always refuses (a later loss warns and reuses it); frozen per attempt; entry `2026-10-19-bb-calibration-phase3-robot-frame.md` |

@@ -168,7 +168,7 @@ const FLAGS = [
     { id: 'flag-levelled',     type: 'error', labelOk: 'Levelled',         labelFail: 'Not Levelled' },
     // Row 4
     { id: 'flag-mocap',        type: 'error', labelOk: 'Mocap Connected',  labelFail: 'Mocap Disconnected' },
-    { id: 'flag-mocap-aligned', type: 'error', labelOk: 'Mocap Aligned',  labelFail: 'Mocap Misaligned' },
+    { id: 'flag-mocap-aligned', type: 'error', labelOk: 'Robot frame OK',  labelFail: 'Robot frame UNKNOWN' },
     // Row 5
     { id: 'flag-ball-held',    type: 'pill', label: 'Ball in Hand' },
 ];
@@ -266,7 +266,7 @@ export function setMocapConnected(connected) {
  * @param {boolean} aligned
  */
 export function setMocapAligned(aligned) {
-    setFlagError('flag-mocap-aligned', !aligned, 'Mocap Misaligned', 'Mocap Aligned');
+    setFlagError('flag-mocap-aligned', !aligned, 'Robot frame UNKNOWN', 'Robot frame OK');
 }
 
 function setFlagProgress(id, value, labelDone, labelWait) {

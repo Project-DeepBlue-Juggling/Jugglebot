@@ -70,7 +70,7 @@ valid, just costlier.
   `logbook/2026-08-15-fw14-validated-arc-closed.md`). The recorder's meta still
   captures `uptime_ms` first/last — quote both in the debrief.
 - `run_mpc.py` is **NOT** running (sole-binder :5557 interlock).
-- QTM up, streaming the Base body at minimum; `/rigid_body_poses` flowing.
+- QTM up, the `Base - 1..7` markers labelled and visible (2026-10-19: the robot frame is fitted from them, `mocap/status` `robot_frame_ok=1`); `/rigid_body_poses` flowing.
 - Branch `mvp-trajectory-bringup` at ≥ `5447f03`.
 - **Build gate (Phase 1 changed ros_ws AND added an interface — the Toss
   action)**:

@@ -263,12 +263,3 @@ namespace EndpointId {
     constexpr uint16_t hw_version_minor = 7;
   }
 }
-
-// ==========================================================================
-// Motion Capture Alignment
-// ==========================================================================
-
-namespace MocapAlignment {
-  constexpr float POS_THRESH_MM = 2000.0f;
-  constexpr float ROT_THRESH_DEG = 180.0f;
-}

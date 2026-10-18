@@ -111,13 +111,15 @@ def _markers_with_visible(indices):
 # Q1 — mocap/status
 # ════════════════════════════════════════════════════════════════
 
-def test_status_publishes_all_five_keys(node):
+def test_status_publishes_all_keys(node):
     node._publish_mocap_status()
     assert len(node.pub_mocap_status.published) == 1
     kv = _kv(node.pub_mocap_status.published[0])
     assert set(kv) == {
         ms.KEY_QTM_RECEIVING, ms.KEY_BB_MARKERS_VISIBLE,
         ms.KEY_MARKER3_VISIBLE, ms.KEY_ALIGNED, ms.KEY_QTM_SYNCED,
+        ms.KEY_ROBOT_FRAME_OK, ms.KEY_ROBOT_FRAME_RMS_MM, ms.KEY_ROBOT_FRAME_N_MATCHED,
+        ms.KEY_ROBOT_FRAME_AGE_S, ms.KEY_ROBOT_FRAME_REASON,
     }
 
 

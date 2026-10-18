@@ -7,14 +7,14 @@ The tool is request-only; you own homing, activating and E-STOP.
 
 | # | Step | Expect |
 |---|---|---|
-| 1 | **Decide now whether the base will be re-shimmed or QTM re-aligned before the acceptance sitting.** If yes, do it **before** this capture. | The fit is expressed in today's QTM Base frame. A re-align between capture and acceptance puts a new frame error on top of the fitted geometry. |
+| 1 | **Decide now whether the base will be re-shimmed before the acceptance sitting** (QTM is NOT re-aligned since 2026-10-19: the robot frame is fitted from the `Base - 1..7` markers). If yes, do it **before** this capture. | The fit is expressed in the robot (kincal) frame. A physical re-shim between capture and acceptance puts a new frame error on top of the fitted geometry; a QTM re-alignment no longer does. |
 | 2 | QTM running with the `Platform` and `Base` bodies enabled. No ball in the hand. | — |
 
 ## 1. Bring-up (system python3, ROS sourced)
 
 | # | Step | Expect |
 |---|---|---|
-| 3 | `ros2 launch jugglebot jugglebot_launch.py auto_arm:=true record:=true 2>&1 \| tee -i temp/logs/launch_kincal_$(date +%Y%m%d_%H%M).log`, with the GUI open | `mocap_node` logs "Mocap base aligned" |
+| 3 | `ros2 launch jugglebot jugglebot_launch.py auto_arm:=true record:=true 2>&1 \| tee -i temp/logs/launch_kincal_$(date +%Y%m%d_%H%M).log`, with the GUI open | `mocap_node` logs `Robot frame OK: rms .. mm, 7 markers ...` (and `mocap/status` `robot_frame_ok=1`) |
 | 4 | GUI: **Home**, then **Activate** | Hand parks at 0 rev; wire reads ARMED |
 | 5 | `ros2 topic pub --once /orchestrator_command std_msgs/String "data: trajectory"` | Mode TRAJECTORY. Do **not** call `set_limits`: the launch defaults are what the dry-run checked. |
 

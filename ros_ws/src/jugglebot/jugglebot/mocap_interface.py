@@ -32,7 +32,7 @@ FRAME_QUEUE_MAXLEN = 150
 #: stamp_ns      that timestamp on the ROS clock through the min-latency sync,
 #:               converted ONCE, at receive (None before the sync exists)
 #: receive_ns    ROS clock at receive (the same reading the sync was fed)
-#: aligned       ``is_aligned`` after this frame's Base body check
+#: aligned       ``is_aligned`` (the robot-frame fit's state, set by mocap_node)
 #: labelled      [(label, x, y, z, residual)] visible labelled markers
 #: unlabelled    [(x, y, z, residual)] visible unlabelled markers
 #: bodies        ((name, frame_id, x, y, z, qx, qy, qz, qw), ...) rigid bodies,
@@ -116,10 +116,10 @@ class MocapInterface:
         # Uses raw QTM names — checked BEFORE space/hyphen sanitization.
         self.base_frame_bodies = {"Base", "Ball Butler", "Ball_Butler", "Catching Cone", "Catching_Cone"}
 
-        # ── Alignment check ────────────────────────────────────────────
-        self.is_aligned = False  # Updated every frame from the "Base" rigid body
-        self._align_pos_thresh_mm = 2.5   # Overridden by set_alignment_thresholds()
-        self._align_rot_thresh_deg = 1.0
+        # ── Robot-frame flag ───────────────────────────────────────────
+        # Set by mocap_node (set_aligned) from the robot-frame fit over the
+        # labelled Base markers; this class no longer judges the QTM Base body.
+        self.is_aligned = False
 
         # Performance statistics from the incoming packet header.
         # Rolling window: ~5 seconds at 200 Hz
@@ -534,28 +534,6 @@ class MocapInterface:
             qx, qy, qz, qw = quaternion_from_rotation_list(body[1].matrix)
             new_bodies[body_name] = (body_name, frame_id, pos.x, pos.y, z, qx, qy, qz, qw)
 
-            # ── Alignment check: "Base" body should be near the global origin ──
-            if body_name == "Base":
-                pos_dist = _sqrt(pos.x**2 + pos.y**2 + pos.z**2)
-                # Rotation angle from identity: 2 * acos(|qw|) (NaN stays NaN)
-                rot_angle_deg = math.degrees(2.0 * math.acos(min(max(abs(qw), 0.0), 1.0))) \
-                    if not _isnan(qw) else math.nan
-                aligned = bool(pos_dist <= self._align_pos_thresh_mm
-                              and rot_angle_deg <= self._align_rot_thresh_deg)
-                if self.is_aligned and not aligned:
-                    if _isnan(pos_dist) or _isnan(rot_angle_deg):
-                        misalign_detail = "Base body not visible to QTM"
-                    else:
-                        misalign_detail = (
-                            f"pos {pos_dist:.0f} mm, rot {rot_angle_deg:.1f}° "
-                            f"(limits {self._align_pos_thresh_mm:.0f} mm, "
-                            f"{self._align_rot_thresh_deg:.0f}°)"
-                        )
-                    self.logger.warning(f"Mocap base misaligned: {misalign_detail}")
-                elif not self.is_aligned and aligned:
-                    self.logger.info("Mocap base aligned")
-                self.is_aligned = aligned
-
         # Process unlabelled markers, skipping NaN positions.
         current_unlabelled = []
         markers_no_label_residual = packet.get_3d_markers_no_label_residual()
@@ -861,10 +839,10 @@ class MocapInterface:
         """
         self.base_to_platform_transformation = offset
 
-    def set_alignment_thresholds(self, pos_mm: float, rot_deg: float):
-        """Set thresholds for the base-body alignment check."""
-        self._align_pos_thresh_mm = pos_mm
-        self._align_rot_thresh_deg = rot_deg
+    def set_aligned(self, aligned: bool):
+        """Whether the robot frame is currently known (the node's fit result);
+        stamped onto each following ``MocapFrame.aligned``."""
+        self.is_aligned = bool(aligned)
 
 
 if __name__ == "__main__":

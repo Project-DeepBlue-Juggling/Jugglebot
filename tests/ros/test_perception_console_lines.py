@@ -171,15 +171,53 @@ def test_mocap_node_shutdown_is_silent():
     assert log.lines == []
 
 
-# ── mocap_interface: base alignment ──────────────────────────────────────────
+# ── mocap_node: robot frame (replaced the QTM Base-body alignment line) ──────
 
-def test_base_not_visible_is_said_plainly():
-    import inspect
-    from jugglebot.mocap_interface import MocapInterface
-    # The alignment branch lives inside the 200 Hz packet handler (needs a live
-    # QTM packet); pin the wording contract on the source instead.
-    src = inspect.getsource(MocapInterface)
-    assert 'Base body not visible to QTM' in src
+_RF_PTS = {'Base - 1': (275.0, 0.0, -44.0), 'Base - 2': (61.0, 106.0, -28.0),
+           'Base - 3': (0.0, -38.0, -2.0), 'Base - 4': (-175.0, 0.0, -44.0),
+           'Base - 5': (0.0, -1.0, -2.5)}
+
+
+def _robot_frame_node(rows):
+    from jugglebot.robot_frame import RobotFrameTemplate, RobotFrameTracker
+    node = _mocap_node()
+    names = tuple(_RF_PTS)
+    node._robot_tracker = RobotFrameTracker(RobotFrameTemplate(
+        labels=names, points_mm=np.array([_RF_PTS[n] for n in names])))
+    log = _rec(node)
+    node._feed_robot_frame(rows, 1_000_000_000)
+    return node, log
+
+
+def test_robot_frame_ok_is_one_info_line():
+    rows = [(n, *p, 0.0) for n, p in _RF_PTS.items()]
+    node, log = _robot_frame_node(rows)
+    info = [m for m in log.at('INFO') if m.startswith('Robot frame OK: ')]
+    assert len(info) == 1 and '5 markers' in info[0] and 'yaw 0.00 deg' in info[0]
+    node.mocap.set_aligned.assert_called_with(True)
+    assert not log.at('WARN') and not log.at('ERROR')
+
+
+def test_robot_frame_never_seen_is_one_info_line_not_a_warning():
+    # A launch with the Base markers out of view is a status fact (the
+    # skills/check refusal names it); only a LOSS after a fit is a warning.
+    node, log = _robot_frame_node([])
+    assert log.at('INFO') == ['Robot frame not seen yet: TOO_FEW_MARKERS']
+    assert log.at('WARN') == []
+    node.mocap.set_aligned.assert_called_with(False)
+
+
+def test_robot_frame_loss_is_said_plainly():
+    rows = [(n, *p, 0.0) for n, p in _RF_PTS.items()]
+    node, log = _robot_frame_node(rows)
+    # Window semantics: one empty feed changes nothing; `window` (10)
+    # consecutive misses clear the running frame.
+    node._feed_robot_frame([], 2_000_000_000)
+    assert log.at('WARN') == []
+    for k in range(1, node._robot_tracker.window):
+        node._feed_robot_frame([], 2_000_000_000 + k * 200_000_000)
+    assert log.at('WARN') == ['Robot frame UNKNOWN: TOO_FEW_MARKERS']
+    node.mocap.set_aligned.assert_called_with(False)
 
 
 # ── ball_tracker_node ────────────────────────────────────────────────────────

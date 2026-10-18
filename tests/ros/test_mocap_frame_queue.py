@@ -474,17 +474,20 @@ def test_float_quaternion_matches_the_numpy_one_on_every_branch():
     assert all(math.isnan(v) for v in _quat_numpy([math.nan] * 9))
 
 
-def test_a_base_body_out_of_view_reads_not_aligned():
+def test_the_interface_no_longer_judges_the_base_body():
+    """The QTM Base-body alignment check retired with the robot frame: a Base
+    body out of view leaves is_aligned as the node set it (set_aligned)."""
     iface = _iface()
-    iface.is_aligned = True
+    iface.set_aligned(True)
     iface._params_need_refresh = True                # one body vs four in body_dict
     p = _packet(1)
     p.get_6d.return_value = (None, [(SimpleNamespace(x=math.nan, y=math.nan, z=math.nan),
                                      SimpleNamespace(matrix=[math.nan] * 9))])
     iface.node.get_clock.return_value.now.return_value.nanoseconds = 5_000_000_000
     iface.on_packet(p)
+    assert iface.is_aligned is True
+    iface.set_aligned(False)
     assert iface.is_aligned is False
-    assert 'Base body not visible to QTM' in iface.logger.warning.call_args[0][0]
 
 
 def test_the_fast_marker_builder_is_off_under_the_message_stand_ins():

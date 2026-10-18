@@ -49,6 +49,13 @@ KEY_BB_MARKERS_VISIBLE = 'bb_markers_visible'
 KEY_MARKER3_VISIBLE = 'marker3_visible'
 KEY_ALIGNED = 'aligned'
 KEY_QTM_SYNCED = 'qtm_synced'
+#: Robot frame (robot_frame.py): ``aligned`` above is now "the robot frame is
+#: known" (the last fit was OK). These say how well, and why not.
+KEY_ROBOT_FRAME_OK = 'robot_frame_ok'
+KEY_ROBOT_FRAME_RMS_MM = 'robot_frame_rms_mm'
+KEY_ROBOT_FRAME_N_MATCHED = 'robot_frame_n_matched'
+KEY_ROBOT_FRAME_AGE_S = 'robot_frame_age_s'
+KEY_ROBOT_FRAME_REASON = 'robot_frame_reason'
 
 #: A ``mocap/status`` sample older than this counts as no signal at all. The
 #: publisher runs at 5 Hz, so 1.0 s is five consecutive missed cycles — far

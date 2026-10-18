@@ -32,7 +32,7 @@ from rclpy.node import Node as _MockNodeClass
 from std_msgs.msg import String
 from std_srvs.srv import Trigger
 from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
-from geometry_msgs.msg import Point, Vector3
+from geometry_msgs.msg import Point, PoseStamped, Quaternion, Vector3
 from jugglebot_interfaces.msg import (BallButlerHeartbeat, BallStateArray,
                                       HandTelemetryMessage, RigidBodyPose,
                                       RigidBodyPoses, ThrowAnnouncement,
@@ -118,6 +118,7 @@ def _pose_at(x, y):
     pose = MagicMock()
     pose.pose.position.x = x
     pose.pose.position.y = y
+    pose.pose.position.z = 0.0
     return pose
 
 
@@ -188,7 +189,22 @@ def _hand_at(node, rev=sn.REST_HAND_REV, ball_held=True):
 _HAND_CLOCK_FROZEN_S = 1.0e6
 
 
-def _node_with_client(response=None, ready=True, hand=True, frame=True):
+def _robot_frame_msg(t=(0.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0)):
+    """A `robot_frame` PoseStamped as mocap_node publishes it: position =
+    robot origin in world mm, orientation = R robot -> world. The default is
+    the EXACT identity (QTM aligned to the robot) -- every transform then
+    returns its input bit for bit."""
+    msg = PoseStamped()
+    msg.pose.position = Point(x=float(t[0]), y=float(t[1]), z=float(t[2]))
+    msg.pose.orientation = Quaternion(x=float(quat_xyzw[0]),
+                                      y=float(quat_xyzw[1]),
+                                      z=float(quat_xyzw[2]),
+                                      w=float(quat_xyzw[3]))
+    return msg
+
+
+def _node_with_client(response=None, ready=True, hand=True, frame=True,
+                      robot_frame=True):
     """``frame=True`` (the default since 2026-09-21, the unpinning of
     `learner_lateral_authority_mm` 0 -> 40): give the node a ready,
     in-tolerance session-start frame via `_frame_ready(node)` (Platform and
@@ -200,12 +216,17 @@ def _node_with_client(response=None, ready=True, hand=True, frame=True):
     an explicit `:=40`).
 
     Pass ``frame=False`` for a test that IS about the frame check itself —
-    one that populates `_platform_mocap_xy` / `_commanded_xy_hist` its own
+    one that populates `_platform_mocap_xyz` / `_commanded_xy_hist` its own
     way (directly or via its own `_frame_ready(...)` call with a deliberate
     offset), asserts on the raw buffer contents, or wants the
     cannot-evaluate ("no Platform sample yet") branch. Injecting the ready
     default AND a test's own frame data would blend two sets of samples into
-    one averaged offset — never what either party intended."""
+    one averaged offset — never what either party intended.
+
+    ``robot_frame=True`` (default, 2026-10-19): the node has received an
+    IDENTITY `robot_frame` (QTM aligned to the robot), so no start path is
+    refused `REJECTED_ROBOT_FRAME_UNKNOWN` by a test not about the robot
+    frame; ``False`` for one that is (`test_skill_node_robot_frame.py`)."""
     node = sn.SkillNode()
     # frozen hand clock: a loaded run cannot age the fixture's sample (2026-10-15)
     node._hand_clock = lambda: _HAND_CLOCK_FROZEN_S
@@ -222,6 +243,8 @@ def _node_with_client(response=None, ready=True, hand=True, frame=True):
         _hand_at(node)
     if frame:
         _frame_ready(node)
+    if robot_frame:
+        node._on_robot_frame(_robot_frame_msg())
     return node, client
 
 
@@ -250,19 +273,25 @@ def _prelevel_ready(node, *, x=-50.0, y=0.0, z=830.0, **resp_overrides):
 
 
 def _frame_ready(node, *, plat_x=0.0, plat_y=0.0, cmd_x=0.0, cmd_y=0.0,
-                 n_plat=None, n_cmd=5):
+                 n_plat=None, n_cmd=5, plat_z_world=None):
     """Populate the session-start frame check's two buffers directly (plan
     `cup-contact-contract.md` § 1) — the Platform mocap body at
     ``(plat_x, plat_y)`` mm and the commanded position at ``(cmd_x, cmd_y)``
     mm, both fresh and, with repeated identical samples, at rest. Bypasses
     `_on_mocap` / `_on_commanded_position` (like `_prelevel_ready` bypasses
     `_on_commanded_position` for `_commanded_pos_mm`) — the node methods are
-    exercised directly by `test_on_mocap_...` style tests instead."""
+    exercised directly by `test_on_mocap_...` style tests instead.
+
+    The Platform buffer holds WORLD points since 2026-10-19: ``plat_z_world``
+    defaults to `hw.GEOM_INITIAL_HEIGHT_MM` (the body at the stow height,
+    published z 0 plus `mocap_interface`'s shift added back)."""
     if n_plat is None:
         n_plat = sn._FRAME_CHECK_MIN_SAMPLES + 5
+    if plat_z_world is None:
+        plat_z_world = float(hw.GEOM_INITIAL_HEIGHT_MM)
     now = time.perf_counter()
     for _ in range(n_plat):
-        node._platform_mocap_xy.append((now, plat_x, plat_y))
+        node._platform_mocap_xyz.append((now, plat_x, plat_y, plat_z_world))
     for _ in range(n_cmd):
         node._commanded_xy_hist.append((now, cmd_x, cmd_y))
 
@@ -2666,7 +2695,7 @@ def test_frame_check_with_zero_authority_starts_and_logs_the_offset(tmp_path):
 
 
 def test_frame_check_cannot_evaluate_refuses_naming_the_missing_input(tmp_path):
-    """No `Platform` body has ever been seen (`node._platform_mocap_xy`
+    """No `Platform` body has ever been seen (`node._platform_mocap_xyz`
     stays empty) — fail-closed: cannot-evaluate refuses exactly like
     over-limit, and names what is missing."""
     node, _client = _node_with_client(frame=False)
@@ -2687,7 +2716,8 @@ def test_frame_check_refuses_when_the_commanded_position_is_moving(tmp_path):
         [_MockParameter(40.0, name='learner_lateral_authority_mm')])
     now = time.perf_counter()
     for _ in range(sn._FRAME_CHECK_MIN_SAMPLES + 5):
-        node._platform_mocap_xy.append((now, 0.0, 0.0))
+        node._platform_mocap_xyz.append((now, 0.0, 0.0,
+                                         float(hw.GEOM_INITIAL_HEIGHT_MM)))
     node._commanded_xy_hist.append((now - 0.5, 0.0, 0.0))
     node._commanded_xy_hist.append((now, 2.0, 0.0))  # 2 mm > 1 mm tolerance
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
@@ -2700,16 +2730,19 @@ def test_frame_check_refuses_when_the_commanded_position_is_moving(tmp_path):
 
 
 def test_on_mocap_buffers_the_platform_body_xy():
-    """`_on_mocap` (extended, plan § 1) appends the Platform body's xy to
-    the frame check's buffer and ignores every other body."""
+    """`_on_mocap` (extended, plan § 1) appends the Platform body's position
+    to the frame check's buffer and ignores every other body -- as a WORLD
+    point since 2026-10-19: x/y as published, z plus the platform shift
+    `mocap_interface` subtracts from non-base bodies."""
     node, _client = _node_with_client(hand=False, frame=False)
     node._on_mocap(RigidBodyPoses(bodies=[
         RigidBodyPose(name='Base', pose=_pose_at(10.0, 20.0)),
         RigidBodyPose(name='Platform', pose=_pose_at(3.0, 4.0)),
     ]))
-    assert len(node._platform_mocap_xy) == 1
-    _t, x, y = node._platform_mocap_xy[-1]
+    assert len(node._platform_mocap_xyz) == 1
+    _t, x, y, z = node._platform_mocap_xyz[-1]
     assert (x, y) == (3.0, 4.0)
+    assert z == 0.0 + float(hw.GEOM_INITIAL_HEIGHT_MM)
 
 
 def test_on_commanded_position_buffers_xy_history():
@@ -2810,11 +2843,11 @@ def test_an_over_limit_or_unevaluable_check_keeps_the_earlier_correction():
     assert node._mocap_to_schedule_mm == pytest.approx((-1.56, -8.53))
     warnings = []
     node.get_logger().warning = lambda m: warnings.append(m)
-    node._platform_mocap_xy.clear()
+    node._platform_mocap_xyz.clear()
     _frame_ready(node, plat_x=2.1, plat_y=31.1, cmd_x=0.0, cmd_y=0.0)
     node._frame_check_error()                       # over the 25 mm bound
     assert node._mocap_to_schedule_mm == pytest.approx((-1.56, -8.53))
-    node._platform_mocap_xy.clear()                 # cannot evaluate
+    node._platform_mocap_xyz.clear()                 # cannot evaluate
     node._frame_check_error()
     assert node._mocap_to_schedule_mm == pytest.approx((-1.56, -8.53))
     assert len(warnings) == 2 and all('NOT updated' in w for w in warnings)
