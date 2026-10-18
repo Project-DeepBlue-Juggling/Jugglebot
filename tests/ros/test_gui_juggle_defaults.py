@@ -94,8 +94,8 @@ def test_no_reload_flag_on_wire_and_cup_preview_exists():
                  "cup UNKNOWN: will be refused", "needs an empty cup",
                  "needs an empty cup (ball A phantom)", "needs a ball in the cup"):
         assert text in JS, text
-    # columns + EMPTY is refused by the node until P3; the preview must say so
-    assert "TWO_FEED_LANDED = false" in JS
+    # columns + EMPTY is accepted by the node since P3 (2026-10-17): the preview shows the two-feed start
+    assert "TWO_FEED_LANDED = true" in JS  # P3 landed 2026-10-17: the node accepts columns on an EMPTY cup
     assert "cup EMPTY: will be refused (two-feed chain not landed)" in JS and "columnsEmptyRefused" in JS
     assert "TWO_FEED_LANDED" in re.search(r"function cupPreviewText\(p, cup\) \{(.*?)\n\}", JS, re.S).group(1)
     # classification is read from the shared ball-in-hand pill, not re-subscribed

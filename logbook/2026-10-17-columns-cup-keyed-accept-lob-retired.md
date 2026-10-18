@@ -1,5 +1,5 @@
 ---
-title: "Columns P1 + P2: accept rule keyed on (pattern, cup evidence), human-lob columns feed retired"
+title: "Columns P1 + P2 + P3: accept rule keyed on (pattern, cup evidence), human-lob columns feed retired"
 type: refactor
 date: 2026-10-17
 status: in-progress
@@ -60,6 +60,17 @@ D2) is gone. Columns is Ball-Butler-fed only.
 - Full gate (P2, `./run_tests.sh --full`, run 2026-10-17 after the audit fixes): **6716 passed, 9 skipped in 307.14 s** (parallel phase) + **7 passed in 27.43 s** (serial tail), exit 0.
 - Build (`colcon build --packages-select jugglebot_interfaces jugglebot`, run 2026-10-17, launch down): 2 packages finished in 1 min 55 s, exit 0. FULL launch restart required before the next sitting (Juggle.action changed). Open GUI tabs need a hard refresh after the restart (a stale tab sending `,reload` is refused as an unknown token).
 
+## Phase 3 (same day)
+
+- Node (`skill_node.py`): columns on an EMPTY cup is ACCEPTED (RELOAD_FIRST). `_run_columns(reload_a=True)` runs `_prelevel`, then `_start_reload(kind='reload', then_columns=plan)` with ball A's catch at the columns FEED site (`a_reload_site = bridge_site`; the (-50, 0) fallback is commented above that line). Chain ctx kind `columns_chain`, phases `await_reload_a` -> `await_chain_gate` -> `chaining`. Gate = A's own executor retired clean AND now >= decay_end_abs AND debounced cup SEATED AND BB heartbeat fresh + connected + IDLE + ball_in_hand. New: `_maybe_advance_chain` (ticked), `_resolve_chain_on_retire`, `_chain_guarded` (tick lock + reload lock; applies only if `_reload_ctx is chain_ctx and not _ended_code_for_swap()`). `_start_columns_feed(plan, chain_ctx=None)` is the ONE tail shared with the SEATED path.
+- `COLUMNS_CHAIN_BB_REFILL_TIMEOUT_S = 15.0` is PROVISIONAL (owner: BB auto-refills ~5-10 s; not measured on a bag; the first sitting measures it; plan rule: raise it if the max refill > 12 s). Gate timeouts: cup UNKNOWN -> `REJECTED_BALL_UNKNOWN`, EMPTY -> `REJECTED_NO_BALL`, else `ABORTED_BB_NOT_READY(state, ball_in_hand)`; a bridge compile refusal during chaining -> `REJECTED_COLUMNS_UNSCHEDULABLE`.
+- Two latent holes closed on the way: `_on_announcement` now claims only phase `await_announcement` (a late A announcement could be claimed by the next ctx), and `_start_reload`'s executor/ctx writes are claim-then-swap when chained (a Stop could be resurrected); its three `_end_attempt` calls go through `end_unless_dropped`. GUI `TWO_FEED_LANDED = true` (preview now says "cup EMPTY: Ball Butler loads first" for columns).
+- Sim probe (i), 2026-10-17 (scratchpad script, output `temp/probes/reload_at_feed_site.json`): the reload choreography is accepted and caught 5/5 seeds at x = -50, -62.5 and -125; site has no effect. The LIVE default separation is 250 mm, so the live feed site is x = -125 (the plan's "-62.5 at sep 125" was the wrong number; corrected in the plan).
+- SEPARATE FINDING (not P3; bisected the same day to `08ec3fe6` 2026-09-30, the R5 columns feed-catch commit, good at `8364808c` 2026-09-24, plan § 6 has the detail): the stock `python sim/skills_gate.py --reload --seeds 0 1 2 3 4` is already FAIL at HEAD 4cd33254 (seeds 0, 2, 3, 4 `LIMIT_JERK` in the continuation throws AFTER the catch, seed 1 PASS; its docstring says it once passed 5/5; no test pins it; it predates P1/P2). Not a P3 blocker because A's reload is catch-only (`n_throws=0`). Recorded as plan § 6 residue; bisect in progress.
+- Coverage honesty: the sim gate certifies each half (reload catch at the site; the columns tail), not the join. The join, the phases and the Stop races are mocked-ROS tests only, which are blind to choreography; the first hardware sitting is the join's real gate.
+- Full gate (P3, `./run_tests.sh --full`, run 2026-10-18 after the audit fixes W1/W2): **6735 passed, 9 skipped in 310.40 s** (parallel phase) + **7 passed in 27.56 s** (serial tail), exit 0. Interim run 2026-10-17 before the audit: 6729 passed, 9 skipped, exit 0.
+- Build (P3, `colcon build --packages-select jugglebot`, run 2026-10-18, launch down): 1 package finished in 3.42 s, exit 0 (interfaces unchanged since P2; the FULL launch restart owed since P2 still stands).
+
 ## Outcome
 
-P1 and P2 code landed; P3 (two-feed chain) remains.
+P1-P3 code landed; P3 NOT FLOWN (first sitting = rehearsal rows 32-34).

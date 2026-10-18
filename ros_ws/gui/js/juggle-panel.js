@@ -348,9 +348,9 @@ export function cupState() {
     return 'unknown';
 }
 
-// P3 of plans/active/columns-empty-cup-two-feed.md flips this when the skill node accepts
-// columns on an EMPTY cup; until then the node refuses REJECTED_NO_BALL.
-const TWO_FEED_LANDED = false;
+// Flipped true at P3 of plans/active/columns-empty-cup-two-feed.md (2026-10-17): the skill node
+// accepts columns on an EMPTY cup (Ball Butler feeds A as a reload, then B). Kept as a kill switch.
+const TWO_FEED_LANDED = true;
 
 /** Preview strings (the node's decision is the authority). */
 export const CUP_PREVIEW = {
