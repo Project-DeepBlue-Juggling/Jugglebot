@@ -71,7 +71,8 @@ ROBOT_FRAME_MIN_FIT_MARKERS = 5
 #: configuration, not noise (at-rest per-frame scatter 0.02-0.05 mm). Wherever
 #: the robot was moved in the volume it sits at 1.00-1.06 mm; at home with the
 #: platform parked raised (occluding the base) it reaches 1.62 mm. The previous
-#: 1.0 mm cap sat ON that floor and flapped on all three bags. 1.5 mm is above
+#: 1.0 mm cap sat ON that floor and flapped on all three bags. (History, the
+#: 1.5 mm cut of the same day:) 1.5 mm is above
 #: the moved-robot plateau; the occluded-home stretches (one marker, Base - 5,
 #: reconstructing 1.8-2.9 mm off) are handled by drop-worst, and a failed fit
 #: that still agrees with the running frame is held by the tracker
@@ -79,7 +80,15 @@ ROBOT_FRAME_MIN_FIT_MARKERS = 5
 #: (report variant E): locks at 0 s and holds 100 % on all three bags, origin
 #: p95 deviation 1.4 mm, yaw p95 up to 0.06 deg. One marker displaced by d mm
 #: adds ~0.33 d to the 7-marker RMS.
-ROBOT_FRAME_MAX_RMS_MM = 1.5
+#: Raised 1.5 -> 2.0 (owner, 2026-10-19): the 14:24 sitting (bag
+#: 2026-10-19_14-24-15, temp/probes/robot_frame_sitting_1424/report.md) ran on
+#: 5 markers after a 48.5 mm / 14.5 deg hand move, Base - 5 and Base - 6
+#: dropped on almost every feed, RMS 1.25-1.33 mm and a max of 1.491 mm against
+#: 1.5: a slightly worse spot would not lock. At 2.0 a 5 mm displaced marker
+#: passes 7-wide with a 0.84 mm origin error (inside the frame's own ~1 mm
+#: scatter) while a 10 mm one is still dropped
+#: (temp/probes/robot_frame/replay_2026-10-19/replay.md).
+ROBOT_FRAME_MAX_RMS_MM = 2.0
 #: Second principal RMS spread (mm) the retained markers must have (checked on
 #: the full matched set and on every drop-worst subset): Base - 3, 5, 6 and 7
 #: are near-collinear (x ≈ 0; spread 3.3 mm). Every other 4-subset of the
@@ -99,6 +108,15 @@ ROBOT_FRAME_OUTLIER_DEG = 0.05
 #: p95 0.03-0.05 deg; a real robot move today was 40-108 mm and 4-12 deg.
 ROBOT_FRAME_HOLD_MM = 2.0
 ROBOT_FRAME_HOLD_DEG = 0.3
+
+#: Settle spread AND move announcement threshold (owner, 2026-10-19): the
+#: running frame is SETTLED only when every fit in a full window agrees with it
+#: within this much, and a settled frame that differs from the last announced
+#: one by more is a MOVE. One pair: origin scatter p95 is 1.45 mm at home with
+#: the platform parking high, per-configuration bias steps ~1 mm, yaw p95
+#: 0.06 deg; 2 mm would false-trip during active juggling.
+ROBOT_FRAME_MOVE_MM = 5.0
+ROBOT_FRAME_MOVE_DEG = 0.3
 
 #: ``RobotFrameFit.reason`` values ('' when the fit is OK).
 REASON_TOO_FEW_MARKERS = 'TOO_FEW_MARKERS'
@@ -535,8 +553,54 @@ class RobotFrameTracker:
         self._fails = 0
         self._held = False
         self._current: Optional[RobotFrame] = None
+        self._announced: Optional[RobotFrame] = None
+        self._event = None
+        self.move_count = 0
+        self.last_move: Optional[Tuple[float, float, int]] = None
 
     def feed(self, labelled, stamp_ns: Optional[int]) -> RobotFrameFit:
+        fit = self._feed(labelled, stamp_ns)
+        self._update_event(stamp_ns)
+        return fit
+
+    @property
+    def settled(self) -> bool:
+        """True iff the window is FULL and every fit in it agrees with the
+        running frame within ROBOT_FRAME_MOVE_MM / _DEG."""
+        if len(self._buf) < self.window:
+            return False
+        cur = self.current()
+        if cur is None:
+            return False
+        return not any(f.moved_from(cur, ROBOT_FRAME_MOVE_MM, ROBOT_FRAME_MOVE_DEG)
+                       for f in self._buf)
+
+    def _update_event(self, stamp_ns) -> None:
+        self._event = None
+        if not self.settled:
+            return
+        cur = self.current()
+        if self._announced is None:
+            self._announced = cur
+            self._event = ('settled', cur, None)
+            return
+        if cur.moved_from(self._announced, ROBOT_FRAME_MOVE_MM, ROBOT_FRAME_MOVE_DEG):
+            d_mm = float(np.linalg.norm(cur.t - self._announced.t))
+            d_deg = float(rotation_angle_deg(self._announced.R.T @ cur.R))
+            frm = self._announced
+            self._announced = cur
+            self.move_count += 1
+            self.last_move = (d_mm, d_deg, int(stamp_ns) if stamp_ns is not None else 0)
+            self._event = ('moved', cur, (d_mm, d_deg, frm))
+
+    def pop_event(self):
+        """The event the last feed produced, once: ``('settled', frame, None)``
+        (the initial lock) or ``('moved', frame, (d_mm, d_yaw_deg, from_frame))``;
+        None otherwise."""
+        ev, self._event = self._event, None
+        return ev
+
+    def _feed(self, labelled, stamp_ns: Optional[int]) -> RobotFrameFit:
         fit = fit_robot_frame(labelled, self.template, max_rms_mm=self.max_rms_mm,
                               min_markers=self.min_markers, stamp_ns=stamp_ns)
         self._last = fit
@@ -589,6 +653,7 @@ class RobotFrameTracker:
         but was held (:class:`RobotFrameTracker` hold rule); ``age_s`` is
         ``now_ns`` minus the newest OK fit's stamp (None without both)."""
         last = self._last
+        lm = self.last_move
         cur = self.current()
         age = None
         if now_ns is not None and cur is not None and cur.stamp_ns is not None:
@@ -600,4 +665,9 @@ class RobotFrameTracker:
                 'reason': 'NO_FIT_YET' if last is None else last.reason,
                 'age_s': age, 'n_window': len(self._buf),
                 'dropped': () if last is None else tuple(last.dropped),
-                'held': bool(self._held)}
+                'held': bool(self._held),
+                'settled': bool(self.settled),
+                'move_count': int(self.move_count),
+                'last_move_mm': 0.0 if lm is None else float(lm[0]),
+                'last_move_deg': 0.0 if lm is None else float(lm[1]),
+                'last_move_stamp_ns': 0 if lm is None else int(lm[2])}

@@ -2,7 +2,7 @@
 title: "BB calibration Phase 3: the robot frame is measured in software (fitted from the labelled Base - 1..7 markers, the kincal frame) and the BB side stays in QTM world - two join points carry the transform, a robot frame never received this launch always refuses, the transform is frozen per attempt, the tilt guard is tilt-vs-build"
 type: feature
 date: 2026-10-19
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack - post-R6 (Ball Butler calibration), Phase 3"
 related_plan: bb-calibration-one-attempt.md
 related_entries:
@@ -53,7 +53,7 @@ files_changed:
   - tools/probes/robot_frame_bag_check.py
   - tools/probes/robot_frame_residual_probe.py
   - tools/robot_frame_build.py
-  - plans/active/bb-calibration-one-attempt.md
+  - plans/archived/bb-calibration-one-attempt.md
   - plans/active/INDEX.md
   - logbook/2026-10-19-bb-calibration-phase3-robot-frame.md
   - logbook/INDEX.md

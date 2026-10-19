@@ -1,6 +1,6 @@
 """Sweep kinematics (start/end angle, duration, fitted lag) on every attempt message.
 
-Phase 0 of plans/active/bb-calibration-one-attempt.md: the hardware pin needs
+Phase 0 of plans/archived/bb-calibration-one-attempt.md: the hardware pin needs
 the sweep end angle and the yaw-source lag recorded per attempt, refusals
 included. Format pinned here: ``<text> · sweep <start>→<end>° <dur> s, lag <±x.x> ms``
 (``lag n/a`` when no estimate ran). The suffix is reserved INSIDE

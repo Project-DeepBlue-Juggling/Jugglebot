@@ -641,6 +641,7 @@ class MocapNode(Node):
         tr = self._robot_tracker
         tr.feed(labelled, frame_ros_ns)
         st = tr.status()
+        ev = tr.pop_event()
         # State = the tracker's RUNNING frame (window semantics), not the last
         # single fit: one bad feed among good ones changes nothing.
         cur = tr.current()
@@ -665,6 +666,8 @@ class MocapNode(Node):
                 self.get_logger().info(f'Robot frame not seen yet: {st["reason"]}')
             else:
                 self.get_logger().warn(f'Robot frame UNKNOWN: {st["reason"]}')
+        if ev is not None and cur is not None:
+            self._log_robot_frame_event(ev)
         if cur is None:
             return
         last = self._robot_published
@@ -673,6 +676,23 @@ class MocapNode(Node):
                 or self._robot_pub_t is None
                 or frame_ros_ns * 1e-9 - self._robot_pub_t >= ROBOT_FRAME_REPUBLISH_S):
             self._publish_robot_frame(cur, frame_ros_ns)
+
+    @staticmethod
+    def _frame_txt(fr):
+        yaw = math.degrees(math.atan2(fr.R[1, 0], fr.R[0, 0]))
+        return (f'({fr.t[0]:.1f}, {fr.t[1]:.1f}, {fr.t[2]:.1f}) mm', yaw)
+
+    def _log_robot_frame_event(self, ev):
+        kind, fr, delta = ev
+        o, yaw = self._frame_txt(fr)
+        if kind == 'settled':
+            self.get_logger().info(f'Robot frame settled: origin {o}, yaw {yaw:.2f} deg')
+        else:
+            d_mm, d_deg, frm = delta
+            o0, yaw0 = self._frame_txt(frm)
+            self.get_logger().warn(
+                f'Robot frame MOVED: {d_mm:.1f} mm / {d_deg:.1f} deg -> origin {o}, '
+                f'yaw {yaw:.2f} deg (was {o0}, {yaw0:.2f} deg)')
 
     def _publish_robot_frame(self, frame, stamp_ns):
         msg = PoseStamped()
@@ -869,14 +889,18 @@ class MocapNode(Node):
         tr = self._robot_tracker
         if tr is None:
             st = {'ok': False, 'rms_mm': None, 'n_matched': 0,
-                  'reason': 'NO_TEMPLATE', 'age_s': None}
+                  'reason': 'NO_TEMPLATE', 'age_s': None, 'settled': False,
+                  'move_count': 0, 'last_move_mm': 0.0, 'last_move_deg': 0.0,
+                  'last_move_stamp_ns': 0}
+            cur = None
         else:
             try:
                 now_ns = int(self.get_clock().now().nanoseconds)
             except Exception:
                 now_ns = None
             st = tr.status(now_ns)
-            st['ok'] = tr.current() is not None     # same meaning as the pill
+            cur = tr.current()
+            st['ok'] = cur is not None              # same meaning as the pill
         return [
             KeyValue(key=mocap_st.KEY_ROBOT_FRAME_OK, value='1' if st['ok'] else '0'),
             KeyValue(key=mocap_st.KEY_ROBOT_FRAME_RMS_MM,
@@ -885,6 +909,21 @@ class MocapNode(Node):
             KeyValue(key=mocap_st.KEY_ROBOT_FRAME_AGE_S,
                      value='' if st['age_s'] is None else f'{st["age_s"]:.2f}'),
             KeyValue(key=mocap_st.KEY_ROBOT_FRAME_REASON, value=str(st['reason'])),
+            KeyValue(key=mocap_st.KEY_ROBOT_FRAME_SETTLED,
+                     value='1' if st['settled'] else '0'),
+            KeyValue(key=mocap_st.KEY_ROBOT_FRAME_MOVE_COUNT, value=str(int(st['move_count']))),
+            KeyValue(key=mocap_st.KEY_ROBOT_FRAME_LAST_MOVE_MM,
+                     value=f'{st["last_move_mm"]:.3f}'),
+            KeyValue(key=mocap_st.KEY_ROBOT_FRAME_LAST_MOVE_DEG,
+                     value=f'{st["last_move_deg"]:.3f}'),
+            KeyValue(key=mocap_st.KEY_ROBOT_FRAME_LAST_MOVE_S,
+                     value=f'{st["last_move_stamp_ns"] * 1e-9:.3f}'),
+            KeyValue(key=mocap_st.KEY_ROBOT_FRAME_ORIGIN_MM,
+                     value='' if cur is None else
+                     f'{cur.t[0]:.3f},{cur.t[1]:.3f},{cur.t[2]:.3f}'),
+            KeyValue(key=mocap_st.KEY_ROBOT_FRAME_YAW_DEG,
+                     value='' if cur is None else
+                     f'{math.degrees(math.atan2(cur.R[1, 0], cur.R[0, 0])):.3f}'),
         ]
 
     def _check_calibration_health(self):

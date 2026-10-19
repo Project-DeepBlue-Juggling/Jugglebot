@@ -204,6 +204,13 @@ export function initFlagsGrid() {
             <span class="flag-icon wait" id="${flag.id}-icon">&#x25cf;</span>
             <span id="${flag.id}-label">${defaultLabel}</span>
         `;
+        if (flag.id === 'flag-mocap-aligned') {
+            // Secondary text from mocap/status: rms / markers / origin / yaw.
+            const detail = document.createElement('span');
+            detail.className = 'flag-detail';
+            detail.id = 'flag-mocap-aligned-detail';
+            item.appendChild(detail);
+        }
         if (flag.id === 'flag-levelled') {
             // Measured-tilt pill, populated once levelling completes
             // (replaces the old standalone Levelling panel).
@@ -266,7 +273,40 @@ export function setMocapConnected(connected) {
  * @param {boolean} aligned
  */
 export function setMocapAligned(aligned) {
-    setFlagError('flag-mocap-aligned', !aligned, 'Robot frame UNKNOWN', 'Robot frame OK');
+    rfAligned = !!aligned;
+    renderRobotFramePill();
+}
+
+/** Robot-frame pill state: aligned (= frame known, from mocap_data), settled and the
+ *  secondary text (from mocap/status, see robot-frame.js).  Three visual states:
+ *  UNKNOWN (red), SETTLING (amber: known but window not yet settled), OK (green). */
+let rfAligned = false;
+let rfSettled = true;
+let rfText = '';
+
+export function setRobotFrameDetail({ settled, text }) {
+    rfSettled = settled !== false;
+    rfText = text || '';
+    renderRobotFramePill();
+}
+
+function renderRobotFramePill() {
+    const id = 'flag-mocap-aligned';
+    if (rfAligned && !rfSettled) {
+        const icon = document.getElementById(id + '-icon');
+        const label = document.getElementById(id + '-label');
+        if (icon) { icon.className = 'flag-icon settling'; icon.innerHTML = '&#x25cf;'; }
+        if (label) label.textContent = 'Robot frame SETTLING';
+    } else {
+        setFlagError(id, !rfAligned, 'Robot frame UNKNOWN', 'Robot frame OK');
+    }
+    const label = document.getElementById(id + '-label');
+    if (label) {
+        const base = rfAligned ? (rfSettled ? 'Robot frame OK' : 'Robot frame SETTLING') : 'Robot frame UNKNOWN';
+        label.title = rfText ? `${base} \u00b7 ${rfText}` : base;
+    }
+    const sub = document.getElementById(id + '-detail');
+    if (sub) sub.textContent = rfAligned ? rfText : '';
 }
 
 function setFlagProgress(id, value, labelDone, labelWait) {

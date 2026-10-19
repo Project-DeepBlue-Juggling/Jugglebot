@@ -2,14 +2,14 @@
 title: "BB calibration power-cycle A/B (2026-10-16 evening): kappa holds 179.27 deg across two BB-only power cycles (72 s and 86 min), so the step is not a power-up state; the long off deformed the marker constellation (pair Q3-Q6 1.2 mm against the template) and calibration refuses 7 of 8 sweeps until it is addressed"
 type: investigation
 date: 2026-10-16
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack - post-R6 (Ball Butler calibration)"
 related_plan: bb-calibration-one-attempt.md
 files_changed:
   - logbook/2026-10-16-bb-calibration-power-cycle-ab.md
   - logbook/2026-10-16-bb-calibration-phase2-template-residual.md
   - logbook/INDEX.md
-  - plans/active/bb-calibration-one-attempt.md
+  - plans/archived/bb-calibration-one-attempt.md
   - ros_ws/docs/bb_calibration_readings.md
 subsystem:
   - tracking

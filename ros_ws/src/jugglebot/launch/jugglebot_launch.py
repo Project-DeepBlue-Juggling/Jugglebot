@@ -620,6 +620,12 @@ def generate_launch_description():
             '/mocap_data',
             '/platform_pose_topic',
             '/rigid_body_poses',
+            # The software robot frame (latched, publish-on-change + 5 s heartbeat) and
+            # mocap/status (5 Hz: robot_frame_* keys incl. settled / move_count) — the
+            # 2026-10-19 14:24 sitting's move timeline had to be REPLAYED from
+            # /mocap_data because neither was recorded.
+            '/robot_frame',
+            '/mocap/status',
             '/orchestrator_state',
             '/control_mode_topic',
             '/orchestrator_command',

@@ -184,3 +184,47 @@ def test_unchanged_frame_is_republished_every_five_seconds():
     n = len(node.pub_robot_frame.published)
     assert n == 3, n
     assert len(node.static_tf_broadcaster.sent) >= 3
+
+
+# ── move observability: log lines and status keys ────────────────────────────
+
+def _logs(node):
+    out = {'info': [], 'warn': []}
+    lg = node.get_logger()
+    lg.info = lambda m, *a, **k: out['info'].append(m)
+    lg.warn = lambda m, *a, **k: out['warn'].append(m)
+    return out
+
+
+def test_settled_info_then_moved_warn_with_magnitude_and_status_keys():
+    node = _node()
+    out = _logs(node)
+    ns = 1_000_000_000
+    for k in range(12):
+        _feed(node, _rows(), ns + k * 200_000_000)
+    settled = [m for m in out['info'] if m.startswith('Robot frame settled: ')]
+    assert len(settled) == 1 and 'origin (0.0, 0.0, 0.0) mm, yaw 0.00 deg' in settled[0]
+    kv = {k.key: k.value for k in node._robot_frame_status_values()}
+    assert kv[ms.KEY_ROBOT_FRAME_SETTLED] == '1' and kv[ms.KEY_ROBOT_FRAME_MOVE_COUNT] == '0'
+    assert kv[ms.KEY_ROBOT_FRAME_LAST_MOVE_S] == '0.000'
+    assert kv[ms.KEY_ROBOT_FRAME_ORIGIN_MM] == '0.000,0.000,0.000'
+    assert kv[ms.KEY_ROBOT_FRAME_YAW_DEG] == '0.000'
+    t0 = ns + 3_000_000_000
+    for k in range(30):
+        _feed(node, _rows(t=(20.0, 0.0, 0.0)), t0 + k * 200_000_000)
+    assert len(out['warn']) == 1
+    w = out['warn'][0]
+    assert w.startswith('Robot frame MOVED: 20.0 mm / 0.0 deg -> origin (20.0, 0.0, 0.0) mm')
+    assert '(was (0.0, 0.0, 0.0) mm, 0.00 deg)' in w
+    kv = {k.key: k.value for k in node._robot_frame_status_values()}
+    assert kv[ms.KEY_ROBOT_FRAME_SETTLED] == '1' and kv[ms.KEY_ROBOT_FRAME_MOVE_COUNT] == '1'
+    assert float(kv[ms.KEY_ROBOT_FRAME_LAST_MOVE_MM]) == pytest.approx(20.0, abs=0.1)
+    assert float(kv[ms.KEY_ROBOT_FRAME_LAST_MOVE_S]) > 4.0
+    assert kv[ms.KEY_ROBOT_FRAME_ORIGIN_MM] == '20.000,0.000,0.000'
+
+
+def test_status_keys_without_a_frame():
+    node = _node()
+    kv = {k.key: k.value for k in node._robot_frame_status_values()}
+    assert kv[ms.KEY_ROBOT_FRAME_SETTLED] == '0' and kv[ms.KEY_ROBOT_FRAME_ORIGIN_MM] == ''
+    assert kv[ms.KEY_ROBOT_FRAME_YAW_DEG] == '' and kv[ms.KEY_ROBOT_FRAME_LAST_MOVE_MM] == '0.000'

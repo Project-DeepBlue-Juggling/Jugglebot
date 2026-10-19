@@ -20,7 +20,7 @@ Reads a ``bb_calibration_replay.py`` output directory (``sweeps.csv``) and write
 Only sweeps whose ``verdict_intrinsic`` is ACCEPTED are used: intrinsic quality, regardless of
 the historical verdict - that is the point of the exercise.
 
-Provenance: plans/active/bb-calibration-one-attempt.md Phase 0 ("Cross-sitting distributions",
+Provenance: plans/archived/bb-calibration-one-attempt.md Phase 0 ("Cross-sitting distributions",
 "Cross-check against throws", P7); logbook/2026-10-14-bb-calibration-one-attempt-investigation.md.
 Pure Python + numpy; no ROS imports. ``summarise(rows) -> dict`` is the test seam.
 

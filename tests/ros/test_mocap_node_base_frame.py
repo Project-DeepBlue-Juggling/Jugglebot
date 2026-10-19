@@ -8,7 +8,7 @@ rejoins) an epoch and is flagged KAPPA_EXCURSION - never a refusal. No base
 The solver is mocked (as in test_mocap_node_keep_last_good); the base frame's
 unlabelled markers are synthetic frames fed to the window.
 See logbook/2026-10-10-bb-base-marker-frame.md and
-plans/active/bb-calibration-one-attempt.md.
+plans/archived/bb-calibration-one-attempt.md.
 """
 from __future__ import annotations
 

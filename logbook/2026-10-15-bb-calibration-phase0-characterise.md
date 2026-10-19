@@ -2,7 +2,7 @@
 title: "BB calibration Phase 0 (Characterise): a production-faithful replay reproduces 38 of 39 logged verdicts and 185 of 185 measurements, the pose-mix explanation of the kappa step is withdrawn, advisory bands are published, and the landing bias does not track the calibration"
 type: investigation
 date: 2026-10-15
-status: open
+status: resolved
 phase: "two-ball-skill-stack - post-R6 (Ball Butler calibration)"
 related_plan: bb-calibration-one-attempt.md
 files_changed:
@@ -18,7 +18,7 @@ files_changed:
   - tests/ros/test_mocap_node_base_frame.py
   - tests/ros/test_perception_console_lines.py
   - tests/hardware/session_bb_kappa_pin.md
-  - plans/active/bb-calibration-one-attempt.md
+  - plans/archived/bb-calibration-one-attempt.md
   - logbook/2026-10-14-bb-calibration-one-attempt-investigation.md
   - logbook/2026-10-15-bb-calibration-phase0-characterise.md
   - logbook/INDEX.md
@@ -36,7 +36,7 @@ tags:
 
 ## Summary
 
-Phase 0 of `plans/active/bb-calibration-one-attempt.md`. Three deliverables: (1) a replay harness that re-runs the node's calibration code on the recorded bags and reproduces what the node logged; (2) cross-sitting distributions and advisory bands for Phase 1; (3) the attempt-message fields the hardware pin needs. The pin's offline part is done and it **excludes the pose-mix explanation of the kappa step** (hypothesis withdrawn, § Discussion). The mechanism of the 0.3 deg step was left UNRESOLVED at the 2026-10-15 commit; on 2026-10-16 the owner's answers and a re-read of the replay moved it to reconstruction drift on a 562 h old QTM wand calibration as the leading candidate, the power-cycle pin was dropped (its runsheet deleted) and the first Phase 1 sweep after the re-wand is the remaining reading (§ Open Questions) - **superseded 2026-10-16 evening: reconstruction drift is ruled out and kappa is two-state (the 10:51 sweeps after the re-wand still read 179.57; 15:08 read 179.26 with QTM unchanged); see the dated corrections in Discussion and Open Questions.** The entry stays `open` for the two-state question and the node stall. The throw cross-check is negative: the landing bias has another owner. No gate logic or threshold changed in this entry.
+Phase 0 of `plans/archived/bb-calibration-one-attempt.md`. Three deliverables: (1) a replay harness that re-runs the node's calibration code on the recorded bags and reproduces what the node logged; (2) cross-sitting distributions and advisory bands for Phase 1; (3) the attempt-message fields the hardware pin needs. The pin's offline part is done and it **excludes the pose-mix explanation of the kappa step** (hypothesis withdrawn, § Discussion). The mechanism of the 0.3 deg step was left UNRESOLVED at the 2026-10-15 commit; on 2026-10-16 the owner's answers and a re-read of the replay moved it to reconstruction drift on a 562 h old QTM wand calibration as the leading candidate, the power-cycle pin was dropped (its runsheet deleted) and the first Phase 1 sweep after the re-wand is the remaining reading (§ Open Questions) - **superseded 2026-10-16 evening: reconstruction drift is ruled out and kappa is two-state (the 10:51 sweeps after the re-wand still read 179.57; 15:08 read 179.26 with QTM unchanged); see the dated corrections in Discussion and Open Questions.** The entry stays `open` for the two-state question and the node stall. The throw cross-check is negative: the landing bias has another owner. No gate logic or threshold changed in this entry.
 
 ## Symptoms
 
@@ -126,7 +126,7 @@ Instrumentation only, no gate or threshold change.
 | `bb_calibration.py` | `sweep_kinematics()`, `sweep_suffix()`; `SweepYawEstimate` gains `sweep_start_deg` / `sweep_end_deg` / `sweep_duration_s`; `summary()` appends "sweep 0.0→121.3° in 12.4 s" |
 | `mocap_node.py` | every `/bb/calibration_attempt` text, the success text on `/bb/calibration_result` and the ERROR console line end with " · sweep <start>→<end>° <dur> s, lag <±x.x> ms" (lag n/a before the estimator); `MAX_CALIBRATION_FAILURE_CHARS` 240 to 300 with the suffix reserved first so truncation cannot drop it |
 | `tests/hardware/session_bb_kappa_pin.md` | pin part 2 runsheet (three power cycles, park reading + two sweeps each) |
-| `plans/active/bb-calibration-one-attempt.md` | `bb_moved` deleted outright, pin redesigned, status row |
+| `plans/archived/bb-calibration-one-attempt.md` | `bb_moved` deleted outright, pin redesigned, status row |
 
 ### Advisory bands (input to Phase 1)
 

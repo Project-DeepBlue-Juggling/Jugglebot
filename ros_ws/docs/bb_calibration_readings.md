@@ -142,6 +142,8 @@ is set at BB power-on and holds within a sitting.
 
    2026-10-19 (second cut, code landed, NOT flown): the first cut flapped on its first sitting (the fit residual is 1.0-1.6 mm of per-configuration QTM reconstruction bias); the robot-frame fit is now yaw-only, drop-worst to 5 markers, cap 1.5 mm, a hold rule, no tilt guard. Entry `2026-10-19-robot-frame-fit-yaw-only-hold.md`.
 
+   2026-10-19 14:24 (second cut FLOWN): locked 0.67 s, 7 markers, rms 0.87 mm, never UNKNOWN; hand move 48.5 mm / 14.5 deg tracked, hops 8/8 caught; robot-frame cap raised to 2.0 mm the same afternoon (move observability + settling refusal landed, NOT flown). Entry `2026-10-19-robot-frame-move-observability.md`.
+
 ## Hypotheses register
 
 | # | mechanism | for | against | discriminator |
@@ -181,4 +183,4 @@ timing (direction split above); reconstruction noise (QTM residuals).
 - `logbook/2026-10-16-bb-calibration-phase2-template-residual.md` (the step is at BB, not labelling)
 - `logbook/2026-10-16-bb-calibration-power-cycle-ab.md` (not a power-up state; the deformation; this ledger's first rows)
 - `logbook/2026-10-17-bb-calibration-residual-cap-1p5.md` (cap 1.5 / advisory 1.0 on measured evidence)
-- plan: `plans/active/bb-calibration-one-attempt.md`
+- plan: `plans/archived/bb-calibration-one-attempt.md`

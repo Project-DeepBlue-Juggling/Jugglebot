@@ -1,12 +1,17 @@
 ---
 title: Ball Butler calibration is a one-attempt process, every time
-status: active
+status: completed
+archived: 2026-10-19
+completed: 2026-10-19
 owner: harrison
 created: 2026-10-14
 last_updated: 2026-10-19
 related_logbook:
+  - 2026-10-19-robot-frame-move-observability.md
   - 2026-10-19-robot-frame-fit-yaw-only-hold.md
   - 2026-10-14-bb-calibration-one-attempt-investigation.md
+  - 2026-10-15-bb-calibration-phase0-characterise.md
+  - 2026-10-19-bb-calibration-one-attempt-archived.md
   - 2026-10-16-bb-calibration-phase1-gate-inversion.md
   - 2026-10-16-bb-calibration-phase2-template-residual.md
   - 2026-10-16-bb-calibration-power-cycle-ab.md
@@ -23,6 +28,14 @@ related_code:
 ---
 
 # Ball Butler calibration is a one-attempt process, every time
+
+## Archival note (2026-10-19)
+
+**What shipped.** Phase 0 characterised the gates on replay (185/185; bands published; pose mix withdrawn). Phase 1 (c115743d) inverted the gates: the sweep is the output, history is advisory flags plus kappa epochs, `bb_moved` retired. Phase 2 (ce97ba38) located the kappa step at BB itself and kept one residual statistic; f17570e5 then landed the residual cap 1.5 / advisory 1.0 on measured evidence. Phase 3 (84519014, second cut 56f717fe) measures the robot frame in software from the `Base - 1..7` markers, so moving Jugglebot no longer needs a QTM re-alignment. a9feb1c9 added move observability, the `REJECTED_ROBOT_FRAME_SETTLING` refusal, the world-anchored GUI and the 2.0 mm cap, flown the same afternoon (rehearsal rows 44-46).
+
+**Why it closed.** Acceptance 1 (offline replay) was met in Phase 0 (23 of the 24 logged refusals accepted on intrinsic quality). Acceptance 2 (hardware: ten consecutive sittings, first-attempt sweep accepted) is CLOSED ON THE EVIDENCE by the owner: the tally was not formally kept past 4 of 10 (2026-10-16), but every sitting since Phase 1 fed from an accepted sweep (10-16 15:08 = 7/7 accepted; the 2026-10-19 sittings fed from BB); the ledger `ros_ws/docs/bb_calibration_readings.md` keeps collecting rows. The Phase 3 gate ("first BB sweep accepted after the robot move") is satisfied by the 14:24 sitting's post-move BB feed (a feed needs the calibration in force; owner's call). Rehearsal row 36 (Base markers hidden -> UNKNOWN WARN; no-labels launch -> REJECTED_ROBOT_FRAME_UNKNOWN) is WAIVED by the owner; the path stays pinned by `tests/ros/test_mocap_node_robot_frame.py`, `tests/ros/test_skill_node_robot_frame.py` and `tests/motion/test_skills_executor.py`.
+
+**Where the residue lives.** Section 6 below.
 
 ## 0. Goal and acceptance
 
@@ -43,12 +56,17 @@ Acceptance, in order:
    2026-10-10 to 2026-10-14 under the new gates. The 25 refused sweeps come
    out accepted. The two intrinsic-quality refusals (CONSTELLATION_TOO_FEW_MOVING
    and the 7.9 s circle-centres sweep) are judged on their data, not forced.
+   -- MET in Phase 0 (2026-10-15): of the 24 refusals the replay fixture
+   carries, 23 accepted and the 24th (the circle-centres sweep) refused on its
+   data by design; the '25' above was the investigation's count, see the
+   Archival note.
 2. **Hardware.** The first sweep of each of ten consecutive sittings is
    accepted with no override, and its kappa and yaw lie inside the band
    characterised in Phase 0 (owner decision pending 2026-10-16: reword to
    'accepted with no override and no operator action; kappa inside its
    epoch's band; any KAPPA_EXCURSION recorded with its cause' - the
-   2026-10-16 first sweep legitimately opened a new epoch).
+   2026-10-16 first sweep legitimately opened a new epoch) -- CLOSED
+   2026-10-19 on the evidence (owner), see the Archival note.
 
 ## 1. Root causes being closed
 
@@ -338,7 +356,7 @@ Decided 2026-10-19 (owner; entry `2026-10-19-bb-calibration-phase3-robot-frame.m
 - **Fit guard (SUPERSEDED 2026-10-19 by the second cut below):** the first cut
   had an RMS cap of 1.0 mm, at least 4 markers and a tilt-vs-build cap of
   0.2 deg; it flapped on the first sitting. Now: yaw-only fit, drop-worst
-  down to 5 markers, RMS cap 1.5 mm, a hold rule, no tilt guard.
+  down to 5 markers, RMS cap 1.5 mm (2.0 mm from 2026-10-19 pm, third block below), a hold rule, no tilt guard.
 - `mocap_interface` is unchanged (world xy, z shift kept); `aligned` is now
   the fit status; the QTM Base-body alignment check, its setters and the
   `mocap_alignment` constants are retired.
@@ -365,8 +383,8 @@ the tilt guard was a second flap source (0.228 deg at the home floor spot).
   retired.
 - **Drop-worst outlier rejection** while RMS > cap, down to 5 markers
   (`ROBOT_FRAME_MIN_FIT_MARKERS`); `MIN_SPREAD` on the retained set.
-- **RMS cap 1.5 mm** (`ROBOT_FRAME_MAX_RMS_MM`; stays 1.5 after the replay
-  sweep: only 1.5 still drops a single marker displaced 5 mm).
+- **RMS cap 1.5 mm, RAISED to 2.0 mm the same afternoon (see the third block)** (`ROBOT_FRAME_MAX_RMS_MM`; was 1.5 after the replay
+  sweep: only 1.5 still dropped a single marker displaced 5 mm).
 - **Tracker hold rule:** a failed fit whose uncapped pose is within 2.0 mm /
   0.3 deg of the running frame does not count toward the 10-feed clear (never
   exercised on the eight replayed bags; defence for a position whose p50
@@ -379,8 +397,38 @@ the tilt guard was a second flap source (0.228 deg at the home floor spot).
   after it starts (never UNKNOWN); a "frame settled" (window spread)
   criterion before the per-attempt snapshot is NOT built.
 
-Status: second cut landed 2026-10-19 (code), NOT flown. Dress rehearsal and
-the hardware check are re-owed (rehearsal rows 35-38).
+Status: second cut FLOWN 2026-10-19 14:24 (below). Rehearsal rows 35 and 37
+passed; row 36 (markers hidden) was not tried.
+
+Flown 2026-10-19 14:24 (bag 2026-10-19_14-24-15; entry
+`2026-10-19-robot-frame-move-observability.md`): the second cut locked 0.67 s
+after bag start, never went UNKNOWN (0 of 830 feeds), and tracked a hand move
+of 48.5 mm / 14.5 deg (4-step walk, settled in 1.9 s); hops 8/8 caught across
+it, no refusals. The move was silent and the GUI model static.
+
+Decided 2026-10-19 pm, third block (owner; same entry), code landed, NOT flown:
+
+- **World-anchored GUI:** the Stewart model follows `robot_frame` in a QTM-world
+  scene; the QTM-sourced layers (markers, balls, trails, history, BB, cone,
+  rigid-body triads) are unchanged because they already arrive in world and
+  trails/history store raw positions. "Global Axes" is now "World Axes (QTM)".
+- **Move threshold 5 mm / 0.3 deg** (`ROBOT_FRAME_MOVE_MM/_DEG`), one pair for
+  the settle spread and the announcement (measured scatter 1.45 mm / 0.06 deg).
+  A settled move logs a WARN with its size; `mocap/status` carries
+  `robot_frame_settled`, `_move_count`, `_last_move_mm/_deg/_s`, `_origin_mm`,
+  `_yaw_deg`; the GUI pill gains SETTLING (amber) and a move banner that auto-hides after 3 s (the WARN line and `mocap/status` keep the record).
+- **Settling refusal:** `REJECTED_ROBOT_FRAME_SETTLING` in the accept-time ladder
+  (the per-attempt snapshot is unchanged); clears ~2 s after rest.
+- **RMS cap 2.0 mm** (reverses the morning's 1.5): the 14:24 sitting ran on 5
+  markers at rms 1.25-1.33 mm, 0.2 mm under 1.5; lock-every-launch outranks the
+  sub-mm single-marker guard (a 5 mm displaced marker now costs 0.84 mm of
+  origin inside the frame's own scatter; 10 mm is still dropped).
+- The GUI residue "3D view still draws in QTM world" is RESOLVED by the
+  world-anchored scene. Residue: a GUI visual check in a browser; a move within
+  5 s of a throw and a mid-attempt move not exercised.
+
+Status: move observability + settling refusal + world-anchored GUI landed
+2026-10-19, NOT flown (GUI hard-refresh); new rehearsal rows 43-46.
 
 Control analysis required before code (CLAUDE.md): which setpoints change
 frame, whether the Platform offset step at session start can produce a
@@ -395,7 +443,11 @@ refusals), `tests/ros/test_robot_frame_resource.py`,
 rotated/translated frame invariance, refusal at authority 0 and 40, freeze),
 `tests/ros/test_ball_tracker_robot_frame.py` (second cut: yaw-only, drop-worst,
 hold and the retired constants are pinned in `tests/ros/test_robot_frame.py`
-and `test_robot_frame_resource.py`), and the bag probe
+and `test_robot_frame_resource.py`; third block: settle/move events, the 2.0 cap
+pair and the status keys in `tests/ros/test_robot_frame.py`,
+`test_mocap_node_robot_frame.py` and `test_mocap_node.py`; the settling
+refusal in `tests/motion/test_skills_executor.py` and
+`tests/ros/test_skill_node_robot_frame.py`), and the bag probe
 `tools/probes/robot_frame_bag_check.py` (promoted replay: `--replay --caps
 --displace`, the production tracker over the eight bags) across the 2026-10-10 re-definition
 (the two bags this plan named carry no `Base - n` labels, so the replay used
@@ -433,6 +485,22 @@ column still lands.
 | Phase | Status | Date | Note |
 |-------|--------|------|------|
 | 0 Characterise | done | 2026-10-16 | bands published in the Phase 0 entry; pose mix excluded; the power-cycle pin dropped (every session is one), replaced by the 2026-10-16 QTM re-wand + the first Phase 1 sweep |
-| 1 Gate inversion and operator surface | code live, R1-R4 passed, tally 4 of 10 (15:08, 16:10, 16:23, 20:30; the 22:01 first sweep refused on a true residual; pending acceptance rewording) | 2026-10-16 | merged c115743d; mechanism: at BB (Phase 2), not its power-up state (A/B) |
+| 1 Gate inversion and operator surface | done; R1-R4 passed; acceptance 2 closed on the evidence by the owner 2026-10-19 (tally not formally kept past 4 of 10; every sitting since fed from an accepted sweep) | 2026-10-16 | merged c115743d; mechanism: at BB (Phase 2), not its power-up state (A/B) |
 | 2 Template residual | done | 2026-10-16 | controlled pair + 75 sweeps of 22 sittings: the step is at BB (every subset, leave-one-out and label-free refit keeps it; firmware excluded); no pickup, no re-fit, one statistic kept (reference 0.18-0.46 mm, pool-size pin); A/B done 2026-10-16 evening: kappa held across two BB-only cycles (not a power-up state); the 86 min off deformed Q3-Q6 to 1.2 mm, calibration refused until addressed (entry `2026-10-16-bb-calibration-power-cycle-ab.md`); cap 1.0 -> 1.5 mm / advisory 0.90 -> 1.0 mm 2026-10-17 on measured evidence (entry `2026-10-17-bb-calibration-residual-cap-1p5.md`) |
-| 3 Robot frame in software | second cut landed 2026-10-19, NOT flown; the hardware check is re-owed (rehearsal rows 35-38); first cut flapped on its first sitting (QTM reconstruction bias 1.0-1.6 mm): now yaw-only, drop-worst to 5 markers, cap 1.5 mm, hold rule, no tilt guard | 2026-10-19 | BB side stays in QTM world, robot side transformed at two join points; kincal frame; a frame never received this launch always refuses (a later loss warns and reuses it); frozen per attempt; entry `2026-10-19-bb-calibration-phase3-robot-frame.md` |
+| 3 Robot frame in software | done, final 2026-10-19: second cut FLOWN 14:24 (hops 8/8 across a 48.5 mm / 14.5 deg hand move); move observability + settling refusal + world-anchored GUI (a9feb1c9) FLOWN the same afternoon, rows 44-46 PASSED (owner); row 36 waived by the owner; banner auto-hide (3 s) NOT flown, see section 6 | 2026-10-19 | BB side stays in QTM world, robot side transformed at two join points; kincal frame; yaw-only fit, cap 2.0 mm, hold rule; frame never received this launch always refuses; frozen per attempt; entries `2026-10-19-bb-calibration-phase3-robot-frame.md`, `2026-10-19-robot-frame-move-observability.md` |
+
+## 6. Residue at archival
+
+Owner-accepted open items, each with where it lives now.
+
+- A robot move within 5 s of a throw, and a move mid-attempt, were not exercised (the snapshot is frozen per attempt by design; the refusal only guards accept). Entry `2026-10-19-robot-frame-move-observability.md`.
+- A quiet `mocap/status` whose last value was `robot_frame_settled=0` keeps refusing at accept until the topic returns (`REJECTED_MOCAP_STALE` co-fires and names the cause); no timeout was added. Same entry.
+- The `Base - 5` / `Base - 6` cluster is dropped on nearly every post-move fit; only camera coverage or a QTM re-wand lowers the floor. Same entry.
+- The "frame settled" window criterion before the per-attempt snapshot is NOT open: the `REJECTED_ROBOT_FRAME_SETTLING` refusal IS that criterion.
+- The kappa level / ambient-temperature mechanism is open; the ledger `ros_ws/docs/bb_calibration_readings.md` keeps collecting rows (entry `2026-10-16-bb-calibration-power-cycle-ab.md`).
+- The weak-marker template builder scripts are gone; a rebuild is a rewrite (owner's call).
+- The 86-min power-off constellation deformation (Q3-Q6, 1.2 mm) is unexplained; the markers were found rigid. Same power-cycle entry.
+- The displaced-marker silent drop is parked in `plans/parked/bb-marker-never-matched-advisory.md`.
+- Phase 0 landing bias vs kappa cross-check: outcome "landing bias NOT the calibration's" (entry `2026-10-15-bb-calibration-phase0-characterise.md`).
+- The banner auto-hide (`ROBOT_FRAME_BANNER_MS` = 3000 ms, reload does not replay a move) is a GUI cosmetic, NOT flown.
+- Out of scope: A3 throw 1 (14:24) logged TRACKER-IDENTITY-REFUSED yet was scored CAUGHT.

@@ -45,7 +45,7 @@ Fidelity contract
 
 Provenance
     logbook/2026-10-14-bb-calibration-one-attempt-investigation.md;
-    plans/active/bb-calibration-one-attempt.md Phase 0. The Phase 0 test unit references this
+    plans/archived/bb-calibration-one-attempt.md Phase 0. The Phase 0 test unit references this
     probe (``--emit-fixture`` writes the one-sweep re-solve fixture it needs).
 
 Differences from the node that cannot be removed offline (listed in summary.md as well)

@@ -15,7 +15,7 @@ inputs it collects (2026-10-09, sweep estimator).
   ``logbook/2026-10-10-bb-yaw-offset-spread-stamped-source.md``.
 
 See ``logbook/2026-10-09-bb-constellation-yaw-offset.md`` and
-``plans/active/bb-calibration-one-attempt.md``.
+``plans/archived/bb-calibration-one-attempt.md``.
 """
 from __future__ import annotations
 

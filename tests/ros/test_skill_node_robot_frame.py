@@ -228,6 +228,61 @@ def test_no_robot_frame_is_reported_by_skills_check_with_the_ladder():
     assert node._observations(0.0).robot_frame_known is True
 
 
+def _status(value=None):
+    from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
+    m = DiagnosticStatus()
+    if value is not None:
+        m.values = [KeyValue(key='robot_frame_settled', value=value)]
+    return m
+
+
+def test_settling_status_refuses_with_the_other_rows_and_clears(tmp_path):
+    node, _c = _node_with_client()
+    node._on_mocap_status(_status('0'))
+    assert node._observations(0.0).robot_frame_settled is False
+    resp = node._svc_check(Trigger.Request(), Trigger.Response())
+    ladder = [ln for ln in resp.message.split('\n')
+              if ln.startswith('ladder REFUSED')]
+    assert len(ladder) == 1 and ex.REJECTED_ROBOT_FRAME_SETTLING in ladder[0]
+    with patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        goal = node._start_pattern(_self_toss_goal())
+    assert goal.success is False
+    assert ex.REJECTED_ROBOT_FRAME_SETTLING in goal.message, goal.message
+    assert 'Robot frame is settling' in goal.message
+    node._on_mocap_status(_status('1'))              # flips back: cleared
+    assert node._observations(0.0).robot_frame_settled is True
+    resp = node._svc_check(Trigger.Request(), Trigger.Response())
+    assert ex.REJECTED_ROBOT_FRAME_SETTLING not in resp.message
+
+
+def test_settled_status_and_no_status_do_not_refuse():
+    node, _c = _node_with_client()
+    assert node._observations(0.0).robot_frame_settled is True   # no status
+    node._on_mocap_status(_status('1'))
+    assert node._observations(0.0).robot_frame_settled is True
+    node._on_mocap_status(_status())                 # key absent: unchanged
+    assert node._observations(0.0).robot_frame_settled is True
+
+
+def test_absent_key_after_unsettled_keeps_unsettled():
+    node, _c = _node_with_client()
+    node._on_mocap_status(_status('0'))
+    assert node._robot_frame_settled is False
+    node._on_mocap_status(_status())                 # key absent: unchanged
+    assert node._robot_frame_settled is False
+
+
+def test_mid_attempt_unsettle_is_frozen_out_of_observations_and_snapshot():
+    node, _c = _node_with_client()
+    node._on_mocap_status(_status('0'))
+    assert node._robot_frame_settled is False
+    with patch.object(node, '_attempt_running', return_value=False):
+        assert node._observations(0.0).robot_frame_settled is False
+    with patch.object(node, '_attempt_running', return_value=True):
+        assert node._observations(0.0).robot_frame_settled is True
+        assert node._snapshot_robot_frame() == ''
+
+
 def test_a_malformed_robot_frame_is_dropped_and_the_previous_kept():
     node, _c = _node_with_client()
     before = node._robot_frame

@@ -2,7 +2,7 @@
 title: "Robot frame fit, second cut: yaw-only, drop-worst down to 5 markers, RMS cap 1.5 mm, a hold rule, no tilt guard - the first sitting showed 1.0-1.6 mm of per-configuration QTM reconstruction bias, not scatter"
 type: bugfix
 date: 2026-10-19
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack - post-R6 (Ball Butler calibration), Phase 3 second cut"
 related_plan: bb-calibration-one-attempt.md
 related_entries:
@@ -18,7 +18,7 @@ files_changed:
   - tests/ros/test_robot_frame.py
   - tests/ros/test_robot_frame_resource.py
   - tests/hardware/session_skill_stack_rehearsals.md
-  - plans/active/bb-calibration-one-attempt.md
+  - plans/archived/bb-calibration-one-attempt.md
   - plans/active/INDEX.md
   - ros_ws/docs/bb_calibration_readings.md
   - logbook/2026-10-19-bb-calibration-phase3-robot-frame.md
@@ -123,7 +123,8 @@ All dated 2026-10-19, PDJ venv.
 - Base - 5 and the 3-5-6 cluster stay the weak spot: highest QTM residual, in line with 3 and 6, 1.8-2.9 mm off when 2 or 3 drops out. Drop-worst absorbs it; only re-wanding QTM or camera coverage of that cluster lowers the floor.
 - The hold rule is untested on real data (no fit failed at 1.5 on eight bags).
 - A "frame settled" criterion (window spread) before the per-attempt snapshot is NOT built; until then, wait more than 5 s after setting the robot down before the first `skills/check`, or launch after the move.
-- The GUI 3D view still draws markers and bodies in QTM world.
+- The GUI 3D view still draws markers and bodies in QTM world. (Resolved 2026-10-19 pm: the model follows `robot_frame`, see `2026-10-19-robot-frame-move-observability`.)
 - The runsheet's "few cm" move was actually 40-108 mm and 4-12 deg; the rows now say so.
 - The 11:13 flap at +38.7/+40.6 s (RMS 0.999 vs 1.000) does not reproduce in the replay (feed-phase dependent); moot at 1.5 mm.
 - First-cut record for the next sitting to compare (flown against the FIRST cut): home 11:04 locked at 0 s and flapped 15 times; 11:13 74.8 % frame; 11:14 locked once at 39.8 s and was UNKNOWN from 41.8 s.
+- Update 2026-10-19 pm: the second cut was flown at 14:24 and the cap was raised to 2.0 mm the same afternoon (5 markers ran 0.2 mm under 1.5 after the move; lock-every-launch outranks the single-marker guard), see `2026-10-19-robot-frame-move-observability`. The 1.5 mm statements above are history.

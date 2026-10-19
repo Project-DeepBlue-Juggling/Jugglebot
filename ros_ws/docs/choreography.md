@@ -161,7 +161,7 @@
 ### `mocap/status`
 
 - **publishers:** `mocap_node`
-- **subscribers:** `orchestrator_node`, `teensy_bridge_node`
+- **subscribers:** `orchestrator_node`, `skill_node`, `teensy_bridge_node`
 - **type:** `diagnostic_msgs.msg.DiagnosticStatus`
 
 ### `mocap_data`

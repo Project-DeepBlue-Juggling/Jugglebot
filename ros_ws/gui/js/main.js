@@ -43,6 +43,7 @@ import {
     initHardwareVersionsPanel, hardwareVersionsOnLinkStatus,
     setHardwareVersionsRosLink,
 } from './hardware-versions.js';
+import { onRobotFrame, onMocapStatus } from './robot-frame.js';
 import { initCommands, updateCommandStates } from './commands.js';
 import { getReplayMode } from './replay/wiring.js';
 import { initReplayUi } from './replay/ui/index.js';
@@ -360,6 +361,12 @@ export function restoreReplayLatches(saved) {
 
 // ---- ROS subscriptions ----
 
+// Named handlers: tests/ros/test_gui_replay_policy.py parses each subscribe call in
+// subscribeAll() as (topic, type, HANDLER-IDENTIFIER, throttle), so an arrow function here
+// would hide the topic from the throttle contract.
+function onRobotFrameMsg(m) { recordTopicMessage('robot_frame'); onRobotFrame(m); }
+function onMocapStatusMsg(m) { recordTopicMessage('mocap/status'); onMocapStatus(m); }
+
 function subscribeAll() {
     // Robot state (100Hz -> throttle to 20Hz = 50ms)
     ros.subscribe('robot_state', 'jugglebot_interfaces/msg/RobotState', onRobotState, 50);
@@ -396,6 +403,12 @@ function subscribeAll() {
 
     // Mocap data — markers + connection/alignment status (200Hz -> throttle to 20Hz = 50ms)
     ros.subscribe('mocap_data', 'jugglebot_interfaces/msg/MocapDataMulti', onMocapData, 50);
+
+    // Measured robot frame (latched PoseStamped, QTM world mm + yaw quaternion):
+    // anchors the Stewart model in the world-fixed scene.
+    ros.subscribe('robot_frame', 'geometry_msgs/msg/PoseStamped', onRobotFrameMsg, 0);
+    // Mocap status (5 Hz): robot-frame settled/move keys -> pill detail + move banner
+    ros.subscribe('mocap/status', 'diagnostic_msgs/msg/DiagnosticStatus', onMocapStatusMsg, 0);
 
     // Tracked balls — trails + ball spheres (published at the mocap frame rate while a ball is
     // tracked, ~200Hz -> throttle to 50Hz = 20ms)
@@ -1165,6 +1178,7 @@ const GUI_SUBSCRIBED_TOPICS = new Set([
     'profile', 'link_status', 'udp_diag', 'clock_diag', 'hand_telemetry',
     'mocap_data', 'balls',
     'rigid_body_poses',
+    'robot_frame', 'mocap/status',
     'leg_setpoint_echo', 'control_mode_topic', 'motion/diagnostics',
     'bb/calibration_result', 'bb/calibration_attempt', 'cone/heartbeat', 'cone/timing_result',
     'skills/attempt',

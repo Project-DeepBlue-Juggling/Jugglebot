@@ -2,7 +2,7 @@
 title: "BB calibration Phase 1 (gate inversion): the sweep is the output, history is advisory, kappa lives in never-discarded epochs, bb_moved is deleted; replay accepts 23 of 24 logged-refused sweeps"
 type: investigation
 date: 2026-10-16
-status: open
+status: resolved
 phase: "two-ball-skill-stack - post-R6 (Ball Butler calibration)"
 related_plan: bb-calibration-one-attempt.md
 files_changed:
@@ -24,7 +24,7 @@ files_changed:
   - tests/hardware/session_bb_calibration_phase1.md
   - tests/hardware/session_skills_r5_sitting8.md
   - tests/hardware/session_bb_kappa_pin.md
-  - plans/active/bb-calibration-one-attempt.md
+  - plans/archived/bb-calibration-one-attempt.md
   - logbook/2026-10-16-bb-calibration-phase1-gate-inversion.md
   - logbook/2026-10-15-bb-calibration-phase0-characterise.md
   - logbook/INDEX.md
@@ -41,7 +41,7 @@ tags:
 
 ## Summary
 
-Phase 1 of `plans/active/bb-calibration-one-attempt.md`, consuming the Phase 0 band table. The sweep's own yaw offset and axis point are now always the output. Hard refusals remain only for intrinsic sweep quality (solver classes, constellation residual at the 1.0 mm cap). Every history comparison (kappa vs pool, yaw vs last accepted, template residual, lag, BB-in-base shift, QTM frame shift) became one advisory on the single outcome line. The kappa pool is kept in epochs and never discarded; `bb_moved`, `bb_pose_source` and `bb_base_min_sweeps` are deleted. Production-faithful replay of the recorded bags: 23 of the 24 replayable logged-refused sweeps are ACCEPTED; the one still refused (CIRCLE_CENTRES, 10-14 20:54 sweep 3) is refused on its own data. Code is done; no hardware sweep has run under Phase 1 yet (entry stays `open`).
+Phase 1 of `plans/archived/bb-calibration-one-attempt.md`, consuming the Phase 0 band table. The sweep's own yaw offset and axis point are now always the output. Hard refusals remain only for intrinsic sweep quality (solver classes, constellation residual at the 1.0 mm cap). Every history comparison (kappa vs pool, yaw vs last accepted, template residual, lag, BB-in-base shift, QTM frame shift) became one advisory on the single outcome line. The kappa pool is kept in epochs and never discarded; `bb_moved`, `bb_pose_source` and `bb_base_min_sweeps` are deleted. Production-faithful replay of the recorded bags: 23 of the 24 replayable logged-refused sweeps are ACCEPTED; the one still refused (CIRCLE_CENTRES, 10-14 20:54 sweep 3) is refused on its own data. Code is done; no hardware sweep has run under Phase 1 yet (entry stays `open`).
 
 ## Symptoms
 

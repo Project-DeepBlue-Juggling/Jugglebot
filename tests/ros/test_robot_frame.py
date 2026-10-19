@@ -5,7 +5,7 @@ learned from the kincal bag (world there == robot frame), fitted per frame by
 yaw about world z + a 3-D translation (owner, 2026-10-19), with drop-worst
 outlier rejection down to 5 markers: p_world = R @ p_robot + t. The exact
 identity must reproduce today's numbers bit for bit; any yaw + translation QTM
-re-definition must be recovered exactly. Thresholds (cap 1.5 mm, hold 2 mm /
+re-definition must be recovered exactly. Thresholds (cap 2.0 mm, hold 2 mm /
 0.3 deg) come from temp/probes/robot_frame_diag/report.md.
 """
 from __future__ import annotations
@@ -163,7 +163,7 @@ def _moved(P, R=None, t=None):
 
 def test_one_displaced_marker_is_dropped():
     P = POINTS.copy()
-    P[3, 1] += 5.0                                          # Base - 4, 5 mm
+    P[3, 1] += 10.0                                          # Base - 4, 10 mm (a 5 mm one now passes the 2.0 mm cap 7-wide)
     B, R, t = _moved(P)
     fit = rf.fit_robot_frame(rows(B), TEMPLATE)
     assert fit.ok and fit.n_matched == 6 and fit.dropped == ('Base - 4',)
@@ -175,8 +175,8 @@ def test_one_displaced_marker_is_dropped():
 
 def test_two_displaced_markers_are_dropped_to_five():
     P = POINTS.copy()
-    P[3, 1] += 5.0                                          # Base - 4
-    P[1, 0] += 5.0                                          # Base - 2
+    P[3, 1] += 10.0                                          # Base - 4
+    P[1, 0] += 10.0                                          # Base - 2
     B, R, t = _moved(P)
     fit = rf.fit_robot_frame(rows(B), TEMPLATE)
     assert fit.ok and fit.n_matched == 5
@@ -187,9 +187,9 @@ def test_two_displaced_markers_are_dropped_to_five():
 
 def test_three_displaced_markers_reach_the_floor_and_refuse():
     P = POINTS.copy()
-    P[3, 1] += 5.0
-    P[1, 0] += 5.0
-    P[5, 2] -= 5.0                                          # Base - 6
+    P[3, 1] += 10.0
+    P[1, 0] += 10.0
+    P[5, 2] -= 10.0                                          # Base - 6
     fit = rf.fit_robot_frame(rows(_moved(P)[0]), TEMPLATE)
     assert fit.frame is None and fit.reason == rf.REASON_RMS_OVER_CAP
     assert fit.n_matched == 5 and len(fit.dropped) == 2
@@ -198,7 +198,7 @@ def test_three_displaced_markers_reach_the_floor_and_refuse():
 
 def test_five_markers_cannot_drop_a_displaced_one():
     P = POINTS.copy()
-    P[3, 1] += 5.0
+    P[3, 1] += 10.0
     idx = [0, 1, 3, 4, 6]
     fit = rf.fit_robot_frame(rows(_moved(P)[0][idx], [LABELS[i] for i in idx]), TEMPLATE)
     assert fit.frame is None and fit.reason == rf.REASON_RMS_OVER_CAP
@@ -206,15 +206,15 @@ def test_five_markers_cannot_drop_a_displaced_one():
     assert max(fit.per_marker_mm, key=fit.per_marker_mm.get) == 'Base - 4'
 
 
-def test_cap_is_one_and_a_half_mm_on_a_uniform_bias():
-    assert rf.ROBOT_FRAME_MAX_RMS_MM == 1.5
-    B, _, _ = _moved(POINTS + 1.227 * BIAS_DIRS)            # RMS ~1.2 mm
+def test_cap_is_two_mm_on_a_uniform_bias():
+    assert rf.ROBOT_FRAME_MAX_RMS_MM == 2.0
+    B, _, _ = _moved(POINTS + 1.85 * BIAS_DIRS)             # RMS ~1.8 mm
     fit = rf.fit_robot_frame(rows(B), TEMPLATE)
-    assert fit.ok and fit.dropped == () and 1.15 < fit.rms_mm < 1.25
-    B, _, _ = _moved(POINTS + 1.70 * BIAS_DIRS)             # RMS ~1.66 mm, floor ~1.55
+    assert fit.ok and fit.dropped == () and 1.7 < fit.rms_mm < 1.9
+    B, _, _ = _moved(POINTS + 2.45 * BIAS_DIRS)             # RMS ~2.4 mm, floor ~2.24
     fit = rf.fit_robot_frame(rows(B), TEMPLATE)
     assert fit.frame is None and fit.reason == rf.REASON_RMS_OVER_CAP and fit.n_matched == 5
-    assert rf.yaw_fit(POINTS, POINTS + 1.70 * BIAS_DIRS)[2] == pytest.approx(1.66, abs=0.02)
+    assert rf.yaw_fit(POINTS, POINTS + 2.45 * BIAS_DIRS)[2] == pytest.approx(2.40, abs=0.03)
 
 
 def test_nan_rows_foreign_labels_duplicates_and_junk_are_ignored():
@@ -289,7 +289,7 @@ def _running_tracker():
 def test_hold_rule_keeps_the_frame_through_a_bias_excursion():
     tr, R, t = _running_tracker()
     before = tr.current()
-    B, _, _ = _moved(POINTS + 1.9 * BIAS_DIRS, R, t)        # ~1.86 mm RMS: fails the cap
+    B, _, _ = _moved(POINTS + 2.45 * BIAS_DIRS, R, t)        # ~2.4 mm RMS: fails the 2.0 cap
     for k in range(20):
         fit = tr.feed(rows(B), 100 + k)
         assert not fit.ok and fit.reason == rf.REASON_RMS_OVER_CAP
@@ -302,7 +302,7 @@ def test_hold_rule_keeps_the_frame_through_a_bias_excursion():
 
 def test_hold_rule_does_not_hold_a_real_move():
     tr, R, t = _running_tracker()
-    B, _, _ = _moved(POINTS + 1.9 * BIAS_DIRS, R, t + np.array([20.0, 0.0, 0.0]))
+    B, _, _ = _moved(POINTS + 2.45 * BIAS_DIRS, R, t + np.array([20.0, 0.0, 0.0]))
     for k in range(9):
         assert not tr.feed(rows(B), 100 + k).ok
         assert tr.status()['held'] is False and tr.current() is not None
@@ -321,7 +321,7 @@ def test_hold_rule_does_not_hold_too_few_markers():
 
 def test_held_feeds_do_not_reset_the_fail_count():
     tr, R, t = _running_tracker()
-    held, _, _ = _moved(POINTS + 1.9 * BIAS_DIRS, R, t)
+    held, _, _ = _moved(POINTS + 2.45 * BIAS_DIRS, R, t)
     for k in range(9):
         tr.feed([], 100 + k)                                 # 9 counted fails
     tr.feed(rows(held), 200)                                 # held: neither counts nor resets
@@ -332,7 +332,7 @@ def test_held_feeds_do_not_reset_the_fail_count():
 
 def test_status_reports_dropped_labels():
     P = POINTS.copy()
-    P[3, 1] += 5.0
+    P[3, 1] += 10.0                                         # over the 2.0 cap
     tr = rf.RobotFrameTracker(TEMPLATE)
     tr.feed(rows(P), 0)
     st = tr.status()
@@ -469,3 +469,105 @@ def test_written_template_has_only_the_schema_1_keys(tmp_path):
     path = tmp_path / 'robot_frame.json'
     rf.write_robot_frame_template(str(path), TEMPLATE)
     assert set(json.loads(path.read_text())) == {'schema', 'frame', 'markers', 'provenance'}
+
+
+# ── settled criterion and move events (observability, 2026-10-19) ────────────
+
+def _pose_rows(dx=0.0, dy=0.0, dyaw=0.0):
+    return rows(POINTS @ yaw(dyaw).T + np.array([dx, dy, 0.0]))
+
+
+def _feed_n(tr, n, k0, **pose):
+    evs = []
+    for k in range(n):
+        tr.feed(_pose_rows(**pose), k0 + k)
+        ev = tr.pop_event()
+        if ev:
+            evs.append(ev)
+    return evs
+
+
+def test_constants_are_the_decided_pair():
+    assert rf.ROBOT_FRAME_MOVE_MM == 5.0 and rf.ROBOT_FRAME_MOVE_DEG == 0.3
+
+
+def test_at_rest_settles_after_a_window_with_one_settled_event():
+    tr = rf.RobotFrameTracker(TEMPLATE, window=10)
+    evs = []
+    for k in range(9):
+        tr.feed(_pose_rows(), k)
+        assert not tr.settled
+        evs += [e for e in [tr.pop_event()] if e]
+    assert evs == [] and tr.status()['settled'] is False
+    evs += _feed_n(tr, 15, 9)
+    assert tr.settled and [e[0] for e in evs] == ['settled']
+    assert evs[0][2] is None and tr.move_count == 0 and tr.last_move is None
+    st = tr.status()
+    assert st['settled'] is True and st['move_count'] == 0
+    assert st['last_move_mm'] == 0.0 and st['last_move_deg'] == 0.0
+    assert st['last_move_stamp_ns'] == 0
+    assert tr.pop_event() is None
+
+
+def test_small_bias_step_inside_a_window_stays_settled_without_event():
+    tr = rf.RobotFrameTracker(TEMPLATE, window=10)
+    _feed_n(tr, 12, 0)
+    evs = []
+    for k in range(10):
+        tr.feed(_pose_rows(dx=1.0 if k % 2 else 0.0), 100 + k)
+        assert tr.settled
+        evs += [e for e in [tr.pop_event()] if e]
+    assert evs == [] and tr.move_count == 0
+
+
+def test_hand_move_unsettles_then_one_moved_event():
+    tr = rf.RobotFrameTracker(TEMPLATE, window=10)
+    _feed_n(tr, 12, 0)
+    before = tr.current()
+    evs, unsettled = [], False
+    for k, dx in enumerate((10.0, 20.0)):          # the slide
+        tr.feed(_pose_rows(dx=dx), 100 + k)
+        unsettled = unsettled or not tr.settled
+        evs += [e for e in [tr.pop_event()] if e]
+    assert unsettled and evs == []
+    evs += _feed_n(tr, 25, 200, dx=20.0)
+    assert tr.settled and [e[0] for e in evs] == ['moved']
+    kind, frame, (d_mm, d_deg, frm) = evs[0]
+    assert d_mm == pytest.approx(20.0, abs=0.5) and d_deg == pytest.approx(0.0, abs=0.05)
+    assert np.allclose(frm.t, before.t) and frame.t[0] == pytest.approx(before.t[0] + 20.0, abs=0.5)
+    assert tr.move_count == 1
+    assert tr.last_move[0] == pytest.approx(20.0, abs=0.5)
+    assert tr.last_move[2] > 200
+    st = tr.status()
+    assert st['move_count'] == 1 and st['last_move_mm'] == pytest.approx(20.0, abs=0.5)
+    assert st['last_move_stamp_ns'] == tr.last_move[2]
+
+
+def test_yaw_move_is_announced_with_degrees():
+    tr = rf.RobotFrameTracker(TEMPLATE, window=10)
+    _feed_n(tr, 12, 0)
+    evs = _feed_n(tr, 25, 100, dyaw=1.0)
+    moved = [e for e in evs if e[0] == 'moved']
+    assert len(moved) == 1 and moved[0][2][1] == pytest.approx(1.0, abs=0.05)
+
+
+def test_three_mm_nudge_stays_settled_and_is_not_a_move():
+    tr = rf.RobotFrameTracker(TEMPLATE, window=10)
+    _feed_n(tr, 12, 0)
+    evs = []
+    for k in range(25):
+        tr.feed(_pose_rows(dx=3.0), 100 + k)
+        assert tr.settled
+        evs += [e for e in [tr.pop_event()] if e]
+    assert evs == [] and tr.move_count == 0
+
+
+def test_frames_lost_then_restored_at_the_same_pose_is_no_move():
+    tr = rf.RobotFrameTracker(TEMPLATE, window=10)
+    _feed_n(tr, 12, 0)
+    for k in range(12):
+        tr.feed([], 100 + k)
+        tr.pop_event()
+    assert tr.current() is None and not tr.settled
+    evs = _feed_n(tr, 25, 200)
+    assert tr.settled and evs == [] and tr.move_count == 0

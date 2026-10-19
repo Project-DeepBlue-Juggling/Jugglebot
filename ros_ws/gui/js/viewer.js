@@ -22,6 +22,12 @@ export let renderer;
 /** @type {OrbitControls} */
 export let controls;
 
+/** World-anchored parent of the Stewart model.  Scene origin = QTM world origin;
+ *  this group sits at the measured robot frame (robot_frame topic) and is identity
+ *  until the first message.  Only the Stewart model is a child; QTM-sourced layers
+ *  stay direct children of `scene`.  Created in initViewer. */
+export let robotFrameGroup;
+
 /** Named groups for visibility toggles */
 export const sceneGroups = {};
 
@@ -99,6 +105,9 @@ export function setCameraState(state) {
 export function initViewer(container) {
     // Scene
     scene = new THREE.Scene();
+    robotFrameGroup = new THREE.Group();
+    robotFrameGroup.name = 'robot-frame';
+    scene.add(robotFrameGroup);
     scene.background = new THREE.Color(0x0f172a);
 
     // Camera
@@ -137,12 +146,14 @@ export function initViewer(container) {
     scene.add(grid);
     sceneGroups['Grid'] = grid;
 
-    // Coordinate axes helper — rotated so RGB = robot X/Y/Z (Z-up frame)
+    // Coordinate axes helper at the scene origin = QTM WORLD origin (NOT the robot
+    // origin since the scene became world-anchored; the Stewart model rides robotFrameGroup).
+    // Rotated so RGB = world X/Y/Z (Z-up frame)
     const axes = new THREE.AxesHelper(0.3);
     axes.name = 'axes';
     axes.rotation.x = -Math.PI / 2; // Rotate so Three.js Y-up → robot Z-up
     scene.add(axes);
-    sceneGroups['Global Axes'] = axes;
+    sceneGroups['World Axes (QTM)'] = axes;
 
     // Handle resize
     const resizeObserver = new ResizeObserver(() => {

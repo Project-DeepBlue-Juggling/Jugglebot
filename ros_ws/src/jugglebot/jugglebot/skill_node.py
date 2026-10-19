@@ -70,6 +70,7 @@ from jugglebot_interfaces.srv import BallButlerThrow, GoToPose, InstallSegment
 import jugglebot.hardware_config as hw
 import jugglebot.protocol_config as proto
 from jugglebot import ball_possession
+from jugglebot import mocap_status as mocap_st
 from jugglebot.motion import blas_threads
 from jugglebot.motion.skills import admissible as adm
 from jugglebot.motion.skills import bump as sk_bump
@@ -843,6 +844,10 @@ class SkillNode(Node):
         # identity -- only between attempts; a goal cannot start without one.
         self._robot_frame = None
         self._robot_frame_mono = 0.0
+        # `mocap/status` `robot_frame_settled` ('1'/'0'; the constant is
+        # `mocap_st.KEY_ROBOT_FRAME_SETTLED`). True until the first status
+        # says otherwise: a stack with no mocap/status must not refuse forever.
+        self._robot_frame_settled = True
         self._attempt_robot_frame = None
         # `/link_status`'s `sched_refused` — the FIRMWARE's count of streamed
         # lanes it refused and is now HOLDING (`_on_link_status`), and the
@@ -1363,6 +1368,10 @@ class SkillNode(Node):
                        durability=DurabilityPolicy.TRANSIENT_LOCAL),
             callback_group=self._sub_cbgroup)
 
+        self.create_subscription(
+            DiagnosticStatus, 'mocap/status', self._on_mocap_status, 10,
+            callback_group=self._sub_cbgroup)
+
         self.create_service(Trigger, 'skills/check', self._svc_check)
 
         # The Juggle action's OWN callback group (R4 owner decision D3, U5):
@@ -1451,6 +1460,15 @@ class SkillNode(Node):
         dx, dy = (0.0, 0.0) if off is None else (float(off[0]), float(off[1]))
         pos_mm = np.array([p[0] - dx, p[1] - dy, p[2]], dtype=float)
         return pos_mm, np.array(v, dtype=float)
+
+    def _on_mocap_status(self, msg) -> None:
+        """`mocap/status` -> `_robot_frame_settled` only. Absent key or any
+        value but '0' leaves/sets True; a quiet topic keeps the last value
+        (no staleness refusals invented here)."""
+        for kv in msg.values:
+            if kv.key == mocap_st.KEY_ROBOT_FRAME_SETTLED:
+                self._robot_frame_settled = (str(kv.value).strip() != '0')
+                return
 
     def _on_robot_frame(self, msg) -> None:
         """Cache the latched ``robot_frame`` (mocap_node: position = robot
@@ -2141,6 +2159,12 @@ class SkillNode(Node):
             in_trajectory_mode=in_trajectory_mode,
             hand_lane_refused=self._hand_lane_refused(now),
             robot_frame_known=self._robot_frame is not None,
+            # Accept-time only: the per-attempt frame is FROZEN at the snapshot,
+            # so a mid-attempt unsettle (a transient marker loss clearing the
+            # window, or a bias step over 5 mm) must not END a running attempt
+            # - the owner's rule that a later loss WARNs rather than refuses.
+            robot_frame_settled=(self._robot_frame_settled
+                                 or self._attempt_running()),
             plan_superseded=plan_superseded)
 
     def _ball_evidence(self, ball_id: int, t_abs_s: float) -> str:
@@ -4281,6 +4305,11 @@ class SkillNode(Node):
                     % (ex.REJECTED_ROBOT_FRAME_UNKNOWN,))
         if self._attempt_running():
             return ''
+        if not self._robot_frame_settled:
+            return ('%s: Robot frame is settling (moved < 2 s ago or being '
+                    'moved) - wait a few seconds and retry; mocap_node logs '
+                    '\'Robot frame MOVED\' with the size'
+                    % (ex.REJECTED_ROBOT_FRAME_SETTLING,))
         self._attempt_robot_frame = frame
         age_s = time.perf_counter() - self._robot_frame_mono
         yaw_deg = math.degrees(math.atan2(float(frame.R[1, 0]),

@@ -297,6 +297,26 @@
 .flag-icon.ok   { color: var(--accent-green); }
 .flag-icon.fail { color: var(--accent-red); }
 .flag-icon.wait { color: var(--text-muted); }
+.flag-icon.settling { color: var(--accent-amber); }
+.flag-detail {
+    font-family: var(--font-mono);
+    font-size: var(--font-size-xs);
+    color: var(--text-muted);
+}
+
+/* Robot-frame move banner (auto-hides after ROBOT_FRAME_BANNER_MS; visual family: .replay-banner.warn). */
+.robot-frame-banner {
+    position: absolute; top: 84px; left: var(--gap); right: var(--gap); z-index: 11;
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    padding: 8px 12px; border-radius: var(--border-radius-sm);
+    border: 1px solid var(--accent-amber); background: rgba(245,158,11,.12);
+    color: var(--accent-amber); font-size: var(--font-size-sm);
+}
+.robot-frame-banner[hidden] { display: none; }
+.robot-frame-banner-close {
+    border: none; background: none; color: inherit; font-size: 18px; line-height: 1; cursor: pointer;
+}
+#viewer-pane.minimap-expanded .robot-frame-banner { left: calc(var(--minimap-width) + var(--gap)); }
 
 /* ---- Levelled-angles pill (System panel) ----
    Shown next to the "Levelled" flag once levelling completes — the measured
