@@ -1713,8 +1713,10 @@ def test_rung1_holdless_raw_chain_reads_the_pinned_values(geom):
     carries the readings the sweep records: max seating residual 18.68 deg
     (< 30), min a_z+g 0.837 g (> 0.30), closing ratio 0.533 (> 0.20), skid
     ~9 mm/s (logged only).  NOTE this is the HOLD-LESS raw chain (no
-    ``pre_release_hold``): the production segment path reads 32.1 deg and is
-    refused (``test_rung1_through_the_production_segment_path_refuses_the_cone``)."""
+    ``pre_release_hold``): the production segment path reads 32.1 deg - refused
+    at the 30 deg cone until 2026-10-19, passing at 45 deg since
+    (``test_rung1_through_the_production_segment_path_passes_the_45_deg_cone``).
+    The 18.68 deg is a post-stroke reading, unchanged by the stroke-end rule."""
     plan, _meta = _rung1_window()
     assert plan.catch_k == 35
     rep = _validate_oval(plan, geom)
@@ -1728,10 +1730,12 @@ def test_rung1_holdless_raw_chain_reads_the_pinned_values(geom):
 @pytest.mark.parametrize('name, deg', [('fx_sep175', 21.44), ('fx_dwell040', 24.41)])
 def test_the_p3_target_fixtures_pass_the_rebased_cone(geom, name, deg):
     """The 175 mm (21.44 deg) and dwell-0.40 (24.41 deg) production windows
-    refused the plan's 20 deg cone; the check is re-based to 30 deg (owner
-    decision 2026-10-18, above the hop's 28.7 deg), so they PASS - kept as pins
-    because they still document the P3 shaper target (20 deg): a P3 QP that
-    holds them inside 20 deg is measured against these numbers."""
+    refused the plan's 20 deg cone; the check was re-based to 30 deg (owner
+    decision 2026-10-18, above the hop's 28.7 deg) and to 45 deg judged from the
+    stroke end (2026-10-19; both readings are post-stroke, unchanged), so they
+    PASS - kept as pins because they still document the P3 shaper target
+    (20 deg): a P3 QP that holds them inside 20 deg is measured against these
+    numbers."""
     rep = _validate_oval(_load_fixture(name), geom)
     assert rep.code == 'OK', (rep.code, rep.reasons)
     assert rep.max_cup_seating_deg == pytest.approx(deg, abs=0.05)
@@ -1778,22 +1782,293 @@ def _oval_carry_segment(dwell_s):
     return sg.plan_segment(sg.CATCH, after, term, cfg, limits, geom), limits
 
 
-def test_rung1_through_the_production_segment_path_refuses_the_cone():
-    """C-CUP-4 cone, the real refusal: the rung-1 cell (150 mm / apex 0.95 /
-    dwell 0.50 / 350-5000-200000 / hand 3900) through the production segment
-    path with the DEFAULT 0.100 s pre-release hold reads 32.1 deg at knot 49
-    (report_diag32: the hold squeezes the 150 mm carry into 0.375 s; the raw
-    chain's 18.68 deg is a hold-less plan nothing dispatches).  Refused at
-    planning with CUP_SEATING_CONE and NOTHING else (floor reads 0.82 g, closing
-    ratio passes)."""
+def _gated_windows(fn, monkeypatch):
+    """``(windows, outcome)``: every plan carrying catch evidence that the
+    production path handed ``validate_cycle`` while running ``fn()`` (the first
+    is the catch window C-CUP-4 judges), and ``fn``'s return value or the
+    ``CycleInfeasible`` it raised.  A spy, not a re-built window, so the plan is
+    exactly the one production gates."""
+    seen = []
+    real = feas.validate_cycle
+
+    def spy(plan, *a, **k):
+        if getattr(plan, 'catch_evidence', None):
+            seen.append(plan)
+        return real(plan, *a, **k)
+    monkeypatch.setattr(_uc.fz, 'validate_cycle', spy)
+    try:
+        out = fn()
+    except _uc.CycleInfeasible as e:
+        out = e
+    monkeypatch.setattr(_uc.fz, 'validate_cycle', real)
+    return seen, out
+
+
+def test_rung1_through_the_production_segment_path_passes_the_45_deg_cone(
+        monkeypatch, geom):
+    """C-CUP-4 margin on the rung-1 carry (150 mm / apex 0.95 / dwell 0.50 /
+    350-5000-200000 / hand 3900, production segment path, default 0.100 s
+    pre-release hold).  Until 2026-10-19 this window was REFUSED at 32.1 deg
+    (knot 49) against the 30 deg cone; at 45 deg, judged from the stroke end, it
+    PASSES with the same 32.1 deg at knot 49 - after the stroke ends at knot 42
+    (catch_k 35) - so the reading is a CARRY reading, and 32.1 > 30 means the
+    owner's fall-back cone would refuse it again.  The exempt braking knots read
+    23.56 deg at worst (touch-down + 1).  Measured 2026-10-19 through the spy.
+    (The whole segment still fails at these limits - LIMIT_VEL on the SETTLE
+    tail, 447.8 > 350 mm/s - which is not C-CUP-4's business; pinned only as
+    "not a seating code".)"""
+    windows, out = _gated_windows(lambda: _oval_carry_segment(0.50), monkeypatch)
+    rep = feas.validate_cycle(windows[0], _oval_limits(), geom)
+    assert rep.code == 'OK', (rep.code, rep.reasons)
+    assert windows[0].catch_k == 35
+    assert rep.cup_stroke_end_k == (42,)
+    assert rep.max_cup_seating_deg == pytest.approx(32.1, abs=0.1)
+    assert 30.0 < rep.max_cup_seating_deg < feas.CUP_SEATING_CONE_DEG
+    assert rep.min_cup_seating_az_g == pytest.approx(0.82, abs=0.01)
+    assert rep.max_cup_braking_deg == pytest.approx(23.56, abs=0.1)
+    if isinstance(out, _uc.CycleInfeasible):
+        assert out.code not in (feas.CUP_SEATING_CONE, feas.CUP_SEATING_FLOOR), out
+
+
+def test_a_faster_rung1_carry_is_refused_after_the_stroke_ends():
+    """C-CUP-4 cone, the real refusal at 45 deg: the same rung-1 carry at dwell
+    0.40 (the carry squeezed into 0.275 s) reads 49.1 deg at knot 45, three knots
+    after the stroke ends (knot 42) - refused at planning with CUP_SEATING_CONE
+    and NOTHING else (floor 0.73 g; the exempt braking knots read 35.5 deg).
+    Measured 2026-10-19."""
     with pytest.raises(_uc.CycleInfeasible) as ei:
-        _oval_carry_segment(0.50)
+        _oval_carry_segment(0.40)
     e = ei.value
     assert e.code == feas.CUP_SEATING_CONE, (e.code, str(e))
     rep = e.report
-    assert rep.max_cup_seating_deg == pytest.approx(32.1, abs=0.1)
-    assert rep.min_cup_seating_az_g == pytest.approx(0.82, abs=0.01)
-    assert len(rep.reasons) == 1 and 'knot 49' in rep.reasons[0], rep.reasons
+    assert rep.max_cup_seating_deg == pytest.approx(49.1, abs=0.1)
+    assert rep.cup_stroke_end_k == (42,)
+    assert rep.max_cup_braking_deg == pytest.approx(35.45, abs=0.1)
+    assert len(rep.reasons) == 1, rep.reasons
+    assert 'knot 45' in rep.reasons[0] and 'stroke ends (knot 42)' in rep.reasons[0]
+
+
+@functools.lru_cache(maxsize=1)
+def _hop_entry_skill2_plan():
+    """The class window of the 2026-10-19 15:23 refusals, re-built offline: the
+    columns hop-entry fed schedule's skill-2 CATCH (Ball 1 at the far site P1,
+    reached by the transit from the feed site), planned from skill 1's (the BB
+    feed catch, A1's arrival) release state with the bag's refused command's
+    landing offset (+7.6, -4.9) mm.  Construction = ``test_skills_executor``'s
+    ``a1_hop_fed_catch`` (R5 point: 125 mm, apex 0.90, dwell 0.27,
+    350/5000/200000 + hand 3900), carried one skill further.  Offline it reads
+    20.2 deg at touch-down + 1 (the hardware read 31.6-41.7 deg there); its
+    catch_k is 11 and its stroke ends at knot 19.  ``(plan, limits, geom)``."""
+    from tests.motion import test_skills_executor as tse
+    ex, sg, sc = tse.ex, tse.sg, tse.sc
+    geom = StewartGeometry()
+    limits = TrajectoryLimits.from_config(hw).with_session_limits(
+        leg_vel_mmps=350.0, leg_acc_mmps2=5000.0, leg_jerk_mmps3=200000.0,
+        hand_acc_rps2=3900.0)
+    p1, p2 = tse.si.columns_sites(tse.R5_SEPARATION_MM)
+    pattern = sc.Pattern(sites=(p1, p2), apex_m=0.90, dwell_s=tse.R5_DWELL_S,
+                         n_throws=6, phantom_balls=(0,))
+    feed = sc.LandingPrior(pos_mm=p2.catch_site_mm(), vel_mm_s=tse._A1_ARRIVAL_MM_S,
+                           t_land_abs_s=tse.T0_ABS)
+    schedule = sc.compile_columns(pattern, feed=feed, hop_entry=True)
+    dry = ex.SkillExecutor(schedule, ex._never_install)
+    sk = schedule.skills
+    ti = next(i for i, s_ in enumerate(sk) if s_.kind == sg.THROW)
+    fi = next(i for i, s_ in enumerate(sk) if s_.landing_prior is not None)
+    seed = ex._rest_state_at(sk[ti].site.rest_site_mm())
+    tt = ex._terminal_on_segment_clock(
+        sg.THROW, dry._throw_terminal(ti, sk[ti]),
+        float(sk[ti].t_abs_s) - float(sk[ti].window_s))
+    seg1 = sg.plan_segment(sg.THROW, seed, tt, sg.SegmentConfig(), limits, geom)
+    lp = sk[fi].landing_prior
+    t1 = float(sk[fi].t_abs_s) - float(sk[fi].window_s)
+    ct = ex._terminal_on_segment_clock(
+        sg.CATCH, dry._catch_terminal(fi, sk[fi], ex.Landing(
+            pos_mm=lp.pos_mm, vel_mm_s=lp.vel_mm_s, t_land_abs_s=lp.t_land_abs_s)),
+        t1)
+    seg_feed = sg.plan_segment(sg.CATCH, seg1.release_state, ct,
+                               sg.SegmentConfig(), limits, geom)
+    ci = fi + 1
+    assert sk[ci].kind == sg.CATCH and sk[ci].site.name == p1.name
+    land = dry._predicted_landing(ci, sk[ci])
+    pos = np.asarray(land.pos_mm, dtype=float) + np.array([7.6, -4.9, 0.0])
+    ct2 = ex._terminal_on_segment_clock(
+        sg.CATCH, dry._catch_terminal(ci, sk[ci], ex.Landing(
+            pos_mm=pos, vel_mm_s=land.vel_mm_s, t_land_abs_s=land.t_land_abs_s)),
+        t1 + float(seg_feed.release_t_s))
+    seg2 = sg.plan_segment(sg.CATCH, seg_feed.release_state, ct2,
+                           sg.SegmentConfig(), limits, geom)
+    return seg2.plan, limits, geom
+
+
+def _with_pose_x_spike(plan, knot, dx_mm, col=0):
+    """``plan`` with pose column ``col`` (default x; 2 = z) moved ``dx_mm`` at
+    ONE knot (pose_vel untouched): the centred cup reading moves at
+    ``knot - 1 .. knot + 1`` only."""
+    pose = plan.pose.copy()
+    pose[knot, col] += dx_mm
+    return CyclePlan(pose, plan.pose_vel, plan.hand_rev, plan.hand_vel_rps,
+                     plan.dt, catch_k=plan.catch_k,
+                     contact_knots=plan.contact_knots,
+                     catch_evidence=plan.catch_evidence)
+
+
+def test_the_stroke_end_is_read_off_the_realised_hand():
+    """``_cup_stroke_end_knot`` on the 15:23 class window (``_hop_entry_skill2_plan``):
+    touch-down at catch_k 11 with the hand at ~ -48 rev/s; the stroke speed peaks
+    at knot 12 (48.88 rev/s) and falls every knot to 4.31 rev/s at knot 18; the
+    hand REVERSES at knot 19 (+6.94) -> stroke end 19.  The second clause (the
+    speed stops falling) ends it early: the same plan with knot 16's speed raised
+    above knot 15's ends at 16.  A hand at rest through touch-down has nothing to
+    brake -> catch_k + 1.  Measured 2026-10-19."""
+    plan, _limits, _geom = _hop_entry_skill2_plan()
+    e = plan.catch_evidence[0]
+    assert e.knot == 11
+    assert feas._cup_stroke_end_knot(plan, e) == 19
+    hv = plan.hand_vel_rps.copy()
+    hv[16] = 1.1 * hv[15]                     # faster downward than knot 15
+    dipped = CyclePlan(plan.pose, plan.pose_vel, plan.hand_rev, hv, plan.dt,
+                       catch_k=plan.catch_k, contact_knots=plan.contact_knots,
+                       catch_evidence=plan.catch_evidence)
+    assert feas._cup_stroke_end_knot(dipped, e) == 16
+    still = CyclePlan(plan.pose, plan.pose_vel, np.full(plan.n_knots, 0.3),
+                      np.zeros(plan.n_knots), plan.dt, catch_k=plan.catch_k,
+                      contact_knots=plan.contact_knots,
+                      catch_evidence=plan.catch_evidence)
+    assert feas._cup_stroke_end_knot(still, e) == e.knot + 1
+
+
+def test_a_braking_knot_outside_the_cone_passes_a_post_stroke_one_refuses(geom):
+    """The 2026-10-19 refusal class, regression.  A real solve cannot be steered
+    past 45 deg at touch-down + 1 offline (the class window reads 16.5-21.7 deg
+    there over landing offsets up to 30 mm), so the plan is HAND-BUILT from the
+    real one (``_hop_entry_skill2_plan``, stroke end 19) with a one-knot pose-x
+    spike (``_with_pose_x_spike``), loose limits so only the cup checks speak:
+
+    * spike 10 mm at knot 12 (= catch_k + 1): touch-down + 1 reads 62.46 deg on
+      a BRAKING knot - PASSES; the reading is on the report as
+      ``max_cup_braking_deg``, the judged max is unchanged (0.23 deg);
+    * spike 15 mm at knot 19 (= the stroke end): a JUDGED knot reads 52.74 deg -
+      refused CUP_SEATING_CONE, the reason naming knot 19 and the stroke end.
+    Numbers measured 2026-10-19 (asserted below)."""
+    plan, _limits, _geom = _hop_entry_skill2_plan()
+    loose = _oval_limits(1e5, 1e8, 1e10, 1e7)
+    base = feas.validate_cycle(plan, loose, geom)
+    assert base.code == 'OK' and base.cup_stroke_end_k == (19,)
+    assert base.max_cup_braking_deg == pytest.approx(20.16, abs=0.1)
+
+    braking = feas.validate_cycle(_with_pose_x_spike(plan, 12, 10.0), loose, geom)
+    assert braking.code == 'OK', (braking.code, braking.reasons)
+    assert braking.max_cup_braking_deg > feas.CUP_SEATING_CONE_DEG
+    assert braking.max_cup_braking_deg == pytest.approx(62.46, abs=0.1)
+    assert braking.max_cup_seating_deg == pytest.approx(base.max_cup_seating_deg,
+                                                        abs=1e-9)
+
+    judged = feas.validate_cycle(_with_pose_x_spike(plan, 19, 15.0), loose, geom)
+    assert judged.code == feas.CUP_SEATING_CONE, (judged.code, judged.reasons)
+    assert judged.max_cup_seating_deg == pytest.approx(52.74, abs=0.1)
+    assert any('at knot 19 >' in r and 'stroke ends (knot 19)' in r
+               for r in judged.reasons), judged.reasons
+
+
+def test_a_window_that_is_all_braking_is_not_judged(geom):
+    """A catch window whose contact range closes before the stroke ends (the
+    class window cut at knot 15, stroke end 19) has no carry to judge: the
+    seating check returns nothing to refuse and the report's judged readings
+    are ``None``; the braking knots' worst reading (20.16 deg) is still on
+    record.  Hand-built from the real plan (contact range edited only)."""
+    plan, _limits, _geom = _hop_entry_skill2_plan()
+    (k0, _k1), = plan.contact_knots
+    cut = CyclePlan(plan.pose, plan.pose_vel, plan.hand_rev, plan.hand_vel_rps,
+                    plan.dt, catch_k=plan.catch_k, contact_knots=((k0, 15),),
+                    catch_evidence=plan.catch_evidence)
+    deg, azg, cone, floor, det = feas._cup_seating_check(cut, detail=True)
+    # no judged knot -> no cone reading; the FLOOR is still read over the
+    # braking knots (the plan's braking-knot a_z+g is far above 0.30 g)
+    assert (deg, cone, floor) == (None, None, None)
+    assert azg is not None and azg > feas.CUP_SEATING_FLOOR_G
+    assert det['stroke_end_k'] == (19,)
+    assert det['braking_deg'] == pytest.approx(20.16, abs=0.1)
+    rep = feas.validate_cycle(cut, _oval_limits(1e5, 1e8, 1e10, 1e7), geom)
+    assert rep.max_cup_seating_deg is None
+    assert rep.min_cup_seating_az_g == pytest.approx(azg)
+
+
+def _hand_rebuilt(plan, hv):
+    """``plan`` with its hand channel replaced by velocity ``hv`` (one value per
+    knot) and the matching trapezoid-integrated position, so ``hand_at`` at
+    touch-down reads ~``hv`` - a HAND-BUILT CyclePlan (pose / contact window /
+    catch evidence are the real hop-entry skill-2 plan's), because the planner
+    never emits a catch whose hand does not brake."""
+    hv = np.asarray(hv, dtype=float)
+    rev = np.concatenate(([0.0], np.cumsum(0.5 * (hv[1:] + hv[:-1]) * plan.dt)))
+    return CyclePlan(plan.pose, plan.pose_vel, rev, hv, plan.dt,
+                     catch_k=plan.catch_k, contact_knots=plan.contact_knots,
+                     catch_evidence=plan.catch_evidence)
+
+
+def test_a_hand_that_never_brakes_is_judged_from_touch_down_plus_one(geom):
+    """The exemption is for BRAKING only (owner, 2026-10-19).  Hand-built from the
+    real hop-entry skill-2 plan (``_hand_rebuilt``: only the hand channel is
+    replaced).  After touch-down the stroke speed is
+
+    * CONSTANT (-20 rev/s), or
+    * RISING (-20 - 2 (k - catch_k) rev/s), or
+    * a near-zero ``v_td`` (5e-4 rev/s, under ``CUP_STROKE_MIN_SPEED_RPS``)
+
+    - no speed peak followed by a fall exists in the window, so there is no
+    braking span: the stroke end is ``catch_k + 1`` and ``catch_k + 1`` is a
+    JUDGED knot.  (Before this rule the ``k_b`` search ran off the end and the
+    whole window was exempt.)  The real plan is unchanged at 19, and a window
+    cut before the speed peak's fall (``k_last`` = the peak knot) is judged from
+    ``catch_k + 1`` too."""
+    plan, _limits, _geom = _hop_entry_skill2_plan()
+    e = plan.catch_evidence[0]
+    kc, n = e.knot, plan.n_knots
+    ks = np.arange(n)
+    assert feas._cup_stroke_end_knot(plan, e) == 19
+    assert feas._cup_stroke_end_knot(plan, e, k_last=12) == kc + 1   # peak at 12, fall at 13
+    assert feas._cup_stroke_end_knot(plan, e, k_last=15) == 19
+    hands = {
+        'constant': np.full(n, -20.0),
+        'rising': -20.0 - 2.0 * np.maximum(ks - kc, 0),
+        'near-zero': np.full(n, 5e-4),
+    }
+    for name, hv in hands.items():
+        p = _hand_rebuilt(plan, hv)
+        assert abs(p.hand_at(float(e.t_s))[1]) < 60.0, name
+        assert feas._cup_stroke_end_knot(p, e) == kc + 1, name
+        deg, azg, cone, floor, det = feas._cup_seating_check(p, detail=True)
+        assert det['stroke_end_k'] == (kc + 1,), name
+        assert det['braking_deg'] is None, name       # no braking knot exists
+        assert deg is not None, name                   # catch_k + 1 is judged
+    # the sanity twin: a hand that does brake (the real plan) still exempts
+    _, _, _, _, det = feas._cup_seating_check(plan, detail=True)
+    assert det['stroke_end_k'] == (19,) and det['braking_deg'] is not None
+
+
+def test_a_braking_knot_below_the_floor_is_still_refused_though_its_cone_is_exempt(geom):
+    """The 0.30 g floor keeps its ORIGINAL span (owner, 2026-10-19: the decision
+    was about the cone).  Hand-built from the real hop-entry skill-2 plan (stroke
+    end 19, braking knots 12-18) with a 10 mm pose-z spike at knot 14, a BRAKING
+    knot: the centred a_z+g there is far under 0.30 g, so ``_cup_seating_check``
+    names ``CUP_SEATING_FLOOR`` at a braking knot, while the (wild) cone reading
+    on the same braking knots is exempt (recorded as ``max_cup_braking_deg``,
+    ``cone_reason`` None) and the judged span is untouched."""
+    plan, _limits, _geom = _hop_entry_skill2_plan()
+    base_deg, base_az, _, base_floor, _ = feas._cup_seating_check(plan, detail=True)
+    assert base_floor is None and base_az > feas.CUP_SEATING_FLOOR_G
+    spiked = _with_pose_x_spike(plan, 14, 10.0, col=2)
+    deg, azg, cone, floor, det = feas._cup_seating_check(spiked, detail=True)
+    assert det['stroke_end_k'] == (19,)
+    assert azg < feas.CUP_SEATING_FLOOR_G, azg
+    assert floor is not None and 'at knot 14' in floor and 'floor 0.30 g' in floor
+    assert cone is None                                   # the cone is exempt there
+    assert det['braking_deg'] > feas.CUP_SEATING_CONE_DEG  # ... though it reads wild
+    assert deg == pytest.approx(base_deg, abs=1e-9)        # judged cone span untouched
+    rep = feas.validate_cycle(spiked, _oval_limits(1e5, 1e8, 1e10, 1e7), geom)
+    assert any('C-CUP-4' in r and 'floor 0.30 g' in r for r in rep.reasons), rep.reasons
+    assert not any('realised specific force' in r for r in rep.reasons), rep.reasons
 
 
 def test_cup_seating_floor_reason_is_appended_beside_contact_acc(geom):

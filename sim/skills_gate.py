@@ -751,7 +751,8 @@ _OVAL_SEPARATION_MM = 150.0
 
 #: The rung-1 oval's dwell (decision 16 amended 2026-10-18): the oval box cell
 #: is swept at 0.65 s -- at 0.50 s the production pre-release hold makes the
-#: carry read 32.1 deg against the 30 deg cone. ``--learn --pattern oval_1ball``
+#: carry read 32.1 deg against the 30 deg cone (45 deg since 2026-10-19, which
+#: 32.1 passes; the dwell was not re-chosen against it). ``--learn --pattern oval_1ball``
 #: plans at it unless ``--dwell-s`` overrides.
 _OVAL_DWELL_S = 0.65
 

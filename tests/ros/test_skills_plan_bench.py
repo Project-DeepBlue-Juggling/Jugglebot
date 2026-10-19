@@ -500,8 +500,9 @@ def test_the_attempt_loop_dispatches_the_whole_schedule_pre_position_first(
     # dwell 0.27 s.  The old R2 point (100 mm / 0.30) reads 33-36 deg of catch
     # tilt residual and the realised-plan seating check refuses it
     # CUP_SEATING_CONE (30 deg); 125 mm with dwell 0.25 or 0.30 is refused the
-    # same way (measured 2026-10-18, both start times), and 125 / 0.27 passes
-    # both.  The UNFED start (ball B's first catch at the NOMINAL site) is
+    # same way (measured 2026-10-18, both start times; the cone is 45 deg
+    # judged from the stroke end since 2026-10-19, not re-measured here), and
+    # 125 / 0.27 passes both.  The UNFED start (ball B's first catch at the NOMINAL site) is
     # never flown -- a two-ball start is FED.
     unfed_separation_mm = 125.0
     unfed_dwell_s = 0.27

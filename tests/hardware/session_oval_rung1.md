@@ -18,7 +18,7 @@ and `session_skill_stack_rehearsals.md`. Driver: `jugglebot/juggle` action; `ski
 **What this sitting decides.** Go/no-go on the LOADED CARRY: does a ball caught at C stay seated while
 the cup carries it 150 mm back to T inside a 0.65 s dwell, throw after throw, at today's limits and
 with today's (leaky, ±2° pin-blend) banking? Offline: the cell plans at 350/5000/200k through the
-production segment path (residual inside the 30° / 0.30 g C-CUP-4 check; closing ratio 0.533; 18.68° is the
+production segment path (residual inside the 30° (45 deg from the stroke end since 2026-10-19; 30 deg the fall-back) / 0.30 g C-CUP-4 check; closing ratio 0.533; 18.68° is the
 plan's probe number and is hold-less, a plan nothing dispatches; the DISPATCHED 0.65 cell reads 17.8°). "Not with this cup" is a valid
 outcome. This bag is also the **as-is column** of the three-way banking comparison (as-is /
 leak-fixed / swept; plan § 3, decision 24).

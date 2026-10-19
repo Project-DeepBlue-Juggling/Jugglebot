@@ -107,24 +107,36 @@ CUP_CONTACT_ACC = 'CUP_CONTACT_ACC'
 # Bare codes like every other here (``outcome_detail.base_outcome`` round-trips
 # them; the numbers live in ``reasons``).
 #
-# C-CUP-4, the SEATED carry.  Over the interior loaded knots (touch-down + 1 ..
-# last contact knot) the cup's REALISED specific force ``a - g`` must stay
-# inside ``CUP_SEATING_CONE_DEG`` of the PRESCRIBED cup axis and keep
-# ``a_z + g >= CUP_SEATING_FLOOR_G * g``.
+# C-CUP-4, the SEATED carry.  Over the loaded knots from the END of the hand's
+# catch stroke (``_cup_stroke_end_knot``) to the last contact knot, the cup's
+# REALISED specific force ``a - g`` must stay inside ``CUP_SEATING_CONE_DEG`` of
+# the PRESCRIBED cup axis.  The braking knots between touch-down and the stroke
+# end are EXEMPT FROM THE CONE ONLY (recorded as ``max_cup_braking_deg``, never
+# refused).  The ``a_z + g >= CUP_SEATING_FLOOR_G * g`` floor is unchanged: it
+# runs over judged AND braking knots (touch-down + 1 .. last contact knot).  A
+# hand that never brakes after touch-down (constant / rising speed) has no
+# braking span: ``_cup_stroke_end_knot`` returns touch-down + 1.
 #
-# Origins (RE-BASED 2026-10-18, owner decision 1): 30 deg / 0.30 g sit just above
-# the worst residual of a pattern that FLIES today - the 250 mm hop with a landing
-# offset reads 28.7 deg and 0.320 g mid-carry (report_refusals, executor
-# hop_catch_releases_from_the_caught_position), the reload's held-axis feed catch
-# 20.2 deg.  THE MARGIN IS THIN: 1.3 deg over the hop's cone, 0.02 g under its
-# floor - a hop that reads worse than that is refused, deliberately, by name.
-# The plan's 20 deg / 0.5 g (an 8-gon inscribed in the 55 deg cup cone, decision
-# 29, 2026-10-17) was written before those readings existed; it is the P3
-# SHAPER's target (the QP rows that will hold a carry inside it), NOT this check's
-# refusal line.  The rung-1 cell at dwell 0.50 through the production segment
-# path (default 0.100 s pre-release hold) reads 32.1 deg and IS refused here
-# (the raw chain's 18.68 deg was a hold-less plan nothing dispatches; logbook
-# 2026-10-18-two-ball-oval-p1-oval-pattern-dispatchable).
+# Origins.  AMENDED 2026-10-19 (owner): 45 deg, judged from the stroke end.  The
+# 15:23 columns sitting was refused 4 of 7 attempts (plus 2 re-aims) on ONE knot,
+# touch-down + 1 of the cross-site self-toss catch after the hop-entry transit,
+# reading 31.6-41.7 deg: the centred estimator there straddles touch-down, where
+# the hand stroke starts braking the ball INTO the cup while the platform sheds
+# the transit's lateral velocity - a transient R5 flew through 32 consecutive
+# times.  The contract protects the CARRY, after the ball is braked and seated.
+# 45 deg stays 10 deg under the cup's physical 55 deg cone.  The owner accepts
+# the weaker carry protection explicitly: **30 deg (the 2026-10-18 re-base, just
+# above the 250 mm hop's 28.7 deg) is the value to fall back to if a loaded carry
+# is observed losing the ball.**  The plan's 20 deg / 0.5 g (decision 29) is the
+# P3 SHAPER's target, NOT this check's refusal line.  The rung-1 oval carry
+# through the production segment path reads 32.1 deg at dwell 0.50 (passes) and
+# 49.1 deg at dwell 0.40 (refused), both after the stroke end.
+#
+# KNOWN HOLE (accepted with the amendment; the only one left): a carry that
+# overlaps REAL braking is not judged on the cone on those knots - the rung-1 carry at dwell 0.30 reads
+# 50.0 deg on an exempt braking knot (it is still refused, 65.0 deg on knot 41,
+# the first knot after the stroke stops slowing).  ``max_cup_braking_deg`` is
+# where it shows.
 #
 # The 0.30 g floor sits BELOW the 0.7 g ``CUP_CONTACT_ACC`` floor on purpose:
 # C-CUP-2 is the FREE cup's contact floor (a one-sided Hermite reading over the
@@ -133,8 +145,20 @@ CUP_CONTACT_ACC = 'CUP_CONTACT_ACC'
 # a tilt-channel perturbation can read < 0.30 g on C-CUP-4 while passing C-CUP-2.
 CUP_SEATING_CONE = 'CUP_SEATING_CONE'
 CUP_SEATING_FLOOR = 'CUP_SEATING_FLOOR'
-CUP_SEATING_CONE_DEG = 30.0
+CUP_SEATING_CONE_DEG = 45.0      # 30.0 until 2026-10-19: the fall-back (above)
 CUP_SEATING_FLOOR_G = 0.30
+# The catch stroke is DONE at the first knot after touch-down where the hand has
+# shed this fraction of its touch-down speed (or reversed).  A fraction, not a
+# bare sign change, so a plan whose hand creeps to rest asymptotically (the
+# held-axis rest tail reads -0.29 rev/s one knot before it crosses zero, against
+# 51 rev/s at touch-down) cannot leave the whole window unjudged.
+CUP_STROKE_DONE_FRAC = 0.02
+# A touch-down hand speed below this (rev/s) counts as ZERO: nothing to brake.
+# 1e-3 rev/s is 0.03 mm/s at the 32.567 mm/rev hand pitch - four orders under
+# the slowest real hand motion on a catch (the held-axis rest tail's 0.29 rev/s)
+# and three orders above float noise on a hand plan whose velocity channel is
+# exactly zero / rounded; it is a zero test, not a tuning knob.
+CUP_STROKE_MIN_SPEED_RPS = 1.0e-3
 # Numerical slack on both seating comparisons (g, and deg).  A planner that
 # holds the floor ACTIVE lands on it to solver precision, not exactly: the
 # prototype capture plan's QP rows read a_z+g = 0.49999999999725 g (2.7e-12 g
@@ -299,14 +323,21 @@ class FeasibilityReport:
     #: — C-CUP-2's measured quantity. ``None`` when the plan carries no contact
     #: window (the gate is vacuous) and on every gate but :func:`validate_cycle`.
     min_cup_acc_z_mmps2: 'float | None' = None
-    #: C-CUP-4's measured quantities over the interior loaded knots of every
-    #: catch window (:func:`_cup_seating_check`): the worst angle (deg) between
-    #: the realised cup specific force ``a - g`` and the prescribed cup axis, and
-    #: the lowest ``(a_z + g) / g``.  ``None`` when the plan has no catch window
+    #: C-CUP-4's measured quantities (:func:`_cup_seating_check`): the worst angle
+    #: (deg) between the realised cup specific force ``a - g`` and the prescribed
+    #: cup axis, over the judged loaded knots (stroke end .. last contact knot),
+    #: and the lowest ``(a_z + g) / g`` over the judged AND braking knots
+    #: (touch-down + 1 .. last contact knot; only the cone exempts braking).  ``None`` when the plan has no catch window
     #: (vacuous) and on every gate but :func:`validate_cycle`.  The admissible
     #: sweep records them per cell.
     max_cup_seating_deg: 'float | None' = None
     min_cup_seating_az_g: 'float | None' = None
+    #: C-CUP-4's EXEMPT span, on record: the worst seating angle (deg) over the
+    #: braking knots (touch-down + 1 .. stroke end - 1; cone-exempt, never refused), and the
+    #: stroke-end knot of each catch record (the first judged knot; ``catch_k + 1``
+    #: when the hand does not brake; ``n_knots`` when the stroke never finishes).  ``None`` as above.
+    max_cup_braking_deg: 'float | None' = None
+    cup_stroke_end_k: 'tuple | None' = None
     #: The WORST (lowest) realised-axial-cup-speed / match-target ratio over the
     #: plan's catches (:func:`_catch_checks`; refused below
     #: ``CATCH_CLOSING_SPEED_MIN_FRAC``) and the largest cross-axis cup speed at
@@ -1387,16 +1418,93 @@ def _cup_positions_batch(pose, hand_rev):
                     axis=-1)
 
 
-def _cup_seating_check(cycle_plan):
+def _cup_stroke_end_knot(cycle_plan, evidence, k_last=None) -> int:
+    """The knot at which the hand's catch stroke has finished BRAKING, for one catch record.
+
+    With ``v_td`` the hand velocity at the INTERPOLATED touch-down
+    (``cycle_plan.hand_at(evidence.t_s)``), ``s(k) = hand_vel_rps[k] *
+    sign(v_td)`` the stroke speed at knot ``k`` and ``k_last`` the window's last
+    contact knot (default: the plan's last knot):
+
+        ``k_b   = min{k >= catch_k : s(k + 1) < s(k)}``  (the speed peak: braking starts)
+        ``k_end = min{k > k_b : s(k) <= CUP_STROKE_DONE_FRAC * |v_td|  or  s(k) >= s(k - 1)}``
+
+    - the first knot after braking starts where the hand has shed 98 % of its
+    touch-down speed (or reversed), OR has stopped slowing down.  The second
+    clause is what keeps the exemption to BRAKING: a carry whose hand dips into
+    the throw's wind-up before it ever stops (rung-1 at dwell 0.30: stroke speed
+    7.79 -> 7.92 rev/s at knot 41, then 11.8) is judged from the knot the speed
+    turns, not from the wind-up's end.  ``n_knots`` when braking starts but never
+    finishes on this plan.  Any numerical wiggle ends the span EARLY, i.e. judges
+    more knots - the safe direction.
+
+    **There is braking to exempt only if the hand actually brakes.**  The result
+    is ``catch_k + 1`` (the window is judged from touch-down + 1, as before the
+    2026-10-19 amendment) when
+
+    (a) ``|v_td| < CUP_STROKE_MIN_SPEED_RPS`` (1e-3 rev/s counts as zero: nothing
+        to brake), or
+    (b) no speed peak followed by a fall exists at or before ``k_last`` (the
+        stroke speed after touch-down is constant or rising right up to the
+        window's last contact knot) - without this clause the ``k_b`` search ran
+        off the end and the WHOLE window was exempt, which is not what the owner
+        exempted (BRAKING only).
+
+    Read off the REALISED hand, not ``|v_td| / hand_acc_limit_rps2``: the
+    planner brakes at ~440 rev/s^2, not the 3900 rev/s^2 limit, so the
+    limit-derived span is 13 ms - under one knot - against the 6-8 braking knots
+    measured 2026-10-19 (k_b / k_end: reload held-axis LANDING 20 / 28; R5
+    hop-entry fed skill 2 12 / 19; rung-1 carry dwell 0.50 36 / 42).
+    """
+    k_c = int(evidence.knot)
+    n = int(cycle_plan.n_knots)
+    k_lim = n - 1 if k_last is None else min(int(k_last), n - 1)
+    _, v_td = cycle_plan.hand_at(float(evidence.t_s))
+    if abs(v_td) < CUP_STROKE_MIN_SPEED_RPS:
+        return k_c + 1
+    sp = np.asarray(cycle_plan.hand_vel_rps, dtype=float) * (1.0 if v_td > 0.0 else -1.0)
+    done = CUP_STROKE_DONE_FRAC * abs(v_td)
+    k_b = k_c
+    while k_b + 1 <= k_lim and sp[k_b + 1] >= sp[k_b] and sp[k_b] > done:
+        k_b += 1
+    if not (k_b + 1 <= k_lim and sp[k_b + 1] < sp[k_b] and sp[k_b] > done):
+        return k_c + 1                  # no peak-then-fall in the window: no braking
+    for k in range(max(k_b + 1, k_c + 1), n):
+        if sp[k] <= done or sp[k] >= sp[k - 1]:
+            return k
+    return n
+
+
+def _cup_seating_check(cycle_plan, detail: bool = False):
     """``(max_resid_deg, min_az_g, cone_reason, floor_reason)`` - C-CUP-4's gate half.
 
-    On every INTERIOR loaded knot of every catch window - ``catch_k + 1`` ..
-    the window's last contact knot (the contact range opens 5 knots BEFORE
-    touch-down, so the range start is NOT the loaded start; the catch record's
-    own knot is) - the cup's REALISED specific force ``a - g`` must lie within
-    ``CUP_SEATING_CONE_DEG`` of the PRESCRIBED cup axis
-    (``tilt_geometry.cup_axis(pose[k, 3], pose[k, 4])``) and keep
-    ``a_z + g >= CUP_SEATING_FLOOR_G * g`` (origins at the constants).
+    On every JUDGED loaded knot of every catch window - from the stroke end
+    ``k_end`` (:func:`_cup_stroke_end_knot`) to the window's last contact knot
+    (the contact range opens 5 knots BEFORE touch-down, so the range start is
+    NOT the loaded start; the catch record's own knot is) - the cup's REALISED
+    specific force ``a - g`` must lie within ``CUP_SEATING_CONE_DEG`` of the
+    PRESCRIBED cup axis (``tilt_geometry.cup_axis(pose[k, 3], pose[k, 4])``) and
+    keep ``a_z + g >= CUP_SEATING_FLOOR_G * g`` (origins at the constants).
+
+    **The braking knots are exempt from the CONE only** (amended 2026-10-19,
+    owner): ``catch_k + 1 .. k_end - 1`` is the hand stroke braking the ball INTO
+    the cup, and the centred reading at ``catch_k + 1`` straddles touch-down - the
+    15:23 columns refusals (31.6-41.7 deg, always that one knot) were that
+    transient, which the hardware flies.  Their worst cone reading is returned in
+    ``detail`` (recorded on the report as ``max_cup_braking_deg``), never
+    refused.  **The 0.30 g FLOOR keeps its original span**: ``a_z + g >=
+    CUP_SEATING_FLOOR_G`` is checked over judged AND braking knots
+    (``catch_k + 1 .. last contact knot``), and ``min_cup_seating_az_g`` is the
+    minimum over that whole span.  Measured 2026-10-19 (the five real plans, the
+    minimum ``a_z + g`` over the BRAKING knots only): reload LANDING clean and
+    ball-17 capture 1.334 g (knot 27), hop-entry skill 2 1.437 g (knot 17),
+    hop-entry feed catch (skill 1) 0.743 g (knot 12), rung-1 dwell 0.50 1.168 g
+    (knot 36), columns catch-carry-throw 1.170 g (knot 36) - all well above the
+    floor, so keeping the floor over the braking knots costs those plans nothing.
+    A carry that overlaps the braking stroke is not judged on the CONE there - the
+    accepted hole the module block above names.  A hand that never brakes
+    (constant / rising speed after touch-down) has no braking span at all
+    (:func:`_cup_stroke_end_knot` returns ``catch_k + 1``).
 
     **The estimator, and why it is this one.**  ``a`` is the centred second
     difference of the REALISED plan's cup-opening position at the knots - the
@@ -1410,60 +1518,94 @@ def _cup_seating_check(cycle_plan):
     window that ends on the plan's last knot is judged to its second-to-last.
 
     Windows with no catch record (a launch, a held-at-start window) have no
-    touch-down to start the loaded span from and are not judged here.
+    touch-down to start the loaded span from, and are not judged here.  A window
+    whose loaded span is braking knots only has no carry for the CONE to judge
+    (``max_resid_deg`` is ``None``) but its floor is still checked.
+
+    ``detail=True`` appends a dict ``{'braking_deg', 'stroke_end_k'}`` (worst
+    exempt reading or ``None``; one stroke-end knot per judged-window catch
+    record, or ``None``) for :func:`validate_cycle`'s report.
     """
+    def _out(deg, azg, cone, floor, braking=None, ends=None):
+        if detail:
+            return deg, azg, cone, floor, {'braking_deg': braking,
+                                            'stroke_end_k': ends}
+        return deg, azg, cone, floor
+
     ev = getattr(cycle_plan, 'catch_evidence', None)
     ck = getattr(cycle_plan, 'contact_knots', None)
     if not ev or not ck:
-        return None, None, None, None
+        return _out(None, None, None, None)
     n = int(cycle_plan.n_knots)
-    knots = set()
+    judged, braking, ends = set(), set(), []
     for e in ev:
         for k0, k1 in ck:
             if int(k0) <= int(e.knot) <= int(k1):
-                knots.update(range(int(e.knot) + 1, min(int(k1), n - 2) + 1))
-    if not knots:
-        return None, None, None, None
-    ks = np.array(sorted(knots))
+                last = min(int(k1), n - 2)
+                k_end = _cup_stroke_end_knot(cycle_plan, e, k_last=int(k1))
+                ends.append(int(k_end))
+                braking.update(range(int(e.knot) + 1, min(k_end - 1, last) + 1))
+                judged.update(range(k_end, last + 1))
+    braking -= judged
+    if not judged and not braking:
+        return _out(None, None, None, None, None, tuple(ends) or None)
+    ks_all = np.array(sorted(judged | braking))
     h = float(cycle_plan.dt)
     # centred second difference of the realised cup-opening position, one pass
-    lo, hi = int(ks[0]) - 1, int(ks[-1]) + 1
+    lo, hi = int(ks_all[0]) - 1, int(ks_all[-1]) + 1
     pose = np.asarray(cycle_plan.pose[lo:hi + 1], dtype=float)
     cup = _cup_positions_batch(pose, np.asarray(cycle_plan.hand_rev[lo:hi + 1],
                                                 dtype=float))
     spec_full = np.zeros_like(cup)
     spec_full[1:-1] = (cup[2:] - 2.0 * cup[1:-1] + cup[:-2]) / (h * h)
     spec_full[:, 2] += GRAVITY_MMS2                    # a - g (g = -z)
-    spec = spec_full[ks - lo]
-    axes = _cup_axes_batch(np.asarray(cycle_plan.pose[ks, 3], dtype=float),
-                           np.asarray(cycle_plan.pose[ks, 4], dtype=float))
+    spec = spec_full[ks_all - lo]
+    axes = _cup_axes_batch(np.asarray(cycle_plan.pose[ks_all, 3], dtype=float),
+                           np.asarray(cycle_plan.pose[ks_all, 4], dtype=float))
     cosang = np.clip(np.einsum('ij,ij->i', spec, axes)
                      / np.linalg.norm(spec, axis=1), -1.0, 1.0)
-    deg = np.degrees(np.arccos(cosang))
-    az_g = spec[:, 2] / GRAVITY_MMS2
-    jd = int(np.argmax(deg))
-    jf = int(np.argmin(az_g))
+    deg_all = np.degrees(np.arccos(cosang))
+    az_all = spec[:, 2] / GRAVITY_MMS2
+    is_judged = np.array([int(k) in judged for k in ks_all], dtype=bool)
+    braking_deg = (float(deg_all[~is_judged].max()) if (~is_judged).any()
+                   else None)
+    ends_t = tuple(ends)
+    ends_txt = ', '.join(str(k) for k in ends_t)
     cone_reason = floor_reason = None
-    if deg[jd] > CUP_SEATING_CONE_DEG + _SEATING_EPS:
-        bad = deg > CUP_SEATING_CONE_DEG + _SEATING_EPS
-        cone_reason = (
-            "cup seating (C-CUP-4): realised specific force %.1f deg off the "
-            "prescribed cup axis at knot %d > cone %.0f deg - %d/%d interior "
-            "loaded knots outside it; the ball would skid on the cup wall. "
-            "The cone is re-based 2026-10-18 above the 250 mm hop's 28.7 deg; "
-            "the plan's 20 deg (decision 29) is the P3 shaper target."
-            % (float(deg[jd]), int(ks[jd]), CUP_SEATING_CONE_DEG,
-               int(bad.sum()), int(ks.size)))
-    if az_g[jf] < CUP_SEATING_FLOOR_G - _SEATING_EPS:
-        bad = az_g < CUP_SEATING_FLOOR_G - _SEATING_EPS
+    deg_max = None
+    if is_judged.any():
+        ks, deg = ks_all[is_judged], deg_all[is_judged]
+        jd = int(np.argmax(deg))
+        deg_max = float(deg[jd])
+        if deg[jd] > CUP_SEATING_CONE_DEG + _SEATING_EPS:
+            bad = deg > CUP_SEATING_CONE_DEG + _SEATING_EPS
+            cone_reason = (
+                "cup seating (C-CUP-4): realised specific force %.1f deg off the "
+                "prescribed cup axis at knot %d > cone %.0f deg - %d/%d loaded "
+                "knots after the catch stroke ends (knot %s) outside it; the ball "
+                "would skid on the cup wall. The cone is 45 deg since 2026-10-19, "
+                "judged from the stroke end (braking knots exempt); 30 deg is the "
+                "fall-back if a carry loses the ball, and the plan's 20 deg "
+                "(decision 29) is the P3 shaper target."
+                % (float(deg[jd]), int(ks[jd]), CUP_SEATING_CONE_DEG,
+                   int(bad.sum()), int(ks.size), ends_txt))
+    # The FLOOR runs over judged AND braking knots (touch-down + 1 .. last
+    # contact knot): the 2026-10-19 amendment exempted the CONE on the braking
+    # knots, not the 0.30 g floor.
+    jf = int(np.argmin(az_all))
+    if az_all[jf] < CUP_SEATING_FLOOR_G - _SEATING_EPS:
+        bad = az_all < CUP_SEATING_FLOOR_G - _SEATING_EPS
         floor_reason = (
             "cup seating (C-CUP-4): a_z+g %.3f g at knot %d < floor %.2f g - "
-            "%d/%d interior loaded knots below it; the cup is dropping away "
-            "from a seated ball (the carry's floor, below C-CUP-2's 0.7 g "
-            "free-cup contact floor; re-based 2026-10-18 below the hop's 0.320 g)."
-            % (float(az_g[jf]), int(ks[jf]), CUP_SEATING_FLOOR_G,
-               int(bad.sum()), int(ks.size)))
-    return float(deg[jd]), float(az_g[jf]), cone_reason, floor_reason
+            "%d/%d loaded knots from touch-down + 1 to the window's last contact "
+            "knot (braking knots included - only the cone exempts them; stroke "
+            "end knot %s) below it; the cup is dropping away from a seated ball "
+            "(the carry's floor, below C-CUP-2's 0.7 g free-cup contact floor; "
+            "re-based 2026-10-18 below the hop's 0.320 g)."
+            % (float(az_all[jf]), int(ks_all[jf]), CUP_SEATING_FLOOR_G,
+               int(bad.sum()), int(ks_all.size), ends_txt))
+    return _out(deg_max, float(az_all[jf]), cone_reason, floor_reason,
+                braking_deg, ends_t)
 
 
 def _catch_checks(cycle_plan):
@@ -1969,7 +2111,7 @@ def validate_cycle(cycle_plan, limits, geom, *,
     # alongside whichever code wins, not instead of it.
     min_cup_acc_z, cup_contact_reason = _cup_contact_floor_check(cycle_plan)
     (max_seat_deg, min_seat_az_g, seat_cone_reason,
-     seat_floor_reason) = _cup_seating_check(cycle_plan)
+     seat_floor_reason, seat_detail) = _cup_seating_check(cycle_plan, detail=True)
     closing_ratio, skid_mmps, closing_reason = _catch_checks(cycle_plan)
     code = OK
     reasons: list = []
@@ -2100,6 +2242,8 @@ def validate_cycle(cycle_plan, limits, geom, *,
         ok=(code == OK), code=code, reasons=reasons,
         min_cup_acc_z_mmps2=min_cup_acc_z,
         max_cup_seating_deg=max_seat_deg, min_cup_seating_az_g=min_seat_az_g,
+        max_cup_braking_deg=seat_detail['braking_deg'],
+        cup_stroke_end_k=seat_detail['stroke_end_k'],
         catch_closing_ratio=closing_ratio, catch_skid_mmps=skid_mmps,
         catch_closing_exempt=any(getattr(e, 'program', 'match') == 'held_axis'
                                  for e in (getattr(cycle_plan, 'catch_evidence', None) or ())),

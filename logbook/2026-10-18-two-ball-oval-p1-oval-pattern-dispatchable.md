@@ -295,6 +295,7 @@ with no code guard: a forgotten `plant_id` pools silently. The runsheet row 12a 
   Operational cost: a self_toss catch landing more than ~20-30 mm off now ends NO_ADMISSIBLE_COMMAND where it
   used to re-plan (on cells whose edge shrank). Follow-up: `plans/active/box-sweep-same-site-fidelity.md`. Pinned by
   `test_oval_resweep_pins_hop_columns_identical_self_toss_changed_one_oval_cell`.
+  *(2026-10-19: renamed `test_cone45_resweep_restores_every_non_oval_cell_to_the_pre_oval_snapshot` - the C-CUP-4 amendment's re-sweep returned the five self_toss cells to the pre-oval values; see `2026-10-19-cup-seating-cone-refuses-columns-stroke-braking.md`.)*
 
 ### Open questions
 

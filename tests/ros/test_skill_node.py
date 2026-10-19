@@ -5212,9 +5212,10 @@ def test_columns_feed_swap_declines_over_a_refused_live_executor(tmp_path):
     ctx = node._reload_ctx
     # Land AT the feed site (the aim BB is asked for), not 100 mm off it: the
     # old (50, 0) landing is a 100 mm displacement the realised-plan
-    # CUP_SEATING_CONE check (30 deg, 2026-10-18) refuses (31.3 deg, 1/11
-    # loaded knots) with REJECTED_COLUMNS_FEED_UNCATCHABLE, which ended the
-    # attempt before the swap path under test.  At the aim the same
+    # CUP_SEATING_CONE check (30 deg, 2026-10-18; 45 deg judged from the
+    # stroke end since 2026-10-19) refused (31.3 deg, 1/11 loaded knots)
+    # with REJECTED_COLUMNS_FEED_UNCATCHABLE, which ended the attempt before
+    # the swap path under test.  At the aim the same
     # (0, 0, -3000) mm/s arrival plans clean (measured 2026-10-18: seating
     # 1.6 deg, closing ratio 0.738, skid 7.6 mm/s) so the swap-decline is
     # what is actually exercised.

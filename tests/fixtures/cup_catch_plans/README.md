@@ -12,8 +12,8 @@ axis is `tilt_geometry.cup_axis(*receive_tilt)`), `program` (`held_axis` | `leve
 |---|---|---|---|
 | `fx_proto_capture.npz` | 237-knot chain, last-but-one STEADY catch (`catch_k` 161), realised axial cup speed -345 mm/s | wayfinder PROTOTYPE pose-level QP with the decision-28 capture span: `p13_run.run((0.95,150.,'L0t',0.50,'capture',30,1,2,1))`, w=10, arm `capture`, 2026-10-17 | REFUSES `CATCH_CLOSING_SPEED` (ratio 0.114 vs 0.25) |
 | `fx_proto_pose.npz` | same cell, arm `pose` (pose-level QP, no capture span), -1742 mm/s | same run, arm `pose` | PASSES (ratio 0.575) |
-| `fx_sep175.npz` | production level planner, 175 mm separation, apex 0.95, dwell 0.50 (workspace_xy_m patched to 0.25 so it solves), 350/5000/200000, hand 3900 | `tools/probes` chain (`plan_launch` + 3x `plan_steady` + `extend`) run BEFORE the check existed; third STEADY window | residual 21.44 deg: PASSES the re-based 30 deg cone (owner 2026-10-18); kept as a P3 shaper-target pin (> 20 deg) |
-| `fx_dwell040.npz` | production level planner, 150 mm, apex 0.95, dwell 0.40, same limits | same chain | residual 24.41 deg: PASSES (30 deg cone); P3 target pin, min 0.772 g |
+| `fx_sep175.npz` | production level planner, 175 mm separation, apex 0.95, dwell 0.50 (workspace_xy_m patched to 0.25 so it solves), 350/5000/200000, hand 3900 | `tools/probes` chain (`plan_launch` + 3x `plan_steady` + `extend`) run BEFORE the check existed; third STEADY window | residual 21.44 deg: PASSES the re-based cone (30 deg owner 2026-10-18; 45 deg from the stroke end 2026-10-19); kept as a P3 shaper-target pin (> 20 deg) |
+| `fx_dwell040.npz` | production level planner, 150 mm, apex 0.95, dwell 0.40, same limits | same chain | residual 24.41 deg: PASSES (30 deg cone, and 45 deg since 2026-10-19); P3 target pin, min 0.772 g |
 
 The two `fx_proto_*` files exist ONLY as data: the prototype pose-level QP is a
 monkeypatch on `cup_cycle` in the wayfinder worktree (`.scratch/two-ball-oval/`)

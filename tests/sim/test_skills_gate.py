@@ -961,7 +961,8 @@ def test_the_one_ball_columns_phantom_produces_no_learner_rows_or_announcement()
     # (2 % BB throw noise) lands the 125 mm throw 40-190 mm off, so the catch
     # aim ends INFEASIBLE / LIMIT_VEL (measured 2026-10-18, seeds 0-4); the
     # 100 mm point this used to fly reads 33-36 deg of catch tilt residual,
-    # past CUP_SEATING_CONE (30 deg).
+    # past CUP_SEATING_CONE (30 deg then; 45 deg judged from the stroke end
+    # since 2026-10-19, not re-measured here).
     cfg = SelfTossGateConfig(pattern='columns', apex_m=0.95, separation_mm=125.0)
     gate = SkillsGate(cfg)
     monkeypatch_target = sg._IdentityTracker.announce

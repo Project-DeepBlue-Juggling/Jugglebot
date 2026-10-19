@@ -53,7 +53,7 @@ and whether this cup can carry a ball 150 mm in 0.30 s is what the plan finds ou
   3900 rev/s² 0.7 % under the measured C-HAND-2 authority) and is OUT.
 - Cup: spherical base R 35, cone to the Ø 85 rim, ball Ø 75 seats on the cone ring; a rigid
   frictionless ball stays centred for any required specific force within **55°** of the cup
-  axis. C-CUP-4 (§ 2.4) keeps the planned force inside 30° of the prescribed axis as a CHECK (25° of margin; amended 2026-10-18, 20° is the P3 shaper target).
+  axis. C-CUP-4 (§ 2.4) keeps the planned force inside 30° of the prescribed axis as a CHECK (45 deg from the stroke end since 2026-10-19; 30 deg the fall-back) (25° of margin; amended 2026-10-18, 20° is the P3 shaper target).
 - Measured offline (production planner, two runs byte-identical per probe): the one-ball oval
   plans at today's limits 350/5000/200k from dwell 0.40 at 150 mm; the two-ball oval at dwell
   0.30 plans only under the pose-level carry planner at 600/8000/200k, apex 1.0 (leg jerk 194k,
@@ -120,6 +120,12 @@ and whether this cup can carry a ball 150 mm in 0.30 s is what the plan finds ou
   - *16* — first rung dwell 0.50 → **0.65**: the dispatched plan carries the R4 pre-release hold (0.100 s =
     4 knots); 0.50 reads 32.1°, 0.60 21.5°, 0.65 passes, 0.70 14.9°. The probe's 18.7° was a hold-less plan
     nothing dispatches. Ladder 0.65 → 0.50 → 0.40 → 0.30; P3's shaper earns 0.50 back.
+  - *Residue, 2026-10-19 (C-CUP-4 amended to 45°, judged from the hand stroke's end; 30° the fall-back —
+    `logbook/2026-10-19-cup-seating-cone-refuses-columns-stroke-braking.md`)* — the minimum passing dwell 0.51 (logbook
+    2026-10-18) was measured at the 30° cone and needs RE-MEASURING at 45° (indicative only: the rung-1 window gate reads dwell
+    0.45 OK at 39.4°, 0.40 refused at 49.1°); the committed cell stays 0.65 until then. The *29–31* wording
+    below (30° / 0.30 g) is the pre-amendment value. Rung 1 is the first loaded CARRY flown under 45°: record
+    `max_cup_braking_deg` and restore 30° if a carry loses the ball.
   - *29–31* — C-CUP-4 check **30° / 0.30 g on every pattern** (20° / 0.5 g stays the P3 shaper TARGET): at
     20° / 0.5 g the check refused flown patterns (250 mm hop with landing offset 28.7° / 0.320 g; reload
     held-axis feed catch 20.0–20.2°). Estimator = the REALISED cup-opening acceleration, not the QP's
@@ -354,8 +360,8 @@ rise. Gate: rung 1 re-flown as the leak-fixed column (same runsheet, column 2 of
   `compile_reload`; the cross-site fold yields one window with `release_site` = T and the
   executor's release xy = T (not the caught xy); memory rows key on T; box `select()` refuses a
   dwell mismatch naming `dwell_s` and the workspace refusal fires at |site| + half-extent
-  > workspace (equality passes); C-CUP-4 check (re-based 30° / 0.30 g): the 175 mm and dwell-0.40 stored windows
-  PASS at 30° (P3 shaper-target pins; the cone refusal is pinned by `test_rung1_through_the_production_segment_path_refuses_the_cone`, 32.1°), a 10 mm bump refuses `CUP_SEATING_FLOOR`, columns passes; the closing-
+  > workspace (equality passes); C-CUP-4 check (re-based 30° / 0.30 g; **amended 2026-10-19: 45°, judged from the hand stroke's end, braking knots exempt from the cone only (the 0.30 g floor keeps its span), 30° the fall-back** — INVARIANTS C-CUP-4): the 175 mm and dwell-0.40 stored windows
+  PASS (P3 shaper-target pins; the rung-1 carry at dwell 0.50 now PASSES at 32.1° — `test_rung1_through_the_production_segment_path_passes_the_45_deg_cone` — and the cone refusal is pinned at dwell 0.40, 49.1°, by `test_a_faster_rung1_carry_is_refused_after_the_stroke_ends`), a 10 mm bump refuses `CUP_SEATING_FLOOR`, columns passes; the closing-
   speed check (20 %) refuses the −345 mm/s fixture and passes −1742; P3: the QP rows hold the realised
   residual ≤ 20° at the box cells, `level` mode output is unchanged for columns (bit-exact against
   the pre-P3 box hash), cycle-budget tests green at the slowest cell.
@@ -391,7 +397,7 @@ rise. Gate: rung 1 re-flown as the leak-fixed column (same runsheet, column 2 of
   rung). *T* / *C* — throw site (P1, near BB) / catch site (P2). *Carry* — loaded cup transit C → T in the
   dwell; *empty transit* τ — T → C. *Sweep* — the carry bank between the event tilts; *banking leak* — leg
   jerk spent on a bank request that delivers none (P2).
-- *Residual* — angle between planned specific force and prescribed cup axis; *C-CUP-4* — check 30° /
+- *Residual* — angle between planned specific force and prescribed cup axis; *C-CUP-4* — check 30° (45 deg from the stroke end since 2026-10-19; 30 deg the fall-back) /
   `a_z + g ≥ 0.30 g` (P3 target 20° / 0.5 g). *Skid* — lateral cup velocity at touch-down (logged).
   *Closing speed* — axial cup speed at touch-down vs the match target (refused below 20 %).
 - *Pose-level carry planner* — the `pose` mode of `cup_cycle`; *seam dz* — platform z velocity across a

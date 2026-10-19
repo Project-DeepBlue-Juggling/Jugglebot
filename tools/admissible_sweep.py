@@ -1051,13 +1051,16 @@ OVAL_DWELL_S = 0.65
 def _cell_metrics(reports) -> Dict[str, Optional[float]]:
     """The per-cell C-CUP-4 / catch metrics, worst over ``reports`` (the
     ``FeasibilityReport``s of the cell's catch segments): max seating residual
-    (deg), min ``(a_z + g)/g``, min closing-speed ratio, max skid (mm/s).
+    (deg, judged knots), min ``(a_z + g)/g``, max exempt-braking-knot seating
+    residual (``braking_deg``, deg: log only, never refused), min closing-speed
+    ratio, max skid (mm/s).
     Read through ``getattr`` so a report that predates a field yields ``None``
     rather than crashing the sweep; a ``None`` field is skipped."""
     out: Dict[str, Optional[float]] = {}
     for key, attr, pick in (
             ('seating_deg', 'max_cup_seating_deg', max),
             ('seating_az_g', 'min_cup_seating_az_g', min),
+            ('braking_deg', 'max_cup_braking_deg', max),
             ('closing_ratio', 'catch_closing_ratio', min),
             ('skid_mmps', 'catch_skid_mmps', max)):
         vals = [getattr(r, attr, None) for r in reports if r is not None]
@@ -1220,7 +1223,7 @@ def oval_sweep(*, apexes_m: Sequence[float] = OVAL_APEXES_M,
                   and xlo <= dx <= xhi and ylo <= dy <= yhi]
         worst: Dict[str, Optional[float]] = {}
         for key, pick in (('seating_deg', max), ('seating_az_g', min),
-                          ('closing_ratio', min), ('skid_mmps', max)):
+                          ('braking_deg', max), ('closing_ratio', min), ('skid_mmps', max)):
             vals = [m[key] for m in inside if m[key] is not None]
             worst[key] = pick(vals) if vals else None
         log({'site_pair': (site_t.name, site_c.name), 'BOX_WORST_METRICS': worst})

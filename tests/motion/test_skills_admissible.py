@@ -353,27 +353,31 @@ _PRE_OVAL_SNAPSHOT = os.path.join(_REPO, 'tests', 'fixtures',
                     reason='tests/fixtures/admissible_box_pre_oval.yaml absent '
                            '(the orchestrator snapshots HEAD\'s box before the '
                            'oval re-sweep)')
-def test_oval_resweep_pins_hop_columns_identical_self_toss_changed_one_oval_cell():
-    """Owner ruling 2026-10-18 pins the re-swept box exactly.
+def test_cone45_resweep_restores_every_non_oval_cell_to_the_pre_oval_snapshot():
+    """The 2026-10-19 re-sweep (C-CUP-4 judged from the stroke end, cone 45 deg)
+    pins the committed box exactly: every non-oval cell - hop (8), columns (6)
+    AND the five self_toss cells - is value-equal to the pre-oval 2026-10-09
+    snapshot on EVERY key (NaN-safe: columns has unswept NaN windows), plus
+    exactly one oval_1ball cell at dwell 0.65, 20 cells in all.
 
-    hop (8) and columns (6) cells are value-equal to the pre-oval snapshot on
-    every key (NaN-safe: columns has unswept NaN windows).  The five self_toss
-    cells equal the snapshot on every key EXCEPT ``landing_xy_m``, whose swept
-    values are hard-coded below (old -> new ``landing_xy_m``, [x],[y] in m, by
-    apex band: 0.45-0.55 [-.03,.03],[-.03,.03] -> [-.02,.02],[-.02,.02];
-    0.55-0.65 [-.04,.03],[-.04,.03] -> [-.03,.03],[-.02,.02]; 0.65-0.75
-    (cell 3) [-.04,.03],[-.04,.03] -> [-.04,.04],[-.03,.03], a WIDENING of x
-    upper 0.03 -> 0.04, one grid step, owner-accepted: the sweep tool gained the
-    carry-window metric path and the settle-at-release-site rule since the
-    2026-10-09 box; 0.75-0.85 and 0.85-0.95 [-.04,.03],[-.04,.03] ->
-    [-.03,.03],[-.02,.02]).  The shrunk edges shrank because the sweep's same-site offset cell plans a loaded cup
-    FLYBACK from the offset landing to the throw site; its lateral
-    acceleration at the first post-touch-down knot (vertical support only
-    0.70 g) reads C-CUP-4 residual of ~1 deg per mm of offset (20 mm -> 21,
-    30 mm -> 30, 40 mm -> 38; cone 30), while the executor never dispatches
-    that flyback (it releases at the caught xy and shifts the aim).  Accepted
-    as is; fidelity follow-up: plans/active/box-sweep-same-site-fidelity.md.
-    Plus exactly one oval_1ball cell at dwell 0.65, 20 cells in all."""
+    History the pin carries.  The 2026-10-18 oval re-sweep (owner ruling that
+    day) had SHRUNK the five self_toss ``landing_xy_m`` cells (0.45-0.55
+    [-.03,.03],[-.03,.03] -> [-.02,.02],[-.02,.02]; the four higher bands
+    [-.04,.03],[-.04,.03] -> [-.03,.03],[-.02,.02], except 0.65-0.75 which
+    WIDENED x upper to .04, one grid step) because the sweep's same-site offset
+    cell plans a loaded-cup FLYBACK from the offset landing to the throw site
+    whose first post-touch-down knot read C-CUP-4 at ~1 deg per mm of offset
+    (20 mm -> 21, 30 mm -> 30, 40 mm -> 38) against the 30 deg cone, while the
+    executor never dispatches that flyback (it releases at the caught xy and
+    shifts the aim; fidelity follow-up plans/active/box-sweep-same-site-fidelity.md).
+    That first post-touch-down knot is the hand stroke's braking knot the
+    2026-10-19 amendment exempts from the cone (logbook
+    2026-10-19-cup-seating-cone-refuses-columns-stroke-braking), so the
+    2026-10-19 re-sweep (``bash temp/sweeps/sweep_P1.sh``, four families x2
+    bit-identical) returned all five to the snapshot values - including the
+    0.65-0.75 x upper back to .03, since the sweep fits the LARGEST-AREA
+    rectangle (``tools/admissible_sweep.py::_max_rectangle``) and the area-winner
+    moved once y widened."""
     import math
     import yaml as _y
     with open(_PRE_OVAL_SNAPSHOT) as fh:
@@ -393,22 +397,12 @@ def test_oval_resweep_pins_hop_columns_identical_self_toss_changed_one_oval_cell
 
     new_other = [b for b in new['boxes'] if b['pattern'] != 'oval_1ball']
     assert len(old['boxes']) == len(new_other)
-    swept_st = [[[-0.02, 0.02], [-0.02, 0.02]],
-                [[-0.03, 0.03], [-0.02, 0.02]],
-                [[-0.04, 0.04], [-0.03, 0.03]],
-                [[-0.03, 0.03], [-0.02, 0.02]],
-                [[-0.03, 0.03], [-0.02, 0.02]]]
     n_st = n_hop = n_col = 0
     for a, b in zip(old['boxes'], new_other):
-        if b['pattern'] == 'self_toss':
-            assert _same({k: v for k, v in a.items() if k != 'landing_xy_m'},
-                         {k: v for k, v in b.items() if k != 'landing_xy_m'}), (a, b)
-            assert b['landing_xy_m'] == swept_st[n_st]
-            n_st += 1
-        else:
-            assert _same(a, b), 'box values moved: %r -> %r' % (a, b)
-            n_hop += b['pattern'] == 'hop'
-            n_col += b['pattern'] == 'columns'
+        assert _same(a, b), 'box values moved: %r -> %r' % (a, b)
+        n_st += b['pattern'] == 'self_toss'
+        n_hop += b['pattern'] == 'hop'
+        n_col += b['pattern'] == 'columns'
     assert (n_st, n_hop, n_col) == (5, 8, 6)
     ovals = [b for b in new['boxes'] if b['pattern'] == 'oval_1ball']
     assert len(ovals) == 1
@@ -673,7 +667,8 @@ def sweep_mod():
 
 #: The session limits ``tiny_sweep`` is pinned at (see its docstring).
 #: RE-BASELINED 2026-10-18 (two-ball-oval checks re-base: cone 30 deg, floor
-#: 0.3 g): the old 300/5000/150000 + 100 mm + apex 0.85 + dwell 0.30 grid reads
+#: 0.3 g; the cone is 45 deg judged from the stroke end since 2026-10-19 and
+#: this grid was not re-measured against it): the old 300/5000/150000 + 100 mm + apex 0.85 + dwell 0.30 grid reads
 #: 37.8 deg of carry seating (CUP_SEATING_CONE) at every offset, and at 300 mm/s
 #: the flown columns point (125 mm, apex 0.95, dwell 0.27) refuses LIMIT_VEL /
 #: LIMIT_JERK. The fixture now freezes the FLOWN point: columns 125 mm, apex
