@@ -63,7 +63,7 @@ Result, 2026-10-17 (record: ``temp/probes/bb_calibration_replay/20261017-cap-evi
     bounds the undetected bias at ~0.23 deg worst-case; this underpinned raising the cap 1.0 -> 1.5 mm.
 
 Provenance: logbook ``2026-10-17-bb-calibration-residual-cap-1p5``; plan
-``plans/active/bb-calibration-one-attempt.md``.
+``plans/archived/bb-calibration-one-attempt.md``.
 """
 from __future__ import annotations
 

@@ -20,7 +20,7 @@ files_changed:
   - logbook/2026-10-17-bb-calibration-residual-cap-1p5.md
   - logbook/2026-10-16-bb-calibration-power-cycle-ab.md
   - logbook/INDEX.md
-  - plans/active/bb-calibration-one-attempt.md
+  - plans/archived/bb-calibration-one-attempt.md
   - ros_ws/docs/bb_calibration_readings.md
 subsystem:
   - tracking

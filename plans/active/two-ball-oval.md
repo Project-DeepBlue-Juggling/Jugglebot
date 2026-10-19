@@ -143,7 +143,7 @@ sim gate. `cup-contact-contract.md` (archived) holds C-CUP-1/2/3; C-CUP-4 extend
 2026-09-16 banking-saturation defect is P2 here. `skill-stack-dress-rehearsals-and-residue.md`
 keeps the columns residue (SPLICE_TOO_LATE, emit gap); the columns canary at P4 reads against it.
 `columns-empty-cup-two-feed.md` (active) owns the cup-keyed accept rule every oval goal passes
-through; `bb-calibration-one-attempt.md` (active) owns the calibration sweep the runsheet's row 6a
+through; `bb-calibration-one-attempt.md` (archived 2026-10-19) owned the calibration sweep the runsheet's row 6a
 reads.
 
 ## 2. Architecture

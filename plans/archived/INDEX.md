@@ -85,6 +85,7 @@ next touches that plan, not a mechanical edit. The vocabulary going forward is
 | 2026-10-14 | [learned-ff-residuals.md](learned-ff-residuals.md) | superseded | Learned feedforward residuals — batch ILC on the leg torque channel |
 | 2026-10-14 | [levelling-frame-contract.md](levelling-frame-contract.md) | completed | Levelling-frame contract — one gravity correction on every pose request (Phase 4 residue left open) |
 | 2026-10-14 | [refactor-2026-07.md](refactor-2026-07.md) | completed | Refactor programme 2026-07 (Phases 0-4 landed, 5-7 partial) |
+| 2026-10-19 | [bb-calibration-one-attempt.md](bb-calibration-one-attempt.md) | completed | Ball Butler calibration is a one-attempt process, every time |
 
 ## Where the other plans are
 

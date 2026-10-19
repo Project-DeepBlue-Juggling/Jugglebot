@@ -2,7 +2,7 @@
 title: "Robot frame moves are announced with their size, an attempt is refused while the frame settles, the GUI model follows the robot frame (world-anchored scene), and the fit cap goes 1.5 -> 2.0 mm - the 14:24 sitting showed the move was tracked but silent"
 type: feature
 date: 2026-10-19
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack - post-R6 (Ball Butler calibration), Phase 3 move observability"
 related_plan: bb-calibration-one-attempt.md
 related_entries:
@@ -32,7 +32,7 @@ files_changed:
   - tests/ros/test_skill_node_robot_frame.py
   - tests/motion/test_skills_executor.py
   - tests/hardware/session_skill_stack_rehearsals.md
-  - plans/active/bb-calibration-one-attempt.md
+  - plans/archived/bb-calibration-one-attempt.md
   - plans/active/INDEX.md
   - ros_ws/docs/bb_calibration_readings.md
   - logbook/2026-10-19-robot-frame-fit-yaw-only-hold.md
@@ -52,7 +52,7 @@ tags:
 
 ## Summary
 
-The second-cut robot frame fit was FLOWN at 14:24 on 2026-10-19 and held: hops 8/8 caught across a 48.5 mm / 14.5 deg hand move, no refusals, never UNKNOWN. The move itself was silent, and the GUI's 3D model never moved. Code landed the same afternoon (NOT flown): `mocap_node` announces every settled move with its magnitude, `mocap/status` carries the settle/move keys, `skill_node` refuses an attempt while the frame is settling (`REJECTED_ROBOT_FRAME_SETTLING`), the GUI scene is world-anchored (the Stewart model follows `robot_frame`) with a three-state pill and a sticky move banner, and the fit's RMS cap is raised 1.5 -> 2.0 mm (reversing the morning's choice).
+The second-cut robot frame fit was FLOWN at 14:24 on 2026-10-19 and held: hops 8/8 caught across a 48.5 mm / 14.5 deg hand move, no refusals, never UNKNOWN. The move itself was silent, and the GUI's 3D model never moved. Code landed the same afternoon (NOT flown): `mocap_node` announces every settled move with its magnitude, `mocap/status` carries the settle/move keys, `skill_node` refuses an attempt while the frame is settling (`REJECTED_ROBOT_FRAME_SETTLING`), the GUI scene is world-anchored (the Stewart model follows `robot_frame`) with a three-state pill and a move banner (auto-hides after 3 s; see the Change list), and the fit's RMS cap is raised 1.5 -> 2.0 mm (reversing the morning's choice).
 
 ## Problem
 
@@ -96,7 +96,8 @@ GUI frame map: the scene assumed world == base. The Stewart model group was adde
 - `skill_node.py`: subscribes `mocap/status`; `_on_mocap_status` sets `_robot_frame_settled` False only on '0' (default True, absent key leaves it unchanged, a quiet topic keeps the last value). `_snapshot_robot_frame` (the accept path: goal accept, magazine, `skills/check`) returns the operator refusal after the `_attempt_running` early-return, so a mid-attempt `skills/check` is never refused. The per-attempt snapshot is otherwise unchanged. Operator text: `REJECTED_ROBOT_FRAME_SETTLING: Robot frame is settling (moved < 2 s ago or being moved) - wait a few seconds and retry; mocap_node logs 'Robot frame MOVED' with the size`; the `skills/check` ladder line carries only the bare code.
 - `executor.py` and `INVARIANTS.md`: `REJECTED_ROBOT_FRAME_SETTLING` constant, `Observations.robot_frame_settled: bool = True`, ladder row right after ROBOT_FRAME_UNKNOWN with the same `skip_mocap` gating; matching INVARIANTS row.
 - `jugglebot_launch.py`: the bag record list gains `/robot_frame` and `/mocap/status` (their absence is why the 14:24 timeline had to be replayed).
-- GUI (`ros_ws/gui`): new `js/robot-frame.js` (`onRobotFrame`, `onMocapStatus`, the banner); `viewer.js` exports `robotFrameGroup` (child of `scene`) and renames "Global Axes" to "World Axes (QTM)"; `stewart-model.js` adds the model to `robotFrameGroup`; `main.js` subscribes `robot_frame` (PoseStamped) and `mocap/status` (DiagnosticStatus); `panels.js` makes the pill three-state (UNKNOWN red, SETTLING amber, OK green) with a secondary text `rms 0.87 mm · 7 mk · (23.8, 19.5) mm · -15.5°`; `css/panels.css` adds `.flag-icon.settling`, `.flag-detail`, `.robot-frame-banner`. Yaw sign: robot (x,y,z) -> Three (x,z,-y), quaternion (qx,qy,qz,qw) -> (qx,qz,-qy,qw) as in `mocap-markers.js`, so a +10 deg `robot_frame` yaw turns the model as a QTM Base body triad with +10 deg does. Banner appears when `robot_frame_move_count` increases and on the first status after a reload if count > 0; "now" origin is the settled pose at announcement and is not refreshed. The replay layer is a pinned mirror of the live subscribe set (`tests/ros/test_replay_allowlist.py`, `test_gui_replay_policy.py`, `test_replay_mcap_oracle.py`, `test_rosbridge_websocket_lean.py`): both topics were added to `GUI_SUBSCRIBED_TOPICS` (main.js), `ros_ws/gui/replay/schema.py` SUBSCRIBED, `js/replay/allowlist.js` and `js/replay/policy.js` (`/mocap/status` state-render, unthrottled; `/robot_frame` state-edge, `every`), and the two subscribe calls use named handlers because the throttle test parses a bare identifier. `ros_ws/docs/choreography.md` regenerated (the new skill_node subscription). Deploy: browser hard-refresh (static files are served `no-cache`); no `jugglebot-gui` restart.
+- GUI (`ros_ws/gui`): new `js/robot-frame.js` (`onRobotFrame`, `onMocapStatus`, the banner); `viewer.js` exports `robotFrameGroup` (child of `scene`) and renames "Global Axes" to "World Axes (QTM)"; `stewart-model.js` adds the model to `robotFrameGroup`; `main.js` subscribes `robot_frame` (PoseStamped) and `mocap/status` (DiagnosticStatus); `panels.js` makes the pill three-state (UNKNOWN red, SETTLING amber, OK green) with a secondary text `rms 0.87 mm · 7 mk · (23.8, 19.5) mm · -15.5°`; `css/panels.css` adds `.flag-icon.settling`, `.flag-detail`, `.robot-frame-banner`. Yaw sign: robot (x,y,z) -> Three (x,z,-y), quaternion (qx,qy,qz,qw) -> (qx,qz,-qy,qw) as in `mocap-markers.js`, so a +10 deg `robot_frame` yaw turns the model as a QTM Base body triad with +10 deg does. Banner appears when `robot_frame_move_count` increases; the first status after a reload only seeds the count and does not replay an old move; "now" origin is the settled pose at announcement and is not refreshed. The replay layer is a pinned mirror of the live subscribe set (`tests/ros/test_replay_allowlist.py`, `test_gui_replay_policy.py`, `test_replay_mcap_oracle.py`, `test_rosbridge_websocket_lean.py`): both topics were added to `GUI_SUBSCRIBED_TOPICS` (main.js), `ros_ws/gui/replay/schema.py` SUBSCRIBED, `js/replay/allowlist.js` and `js/replay/policy.js` (`/mocap/status` state-render, unthrottled; `/robot_frame` state-edge, `every`), and the two subscribe calls use named handlers because the throttle test parses a bare identifier. `ros_ws/docs/choreography.md` regenerated (the new skill_node subscription). Deploy: browser hard-refresh (static files are served `no-cache`); no `jugglebot-gui` restart.
+- `ros_ws/gui/js/robot-frame.js` (owner, 2026-10-19 pm, after the sitting): the banner auto-hides after `ROBOT_FRAME_BANNER_MS` = 3000 ms and `x` closes it sooner; the first `mocap/status` after a reload only seeds the move count, so a reload never replays an old move (the WARN line and `mocap/status` keep the record). Not browser-tested.
 
 ## Control analysis
 
@@ -107,12 +108,12 @@ The new refusal sits in the accept-time ladder only: goal accept, magazine and `
 All dated 2026-10-19, PDJ venv.
 - Tracker, node and status: `pytest tests/ros/test_robot_frame.py tests/ros/test_robot_frame_resource.py tests/ros/test_mocap_node_robot_frame.py tests/ros/test_mocap_node.py tests/ros/test_mocap_frame_queue.py tests/ros/test_perception_console_lines.py -q -n 4` -> 145 passed in 28 s (includes the 2.0 cap: `test_cap_is_two_mm_on_a_uniform_bias`, bias 1.85 passes and 2.45 fails). After the key swap in `skill_node`: `pytest tests/ros/test_skill_node_robot_frame.py -q -n 2` -> 13 passed in 3.40 s.
 - Settling refusal: `pytest tests/motion/test_skills_executor.py tests/ros/test_skill_node_robot_frame.py tests/ros/test_skill_node.py -q -n 4` -> 622 passed, 1 failed in 300 s. The failure, `tests/ros/test_skill_node.py::test_a_slow_test_run_cannot_age_the_fixture_sample_past_the_accept_check`, is a sleep/timing test that failed under 4-worker load and passed on a scoped rerun (1 passed in 3.4 s); its path was not touched. The full gate below is the authority.
-- GUI: `node --check` on every `ros_ws/gui/js/*.js` passes. **NOT browser-tested**: no visual check has been made of the model move, the pill, or the banner.
+- GUI: `node --check` on every `ros_ws/gui/js/*.js` passes. Visual check DONE by the owner at the 2026-10-19 pm sitting (rehearsal rows 44-46, "working nicely", no bag analysed): banner, model move and SETTLING pill seen. The later auto-hide is not browser-tested.
 - Full gate: 2026-10-19 15:09 AEDT, `./run_tests.sh --full` (log `temp/logs/gate_robot_frame_obs_run4.log`): 6969 passed, 9 skipped in 312.76 s + serial 7 passed, exit 0. Build: `cd ros_ws && colcon build --packages-select jugglebot` 2026-10-19, exit 0.
 
 ## Residue / not done
 
-- NOT flown. The GUI needs a visual check in a browser (hard-refresh): banner position against the connection chip and the replay banner (top: 84px), pill detail layout in the narrow flags grid, and the model's yaw direction against the Base body triad.
+- Flown 2026-10-19 pm (rows 44-46 PASSED per the owner). The only unflown item is the banner auto-hide: `ros_ws/gui/js/robot-frame.js` hides the banner after `ROBOT_FRAME_BANNER_MS` = 3000 ms (x closes it sooner), a GUI cosmetic archived as residue.
 - Not exercised: a move within 5 s of a throw, and a move mid-attempt (the snapshot is frozen for the attempt by design; the refusal only guards accept).
 - Out of scope oddity: A3 throw 1 logged TRACKER-IDENTITY-REFUSED (fitted landing 1.164 s off the schedule) yet was scored CAUGHT.
 - Base - 5 and Base - 6 are dropped on nearly every post-move fit: the 3-5-6 cluster residue stands; only re-wanding QTM or camera coverage of that cluster lowers the floor.

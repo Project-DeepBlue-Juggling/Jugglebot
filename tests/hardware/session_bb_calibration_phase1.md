@@ -1,6 +1,6 @@
 # BB calibration Phase 1 - dress-rehearsal runsheet
 
-Plan `plans/active/bb-calibration-one-attempt.md` Phase 1; entry `logbook/2026-10-16-bb-calibration-phase1-gate-inversion.md`. Nothing is powered beyond BB; every refusal and advisory is reported, none stops the row.
+Plan `plans/archived/bb-calibration-one-attempt.md` Phase 1; entry `logbook/2026-10-16-bb-calibration-phase1-gate-inversion.md`. Nothing is powered beyond BB; every refusal and advisory is reported, none stops the row.
 
 ## Pre-flight
 

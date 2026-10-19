@@ -2,7 +2,7 @@
 title: "BB calibration Phase 2 (template residual): the kappa step survives every marker subset, leave-one-out and label-free refit on 75 sweeps of 22 sittings - it is at BB, not in labelling or the template; label-free pickup has nothing to pick up; one residual statistic kept, reference 0.18-0.46 mm"
 type: investigation
 date: 2026-10-16
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack - post-R6 (Ball Butler calibration)"
 related_plan: bb-calibration-one-attempt.md
 files_changed:
@@ -10,7 +10,7 @@ files_changed:
   - tools/probes/README.md
   - tests/ros/test_bb_calibration_replay.py
   - ros_ws/src/jugglebot/jugglebot/bb_calibration.py
-  - plans/active/bb-calibration-one-attempt.md
+  - plans/archived/bb-calibration-one-attempt.md
   - logbook/2026-10-16-bb-calibration-phase2-template-residual.md
   - logbook/2026-10-16-bb-calibration-phase1-gate-inversion.md
   - logbook/INDEX.md
@@ -28,7 +28,7 @@ tags:
 
 ## Summary
 
-Phase 2 of `plans/active/bb-calibration-one-attempt.md`. The first deliverable was a measurement, not code: the 2026-10-16 10:51 and 15:08 bags (one wand calibration, one world frame, kappa 179.57 vs 179.26) re-solved with every marker subset, each marker left out in turn, and label-free pickup of every reconstructed marker near BB. Kappa keeps its two levels under every variant (gap 0.22 to 0.43 deg against 0.02 deg within a sitting), both sweep legs carry the step, the shelf heading is identical to 0.002 deg and the axis point moved under 0.5 mm. Extended to every bag (2026-10-10 to 10-16: 90 sweeps replayed, 82 accepted, 75 with a kappa, 22 sittings) the result is the same: the K2 epoch sits +0.23 to +0.38 deg above K1 and +0.25 to +0.47 deg above K3 in every variant. By the plan's criterion the step is at BB. The BB firmware (read for the owner) cannot be the cause: the encoder is read absolutely every sample, the zero offset is a compile-time constant, nothing is stored or homed. Label-free pickup is a null result on every bag (an unlabelled BB marker never exists in the moving window; what QTM does not label it has not reconstructed), so no pickup lands in production; the replay keeps it as a standing check. The template residual stays one statistic with its 0.90 mm advisory and 1.0 mm cap; its reference level under one wand calibration is 0.18 to 0.46 mm and is carried by marker Q3's pairs. No template re-fit (the per-marker body-frame residuals flip sign between sittings). Owner decisions 2026-10-16 (this session): keep the statistic and document the reference, no pickup in production, no re-fit, and the next step is the owner's BB-only power-cycle A/B with QTM untouched.
+Phase 2 of `plans/archived/bb-calibration-one-attempt.md`. The first deliverable was a measurement, not code: the 2026-10-16 10:51 and 15:08 bags (one wand calibration, one world frame, kappa 179.57 vs 179.26) re-solved with every marker subset, each marker left out in turn, and label-free pickup of every reconstructed marker near BB. Kappa keeps its two levels under every variant (gap 0.22 to 0.43 deg against 0.02 deg within a sitting), both sweep legs carry the step, the shelf heading is identical to 0.002 deg and the axis point moved under 0.5 mm. Extended to every bag (2026-10-10 to 10-16: 90 sweeps replayed, 82 accepted, 75 with a kappa, 22 sittings) the result is the same: the K2 epoch sits +0.23 to +0.38 deg above K1 and +0.25 to +0.47 deg above K3 in every variant. By the plan's criterion the step is at BB. The BB firmware (read for the owner) cannot be the cause: the encoder is read absolutely every sample, the zero offset is a compile-time constant, nothing is stored or homed. Label-free pickup is a null result on every bag (an unlabelled BB marker never exists in the moving window; what QTM does not label it has not reconstructed), so no pickup lands in production; the replay keeps it as a standing check. The template residual stays one statistic with its 0.90 mm advisory and 1.0 mm cap; its reference level under one wand calibration is 0.18 to 0.46 mm and is carried by marker Q3's pairs. No template re-fit (the per-marker body-frame residuals flip sign between sittings). Owner decisions 2026-10-16 (this session): keep the statistic and document the reference, no pickup in production, no re-fit, and the next step is the owner's BB-only power-cycle A/B with QTM untouched.
 
 ## Symptoms
 

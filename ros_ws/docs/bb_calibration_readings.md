@@ -183,4 +183,4 @@ timing (direction split above); reconstruction noise (QTM residuals).
 - `logbook/2026-10-16-bb-calibration-phase2-template-residual.md` (the step is at BB, not labelling)
 - `logbook/2026-10-16-bb-calibration-power-cycle-ab.md` (not a power-up state; the deformation; this ledger's first rows)
 - `logbook/2026-10-17-bb-calibration-residual-cap-1p5.md` (cap 1.5 / advisory 1.0 on measured evidence)
-- plan: `plans/active/bb-calibration-one-attempt.md`
+- plan: `plans/archived/bb-calibration-one-attempt.md`

@@ -8,7 +8,7 @@ related_plan: bb-calibration-one-attempt.md
 files_changed:
   - logbook/2026-10-14-bb-calibration-one-attempt-investigation.md
   - logbook/INDEX.md
-  - plans/active/bb-calibration-one-attempt.md
+  - plans/archived/bb-calibration-one-attempt.md
   - plans/active/INDEX.md
 subsystem:
   - tracking
@@ -98,7 +98,7 @@ So kappa's cross-sitting error band is about 0.25 deg, about 3x the gate's 0.09 
 
 ## Proposals
 
-Ranked in SYNTHESIS § 5; phased work, owners and tests live in `plans/active/bb-calibration-one-attempt.md`.
+Ranked in SYNTHESIS § 5; phased work, owners and tests live in `plans/archived/bb-calibration-one-attempt.md`.
 
 - **P1** Invert gate semantics (closes C3, C4, C6). Hard refusals only for intrinsic sweep quality without history (CONSTELLATION_MIN_FRAMES, TOO_FEW_MOVING, LAG_AT_EDGE, MOCAP_CLOCK, axis consensus, CONSTELLATION_RESIDUAL 1.0 mm). History comparisons become advisory lines. `bb_moved` retired as a gate input.
 - **P2** Characterise before thresholding (closes C2, C5). Re-solve every sweep in the 10-10..10-14 bags offline (about 60 sweeps; the solver is pure Python), publish cross-sitting distributions of kappa, yaw, axis point, lag and template residual, and keep the replay as a `tools/probes` harness.

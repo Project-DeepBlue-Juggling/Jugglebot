@@ -304,7 +304,7 @@
     color: var(--text-muted);
 }
 
-/* Sticky robot-frame move banner (visual family: .replay-banner.warn). */
+/* Robot-frame move banner (auto-hides after ROBOT_FRAME_BANNER_MS; visual family: .replay-banner.warn). */
 .robot-frame-banner {
     position: absolute; top: 84px; left: var(--gap); right: var(--gap); z-index: 11;
     display: flex; align-items: center; justify-content: space-between; gap: 8px;

@@ -55,8 +55,11 @@ function num(s) { const v = parseFloat(s); return Number.isFinite(v) ? v : NaN; 
 
 let banner = null;
 let bannerText = null;
-let lastCount = null;     // null until the first status: a reload shows the last move
-let dismissedCount = 0;
+let lastCount = null;     // null until the first status (a reload does NOT replay an old move)
+let bannerTimer = null;
+//: the banner auto-hides after this (owner, 2026-10-19: 3 s is enough to read the size);
+//: the WARN line in the launch log and mocap/status keep the record.
+const ROBOT_FRAME_BANNER_MS = 3000;
 
 function ensureBanner() {
     if (banner) return;
@@ -72,7 +75,7 @@ function ensureBanner() {
     close.className = 'robot-frame-banner-close';
     close.textContent = '×';
     close.title = 'Dismiss';
-    close.addEventListener('click', () => { banner.hidden = true; dismissedCount = lastCount || 0; });
+    close.addEventListener('click', () => { hideBanner(); });
     banner.append(bannerText, close);
     pane.appendChild(banner);
 }
@@ -89,6 +92,11 @@ function originXY(kv) {
     if (parts.length < 2 || !Number.isFinite(parts[0]) || !Number.isFinite(parts[1])) return '';
     return ` · now (${parts[0].toFixed(1)}, ${parts[1].toFixed(1)}) mm`
         + (Number.isFinite(num(kv[KEY_YAW_DEG])) ? `, ${num(kv[KEY_YAW_DEG]).toFixed(1)}°` : '');
+}
+
+function hideBanner() {
+    if (bannerTimer) { clearTimeout(bannerTimer); bannerTimer = null; }
+    if (banner) banner.hidden = true;
 }
 
 /** mocap/status handler: pill detail + move banner. */
@@ -110,22 +118,22 @@ export function onMocapStatus(msg) {
     // Absent key => treated as settled (a stack without the key must not show SETTLING).
     setRobotFrameDetail({ settled: kv[KEY_SETTLED] !== '0', text: bits.join(' · ') });
 
-    // Move banner: sticky, shown when move_count increases (or count > 0 on first status).
+    // Move banner: shown when move_count increases, auto-hides after ROBOT_FRAME_BANNER_MS
+    // (x closes it sooner). The first status after a reload only seeds the count.
     const count = parseInt(kv[KEY_MOVE_COUNT], 10);
     if (!Number.isFinite(count)) return;
     ensureBanner();
     if (!banner) return;
     const prev = lastCount;
     lastCount = count;
-    if (count > 0 && (prev === null || count > prev)) {
+    if (prev !== null && count > prev) {
         const mm = num(kv[KEY_LAST_MOVE_MM]);
         const deg = num(kv[KEY_LAST_MOVE_DEG]);
         bannerText.textContent = `Robot frame MOVED ${Number.isFinite(mm) ? mm.toFixed(1) : '?'} mm / `
             + `${Number.isFinite(deg) ? deg.toFixed(1) : '?'}° at ${hhmmss(num(kv[KEY_LAST_MOVE_S]))}`
             + originXY(kv);
         banner.hidden = false;
-        dismissedCount = 0;
-    } else if (count > 0 && !banner.hidden) {
-        // same move: keep the "now" origin current while the frame settles
+        if (bannerTimer) clearTimeout(bannerTimer);
+        bannerTimer = setTimeout(hideBanner, ROBOT_FRAME_BANNER_MS);
     }
 }

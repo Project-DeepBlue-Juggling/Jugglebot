@@ -2,7 +2,7 @@
 title: "Robot frame fit, second cut: yaw-only, drop-worst down to 5 markers, RMS cap 1.5 mm, a hold rule, no tilt guard - the first sitting showed 1.0-1.6 mm of per-configuration QTM reconstruction bias, not scatter"
 type: bugfix
 date: 2026-10-19
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack - post-R6 (Ball Butler calibration), Phase 3 second cut"
 related_plan: bb-calibration-one-attempt.md
 related_entries:
@@ -18,7 +18,7 @@ files_changed:
   - tests/ros/test_robot_frame.py
   - tests/ros/test_robot_frame_resource.py
   - tests/hardware/session_skill_stack_rehearsals.md
-  - plans/active/bb-calibration-one-attempt.md
+  - plans/archived/bb-calibration-one-attempt.md
   - plans/active/INDEX.md
   - ros_ws/docs/bb_calibration_readings.md
   - logbook/2026-10-19-bb-calibration-phase3-robot-frame.md
