@@ -352,7 +352,44 @@ _SEAM_POS_TOL_REV = _SEAM_MARGIN * _SEAM_FEAS_TOL_M * HAND_REV_PER_M
 #: widens its stencil, THIS is the number that has to move with it, and
 #: ``test_the_extend_gate_range_covers_every_validate_cycle_stencil`` fails if it
 #: does not.
+#:
+#: **The derivation assumes span ``[k_seam − 1, k_seam]`` is unchanged, and a
+#: TRUNCATED-head splice falsifies it** (I-PLAN-10's corollary, 2026-10-19).
+#: ``extend(head_truncated=True)`` replaces the seam knot's VELOCITY
+#: (:func:`_seam_velocity`), which moves the Hermite end acceleration of that
+#: span at BOTH ends — so the acceleration jump at ``k_seam − 1`` changes too, and
+#: the straddling differences there sit at the view's knot 0, which
+#: ``validate_cycle`` never straddles (its straddles run over knots
+#: ``1..n−2``).  Neither the head's own gate (it saw the old velocity) nor a range
+#: starting at ``k_seam − 1`` measures it, so on that path
+#: :func:`extend_gate_range` starts ONE knot earlier (``k_seam − 2``), which is the
+#: width the retired ``replan_tail`` always gated and the one
+#: ``tests/motion/test_unified_cycle.py::test_a_splice_adjacent_defect_in_the_new_tail_is_still_refused``
+#: drives (its "ONE KNOT WIDER" pair).
 _VALIDATE_STENCIL_KNOTS = 1
+
+#: Tolerance (mm, platform xy) on I-PLAN-10's splice-time check that the
+#: source plan's cup track still decomposes to its pose around the splice knot
+#: (:func:`_refuse_stale_cup_track`).
+#:
+#: It compares POSITIONS, not velocities, on purpose: the seam velocity is
+#: LEGITIMATELY re-derived (``_seam_velocity`` differences the FD-borne channels
+#: over the joined window) and differs from the head's stored ``pose_vel`` by a
+#: baseline of ~1.5-1.9 mm/s even on a coherent plan (1.565 mm/s measured
+#: 2026-09-23; 1.9 mm/s on the 2026-10-19 unbumped control), so a velocity
+#: comparison could not tell a stale track from a healthy one.  Position xy, by
+#: contrast, is ``cup_xy·1000 − shift(cup_z, tilt)`` per knot with no
+#: differencing, so a coherent plan re-decomposes to the SAME floats (residual
+#: 0, or ~1e-13 mm of rounding after an overlay was carried into both).  1 µm is
+#: therefore ~10⁹× the float noise and still far below the smallest staleness
+#: worth refusing: the smallest bump offset inside a 3-knot window is the
+#: ramp-in's first changed knot, ``Δ·10u³`` ≈ 0.05 mm at Δ = 20 mm over a
+#: 16-knot ramp-in (with ḃ ≈ 6 mm/s there) — 50× this tolerance.
+_CUP_TRACK_POS_TOL_MM = 1.0e-3
+#: The same check's tilt tolerance (rad): ``decompose`` COPIES ``meta.tilts``
+#: into ``pose[:, 3:5]``, so a coherent plan matches exactly; 1 µrad is ~0.1 µm
+#: of cup lever at 100 mm, the same order as the xy bar.
+_CUP_TRACK_TILT_TOL_RAD = 1.0e-6
 
 
 class CycleInfeasible(RuntimeError):
@@ -2509,15 +2546,22 @@ def _joined_correction(meta_a: CycleMeta, meta_b: CycleMeta):
     return ca
 
 
-def extend_gate_range(plan_a: CyclePlan, plan_b: CyclePlan) -> Tuple[int, int]:
+def extend_gate_range(plan_a: CyclePlan, plan_b: CyclePlan, *,
+                      head_truncated: bool = False) -> Tuple[int, int]:
     """``(k_from, n_gated)`` — the knot range :func:`extend`'s gate visits.
 
     Exposed so a test can assert the bound without timing anything: on a chain of
     equal windows this is CONSTANT per extend, which is what makes a constant
     beat's install cost constant too.
+
+    ``head_truncated`` (a ``splice_at`` that discards a tail) starts the range one
+    knot earlier: the seam knot's velocity is re-derived there, which changes the
+    acceleration jump at ``k_seam − 1`` as well (see
+    :data:`_VALIDATE_STENCIL_KNOTS`, I-PLAN-10's corollary).
     """
     n_a, n_b = int(plan_a.n_knots), int(plan_b.n_knots)
-    k_from = max(0, (n_a - 1) - _VALIDATE_STENCIL_KNOTS)
+    reach = _VALIDATE_STENCIL_KNOTS + (1 if head_truncated else 0)
+    k_from = max(0, (n_a - 1) - reach)
     return k_from, (n_a + n_b - 1) - k_from
 
 
@@ -2607,7 +2651,8 @@ def _gate_from_knot(plan: CyclePlan, k_from: int, limits, geom):
 
 
 def _gate_joined(joined: CyclePlan, plan_a: CyclePlan, plan_b: CyclePlan,
-                 meta_a: CycleMeta, limits, geom):
+                 meta_a: CycleMeta, limits, geom, *,
+                 head_truncated: bool = False):
     """Re-gate a splice over the SEAM AND THE NEW WINDOW, inheriting the head.
 
     **Why not the whole plan.**  ``validate_cycle`` is ~89 % of a solve and is
@@ -2625,7 +2670,10 @@ def _gate_joined(joined: CyclePlan, plan_a: CyclePlan, plan_b: CyclePlan,
     gate has seen is the SEAM: the per-knot step from ``k_seam − 1`` into
     ``k_seam``, the hand span across it, and the leg-jerk difference through it.
     So the range starts :data:`_VALIDATE_STENCIL_KNOTS` before the seam, which is
-    derived from those stencils, and runs to the end.
+    derived from those stencils, and runs to the end — ONE knot more when
+    ``head_truncated``, because then the seam knot's velocity is re-derived and
+    span ``k_seam − 1 → k_seam`` is no longer the head's (the straddle at
+    ``k_seam − 1`` is new content; :data:`_VALIDATE_STENCIL_KNOTS`, I-PLAN-10).
 
     **What is NOT inherited.**  The peaks: they are maxima, so
     :func:`_merged_peaks` recombines them exactly, and the range they describe is
@@ -2661,7 +2709,8 @@ def _gate_joined(joined: CyclePlan, plan_a: CyclePlan, plan_b: CyclePlan,
         # inherit (unreachable from plan_cycle/extend), and the parked-floor case
         # asks a different question. Either way, gate the whole thing.
         return fz.validate_cycle(joined, limits, geom), None
-    k_from, _n = extend_gate_range(plan_a, plan_b)
+    k_from, _n = extend_gate_range(plan_a, plan_b,
+                                   head_truncated=head_truncated)
     tail = _gate_from_knot(joined, k_from, limits, geom)
     if not tail.ok:
         return tail, None
@@ -2719,7 +2768,9 @@ def extend(plan_a: CyclePlan, meta_a: CycleMeta,
     last.  Both halves were already gated whole by their own ``plan_cycle`` calls;
     what neither had seen is the seam.  So the range runs from
     :data:`_VALIDATE_STENCIL_KNOTS` knots before the seam to the end — a constant
-    ``n_b + 1`` knots per extend, whatever the chain depth — and the head's
+    ``n_b + 1`` knots per extend, whatever the chain depth; one knot more on a
+    ``head_truncated`` splice, whose re-derived seam velocity also changes the
+    straddle at ``k_seam − 1`` (I-PLAN-10) — and the head's
     verdict is inherited with its peaks merged back in, so ``meta.report`` still
     describes the whole plan exactly.  :func:`_gate_joined` carries the argument
     and the one fall-back case; :func:`extend_gate_range` exposes the range.
@@ -2761,7 +2812,7 @@ def extend(plan_a: CyclePlan, meta_a: CycleMeta,
     # The seam and the new window, not the whole plan — see `_gate_joined` for
     # why that is both sound and necessary (a ring's install cost must be flat).
     report, report_range = _gate_joined(joined, plan_a, plan_b, meta_a, limits,
-                                        geom)
+                                        geom, head_truncated=head_truncated)
     if not report.ok:
         raise CycleInfeasible(report.code, report.reasons, report=report)
 
@@ -3025,6 +3076,66 @@ def _head_view(plan: CyclePlan, meta: CycleMeta,
     return head, head_meta
 
 
+def _refuse_stale_cup_track(plan: CyclePlan, meta: CycleMeta, k_s: int,
+                            limits) -> None:
+    """I-PLAN-10's enforcement point: refuse a splice whose source cup track no
+    longer decomposes to the plan's pose around ``k_s``.
+
+    ``extend(head_truncated=True)`` re-derives knot ``k_s``'s velocity from
+    ``meta.cup_plan`` + ``meta.tilts`` (:func:`_seam_velocity`), so a pose
+    overlay that did not update them (the 2026-10-19 I-CATCH-5 bump: ``v_b``
+    missing from ``V[k_s]`` while ``k_s ± 1`` carry it, a 1-knot velocity-FF
+    step the gate read as ``LIMIT_JERK`` 288k-609k mm/s³) would be emitted from
+    a stale representation.  Refusing ``CHAIN_DISCONTINUITY`` here names the
+    defect instead of letting the gate report a mysterious jerk.
+
+    Checks knots ``[k_s − 1, k_s + 1]`` (the window ``_seam_velocity``
+    differences), at negligible cost (one 3-knot ``decompose``):
+
+    * platform xy: ``decompose(cup, tilts).pose[:, :2]`` against
+      ``plan.pose[:, :2]`` within :data:`_CUP_TRACK_POS_TOL_MM` (positions, not
+      velocities — see the constant for why);
+    * tilt: ``meta.tilts`` against ``plan.pose[:, 3:5]`` (``decompose`` copies
+      the tilts into the pose, so a coherent plan matches exactly) within
+      :data:`_CUP_TRACK_TILT_TOL_RAD`.
+
+    z is NOT compared: ``decompose``'s z is ``cfg.active_z_mm + dz`` with the
+    config rebuilt from the LIVE ``limits`` (as ``_seam_velocity`` does), so a
+    mid-session config difference would refuse a coherent plan; no overlay
+    touches z today.  A cup-less meta (``cup_plan is None``) has nothing to
+    check and ``_seam_velocity`` keeps the head's velocity there.
+    """
+    cup = meta.cup_plan
+    n = int(plan.n_knots)
+    if cup is None or k_s < 1 or k_s + 1 > n - 1:
+        return
+    a, b = k_s - 1, k_s + 2
+    tilts = np.asarray(meta.tilts, dtype=float)[a:b]
+    win = cc.CupCyclePlan(
+        pos=cup.pos[a:b], vel=cup.vel[a:b], acc=cup.acc[a:b],
+        jerk=cup.jerk[a:b - 1], t=cup.t[a:b] - cup.t[a], dt=cup.dt,
+        catch_k=-1, takeoff_vel=cup.takeoff_vel, warm_start=None)
+    realized = cr.decompose(win, tilts, build_realize_config(limits))
+    pose = np.asarray(plan.pose, dtype=float)[a:b]
+    reasons = []
+    for label, got, want, tol in (
+            ('xy', realized.pose[:, 0:2], pose[:, 0:2], _CUP_TRACK_POS_TOL_MM),
+            ('tilt', tilts, pose[:, 3:5], _CUP_TRACK_TILT_TOL_RAD)):
+        err = np.abs(got - want)
+        i, ax = np.unravel_index(int(np.argmax(err)), err.shape)
+        if float(err[i, ax]) > tol:
+            reasons.append(
+                'meta.%s is STALE at knot %d (%s axis %d): it decomposes to '
+                '%.4f but plan.pose holds %.4f (|diff| %.3g > %.0e) — a pose '
+                'overlay did not update the derived track (I-PLAN-10), and '
+                'splicing would re-derive the seam velocity from it'
+                % ('cup_plan' if label == 'xy' else 'tilts', a + int(i), label,
+                   int(ax), float(got[i, ax]), float(want[i, ax]),
+                   float(err[i, ax]), tol))
+    if reasons:
+        raise CycleInfeasible(CHAIN_DISCONTINUITY, reasons)
+
+
 def splice_at(plan: CyclePlan, meta: CycleMeta, k_s: int,
               seg_plan: CyclePlan, seg_meta: CycleMeta,
               limits, geom) -> Tuple[CyclePlan, CycleMeta]:
@@ -3048,6 +3159,10 @@ def splice_at(plan: CyclePlan, meta: CycleMeta, k_s: int,
     * ``k_s < 1`` — there would be no head to keep.
     * ``k_s > n - 1`` — that knot is not on this plan.
     * a ``k_s`` inside a detach cone (:func:`_refuse_splice_into_a_detach_cone`).
+    * :data:`CHAIN_DISCONTINUITY` also when the source cup track no longer
+      decomposes to the plan's pose around ``k_s`` (I-PLAN-10,
+      :func:`_refuse_stale_cup_track`; only when a tail is discarded, which is
+      when the seam velocity is re-derived from that track).
 
     The returned meta's kind is :data:`SPLICED`.  Everything else about it is
     ``extend``'s: the marks of the discarded tail are gone, ``seg_meta``'s are
@@ -3069,6 +3184,11 @@ def splice_at(plan: CyclePlan, meta: CycleMeta, k_s: int,
                       tail=('the plan runs [0, %d]; there is no knot %d to '
                             'splice onto' % (n - 1, k_s)))])
     _refuse_splice_into_a_detach_cone(meta, k_s, dt, n)
+    if k_s < n - 1:
+        # I-PLAN-10: the seam velocity below is re-derived from the cup track,
+        # so that track must still BE this plan's (a pose overlay that left it
+        # stale would put a 1-knot velocity-FF step on the wire).
+        _refuse_stale_cup_track(plan, meta, k_s, limits)
     head, head_meta = _head_view(plan, meta, k_s)
     # `k_s < n - 1` is exactly "this splice DISCARDS a tail", which is what makes
     # the head's last-knot velocity stale (:func:`_seam_velocity`).  At

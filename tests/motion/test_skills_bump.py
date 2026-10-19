@@ -439,3 +439,131 @@ def test_the_launch_bound_is_on_the_total_velocity_plan_plus_bias(
                                 (40.0, 0.0), T_LAND - record.t0_s, limits, geom)
     assert not res.accepted and res.code == bump.BUMP_LAUNCH and not res.terminal
     assert float(np.hypot(*res.launch_bias_xy_mm_s)) < 50.0   # the bias alone passes
+
+
+# ---------------------------------------------------------------------------
+# I-PLAN-10 — the bump updates the derived cup track, not only the pose
+# ---------------------------------------------------------------------------
+
+def test_a_bumped_meta_cup_track_decomposes_to_the_bumped_pose(
+        record, limits, geom):
+    """I-PLAN-10: the bump is a pure xy overlay on the pose, so ``meta.cup_plan``
+    must carry the same overlay or ``splice_at`` re-derives the seam velocity
+    from a stale track (the 2026-10-19 17:47 / 15:23 LIMIT_JERK).
+
+    Recipe (probed 2026-10-19 on this ``record``, delta (20, 0), 0.45 s before
+    landing, v_b -18.98 mm/s; also delta (12, 0) v_b 11.39): on every knot
+    ``decompose(meta.cup_plan, meta.tilts).pose[:, :2]`` equals ``plan.pose[:,
+    :2]`` (measured 7e-15 mm; asserted <= 1e-9) and ``meta.tilts`` equals
+    ``plan.pose[:, 3:5]``.  The cup track's vel/acc overlay equals the analytic
+    b_dot/b_ddot.  Acc is compared to a FINE central FD (h = 1e-6 s) of
+    ``retarget_profile``'s own b_dot, never a 25 ms FD of the knots: the 25 ms
+    central FD is 278-500 mm/s^2 off on this fixture (the quintic ramp is far
+    from quadratic over 50 ms), which would either hide a wrong acc or force a
+    tolerance too loose to mean anything.  A control (the unbumped record) is
+    coherent too, so the check is not vacuous.
+    """
+    cfg = uc.build_realize_config(limits)
+    base = cr.decompose(record.meta.cup_plan, record.meta.tilts, cfg)
+    assert np.abs(base.pose[:, :2] - record.plan.pose[:, :2]).max() <= 1e-9
+
+    for delta in ((20.0, 0.0), (12.0, 0.0)):
+        res = _bump(record, limits, geom, 0.45, delta)
+        assert res.accepted, res.message
+        got = cr.decompose(res.meta.cup_plan, res.meta.tilts, cfg)
+        assert np.abs(got.pose[:, :2] - res.plan.pose[:, :2]).max() <= 1e-9
+        assert np.abs(res.meta.tilts - res.plan.pose[:, 3:5]).max() <= 1e-9
+
+        d_pos = (res.meta.cup_plan.pos - record.meta.cup_plan.pos)[:, :2] * 1000.0
+        d_vel = (res.meta.cup_plan.vel - record.meta.cup_plan.vel)[:, :2] * 1000.0
+        d_acc = (res.meta.cup_plan.acc - record.meta.cup_plan.acc)[:, :2] * 1000.0
+        # position overlay == the pose overlay; velocity overlay == the plan's
+        assert np.abs(d_pos - (res.plan.pose - record.plan.pose)[:, :2]).max() <= 1e-9
+        assert np.abs(d_vel - (res.plan.pose_vel - record.plan.pose_vel)[:, :2]).max() <= 1e-6
+        assert np.abs(d_vel).max() > 5.0       # non-vacuous: v_b is ~11-19 mm/s
+        assert np.abs(d_acc).max() > 100.0
+
+        # acc overlay vs a fine FD of retarget_profile's own b_dot
+        t_land = T_LAND - record.t0_s
+        rel = _carried(record)
+        k_b = res.k_b
+        dt = float(record.plan.dt)
+        t = np.arange(record.plan.n_knots) * dt
+        t_b = res.k_b * dt
+        pre_s = int(rel.pre_hold_knots) * dt
+        post_s = uc.post_release_hold_knots() * dt
+        args = (t_b, t_land - bump.BUMP_PRE_HOLD_S, t_land, float(rel.t_s),
+                pre_s, post_s, float(record.plan.t[-1]), float(rel.flight_s),
+                np.asarray(delta, float))
+        h = 1e-6
+        _b, bd_p = bump.retarget_profile(t + h, *args)
+        _b, bd_m = bump.retarget_profile(t - h, *args)
+        fd = (bd_p - bd_m) / (2 * h)
+        fd[:k_b + 1] = 0.0
+        assert np.abs(d_acc[k_b + 1:] - fd[k_b + 1:]).max() < 1.0, (
+            np.abs(d_acc - fd).max())
+
+
+def _splice_catch_at_the_bumped_release(rec_b, sites, limits, geom):
+    """``install_segment`` a CATCH at the snapped carried release of ``rec_b``
+    (the 17:47 / 15:23 sequence: bump, then the next catch splices there)."""
+    _p1, p2 = sites
+    rel2 = _carried(rec_b)
+    t_rel_abs = rec_b.t0_s + float(rel2.t_s)
+    term = sg.CatchTerminal(
+        landing_mm=p2.catch_site_mm(), landing_vel_mm_s=LAND_VEL,
+        t_land_s=t_rel_abs + FLIGHT_S, rest_site_mm=p2.rest_site_mm())
+    t_now = t_rel_abs - ex.LEAD_S - 0.02
+    k_s, _post = ex.splice_knot_for(rec_b, sg.CATCH, term, t_now,
+                                    sc.install_lead_s(sg.CATCH))
+    new, res, _seg = ex.install_segment(rec_b, None, sg.CATCH, term, t_now,
+                                        limits=limits, geom=geom,
+                                        t_install_s=t_now)
+    return k_s, new, res
+
+
+def test_a_splice_at_a_bumped_release_keeps_the_bump_velocity_at_the_seam(
+        record, limits, geom, sites):
+    """I-PLAN-10 end to end: bump 0.45 s before landing, then install the next
+    CATCH at the bumped carried release (snapped knot K = 62).
+
+    Recipe (probed 2026-10-19, ``repro_unit1_fixed.py``): control (no bump) is
+    accepted, V[K] -0.43 mm/s.  Bumped by delta (12|20|36, 0) -> v_b 11.39 /
+    18.98 / 34.17 mm/s: ALL ACCEPTED, and the seam velocity (the spliced plan's
+    ``pose_vel[K]``, re-derived from the joined cup track) is within 2.5 mm/s
+    of the bumped plan's ``pose_vel[K + 1]`` -- the healthy re-derivation
+    baseline is ~1.9 mm/s (the FD of a coherent cup track against the stored
+    velocity), so a missing v_b (11-34 mm/s) cannot hide inside it.  Pre-fix
+    (stale ``meta.cup_plan`` = the unbumped track, injected here) the same
+    install is refused CHAIN_DISCONTINUITY naming ``meta.cup_plan`` ("STALE at
+    knot 61 ... |diff| 16.7" at v_b 19); before the I-PLAN-10 refusal existed it
+    surfaced as LIMIT_JERK 288k-609k mm/s^3.
+    """
+    seam_tol = 2.5      # mm/s; healthy baseline ~1.9
+    k_ctl, _new, res0 = _splice_catch_at_the_bumped_release(record, sites, limits, geom)
+    assert res0.accepted, res0.message
+
+    for delta, v_b_expect in (((12.0, 0.0), 11.39), ((20.0, 0.0), 18.98),
+                              ((36.0, 0.0), 34.17)):
+        r = _bump(record, limits, geom, 0.45, delta)
+        assert r.accepted, r.message
+        assert float(np.hypot(*r.launch_bias_xy_mm_s)) == pytest.approx(v_b_expect, abs=0.01)
+        rec_b = ex.PlanRecord(plan=r.plan, meta=r.meta, t0_s=record.t0_s)
+
+        k_s, new, res = _splice_catch_at_the_bumped_release(rec_b, sites, limits, geom)
+        assert k_s == k_ctl == 62
+        assert res.accepted, (delta, res.code, res.message)
+        seam = np.asarray(new.plan.pose_vel[k_s, :2])
+        want = np.asarray(rec_b.plan.pose_vel[k_s + 1, :2])
+        assert np.abs(seam - want).max() <= seam_tol, (delta, seam, want)
+        # the bias is IN the seam velocity, not merely close to a small number
+        assert abs(seam[0]) > 0.5 * v_b_expect
+
+        # Pre-fix shape: the unbumped (stale) cup track under the bumped pose.
+        stale = dataclasses.replace(r.meta, cup_plan=record.meta.cup_plan)
+        _k, _n, bad = _splice_catch_at_the_bumped_release(
+            ex.PlanRecord(plan=r.plan, meta=stale, t0_s=record.t0_s),
+            sites, limits, geom)
+        assert not bad.accepted
+        assert bad.code == uc.CHAIN_DISCONTINUITY, (delta, bad.code, bad.message)
+        assert 'meta.cup_plan' in bad.message, bad.message

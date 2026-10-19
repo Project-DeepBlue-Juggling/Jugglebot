@@ -47,6 +47,7 @@ from jugglebot.motion.geometry import StewartGeometry
 from jugglebot.motion.skills import segments as sg
 from jugglebot.motion.skills import sites as si
 from jugglebot.motion.trajectory import cup_realize as cr
+from jugglebot.motion.trajectory import feasibility as fz
 from jugglebot.motion.trajectory.cycle_plan import CyclePlan
 from jugglebot.motion.trajectory.limits import TrajectoryLimits
 
@@ -454,3 +455,132 @@ def test_splice_at_refuses_a_knot_that_is_not_on_the_plan(throw, catch_segment,
                      limits, geom)
     assert excinfo.value.code == uc.REPLAN_WINDOW
     assert needle in ' '.join(excinfo.value.reasons)
+
+
+def _with_pose(plan, pose):
+    return CyclePlan(pose=pose, pose_vel=plan.pose_vel, hand_rev=plan.hand_rev,
+                     hand_vel_rps=plan.hand_vel_rps, dt=plan.dt,
+                     catch_k=plan.catch_k, catch_evidence=plan.catch_evidence)
+
+
+def test_splice_at_refuses_a_pose_overlay_its_cup_track_does_not_carry(
+        throw, catch_segment, limits, geom):
+    """I-PLAN-10 enforcement: ``splice_at`` re-derives the seam velocity from
+    ``meta.cup_plan``, so a pose overlay that left the derived track stale
+    (the 2026-10-19 I-CATCH-5 bump) is refused ``CHAIN_DISCONTINUITY`` naming
+    ``meta.cup_plan`` instead of reaching the gate as a mystery LIMIT_JERK.
+
+    Recipe (probed 2026-10-19 on the ``throw`` / ``catch_segment`` fixtures,
+    k_s = 20): add a constant x offset to ``plan.pose[k_s + 1:]`` WITHOUT
+    touching ``meta.cup_plan`` (the seam knot itself stays shared, so
+    ``_seam_check`` passes).  Measured: 5.0 mm -> refused ("decomposes to
+    -50.0000 but plan.pose holds -45.0000", knot 21); 2e-3 mm -> refused (above
+    the 1e-3 mm tolerance); 5e-4 mm -> accepted; 0 -> accepted.  Positions are
+    compared, not velocities, because the re-derived seam velocity differs from
+    the stored one by a ~1.9 mm/s baseline on a healthy plan.  A pure extend
+    (k_s == n - 1) re-derives nothing and is not checked.
+    """
+    plan, meta = throw
+    seg = catch_segment
+
+    def overlaid(off):
+        pose = plan.pose.copy()
+        pose[K_SPLICE + 1:, 0] += off
+        return _with_pose(plan, pose)
+
+    for off in (5.0, 2e-3):
+        with pytest.raises(uc.CycleInfeasible) as excinfo:
+            uc.splice_at(overlaid(off), meta, K_SPLICE, seg.plan, seg.meta,
+                         limits, geom)
+        assert excinfo.value.code == uc.CHAIN_DISCONTINUITY
+        assert 'meta.cup_plan' in ' '.join(excinfo.value.reasons), off
+
+    # Below the 1 um tolerance (and the untouched control) is accepted.
+    for off in (5e-4, 0.0):
+        _spliced, new_meta = uc.splice_at(overlaid(off), meta, K_SPLICE,
+                                          seg.plan, seg.meta, limits, geom)
+        assert new_meta.report.ok, new_meta.report.reasons
+
+    # Not checked at the terminal knot: nothing is re-derived on a pure extend.
+    # Driven through the real path: a stale overlay on the plan's LAST knot,
+    # spliced at k_s == n - 1, must not be refused for `meta.cup_plan` (it may
+    # be refused for something else, e.g. the seam no longer being shared).
+    k_end = plan.n_knots - 1
+    pose = plan.pose.copy()
+    pose[k_end, 0] += 5.0   # an overlay the cup track does not carry, at the tail
+    try:
+        uc.splice_at(_with_pose(plan, pose), meta, k_end, seg.plan, seg.meta,
+                     limits, geom)
+    except uc.CycleInfeasible as exc:
+        assert 'meta.cup_plan' not in ' '.join(exc.reasons), exc.reasons
+
+
+def test_a_truncated_head_splice_gates_the_straddle_at_k_s_minus_1(
+        throw, catch_segment, limits, geom):
+    """I-PLAN-10 corollary: a splice re-derives V[k_s], which moves the
+    acceleration jump at k_s - 1, so its gate view must start at k_s - 2
+    (``extend_gate_range(..., head_truncated=True)``), one knot earlier than a
+    pure extend's k_s - 1.
+
+    Recipe (probed 2026-10-19, ``throw`` + ``catch_segment``, k_s = 20,
+    stencil 1): on the spliced plan add d mm/s to ``pose_vel[k_s - 1, 0]`` (the
+    "ONE KNOT WIDER" pair of ``test_unified_cycle.py``).  Measured: d = 10 ->
+    both views OK; d = 20 -> the k_s - 1 view is OK, the k_s - 2 view is refused
+    LIMIT_JERK; d = 40 -> both refuse.  So d = 20 is the defect only the wider
+    view sees.
+    """
+    plan, meta = throw
+    seg = catch_segment
+    head, _hmeta = uc._head_view(plan, meta, K_SPLICE)
+    assert uc.extend_gate_range(head, seg.plan, head_truncated=True)[0] == K_SPLICE - 2
+    assert uc.extend_gate_range(head, seg.plan, head_truncated=False)[0] == K_SPLICE - 1
+    # The n_gated count grows with the earlier start, consistently.
+    assert (uc.extend_gate_range(head, seg.plan, head_truncated=True)[1]
+            == uc.extend_gate_range(head, seg.plan)[1] + 1)
+
+    spliced, _m = uc.splice_at(plan, meta, K_SPLICE, seg.plan, seg.meta,
+                               limits, geom)
+    vel = spliced.pose_vel.copy()
+    vel[K_SPLICE - 1, 0] += 20.0
+    step = CyclePlan(pose=spliced.pose, pose_vel=vel, hand_rev=spliced.hand_rev,
+                     hand_vel_rps=spliced.hand_vel_rps, dt=spliced.dt,
+                     catch_k=spliced.catch_k,
+                     catch_evidence=spliced.catch_evidence)
+    k_from = uc.extend_gate_range(head, seg.plan, head_truncated=True)[0]
+    narrow = fz.validate_cycle(uc._gate_view(step, K_SPLICE - 1), limits, geom)
+    wide = fz.validate_cycle(uc._gate_view(step, k_from), limits, geom)
+    assert narrow.ok, narrow.reasons
+    assert not wide.ok and wide.code == fz.LIMIT_JERK, wide.reasons
+
+
+def test_the_joined_gate_starts_at_the_range_splice_at_and_extend_forward(
+        halves, throw, catch_segment, limits, geom, monkeypatch):
+    """The ``head_truncated`` flag reaches the gate through the REAL path
+    (``splice_at`` -> ``extend`` -> ``_gate_joined`` -> ``extend_gate_range``),
+    not just through ``extend_gate_range`` called on its own.
+
+    Recipe (probed 2026-10-19): wrap ``uc._gate_from_knot`` (the narrowest seam
+    receiving ``k_from``) to record ``k_from`` and call through.  A truncating
+    ``splice_at`` at k_s = K_SPLICE records K_SPLICE - 2; a pure extend
+    (``splice_at`` at n - 1 of the untruncated first half) records n - 2, i.e.
+    its seam knot - 1.
+    """
+    seen = []
+    real = uc._gate_from_knot
+
+    def spy(plan, k_from, *a, **kw):
+        seen.append(int(k_from))
+        return real(plan, k_from, *a, **kw)
+
+    monkeypatch.setattr(uc, '_gate_from_knot', spy)
+
+    plan, meta = throw
+    seg = catch_segment
+    uc.splice_at(plan, meta, K_SPLICE, seg.plan, seg.meta, limits, geom)
+    assert seen == [K_SPLICE - 2], seen
+
+    del seen[:]
+    plan_a, meta_a, plan_b, meta_b = halves
+    k_end = plan_a.n_knots - 1
+    uc.splice_at(plan_a, meta_a, k_end, plan_b, meta_b, limits, geom)
+    assert seen == [k_end - 1], seen

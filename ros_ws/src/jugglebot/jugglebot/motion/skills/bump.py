@@ -177,6 +177,13 @@ def _q5(u):
     return (10 * u**3 - 15 * u**4 + 6 * u**5), (30 * u**2 - 60 * u**3 + 30 * u**4)
 
 
+def _q5_dd(u):
+    """``d²s/du²`` of :func:`_q5` on ``u`` clipped to [0, 1] (zero at both ends,
+    so the clip leaves no step: the analytic acceleration of the same profile)."""
+    u = np.clip(u, 0.0, 1.0)
+    return 60 * u - 180 * u**2 + 120 * u**3
+
+
 def _vel_ramp(t, t_a, T, v):
     """Position/velocity of a quintic VELOCITY ramp ``0 -> v`` over
     ``[t_a, t_a + T]`` (C2 in velocity), continued at constant ``v`` after."""
@@ -185,6 +192,13 @@ def _vel_ramp(t, t_a, T, v):
     pos = T * (2.5 * u**4 - 3 * u**5 + u**6) + np.maximum(t - (t_a + T), 0.0)
     vel = 10 * u**3 - 15 * u**4 + 6 * u**5
     return pos[:, None] * v[None, :], vel[:, None] * v[None, :]
+
+
+def _vel_ramp_acc(t, t_a, T, v):
+    """Acceleration of :func:`_vel_ramp` (analytic; zero outside the ramp)."""
+    u = np.clip((np.asarray(t, float) - t_a) / T, 0.0, 1.0)
+    acc = (30 * u**2 - 60 * u**3 + 30 * u**4) / T
+    return acc[:, None] * v[None, :]
 
 
 def _rest_quintic(t, t_d, t_e, p0, v0):
@@ -196,11 +210,14 @@ def _rest_quintic(t, t_d, t_e, p0, v0):
     tau = np.clip(np.asarray(t, float) - t_d, 0.0, T)
     pos = np.zeros((len(tau), len(p0)))
     vel = np.zeros_like(pos)
+    acc = np.zeros_like(pos)
     for ax in range(len(p0)):
         c3, c4, c5 = np.linalg.solve(A, [-p0[ax] - v0[ax] * T, -v0[ax], 0.0])
         pos[:, ax] = p0[ax] + v0[ax] * tau + c3 * tau**3 + c4 * tau**4 + c5 * tau**5
         vel[:, ax] = v0[ax] + 3 * c3 * tau**2 + 4 * c4 * tau**3 + 5 * c5 * tau**4
-    return pos, vel
+        # The third boundary row pins acc(T) = 0, so the clip at T leaves no step.
+        acc[:, ax] = 6 * c3 * tau + 12 * c4 * tau**2 + 20 * c5 * tau**3
+    return pos, vel, acc
 
 
 def retarget_parts(delta, t_c, t_rel, pre_s, flight_s):
@@ -215,24 +232,35 @@ def retarget_parts(delta, t_c, t_rel, pre_s, flight_s):
 
 
 def retarget_profile(t, t_b, t_in_end, t_c, t_rel, pre_s, post_s, t_end,
-                     flight_s, delta):
-    """``(b, ḃ)`` at plan-clock times ``t``, shape ``(len(t), 2)`` (module doc)."""
+                     flight_s, delta, *, with_acc: bool = False):
+    """``(b, ḃ)`` at plan-clock times ``t``, shape ``(len(t), 2)`` (module doc).
+
+    ``with_acc=True`` returns ``(b, ḃ, b̈)``: the ANALYTIC second derivative of
+    the same three pieces (I-PLAN-10 — the overlay's cup-track update must not
+    finite-difference the profile it already knows in closed form).
+    """
     delta = np.asarray(delta, float)
     t = np.asarray(t, float)
     T1 = t_in_end - t_b
-    s1, ds1 = _q5((t - t_b) / T1)
+    u1 = (t - t_b) / T1
+    s1, ds1 = _q5(u1)
     b = s1[:, None] * delta[None, :]
     bd = (ds1 / T1)[:, None] * delta[None, :]
+    bdd = (_q5_dd(u1) / T1**2)[:, None] * delta[None, :]
     v_b, _ = retarget_parts(delta, t_c, t_rel, pre_s, flight_s)
     T_a = (t_rel - pre_s) - t_c
     p1, v1 = _vel_ramp(t, t_c, T_a, v_b)
     b, bd = b + p1, bd + v1
+    bdd = bdd + _vel_ramp_acc(t, t_c, T_a, v_b)
     t_d = t_rel + post_s
     after = t >= t_d - 1e-12
     p_d = delta + v_b * (T_a / 2.0 + pre_s + post_s)
-    q, qd = _rest_quintic(t, t_d, t_end, p_d, v_b)
+    q, qd, qdd = _rest_quintic(t, t_d, t_end, p_d, v_b)
     b[after] = q[after]
     bd[after] = qd[after]
+    bdd[after] = qdd[after]
+    if with_acc:
+        return b, bd, bdd
     return b, bd
 
 
@@ -253,11 +281,51 @@ def _plan_slice(pose, pose_vel, plan: CyclePlan, k0: int, k1: int) -> CyclePlan:
                          plan.catch_evidence, -k0, plan.dt, k1 - k0 + 1))
 
 
+def _bumped_cup(cup, b, bd, bdd):
+    """``cup`` (SI metres) with the bump's ANALYTIC ``(b, ḃ, b̈)`` (mm) added to
+    its xy pos/vel/acc on every knot, so ``cup_realize.decompose(cup, tilts)``
+    reproduces the bumped ``plan.pose[:, :2]`` (I-PLAN-10).
+
+    ``decompose`` builds ``pose_xy = cup_xy·1000 − shift`` and ``pose_vel_xy =
+    vel_xy·1000 − shift_dot``, with ``shift`` / ``shift_dot`` functions of
+    ``cup_z`` and the tilts only: a pure xy overlay with tilts and z untouched
+    therefore needs no shift term, and adding ``b/1000`` to the cup xy is the
+    exact preimage.  ``jerk`` is the cup track's per-SPAN quantity
+    (``acc[k+1] = acc[k] + jerk[k]·dt``, ``CupCyclePlan.state_at``), so it takes
+    the span difference of the analytic ``b̈`` — the exact span-mean of the
+    profile's third derivative, keeping the cup track's own rollout
+    self-consistent.  ``takeoff_vel`` is left alone here: the caller mirrors
+    ``meta.takeoff_vel_mps``'s rule.
+    """
+    if cup is None:
+        return None
+    n = cup.pos.shape[0]
+    if b.shape[0] != n:
+        raise ValueError('bump profile has %d knots, cup track %d'
+                         % (b.shape[0], n))
+    pos = np.array(cup.pos, dtype=float, copy=True)
+    vel = np.array(cup.vel, dtype=float, copy=True)
+    acc = np.array(cup.acc, dtype=float, copy=True)
+    jerk = np.array(cup.jerk, dtype=float, copy=True)
+    pos[:, :2] += b / 1000.0
+    vel[:, :2] += bd / 1000.0
+    acc[:, :2] += bdd / 1000.0
+    jerk[:, :2] += np.diff(bdd, axis=0) / 1000.0 / float(cup.dt)
+    return dataclasses.replace(cup, pos=pos, vel=vel, acc=acc, jerk=jerk)
+
+
 def _bumped_meta(meta: uc.CycleMeta, i_rel: int, i_catch: Optional[int],
-                 delta, b_rel, v_b) -> uc.CycleMeta:
+                 delta, b_rel, v_b, profile=None) -> uc.CycleMeta:
     """The meta with the bumped catch's site moved by Δ and the carried
     release's site / cup velocity moved by ``b_rel`` / ``v_b`` — so the splice
-    guard, the report and the next seed read the release the plan executes."""
+    guard, the report and the next seed read the release the plan executes.
+
+    ``profile = (b, ḃ, b̈)`` (mm, per knot, the SAME arrays the plan was bumped
+    with) also moves ``meta.cup_plan`` (I-PLAN-10): the cup track is the second
+    representation of the plan, and ``unified_cycle._seam_velocity`` /
+    ``state_at_knot`` read it at the next splice.  ``meta.tilts`` is untouched
+    because the bump does not touch ``pose[:, 3:5]``.
+    """
     rels = list(meta.releases)
     rm = rels[i_rel]
     off3 = np.array([b_rel[0], b_rel[1], 0.0])
@@ -272,9 +340,18 @@ def _bumped_meta(meta: uc.CycleMeta, i_rel: int, i_catch: Optional[int],
             cm, site_mm=np.asarray(cm.site_mm, float)
             + np.array([delta[0], delta[1], 0.0]))
     kw = dict(releases=tuple(rels), catches=tuple(cats))
-    if (i_rel == len(rels) - 1 and getattr(meta, 'takeoff_vel_mps', None) is not None):
+    last_rel = i_rel == len(rels) - 1
+    if last_rel and getattr(meta, 'takeoff_vel_mps', None) is not None:
         kw['takeoff_vel_mps'] = (np.asarray(meta.takeoff_vel_mps, float)
                                  + vel3 / 1000.0)
+    if profile is not None and meta.cup_plan is not None:
+        cup = _bumped_cup(meta.cup_plan, *profile)
+        if last_rel:
+            # The same rule as ``takeoff_vel_mps`` (which is read straight off
+            # ``CupCyclePlan.takeoff_vel``): the terminal window's release.
+            cup = dataclasses.replace(
+                cup, takeoff_vel=np.asarray(cup.takeoff_vel, float) + vel3 / 1000.0)
+        kw['cup_plan'] = cup
     return dataclasses.replace(meta, **kw)
 
 
@@ -348,11 +425,12 @@ def apply_catch_bump(plan: CyclePlan, meta: uc.CycleMeta, k_wire: int,
                        % (v_norm, float(np.hypot(v_b[0], v_b[1])),
                           max_launch_lateral_mm_s),
                        release_offset_xy_mm=b_rel, launch_bias_xy_mm_s=v_b)
-    b, bd = retarget_profile(plan.t, t_b, t_in_end, t_c, t_rel, pre_s, post_s,
-                             t_end, flight, delta)
+    b, bd, bdd = retarget_profile(plan.t, t_b, t_in_end, t_c, t_rel, pre_s,
+                                  post_s, t_end, flight, delta, with_acc=True)
     # I-CATCH-5: every knot the wire may have read, and k_b itself, unchanged.
     b[:k_b + 1] = 0.0
     bd[:k_b + 1] = 0.0
+    bdd[:k_b + 1] = 0.0
     pose = np.array(plan.pose, dtype=float, copy=True)
     pose_vel = np.array(plan.pose_vel, dtype=float, copy=True)
     pose[:, 0:2] += b
@@ -380,7 +458,8 @@ def apply_catch_bump(plan: CyclePlan, meta: uc.CycleMeta, k_wire: int,
                       '(%.2f, %.2f) mm, launch bias %.1f mm/s'
                       % (delta[0], delta[1], k_b, b_rel[0], b_rel[1], v_norm),
                       k_b, plan=new_plan,
-                      meta=_bumped_meta(meta, i_rel, i_catch, delta, b_rel, v_b),
+                      meta=_bumped_meta(meta, i_rel, i_catch, delta, b_rel, v_b,
+                                        profile=(b, bd, bdd)),
                       report=rep, delta_xy_mm=delta, release_offset_xy_mm=b_rel,
                       launch_bias_xy_mm_s=v_b)
 
