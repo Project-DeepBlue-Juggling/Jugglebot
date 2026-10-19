@@ -16,6 +16,14 @@ that bag the fit is the identity by construction. The ~0.8° lever-arm tilt
 between the QTM Base body and the machine's base plane (logbook 2026-09-23) is
 inside that frame by definition.
 
+Yaw-only fit (owner, 2026-10-19). The robot's z axis is pinned to world z:
+the design already assumes it (the ball tracker's gravity is world -z, the
+landing plane is the world z of robot (0, 0, 830)), and the fitted 6-DoF tilt
+turned out to be QTM reconstruction bias that varies with platform pose, not
+the robot (``temp/probes/robot_frame_diag/report.md``). So the fit solves yaw
+about world z + a 3-D translation; ``R`` is still a 3x3 (a pure yaw rotation)
+and any residual tilt of the QTM world shows up in the RMS, not in ``R``.
+
 Convention (``RobotFrame``)::
 
     p_world = R @ p_robot + t        p_robot = R.T @ (p_world - t)
@@ -50,56 +58,52 @@ from .bb_calibration import kabsch
 
 #: QTM labels of the robot-base markers: 'Base - 1' .. 'Base - 7'.
 ROBOT_MARKER_LABEL_PREFIX = 'Base - '
-#: Fewest matched labels for a fit.
-ROBOT_FRAME_MIN_MARKERS = 4
-#: Fit RMS cap (mm); above it the frame is UNKNOWN. Recipe:
-#: ``python -I tools/probes/robot_frame_residual_probe.py`` (2026-10-19,
-#: ``temp/probes/robot_frame/20261019-094945``): per-frame Kabsch RMS of
-#: Base - 1..7, 3000 frames per bag. Against a template learned from the kincal
-#: bag 2026-09-27_14-31-13: that bag median 0.019 / p99 0.057 / max 0.32 mm;
-#: bags 2026-10-16_16-23-01 and _22-01-50 median 0.665 / 0.655, p99 0.68 /
-#: 0.68, max 0.70 / 1.15 mm. The markers have NOT moved (owner): that 0.66 mm
-#: is the reconstruction's systematic shape scatter between QTM wand
-#: calibrations (re-wanded 2026-10-16; the BB shelf markers show the same
-#: sitting-to-sitting pair-length variation, 0.05-0.48 mm). So the template
-#: SHAPE is learned from the freshest bag (live fit ~0.03 mm) and registered
-#: once into the kincal frame (:func:`register_template`), and the cap stays at
-#: 1.0 mm because the next re-wand can put ~0.66 mm of scatter back: 1.0 mm
-#: holds that with 1.5x margin and still refuses the isolated mislabel frames
-#: (max 1.15 mm). One marker displaced by d mm adds ~0.33 d to the RMS.
-#: Weak direction: the markers are near-coplanar (z spans 43 mm), so a VERTICAL
-#: error on Base - 7 (or 1 / 4) is mostly absorbed as tilt: 1 mm of Base - 7 z
-#: adds only 0.11 mm RMS but tilts the frame 0.12 deg; spending the whole cap
-#: on one marker's error tilts it up to 1.10 deg. The RMS cap is therefore not
-#: a tilt guard; ``ROBOT_FRAME_MAX_TILT_FROM_BUILD_DEG`` is.
-ROBOT_FRAME_MAX_RMS_MM = 1.0
-#: Largest angle (deg) between the live fit's robot z axis (R[:, 2]) and the
-#: template's ``z_axis_world_at_build``. The floor is fixed, so sliding the
-#: robot keeps its tilt; a tilt change means a bad fit (or a QTM frame that is
-#: no longer level-aligned). 0.2 deg moves the cup by 0.9 mm per 250 mm of
-#: height above the rest plane. Measured 2026-10-19 (the three probe bags,
-#: shape learned from 2026-10-16_22-01-50 and registered into the kincal
-#: frame, 3000 frames each): window-frame z axes differ by 0.022-0.036 deg
-#: between bags (0.0035 / 0.0375 / 0.0198 deg from world z); per-frame
-#: scatter p99 0.006-0.011 deg, single-frame max 0.13 deg (kincal bag, an
-#: isolated frame the tracker window absorbs). 0.2 deg is ~5x the
-#: between-bag spread.
-ROBOT_FRAME_MAX_TILT_FROM_BUILD_DEG = 0.2
-#: Second principal RMS spread (mm) the matched markers must have: Base - 3,
-#: 5, 6 and 7 are near-collinear (x ≈ 0; spread 3.3 mm), so that subset alone
-#: cannot fix the rotation about its own line. Every other 4-subset of the
-#: kincal template is >= 19 mm ({2, 3, 5, 6}); 5+ markers are larger still.
+#: Fewest markers a fit may use: a frame with fewer matched labels is
+#: TOO_FEW_MARKERS, and drop-worst outlier rejection (:func:`fit_robot_frame`)
+#: never drops below it. With 5 retained markers one displaced marker cannot be
+#: dropped, so the RMS cap still bounds it there. Also the floor for a template
+#: (loader / learner / registration).
+ROBOT_FRAME_MIN_FIT_MARKERS = 5
+#: Fit RMS cap (mm), 3-D residuals, on the RETAINED markers after drop-worst.
+#: Above it the fit fails (RMS_OVER_CAP). Measured 2026-10-19
+#: (``temp/probes/robot_frame_diag/report.md``, the three 2026-10-19 bags, every
+#: /mocap_data frame): the RMS is a QTM reconstruction BIAS that steps with the
+#: configuration, not noise (at-rest per-frame scatter 0.02-0.05 mm). Wherever
+#: the robot was moved in the volume it sits at 1.00-1.06 mm; at home with the
+#: platform parked raised (occluding the base) it reaches 1.62 mm. The previous
+#: 1.0 mm cap sat ON that floor and flapped on all three bags. 1.5 mm is above
+#: the moved-robot plateau; the occluded-home stretches (one marker, Base - 5,
+#: reconstructing 1.8-2.9 mm off) are handled by drop-worst, and a failed fit
+#: that still agrees with the running frame is held by the tracker
+#: (``ROBOT_FRAME_HOLD_MM``). Replay of cap 1.5 + drop-worst to 5 + hold 2 mm
+#: (report variant E): locks at 0 s and holds 100 % on all three bags, origin
+#: p95 deviation 1.4 mm, yaw p95 up to 0.06 deg. One marker displaced by d mm
+#: adds ~0.33 d to the 7-marker RMS.
+ROBOT_FRAME_MAX_RMS_MM = 1.5
+#: Second principal RMS spread (mm) the retained markers must have (checked on
+#: the full matched set and on every drop-worst subset): Base - 3, 5, 6 and 7
+#: are near-collinear (x ≈ 0; spread 3.3 mm). Every other 4-subset of the
+#: kincal template is >= 19 mm ({2, 3, 5, 6}) and every 5-subset larger still,
+#: so on the real template this only bites a caller passing a lower
+#: ``min_markers``.
 ROBOT_FRAME_MIN_SPREAD_MM = 10.0
 #: Window agreement for :class:`RobotFrameTracker`: a fit further than this
 #: from the window's medoid fit is left out of the current frame.
 ROBOT_FRAME_OUTLIER_MM = 1.0
 ROBOT_FRAME_OUTLIER_DEG = 0.05
+#: Hold rule for :class:`RobotFrameTracker`: a FAILED fit whose uncapped pose
+#: is within this of the running frame (origin distance, mm; yaw, deg) does not
+#: count toward the window clear. From the report's variant E replay
+#: (``temp/probes/robot_frame_diag/report.md`` § 6): the reconstruction bias
+#: moves the origin by ~1 mm at home as occlusion changes (p95 1.4 mm), yaw
+#: p95 0.03-0.05 deg; a real robot move today was 40-108 mm and 4-12 deg.
+ROBOT_FRAME_HOLD_MM = 2.0
+ROBOT_FRAME_HOLD_DEG = 0.3
 
 #: ``RobotFrameFit.reason`` values ('' when the fit is OK).
 REASON_TOO_FEW_MARKERS = 'TOO_FEW_MARKERS'
 REASON_DEGENERATE = 'DEGENERATE_GEOMETRY'
 REASON_RMS_OVER_CAP = 'RMS_OVER_CAP'
-REASON_TILT_FROM_BUILD = 'TILT_FROM_BUILD'
 
 _LABEL_NUM_RE = re.compile(r'(\d+)$')
 
@@ -244,28 +248,13 @@ class RobotFrameTemplate:
     points_mm: np.ndarray           # (n, 3), rows in ``labels`` order
     source: str = ''
     provenance: dict = field(default_factory=dict)
-    #: Unit robot z axis in world (the fitted R[:, 2]) when the template was
-    #: built; None skips the tilt-from-build check (optional: schema stays 1).
-    z_axis_world_at_build: Optional[np.ndarray] = None
-
-    def __post_init__(self):
-        z = self.z_axis_world_at_build
-        if z is not None:
-            z = np.asarray(z, dtype=float).reshape(3)
-            n = float(np.linalg.norm(z))
-            if not (math.isfinite(n) and n > 0.5):
-                raise ValueError(f'z_axis_world_at_build {z.tolist()} is not a unit vector')
-            object.__setattr__(self, 'z_axis_world_at_build', _readonly(z / n))
 
     def as_dict(self, frame: str = 'robot') -> dict:
         """JSON schema 1 (what :func:`load_robot_frame_template` reads)."""
-        d = {'schema': 1, 'frame': frame,
-             'markers': [{'label': lb, 'xyz_mm': [float(v) for v in p]}
-                         for lb, p in zip(self.labels, self.points_mm)],
-             'provenance': dict(self.provenance)}
-        if self.z_axis_world_at_build is not None:
-            d['z_axis_world_at_build'] = [float(v) for v in self.z_axis_world_at_build]
-        return d
+        return {'schema': 1, 'frame': frame,
+                'markers': [{'label': lb, 'xyz_mm': [float(v) for v in p]}
+                            for lb, p in zip(self.labels, self.points_mm)],
+                'provenance': dict(self.provenance)}
 
 
 def load_robot_frame_template(path: str) -> RobotFrameTemplate:
@@ -283,11 +272,6 @@ def load_robot_frame_template(path: str) -> RobotFrameTemplate:
         labels = tuple(str(m['label']) for m in data['markers'])
         P = np.array([[float(v) for v in m['xyz_mm']] for m in data['markers']], dtype=float)
         prov = dict(data.get('provenance') or {})
-        z = data.get('z_axis_world_at_build')
-        z = None if z is None else np.array([float(v) for v in z], dtype=float)
-        if z is not None and (z.shape != (3,) or not np.all(np.isfinite(z))
-                              or abs(float(np.linalg.norm(z)) - 1.0) > 1e-3):
-            raise ValueError(f'z_axis_world_at_build {z.tolist()} is not a finite unit 3-vector')
     except (KeyError, TypeError, ValueError) as e:
         raise ValueError(f'malformed robot frame template {path}: {e!r}')
     if P.ndim != 2 or P.shape != (len(labels), 3) or not np.all(np.isfinite(P)):
@@ -297,11 +281,11 @@ def load_robot_frame_template(path: str) -> RobotFrameTemplate:
     if not all(lb.startswith(ROBOT_MARKER_LABEL_PREFIX) for lb in labels):
         raise ValueError(f'robot frame template {path}: labels must start with '
                          f'{ROBOT_MARKER_LABEL_PREFIX!r}: {labels}')
-    if len(labels) < ROBOT_FRAME_MIN_MARKERS:
+    if len(labels) < ROBOT_FRAME_MIN_FIT_MARKERS:
         raise ValueError(f'robot frame template {path}: {len(labels)} markers, need '
-                         f'>= {ROBOT_FRAME_MIN_MARKERS}')
+                         f'>= {ROBOT_FRAME_MIN_FIT_MARKERS}')
     return RobotFrameTemplate(labels=labels, points_mm=_readonly(P), source=str(path),
-                              provenance=prov, z_axis_world_at_build=z)
+                              provenance=prov)
 
 
 def register_template(shape: RobotFrameTemplate, reference: RobotFrameTemplate):
@@ -309,14 +293,15 @@ def register_template(shape: RobotFrameTemplate, reference: RobotFrameTemplate):
     frame (the kincal frame): Kabsch of the shape's points onto the reference's
     over their common labels, applied to every shape point. Returns
     ``(template, registration_rms_mm, per_marker_mm)``; the template keeps the
-    shape's labels, records the registration in ``provenance['registration']``
-    and carries no ``z_axis_world_at_build`` (the builder sets it). Raises
-    ValueError with fewer than ``ROBOT_FRAME_MIN_MARKERS`` common labels."""
+    shape's labels and records the registration in ``provenance['registration']``.
+    This is a full 6-DoF Kabsch (it expresses a learned SHAPE in another
+    frame; only the per-frame fit is yaw-only). Raises
+    ValueError with fewer than ``ROBOT_FRAME_MIN_FIT_MARKERS`` common labels."""
     ref = {lb: p for lb, p in zip(reference.labels, reference.points_mm)}
     common = [lb for lb in shape.labels if lb in ref]
-    if len(common) < ROBOT_FRAME_MIN_MARKERS:
+    if len(common) < ROBOT_FRAME_MIN_FIT_MARKERS:
         raise ValueError(f'register_template: {len(common)} common labels, need '
-                         f'>= {ROBOT_FRAME_MIN_MARKERS}')
+                         f'>= {ROBOT_FRAME_MIN_FIT_MARKERS}')
     idx = {lb: i for i, lb in enumerate(shape.labels)}
     A = np.array([shape.points_mm[idx[lb]] for lb in common])
     B = np.array([ref[lb] for lb in common])
@@ -363,7 +348,7 @@ def learn_robot_frame_template(frames: Iterable, labels=None, *, inlier_mm: floa
     the mean of the samples within ``inlier_mm`` of it. ``labels`` None = every
     prefixed label seen. The frames must be in the frame the template defines
     (the kincal bag's world). Raises ValueError with fewer than
-    ``ROBOT_FRAME_MIN_MARKERS`` labels."""
+    ``ROBOT_FRAME_MIN_FIT_MARKERS`` labels."""
     want = None if labels is None else set(labels)
     samples: Dict[str, list] = {}
     n_frames = 0
@@ -374,9 +359,9 @@ def learn_robot_frame_template(frames: Iterable, labels=None, *, inlier_mm: floa
                 samples.setdefault(label, []).append(xyz)
     order = sorted(samples, key=_label_key) if labels is None else \
         [lb for lb in labels if lb in samples]
-    if len(order) < ROBOT_FRAME_MIN_MARKERS:
+    if len(order) < ROBOT_FRAME_MIN_FIT_MARKERS:
         raise ValueError(f'learn_robot_frame_template: {len(order)} labels seen in '
-                         f'{n_frames} frames, need >= {ROBOT_FRAME_MIN_MARKERS}')
+                         f'{n_frames} frames, need >= {ROBOT_FRAME_MIN_FIT_MARKERS}')
     pts, stats = [], {}
     for lb in order:
         S = np.asarray(samples[lb], dtype=float)
@@ -394,30 +379,70 @@ def learn_robot_frame_template(frames: Iterable, labels=None, *, inlier_mm: floa
 
 # ── Fit ──────────────────────────────────────────────────────────────────────
 
+def yaw_fit(A, B):
+    """Least-squares yaw-about-z + 3-D translation taking ``A`` onto ``B``
+    ((n, 3) each): 2-D Kabsch on xy after centroid removal; the z translation
+    is the mean z difference. Returns ``(R, t, rms_mm)`` with ``R`` a pure yaw
+    (R[2, 2] == 1 and R[0:2, 2] == R[2, 0:2] == 0 exactly) and the 3-D RMS of
+    ``A @ R.T + t - B``."""
+    A = np.asarray(A, dtype=float)
+    B = np.asarray(B, dtype=float)
+    ca, cb = A.mean(axis=0), B.mean(axis=0)
+    a, b = A - ca, B - cb
+    # maximise sum b.(R a) = cos(th) * sum(ax bx + ay by) + sin(th) * sum(ax by - ay bx)
+    th = math.atan2(float(np.sum(a[:, 0] * b[:, 1] - a[:, 1] * b[:, 0])),
+                    float(np.sum(a[:, 0] * b[:, 0] + a[:, 1] * b[:, 1])))
+    c, s = math.cos(th), math.sin(th)
+    R = np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+    t = cb - R @ ca
+    rms = float(np.sqrt(np.mean(np.sum((A @ R.T + t - B) ** 2, axis=1))))
+    return R, t, rms
+
+
 @dataclass(frozen=True, eq=False)
 class RobotFrameFit:
-    """One frame's fit; ``frame`` is None unless ``reason`` is ''."""
+    """One frame's fit; ``frame`` is None unless ``reason`` is ''.
+
+    ``n_matched`` and ``per_marker_mm`` describe the RETAINED markers (the ones
+    the final fit used); ``dropped`` names the markers drop-worst removed, in
+    drop order. ``uncapped`` is the final fit's pose whether or not it passed
+    the cap (the tracker's hold rule compares it); None when no fit was made
+    (too few markers, degenerate geometry)."""
     frame: Optional[RobotFrame]
     rms_mm: float
     n_matched: int
     per_marker_mm: dict             # label -> |R a + t - b| (mm), empty if not fitted
     reason: str = ''
+    dropped: Tuple[str, ...] = ()
+    uncapped: Optional[RobotFrame] = None
 
     @property
     def ok(self) -> bool:
         return self.frame is not None
 
 
+def _spread_ok(A: np.ndarray, min_spread_mm: float) -> bool:
+    sv = np.linalg.svd(A - A.mean(axis=0), compute_uv=False)
+    return bool(sv[1] / math.sqrt(len(A)) >= min_spread_mm)
+
+
 def fit_robot_frame(labelled, template: RobotFrameTemplate, *,
                     max_rms_mm: float = ROBOT_FRAME_MAX_RMS_MM,
-                    min_markers: int = ROBOT_FRAME_MIN_MARKERS,
+                    min_markers: int = ROBOT_FRAME_MIN_FIT_MARKERS,
                     min_spread_mm: float = ROBOT_FRAME_MIN_SPREAD_MM,
-                    max_tilt_from_build_deg: float = ROBOT_FRAME_MAX_TILT_FROM_BUILD_DEG,
                     stamp_ns: Optional[int] = None) -> RobotFrameFit:
-    """Kabsch fit (proper rotation) of the template onto a frame's labelled
-    markers. ``labelled`` is ``MocapFrame.labelled``: (label, x, y, z[, residual])
-    rows; non-prefixed, unknown, non-finite and repeated labels are ignored.
-    Never raises on bad input: the fit comes back with a reason instead."""
+    """Yaw-only fit (:func:`yaw_fit`) of the template onto a frame's labelled
+    markers, with drop-worst outlier rejection. ``labelled`` is
+    ``MocapFrame.labelled``: (label, x, y, z[, residual]) rows; non-prefixed,
+    unknown, non-finite and repeated labels are ignored (first occurrence wins).
+
+    Rule: fit every matched marker; while the RMS is over ``max_rms_mm`` and
+    more than ``min_markers`` remain, drop the single worst-residual marker and
+    refit. The fit is OK when the RMS of the retained set is within the cap.
+    Fewer than ``min_markers`` matched -> TOO_FEW_MARKERS; the matched set's
+    spread under ``min_spread_mm`` -> DEGENERATE_GEOMETRY; a drop that would
+    leave a degenerate set is not made (the fit then ends RMS_OVER_CAP). Never
+    raises on bad input: the fit comes back with a reason instead."""
     index = {lb: i for i, lb in enumerate(template.labels)}
     A, B, names = [], [], []
     for label, xyz in _iter_prefixed(labelled):
@@ -427,28 +452,38 @@ def fit_robot_frame(labelled, template: RobotFrameTemplate, *,
             B.append(xyz)
             names.append(label)
     n = len(names)
-    if n < max(int(min_markers), 3):
+    floor = max(int(min_markers), 3)
+    if n < floor:
         return RobotFrameFit(None, math.nan, n, {}, REASON_TOO_FEW_MARKERS)
     A = np.asarray(A, dtype=float)
     B = np.asarray(B, dtype=float)
-    sv = np.linalg.svd(A - A.mean(axis=0), compute_uv=False)
-    if sv[1] / math.sqrt(n) < min_spread_mm:
+    if not _spread_ok(A, min_spread_mm):
         return RobotFrameFit(None, math.nan, n, {}, REASON_DEGENERATE)
-    if np.array_equal(A, B):
-        # Exactly the template's own frame: the identity, not SVD round-off.
-        R, t, rms = np.eye(3), np.zeros(3), 0.0
-    else:
-        R, t, rms = kabsch(A, B)
-    per = {lb: float(d) for lb, d in zip(names, np.linalg.norm(A @ R.T + t - B, axis=1))}
-    if not (math.isfinite(rms) and rms <= max_rms_mm):
-        return RobotFrameFit(None, float(rms), n, per, REASON_RMS_OVER_CAP)
-    z0 = template.z_axis_world_at_build
-    if z0 is not None:
-        tilt = math.degrees(math.acos(max(-1.0, min(1.0, float(R[:, 2] @ z0)))))
-        if not tilt <= max_tilt_from_build_deg:
-            return RobotFrameFit(None, float(rms), n, per, REASON_TILT_FROM_BUILD)
-    return RobotFrameFit(RobotFrame(R, t, rms_mm=float(rms), n_matched=n, stamp_ns=stamp_ns),
-                         float(rms), n, per, '')
+    keep = list(range(n))
+    dropped = []
+    while True:
+        Ak, Bk = A[keep], B[keep]
+        if np.array_equal(Ak, Bk):
+            # Exactly the template's own frame: the identity, not round-off.
+            R, t, rms = np.eye(3), np.zeros(3), 0.0
+        else:
+            R, t, rms = yaw_fit(Ak, Bk)
+        res = np.linalg.norm(Ak @ R.T + t - Bk, axis=1)
+        within = math.isfinite(rms) and rms <= max_rms_mm
+        if within or len(keep) <= floor:
+            break
+        cand = [k for j, k in enumerate(keep) if j != int(np.argmax(res))]
+        if not _spread_ok(A[cand], min_spread_mm):
+            break
+        dropped.append(names[keep[int(np.argmax(res))]])
+        keep = cand
+    m = len(keep)
+    per = {names[k]: float(d) for k, d in zip(keep, res)}
+    pose = RobotFrame(R, t, rms_mm=float(rms), n_matched=m, stamp_ns=stamp_ns)
+    if not within:
+        return RobotFrameFit(None, float(rms), m, per, REASON_RMS_OVER_CAP,
+                             tuple(dropped), pose)
+    return RobotFrameFit(pose, float(rms), m, per, '', tuple(dropped), pose)
 
 
 # ── Tracker (the node's slow running frame) ──────────────────────────────────
@@ -458,46 +493,70 @@ class RobotFrameTracker:
     :class:`jugglebot.bb_base_frame.BaseFrameMonitor`). ``current`` is the frame
     over the last ``window`` OK fits: fits that disagree with the window's
     medoid by more than ``ROBOT_FRAME_OUTLIER_MM`` / ``_DEG`` are left out, then
-    the median origin and the SVD-projected mean rotation. After ``window``
-    consecutive failed fits the window is cleared: the frame is UNKNOWN again
-    (a marker knocked or the robot moved must not leave a stale frame live)."""
+    the median origin and the SVD-projected mean rotation.
+
+    Clear rule: after ``window`` consecutive COUNTED failed fits the window is
+    cleared and the frame is UNKNOWN again (a marker knocked or the robot moved
+    must not leave a stale frame live). Hold rule: a failed fit whose
+    ``uncapped`` pose (the final drop-worst fit on the retained markers, see
+    :class:`RobotFrameFit`) agrees with the current running frame within
+    ``ROBOT_FRAME_HOLD_MM`` = 2.0 mm (origin) and ``ROBOT_FRAME_HOLD_DEG`` =
+    0.3 deg (rotation, a pure yaw difference) is HELD: it neither counts toward
+    the clear nor resets the count, and it never enters the window. That rides
+    out the configuration-dependent QTM reconstruction bias (RMS up to 1.62 mm
+    with the platform parked raised, ``temp/probes/robot_frame_diag/report.md``)
+    without letting a stale frame survive a real move: a failed fit that
+    disagrees (a real move is tens of mm / degrees) or has no pose (too few
+    markers, degenerate) counts, so a moved robot still clears within
+    ``window`` feeds (10 = 2 s at mocap_node's 5 Hz). A held feed does not
+    refresh the newest-OK stamp, so ``status()['age_s']`` (a display key on
+    mocap/status, gated by nothing) grows through a long hold by design; the
+    skill_node staleness WARN measures the latched topic's receive time via
+    the 5 s republish, not this key."""
 
     def __init__(self, template: RobotFrameTemplate, *, window: int = 10,
                  max_rms_mm: float = ROBOT_FRAME_MAX_RMS_MM,
-                 min_markers: int = ROBOT_FRAME_MIN_MARKERS,
-                 max_tilt_from_build_deg: float = ROBOT_FRAME_MAX_TILT_FROM_BUILD_DEG,
+                 min_markers: int = ROBOT_FRAME_MIN_FIT_MARKERS,
                  outlier_mm: float = ROBOT_FRAME_OUTLIER_MM,
-                 outlier_deg: float = ROBOT_FRAME_OUTLIER_DEG):
+                 outlier_deg: float = ROBOT_FRAME_OUTLIER_DEG,
+                 hold_mm: float = ROBOT_FRAME_HOLD_MM,
+                 hold_deg: float = ROBOT_FRAME_HOLD_DEG):
         self.template = template
         self.window = max(1, int(window))
         self.max_rms_mm = float(max_rms_mm)
         self.min_markers = int(min_markers)
-        self.max_tilt_from_build_deg = float(max_tilt_from_build_deg)
         self.outlier_mm = float(outlier_mm)
         self.outlier_deg = float(outlier_deg)
+        self.hold_mm = float(hold_mm)
+        self.hold_deg = float(hold_deg)
         self._buf = deque(maxlen=self.window)      # OK RobotFrame fits
         self._last: Optional[RobotFrameFit] = None
         self._last_stamp_ns: Optional[int] = None
         self._fails = 0
+        self._held = False
         self._current: Optional[RobotFrame] = None
 
     def feed(self, labelled, stamp_ns: Optional[int]) -> RobotFrameFit:
         fit = fit_robot_frame(labelled, self.template, max_rms_mm=self.max_rms_mm,
-                              min_markers=self.min_markers,
-                              max_tilt_from_build_deg=self.max_tilt_from_build_deg,
-                              stamp_ns=stamp_ns)
+                              min_markers=self.min_markers, stamp_ns=stamp_ns)
         self._last = fit
+        self._held = False
         if stamp_ns is not None:
             self._last_stamp_ns = int(stamp_ns)
         if fit.ok:
             self._fails = 0
             self._buf.append(fit.frame)
             self._current = None                    # recomputed lazily
-        else:
-            self._fails += 1
-            if self._fails >= self.window and self._buf:
-                self._buf.clear()
-                self._current = None
+            return fit
+        cur = self.current()
+        if (cur is not None and fit.uncapped is not None
+                and not fit.uncapped.moved_from(cur, self.hold_mm, self.hold_deg)):
+            self._held = True                       # bias excursion: not a fail
+            return fit
+        self._fails += 1
+        if self._fails >= self.window and self._buf:
+            self._buf.clear()
+            self._current = None
         return fit
 
     def current(self) -> Optional[RobotFrame]:
@@ -524,9 +583,11 @@ class RobotFrameTracker:
                           n_matched=int(last.n_matched), stamp_ns=last.stamp_ns)
 
     def status(self, now_ns: Optional[int] = None) -> dict:
-        """{'ok', 'rms_mm', 'n_matched', 'reason', 'age_s', 'n_window'}; ``ok``
-        is the LAST fit; ``age_s`` is ``now_ns`` minus the newest OK fit's stamp
-        (None without both)."""
+        """{'ok', 'rms_mm', 'n_matched', 'reason', 'age_s', 'n_window',
+        'dropped', 'held'}; ``ok``, ``rms_mm``, ``n_matched``, ``reason`` and
+        ``dropped`` are the LAST fit's; ``held`` is True when that fit failed
+        but was held (:class:`RobotFrameTracker` hold rule); ``age_s`` is
+        ``now_ns`` minus the newest OK fit's stamp (None without both)."""
         last = self._last
         cur = self.current()
         age = None
@@ -537,4 +598,6 @@ class RobotFrameTracker:
                 else float(last.rms_mm),
                 'n_matched': 0 if last is None else int(last.n_matched),
                 'reason': 'NO_FIT_YET' if last is None else last.reason,
-                'age_s': age, 'n_window': len(self._buf)}
+                'age_s': age, 'n_window': len(self._buf),
+                'dropped': () if last is None else tuple(last.dropped),
+                'held': bool(self._held)}

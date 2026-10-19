@@ -127,6 +127,8 @@ All dated 2026-10-19; scoped runs in the PDJ venv. Nothing is flown.
 
 ## Residue / not done
 
+**Superseded in part 2026-10-19:** the 1.0 mm RMS cap, the "0.66 mm is per-wand scatter" reading and the 0.2 deg tilt-vs-build guard did not survive the first sitting (three launches flapped; the residual is 1.0-1.6 mm of per-configuration QTM reconstruction bias). Replaced by a yaw-only fit, drop-worst down to 5 markers, cap 1.5 mm, a hold rule and no tilt guard: see `2026-10-19-robot-frame-fit-yaw-only-hold.md`. The rest of this entry (join points, freezing, refusal) stands.
+
 - Poses on `rigid_body_poses` are published in WORLD xy (z shifted) under frame_id `platform_start`; the static TF world->platform_start (R@(0,0,z0)+t, rotation R) is for visualisation only and a tf2 consumer must not apply it to those poses (none exists today; grep confirmed).
 - NOT flown: dress rehearsal and the plan's hardware check (move Jugglebot, do not re-align QTM; rehearsal rows 35-38) are owed.
 - The GUI 3D view still draws markers and bodies in QTM world with the robot at the origin; if the robot is moved without re-alignment the drawing is offset by the transform.

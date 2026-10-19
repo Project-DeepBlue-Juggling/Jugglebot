@@ -5,6 +5,7 @@ owner: harrison
 created: 2026-10-14
 last_updated: 2026-10-19
 related_logbook:
+  - 2026-10-19-robot-frame-fit-yaw-only-hold.md
   - 2026-10-14-bb-calibration-one-attempt-investigation.md
   - 2026-10-16-bb-calibration-phase1-gate-inversion.md
   - 2026-10-16-bb-calibration-phase2-template-residual.md
@@ -334,11 +335,10 @@ Decided 2026-10-19 (owner; entry `2026-10-19-bb-calibration-phase3-robot-frame.m
   `REJECTED_ROBOT_FRAME_UNKNOWN`, executor ladder row, any learner
   authority). The transform is **frozen per attempt** (snapshotted at the
   session-start frame check); the tracker plane follows the latched topic live.
-- **Fit guard:** RMS cap 1.0 mm (the 0.66 mm template residual in the 10-16
-  bags is per-wand-calibration QTM scatter, the markers have not moved), at
-  least 4 markers, and a **tilt-vs-build cap of 0.2 deg** instead of a
-  per-marker cap (the markers are nearly coplanar, so a single-marker residual
-  cap does not bound the tilt).
+- **Fit guard (SUPERSEDED 2026-10-19 by the second cut below):** the first cut
+  had an RMS cap of 1.0 mm, at least 4 markers and a tilt-vs-build cap of
+  0.2 deg; it flapped on the first sitting. Now: yaw-only fit, drop-worst
+  down to 5 markers, RMS cap 1.5 mm, a hold rule, no tilt guard.
 - `mocap_interface` is unchanged (world xy, z shift kept); `aligned` is now
   the fit status; the QTM Base-body alignment check, its setters and the
   `mocap_alignment` constants are retired.
@@ -350,8 +350,37 @@ Decided 2026-10-19 (owner; entry `2026-10-19-bb-calibration-phase3-robot-frame.m
 - The manual QTM re-alignment step is removed from the LIVE runsheets (rows
   rewritten 2026-10-19; Phase 1 R4 retired).
 
-Status: code landed 2026-10-19, NOT flown. Dress rehearsal and the hardware
-check are owed (rehearsal rows 35-38).
+Decided 2026-10-19, second cut (owner; entry
+`2026-10-19-robot-frame-fit-yaw-only-hold.md`). The first cut was flown the
+same morning in three launches (bags 2026-10-19_11-04-03 home, 11-13-17 and
+11-14-54 moved by hand 108 mm / 4.2 deg and 40 mm / 11.8 deg; QTM not
+re-aligned) and flapped `RMS_OVER_CAP` at home with the platform parked high;
+in the third launch it never locked in. Diagnosis: the residual is QTM
+reconstruction BIAS that steps with configuration, not noise (1.00-1.06 mm at
+every moved position, up to 1.62 mm at home with the platform parked high);
+the tilt guard was a second flap source (0.228 deg at the home floor spot).
+
+- **Yaw-only fit:** robot z pinned to world z (the design already assumed it:
+  tracker gravity, landing plane); `tilt-vs-build` guard and its constants
+  retired.
+- **Drop-worst outlier rejection** while RMS > cap, down to 5 markers
+  (`ROBOT_FRAME_MIN_FIT_MARKERS`); `MIN_SPREAD` on the retained set.
+- **RMS cap 1.5 mm** (`ROBOT_FRAME_MAX_RMS_MM`; stays 1.5 after the replay
+  sweep: only 1.5 still drops a single marker displaced 5 mm).
+- **Tracker hold rule:** a failed fit whose uncapped pose is within 2.0 mm /
+  0.3 deg of the running frame does not count toward the 10-feed clear (never
+  exercised on the eight replayed bags; defence for a position whose p50
+  crosses the cap).
+- Base - 5 (3-5-6 cluster) is the weak marker; residue, only re-wanding or
+  camera coverage lowers the floor.
+- Replay of eight bags at caps 1.5 / 2.0 / 2.5: every bag locks at 0 s and
+  holds 100 %; origin p95 0.03-1.45 mm, yaw p95 0.001-0.057 deg at 1.5.
+- Residue: a real mid-launch move is tracked with ~2.5 s lag and settles ~4 s
+  after it starts (never UNKNOWN); a "frame settled" (window spread)
+  criterion before the per-attempt snapshot is NOT built.
+
+Status: second cut landed 2026-10-19 (code), NOT flown. Dress rehearsal and
+the hardware check are re-owed (rehearsal rows 35-38).
 
 Control analysis required before code (CLAUDE.md): which setpoints change
 frame, whether the Platform offset step at session start can produce a
@@ -364,8 +393,11 @@ refusals), `tests/ros/test_robot_frame_resource.py`,
 `tests/ros/test_mocap_node_robot_frame.py`,
 `tests/ros/test_skill_node_robot_frame.py` (identity bit-exact on five paths,
 rotated/translated frame invariance, refusal at authority 0 and 40, freeze),
-`tests/ros/test_ball_tracker_robot_frame.py`, and the bag probe
-`tools/probes/robot_frame_bag_check.py` across the 2026-10-10 re-definition
+`tests/ros/test_ball_tracker_robot_frame.py` (second cut: yaw-only, drop-worst,
+hold and the retired constants are pinned in `tests/ros/test_robot_frame.py`
+and `test_robot_frame_resource.py`), and the bag probe
+`tools/probes/robot_frame_bag_check.py` (promoted replay: `--replay --caps
+--displace`, the production tracker over the eight bags) across the 2026-10-10 re-definition
 (the two bags this plan named carry no `Base - n` labels, so the replay used
 10-10_14-13-18 and 10-11_11-27-53).
 
@@ -403,4 +435,4 @@ column still lands.
 | 0 Characterise | done | 2026-10-16 | bands published in the Phase 0 entry; pose mix excluded; the power-cycle pin dropped (every session is one), replaced by the 2026-10-16 QTM re-wand + the first Phase 1 sweep |
 | 1 Gate inversion and operator surface | code live, R1-R4 passed, tally 4 of 10 (15:08, 16:10, 16:23, 20:30; the 22:01 first sweep refused on a true residual; pending acceptance rewording) | 2026-10-16 | merged c115743d; mechanism: at BB (Phase 2), not its power-up state (A/B) |
 | 2 Template residual | done | 2026-10-16 | controlled pair + 75 sweeps of 22 sittings: the step is at BB (every subset, leave-one-out and label-free refit keeps it; firmware excluded); no pickup, no re-fit, one statistic kept (reference 0.18-0.46 mm, pool-size pin); A/B done 2026-10-16 evening: kappa held across two BB-only cycles (not a power-up state); the 86 min off deformed Q3-Q6 to 1.2 mm, calibration refused until addressed (entry `2026-10-16-bb-calibration-power-cycle-ab.md`); cap 1.0 -> 1.5 mm / advisory 0.90 -> 1.0 mm 2026-10-17 on measured evidence (entry `2026-10-17-bb-calibration-residual-cap-1p5.md`) |
-| 3 Robot frame in software | code landed, NOT flown; dress rehearsal + hardware check owed (rehearsal rows 35-38) | 2026-10-19 | BB side stays in QTM world, robot side transformed at two join points; kincal frame; a frame never received this launch always refuses (a later loss warns and reuses it); frozen per attempt; entry `2026-10-19-bb-calibration-phase3-robot-frame.md` |
+| 3 Robot frame in software | second cut landed 2026-10-19, NOT flown; the hardware check is re-owed (rehearsal rows 35-38); first cut flapped on its first sitting (QTM reconstruction bias 1.0-1.6 mm): now yaw-only, drop-worst to 5 markers, cap 1.5 mm, hold rule, no tilt guard | 2026-10-19 | BB side stays in QTM world, robot side transformed at two join points; kincal frame; a frame never received this launch always refuses (a later loss warns and reuses it); frozen per attempt; entry `2026-10-19-bb-calibration-phase3-robot-frame.md` |

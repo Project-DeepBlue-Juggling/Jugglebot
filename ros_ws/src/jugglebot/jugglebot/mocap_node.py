@@ -651,8 +651,11 @@ class MocapNode(Node):
             self._robot_ok_prev = ok
             if ok:
                 yaw = math.degrees(math.atan2(cur.R[1, 0], cur.R[0, 0]))
+                dropped = st.get('dropped') or ()
+                drop_txt = f' (dropped {", ".join(dropped)})' if dropped else ''
                 self.get_logger().info(
-                    f'Robot frame OK: rms {st["rms_mm"]:.2f} mm, {st["n_matched"]} markers, '
+                    f'Robot frame OK: rms {st["rms_mm"]:.2f} mm, {st["n_matched"]} markers'
+                    f'{drop_txt}, '
                     f'origin ({cur.t[0]:.1f}, {cur.t[1]:.1f}, {cur.t[2]:.1f}) mm, '
                     f'yaw {yaw:.2f} deg')
             elif first_state:
