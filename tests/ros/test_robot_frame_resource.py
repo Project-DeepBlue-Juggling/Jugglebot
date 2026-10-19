@@ -31,9 +31,10 @@ def test_provenance_names_kincal_bag_and_registration():
     assert prov['registration']['rms_mm'] < 1.0
 
 
-def test_z_axis_at_build_is_a_unit_vector_near_world_z():
-    z = _tpl().z_axis_world_at_build
-    assert z is not None and abs(np.linalg.norm(z) - 1.0) < 1e-6 and z[2] > 0.9999
+def test_resource_has_only_the_schema_1_keys():
+    # The tilt-from-build reference was retired 2026-10-19 (yaw-only fit).
+    with open(RESOURCE) as f:
+        assert set(json.load(f)) == {'schema', 'frame', 'markers', 'provenance'}
 
 
 def test_template_fits_itself_as_identity():

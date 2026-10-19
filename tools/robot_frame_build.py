@@ -10,9 +10,8 @@ reconstruction's per-wand-calibration scatter. So:
 
   --shape-bag      the FRESHEST bag: the template SHAPE is learned from it (live fit ~0.03 mm)
   --reference-bag  the kincal bag: the shape is REGISTERED once into the kincal frame
-                   (``robot_frame.register_template``); the registered template is written
-  z_axis_world_at_build = R[:, 2] of a RobotFrameTracker fed the registered template against
-  the SHAPE bag's frames (the tilt-from-build cap's reference).
+                   (``robot_frame.register_template``); the registered template is written,
+                   with a RobotFrameTracker's fit over the SHAPE bag recorded in provenance.
 
 The registration residual (~0.66 mm) is expected and is recorded in provenance, not an error.
 
@@ -100,14 +99,13 @@ def main(argv=None):
           f'registration RMS {reg_rms:.3f} mm; per marker '
           + ', '.join(f'{k[-1]}:{v:.2f}' for k, v in per.items()))
 
-    # z axis at build: the tracker over the SHAPE bag's frames with the registered template.
+    # The tracker over the SHAPE bag's frames with the registered template (provenance only).
     trk = rf.RobotFrameTracker(tpl)
     for ns, rows in s_frames:
         trk.feed(rows, ns)
     cur = trk.current()
     if cur is None:
-        sys.exit('no OK fit over the shape bag - cannot set z_axis_world_at_build')
-    z = cur.R[:, 2]
+        sys.exit('no OK fit over the shape bag - template not written')
     prov = dict(tpl.provenance)
     prov.update({
         'built': datetime.datetime.now(datetime.timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
@@ -124,8 +122,8 @@ def main(argv=None):
                                'origin_mm': [float(v) for v in cur.t]},
     })
     out = rf.RobotFrameTemplate(labels=tpl.labels, points_mm=tpl.points_mm, source=tpl.source,
-                                provenance=prov, z_axis_world_at_build=z)
-    print(f'z_axis_world_at_build {np.round(z, 6).tolist()}; tracker RMS {cur.rms_mm:.3f} mm')
+                                provenance=prov)
+    print(f'tracker RMS {cur.rms_mm:.3f} mm over the shape bag')
     for lb, p in zip(out.labels, out.points_mm):
         sd = shape.provenance['per_marker'][lb]
         print(f'  {lb}: ({p[0]:.3f}, {p[1]:.3f}, {p[2]:.3f}) mm  shape-bag n={sd["n"]} sd={np.round(sd["sd_mm"], 3).tolist()}')

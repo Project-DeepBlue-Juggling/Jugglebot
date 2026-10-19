@@ -140,6 +140,8 @@ is set at BB power-on and holds within a sitting.
    frame in the world therefore no longer appears in this ledger as a QTM
    re-alignment. Entry `2026-10-19-bb-calibration-phase3-robot-frame.md`.
 
+   2026-10-19 (second cut, code landed, NOT flown): the first cut flapped on its first sitting (the fit residual is 1.0-1.6 mm of per-configuration QTM reconstruction bias); the robot-frame fit is now yaw-only, drop-worst to 5 markers, cap 1.5 mm, a hold rule, no tilt guard. Entry `2026-10-19-robot-frame-fit-yaw-only-hold.md`.
+
 ## Hypotheses register
 
 | # | mechanism | for | against | discriminator |

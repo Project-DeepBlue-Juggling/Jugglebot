@@ -1,9 +1,12 @@
 """Robot frame, pure layer (jugglebot.robot_frame).
 
 Seven QTM-labelled markers on the robot base (``Base - 1..7``), template
-learned from the kincal bag (world there == robot frame), Kabsch-fitted per
-frame: p_world = R @ p_robot + t. The exact identity must reproduce today's
-numbers bit for bit; any rigid QTM re-definition must be recovered exactly.
+learned from the kincal bag (world there == robot frame), fitted per frame by
+yaw about world z + a 3-D translation (owner, 2026-10-19), with drop-worst
+outlier rejection down to 5 markers: p_world = R @ p_robot + t. The exact
+identity must reproduce today's numbers bit for bit; any yaw + translation QTM
+re-definition must be recovered exactly. Thresholds (cap 1.5 mm, hold 2 mm /
+0.3 deg) come from temp/probes/robot_frame_diag/report.md.
 """
 from __future__ import annotations
 
@@ -40,6 +43,27 @@ def random_rotation(rng):
     return rf._quat_xyzw_to_matrix(q)
 
 
+def yaw(deg):
+    """A pure yaw built with exact zeros / one off the xy block."""
+    c, s = math.cos(math.radians(deg)), math.sin(math.radians(deg))
+    return np.array([[c, -s, 0.0], [s, c, 0.0], [0.0, 0.0, 1.0]])
+
+
+def is_pure_yaw(R):
+    return (R[2, 2] == 1.0 and np.all(R[0:2, 2] == 0.0) and np.all(R[2, 0:2] == 0.0)
+            and abs(np.linalg.det(R) - 1.0) < 1e-12)
+
+
+# A reconstruction-bias shape: every marker displaced by the same magnitude in a
+# fixed direction (seed 310 of a unit-direction search, chosen because
+# drop-worst barely helps it: 7-marker yaw-fit RMS 0.978 d, 5-marker floor
+# 0.914 d). Scaled by d mm it models the configuration-dependent QTM bias of
+# report.md (spread over all markers, not one marker off).
+_rng = np.random.default_rng(310)
+BIAS_DIRS = _rng.normal(size=(7, 3))
+BIAS_DIRS /= np.linalg.norm(BIAS_DIRS, axis=1)[:, None]
+
+
 # ── identity ────────────────────────────────────────────────────────────────
 
 def test_template_frame_fits_exact_identity():
@@ -72,12 +96,13 @@ def test_near_identity_is_not_exact():
 # ── rotated + translated ─────────────────────────────────────────────────────
 
 @pytest.mark.parametrize('seed', range(5))
-def test_rigid_redefinition_is_recovered(seed):
+def test_yaw_and_translation_redefinition_is_recovered(seed):
     rng = np.random.default_rng(seed)
-    R = random_rotation(rng)
+    R = yaw(rng.uniform(-180.0, 180.0))
     t = rng.normal(scale=500, size=3)
     fit = rf.fit_robot_frame(rows(POINTS @ R.T + t), TEMPLATE)
-    assert fit.ok
+    assert fit.ok and fit.dropped == () and fit.n_matched == 7
+    assert is_pure_yaw(fit.frame.R)
     assert np.allclose(fit.frame.R, R, atol=1e-9, rtol=0)
     assert np.allclose(fit.frame.t, t, atol=1e-9, rtol=0)
     assert fit.rms_mm < 1e-9
@@ -92,35 +117,104 @@ def test_rigid_redefinition_is_recovered(seed):
 
 def test_fit_is_a_proper_rotation_under_noise():
     rng = np.random.default_rng(3)
-    R, t = rot((0.2, 0.1, 1.0), 37.0), np.array([12.0, -40.0, 3.0])
+    R, t = yaw(37.0), np.array([12.0, -40.0, 3.0])
     P = POINTS @ R.T + t + rng.normal(scale=0.03, size=POINTS.shape)
     f = rf.fit_robot_frame(rows(P), TEMPLATE).frame
     assert abs(np.linalg.det(f.R) - 1.0) < 1e-12
     assert rf.rotation_angle_deg(R.T @ f.R) < 0.01 and np.linalg.norm(f.t - t) < 0.1
 
 
+def test_tilt_is_residual_not_rotation():
+    # QTM world tilted 0.5 deg against the template: R stays a pure yaw and the
+    # tilt shows up in the residual (the design pins robot z to world z).
+    R, t = yaw(-12.0) @ rot((1, 0, 0), 0.5), np.array([40.0, 25.0, -3.0])
+    fit = rf.fit_robot_frame(rows(POINTS @ R.T + t), TEMPLATE, max_rms_mm=math.inf)
+    assert fit.ok and is_pure_yaw(fit.frame.R) and fit.dropped == ()
+    assert fit.rms_mm > 1.0                                 # ~1.4 mm over a 450 mm lever
+    assert abs(math.degrees(math.atan2(fit.frame.R[1, 0], fit.frame.R[0, 0])) + 12.0) < 0.05
+
+
 # ── refusals and input hygiene ───────────────────────────────────────────────
 
-def test_three_labels_is_too_few():
+def test_fewer_than_five_labels_is_too_few():
+    assert rf.ROBOT_FRAME_MIN_FIT_MARKERS == 5
     fit = rf.fit_robot_frame(rows(POINTS[:3], LABELS[:3]), TEMPLATE)
     assert fit.frame is None and fit.reason == rf.REASON_TOO_FEW_MARKERS and fit.n_matched == 3
+    assert fit.uncapped is None
+    fit = rf.fit_robot_frame(rows(POINTS[:4], LABELS[:4]), TEMPLATE)
+    assert fit.reason == rf.REASON_TOO_FEW_MARKERS and fit.n_matched == 4
+    assert rf.fit_robot_frame(rows(POINTS[:5], LABELS[:5]), TEMPLATE).ok
     assert rf.fit_robot_frame([], TEMPLATE).reason == rf.REASON_TOO_FEW_MARKERS
     assert rf.fit_robot_frame(None, TEMPLATE).reason == rf.REASON_TOO_FEW_MARKERS
 
 
 def test_collinear_subset_is_degenerate():
     idx = [2, 4, 5, 6]                                   # Base - 3, 5, 6, 7: x ≈ 0
-    fit = rf.fit_robot_frame(rows(POINTS[idx], [LABELS[i] for i in idx]), TEMPLATE)
-    assert fit.frame is None and fit.reason == rf.REASON_DEGENERATE
+    fit = rf.fit_robot_frame(rows(POINTS[idx], [LABELS[i] for i in idx]), TEMPLATE,
+                             min_markers=4)        # below the floor of 5, which no 5-subset trips
+    assert fit.frame is None and fit.reason == rf.REASON_DEGENERATE and fit.uncapped is None
 
 
-def test_displaced_marker_is_over_cap():
+def _moved(P, R=None, t=None):
+    R = yaw(23.0) if R is None else R
+    t = np.array([150.0, -80.0, 4.0]) if t is None else t
+    return P @ R.T + t, R, t
+
+
+def test_one_displaced_marker_is_dropped():
     P = POINTS.copy()
-    P[3, 1] += 20.0
-    fit = rf.fit_robot_frame(rows(P), TEMPLATE)
+    P[3, 1] += 5.0                                          # Base - 4, 5 mm
+    B, R, t = _moved(P)
+    fit = rf.fit_robot_frame(rows(B), TEMPLATE)
+    assert fit.ok and fit.n_matched == 6 and fit.dropped == ('Base - 4',)
+    assert 'Base - 4' not in fit.per_marker_mm and len(fit.per_marker_mm) == 6
+    assert np.linalg.norm(fit.frame.t - t) < 0.1
+    assert rf.rotation_angle_deg(R.T @ fit.frame.R) < 0.01
+    assert fit.uncapped is fit.frame
+
+
+def test_two_displaced_markers_are_dropped_to_five():
+    P = POINTS.copy()
+    P[3, 1] += 5.0                                          # Base - 4
+    P[1, 0] += 5.0                                          # Base - 2
+    B, R, t = _moved(P)
+    fit = rf.fit_robot_frame(rows(B), TEMPLATE)
+    assert fit.ok and fit.n_matched == 5
+    assert set(fit.dropped) == {'Base - 2', 'Base - 4'}
+    assert np.linalg.norm(fit.frame.t - t) < 0.1
+    assert rf.rotation_angle_deg(R.T @ fit.frame.R) < 0.01
+
+
+def test_three_displaced_markers_reach_the_floor_and_refuse():
+    P = POINTS.copy()
+    P[3, 1] += 5.0
+    P[1, 0] += 5.0
+    P[5, 2] -= 5.0                                          # Base - 6
+    fit = rf.fit_robot_frame(rows(_moved(P)[0]), TEMPLATE)
     assert fit.frame is None and fit.reason == rf.REASON_RMS_OVER_CAP
-    assert fit.rms_mm > rf.ROBOT_FRAME_MAX_RMS_MM
+    assert fit.n_matched == 5 and len(fit.dropped) == 2
+    assert fit.rms_mm > rf.ROBOT_FRAME_MAX_RMS_MM and fit.uncapped is not None
+
+
+def test_five_markers_cannot_drop_a_displaced_one():
+    P = POINTS.copy()
+    P[3, 1] += 5.0
+    idx = [0, 1, 3, 4, 6]
+    fit = rf.fit_robot_frame(rows(_moved(P)[0][idx], [LABELS[i] for i in idx]), TEMPLATE)
+    assert fit.frame is None and fit.reason == rf.REASON_RMS_OVER_CAP
+    assert fit.n_matched == 5 and fit.dropped == ()
     assert max(fit.per_marker_mm, key=fit.per_marker_mm.get) == 'Base - 4'
+
+
+def test_cap_is_one_and_a_half_mm_on_a_uniform_bias():
+    assert rf.ROBOT_FRAME_MAX_RMS_MM == 1.5
+    B, _, _ = _moved(POINTS + 1.227 * BIAS_DIRS)            # RMS ~1.2 mm
+    fit = rf.fit_robot_frame(rows(B), TEMPLATE)
+    assert fit.ok and fit.dropped == () and 1.15 < fit.rms_mm < 1.25
+    B, _, _ = _moved(POINTS + 1.70 * BIAS_DIRS)             # RMS ~1.66 mm, floor ~1.55
+    fit = rf.fit_robot_frame(rows(B), TEMPLATE)
+    assert fit.frame is None and fit.reason == rf.REASON_RMS_OVER_CAP and fit.n_matched == 5
+    assert rf.yaw_fit(POINTS, POINTS + 1.70 * BIAS_DIRS)[2] == pytest.approx(1.66, abs=0.02)
 
 
 def test_nan_rows_foreign_labels_duplicates_and_junk_are_ignored():
@@ -134,8 +228,11 @@ def test_nan_rows_foreign_labels_duplicates_and_junk_are_ignored():
     fit = rf.fit_robot_frame(junk + good + dup, TEMPLATE)
     assert fit.ok and fit.n_matched == 7
     assert np.allclose(fit.frame.R, R, atol=1e-9) and np.allclose(fit.frame.t, t, atol=1e-9)
-    # A duplicate BEFORE the real one wins (first occurrence), so the fit refuses.
-    assert rf.fit_robot_frame(dup + good, TEMPLATE).reason == rf.REASON_RMS_OVER_CAP
+    # A duplicate BEFORE the real one wins (first occurrence): a wild marker,
+    # which drop-worst removes.
+    fit = rf.fit_robot_frame(dup + good, TEMPLATE)
+    assert fit.ok and fit.dropped == ('Base - 1',) and fit.n_matched == 6
+    assert np.allclose(fit.frame.R, R, atol=1e-9) and np.allclose(fit.frame.t, t, atol=1e-9)
 
 
 def test_all_nan_never_raises():
@@ -156,9 +253,9 @@ def test_tracker_none_before_first_ok_fit_and_status_reason():
 
 
 def test_tracker_window_rejects_one_bad_fit():
-    R, t = rot((1, 2, 3), 5.0), np.array([3.0, -2.0, 1.0])
+    R, t = yaw(5.0), np.array([3.0, -2.0, 1.0])
     good = rows(POINTS @ R.T + t)
-    R_bad = rot((1, 0, 0), 0.5) @ R
+    R_bad = yaw(0.5) @ R
     bad = rows(POINTS @ R_bad.T + t + np.array([5.0, 0.0, 0.0]))   # rigid, so under the RMS cap
     tr = rf.RobotFrameTracker(TEMPLATE, window=10)
     for k in range(9):
@@ -179,6 +276,67 @@ def test_tracker_clears_after_a_window_of_failures():
         assert tr.current() is not None                    # holds through short dropouts
     tr.feed([], 3)
     assert tr.current() is None and tr.status()['n_window'] == 0
+
+
+def _running_tracker():
+    B, R, t = _moved(POINTS)
+    tr = rf.RobotFrameTracker(TEMPLATE, window=10)
+    for k in range(10):
+        assert tr.feed(rows(B), k).ok
+    return tr, R, t
+
+
+def test_hold_rule_keeps_the_frame_through_a_bias_excursion():
+    tr, R, t = _running_tracker()
+    before = tr.current()
+    B, _, _ = _moved(POINTS + 1.9 * BIAS_DIRS, R, t)        # ~1.86 mm RMS: fails the cap
+    for k in range(20):
+        fit = tr.feed(rows(B), 100 + k)
+        assert not fit.ok and fit.reason == rf.REASON_RMS_OVER_CAP
+        assert not fit.uncapped.moved_from(before, rf.ROBOT_FRAME_HOLD_MM,
+                                           rf.ROBOT_FRAME_HOLD_DEG)
+        assert tr.status()['held'] is True
+    assert tr.current() is before                           # unchanged object, same numbers
+    assert tr.status()['n_window'] == 10
+
+
+def test_hold_rule_does_not_hold_a_real_move():
+    tr, R, t = _running_tracker()
+    B, _, _ = _moved(POINTS + 1.9 * BIAS_DIRS, R, t + np.array([20.0, 0.0, 0.0]))
+    for k in range(9):
+        assert not tr.feed(rows(B), 100 + k).ok
+        assert tr.status()['held'] is False and tr.current() is not None
+    tr.feed(rows(B), 109)
+    assert tr.current() is None                              # cleared within the window
+
+
+def test_hold_rule_does_not_hold_too_few_markers():
+    tr, _, _ = _running_tracker()
+    for k in range(9):
+        tr.feed(rows(POINTS[:4], LABELS[:4]), 100 + k)
+        assert tr.current() is not None
+    tr.feed(rows(POINTS[:4], LABELS[:4]), 109)
+    assert tr.current() is None
+
+
+def test_held_feeds_do_not_reset_the_fail_count():
+    tr, R, t = _running_tracker()
+    held, _, _ = _moved(POINTS + 1.9 * BIAS_DIRS, R, t)
+    for k in range(9):
+        tr.feed([], 100 + k)                                 # 9 counted fails
+    tr.feed(rows(held), 200)                                 # held: neither counts nor resets
+    assert tr.current() is not None
+    tr.feed([], 300)                                         # the 10th counted fail
+    assert tr.current() is None
+
+
+def test_status_reports_dropped_labels():
+    P = POINTS.copy()
+    P[3, 1] += 5.0
+    tr = rf.RobotFrameTracker(TEMPLATE)
+    tr.feed(rows(P), 0)
+    st = tr.status()
+    assert st['ok'] and st['dropped'] == ('Base - 4',) and st['n_matched'] == 6
 
 
 # ── template file ────────────────────────────────────────────────────────────
@@ -206,9 +364,9 @@ def test_learn_write_load_round_trip(tmp_path):
     assert json.loads(path.read_text())['frame'] == 'kincal'
 
 
-def test_learn_needs_four_labels():
+def test_learn_needs_five_labels():
     with pytest.raises(ValueError):
-        rf.learn_robot_frame_template([rows(POINTS[:3], LABELS[:3])])
+        rf.learn_robot_frame_template([rows(POINTS[:4], LABELS[:4])])
 
 
 @pytest.mark.parametrize('content', [
@@ -222,7 +380,7 @@ def test_learn_needs_four_labels():
     json.dumps({'schema': 1, 'markers': [{'label': f'Foo {i}', 'xyz_mm': [0, 0, i]}
                                          for i in range(4)]}),          # wrong prefix
     json.dumps({'schema': 1, 'markers': [{'label': f'Base - {i}', 'xyz_mm': [0, 0, i]}
-                                         for i in range(3)]}),          # too few
+                                         for i in range(4)]}),          # too few (< 5)
 ])
 def test_malformed_template_raises_naming_the_file(tmp_path, content):
     path = tmp_path / 'bad_robot_frame.json'
@@ -282,7 +440,7 @@ def test_register_rigidly_moved_shape_lands_on_reference():
     reg, rms, per = rf.register_template(shape, TEMPLATE)
     assert np.allclose(reg.points_mm, POINTS, atol=1e-9, rtol=0)
     assert rms < 1e-9 and set(per) == set(LABELS) and max(per.values()) < 1e-9
-    assert reg.labels == LABELS and reg.z_axis_world_at_build is None
+    assert reg.labels == LABELS
     assert reg.provenance['n'] == 1
     r = reg.provenance['registration']
     assert r['rms_mm'] == rms and r['reference'] == 'test' and r['shape'] == 'fresh'
@@ -298,49 +456,16 @@ def test_register_reports_a_one_mm_marker_and_keeps_extra_labels():
     assert 0.1 < rms < 0.5 and len(reg.labels) == 8         # Base - 8 carried along
 
 
-def test_register_needs_four_common_labels():
-    shape = rf.RobotFrameTemplate(('Base - 1', 'Base - 2', 'Base - 3', 'Base - 9'), POINTS[:4])
+def test_register_needs_five_common_labels():
+    labels = ('Base - 1', 'Base - 2', 'Base - 3', 'Base - 4', 'Base - 9')
+    shape = rf.RobotFrameTemplate(labels, POINTS[:5])
     with pytest.raises(ValueError):
         rf.register_template(shape, TEMPLATE)
 
 
-# ── tilt from build ──────────────────────────────────────────────────────────
+# ── template file carries no tilt reference ─────────────────────────────────
 
-def _built(z):
-    return rf.RobotFrameTemplate(LABELS, POINTS, source='built', z_axis_world_at_build=z)
-
-
-def test_tilt_from_build_refuses_over_cap_and_ignores_yaw_and_slide():
-    T = _built((0.0, 0.0, 1.0))
-    t = np.array([300.0, -120.0, 0.0])
-    slid = rows(POINTS @ rot((0, 0, 1), 30.0).T + t)        # yaw + slide: tilt unchanged
-    assert rf.fit_robot_frame(slid, T).ok
-    ok = rows(POINTS @ rot((1, 0, 0), 0.15).T)
-    assert rf.fit_robot_frame(ok, T).ok
-    bad = rows(POINTS @ rot((1, 1, 0), 0.3).T + t)
-    fit = rf.fit_robot_frame(bad, T)
-    assert fit.frame is None and fit.reason == rf.REASON_TILT_FROM_BUILD
-    assert fit.rms_mm < 1e-9 and fit.n_matched == 7
-    assert rf.fit_robot_frame(bad, TEMPLATE).ok             # no stored axis: check skipped
-    assert rf.fit_robot_frame(bad, T, max_tilt_from_build_deg=0.5).ok
-    tr = rf.RobotFrameTracker(T, max_tilt_from_build_deg=0.5)
-    assert tr.feed(bad, 0).ok
-
-
-def test_tilt_axis_round_trips_through_the_file(tmp_path):
-    z = rot((0, 1, 0), 0.1)[:, 2]
-    T = _built(z * 3.0)                                     # normalised on construction
-    assert np.allclose(T.z_axis_world_at_build, z, atol=1e-15)
-    path = tmp_path / 'tilt_robot_frame.json'
-    rf.write_robot_frame_template(str(path), T)
-    d = json.loads(path.read_text())
-    assert d['schema'] == 1 and len(d['z_axis_world_at_build']) == 3
-    L = rf.load_robot_frame_template(str(path))
-    assert np.array_equal(L.z_axis_world_at_build, T.z_axis_world_at_build)
-    d.pop('z_axis_world_at_build')
-    path.write_text(json.dumps(d))
-    assert rf.load_robot_frame_template(str(path)).z_axis_world_at_build is None
-    d['z_axis_world_at_build'] = [0.0, 0.0, 2.0]
-    path.write_text(json.dumps(d))
-    with pytest.raises(ValueError, match='tilt_robot_frame.json'):
-        rf.load_robot_frame_template(str(path))
+def test_written_template_has_only_the_schema_1_keys(tmp_path):
+    path = tmp_path / 'robot_frame.json'
+    rf.write_robot_frame_template(str(path), TEMPLATE)
+    assert set(json.loads(path.read_text())) == {'schema', 'frame', 'markers', 'provenance'}
