@@ -2915,6 +2915,7 @@ def _single_catch_schedule(site, ball_id, t_land):
 @pytest.mark.parametrize('field, value, code', [
     ('mocap_fresh', False, 'REJECTED_MOCAP_STALE'),
     ('robot_frame_known', False, 'REJECTED_ROBOT_FRAME_UNKNOWN'),
+    ('robot_frame_settled', False, 'REJECTED_ROBOT_FRAME_SETTLING'),
     ('levelled', False, 'REJECTED_NOT_LEVELLED'),
     ('hand_fresh', False, 'REJECTED_HAND_STALE'),
     ('ball_evidence', bp.EVIDENCE_UNKNOWN, 'REJECTED_BALL_UNKNOWN'),
@@ -2968,12 +2969,14 @@ def test_a_fully_failing_observation_reports_every_row_at_once(sites):
     sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
     inst = _FakeInstaller()
     obs = _obs(mocap_fresh=False, hand_fresh=False, robot_frame_known=False,
+               robot_frame_settled=False,
                levelled=False, ball_evidence=bp.EVIDENCE_UNKNOWN)
     x = ex.SkillExecutor(sch, inst, observations=lambda t: obs)
     lines = x.tick(sch.skills[0].dispatch_s())
 
     assert x.end_code == ex.REJECTED_MOCAP_STALE
     for code in (ex.REJECTED_MOCAP_STALE, ex.REJECTED_ROBOT_FRAME_UNKNOWN,
+                ex.REJECTED_ROBOT_FRAME_SETTLING,
                 ex.REJECTED_NOT_LEVELLED,
                 ex.REJECTED_HAND_STALE, ex.REJECTED_BALL_UNKNOWN):
         assert code in lines[0]
@@ -3003,6 +3006,15 @@ def test_precondition_refusals_direct_order_and_launch_gate():
     assert ex.precondition_refusals(no_frame, launch=False,
                                     skip_mocap=True) == [
         ex.REJECTED_NOT_LEVELLED]
+    # The settling row follows the UNKNOWN row, defaults True, and is dropped
+    # for a REST like it.
+    assert ex.Observations.__dataclass_fields__[
+        'robot_frame_settled'].default is True
+    settling = _obs(robot_frame_known=False, robot_frame_settled=False)
+    assert ex.precondition_refusals(settling, launch=False) == [
+        ex.REJECTED_ROBOT_FRAME_UNKNOWN, ex.REJECTED_ROBOT_FRAME_SETTLING]
+    assert ex.precondition_refusals(settling, launch=False,
+                                    skip_mocap=True) == []
 
 
 def test_a_catch_only_checks_the_non_launch_rows(sites):

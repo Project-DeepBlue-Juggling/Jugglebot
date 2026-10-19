@@ -48,6 +48,8 @@ export const TOPIC_POLICY = Object.freeze({
     '/bb/calibration_result': { cls: E, throttleMs: 0, every: true },
     '/bb/calibration_attempt': { cls: E, throttleMs: 0, every: true },
     '/mocap_data':            { cls: R, throttleMs: 50 },
+    '/mocap/status':          { cls: R, throttleMs: 0 },   // 5 Hz robot_frame_* keys (pill detail, move banner)
+    '/robot_frame':           { cls: E, throttleMs: 0, every: true },   // latched, publish-on-change + 5 s heartbeat; places the Stewart model
     '/rigid_body_poses':      { cls: R, throttleMs: 50 },
     '/hand_telemetry':        { cls: R, throttleMs: 100 },
     '/leg_setpoint_echo':     { cls: R, throttleMs: 50 },

@@ -114,11 +114,13 @@ SUBSCRIBED: Tuple[str, ...] = (
     "/hand_telemetry",
     "/leg_setpoint_echo",
     "/link_status",
+    "/mocap/status",            # robot_frame_* keys: settled / move_count / last_move (the pill detail + move banner, 2026-10-19)
     "/mocap_data",
     "/motion/diagnostics",
     "/orchestrator_state",
     "/profile",
     "/rigid_body_poses",
+    "/robot_frame",             # latched software robot frame: places the Stewart model in the world-anchored scene (2026-10-19)
     "/robot_state",
     "/skills/attempt",
     "/udp_diag",

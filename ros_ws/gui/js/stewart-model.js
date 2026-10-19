@@ -1,6 +1,6 @@
 /** Articulated CAD in metres; homed GLB mesh registrations are baked offline. */
 import * as THREE from 'three';
-import { scene, sceneGroups, robotToThreeScaled } from './viewer.js';
+import { robotFrameGroup, sceneGroups, robotToThreeScaled } from './viewer.js';
 import { BASE_NODES_MM, INIT_PLAT_NODES_MM, INITIAL_HEIGHT_MM } from './geometry-config.js';
 import { cadMesh, setAxisFault, setAxisHighlight } from './robot-meshes.js';
 
@@ -34,7 +34,8 @@ export function initStewartModel() {
     pickables.push(hand);
     updateStewartPose(INIT_PLAT_NODES_MM.map(n => [n[0], n[1], n[2] + INITIAL_HEIGHT_MM]),
         [0, 0, INITIAL_HEIGHT_MM], 0, identity);
-    scene.add(platformGroup);
+    // World-anchored: child of robotFrameGroup (identity until robot_frame arrives).
+    robotFrameGroup.add(platformGroup);
     sceneGroups['Jugglebot'] = platformGroup;
 }
 

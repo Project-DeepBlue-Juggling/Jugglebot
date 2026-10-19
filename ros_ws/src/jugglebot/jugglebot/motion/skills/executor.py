@@ -347,6 +347,11 @@ REJECTED_MOCAP_STALE = 'REJECTED_MOCAP_STALE'
 #: a world-frame landing sits relative to the cup. Refuses at ANY learner
 #: authority (an authority-0 attempt still catches on those landings).
 REJECTED_ROBOT_FRAME_UNKNOWN = 'REJECTED_ROBOT_FRAME_UNKNOWN'
+#: The running robot frame is still settling after a move (window spread over
+#: 5 mm / 0.3 deg, or fewer than 10 fits since lock): an attempt's per-attempt
+#: snapshot taken mid-slide would freeze a half-moved frame.  Clears itself
+#: ~2 s after the robot is at rest; a false-positive move costs one refusal.
+REJECTED_ROBOT_FRAME_SETTLING = 'REJECTED_ROBOT_FRAME_SETTLING'
 REJECTED_NOT_LEVELLED = 'REJECTED_NOT_LEVELLED'
 REJECTED_HAND_STALE = 'REJECTED_HAND_STALE'
 #: ``REJECTED_HAND_NOT_PARKED`` WAS here and is RETIRED (owner decision,
@@ -752,6 +757,10 @@ class Observations:
       True so a caller with no QTM at all (the MuJoCo sim gate, where world
       IS the robot frame by construction) keeps its behaviour; the ROS shell
       (``skill_node._observations``) always supplies it.
+    * ``robot_frame_settled`` -- ``mocap/status`` ``robot_frame_settled``
+      is not '0' (the running frame is not mid-move) --
+      :data:`REJECTED_ROBOT_FRAME_SETTLING`.  Defaults True (no mocap/status
+      ever received must not refuse forever).
     * ``hand_fresh`` -- ``REJECTED_HAND_STALE``.
     * ``levelled`` -- ``trajectory_node``'s ``gravity_correction_loaded`` on a
       fresh status (C-LEVEL-1.O) -- ``REJECTED_NOT_LEVELLED``.
@@ -786,6 +795,7 @@ class Observations:
     in_trajectory_mode: bool
     hand_lane_refused: bool = False
     robot_frame_known: bool = True
+    robot_frame_settled: bool = True
     plan_superseded: bool = False
 
 
@@ -825,14 +835,16 @@ def precondition_refusals(obs: Observations, *, launch: bool,
     the live plan the same way a CATCH does and needs none of these facts.
     ``skip_mocap`` drops ``REJECTED_MOCAP_STALE`` for a REST specifically: a
     REST does not aim, so a stale mocap graph is not a fact it needs; it drops
-    ``REJECTED_ROBOT_FRAME_UNKNOWN`` for the same reason (the robot frame only
-    transforms aims and landings).
+    ``REJECTED_ROBOT_FRAME_UNKNOWN`` and ``REJECTED_ROBOT_FRAME_SETTLING`` for
+    the same reason (the robot frame only transforms aims and landings).
     """
     codes = []
     if not skip_mocap and not obs.mocap_fresh:
         codes.append(REJECTED_MOCAP_STALE)
     if not skip_mocap and not obs.robot_frame_known:
         codes.append(REJECTED_ROBOT_FRAME_UNKNOWN)
+    if not skip_mocap and not obs.robot_frame_settled:
+        codes.append(REJECTED_ROBOT_FRAME_SETTLING)
     if not obs.levelled:
         codes.append(REJECTED_NOT_LEVELLED)
     if not obs.hand_fresh:

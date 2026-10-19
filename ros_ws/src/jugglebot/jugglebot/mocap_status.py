@@ -56,6 +56,13 @@ KEY_ROBOT_FRAME_RMS_MM = 'robot_frame_rms_mm'
 KEY_ROBOT_FRAME_N_MATCHED = 'robot_frame_n_matched'
 KEY_ROBOT_FRAME_AGE_S = 'robot_frame_age_s'
 KEY_ROBOT_FRAME_REASON = 'robot_frame_reason'
+KEY_ROBOT_FRAME_SETTLED = 'robot_frame_settled'
+KEY_ROBOT_FRAME_MOVE_COUNT = 'robot_frame_move_count'
+KEY_ROBOT_FRAME_LAST_MOVE_MM = 'robot_frame_last_move_mm'
+KEY_ROBOT_FRAME_LAST_MOVE_DEG = 'robot_frame_last_move_deg'
+KEY_ROBOT_FRAME_LAST_MOVE_S = 'robot_frame_last_move_s'
+KEY_ROBOT_FRAME_ORIGIN_MM = 'robot_frame_origin_mm'
+KEY_ROBOT_FRAME_YAW_DEG = 'robot_frame_yaw_deg'
 
 #: A ``mocap/status`` sample older than this counts as no signal at all. The
 #: publisher runs at 5 Hz, so 1.0 s is five consecutive missed cycles — far
