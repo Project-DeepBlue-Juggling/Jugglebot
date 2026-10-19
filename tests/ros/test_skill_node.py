@@ -647,6 +647,26 @@ def test_the_catch_inward_authority_parameter_defaults_to_35_and_plumbs():
     assert node._catch_inward_authority_m() == 0.0
 
 
+def test_the_capture_cap_is_the_widest_re_aim_the_clamp_can_emit():
+    """The authority pin (I-CATCH-6, 2026-10-19): ``cup_cycle.
+    CAPTURE_MAX_OFFSET_M`` -- the planner's backstop on the capture move's
+    sideways slide -- is the 2-norm of the widest re-aim the executor's clamp
+    can emit, i.e. the two-site inward authority along one axis with the
+    learner's lateral authority across it: ``hypot(catch_inward_authority_mm,
+    learner_lateral_authority_mm)``.  (Pre-norm design: 20 mm per axis, which
+    the clamp's own 28.3 mm diagonal already exceeds.)  If either launch
+    default moves without the cap, a re-aim the clamp is entitled to emit would
+    be refused ``CATCH_AXIS`` at the planner (cap too small) or the backstop
+    would stop being one (cap too large)."""
+    import math
+    from jugglebot.motion.trajectory import cup_cycle as cc
+    node, _client = _node_with_client()
+    inward = float(node.get_parameter('catch_inward_authority_mm').value)
+    lateral = float(node.get_parameter('learner_lateral_authority_mm').value)
+    assert cc.CAPTURE_MAX_OFFSET_M * 1000.0 == pytest.approx(
+        math.hypot(inward, lateral))
+
+
 def test_the_executor_gets_the_inward_authority_and_a_forward_model():
     """The started executor carries `catch_inward_authority_m` and a learner
     exposing `predict` (the catch prior's forward model, 2026-10-13)."""
@@ -6737,3 +6757,190 @@ def test_columns_chain_feed_step_exception_ends_the_attempt_instead_of_hanging(
     assert node._goal_end_code == 'ABORTED_RELOAD_ERROR(RuntimeError)'
     assert node._reload_ctx is None
     assert node._executor is None
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# D2 (2026-10-19): level the platform after an END that left it tilted. The
+# executor owns the choreography (tests/motion/test_skills_executor.py); the
+# shell owns the debug hook that rehearses it, the notices, the cancel
+# receipt and the go_home supersede signal.
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _catch_terminal_for_tests():
+    from jugglebot.motion.skills.segments import CatchTerminal
+    return CatchTerminal(landing_mm=[0.0, 0.0, 830.0],
+                         landing_vel_mm_s=[0.0, 0.0, -2500.0],
+                         t_land_s=100.0, rest_site_mm=[0.0, 0.0, 750.0])
+
+
+def _set_debug_param(node, value):
+    return node.set_parameters(
+        [_MockParameter(value, name=sn._DEBUG_FORCE_CATCH_REFUSAL_PARAM)])[0]
+
+
+def _logged(node):
+    node._logger = MagicMock()
+    node.get_logger = lambda: node._logger
+    return node._logger
+
+
+def test_the_debug_force_catch_refusal_defaults_off():
+    node, client = _node_with_client(response=_response())
+    assert node._params[sn._DEBUG_FORCE_CATCH_REFUSAL_PARAM] is False
+    res = node._installer('CATCH', _catch_terminal_for_tests(), 99.0,
+                          ball_id=0)
+    assert res.accepted is True and len(client.calls) == 1
+
+
+def test_the_debug_force_catch_refusal_fires_once_warns_and_resets():
+    node, client = _node_with_client(response=_response())
+    log = _logged(node)
+    result = _set_debug_param(node, True)
+    assert result.successful is True
+    # A REST is not a CATCH: it goes to the wire and leaves the one-shot armed.
+    from jugglebot.motion.skills.segments import RestTerminal
+    rest = RestTerminal(rest_site_mm=[0.0, 0.0, 750.0], t_rest_s=101.0)
+    assert node._installer('REST', rest, 99.0, ball_id=0).accepted is True
+    assert len(client.calls) == 1
+    # The first CATCH is refused on purpose, never reaching the wire.
+    res = node._installer('CATCH', _catch_terminal_for_tests(), 99.0,
+                          ball_id=0)
+    assert res.accepted is False and res.code == 'CATCH_AXIS'
+    assert 'DEBUG' in res.message and len(client.calls) == 1
+    warn = [c[0][0] for c in log.warning.call_args_list]
+    assert any('debug_force_catch_refusal_once FIRED' in w for w in warn)
+    # Reset to off: the parameter reads False and the next CATCH is real.
+    assert node._params[sn._DEBUG_FORCE_CATCH_REFUSAL_PARAM] is False
+    res2 = node._installer('CATCH', _catch_terminal_for_tests(), 99.5,
+                           ball_id=0)
+    assert res2.accepted is True and len(client.calls) == 2
+    assert sum('FIRED' in c[0][0] for c in log.warning.call_args_list) == 1
+
+
+def test_the_debug_force_catch_refusal_is_refused_while_a_goal_is_active(
+        tmp_path):
+    node, _client = _node_with_client(response=_response())
+    log = _logged(node)
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
+                      _good_box_path(tmp_path, columns=True)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        assert node._start_pattern(
+            _columns_goal(separation_mm=100.0)).success is True
+    assert node._executor is not None
+    result = _set_debug_param(node, True)
+    assert result.successful is False
+    assert 'goal is active' in result.reason
+    assert node._params[sn._DEBUG_FORCE_CATCH_REFUSAL_PARAM] is False
+    assert node._debug_force_catch_refusal_armed is False
+    assert any('REFUSED' in c[0][0] for c in log.warning.call_args_list)
+    # The reload/feed wait counts as an active goal too.
+    node._executor = None
+    node._reload_ctx = object()
+    assert _set_debug_param(node, True).successful is False
+    # Disarming is always allowed.
+    assert _set_debug_param(node, False).successful is True
+
+
+def test_the_debug_force_catch_refusal_launch_value_arms_with_a_warning():
+    """A value given at LAUNCH bypasses the set-callback (it only fires on a
+    later `ros2 param set`), so the constructor arms it itself and warns."""
+    orig = _MockNodeClass.declare_parameter
+
+    def _launch_override(self, name, default_value):
+        if name == sn._DEBUG_FORCE_CATCH_REFUSAL_PARAM:
+            default_value = True
+        return orig(self, name, default_value)
+
+    with patch.object(_MockNodeClass, 'declare_parameter', _launch_override):
+        node = sn.SkillNode()
+    assert node._debug_force_catch_refusal_armed is True
+    assert node._consume_debug_force_catch_refusal() is True
+    assert node._params[sn._DEBUG_FORCE_CATCH_REFUSAL_PARAM] is False
+    assert node._consume_debug_force_catch_refusal() is False
+
+
+def test_executor_notices_are_logged_at_their_severity_once():
+    node, _client = _node_with_client()
+    log = _logged(node)
+    executor = SimpleNamespace(notices=[('INFO', 'a'), ('WARN', 'b'),
+                                        ('ERROR', 'c')])
+    node._drain_notices(executor)
+    assert executor.notices == []
+    assert [c[0][0] for c in log.info.call_args_list] == ['a']
+    assert [c[0][0] for c in log.warning.call_args_list] == ['b']
+    assert [c[0][0] for c in log.error.call_args_list] == ['c']
+    node._drain_notices(MagicMock())             # not a list: ignored
+
+
+def test_a_cancel_receipt_with_the_release_outside_the_windup_levels_the_decay():
+    node, _client = _node_with_client()
+    _logged(node)
+    node._executor = MagicMock()
+    ok = SimpleNamespace(result=lambda: SimpleNamespace(
+        success=True, message='cancel sent'))
+    node._on_bb_cancel_done(ok, 'STOPPED', 2.0)
+    node._executor.note_ball_cancelled.assert_called_once_with()
+    # A release inside BB's wind-up may answer CANCEL_TOO_LATE: not trusted.
+    node._executor = MagicMock()
+    node._on_bb_cancel_done(ok, 'STOPPED', 0.3)
+    node._executor.note_ball_cancelled.assert_not_called()
+    # A failed cancel never levels.
+    node._executor = MagicMock()
+    bad = SimpleNamespace(result=lambda: SimpleNamespace(
+        success=False, message='unavailable'))
+    node._on_bb_cancel_done(bad, 'STOPPED', 2.0)
+    node._executor.note_ball_cancelled.assert_not_called()
+
+
+def test_the_cancel_trust_boundary_is_0_9_s():
+    """The receipt is trusted only when the release was > the 0.6 s wind-up
+    PLUS 0.3 s of latency away at the request (`_BB_CANCEL_TRUST_S`)."""
+    node, _client = _node_with_client()
+    _logged(node)
+    ok = SimpleNamespace(result=lambda: SimpleNamespace(
+        success=True, message='cancel sent'))
+    node._executor = MagicMock()
+    node._on_bb_cancel_done(ok, 'STOPPED', 0.65)
+    node._executor.note_ball_cancelled.assert_not_called()
+    node._executor = MagicMock()
+    node._on_bb_cancel_done(ok, 'STOPPED', 0.95)
+    node._executor.note_ball_cancelled.assert_called_once_with()
+
+
+def test_a_stop_during_the_closing_wait_keeps_the_decay_and_says_so():
+    node, _client = _node_with_client()
+    _logged(node)
+    node._executor = MagicMock()
+    node._executor.attempt_ended = True
+    node._executor.end_code = 'CATCH_AXIS'
+    node._executor.closing_due_s.return_value = 1.5     # node clock reads 0.0
+    resp = node._stop_attempt()
+    assert resp.success is True
+    assert node._executor.end_code == 'CATCH_AXIS'      # untouched
+    assert 'decay to level is still due in 1.50 s' in resp.message
+    assert 'a Stop keeps it' in resp.message
+
+
+def _status_with_cycle(active):
+    st = _status()
+    st.cycle_active = bool(active)
+    return st
+
+
+def test_plan_superseded_reads_a_non_cycle_plan_only_after_the_install_settles():
+    """go_home / go_to_pose / hold install a NON-cycle plan and leave the mode
+    at TRAJECTORY; `cycle_active` False is the signal -- but only on a status
+    received well AFTER this node's last accepted install."""
+    node, _client = _node_with_client(response=_response())
+    assert node._observations(0.0).plan_superseded is False
+    node._on_traj_status(_status_with_cycle(False))
+    assert node._observations(0.0).plan_superseded is False      # no install yet
+    from jugglebot.motion.skills.segments import RestTerminal
+    rest = RestTerminal(rest_site_mm=[0.0, 0.0, 750.0], t_rest_s=101.0)
+    assert node._installer('REST', rest, 99.0, ball_id=0).accepted is True
+    node._on_traj_status(_status_with_cycle(False))              # too soon
+    assert node._observations(0.0).plan_superseded is False
+    node._last_install_mono -= sn._SUPERSEDE_STATUS_SETTLE_S + 0.1
+    assert node._observations(0.0).plan_superseded is True
+    node._on_traj_status(_status_with_cycle(True))               # still ours
+    assert node._observations(0.0).plan_superseded is False

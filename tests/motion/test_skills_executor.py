@@ -1358,6 +1358,11 @@ def test_catch_outward_reaim_is_clipped_to_the_outward_authority(sites):
     note = [l for l in lines if 'AIM-LATERAL-CLAMPED' in l]
     assert len(note) == 1 and 'OUTWARD side, authority 10 mm' in note[0]
     assert 'inward 20 mm' in note[0]
+    # The message states the offset the catch ACTUALLY moves (2026-10-19),
+    # not "keeps the schedule's site" (it moved 10 mm here).
+    assert "keeps the schedule" not in note[0]
+    assert 'clamped to -10.0 mm applied' in note[0]
+    assert '-44.6 mm in x' in note[0]
 
 
 def test_catch_inward_reaim_keeps_the_full_lateral_authority(sites):
@@ -4780,9 +4785,12 @@ def test_a_held_axis_catch_terminal_recomputes_rest_site_from_the_given_landing(
     ``rest_site_mm`` used to be the SKILL's PINNED (compile-time) value even
     when the ``landing`` it builds a terminal FOR has moved (a live tracker
     re-send under ``AIM_TRACKER``) -- the pinned xy then sits off the NEW
-    axis line through the moved landing and the QP refuses ``CATCH_AXIS``
-    (found probing ``sim/skills_gate.py --reload``: a held-axis catch's
-    dispatch reported the seed 3.06e5 mm off axis). ``_catch_terminal``
+    axis line through the moved landing and the QP refuses the SETTLE site
+    ``CATCH_AXIS`` (found probing ``sim/skills_gate.py --reload``: a held-axis
+    catch's dispatch reported the seed 3.06e5 mm off axis; since 2026-10-19 the
+    SEED may be off the line -- the capture move, I-CATCH-6, see
+    ``tests/motion/test_skills_capture_replay.py`` -- but the rest it settles to
+    still must not be). ``_catch_terminal``
     must RE-DERIVE ``rest_site_mm`` from whatever ``landing`` it is
     actually given, at the skill's own ``hold_tilt`` and z -- a dispatch
     with the UNMOVED ``landing_prior`` (no resend yet) must still recompute
@@ -7331,3 +7339,350 @@ def test_the_fences_use_LEAD_S_not_the_handoff_lead(sites):
     x.tick(t)
     assert len(inst.calls) == n0 + 1
     assert x._live_catch is not None
+
+
+# ---------------------------------------------------------------------------
+# D2 (2026-10-19): an END that leaves the platform tilted dispatches the
+# schedule's own DECAY REST (executor._plan_closing / _advance_closing).
+# Fake installer; the real compile_reload shape built by hand like the
+# U3 fixtures above. Defect 2: the reload attempt of 2026-10-19 11:08 ended
+# CATCH_AXIS after its pre-tilt REST and the platform sat tilted ~10 deg for
+# 70 s.
+# ---------------------------------------------------------------------------
+
+def _reload_with_decay_schedule(sites, tilt=(0.0, -0.20943951023931956)):
+    """PRE-TILT REST -> held CATCH -> level DECAY REST, with
+    ``compile_reload``'s own decay timing (``t_land + REST_TAIL +
+    REST_FRESH_MARGIN + DECAY_S``)."""
+    base = _reload_schedule(sites, tilt=tilt)
+    pretilt, catch = base.skills
+    t_land = float(catch.t_abs_s)
+    decay_end = (t_land + float(sg.REST_TAIL_S) + float(sc.REST_FRESH_MARGIN_S)
+                 + sc.DECAY_S)
+    decay = Skill(kind=sg.REST, ball_id=0, site=sites[0], t_abs_s=decay_end,
+                  window_s=sc.DECAY_S, rest_tilt=(0.0, 0.0))
+    return Schedule(pattern='self_toss', skills=(pretilt, catch, decay),
+                    flight_s=FLIGHT_S, beat_s=2.0, transit_s=0.5,
+                    dwell_s=0.30, t0_abs_s=T0_ABS)
+
+
+def _ok():
+    return ex.InstallResult(True, 'OK', 'ok', 0.0, splice_k=0)
+
+
+def _refused(code='CATCH_AXIS'):
+    return ex.InstallResult(False, code, '%s refused' % code, 0.0)
+
+
+def _end_at_the_catch(sites, *, tracker=None, observations=None,
+                      third=None):
+    """Tick the pre-tilt REST (accepted), then the CATCH (refused
+    CATCH_AXIS). Returns ``(sched, installer, executor, t_end)``."""
+    sch = _reload_with_decay_schedule(sites)
+    verdicts = [_ok(), _refused('CATCH_AXIS')]
+    if third is not None:
+        verdicts.append(third)
+    inst = _FakeInstaller(verdicts)
+    x = ex.SkillExecutor(sch, inst, tracker=tracker or (lambda b: None),
+                         observations=observations)
+    x.tick(sch.skills[0].dispatch_s())
+    t_end = sch.skills[1].dispatch_s()
+    x.tick(t_end)
+    return sch, inst, x, t_end
+
+
+def test_a_reload_that_ends_at_the_catch_decays_to_level_after_the_landing(
+        sites):
+    """The DEFECT-2 case. The CATCH is refused after the pre-tilt REST was
+    flown: no REST is dispatched before the schedule's own decay instant
+    (announced landing + REST_TAIL + margin - LEAD), exactly one level REST
+    is dispatched at it, at the schedule's terminal, no THROW ever, and
+    ``done`` waits for it."""
+    sch, inst, x, _t = _end_at_the_catch(sites)
+    decay = sch.skills[2]
+    assert x.attempt_ended and x.end_code == 'CATCH_AXIS'
+    assert [c[0] for c in inst.calls] == [sg.REST, sg.CATCH]
+    assert not x.done                    # the decay is still owed
+    assert x.closing_due_s() == pytest.approx(decay.dispatch_s())
+    # The success path's own instant: announced landing + 0.35 - LEAD.
+    assert decay.dispatch_s() > sch.skills[1].t_abs_s
+    x.tick(decay.dispatch_s() - 0.05)
+    assert len(inst.calls) == 2 and not x.done
+    x.tick(decay.dispatch_s())
+    assert [c[0] for c in inst.calls] == [sg.REST, sg.CATCH, sg.REST]
+    kind, terminal, t_now, _ball = inst.calls[2]
+    assert terminal.tilt == (0.0, 0.0)
+    assert terminal.t_rest_s == pytest.approx(decay.t_abs_s)
+    assert t_now == pytest.approx(decay.dispatch_s())
+    assert x.done and x.end_code == 'CATCH_AXIS'
+    assert x.closing_due_s() is None
+    sev_text = [(s, t) for s, t in x.notices]
+    assert any(s == 'INFO' and 'will level it' in t for s, t in sev_text)
+    assert any(s == 'INFO' and 'installed' in t for s, t in sev_text)
+    x.tick(decay.dispatch_s() + 5.0)
+    assert len(inst.calls) == 3          # once, never again
+
+
+def test_the_closing_decay_waits_for_a_later_fitted_landing(sites):
+    """A converged fit that puts the ball ``0.08 s`` after the announcement
+    postpones the decay by that much, and its terminal moves with it."""
+    state = {'landing': None}
+    sch = _reload_with_decay_schedule(sites)
+    prior = sch.skills[1].landing_prior
+    inst = _FakeInstaller([_ok(), _refused('CATCH_AXIS')])
+    x = ex.SkillExecutor(sch, inst, tracker=lambda b: state['landing'])
+    x.tick(sch.skills[0].dispatch_s())
+    x.tick(sch.skills[1].dispatch_s())
+    assert x.attempt_ended
+    decay = sch.skills[2]
+    state['landing'] = _fit_landing(
+        pos_mm=prior.pos_mm, vel_mm_s=prior.vel_mm_s,
+        t_land_abs_s=prior.t_land_abs_s + 0.08)
+    x.tick(decay.dispatch_s() + 0.001)
+    assert len(inst.calls) == 2          # the schedule's instant has passed
+    assert x.closing_due_s() == pytest.approx(decay.dispatch_s() + 0.08)
+    assert any('0.080 s after the announcement' in t for _s, t in x.notices)
+    x.tick(decay.dispatch_s() + 0.08)
+    assert len(inst.calls) == 3
+    assert inst.calls[2][1].t_rest_s == pytest.approx(decay.t_abs_s + 0.08)
+    assert x.done
+
+
+def test_an_unconverged_tracker_landing_does_not_postpone_the_decay(sites):
+    """Only ``from_fit`` moves the decay: the Kalman fallback runs 0.06-0.20 s
+    late and would hold the platform tilted for no reason."""
+    sch = _reload_with_decay_schedule(sites)
+    prior = sch.skills[1].landing_prior
+    late = ex.Landing(pos_mm=prior.pos_mm, vel_mm_s=prior.vel_mm_s,
+                      t_land_abs_s=prior.t_land_abs_s + 0.10, from_fit=False)
+    inst = _FakeInstaller([_ok(), _refused('CATCH_AXIS')])
+    x = ex.SkillExecutor(sch, inst, tracker=lambda b: late)
+    x.tick(sch.skills[0].dispatch_s())
+    x.tick(sch.skills[1].dispatch_s())
+    x.tick(sch.skills[2].dispatch_s())
+    assert len(inst.calls) == 3
+
+
+@pytest.mark.parametrize('field, code', [
+    ('hand_lane_refused', ex.LANE_REFUSED),
+    ('in_trajectory_mode', ex.ABORTED_MODE_CHANGED)])
+def test_an_excluded_end_never_decays(sites, field, code):
+    """LANE_REFUSED (the firmware is HOLDING the lane; the node's hand-less
+    hold is the safe end) and ABORTED_MODE_CHANGED (the operator has the
+    platform): the pre-tilt REST was flown and the platform is tilted, and
+    nothing is dispatched anyway."""
+    sch = _reload_with_decay_schedule(sites)
+    state = {'obs': _obs()}
+    inst = _FakeInstaller([_ok()])
+    x = ex.SkillExecutor(sch, inst, observations=lambda t: state['obs'])
+    x.tick(sch.skills[0].dispatch_s())
+    state['obs'] = _obs(**{field: field == 'hand_lane_refused'})
+    x.tick(sch.skills[0].dispatch_s() + 0.1)
+    assert x.attempt_ended and x.end_code == code
+    assert x.done and x.closing_due_s() is None
+    state['obs'] = _obs()
+    x.tick(sch.skills[2].dispatch_s() + 1.0)
+    assert [c[0] for c in inst.calls] == [sg.REST]
+    assert not x.notices
+
+
+def test_a_stop_before_the_catch_decays_at_the_schedules_instant(sites):
+    """Stop during the pre-tilt REST: the node sets ``attempt_ended`` and
+    ``end_code = 'STOPPED'`` (``skill_node._stop_attempt``). The CATCH is
+    never dispatched; the decay is, at its own instant."""
+    sch = _reload_with_decay_schedule(sites)
+    inst = _FakeInstaller([_ok()])
+    x = ex.SkillExecutor(sch, inst)
+    x.tick(sch.skills[0].dispatch_s())
+    x.attempt_ended = True
+    x.end_code = 'STOPPED'
+    assert x.closing_due_s() == pytest.approx(sch.skills[2].dispatch_s())
+    x.tick(sch.skills[1].dispatch_s())            # the CATCH's own instant
+    assert [c[0] for c in inst.calls] == [sg.REST]
+    x.tick(sch.skills[2].dispatch_s())
+    assert [c[0] for c in inst.calls] == [sg.REST, sg.REST]
+    assert inst.calls[1][1].tilt == (0.0, 0.0)
+    assert x.done and x.end_code == 'STOPPED'
+
+
+def test_a_confirmed_ball_butler_cancel_levels_immediately(sites):
+    """No ball is coming (the node's cancel receipt, release outside BB's
+    wind-up): the decay need not wait for the announced landing. The pre-tilt
+    REST had already reached its terminal, so it dispatches on the next tick
+    and its terminal is rebased to a FULL window from now."""
+    sch, inst, x, t_end = _end_at_the_catch(sites)
+    decay = sch.skills[2]
+    assert decay.dispatch_s() - t_end > 0.5       # a real wait without it
+    x.note_ball_cancelled()
+    floor = float(sch.skills[0].t_abs_s)       # the pre-tilt REST's terminal
+    assert x.closing_due_s() == pytest.approx(floor)
+    x.tick(floor - 0.05)                        # still slewing: not yet
+    assert len(inst.calls) == 2
+    t = floor + 0.01
+    x.tick(t)
+    assert [c[0] for c in inst.calls] == [sg.REST, sg.CATCH, sg.REST]
+    kind, terminal, t_now, _ball = inst.calls[2]
+    assert t_now == t < decay.dispatch_s()
+    assert terminal.tilt == (0.0, 0.0)
+    assert terminal.t_rest_s == pytest.approx(
+        t + float(decay.lead_s) + float(decay.window_s))
+    assert x.done
+    assert any('cancelled -- no ball coming' in t_ for _s, t_ in x.notices)
+
+
+def test_a_cancel_receipt_before_the_end_is_remembered(sites):
+    """The receipt can land before the attempt ends (a Stop whose cancel
+    callback wins the race): the flag is sticky."""
+    sch = _reload_with_decay_schedule(sites)
+    inst = _FakeInstaller([_ok()])
+    x = ex.SkillExecutor(sch, inst)
+    x.tick(sch.skills[0].dispatch_s())
+    x.note_ball_cancelled()
+    x.attempt_ended = True
+    x.end_code = 'STOPPED'
+    x.tick(sch.skills[0].t_abs_s + 0.01)
+    assert len(inst.calls) == 2 and inst.calls[1][1].tilt == (0.0, 0.0)
+
+
+@pytest.mark.parametrize('over, word', [
+    ({'plan_superseded': True}, 'go_home'),
+    ({'in_trajectory_mode': False}, 'disarm')])
+def test_go_home_or_disarm_cancels_the_closing_decay(sites, over, word):
+    """go_home / go_to_pose / hold replace the plan (``plan_superseded``,
+    mode stays TRAJECTORY) and disarm leaves TRAJECTORY: a decay planned
+    from wherever the operator sent the platform, back to the feed site,
+    would be an unrequested move. Dropped with a WARN, ``done`` released."""
+    state = {'obs': _obs()}
+    sch, inst, x, _t = _end_at_the_catch(
+        sites, observations=lambda t: state['obs'])
+    # the END itself was observed with a healthy machine:
+    assert x.attempt_ended and not x.done
+    state['obs'] = _obs(**over)
+    x.tick(sch.skills[2].dispatch_s() - 0.5)
+    assert x.done and x.closing_due_s() is None
+    assert any(s == 'WARN' and 'DECAY-ON-END cancelled' in t
+               for s, t in x.notices)
+    state['obs'] = _obs()
+    x.tick(sch.skills[2].dispatch_s() + 1.0)
+    assert len(inst.calls) == 2
+
+
+def test_a_refused_closing_decay_is_logged_once_and_ends_the_wait(sites):
+    sch, inst, x, _t = _end_at_the_catch(sites, third=_refused('LIMIT_JERK'))
+    x.tick(sch.skills[2].dispatch_s())
+    assert x.done and x.end_code == 'CATCH_AXIS'
+    errs = [t for s, t in x.notices if s == 'ERROR']
+    assert len(errs) == 1 and 'DECAY-ON-END refused LIMIT_JERK' in errs[0]
+    assert 'go_home' in errs[0]
+    x.tick(sch.skills[2].dispatch_s() + 1.0)
+    assert len(inst.calls) == 3          # no automatic retry
+
+
+def test_a_stale_state_decay_is_retried_until_its_scheduled_start(sites):
+    sch, inst, x, _t = _end_at_the_catch(
+        sites, third=_refused(feas.STALE_STATE))
+    decay = sch.skills[2]
+    x.tick(decay.dispatch_s())
+    assert not x.done and len(inst.calls) == 3
+    x.tick(decay.dispatch_s() + 0.02)
+    assert x.done and len(inst.calls) == 4
+
+
+def test_a_persistent_stale_state_decay_ends_the_wait_at_its_scheduled_start(
+        sites):
+    """The retry is bounded on the SCHEDULE (the REST's scheduled start,
+    ``t_abs_s - window_s``), not on the per-tick rebased terminal, so an
+    installer that answers STALE_STATE on EVERY call cannot retry forever."""
+    sch = _reload_with_decay_schedule(sites)
+    inst = _FakeInstaller([_ok(), _refused('CATCH_AXIS')]
+                          + [_refused(feas.STALE_STATE)] * 50)
+    x = ex.SkillExecutor(sch, inst)
+    x.tick(sch.skills[0].dispatch_s())
+    x.tick(sch.skills[1].dispatch_s())
+    decay = sch.skills[2]
+    bound = float(decay.t_abs_s) - float(decay.window_s)
+    assert decay.dispatch_s() < bound - 0.05
+    t = decay.dispatch_s()
+    while t < bound - 0.02:
+        x.tick(t)
+        assert not x.done and not [m for s_, m in x.notices if s_ == 'ERROR']
+        t += 0.025
+    n_before = len(inst.calls)
+    assert n_before >= 4                          # it really retried
+    x.tick(bound + 0.01)                          # past the scheduled start
+    assert x.done and x.end_code == 'CATCH_AXIS'
+    errs = [m for s_, m in x.notices if s_ == 'ERROR']
+    assert len(errs) == 1 and 'DECAY-ON-END refused STALE_STATE' in errs[0]
+    x.tick(bound + 1.0)
+    assert len(inst.calls) == n_before + 1        # no retry after the end
+
+
+def test_a_persistent_stale_state_ball_cancelled_decay_is_bounded_too(sites):
+    sch = _reload_with_decay_schedule(sites)
+    inst = _FakeInstaller([_ok(), _refused('CATCH_AXIS')]
+                          + [_refused(feas.STALE_STATE)] * 200)
+    x = ex.SkillExecutor(sch, inst)
+    x.tick(sch.skills[0].dispatch_s())
+    t_end = sch.skills[1].dispatch_s()
+    x.tick(t_end)
+    x.note_ball_cancelled()
+    floor = float(sch.skills[0].t_abs_s)
+    t = floor + 0.01
+    while t < floor + 0.95:
+        x.tick(t)
+        assert not x.done
+        t += 0.025
+    x.tick(floor + 1.01)
+    assert x.done
+    errs = [m for s_, m in x.notices if s_ == 'ERROR']
+    assert len(errs) == 1 and 'DECAY-ON-END refused STALE_STATE' in errs[0]
+
+
+def test_a_level_end_dispatches_nothing_extra(sites):
+    """Regression: an END whose last accepted terminal is level -- or whose
+    schedule decay was already dispatched and refused -- plans nothing."""
+    sch = _reload_with_decay_schedule(sites)
+    inst = _FakeInstaller([_ok(), _ok(), _refused('LIMIT_JERK')])
+    x = ex.SkillExecutor(sch, inst)
+    for k in range(3):
+        x.tick(sch.skills[k].dispatch_s())
+    assert x.attempt_ended and x.end_code == 'LIMIT_JERK'
+    assert x.done and not x.notices
+    x.tick(sch.skills[2].dispatch_s() + 2.0)
+    assert len(inst.calls) == 3
+    # and a refused PRE-TILT REST left nothing tilted:
+    inst2 = _FakeInstaller([_refused('LIMIT_JERK')])
+    x2 = ex.SkillExecutor(sch, inst2)
+    x2.tick(sch.skills[0].dispatch_s())
+    assert x2.attempt_ended and x2.done and not x2.notices
+
+
+def test_level_on_end_false_restores_the_old_behaviour(sites):
+    sch, inst, x, _t = _end_at_the_catch(sites)
+    sch2 = _reload_with_decay_schedule(sites)
+    inst2 = _FakeInstaller([_ok(), _refused('CATCH_AXIS')])
+    x2 = ex.SkillExecutor(sch2, inst2)
+    x2.level_on_end = False
+    x2.tick(sch2.skills[0].dispatch_s())
+    x2.tick(sch2.skills[1].dispatch_s())
+    assert x2.done and x2.closing_due_s() is None
+
+
+def test_a_carried_catch_or_a_throw_ahead_is_not_closed_by_the_decay(sites):
+    """The decay rule is the reload's tilt-then-decay shape only: a THROW
+    between the tilted terminal and the level REST means this is not it, and
+    nothing is planned (the node's stop REST / hold own those ENDs)."""
+    p1, p2 = sites
+    base = _reload_with_decay_schedule(sites)
+    pretilt, catch, decay = base.skills
+    throw = Skill(kind=sg.THROW, ball_id=0, site=p1,
+                  t_abs_s=decay.t_abs_s + 1.0, window_s=LAUNCH_S,
+                  y_d=(np.zeros(2), APEX_M), target=p1)
+    sch = Schedule(pattern='self_toss', skills=(pretilt, catch, throw, decay),
+                   flight_s=FLIGHT_S, beat_s=2.0, transit_s=0.5,
+                   dwell_s=0.30, t0_abs_s=T0_ABS)
+    inst = _FakeInstaller([_ok(), _refused('CATCH_AXIS')])
+    x = ex.SkillExecutor(sch, inst)
+    x.tick(sch.skills[0].dispatch_s())
+    x.tick(sch.skills[1].dispatch_s())
+    assert x.attempt_ended and x.done and x.closing_due_s() is None

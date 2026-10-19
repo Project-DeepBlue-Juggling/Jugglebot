@@ -1008,6 +1008,14 @@ class SelfTossGateConfig:
     #: `run_columns_attempt`'s own paragraph on this field for the exact
     #: split). Ignored outside a FEED trial.
     feed_bb_bias_mm: Tuple[float, float] = (0.0, 0.0)
+    #: 2026-10-19 (capture-move Unit 3): ``--reload`` only. The ball is
+    #: PHYSICALLY spawned to land this (x, y) mm away from the synthetic
+    #: ANNOUNCED landing ``compile_reload`` is compiled from (the real
+    #: Ball Butler feed's announced-vs-tracked gap), so the tracker fit
+    #: disagrees with the announcement and the CATCH needs a lateral re-aim
+    #: (a capture move when the platform is already pre-tilted off the new
+    #: line). ``(0.0, 0.0)`` is bit-for-bit the old behaviour.
+    reload_bias_mm: Tuple[float, float] = (0.0, 0.0)
     #: The fed columns entry is always HOP (owner decision, 2026-10-05, R5
     #: sitting-6 prep): a FEED trial spawns Jugglebot already parked at the
     #: feed site holding ball A (or empty, for a one-ball-fed trial), and
@@ -2963,12 +2971,17 @@ class SkillsGate:
         # real, later physical release.
         g = bal.GRAVITY_MMS2
         flight_lead_s = self._RELOAD_BALL_FLIGHT_LEAD_S
+        # `reload_bias_mm`: the PHYSICAL landing sits off the announced one
+        # (`land_pos` stays the announcement `compile_reload` is built from).
+        land_pos_phys = land_pos + np.array(
+            [float(self.cfg.reload_bias_mm[0]),
+             float(self.cfg.reload_bias_mm[1]), 0.0])
         spawn_vel = np.array([land_vel[0], land_vel[1],
                               land_vel[2] + g * flight_lead_s])
         spawn_pos = np.array([
-            land_pos[0] - land_vel[0] * flight_lead_s,
-            land_pos[1] - land_vel[1] * flight_lead_s,
-            land_pos[2] - land_vel[2] * flight_lead_s
+            land_pos_phys[0] - land_vel[0] * flight_lead_s,
+            land_pos_phys[1] - land_vel[1] * flight_lead_s,
+            land_pos_phys[2] - land_vel[2] * flight_lead_s
             - 0.5 * g * flight_lead_s * flight_lead_s])
         spawn_t_abs_s = t_land_abs_s - flight_lead_s
         pending_spawn = (spawn_t_abs_s, spawn_pos, spawn_vel, 0)
@@ -3340,6 +3353,12 @@ def main(argv=None) -> int:
                         'synthetic Ball Butler arrival (25 deg / 4.8 m/s) '
                         'through schedule.compile_reload, instead of the '
                         'columns gate')
+    p.add_argument('--reload-bias-mm', nargs=2, type=float, default=None,
+                   metavar=('BX', 'BY'),
+                   help='--reload only: SelfTossGateConfig.reload_bias_mm -- '
+                        'the ball is physically spawned to land (BX, BY) mm '
+                        'off the announced landing, so the tracker fit '
+                        'forces a lateral re-aim (capture-move check)')
     p.add_argument('--feed-angle-deg', type=float, default=None,
                    help='--learn --pattern columns only: spawn ball 1 on an '
                         'oblique arrival at the feed site (R5 sitting 2, '
@@ -3422,6 +3441,9 @@ def main(argv=None) -> int:
     if args.reload:
         rcfg = SelfTossGateConfig(report_path=args.report,
                                   catch_aim_source=args.catch_aim_source)
+        if args.reload_bias_mm is not None:
+            rcfg.reload_bias_mm = (float(args.reload_bias_mm[0]),
+                                   float(args.reload_bias_mm[1]))
         seeds = tuple(args.seeds) if args.seeds is not None else (0, 1, 2, 3, 4)
         rep = run_reload_gate(rcfg, seeds=seeds)
         _print_reload_table(rep)

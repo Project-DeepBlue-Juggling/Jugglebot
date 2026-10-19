@@ -1496,7 +1496,11 @@ def _events_for(kind: str, goals: CycleGoals):
         events.append(cc.CatchEvent(
             ball_id=int(goals.ball_id), t_s=goals.catch_time_s(),
             site=_vec3(goals.catch_site_mm, 'catch_site_mm') / 1000.0,
-            vel=catch_vel_m_s, axis=axis, vel_target=vel_target))
+            vel=catch_vel_m_s, axis=axis, vel_target=vel_target,
+            # I-CATCH-6: a held catch that ENDS AT REST (the reload / feed
+            # CATCH) may capture onto a refined line inside its window; a held
+            # STEADY keeps the off-line-seed refusal.
+            capture=(kind == LANDING and axis is not None)))
     if has_throw:
         _require(goals, kind, 'throw_site_mm', 'throw_target_mm', 'flight_s')
         events.append(cc.ThrowEvent(
@@ -1709,6 +1713,15 @@ def plan_cycle(kind: str, goals: CycleGoals, state: CycleState,
 
     events, settle_m = _events_for(kind, goals)
     state0 = state.to_cup_state(rcfg)
+    if (any(getattr(e, 'capture', False) for e in events)
+            and isinstance(cup_cfg, cc.CupCycleConfig)
+            and cup_cfg.capture_jerk_mps3 is None):
+        # The capture move's pre-solve jerk gate budgets against the LIVE leg
+        # jerk cap (the number validate_cycle's LIMIT_JERK judges), not the
+        # cup-frame lateral box.  Only a capture-enabled window gets a new
+        # config, so every other window's cup_cfg is untouched.
+        cup_cfg = dataclasses.replace(
+            cup_cfg, capture_jerk_mps3=float(limits.leg_jerk_mmps3) / 1000.0)
 
     # Per-stage attribution (2026-09-06). See CycleMeta.stage_wall_s: one
     # `plan_wall_s` cannot say WHERE a blown-out solve went. (Measured on the
@@ -2003,7 +2016,10 @@ def _realize(kind, cup, goals, state, limits, geom, rcfg, *, t_wall,
         # touch-down and the release keeps ``_throw_tilt_for``'s take-off tilt:
         # the held-span branch re-levels between them.  ``held_from_k`` is 0 —
         # the seed at the held attitude, which the seam check below enforces;
-        # the capture span (> 0) is refused by the QP before this runs.
+        # a caller-chosen span start (> 0) is refused by the QP before this
+        # runs.  A LANDING's CAPTURE move (I-CATCH-6) needs nothing here: it
+        # is a pure platform translation at this same constant attitude, the
+        # held line starting at the contact window's first knot.
         hold = np.asarray(goals.hold_tilt, dtype=float).reshape(2)
         recv = hold
         if kind == STEADY:

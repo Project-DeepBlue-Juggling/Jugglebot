@@ -407,6 +407,17 @@ ABORTED_MODE_CHANGED = 'ABORTED_MODE_CHANGED'
 #: streamed lane, legs or hand; the string value changed with the name.)
 LANE_REFUSED = 'LANE_REFUSED'
 
+#: The D2 closing decay's states (:meth:`SkillExecutor._plan_closing`).
+_CLOSING_NONE = 'none'
+_CLOSING_WAITING = 'waiting'
+_CLOSING_DONE = 'done'
+_CLOSING_CANCELLED = 'cancelled'
+
+#: END codes after which the closing decay is NEVER dispatched: the firmware is
+#: holding a refused lane (the node's forced hand-less hold is the safe end),
+#: or the operator has taken the platform.
+CLOSING_EXCLUDED_END_CODES = frozenset({LANE_REFUSED, ABORTED_MODE_CHANGED})
+
 #: No evidence the ball left by ``t_release + RELEASE_GRACE_S`` -- the throw
 #: produces no learner row (``toss_sequencer.py::_step_throwing``'s
 #: ``now >= self._release_deadline`` -> ``self._abort('NO_RELEASE')``).
@@ -757,6 +768,15 @@ class Observations:
       started (``teensy_bridge_node`` publishes it on ``/link_status``) --
       :data:`LANE_REFUSED`.  Defaults False, so a caller that cannot
       observe the counter keeps the pre-2026-09-18 behaviour exactly.
+    * ``plan_superseded`` -- the streaming plan is no longer a skill plan:
+      ``go_home`` / ``go_to_pose`` / ``hold`` install a NON-cycle plan and,
+      unlike a disarm, leave the control mode at TRAJECTORY, so
+      ``in_trajectory_mode`` cannot see them.  Read ONLY by the closing
+      decay's wait (:meth:`SkillExecutor._advance_closing`), which drops
+      itself on it -- a decay planned from the pose the operator just sent
+      the platform to, back to the feed site, would be an unrequested
+      move.  Defaults False (a caller that cannot observe it never cancels
+      the wait on it).
     """
 
     mocap_fresh: bool
@@ -766,6 +786,7 @@ class Observations:
     in_trajectory_mode: bool
     hand_lane_refused: bool = False
     robot_frame_known: bool = True
+    plan_superseded: bool = False
 
 
 def precondition_refusals(obs: Observations, *, launch: bool,
@@ -1968,6 +1989,25 @@ class SkillExecutor:
         self.results = []                #: (index, Skill, InstallResult)
         self.attempt_ended = False
         self.end_code = ''
+        #: D2 (2026-10-19): level the platform after an END that leaves it
+        #: tilted -- see :meth:`_plan_closing`.  ``False`` restores the
+        #: pre-D2 behaviour (the last terminal is held).
+        self.level_on_end = True
+        #: Set (from the node's cancel receipt) when Ball Butler has
+        #: confirmed the throw this attempt waited for was CANCELLED -- no
+        #: ball is coming, so the closing decay dispatches at once instead
+        #: of waiting for the announced landing (:meth:`note_ball_cancelled`).
+        self.ball_cancelled = False
+        #: ``(severity, text)`` the node logs at the operator's level
+        #: (``'INFO'`` / ``'WARN'`` / ``'ERROR'``) -- :meth:`tick` returns the
+        #: same text as debug lines, which nobody reads at a sitting.
+        self.notices: List[Tuple[str, str]] = []
+        self._closing_state = ''         #: '' | _CLOSING_* (see :meth:`_plan_closing`)
+        self._closing_idx = -1           #: the DECAY REST's schedule index
+        self._closing_catch_idx = -1     #: the CATCH whose fit moves it (-1: none)
+        self._closing_floor_s = 0.0      #: earliest dispatch once the ball is cancelled
+        self._closing_delay_s = 0.0      #: latest converged fit's lateness
+        self._closing_tilt_deg = 0.0
         #: Why ``end_code`` was set, in the END line's words (without its
         #: clock and code), and the kind of skill it ended at (``''`` when it
         #: did not end at one) — for the operator's end line (:mod:`report`).
@@ -2056,11 +2096,16 @@ class SkillExecutor:
         instant the schedule's LAST catch installs, a beat before that
         catch's own :data:`MISSED_CATCH` evidence window has even closed --
         without this a caller that stops at ``done`` would never see the
-        verdict on a schedule's final catch."""
+        verdict on a schedule's final catch.
+
+        And on the D2 closing decay (:meth:`_plan_closing`): an END that left
+        the platform tilted is not over until the schedule's DECAY REST has
+        been dispatched (or dropped), which can be up to ~1 s after the END."""
         finished = (self.attempt_ended
                    or len(self.dispatched) >= len(self.schedule.skills))
         return (finished and not self._pending_outcomes
-               and not self._pending_catches)
+               and not self._pending_catches
+               and not self._closing_waiting())
 
     # ── the R3 command: learner + admissible box, computed once per throw ──
 
@@ -2612,10 +2657,15 @@ class SkillExecutor:
                         % (in_mm, out_mm))
             else:
                 side = 'authority %.0f mm' % a_mm
+            # The applied offset, not "keeps the site": the clamp pulls the
+            # aim to the authority EDGE, so the catch still moves up to that
+            # far off the schedule's site (2026-10-19, the 20 mm moves of the
+            # held-axis reload were read as "stayed on the site").
             self._pending_notes.append(
-                'AIM-LATERAL-CLAMPED skill %d: aim landing %+.1f mm in '
-                '%s, catch keeps the schedule\'s site (%s)'
-                % (idx, offset[axis], 'xy'[axis], side))
+                'AIM-LATERAL-CLAMPED skill %d: aim landing %+.1f mm in %s '
+                'off the schedule\'s site, clamped to %+.1f mm applied '
+                '(the catch moves that far from the site) (%s)'
+                % (idx, offset[axis], 'xy'[axis], float(clipped[axis]), side))
         pos_mm = np.array([clamped_xy[0], clamped_xy[1],
                           float(np.asarray(landing.pos_mm, dtype=float)[2])])
         return Landing(pos_mm=pos_mm, vel_mm_s=landing.vel_mm_s,
@@ -2741,17 +2791,29 @@ class SkillExecutor:
         if skill.rest_site_mm is not None:
             # HELD-AXIS CATCH (R4 reload): `skill.rest_site_mm` was computed
             # ONCE at compile time, from the ANNOUNCED landing --
-            # `_clamp_lateral_to_schedule` above (a live re-send, `AIM_TRACKER`)
-            # can move `landing.pos_mm` off that exact point, and the pinned
-            # rest site would then sit off the NEW axis line through the
-            # refined landing. `segments.hold_axis_site` refuses (`CATCH_AXIS`)
-            # a seed off that line rather than absorbing it (its own
-            # docstring), so a re-send must RE-DERIVE the rest site from the
-            # refined landing at THIS catch's own hold_tilt, keeping only the
-            # z the schedule chose (U2 cross-unit contract, `uc.SETTLE_CUP_
-            # Z_MM`) -- not the pinned xy. A dispatch with no resend yet
-            # (`landing` still the skill's own compile-time value) recomputes
-            # to the SAME point, so this is a no-op there.
+            # `_clamp_lateral_to_schedule` above (a dispatch or a live re-send
+            # on a tracker fit, `AIM_TRACKER`) can move `landing.pos_mm` off
+            # that exact point, and the pinned rest site would then sit off the
+            # NEW axis line through the refined landing -- the catch's TERMINAL
+            # (the rest it settles to after touch-down) must be on the line it
+            # holds, which the settle-site check refuses otherwise. So the rest
+            # site is RE-DERIVED from the refined landing at THIS catch's own
+            # hold_tilt, keeping only the z the schedule chose (U2 cross-unit
+            # contract, `uc.SETTLE_CUP_Z_MM`) -- not the pinned xy.
+            #
+            # This says NOTHING about where the catch STARTS (I-CATCH-6,
+            # 2026-10-19): the seed is the COMMANDED state at the origin/splice
+            # knot (the pre-tilt REST's terminal on the ANNOUNCED line, or a
+            # mid-flight knot of the installed plan), and it is no longer
+            # required to be on the refined line. `cup_cycle._assemble`'s
+            # capture move translates the platform from that seed onto this
+            # line by the contact window's first knot (or refuses `CATCH_AXIS`
+            # past `CAPTURE_MAX_OFFSET_M` / too few knots). Nothing here may
+            # assume `start == line`; before the capture a dispatch with a
+            # tracker-refined landing was refused and ended the attempt (balls
+            # 17 and 18, 2026-10-19). A dispatch with no re-aim (`landing`
+            # still the skill's own compile-time value) recomputes to the SAME
+            # point, so this is a no-op there.
             rest_mm = sg.hold_axis_site(landing.pos_mm, skill.hold_tilt,
                                         float(skill.rest_site_mm[2]))
         else:
@@ -3449,8 +3511,221 @@ class SkillExecutor:
             # ordering ("before `_advance_release_evidence`") only matters
             # while the attempt runs, which is the branch above.
             lines.extend(self._advance_catch_evidence(t_abs_s))
+        if self.attempt_ended:
+            lines.extend(self._advance_closing(t_abs_s))
         lines.extend(self._advance_outcomes(t_abs_s))
         return lines
+
+    # ── D2: level the platform after an END (2026-10-19) ──
+
+    @staticmethod
+    def _tilted(tilt) -> bool:
+        """A non-level ``(rx, ry)`` rad attitude (``None`` is level)."""
+        return (tilt is not None
+                and max(abs(float(tilt[0])), abs(float(tilt[1]))) > 1e-9)
+
+    def note_ball_cancelled(self) -> None:
+        """Ball Butler has confirmed its throw was CANCELLED (the node's
+        ``bb/cancel_throw`` receipt): no ball is coming, so a pending closing
+        decay stops waiting for the announced landing.  Sticky -- it may
+        arrive before or after the END is planned."""
+        self.ball_cancelled = True
+
+    def closing_due_s(self) -> Optional[float]:
+        """The wall-clock instant the closing decay will dispatch (the
+        scheduled instant plus any fitted lateness), or ``None`` when none is
+        pending.  Plans lazily, so a caller that has just ended the attempt
+        itself (the node's Stop) can ask before the next tick."""
+        if not self._closing_waiting():
+            return None
+        return self._closing_due_s()
+
+    def _closing_due_s(self) -> float:
+        if self.ball_cancelled:
+            return self._closing_floor_s
+        return (self.schedule.skills[self._closing_idx].dispatch_s()
+                + self._closing_delay_s)
+
+    def _closing_waiting(self) -> bool:
+        self._plan_closing()
+        return self._closing_state == _CLOSING_WAITING
+
+    def _notice(self, severity: str, text: str) -> None:
+        self.notices.append((severity, text))
+
+    def _plan_closing(self) -> None:
+        """Decide ONCE, at the first look after the attempt has ended, whether
+        the END left the platform tilted with the schedule's own DECAY REST
+        still undispatched -- and if so, arm the wait for it.
+
+        **The defect (2026-10-19, DIAG Defect 2).** A reload attempt whose
+        CATCH is refused (or Stopped, or any later END) after the PRE-TILT
+        REST was flown ended with nothing left to command: the streaming
+        plan's rest-terminal IS the tilted rest, held 70 s until a go_home.
+
+        **The rule.** The last ACCEPTED install is a REST with a non-level
+        ``rest_tilt``, or a CATCH with a ``hold_tilt`` and no carried throw
+        (a carried CATCH ends in a release, which :meth:`stop_terminals` /
+        the node's hold own).  The decay is the first UNDISPATCHED level REST
+        after it with only plain CATCHes between (a THROW or a carried CATCH
+        in between means this is not the reload's tilt-then-decay shape, and
+        nothing is planned).  It dispatches at ITS OWN scheduled instant
+        (``dispatch_s()`` = announced landing + REST_TAIL + margin - LEAD, the
+        timing the success path flies, 2026-10-19 11:07:33), later by however
+        much a converged tracker fit puts the landing after the announcement
+        (:meth:`_advance_closing`) -- un-tilting under a falling ball moves
+        the cup out from under it.
+
+        **Excluded END codes.** :data:`LANE_REFUSED` (the firmware is HOLDING
+        a refused lane; the node's forced hand-less hold is the safe end) and
+        :data:`ABORTED_MODE_CHANGED` (the operator has taken the platform).
+        """
+        if self._closing_state or not self.attempt_ended:
+            return
+        self._closing_state = _CLOSING_NONE
+        if not self.level_on_end:
+            return
+        if self.end_code in CLOSING_EXCLUDED_END_CODES:
+            return
+        skills = self.schedule.skills
+        last = None
+        for idx, _sk, res in self.results:
+            if res.accepted:
+                last = idx
+        if last is None:
+            return
+        ls = skills[last]
+        if ls.kind == REST:
+            tilt = ls.rest_tilt
+        elif ls.kind == CATCH and ls.then_throw is None:
+            tilt = ls.hold_tilt
+        else:
+            return
+        if not self._tilted(tilt):
+            return
+        cand = -1
+        for j in range(last + 1, len(skills)):
+            sk = skills[j]
+            if sk.kind == REST and j not in self.dispatched:
+                if not self._tilted(sk.rest_tilt):
+                    cand = j
+                break
+            if sk.kind == CATCH and sk.then_throw is None:
+                continue
+            break
+        if cand < 0:
+            return
+        catch_idx = -1
+        for k in range(cand - 1, -1, -1):
+            if skills[k].kind == CATCH:
+                catch_idx = k
+                break
+        decay = skills[cand]
+        self._closing_idx = cand
+        self._closing_catch_idx = catch_idx
+        self._closing_tilt_deg = math.degrees(math.hypot(
+            float(tilt[0]), float(tilt[1])))
+        # Once the ball is known not to be coming, a pre-tilt REST that has
+        # reached its terminal is already at rest: level at once from there.
+        # A CATCH was streaming: wait for its own scheduled decay instant (the
+        # catch's runway ends there; an earlier splice would be mid-slew).
+        self._closing_floor_s = (float(ls.t_abs_s) if ls.kind == REST
+                                 else decay.dispatch_s())
+        self._closing_state = _CLOSING_WAITING
+        self._notice(
+            'INFO',
+            'END %s left the platform tilted %.1f deg (skill %d %s): the '
+            'schedule\'s DECAY REST (skill %d) will level it at %.3f'
+            % (self.end_code or 'ATTEMPT_ENDED', self._closing_tilt_deg,
+               last, ls.kind, cand, decay.dispatch_s()))
+
+    def _advance_closing(self, t_abs_s: float) -> List[str]:
+        """One tick of the closing decay's wait / dispatch (see
+        :meth:`_plan_closing`).  Runs only after the attempt has ended and
+        never dispatches anything but the planned level REST."""
+        self._plan_closing()
+        if self._closing_state != _CLOSING_WAITING:
+            return []
+        lines: List[str] = []
+        obs = None if self.observations is None else self.observations(t_abs_s)
+        why = ''
+        if obs is not None:
+            if not obs.in_trajectory_mode:
+                why = 'the control mode left TRAJECTORY (disarm / E-stop)'
+            elif obs.plan_superseded:
+                why = ('another command replaced the streaming plan '
+                       '(go_home / go_to_pose / hold)')
+            elif obs.hand_lane_refused:
+                why = 'the firmware is holding a refused lane'
+        if why:
+            self._closing_state = _CLOSING_CANCELLED
+            text = ('DECAY-ON-END cancelled (END %s, platform left tilted '
+                    '%.1f deg): %s' % (self.end_code, self._closing_tilt_deg,
+                                       why))
+            self._notice('WARN', text)
+            return ['%.3f %s' % (t_abs_s, text)]
+        skill = self.schedule.skills[self._closing_idx]
+        if not self.ball_cancelled and self._closing_catch_idx >= 0:
+            ck = self._closing_catch_idx
+            catch = self.schedule.skills[ck]
+            landing = self._tracked_landing(ck, catch)
+            lines.extend(self._pending_notes)
+            self._pending_notes = []
+            if landing is not None and landing.from_fit:
+                announced = (float(catch.landing_prior.t_land_abs_s)
+                             if catch.landing_prior is not None
+                             else float(catch.t_abs_s))
+                delay = max(0.0, float(landing.t_land_abs_s) - announced)
+                if abs(delay - self._closing_delay_s) >= 0.02:
+                    self._notice(
+                        'INFO',
+                        'DECAY-ON-END: a converged fit puts the landing '
+                        '%.3f s after the announcement -- the decay waits '
+                        'that much longer (now due %.3f)'
+                        % (delay, skill.dispatch_s() + delay))
+                self._closing_delay_s = delay
+        due = self._closing_due_s()
+        if t_abs_s + self.dispatch_lookahead_s < due:
+            return lines
+        # The terminal moves with the lateness, and never plans under its own
+        # window (a late tick shifts the rest, it does not squeeze the slew).
+        t_full = t_abs_s + float(skill.lead_s) + float(skill.window_s)
+        t_rest = (t_full if self.ball_cancelled
+                  else max(float(skill.t_abs_s) + self._closing_delay_s,
+                           t_full))
+        terminal = dataclasses.replace(self._rest_terminal(skill),
+                                       t_rest_s=t_rest)
+        res = self.installer(skill.kind, terminal, t_abs_s,
+                             ball_id=skill.ball_id)
+        # The retry bound is on the SCHEDULE, not on the rebased terminal
+        # (`t_rest` moves with `t_abs_s` every tick, so a guard against it can
+        # never expire): retry a STALE_STATE only until the REST's scheduled
+        # start (+ any fitted lateness); a ball-cancelled decay has no
+        # schedule to honour, so it gets one second past its floor.
+        retry_until = (self._closing_floor_s + 1.0 if self.ball_cancelled
+                       else float(skill.t_abs_s) + self._closing_delay_s
+                       - float(skill.window_s))
+        if (not res.accepted and res.code == STALE_STATE
+                and t_abs_s < retry_until):
+            return lines + ['%.3f DECAY-ON-END-RETRY skill %d: %s -- retried '
+                            'next tick' % (t_abs_s, self._closing_idx,
+                                           res.message)]
+        self.dispatched.add(self._closing_idx)
+        self.results.append((self._closing_idx, skill, res))
+        self._closing_state = _CLOSING_DONE
+        if res.accepted:
+            text = ('DECAY-ON-END: skill %d REST (level) installed at %.3f%s, '
+                    'at rest %.3f -- the platform returns to level'
+                    % (self._closing_idx, t_abs_s,
+                       ' (Ball Butler throw cancelled -- no ball coming)'
+                       if self.ball_cancelled else '', t_rest))
+            self._notice('INFO', text)
+        else:
+            text = ('DECAY-ON-END refused %s (%s): the platform is left at '
+                    '%.1f deg -- go_home'
+                    % (res.code, res.message, self._closing_tilt_deg))
+            self._notice('ERROR', text)
+        return lines + ['%.3f %s' % (t_abs_s, text)]
 
     def _dispatch(self, idx: int, skill: Skill, t_abs_s: float,
                   obs: Optional[Observations] = None

@@ -201,6 +201,35 @@ _MOCAP_STALE_S = 0.5
 #: itself is 5 Hz; also the freshness window for `trajectory/commanded_position`,
 #: same as `_live_commanded_position` there).
 _TRAJ_STATUS_STALE_S = 1.0
+
+#: D2 (2026-10-19): a `trajectory/status` is only evidence that the plan was
+#: SUPERSEDED (`Observations.plan_superseded`: `cycle_active` False) once it
+#: was received this long AFTER this node's last accepted install. Status is
+#: 5 Hz, so one stamped inside the window can still describe the plan before
+#: the install it just got a response for. Two periods plus slack.
+_SUPERSEDE_STATUS_SETTLE_S = 0.5
+
+#: D2 (2026-10-19): `bb/cancel_throw` answers SUCCESS when the cancel was
+#: SENT, not when BB dropped the throw; BB drops a throw only before its
+#: wind-up (~0.6 s before release, `_maybe_cancel_bb_throw`). The closing
+#: decay treats the throw as CONFIRMED cancelled (levels at once) only when
+#: the release was at least this far away at the request; a later cancel may
+#: answer CANCEL_TOO_LATE and the ball comes, so the decay keeps its
+#: landing-relative timing.
+_BB_CANCEL_WINDUP_S = 0.6
+
+#: D2 (2026-10-19): the margin the closing decay actually TRUSTS a cancel
+#: receipt by. `bb/cancel_throw` answers success when the cancel is SENT or
+#: DEFERRED; BB's verdict (incl. CANCEL_TOO_LATE) arrives later. `left_s` is
+#: measured at the request, so the 0.6 s wind-up plus the service / CAN
+#: latency (0.3 s) must still fit inside it: only a release more than this
+#: far away is treated as confirmed-cancelled.
+_BB_CANCEL_TRUST_S = _BB_CANCEL_WINDUP_S + 0.3
+
+#: D2 (2026-10-19): the launch-time DEBUG parameter that forces exactly one
+#: CATCH refusal at dispatch (`_installer`), so the END -> decay-to-level path
+#: can be dress-rehearsed without a ball. Never set it in a production launch.
+_DEBUG_FORCE_CATCH_REFUSAL_PARAM = 'debug_force_catch_refusal_once'
 # `_refuse_if_lane_latched`: a `sched_refused` rise this recent means a lane
 # is still latched (a latched lane refuses every streamed frame, ~40/s, so a
 # 10 Hz `/link_status` sees it rise on every publish). 1 s = ten publishes.
@@ -731,6 +760,9 @@ class SkillNode(Node):
         # streaming release just because it ended -- every segment is
         # rest-terminal, not event-free.
         self._pending_event_mono = 0.0
+        # perf_counter of the last ACCEPTED install (`_installer`): the
+        # reference `_observations` judges `plan_superseded` against.
+        self._last_install_mono = 0.0
         # Guards `_pending_event_mono`'s check-and-clear only (never the hold
         # round trip): `_stop_attempt` calls `_maybe_hold_pending_event` OUTSIDE
         # `_tick_lock` while `_on_tick` may be inside it on another thread.
@@ -1122,6 +1154,24 @@ class SkillNode(Node):
         # hop/self_toss are untouched -- Ball Butler's bias there is folded
         # into the ordinary tracker-fit catch, not a schedule-frame prior.
         self.declare_parameter('columns_feed_bb_bias_mm', [0.0, 0.0])
+        # D2 DEBUG hook (2026-10-19): True arms exactly ONE forced CATCH
+        # refusal (code CATCH_AXIS, never reaching the wire) at the next CATCH
+        # dispatch, so the END -> decay-to-level path (executor
+        # `_plan_closing`) can be dress-rehearsed on the loaded Jetson without
+        # a ball (rehearsal row 40). It is refused if set while a goal is
+        # active, logs a WARN every time it fires, and resets itself to False
+        # after firing. Default False; NEVER set in a production launch.
+        self.declare_parameter(_DEBUG_FORCE_CATCH_REFUSAL_PARAM, False)
+        self._debug_force_catch_refusal_armed = False
+        self._debug_force_catch_lock = threading.Lock()
+        self.add_on_set_parameters_callback(self._on_set_parameters)
+        if bool(self.get_parameter(_DEBUG_FORCE_CATCH_REFUSAL_PARAM).value):
+            # A launch-time value bypasses the set-callback above.
+            self._debug_force_catch_refusal_armed = True
+            self.get_logger().warning(
+                'DEBUG %s=True at launch: the first CATCH dispatch will be '
+                'REFUSED on purpose (CATCH_AXIS) -- a production launch must '
+                'not set this' % _DEBUG_FORCE_CATCH_REFUSAL_PARAM)
         # The fed columns entry is always the HOP entry (owner decision,
         # 2026-10-05, R5 sitting-6 prep -- `schedule.compile_columns`): ball A
         # is parked at the FEED site through the opening REST and THROW 0
@@ -2074,12 +2124,24 @@ class SkillNode(Node):
         # POSITION row: homing is an ACTION, not a refusal. `hand_fresh`
         # stays, and now carries the sizing too — a window sized from a stale
         # encoder is the same defect as a seed reconciled against one.
+        # D2: go_home / go_to_pose / hold install a NON-cycle plan and leave
+        # the mode at TRAJECTORY, so `in_trajectory_mode` cannot see them;
+        # `cycle_active` (False once a non-cycle plan is active) can -- but
+        # only on a status received well AFTER this node's last accepted
+        # install (a 5 Hz status stamped just after it can predate the swap).
+        plan_superseded = bool(
+            status_fresh
+            and self._last_install_mono > 0.0
+            and self._traj_status_mono
+            > self._last_install_mono + _SUPERSEDE_STATUS_SETTLE_S
+            and not bool(getattr(self._traj_status, 'cycle_active', True)))
         return Observations(
             mocap_fresh=mocap_fresh, hand_fresh=hand_fresh,
             levelled=levelled, ball_evidence=self._possession_evidence_stable,
             in_trajectory_mode=in_trajectory_mode,
             hand_lane_refused=self._hand_lane_refused(now),
-            robot_frame_known=self._robot_frame is not None)
+            robot_frame_known=self._robot_frame is not None,
+            plan_superseded=plan_superseded)
 
     def _ball_evidence(self, ball_id: int, t_abs_s: float) -> str:
         """The executor's ``observer`` callable (item 6): the live possession
@@ -2143,6 +2205,15 @@ class SkillNode(Node):
     # ── the installer callable SkillExecutor dispatches through ────────────
 
     def _installer(self, kind, terminal, t_abs_s, *, ball_id) -> InstallResult:
+        if kind == CATCH and self._consume_debug_force_catch_refusal():
+            # A real-looking refusal that never reaches the wire: the
+            # streaming plan stays what it was, exactly as after a genuine
+            # `CATCH_AXIS` refusal (`trajectory_node._reject_segment`).
+            return InstallResult(
+                False, 'CATCH_AXIS',
+                'DEBUG %s: this CATCH was refused on purpose (nothing was '
+                'sent to trajectory/install_segment)'
+                % _DEBUG_FORCE_CATCH_REFUSAL_PARAM, 0.0)
         req = InstallSegment.Request()
         req.kind = _WIRE_KIND[kind]
         req.ball_id = int(ball_id)
@@ -2210,6 +2281,7 @@ class SkillNode(Node):
         # -- a refusal changes nothing about what is actually streaming.
         if result.accepted:
             self._pending_event_mono = release_mono if release_mono > 0.0 else 0.0
+            self._last_install_mono = time.perf_counter()
         self._maybe_announce(kind, terminal, result, release_mono,
                              ball_id=ball_id)
         return result
@@ -2603,6 +2675,14 @@ class SkillNode(Node):
             self.get_logger().info(
                 'END %s: Ball Butler throw cancel (release was %.2f s away): %s'
                 % (end_code, left_s, res.message))
+            # D2: the cancel was accepted with the release still outside BB's
+            # wind-up + latency margin -- no ball is coming, so a pending closing decay need
+            # not wait for the announced landing. (`success` is "SENT", not
+            # BB's verdict; a release inside the wind-up may answer
+            # CANCEL_TOO_LATE, so it keeps the landing-relative timing.)
+            executor = self._executor
+            if left_s > _BB_CANCEL_TRUST_S and executor is not None:
+                executor.note_ball_cancelled()
         else:
             self.get_logger().error(
                 'END %s: Ball Butler throw cancel FAILED (release %.2f s '
@@ -3187,6 +3267,7 @@ class SkillNode(Node):
                 now = self.get_clock().now().nanoseconds / 1e9
                 for line in self._executor.tick(now):
                     self.get_logger().debug(line)
+                self._drain_notices(self._executor)
                 # The Juggle goal result's `per_throw`/`throws`/`caught`
                 # (R4 U5): every finalised release gets exactly one
                 # ThrowReport (`executor._finalise_outcome`), and its screen
@@ -3265,6 +3346,82 @@ class SkillNode(Node):
             logger.warning(text)
         else:
             logger.info(text)
+
+    def _drain_notices(self, executor) -> None:
+        """Log the executor's operator-level notices (the D2 closing decay's
+        plan / dispatch / refusal / cancellation, which `tick` returns only as
+        debug lines) at their severity, once each. Consumes `executor.notices`."""
+        notices = getattr(executor, 'notices', None)
+        if not isinstance(notices, list):
+            return
+        while notices:
+            severity, text = notices.pop(0)
+            self._log_at(severity, text)
+
+    def _attempt_running(self) -> bool:
+        """True while any goal's work is live: an executor, a reload/feed
+        wait, or a magazine throw (the `_refuse_if_running` predicate without
+        its response)."""
+        with self._reload_lock:
+            reloading = self._reload_ctx is not None
+        return (self._executor is not None or reloading
+                or self._magazine_ctx is not None)
+
+    def _on_set_parameters(self, params):
+        """Validation hook for the one runtime-settable parameter,
+        `debug_force_catch_refusal_once` (D2 rehearsal hook): it is REFUSED
+        (logged, ignored, prior value kept) while a goal is active -- arming a
+        refusal under a live attempt would end it -- and otherwise arms (True)
+        or disarms (False) the one-shot. Everything else passes through."""
+        from rcl_interfaces.msg import SetParametersResult
+        for param in params:
+            if param.name != _DEBUG_FORCE_CATCH_REFUSAL_PARAM:
+                continue
+            want = bool(param.value)
+            if want and self._attempt_running():
+                self.get_logger().warning(
+                    'REFUSED %s=True: a goal is active -- set it between '
+                    'attempts (param NOT applied)'
+                    % _DEBUG_FORCE_CATCH_REFUSAL_PARAM)
+                return SetParametersResult(
+                    successful=False,
+                    reason='a goal is active -- set %s between attempts'
+                    % _DEBUG_FORCE_CATCH_REFUSAL_PARAM)
+            with self._debug_force_catch_lock:
+                self._debug_force_catch_refusal_armed = want
+        return SetParametersResult(successful=True)
+
+    def _consume_debug_force_catch_refusal(self) -> bool:
+        """True exactly once per arming: the next CATCH install is to be
+        refused on purpose. Logs the WARN (one call site, every firing) and
+        resets the parameter to False."""
+        with self._debug_force_catch_lock:
+            if not self._debug_force_catch_refusal_armed:
+                return False
+            self._debug_force_catch_refusal_armed = False
+        self.get_logger().warning(
+            'DEBUG %s FIRED: refusing this CATCH on purpose (CATCH_AXIS) -- '
+            'resetting the parameter to False' % _DEBUG_FORCE_CATCH_REFUSAL_PARAM)
+        self._reset_debug_force_catch_param()
+        return True
+
+    def _reset_debug_force_catch_param(self) -> None:
+        """Write the debug parameter back to False through the node's own
+        parameter store (so `ros2 param get` reads False, not a stale True)."""
+        try:
+            from rclpy.parameter import Parameter
+            param = Parameter(_DEBUG_FORCE_CATCH_REFUSAL_PARAM,
+                              Parameter.Type.BOOL, False)
+        except ImportError:
+            # Offline (mocked rclpy): the mock store reads .name / .value.
+            param = SimpleNamespace(name=_DEBUG_FORCE_CATCH_REFUSAL_PARAM,
+                                    value=False)
+        try:
+            self.set_parameters([param])
+        except Exception as exc:                                  # noqa: BLE001
+            self.get_logger().error(
+                'could not reset %s to False (%s) -- the one-shot is spent '
+                'regardless' % (_DEBUG_FORCE_CATCH_REFUSAL_PARAM, exc))
 
     def _drain_reports(self, executor) -> None:
         """Log each newly finalised throw ONCE -- the operator's line for
@@ -5675,6 +5832,17 @@ class SkillNode(Node):
                     message = (
                         'attempt already ended (end_code=%r) — stop is a '
                         'no-op' % self._executor.end_code)
+                # D2: a Stop does NOT cancel the closing decay -- the tilted
+                # rest followed by the level decay IS the machine coming to
+                # rest, and cancelling it recreates Defect 2. (A Ball Butler
+                # cancel receipt that arrives afterwards levels it at once.)
+                closing_due = getattr(self._executor, 'closing_due_s', None)
+                due = closing_due() if callable(closing_due) else None
+                if isinstance(due, float):
+                    message += (' (the decay to level is still due in '
+                                '%.2f s -- a Stop keeps it)'
+                                % max(0.0, due - self.get_clock().now()
+                                      .nanoseconds / 1e9))
                 # A stop is a stop of the WHOLE attempt, its feed/reload wait
                 # included (R5, 2026-09-30): a Stop that lands while the
                 # bridge REST's executor is still live used to leave

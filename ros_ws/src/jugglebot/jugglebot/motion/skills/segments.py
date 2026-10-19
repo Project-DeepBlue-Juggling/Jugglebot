@@ -306,9 +306,13 @@ def hold_axis_site(landing_mm, hold_tilt, z_mm: float) -> np.ndarray:
     pre-tilt REST that seeds it) is a point ON that line, not one under the
     landing point.  ``xy = landing_xy + κ·(z − landing_z)`` with
     ``κ = axis_xy / axis_z``: at the 12° ceiling that is 0.213 mm of lateral
-    per mm of height.  The QP refuses (``CATCH_AXIS``) a site off this line
-    rather than absorbing it, because the slaved lateral channel would carry the
-    offset straight into the seat.
+    per mm of height.  The QP refuses (``CATCH_AXIS``) a REST/settle site off
+    this line rather than absorbing it, because the slaved lateral channel would
+    carry the offset straight into the seat.  A SEED off the line is different
+    since 2026-10-19 (I-CATCH-6): the reload/feed CATCH translates onto the
+    refined line inside its own window (``cup_cycle`` capture move), so the
+    pre-tilt REST that seeds it may sit on the announced line while the catch
+    is aimed at a tracker-refined one.
     """
     land = _vec3(landing_mm, 'landing_mm')
     axis = tg.cup_axis(float(hold_tilt[0]), float(hold_tilt[1]))

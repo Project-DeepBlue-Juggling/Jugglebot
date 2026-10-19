@@ -299,6 +299,13 @@ class CupCycleConfig:
     #: equality manifold landed at 1.2e+2 — five orders of headroom either side.
     #: See :func:`_solve_qp` for why the bar exists at all.
     feas_tol: float = 1e-7
+    #: The jerk the held-axis CAPTURE MOVE's pre-solve gate budgets the platform
+    #: translation against (m/s³).  ``None`` falls back to ``max_jerk_xy`` (the
+    #: platform's own cup-frame box).  ``unified_cycle.plan_cycle`` fills it from
+    #: the LIVE ``limits.leg_jerk_mmps3`` for a capture-enabled window, so the
+    #: gate refuses against the same number ``validate_cycle``'s LIMIT_JERK
+    #: would.  See :func:`_capture_knots_needed`.
+    capture_jerk_mps3: Optional[float] = None
 
 
 # The runway knobs are the only fields a sim ``PlannerConfig`` will not have.
@@ -316,6 +323,7 @@ _RUNWAY_DEFAULTS = {
     'tol': 1e-9,
     'feas_tol': 1e-7,
     'contact_floor_enabled': False,
+    'capture_jerk_mps3': None,
 }
 
 
@@ -387,11 +395,12 @@ class CatchEvent:
     #: which — from a seed already on that line — is the line
     #: ``xy = site_xy + κ·(z − site_z)`` through the touch-down at every knot.
     axis: Optional[np.ndarray] = None
-    #: The first knot of the held span (the axis above).  ``0`` — the only value
-    #: built — says the seed is ALREADY on the held line at the held attitude
-    #: (the PRE-TILT REST put it there), which is checked, not assumed.  A later
-    #: knot is the CAPTURE span, the platform tilting onto the line inside the
-    #: window (R5 unit F-c), and is refused by name until it is built.
+    #: The first knot of the held span (the axis above), as a CALLER states it.
+    #: ``0`` says the seed is ALREADY on the held line at the held attitude (the
+    #: PRE-TILT REST put it there), which is checked, not assumed.  A later knot
+    #: here — the caller choosing a span that starts inside the window — is
+    #: still refused by name: the one capture span that IS built is chosen by
+    #: the planner itself, from the seed, when :attr:`capture` says it may.
     held_from_k: int = 0
     #: The velocity the soft catch MATCH chases (m/s), when it differs from the
     #: observed arrival ``vel``.  ``None`` (every catch but a pinned one) matches
@@ -401,6 +410,18 @@ class CatchEvent:
     #: arrival sideways.  ``vel`` stays the raw arrival for everything structural
     #: — the catch-runway gate decelerates the ball's TRUE vertical speed.
     vel_target: Optional[np.ndarray] = None
+    #: The held-axis CAPTURE MOVE is allowed (I-CATCH-6, 2026-10-19).  Opt-in,
+    #: and only meaningful with :attr:`axis` on a window that ENDS AT REST (a
+    #: LANDING — the reload / feed CATCH): ``unified_cycle._events_for`` sets it
+    #: for exactly that kind.  With it set, a seed OFF the held line is no longer
+    #: refused: the platform translates (at the held attitude) onto the line
+    #: through ``site`` over knots ``0 .. k_h-1`` and is ON it — position,
+    #: velocity and acceleration — at the hold-start knot ``k_h``, the contact
+    #: window's first knot (:func:`contact_window`), from where the held rows
+    #: apply unchanged.  A seed already on the line assembles today's program
+    #: byte for byte whatever this flag says, and a held catch that carries a
+    #: throw keeps today's refusal (``_assemble``'s capture block says why).
+    capture: bool = False
 
 
 @dataclasses.dataclass
@@ -850,6 +871,13 @@ class _Program:
     catch_k: int
     takeoff_vel: np.ndarray
     contact_knots: Optional[tuple] = None
+    #: The hold-start knot ``k_h`` of a held-axis CAPTURE MOVE, ``0`` for every
+    #: window without one.  With it the post-solve check in :func:`plan_window`
+    #: re-measures the plan at ``k_h`` against :data:`HELD_AXIS_SEED_TOL` (the
+    #: contract evaluated where it is promised, not just stated as rows).
+    capture_k: int = 0
+    capture_site: Optional[np.ndarray] = None
+    capture_kappa: Optional[np.ndarray] = None
 
 
 #: How far off the held axis line a held-axis window's SEED and its settle site
@@ -862,8 +890,111 @@ class _Program:
 #: each ≲ 1 mm at the seat, two orders below the 49 mm plant scatter measured on
 #: 2026-09-20 and far below the cup opening's own radius. A seed further off than
 #: this is a wrong boundary condition (the pre-tilt REST was not placed on the
-#: line), which is what the refusal says.
+#: line), which is what the refusal says — EXCEPT on a capture-enabled LANDING
+#: (``CatchEvent.capture``), where the same three bounds are the contract at
+#: the hold-start knot ``k_h`` instead (the capture-move block below).
 HELD_AXIS_SEED_TOL = (1e-4, 1e-3, 1e-2)
+
+# ---------------------------------------------------------------------------
+# The held-axis CAPTURE MOVE (I-CATCH-6, 2026-10-19)
+# ---------------------------------------------------------------------------
+# Since 2026-10-19 the tolerance above is the contract AT THE HOLD-START KNOT
+# ``k_h`` of a capture-enabled LANDING (``CatchEvent.capture``), not at the
+# seed: the platform may translate onto the refined line over knots
+# ``0 .. k_h-1`` and must be on it, in all three derivatives, at ``k_h``.  For
+# every other held window (no ``capture``, or a held catch that throws) it is
+# still the seed's tolerance, exactly as before.
+
+#: The largest lateral offset (m, 2-norm of the per-axis ``_axis_offsets``
+#: position residual) a capture move accepts.  Beyond it: ``CATCH_AXIS``,
+#: refused before the solve.  NOT a physics limit (the jerk gate below would
+#: admit ~109 mm at ``k_h`` = 15) — it is defence in depth sized to accept
+#: exactly the largest offset the UPSTREAM guard can emit, so that guard stays
+#: the authority and a re-aim past it can only mean a broken clamp or a wrong
+#: fit:
+#:
+#: * ``executor._clamp_lateral_to_schedule`` clips the tracker landing to
+#:   ``learner_lateral_authority_mm`` = 20 mm per axis about the schedule's
+#:   landing, EXCEPT on a two-site schedule, whose INWARD authority is
+#:   ``catch_inward_authority_mm`` = 35 mm (owner decision
+#:   2026-10-19: the cap follows the clamp INCLUDING that branch).  Worst case
+#:   is 35 mm inward on one axis with 20 mm on the other:
+#:   ``hypot(35, 20)`` = **40.31 mm**.
+#: * Its jerk, from the planner's own minimum-acceleration rest-to-rest
+#:   expression (``6·|e0| / (k(k−1)·dt³)``, see :func:`_capture_knots_needed`):
+#:   at 40.31 mm and the 200 000 mm/s³ live leg jerk cap ``k(k−1) >= 77.4``, so
+#:   the minimum hold-start knot is **k_h = 10 (250 ms)**; at the dispatch-time
+#:   ``k_h`` of 15-17 it peaks at 57-74 m/s³, 28-37 % of the cap.
+#:
+#: A tracker landing whose height differs from the announced one adds
+#: ``κ·Δz`` (≤ 0.21 mm per mm at the 12° ceiling) on top of the clamp, so a
+#: re-aim AT the 40.31 mm corner with a few mm of height disagreement is
+#: refused — accepted on purpose: that corner is reachable only on a two-site
+#: reload schedule, which nothing compiles today.  (The two-site branch clips
+#: the ACROSS component per axis, so an outward unit that is not on a world
+#: axis could reach ``hypot(35, 20·√2)`` = 45.0 mm; every pattern flown has
+#: its sites on one axis, and the owner's sizing is the on-axis corner.)
+CAPTURE_MAX_OFFSET_M = float(np.hypot(0.035, 0.020))
+
+#: The rank floor on ``k_h``: the three per-axis rows at ``k_h`` (position,
+#: velocity, acceleration onto the line) reach the lateral jerks ``0..k_h-1``
+#: only, so fewer than three of them make ``Aeq`` rank-deficient (the same
+#: argument as the throw-after-catch span's ``3 + N`` floor below).
+CAPTURE_MIN_KNOTS = 3
+
+#: Scale on the closed-form capture jerk the pre-solve gate budgets.  **1.0,
+#: i.e. the gate budgets the PLATFORM jerk itself**, which is conservative for
+#: the legs.  MEASURED 2026-10-19 (scratchpad ``s/probe_capture_span.py``, the
+#: 9.9° reload geometry through ``unified_cycle.plan_landing`` +
+#: ``validate_cycle`` at the live 600/8000→5000/200 000 limits, offsets
+#: (5,0) (20,0) (±20,±20) (35,20) (5.6,−20) mm × ``k_h`` 8..17):
+#:
+#: * the solved plan's peak ``|j_e|`` equals ``6·|e0| / (k_h(k_h−1)·dt³)`` to
+#:   3 s.f. on every case (ratio 1.000) — with the capture objective restated
+#:   on platform acceleration (``_assemble``); and
+#: * the realised peak LEG jerk is **0.36-0.45×** that closed form (the
+#:   leg-geometry factor the design left to measure: legs are inclined, and a
+#:   horizontal translation projects onto each by ``|n_i,xy| < 1``), the
+#:   held-catch stroke's own ~1 300-2 900 mm/s³ included.
+#:
+#: Since the realised value never exceeds the formula the gate keeps 1.0 rather
+#: than taking the measured factor (a 2.2× margin on LIMIT_JERK);
+#: ``tests/motion/test_cup_capture.py`` pins "realised leg jerk ≤ 0.5× the
+#: closed form" so a geometry change that erodes the margin fails a test.
+CAPTURE_JERK_LEG_FACTOR = 1.0
+
+
+def _capture_peak_jerk(offset_m: float, k_h: int, dt: float) -> float:
+    """Closed-form peak platform jerk (m/s³) of a rest-to-rest capture of
+    ``offset_m`` over ``k_h`` knots, scaled by :data:`CAPTURE_JERK_LEG_FACTOR`.
+
+    The discrete minimum-acceleration optimum of a piecewise-constant-jerk
+    triple integrator moving ``e0 -> 0`` with zero velocity and acceleration at
+    both ends puts an impulsive jerk at the first and last knots of magnitude
+    ``6·|e0| / (k(k−1)·dt³)`` (peak acceleration that times ``dt``); verified
+    against the isolated QP at k = 5, 8, 16, 17 (design probe
+    ``probe_capture_minacc.py``, 2026-10-19).
+    """
+    k = int(k_h)
+    if k < 2:
+        return float('inf')
+    return (CAPTURE_JERK_LEG_FACTOR * 6.0 * float(offset_m)
+            / (k * (k - 1) * float(dt) ** 3))
+
+
+def _capture_knots_needed(offset_m: float, jerk_cap: float, dt: float) -> int:
+    """The fewest capture knots ``k >= CAPTURE_MIN_KNOTS`` whose closed-form
+    peak jerk (:func:`_capture_peak_jerk`) is within ``jerk_cap``."""
+    if not jerk_cap > 0.0:
+        raise ValueError("capture jerk cap must be > 0, got %r" % (jerk_cap,))
+    r = (CAPTURE_JERK_LEG_FACTOR * 6.0 * float(offset_m)
+         / (float(jerk_cap) * float(dt) ** 3))
+    k = max(CAPTURE_MIN_KNOTS, int(np.ceil(0.5 * (1.0 + np.sqrt(1.0 + 4.0 * r)))))
+    while k > CAPTURE_MIN_KNOTS and _capture_peak_jerk(offset_m, k - 1, dt) <= jerk_cap:
+        k -= 1
+    while _capture_peak_jerk(offset_m, k, dt) > jerk_cap:
+        k += 1
+    return int(k)
 
 
 def _held_axis(axis) -> np.ndarray:
@@ -901,6 +1032,60 @@ def _axis_offsets(pos, vel, acc, site, kappa):
     dv = np.asarray(vel, float).reshape(3)[:2] - kappa * float(np.asarray(vel, float).reshape(3)[2])
     da = np.asarray(acc, float).reshape(3)[:2] - kappa * float(np.asarray(acc, float).reshape(3)[2])
     return dp, dv, da
+
+
+def _capture_gate(dp, n: int, dt: float, catch_t_s: float, cfg, *,
+                  holds_ball_at_start: bool = False) -> int:
+    """The pre-solve gate of a held-axis CAPTURE MOVE; returns ``k_h``.
+
+    Everything that can refuse a capture refuses HERE, before a row is
+    written and before the solve, as ``CATCH_AXIS`` (the code the refusal
+    tables, the GUI and the logs already know) with the numbers:
+
+    * the offset ``|e0|`` (2-norm of the per-axis line residual ``dp``) past
+      :data:`CAPTURE_MAX_OFFSET_M` — the upstream clamp is broken or the fit is
+      wrong, and the planner does not chase it;
+    * fewer knots before ``k_h`` than ``max(CAPTURE_MIN_KNOTS, K_need)``, where
+      ``K_need`` is :func:`_capture_knots_needed` at the window's capture jerk
+      cap (``capture_jerk_mps3``, else ``max_jerk_xy``).
+
+    ``k_h`` is the contact window's FIRST knot (:func:`contact_window` — the one
+    definition of "when may a ball be in the cup"), the LATEST permissible hold
+    start, because the capture's peak jerk falls as ``1/(k_h(k_h−1))``.  A
+    window that holds a ball at knot 0 has ``k_h = 0`` and is refused by the
+    knot count.  For a seed that is itself mid-capture (a second re-aim spliced
+    before the installed ``k_h``) the gate reads ``|e0|`` only and is advisory;
+    the QP's jerk box and ``validate_cycle`` are the authority there.
+    """
+    offset = float(np.linalg.norm(np.asarray(dp, float)))
+    window = contact_window(n, dt, has_throw=False, catch_t_s=catch_t_s,
+                            holds_ball_at_start=holds_ball_at_start)
+    k_h = 0 if window is None else int(window[0])
+    cap = _cfg(cfg, 'capture_jerk_mps3')
+    jerk_cap = float(_cfg(cfg, 'max_jerk_xy') if cap is None else cap)
+    need = _capture_knots_needed(offset, jerk_cap, dt)
+    if offset > CAPTURE_MAX_OFFSET_M + HELD_AXIS_SEED_TOL[0]:
+        raise CupCycleInfeasible(
+            "this catch would need the platform to slide %.1f mm sideways onto "
+            "the ball's line before it arrives, past the %.1f mm the capture "
+            "move accepts (the widest re-aim the executor's lateral clamp can "
+            "emit: 35 mm inward with 20 mm across; %d steps are left before "
+            "the ball may be in the cup, and this slide would need %d at the "
+            "%.0f mm/s^3 jerk limit). A re-aim this large means the clamp or "
+            "the tracker fit is wrong, so the catch is refused rather than "
+            "chased."
+            % (offset * 1e3, CAPTURE_MAX_OFFSET_M * 1e3, k_h, need,
+               jerk_cap * 1e3), reason='CATCH_AXIS')
+    if k_h < need:
+        raise CupCycleInfeasible(
+            "this catch would need the platform to slide %.1f mm sideways onto "
+            "the ball's line before the ball can arrive: at the %.0f mm/s^3 "
+            "jerk limit that takes at least %d steps (%.0f ms), and only %d "
+            "steps (%.0f ms) are left before the ball may be in the cup. "
+            "Re-aim earlier, or start the catch on the line."
+            % (offset * 1e3, jerk_cap * 1e3, need, need * dt * 1e3, k_h,
+               k_h * dt * 1e3), reason='CATCH_AXIS')
+    return k_h
 
 
 def _assemble(state0: CupState, throw: Optional[ThrowEvent],
@@ -967,6 +1152,7 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
     # axis; the line itself passes through the touch-down site.
     axis = None if catch is None else getattr(catch, 'axis', None)
     kappa = None
+    capture_k = 0
     if axis is not None:
         axis = _held_axis(axis)
         kappa = axis[:2] / axis[2]
@@ -976,9 +1162,10 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
         if held_from_k > 0:
             raise CupCycleInfeasible(
                 "this catch would have to swing the platform onto the ball's "
-                "line partway through the window (at step %d), and that "
-                "capture move is not built yet — start the catch from a rest "
-                "that is already tilted on the line (the PRE-TILT REST)."
+                "line partway through the window (at step %d), and a capture "
+                "move at a caller-chosen step is not built — start the catch "
+                "from a rest that is already tilted on the line (the PRE-TILT "
+                "REST), or let a catch that ends at rest capture on its own."
                 % held_from_k, reason='CATCH_AXIS')
         if state0.post_release:
             raise CupCycleInfeasible(
@@ -990,10 +1177,61 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
         site = np.asarray(catch.site, dtype=float).reshape(3)
         dp, dv, da = _axis_offsets(state0.pos, state0.vel, state0.acc, site, kappa)
         tol_p, tol_v, tol_a = HELD_AXIS_SEED_TOL
+        on_line = all(float(np.max(np.abs(r))) <= t
+                      for r, t in ((dp, tol_p), (dv, tol_v), (da, tol_a)))
+        # THE CAPTURE MOVE (I-CATCH-6).  Chosen by the SEED, so an on-line
+        # seed never reaches this branch and assembles today's program byte
+        # for byte.  Scope: a held window that ENDS AT REST with ``capture``
+        # set (the reload / feed CATCH).  A held catch that carries a throw
+        # keeps the refusal below: its lateral channel is already spent after
+        # the touch-down on the launch line (the ``3 + N`` floor), and nothing
+        # dispatches a held STEADY from an off-line seed.
+        if (not on_line and bool(getattr(catch, 'capture', False))
+                and throw is None):
+            capture_k = _capture_gate(
+                dp, n, dt, float(catch.t_s), cfg,
+                holds_ball_at_start=bool(holds_ball_at_start))
+            held_from_k = capture_k
+            # THE OBJECTIVE ON A CAPTURE: platform acceleration, not cup xy.
+            # The lateral term written above penalises the CUP's lateral
+            # acceleration ``a_xy = a_e + κ·a_z``.  On a held span that is the
+            # stroke's projection alone (``a_e ≡ 0``); on a capture span it
+            # lets the freed platform channel CANCEL the stroke's projection —
+            # MEASURED 2026-10-19 (scratchpad ``s/probe_capture_span.py``,
+            # 9.9° reload geometry, live 600/8000/200k): with the cup-frame
+            # term a 5 mm re-aim drove ``|j_e|`` to 186 m/s³ (20x the
+            # closed form) and the legs to 77 000 mm/s³ / 34 mm/s at
+            # ``k_h`` = 15, the same as a 28.3 mm one, growing with ``k_h`` —
+            # the platform swinging under the stroke for no catch reason.  So
+            # on a capture the lateral term is restated, per axis, as
+            # ``(1+w)·(a_e² + κ²·a_z²)``: the platform's own acceleration plus
+            # the stroke's projection weighted exactly as before.  On the held
+            # span (``a_e ≡ 0``) its value is today's term knot for knot; it
+            # differs only where the platform moves, and there the capture is
+            # the isolated minimum-acceleration move the jerk gate models.
+            AtA = Aa.T @ Aa
+            sz = slice(2 * n, 3 * n)
+            for a in range(2):
+                w = (1.0 + lat_w) / n
+                sa = slice(a * n, (a + 1) * n)
+                k_a = float(kappa[a])
+                H[sa, sa] -= 2.0 * w * AtA            # remove the cup-frame term
+                f[sa] -= 2.0 * w * (Aa.T @ ca[:, a])
+                ce = ca[:, a] - k_a * ca[:, 2]        # a_e's constant part
+                H[sa, sa] += 2.0 * w * AtA
+                H[sa, sz] -= 2.0 * w * k_a * AtA
+                H[sz, sa] -= 2.0 * w * k_a * AtA
+                H[sz, sz] += 2.0 * w * k_a * k_a * AtA
+                f[sa] += 2.0 * w * (Aa.T @ ce)
+                f[sz] -= 2.0 * w * k_a * (Aa.T @ ce)
+                H[sz, sz] += 2.0 * w * k_a * k_a * AtA  # the stroke's projection
+                f[sz] += 2.0 * w * k_a * k_a * (Aa.T @ ca[:, 2])
         for label, resid, tol, unit, scale in (
                 ('position', dp, tol_p, 'mm', 1e3),
                 ('velocity', dv, tol_v, 'mm/s', 1e3),
                 ('acceleration', da, tol_a, 'mm/s^2', 1e3)):
+            if capture_k:
+                break
             if float(np.max(np.abs(resid))) > tol:
                 mag = float(np.linalg.norm(resid))
                 raise CupCycleInfeasible(
@@ -1399,6 +1637,60 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
         # the line and its lateral rows stay implied — and the lateral channel
         # is free afterwards to reach the launch line, whose three release rows
         # per axis the throw branch above writes in full.
+        #
+        # THE CAPTURE MOVE (I-CATCH-6; ``capture_k`` = ``k_h`` > 0 only for an
+        # off-line seed of a capture-enabled LANDING, see ``_capture_gate``).
+        # Three rows per lateral axis AT ``k_h`` put the cup ON the refined
+        # line there in position, velocity and acceleration — the line residual
+        # ``e = (xy − site_xy) − κ·(z − site_z)`` and its two derivatives are
+        # zero — and the slaving rows above then hold it from ``k_h`` on
+        # (``held_knots`` starts at ``k_h``).  The post-release-hold rows'
+        # pattern (lateral map minus κ times the axial one) with a position row
+        # added.  They touch lateral jerks ``0 .. k_h−1`` only, which the
+        # slaving rows do not, so ``k_h >= 3`` is the rank floor.
+        #
+        # ONE 40 Hz CYCLE AT THE SPLICE (the control-system walk-through the
+        # repo requires for a planner change):
+        # * Installed when this plan lands: the previous segment — a PRE-TILT
+        #   REST re-sending its terminal knot (fresh-origin dispatch), or the
+        #   installed catch itself (a live re-aim re-send).  Knot 0 here IS
+        #   that commanded state at the origin / splice knot ``t + LEAD_S``
+        #   (9 knots past the knot being emitted), never the measured pose:
+        #   pos/vel/acc enter through ``Cp, Cv, Ca @ s0`` exactly, so there is
+        #   no step at knot 0 in any derivative and
+        #   ``trajectory_node._install_continuity_ok`` sees the same record.
+        # * Knot 0 -> 1 (the first 25 ms): the only new thing is the lateral
+        #   jerk ``j_e[0]`` — e.g. ≈ 52 m/s³ for 28.3 mm at ``k_h`` = 15
+        #   (closed form, :func:`_capture_peak_jerk`) — so the platform's
+        #   acceleration ramps 0 -> ``j·dt`` ≈ 1.3 m/s² over that span and its
+        #   velocity starts at exactly the commanded value (0 from a rest).
+        #   Jerk steps at a knot are what every piecewise-constant-jerk plan
+        #   does; velocity feedforward (the emitter's Hermite tangents) and
+        #   acceleration are continuous.  A mid-capture re-aim re-plans from
+        #   the installed plan's own triple at the splice knot, so the same
+        #   holds with a moving seed.
+        # * Knots 1 .. k_h−1: the platform translates at the held attitude (the
+        #   stroke runs its own axial profile at the same time — the lateral
+        #   cup motion is ``e`` plus κ times the stroke, and only ``e`` is
+        #   platform), boxed at ``max_jerk_xy`` on ``j_e`` (box block below) and
+        #   judged on the realised legs by ``validate_cycle``.
+        # * Knot ``k_h`` (the contact window opens): ``e = ė = ë = 0`` exactly,
+        #   so platform velocity AND acceleration arrive at zero — no velocity
+        #   or acceleration step, only the jerk drops to the slaved value — and
+        #   from here the plan is today's held catch: stationary platform, the
+        #   hand stroke along the axis, touch-down and rest tail unchanged.
+        if capture_k:
+            r_site = np.asarray(catch.site, dtype=float).reshape(3)
+            for M, c, site_term in ((Ap, cp, True), (Av, cv, False),
+                                    (Aa, ca, False)):
+                for a in range(2):
+                    row = np.zeros(nvar)
+                    row[a * n:(a + 1) * n] = M[capture_k]
+                    row[2 * n:3 * n] = -kappa[a] * M[capture_k]
+                    resid = c[capture_k, a] - kappa[a] * c[capture_k, 2]
+                    if site_term:
+                        resid -= r_site[a] - kappa[a] * r_site[2]
+                    rows.append(row); rhs.append(-resid)
         for k in held_knots:
             for a in range(2):
                 row = np.zeros(nvar)
@@ -1437,6 +1729,14 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
     # the same columns in the same order as before the span existed): after the
     # touch-down of a catch that carries a throw the lateral channel is the
     # platform's again, and it is boxed like any other window's.
+    #
+    # On a CAPTURE span (knots ``0 .. k_h−1`` of a capture move) the box is on
+    # the platform's translation jerk ``j_e = j_xy − κ·j_z`` rather than on the
+    # cup's ``j_xy``: the stroke runs along the held axis there as everywhere
+    # in a held window, its lateral projection ``κ·j_z`` is not the legs, and
+    # boxing ``j_xy`` would again cap the STROKE at ``(300 − |j_e|)/κ`` — the
+    # mis-attribution the paragraph above removed from the held span.  Same
+    # columns, same order; only the row's ``−κ`` entry is new.
     for a in (0, 1, 2):
         lim = jerk_z if a == 2 else jerk_xy
         for k in range(n):
@@ -1444,6 +1744,8 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
                 continue
             row = np.zeros(nvar)
             row[a * n + k] = 1.0
+            if a < 2 and k < capture_k:
+                row[2 * n + k] = -kappa[a]
             box_rows.append(row); box_const.append(0.0)
             box_lo.append(-lim); box_hi.append(lim)
     xy_box = float(_cfg(cfg, 'workspace_xy_m'))
@@ -1587,7 +1889,10 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
 
     return _Program(H=H, f=f, Aeq=Aeq, beq=beq, C=C, bc=bc, n_steps=n,
                     catch_k=k_td, takeoff_vel=v_takeoff,
-                    contact_knots=k_contact)
+                    contact_knots=k_contact, capture_k=int(capture_k),
+                    capture_site=(None if not capture_k else
+                                  np.asarray(catch.site, float).reshape(3)),
+                    capture_kappa=(None if not capture_k else kappa))
 
 
 def catch_runway_requirement(catch_vel, cfg):
@@ -1904,10 +2209,31 @@ def plan_window(events: Sequence, state0: CupState,
     s0 = np.array([np.asarray(state0.pos, float),
                    np.asarray(state0.vel, float),
                    np.asarray(state0.acc, float)])
+    pos = Cp @ s0 + Ap @ jerk
+    vel = Cv @ s0 + Av @ jerk
+    acc = Ca @ s0 + Aa @ jerk
+    if prog.capture_k:
+        # I-CATCH-6 evaluated where it is promised: the capture rows state it,
+        # this re-measures the SOLVED plan at the hold-start knot against the
+        # same tolerance the on-line seed is held to.  At the equality floor
+        # (~1e-13) on every converged solve; a failure here is a solver defect
+        # surfacing, refused rather than flown.
+        k_h = prog.capture_k
+        resid = _axis_offsets(pos[k_h], vel[k_h], acc[k_h], prog.capture_site,
+                              prog.capture_kappa)
+        for label, r, tol in zip(('position', 'velocity', 'acceleration'),
+                                 resid, HELD_AXIS_SEED_TOL):
+            if float(np.max(np.abs(r))) > tol:
+                raise CupCycleInfeasible(
+                    "the capture move did not land the platform on the ball's "
+                    "line by step %d: its %s is %.3g off (allowed %.3g, SI). "
+                    "Refused rather than flown." % (k_h, label,
+                                                    float(np.max(np.abs(r))), tol),
+                    reason='CATCH_AXIS')
     return CupCyclePlan(
-        pos=Cp @ s0 + Ap @ jerk,
-        vel=Cv @ s0 + Av @ jerk,
-        acc=Ca @ s0 + Aa @ jerk,
+        pos=pos,
+        vel=vel,
+        acc=acc,
         jerk=jerk,
         t=np.arange(n + 1) * dt,
         dt=dt,

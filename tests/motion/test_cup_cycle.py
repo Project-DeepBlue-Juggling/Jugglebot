@@ -1617,12 +1617,18 @@ def test_a_held_catch_that_throws_holds_the_line_only_through_the_touch_down():
     assert np.allclose(plan.acc[-1], cc.GRAVITY, atol=1e-9)
 
 
-def test_a_capture_span_is_refused_by_name_until_it_is_built():
-    """``held_from_k > 0`` — tilting onto the line INSIDE the window — is
-    designed (R5 handoff_F § 1: capture rows at ``k_a``, a quintic into the
-    attitude before it) but not built, and says so as one physical sentence
-    rather than falling through to the whole-window hold.  FAIL-BEFORE: the
-    field did not exist."""
+def test_a_held_steady_still_refuses_a_capture_span():
+    """Two refusals the 2026-10-19 capture move (I-CATCH-6) left in place.
+
+    * A CALLER-chosen ``held_from_k > 0`` is still refused by name, with or
+      without a throw: the one capture span that is built is chosen by the
+      planner from the seed (``CatchEvent.capture``), never stated by a caller.
+    * A held catch that CARRIES A THROW (STEADY) refuses an off-line seed even
+      with ``capture=True``: its lateral channel after the touch-down is spent
+      on the launch line, and nothing dispatches a held STEADY off the line.
+
+    FAIL-BEFORE (first half): the field did not exist.  The capture move itself
+    is ``tests/motion/test_cup_capture.py``."""
     cfg = _window_cfg()
     state0, catch, throw, period = _held_throw_events(11)
     for thr in (throw, None):
@@ -1632,6 +1638,12 @@ def test_a_capture_span_is_refused_by_name_until_it_is_built():
                          pre_hold_knots=4 if thr is not None else 0)
         assert exc.value.reason == 'CATCH_AXIS'
         assert 'PRE-TILT REST' in str(exc.value)
+    off = dataclasses.replace(state0, pos=_on_axis(0.75) + np.array([0.01, 0.0, 0.0]))
+    with pytest.raises(cc.CupCycleInfeasible) as exc:
+        cc._assemble(off, throw, dataclasses.replace(catch, capture=True),
+                     period, cfg, pre_hold_knots=4)
+    assert exc.value.reason == 'CATCH_AXIS'
+    assert "isn't lined up" in str(exc.value)
 
 
 def test_a_held_LANDING_assembles_the_program_it_did_before_the_span():
