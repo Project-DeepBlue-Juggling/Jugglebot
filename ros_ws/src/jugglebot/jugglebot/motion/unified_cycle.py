@@ -2038,7 +2038,21 @@ def _realize(kind, cup, goals, state, limits, geom, rcfg, *, t_wall,
                 if goals.catch_vel_mm_s is not None else np.zeros(2))
     throw_tilt = _throw_tilt_for(cup, rcfg.max_tilt_deg)
     start_tilt = _start_tilt_for(state)
+    start_tilt_rate = None
     if start_tilt is not None and not state.post_release:
+        # I-PLAN-11: the seam is C1, not only C0 — the seed's tilt RATE (the
+        # head's ``pose_vel[3:5]`` at k_s on a splice; zero at a rest seam) is
+        # the schedule's knot-0 rate.  Mapped into the gravity frame by the
+        # same map as the pin, differenced over 1 ms of the seed's own rate
+        # (the map is a fixed rotation composition, smooth at this scale).
+        rate = np.asarray(state.pose_vel, dtype=float).reshape(6)[3:5]
+        if correction is None:
+            start_tilt_rate = rate.copy()
+        else:
+            eps = 1e-3
+            start_tilt_rate = (_tilt_to_gravity(start_tilt + eps * rate,
+                                                correction)
+                               - _tilt_to_gravity(start_tilt, correction)) / eps
         # Plan frame → gravity frame.  See step 1 above for why only this branch.
         start_tilt = _tilt_to_gravity(start_tilt, correction)
     rest_slew = False
@@ -2102,7 +2116,8 @@ def _realize(kind, cup, goals, state, limits, geom, rcfg, *, t_wall,
             tilts = cr.tilt_schedule(cup, recv, throw_tilt, rcfg,
                                      start_tilt=start_tilt,
                                      rest_slew=rest_slew,
-                                     held_from_k=held_from_k)
+                                     held_from_k=held_from_k,
+                                     start_tilt_rate=start_tilt_rate)
         except ValueError as exc:
             raise CycleInfeasible(TILT_PIN, [str(exc)])
         # ⚠ THE ATTITUDE HALF OF THE PLATFORM HOLD IS *NOT* TAKEN — measured, not

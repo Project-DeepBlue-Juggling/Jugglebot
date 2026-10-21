@@ -2,7 +2,7 @@
 title: "LIMIT_JERK at the seam knot after a late-catch BUMP: the bump edits the pose but not the cup track the seam velocity is re-derived from"
 type: investigation
 date: 2026-10-19
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack - post-R6 (columns, 17:47 sitting) / late catch re-aim BUMP (I-CATCH-5)"
 related_plan: late-catch-reaim-bump.md
 related:
@@ -130,7 +130,9 @@ Already verified: 2026-10-19, offline reproduction with probe-only monkeypatches
 
 ## Outcome
 
-NOT FLOWN. Status in-progress: the mechanism is traced and reproduced, the contract, enforcement and tests landed 2026-10-19 evening (full gate and box re-sweep recorded in Verification). The next columns sitting is the flight check: every BUMP install should be followed by an accepted catch, with zero first-knot (`t = 0.025 s`) `LIMIT_JERK` and no `CHAIN_DISCONTINUITY` from the new check. Rehearsal row 47 (`tests/hardware/session_skill_stack_rehearsals.md`) names what to count; the launch needs the usual full restart for the rebuilt executor. If the fix cannot fly, the interim mitigation is to disable the bump for columns.
+Was NOT FLOWN at landing (2026-10-19 evening): the mechanism was traced and reproduced, and the contract, enforcement and tests landed that evening (full gate and box re-sweep recorded in Verification). The next columns sitting was the flight check, with rehearsal row 47 (`tests/hardware/session_skill_stack_rehearsals.md`) naming what to count: every BUMP install followed by an accepted catch, zero first-knot (`t = 0.025 s`) `LIMIT_JERK`, no `CHAIN_DISCONTINUITY` from the new check. The interim mitigation held in reserve (disable the bump for columns) was not needed.
+
+**Flown 2026-10-21.** The 22:53 sitting (first on the ASA cup; `2026-10-22-hop-reaims-refused-mid-transit-tilt-rate-seam-and-the-new-cup.md`) was the flight check, row 47 PASSED: the launch ran the 95d148cd build (installed `unified_cycle.py` and `bump.py` md5-identical to source, `INSTALL_SKEW: OK`), the late-catch BUMP installed 20 times, 0 of them was followed by `LIMIT_JERK` at t = 0.025 s (10-19: 5 of 6 columns attempts), and 0 `CHAIN_DISCONTINUITY` fired. The sitting's other refusals were different classes, see that entry.
 
 Residue, not scheduled:
 

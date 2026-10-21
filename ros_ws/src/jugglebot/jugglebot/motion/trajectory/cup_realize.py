@@ -738,7 +738,8 @@ def _accel_bounded_schedule(raw: np.ndarray, anchors, dt: float,
                             accel_cap: float, tilt_cap: float,
                             rate_step: float, jerk_cap: float = 0.0,
                             jerk_terms=None,
-                            jerk_budget_mm: float = 0.0) -> np.ndarray:
+                            jerk_budget_mm: float = 0.0,
+                            start_rate=None) -> np.ndarray:
     """Smooth ``raw`` until its tilt acceleration AND jerk are in budget, pins exact.
 
     **Why a smoother and not an accel-limited slew.**  The obvious construction —
@@ -806,6 +807,20 @@ def _accel_bounded_schedule(raw: np.ndarray, anchors, dt: float,
        guarantee. In the normal case the smoothed schedule is already well inside
        the rate cap and the sweeps cost one no-op pass.
 
+    6. **``start_rate`` — the knot-0 pin's RATE (I-PLAN-11).**  When given, the
+       knot-0 anchor blends toward the RAMP ``v₀ + r₀·t`` (projected onto the cap
+       disc) instead of the constant ``v₀``.  ``W = S(1 − |k|/L)`` has
+       ``W' = W'' = 0`` at its pin, so the output's slope at knot 0 is exactly
+       ``r₀`` and its curvature there is the ramp's, zero: the window OPENS at the
+       rate the preceding window is streaming instead of restarting the slew from
+       rest.  Every knot stays a convex combination of in-disc points, and the
+       ramp's departure from the banking solution is shaped and MEASURED by the
+       same loop as every other pin gap.  A non-zero ``start_rate`` also gives
+       the knot-0 window its own width, the whole gap to its neighbouring pin
+       (I-PLAN-11 corollary, 2026-10-22 — see ``L0_carried`` below): the shared
+       ``L`` is capped by the narrowest gap ANYWHERE in the window, which on a
+       mid-transit re-aim squeezed the handover into the knots before the dive.
+
     Returns the last attempt whichever way the loop exits; when the pins are too
     close together for any width to bound the join, the cap is what gives and
     ``validate_cycle`` is what refuses. That is the same honesty the rate limit
@@ -850,6 +865,37 @@ def _accel_bounded_schedule(raw: np.ndarray, anchors, dt: float,
     half_max = max(0, n // 2)
 
     smoothed = {}
+    # The knot-0 anchor's target series: the constant pin, or (I-PLAN-11) the
+    # ramp at the carried rate, projected onto the cap disc so the blend stays a
+    # convex combination of in-disc points.  Only knot 0 can carry a rate: it is
+    # the only pin that abuts a window already streaming.
+    targets = {j: np.repeat(np.asarray(v, dtype=float)[None, :], n, axis=0)
+               for j, v in anchors}
+    if start_rate is not None and 0 in targets:
+        ramp = (targets[0] + (idx * dt)[:, None]
+                * np.asarray(start_rate, dtype=float)[None, :])
+        targets[0] = _project_to_disc(ramp, np.zeros(2), tilt_cap)
+    # I-PLAN-11 corollary (2026-10-22): a knot-0 pin that CARRIES a rate gets its
+    # own blend width, the whole gap to its neighbouring pin, instead of the shared
+    # ``L`` (which ``blend_max`` couples to the NARROWEST gap anywhere in the
+    # window — on a mid-transit hop re-aim that is the catch -> release gap, 11
+    # knots, nothing to do with the seam).  The handover from the head's motion to
+    # the new solution then spreads over the whole transit left (curvature ~
+    # gap/L², jerk ~ gap/L³) instead of being squeezed into the knots just before
+    # the dive, where the banking objective is itself swinging (it saturates the
+    # cap while the cup accelerates at ~g).  Convexity survives: each window is
+    # still no wider than its gap to every neighbour, so the overlapping weights
+    # sum to <= 1 (the S(u) + S(1 − u) = 1 argument below, per anchor), and the
+    # neighbour's pin is untouched (W0 = 0 there).  A ZERO rate (every rest seam)
+    # keeps the shared width, bit-identically.  MEASURED (probe
+    # scratchpad/hand/proto_a.py, hop 250 mm / apex 0.9 / dwell 0.27, legs
+    # 350/5000/200k): mid-transit re-aims 21/80 -> 66/80 accepted, 0 regressions
+    # over 101 + 60 early-lead rows, columns identical row for row.
+    L0_carried = None
+    if (start_rate is not None and 0 in targets
+            and np.any(np.asarray(start_rate, dtype=float) != 0.0)):
+        right = [float(b) for b in sorted(anchor_set) if b > 0]
+        L0_carried = right[0] if right else float(n)
 
     def _attempt(h: int, scale: float):
         """One shaped schedule at kernel half-width ``h`` and blend scale ``scale``.
@@ -883,8 +929,10 @@ def _accel_bounded_schedule(raw: np.ndarray, anchors, dt: float,
         weight = np.zeros(n)
         out = sm.astype(float, copy=True)
         for j, v in anchors:
-            w = _smoothstep(1.0 - np.abs(idx - j) / L)
-            out += w[:, None] * (np.asarray(v, dtype=float)[None, :] - sm)
+            Lj = (max(L, L0_carried) if (j == 0 and L0_carried is not None)
+                  else L)
+            w = _smoothstep(1.0 - np.abs(idx - j) / Lj)
+            out += w[:, None] * (targets[j] - sm)
             weight += w
         # Belt and braces: with L <= b − a the overlapping sum is exactly
         # S(x) + S(1−x) = 1 at worst, so this never fires — but a caller-supplied
@@ -1057,7 +1105,7 @@ def _smooth_slew(start: np.ndarray, end: np.ndarray, n: int, dt: float,
 
 def tilt_schedule(cup_plan, receive_tilt, throw_tilt, cfg=None, *,
                   start_tilt=None, rest_slew=False,
-                  held_from_k=None) -> np.ndarray:
+                  held_from_k=None, start_tilt_rate=None) -> np.ndarray:
     """Per-knot cup tilt ``(rx, ry)`` for ``cup_plan``.  Returns an ``(n, 2)`` array.
 
     **Banking (``cfg.banking_enabled``, the default).**  A ball resting in the cup
@@ -1166,6 +1214,18 @@ def tilt_schedule(cup_plan, receive_tilt, throw_tilt, cfg=None, *,
       millimetres of leg position inside one 25 ms knot, which is a step command
       on six legs, the thing this stack refuses to emit anywhere else.
 
+    **``start_tilt_rate`` — the seam pin's RATE (I-PLAN-11, ``None`` by default).**
+    ``start_tilt`` makes the seam C0 in tilt; a window spliced onto a head that
+    is still BANKING (a mid-transit re-aim or stop REST) must also open at the
+    head's tilt RATE, or the schedule restarts the slew from rest there.  Through
+    the ~245 mm arm that rate gap is a platform-velocity step at the seam
+    (0.29 rad/s → ~71 mm/s on the 250 mm hop), which ``_seam_velocity``'s
+    re-derivation splits into ~2.5k / 3.3k mm/s² knot-acceleration jumps at
+    ``k_s ∓ 1`` — 400-470k mm/s³ of leg jerk against 200k.  Applied on the
+    banking branch (the one a mid-transit head is on) via
+    :func:`_accel_bounded_schedule`'s ``start_rate``; it needs ``start_tilt``.
+    The zero-banking branches open from a static attitude and ignore it.
+
     The pins resolve in knot order with the terminal pin strongest: ``start_tilt``
     is applied first, then the catch pin, then the throw pin, so a collision (a
     catch on knot 0, or a single-knot plan) leaves the physically stronger pin
@@ -1190,6 +1250,11 @@ def tilt_schedule(cup_plan, receive_tilt, throw_tilt, cfg=None, *,
     throw = _as_tilt_pair(throw_tilt, 'throw_tilt')
     start = (None if start_tilt is None
              else _as_tilt_pair(start_tilt, 'start_tilt'))
+    start_rate = (None if start_tilt_rate is None
+                  else _as_tilt_pair(start_tilt_rate, 'start_tilt_rate'))
+    if start_rate is not None and start is None:
+        raise ValueError("start_tilt_rate needs a start_tilt: a rate is a "
+                         "boundary condition AT the seam pin")
 
     if held_from_k is not None and (cfg.banking_enabled or rest_slew):
         raise ValueError(
@@ -1284,7 +1349,8 @@ def tilt_schedule(cup_plan, receive_tilt, throw_tilt, cfg=None, *,
             jerk_cap = min(jerk_cap,
                            budget_mm / _tilt_jerk_lever_mm(cup_plan, dt))
         return _accel_bounded_schedule(out, anchors, dt, accel_cap, cap, step,
-                                       jerk_cap, jerk_terms, budget_mm)
+                                       jerk_cap, jerk_terms, budget_mm,
+                                       start_rate=start_rate)
 
     for j, v in anchors:
         out[j] = v
