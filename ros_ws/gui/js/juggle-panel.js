@@ -736,6 +736,8 @@ function buildModel(p) {
     return m;
 }
 
+const isOval = (p) => p.value === 'oval_1ball' || p.value === 'oval_1ball_fed';
+
 function diagramKeyOf(p) {
     return [p.value, cupState(), effective('apex_m'), effective('separation_mm'),
         defaults ? defaults.dwell_s : '', defaults ? defaults.columns_feed_site : ''].join('|');
@@ -800,6 +802,13 @@ function rebuildDiagram(p) {
             d: 'M ' + a.x + ' ' + top + ' Q ' + (a.x + b.x) / 2 + ' ' + (2 * ay - top)
                 + ' ' + b.x + ' ' + top,
         }, 'jp-path b1', g);
+        if (isOval(m.p)) {
+            // The loaded carry: the bottom of the oval, P2 -> P1 in the cup.
+            svgEl('path', {
+                d: 'M ' + b.x + ' ' + top + ' Q ' + (a.x + b.x) / 2 + ' ' + (top + 2 * DIP_PX)
+                    + ' ' + a.x + ' ' + top,
+            }, 'jp-path b1', g);
+        }
     } else {
         for (const ball of m.balls) {
             svgEl('line', { x1: ball.x, y1: top, x2: ball.x, y2: ay },
@@ -885,6 +894,22 @@ function drawFrame(s) {
         const u = s % (tf + d);
         if (u < tf) { placeHand(x, 0); placeBall(0, x, flightZ(u, tf, m.apexPx), false, 0); }
         else { const dip = dipAt((u - tf) / d); placeHand(x, dip); placeBall(0, x, 0, true, dip); }
+    } else if (isOval(m.p)) {
+        // Oval (loaded carry): fly T(P1) -> C(P2), then the cup CARRIES the
+        // ball back P2 -> P1 along the bottom of the oval during the dwell.
+        const u = s % (tf + d);
+        const T = m.sites[0].x, C = m.sites[1].x;
+        if (u < tf) {
+            const x = T + (C - T) * (u / tf);
+            placeHand(x, 0);
+            placeBall(0, x, flightZ(u, tf, m.apexPx), false, 0);
+        } else {
+            const w = (u - tf) / d;
+            const dip = dipAt(w);
+            const x = C + (T - C) * smooth(w);
+            placeHand(x, dip);
+            placeBall(0, x, 0, true, dip);
+        }
     } else if (m.p.kind === 'one') {
         // Hop: the cup coasts under the ball at the ball's lateral speed.
         const leg = tf + d;
