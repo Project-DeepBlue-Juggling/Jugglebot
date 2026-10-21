@@ -38,7 +38,8 @@ from jugglebot.motion.skills import bump as bmp
 from jugglebot.motion.skills import magazine_throw as mt
 from jugglebot.motion.skills import segments as sg
 from jugglebot.motion.skills import schedule as sch
-from jugglebot.motion.skills.report import ThrowReport, release_error_s
+from jugglebot.motion.skills.report import (FeedCatchReport, ThrowReport,
+                                            release_error_s)
 from jugglebot.motion.skills.sites import CATCH_CUP_Z_MM, RELEASE_CUP_Z_MM
 from jugglebot.motion.skills.memory import (APEX_RATIO_BAND, Experience,
                                             apex_in_band)
@@ -1138,6 +1139,16 @@ class _PendingCatch:
     t_land_scheduled_s: float
     t_open_s: float
     t_close_s: float
+    #: A Ball Butler FEED catch (the skill carries ``landing_prior``): on a
+    #: confirmed seat it logs a ``feed`` line (:func:`report.feed_line`).
+    is_feed: bool = False
+
+
+#: Where, around the tracker's crossing, the cup strike is searched for
+#: (``contact_probe``).  The 2026-10-21 bag metrics found contact at
+#: +0..+20 ms; the window is generous both ways.
+CONTACT_SEARCH_BEFORE_S = 0.08
+CONTACT_SEARCH_AFTER_S = 0.20
 
 
 def _latest_release_before(schedule: Schedule, t_before: float
@@ -1881,8 +1892,26 @@ class SkillExecutor:
                  seat_window: Optional[Callable[[float, float],
                                                 Optional[SeatWindow]]] = None,
                  catch_bump_enabled: bool = False,
-                 bumper: Optional[Callable[..., 'bmp.BumpResult']] = None):
+                 bumper: Optional[Callable[..., 'bmp.BumpResult']] = None,
+                 contact_probe: Optional[Callable[[float, float],
+                                                  Optional[float]]] = None,
+                 catch_time_offset_s: float = 0.0):
         self.schedule = schedule
+        #: ``contact_probe(t0, t1)`` -> wall stamp of the first hand
+        #: velocity KICK (cup struck by the ball) inside ``[t0, t1]``, or
+        #: ``None`` (no kick / the history does not cover the span).  For the
+        #: operator's ``contact`` / ``settle`` only (:mod:`report`) -- it
+        #: reaches no gate and no learner row.
+        self.contact_probe = contact_probe
+        #: DEBUG catch-time offset (s), added to the touch-down time of
+        #: EVERY catch plan this executor builds (:meth:`_clamp_lateral_to_
+        #: schedule`'s single funnel -- dispatch and every live re-send alike,
+        #: so a re-send never "re-applies" or undoes it).  0.0 is a no-op
+        #: (bit-identical).  The shifted plan goes through the same
+        #: installer / ``validate_cycle`` path as any other catch.
+        self.catch_time_offset_s = float(catch_time_offset_s)
+        #: Feed-catch (Ball Butler) observation lines for the node to log.
+        self.feed_reports: List[FeedCatchReport] = []
         #: The late catch re-aim BUMP (I-CATCH-5, :mod:`.bump`) — OFF unless the
         #: caller enables it for a pattern in ``bump.BUMP_ENABLED_PATTERNS``
         #: (columns family only, owner 2026-10-16; hop/reload stay off until a
@@ -2566,6 +2595,22 @@ class SkillExecutor:
 
     def _clamp_lateral_to_schedule(self, idx: int, skill: Skill,
                                    landing: Landing) -> Landing:
+        """:meth:`_clamp_lateral_inner` plus the DEBUG catch-time offset
+        (:attr:`catch_time_offset_s`) -- the one funnel every catch plan's
+        touch-down time passes (dispatch, hand-corrected and tracker
+        re-sends), so the offset is part of the plan as DISPATCHED and a
+        later re-send compares like with like (never a late re-aim by the
+        offset).  ``0.0`` returns the inner result untouched."""
+        out = self._clamp_lateral_inner(idx, skill, landing)
+        off = self.catch_time_offset_s
+        if off:
+            out = Landing(pos_mm=out.pos_mm, vel_mm_s=out.vel_mm_s,
+                          t_land_abs_s=float(out.t_land_abs_s) + off,
+                          from_fit=out.from_fit)
+        return out
+
+    def _clamp_lateral_inner(self, idx: int, skill: Skill,
+                             landing: Landing) -> Landing:
         """Clamp ``landing``'s lateral (x, y) to within
         :attr:`lateral_authority_m` of the schedule's commanded landing for
         this catch (:meth:`_predicted_landing`'s ``pos_mm[:2]`` — the prior a
@@ -4073,7 +4118,8 @@ class SkillExecutor:
             return
         self._pending_catches.append(_PendingCatch(
             ball_id=skill.ball_id, catch_idx=idx, t_land_scheduled_s=L,
-            t_open_s=t_open, t_close_s=t_close))
+            t_open_s=t_open, t_close_s=t_close,
+            is_feed=skill.landing_prior is not None))
 
     def _note_catch_aim(self, ball_id: int, catch_idx: int,
                         t_land_abs_s: float, reaim: bool = False) -> None:
@@ -4259,6 +4305,25 @@ class SkillExecutor:
         self.schedule = dataclasses.replace(self.schedule,
                                             skills=tuple(new_tail))
 
+    def _report_feed(self, pend: _PendingCatch, t_seat_s: float) -> None:
+        """Queue the ``feed`` line for a Ball Butler feed catch that seated.
+        The crossing is the tracker's final fit for the ball, accepted only
+        within 0.3 s of the dispatched aim (a stale fit of another flight
+        would give a nonsense zero); without one every field is ``--``."""
+        t_cross = None
+        if self.tracker is not None:
+            lnd = self.tracker(pend.ball_id)
+            if (lnd is not None and lnd.from_fit and abs(
+                    float(lnd.t_land_abs_s) - pend.t_land_scheduled_s) < 0.3):
+                t_cross = float(lnd.t_land_abs_s)
+        contact_s, settle_s = self._contact_and_settle(t_cross, t_seat_s)
+        self.feed_reports.append(FeedCatchReport(
+            ball_id=pend.ball_id,
+            arrival_err_s=(None if t_cross is None
+                           else t_cross - pend.t_land_scheduled_s),
+            seat_s=None if t_cross is None else t_seat_s - t_cross,
+            contact_s=contact_s, settle_s=settle_s))
+
     def _advance_catch_evidence(self, t_abs_s: float) -> List[str]:
         """Fire :data:`MISSED_CATCH` for any armed :class:`_PendingCatch`
         whose decision instant has arrived -- called each tick from
@@ -4327,6 +4392,9 @@ class SkillExecutor:
                    or (float(window.n_valid) / expected)
                       >= MISSED_CATCH_MIN_VALID_FRAC)
             live = live and float(window.max_gap_s) <= MISSED_CATCH_MAX_GAP_S
+            if (live and window.n_seated > 0 and pend.is_feed
+                    and window.t_first_seated_s is not None):
+                self._report_feed(pend, float(window.t_first_seated_s))
             if not live or window.n_seated > 0:
                 # Confirmed (a raw-SEATED sample vetoes), or not trustworthy
                 # (under-covered / gappy): no verdict, row dropped -- logged
@@ -4859,6 +4927,22 @@ class SkillExecutor:
         if window.t_first_seated_s is not None:
             pend.t_seat_s = float(window.t_first_seated_s)
 
+    def _contact_and_settle(self, t_cross_s: Optional[float],
+                            t_seat_s: Optional[float]):
+        """``(contact_s, settle_s)`` for the operator's line: the cup strike
+        (``contact_probe`` over a window around the tracker's crossing) minus
+        the crossing, and the first SEATED reading minus the strike.  Either
+        is ``None`` when its evidence is missing (no fit, no probe, no kick
+        found, not seated)."""
+        if t_cross_s is None or self.contact_probe is None:
+            return None, None
+        t_c = self.contact_probe(float(t_cross_s) - CONTACT_SEARCH_BEFORE_S,
+                                 float(t_cross_s) + CONTACT_SEARCH_AFTER_S)
+        if t_c is None:
+            return None, None
+        settle = None if t_seat_s is None else float(t_seat_s) - float(t_c)
+        return float(t_c) - float(t_cross_s), settle
+
     def _report(self, pend: _PendingOutcome, *, row: bool,
                 no_row_reason: str = '',
                 apex_m: Optional[float] = None) -> None:
@@ -4883,6 +4967,8 @@ class SkillExecutor:
         # SAME reason `_finalise_outcome` overrides it on the learner's
         # ``Experience`` -- the operator's throw line must not read CAUGHT
         # off a sensor that is reading the PREVIOUS ball's possession.
+        t_cross = None if landing is None else float(landing.t_land_abs_s)
+        contact_s, settle_s = self._contact_and_settle(t_cross, pend.t_seat_s)
         caught = (False if pend.shadow_landing
                  else (bool(pend.caught_seen) if self.observer is not None
                        else None))
@@ -4893,9 +4979,10 @@ class SkillExecutor:
             apex_m=None if apex_m is None else float(apex_m),
             landing_err_mm=landing_err, release_err_s=release_err,
             arrival_err_s=arrival_err,
-            seat_s=(None if pend.t_seat_s is None
-                    else float(pend.t_seat_s) - float(pend.t_land_scheduled_s)),
-            reaims=pend.reaims, reaim_refused=pend.reaim_refused))
+            seat_s=(None if (pend.t_seat_s is None or t_cross is None)
+                    else float(pend.t_seat_s) - t_cross),
+            reaims=pend.reaims, reaim_refused=pend.reaim_refused,
+            contact_s=contact_s, settle_s=settle_s))
 
     def _finalise_outcome(self, pend: _PendingOutcome,
                           finalise_at: float) -> List[str]:
@@ -4967,16 +5054,30 @@ class SkillExecutor:
         # `shadow_landing` the possession latch is NOT overridden here --
         # this ball is caught in the ordinary way, so `caught` (above) is
         # already read normally for it.
-        if not pend.shadow_landing and not pend.entry_hop:
+        #
+        # `catch_time_offset_s` != 0 (debug A/B, 2026-10-22): the catch plan
+        # was deliberately shifted, so a miss may be the offset's doing, not
+        # the throw's -- training the THROW learner on it would teach the
+        # memory a bad throw that was not. Same no-row treatment; the report
+        # and OUTCOME line still carry the observed landing and say why.
+        offset_in_force = self.catch_time_offset_s != 0.0
+        if (not pend.shadow_landing and not pend.entry_hop
+                and not offset_in_force):
             exp = Experience(x=pend.x, u=pend.u, y=y, t_abs_s=pend.t_release_s,
                              ball_id=pend.ball_id, caught=bool(caught))
             self.on_experience(exp)
-        self._report(pend, row=True, apex_m=apex_obs_m)
+        if offset_in_force:
+            self._report(pend, row=False, apex_m=apex_obs_m,
+                         no_row_reason='catch_time_offset in force')
+        else:
+            self._report(pend, row=True, apex_m=apex_obs_m)
         phase = ('' if pend.t_seat_s is None
                  else ' seat=%+.3f s vs scheduled landing'
                  % (pend.t_seat_s - float(pend.t_land_scheduled_s)))
         shadow = ' (landed on the held ball)' if pend.shadow_landing else ''
         hop = ' (hop entry, no learner row)' if pend.entry_hop else ''
+        if offset_in_force:
+            hop += ' (no learner row: catch_time_offset in force)'
         return ['%.3f OUTCOME %s: y=(%.4f, %.4f) m apex=%.4f m '
                 'caught=%s%s%s%s'
                 % (finalise_at, ball_label(pend.ball_id), y[0], y[1], y[2],
@@ -5039,9 +5140,11 @@ class SkillExecutor:
             return ['%.3f CATCH-AIM-HAND-INFEASIBLE skill %d: r=%.3f gives no '
                     'arrival at the catch plane — the theoretical aim stands'
                     % (t_abs_s, idx, r)]
-        dt_s = float(landing.t_land_abs_s) - _event_abs_s(CATCH, terminal)
-        if self._resend_too_late(t_abs_s, skill,
-                                 float(landing.t_land_abs_s)):
+        # The terminal carries the debug catch-time offset; so must the
+        # landing time every comparison below uses.
+        t_land_eff = float(landing.t_land_abs_s) + self.catch_time_offset_s
+        dt_s = t_land_eff - _event_abs_s(CATCH, terminal)
+        if self._resend_too_late(t_abs_s, skill, t_land_eff):
             return ['%.3f CATCH-AIM-LATE skill %d: the hand-measured '
                     'correction (r=%.3f, Δt=%+.3f s) would splice too late — '
                     'the theoretical aim stands' % (t_abs_s, idx, r, dt_s)]
@@ -5054,7 +5157,7 @@ class SkillExecutor:
         moved_mm = float(np.max(np.abs(
             np.asarray(landing.pos_mm, dtype=float) - terminal.landing_mm)))
         if (t_abs_s + float(skill.lead_s)
-                >= float(landing.t_land_abs_s) - CUP_CONTACT_WINDOW_LEAD_S):
+                >= t_land_eff - CUP_CONTACT_WINDOW_LEAD_S):
             return self._resend_declined(
                 t_abs_s, idx, 'CONTACT-WINDOW', moved_mm, dt_s)
         new_terminal = self._catch_terminal(idx, skill, landing)

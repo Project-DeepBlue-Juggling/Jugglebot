@@ -133,6 +133,7 @@ and whether this cup can carry a ball 150 mm in 0.30 s is what the plan finds ou
   - *38* — workspace rule `|site xy| + box half-extent ≤ workspace_xy_m`, **no 20 mm margin** (125 + 20 + 20
     refused the flown columns and hop); code `REJECTED_SITE_OUTSIDE_WORKSPACE`, every pattern.
   - *39* — `dwell_s` a REQUIRED `select` / `describe_miss` keyword; `check_limits` validates file-level limits.
+    *Amended 2026-10-21 (owner):* `dwell_s` travels on the Juggle goal (it was a node parameter); the GUI pre-fills it per pattern from the box's swept dwell (columns/hop/self_toss 0.27, oval 0.65), editable; the node parameter is the fallback when the goal sends 0. The 22:53 sitting's oval was refused for a 0.27 node dwell against the 0.65 box.
   - *44* — "shared `plant_id`" → oval sittings use a **separate `plant_id`**: T = P1 = (−75, 0) is the same
     `x[0:2]` as every columns / self_toss P1 row and `h_seat` does not separate them.
   - *48* — `CATCH_CLOSING_SPEED` 50 % → 25 % → **20 %** of the 0.7× target, held-axis catches exempt (cup stationary

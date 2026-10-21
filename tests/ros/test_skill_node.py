@@ -4179,7 +4179,7 @@ class TestJuggleAction:
         assert values['n_throws'] == expected
         assert values['reload'] == '0'
         assert set(values) == {'pattern', 'n_throws', 'reload', 'apex_m',
-                               'separation_mm'}
+                               'separation_mm', 'dwell_s'}
 
     def test_a_refused_goal_announces_the_reason(self):
         node, _client = _node_with_client()
@@ -6232,6 +6232,38 @@ def test_oval_refuses_a_box_swept_at_another_dwell_naming_dwell_s(tmp_path):
     assert node._executor is None
 
 
+def test_goal_dwell_wins_over_the_node_param_for_the_oval_selection(tmp_path):
+    """2026-10-21 (owner): dwell_s travels on the goal. The node param is the
+    columns 0.27, the oval box is stamped 0.65: a goal sending 0.65 selects it
+    (the 22:53 sitting's refusal), and the resolved dwell is on the start event."""
+    node = _oval_node('goal_dwell')
+    assert node._params['dwell_s'] == pytest.approx(0.27)
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
+                      _good_box_path(tmp_path, oval=True, oval_dwell_s=0.65)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        resp = node._start_pattern(
+            _goal('oval_1ball', separation_mm=150.0, dwell_s=0.65))
+    assert resp.success is True, resp.message
+    assert resp.attempt['dwell_s'] == pytest.approx(0.65)
+
+
+def test_goal_dwell_zero_falls_back_to_the_node_param(tmp_path):
+    node = _oval_node('goal_dwell0')
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
+                      _good_box_path(tmp_path, oval=True, oval_dwell_s=0.65)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        node._params['dwell_s'] = 0.27
+        refused = node._start_pattern(_goal('oval_1ball', separation_mm=150.0))
+        node._params['dwell_s'] = 0.65
+        ok = node._start_pattern(_goal('oval_1ball', separation_mm=150.0,
+                                       dwell_s=0.0))
+    assert refused.success is False and 'dwell_s' in refused.message
+    assert '0.27' in refused.message and '0.65' in refused.message
+    assert 'on the goal' in refused.message      # points at the goal, not the param
+    assert ok.success is True, ok.message
+    assert ok.attempt['dwell_s'] == pytest.approx(0.65)
+
+
 def test_check_prints_the_oval_box_line_and_the_workspace_result(tmp_path):
     node, _client = _node_with_client()
     node._on_traj_status(_status())
@@ -6945,3 +6977,40 @@ def test_plan_superseded_reads_a_non_cycle_plan_only_after_the_install_settles()
     assert node._observations(0.0).plan_superseded is True
     node._on_traj_status(_status_with_cycle(True))               # still ours
     assert node._observations(0.0).plan_superseded is False
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# DEBUG catch-time offset + the online cup-contact probe (2026-10-22)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def test_the_catch_time_offset_defaults_to_zero_and_reads_in_range_values():
+    node, _client = _node_with_client(response=_response())
+    assert node._params[sn._CATCH_TIME_OFFSET_PARAM] == 0.0
+    assert node._catch_time_offset_s == 0.0
+    for ms in (20.0, -20.0, 40.0, -40.0):
+        node._params[sn._CATCH_TIME_OFFSET_PARAM] = ms
+        assert node._catch_time_offset_s == pytest.approx(ms / 1000.0)
+
+
+@pytest.mark.parametrize('ms', [41.0, -40.5, 200.0, float('nan')])
+def test_an_out_of_range_catch_time_offset_is_ignored_with_a_log(ms):
+    node, _client = _node_with_client(response=_response())
+    log = _logged(node)
+    node._params[sn._CATCH_TIME_OFFSET_PARAM] = ms
+    assert node._catch_time_offset_s == 0.0
+    assert log.error.called and 'IGNORED' in log.error.call_args[0][0]
+
+
+def test_the_contact_probe_finds_the_hand_velocity_kick_in_its_window():
+    node, _client = _node_with_client(response=_response())
+    # (t, valid, raw, held, vel_ff_cmd, vel_meas): descending cup (vff -1.5),
+    # a kick (meas 10 rev/s below ff) from t = 100.03.
+    node._hand_telemetry_hist.clear()
+    for i in range(30):
+        t = 100.0 + 0.01 * i
+        vmeas = -1.5 - (12.0 if t >= 100.03 - 1e-9 else 0.5)
+        node._hand_telemetry_hist.append((t, True, False, False, -1.5, vmeas))
+    assert node._contact_time(100.0, 100.2) == pytest.approx(100.03)
+    # before the kick: none; a window the history does not cover: None.
+    assert node._contact_time(100.0, 100.02) is None
+    assert node._contact_time(100.0, 105.0) is None

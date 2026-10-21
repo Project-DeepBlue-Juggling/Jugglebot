@@ -7698,3 +7698,181 @@ def test_a_carried_catch_or_a_throw_ahead_is_not_closed_by_the_decay(sites):
     x.tick(sch.skills[0].dispatch_s())
     x.tick(sch.skills[1].dispatch_s())
     assert x.attempt_ended and x.done and x.closing_due_s() is None
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# Catch observation (contact / settle / seat vs the tracker's crossing) and the
+# DEBUG catch-time offset (2026-10-22, the future catch learner's observation
+# and command channels). Verified: scoped pytest, see the logbook entry.
+# ═════════════════════════════════════════════════════════════════════════════
+
+from types import SimpleNamespace as _NS
+
+from jugglebot.motion.skills import report as _rp
+
+
+def _bare_executor(sites, **kw):
+    sch, L, R, _t = _feed_catch_schedule(sites)
+    return ex.SkillExecutor(sch, _FakeInstaller(), tracker=None, **kw), L
+
+
+def _pend(t_cross, t_seat, t_sched=100.0):
+    landing = ex.Landing(pos_mm=np.array([0.0, 0.0, 830.0]),
+                         vel_mm_s=np.array([0.0, 0.0, -4000.0]),
+                         t_land_abs_s=t_cross, from_fit=True)
+    return _NS(best_landing=landing, release_z_mm=860.0, t_release_s=t_cross - 0.8,
+               t_catch_aim_s=t_cross - 0.01, shadow_landing=False,
+               caught_seen=True, ball_id=0, throw_no=1, t_seat_s=t_seat,
+               t_land_scheduled_s=t_sched, reaims=0, reaim_refused='',
+               target_xy_mm=[0.0, 0.0])
+
+
+@pytest.mark.parametrize('contact_off_s', [+0.015, -0.020])
+def test_throw_report_contact_settle_seat_are_referenced_to_the_crossing(
+        sites, contact_off_s):
+    """Contact AFTER the tracker's crossing reads positive, BEFORE it
+    negative; settle = seat - contact; seat is measured from the crossing,
+    NOT from the (40 ms earlier) scheduled landing."""
+    x, _L = _bare_executor(
+        sites, contact_probe=lambda t0, t1: 200.0 + contact_off_s)
+    pend = _pend(t_cross=200.0, t_seat=200.30, t_sched=199.96)
+    x._report(pend, row=True, apex_m=0.9)
+    r = x.reports[-1]
+    assert r.contact_s == pytest.approx(contact_off_s)
+    assert r.settle_s == pytest.approx(0.30 - contact_off_s)
+    assert r.seat_s == pytest.approx(0.30)          # vs crossing, not +0.34
+    text = _rp.throw_line(r)[1]
+    assert 'seat +0.30 s (vs crossing)' in text
+    assert 'contact %+.0f ms' % (contact_off_s * 1000) in text
+    assert 'settle %.0f ms' % ((0.30 - contact_off_s) * 1000) in text
+
+
+def test_throw_report_prints_dashes_when_evidence_is_missing(sites):
+    # no contact probe wired: contact/settle are '--'; seat still reads.
+    x, _L = _bare_executor(sites)
+    x._report(_pend(200.0, 200.3), row=True, apex_m=0.9)
+    text = _rp.throw_line(x.reports[-1])[1]
+    assert 'contact --  settle --' in text and 'seat +0.30 s' in text
+    # probe finds no kick: same.
+    x, _L = _bare_executor(sites, contact_probe=lambda a, b: None)
+    x._report(_pend(200.0, 200.3), row=True, apex_m=0.9)
+    assert x.reports[-1].contact_s is None and x.reports[-1].settle_s is None
+    # contact found but never seated: contact prints, settle '--'.
+    x, _L = _bare_executor(sites, contact_probe=lambda a, b: 200.01)
+    x._report(_pend(200.0, None), row=True, apex_m=0.9)
+    text = _rp.throw_line(x.reports[-1])[1]
+    assert 'contact +10 ms  settle --' in text and 'seat --' in text
+    # no tracker fit at all: seat has no zero -> '--'.
+    x, _L = _bare_executor(sites, contact_probe=lambda a, b: 200.01)
+    p = _pend(200.0, 200.3)
+    p.best_landing = None
+    x._report(p, row=False, no_row_reason='no landing')
+    text = _rp.throw_line(x.reports[-1])[1]
+    assert 'seat --  contact --  settle --' in text
+
+
+def test_the_contact_probe_is_searched_around_the_crossing(sites):
+    seen = []
+    x, _L = _bare_executor(
+        sites, contact_probe=lambda a, b: seen.append((a, b)))
+    x._report(_pend(200.0, 200.3), row=True, apex_m=0.9)
+    assert seen == [(pytest.approx(200.0 - ex.CONTACT_SEARCH_BEFORE_S),
+                     pytest.approx(200.0 + ex.CONTACT_SEARCH_AFTER_S))]
+
+
+def _feed_run(sites, *, tracker, contact_probe, t_seat_rel=0.27):
+    sch, L, R, _t = _feed_catch_schedule(sites)
+    inst = _FakeInstaller()
+    x = ex.SkillExecutor(
+        sch, inst, tracker=tracker, observer=_observer_confirms_a_only,
+        observations=lambda t: _obs(), on_experience=lambda e: None,
+        seat_window=lambda t0, t1: ex.SeatWindow(
+            n_valid=int(round((t1 - t0) * 100)), n_seated=1, max_gap_s=0.01,
+            t_first_seated_s=L + t_seat_rel),
+        contact_probe=contact_probe)
+    t = sch.skills[0].dispatch_s() - 0.01
+    t_end = R + ex.MISSED_CATCH_CLOSE_AFTER_RELEASE_S \
+        + ex.MISSED_CATCH_DECIDE_LAG_S + 0.1
+    while t < t_end:
+        x.tick(t)
+        t += 0.02
+    return x, L
+
+
+def test_a_seated_feed_catch_gets_a_feed_line(sites):
+    _sch, L, _R, _t = _feed_catch_schedule(sites)
+    cross = L + 0.012
+    tracker = lambda ball_id: ex.Landing(
+        pos_mm=np.array([0.0, 0.0, 830.0]),
+        vel_mm_s=np.array([0.0, 0.0, -5500.0]), t_land_abs_s=cross,
+        from_fit=True)
+    x, L = _feed_run(sites, tracker=tracker,
+                     contact_probe=lambda a, b: cross + 0.014)
+    assert len(x.feed_reports) == 1
+    r = x.feed_reports[0]
+    assert r.contact_s == pytest.approx(0.014)
+    assert r.seat_s == pytest.approx(L + 0.27 - cross)
+    assert r.settle_s == pytest.approx(L + 0.27 - cross - 0.014)
+    line = _rp.feed_line(r)
+    assert line.startswith('feed ball 1 CAUGHT') and 'contact +14 ms' in line
+    assert 'settle 244 ms' in line
+
+
+def test_a_feed_catch_with_no_fit_prints_dashes(sites):
+    x, _L = _feed_run(sites, tracker=None, contact_probe=lambda a, b: 1.0)
+    line = _rp.feed_line(x.feed_reports[0])
+    assert 'arrival --' in line and 'seat --' in line
+    assert 'contact --  settle --' in line
+
+
+def _catch_t_land(sites, **kw):
+    sch, L, _R, _t = _feed_catch_schedule(sites)
+    inst = _FakeInstaller()
+    x = ex.SkillExecutor(sch, inst, tracker=None, **kw)
+    t = sch.skills[0].dispatch_s() - 0.01
+    while t < L:
+        x.tick(t)
+        t += 0.02
+    return [c[1].t_land_s for c in inst.calls if c[0] == sg.CATCH][0]
+
+
+def test_the_catch_time_offset_shifts_the_dispatched_catch_exactly(sites):
+    base = _catch_t_land(sites)
+    assert _catch_t_land(sites, catch_time_offset_s=0.0) == base   # identical
+    assert _catch_t_land(sites, catch_time_offset_s=0.020) == pytest.approx(
+        base + 0.020, abs=1e-12)
+    assert _catch_t_land(sites, catch_time_offset_s=-0.020) == pytest.approx(
+        base - 0.020, abs=1e-12)
+
+
+@pytest.mark.parametrize('offset_s', [0.020, -0.020, 0.0])
+def test_a_catch_time_offset_run_writes_no_learner_row(sites, offset_s):
+    """A shifted catch plan can miss for the OFFSET's sake; the throw learner
+    must not be trained on that. Offset != 0: no Experience, reason on the
+    OUTCOME line and the report. Offset 0: the row is written as before."""
+    p1, _p2 = sites
+    t_land = ROS_T0 + FLIGHT_S
+    sch = _single_throw_schedule(p1, ball_id=0, t_release=ROS_T0)
+    land = _fit_landing(pos_mm=p1.catch_site_mm(), vel_mm_s=LAND_VEL,
+                        t_land_abs_s=t_land)
+    experiences = []
+    x = ex.SkillExecutor(sch, _FakeInstaller(), tracker=lambda b: land,
+                         observer=lambda b, t: ex.CAUGHT_EVIDENCE,
+                         on_experience=experiences.append,
+                         catch_time_offset_s=offset_s)
+    t = sch.skills[0].dispatch_s() - 0.01
+    t_end = t_land + ex.CAUGHT_WINDOW_S + 0.05
+    lines = []
+    while t < t_end:
+        lines.extend(x.tick(t))
+        t += 0.02
+    outcome = [ln for ln in lines if 'OUTCOME' in ln][0]
+    assert len(x.reports) == 1
+    if offset_s == 0.0:
+        assert len(experiences) == 1
+        assert 'catch_time_offset' not in outcome and x.reports[0].row
+    else:
+        assert experiences == []
+        assert 'no learner row: catch_time_offset in force' in outcome
+        assert not x.reports[0].row
+        assert 'catch_time_offset in force' in x.reports[0].no_row_reason

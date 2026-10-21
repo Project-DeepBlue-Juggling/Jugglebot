@@ -26,9 +26,10 @@ def _points():
     block = re.search(r"export const PATTERN_POINTS = \{(.*?)\n\};", JS, re.S).group(1)
     out = {}
     for m in re.finditer(
-            r"(\w+):\s*\{ box: '(\w+)',\s*apex_m: ([\d.]+),\s*separation_mm: (null|[\d.]+) \}", block):
+            r"(\w+):\s*\{ box: '(\w+)',\s*apex_m: ([\d.]+),\s*separation_mm: (null|[\d.]+),\s*dwell_s: ([\d.]+) \}", block):
         out[m.group(1)] = (m.group(2), float(m.group(3)),
-                           None if m.group(4) == "null" else float(m.group(4)))
+                           None if m.group(4) == "null" else float(m.group(4)),
+                           float(m.group(5)))
     return out
 
 
@@ -37,7 +38,7 @@ def test_every_panel_pattern_has_a_point():
 
 
 def test_points_sit_inside_the_committed_box():
-    for pattern, (kind, apex, sep) in _points().items():
+    for pattern, (kind, apex, sep, _dwell) in _points().items():
         rows = [b for b in BOX["boxes"] if b["pattern"] == kind]
         assert rows, pattern
         if sep is None:   # one-site pattern: apex only
@@ -100,3 +101,31 @@ def test_no_reload_flag_on_wire_and_cup_preview_exists():
     assert "TWO_FEED_LANDED" in re.search(r"function cupPreviewText\(p, cup\) \{(.*?)\n\}", JS, re.S).group(1)
     # classification is read from the shared ball-in-hand pill, not re-subscribed
     assert "flag-ball-held-pill" in JS and "ros.subscribe" not in JS
+
+
+def test_point_dwell_equals_the_boxs_swept_dwell_per_pattern():
+    """Owner 2026-10-21: dwell_s travels on the Juggle goal and the GUI
+    pre-fills it per pattern FROM THE BOX.  The 22:53 sitting's oval refusal
+    ("live dwell 0.27 but the box was swept at 0.65") was a per-pattern value
+    living in a node parameter the operator had to remember.  A re-sweep at a
+    new dwell now fails here until PATTERN_POINTS follows it."""
+    for pattern, (kind, apex, sep, dwell) in _points().items():
+        rows = [b for b in BOX["boxes"] if b["pattern"] == kind]
+        assert rows, pattern
+        if sep is None:
+            near = rows
+        else:
+            near = [b for b in rows
+                    if abs(2 * abs(b["release_site_xy_mm"][0]) - sep) < 1e-6]
+        covering = [b for b in near
+                    if b["apex_band_m"][0] <= apex <= b["apex_band_m"][1]]
+        assert covering, pattern
+        swept = {float(b["dwell_s"]) for b in covering}
+        assert swept == {dwell}, "%s: GUI dwell %s != box dwell(s) %s" % (
+            pattern, dwell, sorted(swept))
+
+
+def test_dwell_is_an_editable_field_sent_on_the_wire():
+    assert "dwell_s: {" in JS and "'dwell_s']" in JS
+    assert "parts.push('dwell_s=' + wireNum(typed.dwell_s, false));" in JS
+    assert "juggle-dwell" not in JS and "dwellVal" not in JS   # the read-only span is gone

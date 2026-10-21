@@ -231,6 +231,13 @@ _BB_CANCEL_TRUST_S = _BB_CANCEL_WINDUP_S + 0.3
 #: CATCH refusal at dispatch (`_installer`), so the END -> decay-to-level path
 #: can be dress-rehearsed without a ball. Never set it in a production launch.
 _DEBUG_FORCE_CATCH_REFUSAL_PARAM = 'debug_force_catch_refusal_once'
+#: Hand-velocity kick (rev/s, measured below feedforward) that marks the cup
+#: being struck -- `_contact_time`.
+_CONTACT_KICK_REV_S = 8.0
+#: DEBUG: shift every catch's touch-down time at dispatch (ms); |value| above
+#: the clamp is ignored with a log (`_read_catch_time_offset`).
+_CATCH_TIME_OFFSET_PARAM = 'catch_time_offset_ms'
+_CATCH_TIME_OFFSET_MAX_MS = 40.0
 # `_refuse_if_lane_latched`: a `sched_refused` rise this recent means a lane
 # is still latched (a latched lane refuses every streamed frame, ~40/s, so a
 # 10 Hz `/link_status` sees it rise on every publish). 1 s = ten publishes.
@@ -1068,6 +1075,12 @@ class SkillNode(Node):
         # 17.6 mm plant scatter — two drops in 51), 20 mm was stable at both
         # apexes — 20 mm is the launch default; the box still admits 40.
         self.declare_parameter('learner_lateral_authority_mm', 20.0)
+        # DEBUG catch-time offset (ms), added to every catch's touch-down time
+        # AT DISPATCH (executor `_clamp_lateral_to_schedule`).  Default 0 =
+        # bit-identical.  The Ball Butler A/B of the catch-learner decision
+        # (rehearsal row 48).  Out of +/-40 is ignored with a log.
+        self.declare_parameter(_CATCH_TIME_OFFSET_PARAM, 0.0)
+        self._catch_offset_bad_logged = set()
         # The magazine program (U2c): '' = magazine_target.default_config_path()
         # (config/bb_magazine.yaml, re-read per request), the oldest
         # bb/base_frame_pose it will map a target through, and the lead
@@ -2087,7 +2100,9 @@ class SkillNode(Node):
             self._hand_telemetry_hist.append((
                 t_wall, valid,
                 (bool(raw) if (valid and raw is not None) else None),
-                (bool(held) if (valid and held is not None) else None)))
+                (bool(held) if (valid and held is not None) else None),
+                float(getattr(msg, 'vel_ff_cmd', 0.0)),
+                float(getattr(msg, 'vel_meas', 0.0))))
             while (self._hand_telemetry_hist
                   and self._hand_telemetry_hist[0][0]
                      < t_wall - _SEAT_WINDOW_HIST_S):
@@ -2176,6 +2191,46 @@ class SkillNode(Node):
         reads the debounced twin instead (`_observations`, 2026-09-16)."""
         return self._possession_evidence
 
+    @property
+    def _catch_time_offset_s(self) -> float:
+        """The DEBUG catch-time offset in seconds, read fresh per executor
+        build (so per goal).  A value outside +/-40 ms is IGNORED (0.0) with
+        a log -- one line of guard, never clamped to the edge: an offset the
+        operator did not ask for is worse than none."""
+        try:
+            ms = float(self.get_parameter(_CATCH_TIME_OFFSET_PARAM).value)
+        except Exception:                                     # noqa: BLE001
+            return 0.0
+        if not math.isfinite(ms) or abs(ms) > _CATCH_TIME_OFFSET_MAX_MS:
+            if ms not in self._catch_offset_bad_logged:
+                self._catch_offset_bad_logged.add(ms)
+                self.get_logger().error(
+                    '%s=%r is outside +/-%.0f ms -- IGNORED (offset 0)'
+                    % (_CATCH_TIME_OFFSET_PARAM, ms,
+                       _CATCH_TIME_OFFSET_MAX_MS))
+            return 0.0
+        return ms / 1000.0
+
+    def _contact_time(self, t0_s: float, t1_s: float) -> Optional[float]:
+        """The executor's ``contact_probe``: the wall stamp of the first
+        hand-velocity KICK in ``[t0_s, t1_s]`` -- measured velocity more than
+        ``_CONTACT_KICK_REV_S`` below the commanded feedforward while the
+        cup is not rising (the ball striking a descending cup pushes it
+        down; the detector the 2026-10-21 bag analysis used,
+        ``scratchpad/hand/smooth/catch_metrics.py``).  ``None`` when the
+        history does not cover the span or no sample qualifies.  Online and
+        passive: the 4 s ring is already held; nothing reads this for a
+        decision."""
+        with self._hand_hist_lock:
+            hist = list(self._hand_telemetry_hist)
+        if not hist or hist[0][0] > float(t0_s) or hist[-1][0] < float(t1_s):
+            return None
+        for t, valid, _raw, _held, vff, vmeas in hist:
+            if (valid and float(t0_s) <= t <= float(t1_s)
+                    and vmeas - vff < -_CONTACT_KICK_REV_S and vff < 1.0):
+                return float(t)
+        return None
+
     def _seat_window(self, t0_s: float, t1_s: float
                      ) -> Optional[SeatWindow]:
         """The executor's ``seat_window`` callable (R5 sitting 4,
@@ -2210,7 +2265,7 @@ class SkillNode(Node):
         max_gap_s = 0.0
         t_prev = None
         t_first_seated = None
-        for t, valid, raw, held in hist:
+        for t, valid, raw, held, _vff, _vmeas in hist:
             if t < float(t0_s) or t > float(t1_s):
                 continue
             if t_prev is not None:
@@ -3451,6 +3506,11 @@ class SkillNode(Node):
         """Log each newly finalised throw ONCE -- the operator's line for
         it (`report.throw_line`: INFO, WARN for a miss) -- and keep it for
         the Juggle result. Consumes `executor.reports`."""
+        feeds = getattr(executor, 'feed_reports', None)
+        while isinstance(feeds, list) and feeds:
+            # Ball Butler feed catches: an INFO line only (no Juggle-result
+            # bookkeeping -- the feed is not one of the attempt's throws).
+            self._log_at('INFO', rp.feed_line(feeds.pop(0)))
         reports = getattr(executor, 'reports', None)
         if not isinstance(reports, list):
             return
@@ -3642,7 +3702,8 @@ class SkillNode(Node):
         apex_m = (float(goal.apex_m) or float(self.get_parameter('apex_m').value))
         separation_mm = (float(goal.separation_mm)
                          or float(self.get_parameter('separation_mm').value))
-        dwell_s = float(self.get_parameter('dwell_s').value)
+        # One dwell per goal (2026-10-21, owner): the goal's, else the param.
+        dwell_s = (float(goal.dwell_s) or float(self.get_parameter('dwell_s').value))
         n_throws = (int(goal.num_cycles)
                    or int(self.get_parameter('n_throws').value))
 
@@ -3694,7 +3755,7 @@ class SkillNode(Node):
         # `self`: goal callbacks run on a reentrant group.
         result.attempt = dict(pattern=pattern, n_throws=n_throws,
                               reload=reload, apex_m=apex_m,
-                              separation_mm=separation_mm)
+                              separation_mm=separation_mm, dwell_s=dwell_s)
         if result.success and pattern != 'magazine':
             # The attempt is installed now -- from here `_maybe_signal_goal_
             # done` may end the goal (see `_goal_armed`'s `__init__` comment).
@@ -4100,7 +4161,9 @@ class SkillNode(Node):
             observer=self._ball_evidence, observations=self._observations,
             on_experience=self._bind_on_experience(memory),
             dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
-            seat_window=self._seat_window)
+            seat_window=self._seat_window,
+            contact_probe=self._contact_time,
+            catch_time_offset_s=self._catch_time_offset_s)
         msg = (
             'columns_1ball schedule compiled: %d skills, %d throws, '
             'plant_id=%r, memory rows=%d, t0=%.3f'
@@ -4111,6 +4174,7 @@ class SkillNode(Node):
             start_line=rp.start_line(
                 self._attempt_label or 'columns_1ball',
                 self._executor.n_throws, apex_m, memory_rows=len(memory),
+                catch_time_offset_ms=self._catch_time_offset_s * 1000.0,
                 frame_offset_mm=self._frame_offset_mm(),
                 extra='(%s -> %s phantom)' % (a_site.name, phantom_site.name)))
 
@@ -4481,7 +4545,13 @@ class SkillNode(Node):
             parts.append('%s refused: %s -- %s'
                          % (what, ex.REJECTED_SITE_OUTSIDE_WORKSPACE,
                             '; '.join(outside)))
-        return '; '.join(parts)
+        msg = '; '.join(parts)
+        # admissible.py's dwell text names the node parameter; the goal now
+        # carries the dwell (the param is only the 0 => fallback).
+        return msg.replace(
+            'set the node dwell_s parameter to a swept value',
+            'send a swept dwell_s on the goal (the GUI Dwell field; 0 falls '
+            'back to the node dwell_s parameter)')
 
     def _run_one_ball(self, kind: str, apex_m: float, separation_mm: float,
                       dwell_s: float, n_throws: int,
@@ -4696,7 +4766,9 @@ class SkillNode(Node):
             observer=self._ball_evidence, observations=self._observations,
             on_experience=self._bind_on_experience(memory),
             dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
-            seat_window=self._seat_window)
+            seat_window=self._seat_window,
+            contact_probe=self._contact_time,
+            catch_time_offset_s=self._catch_time_offset_s)
         msg = (
             '%s schedule compiled: %d skills, %d throws, plant_id=%r, '
             'memory rows=%d, t0=%.3f'
@@ -4707,6 +4779,7 @@ class SkillNode(Node):
             start_line=rp.start_line(
                 self._attempt_label or kind, self._executor.n_throws, apex_m,
                 memory_rows=len(memory),
+                catch_time_offset_ms=self._catch_time_offset_s * 1000.0,
                 frame_offset_mm=self._frame_offset_mm(),
                 extra=('(%s)' % ' -> '.join(st.name for st in sites)
                        if len(sites) > 1 else '')))
@@ -5101,7 +5174,9 @@ class SkillNode(Node):
                 launch_ratio=self._launch_ratio,
                 observer=self._ball_evidence, observations=self._observations,
                 dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
-                seat_window=self._seat_window)
+                seat_window=self._seat_window,
+                contact_probe=self._contact_time,
+                catch_time_offset_s=self._catch_time_offset_s)
         else:
             bridge_executor = SkillExecutor(
                 bridge, self._installer, tracker=self._tracker,
@@ -5111,7 +5186,9 @@ class SkillNode(Node):
                 launch_ratio=self._launch_ratio,
                 observer=self._ball_evidence, observations=self._observations,
                 dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
-                seat_window=self._seat_window)
+                seat_window=self._seat_window,
+                contact_probe=self._contact_time,
+                catch_time_offset_s=self._catch_time_offset_s)
 
             def _install_bridge():
                 with self._correlation_lock:
@@ -5403,7 +5480,9 @@ class SkillNode(Node):
                 observer=self._ball_evidence, observations=self._observations,
                 on_experience=self._bind_on_experience(ctx.memory),
                 dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
-                seat_window=self._seat_window)
+                seat_window=self._seat_window,
+                contact_probe=self._contact_time,
+                catch_time_offset_s=self._catch_time_offset_s)
             # Same tick-locked claim-then-swap as the plain reload branch
             # below (duplicated rather than shared -- that branch is
             # heavily tested and touching it to extract a helper is out of
@@ -5548,7 +5627,9 @@ class SkillNode(Node):
             observer=self._ball_evidence, observations=self._observations,
             on_experience=self._bind_on_experience(ctx.memory),
             dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
-            seat_window=self._seat_window)
+            seat_window=self._seat_window,
+            contact_probe=self._contact_time,
+            catch_time_offset_s=self._catch_time_offset_s)
         # The SkillExecutor SWAP (brief step 1c): the bridge's own executor
         # is done by now in every ordinary case (its one REST dispatched
         # ticks ago) — this still takes `_tick_lock` first, same reason
@@ -5726,7 +5807,9 @@ class SkillNode(Node):
             observer=self._ball_evidence, observations=self._observations,
             on_experience=self._bind_on_experience(ctx.memory),
             dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S,
-            seat_window=self._seat_window)
+            seat_window=self._seat_window,
+            contact_probe=self._contact_time,
+            catch_time_offset_s=self._catch_time_offset_s)
         # The SkillExecutor SWAP, `_install_announced_reload`'s shape
         # exactly: `_tick_lock` first (a tick mid-dispatch on another
         # thread must not read `_executor` half-swapped), then ONE
@@ -5952,7 +6035,8 @@ class SkillNode(Node):
             n_throws=str(attempt['n_throws']),
             reload='1' if attempt['reload'] else '0',
             apex_m='%.3f' % attempt['apex_m'],
-            separation_mm='%.1f' % attempt['separation_mm'])
+            separation_mm='%.1f' % attempt['separation_mm'],
+            dwell_s='%.3f' % attempt['dwell_s'])
         start = getattr(result, 'start_line', '')
         if start:
             self.get_logger().debug('jugglebot/juggle ACCEPTED: %s'

@@ -683,6 +683,7 @@ class _JuggleGoal:
         self.pattern = ''
         self.apex_m = 0.0
         self.separation_mm = 0.0
+        self.dwell_s = 0.0
         self.num_cycles = 0
 
 

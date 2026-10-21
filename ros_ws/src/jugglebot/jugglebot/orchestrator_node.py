@@ -56,6 +56,7 @@ from jugglebot.can import odrive
 _JUGGLE_NUMERIC_FIELDS = {
     'apex_m': float,
     'separation_mm': float,
+    'dwell_s': float,
     'num_cycles': int,
 }
 
@@ -338,7 +339,7 @@ class OrchestratorNode(Node):
 
     @staticmethod
     def _parse_juggle_request(data):
-        """``<pattern>[,apex_m=<f>][,separation_mm=<f>][,num_cycles=<n>]``
+        """``<pattern>[,apex_m=<f>][,separation_mm=<f>][,dwell_s=<f>][,num_cycles=<n>]``
         → ``(pattern, {field: value})``, or raise ValueError naming
         the offending token.  Tokens after the pattern may come in any order.
 
@@ -375,7 +376,7 @@ class OrchestratorNode(Node):
     def _svc_juggle_request(self, req, res):
         """Relay a GUI juggle request to jugglebot/juggle (fire-and-forget
         ACK). ``req.data`` is
-        ``<pattern>[,apex_m=<f>][,separation_mm=<f>][,num_cycles=<n>]``
+        ``<pattern>[,apex_m=<f>][,separation_mm=<f>][,dwell_s=<f>][,num_cycles=<n>]``
         (e.g. ``'hop,num_cycles=4'``, ``'columns,num_cycles=6,apex_m=0.8'``) — the
         GUI's own encoding (juggle-panel.js), never a second place that names
         the launch defaults: every numeric goal field the request does not
@@ -397,6 +398,7 @@ class OrchestratorNode(Node):
         goal.pattern = pattern
         goal.apex_m = float(values.get('apex_m', 0.0))
         goal.separation_mm = float(values.get('separation_mm', 0.0))
+        goal.dwell_s = float(values.get('dwell_s', 0.0))
         goal.num_cycles = int(values.get('num_cycles', 0))
         send_future = self._juggle_client.send_goal_async(goal)
         send_future.add_done_callback(self._on_juggle_goal_response)
