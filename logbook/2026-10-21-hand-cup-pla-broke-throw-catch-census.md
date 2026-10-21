@@ -7,6 +7,9 @@ phase: "two-ball-skill-stack - post-R6 (hardware maintenance)"
 related_entries:
   - 2026-07-29-hand-sensor-ros-surface
   - 2026-10-04-skill-stack-r5-sitting-4
+files_changed:
+  - tools/probes/hand_cup_census.py
+  - tools/probes/README.md
 subsystem:
   - hardware
 tags:
@@ -27,7 +30,8 @@ service life.
 
 Source: every rosbag under `~/Desktop/rosbags` (~880 bags; three 2025-01-09
 bags have no storage plugin and are unreadable, all far older than the Hand).
-No throw counter exists in the code, so the counts are derived from bags:
+No throw counter exists in the code, so the counts are derived from bags by
+`tools/probes/hand_cup_census.py`:
 
 - **Throw** = one `/throw_announcements` message with `thrower_name='jugglebot'`
   (one per release time; no duplicates found).
@@ -59,17 +63,38 @@ sensor cannot tell which ball seated, so the other ball's seat can score
 announcement, and for seats later than 0.8 s. Throws are a floor for the cup's
 true count: unrecorded sessions are missing.
 
+**Are unannounced throws missed?** Some bags carry no `/throw_announcements`
+(eight of the ten 2026-08-12 bags, six 2026-09 bags with `/toss/record`). The
+probe's announcement-independent cross-check settles it: across the
+sensor era **every bag with a throw-speed hand stroke (`vel_meas` > 50 rev/s)
+also carried announcements**, so none of those bags threw. Strokes total 2,724
+against 2,521 announced throws, the excess in the two-ball sessions (strokes
+that release no ball); sensor-confirmed departures total 2,284, below it (the
+sensor cannot tell which ball seated).
+
+## The ASA cup's first session
+
+Bag `2026-10-21_22-53-41` (22:53-23:01, closed after the first count was run)
+was flown with the ASA cup already fitted (owner, 2026-10-21): **86 throws,
+83 catches** (66 self + 17 of 20 feeds). Its count starts there:
+`python tools/probes/hand_cup_census.py --since 2026-10-21`.
+
 ## Verification
 
-(2026-10-21, `python -I <scratchpad>/sensor.py ~/Desktop/rosbags` under
-`PDJ_venv`, a one-off reader over `rosbags.rosbag2.Reader` with hand-rolled CDR
-decoding of `ThrowAnnouncement` and `HandTelemetryMessage`, uncommitted) →
-the totals above. The per-bag breakdown was not committed.
+Run 2026-10-21 under `PDJ_venv`, from the `Jugglebot-skills` root:
+
+- `python tools/probes/hand_cup_census.py --until 2026-10-21` → throws 2,602,
+  catches 2,412, 416 bags, 3 unreadable (2025-01-09, no storage plugin).
+- `python tools/probes/hand_cup_census.py --since 2026-07-29_22 --until 2026-10-21`
+  → throws 2,521, catches 2,412 (2,071 self + 341 feeds), strokes 2,724,
+  sensor departures 2,284.
+- `python tools/probes/hand_cup_census.py --since 2026-10-21` → throws 86,
+  catches 83 (the ASA cup).
+
+These match the one-off scratch reader the first count used.
 
 ## Discussion
 
-For the ASA cup's life: compare against bags from `2026-10-21` on. If a
-lifetime number is wanted again, promote the census script to
-`tools/probes/` rather than re-deriving it. Next time this matters, a failure
+For the ASA cup's life, re-run the probe with `--since 2026-10-21`. Next time this matters, a failure
 mode note (where the cup cracked, layer-line vs perimeter) would make the
 PLA-vs-ASA comparison meaningful; it was not recorded here.
