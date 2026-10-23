@@ -7780,7 +7780,8 @@ def test_the_contact_probe_is_searched_around_the_crossing(sites):
                      pytest.approx(200.0 + ex.CONTACT_SEARCH_AFTER_S))]
 
 
-def _feed_run(sites, *, tracker, contact_probe, t_seat_rel=0.27):
+def _feed_run(sites, *, tracker, contact_probe, t_seat_rel=0.27,
+              on_tick=None, on_executor=None):
     sch, L, R, _t = _feed_catch_schedule(sites)
     inst = _FakeInstaller()
     x = ex.SkillExecutor(
@@ -7790,10 +7791,14 @@ def _feed_run(sites, *, tracker, contact_probe, t_seat_rel=0.27):
             n_valid=int(round((t1 - t0) * 100)), n_seated=1, max_gap_s=0.01,
             t_first_seated_s=L + t_seat_rel),
         contact_probe=contact_probe)
+    if on_executor is not None:
+        on_executor(x)
     t = sch.skills[0].dispatch_s() - 0.01
     t_end = R + ex.MISSED_CATCH_CLOSE_AFTER_RELEASE_S \
         + ex.MISSED_CATCH_DECIDE_LAG_S + 0.1
     while t < t_end:
+        if on_tick is not None:
+            on_tick(t, L)
         x.tick(t)
         t += 0.02
     return x, L
@@ -7816,6 +7821,67 @@ def test_a_seated_feed_catch_gets_a_feed_line(sites):
     line = _rp.feed_line(r)
     assert line.startswith('feed ball 1 CAUGHT') and 'contact +14 ms' in line
     assert 'settle 244 ms' in line
+
+
+def _flight_only_tracker(sites, fit_t_land_off_s):
+    """Provider like skill_node._tracker: answers while the ball is IN_FLIGHT
+    (until the scheduled landing + 0.2 s), None after the status flip."""
+    _sch, L, _R, _t = _feed_catch_schedule(sites)
+    clock = {'t': 0.0}
+    cross = L + fit_t_land_off_s
+
+    def tracker(ball_id):
+        if clock['t'] > L + 0.2:
+            return None
+        return ex.Landing(
+            pos_mm=np.array([0.0, 0.0, 830.0]),
+            vel_mm_s=np.array([0.0, 0.0, -5500.0]), t_land_abs_s=cross,
+            from_fit=True)
+    return tracker, clock, cross
+
+
+def test_feed_line_uses_the_in_flight_fit_after_the_provider_goes_quiet(sites):
+    # (the 0.012 s offset is inside the 0.15 s EXTERNAL_LANDING_TIME_BAND_S band)
+    tracker, clock, cross = _flight_only_tracker(sites, 0.012)
+    x, L = _feed_run(sites, tracker=tracker,
+                     contact_probe=lambda a, b: cross + 0.014,
+                     on_tick=lambda t, _L: clock.update(t=t))
+    # the live call at report time (L + 0.53 s) would have returned None
+    assert tracker(1) is None
+    r = x.feed_reports[0]
+    assert r.seat_s == pytest.approx(L + 0.27 - cross)
+    assert r.contact_s == pytest.approx(0.014)
+    assert r.settle_s == pytest.approx(L + 0.27 - cross - 0.014)
+    line = _rp.feed_line(r)
+    assert 'arrival --' not in line and 'seat --' not in line
+    assert 'contact --' not in line and 'settle --' not in line
+
+
+def test_feed_line_still_rejects_a_stale_latched_fit(sites):
+    # The report-time 0.3 s guard on a LATCHED value.  A fit 0.35 s off would
+    # be refused upstream by the 0.15 s band and never latch, so the stale
+    # latch is seeded directly on the pending catch after registration.
+    tracker, clock, cross = _flight_only_tracker(sites, 0.012)
+    holder = {}
+    seeded = []
+
+    def on_tick(t, L):
+        clock.update(t=t)
+        if t > L:
+            for pend in holder['x']._pending_catches:
+                pend.last_fit_landing = ex.Landing(
+                    pos_mm=np.array([0.0, 0.0, 830.0]),
+                    vel_mm_s=np.array([0.0, 0.0, -5500.0]),
+                    t_land_abs_s=L + 0.35, from_fit=True)
+                seeded.append(t)
+    x, _L = _feed_run(sites, tracker=tracker,
+                      contact_probe=lambda a, b: cross + 0.014,
+                      on_tick=on_tick,
+                      on_executor=lambda e: holder.update(x=e))
+    assert seeded
+    line = _rp.feed_line(x.feed_reports[0])
+    assert 'arrival --' in line and 'seat --' in line
+    assert 'contact --  settle --' in line
 
 
 def test_a_feed_catch_with_no_fit_prints_dashes(sites):

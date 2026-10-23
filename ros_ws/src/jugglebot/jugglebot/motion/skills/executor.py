@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
-from typing import Callable, List, Optional, Tuple, Union
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
@@ -1142,6 +1142,14 @@ class _PendingCatch:
     #: A Ball Butler FEED catch (the skill carries ``landing_prior``): on a
     #: confirmed seat it logs a ``feed`` line (:func:`report.feed_line`).
     is_feed: bool = False
+    #: The last CONVERGED (``from_fit``) tracker landing taken for this catch
+    #: while its ball was still in flight (:meth:`SkillExecutor.
+    #: _tracked_landing`).  :meth:`SkillExecutor._report_feed` fires ~0.53 s
+    #: after the scheduled landing, when the provider has long stopped
+    #: answering for the ball (status no longer IN_FLIGHT): without this
+    #: latch every feed line printed ``--`` (2026-10-22 19:50 sitting).
+    #: Report-only; nothing aims or dispatches from it.
+    last_fit_landing: Optional[Landing] = None
 
 
 #: Where, around the tracker's crossing, the cup strike is searched for
@@ -2085,6 +2093,11 @@ class SkillExecutor:
         #: (:class:`_PendingCatch`) -- empty, and never appended to, when
         #: :attr:`seat_window` is ``None``.
         self._pending_catches: List[_PendingCatch] = []
+        #: catch idx -> last converged tracked landing (every catch; popped
+        #: when its pending catch resolves); the dispatch aim runs
+        #: BEFORE :meth:`_register_catch`, so its fit is parked here and
+        #: handed to the :class:`_PendingCatch` at registration.
+        self._fit_latch_by_idx: Dict[int, Landing] = {}
         #: CATCH indices whose ONE hand-measured re-aim is already settled —
         #: applied, refused, or given up on (:data:`AIM_SCHEDULE_HAND`).
         self._hand_corrected = set()
@@ -3272,8 +3285,21 @@ class SkillExecutor:
             return None
         if self.tracker is None:
             return None
-        return self._valid_tracked_landing(
+        landing = self._valid_tracked_landing(
             idx, skill, self.tracker(skill.ball_id))
+        # Report latch (see :attr:`_PendingCatch.last_fit_landing`).  One
+        # tick: the resend/bump path polls the tracker here at t_land-0.4 s
+        # with the ball IN_FLIGHT and a converged fit (landing within ~10 ms
+        # of the schedule) -> the valid, from_fit landing is stored; ticks
+        # later the same poll is skipped (catch_freeze_s) and at
+        # t_land+0.53 s the provider answers None, but the report reads the
+        # stored value.  No extra tracker call: this IS the existing poll.
+        if landing is not None and landing.from_fit:
+            self._fit_latch_by_idx[idx] = landing
+            for pend in self._pending_catches:
+                if pend.catch_idx == idx:
+                    pend.last_fit_landing = landing
+        return landing
 
     def _hand_ratio_landing(self, idx: int, skill: Skill, t_abs_s: float):
         """``(corrected_landing, r)`` from the MEASURED hand stroke, for the
@@ -4119,7 +4145,8 @@ class SkillExecutor:
         self._pending_catches.append(_PendingCatch(
             ball_id=skill.ball_id, catch_idx=idx, t_land_scheduled_s=L,
             t_open_s=t_open, t_close_s=t_close,
-            is_feed=skill.landing_prior is not None))
+            is_feed=skill.landing_prior is not None,
+            last_fit_landing=self._fit_latch_by_idx.get(idx)))
 
     def _note_catch_aim(self, ball_id: int, catch_idx: int,
                         t_land_abs_s: float, reaim: bool = False) -> None:
@@ -4311,11 +4338,14 @@ class SkillExecutor:
         within 0.3 s of the dispatched aim (a stale fit of another flight
         would give a nonsense zero); without one every field is ``--``."""
         t_cross = None
-        if self.tracker is not None:
+        # The in-flight latch first; the live call only when none was taken
+        # (the provider answers None once the ball's status leaves IN_FLIGHT).
+        lnd = pend.last_fit_landing
+        if lnd is None and self.tracker is not None:
             lnd = self.tracker(pend.ball_id)
-            if (lnd is not None and lnd.from_fit and abs(
-                    float(lnd.t_land_abs_s) - pend.t_land_scheduled_s) < 0.3):
-                t_cross = float(lnd.t_land_abs_s)
+        if (lnd is not None and lnd.from_fit and abs(
+                float(lnd.t_land_abs_s) - pend.t_land_scheduled_s) < 0.3):
+            t_cross = float(lnd.t_land_abs_s)
         contact_s, settle_s = self._contact_and_settle(t_cross, t_seat_s)
         self.feed_reports.append(FeedCatchReport(
             ball_id=pend.ball_id,
@@ -4468,6 +4498,9 @@ class SkillExecutor:
                        pend.catch_idx, window.n_valid, t_open_rel,
                        t_close_rel))
             continue                     # dropped either way
+        for pend in self._pending_catches:
+            if pend not in remaining:
+                self._fit_latch_by_idx.pop(pend.catch_idx, None)
         self._pending_catches = remaining
         return lines
 
