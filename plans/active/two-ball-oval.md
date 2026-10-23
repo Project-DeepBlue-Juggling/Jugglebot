@@ -3,10 +3,11 @@ title: Two-ball oval — two balls in one hand, every throw carried back in the 
 created: 2026-10-17
 status: active
 owner: Harrison
-last_updated: 2026-10-18
+last_updated: 2026-10-23
 related_logbook:
   - 2026-10-17-two-ball-oval-plan-written.md
   - 2026-10-18-two-ball-oval-p1-oval-pattern-dispatchable.md
+  - 2026-10-23-oval-p2-banking-leak-not-reproduced.md
 related_config:
   - config/hardware_config.yaml → trajectory_op.leg_acc_ceiling_mmps2 (5000 → 10000 at P4, decision 53)
   - config/hardware_config.yaml → trajectory_op.leg_{vel,acc,jerk}_limit_* (350/5000/200000 → 600/8000/200000 at P4, decision 54)
@@ -17,7 +18,7 @@ related_code:
   - ros_ws/src/jugglebot/jugglebot/motion/skills/executor.py (release-site threading, § 4 P1)
   - ros_ws/src/jugglebot/jugglebot/motion/skills/admissible.py::PATTERNS / select / check_limits
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/cup_cycle.py::_assemble (C-CUP-4 rows, level | pose mode)
-  - ros_ws/src/jugglebot/jugglebot/motion/trajectory/cup_realize.py (banking leak, P2)
+  - ros_ws/src/jugglebot/jugglebot/motion/trajectory/cup_realize.py (banking request; P2 RETIRED 2026-10-23, the sweep-as-request idea is a note in P3)
   - ros_ws/src/jugglebot/jugglebot/motion/trajectory/feasibility.py (CUP_SEATING_CONE / CUP_SEATING_FLOOR / CATCH_CLOSING_SPEED, CATCH_SKID diagnostic)
   - ros_ws/src/jugglebot/jugglebot/skill_node.py, sim/skills_gate.py, tools/admissible_sweep.py
 ---
@@ -82,6 +83,8 @@ and whether this cup can carry a ball 150 mm in 0.30 s is what the plan finds ou
   under principle (a) (loaded-span request = the sweep; C-CUP-1's per-instant rule applies to
   the free cup only); seated-carry constraint = QP rows (shaper) AND realised-plan check;
   never-stop principle recorded with its lever (free seam dz state) and its caveat.
+  **Amendment 2026-10-23 (owner):** the banking-leak phase is RETIRED (§ 4 P2) - the 40-110k leak
+  did not reproduce on today's planner; the "sweep as the request" idea survives only as a note in P3.
 - **Catch (28b, 40, 48)** (48 amended 2026-10-18)**:** the level program with a receive-pin TILT hold
   `[k_td − h_catch_pre, k_td + h_catch_post]`, no lateral slaving; throw pin held `[n−2, n]`;
   skid LOGGED only; closing speed REFUSES below 20 % of the 0.7× match target; the BB feed
@@ -146,8 +149,9 @@ and whether this cup can carry a ball 150 mm in 0.30 s is what the plan finds ou
 ### 1.4 Relationship to other plans
 
 `two-ball-skill-stack.md` (archived) is the substrate: skills, schedule, executor, learner, box,
-sim gate. `cup-contact-contract.md` (archived) holds C-CUP-1/2/3; C-CUP-4 extends it. The open
-2026-09-16 banking-saturation defect is P2 here. `skill-stack-dress-rehearsals-and-residue.md`
+sim gate. `cup-contact-contract.md` (archived) holds C-CUP-1/2/3; C-CUP-4 extends it. The
+2026-09-16 banking-saturation defect is C-CUP-1's (fixed: `BANKING_SEATING_MIN_G` / `_banking_raw`); the oval's
+separate "leak" claim (P2) was a second, since-unreproduced one (retired 2026-10-23, § 4 P2). `skill-stack-dress-rehearsals-and-residue.md`
 keeps the columns residue (SPLICE_TOO_LATE, emit gap); the columns canary at P4 reads against it.
 `columns-empty-cup-two-feed.md` (active) owns the cup-keyed accept rule every oval goal passes
 through; `bb-calibration-one-attempt.md` (archived 2026-10-19) owned the calibration sweep the runsheet's row 6a
@@ -243,13 +247,14 @@ second-to-last catch at C is a standalone HELD catch and the last throw lands on
 
 | Phase | Lands | Hardware rung that gates the next phase | Status | Date |
 |---|---|---|---|---|
-| P1 | The oval pattern dispatchable: `oval_1ball(_fed)`, fixed roles, cross-site fold, executor threading, codes, box cell at dwell 0.65, C-CUP-4 check, GUI, sim label, tests | **Rung 1** (`session_oval_rung1.md`): 150 / 0.65 / 0.95 at today's limits, as-is banking — go/no-go on the carry | COMPLETE | 2026-10-18; rung 1 FLOWN 2026-10-23: 28/28 caught, owner: "Oval 1 ball patterns are working really nicely. I think we're ready to advance on this." |
-| P2 | Banking leak fix (principle a) | Rung 1 re-flown = the leak-fixed column | NOT STARTED | |
-| P3 | Pose-level carry planner behind `level \| pose`, C-CUP-4 rows, knob re-tune, cycle budget, seam-dz ablation | Rung 1 re-flown = the swept column → decision 24 gate; columns re-gated if the mode flips | NOT STARTED | |
+| P1 | The oval pattern dispatchable: `oval_1ball(_fed)`, fixed roles, cross-site fold, executor threading, codes, box cell at dwell 0.65, C-CUP-4 check, GUI, sim label, tests | **Rung 1** (`session_oval_rung1.md`): 150 / 0.65 / 0.95 at today's limits, as-is banking — go/no-go on the carry (the 30-consecutive gate WAIVED by owner 2026-10-23: longest oval attempt 10/10; 28/28 caught = 18/18 oval, plus 10/10 hop control; the 30-run bar lives at P5) | COMPLETE | 2026-10-18; rung 1 FLOWN 2026-10-23: 28/28 caught (18/18 oval, plus 10/10 hop control), owner: "Oval 1 ball patterns are working really nicely. I think we're ready to advance on this." |
+| P2 | Banking leak fix (principle a) | ~~Rung 1 re-flown = the leak-fixed column~~ | RETIRED 2026-10-23 (row kept): the leak does not reproduce on today's planner, delta 0 at every accepted dwell 0.65-0.45, § 4 P2 | 2026-10-23 |
+| Rung 2 | No planner code (after sweeping the oval box cells at 0.55 and 0.50 (YAML + stamp, twice bit-identical, `./run_tests.sh --full`)): one-ball oval at dwell 0.55 then 0.50 on the as-is `level` planner at today's limits, bundled with the sitting that flies the three owed unflown fixes first | Row-27 metrics per step against the 0.65 baseline (runsheet `session_oval_rung1.md` § Rung 2) sets P3's shaper target | NOT FLOWN | |
+| P3 | Pose-level carry planner behind `level \| pose`, C-CUP-4 rows, knob re-tune, cycle budget, seam-dz ablation (design starts AFTER rung 2 flies) | Rung 2 outcome, then rung 1 re-flown = the swept column → decision 24 gate; columns re-gated if the mode flips | NOT STARTED | |
 | P4 | Working point 600/8000/200k, acc ceiling 10000, 30 A, box re-sweep (oval + columns), one-ball cells at 0.40 / 0.30 | Ramp sitting (five columns canary, one-ball oval at 0.40), then one-ball at 0.30 | NOT STARTED | |
 | P5 | Two-ball `oval(_fed)`: `compile_oval`, hop-shaped entry, Stop exit, clearance pre-flight | 30 consecutive BB-fed catches in one attempt | NOT STARTED | |
 
-Each rung is the gate: a phase does not start until the rung before it has flown and its
+Each rung is the gate (P3's gate is rung 2's outcome): a phase does not start until the rung before it has flown and its
 outcome is logged. Rung 1's GO/NO-GO bar is stated under P1 in § 4. "Not with this cup" at rung 1 ends the plan (archive `superseded`, the
 backup destination is a fresh effort).
 
@@ -296,23 +301,32 @@ Paths under `ros_ws/src/jugglebot/jugglebot/`.
   then rung 1 on the loaded Jetson with every accept-time refusal reported at once (runsheet
   rows 16b/16c). **GO** = a 30-cycle attempt completes with the hand ball sensor's seat bit
   continuous through every carry (runsheet rows 22a/25); **NO-GO** = the ball leaves the cup
-  in the same carry region twice (row 26). Outcome recorded in the runsheet § 6 and § 3 here.
+  in the same carry region twice (row 26). **The 30-cycle bar was WAIVED by the owner 2026-10-23** (longest oval attempt 10/10; 28/28 caught across attempts = 18/18 oval, plus 10/10 hop control; the 30-run bar lives at P5). Outcome recorded in the runsheet § 6 and § 3 here.
 - **Outcome (2026-10-18):** commits 7ae390cb (code, tests, fixtures, box, logbook, INVARIANTS) + the plan/runsheet commit that follows it; gate `./run_tests.sh --full` 2026-10-18 parallel 6792 passed / 9 skipped / 1 failed (a GUI replay-overview thread race, untouched code, 3/3 green in isolation) + serial 7 passed (logbook Verification); box re-sweep
   sweep 2026-10-18 `temp/sweeps/sweep_P1.sh` (four invocations: single/hop/columns at dwell 0.27, oval at 0.65 - 150 mm, apex 0.95 +/- 0.025 - all at 350/5000/200000/hand 3900, BLAS one thread), each run twice, `cmp` IDENTICAL for all four; merged single->hop->columns->oval; gate_hash 606b53e3912f (first merge 20436164b087 at the 25 % closing threshold; re-swept after the 20 % re-base with every cell identical, four files cmp IDENTICAL again), swept_at 2026-10-18, 20 cells, merged-file md5 5e2ea1b3ba8a1b75718c78b5d3035096; hop and columns cells value-identical to the pre-oval snapshot, self_toss cells shrunk (see Tradeoffs). The dispatched carry reads 32.1° at dwell 0.50 (pre-release hold), so rung 1 flies
   at 0.65. Rung 1 cleared to fly; P2 starts after its outcome is logged. Open residue: oval Stop exit: REST+CATCH pair at C (decision 51), not landed in P1.
 
-### P2 — Banking leak fix — NOT STARTED
+### P2 — Banking leak fix — RETIRED 2026-10-23
 
-`motion/trajectory/cup_realize.py`: on a loaded span the banking request IS the event-tilt
-sweep (feed the sweep itself as the request — zeroing it pulls the smoother toward level and the
-seam re-gate refuses); C-CUP-1's per-instant rule applies only to the free cup. Evidence the fix
-targets: 40–110k of leg jerk leaked by the saturated ±12° demand on unequal anchor gaps; clipped
-to the pin envelope the oval first plans at 200k. Test: the loaded-span request equals the sweep
-on a fixture with unequal anchor gaps, and the planned leg jerk at the first-rung cell does not
-rise. Gate: rung 1 re-flown as the leak-fixed column (same runsheet, column 2 of § 6).
+Owner decision 2026-10-23 (measure-first review, `logbook/2026-10-23-oval-p2-banking-leak-not-reproduced.md`): the
+premise ("40-110k of leg jerk leaked by the saturated ±12° banking demand; clipped to the pin envelope the oval first
+plans at 200k") came from the gitignored wayfinder's pre-P1 prototype grid (dwell 0.30-0.50, 12 vs 20° clamps), not
+from a dispatched cell. It does not reproduce:
+- **Offline** (`python tools/probes/oval_dwell_sweep.py --dwells 0.65,0.60,0.55,0.50,0.45,0.40 --mode both --controls --control-dwells 0.65,0.50,0.27`, 2026-10-23, HEAD 48fd8d5a): a probe-only
+  "sweep as the request" patch gives delta 0 at every accepted dwell 0.65 / 0.60 / 0.55 / 0.50 / 0.45 (window jerk 58.7k /
+  71.4k / 88.3k / 111.5k / 143.8k mm/s³, realised bank ±2.26° identical with or without the clamped demand). The first
+  refusal is `CUP_SEATING_CONE` at dwell 0.40 (49.1° > 45°), P3's shaper job, not jerk.
+- **Hardware** (rung-1 bag, `tools/probes/oval_carry_bag_metrics.py`): 15 steady carries at 0.65 median 35.3k commanded
+  jerk, max 83.1k; legs 1/2 peak 4.5 / 6.9 A against the 15 A clamp; no carry `LIMIT_*`.
+- **Not neutral outside carried folds**: on hop cells the same patch moves jerk by -106k / -76k / +7k (0.65 / 0.50 /
+  0.27 dwell), so "feed the sweep as the request" was never safe ungated.
+Where the idea lives now: a note inside P3 (below). Code never started; nothing to revert.
 
 ### P3 — Pose-level carry planner — NOT STARTED
 
+- **Sequencing (owner 2026-10-23):** P3 design starts after rung 2 flies; its shaper target = the cone refusal at dwell 0.40
+  (49.1°). The retired P2 idea (feed the receive-to-throw sweep as the banking request on carried folds only) is a
+  candidate sub-item here, to be gated to carried folds and measured against the hop cells before it is adopted.
 - `cup_cycle`: the `level | pose` mode (default `level`); the free centroid z block, analytic
   dz in `decompose`, the prescribed tilt series with its two holds, the leg-jerk objective,
   C-CUP-4 rows after the C-CUP-2 block. Solve time was ~2× today's offline: measure the cycle
@@ -370,7 +384,7 @@ rise. Gate: rung 1 re-flown as the leak-fixed column (same runsheet, column 2 of
   convergence. Seating is NOT a sim claim.
 - **Box sweeps**: every cell twice, bit-identical, BLAS one thread, same commit as any YAML
   change; `tests/motion/test_skills_admissible.py` keeps the stamp pinned to the launch default.
-- **Hardware**: rung 1 three times (as-is / leak-fixed / swept), the ramp sitting, the 0.40 and
+- **Hardware**: rung 1 twice (as-is / swept), the ramp sitting, the 0.40 and
   0.30 rungs, the two-ball gate. Every sitting: `./run_tests.sh --full` first, dress rehearsal of
   the accept path with all refusals reported at once, bag + launch log by path, logbook entry.
 
@@ -381,11 +395,16 @@ rise. Gate: rung 1 re-flown as the leak-fixed column (same runsheet, column 2 of
   twice in one region, FET > 60 °C, a leg on the current clamp > 50 ms, lane recovery failed) are
   in the runsheet. 30 A is the owner's number (~30 A judged safe 2026-10-12); the 0.40 rung's bag
   is the measurement. The hand cap 3900 is NOT raisable.
-- **Non-obvious choices**: the first rung flies at dwell 0.65 (pre-release hold; P3 earns 0.50 back); symmetric sites (every one-sided probe placement produced edge
+- **Non-obvious choices**: the first rung flies at dwell 0.65 (pre-release hold; the cone moved to 45° since b28b129f so 0.50 passes the planner and cone offline (32.1° < 45°) but is NOT dispatchable until the oval box cells at 0.55 and 0.50 are swept; rung 2 flies it after that); symmetric sites (every one-sided probe placement produced edge
   artefacts); the catch stays level because the capture span is infeasible at two balls (probe,
   two runs); the mode switch exists so decision 24's as-is column stays producible; dwell is a
   parameter, not a goal field, so a box swept at one dwell refuses the other by name.
-- **Rollback**: `level` is the default mode until the gate; P1–P2 are additive on the one-ball
+- **Row-27 baseline exists (2026-10-23)**: the rung-1 bag is read into the runsheet's § 6 as-is column (commanded jerk, bank,
+  leg 1/2 current, seat-bit continuity, landing, LIMIT tally). Re-run per rung: `tools/probes/oval_carry_bag_metrics.py` (bag) and
+  `tools/probes/oval_dwell_sweep.py` (offline dwell ladder); rung 2 reads against the 0.65 numbers. Owed first: the three unflown fixes
+  (I-PLAN-11 rest_slew daa495e0, columns parity 21e02cfa, feed-line latch 3fe2cdee). No planner code lands in
+  `cup_realize` / `cup_cycle` before that sitting. Oval SPLICE_TOO_LATE (11/16 re-aims refused) stays residue (archived residue plan § 2).
+- **Rollback**: `level` is the default mode until the gate; P1 is additive on the one-ball
   path (`roles='alternate'` is today's hop); P4's working point reverts by one YAML commit + box
   re-sweep.
 - **Files**: see `related_code` above; new files are `tests/hardware/session_oval_rung1.md`
