@@ -61,6 +61,28 @@ from jugglebot.motion.trajectory import cup_realize as cr
 from jugglebot.motion.trajectory import tilt_geometry as tg
 from jugglebot.motion.trajectory.cycle_plan import CyclePlan
 
+# ── I-PLAN-12: the REBASE continuity bar (2026-10-23) ─────────────────────────
+#: The firmware's own "same state" tolerances (``canbridge_config.h``
+#: ``SCHED_RESUME_TOL_POS/VEL_{LEG,HAND}_*``, lines 461-465): what
+#: ``sched_apply`` allows between a promoted frame and the lane it is already
+#: holding.  A REBASED REST's knot 0 is held to the same bar against the state
+#: the machine is propagated to at the new origin, so a rebase can never put a
+#: step on the wire that the firmware itself would call a different machine.
+#: The node's ``_install_continuity_ok`` bounds (0.06 rev legs, 1.0 rev hand)
+#: are an OUTER guard sized for legitimate reconciles (0.56-0.76 rev measured)
+#: and cannot separate the stale-seed rebase (0.52-0.67 rev) from them.
+REBASE_TOL_LEG_REV = 0.005
+REBASE_TOL_LEG_RPS = 0.3
+REBASE_TOL_HAND_REV = 0.05
+REBASE_TOL_HAND_RPS = 8.0
+#: The stopped-detector a REBASE uses to decide whether the machine HOLDS the
+#: seed over the slide (no knot dropped) or keeps moving (the head is dropped):
+#: the same thousandth of the live velocity ceiling, per channel, that
+#: ``trajectory_node._cycle_start_state``'s ``at_rest`` predicate uses (the
+#: angular term carried to the rim through the platform radius).
+REBASE_REST_FRACTION = 1e-3
+
+
 # ── Refusal codes this layer owns ────────────────────────────────────────────
 #: The solve finished so late that the splice knot is already behind the wire.
 SPLICE_TOO_LATE = 'SPLICE_TOO_LATE'
@@ -71,6 +93,13 @@ SPLICE_TOO_LATE = 'SPLICE_TOO_LATE'
 #: check (2026-09-28, R4 sitting-1 fact 5: a REST-kind segment in the same
 #: situation is REBASED instead, because a rest carries no event).
 ORIGIN_TOO_LATE = 'ORIGIN_TOO_LATE'
+#: I-PLAN-12 (2026-10-23): a REBASED fresh REST whose knot 0 does not match
+#: the state the machine is propagated to at the NEW origin — the seed's own
+#: hold when the seed was at rest, the solved plan's own continuation when it
+#: was moving. Refused rather than clipped: installing it is a commanded step
+#: on the hand and/or leg lanes (the 2026-10-23 Feed-catch bump: +0.52 /
+#: +0.67 rev on the Hand, inside the node's 1.0 rev continuity bound).
+REBASE_DISCONTINUOUS = 'REBASE_DISCONTINUOUS'
 #: The window from the splice knot to the skill's event is shorter than a plan.
 WINDOW_TOO_SHORT = 'WINDOW_TOO_SHORT'
 #: The tracker has no landing for the ball this CATCH is for.
@@ -1472,6 +1501,141 @@ def splice_cliff_s(record: PlanRecord, k_s: int) -> float:
             + (int(k_s) - WIRE_READ_KNOTS) * float(record.plan.dt))
 
 
+def _seed_holds_still(seed: uc.CycleState, limits, geom) -> bool:
+    """True iff the machine HOLDS ``seed`` while the solve runs — the premise
+    under which a REBASE may slide a fresh REST's origin with the plan intact.
+
+    The same stopped-detector as ``trajectory_node._cycle_start_state``'s
+    ``at_rest`` (:data:`REBASE_REST_FRACTION` of the live velocity ceiling on
+    the platform's linear, angular-at-the-rim and hand channels), read off the
+    seed's own rates, so the two layers agree on what "at rest" means.
+    """
+    if limits is None:
+        from jugglebot.motion.trajectory.limits import TrajectoryLimits
+        limits = TrajectoryLimits.from_config(hw)
+    geom = StewartGeometry() if geom is None else geom
+    pv = (np.zeros(6) if seed.pose_vel is None
+          else np.asarray(seed.pose_vel, dtype=float))
+    lin_bound = REBASE_REST_FRACTION * float(limits.leg_vel_mmps)
+    ang_bound = lin_bound / float(geom.plat_radius_mm)
+    hand_bound = REBASE_REST_FRACTION * float(limits.hand_vel_limit_rps)
+    return bool(float(np.max(np.abs(pv[:3]))) <= lin_bound
+                and float(np.max(np.abs(pv[3:]))) <= ang_bound
+                and abs(float(seed.hand_vel_rps or 0.0)) <= hand_bound)
+
+
+def rebase_discontinuity(plan: CyclePlan, ref_pose, ref_twist,
+                         ref_hand_rev: float, ref_hand_vel_rps: float,
+                         geom=None) -> Optional[str]:
+    """I-PLAN-12's check: ``None`` iff a REBASED plan's knot 0 is the state
+    the machine is propagated to at the new origin, else a message naming the
+    lane and the step.
+
+    Legs are compared in MOTOR rev and rev/s — the chain the emitter ships
+    (pose → leg extensions × ``mm_to_rev``; twist → leg velocities ×
+    ``mm_to_rev``) — the hand in its own rev; each against the firmware's
+    resume tolerances (:data:`REBASE_TOL_LEG_REV` & co.).
+    """
+    from jugglebot.motion.ik_solver import (pose_to_leg_lengths,
+                                            rotvec_to_rot_matrix,
+                                            twist_to_leg_velocities)
+    geom = StewartGeometry() if geom is None else geom
+    mm_to_rev = np.asarray(geom.mm_to_rev, dtype=float)
+
+    def _legs(pose, twist):
+        pose = np.asarray(pose, dtype=float)
+        pos, rot = pose[:3], rotvec_to_rot_matrix(pose[3:6])
+        return (pose_to_leg_lengths(pos, rot, geom) * mm_to_rev,
+                twist_to_leg_velocities(np.asarray(twist, dtype=float), pos,
+                                        rot, geom) * mm_to_rev)
+
+    q_ref, qd_ref = _legs(ref_pose, ref_twist)
+    q_k0, qd_k0 = _legs(plan.pose[0], plan.pose_vel[0])
+    steps = (
+        ('leg position', float(np.max(np.abs(q_k0 - q_ref))),
+         REBASE_TOL_LEG_REV, 'rev'),
+        ('leg velocity', float(np.max(np.abs(qd_k0 - qd_ref))),
+         REBASE_TOL_LEG_RPS, 'rev/s'),
+        ('hand position', abs(float(plan.hand_rev[0]) - float(ref_hand_rev)),
+         REBASE_TOL_HAND_REV, 'rev'),
+        ('hand velocity',
+         abs(float(plan.hand_vel_rps[0]) - float(ref_hand_vel_rps)),
+         REBASE_TOL_HAND_RPS, 'rev/s'),
+    )
+    bad = ['%s step %.4f %s > %.4f' % (name, step, unit, tol)
+           for name, step, tol, unit in steps if not step <= tol]
+    return '; '.join(bad) if bad else None
+
+
+def _rebase_fresh_rest(seg, seed: uc.CycleState, t0_before_solve: float,
+                       t0_wire_s: float, limits, geom):
+    """The REBASE of a fresh REST whose solve outran the wire (I-PLAN-12).
+
+    Returns ``(plan, meta, t0, k_cut, held, refusal)``; ``refusal`` is
+    ``None`` or ``(code, message)``.
+
+    * Seed AT REST (:func:`_seed_holds_still`): the machine holds the seed
+      over the slide, so the solved plan is the same motion later — ``t0 =
+      t0_wire_s`` and the plan is untouched (bit-identical to the pre-I-PLAN-12
+      rule).  Reference = the seed.
+    * Seed IN MOTION: the machine kept moving over the slide (a fresh origin
+      is declared while the running record still has up to ``lead_s`` to
+      play, and the seed is that record's commanded state at dispatch), so
+      knot 0 of the solved plan is where the machine WAS.  The seed is
+      propagated over the slide by DROPPING the plan's first ``k =
+      ceil((t0_wire_s - t0_before_solve)/dt)`` knots: ``t0 = t0_before_solve
+      + k·dt`` (on the solve's own grid, ``>= t0_wire_s``), knot 0 = the
+      solved plan's knot ``k``.  No new solve; the remaining knots are the
+      gated plan bit for bit.  Reference = the solved plan evaluated at
+      ``t0 - t0_before_solve`` on its own clock.
+
+    Either way knot 0 is then checked against the reference
+    (:func:`rebase_discontinuity`) and a mismatch is refused
+    :data:`REBASE_DISCONTINUOUS`.
+
+    What that check guards, exactly: in the in-motion branch the reference is
+    the solved plan at ``k·dt`` — the SAME knot the cut starts on — so it
+    guards the cut arithmetic (``tail_view`` and ``t0 = t_now + k·dt``)
+    against regression; it does NOT read the running record and does NOT
+    bound the residual between knot 0 and where the wire actually has the
+    machine at ``t0`` (the running record's state there, the two plans'
+    disagreement over the slide — unmeasured).  In the at-rest branch it
+    checks knot 0 against the held seed.
+    """
+    plan, meta = seg.plan, seg.meta
+    dt = float(plan.dt)
+    held = _seed_holds_still(seed, limits, geom)
+    if held:
+        t0, k_cut = float(t0_wire_s), 0
+        ref = (np.asarray(seed.pose, dtype=float),
+               (np.zeros(6) if seed.pose_vel is None
+                else np.asarray(seed.pose_vel, dtype=float)),
+               float(seed.hand_rev), float(seed.hand_vel_rps or 0.0))
+        cut_plan, cut_meta = plan, meta
+    else:
+        k_cut = int(math.ceil((t0_wire_s - t0_before_solve) / dt - 1e-9))
+        if k_cut > int(plan.n_knots) - 2:
+            return (None, None, None, k_cut, held, (
+                ORIGIN_TOO_LATE,
+                'the REST seeded in motion would be rebased past its own end '
+                '(drop %d of %d knots): nothing of it is left to install'
+                % (k_cut, int(plan.n_knots))))
+        t0 = float(t0_before_solve) + k_cut * dt
+        tau = t0 - float(t0_before_solve)
+        pose_ref, twist_ref, _acc = plan.state_at(tau)
+        hand_ref, hand_vel_ref = plan.hand_at(tau)
+        ref = (pose_ref, twist_ref, float(hand_ref), float(hand_vel_ref))
+        cut_plan, cut_meta = uc.tail_view(plan, meta, k_cut)
+    bad = rebase_discontinuity(cut_plan, *ref, geom=geom)
+    if bad is not None:
+        return (None, None, None, k_cut, held, (
+            REBASE_DISCONTINUOUS,
+            'REBASED %s knot 0 is not the state the machine is propagated to '
+            'at the new origin (seed %s, %d knot(s) dropped): %s'
+            % (seg.kind, 'at rest' if held else 'in motion', k_cut, bad)))
+    return cut_plan, cut_meta, t0, k_cut, held, None
+
+
 def install_segment(record: Optional[PlanRecord],
                     seed_rest: Optional[uc.CycleState],
                     kind: str, terminal, t_now_s: float, *,
@@ -1513,11 +1677,19 @@ def install_segment(record: Optional[PlanRecord],
     clock exactly as the splice branch does (:data:`ORIGIN_TOO_LATE` below)
     and, if the origin has gone stale:
 
-    * kind ``REST`` — REBASED, not re-solved: ``t0`` moves to
-      ``t_inst + WIRE_READ_KNOTS·dt``.  A REST from rest is the same motion
-      later — it carries no absolute event, so sliding when it starts costs
-      nothing and the plan itself (built from the same at-rest seed) is
-      unchanged.
+    * kind ``REST`` — REBASED, not re-solved (:func:`_rebase_fresh_rest`).
+      From a seed AT REST: ``t0`` moves to ``t_inst + WIRE_READ_KNOTS·dt``
+      and the plan is unchanged — a REST from rest is the same motion later
+      and carries no absolute event.  From a seed IN MOTION (a fresh REST is
+      dispatched while the running record still streams, e.g. the settle
+      after a Feed catch, seeded with the Hand still riding down the stroke)
+      that premise is false: the machine kept moving over the slide, so the
+      plan's first ``k = ceil(slide/dt)`` knots are DROPPED and ``t0 =
+      t_now + k·dt`` — knot 0 is where the seed's own motion has got to.
+      I-PLAN-12: either way knot 0 must match that propagated state within
+      the firmware's resume tolerances, else :data:`REBASE_DISCONTINUOUS`
+      (2026-10-23: sliding an in-motion plan whole put a +0.52/+0.67 rev
+      Hand step on the wire 0.1 s after two Feed catches).
     * kind ``THROW`` / ``CATCH`` — REFUSED :data:`ORIGIN_TOO_LATE`.  These
       carry an absolute event (the release or the landing is a real instant
       the rest of the schedule, the tracker and the ball's flight all agree
@@ -1747,21 +1919,40 @@ def install_segment(record: Optional[PlanRecord],
                 # past".
                 staleness_s = solve_s + wire_margin_s
                 if kind == REST:
-                    # REBASE, not re-solve: a REST from rest is the same
-                    # motion later — it carries no absolute event, so sliding
-                    # its origin forward by exactly the measured staleness
-                    # costs nothing and the plan already built (from the same
-                    # at-rest seed) is unchanged.
-                    t0 = t_inst + wire_margin_s
+                    # REBASE, not re-solve: a REST carries no absolute event,
+                    # so its origin may slide past the wire. From a seed AT
+                    # REST the plan is the same motion later and is kept
+                    # whole; from a seed IN MOTION the machine kept moving
+                    # over the slide, so the plan's head is DROPPED to the
+                    # knot the new origin lands on (I-PLAN-12, 2026-10-23:
+                    # sliding the whole plan replayed the stale in-motion
+                    # seed — a +0.52/+0.67 rev Hand step after a Feed catch).
+                    # Either way knot 0 is checked against the propagated
+                    # state and a mismatch is refused, never clipped.
+                    plan_r, meta_r, t0, k_cut, held, refusal = \
+                        _rebase_fresh_rest(seg, seed, t0_before_solve,
+                                           t_inst + wire_margin_s,
+                                           limits, geom)
+                    if refusal is not None:
+                        return record, InstallResult(
+                            False, refusal[0], refusal[1],
+                            float(seg.meta.plan_wall_s)), None
+                    if k_cut:
+                        seg = dataclasses.replace(seg, plan=plan_r,
+                                                  meta=meta_r)
                     new_record = PlanRecord(plan=seg.plan, meta=seg.meta,
                                             t0_s=t0)
                     return new_record, InstallResult(
                         True, 'OK',
                         'fresh origin REBASED +%.3f s: the solve outran the '
-                        'origin (%s over %.3f s from rest; solve %.3f s vs '
-                        'a %.3f s wire-read margin)'
+                        'origin (%s over %.3f s from %s; solve %.3f s vs '
+                        'a %.3f s wire-read margin)%s'
                         % (t0 - t0_before_solve, kind, seg.plan.total_duration,
-                           solve_s, wire_margin_s),
+                           'rest' if held else 'a seed in motion',
+                           solve_s, wire_margin_s,
+                           ('' if not k_cut else
+                            '; seed propagated: first %d knot(s) dropped'
+                            % k_cut)),
                         float(seg.meta.plan_wall_s), splice_k=0, t0_s=t0,
                         event_t_s=float(seg.event_t_s or 0.0),
                         seeded_post_release=False), seg

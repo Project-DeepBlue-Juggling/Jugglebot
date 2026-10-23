@@ -3091,6 +3091,67 @@ def _head_view(plan: CyclePlan, meta: CycleMeta,
     return head, head_meta
 
 
+def tail_view(plan: CyclePlan, meta: CycleMeta,
+              k: int) -> Tuple[CyclePlan, CycleMeta]:
+    """``plan``/``meta`` with knots ``[0, k)`` DROPPED: knot ``k`` becomes knot 0.
+
+    The twin of :func:`_head_view`, for the one caller that needs the other
+    half: ``skills.executor.install_segment``'s REBASE of a fresh REST seeded
+    IN MOTION (I-PLAN-12, 2026-10-23).  There the solve outran the wire, the
+    origin slides later by ``k`` knots, and the machine kept moving over the
+    slide — so the plan the wire receives must START where the seed's own
+    motion has got to, i.e. at the solved plan's knot ``k``, not at its knot 0
+    (which is where the machine WAS when the seed was read).
+
+    Every knot-indexed field is re-indexed by ``-k`` (pose, rates, cup track,
+    tilts, contact windows, catch evidence); the arrays are SLICES of the
+    solved plan, so the remaining knots are bit for bit the plan that was
+    gated.  Defined only for an EVENT-FREE window (a REST): a plan carrying a
+    release or a catch mark refuses ``ValueError``, because moving an event's
+    knot is moving the event, which no caller of this may do.
+
+    ``report`` is carried with ``report_range_knots = None``: its peaks are
+    the whole SOURCE plan's, i.e. a superset of the tail's (the conservative
+    direction, the same trade :func:`_head_view` documents).
+    ``plan_wall_s`` is kept (this is the solve that produced the tail, and the
+    install path reports it as such); ``cup_plan.warm_start`` is dropped.
+    """
+    k = int(k)
+    n = int(plan.n_knots)
+    if meta.releases or meta.catches or int(plan.catch_k) >= 0:
+        raise ValueError(
+            'tail_view is defined for an event-free window only; this %s plan '
+            'carries %d release(s) / %d catch(es) — dropping knots would move '
+            'an event' % (meta.kind, len(meta.releases), len(meta.catches)))
+    if not 0 <= k <= n - 2:
+        raise ValueError(
+            'tail_view needs at least 2 knots left: k=%d of a %d-knot plan'
+            % (k, n))
+    if k == 0:
+        return plan, meta
+    dt = float(plan.dt)
+    m = n - k
+    tail = CyclePlan(pose=plan.pose[k:], pose_vel=plan.pose_vel[k:],
+                     hand_rev=plan.hand_rev[k:],
+                     hand_vel_rps=plan.hand_vel_rps[k:], dt=dt, catch_k=-1,
+                     contact_knots=_shift_contact(plan.contact_knots, -k, m),
+                     catch_evidence=shift_catch_evidence(
+                         plan.catch_evidence, -k, dt, m))
+    cup = meta.cup_plan
+    cup_tail = None if cup is None else cc.CupCyclePlan(
+        pos=cup.pos[k:], vel=cup.vel[k:], acc=cup.acc[k:], jerk=cup.jerk[k:],
+        t=np.asarray(cup.t[k:], dtype=float) - float(cup.t[k]), dt=cup.dt,
+        catch_k=-1, takeoff_vel=cup.takeoff_vel, warm_start=None,
+        contact_knots=_shift_contact(cup.contact_knots, -k, m))
+    stroke_clear = (None if meta.stroke_clear_s is None
+                    else max(0.0, float(meta.stroke_clear_s) - k * dt))
+    tail_meta = dataclasses.replace(
+        meta, n_knots=m, duration_s=(m - 1) * dt,
+        tilts=np.asarray(meta.tilts)[k:], cup_plan=cup_tail,
+        stroke_clear_s=stroke_clear, report_range_knots=None)
+    return tail, tail_meta
+
+
 def _refuse_stale_cup_track(plan: CyclePlan, meta: CycleMeta, k_s: int,
                             limits) -> None:
     """I-PLAN-10's enforcement point: refuse a splice whose source cup track no
