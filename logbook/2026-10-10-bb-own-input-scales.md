@@ -96,6 +96,6 @@ checkout's `tools/teensy_link_bridge.py --fw-update --target bb` (163 840 B in 2
 `FW version: 6 -> 7`); `bb_link_check.py` afterwards: bridge FW 28, BB on the bus, `bb_yaw` 99.8 Hz, 401/401 paired.
 `test_bb_fw_update_xref.py` + `test_udp_protocol_xlang.py` against the merged BallButler tree: 49 passed;
 `generate_config.py --check`: CONFIG FRESH. This entry's scope (the keys, the regeneration, the expected version) is
-live; the behavioural verification of the hand (rest ~+0.46 mm after a reload, no pre-throw kick, stroke ~236 mm, no
+live; the behavioural verification of the hand (rest ~+0.46 mm after a `reload`, no pre-throw kick, stroke ~236 mm, no
 spinouts, then the 40-throw validation) is the owner's first FW 7 sitting, tracked in BallButler
 `logbook/2026-10-10-bb-hand-torque-ff-scale.md`.

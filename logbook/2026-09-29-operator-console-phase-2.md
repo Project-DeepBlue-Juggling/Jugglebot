@@ -117,5 +117,5 @@ a few per goal, in the record only.
 - Phase 3: the other nodes (orchestrator's three lines per transition, the Ball Butler throw's
   four lines, startup banners, the 12-line BB calibration result, the Ctrl-C tracebacks) and a
   one-line-per-operator-action audit.
-- The R4 runsheets say to read OUTCOME fields live. The throw line carries the same numbers.
-  R5 runsheets should name the throw line.
+- The R4 runbooks say to read OUTCOME fields live. The throw line carries the same numbers.
+  R5 runbooks should name the throw line.

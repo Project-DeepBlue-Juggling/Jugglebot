@@ -41,7 +41,7 @@ Three read-only passes on 2026-10-23, HEAD 48fd8d5a; no repo file edited.
 
 1. Plan vs code. The mechanism is intact: `cup_realize._banking_raw` (C-CUP-1 gate, then `tilt_to_receive`) is the sole request, `tilt_schedule` pins seam / catch_k / throw, and the banking path goes through `_accel_bounded_schedule` whose blend width comes from the anchor gaps. No "loaded span" symbol exists; the sweep is only implicit. The dispatched 0.65 cell plans at 58,742 mm/s^3 (carry window) and 58,121 (chained catch), about 29 % of the 200k limit, C-CUP-4 residual 17.81 deg.
 2. Offline dwell ladder (table below), as-is versus a probe-only patch that overrides `_banking_raw` on the loaded span `[catch_k:]` with the `_smooth_slew` receive-to-throw sweep, armed only while a `then_throw` terminal is planned.
-3. Rung-1 bag read-back (runsheet rows 22a/23/24/27), the first time those rows were filled.
+3. Rung-1 bag read-back (runbook rows 22a/23/24/27), the first time those rows were filled.
 
 Dwell ladder (oval cell, 150 mm, apex 0.95, 350/5000/200000, hand 3900); window jerk in mm/s^3:
 
@@ -58,7 +58,7 @@ The demand does saturate (7 of 21-27 loaded knots at the 12 deg clamp, one sign 
 
 Hop-shaped controls (cross-site catch, catch, throw): the patch is NOT neutral. Window jerk hop 0.65: 151,308 to 45,594; hop 0.50: 140,688 to 64,934; hop 0.27 (the real columns dwell): 141,886 to 148,677. Not decomposed (tilt-channel and lever interaction).
 
-Bag read-back (`2026-10-23_11-06-46`, 15 steady carries of 0.68-0.70 s): normal tilt max 2.77 / 2.83 / 3.26 deg (min / median / max over carries; bank about one axis (normal-x -3.25..+2.34 deg, normal-y -0.66..+0.40 deg)), commanded leg jerk median 35.3k and max 83.1k (14 of 15 in 28.4k to 36.7k; the hop control's steady jerk is the same ~35k), legs 1/2 peak current 4.5 / 6.9 A, FET max 34.5 C. `ball_held` continuous through 16 of 16 carries; raw `ball_held_raw` dropouts in 9 of 16 carries (7 runs 0.086-0.117 s before release, in the braking lobe the runsheet predicted as worst; 3 right after seating). Launch log: one `LIMIT_JERK` event (262k, the reload pre-tilt REST, not a carry), no carry `LIMIT_*`.
+Bag read-back (`2026-10-23_11-06-46`, 15 steady carries of 0.68-0.70 s): normal tilt max 2.77 / 2.83 / 3.26 deg (min / median / max over carries; bank about one axis (normal-x -3.25..+2.34 deg, normal-y -0.66..+0.40 deg)), commanded leg jerk median 35.3k and max 83.1k (14 of 15 in 28.4k to 36.7k; the hop control's steady jerk is the same ~35k), legs 1/2 peak current 4.5 / 6.9 A, FET max 34.5 C. `ball_held` continuous through 16 of 16 carries; raw `ball_held_raw` dropouts in 9 of 16 carries (7 runs 0.086-0.117 s before release, in the braking lobe the runbook predicted as worst; 3 right after seating). Launch log: one `LIMIT_JERK` event (262k, the `reload` pre-tilt REST, not a carry), no carry `LIMIT_*`.
 
 ## Discussion
 
@@ -82,7 +82,7 @@ Owner decisions, 2026-10-23 (asked in the orchestrating session):
 4. Next sitting: the three owed unflown fixes first (I-PLAN-11 rest_slew daa495e0, columns parity rule 21e02cfa, feed-line latch 3fe2cdee), then rung 2 = one-ball oval at dwell 0.55 then 0.50 on the as-is `level` planner at today's limits, recording the row-27 metrics per step against the 0.65 baseline. No new planner code lands in `cup_realize` / `cup_cycle` before that sitting. P3 design starts after rung 2 flies; rung 2's outcome sets P3's shaper target.
 5. Dwell 0.50 passes the planner and cone offline (32.1 deg < 45 deg) but is NOT dispatchable until the oval box cells at 0.55 and 0.50 are swept (YAML + stamp, twice bit-identical, `./run_tests.sh --full`).
 
-Doc changes: plan § 1.3 amendment, § 1.4 line corrected, § 3 table (P2 retired, Rung 2 row, P1 gate waived), § 4 P2 rewritten, P3 sequencing bullet, § 6 notes; runsheet § 6 as-is column filled and a Rung 2 section added; plans INDEX row amended.
+Doc changes: plan § 1.3 amendment, § 1.4 line corrected, § 3 table (P2 retired, Rung 2 row, P1 gate waived), § 4 P2 rewritten, P3 sequencing bullet, § 6 notes; runbook § 6 as-is column filled and a Rung 2 section added; plans INDEX row amended.
 
 ## Verification
 
@@ -92,7 +92,7 @@ All read-only; no gated file edited.
 |---|---|---|
 | 2026-10-23 | `cd ~/Desktop/Jugglebot && OMP_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 python tools/probes/oval_dwell_sweep.py --dwells 0.65,0.60,0.55,0.50,0.45,0.40 --mode both --controls --control-dwells 0.65,0.50,0.27` (this entry's probe; first run used the equivalent scratchpad script) | dwell 0.65 as-is reproduces 58,742 / 58,121 exactly; delta 0 at 0.65, 0.60, 0.55, 0.50, 0.45; 0.40 refused `CUP_SEATING_CONE` 49.1 deg; hop controls -106k / -76k / +7k |
 | 2026-10-23 | `python tools/probes/oval_carry_bag_metrics.py /home/jetson/Desktop/rosbags/2026-10-23_11-06-46/2026-10-23_11-06-46_0.mcap --launch-log /home/jetson/.ros/log/2026-10-23-11-06-46-742322-jetson-202560/launch.log` (first run via scratchpad `load.py` / `prep.py` / `ana*.py`, same method) | 15 steady carries: jerk median 35.3k, max 83.1k; bank 2.77 / 2.83 / 3.26 deg; legs 1/2 6.9 A peak; seat bit 16/16, raw dropouts 9/16 |
-| 2026-10-23 | launch log `/home/jetson/.ros/log/2026-10-23-11-06-46-742322-jetson-202560/launch.log`, `grep` LIMIT_ / install_segment | 1 LIMIT_JERK (262k, reload REST); installs refused 18x (12 SPLICE_TOO_LATE, 4 wire deadline, 1 state moved, 1 infeasible) |
+| 2026-10-23 | launch log `/home/jetson/.ros/log/2026-10-23-11-06-46-742322-jetson-202560/launch.log`, `grep` LIMIT_ / install_segment | 1 LIMIT_JERK (262k, `reload` REST); installs refused 18x (12 SPLICE_TOO_LATE, 4 wire deadline, 1 state moved, 1 infeasible) |
 | 2026-10-23 | `pytest tests/sim/test_plans_index.py tests/sim/test_docs_links.py tests/sim/test_logbook_front_matter.py tests/sim/test_logbook_search.py -q` | **123 passed in 0.97 s** (docs-only change; these are the tests that read plans/INDEX, doc links and logbook front matter; the INDEX row itself is covered by `test_plans_index.py` for plans but NOT for `logbook/INDEX.md`, which no test reads) |
 
 ## Residue

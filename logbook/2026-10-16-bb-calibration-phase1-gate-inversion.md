@@ -83,7 +83,7 @@ Files (from `git status --short`):
 | `tests/ros/test_bb_base_frame.py`, `test_bb_calibration_constellation.py`, `test_bb_calibration_replay.py`, `test_mocap_node_base_frame.py`, `test_mocap_node_keep_last_good.py`, `test_mocap_node_yaw_gate.py`, `test_perception_console_lines.py` | rewritten for advisory behaviour; absence asserts for the deleted params |
 | `tools/bb_base_frame_build.py`, `resources/bb_base_frame.json` | `--from-state` folds only the CURRENT epoch (a stepped history would give a bimodal seed); the resource description no longer names `bb_pose_source` (no data change) |
 | `tests/hardware/session_skills_r5_sitting8.md` | row 6a: nothing to arm; repeated KAPPA_EXCURSION / YAW_SHIFT advisories are noted, not a stop |
-| `tests/hardware/session_bb_calibration_phase1.md` | new runsheet (dress-rehearsal rows) |
+| `tests/hardware/session_bb_calibration_phase1.md` | new runbook (dress-rehearsal rows) |
 | `tests/hardware/session_bb_kappa_pin.md` | deleted (pin dropped 2026-10-16, Phase 0 entry) |
 | plan, INDEX, Phase 0 entry | status and cross-references |
 

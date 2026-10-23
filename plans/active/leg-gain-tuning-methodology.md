@@ -518,7 +518,7 @@ ladder off to last-good, disarms, and recovers via a `CLEAR_ERRORS` RPC** (the f
 re-enable slew makes that gentle) — with a bounded recovery budget so it never keeps
 climbing into a guard it cannot satisfy (`sysid_lib.GuardLatchBackoff`). Only a **recoverable**
 fault (feedback-stale / link-lost — the two the firmware self-clears when feedback/link
-returns) is watched, not fought; the **latching** guard E-STOPs (MPC-staleness /
+returns) is watched, not fought; the **latching** Soft E-stops (MPC-staleness /
 `MAX_DEVIATION` / motor-overspeed all set the sticky `s_estop_latched`, released only by
 `CLEAR_ERRORS`) drive the back-off + `CLEAR_ERRORS` recovery above — MPC-staleness is not
 merely watched, because the firmware does not self-clear it; a fatal fault (ODRIVE_FATAL /

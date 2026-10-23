@@ -10,13 +10,15 @@ scope: >-
   Builds the project map in six phases. A pure-Python `mapkit/` package parses plans and `map/` items and generates the three plan INDEX files, the CLAUDE.md term block and the two mkdocs pages. The glossary is renamed `GLOSSARY.md` and extended. Claude-session wiring covers the slash commands, agents and normative docs. A new public repo `jugglebot-map`, seeded from TaskTree's frontend, serves two pages (Front page, Now / Next / Later) from the Raspberry Pi `jeeves`, with write-through to `map/` files and a debounced commit-and-push. Done when a phone edit on the LAN lands on `main` within 10 s.
 steps:
   - {id: P0, title: mapkit package and generated plan boards, kind: phase, status: complete, date: 2026-10-24}
-  - {id: P1, title: Glossary rename and term block, kind: phase, status: not_started}
+  - {id: P1, title: Glossary rename and term block, kind: phase, status: complete, date: 2026-10-24}
   - {id: P2, title: map directory seed and session wiring, kind: phase, status: not_started}
   - {id: P3, title: Fork skeleton and thin server, kind: phase, status: not_started}
   - {id: P4, title: The two pages, kind: phase, status: not_started}
   - {id: P5, title: Pi deployment and publishing, kind: phase, status: not_started}
 related_logbook:
   - 2026-10-24-project-map-plan-written.md
+  - 2026-10-24-project-map-p0-mapkit-generated-boards.md
+  - 2026-10-24-project-map-p1-glossary-rename-term-block.md
 related_code:
   - mapkit/::the parser, generators and subcommands package
 ---
@@ -48,7 +50,7 @@ This plan implements the design settled by the resolved tickets of wayfinder map
 | Step | Lands | Gate | Status |
 |---|---|---|---|
 | P0 | `mapkit/` parser, loaders, generators, subcommands; plan frontmatter backfill; three INDEX files regenerated; `test_plans_index.py` rewritten | `./run_tests.sh` | COMPLETE 2026-10-24 |
-| P1 | `GLOSSARY.md` rename and stub, 22 entries, CLAUDE.md term block, Avoid-word test | `./run_tests.sh`; `/audit --unstaged` | NOT STARTED |
+| P1 | `GLOSSARY.md` rename and stub, 23 entries, CLAUDE.md term block, Avoid-word test | `./run_tests.sh`; `/audit --unstaged` | COMPLETE 2026-10-24 |
 | P2 | `map/` seed, `/inbox`, `/work-inbox`, gated offers, agent edits, doc edits, nav entries | `./run_tests.sh`; `/audit --unstaged` | NOT STARTED |
 | P3 | Fork repo: strip, static auth, FastAPI server, contract suite, CI | fork CI green (`npm ci`, lint, typecheck, vitest, build, pytest, grep) | NOT STARTED |
 | P4 | Front page, Now / Next / Later, drawer, hover, palette, modal | fork CI green; owner live-reaction round | NOT STARTED |
@@ -80,19 +82,24 @@ Dependencies: P1 needs P0 (the term block generator). P2 needs P0 and P1. P3 nee
 - `claim` / `resolve` re-serialise the whole frontmatter through `write_item`; `claim` on an already-claimed ticket makes no commit. `import-issues` reads sub-issues, labels and native `blocked_by` dependencies through an injectable `gh` fetch; the real #21 import runs in P2.
 - Plan `title:` values with a colon must be quoted (this plan's own was not; the parse test now catches it).
 
-### P1 — Glossary rename and term block — NOT STARTED
+### P1 — Glossary rename and term block — COMPLETE 2026-10-24
 **Implements:** #28, #29, #25 (glossary entries), #33 (CLAUDE.md edits)
 **Files:** `GLOSSARY.md` (via `git mv CONTEXT.md GLOSSARY.md`), `CONTEXT.md` (new three-line stub pointing at `GLOSSARY.md`), `CLAUDE.md`, `DOCUMENTATION_GUIDE.md` (§§ 2.9 and 6), `docs/agents/domain.md` (incl. its CONTEXT-MAP wording), `mapkit/gen_glossary.py`, `tests/sim/test_glossary_avoid_words.py`, `tests/sim/avoid_words_checked.txt`, `tests/sim/test_mapkit_glossary.py`.
 **Approach:** One rename commit: `git mv`, update the 16 live references (grep first and count before and after; the five historical logbook and plan files that name it are never rewritten and resolve through the stub), then add the 13 #29 entries (Lane, Robot frame, Wave, Braking knot, Carry, Capture move, Catch plane, Hop, Oval, Ball 1 / Ball 2, Handoff lead, Fresh-origin, Emit gap) and the 9 #25 entries (Pathway, Destination, Item, Inbox, Idea, Feature, Bug, Step, Reference document) under their `###` clusters. The generator writes term names grouped by cluster, one line each, between `<!-- glossary-terms:start -->` and `<!-- glossary-terms:end -->` in CLAUDE.md, under the hand-written rule sentence, within 1,200 characters (cluster names drop first when over). Fix "runsheet" at CLAUDE.md:128 and leave "UH-3" as history. The Avoid-word test checks only the phrases in `avoid_words_checked.txt` (`leg 6`, `can-hub`, `session limits`, `guard E-STOP`, `runsheet`, `toss` as a word, `reload` as a word), skips backticked or quoted occurrences and lines ending `<!-- avoid-ok -->`, and scans plans in `plans/active` and `plans/parked`, logbook entries dated on or after 2026-09-21, and every `map/` item. (GitHub #16, the standing ask for this test, was closed by #28 on 2026-10-23.)
 **Tests:** `test_glossary_avoid_words.py` (one looping test listing every offender, severity fail); a glossary parse test (term, definition, avoid list, cluster) over the real file; a term-block currency test (regenerate, byte-compare, assert under 1,200 characters).
 **Acceptance:**
-- [ ] `grep -rn "CONTEXT.md"` outside `logbook/`, `plans/archived/` and the stub returns 0 live references (count before: 16).
-- [ ] `GLOSSARY.md` holds the 22 new entries in the skill's format and `mapkit` parses every entry with its cluster.
-- [ ] The term block is between the markers in `CLAUDE.md`, and the currency test fails if it is hand-edited.
-- [ ] The Avoid-word test passes on the tree and fails on a planted `leg 6` in a fixture plan (negative case asserted in the test file).
-- [ ] `/audit --unstaged` run once at phase end (normative docs touched); behaviour-affecting findings surfaced, narrative findings fixed.
-- [ ] Gate: `./run_tests.sh`, (date, command, result) triple in the logbook entry.
-- [ ] All tests pass
+- [x] `grep -rn "CONTEXT.md"` outside `logbook/`, `plans/archived/` and the stub returns 0 live references (count before: 16). What remains names the old file as history: the rename sentence in `DOCUMENTATION_GUIDE.md` § 2.9 and in `docs/agents/domain.md`, and this plan's own text.
+- [x] `GLOSSARY.md` holds the new entries in the skill's format (23: #34's `Ticket` joins #25's nine) and `mapkit` parses every entry with its cluster.
+- [x] The term block is between the markers in `CLAUDE.md`, and the currency test fails if it is hand-edited.
+- [x] The Avoid-word test passes on the tree and fails on a planted `leg 6` in a fixture plan (negative case asserted in the test file).
+- [x] `/audit --unstaged` run once at phase end (normative docs touched); behaviour-affecting findings surfaced, narrative findings fixed.
+- [x] Gate: `./run_tests.sh --full`, (date, command, result) triple in the logbook entry.
+- [x] All tests pass
+
+**Implementation notes (2026-10-24):**
+- Clusters: the ticket brackets [Motion] and [Skills] both map to the existing `### Skills and motion`; `### Tooling` (Emit gap) and `### Project map` (the nine #25 entries plus `Ticket`) are new clusters. The term block renders at 963 characters with cluster names kept.
+- `CLAUDE.md:128` no longer said "runsheet" (it reads "runbook"); nothing to fix there. The avoid sweep that made the tree pass touched 74 files (71 logbook entries and 3 plans, 377 changed lines): `runsheet` -> runbook, `session limits` -> Sitting limits, `can-hub` -> can-bridge, `self-toss` -> self-throw, `toss` -> throw, the two `guard E-STOP` lines reworded to the Guard raising a Soft E-stop, and `reload` backticked where it names the `reload` pattern, skill or button (the English sense, a page `reload`, became "refresh"). Entries dated before 2026-09-21 were not touched. This is the one place a later ticket (#28, scope = entries dated on or after the glossary's landing) overrode the CLAUDE.md sentence that historical entries are never rewritten; the ticket wins.
+- `mapkit.gen_glossary` exposes `parse_glossary`, `load_glossary`, `render_term_block` and `write_term_block`; the avoid-word checker lives in the test file with the phrase list in `tests/sim/avoid_words_checked.txt`.
 
 ### P2 — map directory seed and session wiring — NOT STARTED
 **Implements:** #26, #25, #30, #34 (migration), #33, #37, #32 (nav)

@@ -33,4 +33,4 @@ Rung 2 flies the one-ball oval at dwell 0.55 then 0.50, and `select()` refuses a
 
 - Tests (2026-10-23, `pytest tests/motion/test_skills_admissible.py tests/ros/test_skill_node.py tests/ros/test_gui_juggle_defaults.py tests/ros/test_skills_plan_bench.py tests/sim/test_skills_gate.py -q`): 551 passed in 187 s. Updated: oval cells 1 -> 3 and 20 -> 22 boxes; oval dwells subset of {0.65, 0.55, 0.50}; GUI oval dwell must be in the swept set.
 - Sim learner gate (2026-10-23, `python sim/skills_gate.py --learn --pattern oval_1ball --separation-mm 150 --apex-m 0.95 --dwell-s <d> --seeds 0`): PASS at 0.65 (50 s), 0.55 (48 s), 0.50 (47 s); 25 makes, 3 attempts, 0 drops each. (A first 6-throw run FAILed only because the monotone window was too short; not a defect.)
-- Not done here: the launch-side `skills/check` step (runsheet R2-4) and a launch restart so `skill_node` loads the new box are the operator's.
+- Not done here: the launch-side `skills/check` step (runbook R2-4) and a launch restart so `skill_node` loads the new box are the operator's.

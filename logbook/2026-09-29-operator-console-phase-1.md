@@ -38,7 +38,7 @@ errors, DEBUG never shown. Third-party reductions: rosbridge → one line per GU
 plus its errors (client UUIDs stripped); rosbag2's topic list and hidden-topics warning hidden;
 launch's "process started" hidden, "finished cleanly" → "exited cleanly", "has died" →
 "PROCESS DIED (killed by SIGINT)"; qtm_rt's INFO chatter inside mocap_node hidden. Also: launch now
-prints `recording bag -> <dir>` / `NOT recording a bag` (the runsheets said "note the bag folder it
+prints `recording bag -> <dir>` / `NOT recording a bag` (the runbooks said "note the bag folder it
 prints"; nothing printed it), and trajectory_node + teensy_bridge_node run `output='both'` — with
 `'screen'` their lines never reached `~/.ros/log/<run>/launch.log`.
 

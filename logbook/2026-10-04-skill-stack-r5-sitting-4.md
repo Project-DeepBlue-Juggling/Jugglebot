@@ -31,7 +31,7 @@ tags: [skill-stack, R5, columns, ball-butler, hand-jam, missed-catch, can-bridge
 
 ## Summary
 
-Four launches on the evening of 2026-10-04 flew the sitting-4 runsheet: the jam bench check
+Four launches on the evening of 2026-10-04 flew the sitting-4 runbook: the jam bench check
 (§ 2), the level measurement (§ 3, 31 self-tosses → `level_trim_deg [+0.0945, +0.3678]`),
 one-ball columns (§ 4, "passed fairly well, very few catches clean"), twenty Ball-Butler-fed
 columns attempts (§ 5), and two more after the owner re-aligned the QTM frame to the Base
@@ -85,9 +85,9 @@ Six analyses (five agents plus the orchestrator's own replay; reports under
    already owns (2 episodes per streaming minute at 3 h and at 94 h alike; the log's
    "0/N encoder frames" is a 1 Hz census artefact — real encoder gaps max ~100 ms).
 
-Also found: `hold_tilt_max_deg` only reaches the reload compiles, so the owner's change to
+Also found: `hold_tilt_max_deg` only reaches the `reload` compiles, so the owner's change to
 4.0 before attempt 9 was a no-op for fed columns; the level trim's effect on the landings
-could not be confirmed (the learner moved the self-toss command 15 mm in the same session);
+could not be confirmed (the learner moved the self-throw command 15 mm in the same session);
 the ball naming convention is settled (**Ball 1** = the ball in Jugglebot's hand at the
 start, schedule id 0; **Ball 2** = Ball Butler's, id 1; note Ball 1 holds at P2 and Ball 2
 lands at P1).
@@ -104,7 +104,7 @@ decision (§ Open Questions).
 
 ## What the owner reported
 
-(Verbatim intent, 2026-10-04 evening.) Step 2 of the runsheet was mistaken: "the detector
+(Verbatim intent, 2026-10-04 evening.) Step 2 of the runbook was mistaken: "the detector
 takes the command from `_last_hand_cmd`. Only the streamed lane's echo frame writes that
 value, plus ACTIVATE … HAND_MOVE_TO reuses ACTIVATE's TRAP_TRAJ move: the ODrive plans the
 trajectory internally and nothing echoes it back. So pos_cmd stayed at its startup value of
@@ -202,7 +202,7 @@ Session acc/jerk (5000 / 200000) equal the YAML ceilings (`leg_acc_ceiling_mmps2
 probe, frame unreconciled with A2 — B4 settles it) x −57 (24.9) y +19.6 (39.6) mm (n 20);
 JB self-tosses L2 (trim 0, n 31) x −0.8 (19.0) y +2.3 (18.2); L3 trimmed (n 19) x −9.3
 (18.7) y +6.1 (23.1). The learner appended 144 rows today (120 caught / 24 not); the self-
-toss command moved from (−16.8, −3.2) mm to (−1.5, −19.5) mm within the session. 38
+throw command moved from (−16.8, −3.2) mm to (−1.5, −19.5) mm within the session. 38
 TRACKER-IDENTITY-REFUSED lines, 24 at the feed catch; every one "the catch keeps the
 schedule"; no wrong-ball row reached memory.
 
@@ -285,7 +285,7 @@ hand reverses for the throw stroke 0.19 s later. Two mechanisms stack for the fe
 lateral miss and the 47 % higher impact speed (the ball falls from ~1.6 m) — and this data
 cannot separate them because every feed had both. The bias is Ball Butler's, not the
 cup's: the cup sat exactly on the request point, the number survived the QTM re-alignment,
-and the one-ball reload feeds at P2 show a different (smaller, +y) error, so it is an
+and the one-ball `reload` feeds at P2 show a different (smaller, +y) error, so it is an
 aim-point-dependent calibration error in Ball Butler. The cheapest lever is to cancel it at
 the request: ask Ball Butler for aim − bias and plan the catch at announced + bias, keep the
 cup site where it is (no collision margin spent), and re-measure every sitting with the
@@ -391,7 +391,7 @@ Nine units (five analyses, then J1/J2/B1/B1b/B1c/B2/B3/B4), briefs and the saved
    mocap and schedule frames (the two differ by a pure translation), +x toward Ball 1's site;
    on the fed path only (`ctx.kind == 'columns'`, which `columns_1ball_fed` shares): the point
    sent to Ball Butler is `aim − bias`, the announced landing becomes the prior as
-   `announced + bias`, one INFO line names all three; clamp ±60 mm with a WARN; the reload
+   `announced + bias`, one INFO line names all three; clamp ±60 mm with a WARN; the `reload`
    and hop paths are untouched (tests). The probe measures ball − Platform-body xy at the
    free-fall 830 mm crossing and prints `RECOMMENDED columns_feed_bb_bias_mm = [...]` for the
    bias in force; L3 gives `[+25.8, +27.3]` (n 14), L4 `[+33.3, +23.2]` (n 1). The sim's
@@ -410,12 +410,12 @@ Nine units (five analyses, then J1/J2/B1/B1b/B1c/B2/B3/B4), briefs and the saved
    negative controls; mutation check (gate forced true → the attempt-2 test latches). Flashed
    21:44 (`pio run -e teensy41 -t upload`: SUCCESS, 284672 bytes, booted). The post-flash
    identity sniff was refused by the session's permission classifier, so the receipt is the
-   bridge's `BRIDGE_FW_CHECK: OK — can-bridge v27` at the next launch (runsheet row 8).
+   bridge's `BRIDGE_FW_CHECK: OK — can-bridge v27` at the next launch (runbook row 8).
    Python twin `hermite_xref/teensy_interp.py` not updated (follow-up).
 6. **Ball names** (`schedule.ball_label`, every operator-facing line in `skill_node.py`,
    the executor's evidence lines, the sim gate's verdict lines; parsers accept both spellings
    for pre-2026-10-05 logs). Plan § 0 carries the glossary.
-7. **Runsheet** `tests/hardware/session_skills_r5_sitting5.md`: bring-up (FW 27 receipt, the
+7. **Runbook** `tests/hardware/session_skills_r5_sitting5.md`: bring-up (FW 27 receipt, the
    trim, the honest bench check), the fed half alone with the bias measured then applied,
    Ball 1's half, fed columns with `MISSED_CATCH` live, the optional trim A/B with fresh
    `plant_id`s, the dropout watch items.
@@ -472,14 +472,14 @@ Nine units (five analyses, then J1/J2/B1/B1b/B1c/B2/B3/B4), briefs and the saved
    injection (its executor re-aims from a clean fit). A tracker-correction-disabled mode, or a
    cup-level possession model, would make both rehearsable.
 4. **The level trim's effect on the landings is unconfirmed** (the learner moved the command
-   15 mm in the same session); runsheet § 6 is the clean A/B with fresh `plant_id`s.
+   15 mm in the same session); runbook § 6 is the clean A/B with fresh `plant_id`s.
 5. **The hand dropouts' source** stays with `plans/active/leg-bus-frame-drops.md` workstream B;
    FW 27 tolerates them. `MOTOR_FB_STALE` carries no axis index on the wire (which axis went
    stale is `/cache_diag age_max_us_*`). The Python twin of the hand guard lacks the gate.
-6. **Ball Butler's bias is aim-point dependent** (P2 reload feeds show a different, smaller
+6. **Ball Butler's bias is aim-point dependent** (P2 `reload` feeds show a different, smaller
    error): one parameter per feed site is a patch; the durable fix is Ball Butler's own
    calibration, or a learner for its aim like the throws'.
 7. The jam recovery itself has still never run on the robot (sitting 4's bench check never
-   reached it); runsheet § 2 is the first honest test. Stripping Ball 1's already-dispatched
+   reached it); runbook § 2 is the first honest test. Stripping Ball 1's already-dispatched
    throw after a missed feed (one fewer stroke over a loose ball) contradicts the 2026-09-29
    "first throw after a catch" rule and waits for the owner.

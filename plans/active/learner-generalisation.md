@@ -387,7 +387,7 @@ radius is the compilers, executor, node goal acceptance, GUI, sim gate and ~20 t
 |---------|-------------|
 | `tools/admissible_sweep.py` and the ~30 min offline sweep | L0 online check |
 | `config/generated/admissible_box.yaml`; `gate_hash` (8 files + exact dwell, 34 test lines) | none |
-| dwell-in-key, `select` coverage, empty-box refusal, runsheet rows 3/3a/3b | online check refuses the real candidate |
+| dwell-in-key, `select` coverage, empty-box refusal, runbook rows 3/3a/3b | online check refuses the real candidate |
 | `check_limits` limits/dwell compares; `AdmissibleBox` clip in the learner | limits precondition and ladder stay; L3 cap(x) + L0 |
 
 Census (~35 production call sites, ~20 test files, ~10 doc files) is counted at P3 start and end, not

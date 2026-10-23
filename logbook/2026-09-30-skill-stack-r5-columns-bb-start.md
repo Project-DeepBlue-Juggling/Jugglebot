@@ -63,7 +63,7 @@ what is left.
 2. `compile_columns` had no opening REST, so `skill_node._hand_home_error` refused any columns
    start with a displaced hand (R3 carry (c)).
 3. Nothing on the robot feeds ball B: the sim spawns it in flight; the Ball Butler ball needs
-   the R4 reload's pre-tilt.
+   the R4 `reload`'s pre-tilt.
 4. The two-ball drop policy and the Stop shape were open.
 
 ## Diagnosis
@@ -154,7 +154,7 @@ The floors depend on the HOLD angle, not on how steep the arrival is; catching B
 
 ### 5. Unit F-b: the seam F-a's probe could not see
 
-F-b built the reload-only fused window (k_a ≡ 0). F-a's slew landed on the release knot;
+F-b built the `reload`-only fused window (k_a ≡ 0). F-a's slew landed on the release knot;
 `cup_realize._knot_derivative`'s one-sided 3-knot stencil does not differentiate a quintic's
 (1−u)³ approach to zero, so the release knot carried ry −0.036 rad/s and x +3.99 mm/s, and
 `extend`'s seam re-gate read 315 107 mm/s³ against 133 k for the STEADY alone — a velocity step
@@ -168,8 +168,8 @@ velocity is exactly 0). Re-probed floors through the tail and `extend` (`probe_f
 | 0.45 | `LIMIT_JERK` 152 k | OK at w 0.20 (T 0.65), j 152 k |
 | 0.50 | OK at w 0.20 (T 0.70), j 110 k | OK |
 
-Floor 0.70 s (session) / 0.65 s (ceilings) against 0.90 s for today's R4 reload (catch window
-0.20 + its 0.30 s rest tail + a 0.40 s throw), i.e. −0.20 / −0.25 s per reload. The 4° start
+Floor 0.70 s (session) / 0.65 s (ceilings) against 0.90 s for today's R4 `reload` (catch window
+0.20 + its 0.30 s rest tail + a 0.40 s throw), i.e. −0.20 / −0.25 s per `reload`. The 4° start
 cell therefore misses by 40–90 ms at every ceiling.
 
 ### 6. Unit E: the first Stop could not cross the sites
@@ -217,7 +217,7 @@ the 100 % runtime gate alone, while 0.85 m is the flaky point (mid-schedule `LIM
 that was chosen on 2026-09-16 as "safe enough", not measured; the R2 sizing point and the YAML
 ceiling are 200 000. Owner (2026-09-30): ramp the session leg jerk to 200 000, re-sweep the
 whole box at it, keep the launch default at 150 000 until the ramp is logged, and make the
-sitting's first block the ramp measurement on self-toss and hop.
+sitting's first block the ramp measurement on self-throw and hop.
 
 ### 9. At 200 k the 0.90 m band opens laterally, and the ladder's timing model pins the apex
 
@@ -232,7 +232,7 @@ Since 2026-09-18 the command is an apex: the schedule's catch instants and trans
 the PATTERN's apex (`compile_columns`, `compile_one_ball`), the throw's launch follows the
 command (`executor._throw_terminal` / `_catch_terminal`, `flight_s = flight_s(u_apex)`), and
 the next catch is aimed at the schedule's instant (`_predicted_landing` reads `y_d[1]`). The
-sweep therefore refuses commands the pattern would fly, and it is why the R4 reload hops were
+sweep therefore refuses commands the pattern would fly, and it is why the R4 `reload` hops were
 floored at 0.85 for a 0.9 m target while the plant threw ~10 % high. Unit L separates the two
 flights (the pattern's for timing and arrival, the command's for the carried throw) before the
 installed sweep.
@@ -249,7 +249,7 @@ so the owner's 0.9 m operating point is MARGIN at 100 mm and the box will say so
 
 **Why the BB start was measured on the planner before any design was proposed, and what the
 measurements changed.** My first framing (a human lob; BB out by physics) rested on a
-1/T³ scaling of the reload's decay and a quintic estimate of a 12° slew at a 200 mm radius —
+1/T³ scaling of the `reload`'s decay and a quintic estimate of a 12° slew at a 200 mm radius —
 both withdrawn below. The owner's pushback ("the platform can reorient extremely quickly")
 was right about the legs (23 % of their acceleration budget in the 0.5 s re-tilt) and the
 probes located the real binder in the planner's tilt budget and, past it, in the cycle
@@ -258,8 +258,8 @@ flight. The number that decides is the arrival angle. From 1.1 m away every BB l
 unless it arrives faster than the hand can match; within ~0.25–0.35 m of the site it is ≤ 5°
 and the stock columns catch nearly takes it level (5° refused by 2 mm/s at 300 mm/s).
 
-**Why the fused window was built for the reload even though the start does not close.** It
-is the subset every BB-fed pattern needs, it removes a full stop from every reload (0.90 →
+**Why the fused window was built for the `reload` even though the start does not close.** It
+is the subset every BB-fed pattern needs, it removes a full stop from every `reload` (0.90 →
 0.70 s), and its one contract change — the re-level slew inside a held STEADY is shaped by the
 tilt budget and refused by `validate_cycle` alone, the rule a launch from a tilted seed already
 follows — is stated in `cup_realize._smooth_slew`'s docstring, the only place the check was
@@ -312,13 +312,13 @@ re-attitude the numbers do not support, or on where BB can stand.
   (`reload=True`, the "columns until R5" refusal lifted) or an un-announced tracker fit
   within ±10 x / ±20 y mm of P2 with lead ≥ τ + launch + LEAD_S, `ABORTED_NO_COLUMNS_FEED`
   at 30 s; `_hand_home_error` deleted (the bridge homes the hand, R3 carry (c)).
-- Main session: `_stop_attempt` clears the feed/reload context in its executor branch too
+- Main session: `_stop_attempt` clears the feed/`reload` context in its executor branch too
   (a Stop while the bridge REST's executor was still live left the wait armed and the Juggle
   goal hung until the wait's deadline; unit T found it).
 - Unit G (Sonnet): the sim gate's Stop assertion (`FINAL_CUP_XY_TOL_MM` 25) and
   `--learn --pattern columns --apex-m --target-throws`; a missing `observer=` fixed on the way.
 - Unit R (Sonnet): `tests/hardware/session_skills_r5.md` (50 rows; a 200 k ramp block with a
-  pre-registered stop rule; Block A the 4° cup test; B the fused reload; C columns from a
+  pre-registered stop rule; Block A the 4° cup test; B the fused `reload`; C columns from a
   lob); the bag probe's plane pin derived from config (`FSM_ERA_CATCH_Z_MM`), no literal.
 - Unit L (Sonnet): the sweep ladder's `pattern_flight_s` (Diagnosis § 9).
 - Sweep install: TODO(main).
@@ -375,7 +375,7 @@ re-attitude the numbers do not support, or on where BB can stand.
   publishes the status, six columns starts pass the 100 mm separation, and two tests were
   rewritten to the two-phase start); `tests/ros/test_skill_node_resend_param.py` +
   `tests/ros/test_skills_plan_bench.py` + `tests/sim/test_skills_gate.py`: **93 passed** after
-  the bench's self-toss jerk followed the box to 200 k and the hop learner test's 0.85 m floor
+  the bench's self-throw jerk followed the box to 200 k and the hop learner test's 0.85 m floor
   (a ladder artefact) was rewritten.
 - Full gate, `./run_tests.sh --full`, run 2026-09-30 15:10–15:16
   (`temp/logs/gate_full_r5_day1_final2_20260930_1510.log`): **PASS — 5760 passed, 9 skipped,
@@ -400,7 +400,7 @@ re-attitude the numbers do not support, or on where BB can stand.
   probe planned the STEADY alone and never saw the seam; through the tail and `extend` the
   floor is 0.70 / 0.65 s. Superseded by Diagnosis § 5.
 - [2026-09-28/29, carried into today] "The hop box widened under the hold (x upper +2 → +10
-  mm) and the self-toss boxes narrowed (±40 → ±30 mm)" — those widths were measured on chained
+  mm) and the self-throw boxes narrowed (±40 → ±30 mm)" — those widths were measured on chained
   cells seeded from an un-held raw launch (Diagnosis § 7). The re-sweep on
   `Segment.release_state` is the first box whose chained cells start from the segment the
   machine flies; the earlier widths are provenance for the tool defect, not for the plant.
@@ -411,7 +411,7 @@ re-attitude the numbers do not support, or on where BB can stand.
 
 ## Open Questions
 
-- The 4° cup test (owner): a `hold_tilt_max_deg` cap on the R4 reload, watched for the seat
+- The 4° cup test (owner): a `hold_tilt_max_deg` cap on the R4 `reload`, watched for the seat
   with the ball entering ~8° off the cup axis.
 - Where Ball Butler can stand: the start closes with the stock catch when the ball arrives
   within ~5° of vertical at ≤ 4.5 m/s (a release point within ~0.25–0.35 m of the catch site

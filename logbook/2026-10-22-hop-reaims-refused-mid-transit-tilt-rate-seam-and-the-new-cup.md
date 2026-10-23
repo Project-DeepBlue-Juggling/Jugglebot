@@ -36,7 +36,7 @@ The 2026-10-21 22:53 sitting (`~/.ros/log/2026-10-21-22-53-41-347705-jetson-3884
 
 - **Row 47 PASSED on hardware.** The launch ran the 95d148cd build (installed `unified_cycle.py` / `bump.py` md5-identical to source, `INSTALL_SKEW: OK`). The late-catch BUMP installed 20 times; 0 was followed by `LIMIT_JERK` at t = 0.025 s (10-19: 5 of 6 columns attempts), and 0 `CHAIN_DISCONTINUITY` fired.
 - **The sitting's 12 other `LIMIT_JERK` refusals are an OLDER class**, not the new cup and not I-PLAN-10: a hop splice lands mid-transit where the head banks at ~0.28 rad/s and the new segment's tilt schedule pins the tilt VALUE but not its RATE. I-PLAN-10's `k_s-2` range only relabelled the refused knot from t = 0.050 s to 0.075 s. Fixed in code as I-PLAN-11 (offline 0/101 -> 38/101, zero t = 0.075 refusals), NOT FLOWN. A second class (the segment's own gate, knots 7-13) is characterised and left open.
-- **Owner's three questions.** (1) The improvement is not attributable to the learner: its commands moved 5-17 mm, landing error did not shrink, and the inflection tracks hop -> columns and the feed catch starting to work. (2) Do not reset (owner, 2026-10-22: "Don't reset"). (3) The oval was refused because the live node dwell was 0.27 s against a box swept at 0.65 s; runsheet row 12a (`ros2 param set /skill_node dwell_s 0.65`) was not executed and the GUI showed dwell read-only; closed by `2026-10-21-juggle-goal-carries-dwell.md`.
+- **Owner's three questions.** (1) The improvement is not attributable to the learner: its commands moved 5-17 mm, landing error did not shrink, and the inflection tracks hop -> columns and the feed catch starting to work. (2) Do not reset (owner, 2026-10-22: "Don't reset"). (3) The oval was refused because the live node dwell was 0.27 s against a box swept at 0.65 s; runbook row 12a (`ros2 param set /skill_node dwell_s 0.65`) was not executed and the GUI showed dwell read-only; closed by `2026-10-21-juggle-goal-carries-dwell.md`.
 - **Catch smoothness** is a real change, but on BB feeds it is the ball settling 252 ms in the cup (PLA: 119 ms) at an unchanged closing speed. The lever is unproven, so the decision is instrument first plus two checks, no catch learner yet.
 
 ## Symptoms
@@ -45,16 +45,16 @@ Build check first: the launch ran the right code (see Summary). Attempt timeline
 
 | # | wall | goal | result | END reason / what the log says |
 |---|---|---|---|---|
-| 1 | 22:55:14 | hop (reload), apex 0.9, sep 250 | 4/4 | every throw "re-aimed 0x, then refused" (C2, JERK) |
+| 1 | 22:55:14 | hop (`reload`), apex 0.9, sep 250 | 4/4 | every throw "re-aimed 0x, then refused" (C2, JERK) |
 | 2 | 22:55:37 | hop | 4/4 | same |
 | 3 | 22:55:57 | hop | 0/0 | MISSED_CATCH skill 4 cup EMPTY; stop REST refused `LIMIT_JERK` (t = 0.075, knot 125); throw-1 re-aim `HAND_LIMIT_C2` 4.18 |
 | 4 | 22:56:10 | hop | 0/0 | REJECTED_NO_BALL (ball lost in #3) |
 | 5 | 22:57:04 | hop | 0/0 | MISSED_CATCH; stop REST `LIMIT_JERK` (t = 0.075, knot 126, 444900); re-aim `HAND_LIMIT_C2` 4.32 |
 | 6 | 22:57:18 | hop | 4/4 | all four re-aims refused |
 | 7 | 22:57:36 | columns, hop entry, apex 0.95, sep 125 | 0/2 | MISSED_CATCH skill 2 cup EMPTY (BB-fed Ball 2 landed (-53,-26)) |
-| 8 | 22:57:46 | columns (reload) | 0/0 | `LIMIT_JERK` at the REST, 219k, leg 0, t = 0.025 |
-| 9-10 | 22:58:10, :31 | columns (reload) | 0/0 | MISSED_CATCH, feed missed (Ball 2 skill 1 then Ball 1 skill 2 EMPTY) |
-| 11 | 22:58:56 | columns (reload) | 2/2 | MISSED_CATCH Ball 2 skill 1 EMPTY; one re-aim refused JERK 287k t = 0.100 |
+| 8 | 22:57:46 | columns (`reload`) | 0/0 | `LIMIT_JERK` at the REST, 219k, leg 0, t = 0.025 |
+| 9-10 | 22:58:10, :31 | columns (`reload`) | 0/0 | MISSED_CATCH, feed missed (Ball 2 skill 1 then Ball 1 skill 2 EMPTY) |
+| 11 | 22:58:56 | columns (`reload`) | 2/2 | MISSED_CATCH Ball 2 skill 1 EMPTY; one re-aim refused JERK 287k t = 0.100 |
 | 12 | 22:59:30 | columns, hop entry | 2/3 | ABORTED_NO_RELEASE; one JERK 224k t = 0.250, one LIMIT_ACC |
 | 13 | 22:59:44 | columns, 10 cycles | 9/10 | done; last throw landed on the held ball |
 | 14-17 | 23:00:09-23:01:04 | columns 50 | 3/3, 6/6, 14/14, 3/3 | each ends with a cup-EMPTY MISSED_CATCH after 3-14 catches |
@@ -66,7 +66,7 @@ Hops: 12 caught of 14, but 0 of 14 tracker re-aims accepted. Columns accepted ~2
 
 | t on the gated clock | count | what |
 |---|---|---|
-| 0.025 s | 1 | the 218661 leg-0 REST at a "0 throws" columns reload (22:57:48), no BUMP in that goal |
+| 0.025 s | 1 | the 218661 leg-0 REST at a "0 throws" columns `reload` (22:57:48), no BUMP in that goal |
 | 0.075 s | 4 | hop RESENDs (437969, 398983) and the two hop stop RESTs (423599, 444900); legs 4/5, ~2x the 200k limit |
 | 0.100 s | 1 | columns RESEND 287151 |
 | 0.125 s | 3 | hop RESENDs 260852, 291485, 263263 |
@@ -101,7 +101,7 @@ The 0.29 rad/s tilt-rate gap through the ~245 mm lever is a ~71 mm/s platform-x 
 
 **4. Why columns passes.** On columns (sep 125, vertical throws) the tilt rate at the splice knot is ~0 and the seam delta-V is the known 1.7-2.2 mm/s re-derivation baseline; offline columns re-aims pass 44/88 with no seam-class refusal. The columns refusals are the segment's own gate on the larger x/time moves. That, not the learner, is why refusals nearly vanish when the pattern switches from hop to columns.
 
-**5. The one t = 0.025 case (218661, leg 0).** A REST 1.4 s after the REST install at a fresh-origin reload, no BUMP. It is the `k_s-1` straddle that I-PLAN-10's widened range now measures and the old range never did, so that jerk flew unmeasured before. Exact mechanism not traced (candidate: the same tilt-borne re-derivation across a stop-then-slew kink at `k_s` = 65, pre-tilt REST hold 9.456 deg).
+**5. The one t = 0.025 case (218661, leg 0).** A REST 1.4 s after the REST install at a fresh-origin `reload`, no BUMP. It is the `k_s-1` straddle that I-PLAN-10's widened range now measures and the old range never did, so that jerk flew unmeasured before. Exact mechanism not traced (candidate: the same tilt-borne re-derivation across a stop-then-slew kink at `k_s` = 65, pre-tilt REST hold 9.456 deg).
 
 **6. Is the hand involved?** Seat time does not feed `k_s` or the REST lead: a re-aim `k_s` is the RESEND dispatch (0.55-0.63 s before landing) + `LEAD_S`; the stop-REST `k_s` is the MISSED_CATCH verdict instant (+0.39 s, fired ~+0.43 s) + `LEAD_S`. Both stops followed "cup EMPTY on all 112 valid samples", a real miss. The head's transit banking rate is flat at 0.27-0.30 rad/s across [-0.6, -0.5] and [+0.3, +0.5] s, so offline every transit offset refuses at 333-470k with an ideal hand.
 
@@ -215,7 +215,7 @@ Residue, not scheduled (carried forward from the pre-flight Outcome):
 - The V2 variant (also retarget the knot-0 anchor at the head's tilt track, 68/80 vs the landed 66/80) was not taken; the BUMP overlay for the hop (option (c)) was rejected for now (launch bound and unmodelled carry banking, see Discussion (d)).
 - The box re-sweep is owed on the final tree (cup_realize.py changed after the sweep this entry's Fix measured).
 - The 4 `CUP_CONTACT_ACC` stop-REST dives (one per catch at -0.4 s 'before'); out of scope here.
-- The 218661 t = 0.025 reload-REST straddle: mechanism untraced.
+- The 218661 t = 0.025 `reload`-REST straddle: mechanism untraced.
 - Monday's (10-19) unusually tight hand tracking (4.6 ms vs 11-12 ms) is unexplained.
 - The new cup's seat and rim height measurement is RETIRED 2026-10-23 (owner: the ASA hand is geometrically identical to the PLA hand).
 - The sim `--reload` gate LIMIT_JERK regression (bisected to 08ec3fe6, 2026-09-30) is unchanged and not this class.

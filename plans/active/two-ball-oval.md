@@ -45,7 +45,7 @@ related_code:
 
 Branch: `main` in `~/Desktop/Jugglebot` (merged from `skill-stack` / `two-ball-oval` 2026-10-23; the oval worktree is retired; the `two-ball-oval` branch is kept at `main`'s tip, but work continues on `main` directly, fly after a FULL launch restart).
 Design record: the wayfinder map was at `.scratch/two-ball-oval/` in the retired oval worktree (gitignored, may no longer exist; the
-58 decisions it holds are restated here in § 1.3 so the plan stands alone). Runsheet for the first
+58 decisions it holds are restated here in § 1.3 so the plan stands alone). Runbook for the first
 rung: `tests/hardware/session_oval_rung1.md`. Build runs phase by phase through
 `/next-phase-prompt two-ball-oval <n>`. **§ 0 of `two-ball-skill-stack.md` (archived) stays
 normative for every unit of work here**: one path per function, delete what is replaced in the
@@ -106,7 +106,7 @@ and whether this cup can carry a ball 150 mm in 0.30 s is what the plan finds ou
 - **Catch (28b, 40, 48)** (48 amended 2026-10-18)**:** the level program with a receive-pin TILT hold
   `[k_td − h_catch_pre, k_td + h_catch_post]`, no lateral slaving; throw pin held `[n−2, n]`;
   skid LOGGED only; closing speed REFUSES below 20 % of the 0.7× match target; the BB feed
-  catch keeps the program each rung already flies (reload held-axis at one ball, columns LEVEL
+  catch keeps the program each rung already flies (`reload` held-axis at one ball, columns LEVEL
   pin + axial-only match at two balls).
 - **Contract (29–31, 35)** (29–31 amended 2026-10-18)**:** C-CUP-4 — 20° axis-relative cone + `a_z + g ≥ 0.5 g` on every
   interior loaded knot of every pattern; check in P1, QP rows in P3; codes `CUP_SEATING_CONE`
@@ -148,7 +148,7 @@ and whether this cup can carry a ball 150 mm in 0.30 s is what the plan finds ou
     below (30° / 0.30 g) is the pre-amendment value. Rung 1 is the first loaded CARRY flown under 45°: record
     `max_cup_braking_deg` and restore 30° if a carry loses the ball.
   - *29–31* — C-CUP-4 check **30° / 0.30 g on every pattern** (20° / 0.5 g stays the P3 shaper TARGET): at
-    20° / 0.5 g the check refused flown patterns (250 mm hop with landing offset 28.7° / 0.320 g; reload
+    20° / 0.5 g the check refused flown patterns (250 mm hop with landing offset 28.7° / 0.320 g; `reload`
     held-axis feed catch 20.0–20.2°). Estimator = the REALISED cup-opening acceleration, not the QP's
     (18.7° vs 26.6° on one plan). "Columns passes trivially" withdrawn: it passes (the 1.3° / 0.02 g margin is the HOP's, 28.7° / 0.320 g vs 30° / 0.30 g; columns' own margin is unmeasured, the sim-gate columns point at dwell 0.25 or 0.30 is refused while 0.27 passes).
   - *38* — workspace rule `|site xy| + box half-extent ≤ workspace_xy_m`, **no 20 mm margin** (125 + 20 + 20
@@ -172,7 +172,7 @@ sim gate. `cup-contact-contract.md` (archived) holds C-CUP-1/2/3; C-CUP-4 extend
 separate "leak" claim (P2) was a second, since-unreproduced one (retired 2026-10-23, § 4 P2). `skill-stack-dress-rehearsals-and-residue.md`
 keeps the columns residue (SPLICE_TOO_LATE, emit gap); the columns canary at P4 reads against it.
 `columns-empty-cup-two-feed.md` (active) owns the cup-keyed accept rule every oval goal passes
-through; `bb-calibration-one-attempt.md` (archived 2026-10-19) owned the calibration sweep the runsheet's row 6a
+through; `bb-calibration-one-attempt.md` (archived 2026-10-19) owned the calibration sweep the runbook's row 6a
 reads.
 
 ## 2. Architecture
@@ -267,7 +267,7 @@ second-to-last catch at C is a standalone HELD catch and the last throw lands on
 |---|---|---|---|---|
 | P1 | The oval pattern dispatchable: `oval_1ball(_fed)`, fixed roles, cross-site fold, executor threading, codes, box cell at dwell 0.65, C-CUP-4 check, GUI, sim label, tests | **Rung 1** (`session_oval_rung1.md`): 150 / 0.65 / 0.95 at today's limits, as-is banking — go/no-go on the carry (the 30-consecutive gate WAIVED by owner 2026-10-23: longest oval attempt 10/10; 28/28 caught = 18/18 oval, plus 10/10 hop control; the 30-run bar lives at P5) | COMPLETE | 2026-10-18; rung 1 FLOWN 2026-10-23: 28/28 caught (18/18 oval, plus 10/10 hop control), owner: "Oval 1 ball patterns are working really nicely. I think we're ready to advance on this." |
 | P2 | Banking leak fix (principle a) | ~~Rung 1 re-flown = the leak-fixed column~~ | RETIRED 2026-10-23 (row kept): the leak does not reproduce on today's planner, delta 0 at every accepted dwell 0.65-0.45, § 4 P2 | 2026-10-23 |
-| Rung 2 | No planner code (box cells at 0.55 / 0.50 swept 2026-10-23, see the logbook): one-ball oval at dwell 0.55 then 0.50 on the as-is `level` planner at today's limits, bundled with the sitting that flies the three owed unflown fixes first | Row-27 metrics per step against the 0.65 baseline (runsheet `session_oval_rung1.md` § 7) sets P3's shaper target | FLOWN 2026-10-23, MET (owner GO): 0.50 38/38 with a 32-run, 0.55 4/4, 0.65 75/76; leg 2 peak 10.1 A accepted (15 A clamp) | `2026-10-23-oval-rung2-flown-dwell-050` |
+| Rung 2 | No planner code (box cells at 0.55 / 0.50 swept 2026-10-23, see the logbook): one-ball oval at dwell 0.55 then 0.50 on the as-is `level` planner at today's limits, bundled with the sitting that flies the three owed unflown fixes first | Row-27 metrics per step against the 0.65 baseline (runbook `session_oval_rung1.md` § 7) sets P3's shaper target | FLOWN 2026-10-23, MET (owner GO): 0.50 38/38 with a 32-run, 0.55 4/4, 0.65 75/76; leg 2 peak 10.1 A accepted (15 A clamp) | `2026-10-23-oval-rung2-flown-dwell-050` |
 | P3 | Pose-level carry planner behind `level \| pose`, C-CUP-4 rows, knob re-tune, cycle budget, seam-dz ablation (design starts AFTER rung 2 flies) | Starts from the dwell-0.50 as-is baseline (38/38); rung 1 re-flown = the swept column → decision 24 gate; columns re-gated if the mode flips | NOT STARTED | |
 | P4 | Working point 600/8000/200k, acc ceiling 10000, 30 A, box re-sweep (oval + columns), one-ball cells at 0.40 / 0.30 | Ramp sitting (five columns canary, one-ball oval at 0.40), then one-ball at 0.30 | NOT STARTED | |
 | P5 | Two-ball `oval(_fed)`: `compile_oval`, hop-shaped entry, Stop exit, clearance pre-flight | 30 consecutive BB-fed catches in one attempt | NOT STARTED | |
@@ -305,7 +305,7 @@ Paths under `ros_ws/src/jugglebot/jugglebot/`.
   measured cell is a comment-level reference for reading the log line, never a refusal.
 - **Node and GUI**: `skill_node._PATTERNS` + `_run_one_ball` dispatch for `oval_1ball(_fed)`
   (fed = `_start_reload(site=sites[0])`, no entry code); rows in the cup-keyed accept table
-  `_CUP_RULE` (`columns-empty-cup-two-feed.md` D3, 2026-10-17 — the goal carries no reload
+  `_CUP_RULE` (`columns-empty-cup-two-feed.md` D3, 2026-10-17 — the goal carries no `reload`
   flag, the debounced cup evidence picks the first skill): `oval_1ball` as `hop` (EMPTY →
   RELOAD_FIRST, SEATED → THROW_FIRST), `oval_1ball_fed` as `columns_1ball_fed` (EMPTY →
   RELOAD_FIRST, SEATED → `REJECTED_BALL_IN_HAND`); `skills/check` prints the oval box;
@@ -315,12 +315,12 @@ Paths under `ros_ws/src/jugglebot/jugglebot/`.
 - **Tests**: new `tests/motion/test_skills_oval.py` (fold + executor); the checks' tests in
   `tests/motion/test_validate_cycle.py` beside `CUP_CONTACT_ACC`; table-shaped tests grow in place.
 - **Gate**: (merge done 2026-10-23: `skill-stack` and `two-ball-oval` are both on `main`; the BB-calibration phases, the handoff and
-  splice fixes and the calibration ledger the runsheet reads are all present); `./run_tests.sh --full` green;
-  then rung 1 on the loaded Jetson with every accept-time refusal reported at once (runsheet
+  splice fixes and the calibration ledger the runbook reads are all present); `./run_tests.sh --full` green;
+  then rung 1 on the loaded Jetson with every accept-time refusal reported at once (runbook
   rows 16b/16c). **GO** = a 30-cycle attempt completes with the hand ball sensor's seat bit
-  continuous through every carry (runsheet rows 22a/25); **NO-GO** = the ball leaves the cup
-  in the same carry region twice (row 26). **The 30-cycle bar was WAIVED by the owner 2026-10-23** (longest oval attempt 10/10; 28/28 caught across attempts = 18/18 oval, plus 10/10 hop control; the 30-run bar lives at P5). Outcome recorded in the runsheet § 6 and § 3 here.
-- **Outcome (2026-10-18):** commits 7ae390cb (code, tests, fixtures, box, logbook, INVARIANTS) + the plan/runsheet commit that follows it; gate `./run_tests.sh --full` 2026-10-18 parallel 6792 passed / 9 skipped / 1 failed (a GUI replay-overview thread race, untouched code, 3/3 green in isolation) + serial 7 passed (logbook Verification); box re-sweep
+  continuous through every carry (runbook rows 22a/25); **NO-GO** = the ball leaves the cup
+  in the same carry region twice (row 26). **The 30-cycle bar was WAIVED by the owner 2026-10-23** (longest oval attempt 10/10; 28/28 caught across attempts = 18/18 oval, plus 10/10 hop control; the 30-run bar lives at P5). Outcome recorded in the runbook § 6 and § 3 here.
+- **Outcome (2026-10-18):** commits 7ae390cb (code, tests, fixtures, box, logbook, INVARIANTS) + the plan/runbook commit that follows it; gate `./run_tests.sh --full` 2026-10-18 parallel 6792 passed / 9 skipped / 1 failed (a GUI replay-overview thread race, untouched code, 3/3 green in isolation) + serial 7 passed (logbook Verification); box re-sweep
   sweep 2026-10-18 `temp/sweeps/sweep_P1.sh` (four invocations: single/hop/columns at dwell 0.27, oval at 0.65 - 150 mm, apex 0.95 +/- 0.025 - all at 350/5000/200000/hand 3900, BLAS one thread), each run twice, `cmp` IDENTICAL for all four; merged single->hop->columns->oval; gate_hash 606b53e3912f (first merge 20436164b087 at the 25 % closing threshold; re-swept after the 20 % re-base with every cell identical, four files cmp IDENTICAL again), swept_at 2026-10-18, 20 cells, merged-file md5 5e2ea1b3ba8a1b75718c78b5d3035096; hop and columns cells value-identical to the pre-oval snapshot, self_toss cells shrunk (see Tradeoffs). The dispatched carry reads 32.1° at dwell 0.50 (pre-release hold), so rung 1 flies
   at 0.65. Rung 1 cleared to fly; P2 starts after its outcome is logged. Open residue: oval Stop exit: REST+CATCH pair at C (decision 51), not landed in P1.
 
@@ -411,13 +411,13 @@ Where the idea lives now: a note inside P3 (below). Code never started; nothing 
 - **Safety**: the Teensy `MAX_DEVIATION` guard is the leg-path authority; nothing here changes
   it. The carry is the first LOADED translation — the first rung's stop rules (ball leaves the cup
   twice in one region, FET > 60 °C, a leg on the current clamp > 50 ms, lane recovery failed) are
-  in the runsheet. 30 A is the owner's number (~30 A judged safe 2026-10-12); the 0.40 rung's bag
+  in the runbook. 30 A is the owner's number (~30 A judged safe 2026-10-12); the 0.40 rung's bag
   is the measurement. The hand cap 3900 is NOT raisable.
 - **Non-obvious choices**: the first rung flies at dwell 0.65 (pre-release hold; the cone moved to 45° since b28b129f so 0.50 passes the planner and cone offline (32.1° < 45°) but is NOT dispatchable until the oval box cells at 0.55 and 0.50 are swept; rung 2 flew it 2026-10-23 once the cells were swept); symmetric sites (every one-sided probe placement produced edge
   artefacts); the catch stays level because the capture span is infeasible at two balls (probe,
   two runs); the mode switch exists so decision 24's as-is column stays producible; dwell is a
   parameter, not a goal field, so a box swept at one dwell refuses the other by name.
-- **Row-27 baseline exists (2026-10-23)**: the rung-1 bag is read into the runsheet's § 6 as-is column (commanded jerk, bank,
+- **Row-27 baseline exists (2026-10-23)**: the rung-1 bag is read into the runbook's § 6 as-is column (commanded jerk, bank,
   leg 1/2 current, seat-bit continuity, landing, LIMIT tally). Re-run per rung: `tools/probes/oval_carry_bag_metrics.py` (bag) and
   `tools/probes/oval_dwell_sweep.py` (offline dwell ladder); rung 2 reads against the 0.65 numbers. Flown 2026-10-23 ahead of rung 2: the three then-unflown fixes
   (I-PLAN-11 rest_slew daa495e0, columns parity 21e02cfa, feed-line latch 3fe2cdee). No planner code landed in
@@ -430,7 +430,7 @@ Where the idea lives now: a note inside P3 (below). Code never started; nothing 
   path (`roles='alternate'` is today's hop); P4's working point reverts by one YAML commit + box
   re-sweep.
 - **Files**: see `related_code` above; new files are `tests/hardware/session_oval_rung1.md`
-  (P1) and the P4/P5 runsheets written at their phases.
+  (P1) and the P4/P5 runbooks written at their phases.
 
 ## 7. Vocabulary
 

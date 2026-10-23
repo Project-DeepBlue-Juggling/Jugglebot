@@ -95,17 +95,17 @@ identical on every columns feed (`in 2.5 s, flight 0.88 s, 3.29 m/s, aim correct
 | S | pattern (n) | node | end | streak |
 |---|---|---|---|---|
 | S1 | self_toss 10 | 10/10 | done | 10 |
-| S1 | hop 10, hop reload 10, hop reload 10 | 1/2, 2/3, 5/6 | SPLICE_TOO_LATE x3 (stop REST refused LIMIT_ACC -> hold) | 1, 2, 5 |
+| S1 | hop 10, hop `reload` 10, hop `reload` 10 | 1/2, 2/3, 5/6 | SPLICE_TOO_LATE x3 (stop REST refused LIMIT_ACC -> hold) | 1, 2, 5 |
 | S1 | columns_1ball_fed 10 | 4/5 | done (final throw) | 5 |
 | S1 | columns 10 | 4/4 | MISSED_CATCH Ball 1 skill 6, Ball 2 skill 7 | 5 |
 | S1 | columns 10 x4 | 2/2 each | MISSED_CATCH skill 1 = the FEED catch | 0, 0, 0, 0 |
-| S1 | columns_1ball 10, 10, reload 5 | 2/2, 4/4, 5/5 | SPLICE_TOO_LATE; MISSED_CATCH skill 11 (throw landed -16,+73); done | 2, 4, 5 |
-| S2 | hop 10; hop reload 10 | 4/4; 10/10 | MISSED_CATCH skill 6 (rim bounce); done | 4; 10 |
+| S1 | columns_1ball 10, 10, `reload` 5 | 2/2, 4/4, 5/5 | SPLICE_TOO_LATE; MISSED_CATCH skill 11 (throw landed -16,+73); done | 2, 4, 5 |
+| S2 | hop 10; hop `reload` 10 | 4/4; 10/10 | MISSED_CATCH skill 6 (rim bounce); done | 4; 10 |
 | S2 | columns 10 | 9/10 | done (final throw) | 10 |
 | S2 | columns 50 x11 | 7/7, 9/9, 5/5, 2/2, 4/5, 2/4, 5/6, 6/6, 1/3, 4/4, 4/6, 7/8 | MISSED_CATCH x7 (Ball 2 at P1 x5, Ball 1 at P2 x2), LIMIT_ACC, LIMIT_JERK, SPLICE_TOO_LATE x3 | 6, 8, 4, 3, 4, 3, 5, 7, 2, 3, 5, 7 |
 
 Refusals: 2 `REJECTED_BALL_IN_HAND`, 2 `REJECTED_NO_BALL` (one at the throw after a missed
-hop-reload feed, 66 mm off), 2 `MAGAZINE_UNREACHABLE`. Release offset median +9/+10 ms (the
+hop-`reload` feed, 66 mm off), 2 `MAGAZINE_UNREACHABLE`. Release offset median +9/+10 ms (the
 sitting-8 +20 ms step did not recur); arrival median -1 ms. No lane latch, no hand jam, no
 emitter window over 42.7 ms. `QTM frames lost` only during the pre-goal BB calibration sweeps.
 
@@ -132,7 +132,7 @@ alone (cup 7.8 mm from the true landing at -50 ms, 30 mm at the crossing, tracke
 4.7 mm). Plus 3 hop "misses" after a SPLICE_TOO_LATE end where no catch was planned at all.
 
 *Withdrawn:* (a) "the platform corrected toward a wrong prediction" - 0 of 13; the pattern
-exists only early and harmlessly (3 of 6 accepted self-toss re-aims moved 480-770 ms before
+exists only early and harmlessly (3 of 6 accepted self-throw re-aims moved 480-770 ms before
 landing toward an estimate 9-19 mm worse; all caught). (b) "LIMIT_JERK/LIMIT_ACC are costing
 catches" - 81 % of requested re-aims (46 of 57) were refused, but 37 of the 40 non-timing
 refusals were followed by that catch succeeding on its old aim; the three that preceded a miss
@@ -168,7 +168,7 @@ emitter stall (no window > 34.5 ms within 0.6 s), slower hop solves (hop p50 97 
 before the node's fixed 250 ms wait, so the wait never decided anything. `_reject_segment` dropped
 the refused solve's duration, which is why sitting 8 read its 0.23-0.26 s request-to-refusal
 as the solve time. Five of the six RESEND refusals were by construction: a free-standing re-aim
-has 150-175 ms against tracker-aim solves of p50 126-146 (self-toss 169).
+has 150-175 ms against tracker-aim solves of p50 126-146 (self-throw 169).
 
 *Tradeoff accepted:* +2 knots of handoff lead moves every columns catch dispatch 50 ms earlier
 (minimum gap between consecutive dispatches 0.350 -> 0.300 s; the predecessor's install, capped

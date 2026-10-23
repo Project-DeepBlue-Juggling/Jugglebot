@@ -48,7 +48,7 @@ Owner, 2026-10-23: the skill-stack design "has been very conclusively validated"
   `main` and kept for the oval work.
 - Current-state docs repointed from the branch/worktree to `main` in the single checkout
   (CLAUDE.md's live-stack bullet and parallel-session bullet, the oval plan's header and
-  gate, the learner-generalisation plan, the two live runsheets' step rows). Dated runsheets
+  gate, the learner-generalisation plan, the two live runbooks' step rows). Dated runbooks
   and logbook entries keep their original paths as history.
 
 ## Verification

@@ -1,0 +1,10 @@
+# Phrases checked by tests/sim/test_glossary_avoid_words.py (one per line).
+# Each is a GLOSSARY.md _Avoid_ word. Add a phrase here only after the sweep of
+# plans/active, plans/parked, recent logbook entries and map/ is clean for it.
+leg 6
+can-hub
+session limits
+guard E-STOP
+runsheet
+toss
+reload

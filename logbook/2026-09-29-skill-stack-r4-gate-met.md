@@ -26,7 +26,7 @@ subsystem:
 ## Symptom
 
 The owner flew `tests/hardware/session_skills_r4.md` on 2026-09-29, 19:11–19:24, from one launch
-(bag `~/Desktop/rosbags/2026-09-29_19-11-49`). The diagnostic runsheet `session_skills_r4_diag.md`
+(bag `~/Desktop/rosbags/2026-09-29_19-11-49`). The diagnostic runbook `session_skills_r4_diag.md`
 was not flown. The owner reported: "everything passed with flying colours", "at least 10–15
 consecutive catches of the hop", and the reload "semi-dodgy": "the hand could afford to raise
 while the platform is tilting to not need to rocket up in anticipation of the catch". This entry
@@ -35,7 +35,7 @@ about R5.
 
 ## Diagnosis
 
-### 1. The gate (plan § R4: 10 consecutive catches alternating P1/P2, and a one-button BB reload → catch → throw → catch)
+### 1. The gate (plan § R4: 10 consecutive catches alternating P1/P2, and a one-button BB `reload` → catch → throw → catch)
 
 | Pattern | Throws | Caught | Landing x (mean ± 1σ) | Landing y | Apex |
 |---|---|---|---|---|---|
@@ -49,10 +49,10 @@ about R5.
   So the ball stayed in the cup, and that verdict was a slow seat, not a drop. Ten more catches
   followed. The run ended on a real drop: a P2→P1 throw landed 60 mm long, beyond P1. So the
   run was 25 consecutive catches physically, and 14 by the strict verdict. Either count clears 10.
-- **One-button reload chain: MET, 3 of 3.** One reload went into self_toss (19:15:13) and two
+- **One-button `reload` chain: MET, 3 of 3.** One `reload` went into self_toss (19:15:13) and two
   into hop (19:20:38 and 19:23:21). Ball Butler already held a ball each time, so `bb/reload`
-  was skipped by design. The reload CATCH installed from rest with no refusal; the sitting-3
-  `CATCH_AXIS` refusal is gone. Each reload was followed by 4 caught throws.
+  was skipped by design. The `reload` CATCH installed from rest with no refusal; the sitting-3
+  `CATCH_AXIS` refusal is gone. Each `reload` was followed by 4 caught throws.
 - No guard latch, E-stop, `MAX_DEVIATION` or `CAN_BUS_DOWN` in the log.
 
 ### 2. The hop overshoot is gone, and the hold is what removed it
@@ -61,22 +61,22 @@ Before, the hop landed +88/+110 mm long (sitting 3, 2026-09-28). Now P1→P2 lan
 includes a −10 mm learner command, so the raw plant bias is +22.3 mm. P2→P1 lands +2.3 mm (raw
 +11.4 mm). The only change between the two sittings that touches a hop THROW is the pre-release
 hold (`0fbd7e66`); the box re-sweep changed what is admissible, not how a throw flies. This
-sitting had no hold-off arm, so it is not the diagnostic runsheet's A/B. But a ~80 mm shift that
+sitting had no hold-off arm, so it is not the diagnostic runbook's A/B. But a ~80 mm shift that
 coincides with the one throw-side change is the answer the A/B was designed to give.
 
-### 3. The reload's Juggle result raced its own schedule swap (fixed)
+### 3. The `reload`'s Juggle result raced its own schedule swap (fixed)
 
 All three reloads reported `Juggle OK: COMPLETED (0/0 caught)` in the orchestrator ~20 ms after the
 button, while each attempt went on to catch and throw four times.
 
-The mechanism: `_on_announcement` popped `_reload_ctx` before it compiled the reload schedule and
-swapped the executor in. For those few ms the node had neither an executor nor a reload context,
+The mechanism: `_on_announcement` popped `_reload_ctx` before it compiled the `reload` schedule and
+swapped the executor in. For those few ms the node had neither an executor nor a `reload` context,
 the idle state. The tick's `_maybe_signal_goal_done`, running on another thread of the
 `ReentrantCallbackGroup`, set `_goal_done_event`. The goal returned with no end code, i.e.
 COMPLETED, and zero OUTCOME lines.
 
 The same window had a second consequence: a Stop landing in it found "no attempt was running",
-and the swap then installed the reload schedule anyway.
+and the swap then installed the `reload` schedule anyway.
 
 ### 4. Re-aims do not survive on the hop (owner asked for this to be documented clearly)
 
@@ -116,7 +116,7 @@ not correcting it. **That was wrong.** An offline replay of `learner.command` ov
 own memory, row by row, reproduces 74 of the 82 hop commands to within 2 mm only at a **0.95 m
 target**. The command-line hop goals asked for 0.95 m, and the throws converged there (0.953).
 
-The other 8 rows are the two reload hops, which take the node's `apex_m` (0.9). There the learner
+The other 8 rows are the two `reload` hops, which take the node's `apex_m` (0.9). There the learner
 wanted 0.821–0.826 m, and the box floored it at 0.85, so those throws flew 0.935–0.941. The plant
 still throws about 10 % high, so a 0.9 m target needs a command near 0.82 m.
 
@@ -209,13 +209,13 @@ change.
 
 ## Discussion
 
-**Declaring the gate met without the diagnostic A/B.** The diagnostic runsheet existed because
+**Declaring the gate met without the diagnostic A/B.** The diagnostic runbook existed because
 the owner contested the hop mechanism (2026-09-29: "the pre-throw movement is in the −x
 direction, while the overshoot is reliably in +x"). This sitting ran the hold on throughout and
 never off, so strictly it shows only that the overshoot vanished when the hold arrived. The
 alternative the owner named (orientation, or post-release motion bleeding in) would have to
 have changed by ~80 mm between two sittings in which neither the tilt plan nor the post-release
-hold changed. That is not credible, so the A/B is dropped. The diagnostic sheet's self-toss spread
+hold changed. That is not credible, so the A/B is dropped. The diagnostic sheet's self-throw spread
 (Block B) and dwell (Block C) questions are still open and matter more for columns; they fold into
 R5's first sitting.
 
@@ -252,11 +252,11 @@ fact.
   before it is tightened, or a good chain gets stopped.
 
 Where the hand stops (the owner's "ideally at the top, ready for the next feed") is linked to the
-reload's hand-rise item. Every attempt's opening REST homes the hand to the bottom today.
+`reload`'s hand-rise item. Every attempt's opening REST homes the hand to the bottom today.
 
 ## Fix
 
-- `skill_node._on_announcement` claims the reload context (`ctx.announced`) instead of popping it.
+- `skill_node._on_announcement` claims the `reload` context (`ctx.announced`) instead of popping it.
   It builds the executor outside the locks, then installs it and clears the context in one
   `_reload_lock` section, under `_tick_lock`, only if the claim is still current. A superseded
   compile is logged and dropped.
@@ -305,7 +305,7 @@ reload's hand-rise item. Every attempt's opening REST homes the hand to the bott
     passed in 20.10 s (`temp/logs/gate_full_r4_close3_20260929.log`).
 - Replays, both 2026-09-29, from this sitting's `temp/learn/r4-20260929/memory.csv`:
   - learner (§ 5): inline scratch script, `learner.command` over the rows in order. 74/82 hop
-    commands within 2 mm at a 0.95 m target; the 8 others are the reload hops (0.9 m target,
+    commands within 2 mm at a 0.95 m target; the 8 others are the `reload` hops (0.9 m target,
     box-floored).
   - seat vs landing error (§ 6): parsed from the log's OUTCOME lines.
 
@@ -316,7 +316,7 @@ reload's hand-rise item. Every attempt's opening REST homes the hand to the bott
   WITHDRAWN: the command-line hop goals asked for 0.95 m. A replay of `learner.command` over the
   sitting's own memory reproduces 74/82 hop commands only at a 0.95 m target, and those throws
   landed 0.953 m (converged).
-  Superseded by: Diagnosis § 5. The box's 0.85 m floor binds at a 0.9 m target (the two reload
+  Superseded by: Diagnosis § 5. The box's 0.85 m floor binds at a 0.9 m target (the two `reload`
   hops), and the box's ±10 mm hop width binds laterally.
 - [2026-09-29 19:45] Told the owner the 25-catch run ended on a drop "60 mm short at P2".
   WITHDRAWN: that row is a P2→P1 throw (`x0 = +0.125`), and `y0 = −60.5 mm` from the P1 target
@@ -325,7 +325,7 @@ reload's hand-rise item. Every attempt's opening REST homes the hand to the bott
 
 ## Open Questions
 
-- The reload-result race fix is verified by tests only. The next reload from the GUI should
+- The `reload`-result race fix is verified by tests only. The next `reload` from the GUI should
   read the attempt's real result (throws, caught), not COMPLETED 0/0 at the button.
 
 - The stop-after-drop design (§ 7, Discussion): owner to confirm (a) and (b), and where the hand

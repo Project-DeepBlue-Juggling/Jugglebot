@@ -1,5 +1,5 @@
 ---
-title: Two-ball oval plan written - the wayfinder map's 58 decisions become plans/active/two-ball-oval.md, rung-1 runsheet promoted
+title: Two-ball oval plan written - the wayfinder map's 58 decisions become plans/active/two-ball-oval.md, rung-1 runbook promoted
 type: feature
 date: 2026-10-17
 status: resolved
@@ -32,8 +32,8 @@ aim principle, fed entry and exit); § 3/§ 4 are five phases each gated by a ha
 (P1 pattern dispatchable → rung 1 go/no-go on the loaded carry at 150 mm / dwell 0.50 /
 apex 0.95 at today's limits; P2 banking leak fix; P3 pose planner → decision 24 gate; P4 one
 working-point move 600/8000/200k + 30 A + dwell ladder; P5 two-ball → 30 consecutive).
-The rung-1 runsheet is promoted to `tests/hardware/session_oval_rung1.md` with the draft's
-site rows corrected (BB feeds T through the reload; the first carry follows the first steady
+The rung-1 runbook is promoted to `tests/hardware/session_oval_rung1.md` with the draft's
+site rows corrected (BB feeds T through the `reload`; the first carry follows the first steady
 catch at C).
 
 ## Why

@@ -46,10 +46,10 @@ tags:
   - skill-stack
   - planner
   - learner
-  - reload
+  - `reload`
 ---
 
-# R4 software: the hop, the reload, and two seam defects (2026-09-23)
+# R4 software: the hop, the `reload`, and two seam defects (2026-09-23)
 
 ## Summary
 
@@ -61,7 +61,7 @@ throw back toward P1 — which is `compile_self_toss` with the site cycling, so
 compiler. **The box** (D2): `admissible_box.yaml` boxes are keyed by pattern, by (release
 site, target site) — the executor's own lookup, which the sweep's columns key had never
 matched — and stamped with both sites' xy so a 250 mm box cannot start a 100 mm schedule;
-the gate hash now covers six planner files, not two. **The reload** (D4): the FSM's proven
+the gate hash now covers six planner files, not two. **The `reload`** (D4): the FSM's proven
 choreography, expressed as skills anchored on the Ball Butler's `ThrowAnnouncement` — one
 opening REST that homes the hand AND ends at the receive attitude on the axis through the
 announced landing, a held-axis CATCH whose cup opening may only move along that axis, a
@@ -71,7 +71,7 @@ truncated head's stale commanded velocity at the seam knot (59 k mm/s³ of leg j
 250 mm hop seam), and a REST dispatched exactly two tails after a touch-down still spliced
 into the tail's last knot instead of starting fresh from rest.
 
-The reload's physics is the entry's Discussion trigger: my first framing (match the ball's
+The `reload`'s physics is the entry's Discussion trigger: my first framing (match the ball's
 lateral arrival by translating the platform) was wrong, the owner's pushback was right, and
 three probes were needed to find that the planner could not express what the FSM did.
 
@@ -90,11 +90,11 @@ three probes were needed to find that the planner could not express what the FSM
 
 ## Discussion
 
-### Why this approach — the reload as a held-axis catch
+### Why this approach — the `reload` as a held-axis catch
 
-The owner's pushback on my first reload proposal was load-bearing: *"if the Platform is
+The owner's pushback on my first `reload` proposal was load-bearing: *"if the Platform is
 tilted to 'face' the oncoming ball, the hand only needs to move along its usual linear axis
-to match the ball's vertical and lateral velocities. The RELOAD sequence has been working
+to match the ball's vertical and lateral velocities. The `RELOAD` sequence has been working
 flawlessly."* The code confirmed it: `planner.build_catch` forced the platform's
 translational arrival velocity to zero ("velocity matching is the hand's job"),
 `catch_coordinator` pre-tilted during BB's countdown, and real BB arrivals are 18–40° off
@@ -122,7 +122,7 @@ naming the xy).
 * *Project the arrival onto the clamped axis* alone — the xy channel cannot ramp the
   stroke's lateral projection during the dive.
 * *Pre-tilt the seed* alone — banking returns it to level in-window.
-* *Defer the reload to R5* — offered; the owner chose the faithful port.
+* *Defer the `reload` to R5* — offered; the owner chose the faithful port.
 * *The seam tilt-RATE pin* (watch item 5) — measured unnecessary (seams are C1 at 0.05× the
   bound, structurally: a splice opens inside the unseated dive where C-CUP-1 holds the
   attitude on both sides); the real defect was one layer down, in the join.
@@ -146,8 +146,8 @@ naming the xy).
 * Every REST that follows a catch (closing, decay) is a fresh origin two knots past the
   catch segment's end (`REST_FRESH_MARGIN_S`): the attempt ends 50 ms later, which nothing
   measures, and the seam that refused `LIMIT_JERK` at 250 mm and `CUP_CONTACT_ACC` in the sim
-  reload trial no longer exists.
-* The held-axis QP costs ~5× a level LANDING per iteration (~0.09 s unloaded); the reload
+  `reload` trial no longer exists.
+* The held-axis QP costs ~5× a level LANDING per iteration (~0.09 s unloaded); the `reload`
   CATCH is a fresh origin, so no splice budget is at risk.
 * `InstallSegment.srv` gained `hold_tilt_rad` / `rest_tilt_rad`, first with a NaN sentinel
   for "no tilt" (a DECAY REST's real (0, 0) target is a distinct fact — it selects the
@@ -162,9 +162,9 @@ naming the xy).
 
 ### Open questions
 
-* The sim reload trial with the live default `catch_aim_source=tracker` produced a garbage
+* The sim `reload` trial with the live default `catch_aim_source=tracker` produced a garbage
   early fit on the gate's synthetic 4 s flight (x = 306 078 mm); the trial runs open-loop from
-  the announcement. Before the first reload sitting the executor must bound a tracker fit
+  the announcement. Before the first `reload` sitting the executor must bound a tracker fit
   for an externally announced ball against the announced landing in TIME as well as
   laterally (the lateral clamp already applies; the time does not).
 * The held-axis catch's axial velocity match is ~51 % satisfied at the reference weight —
@@ -179,12 +179,12 @@ summarised above; the probe recipes are repeated in the tests' docstrings.
 ## Verification
 
 * 2026-09-23, `pytest tests/motion/test_skills_admissible.py -q` → **54 passed in 774.24 s**.
-* 2026-09-23, `pytest tests/motion/test_skills_schedule.py tests/motion/test_skills_executor.py tests/motion/test_skills_sites.py -q -x -p no:cacheprovider` → **205 passed in 359.13 s** (before the reload units; schedule alone after them: **96 passed in 1.11 s**).
+* 2026-09-23, `pytest tests/motion/test_skills_schedule.py tests/motion/test_skills_executor.py tests/motion/test_skills_sites.py -q -x -p no:cacheprovider` → **205 passed in 359.13 s** (before the `reload` units; schedule alone after them: **96 passed in 1.11 s**).
 * 2026-09-23 (U2), `pytest tests/motion/test_cup_cycle.py tests/motion/test_cup_realize.py tests/motion/test_unified_cycle.py tests/motion/test_skills_segments.py tests/motion/test_cup_contact_contract.py tests/motion/test_validate_cycle.py -q` → **322 passed in 7.69 s**.
 * 2026-09-23 (U4), `pytest tests/motion/test_unified_cycle_splice.py tests/motion/test_unified_cycle.py -q -p no:randomly -k "not test_the_qp_and_the_gate_stay_within_an_order_of_magnitude"` → **111 passed, 1 deselected in 388.37 s**.
 * 2026-09-23 (U3), `pytest tests/ros/test_skill_node.py -q` → **108 passed**; `pytest tests/ros/test_install_segment.py -q` → **22 passed in 4.10 s**.
-* 2026-09-23, `python tools/admissible_sweep.py --site-pairs all --single-apex 0.5 0.6 0.7 0.8 0.9 --out config/generated/admissible_box.yaml` → **2159.9 s (36.00 min)**, 15 702 admitted / 769 refused rows, every columns and self-toss box bit-identical to HEAD's bounds, two new hop boxes; `gate_hash` 2fcdec288853 → 7966cb6fadc9.
-* Sim reload trial and the per-commit gate: see the Outcome below.
+* 2026-09-23, `python tools/admissible_sweep.py --site-pairs all --single-apex 0.5 0.6 0.7 0.8 0.9 --out config/generated/admissible_box.yaml` → **2159.9 s (36.00 min)**, 15 702 admitted / 769 refused rows, every columns and self-throw box bit-identical to HEAD's bounds, two new hop boxes; `gate_hash` 2fcdec288853 → 7966cb6fadc9.
+* Sim `reload` trial and the per-commit gate: see the Outcome below.
 
 ## Outcome
 
@@ -205,4 +205,4 @@ summarised above; the probe recipes are repeated in the tests' docstrings.
   which no test on those trees asserts.
 * Still to come in R4: `Juggle.action` + the GUI relay (U5), the FSM deletion under `fsm-final`
   (U6, census in hand), the hop sim gate at 20 cycles × 5 seeds, the determinism re-sweep,
-  `./run_tests.sh --full`, the runsheet and the plan's R4 row.
+  `./run_tests.sh --full`, the runbook and the plan's R4 row.

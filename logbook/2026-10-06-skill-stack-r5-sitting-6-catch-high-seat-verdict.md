@@ -25,13 +25,13 @@ The owner re-flew `tests/hardware/session_skills_r5_sitting6.md` on the evening 
 (launch 20:19:40, bag `~/Desktop/rosbags/2026-10-06_20-19-40`, log
 `~/.ros/log/2026-10-06-20-19-40-338838-jetson-420583/launch.log`) after the morning's fixes
 (`2026-10-06-skill-stack-r5-sitting-6-start-state-refusals.md`) and reported a poor outcome:
-the Step 2 regression (`columns_1ball`, reload ticked) "nominally passed more than one attempt,
+the Step 2 regression (`columns_1ball`, `reload` ticked) "nominally passed more than one attempt,
 but even in those attempts the hand seemed like it was moving far too slowly". Between the
 sittings every leg ODrive had been put through `FULL_CALIBRATION_SEQUENCE`; mid-sitting the hand
 ODrive was too, and its reboot latched the guard, FAULTed the machine, and left the platform
 holding at the P2 site until the next activate moved it to the home pose in one TRAP_TRAJ move.
 
-Four attempts, all `columns_1ball` with reload (ball A fed by Ball Butler, three real throws and
+Four attempts, all `columns_1ball` with `reload` (ball A fed by Ball Butler, three real throws and
 three phantom strokes per attempt):
 
 | attempt | start | end | reported | what actually happened |

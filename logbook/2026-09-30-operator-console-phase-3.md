@@ -89,7 +89,7 @@ exactly once.
 
 ## Discussion
 
-**A runsheet check nearly became a false STOP.** The R2/R3/R4 sheets say `grep 'blas threads'`
+**A runbook check nearly became a false STOP.** The R2/R3/R4 sheets say `grep 'blas threads'`
 the tee'd launch log, and "anything else: stop". The 1-thread confirmation is now DEBUG, so it
 is in launch.log but not on screen. That grep would find nothing on a healthy launch, and the
 operator would abort the sitting. The reusable sheets now grep `BLAS`, which matches `BLAS 1
@@ -99,9 +99,9 @@ FW list check, `hand park complete`, and the levelling probe's pointer to `Gravi
 published`. Superseded sheets (`session_unified7_cycle_ladder.md`,
 `session_anomaly_fixes.md`) keep their text as history under a dated banner. The banner says
 a missing old string is not an abort, because other sheets and probes still link to them. The lesson for any later demotion: grep
-`tests/hardware/` and `tools/` for the old text, because runsheets read the SCREEN log.
+`tests/hardware/` and `tools/` for the old text, because runbooks read the SCREEN log.
 
-**Every runsheet launch line is now `| tee -i`.** A plain `tee` dies on Ctrl-C. The owner's
+**Every runbook launch line is now `| tee -i`.** A plain `tee` dies on Ctrl-C. The owner's
 first phase-2 launch showed no shutdown lines and no `bag saved:` line, while launch.log had
 the whole clean shutdown (`2026-09-29-skill-node-log-severity-crash` § Notes).
 
@@ -146,7 +146,7 @@ the whole clean shutdown (`2026-09-29-skill-node-log-severity-crash` § Notes).
 ## Open Questions
 
 - Those launches covered the startup, activate, go_home, deactivate and Ctrl-C lines. No
-  throw, Ball Butler, reload or levelling line has been seen live yet. The first throwing
+  throw, Ball Butler, `reload` or levelling line has been seen live yet. The first throwing
   sitting is the check.
 - A `/recover` or `/clear_errors` failure can still print two ERRORs: the inner cause and the
   outcome line.

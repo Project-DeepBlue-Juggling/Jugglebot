@@ -67,11 +67,11 @@ Two consequences:
 - **A reserved callback group cannot fix it either.** Foxy's `MultiThreadedExecutor` lets any pool thread take any
   ready entity (`rclpy/executors.py` ~L503-508, L654), so no group can reserve a free thread.
 - **Converting every blocking `_wait_future` to done-callbacks** is the structurally cleanest fix, but it rewrites
-  the sequential install, stop and reload logic. It was rejected for this unit.
+  the sequential install, stop and `reload` logic. It was rejected for this unit.
 - **Chosen: a dedicated client node.** Every client skill_node waits on lives on a small helper node
   (`skill_node_clients`), spun by its own `SingleThreadedExecutor` in a daemon thread. Response delivery therefore
   no longer competes with blocking callbacks, whatever their number, and `_wait_future` polls the future across
-  threads unchanged. The five clients are install_segment, go_to_pose, hold, bb/reload and bb/throw_at_target.
+  threads unchanged. The five clients are install_segment, go_to_pose, hold, `bb/reload` and bb/throw_at_target.
 - **Control/timing implications.** No schedule, segment or 40 Hz cadence change. Replies arrive in milliseconds
   instead of at the 2 s timeout, so the REST install and the BB claim happen in order.
 
@@ -82,8 +82,8 @@ Two consequences:
 - **The helper client node.** Created in `__init__`; `main` spins it on its own thread and shuts it down in
   `finally`. `num_threads` stays 4.
 - **`_ended_code_for_swap`.** An END is either a captured `_goal_end_code` or a live executor with `attempt_ended`,
-  which flips only on a refusal. All three reload executor swaps now decline after an END and log one line: the
-  columns feed, the one-ball reload and the `columns_1ball` reload.
+  which flips only on a refusal. All three `reload` executor swaps now decline after an END and log one line: the
+  columns feed, the one-ball `reload` and the `columns_1ball` `reload`.
 - **`_end_attempt` is first-end-wins.** A later derived END is logged and ignored, not written over the first.
 - **Neutral BB no-response text.** "no response ... within N s (the request may still have been executed -- check
   ball_butler_node's log)".

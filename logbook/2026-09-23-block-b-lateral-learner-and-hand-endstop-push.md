@@ -33,7 +33,7 @@ tags:
 
 ## Summary
 
-Two sittings. The first was the runsheet § 9 z-sweep (its verdict, a 0.77° lever arm about
+Two sittings. The first was the runbook § 9 z-sweep (its verdict, a 0.77° lever arm about
 a pivot ≈ 170 mm above the base plane, is in `plans/archived/cup-contact-contract.md` § 1 and the
 2026-09-23 memory note). The second flew Block B: 80 learner rows at 0.6 and 0.9 m with the
 tracker-corrected frame live for the first time, 78 caught. The lateral learner pulled the
@@ -152,7 +152,7 @@ distinction is why moving the park to its own thread would not have helped and o
 ## Fix
 
 - `learner_lateral_authority_mm` default 40 → 20 (`skill_node.py`,
-  `test_the_learner_lateral_authority_parameter_defaults_to_twenty`, plan § 6, runsheet).
+  `test_the_learner_lateral_authority_parameter_defaults_to_twenty`, plan § 6, runbook).
 - `odrive_command` service created in `_recover_cbgroup` (`teensy_bridge_node.py`), with
   `test_odrive_command_shares_the_recover_callback_group`.
 - Not built (owner: minimal remedy): IDLE-when-not-driven, load-follow detection, park target

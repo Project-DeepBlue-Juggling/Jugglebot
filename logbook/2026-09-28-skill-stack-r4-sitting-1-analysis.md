@@ -29,7 +29,7 @@ tags:
   - sitting
   - learner
   - planner
-  - reload
+  - `reload`
 ---
 
 # R4 sitting 1: what the bag said, and what changed because of it (2026-09-28)
@@ -37,9 +37,9 @@ tags:
 ## Symptom (owner, 2026-09-27 22:37 session, one launch)
 
 The first `session_skills_r4.md` sitting after the kinematic calibration (`3059cc1`, FW 24).
-Every self-toss throw "had the platform slightly tilted, so the platform had to move rather far
+Every self-throw throw "had the platform slightly tilted, so the platform had to move rather far
 to catch every throw"; no `num_cycles: 5` chain completed (the 3rd or 4th throw dropped); every
-Ball Butler reload attempt ended in an error or abort; the three 250 mm hops "looked quite good"
+Ball Butler `reload` attempt ended in an error or abort; the three 250 mm hops "looked quite good"
 but the platform "was tilted too far and the ball consistently over-shot the target". The
 owner's question: retrain the learner now that the geometry has changed?
 
@@ -75,7 +75,7 @@ starts cold.
 
 The first throw of every chain landed within 35 mm; every throw that followed a catch missed
 toward +y by 30–110 mm. The bag shows the platform level (0.3°) and stationary at those releases,
-so it is not a tilt at release. The offline replan (self-toss, every landing +20 mm in y) shows
+so it is not a tilt at release. The offline replan (self-throw, every landing +20 mm in y) shows
 what the plan does between the catch and the carried release: the centroid returns from y = +23.8
 mm (−0.45 s) to 0 at the release knot, peaking at −104 mm/s at −0.15 s, with a 1.2° bank at
 −0.5 s — while the hand carries the ball down from 9.6 rev and into the stroke. The measured
@@ -101,14 +101,14 @@ realises the launch velocity through the hand along the cup axis: planned cup ve
 4166) mm/s with platform (0, 0, 0)), then re-accelerating toward the far site immediately after
 it: +33 mm/s at +0.05 s, +115 at +0.10, +196 at +0.15, +276 at +0.20. The ball's free flight,
 extrapolated back to the planned release time, sits 48–172 mm BELOW the release point on every
-throw of the sitting (self-toss too, 54–102 mm): the ball separates from the hand 20–40 ms after
-the plan's release knot. A late separation on a stationary self-toss cup costs nothing; on the hop
+throw of the sitting (self-throw too, 54–102 mm): the ball separates from the hand 20–40 ms after
+the plan's release knot. A late separation on a stationary self-throw cup costs nothing; on the hop
 it hands the ball the platform's first 20–40 ms of return (plus the hand's 5–13 % overspeed along
 the 4° axis) — the +95 mm/s of surplus x velocity that overshot the far site by 100 mm three
 times. The learner cannot absorb it: the hop box (carried item (1) of the R4 Outcome) admits
 x ∈ [−20, +2] mm toward the far site and the error is 100.
 
-### 4. The reload never threw, and the one thing that did move was the E-stop
+### 4. The `reload` never threw, and the one thing that did move was the E-stop
 
 Five attempts, five `THROW_REJECTED_BAD_STATE`. Ball Butler's `RELOAD` CAN command runs the
 firmware's `requestCheckBall()` → CHECKING_BALL (pitch dips to the disrupt position, the sensor
@@ -122,7 +122,7 @@ ThrowAnnouncement inside the service handler, before the Teensy answers; skill_n
 attempt waited out the 4.6 s `ABORTED_NO_ANNOUNCEMENT` timeout with the platform at rest.
 
 The guard latch at 22:46:04.9 is a fifth item. The aborted 5-cycle run (`ABORTED_NO_RELEASE`,
-its hold installed) left the hand at 8.87 rev. The next reload attempt was refused by BB
+its hold installed) left the hand at 8.87 rev. The next `reload` attempt was refused by BB
 (calibration not yet received) but its opening REST — 6.6 s, hand 8.87 → 0.31 rev — was already
 dispatched (the bridge executor goes live before BB is asked). `executor.install_segment` gives a
 fresh origin `t0 = t_now` with no check that the wire can still meet it; the solve took 381 ms,
@@ -132,11 +132,11 @@ lane compares a resuming block, evaluated at arrival, against the held hand
 (`/link_status sched_refused` 0 → 80 over 22:46:02.9–04.9), the ODrive received NO new command
 (`pos_cmd` flat at 8.858, `vel_ff` 0), while the deviation guard integrated the refused block's
 base (`s_base_pos`, the firmware's "keep holding, stay loud") against the unmoving hand and
-tripped `MAX_DEVIATION` at −2.508 rev. The self-toss opening RESTs (solve ~100 ms, a 0.3 rev
+tripped `MAX_DEVIATION` at −2.508 rev. The self-throw opening RESTs (solve ~100 ms, a 0.3 rev
 walk) passed the same check all evening. skill_node's per-tick `hand_lane_refused` end did not
 fire in the field (its unit test passes) — investigated in the Fix.
 
-A sixth, small one: one reload REST was refused `HAND_STROKE` at t = 0.006 s because the hand
+A sixth, small one: one `reload` REST was refused `HAND_STROKE` at t = 0.006 s because the hand
 seed velocity, −0.0435 rev/s of telemetry noise on a hand at rest, made the plan dive below the
 parked start.
 
@@ -146,7 +146,7 @@ parked start.
 "every throw had the platform slightly tilted" was a levelling or geometry error — the sitting
 was the first under the new geometry, `level` had been run three times, and a wrong tilt centre
 would look exactly like that. The bag refuted it in one line: the hop's platform tilt at release
-matched the plan to 0.1°, and the self-toss releases were level to 0.3°. The tilt was the planned
+matched the plan to 0.1°, and the self-throw releases were level to 0.3°. The tilt was the planned
 1.2° bank of a 20 mm lateral catch, seen on every catch because the learner aimed every throw 20
 mm off. The hypothesis that survived is one level up: **the platform must not move while it holds
 a ball between a catch and the release that follows it**, and the plan moved it — back to the
@@ -168,7 +168,7 @@ itself (hand overspeed under K = 0.7, cup compliance) is left as a characterisat
 the learner already absorbs its vertical effect and the hold removes its lateral one.
 
 **Two fail-closed mechanisms existed and neither acted.** The firmware's scheduled lane refused
-the block loudly — by letting the deviation guard E-stop the machine two seconds later — and the
+the block loudly — by letting the deviation Guard raise a Soft E-stop two seconds later — and the
 host's `hand_lane_refused` end, built for exactly this (2026-09-18), stayed silent. A refusal the
 host learns of only through an E-stop is not a refusal surface; the host-side fix is to never
 send a fresh-origin block the wire cannot meet (rebase a REST, refuse an event-bearing kind), and
@@ -176,7 +176,7 @@ to find why the per-tick end did not fire.
 
 **What was ruled out.** A geometry or levelling error (tilt at release matched the plan); the
 tracker (fits converged on every caught throw, landing errors ≤ 20 mm on throws from rest); a
-Ball Butler hardware fault (its state machine did exactly what its RELOAD handler says; it had a
+Ball Butler hardware fault (its state machine did exactly what its `RELOAD` handler says; it had a
 ball throughout); the hop box collapse as the cause of the overshoot (100 mm is five times the
 authority in any box).
 
@@ -184,14 +184,14 @@ authority in any box).
 
 Four units, each with fail-before / pass-after tests; owner decisions 2026-09-28: redesign the
 carried throw before the next sitting (not re-pin the authority), a post-release hold in the
-planner, fix every reload defect now, retrain cold.
+planner, fix every `reload` defect now, retrain cold.
 
 **A — the carried throw releases from where the ball was caught** (`executor._catch_terminal`):
 `ThrowAfterCatch.site_mm` is the CLAMPED landing's xy at the site's throw z; the target, flight and
 release instant are the schedule's; the rest site stays the nominal site's, so the return to the
 site happens in the SETTLE tail after the ball has left. The announcement / landing prior of the
 next catch is computed from the same release position (`_release_pos_mm`, one answer to "where
-does this release happen"). Offline (self-toss 0.9 m, landing +20 mm in y): cup wander over the
+does this release happen"). Offline (self-throw 0.9 m, landing +20 mm in y): cup wander over the
 dwell 20.00 → 1.27 mm, peak centroid lateral speed 104.6 → 7.09 mm/s (the residual is banking
 compensation of a 0.32° release tilt, not translation). A landing ON the site clamps to the site's
 xy bit for bit, so every existing pinned plan is unchanged. The admissible boxes were swept for
@@ -221,7 +221,7 @@ first dispatch's plan through the gate's bias model, on a ball released 13.9 mm 
 Harmless before unit A (identical takeoffs); now the last terminal wins. Seeds 0 and 3 pass with
 the fix, with or without the pre-compensation.
 
-**C-node — the reload chain** (`skill_node`, tests `test_c1_*`…`test_c5b_*`): (C1) after
+**C-node — the `reload` chain** (`skill_node`, tests `test_c1_*`…`test_c5b_*`): (C1) after
 `bb/reload` the node waits for Ball Butler's own heartbeat to read IDLE + ball in hand + connected
 before `bb/throw_at_target` (phase `await_bb_idle`, `RELOAD_BB_READY_TIMEOUT_S` 3.0 s, else
 `ABORTED_BB_NOT_READY(<state>, ball_in_hand=<bool>)`); the throw delay is derived from the bridge
@@ -233,7 +233,7 @@ exists ends the attempt through one point (`_end_attempt`) instead of rejecting 
 live executor. (C5b, root cause of the silent guard latch) the bridge is a ONE-skill schedule, so
 its executor was `done` — and nulled — the tick it dispatched, up to 6.4 s before the REST settled,
 and `hand_lane_refused` had nothing left to be read by; `_check_reload_lane_refused` now watches
-the reload context directly. A double `trajectory/hold` call found on the way was fixed. One
+the `reload` context directly. A double `trajectory/hold` call found on the way was fixed. One
 change the unit proposed was REVERTED: announcing only on the Teensy's OK result — that result is
 terminal (`OK` once the ball has left, `ABORTED_NOT_SETTLED` if it aborts at fire), so the
 announcement would have arrived after the flight began and starved `compile_reload` of its
@@ -260,8 +260,8 @@ of the hold REFUSES on the 250 mm hop at the operating point (`LIMIT_JERK` over 
 `LIMIT_ACC` 5538 > 5000 over 0–2, 12 199 over 0–3, 21 711 over 0–4) because the tail then has
 75 ms less to level and the pin is a kink, not a rescaled slew; the banking slew therefore leaves a
 residual through the 224–261 mm cup lever. Measured through the real install chain (worst centroid
-speed over the 3 post-release knots): hop 68.10 → 13.36 mm/s (2.02 → 0.34 mm), self-toss re-aimed
-releases 8.5–11.6 → 5.9–12.5 mm/s, level self-toss 0 → 0. The hop's CATCH at P2 with 75 ms less to
+speed over the 3 post-release knots): hop 68.10 → 13.36 mm/s (2.02 → 0.34 mm), self-throw re-aimed
+releases 8.5–11.6 → 5.9–12.5 mm/s, level self-throw 0 → 0. The hop's CATCH at P2 with 75 ms less to
 return: leg vel 191 → 213 mm/s (bound 300), acc 1421 → 1469 (5000), jerk 92 454 → 92 374
 (150 000), hand acc 3265 → 2978 (3500); nothing refused, no limit widened. The attitude half is
 carried to the plan as an owner item (a flat-then-slew tilt schedule or a longer tail). QP-level tests (`test_cup_cycle.py`, `test_unified_cycle.py`: the held-line relation at the residual floor, bit-identity with the field absent at the assembled-program and solved-plan levels, the four refusal paths, `protected_release_knots` and the splice guard) found one latent defect on the way — `protected_release_knots` passed its config positionally into `post_release_hold_knots`'s `hold_s` slot, a `TypeError` for any non-None config that no production caller yet passes — fixed with the keyword. **Sizing:** the first cut was 3 knots (75 ms, 2× the worst 40 ms lag); with it the R2 two-ball columns schedule at 100 mm refused `LIMIT_VEL` 303.6 > 300 mm/s and the columns sim smoke run dropped a ball (3/4 makes) — every knot held is a knot the next window loses for its return. Measured in-process with `segments._hold_knots` clamped to 0, 2 and 3: 2 knots plans everything and the smoke run is 4/4 again. `POST_RELEASE_HOLD_S = 0.050` (1.25× the worst lag); the hop's platform speed at +50 ms is what sitting 2 watches. B's residual numbers above were measured at 3 knots; the 2-knot values are in the Verification section.
@@ -290,7 +290,7 @@ neighbours; the 75 ms production margin was not touched.
   (2 knots), limits 300/5000/150000, hand 3500, HOLD verdict = worst centroid speed /
   displacement / tilt change over the held knots after each release, through the real install
   chain: **hop 250 mm 2.75 mm/s / 0.076 mm / 0.013°** (68.10 mm/s unheld, 13.36 at 3 knots);
-  self-toss ×3 on the site 0 / 0 / 0; self-toss ×3 with every landing +20 mm in y 6.53, 3.92,
+  self-throw ×3 on the site 0 / 0 / 0; self-throw ×3 with every landing +20 mm in y 6.53, 3.92,
   4.30 mm/s (8.5–11.6 unheld). Nothing refused.
 * 2026-09-28, in-process hold clamp (`segments._hold_knots` → min(N)) on
   `tests/motion/test_skills_executor.py::test_a_six_throw_columns_schedule_installs_end_to_end`,
@@ -332,7 +332,7 @@ neighbours; the 75 ms production margin was not touched.
   a `./run_tests.sh` running alongside the first) → **the two boxes are bit-identical** (`swept_at`
   excluded); installed as `config/generated/admissible_box.yaml`, **gate_hash `3fda47b2ad5b`**
   (was `7f76f68d4943`; `segments.py`, `unified_cycle.py` and `cup_cycle.py` changed). Bounds:
-  every self-toss and columns box unchanged; the hop's x bound away from the far site halved —
+  every self-throw and columns box unchanged; the hop's x bound away from the far site halved —
   P1→P2 x [−10, +2] mm (was [−20, +2]), P2→P1 x [−1, +10] (was [−0.5, +20]); y ±20 and apex
   0.85–0.95 unchanged. The hold costs the hop's return 50 ms and the learner 10 mm of the
   authority it never had toward the far site (carried item (1) of the R4 Outcome).

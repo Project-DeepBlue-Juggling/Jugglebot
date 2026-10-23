@@ -44,7 +44,7 @@ criterion and the feasibility check.
   skill-stack vocabulary (Skill, Schedule, Segment, Beat, REST) was read from
   that tree and defined here; skill-stack picks the file up at its next merge.
 - **Inclusion bar**: project coinages, plus juggling/robotics words only where
-  the project narrows them. Superseded vocabulary (MPC chain, FSM toss/reload,
+  the project narrows them. Superseded vocabulary (MPC chain, FSM throw/`reload`,
   ILC) appears only on `_Avoid_` lines.
 - **New words the owner chose**: **Feed** (a Ball Butler Throw to Jugglebot;
   retires "reload"), **Sitting limits** (retires "session limits"),
@@ -56,7 +56,7 @@ criterion and the feasibility check.
 
 ## Discussion — two recommendations that did not survive the evidence
 
-**Runsheet → Runbook.** I recommended "Runsheet" as canonical (it is the word
+**Runbook → Runbook.** I recommended "Runsheet" as canonical (it is the word
 in CLAUDE.md's dress-rehearsal rule) and the owner agreed. Counting afterwards:
 "runbook" 792 hits (321 outside the logbook), "runsheet" 5. The recommendation
 was reversed and the owner agreed again; the one live "runsheet" in CLAUDE.md

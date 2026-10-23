@@ -36,11 +36,11 @@ tags:
 
 ## What happened
 
-Sources: LOG = `~/.ros/log/2026-10-13-23-12-50-197471-jetson-3905591/launch.log` (3113 lines; `L` = line); BAG = `~/Desktop/rosbags/2026-10-13_23-12-50_2-Ball-32-Catches`. The flown part is 23:14:26 to 23:22:02 (SIGINT L3100). Firmware per the log: can-bridge v30 (L117), Platform v7 (L116), ODrive 0.6.11-0 on 0-6 and BB 7, 8. `level_trim_deg = [+0.0945, +0.3678]` came from the launch default (L35). Box gate `5072c89d4ddc` per the runsheet (not in the launch log). Limits quoted by the refusals: leg acc 5000 mm/s^2, leg jerk 200000 mm/s^3, hand acc 3900 rev/s^2.
+Sources: LOG = `~/.ros/log/2026-10-13-23-12-50-197471-jetson-3905591/launch.log` (3113 lines; `L` = line); BAG = `~/Desktop/rosbags/2026-10-13_23-12-50_2-Ball-32-Catches`. The flown part is 23:14:26 to 23:22:02 (SIGINT L3100). Firmware per the log: can-bridge v30 (L117), Platform v7 (L116), ODrive 0.6.11-0 on 0-6 and BB 7, 8. `level_trim_deg = [+0.0945, +0.3678]` came from the launch default (L35). Box gate `5072c89d4ddc` per the runbook (not in the launch log). Limits quoted by the refusals: leg acc 5000 mm/s^2, leg jerk 200000 mm/s^3, hand acc 3900 rev/s^2.
 
 **Counting rule (once).** Skill 1 is the fed catch of BB's Ball 2; skill 2 is the catch of Ball 1's hop throw (= "throw 1"); skill k+1 = "throw k". Streak = skill 1 plus the throws caught before the first MISSED / MISSED_CATCH / END. The fed catch has no verdict line of its own (only `CATCH-EVIDENCE-ABSTAIN ... cup read SEATED`, e.g. L1057), so it counts as caught when the cup read SEATED and the pattern went on to throw Ball 2, and as missed when `END MISSED_CATCH (skill 1)` fires.
 
-**Warm-ups** (before the first fed accept, L1034): reload (BB throw, JB catch only, 23:14:26); self_toss 4/4; hop 4/4; columns_1ball 2/2; columns_1ball 10 ended `SPLICE_TOO_LATE` twice (2/3, 1/2); columns_1ball reload 5/5.
+**Warm-ups** (before the first fed accept, L1034): `reload` (BB throw, JB catch only, 23:14:26); self_toss 4/4; hop 4/4; columns_1ball 2/2; columns_1ball 10 ended `SPLICE_TOO_LATE` twice (2/3, 1/2); columns_1ball `reload` 5/5.
 
 **Fed attempts** (feed seat = first cup-SEATED relative to the scheduled landing):
 
@@ -72,7 +72,7 @@ Throws-only (feed excluded): 4, 4, 4, 0, 9, 3, 3, 10, 0, 9, 31, 8. Three attempt
 | JB-side feed catch | `CATCH-AIM skill 1 source=schedule` 12/12; `TRACKER-IDENTITY-REFUSED skill 1` 8/12 at about -0.34 s and -0.170 s in the gate attempt (band +-0.150 s) |
 | Feed seat | +0.036..+0.119 s after schedule in 11 of 12; attempt 9 cup EMPTY |
 | Probe `feed_lateral_miss.py` (`temp/probes/s8_feed_lateral.csv`, `.log`) | n=11, dx med -6.8, dy med -8.6, r med 12.9 mm, 10/11 seated before 0.20 s, PASS; recommended `columns_feed_bb_bias_mm = [-6.8, -8.6]` (frame: +x toward ball A's site) |
-| Runsheet row 23 premise | "+27 mm toward P2" NOT reproduced |
+| Runbook row 23 premise | "+27 mm toward P2" NOT reproduced |
 | Node OUTCOME lines, JB-thrown balls caught at the columns (12 fed attempts) | Ball 2 (P1) n=44 mean (+3.9,+6.7) sd (25.4,23.5); Ball 1 n=43 mean (-1.2,-4.8) sd (17.6,19.3); all n=81 mean (-0.5,+0.9) sd (20.1,22.0), rms radius 29.6 mm |
 
 ## Discussion
@@ -110,9 +110,9 @@ Target p99 < 30 ms: **met** overall (29.94) but not inside the gate attempt (32.
 
 *i. Hand jam at the end (attempt 12).* MISSED_CATCH skill 10 (cup EMPTY 55/55, L3016), 0.3 s later `HAND JAM detected: hand stalled at +2.546 rev under a descending command (cmd +0.546 rev), iq -48.4 A` (L3017); guard LATCHED, ACTIVE -> FAULT (L3029), ABORTED_MODE_CHANGED. The node's final `10/10 caught` text then misreports a dead pattern (the streak was 9). Cause of the stuck hand is not in the log (a ball under the cup is one reading).
 
-**4. BB dispatch ordering, for the record.** 14 dispatches: 12 reply-first (`awaiting ThrowAnnouncement`), 2 swap-first (`answered after the announcement swapped`, L341 and L810, both reload-family goals whose announcement install has no columns compile). For columns the announcement must compile and SOLVE the fed schedule first (52-357 ms), so the reply wins the race (`_still_current` true). Both branches are guarded (`_swapped_in_and_live`); neither cancelled a throw.
+**4. BB dispatch ordering, for the record.** 14 dispatches: 12 reply-first (`awaiting ThrowAnnouncement`), 2 swap-first (`answered after the announcement swapped`, L341 and L810, both `reload`-family goals whose announcement install has no columns compile). For columns the announcement must compile and SOLVE the fed schedule first (52-357 ms), so the reply wins the race (`_still_current` true). Both branches are guarded (`_swapped_in_and_live`); neither cancelled a throw.
 
-**5. Withdrawn claims.** None. One brief-level correction: `missed_catch_fixture.py` has no CLI (hard-coded to the 2026-10-04 bags), so runsheet row 29's flags do not exist; it was not run, and running it with `--help` rewrote `tests/motion/fixtures/missed_catch_20261004.csv` with identical content (`git status` clean).
+**5. Withdrawn claims.** None. One brief-level correction: `missed_catch_fixture.py` has no CLI (hard-coded to the 2026-10-04 bags), so runbook row 29's flags do not exist; it was not run, and running it with `--help` rewrote `tests/motion/fixtures/missed_catch_20261004.csv` with identical content (`git status` clean).
 
 ## Fix
 
@@ -135,6 +135,6 @@ Not extracted: per-feed landing offsets (the probe prints medians), worker/node 
 
 ## Open
 
-- Rehearsals not run (runsheet rows 17a-20; owner, time): moved to `plans/active/skill-stack-dress-rehearsals-and-residue.md` and `tests/hardware/session_skill_stack_rehearsals.md`.
+- Rehearsals not run (runbook rows 17a-20; owner, time): moved to `plans/active/skill-stack-dress-rehearsals-and-residue.md` and `tests/hardware/session_skill_stack_rehearsals.md`.
 - Residue rows (SPLICE_TOO_LATE self-ends, hop-entry accept not checking the cup, the 47 ms emitter gap, the throw-24 release step, the attempt-12 hand jam): rows in `plans/active/skill-stack-dress-rehearsals-and-residue.md` § 2.
 - R6 close-out proceeds tonight.

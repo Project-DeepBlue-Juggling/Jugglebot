@@ -56,9 +56,9 @@ Wave 2 ended with a list of owner decisions. The owner answered on the evening o
 |---|---|---|
 | Box: "Instead of clipping the learner's aim, run the aim through the learner's own prediction of where the ball will land and clip that. The box then bounds where the ball is expected to go, not the number the learner asks for." | H | `learner.local_model`, `Memory.local_model`, `SkillExecutor._forward_clip_xy`; box values and gate hash `5072c89d4ddc` unchanged |
 | Stall: "move the planner into its own process so the stream is never starved." | I, I1, I2 | `motion/skills/solver_worker.py` (new), `trajectory_node` seam, new refusal `SOLVER_UNAVAILABLE` |
-| The hand stays where it stopped after an automatic lane recovery (no park) | none | Already the behaviour; runsheet row 18 states it as the owner ruling |
-| The hop entry counts as "BB initiates" for the 30-consecutive gate | orchestrator | Plan assumption confirmed; runsheet row 25 |
-| Lane-recovery dress rehearsal approved; write a command the operator runs | J | `tools/probes/lane_latch_rehearsal.py` (+ 10 tests, README row); runsheet rows 17a-17d |
+| The hand stays where it stopped after an automatic lane recovery (no park) | none | Already the behaviour; runbook row 18 states it as the owner ruling |
+| The hop entry counts as "BB initiates" for the 30-consecutive gate | orchestrator | Plan assumption confirmed; runbook row 25 |
+| Lane-recovery dress rehearsal approved; write a command the operator runs | J | `tools/probes/lane_latch_rehearsal.py` (+ 10 tests, README row); runbook rows 17a-17d |
 
 Ball Butler FW 9 was FLASHED 2026-10-13 20:09 (dry-run first; receipt "Ball Butler FW version: 8 -> 9", log `temp/logs/bb_fw9_flash_20261013.log`). The wave-2 cancel rung (row 19) is now runnable.
 
@@ -119,8 +119,8 @@ The wave-2 rehearsal was two kill commands: `kill -STOP <pid>; sleep 0.10; kill 
 - **I1** new `motion/skills/solver_worker.py` (`SegmentSolveRequest`/`Reply`, `WorkerSegmentSolver`, `InProcessSegmentSolver`, `worker_main`, `SOLVER_UNAVAILABLE`, `SKIPPED_LATE`), new `tests/motion/test_solver_worker.py` (14) and `test_solver_worker_lateness.py` (1, `serial`).
 - **I2** `trajectory_node.py`: `_default_segment_solver_factory` (L262), constructor seam before `_start_emitter`, `_solver_log` (L1151), `_warm_segment_solver` (L1263; also solves one throwaway REST through the seam so the worker is warm), `_svc_install_segment` request/deadline/refusal mapping, `_reply_outran_wire` (L4679), `solve %.1f ms` on the existing DEBUG line (L4709), `poll_health` in `_publish_status`, `close` in `on_shutdown`; `tests/ros/conftest.py` autouse `in_process_segment_solver`; 13 tests in `tests/ros/test_install_segment.py` (12 with a fake solver + 1 through the real worker process).
 - **J** new `tools/probes/lane_latch_rehearsal.py`, `tests/motion/test_lane_latch_rehearsal.py` (10), one row in `tools/probes/README.md`.
-- **Orchestrator** `CLAUDE.md` serial-test sentence and `run_tests.sh` rationale (third default-gate serial test), plan § 0/§ 2.5 rule text and the hop ruling, runsheet rows 4/17a-18/25, memory.
-- **K (docs)** this entry, `logbook/INDEX.md` row, one clause on each of C-REACH-1, I-CATCH-1 and I-CATCH-3 in `motion/skills/INVARIANTS.md`, runsheet rows 10a/16a/22/closeout, the wave-2 follow-up paragraph, one plan status line.
+- **Orchestrator** `CLAUDE.md` serial-test sentence and `run_tests.sh` rationale (third default-gate serial test), plan § 0/§ 2.5 rule text and the hop ruling, runbook rows 4/17a-18/25, memory.
+- **K (docs)** this entry, `logbook/INDEX.md` row, one clause on each of C-REACH-1, I-CATCH-1 and I-CATCH-3 in `motion/skills/INVARIANTS.md`, runbook rows 10a/16a/22/closeout, the wave-2 follow-up paragraph, one plan status line.
 
 ## Verification
 

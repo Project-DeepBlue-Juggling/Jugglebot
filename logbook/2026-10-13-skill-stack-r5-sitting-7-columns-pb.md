@@ -33,7 +33,7 @@ tags:
 
 ## What happened
 
-Runsheet `tests/hardware/session_skills_r5_sitting7.md`, two launches:
+Runbook `tests/hardware/session_skills_r5_sitting7.md`, two launches:
 - **L1** 23:24 (`~/Desktop/rosbags/2026-10-12_23-24-02`): fed-feed misses, fixed mid-sitting by `2933ffac` (separate entry).
 - **L2** 00:18 (`~/Desktop/rosbags/2026-10-13_00-18-46`, launch.log `~/.ros/log/2026-10-13-00-18-46-323618-jetson-3638285`): two-ball `columns`, hop entry, apex 0.95, sep 125, BB-fed.
 
@@ -63,7 +63,7 @@ Analysis scripts and per-throw CSVs (`l2_throws_joined.csv`, `l2_flights.csv`, `
 - That rules out ball-in-cup offset, re-aim drag and transit velocity as the cause.
 
 **Root cause, part 1: the level trim was not applied in L2.**
-- `trajectory_node` logged `level_trim_deg = [+0.0000, +0.0000]` and it was never set afterwards. L1 had applied runsheet row 11's `[0.0945, 0.3678]`, but the relaunch dropped it.
+- `trajectory_node` logged `level_trim_deg = [+0.0000, +0.0000]` and it was never set afterwards. L1 had applied runbook row 11's `[0.0945, 0.3678]`, but the relaunch dropped it.
 - The y component, 0.368°, predicts about 22 mm of x drift over a 0.95 m flight. Measured with it applied, P1's columns bias was **+14 mm** (sitting 7b, n=22); without it, **+30 mm** (L2, n=28). P2 went from +7 to +11 mm.
 - The sign is right, and it removes about half of P1's bias. **Fix: the trim is now a launch default.**
 

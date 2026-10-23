@@ -53,9 +53,9 @@ tags:
 Owner's report, one launch (log `temp/logs/skills_r4_20260928_2355.log`, bag
 `~/Desktop/rosbags/2026-09-28_23-55-19`):
 
-1. Self-toss unchanged from sitting 2: every catch is still re-aimed by the full 20 mm lateral
+1. Self-throw unchanged from sitting 2: every catch is still re-aimed by the full 20 mm lateral
    authority.
-2. Every reload left the hand parked at the bottom of its stroke; the inbound ball was caught hard;
+2. Every `reload` left the hand parked at the bottom of its stroke; the inbound ball was caught hard;
    the refusal behind it (`CATCH_AXIS`) was cryptic to the operator.
 3. Hops landed +88 / +110 mm long on the far site.
 4. A 0.95 m hop was refused, and the box-refusal message read like an apex problem when the real
@@ -63,7 +63,7 @@ Owner's report, one launch (log `temp/logs/skills_r4_20260928_2355.log`, bag
 
 ## Diagnosis
 
-### 1. Self-toss: the owner's premise does not survive — the residual is release-side scatter
+### 1. Self-throw: the owner's premise does not survive — the residual is release-side scatter
 
 43 fitted self-tosses across sittings 1–3 (new probe `tools/probes/selftoss_landing_decomposition.py`,
 evidence `.scratch/r4-throw-precision/evidence/result_t01.md`): rest throws (first throw of an
@@ -111,7 +111,7 @@ sitting 1 either — there is nothing for a post-release hold to hold against, b
 velocity is entirely the tail of the pre-release forward swing, arriving late at the knot because the
 legs are still catching up to a command that has already gone to zero.
 
-### 3. Reload: the fresh-predicate dead zone
+### 3. "Reload": the fresh-predicate dead zone
 
 `schedule.compile_reload` places the CATCH's dispatch instant at exactly `pretilt_end_rel − LEAD_S`
 (0.225 s / 9 knots) — "by construction", per its own docstring — so that the schedule's arithmetic
@@ -176,26 +176,26 @@ governs `HOLD_WINDOW`'s sibling `CATCH_AXIS` and the rest of the gated-refusal f
 make `_cycle_start_state`'s `SETTLE` branch refuse on a moving machine, the way the non-`post_release`
 branch already does. That was rejected: `post_release=True` on `SETTLE` is deliberate, load-bearing
 behaviour from 2026-09-16 (the hand-seed reconciliation that runs on every fresh install, not just a
-reload's), and every other fresh install in the system relies on it never refusing there. Changing it
+`reload`'s), and every other fresh install in the system relies on it never refusing there. Changing it
 would touch a shared code path used by every skill's fresh install, with no way to scope the change to
-just this one dead zone. The actual defect is local to the reload: `compile_reload` is the one place
+just this one dead zone. The actual defect is local to the `reload`: `compile_reload` is the one place
 that places a CATCH's dispatch instant exactly at the earliest instant the fresh check can fire,
 before the preceding REST has actually arrived. That is a scheduling-geometry bug with a
 scheduling-geometry fix — subtract `LEAD_S` from the window so the dispatch instant moves to
 `pretilt_end_rel` (the REST's real completion), not before it.
 
-**The fresh-predicate's dead zone `[end_s − lead, end_s)` is a carried class, not closed.** The reload
-fix closes the one place this cost a refused reload, but the dead zone itself is generic:
+**The fresh-predicate's dead zone `[end_s − lead, end_s)` is a carried class, not closed.** The `reload`
+fix closes the one place this cost a refused `reload`, but the dead zone itself is generic:
 `_svc_install_segment` can seed any fresh install from a live, possibly mid-slew, commanded state
 whenever that install's earliest dispatch attempt falls inside it. THROW 0, dispatched right after the
 opening REST, lands in the same zone by construction — but it is benign there, because the opening
-REST's own target is on-axis in every direction that matters to a THROW's seed (unlike the reload's
+REST's own target is on-axis in every direction that matters to a THROW's seed (unlike the `reload`'s
 CATCH, which needs the seed on a specific held-axis line). Whether this deserves a class-level fix at
 the node (for example, refusing any fresh install inside the dead zone unless the caller declares its
 seed axis-insensitive) is left in `.scratch/r4-throw-precision/map.md` § "Not yet specified" rather
 than decided here.
 
-**What is still unexplained.** The self-toss release-side residual (17/22 mm) has no instrument that
+**What is still unexplained.** The self-throw release-side residual (17/22 mm) has no instrument that
 separates ball-in-cup motion from carriage compliance from a non-coaxial hand axis — that needs the
 diagnostic sitting's instrumented block (ticket 05), not more bag analysis. And the learner's lateral
 command wanders ±10 mm on noise with no lateral bias to correct (rest-throw mean (+6, +2), SEM (3.6,
@@ -235,7 +235,7 @@ and no code change follows from it in this entry.
   needs re-sweeping (batched with the pre-release-hold edits below — same gated files, one sweep).
   Remaining jargon-heavy messages (other `CATCH_AXIS` variants, `CATCH_TOO_EARLY`, `CUP_CONTACT_ACC`,
   `SINGULAR`, the feasibility Jacobian condition) are deferred to the next gated batch.
-- New reusable probe `tools/probes/selftoss_landing_decomposition.py`: decomposes a bag's self-toss
+- New reusable probe `tools/probes/selftoss_landing_decomposition.py`: decomposes a bag's self-throw
   landings into `p_rel − p_ann` / `needed` / `dv` / `cup` terms against a gravity-fixed parabola fit to
   raw mocap; writes `temp/probes/selftoss_decomp_*.txt` plus a per-bag `.npz` raw cache.
 
@@ -286,11 +286,11 @@ and no code change follows from it in this entry.
 - **The diagnostic sitting** is designed (ticket 05, answered with the owner 2026-09-29) as
   `tests/hardware/session_skills_r4_diag.md`: A. hop hold A/B (the owner contests the pre-release
   mechanism — the visible windup is −x; the executed commands show a fast +140 mm/s +x swing at
-  −75 ms after it; the A/B decides); B. open-loop self-toss singles (true spread, re-aim off); C.
-  carried-chain dwell 0.3 vs 0.6 s (owner: a wonky catch doesn't settle in 0.3 s); D. reload. A cup
+  −75 ms after it; the A/B decides); B. open-loop self-throw singles (true spread, re-aim off); C.
+  carried-chain dwell 0.3 vs 0.6 s (owner: a wonky catch doesn't settle in 0.3 s); D. `reload`. A cup
   marker body is off the table for now (owner: hard to fit); offline release-side discriminators
   (scatter vs launch speed; is the ball visible in the cup pre-release) are running instead.
-- **No fallback on a refused CATCH.** A refused reload CATCH leaves the hand parked at the PRE-TILT
+- **No fallback on a refused CATCH.** A refused `reload` CATCH leaves the hand parked at the PRE-TILT
   REST's own terminal (bottom of stroke, receive tilt) for an inbound ball the schedule already knows
   is coming (`Skill.landing_prior`). Should it instead fall back to a receive-height REST that at
   least lets the stroke absorb the impact? Raised in `result_t03.md` § 5, not decided.
@@ -308,7 +308,7 @@ and no code change follows from it in this entry.
   drifts only 2.2–6.1 mm relative to the Platform body (5 throws, sitting 3), so the ~17/22 mm kick is
   concentrated at separation. On 2026-09-22 (the cleanest data, n=4–5 per apex) the lateral velocity σ is flat at
   17.4 → 18.0 mm/s from 0.6 to 0.9 m while the angle σ shrinks, which leans toward a fixed-size kick
-  (lip or ball–cup contact) over axis wobble. The diag runsheet's block B2 decides it.
+  (lip or ball–cup contact) over axis wobble. The diag runbook's block B2 decides it.
 - **The early tracker fit reads about 9 mm short in x**, which drives some of the 20 mm re-aims that
   chase real error but with a biased trigger. De-biasing the early fit, or gating re-aims on a later
   or converged fit, would halve the noise in each re-aim decision — not attempted here.

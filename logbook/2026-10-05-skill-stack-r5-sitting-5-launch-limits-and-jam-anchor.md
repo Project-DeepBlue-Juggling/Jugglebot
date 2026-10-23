@@ -34,7 +34,7 @@ Two findings from the first three launches of `tests/hardware/session_skills_r5_
 1. **Every `jugglebot/juggle` goal was refused** with `admissible box for site pair ('P1', 'P1')
    was swept with leg_vel_mmps=350.0 but the live session limit is 300.0`. The box has been
    swept at 350/5000/200000 since sitting 3 (the roomier R5 geometry); the launch default was
-   still the R2/R3 point 300/5000/150000; the only thing coupling them was runsheet row 10
+   still the R2/R3 point 300/5000/150000; the only thing coupling them was runbook row 10
    (`trajectory/set_limits`), and no launch this morning logged a `leg limits set:` line, so
    the ramp never ran. The fix makes the launch default the R5 working point and pins the
    committed box to the launch default in the suite, so the two can no longer drift apart
@@ -81,7 +81,7 @@ clearance, the launch default moving to 350 — that's load-bearing signal; say 
   not run; `_svc_set_limits` logs one on every call); 8 refusals, all the same text.
 - Sitting 4's sheet row 8 and sitting 5's row 10 both ramp 350/5000/200000 by hand at bring-up;
   both sheets' stop rules note that reverting to 300 ends every pattern. The coupling was a
-  runsheet row.
+  runbook row.
 
 ### The jam recovery (bag `2026-10-05_10-30-08`, pinch 1 at 1791156698.5; pinch 2 at
 1791156795.4 is the same shape)
@@ -181,7 +181,7 @@ a test that loads the committed box and refuses the commit when its limits, gate
 differ from what a default launch starts with. **The trade-off accepted:** the YAML change
 touches `hardware_config.py`, one of the seven gated files, so the box had to be re-swept
 (same limits, new gate hash) — and `cup_realize.TILT_JERK_LIMIT_DEFAULT_RAD_S3` derives from
-the YAML jerk default; the live planner takes its tilt caps from the session limits
+the YAML jerk default; the live planner takes its tilt caps from the Sitting limits
 (`unified_cycle`, "the session limit enters exactly here, and exactly once"), so the sweep's
 result should not move. The re-sweep is the empirical check of that claim: see Verification.
 

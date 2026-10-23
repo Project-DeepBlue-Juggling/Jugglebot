@@ -32,10 +32,10 @@ files_changed:
 
 Owner's report, one launch:
 
-1. Self-toss from a cold memory "fairly well": stable to `num_cycles: 5`; the one
+1. Self-throw from a cold memory "fairly well": stable to `num_cycles: 5`; the one
    `num_cycles: 10` dropped after ~5–7 throws (log: `END ABORTED_NO_RELEASE`).
-2. Every Ball Butler reload: `ABORTED_BB_THROW_TIMEOUT: reload refused: bb/throw_at_target did not
-   answer in 2.0 s`. Owner: why does BB run its ball check before feeding at all? It should only
+2. Every Ball Butler `reload`: `ABORTED_BB_THROW_TIMEOUT: reload refused: bb/throw_at_target did not answer in 2.0 s`.
+   Owner: why does BB run its ball check before feeding at all? It should only
    run on NO_BALL; BB can feed as soon as its axes are in position.
 3. The hop gate (`pattern: hop, apex 0.9, separation 250`): the platform moved to the throw pose,
    then `install_segment refused: REJECTED_CYCLE_INFEASIBLE(HAND_LIMIT_ACC: peak hand acceleration
@@ -73,10 +73,10 @@ line away from it by the correction angle. Along the hop that is a small change 
 `v_x`. Across it, the row demands `v_y = 0.0058·v_z ≈ 24 mm/s` one knot after a release with
 `v_y = 0`; lateral velocity cannot jump under the jerk rows, so the QP satisfies the row by
 collapsing `v_z`, which is the hand. The sim gates never set a level correction, which is why the
-hop gate passed 25/25 twice. The on-axis self-toss is unaffected under the same offset at both commits
+hop gate passed 25/25 twice. The on-axis self-throw is unaffected under the same offset at both commits
 (offline, three throws: 3009.9 rev/s² at `b16561e`, 3008.8 with the fix), which matches the sitting.
 
-### 2. The reload: a deaf Ball Butler node, and a race behind it
+### 2. The `reload`: a deaf Ball Butler node, and a race behind it
 
 `ball_butler_node` started ("BallButler node ready") and then processed **no callback for the whole
 session**: no "BB calibration received" after mocap published the calibration (sitting 1 logged
@@ -92,8 +92,8 @@ the live bridge's action server. Neither can be separated without a stack dump o
 Behind it, a second defect the dead node hid: the bag's `/bb/heartbeat` shows `bb/reload` → the
 next heartbeat still IDLE (the state from **before** the check) → CHECKING_BALL 73–121 ms later →
 IDLE 1.0 s after that, on all three reloads. The gate fired `bb/throw_at_target` ~20 ms after the
-reload, on that stale IDLE. A responsive node would have drawn `THROW_REJECTED_BAD_STATE` again.
-And `bb/reload` was never needed: every reload in both R4 sittings found the ball already in hand
+`reload`, on that stale IDLE. A responsive node would have drawn `THROW_REJECTED_BAD_STATE` again.
+And `bb/reload` was never needed: every `reload` in both R4 sittings found the ball already in hand
 (no RELOADING state in any 2026-09 bag), so it only ever bought the ~1 s ball check.
 
 ### 3. GUI freeze
@@ -118,11 +118,11 @@ cup continuous through the release knot and leaves the platform translating at
 `v_z·(kappa_launch − axis_plan_xy)`, the same small velocity it already has at the release knot
 (24 mm/s at 5.8 mrad and 4.2 m/s), decaying with `v_z`. With no correction the two lines agree to
 the sin/tan difference of the 4° release tilt (0.48 mm/s off the old line in the hop test), so the
-self-toss plans are unchanged to the printed digit and the hop's hold verdict reads 2.74 mm/s.
+self-throw plans are unchanged to the printed digit and the hop's hold verdict reads 2.74 mm/s.
 Ruled out: widening the hand limit (the plan was not asking for more hand; the constraint was
 inconsistent), and dropping the hold under a correction (every real sitting has one).
 
-**Why the reload skips `bb/reload` on a ball in hand, and what still guards the no-ball case.** The
+**Why the `reload` skips `bb/reload` on a ball in hand, and what still guards the no-ball case.** The
 owner's physical point stands: the check is for an empty hand. The decision reads only a heartbeat
 fresher than 0.5 s (10 Hz measured); anything older is not evidence of a ball and falls through to
 `bb/reload`. After a `bb/reload`, only an IDLE that follows a non-IDLE state counts, which closes the
@@ -131,8 +131,8 @@ race directly rather than by a delay. It assumes BB's non-IDLE interval outlasts
 `ABORTED_BB_NOT_READY`, not a wrong throw. The 10 s wait after `bb/reload` is a ceiling, not a
 measurement: no bag holds a physical fetch.
 
-**The deaf node is carried, not fixed.** A code fix would be a guess. The runsheet now makes the
-next sitting prove the node is listening before the reload block, and says to capture a `py-spy`
+**The deaf node is carried, not fixed.** A code fix would be a guess. The runbook now makes the
+next sitting prove the node is listening before the `reload` block, and says to capture a `py-spy`
 dump if it is not.
 
 ## Fix
@@ -156,7 +156,7 @@ dump if it is not.
   `ORIGIN_TOO_LATE` they compared a real solve time against the 75 ms wire lead and all five
   refused under the evening's sweep load (0.15–0.55 s solves), which is load, not the frame
   logic they test.
-- `INVARIANTS.md` `ABORTED_BB_NOT_READY` row, runsheet § "since sitting 2", step 27 listening
+- `INVARIANTS.md` `ABORTED_BB_NOT_READY` row, runbook § "since sitting 2", step 27 listening
   check, § 7 `ABORTED_BB_THROW_TIMEOUT` row, § 11 sitting 2.
 - `config/generated/admissible_box.yaml` re-swept (`unified_cycle.py` is in the gate hash).
 
@@ -164,7 +164,7 @@ dump if it is not.
 
 * 2026-09-28, `pytest tests/motion/test_skills_segments.py -k level_correction` against the
   committed `unified_cycle.py` → **FAIL** `CycleInfeasible HAND_LIMIT_ACC 5235.7`; with the fix →
-  **PASS**. The reload trio (`-k "ball_already_in_hand or before_the_ball_check or
+  **PASS**. The `reload` trio (`-k "ball_already_in_hand or before_the_ball_check or
   stale_bb_heartbeat"`) against the committed `skill_node.py` → **3 FAIL** (a `bb/reload` call
   recorded; the 3.0 s deadline; `AttributeError` on the heartbeat age) → **3 PASS** after.
   `tests/ros/test_rosbridge_websocket_lean.py` → 32 passed (2 new); the shim also checked against

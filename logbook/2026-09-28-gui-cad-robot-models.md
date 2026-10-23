@@ -178,7 +178,7 @@ only a synthetic verification harness. Ship the changed GUI JavaScript together
 with assets/robots/robot-parts.glb and manifest.json. The feature remains
 uncommitted on the Windows workstation. Before deployment, run the repository
 Linux test gate; then update the checkout/static GUI directory served by the
-Jetson and reload clients. No ROS build, firmware update, Blender installation or
+Jetson and `reload` clients. No ROS build, firmware update, Blender installation or
 CAD conversion on the Jetson is required for these frontend-only changes. Check
 live telemetry articulation, mocap overlays, IDLE/CLOSED_LOOP indications and
 frame times on the actual viewing client. Three.js and its loader currently use

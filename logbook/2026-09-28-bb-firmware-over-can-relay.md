@@ -47,7 +47,7 @@ related_entries:
 
 ## Summary
 
-Ball Butler can now be flashed over CAN through the can-hub, re-using the Platform's
+Ball Butler can now be flashed over CAN through the can-bridge, re-using the Platform's
 firmware-over-CAN chain (relay-seam entry, 2026-09-09 addendum) almost whole: the
 same opcodes, statuses, frame layouts, arg structs, windowing/rewind host logic and
 pio `upload_protocol = custom` pattern. What is new is small: five additive RPCs
@@ -63,7 +63,7 @@ is recoverable over USB.
 ## Motivation
 
 The owner asked for BB to be flashable the way the Platform now is, re-using the
-plumbing: both boards hang off the same can-hub Teensy, BB on CAN1, the Platform on
+plumbing: both boards hang off the same can-bridge Teensy, BB on CAN1, the Platform on
 CAN3. BB's USB still works, so this is convenience and a single flash path, not
 recovery from a dead port.
 

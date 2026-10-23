@@ -39,7 +39,7 @@ The owner reviewed it the same day and asked for one group instead, so the
 triad pool is back to the original index-keyed form with a new parent.
 
 No ROS, message or server change: `gui_server.py` serves `ros_ws/gui/`
-directly, so a browser reload picks this up and no `colcon build` is needed.
+directly, so a browser refresh picks this up and no `colcon build` is needed.
 
 ## Verification
 

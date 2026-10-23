@@ -30,16 +30,16 @@ tags:
   - kinematics
 ---
 
-# R5 sitting 1: the cup test, the fused reload, and why the human lob is retired
+# R5 sitting 1: the cup test, the fused `reload`, and why the human lob is retired
 
 ## Summary
 
 The first R5 hardware sitting (2026-09-30, launch 16:20-16:57, bag `2026-09-30_16-20-05`)
-flew the runsheet day 1's planner findings produced (`tests/hardware/session_skills_r5.md`):
-a leg-jerk ramp to 200 000 mm/s³, Block A (the reload's receive-tilt cap swept 12°→4°→0°,
-skipping 8°), Block B (the fused catch→re-level→throw reload window), and Block C (a
+flew the runbook day 1's planner findings produced (`tests/hardware/session_skills_r5.md`):
+a leg-jerk ramp to 200 000 mm/s³, Block A (the `reload`'s receive-tilt cap swept 12°→4°→0°,
+skipping 8°), Block B (the fused catch→re-level→throw `reload` window), and Block C (a
 human-lobbed columns feed). The ramp held, the cup took 4° and 0° cleanly enough that the
-owner wants 0° made the default, and the fused reload flew with no rebound. Block C never
+owner wants 0° made the default, and the fused `reload` flew with no rebound. Block C never
 registered a single lob and is retired. Offline analysis after the sitting found: the BB
 settle refusal is a firmware rate-gate false-positive, not a real slew; the feed lands **52 ms
 late**, not the ~0.1 s early an earlier reading of the log claimed; the +27/+11 mm lateral
@@ -52,10 +52,10 @@ held-level catch that carries the throw is the lever the owner picked instead.
 Day 1 (`logbook/2026-09-30-skill-stack-r5-columns-bb-start.md`) measured the BB-fed columns
 start on the real planner before any hardware ran: the six-step re-attitude sequence the plan
 opened R5 with does not close against one 0.9 m flight, a fused held-catch→re-level→throw
-window shortens every reload by 0.20-0.25 s, and the admissible box was re-swept at 200 000
-mm/s³ jerk after a segment-modelling defect was found and fixed. That re-scoped the runsheet to
-what this sitting flew: a jerk-ramp measurement, a reload receive-tilt sweep (the "4° cup
-test"), the fused-reload control flights, and an interim columns start fed by a human lob
+window shortens every `reload` by 0.20-0.25 s, and the admissible box was re-swept at 200 000
+mm/s³ jerk after a segment-modelling defect was found and fixed. That re-scoped the runbook to
+what this sitting flew: a jerk-ramp measurement, a `reload` receive-tilt sweep (the "4° cup
+test"), the fused-`reload` control flights, and an interim columns start fed by a human lob
 (since BB cannot yet aim at two live sites in one round trip).
 
 ## Observations
@@ -73,7 +73,7 @@ multi-ball routines; BB-led patterns are the goal.
 
 | Cap | Caught / fed | Refusals (THROW_ABORTED_NOT_SETTLED) | Notes |
 |---|---|---|---|
-| 12° | 5/5 | 1 (detail1 = 30 centideg) | includes Block B's fused-reload flights |
+| 12° | 5/5 | 1 (detail1 = 30 centideg) | includes Block B's fused-`reload` flights |
 | 4° | 2/2 | 2 (detail1 = -18, -40) | 8° skipped, owner call |
 | 0° | 6/7 | 2 (detail1 = -47, -32) | the 1 miss was `REJECTED_NO_BALL` (`launch.log:1114`), normal timing |
 
@@ -267,7 +267,7 @@ the columns gate — `SelfTossGateConfig.feed_angle_deg`/`feed_speed_mmps`, a
 `run_columns_attempt` branch that backward-integrates a synthetic arrival along BB's real bearing
 and compiles via `sk.compile_columns(pattern, feed=sk.LandingPrior(...))` (the same call shape
 `SkillNode._install_columns_schedule` uses), plus `--feed-angle-deg`/`--feed-speed-mmps` CLI
-flags. *Why*: the day-1 "columns sim gate MET" run drove the R2 vertical self-toss spawn, not the
+flags. *Why*: the day-1 "columns sim gate MET" run drove the R2 vertical self-throw spawn, not the
 feed path BB now dispatches through. Test (2026-09-30): `pytest tests/sim/test_skills_gate.py
 -q` → **24 passed, 77.76 s**. Rehearsal command (result in Verification: PASS 5/5 seeds at
 200 k; the first run at the learner gate's stale 150 k default restarted 4–30 times per seed on
@@ -336,7 +336,7 @@ diagnosis of the tracker silence planned, since BB-led feeds are the target.
 
 Verbatim from the 2026-09-30 evening decision record:
 
-- Next sitting shape: feed fixes first, a 0° reload gate, then BB-fed columns in the same
+- Next sitting shape: feed fixes first, a 0° `reload` gate, then BB-fed columns in the same
   sitting.
 - 0° gate: 10 BB feeds at 0°, ≥9 caught, ≥8 smooth seats (+0.05..+0.15 s band), bag-measured
   landing-vs-committed within ±30 ms, three catches filmed on the owner's high-speed camera.
@@ -413,7 +413,7 @@ frontmatter and index edits — see the session handoff.
   diagnosed; candidate mechanism is a knot-grid discretisation effect, unverified.
 - The leg heartbeat dropout episodes seen throughout the sitting are the known load-gated
   frame-drop class (`plans/active/leg-bus-frame-drops.md`) — carried, not this entry's.
-- The two hop-reload throw-3 drops at 12° (`ABORTED_NO_RELEASE`, `launch.log:1731, 1813`) —
+- The two hop-`reload` throw-3 drops at 12° (`ABORTED_NO_RELEASE`, `launch.log:1731, 1813`) —
   noted, not traced this sitting.
 - Block C's tracker silence: `detect_human_throws` was confirmed live and no lob — including
   near-vertical ones beside the robot — was ever claimed. Not diagnosed; the path is retired
@@ -429,4 +429,4 @@ frontmatter and index edits — see the session handoff.
   the target).
 - **BB accuracy volley re-fit**: `throw_affine_correction.json` was fitted 2026-06-09 at a BB
   pose/yaw the 2026-09-27 coplanar-marker recalibration has since moved by 10.3°. Needs a fresh
-  volley, scheduled for the next sitting, before the 0° reload gate (owner decision, above).
+  volley, scheduled for the next sitting, before the 0° `reload` gate (owner decision, above).

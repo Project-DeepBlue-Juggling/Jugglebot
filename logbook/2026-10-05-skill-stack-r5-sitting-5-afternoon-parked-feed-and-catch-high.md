@@ -59,7 +59,7 @@ parked for Ball 2) and **catch high** on every catch (catch plane 930 mm, was 83
 that the hand wait near the top and move the main part of its stroke only with a ball in it).
 
 Also found: `tools/probes/feed_lateral_miss.py` (added in the sitting-4 fixes) matched pattern names
-by substring, so it skipped every `columns_1ball_fed` goal — runsheet row 19 could never return a
+by substring, so it skipped every `columns_1ball_fed` goal — runbook row 19 could never return a
 bias, and `columns_feed_bb_bias_mm` stayed `[0, 0]` all sitting. Fixed and tested.
 
 ## What the owner reported
@@ -158,7 +158,7 @@ throw with no learner rows behind it — the memory's state x is the release sit
 pool with that site's vertical throws; it flies `u = y_d` with no memory row, the columns Stop's
 precedent, and its first catch at P2 follows the tracker; (b) the two balls pass ~0.19 s after
 the release, safe with the bias corrected (median gap 84 mm, worst 29 mm) and touching only with an
-uncorrected +67 mm feed — the runsheet orders bias before two balls; (c) Ball Butler's aim walk
+uncorrected +67 mm feed — the runbook orders bias before two balls; (c) Ball Butler's aim walk
 toward A (`columns_feed_aim_toward_a_mm`, which existed only because the transit catch reversed the
 cup against BB's +x arrival) is dropped in hop mode — it would cost 10 mm of that clearance.
 Considered and rejected: a higher first throw of Ball 1 so the cup crosses early and waits (needs a
@@ -174,7 +174,7 @@ for ~237 mm of stroke with the ball in the cup instead of ~137. The owner chose 
 (2026-10-05). 930 rather than higher: past ~940 mm the dwell, not the stroke, limits how deep the
 ball is carried (the bottom lifts), and hand acceleration rises at 970.
 
-**What catch high costs beyond the contact speed: tolerance to a throw that flies high.** Found by the full gate, after the decision: the plan bench's self-toss rehearsal injects R3's cold-start plant error (+11 % launch speed, ~+23 % apex) and its catch-and-re-throw now refuses from ~900 mm (`HAND_LIMIT_ACC` 4305 rev/s² at 900 and 0.95 m apex, QP-infeasible at 930; clean at 880 and below), while NOMINAL self-toss throws plan at 930 (7/7 installs through `install_segment`, hand 3600). The columns box says the same thing from the other side: its apex ceiling fell from 1.047 to 0.950 m. A ball arriving much faster than commanded has to be stopped and re-thrown inside the same 0.27 s dwell from a slower, higher contact, and the hand cap runs out first. Kept at 930 for sitting 6 because the runsheet flies only columns patterns on a warm, migrated memory (sitting 5's apex errors were ~±2 %, not +23 %) and the owner chose the high catch knowing it trades contact speed; the fallback that restores the old tolerance is 880 mm (one constant, a re-sweep, the sims). A cold-start session (fresh `plant_id`) or a self-toss sitting at 930 should expect refused catches on its first high throws.
+**What catch high costs beyond the contact speed: tolerance to a throw that flies high.** Found by the full gate, after the decision: the plan bench's self-throw rehearsal injects R3's cold-start plant error (+11 % launch speed, ~+23 % apex) and its catch-and-re-throw now refuses from ~900 mm (`HAND_LIMIT_ACC` 4305 rev/s² at 900 and 0.95 m apex, QP-infeasible at 930; clean at 880 and below), while NOMINAL self-throw throws plan at 930 (7/7 installs through `install_segment`, hand 3600). The columns box says the same thing from the other side: its apex ceiling fell from 1.047 to 0.950 m. A ball arriving much faster than commanded has to be stopped and re-thrown inside the same 0.27 s dwell from a slower, higher contact, and the hand cap runs out first. Kept at 930 for sitting 6 because the runbook flies only columns patterns on a warm, migrated memory (sitting 5's apex errors were ~±2 %, not +23 %) and the owner chose the high catch knowing it trades contact speed; the fallback that restores the old tolerance is 880 mm (one constant, a re-sweep, the sims). A cold-start session (fresh `plant_id`) or a self-throw sitting at 930 should expect refused catches on its first high throws.
 
 **The learner's apex had to change definition with the plane.** The learner reads a throw's apex
 as v_z²/2g at the catch-plane crossing — the height above the CATCH plane — while the command side
@@ -217,7 +217,7 @@ fixtures sat at the retired R2/R3 operating points (apex 0.9 / 0.85, dwell 0.30,
 moved to the R5 point, where the machine flies and the box is swept.
 
 **Box.** Re-swept at the 930 plane (gate `3c9533225417`). Hop boxes are byte-identical; the
-self-toss boxes at the 0.45 and 0.55 m bands each WIDEN by one 10 mm landing cell (x [−30, +30] →
+self-throw boxes at the 0.45 and 0.55 m bands each WIDEN by one 10 mm landing cell (x [−30, +30] →
 [−40, +40] and x/y [−40, +30] → [−40, +40] mm), the other three are unchanged; the columns band 0.925-0.975 keeps its lateral box (x [−4, +4], y [−10, +20] mm) but its apex
 ceiling falls from 1.047 to 0.950 m (the next grid flight, 0.924 s, trips the 3900 hand cap at the
 high catch), so the learner can no longer command a columns throw above 0.95; the 0.875 band, empty
@@ -254,9 +254,9 @@ at 830, now holds a box up to 0.992 m.
   (`pytest tests/motion/test_skills_executor.py tests/motion/test_skills_admissible.py
   tests/sim/test_skills_gate.py -q -n 4 --dist loadfile`, 2026-10-05: **280 passed**).
 - Audit (`/audit --unstaged`, 2026-10-05): CLEAN on behaviour; two narrative findings applied (the
-  self-toss box sentence above; the migration tool now names a degenerate row before failing
+  self-throw box sentence above; the migration tool now names a degenerate row before failing
   closed).
-- First full gate (`./run_tests.sh --full`, 2026-10-05, `temp/logs/gate_full_r5_sitting6_prep_20261005.log`): 2 failed, 6062 passed, 9 skipped, 1 xfailed — both the plan bench's self-toss rehearsal (`LIMIT_JERK`) at the high catch with R3's +11 % plant error (the Discussion's tolerance paragraph; probe `scratchpad/s6/selftoss_probe.py`: clean at 830-880 mm, refused at 900 and 930). Those two tests characterise R3's rehearsal and now freeze the 830 plane (`tests/ros/test_skills_plan_bench.py` 69 passed).
+- First full gate (`./run_tests.sh --full`, 2026-10-05, `temp/logs/gate_full_r5_sitting6_prep_20261005.log`): 2 failed, 6062 passed, 9 skipped, 1 xfailed — both the plan bench's self-throw rehearsal (`LIMIT_JERK`) at the high catch with R3's +11 % plant error (the Discussion's tolerance paragraph; probe `scratchpad/s6/selftoss_probe.py`: clean at 830-880 mm, refused at 900 and 930). Those two tests characterise R3's rehearsal and now freeze the 830 plane (`tests/ros/test_skills_plan_bench.py` 69 passed).
 - Full gate after the freeze (`./run_tests.sh --full`, 2026-10-05, `temp/logs/gate_full_r5_sitting6_prep_20261005b.log`): **6064 passed, 9 skipped, 1 xfailed in 302.82 s, serial 6 passed** (exit 0). Edited afterwards: this entry's Verification text only.
 
 ## Open questions
