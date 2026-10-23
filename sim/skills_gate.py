@@ -2421,16 +2421,12 @@ class SkillsGate:
 
         while len(throws) < cfg.target_throws and attempts < cfg.max_attempts:
             remaining = cfg.target_throws - len(throws)
-            # Floored at 3, not 2 (`run_columns_seed`'s own floor): ball B
-            # (the real one here) is at ODD schedule index, and the Stop
-            # (`compile_columns`'s own cross-site last throw) lands on ball
-            # B whenever `n_throws` is EVEN -- at the floor of 2 this makes
-            # ball B's ONLY throw the Stop, which carries no experience row
-            # (`shadow_landing`), so the attempt nets ZERO new rows and the
-            # loop never converges. `rows(n) = (n - 1) // 2` for either
-            # parity (worked out from `compile_columns`'s own `ball_i =
-            # i % 2` / stop-index arithmetic) is >= 1 once `n >= 3`, so 3
-            # is the smallest floor that always makes progress.
+            # Floored at 3 (history: before the 2026-10-23 parity rule the
+            # Stop landed on the real ball at EVEN n, so a floor of 2 netted
+            # zero rows and never converged).  With the parity rule the Stop
+            # is always the phantom's, every real throw yields a row
+            # (`rows = n // 2`), and the floor only has to stay >= 3; the
+            # `while` tolerates over-collection.
             n_throws = max(3, remaining + 1)
             attempts += 1
             end_code, loop, ictx = self.run_columns_1ball_fed_attempt(

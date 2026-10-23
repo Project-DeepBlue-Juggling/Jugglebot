@@ -155,3 +155,41 @@ def test_a_value_that_rounds_to_zero_prints_plus_zero():
     assert 'landed +0, +0 mm' in text and 'release +0 ms' in text
     assert 'arrival +0 ms' in text and 'seat +0.00 s' in text
     assert '-0' not in text
+
+
+# ── The two-ball columns Stop is NOT a catch attempt (owner, 2026-10-23) ──
+
+def test_the_stop_throw_is_excluded_from_the_tally_but_the_end_code_stays():
+    reports = [_r(throw_no=1), _r(throw_no=2, caught=False),
+               _r(throw_no=3, caught=False, stop=True)]
+    assert rp.summarise(reports) == (2, 1)
+    # clean finish: N/N over real attempts, no miss claimed for the Stop
+    clean = [_r(throw_no=1), _r(throw_no=2),
+             _r(throw_no=3, caught=False, stop=True)]
+    sev, text = rp.end_line('columns', '', '', clean, shadow_landing_stop=True)
+    assert sev == 'INFO' and '2/2 caught' in text
+    # a run that ENDED on a genuine miss still says so beside the count
+    sev, text = rp.end_line('columns', 'MISSED_CATCH', '', clean[:2])
+    assert sev == 'ERROR' and 'MISSED_CATCH' in text and '2/2 caught' in text
+    sev, text = rp.end_line('columns', 'MISSED_CATCH', '', reports)
+    assert 'ENDED (MISSED_CATCH)' in text and '1/2 caught' in text
+
+
+def test_the_stop_throws_landing_and_release_stay_out_of_the_end_tally_ranges():
+    # The Stop lands on the held ball by design: a 60 mm "landing error" and a
+    # late "release" on it must not set the worst figures of a 2/2 run.
+    clean = [_r(throw_no=1, landing_err_mm=(3.0, -4.0), release_err_s=0.010),
+             _r(throw_no=2, landing_err_mm=(5.0, 2.0), release_err_s=-0.005),
+             _r(throw_no=3, caught=False, stop=True,
+                landing_err_mm=(60.0, 10.0), release_err_s=0.080)]
+    _, text = rp.end_line('columns', '', '', clean, shadow_landing_stop=True)
+    assert '2/2 caught' in text
+    assert 'worst landing 5 mm' in text
+    assert '60' not in text and '80' not in text
+
+
+def test_the_stop_throw_line_says_stop_not_missed_and_is_info():
+    sev, text = rp.throw_line(_r(caught=False, stop=True))
+    assert sev == 'INFO'
+    assert 'STOP (landed on the held ball, by design; not counted)' in text
+    assert 'MISSED' not in text

@@ -5015,7 +5015,8 @@ class SkillExecutor:
             seat_s=(None if (pend.t_seat_s is None or t_cross is None)
                     else float(pend.t_seat_s) - t_cross),
             reaims=pend.reaims, reaim_refused=pend.reaim_refused,
-            contact_s=contact_s, settle_s=settle_s))
+            contact_s=contact_s, settle_s=settle_s,
+            stop=bool(pend.shadow_landing)))
 
     def _finalise_outcome(self, pend: _PendingOutcome,
                           finalise_at: float) -> List[str]:
@@ -5107,7 +5108,8 @@ class SkillExecutor:
         phase = ('' if pend.t_seat_s is None
                  else ' seat=%+.3f s vs scheduled landing'
                  % (pend.t_seat_s - float(pend.t_land_scheduled_s)))
-        shadow = ' (landed on the held ball)' if pend.shadow_landing else ''
+        shadow = (' (Stop: landed on the held ball, by design; not counted)'
+                  if pend.shadow_landing else '')
         hop = ' (hop entry, no learner row)' if pend.entry_hop else ''
         if offset_in_force:
             hop += ' (no learner row: catch_time_offset in force)'

@@ -923,7 +923,9 @@ def test_compile_columns_fed_phantom_a_does_not_change_the_motion(cols):
     t_land = 1_700_000_300.0 + tau
     feed = sc.LandingPrior(pos_mm=cols[1].cup_mm, vel_mm_s=(0.0, 0.0, -2000.0),
                            t_land_abs_s=t_land)
-    plain = sc.compile_columns(_pattern(cols, n_throws=4), feed=feed)
+    # n=4 with ball 0 phantom is lengthened to 5 by the parity rule (the Stop
+    # must be the phantom's), so the like-for-like plain compile is n=5.
+    plain = sc.compile_columns(_pattern(cols, n_throws=5), feed=feed)
     phantom = sc.compile_columns(
         _pattern(cols, n_throws=4, phantom_balls=(0,)), feed=feed)
     assert len(plain.skills) == len(phantom.skills)
@@ -1938,3 +1940,83 @@ def test_compile_one_ball_still_refuses_zero_throws(site):
     _, _, _, pattern, _ = _reload_args(site, n_throws=0)
     with pytest.raises(ValueError, match='n_throws must be >= 1'):
         sc.compile_one_ball(pattern, t0_abs_s=0.0)
+
+
+# ── The one-ball PARITY RULE (owner decision 2026-10-23): with a phantom ball
+# the cross-site Stop throw is always the PHANTOM's, so the last real ball is
+# caught by an ordinary transit CATCH and held by the closing REST. ──
+
+def _stop_skills(schedule):
+    out = []
+    for s in schedule.skills:
+        if s.shadow_landing or (s.then_throw is not None
+                                and s.then_throw.shadow_landing):
+            out.append(s)
+    return out
+
+
+def _real_throw_catch_balance(schedule):
+    """(real releases, real CATCH skills) -- every real release but the first
+    has a landing catch; the Stop of a phantom schedule is not a real one."""
+    rel = [s for s in schedule.skills
+           if (s.kind == sc.THROW or (s.kind == sc.CATCH and s.then_throw))
+           and not schedule.is_phantom(s.ball_id)]
+    cat = [s for s in schedule.skills
+           if s.kind == sc.CATCH and not schedule.is_phantom(s.ball_id)]
+    return rel, cat
+
+
+@pytest.mark.parametrize('phantom', [(0,), (1,)])
+@pytest.mark.parametrize('n', [2, 3, 4, 5, 6, 7, 8, 9])
+def test_one_ball_stop_is_always_the_phantoms_and_the_real_ball_is_caught(
+        cols, phantom, n):
+    pat = _pattern(cols, n_throws=n, phantom_balls=phantom)
+    sched = sc.compile_columns(pat, t0_abs_s=10.0)
+    stops = _stop_skills(sched)
+    assert len(stops) == 1
+    assert sched.is_phantom(stops[0].ball_id)
+    # schedule_has_shadow_landing must not claim "last ball rests on the platform"
+    assert sc.schedule_has_shadow_landing(sched) is False
+    # every real release has its catch (real catches == real releases + the
+    # pre-existing/initial catch when ball 1 is real)
+    rel, cat = _real_throw_catch_balance(sched)
+    real = 1 - phantom[0]
+    first_catch_extra = 1 if real == 1 else 0     # ball B's pre-existing flight
+    assert len(cat) == len(rel) + first_catch_extra
+    # closing: [... CATCH(real, no throw), REST] and the REST holds that ball
+    assert sched.skills[-1].kind == sc.REST
+    last = sched.skills[-2]
+    assert last.kind == sc.CATCH and last.then_throw is None
+    assert last.ball_id == real
+    assert sched.skills[-1].site == last.site
+
+
+def test_parity_rule_fed_n4_compiles_as_n5_and_n5_is_unchanged_in_shape(cols):
+    a = sc.compile_columns(_pattern(cols, n_throws=4, phantom_balls=(0,)),
+                           t0_abs_s=10.0)
+    b = sc.compile_columns(_pattern(cols, n_throws=5, phantom_balls=(0,)),
+                           t0_abs_s=10.0)
+    fp = lambda sch: [_skill_motion_fingerprint(s) for s in sch.skills]
+    assert fp(a) == fp(b)
+    kinds = [(s.kind, s.ball_id, s.then_throw is not None) for s in a.skills]
+    # phantom Stop (catch+throw, ball 0) -> real transit catch -> REST
+    assert kinds[-3:] == [(sc.CATCH, 0, True), (sc.CATCH, 1, False),
+                          (sc.REST, 1, False)]
+    assert a.skills[-3].then_throw.shadow_landing is True
+
+
+def test_parity_rule_leaves_two_ball_columns_skill_for_skill(cols):
+    for n in (2, 3, 4, 5, 6):
+        plain = sc.compile_columns(_pattern(cols, n_throws=n), t0_abs_s=10.0)
+        stops = _stop_skills(plain)
+        assert len(stops) == 1 and not plain.is_phantom(stops[0].ball_id)
+        assert sc.schedule_has_shadow_landing(plain) is True
+        throws = [s for s in plain.skills
+                  if s.kind == sc.THROW or (s.kind == sc.CATCH and s.then_throw)]
+        assert len(throws) == n       # exactly the n asked, no lengthening
+
+
+def test_parity_rule_phantom_n1_unchanged(cols):
+    sched = sc.compile_columns(_pattern(cols, n_throws=1, phantom_balls=(1,)),
+                               t0_abs_s=10.0)
+    assert _stop_skills(sched) == []

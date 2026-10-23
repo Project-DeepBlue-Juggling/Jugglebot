@@ -78,6 +78,11 @@ class ThrowReport:
     reaim_refused: str = ''          # code of the re-aim that was refused
     contact_s: Optional[float] = None   # cup struck - the tracker's crossing
     settle_s: Optional[float] = None    # first SEATED - cup struck
+    #: The two-ball columns Stop (D2): the last throw is aimed at the ball the
+    #: cup already holds, BY DESIGN, so it is not a catch attempt -- it is
+    #: excluded from the operator's tally (:func:`end_line`, :func:`summarise`)
+    #: and its line says so (2026-10-23, owner: the 47/48 read of the 48-run).
+    stop: bool = False
 
 
 @dataclasses.dataclass(frozen=True)
@@ -158,6 +163,8 @@ def throw_line(r: ThrowReport) -> Tuple[str, str]:
     re-aimed 1x``.  ``seat`` is referenced to the tracker's crossing time
     (not the scheduled landing); ``--`` marks a field with no evidence."""
     verdict = {True: 'CAUGHT', False: 'MISSED', None: 'released'}[r.caught]
+    if r.stop:
+        verdict = 'STOP (landed on the held ball, by design; not counted)'
     parts = ['throw %d/%d %s' % (r.throw_no, r.n_throws, verdict)]
     if r.apex_m is not None:
         parts.append('apex %.3f m' % (r.apex_m,))
@@ -178,7 +185,8 @@ def throw_line(r: ThrowReport) -> Tuple[str, str]:
         parts.append(text)
     if not r.row:
         parts.append('no learner row: %s' % (r.no_row_reason,))
-    return ('WARN' if r.caught is False else 'INFO'), '  '.join(parts)
+    return (('WARN' if (r.caught is False and not r.stop) else 'INFO'),
+            '  '.join(parts))
 
 
 _PEAK = re.compile(r'peak ([a-z ]+?) ([-+\d.eE]+) ?(\S+) > ([-+\d.eE]+)')
@@ -261,17 +269,23 @@ def end_line(label: str, end_code: str, end_message: str,
     holding both balls, not at an ordinary rest. Only meaningful when
     ``end_code`` is empty: a D3 drop or any other refusal already has its
     own, more specific, reason and takes priority."""
-    thrown = len(reports)
-    caught = sum(1 for r in reports if r.caught)
+    # The Stop throw is not a catch attempt (ThrowReport.stop): the tally is
+    # over the throws the cup was asked to catch.  The end code below still
+    # rides beside it, so a run that ENDED on a real miss says so.
+    thrown, caught = summarise(reports)
     tally = '%d/%d caught' % (caught, thrown)
-    apexes = [r.apex_m for r in reports if r.apex_m is not None]
+    # The ranges share the count's base: the Stop's "landing" is a ball
+    # striking the held ball by design, so its landing and release errors
+    # would otherwise set the worst figure of a clean run (audit 2026-10-23).
+    counted = [r for r in reports if not r.stop]
+    apexes = [r.apex_m for r in counted if r.apex_m is not None]
     if apexes:
         tally += ' · apex %.2f–%.2f m' % (min(apexes), max(apexes))
     worst = [max(abs(r.landing_err_mm[0]), abs(r.landing_err_mm[1]))
-             for r in reports if r.landing_err_mm is not None]
+             for r in counted if r.landing_err_mm is not None]
     if worst:
         tally += ' · worst landing %.0f mm' % (max(worst),)
-    releases = [r.release_err_s for r in reports
+    releases = [r.release_err_s for r in counted
                 if r.release_err_s is not None]
     if releases:
         tally += ' · release %s..%s' % (_ms(min(releases)), _ms(max(releases)))
@@ -296,5 +310,7 @@ def end_line(label: str, end_code: str, end_message: str,
 
 def summarise(reports: List[ThrowReport]) -> Tuple[int, int]:
     """``(throws, caught)`` for the Juggle result — from the reports, never
-    from log text."""
-    return len(reports), sum(1 for r in reports if r.caught)
+    from log text.  The columns Stop (:attr:`ThrowReport.stop`) is neither a
+    throw nor a catch here: it was never a catch attempt."""
+    counted = [r for r in reports if not r.stop]
+    return len(counted), sum(1 for r in counted if r.caught)

@@ -853,9 +853,15 @@ def schedule_has_shadow_landing(schedule: Schedule) -> bool:
     _log_attempt_end``) only asks this when ``end_code`` is empty — a D3
     drop already has its own, more specific, code.
     """
-    return any(sk.shadow_landing
-              or (sk.then_throw is not None and sk.then_throw.shadow_landing)
-              for sk in schedule.skills)
+    # A PHANTOM ball's Stop (the one-ball parity rule in :func:`compile_columns`)
+    # lands on nothing and leaves the REAL ball caught and held: that is an
+    # ordinary rest, so it does not claim the "last ball rests on the platform"
+    # end state.
+    phantom = tuple(schedule.phantom_balls)
+    return any((sk.shadow_landing
+                or (sk.then_throw is not None and sk.then_throw.shadow_landing))
+               and int(sk.ball_id) not in phantom
+               for sk in schedule.skills)
 
 
 def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
@@ -926,6 +932,37 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
     150 000 cap — no headroom, but this is a single terminal event with
     ``u = y_d`` fixed, not a box-swept command the learner re-aims, so the
     tight margin is acceptable here and nowhere else).
+
+    **The one-ball PARITY RULE (owner decision, 2026-10-23 — columns_1ball_fed
+    and columns_1ball, i.e. ``pattern.phantom_balls`` non-empty).** The Stop
+    exists to give a two-ball schedule a place for the ball it cannot catch.
+    With a phantom ball there is one real ball and the cup it would land in is
+    EMPTY: pointing the Stop at it slammed the real ball into a static cup with
+    no catch planned (the k/(k+1) read of the 2026-10-22 goals).  So the Stop
+    (throw ``n-1``, ball ``(n-1) % 2``) must always be a PHANTOM's throw: if
+    ball ``(n-1) % 2`` is real, ``n`` is raised to ``n + 1``, which hands the
+    Stop to the other (phantom) ball.  Counting convention, exact: the
+    operator's ``n_throws`` is the number of throws ASKED, phantom throws
+    included (``skill_node`` ``num_cycles``); the REAL throws asked are
+    unchanged because the one added throw is the phantom's.  Example, phantom
+    ball 0, real ball 1 (columns_1ball_fed): ``n = 4`` and ``n = 5`` both
+    compile 5 throws, real throws ``i = 1, 3`` (both caught); ``n = 5``
+    compiles as asked.  Phantom ball 1 (columns_1ball): ``n = 5`` compiles 6.
+    Two-ball columns (no phantom) is untouched.
+
+    Closing walk-through (columns_1ball_fed, ``n = 4`` -> 5, apex 0.9 m, dwell
+    0.27 s: t_f 0.857, beta 0.563, tau 0.293 s; times from THROW 0, sites
+    A = P2, feed = P1): the last real throw is ``i = 3`` (ball 1, P1 -> P1,
+    ``+1.690`` release, folded into the CATCH landing ``+1.420``).  The Stop is
+    ``i = 4`` (ball 0, the phantom): released at ``+2.254`` from P2, target P1,
+    ``shadow_landing`` (an empty stroke), folded into the phantom's catch at
+    P2 (``+1.984``).  Ball 1 lands at P1 at ``+1.690 + 0.857 = +2.547``: a
+    standalone, ordinary transit CATCH (window tau).  The closing REST is at
+    ``+2.547 + 2*0.30 + 0.05 = +3.197`` at P1, holding that ball.  Skill order:
+    ... CATCH ball1 + then_throw, CATCH ball0 (phantom) + then_throw Stop,
+    CATCH ball1, REST.  Rest-terminal, first-skill-REST and level-terminal
+    (I-PLAN-7/8/9) are untouched: no new segment shape, the compiler still ends
+    on a standalone CATCH plus the REST at its site.
 
     ``n_throws == 1`` (a single launch, nothing caught yet) keeps the pre-R5
     behaviour: the only throw stays at its own site, ``shadow_landing`` stays
@@ -1011,6 +1048,10 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
     n = int(pattern.n_throws)
     if n < 1:
         raise ValueError('n_throws must be >= 1, got %r' % (pattern.n_throws,))
+    # The one-ball parity rule (docstring): the Stop must be a phantom's throw.
+    if (n >= 2 and pattern.phantom_balls
+            and ((n - 1) % 2) not in tuple(pattern.phantom_balls)):
+        n += 1
     site0, site1 = pattern.sites
     sites2 = (site0, site1)
 

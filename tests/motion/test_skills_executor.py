@@ -2577,7 +2577,7 @@ def test_a_shadow_landed_throw_is_never_read_caught(sites):
     assert shadow_exp == []
     outcome = [ln for ln in shadow_lines if 'OUTCOME' in ln][0]
     assert 'caught=False' in outcome
-    assert 'landed on the held ball' in outcome
+    assert 'landed on the held ball, by design; not counted' in outcome
 
     # The SAME evidence (SEATED throughout), on the ordinary schedule
     # (``shadow_landing=False``, the pre-Stop shape every earlier rung used),
