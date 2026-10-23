@@ -1,0 +1,317 @@
+{
+ "users": [
+  {
+   "id": "7cfe988d-070f-5f3c-8dc1-7835ea9204e2",
+   "name": "Harrison"
+  },
+  {
+   "id": "2e3b3f1e-a8d0-56d2-824d-42f2b83daa09",
+   "name": "Claude"
+  }
+ ],
+ "items": [
+  {
+   "id": "1ea537cf-12db-500c-98e7-bee68908d3cb",
+   "parent_id": null,
+   "title": "Ball Butler",
+   "description": "Holds the parked bb-marker advisory plan and the Feed-side residue.",
+   "completion_criteria": "Ball Butler feeds reliably enough that no Sitting is lost to the feeder.",
+   "assignee_ids": [],
+   "stage": "pathway",
+   "status": "blocked",
+   "priority": null,
+   "canvas_x": 48.0,
+   "canvas_y": 264.0
+  },
+  {
+   "id": "ad99092b-891b-5e21-ba36-1e95e2b1bd4d",
+   "parent_id": "1ea537cf-12db-500c-98e7-bee68908d3cb",
+   "title": "plans/parked/bb-marker-never-matched-advisory.md",
+   "description": "Parked; the unpark gate is in its INDEX row.",
+   "completion_criteria": "",
+   "assignee_ids": [],
+   "stage": "plan",
+   "status": "backlog",
+   "priority": null,
+   "canvas_x": 24.0,
+   "canvas_y": 384.0
+  },
+  {
+   "id": "19730ef6-eb60-577b-94e1-61f70750ad98",
+   "parent_id": "fbaf7cbd-5855-51bf-b0ed-d580fd3c3749",
+   "title": "plans/active/box-sweep-same-site-fidelity.md",
+   "description": "Assigned here because learner P3 decides the box's fate, so the two sequence together.",
+   "completion_criteria": "",
+   "assignee_ids": [],
+   "stage": "plan",
+   "status": "not_started",
+   "priority": null,
+   "canvas_x": 600.0,
+   "canvas_y": 408.0
+  },
+  {
+   "id": "7eb0d73d-60db-5b1a-af81-78aad3c5d761",
+   "parent_id": null,
+   "title": "Levelling contract int16 offset-truncation defect",
+   "description": "OPEN, no owner; read in its archived plan. Unattached inbox item.",
+   "completion_criteria": "",
+   "assignee_ids": [],
+   "stage": "bug",
+   "status": "backlog",
+   "priority": "medium",
+   "canvas_x": 24.0,
+   "canvas_y": 24.0
+  },
+  {
+   "id": "bf3fa530-d8a8-5ae7-adcf-ef06dbdd3a50",
+   "parent_id": "c9ae3c0b-68e1-5263-bf09-788283c7098c",
+   "title": "10 % jitter-margin class (LIMIT_* refusals)",
+   "description": "Residue row (b) from skill-stack-dress-rehearsals-and-residue.md section 2; triggered by an oval Sitting.",
+   "completion_criteria": "",
+   "assignee_ids": [],
+   "stage": "bug",
+   "status": "backlog",
+   "priority": "medium",
+   "canvas_x": 528.0,
+   "canvas_y": 624.0
+  },
+  {
+   "id": "6d1eae5c-5790-560a-85cd-ada904fbda1c",
+   "parent_id": "1ea537cf-12db-500c-98e7-bee68908d3cb",
+   "title": "NOT_SETTLED retry dead in the field",
+   "description": "Residue row (b); the Feed retry never fires on hardware.",
+   "completion_criteria": "",
+   "assignee_ids": [],
+   "stage": "bug",
+   "status": "backlog",
+   "priority": "low",
+   "canvas_x": 192.0,
+   "canvas_y": 384.0
+  },
+  {
+   "id": "daed81f5-c472-5858-baeb-9460f2cdf8b7",
+   "parent_id": null,
+   "title": "Rename the one-ball Patterns to Ball1/Ball2 terminology",
+   "description": "Day-one inbox seed Idea 3 (from #26). Define Ball1/Ball2 in the glossary first; the rename is its own effort.",
+   "completion_criteria": "",
+   "assignee_ids": [],
+   "stage": "idea",
+   "status": "backlog",
+   "priority": null,
+   "canvas_x": 192.0,
+   "canvas_y": 24.0
+  },
+  {
+   "id": "c3e57b3a-1d9a-5bc8-a7e4-9d7a9621bbcf",
+   "parent_id": null,
+   "title": "All-time personal-best window per Pattern (Throws and Catches)",
+   "description": "Day-one inbox seed Idea 2 (from #26).",
+   "completion_criteria": "",
+   "assignee_ids": [],
+   "stage": "idea",
+   "status": "backlog",
+   "priority": null,
+   "canvas_x": 360.0,
+   "canvas_y": 24.0
+  },
+  {
+   "id": "73f0f05f-2248-575d-920a-1cfdd35071b6",
+   "parent_id": null,
+   "title": "Search rosbag recordings for specific information",
+   "description": "Day-one inbox seed Idea 1 (from #26). Unattached: no pathway, no destination yet.",
+   "completion_criteria": "",
+   "assignee_ids": [],
+   "stage": "idea",
+   "status": "backlog",
+   "priority": null,
+   "canvas_x": 528.0,
+   "canvas_y": 24.0
+  },
+  {
+   "id": "b390d967-a267-5bbc-b944-7d97e743f04d",
+   "parent_id": "fbaf7cbd-5855-51bf-b0ed-d580fd3c3749",
+   "title": "plans/active/learner-generalisation.md",
+   "description": "P1-P5 not started.",
+   "completion_criteria": "",
+   "assignee_ids": [],
+   "stage": "plan",
+   "status": "not_started",
+   "priority": null,
+   "canvas_x": 360.0,
+   "canvas_y": 408.0
+  },
+  {
+   "id": "fbaf7cbd-5855-51bf-b0ed-d580fd3c3749",
+   "parent_id": null,
+   "title": "Learner generalisation",
+   "description": "Sequenced after the oval's Rung 2; P3 decides the fate of the Admissible box.",
+   "completion_criteria": "A global plant model with a physics-keyed residual replaces the local-linear Memory and the offline Admissible box, so any Site, Apex, Dwell or yaw can be commanded and changed mid-Pattern.",
+   "assignee_ids": [],
+   "stage": "pathway",
+   "status": "not_started",
+   "priority": null,
+   "canvas_x": 408.0,
+   "canvas_y": 264.0
+  },
+  {
+   "id": "b6a5a13b-cd24-55fd-9898-95a3d73883f3",
+   "parent_id": "2ae129fe-0504-5e09-bd0c-2aad379e764e",
+   "title": "P1 The oval pattern dispatchable",
+   "description": "Heading: '### P1 \u2014 The oval pattern dispatchable \u2014 COMPLETE 2026-10-18' (plans/active/two-ball-oval.md:263). Title and status lifted from the heading; this is what the phases: frontmatter rule from #23 extracts.",
+   "completion_criteria": "",
+   "assignee_ids": [],
+   "stage": "phase",
+   "status": "complete",
+   "priority": null,
+   "canvas_x": 384.0,
+   "canvas_y": 768.0
+  },
+  {
+   "id": "320adb33-3cdb-5fce-9747-5831e76e2031",
+   "parent_id": "2ae129fe-0504-5e09-bd0c-2aad379e764e",
+   "title": "P2 Banking leak fix",
+   "description": "Heading: '### P2 \u2014 Banking leak fix \u2014 RETIRED 2026-10-23' (line 309). Retired on measurement: the leak was a pre-P1 prototype-grid number.",
+   "completion_criteria": "",
+   "assignee_ids": [],
+   "stage": "phase",
+   "status": "dropped",
+   "priority": null,
+   "canvas_x": 768.0,
+   "canvas_y": 768.0
+  },
+  {
+   "id": "bd047c5d-2c6d-5869-9765-14aa72fd2597",
+   "parent_id": "2ae129fe-0504-5e09-bd0c-2aad379e764e",
+   "title": "P3 Pose-level carry planner",
+   "description": "Heading: '### P3 \u2014 Pose-level carry planner \u2014 NOT STARTED' (line 325). Designed after Rung 2.",
+   "completion_criteria": "",
+   "assignee_ids": [],
+   "stage": "phase",
+   "status": "not_started",
+   "priority": null,
+   "canvas_x": 24.0,
+   "canvas_y": 768.0
+  },
+  {
+   "id": "f22d9322-e998-5a39-9e16-84c59520e1c4",
+   "parent_id": "2ae129fe-0504-5e09-bd0c-2aad379e764e",
+   "title": "P4 Working point and the dwell ladder",
+   "description": "Heading: '### P4 \u2014 Working point and the dwell ladder \u2014 NOT STARTED' (line 348).",
+   "completion_criteria": "",
+   "assignee_ids": [],
+   "stage": "phase",
+   "status": "not_started",
+   "priority": null,
+   "canvas_x": 192.0,
+   "canvas_y": 768.0
+  },
+  {
+   "id": "b048c110-3008-57d0-97f9-cdbfec056440",
+   "parent_id": "2ae129fe-0504-5e09-bd0c-2aad379e764e",
+   "title": "P5 Two-ball oval",
+   "description": "Heading: '### P5 \u2014 Two-ball oval \u2014 NOT STARTED' (line 360). Holds the 30-consecutive-Catches Rung gate that closes the pathway.",
+   "completion_criteria": "",
+   "assignee_ids": [],
+   "stage": "phase",
+   "status": "not_started",
+   "priority": null,
+   "canvas_x": 576.0,
+   "canvas_y": 768.0
+  },
+  {
+   "id": "aa05e1a9-5b8f-412e-a481-39abad94f0b5",
+   "parent_id": "1ea537cf-12db-500c-98e7-bee68908d3cb",
+   "title": "Probe: round 2",
+   "description": "",
+   "completion_criteria": "",
+   "assignee_ids": [],
+   "stage": "feature",
+   "status": "backlog",
+   "priority": null,
+   "canvas_x": -192.0,
+   "canvas_y": 384.0
+  },
+  {
+   "id": "0a3e8921-e2b8-5d16-967b-6f9972b46de3",
+   "parent_id": null,
+   "title": "Project map and shared dictionary",
+   "description": "No plans yet; the implementation plan from #35 will be its first.EDITED via panel.",
+   "completion_criteria": "A locked design plus a phased implementation plan for the map, the TaskTree-forked viewer and GLOSSARY.md, handed to a fresh session (wayfinder map #21).",
+   "assignee_ids": [
+    "2e3b3f1e-a8d0-56d2-824d-42f2b83daa09",
+    "7cfe988d-070f-5f3c-8dc1-7835ea9204e2"
+   ],
+   "stage": "pathway",
+   "status": "in_progress",
+   "priority": null,
+   "canvas_x": 696.0,
+   "canvas_y": 24.0
+  },
+  {
+   "id": "2ae129fe-0504-5e09-bd0c-2aad379e764e",
+   "parent_id": "c9ae3c0b-68e1-5263-bf09-788283c7098c",
+   "title": "plans/active/two-ball-oval.md",
+   "description": "P1 complete, P2 retired 2026-10-23 on measurement; next Sitting flies the three owed fixes then Rung 2 at dwell 0.55 / 0.50; P3-P5 not started.",
+   "completion_criteria": "",
+   "assignee_ids": [
+    "7cfe988d-070f-5f3c-8dc1-7835ea9204e2"
+   ],
+   "stage": "plan",
+   "status": "in_progress",
+   "priority": null,
+   "canvas_x": 720.0,
+   "canvas_y": 624.0
+  },
+  {
+   "id": "c9ae3c0b-68e1-5263-bf09-788283c7098c",
+   "parent_id": null,
+   "title": "Two-ball oval",
+   "description": "Own pathway, not a continuation of the archived two-ball-skill-stack arc (its destination was met at Sitting 8, 2026-10-13).",
+   "completion_criteria": "Two balls in one Hand on an oval, every Throw caught and carried back in the Cup, closed by 30 consecutive Ball Butler-fed Catches in one Attempt (P5 Rung gate).",
+   "assignee_ids": [
+    "7cfe988d-070f-5f3c-8dc1-7835ea9204e2"
+   ],
+   "stage": "pathway",
+   "status": "in_progress",
+   "priority": "high",
+   "canvas_x": 696.0,
+   "canvas_y": 504.0
+  },
+  {
+   "id": "972d9115-223e-5423-b904-e8f7298145dc",
+   "parent_id": "ec6c9fa1-8536-5196-873d-e4edd9132b7f",
+   "title": "wave-camera-can3-integration.md",
+   "description": "Uncommitted on the 2026-10_wave-camera-can3 checkout.",
+   "completion_criteria": "",
+   "assignee_ids": [],
+   "stage": "plan",
+   "status": "in_progress",
+   "priority": null,
+   "canvas_x": 864.0,
+   "canvas_y": 144.0
+  },
+  {
+   "id": "ec6c9fa1-8536-5196-873d-e4edd9132b7f",
+   "parent_id": null,
+   "title": "Wave camera on CAN3",
+   "description": "Work lives uncommitted on the other checkout (E:/PDJ/Github/Jugglebot, 14 behind main).",
+   "completion_criteria": "The Wave camera is visible over CAN3 and automated recording start/stop is working.",
+   "assignee_ids": [],
+   "stage": "pathway",
+   "status": "in_progress",
+   "priority": null,
+   "canvas_x": 864.0,
+   "canvas_y": 24.0
+  }
+ ],
+ "dependencies": [
+  {
+   "blocker_id": "aa05e1a9-5b8f-412e-a481-39abad94f0b5",
+   "blocked_id": "ad99092b-891b-5e21-ba36-1e95e2b1bd4d"
+  },
+  {
+   "blocker_id": "b390d967-a267-5bbc-b944-7d97e743f04d",
+   "blocked_id": "19730ef6-eb60-577b-94e1-61f70750ad98"
+  }
+ ]
+}

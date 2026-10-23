@@ -1,0 +1,881 @@
+<!doctype html>
+<!--
+PROTOTYPE, throwaway: four display formats for the Jugglebot project map, switchable via ?variant=; feeds wayfinder ticket #31.
+
+Why these four (see survey.md): each answers a different first question, and none is TaskTree's
+free canvas of uniform cards.
+  a  Metro map        - spatial + directional: each Pathway is a line running to its Destination
+                        terminus; Plans/Phases are stations; "next" is a marker on the line;
+                        Inbox items sit in a yard. (survey #8, yard from #11)
+  b  Briefing outline - textual + hierarchical: the whole tree as a dense foldable outline, the
+                        Destination as each section's strapline, a computed "Next up". (#5 + #10)
+  c  Now/Next/Later   - a matrix: Pathway swimlanes x commitment horizon, Inbox rail on the
+                        right. (#4 crossed with #1)
+  d  Front page       - editorial: one tile per Pathway (progress, next action, owners) ranked
+                        lead-first, the Inbox as a Keep-style wall beneath. (#10 + #11)
+Data: snapshot of data.json embedded below (file:// must work, so no fetch). Plain HTML/CSS/JS,
+no libraries.
+-->
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Jugglebot Map Formats</title>
+<style>
+:root{
+  --bg:#f7f6f2; --panel:#ffffff; --ink:#1d1d1f; --ink2:#55565a; --ink3:#8a8b90; --rule:#e2e0d8;
+  --accent:#2f5bd3; --red:#c62828; --green:#2e7d32; --amber:#b26a00;
+  --st-complete:#2e7d32; --st-in_progress:#2f5bd3; --st-not_started:#6b6f76; --st-backlog:#9a9ca1;
+  --st-blocked:#c62828; --st-qa:#7b3fb3; --st-dropped:#a1a1a1;
+  --k-idea:#fff4b8; --k-bug:#ffd9d6; --k-feature:#d7e9ff;
+}
+*{box-sizing:border-box}
+html,body{margin:0}
+body{background:var(--bg);color:var(--ink);font:14px/1.45 "Segoe UI",system-ui,-apple-system,sans-serif;padding-bottom:110px;overflow-x:hidden}
+button.lnk{color:inherit;background:none;border:0;padding:0;font:inherit;cursor:pointer;text-align:left}
+button.lnk:hover{color:var(--accent);text-decoration:underline}
+#stage{max-width:1480px;margin:0 auto;padding:24px 28px}
+h1.vt{font-size:13px;letter-spacing:.12em;text-transform:uppercase;color:var(--ink3);margin:0 0 14px;font-weight:600}
+.g{display:inline-block;width:1.1em;text-align:center;font-weight:700}
+.g.complete{color:var(--st-complete)} .g.in_progress{color:var(--st-in_progress)} .g.not_started{color:var(--st-not_started)}
+.g.backlog{color:var(--st-backlog)} .g.blocked{color:var(--st-blocked)} .g.qa{color:var(--st-qa)} .g.dropped{color:var(--st-dropped)}
+.pill{display:inline-block;font-size:11px;padding:1px 7px;border-radius:9px;background:#eceae3;color:var(--ink2);white-space:nowrap;vertical-align:1px}
+.pill.blocked{background:#fde3e1;color:var(--red)} .pill.in_progress{background:#e2e9fb;color:var(--accent)}
+.pill.complete{background:#e1f1e2;color:var(--green)} .pill.dropped{background:#eee;color:#888;text-decoration:line-through}
+.pill.high{background:#fde3e1;color:var(--red)} .pill.medium{background:#fff0d6;color:var(--amber)} .pill.low{background:#eceae3}
+.kind{font-size:10px;letter-spacing:.08em;text-transform:uppercase;color:var(--ink3);font-weight:600}
+.av{display:inline-flex;align-items:center;justify-content:center;width:20px;height:20px;border-radius:50%;font-size:10px;font-weight:700;color:#fff;vertical-align:middle;margin-right:2px}
+.owners{font-size:12px;color:var(--ink2);white-space:nowrap}
+.unowned{font-size:12px;color:var(--ink3);font-style:italic}
+.dep{display:inline-block;font-size:11px;padding:0 6px;border-radius:4px;border:1px solid #f0b4ae;color:var(--red);background:#fff6f5;cursor:pointer;white-space:nowrap}
+.dep.blocks{border-color:#c9d3ee;color:#3d58a8;background:#f5f7fd}
+.hl{outline:3px solid #f5a623 !important;outline-offset:2px}
+
+/* ---------- bottom bar ---------- */
+#bar{position:fixed;left:50%;bottom:14px;transform:translateX(-50%);background:#1d1d1f;color:#fff;border-radius:14px;padding:10px 14px;box-shadow:0 8px 30px rgba(0,0,0,.25);display:flex;align-items:center;gap:14px;z-index:50;max-width:calc(100vw - 32px)}
+#bar .btns{display:flex;gap:6px}
+#bar button{background:#333;color:#ddd;border:0;border-radius:9px;padding:7px 12px;font-weight:600;font-size:13px;font-family:inherit;cursor:pointer;white-space:nowrap}
+#bar button.on{background:#fff;color:#111}
+#bar .cap{font-size:13px;max-width:520px;line-height:1.3}
+#bar .cap b{display:block;font-size:14px}
+#bar .cap span{color:#bbb}
+
+/* ---------- drawer ---------- */
+#drawer{position:fixed;top:0;right:0;height:100vh;width:440px;max-width:100vw;background:var(--panel);box-shadow:-10px 0 40px rgba(0,0,0,.15);transform:translateX(105%);transition:transform .18s ease;z-index:60;overflow:auto;padding:22px 24px 40px}
+#drawer.open{transform:none}
+#drawer .x{position:absolute;top:12px;right:14px;font-size:22px;border:0;background:none;cursor:pointer;color:var(--ink3)}
+#drawer h2{margin:4px 0 8px;font-size:20px;line-height:1.25;padding-right:30px}
+#drawer .crumb{font-size:12px;color:var(--ink3)}
+#drawer dl{display:grid;grid-template-columns:110px 1fr;gap:8px 12px;margin:16px 0}
+#drawer dt{color:var(--ink3);font-size:12px;text-transform:uppercase;letter-spacing:.06em;padding-top:2px}
+#drawer dd{margin:0}
+#drawer .dest{background:#f3f6ff;border-left:3px solid var(--accent);padding:8px 10px;border-radius:4px}
+#drawer ul{margin:0;padding-left:18px}
+
+/* ---------- A: metro ---------- */
+.m-wrap{position:relative}
+.m-legend{display:flex;gap:18px;flex-wrap:wrap;font-size:12px;color:var(--ink2);margin-bottom:10px;align-items:center}
+.m-row{display:grid;grid-template-columns:200px 1fr 300px;gap:0 18px;align-items:start;padding:8px 0;border-bottom:1px solid var(--rule)}
+.m-head{padding-top:40px}
+.m-head .nm{font-size:17px;font-weight:700;display:flex;align-items:center;gap:8px}
+.m-head .sw{width:16px;height:16px;border-radius:3px;background:var(--c);flex:none}
+.m-head .meta{margin-top:4px;display:flex;flex-wrap:wrap;gap:4px 6px;align-items:center}
+.m-track{position:relative;height:172px}
+.m-rail{position:absolute;left:0;right:18px;top:58px;height:9px;border-radius:5px;background:var(--c)}
+.m-rail.blocked{background:repeating-linear-gradient(45deg,var(--c) 0 12px,#fff 12px 18px);box-shadow:0 0 0 1px var(--c) inset}
+.m-rail.empty{background:repeating-linear-gradient(90deg,var(--c) 0 14px,transparent 14px 24px);opacity:.7}
+.m-end{position:absolute;right:6px;top:46px;width:14px;height:33px;border-radius:4px;background:#1d1d1f}
+.m-st{position:absolute;top:50px;transform:translateX(-50%);width:25px;height:25px;border-radius:50%;background:#fff;border:5px solid #1d1d1f;cursor:pointer;padding:0}
+.m-st.complete{background:#1d1d1f}
+.m-st.dropped{border-color:#bbb;background:#f1f1f1}
+.m-st.dropped::after{content:"";position:absolute;left:-4px;right:-4px;top:7px;height:2px;background:#999;transform:rotate(-45deg)}
+.m-st.backlog{border-style:dashed;border-color:#777}
+.m-st.blocked{border-color:var(--red);border-radius:5px}
+.m-st.in_progress{box-shadow:0 0 0 5px rgba(47,91,211,.35)}
+.m-st.next{width:31px;height:31px;top:47px;box-shadow:0 0 0 4px #fff,0 0 0 7px #f5a623}
+.m-lbl{position:absolute;top:84px;transform:translateX(-50%);width:132px;text-align:center;font-size:12px;line-height:1.25;cursor:pointer}
+.m-lbl:hover{color:var(--accent)}
+.m-lbl.dropped{color:#999;text-decoration:line-through}
+.m-lbl small{display:block;color:var(--ink3);font-size:11px;text-decoration:none}
+.m-br{position:absolute;top:22px;height:14px;border:2px solid var(--ink3);border-bottom:0;border-radius:6px 6px 0 0}
+.m-brl{position:absolute;top:2px;font-size:11px;color:var(--ink2);font-weight:600;transform:translateX(-50%);white-space:nowrap;cursor:pointer;background:var(--bg);padding:0 4px}
+.m-next{position:absolute;top:30px;transform:translateX(-50%);font-size:10px;font-weight:800;background:#f5a623;color:#1d1d1f;padding:1px 6px;border-radius:3px;letter-spacing:.06em;white-space:nowrap}
+.m-siding{position:absolute;left:0;right:18px;bottom:0;display:flex;gap:8px;align-items:center;flex-wrap:wrap;border-top:2px dashed #c9c7bf;padding-top:5px}
+.tok{display:inline-flex;align-items:center;gap:5px;font-size:12px;padding:2px 8px;border-radius:5px;border:1px solid rgba(0,0,0,.12);cursor:pointer;max-width:340px}
+.tok span.t{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.tok.next{box-shadow:0 0 0 3px #f5a623}
+.tok.idea{background:var(--k-idea)} .tok.bug{background:var(--k-bug)} .tok.feature{background:var(--k-feature)}
+.m-empty{position:absolute;top:84px;left:30%;font-size:12px;color:var(--ink3);font-style:italic}
+.m-term{padding-top:36px}
+.m-term .lab{font-size:10px;letter-spacing:.14em;text-transform:uppercase;font-weight:700;color:#fff;background:#1d1d1f;display:inline-block;padding:2px 7px;border-radius:3px}
+.m-term .txt{font-size:13px;margin-top:6px;line-height:1.35;border-left:4px solid var(--c);padding-left:8px}
+.m-yard{margin-top:22px;background:var(--panel);border:1px solid var(--rule);border-radius:10px;padding:14px 16px}
+.m-yard h3{margin:0 0 4px;font-size:15px}
+.m-yard .rows{display:flex;gap:10px;flex-wrap:wrap;margin-top:8px}
+svg.m-deps{position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;overflow:visible}
+
+/* ---------- B: outline ---------- */
+.o-tools{display:flex;gap:16px;align-items:center;margin-bottom:14px;font-size:13px;color:var(--ink2);flex-wrap:wrap}
+.o-tools input[type=search]{padding:6px 10px;border:1px solid var(--rule);border-radius:6px;width:280px;font:inherit}
+.o-tools button{font:inherit;padding:5px 10px;border:1px solid var(--rule);background:#fff;border-radius:6px;cursor:pointer}
+.o-doc{background:var(--panel);border:1px solid var(--rule);border-radius:10px;padding:8px 34px 24px;max-width:1120px;font-family:Georgia,"Times New Roman",serif}
+.o-sec{border-bottom:1px solid var(--rule);padding:18px 0 14px}
+.o-sec>summary,.o-list summary{list-style:none;cursor:pointer}
+.o-sec>summary::-webkit-details-marker,.o-list summary::-webkit-details-marker{display:none}
+.o-h{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.o-h .num{color:var(--ink3);font-size:15px}
+.o-h .tt{font-size:22px;font-weight:700}
+.chev{color:var(--ink3);font-size:11px;width:14px;display:inline-block;transition:transform .12s}
+details[open]>summary .chev{transform:rotate(90deg)}
+details[open]>summary .o-r .chev{transform:rotate(90deg)}
+.o-strap{font-style:italic;color:#333;font-size:15px;margin:3px 0 4px 24px}
+.o-strap b{font-style:normal;font-family:"Segoe UI",system-ui,sans-serif;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--accent);margin-right:6px}
+.o-next{margin:6px 0 8px 24px;font-family:"Segoe UI",system-ui,sans-serif;font-size:13px;background:#fff7e6;border-left:3px solid #f5a623;padding:4px 10px;display:inline-block}
+.o-meta{margin-left:24px;font-family:"Segoe UI",system-ui,sans-serif;font-size:12px;color:var(--ink2);display:flex;gap:10px;flex-wrap:wrap;align-items:center}
+.o-list{margin:4px 0 0 24px;font-family:"Segoe UI",system-ui,sans-serif}
+.o-r{display:flex;gap:8px;align-items:baseline;padding:3px 0;border-bottom:1px dotted #ece9e0;flex-wrap:wrap}
+.o-r .nochev{width:14px;display:inline-block}
+.o-r .tt{font-weight:600}
+.o-r.done .tt{color:var(--ink3)} .o-r.dropped .tt{text-decoration:line-through}
+.o-r .st{font-size:12px;color:var(--ink3)}
+.o-kids{margin-left:24px}
+.o-note{font-size:12.5px;color:var(--ink2);margin:0 0 4px 36px;font-family:Georgia,serif;font-style:italic}
+body:not(.notes) .o-note{display:none}
+body.hidedone .o-r.done,body.hidedone .o-note.done{display:none}
+.o-subh{font-family:"Segoe UI",system-ui,sans-serif;font-size:11px;text-transform:uppercase;letter-spacing:.1em;color:var(--ink3);margin:10px 0 2px 24px;font-weight:700}
+.o-hide{display:none !important}
+
+/* ---------- C: now/next/later ---------- */
+.c-wrap{display:grid;grid-template-columns:1fr 290px;gap:18px;align-items:start}
+.c-grid{display:grid;grid-template-columns:220px 1fr 1fr 1fr 130px;border:1px solid var(--rule);border-radius:10px;overflow:hidden;background:var(--panel)}
+.c-grid>div{border-bottom:1px solid var(--rule);border-right:1px solid var(--rule);padding:10px;min-height:70px;min-width:0}
+.c-grid>div:nth-child(5n){border-right:0}
+.c-colh{background:#efede6;min-height:0 !important;font-weight:700;font-size:13px;letter-spacing:.06em;text-transform:uppercase}
+.c-colh small{display:block;font-weight:400;text-transform:none;letter-spacing:0;color:var(--ink3);font-size:11px}
+.c-colh.now{color:var(--accent)}
+.c-lane{border-left:6px solid var(--c) !important}
+.c-lane .nm{font-weight:700;font-size:15px}
+.c-lane .ds{font-size:12px;color:var(--ink2);margin-top:4px}
+.c-lane .ds b{color:var(--accent);font-size:10px;letter-spacing:.1em;text-transform:uppercase}
+.c-lane .meta{margin-top:6px;display:flex;gap:5px;flex-wrap:wrap;align-items:center}
+.c-cell.nowc{background:#f7f9ff}
+.c-card{background:#fff;border:1px solid #dcdad2;border-left:4px solid var(--c);border-radius:7px;padding:7px 9px;margin-bottom:8px;cursor:pointer;box-shadow:0 1px 2px rgba(0,0,0,.04)}
+.c-card:hover{border-color:#999}
+.c-card .tt{font-weight:600;font-size:13px;line-height:1.3;overflow-wrap:anywhere}
+.c-card .row{display:flex;gap:6px;align-items:center;flex-wrap:wrap;margin-top:4px}
+.c-card.isnext{box-shadow:0 0 0 2px #f5a623}
+.c-card .phs{display:flex;gap:3px;margin-top:5px}
+.c-card .phs i{flex:1;height:6px;border-radius:2px;background:#ddd}
+.c-done{font-size:12px;color:var(--ink3)}
+.c-done div{cursor:pointer;margin-bottom:3px}
+.c-done div:hover{color:var(--accent)}
+.c-empty{color:var(--ink3);font-size:12px;font-style:italic}
+.c-rail{background:var(--panel);border:1px solid var(--rule);border-radius:10px;padding:12px;position:sticky;top:12px}
+.c-rail h3{margin:0 0 2px;font-size:15px}
+.c-rail .grp{margin-top:12px}
+.c-note{border-radius:6px;padding:7px 9px;margin-top:6px;cursor:pointer;border:1px solid rgba(0,0,0,.08);font-size:13px}
+.c-note.idea{background:var(--k-idea)} .c-note.bug{background:var(--k-bug)} .c-note.feature{background:var(--k-feature)}
+
+/* ---------- D: front page ---------- */
+.d-mast{display:flex;justify-content:space-between;align-items:flex-end;border-bottom:3px double #1d1d1f;padding-bottom:8px;margin-bottom:18px}
+.d-mast .t{font-family:Georgia,serif;font-size:34px;font-weight:700;letter-spacing:-.01em}
+.d-mast .s{font-size:12px;color:var(--ink2);text-align:right}
+.d-tiles{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px}
+.d-tile{background:var(--panel);border:1px solid var(--rule);border-top:6px solid var(--c);border-radius:8px;padding:16px 18px;display:flex;flex-direction:column;gap:9px;min-width:0}
+.d-tile.lead{grid-column:span 2}
+.d-tile .top{display:flex;justify-content:space-between;align-items:center;gap:8px}
+.d-tile h2{margin:0;font-family:Georgia,serif;font-size:22px;cursor:pointer}
+.d-tile h2:hover{color:var(--accent)}
+.d-tile.lead h2{font-size:32px}
+.d-tile .dest{font-family:Georgia,serif;font-size:14.5px;font-style:italic;color:#333;line-height:1.4}
+.d-tile.lead .dest{font-size:18px}
+.d-tile .dest b{font-family:"Segoe UI",system-ui,sans-serif;font-style:normal;font-size:10px;letter-spacing:.12em;text-transform:uppercase;color:var(--accent);display:block}
+.d-prog{display:flex;gap:3px;height:12px}
+.d-prog i{flex:1;border-radius:3px;cursor:pointer}
+.d-prog.none{height:auto;font-size:12px;color:var(--ink3);font-style:italic}
+.d-ptxt{font-size:12px;color:var(--ink2)}
+.d-nextbox{background:#fff7e6;border-left:4px solid #f5a623;padding:7px 10px;border-radius:4px}
+.d-nextbox b{font-size:10px;letter-spacing:.12em;text-transform:uppercase;display:block;color:var(--amber)}
+.d-rem{font-size:13px;margin:0;padding:0;list-style:none}
+.d-rem li{padding:2px 0;border-bottom:1px dotted #e6e3da}
+.d-foot{margin-top:auto;display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;padding-top:6px;border-top:1px solid var(--rule)}
+.d-lead-cols{display:grid;grid-template-columns:1.1fr 1fr;gap:20px}
+.d-wallh{margin:30px 0 4px;font-family:Georgia,serif;font-size:24px;border-top:3px double #1d1d1f;padding-top:10px}
+.d-wall{columns:4 260px;column-gap:14px;margin-top:10px}
+.d-note{break-inside:avoid;margin:0 0 14px;padding:12px 14px;border-radius:6px;box-shadow:0 2px 6px rgba(0,0,0,.08);cursor:pointer;transition:transform .1s}
+.d-note:hover{transform:translateY(-2px)}
+.d-note.idea{background:var(--k-idea)} .d-note.bug{background:var(--k-bug)} .d-note.feature{background:var(--k-feature)}
+.d-note .tt{font-weight:600;font-size:15px;margin:3px 0}
+.d-note .ds{font-size:12.5px;color:#444}
+.d-note .pin{font-size:11px;margin-top:6px;color:#333}
+.d-note .pin i{display:inline-block;width:9px;height:9px;border-radius:50%;background:var(--c);margin-right:4px}
+</style>
+</head>
+<body>
+<div id="stage"></div>
+<aside id="drawer" aria-hidden="true"></aside>
+<nav id="bar"></nav>
+
+<script type="application/json" id="data">{
+ "users": [
+  {
+   "id": "7cfe988d-070f-5f3c-8dc1-7835ea9204e2",
+   "name": "Harrison"
+  },
+  {
+   "id": "2e3b3f1e-a8d0-56d2-824d-42f2b83daa09",
+   "name": "Claude"
+  }
+ ],
+ "items": [
+  {
+   "id": "1ea537cf-12db-500c-98e7-bee68908d3cb",
+   "parent_id": null,
+   "title": "Ball Butler",
+   "description": "Holds the parked bb-marker advisory plan and the Feed-side residue.",
+   "completion_criteria": "Ball Butler feeds reliably enough that no Sitting is lost to the feeder.",
+   "assignee_ids": [],
+   "stage": "pathway",
+   "status": "blocked",
+   "priority": null,
+   "canvas_x": 48.0,
+   "canvas_y": 264.0
+  },
+  {
+   "id": "ad99092b-891b-5e21-ba36-1e95e2b1bd4d",
+   "parent_id": "1ea537cf-12db-500c-98e7-bee68908d3cb",
+   "title": "plans/parked/bb-marker-never-matched-advisory.md",
+   "description": "Parked; the unpark gate is in its INDEX row.",
+   "completion_criteria": "",
+   "assignee_ids": [],
+   "stage": "plan",
+   "status": "backlog",
+   "priority": null,
+   "canvas_x": 24.0,
+   "canvas_y": 384.0
+  },
+  {
+   "id": "19730ef6-eb60-577b-94e1-61f70750ad98",
+   "parent_id": "fbaf7cbd-5855-51bf-b0ed-d580fd3c3749",
+   "title": "plans/active/box-sweep-same-site-fidelity.md",
+   "description": "Assigned here because learner P3 decides the box's fate, so the two sequence together.",
+   "completion_criteria": "",
+   "assignee_ids": [],
+   "stage": "plan",
+   "status": "not_started",
+   "priority": null,
+   "canvas_x": 600.0,
+   "canvas_y": 408.0
+  },
+  {
+   "id": "7eb0d73d-60db-5b1a-af81-78aad3c5d761",
+   "parent_id": null,
+   "title": "Levelling contract int16 offset-truncation defect",
+   "description": "OPEN, no owner; read in its archived plan. Unattached inbox item.",
+   "completion_criteria": "",
+   "assignee_ids": [],
+   "stage": "bug",
+   "status": "backlog",
+   "priority": "medium",
+   "canvas_x": 24.0,
+   "canvas_y": 24.0
+  },
+  {
+   "id": "bf3fa530-d8a8-5ae7-adcf-ef06dbdd3a50",
+   "parent_id": "c9ae3c0b-68e1-5263-bf09-788283c7098c",
+   "title": "10 % jitter-margin class (LIMIT_* refusals)",
+   "description": "Residue row (b) from skill-stack-dress-rehearsals-and-residue.md section 2; triggered by an oval Sitting.",
+   "completion_criteria": "",
+   "assignee_ids": [],
+   "stage": "bug",
+   "status": "backlog",
+   "priority": "medium",
+   "canvas_x": 528.0,
+   "canvas_y": 624.0
+  },
+  {
+   "id": "6d1eae5c-5790-560a-85cd-ada904fbda1c",
+   "parent_id": "1ea537cf-12db-500c-98e7-bee68908d3cb",
+   "title": "NOT_SETTLED retry dead in the field",
+   "description": "Residue row (b); the Feed retry never fires on hardware.",
+   "completion_criteria": "",
+   "assignee_ids": [],
+   "stage": "bug",
+   "status": "backlog",
+   "priority": "low",
+   "canvas_x": 192.0,
+   "canvas_y": 384.0
+  },
+  {
+   "id": "daed81f5-c472-5858-baeb-9460f2cdf8b7",
+   "parent_id": null,
+   "title": "Rename the one-ball Patterns to Ball1/Ball2 terminology",
+   "description": "Day-one inbox seed Idea 3 (from #26). Define Ball1/Ball2 in the glossary first; the rename is its own effort.",
+   "completion_criteria": "",
+   "assignee_ids": [],
+   "stage": "idea",
+   "status": "backlog",
+   "priority": null,
+   "canvas_x": 192.0,
+   "canvas_y": 24.0
+  },
+  {
+   "id": "c3e57b3a-1d9a-5bc8-a7e4-9d7a9621bbcf",
+   "parent_id": null,
+   "title": "All-time personal-best window per Pattern (Throws and Catches)",
+   "description": "Day-one inbox seed Idea 2 (from #26).",
+   "completion_criteria": "",
+   "assignee_ids": [],
+   "stage": "idea",
+   "status": "backlog",
+   "priority": null,
+   "canvas_x": 360.0,
+   "canvas_y": 24.0
+  },
+  {
+   "id": "73f0f05f-2248-575d-920a-1cfdd35071b6",
+   "parent_id": null,
+   "title": "Search rosbag recordings for specific information",
+   "description": "Day-one inbox seed Idea 1 (from #26). Unattached: no pathway, no destination yet.",
+   "completion_criteria": "",
+   "assignee_ids": [],
+   "stage": "idea",
+   "status": "backlog",
+   "priority": null,
+   "canvas_x": 528.0,
+   "canvas_y": 24.0
+  },
+  {
+   "id": "b390d967-a267-5bbc-b944-7d97e743f04d",
+   "parent_id": "fbaf7cbd-5855-51bf-b0ed-d580fd3c3749",
+   "title": "plans/active/learner-generalisation.md",
+   "description": "P1-P5 not started.",
+   "completion_criteria": "",
+   "assignee_ids": [],
+   "stage": "plan",
+   "status": "not_started",
+   "priority": null,
+   "canvas_x": 360.0,
+   "canvas_y": 408.0
+  },
+  {
+   "id": "fbaf7cbd-5855-51bf-b0ed-d580fd3c3749",
+   "parent_id": null,
+   "title": "Learner generalisation",
+   "description": "Sequenced after the oval's Rung 2; P3 decides the fate of the Admissible box.",
+   "completion_criteria": "A global plant model with a physics-keyed residual replaces the local-linear Memory and the offline Admissible box, so any Site, Apex, Dwell or yaw can be commanded and changed mid-Pattern.",
+   "assignee_ids": [],
+   "stage": "pathway",
+   "status": "not_started",
+   "priority": null,
+   "canvas_x": 408.0,
+   "canvas_y": 264.0
+  },
+  {
+   "id": "b6a5a13b-cd24-55fd-9898-95a3d73883f3",
+   "parent_id": "2ae129fe-0504-5e09-bd0c-2aad379e764e",
+   "title": "P1 The oval pattern dispatchable",
+   "description": "Heading: '### P1 — The oval pattern dispatchable — COMPLETE 2026-10-18' (plans/active/two-ball-oval.md:263). Title and status lifted from the heading; this is what the phases: frontmatter rule from #23 extracts.",
+   "completion_criteria": "",
+   "assignee_ids": [],
+   "stage": "phase",
+   "status": "complete",
+   "priority": null,
+   "canvas_x": 384.0,
+   "canvas_y": 768.0
+  },
+  {
+   "id": "320adb33-3cdb-5fce-9747-5831e76e2031",
+   "parent_id": "2ae129fe-0504-5e09-bd0c-2aad379e764e",
+   "title": "P2 Banking leak fix",
+   "description": "Heading: '### P2 — Banking leak fix — RETIRED 2026-10-23' (line 309). Retired on measurement: the leak was a pre-P1 prototype-grid number.",
+   "completion_criteria": "",
+   "assignee_ids": [],
+   "stage": "phase",
+   "status": "dropped",
+   "priority": null,
+   "canvas_x": 768.0,
+   "canvas_y": 768.0
+  },
+  {
+   "id": "bd047c5d-2c6d-5869-9765-14aa72fd2597",
+   "parent_id": "2ae129fe-0504-5e09-bd0c-2aad379e764e",
+   "title": "P3 Pose-level carry planner",
+   "description": "Heading: '### P3 — Pose-level carry planner — NOT STARTED' (line 325). Designed after Rung 2.",
+   "completion_criteria": "",
+   "assignee_ids": [],
+   "stage": "phase",
+   "status": "not_started",
+   "priority": null,
+   "canvas_x": 24.0,
+   "canvas_y": 768.0
+  },
+  {
+   "id": "f22d9322-e998-5a39-9e16-84c59520e1c4",
+   "parent_id": "2ae129fe-0504-5e09-bd0c-2aad379e764e",
+   "title": "P4 Working point and the dwell ladder",
+   "description": "Heading: '### P4 — Working point and the dwell ladder — NOT STARTED' (line 348).",
+   "completion_criteria": "",
+   "assignee_ids": [],
+   "stage": "phase",
+   "status": "not_started",
+   "priority": null,
+   "canvas_x": 192.0,
+   "canvas_y": 768.0
+  },
+  {
+   "id": "b048c110-3008-57d0-97f9-cdbfec056440",
+   "parent_id": "2ae129fe-0504-5e09-bd0c-2aad379e764e",
+   "title": "P5 Two-ball oval",
+   "description": "Heading: '### P5 — Two-ball oval — NOT STARTED' (line 360). Holds the 30-consecutive-Catches Rung gate that closes the pathway.",
+   "completion_criteria": "",
+   "assignee_ids": [],
+   "stage": "phase",
+   "status": "not_started",
+   "priority": null,
+   "canvas_x": 576.0,
+   "canvas_y": 768.0
+  },
+  {
+   "id": "aa05e1a9-5b8f-412e-a481-39abad94f0b5",
+   "parent_id": "1ea537cf-12db-500c-98e7-bee68908d3cb",
+   "title": "Probe: round 2",
+   "description": "",
+   "completion_criteria": "",
+   "assignee_ids": [],
+   "stage": "feature",
+   "status": "backlog",
+   "priority": null,
+   "canvas_x": -192.0,
+   "canvas_y": 384.0
+  },
+  {
+   "id": "0a3e8921-e2b8-5d16-967b-6f9972b46de3",
+   "parent_id": null,
+   "title": "Project map and shared dictionary",
+   "description": "No plans yet; the implementation plan from #35 will be its first.EDITED via panel.",
+   "completion_criteria": "A locked design plus a phased implementation plan for the map, the TaskTree-forked viewer and GLOSSARY.md, handed to a fresh session (wayfinder map #21).",
+   "assignee_ids": [
+    "2e3b3f1e-a8d0-56d2-824d-42f2b83daa09",
+    "7cfe988d-070f-5f3c-8dc1-7835ea9204e2"
+   ],
+   "stage": "pathway",
+   "status": "in_progress",
+   "priority": null,
+   "canvas_x": 696.0,
+   "canvas_y": 24.0
+  },
+  {
+   "id": "2ae129fe-0504-5e09-bd0c-2aad379e764e",
+   "parent_id": "c9ae3c0b-68e1-5263-bf09-788283c7098c",
+   "title": "plans/active/two-ball-oval.md",
+   "description": "P1 complete, P2 retired 2026-10-23 on measurement; next Sitting flies the three owed fixes then Rung 2 at dwell 0.55 / 0.50; P3-P5 not started.",
+   "completion_criteria": "",
+   "assignee_ids": [
+    "7cfe988d-070f-5f3c-8dc1-7835ea9204e2"
+   ],
+   "stage": "plan",
+   "status": "in_progress",
+   "priority": null,
+   "canvas_x": 720.0,
+   "canvas_y": 624.0
+  },
+  {
+   "id": "c9ae3c0b-68e1-5263-bf09-788283c7098c",
+   "parent_id": null,
+   "title": "Two-ball oval",
+   "description": "Own pathway, not a continuation of the archived two-ball-skill-stack arc (its destination was met at Sitting 8, 2026-10-13).",
+   "completion_criteria": "Two balls in one Hand on an oval, every Throw caught and carried back in the Cup, closed by 30 consecutive Ball Butler-fed Catches in one Attempt (P5 Rung gate).",
+   "assignee_ids": [
+    "7cfe988d-070f-5f3c-8dc1-7835ea9204e2"
+   ],
+   "stage": "pathway",
+   "status": "in_progress",
+   "priority": "high",
+   "canvas_x": 696.0,
+   "canvas_y": 504.0
+  },
+  {
+   "id": "972d9115-223e-5423-b904-e8f7298145dc",
+   "parent_id": "ec6c9fa1-8536-5196-873d-e4edd9132b7f",
+   "title": "wave-camera-can3-integration.md",
+   "description": "Uncommitted on the 2026-10_wave-camera-can3 checkout.",
+   "completion_criteria": "",
+   "assignee_ids": [],
+   "stage": "plan",
+   "status": "in_progress",
+   "priority": null,
+   "canvas_x": 864.0,
+   "canvas_y": 144.0
+  },
+  {
+   "id": "ec6c9fa1-8536-5196-873d-e4edd9132b7f",
+   "parent_id": null,
+   "title": "Wave camera on CAN3",
+   "description": "Work lives uncommitted on the other checkout (E:/PDJ/Github/Jugglebot, 14 behind main).",
+   "completion_criteria": "The Wave camera is visible over CAN3 and automated recording start/stop is working.",
+   "assignee_ids": [],
+   "stage": "pathway",
+   "status": "in_progress",
+   "priority": null,
+   "canvas_x": 864.0,
+   "canvas_y": 24.0
+  }
+ ],
+ "dependencies": [
+  {
+   "blocker_id": "aa05e1a9-5b8f-412e-a481-39abad94f0b5",
+   "blocked_id": "ad99092b-891b-5e21-ba36-1e95e2b1bd4d"
+  },
+  {
+   "blocker_id": "b390d967-a267-5bbc-b944-7d97e743f04d",
+   "blocked_id": "19730ef6-eb60-577b-94e1-61f70750ad98"
+  }
+ ]
+}</script>
+<script>
+"use strict";
+// ---------------------------------------------------------------- model
+const D = JSON.parse(document.getElementById('data').textContent);
+const byId = new Map(D.items.map(i => [i.id, i]));
+const userName = new Map(D.users.map(u => [u.id, u.name]));
+const USER_COL = {}; D.users.forEach((u, k) => USER_COL[u.id] = ['#d9662b', '#7b3fb3', '#2a7f8f', '#5a6b2a'][k % 4]);
+
+const STATUS = {
+  complete:    {label: 'Complete',    g: '●'},
+  in_progress: {label: 'In progress', g: '◐'},
+  qa:          {label: 'QA',          g: '◑'},
+  blocked:     {label: 'Blocked',     g: '■'},
+  not_started: {label: 'Not started', g: '○'},
+  backlog:     {label: 'Backlog',     g: '◌'},
+  dropped:     {label: 'Dropped',     g: '⊘'},
+};
+const ST_RANK = {in_progress: 0, qa: 1, blocked: 2, not_started: 3, backlog: 4, complete: 5, dropped: 6};
+const PRI_RANK = {high: 0, medium: 1, low: 2};
+const KIND = {pathway: 'Pathway', plan: 'Plan', phase: 'Phase', idea: 'Idea', bug: 'Bug', feature: 'Feature', task: 'Task'};
+const INBOX_KINDS = new Set(['idea', 'bug', 'feature']);
+const ACTIVE = new Set(['in_progress', 'qa', 'blocked']);
+const DONE = s => s === 'complete' || s === 'dropped';
+const LINE_COL = ['#E32017', '#00782A', '#9B0056', '#B8860B', '#0098D4', '#6950a1'];
+
+const esc = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'}[c]));
+const short = t => t.replace(/^plans\/(active|parked|archived)\//, '').replace(/\.md$/, '');
+const parked = t => /^plans\/parked\//.test(t);
+function cmpItems(a, b) {
+  if (a.stage === 'phase' && b.stage === 'phase') return a.title.localeCompare(b.title, undefined, {numeric: true});
+  const wa = a.stage === 'plan' && openBlockers(a.id).length ? 1 : 0, wb = b.stage === 'plan' && openBlockers(b.id).length ? 1 : 0;
+  return (wa - wb) || (ST_RANK[a.status] - ST_RANK[b.status]) || a.title.localeCompare(b.title);
+}
+const children = id => D.items.filter(i => i.parent_id === id).sort(cmpItems);
+function pathwayOf(it) { while (it && it.parent_id) it = byId.get(it.parent_id); return it && it.stage === 'pathway' ? it : null; }
+function descendants(id) { const out = []; children(id).forEach(c => { out.push(c); out.push(...descendants(c.id)); }); return out; }
+const plansOf = pw => children(pw.id).filter(c => c.stage === 'plan');
+const phasesOf = pl => children(pl.id).filter(c => c.stage === 'phase');
+// Work units = the stations of a Pathway: a Plan's Phases if it has any, else the Plan itself.
+function units(pw) { const u = []; plansOf(pw).forEach(pl => { const ph = phasesOf(pl); if (ph.length) ph.forEach(p => u.push({it: p, plan: pl})); else u.push({it: pl, plan: pl}); }); return u; }
+const attachedInbox = pw => descendants(pw.id).filter(i => INBOX_KINDS.has(i.stage));
+const looseInbox = () => D.items.filter(i => !i.parent_id && INBOX_KINDS.has(i.stage)).sort((a, b) => a.stage.localeCompare(b.stage) || a.title.localeCompare(b.title));
+const blockersOf = id => D.dependencies.filter(d => d.blocked_id === id).map(d => byId.get(d.blocker_id)).filter(Boolean);
+const blocksOf = id => D.dependencies.filter(d => d.blocker_id === id).map(d => byId.get(d.blocked_id)).filter(Boolean);
+const openBlockers = id => blockersOf(id).filter(b => !DONE(b.status));
+// Next up: first unfinished Phase of the most-advanced Plan, else the Plan itself. If every open Plan waits on an
+// open blocker, the next thing to do is that blocker.
+function nextUp(pw) {
+  const plans = plansOf(pw).filter(p => !DONE(p.status));
+  const ready = plans.filter(p => !openBlockers(p.id).length);
+  if (!ready.length && plans.length) return openBlockers(plans[0].id)[0];
+  for (const pl of ready) {
+    const ph = phasesOf(pl);
+    if (ph.length) { const n = ph.find(p => !DONE(p.status)); if (n) return n; continue; }
+    return pl;
+  }
+  return null;
+}
+function progress(pw) {
+  const u = units(pw); const c = {}; u.forEach(x => c[x.it.status] = (c[x.it.status] || 0) + 1);
+  return {n: u.length, done: c.complete || 0, dropped: c.dropped || 0, live: u.length - (c.dropped || 0)};
+}
+const pathways = D.items.filter(i => i.stage === 'pathway').sort((a, b) =>
+  ((PRI_RANK[a.priority] ?? 3) - (PRI_RANK[b.priority] ?? 3)) || (ST_RANK[a.status] - ST_RANK[b.status]) || a.title.localeCompare(b.title));
+const PW_COL = {}; pathways.forEach((p, k) => PW_COL[p.id] = LINE_COL[k % LINE_COL.length]);
+
+// ---------------------------------------------------------------- shared bits
+const glyph = s => `<span class="g ${s}" title="${esc(STATUS[s].label)}">${STATUS[s].g}</span>`;
+const pill = s => `<span class="pill ${s}">${esc(STATUS[s].label)}</span>`;
+const pri = p => p ? `<span class="pill ${p}" title="Priority">${esc(p)}</span>` : '';
+const names = it => it.assignee_ids.map(id => userName.get(id)).join(', ');
+function avatars(it, withNames) {
+  if (!it.assignee_ids.length) return withNames ? '<span class="unowned">unowned</span>' : '';
+  const a = it.assignee_ids.map(id => `<span class="av" style="background:${USER_COL[id]}" title="${esc(userName.get(id))}">${esc((userName.get(id) || '?')[0])}</span>`).join('');
+  return withNames ? `<span class="owners">${a} ${esc(names(it))}</span>` : a;
+}
+const displayTitle = it => it.stage === 'plan' ? short(it.title) : it.title;
+const L = (it, txt) => `<button class="lnk" data-open="${it.id}">${esc(txt == null ? displayTitle(it) : txt)}</button>`;
+function depTags(it, compact) {
+  const cut = t => compact && t.length > 28 ? t.slice(0, 26) + '…' : t;
+  const out = [];
+  blockersOf(it.id).forEach(b => out.push(`<span class="dep" data-open="${b.id}" data-hl="${b.id}" title="Blocked by ${esc(b.title)} (${STATUS[b.status].label})">⛔ blocked by ${esc(cut(displayTitle(b)))}</span>`));
+  blocksOf(it.id).forEach(b => out.push(`<span class="dep blocks" data-open="${b.id}" data-hl="${b.id}" title="Blocks ${esc(b.title)}">→ blocks ${esc(cut(displayTitle(b)))}</span>`));
+  return out.join(' ');
+}
+
+// ---------------------------------------------------------------- drawer
+const drawer = document.getElementById('drawer');
+function openDrawer(id) {
+  const it = byId.get(id); if (!it) return;
+  const pw = pathwayOf(it);
+  const crumbs = []; let p = it.parent_id ? byId.get(it.parent_id) : null;
+  while (p) { crumbs.unshift(L(p)); p = p.parent_id ? byId.get(p.parent_id) : null; }
+  const kids = children(it.id), blk = blockersOf(it.id), bks = blocksOf(it.id);
+  const nx = it.stage === 'pathway' ? nextUp(it) : null;
+  const linkList = arr => arr.length ? '<ul>' + arr.map(b => `<li>${glyph(b.status)} <span class="kind">${KIND[b.stage]}</span> ${L(b)}</li>`).join('') + '</ul>' : '<span style="color:var(--ink3)">nothing</span>';
+  drawer.innerHTML = `
+    <button class="x" onclick="closeDrawer()" title="Close (Esc)">×</button>
+    <div class="crumb">${crumbs.length ? crumbs.join(' › ') : (INBOX_KINDS.has(it.stage) ? 'Inbox (unattached)' : 'Top level')}</div>
+    <div class="kind" style="margin-top:8px">${KIND[it.stage] || it.stage}${it.stage === 'plan' && parked(it.title) ? ' · parked' : ''}</div>
+    <h2>${esc(it.title)}</h2>
+    <div>${glyph(it.status)} ${pill(it.status)} ${pri(it.priority)}</div>
+    <dl>
+      <dt>Owners</dt><dd>${avatars(it, true)}</dd>
+      ${it.stage === 'pathway' ? `<dt>Destination</dt><dd class="dest">${esc(it.completion_criteria) || '<i>none set</i>'}</dd>` : (it.completion_criteria ? `<dt>Done when</dt><dd class="dest">${esc(it.completion_criteria)}</dd>` : '')}
+      ${pw && pw !== it ? `<dt>Pathway</dt><dd>${L(pw)}<div style="font-size:12px;color:var(--ink2);margin-top:2px">→ ${esc(pw.completion_criteria)}</div></dd>` : ''}
+      ${nx ? `<dt>Next up</dt><dd>${glyph(nx.status)} ${L(nx)}</dd>` : ''}
+      ${it.branch ? `<dt>Branch</dt><dd><code>${esc(it.branch)}</code></dd>` : ''}
+      <dt>Description</dt><dd>${esc(it.description) || '<i style="color:var(--ink3)">none</i>'}</dd>
+      <dt>Blocked by</dt><dd>${linkList(blk)}</dd>
+      <dt>Blocks</dt><dd>${linkList(bks)}</dd>
+      ${kids.length ? `<dt>Contains</dt><dd>${linkList(kids)}</dd>` : ''}
+    </dl>`;
+  drawer.classList.add('open'); drawer.setAttribute('aria-hidden', 'false');
+}
+function closeDrawer() { drawer.classList.remove('open'); drawer.setAttribute('aria-hidden', 'true'); }
+document.addEventListener('keydown', e => { if (e.key === 'Escape') closeDrawer(); });
+document.addEventListener('click', e => {
+  const t = e.target.closest('[data-open]');
+  if (t) { e.preventDefault(); e.stopPropagation(); openDrawer(t.getAttribute('data-open')); return; }
+  if (!e.target.closest('#drawer') && !e.target.closest('#bar') && !e.target.closest('summary') && !e.target.closest('.o-tools')) closeDrawer();
+});
+document.addEventListener('mouseover', e => {
+  const t = e.target.closest('[data-hl]'); document.querySelectorAll('.hl').forEach(x => x.classList.remove('hl'));
+  if (t) document.querySelectorAll(`#stage [data-id="${t.getAttribute('data-hl')}"]`).forEach(x => x.classList.add('hl'));
+});
+
+// ---------------------------------------------------------------- A: metro
+function renderMetro(root) {
+  const legend = Object.entries(STATUS).map(([k, v]) => `<span>${glyph(k)} ${v.label}</span>`).join('');
+  let html = `<h1 class="vt">Metro map · every Pathway runs to its Destination</h1>
+    <div class="m-legend">${legend}<span><span class="m-next" style="position:static;transform:none">NEXT</span> next stop</span><span style="color:var(--red);font-weight:600">- - → red arc = dependency (blocker → blocked)</span><span>striped line = Pathway blocked</span></div>
+    <div class="m-wrap" id="mwrap">`;
+  pathways.forEach(pw => {
+    const u = units(pw), nx = nextUp(pw), ib = attachedInbox(pw), n = u.length;
+    const f = k => (k + 0.6) / (n + 0.4);
+    const x = k => `calc(${(f(k) * 100).toFixed(3)}% - ${(f(k) * 18).toFixed(2)}px)`;
+    let tr = `<div class="m-rail ${pw.status === 'blocked' ? 'blocked' : ''} ${n ? '' : 'empty'}"></div><div class="m-end" title="Terminus"></div>`;
+    const groups = {}; u.forEach((s, k) => { if (s.it !== s.plan) (groups[s.plan.id] = groups[s.plan.id] || []).push(k); });
+    Object.entries(groups).forEach(([pid, ks]) => {
+      const a = ks[0], b = ks[ks.length - 1], pl = byId.get(pid);
+      tr += `<div class="m-br" style="left:${x(a)};width:calc(${x(b)} - ${x(a)})"></div>
+             <div class="m-brl" style="left:calc((${x(a)} + ${x(b)}) / 2)" data-open="${pid}" data-id="${pid}">${glyph(pl.status)} Plan: ${esc(short(pl.title))}${pl.assignee_ids.length ? ' · ' + esc(names(pl)) : ''}</div>`;
+    });
+    u.forEach((s, k) => {
+      const it = s.it, isNext = nx && nx.id === it.id, solo = it === s.plan;
+      tr += `<button class="m-st ${it.status} ${isNext ? 'next' : ''}" style="left:${x(k)}" data-open="${it.id}" data-id="${it.id}" title="${esc(KIND[it.stage] + ': ' + displayTitle(it) + ' — ' + STATUS[it.status].label)}"></button>`;
+      if (isNext) tr += `<div class="m-next" style="left:${x(k)}">NEXT</div>`;
+      tr += `<div class="m-lbl ${it.status}" style="left:${x(k)}" data-open="${it.id}">${solo ? '<span class="kind">Plan' + (parked(it.title) ? ' · parked' : '') + '</span><br>' : ''}${esc(displayTitle(it))}<small>${glyph(it.status)}${STATUS[it.status].label}${it.assignee_ids.length && !solo ? '' : (it.assignee_ids.length ? ' · ' + esc(names(it)) : '')}</small></div>`;
+    });
+    if (!n) tr += `<div class="m-empty">No stations yet: no Plans on this line</div>`;
+    if (ib.length) tr += `<div class="m-siding"><span class="kind">Siding · Inbox on this line</span>${ib.map(i => `<span class="tok ${i.stage} ${nx && nx.id === i.id ? 'next' : ''}" data-open="${i.id}" data-id="${i.id}" title="${esc(KIND[i.stage] + ' — ' + STATUS[i.status].label)}">${nx && nx.id === i.id ? '<span class="m-next" style="position:static;transform:none">NEXT</span>' : ''}<b>${KIND[i.stage]}</b><span class="t">${esc(i.title)}</span>${pri(i.priority)}</span>`).join('')}</div>`;
+    const pr = progress(pw);
+    html += `<div class="m-row" style="--c:${PW_COL[pw.id]}">
+      <div class="m-head"><div class="nm"><span class="sw"></span>${L(pw)}</div>
+        <div class="meta">${pill(pw.status)} ${pri(pw.priority)} <span style="font-size:12px;color:var(--ink2)">${pr.n ? `${pr.done}/${pr.live} stops` : ''}</span></div>
+        <div class="meta">${avatars(pw, true)}</div></div>
+      <div class="m-track">${tr}</div>
+      <div class="m-term"><span class="lab">Terminus · Destination</span><div class="txt">${esc(pw.completion_criteria)}</div></div>
+    </div>`;
+  });
+  const loose = looseInbox();
+  html += `<div class="m-yard"><h3>Inbox yard</h3><div style="font-size:12px;color:var(--ink2)">Not yet on any line: unattached Ideas, Bugs and Features. Attached ones wait in their line's siding above.</div>
+    <div class="rows">${loose.map(i => `<span class="tok ${i.stage}" data-open="${i.id}" data-id="${i.id}"><b>${KIND[i.stage]}</b><span class="t">${esc(i.title)}</span>${pri(i.priority)}</span>`).join('')}</div></div>`;
+  html += `<svg class="m-deps" id="mdeps"><defs><marker id="arr" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto"><path d="M0,0 L10,5 L0,10 z" fill="#c62828"/></marker></defs></svg></div>`;
+  root.innerHTML = html;
+  requestAnimationFrame(drawMetroDeps);
+}
+function drawMetroDeps() {
+  const wrap = document.getElementById('mwrap'), svg = document.getElementById('mdeps'); if (!wrap || !svg) return;
+  svg.querySelectorAll('.dp').forEach(e => e.remove());
+  const W = wrap.getBoundingClientRect();
+  const c = el => { const r = el.getBoundingClientRect(); return {x: r.left - W.left + r.width / 2, y: r.top - W.top, h: r.height}; };
+  const find = id => wrap.querySelector(`.m-st[data-id="${id}"],.m-brl[data-id="${id}"],.tok[data-id="${id}"]`);
+  const NS = 'http://www.w3.org/2000/svg';
+  D.dependencies.forEach(d => {
+    const a = find(d.blocker_id), b = find(d.blocked_id); if (!a || !b) return;
+    const p = c(a), q = c(b);
+    const lift = 34 + Math.abs(q.x - p.x) * 0.08;
+    const trk = (a.closest('.m-track') || a).getBoundingClientRect();
+    const my = Math.max(Math.min(p.y, q.y) - lift, trk.top - W.top + 4);
+    const path = document.createElementNS(NS, 'path');
+    path.setAttribute('class', 'dp');
+    path.setAttribute('d', `M${p.x},${p.y - 2} C${p.x},${my} ${q.x},${my} ${q.x},${q.y - 4}`);
+    path.setAttribute('fill', 'none'); path.setAttribute('stroke', '#c62828'); path.setAttribute('stroke-width', '2');
+    path.setAttribute('stroke-dasharray', '6 4'); path.setAttribute('marker-end', 'url(#arr)');
+    const t = document.createElementNS(NS, 'text');
+    t.setAttribute('class', 'dp'); t.setAttribute('x', (p.x + q.x) / 2); t.setAttribute('y', my + 12);
+    t.setAttribute('text-anchor', 'middle'); t.setAttribute('font-size', '11'); t.setAttribute('fill', '#c62828'); t.setAttribute('font-weight', '700');
+    t.setAttribute('paint-order', 'stroke'); t.setAttribute('stroke', '#f7f6f2'); t.setAttribute('stroke-width', '4');
+    t.textContent = 'blocks';
+    svg.append(path, t);
+  });
+}
+window.addEventListener('resize', () => { if (current === 'a') drawMetroDeps(); });
+
+// ---------------------------------------------------------------- B: outline
+function renderOutline(root) {
+  const row = (it, hasKids) => {
+    const done = DONE(it.status) ? 'done' : '';
+    return `<div class="o-r ${done} ${it.status}" data-id="${it.id}" data-txt="${esc((it.title + ' ' + it.description + ' ' + it.stage + ' ' + it.status + ' ' + names(it)).toLowerCase())}">
+      ${hasKids ? '<span class="chev">▶</span>' : '<span class="nochev"></span>'}${glyph(it.status)}
+      <span class="kind">${KIND[it.stage]}${it.stage === 'plan' && parked(it.title) ? ' · parked' : ''}</span>
+      <span class="tt">${L(it)}</span><span class="st">${STATUS[it.status].label}</span> ${pri(it.priority)}
+      ${avatars(it, true)} ${depTags(it)}</div>
+      ${it.description ? `<div class="o-note ${done}">${esc(it.description)}</div>` : ''}`;
+  };
+  const tree = it => {
+    const kids = children(it.id);
+    if (!kids.length) return row(it, false);
+    return `<details open><summary>${row(it, true)}</summary><div class="o-kids">${kids.map(tree).join('')}</div></details>`;
+  };
+  let html = `<h1 class="vt">Briefing outline · the whole map as one foldable document</h1>
+    <div class="o-tools"><input type="search" id="oq" placeholder="Filter rows (e.g. oval, bug, Harrison, not_started)">
+      <label><input type="checkbox" id="onotes"> Show notes (descriptions)</label>
+      <label><input type="checkbox" id="odone"> Hide complete / dropped</label>
+      <button id="oexp">Expand all</button><button id="ocol">Collapse all</button></div><div class="o-doc">`;
+  pathways.forEach((pw, k) => {
+    const nx = nextUp(pw), pr = progress(pw), plans = plansOf(pw), inb = attachedInbox(pw);
+    html += `<details class="o-sec" open data-id="${pw.id}"><summary>
+      <div class="o-h"><span class="chev">▶</span><span class="num">${k + 1}.</span><span class="tt">${L(pw)}</span>${pill(pw.status)} ${pri(pw.priority)}</div>
+      <div class="o-strap"><b>Destination</b>${esc(pw.completion_criteria)}</div></summary>
+      <div class="o-meta">${avatars(pw, true)}<span>· ${plans.length} Plan${plans.length === 1 ? '' : 's'}</span>${pr.n ? `<span>· ${pr.done} of ${pr.live} stops done${pr.dropped ? `, ${pr.dropped} dropped` : ''}</span>` : ''}${inb.length ? `<span>· ${inb.length} Inbox item${inb.length === 1 ? '' : 's'}</span>` : ''}</div>
+      ${nx ? `<div class="o-next"><b>Next up:</b> ${glyph(nx.status)} ${L(nx)}${nx.stage === 'phase' ? ` <span style="color:var(--ink3)">in ${esc(short(byId.get(nx.parent_id).title))}</span>` : ''}</div>` : `<div class="o-next" style="background:#f3f3f3;border-color:#bbb"><b>Next up:</b> no Plan yet. ${esc(pw.description)}</div>`}
+      ${pw.description && nx ? `<div class="o-note" style="margin-left:24px">${esc(pw.description)}</div>` : ''}
+      ${plans.length ? `<div class="o-subh">Plans</div><div class="o-list">${plans.map(tree).join('')}</div>` : ''}
+      ${inb.length ? `<div class="o-subh">Inbox on this Pathway</div><div class="o-list">${inb.map(tree).join('')}</div>` : ''}
+    </details>`;
+  });
+  const loose = looseInbox();
+  html += `<details class="o-sec" open><summary><div class="o-h"><span class="chev">▶</span><span class="num">${pathways.length + 1}.</span><span class="tt">Inbox</span><span class="pill">${loose.length} unattached</span></div>
+    <div class="o-strap"><b>Not yet on a Pathway</b>Ideas, Bugs and Features waiting for a home.</div></summary>`;
+  ['bug', 'feature', 'idea'].forEach(kd => {
+    const g = loose.filter(i => i.stage === kd); if (!g.length) return;
+    html += `<div class="o-subh">${KIND[kd]}s</div><div class="o-list">${g.map(tree).join('')}</div>`;
+  });
+  html += `</details></div>`;
+  root.innerHTML = html;
+  const q = document.getElementById('oq');
+  q.addEventListener('input', () => {
+    const v = q.value.trim().toLowerCase();
+    root.querySelectorAll('.o-r').forEach(r => r.classList.toggle('o-hide', !!v && !r.dataset.txt.includes(v)));
+  });
+  document.getElementById('onotes').addEventListener('change', e => document.body.classList.toggle('notes', e.target.checked));
+  document.getElementById('odone').addEventListener('change', e => document.body.classList.toggle('hidedone', e.target.checked));
+  document.getElementById('oexp').onclick = () => root.querySelectorAll('details').forEach(d => d.open = true);
+  document.getElementById('ocol').onclick = () => root.querySelectorAll('details').forEach(d => d.open = false);
+}
+
+// ---------------------------------------------------------------- C: now / next / later
+// Now = in progress / QA / blocked. Next = the Pathway's computed next stop. Later = everything else open
+// (queued Phases, parked Plans, Plans waiting on a blocker, attached Inbox items). Done = complete / dropped.
+function bucket(pw) {
+  const b = {now: [], next: [], later: [], done: []}, nx = nextUp(pw);
+  const put = it => DONE(it.status) ? b.done.push(it) : ACTIVE.has(it.status) ? b.now.push(it) : (nx && nx.id === it.id ? b.next : b.later).push(it);
+  plansOf(pw).forEach(pl => {
+    const ph = phasesOf(pl);
+    if (!ph.length || ACTIVE.has(pl.status) || DONE(pl.status)) put(pl);
+    ph.forEach(put);
+  });
+  attachedInbox(pw).forEach(put);
+  return b;
+}
+function renderNNL(root) {
+  const phCol = s => ({complete: 'var(--st-complete)', dropped: 'repeating-linear-gradient(45deg,#ccc 0 3px,#fff 3px 6px)', in_progress: 'var(--accent)'}[s] || '#ddd');
+  const card = (it, pw, nx) => {
+    const ph = it.stage === 'plan' ? phasesOf(it) : [];
+    return `<div class="c-card ${nx && nx.id === it.id ? 'isnext' : ''}" data-open="${it.id}" data-id="${it.id}" style="--c:${PW_COL[pw.id]}${INBOX_KINDS.has(it.stage) ? `;background:var(--k-${it.stage})` : ''}">
+      <div class="row" style="margin-top:0">${glyph(it.status)}<span class="kind">${KIND[it.stage]}${it.stage === 'plan' && parked(it.title) ? ' · parked' : ''}${it.stage === 'phase' ? ' · ' + esc(short(byId.get(it.parent_id).title)) : ''}</span>${nx && nx.id === it.id ? '<span class="pill" style="background:#f5a623;color:#111">next</span>' : ''}</div>
+      <div class="tt">${esc(displayTitle(it))}</div>
+      ${ph.length ? `<div class="phs">${ph.map(p => `<i title="${esc(p.title + ' — ' + STATUS[p.status].label)}" style="background:${phCol(p.status)}"></i>`).join('')}</div>` : ''}
+      <div class="row">${avatars(it, true)} ${pri(it.priority)} ${depTags(it, true)}</div></div>`;
+  };
+  let g = `<div class="c-colh">Pathway → Destination</div><div class="c-colh now">Now<small>in progress, QA, blocked</small></div><div class="c-colh">Next<small>the next stop on each Pathway</small></div><div class="c-colh">Later<small>queued, parked, waiting on a blocker, Inbox</small></div><div class="c-colh">Done<small>complete / dropped</small></div>`;
+  pathways.forEach(pw => {
+    const b = bucket(pw), nx = nextUp(pw), st = `style="--c:${PW_COL[pw.id]}"`;
+    const cell = (arr, cls) => `<div class="c-cell ${cls}" ${st}>${arr.length ? arr.map(i => card(i, pw, nx)).join('') : '<span class="c-empty">—</span>'}</div>`;
+    g += `<div class="c-lane" ${st}><div class="nm">${L(pw)}</div>
+      <div class="ds"><b>Destination</b> ${esc(pw.completion_criteria)}</div>
+      <div class="meta">${pill(pw.status)} ${pri(pw.priority)} ${avatars(pw, true)}</div>
+      ${!plansOf(pw).length ? `<div class="c-empty" style="margin-top:6px">No Plans yet</div>` : ''}</div>
+      ${cell(b.now, 'nowc')}${cell(b.next, '')}${cell(b.later, '')}
+      <div class="c-done" ${st}>${b.done.length ? b.done.map(i => `<div data-open="${i.id}" data-id="${i.id}">${glyph(i.status)} ${esc(displayTitle(i))}</div>`).join('') : '<span class="c-empty">—</span>'}</div>`;
+  });
+  const loose = looseInbox();
+  const rail = ['bug', 'feature', 'idea'].map(kd => {
+    const items = loose.filter(i => i.stage === kd); if (!items.length) return '';
+    return `<div class="grp"><div class="kind">${KIND[kd]}s · ${items.length}</div>${items.map(i => `<div class="c-note ${kd}" data-open="${i.id}" data-id="${i.id}">${glyph(i.status)} ${esc(i.title)} ${pri(i.priority)} ${depTags(i, true)}</div>`).join('')}</div>`;
+  }).join('');
+  root.innerHTML = `<h1 class="vt">Now / Next / Later · every Pathway against the commitment horizon</h1>
+    <div class="c-wrap"><div class="c-grid">${g}</div>
+    <aside class="c-rail"><h3>Inbox</h3><div style="font-size:12px;color:var(--ink2)">Unattached: no Pathway yet. Attached Inbox items sit in their Pathway's Later column.</div>${rail}</aside></div>`;
+}
+
+// ---------------------------------------------------------------- D: front page
+function renderFront(root) {
+  const segCol = s => ({complete: 'var(--st-complete)', in_progress: 'var(--accent)', qa: 'var(--st-qa)', blocked: 'var(--red)', not_started: '#d6d4cc', backlog: 'repeating-linear-gradient(90deg,#d6d4cc 0 4px,#fff 4px 7px)', dropped: 'repeating-linear-gradient(45deg,#ccc 0 3px,#fff 3px 6px)'}[s]);
+  const tile = (pw, lead) => {
+    const u = units(pw), pr = progress(pw), nx = nextUp(pw), inb = attachedInbox(pw);
+    const remaining = u.filter(x => !DONE(x.it.status));
+    const progBar = u.length ? `<div class="d-prog">${u.map(x => `<i style="background:${segCol(x.it.status)}" data-open="${x.it.id}" title="${esc(displayTitle(x.it) + ' — ' + STATUS[x.it.status].label)}"></i>`).join('')}</div><div class="d-ptxt">${pr.done} of ${pr.live} stops done${pr.dropped ? ` · ${pr.dropped} dropped` : ''} · ${remaining.length} remaining</div>` : `<div class="d-prog none">No Plans yet</div>`;
+    const nextBox = `<div class="d-nextbox"><b>Next</b>${nx ? `${glyph(nx.status)} ${L(nx)}${nx.stage === 'phase' ? ` <span style="color:var(--ink3);font-size:12px">(${esc(short(byId.get(nx.parent_id).title))})</span>` : ''}` : esc(pw.description || 'Nothing scheduled')}</div>`;
+    const remList = remaining.length ? `<ul class="d-rem">${remaining.map(x => `<li>${glyph(x.it.status)} <span class="kind">${KIND[x.it.stage]}</span> ${L(x.it)} ${depTags(x.it, true)}</li>`).join('')}</ul>` : '';
+    const foot = `<div class="d-foot"><span>${avatars(pw, true)}</span><span>${inb.map(i => `<span class="tok ${i.stage}" data-open="${i.id}" data-id="${i.id}" title="${esc(i.title)}" style="margin-left:4px;max-width:230px"><b>${KIND[i.stage]}</b><span class="t">${esc(i.title)}</span></span>`).join('')}</span></div>`;
+    const head = `<div class="top"><span class="kind">Pathway</span><span>${pill(pw.status)} ${pri(pw.priority)}</span></div><h2 data-open="${pw.id}">${esc(pw.title)}</h2>`;
+    const dest = `<div class="dest"><b>Destination</b>${esc(pw.completion_criteria)}</div>`;
+    if (lead) return `<article class="d-tile lead" style="--c:${PW_COL[pw.id]}">${head}${dest}
+      <div class="d-lead-cols"><div style="display:flex;flex-direction:column;gap:9px">${progBar}${nextBox}<div style="font-size:13px;color:var(--ink2)">${esc(pw.description)}</div></div>
+      <div><div class="kind" style="margin-bottom:4px">What remains</div>${remList || '<span class="c-empty">nothing</span>'}</div></div>${foot}</article>`;
+    return `<article class="d-tile" style="--c:${PW_COL[pw.id]}">${head}${dest}${progBar}${nextBox}${remList}${foot}</article>`;
+  };
+  const allInbox = [...looseInbox(), ...pathways.flatMap(attachedInbox)];
+  root.innerHTML = `<div class="d-mast"><div><div class="kind">The Jugglebot</div><div class="t">Project Map</div></div>
+      <div class="s">${pathways.length} Pathways · ${D.items.filter(i => i.stage === 'plan').length} Plans · ${allInbox.length} Inbox items<br>snapshot of data.json</div></div>
+    <div class="d-tiles">${pathways.map((pw, k) => tile(pw, k === 0)).join('')}</div>
+    <h2 class="d-wallh">Inbox wall</h2><div style="font-size:12px;color:var(--ink2)">Every Idea, Bug and Feature. A coloured pin names its Pathway; "unattached" means it has no home yet.</div>
+    <div class="d-wall">${allInbox.map(i => { const pw = pathwayOf(i); return `<div class="d-note ${i.stage}" data-open="${i.id}" data-id="${i.id}">
+      <div class="kind">${KIND[i.stage]} · ${glyph(i.status)} ${STATUS[i.status].label}${i.priority ? ' · ' + esc(i.priority) + ' priority' : ''}</div>
+      <div class="tt">${esc(i.title)}</div>${i.description ? `<div class="ds">${esc(i.description)}</div>` : ''}
+      ${depTags(i) ? `<div style="margin-top:6px">${depTags(i, true)}</div>` : ''}
+      <div class="pin">${pw ? `<span style="--c:${PW_COL[pw.id]}"><i></i>${esc(pw.title)}</span>` : '<span style="color:var(--ink3)">unattached</span>'} ${i.assignee_ids.length ? '· ' + avatars(i, true) : ''}</div></div>`; }).join('')}</div>`;
+}
+
+// ---------------------------------------------------------------- variants + bar
+const VARIANTS = {
+  a: {name: 'Metro map', cap: 'Privileges direction: each Pathway is a line to its Destination, stations show what remains, NEXT marks the train.', render: renderMetro},
+  b: {name: 'Briefing outline', cap: 'Privileges completeness: the whole tree as dense foldable text, Destination as strapline, computed Next up.', render: renderOutline},
+  c: {name: 'Now / Next / Later', cap: 'Privileges commitment: every Pathway against the horizon, so "what are we doing now" reads down one column.', render: renderNNL},
+  d: {name: 'Front page', cap: 'Privileges editorial priority: one tile per Pathway with progress and next action, the Inbox as a loose wall.', render: renderFront},
+};
+let current = 'a';
+function show(v) {
+  if (!VARIANTS[v]) v = 'a';
+  current = v; closeDrawer();
+  document.body.classList.remove('notes', 'hidedone');
+  VARIANTS[v].render(document.getElementById('stage'));
+  try { const u = new URL(location.href); u.searchParams.set('variant', v); history.replaceState(null, '', u); } catch (e) { /* some browsers refuse on file:// */ }
+  document.getElementById('bar').innerHTML = `<div class="btns">${Object.entries(VARIANTS).map(([k, x]) => `<button class="${k === v ? 'on' : ''}" data-v="${k}" title="${esc(x.cap)}">${k.toUpperCase()} · ${x.name}</button>`).join('')}</div>
+    <div class="cap"><b>${v.toUpperCase()} · ${VARIANTS[v].name}</b><span>${VARIANTS[v].cap}</span></div>`;
+  window.scrollTo(0, 0);
+}
+document.getElementById('bar').addEventListener('click', e => { const b = e.target.closest('button[data-v]'); if (b) { e.stopPropagation(); show(b.dataset.v); } });
+show(new URLSearchParams(location.search).get('variant') || 'a');
+</script>
+</body>
+</html>
