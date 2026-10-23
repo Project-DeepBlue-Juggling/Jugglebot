@@ -21,11 +21,11 @@ Outside this repo: `~/Desktop/jugglebot-map` on the Jetson holds the fork, two l
 
 ## Verification
 
-- 2026-10-24, in `~/Desktop/jugglebot-map`, `pytest -q -p no:cacheprovider` (venv Python 3.8): **30 passed in 23.96 s**; `scripts/check_no_upstream_name.sh`: clean; README first line is the required attribution sentence; no `.env`, no foreign URL or email in the tree.
+- 2026-10-24, in `~/Desktop/jugglebot-map`, `pytest -q -p no:cacheprovider` (venv Python 3.8): **30 passed in 23.96 s**; `scripts/check_no_upstream_name.sh`: clean; no `.env`, no foreign URL or email in the tree. Later the same day (owner: no attributive connection to the frontend's origin project at all, overriding #31's attribution clause) fork commit `dde18ba` removed `LICENSE-TaskTree` and the README's attribution line and added the project name to the name-pattern check; `pytest -q`: **30 passed in 22.02 s**, check clean.
 - 2026-10-24, in this worktree after the plan edit, `python -m mapkit gen --check` exit 0 and `pytest tests/sim/test_plans_index.py tests/sim/test_mapkit_docs.py tests/sim/test_logbook_front_matter.py tests/sim/test_glossary_avoid_words.py -q -p no:cacheprovider`: **34 passed in 3.20s** (markdown-only change; these are the tests that read `plans/`, `docs/` and `logbook/`).
 
 ## Open (owner)
 
 1. Create the public repo and push: `cd ~/Desktop/jugglebot-map && gh repo create Project-DeepBlue-Juggling/jugglebot-map --public --source . --remote origin --push` (the session's permission classifier refused "create public surface"); the first CI run is P3's acceptance for the server half.
-2. Provide the TaskTree `frontend/` at 6e0baa2 (tarball from `E:/PDJ/Github/TaskTree`, or the upstream URL) and the upstream name patterns for `scripts/upstream_name_patterns.txt`; then the seed-and-strip commit, the static auth client and P4 can proceed.
+2. Provide the reference `frontend/` at pin 6e0baa2 (tarball from `E:/PDJ/Github/TaskTree` on the Windows box) and the organisation, account and domain patterns for `scripts/upstream_name_patterns.txt`; then the seed-and-strip commit, the static auth client and P4 can proceed.
 3. On the Pi: clone both repos and run `deploy.sh`; the five acceptance checks are in the fork README (SSH from the session is classifier-denied).
