@@ -1031,7 +1031,8 @@ def _as_tilt_pair(value, name: str) -> np.ndarray:
 
 
 def _smooth_slew(start: np.ndarray, end: np.ndarray, n: int, dt: float,
-                 cfg, *, checked: bool = True) -> np.ndarray:
+                 cfg, *, checked: bool = True,
+                 start_rate=None) -> np.ndarray:
     """Quintic-smoothstep tilt ramp from ``start`` to ``end`` over ``n`` knots.
 
     The attitude-bearing REST's schedule (the PRE-TILT that puts the platform at
@@ -1074,7 +1075,30 @@ def _smooth_slew(start: np.ndarray, end: np.ndarray, n: int, dt: float,
     ``TILT_PIN`` although its legs pass (scratchpad ``probe_fused_ct.out``).
     The gate that protects the machine is ``validate_cycle``, and it stays on
     every path.
+
+    **``start_rate`` — the carried seam rate (I-PLAN-11, extended 2026-10-23).**
+    A pre-tilt REST spliced onto a head that is still moving (a cross-site
+    opening/bridge REST unwinding its bank in its last knots, head ry rate
+    -0.016..-0.16 rad/s) must open at the head's tilt RATE as well as its value,
+    or the seam is a platform-velocity step through the lever (0.9-5.9 mm/s of
+    pose x at live ``k_s`` 63-66) that ``_seam_velocity`` splits into a knot-
+    acceleration jump at ``k_s-1``: ``LIMIT_JERK`` 219k / 262k at view
+    ``t = 0.025``.  With a rate ``r0`` the slew is the quintic PLUS the
+    rate-carrying Hermite basis ``r0·T·h(u)``, ``h = u − 6u³ + 8u⁴ − 3u⁵``:
+    ``h(0) = h(1) = 0``, ``h'(0) = 1``, ``h'(1) = h''(0) = h''(1) = 0`` — so the
+    window opens at ``start`` with rate ``r0`` and zero acceleration and still
+    lands EXACTLY on ``end`` at rest.  The added term is inside every check
+    below (rate, acceleration and the ``max_tilt_deg`` disc are evaluated on
+    the COMBINED profile, densely, not on the quintic's closed form), so a
+    window too short for the carried rate is refused, never clipped.  ``None``
+    or an all-zero rate takes the quintic path unchanged, bit-for-bit — the
+    decay REST and every rest seam.
     """
+    if start_rate is not None:
+        r0 = np.asarray(start_rate, dtype=float).reshape(2)
+        if np.any(r0 != 0.0) and n >= 2:
+            return _smooth_slew_carried(start, end, n, dt, cfg, r0,
+                                        checked=checked)
     start = np.asarray(start, dtype=float).reshape(2)
     end = np.asarray(end, dtype=float).reshape(2)
     delta = end - start
@@ -1101,6 +1125,78 @@ def _smooth_slew(start: np.ndarray, end: np.ndarray, n: int, dt: float,
     u = np.linspace(0.0, 1.0, n)
     ss = u * u * u * (10.0 + u * (-15.0 + 6.0 * u))
     return start[None, :] + ss[:, None] * delta[None, :]
+
+
+#: Samples per window for the carried-rate slew's cap checks (the closed-form
+#: peaks of the bare quintic do not hold once the rate term is added).
+_CARRIED_SLEW_CHECK_SAMPLES = 2001
+
+
+def _smooth_slew_carried(start: np.ndarray, end: np.ndarray, n: int,
+                         dt: float, cfg, r0: np.ndarray, *,
+                         checked: bool = True) -> np.ndarray:
+    """:func:`_smooth_slew` with a non-zero knot-0 rate ``r0`` (I-PLAN-11).
+
+    ``θ(u) = start + s(u)·Δ + r0·T·h(u)``, ``s = 6u⁵ − 15u⁴ + 10u³``,
+    ``h = u − 6u³ + 8u⁴ − 3u⁵``; ``u = t/T``.  Rate ``θ' = s'·Δ/T + h'·r0``,
+    acceleration ``θ'' = s''·Δ/T² + h''·r0/T``.  The rate, acceleration and
+    disc checks run on a dense sample of THIS profile (the vector norm, never
+    per axis), so the added term is inside them rather than after them.
+    """
+    start = np.asarray(start, dtype=float).reshape(2)
+    end = np.asarray(end, dtype=float).reshape(2)
+    delta = end - start
+    T = float(n - 1) * float(dt)
+    if checked:
+        rate_cap = float(cfg.tilt_rate_limit_rad_s)
+        accel_cap = float(cfg.tilt_accel_limit_rad_s2)
+        disc = np.radians(float(cfg.max_tilt_deg))
+        w = np.linspace(0.0, 1.0, _CARRIED_SLEW_CHECK_SAMPLES)
+        ds = 30.0 * w * w * (1.0 - w) ** 2
+        dds = 60.0 * w * (1.0 - w) * (1.0 - 2.0 * w)
+        dh = (1.0 - w) ** 2 * (1.0 + 2.0 * w - 15.0 * w * w)
+        ddh = -36.0 * w + 96.0 * w * w - 60.0 * w ** 3
+        sw = w * w * w * (10.0 + w * (-15.0 + 6.0 * w))
+        hw = w - 6.0 * w ** 3 + 8.0 * w ** 4 - 3.0 * w ** 5
+        rate = ds[:, None] * (delta / T)[None, :] + dh[:, None] * r0[None, :]
+        acc = (dds[:, None] * (delta / (T * T))[None, :]
+               + ddh[:, None] * (r0 / T)[None, :])
+        pos = (start[None, :] + sw[:, None] * delta[None, :]
+               + (T * hw)[:, None] * r0[None, :])
+        peak_rate = float(np.max(np.hypot(rate[:, 0], rate[:, 1])))
+        peak_acc = float(np.max(np.hypot(acc[:, 0], acc[:, 1])))
+        peak_tilt = float(np.max(np.hypot(pos[:, 0], pos[:, 1])))
+        r0_mag = float(np.hypot(r0[0], r0[1]))
+        if rate_cap > 0.0 and peak_rate > rate_cap * (1.0 + 1e-9):
+            raise ValueError(
+                "a %.3f° attitude change over %.3f s opening at the head's "
+                "%.4f rad/s needs %.3f rad/s of tilt rate, past the %.3f rad/s "
+                "limit — give the REST a longer window."
+                % (np.degrees(float(np.hypot(*delta))), T, r0_mag, peak_rate,
+                   rate_cap))
+        if accel_cap > 0.0 and peak_acc > accel_cap * (1.0 + 1e-9):
+            raise ValueError(
+                "a %.3f° attitude change over %.3f s opening at the head's "
+                "%.4f rad/s needs %.3f rad/s² of tilt acceleration, past the "
+                "%.3f rad/s² limit (the leg-acceleration budget through the "
+                "744.3 mm lever) — give the REST a longer window."
+                % (np.degrees(float(np.hypot(*delta))), T, r0_mag, peak_acc,
+                   accel_cap))
+        if peak_tilt > disc * (1.0 + 1e-9) + 1e-12:
+            raise ValueError(
+                "the slew opening at the head's %.4f rad/s overshoots to "
+                "%.3f° from vertical, past the %s° usable ceiling — the carried "
+                "rate points out of the cone; give the REST a longer window or "
+                "splice it after the head settles."
+                % (r0_mag, np.degrees(peak_tilt), cfg.max_tilt_deg))
+    u = np.linspace(0.0, 1.0, n)
+    ss = u * u * u * (10.0 + u * (-15.0 + 6.0 * u))
+    hv = T * (u - 6.0 * u ** 3 + 8.0 * u ** 4 - 3.0 * u ** 5)
+    out = start[None, :] + ss[:, None] * delta[None, :] + hv[:, None] * r0[None, :]
+    # The terminal knot is the pin: exact, not a rounding of h(1) = 0.
+    out[0] = start
+    out[-1] = end
+    return out
 
 
 def tilt_schedule(cup_plan, receive_tilt, throw_tilt, cfg=None, *,
@@ -1224,7 +1320,11 @@ def tilt_schedule(cup_plan, receive_tilt, throw_tilt, cfg=None, *,
     ``k_s ∓ 1`` — 400-470k mm/s³ of leg jerk against 200k.  Applied on the
     banking branch (the one a mid-transit head is on) via
     :func:`_accel_bounded_schedule`'s ``start_rate``; it needs ``start_tilt``.
-    The zero-banking branches open from a static attitude and ignore it.
+    The ``rest_slew`` branch carries it too (extended 2026-10-23): the reload's
+    pre-tilt REST is spliced onto a still-moving opening REST, and
+    :func:`_smooth_slew`'s ``start_rate`` term opens it at the head's rate.  The
+    held branch's seam is pinned by ``HOLD_TILT_SEAM_TOL_RAD`` and the
+    two-constant branch is the parity-pinned legacy realisation; both ignore it.
 
     The pins resolve in knot order with the terminal pin strongest: ``start_tilt``
     is applied first, then the catch pin, then the throw pin, so a collision (a
@@ -1287,7 +1387,10 @@ def tilt_schedule(cup_plan, receive_tilt, throw_tilt, cfg=None, *,
                 "rest_slew needs a start_tilt: a REST that ENDS at a chosen "
                 "attitude has to know the one it opens at, or the slew is a "
                 "step at the seam.")
-        raw = _smooth_slew(start, throw, n, dt, cfg)
+        # I-PLAN-11 (extended 2026-10-23): a pre-tilt REST spliced onto a head
+        # still moving opens at the head's tilt RATE, not from rest.  None or
+        # zero (a rest seam, the decay REST's fresh origin) is bit-identical.
+        raw = _smooth_slew(start, throw, n, dt, cfg, start_rate=start_rate)
     else:
         idx = np.arange(n)
         raw = np.where((idx <= catch_k)[:, None], recv[None, :], throw[None, :])

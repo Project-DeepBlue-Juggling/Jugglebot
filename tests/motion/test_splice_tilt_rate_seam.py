@@ -300,3 +300,223 @@ def test_a_carried_rate_gives_the_knot0_window_the_whole_gap():
     assert out[16, 1] == 0.0 and np.all(out[16:, 1] == 0.0)   # the pin is exact
     # Slope at knot 0 is the carried rate (I-PLAN-11 itself).
     assert abs((out[1, 1] - out[0, 1]) / dt - r[1]) < 0.01
+
+
+# ── The rest_slew seed (I-PLAN-11 extended, 2026-10-23) ─────────────────────────
+#
+# A reload's PRE-TILT REST (zero banking, ``rest_slew``: a quintic to the
+# ~9.2 deg receive attitude) is spliced onto the opening/bridge REST at live
+# k_s 62-65, 5-8 knots before the bridge ends.  When the bridge is a cross-site
+# move it is still unwinding its bank there (head ry rate -0.12 / -0.15 rad/s at
+# the driver's k_s), and the quintic opened at the head's VALUE with zero RATE:
+# a 0.9-5.9 mm/s pose-x step, ``LIMIT_JERK`` 219k (2026-10-21 columns, 120.7 mm
+# crossing) and 262k (2026-10-23 oval_1ball_fed, 146 mm) at view ``t = 0.025``.
+# The verdict scales with the crossing distance d and with k_s; hold tilt, yaw,
+# absolute x and the k_wire skew were each ruled out (scratchpad
+# ``straddle_diag.md``).  Driver prototyped first (scratchpad
+# ``probe_reload_pretilt.py`` / ``probe_sweep.py``, 2026-10-23) on the PRODUCTION
+# chain ``compile_reload_wait`` -> ``SkillExecutor`` -> ``install_segment``
+# (fresh) -> ``compile_reload`` -> splice of the pre-tilt REST; legs
+# 350 / 5000 / 200k, hand 3900.  The offline head is one knot longer than the
+# live one (1.775 vs 1.750 s), so live k_s 65 is offline k_s 66 (matched by
+# knots before the head's end).  Measured at offline k_s 66, hold 9.231 deg:
+#
+# =========  =========================================  ======================
+# crossing   rate carried (pose-x seam gap; peak)        value pin only
+# =========  =========================================  ======================
+# 120 mm     OK; 0.011 mm/s; 52361 (= the head's own)   LIMIT_JERK 204885
+# 146 mm     OK; 0.007 mm/s; 63625 (= the head's own)   LIMIT_JERK 249474
+# =========  =========================================  ======================
+
+RELOAD_SITE_X_MM = -71.6
+RELOAD_HOLD_DEG = 9.231
+RELOAD_LIFT_S = 1.5
+#: Offline k_s 66 = live k_s 65 (see above): 2 knots after the captured dispatch.
+RELOAD_SHIFT_KNOTS = 2
+#: The pose-x seam gap a carried rate may leave (measured <= 0.011 mm/s; the
+#: defect is 2.8-5.9 mm/s here and the re-derivation baseline 3.1).
+RELOAD_SEAM_DVX_MM_S = 3.0
+
+
+def _reload_pretilt_splice(limits, geom, cross_mm, shift=RELOAD_SHIFT_KNOTS):
+    """(head, new, result, segment, k_s) for the pre-tilt REST spliced onto a
+    bridge that crosses ``cross_mm`` to the feed site (the probe's driver)."""
+    dt = float(hw.JB_TRAJ_KNOT_DT_S)
+    cfg = cr.RealizeConfig()
+    site = si.Site(name='P', cup_mm=np.array([RELOAD_SITE_X_MM, 0.0,
+                                              si.CATCH_CUP_Z_MM]))
+    pat = sc.OneBallPattern(sites=(site,), apex_m=0.95, dwell_s=0.65,
+                            n_throws=0, floor_lift_s=RELOAD_LIFT_S)
+    c = np.array([RELOAD_SITE_X_MM + cross_mm, 0.0, si.REST_CUP_Z_MM])
+    rev = ((float(c[2]) - cfg.cup_z_base_mm - cfg.slider_rev_zero_mm)
+           / 1000.0 * cr.HAND_REV_PER_M)
+    seed0 = uc.CycleState.at_rest(
+        np.array([c[0], c[1], cfg.active_z_mm, 0.0, 0.0, 0.0]), rev, cfg)
+    st = {'rec': None, 'caps': []}
+
+    def installer(kind, terminal, t_now_s, ball_id=0):
+        rec = st['rec']
+        new, res, _ = ex.install_segment(
+            rec, seed0 if rec is None else None, kind, terminal, t_now_s,
+            limits=limits, geom=geom, reserve_fresh_lead=True,
+            t_install_s=t_now_s)
+        st['caps'].append((kind, terminal, t_now_s, rec))
+        if res.accepted:
+            st['rec'] = new
+        return res
+
+    look = 1.0 / 40.0 + dt
+    e1 = ex.SkillExecutor(sc.compile_reload_wait(site, RELOAD_LIFT_S, T0_ABS),
+                          installer, tracker=lambda b: None,
+                          dispatch_lookahead_s=look)
+    t = T0_ABS - 0.3
+    while t < T0_ABS + 0.06:
+        e1.tick(t)
+        t += 0.025
+    vz = -5500.0
+    vel = np.array([abs(vz) * np.tan(np.radians(RELOAD_HOLD_DEG)), 0.0, vz])
+    t_land = T0_ABS + 3.59
+    sched = sc.compile_reload(site.catch_site_mm(), vel, t_land, pat, t,
+                              max_tilt_deg=12.0)
+    n0 = len(st['caps'])
+    e2 = ex.SkillExecutor(sched, installer, tracker=lambda b: None,
+                          dispatch_lookahead_s=look)
+    while (not any(cp[0] == sg.REST for cp in st['caps'][n0:])
+           and t < t_land):
+        e2.tick(t)
+        t += 0.025
+    rests = [cp for cp in st['caps'][n0:] if cp[0] == sg.REST]
+    assert rests, 'the reload must dispatch its pre-tilt REST'
+    _kind, term, t_now, head = rests[0]
+    assert head is not None, 'the pre-tilt REST must be a splice onto the bridge'
+    tn = t_now + shift * dt
+    new, res, seg = ex.install_segment(head, None, sg.REST, term, tn,
+                                       limits=limits, geom=geom,
+                                       reserve_fresh_lead=True, t_install_s=tn)
+    k_s = None
+    if seg is not None:
+        k_s = int(np.argmin(np.abs(head.plan.pose - seg.plan.pose[0]).sum(axis=1)))
+    return head, new, res, seg, k_s
+
+
+RELOAD_CROSSINGS = [120.0, 146.0]
+
+
+@pytest.mark.parametrize('cross_mm', RELOAD_CROSSINGS)
+def test_a_reload_pretilt_rest_spliced_mid_bridge_is_accepted(limits, geom,
+                                                              cross_mm):
+    head, new, res, seg, k_s = _reload_pretilt_splice(limits, geom, cross_mm)
+    assert res.accepted, res.message
+    hv, sv = head.plan.pose_vel[k_s], seg.plan.pose_vel[0]
+    # The head IS still moving its tilt here — otherwise this proves nothing.
+    assert abs(float(hv[4])) > 0.1, hv
+    assert abs(float(sv[0] - hv[0])) < RELOAD_SEAM_DVX_MM_S, (sv, hv)
+    np.testing.assert_allclose(sv[3:5], hv[3:5], atol=SEAM_DV_TILT_RAD_S)
+    # No worse than the head's own peak (the seam adds nothing).
+    head_peak = head.meta.report.peak_leg_jerk_mmps3
+    assert new.meta.report.peak_leg_jerk_mmps3 <= head_peak * (1.0 + 1e-6) + 1.0
+
+
+@pytest.mark.parametrize('cross_mm', RELOAD_CROSSINGS)
+def test_without_the_rest_slew_rate_the_reload_seam_refuses_limit_jerk(
+        limits, geom, cross_mm, monkeypatch):
+    """The regression guard: the pre-2026-10-23 rest_slew (value pin only) is
+    refused on the same driver at the live failure's knot, t=0.025."""
+    orig = cr.tilt_schedule
+
+    def value_pin_only(*a, **kw):
+        if kw.get('rest_slew'):
+            kw['start_tilt_rate'] = None
+        return orig(*a, **kw)
+
+    monkeypatch.setattr(cr, 'tilt_schedule', value_pin_only)
+    _h, _n, res, _s, _k = _reload_pretilt_splice(limits, geom, cross_mm)
+    assert not res.accepted
+    assert res.code == fz.LIMIT_JERK, res.message
+    assert 'leg 0 at t=0.025 s' in res.message, res.message
+    peak = float(res.message.split('peak leg jerk ')[1].split()[0])
+    assert peak > 200000.0
+
+
+@pytest.fixture(scope='module')
+def pretilt_146(geom):
+    lim = TrajectoryLimits.from_config(hw).with_session_limits(
+        leg_vel_mmps=350.0, leg_acc_mmps2=5000.0, leg_jerk_mmps3=200000.0,
+        hand_acc_rps2=3900.0)
+    return _reload_pretilt_splice(lim, geom, 146.0)
+
+
+def test_a_zero_or_absent_rest_slew_rate_is_bit_identical_to_the_quintic(
+        pretilt_146):
+    """A rest seam (the decay REST's fresh origin) must not move by one bit:
+    None, an explicit zero, and the frozen pre-fix quintic agree exactly, on the
+    production cup plan of the 146 mm pre-tilt REST."""
+    _head, new, _res, _seg, _k = pretilt_146
+    cup = new.meta.cup_plan if hasattr(new.meta, 'cup_plan') else None
+    if cup is None:
+        pytest.skip('record meta carries no cup plan')
+    cfg = cr.RealizeConfig(banking_enabled=False)
+    start = np.radians([0.0, -3.0])
+    hold = np.radians([0.0, -RELOAD_HOLD_DEG])
+    kw = dict(start_tilt=start, rest_slew=True)
+    a = cr.tilt_schedule(cup, np.zeros(2), hold, cfg, **kw)
+    b = cr.tilt_schedule(cup, np.zeros(2), hold, cfg, start_tilt_rate=None, **kw)
+    c = cr.tilt_schedule(cup, np.zeros(2), hold, cfg,
+                         start_tilt_rate=np.zeros(2), **kw)
+    n = a.shape[0]
+    u = np.linspace(0.0, 1.0, n)
+    ss = u * u * u * (10.0 + u * (-15.0 + 6.0 * u))
+    frozen = start[None, :] + ss[:, None] * (hold - start)[None, :]
+    assert np.array_equal(a, b) and np.array_equal(a, c)
+    assert np.array_equal(a, frozen)
+
+
+def test_the_carried_rest_slew_opens_at_the_rate_and_lands_on_the_hold_at_rest(
+        pretilt_146):
+    _head, _new, _res, seg, _k = pretilt_146
+    tilts = np.asarray(_new.meta.tilts, dtype=float)
+    hold = np.radians([0.0, -RELOAD_HOLD_DEG])
+    # The hold value is the terminal PIN: exact.
+    np.testing.assert_allclose(tilts[-1], hold, rtol=0, atol=1e-15)
+    # Direct construction: rate r0 at knot 0, zero at the end, exact pins,
+    # inside the 12 deg disc at the worst swept case (the 146 mm head rate).
+    cfg = cr.RealizeConfig(banking_enabled=False)
+    n, dt = 41, 0.025
+    start = np.radians([0.0, -1.5])
+    r0 = np.array([0.0, -0.16])
+    out = cr._smooth_slew(start, hold, n, dt, cfg, start_rate=r0)
+    assert np.array_equal(out[0], start) and np.array_equal(out[-1], hold)
+    # Knot-0 one-sided slope -> r0 (O(dt^2) for h = u - 6u^3 + ...); end slope -> 0.
+    assert np.abs((out[1] - out[0]) / dt - r0).max() < 0.01
+    assert np.abs((out[-1] - out[-2]) / dt).max() < 1e-3
+    assert np.degrees(np.hypot(out[:, 0], out[:, 1])).max() <= cfg.max_tilt_deg
+
+
+def test_the_carried_rest_slew_caps_include_the_rate_term():
+    """Rate, acceleration and the 12 deg disc are checked on the COMBINED
+    profile: a carried rate that the bare quintic's closed form would pass is
+    refused, never clipped."""
+    cfg = cr.RealizeConfig(banking_enabled=False)
+    n, dt = 41, 0.025
+    hold = np.radians([0.0, -9.231])
+    # Pointing out of the cone near the hold: the bump overshoots past 12 deg.
+    with pytest.raises(ValueError, match='ceiling'):
+        cr._smooth_slew(np.radians([0.0, -11.5]), hold, n, dt, cfg,
+                        start_rate=np.array([0.0, -0.5]))
+    # Rate: the quintic alone (~0.13 rad/s) is far inside the cap; r0 is not.
+    big = 1.01 * float(cfg.tilt_rate_limit_rad_s)
+    with pytest.raises(ValueError, match='tilt rate'):
+        cr._smooth_slew(np.zeros(2), hold, n, dt, cfg,
+                        start_rate=np.array([big, 0.0]))
+    # Acceleration: max |h''(u)| = 3.94 (u = 0.243), so the term is 3.94·r0/T; a
+    # 0.1 s window with a rate inside the rate cap still breaks the accel cap.
+    acc_cap = float(cfg.tilt_accel_limit_rad_s2)
+    n_s = 5
+    T_s = (n_s - 1) * dt
+    r_acc = min(0.9 * float(cfg.tilt_rate_limit_rad_s), 2.0 * acc_cap * T_s)
+    with pytest.raises(ValueError, match='acceleration'):
+        cr._smooth_slew(np.zeros(2), np.zeros(2) + 1e-6, n_s, dt, cfg,
+                        start_rate=np.array([r_acc, 0.0]))
+    # checked=False (the held re-level's rule) shapes, never refuses.
+    cr._smooth_slew(np.zeros(2), hold, n, dt, cfg, checked=False,
+                    start_rate=np.array([big, 0.0]))
