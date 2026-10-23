@@ -3,14 +3,14 @@
 - **Status**: Accepted
 - **Date**: 2026-06-02 (captured); decision made 2026-05-27
 - **Deciders**: Harrison (user) + Claude (collaborative design session)
-- **Related**: [parent plan](../../plans/archived/teensy-can-offload.md); supersedes none
+- **Related**: [parent plan](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/archived/teensy-can-offload.md); supersedes none
 
 ## Context
 
 The Jetson Orin Nano currently owns the entire CAN bus: it transmits 500 Hz leg
 setpoints to 6 ODrives, receives ~3000 msg/s of telemetry from the same
 ODrives, runs the 500 Hz Hermite interpolator in
-[`motor_guard.py`](../../ros_ws/src/jugglebot/jugglebot/motion/motor_guard.py),
+[`motor_guard.py`](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/ros_ws/src/jugglebot/jugglebot/motion/motor_guard.py),
 and exposes everything to ROS 2 via
 `can_node.py` (deleted 2026-07-06 in the SocketCAN decommission — see git
 history and `ros_ws/docs/can-node-teensy-parity.md`).

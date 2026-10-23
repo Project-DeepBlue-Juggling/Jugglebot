@@ -3,7 +3,7 @@
 - **Status**: Accepted
 - **Date**: 2026-06-02 (captured); decision made 2026-05-27
 - **Deciders**: Harrison + Claude
-- **Related**: [ADR-0001](0001-offload-can-and-interpolator-from-jetson.md), [ADR-0013](0013-three-can-buses.md), [parent plan](../../plans/archived/teensy-can-offload.md)
+- **Related**: [ADR-0001](0001-offload-can-and-interpolator-from-jetson.md), [ADR-0013](0013-three-can-buses.md), [parent plan](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/archived/teensy-can-offload.md)
 
 ## Context
 
@@ -14,7 +14,7 @@ next question is *which* MCU.
 The project already has a platform Teensy 4.0 running an Arduino super-loop
 that handles the hand trajectory, time-sync slave-side IIR, inclinometer
 readout, and robot-state persistence
-([`ros_ws/src/jugglebot/Teensy_code_platform/`](../../ros_ws/src/jugglebot/Teensy_code_platform/)).
+([`ros_ws/src/jugglebot/Teensy_code_platform/`](https://github.com/Project-DeepBlue-Juggling/Jugglebot/tree/main/ros_ws/src/jugglebot/Teensy_code_platform)).
 A first-pass design considered extending it with the new responsibilities,
 provided the firmware was rewritten on top of FreeRTOS to make room for hard
 real-time scheduling.

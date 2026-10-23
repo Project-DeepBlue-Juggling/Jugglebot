@@ -8,7 +8,7 @@ point-to-point UDP/Ethernet link and owns three isolated CAN buses.
 **Related:** [ADR-0001: Offload CAN and the interpolator from the
 Jetson](../adr/0001-offload-can-and-interpolator-from-jetson.md) (why this
 exists) · [Wire protocol reference](../teensy-udp-protocol.md) ·
-[Parent plan](../../plans/archived/teensy-can-offload.md) (current
+[Parent plan](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/archived/teensy-can-offload.md) (current
 implementation status) · [Architecture Decisions](../adr/index.md)
 (ADR-0002 through ADR-0013 cover the individual hardware/protocol choices)
 
@@ -41,14 +41,14 @@ Jetson). The platform Teensy 4.0 is unchanged in scope — it still owns hand
 trajectory execution and inclinometer/robot-state persistence — but is now
 a time-sync slave on CAN3 rather than the old Jetson-hosted stack's peer.
 
-Firmware source: [`ros_ws/src/jugglebot/Teensy_code_canbridge/`](../../ros_ws/src/jugglebot/Teensy_code_canbridge/).
+Firmware source: [`ros_ws/src/jugglebot/Teensy_code_canbridge/`](https://github.com/Project-DeepBlue-Juggling/Jugglebot/tree/main/ros_ws/src/jugglebot/Teensy_code_canbridge).
 
 ## Current status
 
 !!! warning "Snapshot, not a live status page"
     This section reflects the state as of **2026-07-06**. The authoritative,
     continuously-updated status lives in
-    [`plans/archived/teensy-can-offload.md`](../../plans/archived/teensy-can-offload.md)
+    [`plans/archived/teensy-can-offload.md`](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/archived/teensy-can-offload.md)
     (see its "Status snapshot" section) — check there before relying on
     anything below for a decision.
 
