@@ -86,6 +86,8 @@ next touches that plan, not a mechanical edit. The vocabulary going forward is
 | 2026-10-14 | [levelling-frame-contract.md](levelling-frame-contract.md) | completed | Levelling-frame contract — one gravity correction on every pose request (Phase 4 residue left open) |
 | 2026-10-14 | [refactor-2026-07.md](refactor-2026-07.md) | completed | Refactor programme 2026-07 (Phases 0-4 landed, 5-7 partial) |
 | 2026-10-19 | [bb-calibration-one-attempt.md](bb-calibration-one-attempt.md) | completed | Ball Butler calibration is a one-attempt process, every time |
+| 2026-10-23 | [late-catch-reaim-bump.md](late-catch-reaim-bump.md) | completed | The late catch re-aim as a platform-xy bump on the installed plan (the raw-path re-solve is refused on physics every time) |
+| 2026-10-23 | [columns-empty-cup-two-feed.md](columns-empty-cup-two-feed.md) | completed | Columns accepts an EMPTY cup (two Ball Butler feeds), cup-keyed accept rule, 'Reload first' retired |
 
 ## Where the other plans are
 

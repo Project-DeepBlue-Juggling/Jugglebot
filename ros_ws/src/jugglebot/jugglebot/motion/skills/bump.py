@@ -1,6 +1,6 @@
 """The late catch re-aim as a platform-xy BUMP on the installed plan (I-CATCH-5).
 
-Plan: ``plans/active/late-catch-reaim-bump.md``; design and offline
+Plan: ``plans/archived/late-catch-reaim-bump.md``; design and offline
 characterisation: ``logbook/2026-10-16-late-catch-reaim-bump-design.md``.
 Past the snap band the raw re-solve (catch-with-throw from a mid-swing seed)
 was refused 87/87 on 2026-10-16.  The bump re-aims the SAME installed record

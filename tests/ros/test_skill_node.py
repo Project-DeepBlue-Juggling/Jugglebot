@@ -6357,7 +6357,7 @@ def test_stop_mid_carry_logs_why_only_the_after_rest_was_offered():
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# P3 of plans/active/columns-empty-cup-two-feed.md (2026-10-17): the columns
+# P3 of plans/archived/columns-empty-cup-two-feed.md (2026-10-17): the columns
 # two-feed chain. EMPTY cup -> Ball Butler reloads ball A at the feed site,
 # then (gate: DECAY REST ended, cup SEATED, BB IDLE with a ball after its own
 # refill) the SEATED columns tail feeds ball B. Mocked-ROS only: these pin

@@ -2,7 +2,7 @@
 title: "Columns P1 + P2 + P3: accept rule keyed on (pattern, cup evidence), human-lob columns feed retired"
 type: refactor
 date: 2026-10-17
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack - post-R6 (columns empty-cup two-feed, P1)"
 related_plan: columns-empty-cup-two-feed.md
 files_changed:
@@ -32,7 +32,7 @@ tags:
 
 ## Summary
 
-Phase 1 of `plans/active/columns-empty-cup-two-feed.md`. The accept rule is now
+Phase 1 of `plans/archived/columns-empty-cup-two-feed.md`. The accept rule is now
 a function of (pattern, cup evidence) and the human-lob columns feed (decision
 D2) is gone. Columns is Ball-Butler-fed only.
 
@@ -73,4 +73,4 @@ D2) is gone. Columns is Ball-Butler-fed only.
 
 ## Outcome
 
-P1-P3 code landed; P3 NOT FLOWN (first sitting = rehearsal rows 32-34).
+P1-P3 code landed 2026-10-17/18 and the P3 two-feed chain was flown on 2026-10-21 and 2026-10-22 (6 empty-cup chains fed B, refill <= 6.8 s; rows 33/34 unexercised), after which the plan was archived on 2026-10-23.

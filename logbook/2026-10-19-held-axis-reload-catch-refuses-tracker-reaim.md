@@ -2,7 +2,7 @@
 title: "Held-axis reload catch refuses every tracker re-aim (CATCH_AXIS at 0.1 mm), and an ended attempt leaves the platform tilted"
 type: investigation
 date: 2026-10-19
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack - post-R6 (columns empty-cup two-feed, row 33 sitting)"
 related_plan: columns-empty-cup-two-feed.md
 related:
@@ -26,7 +26,7 @@ files_changed:
   - tools/probes/capture_move_replay_extract.py
   - tools/probes/capture_move_sim.py
   - tools/probes/README.md
-  - plans/active/columns-empty-cup-two-feed.md
+  - plans/archived/columns-empty-cup-two-feed.md
 subsystem:
   - motion
   - ros
@@ -208,6 +208,8 @@ All runs 2026-10-19 from `~/Desktop/Jugglebot-oval` with the project venv.
 ## Outcome
 
 Fix built, audited and gate-tested on 2026-10-19; not flown. A held-axis BB feed now captures a tracker re-aim of up to hypot(35, 20) mm inside the catch window from the commanded state, with CATCH_AXIS judged at the hold-start knot; an attempt that ENDs after its pre-tilt REST levels the platform at the schedule's own decay instant (or immediately on a Ball Butler cancel confirmed more than 0.9 s before release). This morning's two refused balls replay as installed catches. The entry stays in-progress until rows 39-42 fly; the separate ~20 mm y feed bias between Ball Butler's announced and tracked landings (every feed today) is noted for the columns plan, not fixed here.
+
+Flown on 2026-10-21 and 2026-10-22: the six empty-cup two-feed chains ran with the held-axis capture fix and the C-CUP-4 cone refusals did not recur in about 30 columns goals; the feed y bias (about 20 mm) stayed open as residue, and the plan was archived on 2026-10-23.
 
 ## Withdrawn claims
 

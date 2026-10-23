@@ -2,7 +2,7 @@
 title: "The late catch re-aim is refused 87/87 past the snap band because it re-solves the catch-with-throw from a mid-swing seed; the same corrections installed as a platform-xy bump on the installed plan (hand untouched, held through the carried release with a retargeting launch velocity) pass validate_cycle on 87 % of the columns cases offline, worst-case direction"
 type: investigation
 date: 2026-10-16
-status: open
+status: resolved
 phase: "late-catch-reaim-bump — design + offline prototype (not implemented)"
 related_plan: late-catch-reaim-bump.md
 related:
@@ -13,7 +13,7 @@ files_changed:
   - tools/probes/late_reaim/parse_resends.py
   - tools/probes/late_reaim/capture_records.py
   - tools/probes/late_reaim/bump_replay.py
-  - plans/active/late-catch-reaim-bump.md
+  - plans/archived/late-catch-reaim-bump.md
   - ros_ws/src/jugglebot/jugglebot/motion/skills/bump.py
   - ros_ws/src/jugglebot/jugglebot/motion/skills/executor.py
   - ros_ws/src/jugglebot/jugglebot/motion/skills/INVARIANTS.md
@@ -90,7 +90,7 @@ For (b): a platform-xy translation moves the cup by exactly b at any tilt or sli
 Every remaining refusal is on the ramp-in (LIMIT_VEL first, then ACC/JERK), none in the carry or settle.
 
 ## Fix
-Not implemented in this unit. The design, interface, fences, invariant (I-CATCH-5) and rehearsal row are in `plans/active/late-catch-reaim-bump.md`. Implementing it needs a node-side request on the install service (the record lives in trajectory_node), an interface rebuild, and the executor path. It is safety-bearing leg-path work and needs its own unit with a 40 Hz walk.
+Not implemented in this unit. The design, interface, fences, invariant (I-CATCH-5) and rehearsal row are in `plans/archived/late-catch-reaim-bump.md`. Implementing it needs a node-side request on the install service (the record lives in trajectory_node), an interface rebuild, and the executor path. It is safety-bearing leg-path work and needs its own unit with a 40 Hz walk.
 
 ## Verification
 All runs are from the repo root with the project venv and `OPENBLAS_NUM_THREADS=1`. `B` = `python tools/probes/late_reaim/bump_replay.py --records temp/probes/late_reaim/records_columns_0.pkl --rows temp/probes/late_reaim/resends_2026-10-16.json --lead-knots 5`. The corrected-version runs are saved in `temp/probes/late_reaim/runs_w1.txt`.
@@ -145,3 +145,7 @@ All runs are from the repo root with the project venv and `OPENBLAS_NUM_THREADS=
 - **Verification (G2).**
   - (2026-10-16, `pytest tests/motion/test_skills_bump.py tests/ros/test_install_segment.py tests/ros/test_skill_node.py tests/motion/test_skills_executor.py tests/sim/test_skills_gate.py -q -p no:cacheprovider -k "not real_worker_process"`) -> 649 passed, 1 deselected in 150.27 s (auditor's run).
   - 2026-10-16, `./run_tests.sh --full` on the branch rebased onto skill-stack 7e74f42f (load average < 1): parallel 6701 passed, 11 skipped, 1 failed — `tests/ros/test_skills_plan_bench.py::test_the_kind_enum_matches_the_srv`, which pins the srv kind enum and had not been told about `KIND_BUMP=4`; the expected dict was extended and that file re-run: 69 passed; serial tail 7 passed.
+
+## Outcome
+
+Implemented 2026-10-16, the stale cup-track seam defect closed by I-PLAN-10 on 2026-10-19, flown with the criterion MET on 2026-10-21 and 2026-10-22 (74.1 % and 79.5 % installed, zero bump-caused LIMIT/guard events), and the plan archived 2026-10-23.

@@ -1,9 +1,11 @@
 ---
 title: Columns accepts an EMPTY cup (two Ball Butler feeds), cup-keyed accept rule, 'Reload first' retired
 created: 2026-10-17
-status: active
+status: completed
+archived: 2026-10-23
+completed: 2026-10-22
 owner: harrison
-last_updated: 2026-10-17
+last_updated: 2026-10-23
 related_plan:
   - two-ball-skill-stack.md
 related_logbook:
@@ -230,7 +232,7 @@ tests/ and docs/) before and after; record counts in the logbook.
   certifies each half, not the join; the join, phases and Stop races are mocked-ROS only (blind to choreography). The first
   hardware sitting is the join's real gate: columns, cup EMPTY, `num_cycles` 1-2, bag recorded, dress-rehearsed on the
   loaded Jetson first.
-- **Risk:** HIGH (live hardware path, unmeasured refill, new catch xy, new Stop races). **Status: code landed 2026-10-17/18 (audit W1 exception wrapper + W2 guarded latch pops applied, 18 chain tests), NOT FLOWN: first sitting = rehearsal rows 32-34, measure the BB refill time** (first sitting = rehearsal rows 32-34; refill constant still provisional).
+- **Risk:** HIGH (live hardware path, unmeasured refill, new catch xy, new Stop races). **Status: code landed 2026-10-17/18 (audit W1 exception wrapper + W2 guarded latch pops applied, 18 chain tests); FLOWN 2026-10-21/22** (launch logs `~/.ros/log/2026-10-21-22-53-41*/launch.log` and `~/.ros/log/2026-10-22-19-50-38*/launch.log`, both at separation 125 mm). Seven empty-cup goals reached feed A; 6 passed the gate and fed B (S1 L1431, L1570, L1717; S2 L1805, L2401, L3402; the seventh, S1 L1356, ended LIMIT_JERK at the REST before the gate). Each ran feed A -> refill wait (release-to-gate-open 6.4-6.8 s, n=6, an upper bound read from the log: S1 L1490/1628/1788 = 6.6/6.7/6.8 s, S2 L1871/2460/3465 = 6.4 s) -> feed B -> pattern. Decision: keep `COLUMNS_CHAIN_BB_REFILL_TIMEOUT_S` = 15 s (covers 6.8 s with margin). Rehearsal row 32 satisfied at separation 125 (not the 250 written); rows 33 (Stop between feeds) and 34 (gate timeout, `ABORTED_BB_NOT_READY`) were NOT exercised on hardware (mocked-ROS tests only). The C-CUP-4 cone class (rows 39-43) did not recur in about 30 columns goals (zero `CUP_SEATING_*` hits in either log).
 
 ## 5. Probes
 
@@ -248,3 +250,17 @@ tests/ and docs/) before and after; record counts in the logbook.
 - **Sim reload gate `LIMIT_JERK` regression (found 2026-10-17, BISECTED 2026-10-17 to `08ec3fe6` 2026-09-30, the R5 columns feed-catch commit; good at `8364808c` 2026-09-24, 5/5 makes 2 per seed, dwell 0.30 s; after it the scenario gets 1 make, dwell 0.27 s and `LIMIT_JERK` in the continuation throws, catch itself fine; no config/limit change in that commit; hardware flew R5 cleanly after it, so this reads as sim-scenario drift, owner to decide whether to fix or re-baseline):** the stock `python sim/skills_gate.py --reload --seeds 0 1 2 3 4` is FAIL at HEAD 4cd33254 (seeds 0, 2, 3, 4 `LIMIT_JERK` in the continuation throws AFTER the catch; seed 1 PASS; docstring says it once passed 5/5; not pinned by any test; predates P1/P2). Not a P3 blocker: A's reload is catch-only (`n_throws=0`). 2026-10-19 update: the capture-move sim check (`tools/probes/capture_move_sim.py`, logbook `2026-10-19-held-axis-reload-catch-refuses-tracker-reaim`) found the refusal comes from the UNCLAMPED 41-45 mm re-aim on the second catch, because the sim gate leaves lateral authority unset; with the live 20 mm clamp the chain passes. Candidate fix: set the authorities in the gate (not done).
 - Refill constant `COLUMNS_CHAIN_BB_REFILL_TIMEOUT_S = 15.0` provisional until rehearsal row 32 measures it.
 - **Latent 'firing'-phase hang (pre-existing, audit 2026-10-18):** `_maybe_fire_reload_throw` sets `ctx.phase='firing'` (skipped by `_check_reload_timeout`) and calls the BB throw outside any try, the same shape W1 fixed for 'chaining'. Not new to this plan; fix when the reload path is next opened.
+
+## Archival note (2026-10-23)
+
+**What shipped.** P1 (cup-keyed accept rule, human-lob columns feed retired), P2 (`bool reload` removed from `Juggle.action`, GUI checkbox retired) and P3 (the automatic two-feed chain: feed A as a catch-only reload, wait for cup SEATED + BB IDLE with a ball after its auto-refill, then feed B), flown 2026-10-21/22 (P3 status text in § 4 carries the log paths and L-numbers).
+
+**Why it closed.** Owner decision 2026-10-23: archive as completed. The chain works on hardware (6 of 6 gated chains fed B; refill <= 6.8 s against the 15 s timeout). Post-gate pattern failures (first-hop MISSED_CATCH, LIMIT_VEL, one 47/48 run) belong to the hop/seam and cup-mechanics work, not this plan.
+
+**Stated plainly: rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, `ABORTED_BB_NOT_READY`) have never been exercised on hardware.** Only the mocked-ROS chain tests cover them.
+
+**Residue (all unscheduled, no live owner; revive by filing a plan when one bites).**
+1. Sim `--reload` gate `LIMIT_JERK` regression bisected to `08ec3fe6`; candidate fix is setting lateral authorities in the sim gate (§ 6); owner decision pending.
+2. Latent `'firing'`-phase hang in `_maybe_fire_reload_throw`: `ctx.phase='firing'` is skipped by `_check_reload_timeout` and the BB throw sits outside any try, the same shape W1 fixed for `'chaining'`.
+3. Feed y bias about 20 mm: the feed-A CATCH hit AIM-LATERAL-CLAMPED in y in 5 of 6 chains (requested -22 to -33 mm, clamped to -20); `columns_feed_bb_bias_mm` is still 0.0.
+4. Rows 33/34 unexercised on hardware (above).

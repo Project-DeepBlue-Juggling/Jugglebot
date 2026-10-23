@@ -1,6 +1,6 @@
 """I-CATCH-5 — the late catch re-aim BUMP (``motion/skills/bump.py::apply_catch_bump``).
 
-Plan ``plans/active/late-catch-reaim-bump.md``; design entry
+Plan ``plans/archived/late-catch-reaim-bump.md``; design entry
 ``logbook/2026-10-16-late-catch-reaim-bump-design.md`` (§ Implementation G1).
 
 The record every test bumps is a REAL catch-with-throw installed here by

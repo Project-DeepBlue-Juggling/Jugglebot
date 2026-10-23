@@ -1,5 +1,5 @@
 """Parse every RESEND / RESEND-REFUSED line of the 2026-10-16 launch logs (late-catch re-aim bump design,
-plans/active/late-catch-reaim-bump.md): pattern, skill, code, delta mm / s, time to the committed landing,
+plans/archived/late-catch-reaim-bump.md): pattern, skill, code, delta mm / s, time to the committed landing,
 and the limit the preceding `install_segment refused` line names.  Usage: python parse_resends.py <out.json>
 """
 import re,sys,json

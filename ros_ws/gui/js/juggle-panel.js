@@ -27,7 +27,7 @@
  * overridden by the GUI's stale copy, and a relaunch with a new default
  * would keep flying the old one from any tab left open.
  *
- * There is NO reload flag on the wire (P2, plans/active/columns-empty-cup-two-feed.md
+ * There is NO reload flag on the wire (P2, plans/archived/columns-empty-cup-two-feed.md
  * D3/D4): the skill node decides from the cup sensor (EMPTY -> Ball Butler
  * loads first, SEATED -> throw first, UNKNOWN -> refused) and the orchestrator
  * refuses a `reload` token after the pattern.  Only the bare `reload` PATTERN
@@ -355,7 +355,7 @@ export function cupState() {
     return 'unknown';
 }
 
-// Flipped true at P3 of plans/active/columns-empty-cup-two-feed.md (2026-10-17): the skill node
+// Flipped true at P3 of plans/archived/columns-empty-cup-two-feed.md (2026-10-17): the skill node
 // accepts columns on an EMPTY cup (Ball Butler feeds A as a reload, then B). Kept as a kill switch.
 const TWO_FEED_LANDED = true;
 
