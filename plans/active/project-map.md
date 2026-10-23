@@ -12,14 +12,15 @@ steps:
   - {id: P0, title: mapkit package and generated plan boards, kind: phase, status: complete, date: 2026-10-24}
   - {id: P1, title: Glossary rename and term block, kind: phase, status: complete, date: 2026-10-24}
   - {id: P2, title: map directory seed and session wiring, kind: phase, status: complete, date: 2026-10-24}
-  - {id: P3, title: Fork skeleton and thin server, kind: phase, status: not_started}
+  - {id: P3, title: Fork skeleton and thin server, kind: phase, status: in_progress, date: 2026-10-24}
   - {id: P4, title: The two pages, kind: phase, status: not_started}
-  - {id: P5, title: Pi deployment and publishing, kind: phase, status: not_started}
+  - {id: P5, title: Pi deployment and publishing, kind: phase, status: in_progress, date: 2026-10-24}
 related_logbook:
   - 2026-10-24-project-map-plan-written.md
   - 2026-10-24-project-map-p0-mapkit-generated-boards.md
   - 2026-10-24-project-map-p1-glossary-rename-term-block.md
   - 2026-10-24-project-map-p2-map-seed-session-wiring.md
+  - 2026-10-24-project-map-p3-p5-fork-server-half.md
 related_code:
   - mapkit/::the parser, generators and subcommands package
 ---
@@ -53,9 +54,9 @@ This plan implements the design settled by the resolved tickets of wayfinder map
 | P0 | `mapkit/` parser, loaders, generators, subcommands; plan frontmatter backfill; three INDEX files regenerated; `test_plans_index.py` rewritten | `./run_tests.sh` | COMPLETE 2026-10-24 |
 | P1 | `GLOSSARY.md` rename and stub, 23 entries, CLAUDE.md term block, Avoid-word test | `./run_tests.sh`; `/audit --unstaged` | COMPLETE 2026-10-24 |
 | P2 | `map/` seed, `/inbox`, `/work-inbox`, gated offers, agent edits, doc edits, nav entries | `./run_tests.sh`; `/audit --unstaged` | COMPLETE 2026-10-24 |
-| P3 | Fork repo: strip, static auth, FastAPI server, contract suite, CI | fork CI green (`npm ci`, lint, typecheck, vitest, build, pytest, grep) | NOT STARTED |
-| P4 | Front page, Now / Next / Later, drawer, hover, palette, modal | fork CI green; owner live-reaction round | NOT STARTED |
-| P5 | Pi units, `deploy.sh`, watcher invalidate, debounced commit-and-push, generated docs pages live | fork CI green; Pi acceptance checks; Jugglebot `./run_tests.sh` | NOT STARTED |
+| P3 | Fork repo: strip, static auth, FastAPI server, contract suite, CI | fork CI green (`npm ci`, lint, typecheck, vitest, build, pytest, grep) | IN PROGRESS 2026-10-24: server half, CI and licences built and committed locally; frontend seed and the GitHub repo wait on the owner (notes below) |
+| P4 | Front page, Now / Next / Later, drawer, hover, palette, modal | fork CI green; owner live-reaction round | NOT STARTED (blocked on the P3 frontend seed) |
+| P5 | Pi units, `deploy.sh`, watcher invalidate, debounced commit-and-push, generated docs pages live | fork CI green; Pi acceptance checks; Jugglebot `./run_tests.sh` | IN PROGRESS 2026-10-24: watcher, git writer, units and `deploy.sh` built and tested; the Pi steps are owner-run |
 
 Dependencies: P1 needs P0 (the term block generator). P2 needs P0 and P1. P3 needs P0 (the fork imports `mapkit`). P4 needs P3. P5 needs P2 and P4. P3 may start in parallel with P1/P2 in a second checkout.
 
@@ -124,7 +125,7 @@ Dependencies: P1 needs P0 (the term block generator). P2 needs P0 and P1. P3 nee
 - `/inbox` and `/work-inbox` exist as command files; `/investigate`, `/log` and `/archive-plan` carry the gated offer; `/archive-plan` and `/implementation-report` run `python -m mapkit gen`; `/next-phase-prompt` reads `steps:` first. There is no `plan-writer` agent in this repo, so its #33 rules live in `/implementation-report`.
 - `mkdocs` is not in the project venv; the strict build ran from a scratch venv with `mkdocs-material` (`mkdocs build --strict`: built in 2.40 s, the one INFO line is the pre-existing `teensy-udp-protocol.md` not in nav).
 
-### P3 — Fork skeleton and thin server — NOT STARTED
+### P3 — Fork skeleton and thin server — IN PROGRESS 2026-10-24
 **Implements:** #31, #22, #24, #25 (uuid5, 409), #34 (ticket kind in the API)
 **Files (fork:):** new public repo `jugglebot-map`; `LICENSE` (MIT), `LICENSE-TaskTree` ("Copyright (c) 2026 Harrison", verbatim), `README.md` (opens "Derived from TaskTree at 6e0baa2 (2026-10-07), MIT"), `CLAUDE.md`, `frontend/` (seeded from TaskTree `frontend/` at 6e0baa2, then stripped), `server/app.py`, `server/models.py` (pydantic mirroring the zod schemas), `server/store.py` (write-through to `map/` files), `server/events.py`, `pyproject.toml`, `tests/` (pytest contract suite with a fixture `items/`), `.github/workflows/ci.yml`, `scripts/check_no_upstream_name.sh`.
 **Approach:** Seed a fresh repo (not a GitHub fork) and apply the #31 strip list in the first commit: Timeline, Team Roles, Project settings, My Tasks, BOM/catalogue/stock/builds/units, Brief, Availability, Teams, Entra/MSAL, notifications, comments, undo, roles and membership UI, all three auth providers and `SignInPage`, the five stock views, the 13 Playwright specs and the ~60 vitest files in stripped directories. Add a ~30-line `StaticAuthClient` (two synthetic users, `owner` and `claude`, no `X-Dev-User`, no `?as=`) and remove the production `local-dev` guard. The server is one FastAPI + uvicorn process serving the 14 endpoints, `/events` and `dist/` as static files on one port (prints "run `npm run build`" when `dist/` is missing). It imports `mapkit` by inserting the `--repo` / `JUGGLEBOT_REPO` root on `sys.path`, reads `map/config.yaml` and refuses to start without it. The three 409 shapes the kept client handles are TaskTree's reparent-cycle, dependency-cycle and delete-conflict shapes (#24); closing or dropping a pathway while any active or parked plan points at it reuses the delete-conflict shape (#25). All are asserted by contract tests. Plans are served read-only from `mapkit`'s plan loader. Dev run: `VITE_API_PROXY_TARGET` as in #22/#24.
@@ -137,6 +138,8 @@ Dependencies: P1 needs P0 (the term block generator). P2 needs P0 and P1. P3 nee
 - [ ] `grep -rn "local-dev"` in the production auth path returns 0.
 - [ ] No `LICENSE` or README line names any upstream organisation or account (only "TaskTree, MIT, Copyright (c) 2026 Harrison").
 - [ ] All tests pass (fork CI)
+
+**Implementation notes (2026-10-24, server half):** the fork lives at `~/Desktop/jugglebot-map` on the Jetson (two local commits, `7a66c08` P3 and `c84209e` P5 server side; `pytest -q` 30 passed; `scripts/check_no_upstream_name.sh` clean). `server/` is FastAPI + uvicorn over `mapkit` (sys.path on `--repo`): the 14 endpoints, the seven quiet stubs, `/events`, `dist/` static, the three TaskTree 409 shapes byte-compatible with the #24 prototype, the pathway-close 409 (delete-conflict shape, plans under `children`), `if_unchanged_since` -> 409 "Task was modified" with the current task, uuid5 ids, `stage` renamed `kind` (the Project keeps `stages`), plans and phases read-only (405 on a changed field). Parse-error minimum chosen (the § 4 open point): a file that fails to load is skipped, everything else keeps serving, `/health` reports `degraded` with the path and message; a write is validated on a temp copy first (422, file untouched). **Blocked on the owner:** (1) the TaskTree `frontend/` at pin 6e0baa2 exists only on the Windows box (`E:/PDJ/Github/TaskTree`); no public TaskTree-named repo holds that commit and the tickets never name the upstream, so the seed-and-strip commit, the static auth client and the kept vitest files wait for a tarball or URL (checklist in `frontend/README-SEED.md`); (2) `scripts/upstream_name_patterns.txt` needs the real organisation / account / domain patterns (placeholder plus a live control pattern today); (3) creating the public GitHub repo was refused by the session's permission classifier: `cd ~/Desktop/jugglebot-map && gh repo create Project-DeepBlue-Juggling/jugglebot-map --public --source . --remote origin --push` then the CI run is the acceptance. The venv gained fastapi 0.124.4 / pydantic 2.10.6 / httpx / watchdog 4.0.2 (the P2 full gate ran on it).
 
 ### P4 — The two pages — NOT STARTED
 **Implements:** #38, #30 (modal, 400 px), #37 (`promoted` on all inbox kinds), #34 (ticket cards), #31 (pages, hover, palette)
@@ -152,7 +155,7 @@ Dependencies: P1 needs P0 (the term block generator). P2 needs P0 and P1. P3 nee
 - [ ] Owner live-reaction round held against the running app (replaces #36): reactions logged in the logbook entry, and any change they request filed as a `map/` item rather than absorbed silently.
 - [ ] All tests pass (fork CI)
 
-### P5 — Pi deployment and publishing — NOT STARTED
+### P5 — Pi deployment and publishing — IN PROGRESS 2026-10-24
 **Implements:** #31 (Pi, watcher, write path), #32 (pages live), #30 (phone path)
 **Files (fork:):** `deploy/jugglebot-map.service`, `deploy/jugglebot-map-pull.timer`, `deploy/jugglebot-map-pull.service`, `deploy.sh`, `server/watcher.py`, `server/gitwrite.py`, `server/banner.py`, `frontend/src/features/events/` (ten-line invalidate handler), `README.md` (Pi runbook), pytest cases. **Jugglebot:** `docs/project-map.md`, `docs/glossary.md` (regenerated, already in nav; `docs.yml` unchanged), the Pi URL in the `CLAUDE.md` Project map paragraph.
 **Approach:** Install the units as system units in `/etc/systemd/system` with `User=jeeves` (linger is off), copied from Jugglebot's `tools/systemd/jugglebot-gui.service`; the timer fast-forwards the Pi's checkout `~/Jugglebot` on `main` every two minutes. `deploy.sh` installs Node 22 from NodeSource if missing, then `git pull`, `npm ci`, `npm run build`, `pip install -e .`, `systemctl restart jugglebot-map`, run by hand over SSH after a fork change; no CI artifacts and no secrets on the Pi. The server binds `0.0.0.0:8765` on the Pi (`127.0.0.1` on Windows, `--port` to override, browser opens unless `--no-open`). `watchdog` watches `map/`, the three `plans/` directories and `GLOSSARY.md`; 300 ms after the last event it rebuilds the index and sends one `invalidate` SSE event, and the frontend refetches tasks, dependencies and the project. The write path commits all changed map files 5 s after the last edit as author `map-bot` with message `map: <titles>` and no `Logbook-Entry` trailer, runs `pull --rebase`, then pushes to `main`; a failed rebase or push raises a red banner, local edits are never discarded, and the next edit retries. The Pi serves `main` only.
@@ -166,6 +169,8 @@ Dependencies: P1 needs P0 (the term block generator). P2 needs P0 and P1. P3 nee
 - [ ] `docs/project-map.md` and `docs/glossary.md` are in the mkdocs nav and the docs workflow passes unchanged; Jugglebot `./run_tests.sh` passes after the final regenerate.
 - [ ] (date, command, result) triples for fork CI, the Pi checks and `./run_tests.sh` recorded in the logbook entry.
 - [ ] All tests pass
+
+**Implementation notes (2026-10-24, server side):** `server/watcher.py` (watchdog on `map/`, the three `plans/` directories and `GLOSSARY.md`; one `invalidate` 300 ms after the last event; server writes coalesce into the same window), `server/gitwriter.py` (5 s after the last API edit: `git add -A -- map`, commit as `map-bot <map-bot@jugglebot.local>` with `map: <titles>` and no trailer, `pull --rebase --no-autostash origin main`, `push origin HEAD:refs/heads/main`; a failed rebase is aborted and the local commit kept; the banner on `/health` names the failure and clears on the next success; retry on the next edit; off `main` the writer stays off and writes answer 403; `GIT_TERMINAL_PROMPT=0`, 60 s per git call; one final flush at shutdown), `deploy/` (system units with `User=jeeves`, `OnCalendar=*:0/2` pull timer with `Persistent=true`) and `deploy.sh` (Node 22 from NodeSource if missing, `git pull --ff-only`, `npm ci && npm run build` when `frontend/` exists, venv + `pip install -e .`, install units, `enable --now`, restart). Eight tests with a temporary bare remote cover the debounce, the conflict, the push failure, the off-main refusal, `--no-git` and the watcher burst. **Owner-run (SSH to the Pi is classifier-denied for the session):** on `jeeves`, `git clone` Jugglebot to `~/Jugglebot` (main) and the fork to `~/jugglebot-map`, then `./deploy.sh`; the README's Pi runbook lists the five acceptance checks (stop the pull timer while forcing the conflict). Known overlap: while a map-bot commit is unpushed the timer's `pull --ff-only` fails until the push lands. The docs pages are already regenerated on `main`; the `CLAUDE.md` Project map paragraph carries the Pi URL as "once P5 lands".
 
 ## 4. Residue
 
