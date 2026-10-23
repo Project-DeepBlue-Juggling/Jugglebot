@@ -54,6 +54,8 @@ extra_javascript:
 
 nav:
   - Home: index.md
+  - Project map: project-map.md
+  - Glossary: glossary.md
   - Motion Planner:
     - Overview: motion_planner/index.md
     - Architecture: motion_planner/architecture.md

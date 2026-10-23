@@ -44,7 +44,7 @@ Based on your exploration:
 
 ### Phase 4: Write the Report
 
-Save the report as a markdown file in `plans/active/` using kebab-case (e.g., `can-process-refactor.md`, `kalman-filter-redesign.md`). Add YAML frontmatter with `title`, `created` (today's date), and `status: active`.
+Save the report as a markdown file in `plans/active/` using kebab-case (e.g., `can-process-refactor.md`, `kalman-filter-redesign.md`). Add YAML frontmatter with `title`, `created` (today's date), `status: active`, `owner`, `last_updated`, `pathway` (ask which pathway; when invoked from `/work-inbox`, the item's `parent:`; `map/pathway-*.md` lists them), `branch` (only when not main), `scope` (one paragraph: the active board's Scope cell), and `steps:` mirroring the phase headings you write below (one `{id, title, kind: phase|rung, status: not_started}` per step; ids `P1..Pn` or `Rung n`). Phase headings must follow the one regex: `### P1 — Title — NOT STARTED` (status suffix free text); `tests/sim/test_plans_index.py` fails if the ids/titles do not mirror. After saving, run `python -m mapkit gen` and stage the regenerated `plans/*/INDEX.md` and `docs/project-map.md`.
 
 The report MUST contain these sections, in this order:
 

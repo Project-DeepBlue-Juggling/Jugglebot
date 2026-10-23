@@ -26,7 +26,11 @@ def slugify(title: str) -> str:
     s = unicodedata.normalize("NFKD", title)
     s = s.encode("ascii", "ignore").decode("ascii").lower()
     s = re.sub(r"[^a-z0-9]+", "-", s).strip("-")
-    s = s[:MAX_SLUG].strip("-")
+    if len(s) > MAX_SLUG:
+        # cut at a word boundary, never mid-word (filenames are permanent)
+        cut = s[:MAX_SLUG + 1].rfind("-")
+        s = s[:cut if cut > 0 else MAX_SLUG]
+    s = s.strip("-")
     return s or "ticket"
 
 

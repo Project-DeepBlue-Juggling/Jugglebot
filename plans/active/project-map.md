@@ -11,7 +11,7 @@ scope: >-
 steps:
   - {id: P0, title: mapkit package and generated plan boards, kind: phase, status: complete, date: 2026-10-24}
   - {id: P1, title: Glossary rename and term block, kind: phase, status: complete, date: 2026-10-24}
-  - {id: P2, title: map directory seed and session wiring, kind: phase, status: not_started}
+  - {id: P2, title: map directory seed and session wiring, kind: phase, status: complete, date: 2026-10-24}
   - {id: P3, title: Fork skeleton and thin server, kind: phase, status: not_started}
   - {id: P4, title: The two pages, kind: phase, status: not_started}
   - {id: P5, title: Pi deployment and publishing, kind: phase, status: not_started}
@@ -19,6 +19,7 @@ related_logbook:
   - 2026-10-24-project-map-plan-written.md
   - 2026-10-24-project-map-p0-mapkit-generated-boards.md
   - 2026-10-24-project-map-p1-glossary-rename-term-block.md
+  - 2026-10-24-project-map-p2-map-seed-session-wiring.md
 related_code:
   - mapkit/::the parser, generators and subcommands package
 ---
@@ -51,7 +52,7 @@ This plan implements the design settled by the resolved tickets of wayfinder map
 |---|---|---|---|
 | P0 | `mapkit/` parser, loaders, generators, subcommands; plan frontmatter backfill; three INDEX files regenerated; `test_plans_index.py` rewritten | `./run_tests.sh` | COMPLETE 2026-10-24 |
 | P1 | `GLOSSARY.md` rename and stub, 23 entries, CLAUDE.md term block, Avoid-word test | `./run_tests.sh`; `/audit --unstaged` | COMPLETE 2026-10-24 |
-| P2 | `map/` seed, `/inbox`, `/work-inbox`, gated offers, agent edits, doc edits, nav entries | `./run_tests.sh`; `/audit --unstaged` | NOT STARTED |
+| P2 | `map/` seed, `/inbox`, `/work-inbox`, gated offers, agent edits, doc edits, nav entries | `./run_tests.sh`; `/audit --unstaged` | COMPLETE 2026-10-24 |
 | P3 | Fork repo: strip, static auth, FastAPI server, contract suite, CI | fork CI green (`npm ci`, lint, typecheck, vitest, build, pytest, grep) | NOT STARTED |
 | P4 | Front page, Now / Next / Later, drawer, hover, palette, modal | fork CI green; owner live-reaction round | NOT STARTED |
 | P5 | Pi units, `deploy.sh`, watcher invalidate, debounced commit-and-push, generated docs pages live | fork CI green; Pi acceptance checks; Jugglebot `./run_tests.sh` | NOT STARTED |
@@ -101,20 +102,27 @@ Dependencies: P1 needs P0 (the term block generator). P2 needs P0 and P1. P3 nee
 - `CLAUDE.md:128` no longer said "runsheet" (it reads "runbook"); nothing to fix there. The avoid sweep that made the tree pass touched 74 files (71 logbook entries and 3 plans, 377 changed lines): `runsheet` -> runbook, `session limits` -> Sitting limits, `can-hub` -> can-bridge, `self-toss` -> self-throw, `toss` -> throw, the two `guard E-STOP` lines reworded to the Guard raising a Soft E-stop, and `reload` backticked where it names the `reload` pattern, skill or button (the English sense, a page `reload`, became "refresh"). Entries dated before 2026-09-21 were not touched. This is the one place a later ticket (#28, scope = entries dated on or after the glossary's landing) overrode the CLAUDE.md sentence that historical entries are never rewritten; the ticket wins.
 - `mapkit.gen_glossary` exposes `parse_glossary`, `load_glossary`, `render_term_block` and `write_term_block`; the avoid-word checker lives in the test file with the phrase list in `tests/sim/avoid_words_checked.txt`.
 
-### P2 — map directory seed and session wiring — NOT STARTED
+### P2 — map directory seed and session wiring — COMPLETE 2026-10-24
 **Implements:** #26, #25, #30, #34 (migration), #33, #37, #32 (nav)
 **Files:** `map/config.yaml`; `map/pathway-*.md` (six files: the five live pathways of #26, `pathway-project-map` among them as the home of the imported tickets, plus the closed `pathway-two-ball-skill-stack`); `map/bug-*.md`, `map/feature-*.md`, `map/idea-*.md` (residue and the three ideas); `map/ticket-*.md` (the #21 import); `.claude/commands/inbox.md`, `.claude/commands/work-inbox.md`; `.claude/commands/investigate.md`, `log.md`, `archive-plan.md`, `implementation-report.md`, `next-phase-prompt.md`; `.claude/agents/` logbook-updater, plan-writer, plan-reviewer; `CLAUDE.md` ("Project map" paragraph); `DOCUMENTATION_GUIDE.md` (§§ 2.5, 2.6, 2.9, new 2.10); `docs/agents/issue-tracker.md` (wayfinding section rewritten to file operations); `docs/agents/domain.md`; `mkdocs.yml` (nav "Project map", "Glossary"); `docs/project-map.md`, `docs/glossary.md` (first committed generator output); `tests/sim/test_map_items.py`.
 **Approach:** Seed `map/` exactly as #26 lists: five pathways, the closed Skill-stack pathway whose Destination is the R5 gate met 2026-10-13, the (b)-row residue and the two columns-empty-cup rows as inbox items attached where #26 says, the int16 offset-truncation and LIMIT_JERK items, and the three unattached ideas. Migrate #17, #18 and #19 to Feature, Bug and Feature items and close each issue with a comment naming its file. Run `python -m mapkit import-issues 21` to create the `project-map` pathway's tickets, leaving the GitHub issues as read-only history. `/inbox` writes, commits (`map: file <kind> <title>`, no `Logbook-Entry` trailer) and pushes; `/work-inbox` follows the #37 dispatch table and writes back `## Findings`, `## Decision` or `## Progress`. `/investigate`, `/log` and `/archive-plan` gain one gated offer (default yes) listing open follow-ups or residue rows and filing each as a Bug or Feature with `links:`; `/archive-plan` and `/implementation-report` run `python -m mapkit gen` instead of hand-editing rows, and parking sets the three parked fields. Agent edits follow #33. The `map/` pathway files carry no plan list (plans point up with `pathway:`).
 **Tests:** `test_map_items.py`: one looping test over `map/` for required fields per kind, status in the per-kind set, `parent` and `blocked_by` targets resolving to an item or a plan filename, no filename renamed (slug equals filename); currency test extended to `docs/project-map.md` and `docs/glossary.md`; the Avoid-word test now covers `map/` items for real.
 **Acceptance:**
-- [ ] `map/` contains the 6 pathways listed, the residue and idea items, and the #21 tickets; `python -m mapkit gen` is idempotent and `docs/project-map.md` renders one section per live pathway.
-- [ ] `mkdocs build --strict` passes locally (absolute GitHub URLs enforced by `test_docs_links.py`).
-- [ ] GitHub #17/#18/#19 are closed with comments naming their item files.
-- [ ] `/inbox bug "x" "y"` on a scratch branch writes, commits (no trailer) and pushes one file; verified once by hand and recorded in the logbook.
-- [ ] `docs/agents/issue-tracker.md` no longer describes GitHub issue operations for wayfinding; `grep -rn "gh issue" docs/agents/issue-tracker.md` hits only the public-door section.
-- [ ] `/audit --unstaged` run once at phase end (two or more narrative docs plus normative docs touched).
-- [ ] Gate: `./run_tests.sh`, (date, command, result) triple in the logbook entry.
-- [ ] All tests pass
+- [x] `map/` contains the 6 pathways listed, the residue and idea items, and the #21 tickets (17); `python -m mapkit gen` is idempotent and `docs/project-map.md` renders one section per live pathway.
+- [x] `mkdocs build --strict` passes locally (absolute GitHub URLs enforced by `test_docs_links.py`).
+- [x] GitHub #17/#18/#19 are closed with comments naming their item files.
+- [x] `/inbox bug "x" "y"` on a scratch branch writes, commits (no trailer) and pushes one file; verified once by hand and recorded in the logbook.
+- [x] `docs/agents/issue-tracker.md` no longer describes GitHub issue operations for wayfinding; `grep -rn "gh issue" docs/agents/issue-tracker.md` hits only the public-door section.
+- [x] `/audit --unstaged` run once at phase end (two or more narrative docs plus normative docs touched).
+- [x] Gate: `./run_tests.sh --full`, (date, command, result) triple in the logbook entry.
+- [x] All tests pass
+
+**Implementation notes (2026-10-24):**
+- `map/` holds 6 pathways, 8 bugs, 7 features, 4 ideas (the three #26 ideas plus the logbook-backfill Idea from § 4) and the 17 tickets of map #21 imported by `python -m mapkit import-issues 21 --pathway project-map` (all `complete`, ranks in issue-number order, slugs cut at a word boundary under 60 characters). The two GitHub map comments that named avoid-words as words were quoted on import; the import itself does not rewrite bodies.
+- `blocked_by` targets are filename stems (`ticket-<slug>`, `<kind>-<slug>`) or a plan's bare filename; `parent` is a pathway slug. `tests/sim/test_map_items.py` and `mapkit.tickets.is_open_blocker` agree on that.
+- `mapkit/derive.py` (pathway order, progress with retired steps excluded, Next, lanes, attached items, open tickets) is the one renderer behind `docs/project-map.md`; the fork's server imports it in P3. A plan "waits on a blocker" only through its own `blocked_by` frontmatter, a forward-compatible hook no plan uses yet.
+- `/inbox` and `/work-inbox` exist as command files; `/investigate`, `/log` and `/archive-plan` carry the gated offer; `/archive-plan` and `/implementation-report` run `python -m mapkit gen`; `/next-phase-prompt` reads `steps:` first. There is no `plan-writer` agent in this repo, so its #33 rules live in `/implementation-report`.
+- `mkdocs` is not in the project venv; the strict build ran from a scratch venv with `mkdocs-material` (`mkdocs build --strict`: built in 2.40 s, the one INFO line is the pre-existing `teensy-udp-protocol.md` not in nav).
 
 ### P3 — Fork skeleton and thin server — NOT STARTED
 **Implements:** #31, #22, #24, #25 (uuid5, 409), #34 (ticket kind in the API)

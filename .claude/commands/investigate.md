@@ -271,6 +271,14 @@ Spawn the **logbook-updater** agent to:
    body text of the Discussion section (not just the frontmatter). A reader
    landing in the entry from `git blame` should see the plan link in prose,
    not have to read ahead to find it.
+6. **Gated offer: file the open follow-ups.** If the status set above is anything
+   other than `resolved`, list each open follow-up visible in the entry (open
+   questions, follow-up sections, residue bullets; the logbook-updater returns
+   them in its final message) and offer, at ONE gate (default yes, nothing
+   silent), to file each as a Bug or Feature item with `links: [logbook/<slug>.md]`,
+   `status: inbox`, and `parent:` = the `pathway:` of the entry's `related_plan:`
+   plan when that plan carries one. Filing follows the `/inbox` steps (write the
+   item, commit `map: file <kind> <title>`, push).
 
 ## Gating Design
 

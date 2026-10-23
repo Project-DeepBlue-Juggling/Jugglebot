@@ -38,13 +38,19 @@ prompt for a fresh Claude session to take on.
    list available active plans and stop.
 2. Verify the plan has a phased structure. Try in order:
 
-   **Primary — Implementation Phase Summary table.** Search for a
+   **Primary — `steps:` frontmatter.** When the plan's frontmatter carries a
+   `steps:` list, parse it into `(phase_id, scope, status, date)` from each
+   entry's `id`, `title`, `status` (`not_started|in_progress|complete|retired`)
+   and `date`. The table and headings below are fallbacks for plans without
+   `steps:`. `{PREV_SHA}` parsing is unchanged.
+
+   **Fallback 1 — Implementation Phase Summary table.** Search for a
    markdown table whose header row includes `Phase` and `Status`
    (typically directly under an `## Implementation Phase Summary`
    heading). If present, parse rows into
    `(phase_id, scope, status, date)`.
 
-   **Fallback — direct phase headings.** If no summary table,
+   **Fallback 2 — direct phase headings.** If no summary table,
    search for headings matching the pattern
    `^## Phase <N>:` or `^### Phase <N>:`. For each:
    - `phase_id` = the integer after `Phase`

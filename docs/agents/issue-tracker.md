@@ -1,8 +1,8 @@
-# Issue tracker: GitHub
+# Issue tracker: GitHub (public door) and `map/` (planning)
 
-Issues and specs for this repo live as GitHub issues. Use the `gh` CLI for all operations.
+GitHub Issues are the **public door only**: outsiders' bugs and requests, and PR triage. The owner's own planning never lives there; it lives in `map/` (`DOCUMENTATION_GUIDE.md` § 2.10), `plans/` and `logbook/`. Use the `gh` CLI for the public-door operations below; the file-based operations are in the last section.
 
-## Conventions
+## Public door: conventions
 
 **`gh` is not on `PATH` here.** It is installed at `~/bin/gh` and already authenticated on this Jetson. In a Bash tool call run `export PATH="$HOME/bin:$PATH"` first (or call it by absolute path), or every command below fails with `command not found`.
 
@@ -18,7 +18,7 @@ Infer the repo from `git remote -v`; `gh` does this automatically when run insid
 ## Repo notes
 
 - The repo is **public**: issue bodies, comments and labels are world-readable.
-- GitHub Issues sit alongside `plans/` and `logbook/`; they don't replace them (those layers are defined in `DOCUMENTATION_GUIDE.md` §§ 2.5–2.6).
+- GitHub Issues sit alongside `map/`, `plans/` and `logbook/`; they don't replace them (those layers are defined in `DOCUMENTATION_GUIDE.md` §§ 2.5–2.6 and 2.10).
 - The logbook front-matter field `related_issues:` holds `known_issues.yaml` IDs (e.g. `VEL_FF_BUG`), never GitHub issue numbers (`DOCUMENTATION_GUIDE.md` § 2.5).
 
 ## Pull requests as a triage surface
@@ -35,19 +35,21 @@ GitHub shares one number space across issues and PRs, so a bare `#42` may be eit
 
 ## When a skill says "publish to the issue tracker"
 
-Create a GitHub issue.
+Create a GitHub issue, and only for outsider-facing specs. The owner's own planning never lives there: file it with `/inbox` (a `map/` item). An outsider's issue is imported with `/inbox --from-issue <n>` and then closed with a comment pointing at the map item.
 
 ## When a skill says "fetch the relevant ticket"
 
 Run `gh issue view <number> --comments`.
 
-## Wayfinding operations
+## Wayfinding operations (file-based)
 
-Used by `/wayfinder`. The **map** is a single issue with **child** issues as tickets.
+Used by `/wayfinder`. Nothing here touches GitHub; every operation is a file edit in `map/` plus a commit and push (`map: ...`, no `Logbook-Entry:` trailer).
 
-- **Map**: a single issue labelled `wayfinder:map`, holding the Notes / Decisions-so-far / Fog body. `gh issue create --label wayfinder:map`.
-- **Child ticket**: an issue linked to the map as a GitHub sub-issue (`gh api` on the sub-issues endpoint). Where sub-issues aren't enabled, add the child to a task list in the map body and put `Part of #<map>` at the top of the child body. Labels: `wayfinder:<type>` (`research`/`prototype`/`grilling`/`task`). Once claimed, the ticket is assigned to the driving dev.
-- **Blocking**: GitHub's **native issue dependencies**, the canonical, UI-visible representation. Add an edge with `gh api --method POST repos/<owner>/<repo>/issues/<child>/dependencies/blocked_by -F issue_id=<blocker-db-id>`, where `<blocker-db-id>` is the blocker's numeric **database id** (`gh api repos/<owner>/<repo>/issues/<n> --jq .id`, _not_ the `#number` or `node_id`). GitHub reports `issue_dependencies_summary.blocked_by` (open blockers only, the live gate). Where dependencies aren't available, fall back to a `Blocked by: #<n>, #<n>` line at the top of the child body. A ticket is unblocked when every blocker is closed.
-- **Frontier query**: list the map's open children (`gh issue list --state open`, scoped to the map's sub-issues / task list), drop any with an open blocker (`issue_dependencies_summary.blocked_by > 0`, or an open issue in the `Blocked by` line) or an assignee; first in map order wins.
-- **Claim**: `gh issue edit <n> --add-assignee @me`, the session's first write.
-- **Resolve**: `gh issue comment <n> --body "<answer>"`, then `gh issue close <n>`, then append a context pointer (gist + link) to the map's Decisions-so-far.
+- **Map**: `map/pathway-<slug>.md`. Frontmatter carries the Destination; the body holds Notes / Decisions so far / Not yet specified / Out of scope. "Resolved tickets" is computed from the Pathway's complete ticket children, never hand-kept.
+- **Child ticket**: `map/ticket-<slug>.md` with `kind: ticket`, `type: research|prototype|grilling|task`, `parent: <pathway slug>`, `blocked_by`, `owners` (non-empty means claimed), `rank`, `status: open|complete|dropped`, `links`. The body is the question; the answer is appended under `## Answer`.
+- **Blocking**: the `blocked_by` list of filename stems (`ticket-<slug>`, or another item's `<kind>-<slug>`, or a plan's bare filename). A ticket is unblocked when every blocker is complete or dropped (a plan blocker: archived).
+- **Frontier query**: `python -m mapkit frontier <pathway>` lists tickets that are open, have no open blocker and no owner, lowest `rank` first.
+- **Claim**: `python -m mapkit claim <slug> --as <user>` adds the owner, commits `map: claim <slug>` and pushes. It is the session's first write.
+- **Resolve**: `python -m mapkit resolve <slug> --answer-file <path>` appends the Answer, sets `status: complete`, commits `map: resolve <slug>` and pushes.
+- **Sharpened tickets**: a ticket that turns out too big is not edited in place; write new ticket files with `blocked_by` on what they need.
+- **Legacy GitHub maps**: `python -m mapkit import-issues <n> --pathway <slug>` imports a map that was kept as GitHub issues.

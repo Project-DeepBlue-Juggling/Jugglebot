@@ -1,0 +1,12 @@
+# Read by the jugglebot-map app (--repo / JUGGLEBOT_REPO) and by mapkit. Paths relative to the repo root.
+items: map/
+plans: [plans/active, plans/parked, plans/archived]
+glossary: GLOSSARY.md
+logbook: logbook/
+kinds: [pathway, idea, feature, bug, ticket]
+statuses:
+  pathway: [active, complete, dropped]
+  idea: [inbox, backlog, in_progress, complete, dropped, promoted]
+  feature: [inbox, backlog, in_progress, complete, dropped, promoted]
+  bug: [inbox, backlog, in_progress, complete, dropped, promoted]
+  ticket: [open, complete, dropped]
