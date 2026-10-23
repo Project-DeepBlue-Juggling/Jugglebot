@@ -15,14 +15,14 @@ rows 17a-18; row 19-20 need BB holding a ball and the JB cup empty.
 
 | # | Step | Expect |
 |---|---|---|
-| 1 | `cd ~/Desktop/Jugglebot-skills && git fetch && git status -sb && git log --oneline -1` | On `skill-stack`, in sync. |
+| 1 | `cd ~/Desktop/Jugglebot && git fetch && git status -sb && git log --oneline -1` | On `main`, in sync. |
 | 2 | Verify the colcon install is fresh: `ls -l --time-style=full-iso ros_ws/install/jugglebot/lib/python3.8/site-packages/jugglebot/skill_node.py` against `git log -1 --format=%cI` | Built after the HEAD commit, **both** `jugglebot_interfaces` and `jugglebot`. Rebuild (`cd ros_ws && colcon build --packages-select jugglebot_interfaces jugglebot && source install/setup.bash`) if older. |
 | 3 | Bridge FW: boot banner / `BRIDGE_FW_CHECK` must say **FW 30 / PROTOCOL_VERSION 10**. If 29: launch DOWN, `cd ros_ws/src/jugglebot/Teensy_code_canbridge && pio run -e teensy41 -t upload` (bare `pio run` only builds). | `BRIDGE_FW_CHECK: OK — can-bridge v30`. |
 | 4 | Ball Butler FW: flashed 2026-10-13 20:09 (8 -> 9). Confirm on the BB boot banner; re-flash (BB powered, launch down) with `python tools/teensy_link_bridge.py --fw-update ~/Desktop/BallButler/ball_butler_main/.pio/build/teensy40_can/firmware.hex --target bb` if it says 8. Bridge 30 + BB 8 acks a cancel, logs `NO_CANCEL_RESULT`, and **the throw still fires**. | BB banner FW 9. Do not run row 19 on FW 8. |
 | 8 | `tools/nightly_ticker.sh check --who "dress rehearsals"` | `CLAIMED GREEN`, or a `LOWERED …` line only (read nothing further), or a `RED` read against `git status`. |
 | 9 | Launch (tee to `temp/logs/`), GUI up, bag recording, on the loaded Jetson. `level` FIRST. | `/gravity_offset` published. |
 | 10 | Read the bridge's startup lines. | `BRIDGE_FW_CHECK: OK — can-bridge v30`. |
-| 10a | `grep -n 'segment solver worker' <launch.log>`; `ps -o pid,rss,cmd -C python3 \| grep solver_worker` | One `segment solver worker READY pid=<n> executor=<path under Jugglebot-skills> blas_threads=1`. **If `blas_threads` is not 1, a `BLAS threads =` WARN appears, the line is missing, or the executor path is the MAIN checkout: STOP.** |
+| 10a | `grep -n 'segment solver worker' <launch.log>`; `ps -o pid,rss,cmd -C python3 \| grep solver_worker` | One `segment solver worker READY pid=<n> executor=<path under Jugglebot> blas_threads=1`. **If `blas_threads` is not 1, a `BLAS threads =` WARN appears, the line is missing, or the executor path is under a stale worktree (`Jugglebot-skills`/`-oval`/`-bbcal`) or any directory other than `~/Desktop/Jugglebot`: STOP.** |
 | 11 | `ros2 param get /trajectory_node level_trim_deg` | `[0.0945, 0.3678]`. |
 | 12 | `ros2 service call /trajectory/set_limits jugglebot_interfaces/srv/SetTrajectoryLimits "{leg_vel_limit_mmps: 0.0, leg_acc_limit_mmps2: 0.0, leg_jerk_limit_mmps3: 0.0}"` (reads back, changes nothing) | `applied_*` 350 / 5000 / 200000. |
 | 15 | `ros2 service list \| grep -E 'recover_lane\|bb/cancel'`; `ros2 topic echo --once /link_status` (or the GUI) | `/recover_lane`, `/bb/cancel`, `bb/cancel_throw` present; `/link_status` carries `sched_hold_latched`, `lane_recovery: idle`, `lane_recovery_stage: none`. |
@@ -35,9 +35,9 @@ rows 17a-18; row 19-20 need BB holding a ball and the JB cup empty.
 
 ```
 # 17a (no signal sent)
-bash -c 'source /opt/ros/foxy/setup.bash && source ~/Desktop/Jugglebot-skills/ros_ws/install/setup.bash && cd ~/Desktop/Jugglebot-skills && python3 tools/probes/lane_latch_rehearsal.py --no-freeze'
+bash -c 'source /opt/ros/foxy/setup.bash && source ~/Desktop/Jugglebot/ros_ws/install/setup.bash && cd ~/Desktop/Jugglebot && python3 tools/probes/lane_latch_rehearsal.py --no-freeze'
 # 17b (freeze ON; defaults 50 mm / 1.2 s / freeze at 450 ms)
-bash -c 'source /opt/ros/foxy/setup.bash && source ~/Desktop/Jugglebot-skills/ros_ws/install/setup.bash && cd ~/Desktop/Jugglebot-skills && python3 tools/probes/lane_latch_rehearsal.py'
+bash -c 'source /opt/ros/foxy/setup.bash && source ~/Desktop/Jugglebot/ros_ws/install/setup.bash && cd ~/Desktop/Jugglebot && python3 tools/probes/lane_latch_rehearsal.py'
 ```
 
 Why no `<flags>` placeholder: on 2026-10-14 the literal `<flags>` was pasted and bash read `<flags` as a redirect, and a flag typed after the closing quote became `$0` of the `bash -c` script, not an argument of the probe. Flags go inside the quotes.
@@ -66,7 +66,7 @@ Rows 23-29 cover the handoff lead 13 -> 17 knots (`HANDOFF_LEAD_EXTRA_KNOTS` 8, 
 
 | # | Step | Expect |
 |---|---|---|
-| 23 | Rebuild and restart: `cd ~/Desktop/Jugglebot-skills/ros_ws && colcon build --packages-select jugglebot_interfaces jugglebot && source install/setup.bash`, launch DOWN then UP (tee to `temp/logs/`). Then `grep -n 'HANDOFF_LEAD_EXTRA_KNOTS = ' ros_ws/install/jugglebot/lib/python3.8/site-packages/jugglebot/motion/skills/schedule.py` and `git log --oneline -1` | The installed copy says `= 8`; HEAD contains `ecc21d68`. A `= 4` is a stale install: stop. |
+| 23 | Rebuild and restart: `cd ~/Desktop/Jugglebot/ros_ws && colcon build --packages-select jugglebot_interfaces jugglebot && source install/setup.bash`, launch DOWN then UP (tee to `temp/logs/`). Then `grep -n 'HANDOFF_LEAD_EXTRA_KNOTS = ' ros_ws/install/jugglebot/lib/python3.8/site-packages/jugglebot/motion/skills/schedule.py` and `git log --oneline -1` | The installed copy says `= 8`; HEAD contains `ecc21d68`. A `= 4` is a stale install: stop. |
 | 24 | Offline compile check (the "validate-only" row): `source ~/Desktop/PDJ_venv/venv/bin/activate && pytest tests/motion/test_skills_schedule.py -q -p no:cacheprovider -k monotone` and `pytest tests/motion/test_skills_schedule.py -q -p no:cacheprovider -k handoff_lead` | All pass: the columns and one-ball schedules at 17 knots (apex 0.95, sep 125, dwell 0.27) are dispatch-monotone with every consecutive gap >= 0.200 s (`test_the_handoff_lead_buys_eight_knots_and_the_live_schedules_stay_monotone`). This is the compiler, not the live node. |
 | 25 | `ros2 service call skills/check std_srvs/srv/Trigger` on the loaded Jetson (cup state per row 22 for the pattern about to fly) | `ladder OK`, `frame check OK`, `box OK`, and a `cup:` line matching the pattern; any `ladder REFUSED: <codes>` lists every refusal at once. |
 | 26 | Fly the columns attempt (`{pattern: columns, ...}` at the usual 0.95 / 125 / 0.27 point, the sitting's normal cadence; one-ball `columns_1ball_fed` also counts). Then `grep -E 'CATCH-AIM skill\|CATCH-AIM-FALLBACK' <launch.log>`. | One `CATCH-AIM skill N: source=...` line per catch dispatch. **Expect the first dispatch of a handoff catch to be mostly prior/schedule-aimed** (`source=schedule` / `schedule:learned`: at 17 knots the dispatch lands 100 ms earlier, ahead of the tracker fit in ~95 % of catches), with the tracker (`source=tracker`) appearing on later RESEND re-aims. Record the count per source; a first dispatch that is tracker-aimed in most catches means the lead did not take effect (recheck row 23). |

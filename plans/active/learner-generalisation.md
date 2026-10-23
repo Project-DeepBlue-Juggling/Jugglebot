@@ -17,10 +17,10 @@ related_code:
 
 # Learner generalisation
 
-Branch `skill-stack`. Standalone follow-on to `plans/archived/two-ball-skill-stack.md`, whose § 0 values
+Branch `main` (merged from `skill-stack` 2026-10-23). Standalone follow-on to `plans/archived/two-ball-skill-stack.md`, whose § 0 values
 (one path per function, delete what is replaced in the same rung, refuse by name, no hand-picked
 thresholds without a measured origin) stay normative. Companion: `plans/active/two-ball-oval.md`
-(branch `two-ball-oval`, NOT on `skill-stack`; the other session owns it, § 6.3). Design record:
+(now also on `main`, merged 2026-10-23; originally a separate branch and session, § 6.3). Design record:
 `logbook/2026-10-18-learner-generalisation-investigation.md` (the hypothesis "the memory learns
 site-specific structure" was withdrawn when the corpus regression showed the error is global).
 
@@ -109,7 +109,7 @@ pattern change); height/site/duration changes were never tested. Ploeger & Peter
 u_{n+1} = u_n − α_n e_n; first success at 1.2 ± 0.4 (3 balls) / 2.2 ± 0.4 (5 balls) attempts; noise floor
 ≈ 22 mm; no context, so no generalisation. From SafeOpt-MC (Berkenkamp) only the Lipschitz-cap filter.
 
-### 1.6 The oval plan's demands (`plans/active/two-ball-oval.md`, branch `two-ball-oval` @ 488bec36)
+### 1.6 The oval plan's demands (`plans/active/two-ball-oval.md`, as of 488bec36; now on `main`)
 
 Sites fixed (T = P1 x = −75 mm, C = P2 x = +75 mm); one release-to-release STEADY window carries the
 ball T→C→T. Its learner keys rows by release site T ("release at T exactly" works around a keyless
@@ -357,7 +357,7 @@ Dwell stops being a node parameter (oval decisions 39/41 and LimitsMismatch-on-d
 the next-beat rule is new design; two sessions touch `schedule.py`; yaw is dormant until P2; the blast
 radius is the compilers, executor, node goal acceptance, GUI, sim gate and ~20 test files (golden test).
 
-### 6.3 For the oval session (branch `two-ball-oval`)
+### 6.3 For the oval session (the `two-ball-oval` branch is merged into `main` since 2026-10-23 and kept at its tip; work happens on `main`)
 
 - `compile_oval` at its P5 targets `BeatEvent` (§ 2.6). Its rungs 1–4 proceed unchanged on the
   compiled path; its first learned throw uses the P1 learner once P1 lands (D5); the P2 sitting (D6)

@@ -24,8 +24,8 @@ related_code:
 
 # Two-ball oval
 
-Branch `two-ball-oval`, worktree `~/Desktop/Jugglebot-oval` (from `skill-stack` @ 6e4a0bab).
-Design record: the wayfinder map at `.scratch/two-ball-oval/` in that worktree (gitignored; the
+Branch: `main` in `~/Desktop/Jugglebot` (merged from `skill-stack` / `two-ball-oval` 2026-10-23; the oval worktree is retired; the `two-ball-oval` branch is kept at `main`'s tip, but work continues on `main` directly, fly after a FULL launch restart).
+Design record: the wayfinder map was at `.scratch/two-ball-oval/` in the retired oval worktree (gitignored, may no longer exist; the
 58 decisions it holds are restated here in § 1.3 so the plan stands alone). Runsheet for the first
 rung: `tests/hardware/session_oval_rung1.md`. Build runs phase by phase through
 `/next-phase-prompt two-ball-oval <n>`. **§ 0 of `two-ball-skill-stack.md` (archived) stays
@@ -291,9 +291,8 @@ Paths under `ros_ws/src/jugglebot/jugglebot/`.
   dwell key); the archived `cup-contact-contract.md` carries a one-line pointer; `docs/motion_planner` has no pattern table.
 - **Tests**: new `tests/motion/test_skills_oval.py` (fold + executor); the checks' tests in
   `tests/motion/test_validate_cycle.py` beside `CUP_CONTACT_ACC`; table-shaped tests grow in place.
-- **Gate**: merge `skill-stack` into `two-ball-oval` first (the live stack flies from
-  `skill-stack`, 35 commits ahead at 2026-10-17: the BB-calibration phases, the handoff and
-  splice fixes, the calibration ledger the runsheet reads); `./run_tests.sh --full` green;
+- **Gate**: (merge done 2026-10-23: `skill-stack` and `two-ball-oval` are both on `main`; the BB-calibration phases, the handoff and
+  splice fixes and the calibration ledger the runsheet reads are all present); `./run_tests.sh --full` green;
   then rung 1 on the loaded Jetson with every accept-time refusal reported at once (runsheet
   rows 16b/16c). **GO** = a 30-cycle attempt completes with the hand ball sensor's seat bit
   continuous through every carry (runsheet rows 22a/25); **NO-GO** = the ball leaves the cup
