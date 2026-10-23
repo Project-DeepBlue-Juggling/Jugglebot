@@ -130,8 +130,63 @@ dwell 0.55 and 0.50 swept (`select` refuses a dwell it was not swept at, by name
 | R2-5 | `ros2 param get /skill_node plant_id` stays the OVAL id; GUI Dwell field set to **0.55**. `{pattern: oval_1ball, apex_m: 0.95, separation_mm: 150.0, num_cycles: 6}` x N (N = 3 to start; `oval_1ball_fed` for a cold start). | Catches, carries, seat bit as at 0.65. Record row-27 metrics (commanded jerk, bank, leg 1/2 current, seat-bit continuity, landing dx/dy, LIMIT tally) with the two probes above. |
 | R2-6 | Same at dwell **0.50**, only after R2-5 is clean. | As R2-5; compare per step against the § 6 as-is column. |
 
-**GO / NO-GO for 0.50 (proposed, owner to confirm):** GO = no `ball_held` (debounced seat bit) loss on any carry; no carry `LIMIT_*`; catch rate matching
+**GO / NO-GO for 0.50 (confirmed 2026-10-23, see § 7.1):** GO = no `ball_held` (debounced seat bit) loss on any carry; no carry `LIMIT_*`; catch rate matching
 0.65 (28/28); legs 1/2 peak current not above ~ the 0.65 baseline by more than a margin the owner names (baseline 4.5 / 6.9 A vs the 15 A clamp);
 raw `ball_held_raw` dropout count recorded against the 9/16 baseline (a rise is a finding, not a stop). NO-GO / stop: the ball leaves the cup in the same
 carry region twice, a leg on the clamp > 50 ms, FET > 60 C, `lane_recovery=failed`. Offline expectation to check the bag against: window jerk 88.3k
 (0.55) and 111.5k (0.50) vs 58.7k at 0.65, bank unchanged at +-2.26 deg.
+
+### 7.1 Rung 2 results — MET 2026-10-23 (owner GO at dwell 0.50)
+
+Two launches, same day, HEAD 86987515 at read-back. **Launch A** 15:53:59 (bag `/home/jetson/Desktop/rosbags/2026-10-23_15-54-00/`, launch log `/home/jetson/.ros/log/2026-10-23-15-53-59-944623-jetson-372113/launch.log`)
+flew BEFORE the box-cell commits (16:54 / 17:11): it carries the three owed fixes (daa495e0, 21e02cfa, 3fe2cdee) but only the 0.65 oval cell, so it satisfied R2-1/2/3 only.
+**Launch B** 17:30:31 (bag `/home/jetson/Desktop/rosbags/2026-10-23_17-30-31/2026-10-23_17-30-31_0.mcap`, launch log
+`/home/jetson/.ros/log/2026-10-23-17-30-31-087871-jetson-428635/launch.log`) loaded the 22-cell box (the 17:39:10 refusal text names "swept at dwell_s=0.5, 0.55, 0.65") and flew R2-4..R2-6.
+Row-27 command (2026-10-23, bag B, ~3 min, goal parser worked, no `--windows` fallback):
+`python tools/probes/oval_carry_bag_metrics.py /home/jetson/Desktop/rosbags/2026-10-23_17-30-31/2026-10-23_17-30-31_0.mcap --launch-log /home/jetson/.ros/log/2026-10-23-17-30-31-087871-jetson-428635/launch.log --out temp/probes/oval_rung2_1730`
+(outputs `temp/probes/oval_rung2_1730/{row27.md,bag.pkl}`; per-dwell split is by goal order, windowing estimate-level +-30 ms).
+
+| # | Result | Launch |
+|---|---|---|
+| R2-1 | MET (as far as the logs show). 6 hop-entry goals in A and 10+ reload/hop goals in B (8 `oval_1ball_fed`, 2 `columns_1ball_fed`, plus the n=32 run's reloads) opened on a cross-site REST: zero `LIMIT_JERK` at t~0.025 (219k / 262k before the fix). Every `LIMIT_JERK` in the sitting is a late re-aim or bump plan at t >= 0.175 s (A 381,806; B 312,525 / 208,532 / 537,516 / 204,475 / 402,024 / 262,057), ball caught each time | A + B |
+| R2-2 | PARTLY measurable. All four `columns_1ball_fed` goals (A 2, B 2 at `num_cycles: 4`) read `2/2 caught`, no MISSED, no slam line. Cup SEATED at the end NOT checked (no log line, not read from the bag); per-throw lines still print denominator 5 | A + B |
+| R2-3 | MET. 8 `feed ball 1 CAUGHT` lines (A 6, B 2), all numeric (arrival, seat, contact, settle), zero `--` | A + B |
+| R2-4 | Box present (22 cells, sweep logbook `2026-10-23-oval-box-cells-dwell-055-050-swept`); the 0.40 dispatch was REFUSED by name by the box (swept at 0.5 / 0.55 / 0.65), as designed. No explicit `oval box OK` line found in launch.log (that is the operator's `skills/check` output, not captured) | B |
+| R2-5 | `plant_id` printed on every oval accept is `jugglebot` (same as rung 1 at 11:06); the `param get` itself is not in the logs. Dwell 0.55: ONE 4-throw `oval_1ball_fed` goal, COMPLETED 4/4 (3 steady carries, 0.58 s); a second 0.55 goal was REFUSED `REJECTED_BALL_IN_HAND` (operator, cup not empty); plain `oval_1ball` at 0.55 never flown. N=3 NOT met at 0.55 (thin; owner: moot since 0.50 passed) | B |
+| R2-6 | Dwell 0.50: `oval_1ball` 6/6 then 32/32, 38/38 caught, worst landing 44 mm, 36 steady carries (0.53-0.55 s) | B |
+
+Oval throws (throw-line parse, B): 0.65 75/76 caught (the one miss = the cold first goal after launch, 1/2, landing -94,-142 mm, cup EMPTY, learner at identity prior); 0.55 4/4; 0.50 38/38.
+Dispatch tally B: 17 sent, 14 ran, 3 refused (2 `REJECTED_BALL_IN_HAND`, operator error, each re-sent after the ball was removed; 1 box refusal at 0.40).
+
+**Row 27 per dwell** (steady carries only; 0.65 baseline = § 6 as-is column):
+
+| metric | 0.65 baseline (15 carries) | 0.65 today (69 steady) | 0.55 (3 steady) | 0.50 (36 steady) |
+|---|---|---|---|---|
+| carry length s | 0.68-0.70 | 0.68-0.71 | 0.58 | 0.53-0.55 |
+| commanded leg jerk median / max | 35.3k / 83.1k | 35.2k / 496k* | 55.3k / 58.9k | 66.3k / 77.1k |
+| leg peak vel / acc median (probe) | 163 / 1297 | ~165 / ~1330 | ~206 / ~1967 | ~222 / ~2230 (max 245 / 2490) |
+| leg 1 iq peak median / max A | 4.04 / 4.53 | 3.93 / 5.15 | 5.39 / 6.07 | 5.89 / 7.49 |
+| leg 2 iq peak median / max A | 6.43 / 6.90 | 6.65 / 7.44 | 7.36 / 7.76 | 9.09 / 10.05 |
+| bank commanded max median / max deg | 2.83 / 3.26 | 2.89 / 3.86 | 2.93 / 3.43 | 2.83 / 3.36 |
+| `ball_held` (debounced seat bit) unbroken | 16/16 | 69/69 steady (115/116 incl. 1.7 s feed carries; the one break = a 1.5 s feed carry, raw gap 0.279 s) | 3/3 | 36/36 |
+| `ball_held_raw` dropout carries | 9/16 (56 %) | 30/69 (43 %), 34 events | 3/3 (100 %, n tiny), 4 events | 25/36 (69 %), 30 events (0.83/carry vs 0.49 at 0.65 today) |
+| dropout duration ms | 8-60 | 8-66 | 31-54 | 9-59 |
+| landing dx mean/sd, dy mean/sd mm | oval pooled -4.2/12.6, +0.6/18.1 | -3.6/20.5, -0.9/23.3 (incl. the 170 mm cold miss) | +9.5/14.1, -2.5/15.7 | +4.7/16.3, +0.1/17.0 |
+| max emit gap ms | 30.0 | 29.9-32.0 | 29.6 | 28.4-31.3 |
+| LIMIT_ tally | 1 (262k reload REST) | 2 late re-aim refusals (n=32 run) + 1 bump (columns) | 0 | 3 late re-aim refusals (204k, 402k, 262k) |
+| FET temp | 34.5 C max | NOT MEASURED | NOT MEASURED | NOT MEASURED |
+
+\*Three 0.65 carries show echo jerk 417k / 476k / 496k (fed#3 k4, oval#1 k5, oval#2 k1; acc 6.2-6.9k). The probe labels that column "seam-prone"; the node's own tick-diff max for those goals is only 52-55k. Absent at 0.50 / 0.55 and
+absent at 0.65 in rung 1; cause NOT diagnosed (probe artefact suspected, flagged for the probe owner). Dwell 0.65 to 0.50 raises commanded acceleration x1.7 (1297 to 2230) and jerk x1.9 (median); measured maxima sit below the offline window numbers (88.3k at 0.55, 111.5k at 0.50).
+
+**GO / NO-GO bar, item by item** (owner confirmed 2026-10-23):
+- No `ball_held` loss on any carry: MET at 0.55 and 0.50 (3/3, 36/36).
+- No carry `LIMIT_*`: MET (every `LIMIT_*` is a late re-aim resend at the catch, ball caught each time; 0.50 had 3).
+- Catch rate matching 0.65 (28/28): MET (0.50 38/38, 0.55 4/4, 0.65 75/76).
+- Legs 1/2 peak current vs 4.5 / 6.9 A: NOT within the baseline: 0.50 max 7.49 A (+65 %) / 10.05 A (+46 %), median 5.9 / 9.1 A. **Accepted by the owner as margin** (leg 2 peak 10.1 A of the 15 A clamp, 67 %).
+- Raw `ball_held_raw` dropouts vs 9/16: recorded; a rise at 0.50 (25/36 = 69 %); a finding, not a stop (0.55 n=3 too small).
+- NO-GO items: ball leaves the cup twice in one region: not seen; leg on the clamp > 50 ms: not seen; FET > 60 C: NOT MEASURED; `lane_recovery=failed`: no such line in log B. No E-STOP / `MAX_DEVIATION` lines in B.
+
+**Verdict: rung 2 MET 2026-10-23 (owner GO).** Dwell 0.50 is the new one-ball oval baseline for P3 (38/38). The 0.55 column is one 4-throw goal, noted thin by the owner and moot.
+Heartbeat dropouts (21 episodes in B, 3 in A, 5 at rung 1) are the known leg-bus per-axis frame-loss class: WATCH. The deactivate refusal at 17:40:21 (`ERR_REJECTED`) is diagnosed and fixed, unflown
+(`2026-10-23-deactivate-rejected-state-machine-divergence`). Sitting logbook: `2026-10-23-oval-rung2-flown-dwell-050`.

@@ -9,6 +9,7 @@ related_logbook:
   - 2026-10-18-two-ball-oval-p1-oval-pattern-dispatchable.md
   - 2026-10-23-oval-p2-banking-leak-not-reproduced.md
   - 2026-10-23-oval-box-cells-dwell-055-050-swept.md
+  - 2026-10-23-oval-rung2-flown-dwell-050.md
 related_config:
   - config/hardware_config.yaml → trajectory_op.leg_acc_ceiling_mmps2 (5000 → 10000 at P4, decision 53)
   - config/hardware_config.yaml → trajectory_op.leg_{vel,acc,jerk}_limit_* (350/5000/200000 → 600/8000/200000 at P4, decision 54)
@@ -250,8 +251,8 @@ second-to-last catch at C is a standalone HELD catch and the last throw lands on
 |---|---|---|---|---|
 | P1 | The oval pattern dispatchable: `oval_1ball(_fed)`, fixed roles, cross-site fold, executor threading, codes, box cell at dwell 0.65, C-CUP-4 check, GUI, sim label, tests | **Rung 1** (`session_oval_rung1.md`): 150 / 0.65 / 0.95 at today's limits, as-is banking — go/no-go on the carry (the 30-consecutive gate WAIVED by owner 2026-10-23: longest oval attempt 10/10; 28/28 caught = 18/18 oval, plus 10/10 hop control; the 30-run bar lives at P5) | COMPLETE | 2026-10-18; rung 1 FLOWN 2026-10-23: 28/28 caught (18/18 oval, plus 10/10 hop control), owner: "Oval 1 ball patterns are working really nicely. I think we're ready to advance on this." |
 | P2 | Banking leak fix (principle a) | ~~Rung 1 re-flown = the leak-fixed column~~ | RETIRED 2026-10-23 (row kept): the leak does not reproduce on today's planner, delta 0 at every accepted dwell 0.65-0.45, § 4 P2 | 2026-10-23 |
-| Rung 2 | No planner code (box cells at 0.55 / 0.50 swept 2026-10-23, see the logbook): one-ball oval at dwell 0.55 then 0.50 on the as-is `level` planner at today's limits, bundled with the sitting that flies the three owed unflown fixes first | Row-27 metrics per step against the 0.65 baseline (runsheet `session_oval_rung1.md` § Rung 2) sets P3's shaper target | NOT FLOWN | |
-| P3 | Pose-level carry planner behind `level \| pose`, C-CUP-4 rows, knob re-tune, cycle budget, seam-dz ablation (design starts AFTER rung 2 flies) | Rung 2 outcome, then rung 1 re-flown = the swept column → decision 24 gate; columns re-gated if the mode flips | NOT STARTED | |
+| Rung 2 | No planner code (box cells at 0.55 / 0.50 swept 2026-10-23, see the logbook): one-ball oval at dwell 0.55 then 0.50 on the as-is `level` planner at today's limits, bundled with the sitting that flies the three owed unflown fixes first | Row-27 metrics per step against the 0.65 baseline (runsheet `session_oval_rung1.md` § 7) sets P3's shaper target | FLOWN 2026-10-23, MET (owner GO): 0.50 38/38 with a 32-run, 0.55 4/4, 0.65 75/76; leg 2 peak 10.1 A accepted (15 A clamp) | `2026-10-23-oval-rung2-flown-dwell-050` |
+| P3 | Pose-level carry planner behind `level \| pose`, C-CUP-4 rows, knob re-tune, cycle budget, seam-dz ablation (design starts AFTER rung 2 flies) | Starts from the dwell-0.50 as-is baseline (38/38); rung 1 re-flown = the swept column → decision 24 gate; columns re-gated if the mode flips | NOT STARTED | |
 | P4 | Working point 600/8000/200k, acc ceiling 10000, 30 A, box re-sweep (oval + columns), one-ball cells at 0.40 / 0.30 | Ramp sitting (five columns canary, one-ball oval at 0.40), then one-ball at 0.30 | NOT STARTED | |
 | P5 | Two-ball `oval(_fed)`: `compile_oval`, hop-shaped entry, Stop exit, clearance pre-flight | 30 consecutive BB-fed catches in one attempt | NOT STARTED | |
 
@@ -325,8 +326,8 @@ Where the idea lives now: a note inside P3 (below). Code never started; nothing 
 
 ### P3 — Pose-level carry planner — NOT STARTED
 
-- **Sequencing (owner 2026-10-23):** P3 design starts after rung 2 flies; its shaper target = the cone refusal at dwell 0.40
-  (49.1°). The retired P2 idea (feed the receive-to-throw sweep as the banking request on carried folds only) is a
+- **Sequencing (owner 2026-10-23):** rung 2 flew (MET, owner GO): the as-is `level` baseline for P3 is dwell 0.50 (38/38 caught, leg 2 peak 10.1 A of 15, `ball_held` unbroken 36/36). P3's shaper target = the cone refusal at dwell 0.40
+  (49.1° > 45°); the physical thing to watch is the raw seat-bit dropout rise (`ball_held_raw` dropouts in 56 % of carries at 0.65 to 69 % at 0.50) as the dwell shortens. P3 design starts now. The retired P2 idea (feed the receive-to-throw sweep as the banking request on carried folds only) is a
   candidate sub-item here, to be gated to carried folds and measured against the hop cells before it is adopted.
 - `cup_cycle`: the `level | pose` mode (default `level`); the free centroid z block, analytic
   dz in `decompose`, the prescribed tilt series with its two holds, the leg-jerk objective,
@@ -396,15 +397,19 @@ Where the idea lives now: a note inside P3 (below). Code never started; nothing 
   twice in one region, FET > 60 °C, a leg on the current clamp > 50 ms, lane recovery failed) are
   in the runsheet. 30 A is the owner's number (~30 A judged safe 2026-10-12); the 0.40 rung's bag
   is the measurement. The hand cap 3900 is NOT raisable.
-- **Non-obvious choices**: the first rung flies at dwell 0.65 (pre-release hold; the cone moved to 45° since b28b129f so 0.50 passes the planner and cone offline (32.1° < 45°) but is NOT dispatchable until the oval box cells at 0.55 and 0.50 are swept; rung 2 flies it after that); symmetric sites (every one-sided probe placement produced edge
+- **Non-obvious choices**: the first rung flies at dwell 0.65 (pre-release hold; the cone moved to 45° since b28b129f so 0.50 passes the planner and cone offline (32.1° < 45°) but is NOT dispatchable until the oval box cells at 0.55 and 0.50 are swept; rung 2 flew it 2026-10-23 once the cells were swept); symmetric sites (every one-sided probe placement produced edge
   artefacts); the catch stays level because the capture span is infeasible at two balls (probe,
   two runs); the mode switch exists so decision 24's as-is column stays producible; dwell is a
   parameter, not a goal field, so a box swept at one dwell refuses the other by name.
 - **Row-27 baseline exists (2026-10-23)**: the rung-1 bag is read into the runsheet's § 6 as-is column (commanded jerk, bank,
   leg 1/2 current, seat-bit continuity, landing, LIMIT tally). Re-run per rung: `tools/probes/oval_carry_bag_metrics.py` (bag) and
-  `tools/probes/oval_dwell_sweep.py` (offline dwell ladder); rung 2 reads against the 0.65 numbers. Owed first: the three unflown fixes
-  (I-PLAN-11 rest_slew daa495e0, columns parity 21e02cfa, feed-line latch 3fe2cdee). No planner code lands in
-  `cup_realize` / `cup_cycle` before that sitting. Oval SPLICE_TOO_LATE (11/16 re-aims refused) stays residue (archived residue plan § 2).
+  `tools/probes/oval_dwell_sweep.py` (offline dwell ladder); rung 2 reads against the 0.65 numbers. Flown 2026-10-23 ahead of rung 2: the three then-unflown fixes
+  (I-PLAN-11 rest_slew daa495e0, columns parity 21e02cfa, feed-line latch 3fe2cdee). No planner code landed in
+  `cup_realize` / `cup_cycle` before that sitting (the I-PLAN-12 REST-rebase fix landed the same evening, after it, unflown). Oval SPLICE_TOO_LATE (11/16 re-aims refused) stays residue (archived residue plan § 2).
+- **Rung 2 residue (2026-10-23, owner decisions)**: (a) the four two-ball `columns` MISSED_CATCH ends in the 15:53 launch were REAL misses, lateral launch
+  outliers (77 / 39 / 29 / 191 mm/s) beyond the clamped aim authority (10 out / 35 in / 20 y mm), inside the sitting-8 streak range, no regression from the three fixes; OPEN,
+  unowned, confirming replay = `sim/skills_gate.py` two-ball columns with a refused re-aim before a Ball 2 release, parent of 21e02cfa vs HEAD. (b) Leg/hand heartbeat dropouts (21 in launch B) = the known leg-bus frame-loss
+  class, 2.4/min of trajectory like rung 1: WATCH, escalate past an episode near 2.0 s, a `MAX_DEVIATION` or miss coincident with a lead-clamp mask, or > 4/min. (c) `SPLICE_TOO_LATE` (175 mentions in launch B) not tallied per re-aim. (d) Three 0.65 echo-jerk spikes (417-496k) undiagnosed, probe-artefact suspected. See the sitting entry.
 - **Rollback**: `level` is the default mode until the gate; P1 is additive on the one-ball
   path (`roles='alternate'` is today's hop); P4's working point reverts by one YAML commit + box
   re-sweep.
