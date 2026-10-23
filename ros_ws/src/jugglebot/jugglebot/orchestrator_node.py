@@ -66,7 +66,11 @@ _JUGGLE_NUMERIC_FIELDS = {
 # IdleHandler / ActiveHandler / FaultHandler; BOOT, HOMING and LEVELLING clear
 # their command queue every tick). Used ONLY to tell the operator, in one WARN
 # line, that a command was ignored and why — the command is still enqueued
-# exactly as before, so control flow is unchanged.
+# exactly as before, so control flow is unchanged. (While a deactivate is in
+# flight ActiveHandler stays ACTIVE and DISCARDS the streaming mode switches
+# below, one WARN notice each; a duplicate 'deactivate' is absorbed; and with
+# the wire disarmed in an auto-arm session it refuses them -- see
+# state_machine.ActiveHandler._step_deactivate.)
 _COMMANDS_ACCEPTED = {
     RobotState.IDLE: ('activate', 'home', 'level'),
     RobotState.ACTIVE: ('deactivate', 'standby', 'trajectory', 'spacemouse',
@@ -142,6 +146,10 @@ class OrchestratorNode(Node):
         # stream-then-arm check).
         self._setpoint_output_client = self.create_client(
             SetBool, 'set_setpoint_output')
+        # Hand axis state (the bridge's /set_hand_state, SET_AXIS_STATE on axis
+        # 6 only — no leg command). Used by 'disarm_and_idle_hand'.
+        self._hand_state_client = self.create_client(
+            SetString, 'set_hand_state')
 
         # ── Action clients ────────────────────────────────────────
         self._home_client = ActionClient(self, HomeMotors, 'home_motors')
@@ -550,6 +558,12 @@ class OrchestratorNode(Node):
         # 3. Run state machine
         self.sm.tick(self.ctx)
 
+        # 3-notice. A handler's operator notice (e.g. a refused deactivate that
+        # keeps the robot ACTIVE), logged once.
+        notices, self.ctx.operator_notices = self.ctx.operator_notices, []
+        for notice in notices:
+            self.get_logger().warning(notice)
+
         # 3-pre. Sub-mode switch (standby/trajectory/spacemouse/gui) applied by
         # ActiveHandler this tick — the one line for that operator command.
         # Not fired on ACTIVE entry (its on_enter resets to STANDBY).
@@ -701,6 +715,7 @@ class OrchestratorNode(Node):
                     self.ctx.operation_result = True
                 else:
                     self.ctx.operation_result = result.success
+                    self.ctx.operation_message = detail
                     if not result.success:
                         # A genuine RPC failure still faults: the CAN write did
                         # not land, which is a real machine problem, not an
@@ -720,6 +735,7 @@ class OrchestratorNode(Node):
             except Exception as e:
                 self.get_logger().error(f'Service call exception: {e}')
                 self.ctx.operation_result = False
+                self.ctx.operation_message = f'service call exception: {e}'
             self.ctx.operation_pending = False
             self._pending_future = None
             self._pending_kind = None
@@ -853,6 +869,21 @@ class OrchestratorNode(Node):
             self._fire_forget_service_call(
                 self._setpoint_output_client, disarm_req, 'disarm_setpoints')
 
+        elif req == 'disarm_and_idle_hand':
+            # ActiveHandler's legs-out exits to IDLE (the legs already dropped
+            # out of closed loop): make the wire and the Hand safe WITHOUT any
+            # leg command — a leg DEACTIVATE would re-energise legs that fell
+            # out of closed loop and lower them a second time. Both calls are
+            # idempotent and fire-and-forget (same reasoning as above).
+            disarm_req = SetBool.Request()
+            disarm_req.data = False
+            self._fire_forget_service_call(
+                self._setpoint_output_client, disarm_req, 'disarm_setpoints')
+            hand_req = SetString.Request()
+            hand_req.data = 'IDLE'
+            self._fire_forget_service_call(
+                self._hand_state_client, hand_req, 'hand_idle')
+
         # ── Levelling requests ────────────────────────────────────
 
         elif req == 'level_activate':
@@ -931,10 +962,12 @@ class OrchestratorNode(Node):
             self.get_logger().warning(
                 f'Service {client.srv_name} not ready, failing request')
             self.ctx.operation_result = False
+            self.ctx.operation_message = f'service {client.srv_name} not ready'
             return
 
         self.ctx.operation_pending = True
         self.ctx.operation_result = None
+        self.ctx.operation_message = None
         self._pending_kind = kind
         self._pending_label = self._current_req
         self._pending_future = client.call_async(request)

@@ -72,10 +72,12 @@ work (2026-07-15) hit three distinct doors into that hole:
   the mechanism. The arm pre-check symmetrically refuses while a deactivate is
   in progress (an arm must never land mid-descent).
 - **A4 — the stream outlives the armed window.** `control_mode` stays in the
-  streaming set until the deactivate **completes**: ActiveHandler.on_exit no
-  longer blanks it; IdleHandler blanks it only after the pending operation
-  resolves. This removes the 250 ms race (blank → emitter stops → SETPOINT_STALE
-  beats the disarm) instead of merely winning it. A guard-only FAULT preserves
+  streaming set until the deactivate **completes**: the mode stays published
+  because the machine is still ACTIVE through the descent (ActiveHandler leaves
+  ACTIVE only on the bridge's confirmation, 2026-10-23); IdleHandler blanks it
+  on entry, after any operation still in flight has resolved. This removes
+  the 250 ms race (blank → emitter stops → SETPOINT_STALE beats the disarm)
+  instead of merely winning it. A guard-only FAULT preserves
   the mode for the same reason (pre-existing).
 - **A5 — illegal states are loud.** trajectory_node reads `mpc_active` from
   `/link_status` and (a) WARNs when a motion command is accepted while the wire
@@ -119,12 +121,32 @@ work (2026-07-15) hit three distinct doors into that hole:
 4. Mode changes within ACTIVE (STANDBY↔TRAJECTORY↔…) are streaming→streaming:
    the armed wire is never starved (this is why "stream only in TRAJECTORY
    mode" was rejected as a design — the armed STANDBY hold is load-bearing).
-5. `deactivate` → ActiveHandler.on_exit requests the deactivate;
+5. `deactivate` → ActiveHandler requests the deactivate and **stays ACTIVE
+   until the bridge confirms it** (2026-10-23: the machine used to leave ACTIVE
+   on the command and reached IDLE on a refused DEACTIVATE with the legs still
+   up — `logbook/2026-10-23-deactivate-rejected-state-machine-divergence.md`);
    **the streaming mode stays published** (A4). The bridge disarms in-process
-   (A3) — from that instant the Teensy ignores the still-flowing stream and its
-   staleness watchdog is inert (`s_mpc_active=0` gates it) — then runs the
-   parallel no-tilt TRAP_TRAJ descent. IdleHandler blanks the mode only after
-   the operation resolves; the emitter then stops, long since disarmed.
+   (A3) and waits for the firmware's T2J bit3 to drop before firing, whoever
+   did the disarm — from that instant the Teensy ignores the still-flowing
+   stream and its staleness watchdog is inert (`s_mpc_active=0` gates it) —
+   then runs the parallel no-tilt TRAP_TRAJ descent. ERR_REJECTED = the firmware latched
+   nothing: retried up to 3 attempts 1 s apart. ERR_TIMEOUT = the ack was lost
+   and a start MAY have latched: the bridge observes the legs through the
+   DeactivateMonitor window before any verdict and never re-sends. A genuine
+   failure, a spent budget or no reply within 30 s opens a 1 s reconcile
+   window: the machine follows the legs to IDLE if they leave closed loop,
+   else stays ACTIVE (disarmed) with the reason logged; streaming mode
+   switches are then refused until the operator re-arms (no auto re-arm).
+   The same legs-out rule (5 consecutive ticks out of closed loop, after
+   closed loop was seen) applies throughout armed ACTIVE. Both legs-out exits
+   to IDLE request **disarm + Hand IDLE only** (`disarm_and_idle_hand`:
+   `/set_setpoint_output false` + `/set_hand_state IDLE`), never a leg
+   DEACTIVATE — legs that fell out of closed loop must not be re-energised
+   and lowered a second time. The disarm lands on the host flag at once and on
+   the wire within one heartbeat (~100 ms), inside the 250 ms SETPOINT_STALE
+   window that opens when IdleHandler blanks the mode.
+   IdleHandler blanks the mode on entry; the emitter then stops, long since
+   disarmed.
 6. Real fault at any point → FAULT entry disarms (A2). Guard-only fault from
    ACTIVE → stays armed, guard suppresses output, resume re-verifies the arm
    through A1 (idempotent if still armed).

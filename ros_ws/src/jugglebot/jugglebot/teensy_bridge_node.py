@@ -7967,7 +7967,8 @@ class TeensyBridgeNode(Node):
                 return False                                          # extended or unknown
         return True
 
-    def _run_deactivate(self, axes, *, poll_dt=0.05, timeout_s=None):
+    def _run_deactivate(self, axes, *, poll_dt=0.05, timeout_s=None,
+                        wire_wait_s=1.0):
         """Fire the firmware DEACTIVATE (TRAP_TRAJ controlled lower to STOW, then
         IDLE) and observe it to completion. A single configured axis fires that
         leg; any larger set fires ``AXIS_ALL`` (every PRESENT leg, parallel
@@ -7994,11 +7995,13 @@ class TeensyBridgeNode(Node):
         self._deactivate_in_progress = True
         try:
             return self._run_deactivate_inner(axes, poll_dt=poll_dt,
-                                              timeout_s=timeout_s)
+                                              timeout_s=timeout_s,
+                                              wire_wait_s=wire_wait_s)
         finally:
             self._deactivate_in_progress = False
 
-    def _run_deactivate_inner(self, axes, *, poll_dt=0.05, timeout_s=None):
+    def _run_deactivate_inner(self, axes, *, poll_dt=0.05, timeout_s=None,
+                              wire_wait_s=1.0):
         # ARMING_CONTRACT A3 — disarm-before-stow, in-process. This is the ONE
         # place the ordering is airtight (same thread, synchronous), and it covers
         # every deactivate entry point: the orchestrator's ACTIVE→IDLE, the direct
@@ -8014,15 +8017,23 @@ class TeensyBridgeNode(Node):
                 "deactivate requested while armed — disarming first "
                 "(ARMING_CONTRACT A3: disarm-before-stow)")
             self._stop_setpoint_output()
-            # The disarm is only STAGED until the next 10 Hz heartbeat tick —
-            # firing DEACTIVATE immediately would race s_mpc_active=1 on the
-            # Teensy and be rejected. Wait for the firmware's arm-took bit
-            # (T2J bit3) to confirm the disarm landed.
-            if not self._wait_wire_disarmed():
-                self.get_logger().error(
-                    "disarm did not confirm on the wire (T2J bit3 still set "
-                    "after 1 s) — proceeding; the firmware rejects DEACTIVATE "
-                    "if truly armed (loud failure, no motion)")
+        # The disarm is only STAGED until the next 10 Hz heartbeat tick — firing
+        # DEACTIVATE before it lands races s_mpc_active=1 on the Teensy and is
+        # rejected (ERR_REJECTED). Wait for the firmware's arm-took bit (T2J
+        # bit3) UNCONDITIONALLY, not only when this call did the disarm: a disarm
+        # through /set_setpoint_output (the GUI teardown's disarm-then-deactivate)
+        # has already cleared the host _mpc_active, so the old `if
+        # self._mpc_active` guard skipped the wait and the DEACTIVATE raced the
+        # wire (2026-10-19, 65 ms after the disarm; 2026-10-23, 40 ms — both
+        # ERR_REJECTED; the 100/130 ms re-tries passed). Returns at once when the
+        # firmware already reports disarmed. ``wire_wait_s`` = 0 for the shutdown
+        # stow: on_shutdown has already run its own settle + wire wait, and a
+        # second 1 s budget would eat into the ~8 s teardown window.
+        if not self._wait_wire_disarmed(wire_wait_s):
+            self.get_logger().error(
+                f"disarm did not confirm on the wire (T2J bit3 still set "
+                f"after {wire_wait_s:.1f} s) — proceeding; the firmware rejects "
+                f"DEACTIVATE if truly armed (loud failure, no motion)")
         # Already-at-STOW no-op guard: if every target leg is already IDLE and within
         # _STOW_POS_MAX_REV of STOW, the platform is stowed — a DEACTIVATE would
         # needlessly re-arm CLOSED_LOOP (a jolt) only to lower nothing, then IDLE. Skip
@@ -8052,8 +8063,21 @@ class TeensyBridgeNode(Node):
                 f"will move ALL present legs, but only {axes} are observed. Use a "
                 f"single leg or the full leg set.")
         ok, msg, _ = self.teensy_deactivate(fire_axis)
-        if not ok:
+        # ERR_REJECTED (and every other refusal code) = the firmware latched
+        # nothing: return the refusal. ERR_TIMEOUT is different — the ack was
+        # lost, and the DEACTIVATE may have latched and be lowering the legs
+        # right now. Never report that as a refusal (the orchestrator would
+        # re-send a move whose first copy may be running): OBSERVE it to a
+        # verdict through the same DeactivateMonitor window instead (owner,
+        # 2026-10-23). A descent that runs → success; nothing moved → the
+        # monitor's timeout → a genuine "deactivate FAILED".
+        lost_ack = (not ok) and ('ERR_TIMEOUT' in str(msg))
+        if not ok and not lost_ack:
             return False, f"DEACTIVATE rejected: {msg}"
+        if lost_ack:
+            self.get_logger().warning(
+                f"deactivate: DEACTIVATE ack lost ({msg}) — the lower may have "
+                f"started; observing the legs before any verdict (no re-send)")
         mon = (DeactivateMonitor(axes, timeout_s=float(timeout_s))
                if timeout_s is not None else DeactivateMonitor(axes))
         _t_deact = time.monotonic()
@@ -8069,18 +8093,43 @@ class TeensyBridgeNode(Node):
                 self.get_logger().error("deactivate: hard deadline exceeded")
                 break
             time.sleep(poll_dt)
+        if not mon.done:
+            # Hard-deadline exit with NO verdict from the monitor: never report
+            # it as success (the hand is left as-is — the legs' state is unknown).
+            msg = "deactivate FAILED — no verdict (hard deadline)"
+            if lost_ack:
+                msg += " (DEACTIVATE ack lost; observed, not re-sent)"
+            self.get_logger().error(msg)
+            return False, msg
         # Idle the HAND (axis 6) too: can_node's deactivate de-energised ALL
         # JUGGLEBOT_AXES (legs via the TRAP_TRAJ→IDLE above; hand via
         # SET_AXIS_STATE(IDLE), can_node.py:1541-1543). ACTIVATE/DEACTIVATE are
         # rejected on axis 6 (leg-specific cold-start moves), so the hand is idled
         # explicitly here. Best-effort — a failure is logged but does not fail the
         # leg deactivate result (per the can_node<->Teensy parity audit).
-        hok, hmsg, _ = self.teensy_set_axis_state(_HAND_AXIS, proto.ODRIVE_STATES['IDLE'])
-        if not hok:
-            self.get_logger().warning(f"deactivate: hand IDLE failed — {hmsg}")
+        if lost_ack and mon.failed and self._legs_already_stowed(axes):
+            # The descent finished before the monitor saw a CLOSED_LOOP sample at
+            # STOW (its arrival evidence): the legs are IDLE inside the stow band,
+            # so the lost-ack DEACTIVATE did run. Caveat: a leg resting OUTSIDE the
+            # band (foam) still reads as a failure — the fail-safe direction.
+            mon = None
+        lost_ack_unmoved = lost_ack and mon is not None and not mon.succeeded
+        if not lost_ack_unmoved:
+            # (A lost-ack DEACTIVATE that moved no leg leaves the robot posed and
+            # ACTIVE: do NOT de-energise the Hand under it.)
+            hok, hmsg, _ = self.teensy_set_axis_state(
+                _HAND_AXIS, proto.ODRIVE_STATES['IDLE'])
+            if not hok:
+                self.get_logger().warning(f"deactivate: hand IDLE failed — {hmsg}")
+        if mon is None:
+            msg = f"deactivate complete on axes {axes} (ack lost; legs found stowed)"
+            self.get_logger().info(f"deactivate: {msg}")
+            return True, msg
         if mon.failed:
             parts = [f"axis {a}: {r}" for a, r in mon.failed.items()]
             msg = "deactivate FAILED — " + "; ".join(parts)
+            if lost_ack:
+                msg += " (DEACTIVATE ack lost; observed, not re-sent)"
             if mon.succeeded:
                 msg += f" (succeeded: {mon.succeeded})"
             self.get_logger().error(msg)
@@ -9203,8 +9252,10 @@ class TeensyBridgeNode(Node):
             axes = [int(a) for a in self.get_parameter('deactivate_axes').value]
             self.get_logger().info(
                 f"shutdown: profiled stow (DEACTIVATE) on legs {axes} before teardown")
+            # wire_wait_s=0: on_shutdown already settled and waited for the wire
+            # disarm before calling here; keep the teardown inside its ~8 s window.
             ok, msg = self._run_deactivate(
-                axes, timeout_s=_SHUTDOWN_DEACTIVATE_TIMEOUT_S)
+                axes, timeout_s=_SHUTDOWN_DEACTIVATE_TIMEOUT_S, wire_wait_s=0.0)
             if ok:
                 self.get_logger().info(f"shutdown stow complete — {msg}")
             else:

@@ -457,7 +457,7 @@
 ### `set_hand_state`
 
 - **servers:** `teensy_bridge_node`
-- **clients:** _none_
+- **clients:** `orchestrator_node`
 - **type:** `jugglebot_interfaces.srv.SetString`
 
 ### `set_setpoint_output`
@@ -578,7 +578,6 @@ broken wire cannot hide among them.
 - `recover` — service with no clients
 - `ring_diag` — topic with no subscribers
 - `set_hand_gains` — service with no clients
-- `set_hand_state` — service with no clients
 - `set_motor_vel_curr_limits` — topic with no publishers
 - `skills/attempt` — topic with no subscribers
 - `skills/check` — service with no clients
