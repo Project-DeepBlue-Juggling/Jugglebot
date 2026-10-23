@@ -68,7 +68,7 @@ channels; the learner itself is decided by rehearsal row 49.
 4. Rehearsal row 49: ten BB feeds each at −20 / 0 / +20 ms; median `settle`
    moving > 60 ms between any two runs ⇒ timing is a lever and the catch
    learner goes ahead as a second memory on the existing machinery; otherwise
-   the cause is mechanical (the cup's seat/rim geometry, owner to measure).
+   the cause is mechanical (the cup's seat/rim geometry, owner to measure; geometry measurement RETIRED 2026-10-23, see Flown 2026-10-22).
 
 Restart the FULL launch before flying (new parameter, new ring layout).
 
@@ -81,4 +81,19 @@ Restart the FULL launch before flying (new parameter, new ring layout).
 | 2026-10-22 | `pytest tests/ros/test_skill_node.py -q -k "catch_time_offset or contact_probe"` | 6 passed |
 | 2026-10-22 | `./run_tests.sh --full` (shared gate with the I-PLAN-11 commit, log `temp/logs/gate_iplan11_20261022.log`) | 7017 passed, 9 skipped in 313.53 s + serial 7 passed; exit 0 |
 
-NOT FLOWN.
+NOT FLOWN as of the instrument's landing; see Flown 2026-10-22 below.
+
+## Flown 2026-10-22
+
+Rehearsal row 49 flew in the 2026-10-22 19:50 sitting (launch log `/home/jetson/.ros/log/2026-10-22-19-50-38-975040-jetson-50159/launch.log`; 964bd409 build). Criterion NOT met. The feed lines printed `arrival -- seat -- contact -- settle --` for all 21 feeds (21 feed lines against 28 BB-fed balls in the bag; the 7 without a line registered no seated feed catch -- not reconciled per ball): the fed ball's /balls status leaves IN_FLIGHT 0.29-0.50 s after landing, before the +0.53 s report (`_report_feed`, executor.py), so the tracker provider (`ball_possession.flight_in_progress`) returns None and every derived field is `--`. Fix (latch the last converged landing) goes in the next commit; NOT FLOWN. Numbers below are therefore bag-derived: settle = first SEATED minus first cup contact, per BB-fed ball.
+
+| arm (offset) | fed/caught | settle median [range] ms (n) |
+|---|---|---|
+| before any offset | 6/6 | 118 (3) |
+| -20 | 9/9 | 209 [118-224] (9) |
+| 0 | 7/7 | 213 [178-220] (4) |
+| +20 | 6/6 | 259 [140-260] (3) |
+
+Bimodal ~100-140 vs ~230-270 ms in every arm; no shift between the -20/0/+20 arms exceeds 60 ms (max 50 ms); the pre-offset control sits 91-141 ms below them (n=3, slower-closing balls), so drift between zero-offset groups exceeds the criterion and the A/B is under-powered rather than clean negative evidence; the decision (no catch-timing learner) rests on the within-arm bimodality (100-140 vs 230-270 ms in every arm) and the owner's 48-catch run at 0 ms. Self-throw settle at 0 ms: 125 ms [81-210] (n=45, bag) / 151 [94-235] (n=39, log). Protocol caveat: ten feeds per arm was not met (the -20 runs ended after 1-3 throws: 4 LIMIT_ACC 5030-5398 vs 5000, one LIMIT_VEL 351.8 > 350, two ABORTED_NO_RELEASE after wild throws landed -209/-278 mm; owner: "the balls collided in the air, suggesting messy throws"). The +20 arm was ended 4 of 6 times by a repeatable LIMIT_JERK 240-256k on CATCH skill 2 (leg 5, t=0.100, k_s 40) of the hop-entry columns goal; both the learned aim and the y_d fallback were refused. Owner impressions: "-20 felt like good catching", "0 was great. We got Jugglebot's PB of 48 catches", "+20 was pretty clunky". The 48-catch run (L3402-4405): 47/48 by the log: 47 caught; the goal ended on a genuine MISSED_CATCH at skill 48 (L4394/L4403) that is not in the count; the one MISSED inside the count is the final cross-site throw, the by-design D2 ending (2026-09-30; executor.py ~5001 sets caught=False for the Stop throw regardless; owner's '48 catches' counts that run). The columns_1ball_fed 1/2 results (L1129, 1301, 1673): the real ball lands at the far site on an empty, static cup during the closing REST (no catch planned); the log's 'landed on the held ball' label is wrong for the one-ball patterns.
+
+Decision (orchestrator, 2026-10-23): timing is not a lever on settle at +/-20 ms; no second catch learner. Owner 2026-10-23: "The ASA hand is geometrically identical to the PLA hand", so the seat/rim-height measurement is RETIRED; the remaining candidate for the longer ASA settle is the print's surface/sliding friction (owner: the ASA hand "slides slightly less smoothly"). Status stays in-progress because the feed-line fix is unflown.

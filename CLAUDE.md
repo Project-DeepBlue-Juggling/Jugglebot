@@ -33,7 +33,7 @@ plans/archived/              ← completed or superseded plans
 ```
 
 **Documentation:**
-- `CONTEXT.md` is the project glossary and it is **normative**: name a domain concept with the glossary's term and never with a word on its `_Avoid_` lines (Hand not "leg 6", Sitting not "session", Throw not "toss", Feed not "reload", Soft E-stop vs E-stop button). It may run ahead of the code — identifiers follow in their own grep-counted rename commits, and historical entries are never rewritten. Change it through `/grill-with-docs`, not by hand.
+- `CONTEXT.md` is the project glossary and it is **normative**: name a domain concept with the glossary's term and never with a word on its `_Avoid_` lines (Hand not "leg 6", Sitting not "session", Throw not "toss", Feed not "reload", Soft E-stop vs E-stop button). It may run ahead of the code — identifiers follow in their own grep-counted rename commits, and historical entries are never rewritten. Change it through the `grilling` + `domain-modeling` skills (mattpocock-skills plugin), not by hand.
 - `DOCUMENTATION_GUIDE.md` is the single reference for how documentation is organised across the codebase (logbook, plans, `docs/`, subsystem docs, `.claude/`, inline). Read it before creating or editing any markdown artifact, or when you're unsure which layer a piece of information belongs in.
 
 **Engineering logbook & planning:**

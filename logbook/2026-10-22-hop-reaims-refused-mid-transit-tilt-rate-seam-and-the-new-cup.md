@@ -2,7 +2,7 @@
 title: "Hop re-aims and stop RESTs refused mid-transit: the splice seam is C0 but not C1 in the tilt-borne channels (22:53 sitting, first on the ASA cup)"
 type: investigation
 date: 2026-10-22
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack - post-R6 (hop/columns, 2026-10-21 22:53 sitting, first sitting on the ASA cup)"
 related_plan: two-ball-oval.md
 related:
@@ -206,11 +206,9 @@ Seam numbers with the pin (proto probe): delta-V (segment knot 0 - head) 1.4-3.1
 
 ## Outcome
 
-NOT FLOWN. Row 47 (I-PLAN-10) PASSED on hardware; I-PLAN-11 landed 2026-10-21/22 and has never flown. Status in-progress until the hop check flies.
+FLOWN 2026-10-22, PASSED (rehearsal row 48; launch log `/home/jetson/.ros/log/2026-10-22-19-50-38-975040-jetson-50159/launch.log`). I-PLAN-11 flew on the 964bd409 build: 3 hop goals, 12/12 caught, zero `LIMIT_JERK` at `t=0.075 / 0.050 / 0.025` anywhere in the log, so the old mid-transit seam class is gone (2026-10-21 had 12 of 13 refusals there). Hop re-aims 11 accepted / 7 refused (5 `SPLICE_TOO_LATE`, 1 `HAND_LIMIT_C2`, 1 infeasible). The stop-REST half was not exercised (no hop ended early). Six `bump declined` `LIMIT_JERK` 217-355k (legs 4/5, `t=0.1-0.225`) were graceful declines; 0 `CHAIN_DISCONTINUITY`. One new single refusal: 377161 mm/s3 leg 3 at `t=0.425` on a late CATCH re-aim whose fit moved the landing 31.5 mm (L3368), cost one throw: residue, not the old class. Row 49 and the oval at dwell 0.65 flew in the same arc (see `2026-10-23-oval-rung1-flown-and-rows-48-49`).
 
-Next sitting: a FULL launch restart (interfaces rebuilt, both packages colcon-built) and a GUI hard refresh. Then, in order: (1) the I-PLAN-11 flight check (rehearsal row 48): hop goals; most hop re-aims are now expected ACCEPTED (offline 66/80), with zero `LIMIT_JERK` at t = 0.075 on hop re-aims and stop RESTs; the residual codes (QP-INFEASIBLE on ~35 mm moves, borderline `HAND_LIMIT_C2` 3.9-5.0) are counted, not failed; (2) the catch-time offset feed test (rehearsal row 49): 10 BB feeds each at -20 / 0 / +20 ms, pre-registered as above; (3) the oval at dwell 0.65 from the GUI (dwell is now a goal field, defaulted per pattern).
-
-Residue, not scheduled:
+Residue, not scheduled (carried forward from the pre-flight Outcome):
 
 - The second-class residual (item (d), after the per-pin width): 14 of 80 offline re-aims = 8 QP-INFEASIBLE 35 mm moves (the honest limit) + 6 borderline hand C2 (3.91-5.0) on the 10 mm short / 40 ms late move. Accepted as is.
 - Owed to the executor/report owner: a report label "re-aim refused by the segment's own gate, not the seam" (executor.py / report.py were off limits to the second-class unit).
@@ -219,5 +217,5 @@ Residue, not scheduled:
 - The 4 `CUP_CONTACT_ACC` stop-REST dives (one per catch at -0.4 s 'before'); out of scope here.
 - The 218661 t = 0.025 reload-REST straddle: mechanism untraced.
 - Monday's (10-19) unusually tight hand tracking (4.6 ms vs 11-12 ms) is unexplained.
-- The new cup's seat and rim height measurement is owed by the owner (check 1 of item (e)).
+- The new cup's seat and rim height measurement is RETIRED 2026-10-23 (owner: the ASA hand is geometrically identical to the PLA hand).
 - The sim `--reload` gate LIMIT_JERK regression (bisected to 08ec3fe6, 2026-09-30) is unchanged and not this class.

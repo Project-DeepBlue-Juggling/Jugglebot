@@ -416,8 +416,8 @@ logbook.
   the identifiers follow in their own commit (a rename is a grep-counted
   refactor, not a docs edit). Historical logbook entries and archived plans
   are never rewritten to match.
-- **Changing it**: through `/grill-with-docs` (a plugin skill; it loads the
-  domain-modeling skill), which resolves a term with the owner before writing
+- **Changing it**: through the `grilling` + `domain-modeling` skills (mattpocock-skills plugin;
+  they load together), which resolves a term with the owner before writing
   it. Consumer-side rules for
   agents are in [docs/agents/domain.md](docs/agents/domain.md).
 - There is deliberately **no test** that greps prose for avoided words yet
@@ -501,7 +501,7 @@ Use this to pick the right layer *before* writing.
 
 - **Is this what a word *means* — a new domain term, or two words competing
   for one concept?**
-  → [CONTEXT.md](CONTEXT.md), via `/grill-with-docs`. Definition only.
+  → [CONTEXT.md](CONTEXT.md), via the `grilling` + `domain-modeling` skills (mattpocock-skills plugin). Definition only.
 
 - **Is this a forward-looking plan of work yet to be done?**
   → Plan in [plans/active/](plans/active/) if it is schedulable now, or

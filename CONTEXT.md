@@ -74,7 +74,7 @@ The raised pose the Platform holds once Active, from which every Attempt starts.
 _Avoid_: home, operating pose
 
 **Park**:
-The Hand at the bottom of its stroke.
+The Hand at the bottom of its stroke (the ACTIVATE park also lowers the Platform, I-PLAN-8).
 
 **Armed**:
 Streaming motion to the motors is permitted. Armed means this and nothing else.
@@ -159,10 +159,10 @@ The atomic unit of a Schedule: one THROW, CATCH or REST, of a given ball, at a g
 _Avoid_: primitive, action
 
 **REST**:
-The Skill kind that brings the robot to rest at a Site. Every Attempt opens and ends with one.
+The Skill kind that brings the robot to rest at a Site. Every Attempt opens with one and normally ends with one (not with `level_on_end=False`, nor the end codes that skip the decay).
 
 **Schedule**:
-The list of Skills, at absolute wall-clock times, that realises a Pattern. A Schedule never delays.
+The list of Skills, at absolute wall-clock times, that realises a Pattern. A Schedule never delays a Skill's absolute time (the closing level REST may be dispatched later, I-PLAN-9).
 _Avoid_: plan (for a Schedule — a plan is a document of intended work), trajectory, sequence
 
 **Segment**:

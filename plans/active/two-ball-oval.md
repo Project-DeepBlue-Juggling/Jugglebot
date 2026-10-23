@@ -243,7 +243,7 @@ second-to-last catch at C is a standalone HELD catch and the last throw lands on
 
 | Phase | Lands | Hardware rung that gates the next phase | Status | Date |
 |---|---|---|---|---|
-| P1 | The oval pattern dispatchable: `oval_1ball(_fed)`, fixed roles, cross-site fold, executor threading, codes, box cell at dwell 0.65, C-CUP-4 check, GUI, sim label, tests | **Rung 1** (`session_oval_rung1.md`): 150 / 0.65 / 0.95 at today's limits, as-is banking — go/no-go on the carry | COMPLETE | 2026-10-18 |
+| P1 | The oval pattern dispatchable: `oval_1ball(_fed)`, fixed roles, cross-site fold, executor threading, codes, box cell at dwell 0.65, C-CUP-4 check, GUI, sim label, tests | **Rung 1** (`session_oval_rung1.md`): 150 / 0.65 / 0.95 at today's limits, as-is banking — go/no-go on the carry | COMPLETE | 2026-10-18; rung 1 FLOWN 2026-10-23: 28/28 caught, owner: "Oval 1 ball patterns are working really nicely. I think we're ready to advance on this." |
 | P2 | Banking leak fix (principle a) | Rung 1 re-flown = the leak-fixed column | NOT STARTED | |
 | P3 | Pose-level carry planner behind `level \| pose`, C-CUP-4 rows, knob re-tune, cycle budget, seam-dz ablation | Rung 1 re-flown = the swept column → decision 24 gate; columns re-gated if the mode flips | NOT STARTED | |
 | P4 | Working point 600/8000/200k, acc ceiling 10000, 30 A, box re-sweep (oval + columns), one-ball cells at 0.40 / 0.30 | Ramp sitting (five columns canary, one-ball oval at 0.40), then one-ball at 0.30 | NOT STARTED | |
