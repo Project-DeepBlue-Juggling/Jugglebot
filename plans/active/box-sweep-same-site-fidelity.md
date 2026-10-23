@@ -3,6 +3,12 @@ title: Box sweep fidelity for same-site families (plan what the executor dispatc
 created: 2026-10-18
 status: active
 owner: Harrison
+last_updated: 2026-10-18
+pathway: learner-generalisation
+scope: >-
+  Make the box sweep plan what the executor dispatches for same-site families (release at the caught xy
+  with the aim shift, not a cup flyback), which shrank the self_toss landing box on 2026-10-18; re-sweep
+  twice bit-identical and re-pin. Sequenced under the learner pathway because its P3 decides the box's fate.
 related_logbook:
   - 2026-10-18-two-ball-oval-p1-oval-pattern-dispatchable.md
 related_code:

@@ -4,6 +4,22 @@ created: 2026-10-17
 status: active
 owner: Harrison
 last_updated: 2026-10-23
+pathway: two-ball-oval
+scope: >-
+  Two balls in one hand on an oval: every throw T to C, the ball carried back in the cup. Five phases, each
+  gated by a hardware rung: P1 the oval pattern dispatchable (fixed roles, cross-site fold, C-CUP-4 check, box
+  cell at dwell 0.65) and rung 1 on the loaded carry at 150 mm / 0.65 s / 0.95 m; P2 the banking leak fix
+  (retired, the leak does not reproduce); rung 2 at dwell 0.55 then 0.50 on the as-is level planner; P3 the
+  pose-level carry planner behind `level | pose` with the C-CUP-4 rows; P4 one working-point move
+  600/8000/200k, acc ceiling 10000, 30 A, dwell ladder 0.40 to 0.30; P5 the two-ball `oval` with the
+  hop-shaped fed entry, closed by 30 consecutive Ball Butler-fed catches in one attempt. "Not with this cup"
+  at rung 1 is a valid end. Where we are lives in § 3 of the plan.
+steps:
+  - {id: P1, title: The oval pattern dispatchable, kind: phase, status: complete, date: 2026-10-18}
+  - {id: P2, title: Banking leak fix, kind: phase, status: retired, date: 2026-10-23}
+  - {id: P3, title: Pose-level carry planner, kind: phase, status: not_started}
+  - {id: P4, title: Working point and the dwell ladder, kind: phase, status: not_started}
+  - {id: P5, title: Two-ball oval, kind: phase, status: not_started}
 related_logbook:
   - 2026-10-17-two-ball-oval-plan-written.md
   - 2026-10-18-two-ball-oval-p1-oval-pattern-dispatchable.md

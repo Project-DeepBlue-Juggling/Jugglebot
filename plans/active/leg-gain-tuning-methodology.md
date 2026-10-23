@@ -4,6 +4,11 @@ status: active  # gain hunt CLOSED 2026-07-13 (production 40/0.20/0.32 ships); e
 owner: harrison
 created: 2026-04-18
 last_updated: 2026-07-13
+kind: reference
+scope: >-
+  Leg PID tuning methodology. The gain hunt closed 2026-07-13 (40/0.20/0.32 ships, gains frozen); the
+  document stays beside the active plans as the normative procedure for any future tuning round, never
+  scheduled.
 related_logbook:
   - 2026-04-18-hold-fighting-motion-onset-jitter.md
   - 2026-04-19-leg1-pose-dependent-hold-twitch.md

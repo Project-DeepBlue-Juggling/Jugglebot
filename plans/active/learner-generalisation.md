@@ -4,6 +4,19 @@ created: 2026-10-18
 status: active
 owner: Harrison
 last_updated: 2026-10-18
+pathway: learner-generalisation
+scope: >-
+  Replace the local-linear memory with a global plant model (apex gain, lateral offset, centre-pull, per-ball
+  offset) plus a physics-keyed fixed-Jacobian residual and evidence-scaled authority, retire the offline
+  AdmissibleBox sweep for online admissibility, and add a per-beat event stream so any throw site, apex,
+  dwell or yaw can be commanded and changed mid-pattern. P1 learner core, P2 characterisation sitting, P3
+  online admissibility, P4 event stream, P5 close-out.
+steps:
+  - {id: P1, title: Learner core, kind: phase, status: not_started}
+  - {id: P2, title: The characterisation sitting, kind: phase, status: not_started}
+  - {id: P3, title: Online admissibility and box retirement, kind: phase, status: not_started}
+  - {id: P4, title: BeatEvent stream and the columns wrapper, kind: phase, status: not_started}
+  - {id: P5, title: Close-out, kind: phase, status: not_started}
 related_logbook:
   - 2026-10-18-learner-generalisation-investigation.md
 related_config:

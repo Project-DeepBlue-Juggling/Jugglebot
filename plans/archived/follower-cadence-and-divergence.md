@@ -1,5 +1,5 @@
 ---
-title: Design proposal — SpaceMouse follower: knot-cadence protection and command-divergence bounding
+title: "Design proposal — SpaceMouse follower: knot-cadence protection and command-divergence bounding"
 status: superseded
 archived: 2026-08-01
 ---

@@ -1,5 +1,5 @@
 ---
-title: Project map and shared dictionary: implementation
+title: "Project map and shared dictionary: implementation"
 created: 2026-10-24
 status: active
 owner: Harrison
@@ -9,7 +9,7 @@ branch: project-map
 scope: >-
   Builds the project map in six phases. A pure-Python `mapkit/` package parses plans and `map/` items and generates the three plan INDEX files, the CLAUDE.md term block and the two mkdocs pages. The glossary is renamed `GLOSSARY.md` and extended. Claude-session wiring covers the slash commands, agents and normative docs. A new public repo `jugglebot-map`, seeded from TaskTree's frontend, serves two pages (Front page, Now / Next / Later) from the Raspberry Pi `jeeves`, with write-through to `map/` files and a debounced commit-and-push. Done when a phone edit on the LAN lands on `main` within 10 s.
 steps:
-  - {id: P0, title: mapkit package and generated plan boards, kind: phase, status: not_started}
+  - {id: P0, title: mapkit package and generated plan boards, kind: phase, status: complete, date: 2026-10-24}
   - {id: P1, title: Glossary rename and term block, kind: phase, status: not_started}
   - {id: P2, title: map directory seed and session wiring, kind: phase, status: not_started}
   - {id: P3, title: Fork skeleton and thin server, kind: phase, status: not_started}
@@ -47,7 +47,7 @@ This plan implements the design settled by the resolved tickets of wayfinder map
 
 | Step | Lands | Gate | Status |
 |---|---|---|---|
-| P0 | `mapkit/` parser, loaders, generators, subcommands; plan frontmatter backfill; three INDEX files regenerated; `test_plans_index.py` rewritten | `./run_tests.sh` | NOT STARTED |
+| P0 | `mapkit/` parser, loaders, generators, subcommands; plan frontmatter backfill; three INDEX files regenerated; `test_plans_index.py` rewritten | `./run_tests.sh` | COMPLETE 2026-10-24 |
 | P1 | `GLOSSARY.md` rename and stub, 22 entries, CLAUDE.md term block, Avoid-word test | `./run_tests.sh`; `/audit --unstaged` | NOT STARTED |
 | P2 | `map/` seed, `/inbox`, `/work-inbox`, gated offers, agent edits, doc edits, nav entries | `./run_tests.sh`; `/audit --unstaged` | NOT STARTED |
 | P3 | Fork repo: strip, static auth, FastAPI server, contract suite, CI | fork CI green (`npm ci`, lint, typecheck, vitest, build, pytest, grep) | NOT STARTED |
@@ -58,19 +58,27 @@ Dependencies: P1 needs P0 (the term block generator). P2 needs P0 and P1. P3 nee
 
 ## 3. Phases
 
-### P0 — mapkit package and generated plan boards — NOT STARTED
+### P0 — mapkit package and generated plan boards — COMPLETE 2026-10-24
 **Implements:** #27, #28 (generators), #32 (generators), #34 (subcommands), #25 (loaders), #23
 **Files:** `mapkit/__init__.py`, `mapkit/__main__.py`, `mapkit/frontmatter.py` (yaml-based `split_frontmatter`), `mapkit/items.py`, `mapkit/plans.py`, `mapkit/steps.py`, `mapkit/gen_index.py`, `mapkit/gen_glossary.py`, `mapkit/gen_docs.py`, `mapkit/tickets.py` (frontier, claim, resolve), `mapkit/import_issues.py`; `plans/active/*.md` (4 plans) and the parked plan (backfill); the three archived plans with invalid YAML (`follower-cadence-and-divergence.md`, `PROMPT-canbridge-rx-drain-throughput.md`, `shaped-planning-efficiency.md`: quote colons only); `plans/active/INDEX.md`, `plans/parked/INDEX.md`, `plans/archived/INDEX.md` (regenerated, narrative sections retired, short static header kept); `tests/sim/test_plans_index.py` (rewritten); `tests/sim/test_mapkit_*.py`; `plans/active/leg-gain-tuning-methodology.md` (`kind: reference`).
 **Approach:** Build `mapkit` as pure Python beside `controller/` and `teensy_link/`, with no ROS imports, leaving `logbook_search._parse_frontmatter` alone. Normalise `complete` to `completed`, `related_plan` to a list and dates to ISO strings in the parser, never in the files. The step extractor uses the single heading regex (`##` to `####`; `Phase|P|R|Rung|Stage` plus id; container headings excluded; ids normalised) and takes the first paragraph after the heading as the step summary. Generators write the three INDEX files in the column layouts of #27. `gen` also exposes the CLAUDE.md term-block, `docs/project-map.md` and `docs/glossary.md` entry points as no-ops until P1/P2 provide their inputs; they are wired but not yet committed outputs. Subcommands `frontier`, `claim`, `resolve` and `import-issues` follow #34; `claim` and `resolve` commit and push with the #30 rule (`map: claim <slug>`).
 **Tests:** `tests/sim/`, unmarked, parallel-safe, one looping test per concern (no collection-time parametrize). Parser suite covers the frontmatter edge cases (dates, str-or-list `related_plan`, the three formerly invalid files), the step regex over the real plan corpus, the mirror rule (every listed id has exactly one heading and the reverse), item loading, and the tickets `frontier` ordering by `rank` with owned and blocked tickets excluded. `test_plans_index.py` becomes the currency test (all three boards regenerated in memory and byte-compared), one looping field test (`status`, `scope`, `last_updated`, `pathway` on active; `parked`, `parked_why`, `unpark`, `pathway` on parked; `archived` on archived), and the kept filesystem tests (bare archived filenames, one board per filename, no self-link). Row-shape tests and the parked-word regex are retired.
 **Acceptance:**
-- [ ] `python -m mapkit gen` rewrites nothing on a second run (idempotent), and the three INDEX files carry only generated rows under a short static header.
-- [ ] Every active plan has `pathway`, `scope`, `last_updated` and, where its headings are phases or rungs, a `steps:` list that passes the mirror test; the parked plan has `parked`, `parked_why`, `unpark`.
-- [ ] All 69 plans parse with no exception; the three formerly invalid files parse, their content unchanged apart from quoting.
-- [ ] `python -m mapkit frontier <pathway>` on a fixture returns the lowest-rank open ticket with no open blocker and no owner.
-- [ ] No `mapkit` module imports `rclpy` or any ROS package (checked by a test).
-- [ ] Gate: `./run_tests.sh`, with the (date, command, result) triple recorded in the logbook entry.
-- [ ] All tests pass
+- [x] `python -m mapkit gen` rewrites nothing on a second run (idempotent), and the three INDEX files carry only generated rows under a short static header.
+- [x] Every active plan has `pathway`, `scope`, `last_updated` and, where its headings are phases or rungs, a `steps:` list that passes the mirror test; the parked plan has `parked`, `parked_why`, `unpark`.
+- [x] All 69 plans parse with no exception (70 with this plan); the three formerly invalid files parse, their content unchanged apart from quoting.
+- [x] `python -m mapkit frontier <pathway>` on a fixture returns the lowest-rank open ticket with no open blocker and no owner.
+- [x] No `mapkit` module imports `rclpy` or any ROS package (checked by a test).
+- [x] Gate: `./run_tests.sh --full`, with the (date, command, result) triple recorded in the logbook entry.
+- [x] All tests pass
+
+**Implementation notes (2026-10-24):**
+- Package layout: `frontmatter.py` (PyYAML `split_frontmatter`), `plans.py` (`load_plans`, normalisation), `steps.py` (heading regex, `normalise_step_id`, `check_mirror`, `check_step_vocab`), `items.py` (five kinds, per-kind `REQUIRED_FIELDS` / `STATUS_SETS`, `item_uuid` = uuid5 under a pinned namespace, `write_item`), `gen_index.py`, `gen_glossary.py` and `gen_docs.py` (no-ops until P1 / P2 provide the markers and `map/`), `tickets.py`, `import_issues.py`, `__main__.py`.
+- Canonical step ids: `Phase`/`P` -> `P`, `Rung`/`R` -> `R`, `Stage` -> `STAGE`, token upper-cased (`Phase W4a` == `PW4a` -> `PW4A`, `Rung 4+` -> `R4+`). The status suffix is the last spaced-dash segment whose first word is an upper-case status word; over the 307 step headings in the real corpus no extracted title keeps one.
+- `two-ball-oval.md` lists P1-P5 only: its Rung 2 lives in the § 3 summary table, not under a heading, and the mirror rule needs a heading. Adding one is the oval session's call. `box-sweep-same-site-fidelity.md` has numbered sections, so no `steps:`.
+- Board row order: active by `last_updated` descending with `kind: reference` rows last; parked by `parked` descending; archived by `archived` ascending. The archived Status column now shows the parser-normalised status (`complete` renders `completed`; missing renders `—`), so the old status-drift paragraph is gone with the other narrative sections.
+- `claim` / `resolve` re-serialise the whole frontmatter through `write_item`; `claim` on an already-claimed ticket makes no commit. `import-issues` reads sub-issues, labels and native `blocked_by` dependencies through an injectable `gh` fetch; the real #21 import runs in P2.
+- Plan `title:` values with a colon must be quoted (this plan's own was not; the parse test now catches it).
 
 ### P1 — Glossary rename and term block — NOT STARTED
 **Implements:** #28, #29, #25 (glossary entries), #33 (CLAUDE.md edits)
