@@ -405,11 +405,12 @@ def test_cone45_resweep_restores_every_non_oval_cell_to_the_pre_oval_snapshot():
         n_col += b['pattern'] == 'columns'
     assert (n_st, n_hop, n_col) == (5, 8, 6)
     ovals = [b for b in new['boxes'] if b['pattern'] == 'oval_1ball']
-    assert len(ovals) == 1
-    assert ovals[0]['dwell_s'] == pytest.approx(0.65)
-    assert ovals[0]['release_site_xy_mm'] == [-75.0, 0.0]
-    assert ovals[0]['target_site_xy_mm'] == [75.0, 0.0]
-    assert len(new['boxes']) == 20
+    # two-ball-oval rung 2 (2026-10-23): cells at 0.55 / 0.50 appended after 0.65
+    assert [o['dwell_s'] for o in ovals] == pytest.approx([0.65, 0.55, 0.50])
+    for o in ovals:
+        assert o['release_site_xy_mm'] == [-75.0, 0.0]
+        assert o['target_site_xy_mm'] == [75.0, 0.0]
+    assert len(new['boxes']) == 22
 
 
 def test_dump_refuses_a_mix_of_provenance(tmp_path):

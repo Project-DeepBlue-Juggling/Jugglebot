@@ -121,8 +121,12 @@ def test_point_dwell_equals_the_boxs_swept_dwell_per_pattern():
                     if b["apex_band_m"][0] <= apex <= b["apex_band_m"][1]]
         assert covering, pattern
         swept = {float(b["dwell_s"]) for b in covering}
-        assert swept == {dwell}, "%s: GUI dwell %s != box dwell(s) %s" % (
+        # rung 2 (2026-10-23) swept the oval at 0.55 / 0.50 too: the GUI
+        # default must be one of the swept dwells (the other families: only one).
+        assert dwell in swept, "%s: GUI dwell %s not in box dwell(s) %s" % (
             pattern, dwell, sorted(swept))
+        if kind not in ("oval_1ball", "oval"):
+            assert swept == {dwell}
 
 
 def test_dwell_is_an_editable_field_sent_on_the_wire():

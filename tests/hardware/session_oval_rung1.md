@@ -119,14 +119,14 @@ Attempts: hop H 10/10, oval_1ball O1 4/4 and O2 10/10, oval_1ball_fed F0 0/0 (re
 Decided 2026-10-23 (owner; logbook `2026-10-23-oval-p2-banking-leak-not-reproduced`): dwell 0.50 passes the planner and cone offline but is NOT dispatchable until the oval box cells at 0.55 and 0.50 are swept (cone 45 deg since
 b28b129f accepts the 32.1 deg cell; offline window jerk 111.5k at 0.50, 88.3k at 0.55). No new planner code lands in `cup_realize` /
 `cup_cycle` before this sitting. Rung 2's outcome sets P3's shaper target. Rows below are numbered R2-n; the box needs the oval cells at
-dwell 0.55 and 0.50 swept (`select` refuses a dwell it was not swept at, by name) before the rows fly.
+dwell 0.55 and 0.50 swept (`select` refuses a dwell it was not swept at, by name) before the rows fly -- swept 2026-10-23.
 
 | # | Step | Expect |
 |---|---|---|
 | R2-1 | **Owed fix 1, I-PLAN-11 rest_slew seed (daa495e0):** hop and columns reload goals with a CROSS-SITE opening REST. | Zero `LIMIT_JERK` at the reload pre-tilt REST splice (219k on 2026-10-21 and 262k on 2026-10-23 before the fix; 0 of 12 refusals offline after). |
 | R2-2 | **Owed fix 2, columns parity rule (21e02cfa):** one `columns_1ball_fed` goal, `num_cycles: 4`, validate-only first. | Counts read 2/2 and the cup SEATED at the end (the real ball ends in a transit catch held at REST, the Stop throw is the phantom's). |
 | R2-3 | **Owed fix 3, feed-line latch (3fe2cdee):** read the `feed ball` line of every fed goal in the launch log. | The lines carry numbers, not `--` (21 of 21 printed `--` at row 49). |
-| R2-4 | Box check: `grep -n 'dwell_s' config/generated/admissible_box.yaml`; `skills/check` at each dwell. | Oval cells for 0.55 and 0.50 present; `oval box OK ... dwell 0.550 s` then `0.500 s`. |
+| R2-4 | Box check: `grep -n 'dwell_s' config/generated/admissible_box.yaml`; `skills/check` at each dwell. | Oval cells for 0.55 and 0.50 present (SWEPT 2026-10-23, a/b bit-identical, logbook `2026-10-23-oval-box-cells-dwell-055-050-swept`; the grep is a sanity check). The launch-side `skills/check` step stays the operator's: `oval box OK ... dwell 0.550 s` then `0.500 s`. |
 | R2-5 | `ros2 param get /skill_node plant_id` stays the OVAL id; GUI Dwell field set to **0.55**. `{pattern: oval_1ball, apex_m: 0.95, separation_mm: 150.0, num_cycles: 6}` x N (N = 3 to start; `oval_1ball_fed` for a cold start). | Catches, carries, seat bit as at 0.65. Record row-27 metrics (commanded jerk, bank, leg 1/2 current, seat-bit continuity, landing dx/dy, LIMIT tally) with the two probes above. |
 | R2-6 | Same at dwell **0.50**, only after R2-5 is clean. | As R2-5; compare per step against the § 6 as-is column. |
 

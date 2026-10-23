@@ -446,3 +446,47 @@ boxes:
   - 75.0
   - 0.0
   dwell_s: 0.65
+- pattern: oval_1ball
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 0.9249999999999999
+  - 0.975
+  landing_xy_m:
+  - - -0.02
+    - 0.02
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.6080000000000001
+  - 1.047375
+  release_site_xy_mm:
+  - -75.0
+  - 0.0
+  target_site_xy_mm:
+  - 75.0
+  - 0.0
+  dwell_s: 0.55
+- pattern: oval_1ball
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 0.9249999999999999
+  - 0.975
+  landing_xy_m:
+  - - -0.02
+    - 0.02
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.6080000000000001
+  - 1.047375
+  release_site_xy_mm:
+  - -75.0
+  - 0.0
+  target_site_xy_mm:
+  - 75.0
+  - 0.0
+  dwell_s: 0.5

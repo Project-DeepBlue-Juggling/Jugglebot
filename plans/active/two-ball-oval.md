@@ -8,6 +8,7 @@ related_logbook:
   - 2026-10-17-two-ball-oval-plan-written.md
   - 2026-10-18-two-ball-oval-p1-oval-pattern-dispatchable.md
   - 2026-10-23-oval-p2-banking-leak-not-reproduced.md
+  - 2026-10-23-oval-box-cells-dwell-055-050-swept.md
 related_config:
   - config/hardware_config.yaml → trajectory_op.leg_acc_ceiling_mmps2 (5000 → 10000 at P4, decision 53)
   - config/hardware_config.yaml → trajectory_op.leg_{vel,acc,jerk}_limit_* (350/5000/200000 → 600/8000/200000 at P4, decision 54)
@@ -249,7 +250,7 @@ second-to-last catch at C is a standalone HELD catch and the last throw lands on
 |---|---|---|---|---|
 | P1 | The oval pattern dispatchable: `oval_1ball(_fed)`, fixed roles, cross-site fold, executor threading, codes, box cell at dwell 0.65, C-CUP-4 check, GUI, sim label, tests | **Rung 1** (`session_oval_rung1.md`): 150 / 0.65 / 0.95 at today's limits, as-is banking — go/no-go on the carry (the 30-consecutive gate WAIVED by owner 2026-10-23: longest oval attempt 10/10; 28/28 caught = 18/18 oval, plus 10/10 hop control; the 30-run bar lives at P5) | COMPLETE | 2026-10-18; rung 1 FLOWN 2026-10-23: 28/28 caught (18/18 oval, plus 10/10 hop control), owner: "Oval 1 ball patterns are working really nicely. I think we're ready to advance on this." |
 | P2 | Banking leak fix (principle a) | ~~Rung 1 re-flown = the leak-fixed column~~ | RETIRED 2026-10-23 (row kept): the leak does not reproduce on today's planner, delta 0 at every accepted dwell 0.65-0.45, § 4 P2 | 2026-10-23 |
-| Rung 2 | No planner code (after sweeping the oval box cells at 0.55 and 0.50 (YAML + stamp, twice bit-identical, `./run_tests.sh --full`)): one-ball oval at dwell 0.55 then 0.50 on the as-is `level` planner at today's limits, bundled with the sitting that flies the three owed unflown fixes first | Row-27 metrics per step against the 0.65 baseline (runsheet `session_oval_rung1.md` § Rung 2) sets P3's shaper target | NOT FLOWN | |
+| Rung 2 | No planner code (box cells at 0.55 / 0.50 swept 2026-10-23, see the logbook): one-ball oval at dwell 0.55 then 0.50 on the as-is `level` planner at today's limits, bundled with the sitting that flies the three owed unflown fixes first | Row-27 metrics per step against the 0.65 baseline (runsheet `session_oval_rung1.md` § Rung 2) sets P3's shaper target | NOT FLOWN | |
 | P3 | Pose-level carry planner behind `level \| pose`, C-CUP-4 rows, knob re-tune, cycle budget, seam-dz ablation (design starts AFTER rung 2 flies) | Rung 2 outcome, then rung 1 re-flown = the swept column → decision 24 gate; columns re-gated if the mode flips | NOT STARTED | |
 | P4 | Working point 600/8000/200k, acc ceiling 10000, 30 A, box re-sweep (oval + columns), one-ball cells at 0.40 / 0.30 | Ramp sitting (five columns canary, one-ball oval at 0.40), then one-ball at 0.30 | NOT STARTED | |
 | P5 | Two-ball `oval(_fed)`: `compile_oval`, hop-shaped entry, Stop exit, clearance pre-flight | 30 consecutive BB-fed catches in one attempt | NOT STARTED | |
