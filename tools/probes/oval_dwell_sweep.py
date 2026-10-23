@@ -28,9 +28,21 @@ MODES
 Sanity anchor (2026-10-23, HEAD 48fd8d5a): dwell 0.65 asis reproduces
 58,742 (window) / 58,121 (chain) mm/s^3 exactly.
 
+PLANNER MODE (two-ball-oval P3, 2026-10-23). ``--planner-mode level|pose``
+sets ``SegmentConfig.planner_mode`` for every segment the ladder plans, so the
+``asis`` rows ARE the production path under that mode (the pose planner is a
+production formulation, not a monkeypatch: prescribed tilt, leg-jerk objective,
+C-CUP-4 rows; plan § 2.5). The P3 ladder is ``--mode asis`` run twice, once per
+planner mode; ``patched`` keeps its P2 meaning and is only sensible under
+``level``. Anchor (2026-10-23, pose, h_catch 0/0, z band 0): dwell 0.65 / 0.55
+/ 0.50 window jerk 44,329 / 44,329 / 44,329, residual 12.0 / 18.6 / 18.6 deg;
+0.45 56,479 (accepted; level refuses nothing but reads 39.4 deg); 0.40 refused
+LIMIT_VEL 357 mm/s (level: CUP_SEATING_CONE 49.1 deg).
+
 Run (repo root, venv):
   python tools/probes/oval_dwell_sweep.py [--dwells 0.65,0.60,0.55,0.50,0.45,0.40]
          [--sep 150] [--apex 0.95] [--mode asis|patched|both] [--controls]
+         [--planner-mode level|pose]
          [--out temp/probes/oval_dwell_sweep_<date>.json]
 Imports only the planner modules + tools/admissible_sweep; writes only --out.
 """
@@ -193,8 +205,14 @@ def main():
                     help='also run hop and same-site (columns) controls at --control-dwells')
     ap.add_argument('--control-dwells', default='0.65,0.50',
                     help='comma list of dwells for the --controls runs (default 0.65,0.50)')
+    ap.add_argument('--planner-mode', choices=A.uc.PLANNER_MODES,
+                    default=A.uc.PLANNER_MODE_DEFAULT,
+                    help='SegmentConfig.planner_mode for every planned segment '
+                         '(two-ball-oval P3): the production level or pose planner')
     ap.add_argument('--out', default=None)
     a = ap.parse_args()
+    global cfg
+    cfg = A.sg.SegmentConfig(planner_mode=a.planner_mode)
     dwells = [float(x) for x in a.dwells.split(',')]
     cdw = [float(x) for x in a.control_dwells.split(',')]
     site_t, site_c = A.st.columns_sites(a.sep)
@@ -202,6 +220,7 @@ def main():
     plan = [('oval', dwells)] + ([('hop', cdw), ('columns', cdw)] if a.controls else [])
     patches = {'asis': [False], 'patched': [True], 'both': [False, True]}[a.mode]
     out = []
+    print('planner_mode: %s (SegmentConfig for every segment below)' % a.planner_mode)
     print('| cell | dwell | mode | result | window jerk mm/s^3 (leg, t) | win vel / acc | chain jerk | bank request on loaded span |')
     print('|---|---|---|---|---|---|---|---|')
     for kind, dws in plan:

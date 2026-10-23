@@ -268,6 +268,11 @@ class SkillsGateConfig:
     #: assertions) only exists on that path, and an open-loop run is
     #: requested explicitly with ``--catch-aim-source schedule``.
     catch_aim_source: str = ex.AIM_TRACKER
+    #: The segment planner this run plans with AND selects boxes under
+    #: ('level' | 'pose', ``uc.PLANNER_MODES``; two-ball-oval P3): the gate's
+    #: twin of skill_node's live ``planner_mode`` parameter. Validated in
+    #: :class:`SkillsGate`.
+    planner_mode: str = uc.PLANNER_MODE_DEFAULT
     noise: NoiseConfig = dataclasses.field(
         default_factory=lambda: NoiseConfig(bb_throw_noise_frac=0.0,
                                             tracking_noise_mm=0.5))
@@ -934,6 +939,11 @@ class SelfTossGateConfig:
     #: assertions) only exists on that path, and an open-loop run is
     #: requested explicitly with ``--catch-aim-source schedule``.
     catch_aim_source: str = ex.AIM_TRACKER
+    #: The segment planner this run plans with AND selects boxes under
+    #: ('level' | 'pose', ``uc.PLANNER_MODES``; two-ball-oval P3): the gate's
+    #: twin of skill_node's live ``planner_mode`` parameter. Validated in
+    #: :class:`SkillsGate`.
+    planner_mode: str = uc.PLANNER_MODE_DEFAULT
     noise: NoiseConfig = dataclasses.field(
         default_factory=lambda: NoiseConfig(bb_throw_noise_frac=0.0,
                                             tracking_noise_mm=0.5))
@@ -1252,7 +1262,10 @@ class SkillsGate:
             hand_acc_rps2=self.cfg.hand_acc_rps2)
         self.rcfg = uc.build_realize_config(self.limits)
         self.mm_to_rev = np.asarray(hw.GEOM_MM_TO_REV, dtype=float)
-        self.seg_cfg = SegmentConfig()
+        if self.cfg.planner_mode not in uc.PLANNER_MODES:
+            raise ValueError('planner_mode must be one of %r, got %r'
+                             % (uc.PLANNER_MODES, self.cfg.planner_mode))
+        self.seg_cfg = SegmentConfig(planner_mode=self.cfg.planner_mode)
         self.viewer = None
         self._plant = None
 
@@ -1751,6 +1764,7 @@ class SkillsGate:
             **_bump_kwargs(sched, ictx, self.limits, geom),
             catch_aim_source=self.cfg.catch_aim_source,
             learner=learner, boxes=boxes,
+            planner_mode=self.seg_cfg.planner_mode,
             observer=observer, on_experience=lambda exp: (
                 memory.append(exp), throws_out.append(exp)),
             observations=observations,
@@ -3083,6 +3097,7 @@ class SkillsGate:
             'apex_m': self.cfg.apex_m,
             'separation_mm': self.cfg.separation_mm,
             'dwell_s': self.cfg.dwell_s,
+            'planner_mode': self.cfg.planner_mode,
             'wall_s': wall_s,
             'plan_wall_ms': _wall_ms_stats(all_wall_s),
             'thresholds': {
@@ -3161,6 +3176,7 @@ def run_learn(cfg: SelfTossGateConfig = None, seeds=(0, 1, 2, 3, 4),
         'seeds': list(seeds),
         'apex_m': cfg.apex_m,
         'dwell_s': cfg.dwell_s,
+        'planner_mode': cfg.planner_mode,
         'separation_mm': cfg.separation_mm,
         'feed_angle_deg': cfg.feed_angle_deg,
         'feed_speed_mmps': cfg.feed_speed_mmps,
@@ -3208,6 +3224,7 @@ def run_reload_gate(cfg: SelfTossGateConfig = None,
         'seeds': list(seeds),
         'apex_m': cfg.apex_m,
         'dwell_s': cfg.dwell_s,
+        'planner_mode': cfg.planner_mode,
         'arrival_angle_deg': SkillsGate._RELOAD_ARRIVAL_ANGLE_DEG,
         'arrival_speed_mmps': SkillsGate._RELOAD_ARRIVAL_SPEED_MMPS,
         'wall_s': wall_s,
@@ -3228,9 +3245,9 @@ def run_reload_gate(cfg: SelfTossGateConfig = None,
 
 def _print_reload_table(rep: dict) -> None:
     print('[skills_gate_reload] arrival %.1f deg / %.1f m/s  apex %.2f m  '
-          'dwell %.2f s'
+          'dwell %.2f s  planner %s'
           % (rep['arrival_angle_deg'], rep['arrival_speed_mmps'] / 1000.0,
-             rep['apex_m'], rep['dwell_s']))
+             rep['apex_m'], rep['dwell_s'], rep.get('planner_mode', '?')))
     print('[skills_gate_reload] %-6s %-8s %-6s %-6s %-13s %-9s %s'
           % ('seed', 'verdict', 'makes', 'drops', 'pump_rejects',
              'installs', 'end_code'))
@@ -3250,11 +3267,11 @@ def _print_reload_table(rep: dict) -> None:
 def _print_learn_table(rep: dict) -> None:
     print('[skills_gate_learn] pattern %s  policy %s  apex %.2f m  dwell '
           '%.2f s  separation %.0f mm  band %.0f mm xy / %.0f mm apex  '
-          'entry<=%d throws  window<=%d throws'
+          'entry<=%d throws  window<=%d throws  planner %s'
           % (rep.get('pattern', 'self_toss'), rep['policy'], rep['apex_m'],
              rep['dwell_s'], rep.get('separation_mm', float('nan')),
              rep['xy_band_mm'], rep['apex_band_mm'], rep['band_entry_throws'],
-             rep['target_throws']))
+             rep['target_throws'], rep.get('planner_mode', '?')))
     print('[skills_gate_learn] %-6s %-8s %-10s %-10s %-9s %-9s %-9s %-6s %-6s '
           '%-9s %-9s'
           % ('seed', 'verdict', 'band_xy', 'band_apex', 'mono_xy', 'mono_apex',
@@ -3285,6 +3302,7 @@ def _print_learn_table(rep: dict) -> None:
 
 
 def _print_table(rep: dict) -> None:
+    print('[skills_gate] planner %s' % rep.get('planner_mode', '?'))
     print('[skills_gate] %-6s %-8s %-6s %-6s %-6s %-10s %-10s %-9s'
           % ('seed', 'verdict', 'sched', 'makes', 'drops', 'mir_leg',
              'mir_hand', 'installs'))
@@ -3324,6 +3342,11 @@ def main(argv=None) -> int:
                    help='--learn only: throws to collect per seed (default: '
                         'the operating point, 25; R5 columns\' own gate '
                         'criterion wants >= 30, plan § R5)')
+    p.add_argument('--planner-mode', choices=uc.PLANNER_MODES,
+                   default=uc.PLANNER_MODE_DEFAULT,
+                   help='the segment planner this run plans with and selects '
+                        'admissible boxes under (level | pose); the box '
+                        'file must carry cells swept under it')
     p.add_argument('--catch-aim-source', choices=ex.AIM_SOURCES,
                    default=ex.AIM_TRACKER,
                    help='where a CATCH is aimed from: tracker (the LIVE '
@@ -3437,7 +3460,8 @@ def main(argv=None) -> int:
 
     if args.reload:
         rcfg = SelfTossGateConfig(report_path=args.report,
-                                  catch_aim_source=args.catch_aim_source)
+                                  catch_aim_source=args.catch_aim_source,
+                                  planner_mode=args.planner_mode)
         if args.reload_bias_mm is not None:
             rcfg.reload_bias_mm = (float(args.reload_bias_mm[0]),
                                    float(args.reload_bias_mm[1]))
@@ -3480,6 +3504,7 @@ def main(argv=None) -> int:
         lcfg = SelfTossGateConfig(report_path=args.report,
                                   catch_aim_source=args.catch_aim_source,
                                   pattern=args.pattern,
+                                  planner_mode=args.planner_mode,
                                   separation_mm=separation_mm)
         if args.apex_m is not None:
             lcfg.apex_m = float(args.apex_m)
@@ -3517,7 +3542,8 @@ def main(argv=None) -> int:
         return 0 if rep['passed'] else 1
 
     cfg = SkillsGateConfig(report_path=args.report,
-                           catch_aim_source=args.catch_aim_source)
+                           catch_aim_source=args.catch_aim_source,
+                           planner_mode=args.planner_mode)
     if args.seeds is not None:
         cfg.seeds = tuple(args.seeds)
     if args.n_throws is not None:

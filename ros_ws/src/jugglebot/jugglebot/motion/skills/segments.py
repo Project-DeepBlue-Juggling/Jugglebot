@@ -241,6 +241,17 @@ class SegmentConfig:
     #: +70..+100 mm/s when the ball left).  ``0`` turns it off, bit for bit
     #: (``trajectory_node`` parameter ``pre_release_hold_s``, for the A/B).
     pre_release_hold_s: float = uc.PRE_RELEASE_HOLD_S
+    #: Which formulation solves the folded STEADY window (a CATCH carrying its
+    #: throw): ``unified_cycle.PLANNER_LEVEL`` (the shipped planner) or
+    #: ``PLANNER_POSE`` (two-ball-oval P3: prescribed tilt, leg-jerk objective,
+    #: C-CUP-4 rows).  Default from ``hardware_config.yaml``
+    #: ``trajectory_op.planner_mode``.  Only :func:`_plan_catch_throw` reads
+    #: it — every other segment shape is the level program in both modes.  The
+    #: LIVE value is skill_node's ``planner_mode`` parameter, carried on every
+    #: ``InstallSegment`` request (the same parameter selects the admissible
+    #: box cell, which is stamped with the mode it was swept under); this field
+    #: is what the emitter plans with when a request carries none.
+    planner_mode: str = uc.PLANNER_MODE_DEFAULT
 
 
 @dataclasses.dataclass(frozen=True)
@@ -320,6 +331,18 @@ def hold_axis_site(landing_mm, hold_tilt, z_mm: float) -> np.ndarray:
     dz = float(z_mm) - float(land[2])
     return np.array([land[0] + kappa[0] * dz, land[1] + kappa[1] * dz,
                      float(z_mm)])
+
+
+def _planner_mode(cfg: 'SegmentConfig') -> str:
+    """``cfg.planner_mode`` validated against ``unified_cycle.PLANNER_MODES`` —
+    the ONE place a segment reads it, so a typo refuses here by name rather
+    than planning the level program under a label the box was never swept
+    for."""
+    mode = str(cfg.planner_mode)
+    if mode not in uc.PLANNER_MODES:
+        raise ValueError('SegmentConfig.planner_mode must be one of %r, got %r'
+                         % (uc.PLANNER_MODES, cfg.planner_mode))
+    return mode
 
 
 def plan_segment(kind: str, seed: uc.CycleState, terminal, cfg: SegmentConfig,
@@ -406,7 +429,8 @@ def _plan_catch_throw(seed, terminal: CatchTerminal, cfg: SegmentConfig,
                             hold_tilt=terminal.hold_tilt,
                             receive_tilt=terminal.receive_tilt,
                             hold_platform_knots=_hold_knots(cfg, seed),
-                            pre_release_hold_knots=_pre_hold_knots(cfg))
+                            pre_release_hold_knots=_pre_hold_knots(cfg),
+                            planner_mode=_planner_mode(cfg))
     plan_a, meta_a = uc.plan_steady(goals_a, seed, limits, geom,
                                     warm_start=warm_start)
     seed_b = uc.release_state_from_meta(meta_a, plan_a)

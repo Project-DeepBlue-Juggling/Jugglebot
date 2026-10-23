@@ -1199,6 +1199,156 @@ def _smooth_slew_carried(start: np.ndarray, end: np.ndarray, n: int,
     return out
 
 
+# ── The PRESCRIBED tilt series — the `pose` planner's schedule (two-ball-oval P3)
+
+def _quintic_bridge(t: np.ndarray, T: float, p0: np.ndarray, v0: np.ndarray,
+                    p1: np.ndarray) -> np.ndarray:
+    """``(m, 2)`` quintic from ``(p0, v0, 0)`` at ``t = 0`` to ``(p1, 0, 0)`` at
+    ``t = T``, evaluated at ``t`` (clipped to ``[0, T]``).
+
+    ``p(t) = p0 + v0·t + c3·t³ + c4·t⁴ + c5·t⁵``; the three terminal conditions
+    fix ``(c3, c4, c5)`` per axis.  With ``v0 = 0`` it is exactly the
+    ``6u⁵ − 15u⁴ + 10u³`` smoothstep :func:`_smooth_slew` uses, so the pose
+    planner's sweeps and the attitude-bearing REST's slews are one family; with
+    a non-zero ``v0`` it is the C1 seam I-PLAN-11 asks of a spliced window (the
+    seed's tilt RATE is honoured at knot 0, the way :func:`_smooth_slew_carried`
+    honours it).
+    """
+    return _quintic_eval(t, T, p0, v0, _quintic_coeffs(T, p0, v0, p1))
+
+
+def _quintic_coeffs(T: float, p0: np.ndarray, v0: np.ndarray,
+                    p1: np.ndarray) -> np.ndarray:
+    """``(c3, c4, c5)`` per axis, ``(3, 2)``, for :func:`_quintic_bridge` — solved
+    ONCE per sweep segment at :func:`prescribed_tilt_fn` construction (the pose
+    planner evaluates the series ~10 times per window; a 3x3 solve per
+    evaluation was 4 ms of the window's budget)."""
+    T = float(T)
+    d = p1 - p0 - v0 * T
+    M = np.array([[T ** 3, T ** 4, T ** 5],
+                  [3 * T ** 2, 4 * T ** 3, 5 * T ** 4],
+                  [6 * T, 12 * T ** 2, 20 * T ** 3]])
+    rhs = np.stack([d, -v0, np.zeros_like(v0)], axis=0)          # (3, 2)
+    return np.linalg.solve(M, rhs)                               # (3, 2)
+
+
+def _quintic_eval(t, T: float, p0: np.ndarray, v0: np.ndarray,
+                  c: np.ndarray) -> np.ndarray:
+    """Evaluate :func:`_quintic_bridge`'s polynomial from precomputed ``c``."""
+    tt = np.clip(np.asarray(t, dtype=float), 0.0, float(T))[:, None]
+    return (p0[None, :] + v0[None, :] * tt + c[0][None, :] * tt ** 3
+            + c[1][None, :] * tt ** 4 + c[2][None, :] * tt ** 5)
+
+
+def prescribed_tilt_fn(n_steps: int, dt: float, k_td: int, start_tilt,
+                       receive_tilt, throw_tilt, *, h_pre: int,
+                       h_catch_pre: int, h_catch_post: int,
+                       start_rate=None, h_post: int = 0,
+                       max_tilt_deg: float = tilt_geometry.MAX_TILT_DEG):
+    """The `pose` planner's tilt series as a CALLABLE of time ``t_s`` → ``(m, 2)``.
+
+    The folded STEADY window (catch at ``k_td``, release at knot ``n_steps``)
+    gets a PRESCRIBED attitude — known before the QP, because every pin depends
+    only on the event velocities — so the QP can carry the tilt's lever motion
+    inside its leg-jerk objective and its C-CUP-4 rows, and the realisation
+    uses the SAME series (sampled at the knots) instead of
+    :func:`tilt_schedule`'s banking objective.  Plan two-ball-oval § 2.3:
+
+    * hold the seam pin ``start_tilt`` over ``[0, a]`` (``a = h_post`` knots;
+      0 by default — a non-zero ``start_rate`` needs ``a == 0``);
+    * sweep seam → receive over ``[a, c0]``, ``c0 = k_td − h_catch_pre``
+      (:func:`_quintic_bridge`, C1 at the seed);
+    * HOLD the receive pin over ``[c0, c1]``, ``c1 = k_td + h_catch_post``;
+    * sweep receive → throw over ``[c1, b]``, ``b = n_steps − h_pre``
+      (the carry bank: the smoothstep between the two event tilts, and
+      nothing more — decision 20);
+    * HOLD the throw pin over ``[b, n_steps]`` (the pre-release knots, where the
+      composition's ``3·v_z·axis''`` term would turn any tilt acceleration
+      into centroid jerk while the stroke runs at 4 m/s — ticket 11).
+
+    Every sweep arrives at its pin with zero rate AND zero acceleration (the
+    quintic's property), which is why the catch holds default to 0 (owner,
+    2026-10-23: 2/1 cost 10–13 % of carry jerk for nothing the ball can feel).
+    A window too short for a sweep (``c0 <= a`` or ``b <= c1``) is refused with
+    ``ValueError`` naming the hold, never squeezed — ``unified_cycle`` maps it
+    to the ``POSE_WINDOW`` refusal.  Pins outside the usable ceiling raise too
+    (the ``tilt_schedule`` rule).  The returned callable carries the knot map as
+    ``fn.knots == (a, c0, c1, b)``.
+    """
+    n = int(n_steps)
+    dt = float(dt)
+    k_td = int(k_td)
+    if n < 2 or not dt > 0.0:
+        raise ValueError("prescribed_tilt_fn needs n_steps >= 2 and dt > 0, got "
+                         "%d / %r" % (n, dt))
+    if not 1 <= k_td <= n - 1:
+        raise ValueError("the catch knot must lie inside the window (1 <= k_td "
+                         "<= n - 1), got k_td %d for n %d" % (k_td, n))
+    start = _as_tilt_pair(start_tilt, 'start_tilt')
+    recv = _as_tilt_pair(receive_tilt, 'receive_tilt')
+    thr = _as_tilt_pair(throw_tilt, 'throw_tilt')
+    cap = np.radians(float(max_tilt_deg)) * (1.0 + 1e-9)
+    for name, pin in (('start_tilt', start), ('receive_tilt', recv),
+                      ('throw_tilt', thr)):
+        if float(np.hypot(*pin)) > cap:
+            raise ValueError("%s %.3f deg is outside the usable %.1f deg cone"
+                             % (name, np.degrees(np.hypot(*pin)), max_tilt_deg))
+    rate = (np.zeros(2) if start_rate is None
+            else _as_tilt_pair(start_rate, 'start_rate'))
+    a = int(h_post)
+    c0 = k_td - int(h_catch_pre)
+    c1 = k_td + int(h_catch_post)
+    b = n - int(h_pre)
+    if a < 0 or int(h_catch_pre) < 0 or int(h_catch_post) < 0 or int(h_pre) < 0:
+        raise ValueError("hold lengths must be >= 0, got h_post %d h_catch_pre "
+                         "%d h_catch_post %d h_pre %d"
+                         % (a, int(h_catch_pre), int(h_catch_post), int(h_pre)))
+    if a > 0 and float(np.max(np.abs(rate))) > 0.0:
+        raise ValueError("a seam hold (h_post %d) cannot start from a moving "
+                         "tilt (start_rate %s rad/s)" % (a, rate.tolist()))
+    if c0 <= a:
+        raise ValueError(
+            "no knots left for the seam -> receive sweep: the catch at knot %d "
+            "with a %d-knot receive hold before it (h_catch_pre) and a %d-knot "
+            "seam hold (h_post) leaves the sweep [%d, %d]"
+            % (k_td, int(h_catch_pre), a, a, c0))
+    if b <= c1:
+        raise ValueError(
+            "no knots left for the receive -> throw sweep (the carry bank): the "
+            "catch at knot %d with a %d-knot receive hold after it (h_catch_post) "
+            "and a %d-knot throw hold before the release at knot %d (h_pre) "
+            "leaves the sweep [%d, %d]"
+            % (k_td, int(h_catch_post), int(h_pre), n, c1, b))
+    t_a, t_c0, t_c1, t_b = a * dt, c0 * dt, c1 * dt, b * dt
+    zero_rate = np.zeros(2)
+    coef_1 = _quintic_coeffs(t_c0 - t_a, start, rate, recv)
+    coef_2 = _quintic_coeffs(t_b - t_c1, recv, zero_rate, thr)
+
+    def fn(t_s):
+        t = np.asarray(t_s, dtype=float).reshape(-1)
+        out = np.empty((t.size, 2))
+        m0 = t <= t_a
+        m1 = (t > t_a) & (t <= t_c0)
+        m2 = (t > t_c0) & (t <= t_c1)
+        m3 = (t > t_c1) & (t <= t_b)
+        m4 = t > t_b
+        if m0.any():
+            out[m0] = start[None, :] + rate[None, :] * t[m0, None]
+        if m1.any():
+            out[m1] = _quintic_eval(t[m1] - t_a, t_c0 - t_a, start, rate, coef_1)
+        if m2.any():
+            out[m2] = recv
+        if m3.any():
+            out[m3] = _quintic_eval(t[m3] - t_c1, t_b - t_c1, recv, zero_rate, coef_2)
+        if m4.any():
+            out[m4] = thr
+        return out
+
+    fn.knots = (a, c0, c1, b)
+    fn.pins = (start.copy(), recv.copy(), thr.copy())
+    return fn
+
+
 def tilt_schedule(cup_plan, receive_tilt, throw_tilt, cfg=None, *,
                   start_tilt=None, rest_slew=False,
                   held_from_k=None, start_tilt_rate=None) -> np.ndarray:
@@ -1552,6 +1702,24 @@ def decompose(cup_plan, tilts, cfg=None) -> RealizedCycle:
     stroke = float(cfg.slider_stroke_mm)
     band = max(0.0, float(cfg.z_band_mm)) if cfg.z_float_enabled else 0.0
 
+    # The `pose` planner's PLANNED platform-z excursion (``CupCyclePlan.
+    # platform_dz``: (n, 3) m / m/s / m/s², None for every level-mode plan and
+    # for a pose-mode plan with the z band at 0).  It is added to the pose z and
+    # taken off the slider exactly as the z-float's ``dz_k`` is — the QP already
+    # boxed the SLIDER (cup_z − dz) — with an ANALYTIC knot velocity (a finite
+    # difference here tripped HAND_LIMIT_C2 at 28 rev/s² in the prototype).
+    # Every statement below that reads it is guarded so the None path is the
+    # pre-P3 function byte for byte.
+    dzp = getattr(cup_plan, 'platform_dz', None)
+    dzp_mm = dzp_vel = None
+    if dzp is not None:
+        dzp = np.asarray(dzp, dtype=float)
+        if dzp.shape != (n, 3):
+            raise ValueError(f"cup_plan.platform_dz must be ({n}, 3), got "
+                             f"{dzp.shape}")
+        dzp_mm = dzp[:, 0] * 1000.0
+        dzp_vel = dzp[:, 1] * 1000.0
+
     pose = np.zeros((n, 6), dtype=float)
     axis = np.zeros((n, 3), dtype=float)
     arm = np.zeros(n, dtype=float)
@@ -1570,6 +1738,8 @@ def decompose(cup_plan, tilts, cfg=None) -> RealizedCycle:
         shift = arm_k * a[:2]
         drop_k = arm_k * (1.0 - float(a[2]))
         slider_raw = cup_z_mm - cfg.cup_z_base_mm + drop_k
+        if dzp_mm is not None:
+            slider_raw -= dzp_mm[k]
 
         dz_k = 0.0
         if band > 0.0:
@@ -1584,6 +1754,8 @@ def decompose(cup_plan, tilts, cfg=None) -> RealizedCycle:
         pose[k, 0] = centroid[0]
         pose[k, 1] = centroid[1]
         pose[k, 2] = cfg.active_z_mm + dz_k
+        if dzp_mm is not None:
+            pose[k, 2] += dzp_mm[k]
         pose[k, 3] = rx
         pose[k, 4] = ry
         pose[k, 5] = 0.0
@@ -1612,6 +1784,9 @@ def decompose(cup_plan, tilts, cfg=None) -> RealizedCycle:
     # pose_vel[:, 5] stays 0 — rz is pinned to 0 by the realisation.
 
     slider_vel_mm_s = vz_mm - dz_dot + drop_dot
+    if dzp_vel is not None:
+        pose_vel[:, 2] = pose_vel[:, 2] + dzp_vel
+        slider_vel_mm_s = slider_vel_mm_s - dzp_vel
     slider_vel_mm_s = np.where(saturated, 0.0, slider_vel_mm_s)
 
     # the mm->rev conversion, vectorised (it is float-only).  The zero offset is a
@@ -1635,5 +1810,5 @@ def decompose(cup_plan, tilts, cfg=None) -> RealizedCycle:
         catch_k=int(cup_plan.catch_k),
         tilts=tilt_arr.astype(float, copy=True),
         slider_saturated=saturated,
-        z_excursion_mm=dz,
+        z_excursion_mm=(dz if dzp_mm is None else dz + dzp_mm),
     )

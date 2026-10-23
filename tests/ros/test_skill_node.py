@@ -570,7 +570,7 @@ def test_self_toss_is_refused_on_a_dwell_mismatch(tmp_path):
                # set_limits has no hand field) — 3900 since 2026-10-02.
                'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
         gate_hash=adm.gate_hash(), swept_at='2026-09-13',
-        dwell_s=0.20)                            # != the node's default 0.30
+        dwell_s=0.20, planner_mode='level')                            # != the node's default 0.30
     adm.dump(str(box_path), [box])
     node, _client = _node_with_client()
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH', str(box_path)):
@@ -884,7 +884,7 @@ def test_self_toss_refuses_an_uncovered_apex_before_any_motion(tmp_path):
         limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': 5000.0,
                'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
         gate_hash=adm.gate_hash(), swept_at='2026-09-13',
-        dwell_s=sn._DEFAULT_DWELL_S)
+        dwell_s=sn._DEFAULT_DWELL_S, planner_mode='level')
     adm.dump(str(box_path), [box])
     node, _client = _node_with_client()
     node._on_traj_status(_status())
@@ -1558,7 +1558,7 @@ def test_check_reports_box_refused_when_the_apex_param_is_uncovered(tmp_path):
         limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': 5000.0,
                'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
         gate_hash=adm.gate_hash(), swept_at='2026-09-13',
-        dwell_s=sn._DEFAULT_DWELL_S)
+        dwell_s=sn._DEFAULT_DWELL_S, planner_mode='level')
     adm.dump(str(box_path), [box])
     node, _client = _node_with_client()
     node._on_traj_status(_status())
@@ -2907,7 +2907,7 @@ def _good_box_path(tmp_path, *, apex_band_m=(0.85, 0.95), hop=False,
         limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': 5000.0,
                'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
         gate_hash=adm.gate_hash(), swept_at='2026-09-13',
-        dwell_s=sn._DEFAULT_DWELL_S)
+        dwell_s=sn._DEFAULT_DWELL_S, planner_mode='level')
     boxes = [box]
     if hop:
         # The 250 mm hop's two boxes as the 2026-09-23 sweep produced them
@@ -2922,7 +2922,7 @@ def _good_box_path(tmp_path, *, apex_band_m=(0.85, 0.95), hop=False,
                 limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': 5000.0,
                        'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
                 gate_hash=adm.gate_hash(), swept_at='2026-09-13',
-                dwell_s=sn._DEFAULT_DWELL_S))
+                dwell_s=sn._DEFAULT_DWELL_S, planner_mode='level'))
     if columns:
         # R5 (owner decision D1, 2026-09-30): `compile_columns` folds each
         # ball into its own SAME-site chain, so it needs (P1,P1)/(P2,P2) --
@@ -2936,7 +2936,7 @@ def _good_box_path(tmp_path, *, apex_band_m=(0.85, 0.95), hop=False,
                 limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': 5000.0,
                        'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
                 gate_hash=adm.gate_hash(), swept_at='2026-09-13',
-                dwell_s=sn._DEFAULT_DWELL_S))
+                dwell_s=sn._DEFAULT_DWELL_S, planner_mode='level'))
     if oval:
         # The one-ball oval (plan two-ball-oval): ONE box, T -> C at
         # separation 150 mm (columns_sites(150) = P1 (-75, 0), P2 (+75, 0)),
@@ -2953,7 +2953,8 @@ def _good_box_path(tmp_path, *, apex_band_m=(0.85, 0.95), hop=False,
                    'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
             gate_hash=adm.gate_hash(), swept_at='2026-09-13',
             dwell_s=sn._DEFAULT_DWELL_S if oval_dwell_s is None
-            else oval_dwell_s))
+            else oval_dwell_s,
+            planner_mode='level'))
     adm.dump(str(box_path), boxes)
     return str(box_path)
 
@@ -4277,7 +4278,7 @@ class TestJuggleAction:
                 limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': 5000.0,
                        'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
                 gate_hash=adm.gate_hash(), swept_at='2026-09-13',
-                dwell_s=sn._DEFAULT_DWELL_S)
+                dwell_s=sn._DEFAULT_DWELL_S, planner_mode='level')
             for pair, rel, tgt in [(('P1', 'P2'), (-50.0, 0.0), (50.0, 0.0)),
                                    (('P2', 'P1'), (50.0, 0.0), (-50.0, 0.0))]]
         adm.dump(str(box_path), boxes)
@@ -7016,3 +7017,109 @@ def test_the_contact_probe_finds_the_hand_velocity_kick_in_its_window():
     # before the kick: none; a window the history does not cover: None.
     assert node._contact_time(100.0, 100.02) is None
     assert node._contact_time(100.0, 105.0) is None
+
+
+# ── planner_mode on the install wire (two-ball-oval P3, 2026-10-23) ────────
+# ONE live switch (this node's `planner_mode` parameter) selects the box AND
+# rides on every InstallSegment request; trajectory_node plans with it.
+
+def _p3_terminals():
+    from jugglebot.motion.skills.segments import (
+        CatchTerminal, RestTerminal, ThrowTerminal)
+    return [
+        ('THROW', ThrowTerminal(site_mm=[0.0, 0.0, 860.0],
+                                target_mm=[0.0, 0.0, 830.0], flight_s=0.6,
+                                t_release_s=100.0)),
+        ('CATCH', CatchTerminal(landing_mm=[0.0, 0.0, 830.0],
+                                landing_vel_mm_s=[0.0, 0.0, -2500.0],
+                                t_land_s=100.0, rest_site_mm=[0.0, 0.0, 750.0])),
+        ('REST', RestTerminal(rest_site_mm=[0.0, 0.0, 750.0], t_rest_s=100.0)),
+    ]
+
+
+def test_every_install_request_carries_the_default_planner_mode():
+    node, client = _node_with_client(response=_response())
+    for kind, terminal in _p3_terminals():
+        node._installer(kind, terminal, 100.0, ball_id=0)
+    assert [r.planner_mode for r in client.calls] == ['level'] * 3
+
+
+def test_every_install_request_carries_the_planner_mode_parameter():
+    node, client = _node_with_client(response=_response())
+    node._params['planner_mode'] = 'pose'
+    for kind, terminal in _p3_terminals():
+        node._installer(kind, terminal, 100.0, ball_id=0)
+    assert [r.planner_mode for r in client.calls] == ['pose'] * 3
+
+
+def test_planner_mode_cannot_change_while_a_goal_is_active(tmp_path):
+    """Audit finding 2026-10-24: the executor's box selection is frozen at goal
+    accept while every InstallSegment request re-reads the live parameter, so a
+    mid-goal `ros2 param set /skill_node planner_mode pose` would solve the
+    remaining installs under a planner the box was not selected under. Refused
+    by name while a goal is active (the same guard as the debug param); the
+    same value re-set is a no-op and allowed; between attempts it applies."""
+    node, _client = _node_with_client(response=_response())
+    log = _logged(node)
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
+                      _good_box_path(tmp_path, columns=True)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        assert node._start_pattern(
+            _columns_goal(separation_mm=100.0)).success is True
+    assert node._executor is not None
+    result = node.set_parameters([_MockParameter('pose', name='planner_mode')])[0]
+    assert result.successful is False
+    assert 'goal is active' in result.reason
+    assert node._planner_mode() == 'level'
+    assert any('REFUSED planner_mode' in c[0][0] for c in log.warning.call_args_list)
+    # Re-setting the value already in force is not a change.
+    assert node.set_parameters(
+        [_MockParameter('level', name='planner_mode')])[0].successful is True
+    # Between attempts the switch applies.
+    node._executor = None
+    node._reload_ctx = None
+    assert node.set_parameters(
+        [_MockParameter('pose', name='planner_mode')])[0].successful is True
+    # ...and a typo is refused by name whatever the state.
+    assert node.set_parameters(
+        [_MockParameter('banana', name='planner_mode')])[0].successful is False
+
+
+def _self_toss_box(planner_mode):
+    return adm.AdmissibleBox(
+        site_pair=('P1', 'P1'), apex_band_m=(0.85, 0.95),
+        landing_xy_m=((-0.05, 0.05), (-0.05, 0.05)), apex_m=(0.6, 1.2),
+        pattern='self_toss', release_site_xy_mm=(-50.0, 0.0),
+        target_site_xy_mm=(-50.0, 0.0),
+        limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': 5000.0,
+               'leg_jerk_mmps3': 200000.0,
+               'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
+        gate_hash=adm.gate_hash(), swept_at='2026-10-23',
+        dwell_s=sn._DEFAULT_DWELL_S, planner_mode=planner_mode)
+
+
+def test_a_level_box_is_refused_by_name_under_the_pose_planner(tmp_path):
+    box_path = tmp_path / 'admissible_box.yaml'
+    adm.dump(str(box_path), [_self_toss_box('level')])
+    node, _client = _node_with_client()
+    node._on_traj_status(_status())
+    node._params['planner_mode'] = 'pose'
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', str(box_path)):
+        resp = node._start_pattern(_self_toss_goal())
+    assert resp.success is False
+    assert 'planner_mode' in resp.message
+    assert node._executor is None
+
+
+def test_a_pose_box_passes_the_box_select_under_the_pose_planner(tmp_path):
+    box_path = tmp_path / 'admissible_box.yaml'
+    adm.dump(str(box_path), [_self_toss_box('pose')])
+    node, _client = _node_with_client()
+    node._on_traj_status(_status())
+    node._params['planner_mode'] = 'pose'
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', str(box_path)):
+        resp = node._start_pattern(_self_toss_goal())
+    # Refused later for an unrelated reason (no live prelevel/commanded state
+    # in this fixture) -- but NOT by the box select.
+    assert 'no admissible box covers' not in resp.message
+    assert 'planner_mode' not in resp.message

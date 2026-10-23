@@ -1554,7 +1554,7 @@ def _box(xy=((-0.05, 0.05), (-0.05, 0.05)), apex=(0.3, 1.5), empty=False,
         limits={'leg_vel_mmps': 1.0, 'leg_acc_mmps2': 1.0,
                'leg_jerk_mmps3': 1.0, 'hand_acc_rps2': 1.0},
         gate_hash='0123456789ab', swept_at='2026-09-13',
-        dwell_s=0.30)   # the dwell every schedule in this file compiles at
+        dwell_s=0.30, planner_mode='level')   # the dwell every schedule in this file compiles at
 
 
 def _schedule_with_then_throw(sites):

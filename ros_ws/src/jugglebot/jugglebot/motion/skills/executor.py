@@ -2094,7 +2094,8 @@ class SkillExecutor:
                  bumper: Optional[Callable[..., 'bmp.BumpResult']] = None,
                  contact_probe: Optional[Callable[[float, float],
                                                   Optional[float]]] = None,
-                 catch_time_offset_s: float = 0.0):
+                 catch_time_offset_s: float = 0.0,
+                 planner_mode: str = uc.PLANNER_MODE_DEFAULT):
         self.schedule = schedule
         #: ``contact_probe(t0, t1)`` -> wall stamp of the first hand
         #: velocity KICK (cup struck by the ball) inside ``[t0, t1]``, or
@@ -2162,6 +2163,15 @@ class SkillExecutor:
         self.resend_max_per_catch = int(resend_max_per_catch)
         self.learner = learner
         self.boxes = boxes
+        #: The segment planner ('level' | 'pose', ``uc.PLANNER_MODES``) this
+        #: session runs: ``skill_node`` sets it from its ``planner_mode``
+        #: parameter; it selects the admissible box (a box is stamped with the
+        #: planner it was swept under) and the same value rides on every
+        #: InstallSegment request (a later unit wires that).
+        if planner_mode not in uc.PLANNER_MODES:
+            raise ValueError('planner_mode must be one of %r, not %r'
+                             % (uc.PLANNER_MODES, planner_mode))
+        self.planner_mode = str(planner_mode)
         #: How far (m, per axis) the learner's THROW command, and a tracker
         #: CATCH aim (:meth:`_clamp_lateral_to_schedule`), may move the
         #: commanded/aimed landing AWAY from the schedule's desired offset
@@ -2494,14 +2504,16 @@ class SkillExecutor:
                              (site.name, target.name), apex,
                              release_site_xy_mm=site.cup_mm[:2],
                              target_site_xy_mm=target.cup_mm[:2],
-                             dwell_s=self.schedule.dwell_s)
+                             dwell_s=self.schedule.dwell_s,
+                             planner_mode=self.planner_mode)
             if self.learner is not None and box is None:
                 reason = adm.describe_miss(
                     self.boxes, self.schedule.pattern,
                     (site.name, target.name), apex,
                     release_site_xy_mm=site.cup_mm[:2],
                     target_site_xy_mm=target.cup_mm[:2],
-                    dwell_s=self.schedule.dwell_s)
+                    dwell_s=self.schedule.dwell_s,
+                             planner_mode=self.planner_mode)
                 raise _NoAdmissibleCommand(
                     'no admissible box covers pattern %r site pair %r: %s — '
                     'a learner command may not reach the platform unclipped'
@@ -2729,7 +2741,8 @@ class SkillExecutor:
                              (site.name, site.name), apex,
                              release_site_xy_mm=site.cup_mm[:2],
                              target_site_xy_mm=site.cup_mm[:2],
-                             dwell_s=self.schedule.dwell_s)
+                             dwell_s=self.schedule.dwell_s,
+                             planner_mode=self.planner_mode)
             if box is not None and not box.empty:
                 alo, ahi = box.apex_m
                 u_apex = min(max(u_apex, alo), ahi)

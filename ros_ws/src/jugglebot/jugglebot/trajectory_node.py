@@ -168,6 +168,7 @@ _FROZEN = 'FROZEN'
 #   so any advancing service is refused loudly rather than jumping u0 back toward a
 #   target the suppressed legs cannot follow (which is what re-trips the guard).
 _GUARD_LATCHED = 'GUARD_LATCHED'
+_PLANNER_MODE = 'PLANNER_MODE'   # InstallSegment refusal: unknown request.planner_mode
 
 
 # Control modes in which the node streams a hold. STANDBY is the armed-hold state
@@ -920,11 +921,26 @@ class TrajectoryNode(Node):
         if not 0.0 <= _pre_hold_s <= 0.25:
             raise ValueError(
                 'pre_release_hold_s must be in [0, 0.25] s, got %r' % _pre_hold_s)
-        self._segment_cfg = sk_seg.SegmentConfig(pre_release_hold_s=_pre_hold_s)
+        # `planner_mode` ('level' | 'pose', two-ball-oval P3) is ONLY the
+        # DEFAULT for an InstallSegment request that carries none (''): the
+        # LIVE switch is skill_node's `planner_mode` parameter, which rides on
+        # every request (it selects the admissible box AND the plan, so the two
+        # cannot disagree). Deliberately NOT live-settable here -- a second
+        # live knob would be an unenforced twin of that one.
+        self.declare_parameter('planner_mode',
+                               str(sk_seg.SegmentConfig().planner_mode))
+        _planner_mode = str(self.get_parameter('planner_mode').value)
+        if _planner_mode not in uc.PLANNER_MODES:
+            raise ValueError('planner_mode must be one of %r, got %r'
+                             % (uc.PLANNER_MODES, _planner_mode))
+        self._segment_cfg = sk_seg.SegmentConfig(
+            pre_release_hold_s=_pre_hold_s, planner_mode=_planner_mode)
         self.get_logger().debug(
             'segment config: pre_release_hold_s=%.3f s, post_release_hold_s='
-            '%.3f s' % (self._segment_cfg.pre_release_hold_s,
-                        self._segment_cfg.post_release_hold_s))
+            '%.3f s, planner_mode default=%s'
+            % (self._segment_cfg.pre_release_hold_s,
+               self._segment_cfg.post_release_hold_s,
+               self._segment_cfg.planner_mode))
         # Live, so a sitting A/Bs the hold between attempts without a relaunch
         # (`ros2 param set /trajectory_node pre_release_hold_s 0.0`). Safe
         # mid-chain: the swap only reaches the NEXT install_segment, and each
@@ -1159,7 +1175,8 @@ class TrajectoryNode(Node):
             f" · {blas_threads.format_blas_short(self._blas_threads)}"
             f" · pre/post-release hold "
             f"{self._segment_cfg.pre_release_hold_s:.3f}/"
-            f"{self._segment_cfg.post_release_hold_s:.3f} s")
+            f"{self._segment_cfg.post_release_hold_s:.3f} s"
+            f" · planner_mode default {self._segment_cfg.planner_mode}")
         self.get_logger().debug(
             f"trajectory_node up: stream modes={sorted(self._stream_modes)}, "
             f"go_home={self._go_home_duration_s}s")
@@ -4550,6 +4567,7 @@ class TrajectoryNode(Node):
         response.duration_s = 0.0
         response.seeded_post_release = False
         response.t_release_mono = 0.0
+        response.planner_mode = ''
         # KIND_BUMP (I-CATCH-5): every guard refusal below is TERMINAL for a
         # bump (the attempt is ending; a 40 Hz retry would only spam this
         # service); `_svc_bump_catch` sets its own outcomes explicitly.
@@ -4592,6 +4610,24 @@ class TrajectoryNode(Node):
         # `_ros_time_to_perf`). `t_event_s` is a bare float64 seconds field
         # (not a `builtin_interfaces/Time`), so the crossing is the same sum
         # `_ros_time_to_perf` does without that message's two-field unpack.
+        # The planner this ONE install is solved with: the request's (skill_node's
+        # live parameter -- the same value the admissible box was selected
+        # under), else the node's default for a pre-P3 / hand-built client.
+        # Refused by name BEFORE any solve; per install only (the node's own
+        # `_segment_cfg` is never mutated).
+        req_mode = str(request.planner_mode)
+        if req_mode == '':
+            seg_cfg = self._segment_cfg
+        elif req_mode in uc.PLANNER_MODES:
+            seg_cfg = (self._segment_cfg
+                       if req_mode == self._segment_cfg.planner_mode else
+                       dataclasses.replace(self._segment_cfg,
+                                           planner_mode=req_mode))
+        else:
+            return self._reject_segment(
+                response, _PLANNER_MODE,
+                'planner_mode %r is not one of %s (nothing solved)'
+                % (req_mode, list(uc.PLANNER_MODES)), t_wall)
         t_event_perf = float(request.t_event_s) + self._ros_to_perf_offset
         # A CATCH-with-throw's release time gets the identical crossing; a
         # plain CATCH's `t_release_s` is 0.0 (the wire's own sentinel for "no
@@ -4779,7 +4815,7 @@ class TrajectoryNode(Node):
         reply = self._segment_solver.solve(sk_solver.SegmentSolveRequest(
             seq=self._solve_seq, record=record, seed_rest=seed_rest,
             kind=kind, terminal=terminal, t_now_s=t_now_s,
-            lead_s=lead_s, cfg=self._segment_cfg,
+            lead_s=lead_s, cfg=seg_cfg,
             limits=self._limits, geom=self._geom,
             warm_start=self._segment_warm_start,
             reserve_fresh_lead=True, deadline_s=deadline_s))
@@ -4909,7 +4945,9 @@ class TrajectoryNode(Node):
         return self._accept_segment(response, kind, int(request.ball_id),
                                     new_record, result, t_wall,
                                     t_release_mono=t_release_mono,
-                                    solve_s=float(reply.solve_s))
+                                    solve_s=float(reply.solve_s),
+                                    planner_mode=self._solved_planner_mode(
+                                        kind, terminal, new_record, seg_cfg))
 
     def _svc_bump_catch(self, request, response, t_wall: float, epoch0):
         """``KIND_BUMP``: re-aim the ACTIVE record's catch as a platform-xy
@@ -5120,8 +5158,23 @@ class TrajectoryNode(Node):
                   + sk_exec.WIRE_READ_KNOTS)
         return k_s <= k_wire
 
+    @staticmethod
+    def _solved_planner_mode(kind, terminal, record, seg_cfg) -> str:
+        """The planner formulation this install was SOLVED with, for the reply.
+
+        Read off the record's ``CycleMeta.planner_mode`` — what the planner
+        actually ran, never the mode the request asked for: only a CATCH
+        carrying its throw can be solved under ``pose`` (``segments.
+        _plan_catch_throw``), every other shape is the level program in both
+        modes, and a pose request whose folded window fell back to level (no
+        pose spec) must say so.  ``unified_cycle.extend`` carries the HEAD
+        window's mode onto the joined meta (I-PLAN-13 b), so the joined
+        CATCH+SETTLE segment reports the carry's formulation."""
+        return str(getattr(record.meta, 'planner_mode', '') or 'level')
+
     def _accept_segment(self, response, kind, ball_id, record, result, t_wall,
-                        t_release_mono: float = 0.0, solve_s: float = 0.0):
+                        t_release_mono: float = 0.0, solve_s: float = 0.0,
+                        planner_mode: str = ''):
         """Fill ``response`` from an INSTALLED segment. Mirrors ``_accept_cycle``."""
         response.accepted = True
         response.code = feas.OK
@@ -5135,13 +5188,15 @@ class TrajectoryNode(Node):
         response.duration_s = float(record.plan.total_duration)
         response.seeded_post_release = bool(result.seeded_post_release)
         response.t_release_mono = float(t_release_mono)
+        response.planner_mode = str(planner_mode)
         response.plan_wall_ms = (time.perf_counter() - t_wall) * 1e3
         self._cycle_plan_wall_ms = response.plan_wall_ms
         self.get_logger().debug(
             'install_segment %s %s: splice_k=%d, plan %.1f ms, event tau '
-            '%.3f s, solve %.1f ms'
+            '%.3f s, solve %.1f ms, planner %s'
             % (kind, ball_label(ball_id), response.splice_k, response.plan_wall_ms,
-               float(result.event_t_s), solve_s * 1e3))
+               float(result.event_t_s), solve_s * 1e3,
+               response.planner_mode))
         return response
 
     # ═══════════════════════════════════════════════════════════

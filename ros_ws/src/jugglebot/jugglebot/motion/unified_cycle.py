@@ -140,6 +140,26 @@ _KIND_SHAPE = {
 #: ``validate_cycle`` code (``WORKSPACE``, ``LIMIT_JERK``, ``HAND_STROKE``, …) or
 #: one of the three below that this module owns.
 TILT_PIN = 'TILT_PIN'                    #: a tilt pin outside the 12° ceiling
+#: The `pose` planner's prescribed tilt series has no knots left for one of its
+#: sweeps (a hold eats the window) — ``cup_realize.prescribed_tilt_fn``'s
+#: ``ValueError``, re-coded so an operator reads "shorten a hold / lengthen the
+#: window", not "aim outside the cone" (two-ball-oval P3).
+POSE_WINDOW = 'POSE_WINDOW'
+
+#: The two formulations ``cup_cycle`` can solve the folded STEADY window with
+#: (two-ball-oval § 2.5; ``hardware_config.yaml`` ``trajectory_op.planner_mode``).
+#: ``level`` = cup xyz jerk, banking after the QP; ``pose`` = prescribed tilt +
+#: leg-jerk objective + C-CUP-4 rows (+ an optional free centroid-z block).
+#: Every other window kind is the level program in BOTH modes.  The admissible
+#: box is stamped with the mode it was swept under and ``admissible.select``
+#: refuses a mismatch by name, so the default flips only with a re-sweep.
+PLANNER_LEVEL = 'level'
+PLANNER_POSE = 'pose'
+PLANNER_MODES = (PLANNER_LEVEL, PLANNER_POSE)
+PLANNER_MODE_DEFAULT = str(hw.JB_TRAJ_PLANNER_MODE)
+if PLANNER_MODE_DEFAULT not in PLANNER_MODES:
+    raise ValueError("hardware_config trajectory_op.planner_mode must be one of %r, "
+                     "got %r" % (PLANNER_MODES, PLANNER_MODE_DEFAULT))
 
 #: How far a held-attitude window's SEED may be from the attitude it holds (rad).
 #:
@@ -554,6 +574,16 @@ class CycleGoals:
     #: STEADY); the catch a STEADY carries must touch down before the hold
     #: starts.  See ``cup_cycle._assemble``'s pre-release block.
     pre_release_hold_knots: int = 0
+    #: Which formulation solves a STEADY window that carries a catch AND a
+    #: throw (the folded window): :data:`PLANNER_LEVEL` (default, the shipped
+    #: planner) or :data:`PLANNER_POSE` (two-ball-oval P3).  Ignored — the level
+    #: program is used — on every other kind and on a held-axis STEADY
+    #: (``hold_tilt``), by design: the pose formulation is the carry's.
+    #: ``segments.SegmentConfig.planner_mode`` sets it; nothing else should.
+    planner_mode: str = PLANNER_LEVEL
+    #: The pose planner's knobs; ``None`` = ``cup_cycle.PoseConfig()`` (the
+    #: ``hardware_config`` defaults).  Read only in pose mode.
+    pose_cfg: Optional['cc.PoseConfig'] = None
 
     def catch_time_s(self) -> float:
         """The catch instant on the window clock, from whichever form was given."""
@@ -967,6 +997,11 @@ class CycleMeta:
     #: consumer that needs a whole-plan peak must ask for one
     #: (``validate_cycle`` on the plan) rather than assume.
     report_range_knots: Optional[Tuple[int, int]] = None
+    #: The formulation this window was solved with (:data:`PLANNER_MODES`);
+    #: ``level`` for every window the pose planner does not apply to, so a
+    #: pose-mode SESSION still reports ``level`` on its LAUNCH / LANDING /
+    #: SETTLE windows — the field names what was SOLVED, not what was asked.
+    planner_mode: str = PLANNER_LEVEL
     #: Per-stage wall time, seconds, keyed :data:`STAGE_KEYS`.  ``None`` when the
     #: meta did not come from :func:`plan_cycle` directly (a spliced/joined meta).
     #:
@@ -1642,6 +1677,9 @@ def plan_cycle(kind: str, goals: CycleGoals, state: CycleState,
             % (kind, post_release, bool(state.post_release)))
     if not float(goals.period_s) > 0.0:
         raise ValueError("period_s must be > 0, got %r" % (goals.period_s,))
+    if goals.planner_mode not in PLANNER_MODES:
+        raise ValueError("planner_mode must be one of %r, got %r"
+                         % (PLANNER_MODES, goals.planner_mode))
     # The two attitude fields are checked per kind, like the site fields: one
     # window can HOLD an attitude through a catch or END at one, never both —
     # a slew inside a held line is the thing the held line exists to forbid.
@@ -1765,6 +1803,10 @@ def plan_cycle(kind: str, goals: CycleGoals, state: CycleState,
     # first run of this field: the gate, not the QP, is ~89 % of it.)
     stages: Dict[str, float] = {}
     t_stage = time.perf_counter()
+    # The `pose` planner's spec (two-ball-oval P3) — None on every window the
+    # pose formulation does not apply to, and then NOTHING below changes.  Built
+    # inside the 'qp' stage: it is part of assembling the program.
+    pose_spec = _pose_spec_for(kind, goals, state, rcfg, cup_cfg, geom, events)
     try:
         cup = cc.plan_window(events, state0, cup_cfg,
                              period_s=float(goals.period_s),
@@ -1772,15 +1814,131 @@ def plan_cycle(kind: str, goals: CycleGoals, state: CycleState,
                              holds_ball_at_start=(kind == LAUNCH
                                                   or bool(goals.holds_ball)),
                              hold_axis=hold_axis, hold_knots=hold_knots,
-                             pre_hold_knots=pre_hold_knots)
+                             pre_hold_knots=pre_hold_knots, pose=pose_spec)
     except cc.CupCycleInfeasible as exc:
         raise CycleInfeasible(exc.reason, [str(exc)])
     finally:
         stages['qp'] = time.perf_counter() - t_stage
 
+    pose_tilts = None
+    if pose_spec is not None:
+        # The SAME callable the QP differentiated, sampled at the knots: one
+        # series by construction (the realisation never re-derives it).
+        pose_tilts = np.asarray(pose_spec.tilt_fn(
+            np.arange(int(cup.jerk.shape[0]) + 1) * float(cup.dt)), dtype=float)
     plan, meta = _realize(kind, cup, goals, state, limits, geom, rcfg,
-                          t_wall=t_wall, stages=stages)
+                          t_wall=t_wall, stages=stages, pose_tilts=pose_tilts,
+                          planner_mode=(PLANNER_POSE if pose_spec is not None
+                                        else PLANNER_LEVEL))
     return plan, meta
+
+
+def _receive_pin_for(goals: CycleGoals, rcfg) -> np.ndarray:
+    """The touch-down attitude: the caller's ``receive_tilt`` pin when given
+    (INSTEAD of ``tilt_to_receive``, not as a further clamp on it — the caller
+    has already named the attitude it wants at the catch knot), else the
+    collinear receive tilt of the observed arrival, LEVEL with no catch."""
+    if goals.receive_tilt is not None:
+        return np.asarray(goals.receive_tilt, dtype=float).reshape(2)
+    if goals.catch_vel_mm_s is None:
+        return np.zeros(2)
+    return np.asarray(tg.tilt_to_receive(
+        np.asarray(goals.catch_vel_mm_s, dtype=float),
+        max_tilt_deg=rcfg.max_tilt_deg), dtype=float)
+
+
+def _seed_tilt_pins(state: CycleState, correction):
+    """``(start_tilt, start_tilt_rate)`` in the GRAVITY frame, or ``(None, None)``.
+
+    :func:`_start_tilt_for`'s raw answer carried into the frame every other pin
+    lives in (:func:`_realize` step 1): a post-release seed's pin comes from
+    ``detach_axis`` and IS gravity-referenced (rate ``None`` — the previous
+    window's pre-release hold ended with the attitude still); a rest / splice
+    seed's pin is the commanded PLAN-frame pose, mapped through the levelling
+    correction, and I-PLAN-11 makes that seam C1: the seed's tilt RATE
+    (``pose_vel[3:5]``, zero at a rest, the head's rate on a splice) rides
+    along, differenced through the same map over 1 ms of the seed's own rate.
+    One function because the pose planner needs the same two numbers BEFORE
+    the QP (``_pose_spec_for``) that the banking schedule needs after it.
+    """
+    start_tilt = _start_tilt_for(state)
+    start_tilt_rate = None
+    if start_tilt is not None and not state.post_release:
+        rate = np.asarray(state.pose_vel, dtype=float).reshape(6)[3:5]
+        if correction is None:
+            start_tilt_rate = rate.copy()
+        else:
+            eps = 1e-3
+            start_tilt_rate = (_tilt_to_gravity(start_tilt + eps * rate,
+                                                correction)
+                               - _tilt_to_gravity(start_tilt, correction)) / eps
+        start_tilt = _tilt_to_gravity(start_tilt, correction)
+    return start_tilt, start_tilt_rate
+
+
+def _pose_spec_for(kind, goals: CycleGoals, state: CycleState, rcfg, cup_cfg,
+                   geom, events) -> Optional['cc.PoseSpec']:
+    """The :class:`cup_cycle.PoseSpec` for this window, or ``None``.
+
+    ``None`` — the level program, byte for byte — unless ALL of: the goals ask
+    for :data:`PLANNER_POSE`, the kind is :data:`STEADY`, the window carries a
+    catch AND a throw, and the catch is not a held-axis one (``hold_tilt``).
+    The pose formulation is the folded carry's (plan two-ball-oval § 2.5);
+    LAUNCH / LANDING / SETTLE and the held feed catch keep the planner every
+    rung has flown.
+
+    What it assembles, all known before the QP: the three pins (seed via
+    :func:`_seed_tilt_pins`, receive via :func:`_receive_pin_for`, throw from
+    the ballistic take-off velocity — the same ``cc.takeoff_velocity`` the
+    release equality uses, aim-gated as :func:`_throw_tilt_for` gates it), the
+    prescribed series ``cup_realize.prescribed_tilt_fn`` with the catch knot
+    computed EXACTLY as ``cup_cycle._assemble`` computes it, one leg-rate
+    Jacobian at the window's nominal pose (mid-site xy, active z, level) and
+    the platform's z state at the seed (zero from a rest or a release).  A
+    window too short for the prescribed sweeps is :data:`POSE_WINDOW`.
+    """
+    if goals.planner_mode != PLANNER_POSE or kind != STEADY:
+        return None
+    if goals.hold_tilt is not None:
+        return None
+    throws = [e for e in events if isinstance(e, cc.ThrowEvent)]
+    catches = [e for e in events if isinstance(e, cc.CatchEvent)]
+    if len(throws) != 1 or len(catches) != 1:
+        return None
+    throw, catch = throws[0], catches[0]
+    dt = float(cc._cfg(cup_cfg, 'dt'))
+    n = int(round(float(goals.period_s) / dt))
+    k_td = max(0, min(int(np.floor(float(catch.t_s) / dt)), n - 1))
+    pcfg = goals.pose_cfg if goals.pose_cfg is not None else cc.PoseConfig()
+    recv = _receive_pin_for(goals, rcfg)
+    v_take = cc.takeoff_velocity(np.asarray(throw.site, dtype=float),
+                                 np.asarray(throw.target, dtype=float),
+                                 float(throw.flight_s))
+    throw_tilt = _throw_tilt_from_velocity(v_take, rcfg.max_tilt_deg)
+    start_tilt, start_rate = _seed_tilt_pins(state, state.levelling_correction)
+    if start_tilt is None:
+        raise CycleInfeasible(TILT_PIN, [
+            "the pose planner prescribes the whole tilt series from the seed's "
+            "attitude, and this post-release seed carries no detach axis to "
+            "read it from. Seed the window with release_state_from_meta."])
+    try:
+        fn = cr.prescribed_tilt_fn(
+            n, dt, k_td, start_tilt, recv, throw_tilt,
+            h_pre=int(pcfg.h_pre_knots), h_catch_pre=int(pcfg.h_catch_pre_knots),
+            h_catch_post=int(pcfg.h_catch_post_knots), start_rate=start_rate,
+            max_tilt_deg=float(rcfg.max_tilt_deg))
+    except ValueError as exc:
+        raise CycleInfeasible(POSE_WINDOW, [str(exc)])
+    x0 = 0.5 * (float(throw.site[0]) + float(catch.site[0])) * 1000.0
+    y0 = 0.5 * (float(throw.site[1]) + float(catch.site[1])) * 1000.0
+    nominal = np.array([[x0, y0, float(rcfg.active_z_mm), 0.0, 0.0, 0.0]])
+    jacobian = fz._batched_jacobian(nominal, geom)[0][0]
+    pose = np.asarray(state.pose, dtype=float).reshape(6)
+    pose_vel = np.asarray(state.pose_vel, dtype=float).reshape(6)
+    pose_acc = np.asarray(state.pose_accel, dtype=float).reshape(6)
+    dz0 = np.array([(pose[2] - float(rcfg.active_z_mm)) / 1000.0,
+                    pose_vel[2] / 1000.0, pose_acc[2] / 1000.0])
+    return cc.PoseSpec(tilt_fn=fn, jacobian=jacobian, cfg=pcfg, dz0=dz0)
 
 
 def _throw_tilt_for(cup, max_tilt_deg: float) -> np.ndarray:
@@ -1801,7 +1959,15 @@ def _throw_tilt_for(cup, max_tilt_deg: float) -> np.ndarray:
     deliberately: a partially-nulled fast arrival is a worse catch, not a wrong
     destination.
     """
-    v = np.asarray(cup.takeoff_vel, dtype=float).reshape(3)
+    return _throw_tilt_from_velocity(cup.takeoff_vel, max_tilt_deg)
+
+
+def _throw_tilt_from_velocity(takeoff_vel, max_tilt_deg: float) -> np.ndarray:
+    """:func:`_throw_tilt_for`'s body on a bare take-off velocity — the pose
+    planner needs the release pin BEFORE the QP (``_pose_spec_for``), from the
+    same ballistic velocity the release equality will pin, under the same
+    aim gate."""
+    v = np.asarray(takeoff_vel, dtype=float).reshape(3)
     speed = float(np.linalg.norm(v))
     if speed > 0.0:
         angle_deg = float(np.degrees(np.arccos(
@@ -1956,7 +2122,9 @@ def _start_tilt_for(state: CycleState) -> Optional[np.ndarray]:
 
 
 def _realize(kind, cup, goals, state, limits, geom, rcfg, *, t_wall,
-             stages: Optional[Dict[str, float]] = None):
+             stages: Optional[Dict[str, float]] = None,
+             pose_tilts: Optional[np.ndarray] = None,
+             planner_mode: str = PLANNER_LEVEL):
     """Stages 2-4 plus the gate: tilt schedule, decomposition, plan, validate.
 
     ``stages`` is the caller's per-stage wall-time accumulator (see
@@ -2026,35 +2194,13 @@ def _realize(kind, cup, goals, state, limits, geom, rcfg, *, t_wall,
     ~1.35 mm is looking at this, and at a real difference.)
     """
     correction = state.levelling_correction
-    if goals.receive_tilt is not None:
-        # The touch-down pin (CycleGoals.receive_tilt docstring): used
-        # INSTEAD of tilt_to_receive, not as a further clamp on it — the
-        # caller has already named the attitude it wants at the catch knot.
-        recv = np.asarray(goals.receive_tilt, dtype=float).reshape(2)
-    else:
-        recv = (np.asarray(tg.tilt_to_receive(
-            np.asarray(goals.catch_vel_mm_s, dtype=float),
-            max_tilt_deg=rcfg.max_tilt_deg), dtype=float)
-                if goals.catch_vel_mm_s is not None else np.zeros(2))
+    recv = _receive_pin_for(goals, rcfg)
     throw_tilt = _throw_tilt_for(cup, rcfg.max_tilt_deg)
-    start_tilt = _start_tilt_for(state)
-    start_tilt_rate = None
-    if start_tilt is not None and not state.post_release:
-        # I-PLAN-11: the seam is C1, not only C0 — the seed's tilt RATE (the
-        # head's ``pose_vel[3:5]`` at k_s on a splice; zero at a rest seam) is
-        # the schedule's knot-0 rate.  Mapped into the gravity frame by the
-        # same map as the pin, differenced over 1 ms of the seed's own rate
-        # (the map is a fixed rotation composition, smooth at this scale).
-        rate = np.asarray(state.pose_vel, dtype=float).reshape(6)[3:5]
-        if correction is None:
-            start_tilt_rate = rate.copy()
-        else:
-            eps = 1e-3
-            start_tilt_rate = (_tilt_to_gravity(start_tilt + eps * rate,
-                                                correction)
-                               - _tilt_to_gravity(start_tilt, correction)) / eps
-        # Plan frame → gravity frame.  See step 1 above for why only this branch.
-        start_tilt = _tilt_to_gravity(start_tilt, correction)
+    # I-PLAN-11: the seam is C1, not only C0 — the seed's tilt RATE (the
+    # head's ``pose_vel[3:5]`` at k_s on a splice; zero at a rest seam) is
+    # the schedule's knot-0 rate.  Both pins arrive in the GRAVITY frame
+    # (step 1 above); see :func:`_seed_tilt_pins`.
+    start_tilt, start_tilt_rate = _seed_tilt_pins(state, correction)
     rest_slew = False
     held_from_k = None
     if goals.hold_tilt is not None:
@@ -2112,14 +2258,27 @@ def _realize(kind, cup, goals, state, limits, geom, rcfg, *, t_wall,
         # would send an operator to move the target when the defect is here.  The
         # shift is inside the `finally` so its cost lands in the `tilt` stage,
         # which is where a reader looking for it will look.
-        try:
-            tilts = cr.tilt_schedule(cup, recv, throw_tilt, rcfg,
-                                     start_tilt=start_tilt,
-                                     rest_slew=rest_slew,
-                                     held_from_k=held_from_k,
-                                     start_tilt_rate=start_tilt_rate)
-        except ValueError as exc:
-            raise CycleInfeasible(TILT_PIN, [str(exc)])
+        if pose_tilts is not None:
+            # The `pose` planner: the PRESCRIBED series the QP already carried
+            # in its objective and its C-CUP-4 rows, sampled at the knots by
+            # ``plan_cycle``.  The banking schedule is not consulted — a second,
+            # disagreeing attitude series is exactly what the prescription
+            # exists to remove.  The frame shift and the knot-0 write-back
+            # below apply to it as to any series.
+            tilts = np.asarray(pose_tilts, dtype=float)
+            n_knots = int(np.asarray(cup.pos).shape[0])
+            if tilts.shape != (n_knots, 2):
+                raise ValueError("pose_tilts must be (%d, 2), got %s"
+                                 % (n_knots, tilts.shape))
+        else:
+            try:
+                tilts = cr.tilt_schedule(cup, recv, throw_tilt, rcfg,
+                                         start_tilt=start_tilt,
+                                         rest_slew=rest_slew,
+                                         held_from_k=held_from_k,
+                                         start_tilt_rate=start_tilt_rate)
+            except ValueError as exc:
+                raise CycleInfeasible(TILT_PIN, [str(exc)])
         # ⚠ THE ATTITUDE HALF OF THE PLATFORM HOLD IS *NOT* TAKEN — measured, not
         # overlooked (2026-09-28).  ``hold_platform_knots`` freezes the platform's
         # TRANSLATION only (``cup_cycle``'s hold rows put the cup on the line the
@@ -2190,13 +2349,13 @@ def _realize(kind, cup, goals, state, limits, geom, rcfg, *, t_wall,
         catch_evidence=evidence)
     meta = _meta_for(kind, plan, cup, goals, tilts, recv, throw_tilt,
                      limits, geom, t_wall=t_wall, stages=stages,
-                     correction=correction)
+                     correction=correction, planner_mode=planner_mode)
     return plan, meta
 
 
 def _meta_for(kind, plan, cup, goals, tilts, recv, throw_tilt, limits, geom, *,
               t_wall, stages: Optional[Dict[str, float]] = None,
-              correction=None):
+              correction=None, planner_mode: str = PLANNER_LEVEL):
     t_stage = time.perf_counter()
     report = fz.validate_cycle(plan, limits, geom)
     if stages is not None:
@@ -2250,7 +2409,8 @@ def _meta_for(kind, plan, cup, goals, tilts, recv, throw_tilt, limits, geom, *,
                         else None),
         takeoff_vel_mps=np.asarray(cup.takeoff_vel, dtype=float),
         warm_start=getattr(cup, 'warm_start', None),
-        cup_plan=cup, goals=goals, levelling_correction=correction)
+        cup_plan=cup, goals=goals, levelling_correction=correction,
+        planner_mode=str(planner_mode))
 
 
 def _runway_margin_rev(plan: CyclePlan, t_catch: float, limits) -> float:
@@ -2867,6 +3027,13 @@ def extend(plan_a: CyclePlan, meta_a: CycleMeta,
         stroke_clear_s=meta_a.stroke_clear_s,
         takeoff_vel_mps=meta_b.takeoff_vel_mps,
         warm_start=meta_b.warm_start,
+        # The HEAD's formulation: a folded CATCH+throw segment is always a
+        # STEADY head joined to a level SETTLE tail, and "what was solved"
+        # means the window that carried the catch (I-PLAN-13 b).  Found by
+        # unit B 2026-10-23: without this the joined meta read 'level' for
+        # every pose-mode segment and the install reply could only echo the
+        # request.
+        planner_mode=meta_a.planner_mode,
         cup_plan=cup_joined,
         goals=meta_b.goals, seam_vel_mismatch=seam,
         levelling_correction=correction,
@@ -3087,7 +3254,8 @@ def _head_view(plan: CyclePlan, meta: CycleMeta,
         cup_plan=cup_head, goals=meta.goals,
         levelling_correction=meta.levelling_correction,
         seam_vel_mismatch=meta.seam_vel_mismatch,
-        report_range_knots=meta.report_range_knots, stage_wall_s=None)
+        report_range_knots=meta.report_range_knots, stage_wall_s=None,
+        planner_mode=meta.planner_mode)
     return head, head_meta
 
 
@@ -3273,4 +3441,10 @@ def splice_at(plan: CyclePlan, meta: CycleMeta, k_s: int,
     joined, joined_meta = extend(head, head_meta, seg_plan, seg_meta,
                                  limits, geom,
                                  head_truncated=(k_s < n - 1))
-    return joined, dataclasses.replace(joined_meta, kind=SPLICED)
+    # The INSTALLED segment's own formulation, not the running record's: the
+    # head is the record's old plan, the join is about THIS install, and the
+    # reply / install log read `planner_mode` off the spliced meta (audit
+    # finding 2026-10-24: a pose CATCH spliced onto a level THROW record
+    # otherwise replied 'level').
+    return joined, dataclasses.replace(joined_meta, kind=SPLICED,
+                                       planner_mode=seg_meta.planner_mode)

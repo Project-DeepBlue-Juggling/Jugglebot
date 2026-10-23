@@ -115,12 +115,13 @@ gain. No ROS2, no repo-root / ``controller`` / ``sim`` imports.
 from __future__ import annotations
 
 import dataclasses
-from typing import Optional, Sequence
+from typing import Callable, Optional, Sequence
 
 import numpy as np
 
 import jugglebot.hardware_config as hw
-from jugglebot.motion.trajectory.tilt_geometry import MAX_TILT_DEG
+from jugglebot.motion.trajectory.tilt_geometry import (CUP_TILT_CENTER_Z_MM,
+                                                       MAX_TILT_DEG)
 # The 12° usable tilt ceiling, imported rather than restated: the caller
 # CLAMPS the receive tilt to it (``tilt_geometry.tilt_to_receive``) and the QP
 # CHECKS the held axis against it, so the two must be the same constant.
@@ -335,6 +336,96 @@ def _cfg(cfg, name):
 
 
 # ---------------------------------------------------------------------------
+# The `pose` planner (two-ball-oval P3, 2026-10-23)
+# ---------------------------------------------------------------------------
+
+@dataclasses.dataclass(frozen=True)
+class PoseConfig:
+    """The pose-level carry planner's named knobs (plan two-ball-oval § 2.5,
+    decision 32), defaults from ``hardware_config.yaml`` ``trajectory_op.pose_*``
+    where each value's measurement is recorded.
+
+    The pose planner is the folded STEADY window's formulation: the tilt is
+    PRESCRIBED before the QP (``cup_realize.prescribed_tilt_fn``), the
+    objective adds the LEG jerk of the composed pose through one fixed Jacobian
+    (``leg_jerk_weight``), the C-CUP-4 seating rule becomes QP rows
+    (``cone_deg`` about the prescribed cup axis, ``floor_g`` on ``a_z + g``)
+    on every loaded knot ``catch + 1 .. release − 2``, and an optional 4th
+    jerk block lets the platform centroid's z move inside ``z_band_mm``
+    (0 = the block is not assembled; SHIPS 0 — measured 2026-10-23, the band
+    spends leg velocity and buys no peak jerk).  The three hold lengths shape
+    the prescribed series (``prescribed_tilt_fn``).
+    """
+
+    leg_jerk_weight: float = float(hw.JB_TRAJ_POSE_LEG_JERK_WEIGHT)
+    z_band_mm: float = float(hw.JB_TRAJ_POSE_Z_BAND_MM)
+    cone_deg: float = float(hw.JB_TRAJ_POSE_CONE_DEG)
+    floor_g: float = float(hw.JB_TRAJ_POSE_FLOOR_G)
+    h_pre_knots: int = int(hw.JB_TRAJ_POSE_H_PRE_KNOTS)
+    h_catch_pre_knots: int = int(hw.JB_TRAJ_POSE_H_CATCH_PRE_KNOTS)
+    h_catch_post_knots: int = int(hw.JB_TRAJ_POSE_H_CATCH_POST_KNOTS)
+    slider_margin_mm: float = float(hw.JB_TRAJ_POSE_SLIDER_MARGIN_MM)
+    #: Sides of the inscribed polygon the cone is written as (8: the ticket-09
+    #: prototype's; the polygon is INSIDE the cone, so it is conservative).
+    cone_sides: int = 8
+
+    def __post_init__(self):
+        if not 0.0 < float(self.cone_deg) < 90.0:
+            raise ValueError("cone_deg must be in (0, 90), got %r" % (self.cone_deg,))
+        if not float(self.floor_g) >= 0.0:
+            raise ValueError("floor_g must be >= 0, got %r" % (self.floor_g,))
+        if not float(self.leg_jerk_weight) >= 0.0:
+            raise ValueError("leg_jerk_weight must be >= 0, got %r"
+                             % (self.leg_jerk_weight,))
+        if not float(self.z_band_mm) >= 0.0:
+            raise ValueError("z_band_mm must be >= 0, got %r" % (self.z_band_mm,))
+        if int(self.cone_sides) < 3:
+            raise ValueError("cone_sides must be >= 3, got %r" % (self.cone_sides,))
+        for name in ('h_pre_knots', 'h_catch_pre_knots', 'h_catch_post_knots'):
+            if int(getattr(self, name)) < 0:
+                raise ValueError("%s must be >= 0, got %r"
+                                 % (name, getattr(self, name)))
+
+
+@dataclasses.dataclass(frozen=True)
+class PoseSpec:
+    """Everything :func:`_assemble` needs to write the pose program for ONE
+    window, built by ``unified_cycle._pose_spec_for`` (which knows the pins,
+    the seed and the geometry this module deliberately does not).
+
+    ``tilt_fn(t_s) -> (m, 2)`` is the prescribed tilt series as a callable of
+    window time (gravity frame): the QP samples it at the knots and
+    differentiates it (central differences, ``h = 2e-4 s``) for the lever
+    terms, and the realisation samples the SAME callable at the knots — one
+    series by construction, no second copy.  ``jacobian`` is the (6, 6)
+    leg-rate Jacobian ``[v_xyz mm/s, ω rad/s] -> leg mm/s`` at the window's
+    nominal pose (mid-site, active z, level): one linearisation, the ticket-11
+    formulation.  ``dz0`` is the platform's z excursion state at knot 0
+    ``(m, m/s, m/s²)`` relative to the active height — zeros from a rest or a
+    release seed; non-zero only when a free-z plan is re-planned mid-window.
+    """
+
+    tilt_fn: Callable[[np.ndarray], np.ndarray]
+    jacobian: np.ndarray
+    cfg: PoseConfig = PoseConfig()
+    dz0: Optional[np.ndarray] = None
+    cup_tilt_center_z_m: float = float(CUP_TILT_CENTER_Z_MM) / 1000.0
+
+    def __post_init__(self):
+        J = np.asarray(self.jacobian, dtype=float)
+        if J.shape != (6, 6) or not np.all(np.isfinite(J)):
+            raise ValueError("jacobian must be a finite (6, 6) array, got shape %s"
+                             % (J.shape,))
+        if self.dz0 is not None:
+            d = np.asarray(self.dz0, dtype=float).reshape(-1)
+            if d.shape != (3,) or not np.all(np.isfinite(d)):
+                raise ValueError("dz0 must be a finite (pos, vel, acc) triple, "
+                                 "got %r" % (self.dz0,))
+        if not callable(self.tilt_fn):
+            raise TypeError("tilt_fn must be callable")
+
+
+# ---------------------------------------------------------------------------
 # Timeline events + window state
 # ---------------------------------------------------------------------------
 
@@ -516,6 +607,12 @@ class CupCyclePlan:
     #: ``feasibility.validate_cycle`` re-measures it on the REALISED 7-channel
     #: plan, so the two must be carried together or the gate goes vacuous.
     contact_knots: Optional[tuple] = None
+    #: The `pose` planner's PLANNED platform-z excursion, ``(n_steps + 1, 3)``
+    #: ``(m, m/s, m/s²)`` relative to the active height, or ``None`` (every
+    #: level-mode plan, and a pose-mode plan whose ``PoseConfig.z_band_mm`` is
+    #: 0 — the block is then not assembled).  ``cup_realize.decompose`` adds it
+    #: to the pose z and takes it off the slider; nothing else reads it.
+    platform_dz: Optional[np.ndarray] = None
 
     def sample(self, t_rel: float):
         """Cubic (jerk-constant) interpolation of the cup state at ``t_rel``.
@@ -878,6 +975,12 @@ class _Program:
     capture_k: int = 0
     capture_site: Optional[np.ndarray] = None
     capture_kappa: Optional[np.ndarray] = None
+    #: The `pose` planner's 4th jerk block (platform dz): ``n_steps`` extra
+    #: variables after the three cup blocks, or 0 (every level program, and a
+    #: pose program with the z band at 0).  ``dz0`` is that block's knot-0
+    #: state ``(m, m/s, m/s²)`` so :func:`plan_window` can integrate it.
+    n_dz: int = 0
+    dz0: Optional[np.ndarray] = None
 
 
 #: How far off the held axis line a held-axis window's SEED and its settle site
@@ -1095,8 +1198,16 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
               holds_ball_at_start: bool = False,
               hold_axis: Optional[np.ndarray] = None,
               hold_knots: int = 0,
-              pre_hold_knots: int = 0) -> _Program:
+              pre_hold_knots: int = 0,
+              pose: Optional[PoseSpec] = None) -> _Program:
     """Transcribe one window into a dense convex QP.
+
+    ``pose`` (two-ball-oval P3) switches the folded STEADY window to the
+    pose-level formulation: the level program below is assembled UNCHANGED and
+    :func:`_pose_augment` then appends its blocks (leg-jerk objective, C-CUP-4
+    rows, the optional dz block) after every pre-existing column, so with
+    ``pose=None`` not one byte of the program moves (the T-U2 parity fixtures
+    and the admissible box's pinned values are what guard that).
 
     Decision variables are the cup's per-axis jerk over ``n_steps`` knots,
     stacked axis-major. Every term below has a one-to-one counterpart in
@@ -1709,6 +1820,11 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
     # upper sides, then all lower sides, then the one-sided runway) because the
     # G-I most-violated selection breaks ties by index.
     box_rows, box_const, box_lo, box_hi = [], [], [], []
+    # Bookkeeping for the `pose` planner only: which box rows are the cup's
+    # z JERK ('jz') and z POSITION ('pz') — the rows a free platform z moves
+    # onto the SLIDER.  Numerically inert; nothing below reads it unless
+    # ``pose`` is given.
+    box_tags = []
     jerk_xy = float(_cfg(cfg, 'max_jerk_xy'))
     jerk_z = float(_cfg(cfg, 'max_jerk_z'))
     # The xy jerk box bounds PLATFORM translation (300 m/s³ against the z
@@ -1748,6 +1864,7 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
                 row[2 * n + k] = -kappa[a]
             box_rows.append(row); box_const.append(0.0)
             box_lo.append(-lim); box_hi.append(lim)
+            box_tags.append(('jz', k) if a == 2 else None)
     xy_box = float(_cfg(cfg, 'workspace_xy_m'))
     z_min = float(_cfg(cfg, 'z_min_m'))
     z_max = float(_cfg(cfg, 'z_max_m'))
@@ -1771,12 +1888,18 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
             box_rows.append(_axis_row(n, a, Ap[k]))
             box_const.append(cp[k, a])
             box_lo.append(lo); box_hi.append(hi)
+            box_tags.append(('pz', k) if a == 2 else None)
     BR = np.array(box_rows)
     BC = np.array(box_const)
     BLO = np.array(box_lo)
     BHI = np.array(box_hi)
     cols = [-BR.T, BR.T]
     rhss = [BC - BHI, BLO - BC]
+    # One tag per COLUMN of the final C, in hstack order: (kind, knot, sign of
+    # the row's z coefficient) for the z rows the pose planner moves onto the
+    # slider, None for every other column.  Upper sides are ``-BR``, lower ``+BR``.
+    col_tags = ([(t[0], t[1], -1.0) if t else None for t in box_tags]
+                + [(t[0], t[1], 1.0) if t else None for t in box_tags])
 
     if catch is not None and _cfg(cfg, 'catch_runway_enabled'):
         floor_m, need_m = catch_runway_requirement(catch_vel, cfg)
@@ -1809,6 +1932,7 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
         if k_td > 0:
             cols.append(_axis_row(n, 2, Ap[k_td])[:, None])
             rhss.append(np.array([floor_m + need_m - cp[k_td, 2]]))
+            col_tags.append(('rw', k_td, 1.0))
 
     # ---- optional acceleration boxes (default OFF; see CupCycleConfig) ------
     # Appended as their OWN block after every pre-existing column so that with the
@@ -1841,6 +1965,7 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
         AC = np.array(aconst)
         cols.extend([-AR.T, AR.T])
         rhss.extend([AC - np.array(ahi), np.array(alo) - AC])
+        col_tags.extend([None] * (2 * AR.shape[0]))
 
     # ---- C-CUP-2: the dive floor over the contact window --------------------
     # Its OWN block, after every pre-existing column (the discipline the runway
@@ -1876,10 +2001,20 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
         if ks.size:
             CR = np.stack([_axis_row(n, 2, Aa[k]) for k in ks], axis=1)
             cols.append(CR)
+            col_tags.extend([None] * CR.shape[1])
             # + the slack (see CONTACT_ACC_QP_SLACK_MPS2): the gate re-measures
             # this bound on the REALISED plan, and a row at the bare floor lands
             # the solver exactly on it.
             rhss.append((a_floor + CONTACT_ACC_QP_SLACK_MPS2) - ca[ks, 2])
+
+    # ---- the `pose` planner's blocks, after every level column ------------
+    n_dz, dz0 = 0, None
+    if pose is not None:
+        H, f, Aeq, beq, cols, rhss, n_dz, dz0 = _pose_augment(
+            pose, n, dt, H, f, Aeq, beq, cols, rhss, col_tags,
+            Ap, Av, Aa, Cp, Cv, Ca, cp, cv, ca, throw, catch, k_td,
+            holds_ball_at_start=bool(holds_ball_at_start), axis=axis,
+            capture_k=int(capture_k))
 
     C = np.hstack(cols)
     bc = np.concatenate(rhss)
@@ -1892,7 +2027,251 @@ def _assemble(state0: CupState, throw: Optional[ThrowEvent],
                     contact_knots=k_contact, capture_k=int(capture_k),
                     capture_site=(None if not capture_k else
                                   np.asarray(catch.site, float).reshape(3)),
-                    capture_kappa=(None if not capture_k else kappa))
+                    capture_kappa=(None if not capture_k else kappa),
+                    n_dz=int(n_dz), dz0=dz0)
+
+
+def _axes_from_tilts(tilts: np.ndarray) -> np.ndarray:
+    """``(m, 2)`` ``(rx, ry)`` → ``(m, 3)`` cup up-axes, vectorised.
+
+    ``rotvec_to_rot_matrix([rx, ry, 0]) @ e_z`` in closed form: Rodrigues with
+    ``k · e_z = 0`` gives ``(ry·sinc θ, −rx·sinc θ, cos θ)``, ``θ = |(rx, ry)|``
+    — the same vector ``tilt_geometry.cup_axis`` returns (to ~1e-16), without a
+    Python call per knot (the pose planner samples the series five times per
+    knot for its derivatives).
+    """
+    t = np.asarray(tilts, dtype=float).reshape(-1, 2)
+    th = np.hypot(t[:, 0], t[:, 1])
+    safe = np.where(th > 1e-12, th, 1.0)
+    sinc = np.where(th > 1e-12, np.sin(th) / safe, 1.0)
+    return np.stack([t[:, 1] * sinc, -t[:, 0] * sinc, np.cos(th)], axis=1)
+
+
+def _rots_from_tilts(tilts: np.ndarray) -> np.ndarray:
+    """``(m, 2)`` → ``(m, 3, 3)`` rotation matrices for the rotation vectors
+    ``(rx, ry, 0)``: Rodrigues ``R = cos θ·I + sin θ·[k]× + (1 − cos θ)·k kᵀ``,
+    vectorised — the same matrices ``ik_solver.rotvec_to_rot_matrix`` returns
+    per knot (to ~1e-16; ``tests/motion/test_pose_planner.py`` pins it), without
+    a Python call per loaded knot.  The cone rows need all three cup-frame axes.
+    """
+    t = np.asarray(tilts, dtype=float).reshape(-1, 2)
+    th = np.hypot(t[:, 0], t[:, 1])
+    safe = np.where(th > 1e-12, th, 1.0)
+    kx = np.where(th > 1e-12, t[:, 0] / safe, 0.0)
+    ky = np.where(th > 1e-12, t[:, 1] / safe, 0.0)
+    c, s = np.cos(th), np.sin(th)
+    one_c = 1.0 - c
+    R = np.zeros((t.shape[0], 3, 3))
+    R[:, 0, 0] = c + one_c * kx * kx
+    R[:, 0, 1] = one_c * kx * ky
+    R[:, 0, 2] = s * ky
+    R[:, 1, 0] = one_c * kx * ky
+    R[:, 1, 1] = c + one_c * ky * ky
+    R[:, 1, 2] = -s * kx
+    R[:, 2, 0] = -s * ky
+    R[:, 2, 1] = s * kx
+    R[:, 2, 2] = c
+    return R
+
+
+def _pose_augment(pose: PoseSpec, n: int, dt: float, H, f, Aeq, beq, cols, rhss,
+                  col_tags, Ap, Av, Aa, Cp, Cv, Ca, cp, cv, ca, throw, catch,
+                  k_td: int, *, holds_ball_at_start: bool, axis, capture_k: int):
+    """Append the pose planner's blocks to an assembled level program.
+
+    The level program's pieces arrive UNNORMALISED (``cols`` / ``rhss`` as
+    :func:`_assemble` built them, ``Aeq`` / ``beq`` already row-scaled) and go
+    back the same way; :func:`_assemble` normalises the columns once, after
+    this.  Four blocks (plan two-ball-oval § 2.5, ticket 11's formulation,
+    re-measured through the production holds 2026-10-23):
+
+    1. **The leg-jerk objective** ``w/n/1e6 · Σ_k |J0 · pose'''_k|²`` on the
+       continuous jerk of the COMPOSED pose at every jerk knot ``k``:
+       ``X''' = 1000·j_x − [1000·j_z·a_x + 3000·a_z·a_x' + 3000·v_z·a_x'' +
+       arm·a_x''']`` (the lever ``arm = 1000·cup_z − C`` with
+       ``decompose``'s own shift ``centroid_xy = cup_xy − arm·axis_xy``),
+       ``Z''' = 1000·j_dz`` (the dz block, when assembled), the tilt channels'
+       ``θ'''`` from the prescribed series; ``J0[:, :5]`` maps the five to leg
+       rates.  Affine in the variables because the tilt is prescribed — a tilt
+       VARIABLE would make the lever bilinear and the program non-convex.
+       Leg VELOCITY is not in the objective, which is why a free z band spends
+       it (measured: +57..+62 mm/s for the same peak jerk).
+    2. **C-CUP-4 rows** on every loaded knot ``catch + 1 .. n − 2``: the
+       specific force ``s = a − g`` expressed in the PRESCRIBED cup frame
+       (``R_kᵀ s``, ``R_k`` the knot's rotation) must satisfy the inscribed
+       ``cone_sides``-gon ``u_i · s_xy <= s_z · tan θ · cos(π/m)`` and the
+       world-z floor ``a_z + g >= floor_g · g``.  The CHECK (``feasibility.
+       _cup_seating_check``, 45° / 0.30 g, judged from the stroke end) stays
+       the authority on the REALISED plan; these rows are the shaper that
+       keeps the realised residual ~18.6° on every measured cell.
+    3. **The dz block** (only with ``cfg.z_band_mm > 0``): ``n`` platform-z
+       jerk variables with the knot-0 state ``dz0``, ``dz = dz' = dz'' = 0``
+       at the release knot (the seam is unchanged), a ``±band`` position box,
+       an acceleration regulariser with the cup-z weight, and every z-only
+       POSITION / JERK row of the level program (tagged ``pz`` / ``jz`` /
+       ``rw``) rewritten on the SLIDER ``cup_z − dz`` — the hand's stroke box,
+       its jerk box and the catch runway are the slider's, not the cup's; the
+       C-CUP-2 floor and the cone stay on the cup's acceleration (ball
+       physics).  The stroke-top bound keeps ``slider_margin_mm`` for the
+       tilt drop.
+    4. Nothing else: the catch's soft velocity match, the holds and the
+       release triple are the level program's, untouched.
+    """
+    pcfg = pose.cfg
+    if throw is None or catch is None:
+        raise ValueError(
+            "the pose planner is the folded STEADY window's formulation and "
+            "needs BOTH a catch and a throw in the window (got catch=%s, "
+            "throw=%s); every other window kind is the level program"
+            % (catch is not None, throw is not None))
+    if axis is not None or capture_k:
+        raise ValueError(
+            "the pose planner does not apply to a held-axis catch (its lateral "
+            "channel is slaved to the stroke, not planned); plan held windows "
+            "in level mode")
+    if holds_ball_at_start:
+        raise ValueError(
+            "the pose planner's loaded span starts at the catch; a window that "
+            "opens with the ball already in the cup is not the folded STEADY")
+    if k_td < 1:
+        raise ValueError("the pose planner needs the catch past knot 0, got k_td %d"
+                         % k_td)
+    nv3 = 3 * n
+    band_m = float(pcfg.z_band_mm) / 1000.0
+    use_dz = band_m > 0.0
+    dz0 = (np.zeros(3) if pose.dz0 is None
+           else np.asarray(pose.dz0, dtype=float).reshape(3).copy())
+    # 1 µm / 1 µm/s: a physical tolerance (today every level seed has z exactly
+    # at the active height, so this is inert; a nanometre bar would have refused
+    # the first z-trimmed seed for nothing — audit 2026-10-24).
+    if not use_dz and (abs(dz0[0]) > 1e-6 or abs(dz0[1]) > 1e-6):
+        raise CupCycleInfeasible(
+            "the platform is %.3f mm / %.1f mm/s off its pinned height at this "
+            "window's seed and the pose planner's z band is 0, so z cannot be "
+            "re-planned from here without a step — a free-z plan (pose_z_band_mm "
+            "> 0) must be re-planned with the band on, or from a rest."
+            % (1e3 * dz0[0], 1e3 * dz0[1]), reason='POSE_SEAM')
+    nv = nv3 + (n if use_dz else 0)
+    G = abs(float(GRAVITY[2]))
+
+    # ---- the prescribed series and its derivatives at the jerk knots -------
+    tk = np.arange(n + 1) * dt
+    tj = tk[:n]
+    h = 2e-4
+
+    def tl(t):
+        out = np.asarray(pose.tilt_fn(t), dtype=float)
+        if out.shape != (np.size(t), 2) or not np.all(np.isfinite(out)):
+            raise ValueError("tilt_fn must return a finite (m, 2) array for m "
+                             "times, got shape %s" % (out.shape,))
+        return out
+
+    a0 = _axes_from_tilts(tl(tj))
+    ap, am = _axes_from_tilts(tl(tj + h)), _axes_from_tilts(tl(tj - h))
+    ap2, am2 = _axes_from_tilts(tl(tj + 2 * h)), _axes_from_tilts(tl(tj - 2 * h))
+    a1 = (ap - am) / (2.0 * h)
+    a2 = (ap - 2.0 * a0 + am) / h ** 2
+    a3 = (ap2 - 2.0 * ap + 2.0 * am - am2) / (2.0 * h ** 3)
+    t3 = (tl(tj + 2 * h) - 2.0 * tl(tj + h) + 2.0 * tl(tj - h)
+          - tl(tj - 2 * h)) / (2.0 * h ** 3)
+
+    # ---- pad the level program to the pose variable count -----------------
+    if use_dz:
+        Hn = np.zeros((nv, nv)); Hn[:nv3, :nv3] = H; H = Hn
+        f = np.concatenate([f, np.zeros(n)])
+        Aeq = np.hstack([Aeq, np.zeros((Aeq.shape[0], n))])
+
+    # ---- 1. the leg-jerk objective -----------------------------------------
+    J5 = np.asarray(pose.jacobian, dtype=float)[:, :5]
+    E = np.eye(n)
+    Apn, Avn, Aan = Ap[:n], Av[:n], Aa[:n]
+    M = np.zeros((n, 5, nv))
+    m = np.zeros((n, 5))
+    arm_c = 1000.0 * cp[:n, 2] - 1000.0 * float(pose.cup_tilt_center_z_m)
+    for i in (0, 1):
+        M[:, i, i * n:(i + 1) * n] = 1000.0 * E
+        M[:, i, 2 * n:3 * n] = -(1000.0 * E * a0[:, i, None]
+                                 + 3000.0 * Aan * a1[:, i, None]
+                                 + 3000.0 * Avn * a2[:, i, None]
+                                 + 1000.0 * Apn * a3[:, i, None])
+        m[:, i] = -(3000.0 * ca[:n, 2] * a1[:, i] + 3000.0 * cv[:n, 2] * a2[:, i]
+                    + arm_c * a3[:, i])
+    if use_dz:
+        M[:, 2, nv3:nv] = 1000.0 * E
+    m[:, 3] = t3[:, 0]
+    m[:, 4] = t3[:, 1]
+    A = np.einsum('lj,kjv->klv', J5, M).reshape(6 * n, nv)
+    b = (m @ J5.T).reshape(6 * n)
+    w = float(pcfg.leg_jerk_weight) / n / 1e6
+    H = H + 2.0 * w * (A.T @ A)
+    f = f + 2.0 * w * (A.T @ b)
+
+    cols = [np.asarray(c, dtype=float) for c in cols]
+    rhss = [np.asarray(r, dtype=float).copy() for r in rhss]
+
+    # ---- 3. the dz block ---------------------------------------------------
+    if use_dz:
+        H[nv3:, nv3:] += 2.0 / n * (Aa.T @ Aa)
+        cp_dz, cv_dz, ca_dz = Cp @ dz0, Cv @ dz0, Ca @ dz0
+        ez = np.zeros((3, nv))
+        ez[0, nv3:] = Ap[n]; ez[1, nv3:] = Av[n]; ez[2, nv3:] = Aa[n]
+        ez_rhs = -np.array([cp_dz[n], cv_dz[n], ca_dz[n]])
+        sc = np.linalg.norm(ez, axis=1)
+        Aeq = np.vstack([Aeq, ez / sc[:, None]])
+        beq = np.concatenate([beq, ez_rhs / sc])
+        n_cols = sum(c.shape[1] for c in cols)
+        if n_cols != len(col_tags):
+            raise RuntimeError("pose planner: %d inequality columns but %d tags"
+                               % (n_cols, len(col_tags)))
+        margin = float(pcfg.slider_margin_mm) / 1000.0
+        j = 0
+        for blk_i, (blk, rb) in enumerate(zip(cols, rhss)):
+            ext = np.zeros((n, blk.shape[1]))
+            for jj in range(blk.shape[1]):
+                tag = col_tags[j]; j += 1
+                if tag is None:
+                    continue
+                kind, k, s = tag
+                ext[:, jj] = -blk[2 * n:3 * n, jj]       # slider = cup_z − dz
+                if kind in ('pz', 'rw'):
+                    rb[jj] += s * cp_dz[k]
+                if kind == 'pz' and s < 0.0:
+                    rb[jj] += margin                      # stroke top − margin
+            cols[blk_i] = np.vstack([blk, ext])
+        D = np.zeros((nv, 2 * n))
+        db = np.zeros(2 * n)
+        for k in range(1, n + 1):
+            D[nv3:, 2 * (k - 1)] = Ap[k]
+            db[2 * (k - 1)] = -band_m - cp_dz[k]
+            D[nv3:, 2 * (k - 1) + 1] = -Ap[k]
+            db[2 * (k - 1) + 1] = -band_m + cp_dz[k]
+        cols.append(D); rhss.append(db)
+
+    # ---- 2. C-CUP-4 rows: the cone about the prescribed axis + the floor ----
+    ks = np.arange(k_td + 1, n - 1)
+    ks = ks[ks >= 1]
+    if ks.size:
+        R = _rots_from_tilts(tl(tk[ks]))                              # (m, 3, 3)
+        q = ca[ks] + np.array([0.0, 0.0, G])                          # a − g, const part
+        sides = int(pcfg.cone_sides)
+        tcone = np.tan(np.radians(float(pcfg.cone_deg))) * np.cos(np.pi / sides)
+        phi = 2.0 * np.pi * np.arange(sides) / sides
+        d = (tcone * R[:, None, :, 2]
+             - np.cos(phi)[None, :, None] * R[:, None, :, 0]
+             - np.sin(phi)[None, :, None] * R[:, None, :, 1])         # (m, S, 3)
+        rows_c = np.zeros((ks.size, sides, nv))
+        for a_ in range(3):
+            rows_c[:, :, a_ * n:(a_ + 1) * n] = d[:, :, a_, None] * Aa[ks][:, None, :]
+        rhs_c = -np.einsum('msa,ma->ms', d, q)
+        cols.append(rows_c.reshape(-1, nv).T)
+        rhss.append(rhs_c.reshape(-1))
+        if float(pcfg.floor_g) > 0.0:
+            rows_f = np.zeros((ks.size, nv))
+            rows_f[:, 2 * n:3 * n] = Aa[ks]
+            cols.append(rows_f.T)
+            rhss.append(float(pcfg.floor_g) * G - q[:, 2])
+
+    return H, f, Aeq, beq, cols, rhss, (n if use_dz else 0), dz0
 
 
 def catch_runway_requirement(catch_vel, cfg):
@@ -2078,7 +2457,8 @@ def plan_window(events: Sequence, state0: CupState,
                 holds_ball_at_start: bool = False,
                 hold_axis: Optional[np.ndarray] = None,
                 hold_knots: int = 0,
-                pre_hold_knots: int = 0) -> CupCyclePlan:
+                pre_hold_knots: int = 0,
+                pose: Optional[PoseSpec] = None) -> CupCyclePlan:
     """Plan the cup over one horizon window from an ordered event timeline.
 
     Parameters
@@ -2194,7 +2574,7 @@ def plan_window(events: Sequence, state0: CupState,
                      settle_site=settle_site,
                      holds_ball_at_start=bool(holds_ball_at_start),
                      hold_axis=hold_axis, hold_knots=int(hold_knots),
-                     pre_hold_knots=int(pre_hold_knots))
+                     pre_hold_knots=int(pre_hold_knots), pose=pose)
     dt = float(_cfg(cfg, 'dt'))
     n = prog.n_steps
     key = (n, dt, prog.C.shape[1])
@@ -2204,7 +2584,7 @@ def plan_window(events: Sequence, state0: CupState,
                                  float(_cfg(cfg, 'tol')),
                                  float(_cfg(cfg, 'feas_tol')))
 
-    jerk = x.reshape(3, n).T
+    jerk = x[:3 * n].reshape(3, n).T
     Ap, Av, Aa, Cp, Cv, Ca = _integrator_maps(n, dt)
     s0 = np.array([np.asarray(state0.pos, float),
                    np.asarray(state0.vel, float),
@@ -2212,6 +2592,14 @@ def plan_window(events: Sequence, state0: CupState,
     pos = Cp @ s0 + Ap @ jerk
     vel = Cv @ s0 + Av @ jerk
     acc = Ca @ s0 + Aa @ jerk
+    platform_dz = None
+    if prog.n_dz:
+        # The pose planner's 4th block, integrated from its own knot-0 state
+        # exactly as the cup blocks are from theirs.
+        xz = x[3 * n:3 * n + prog.n_dz]
+        d0 = np.asarray(prog.dz0, dtype=float).reshape(3)
+        platform_dz = np.stack([Cp @ d0 + Ap @ xz, Cv @ d0 + Av @ xz,
+                                Ca @ d0 + Aa @ xz], axis=1)
     if prog.capture_k:
         # I-CATCH-6 evaluated where it is promised: the capture rows state it,
         # this re-measures the SOLVED plan at the hold-start knot against the
@@ -2240,7 +2628,8 @@ def plan_window(events: Sequence, state0: CupState,
         catch_k=prog.catch_k,
         takeoff_vel=prog.takeoff_vel,
         warm_start=SolverState(active=active, key=key, iters=iters),
-        contact_knots=prog.contact_knots)
+        contact_knots=prog.contact_knots,
+        platform_dz=platform_dz)
 
 
 def plan_cup_cycle(pos0, vel0, acc0,

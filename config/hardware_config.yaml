@@ -1015,6 +1015,59 @@ trajectory_op:
                                    # search, it does not widen the safety envelope. Inert while
                                    # unified_z_float_enabled is false.
 
+  # ── Pose-level carry planner (two-ball-oval P3, 2026-10-23) ──────────────
+  # `planner_mode` picks the formulation cup_cycle solves the folded STEADY
+  # window (catch + carried throw) with. `level` = the shipped planner: cup xyz
+  # jerk variables, tilt banked AFTER the QP by cup_realize.tilt_schedule.
+  # `pose` = the tilt is PRESCRIBED before the QP (seam pin -> receive pin ->
+  # throw pin, quintic sweeps, holds below), the objective adds the LEG jerk
+  # of the composed pose through one fixed Jacobian, and C-CUP-4 is a set of
+  # QP rows (cone + floor below) instead of only a post-solve check. Every
+  # other window kind (LAUNCH / LANDING / SETTLE / held-axis STEADY) is the
+  # level program in both modes. THE DEFAULT STAYS `level` until decision 24's
+  # hardware gate (plans/active/two-ball-oval.md P3): the admissible box is
+  # stamped with the mode it was swept under and `admissible.select` refuses a
+  # mismatch by name, so flipping this constant means re-sweeping every
+  # family. The LIVE switch is skill_node's `planner_mode` parameter, carried
+  # on every InstallSegment request; this constant is the default both nodes
+  # start from. Measured 2026-10-23 (oval cell 150 mm / apex 0.95 / dwell
+  # 0.50, today's limits): level 111.5k leg jerk, 32.1 deg seating residual;
+  # pose 44.3k, 18.6 deg (49.8k with the 2/1 receive holds the owner retired).
+  # Read by unified_cycle.PLANNER_MODE_DEFAULT.
+  planner_mode: level
+  pose_leg_jerk_weight: 10.0       # w {-}: weight of the leg-jerk term (sum_k |J0 pose'''_k|^2,
+                                   # (mm/s^3)^2, scaled 1e-6/n) against the cup-acceleration
+                                   # objective. 10 saturates (ticket 11); 1 raises the carry's leg
+                                   # velocity at short dwell (427 vs 401 mm/s at 0.40), 30 slams
+                                   # the hand (HAND_LIMIT_ACC at 0.45). Measured 2026-10-23.
+  pose_z_band_mm: 0.0              # Free platform-centroid z band {mm} the pose QP may use as a 4th
+                                   # jerk block (dz at rest at the window's end). 0 = the block is
+                                   # NOT assembled (3n variables). SHIPS 0 (owner, 2026-10-23): a
+                                   # +-30 mm band saturated on every accepted oval cell and cost
+                                   # +57..+62 mm/s leg velocity and +270..+320 mm/s^2 leg acc for
+                                   # the SAME peak jerk (leg velocity is not in the objective), and
+                                   # it refused the 0.45 cell on the sweep margin where pinned z
+                                   # passes. Kept as a knob for a hardware A/B.
+  pose_cone_deg: 20.0              # C-CUP-4 SHAPER cone {deg} about the PRESCRIBED cup axis
+                                   # (inscribed 8-gon) on every loaded knot catch+1 .. release-2.
+                                   # The CHECK (feasibility.CUP_SEATING_CONE_DEG) stays 45 deg;
+                                   # this is the plan's decision-29 target. 30 deg bought no jerk
+                                   # (2026-10-23 ladder), so the target is free.
+  pose_floor_g: 0.5                # C-CUP-4 SHAPER floor {g}: a_z + g >= this on the same knots
+                                   # (world z). The CHECK's floor stays 0.30 g.
+  pose_h_pre_knots: 2              # Throw-pin hold {knots} before the release: the tilt is held at
+                                   # the throw pin over [n - h_pre, n]. 0 -> hand 4166 rev/s^2 at
+                                   # dwell 0.40 (release-seam braking spike); 4 -> +35 % carry jerk
+                                   # at 0.50 (the sweep is compressed). Measured 2026-10-23.
+  pose_h_catch_pre_knots: 0        # Receive-pin hold {knots} BEFORE touch-down. The quintic sweep
+                                   # already arrives at the pin with zero tilt rate AND acceleration,
+                                   # so the hold buys nothing the ball can feel; 2/1 cost 10-13 % of
+                                   # carry jerk at 0.50 / 0.45 / 0.40 (owner 2026-10-23: 0 / 0).
+  pose_h_catch_post_knots: 0       # Receive-pin hold {knots} AFTER touch-down (see above).
+  pose_slider_margin_mm: 0.5       # With a free z band the hand's stroke-top box moves onto the
+                                   # SLIDER (cup_z - dz); this margin {mm} keeps the tilt drop's
+                                   # share of the stroke out of it. Inert at pose_z_band_mm 0.
+
   # ── Stream C2 stop (can-bridge FW 22 scheduled playback, cover exhaustion) ──
   # When a stamped stream's 2-knot cover runs out with no newer frame, the
   # firmware runs a jerk-bounded cubic-in-velocity stop from the live (p, v, a)

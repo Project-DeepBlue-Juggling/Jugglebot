@@ -485,7 +485,8 @@ def test_a_small_hop_learner_run_commands_below_the_old_apex_floor():
     boxes = sg._load_admissible_boxes()
     box = adm.select(boxes, 'hop', ('P1', 'P2'), cfg.apex_m,
                      release_site_xy_mm=(-125.0, 0.0), target_site_xy_mm=(125.0, 0.0),
-                     dwell_s=cfg.dwell_s)
+                     dwell_s=cfg.dwell_s,
+                     planner_mode=SegmentConfig().planner_mode)
     assert box is not None and not box.empty
     lo, hi = box.apex_m
     commanded = [t['u'][2] for t in res['throws']]
@@ -1024,3 +1025,39 @@ def test_one_ball_fed_requires_feed_angle_and_speed():
     cfg = SelfTossGateConfig(pattern='columns', one_ball_fed=True)
     with pytest.raises(ValueError, match='feed_angle_deg'):
         SkillsGate(cfg).run_columns_1ball_fed_seed(0)
+
+
+# ── Two-ball-oval P3: the gate's planner_mode switch ────────────────────────
+
+def test_the_gate_config_validates_planner_mode_and_threads_it_to_the_planner():
+    with pytest.raises(ValueError, match='planner_mode'):
+        SkillsGate(SelfTossGateConfig(planner_mode='banana'))
+    gate = SkillsGate(SelfTossGateConfig(planner_mode='pose'))
+    assert gate.seg_cfg.planner_mode == 'pose'
+    assert SkillsGate(SelfTossGateConfig()).seg_cfg.planner_mode == 'level'
+
+
+def test_a_small_oval_run_under_the_pose_planner(tmp_path, monkeypatch):
+    """One short ``oval_1ball`` run with ``planner_mode='pose'``: the box file
+    is the committed box's ``oval_1ball`` cells (the P3 re-sweep of 2026-10-24
+    carries them under BOTH planners, stamped), the executor selects under
+    'pose' and ``plan_segment`` plans the carried throw with the pose-level
+    planner. A level-only file would be refused by name instead
+    (``test_adm_select`` pins that), so a pass here proves the mode reached
+    BOTH the box select and the planner."""
+    boxes = [b for b in sg._load_admissible_boxes() if b.pattern == 'oval_1ball']
+    assert any(b.planner_mode == 'pose' for b in boxes), \
+        'no pose-stamped oval_1ball cell in the committed box file'
+    from jugglebot.motion.skills import admissible as adm
+    box_path = tmp_path / 'pose_box.yaml'
+    adm.dump(str(box_path), boxes)
+    mem_dir = tmp_path / 'oval_mem'
+    mem_dir.mkdir()
+    monkeypatch.setattr(sg.tempfile, 'mkdtemp', lambda *a, **k: str(mem_dir))
+    cfg = SelfTossGateConfig(pattern='oval_1ball', separation_mm=150.0,
+                             dwell_s=0.65, apex_m=0.95, planner_mode='pose',
+                             target_throws=3, band_entry_throws=3,
+                             max_attempts=8, admissible_box_path=str(box_path))
+    res = SkillsGate(cfg).run_self_toss_seed(0, policy='A')
+    assert res['n_throws_collected'] == 3, (res['end_codes'], res['refusals'])
+    assert res['drops'] == 0

@@ -1,4 +1,4 @@
-# Oval rung 1 runsheet — single-ball oval, BB-fed, 150 mm / dwell 0.65 s / apex 0.95 m, today's limits
+# Oval rung 1 runbook — single-ball oval, BB-fed, 150 mm / dwell 0.65 s / apex 0.95 m, today's limits
 
 Plan: `plans/active/two-ball-oval.md` (§ 3 rung 1; design record decisions 18, 23, 24, 37, 47, 49).
 **Flyable once P1 commit 7ae390cb is built and the launch fully restarted** (the GUI service
@@ -190,3 +190,29 @@ absent at 0.65 in rung 1; cause NOT diagnosed (probe artefact suspected, flagged
 **Verdict: rung 2 MET 2026-10-23 (owner GO).** Dwell 0.50 is the new one-ball oval baseline for P3 (38/38). The 0.55 column is one 4-throw goal, noted thin by the owner and moot.
 Heartbeat dropouts (21 episodes in B, 3 in A, 5 at rung 1) are the known leg-bus per-axis frame-loss class: WATCH. The deactivate refusal at 17:40:21 (`ERR_REJECTED`) is diagnosed and fixed, unflown
 (`2026-10-23-deactivate-rejected-state-machine-divergence`). Sitting logbook: `2026-10-23-oval-rung2-flown-dwell-050`.
+
+## 8. P3 A/B sitting — decision 24's hardware gate (as-is `level` column vs the swept `pose` column, dwell 0.50)
+
+Decided 2026-10-23 (owner; logbook `2026-10-23-two-ball-oval-p3-pose-level-carry-planner`): the pose-level carry planner is
+landed behind `planner_mode` (`level` | `pose`), default `level`. Offline (production path, 150 mm / apex 0.95 / dwell 0.50,
+today's limits) the pose plan reads window jerk 44.3k vs 111.5k, leg acc 1591 vs 2769, seating residual 18.6 vs 32.1 deg,
+and a cross-axis cup velocity at touch-down of ~494 mm/s vs 33 (the skid the leg-jerk objective introduces; accepted as a
+logged diagnostic, decision 28b). The box carries BOTH planners' oval cells (0.65 / 0.55 / 0.50, stamped `planner_mode`),
+so the switch is ONE parameter. **Gate (decision 24, hardware):** the swept column matches or beats the as-is catch rate
+over 30 attempts with leg current not higher; pass -> the default flips to `pose` with columns re-gated (box re-sweep of
+every family under pose, sim gate, one columns check sitting). A loss keeps `pose` an option, not a phase; the ladder
+continues on `level`. Rows are numbered P3-n. Full launch restart first (new interfaces: `InstallSegment.srv` gained
+`planner_mode`; `colcon build` of jugglebot_interfaces + jugglebot; GUI hard refresh).
+
+| # | Step | Expect |
+|---|---|---|
+| P3-1 | `./run_tests.sh --full` on the launch tree; `skills/check` at dwell 0.50 with `planner_mode` `level`, then `ros2 param set /skill_node planner_mode pose` and `skills/check` again. | Both report the oval box OK at 0.50 naming the planner; a check with a mode the box was not swept under is refused BY NAME (`planner_mode`), not on apex or separation. |
+| P3-2 | `ros2 param get /skill_node planner_mode` -> `level`. **As-is column**: `oval_1ball_fed` cold start, then `{pattern: oval_1ball, apex_m: 0.95, separation_mm: 150.0, num_cycles: 30}` (one 30-run; `oval_1ball` 6 first if the hand is cold). | 30 consecutive catches is the bar the swept column is read against (rung 2 read 38/38 here). Record row 27 with `tools/probes/oval_carry_bag_metrics.py` as in § 7.1. |
+| P3-3 | `ros2 param set /skill_node planner_mode pose` (live; applies from the NEXT goal — the install log line and the `InstallSegment` response name the mode solved). Dry-run / validate-only first if the launch offers it. | The next folded CATCH install logs `planner_mode=pose`; LAUNCH / LANDING / REST installs still say `level` (the pose formulation is the carry's). |
+| P3-4 | **Swept column**: same goals as P3-2 at dwell 0.50 (6 first, then a 30-run). | GO = catch rate >= the as-is column's over 30 attempts AND legs 1/2 peak current not above the as-is column's (rung 2: 7.49 / 10.05 A); `ball_held` (debounced) unbroken on every carry; no carry `LIMIT_*`. Record: row 27 per column; the raw `ball_held_raw` dropout rate against the as-is 69 % at 0.50 (a rise is the skid's first symptom — then the lateral catch weight is the recorded lever); commanded leg jerk median (expect ~45k vs ~66k); bank unchanged (+-2.3 deg, the sweep). |
+| P3-5 | If the swept column is GO: one `oval_1ball` goal at dwell **0.45** under `pose` (the cell the shaper made admissible; refused under `level` by the box: no 0.45 level cell). | Caught, seat bit unbroken; this is the first carry the level planner could not plan at today's limits. Not part of the gate; a finding. |
+| P3-6 | Stop rules (unchanged from § 2): the ball leaves the cup in the same carry region twice; a leg on the clamp > 50 ms; FET > 60 C; `lane_recovery=failed`. Set `planner_mode` back to `level` before the close-out REST if the swept column was NO-GO. | |
+
+**Read-back:** `python tools/probes/oval_carry_bag_metrics.py <bag> --launch-log <launch.log> --out temp/probes/oval_p3_ab_<time>` per launch (both
+columns in one launch is fine: split by goal order, the install log lines carry the mode). The planned-vs-realised skid is not in the bag (no cup
+velocity topic); read the raw seat-bit dropouts and the landing scatter instead.
