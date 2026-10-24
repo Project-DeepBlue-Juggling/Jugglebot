@@ -522,8 +522,9 @@ def test_cone45_resweep_restores_every_non_oval_cell_to_the_pre_oval_snapshot():
     for o in ovals:
         assert o['release_site_xy_mm'] == [-75.0, 0.0]
         assert o['target_site_xy_mm'] == [75.0, 0.0]
-    # P3: the same three cells again under the pose planner -> 25 cells
-    assert len(new['boxes']) == 25
+    # P3: the same three cells again under the pose planner -> 25 cells;
+    # P3 tail (2026-10-24): the 0.45 pose cell the A/B runbook assumed -> 26.
+    assert len(new['boxes']) == 26
 
 
 _PRE_P3_SNAPSHOT = os.path.join(_REPO, 'tests', 'fixtures', 'admissible_box_pre_p3.yaml')
@@ -536,9 +537,16 @@ def test_p3_resweep_changed_only_the_stamp_and_added_the_pose_cells():
     22 committed LEVEL cells value for value (only ``gate_hash`` / ``swept_at``
     and the new ``planner_mode: level`` stamp may differ) and add exactly three
     ``oval_1ball`` cells stamped ``pose`` at dwell 0.65 / 0.55 / 0.50 — the
-    cells the A/B sitting (runsheet § 8) flips to by one parameter.  This is the
+    cells the A/B sitting (runbook § 8) flips to by one parameter.  This is the
     strongest byte-identity pin level mode has: 22 cells x every family through
-    the whole planner + gate."""
+    the whole planner + gate.
+
+    P3 tail (2026-10-24, touch-down skid bound I-PLAN-14): the pose cells were
+    re-swept under the bound and the 0.45 pose cell was added (the A/B's row
+    P3-5 was refused by the box because it did not exist) — four pose cells,
+    26 in all; the 22 level cells are still value-identical to the pre-P3
+    snapshot (the bound lives in ``_pose_augment``, which ``pose=None`` never
+    reaches)."""
     import math
     import yaml as _y
     with open(_PRE_P3_SNAPSHOT) as fh:
@@ -559,7 +567,7 @@ def test_p3_resweep_changed_only_the_stamp_and_added_the_pose_cells():
 
     level = [dict(b) for b in new['boxes'] if b.get('planner_mode') == 'level']
     pose = [b for b in new['boxes'] if b.get('planner_mode') == 'pose']
-    assert len(level) == 22 and len(pose) == 3 and len(new['boxes']) == 25
+    assert len(level) == 22 and len(pose) == 4 and len(new['boxes']) == 26
     for b in level:
         b.pop('planner_mode')
     old_boxes = [dict(b) for b in old['boxes']]
@@ -567,7 +575,7 @@ def test_p3_resweep_changed_only_the_stamp_and_added_the_pose_cells():
         b.pop('planner_mode', None)                      # the snapshot is unstamped
     for a, b in zip(old_boxes, level):
         assert _same(a, b), 'level cell moved under P3: %r -> %r' % (a, b)
-    assert [p['dwell_s'] for p in pose] == pytest.approx([0.65, 0.55, 0.50])
+    assert [p['dwell_s'] for p in pose] == pytest.approx([0.65, 0.55, 0.50, 0.45])
     for p in pose:
         assert p['pattern'] == 'oval_1ball'
         assert p['release_site_xy_mm'] == [-75.0, 0.0]

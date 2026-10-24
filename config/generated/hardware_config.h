@@ -206,6 +206,7 @@ namespace TrajOp {
   constexpr float POSE_Z_BAND_MM = 0.0f;
   constexpr float POSE_CONE_DEG = 20.0f;
   constexpr float POSE_FLOOR_G = 0.5f;
+  constexpr float POSE_TOUCHDOWN_SKID_MMPS = 175.0f;
   constexpr uint32_t POSE_H_PRE_KNOTS = 2u;
   constexpr uint32_t POSE_H_CATCH_PRE_KNOTS = 0u;
   constexpr uint32_t POSE_H_CATCH_POST_KNOTS = 0u;

@@ -540,10 +540,11 @@ def test_the_committed_box_is_swept_at_the_node_default_dwell():
     # carries the node default so the default launch is not refused.
     oval = [box for box in boxes if box.pattern in ('oval_1ball', 'oval')]
     assert oval, 'the committed box has no oval cell'
-    # rung 2 (2026-10-23) swept the oval at 0.55 / 0.50 as well as 0.65.
+    # rung 2 (2026-10-23) swept the oval at 0.55 / 0.50 as well as 0.65;
+    # P3 tail (2026-10-24) added the 0.45 cell under the pose planner.
     assert any(box.dwell_s == pytest.approx(0.65) for box in oval)
     for box in oval:
-        assert any(box.dwell_s == pytest.approx(d) for d in (0.65, 0.55, 0.50)), (
+        assert any(box.dwell_s == pytest.approx(d) for d in (0.65, 0.55, 0.50, 0.45)), (
             box.site_pair, box.pattern, box.dwell_s)
     for box in boxes:
         if box.pattern in ('oval_1ball', 'oval'):

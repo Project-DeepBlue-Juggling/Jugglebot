@@ -361,6 +361,12 @@ class PoseConfig:
     z_band_mm: float = float(hw.JB_TRAJ_POSE_Z_BAND_MM)
     cone_deg: float = float(hw.JB_TRAJ_POSE_CONE_DEG)
     floor_g: float = float(hw.JB_TRAJ_POSE_FLOOR_G)
+    #: Touch-down skid bound (mm/s): the cup velocity's component perpendicular
+    #: to the prescribed cup axis at the catch time stays inside an inscribed
+    #: ``cone_sides``-gon of this radius.  0 = the rows are not assembled (the
+    #: 2026-10-23 formulation, which read -507 mm/s at dwell 0.50 on the robot
+    #: and dropped the inward-landing balls — the 2026-10-24 A/B sittings).
+    touchdown_skid_mmps: float = float(hw.JB_TRAJ_POSE_TOUCHDOWN_SKID_MMPS)
     h_pre_knots: int = int(hw.JB_TRAJ_POSE_H_PRE_KNOTS)
     h_catch_pre_knots: int = int(hw.JB_TRAJ_POSE_H_CATCH_PRE_KNOTS)
     h_catch_post_knots: int = int(hw.JB_TRAJ_POSE_H_CATCH_POST_KNOTS)
@@ -379,6 +385,9 @@ class PoseConfig:
                              % (self.leg_jerk_weight,))
         if not float(self.z_band_mm) >= 0.0:
             raise ValueError("z_band_mm must be >= 0, got %r" % (self.z_band_mm,))
+        if not float(self.touchdown_skid_mmps) >= 0.0:
+            raise ValueError("touchdown_skid_mmps must be >= 0, got %r"
+                             % (self.touchdown_skid_mmps,))
         if int(self.cone_sides) < 3:
             raise ValueError("cone_sides must be >= 3, got %r" % (self.cone_sides,))
         for name in ('h_pre_knots', 'h_catch_pre_knots', 'h_catch_post_knots'):
@@ -2082,8 +2091,9 @@ def _pose_augment(pose: PoseSpec, n: int, dt: float, H, f, Aeq, beq, cols, rhss,
     The level program's pieces arrive UNNORMALISED (``cols`` / ``rhss`` as
     :func:`_assemble` built them, ``Aeq`` / ``beq`` already row-scaled) and go
     back the same way; :func:`_assemble` normalises the columns once, after
-    this.  Four blocks (plan two-ball-oval § 2.5, ticket 11's formulation,
-    re-measured through the production holds 2026-10-23):
+    this.  Five blocks (plan two-ball-oval § 2.5, ticket 11's formulation,
+    re-measured through the production holds 2026-10-23; the skid rows added
+    2026-10-24 from the A/B sittings):
 
     1. **The leg-jerk objective** ``w/n/1e6 · Σ_k |J0 · pose'''_k|²`` on the
        continuous jerk of the COMPOSED pose at every jerk knot ``k``:
@@ -2104,7 +2114,15 @@ def _pose_augment(pose: PoseSpec, n: int, dt: float, H, f, Aeq, beq, cols, rhss,
        _cup_seating_check``, 45° / 0.30 g, judged from the stroke end) stays
        the authority on the REALISED plan; these rows are the shaper that
        keeps the realised residual ~18.6° on every measured cell.
-    3. **The dz block** (only with ``cfg.z_band_mm > 0``): ``n`` platform-z
+    3. **Touch-down skid rows** (only with ``cfg.touchdown_skid_mmps > 0``):
+       the cup velocity at the catch TIME, projected on the two directions
+       perpendicular to the prescribed cup axis there, inside an inscribed
+       ``cone_sides``-gon of radius ``touchdown_skid_mmps``.  The quantity
+       ``feasibility._catch_closing_check`` records as ``catch_skid_mmps``,
+       bounded instead of logged: the 2026-10-24 sittings read it at −507
+       mm/s (dwell 0.50) and lost every inward-landing ball to the advancing
+       rim, while −174 (0.65) caught 63/64.
+    4. **The dz block** (only with ``cfg.z_band_mm > 0``): ``n`` platform-z
        jerk variables with the knot-0 state ``dz0``, ``dz = dz' = dz'' = 0``
        at the release knot (the seam is unchanged), a ``±band`` position box,
        an acceleration regulariser with the cup-z weight, and every z-only
@@ -2114,7 +2132,7 @@ def _pose_augment(pose: PoseSpec, n: int, dt: float, H, f, Aeq, beq, cols, rhss,
        C-CUP-2 floor and the cone stay on the cup's acceleration (ball
        physics).  The stroke-top bound keeps ``slider_margin_mm`` for the
        tilt drop.
-    4. Nothing else: the catch's soft velocity match, the holds and the
+    5. Nothing else: the catch's soft velocity match, the holds and the
        release triple are the level program's, untouched.
     """
     pcfg = pose.cfg
@@ -2270,6 +2288,38 @@ def _pose_augment(pose: PoseSpec, n: int, dt: float, H, f, Aeq, beq, cols, rhss,
             rows_f[:, 2 * n:3 * n] = Aa[ks]
             cols.append(rows_f.T)
             rhss.append(float(pcfg.floor_g) * G - q[:, 2])
+
+    # ---- 3. Touch-down skid rows: the cup's lateral velocity at the catch ----
+    # The cup velocity at the catch TIME (between knots k_td and k_td + 1, as the
+    # catch-position row interpolates it) is ``v = Σ_a (r_vtd · x_a) e_a + c_vtd``
+    # in m/s; its components along the two directions perpendicular to the
+    # PRESCRIBED cup axis at that time (``R_td[:, 0]``, ``R_td[:, 1]``) are held
+    # inside an inscribed ``cone_sides``-gon of radius ``touchdown_skid_mmps``:
+    # ``n_i · v <= b cos(π/m)`` for ``n_i = cos φ_i R_x + sin φ_i R_y``, written
+    # in the solver's ``Cᵀx >= bc`` form.  This is the quantity ``feasibility.
+    # _catch_closing_check`` RECORDS as ``catch_skid_mmps`` (|v − (v·u)u|) and
+    # the quantity the 2026-10-24 bags measured on the mocap Platform body; the
+    # rows make the planner meet the check's number instead of logging it.  The
+    # dz block (when assembled) moves the centroid, not the cup, so its columns
+    # stay zero here.
+    skid_b = float(pcfg.touchdown_skid_mmps) / 1000.0
+    if skid_b > 0.0:
+        t_td = float(catch.t_s)
+        d_t = t_td - k_td * dt
+        e_td = np.zeros(n)
+        e_td[k_td] = 1.0
+        r_vtd = Av[k_td] + Aa[k_td] * d_t + 0.5 * d_t ** 2 * e_td      # (n,)
+        c_vtd = cv[k_td] + ca[k_td] * d_t                              # (3,)
+        R_td = _rots_from_tilts(tl(np.array([t_td])))[0]               # (3, 3)
+        sides = int(pcfg.cone_sides)
+        phi = 2.0 * np.pi * np.arange(sides) / sides
+        n_i = (np.cos(phi)[:, None] * R_td[None, :, 0]
+               + np.sin(phi)[:, None] * R_td[None, :, 1])              # (S, 3)
+        rows_s = np.zeros((sides, nv))
+        for a_ in range(3):
+            rows_s[:, a_ * n:(a_ + 1) * n] = -n_i[:, a_, None] * r_vtd[None, :]
+        cols.append(rows_s.T)
+        rhss.append(n_i @ c_vtd - skid_b * np.cos(np.pi / sides))
 
     return H, f, Aeq, beq, cols, rhss, (n if use_dz else 0), dz0
 

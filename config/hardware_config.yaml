@@ -1055,6 +1055,17 @@ trajectory_op:
                                    # (2026-10-23 ladder), so the target is free.
   pose_floor_g: 0.5                # C-CUP-4 SHAPER floor {g}: a_z + g >= this on the same knots
                                    # (world z). The CHECK's floor stays 0.30 g.
+  pose_touchdown_skid_mmps: 175.0  # Touch-down SKID bound {mm/s}: the cup's velocity component
+                                   # perpendicular to the PRESCRIBED cup axis at the catch time is
+                                   # held inside an inscribed 8-gon of this radius (QP rows; 0 = rows
+                                   # not assembled). Why a bound and not the logged diagnostic
+                                   # decision 28b made it: the 2026-10-24 A/B sittings (bag
+                                   # 2026-10-24_10-44-21) read the cup moving INWARD at landing,
+                                   # median -507 mm/s at dwell 0.50 under pose (-174 at 0.65, level
+                                   # +20), and 9 of the 10 pose misses were balls landing >15 mm inward
+                                   # meeting the advancing rim (9/16 missed vs 0/7 under level) -
+                                   # the drops, not the throw (landing scatter equal). 175 = the
+                                   # 0.65 figure that caught 63/64. Owner 2026-10-24: FIX AND RE-GATE.
   pose_h_pre_knots: 2              # Throw-pin hold {knots} before the release: the tilt is held at
                                    # the throw pin over [n - h_pre, n]. 0 -> hand 4166 rev/s^2 at
                                    # dwell 0.40 (release-seam braking spike); 4 -> +35 % carry jerk

@@ -20,6 +20,10 @@ dwell   level  jerk / vel / seat     pose (z pinned, h_catch 0/0) jerk / vel / s
 0.40    REFUSED CUP_SEATING_CONE     REFUSED LIMIT_VEL 357 mm/s (18.7 deg)
 ======  ===========================  ======================================
 
+The pose column is the skid-bound-OFF formulation.  With the 2026-10-24
+touch-down skid bound (default 175 mm/s) pose reads 0.50: 53,341; 0.45: 73,949
+(18.6 deg both); 0.40: REFUSED HAND_LIMIT_ACC.
+
 Level mode's byte-identity is NOT asserted here: it is pinned where it was
 already pinned — ``test_cup_cycle.py``'s T-U2 parity fixtures (``plan_window``
 with ``pose=None``) and the admissible box's value-equal re-sweep
@@ -146,14 +150,15 @@ def test_pose_passes_decision_24_offline_gate_at_the_box_cells(dwell, limits, ge
 
 def test_pose_rung2_baseline_cell_reads_the_measured_values(limits, geom):
     """Dwell 0.50 — the rung-2 as-is baseline (38/38 caught): level 111,510
-    mm/s^3 / 32.1 deg vs pose 44,329 / 18.6 deg, measured 2026-10-23 on this
+    mm/s^3 / 32.1 deg vs pose 53,341 / 18.6 deg (44,329 before the 2026-10-24 skid bound), measured on this
     path.  Pinned loosely (±1 % jerk, ±0.3 deg) so a formulation drift shows
     while a numpy point release does not."""
     _, lvl = _folded(0.50, uc.PLANNER_LEVEL, limits, geom)
     _, pose = _folded(0.50, uc.PLANNER_POSE, limits, geom)
     assert lvl.report.peak_leg_jerk_mmps3 == pytest.approx(111510, rel=0.01)
     assert lvl.report.max_cup_seating_deg == pytest.approx(32.1, abs=0.3)
-    assert pose.report.peak_leg_jerk_mmps3 == pytest.approx(44329, rel=0.01)
+    # 2026-10-24 touch-down skid bound 175 mm/s: 44,329 -> 53,341 at 0.50.
+    assert pose.report.peak_leg_jerk_mmps3 == pytest.approx(53341, rel=0.01)
     assert pose.report.max_cup_seating_deg == pytest.approx(18.6, abs=0.3)
 
 
@@ -199,7 +204,7 @@ def test_a_pose_segment_spliced_onto_a_level_record_reports_its_own_mode(limits,
 def test_pose_accepts_dwell_045_where_level_reads_39_deg(limits, geom):
     """The shaper turns the 0.45 cell from a 39.4 deg carry (accepted only
     because the check is 45 deg) into an 18.6 deg one; 0.40 stays refused —
-    on leg VELOCITY now (357 > 350 mm/s), not on seating.  That hand-off from
+    on the hand's acceleration with the 175 mm/s skid bound (LIMIT_VEL 357 mm/s without it), not on seating.  That hand-off from
     the cone to the limits is the P4 working-point raise's premise."""
     _, lvl = _folded(0.45, uc.PLANNER_LEVEL, limits, geom)
     _, pose = _folded(0.45, uc.PLANNER_POSE, limits, geom)
@@ -208,9 +213,12 @@ def test_pose_accepts_dwell_045_where_level_reads_39_deg(limits, geom):
     with pytest.raises(uc.CycleInfeasible) as exc_l:
         _folded(0.40, uc.PLANNER_LEVEL, limits, geom)
     assert exc_l.value.code == fz.CUP_SEATING_CONE
+    # 2026-10-24 touch-down skid bound 175 mm/s: 0.45 jerk 56,479 -> 73,949;
+    # 0.40 now refused HAND_LIMIT_ACC (was LIMIT_VEL).
+    assert pose.report.peak_leg_jerk_mmps3 == pytest.approx(73949, rel=0.01)
     with pytest.raises(uc.CycleInfeasible) as exc_p:
         _folded(0.40, uc.PLANNER_POSE, limits, geom)
-    assert exc_p.value.code == 'LIMIT_VEL'
+    assert exc_p.value.code == 'HAND_LIMIT_ACC'
 
 
 # ---------------------------------------------------------------------------
@@ -469,3 +477,40 @@ def test_pose_spec_validates_its_inputs():
     cfg = cc.PoseConfig()
     assert (cfg.h_pre_knots, cfg.h_catch_pre_knots, cfg.h_catch_post_knots) == (2, 0, 0)
     assert cfg.z_band_mm == 0.0 and cfg.cone_deg == 20.0 and cfg.floor_g == 0.5
+
+
+# ---------------------------------------------------------------------------
+# Touch-down skid bound (2026-10-24)
+# ---------------------------------------------------------------------------
+
+def _skid(dwell, limits, geom, skid_mmps=None):
+    pc = None if skid_mmps is None else cc.PoseConfig(touchdown_skid_mmps=skid_mmps)
+    _, meta = _folded(dwell, uc.PLANNER_POSE, limits, geom, pose_cfg=pc)
+    return meta.report.catch_skid_mmps, meta.report.peak_leg_jerk_mmps3
+
+
+def test_touchdown_skid_rows_bind_on_the_production_path(limits, geom):
+    """The ROWS, not the objective, hold the skid: with the default 175 mm/s
+    bound the realised catch_skid_mmps sits at ~0.924 x 175 (inscribed 8-gon);
+    with the bound off the same cell skids > 400 mm/s.  Prevents the
+    2026-10-24 failure (skid 507 mm/s at dwell 0.50 dropped inward balls)
+    returning because a refactor silently dropped the rows."""
+    on, _ = _skid(0.50, limits, geom)
+    off, _ = _skid(0.50, limits, geom, 0.0)
+    assert 150.0 <= on <= 175.0 + 0.5, on
+    assert off > 400.0, off
+
+
+def test_touchdown_skid_bound_scales_and_keeps_the_jerk_gain(limits, geom):
+    """Bound 50 gives a skid in [40, 50] (the rows follow the parameter), and
+    the default's jerk at 0.50 stays <= 60,000 so the bound cannot silently
+    trade the pose planner's whole jerk gain (level 111,510) away."""
+    s50, _ = _skid(0.50, limits, geom, 50.0)
+    assert 40.0 <= s50 <= 50.0 + 0.5, s50
+    _, jerk = _skid(0.50, limits, geom)
+    assert jerk <= 60000.0, jerk
+
+
+def test_touchdown_skid_negative_is_refused():
+    with pytest.raises(ValueError, match='touchdown_skid_mmps'):
+        cc.PoseConfig(touchdown_skid_mmps=-1.0)
