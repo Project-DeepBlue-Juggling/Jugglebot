@@ -1,9 +1,9 @@
 ---
 kind: idea
-title: Personal best window (pi check)
+title: Personal best window
 status: inbox
 created: '2026-10-24'
-updated: '2026-10-24T00:29:15Z'
+updated: '2026-10-24T00:29:28Z'
 owners: []
 priority: low
 blocked_by: []
