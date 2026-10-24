@@ -33,6 +33,24 @@ carry-window numbers (and the node's diag column), never the whole-goal echo
 peaks (those are only printed in the per-goal block, marked "seam-prone").
 Carry-window peaks can still hold one seam (O2 carry k=6, 83.1k).
 
+TOUCH-DOWN CUP VELOCITY (per carry; "v_td" column and per-goal median): the mocap
+`Platform` rigid body from /rigid_body_poses (body.name == 'Platform', stamp =
+body.pose.header.stamp, ~300 Hz, WORLD mm), sorted by stamp, central difference
+over +-15 ms (30 ms window, nearest samples via searchsorted) evaluated at the
+the carry's scheduled touch-down time t_td: the skill_node "CATCH-AIM skill N: ...
+landing=(x, y, z) mm t_land=T" line (launch log; only lines with landing x > 0, i.e. the
+catch site, de-duplicated on (skill, round(T))) whose T lies in (l, l+0.1] after the
+carry's /throw_announcements landing_time l -- it runs ~32 ms (19-49) after l, and the
+cup is still decelerating there, so evaluating at l instead reads ~80 mm/s (pose 0.65)
+and ~125 mm/s (pose 0.50) less negative. No such line -> '--'. v = (p[b]-p[a])/(t[b]-t[a]),
+a = first sample >= t_td-15 ms, b = first sample >= t_td+15 ms. The world xy vector is rotated by +`--cup-yaw-deg`
+(default 10.81, --cup-yaw-deg; the Sitting's platform-start frame, ~ the
+robot frame, whose launch-log yaw is -10.7..-10.8 deg) to give (v_x, v_y) in the robot/base frame, mm/s.
+Same recipe as the 2026-10-24 sitting review (its skid.py); the probe and the review agree
+to the mm/s. Mocap is decoded once to <out>/plat.npy (the 675 MB bag is not re-read).
+Missed catches are still reported (the cup moves regardless of the ball). Per-goal
+number = median over that goal's carries. Only carries of 'oval' goals are listed.
+
 Goal windows: parsed from the launch log (--goals auto, default). Regexes:
   DISPATCH  Juggle requested .* goal dispatched \\(pattern='(\\w+)'
   ACCEPT    skill_node\\]: New goal accepted: \\[([\\d ]+)\\]      (start = leading epoch)
@@ -94,6 +112,55 @@ def load_bag(path, cache):
         d[r.channel.topic].append((r.log_time_ns, tod(r.ros_msg)))
     pickle.dump(d, open(cache, 'wb'))
     return d
+
+
+def load_platform(path, cache):
+    """Mocap `Platform` body -> array [t_epoch, x, y, z] sorted by t (cached as .npy)."""
+    if os.path.exists(cache):
+        return np.load(cache)
+    from mcap_ros2.reader import read_ros2_messages
+    rows = []
+    for r in read_ros2_messages(path, topics=['/rigid_body_poses']):
+        for b in r.ros_msg.bodies:
+            if b.name == 'Platform':
+                p = b.pose.pose.position
+                st = b.pose.header.stamp
+                rows.append((st.sec + st.nanosec * 1e-9, p.x, p.y, p.z))
+    arr = np.array(rows, float).reshape(-1, 4)
+    arr = arr[np.argsort(arr[:, 0], kind='stable')]
+    np.save(cache, arr)
+    return arr
+
+
+def cup_velocity(plat, t_epoch, yaw_deg, half=0.015):
+    """(v_x, v_y) mm/s, robot frame, 30 ms central difference at t_epoch; None if no data."""
+    if len(plat) < 2:
+        return None
+    tp = plat[:, 0]
+    a, b = np.searchsorted(tp, t_epoch - half), np.searchsorted(tp, t_epoch + half)
+    if b >= len(tp) or tp[b] == tp[a] or tp[b] - tp[a] > 0.1:
+        return None
+    v = (plat[b, 1:3] - plat[a, 1:3]) / (tp[b] - tp[a])
+    ya = np.radians(yaw_deg)
+    return (float(np.cos(ya) * v[0] - np.sin(ya) * v[1]), float(np.sin(ya) * v[0] + np.cos(ya) * v[1]))
+
+
+RE_AIM = re.compile(r"CATCH-AIM skill (\d+): source=(\S+) landing=\(([-\d.]+), ([-\d.]+),.*t_land=([\d.]+)")
+
+
+def parse_catch_aims(path):
+    """-> sorted epoch t_land of the CATCH-AIM lines at the catch site (landing x > 0)."""
+    ev = {}
+    for line in open(path, errors='replace'):
+        m = RE_AIM.search(line)
+        if m and float(m.group(3)) > 0:
+            ev[(int(m.group(1)), round(float(m.group(5))))] = float(m.group(5))
+    return np.array(sorted(ev.values()), float)
+
+
+def touchdown(aims, l_epoch):
+    k = np.searchsorted(aims, l_epoch, side='right')
+    return float(aims[k]) if k < len(aims) and aims[k] - l_epoch <= 0.1 else None
 
 
 def parse_launch(path):
@@ -172,11 +239,15 @@ def main():
     ap.add_argument('--goals', '--windows', dest='goals', default='auto',
                     help="auto (parse launch log) or name:epoch0:epoch1,...")
     ap.add_argument('--out', default=None)
+    ap.add_argument('--cup-yaw-deg', type=float, default=10.81,
+                    help="world->robot xy rotation applied to the Platform velocity (default 10.81)")
     a = ap.parse_args()
     stamp = os.path.basename(os.path.dirname(os.path.abspath(a.bag))) or 'bag'
     out = a.out or os.path.join(ROOT, 'temp', 'probes', f'oval_carry_{stamp}')
     os.makedirs(out, exist_ok=True)
     d = load_bag(a.bag, os.path.join(out, 'bag.pkl'))
+    plat = load_platform(a.bag, os.path.join(out, 'plat.npy'))
+    aims = parse_catch_aims(a.launch_log)
     goals, landed, lim = parse_launch(a.launch_log)
     if a.goals != 'auto':
         goals = spec_goals(a.goals)
@@ -255,7 +326,8 @@ def main():
             mm = W(th, s0, tt)
             after = np.where((th > tt) & (~held))[0]
             carries.append(dict(
-                goal=name, k=kk, len=tt - l, steady=(tt - l) < 1.0, seat_lag_ms=round((s0 - l) * 1e3),
+                goal=name, k=kk, len=tt - l, steady=(tt - l) < 1.0, seat_lag_ms=round((s0 - l) * 1e3) if np.isfinite(s0) else None,
+                vtd=(lambda t_td: cup_velocity(plat, t_td, a.cup_yaw_deg) if t_td else None)(touchdown(aims, l + E0)),
                 bank_cmd=bc[1], floor=bc[0], bank_meas=bm[1], ny=(bc[2], bc[3]), nx=(bc[4], bc[5]),
                 vmax=pk[0], amax=pk[1], jmax=pk[2], legs=pk[3:],
                 iq1=(q[0], q[1]), iq2=(q[2], q[3]), fet=q[4],
@@ -271,10 +343,11 @@ def main():
     for g in goalrows:
         P(f"| {g['name']} | {g['win'][0]}-{g['win'][1]} | {g['state']} | {g['nland']} |")
     P("\n## Per carry (landing -> next Jugglebot throw)")
-    P("| goal | k | len s | steady | bank cmd max (floor) / meas max deg | normal-y range deg | leg v / a / jerk | leg1 iq pk/rms | leg2 iq pk/rms | held all | raw dropouts (s before release, dur) |")
-    P("|---|---|---|---|---|---|---|---|---|---|---|")
+    vt = lambda c: f"{c['vtd'][0]:+.0f}, {c['vtd'][1]:+.0f}" if c['vtd'] else '--'
+    P("| goal | k | len s | steady | seat lag ms | v_td x, y mm/s | bank cmd max (floor) / meas max deg | normal-y range deg | leg v / a / jerk | leg1 iq pk/rms | leg2 iq pk/rms | held all | raw dropouts (s before release, dur) |")
+    P("|---|---|---|---|---|---|---|---|---|---|---|---|---|")
     for c in carries:
-        P(f"| {c['goal']} | {c['k']} | {c['len']:.2f} | {c['steady']} | {c['bank_cmd']:.2f} ({c['floor']:.2f}) / {c['bank_meas']:.2f} | "
+        P(f"| {c['goal']} | {c['k']} | {c['len']:.2f} | {c['steady']} | {'--' if c['seat_lag_ms'] is None else c['seat_lag_ms']} | {vt(c)} | {c['bank_cmd']:.2f} ({c['floor']:.2f}) / {c['bank_meas']:.2f} | "
           f"{c['ny'][0]:+.2f}..{c['ny'][1]:+.2f} | {f(c['vmax'])} / {f(c['amax'])} / {f(c['jmax'] / 1e3, 1)}k | "
           f"{c['iq1'][0]:.2f}/{c['iq1'][1]:.2f} | {c['iq2'][0]:.2f}/{c['iq2'][1]:.2f} | {c['held_all']} | {c['raw_runs']} |")
     S = [c for c in carries if c['steady']]
@@ -299,6 +372,13 @@ def main():
         P(f"| {g['name']} | {f(g['echo'][0])}/{f(g['echo'][1])}/{f(g['echo'][2] / 1e3, 1)}k | "
           f"{f(g['diag'][0])}/{f(g['diag'][1])}/{f(g['diag'][2] / 1e3, 1)}k | {g['gap'][0]:.1f}/{g['gap'][1]:.1f}/{g['gap'][2]:.1f} | "
           f"{g['iq'][0]:.2f}/{g['iq'][1]:.2f} | {g['iq'][2]:.2f}/{g['iq'][3]:.2f} |")
+    P("\n## Touch-down cup velocity per goal (mocap Platform, robot frame, median over carries; mm/s)")
+    P("| goal | n carries | n with v | v_x median | v_y median |\n|---|---|---|---|---|")
+    for name in dict.fromkeys(c['goal'] for c in carries):
+        vs = np.array([c['vtd'] for c in carries if c['goal'] == name and c['vtd']], float).reshape(-1, 2)
+        med = (lambda x: f"{x:+.0f}") if len(vs) else (lambda x: '--')
+        P(f"| {name} | {sum(c['goal'] == name for c in carries)} | {len(vs)} | "
+          f"{med(np.median(vs[:, 0]) if len(vs) else 0)} | {med(np.median(vs[:, 1]) if len(vs) else 0)} |")
     P("\n## Landing dx/dy (tracker log lines, mm)")
     P("| goal | n | dx mean/sd | dy mean/sd |\n|---|---|---|---|")
     for name, g0, g1, _ in goals:
