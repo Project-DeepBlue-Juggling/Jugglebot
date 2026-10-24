@@ -483,7 +483,7 @@ complete | dropped | promoted`.
 - **Generated outputs (never hand-edited):** `python -m mapkit gen` writes the
   three `plans/*/INDEX.md`, the `CLAUDE.md` term block, `docs/project-map.md`
   and `docs/glossary.md`; currency tests fail on drift. The Pi app serves the
-  map at `http://jeeves.local:8765` (192.168.20.7; the bare name `jeeves` has no DNS entry on the LAN) once P5 lands.
+  map at `http://jeeves.local:8765` (mDNS, may resolve to the Wi-Fi address 192.168.20.38) or `http://192.168.20.7:8765` (wired); the bare name `jeeves` has no DNS entry on the LAN.
 - **Operations:** `/inbox` files bugs, features and ideas and `/work-inbox`
   consumes them; `python -m mapkit frontier | claim | resolve | import-issues`
   are the wayfinder operations (`docs/agents/issue-tracker.md`).
