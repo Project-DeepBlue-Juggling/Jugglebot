@@ -1,9 +1,9 @@
 ---
 kind: idea
-title: Personal best window (scratch conflict)
+title: Personal best window (pi conflict)
 status: inbox
 created: '2026-10-24'
-updated: '2026-10-24T00:29:28Z'
+updated: '2026-10-24T00:31:51Z'
 owners: []
 priority: low
 blocked_by: []
