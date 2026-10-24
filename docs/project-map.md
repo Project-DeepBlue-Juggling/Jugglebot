@@ -19,7 +19,7 @@ Where each pathway of the Jugglebot project stands: its destination, how many st
 
 **Attached inbox items:**
 
-- —
+- bug: [The Pi server keeps serving the old mapkit after the pull timer brings a new one](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-the-pi-server-keeps-serving-the-old-mapkit-after-the-pull-timer-brings-a-new-one.md) (inbox)
 
 ## Two-ball oval
 
@@ -116,7 +116,7 @@ _Status: closed (complete)._
 
 | Pathway | Now | Next | Later | Done |
 | --- | --- | --- | --- | --- |
-| Project map and shared dictionary | P4 The two pages; P5 Pi deployment and publishing | — | — | P0 mapkit package and generated plan boards; P1 Glossary rename and term block; P2 map directory seed and session wiring; P3 Fork skeleton and thin server |
+| Project map and shared dictionary | P4 The two pages; P5 Pi deployment and publishing | — | bug The Pi server keeps serving the old mapkit after the pull timer brings a new one | P0 mapkit package and generated plan boards; P1 Glossary rename and term block; P2 map directory seed and session wiring; P3 Fork skeleton and thin server |
 | Two-ball oval | P3 Pose-level carry planner | P1 Firmware - age-aware lead clamp and engagement counter | P2 Bench validation; P3 Robot validation; P4 Working point and the dwell ladder; P5 Two-ball oval; bug Cup Banking saturates at its 12 deg clamp on small lateral offsets; bug 10 % jitter-margin class of LIMIT_* refusals | P1 The oval pattern dispatchable |
 | Ball Butler | — | BB calibration: advisory when a template marker is never matched in a sweep | bug bb/throw_outcome carries no throw identity; bug NOT_SETTLED retry is dead in the field; feature Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware | — |
 | Learner generalisation | — | Box sweep fidelity for same-site families (plan what the executor dispatches) | P1 Learner core; P2 The characterisation sitting; P3 Online admissibility and box retirement; P4 BeatEvent stream and the columns wrapper; P5 Close-out | — |
@@ -146,6 +146,7 @@ _Status: closed (complete)._
 | idea | [Rosbag search](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-rosbag-search.md) | inbox | low | — | filed 2026-10-24 |
 | feature | [Sim columns run with a biased plant to exercise the forward-clip rule](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-sim-columns-biased-plant-forward-clip.md) | inbox | medium | — | filed 2026-10-24 |
 | bug | [Sim `--reload` gate LIMIT_JERK regression bisected to 08ec3fe6 (2026-09-30)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-sim-reload-gate-limit-jerk-regression.md) | inbox | medium | — | filed 2026-10-24 |
+| bug | [The Pi server keeps serving the old mapkit after the pull timer brings a new one](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-the-pi-server-keeps-serving-the-old-mapkit-after-the-pull-timer-brings-a-new-one.md) | inbox | medium | Project map and shared dictionary | filed 2026-10-24 |
 
 ## Open tickets
 
