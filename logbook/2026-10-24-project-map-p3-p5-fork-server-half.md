@@ -26,6 +26,6 @@ Outside this repo: `~/Desktop/jugglebot-map` on the Jetson holds the fork, two l
 
 ## Open (owner)
 
-1. Create the public repo and push: `cd ~/Desktop/jugglebot-map && gh repo create Project-DeepBlue-Juggling/jugglebot-map --public --source . --remote origin --push` (the session's permission classifier refused "create public surface"); the first CI run is P3's acceptance for the server half.
+1. Create the public repo and push: `cd ~/Desktop/jugglebot-map && gh repo create Project-DeepBlue-Juggling/jugglebot-map --public --source . --remote origin --push` (the session's permission classifier refused "create public surface"). DONE 2026-10-24 by the owner; CI run 40043460138 failed on the workflow file (job-level `hashFiles` condition), fixed in fork commit "ci: the frontend job's seed check is a step"; run 40043742705 (`gh run watch ... --exit-status`, 2026-10-24): **success**.
 2. Provide the reference `frontend/` at pin 6e0baa2 (tarball from `E:/PDJ/Github/TaskTree` on the Windows box) and the organisation, account and domain patterns for `scripts/upstream_name_patterns.txt`; then the seed-and-strip commit, the static auth client and P4 can proceed.
 3. On the Pi: clone both repos and run `deploy.sh`; the five acceptance checks are in the fork README (SSH from the session is classifier-denied).
