@@ -43,8 +43,9 @@ Two things about it are deliberate and must not be "tidied":
   a MODE (`TeensyLegInterp(leg_clamp=...)`, 2026-10-24, FW 31): "motor_guard"
   (the DEFAULT, untouched bit for bit — it is what the xref pins),
   "firmware_fw30" (the clamp as flashed through FW 30: 0.10 rev, bounded vel_ff,
-  raw encoder anchor) and "firmware" (FW 31: the same band around a
-  frame-age-aware, dead-reckoned anchor). The hand clamp is written against the
+  raw encoder anchor), "firmware_fw31" (the same band around a frame-age-aware,
+  dead-reckoned anchor) and "firmware" (FW 32: FW 31 with the shift's per-tick
+  growth slew-bounded at vel_limit x tick, 2026-10-25). The hand clamp is written against the
   firmware directly.
 
 Also added: the **transmitted-v1** Mode-1 rule (`HAS_V1`, v6 wire). Pass
@@ -92,7 +93,12 @@ LEAD_CLAMP_VELFF_LIMIT_RPS = 3.5
 # Stale-anchor census threshold (LEG_ANCHOR_STALE_US = 30000 us, FW 31). The age
 # CAP on the dead-reckoned anchor reuses MOTOR_FB_STALENESS_S below.
 LEG_ANCHOR_STALE_S = 0.030
-LEG_CLAMP_MODES = ("motor_guard", "firmware_fw30", "firmware")
+# Per-tick slew bound on the dead-reckoned shift (LEG_ANCHOR_SHIFT_SLEW_REV, FW 32):
+# ODriveDefaults::LEG_VEL_LIMIT_RPS (12.0) x INTERP_PERIOD_US (2000 us). Per TICK,
+# so the twin must be ticked at the firmware's 500 Hz for it to mean vel_limit.
+LEG_VEL_LIMIT_RPS_FW = 12.0
+LEG_ANCHOR_SHIFT_SLEW_REV = LEG_VEL_LIMIT_RPS_FW * 0.002
+LEG_CLAMP_MODES = ("motor_guard", "firmware_fw30", "firmware_fw31", "firmware")
 
 # ── Hand-lane guard constants (canbridge_config.h, FW 17) ────────────────────
 # These are the firmware's, NOT the legs': applying MAX_LEAD_REV (0.10) or
@@ -536,9 +542,12 @@ class TeensyLegInterp:
                     self.lead_clamp_ticks += 1
         else:
             # Firmware clamp (leg_interp.cpp): 0.10 rev, vel_ff CAPPED not zeroed.
-            # "firmware_fw30": anchor = fb.  "firmware" (FW 31): anchor = fb + dr,
-            # the dead-reckoned shift of the raw command since the frame landed.
-            aged = (self.leg_clamp == "firmware") and (fb_ts is not None)
+            # "firmware_fw30": anchor = fb.  "firmware_fw31": anchor = fb + dr, the
+            # dead-reckoned shift of the raw command since the frame landed.
+            # "firmware" (FW 32): the same, dr's per-tick growth bounded at
+            # LEG_ANCHOR_SHIFT_SLEW_REV.
+            aged = (self.leg_clamp in ("firmware_fw31", "firmware")) and (fb_ts is not None)
+            slewed = self.leg_clamp == "firmware"
             for i in range(NUM_LEGS):
                 pre = self.cmd_pos[i]
                 dr = 0.0
@@ -551,7 +560,12 @@ class TeensyLegInterp:
                     if ts != 0.0:
                         age = t_now - ts if t_now > ts else 0.0
                         if age <= MOTOR_FB_STALENESS_S:
-                            self._leg_dr[i] = self.cmd_pos[i] - self._leg_cmd_ref[i]
+                            target = self.cmd_pos[i] - self._leg_cmd_ref[i]
+                            if slewed:
+                                lo = self._leg_dr[i] - LEG_ANCHOR_SHIFT_SLEW_REV
+                                hi = self._leg_dr[i] + LEG_ANCHOR_SHIFT_SLEW_REV
+                                target = hi if target > hi else (lo if target < lo else target)
+                            self._leg_dr[i] = target
                         # else: dr keeps its value at the cap crossing
                         if age > LEG_ANCHOR_STALE_S:
                             self.leg_stale_anchor_ticks[i] += 1

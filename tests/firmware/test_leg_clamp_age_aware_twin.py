@@ -1,4 +1,4 @@
-"""The Python twin of the can-bridge's frame-age-aware LEG lead clamp (FW 31).
+"""The Python twin of the can-bridge's frame-age-aware LEG lead clamp (FW 31, slew-bounded at FW 32).
 
 Plan ``plans/active/leg-lead-clamp-age-aware.md``; design in
 ``logbook/2026-10-24-leg-lead-clamp-age-aware-p1-firmware.md``.  The firmware clamp
@@ -10,7 +10,16 @@ landed (the 2026-10-24 staircase).  Form Z: while a frame is aged the anchor is
 150 ms staleness cap; at age 0 it is bit-identical to FW 30.
 
 ``TeensyLegInterp(leg_clamp=...)``: ``motor_guard`` (default; what the xref pins),
-``firmware_fw30`` (clamp as flashed through FW 30), ``firmware`` (FW 31).
+``firmware_fw30`` (clamp as flashed through FW 30), ``firmware_fw31`` (form Z as built at P1),
+``firmware`` (FW 32: form Z with the dead-reckoned shift's per-tick growth bounded at
+vel_limit x tick = 0.024 rev, P2 2026-10-25, logbook
+``2026-10-25-leg-lead-clamp-age-aware-p2-bench.md``).  The bound acts only on a raw command
+moving faster than vel_limit, so the P1 claims below are asserted on ``firmware_fw31`` and the
+FW 32 relation to it is asserted separately (test_replay_oracle_fw32_departs_only_on_super_vel_limit_ticks).
+
+P2 adds the 2026-08-15 fixture ``tools/probes/data/lead_clamp_staircase_2026-08-15.json``
+(``--emit-fixture-0815``; FW 14 bag 2026-08-15_10-08-06): ax1 (leg 1, staircase) joins the
+oracle; ax4 (leg 4, ~100 ms gaps that never engaged the clamp) is a no-harm window.
 
 REPLAY ORACLE RECIPE (test_replay_oracle_*): the committed fixture
 ``tools/probes/data/lead_clamp_staircase_2026-10-24.json`` (regenerate with
@@ -48,6 +57,8 @@ xref = pytest.importorskip("xref")
 _CFG = os.path.join(_REPO, "ros_ws", "src", "jugglebot", "Teensy_code_canbridge",
                     "canbridge_config.h")
 _FIXTURE = os.path.join(_REPO, "tools", "probes", "data", "lead_clamp_staircase_2026-10-24.json")
+_FIXTURE_0815 = os.path.join(_REPO, "tools", "probes", "data", "lead_clamp_staircase_2026-08-15.json")
+_HWCFG = os.path.join(os.path.dirname(_CFG), "hardware_config.h")
 _LO, _HI = [-100.0] * NUM_LEGS, [100.0] * NUM_LEGS
 _DT = 0.002
 
@@ -68,6 +79,17 @@ def test_leg_clamp_constants_match_the_firmware():
     assert ti.MAX_LEAD_REV == 0.15          # motor_guard's value, deliberately not the firmware's
 
 
+def test_shift_slew_constant_is_vel_limit_times_the_tick():
+    """FW 32: LEG_ANCHOR_SHIFT_SLEW_REV = ODriveDefaults::LEG_VEL_LIMIT_RPS x INTERP_PERIOD_US."""
+    hw = open(_HWCFG).read()
+    m = re.search(r"constexpr\s+float\s+LEG_VEL_LIMIT_RPS\s*=\s*([0-9.]+)f\s*;", hw)
+    assert m and ti.LEG_VEL_LIMIT_RPS_FW == float(m.group(1))
+    assert 1.0 / _hdr("INTERP_RATE_HZ") == _DT
+    assert ti.LEG_ANCHOR_SHIFT_SLEW_REV == pytest.approx(ti.LEG_VEL_LIMIT_RPS_FW * _DT, abs=1e-12)
+    cfg = open(_CFG).read()
+    assert re.search(r"LEG_ANCHOR_SHIFT_SLEW_REV\s*=\s*ODriveDefaults::LEG_VEL_LIMIT_RPS\s*\*\s*\(float\)INTERP_PERIOD_US", cfg)
+
+
 # ── 2. the default mode did not move ─────────────────────────────────────────
 def test_motor_guard_mode_is_untouched_by_the_mode_switch():
     assert TeensyLegInterp(_LO, _HI).leg_clamp == "motor_guard"
@@ -84,23 +106,25 @@ _vec = st.lists(_rev, min_size=NUM_LEGS, max_size=NUM_LEGS)
 @given(u0=_vec, u1=_vec, u2=_vec, off=st.lists(st.floats(-0.4, 0.4), min_size=NUM_LEGS, max_size=NUM_LEGS),
        dts=st.lists(st.floats(0.0, 0.2), min_size=1, max_size=6), with_u=st.integers(0, 2))
 def test_age_zero_firmware_equals_fw30_and_never_wider(u0, u1, u2, off, dts, with_u):
-    """At age 0 FW 31 == FW 30 bit for bit, and the band is never wider than 0.10 rev."""
+    """At age 0 FW 31 and FW 32 == FW 30 bit for bit, and the band is never wider than 0.10 rev."""
     a = TeensyLegInterp(_LO, _HI, leg_clamp="firmware_fw30")
     b = TeensyLegInterp(_LO, _HI, leg_clamp="firmware")
+    c = TeensyLegInterp(_LO, _HI, leg_clamp="firmware_fw31")
     v0 = [(u1[i] - u0[i]) / ti.SEGMENT_T_S for i in range(NUM_LEGS)]
     kw = {}
     if with_u >= 1:
         kw["u1"] = u1
     if with_u >= 2:
         kw["u2"] = u2
-    for m in (a, b):
+    for m in (a, b, c):
         m.latch_setpoint(u0, v0, [0.0] * NUM_LEGS, [0.0] * NUM_LEGS, 100.0, **kw)
     for dt in sorted(dts):
         t = 100.0 + dt
         fb = [u0[i] + off[i] for i in range(NUM_LEGS)]
         pa, va, _ = a.tick(t, fb)
         pb, vb, _ = b.tick(t, fb, [t] * NUM_LEGS)
-        assert pa == pb and va == vb          # bit-identical, not approx
+        pc, vc, _ = c.tick(t, fb, [t] * NUM_LEGS)
+        assert pa == pb == pc and va == vb == vc   # bit-identical, not approx
         for i in range(NUM_LEGS):
             assert abs(pb[i] - fb[i]) <= ti.MAX_LEAD_REV_FW + 1e-12
 
@@ -110,11 +134,11 @@ _V = 2.0                     # rev/s, constant-velocity leg
 _LAG = 0.05                  # rev, the encoder trails the command by this (inside the band)
 
 
-def _coast(mode, gap_s, t0=10.0003, tail=0.05):
+def _coast(mode, gap_s, t0=10.0003, tail=0.05, v=_V, lag=_LAG):
     """Stream a constant-velocity command; the leg's frame stops at t0 for gap_s, then returns."""
     m = TeensyLegInterp(_LO, _HI, leg_clamp=mode)
     T = ti.SEGMENT_T_S
-    pos = lambda t: _V * t
+    pos = lambda t: v * t
     rows = []
     last_k = -1
     n = int(round((t0 + gap_s + tail - 9.0) / _DT))
@@ -125,11 +149,11 @@ def _coast(mode, gap_s, t0=10.0003, tail=0.05):
         if k != last_k:
             last_k = k
             u = [[pos((k + j) * T)] * NUM_LEGS for j in range(3)]
-            m.latch_setpoint(u[0], [_V] * NUM_LEGS, [0.0] * NUM_LEGS, [0.0] * NUM_LEGS, k * T,
-                             u1=u[1], u2=u[2], v1=[_V] * NUM_LEGS)
+            m.latch_setpoint(u[0], [v] * NUM_LEGS, [0.0] * NUM_LEGS, [0.0] * NUM_LEGS, k * T,
+                             u1=u[1], u2=u[2], v1=[v] * NUM_LEGS)
         if t < t0 or t >= t0 + gap_s:       # frames every 10 ms outside the gap
             fb_ts_f = t - ((t - 9.0) % 0.010) if t < t0 else t
-            fb_f = pos(fb_ts_f) - _LAG
+            fb_f = pos(fb_ts_f) - lag
         pos_out, vel_out, _ = m.tick(t, [fb_f] * NUM_LEGS, [fb_ts_f] * NUM_LEGS)
         rows.append((t, pos_out[0], vel_out[0], pos(t), fb_f, fb_ts_f, m.leg_anchor[0], m.leg_clamped[0]))
     return m, rows
@@ -138,7 +162,7 @@ def _coast(mode, gap_s, t0=10.0003, tail=0.05):
 def test_coast_fw30_pins_and_steps_while_firmware_emits_the_raw_command():
     gap = 0.12
     m30, r30 = _coast("firmware_fw30", gap)
-    m31, r31 = _coast("firmware", gap)
+    m31, r31 = _coast("firmware_fw31", gap)
     t0 = 10.0003
     gap_rows = lambda rows: [r for r in rows if t0 + 0.0005 < r[0] < t0 + gap]
     # FW 30: pinned at fb + 0.10 once the raw command is 0.10 ahead of the frozen frame.
@@ -159,33 +183,81 @@ def test_coast_fw30_pins_and_steps_while_firmware_emits_the_raw_command():
 
 def test_coast_past_the_cap_freezes_the_shift_and_a_frame_resets_it():
     gap = 0.40
-    m, rows = _coast("firmware", gap, tail=0.0)
+    m, rows = _coast("firmware_fw31", gap, tail=0.0)
     t0 = 10.0003
     late = [r for r in rows if r[0] - r[5] > ti.MOTOR_FB_STALENESS_S + 1e-9]
     assert len(late) > 50
     assert max(r[6] for r in late) - min(r[6] for r in late) == 0.0      # anchor frozen past the cap
     assert late[-1][7] and abs(late[-1][1] - (late[-1][6] + 0.10)) < 1e-9  # clamp re-engaged at the band
     # the frame returns: shift resets, anchor == fb exactly.
-    m2, rows2 = _coast("firmware", gap, tail=0.02)
+    m2, rows2 = _coast("firmware_fw31", gap, tail=0.02)
     last = rows2[-1]
     assert m2._leg_dr[0] == 0.0 and last[6] == last[4]
 
 
-# ── 5. replay oracle on the committed 2026-10-24 windows ─────────────────────
+# ── 4b. FW 32 shift slew bound ───────────────────────────────────────────────
+@settings(deadline=None)
+@given(speed=st.floats(0.5, 0.98 * 12.0), sign=st.sampled_from([-1.0, 1.0]),
+       gap=st.floats(0.03, 0.30), lag=st.floats(-0.08, 0.08))
+def test_slew_bound_is_invisible_to_a_stream_at_or_below_vel_limit(speed, sign, gap, lag):
+    """A constant-velocity stream below vel_limit through any gap (inside or past the cap):
+    FW 32 emits exactly what FW 31 does, tick for tick, census included. The strategy draws
+    speed and gap independently with a real gap every time: drawn jointly over [0, 0.30] s
+    Hypothesis paired its large speeds with gap 0 and the property passed with the slew
+    mutated to 0.005 rev/tick (P2 logbook, fails-before table)."""
+    v = sign * speed
+    m31, r31 = _coast("firmware_fw31", gap, v=v, lag=lag)
+    m32, r32 = _coast("firmware", gap, v=v, lag=lag)
+    assert [r[1] for r in r31] == [r[1] for r in r32] and [r[2] for r in r31] == [r[2] for r in r32]
+    assert m31.leg_lead_clamp_ticks == m32.leg_lead_clamp_ticks
+    assert m31.leg_stale_anchor_ticks == m32.leg_stale_anchor_ticks
+
+
+def test_a_command_step_inside_a_gap_ramps_at_vel_limit_under_fw32():
+    """The P1 pinned exposure: a 1 rev command step while the leg's frame is aged. FW 31 emits it
+    on the next tick; FW 32 ramps it at LEG_ANCHOR_SHIFT_SLEW_REV per tick one band ahead of the
+    slewed anchor; FW 30 holds it at fb + 0.10. The next frame re-clamps all three at fb + 0.10."""
+    out = {}
+    for mode in ("firmware_fw30", "firmware_fw31", "firmware"):
+        m = TeensyLegInterp(_LO, _HI, leg_clamp=mode)
+        z = [0.0] * NUM_LEGS
+        m.latch_setpoint([1.0] * NUM_LEGS, z, z, z, 0.0)
+        p, _, _ = m.tick(0.002, [1.0] * NUM_LEGS, [0.002] * NUM_LEGS)       # frame lands, command at the leg
+        assert p[0] == 1.0
+        m.latch_setpoint([2.0] * NUM_LEGS, z, z, z, 0.003)                  # the step, no fresh frame
+        seq = [m.tick(0.002 * (k + 2), [1.0] * NUM_LEGS, [0.002] * NUM_LEGS)[0][0] for k in range(10)]
+        back = m.tick(0.024, [1.0] * NUM_LEGS, [0.024] * NUM_LEGS)[0][0]   # the frame returns
+        out[mode] = (seq, back)
+    s30, s31, s32 = out["firmware_fw30"][0], out["firmware_fw31"][0], out["firmware"][0]
+    slew = ti.LEG_ANCHOR_SHIFT_SLEW_REV
+    assert all(abs(x - 1.10) < 1e-12 for x in s30)
+    assert all(abs(x - 2.0) < 1e-12 for x in s31)
+    for k, x in enumerate(s32):
+        assert x == pytest.approx(1.0 + (k + 1) * slew + ti.MAX_LEAD_REV_FW, abs=1e-12)
+    assert all(abs(out[mode][1] - 1.10) < 1e-12 for mode in out)
+
+
+# ── 5. replay oracle on the committed 2026-10-24 and 2026-08-15 windows ──────
 def _oracle():
     import lead_clamp_staircase_probe as probe
-    return probe, probe.load_fixture(_FIXTURE)
+    return probe, probe.load_fixture(_FIXTURE)["windows"] + probe.load_fixture(_FIXTURE_0815)["windows"]
 
 
-@pytest.mark.parametrize("name,min_cut", [("S1A_leg1", 0.40), ("S1B_leg2", 0.25), ("S2_leg1", 0.40)])
+def _window(name):
+    probe, ws = _oracle()
+    return probe, next(x for x in ws if x["name"] == name)
+
+
+@pytest.mark.parametrize("name,min_cut", [("S1A_leg1", 0.40), ("S1B_leg2", 0.25), ("S2_leg1", 0.40),
+                                          ("ax1_leg1", 0.40)])
 def test_replay_oracle_staircase_fw30_vs_fw31(name, min_cut):
     """S1B (leg 2) is held to 25 %, not 40 %: 2 of its 3 largest remaining FW 31 steps land on
     frames whose frame-time error is 0.23-0.30 rev, i.e. the recorded leg really was > band
-    behind its command (the lag today's clamp built), so the clamp must engage there."""
-    probe, fx = _oracle()
-    w = next(x for x in fx["windows"] if x["name"] == name)
+    behind its command (the lag today's clamp built), so the clamp must engage there.
+    ax1 (2026-08-15, FW 14): FW 30 replays the recorded 10.64 mm step exactly; FW 31 3.35 mm."""
+    probe, w = _window(name)
     r = probe.twin_summary(w)
-    f30, f31 = r["firmware_fw30"], r["firmware"]
+    f30, f31 = r["firmware_fw30"], r["firmware_fw31"]
     print(f"\n{name}: fw30 max step {f30['max_step_mm']:.2f} mm, gap engaged {f30['gap_engaged_frac']*100:.1f} % | "
           f"fw31 max step {f31['max_step_mm']:.2f} mm, gap engaged {f31['gap_engaged_frac']*100:.1f} %, "
           f"sub-band gap ticks {f31['subband_gap_ticks']} engaged {f31['subband_gap_engaged']}")
@@ -194,3 +266,58 @@ def test_replay_oracle_staircase_fw30_vs_fw31(name, min_cut):
     assert f31["max_step_mm"] <= (1.0 - min_cut) * f30["max_step_mm"]
     assert f31["subband_gap_ticks"] > 50                 # the claim below is not vacuous
     assert f31["subband_gap_engaged"] == 0
+
+
+@pytest.mark.parametrize("name", ["S1A_leg1", "S1B_leg2", "S2_leg1", "ax1_leg1", "ax4_leg4"])
+def test_replay_oracle_fw32_departs_only_on_super_vel_limit_ticks(name):
+    """FW 32 differs from FW 31 only where the shift's slew bound bit: the dead-reckoned target
+    moved more than LEG_ANCHOR_SHIFT_SLEW_REV in one tick. On these replays that is the raw
+    ladder stepping 0.027-0.054 rev/tick at a few knot latches (the twin latches the echo knots
+    at their jittery arrival times; the live HAS_SCHED stream plays on its stamp), and never
+    makes the step worse. Elsewhere FW 32 == FW 31 bit for bit."""
+    probe, w = _window(name)
+    a = probe.replay_window(w, "firmware_fw31")
+    b = probe.replay_window(w, "firmware")
+    slew = ti.LEG_ANCHOR_SHIFT_SLEW_REV
+    target = a["raw"] - a["ref"]                         # the unbounded shift FW 31 used
+    fast = np.r_[False, np.abs(np.diff(target)) > slew + 1e-12]
+    differ = a["emit"] != b["emit"]
+    # once the bound bites, the shift lags until the next frame resets it: allow the ticks after
+    # a fast tick up to the next frame landing.
+    frame = np.r_[True, np.diff(a["ref"]) != 0.0]
+    owed = np.zeros_like(fast)
+    on = False
+    for k in range(len(fast)):
+        on = (on or fast[k]) and not (frame[k] and not fast[k])
+        owed[k] = on
+    assert not np.any(differ & ~owed), f"{name}: FW 32 departs from FW 31 on a tick the bound cannot reach"
+    step = lambda r: np.max(np.abs(np.diff(r["emit"])))
+    assert step(b) <= step(a) + 1e-12
+
+
+def test_replay_ax4_no_harm_window_is_identical_under_every_firmware_clamp():
+    """ax4 (2026-08-15, leg 4): four ~100 ms gaps while moving that never engaged FW 30's clamp.
+    FW 31 and FW 32 emit exactly what FW 30 does on every tick, gap or not."""
+    probe, w = _window("ax4_leg4")
+    r = {m: probe.replay_window(w, m) for m in ("firmware_fw30", "firmware_fw31", "firmware")}
+    assert (r["firmware_fw30"]["age"] > ti.LEG_ANCHOR_STALE_S).sum() > 100     # the gaps are there
+    assert not r["firmware_fw30"]["engaged"].any()
+    for m in ("firmware_fw31", "firmware"):
+        assert np.array_equal(r[m]["emit"], r["firmware_fw30"]["emit"])
+
+
+@pytest.mark.parametrize("name", ["S1A_leg1", "S1B_leg2", "S2_leg1", "ax1_leg1", "ax4_leg4"])
+def test_replay_clean_ticks_are_bit_identical_to_fw30(name):
+    """The plan's P2 'bit-for-bit on the clean windows': on every tick whose frame is fresh
+    (age <= LEG_ANCHOR_STALE_S) and on which FW 30 did not engage, FW 31 and FW 32 emit
+    exactly FW 30's command. (Where FW 30 DID engage on a fresh frame, the leg was already
+    more than a band behind -- the FW 31/32 output there is the same clamp around the same
+    live encoder only when the frame landed this tick, which the age-0 property covers.)"""
+    probe, w = _window(name)
+    r = {m: probe.replay_window(w, m, pre=0.55, post=0.35) for m in ("firmware_fw30", "firmware_fw31", "firmware")}
+    a = r["firmware_fw30"]
+    clean = (a["age"] <= ti.LEG_ANCHOR_STALE_S) & ~a["engaged"]
+    assert clean.sum() > 50
+    for m in ("firmware_fw31", "firmware"):
+        assert np.array_equal(r[m]["emit"][clean], a["emit"][clean]), m
+        assert np.array_equal(r[m]["vel"][clean], a["vel"][clean]), m

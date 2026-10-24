@@ -2036,23 +2036,30 @@ TEST_CASE("FW 31 lead clamp: the engaged-tick census is gated on the wire; the s
   CHECK(interp_leg_lead_clamp_ticks(0) == 0u);
 }
 
-TEST_CASE("FW 31 lead clamp, PINNED EXPOSURE: a command DISCONTINUITY while the frame is aged passes until the next frame") {
-  // The accepted trade, made visible: the dead-reckoned shift follows the RAW
-  // command, so a step in the command that lands while no fresh frame has arrived
-  // is absorbed into the anchor and emitted unclamped — for at most one frame
-  // interval (1-10 ms healthy, the cap in a drop). FW 30 would hold it at fb + LEAD
-  // from the first tick. Bounds that remain: the stream is continuous by contract
-  // (the trajectory node's feasibility gates), the recovery slew owns the enable
-  // edge, MAX_DEVIATION (u0 vs raw encoder, 1.0 rev at 10 Hz) and the ODrive's own
-  // vel/current limits. The NEXT fresh frame re-clamps against the live encoder.
-  // Recorded in logbook 2026-10-24-leg-lead-clamp-age-aware-p1-firmware § Discussion.
+TEST_CASE("FW 32 lead clamp: a command DISCONTINUITY while the frame is aged is RAMPED at vel_limit behind the clamp") {
+  // FW 31's accepted trade, now closed: the dead-reckoned shift followed the RAW
+  // command, so a step landing while no fresh frame had arrived was absorbed into the
+  // anchor and emitted unclamped until the next frame (FW 31 emitted 2.0 on the first
+  // tick below; FW 30 held 1.10). FW 32 bounds the shift's per-tick growth at
+  // LEG_ANCHOR_SHIFT_SLEW_REV (vel_limit x tick, 0.024 rev): the step reaches the wire
+  // as a vel_limit ramp one lead band ahead of the slewed anchor, and the NEXT fresh
+  // frame re-clamps against the live encoder exactly as before. Logbook
+  // 2026-10-25-leg-lead-clamp-age-aware-p2-bench § Design.
   fw31_arm_leg0(1.0f);
   float u0[6] = {2.0f, 0, 0, 0, 0, 0}, zeros[6] = {0, 0, 0, 0, 0, 0};
   fake_advance(INTERP_PERIOD_US);                // no frame this tick: the anchor is aged by one tick
   stage(u0, nullptr, zeros, zeros, 2);           // a 1 rev step
   interp_isr();
-  CHECK(axes[0].target_pos_rev == doctest::Approx(2.0f).epsilon(1e-4));   // passed (FW 30: 1.10)
-  CHECK((interp_lead_clamp_mask() & 0x1u) == 0);
+  CHECK(axes[0].target_pos_rev == doctest::Approx(1.0f + LEG_ANCHOR_SHIFT_SLEW_REV + MAX_LEAD_REV).epsilon(1e-5));   // FW 31: 2.0
+  CHECK((interp_lead_clamp_mask() & 0x1u) != 0);
+  float prev = axes[0].target_pos_rev;
+  for (int k = 0; k < 10; ++k) {                 // still dark: the step ramps at the slew rate
+    fake_advance(INTERP_PERIOD_US);
+    interp_isr();
+    CHECK(axes[0].target_pos_rev - prev == doctest::Approx(LEG_ANCHOR_SHIFT_SLEW_REV).epsilon(1e-3));
+    CHECK((interp_lead_clamp_mask() & 0x1u) != 0);
+    prev = axes[0].target_pos_rev;
+  }
   fake_advance(INTERP_PERIOD_US);
   leg0_frame(1.0f);                              // the frame lands: the leg did not move
   interp_isr();

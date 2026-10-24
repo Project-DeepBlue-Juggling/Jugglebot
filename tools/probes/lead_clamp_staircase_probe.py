@@ -16,6 +16,15 @@ Run (venv):
   python tools/probes/lead_clamp_staircase_probe.py                  # report -> temp/probes/lead_clamp_age_aware/
   python tools/probes/lead_clamp_staircase_probe.py --emit-fixture   # (re)write tools/probes/data/lead_clamp_staircase_2026-10-24.json
   python tools/probes/lead_clamp_staircase_probe.py --fixture-only   # twin replay of the committed fixture, no bags needed
+  python tools/probes/lead_clamp_staircase_probe.py --emit-fixture-0815   # (re)write ..._2026-08-15.json (P2)
+
+P2 (2026-10-25) adds the archived leg-bus-frame-drops plan's 2026-08-15 episodes (FW 14,
+bag 2026-08-15_10-08-06, decoded straight from the mcap into temp/probes/lead_clamp_p2_0815/):
+ax1 (leg 1, a staircase — the oracle) and ax4 (leg 4, ~100 ms gaps that never engage the
+clamp — a no-harm window). ax5 (a motionless hold: no command travel to staircase) and ax2
+(cache age 18 ms, below the 30 ms census threshold) carry nothing to replay and are not cut.
+CAVEAT shared by every window: 'a fresh frame' = /robot_state pos_estimate changed, which is
+only trustworthy while the leg moves (a still leg reads as one long gap).
 
 The fixture is a MEASUREMENT RECORD (three windows); regenerate only on purpose.
 `replay_window(window, mode)` drives the Python twin (teensy_interp.TeensyLegInterp) at 500 Hz
@@ -40,6 +49,13 @@ BAGS = {
     '11-34-29': ('/home/jetson/Desktop/rosbags/2026-10-24_11-34-29/2026-10-24_11-34-29_0.mcap',
                  f'{REPO}/temp/probes/oval_carry_2026-10-24_11-34-29/bag.pkl'),
 }
+FIXTURE_0815 = os.path.join(REPO, 'tools', 'probes', 'data', 'lead_clamp_staircase_2026-08-15.json')
+WINDOWS_0815 = [
+    ('ax1_leg1', '10-08-06', 1, 1786752543.59, 1786752544.12),
+    ('ax4_leg4', '10-08-06', 4, 1786752548.30, 1786752548.75),
+]
+BAGS['10-08-06'] = ('/home/jetson/Desktop/rosbags/2026-08-15_10-08-06/2026-08-15_10-08-06_0.mcap',
+                    f'{REPO}/temp/probes/lead_clamp_p2_0815/bag.pkl')
 OUT = f'{REPO}/temp/probes/lead_clamp_age_aware'
 LEAD = 0.10
 CAPS = [0.100, 0.150]
@@ -219,6 +235,8 @@ def report():
     os.makedirs(OUT, exist_ok=True)
     report = {}
     for name, (mcap, pkl) in BAGS.items():
+        if name == '10-08-06':
+            continue                 # the P2 fixture-only bag (no /cache_diag decode, FW 14)
         d = pickle.load(open(pkl, 'rb'))
         diag = load_diag(mcap, f'{OUT}/diag_{name}.pkl')
         A = arrays(d)
@@ -274,15 +292,28 @@ def report():
     print(f'\nwrote {OUT}/probe_report.json')
 
 
-def emit_fixture(path=FIXTURE):
+def decode_bag(mcap, pkl, topics=('/robot_state', '/leg_cmd_executed', '/leg_setpoint_echo')):
+    """mcap -> the {topic: [(log_time_ns, msg_dict)]} pickle arrays() reads (cached)."""
+    if os.path.exists(pkl):
+        return pickle.load(open(pkl, 'rb'))
+    from mcap_ros2.reader import read_ros2_messages
+    d = {t: [] for t in topics}
+    for r in read_ros2_messages(mcap, topics=list(topics)):
+        d[r.channel.topic].append((r.log_time_ns, tod(r.ros_msg)))
+    os.makedirs(os.path.dirname(pkl), exist_ok=True)
+    pickle.dump(d, open(pkl, 'wb'))
+    return d
+
+
+def emit_fixture(path=FIXTURE, windows=WINDOWS, recipe='--emit-fixture'):
     """Per window: echo knots (t, u[6]) t0-0.6..t1+0.4, fresh encoder samples (t,pos,vel) and the
     recorded /leg_cmd_executed (t,pos,vel) for the window's leg. Bag receive times, epoch seconds."""
-    out = {'recipe': 'python tools/probes/lead_clamp_staircase_probe.py --emit-fixture',
-           'bags': {k: os.path.basename(v[0]) for k, v in BAGS.items()}, 'windows': []}
+    out = {'recipe': f'python tools/probes/lead_clamp_staircase_probe.py {recipe}',
+           'bags': {w[1]: os.path.basename(BAGS[w[1]][0]) for w in windows}, 'windows': []}
     pk = {}
-    for name, bag, leg, t0, t1 in WINDOWS:
+    for name, bag, leg, t0, t1 in windows:
         if bag not in pk:
-            pk[bag] = arrays(pickle.load(open(BAGS[bag][1], 'rb')))
+            pk[bag] = arrays(decode_bag(*BAGS[bag]))
         A = pk[bag]
         lo, hi = t0 - 0.6, t1 + 0.4
         me = (A['et'] >= lo) & (A['et'] <= hi)
@@ -366,7 +397,7 @@ def twin_summary(w):
     engagement on gap ticks whose frame-time tracking error was < 0.10 rev."""
     from teensy_interp import LEG_ANCHOR_STALE_S, MOTOR_FB_STALENESS_S, MAX_LEAD_REV_FW
     res = {}
-    for mode in ('firmware_fw30', 'firmware'):
+    for mode in ('firmware_fw30', 'firmware_fw31', 'firmware'):
         r = replay_window(w, mode)
         gap = r['age'] > LEG_ANCHOR_STALE_S
         err_frame = np.abs(r['ref'] - r['fb'])
@@ -382,6 +413,8 @@ def twin_summary(w):
 
 def fixture_report(fx=None):
     fx = fx or load_fixture()
+    if os.path.exists(FIXTURE_0815):
+        fx = dict(fx, windows=fx['windows'] + load_fixture(FIXTURE_0815)['windows'])
     print('\n== twin replay of the committed fixture (500 Hz, sample-and-hold encoder) ==')
     out = {}
     for w in fx['windows']:
@@ -399,10 +432,13 @@ def fixture_report(fx=None):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--emit-fixture', action='store_true', help='write tools/probes/data/lead_clamp_staircase_2026-10-24.json from the bag pickles')
+    ap.add_argument('--emit-fixture-0815', action='store_true', help='write tools/probes/data/lead_clamp_staircase_2026-08-15.json from the 2026-08-15_10-08-06 mcap')
     ap.add_argument('--fixture-only', action='store_true', help='only replay the committed fixture through the twin')
     a = ap.parse_args()
     if a.emit_fixture:
         emit_fixture()
+    if a.emit_fixture_0815:
+        emit_fixture(FIXTURE_0815, WINDOWS_0815, '--emit-fixture-0815')
     if not a.fixture_only:
         report()
     fixture_report()
