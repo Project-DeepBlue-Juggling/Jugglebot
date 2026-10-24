@@ -32,5 +32,5 @@ Known, left: scrollbars render light on the dark theme (`color-scheme: dark` had
 
 ## Open
 
-- The owner's live-reaction round against `http://jeeves:8765` after the Pi redeploy (the Pi's fork checkout predates the frontend: `./deploy.sh` again). Reactions go in this entry; requested changes are filed as `map/` items.
+- The owner's live-reaction round against `http://jeeves.local:8765` (the bare name has no DNS entry on the LAN: the owner's first try failed on that, 2026-10-24) after the Pi redeploy (the Pi's fork checkout predates the frontend: `./deploy.sh` again). Reactions go in this entry; requested changes are filed as `map/` items.
 - `logbook/INDEX.md`: the five project-map rows of 2026-10-24 were dropped by another session's commit `4ecc5780` (its INDEX conflict resolution); restored here.
