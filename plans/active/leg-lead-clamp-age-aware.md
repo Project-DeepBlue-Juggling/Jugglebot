@@ -13,7 +13,7 @@ scope: >-
   oval level 0.50 Sitting with zero staircase episodes. Prerequisite of the next powered oval Sitting and of
   P4's leg_curr_limit_a 15 -> 30.
 steps:
-  - {id: P1, title: Firmware - age-aware lead clamp and engagement counter, kind: phase, status: not_started}
+  - {id: P1, title: Firmware - age-aware lead clamp and engagement counter, kind: phase, status: complete, date: 2026-10-24}
   - {id: P2, title: Bench validation, kind: phase, status: not_started}
   - {id: P3, title: Robot validation, kind: phase, status: not_started}
 related_plan:
@@ -21,12 +21,16 @@ related_plan:
   - leg-bus-frame-drops.md
 related_logbook:
   - 2026-08-15-fw14-validated-arc-closed.md
+  - 2026-10-24-leg-lead-clamp-age-aware-p1-firmware.md
 related_config:
-  - ros_ws/src/jugglebot/Teensy_code_canbridge/canbridge_config.h → MAX_LEAD_REV (0.10), MOTOR_FB_STALENESS_US (150000)
+  - ros_ws/src/jugglebot/Teensy_code_canbridge/canbridge_config.h → MAX_LEAD_REV (0.10), MOTOR_FB_STALENESS_US (150000, the anchor's age cap), LEG_ANCHOR_STALE_US (30000, the stale census threshold, FW 31), FW_VERSION (31)
 related_code:
-  - ros_ws/src/jugglebot/Teensy_code_canbridge/leg_interp.cpp::interp_isr (leg lead clamp ~1066-1072; hand lane fb_ex ~1205-1217)
+  - ros_ws/src/jugglebot/Teensy_code_canbridge/leg_interp.cpp::leg_clamp_anchor (the single anchor derivation, ~232) and ::interp_isr (leg lead clamp ~1136-1146; recovery-slew re-clamp ~1463; hand lane fb_ex ~1265-1288)
+  - ros_ws/src/jugglebot/Teensy_code_canbridge/telemetry.cpp::leg_clamp_diag_uplink_step (LegClampDiag 0x94 at 1 Hz)
+  - config/generate_udp_protocol.py (LegClampDiag; generates udp_protocol.h/.py + docs/teensy-udp-protocol.md)
   - ros_ws/src/jugglebot/Teensy_code_canbridge/axis_state.h (pos_timestamp_us, snapshot_pos_vel)
-  - tools/probes/teensy_link_profiling/hermite_xref/ (teensy_interp.py, xref.py)
+  - tools/probes/teensy_link_profiling/hermite_xref/ (teensy_interp.py leg_clamp modes, xref.py)
+  - tools/probes/lead_clamp_staircase_probe.py (+ data/lead_clamp_staircase_2026-10-24.json, the replay oracle fixture)
 ---
 
 # Age-aware leg lead clamp
@@ -53,9 +57,9 @@ is decided: it ships, as defence-in-depth, because the drops are now seen on two
 
 ## 3. Design
 
-Today (`leg_interp.cpp` lines 1066-1072): `fb = axes[i].pos_rev` (a bare single-word read), `dev = cmd_pos - fb`,
+Through FW 30 (`leg_interp.cpp` lines 1066-1072 at `2bafbae7`): `fb = axes[i].pos_rev` (a bare single-word read), `dev = cmd_pos - fb`,
 clamped to +-`LEAD` (= `MAX_LEAD_REV`), `clamp_mask` bit i set on engagement. No age is consulted.
-The hand lane already does the right thing (lines ~1205-1217): `fb_ex = fb + vel_rps * age`, with age =
+The hand lane already does the right thing (now lines ~1265-1288): `fb_ex = fb + vel_rps * age`, with age =
 `now_mono - pos_timestamp_us` capped at `MOTOR_FB_STALENESS_US` and the cap counted (`s_hand_stale_holds`);
 the raw age feeds the deviation guard's freshness gate; engagement is counted in `s_hand_lead_clamp_ticks`.
 
@@ -72,6 +76,19 @@ Measured support (archived D3 gate, n = 25): anchor error p95 0.129 -> 0.064 rev
 - Option Y, widen-and-hold: keep the frozen anchor but widen the band by `|vel| * age` up to a cap. Smaller
   behavioural change at age 0 and no reliance on the velocity estimate's sign, but a wider band under a stale
   anchor leans on the ODrive's own limits more.
+**Decided 2026-10-24 (owner, P1): neither X nor Y — Option Z, the dead-reckoned anchor** of the archived
+content-freshness draft § 4.2: `anchor = pos_rev + (raw cmd now - raw cmd at the tick the frame landed)`, the shift
+frozen once the age passes `MOTOR_FB_STALENESS_US` (150 ms, the cap). The measured basis is the P1 logbook's replay of
+the five 2026-10-24 staircase episodes: the legs ACCELERATE through the 76-108 ms gaps (42-200 rev/s^2), so X and Y
+(identical on this data, no reversals) left ~75 % of the step (8.4-9.5 mm against today's 11.6-12.7); Z froze the
+clamp's verdict for the gap's length (4.0-6.1 mm in that first-cut 100 Hz replay; 2.6 / 8.6 / 3.8 mm in the 500 Hz
+twin oracle run afterwards, the residue being the lag today's clamp had already built into the recorded trace) and
+needs no velocity estimate. Trade accepted: through a gap a command discontinuity passes unclamped
+until the next frame, and a leg that binds exactly as its frames stop is shoved by the gap's command travel (10-27 mm
+measured; bounded by `v x cap`) — the same bind exposure X and Y carry. Age cap 150 ms (hand parity; the fault task's
+`MOTOR_FB_STALE` is the terminating arm). Stale census threshold `LEG_ANCHOR_STALE_US` 30 ms (healthy p95 <= 10.1 ms,
+drops >= 76 ms). Logbook: `2026-10-24-leg-lead-clamp-age-aware-p1-firmware.md` § Design and § Discussion.
+
 Whichever is chosen: the clamp must be bit-identical to today at zero age (property test), and the
 `MAX_DEVIATION` guard's exposure must be shown unchanged (it compares raw pre-clamp `u0` against the same
 anchor; archived § 3.3 item 2). A1 (age threshold and extrapolation cap) is the safety-envelope trade: coast
@@ -89,8 +106,11 @@ Today `lead_clamp_mask` rides the heartbeat at 10 Hz, which is what under-sample
 ### P1 — Firmware - age-aware lead clamp and engagement counter
 - Implement the chosen option in `leg_interp.cpp` for legs 0-5 only; the hand lane is untouched.
 - Add the two per-leg counters. Wire format: prefer a new additive 1 Hz uplink in the `BridgeTxDiag` pattern (a new
-  `MsgType` + payload struct in `udp_protocol.h`, decoder in `teensy_link/protocol.py`, row in
-  `config/protocol_config.yaml`, then `python config/generate_config.py`). Precedent: BridgeTxDiag and
+  `MsgType` + `Message` in `config/generate_udp_protocol.py`, which GENERATES `udp_protocol.h` for the firmware and
+  `config/generated/`, `udp_protocol.py` and `docs/teensy-udp-protocol.md` — the Teensy header is a delivered copy,
+  never hand-edited; `teensy_link/protocol.py` re-exports the generated class. The plan originally said
+  "`config/protocol_config.yaml` + `generate_config.py`": that file holds CAN constants, not UDP messages — refreshed
+  at P1). Precedent: BridgeTxDiag and
   CacheDiag-style additions carried NO `PROTOCOL_VERSION` bump ("an old Jetson ignores the unknown msg_type"),
   whereas GROWING an existing struct (HeartbeatT2J, CacheDiag at 8->9) is incompatible and bumps it. So: new
   message means no bump; extending a heartbeat means a bump, lockstep flash, and darkness against old boards.
@@ -98,6 +118,21 @@ Today `lead_clamp_mask` rides the heartbeat at 10 Hz, which is what under-sample
 - Mirror the clamp change in `teensy_interp.py` (see § 7: its `MAX_LEAD_REV` is already stale).
 - Exit: firmware builds (`pio run -e teensy41`); xref still 0.0 rev on the unchanged-clamp cases; counters decode
   in `teensy_link` with a unit test; ROS bag/telemetry plumbing records them (check the bridge node's republish).
+- **Outcome (2026-10-24): COMPLETE, NOT FLASHED.** Commits by `git log --grep "Logbook-Entry: 2026-10-24-leg-lead-clamp-age-aware-p1-firmware"`;
+  logbook `logbook/2026-10-24-leg-lead-clamp-age-aware-p1-firmware.md`. Landed: `leg_clamp_anchor()` (one derivation per
+  leg per tick, consumed by the lead clamp AND the recovery-slew re-clamp), the two per-leg cumulative counters,
+  `LegClampDiag` 0x94 at 1 Hz from `task_telem`, `FW_VERSION` 31 / `EXPECTED_BRIDGE_FW_VERSION` 31, `/link_status`
+  row `leg_clamp_diag`, the twin's `leg_clamp` modes (`motor_guard` default untouched, xref 0.0 rev; `firmware_fw30`;
+  `firmware`), the replay oracle on the committed fixture `tools/probes/data/lead_clamp_staircase_2026-10-24.json`
+  (FW 30 replays 11.6 / 12.4 / 14.9 mm staircases against the bag-recorded 11.6 / 12.4 / 12.4; FW 31 cuts the max step
+  77 / 31 / 74 % and engages on ZERO
+  gap ticks whose frame-time error was inside the band), five native doctest cases on the compiled ISR (age-0
+  bit-identity, coast, cap freeze, census gating, the pinned command-discontinuity exposure). Build receipt:
+  `pio run -e teensy41` 2026-10-24, SUCCESS (`temp/logs/lead-clamp-p1-pio-build-*.log`). Test-count delta and the
+  full-gate triple: logbook § Verification. **P2 cleared to start**: the replay half of P2 is prototyped here (the
+  fixture + `replay_window`); P2 owes the bench-rig injected-gap run and the archived plan's four 2026-08-15 episodes
+  if their traces still exist. Open: a dead-reckoned-shift slew bound (would hold a command discontinuity during a
+  gap to the drive's `vel_limit` rate) was considered and not built — see the logbook § Open Questions.
 
 ### P2 — Bench validation
 - Offline replay of the 2026-10-24 episodes (leg 1 at 1792799742.4, leg 2 at 1792799921.7) through the `hermite_xref`
@@ -137,7 +172,11 @@ feedforward path (`vel_ff` is bounded by `VELFF_CAP`, unaffected) and the `MAX_D
 - The leg path's safety authority is the Teensy `MAX_DEVIATION` guard; nothing on the Jetson sits below the clamp.
   Treat this as live-control-path firmware: a bench rig first, owner present for the first powered flash.
 - `hand_source` latch resets on every bridge reboot (latch before arming).
-- Stale-against-code notes found while writing: `teensy_interp.py` still has `MAX_LEAD_REV = 0.15` (firmware is 0.10,
-  documented as a deliberate divergence in its header, so the twin cannot be the oracle for the leg clamp until P1
-  updates it); the archived plan cites `interp_isr` generally, the leg clamp now sits at lines 1066-1072 and the
-  hand-lane extrapolation at ~1205-1217; FW_VERSION is 30, not the 14 the archived evidence was gathered on.
+- Stale-against-code notes found while writing (refreshed at P1): `teensy_interp.py`'s `MAX_LEAD_REV = 0.15` is NOT a
+  stale firmware copy — it is motor_guard's value and the xref pins the twin to motor_guard at 0.0 rev (a bare 0.15 → 0.10
+  edit fails `tests/firmware/test_hermite_xref.py`); since P1 the twin carries the firmware clamp as a MODE
+  (`TeensyLegInterp(leg_clamp="firmware")`, constants `MAX_LEAD_REV_FW` 0.10 / `LEAD_CLAMP_VELFF_LIMIT_RPS` 3.5 /
+  `LEG_ANCHOR_STALE_S` 0.030 pinned against the header by `tests/firmware/test_leg_clamp_age_aware_twin.py`) and the
+  default stays motor_guard's. The archived plan cites `interp_isr` generally; at FW 31 the anchor derivation is
+  `leg_clamp_anchor()` (~232), the leg clamp loop ~1136-1146, the slew re-clamp ~1463, the hand-lane extrapolation
+  ~1265-1288. FW_VERSION is 31 (was 30 when the plan was filed; the archived evidence was gathered on 14).
