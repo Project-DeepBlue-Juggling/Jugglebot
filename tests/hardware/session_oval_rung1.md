@@ -210,9 +210,67 @@ continues on `level`. Rows are numbered P3-n. Full launch restart first (new int
 | P3-2 | `ros2 param get /skill_node planner_mode` -> `level`. **As-is column**: `oval_1ball_fed` cold start, then `{pattern: oval_1ball, apex_m: 0.95, separation_mm: 150.0, num_cycles: 30}` (one 30-run; `oval_1ball` 6 first if the hand is cold). | 30 consecutive catches is the bar the swept column is read against (rung 2 read 38/38 here). Record row 27 with `tools/probes/oval_carry_bag_metrics.py` as in § 7.1. |
 | P3-3 | `ros2 param set /skill_node planner_mode pose` (live; applies from the NEXT goal — the install log line and the `InstallSegment` response name the mode solved). Dry-run / validate-only first if the launch offers it. | The next folded CATCH install logs `planner_mode=pose`; LAUNCH / LANDING / REST installs still say `level` (the pose formulation is the carry's). |
 | P3-4 | **Swept column**: same goals as P3-2 at dwell 0.50 (6 first, then a 30-run). | GO = catch rate >= the as-is column's over 30 attempts AND legs 1/2 peak current not above the as-is column's (rung 2: 7.49 / 10.05 A); `ball_held` (debounced) unbroken on every carry; no carry `LIMIT_*`. Record: row 27 per column; the raw `ball_held_raw` dropout rate against the as-is 69 % at 0.50 (a rise is the skid's first symptom — then the lateral catch weight is the recorded lever); commanded leg jerk median (expect ~45k vs ~66k); bank unchanged (+-2.3 deg, the sweep). |
-| P3-5 | If the swept column is GO: one `oval_1ball` goal at dwell **0.45** under `pose` (the cell the shaper made admissible; refused under `level` by the box: no 0.45 level cell). | Caught, seat bit unbroken; this is the first carry the level planner could not plan at today's limits. Not part of the gate; a finding. |
+| P3-5 | If the swept column is GO: one `oval_1ball` goal at dwell **0.45** under `pose` (the cell the shaper made admissible; refused under `level` by the box: no 0.45 level cell). **Flown 2026-10-24: REFUSED by the box — no 0.45 POSE cell had been swept either (this row assumed one). The cell is in the box since the 2026-10-24 re-sweep (26 cells).** | Caught, seat bit unbroken; this is the first carry the level planner could not plan at today's limits. Not part of the gate; a finding. |
 | P3-6 | Stop rules (unchanged from § 2): the ball leaves the cup in the same carry region twice; a leg on the clamp > 50 ms; FET > 60 C; `lane_recovery=failed`. Set `planner_mode` back to `level` before the close-out REST if the swept column was NO-GO. | |
 
 **Read-back:** `python tools/probes/oval_carry_bag_metrics.py <bag> --launch-log <launch.log> --out temp/probes/oval_p3_ab_<time>` per launch (both
-columns in one launch is fine: split by goal order, the install log lines carry the mode). The planned-vs-realised skid is not in the bag (no cup
-velocity topic); read the raw seat-bit dropouts and the landing scatter instead.
+columns in one launch is fine: split by goal order, the install log lines carry the mode: `install_segment … planner pose`). Since 2026-10-24 the
+probe also reports the **touch-down cup velocity** per carry (mocap `Platform` body, ±15 ms central difference at the CATCH-AIM `t_land`, robot
+frame) and its per-goal median — the realised skid; a missed catch no longer crashes it.
+
+### 8.1 P3 A/B results — FLOWN 2026-10-24, NO-GO for `pose` as built (owner: fix and re-gate, § 9)
+
+Two launches. **Sitting 1** 10:44:21 (bag `/home/jetson/Desktop/rosbags/2026-10-24_10-44-21/`, launch log
+`/home/jetson/.ros/log/2026-10-24-10-44-21-255138-jetson-913736/launch.log`): the as-is column ran at dwell **0.65** (G1, 32/32), not 0.50; `pose` at 0.65
+(G3–G5: 6/6, 25/26, 32/32) then at 0.50 (G8–G17, ten goals, each ENDED by one missed catch: 47/57). **Sitting 2** 11:34:29 (bag
+`/home/jetson/Desktop/rosbags/2026-10-24_11-34-29/`, launch log `/home/jetson/.ros/log/2026-10-24-11-34-29-354803-jetson-939205/launch.log`): the `level`
+0.50 column (G1, 32/32) then three `pose` 0.50 goals (7/8 ENDED `SPLICE_TOO_LATE` — no solver reply by the install's +385 ms deadline; a transit-margin
+end at the first REST; a feed-site first-throw MISSED_CATCH). Review (Opus bag read, every number sourced): `temp/probes/oval_carry_2026-10-24_10-44-21/sitting_review_2026-10-24.md`
+(copied into the logbook entry). Row-27 command per launch: `python tools/probes/oval_carry_bag_metrics.py <bag.mcap> --launch-log <launch.log> --out temp/probes/oval_carry_<bagstamp>/`
+(the probe needed its missed-catch NaN fix first, landed the same day).
+
+| row-27 item | `level` 0.65 (S1 G1) | `level` 0.50 (S2 G1) | `pose` 0.65 (S1 G3–G5) | `pose` 0.50 (S1 G8–G17 + S2) | criterion |
+|---|---|---|---|---|---|
+| catch rate | 32/32 | **32/32** | 63/64 | **47/57 + 7/8 (+1 feed-site miss) = 54/66** | ≥ level's: **FAIL** |
+| legs 1/2 iq peak, carry median / max (A) | 3.90 / 5.28 ; 6.38 / 7.11 | 6.14 / 7.32 ; 9.12 / 9.87 (11.31 on the one lead-clamp carry) | 4.01 / 5.89 ; 5.95 / 7.01 | 4.38 / 11.98 ; 6.65 / 11.88 (both maxima = lead-clamp events; otherwise ≤ 6.2 / 8.1) | ≤ 7.49 / 10.05: pass apart from the clamp events |
+| `ball_held` unbroken | 32/32 | 32/32 | 66/66 | 68/77 (S1), 9/11 (S2): ~0.1 s flickers 0.14–0.29 s before release, ball still thrown | every carry: **FAIL** (soft) |
+| `ball_held_raw` dropouts | 53 % | 81 % | 64 % | 62–64 % | vs 69 %: no rise |
+| commanded leg jerk, carry median | — | 66.5k | — | ~15.5k (echo window) | ~66k vs ~45k expected |
+| touch-down cup velocity v_x, median | +20 mm/s | (level) | **−174 mm/s** | **−507 mm/s** (probe pooled −533) | the skid; 0.65's −174 caught 63/64 |
+| bank | 3.0° median | 2.99 / 3.61 max | 3.0° | 3.0° | unchanged |
+| landing scatter dx / dy sd (mm) | 18 / 15 | 16.8 / 21.8 | 19 / 13 | 16–19 / 13–15 | equal: the throw is not the lever |
+
+**Why `pose` misses:** 9 of the 10 pose-0.50 misses were balls landing INWARD (dx median −30 mm) meeting a cup already moving inward toward T at ~0.5 m/s — 9 of 16
+inward landings missed at pose 0.50 against 0 of 7 under level 0.65 and 1 of 11 under pose 0.65; the raw seat bit never went true on any miss (deflected
+at entry, not dropped from the cup). Wide throws and refused re-aims are equal across columns. **Vibration events:** single-leg ~10 Hz for 0.5–1.0 s
+— S1: leg 1 @1792799742.4 (pose 0.65), leg 2 @1792799921.7 (pose 0.50, iq setpoint 14.99 A, ±19 mm); S2: leg 1 @1792802191.8 (LEVEL 0.50, mid-carry
+with the ball, iq setpoint 14.99 A). Commanded echo smooth in every case; the leg's encoder feedback had dropped to ~10 Hz (bridge: `heartbeat gap
+906 ms (0/91 encoder frames)`), and the bridge lead clamp (`leg_interp.cpp:1066-1072`, target = stale fb ± 7.07 mm, no age term) staircased the
+command. Not the planner, not pose-specific: `plans/active/leg-lead-clamp-age-aware.md`. **Solve time under load:** CATCH installs median 133 /
+207 ms (level 0.65 / 0.50) vs 168 / 156 / 236 ms (pose 0.65 / 0.50 S1 / 0.50 S2), both planners within reach of the 250 ms deadline at 0.50 on the
+loaded Jetson (idle: 42 vs 46 ms). P3-5 was refused by the box (no 0.45 pose cell existed). Decisions: § 9.
+
+## 9. P3 re-gate Sitting — the skid-bound `pose` column against a `level` column, both at dwell 0.50
+
+Decided 2026-10-24 (owner; logbook `2026-10-24-two-ball-oval-p3-ab-sittings-skid-bound`): the § 8 A/B was flown twice on 2026-10-24
+and read NO-GO for `pose` as built — the cup arrived at the catch moving inward (−507 mm/s median at 0.50) and dropped every ball
+that landed more than 15 mm inward. The skid is now a QP BOUND (`I-PLAN-14`, `pose_touchdown_skid_mmps` 175; planned 162 mm/s on
+every cell) and the box carries the re-swept pose cells at 0.65 / 0.55 / 0.50 / 0.45. **Prerequisite (owner 2026-10-24):**
+`plans/active/leg-lead-clamp-age-aware.md` has FLOWN its P3 (zero lead-clamp staircase episodes in one `level` 0.50 Sitting) —
+both 2026-10-24 Sittings showed single-leg ~10 Hz vibrations from the bridge lead clamp on stale encoder frames, two with the iq setpoint on the 15 A
+clamp. Full launch restart after the colcon build. Dress-rehearse on the loaded Jetson first: `skills/check` at 0.50 under both
+modes, every refusal reported at once. Rows are numbered P3R-n.
+
+| # | Step | Expect |
+|---|---|---|
+| P3R-1 | `./run_tests.sh --full` on the launch tree; `ros2 param get /skill_node planner_mode` → `level`; `skills/check` at dwell 0.50 under `level`, then `ros2 param set /skill_node planner_mode pose` and `skills/check` again; set back to `level`. | Both checks name the planner and the 0.50 cell; the bridge telemetry shows the lead-clamp counters (from the prerequisite plan) at zero after the arm. |
+| P3R-2 | **`level` column**: `oval_1ball_fed` cold start, then `{pattern: oval_1ball, apex_m: 0.95, separation_mm: 150.0, num_cycles: 30}` (6 first if the hand is cold). | ≥ 30 attempts in one launch. Reference: rung 2 38/38, 2026-10-24 32/32. Record row 27 + the touch-down cup velocity (expect ~0 to +20 mm/s). |
+| P3R-3 | `ros2 param set /skill_node planner_mode pose` BETWEEN goals (refused mid-goal by design). | The next folded CATCH install logs `planner pose`; LAUNCH / LANDING / REST installs still say `planner level`. |
+| P3R-4 | **`pose` column**: the same goals as P3R-2 at 0.50 (6 first, then a 30-run). | **GO** = catch rate ≥ the `level` column's over 30 attempts AND legs 1/2 peak current not above it (reference 7.49 / 10.05 A, carry-median 3.9 / 6.4 A), `ball_held` unbroken on every carry, no carry `LIMIT_*`, and the touch-down cup velocity median inside ±175 mm/s (the bound, read on the mocap body — if it reads −400 again the rows are not reaching the robot: stop and read the install log's planner). Expect window jerk ~53k vs ~111k and the same landing scatter (16–19 mm) in both columns. |
+| P3R-5 | If GO: one `oval_1ball` goal at dwell **0.45** under `pose` (now a swept cell). | Caught, seat bit unbroken; the first carry `level` cannot plan at today's limits. A finding, not part of the gate. |
+| P3R-6 | Stop rules: the ball leaves the cup in the same carry region twice; a leg on the clamp > 50 ms; FET > 60 °C; `lane_recovery=failed`; **any lead-clamp staircase episode (the prerequisite's counter, or a single-leg ~10 Hz buzz by ear) ends the Sitting — it is the prerequisite's failure, not the planner's.** Set `planner_mode` back to `level` before the close-out REST unless GO. |
+
+**Read-back:** as § 8, one probe run per launch; split columns by goal order (the install lines name the planner). A GO flips the default
+(`trajectory_op.planner_mode: pose`), re-sweeps every family under `pose`, re-runs the sim gate and books one columns check Sitting (plan § 4 P3
+gate). A NO-GO with the cup velocity inside the bound means the skid was not the whole story: read the per-miss landing offsets and the seat-bit
+timing before touching the planner again.
