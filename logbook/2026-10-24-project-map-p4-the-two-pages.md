@@ -30,7 +30,20 @@ Known, left: scrollbars render light on the dark theme (`color-scheme: dark` had
 - 2026-10-24, fork CI run 40051768755 on `11f2f09` (`gh run watch --exit-status`): **success** (python, frontend, no-upstream-name).
 - 2026-10-24, in this worktree after the plan and INDEX edits, `python -m mapkit gen --check` exit 0 and the scoped doc tests pass (count in the commit message).
 
+## Reactions (owner, 2026-10-24, against the Pi at `http://jeeves.local:8765`)
+
+Both pages "okay, but quite busy". Verbatim points, each filed as a `map/` item (nothing absorbed silently):
+
+- "The Front Page is showing with about a third of the page blank, while the Inbox wall is truncated to be barely taller than a single box" -> Bug `front-page-leaves-a-third-of-the-screen-blank-while-the-inbox-wall-is-one-card-tall` (the 860 px budget tuned to a 900 px viewport does not fill a taller window).
+- "Keyboard shortcuts are incorrect" -> Bug `keyboard-shortcuts-dialog-lists-shortcuts-that-no-longer-exist`.
+- "Hovering over most of the panels is glitchy (hover effects flash and often disappear completely until the cursor is moved off and back on to the panel)" -> Bug `hover-highlight-flickers-and-drops-out-until-the-cursor-leaves-and-re-enters` (mouseover/mouseout on child transitions).
+- "The edit panel is nice, but it takes a while to load. It would be nice to be able to go back to the previous page, especially with the links set up as cleanly as they are. Relatedly, the Summary section could afford to be longer. As long as the entire information in that panel fits in the window height, nothing should be truncated" -> Feature `drawer-opens-as-a-route-loads-faster-and-shows-the-full-summary-when-it-fits`.
+- "I don't like how expanding the edit panel hides the ideas/bugs/features, at least in Now/Next/Later" -> Feature `drawer-must-not-cover-the-inbox-rail-on-now-next-later`.
+- "I think it might be worth revisiting the style of the Now/Next/Later page. I think something more graphic/visual would be nice. The current layout makes it tricky to see all the different streams of the project at once, as a single stream with many items in Now/Next/Later will cover a lot of vertical space, requiring scrolling to see the rest" -> ticket `now-next-later-a-more-graphic-layout-that-shows-every-stream-at-once` (type grilling, project-map pathway, rank 17): a prototype round like #31's, not a patch.
+
+The three orchestrator deviations above drew no comment; they stand until the ticket's round revisits the layout. The reaction round is held; P4's remaining acceptance is the fixes above, which are tracked on the map, not in this plan.
+
 ## Open
 
-- The owner's live-reaction round against `http://jeeves.local:8765` (the bare name has no DNS entry on the LAN: the owner's first try failed on that, 2026-10-24) after the Pi redeploy (the Pi's fork checkout predates the frontend: `./deploy.sh` again). Reactions go in this entry; requested changes are filed as `map/` items.
+- The owner's reaction round was held 2026-10-24 (section above); the Pi was redeployed the same afternoon (fork 11f2f09, both pages served). Still open: the Pi Claude's report for checks 1, 3, 4 and the reboot check.
 - `logbook/INDEX.md`: the five project-map rows of 2026-10-24 were dropped by another session's commit `4ecc5780` (its INDEX conflict resolution); restored here.

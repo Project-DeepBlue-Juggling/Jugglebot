@@ -19,7 +19,11 @@ Where each pathway of the Jugglebot project stands: its destination, how many st
 
 **Attached inbox items:**
 
-- —
+- bug: [Front page leaves a third of the screen blank while the inbox wall is one card tall](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-front-page-leaves-a-third-of-the-screen-blank-while-the-inbox-wall-is-one-card-tall.md) (inbox)
+- bug: [Hover highlight flickers and drops out until the cursor leaves and re-enters](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-hover-highlight-flickers-and-drops-out-until-the-cursor-leaves-and-re-enters.md) (inbox)
+- bug: [Keyboard shortcuts dialog lists shortcuts that no longer exist](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-keyboard-shortcuts-dialog-lists-shortcuts-that-no-longer-exist.md) (inbox)
+- feature: [Drawer must not cover the inbox rail on Now / Next / Later](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-drawer-must-not-cover-the-inbox-rail-on-now-next-later.md) (inbox)
+- feature: [Drawer: open as a route so Back works, load faster, show the full summary when it fits the window](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-drawer-opens-as-a-route-loads-faster-and-shows-the-full-summary-when-it-fits.md) (inbox)
 
 ## Two-ball oval
 
@@ -116,7 +120,7 @@ _Status: closed (complete)._
 
 | Pathway | Now | Next | Later | Done |
 | --- | --- | --- | --- | --- |
-| Project map and shared dictionary | P4 The two pages; P5 Pi deployment and publishing | — | — | P0 mapkit package and generated plan boards; P1 Glossary rename and term block; P2 map directory seed and session wiring; P3 Fork skeleton and thin server |
+| Project map and shared dictionary | P4 The two pages; P5 Pi deployment and publishing | — | bug Front page leaves a third of the screen blank while the inbox wall is one card tall; bug Hover highlight flickers and drops out until the cursor leaves and re-enters; bug Keyboard shortcuts dialog lists shortcuts that no longer exist; feature Drawer must not cover the inbox rail on Now / Next / Later; feature Drawer: open as a route so Back works, load faster, show the full summary when it fits the window | P0 mapkit package and generated plan boards; P1 Glossary rename and term block; P2 map directory seed and session wiring; P3 Fork skeleton and thin server |
 | Two-ball oval | P3 Pose-level carry planner | P1 Firmware - age-aware lead clamp and engagement counter | P2 Bench validation; P3 Robot validation; P4 Working point and the dwell ladder; P5 Two-ball oval; bug Cup Banking saturates at its 12 deg clamp on small lateral offsets; bug 10 % jitter-margin class of LIMIT_* refusals | P1 The oval pattern dispatchable |
 | Ball Butler | — | BB calibration: advisory when a template marker is never matched in a sweep | bug bb/throw_outcome carries no throw identity; bug NOT_SETTLED retry is dead in the field; feature Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware | — |
 | Learner generalisation | — | Box sweep fidelity for same-site families (plan what the executor dispatches) | P1 Learner core; P2 The characterisation sitting; P3 Online admissibility and box retirement; P4 BeatEvent stream and the columns wrapper; P5 Close-out | — |
@@ -134,7 +138,12 @@ _Status: closed (complete)._
 | bug | [bb/throw_outcome carries no throw identity](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-bb-throw-outcome-carries-no-throw-identity.md) | inbox | medium | Ball Butler | filed 2026-10-24 |
 | feature | [Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-columns-empty-cup-rows-33-34-on-hardware.md) | inbox | medium | Ball Butler | filed 2026-10-24 |
 | bug | [Cup Banking saturates at its 12 deg clamp on small lateral offsets](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-cup-banking-saturates-at-clamp.md) | inbox | medium | Two-ball oval | filed 2026-10-24 |
+| feature | [Drawer must not cover the inbox rail on Now / Next / Later](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-drawer-must-not-cover-the-inbox-rail-on-now-next-later.md) | inbox | medium | Project map and shared dictionary | filed 2026-10-24 |
+| feature | [Drawer: open as a route so Back works, load faster, show the full summary when it fits the window](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-drawer-opens-as-a-route-loads-faster-and-shows-the-full-summary-when-it-fits.md) | inbox | medium | Project map and shared dictionary | filed 2026-10-24 |
 | bug | [Emitter gap: one 47 ms window over sitting 8 against the 35 ms max target](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-emitter-gap-47ms.md) | inbox | medium | — | filed 2026-10-24 |
+| bug | [Front page leaves a third of the screen blank while the inbox wall is one card tall](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-front-page-leaves-a-third-of-the-screen-blank-while-the-inbox-wall-is-one-card-tall.md) | inbox | high | Project map and shared dictionary | filed 2026-10-24 |
+| bug | [Hover highlight flickers and drops out until the cursor leaves and re-enters](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-hover-highlight-flickers-and-drops-out-until-the-cursor-leaves-and-re-enters.md) | inbox | high | Project map and shared dictionary | filed 2026-10-24 |
+| bug | [Keyboard shortcuts dialog lists shortcuts that no longer exist](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-keyboard-shortcuts-dialog-lists-shortcuts-that-no-longer-exist.md) | inbox | medium | Project map and shared dictionary | filed 2026-10-24 |
 | bug | [10 % jitter-margin class of LIMIT_* refusals](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-limit-refusal-jitter-margin.md) | inbox | medium | Two-ball oval | filed 2026-10-24 |
 | idea | [Backfill the open logbook entries into map items](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-logbook-open-entries-backfill.md) | inbox | low | — | filed 2026-10-24 |
 | feature | [Magazine feed-tuning loop (`magazine` + `reload` patterns, hand-only throw)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-magazine-feed-tuning-loop.md) | inbox | medium | — | filed 2026-10-24 |
@@ -146,3 +155,9 @@ _Status: closed (complete)._
 | idea | [Rosbag search](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-rosbag-search.md) | inbox | low | — | filed 2026-10-24 |
 | feature | [Sim columns run with a biased plant to exercise the forward-clip rule](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-sim-columns-biased-plant-forward-clip.md) | inbox | medium | — | filed 2026-10-24 |
 | bug | [Sim `--reload` gate LIMIT_JERK regression bisected to 08ec3fe6 (2026-09-30)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-sim-reload-gate-limit-jerk-regression.md) | inbox | medium | — | filed 2026-10-24 |
+
+## Open tickets
+
+### Project map and shared dictionary
+
+- [Now / Next / Later: a more graphic layout that shows every stream at once without scrolling](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/ticket-now-next-later-a-more-graphic-layout-that-shows-every-stream-at-once.md) — grilling, unclaimed, rank 17
