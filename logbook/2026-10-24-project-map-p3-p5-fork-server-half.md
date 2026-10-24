@@ -2,7 +2,7 @@
 title: "project-map P3/P5 server half: the jugglebot-map fork's FastAPI server, contract suite, CI, watcher, map-bot git writer and Pi units built and committed locally; frontend seed, GitHub repo and Pi steps wait on the owner"
 type: feature
 date: 2026-10-24
-status: in-progress
+status: resolved
 phase: "project-map - P3 fork skeleton and thin server, P5 Pi deployment (server side)"
 related_plan: project-map.md
 files_changed:
@@ -27,6 +27,9 @@ Outside this repo: `~/Desktop/jugglebot-map` on the Jetson holds the fork, two l
 - 2026-10-24, in this worktree with the libyaml parser change, `./run_tests.sh` (log `temp/logs/gate_p5_project_map_20261024.log`): **PASS - 7144 passed, 9 skipped (parallel, 330.76 s) + 5 passed (serial)**, total 357 s.
 - 2026-10-24, fork CI run on `2c5fbb0` (`gh run watch --exit-status`): **success** (python, frontend, no-upstream-name).
 
+- 2026-10-24 23:00, on `jeeves` after `git pull --ff-only && ./deploy.sh` (fork `2c5fbb0`, checkout `3393e4a5`, which contains the libyaml change): `yaml.__with_libyaml__` True; check 3 repeated three times over `/api/v1/events` -> `event: invalidate` after **0.869, 0.673 and 0.716 s** (target 1 s, met); both units active, health ok, checkout clean.
+- That restart took 90 s: uvicorn waited on a browser's open `/events` stream until systemd's stop timeout killed it, so every deploy took the map offline for 90 s. Fork `3d86c4d` sets a 3 s graceful-shutdown timeout (browsers reconnect); `tests/test_shutdown.py` sends SIGTERM with a stream open (2026-10-24, `pytest -q`: **34 passed in 28.23 s**; the new test fails without the fix, 14.8 s); fork CI run 40092545606 on `3d86c4d` (`gh run watch --exit-status`, 2026-10-24): **success**. The Pi picks it up at its next `./deploy.sh` (that restart is the last one that stalls).
+
 ## Open (owner)
 
 1. Create the public repo and push: `cd ~/Desktop/jugglebot-map && gh repo create Project-DeepBlue-Juggling/jugglebot-map --public --source . --remote origin --push` (the session's permission classifier refused "create public surface"). DONE 2026-10-24 by the owner; CI run 40043460138 failed on the workflow file (job-level `hashFiles` condition), fixed in fork commit "ci: the frontend job's seed check is a step"; run 40043742705 (`gh run watch ... --exit-status`, 2026-10-24): **success**.
@@ -34,7 +37,8 @@ Outside this repo: `~/Desktop/jugglebot-map` on the Jetson holds the fork, two l
 3. DONE 2026-10-24 by the owner's Claude on `jeeves`: deploy key, both clones, `deploy.sh` (twice: server, then with the frontend at fork `11f2f09`), and the checks, reported as triples:
    - check 1: `getent hosts jeeves.local` -> 192.168.20.38 (the Wi-Fi address; wired is .7), `curl -H 'Accept: text/html' http://jeeves.local:8765/` -> 200; the owner's Windows browser could not resolve the bare name `jeeves` (no DNS entry), docs now give both forms;
    - check 2: browser-path edit landed on `main` as `map-bot` within 10 s (`8603f214`, `c449456f`);
-   - check 3: `echo >> map/idea-personal-best-window.md` -> `event: invalidate` after **1.12 s and 1.11 s** (target 1 s): cause = 300 ms debounce + full index rebuild in pure-Python YAML; fix `mapkit/frontmatter.py` -> libyaml `CSafeLoader` (rebuild 0.404 s -> 0.147 s on the Jetson, `python -m mapkit gen --check` unchanged); re-measure owed after the Pi server restarts (the server imports `mapkit` once, so a pulled parser change needs `systemctl restart jugglebot-map`);
+   - check 3: `echo >> map/idea-personal-best-window.md` -> `event: invalidate` after **1.12 s and 1.11 s** (target 1 s): cause = 300 ms debounce + full index rebuild in pure-Python YAML; fix `mapkit/frontmatter.py` -> libyaml `CSafeLoader` (rebuild 0.404 s -> 0.147 s on the Jetson, `python -m mapkit gen --check` unchanged); re-measured 23:00 (bullet in Verification): 0.87 / 0.67 / 0.72 s (the server imports `mapkit` once, so a pulled parser change needs `systemctl restart jugglebot-map`);
    - check 4: six items pushed 19:11:13, Pi fast-forward 19:12:03, item served;
    - check 5: forced conflict 11:31, `git pull --rebase failed` logged, banner, edit kept, resolved (`bcfe6faa`, `6f90b945`);
-   - reboot 19:30: back at 19:32, both units active, health ok, Immich and Jellyfin back; `npm audit --omit=dev`: 1 high (not fixed; to triage).
+   - reboot 19:30: back at 19:32, both units active, health ok, Immich and Jellyfin back; `npm audit --omit=dev`: 1 high = zod < 4.6.6 (memory exhaustion on oversized input; only our own server feeds it; the fix is the breaking zod 4 upgrade, deferred).
+4. Closed 2026-10-24: P5 complete. Residue: the server imports `mapkit` once, so a parser change pulled onto `main` is served only after a restart (map bug `the-pi-server-keeps-serving-the-old-mapkit-after-the-pull-timer-brings-a-new-one`).

@@ -2,7 +2,7 @@
 title: "project-map P4: the two pages built in the jugglebot-map fork - Front page (pathway tiles, segmented bar, Next box, capped what-remains, inbox wall), Now / Next / Later (swimlanes, plan and phase cards, ticket cards, unattached rail), the per-kind drawer, the five-field modal, hover-highlight and the dark palette; audited and screenshot-checked; owner reaction round pending"
 type: feature
 date: 2026-10-24
-status: in-progress
+status: resolved
 phase: "project-map - P4 the two pages"
 related_plan: project-map.md
 files_changed:
@@ -45,5 +45,5 @@ Fixed the same day (fork, CI-gated): the three bugs in `7585cac` (wall fills the
 
 ## Open
 
-- The owner's reaction round was held 2026-10-24 (section above); the Pi was redeployed the same afternoon (fork 11f2f09, both pages served). Still open: the Pi Claude's report for checks 1, 3, 4 and the reboot check.
+- Closed 2026-10-24: the owner's phone check of "+ New" at phone width passed (all five fields display and work), the Pi serves fork `2c5fbb0` with the reaction fixes (redeploy 23:00), and the Pi checks are in the P3/P5 entry. P4 complete. The Now / Next / Later re-layout continues under its ticket.
 - `logbook/INDEX.md`: the five project-map rows of 2026-10-24 were dropped by another session's commit `4ecc5780` (its INDEX conflict resolution); restored here.

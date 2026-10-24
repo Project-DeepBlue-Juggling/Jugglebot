@@ -6,16 +6,15 @@ Where each pathway of the Jugglebot project stands: its destination, how many st
 
 **Destination:** A locked design plus a phased implementation plan, handed to a fresh session, for: (1) a project map in git-tracked markdown (`map/` items + extended plan frontmatter) that shows every pathway, what remains in it and where it leads, with an inbox for features, bugs and ideas; (2) a viewer/editor app forked from the TaskTree frontend with a thin Python file-backed server; (3) `GLOSSARY.md`, the project's shared dictionary, resurrected from the stranded `CONTEXT.md`, parseable, editable in the app, and reliably met by every Claude session via a term-name list in CLAUDE.md and an Avoid-word test. Done when nothing is left to decide before implementation starts and the plan is in `plans/active/`.
 
-**Progress:** 4 of 6 stops done
+**Progress:** 6 of 6 stops done
 
-**Next:** P4 The two pages ([project-map.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/project-map.md))
+**Next:** —
 
 **Owners:** harrison
 
 **Remaining:**
 
-- P4 The two pages ([project-map.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/project-map.md)) — in progress
-- P5 Pi deployment and publishing ([project-map.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/project-map.md)) — in progress
+- —
 
 **Attached inbox items:**
 
@@ -115,7 +114,7 @@ _Status: closed (complete)._
 
 | Pathway | Now | Next | Later | Done |
 | --- | --- | --- | --- | --- |
-| Project map and shared dictionary | P4 The two pages; P5 Pi deployment and publishing | — | bug The Pi server keeps serving the old mapkit after the pull timer brings a new one | P0 mapkit package and generated plan boards; P1 Glossary rename and term block; P2 map directory seed and session wiring; P3 Fork skeleton and thin server |
+| Project map and shared dictionary | — | — | bug The Pi server keeps serving the old mapkit after the pull timer brings a new one | P0 mapkit package and generated plan boards; P1 Glossary rename and term block; P2 map directory seed and session wiring; P3 Fork skeleton and thin server; P4 The two pages; P5 Pi deployment and publishing |
 | Two-ball oval | P3 Pose-level carry planner | P2 Bench validation | P3 Robot validation; P4 Working point and the dwell ladder; P5 Two-ball oval; bug Cup Banking saturates at its 12 deg clamp on small lateral offsets; bug 10 % jitter-margin class of LIMIT_* refusals | P1 Firmware - age-aware lead clamp and engagement counter; P1 The oval pattern dispatchable |
 | Ball Butler | — | BB calibration: advisory when a template marker is never matched in a sweep | bug bb/throw_outcome carries no throw identity; bug NOT_SETTLED retry is dead in the field; feature Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware | — |
 | Learner generalisation | — | Box sweep fidelity for same-site families (plan what the executor dispatches) | P1 Learner core; P2 The characterisation sitting; P3 Online admissibility and box retirement; P4 BeatEvent stream and the columns wrapper; P5 Close-out | — |
