@@ -2,13 +2,18 @@
 
 A file whose first line is exactly ``---`` carries a frontmatter block that
 ends at the next line that is exactly ``---``. The block is parsed with
-``yaml.safe_load``. Files are only ever read here, never rewritten.
+``yaml.safe_load`` semantics, through libyaml's ``CSafeLoader`` when PyYAML
+was built with it (about ten times faster: the map app rebuilds its whole index
+on every file change, and the pure-Python scanner was ~0.5 s of a 0.67 s
+rebuild on the Jetson). Files are only ever read here, never rewritten.
 """
 from __future__ import annotations
 
 from typing import Any, Dict, Tuple
 
 import yaml
+
+_Loader = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
 
 
 class FrontmatterError(ValueError):
@@ -38,7 +43,7 @@ def split_frontmatter(text: str) -> Tuple[Dict[str, Any], str]:
     block = "\n".join(lines[1:end])
     body = "\n".join(lines[end + 1:])
     try:
-        meta = yaml.safe_load(block)
+        meta = yaml.load(block, Loader=_Loader)  # noqa: S506 - a safe loader
     except yaml.YAMLError as exc:
         raise FrontmatterError("invalid YAML in frontmatter: %s" % exc) from exc
     if meta is None:
