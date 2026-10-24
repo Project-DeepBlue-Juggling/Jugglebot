@@ -844,7 +844,16 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # (0x44, payloadless, presence-gated like BB_RESET) sends CANCEL_CMD 0x7D9 on
 # CAN1. No wire change to any existing message; PROTOCOL_VERSION stays 10; an
 # FW 29 board answers BB_CANCEL with ERR_UNKNOWN_METHOD.
-EXPECTED_BRIDGE_FW_VERSION = 30
+# 30 -> 31 (2026-10-24): frame-age-aware leg lead clamp (plans/active/
+# leg-lead-clamp-age-aware.md P1). The leg clamp anchors to a dead-reckoned
+# encoder through an encoder-frame gap instead of pinning the command at the
+# stale reading + MAX_LEAD_REV (the 2026-10-24 single-leg ~10 Hz staircases);
+# two per-leg cumulative counters ride one ADDITIVE 1 Hz uplink LegClampDiag
+# (0x94). No wire change to any existing message; PROTOCOL_VERSION stays 10.
+# An FW 30 board is wire-compatible and simply never sends 0x94 (the
+# /link_status leg_clamp_diag row reads never-seen) — AND it still carries the
+# staircase amplifier, which is why the skew must be loud before a Sitting.
+EXPECTED_BRIDGE_FW_VERSION = 31
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

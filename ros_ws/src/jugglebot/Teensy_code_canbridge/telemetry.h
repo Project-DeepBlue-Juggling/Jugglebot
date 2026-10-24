@@ -70,6 +70,14 @@ void can_errors_uplink_step();
 // baseline, and "no frame" must never be ambiguous with "no pressure".
 void bridge_tx_diag_uplink_step();
 
+// Call at TELEM_RATE_HZ (100 Hz), after telemetry_step(). Emits the FW 31 per-leg
+// lead-clamp census (interp_leg_lead_clamp_ticks / interp_leg_stale_anchor_ticks,
+// cumulative since boot) as a LEG_CLAMP_DIAG frame at a flat 1 Hz. Unconditional
+// for the same reason as its 1 Hz siblings: the P3 Sitting gate reads it by
+// DIFFERENCING two captures, and "no frame" must never be ambiguous with "no
+// engagement". Six single-word volatile reads per field; no ISR work.
+void leg_clamp_diag_uplink_step();
+
 // Call at TELEM_RATE_HZ (100 Hz), after telemetry_step(). Folds ONE per-axis
 // encoder-cache-age sample into the current window on EVERY call, and emits the
 // window's per-axis age floor/peak plus the CAN RX-ring occupancy as a

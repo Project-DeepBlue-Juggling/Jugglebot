@@ -14,6 +14,10 @@
 //  latent defect and needs the same fix under a separate, operator-gated change that
 //  re-validates the xref; until then the two intentionally differ ONLY in the lead
 //  clamp. Every other mode (Hermite/Taylor/decay + stroke clamp) stays a 1:1 port.
+//  FW 31 (2026-10-24): the twin now carries THIS file's leg clamp as a MODE
+//  (TeensyLegInterp(leg_clamp="firmware")) — 0.10 band, capped vel_ff and the
+//  frame-age-aware dead-reckoned anchor below — while its default stays motor_guard's
+//  for the xref. tests/firmware/test_leg_clamp_age_aware_twin.py pins the mode.
 //
 //  DELIBERATE DIVERGENCE (2026-07-11 clear-errors jolt forensics): the RE-ENABLE
 //  RECOVERY SLEW below has NO analog in teensy_interp.py / motor_guard, and cannot:
@@ -183,6 +187,64 @@ static volatile uint8_t s_lead_clamp_mask = 0;
 // |torque_ff[i]| exceeded TORQUE_CLAMP at ingest; cleared by the next accepted
 // frame whose torque_ff[i] is in bounds. 2026-07-14 gravity-FF observability.
 static volatile uint8_t s_torque_clamp_mask = 0;
+
+// ── Leg lead clamp: frame-age-aware anchor (FW 31) ────────────────────────────
+// plans/active/leg-lead-clamp-age-aware.md P1 / logbook 2026-10-24-leg-lead-clamp-
+// age-aware-p1-firmware. The leg lead clamp used to anchor to axes[i].pos_rev with
+// no regard for the frame's age: through a leg-bus encoder-frame drop (76-108 ms
+// measured 2026-10-24, against a healthy 1-10 ms) it pinned the command at the
+// STALE reading + MAX_LEAD_REV and jumped 11-12 mm when the next frame landed —
+// a ~10 Hz staircase the ODrive chased at the 15 A clamp (legs 1 and 2, both
+// planners). The anchor is now DEAD-RECKONED while the frame is aged:
+//   anchor = pos_rev + (raw cmd now − raw cmd at the tick the frame landed),
+// the shift frozen once the age passes MOTOR_FB_STALENESS_US (the fault task's
+// MOTOR_FB_STALE suppression is the terminating arm). A fresh frame resets the
+// shift to 0.0f, so at age 0 anchor == pos_rev BIT FOR BIT and the clamp is FW 30.
+// Through a gap the clamp's VERDICT is frozen at its last fresh value: a tracking
+// leg costs nothing, a leg that BINDS exactly as its frames stop is shoved by the
+// gap's command travel (bounded by the cap) and snapped back at the next frame —
+// the owner-accepted trade (coast coverage of the frequent gap against the rare
+// bind). Chosen over the velocity-extrapolated anchor (the hand lane's fb_ex)
+// because the legs ACCELERATE through a gap (42-200 rev/s² at the episodes) and a
+// frozen vel_rps left ~75 % of the step in the 2026-10-24 replay; this form needs
+// no velocity estimate at all. The three anchor arrays are ISR-ONLY (written and
+// read by interp_isr, zeroed by interp_reset while quiescent) so they are plain.
+// The two census arrays are the hand-lane counter idiom: ISR-written, task-read
+// (telemetry.cpp leg_clamp_diag_uplink_step → LegClampDiag 0x94 at 1 Hz),
+// naturally-aligned u32, cumulative since boot, never read-then-cleared.
+static uint64_t s_leg_anchor_ts[NUM_LEGS] = {0, 0, 0, 0, 0, 0};   // last pos_timestamp_us seen by the ISR
+static float    s_leg_cmd_ref[NUM_LEGS]   = {0, 0, 0, 0, 0, 0};   // raw command at the tick that frame landed
+static float    s_leg_dr[NUM_LEGS]        = {0, 0, 0, 0, 0, 0};   // dead-reckoned anchor shift (rev)
+static volatile uint32_t s_leg_lead_clamp_ticks[NUM_LEGS]   = {0, 0, 0, 0, 0, 0};   // clamp engaged AND on the wire
+static volatile uint32_t s_leg_stale_anchor_ticks[NUM_LEGS] = {0, 0, 0, 0, 0, 0};   // anchor age > LEG_ANCHOR_STALE_US
+
+// THE single enforcement point for the leg lead clamp's anchor (archived
+// lead-clamp-content-freshness.md § 6.1: one derivation, several consumers — the
+// primary clamp and the recovery-slew re-clamp both read anchor[i] computed ONCE per
+// tick, never a second bare pos_rev). ISR discipline: two single-word loads plus
+// one atomic_read_u64 (PRIMASK save/disable/restore — ISR-safe, the hand lane's
+// accessor since FW 17); NEVER snapshot_pos_vel, whose seqlock retry loop would
+// spin forever if this ISR preempted the writer mid-update. A torn pos/age pair
+// across a 100 Hz write is a bounded anchor error the band dwarfs. `raw_cmd` is the
+// ladder's PRE-clamp output for this tick; `now_mono` the tick's micros64().
+// ts == 0 (axis never seen) keeps the shift at 0 and counts nothing: anchor ==
+// pos_rev, exactly FW 30 (the CacheDiag seen_mask 'n/a' discipline).
+static inline float leg_clamp_anchor(uint8_t i, float raw_cmd, uint64_t now_mono) {
+  const uint64_t ts = atomic_read_u64(&axes[i].pos_timestamp_us);
+  const float    fb = axes[i].pos_rev;                 // single-word atomic read
+  if (ts != s_leg_anchor_ts[i]) {                      // a frame landed since the last tick
+    s_leg_anchor_ts[i] = ts;
+    s_leg_cmd_ref[i]   = raw_cmd;
+    s_leg_dr[i]        = 0.0f;                         // anchor snaps to the live encoder
+  }
+  if (ts != 0u) {
+    const uint64_t age_us = (now_mono > ts) ? (now_mono - ts) : 0u;
+    if (age_us <= MOTOR_FB_STALENESS_US) s_leg_dr[i] = raw_cmd - s_leg_cmd_ref[i];   // coast
+    // else: the shift keeps its value at the cap crossing — the band stops following
+    if (age_us > LEG_ANCHOR_STALE_US) ++s_leg_stale_anchor_ticks[i];   // census, NOT gated on out_en
+  }
+  return fb + s_leg_dr[i];
+}
 
 // ── Hand-lane counters + deviation-guard state (FW 17) ────────────────────────
 // CONCURRENCY, matching this file's existing discipline. The counters are
@@ -1063,13 +1125,22 @@ static void interp_isr() {
   // (This deliberately diverges from teensy_interp.py/motor_guard — see the file
   //  header. The stroke clamp below still zeros vel_ff, correctly: a physical backstop
   //  hit means "hold at the limit", where feedforward is meaningless.)
+  // FW 31: the anchor is leg_clamp_anchor() — the live encoder when the frame is
+  // fresh (bit-identical to FW 30), dead-reckoned along the raw command while it is
+  // aged (see the state block above). Computed ONCE per leg here into anchor[] and
+  // re-used by the recovery-slew re-clamp below. The engaged-tick census is gated
+  // exactly like the hand lane's lead-duty counter (FW 18: out_en && !coldstart),
+  // so an aborted or suppressed stage leaves it at zero and an absolute read means
+  // something; the mask bit is NOT gated (it reports the verdict, as before).
+  const bool leg_counts = out_en && !coldstart;
+  float anchor[NUM_LEGS];
   uint8_t clamp_mask = 0;
   for (uint8_t i = 0; i < NUM_LEGS; ++i) {
-    const float fb = axes[i].pos_rev;          // single-word atomic read
-    float dev = cmd_pos[i] - fb;
-    if (dev > LEAD)       { dev = LEAD;  clamp_mask |= (uint8_t)(1u << i); }
-    else if (dev < -LEAD) { dev = -LEAD; clamp_mask |= (uint8_t)(1u << i); }
-    cmd_pos[i] = fb + dev;
+    anchor[i] = leg_clamp_anchor(i, cmd_pos[i], now_mono);
+    float dev = cmd_pos[i] - anchor[i];
+    if (dev > LEAD)       { dev = LEAD;  clamp_mask |= (uint8_t)(1u << i); if (leg_counts) ++s_leg_lead_clamp_ticks[i]; }
+    else if (dev < -LEAD) { dev = -LEAD; clamp_mask |= (uint8_t)(1u << i); if (leg_counts) ++s_leg_lead_clamp_ticks[i]; }
+    cmd_pos[i] = anchor[i] + dev;
     // Bound the feedforward magnitude (applies whether or not the clamp engaged).
     if (cmd_vel[i] > VELFF_CAP)       cmd_vel[i] = VELFF_CAP;
     else if (cmd_vel[i] < -VELFF_CAP) cmd_vel[i] = -VELFF_CAP;
@@ -1385,11 +1456,14 @@ static void interp_isr() {
       // lagged a fast-moving encoder — a defense-in-depth backstop mirroring the primary
       // lead clamp above. The clamped value is stored back into s_recover_pos so the
       // slew state itself can never run away either.
-      const float fb = axes[i].pos_rev;   // single-word atomic read
-      float dev = p - fb;
+      // FW 31: against the SAME anchor[i] the primary clamp derived this tick (one
+      // derivation per tick), not a second bare pos_rev read — a bare read here
+      // would re-pin, through a frame gap, the command the primary clamp just let
+      // coast (archived lead-clamp-content-freshness.md § 5.2, site 3).
+      float dev = p - anchor[i];
       if (dev > LEAD)       dev = LEAD;
       else if (dev < -LEAD) dev = -LEAD;
-      p = fb + dev;
+      p = anchor[i] + dev;
       s_recover_pos[i] = p;
       cmd_pos[i] = p;                     // transmit the slewed command in place of the streamed one
       cmd_vel[i] = v;                     // vel_ff = the slew velocity (0 at the edge, ≤ RECOVER_SLEW_VEL_RPS)
@@ -1646,6 +1720,10 @@ void interp_reset() {
   s_last_tick_us = 0;
   s_lead_clamp_mask = 0;
   s_torque_clamp_mask = 0;
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) {   // FW 31 frame-age-aware anchor + census
+    s_leg_anchor_ts[i] = 0; s_leg_cmd_ref[i] = 0.0f; s_leg_dr[i] = 0.0f;
+    s_leg_lead_clamp_ticks[i] = 0; s_leg_stale_anchor_ticks[i] = 0;
+  }
   // FW 22 scheduled playback
   s_sq_n = 0;
   for (uint8_t gi = 0; gi < 2; ++gi) s_sg[gi] = SchedGroup{};
@@ -1720,6 +1798,10 @@ uint32_t interp_recover_slew_ticks() { return s_recover_slew_ticks; }
 uint32_t interp_extrap_ticks() { return s_extrap_ticks; }
 uint8_t interp_lead_clamp_mask() { return s_lead_clamp_mask; }
 uint8_t interp_torque_clamp_mask() { return s_torque_clamp_mask; }
+// FW 31 per-leg lead-clamp census (LegClampDiag 0x94). Single-word volatile reads of
+// ISR-written u32s; out-of-range legs read 0 (an absent leg is 'n/a', never a fault).
+uint32_t interp_leg_lead_clamp_ticks(uint8_t i)   { return (i < NUM_LEGS) ? s_leg_lead_clamp_ticks[i]   : 0u; }
+uint32_t interp_leg_stale_anchor_ticks(uint8_t i) { return (i < NUM_LEGS) ? s_leg_stale_anchor_ticks[i] : 0u; }
 
 void interp_begin_stow() {
   // PRIMASK-publish (mirror interp_on_setpoint's exemplar above). The 500 Hz

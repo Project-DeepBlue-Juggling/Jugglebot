@@ -72,7 +72,7 @@ def test_crc16_matches_generator(gen, proto):
 @pytest.mark.parametrize("name", [
     "Setpoint", "HeartbeatJ2T", "Telemetry", "Diagnostic",
     "HeartbeatT2J", "Profile", "PlatformFrame", "HandCmdEcho", "HandSensor",
-    "CanErrors", "BridgeTxDiag", "BridgeIdentity",
+    "CanErrors", "BridgeTxDiag", "BridgeIdentity", "LegClampDiag",
     "RpcRequest", "RpcResponse",
 ])
 def test_message_pack_unpack_roundtrip(proto, gen, name):
@@ -112,6 +112,7 @@ def test_message_pack_unpack_roundtrip(proto, gen, name):
     ("PlatformFrame", "PLATFORM_FRAME"), ("HandCmdEcho", "HAND_CMD_ECHO"),
     ("HandSensor", "HAND_SENSOR"), ("CanErrors", "CAN_ERRORS"),
     ("BridgeTxDiag", "BRIDGE_TX_DIAG"), ("BridgeIdentity", "BRIDGE_IDENTITY"),
+    ("LegClampDiag", "LEG_CLAMP_DIAG"),
 ])
 def test_frame_encode_decode_roundtrip(proto, gen, name, msg_type_member):
     msg_spec = next(m for m in gen.MESSAGES if m.name == name)
@@ -517,7 +518,13 @@ def test_wire_layout_frozen(gen):
     # relative) became release_wall_us (u64, absolute) — 16→20 B — and
     # ResultBbThrow (i32 lead_us, 4 B) was added. Previous digest:
     #   681bd26e16941f4b55ae8ba83741af1f674510b175f762d862399169339f5250
-    _EXPECTED = "2d9d7b7b0183535b6b486f49dba457cf2c09785126846bc4b8b0345eed946f8a"
+    # Re-pinned for the ADDITIVE LegClampDiag uplink (2026-10-24, can-bridge FW 31,
+    # plan leg-lead-clamp-age-aware.md P1): MsgType 0x94 + 48 B (u32[6]
+    # lead_clamp_ticks + u32[6] stale_anchor_ticks, cumulative since boot). No
+    # existing message changed, so PROTOCOL_VERSION stays 10; an old host ignores
+    # 0x94. Previous digest:
+    #   2d9d7b7b0183535b6b486f49dba457cf2c09785126846bc4b8b0345eed946f8a
+    _EXPECTED = "b8f8027feb744910a7d13cb9a464bdb7783945cf7a8f1f5ea9623c68676e288d"
     assert digest == _EXPECTED, (
         "The UDP wire LAYOUT changed (a message/arg field layout, a framed MsgType "
         "value, or a framing constant). If INCOMPATIBLE, bump PROTOCOL_VERSION. Either "

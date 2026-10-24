@@ -57,6 +57,7 @@ class MsgType(IntEnum):
     CACHE_DIAG = 145  # 1 Hz encoder-cache freshness census (per-axis age floor/peak) + CAN RX-ring occupancy (STREAM, T→J)
     RING_DIAG = 146  # 1 Hz CAN RX-ring TRUE-occupancy census (true_depth vs reported _available = the leak) + jugglebot delivery lag + SDO RTT (STREAM, T→J)
     BB_YAW_ESTIMATE = 147  # Ball Butler yaw estimate @100Hz, paired 1:1 with BB_AXIS_ESTIMATES by t_bridge_us (STREAM, T→J)
+    LEG_CLAMP_DIAG = 148  # 1 Hz per-leg lead-clamp census: clamp-engaged ticks + stale-anchor ticks, cumulative since boot (STREAM, T→J)
 
 class RpcMethod(IntEnum):
     NOP = 0  # No-op (link test)
@@ -773,6 +774,26 @@ class RingDiag:
         vals = _RING_DIAG_STRUCT.unpack(data[:103])
         it = iter(vals)
         return cls(next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
+
+# LegClampDiag: PER-LEG LEAD-CLAMP CENSUS, 1 Hz (can-bridge FW 31, plans/active/leg-lead-clamp-age-aware.md P1). Two cumulative-since-boot u32 counters per leg, written by the 500 Hz interp ISR and read by task_telem (the s_hand_lead_clamp_ticks / s_hand_stale_holds idiom: single writer, naturally-aligned words, the consumer differences two reads, nothing is ever read-then-cleared — a clear at the emit site would swallow ISR increments). WHY IT EXISTS: on 2026-10-24 three single-leg ~10 Hz vibrations (legs 1 and 2, two with the iq setpoint on the 15 A clamp) were the leg lead clamp pinning the command at a STALE encoder reading + MAX_LEAD_REV through 76-108 ms encoder-frame gaps, and the only wire witness was lead_clamp_mask on the 10 Hz heartbeat, which under-sampled a 500 Hz verdict so badly the engagement had to be INFERRED from the staircase. These counters make the 500 Hz truth readable at 1 Hz: lead_clamp_ticks advancing over a window says the clamp engaged on that leg and for how many ticks; stale_anchor_ticks advancing says that leg's encoder anchor was older than LEG_ANCHOR_STALE_US (30 ms; healthy p95 <= 10 ms, a drop is 76-108 ms) — i.e. a frame-drop episode happened on that leg whether or not the clamp engaged. The P3 Sitting gate reads both: a stale window WITHOUT clamp engagement is the age-aware anchor doing its job; a stale window WITH engagement is the residue. GATED like the hand lane (FW 18): lead_clamp_ticks counts only ticks whose command reached the wire (out_en && !coldstart), so an absolute read after an aborted stage is still meaningful; stale_anchor_ticks is NOT gated (an anchor's age is a fact about the bus, not about the output gate). Additive — no existing frame changes, so NO PROTOCOL_VERSION bump (the LegCmd / HandSensor / BridgeTxDiag / ClockDiag / CacheDiag / RingDiag precedent): an old Jetson ignores the unknown msg_type and a new Jetson renders never-seen as unknown. An FW <= 30 board never sends this frame, so its consumer surface must read EMPTY, never error. INSTRUMENTATION ONLY: nothing in the firmware reads these counters.
+LEG_CLAMP_DIAG_FMT = '<IIIIIIIIIIII'
+LEG_CLAMP_DIAG_SIZE = 48
+_LEG_CLAMP_DIAG_STRUCT = struct.Struct(LEG_CLAMP_DIAG_FMT)
+assert _LEG_CLAMP_DIAG_STRUCT.size == 48
+
+@dataclass
+class LegClampDiag:
+    lead_clamp_ticks: tuple = field(default_factory=lambda: (0,) * 6)
+    stale_anchor_ticks: tuple = field(default_factory=lambda: (0,) * 6)
+
+    def pack(self) -> bytes:
+        return _LEG_CLAMP_DIAG_STRUCT.pack(*self.lead_clamp_ticks, *self.stale_anchor_ticks)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'LegClampDiag':
+        vals = _LEG_CLAMP_DIAG_STRUCT.unpack(data[:48])
+        it = iter(vals)
+        return cls(tuple(next(it) for _ in range(6)), tuple(next(it) for _ in range(6)))
 
 # RpcRequest: Generic RPC envelope. `method` selects the operation; `args` is a method-specific blob (see docs). `req_id` is echoed in the response for matching independent of the frame sequence counter.
 RPC_REQUEST_FMT = '<HHHH'

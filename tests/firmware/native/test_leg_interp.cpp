@@ -1856,3 +1856,206 @@ TEST_CASE("FW 22 hand torque FF: cover exhaustion → C2 stop → hold keeps tau
   CHECK(v.back().tau == 0.0f);
   CHECK(v.back().hand_frame);
 }
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  FW 31 — FRAME-AGE-AWARE LEG LEAD CLAMP (plans/active/leg-lead-clamp-age-aware.md P1)
+//  The 2026-10-24 staircase: a leg-bus encoder-frame drop froze axes[i].pos_rev
+//  for 76-108 ms while the lead clamp kept anchoring to it, pinning the command at
+//  stale fb + MAX_LEAD_REV and jumping 11-12 mm per frame. The anchor is now
+//  dead-reckoned along the raw command while the frame is aged (leg_clamp_anchor).
+//  Fixture: leg 0 present, output ENABLED (the engaged-tick census is gated on the
+//  wire like the hand lane's), the recovery slew disarmed on a converged edge tick,
+//  then a constant-velocity Hermite stream (u0 -> u1 per 25 ms, v0 = chord) at
+//  LEG_V rev/s whose encoder frames the test either refreshes or withholds.
+// ═══════════════════════════════════════════════════════════════════════════
+
+static constexpr float LEG_V = 3.0f;   // rev/s (212 mm/s — the oval return stroke's order)
+
+// Fresh encoder frame for leg 0: pos + a NOW stamp (what decode_into_cache writes).
+static void leg0_frame(float pos) { write_pos_vel(axes[0], pos, LEG_V, fake_mono_us()); }
+
+// Arm leg 0 streaming with output enabled and the slew already converged: the
+// command sits AT the encoder on the enable edge, so the recovery slew's edge tick
+// is the documented one-tick no-op and every later tick runs the plain ladder.
+static void fw31_arm_leg0(float pos0) {
+  reset_interp_test();
+  axes[0].heartbeat_seen = true;
+  leg0_frame(pos0);
+  float u0[6] = {pos0, 0, 0, 0, 0, 0}, zeros[6] = {0, 0, 0, 0, 0, 0};
+  stage(u0, nullptr, zeros, zeros, 1);
+  interp_set_output_enabled(true);
+  fake_advance(INTERP_PERIOD_US);
+  interp_isr();                                  // enable edge: converged → disarmed
+  REQUIRE_FALSE(s_recover_slewing);
+}
+
+// Stage the k-th 25 ms Hermite segment of the constant-velocity stream from pos0.
+static void fw31_stage_segment(float pos0, int k, uint16_t seq) {
+  const float a = pos0 + LEG_V * SEG_T * (float)k, b = a + LEG_V * SEG_T;
+  float u0[6] = {a, 0, 0, 0, 0, 0}, u1[6] = {b, 0, 0, 0, 0, 0};
+  float v0[6] = {LEG_V, 0, 0, 0, 0, 0}, zeros[6] = {0, 0, 0, 0, 0, 0};
+  stage(u0, u1, v0, zeros, seq);
+}
+
+TEST_CASE("FW 31 lead clamp: a FRESH frame this tick anchors to the live encoder, bit-identical to FW 30") {
+  fw31_arm_leg0(1.0f);
+  // Command 1.0 rev ahead of a fresh encoder: FW 30 pins at fb + MAX_LEAD_REV. So
+  // must FW 31 — the shift is exactly 0.0f on a frame tick, so anchor == fb and the
+  // emitted value is the SAME float expression as before (fb + LEAD).
+  float u0[6] = {2.0f, 0, 0, 0, 0, 0}, v0[6] = {2.0f, 0, 0, 0, 0, 0}, zeros[6] = {0, 0, 0, 0, 0, 0};
+  fake_advance(INTERP_PERIOD_US);
+  leg0_frame(1.0f);                              // fresh stamp this tick
+  stage(u0, nullptr, v0, zeros, 2);
+  interp_isr();
+  CHECK(axes[0].target_pos_rev == 1.0f + MAX_LEAD_REV);          // exact, not Approx
+  CHECK(axes[0].target_vel_rps == doctest::Approx(2.0f));        // vel_ff kept, as FW 30
+  CHECK((interp_lead_clamp_mask() & 0x1u) != 0);
+  CHECK(interp_leg_lead_clamp_ticks(0) == 1u);                   // on the wire → counted
+  CHECK(interp_leg_stale_anchor_ticks(0) == 0u);                 // age 0 → no census
+  // A leg NEVER seen (pos_timestamp_us == 0) is FW 30 exactly and counts nothing.
+  CHECK(axes[1].pos_timestamp_us == 0u);
+  CHECK(interp_leg_stale_anchor_ticks(1) == 0u);
+  CHECK(interp_leg_lead_clamp_ticks(1) == 0u);
+}
+
+TEST_CASE("FW 31 lead clamp: through an encoder-frame gap the command COASTS (no pin, stale census counts, no step at the frame's return)") {
+  // Frames stop at t0 with the leg at 1.0 moving at LEG_V; the stream keeps
+  // advancing 0.006 rev/tick. FW 30 would pin at 1.10 after ~17 ticks and step
+  // 0.3 rev when the frame returned; FW 31 must emit the raw command throughout.
+  fw31_arm_leg0(1.0f);
+  const float dt = INTERP_PERIOD_US * 1e-6f;
+  uint16_t seq = 2;
+  float prev = axes[0].target_pos_rev, max_step = 0.0f;
+  // 100 ms gap = 50 ticks, four 25 ms segments; NO leg0_frame() calls inside.
+  for (int tick = 0; tick < 50; ++tick) {
+    if (tick % 12 == 0) fw31_stage_segment(1.0f, tick / 12, seq++);   // a knot every ~24 ms
+    fake_advance(INTERP_PERIOD_US);
+    interp_isr();
+    const float raw = s_base_pos[0] + LEG_V * ((float)((double)(micros64() - s_base_ts_us) * 1e-6));
+    // Emitted == the raw ladder output (Hermite of a straight line IS the line),
+    // never the frozen-encoder pin at 1.10.
+    CHECK(std::fabs(axes[0].target_pos_rev - raw) < 2e-3f);
+    CHECK((interp_lead_clamp_mask() & 0x1u) == 0);
+    max_step = std::max(max_step, std::fabs(axes[0].target_pos_rev - prev));
+    prev = axes[0].target_pos_rev;
+  }
+  CHECK(prev > 1.0f + MAX_LEAD_REV + 0.1f);      // decisively PAST where FW 30 would have pinned
+  CHECK(interp_leg_lead_clamp_ticks(0) == 0u);
+  // Stale census: ticks with age > LEG_ANCHOR_STALE_US (30 ms) inside a 100 ms gap
+  // = ticks 16..50 → 35 (±1 for the arm tick's phase).
+  CHECK(interp_leg_stale_anchor_ticks(0) >= 34u);
+  CHECK(interp_leg_stale_anchor_ticks(0) <= 36u);
+
+  SUBCASE("the recovery-slew re-clamp uses the SAME dead-reckoned anchor (one derivation per tick)") {
+    // Force the slew active and converged on the raw command mid-gap: with a bare
+    // pos_rev re-clamp it would re-pin the emitted command at 1.10; against
+    // anchor[i] it passes the coasted command through untouched.
+    // Converged = the slew state sits ON this tick's raw command (within
+    // RECOVER_SLEW_DONE_EPS_REV), so the ramp is a no-op and only the re-clamp acts.
+    const float raw_next = s_base_pos[0] + LEG_V * ((float)((double)(micros64() + INTERP_PERIOD_US - s_base_ts_us) * 1e-6));
+    s_recover_slewing = true;
+    s_recover_pos[0] = raw_next;
+    fake_advance(INTERP_PERIOD_US);
+    interp_isr();
+    CHECK(std::fabs(axes[0].target_pos_rev - raw_next) < 2e-3f);
+    CHECK(axes[0].target_pos_rev > 1.0f + MAX_LEAD_REV + 0.1f);   // NOT re-pinned at 1.10
+    s_recover_slewing = false;
+  }
+
+  SUBCASE("the frame returns with the leg ON the command: the anchor snaps to it, nothing steps") {
+    fake_advance(INTERP_PERIOD_US);
+    leg0_frame(prev + LEG_V * dt);               // the leg tracked the stream through the gap
+    interp_isr();
+    const float step = std::fabs(axes[0].target_pos_rev - prev);
+    CHECK(step <= LEG_V * dt + 2e-3f);           // one tick of travel, no jump
+    CHECK((interp_lead_clamp_mask() & 0x1u) == 0);
+    CHECK(s_leg_dr[0] == 0.0f);                  // shift reset exactly
+  }
+
+  SUBCASE("the frame returns with the leg BOUND at 1.0: the clamp re-engages against the live encoder, as FW 30 would") {
+    fake_advance(INTERP_PERIOD_US);
+    leg0_frame(1.0f);                            // the leg never moved (bind-plus-gap)
+    interp_isr();
+    CHECK(axes[0].target_pos_rev == 1.0f + MAX_LEAD_REV);   // snapped back onto the band
+    CHECK((interp_lead_clamp_mask() & 0x1u) != 0);
+  }
+}
+
+TEST_CASE("FW 31 lead clamp: past MOTOR_FB_STALENESS_US the shift FREEZES and the clamp re-engages; a frame resets it") {
+  fw31_arm_leg0(1.0f);
+  uint16_t seq = 2;
+  const int cap_ticks = (int)(MOTOR_FB_STALENESS_US / INTERP_PERIOD_US);   // 75
+  float frozen_dr = -1.0f;
+  for (int tick = 0; tick < cap_ticks + 40; ++tick) {   // 230 ms dark
+    if (tick % 12 == 0) fw31_stage_segment(1.0f, tick / 12, seq++);
+    fake_advance(INTERP_PERIOD_US);
+    interp_isr();
+    if (tick == cap_ticks + 2) frozen_dr = s_leg_dr[0];
+  }
+  // The shift stopped growing at the cap (≈ LEG_V * 0.150 = 0.45 rev)…
+  CHECK(frozen_dr == doctest::Approx(LEG_V * 0.150f).epsilon(0.05));
+  CHECK(s_leg_dr[0] == frozen_dr);
+  // …so the band stopped following and the clamp is back on: emitted = fb + dr + LEAD.
+  CHECK(axes[0].target_pos_rev == doctest::Approx(1.0f + frozen_dr + MAX_LEAD_REV).epsilon(1e-4));
+  CHECK((interp_lead_clamp_mask() & 0x1u) != 0);
+  CHECK(interp_leg_lead_clamp_ticks(0) > 0u);
+  CHECK(interp_leg_stale_anchor_ticks(0) >= (uint32_t)(cap_ticks + 40 - 16));
+  // A frame lands with the leg where the stream says it is → shift 0, anchor live, coast resumes.
+  const float raw_now = s_base_pos[0] + LEG_V * ((float)((double)(micros64() + INTERP_PERIOD_US - s_base_ts_us) * 1e-6));
+  fake_advance(INTERP_PERIOD_US);
+  leg0_frame(raw_now);
+  interp_isr();
+  CHECK(s_leg_dr[0] == 0.0f);
+  CHECK(std::fabs(axes[0].target_pos_rev - raw_now) < 2e-3f);
+  CHECK((interp_lead_clamp_mask() & 0x1u) == 0);
+}
+
+TEST_CASE("FW 31 lead clamp: the engaged-tick census is gated on the wire; the stale census is not") {
+  fw31_arm_leg0(1.0f);
+  interp_set_output_enabled(false);              // suppressed stage
+  float u0[6] = {2.0f, 0, 0, 0, 0, 0}, zeros[6] = {0, 0, 0, 0, 0, 0};
+  uint16_t seq = 2;
+  for (int tick = 0; tick < 30; ++tick) {        // FRESH frame every tick, command 1 rev ahead
+    fake_advance(INTERP_PERIOD_US);
+    leg0_frame(1.0f);
+    stage(u0, nullptr, zeros, zeros, seq++);
+    interp_isr();
+  }
+  CHECK((interp_lead_clamp_mask() & 0x1u) != 0);        // the verdict is still reported…
+  CHECK(interp_leg_lead_clamp_ticks(0) == 0u);           // …but nothing reached the wire
+  CHECK(interp_leg_stale_anchor_ticks(0) == 0u);         // fresh every tick → no census
+  for (int tick = 0; tick < 30; ++tick) {        // now 60 ms DARK, still suppressed
+    fake_advance(INTERP_PERIOD_US);
+    stage(u0, nullptr, zeros, zeros, seq++);
+    interp_isr();
+  }
+  CHECK(interp_leg_stale_anchor_ticks(0) >= 14u);        // age > 30 ms on ticks 16..30, ungated
+  CHECK(interp_leg_lead_clamp_ticks(0) == 0u);
+  interp_reset();                                        // quiescent reset zeroes both
+  CHECK(interp_leg_stale_anchor_ticks(0) == 0u);
+  CHECK(interp_leg_lead_clamp_ticks(0) == 0u);
+}
+
+TEST_CASE("FW 31 lead clamp, PINNED EXPOSURE: a command DISCONTINUITY while the frame is aged passes until the next frame") {
+  // The accepted trade, made visible: the dead-reckoned shift follows the RAW
+  // command, so a step in the command that lands while no fresh frame has arrived
+  // is absorbed into the anchor and emitted unclamped — for at most one frame
+  // interval (1-10 ms healthy, the cap in a drop). FW 30 would hold it at fb + LEAD
+  // from the first tick. Bounds that remain: the stream is continuous by contract
+  // (the trajectory node's feasibility gates), the recovery slew owns the enable
+  // edge, MAX_DEVIATION (u0 vs raw encoder, 1.0 rev at 10 Hz) and the ODrive's own
+  // vel/current limits. The NEXT fresh frame re-clamps against the live encoder.
+  // Recorded in logbook 2026-10-24-leg-lead-clamp-age-aware-p1-firmware § Discussion.
+  fw31_arm_leg0(1.0f);
+  float u0[6] = {2.0f, 0, 0, 0, 0, 0}, zeros[6] = {0, 0, 0, 0, 0, 0};
+  fake_advance(INTERP_PERIOD_US);                // no frame this tick: the anchor is aged by one tick
+  stage(u0, nullptr, zeros, zeros, 2);           // a 1 rev step
+  interp_isr();
+  CHECK(axes[0].target_pos_rev == doctest::Approx(2.0f).epsilon(1e-4));   // passed (FW 30: 1.10)
+  CHECK((interp_lead_clamp_mask() & 0x1u) == 0);
+  fake_advance(INTERP_PERIOD_US);
+  leg0_frame(1.0f);                              // the frame lands: the leg did not move
+  interp_isr();
+  CHECK(axes[0].target_pos_rev == 1.0f + MAX_LEAD_REV);   // re-clamped against the live encoder
+  CHECK((interp_lead_clamp_mask() & 0x1u) != 0);
+}

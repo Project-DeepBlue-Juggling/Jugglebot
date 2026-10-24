@@ -57,6 +57,7 @@ namespace MsgType {
   constexpr uint8_t CACHE_DIAG = 145u;  // 1 Hz encoder-cache freshness census (per-axis age floor/peak) + CAN RX-ring occupancy (STREAM, T→J)
   constexpr uint8_t RING_DIAG = 146u;  // 1 Hz CAN RX-ring TRUE-occupancy census (true_depth vs reported _available = the leak) + jugglebot delivery lag + SDO RTT (STREAM, T→J)
   constexpr uint8_t BB_YAW_ESTIMATE = 147u;  // Ball Butler yaw estimate @100Hz, paired 1:1 with BB_AXIS_ESTIMATES by t_bridge_us (STREAM, T→J)
+  constexpr uint8_t LEG_CLAMP_DIAG = 148u;  // 1 Hz per-leg lead-clamp census: clamp-engaged ticks + stale-anchor ticks, cumulative since boot (STREAM, T→J)
 }
 namespace RpcMethod {
   constexpr uint16_t NOP = 0x0000u;  // No-op (link test)
@@ -474,6 +475,13 @@ struct RingDiagPayload {
 };
 static_assert(sizeof(RingDiagPayload) == 103, "RingDiagPayload size drift");
 
+// LegClampDiag: PER-LEG LEAD-CLAMP CENSUS, 1 Hz (can-bridge FW 31, plans/active/leg-lead-clamp-age-aware.md P1). Two cumulative-since-boot u32 counters per leg, written by the 500 Hz interp ISR and read by task_telem (the s_hand_lead_clamp_ticks / s_hand_stale_holds idiom: single writer, naturally-aligned words, the consumer differences two reads, nothing is ever read-then-cleared — a clear at the emit site would swallow ISR increments). WHY IT EXISTS: on 2026-10-24 three single-leg ~10 Hz vibrations (legs 1 and 2, two with the iq setpoint on the 15 A clamp) were the leg lead clamp pinning the command at a STALE encoder reading + MAX_LEAD_REV through 76-108 ms encoder-frame gaps, and the only wire witness was lead_clamp_mask on the 10 Hz heartbeat, which under-sampled a 500 Hz verdict so badly the engagement had to be INFERRED from the staircase. These counters make the 500 Hz truth readable at 1 Hz: lead_clamp_ticks advancing over a window says the clamp engaged on that leg and for how many ticks; stale_anchor_ticks advancing says that leg's encoder anchor was older than LEG_ANCHOR_STALE_US (30 ms; healthy p95 <= 10 ms, a drop is 76-108 ms) — i.e. a frame-drop episode happened on that leg whether or not the clamp engaged. The P3 Sitting gate reads both: a stale window WITHOUT clamp engagement is the age-aware anchor doing its job; a stale window WITH engagement is the residue. GATED like the hand lane (FW 18): lead_clamp_ticks counts only ticks whose command reached the wire (out_en && !coldstart), so an absolute read after an aborted stage is still meaningful; stale_anchor_ticks is NOT gated (an anchor's age is a fact about the bus, not about the output gate). Additive — no existing frame changes, so NO PROTOCOL_VERSION bump (the LegCmd / HandSensor / BridgeTxDiag / ClockDiag / CacheDiag / RingDiag precedent): an old Jetson ignores the unknown msg_type and a new Jetson renders never-seen as unknown. An FW <= 30 board never sends this frame, so its consumer surface must read EMPTY, never error. INSTRUMENTATION ONLY: nothing in the firmware reads these counters.
+struct LegClampDiagPayload {
+  uint32_t lead_clamp_ticks[6];  // Per leg (0-5): 500 Hz ticks on which the leg lead clamp engaged AND the command reached the wire, CUMULATIVE SINCE BOOT. Difference two samples for a window count; 500 x window_seconds is the per-leg ceiling. u32 wraps after ~99 days of continuous engagement; unsigned differencing is wrap-correct
+  uint32_t stale_anchor_ticks[6];  // Per leg (0-5): 500 Hz ticks on which the leg's encoder anchor age (now - pos_timestamp_us) exceeded LEG_ANCHOR_STALE_US (30 ms), CUMULATIVE SINCE BOOT and NOT gated on the output enable. A 100 ms frame gap adds ~35 (ticks 16..50 of the gap). An axis never seen (pos_timestamp_us == 0) is NOT counted: its anchor has no age to census (the CacheDiag seen_mask 'n/a' discipline), and a bench rig with absent legs must not spin six counters at 500 Hz
+};
+static_assert(sizeof(LegClampDiagPayload) == 48, "LegClampDiagPayload size drift");
+
 // RpcRequest: Generic RPC envelope. `method` selects the operation; `args` is a method-specific blob (see docs). `req_id` is echoed in the response for matching independent of the frame sequence counter.
 struct RpcRequestPayload {
   uint16_t method;  // RpcMethod enum
@@ -517,6 +525,7 @@ constexpr uint16_t BRIDGE_IDENTITY_SIZE = 3u;
 constexpr uint16_t CLOCK_DIAG_SIZE = 49u;
 constexpr uint16_t CACHE_DIAG_SIZE = 157u;
 constexpr uint16_t RING_DIAG_SIZE = 103u;
+constexpr uint16_t LEG_CLAMP_DIAG_SIZE = 48u;
 constexpr uint16_t RPC_REQUEST_SIZE = 8u;
 constexpr uint16_t RPC_RESPONSE_SIZE = 8u;
 

@@ -86,6 +86,24 @@ uint32_t interp_extrap_ticks();
 // FW 17 hand lead-duty read.
 uint8_t  interp_lead_clamp_mask();
 
+// ── FW 31 per-leg lead-clamp census (LegClampDiag 0x94, 1 Hz from task_telem) ───
+// CUMULATIVE SINCE BOOT, the same contract as the occupancy census above: the
+// consumer differences two reads, there is no reset entry point (a read-then-clear
+// at the emit site would swallow ISR increments). plans/active/leg-lead-clamp-age-
+// aware.md P1.
+//   interp_leg_lead_clamp_ticks(i)   — ticks on which leg i's lead clamp engaged AND
+//                                      the command reached the wire (out_en &&
+//                                      !coldstart, the FW 18 hand-lane gate).
+//   interp_leg_stale_anchor_ticks(i) — ticks on which leg i's encoder anchor age
+//                                      exceeded LEG_ANCHOR_STALE_US (30 ms); NOT
+//                                      gated — a frame gap is a fact about the bus.
+//                                      A never-seen axis (pos_timestamp_us == 0)
+//                                      counts nothing.
+// Read together: stale ticks WITHOUT clamp ticks is the frame-age-aware anchor
+// coasting through a gap (the design working); both advancing is the residue.
+uint32_t interp_leg_lead_clamp_ticks(uint8_t i);
+uint32_t interp_leg_stale_anchor_ticks(uint8_t i);
+
 // Per-leg torque_ff-ingest-clamp bitmask from the most recent ACCEPTED setpoint
 // frame (bit i = leg i; set when |torque_ff[i]| was clamped to
 // Dynamics::TORQUE_FF_FIRMWARE_CLAMP_WIRE_NM at UDP ingest). Diagnostic telemetry
