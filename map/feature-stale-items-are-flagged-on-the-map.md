@@ -1,9 +1,9 @@
 ---
 kind: feature
 title: 'Stale items: flag items left in the inbox or in progress too long'
-status: inbox
+status: in_progress
 created: '2026-10-25'
-updated: '2026-10-25T10:00:00Z'
+updated: '2026-10-25T13:21:09Z'
 owners:
 - harrison
 priority: medium
@@ -28,3 +28,7 @@ An item can sit in `inbox` or `in_progress` indefinitely with nothing on the map
 
 - The badge and the CLI agree on the same fixture set (one test each side, same dates).
 - A Progress note resets the clock and a save that changes nothing does not: `updated` is bumped by every write (DOCUMENTATION_GUIDE § 2.10), so either the app skips no-op writes or staleness is dated from the last `## Progress` line, decided when this is planned.
+
+## Progress
+
+- 2026-10-26: 2026-10-25 - mapkit half: is_stale, items --stale, no-op writes (Jugglebot side); app badge pending (fork)

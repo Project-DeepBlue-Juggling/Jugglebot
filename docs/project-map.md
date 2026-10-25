@@ -95,7 +95,7 @@ _Status: closed (complete)._
 - feature: [Nightly status chip in the map header](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-nightly-status-chip-in-the-map-header.md) (inbox)
 - feature: [Quick capture: file a bug or idea from the GUI's Robot tab mid-sitting](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-quick-capture-files-a-map-item-from-the-robot-tab.md) (inbox)
 - feature: [Search across items, plans and glossary terms](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-search-across-items-plans-and-glossary.md) (inbox)
-- feature: [Stale items: flag items left in the inbox or in progress too long](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-stale-items-are-flagged-on-the-map.md) (inbox)
+- feature: [Stale items: flag items left in the inbox or in progress too long](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-stale-items-are-flagged-on-the-map.md) (in_progress)
 
 ## Two-ball skill stack
 
@@ -149,7 +149,7 @@ _Status: closed (complete)._
 | feature | [Nightly status chip in the map header](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-nightly-status-chip-in-the-map-header.md) | inbox | low | Map improvements | filed 2026-10-25 |
 | feature | [Quick capture: file a bug or idea from the GUI's Robot tab mid-sitting](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-quick-capture-files-a-map-item-from-the-robot-tab.md) | inbox | high | Map improvements | filed 2026-10-25 |
 | feature | [Search across items, plans and glossary terms](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-search-across-items-plans-and-glossary.md) | inbox | medium | Map improvements | filed 2026-10-25 |
-| feature | [Stale items: flag items left in the inbox or in progress too long](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-stale-items-are-flagged-on-the-map.md) | inbox | medium | Map improvements | filed 2026-10-25 |
+| feature | [Stale items: flag items left in the inbox or in progress too long](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-stale-items-are-flagged-on-the-map.md) | in_progress | medium | Map improvements | filed 2026-10-25 |
 | bug | [Wave camera: CLIP_MISSING on the first start after a camera power-cycle](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-wave-camera-clip-missing-on-first-start-after-a-camera-power-cycle.md) | inbox | low | Wave camera on CAN3 | filed 2026-10-25 |
 | feature | [Wave camera: optical frame calibration maps the START tick to a recorded frame](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-wave-camera-optical-frame-calibration.md) | inbox | low | Wave camera on CAN3 | filed 2026-10-25 |
 | feature | [Wave camera: a shared JSON wire-vector fixture for the adapter firmware and the node](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-wave-camera-shared-json-wire-vector-fixture.md) | inbox | low | Wave camera on CAN3 | filed 2026-10-25 |
