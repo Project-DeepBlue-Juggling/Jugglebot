@@ -2,22 +2,26 @@
 
 Every command that moves a `map/` item follows this page instead of copying steps. Item model: `DOCUMENTATION_GUIDE.md` § 2.10. Tool: `mapkit/itemcli.py`. Run with the project venv from the repo root.
 
+## Naming an Item
+
+Every Item has a short ID `JB-<n>` (frontmatter `id:`, one global sequence; plan `plans/active/map-item-ids.md`). Every command below takes the ID (`JB-12`, `jb12`, `jb-12`, any case), the stem (`bug-x`) or the bare slug (`x`); resolution is stem, then slug, then ID. **Bare digits (`12`) are accepted by read commands only** (`items`, `show`): on a write they are an error, because GitHub issue numbers live alongside and a one-digit typo in one sequence lands on another real Item. Every write prints `JB-n <stem> ... <title>`; check it names the Item you meant. Stored references (`parent`, `blocked_by`, `links`) stay stems: an ID typed into `item new --parent` / `--link` is stored as the stem.
+
 ## Reads (silent, short)
 
-- `python -m mapkit show <pathway>`: Destination, active plans with step table, open children by kind. Quote only the Destination and the open-bug lines into context.
-- `python -m mapkit items [--pathway X] [--kind K] [--open | --status S] [--stale] [--json]`: one line per item; `--stale` keeps only items left too long (clock = newest dated Progress line, else `created`; inbox 30 d, backlog 60 d, in_progress 14 d) and appends the age and clock date.
+- `python -m mapkit show <pathway slug or ID>`: Destination, active plans with step table, open children by kind. Quote only the Destination and the open-bug lines into context.
+- `python -m mapkit items [--pathway X] [--kind K] [--open | --status S] [--stale] [--json]`: one line per item, ID first; `--stale` keeps only items left too long (clock = newest dated Progress line, else `created`; inbox 30 d, backlog 60 d, in_progress 14 d) and appends the age and clock date.
 - The pathway slug is the `pathway:` of the plan (or the item's `parent:`). No pathway found: skip the read, do not ask.
 
 ## Writes
 
 1. **Set status** (with `--commit` the CLI pulls `--ff-only` first; before a close without `--commit`, run `git fetch && git status -sb` and `git pull --ff-only` yourself. The CLI also validates the status for the kind, refuses to re-open a `complete` item or start one another owner holds, appends a dated `## Progress` line, de-duplicates `--link`, regenerates `docs/project-map.md`):
-   `python -m mapkit item set-status <slug> <status> [--note TEXT] [--link PATH]... [--owner NAME] [--force] [--commit [--no-push]]`
+   `python -m mapkit item set-status <id|stem|slug> <status> [--note TEXT] [--link PATH]... [--owner NAME] [--force] [--commit [--no-push]]`
 2. **Which commit carries what** (hybrid rule, owner decision 2026-10-25):
-   - **Start and progress notes** (`in_progress`, evidence lines): `--commit`. Its own `map: <status> <title>` commit, no `Logbook-Entry` trailer, pushed at once so the app shows it.
+   - **Start and progress notes** (`in_progress`, evidence lines): `--commit`. Its own `map: <status> JB-n <title>` commit, no `Logbook-Entry` trailer, pushed at once so the app shows it.
    - **Closing** (`complete`): omit `--commit`. The CLI prints the two paths (`map/<file>`, `docs/project-map.md`); stage them into the SAME commit as the fix and its logbook entry, which carries the `Logbook-Entry:` trailer. Reason: a `complete` item whose fix was reverted or never pushed is the worst map lie; bundled, a revert reopens the item textually.
    - **`promoted`, `dropped`, filing**: own `map:` commit, no trailer.
    - If the push races the app: `git pull --rebase`, re-run `python -m mapkit gen`, stage again.
-3. **Announce** a status change in one line (`bug-x -> in_progress`). No approval step. The one exception is a **Pathway** going `complete`: always ask the owner.
+3. **Announce** a status change in one line (`JB-12 bug-x -> in_progress`). No approval step. The one exception is a **Pathway** going `complete`: always ask the owner.
 4. **Scoped tests** after a write: `pytest -q tests/sim/test_map_items.py tests/sim/test_glossary_avoid_words.py tests/sim/test_mapkit_docs.py` (item bodies are inside the Avoid-word scope).
 
 ## Rules
@@ -25,4 +29,5 @@ Every command that moves a `map/` item follows this page instead of copying step
 - Subagents never write map files; the calling command does. They return "item to close: <slug>" in their final message.
 - Never hand-edit YAML; `set-status` and `mapkit.items.write_item` keep the canonical form.
 - Re-setting the same status without `--note` is a no-op ("unchanged", nothing written or committed). With `--note` it is not idempotent: re-running appends another Progress line, so check the status first (`mapkit items` or the file) before writing. `--owner` takes the session's name on `in_progress`.
-- Filing new items stays in `/inbox` (`map: file <kind> <title>`, no trailer).
+- **Filing** goes through `python -m mapkit item new <kind> "<title>" [--parent ID|slug] [--priority P] [--filed-by NAME] [--body TEXT | --body-file F] [--link L]... [--type T] [--destination D] [--commit [--no-push]]` (used by `/inbox`): it allocates the next ID, writes the canonical form and regenerates the docs page. With `--commit` it commits `map: file <kind> JB-n <title>` (no trailer) and runs up to 3 rounds of `pull --rebase` -> duplicate check -> push; if a rebase brought in an Item with the same ID it renumbers its own Item in a `map: renumber JB-a -> JB-b <title>` commit. A hand-written Item, `item new` without `--commit`, or a plain `git push` is not checked: the gate (`tests/sim/test_map_items.py::test_item_ids_unique`) catches a duplicate and `python -m mapkit ids --repair` fixes it; `python -m mapkit ids --assign-missing` numbers an ID-less Item.
+- **Subjects** written by Claude cite the ID after the verb (`map: file bug JB-63 <title>`, `map: in_progress JB-12 <title>`, `map: claim JB-9 <slug>`). The app's own commits stay `map: <title>`: it commits before it knows whether its ID survives the rebase. Progress lines that name another Item cite its ID (`blocked on JB-14`) by convention.

@@ -75,7 +75,7 @@ def test_items_stale_lists_exactly_the_stale_rows(tmp_path, monkeypatch, capsys)
     from mapkit.__main__ import main
     assert main(["items", "--stale", "--repo", str(tmp_path)]) == 0
     out = capsys.readouterr().out.strip().splitlines()
-    got = sorted(l.split()[1] for l in out)
+    got = sorted(l.split()[2] for l in out)  # columns: id kind slug ... (map-item-ids P3)
     assert got == sorted("row%d" % r[0] for r in ROWS if r[5])
     row2 = next(l for l in out if " row2 " in l)
     assert row2.endswith("stale 35d since 2026-09-20")

@@ -3,7 +3,7 @@ title: "Map item IDs: a short, unique, stable ID on every Item"
 created: 2026-10-25
 status: active
 owner: harrison
-last_updated: 2026-10-25
+last_updated: 2026-10-26
 pathway: map-improvements
 branch: main
 scope: >-
@@ -12,10 +12,10 @@ scope: >-
   gate, and backfilled in one map: commit. Read commands, write commands, the app API and the drawer deep link
   take the ID; the tile, drawer and mapkit listings show it. Stored cross-references stay stem-based. Items only.
 steps:
-  - {id: P0, title: Plan and its Feature, kind: phase, status: not_started}
-  - {id: P1, title: mapkit ids module and checks, kind: phase, status: not_started}
-  - {id: P2, title: Backfill and the uniqueness test, kind: phase, status: not_started}
-  - {id: P3, title: 'mapkit resolution, creation, display and the commands', kind: phase, status: not_started}
+  - {id: P0, title: Plan and its Feature, kind: phase, status: complete, date: 2026-10-25}
+  - {id: P1, title: mapkit ids module and checks, kind: phase, status: complete, date: 2026-10-26}
+  - {id: P2, title: Backfill and the uniqueness test, kind: phase, status: complete, date: 2026-10-26}
+  - {id: P3, title: 'mapkit resolution, creation, display and the commands', kind: phase, status: complete, date: 2026-10-26}
   - {id: P4, title: 'App server: allocate, resolve, repair (fork repo)', kind: phase, status: not_started}
   - {id: P5, title: 'App frontend: show and deep-link (fork repo)', kind: phase, status: not_started}
   - {id: P6, title: Normative docs, kind: phase, status: not_started}
@@ -171,9 +171,9 @@ Done when: the test passes on the branch; `./run_tests.sh` green.
 Precondition: the Stale items unit's `itemcli.py` change has merged (`mapkit items --stale` runs).
 Files: `mapkit/itemcli.py` (`find_item` via `resolve`; `item new`; ID column and `id` in `--json` for
 `items`/`show`; write echo; subjects carry the ID), `mapkit/tickets.py` (`_load_ticket` via `find_item` +
-kind check; `frontier` ID column), `mapkit/import_issues.py` (allocate per Item), `mapkit/gen_docs.py` (ID
-column), `.claude/commands/inbox.md` (steps 3-6 become `mapkit item new --commit`),
-`.claude/commands/work-inbox.md` (`[id|stem ...]`), tests in `tests/sim/test_mapkit_itemcli.py`.
+kind check; `frontier` ID column), `mapkit/import_issues.py` (allocate per Item),
+`docs/agents/map-writes.md` (naming, `item new`, subjects), `.claude/commands/inbox.md` (steps 3-6 become `mapkit item new --commit`),
+`.claude/commands/work-inbox.md` (`[id|stem ...]`), tests in `tests/sim/test_mapkit_item_ids_cli.py`.
 Tests: read commands accept `JB-12`, `jb12`, `12`, stem and slug; write commands refuse bare `12`; an unknown
 ID exits 2; `item new --commit` against a fixture remote that gains a same-ID Item between the check and the
 push ends with two distinct IDs, a `map: renumber` commit and at most 3 rounds.
@@ -208,8 +208,8 @@ Done when: frontend tests pass; deployed; the owner opens `http://jetson.local:8
 
 ### P6 — Normative docs
 Files: `DOCUMENTATION_GUIDE.md` § 2.10 (ID field, format, allocation, repairing vs gate-only writers, keeper
-rule, stems stay the stored reference) and § 3; `docs/agents/map-writes.md` (`item new`, ID forms, bare
-numbers read-only, subjects, the Progress citation convention); `docs/agents/issue-tracker.md`; `CLAUDE.md`
+rule, stems stay the stored reference) and § 3; `mapkit/gen_docs.py` (ID column in `docs/project-map.md`,
+moved here from P3); `docs/agents/map-writes.md` (audit the P3 wording); `docs/agents/issue-tracker.md`; `CLAUDE.md`
 project-map paragraph (one sentence); fork `README.md`/`CLAUDE.md`.
 Done when: `/audit --unstaged` run once, findings applied; `./run_tests.sh` green; logbook entry; the GLOSSARY
 "Item ID" term filed as an Idea for the grilling round.

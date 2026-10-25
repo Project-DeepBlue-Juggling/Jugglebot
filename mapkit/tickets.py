@@ -82,13 +82,20 @@ def frontier(repo_root: str, pathway: str) -> List[Item]:
 
 
 def _load_ticket(repo_root: str, slug: str) -> Item:
-    path = os.path.join(repo_root, MAP_DIR, "ticket-%s.md" % slug)
-    if not os.path.isfile(path):
-        raise TicketError("no ticket %r (%s does not exist)" % (slug, path))
+    """A ticket by stem, slug or ``jb`` ID (write forms: no bare digits)."""
+    from mapkit.itemcli import ItemCliError, find_item  # local: itemcli is the CLI layer
     try:
-        return load_item(path)
-    except ItemError as exc:
+        item = find_item(repo_root, slug)
+    except ItemCliError as exc:
         raise TicketError(str(exc))
+    if item.kind != "ticket":
+        raise TicketError("%r is a %s (%s), not a ticket" % (slug, item.kind, _stem(item)))
+    return item
+
+
+def _label(item: Item) -> str:
+    """``JB-9 <slug>`` (or the slug alone for an ID-less ticket): subjects and echo."""
+    return ("%s %s" % (item.short_id, item.slug)) if item.short_id else item.slug
 
 
 def _git(repo_root: str, *args: str) -> None:
@@ -114,7 +121,7 @@ def claim(repo_root: str, slug: str, user: str, push: bool = True) -> Item:
     item.meta["owners"] = owners
     item.meta["updated"] = _now()
     write_item(item.path, item.meta, item.body)
-    _commit(repo_root, item, "map: claim %s" % slug, push)
+    _commit(repo_root, item, "map: claim %s" % _label(item), push)
     return item
 
 
@@ -127,7 +134,7 @@ def resolve(repo_root: str, slug: str, answer: str, push: bool = True) -> Item:
     item.meta["updated"] = _now()
     item.body = body
     write_item(item.path, item.meta, body)
-    _commit(repo_root, item, "map: resolve %s" % slug, push)
+    _commit(repo_root, item, "map: resolve %s" % _label(item), push)
     return item
 
 
@@ -137,16 +144,17 @@ def _repo(args) -> str:
 
 def _run_frontier(args) -> int:
     for it in frontier(_repo(args), args.pathway):
-        print("%s\t%s\t%s" % (it.meta.get("rank", ""), it.slug, it.title))
+        print("%s\t%s\t%s\t%s" % (it.meta.get("rank", ""), it.short_id or "-", it.slug, it.title))
     return 0
 
 
 def _run_claim(args) -> int:
     try:
-        claim(_repo(args), args.slug, args.user, push=not args.no_push)
+        item = claim(_repo(args), args.slug, args.user, push=not args.no_push)
     except TicketError as exc:
         print("mapkit: %s" % exc, file=sys.stderr)
         return 2
+    print("%s %s-%s claimed (%s)" % (item.short_id or "-", item.kind, item.slug, item.title))
     return 0
 
 
@@ -157,10 +165,11 @@ def _run_resolve(args) -> int:
         with open(args.answer_file, encoding="utf-8") as fh:
             answer = fh.read()
     try:
-        resolve(_repo(args), args.slug, answer, push=not args.no_push)
+        item = resolve(_repo(args), args.slug, answer, push=not args.no_push)
     except TicketError as exc:
         print("mapkit: %s" % exc, file=sys.stderr)
         return 2
+    print("%s %s-%s resolved (%s)" % (item.short_id or "-", item.kind, item.slug, item.title))
     return 0
 
 

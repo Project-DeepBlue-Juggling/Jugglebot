@@ -19,7 +19,7 @@ import subprocess
 import sys
 from typing import Dict, List, Optional
 
-from mapkit import derive, gen_docs
+from mapkit import derive, gen_docs, ids
 from mapkit.items import (KINDS, STATUS_SETS, Item, ItemError, is_stale, load_item,
                           load_items, stale_clock, write_item)
 from mapkit.plans import load_plans
@@ -48,21 +48,39 @@ def _load(path: str) -> Item:
         raise ItemCliError(str(exc))
 
 
-def find_item(repo_root: str, slug: str) -> Item:
-    """Resolve a filename stem (``bug-x``) or a bare slug (``x``)."""
+def find_item(repo_root: str, slug: str, allow_bare: bool = False) -> Item:
+    """Resolve a stem (``bug-x``), a bare slug (``x``) or an ID (``JB-12``, ``jb12``).
+
+    One resolver for every command (``mapkit.ids.resolve``: stem, then slug,
+    then ID). Bare digits (``12``) are an ID only when ``allow_bare`` (read
+    commands); a write needs the ``jb`` prefix or a stem. The exact-stem path
+    is tried first and loads one file, so a malformed unrelated Item never
+    blocks a write by stem.
+    """
     map_dir = os.path.join(repo_root, MAP_DIR)
     stem = slug[:-3] if slug.endswith(".md") else slug
     path = os.path.join(map_dir, stem + ".md")
     if os.path.isfile(path):
         return _load(path)
-    hits = [os.path.join(map_dir, "%s-%s.md" % (k, stem)) for k in KINDS]
-    hits = [h for h in hits if os.path.isfile(h)]
-    if not hits:
-        raise ItemCliError("no item %r in %s" % (slug, map_dir))
-    if len(hits) > 1:
-        raise ItemCliError("slug %r is ambiguous (%s); use the full stem" % (
-            slug, ", ".join(os.path.basename(h)[:-3] for h in hits)))
-    return _load(hits[0])
+    try:
+        items = load_items(map_dir)
+    except ItemError as exc:
+        raise ItemCliError(str(exc))
+    try:
+        return ids.resolve(items, stem, allow_bare=allow_bare)
+    except ids.IdError as exc:
+        raise ItemCliError("%s in %s" % (exc, map_dir))
+
+
+def label(item: Item) -> str:
+    """``JB-12 bug-x`` (``- bug-x`` when ID-less): every write's echo starts with it."""
+    return "%s %s-%s" % (item.short_id or "-", item.kind, item.slug)
+
+
+def _subject(verb: str, item: Item) -> str:
+    """``map: <verb> JB-12 <title>``; the ID is omitted while an Item has none."""
+    sid = item.short_id
+    return "map: %s %s%s" % (verb, (sid + " ") if sid else "", item.title)
 
 
 def _git(repo_root: str, *args: str, check: bool = True) -> int:
@@ -130,11 +148,114 @@ def set_status(repo_root: str, slug: str, status: str, note: Optional[str] = Non
         rel = os.path.relpath(item.path, repo_root)
         paths = [rel] + ([DOCS_PAGE] if os.path.isfile(os.path.join(repo_root, DOCS_PAGE)) else [])
         _git(repo_root, "add", "--", *paths)
-        _git(repo_root, "commit", "-m", "map: %s %s" % (status, item.title), "--", *paths)
+        _git(repo_root, "commit", "-m", _subject(status, item), "--", *paths)
         if push:
             _git(repo_root, "pull", "--rebase", "--autostash")
             _git(repo_root, "push")
     return item
+
+
+PUSH_ROUNDS = 3
+_DEFAULT_STATUS = {"pathway": "active", "ticket": "open"}  # inbox kinds: "inbox"
+
+
+def _git_out(repo_root: str, *args: str) -> "subprocess.CompletedProcess":
+    return subprocess.run(["git"] + list(args), cwd=repo_root, capture_output=True, text=True)
+
+
+def _unique_slug(map_dir: str, base: str) -> str:
+    """``base``, else ``base-2``... free across EVERY kind (the app's uuid is
+    keyed on the slug alone, so ``bug-x`` beside ``idea-x`` collides there)."""
+    slug, n = base, 2
+    while any(os.path.exists(os.path.join(map_dir, "%s-%s.md" % (k, slug))) for k in KINDS):
+        slug, n = "%s-%d" % (base, n), n + 1
+    return slug
+
+
+def _ref_or_stem(items: List[Item], text: str) -> str:
+    """A typed reference (``JB-3`` or a stem/slug) -> the stem stored on disk."""
+    try:
+        return ids.stem(ids.resolve(items, text))
+    except ids.IdError as exc:
+        raise ItemCliError(str(exc))
+
+
+def new_item(repo_root: str, kind: str, title: str, parent: Optional[str] = None,
+             priority: str = "medium", filed_by: str = "claude", body: str = "",
+             links: Optional[List[str]] = None, ticket_type: Optional[str] = None,
+             destination: Optional[str] = None, commit: bool = False,
+             push: bool = True) -> Item:
+    """File one Item with the next ID: the one Claude-side creation path.
+
+    With ``commit`` and ``push``: pull ``--ff-only``, write, gen, commit
+    ``map: file <kind> JB-n <title>``, then up to :data:`PUSH_ROUNDS` rounds of
+    ``pull --rebase --autostash`` -> repair this Item's ID if a rebase brought
+    in the same one (``map: renumber`` commit) -> push. A rejected push goes
+    round again; git refuses non-fast-forward pushes, so the check before the
+    push that lands always saw the final remote.
+    """
+    from mapkit.import_issues import slugify  # local: keeps the CLI import light
+    if kind not in KINDS:
+        raise ItemCliError("kind %r not in %s" % (kind, ", ".join(KINDS)))
+    if commit and push and _git(repo_root, "pull", "--ff-only", check=False) != 0:
+        print("mapkit: warning: git pull --ff-only failed; continuing on the local tree",
+              file=sys.stderr)
+    map_dir = os.path.join(repo_root, MAP_DIR)
+    items = load_items(map_dir)
+    meta: Dict[str, object] = {
+        "id": ids.allocate(repo_root, items=items), "kind": kind, "title": title,
+        "status": _DEFAULT_STATUS.get(kind, "inbox"), "created": _today(), "updated": _now(),
+        "owners": [], "priority": priority, "blocked_by": [], "links": [],
+    }
+    if parent:
+        pw = next((i for i in items if i.kind == "pathway" and i.slug == parent), None)
+        if pw is None:
+            pw = ids.resolve(items, parent)  # a write: ``jb`` ID or stem, never bare digits
+        if pw.kind != "pathway":
+            raise ItemCliError("parent %r is a %s, not a pathway" % (parent, pw.kind))
+        meta["parent"] = pw.slug
+    for l in links or []:
+        ref = _ref_or_stem(items, l) if ids.parse(l) is not None else l
+        if ref not in meta["links"]:
+            meta["links"].append(ref)
+    if kind in ("idea", "feature", "bug"):
+        meta["filed_by"] = filed_by
+    if kind == "ticket":
+        meta["type"] = ticket_type or "task"
+    if kind == "pathway":
+        meta["destination"] = destination or ""
+    slug = _unique_slug(map_dir, slugify(title)[:60].strip("-") or kind)
+    path = os.path.join(map_dir, "%s-%s.md" % (kind, slug))
+    write_item(path, meta, (body.strip() + "\n") if body.strip() else "")
+    item = _load(path)  # validates required fields (a pathway without destination fails here)
+    gen_docs.write_docs(repo_root)
+    if not commit:
+        return item
+    rel = os.path.relpath(path, repo_root)
+    paths = [rel] + ([DOCS_PAGE] if os.path.isfile(os.path.join(repo_root, DOCS_PAGE)) else [])
+    _git(repo_root, "add", "--", *paths)
+    _git(repo_root, "commit", "-q", "-m", _subject("file " + kind, item), "--", *paths)
+    if not push:
+        return item
+    stem = "%s-%s" % (kind, slug)
+    for _ in range(PUSH_ROUNDS):
+        r = _git_out(repo_root, "pull", "--rebase", "--autostash")
+        if r.returncode != 0:
+            raise ItemCliError("pull --rebase failed: %s" % r.stderr.strip()[-300:])
+        for old, new, _st in ids.repair(repo_root, own=[stem]):
+            item = _load(path)
+            gen_docs.write_docs(repo_root)
+            _git(repo_root, "add", "--", *paths)
+            _git(repo_root, "commit", "-q", "-m",
+                 "map: renumber %s -> %s %s" % (old, new, item.title), "--", *paths)
+            print("mapkit: %s collided after the rebase; renumbered %s -> %s" % (stem, old, new),
+                  file=sys.stderr)
+        if _git_out(repo_root, "push").returncode == 0:
+            return _load(path)
+    local = _git_out(repo_root, "log", "--oneline", "@{u}..HEAD").stdout.strip()
+    raise ItemCliError("push rejected %d times; local commits ahead:\n%s\n(the Item is %s; "
+                       "re-run the push by hand after python -m mapkit ids --check)"
+                       % (PUSH_ROUNDS, local, stem))
 
 
 def _age_days(item: Item) -> int:
@@ -146,7 +267,7 @@ def _age_days(item: Item) -> int:
 
 
 def _row(i: Item) -> Dict[str, object]:
-    return {"kind": i.kind, "slug": i.slug, "status": i.status,
+    return {"id": i.short_id or "", "kind": i.kind, "slug": i.slug, "status": i.status,
             "priority": i.meta.get("priority") or "",
             "pathway": i.slug if i.kind == "pathway" else (i.meta.get("parent") or ""),
             "age_days": _age_days(i), "title": i.title}
@@ -157,7 +278,10 @@ def list_items(repo_root: str, pathway: Optional[str] = None, kind: Optional[str
                stale: bool = False, today: Optional[datetime.date] = None) -> List[Item]:
     today = today or datetime.date.today()
     out = []
-    for i in load_items(os.path.join(repo_root, MAP_DIR)):
+    items = load_items(os.path.join(repo_root, MAP_DIR))
+    if pathway and ids.parse(pathway, allow_bare=True) is not None:
+        pathway = _pathway(items, pathway).slug
+    for i in items:
         if kind and i.kind != kind:
             continue
         if pathway and not (i.meta.get("parent") == pathway
@@ -173,11 +297,23 @@ def list_items(repo_root: str, pathway: Optional[str] = None, kind: Optional[str
     return out
 
 
+def _pathway(items: List[Item], text: str) -> Item:
+    """A Pathway by slug, stem or ID (bare digits allowed: read commands only)."""
+    pw = next((i for i in items if i.kind == "pathway" and i.slug == text), None)
+    if pw is None:
+        try:
+            pw = ids.resolve(items, text, allow_bare=True)
+        except ids.IdError:
+            pw = None
+    if pw is None or pw.kind != "pathway":
+        raise ItemCliError("no pathway %r" % text)
+    return pw
+
+
 def show(repo_root: str, pathway: str) -> Dict[str, object]:
     items = load_items(os.path.join(repo_root, MAP_DIR))
-    pw = next((i for i in items if i.kind == "pathway" and i.slug == pathway), None)
-    if pw is None:
-        raise ItemCliError("no pathway %r" % pathway)
+    pw = _pathway(items, pathway)
+    pathway = pw.slug
     plan_rows = []
     for p in derive.pathway_plans(pw, load_plans(repo_root)):
         if p.board not in ("active", "parked"):
@@ -193,13 +329,13 @@ def show(repo_root: str, pathway: str) -> Dict[str, object]:
         open_ = (i.status == "open") if i.kind == "ticket" else i.status in derive.OPEN_INBOX_STATUSES
         if open_:
             children.setdefault(i.kind, []).append(_row(i))
-    return {"slug": pw.slug, "title": pw.title, "status": pw.status,
+    return {"id": pw.short_id or "", "slug": pw.slug, "title": pw.title, "status": pw.status,
             "destination": " ".join(str(pw.meta["destination"]).split()),
             "plans": plan_rows, "children": children}
 
 
 def _render_show(d: Dict[str, object]) -> str:
-    out = ["%s [%s] (%s)" % (d["title"], d["status"], d["slug"]),
+    out = ["%s %s [%s] (%s)" % (d["id"] or "-", d["title"], d["status"], d["slug"]),
            "Destination: %s" % d["destination"], ""]
     out.append("Active plans:" if d["plans"] else "Active plans: none")
     for p in d["plans"]:
@@ -211,7 +347,8 @@ def _render_show(d: Dict[str, object]) -> str:
         rows = d["children"].get(kind, [])
         out += ["", "%s (%d open)" % (label, len(rows))]
         for r in rows:
-            out.append("  %-50s %-8s %s" % (r["slug"], r["priority"] or "-", r["status"]))
+            out.append("  %-6s %-50s %-8s %s" % (r["id"] or "-", r["slug"], r["priority"] or "-",
+                                                 r["status"]))
     return "\n".join(out)
 
 
@@ -228,9 +365,31 @@ def _run_set_status(args) -> int:
         print("mapkit: %s" % exc, file=sys.stderr)
         return 2
     if not getattr(item, "changed", True):
-        print("%s-%s unchanged (%s)" % (item.kind, item.slug, item.status))
+        print("%s unchanged (%s) %s" % (label(item), item.status, item.title))
         return 0
-    print("%s-%s -> %s" % (item.kind, item.slug, item.status))
+    print("%s -> %s %s" % (label(item), item.status, item.title))
+    if not args.commit:
+        print("stage: %s" % os.path.relpath(item.path, _repo(args)))
+        print("stage: %s" % DOCS_PAGE)
+    return 0
+
+
+def _run_new(args) -> int:
+    body = ""
+    if args.body_file:
+        with open(args.body_file, encoding="utf-8") as fh:
+            body = fh.read()
+    elif args.body:
+        body = args.body
+    try:
+        item = new_item(_repo(args), args.kind, args.title, parent=args.parent,
+                        priority=args.priority, filed_by=args.filed_by, body=body,
+                        links=args.link, ticket_type=args.type, destination=args.destination,
+                        commit=args.commit, push=not args.no_push)
+    except (ItemCliError, ItemError, ids.IdError) as exc:
+        print("mapkit: %s" % exc, file=sys.stderr)
+        return 2
+    print("%s filed (%s) %s" % (label(item), item.status, item.title))
     if not args.commit:
         print("stage: %s" % os.path.relpath(item.path, _repo(args)))
         print("stage: %s" % DOCS_PAGE)
@@ -266,8 +425,8 @@ def _run_items(args) -> int:
         print(json.dumps(rows, indent=2))
     else:
         for r in rows:
-            line = "%-8s %-50s %-12s %-6s %-30s %dd" % (
-                r["kind"], r["slug"], r["status"], r["priority"] or "-",
+            line = "%-6s %-8s %-50s %-12s %-6s %-30s %dd" % (
+                r["id"] or "-", r["kind"], r["slug"], r["status"], r["priority"] or "-",
                 r["pathway"] or "-", r["age_days"])
             if stale:
                 line += "  stale %dd since %s" % (r["stale_days"], r["stale_clock"])
@@ -295,6 +454,22 @@ def register(subparsers) -> None:
     p.add_argument("--no-push", action="store_true")
     common(p)
     p.set_defaults(func=_run_set_status)
+
+    p = isub.add_parser("new", help="file a new Item with the next ID (optionally commit + push)")
+    p.add_argument("kind", choices=KINDS)
+    p.add_argument("title")
+    p.add_argument("--parent", help="pathway slug or ID")
+    p.add_argument("--priority", default="medium", choices=("low", "medium", "high"))
+    p.add_argument("--filed-by", default="claude")
+    p.add_argument("--body", help="body text (or --body-file)")
+    p.add_argument("--body-file")
+    p.add_argument("--link", action="append", default=[], help="path, URL, stem or ID (stored as a stem)")
+    p.add_argument("--type", choices=("research", "prototype", "grilling", "task"), help="ticket type")
+    p.add_argument("--destination", help="pathway Destination (required for a pathway)")
+    p.add_argument("--commit", action="store_true")
+    p.add_argument("--no-push", action="store_true")
+    common(p)
+    p.set_defaults(func=_run_new)
 
     p = subparsers.add_parser("show", help="a pathway: destination, plans and steps, open children")
     p.add_argument("pathway")

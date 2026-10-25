@@ -16,25 +16,24 @@ Minimum from the filer: kind, title, one line. If the line is missing, ask for i
 
 ## Protocol
 
-1. **Fill the frontmatter.** `kind` as given; `status: inbox`; `created` = today;
-   `updated` = now (UTC, ISO seconds); `owners: []`; `priority` default `medium`;
-   `links` a plain list (`--link` values); `parent` = `--pathway` slug when given;
+1. **Fields.** `kind` as given; `priority` default `medium`; `--link` values as given
+   (an ID such as `JB-12` is stored as its stem); parent = `--pathway` (slug or `jb` ID);
    `filed_by` = `harrison` when the owner typed the command, else the session's
    name (e.g. `claude`). The one-line description is the body.
-2. **`--from-issue <n>`**: import title, body and `links: [<issue URL>]` via
+2. **`--from-issue <n>`**: import title, body and the issue URL (as a `--link`) via
    `~/bin/gh issue view <n> --json title,body,url`, then close the issue with a
-   comment pointing at the item file.
-3. **Pull first** (`git pull --ff-only`: the app writes `map/` concurrently), then
-   **slug** = kebab-case of the title (ASCII, <= 60 chars). The file is
-   `map/<kind>-<slug>.md`; if it exists, append `-2`. The filename is the item's
-   identity and is never renamed.
-4. **Write** with `mapkit.items.write_item` (the canonical form), e.g. a
-   `python -c` one-liner or heredoc run from the repo root with the project venv.
-5. **Check** (the item is inside the Avoid-word scope):
-   `pytest tests/sim/test_map_items.py tests/sim/test_glossary_avoid_words.py -q`.
-   Then `python -m mapkit gen`: items do not change the plan INDEX boards, but they do feed `docs/project-map.md` (its Inbox table and the attached-items lists), and `tests/sim/test_mapkit_docs.py` fails on a stale page.
-6. **Commit and push**: `git add map/<file> docs/project-map.md && git commit -m "map: file <kind> <title>"`
-   then `git push`. No `Logbook-Entry` trailer: this is data, not code.
+   comment pointing at the item file. The issue number is never the Item's ID.
+3. **File it with the one creation command**, from the repo root with the project venv:
+   `python -m mapkit item new <kind> "<title>" --body "<line>" [--parent <pathway>]
+   [--priority P] [--filed-by NAME] [--link L]... --commit`.
+   It pulls `--ff-only`, picks the slug (kebab-case, <= 60 chars, `-2` if taken by
+   any kind; the filename is the Item's identity and is never renamed), allocates the
+   next ID `JB-<n>`, writes the canonical form, regenerates `docs/project-map.md`,
+   commits `map: file <kind> JB-<n> <title>` (no `Logbook-Entry` trailer: data, not
+   code) and pushes, renumbering its own Item if a rebase brought in the same ID.
+   It prints `JB-<n> <stem> filed (inbox) <title>`: quote that line in the reply.
+4. **Check** (the item is inside the Avoid-word scope):
+   `pytest tests/sim/test_map_items.py tests/sim/test_glossary_avoid_words.py tests/sim/test_mapkit_docs.py -q`.
 
 Shared recipe, commit rule and reads: `docs/agents/map-writes.md`.
 

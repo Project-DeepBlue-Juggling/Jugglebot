@@ -78,18 +78,14 @@ _Status: closed (complete)._
 
 **Destination:** The map shows each item's history, takes new items from the Robot tab mid-sitting, finds anything by text, and surfaces stale items and a red nightly without leaving the GUI.
 
-**Progress:** 0 of 7 stops done
+**Progress:** 4 of 7 stops done
 
-**Next:** P0 Plan and its Feature ([map-item-ids.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/map-item-ids.md))
+**Next:** P4 App server: allocate, resolve, repair (fork repo) ([map-item-ids.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/map-item-ids.md))
 
 **Owners:** harrison
 
 **Remaining:**
 
-- P0 Plan and its Feature ([map-item-ids.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/map-item-ids.md))
-- P1 mapkit ids module and checks ([map-item-ids.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/map-item-ids.md))
-- P2 Backfill and the uniqueness test ([map-item-ids.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/map-item-ids.md))
-- P3 mapkit resolution, creation, display and the commands ([map-item-ids.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/map-item-ids.md))
 - P4 App server: allocate, resolve, repair (fork repo) ([map-item-ids.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/map-item-ids.md))
 - P5 App frontend: show and deep-link (fork repo) ([map-item-ids.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/map-item-ids.md))
 - P6 Normative docs ([map-item-ids.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/map-item-ids.md))
@@ -123,7 +119,7 @@ _Status: closed (complete)._
 | Project map and shared dictionary | — | — | — | closed |
 | Ball Butler | — | BB calibration: advisory when a template marker is never matched in a sweep | bug bb/throw_outcome carries no throw identity; bug NOT_SETTLED retry is dead in the field; feature Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware | — |
 | Learner generalisation | — | Box sweep fidelity for same-site families (plan what the executor dispatches) | P1 Learner core; P2 The characterisation sitting; P3 Online admissibility and box retirement; P4 BeatEvent stream and the columns wrapper; P5 Close-out | — |
-| Map improvements | — | P0 Plan and its Feature | P1 mapkit ids module and checks; P2 Backfill and the uniqueness test; P3 mapkit resolution, creation, display and the commands; P4 App server: allocate, resolve, repair (fork repo); P5 App frontend: show and deep-link (fork repo); P6 Normative docs; feature A Done view: complete Pathways and closed items, with their dates; feature Item provenance: the drawer lists the logbook entries and commits that touched an item; feature Nightly status chip in the map header; feature Quick capture: file a bug or idea from the GUI's Robot tab mid-sitting; feature Search across items, plans and glossary terms; feature Stale items: flag items left in the inbox or in progress too long | — |
+| Map improvements | — | P4 App server: allocate, resolve, repair (fork repo) | P5 App frontend: show and deep-link (fork repo); P6 Normative docs; feature A Done view: complete Pathways and closed items, with their dates; feature Item provenance: the drawer lists the logbook entries and commits that touched an item; feature Nightly status chip in the map header; feature Quick capture: file a bug or idea from the GUI's Robot tab mid-sitting; feature Search across items, plans and glossary terms; feature Stale items: flag items left in the inbox or in progress too long | P0 Plan and its Feature; P1 mapkit ids module and checks; P2 Backfill and the uniqueness test; P3 mapkit resolution, creation, display and the commands |
 | Two-ball skill stack | — | — | — | closed |
 | Wave camera on CAN3 | — | — | — | closed |
 

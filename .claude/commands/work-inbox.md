@@ -1,5 +1,5 @@
 ---
-description: Work map items from the inbox/backlog - classify each, dispatch to the right skill or command, write the result back and commit. Invoke with /work-inbox [slug ...] [--pathway <slug>] [--kind bug|feature|idea] [--dry-run].
+description: Work map items from the inbox/backlog - classify each, dispatch to the right skill or command, write the result back and commit. Invoke with /work-inbox [id|stem ...] [--pathway <slug>] [--kind bug|feature|idea] [--dry-run].
 ---
 
 # Work Inbox Command
@@ -9,9 +9,12 @@ Take map items (`map/<kind>-<slug>.md`) and move them toward `complete` or
 
 ## Arguments
 
-`/work-inbox [slug ...] [--pathway <slug>] [--kind bug|feature|idea] [--dry-run]`
+`/work-inbox [id|stem ...] [--pathway <slug>] [--kind bug|feature|idea] [--dry-run]`
 
-With no slugs: list `backlog` items first, then `inbox`, by priority then age
+Items are named by ID (`JB-12`, `jb12`) or stem; bare digits are refused on a write
+(`docs/agents/map-writes.md` § Naming an Item). Say the ID in every announcement.
+
+With no Items named: list `backlog` items first, then `inbox`, by priority then age
 (filtered by `--pathway` / `--kind`), and ask which to take.
 
 ## Protocol
@@ -35,13 +38,13 @@ With no slugs: list `backlog` items first, then `inbox`, by priority then age
 
 `promoted` / `promoted_to` apply to all three inbox kinds (bug, feature, idea).
 
-3b. **Start**: before dispatching, `python -m mapkit item set-status <slug> in_progress
+3b. **Start**: before dispatching, `python -m mapkit item set-status <id> in_progress
    --owner <session> --commit` (own `map:` commit, pushed). A "fix" row that names a
    plan step ticks that step too.
 4. **Done** = status `complete` or `promoted`. `complete`: run
-   `python -m mapkit item set-status <slug> complete --link logbook/<entry>.md`
+   `python -m mapkit item set-status <id> complete --link logbook/<entry>.md`
    WITHOUT `--commit` and stage the printed paths into the fix's commit, which
-   carries `Logbook-Entry:`. `promoted`: `python -m mapkit item set-status <slug>
+   carries `Logbook-Entry:`. `promoted`: `python -m mapkit item set-status <id>
    promoted` WITH `--commit` (its own `map: promoted <title>` commit, no trailer).
 5. **Partial** = `in_progress` plus a dated `## Progress` note (done / next /
    evidence), committed and pushed before the session ends; the next run
