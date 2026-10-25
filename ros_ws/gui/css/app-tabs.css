@@ -31,6 +31,17 @@
 }
 #app-tabs .app-tab:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: -2px; }
 
+/* Right-aligned prefs group.  Fixed px sizes (not rem/em) so the 32 px bar holds at every A-/A+ size. */
+#app-tabs .app-tabs-prefs {
+    margin-left: auto;
+    display: flex;
+    align-items: center;
+    gap: 4px;
+}
+#app-tabs .app-tabs-gap { width: 8px; }
+#app-tabs .font-btn { font-size: 11px; line-height: 1; }
+#app-tabs .font-size-label { font-size: 10px; }
+
 body > #app { height: calc(100vh - var(--app-tabs-height)); }
 
 #map-pane {

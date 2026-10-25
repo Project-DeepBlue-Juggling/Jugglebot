@@ -460,20 +460,6 @@ html, body {
     animation: pulse-fault 1s ease-in-out infinite;
 }
 
-/* ---- Sidebar toolbar ---- */
-#sidebar-toolbar {
-    display: flex;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 4px;
-    padding: 0 2px;
-    flex-shrink: 0;
-}
-
-.sidebar-toolbar-gap {
-    width: 8px;
-}
-
 #theme-toggle {
     min-width: 44px;
 }

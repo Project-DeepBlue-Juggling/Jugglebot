@@ -6,6 +6,11 @@
  * alive (the pane is hidden with CSS, not destroyed) so switching is instant and
  * the map keeps updating.  Nothing on the robot side is paused while Map shows.
  *
+ * Prefs: the Light/A-/A+ controls live in this bar (theme.js / main.js own them).  Their
+ * state is read back from <html> (`data-theme`, `style.fontSize`) and posted to the map
+ * iframe as {type:'jugglebot-gui-prefs', theme, fontSize} on iframe load and on every
+ * change, with the map's origin as targetOrigin (never '*').
+ *
  * No persistence: the page loads on Robot unless the URL hash is `#map`, so the
  * E-stop / Fault / ROS state is what an operator sees on load.  While Map shows,
  * `#app` is `inert` (no focus or keyboard handlers reach the hidden robot view);
@@ -26,7 +31,31 @@ const mapUrl = (() => {
     u.hash = '';
     return u.href;
 })();
+const mapOrigin = new URL(mapUrl).origin;
 let mapCreated = false;
+
+function currentPrefs() {
+    const root = document.documentElement;
+    const theme = root.dataset.theme === 'light' ? 'light' : 'dark';
+    let fontSize = parseInt(root.style.fontSize, 10);
+    if (!Number.isFinite(fontSize)) fontSize = 14;
+    fontSize = Math.max(10, Math.min(22, fontSize));
+    return { type: 'jugglebot-gui-prefs', theme, fontSize };
+}
+
+function postPrefs() {
+    const frame = pane.querySelector('iframe');
+    if (!frame || !frame.contentWindow) return;
+    try {
+        frame.contentWindow.postMessage(currentPrefs(), mapOrigin);
+    } catch (e) { /* frame navigating; the next load/change re-posts */ }
+}
+
+// Detect theme / font-size changes without coupling to theme.js or main.js.
+new MutationObserver(postPrefs).observe(document.documentElement, {
+    attributes: true,
+    attributeFilter: ['data-theme', 'style'],
+});
 
 async function createMap() {
     mapCreated = true;
@@ -53,6 +82,7 @@ async function createMap() {
     const frame = document.createElement('iframe');
     frame.src = mapUrl;
     frame.title = 'Project map';
+    frame.addEventListener('load', postPrefs);
     pane.appendChild(frame);
 }
 

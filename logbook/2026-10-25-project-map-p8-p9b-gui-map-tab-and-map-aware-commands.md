@@ -50,3 +50,20 @@ One `/audit --unstaged` over both units found no blocking issues. Its four warni
 - 2026-10-25, `pytest -q tests/ros/test_gui_app_tabs.py tests/sim/test_mapkit_*.py tests/sim/test_map_items.py tests/sim/test_plans_index.py tests/sim/test_glossary_avoid_words.py tests/sim/test_docs_links.py`: exit 0 after the audit fixes. The 7 GUI tab tests pin the tablist, the lazy and never-destroyed frame, the bar height taken from `#app`, the pane cleared before each probe, no `localStorage`, `inert` toggled, and the initial tab being `robot` unless the URL says `#map`.
 - 2026-10-25, gate `./run_tests.sh -q` (log `temp/logs/gate_p8_p9b_2026-10-25.log`): RESULT PASS (parallel 327 s rc=0, serial 22 s rc=0, total 349 s).
 - 2026-10-25, headless Firefox against a scratch GUI server on :8091 at `http://192.168.20.34:8091/#map` and `#robot`, read by eye: the Map tab shows the live project map from the Jetson's app; the Robot tab shows the GUI, disconnected because ROS was not running.
+
+## Follow-up (2026-10-25): theme and font size in the bar, carried into the Map
+
+The owner asked for the GUI's `Light`, `A-` and `A+` controls to sit in the Robot / Map bar, on the right, and to work in the Map on every page.
+- **Move:** they moved into `#app-tabs` (ids unchanged, so `theme.js` and `main.js` are untouched; `#sidebar-toolbar` deleted). Their own text is px-sized, so the bar stays 32 px at every font size.
+- **Carry into the Map:** `app-tabs.js` watches `data-theme` and `style` on `<html>` with a MutationObserver. It posts `{type: 'jugglebot-gui-prefs', theme, fontSize}` to the frame on its `load` and on every change, with the map origin as targetOrigin.
+- **Map side (fork `13f1ad4`):** the app accepts the message only from the same hostname. The theme drives the `dark` class and wins over the stored user preference. The font size scales the whole app by `fontSize / 14` with CSS zoom, sized so the viewport stays filled.
+- **Light palette:** the Now / Next / Later and Dictionary colours gained light values, with text at 4.5:1 or better and marks at 3:1 or better.
+- **Owner's same-turn ask:** "Signed in as" is removed.
+
+A live round trip turned up one bug, fixed in fork `8620e6f` with a regression test: the Dictionary page forced the `dark` class on itself.
+
+Verification:
+- 2026-10-25, `pytest -q tests/ros/test_gui_*.py tests/ros/test_replay_*.py tests/firmware/test_config_drift.py`: 596 passed, 1 skipped, exit 0.
+- 2026-10-25, gate `./run_tests.sh -q` (log `temp/logs/gate_gui_prefs_2026-10-25.log`): PASS (parallel 327 s, serial 23 s, total 350 s).
+- 2026-10-25: fork vitest 197 passed and 1 skipped; fork CI green (runs 40170580502 and 40170906406).
+- 2026-10-25, live round trip through the real message: a test page on :8092 framed the deployed map and posted the prefs. In light at 14 px, the Dictionary and Now / Next / Later rendered light; in dark at 11 px, the whole app scaled down.

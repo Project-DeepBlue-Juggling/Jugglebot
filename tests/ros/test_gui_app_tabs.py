@@ -44,3 +44,25 @@ def test_app_is_inert_while_map_shows_and_never_hidden():
 
 def test_initial_tab_is_robot_unless_hash_map():
     assert "hash === 'map' ? 'map' : 'robot'" in JS
+
+
+def test_prefs_controls_live_in_the_tab_bar_not_the_sidebar():
+    bar = HTML[HTML.index('id="app-tabs"'):HTML.index('id="map-pane"')]
+    for ident in ("theme-toggle", "font-decrease", "font-size-label", "font-increase"):
+        assert f'id="{ident}"' in bar
+        assert HTML.count(f'id="{ident}"') == 1
+    assert "sidebar-toolbar" not in HTML
+    assert "sidebar-toolbar" not in (GUI / "css" / "theme.css").read_text()
+    assert "margin-left: auto" in CSS
+
+
+def test_prefs_are_posted_to_the_map_with_explicit_origin():
+    assert "'jugglebot-gui-prefs'" in JS
+    assert "postMessage(currentPrefs(), mapOrigin)" in JS
+    assert "postMessage(" in JS and ", '*')" not in JS and ', "*")' not in JS
+    assert "addEventListener('load', postPrefs)" in JS
+
+
+def test_prefs_changes_observed_on_data_theme_and_style():
+    assert "new MutationObserver(postPrefs)" in JS
+    assert "attributeFilter: ['data-theme', 'style']" in JS
