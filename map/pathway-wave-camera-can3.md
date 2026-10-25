@@ -11,7 +11,7 @@ blocked_by: []
 links:
 - plans/archived/wave-camera-can3-integration.md
 destination: The Wave camera is visible over CAN3 and automated recording start/stop is working.
-branch: 2026-10_wave-camera-can3
+branch: main
 ---
 
 Plan: `plans/archived/wave-camera-can3-integration.md` (archived complete 2026-10-25). One-button recording from ROS 2 and the GUI through an ESP32 adapter on the cone-role bus; residue is filed as items under this Pathway.

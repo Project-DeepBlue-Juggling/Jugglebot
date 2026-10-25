@@ -74,6 +74,29 @@ _Status: closed (complete)._
 
 - —
 
+## Map improvements
+
+**Destination:** The map shows each item's history, takes new items from the Robot tab mid-sitting, finds anything by text, and surfaces stale items and a red nightly without leaving the GUI.
+
+**Progress:** 0 of 0 stops done
+
+**Next:** —
+
+**Owners:** harrison
+
+**Remaining:**
+
+- —
+
+**Attached inbox items:**
+
+- feature: [A Done view: complete Pathways and closed items, with their dates](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-done-view-for-complete-pathways-and-closed-items.md) (inbox)
+- feature: [Item provenance: the drawer lists the logbook entries and commits that touched an item](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-item-provenance-logbook-entries-and-commits-in-the-drawer.md) (inbox)
+- feature: [Nightly status chip in the map header](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-nightly-status-chip-in-the-map-header.md) (inbox)
+- feature: [Quick capture: file a bug or idea from the GUI's Robot tab mid-sitting](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-quick-capture-files-a-map-item-from-the-robot-tab.md) (inbox)
+- feature: [Search across items, plans and glossary terms](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-search-across-items-plans-and-glossary.md) (inbox)
+- feature: [Stale items: flag items left in the inbox or in progress too long](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-stale-items-are-flagged-on-the-map.md) (inbox)
+
 ## Two-ball skill stack
 
 **Destination:** 30 consecutive Ball Butler-fed Catches in one Attempt (the R5 Rung gate), met 2026-10-13.
@@ -94,6 +117,7 @@ _Status: closed (complete)._
 | Project map and shared dictionary | — | — | — | closed |
 | Ball Butler | — | BB calibration: advisory when a template marker is never matched in a sweep | bug bb/throw_outcome carries no throw identity; bug NOT_SETTLED retry is dead in the field; feature Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware | — |
 | Learner generalisation | — | Box sweep fidelity for same-site families (plan what the executor dispatches) | P1 Learner core; P2 The characterisation sitting; P3 Online admissibility and box retirement; P4 BeatEvent stream and the columns wrapper; P5 Close-out | — |
+| Map improvements | — | — | feature A Done view: complete Pathways and closed items, with their dates; feature Item provenance: the drawer lists the logbook entries and commits that touched an item; feature Nightly status chip in the map header; feature Quick capture: file a bug or idea from the GUI's Robot tab mid-sitting; feature Search across items, plans and glossary terms; feature Stale items: flag items left in the inbox or in progress too long | — |
 | Two-ball skill stack | — | — | — | closed |
 | Wave camera on CAN3 | — | — | — | closed |
 
@@ -120,6 +144,12 @@ _Status: closed (complete)._
 | idea | [Rosbag search](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-rosbag-search.md) | inbox | low | — | filed 2026-10-24 |
 | feature | [Sim columns run with a biased plant to exercise the forward-clip rule](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-sim-columns-biased-plant-forward-clip.md) | inbox | medium | — | filed 2026-10-24 |
 | bug | [Sim `--reload` gate LIMIT_JERK regression bisected to 08ec3fe6 (2026-09-30)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-sim-reload-gate-limit-jerk-regression.md) | inbox | medium | — | filed 2026-10-24 |
+| feature | [A Done view: complete Pathways and closed items, with their dates](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-done-view-for-complete-pathways-and-closed-items.md) | inbox | medium | Map improvements | filed 2026-10-25 |
+| feature | [Item provenance: the drawer lists the logbook entries and commits that touched an item](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-item-provenance-logbook-entries-and-commits-in-the-drawer.md) | inbox | high | Map improvements | filed 2026-10-25 |
+| feature | [Nightly status chip in the map header](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-nightly-status-chip-in-the-map-header.md) | inbox | low | Map improvements | filed 2026-10-25 |
+| feature | [Quick capture: file a bug or idea from the GUI's Robot tab mid-sitting](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-quick-capture-files-a-map-item-from-the-robot-tab.md) | inbox | high | Map improvements | filed 2026-10-25 |
+| feature | [Search across items, plans and glossary terms](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-search-across-items-plans-and-glossary.md) | inbox | medium | Map improvements | filed 2026-10-25 |
+| feature | [Stale items: flag items left in the inbox or in progress too long](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-stale-items-are-flagged-on-the-map.md) | inbox | medium | Map improvements | filed 2026-10-25 |
 | bug | [Wave camera: CLIP_MISSING on the first start after a camera power-cycle](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-wave-camera-clip-missing-on-first-start-after-a-camera-power-cycle.md) | inbox | low | Wave camera on CAN3 | filed 2026-10-25 |
 | feature | [Wave camera: optical frame calibration maps the START tick to a recorded frame](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-wave-camera-optical-frame-calibration.md) | inbox | low | Wave camera on CAN3 | filed 2026-10-25 |
 | feature | [Wave camera: a shared JSON wire-vector fixture for the adapter firmware and the node](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-wave-camera-shared-json-wire-vector-fixture.md) | inbox | low | Wave camera on CAN3 | filed 2026-10-25 |
