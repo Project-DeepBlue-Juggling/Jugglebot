@@ -202,6 +202,16 @@ def test_seq_unwrapper_across_wrap_and_reset():
     assert u.update(1) == 260
 
 
+def test_tracker_recordings_ignore_the_previous_sessions_count():
+    # Hardware sequence 2026-10-25: the node's first heartbeat still carried the
+    # bench session's count (1); the adapter reset to 0 on the node's first
+    # intent (new session_id), then counted this session's three recordings.
+    # Seeding from the raw 1 published 2, 3, 4 for recordings 1, 2, 3.
+    t = wc.WaveRecordingTracker()
+    hb = lambda n: wc.WaveHeartbeat(recordings=n)
+    assert [t.recordings(hb(n)) for n in (1, 1, 0, 0, 1, 2, 3)] == [0, 0, 0, 0, 1, 2, 3]
+
+
 def test_tracker_unwraps_recording_seq_and_latches_start():
     t = wc.WaveRecordingTracker()
     start = wc.WaveRecEvent(kind=int(wc.WaveEventKind.START), recording_seq=255)

@@ -81,6 +81,7 @@
 }
 
 .camera-rec-warn[hidden] { display: none; }
+.camera-rec-warn.clearable { cursor: pointer; }
 
 .camera-rec-status {
     min-width: 0;

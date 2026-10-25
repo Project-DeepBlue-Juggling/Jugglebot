@@ -1648,6 +1648,7 @@ class TeensyBridgeNode(Node):
         self._wave_hb = wave_camera.WaveHeartbeat()
         self._wave_hb_received = False
         self._wave_last_hb_mono = 0.0
+        self._wave_hb_count = 0         # heartbeats received; camera/clear_faults waits on it
         self._wave_hb_timeout_s = proto.WAVE_HEARTBEAT_TIMEOUT_MS / 1000.0
         self._wave_info = {}            # page -> WaveInfoPage (latest)
         self._wave_event_queue = []     # [(WaveRecEvent, wall_us, rec_seq_u32)] for the drain
@@ -2244,6 +2245,8 @@ class TeensyBridgeNode(Node):
                             callback_group=self._wave_cbgroup)
         self.create_service(Trigger, 'camera/record_stop', self._svc_wave_record_stop,
                             callback_group=self._wave_cbgroup)
+        self.create_service(Trigger, 'camera/clear_faults', self._svc_wave_clear_faults,
+                            callback_group=self._wave_cbgroup)
         self.create_timer(1.0 / proto.WAVE_INTENT_RATE_HZ, self._wave_intent_tick,
                           callback_group=self._wave_cbgroup)
 
@@ -2634,6 +2637,8 @@ class TeensyBridgeNode(Node):
                     self._wave_hb_received = True
                     self._wave_last_hb_mono = time.monotonic()
                     self._wave_recordings_total = self._wave_tracker.recordings(whb)
+                    self._wave_hb_count += 1
+                    self._wave_cv.notify_all()
             elif cf.can_id == wave_camera.REC_EVENT_ID:
                 wevt = wave_camera.WaveRecEvent.from_can_frame(data)
                 wall_us = wave_camera.event_wall_us(
@@ -8982,6 +8987,10 @@ class TeensyBridgeNode(Node):
     _WAVE_ACK_TIMEOUT_S = 2.5
     #: The streamed intent's RPC budget: one shot, the next tick supersedes.
     _WAVE_INTENT_RPC_TIMEOUT_S = 0.2
+    #: camera/clear_faults waits for this many heartbeats after its frame (10 Hz):
+    #: the first may have left the adapter before the clear was processed.
+    _WAVE_CLEAR_CONFIRM_HEARTBEATS = 2
+    _WAVE_CLEAR_CONFIRM_TIMEOUT_S = 1.0
 
     def _wave_connected(self) -> bool:
         """Host-monotonic heartbeat freshness (caller must NOT hold _wave_cv)."""
@@ -8989,11 +8998,14 @@ class TeensyBridgeNode(Node):
             return (self._wave_hb_received
                     and (time.monotonic() - self._wave_last_hb_mono) < self._wave_hb_timeout_s)
 
-    def _wave_send_intent(self, *, timeout, retries):
-        """Send the current (desired, cmd_seq, session_id) as one WAVE_CMD RPC."""
+    def _wave_send_intent(self, *, timeout, retries, flags=0):
+        """Send the current (desired, cmd_seq, session_id) as one WAVE_CMD RPC.
+
+        ``flags`` rides this one frame only: the 5 Hz stream always sends 0, so
+        CLEAR_FAULTS is a one-shot and can never keep wiping faults mid-take."""
         with self._wave_cv:
             args = rpc_args.encode_wave_cmd(self._wave_desired, self._wave_cmd_seq,
-                                            0, self._wave_session_id)
+                                            flags, self._wave_session_id)
         return self._call_rpc(RpcMethod.WAVE_CMD, args, timeout=timeout, retries=retries)
 
     def _wave_intent_tick(self):
@@ -9029,6 +9041,55 @@ class TeensyBridgeNode(Node):
         return self._log_service_outcome(
             'camera/record_stop', self._wave_record(False, res))
 
+    def _svc_wave_clear_faults(self, req, res):
+        """camera/clear_faults — clear the adapter's latched fault byte. Sends the
+        CURRENT (desired, cmd_seq) with CLEAR_FAULTS: an unchanged seq is a
+        keepalive to the adapter's state machine, so this never starts or stops
+        a recording (a bumped seq with desired=1 would start one from IDLE).
+        Success when a fresh heartbeat reads faults 0."""
+        return self._log_service_outcome(
+            'camera/clear_faults', self._wave_clear_faults(res))
+
+    def _wave_clear_faults(self, res):
+        if not self._wave_connected():
+            res.success = False
+            res.message = ('camera adapter not connected (no WAVE_HEARTBEAT within '
+                           f'{proto.WAVE_HEARTBEAT_TIMEOUT_MS} ms)')
+            return res
+        with self._wave_cv:
+            before = self._wave_hb.faults
+        ok, m, _ = self._wave_send_intent(
+            timeout=self._WAVE_INTENT_RPC_TIMEOUT_S, retries=2,
+            flags=wave_camera.CMD_FLAG_CLEAR_FAULTS)
+        if not ok:
+            res.success = False
+            res.message = f'WAVE_CMD failed: {m} (ERR_UNKNOWN_METHOD = bridge FW <= 32)'
+            return res
+        # Count from AFTER the send returns: heartbeats that arrived while a
+        # slow or retried RPC was in flight predate the clear at the adapter.
+        with self._wave_cv:
+            want = self._wave_hb_count + self._WAVE_CLEAR_CONFIRM_HEARTBEATS
+        deadline = time.monotonic() + self._WAVE_CLEAR_CONFIRM_TIMEOUT_S
+        with self._wave_cv:
+            while self._wave_hb_count < want:
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    res.success = False
+                    res.message = (f'no fresh heartbeat within {self._WAVE_CLEAR_CONFIRM_TIMEOUT_S:.1f} s '
+                                   'to confirm the clear')
+                    return res
+                self._wave_cv.wait(timeout=remaining)
+            after = self._wave_hb.faults
+        if after:
+            res.success = False
+            res.message = (f'faults still latched: {wave_camera.fault_names(after)} '
+                           '(re-latched: the condition is still present)')
+        else:
+            res.success = True
+            res.message = (f'faults cleared (were: {wave_camera.fault_names(before)})' if before
+                           else 'no faults were latched')
+        return res
+
     def _wave_set_intent(self, desired: int) -> int:
         """Set desired and bump cmd_seq (u8); returns the new seq."""
         with self._wave_cv:
@@ -9050,8 +9111,12 @@ class TeensyBridgeNode(Node):
         seq = self._wave_set_intent(1 if want_record else 0)
         with self._wave_cv:
             mark = self._wave_event_index
+        # A start clears the latched fault byte on its own new-seq frame (the
+        # adapter clears before it acts), so the faults shown during a take are
+        # that take's. A stop leaves them for the operator to read.
         ok, m, _ = self._wave_send_intent(
-            timeout=self._WAVE_INTENT_RPC_TIMEOUT_S, retries=2)
+            timeout=self._WAVE_INTENT_RPC_TIMEOUT_S, retries=2,
+            flags=wave_camera.CMD_FLAG_CLEAR_FAULTS if want_record else 0)
         if not ok:
             if want_record:
                 self._wave_set_intent(0)

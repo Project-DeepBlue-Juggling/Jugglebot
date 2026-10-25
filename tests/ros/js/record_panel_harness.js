@@ -196,4 +196,50 @@ P.setCameraPanelDisconnected();
 g.disconnected = snap();
 out.glue = g;
 
+// ---- 6. warning glyph: click-to-clear (camera/clear_faults) ----
+const faulted = model({ fault_bits: 0x28 });
+out.clear = {
+    enable: {
+        faulted: P.canClearFaults(faulted, 500, live),
+        clean: P.canClearFaults(model({}), 500, live),
+        camera_off: P.canClearFaults(model({ camera_on: false, fault_bits: 0x28 }), 500, live),
+        adapter_down: P.canClearFaults(model({ connected: false, fault_bits: 0x28 }), 500, live),
+        stale: P.canClearFaults(model({ fault_bits: 0x28 }, 0), 1001, live),
+        ros_down: P.canClearFaults(faulted, 500, { ...live, rosConnected: false }),
+        fenced: P.canClearFaults(faulted, 500, { ...live, fenced: true }),
+        pending: P.canClearFaults(faulted, 500, { ...live, pending: true }),
+        no_hb: P.canClearFaults(null, 500, live),
+    },
+    view_faulted: v(faulted, 0),
+    view_unsynced_only: v(model({ time_synced: false }), 0),
+};
+const wsnap = () => ({ ...snap(), warnTitle: dom['camera-rec-warn'].title,
+    clearable: dom['camera-rec-warn'].classList.contains('clearable') });
+const c = {};
+globalThis.__fakeRos.state = 'connected';
+mono = 9000; P.cameraPanelOnHeartbeat(hb({ fault_bits: 0x28 }));
+c.faulted = wsnap();
+nextResult = { resolve: { success: true, message: 'faults cleared (were: INTENT_TIMEOUT_AUTOSTOP, SYNC_STEP)' } };
+let n0 = calls.length;
+dom['camera-rec-warn'].click();
+await tick(); await tick();
+c.call = calls.slice(n0);
+c.cleared = wsnap();
+fireTimeouts();
+mono = 9100; P.cameraPanelOnHeartbeat(hb({ fault_bits: 0 }));
+c.after = wsnap();
+n0 = calls.length; dom['camera-rec-warn'].click(); await tick();
+c.click_when_clean_calls = calls.length - n0;
+mono = 9200; P.cameraPanelOnHeartbeat(hb({ fault_bits: 0x20 }));
+nextResult = { resolve: { success: false, message: 'faults still latched: SYNC_STEP' } };
+dom['camera-rec-warn'].click();
+await tick(); await tick();
+c.relatched = wsnap();
+fireTimeouts();
+setReplayFence(true);
+n0 = calls.length; dom['camera-rec-warn'].click(); await tick();
+c.fenced_calls = calls.length - n0;
+setReplayFence(false);
+out.clearGlue = c;
+
 process.stdout.write(JSON.stringify(out) + '\n');

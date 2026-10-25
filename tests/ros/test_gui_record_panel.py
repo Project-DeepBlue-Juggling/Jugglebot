@@ -175,6 +175,34 @@ def test_glue_click_in_flight_failure_flash_and_fence(out):
     assert d["status"] == "ROS disconnected" and d["warnHidden"] is True
 
 
+@needs_node
+def test_clear_faults_enable_rule_and_view(out):
+    e = out["clear"]["enable"]
+    assert e["faulted"] is True
+    assert e["camera_off"] is True                    # clearing needs the adapter, not the camera
+    for k in ("clean", "adapter_down", "stale", "ros_down", "fenced", "pending", "no_hb"):
+        assert e[k] is False, k
+    vf = out["clear"]["view_faulted"]
+    assert vf["clearable"] is True and vf["warn"] is True
+    assert vf["warnText"] == "Faults: INTENT_TIMEOUT_AUTOSTOP, SYNC_STEP\n(click to clear faults)"
+    vu = out["clear"]["view_unsynced_only"]
+    assert vu["warn"] is True and vu["clearable"] is False   # a warning with no fault is not clearable
+    assert "click to clear" not in vu["warnText"]
+
+
+@needs_node
+def test_glue_warning_click_calls_clear_faults(out):
+    c = out["clearGlue"]
+    assert c["faulted"]["clearable"] is True and c["faulted"]["warnHidden"] is False
+    assert c["faulted"]["warnTitle"].endswith("(click to clear faults)")
+    assert c["call"] == [{"name": "camera/clear_faults", "type": "std_srvs/srv/Trigger"}]
+    assert c["cleared"]["status"] == "Faults cleared"
+    assert c["after"]["warnHidden"] is True and c["after"]["clearable"] is False
+    assert c["click_when_clean_calls"] == 0
+    assert c["relatched"]["status"] == "Clear failed: faults still latched: SYNC_STEP"
+    assert c["fenced_calls"] == 0
+
+
 # ---------------------------------------------------------------- source wiring
 
 def _src(rel):

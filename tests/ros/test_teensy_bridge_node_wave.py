@@ -13,6 +13,7 @@ its assertions. ROS is mocked by tests/ros/conftest.py (timers do not fire).
 from __future__ import annotations
 
 import struct
+import threading
 import time
 
 import pytest
@@ -104,6 +105,8 @@ def test_heartbeat_published_connected(bridge):
     node = bridge
     _feed(node, wc.INFO_ID, wc.WaveInfoPage.encode(0, fw_version=3, wire_version=1, uptime_s=42))
     _feed(node, wc.INFO_ID, wc.WaveInfoPage.encode(2, offset_spread_us=120))
+    # recordings_this_session counts from the first heartbeat seen (0 here).
+    _feed(node, wc.HEARTBEAT_ID, _hb(state=wc.WaveState.IDLE, recordings=0))
     _feed(node, wc.HEARTBEAT_ID, _hb(state=wc.WaveState.RECORDING, elapsed=25, recordings=2,
                                      status=wc.STATUS_CAMERA_ON | wc.STATUS_TIME_SYNCED
                                      | wc.STATUS_UART_SEEN | wc.STATUS_INTENT_FRESH,
@@ -226,7 +229,8 @@ def test_record_start_happy_path(bridge):
     assert res.success is True, res.message
     assert res.message == 'recording started'
     desired, seq, flags, reserved, session, _, _ = rec.calls[0]
-    assert (desired, seq, flags, reserved) == (1, 1, 0, 0)
+    # A start clears the latched fault byte on its own new-seq frame.
+    assert (desired, seq, flags, reserved) == (1, 1, wc.CMD_FLAG_CLEAR_FAULTS, 0)
     assert session == node._wave_session_id and session > 1_700_000_000
     assert node._wave_desired == 1
 
@@ -319,6 +323,15 @@ def test_record_stop_no_change_succeeds(bridge):
     assert rec.calls[0][0] == 0
 
 
+def test_record_stop_does_not_clear_faults(bridge):
+    node = bridge
+    _feed(node, wc.HEARTBEAT_ID, _hb())
+    rec = _RpcRecorder(node, reply=lambda seq: _event(wc.WaveEventKind.STOP, seq=seq))
+    node._call_rpc = rec
+    assert node._svc_wave_record_stop(_Req(), _Res()).success
+    assert rec.calls[0][2] == 0
+
+
 def test_record_stop_rpc_failure(bridge):
     node = bridge
     _feed(node, wc.HEARTBEAT_ID, _hb())
@@ -355,4 +368,125 @@ def test_intent_tick_repeats_the_current_seq_while_recording(bridge):
     node._call_rpc = rec
     node._wave_intent_tick()
     node._wave_intent_tick()
-    assert [c[:2] for c in rec.calls] == [(1, 1), (1, 1)]
+    # The start's CLEAR_FAULTS was a one-shot: the stream repeats with flags 0.
+    assert [c[:3] for c in rec.calls] == [(1, 1, 0), (1, 1, 0)]
+
+
+# ── camera/clear_faults ───────────────────────────────────────
+
+class _HbAfterSend(_RpcRecorder):
+    """Recorder whose WAVE_CMD is answered by ``n`` heartbeats carrying ``faults``,
+    fed from a thread AFTER the RPC has returned (as the adapter's next
+    heartbeats would arrive), plus ``during`` heartbeats fed inside the RPC (a
+    slow or retried send) that must not count toward the confirmation."""
+
+    def __init__(self, node, faults, n=2, ok=True, during=0, during_faults=None):
+        super().__init__(node, ok=ok)
+        self.faults, self.n = faults, n
+        self.during, self.during_faults = during, during_faults
+        self.thread = None
+
+    def __call__(self, method, args=b"", *, timeout=None, retries=None):
+        result = super().__call__(method, args, timeout=timeout, retries=retries)
+        if self.ok:
+            for _ in range(self.during):
+                _feed(self.node, wc.HEARTBEAT_ID, _hb(faults=self.during_faults))
+
+            def later():
+                time.sleep(0.02)
+                for _ in range(self.n):
+                    _feed(self.node, wc.HEARTBEAT_ID, _hb(faults=self.faults))
+            self.thread = threading.Thread(target=later, daemon=True)
+            self.thread.start()
+        return result
+
+
+def test_clear_faults_sends_the_current_seq_with_the_flag_and_confirms(bridge):
+    node = bridge
+    _feed(node, wc.HEARTBEAT_ID, _hb(faults=wc.FAULT_INTENT_TIMEOUT_AUTOSTOP | wc.FAULT_SYNC_STEP))
+    rec = _HbAfterSend(node, faults=0)
+    node._call_rpc = rec
+    res = node._svc_wave_clear_faults(_Req(), _Res())
+    assert res.success is True, res.message
+    assert res.message == 'faults cleared (were: INTENT_TIMEOUT_AUTOSTOP, SYNC_STEP)'
+    desired, seq, flags, reserved, session, _, _ = rec.calls[0]
+    # Unchanged (desired, seq): a keepalive to the adapter's state machine.
+    assert (desired, seq, flags, reserved) == (0, 0, wc.CMD_FLAG_CLEAR_FAULTS, 0)
+    assert node._wave_cmd_seq == 0 and node._wave_desired == 0
+
+
+def test_clear_faults_while_recording_never_bumps_the_seq(bridge):
+    # A bumped seq with desired=1 would START a recording from IDLE (e.g. after a
+    # TICK_LOST auto-stop left the node's desired at 1), so the clear must not bump.
+    node = bridge
+    _feed(node, wc.HEARTBEAT_ID, _hb())
+    node._call_rpc = _RpcRecorder(node, reply=lambda seq: _event(wc.WaveEventKind.START, seq=seq))
+    assert node._svc_wave_record_start(_Req(), _Res()).success
+    rec = _HbAfterSend(node, faults=0)
+    node._call_rpc = rec
+    assert node._svc_wave_clear_faults(_Req(), _Res()).success
+    assert rec.calls[0][:3] == (1, 1, wc.CMD_FLAG_CLEAR_FAULTS)
+    assert node._wave_cmd_seq == 1
+    stream = _RpcRecorder(node)
+    node._call_rpc = stream
+    node._wave_intent_tick()
+    assert stream.calls[0][:3] == (1, 1, 0)        # one-shot: the stream sends flags 0
+
+
+def test_clear_faults_reports_a_relatched_fault(bridge):
+    node = bridge
+    _feed(node, wc.HEARTBEAT_ID, _hb(faults=wc.FAULT_SYNC_STEP))
+    node._call_rpc = _HbAfterSend(node, faults=wc.FAULT_SYNC_STEP)
+    res = node._svc_wave_clear_faults(_Req(), _Res())
+    assert res.success is False and 'still latched: SYNC_STEP' in res.message
+
+
+def test_clear_faults_with_nothing_latched(bridge):
+    node = bridge
+    _feed(node, wc.HEARTBEAT_ID, _hb())
+    node._call_rpc = _HbAfterSend(node, faults=0)
+    res = node._svc_wave_clear_faults(_Req(), _Res())
+    assert res.success is True and res.message == 'no faults were latched'
+
+
+def test_clear_faults_ignores_heartbeats_that_arrived_during_the_send(bridge):
+    # Two stale heartbeats (old faults) land while a retried RPC is in flight;
+    # only the two after it returns decide the outcome.
+    node = bridge
+    _feed(node, wc.HEARTBEAT_ID, _hb(faults=wc.FAULT_SYNC_STEP))
+    node._call_rpc = _HbAfterSend(node, faults=0, during=2, during_faults=wc.FAULT_SYNC_STEP)
+    res = node._svc_wave_clear_faults(_Req(), _Res())
+    assert res.success is True, res.message
+
+
+def test_clear_faults_waits_for_two_fresh_heartbeats(bridge):
+    # One heartbeat after the send may predate the clear at the adapter: not enough.
+    node = bridge
+    _feed(node, wc.HEARTBEAT_ID, _hb(faults=wc.FAULT_SYNC_STEP))
+    node._WAVE_CLEAR_CONFIRM_TIMEOUT_S = 0.05
+    node._call_rpc = _HbAfterSend(node, faults=0, n=1)
+    res = node._svc_wave_clear_faults(_Req(), _Res())
+    assert res.success is False and 'no fresh heartbeat' in res.message
+
+
+def test_clear_faults_when_disconnected_fails_without_sending(bridge):
+    node = bridge
+    rec = _HbAfterSend(node, faults=0)
+    node._call_rpc = rec
+    res = node._svc_wave_clear_faults(_Req(), _Res())
+    assert res.success is False and 'not connected' in res.message
+    assert rec.calls == []
+
+
+def test_clear_faults_rpc_failure(bridge):
+    node = bridge
+    _feed(node, wc.HEARTBEAT_ID, _hb(faults=wc.FAULT_SYNC_STEP))
+    node._call_rpc = _HbAfterSend(node, faults=0, ok=False)
+    res = node._svc_wave_clear_faults(_Req(), _Res())
+    assert res.success is False and 'ERR_BUS_DOWN' in res.message
+
+
+def test_fault_names():
+    assert wc.fault_names(0) == 'none'
+    assert wc.fault_names(0x28) == 'INTENT_TIMEOUT_AUTOSTOP, SYNC_STEP'
+    assert wc.fault_names(0x80) == 'BIT7'

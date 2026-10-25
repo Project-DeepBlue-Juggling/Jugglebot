@@ -11,7 +11,8 @@
  *      tests/ros/test_gui_record_panel.py through
  *      tests/ros/js/record_panel_harness.js.
  *   2. The glue: initCameraPanel() wires #camera-panel's markup, a 4 Hz
- *      repaint and the REC/STOP click; cameraPanelOnHeartbeat() is the
+ *      repaint, the REC/STOP click and the warning glyph's click-to-clear
+ *      (camera/clear_faults) while faults are latched; cameraPanelOnHeartbeat() is the
  *      camera/heartbeat handler main.js subscribes; setCameraPanelDisconnected()
  *      is called from main.js blankDisconnectedState().
  *
@@ -135,6 +136,21 @@ export function canPress(model, nowMs, ctx) {
     return hb.state === STATE.IDLE || hb.state === STATE.RECORDING;
 }
 
+/**
+ * The warning glyph clears the latched fault byte on click (camera/clear_faults)
+ * when this holds: the same ROS/fence/pending/freshness gates as the button, a
+ * connected adapter, and at least one fault latched. The camera need not be on.
+ * @param {object|null} model
+ * @param {number} nowMs
+ * @param {{rosConnected:boolean, fenced:boolean, pending?:boolean}} ctx
+ */
+export function canClearFaults(model, nowMs, ctx) {
+    if (!ctx || !ctx.rosConnected || ctx.fenced || ctx.pending) return false;
+    if (isStale(model, nowMs)) return false;
+    const hb = model.hb;
+    return !!hb.connected && hb.faults !== 0;
+}
+
 /** @returns {string} the one-line status for a heartbeat (no ROS/flash context). */
 export function statusText(hb) {
     if (!hb) return 'No heartbeat';
@@ -180,6 +196,7 @@ export function cameraPanelView(model, nowMs, ctx) {
     const stale = !blank && isStale(model, nowMs);
     const recording = !blank && isRecording(hb);
     const warn = blank ? [] : warnings(hb);
+    const clearable = !blank && canClearFaults(model, nowMs, c);
     let status = blank ? (c.rosConnected ? 'No heartbeat' : 'ROS disconnected') : statusText(hb);
     if (stale) status += ' (stale)';
     if (c.flash) status = c.flash;
@@ -192,7 +209,8 @@ export function cameraPanelView(model, nowMs, ctx) {
         elapsedText: blank ? BLANK_ELAPSED : formatElapsed(interpolatedElapsedMs(model, nowMs)),
         statusText: status,
         warn: warn.length > 0,
-        warnText: warn.join('\n'),
+        warnText: warn.join('\n') + (clearable ? '\n(click to clear faults)' : ''),
+        clearable,
     };
 }
 
@@ -231,6 +249,7 @@ function render() {
     els.status.title = v.statusText;
     els.warn.hidden = !v.warn;
     els.warn.title = v.warnText;
+    els.warn.classList.toggle('clearable', v.clearable);
     els.root.classList.toggle('stale', v.stale);
     els.root.classList.toggle('blank', v.blank);
 }
@@ -255,6 +274,29 @@ function onRecClick() {
                 const msg = (result && result.message) || 'refused';
                 console.warn(service + ' failed:', msg);
                 showFlash((stop ? 'Stop failed: ' : 'Start failed: ') + msg);
+            }
+        })
+        .catch((err) => {
+            console.error(service + ' service error:', err);
+            showFlash('Error: ' + ((err && err.message) || err));
+        })
+        .finally(() => { pending = false; render(); });
+}
+
+function onWarnClick() {
+    if (isReplayFenced()) return;  // replay fence (callService also refuses in replay)
+    if (pending || !els || !canClearFaults(model, nowMono(), ctxNow())) return;
+    const service = 'camera/clear_faults';
+    pending = true;
+    render();
+    ros.withTimeout(ros.callService(service, 'std_srvs/srv/Trigger'), SERVICE_TIMEOUT_MS, service)
+        .then((result) => {
+            if (result && result.success) {
+                showFlash('Faults cleared');
+            } else {
+                const msg = (result && result.message) || 'refused';
+                console.warn(service + ' failed:', msg);
+                showFlash('Clear failed: ' + msg);
             }
         })
         .catch((err) => {
@@ -290,6 +332,7 @@ export function initCameraPanel() {
     };
     if (Object.values(els).some((e) => !e)) { els = null; return; }
     els.btn.addEventListener('click', onRecClick);
+    els.warn.addEventListener('click', onWarnClick);
     render();
     setInterval(render, 250);
 }

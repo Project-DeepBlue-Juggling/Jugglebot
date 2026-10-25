@@ -376,6 +376,12 @@
 - **clients:** `skill_node`
 - **type:** `jugglebot_interfaces.srv.BallButlerThrow`
 
+### `camera/clear_faults`
+
+- **servers:** `teensy_bridge_node`
+- **clients:** _none_
+- **type:** `std_srvs.srv.Trigger`
+
 ### `camera/record_start`
 
 - **servers:** `teensy_bridge_node`
@@ -586,6 +592,7 @@ broken wire cannot hide among them.
 - `bb/reset` — service with no clients
 - `bb/start_accuracy_calibration` — service with no clients
 - `cache_diag` — topic with no subscribers
+- `camera/clear_faults` — service with no clients
 - `camera/heartbeat` — topic with no subscribers
 - `camera/record_event` — topic with no subscribers
 - `camera/record_start` — service with no clients

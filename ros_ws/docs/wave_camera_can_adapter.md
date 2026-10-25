@@ -53,7 +53,8 @@ GPI2 released if no WAVE_CMD intent arrives for 3 s (INTENT_TIMEOUT, s5.3).
    | roslib WebSocket :9090
  rosbridge_server
    | ROS2 topics/services: camera/heartbeat 10 Hz, camera/record_event,
-   |                       camera/record_start, camera/record_stop (Trigger)
+   |                       camera/record_start, camera/record_stop,
+   |                       camera/clear_faults (Trigger)
  teensy_bridge_node (Jetson, the single UDP owner)
    | 5 Hz RPC WAVE_CMD (0x0062)        ^ CONE_FRAME 0x85 (verbatim relay)
    v UDP RPC port                      | UDP stream port
@@ -128,8 +129,8 @@ time beacon always wins arbitration against this traffic.
 | Byte | Field | Type | Meaning |
 |---|---|---|---|
 | 0 | desired | u8 | 1 = record, 0 = do not record; anything else is ignored and counted |
-| 1 | cmd_seq | u8 | bumped by the node on every service call; repeats while streaming |
-| 2 | flags | u8 | bit0 CLEAR_FAULTS (clears the latched fault byte); others 0 |
+| 1 | cmd_seq | u8 | bumped by `record_start` and `record_stop`; repeats while streaming (`camera/clear_faults` re-sends it unchanged) |
+| 2 | flags | u8 | bit0 CLEAR_FAULTS (clears the latched fault byte); others 0. One-shot: set on `record_start`'s new-seq frame and on the `camera/clear_faults` frame, never on the 5 Hz repeats |
 | 3 | reserved | u8 | 0 |
 | 4-7 | session_id | u32 | node start time, Unix s; a change resets `recordings_this_session` |
 
@@ -207,6 +208,17 @@ Each new `cmd_seq` produces exactly one WAVE_REC_EVENT carrying that seq:
 Frames that repeat a seq are keepalives only. `record_start` succeeds on
 START with reason NONE, or on REFUSED/NO_CHANGE while recording.
 `record_stop` succeeds on STOP, or on REFUSED/NO_CHANGE.
+
+Clearing faults (added 2026-10-25 at the Jetson bring-up): the fault byte
+latches, so the node clears it in two places. `record_start` sets
+CLEAR_FAULTS on its new-seq frame; the adapter clears before it acts, so the
+faults shown during a take are that take's. `camera/clear_faults` (Trigger;
+the GUI's warning glyph calls it on click while faults are latched) sends
+the CURRENT desired and cmd_seq with CLEAR_FAULTS. An unchanged seq is a
+keepalive, so it never starts or stops a recording; a bumped seq would start
+one from IDLE if the node's desired were still 1 (after a TICK_LOST
+auto-stop). It succeeds when the second heartbeat after the send reads
+faults 0, and fails naming any fault that re-latched.
 
 ## 5. ESP32 firmware design
 
@@ -372,6 +384,7 @@ CAN3 peripheral (can_buses.cpp:41).
   - A 5 Hz `_wave_intent_tick` that calls `_call_rpc(RpcMethod.WAVE_CMD, …, retries=0, timeout=0.2)` (line 6389) only while connected.
   - Two Trigger services, `camera/record_start` and `camera/record_stop`, on their own ReentrantCallbackGroup like `bb/cancel` (line 2186-2191). Each bumps cmd_seq, sends immediately, then waits on a condition variable for the matching event (s4.5), bounded at 2.0 s (500 ms min-state stretch + 33 ms tick + 150 ms clip window + margin).
   - On a start timeout or a REFUSED, it sets desired=0, so the robot is never recording without a confirmation.
+  - A third Trigger service, `camera/clear_faults`, on the same group (s4.5 "Clearing faults").
   - `camera/record_event` is published from the RX queue by a 100 Hz drain like `_drain_cone_catch_events`.
 - Messages in `ros_ws/src/jugglebot_interfaces/msg/`, listed in CMakeLists.txt next to line 42:
   - `WaveCameraHeartbeat.msg`: `bool connected, uint8 state, bool camera_on, bool uart_seen, bool recording, uint32 elapsed_ms, builtin_interfaces/Time start_stamp, uint32 recordings_this_session, bool time_synced, uint32 sync_age_ms, uint16 fw_version, uint32 uptime_s, uint8 fault_bits, bool console_owns, bool intent_fresh, uint16 offset_spread_us`.

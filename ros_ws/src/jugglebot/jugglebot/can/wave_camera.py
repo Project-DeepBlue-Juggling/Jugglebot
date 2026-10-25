@@ -66,6 +66,8 @@ FAULT_INTENT_TIMEOUT_AUTOSTOP = 0x08
 FAULT_BUS_OFF_SEEN = 0x10
 FAULT_SYNC_STEP = 0x20
 FAULT_EDGE_RING_OVERFLOW = 0x40
+_FAULT_NAMES = ('GPI2_REFUSED', 'TICK_LOST_MID_REC', 'CLIP_MISSING', 'INTENT_TIMEOUT_AUTOSTOP',
+                'BUS_OFF_SEEN', 'SYNC_STEP', 'EDGE_RING_OVERFLOW', 'BIT7')
 
 # WAVE_HEARTBEAT units
 ELAPSED_UNIT_MS = 100
@@ -321,6 +323,13 @@ class WaveInfoPage:
 
 # ── Sequence / elapsed unwrapping ────────────────────────────────────────────
 
+def fault_names(bits: int) -> str:
+    """Latched fault byte as comma-separated names ('none' for 0), the same
+    vocabulary as the GUI's tooltip (camera-panel.js FAULT_NAMES)."""
+    names = [n for i, n in enumerate(_FAULT_NAMES) if int(bits) & (1 << i)]
+    return ', '.join(names) if names else 'none'
+
+
 class SeqUnwrapper:
     """Unwrap a u8 counter into a monotonic u32.
 
@@ -328,11 +337,19 @@ class SeqUnwrapper:
     wrap. A larger "forward" step is a backward step on the wire, i.e. the
     adapter reset its counter (reboot, or a new session_id): the total keeps
     counting from where it was rather than jumping by ~250.
+
+    ``seed_from_zero`` starts the total at 0 instead of at the first raw value,
+    so only forward steps seen by this unwrapper count. ``recordings`` needs it:
+    the node's first heartbeat always predates its own session_id at the
+    adapter (intents stream only once a heartbeat is fresh), so that first
+    value is the previous session's count, and the adapter's reset to 0 one
+    intent later must not leave it behind as an offset.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, seed_from_zero: bool = False) -> None:
         self._last: Optional[int] = None
         self._total = 0
+        self._seed_from_zero = seed_from_zero
 
     @property
     def value(self) -> int:
@@ -341,7 +358,7 @@ class SeqUnwrapper:
     def update(self, raw: int) -> int:
         raw = int(raw) & 0xFF
         if self._last is None:
-            self._total = raw
+            self._total = 0 if self._seed_from_zero else raw
         else:
             delta = (raw - self._last) & 0xFF
             if delta <= 0x80:
@@ -356,7 +373,8 @@ class WaveRecordingTracker:
     """Host-side bookkeeping for the heartbeat and event counters.
 
     * ``recording_seq`` from WAVE_REC_EVENT is unwrapped u8 -> u32;
-    * ``recordings`` from WAVE_HEARTBEAT is unwrapped likewise;
+    * ``recordings`` from WAVE_HEARTBEAT is unwrapped likewise, counted from 0
+      (the first heartbeat carries the previous session's count);
     * ``elapsed`` (100 ms units) saturates at 0xFFFE on the wire, so past that
       the tracker extrapolates from the last unsaturated value on the host
       monotonic clock;
@@ -366,7 +384,7 @@ class WaveRecordingTracker:
 
     def __init__(self) -> None:
         self._rec_seq = SeqUnwrapper()
-        self._recordings = SeqUnwrapper()
+        self._recordings = SeqUnwrapper(seed_from_zero=True)
         self._elapsed_anchor: Optional[Tuple[int, float]] = None   # (ms, host mono s)
         self.start_wall_us: Optional[int] = None
 
