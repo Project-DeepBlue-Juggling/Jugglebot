@@ -96,6 +96,7 @@ class RpcMethod(IntEnum):
     BB_FW_COMMIT = 95  # Ball Butler FW-over-CAN: apply the staged image + reboot (relay → CAN1 0x7D6 op 0x04)
     BB_FW_INFO = 96  # Ball Butler FW-over-CAN: read the running FW_VERSION (relay → CAN1 0x7D6 op 0x05)
     HAND_MOVE_TO = 97  # Hand-only TRAP_TRAJ move to a caller target (ACTIVATE's axis-6 ladder); deferred reply at arrival / timeout / supersede
+    WAVE_CMD = 98  # Wave camera: send one WAVE_CMD intent frame on the cone bus
 
 class RpcStatus(IntEnum):
     OK = 0  # Success
@@ -1130,6 +1131,29 @@ class ResultHandMoveTo:
         vals = _RESULT_HAND_MOVE_TO_STRUCT.unpack(data[:20])
         it = iter(vals)
         return cls(next(it), tuple(next(it) for _ in range(3)), next(it), next(it), next(it), next(it))
+
+# ArgWaveCmd (WAVE_CMD)
+ARG_WAVE_CMD_FMT = '<BBBBI'
+ARG_WAVE_CMD_SIZE = 8
+_ARG_WAVE_CMD_STRUCT = struct.Struct(ARG_WAVE_CMD_FMT)
+assert _ARG_WAVE_CMD_STRUCT.size == 8
+
+@dataclass
+class ArgWaveCmd:
+    desired: int = 0
+    cmd_seq: int = 0
+    flags: int = 0
+    reserved: int = 0
+    session_id: int = 0
+
+    def pack(self) -> bytes:
+        return _ARG_WAVE_CMD_STRUCT.pack(self.desired, self.cmd_seq, self.flags, self.reserved, self.session_id)
+
+    @classmethod
+    def unpack(cls, data: bytes) -> 'ArgWaveCmd':
+        vals = _ARG_WAVE_CMD_STRUCT.unpack(data[:8])
+        it = iter(vals)
+        return cls(next(it), next(it), next(it), next(it), next(it))
 
 # ArgBbThrow (BB_THROW)
 ARG_BB_THROW_FMT = '<fffQ'

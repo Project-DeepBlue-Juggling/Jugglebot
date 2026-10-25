@@ -41,6 +41,7 @@ from .protocol import (
     ArgPlatformFwBegin,
     ArgPlatformFwData,
     ArgPlatformFwVerify,
+    ArgWaveCmd,
 )
 
 RpcMethod = p.RpcMethod
@@ -79,6 +80,8 @@ __all__ = [
     "encode_hand_move_to_result", "decode_hand_move_to_result",
     "HAND_AXIS", "HAND_MOVE_ARRIVED", "HAND_MOVE_SUPERSEDED", "HAND_MOVE_TIMEOUT",
     "HAND_MOVE_ABORTED", "HAND_MOVE_OUTCOME_NAMES",
+    # WAVE_CMD (FW 31)
+    "ArgWaveCmd", "encode_wave_cmd", "WAVE_CMD_FLAG_CLEAR_FAULTS",
     # method association
     "METHOD",
 ]
@@ -343,6 +346,26 @@ def encode_hand_move_to_result(outcome: int, pos_rev: float, vel_rps: float,
 def decode_hand_move_to_result(blob: bytes) -> ResultHandMoveTo:
     """Decode a HAND_MOVE_TO result blob (exact-size unpack)."""
     return ResultHandMoveTo.unpack(blob)
+
+
+# ── WAVE_CMD (can-bridge FW 31, additive RpcMethod) ──────────────────────────
+# One recording-intent frame for the Wave camera adapter on the cone-role bus
+# (ADR-0014). The 8 arg bytes go out VERBATIM as the 0x7E2 CAN payload, so this
+# encoder is byte-identical to jugglebot.can.wave_camera.encode_cmd (pinned by
+# tests/ros/test_wave_camera.py). The firmware is the validator (desired > 1 or
+# reserved != 0 -> ERR_BAD_ARGS); the encoder does not pre-validate, for the same
+# one-enforcement-point reason as HAND_MOVE_TO. IDEMPOTENT: a re-dispatch resends
+# the same cmd_seq, which the adapter treats as a keepalive, so WAVE_CMD is
+# deliberately NOT in teensy_link.rpc.NON_IDEMPOTENT_METHODS.
+WAVE_CMD_FLAG_CLEAR_FAULTS = 0x01
+
+
+def encode_wave_cmd(desired: int, cmd_seq: int, flags: int = 0,
+                    session_id: int = 0) -> bytes:
+    """WAVE_CMD args: desired (0/1), cmd_seq (u8), flags (u8), session_id (u32)."""
+    return ArgWaveCmd(desired=int(desired), cmd_seq=int(cmd_seq) & 0xFF,
+                      flags=int(flags), reserved=0,
+                      session_id=int(session_id) & 0xFFFFFFFF).pack()
 
 
 # ── Platform-Teensy relay ─────────────────────────────────────────────────────
@@ -844,7 +867,12 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # (0x44, payloadless, presence-gated like BB_RESET) sends CANCEL_CMD 0x7D9 on
 # CAN1. No wire change to any existing message; PROTOCOL_VERSION stays 10; an
 # FW 29 board answers BB_CANCEL with ERR_UNKNOWN_METHOD.
-EXPECTED_BRIDGE_FW_VERSION = 30
+# 30 -> 31 (2026-10-19): Wave camera adapter. One ADDITIVE RpcMethod WAVE_CMD
+# (0x62, ArgWaveCmd 8 B) sends the args verbatim as WaveCameraCanId::CMD 0x7E2 on
+# the cone-role bus (CAN3 peripheral); ERR_BUS_DOWN when no cone-bus partner has
+# been heard. No wire change to any existing message; PROTOCOL_VERSION stays 10;
+# an FW 30 board answers WAVE_CMD with ERR_UNKNOWN_METHOD.
+EXPECTED_BRIDGE_FW_VERSION = 31
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────
@@ -935,6 +963,7 @@ METHOD = {
     RpcMethod.BB_FW_DATA: ArgPlatformFwData,
     RpcMethod.BB_FW_VERIFY: ArgPlatformFwVerify,
     RpcMethod.HAND_MOVE_TO: ArgHandMoveTo,         # FW 26, deferred reply
+    RpcMethod.WAVE_CMD: ArgWaveCmd,                # FW 31, cone-bus intent frame
     # BB_RELOAD/RESET/CALIBRATE_LOC/CANCEL are payloadless — no entry (matches NOP).
     # TILT_READ/STATE_READ are payloadless too (reply arrives as a PLATFORM_FRAME).
     # PLATFORM_FW_COMMIT is payloadless too — no entry (matches NOP).

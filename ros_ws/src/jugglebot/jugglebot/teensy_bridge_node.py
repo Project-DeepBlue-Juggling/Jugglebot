@@ -70,6 +70,8 @@ from jugglebot_interfaces.msg import (
     MotorStateSingle,
     RobotState,
     SetMotorVelCurrLimitsMessage,
+    WaveCameraHeartbeat,
+    WaveRecordEvent,
 )
 from jugglebot_interfaces.srv import (
     ODriveCommandService,
@@ -136,6 +138,7 @@ from teensy_link.deactivate import (
 )
 from jugglebot.can import catching_cone
 from jugglebot.can import odrive
+from jugglebot.can import wave_camera
 from jugglebot.can.motor_state import MotorStateTracker
 from jugglebot import mocap_status as mocap_st
 import jugglebot.hardware_config as hw
@@ -1628,6 +1631,30 @@ class TeensyBridgeNode(Node):
         self._cone_last_hb_mono = 0.0
         self._cone_hb_timeout_s = proto.CC_HEARTBEAT_TIMEOUT_MS / 1000.0
 
+        # Wave camera adapter (ESP32 on the cone-role bus, ADR-0014). Its
+        # uplink rides CONE_FRAME like the cone's; IDs 0x7E2-0x7E7. Heartbeat
+        # and INFO pages are state (latest wins); REC_EVENTs are discrete
+        # (queued, published once) AND kept in a short recent list the
+        # record_start/record_stop services wait on for their cmd_seq echo.
+        # Everything below is guarded by _wave_cv (its own lock: a service
+        # waits on it for seconds, and must not hold self._lock).
+        self._wave_cv = threading.Condition()
+        self._wave_hb = wave_camera.WaveHeartbeat()
+        self._wave_hb_received = False
+        self._wave_last_hb_mono = 0.0
+        self._wave_hb_timeout_s = proto.WAVE_HEARTBEAT_TIMEOUT_MS / 1000.0
+        self._wave_info = {}            # page -> WaveInfoPage (latest)
+        self._wave_event_queue = []     # [(WaveRecEvent, wall_us, rec_seq_u32)] for the drain
+        self._wave_recent_events = []   # [(arrival_index, WaveRecEvent)] for the services
+        self._wave_event_index = 0
+        self._wave_tracker = wave_camera.WaveRecordingTracker()
+        self._wave_recordings_total = 0
+        # Intent stream state. session_id = this node's start time (Unix s):
+        # a change tells the adapter to reset recordings_this_session.
+        self._wave_desired = 0
+        self._wave_cmd_seq = 0
+        self._wave_session_id = int(time.time()) & 0xFFFFFFFF
+
         # Link-loss deferred-stow latch (the bridge's UDP-link watchdog — the
         # Jetson↔Teensy analog of can_node._watchdog_check; the CAN-side latch is
         # owned by the Teensy firmware). See teensy_link/fault_logic.py.
@@ -2051,6 +2078,17 @@ class TeensyBridgeNode(Node):
         self.cone_heartbeat_pub = self.create_publisher(
             CatchingConeHeartbeat, 'cone/heartbeat', 10)
 
+        # ── Wave camera adapter (cone-role bus, ADR-0014) ────
+        # camera/heartbeat at 10 Hz (connected=False before the first frame),
+        # camera/record_event per START/STOP/AUTO_STOP/REFUSED, and a 1 Hz
+        # camera_diag DiagnosticStatus carrying the WAVE_INFO pages.
+        self.wave_heartbeat_pub = self.create_publisher(
+            WaveCameraHeartbeat, 'camera/heartbeat', 10)
+        self.wave_record_event_pub = self.create_publisher(
+            WaveRecordEvent, 'camera/record_event', 10)
+        self.wave_diag_pub = self.create_publisher(
+            DiagnosticStatus, 'camera_diag', 10)
+
         # Ball Butler ODrive diagnostics (CAN1 nodes 7=pitch, 8=hand). The bridge
         # emits these as DIAGNOSTIC frames with axis_id 7/8, stashed in
         # self._latest_diag[7|8] by _on_diagnostic; republished as a flat array.
@@ -2189,6 +2227,18 @@ class TeensyBridgeNode(Node):
         self._bb_cancel_cbgroup = ReentrantCallbackGroup()
         self.create_service(Trigger, 'bb/cancel', self._svc_bb_cancel,
                             callback_group=self._bb_cancel_cbgroup)
+        # Wave camera record_start / record_stop: each sends one WAVE_CMD and
+        # waits (bounded, _WAVE_ACK_TIMEOUT_S) for the matching REC_EVENT, so
+        # they get their own ReentrantCallbackGroup, as does the 5 Hz intent
+        # stream (its RPC can block up to 0.2 s and must never stall the
+        # default group's 100 Hz timers).
+        self._wave_cbgroup = ReentrantCallbackGroup()
+        self.create_service(Trigger, 'camera/record_start', self._svc_wave_record_start,
+                            callback_group=self._wave_cbgroup)
+        self.create_service(Trigger, 'camera/record_stop', self._svc_wave_record_stop,
+                            callback_group=self._wave_cbgroup)
+        self.create_timer(1.0 / proto.WAVE_INTENT_RATE_HZ, self._wave_intent_tick,
+                          callback_group=self._wave_cbgroup)
 
         # F4/Q2 — mocap_node's QTM view, the DATA-path half of bb/calibrate's
         # preconditions (see the module note above). Read-only: it feeds
@@ -2224,7 +2274,10 @@ class TeensyBridgeNode(Node):
         self.create_timer(0.1, self._publish_link_status)      # 10 Hz (heartbeat rate)
         self.create_timer(0.1, self._publish_bb_heartbeat)     # 10 Hz BB (matches CAN1 rate)
         self.create_timer(0.01, self._drain_cone_catch_events) # 100 Hz cone events (cheap when idle)
-        self.create_timer(0.1, self._publish_cone_heartbeat)   # 10 Hz cone (matches CAN2 rate)
+        self.create_timer(0.1, self._publish_cone_heartbeat)   # 10 Hz cone (matches the cone heartbeat)
+        self.create_timer(0.01, self._drain_wave_record_events)  # 100 Hz camera events (cheap when idle)
+        self.create_timer(0.1, self._publish_wave_heartbeat)   # 10 Hz camera (matches WAVE_HEARTBEAT)
+        self.create_timer(1.0, self._publish_wave_diag)        # 1 Hz camera_diag (WAVE_INFO pages)
         self.create_timer(0.01, self._publish_bb_axis_estimates)  # 100 Hz drain (BB pitch/hand est.)
         self.create_timer(0.01, self._publish_leg_cmd_executed)   # 100 Hz drain (Teensy post-clamp leg cmd)
         # 1 Hz is ample for a ~30 s (worst case 500 ms) anchor cadence, and keeps
@@ -2564,7 +2617,35 @@ class TeensyBridgeNode(Node):
         try:
             cf = ConeFrame.unpack(payload)
             data = bytes(cf.data[:cf.dlc])
-            if cf.can_id == catching_cone.CATCH_EVENT_ID:
+            # Wave camera adapter first (ADR-0014): its block 0x7E2-0x7E7 is
+            # disjoint from the cone's 0x7E0/0x7E1, and the two devices are
+            # mutually exclusive on the drop, so order is only for clarity.
+            if cf.can_id == wave_camera.HEARTBEAT_ID:
+                whb = wave_camera.WaveHeartbeat.from_can_frame(data)
+                with self._wave_cv:
+                    self._wave_hb = whb
+                    self._wave_hb_received = True
+                    self._wave_last_hb_mono = time.monotonic()
+                    self._wave_recordings_total = self._wave_tracker.recordings(whb)
+            elif cf.can_id == wave_camera.REC_EVENT_ID:
+                wevt = wave_camera.WaveRecEvent.from_can_frame(data)
+                wall_us = wave_camera.event_wall_us(
+                    wevt, int(cf.t_bridge_us), int(time.time() * 1e6))
+                with self._wave_cv:
+                    rec_seq = self._wave_tracker.on_event(wevt, wall_us)
+                    q = self._wave_event_queue
+                    q.append((wevt, wall_us, rec_seq))
+                    if len(q) > 1000:
+                        del q[:len(q) - 1000]
+                    self._wave_event_index += 1
+                    self._wave_recent_events.append((self._wave_event_index, wevt))
+                    del self._wave_recent_events[:-32]
+                    self._wave_cv.notify_all()
+            elif cf.can_id == wave_camera.INFO_ID:
+                page = wave_camera.WaveInfoPage.from_can_frame(data)
+                with self._wave_cv:
+                    self._wave_info[page.page] = page
+            elif cf.can_id == catching_cone.CATCH_EVENT_ID:
                 evt = catching_cone.CatchEvent.from_can_frame(data)
                 arrival_us = int(time.time() * 1e6)
                 with self._lock:
@@ -8788,6 +8869,246 @@ class TeensyBridgeNode(Node):
             self.cone_heartbeat_pub.publish(msg)
         except Exception as e:  # noqa: BLE001
             self.get_logger().error(f"Cone heartbeat publish error: {e}")
+
+    # ═══════════════════════════════════════════════════════════
+    # Wave camera adapter (cone-role bus, ADR-0014)
+    # ═══════════════════════════════════════════════════════════
+
+    #: Service wait for the REC_EVENT echoing its cmd_seq: the 500 ms GPI2
+    #: minimum-low stretch + one 33 ms tick + the 150 ms clip-line window + a
+    #: margin for the relay path. Kept under the adapter's 3 s intent timeout.
+    _WAVE_ACK_TIMEOUT_S = 2.5
+    #: The streamed intent's RPC budget: one shot, the next tick supersedes.
+    _WAVE_INTENT_RPC_TIMEOUT_S = 0.2
+
+    def _wave_connected(self) -> bool:
+        """Host-monotonic heartbeat freshness (caller must NOT hold _wave_cv)."""
+        with self._wave_cv:
+            return (self._wave_hb_received
+                    and (time.monotonic() - self._wave_last_hb_mono) < self._wave_hb_timeout_s)
+
+    def _wave_send_intent(self, *, timeout, retries):
+        """Send the current (desired, cmd_seq, session_id) as one WAVE_CMD RPC."""
+        with self._wave_cv:
+            args = rpc_args.encode_wave_cmd(self._wave_desired, self._wave_cmd_seq,
+                                            0, self._wave_session_id)
+        return self._call_rpc(RpcMethod.WAVE_CMD, args, timeout=timeout, retries=retries)
+
+    def _wave_intent_tick(self):
+        """5 Hz intent stream: re-send the current WAVE_CMD while the adapter
+        heartbeat is fresh, desired=0 included (a lost stop is repaired within
+        one period, and the adapter auto-stops after 3 s of silence). Silent
+        while disconnected: the bridge would refuse with ERR_BUS_DOWN anyway."""
+        try:
+            if not self._wave_connected():
+                return
+            ok, m, _ = self._wave_send_intent(
+                timeout=self._WAVE_INTENT_RPC_TIMEOUT_S, retries=0)
+            if not ok:
+                self.get_logger().warning(f'camera intent WAVE_CMD failed: {m}',
+                                          throttle_duration_sec=5.0)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f'camera intent tick error: {e}',
+                                    throttle_duration_sec=5.0)
+
+    def _svc_wave_record_start(self, req, res):
+        """camera/record_start — set desired=1, bump cmd_seq, send one WAVE_CMD
+        now and wait for the REC_EVENT echoing that seq. Success on START
+        (reason NONE; CLIP_MISSING succeeds with a WARNING in the message) or on
+        REFUSED/NO_CHANGE (already recording). On any failure or timeout desired
+        goes back to 0, so the robot is never recording without a confirmation."""
+        return self._log_service_outcome(
+            'camera/record_start', self._wave_record(True, res))
+
+    def _svc_wave_record_stop(self, req, res):
+        """camera/record_stop — set desired=0, bump cmd_seq, send one WAVE_CMD
+        now and wait for the matching REC_EVENT. Success on STOP or on
+        REFUSED/NO_CHANGE (already stopped). desired stays 0 either way."""
+        return self._log_service_outcome(
+            'camera/record_stop', self._wave_record(False, res))
+
+    def _wave_set_intent(self, desired: int) -> int:
+        """Set desired and bump cmd_seq (u8); returns the new seq."""
+        with self._wave_cv:
+            self._wave_desired = 1 if desired else 0
+            self._wave_cmd_seq = (self._wave_cmd_seq + 1) & 0xFF
+            return self._wave_cmd_seq
+
+    def _wave_record(self, want_record: bool, res):
+        if not self._wave_connected():
+            if want_record:
+                with self._wave_cv:
+                    self._wave_desired = 0
+            else:
+                self._wave_set_intent(0)
+            res.success = False
+            res.message = ('camera adapter not connected (no WAVE_HEARTBEAT within '
+                           f'{proto.WAVE_HEARTBEAT_TIMEOUT_MS} ms)')
+            return res
+        seq = self._wave_set_intent(1 if want_record else 0)
+        with self._wave_cv:
+            mark = self._wave_event_index
+        ok, m, _ = self._wave_send_intent(
+            timeout=self._WAVE_INTENT_RPC_TIMEOUT_S, retries=2)
+        if not ok:
+            if want_record:
+                self._wave_set_intent(0)
+            res.success = False
+            res.message = f'WAVE_CMD failed: {m} (ERR_UNKNOWN_METHOD = bridge FW <= 30)'
+            return res
+        evt = self._wave_wait_event(seq, mark, self._WAVE_ACK_TIMEOUT_S)
+        if evt is None:
+            if want_record:
+                self._wave_set_intent(0)
+            res.success = False
+            res.message = (f'no WAVE_REC_EVENT for cmd_seq {seq} within '
+                           f'{self._WAVE_ACK_TIMEOUT_S:.1f} s'
+                           + ('; desired reset to 0' if want_record else ''))
+            return res
+        success, text = wave_camera.evaluate_ack(want_record, evt)
+        if want_record and not success:
+            self._wave_set_intent(0)
+            text += '; desired reset to 0'
+        if success and 'WARNING' in text:
+            self.get_logger().warning(f'camera: {text}')
+        res.success = success
+        res.message = text
+        return res
+
+    def _wave_wait_event(self, seq: int, mark: int, timeout_s: float):
+        """Block until a REC_EVENT with cmd_seq_echo == seq arrives after
+        arrival index ``mark``; None on timeout."""
+        deadline = time.monotonic() + timeout_s
+        with self._wave_cv:
+            while True:
+                for idx, evt in self._wave_recent_events:
+                    if idx > mark and evt.cmd_seq_echo == seq:
+                        return evt
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    return None
+                self._wave_cv.wait(timeout=remaining)
+
+    def _drain_wave_record_events(self):
+        """Publish every queued REC_EVENT on camera/record_event (100 Hz drain).
+        header.stamp == event_time == the reconstructed event instant."""
+        with self._wave_cv:
+            if not self._wave_event_queue:
+                return
+            queued = self._wave_event_queue
+            self._wave_event_queue = []
+        for evt, wall_us, rec_seq in queued:
+            try:
+                msg = WaveRecordEvent()
+                stamp = rclpy.time.Time(nanoseconds=int(wall_us) * 1000).to_msg()
+                msg.header.stamp = stamp
+                msg.header.frame_id = 'wave_camera'
+                msg.kind = int(evt.kind)
+                msg.reason = int(evt.reason)
+                msg.event_time = stamp
+                msg.event_time_us = int(wall_us)
+                msg.time_synced = bool(evt.synced)
+                msg.tick_stamped = bool(evt.tick_stamped)
+                msg.recording_seq = int(rec_seq) & 0xFFFFFFFF
+                msg.cmd_seq = int(evt.cmd_seq_echo)
+                self.wave_record_event_pub.publish(msg)
+            except Exception as e:  # noqa: BLE001
+                self.get_logger().error(f'Camera record event publish error: {e}')
+
+    def _publish_wave_heartbeat(self):
+        """Publish camera/heartbeat (10 Hz). ``connected`` is host-monotonic
+        staleness against WAVE_HEARTBEAT_TIMEOUT_MS; before the first frame the
+        topic still publishes connected=False defaults (the GUI shows
+        'disconnected' off it)."""
+        try:
+            now_mono = time.monotonic()
+            with self._wave_cv:
+                hb = self._wave_hb
+                received = self._wave_hb_received
+                last_mono = self._wave_last_hb_mono
+                info0 = self._wave_info.get(wave_camera.INFO_PAGE_IDENTITY)
+                info2 = self._wave_info.get(wave_camera.INFO_PAGE_SYNC)
+                recordings = self._wave_recordings_total
+                start_us = self._wave_tracker.start_wall_us
+                elapsed_ms = self._wave_tracker.elapsed_ms(hb, now_mono)
+            connected = received and (now_mono - last_mono) < self._wave_hb_timeout_s
+            msg = WaveCameraHeartbeat()
+            msg.connected = bool(connected)
+            msg.state = int(hb.state)
+            msg.camera_on = hb.camera_on
+            msg.uart_seen = hb.uart_seen
+            # A stale heartbeat says nothing about whether the camera is still
+            # recording, so a disconnected adapter reports not-recording with a
+            # zero elapsed and start_stamp rather than extrapolating the tracker.
+            live_rec = bool(connected and hb.recording)
+            msg.recording = live_rec
+            msg.elapsed_ms = (int(elapsed_ms) & 0xFFFFFFFF) if live_rec else 0
+            msg.start_stamp = rclpy.time.Time(
+                nanoseconds=(int(start_us) * 1000 if (live_rec and start_us) else 0)).to_msg()
+            msg.recordings_this_session = int(recordings) & 0xFFFFFFFF
+            msg.time_synced = hb.time_synced
+            msg.sync_age_ms = int(hb.sync_age_ms)
+            msg.fw_version = int(info0.fields.get('fw_version', 0)) if info0 else 0
+            msg.uptime_s = int(info0.fields.get('uptime_s', 0)) if info0 else 0
+            msg.fault_bits = int(hb.faults)
+            msg.console_owns = hb.console_owns
+            msg.intent_fresh = hb.intent_fresh
+            msg.offset_spread_us = int(info2.fields.get('offset_spread_us', 0)) if info2 else 0
+            self.wave_heartbeat_pub.publish(msg)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f'Camera heartbeat publish error: {e}',
+                                    throttle_duration_sec=5.0)
+
+    def _publish_wave_diag(self):
+        """Publish camera_diag (1 Hz): the heartbeat summary plus every
+        WAVE_INFO page seen. OK when connected, synced and fault-free; WARN on a
+        latched fault, an unsynced adapter or the camera off; ERROR when the
+        adapter is disconnected after having been seen; STALE before then."""
+        try:
+            now_mono = time.monotonic()
+            with self._wave_cv:
+                hb = self._wave_hb
+                received = self._wave_hb_received
+                last_mono = self._wave_last_hb_mono
+                pages = dict(self._wave_info)
+                desired = self._wave_desired
+                seq = self._wave_cmd_seq
+                session = self._wave_session_id
+            connected = received and (now_mono - last_mono) < self._wave_hb_timeout_s
+            msg = DiagnosticStatus()
+            msg.name = 'wave_camera'
+            msg.hardware_id = 'wave_camera_adapter'
+            if not received:
+                msg.level = DiagnosticStatus.STALE
+                msg.message = 'no WAVE_HEARTBEAT seen'
+            elif not connected:
+                msg.level = DiagnosticStatus.ERROR
+                msg.message = 'adapter disconnected (heartbeat stale)'
+            elif hb.faults or not hb.time_synced or not hb.camera_on:
+                msg.level = DiagnosticStatus.WARN
+                msg.message = (f'{hb.state_name} faults=0x{hb.faults:02X} '
+                               f'synced={hb.time_synced} camera_on={hb.camera_on}')
+            else:
+                msg.level = DiagnosticStatus.OK
+                msg.message = hb.state_name
+            values = [
+                ('connected', connected), ('state', hb.state_name),
+                ('status_bits', f'0x{hb.status:02X}'), ('fault_bits', f'0x{hb.faults:02X}'),
+                ('sync_age_ms', hb.sync_age_ms), ('cmd_seq_echo', hb.cmd_seq_echo),
+                ('host_desired', desired), ('host_cmd_seq', seq), ('session_id', session),
+            ]
+            for page_no in sorted(pages):
+                page = pages[page_no]
+                if page.fields:
+                    for k, v in page.fields.items():
+                        values.append((f'p{page_no}.{k}', v))
+                else:
+                    values.append((f'p{page_no}.raw', page.raw.hex()))
+            msg.values = [KeyValue(key=str(k), value=str(v)) for k, v in values]
+            self.wave_diag_pub.publish(msg)
+        except Exception as e:  # noqa: BLE001
+            self.get_logger().error(f'Camera diag publish error: {e}',
+                                    throttle_duration_sec=5.0)
 
     # Extra wait (s) past the release instant before the action times out a result. Covers
     # the wind-up + release + the streamer completing and the firmware emitting OK.

@@ -91,6 +91,24 @@
 - **subscribers:** _none_
 - **type:** `diagnostic_msgs.msg.DiagnosticStatus`
 
+### `camera/heartbeat`
+
+- **publishers:** `teensy_bridge_node`
+- **subscribers:** _none_
+- **type:** `jugglebot_interfaces.msg.WaveCameraHeartbeat`
+
+### `camera/record_event`
+
+- **publishers:** `teensy_bridge_node`
+- **subscribers:** _none_
+- **type:** `jugglebot_interfaces.msg.WaveRecordEvent`
+
+### `camera_diag`
+
+- **publishers:** `teensy_bridge_node`
+- **subscribers:** _none_
+- **type:** `diagnostic_msgs.msg.DiagnosticStatus`
+
 ### `clock_diag`
 
 - **publishers:** `teensy_bridge_node`
@@ -358,6 +376,18 @@
 - **clients:** `skill_node`
 - **type:** `jugglebot_interfaces.srv.BallButlerThrow`
 
+### `camera/record_start`
+
+- **servers:** `teensy_bridge_node`
+- **clients:** _none_
+- **type:** `std_srvs.srv.Trigger`
+
+### `camera/record_stop`
+
+- **servers:** `teensy_bridge_node`
+- **clients:** _none_
+- **type:** `std_srvs.srv.Trigger`
+
 ### `clear_errors`
 
 - **servers:** `teensy_bridge_node`
@@ -556,6 +586,11 @@ broken wire cannot hide among them.
 - `bb/reset` — service with no clients
 - `bb/start_accuracy_calibration` — service with no clients
 - `cache_diag` — topic with no subscribers
+- `camera/heartbeat` — topic with no subscribers
+- `camera/record_event` — topic with no subscribers
+- `camera/record_start` — service with no clients
+- `camera/record_stop` — service with no clients
+- `camera_diag` — topic with no subscribers
 - `clear_errors` — service with no clients
 - `clock_diag` — topic with no subscribers
 - `cone/heartbeat` — topic with no subscribers

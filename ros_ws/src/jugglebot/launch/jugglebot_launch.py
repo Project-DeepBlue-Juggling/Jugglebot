@@ -654,6 +654,12 @@ def generate_launch_description():
             '/cone/catch_event',
             '/cone/heartbeat',
             '/cone/timing_result',
+            # Wave camera adapter (ADR-0014): the record start/stop instants
+            # are what lines recorded footage up with this bag, so they are
+            # bagged; the heartbeat and diag give the sync/fault context.
+            '/camera/heartbeat',
+            '/camera/record_event',
+            '/camera_diag',
             '/bb/odrive_diag',
             '/bb/axis_estimates',
             # The two telemetry gaps the 2026-07-18 uptime-lag investigation

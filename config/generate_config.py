@@ -188,6 +188,14 @@ def generate_cpp(cfg: dict) -> str:
         lines.append(f"  constexpr uint32_t {name} = {fmt_hex(val)};")
     lines.append("}")
 
+    # Wave camera adapter CAN IDs (same physical bus as the cone — see the YAML)
+    lines.append("")
+    lines.append("// Wave camera adapter <-> Host (shares the CONE bus by role)")
+    lines.append("namespace WaveCameraCanId {")
+    for name, val in cfg["can_ids"]["wave_camera"].items():
+        lines.append(f"  constexpr uint32_t {name} = {fmt_hex(val)};")
+    lines.append("}")
+
     # Ball Butler scalar constants
     lines += cpp_section("Ball Butler State Machine")
     lines.append("namespace BallButler {")
@@ -239,6 +247,33 @@ def generate_cpp(cfg: dict) -> str:
     lines.append("// States — encoded in CONE_HEARTBEAT byte 0")
     lines.append("namespace CatchingConeState {")
     for name, val in cfg["catching_cone"]["states"].items():
+        lines.append(f"  constexpr uint8_t {name} = {val};")
+    lines.append("}")
+
+    # Wave camera adapter scalar constants + states + event kinds + reasons
+    lines += cpp_section("Wave Camera Adapter")
+    lines.append("namespace WaveCamera {")
+    for name, val in cfg["wave_camera"].items():
+        if not isinstance(val, dict):
+            ctype, cval = _cpp_type_and_val(val)
+            lines.append(f"  constexpr {ctype} {name.upper()} = {cval};")
+    lines.append("}")
+    lines.append("")
+    lines.append("// States — encoded in WAVE_HEARTBEAT byte 0")
+    lines.append("namespace WaveCameraState {")
+    for name, val in cfg["wave_camera"]["states"].items():
+        lines.append(f"  constexpr uint8_t {name} = {val};")
+    lines.append("}")
+    lines.append("")
+    lines.append("// Event kinds — WAVE_REC_EVENT byte 5 bits 0-2")
+    lines.append("namespace WaveCameraEventKind {")
+    for name, val in cfg["wave_camera"]["event_kinds"].items():
+        lines.append(f"  constexpr uint8_t {name} = {val};")
+    lines.append("}")
+    lines.append("")
+    lines.append("// Reasons — WAVE_REC_EVENT byte 5 bits 5-7")
+    lines.append("namespace WaveCameraReason {")
+    for name, val in cfg["wave_camera"]["reasons"].items():
         lines.append(f"  constexpr uint8_t {name} = {val};")
     lines.append("}")
 
@@ -383,6 +418,12 @@ def generate_python(cfg: dict) -> str:
     lines.append("# Catching Cone Teensy <-> Host")
     for name, val in cfg["can_ids"]["catching_cone"].items():
         lines.append(f"CAN_ID_CC_{name} = {fmt_hex(val)}")
+    lines.append("")
+
+    # Wave camera adapter CAN IDs (same physical bus as the cone — see the YAML)
+    lines.append("# Wave camera adapter <-> Host (shares the CONE bus by role)")
+    for name, val in cfg["can_ids"]["wave_camera"].items():
+        lines.append(f"CAN_ID_WAVE_{name} = {fmt_hex(val)}")
 
     # Ball Butler scalar constants (e.g. heartbeat_timeout_ms)
     lines += py_section("Ball Butler State Machine")
@@ -425,6 +466,27 @@ def generate_python(cfg: dict) -> str:
     lines.append("# States — encoded in CONE_HEARTBEAT byte 0")
     lines.append("class CatchingConeStates(IntEnum):")
     for name, val in cfg["catching_cone"]["states"].items():
+        lines.append(f"    {name} = {val}")
+
+    # Wave camera adapter scalar constants + states + event kinds + reasons
+    lines += py_section("Wave Camera Adapter")
+    for name, val in cfg["wave_camera"].items():
+        if not isinstance(val, dict):
+            lines.append(f"WAVE_{name.upper()} = {val}")
+    lines.append("")
+    lines.append("# States — encoded in WAVE_HEARTBEAT byte 0")
+    lines.append("class WaveState(IntEnum):")
+    for name, val in cfg["wave_camera"]["states"].items():
+        lines.append(f"    {name} = {val}")
+    lines.append("")
+    lines.append("# Event kinds — WAVE_REC_EVENT byte 5 bits 0-2")
+    lines.append("class WaveEventKind(IntEnum):")
+    for name, val in cfg["wave_camera"]["event_kinds"].items():
+        lines.append(f"    {name} = {val}")
+    lines.append("")
+    lines.append("# Reasons — WAVE_REC_EVENT byte 5 bits 5-7")
+    lines.append("class WaveReason(IntEnum):")
+    for name, val in cfg["wave_camera"]["reasons"].items():
         lines.append(f"    {name} = {val}")
 
     # Heartbeat encoding

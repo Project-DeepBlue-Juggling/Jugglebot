@@ -135,6 +135,19 @@ can_ids:
     CATCH_EVENT:      0x7E0
     HEARTBEAT:        0x7E1
 
+  # Freefly Wave camera adapter (ESP32) <-> Host, 2026-10-19. Rides the cone-role
+  # bus (the bridge's CAN3 peripheral); the cone and the camera adapter are
+  # mutually exclusive on that drop (owner decision). All frames DLC 8, LE.
+  # Contract: ros_ws/docs/wave_camera_can_adapter.md s4; ADR-0014.
+  wave_camera:
+    CMD:              0x7E2   # J->W  5 Hz recording intent (desired, cmd_seq, flags, session_id)
+    HEARTBEAT:        0x7E3   # W->J  10 Hz liveness from boot; ALSO what opens the bridge TX gate
+    REC_EVENT:        0x7E4   # W->J  start/stop/auto-stop/refused, 40-bit event time
+    INFO:             0x7E5   # W->J  paged diagnostics, one page every 333 ms
+    # Inclusive bounds of the whole allocation; 0x7E6-0x7E7 are reserved.
+    BLOCK_FIRST:      0x7E2
+    BLOCK_LAST:       0x7E7
+
 # =============================================================================
 # Ball Butler State Machine
 # =============================================================================
@@ -222,6 +235,48 @@ catching_cone:
     UNSYNCED:  1   # running, no time-sync acquired yet
     READY:     2   # synced, armed, waiting for an impact
     ERROR:     127
+
+# =============================================================================
+# Wave camera adapter (ESP32 on the cone-role bus)
+# =============================================================================
+# Wire contract: ros_ws/docs/wave_camera_can_adapter.md s4 (frame tables, ack
+# semantics s4.5). ADR: docs/adr/0014-wave-camera-on-can3.md.
+wave_camera:
+  # Host-side presence: no WAVE_HEARTBEAT (10 Hz) within this window -> disconnected.
+  heartbeat_timeout_ms: 500
+  # The node streams WAVE_CMD at this rate whenever the heartbeat is fresh,
+  # desired=0 included, so a lost stop is repaired within one period.
+  intent_rate_hz: 5
+  # ESP-side: no WAVE_CMD for this long while STARTING/RECORDING -> AUTO_STOP
+  # INTENT_TIMEOUT with GPI2 released. Mirrored here for the docs and tests.
+  intent_timeout_ms: 3000
+
+  # States — WAVE_HEARTBEAT byte 0
+  states:
+    BOOT:       0
+    IDLE:       1
+    STARTING:   2
+    RECORDING:  3
+    STOPPING:   4
+    FAULT:      5
+
+  # Event kinds — WAVE_REC_EVENT byte 5 bits 0-2
+  event_kinds:
+    START:      1
+    STOP:       2
+    AUTO_STOP:  3
+    REFUSED:    4
+
+  # Reasons — WAVE_REC_EVENT byte 5 bits 5-7
+  reasons:
+    NONE:            0
+    NO_CHANGE:       1   # already in the requested state
+    INTENT_TIMEOUT:  2
+    TICK_LOST:       3
+    CAMERA_OFF:      4
+    CLIP_MISSING:    5   # START without the "Created new clip." line; GPI2 kept low
+    CONSOLE_OWNS:    6
+    GPI2_FAULT:      7
 
 # =============================================================================
 # Encoding / Scaling

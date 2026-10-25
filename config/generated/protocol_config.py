@@ -113,6 +113,14 @@ CAN_ID_BB_CANCEL_CMD = 0x7D9
 CAN_ID_CC_CATCH_EVENT = 0x7E0
 CAN_ID_CC_HEARTBEAT = 0x7E1
 
+# Wave camera adapter <-> Host (shares the CONE bus by role)
+CAN_ID_WAVE_CMD = 0x7E2
+CAN_ID_WAVE_HEARTBEAT = 0x7E3
+CAN_ID_WAVE_REC_EVENT = 0x7E4
+CAN_ID_WAVE_INFO = 0x7E5
+CAN_ID_WAVE_BLOCK_FIRST = 0x7E2
+CAN_ID_WAVE_BLOCK_LAST = 0x7E7
+
 # ============================================================================
 # Ball Butler State Machine
 # ============================================================================
@@ -176,6 +184,41 @@ class CatchingConeStates(IntEnum):
     UNSYNCED = 1
     READY = 2
     ERROR = 127
+
+# ============================================================================
+# Wave Camera Adapter
+# ============================================================================
+
+WAVE_HEARTBEAT_TIMEOUT_MS = 500
+WAVE_INTENT_RATE_HZ = 5
+WAVE_INTENT_TIMEOUT_MS = 3000
+
+# States — encoded in WAVE_HEARTBEAT byte 0
+class WaveState(IntEnum):
+    BOOT = 0
+    IDLE = 1
+    STARTING = 2
+    RECORDING = 3
+    STOPPING = 4
+    FAULT = 5
+
+# Event kinds — WAVE_REC_EVENT byte 5 bits 0-2
+class WaveEventKind(IntEnum):
+    START = 1
+    STOP = 2
+    AUTO_STOP = 3
+    REFUSED = 4
+
+# Reasons — WAVE_REC_EVENT byte 5 bits 5-7
+class WaveReason(IntEnum):
+    NONE = 0
+    NO_CHANGE = 1
+    INTENT_TIMEOUT = 2
+    TICK_LOST = 3
+    CAMERA_OFF = 4
+    CLIP_MISSING = 5
+    CONSOLE_OWNS = 6
+    GPI2_FAULT = 7
 
 # ============================================================================
 # Encoding / Scaling

@@ -131,6 +131,16 @@ namespace CatchingConeCanId {
   constexpr uint32_t HEARTBEAT = 0x7E1;
 }
 
+// Wave camera adapter <-> Host (shares the CONE bus by role)
+namespace WaveCameraCanId {
+  constexpr uint32_t CMD = 0x7E2;
+  constexpr uint32_t HEARTBEAT = 0x7E3;
+  constexpr uint32_t REC_EVENT = 0x7E4;
+  constexpr uint32_t INFO = 0x7E5;
+  constexpr uint32_t BLOCK_FIRST = 0x7E2;
+  constexpr uint32_t BLOCK_LAST = 0x7E7;
+}
+
 // ==========================================================================
 // Ball Butler State Machine
 // ==========================================================================
@@ -202,6 +212,46 @@ namespace CatchingConeState {
   constexpr uint8_t UNSYNCED = 1;
   constexpr uint8_t READY = 2;
   constexpr uint8_t ERROR = 127;
+}
+
+// ==========================================================================
+// Wave Camera Adapter
+// ==========================================================================
+
+namespace WaveCamera {
+  constexpr uint32_t HEARTBEAT_TIMEOUT_MS = 500u;
+  constexpr uint32_t INTENT_RATE_HZ = 5u;
+  constexpr uint32_t INTENT_TIMEOUT_MS = 3000u;
+}
+
+// States — encoded in WAVE_HEARTBEAT byte 0
+namespace WaveCameraState {
+  constexpr uint8_t BOOT = 0;
+  constexpr uint8_t IDLE = 1;
+  constexpr uint8_t STARTING = 2;
+  constexpr uint8_t RECORDING = 3;
+  constexpr uint8_t STOPPING = 4;
+  constexpr uint8_t FAULT = 5;
+}
+
+// Event kinds — WAVE_REC_EVENT byte 5 bits 0-2
+namespace WaveCameraEventKind {
+  constexpr uint8_t START = 1;
+  constexpr uint8_t STOP = 2;
+  constexpr uint8_t AUTO_STOP = 3;
+  constexpr uint8_t REFUSED = 4;
+}
+
+// Reasons — WAVE_REC_EVENT byte 5 bits 5-7
+namespace WaveCameraReason {
+  constexpr uint8_t NONE = 0;
+  constexpr uint8_t NO_CHANGE = 1;
+  constexpr uint8_t INTENT_TIMEOUT = 2;
+  constexpr uint8_t TICK_LOST = 3;
+  constexpr uint8_t CAMERA_OFF = 4;
+  constexpr uint8_t CLIP_MISSING = 5;
+  constexpr uint8_t CONSOLE_OWNS = 6;
+  constexpr uint8_t GPI2_FAULT = 7;
 }
 
 // ==========================================================================

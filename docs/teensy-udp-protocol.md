@@ -134,6 +134,7 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `BB_FW_COMMIT` | 0x005F | Ball Butler FW-over-CAN: apply the staged image + reboot (relay → CAN1 0x7D6 op 0x04) |
 | `BB_FW_INFO` | 0x0060 | Ball Butler FW-over-CAN: read the running FW_VERSION (relay → CAN1 0x7D6 op 0x05) |
 | `HAND_MOVE_TO` | 0x0061 | Hand-only TRAP_TRAJ move to a caller target (ACTIVATE's axis-6 ladder); deferred reply at arrival / timeout / supersede |
+| `WAVE_CMD` | 0x0062 | Wave camera: send one WAVE_CMD intent frame on the cone bus |
 
 ### RpcStatus
 
@@ -782,6 +783,18 @@ wraps the generated Python. `AXIS_ALL = 0xFF` broadcasts to all legs.
 | `vel_rps` | f32 | measured hand velocity at the reply (rev/s) |
 | `target_rev` | f32 | the target this reply's request commanded (rev) |
 | `elapsed_ms` | u32 | ms from the request's acceptance to the reply |
+
+### ArgWaveCmd (`WAVE_CMD`)
+
+**8 bytes**. Python struct fmt: `<BBBBI`.
+
+| Field | Type | Notes |
+|-------|------|-------|
+| `desired` | u8 | 1 = record, 0 = do not record |
+| `cmd_seq` | u8 | bumped by the node on every service call; repeats while streaming |
+| `flags` | u8 | bit0 CLEAR_FAULTS; other bits 0 |
+| `reserved` | u8 | zero |
+| `session_id` | u32 | node start time (Unix s); a change resets the adapter's per-session count |
 
 ### ArgBbThrow (`BB_THROW`)
 

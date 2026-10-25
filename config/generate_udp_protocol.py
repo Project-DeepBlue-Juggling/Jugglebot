@@ -328,6 +328,16 @@ ENUMS = {
         # HAND_MOVE_TO while one runs RETARGETS it and answers the first with
         # outcome SUPERSEDED. Not idempotent (host: retries forced to 0).
         ("HAND_MOVE_TO", 0x0061, "Hand-only TRAP_TRAJ move to a caller target (ACTIVATE's axis-6 ladder); deferred reply at arrival / timeout / supersede"),
+        # ADDITIVE (2026-10-19, can-bridge FW 31 — no PROTOCOL_VERSION bump: no
+        # existing message changes, and an FW <= 30 board answers the unknown id
+        # through rpc.cpp's `default:` with ERR_UNKNOWN_METHOD, loudly). The Wave
+        # camera adapter (an ESP32 on the cone-role bus, ADR-0014) records while
+        # it keeps hearing this intent: the node streams it at 5 Hz whenever the
+        # adapter's heartbeat is fresh, and the adapter auto-stops after 3 s of
+        # silence. The arg bytes go out VERBATIM as the 8-byte WaveCameraCanId::CMD
+        # frame. Idempotent: a re-dispatch resends the same cmd_seq, which the
+        # adapter treats as a keepalive. The uplink rides CONE_FRAME (no new MsgType).
+        ("WAVE_CMD",     0x0062, "Wave camera: send one WAVE_CMD intent frame on the cone bus"),
     ],
     "RpcStatus": [
         ("OK",            0x0000, "Success"),
@@ -1720,6 +1730,16 @@ RPC_ARGS = [
         Field("vel_rps",    "f32", 1, "measured hand velocity at the reply (rev/s)"),
         Field("target_rev", "f32", 1, "the target this reply's request commanded (rev)"),
         Field("elapsed_ms", "u32", 1, "ms from the request's acceptance to the reply"),
+    ]),
+    # WAVE_CMD (FW 31, additive). 8 B, sent verbatim as the WaveCameraCanId::CMD
+    # (0x7E2) frame on the cone bus. The firmware refuses desired > 1 or a
+    # nonzero reserved byte with ERR_BAD_ARGS before it gates on the partner.
+    RpcArg("ArgWaveCmd", "WAVE_CMD", [
+        Field("desired",    "u8",  1, "1 = record, 0 = do not record"),
+        Field("cmd_seq",    "u8",  1, "bumped by the node on every service call; repeats while streaming"),
+        Field("flags",      "u8",  1, "bit0 CLEAR_FAULTS; other bits 0"),
+        Field("reserved",   "u8",  1, "zero"),
+        Field("session_id", "u32", 1, "node start time (Unix s); a change resets the adapter's per-session count"),
     ]),
     # Ball Butler — typed firmware-side encoders own the wire format (the can-bridge
     # refuses a malformed throw before it hits CAN1).

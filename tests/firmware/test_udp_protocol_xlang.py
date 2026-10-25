@@ -517,7 +517,13 @@ def test_wire_layout_frozen(gen):
     # relative) became release_wall_us (u64, absolute) — 16→20 B — and
     # ResultBbThrow (i32 lead_us, 4 B) was added. Previous digest:
     #   681bd26e16941f4b55ae8ba83741af1f674510b175f762d862399169339f5250
-    _EXPECTED = "2d9d7b7b0183535b6b486f49dba457cf2c09785126846bc4b8b0345eed946f8a"
+    # Re-pinned for the ADDITIVE WAVE_CMD RPC (2026-10-19, can-bridge FW 31):
+    # one new arg struct ArgWaveCmd (u8 desired + u8 cmd_seq + u8 flags + u8
+    # reserved + u32 session_id, 8 B) behind one new RpcMethod 0x0062. No
+    # existing message, arg or MsgType changed, so PROTOCOL_VERSION stays 10 and
+    # an FW 30 board answers 0x62 with ERR_UNKNOWN_METHOD. Previous digest:
+    #   2d9d7b7b0183535b6b486f49dba457cf2c09785126846bc4b8b0345eed946f8a
+    _EXPECTED = "d908fabbe5735cd3147977bf3ac3088382b8d9b23e0cb0572d4d73bf6962c3a2"
     assert digest == _EXPECTED, (
         "The UDP wire LAYOUT changed (a message/arg field layout, a framed MsgType "
         "value, or a framing constant). If INCOMPATIBLE, bump PROTOCOL_VERSION. Either "

@@ -123,6 +123,43 @@ class CatchingConeHeartbeatMsg:
 
 
 @dataclass
+class WaveCameraHeartbeatMsg:
+    connected: bool = False
+    state: int = 0
+    camera_on: bool = False
+    uart_seen: bool = False
+    recording: bool = False
+    elapsed_ms: int = 0
+    start_stamp: object = None
+    recordings_this_session: int = 0
+    time_synced: bool = False
+    sync_age_ms: int = 0
+    fw_version: int = 0
+    uptime_s: int = 0
+    fault_bits: int = 0
+    console_owns: bool = False
+    intent_fresh: bool = False
+    offset_spread_us: int = 0
+
+
+@dataclass
+class WaveRecordEventMsg:
+    START = 1
+    STOP = 2
+    AUTO_STOP = 3
+    REFUSED = 4
+    header: object = field(default_factory=lambda: MagicMock())
+    kind: int = 0
+    reason: int = 0
+    event_time: object = None
+    event_time_us: int = 0
+    time_synced: bool = False
+    tick_stamped: bool = False
+    recording_seq: int = 0
+    cmd_seq: int = 0
+
+
+@dataclass
 class CatchTimingResultMsg:
     header: object = field(default_factory=lambda: MagicMock())
     matched: bool = False
@@ -1025,6 +1062,8 @@ _create_mock_module('jugglebot_interfaces.msg', {
     'CatchEvent': CatchEventMsg,
     'CatchingConeHeartbeat': CatchingConeHeartbeatMsg,
     'CatchTimingResult': CatchTimingResultMsg,
+    'WaveCameraHeartbeat': WaveCameraHeartbeatMsg,
+    'WaveRecordEvent': WaveRecordEventMsg,
     'HandTelemetryMessage': HandTelemetryMessage,
     'MocapDataMulti': MocapDataMulti,
     'MocapDataSingle': MocapDataSingle,
