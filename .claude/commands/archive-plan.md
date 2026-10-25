@@ -151,7 +151,7 @@ List the plan's residue rows (its residue section, deferred items, open
 follow-ups) and offer, at ONE gate (default yes, nothing silent), to file each
 as a Bug or Feature item with `links: [plans/archived/<plan>.md]`,
 `status: inbox`, `parent:` = the plan's `pathway:`. Filing follows the
-`/inbox` steps (write, commit `map: file <kind> <title>`, push).
+`/inbox` steps (write, commit `map: file <kind> JB-<n> <title>`, push).
 
 ### Step 4c: Map items
 

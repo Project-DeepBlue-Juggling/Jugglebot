@@ -80,7 +80,7 @@ Spawn the **logbook-updater** agent to create the entry:
    silent), to file each as a Bug or Feature item with `links: [logbook/<slug>.md]`,
    `status: inbox`, and `parent:` = the `pathway:` of the entry's `related_plan:`
    plan when that plan carries one. Filing follows the `/inbox` steps (write the
-   item, commit `map: file <kind> <title>`, push).
+   item, commit `map: file <kind> JB-<n> <title>`, push).
 
 ### Step 4: Review
 
