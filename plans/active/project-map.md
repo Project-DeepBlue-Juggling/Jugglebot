@@ -208,9 +208,14 @@ A Robot / Map tab bar in `ros_ws/gui`; the Map tab frames the app from the same 
 ## 4. Residue
 
 - Conflicts resolved, not questions: #32 (markdown page) overrides #31 (static dark HTML); #37 (`promoted` on all three inbox kinds) overrides #25 (idea only); #34 adds the fifth kind `ticket` to #25; #27 (`mapkit/` top-level) overrides #31 (`tools/mapkit/`).
-- Parse-error behaviour on a malformed hand-edited file (server and `mapkit`) is open: #31 left it open under "Conflict behaviour". P3 must pick a minimum (skip the file and surface a banner) and log it; a decision is not made here.
+- Parse-error behaviour on a malformed hand-edited file: CLOSED 2026-10-25, no extra handling. Owner: "I don't expect to hand-edit any map files myself; this will just be Claude". Every map file is validated by `tests/sim/test_map_items.py` before a commit lands.
 - The backfill of the existing non-resolved logbook entries (458 entries: 79 `in-progress`, 21 `tuned`, 192 with open-question sections) is one Idea item filed in P2, not work in this plan.
-- The deferred deletion of `origin/two-ball-oval`, the `archive/<branch>` tags and deletion of the three stale Windows-box branches (`demo/bb-led-two-ball-juggle`, `phase-a-plus-accuracy-cal`, `claude/unruffled-beaver`), and the prototype branch `prototype/24-thin-server`, is a separate housekeeping commit after P5; none gate a phase.
+- Branch and tag housekeeping DONE 2026-10-25 (owner):
+  - Deleted the branches `two-ball-oval` and `prototype/24-thin-server`.
+  - Deleted the merged tags `archive/bb-calibration`, `archive/handoff-robustness`, `archive/main_backup` and `archive/skill-stack`.
+  - Deleted the unmerged tags `archive/ros2_first_approach`, `archive/demo/hand-generator-overhaul`, `archive/refactor` and `archive/hand-geometry-correction`.
+  - Kept `archive/mvp-trajectory-bringup` and `archive/2026-08_clapboard-can3`: unmerged firmware and bridge work, and clapboard is parked. The tags preserve them.
+  - The three Windows-box branches exist only on that machine and are owner-run.
 - The wave-camera plan file is committed to `main` as soon as it exists, per the branch rule; until then the Wave pathway card has no plan.
 - One smoke e2e against a fixture in the fork is deferred (#31: "comes later").
 - Per-item SSE events instead of one `invalidate`, only if the refetch flickers.
