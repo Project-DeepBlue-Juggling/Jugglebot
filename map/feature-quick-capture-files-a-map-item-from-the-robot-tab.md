@@ -1,9 +1,9 @@
 ---
 kind: feature
 title: 'Quick capture: file a bug or idea from the GUI''s Robot tab mid-sitting'
-status: inbox
+status: in_progress
 created: '2026-10-25'
-updated: '2026-10-25T10:00:00Z'
+updated: '2026-10-25T13:43:24Z'
 owners:
 - harrison
 priority: high
@@ -29,3 +29,7 @@ A small "+" control in the GUI's Robot / Map bar opening a two-field form (kind:
 - Filing takes under ten seconds and never takes focus away from motion controls for longer than the form is open.
 - The item reaches `main` the same way an app edit does, and shows in the inbox rail.
 - With the map server down, the form says so and keeps the text instead of losing it.
+
+## Progress
+
+- 2026-10-26: GUI + control and popover landed (cc608ace); needs the map server CORS (fork 533daa2, deployed 2026-10-26) and a GUI page refresh
