@@ -145,9 +145,3 @@ _Status: closed (complete)._
 | feature | [Sim columns run with a biased plant to exercise the forward-clip rule](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-sim-columns-biased-plant-forward-clip.md) | inbox | medium | — | filed 2026-10-24 |
 | bug | [Sim `--reload` gate LIMIT_JERK regression bisected to 08ec3fe6 (2026-09-30)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-sim-reload-gate-limit-jerk-regression.md) | inbox | medium | — | filed 2026-10-24 |
 | bug | [The Pi server keeps serving the old mapkit after the pull timer brings a new one](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-the-pi-server-keeps-serving-the-old-mapkit-after-the-pull-timer-brings-a-new-one.md) | inbox | medium | Project map and shared dictionary | filed 2026-10-24 |
-
-## Open tickets
-
-### Project map and shared dictionary
-
-- [Now / Next / Later: a more graphic layout that shows every stream at once without scrolling](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/ticket-now-next-later-a-more-graphic-layout-that-shows-every-stream-at-once.md) — grilling, unclaimed, rank 17

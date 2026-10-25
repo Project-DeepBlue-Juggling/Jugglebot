@@ -7,8 +7,10 @@ blocked_by: []
 owners: []
 rank: 17
 priority: medium
-status: open
+status: complete
 links:
+- https://github.com/Project-DeepBlue-Juggling/jugglebot-map/commit/c21a8156a8f13e8ad70fed53512385977fd8389c
+- https://github.com/Project-DeepBlue-Juggling/jugglebot-map/tree/prototype/nnl-relayout
 - logbook/2026-10-24-project-map-p4-the-two-pages.md
 - https://github.com/Project-DeepBlue-Juggling/Jugglebot/issues/38
 - https://github.com/Project-DeepBlue-Juggling/Jugglebot/issues/31
@@ -43,3 +45,9 @@ Two new variants built from the critic's research and passed by it before the ow
 - "Overall my favourite is G, but it'd be good to borrow the Pathway bugs/issues style from E; having these expanded out to a one-liner is very helpful to see what the bugs/issues actually are. Expanding the legent would also be nice, so that I can more readily scan through and know what the symbols mean"
 
 Round 3 builds H: G with each Pathway's bugs and features listed as one-liners in its own row (E's style) and an expanded legend.
+
+## Round 3 and verdict (2026-10-25)
+
+H (G plus each Pathway's bugs, features and ideas as one-liners, an unattached-only rail and a full key) passed the critic after one fix pass. Owner, verbatim: "H is the one, build it into the real page. We could afford to simplify the key a bit and make some other smaller changes, but I like the overall look of this one." The smaller changes, verbatim: "Remove the colour bar, stages, hover, "BSS", finished plans, finished tickets items from the key." / coloured dots instead of the coloured left bracket on no-Pathway items / no-Pathway panels "only as tall as they need to be", an over-share category truncated and scrollable / Pathway one-liners aligned, about 85 characters with an ellipsis.
+
+Settled: plan tracks per plan inside each Pathway block, one-liners beside the tracks, unattached items alone in the rail, a key that shows only the marks drawn. Built into fork main c21a815 with tests; the prototype (variants A to H) stays on fork branch `prototype/nnl-relayout` as the primary source. The drawer's Markdown rendering and full titles are a separate follow-up (design review in progress).
