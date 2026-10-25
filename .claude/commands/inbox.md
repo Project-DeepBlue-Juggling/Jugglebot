@@ -21,13 +21,13 @@ Minimum from the filer: kind, title, one line. If the line is missing, ask for i
    `filed_by` = `harrison` when the owner typed the command, else the session's
    name (e.g. `claude`). The one-line description is the body.
 2. **`--from-issue <n>`**: import title, body and the issue URL (as a `--link`) via
-   `~/bin/gh issue view <n> --json title,body,url`, then close the issue with a
-   comment pointing at the item file. The issue number is never the Item's ID.
+   `~/bin/gh issue view <n> --json title,body,url`. Do NOT close the issue yet: it is
+   closed in step 6, only after the push has landed. The issue number is never the Item's ID.
 3. **File it locally with the one creation command**, from the repo root with the project venv
-   (`git pull --ff-only` first: the app writes `map/` concurrently, and `--no-push` skips the CLI's own pull):
+   (run `git pull --ff-only` first: the app writes `map/` concurrently, and `--commit --no-push` does not pull, so that preceding pull is the only one before the file commit):
    `python -m mapkit item new <kind> "<title>" --body "<line>" [--parent <pathway>]
    [--priority P] [--filed-by NAME] [--link L]... --commit --no-push`.
-   It pulls `--ff-only`, picks the slug (kebab-case, <= 60 chars, `-2` if taken by
+   It picks the slug (kebab-case, <= 60 chars, `-2` if taken by
    any kind; the filename is the Item's identity and is never renamed), allocates the
    next ID `JB-<n>`, writes the canonical form, regenerates `docs/project-map.md` and
    commits `map: file <kind> JB-<n> <title>` (no `Logbook-Entry` trailer: data, not
@@ -44,6 +44,9 @@ Minimum from the filer: kind, title, one line. If the line is missing, ask for i
    check -> push; if a rebase brought in the same ID it renumbers its own Item by amending
    its unpushed commit). Quote the `JB-<n> pushed` line in the reply. A failure says a local
    commit is waiting and how to push or undo it.
+6. **`--from-issue` only, after `item push` reports pushed**: close the issue with a comment
+   pointing at the item file (`~/bin/gh issue close <n> --comment "Filed as JB-<n> (map/<stem>.md)"`).
+   If the Avoid-word check or the push failed, leave the issue open.
 
 Shared recipe, commit rule and reads: `docs/agents/map-writes.md`.
 

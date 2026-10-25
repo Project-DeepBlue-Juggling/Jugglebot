@@ -254,12 +254,20 @@ def _waiting_note(repo_root: str, stem: str) -> str:
     """Appended to any failure after the Item's commit exists."""
     head = _git_out(repo_root, "log", "-1", "--oneline").stdout.strip()
     return ("\nA local commit for %s is waiting, NOT pushed (HEAD: %s). Push it with "
-            "python -m mapkit item push %s, or undo it with git reset --hard HEAD~1 "
-            "(only while it is still the top commit; check git log -1)." % (stem, head, stem))
+            "python -m mapkit item push %s, or undo it with git reset --soft HEAD~1 "
+            "(only while it is still the top commit; check git log -1; --soft keeps "
+            "your other edits), then delete map/%s.md and revert the %s change "
+            "if you do not want them." % (stem, head, stem, stem, DOCS_PAGE))
 
 
-def _head_adds(repo_root: str, rel: str) -> bool:
-    """True when HEAD is the commit that adds ``rel`` (so amending it is safe)."""
+def _head_adds(repo_root: str, rel: str, upstream: str) -> bool:
+    """True when HEAD is the commit that adds ``rel`` AND is not yet on ``upstream``.
+
+    Amending is safe only for an unpublished commit: re-running ``item push``
+    after it succeeded must not rewrite a commit the remote already has.
+    """
+    if _git_out(repo_root, "merge-base", "--is-ancestor", "HEAD", upstream).returncode == 0:
+        return False
     out = _git_out(repo_root, "diff-tree", "--no-commit-id", "--name-status", "-r", "HEAD").stdout
     return any(l.split("\t")[:1] == ["A"] and l.split("\t")[-1] == rel for l in out.splitlines())
 
@@ -276,7 +284,9 @@ def push_item(repo_root: str, stem: str) -> Item:
     pushes, so the check before the push that lands always saw the final
     remote. Every failure names the waiting local commit.
     """
-    path = os.path.join(repo_root, MAP_DIR, stem + ".md")
+    item0 = find_item(repo_root, stem)  # ID or stem; refuses BEFORE any git call
+    stem = "%s-%s" % (item0.kind, item0.slug)
+    path = item0.path
     rel = os.path.relpath(path, repo_root)
     paths = [rel] + ([DOCS_PAGE] if os.path.isfile(os.path.join(repo_root, DOCS_PAGE)) else [])
     try:
@@ -286,7 +296,7 @@ def push_item(repo_root: str, stem: str) -> Item:
             # a textual merge of two generated tables can differ from a fresh gen
             gen_docs.write_docs(repo_root)
             if DOCS_PAGE in paths and _git_out(repo_root, "diff", "--quiet", "--", DOCS_PAGE).returncode:
-                if _head_adds(repo_root, rel):
+                if _head_adds(repo_root, rel, upstream):
                     _git(repo_root, "commit", "-q", "--amend", "--no-edit", "--", DOCS_PAGE)
                 else:
                     _git(repo_root, "commit", "-q", "-m", "map: regenerate project-map page",
@@ -295,7 +305,7 @@ def push_item(repo_root: str, stem: str) -> Item:
                 item = _load(path)
                 gen_docs.write_docs(repo_root)
                 _git(repo_root, "add", "--", *paths)
-                if _head_adds(repo_root, rel):
+                if _head_adds(repo_root, rel, upstream):
                     _git(repo_root, "commit", "-q", "--amend", "-m",
                          _subject("file " + item.kind, item), "--", *paths)
                 else:
@@ -488,7 +498,7 @@ def _run_new(args) -> int:
 
 def _run_push(args) -> int:
     try:
-        item = push_item(_repo(args), args.item[:-3] if args.item.endswith(".md") else args.item)
+        item = push_item(_repo(args), args.item)
     except (ItemCliError, ItemError, ids.IdError) as exc:
         print("mapkit: %s" % exc, file=sys.stderr)
         return 2
@@ -573,7 +583,7 @@ def register(subparsers) -> None:
 
     p = isub.add_parser("push", help="push an Item's local commit (item new --commit --no-push) "
                                      "through the bounded rebase / renumber / push loop")
-    p.add_argument("item", help="the Item's stem, e.g. idea-my-title")
+    p.add_argument("item", help="the Item (ID or stem), e.g. JB-64 or idea-my-title")
     common(p)
     p.set_defaults(func=_run_push)
 

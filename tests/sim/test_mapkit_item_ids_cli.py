@@ -314,7 +314,7 @@ def test_failure_after_the_commit_says_a_local_commit_is_waiting(tmp_path, monke
         itemcli.new_item(str(work), "bug", "Stuck", commit=True)
     msg = str(exc.value)
     assert "local commit for bug-stuck is waiting" in msg
-    assert "item push bug-stuck" in msg and "git reset --hard HEAD~1" in msg
+    assert "item push bug-stuck" in msg and "git reset --soft HEAD~1" in msg and "--hard" not in msg
 
 
 def test_a_malformed_sibling_is_skipped_for_allocation_and_named_when_gen_refuses(tmp_path, capsys):
@@ -326,3 +326,40 @@ def test_a_malformed_sibling_is_skipped_for_allocation_and_named_when_gen_refuse
     assert sorted(p.name for p in (work / "map").iterdir()) == before  # nothing half-filed
     assert "skipping unreadable Item map/bug-broken.md" in capsys.readouterr().err
     assert ids.allocate(str(work)) == "JB-10"  # the broken file's JB-9 is never reused
+
+
+# --- ids-p6-audit-fixes (2026-10-26) -------------------------------------------------------
+def test_item_push_unknown_name_refuses_before_any_git_call(tmp_path, monkeypatch, capsys):
+    work, remote = _repo(tmp_path)
+    itemcli.new_item(str(work), "bug", "Other", commit=True, push=False)  # an unrelated unpushed commit
+    calls = []
+    real = itemcli._git_out
+    monkeypatch.setattr(itemcli, "_git_out", lambda r, *a: calls.append(a) or real(r, *a))
+    from mapkit.__main__ import main
+    assert main(["item", "push", "JB-64", "--repo", str(work)]) == 2
+    err = capsys.readouterr().err
+    assert "JB-64" in err and "waiting" not in err
+    assert calls == []  # not even the first pull
+    assert _out(remote, "log", "-1", "--format=%s", "main").strip() == "seed"  # nothing went out
+
+
+def test_item_push_accepts_an_id(tmp_path):
+    work, remote = _repo(tmp_path)
+    itemcli.new_item(str(work), "idea", "By id", commit=True, push=False)  # JB-5
+    from mapkit.__main__ import main
+    assert main(["item", "push", "JB-5", "--repo", str(work)]) == 0
+    assert _out(remote, "log", "-1", "--format=%s", "main").strip() == "map: file idea JB-5 By id"
+
+
+def test_rerunning_item_push_never_amends_a_published_commit(tmp_path):
+    work, remote = _repo(tmp_path)
+    itemcli.new_item(str(work), "bug", "Done", commit=True, push=False)
+    page = work / "docs" / "project-map.md"
+    page.write_text(page.read_text() + "\nstale\n")  # the commit carries a stale generated page
+    _git(work, "commit", "-q", "-a", "--amend", "--no-edit")
+    _git(work, "push")
+    sha = _out(remote, "rev-parse", "main").strip()
+    itemcli.push_item(str(work), "bug-done")  # re-run: regenerating dirties the page again
+    assert _out(work, "log", "--format=%H").split().count(sha) == 1  # the published commit survives
+    assert _out(work, "rev-parse", "HEAD") == _out(remote, "rev-parse", "main")  # and the push landed
+    assert _out(work, "log", "-1", "--format=%s").strip() == "map: regenerate project-map page"

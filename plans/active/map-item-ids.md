@@ -17,7 +17,7 @@ steps:
   - {id: P2, title: Backfill and the uniqueness test, kind: phase, status: complete, date: 2026-10-26}
   - {id: P3, title: 'mapkit resolution, creation, display and the commands', kind: phase, status: complete, date: 2026-10-26}
   - {id: P4, title: 'App server: allocate, resolve, repair (fork repo)', kind: phase, status: complete, date: 2026-10-26}
-  - {id: P5, title: 'App frontend: show and deep-link (fork repo)', kind: phase, status: in_progress}
+  - {id: P5, title: 'App frontend: show and deep-link (fork repo)', kind: phase, status: complete, date: 2026-10-26}
   - {id: P6, title: Normative docs, kind: phase, status: in_progress}
 related_code:
   - mapkit/ids.py::allocate
@@ -27,14 +27,15 @@ related_code:
 
 # Map item IDs
 
-**Status, 2026-10-26.** P0-P3 complete. **P4 complete**: the live app (fork `74826ea`, deployed and running
+**Status, 2026-10-26.** P0-P3 complete. **P4 complete except its phone-filed-Item check**: the live app (fork `74826ea`, deployed and running
 since 2026-10-26) contains it; a GET of the task list returned `short_id` on 62 of 62 Items that day, and its
 `create` allocates, so the presence test is safe to land. P4's Done-check "a phone-filed Item has an ID on
-`main`" is still unobserved. **P5 built, not deployed** (fork `6c10eb4`; needs `deploy-jetson.sh`; the
-drawer-body JB-link test is skipped in the full-app harness and wants a real-browser check). **P6 in
+`main`" is still unobserved. **P5 complete** (fork `0a4cd9a`, with the review fixes, deployed 2026-10-26: 62 of 62
+Items served with `short_id` and none unpushed after the restart; the drawer-body JB-link test is skipped in the
+full-app harness). **P6 in
 progress**: the Jugglebot docs, the presence test `test_every_item_has_an_id` and the build-review fixes
 (`/inbox` checks before pushing; ID writes survive a malformed Item; a renumber amends the unpushed file
-commit) land in `ids-p6-jugglebot`; the fork `README.md`/`CLAUDE.md` and the GLOSSARY Idea remain.
+commit) land in logbook `map-item-ids-p6-jugglebot`; the fork `README.md`/`CLAUDE.md` and the GLOSSARY term (Idea JB-63) remain.
 
 ## 1. Context
 
@@ -75,7 +76,7 @@ Facts the design rests on, read from the code:
    gate as the backstop.** `mapkit.ids.allocate(repo_root)` returns 1 + max over the working tree's `id:`
    values and those on `origin/main` (`git grep`, no network). **Repairing writers:** the app's gitwriter and
    `mapkit item new --commit` run `duplicates()` after `pull --rebase` and before push, renumber their *own*
-   unpushed colliding Items (`repair`), commit `map: renumber JB-63 -> JB-64 <title>`, and push. A non-ff
+   unpushed colliding Items (`repair`), commit `map: renumber JB-63 -> JB-64 <title>` (amends the unpushed file commit when it is HEAD), and push. A non-ff
    push rejection re-enters rebase + check. This is race-free because git refuses a non-fast-forward push,
    provided no writer force-pushes `main` (none does; this plan forbids it). **Gate-only paths:** a
    session's plain `git push` after a rebase that pulled in a colliding app Item, `item new` without
@@ -185,7 +186,7 @@ kind check; `frontier` ID column), `mapkit/import_issues.py` (allocate per Item)
 `.claude/commands/work-inbox.md` (`[id|stem ...]`), tests in `tests/sim/test_mapkit_item_ids_cli.py`.
 Tests: read commands accept `JB-12`, `jb12`, `12`, stem and slug; write commands refuse bare `12`; an unknown
 ID exits 2; `item new --commit` against a fixture remote that gains a same-ID Item between the check and the
-push ends with two distinct IDs, a `map: renumber` commit and at most 3 rounds.
+push ends with two distinct IDs, a `map: renumber` commit (amends the unpushed file commit when it is HEAD) and at most 3 rounds.
 Done when: tests pass; `./run_tests.sh` green; logbook entry.
 
 ### P4 — App server: allocate, resolve, repair (fork repo)

@@ -78,15 +78,14 @@ _Status: closed (complete)._
 
 **Destination:** The map shows each item's history, takes new items from the Robot tab mid-sitting, finds anything by text, and surfaces stale items and a red nightly without leaving the GUI.
 
-**Progress:** 5 of 7 stops done
+**Progress:** 6 of 7 stops done
 
-**Next:** P5 App frontend: show and deep-link (fork repo) ([map-item-ids.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/map-item-ids.md))
+**Next:** P6 Normative docs ([map-item-ids.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/map-item-ids.md))
 
 **Owners:** harrison
 
 **Remaining:**
 
-- P5 App frontend: show and deep-link (fork repo) ([map-item-ids.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/map-item-ids.md)) — in progress
 - P6 Normative docs ([map-item-ids.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/map-item-ids.md)) — in progress
 
 **Attached inbox items:**
@@ -115,7 +114,7 @@ _Status: closed (complete)._
 | Project map and shared dictionary | — | — | — | closed |
 | Ball Butler | — | BB calibration: advisory when a template marker is never matched in a sweep | bug bb/throw_outcome carries no throw identity; bug NOT_SETTLED retry is dead in the field; feature Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware | — |
 | Learner generalisation | — | Box sweep fidelity for same-site families (plan what the executor dispatches) | P1 Learner core; P2 The characterisation sitting; P3 Online admissibility and box retirement; P4 BeatEvent stream and the columns wrapper; P5 Close-out | — |
-| Map improvements | P5 App frontend: show and deep-link (fork repo); P6 Normative docs | — | feature Nightly status chip in the map header; feature Quick capture: file a bug or idea from the GUI's Robot tab mid-sitting; idea GLOSSARY: add Item ID (JB-<n>) via grilling + domain-modeling | P0 Plan and its Feature; P1 mapkit ids module and checks; P2 Backfill and the uniqueness test; P3 mapkit resolution, creation, display and the commands; P4 App server: allocate, resolve, repair (fork repo) |
+| Map improvements | P6 Normative docs | — | feature Nightly status chip in the map header; feature Quick capture: file a bug or idea from the GUI's Robot tab mid-sitting; idea GLOSSARY: add Item ID (JB-<n>) via grilling + domain-modeling | P0 Plan and its Feature; P1 mapkit ids module and checks; P2 Backfill and the uniqueness test; P3 mapkit resolution, creation, display and the commands; P4 App server: allocate, resolve, repair (fork repo); P5 App frontend: show and deep-link (fork repo) |
 | Two-ball skill stack | — | — | — | closed |
 | Wave camera on CAN3 | — | — | — | closed |
 
