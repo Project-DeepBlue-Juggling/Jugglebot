@@ -57,6 +57,11 @@
                 aria-selected="false" aria-controls="map-pane">Map</button>
         <!-- Theme + font size controls (ids used by theme.js / main.js); forwarded to the Map by app-tabs.js -->
         <div class="app-tabs-prefs">
+            <button class="font-btn" id="quick-capture-btn" type="button" aria-haspopup="dialog"
+                    aria-expanded="false" aria-controls="quick-capture-form"
+                    title="File a bug or idea in the map">+</button>
+            <span class="qc-toast" id="quick-capture-toast" role="status" aria-live="polite"></span>
+            <span class="app-tabs-gap"></span>
             <button class="font-btn" id="theme-toggle" title="Toggle light/dark theme">Light</button>
             <span class="app-tabs-gap"></span>
             <button class="font-btn" id="font-decrease" title="Decrease font size">A&#x2212;</button>
@@ -64,6 +69,20 @@
             <button class="font-btn" id="font-increase" title="Increase font size">A+</button>
         </div>
     </div>
+    <form id="quick-capture-form" role="dialog" aria-label="File a bug or idea in the map" hidden>
+        <div class="qc-row" role="radiogroup" aria-label="Kind">
+            <label><input type="radio" name="qc-kind" value="bug" checked> bug</label>
+            <label><input type="radio" name="qc-kind" value="idea"> idea</label>
+            <label><input type="radio" name="qc-kind" value="feature"> feature</label>
+        </div>
+        <input type="text" id="qc-title" placeholder="Title (required)" autocomplete="off" maxlength="200">
+        <input type="text" id="qc-note" placeholder="Note (optional)" autocomplete="off">
+        <div class="qc-error" id="qc-error" role="alert"></div>
+        <div class="qc-row">
+            <button type="submit" id="qc-file">File</button>
+            <button type="button" id="qc-cancel">Cancel</button>
+        </div>
+    </form>
     <div id="map-pane" role="tabpanel" aria-labelledby="tab-map" hidden></div>
     <div id="app">
         <!-- Left: topic monitor sidebar -->
@@ -338,6 +357,7 @@
 
     <!-- Entry point -->
     <script type="module" src="js/app-tabs.js"></script>
+    <script type="module" src="js/quick-capture.js"></script>
     <script type="module" src="js/main.js"></script>
 </body>
 </html>

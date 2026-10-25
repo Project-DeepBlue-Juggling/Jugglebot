@@ -60,3 +60,45 @@ body > #app { height: calc(100vh - var(--app-tabs-height)); }
     color: var(--text-secondary);
     font-size: 13px;
 }
+
+/* Quick capture (js/quick-capture.js): "+" in the prefs group, popover form under the bar. */
+#app-tabs .qc-toast { font-size: 11px; color: var(--text-secondary); opacity: 0; transition: opacity 0.6s; }
+#app-tabs .qc-toast.show { opacity: 1; transition: none; }
+#quick-capture-form {
+    position: fixed;
+    top: var(--app-tabs-height);
+    right: var(--gap-sm);
+    z-index: 1100;
+    width: 280px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    padding: 8px;
+    box-sizing: border-box;
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    font-size: 12px;
+    color: var(--text-primary);
+}
+#quick-capture-form[hidden] { display: none; }
+#quick-capture-form .qc-row { display: flex; gap: 10px; align-items: center; }
+#quick-capture-form input[type="text"] {
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    padding: 4px 6px;
+    font: inherit;
+}
+#quick-capture-form .qc-error { color: var(--accent-red, #e5534b); }
+#quick-capture-form .qc-error:empty { display: none; }
+#quick-capture-form button {
+    background: var(--bg-primary);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius-sm);
+    color: var(--text-primary);
+    font: inherit;
+    padding: 2px 10px;
+    cursor: pointer;
+}
