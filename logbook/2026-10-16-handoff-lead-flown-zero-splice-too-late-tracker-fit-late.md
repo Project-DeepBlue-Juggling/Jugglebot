@@ -22,11 +22,11 @@ HEAD at the sitting 466878eb (`HANDOFF_LEAD_EXTRA_KNOTS = 8`, install receipt `=
 (Ball-Butler-fed hop entry), 191 catches dispatched (175 handoff + 16 attempt-opening); the log names an outcome for
 151 of them, 136 caught / 15 missed (the rest are catches the attempt ended before or that the outcome line does not
 name), ends: 15 `MISSED_CATCH`, 1 `ORIGIN_TOO_LATE` (the sitting's
-first reload THROW), 1 `ABORTED_NO_RELEASE`. The operator did not run runsheet § 1b rows 26-29 live; all reads
+first `reload` THROW), 1 `ABORTED_NO_RELEASE`. The operator did not run runbook § 1b rows 26-29 live; all reads
 below are retrospective (parser `scratchpad/sitting_parse.py` + `sitting_stats.py`, session-local; the replay probe
 re-run on the pair: `python tools/probes/handoff_replay.py --log S16=<launch.log> --bag S16=<bag>`, 2026-10-16).
 
-## Runsheet § 1b reads (rows 23-29)
+## Runbook § 1b reads (rows 23-29)
 
 | row | check | result |
 |---|---|---|
@@ -76,7 +76,7 @@ tracker-vs-aim delta of 18-40 mm that never got in; caught landings run p50 22-2
 the cup's authority is about 50-60 mm and the misses are the balls beyond it. Shrinking that spread (the
 "messy throws") is worth more than any timing change; getting the correction in is second.
 
-**The fresh THROW origin is the same failure class and is unprotected.** The reload THROW is a fresh origin with
+**The fresh THROW origin is the same failure class and is unprotected.** The `reload` THROW is a fresh origin with
 `LEAD_S` (0.225 s) and therefore a 150 ms solve budget (`reserve_fresh_lead`). Today's 16 THROW plan times ran
 44-165 ms (recorded sessions: 41-88 ms) and the sitting's first attempt ended `ORIGIN_TOO_LATE` on a 188 ms
 solve (0/0 caught; not the first solve of the session, so not a cold start). A THROW-specific fresh-origin lead
@@ -90,7 +90,7 @@ hop-entry timing and needs its own replay.
   Worker chaining stays dropped. The lead stays at 8 extra knots; a further knot or two is available (min dispatch
   gap 0.400 - 0.025 x EXTRA s stays positive to 15) but nothing today asks for it.
 - The rung's own target is met; the plan can be archived. Three follow-ups are recorded in the plan § 4, none of
-  them this rung's: (1) tracker fit latency since 5974d8c3 (bag in hand), (2) a fresh-origin lead for the reload
+  them this rung's: (1) tracker fit latency since 5974d8c3 (bag in hand), (2) a fresh-origin lead for the `reload`
   THROW, (3) the raw-path re-aim after the snap band never installs and could be fenced on physics instead of
   being spent on a terminal refusal.
 

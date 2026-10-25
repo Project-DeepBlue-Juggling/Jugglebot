@@ -92,6 +92,7 @@ Static IPs: Teensy `192.168.42.2`, Jetson `192.168.42.1` (`/30` point-to-point).
 | `CACHE_DIAG` | 0x91 | 1 Hz encoder-cache freshness census (per-axis age floor/peak) + CAN RX-ring occupancy (STREAM, T→J) |
 | `RING_DIAG` | 0x92 | 1 Hz CAN RX-ring TRUE-occupancy census (true_depth vs reported _available = the leak) + jugglebot delivery lag + SDO RTT (STREAM, T→J) |
 | `BB_YAW_ESTIMATE` | 0x93 | Ball Butler yaw estimate @100Hz, paired 1:1 with BB_AXIS_ESTIMATES by t_bridge_us (STREAM, T→J) |
+| `LEG_CLAMP_DIAG` | 0x94 | 1 Hz per-leg lead-clamp census: clamp-engaged ticks + stale-anchor ticks, cumulative since boot (STREAM, T→J) |
 
 ### RpcMethod
 
@@ -605,6 +606,17 @@ Payload **103 bytes**. Python struct fmt: `<QIIIIIIIiiIIIIIIIIHHHHHHHHHHHHHB`.
 | `true_depth_hwm_cone` | u16 | 1 | Cone bus: same true-occupancy high-water mark |
 | `sdo_rtt_count` | u16 | 1 | SDO round trips that COMPLETED during this window, nominally ~50 at the poller's 20 ms interval. READ THIS BEFORE THE THREE RTT FIELDS: 0 means no round trip closed — the poller is off, parked on the version gate, or every request timed out — and the three RTT fields are then 0 because there was nothing to measure, NOT because the path was instant. Also the denominator that makes sdo_rtt_min_us a floor rather than an anecdote. The poller's own health is deliberately NOT duplicated here: HAND_SENSOR (0x8B) already carries its validity and staleness at this same rate, and a second source of truth for one fact is how the two disagree |
 | `flags` | u8 | 1 | RingDiagFlags bitfield: LAG_SEEDED / LAG_RESEED_IN_WINDOW. Read this BEFORE lag_now_us and lag_hwm_us — both are 0 when unseeded, and a 0 lag must never be readable as a healthy measurement when it actually means no reference exists (the ClockDiag FREQ_VALID discipline) |
+
+### LegClampDiag (`MsgType.LEG_CLAMP_DIAG`, T2J, STREAM port)
+
+PER-LEG LEAD-CLAMP CENSUS, 1 Hz (can-bridge FW 31, plans/active/leg-lead-clamp-age-aware.md P1). Two cumulative-since-boot u32 counters per leg, written by the 500 Hz interp ISR and read by task_telem (the s_hand_lead_clamp_ticks / s_hand_stale_holds idiom: single writer, naturally-aligned words, the consumer differences two reads, nothing is ever read-then-cleared — a clear at the emit site would swallow ISR increments). WHY IT EXISTS: on 2026-10-24 three single-leg ~10 Hz vibrations (legs 1 and 2, two with the iq setpoint on the 15 A clamp) were the leg lead clamp pinning the command at a STALE encoder reading + MAX_LEAD_REV through 76-108 ms encoder-frame gaps, and the only wire witness was lead_clamp_mask on the 10 Hz heartbeat, which under-sampled a 500 Hz verdict so badly the engagement had to be INFERRED from the staircase. These counters make the 500 Hz truth readable at 1 Hz: lead_clamp_ticks advancing over a window says the clamp engaged on that leg and for how many ticks; stale_anchor_ticks advancing says that leg's encoder anchor was older than LEG_ANCHOR_STALE_US (30 ms; healthy p95 <= 10 ms, a drop is 76-108 ms) — i.e. a frame-drop episode happened on that leg whether or not the clamp engaged. The P3 Sitting gate reads both: a stale window WITHOUT clamp engagement is the age-aware anchor doing its job; a stale window WITH engagement is the residue. GATED like the hand lane (FW 18): lead_clamp_ticks counts only ticks whose command reached the wire (out_en && !coldstart), so an absolute read after an aborted stage is still meaningful; stale_anchor_ticks is NOT gated (an anchor's age is a fact about the bus, not about the output gate). Additive — no existing frame changes, so NO PROTOCOL_VERSION bump (the LegCmd / HandSensor / BridgeTxDiag / ClockDiag / CacheDiag / RingDiag precedent): an old Jetson ignores the unknown msg_type and a new Jetson renders never-seen as unknown. An FW <= 30 board never sends this frame, so its consumer surface must read EMPTY, never error. INSTRUMENTATION ONLY: nothing in the firmware reads these counters.
+
+Payload **48 bytes**. Python struct fmt: `<IIIIIIIIIIII`.
+
+| Field | Type | Count | Notes |
+|-------|------|------:|-------|
+| `lead_clamp_ticks` | u32 | 6 | Per leg (0-5): 500 Hz ticks on which the leg lead clamp engaged AND the command reached the wire, CUMULATIVE SINCE BOOT. Difference two samples for a window count; 500 x window_seconds is the per-leg ceiling. u32 wraps after ~99 days of continuous engagement; unsigned differencing is wrap-correct |
+| `stale_anchor_ticks` | u32 | 6 | Per leg (0-5): 500 Hz ticks on which the leg's encoder anchor age (now - pos_timestamp_us) exceeded LEG_ANCHOR_STALE_US (30 ms), CUMULATIVE SINCE BOOT and NOT gated on the output enable. A 100 ms frame gap adds ~35 (ticks 16..50 of the gap). An axis never seen (pos_timestamp_us == 0) is NOT counted: its anchor has no age to census (the CacheDiag seen_mask 'n/a' discipline), and a bench rig with absent legs must not spin six counters at 500 Hz |
 
 ### RpcRequest (`MsgType.RPC_REQUEST`, J2T, RPC port)
 

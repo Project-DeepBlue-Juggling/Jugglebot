@@ -28,9 +28,18 @@ Timing words, all in the wall-clock seconds the schedule runs on:
 - **arrival** — when the ball reached the catch plane, minus when the catch
   that met it was aimed to (its final aim, after any re-aims): how well the
   catch was timed.
-- **seat** — the first SEATED possession reading, minus the SCHEDULED
-  landing (the OUTCOME line's ``seat=``: +0.10 s on a smooth catch at the
-  bottom of the dive, +0.02 s met at the top, larger on a bounce).
+- **seat** — the first SEATED possession reading, minus the TRACKER'S
+  crossing of the catch plane (the fit's ``t_land``; since 2026-10-22 -- it
+  was the SCHEDULED landing, whose zero used the COMMANDED apex and so carried
+  the learner's ~40 ms low-apex bias on every self-throw).  The OUTCOME
+  DEBUG line's ``seat=`` keeps the scheduled zero.  ``--`` with no fit.
+- **contact** — when the cup was struck (the hand's measured velocity kicked
+  below its feedforward, ``skill_node._contact_time``) minus the same
+  crossing; + = the ball met the cup after the tracker's crossing time.
+- **settle** — contact to the first SEATED reading: how long the ball
+  bounces or rattles before it rests on the sensor (2026-10-21: BB feeds
+  119 ms in the PLA cup, 252 ms in the ASA one at the same closing speed).
+  ``--`` when either end is unobserved.
 
 Pure Python: no ROS, no config imports.
 """
@@ -64,9 +73,29 @@ class ThrowReport:
     landing_err_mm: Optional[Tuple[float, float]]   # landing - target (x, y)
     release_err_s: Optional[float]
     arrival_err_s: Optional[float]
-    seat_s: Optional[float]
+    seat_s: Optional[float]          # seat - the tracker's crossing
     reaims: int = 0                  # accepted re-aims of the catch
     reaim_refused: str = ''          # code of the re-aim that was refused
+    contact_s: Optional[float] = None   # cup struck - the tracker's crossing
+    settle_s: Optional[float] = None    # first SEATED - cup struck
+    #: The two-ball columns Stop (D2): the last throw is aimed at the ball the
+    #: cup already holds, BY DESIGN, so it is not a catch attempt -- it is
+    #: excluded from the operator's tally (:func:`end_line`, :func:`summarise`)
+    #: and its line says so (2026-10-23, owner: the 47/48 read of the 48-run).
+    stop: bool = False
+
+
+@dataclasses.dataclass(frozen=True)
+class FeedCatchReport:
+    """One Ball Butler feed catch that seated (the feed has no THROW row of
+    its own, so no :class:`ThrowReport`).  Same zero as the throw line: the
+    tracker's crossing.  ``None`` fields print ``--``."""
+
+    ball_id: int
+    arrival_err_s: Optional[float]   # crossing - the catch's dispatched aim
+    seat_s: Optional[float]
+    contact_s: Optional[float]
+    settle_s: Optional[float]
 
 
 def release_error_s(t_land_s: float, z_land_mm: float, vz_land_mm_s: float,
@@ -100,12 +129,42 @@ def _ms(seconds: float) -> str:
     return _signed('%+.0f', seconds * 1000.0) + ' ms'
 
 
+def _seat_text(seat_s: Optional[float]) -> str:
+    return ('--' if seat_s is None
+            else '%s s (vs crossing)' % (_signed('%+.2f', seat_s),))
+
+
+def _contact_text(contact_s: Optional[float]) -> str:
+    return '--' if contact_s is None else _ms(contact_s)
+
+
+def _settle_text(settle_s: Optional[float]) -> str:
+    return ('--' if settle_s is None
+            else '%s ms' % (_signed('%.0f', settle_s * 1000.0),))
+
+
+def feed_line(r: FeedCatchReport) -> str:
+    """``feed Ball 2 CAUGHT  arrival +12 ms  seat +0.26 s (vs crossing)
+    contact +14 ms  settle 252 ms`` (INFO)."""
+    parts = ['feed ball %d CAUGHT' % (r.ball_id,)]
+    parts.append('arrival %s' % ('--' if r.arrival_err_s is None
+                                 else _ms(r.arrival_err_s),))
+    parts.append('seat %s' % (_seat_text(r.seat_s),))
+    parts.append('contact %s' % (_contact_text(r.contact_s),))
+    parts.append('settle %s' % (_settle_text(r.settle_s),))
+    return '  '.join(parts)
+
+
 def throw_line(r: ThrowReport) -> Tuple[str, str]:
     """``(severity, text)`` — WARN for a miss, INFO otherwise.
 
     ``throw 3/5 CAUGHT  apex 0.917 m  landed -4, +9 mm  release +15 ms
-    arrival -8 ms  seat +0.08 s  re-aimed 1x``"""
+    arrival -8 ms  seat +0.08 s (vs crossing)  contact +14 ms  settle 82 ms
+    re-aimed 1x``.  ``seat`` is referenced to the tracker's crossing time
+    (not the scheduled landing); ``--`` marks a field with no evidence."""
     verdict = {True: 'CAUGHT', False: 'MISSED', None: 'released'}[r.caught]
+    if r.stop:
+        verdict = 'STOP (landed on the held ball, by design; not counted)'
     parts = ['throw %d/%d %s' % (r.throw_no, r.n_throws, verdict)]
     if r.apex_m is not None:
         parts.append('apex %.3f m' % (r.apex_m,))
@@ -116,8 +175,9 @@ def throw_line(r: ThrowReport) -> Tuple[str, str]:
         parts.append('release %s' % (_ms(r.release_err_s),))
     if r.arrival_err_s is not None:
         parts.append('arrival %s' % (_ms(r.arrival_err_s),))
-    if r.seat_s is not None:
-        parts.append('seat %s s' % (_signed('%+.2f', r.seat_s),))
+    parts.append('seat %s' % (_seat_text(r.seat_s),))
+    parts.append('contact %s' % (_contact_text(r.contact_s),))
+    parts.append('settle %s' % (_settle_text(r.settle_s),))
     if r.reaims or r.reaim_refused:
         text = 're-aimed %dx' % (r.reaims,)
         if r.reaim_refused:
@@ -125,7 +185,8 @@ def throw_line(r: ThrowReport) -> Tuple[str, str]:
         parts.append(text)
     if not r.row:
         parts.append('no learner row: %s' % (r.no_row_reason,))
-    return ('WARN' if r.caught is False else 'INFO'), '  '.join(parts)
+    return (('WARN' if (r.caught is False and not r.stop) else 'INFO'),
+            '  '.join(parts))
 
 
 _PEAK = re.compile(r'peak ([a-z ]+?) ([-+\d.eE]+) ?(\S+) > ([-+\d.eE]+)')
@@ -173,6 +234,7 @@ def short_refusal(message: str, limit: int = 90) -> str:
 def start_line(label: str, n_throws: int, apex_m: float, *,
                memory_rows: Optional[int] = None,
                frame_offset_mm: Optional[float] = None,
+               catch_time_offset_ms: float = 0.0,
                extra: str = '') -> str:
     """``self_toss started: 5 throws at apex 0.90 m · memory 4 rows ·
     mocap frame offset 1.5 mm``"""
@@ -183,6 +245,9 @@ def start_line(label: str, n_throws: int, apex_m: float, *,
         parts.append('memory %d rows' % (memory_rows,))
     if frame_offset_mm is not None:
         parts.append('mocap frame offset %.1f mm' % (frame_offset_mm,))
+    if catch_time_offset_ms:
+        parts.append('DEBUG catch_time_offset %s ms'
+                     % (_signed('%+.0f', catch_time_offset_ms),))
     return ' · '.join(parts)
 
 
@@ -204,17 +269,23 @@ def end_line(label: str, end_code: str, end_message: str,
     holding both balls, not at an ordinary rest. Only meaningful when
     ``end_code`` is empty: a D3 drop or any other refusal already has its
     own, more specific, reason and takes priority."""
-    thrown = len(reports)
-    caught = sum(1 for r in reports if r.caught)
+    # The Stop throw is not a catch attempt (ThrowReport.stop): the tally is
+    # over the throws the cup was asked to catch.  The end code below still
+    # rides beside it, so a run that ENDED on a real miss says so.
+    thrown, caught = summarise(reports)
     tally = '%d/%d caught' % (caught, thrown)
-    apexes = [r.apex_m for r in reports if r.apex_m is not None]
+    # The ranges share the count's base: the Stop's "landing" is a ball
+    # striking the held ball by design, so its landing and release errors
+    # would otherwise set the worst figure of a clean run (audit 2026-10-23).
+    counted = [r for r in reports if not r.stop]
+    apexes = [r.apex_m for r in counted if r.apex_m is not None]
     if apexes:
         tally += ' · apex %.2f–%.2f m' % (min(apexes), max(apexes))
     worst = [max(abs(r.landing_err_mm[0]), abs(r.landing_err_mm[1]))
-             for r in reports if r.landing_err_mm is not None]
+             for r in counted if r.landing_err_mm is not None]
     if worst:
         tally += ' · worst landing %.0f mm' % (max(worst),)
-    releases = [r.release_err_s for r in reports
+    releases = [r.release_err_s for r in counted
                 if r.release_err_s is not None]
     if releases:
         tally += ' · release %s..%s' % (_ms(min(releases)), _ms(max(releases)))
@@ -239,5 +310,7 @@ def end_line(label: str, end_code: str, end_message: str,
 
 def summarise(reports: List[ThrowReport]) -> Tuple[int, int]:
     """``(throws, caught)`` for the Juggle result — from the reports, never
-    from log text."""
-    return len(reports), sum(1 for r in reports if r.caught)
+    from log text.  The columns Stop (:attr:`ThrowReport.stop`) is neither a
+    throw nor a catch here: it was never a catch attempt."""
+    counted = [r for r in reports if not r.stop]
+    return len(counted), sum(1 for r in counted if r.caught)

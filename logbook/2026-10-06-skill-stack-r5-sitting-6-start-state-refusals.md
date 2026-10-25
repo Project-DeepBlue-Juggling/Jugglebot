@@ -32,9 +32,9 @@ hold **ten attempts across three launches, three different refusals, and no thro
 
 | Refusal | Attempts | Goal | What the plan started from |
 |---|---|---|---|
-| `INFEASIBLE` at THROW 0 | 7 | `columns_1ball`, no reload | The ACTIVATE park: hand 0.0 rev, the cup 10 mm under the planner floor |
-| `LIMIT_JERK` at THROW 0 (254 659 vs 200 000 mm/s³) | 2 | `columns_1ball`, no reload | The tilted receive hold the failed reload attempt left: ~12° and 99 mm off centre, ball in the cup |
-| `STALE_STATE` at the levelling REST (hand drift 1.2600 rev > 1.0000) | 1 | `columns_1ball`, reload | The hand still descending at 34.7 rev/s, 83 ms after the high catch |
+| `INFEASIBLE` at THROW 0 | 7 | `columns_1ball`, no `reload` | The ACTIVATE park: hand 0.0 rev, the cup 10 mm under the planner floor |
+| `LIMIT_JERK` at THROW 0 (254 659 vs 200 000 mm/s³) | 2 | `columns_1ball`, no `reload` | The tilted receive hold the failed `reload` attempt left: ~12° and 99 mm off centre, ball in the cup |
+| `STALE_STATE` at the levelling REST (hand drift 1.2600 rev > 1.0000) | 1 | `columns_1ball`, `reload` | The hand still descending at 34.7 rev/s, 83 ms after the high catch |
 
 None is a planner-math or geometry fault, and the level trim is irrelevant (launch 4 had it set and
 refused the same way). All three are one class: **a skill planned from wherever the machine
@@ -49,8 +49,8 @@ catch plane was caught and held (bag `ball_held=True`).
 
 The INFEASIBLE line above, on every attempt, and nothing thrown. The GUI Juggle panel was used for
 most attempts; it sends `reload` only when its box is ticked (`ros_ws/gui/js/juggle-panel.js`,
-`userReload: false`), while the runsheet's row 15 specifies `reload: true`. So nine of the ten
-attempts flew a start the runsheet had not asked for — and that nobody had rehearsed.
+`userReload: false`), while the runbook's row 15 specifies `reload: true`. So nine of the ten
+attempts flew a start the runbook had not asked for — and that nobody had rehearsed.
 
 ## Measured
 
@@ -76,11 +76,11 @@ and the seated-ball bound then forbids the braking that needs.
 
 **LIMIT_JERK (launch 1, 2 attempts).** The start was not home. The bag at 1791200014.5 shows the
 commanded platform at (99, 12, 170) mm, mocap tilt ~12.5°, hand 0.2668 rev, `ball_held=True`: the
-receive hold of the reload attempt that had just died. Reproduced in class, not to the number
+receive hold of the `reload` attempt that had just died. Reproduced in class, not to the number
 (the commanded tilt is not in the bag): start tilt drives it — 6.2° installs at 97 k, 9.3° reads
 221 k, 12.5° reads 298 k — and hand position, lateral offset, trim and catch plane do not.
 
-**STALE_STATE (launch 1, the one reload attempt).** REST → CATCH installed, the feed was caught,
+**STALE_STATE (launch 1, the one `reload` attempt).** REST → CATCH installed, the feed was caught,
 then the levelling (DECAY) REST: *"cycle seed for settle: IN MOTION (… hand -34.6888 rev/s)"* and
 36.6 ms later in the log *"commanded state moved during planning (hand position drift 1.2600 rev >
 1.0000) — retry"*. 1.26 rev is 36.3 ms of travel at 34.69 rev/s: the guard reads the hand just
@@ -98,7 +98,7 @@ n 40) ran 12.8-29.5 rev/s, with zero `STALE_STATE`. The mechanism:
   hand's travel across the solve, v × latency.
 - Catch high stretched the post-catch descent from ~140 mm to ~240 mm in the same tail, so the
   hand is ~10 rev/s faster at that instant. Sitting 5's speeds stayed under the bound; 34.7 does
-  not, at any solve over 29 ms. REST solves in the logs run 21-73 ms, so most reload attempts at
+  not, at any solve over 29 ms. REST solves in the logs run 21-73 ms, so most `reload` attempts at
   930 mm would have ended this way, with the ball caught.
 
 **Why no gate saw any of it.** The sim gate and the box sweep seed every run from
@@ -106,8 +106,8 @@ n 40) ran 12.8-29.5 rev/s, with zero `STALE_STATE`. The mechanism:
 handler, which the sim gate bypasses. `sim/skills_gate.py`'s own `_activate_park_state` docstring
 states the park hazard ("which is exactly why `compile_one_ball` opens on a REST"), and
 `schedule.FLOOR_LIFT_S` records that columns' opening REST was "carried to R4" — and then
-`_run_columns` got its bridge while `_run_columns_1ball`'s no-reload branch computed the lift,
-logged it, and passed it only to the reload branch.
+`_run_columns` got its bridge while `_run_columns_1ball`'s no-`reload` branch computed the lift,
+logged it, and passed it only to the `reload` branch.
 
 ## Discussion
 
@@ -155,7 +155,7 @@ questions.
 ## Fix
 
 - `schedule.compile_rest_columns` (new): the opening REST (`compile_reload_wait(...,
-  holds_ball=True)`, the bridge `_run_columns` opens on) followed by the unchanged no-reload
+  holds_ball=True)`, the bridge `_run_columns` opens on) followed by the unchanged no-`reload`
   columns compile, with ball A's release one `launch_s` after the REST ends — the anchor
   `compile_reload_columns` uses after its DECAY REST.
 - `skill_node._run_columns_1ball`, `reload=False`: compiles that instead of `compile_columns`
@@ -168,8 +168,8 @@ questions.
   points and its test.
 - None of the three code files is gated (`admissible._GATED_FILES`): the box and its gate hash
   `3c9533225417` stand, no re-sweep.
-- Runsheet `session_skills_r5_sitting6.md`: a dated block on what changed and what the log now
-  shows, and row 15 says to tick the panel's reload box.
+- Runbook `session_skills_r5_sitting6.md`: a dated block on what changed and what the log now
+  shows, and row 15 says to tick the panel's `reload` box.
 
 Control implications, one 40 Hz cycle of the retry: tick k dispatches the REST; the handler seeds,
 solves and refuses; nothing reaches `_install`, so the emitter streams the CATCH record unchanged

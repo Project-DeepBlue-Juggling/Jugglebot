@@ -201,6 +201,16 @@ namespace TrajOp {
   constexpr bool RETIME_MODEL = false;
   constexpr bool UNIFIED_Z_FLOAT_ENABLED = false;
   constexpr float UNIFIED_Z_BAND_MM = 30.0f;
+  constexpr const char* PLANNER_MODE = "level";
+  constexpr float POSE_LEG_JERK_WEIGHT = 10.0f;
+  constexpr float POSE_Z_BAND_MM = 0.0f;
+  constexpr float POSE_CONE_DEG = 20.0f;
+  constexpr float POSE_FLOOR_G = 0.5f;
+  constexpr float POSE_TOUCHDOWN_SKID_MMPS = 175.0f;
+  constexpr uint32_t POSE_H_PRE_KNOTS = 2u;
+  constexpr uint32_t POSE_H_CATCH_PRE_KNOTS = 0u;
+  constexpr uint32_t POSE_H_CATCH_POST_KNOTS = 0u;
+  constexpr float POSE_SLIDER_MARGIN_MM = 0.5f;
   constexpr float STREAM_STOP_HAND_ACCEL_RPS2 = 3500.0f;
   constexpr float STREAM_STOP_HAND_JERK_RPS3 = 350000.0f;
   constexpr float STREAM_STOP_LEG_ACCEL_RPS2 = 250.0f;

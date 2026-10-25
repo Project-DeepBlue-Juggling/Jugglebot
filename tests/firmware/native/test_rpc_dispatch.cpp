@@ -93,7 +93,7 @@ TxResult can_bb_tx(const ODrive::CanFrame& f, uint8_t cls) {
   g_bb_sent++; g_bb_last = f; g_bb_last_cls = cls;
   return g_bb_send_ok ? g_bb_result : TxResult::FAILED;
 }
-// Cone-role bus (WAVE_CMD, FW 31). g_cone_result models can_cone_tx's own
+// Cone-role bus (WAVE_CMD, FW 33). g_cone_result models can_cone_tx's own
 // presence gate: FAILED = no cone-bus partner heard, nothing queued.
 static int      g_cone_sent = 0;
 static ODrive::CanFrame g_cone_last{};
@@ -540,7 +540,7 @@ TEST_CASE("BB_CANCEL (FW 30): BB present → one payloadless CANCEL_CMD on CAN1;
   CHECK(g_bb_sent == 0);
 }
 
-TEST_CASE("WAVE_CMD (FW 31): args verbatim as one DLC-8 0x7E2 frame on the cone bus; gate/arg refusals") {
+TEST_CASE("WAVE_CMD (FW 33): args verbatim as one DLC-8 0x7E2 frame on the cone bus; gate/arg refusals") {
   reset_all();
   ArgWaveCmd a{}; a.desired = 1; a.cmd_seq = 0x2A; a.flags = 0x01; a.reserved = 0;
   a.session_id = 0x6A1B2C3Du;

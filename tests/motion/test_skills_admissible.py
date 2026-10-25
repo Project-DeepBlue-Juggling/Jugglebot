@@ -61,7 +61,7 @@ def _box(**overrides):
         pattern='hop', release_site_xy_mm=_DEFAULT_XY_MM,
         target_site_xy_mm=_DEFAULT_XY_MM,
         limits=dict(_LIMITS_DICT), gate_hash=_GATE_HASH, swept_at='2026-09-12',
-        dwell_s=_DWELL_S)
+        dwell_s=_DWELL_S, planner_mode='level')
     kwargs.update(overrides)
     return ab.AdmissibleBox(**kwargs)
 
@@ -73,7 +73,8 @@ def _empty_box(**overrides):
         apex_m=(float('nan'), float('nan')), pattern='hop',
         release_site_xy_mm=_DEFAULT_XY_MM, target_site_xy_mm=_DEFAULT_XY_MM,
         limits=dict(_LIMITS_DICT),
-        gate_hash=_GATE_HASH, swept_at='2026-09-12', dwell_s=_DWELL_S)
+        gate_hash=_GATE_HASH, swept_at='2026-09-12', dwell_s=_DWELL_S,
+        planner_mode='level')
     kwargs.update(overrides)
     return ab.AdmissibleBox(**kwargs)
 
@@ -253,7 +254,8 @@ def test_select_refuses_a_cell_swept_at_another_dwell_and_describe_miss_names_dw
     assert _sel([box], 'oval_1ball', ('P1', 'P2'), 0.90, dwell_s=0.50) is None
     msg = ab.describe_miss([box], 'oval_1ball', ('P1', 'P2'), 0.90,
                            release_site_xy_mm=_DEFAULT_XY_MM,
-                           target_site_xy_mm=_DEFAULT_XY_MM, dwell_s=0.50)
+                           target_site_xy_mm=_DEFAULT_XY_MM, dwell_s=0.50,
+                           planner_mode='level')
     assert 'dwell_s' in msg and '0.5' in msg and '0.27' in msg
     # Apex / separation causes must NOT be blamed when only the dwell differs.
     assert 'separation_mm' not in msg and 'outside the range' not in msg
@@ -273,7 +275,8 @@ def test_select_treats_an_unstamped_box_as_matching_no_dwell():
     assert _sel([box], 'hop', ('P1', 'P2'), 0.90, dwell_s=0.27) is None
     msg = ab.describe_miss([box], 'hop', ('P1', 'P2'), 0.90,
                            release_site_xy_mm=_DEFAULT_XY_MM,
-                           target_site_xy_mm=_DEFAULT_XY_MM, dwell_s=0.27)
+                           target_site_xy_mm=_DEFAULT_XY_MM, dwell_s=0.27,
+                           planner_mode='level')
     assert 'dwell_s' in msg and 'unstamped' in msg
 
 
@@ -282,6 +285,107 @@ def test_select_requires_dwell_s():
         ab.select([_box()], 'hop', ('P1', 'P2'), 0.90,
                   release_site_xy_mm=_DEFAULT_XY_MM,
                   target_site_xy_mm=_DEFAULT_XY_MM)
+
+
+# -- planner_mode stamp (two-ball-oval P3, 2026-10-23) ---------------------------
+
+def _miss(boxes, pattern='oval_1ball', apex=0.90, dwell_s=_DWELL_S,
+          planner_mode='level'):
+    return ab.describe_miss(boxes, pattern, ('P1', 'P2'), apex,
+                            release_site_xy_mm=_DEFAULT_XY_MM,
+                            target_site_xy_mm=_DEFAULT_XY_MM, dwell_s=dwell_s,
+                            planner_mode=planner_mode)
+
+
+def test_planner_modes_vocabulary_equals_unified_cycles():
+    from jugglebot.motion import unified_cycle as uc
+    assert ab.PLANNER_MODES == uc.PLANNER_MODES == ('level', 'pose')
+    assert 'PLANNER_MODES' in ab.__all__
+
+
+def test_round_trip_dump_then_load_preserves_planner_mode(tmp_path):
+    path = str(tmp_path / 'x.yaml')
+    ab.dump(path, [_box(planner_mode='pose')])
+    assert ab.load(path)[0].planner_mode == 'pose'
+
+
+def test_round_trip_dump_then_load_tolerates_an_unstamped_planner_mode(tmp_path):
+    path = str(tmp_path / 'x.yaml')
+    ab.dump(path, [_box(planner_mode=None)])
+    assert ab.load(path)[0].planner_mode is None
+    # A pre-P3 file has no key at all: loads unstamped, not refused.
+    import yaml
+    with open(path) as fh:
+        doc = yaml.safe_load(fh)
+    for b in doc['boxes']:
+        b.pop('planner_mode', None)
+    with open(path, 'w') as fh:
+        yaml.safe_dump(doc, fh)
+    assert ab.load(path)[0].planner_mode is None
+
+
+def test_box_rejects_a_planner_mode_outside_the_vocabulary():
+    with pytest.raises(ValueError, match='planner_mode'):
+        _box(planner_mode='posee')
+    with pytest.raises(ValueError, match='planner_mode'):
+        _box(planner_mode=3)
+
+
+def test_select_refuses_a_cell_swept_under_the_other_planner_and_names_it():
+    box = _box(pattern='oval_1ball', planner_mode='level')
+    assert _sel([box], 'oval_1ball', ('P1', 'P2'), 0.90,
+                planner_mode='level') is box
+    assert _sel([box], 'oval_1ball', ('P1', 'P2'), 0.90,
+                planner_mode='pose') is None
+    msg = _miss([box], planner_mode='pose')
+    assert 'planner_mode' in msg and "'pose'" in msg and 'level' in msg
+    assert 'dwell_s' not in msg and 'separation_mm' not in msg
+    assert 'outside the range' not in msg
+
+
+def test_a_planner_mode_miss_is_reported_before_a_dwell_miss():
+    box = _box(pattern='oval_1ball', planner_mode='level', dwell_s=0.27)
+    msg = _miss([box], dwell_s=0.50, planner_mode='pose')
+    assert msg.startswith('planner_mode')
+
+
+def test_pose_and_level_cells_coexist_at_one_pattern_pair_dwell_and_band(tmp_path):
+    lvl = _box(pattern='oval_1ball', planner_mode='level')
+    pse = _box(pattern='oval_1ball', planner_mode='pose')
+    assert _sel([lvl, pse], 'oval_1ball', ('P1', 'P2'), 0.90,
+                planner_mode='level') is lvl
+    assert _sel([lvl, pse], 'oval_1ball', ('P1', 'P2'), 0.90,
+                planner_mode='pose') is pse
+    path = str(tmp_path / 'x.yaml')
+    ab.dump(path, [lvl, pse])
+    assert len(ab.load(path)) == 2
+
+
+def test_overlap_refusal_keys_on_planner_mode(tmp_path):
+    a = _box(pattern='oval_1ball', planner_mode='pose')
+    b = _box(pattern='oval_1ball', planner_mode='pose')
+    path = str(tmp_path / 'x.yaml')
+    with pytest.raises(ValueError, match='planner_mode'):
+        ab.dump(path, [a, b])
+
+
+def test_select_treats_an_unstamped_box_as_matching_no_planner_mode():
+    box = _box(planner_mode=None)
+    for mode in ab.PLANNER_MODES:
+        assert _sel([box], 'hop', ('P1', 'P2'), 0.90, planner_mode=mode) is None
+    assert 'planner_mode' in _miss([box], pattern='hop') and 'unstamped' in _miss(
+        [box], pattern='hop')
+
+
+def test_select_and_describe_miss_require_planner_mode():
+    with pytest.raises(TypeError):
+        ab.select([_box()], 'hop', ('P1', 'P2'), 0.90,
+                  release_site_xy_mm=_DEFAULT_XY_MM,
+                  target_site_xy_mm=_DEFAULT_XY_MM, dwell_s=_DWELL_S)
+    with pytest.raises(TypeError):
+        ab.describe_miss([_box()], 'hop', ('P1', 'P2'), 0.90,
+                         release_site_xy_mm=_DEFAULT_XY_MM,
+                         target_site_xy_mm=_DEFAULT_XY_MM, dwell_s=_DWELL_S)
 
 
 def test_vocabulary_includes_the_oval_labels():
@@ -395,7 +499,14 @@ def test_cone45_resweep_restores_every_non_oval_cell_to_the_pre_oval_snapshot():
             return x.keys() == y.keys() and all(_same(x[k], y[k]) for k in x)
         return x == y
 
-    new_other = [b for b in new['boxes'] if b['pattern'] != 'oval_1ball']
+    # P3 (2026-10-23): every cell gained the ``planner_mode`` stamp; the
+    # pre-oval snapshot predates it, so the stamp is dropped before the
+    # value comparison (and every level cell must carry 'level').
+    new_other = [dict(b) for b in new['boxes']
+                 if b['pattern'] != 'oval_1ball' or b.get('planner_mode') == 'pose']
+    new_other = [b for b in new_other if b['pattern'] != 'oval_1ball']
+    for b in new_other:
+        assert b.pop('planner_mode', None) == 'level'
     assert len(old['boxes']) == len(new_other)
     n_st = n_hop = n_col = 0
     for a, b in zip(old['boxes'], new_other):
@@ -404,12 +515,81 @@ def test_cone45_resweep_restores_every_non_oval_cell_to_the_pre_oval_snapshot():
         n_hop += b['pattern'] == 'hop'
         n_col += b['pattern'] == 'columns'
     assert (n_st, n_hop, n_col) == (5, 8, 6)
-    ovals = [b for b in new['boxes'] if b['pattern'] == 'oval_1ball']
-    assert len(ovals) == 1
-    assert ovals[0]['dwell_s'] == pytest.approx(0.65)
-    assert ovals[0]['release_site_xy_mm'] == [-75.0, 0.0]
-    assert ovals[0]['target_site_xy_mm'] == [75.0, 0.0]
-    assert len(new['boxes']) == 20
+    ovals = [b for b in new['boxes'] if b['pattern'] == 'oval_1ball'
+             and b.get('planner_mode') == 'level']
+    # two-ball-oval rung 2 (2026-10-23): cells at 0.55 / 0.50 appended after 0.65
+    assert [o['dwell_s'] for o in ovals] == pytest.approx([0.65, 0.55, 0.50])
+    for o in ovals:
+        assert o['release_site_xy_mm'] == [-75.0, 0.0]
+        assert o['target_site_xy_mm'] == [75.0, 0.0]
+    # P3: the same three cells again under the pose planner -> 25 cells;
+    # P3 tail (2026-10-24): the 0.45 pose cell the A/B runbook assumed -> 26.
+    assert len(new['boxes']) == 26
+
+
+_PRE_P3_SNAPSHOT = os.path.join(_REPO, 'tests', 'fixtures', 'admissible_box_pre_p3.yaml')
+
+
+def test_p3_resweep_changed_only_the_stamp_and_added_the_pose_cells():
+    """two-ball-oval P3 (2026-10-23): the pose planner is appended AFTER every
+    level column (``cup_cycle._assemble(pose=None)`` assembles nothing new), so
+    the re-sweep forced by the gated-file edits must reproduce every one of the
+    22 committed LEVEL cells value for value (only ``gate_hash`` / ``swept_at``
+    and the new ``planner_mode: level`` stamp may differ) and add exactly three
+    ``oval_1ball`` cells stamped ``pose`` at dwell 0.65 / 0.55 / 0.50 — the
+    cells the A/B sitting (runbook § 8) flips to by one parameter.  This is the
+    strongest byte-identity pin level mode has: 22 cells x every family through
+    the whole planner + gate.
+
+    P3 tail (2026-10-24, touch-down skid bound I-PLAN-14): the pose cells were
+    re-swept under the bound and the 0.45 pose cell was added (the A/B's row
+    P3-5 was refused by the box because it did not exist) — four pose cells,
+    26 in all; the 22 level cells are still value-identical to the pre-P3
+    snapshot (the bound lives in ``_pose_augment``, which ``pose=None`` never
+    reaches)."""
+    import math
+    import yaml as _y
+    with open(_PRE_P3_SNAPSHOT) as fh:
+        old = _y.safe_load(fh)
+    with open(_COMMITTED_BOX) as fh:
+        new = _y.safe_load(fh)
+    assert new['limits'] == old['limits']
+    assert new['gate_hash'] != old['gate_hash']          # the gated files changed
+
+    def _same(x, y):
+        if isinstance(x, float) and isinstance(y, float):
+            return (math.isnan(x) and math.isnan(y)) or x == y
+        if isinstance(x, (list, tuple)) and isinstance(y, (list, tuple)):
+            return len(x) == len(y) and all(_same(i, j) for i, j in zip(x, y))
+        if isinstance(x, dict) and isinstance(y, dict):
+            return x.keys() == y.keys() and all(_same(x[k], y[k]) for k in x)
+        return x == y
+
+    level = [dict(b) for b in new['boxes'] if b.get('planner_mode') == 'level']
+    pose = [b for b in new['boxes'] if b.get('planner_mode') == 'pose']
+    assert len(level) == 22 and len(pose) == 4 and len(new['boxes']) == 26
+    for b in level:
+        b.pop('planner_mode')
+    old_boxes = [dict(b) for b in old['boxes']]
+    for b in old_boxes:
+        b.pop('planner_mode', None)                      # the snapshot is unstamped
+    for a, b in zip(old_boxes, level):
+        assert _same(a, b), 'level cell moved under P3: %r -> %r' % (a, b)
+    assert [p['dwell_s'] for p in pose] == pytest.approx([0.65, 0.55, 0.50, 0.45])
+    for p in pose:
+        assert p['pattern'] == 'oval_1ball'
+        assert p['release_site_xy_mm'] == [-75.0, 0.0]
+        assert p['target_site_xy_mm'] == [75.0, 0.0]
+        assert not math.isnan(p['apex_m'][0]), 'the pose cell must be non-empty'
+    # The live loader resolves both planners' cells at one dwell by the stamp.
+    boxes = ab.load(_COMMITTED_BOX)
+    for mode in ('level', 'pose'):
+        for d in (0.65, 0.55, 0.50):
+            hit = ab.select(boxes, 'oval_1ball', ('P1', 'P2'), 0.95,
+                            release_site_xy_mm=(-75.0, 0.0),
+                            target_site_xy_mm=(75.0, 0.0), dwell_s=d,
+                            planner_mode=mode)
+            assert hit is not None and hit.planner_mode == mode and not hit.empty
 
 
 def test_dump_refuses_a_mix_of_provenance(tmp_path):
@@ -516,9 +696,11 @@ def test_load_refuses_a_box_missing_apex_m():
 # select
 # ---------------------------------------------------------------------------
 
-def _sel(boxes, pattern, pair, apex, xy=_DEFAULT_XY_MM, dwell_s=_DWELL_S):
+def _sel(boxes, pattern, pair, apex, xy=_DEFAULT_XY_MM, dwell_s=_DWELL_S,
+         planner_mode='level'):
     return ab.select(boxes, pattern, pair, apex, release_site_xy_mm=xy,
-                     target_site_xy_mm=xy, dwell_s=dwell_s)
+                     target_site_xy_mm=xy, dwell_s=dwell_s,
+                     planner_mode=planner_mode)
 
 
 def test_select_hits_a_box_covering_the_apex():
@@ -560,11 +742,11 @@ def test_select_misses_when_the_live_site_xy_does_not_match_the_swept_xy():
               release_site_xy_mm=(-125.0, 0.0), target_site_xy_mm=(125.0, 0.0))
     hit = ab.select([box], 'hop', ('P1', 'P2'), 0.90,
                     release_site_xy_mm=(-125.0, 0.0), target_site_xy_mm=(125.0, 0.0),
-                    dwell_s=_DWELL_S)
+                    dwell_s=_DWELL_S, planner_mode='level')
     assert hit is box
     miss = ab.select([box], 'hop', ('P1', 'P2'), 0.90,
                      release_site_xy_mm=(-50.0, 0.0), target_site_xy_mm=(50.0, 0.0),
-                     dwell_s=_DWELL_S)
+                     dwell_s=_DWELL_S, planner_mode='level')
     assert miss is None
 
 
@@ -1044,11 +1226,17 @@ def test_single_apex_boxes_records_the_requested_band_not_the_grid_derived_one(
     exists. `sweep` itself is stubbed so this stays a unit test of the band
     construction, not a second copy of the real-solver sweep test above."""
     calls = []
+    modes = []
     pattern_flight_calls = []
 
     def _fake_sweep(*, flights_s, offsets_mm, dwell_s, separation_mm, leg_vel,
                     leg_acc, leg_jerk, hand_acc, center_flight_s, site_pairs,
-                    pattern_flight_s, log):
+                    pattern_flight_s, log, planner_mode='level', swept_at=None):
+        modes.append(planner_mode)
+        # P3 (2026-10-24): the ladder stamps ONE date per invocation and passes it
+        # to every apex's sweep call (a midnight straddle mixed two dates in one
+        # file and ``dump`` refused it, round a of the P3 re-sweep).
+        assert swept_at is not None and len(swept_at) == 10
         calls.append(list(flights_s))
         pattern_flight_calls.append(pattern_flight_s)
         site = site_pairs[0][0]
@@ -1062,7 +1250,8 @@ def test_single_apex_boxes_records_the_requested_band_not_the_grid_derived_one(
             target_site_xy_mm=site_xy,
             limits=dict(leg_vel_mmps=leg_vel, leg_acc_mmps2=leg_acc,
                        leg_jerk_mmps3=leg_jerk, hand_acc_rps2=hand_acc),
-            gate_hash=sweep_mod.ab.gate_hash(), swept_at='2026-09-14')
+            gate_hash=sweep_mod.ab.gate_hash(), swept_at='2026-09-14',
+            planner_mode=planner_mode)
         return [box], []
 
     monkeypatch.setattr(sweep_mod, 'sweep', _fake_sweep)
@@ -1071,7 +1260,9 @@ def test_single_apex_boxes_records_the_requested_band_not_the_grid_derived_one(
         [0.5, 0.6], flight_frac=[-0.1, 0.0, 0.1], halfwidth_m=0.05,
         offsets_mm=[0.0], dwell_s=0.30, separation_mm=100.0, leg_vel=300.0,
         leg_acc=5000.0, leg_jerk=150000.0, hand_acc=3500.0, site=site,
-        log=lambda r: None)
+        planner_mode='pose', log=lambda r: None)
+    assert modes == ['pose', 'pose']
+    assert [b.planner_mode for b in boxes] == ['pose', 'pose']
     assert len(boxes) == 2
     assert boxes[0].apex_band_m == pytest.approx((0.45, 0.55))
     assert boxes[1].apex_band_m == pytest.approx((0.55, 0.65))
@@ -1231,7 +1422,8 @@ def test_describe_miss_names_an_apex_outside_every_swept_band():
     swept, and does not blame the site positions."""
     msg = ab.describe_miss([_box()], 'hop', ('P1', 'P2'), 1.10,
                            release_site_xy_mm=_DEFAULT_XY_MM,
-                           target_site_xy_mm=_DEFAULT_XY_MM, dwell_s=_DWELL_S)
+                           target_site_xy_mm=_DEFAULT_XY_MM, dwell_s=_DWELL_S,
+                           planner_mode="level")
     assert 'outside the range' in msg
     assert '0.850-0.950 m' in msg
     assert 'separation_mm' not in msg
@@ -1243,7 +1435,8 @@ def test_describe_miss_names_a_site_separation_mismatch():
     sites are not the swept ones -- both separations are named."""
     msg = ab.describe_miss([_box()], 'hop', ('P1', 'P2'), 0.90,
                            release_site_xy_mm=(-50.0, 0.0),
-                           target_site_xy_mm=(50.0, 0.0), dwell_s=_DWELL_S)
+                           target_site_xy_mm=(50.0, 0.0), dwell_s=_DWELL_S,
+                           planner_mode="level")
     assert 'IS covered' in msg and 'separation_mm' in msg
     assert '100.0 mm apart' in msg
 

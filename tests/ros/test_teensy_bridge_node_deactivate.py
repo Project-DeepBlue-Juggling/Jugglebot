@@ -297,3 +297,129 @@ def test_run_deactivate_waits_for_wire_disarm_confirmation():
         assert sent[0] is False       # host disarmed before the RPC
     finally:
         _teardown(teensy, client, node)
+
+
+def test_run_deactivate_waits_for_wire_after_an_external_disarm():
+    """2026-10-23 Sitting (and 2026-10-19): the GUI teardown disarms through
+    /set_setpoint_output, which clears the HOST ``_mpc_active`` at once, then
+    publishes 'deactivate' ~40-65 ms later -- inside one 10 Hz heartbeat, so the
+    firmware still has s_mpc_active=1 and answers ERR_REJECTED. The wire wait
+    used to sit behind ``if self._mpc_active`` and was skipped on exactly this
+    path. It must run whenever the firmware still reports armed (T2J bit3),
+    whoever did the disarm."""
+    from teensy_link import HeartbeatT2J, LinkState, BusHealth
+
+    def _hb(flags):
+        return HeartbeatT2J(
+            t_teensy_us=1, link_state=int(LinkState.UP),
+            bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
+            fault_state=0, flags=flags, uptime_ms=0)
+
+    teensy, client, node = _build_paired_node()
+    try:
+        sent = []
+        teensy.on_rpc(int(RpcMethod.DEACTIVATE),
+                      lambda req_id, args: (sent.append(time.monotonic())
+                                            or (int(RpcStatus.ERR_REJECTED), b"")))
+        teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), _hb(0x8).pack())
+        assert _poll(lambda: node._latest_heartbeat is not None)
+        node._mpc_active = False          # host already disarmed (the service)
+
+        t = threading.Thread(target=lambda: node._run_deactivate([0], poll_dt=0.02))
+        t.start()
+        time.sleep(0.15)
+        assert not sent, ("DEACTIVATE fired while the firmware still reported "
+                          "armed after an external disarm (the 2026-10-23 race)")
+        teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), _hb(0x0).pack())
+        assert _poll(lambda: len(sent) >= 1), "DEACTIVATE never fired after confirm"
+        t.join(timeout=8.0)
+        assert not t.is_alive()
+    finally:
+        _teardown(teensy, client, node)
+
+
+# ── lost ack (ERR_TIMEOUT) is OBSERVED, never reported as a refusal ──────────
+# (owner, 2026-10-23 audit). The firmware's deactivate_request never returns
+# ERR_TIMEOUT itself; on DEACTIVATE it is the client's RpcTimeout (a lost
+# request or ack), whose message renders "DEACTIVATE: ERR_TIMEOUT after ...".
+
+_LOST_ACK = (False, 'DEACTIVATE: ERR_TIMEOUT after 2 retries × 0.100s', b'')
+
+
+def test_lost_ack_deactivate_that_ran_is_observed_to_success():
+    teensy, client, node = _build_paired_node()
+    try:
+        node.teensy_deactivate = lambda axis: _LOST_ACK
+        result = {}
+
+        def run():
+            result['ok'], result['msg'] = node._run_deactivate([0], poll_dt=0.02)
+
+        t = threading.Thread(target=run)
+        t.start()
+        time.sleep(0.1)
+        # The lower DID latch: the monitor sees it descend and IDLE at STOW.
+        teensy.send_telemetry(pos_rev=[0.02] + [0.0] * 6, vel_rps=[-0.2] + [0.0] * 6)
+        teensy.send_to_jetson(
+            int(MsgType.DIAGNOSTIC),
+            Diagnostic(axis_id=0, axis_state=CLOSED_LOOP, active_errors=0).pack())
+        time.sleep(0.1)
+        teensy.send_telemetry(pos_rev=[0.0] * 7, vel_rps=[0.0] * 7)
+        teensy.send_to_jetson(
+            int(MsgType.DIAGNOSTIC),
+            Diagnostic(axis_id=0, axis_state=IDLE, active_errors=0).pack())
+        t.join(timeout=8.0)
+        assert not t.is_alive()
+        assert result['ok'] is True, result['msg']
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_lost_ack_deactivate_that_did_not_run_is_a_genuine_failure():
+    """Nothing moved within the monitor window -> 'deactivate FAILED' (never
+    a bare 'rejected' the orchestrator could re-send), and the Hand is NOT
+    de-energised under a robot that is still posed."""
+    teensy, client, node = _build_paired_node()
+    try:
+        node.teensy_deactivate = lambda axis: _LOST_ACK
+        set_state = []
+        teensy.on_rpc(int(RpcMethod.SET_AXIS_STATE),
+                      lambda rid, a: (set_state.append(a), (int(RpcStatus.OK), b""))[1])
+        teensy.send_telemetry(pos_rev=[2.0] + [0.0] * 6, vel_rps=[0.0] * 7)
+        teensy.send_to_jetson(
+            int(MsgType.DIAGNOSTIC),
+            Diagnostic(axis_id=0, axis_state=CLOSED_LOOP, active_errors=0).pack())
+        ok, msg = node._run_deactivate([0], poll_dt=0.02, timeout_s=0.3)
+        assert ok is False
+        assert msg.startswith('deactivate FAILED') and 'ack lost' in msg, msg
+        assert 'rejected' not in msg.lower()
+        assert set_state == [], 'Hand idled under a posed, still-ACTIVE robot'
+    finally:
+        _teardown(teensy, client, node)
+
+
+def test_hard_deadline_without_a_monitor_verdict_is_a_failure(monkeypatch):
+    """Second audit, item 2: if the loop exits on the hard deadline with the
+    monitor still undecided, the result is a FAILURE, never success."""
+    import jugglebot.teensy_bridge_node as tbn
+
+    class _Undecided:
+        def __init__(self, axes, timeout_s=None):
+            self.timeout_s = -4.9          # hard deadline = +0.1 s
+            self.done = False
+            self.failed = {}
+            self.succeeded = []
+
+        def step(self, now, status):
+            return types.SimpleNamespace(done=False)
+
+    monkeypatch.setattr(tbn, 'DeactivateMonitor', _Undecided)
+    teensy, client, node = _build_paired_node()
+    try:
+        teensy.on_rpc(int(RpcMethod.DEACTIVATE),
+                      lambda req_id, args: (int(RpcStatus.OK), b""))
+        ok, msg = node._run_deactivate([0], poll_dt=0.02)
+        assert ok is False
+        assert 'no verdict (hard deadline)' in msg, msg
+    finally:
+        _teardown(teensy, client, node)

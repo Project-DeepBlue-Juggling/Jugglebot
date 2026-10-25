@@ -227,7 +227,7 @@ static uint16_t send_bb_frame(const ODrive::CanFrame& f) {
 }
 
 // Send a frame on the cone-role bus (the CAN3 peripheral, can_buses.cpp), used
-// by WAVE_CMD (FW 31). Unlike CAN1 there is no decoded partner state to consult
+// by WAVE_CMD (FW 33). Unlike CAN1 there is no decoded partner state to consult
 // here: can_cone_tx's own partner_recent() presence gate is the gate, and its
 // FAILED (no cone-bus partner heard within BUS_PARTNER_STALENESS_US) is the ONLY
 // outcome in which no frame exists, so it maps to ERR_BUS_DOWN. MAILBOX and
@@ -612,8 +612,8 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
       // CMD_RESULT. 0x7D9 loses arbitration to a THROW_CMD queued beside it.
       return send_bb_frame(BallButler::encode_cancel());
 
-    // ── Wave camera adapter (cone-role bus) — FW 31, ADDITIVE ─────────────
-    // An FW <= 30 board answers 0x62 with ERR_UNKNOWN_METHOD via the default
+    // ── Wave camera adapter (cone-role bus) — FW 33, ADDITIVE ─────────────
+    // An FW <= 32 board answers 0x62 with ERR_UNKNOWN_METHOD via the default
     // below. The 8 arg bytes ARE the WaveCameraCanId::CMD (0x7E2) payload
     // (desired, cmd_seq, flags, reserved, session_id u32 LE — ArgWaveCmd is
     // packed little-endian, as is the CAN frame). Validated BEFORE gating (the

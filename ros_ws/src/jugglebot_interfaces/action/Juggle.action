@@ -25,6 +25,11 @@ string pattern                 # self_toss | hop | columns | columns_1ball |
 float64 apex_m                 # ball apex height, m; 0 => the node's apex_m param
 float64 separation_mm          # site separation, mm; hop/columns only; 0 => the
                                # node's separation_mm param (self_toss ignores this)
+float64 dwell_s                # dwell at a site, s; 0 => the node's dwell_s param. The
+                               # admissible box is swept per (pattern, dwell):
+                               # columns/hop 0.27, oval_1ball 0.65 -- send the
+                               # pattern's swept dwell (the GUI defaults it from
+                               # the box)
 int32 num_cycles               # throws; 0 => the node's n_throws param
 ---
 bool success                   # True iff the attempt reached its own COMPLETED end

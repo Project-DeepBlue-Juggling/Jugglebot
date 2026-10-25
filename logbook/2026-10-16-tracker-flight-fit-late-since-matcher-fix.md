@@ -57,7 +57,7 @@ commit between the two sittings.
    at the apex where the two paths cross (fit converges at +0.51 s). The cause is `_frame_dt`'s upper clamp,
    4 x nominal dt = **20 ms**: across a 36 ms processed-frame gap the filter steps 20 ms and is left
    (36 - 20) ms x ~4 m/s ~ 65 mm behind, outside the 50 mm association gate (`gate_radius_mm` default; the node
-   does not override it). Synthetic driver (4 m/s toss, 3.4 ms frames, one dropped run from t = 30 ms): first
+   does not override it). Synthetic driver (4 m/s throw, 3.4 ms frames, one dropped run from t = 30 ms): first
    fit at 0.112 s with a 20-30 ms gap, **0.238 s at 36 ms, 0.340 s at 50 ms, 0.422 s at 80 ms**.
 5. The +1.18 s identity refusals are downstream: with no fit before the same ball's next release,
    `flight_in_progress` hands the executor the NEXT flight's fit, which `_release_landing` correctly refuses.
@@ -165,7 +165,7 @@ run, and the numbers are those recorded in this entry and the session hand-off.
 - Symptoms S8 566/633/671 ms & 25/145 never, S16 142/540/614 ms & 77/212 never: from the bags' `/balls` via
   `handoff_replay.load_fits` (live numbers; no probe command recorded for this read beyond that loader).
 - Diagnosis 1 (full-frame replay), `python tools/probes/tracker_fit_latency/probe_fit.py ~/Desktop/rosbags/2026-10-16_10-50-42 new|old temp/probes/tracker_fit_latency/fit_S16_<new|old>.json`:
-  212 announcements, 123,524 frames; self-toss landing - F 768/772/780 ms, 36/191 never for both matchers.
+  212 announcements, 123,524 frames; self-throw landing - F 768/772/780 ms, 36/191 never for both matchers.
 - Diagnosis 1 per-frame cost (0.153 ms new vs 0.177 ms old, 30,000 frames): from a scratch `probe_cost.py`,
   NOT promoted (results in the session scratchpad `cost_new.txt` / `cost_old.txt`); no repo-recorded command.
 - Diagnosis 2 (rates), `python tools/probes/tracker_fit_latency/bagrate.py <bag> temp/probes/tracker_fit_latency/rate_<tag>.json`:

@@ -1,6 +1,6 @@
 /**
  * juggle-panel.js — The Juggle command panel: pattern, throws, apex,
- * separation, a read-only dwell, the Ball Butler reload, a hold-to-confirm
+ * separation, an editable dwell, the Ball Butler reload, a hold-to-confirm
  * Start, an immediate Stop, the live attempt status, and an animated 2-D
  * front-view diagram of the selected pattern on its real timing.
  *
@@ -16,7 +16,7 @@
  * jugglebot/juggle action — rosbridge on Foxy has no action transport):
  *
  *     jugglebot/juggle_request  (jugglebot_interfaces/srv/SetString)
- *     data = <pattern>[,apex_m=<f>][,separation_mm=<f>][,num_cycles=<int>]
+ *     data = <pattern>[,apex_m=<f>][,separation_mm=<f>][,dwell_s=<f>][,num_cycles=<int>]
  *
  * THE GUI NEVER ENCODES A LAUNCH DEFAULT.  A blank field sends nothing; the
  * relay then fills the goal field with 0, and 0 is skill_node's "use my own
@@ -27,7 +27,7 @@
  * overridden by the GUI's stale copy, and a relaunch with a new default
  * would keep flying the old one from any tab left open.
  *
- * There is NO reload flag on the wire (P2, plans/active/columns-empty-cup-two-feed.md
+ * There is NO reload flag on the wire (P2, plans/archived/columns-empty-cup-two-feed.md
  * D3/D4): the skill node decides from the cup sensor (EMPTY -> Ball Butler
  * loads first, SEATED -> throw first, UNKNOWN -> refused) and the orchestrator
  * refuses a `reload` token after the pattern.  Only the bare `reload` PATTERN
@@ -41,9 +41,10 @@
  * raises an amber warning (a stale relay silently flies the node defaults
  * instead of the typed values — the fix is a colcon build).
  *
- * Dwell is NOT a goal field: it is skill_node's `dwell_s` parameter and the
- * admissible box is swept AT that dwell (a different live dwell is
- * refused), so it is shown read-only.
+ * Dwell IS a goal field (owner 2026-10-21): the admissible box is swept AT a
+ * dwell per pattern (columns/hop/self_toss 0.27, oval 0.65), a different dwell
+ * is refused, so PATTERN_POINTS pre-fills it per pattern (editable) and the
+ * request carries `dwell_s=`; blank = skill_node's dwell_s parameter.
  */
 
 import * as clock from './clock.js';
@@ -156,8 +157,14 @@ const FIELDS = {
         tip: 'separation_mm — distance between the two sites P1/P2. Blank = skill_node\'s separation_mm.',
         tooBig: 'over 1000 mm — check the unit',
     },
+    dwell_s: {
+        label: 'Dwell', unit: 's', integer: false, max: 3, param: 'dwell_s',
+        tip: 'dwell_s — dwell at a site, seconds. The admissible box is swept AT a dwell '
+            + 'per pattern (PATTERN_POINTS); a different dwell is refused. Blank = skill_node\'s dwell_s.',
+        tooBig: 'dwell is in SECONDS',
+    },
 };
-const FIELD_KEYS = ['num_cycles', 'apex_m', 'separation_mm'];
+const FIELD_KEYS = ['num_cycles', 'apex_m', 'separation_mm', 'dwell_s'];
 
 /**
  * Per-pattern operating point the apex / separation fields are PRE-FILLED
@@ -172,19 +179,19 @@ const FIELD_KEYS = ['num_cycles', 'apex_m', 'separation_mm'];
  * tests/ros/test_gui_juggle_defaults.py pins every row to the committed box.
  */
 export const PATTERN_POINTS = {
-    self_toss:         { box: 'self_toss', apex_m: 0.9,  separation_mm: null },
-    hop:               { box: 'hop',       apex_m: 0.9,  separation_mm: 250 },
-    columns:           { box: 'columns',   apex_m: 0.95, separation_mm: 125 },
-    columns_1ball:     { box: 'columns',   apex_m: 0.95, separation_mm: 125 },
-    columns_1ball_fed: { box: 'columns',   apex_m: 0.95, separation_mm: 125 },
-    oval_1ball:        { box: 'oval_1ball', apex_m: 0.95, separation_mm: 150 },
-    oval_1ball_fed:    { box: 'oval_1ball', apex_m: 0.95, separation_mm: 150 },
+    self_toss:         { box: 'self_toss', apex_m: 0.9,  separation_mm: null, dwell_s: 0.27 },
+    hop:               { box: 'hop',       apex_m: 0.9,  separation_mm: 250, dwell_s: 0.27 },
+    columns:           { box: 'columns',   apex_m: 0.95, separation_mm: 125, dwell_s: 0.27 },
+    columns_1ball:     { box: 'columns',   apex_m: 0.95, separation_mm: 125, dwell_s: 0.27 },
+    columns_1ball_fed: { box: 'columns',   apex_m: 0.95, separation_mm: 125, dwell_s: 0.27 },
+    oval_1ball:        { box: 'oval_1ball', apex_m: 0.95, separation_mm: 150, dwell_s: 0.65 },
+    oval_1ball_fed:    { box: 'oval_1ball', apex_m: 0.95, separation_mm: 150, dwell_s: 0.65 },
 };
 
-/** Overwrite apex/separation with pattern `value`'s certified point. */
+/** Overwrite apex/separation/dwell with pattern `value`'s certified point. */
 function applyPatternPoint(value) {
     const pt = PATTERN_POINTS[value];
-    for (const k of ['apex_m', 'separation_mm']) {
+    for (const k of ['apex_m', 'separation_mm', 'dwell_s']) {
         const v = pt ? pt[k] : null;
         const raw = v == null ? '' : String(v);
         fields[k] = { raw, value: v == null ? null : v, error: null };
@@ -348,7 +355,7 @@ export function cupState() {
     return 'unknown';
 }
 
-// Flipped true at P3 of plans/active/columns-empty-cup-two-feed.md (2026-10-17): the skill node
+// Flipped true at P3 of plans/archived/columns-empty-cup-two-feed.md (2026-10-17): the skill node
 // accepts columns on an EMPTY cup (Ball Butler feeds A as a reload, then B). Kept as a kill switch.
 const TWO_FEED_LANDED = true;
 
@@ -398,6 +405,7 @@ function buildRequestData(p) {
     const typed = typedOverrides(p);
     if (typed.apex_m != null) parts.push('apex_m=' + wireNum(typed.apex_m, false));
     if (typed.separation_mm != null) parts.push('separation_mm=' + wireNum(typed.separation_mm, false));
+    if (typed.dwell_s != null) parts.push('dwell_s=' + wireNum(typed.dwell_s, false));
     if (typed.num_cycles != null) parts.push('num_cycles=' + wireNum(typed.num_cycles, true));
     return parts.join(',');
 }
@@ -688,10 +696,10 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
  */
 function buildModel(p) {
     const apexKnown = effective('apex_m') != null;
-    const dwellKnown = defaults && defaults.dwell_s != null;
+    const dwellKnown = effective('dwell_s') != null;
     const sepKnown = effective('separation_mm') != null;
     const apex = apexKnown ? effective('apex_m') : NOMINAL.apex_m;
-    const dwell = dwellKnown ? defaults.dwell_s : NOMINAL.dwell_s;
+    const dwell = dwellKnown ? effective('dwell_s') : NOMINAL.dwell_s;
     const sep = sepKnown ? effective('separation_mm') : NOMINAL.separation_mm;
     const cup = cupState();
     const hs = HALF_SEP_PX * clamp(sep / 250, 0.55, 1.2);
@@ -736,9 +744,11 @@ function buildModel(p) {
     return m;
 }
 
+const isOval = (p) => p.value === 'oval_1ball' || p.value === 'oval_1ball_fed';
+
 function diagramKeyOf(p) {
-    return [p.value, cupState(), effective('apex_m'), effective('separation_mm'),
-        defaults ? defaults.dwell_s : '', defaults ? defaults.columns_feed_site : ''].join('|');
+    return [p.value, cupState(), effective('apex_m'), effective('separation_mm'), effective('dwell_s'),
+         defaults ? defaults.columns_feed_site : ''].join('|');
 }
 
 function ballCls(b) {
@@ -800,6 +810,13 @@ function rebuildDiagram(p) {
             d: 'M ' + a.x + ' ' + top + ' Q ' + (a.x + b.x) / 2 + ' ' + (2 * ay - top)
                 + ' ' + b.x + ' ' + top,
         }, 'jp-path b1', g);
+        if (isOval(m.p)) {
+            // The loaded carry: the bottom of the oval, P2 -> P1 in the cup.
+            svgEl('path', {
+                d: 'M ' + b.x + ' ' + top + ' Q ' + (a.x + b.x) / 2 + ' ' + (top + 2 * DIP_PX)
+                    + ' ' + a.x + ' ' + top,
+            }, 'jp-path b1', g);
+        }
     } else {
         for (const ball of m.balls) {
             svgEl('line', { x1: ball.x, y1: top, x2: ball.x, y2: ay },
@@ -885,6 +902,22 @@ function drawFrame(s) {
         const u = s % (tf + d);
         if (u < tf) { placeHand(x, 0); placeBall(0, x, flightZ(u, tf, m.apexPx), false, 0); }
         else { const dip = dipAt((u - tf) / d); placeHand(x, dip); placeBall(0, x, 0, true, dip); }
+    } else if (isOval(m.p)) {
+        // Oval (loaded carry): fly T(P1) -> C(P2), then the cup CARRIES the
+        // ball back P2 -> P1 along the bottom of the oval during the dwell.
+        const u = s % (tf + d);
+        const T = m.sites[0].x, C = m.sites[1].x;
+        if (u < tf) {
+            const x = T + (C - T) * (u / tf);
+            placeHand(x, 0);
+            placeBall(0, x, flightZ(u, tf, m.apexPx), false, 0);
+        } else {
+            const w = (u - tf) / d;
+            const dip = dipAt(w);
+            const x = C + (T - C) * smooth(w);
+            placeHand(x, dip);
+            placeBall(0, x, 0, true, dip);
+        }
     } else if (m.p.kind === 'one') {
         // Hop: the cup coasts under the ball at the ball's lateral speed.
         const leg = tf + d;
@@ -1066,16 +1099,6 @@ export function buildJugglePanel(container) {
         fieldDom[k] = f;
         fieldsBox.append(f.label, f.input, f.unit);
     }
-    const dwellLabel = el('span', 'jp-flabel', 'Dwell');
-    const dwellVal = el('span', 'jp-readonly', '—');
-    dwellVal.id = 'juggle-dwell';
-    const dwellUnit = el('span', 'jp-unit', 's');
-    const dwellTip = 'Read-only: dwell is skill_node\'s dwell_s parameter, not a Juggle goal '
-        + 'field — the admissible box is swept AT this dwell, so a different live dwell '
-        + 'is refused.';
-    dwellLabel.title = dwellTip;
-    dwellVal.title = dwellTip;
-    fieldsBox.append(dwellLabel, dwellVal, dwellUnit);
     main.append(diagWrap, fieldsBox);
 
     const timing = el('div', 'jp-timing');
@@ -1122,7 +1145,7 @@ export function buildJugglePanel(container) {
         root: container, title, clear, badge, select, cupPreview,
         svg: diag.svg, diagTitle: diag.title, diagStatic: diag.stat, hand: diag.hand,
         handStem: diag.handStem, balls: diag.balls, speedT: diag.speedT,
-        fields: fieldDom, dwellVal, timing, start, reloadBtn, magazine, stop, status, summary, attempt, warn: warnEl,
+        fields: fieldDom, timing, start, reloadBtn, magazine, stop, status, summary, attempt, warn: warnEl,
     };
     document.addEventListener('visibilitychange', ensureAnim);
     sync();
@@ -1264,7 +1287,7 @@ function sync() {
         const dv = defaults ? defaults[spec.param] : null;
         let ph;
         if (!applies) ph = 'n/a';
-        else if (dv != null) ph = spec.integer ? String(dv) : (k === 'apex_m' ? fmt2(dv) : String(Math.round(dv)));
+        else if (dv != null) ph = spec.integer ? String(dv) : (k === 'apex_m' || k === 'dwell_s' ? fmt2(dv) : String(Math.round(dv)));
         else if (defaultsState === 'loading') ph = '…';
         else ph = 'node';   // "node default", in the width a 5em field has
         if (f.input.placeholder !== ph) f.input.placeholder = ph;
@@ -1277,12 +1300,10 @@ function sync() {
                 : spec.tip + (dv != null ? ' Node: ' + dv + (spec.unit ? ' ' + spec.unit : '') + '.' : ''));
         f.label.classList.toggle('na', !applies);
     }
-    const dwell = defaults && defaults.dwell_s != null ? defaults.dwell_s.toFixed(2) : '—';
-    setText(dom.dwellVal, dwell);
     const pt = PATTERN_POINTS[p.value] || {};
     const anyTyped = FIELD_KEYS.some((k) => {
         const raw = fields[k].raw.trim();
-        if (k === 'apex_m' || k === 'separation_mm') {
+        if (k === 'apex_m' || k === 'separation_mm' || k === 'dwell_s') {
             return raw !== (pt[k] == null ? '' : String(pt[k]));
         }
         return raw !== '';

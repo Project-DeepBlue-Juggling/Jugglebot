@@ -780,6 +780,9 @@ class TestActiveHandler:
         ctx.operation_result = True                 # (idempotent) arm confirms
         handler.execute(ctx)
         ctx.enqueue_command('deactivate')
+        assert handler.execute(ctx) is None         # stays ACTIVE until confirmed
+        assert ctx.drain_requests() == ['deactivate']
+        ctx.operation_result = True                 # bridge: stowed + IDLE
         assert handler.execute(ctx) == RobotState.IDLE
 
     def test_normal_activation_still_requests_activate(self):
@@ -799,6 +802,9 @@ class TestActiveHandler:
         ctx.drain_requests()
         _activate_and_arm(handler, ctx)
         ctx.enqueue_command('deactivate')
+        assert handler.execute(ctx) is None
+        assert ctx.drain_requests() == ['deactivate']
+        ctx.operation_result = True
         assert handler.execute(ctx) == RobotState.IDLE
 
     def test_spacemouse_command_switches_mode(self):
@@ -1647,13 +1653,18 @@ class TestStateFlowIntegration:
         ctx.operation_result = True
         sm.tick(ctx)  # Armed
 
-        # Deactivate — the streaming mode survives until IDLE resolves it (A4)
+        # Deactivate — the machine stays ACTIVE (streaming mode published, A4)
+        # until the bridge confirms the stow; only then IDLE, which blanks it.
         ctx.enqueue_command('deactivate')
         sm.tick(ctx)
+        assert sm.state == RobotState.ACTIVE
+        assert ctx.control_mode == 'STANDBY'
+        assert ctx.drain_requests() == ['deactivate']
+        ctx.operation_result = True             # deactivate confirmed
+        sm.tick(ctx)
         assert sm.state == RobotState.IDLE
-        assert ctx.control_mode == 'STANDBY'   # NOT blanked by on_exit (A4)
-        assert 'deactivate' in ctx.drain_requests()
-        ctx.operation_pending = False
+        assert ctx.drain_requests() == []       # no second deactivate on exit
+        assert ctx.control_mode == 'STANDBY'
         sm.tick(ctx)                            # IDLE blanks after the op
         assert ctx.control_mode == ''
 

@@ -729,13 +729,15 @@ def test_cup_cycle_plan_mirrors_the_sim_dataclass_fields():
     Pinned as a literal list rather than compared against the sim class,
     because importing ``sim.juggle_planner`` pulls in CasADi, which does not
     exist in this environment — the very constraint that made this port
-    necessary. ``warm_start`` and ``contact_knots`` are this port's own
-    additions and are deliberately trailing with defaults, so positional
-    construction written against the sim dataclass still works.
+    necessary. ``warm_start``, ``contact_knots`` and ``platform_dz`` (the
+    `pose` planner's planned platform-z excursion, two-ball-oval P3) are this
+    port's own additions and are deliberately trailing with defaults, so
+    positional construction written against the sim dataclass still works.
     """
     names = [f.name for f in dataclasses.fields(cc.CupCyclePlan)]
     assert names == ['pos', 'vel', 'acc', 'jerk', 't', 'dt', 'catch_k',
-                     'takeoff_vel', 'warm_start', 'contact_knots']
+                     'takeoff_vel', 'warm_start', 'contact_knots',
+                     'platform_dz']
     assert dataclasses.fields(cc.CupCyclePlan)[-1].default is None
     assert callable(cc.CupCyclePlan.sample)
 

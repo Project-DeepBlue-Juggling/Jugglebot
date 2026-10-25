@@ -196,7 +196,7 @@ cross and vertical throws "would corrupt both".
   passing dwell is 0.51 with a 1 deg margin, 0.65 has 12 deg; 0.65 was chosen for margin (table in Verification).
 - **"Columns passes trivially" / every-pattern 20 deg / 0.5 g, withdrawn (trigger a).** The checks as
   specified refused 13 windows that fly today. Applied at 20 deg / 0.5 g: the 250 mm hop with a landing
-  offset (28.7 deg, 0.320 g mid-carry at td+5..td+7, closing 0.35); the reload's held-axis feed catch
+  offset (28.7 deg, 0.320 g mid-carry at td+5..td+7, closing 0.35); the `reload`'s held-axis feed catch
   (20.0-20.2 deg at touch-down + 1; a stationary cup holding tilt theta reads residual theta by
   construction); the held-attitude LANDING windows at the n-2 rest-approach knot (0.479 g). Columns itself
   passes. The re-base to **30 deg / 0.30 g on every pattern** (D-P1-8) is above the hop's 28.7 and the floor
@@ -221,7 +221,7 @@ cross and vertical throws "would corrupt both".
 Decision 48 was written from the STEADY catch (p50 0.58): refuse below 50 % of the 0.7x match target.
 The planner's match is a soft term, and at columns' ~0.28 s runway it lands 0.42-0.50 of the target:
 committed columns cells 0.44-0.48, the flown BB feed 0.42 (32 consecutive catches at sitting 8), hop
-landing 0.47-0.49, self-toss 0.48, hop carry 0.349, p50 over 479 windows 0.58 (p5 0.527); held-axis
+landing 0.47-0.49, self-throw 0.48, hop carry 0.349, p50 over 479 windows 0.58 (p5 0.527); held-axis
 catches read ~0 (-0.006) because the cup is stationary at touch-down by design. The failure the check
 exists to close is the near-hard capture-span catch at 0.114. A 50 % line cut straight through the flown
 columns program. 25 % sat below the lowest flown ratio then recorded (0.349) with margin and above 0.114. The sitting-6 (2026-10-06) high catch at the historical 930 mm plane then proved lower: arrival −5520 mm/s, realised −960 vs target −3864 mm/s = 0.248; `tests/ros/test_install_segment.py` replays it (pinned at 930 mm on purpose), and the first re-base to 25 % refused that replay. The second step is 20 %: below 0.248 with margin, 1.75× above 0.114; the oval's catch reads 0.533. Held-axis catches are exempt by program (D-P1-9). Skid has no threshold: 100 mm/s covered
@@ -268,7 +268,7 @@ T = P1 = (-75, 0) has exactly the `x[0:2]` of every columns and self_toss P1 row
 not separate them, so oval rows (target C, aim about C) would be fitted together with columns rows (target P1).
 The owner chose a separate `plant_id` node parameter for oval sittings and no learner code change; the caveat
 "two patterns sharing a release xy share rows" stays recorded as `I-LEARN-1`. This is an operational control
-with no code guard: a forgotten `plant_id` pools silently. The runsheet row 12a sets it.
+with no code guard: a forgotten `plant_id` pools silently. The runbook row 12a sets it.
 
 ### Tradeoffs accepted
 
@@ -284,7 +284,7 @@ with no code guard: a forgotten `plant_id` pools silently. The runsheet row 12a 
 - **Duplicated geometry in `feasibility.py`** (`_cup_axes_batch`, `_cup_positions_batch` copy
   `tg.cup_axis` / `uc.cup_state_from_platform`, `CATCH_MATCH_FRAC` restated): forced by the 10 ms budget and the
   gate-does-not-import-the-planner layering, and pinned equal to 1e-9 by tests rather than imported.
-- **No seat-bit carry probe** was written (runsheet row 29 states it); the sitting reads seating from the bag by hand.
+- **No seat-bit carry probe** was written (runbook row 29 states it); the sitting reads seating from the bag by hand.
 - **Rest-terminal tail artefact left unfixed**: the 0.479 g reading at n-2 of a window with no release clears only
   with a k1-2 end, and is not needed once the check is at 0.30 g.
 - **self_toss box CHANGED (owner ruling 2026-10-18, accepted as is).** per-cell `landing_xy_m` old -> new ([x lo, hi], [y lo, hi], m): apex band 0.45-0.55 [-0.03,0.03],[-0.03,0.03] -> [-0.02,0.02],[-0.02,0.02]; 0.55-0.65 [-0.04,0.03],[-0.04,0.03] -> [-0.03,0.03],[-0.02,0.02]; 0.65-0.75 (cell 3) [-0.04,0.03],[-0.04,0.03] -> [-0.04,0.04],[-0.03,0.03]; 0.75-0.85 [-0.04,0.03],[-0.04,0.03] -> [-0.03,0.03],[-0.02,0.02]; 0.85-0.95 [-0.04,0.03],[-0.04,0.03] -> [-0.03,0.03],[-0.02,0.02]. Most edges shrank by one grid step; cell 3 (apex band 0.65-0.75) x upper went 0.03 -> 0.04, a WIDENING, also accepted by the owner (one grid step; the sweep tool gained the carry-window metric path and the settle-at-release-site rule since the 2026-10-09 box). Hop (8) and columns (6) cells are value-identical to the snapshot. Mechanism of the shrinkage: the

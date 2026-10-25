@@ -113,8 +113,8 @@ running more than ~100 ms late falls through to the 'after' REST, which is one e
 but still bounded.
 
 **Hand at home, not at the top** (owner, 2026-09-29). Every attempt's opening REST already homes
-the hand. The top only pays off once the reload also starts from the top, which belongs with the
-reload hand-rise item.
+the hand. The top only pays off once the `reload` also starts from the top, which belongs with the
+`reload` hand-rise item.
 
 ## Fix
 
@@ -160,7 +160,7 @@ reload hand-rise item.
   - the margin note: `test_the_before_stop_splice_clears_the_pre_release_hold_band` pins
     `MIN_WINDOW_KNOTS + margin >= pre-hold knots + 2`, exactly 6 = 6 at the defaults.
   The tolerance citation was corrected, as above. One finding did not apply: the held-axis
-  `rest_site_mm` never reaches `stop_terminals`, because the reload's held-axis CATCH carries no
+  `rest_site_mm` never reaches `stop_terminals`, because the `reload`'s held-axis CATCH carries no
   throw (see its docstring). After these, `tests/ros/test_skill_node.py` 144 passed, and the
   stop and evidence tests in `tests/motion/test_skills_executor.py` 9 passed.
 - Hardware: not yet flown. At the next sitting, a drop should end with at most ONE empty throw

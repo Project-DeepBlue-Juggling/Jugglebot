@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import dataclasses
 import math
-from typing import Callable, List, Optional, Tuple, Union
+from typing import Callable, Dict, List, Optional, Tuple, Union
 
 import numpy as np
 
@@ -38,7 +38,8 @@ from jugglebot.motion.skills import bump as bmp
 from jugglebot.motion.skills import magazine_throw as mt
 from jugglebot.motion.skills import segments as sg
 from jugglebot.motion.skills import schedule as sch
-from jugglebot.motion.skills.report import ThrowReport, release_error_s
+from jugglebot.motion.skills.report import (FeedCatchReport, ThrowReport,
+                                            release_error_s)
 from jugglebot.motion.skills.sites import CATCH_CUP_Z_MM, RELEASE_CUP_Z_MM
 from jugglebot.motion.skills.memory import (APEX_RATIO_BAND, Experience,
                                             apex_in_band)
@@ -60,6 +61,28 @@ from jugglebot.motion.trajectory import cup_realize as cr
 from jugglebot.motion.trajectory import tilt_geometry as tg
 from jugglebot.motion.trajectory.cycle_plan import CyclePlan
 
+# ── I-PLAN-12: the REBASE continuity bar (2026-10-23) ─────────────────────────
+#: The firmware's own "same state" tolerances (``canbridge_config.h``
+#: ``SCHED_RESUME_TOL_POS/VEL_{LEG,HAND}_*``, lines 461-465): what
+#: ``sched_apply`` allows between a promoted frame and the lane it is already
+#: holding.  A REBASED REST's knot 0 is held to the same bar against the state
+#: the machine is propagated to at the new origin, so a rebase can never put a
+#: step on the wire that the firmware itself would call a different machine.
+#: The node's ``_install_continuity_ok`` bounds (0.06 rev legs, 1.0 rev hand)
+#: are an OUTER guard sized for legitimate reconciles (0.56-0.76 rev measured)
+#: and cannot separate the stale-seed rebase (0.52-0.67 rev) from them.
+REBASE_TOL_LEG_REV = 0.005
+REBASE_TOL_LEG_RPS = 0.3
+REBASE_TOL_HAND_REV = 0.05
+REBASE_TOL_HAND_RPS = 8.0
+#: The stopped-detector a REBASE uses to decide whether the machine HOLDS the
+#: seed over the slide (no knot dropped) or keeps moving (the head is dropped):
+#: the same thousandth of the live velocity ceiling, per channel, that
+#: ``trajectory_node._cycle_start_state``'s ``at_rest`` predicate uses (the
+#: angular term carried to the rim through the platform radius).
+REBASE_REST_FRACTION = 1e-3
+
+
 # ── Refusal codes this layer owns ────────────────────────────────────────────
 #: The solve finished so late that the splice knot is already behind the wire.
 SPLICE_TOO_LATE = 'SPLICE_TOO_LATE'
@@ -70,6 +93,13 @@ SPLICE_TOO_LATE = 'SPLICE_TOO_LATE'
 #: check (2026-09-28, R4 sitting-1 fact 5: a REST-kind segment in the same
 #: situation is REBASED instead, because a rest carries no event).
 ORIGIN_TOO_LATE = 'ORIGIN_TOO_LATE'
+#: I-PLAN-12 (2026-10-23): a REBASED fresh REST whose knot 0 does not match
+#: the state the machine is propagated to at the NEW origin — the seed's own
+#: hold when the seed was at rest, the solved plan's own continuation when it
+#: was moving. Refused rather than clipped: installing it is a commanded step
+#: on the hand and/or leg lanes (the 2026-10-23 Feed-catch bump: +0.52 /
+#: +0.67 rev on the Hand, inside the node's 1.0 rev continuity bound).
+REBASE_DISCONTINUOUS = 'REBASE_DISCONTINUOUS'
 #: The window from the splice knot to the skill's event is shorter than a plan.
 WINDOW_TOO_SHORT = 'WINDOW_TOO_SHORT'
 #: The tracker has no landing for the ball this CATCH is for.
@@ -1138,6 +1168,24 @@ class _PendingCatch:
     t_land_scheduled_s: float
     t_open_s: float
     t_close_s: float
+    #: A Ball Butler FEED catch (the skill carries ``landing_prior``): on a
+    #: confirmed seat it logs a ``feed`` line (:func:`report.feed_line`).
+    is_feed: bool = False
+    #: The last CONVERGED (``from_fit``) tracker landing taken for this catch
+    #: while its ball was still in flight (:meth:`SkillExecutor.
+    #: _tracked_landing`).  :meth:`SkillExecutor._report_feed` fires ~0.53 s
+    #: after the scheduled landing, when the provider has long stopped
+    #: answering for the ball (status no longer IN_FLIGHT): without this
+    #: latch every feed line printed ``--`` (2026-10-22 19:50 sitting).
+    #: Report-only; nothing aims or dispatches from it.
+    last_fit_landing: Optional[Landing] = None
+
+
+#: Where, around the tracker's crossing, the cup strike is searched for
+#: (``contact_probe``).  The 2026-10-21 bag metrics found contact at
+#: +0..+20 ms; the window is generous both ways.
+CONTACT_SEARCH_BEFORE_S = 0.08
+CONTACT_SEARCH_AFTER_S = 0.20
 
 
 def _latest_release_before(schedule: Schedule, t_before: float
@@ -1453,6 +1501,141 @@ def splice_cliff_s(record: PlanRecord, k_s: int) -> float:
             + (int(k_s) - WIRE_READ_KNOTS) * float(record.plan.dt))
 
 
+def _seed_holds_still(seed: uc.CycleState, limits, geom) -> bool:
+    """True iff the machine HOLDS ``seed`` while the solve runs — the premise
+    under which a REBASE may slide a fresh REST's origin with the plan intact.
+
+    The same stopped-detector as ``trajectory_node._cycle_start_state``'s
+    ``at_rest`` (:data:`REBASE_REST_FRACTION` of the live velocity ceiling on
+    the platform's linear, angular-at-the-rim and hand channels), read off the
+    seed's own rates, so the two layers agree on what "at rest" means.
+    """
+    if limits is None:
+        from jugglebot.motion.trajectory.limits import TrajectoryLimits
+        limits = TrajectoryLimits.from_config(hw)
+    geom = StewartGeometry() if geom is None else geom
+    pv = (np.zeros(6) if seed.pose_vel is None
+          else np.asarray(seed.pose_vel, dtype=float))
+    lin_bound = REBASE_REST_FRACTION * float(limits.leg_vel_mmps)
+    ang_bound = lin_bound / float(geom.plat_radius_mm)
+    hand_bound = REBASE_REST_FRACTION * float(limits.hand_vel_limit_rps)
+    return bool(float(np.max(np.abs(pv[:3]))) <= lin_bound
+                and float(np.max(np.abs(pv[3:]))) <= ang_bound
+                and abs(float(seed.hand_vel_rps or 0.0)) <= hand_bound)
+
+
+def rebase_discontinuity(plan: CyclePlan, ref_pose, ref_twist,
+                         ref_hand_rev: float, ref_hand_vel_rps: float,
+                         geom=None) -> Optional[str]:
+    """I-PLAN-12's check: ``None`` iff a REBASED plan's knot 0 is the state
+    the machine is propagated to at the new origin, else a message naming the
+    lane and the step.
+
+    Legs are compared in MOTOR rev and rev/s — the chain the emitter ships
+    (pose → leg extensions × ``mm_to_rev``; twist → leg velocities ×
+    ``mm_to_rev``) — the hand in its own rev; each against the firmware's
+    resume tolerances (:data:`REBASE_TOL_LEG_REV` & co.).
+    """
+    from jugglebot.motion.ik_solver import (pose_to_leg_lengths,
+                                            rotvec_to_rot_matrix,
+                                            twist_to_leg_velocities)
+    geom = StewartGeometry() if geom is None else geom
+    mm_to_rev = np.asarray(geom.mm_to_rev, dtype=float)
+
+    def _legs(pose, twist):
+        pose = np.asarray(pose, dtype=float)
+        pos, rot = pose[:3], rotvec_to_rot_matrix(pose[3:6])
+        return (pose_to_leg_lengths(pos, rot, geom) * mm_to_rev,
+                twist_to_leg_velocities(np.asarray(twist, dtype=float), pos,
+                                        rot, geom) * mm_to_rev)
+
+    q_ref, qd_ref = _legs(ref_pose, ref_twist)
+    q_k0, qd_k0 = _legs(plan.pose[0], plan.pose_vel[0])
+    steps = (
+        ('leg position', float(np.max(np.abs(q_k0 - q_ref))),
+         REBASE_TOL_LEG_REV, 'rev'),
+        ('leg velocity', float(np.max(np.abs(qd_k0 - qd_ref))),
+         REBASE_TOL_LEG_RPS, 'rev/s'),
+        ('hand position', abs(float(plan.hand_rev[0]) - float(ref_hand_rev)),
+         REBASE_TOL_HAND_REV, 'rev'),
+        ('hand velocity',
+         abs(float(plan.hand_vel_rps[0]) - float(ref_hand_vel_rps)),
+         REBASE_TOL_HAND_RPS, 'rev/s'),
+    )
+    bad = ['%s step %.4f %s > %.4f' % (name, step, unit, tol)
+           for name, step, tol, unit in steps if not step <= tol]
+    return '; '.join(bad) if bad else None
+
+
+def _rebase_fresh_rest(seg, seed: uc.CycleState, t0_before_solve: float,
+                       t0_wire_s: float, limits, geom):
+    """The REBASE of a fresh REST whose solve outran the wire (I-PLAN-12).
+
+    Returns ``(plan, meta, t0, k_cut, held, refusal)``; ``refusal`` is
+    ``None`` or ``(code, message)``.
+
+    * Seed AT REST (:func:`_seed_holds_still`): the machine holds the seed
+      over the slide, so the solved plan is the same motion later — ``t0 =
+      t0_wire_s`` and the plan is untouched (bit-identical to the pre-I-PLAN-12
+      rule).  Reference = the seed.
+    * Seed IN MOTION: the machine kept moving over the slide (a fresh origin
+      is declared while the running record still has up to ``lead_s`` to
+      play, and the seed is that record's commanded state at dispatch), so
+      knot 0 of the solved plan is where the machine WAS.  The seed is
+      propagated over the slide by DROPPING the plan's first ``k =
+      ceil((t0_wire_s - t0_before_solve)/dt)`` knots: ``t0 = t0_before_solve
+      + k·dt`` (on the solve's own grid, ``>= t0_wire_s``), knot 0 = the
+      solved plan's knot ``k``.  No new solve; the remaining knots are the
+      gated plan bit for bit.  Reference = the solved plan evaluated at
+      ``t0 - t0_before_solve`` on its own clock.
+
+    Either way knot 0 is then checked against the reference
+    (:func:`rebase_discontinuity`) and a mismatch is refused
+    :data:`REBASE_DISCONTINUOUS`.
+
+    What that check guards, exactly: in the in-motion branch the reference is
+    the solved plan at ``k·dt`` — the SAME knot the cut starts on — so it
+    guards the cut arithmetic (``tail_view`` and ``t0 = t_now + k·dt``)
+    against regression; it does NOT read the running record and does NOT
+    bound the residual between knot 0 and where the wire actually has the
+    machine at ``t0`` (the running record's state there, the two plans'
+    disagreement over the slide — unmeasured).  In the at-rest branch it
+    checks knot 0 against the held seed.
+    """
+    plan, meta = seg.plan, seg.meta
+    dt = float(plan.dt)
+    held = _seed_holds_still(seed, limits, geom)
+    if held:
+        t0, k_cut = float(t0_wire_s), 0
+        ref = (np.asarray(seed.pose, dtype=float),
+               (np.zeros(6) if seed.pose_vel is None
+                else np.asarray(seed.pose_vel, dtype=float)),
+               float(seed.hand_rev), float(seed.hand_vel_rps or 0.0))
+        cut_plan, cut_meta = plan, meta
+    else:
+        k_cut = int(math.ceil((t0_wire_s - t0_before_solve) / dt - 1e-9))
+        if k_cut > int(plan.n_knots) - 2:
+            return (None, None, None, k_cut, held, (
+                ORIGIN_TOO_LATE,
+                'the REST seeded in motion would be rebased past its own end '
+                '(drop %d of %d knots): nothing of it is left to install'
+                % (k_cut, int(plan.n_knots))))
+        t0 = float(t0_before_solve) + k_cut * dt
+        tau = t0 - float(t0_before_solve)
+        pose_ref, twist_ref, _acc = plan.state_at(tau)
+        hand_ref, hand_vel_ref = plan.hand_at(tau)
+        ref = (pose_ref, twist_ref, float(hand_ref), float(hand_vel_ref))
+        cut_plan, cut_meta = uc.tail_view(plan, meta, k_cut)
+    bad = rebase_discontinuity(cut_plan, *ref, geom=geom)
+    if bad is not None:
+        return (None, None, None, k_cut, held, (
+            REBASE_DISCONTINUOUS,
+            'REBASED %s knot 0 is not the state the machine is propagated to '
+            'at the new origin (seed %s, %d knot(s) dropped): %s'
+            % (seg.kind, 'at rest' if held else 'in motion', k_cut, bad)))
+    return cut_plan, cut_meta, t0, k_cut, held, None
+
+
 def install_segment(record: Optional[PlanRecord],
                     seed_rest: Optional[uc.CycleState],
                     kind: str, terminal, t_now_s: float, *,
@@ -1494,11 +1677,19 @@ def install_segment(record: Optional[PlanRecord],
     clock exactly as the splice branch does (:data:`ORIGIN_TOO_LATE` below)
     and, if the origin has gone stale:
 
-    * kind ``REST`` — REBASED, not re-solved: ``t0`` moves to
-      ``t_inst + WIRE_READ_KNOTS·dt``.  A REST from rest is the same motion
-      later — it carries no absolute event, so sliding when it starts costs
-      nothing and the plan itself (built from the same at-rest seed) is
-      unchanged.
+    * kind ``REST`` — REBASED, not re-solved (:func:`_rebase_fresh_rest`).
+      From a seed AT REST: ``t0`` moves to ``t_inst + WIRE_READ_KNOTS·dt``
+      and the plan is unchanged — a REST from rest is the same motion later
+      and carries no absolute event.  From a seed IN MOTION (a fresh REST is
+      dispatched while the running record still streams, e.g. the settle
+      after a Feed catch, seeded with the Hand still riding down the stroke)
+      that premise is false: the machine kept moving over the slide, so the
+      plan's first ``k = ceil(slide/dt)`` knots are DROPPED and ``t0 =
+      t_now + k·dt`` — knot 0 is where the seed's own motion has got to.
+      I-PLAN-12: either way knot 0 must match that propagated state within
+      the firmware's resume tolerances, else :data:`REBASE_DISCONTINUOUS`
+      (2026-10-23: sliding an in-motion plan whole put a +0.52/+0.67 rev
+      Hand step on the wire 0.1 s after two Feed catches).
     * kind ``THROW`` / ``CATCH`` — REFUSED :data:`ORIGIN_TOO_LATE`.  These
       carry an absolute event (the release or the landing is a real instant
       the rest of the schedule, the tracker and the ball's flight all agree
@@ -1728,21 +1919,40 @@ def install_segment(record: Optional[PlanRecord],
                 # past".
                 staleness_s = solve_s + wire_margin_s
                 if kind == REST:
-                    # REBASE, not re-solve: a REST from rest is the same
-                    # motion later — it carries no absolute event, so sliding
-                    # its origin forward by exactly the measured staleness
-                    # costs nothing and the plan already built (from the same
-                    # at-rest seed) is unchanged.
-                    t0 = t_inst + wire_margin_s
+                    # REBASE, not re-solve: a REST carries no absolute event,
+                    # so its origin may slide past the wire. From a seed AT
+                    # REST the plan is the same motion later and is kept
+                    # whole; from a seed IN MOTION the machine kept moving
+                    # over the slide, so the plan's head is DROPPED to the
+                    # knot the new origin lands on (I-PLAN-12, 2026-10-23:
+                    # sliding the whole plan replayed the stale in-motion
+                    # seed — a +0.52/+0.67 rev Hand step after a Feed catch).
+                    # Either way knot 0 is checked against the propagated
+                    # state and a mismatch is refused, never clipped.
+                    plan_r, meta_r, t0, k_cut, held, refusal = \
+                        _rebase_fresh_rest(seg, seed, t0_before_solve,
+                                           t_inst + wire_margin_s,
+                                           limits, geom)
+                    if refusal is not None:
+                        return record, InstallResult(
+                            False, refusal[0], refusal[1],
+                            float(seg.meta.plan_wall_s)), None
+                    if k_cut:
+                        seg = dataclasses.replace(seg, plan=plan_r,
+                                                  meta=meta_r)
                     new_record = PlanRecord(plan=seg.plan, meta=seg.meta,
                                             t0_s=t0)
                     return new_record, InstallResult(
                         True, 'OK',
                         'fresh origin REBASED +%.3f s: the solve outran the '
-                        'origin (%s over %.3f s from rest; solve %.3f s vs '
-                        'a %.3f s wire-read margin)'
+                        'origin (%s over %.3f s from %s; solve %.3f s vs '
+                        'a %.3f s wire-read margin)%s'
                         % (t0 - t0_before_solve, kind, seg.plan.total_duration,
-                           solve_s, wire_margin_s),
+                           'rest' if held else 'a seed in motion',
+                           solve_s, wire_margin_s,
+                           ('' if not k_cut else
+                            '; seed propagated: first %d knot(s) dropped'
+                            % k_cut)),
                         float(seg.meta.plan_wall_s), splice_k=0, t0_s=t0,
                         event_t_s=float(seg.event_t_s or 0.0),
                         seeded_post_release=False), seg
@@ -1881,8 +2091,27 @@ class SkillExecutor:
                  seat_window: Optional[Callable[[float, float],
                                                 Optional[SeatWindow]]] = None,
                  catch_bump_enabled: bool = False,
-                 bumper: Optional[Callable[..., 'bmp.BumpResult']] = None):
+                 bumper: Optional[Callable[..., 'bmp.BumpResult']] = None,
+                 contact_probe: Optional[Callable[[float, float],
+                                                  Optional[float]]] = None,
+                 catch_time_offset_s: float = 0.0,
+                 planner_mode: str = uc.PLANNER_MODE_DEFAULT):
         self.schedule = schedule
+        #: ``contact_probe(t0, t1)`` -> wall stamp of the first hand
+        #: velocity KICK (cup struck by the ball) inside ``[t0, t1]``, or
+        #: ``None`` (no kick / the history does not cover the span).  For the
+        #: operator's ``contact`` / ``settle`` only (:mod:`report`) -- it
+        #: reaches no gate and no learner row.
+        self.contact_probe = contact_probe
+        #: DEBUG catch-time offset (s), added to the touch-down time of
+        #: EVERY catch plan this executor builds (:meth:`_clamp_lateral_to_
+        #: schedule`'s single funnel -- dispatch and every live re-send alike,
+        #: so a re-send never "re-applies" or undoes it).  0.0 is a no-op
+        #: (bit-identical).  The shifted plan goes through the same
+        #: installer / ``validate_cycle`` path as any other catch.
+        self.catch_time_offset_s = float(catch_time_offset_s)
+        #: Feed-catch (Ball Butler) observation lines for the node to log.
+        self.feed_reports: List[FeedCatchReport] = []
         #: The late catch re-aim BUMP (I-CATCH-5, :mod:`.bump`) — OFF unless the
         #: caller enables it for a pattern in ``bump.BUMP_ENABLED_PATTERNS``
         #: (columns family only, owner 2026-10-16; hop/reload stay off until a
@@ -1934,6 +2163,15 @@ class SkillExecutor:
         self.resend_max_per_catch = int(resend_max_per_catch)
         self.learner = learner
         self.boxes = boxes
+        #: The segment planner ('level' | 'pose', ``uc.PLANNER_MODES``) this
+        #: session runs: ``skill_node`` sets it from its ``planner_mode``
+        #: parameter; it selects the admissible box (a box is stamped with the
+        #: planner it was swept under) and the same value rides on every
+        #: InstallSegment request (a later unit wires that).
+        if planner_mode not in uc.PLANNER_MODES:
+            raise ValueError('planner_mode must be one of %r, not %r'
+                             % (uc.PLANNER_MODES, planner_mode))
+        self.planner_mode = str(planner_mode)
         #: How far (m, per axis) the learner's THROW command, and a tracker
         #: CATCH aim (:meth:`_clamp_lateral_to_schedule`), may move the
         #: commanded/aimed landing AWAY from the schedule's desired offset
@@ -2056,6 +2294,11 @@ class SkillExecutor:
         #: (:class:`_PendingCatch`) -- empty, and never appended to, when
         #: :attr:`seat_window` is ``None``.
         self._pending_catches: List[_PendingCatch] = []
+        #: catch idx -> last converged tracked landing (every catch; popped
+        #: when its pending catch resolves); the dispatch aim runs
+        #: BEFORE :meth:`_register_catch`, so its fit is parked here and
+        #: handed to the :class:`_PendingCatch` at registration.
+        self._fit_latch_by_idx: Dict[int, Landing] = {}
         #: CATCH indices whose ONE hand-measured re-aim is already settled —
         #: applied, refused, or given up on (:data:`AIM_SCHEDULE_HAND`).
         self._hand_corrected = set()
@@ -2261,14 +2504,16 @@ class SkillExecutor:
                              (site.name, target.name), apex,
                              release_site_xy_mm=site.cup_mm[:2],
                              target_site_xy_mm=target.cup_mm[:2],
-                             dwell_s=self.schedule.dwell_s)
+                             dwell_s=self.schedule.dwell_s,
+                             planner_mode=self.planner_mode)
             if self.learner is not None and box is None:
                 reason = adm.describe_miss(
                     self.boxes, self.schedule.pattern,
                     (site.name, target.name), apex,
                     release_site_xy_mm=site.cup_mm[:2],
                     target_site_xy_mm=target.cup_mm[:2],
-                    dwell_s=self.schedule.dwell_s)
+                    dwell_s=self.schedule.dwell_s,
+                             planner_mode=self.planner_mode)
                 raise _NoAdmissibleCommand(
                     'no admissible box covers pattern %r site pair %r: %s — '
                     'a learner command may not reach the platform unclipped'
@@ -2496,7 +2741,8 @@ class SkillExecutor:
                              (site.name, site.name), apex,
                              release_site_xy_mm=site.cup_mm[:2],
                              target_site_xy_mm=site.cup_mm[:2],
-                             dwell_s=self.schedule.dwell_s)
+                             dwell_s=self.schedule.dwell_s,
+                             planner_mode=self.planner_mode)
             if box is not None and not box.empty:
                 alo, ahi = box.apex_m
                 u_apex = min(max(u_apex, alo), ahi)
@@ -2566,6 +2812,22 @@ class SkillExecutor:
 
     def _clamp_lateral_to_schedule(self, idx: int, skill: Skill,
                                    landing: Landing) -> Landing:
+        """:meth:`_clamp_lateral_inner` plus the DEBUG catch-time offset
+        (:attr:`catch_time_offset_s`) -- the one funnel every catch plan's
+        touch-down time passes (dispatch, hand-corrected and tracker
+        re-sends), so the offset is part of the plan as DISPATCHED and a
+        later re-send compares like with like (never a late re-aim by the
+        offset).  ``0.0`` returns the inner result untouched."""
+        out = self._clamp_lateral_inner(idx, skill, landing)
+        off = self.catch_time_offset_s
+        if off:
+            out = Landing(pos_mm=out.pos_mm, vel_mm_s=out.vel_mm_s,
+                          t_land_abs_s=float(out.t_land_abs_s) + off,
+                          from_fit=out.from_fit)
+        return out
+
+    def _clamp_lateral_inner(self, idx: int, skill: Skill,
+                             landing: Landing) -> Landing:
         """Clamp ``landing``'s lateral (x, y) to within
         :attr:`lateral_authority_m` of the schedule's commanded landing for
         this catch (:meth:`_predicted_landing`'s ``pos_mm[:2]`` — the prior a
@@ -3227,8 +3489,21 @@ class SkillExecutor:
             return None
         if self.tracker is None:
             return None
-        return self._valid_tracked_landing(
+        landing = self._valid_tracked_landing(
             idx, skill, self.tracker(skill.ball_id))
+        # Report latch (see :attr:`_PendingCatch.last_fit_landing`).  One
+        # tick: the resend/bump path polls the tracker here at t_land-0.4 s
+        # with the ball IN_FLIGHT and a converged fit (landing within ~10 ms
+        # of the schedule) -> the valid, from_fit landing is stored; ticks
+        # later the same poll is skipped (catch_freeze_s) and at
+        # t_land+0.53 s the provider answers None, but the report reads the
+        # stored value.  No extra tracker call: this IS the existing poll.
+        if landing is not None and landing.from_fit:
+            self._fit_latch_by_idx[idx] = landing
+            for pend in self._pending_catches:
+                if pend.catch_idx == idx:
+                    pend.last_fit_landing = landing
+        return landing
 
     def _hand_ratio_landing(self, idx: int, skill: Skill, t_abs_s: float):
         """``(corrected_landing, r)`` from the MEASURED hand stroke, for the
@@ -4073,7 +4348,9 @@ class SkillExecutor:
             return
         self._pending_catches.append(_PendingCatch(
             ball_id=skill.ball_id, catch_idx=idx, t_land_scheduled_s=L,
-            t_open_s=t_open, t_close_s=t_close))
+            t_open_s=t_open, t_close_s=t_close,
+            is_feed=skill.landing_prior is not None,
+            last_fit_landing=self._fit_latch_by_idx.get(idx)))
 
     def _note_catch_aim(self, ball_id: int, catch_idx: int,
                         t_land_abs_s: float, reaim: bool = False) -> None:
@@ -4259,6 +4536,28 @@ class SkillExecutor:
         self.schedule = dataclasses.replace(self.schedule,
                                             skills=tuple(new_tail))
 
+    def _report_feed(self, pend: _PendingCatch, t_seat_s: float) -> None:
+        """Queue the ``feed`` line for a Ball Butler feed catch that seated.
+        The crossing is the tracker's final fit for the ball, accepted only
+        within 0.3 s of the dispatched aim (a stale fit of another flight
+        would give a nonsense zero); without one every field is ``--``."""
+        t_cross = None
+        # The in-flight latch first; the live call only when none was taken
+        # (the provider answers None once the ball's status leaves IN_FLIGHT).
+        lnd = pend.last_fit_landing
+        if lnd is None and self.tracker is not None:
+            lnd = self.tracker(pend.ball_id)
+        if (lnd is not None and lnd.from_fit and abs(
+                float(lnd.t_land_abs_s) - pend.t_land_scheduled_s) < 0.3):
+            t_cross = float(lnd.t_land_abs_s)
+        contact_s, settle_s = self._contact_and_settle(t_cross, t_seat_s)
+        self.feed_reports.append(FeedCatchReport(
+            ball_id=pend.ball_id,
+            arrival_err_s=(None if t_cross is None
+                           else t_cross - pend.t_land_scheduled_s),
+            seat_s=None if t_cross is None else t_seat_s - t_cross,
+            contact_s=contact_s, settle_s=settle_s))
+
     def _advance_catch_evidence(self, t_abs_s: float) -> List[str]:
         """Fire :data:`MISSED_CATCH` for any armed :class:`_PendingCatch`
         whose decision instant has arrived -- called each tick from
@@ -4327,6 +4626,9 @@ class SkillExecutor:
                    or (float(window.n_valid) / expected)
                       >= MISSED_CATCH_MIN_VALID_FRAC)
             live = live and float(window.max_gap_s) <= MISSED_CATCH_MAX_GAP_S
+            if (live and window.n_seated > 0 and pend.is_feed
+                    and window.t_first_seated_s is not None):
+                self._report_feed(pend, float(window.t_first_seated_s))
             if not live or window.n_seated > 0:
                 # Confirmed (a raw-SEATED sample vetoes), or not trustworthy
                 # (under-covered / gappy): no verdict, row dropped -- logged
@@ -4400,6 +4702,9 @@ class SkillExecutor:
                        pend.catch_idx, window.n_valid, t_open_rel,
                        t_close_rel))
             continue                     # dropped either way
+        for pend in self._pending_catches:
+            if pend not in remaining:
+                self._fit_latch_by_idx.pop(pend.catch_idx, None)
         self._pending_catches = remaining
         return lines
 
@@ -4859,6 +5164,22 @@ class SkillExecutor:
         if window.t_first_seated_s is not None:
             pend.t_seat_s = float(window.t_first_seated_s)
 
+    def _contact_and_settle(self, t_cross_s: Optional[float],
+                            t_seat_s: Optional[float]):
+        """``(contact_s, settle_s)`` for the operator's line: the cup strike
+        (``contact_probe`` over a window around the tracker's crossing) minus
+        the crossing, and the first SEATED reading minus the strike.  Either
+        is ``None`` when its evidence is missing (no fit, no probe, no kick
+        found, not seated)."""
+        if t_cross_s is None or self.contact_probe is None:
+            return None, None
+        t_c = self.contact_probe(float(t_cross_s) - CONTACT_SEARCH_BEFORE_S,
+                                 float(t_cross_s) + CONTACT_SEARCH_AFTER_S)
+        if t_c is None:
+            return None, None
+        settle = None if t_seat_s is None else float(t_seat_s) - float(t_c)
+        return float(t_c) - float(t_cross_s), settle
+
     def _report(self, pend: _PendingOutcome, *, row: bool,
                 no_row_reason: str = '',
                 apex_m: Optional[float] = None) -> None:
@@ -4883,6 +5204,8 @@ class SkillExecutor:
         # SAME reason `_finalise_outcome` overrides it on the learner's
         # ``Experience`` -- the operator's throw line must not read CAUGHT
         # off a sensor that is reading the PREVIOUS ball's possession.
+        t_cross = None if landing is None else float(landing.t_land_abs_s)
+        contact_s, settle_s = self._contact_and_settle(t_cross, pend.t_seat_s)
         caught = (False if pend.shadow_landing
                  else (bool(pend.caught_seen) if self.observer is not None
                        else None))
@@ -4893,9 +5216,11 @@ class SkillExecutor:
             apex_m=None if apex_m is None else float(apex_m),
             landing_err_mm=landing_err, release_err_s=release_err,
             arrival_err_s=arrival_err,
-            seat_s=(None if pend.t_seat_s is None
-                    else float(pend.t_seat_s) - float(pend.t_land_scheduled_s)),
-            reaims=pend.reaims, reaim_refused=pend.reaim_refused))
+            seat_s=(None if (pend.t_seat_s is None or t_cross is None)
+                    else float(pend.t_seat_s) - t_cross),
+            reaims=pend.reaims, reaim_refused=pend.reaim_refused,
+            contact_s=contact_s, settle_s=settle_s,
+            stop=bool(pend.shadow_landing)))
 
     def _finalise_outcome(self, pend: _PendingOutcome,
                           finalise_at: float) -> List[str]:
@@ -4967,16 +5292,31 @@ class SkillExecutor:
         # `shadow_landing` the possession latch is NOT overridden here --
         # this ball is caught in the ordinary way, so `caught` (above) is
         # already read normally for it.
-        if not pend.shadow_landing and not pend.entry_hop:
+        #
+        # `catch_time_offset_s` != 0 (debug A/B, 2026-10-22): the catch plan
+        # was deliberately shifted, so a miss may be the offset's doing, not
+        # the throw's -- training the THROW learner on it would teach the
+        # memory a bad throw that was not. Same no-row treatment; the report
+        # and OUTCOME line still carry the observed landing and say why.
+        offset_in_force = self.catch_time_offset_s != 0.0
+        if (not pend.shadow_landing and not pend.entry_hop
+                and not offset_in_force):
             exp = Experience(x=pend.x, u=pend.u, y=y, t_abs_s=pend.t_release_s,
                              ball_id=pend.ball_id, caught=bool(caught))
             self.on_experience(exp)
-        self._report(pend, row=True, apex_m=apex_obs_m)
+        if offset_in_force:
+            self._report(pend, row=False, apex_m=apex_obs_m,
+                         no_row_reason='catch_time_offset in force')
+        else:
+            self._report(pend, row=True, apex_m=apex_obs_m)
         phase = ('' if pend.t_seat_s is None
                  else ' seat=%+.3f s vs scheduled landing'
                  % (pend.t_seat_s - float(pend.t_land_scheduled_s)))
-        shadow = ' (landed on the held ball)' if pend.shadow_landing else ''
+        shadow = (' (Stop: landed on the held ball, by design; not counted)'
+                  if pend.shadow_landing else '')
         hop = ' (hop entry, no learner row)' if pend.entry_hop else ''
+        if offset_in_force:
+            hop += ' (no learner row: catch_time_offset in force)'
         return ['%.3f OUTCOME %s: y=(%.4f, %.4f) m apex=%.4f m '
                 'caught=%s%s%s%s'
                 % (finalise_at, ball_label(pend.ball_id), y[0], y[1], y[2],
@@ -5039,9 +5379,11 @@ class SkillExecutor:
             return ['%.3f CATCH-AIM-HAND-INFEASIBLE skill %d: r=%.3f gives no '
                     'arrival at the catch plane — the theoretical aim stands'
                     % (t_abs_s, idx, r)]
-        dt_s = float(landing.t_land_abs_s) - _event_abs_s(CATCH, terminal)
-        if self._resend_too_late(t_abs_s, skill,
-                                 float(landing.t_land_abs_s)):
+        # The terminal carries the debug catch-time offset; so must the
+        # landing time every comparison below uses.
+        t_land_eff = float(landing.t_land_abs_s) + self.catch_time_offset_s
+        dt_s = t_land_eff - _event_abs_s(CATCH, terminal)
+        if self._resend_too_late(t_abs_s, skill, t_land_eff):
             return ['%.3f CATCH-AIM-LATE skill %d: the hand-measured '
                     'correction (r=%.3f, Δt=%+.3f s) would splice too late — '
                     'the theoretical aim stands' % (t_abs_s, idx, r, dt_s)]
@@ -5054,7 +5396,7 @@ class SkillExecutor:
         moved_mm = float(np.max(np.abs(
             np.asarray(landing.pos_mm, dtype=float) - terminal.landing_mm)))
         if (t_abs_s + float(skill.lead_s)
-                >= float(landing.t_land_abs_s) - CUP_CONTACT_WINDOW_LEAD_S):
+                >= t_land_eff - CUP_CONTACT_WINDOW_LEAD_S):
             return self._resend_declined(
                 t_abs_s, idx, 'CONTACT-WINDOW', moved_mm, dt_s)
         new_terminal = self._catch_terminal(idx, skill, landing)

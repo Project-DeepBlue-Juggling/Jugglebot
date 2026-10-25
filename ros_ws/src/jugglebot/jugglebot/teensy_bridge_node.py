@@ -114,6 +114,7 @@ from teensy_link import (
     HandSensor,
     CanErrors,
     BridgeTxDiag,
+    LegClampDiag,
     BridgeIdentity,
     ClockDiag,
     CacheDiag,
@@ -1580,6 +1581,11 @@ class TeensyBridgeNode(Node):
         # floor. A bridge older than FW 9 never sends it, so None is a normal
         # steady state and must render as such rather than as zeros.
         self._latest_bridge_tx_diag: BridgeTxDiag | None = None
+        # Latest LEG_CLAMP_DIAG frame (per-leg lead-clamp engagement and
+        # stale-anchor tick counts, 1 Hz from can-bridge FW 31+). Same terms as
+        # _latest_bridge_tx_diag: cumulative since boot, no arrival stamp, and
+        # None is the normal steady state against an older bridge.
+        self._latest_leg_clamp_diag: LegClampDiag | None = None
         # Latest BRIDGE_IDENTITY frame + the version verdict derived from it.
         # The verdict is recorded once per CHANGE (see _record_bridge_fw_version)
         # rather than on every 1 Hz frame, so a skew logs once instead of 3600
@@ -1909,6 +1915,7 @@ class TeensyBridgeNode(Node):
         self._client.subscribe(int(MsgType.HAND_SENSOR), self._on_hand_sensor)  # ball-present switch
         self._client.subscribe(int(MsgType.CAN_ERRORS), self._on_can_errors)    # CAN3 wire-error counters
         self._client.subscribe(int(MsgType.BRIDGE_TX_DIAG), self._on_bridge_tx_diag)      # TX pressure + hand stages
+        self._client.subscribe(int(MsgType.LEG_CLAMP_DIAG), self._on_leg_clamp_diag)      # per-leg lead-clamp census
         self._client.subscribe(int(MsgType.BRIDGE_IDENTITY), self._on_bridge_identity)    # bridge FW identity
         self._client.subscribe(int(MsgType.LEG_CMD), self._on_leg_cmd)          # post-clamp executed leg cmd
         self._client.subscribe(int(MsgType.CLOCK_DIAG), self._on_clock_diag)    # per-anchor clock + interp occupancy
@@ -2746,6 +2753,21 @@ class TeensyBridgeNode(Node):
             return
         with self._lock:
             self._latest_bridge_tx_diag = d
+
+    def _on_leg_clamp_diag(self, msg_type, seq, payload, addr):
+        # RX-thread callback (per-leg lead-clamp census). Same contract as
+        # _on_bridge_tx_diag: pure diagnostics, cached under the lock, no
+        # logging, no arrival stamp (cumulative counters make a stale copy a
+        # truthful floor). The except is broad ON PURPOSE for the reason spelled
+        # out there: a short payload raises struct.error, which is not a
+        # ValueError, and would otherwise escape to the client's per-callback
+        # handler at 1 Hz forever.
+        try:
+            d = LegClampDiag.unpack(payload)
+        except Exception:  # noqa: BLE001
+            return
+        with self._lock:
+            self._latest_leg_clamp_diag = d
 
     def _on_bridge_identity(self, msg_type, seq, payload, addr):
         # RX-thread callback (can-bridge firmware identity). Caches the frame and
@@ -4502,6 +4524,33 @@ class TeensyBridgeNode(Node):
                 f'txq jb={int(d.tx_q_hwm_jb)} bb={int(d.tx_q_hwm_bb)} '
                 f'cone={int(d.tx_q_hwm_cone)}')
 
+    def _leg_clamp_diag_str(self) -> str:
+        """``/link_status`` rendering of the per-leg lead-clamp census.
+
+        ``clamp`` is, per leg (leg order, six ints), the cumulative count of
+        500 Hz interp ticks on which the leg lead clamp engaged while output was
+        enabled (not cold-start); ``stale`` is the cumulative count of ticks on
+        which that leg's encoder frame was older than ``LEG_ANCHOR_STALE_US``
+        (30 ms), counted whether or not output was enabled. Both are since
+        can-bridge boot and are read by DIFFERENCING two captures, never from a
+        single value: a clamp count that climbs together with a stale count says
+        the clamp anchor was aged feedback, not the command running away.
+
+        Never-seen is explicit (``unknown (never seen)``): any bridge older than
+        FW 31 sends no such frame, and a row of zeros would impersonate a healthy
+        board that has never clamped.
+
+        Total by construction: field reads and ``int()`` only. A renderer that
+        raises takes the WHOLE ``/link_status`` message down, not just its row.
+        """
+        with self._lock:
+            d = self._latest_leg_clamp_diag
+        if d is None:
+            return 'unknown (never seen)'
+        clamp = ' '.join(str(int(v)) for v in d.lead_clamp_ticks)
+        stale = ' '.join(str(int(v)) for v in d.stale_anchor_ticks)
+        return f'clamp {clamp} | stale {stale}'
+
     def _bridge_fw_version_str(self) -> str:
         """Human/runbook rendering of the can-bridge's reported ``FW_VERSION``.
 
@@ -6053,6 +6102,10 @@ class TeensyBridgeNode(Node):
                 # vanishing, so a missing row never reads as no pressure.
                 KeyValue(key='bridge_tx_diag',
                          value=self._bridge_tx_diag_str()),
+                # Per-leg lead-clamp census (can-bridge FW 31+); renders
+                # 'unknown (never seen)' against an older bridge, never zeros.
+                KeyValue(key='leg_clamp_diag',
+                         value=self._leg_clamp_diag_str()),
                 # Can-bridge firmware identity, beside platform_fw_version
                 # above — three Teensys share this bench and until now only one
                 # of them said which build it was running. Warn-never-refuse:
@@ -8048,7 +8101,8 @@ class TeensyBridgeNode(Node):
                 return False                                          # extended or unknown
         return True
 
-    def _run_deactivate(self, axes, *, poll_dt=0.05, timeout_s=None):
+    def _run_deactivate(self, axes, *, poll_dt=0.05, timeout_s=None,
+                        wire_wait_s=1.0):
         """Fire the firmware DEACTIVATE (TRAP_TRAJ controlled lower to STOW, then
         IDLE) and observe it to completion. A single configured axis fires that
         leg; any larger set fires ``AXIS_ALL`` (every PRESENT leg, parallel
@@ -8075,11 +8129,13 @@ class TeensyBridgeNode(Node):
         self._deactivate_in_progress = True
         try:
             return self._run_deactivate_inner(axes, poll_dt=poll_dt,
-                                              timeout_s=timeout_s)
+                                              timeout_s=timeout_s,
+                                              wire_wait_s=wire_wait_s)
         finally:
             self._deactivate_in_progress = False
 
-    def _run_deactivate_inner(self, axes, *, poll_dt=0.05, timeout_s=None):
+    def _run_deactivate_inner(self, axes, *, poll_dt=0.05, timeout_s=None,
+                              wire_wait_s=1.0):
         # ARMING_CONTRACT A3 — disarm-before-stow, in-process. This is the ONE
         # place the ordering is airtight (same thread, synchronous), and it covers
         # every deactivate entry point: the orchestrator's ACTIVE→IDLE, the direct
@@ -8095,15 +8151,23 @@ class TeensyBridgeNode(Node):
                 "deactivate requested while armed — disarming first "
                 "(ARMING_CONTRACT A3: disarm-before-stow)")
             self._stop_setpoint_output()
-            # The disarm is only STAGED until the next 10 Hz heartbeat tick —
-            # firing DEACTIVATE immediately would race s_mpc_active=1 on the
-            # Teensy and be rejected. Wait for the firmware's arm-took bit
-            # (T2J bit3) to confirm the disarm landed.
-            if not self._wait_wire_disarmed():
-                self.get_logger().error(
-                    "disarm did not confirm on the wire (T2J bit3 still set "
-                    "after 1 s) — proceeding; the firmware rejects DEACTIVATE "
-                    "if truly armed (loud failure, no motion)")
+        # The disarm is only STAGED until the next 10 Hz heartbeat tick — firing
+        # DEACTIVATE before it lands races s_mpc_active=1 on the Teensy and is
+        # rejected (ERR_REJECTED). Wait for the firmware's arm-took bit (T2J
+        # bit3) UNCONDITIONALLY, not only when this call did the disarm: a disarm
+        # through /set_setpoint_output (the GUI teardown's disarm-then-deactivate)
+        # has already cleared the host _mpc_active, so the old `if
+        # self._mpc_active` guard skipped the wait and the DEACTIVATE raced the
+        # wire (2026-10-19, 65 ms after the disarm; 2026-10-23, 40 ms — both
+        # ERR_REJECTED; the 100/130 ms re-tries passed). Returns at once when the
+        # firmware already reports disarmed. ``wire_wait_s`` = 0 for the shutdown
+        # stow: on_shutdown has already run its own settle + wire wait, and a
+        # second 1 s budget would eat into the ~8 s teardown window.
+        if not self._wait_wire_disarmed(wire_wait_s):
+            self.get_logger().error(
+                f"disarm did not confirm on the wire (T2J bit3 still set "
+                f"after {wire_wait_s:.1f} s) — proceeding; the firmware rejects "
+                f"DEACTIVATE if truly armed (loud failure, no motion)")
         # Already-at-STOW no-op guard: if every target leg is already IDLE and within
         # _STOW_POS_MAX_REV of STOW, the platform is stowed — a DEACTIVATE would
         # needlessly re-arm CLOSED_LOOP (a jolt) only to lower nothing, then IDLE. Skip
@@ -8133,8 +8197,21 @@ class TeensyBridgeNode(Node):
                 f"will move ALL present legs, but only {axes} are observed. Use a "
                 f"single leg or the full leg set.")
         ok, msg, _ = self.teensy_deactivate(fire_axis)
-        if not ok:
+        # ERR_REJECTED (and every other refusal code) = the firmware latched
+        # nothing: return the refusal. ERR_TIMEOUT is different — the ack was
+        # lost, and the DEACTIVATE may have latched and be lowering the legs
+        # right now. Never report that as a refusal (the orchestrator would
+        # re-send a move whose first copy may be running): OBSERVE it to a
+        # verdict through the same DeactivateMonitor window instead (owner,
+        # 2026-10-23). A descent that runs → success; nothing moved → the
+        # monitor's timeout → a genuine "deactivate FAILED".
+        lost_ack = (not ok) and ('ERR_TIMEOUT' in str(msg))
+        if not ok and not lost_ack:
             return False, f"DEACTIVATE rejected: {msg}"
+        if lost_ack:
+            self.get_logger().warning(
+                f"deactivate: DEACTIVATE ack lost ({msg}) — the lower may have "
+                f"started; observing the legs before any verdict (no re-send)")
         mon = (DeactivateMonitor(axes, timeout_s=float(timeout_s))
                if timeout_s is not None else DeactivateMonitor(axes))
         _t_deact = time.monotonic()
@@ -8150,18 +8227,43 @@ class TeensyBridgeNode(Node):
                 self.get_logger().error("deactivate: hard deadline exceeded")
                 break
             time.sleep(poll_dt)
+        if not mon.done:
+            # Hard-deadline exit with NO verdict from the monitor: never report
+            # it as success (the hand is left as-is — the legs' state is unknown).
+            msg = "deactivate FAILED — no verdict (hard deadline)"
+            if lost_ack:
+                msg += " (DEACTIVATE ack lost; observed, not re-sent)"
+            self.get_logger().error(msg)
+            return False, msg
         # Idle the HAND (axis 6) too: can_node's deactivate de-energised ALL
         # JUGGLEBOT_AXES (legs via the TRAP_TRAJ→IDLE above; hand via
         # SET_AXIS_STATE(IDLE), can_node.py:1541-1543). ACTIVATE/DEACTIVATE are
         # rejected on axis 6 (leg-specific cold-start moves), so the hand is idled
         # explicitly here. Best-effort — a failure is logged but does not fail the
         # leg deactivate result (per the can_node<->Teensy parity audit).
-        hok, hmsg, _ = self.teensy_set_axis_state(_HAND_AXIS, proto.ODRIVE_STATES['IDLE'])
-        if not hok:
-            self.get_logger().warning(f"deactivate: hand IDLE failed — {hmsg}")
+        if lost_ack and mon.failed and self._legs_already_stowed(axes):
+            # The descent finished before the monitor saw a CLOSED_LOOP sample at
+            # STOW (its arrival evidence): the legs are IDLE inside the stow band,
+            # so the lost-ack DEACTIVATE did run. Caveat: a leg resting OUTSIDE the
+            # band (foam) still reads as a failure — the fail-safe direction.
+            mon = None
+        lost_ack_unmoved = lost_ack and mon is not None and not mon.succeeded
+        if not lost_ack_unmoved:
+            # (A lost-ack DEACTIVATE that moved no leg leaves the robot posed and
+            # ACTIVE: do NOT de-energise the Hand under it.)
+            hok, hmsg, _ = self.teensy_set_axis_state(
+                _HAND_AXIS, proto.ODRIVE_STATES['IDLE'])
+            if not hok:
+                self.get_logger().warning(f"deactivate: hand IDLE failed — {hmsg}")
+        if mon is None:
+            msg = f"deactivate complete on axes {axes} (ack lost; legs found stowed)"
+            self.get_logger().info(f"deactivate: {msg}")
+            return True, msg
         if mon.failed:
             parts = [f"axis {a}: {r}" for a, r in mon.failed.items()]
             msg = "deactivate FAILED — " + "; ".join(parts)
+            if lost_ack:
+                msg += " (DEACTIVATE ack lost; observed, not re-sent)"
             if mon.succeeded:
                 msg += f" (succeeded: {mon.succeeded})"
             self.get_logger().error(msg)
@@ -8954,7 +9056,7 @@ class TeensyBridgeNode(Node):
             if want_record:
                 self._wave_set_intent(0)
             res.success = False
-            res.message = f'WAVE_CMD failed: {m} (ERR_UNKNOWN_METHOD = bridge FW <= 30)'
+            res.message = f'WAVE_CMD failed: {m} (ERR_UNKNOWN_METHOD = bridge FW <= 32)'
             return res
         evt = self._wave_wait_event(seq, mark, self._WAVE_ACK_TIMEOUT_S)
         if evt is None:
@@ -9524,8 +9626,10 @@ class TeensyBridgeNode(Node):
             axes = [int(a) for a in self.get_parameter('deactivate_axes').value]
             self.get_logger().info(
                 f"shutdown: profiled stow (DEACTIVATE) on legs {axes} before teardown")
+            # wire_wait_s=0: on_shutdown already settled and waited for the wire
+            # disarm before calling here; keep the teardown inside its ~8 s window.
             ok, msg = self._run_deactivate(
-                axes, timeout_s=_SHUTDOWN_DEACTIVATE_TIMEOUT_S)
+                axes, timeout_s=_SHUTDOWN_DEACTIVATE_TIMEOUT_S, wire_wait_s=0.0)
             if ok:
                 self.get_logger().info(f"shutdown stow complete — {msg}")
             else:

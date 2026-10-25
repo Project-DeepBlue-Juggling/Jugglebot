@@ -112,3 +112,11 @@ When creating or updating entries:
   `plans/parked/` and `plans/archived/` to verify it exists. Plan filenames
   never change, so the reference survives parking and archival. This convention prevents broken
   references when plans are archived (filename stays the same, directory changes)
+
+## Open follow-ups in the final message
+
+When the status you set is not `resolved`, end your final message with the open
+follow-ups you saw in the entry (open questions, follow-up sections, residue
+bullets): one line each, the text plus where in the entry it lives. The calling
+command (`/investigate`, `/log`) uses them to make the gated offer to file Bug
+or Feature items; you do not file anything yourself.

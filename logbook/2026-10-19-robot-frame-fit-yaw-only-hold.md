@@ -41,7 +41,7 @@ Code landed 2026-10-19 (second cut), NOT flown. The first cut of the software ro
 
 ## Problem
 
-Three launches the same morning, same QTM wand calibration, same AIM model, QTM not re-aligned: bags 2026-10-19_11-04-03 (home, 537 s), 11-13-17 and 11-14-54 (Jugglebot moved by hand: 108 mm / 4.2 deg at +65 s in the first, 40 mm / 11.8 deg at +37-40 s in the second; the runsheet said "a few cm").
+Three launches the same morning, same QTM wand calibration, same AIM model, QTM not re-aligned: bags 2026-10-19_11-04-03 (home, 537 s), 11-13-17 and 11-14-54 (Jugglebot moved by hand: 108 mm / 4.2 deg at +65 s in the first, 40 mm / 11.8 deg at +37-40 s in the second; the runbook said "a few cm").
 - 11:04: the frame flapped `RMS_OVER_CAP` / `TILT_FROM_BUILD` while the platform was parked high. Logged transitions at 125.2 UNK, 128.0 OK, 134.3, 150.8, 258.0, 261.5, 355.9, 359.7, 372.7, 384.3, 386.3 s.
 - 11:13: a flap at +38.7/+40.6 s (RMS 0.999 against the 1.000 cap), then the +66/+67/+69 s transitions around the physical move.
 - 11:14: OK at 39.8 s, UNKNOWN at 41.8 s, and the frame never locked in again (4.1 % of feeds with a frame).
@@ -124,7 +124,7 @@ All dated 2026-10-19, PDJ venv.
 - The hold rule is untested on real data (no fit failed at 1.5 on eight bags).
 - A "frame settled" criterion (window spread) before the per-attempt snapshot is NOT built; until then, wait more than 5 s after setting the robot down before the first `skills/check`, or launch after the move.
 - The GUI 3D view still draws markers and bodies in QTM world. (Resolved 2026-10-19 pm: the model follows `robot_frame`, see `2026-10-19-robot-frame-move-observability`.)
-- The runsheet's "few cm" move was actually 40-108 mm and 4-12 deg; the rows now say so.
+- The runbook's "few cm" move was actually 40-108 mm and 4-12 deg; the rows now say so.
 - The 11:13 flap at +38.7/+40.6 s (RMS 0.999 vs 1.000) does not reproduce in the replay (feed-phase dependent); moot at 1.5 mm.
 - First-cut record for the next sitting to compare (flown against the FIRST cut): home 11:04 locked at 0 s and flapped 15 times; 11:13 74.8 % frame; 11:14 locked once at 39.8 s and was UNKNOWN from 41.8 s.
 - Update 2026-10-19 pm: the second cut was flown at 14:24 and the cap was raised to 2.0 mm the same afternoon (5 markers ran 0.2 mm under 1.5 after the move; lock-every-launch outranks the single-marker guard), see `2026-10-19-robot-frame-move-observability`. The 1.5 mm statements above are history.

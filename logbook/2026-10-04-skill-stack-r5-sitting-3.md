@@ -171,7 +171,7 @@ Self_toss: `ABORTED_NO_RELEASE` after a miss (the empty-hand throw) in most atte
 catch failed or the ball was not sensed; the launch log cannot tell which), one
 `LIMIT_JERK` at the closing REST (219k > 200k after a re-aim run).
 
-| Self-toss accuracy | R4 gate (2026-09-29) | Sitting 3 |
+| Self-throw accuracy | R4 gate (2026-09-29) | Sitting 3 |
 |---|---|---|
 | Mean landing offset, clean rows | 23.0 mm (sd 15.2, p95 45.1, n 106) | 49.2 mm (sd 67.1, p95 136.8, n 144) |
 | Per-axis landing sd (U2) | ~17 mm | ~23 mm |
@@ -192,7 +192,7 @@ with slope −2.2 to −4 mm per mm; leg-tracking lean at release (−0.12, +0.0
 (+4.6, +2.7) mm/s; the QTM z axis 0.6° off gravity, unchanged since R4 (biases short-arc
 tracker fits by 10 to 17 mm, does not move a landing); hand stroke peak about 2000 to
 2200 rev/s², the same as R4 and well under either cap, so the 3900 cap changed nothing
-in self-toss. The tilt calibration map is not loaded on this path (deliberate,
+in self-throw. The tilt calibration map is not loaded on this path (deliberate,
 1b187e8c); only the `level` gravity offset applies.
 
 Feed (`u4_feed_and_columns_truth.md`): landing +94.2 ms late (sd 143.2, n 31) in A and
@@ -249,9 +249,9 @@ feeding it one-id-per-announcement records through the same correlator, so a pat
 that mis-latches fails the gate before it reaches the robot.
 
 **Why the learner flipped.** The local affine fit has u_y almost constant across the
-self-toss neighbourhood, so the fitted slope in y is noise and its sign decides the
+self-throw neighbourhood, so the fitted slope in y is noise and its sign decides the
 command. Dropping the 33 bogus columns rows does not change the command (the 10 mm
-kernel isolates the self-toss context), so the purge is hygiene, not the fix. The fix
+kernel isolates the self-throw context), so the purge is hygiene, not the fix. The fix
 regularises the local slope toward the identity prior with a strength tied to the
 neighbours' spread in u: where the data cannot identify a slope, the slope is the prior.
 
@@ -319,11 +319,11 @@ freezes wherever history left ū. Fix: the outcome bandwidth only GATES which ro
 (`support_d2 = 9.0`), the neighbourhood is the k most RECENT rows inside that gate (row order is
 now part of the law; memory is appended oldest-first), ū keeps the paper's weights, the forward
 fit uses state-only weights, and a query with no supported row returns the identity prior. On the
-real memory the self-toss command moves from (−15.9, +4.1) to (−17.5, −4.5) mm. Tests in
+real memory the self-throw command moves from (−15.9, +4.1) to (−17.5, −4.5) mm. Tests in
 `tests/motion/test_learner.py`: a 48-row real P1 fixture, a synthetic frozen-learner case,
 identical-u gives D = I exactly, a well-spread neighbourhood reaches 88/79/76 % of the true slope
 (55/58/63 % before); swapping the old law back fails four of them. One sim-gate assertion changed
-with it: the self-toss apex-band test judges the MEAN signed apex error from band entry rather than
+with it: the self-throw apex-band test judges the MEAN signed apex error from band entry rather than
 the last throw alone, because seed 0's throws 3 to 5 scatter (0, +26, −45) mm on one command and
 the old law passed only because its +57 mm bias cancelled the −45 mm draw.
 
@@ -348,7 +348,7 @@ u2's (+0.07, +0.30)° over 63 self-tosses. A trim of 0 is bit-identical (tested)
 `compile_reload_columns` reuses `compile_reload` for the lead-in; the executor's three enforcement
 points are `_register_outcome` (no pending row → no evidence wait, no OUTCOME, no learner row),
 `_tracked_landing` (never consults the tracker) and `_predicted_landing` (the phantom's first catch
-gets a synthesised vertical self-toss landing instead of hanging on `NO_LANDING`); `_maybe_announce`
+gets a synthesised vertical self-throw landing instead of hanging on `NO_LANDING`); `_maybe_announce`
 never announces it. Same box as columns (`'columns'` box kind, both site pairs).
 
 **U5 — the hand-jam detector and recovery** (`motion/hand_jam.py`, `teensy_bridge_node.py`,
@@ -383,8 +383,8 @@ firmware cases + 3 dispatch cases, `tests/teensy_link/test_hand_move_to.py`. The
 **U6 — the geometry.** `skill_node._DEFAULT_DWELL_S` 0.30 → 0.27, `columns_feed_aim_toward_a_mm`
 20 → 10 (the sim gate's and the plan bench's defaults follow), and the admissible box re-swept at
 dwell 0.27, leg velocity 350, acceleration 5000, jerk 200000, hand 3900, columns separation 125
-(apex rungs 0.85/0.90/0.95), hop at 250, self-toss at (−50, 0): see Verification. Apex 0.95 and
-separation 125 are goal fields, set from the runsheet. The feed aim is 10 rather than 0 because
+(apex rungs 0.85/0.90/0.95), hop at 250, self-throw at (−50, 0): see Verification. Apex 0.95 and
+separation 125 are goal fields, set from the runbook. The feed aim is 10 rather than 0 because
 the undisplaced feed catch at 125 mm demands 98 % of the acceleration limit (u5), and 10 mm
 spends 8 of the 51 mm of clearance. **The dwell went to 0.27, not the 0.25 the limits report
 proposed**, and the box was swept three times for it: at 0.25 the one-ball trial refused
@@ -395,9 +395,9 @@ re-level for its throw — while at 0.30 the same loop is acceleration-bound at 
 (4507 to 4813 mm/s² against 4500 at the sweep's 90 % margin). A (separation, dwell) scan at 90 %
 of all three limits passes 115/0.27-0.29, 120/0.27-0.28 and 125/0.27 only; 0.27 keeps 10 % on
 every limit at 125. The one-ball start also needed its first catch moved to the FED start's aim
-point and level pin (`schedule.phantom_feed_prior`), and the one-ball reload's columns anchored
+point and level pin (`schedule.phantom_feed_prior`), and the one-ball `reload`'s columns anchored
 one launch window after the decay REST (`compile_reload_columns`): both measured in the sim,
-both recorded at the code. Two sim-gate constants that restated the session limits as
+both recorded at the code. Two sim-gate constants that restated the Sitting limits as
 literals (`SelfTossGateConfig.leg_vel_mmps = 300.0`, and the plan bench's own operating point)
 now follow the session constants, which is the derived-literal lesson of 2026-10-02 biting a
 third time.
@@ -416,7 +416,7 @@ All runs 2026-10-04 unless stated. Console output by path under `temp/logs/`.
   `3c2087eff6e65bab0761c9f9d0912301`). Columns at 125 mm is admissible ONLY in the 0.925-0.975
   apex band (P2 x [−2, +4] y [−8, +20] mm; P1 x [−4, +2] y [−10, +20]); the 0.85 and 0.90 bands are
   empty, so `skills/check` refuses apex 0.9 at 125 mm by name. Hop at 250: x ±1 to ±8 by band;
-  self-toss at (−50, 0): x [−40, +30] y [−40, +30].
+  self-throw at (−50, 0): x [−40, +30] y [−40, +30].
 - **Sim gates** (`sim/skills_gate.py --learn --no-viewer`, 5 seeds, dwell 0.27, session legs
   350/5000/200000, hand 3900; `scratchpad/s3/run_gates_s4.sh`, 15:03):
   - fed columns `--pattern columns --apex-m 0.95 --separation-mm 125 --target-throws 30

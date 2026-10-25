@@ -1,5 +1,5 @@
 ---
-title: Prompt: can-bridge CAN3 RX-drain throughput investigation
+title: "Prompt: can-bridge CAN3 RX-drain throughput investigation"
 archived: 2026-07-05
 ---
 # Prompt: can-bridge CAN3 RX-drain throughput investigation

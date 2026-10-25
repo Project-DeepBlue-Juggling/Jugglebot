@@ -29,13 +29,13 @@ through the action was dead for any attempt in this state.
 ## Root Cause
 
 `_juggle_execute` waits on `_goal_done_event`. `_on_tick` sets that event (through
-`_maybe_signal_goal_done`) whenever it sees no executor and no reload context. `_start_pattern`
+`_maybe_signal_goal_done`) whenever it sees no executor and no `reload` context. `_start_pattern`
 cleared the event at the top of a goal, then ran the frame check, the blocking `_prelevel`
 round trip and the compile, and only then installed the executor. The 40 Hz tick runs on its
 own thread throughout that window and sees exactly "no executor, no reload", so it fired the
 event. The empty `_goal_end_code` then read as COMPLETED.
 
-This is the same class as the reload-announcement window fixed on 2026-09-29
+This is the same class as the `reload`-announcement window fixed on 2026-09-29
 (`test_the_juggle_goal_is_not_done_while_the_announced_reload_compiles`). That fix closed one
 window and left the goal-start window open.
 
@@ -43,7 +43,7 @@ window and left the goal-start window open.
 
 A `_goal_armed` flag, closing the whole class at the one place the event is set.
 `_start_pattern` disarms it and clears the event when a goal begins. It re-arms the goal only
-once a successful start has installed its executor or reload context. `_maybe_signal_goal_done`
+once a successful start has installed its executor or `reload` context. `_maybe_signal_goal_done`
 sets the event only while the goal is armed. The flag, the clear and the set all happen under
 `_reload_lock`. Simply moving the `clear()` after the install would leave a tick that had
 already read "idle" free to set the event just after the clear.

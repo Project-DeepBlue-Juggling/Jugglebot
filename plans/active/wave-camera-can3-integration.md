@@ -4,6 +4,12 @@ created: 2026-10-19
 status: active
 owner: Harrison
 last_updated: 2026-10-25
+pathway: wave-camera-can3
+scope: >-
+  One-button Wave camera recording from ROS 2: an ESP32 adapter on the cone-role bus (CAN3) drives the
+  camera's GPI2 record line and stamps its 30 Hz tick, the can-bridge relays it (WAVE_CMD RPC 0x0062,
+  FW 33), and teensy_bridge_node exposes camera/* topics, record_start/record_stop services and a GUI
+  REC/STOP panel. Phases: adapter firmware, bridge and Jetson node, GUI, Jetson bring-up on hardware.
 related_logbook:
   - 2026-10-19-wave-camera-can3-bridge-and-node.md
   - 2026-10-19-gui-camera-record-panel.md
@@ -39,14 +45,14 @@ Owner decisions (2026-10-19): `session_id` is the node start time (Unix s);
 or REFUSED/NO_CHANGE; `record_stop` succeeds on STOP or REFUSED/NO_CHANGE; the
 intent streams at 5 Hz whenever the adapter heartbeat is fresh, `desired=0`
 included; the adapter auto-stops after 3 s without intent; the cone and the
-camera adapter are mutually exclusive on the drop; bridge FW 30 → 31.
+camera adapter are mutually exclusive on the drop; bridge FW 32 → 33 (FW 31 on the branch; renumbered at the 2026-10-25 merge with main, whose FW 31/32 are the leg lead clamp).
 
 ## Architecture
 
 ```
 GUI camera panel ── rosbridge ── camera/heartbeat (10 Hz), camera/record_event,
                                  camera/record_start|stop (std_srvs/Trigger), camera_diag
-teensy_bridge_node ── RPC WAVE_CMD 0x0062 (5 Hz) ──▶ can-bridge FW 31 ── 0x7E2 ──▶ ESP32
+teensy_bridge_node ── RPC WAVE_CMD 0x0062 (5 Hz) ──▶ can-bridge FW 33 ── 0x7E2 ──▶ ESP32
                    ◀── CONE_FRAME 0x85 (verbatim) ◀── 0x7E3 / 0x7E4 / 0x7E5 ◀──┘
 ```
 
@@ -59,7 +65,7 @@ IDs 0x7E2-0x7E7 (`WaveCameraCanId`), all DLC 8, little-endian. Event time is
 | # | Phase | Repo | Status | Gate |
 |---|-------|------|--------|------|
 | 1 | Adapter firmware (CAN link, time slave, record FSM, heartbeat/INFO) | wave | firmware in `WaveCamera_ESP_code/`; bench-verified with simulated intent 2026-10-25, no bridge yet | native tests; bench rows 1 and 10 with a USB-CAN sniffer |
-| 2 | Bridge FW 31 + Jetson node, msgs, config, tests | JB | code landed 2026-10-19, not flashed | pytest; `pio run -e teensy41`; colcon + reflash on the Jetson |
+| 2 | Bridge FW 33 + Jetson node, msgs, config, tests | JB | code landed 2026-10-19, not flashed | pytest; `pio run -e teensy41`; colcon + reflash on the Jetson |
 | 3 | GUI camera panel | JB | in progress (separate change) | node harness tests; bench row 8 |
 | 4 | Bench bring-up on the robot | both | not started | CAN adapter design s10 rows 2-7 and 9 |
 | 5 | Optical frame calibration | both | later | a clapboard flash maps the start tick to a recorded frame |
@@ -72,7 +78,7 @@ Lives in `ros_ws/src/jugglebot/WaveCamera_ESP_code/` (CAN adapter design s5, s12
 phases 0-1); built and flashed from the bench PC, never from the Jetson. This plan tracks it
 only as the prerequisite for Phase 4.
 
-### Phase 2 — Bridge FW 31 and the Jetson node
+### Phase 2 — Bridge FW 33 and the Jetson node
 
 Landed in the working tree on 2026-10-19 (logbook
 `2026-10-19-wave-camera-can3-bridge-and-node.md`):
@@ -130,7 +136,7 @@ for this plan's first closure.
   publishing, service success / CLIP_MISSING / refusal / timeout paths, intent
   stream on and off with heartbeat freshness.
 - `tests/firmware/native/test_rpc_dispatch.cpp`: WAVE_CMD frame bytes, gate
-  closed gives ERR_BUS_DOWN, bad args; `test_bridge_fw_version_xref.py` FW 31
+  closed gives ERR_BUS_DOWN, bad args; `test_bridge_fw_version_xref.py` FW 33
   clause; `test_udp_protocol_xlang.py` re-pinned layout digest.
 
 ## Notes for Collaborators

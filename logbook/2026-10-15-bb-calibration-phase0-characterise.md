@@ -36,7 +36,7 @@ tags:
 
 ## Summary
 
-Phase 0 of `plans/archived/bb-calibration-one-attempt.md`. Three deliverables: (1) a replay harness that re-runs the node's calibration code on the recorded bags and reproduces what the node logged; (2) cross-sitting distributions and advisory bands for Phase 1; (3) the attempt-message fields the hardware pin needs. The pin's offline part is done and it **excludes the pose-mix explanation of the kappa step** (hypothesis withdrawn, § Discussion). The mechanism of the 0.3 deg step was left UNRESOLVED at the 2026-10-15 commit; on 2026-10-16 the owner's answers and a re-read of the replay moved it to reconstruction drift on a 562 h old QTM wand calibration as the leading candidate, the power-cycle pin was dropped (its runsheet deleted) and the first Phase 1 sweep after the re-wand is the remaining reading (§ Open Questions) - **superseded 2026-10-16 evening: reconstruction drift is ruled out and kappa is two-state (the 10:51 sweeps after the re-wand still read 179.57; 15:08 read 179.26 with QTM unchanged); see the dated corrections in Discussion and Open Questions.** The entry stays `open` for the two-state question and the node stall. The throw cross-check is negative: the landing bias has another owner. No gate logic or threshold changed in this entry.
+Phase 0 of `plans/archived/bb-calibration-one-attempt.md`. Three deliverables: (1) a replay harness that re-runs the node's calibration code on the recorded bags and reproduces what the node logged; (2) cross-sitting distributions and advisory bands for Phase 1; (3) the attempt-message fields the hardware pin needs. The pin's offline part is done and it **excludes the pose-mix explanation of the kappa step** (hypothesis withdrawn, § Discussion). The mechanism of the 0.3 deg step was left UNRESOLVED at the 2026-10-15 commit; on 2026-10-16 the owner's answers and a re-read of the replay moved it to reconstruction drift on a 562 h old QTM wand calibration as the leading candidate, the power-cycle pin was dropped (its runbook deleted) and the first Phase 1 sweep after the re-wand is the remaining reading (§ Open Questions) - **superseded 2026-10-16 evening: reconstruction drift is ruled out and kappa is two-state (the 10:51 sweeps after the re-wand still read 179.57; 15:08 read 179.26 with QTM unchanged); see the dated corrections in Discussion and Open Questions.** The entry stays `open` for the two-state question and the node stall. The throw cross-check is negative: the landing bias has another owner. No gate logic or threshold changed in this entry.
 
 ## Symptoms
 
@@ -103,7 +103,7 @@ Nine post-step sweeps refuse CIRCLE_CENTRES once clipped (an arc too short for t
 
 **What the Phase 1 design is robust to.** All three. The epoch band (below) treats any of them as a new kappa epoch with an advisory, never a refusal, and the pool is kept. The design does not need the mechanism; it needs the measurement to be fresh and the history to be advisory.
 
-**Why the sweep end is not an operator lever (C), and what that did to P7.** The sweep end is `120 + overshoot` from a compile-time constant, so P7 as first written ("sweep 5 deg longer and see kappa follow") cannot be run. The plan's Phase 0 text was rewritten: three power cycles, a park reading and two sweeps each, with sweep start/end/duration/lag recorded per attempt (§ G, runsheet).
+**Why the sweep end is not an operator lever (C), and what that did to P7.** The sweep end is `120 + overshoot` from a compile-time constant, so P7 as first written ("sweep 5 deg longer and see kappa follow") cannot be run. The plan's Phase 0 text was rewritten: three power cycles, a park reading and two sweeps each, with sweep start/end/duration/lag recorded per attempt (§ G, runbook).
 
 **Why the bands are stated the way they are.** One rule for every band: band = max(3 x the relevant SD, 1.25 x the largest observed intrinsic-good excursion), rounded up. The relevant SD is the spread of sitting MEANS within the epoch the advisory compares against, never one sitting's per-sweep sigma (the old 0.09 deg floor was 2 x within-sitting sigma). The 1.25 x max term makes ~all recorded intrinsic-good sweeps fall inside, which is the owner's intent: none of the 23 false positives fires. The kappa band existed in two readings until D came back: if clipping had moved kappa by ~+0.25 deg the step would be a measurement artefact and the band would need to cover it (+-0.45 deg vs the whole pool); D chose the other branch, so the recommended reading is +-0.20 deg vs the current kappa epoch's median, and the +-0.45 deg whole-pool band is kept as the rejected alternative. A real 2 mm bump at r ~143 mm is 0.80 deg, 4.0 x the recommended band.
 
@@ -125,7 +125,7 @@ Instrumentation only, no gate or threshold change.
 | `tools/probes/bb_calibration_bands.py` | cross-sitting distributions, world and kappa epochs, bands, throw cross-check, P7 prediction |
 | `bb_calibration.py` | `sweep_kinematics()`, `sweep_suffix()`; `SweepYawEstimate` gains `sweep_start_deg` / `sweep_end_deg` / `sweep_duration_s`; `summary()` appends "sweep 0.0→121.3° in 12.4 s" |
 | `mocap_node.py` | every `/bb/calibration_attempt` text, the success text on `/bb/calibration_result` and the ERROR console line end with " · sweep <start>→<end>° <dur> s, lag <±x.x> ms" (lag n/a before the estimator); `MAX_CALIBRATION_FAILURE_CHARS` 240 to 300 with the suffix reserved first so truncation cannot drop it |
-| `tests/hardware/session_bb_kappa_pin.md` | pin part 2 runsheet (three power cycles, park reading + two sweeps each) |
+| `tests/hardware/session_bb_kappa_pin.md` | pin part 2 runbook (three power cycles, park reading + two sweeps each) |
 | `plans/archived/bb-calibration-one-attempt.md` | `bb_moved` deleted outright, pin redesigned, status row |
 
 ### Advisory bands (input to Phase 1)
@@ -181,7 +181,7 @@ Kappa noise: within-sitting SD 0.044 deg, within-epoch sitting-mean SD 0.040 deg
 | power cycles, ONE sweep per cycle | >= 0.19 deg (3 x sqrt(2) x 0.044) |
 | power cycles, TWO sweeps per cycle (pair mean vs pair mean) | >= 0.13 deg |
 
-The step (0.26-0.31 deg) clears one-sweep detection at ~4 sigma, but 10-14 20:54 drifted 0.22 deg inside one sitting, so the runsheet uses two sweeps per cycle. Criterion for "kappa changed across a power cycle": more than **0.20 deg** (the within-epoch band).
+The step (0.26-0.31 deg) clears one-sweep detection at ~4 sigma, but 10-14 20:54 drifted 0.22 deg inside one sitting, so the runbook uses two sweeps per cycle. Criterion for "kappa changed across a power cycle": more than **0.20 deg** (the within-epoch band).
 
 ## Verification
 
@@ -198,11 +198,11 @@ Replay fidelity (§ A) and the clip experiment (§ D) are the (2026-10-15, comma
 
 Open. Done: harness, bands, attempt-message fields, pin part 1 (offline: pose mix EXCLUDED). Owed: pin part 2 on hardware. Phase 1 (gate inversion, kappa epochs, `bb_moved` deletion) consumes the band table above. Plan status row: "code done, hardware pin owed".
 
-2026-10-16: pin re-scoped (power-cycle sitting dropped, runsheet deleted); QTM re-wanded 2026-10-16; Phase 1 started 2026-10-16.
+2026-10-16: pin re-scoped (power-cycle sitting dropped, runbook deleted); QTM re-wanded 2026-10-16; Phase 1 started 2026-10-16.
 
 ## Open Questions
 
-- Hardware pin part 2 (`tests/hardware/session_bb_kappa_pin.md`, deleted 2026-10-16): DROPPED (owner, 2026-10-16, on recommendation). Every session boundary is already a BB power cycle (BB is on the main motor PSU) and kappa survived all but one of them; Phase 1's hardware acceptance (first sweep of ten consecutive sittings) is ten more. Replaced by (i) the owner's QTM check, done, and (ii) the first Phase 1 sweep read as in the mechanism bullet below. The runsheet was removed with `git rm`.
+- Hardware pin part 2 (`tests/hardware/session_bb_kappa_pin.md`, deleted 2026-10-16): DROPPED (owner, 2026-10-16, on recommendation). Every session boundary is already a BB power cycle (BB is on the main motor PSU) and kappa survived all but one of them; Phase 1's hardware acceptance (first sweep of ten consecutive sittings) is ten more. Replaced by (i) the owner's QTM check, done, and (ii) the first Phase 1 sweep read as in the mechanism bullet below. The runbook was removed with `git rm`.
 - Owner questions: ANSWERED 2026-10-15 evening. BB is powered from the MAIN motor PSU, so whenever Jugglebot's motors are unpowered BB is unpowered (BB also has its own E-stop); on 10-13 it was simply powered off normally, with no contact. Neither BB nor the shelf was moved. Neither BB nor its frame can move (both fixed to the shelf); the shelf itself can rock a little about an axis roughly parallel to world x but tends to settle in the same position. Nothing was touched near BB 10-14 20:54-21:00. QTM's calibration report: the owner did not think it showed a change (from memory, not checked at the time). QTM, 2026-10-16: the wand calibration was 562 h old (about 2026-09-22), so the whole 10-10..14 window ran on an 18-23 day old calibration; the owner re-wanded QTM on 2026-10-16. QTM's own residual for the BB body was 0.30 mm before and 0.23 mm after.
 - Mechanism, 2026-10-16 reading (replay run 20261015-104816, `sweeps.csv`, intrinsic-accepted sweeps with the base seen, sitting medians):
 

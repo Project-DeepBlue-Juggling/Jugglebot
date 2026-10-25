@@ -2,7 +2,7 @@
 title: "The late catch re-aim is refused 87/87 past the snap band because it re-solves the catch-with-throw from a mid-swing seed; the same corrections installed as a platform-xy bump on the installed plan (hand untouched, held through the carried release with a retargeting launch velocity) pass validate_cycle on 87 % of the columns cases offline, worst-case direction"
 type: investigation
 date: 2026-10-16
-status: open
+status: resolved
 phase: "late-catch-reaim-bump — design + offline prototype (not implemented)"
 related_plan: late-catch-reaim-bump.md
 related:
@@ -13,7 +13,7 @@ files_changed:
   - tools/probes/late_reaim/parse_resends.py
   - tools/probes/late_reaim/capture_records.py
   - tools/probes/late_reaim/bump_replay.py
-  - plans/active/late-catch-reaim-bump.md
+  - plans/archived/late-catch-reaim-bump.md
   - ros_ws/src/jugglebot/jugglebot/motion/skills/bump.py
   - ros_ws/src/jugglebot/jugglebot/motion/skills/executor.py
   - ros_ws/src/jugglebot/jugglebot/motion/skills/INVARIANTS.md
@@ -31,17 +31,17 @@ files_changed:
 
 # The late catch re-aim as a bump: characterisation and offline prototype
 
-**Data:** launch logs `~/.ros/log/2026-10-16-10-50-42-798495-jetson-1033523` (am, columns + reload), `…-16-10-37-689586-jetson-1220502` (pm1, hop / magazine / columns_1ball_fed), `…-16-23-01-479044-jetson-1230939` (pm2, columns_1ball_fed). Bags were not needed: the RESEND lines carry the delta, and the CATCH-AIM lines carry the committed landing instant.
+**Data:** launch logs `~/.ros/log/2026-10-16-10-50-42-798495-jetson-1033523` (am, columns + `reload`), `…-16-10-37-689586-jetson-1220502` (pm1, hop / magazine / columns_1ball_fed), `…-16-23-01-479044-jetson-1230939` (pm2, columns_1ball_fed). Bags were not needed: the RESEND lines carry the delta, and the CATCH-AIM lines carry the committed landing instant.
 
 ## Symptom
 The tracker fit now converges about 0.6 s before landing. Only ~15 % of catches take the correction. Re-aims that installed: 25 caught / 0 missed. Refused: 45 caught / 10 missed. (These outcome numbers are from the P2 entry, not from this entry's scripts.)
 
 ## Characterisation (`parse_resends.py`)
-- **146 re-sends: 53 installed, 93 refused.** The refused set is 87 once the 6 `CATCH_AXIS` refusals on the fresh-origin reload/hop catch from a tilted rest are excluded. That is a geometry refusal of the seed and out of scope here.
+- **146 re-sends: 53 installed, 93 refused.** The refused set is 87 once the 6 `CATCH_AXIS` refusals on the fresh-origin `reload`/hop catch from a tilted rest are excluded. That is a geometry refusal of the seed and out of scope here.
 - The 87 by pattern: columns 72, hop 8, columns_1ball_fed 7. By code: LIMIT_JERK 48, LIMIT_ACC 13, INFEASIBLE 12, HAND_LIMIT_C2 5 (all hop), SPLICE_TOO_LATE 5, LIMIT_VEL 2, SINGULAR 1, WINDOW_TOO_SHORT 1.
 - **Time to the committed landing at the re-send:** refused p50 0.463 s (min 0.360, p90 0.572). Installed p50 0.588 s (min 0.445): the installed ones are mostly the pinned path inside the snap band.
 - **Delta** (the `moved_mm` max component): p50 20 mm, p90 35, max 40, the authority bounds. Timing |Δt| p50 6 ms, max 41 ms.
-- The raw splice is at `t + LEAD_S` (0.225 s), so 0.135-0.43 s is left to landing (p50 ~0.24 s). Ending the ramp at the contact window (0.125 s) leaves p50 ~0.11 s. A quintic 35 mm over 0.11 s needs 16.7 m/s² of Cartesian acceleration and ~1600 m/s³ of jerk before any of the plan's own demand (a Cartesian-demand proxy; the session limits are LEG-space, 5000 mm/s² and 200 000 mm/s³). Over the bump's 5-knot lead with a 50 ms pre-hold (T p50 ≈ 0.29 s) it needs v 228 mm/s, a 2.4 m/s², j 88 m/s³ (Cartesian).
+- The raw splice is at `t + LEAD_S` (0.225 s), so 0.135-0.43 s is left to landing (p50 ~0.24 s). Ending the ramp at the contact window (0.125 s) leaves p50 ~0.11 s. A quintic 35 mm over 0.11 s needs 16.7 m/s² of Cartesian acceleration and ~1600 m/s³ of jerk before any of the plan's own demand (a Cartesian-demand proxy; the Sitting limits are LEG-space, 5000 mm/s² and 200 000 mm/s³). Over the bump's 5-knot lead with a 50 ms pre-hold (T p50 ≈ 0.29 s) it needs v 228 mm/s, a 2.4 m/s², j 88 m/s³ (Cartesian).
 - Why the raw path fails, as far as the logs show:
   - `CycleState` carries no hand acceleration, so the re-solved hand joins the head C1. HAND_LIMIT_C2 measures exactly that knot-acceleration step (4.44 vs 3.9 rev/s²).
   - The leg LIMIT_JERK/ACC peaks sit at t = 0.275-0.35 s on the gated plan's clock. That is past a ~0.24 s splice-to-landing, i.e. in the carry/throw that the catch-with-throw re-solve also re-plans. This assumes the gated clock starts at the splice, which was not verified.
@@ -71,11 +71,11 @@ For (b): a platform-xy translation moves the cup by exactly b at any tilt or sli
 
 ## Offline prototype (`capture_records.py` → `bump_replay.py`)
 **Method:**
-- Sim columns at apex 0.95 / sep 125 and the live session limits (350 / 5000 / 200 000, hand 3900).
+- Sim columns at apex 0.95 / sep 125 and the live Sitting limits (350 / 5000 / 200 000, hand 3900).
 - 4 interior catches × every recorded (Δ, time-to-landing) × 4 directions. The diagonal is the worst case, since `moved_mm` is the max component.
 - Each bump is applied to the record active at that instant, and `validate_cycle` runs on knots `[k_b-4, end]`. An unbumped slice is gated first; zero baseline failures.
 
-**Caveat:** the hop and the reload geometry are not matched (sep 250 plans no catch in this gate), so hop is a columns proxy.
+**Caveat:** the hop and the `reload` geometry are not matched (sep 250 plans no catch in this gate), so hop is a columns proxy.
 
 | Variant (`--retarget`, corrected) | columns 72 rows: diag / axis | hop 8 (proxy) | 1ball_fed 7 | 53 live-installed rows |
 |---|---|---|---|---|
@@ -90,7 +90,7 @@ For (b): a platform-xy translation moves the cup by exactly b at any tilt or sli
 Every remaining refusal is on the ramp-in (LIMIT_VEL first, then ACC/JERK), none in the carry or settle.
 
 ## Fix
-Not implemented in this unit. The design, interface, fences, invariant (I-CATCH-5) and rehearsal row are in `plans/active/late-catch-reaim-bump.md`. Implementing it needs a node-side request on the install service (the record lives in trajectory_node), an interface rebuild, and the executor path. It is safety-bearing leg-path work and needs its own unit with a 40 Hz walk.
+Not implemented in this unit. The design, interface, fences, invariant (I-CATCH-5) and rehearsal row are in `plans/archived/late-catch-reaim-bump.md`. Implementing it needs a node-side request on the install service (the record lives in trajectory_node), an interface rebuild, and the executor path. It is safety-bearing leg-path work and needs its own unit with a 40 Hz walk.
 
 ## Verification
 All runs are from the repo root with the project venv and `OPENBLAS_NUM_THREADS=1`. `B` = `python tools/probes/late_reaim/bump_replay.py --records temp/probes/late_reaim/records_columns_0.pkl --rows temp/probes/late_reaim/resends_2026-10-16.json --lead-knots 5`. The corrected-version runs are saved in `temp/probes/late_reaim/runs_w1.txt`.
@@ -114,7 +114,7 @@ All runs are from the repo root with the project venv and `OPENBLAS_NUM_THREADS=
 
 **Owner decisions 2026-10-16, recorded in the plan § 2:**
 - The launch bias is accepted with a bound of 50 mm/s (`BUMP-LAUNCH`, non-terminal).
-- Columns first: `BUMP_ENABLED_PATTERNS` = columns / columns_1ball_fed, and the executor defaults to off. Hop and reload stay off until a matching-record capture exists.
+- Columns first: `BUMP_ENABLED_PATTERNS` = columns / columns_1ball_fed, and the executor defaults to off. Hop and `reload` stay off until a matching-record capture exists.
 
 **Two differences from the prototype, both deliberate:**
 - (a) `k_b` is knot-aligned: the ramp starts at `(floor(t/dt) + 5)·dt`, up to one knot EARLIER than the probe's continuous `t + 0.125`. Zero-through-`k_b` holds either way. The ramp is longer, so the rate rises. `t_ramp_start_s` may only move the start later (an earlier value raises), and that is what `--legacy-start` uses for the exact reproduction.
@@ -138,10 +138,14 @@ All runs are from the repo root with the project venv and `OPENBLAS_NUM_THREADS=
 - **Two small rules added.** BUMP-LAUNCH joins BUMP-WINDOW's shrink-retry rule: |v_b| is linear in Δ at fixed timing, so the same Δ can only be refused again. `BUMP_HANDOFF` / `SPLICE_TOO_LATE` retry as-is (`bump.BUMP_RETRY_CODES`).
 - **Switch.** `skill_node._start_pattern` sets `_bump_enabled = bump_enabled_for(goal pattern)` after the refusal ladder, and all seven `SkillExecutor` constructions take `**self._bump_kwargs()`. The sim gate keys on `Schedule.pattern`, which is `'columns'` for both columns compilers, so the sim's `columns_1ball` is on where the robot's goal name `columns_1ball` is off. Its bumper is `bump_record` over the local record, and it also moves the carried release's pending entry (site + b(t_rel), takeoff + v_b).
 - **ThrowAnnouncement of a bumped release (measured verdict, no consumer affected).** The announcement still carries the pre-bump release site and launch velocity: off by at most `b(t_rel)` ~ 40 mm in release site and `|v_b|` <= 50 mm/s in launch velocity. Its only consumers are the tracker's announced-flight gate (`announced_gate` 200 mm plus the speed-ratio / direction-cosine tests on a ~3.8 m/s flight: 50 mm/s is 1.3 % of the speed, ~0.8 deg) and the executor's `TRACKED_LANDING_LATERAL_IDENTITY_MM` 200 mm. Landing position and time are unchanged because the retarget is exact. The raw re-send path already left the announcement stale by up to 20 mm.
-- **Launch bound = TOTAL lateral launch velocity (owner reading, applied after the audit).** `apply_catch_bump` now tests `|rm.vel_mm_s[:2] + v_b|` against 50 mm/s (the plan's own release lateral velocity is ~0 for a columns self-toss, <= ~25 mm/s after a carried offset); `BumpResult.launch_bias_xy_mm_s` still reports the bias alone. The bound is unchanged. `bump_replay.py --retarget --hold-s 0.05` under the total bound (2026-10-16): columns diagonal **993/1152** (was 1000; BUMP-LAUNCH 76, LIMIT_VEL 62, JERK 13, ACC 8), columns axis **1116/1152** (unchanged), columns_1ball_fed **112/112** (unchanged), installed-only **839/848** (was 848/848; 9 BUMP-LAUNCH at |delta| ~35 mm, to_land ~0.55-0.60), hop 128/128 (off anyway). The stricter bound lowers diagonal and installed-only by a few cases; `--check` still prints landing offset 0.0. The `test_skills_bump` executor fixture's then-throw targeted `p1` from `p2` (a cross-column throw with ~117 mm/s lateral velocity, which the total bound correctly declines); it now self-tosses to `p2`, like the real columns compiler.
+- **Launch bound = TOTAL lateral launch velocity (owner reading, applied after the audit).** `apply_catch_bump` now tests `|rm.vel_mm_s[:2] + v_b|` against 50 mm/s (the plan's own release lateral velocity is ~0 for a columns self-throw, <= ~25 mm/s after a carried offset); `BumpResult.launch_bias_xy_mm_s` still reports the bias alone. The bound is unchanged. `bump_replay.py --retarget --hold-s 0.05` under the total bound (2026-10-16): columns diagonal **993/1152** (was 1000; BUMP-LAUNCH 76, LIMIT_VEL 62, JERK 13, ACC 8), columns axis **1116/1152** (unchanged), columns_1ball_fed **112/112** (unchanged), installed-only **839/848** (was 848/848; 9 BUMP-LAUNCH at |delta| ~35 mm, to_land ~0.55-0.60), hop 128/128 (off anyway). The stricter bound lowers diagonal and installed-only by a few cases; `--check` still prints landing offset 0.0. The `test_skills_bump` executor fixture's then-throw targeted `p1` from `p2` (a cross-column throw with ~117 mm/s lateral velocity, which the total bound correctly declines); it now self-tosses to `p2`, like the real columns compiler.
 - **Peaks.** After a successful bump `_install` the node writes `_last_peak_vel/acc/jerk` from the bumped plan's `validate_cycle` report (as `_accept_segment` does), so `/trajectory/status` and `/diagnose` do not read 0.0 for the bumped record.
 - **Swap-time re-checks tested.** Node tests cover: the clock passing k_b between the entry check and the swap (non-terminal SPLICE_TOO_LATE, `_active_plan` / `_cycle` / `_plan_t0` unchanged), the record superseded inside the compute (terminal BUMP-NO-RECORD, record unchanged), and `_install(precondition=lambda: False)` leaving the record untouched.
 - **Sim coverage of the bump: none; hardware row 31 is the first exercise.** The sim bumper keeps a tally (`sim.skills_gate.BUMP_STATS`, printed in the summary lines as `bump: N accepted, M declined (...)`). Measured 2026-10-16: the default columns gate (`gate.run()`, 4 throws) and the small columns learner run (seed 0, target_throws 5) both reach the bump route **0 times** (0 accepted, 0 declined): no sim columns trial produces a post-band `from_fit` re-aim. No test asserts otherwise; none was faked. Two sim constructions (the learner runs, `skills_gate.py` lines ~2172 and ~2681) pass `resend_max_per_catch=0`, where CAP-SPENT blocks the bump regardless. The sim's `columns_1ball` has the bump ON (it keys on `Schedule.pattern == 'columns'`) while the robot's goal of that name has it OFF.
 - **Verification (G2).**
   - (2026-10-16, `pytest tests/motion/test_skills_bump.py tests/ros/test_install_segment.py tests/ros/test_skill_node.py tests/motion/test_skills_executor.py tests/sim/test_skills_gate.py -q -p no:cacheprovider -k "not real_worker_process"`) -> 649 passed, 1 deselected in 150.27 s (auditor's run).
   - 2026-10-16, `./run_tests.sh --full` on the branch rebased onto skill-stack 7e74f42f (load average < 1): parallel 6701 passed, 11 skipped, 1 failed — `tests/ros/test_skills_plan_bench.py::test_the_kind_enum_matches_the_srv`, which pins the srv kind enum and had not been told about `KIND_BUMP=4`; the expected dict was extended and that file re-run: 69 passed; serial tail 7 passed.
+
+## Outcome
+
+Implemented 2026-10-16, the stale cup-track seam defect closed by I-PLAN-10 on 2026-10-19, flown with the criterion MET on 2026-10-21 and 2026-10-22 (74.1 % and 79.5 % installed, zero bump-caused LIMIT/guard events), and the plan archived 2026-10-23.

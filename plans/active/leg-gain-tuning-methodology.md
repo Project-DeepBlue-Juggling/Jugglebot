@@ -4,6 +4,11 @@ status: active  # gain hunt CLOSED 2026-07-13 (production 40/0.20/0.32 ships); e
 owner: harrison
 created: 2026-04-18
 last_updated: 2026-07-13
+kind: reference
+scope: >-
+  Leg PID tuning methodology. The gain hunt closed 2026-07-13 (40/0.20/0.32 ships, gains frozen); the
+  document stays beside the active plans as the normative procedure for any future tuning round, never
+  scheduled.
 related_logbook:
   - 2026-04-18-hold-fighting-motion-onset-jitter.md
   - 2026-04-19-leg1-pose-dependent-hold-twitch.md
@@ -513,7 +518,7 @@ ladder off to last-good, disarms, and recovers via a `CLEAR_ERRORS` RPC** (the f
 re-enable slew makes that gentle) — with a bounded recovery budget so it never keeps
 climbing into a guard it cannot satisfy (`sysid_lib.GuardLatchBackoff`). Only a **recoverable**
 fault (feedback-stale / link-lost — the two the firmware self-clears when feedback/link
-returns) is watched, not fought; the **latching** guard E-STOPs (MPC-staleness /
+returns) is watched, not fought; the **latching** Soft E-stops (MPC-staleness /
 `MAX_DEVIATION` / motor-overspeed all set the sticky `s_estop_latched`, released only by
 `CLEAR_ERRORS`) drive the back-off + `CLEAR_ERRORS` recovery above — MPC-staleness is not
 merely watched, because the firmware does not self-clear it; a fatal fault (ODRIVE_FATAL /

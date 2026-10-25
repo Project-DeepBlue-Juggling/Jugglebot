@@ -634,12 +634,15 @@ class InstallSegment:
             # KIND_BUMP (I-CATCH-5, 2026-10-16).
             self.bump_delta_xy_mm = [0.0, 0.0]
             self.t_dispatch_s = 0.0
+            # two-ball-oval P3: '' = the emitter's SegmentConfig default.
+            self.planner_mode = ''
 
     Response = _make_service(
         resp_fields={'accepted': False, 'code': '', 'message': '',
                      'plan_wall_ms': 0.0, 'splice_k': -1, 't0_mono': 0.0,
                      't_event_mono': 0.0, 'duration_s': 0.0,
                      'seeded_post_release': False, 't_release_mono': 0.0,
+                     'planner_mode': '',
                      'terminal': False,
                      'release_offset_xy_mm': [0.0, 0.0],
                      'launch_bias_xy_mm_s': [0.0, 0.0]}).Response
@@ -720,6 +723,7 @@ class _JuggleGoal:
         self.pattern = ''
         self.apex_m = 0.0
         self.separation_mm = 0.0
+        self.dwell_s = 0.0
         self.num_cycles = 0
 
 

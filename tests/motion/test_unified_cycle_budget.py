@@ -267,3 +267,86 @@ def test_per_cycle_planning_budget(rig):
         "FIRST whether the gate is still measuring every pass, and only then "
         "re-measure the attribution [%s]"
         % (gmin, tmin, 100.0 * gate_share, note))
+
+
+# ---------------------------------------------------------------------------
+# The `pose` planner (two-ball-oval P3) on the LONGEST oval box cell
+# ---------------------------------------------------------------------------
+
+OVAL_SEP_MM = 150.0
+OVAL_APEX_M = 0.95
+#: Dwell 0.65 is the longest window in the oval box (flight 0.88 s + 0.65 s =
+#: 61 knots): the pose program's cost grows with the knot count (a dense
+#: (3n)² objective plus 8 cone rows per loaded knot), so it is the binding cell.
+OVAL_DWELL_S = 0.65
+
+
+@pytest.fixture(scope='module')
+def oval_rig():
+    """``(limits, geom, release_state, goals)`` for the folded oval window in
+    POSE mode at the box's limits — the production ``segments`` path's goals
+    (``_plan_catch_throw``), so what is timed is what the emitter solves."""
+    from jugglebot.motion.skills import schedule as sc
+    from jugglebot.motion.skills import segments as sg
+    from jugglebot.motion.skills import sites as si
+    from jugglebot.motion.trajectory import ballistics_bc as bal
+
+    limits = TrajectoryLimits.from_config(hw).with_session_limits(
+        leg_vel_mmps=350.0, leg_acc_mmps2=5000.0, leg_jerk_mmps3=200000.0,
+        hand_acc_rps2=3900.0)
+    geom = StewartGeometry()
+    site_t, site_c = si.columns_sites(OVAL_SEP_MM)
+    T = sc.flight_s(OVAL_APEX_M)
+    cfg = sg.SegmentConfig(planner_mode=uc.PLANNER_POSE)
+    rcfg = cr.RealizeConfig()
+    rest = site_t.rest_site_mm()
+    slider_mm = float(rest[2]) - rcfg.cup_z_base_mm
+    rev = ((slider_mm - rcfg.slider_rev_zero_mm) / 1000.0) * cr.HAND_REV_PER_M
+    seed = uc.CycleState.at_rest(
+        np.array([rest[0], rest[1], rcfg.active_z_mm, 0.0, 0.0, 0.0]), rev, rcfg)
+    throw = sg.plan_segment(sg.THROW, seed, sg.ThrowTerminal(
+        site_mm=site_t.throw_site_mm(), target_mm=site_c.throw_site_mm(),
+        flight_s=T, t_release_s=0.4), cfg, limits, geom)
+    goals = uc.CycleGoals(
+        period_s=T + OVAL_DWELL_S, throw_site_mm=site_t.throw_site_mm(),
+        throw_target_mm=site_c.throw_site_mm(), flight_s=T,
+        catch_site_mm=site_c.catch_site_mm(),
+        catch_vel_mm_s=bal.arrival_velocity(throw.takeoff_vel_mm_s, T),
+        catch_t_s=T, hold_platform_knots=sg._hold_knots(cfg, throw.release_state),
+        pre_release_hold_knots=sg._pre_hold_knots(cfg),
+        planner_mode=uc.PLANNER_POSE)
+    plan, meta = uc.plan_steady(goals, throw.release_state, limits, geom)
+    assert meta.planner_mode == uc.PLANNER_POSE
+    return limits, geom, throw.release_state, goals, plan
+
+
+def test_pose_mode_steady_fits_the_same_budget(oval_rig):
+    """The pose planner on the 61-knot oval cell: the SAME two halves as the
+    reference cycle above — core (plan minus gate) <= 50 ms, whole call <= 250
+    ms — because a pose-mode install_segment runs off the same emitter thread
+    under the same determinism rule.
+
+    MEASURED (2026-10-23, this Jetson, box otherwise busy with a parallel test
+    run): pose 'qp' stage (spec build + assembly + solve) 31-42 ms against the
+    level program's 20-29 ms on the same windows, plan_cycle total 56 ms at
+    dwell 0.65, gate ~14 ms.  The pose program is 3n variables at the shipped
+    band 0 (the dz block is not assembled); the leg-jerk term is one dense
+    einsum, the cone rows one broadcast — the prototype's per-knot Python loops
+    cost 26-35 ms of assembly alone and are what this test exists to keep out.
+    """
+    limits, geom, state, goals, plan = oval_rig
+    totals = _samples(lambda: uc.plan_steady(goals, state, limits, geom), N_SOLVES)
+    gates = _samples(lambda: fz.validate_cycle(plan, limits, geom), N_GATE)
+    tmin, t50, t90, t99, tmax = _stats(totals)
+    gmin, g50, _, _, _ = _stats(gates)
+    tmin_core = float(totals[:N_GATE].min())
+    note = ("pose total min %.1f (first %d: %.1f) p50 %.1f p90 %.1f p99 %.1f max "
+            "%.1f | gate min %.1f p50 %.1f"
+            % (tmin, N_GATE, tmin_core, t50, t90, t99, tmax, gmin, g50))
+    core = tmin_core - gmin
+    assert core <= OWNER_BUDGET_MS, (
+        "pose planner core %.1f ms > %.1f ms owner budget [%s]"
+        % (core, OWNER_BUDGET_MS, note))
+    assert tmin <= TOTAL_BUDGET_MS, (
+        "pose plan_cycle %.1f ms > %.1f ms owner plan+validate ceiling [%s]"
+        % (tmin, TOTAL_BUDGET_MS, note))

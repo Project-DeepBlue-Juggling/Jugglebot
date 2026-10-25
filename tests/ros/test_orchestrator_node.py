@@ -1155,6 +1155,15 @@ class TestJuggleRelay:
         assert goal.num_cycles == 6
         assert isinstance(goal.num_cycles, int)
 
+    def test_goal_carries_dwell_s_and_omitted_dwell_is_the_zero_sentinel(self, orch):
+        """2026-10-21 (owner): dwell_s travels on the goal; omitted = 0 = the
+        node's dwell_s parameter."""
+        res, sent = self._dispatch(orch, 'oval_1ball,separation_mm=150,dwell_s=0.65')
+        assert res.success is True
+        assert sent[0].dwell_s == 0.65
+        res, sent = self._dispatch(orch, 'hop,num_cycles=3')
+        assert sent[0].dwell_s == 0.0
+
     def test_tokens_after_the_pattern_may_come_in_any_order(self, orch):
         """The numeric tokens are not a fixed order —
         and the field the request omits keeps its 0 sentinel."""

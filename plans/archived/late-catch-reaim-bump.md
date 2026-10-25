@@ -1,9 +1,11 @@
 ---
 title: The late catch re-aim as a platform-xy bump on the installed plan (the raw-path re-solve is refused on physics every time)
 created: 2026-10-16
-status: active
+status: completed
+archived: 2026-10-23
+completed: 2026-10-22
 owner: harrison
-last_updated: 2026-10-16
+last_updated: 2026-10-23
 related_logbook:
   - 2026-10-16-late-catch-reaim-bump-design.md
   - 2026-10-16-handoff-lead-flown-zero-splice-too-late-tracker-fit-late.md
@@ -64,5 +66,21 @@ Every refusal is on the ramp-in; the carry, retarget and settle add none. The re
 
 ## 6. Done means
 - **G1 (DONE 2026-10-16):** I-CATCH-5, `apply_catch_bump`, the executor's pure layer and the § 3 tests. The probe calls the production function and reproduces the design row exactly with `--legacy-start --no-launch-bound`. Scoped gate green: `tests/motion/test_skills_bump.py tests/motion/test_skills_executor.py tests/motion/test_cup_cycle.py tests/motion/test_cup_contact_contract.py`.
-- **G2 (CODE DONE 2026-10-16, not committed, not flown):** the node request and the executor dispatch path have landed. The node request is `InstallSegment.srv` `KIND_BUMP` (one service, sharing the install path's guards, hold epoch and callback group) → `trajectory_node._svc_bump_catch`. On the executor side, `_resend_live_catch` routes post-band carried-catch re-aims to `SkillExecutor.bumper`, ahead of the `catch_freeze_s` return. A catch with no carried throw keeps the raw re-solve. `skill_node` turns the bump on per goal pattern and the sim gate wires in a bumper. **The interfaces changed: `colcon build --packages-select jugglebot_interfaces jugglebot` + a FULL launch restart before flying** (rehearsal row 31). Scoped gate: . `./run_tests.sh` and `--full` are still owed (coordinator). Details: design entry § "Implementation G2".
+- **G2 (DONE: code 2026-10-16; I-PLAN-10 landed 2026-10-19 evening; flown, row 47 PASSED 2026-10-21):** the node request and the executor dispatch path have landed. The node request is `InstallSegment.srv` `KIND_BUMP` (one service, sharing the install path's guards, hold epoch and callback group) → `trajectory_node._svc_bump_catch`. On the executor side, `_resend_live_catch` routes post-band carried-catch re-aims to `SkillExecutor.bumper`, ahead of the `catch_freeze_s` return. A catch with no carried throw keeps the raw re-solve. `skill_node` turns the bump on per goal pattern and the sim gate wires in a bumper. **The interfaces changed: `colcon build --packages-select jugglebot_interfaces jugglebot` + a FULL launch restart before flying** (rehearsal row 31). Details: design entry § "Implementation G2".
 - **Flown:** one sitting shows ≥ 70 % of post-band re-aims installed, zero bump-caused LIMIT/guard events, and no throw-landing regression.
+  - **2026-10-19 15:23 / 17:47: FIRST FLIGHTS, NOT MET.** The bump installed 2 + 6 times and was the direct cause of 1 + 5 attempt-ending `LIMIT_JERK` refusals on the NEXT catch (first knot of the re-gated range): `_bumped_meta` overlaid the pose but left `meta.cup_plan` stale, and the splice re-derived the seam velocity from the stale track. Closed as a class by I-PLAN-10 (derived tracks agree with the pose; splice refuses `CHAIN_DISCONTINUITY`) the same evening, NOT FLOWN: `logbook/2026-10-19-limit-jerk-at-the-seam-after-a-bump-stale-cup-track.md`, rehearsal row 47. The 'Flown' criterion is re-judged at the next columns sitting.
+  - **2026-10-21 22:53: re-judged, MET on the seam.** 20 bump installs, 0 `LIMIT_JERK` at t=0.025 s after a bump, 0 `CHAIN_DISCONTINUITY` (row 47 PASSED); the sitting's other refusals were not bump-caused (`logbook/2026-10-22-hop-reaims-refused-mid-transit-tilt-rate-seam-and-the-new-cup.md`).
+  - **2026-10-21 / 2026-10-22: FLOWN, criterion MET** (close-out log check 2026-10-23). 2026-10-21 22:53: 74.1 % installed (20 of 27 requests; refusals 3 BUMP-LAUNCH, 4 LIMIT_ACC). 2026-10-22 19:50: 79.5 % (58 of 73; 6 LIMIT_JERK 217-355k by the bump's own gate, 5 SPLICE_TOO_LATE, 3 BUMP-LAUNCH, 1 SERVICE_TIMEOUT). Zero bump-caused LIMIT/guard events, 0 CHAIN_DISCONTINUITY. Throw landing median, bumped vs unbumped goals: 24.6 vs 29.7 mm (10-21), 22.1 vs 21.9 mm (10-22); the unbumped group is mixed (hop, short, ended-early), so this is no clean A/B but shows no regression.
+
+## Archival note (2026-10-23)
+
+**What shipped.** I-CATCH-5, `apply_catch_bump`, the executor's pure layer, the node request (`InstallSegment` `KIND_BUMP` -> `trajectory_node._svc_bump_catch`) and the `_resend_live_catch` routing, all landed 2026-10-16. The 2026-10-19 first flights found the bump leaving `meta.cup_plan` stale (next catch refused `LIMIT_JERK`); I-PLAN-10 closed that class the same evening and the criterion was re-flown MET on 2026-10-21 and 2026-10-22 (numbers above).
+
+**Why it closed.** The Done-means criterion (>= 70 % of post-band re-aims installed, zero bump-caused LIMIT/guard events, no throw regression) was met at both sittings. The 2026-10-22 non-install mass is gate refusals (LIMIT_JERK, SPLICE_TOO_LATE, BUMP-LAUNCH, SERVICE_TIMEOUT), not bump faults; declines are graceful (trajectory_node refuses before install, the committed catch is untouched). The 2026-10-23 sitting did not exercise the bump (hop/oval only), so there is no third data point.
+
+**Deliberate decisions that stand.**
+- The bump breaks the 2026-09-28 carry rule on purpose (owner-deliberate), bounded at `BUMP_MAX_LAUNCH_LATERAL_MM_S` = 50 mm/s of launch velocity.
+- `BUMP_ENABLED_PATTERNS` is columns-only. Hop and reload stay off until a matching-record capture passes the replay; this is deliberate scope, not an omission.
+- The 2026-10-19 stale cup-track incident is closed by I-PLAN-10 and re-flown MET on 2026-10-21.
+
+**Residue (unscheduled, no live owner).** The bump gate's headroom (5 knots / 0.125 s ramp-in) was never re-opened; the 6 LIMIT_JERK refusals (t = 0.1-0.225 s, legs 4/5) and 5 SPLICE_TOO_LATE (k_b <= k_wire) are the remaining non-install mass. Revive by filing a plan if they bite.

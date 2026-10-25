@@ -170,7 +170,7 @@ and `initial_height_mm` 574.3 → 578.2. `config/tilt_calibration.yaml` is `git 
 it was captured against the old geometry, so it encoded part of the error the fit
 removes. An absent file is the documented C-LEVEL-1 fallback. (Attribution note: this
 worktree's index is shared with the R4 session, and the staged deletion rode that
-session's runsheet commit `1b187e8` — the R4 sheet's new row 8b, `level` first under
+session's runbook commit `1b187e8` — the R4 sheet's new row 8b, `level` first under
 the new geometry — before the apply commit was written. The deletion is part of THIS
 change; the SHA is recorded only so `git log -- config/tilt_calibration.yaml` makes
 sense.) The generated
@@ -219,7 +219,7 @@ the tilt-centre and cup-base fixes below: 17 931 rows, 1 243 refused, **1 971.2 
 1 973.2 s**; the two YAMLs are byte-identical, so the sweep is deterministic under the
 new IK. Boxes 9 → 9, limits unchanged (300/5000/150k, hand 3500). **Bounds moved for the
 first time since R2** (every R4 re-sweep was bit-identical; the IK changed this time).
-The grid steps 2 mm inside ±10 mm and then jumps to ±20 (±30/40 for self-toss), so one
+The grid steps 2 mm inside ±10 mm and then jumps to ±20 (±30/40 for self-throw), so one
 refused edge cell moves a bound by 10 mm:
 
 | box | old | new |
@@ -233,7 +233,7 @@ refused edge cell moves a bound by 10 mm:
 
 **The hop boxes the first R4 sitting flies narrowed on x** (toward the target site) by
 4–6 mm while their apex band widened; the R4 session was told. The columns and 0.6 m
-self-toss boxes traded 10 mm of one lateral axis for a wider apex band — the
+self-throw boxes traded 10 mm of one lateral axis for a wider apex band — the
 largest-box search picking a different aspect out of a reshaped admitted set. The
 identity prior's own command (0, 0) is inside every box. New file:
 `config/generated/admissible_box.yaml`, `swept_at: 2026-09-27`, `gate_hash:
@@ -298,7 +298,7 @@ mode, which moved from seed 3 to seed 4 (6.45 → 110.7 → 212.1 mm; every seed
 diverges) — its docstring already says the mode follows the catch contact, and it
 moved the same way on 2026-08-21. `build_cup_config`'s slider band re-pins 0.690 /
 0.6796 → 0.6935 / 0.6835 for the same 3.9 mm. One sim pin was re-set on evidence
-rather than restored: the vertical column toss now lands 22.7 mm off (was 8.3), with
+rather than restored: the vertical column throw now lands 22.7 mm off (was 8.3), with
 the platform level and still through the contact window (< 0.01°, < 0.5 mm/s) and
 the cup velocity vertical at release — the ball rolling in the cup, the documented
 pose-chaos, so `test_juggle_throw`'s bound is 30 mm (still deep inside the catch's

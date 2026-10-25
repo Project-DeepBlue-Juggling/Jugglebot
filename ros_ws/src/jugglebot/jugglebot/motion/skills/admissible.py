@@ -53,7 +53,7 @@ import yaml
 
 __all__ = [
     'AdmissibleBox', 'AdmissibleError', 'LimitsMismatch',
-    'MARGIN_FRAC', 'PATTERNS', 'clip', 'dump', 'load', 'check_limits',
+    'MARGIN_FRAC', 'PATTERNS', 'PLANNER_MODES', 'clip', 'dump', 'load', 'check_limits',
     'describe_miss', 'gate_hash', 'select', 'check_site_workspace',
     'SITE_OUTSIDE_WORKSPACE_REASON',
 ]
@@ -74,6 +74,12 @@ __all__ = [
 #: caller passes the sibling's box label to :func:`select` (skill_node does so
 #: today for 'columns_1ball_fed' -> 'columns'), so there is one path.
 PATTERNS = ('self_toss', 'hop', 'columns', 'oval_1ball', 'oval')
+
+#: The segment planners a box may be swept under (two-ball-oval P3): 'level'
+#: (cup held level) or 'pose' (pose-level planner). Kept here as a literal
+#: twin of ``unified_cycle.PLANNER_MODES`` (this module does not import the
+#: planner); ``tests/motion/test_skills_admissible.py`` asserts they are equal.
+PLANNER_MODES = ('level', 'pose')
 
 #: Workspace rule (decision 38, AMENDED 2026-10-18 by the owner): for every
 #: site, ``|site xy| + box half-extent <= workspace_xy_m`` -- NO margin. The
@@ -176,6 +182,15 @@ class AdmissibleBox:
     #: that matters (the operator-visible refusal at runtime) and treats a
     #: ``None`` box exactly like a numeric mismatch when a live dwell is given.
     dwell_s: Optional[float] = None
+    #: two-ball-oval P3 (2026-10-23): the segment planner ('level' | 'pose',
+    #: :data:`PLANNER_MODES`) this box was swept under. The pose planner admits
+    #: a different set than the level planner (e.g. oval at dwell 0.45 passes
+    #: under pose, is refused under level), so a box swept under one and
+    #: selected for a session running the other is the same unenforced-twin
+    #: class the ``dwell_s`` stamp closed. :func:`select` matches it exactly,
+    #: so pose- and level-swept cells coexist in one file. ``None`` is a
+    #: pre-P3 box: tolerated at load, but it matches NO planner mode.
+    planner_mode: Optional[str] = None
 
     def __post_init__(self):
         if (not isinstance(self.site_pair, tuple) or len(self.site_pair) != 2
@@ -232,6 +247,9 @@ class AdmissibleBox:
             if not (math.isfinite(dwell) and dwell > 0.0):
                 raise ValueError('dwell_s must be None or a finite positive '
                                   'float, got %r' % (self.dwell_s,))
+        if self.planner_mode is not None and self.planner_mode not in PLANNER_MODES:
+            raise ValueError('planner_mode must be None or one of %r, got %r'
+                              % (PLANNER_MODES, self.planner_mode))
 
     @property
     def empty(self) -> bool:
@@ -342,10 +360,16 @@ def _dwell_matches(box: AdmissibleBox, dwell_s: float) -> bool:
         float(box.dwell_s), float(dwell_s), rel_tol=1e-9, abs_tol=1e-9)
 
 
+def _mode_matches(box: AdmissibleBox, planner_mode: str) -> bool:
+    """True when ``box`` was swept under exactly ``planner_mode`` (an
+    unstamped box matches no mode)."""
+    return box.planner_mode is not None and box.planner_mode == planner_mode
+
+
 def select(boxes: List[AdmissibleBox], pattern: str, site_pair: Tuple[str, str],
           apex_m: float, *, release_site_xy_mm: Tuple[float, float],
           target_site_xy_mm: Tuple[float, float],
-          dwell_s: float) -> Optional[AdmissibleBox]:
+          dwell_s: float, planner_mode: str) -> Optional[AdmissibleBox]:
     """The box in ``boxes`` whose ``pattern`` matches ``pattern``, whose
     ``site_pair`` matches ``site_pair``, whose ``apex_band_m`` contains
     ``apex_m`` (inclusive, 1e-9 m tolerance), and whose ``release_site_xy_mm``
@@ -363,7 +387,10 @@ def select(boxes: List[AdmissibleBox], pattern: str, site_pair: Tuple[str, str],
     one file. ``dwell_s`` is REQUIRED (no default: a caller that forgets it
     would silently select another dwell's box); an unstamped box
     (``dwell_s is None``) matches no dwell. A miss on dwell alone is named by
-    :func:`describe_miss`."""
+    :func:`describe_miss`. ``planner_mode`` (two-ball-oval P3) is likewise
+    REQUIRED and matched exactly: a box swept under the level planner is never
+    selected for a session running the pose planner, or vice versa; an
+    unstamped box matches no mode."""
     tol = 1e-9
     xy_tol_mm = 1e-6
     pair = tuple(site_pair)
@@ -373,6 +400,8 @@ def select(boxes: List[AdmissibleBox], pattern: str, site_pair: Tuple[str, str],
         if box.pattern != pattern or box.site_pair != pair:
             continue
         if not _dwell_matches(box, dwell_s):
+            continue
+        if not _mode_matches(box, planner_mode):
             continue
         if (abs(box.release_site_xy_mm[0] - rel_x) > xy_tol_mm
                 or abs(box.release_site_xy_mm[1] - rel_y) > xy_tol_mm
@@ -389,7 +418,7 @@ def describe_miss(boxes: List[AdmissibleBox], pattern: str,
                   site_pair: Tuple[str, str], apex_m: float, *,
                   release_site_xy_mm: Tuple[float, float],
                   target_site_xy_mm: Tuple[float, float],
-                  dwell_s: float) -> str:
+                  dwell_s: float, planner_mode: str) -> str:
     """Plain-language reason :func:`select` returned ``None`` for these exact
     arguments -- for an operator-facing refusal message, not for control flow.
 
@@ -406,7 +435,11 @@ def describe_miss(boxes: List[AdmissibleBox], pattern: str,
        regardless of site xy -- reported with whatever bands were swept for
        this pair (if any), so the operator knows what apex range to ask for.
 
-    A third, reported FIRST (two-ball-oval P1): a box matches on everything
+    A fourth, reported before all others (two-ball-oval P3): a box matches on
+    everything except ``planner_mode`` -- the message names the field, the live
+    mode and the swept mode(s).
+
+    A third, reported FIRST after that (two-ball-oval P1): a box matches on everything
     except ``dwell_s`` -- the message names ``dwell_s``, the live value and
     the swept dwell(s), so the operator sets the node parameter or
     re-sweeps rather than chasing an apex or separation that is fine.
@@ -418,6 +451,29 @@ def describe_miss(boxes: List[AdmissibleBox], pattern: str,
     rel_x, rel_y = float(release_site_xy_mm[0]), float(release_site_xy_mm[1])
     tgt_x, tgt_y = float(target_site_xy_mm[0]), float(target_site_xy_mm[1])
     same_pair = [b for b in boxes if b.pattern == pattern and b.site_pair == pair]
+    def _geom_ok(b):
+        return (b.apex_band_m[0] - tol <= apex <= b.apex_band_m[1] + tol
+                and abs(b.release_site_xy_mm[0] - rel_x) <= xy_tol_mm
+                and abs(b.release_site_xy_mm[1] - rel_y) <= xy_tol_mm
+                and abs(b.target_site_xy_mm[0] - tgt_x) <= xy_tol_mm
+                and abs(b.target_site_xy_mm[1] - tgt_y) <= xy_tol_mm)
+    wrong_mode = [b.planner_mode for b in same_pair
+                  if _geom_ok(b) and not _mode_matches(b, planner_mode)]
+    if wrong_mode and not any(
+            _geom_ok(b) and _mode_matches(b, planner_mode)
+            for b in same_pair):
+        return (
+            'planner_mode: the live planner is %r but the box covering this '
+            'request was swept under planner_mode=%s -- set skill_node\'s '
+            'planner_mode parameter to the swept value, or re-sweep for this '
+            'planner (tools/admissible_sweep.py --planner-mode %s)'
+            % (planner_mode, ', '.join(
+                'unstamped' if m is None else m
+                for m in sorted(set(wrong_mode), key=lambda m: m or '')),
+               planner_mode))
+    same_pair = [b for b in same_pair if _mode_matches(b, planner_mode)] \
+        if any(_mode_matches(b, planner_mode) for b in same_pair) \
+        else same_pair
     wrong_dwell = []
     for box in same_pair:
         if _dwell_matches(box, dwell_s):
@@ -490,7 +546,7 @@ def _apex_bands_overlap(a: Tuple[float, float], b: Tuple[float, float]) -> bool:
 
 def _refuse_overlapping_apex_bands(boxes: List[AdmissibleBox], error_cls) -> None:
     """Refuse (raising ``error_cls``) when two boxes share a
-    ``(pattern, site_pair, dwell_s)`` and their ``apex_band_m`` ranges overlap --
+    ``(pattern, site_pair, dwell_s, planner_mode)`` and their ``apex_band_m`` ranges overlap --
     ambiguous at :func:`select` time, so it is a contract violation in
     whatever built the file, not a tie for the caller to break. Keyed on
     pattern too (R4): a 'hop' and a 'columns' box may legitimately share a
@@ -498,14 +554,14 @@ def _refuse_overlapping_apex_bands(boxes: List[AdmissibleBox], error_cls) -> Non
     :func:`select` never confuses them, so this must not refuse them either."""
     by_key: Dict[tuple, List[Tuple[float, float]]] = {}
     for box in boxes:
-        key = (box.pattern, box.site_pair, box.dwell_s)
+        key = (box.pattern, box.site_pair, box.dwell_s, box.planner_mode)
         for band in by_key.get(key, ()):
             if _apex_bands_overlap(band, box.apex_band_m):
                 raise error_cls(
-                    'two boxes for pattern %r site pair %r dwell_s %r have '
-                    'overlapping apex_band_m %r and %r -- select() could not '
+                    'two boxes for pattern %r site pair %r dwell_s %r '
+                    'planner_mode %r have overlapping apex_band_m %r and %r -- select() could not '
                     'resolve which one a command in the overlap belongs to'
-                    % (box.pattern, box.site_pair, box.dwell_s, band,
+                    % (box.pattern, box.site_pair, box.dwell_s, box.planner_mode, band,
                        box.apex_band_m))
         by_key.setdefault(key, []).append(box.apex_band_m)
 
@@ -635,6 +691,7 @@ def dump(path: str, boxes: List[AdmissibleBox]) -> None:
                                       float(box.target_site_xy_mm[1])],
                 'dwell_s': (float(box.dwell_s) if box.dwell_s is not None
                            else None),
+                'planner_mode': box.planner_mode,
             }
             for box in boxes
         ],
@@ -732,6 +789,14 @@ def load(path: str) -> List[AdmissibleBox]:
         # like a numeric mismatch); `check_limits` no longer takes `dwell_s`.
         raw_dwell = raw.get('dwell_s')
         dwell = float(raw_dwell) if raw_dwell is not None else None
+        # two-ball-oval P3: `planner_mode` is tolerated ABSENT or null (a
+        # pre-P3 file loads unstamped and matches no mode); a non-string or
+        # out-of-vocabulary value is refused by the box's own validation.
+        raw_mode = raw.get('planner_mode')
+        if raw_mode is not None and not isinstance(raw_mode, str):
+            raise AdmissibleError(
+                "%s: box %d planner_mode must be a string or null, got %r"
+                % (path, i, raw_mode))
         out.append(AdmissibleBox(
             site_pair=tuple(raw['site_pair']),
             apex_band_m=(float(raw['apex_band_m'][0]), float(raw['apex_band_m'][1])),
@@ -745,6 +810,7 @@ def load(path: str) -> List[AdmissibleBox]:
             gate_hash=ghash,
             swept_at=swept_at,
             dwell_s=dwell,
+            planner_mode=raw_mode,
         ))
     _refuse_overlapping_apex_bands(out, AdmissibleError)
     return out

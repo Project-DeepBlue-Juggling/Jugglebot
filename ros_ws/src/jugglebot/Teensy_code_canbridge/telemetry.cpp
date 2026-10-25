@@ -411,6 +411,36 @@ void bridge_tx_diag_uplink_step() {
   udp_send_stream(JbUdp::MsgType::BRIDGE_TX_DIAG, (const uint8_t*)&p, sizeof(p));
 }
 
+// ── FW 31 per-leg lead-clamp census — contract in telemetry.h ────────────────
+// The wire half of plans/active/leg-lead-clamp-age-aware.md P1: the 500 Hz clamp
+// verdict was only ever visible as lead_clamp_mask on the 10 Hz heartbeat, which
+// under-sampled the 2026-10-24 staircases so badly that engagement had to be
+// INFERRED from the executed target. Cumulative u32s (the BridgeTxDiag census
+// idiom), read through leg_interp.h's accessors — six naturally-aligned volatile
+// loads per array, the single-writer discipline leg_interp.cpp documents.
+static constexpr uint64_t LEG_CLAMP_DIAG_PERIOD_US = 1000000u;   // 1 Hz
+static uint64_t s_leg_clamp_diag_sent_us = 0;
+static_assert(sizeof(JbUdp::LegClampDiagPayload::lead_clamp_ticks) /
+                  sizeof(JbUdp::LegClampDiagPayload::lead_clamp_ticks[0]) == NUM_LEGS,
+              "LegClampDiag lead_clamp_ticks array width != NUM_LEGS");
+static_assert(sizeof(JbUdp::LegClampDiagPayload::stale_anchor_ticks) /
+                  sizeof(JbUdp::LegClampDiagPayload::stale_anchor_ticks[0]) == NUM_LEGS,
+              "LegClampDiag stale_anchor_ticks array width != NUM_LEGS");
+
+void leg_clamp_diag_uplink_step() {
+  const uint64_t now = micros64();   // interval clock: emission pacing
+  if (s_leg_clamp_diag_sent_us != 0 &&
+      (now - s_leg_clamp_diag_sent_us) < LEG_CLAMP_DIAG_PERIOD_US) return;
+  s_leg_clamp_diag_sent_us = now;
+
+  JbUdp::LegClampDiagPayload p{};
+  for (uint8_t i = 0; i < NUM_LEGS; ++i) {
+    p.lead_clamp_ticks[i]   = interp_leg_lead_clamp_ticks(i);
+    p.stale_anchor_ticks[i] = interp_leg_stale_anchor_ticks(i);
+  }
+  udp_send_stream(JbUdp::MsgType::LEG_CLAMP_DIAG, (const uint8_t*)&p, sizeof(p));
+}
+
 // ── Encoder-cache freshness census — contract in telemetry.h ────────────────
 // The confirmation instrument for the surviving question of
 // logbook/2026-07-18-teensy-uptime-tracking-degradation.md, after the S1

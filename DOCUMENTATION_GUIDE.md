@@ -12,7 +12,7 @@ update?", jump straight to [§ Decision Tree](#decision-tree).
 
 ## 1. Documentation layers at a glance
 
-Jugglebot has **eight distinct documentation layers**. Each has a specific
+Jugglebot has **ten distinct documentation layers**. Each has a specific
 purpose; duplication between them is a bug. Pick the right layer and keep
 authoritative content in exactly one place — cross-reference from the others.
 
@@ -26,6 +26,8 @@ authoritative content in exactly one place — cross-reference from the others.
 | 6 | **Plans** | [plans/active/](plans/active/), [plans/parked/](plans/parked/), [plans/archived/](plans/archived/) | Implementers and reviewers | Forward-looking implementation reports & bringup plans |
 | 7 | **Automation layer** | [.claude/commands/](.claude/commands/), [.claude/agents/](.claude/agents/) | Claude (and anyone editing the workflow) | Slash-command protocols and dedicated agent specs |
 | 8 | **Inline (source code)** | `*.py`, `*.h`, `*.yaml` | Engineers reading the code | Docstrings, module headers, non-obvious *why* comments |
+| 9 | **Domain glossary** | [GLOSSARY.md](GLOSSARY.md) | Everyone who names a domain concept (human + Claude) | The project's vocabulary: one canonical term per concept, a one-or-two-sentence definition, and the synonyms to avoid. Nothing else |
+| 10 | **Project map** | [map/](map/) | The owner and Claude (both write and move items) | One flat directory of items (pathways, ideas, features, bugs, tickets): what to build or fix, how work is sequenced, and where a wayfinder map stands. Points at plans and logbook entries; holds no change narrative |
 
 > Claude's **auto-memory** at `~/.claude/.../memory/` is Claude-private and is
 > deliberately **not** a documentation layer. Do not copy project docs there.
@@ -74,6 +76,25 @@ Every new page must be registered in `mkdocs.yml → nav:`. Section names map
 to directories; filenames are lowercase, hyphenated (or underscore where
 matching existing style — `motion_planner/`, `can_bridge/`, `analysis/`).
 
+**Links out of `docs/`.** A link from a docs page to a repo path outside
+`docs/` (source, firmware, plans, logbook) is the absolute URL
+`https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/<path>`
+(`tree/main/<dir>` for a directory), never a relative path. MkDocs cannot
+resolve a relative link that leaves `docs/`: `--strict` warns (a strict build on
+2026-09-20 gave 33 warnings, latent until the first CI run on `main`/`refactor`)
+and the link is a 404 on the published site. MkDocs cannot check the absolute
+form, so
+[tests/sim/test_docs_links.py](tests/sim/test_docs_links.py) does — no relative
+escape, and the `<path>` must exist in the tree — on every commit, with
+`mkdocs build --strict` in CI as the backstop.
+
+**Carve-out — `docs/agents/`.** Agent-skill configuration written by
+`/setup-matt-pocock-skills` (`issue-tracker.md`, `triage-labels.md`,
+`domain.md`) lives here but is *not* site content: `mkdocs.yml` excludes it
+via `exclude_docs`, and it is deliberately not registered in `nav:`. Skills
+find it through the `## Agent skills` block in `CLAUDE.md`. It is a
+carve-out inside this layer, not a separate layer.
+
 **When to add here:** a stable piece of knowledge about how a subsystem
 works that will be referenced more than once. If the content is specific to
 one investigation or one change, it belongs in the **logbook**, not here.
@@ -116,7 +137,11 @@ Essentials you must know:
 - **Frontmatter** (YAML between `---` delimiters) is mandatory. Fields:
   `title`, `type`, `date`, `status`, and optional `phase`, `related_plan`,
   `related_issues`, `sessions`, `files_changed`, `commits`, `subsystem`,
-  `tags`.
+  `tags`. `related_issues` holds `known_issues.yaml` IDs (§ 4), never GitHub
+  issue numbers: GitHub Issues are external state, not a documentation layer
+  (see `docs/agents/issue-tracker.md`). Map items (§ 2.10) link to entries
+  through their own `links:` field; entries do not point back except through
+  `related_plan:` or prose.
 - **`type` (controlled):** `investigation | bugfix | refactor | feature | optimization`.
   Each type has its own required body sections — see
   [logbook/README.md § Entry types](logbook/README.md#entry-types-and-their-sections).
@@ -217,7 +242,16 @@ completed: YYYY-MM-DD     # only when the work finished
 archived: YYYY-MM-DD      # set at archival -- replaces the old filename date prefix
 # Optional, for tuning/methodology plans:
 owner: <name>
-last_updated: YYYY-MM-DD
+last_updated: YYYY-MM-DD  # required on every plan (the boards are generated from it)
+pathway: <slug>           # the map/pathway-<slug>.md item this plan serves
+branch: <branch>          # branch the work lands on
+scope: <short phrase>     # board "scope" column
+kind: reference           # only for reference documents that are not schedulable work
+steps:                    # mirrors the step headings in the body, in order
+  - id: P1                # id/title/kind/status; kind: phase | rung; status: not_started | in_progress | complete | retired
+    title: <heading text>
+    kind: phase
+    status: not_started
 related_logbook:          # logbook filenames this plan discusses
   - YYYY-MM-DD-slug.md
 related_config:           # config files this plan pins values in
@@ -237,6 +271,14 @@ status: parked   # 2026-08-15 — nothing schedulable: THE gate (firmware
                  # stale-hold torque decay) is unwritten, and the motivating
                  # deficit was measured on the degraded plant. Resume from Phase 0.
 ```
+
+The note is for readers of the file; the board is generated from three
+fields beside it: `parked: YYYY-MM-DD`, `parked_why: <why>` and `unpark: <what
+would unpark it>`. The three `INDEX.md` files are generated by `python -m
+mapkit gen` from plan frontmatter (no hand-edited rows) and pinned by the
+currency test in `tests/sim/test_plans_index.py`, which also pins that `steps:`
+mirrors the step headings. The archived board's status column shows the
+parser-normalised status (`complete` reads as `completed`).
 
 Pre-frontmatter plans (§ 6) may carry the equivalent in their `**Status:**`
 banner instead. `tests/sim/test_plans_index.py` pins that *some* parked note
@@ -375,6 +417,79 @@ economy-of-words principle. Rules:
 
 ---
 
+### 2.9 [GLOSSARY.md](GLOSSARY.md) — Domain glossary
+
+Named `GLOSSARY.md` since 2026-10-24 because the `domain-modeling` skill writes
+that file; a three-line `CONTEXT.md` stub keeps old references resolving.
+
+The project's shared language, **normative**: every other layer uses the
+glossary's term for a concept and none of the words listed under its `_Avoid_`
+lines. It is a glossary and nothing else — no history, no procedure, and no
+implementation detail beyond the bare identifier an entry needs to separate
+two things that share a name (`teensy_bridge_node`, `motor_guard`). A definition says what a thing *is*; how it works
+belongs in [docs/](docs/) or a contract, and why it changed belongs in the
+logbook.
+
+- **Format**: `**Term**:` + a one-or-two-sentence definition + an optional
+  `_Avoid_:` line, grouped under cluster subheadings. No frontmatter.
+- **Inclusion bar**: project coinages, and general juggling or robotics words
+  only where the project narrows them (a Leg is one of six, never the Hand).
+  General engineering vocabulary stays out.
+- **The glossary may run ahead of the code.** A term is adopted here first and
+  the identifiers follow in their own commit (a rename is a grep-counted
+  refactor, not a docs edit). Historical logbook entries and archived plans
+  are never rewritten to match.
+- **Changing it**: through the `grilling` + `domain-modeling` skills (mattpocock-skills plugin;
+  they load together), which resolves a term with the owner before writing
+  it. Consumer-side rules for
+  agents are in [docs/agents/domain.md](docs/agents/domain.md).
+- The Avoid-word test exists (`tests/sim/test_glossary_avoid_words.py`) and
+  checks only the phrases listed in `tests/sim/avoid_words_checked.txt`, over
+  `plans/active`, `plans/parked`, logbook entries dated on or after 2026-09-21
+  and `map/` items. Backticked or quoted phrases and lines ending
+  `<!-- avoid-ok -->` are exempt; severity is fail.
+- The term-name list in `CLAUDE.md` between `<!-- glossary-terms:start -->` /
+  `<!-- glossary-terms:end -->` is GENERATED by `python -m mapkit gen` from this
+  file (never hand-edited; a currency test pins it).
+
+---
+
+### 2.10 [map/](map/) — Project map
+
+The owner's planning surface: one flat directory, one file per item,
+`map/<kind>-<slug>.md`, beside `map/config.yaml`. **Identity is the filename**
+and it never changes; the slug is the name minus `<kind>-` and `.md`.
+Frontmatter fields (`mapkit/items.py` is the authority):
+
+| Kind | Required beyond `kind`, `title`, `status`, `created` | Notes |
+|------|------------------------------------------------------|-------|
+| `pathway` | `destination` | A goal; body = Notes / Decisions so far / Not yet specified / Out of scope. Its "Resolved tickets" list is computed from complete `ticket` children |
+| `idea`, `feature`, `bug` | — | Inbox kinds; optional `parent` (pathway slug; absent = unattached), `filed_by`, `promoted_to` (plan filename or pathway slug), `priority: low\|medium\|high` |
+| `ticket` | `parent`, `type` | `type: research\|prototype\|grilling\|task`; optional `blocked_by`, `owners`, `rank`; the answer is appended under `## Answer` |
+
+Any kind may carry `links:` (logbook entries, plans, other items), `owners:`, `priority:` and `blocked_by:`, whose targets are filename stems (`ticket-<slug>`, `<kind>-<slug>`) or a plan's bare filename; `updated:` is the ISO timestamp every write bumps (the app's conflict token).
+**Status sets:** pathway `active | complete | dropped`; ticket `open |
+complete | dropped`; idea, feature and bug `inbox | backlog | in_progress |
+complete | dropped | promoted`.
+
+- **Tree edges:** a plan points up with `pathway:`; an item points up with
+  `parent:`. Nothing points down; children are found by search.
+- **Commit rule:** an item commit is `map: <verb> <what>` (for example `map:
+  file bug <title>`), carries **no** `Logbook-Entry:` trailer, and is pushed in
+  the same response. Items are not code changes; a code change an item
+  triggers gets its own logbook entry as usual.
+- **Who moves items:** the owner and Claude both, on every transition
+  (file, promote, claim, resolve, drop). There is no approval step.
+- **Generated outputs (never hand-edited):** `python -m mapkit gen` writes the
+  three `plans/*/INDEX.md`, the `CLAUDE.md` term block, `docs/project-map.md`
+  and `docs/glossary.md`; currency tests fail on drift. The Pi app serves the
+  map at `http://jeeves.local:8765` (mDNS, may resolve to the Wi-Fi address 192.168.20.38) or `http://192.168.20.7:8765` (wired); the bare name `jeeves` has no DNS entry on the LAN.
+- **Operations:** `/inbox` files bugs, features and ideas and `/work-inbox`
+  consumes them; `python -m mapkit frontier | claim | resolve | import-issues`
+  are the wayfinder operations (`docs/agents/issue-tracker.md`).
+
+---
+
 ## 3. Frontmatter cheat sheet
 
 One-glance reference for what goes in the `---` YAML block of each artifact.
@@ -382,9 +497,10 @@ One-glance reference for what goes in the `---` YAML block of each artifact.
 | Layer | Required | Optional | Controlled vocabulary |
 |-------|----------|----------|-----------------------|
 | **logbook entry** | `title`, `type`, `date`, `status` | `phase`, `related_plan`, `related_issues`, `sessions`, `files_changed`, `commits`, `subsystem`, `tags` | `type`, `status`, `subsystem`, `tags` |
-| **plan (active)** | `title`, `created`, `status: active` | `owner`, `last_updated`, `related_logbook`, `related_config`, `related_code` | `status` |
-| **plan (parked)** | `title`, `created`, `status: parked   # YYYY-MM-DD — why` | same as active | `status` |
+| **plan (active)** | `title`, `created`, `status: active`, `pathway`, `branch`, `scope`, `last_updated`, `steps` | `owner`, `kind: reference`, `related_logbook`, `related_config`, `related_code` | `status`, step `status` |
+| **plan (parked)** | `title`, `created`, `status: parked   # YYYY-MM-DD — why`, `parked`, `parked_why`, `unpark`, plus the active-plan fields | same as active | `status` |
 | **plan (archived)** | `title`, `created`, `status`, `archived` | `completed`, else same as active | `completed` / `superseded` |
+| **map item** | `kind`, `title`, `status`, `created`; pathway adds `destination`, ticket adds `parent`, `type` | `filed_by`, `promoted_to`, `priority`, `links`, `blocked_by` (filename stems `<kind>-<slug>` or a plan's bare filename), `owners`, `rank` | `kind`, per-kind `status` (§ 2.10), ticket `type` |
 | **slash command** | `description` | `disable-model-invocation` | — |
 | **agent** | `name`, `description` | — | — |
 
@@ -405,6 +521,7 @@ Who points to whom:
 
 ```
 CLAUDE.md ──► DOCUMENTATION_GUIDE.md (this file)
+          ──► GLOSSARY.md                               (the vocabulary every layer uses)
           ──► logbook/README.md
           ──► plans/active/, plans/parked/, plans/archived/
 
@@ -419,6 +536,12 @@ logbook/<entry>.md ──► plans/<plan>.md                (via related_plan)
 plans/<plan>.md ──► logbook/<entry>.md                (via related_logbook)
               ──► config/<file>.yaml                  (via related_config)
               ──► code symbols                        (via related_code)
+
+map/<item>.md ──► plans/<plan>.md                    (plans point up via pathway:; items via links:)
+              ──► logbook/<entry>.md                 (via links:)
+              ──► map/<item>.md                      (via parent:, blocked_by:)
+
+docs/agents/domain.md ──► GLOSSARY.md, docs/adr/        (how agent skills consume them)
 
 .claude/commands/ ──► logbook/, plans/, sim/analysis/  (the protocols)
 .claude/agents/   ◄── .claude/commands/                (invoked by)
@@ -444,6 +567,13 @@ Use this to pick the right layer *before* writing.
 - **Is this the *why* behind a concrete code change?**
   → Logbook entry. Use `/investigate` (hardware) or `/log` (non-hardware).
   The commit for the code change gets a `Logbook-Entry:` trailer.
+
+- **Is this what a word *means* — a new domain term, or two words competing
+  for one concept?**
+  → [GLOSSARY.md](GLOSSARY.md), via the `grilling` + `domain-modeling` skills (mattpocock-skills plugin). Definition only.
+
+- **Is this a bug, feature or idea to record for later (not a change already made)?**
+  → `/inbox` (files a `map/` item; § 2.10). `/work-inbox` picks it up.
 
 - **Is this a forward-looking plan of work yet to be done?**
   → Plan in [plans/active/](plans/active/) if it is schedulable now, or
@@ -555,7 +685,10 @@ if you don't know them:
 
 - **The `motion/skills/INVARIANTS.md` pattern is reserved for
   normative specs.** Don't create new `ALLCAPS.md` files for general notes;
-  prefer [docs/](docs/) or [logbook/](logbook/).
+  prefer [docs/](docs/) or [logbook/](logbook/). Root [GLOSSARY.md](GLOSSARY.md)
+  is inside the rule, not an exception to it: the glossary is normative
+  (§ 2.9), and its filename is fixed by the domain-modeling skill that
+  maintains it.
 
 ---
 

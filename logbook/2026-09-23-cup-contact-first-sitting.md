@@ -97,7 +97,7 @@ within counting noise, and the late-seat rate, which improved. Landing scatter a
 lateral command (the R3-carried measurement): 0.9 m sd 18.5 / 16.1 mm (x / y), max +63 mm in
 x; 0.6 m sd 10.4 / 10.2 mm.
 
-Runsheet § 8 counters from the launch log: `SPLICE_TOO_LATE` 1 (a 173 ms solve),
+Runbook § 8 counters from the launch log: `SPLICE_TOO_LATE` 1 (a 173 ms solve),
 `AIM-LATERAL-CLAMPED` 91 (authority 0), re-sends 57 accepted / 23 refused (16 `LIMIT_JERK`,
 3 `CUP_CONTACT_ACC`, 2 `INFEASIBLE`, 1 `GUARD_LATCHED`, 1 `SPLICE_TOO_LATE`), guard latches 2,
 drops 0. The three `CUP_CONTACT_ACC` refusals are re-aims of ≤ 0.06 s whose splice seed
@@ -130,7 +130,7 @@ body reads 0.0136 rad of roll in the QTM frame (the inclinometer's number), and 
 fit of the raw ball markers over 35 flights (z residual sd 2.0 mm) shows the QTM z-axis
 0.0066 ± 0.0005 rad from gravity in y (+62 mm/s²) — neither gravity-level nor base-plane
 locked. Sign conventions could not be pinned from the bags alone, so the mechanism is
-strongly indicated, not proven; the z-sweep in the runsheet (§ 9) settles it on the rig.
+strongly indicated, not proven; the z-sweep in the runbook (§ 9) settles it on the rig.
 
 Whichever frame is "right", the consequence for the learner is the same: the commanded site
 is in the base frame, the tracker's landing in the QTM frame, and the cup is physically at
@@ -228,7 +228,7 @@ open leg-bus-frame-drops plan; the recovery fix removes its consequence, not its
   body refused, spread reported, the sitting's own (−1.56, −8.53) adopted, `_on_balls`
   subtracts xy only, pass-through before any measurement, a bad later check keeps the
   earlier correction).
-- Runsheet: rows 8/9/15 re-worded for the new check semantics; new § 9 z-sweep block.
+- Runbook: rows 8/9/15 re-worded for the new check semantics; new § 9 z-sweep block.
 - `temp/learn/jugglebot/memory.csv` (the 87 rows, raw mocap frame) quarantined to
   `temp/learn/_quarantine_20260922/` — they are inconsistent with corrected rows.
 
@@ -239,8 +239,8 @@ open leg-bus-frame-drops plan; the recovery fix removes its consequence, not its
 - Default gate (run 2026-09-23, after the phase-end audit's fixes): `./run_tests.sh` —
   **6360 passed, 9 skipped in 222.23 s; serial tail 3 passed; RESULT: PASS**
   (`temp/logs/gate_20260923_b.log`). No `controller/` or `sim/` file changed, so the full
-  tier is the operator's pre-sitting step (runsheet row 5), not owed here.
-- Not yet flown. The next sitting (runsheet § 9, then Block B) is the verification of both
+  tier is the operator's pre-sitting step (runbook row 5), not owed here.
+- Not yet flown. The next sitting (runbook § 9, then Block B) is the verification of both
   fixes on hardware: the frame check should now read an adopted offset and the first
   recovery after a latch should end with "hand parked … wire DISARMED" and an automatic
   re-arm. `colcon build` is owed before it.
@@ -259,7 +259,7 @@ open leg-bus-frame-drops plan; the recovery fix removes its consequence, not its
 
 ## Open Questions
 
-- Which frame is tilted: run the runsheet § 9 z-sweep (offset vs commanded z at 0 / 100 /
+- Which frame is tilted: run the runbook § 9 z-sweep (offset vs commanded z at 0 / 100 /
   170 / 250 mm) — a lever arm changes by ≈ 1.4 mm per 100 mm, a translation does not. If it
   is the Base body definition, redefining it with the base plane's normal removes the offset
   at the source (the subtraction stays as the fail-safe).

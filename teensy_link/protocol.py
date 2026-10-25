@@ -88,6 +88,7 @@ from udp_protocol import (  # noqa: E402, F401
     HandSensor,
     CanErrors,
     BridgeTxDiag,
+    LegClampDiag,
     BridgeIdentity,
     ClockDiag,
     CacheDiag,
@@ -111,6 +112,7 @@ from udp_protocol import (  # noqa: E402, F401
     HAND_SENSOR_SIZE,
     CAN_ERRORS_SIZE,
     BRIDGE_TX_DIAG_SIZE,
+    LEG_CLAMP_DIAG_SIZE,
     BRIDGE_IDENTITY_SIZE,
     CLOCK_DIAG_SIZE,
     CACHE_DIAG_SIZE,
@@ -140,7 +142,7 @@ from udp_protocol import (  # noqa: E402, F401
     ArgPlatformFwBegin,  # PLATFORM_FW_BEGIN — Platform firmware-over-CAN (2026-09-09)
     ArgPlatformFwData,  # PLATFORM_FW_DATA
     ArgPlatformFwVerify,  # PLATFORM_FW_VERIFY
-    ArgWaveCmd,  # WAVE_CMD — Wave camera intent frame (FW 31, additive)
+    ArgWaveCmd,  # WAVE_CMD — Wave camera intent frame (FW 33, additive)
     # Hand axis-6 allow-table
     HAND_AXIS6_PERMITTED,
     hand_axis6_permitted,

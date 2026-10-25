@@ -738,7 +738,8 @@ def _accel_bounded_schedule(raw: np.ndarray, anchors, dt: float,
                             accel_cap: float, tilt_cap: float,
                             rate_step: float, jerk_cap: float = 0.0,
                             jerk_terms=None,
-                            jerk_budget_mm: float = 0.0) -> np.ndarray:
+                            jerk_budget_mm: float = 0.0,
+                            start_rate=None) -> np.ndarray:
     """Smooth ``raw`` until its tilt acceleration AND jerk are in budget, pins exact.
 
     **Why a smoother and not an accel-limited slew.**  The obvious construction —
@@ -806,6 +807,20 @@ def _accel_bounded_schedule(raw: np.ndarray, anchors, dt: float,
        guarantee. In the normal case the smoothed schedule is already well inside
        the rate cap and the sweeps cost one no-op pass.
 
+    6. **``start_rate`` — the knot-0 pin's RATE (I-PLAN-11).**  When given, the
+       knot-0 anchor blends toward the RAMP ``v₀ + r₀·t`` (projected onto the cap
+       disc) instead of the constant ``v₀``.  ``W = S(1 − |k|/L)`` has
+       ``W' = W'' = 0`` at its pin, so the output's slope at knot 0 is exactly
+       ``r₀`` and its curvature there is the ramp's, zero: the window OPENS at the
+       rate the preceding window is streaming instead of restarting the slew from
+       rest.  Every knot stays a convex combination of in-disc points, and the
+       ramp's departure from the banking solution is shaped and MEASURED by the
+       same loop as every other pin gap.  A non-zero ``start_rate`` also gives
+       the knot-0 window its own width, the whole gap to its neighbouring pin
+       (I-PLAN-11 corollary, 2026-10-22 — see ``L0_carried`` below): the shared
+       ``L`` is capped by the narrowest gap ANYWHERE in the window, which on a
+       mid-transit re-aim squeezed the handover into the knots before the dive.
+
     Returns the last attempt whichever way the loop exits; when the pins are too
     close together for any width to bound the join, the cap is what gives and
     ``validate_cycle`` is what refuses. That is the same honesty the rate limit
@@ -850,6 +865,37 @@ def _accel_bounded_schedule(raw: np.ndarray, anchors, dt: float,
     half_max = max(0, n // 2)
 
     smoothed = {}
+    # The knot-0 anchor's target series: the constant pin, or (I-PLAN-11) the
+    # ramp at the carried rate, projected onto the cap disc so the blend stays a
+    # convex combination of in-disc points.  Only knot 0 can carry a rate: it is
+    # the only pin that abuts a window already streaming.
+    targets = {j: np.repeat(np.asarray(v, dtype=float)[None, :], n, axis=0)
+               for j, v in anchors}
+    if start_rate is not None and 0 in targets:
+        ramp = (targets[0] + (idx * dt)[:, None]
+                * np.asarray(start_rate, dtype=float)[None, :])
+        targets[0] = _project_to_disc(ramp, np.zeros(2), tilt_cap)
+    # I-PLAN-11 corollary (2026-10-22): a knot-0 pin that CARRIES a rate gets its
+    # own blend width, the whole gap to its neighbouring pin, instead of the shared
+    # ``L`` (which ``blend_max`` couples to the NARROWEST gap anywhere in the
+    # window — on a mid-transit hop re-aim that is the catch -> release gap, 11
+    # knots, nothing to do with the seam).  The handover from the head's motion to
+    # the new solution then spreads over the whole transit left (curvature ~
+    # gap/L², jerk ~ gap/L³) instead of being squeezed into the knots just before
+    # the dive, where the banking objective is itself swinging (it saturates the
+    # cap while the cup accelerates at ~g).  Convexity survives: each window is
+    # still no wider than its gap to every neighbour, so the overlapping weights
+    # sum to <= 1 (the S(u) + S(1 − u) = 1 argument below, per anchor), and the
+    # neighbour's pin is untouched (W0 = 0 there).  A ZERO rate (every rest seam)
+    # keeps the shared width, bit-identically.  MEASURED (probe
+    # scratchpad/hand/proto_a.py, hop 250 mm / apex 0.9 / dwell 0.27, legs
+    # 350/5000/200k): mid-transit re-aims 21/80 -> 66/80 accepted, 0 regressions
+    # over 101 + 60 early-lead rows, columns identical row for row.
+    L0_carried = None
+    if (start_rate is not None and 0 in targets
+            and np.any(np.asarray(start_rate, dtype=float) != 0.0)):
+        right = [float(b) for b in sorted(anchor_set) if b > 0]
+        L0_carried = right[0] if right else float(n)
 
     def _attempt(h: int, scale: float):
         """One shaped schedule at kernel half-width ``h`` and blend scale ``scale``.
@@ -883,8 +929,10 @@ def _accel_bounded_schedule(raw: np.ndarray, anchors, dt: float,
         weight = np.zeros(n)
         out = sm.astype(float, copy=True)
         for j, v in anchors:
-            w = _smoothstep(1.0 - np.abs(idx - j) / L)
-            out += w[:, None] * (np.asarray(v, dtype=float)[None, :] - sm)
+            Lj = (max(L, L0_carried) if (j == 0 and L0_carried is not None)
+                  else L)
+            w = _smoothstep(1.0 - np.abs(idx - j) / Lj)
+            out += w[:, None] * (targets[j] - sm)
             weight += w
         # Belt and braces: with L <= b − a the overlapping sum is exactly
         # S(x) + S(1−x) = 1 at worst, so this never fires — but a caller-supplied
@@ -983,7 +1031,8 @@ def _as_tilt_pair(value, name: str) -> np.ndarray:
 
 
 def _smooth_slew(start: np.ndarray, end: np.ndarray, n: int, dt: float,
-                 cfg, *, checked: bool = True) -> np.ndarray:
+                 cfg, *, checked: bool = True,
+                 start_rate=None) -> np.ndarray:
     """Quintic-smoothstep tilt ramp from ``start`` to ``end`` over ``n`` knots.
 
     The attitude-bearing REST's schedule (the PRE-TILT that puts the platform at
@@ -1026,7 +1075,30 @@ def _smooth_slew(start: np.ndarray, end: np.ndarray, n: int, dt: float,
     ``TILT_PIN`` although its legs pass (scratchpad ``probe_fused_ct.out``).
     The gate that protects the machine is ``validate_cycle``, and it stays on
     every path.
+
+    **``start_rate`` — the carried seam rate (I-PLAN-11, extended 2026-10-23).**
+    A pre-tilt REST spliced onto a head that is still moving (a cross-site
+    opening/bridge REST unwinding its bank in its last knots, head ry rate
+    -0.016..-0.16 rad/s) must open at the head's tilt RATE as well as its value,
+    or the seam is a platform-velocity step through the lever (0.9-5.9 mm/s of
+    pose x at live ``k_s`` 63-66) that ``_seam_velocity`` splits into a knot-
+    acceleration jump at ``k_s-1``: ``LIMIT_JERK`` 219k / 262k at view
+    ``t = 0.025``.  With a rate ``r0`` the slew is the quintic PLUS the
+    rate-carrying Hermite basis ``r0·T·h(u)``, ``h = u − 6u³ + 8u⁴ − 3u⁵``:
+    ``h(0) = h(1) = 0``, ``h'(0) = 1``, ``h'(1) = h''(0) = h''(1) = 0`` — so the
+    window opens at ``start`` with rate ``r0`` and zero acceleration and still
+    lands EXACTLY on ``end`` at rest.  The added term is inside every check
+    below (rate, acceleration and the ``max_tilt_deg`` disc are evaluated on
+    the COMBINED profile, densely, not on the quintic's closed form), so a
+    window too short for the carried rate is refused, never clipped.  ``None``
+    or an all-zero rate takes the quintic path unchanged, bit-for-bit — the
+    decay REST and every rest seam.
     """
+    if start_rate is not None:
+        r0 = np.asarray(start_rate, dtype=float).reshape(2)
+        if np.any(r0 != 0.0) and n >= 2:
+            return _smooth_slew_carried(start, end, n, dt, cfg, r0,
+                                        checked=checked)
     start = np.asarray(start, dtype=float).reshape(2)
     end = np.asarray(end, dtype=float).reshape(2)
     delta = end - start
@@ -1055,9 +1127,231 @@ def _smooth_slew(start: np.ndarray, end: np.ndarray, n: int, dt: float,
     return start[None, :] + ss[:, None] * delta[None, :]
 
 
+#: Samples per window for the carried-rate slew's cap checks (the closed-form
+#: peaks of the bare quintic do not hold once the rate term is added).
+_CARRIED_SLEW_CHECK_SAMPLES = 2001
+
+
+def _smooth_slew_carried(start: np.ndarray, end: np.ndarray, n: int,
+                         dt: float, cfg, r0: np.ndarray, *,
+                         checked: bool = True) -> np.ndarray:
+    """:func:`_smooth_slew` with a non-zero knot-0 rate ``r0`` (I-PLAN-11).
+
+    ``θ(u) = start + s(u)·Δ + r0·T·h(u)``, ``s = 6u⁵ − 15u⁴ + 10u³``,
+    ``h = u − 6u³ + 8u⁴ − 3u⁵``; ``u = t/T``.  Rate ``θ' = s'·Δ/T + h'·r0``,
+    acceleration ``θ'' = s''·Δ/T² + h''·r0/T``.  The rate, acceleration and
+    disc checks run on a dense sample of THIS profile (the vector norm, never
+    per axis), so the added term is inside them rather than after them.
+    """
+    start = np.asarray(start, dtype=float).reshape(2)
+    end = np.asarray(end, dtype=float).reshape(2)
+    delta = end - start
+    T = float(n - 1) * float(dt)
+    if checked:
+        rate_cap = float(cfg.tilt_rate_limit_rad_s)
+        accel_cap = float(cfg.tilt_accel_limit_rad_s2)
+        disc = np.radians(float(cfg.max_tilt_deg))
+        w = np.linspace(0.0, 1.0, _CARRIED_SLEW_CHECK_SAMPLES)
+        ds = 30.0 * w * w * (1.0 - w) ** 2
+        dds = 60.0 * w * (1.0 - w) * (1.0 - 2.0 * w)
+        dh = (1.0 - w) ** 2 * (1.0 + 2.0 * w - 15.0 * w * w)
+        ddh = -36.0 * w + 96.0 * w * w - 60.0 * w ** 3
+        sw = w * w * w * (10.0 + w * (-15.0 + 6.0 * w))
+        hw = w - 6.0 * w ** 3 + 8.0 * w ** 4 - 3.0 * w ** 5
+        rate = ds[:, None] * (delta / T)[None, :] + dh[:, None] * r0[None, :]
+        acc = (dds[:, None] * (delta / (T * T))[None, :]
+               + ddh[:, None] * (r0 / T)[None, :])
+        pos = (start[None, :] + sw[:, None] * delta[None, :]
+               + (T * hw)[:, None] * r0[None, :])
+        peak_rate = float(np.max(np.hypot(rate[:, 0], rate[:, 1])))
+        peak_acc = float(np.max(np.hypot(acc[:, 0], acc[:, 1])))
+        peak_tilt = float(np.max(np.hypot(pos[:, 0], pos[:, 1])))
+        r0_mag = float(np.hypot(r0[0], r0[1]))
+        if rate_cap > 0.0 and peak_rate > rate_cap * (1.0 + 1e-9):
+            raise ValueError(
+                "a %.3f° attitude change over %.3f s opening at the head's "
+                "%.4f rad/s needs %.3f rad/s of tilt rate, past the %.3f rad/s "
+                "limit — give the REST a longer window."
+                % (np.degrees(float(np.hypot(*delta))), T, r0_mag, peak_rate,
+                   rate_cap))
+        if accel_cap > 0.0 and peak_acc > accel_cap * (1.0 + 1e-9):
+            raise ValueError(
+                "a %.3f° attitude change over %.3f s opening at the head's "
+                "%.4f rad/s needs %.3f rad/s² of tilt acceleration, past the "
+                "%.3f rad/s² limit (the leg-acceleration budget through the "
+                "744.3 mm lever) — give the REST a longer window."
+                % (np.degrees(float(np.hypot(*delta))), T, r0_mag, peak_acc,
+                   accel_cap))
+        if peak_tilt > disc * (1.0 + 1e-9) + 1e-12:
+            raise ValueError(
+                "the slew opening at the head's %.4f rad/s overshoots to "
+                "%.3f° from vertical, past the %s° usable ceiling — the carried "
+                "rate points out of the cone; give the REST a longer window or "
+                "splice it after the head settles."
+                % (r0_mag, np.degrees(peak_tilt), cfg.max_tilt_deg))
+    u = np.linspace(0.0, 1.0, n)
+    ss = u * u * u * (10.0 + u * (-15.0 + 6.0 * u))
+    hv = T * (u - 6.0 * u ** 3 + 8.0 * u ** 4 - 3.0 * u ** 5)
+    out = start[None, :] + ss[:, None] * delta[None, :] + hv[:, None] * r0[None, :]
+    # The terminal knot is the pin: exact, not a rounding of h(1) = 0.
+    out[0] = start
+    out[-1] = end
+    return out
+
+
+# ── The PRESCRIBED tilt series — the `pose` planner's schedule (two-ball-oval P3)
+
+def _quintic_bridge(t: np.ndarray, T: float, p0: np.ndarray, v0: np.ndarray,
+                    p1: np.ndarray) -> np.ndarray:
+    """``(m, 2)`` quintic from ``(p0, v0, 0)`` at ``t = 0`` to ``(p1, 0, 0)`` at
+    ``t = T``, evaluated at ``t`` (clipped to ``[0, T]``).
+
+    ``p(t) = p0 + v0·t + c3·t³ + c4·t⁴ + c5·t⁵``; the three terminal conditions
+    fix ``(c3, c4, c5)`` per axis.  With ``v0 = 0`` it is exactly the
+    ``6u⁵ − 15u⁴ + 10u³`` smoothstep :func:`_smooth_slew` uses, so the pose
+    planner's sweeps and the attitude-bearing REST's slews are one family; with
+    a non-zero ``v0`` it is the C1 seam I-PLAN-11 asks of a spliced window (the
+    seed's tilt RATE is honoured at knot 0, the way :func:`_smooth_slew_carried`
+    honours it).
+    """
+    return _quintic_eval(t, T, p0, v0, _quintic_coeffs(T, p0, v0, p1))
+
+
+def _quintic_coeffs(T: float, p0: np.ndarray, v0: np.ndarray,
+                    p1: np.ndarray) -> np.ndarray:
+    """``(c3, c4, c5)`` per axis, ``(3, 2)``, for :func:`_quintic_bridge` — solved
+    ONCE per sweep segment at :func:`prescribed_tilt_fn` construction (the pose
+    planner evaluates the series ~10 times per window; a 3x3 solve per
+    evaluation was 4 ms of the window's budget)."""
+    T = float(T)
+    d = p1 - p0 - v0 * T
+    M = np.array([[T ** 3, T ** 4, T ** 5],
+                  [3 * T ** 2, 4 * T ** 3, 5 * T ** 4],
+                  [6 * T, 12 * T ** 2, 20 * T ** 3]])
+    rhs = np.stack([d, -v0, np.zeros_like(v0)], axis=0)          # (3, 2)
+    return np.linalg.solve(M, rhs)                               # (3, 2)
+
+
+def _quintic_eval(t, T: float, p0: np.ndarray, v0: np.ndarray,
+                  c: np.ndarray) -> np.ndarray:
+    """Evaluate :func:`_quintic_bridge`'s polynomial from precomputed ``c``."""
+    tt = np.clip(np.asarray(t, dtype=float), 0.0, float(T))[:, None]
+    return (p0[None, :] + v0[None, :] * tt + c[0][None, :] * tt ** 3
+            + c[1][None, :] * tt ** 4 + c[2][None, :] * tt ** 5)
+
+
+def prescribed_tilt_fn(n_steps: int, dt: float, k_td: int, start_tilt,
+                       receive_tilt, throw_tilt, *, h_pre: int,
+                       h_catch_pre: int, h_catch_post: int,
+                       start_rate=None, h_post: int = 0,
+                       max_tilt_deg: float = tilt_geometry.MAX_TILT_DEG):
+    """The `pose` planner's tilt series as a CALLABLE of time ``t_s`` → ``(m, 2)``.
+
+    The folded STEADY window (catch at ``k_td``, release at knot ``n_steps``)
+    gets a PRESCRIBED attitude — known before the QP, because every pin depends
+    only on the event velocities — so the QP can carry the tilt's lever motion
+    inside its leg-jerk objective and its C-CUP-4 rows, and the realisation
+    uses the SAME series (sampled at the knots) instead of
+    :func:`tilt_schedule`'s banking objective.  Plan two-ball-oval § 2.3:
+
+    * hold the seam pin ``start_tilt`` over ``[0, a]`` (``a = h_post`` knots;
+      0 by default — a non-zero ``start_rate`` needs ``a == 0``);
+    * sweep seam → receive over ``[a, c0]``, ``c0 = k_td − h_catch_pre``
+      (:func:`_quintic_bridge`, C1 at the seed);
+    * HOLD the receive pin over ``[c0, c1]``, ``c1 = k_td + h_catch_post``;
+    * sweep receive → throw over ``[c1, b]``, ``b = n_steps − h_pre``
+      (the carry bank: the smoothstep between the two event tilts, and
+      nothing more — decision 20);
+    * HOLD the throw pin over ``[b, n_steps]`` (the pre-release knots, where the
+      composition's ``3·v_z·axis''`` term would turn any tilt acceleration
+      into centroid jerk while the stroke runs at 4 m/s — ticket 11).
+
+    Every sweep arrives at its pin with zero rate AND zero acceleration (the
+    quintic's property), which is why the catch holds default to 0 (owner,
+    2026-10-23: 2/1 cost 10–13 % of carry jerk for nothing the ball can feel).
+    A window too short for a sweep (``c0 <= a`` or ``b <= c1``) is refused with
+    ``ValueError`` naming the hold, never squeezed — ``unified_cycle`` maps it
+    to the ``POSE_WINDOW`` refusal.  Pins outside the usable ceiling raise too
+    (the ``tilt_schedule`` rule).  The returned callable carries the knot map as
+    ``fn.knots == (a, c0, c1, b)``.
+    """
+    n = int(n_steps)
+    dt = float(dt)
+    k_td = int(k_td)
+    if n < 2 or not dt > 0.0:
+        raise ValueError("prescribed_tilt_fn needs n_steps >= 2 and dt > 0, got "
+                         "%d / %r" % (n, dt))
+    if not 1 <= k_td <= n - 1:
+        raise ValueError("the catch knot must lie inside the window (1 <= k_td "
+                         "<= n - 1), got k_td %d for n %d" % (k_td, n))
+    start = _as_tilt_pair(start_tilt, 'start_tilt')
+    recv = _as_tilt_pair(receive_tilt, 'receive_tilt')
+    thr = _as_tilt_pair(throw_tilt, 'throw_tilt')
+    cap = np.radians(float(max_tilt_deg)) * (1.0 + 1e-9)
+    for name, pin in (('start_tilt', start), ('receive_tilt', recv),
+                      ('throw_tilt', thr)):
+        if float(np.hypot(*pin)) > cap:
+            raise ValueError("%s %.3f deg is outside the usable %.1f deg cone"
+                             % (name, np.degrees(np.hypot(*pin)), max_tilt_deg))
+    rate = (np.zeros(2) if start_rate is None
+            else _as_tilt_pair(start_rate, 'start_rate'))
+    a = int(h_post)
+    c0 = k_td - int(h_catch_pre)
+    c1 = k_td + int(h_catch_post)
+    b = n - int(h_pre)
+    if a < 0 or int(h_catch_pre) < 0 or int(h_catch_post) < 0 or int(h_pre) < 0:
+        raise ValueError("hold lengths must be >= 0, got h_post %d h_catch_pre "
+                         "%d h_catch_post %d h_pre %d"
+                         % (a, int(h_catch_pre), int(h_catch_post), int(h_pre)))
+    if a > 0 and float(np.max(np.abs(rate))) > 0.0:
+        raise ValueError("a seam hold (h_post %d) cannot start from a moving "
+                         "tilt (start_rate %s rad/s)" % (a, rate.tolist()))
+    if c0 <= a:
+        raise ValueError(
+            "no knots left for the seam -> receive sweep: the catch at knot %d "
+            "with a %d-knot receive hold before it (h_catch_pre) and a %d-knot "
+            "seam hold (h_post) leaves the sweep [%d, %d]"
+            % (k_td, int(h_catch_pre), a, a, c0))
+    if b <= c1:
+        raise ValueError(
+            "no knots left for the receive -> throw sweep (the carry bank): the "
+            "catch at knot %d with a %d-knot receive hold after it (h_catch_post) "
+            "and a %d-knot throw hold before the release at knot %d (h_pre) "
+            "leaves the sweep [%d, %d]"
+            % (k_td, int(h_catch_post), int(h_pre), n, c1, b))
+    t_a, t_c0, t_c1, t_b = a * dt, c0 * dt, c1 * dt, b * dt
+    zero_rate = np.zeros(2)
+    coef_1 = _quintic_coeffs(t_c0 - t_a, start, rate, recv)
+    coef_2 = _quintic_coeffs(t_b - t_c1, recv, zero_rate, thr)
+
+    def fn(t_s):
+        t = np.asarray(t_s, dtype=float).reshape(-1)
+        out = np.empty((t.size, 2))
+        m0 = t <= t_a
+        m1 = (t > t_a) & (t <= t_c0)
+        m2 = (t > t_c0) & (t <= t_c1)
+        m3 = (t > t_c1) & (t <= t_b)
+        m4 = t > t_b
+        if m0.any():
+            out[m0] = start[None, :] + rate[None, :] * t[m0, None]
+        if m1.any():
+            out[m1] = _quintic_eval(t[m1] - t_a, t_c0 - t_a, start, rate, coef_1)
+        if m2.any():
+            out[m2] = recv
+        if m3.any():
+            out[m3] = _quintic_eval(t[m3] - t_c1, t_b - t_c1, recv, zero_rate, coef_2)
+        if m4.any():
+            out[m4] = thr
+        return out
+
+    fn.knots = (a, c0, c1, b)
+    fn.pins = (start.copy(), recv.copy(), thr.copy())
+    return fn
+
+
 def tilt_schedule(cup_plan, receive_tilt, throw_tilt, cfg=None, *,
                   start_tilt=None, rest_slew=False,
-                  held_from_k=None) -> np.ndarray:
+                  held_from_k=None, start_tilt_rate=None) -> np.ndarray:
     """Per-knot cup tilt ``(rx, ry)`` for ``cup_plan``.  Returns an ``(n, 2)`` array.
 
     **Banking (``cfg.banking_enabled``, the default).**  A ball resting in the cup
@@ -1166,6 +1460,22 @@ def tilt_schedule(cup_plan, receive_tilt, throw_tilt, cfg=None, *,
       millimetres of leg position inside one 25 ms knot, which is a step command
       on six legs, the thing this stack refuses to emit anywhere else.
 
+    **``start_tilt_rate`` — the seam pin's RATE (I-PLAN-11, ``None`` by default).**
+    ``start_tilt`` makes the seam C0 in tilt; a window spliced onto a head that
+    is still BANKING (a mid-transit re-aim or stop REST) must also open at the
+    head's tilt RATE, or the schedule restarts the slew from rest there.  Through
+    the ~245 mm arm that rate gap is a platform-velocity step at the seam
+    (0.29 rad/s → ~71 mm/s on the 250 mm hop), which ``_seam_velocity``'s
+    re-derivation splits into ~2.5k / 3.3k mm/s² knot-acceleration jumps at
+    ``k_s ∓ 1`` — 400-470k mm/s³ of leg jerk against 200k.  Applied on the
+    banking branch (the one a mid-transit head is on) via
+    :func:`_accel_bounded_schedule`'s ``start_rate``; it needs ``start_tilt``.
+    The ``rest_slew`` branch carries it too (extended 2026-10-23): the reload's
+    pre-tilt REST is spliced onto a still-moving opening REST, and
+    :func:`_smooth_slew`'s ``start_rate`` term opens it at the head's rate.  The
+    held branch's seam is pinned by ``HOLD_TILT_SEAM_TOL_RAD`` and the
+    two-constant branch is the parity-pinned legacy realisation; both ignore it.
+
     The pins resolve in knot order with the terminal pin strongest: ``start_tilt``
     is applied first, then the catch pin, then the throw pin, so a collision (a
     catch on knot 0, or a single-knot plan) leaves the physically stronger pin
@@ -1190,6 +1500,11 @@ def tilt_schedule(cup_plan, receive_tilt, throw_tilt, cfg=None, *,
     throw = _as_tilt_pair(throw_tilt, 'throw_tilt')
     start = (None if start_tilt is None
              else _as_tilt_pair(start_tilt, 'start_tilt'))
+    start_rate = (None if start_tilt_rate is None
+                  else _as_tilt_pair(start_tilt_rate, 'start_tilt_rate'))
+    if start_rate is not None and start is None:
+        raise ValueError("start_tilt_rate needs a start_tilt: a rate is a "
+                         "boundary condition AT the seam pin")
 
     if held_from_k is not None and (cfg.banking_enabled or rest_slew):
         raise ValueError(
@@ -1222,7 +1537,10 @@ def tilt_schedule(cup_plan, receive_tilt, throw_tilt, cfg=None, *,
                 "rest_slew needs a start_tilt: a REST that ENDS at a chosen "
                 "attitude has to know the one it opens at, or the slew is a "
                 "step at the seam.")
-        raw = _smooth_slew(start, throw, n, dt, cfg)
+        # I-PLAN-11 (extended 2026-10-23): a pre-tilt REST spliced onto a head
+        # still moving opens at the head's tilt RATE, not from rest.  None or
+        # zero (a rest seam, the decay REST's fresh origin) is bit-identical.
+        raw = _smooth_slew(start, throw, n, dt, cfg, start_rate=start_rate)
     else:
         idx = np.arange(n)
         raw = np.where((idx <= catch_k)[:, None], recv[None, :], throw[None, :])
@@ -1284,7 +1602,8 @@ def tilt_schedule(cup_plan, receive_tilt, throw_tilt, cfg=None, *,
             jerk_cap = min(jerk_cap,
                            budget_mm / _tilt_jerk_lever_mm(cup_plan, dt))
         return _accel_bounded_schedule(out, anchors, dt, accel_cap, cap, step,
-                                       jerk_cap, jerk_terms, budget_mm)
+                                       jerk_cap, jerk_terms, budget_mm,
+                                       start_rate=start_rate)
 
     for j, v in anchors:
         out[j] = v
@@ -1383,6 +1702,24 @@ def decompose(cup_plan, tilts, cfg=None) -> RealizedCycle:
     stroke = float(cfg.slider_stroke_mm)
     band = max(0.0, float(cfg.z_band_mm)) if cfg.z_float_enabled else 0.0
 
+    # The `pose` planner's PLANNED platform-z excursion (``CupCyclePlan.
+    # platform_dz``: (n, 3) m / m/s / m/s², None for every level-mode plan and
+    # for a pose-mode plan with the z band at 0).  It is added to the pose z and
+    # taken off the slider exactly as the z-float's ``dz_k`` is — the QP already
+    # boxed the SLIDER (cup_z − dz) — with an ANALYTIC knot velocity (a finite
+    # difference here tripped HAND_LIMIT_C2 at 28 rev/s² in the prototype).
+    # Every statement below that reads it is guarded so the None path is the
+    # pre-P3 function byte for byte.
+    dzp = getattr(cup_plan, 'platform_dz', None)
+    dzp_mm = dzp_vel = None
+    if dzp is not None:
+        dzp = np.asarray(dzp, dtype=float)
+        if dzp.shape != (n, 3):
+            raise ValueError(f"cup_plan.platform_dz must be ({n}, 3), got "
+                             f"{dzp.shape}")
+        dzp_mm = dzp[:, 0] * 1000.0
+        dzp_vel = dzp[:, 1] * 1000.0
+
     pose = np.zeros((n, 6), dtype=float)
     axis = np.zeros((n, 3), dtype=float)
     arm = np.zeros(n, dtype=float)
@@ -1401,6 +1738,8 @@ def decompose(cup_plan, tilts, cfg=None) -> RealizedCycle:
         shift = arm_k * a[:2]
         drop_k = arm_k * (1.0 - float(a[2]))
         slider_raw = cup_z_mm - cfg.cup_z_base_mm + drop_k
+        if dzp_mm is not None:
+            slider_raw -= dzp_mm[k]
 
         dz_k = 0.0
         if band > 0.0:
@@ -1415,6 +1754,8 @@ def decompose(cup_plan, tilts, cfg=None) -> RealizedCycle:
         pose[k, 0] = centroid[0]
         pose[k, 1] = centroid[1]
         pose[k, 2] = cfg.active_z_mm + dz_k
+        if dzp_mm is not None:
+            pose[k, 2] += dzp_mm[k]
         pose[k, 3] = rx
         pose[k, 4] = ry
         pose[k, 5] = 0.0
@@ -1443,6 +1784,9 @@ def decompose(cup_plan, tilts, cfg=None) -> RealizedCycle:
     # pose_vel[:, 5] stays 0 — rz is pinned to 0 by the realisation.
 
     slider_vel_mm_s = vz_mm - dz_dot + drop_dot
+    if dzp_vel is not None:
+        pose_vel[:, 2] = pose_vel[:, 2] + dzp_vel
+        slider_vel_mm_s = slider_vel_mm_s - dzp_vel
     slider_vel_mm_s = np.where(saturated, 0.0, slider_vel_mm_s)
 
     # the mm->rev conversion, vectorised (it is float-only).  The zero offset is a
@@ -1466,5 +1810,5 @@ def decompose(cup_plan, tilts, cfg=None) -> RealizedCycle:
         catch_k=int(cup_plan.catch_k),
         tilts=tilt_arr.astype(float, copy=True),
         slider_saturated=saturated,
-        z_excursion_mm=dz,
+        z_excursion_mm=(dz if dzp_mm is None else dz + dzp_mm),
     )

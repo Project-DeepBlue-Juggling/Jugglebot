@@ -4,6 +4,16 @@ status: parked   # 2026-10-17 - owner decision: no evidence of a displaced-beyon
 owner: harrison
 created: 2026-10-17
 last_updated: 2026-10-17
+pathway: ball-butler
+parked: 2026-10-17
+parked_why: >-
+  A template marker displaced beyond the 3 mm match tolerance drops out of the fit silently (only an
+  unflagged `matched_min`); leave-one-out bounds the accuracy cost at <= 0.09 deg, so it is a reporting gap,
+  and there is no evidence of such an event.
+unpark: >-
+  Any one of: a sitting's first-sweep template residual > 1.3 mm; a BB marker post found loose, bent or
+  re-seated; a sweep with `matched_max` < 7 while all 7 BB markers are visible at rest; the node gains any
+  other per-marker check (do both at once).
 related_logbook:
   - 2026-10-17-bb-calibration-residual-cap-1p5.md
 related_code:

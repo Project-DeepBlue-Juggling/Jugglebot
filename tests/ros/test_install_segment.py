@@ -2314,3 +2314,58 @@ def test_a_bump_with_no_matching_catch_in_the_record_is_terminal():
                                          InstallSegment.Response())
     assert not resp.accepted and resp.code == 'BUMP-NO-RECORD'
     assert resp.terminal is True and node._active_plan is rec.plan
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# planner_mode on the wire (two-ball-oval P3, 2026-10-23)
+# ═════════════════════════════════════════════════════════════════════════════
+# ONE live switch: skill_node's `planner_mode` parameter rides on every
+# InstallSegment request and trajectory_node plans THAT segment with it; the
+# node's own SegmentConfig.planner_mode only answers a request that carries
+# none (''), so the box selected and the plan flown cannot disagree.
+
+def _fresh_catch_throw(node, at, mode):
+    req = _catch_throw_req(at + 0.5, at + 1.0)
+    if mode is not None:
+        req.planner_mode = mode
+    return node._svc_install_segment(req, InstallSegment.Response())
+
+
+def test_a_pose_request_plans_the_catch_throw_with_the_pose_planner():
+    solver = _FakeSolver()
+    node = _solver_node(solver)
+    with _frozen_perf() as at:
+        resp = _fresh_catch_throw(node, at, 'pose')
+    assert resp.accepted is True, resp.message
+    assert resp.planner_mode == 'pose'
+    assert solver.requests[0].cfg.planner_mode == 'pose'
+    # per-install only: the node's own default is untouched
+    assert node._segment_cfg.planner_mode == 'level'
+
+
+def test_an_empty_planner_mode_uses_the_nodes_default():
+    solver = _FakeSolver()
+    node = _solver_node(solver)
+    with _frozen_perf() as at:
+        resp = _fresh_catch_throw(node, at, '')
+    assert resp.accepted is True, resp.message
+    assert resp.planner_mode == 'level'
+    assert solver.requests[0].cfg is node._segment_cfg
+
+
+def test_an_unknown_planner_mode_is_refused_by_name_before_any_solve():
+    solver = _FakeSolver()
+    node = _solver_node(solver)
+    active_before, cycle_before = node._active_plan, node._cycle
+    with _frozen_perf() as at:
+        resp = _fresh_catch_throw(node, at, 'banana')
+    assert resp.accepted is False
+    assert resp.code == 'PLANNER_MODE'
+    assert 'banana' in resp.message and 'pose' in resp.message
+    assert solver.requests == []
+    assert node._active_plan is active_before and node._cycle is cycle_before
+
+
+def test_the_planner_mode_parameter_is_the_default_for_an_empty_request():
+    node = _perf_node()
+    assert node._segment_cfg.planner_mode == 'level'

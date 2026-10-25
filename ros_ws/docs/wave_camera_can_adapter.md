@@ -57,7 +57,7 @@ GPI2 released if no WAVE_CMD intent arrives for 3 s (INTENT_TIMEOUT, s5.3).
  teensy_bridge_node (Jetson, the single UDP owner)
    | 5 Hz RPC WAVE_CMD (0x0062)        ^ CONE_FRAME 0x85 (verbatim relay)
    v UDP RPC port                      | UDP stream port
- can-bridge Teensy 4.1 (FW 31)
+ can-bridge Teensy 4.1 (FW 33)
    | can_cone_tx(TxCls::RPC) 0x7E2     ^ on_cone_rx -> 16-slot ring -> 4/tick
    | 0x7DD TIME_SYNC 100 Hz            |
    v CAN3 periph, pins 31 TX/30 RX, 1 Mbit/s classic, 11-bit, DLC 8
@@ -337,7 +337,7 @@ allowed unsynced, and events carry an age (s4.3), flagged.
   - `take()` the arg; ERR_BAD_ARGS if `desired > 1` or pad != 0 (validate before gating, the BB_THROW ordering).
   - Build the 0x7E2 frame (`WaveCanId::CMD`, DLC 8, the arg bytes verbatim).
   - Add a new `send_cone_frame()` beside `send_bb_frame` (line 223): `can_cone_tx(f, TxCls::RPC)`. A FAILED result (the presence gate, `BUS_PARTNER_STALENESS_US` = 5 s, canbridge_config.h:356) maps to ERR_BUS_DOWN, any other non-wire result to ERR_TIMEOUT.
-- `canbridge_config.h:55`: FW_VERSION 30 -> 31, with a history note. `teensy_link/rpc_args.py:847` EXPECTED_BRIDGE_FW_VERSION -> 31 (pinned by tests/firmware/test_bridge_fw_version_xref.py:83).
+- `canbridge_config.h:55`: FW_VERSION 32 -> 33, with a history note. `teensy_link/rpc_args.py:847` EXPECTED_BRIDGE_FW_VERSION -> 33 (pinned by tests/firmware/test_bridge_fw_version_xref.py:83).
 - `protocol_config.h` is regenerated (the WaveCanId namespace). `README.md` and docs/teensy-udp-protocol.md gain the method.
 - PROTOCOL_VERSION stays 10. Precedent: BB_CANCEL in ed384cb4 ("ADDITIVE ... can-bridge FW 30 — no PROTOCOL_VERSION bump: no existing message changes, and an FW <= 29 board answers the unknown id ... with ERR_UNKNOWN_METHOD"), and likewise HAND_MOVE_TO in 8df4e11a and the BB FW relay in 658c21a3. Every bump in the history at udp_protocol.h:12 grew or removed a struct.
 - Idempotency: WAVE_CMD is idempotent. A re-dispatch of the same req_id resends an identical frame with the same cmd_seq, which the ESP treats as a keepalive. Do not add it to `NON_IDEMPOTENT_METHODS` (teensy_link/rpc.py:54). The 5 Hz stream still calls with `retries=0` and a 0.2 s timeout, because the next tick supersedes.
@@ -443,7 +443,7 @@ All resolved by the owner on 2026-10-19; see the decisions log below.
 - (b) If "Created new clip." does not arrive within the window, keep GPI2 low and report START with reason CLIP_MISSING, as designed.
 - (c) No Schottky diode. A USB isolator is used instead when USB and CAN are connected together, and the DevKitC is fed 3.3 V at the 3V3 pin (s3).
 - (d) The cone and the camera adapter are mutually exclusive on the CAN3 drop.
-- (e) Bridge reflash accepted, FW_VERSION 30 -> 31.
+- (e) Bridge reflash accepted, FW_VERSION 32 -> 33.
 - (f) Jugglebot branch `2026-10_wave-camera-can3` is cut from origin/skill-stack; the owner commits.
 - Also confirmed: the bridge end of the CAN3 segment is terminated, and the ESP end gets 120 R (s3).
 
@@ -453,7 +453,7 @@ All resolved by the owner on 2026-10-19; see the decisions log below.
 |---|---|---|---|---|
 | 0 | wave | `wave_frames.h`, `time_slave_math.h`, `record_fsm.h` + Unity tests in test/ | `pio test -e native` | no |
 | 1 | wave | can_link, time_slave, record_ctrl, heartbeat, console `ctl`/`can`/`sync` | build; bench rows 1 and 10 with a USB-CAN sniffer | no |
-| 2 | JB | YAML + both generators, bridge FW 31 (rpc.cpp case, send_cone_frame), rpc_args encoder, version xref | pytest firmware/teensy_link tests; native C++ tests where g++ is installed | flash on the Jetson |
+| 2 | JB | YAML + both generators, bridge FW 33 (rpc.cpp case, send_cone_frame), rpc_args encoder, version xref | pytest firmware/teensy_link tests; native C++ tests where g++ is installed | flash on the Jetson |
 | 3 | JB | wave_camera.py, msgs, bridge node services and timers, launch/rosbag, conftest | pytest with mocks (test_wave_camera, test_teensy_bridge_node_wave) | colcon, rows 2-7 |
 | 4 | JB | GUI panel, CSS, main.js wiring | node harness tests | row 8 |
 | 5 | both | 20-run latency, docs (ADR-0014, plan, logbook), findings doc update | `./run_tests.sh` | row 9 |

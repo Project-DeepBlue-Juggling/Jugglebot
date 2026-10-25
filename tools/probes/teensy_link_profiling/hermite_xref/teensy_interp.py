@@ -39,9 +39,14 @@ Two things about it are deliberate and must not be "tidied":
   `leg_interp.cpp`.** There is no motor_guard hand lane to be the twin of, and
   the firmware's LEG lead clamp deliberately diverges from motor_guard's
   (0.10 rev + a bounded feedforward, versus 0.15 rev + a zeroed one — see
-  `leg_interp.cpp`'s clamp comment). Porting the firmware's leg clamp here would
-  break the xref this file exists to serve, so it is left alone and the hand
-  clamp is written against the firmware directly.
+  `leg_interp.cpp`'s clamp comment). The twin carries the firmware leg clamp as
+  a MODE (`TeensyLegInterp(leg_clamp=...)`, 2026-10-24, FW 31): "motor_guard"
+  (the DEFAULT, untouched bit for bit — it is what the xref pins),
+  "firmware_fw30" (the clamp as flashed through FW 30: 0.10 rev, bounded vel_ff,
+  raw encoder anchor), "firmware_fw31" (the same band around a frame-age-aware,
+  dead-reckoned anchor) and "firmware" (FW 32: FW 31 with the shift's per-tick
+  growth slew-bounded at vel_limit x tick, 2026-10-25). The hand clamp is written against the
+  firmware directly.
 
 Also added: the **transmitted-v1** Mode-1 rule (`HAS_V1`, v6 wire). Pass
 ``v1=`` to :meth:`latch_setpoint` / :meth:`latch_hand` and the Hermite endpoint
@@ -76,7 +81,24 @@ SEGMENT_T_S = 0.025
 MAX_EXTRAP_DT_S = 0.05
 EXTRAP_DECAY_DT_S = 0.06
 JERK_EMA_ALPHA = 0.3
+# motor_guard's leg lead clamp (the DEFAULT mode, what the xref pins). NOT a stale
+# copy of the firmware's: the firmware's leg clamp is MAX_LEAD_REV_FW below.
 MAX_LEAD_REV = 0.15
+
+# ── Firmware leg lead clamp (canbridge_config.h; modes "firmware_fw30" and
+# "firmware" of TeensyLegInterp, pinned by
+# tests/firmware/test_leg_clamp_age_aware_twin.py). ──
+MAX_LEAD_REV_FW = 0.10
+LEAD_CLAMP_VELFF_LIMIT_RPS = 3.5
+# Stale-anchor census threshold (LEG_ANCHOR_STALE_US = 30000 us, FW 31). The age
+# CAP on the dead-reckoned anchor reuses MOTOR_FB_STALENESS_S below.
+LEG_ANCHOR_STALE_S = 0.030
+# Per-tick slew bound on the dead-reckoned shift (LEG_ANCHOR_SHIFT_SLEW_REV, FW 32):
+# ODriveDefaults::LEG_VEL_LIMIT_RPS (12.0) x INTERP_PERIOD_US (2000 us). Per TICK,
+# so the twin must be ticked at the firmware's 500 Hz for it to mean vel_limit.
+LEG_VEL_LIMIT_RPS_FW = 12.0
+LEG_ANCHOR_SHIFT_SLEW_REV = LEG_VEL_LIMIT_RPS_FW * 0.002
+LEG_CLAMP_MODES = ("motor_guard", "firmware_fw30", "firmware_fw31", "firmware")
 
 # ── Hand-lane guard constants (canbridge_config.h, FW 17) ────────────────────
 # These are the firmware's, NOT the legs': applying MAX_LEAD_REV (0.10) or
@@ -257,7 +279,10 @@ class TeensyLegInterp:
     _stroke_min_rev / _stroke_max_rev.
     """
 
-    def __init__(self, stroke_min_rev, stroke_max_rev):
+    def __init__(self, stroke_min_rev, stroke_max_rev, leg_clamp="motor_guard"):
+        if leg_clamp not in LEG_CLAMP_MODES:
+            raise ValueError("leg_clamp must be one of %r" % (LEG_CLAMP_MODES,))
+        self.leg_clamp = leg_clamp
         self.stroke_min = list(stroke_min_rev)
         self.stroke_max = list(stroke_max_rev)
 
@@ -288,6 +313,17 @@ class TeensyLegInterp:
         self.raw_vel = [0.0] * NUM_LEGS
         self.lead_clamp_ticks = 0
         self.stroke_clamp_ticks = 0
+        # ── FW 31 age-aware leg clamp state ("firmware" mode only; per leg,
+        # mirrors leg_interp.cpp's s_leg_anchor_ts / s_leg_cmd_ref / s_leg_dr). ──
+        self._leg_anchor_ts = [0.0] * NUM_LEGS
+        self._leg_cmd_ref = [0.0] * NUM_LEGS
+        self._leg_dr = [0.0] * NUM_LEGS
+        # Per-leg census (the LegClampDiag uplink; no out_en gate in the twin).
+        self.leg_lead_clamp_ticks = [0] * NUM_LEGS
+        self.leg_stale_anchor_ticks = [0] * NUM_LEGS
+        # Last tick's per-leg clamp anchor and engagement mask (observability).
+        self.leg_anchor = [0.0] * NUM_LEGS
+        self.leg_clamped = [False] * NUM_LEGS
 
         # ── Transmitted-v1 (HAS_V1, v6 wire).  None ⇒ the forward-difference
         # fallback, i.e. the pre-v6 behaviour this file's xref pins. ──
@@ -395,10 +431,12 @@ class TeensyLegInterp:
         self.prev_timestamp = t_latch
 
     # ── 500 Hz tick (port of _interpolate_and_send) ───────────────────────────
-    def tick(self, t_now, fb_pos):
+    def tick(self, t_now, fb_pos, fb_ts=None):
         """Compute the per-leg commanded position/velocity for the current tick.
 
         fb_pos[6] is the latest motor feedback (rev), used by the lead clamp.
+        fb_ts[6] (seconds; 0.0 = never seen) are the frames' timestamps, read
+        only by leg_clamp="firmware"; None => every leg age 0 in every mode.
         Returns (cmd_pos, cmd_vel, cmd_torque), each a list[6].
         """
         dt = t_now - self.base_timestamp
@@ -488,18 +526,69 @@ class TeensyLegInterp:
         self.raw_pos = list(self.cmd_pos)
         self.raw_vel = list(self.cmd_vel)
 
-        # ── Lead clamp: never run more than MAX_LEAD_REV ahead of encoder ──
-        for i in range(NUM_LEGS):
-            pre = self.cmd_pos[i]
-            dev = self.cmd_pos[i] - fb_pos[i]
-            if dev > MAX_LEAD_REV:
-                dev = MAX_LEAD_REV
-            elif dev < -MAX_LEAD_REV:
-                dev = -MAX_LEAD_REV
-            self.cmd_pos[i] = fb_pos[i] + dev
-            if self.cmd_pos[i] != pre:        # leg was lead-clamped → zero vel_ff
-                self.cmd_vel[i] = 0.0
-                self.lead_clamp_ticks += 1
+        # ── Lead clamp: never run more than the band ahead of the anchor ──
+        if self.leg_clamp == "motor_guard":
+            # motor_guard's clamp: 0.15 rev, raw encoder anchor, vel_ff ZEROED.
+            for i in range(NUM_LEGS):
+                pre = self.cmd_pos[i]
+                dev = self.cmd_pos[i] - fb_pos[i]
+                if dev > MAX_LEAD_REV:
+                    dev = MAX_LEAD_REV
+                elif dev < -MAX_LEAD_REV:
+                    dev = -MAX_LEAD_REV
+                self.cmd_pos[i] = fb_pos[i] + dev
+                if self.cmd_pos[i] != pre:        # leg was lead-clamped → zero vel_ff
+                    self.cmd_vel[i] = 0.0
+                    self.lead_clamp_ticks += 1
+        else:
+            # Firmware clamp (leg_interp.cpp): 0.10 rev, vel_ff CAPPED not zeroed.
+            # "firmware_fw30": anchor = fb.  "firmware_fw31": anchor = fb + dr, the
+            # dead-reckoned shift of the raw command since the frame landed.
+            # "firmware" (FW 32): the same, dr's per-tick growth bounded at
+            # LEG_ANCHOR_SHIFT_SLEW_REV.
+            aged = (self.leg_clamp in ("firmware_fw31", "firmware")) and (fb_ts is not None)
+            slewed = self.leg_clamp == "firmware"
+            for i in range(NUM_LEGS):
+                pre = self.cmd_pos[i]
+                dr = 0.0
+                if aged:
+                    ts = fb_ts[i]
+                    if ts != self._leg_anchor_ts[i]:      # a frame landed
+                        self._leg_anchor_ts[i] = ts
+                        self._leg_cmd_ref[i] = self.cmd_pos[i]
+                        self._leg_dr[i] = 0.0
+                    if ts != 0.0:
+                        age = t_now - ts if t_now > ts else 0.0
+                        if age <= MOTOR_FB_STALENESS_S:
+                            target = self.cmd_pos[i] - self._leg_cmd_ref[i]
+                            if slewed:
+                                lo = self._leg_dr[i] - LEG_ANCHOR_SHIFT_SLEW_REV
+                                hi = self._leg_dr[i] + LEG_ANCHOR_SHIFT_SLEW_REV
+                                target = hi if target > hi else (lo if target < lo else target)
+                            self._leg_dr[i] = target
+                        # else: dr keeps its value at the cap crossing
+                        if age > LEG_ANCHOR_STALE_S:
+                            self.leg_stale_anchor_ticks[i] += 1
+                    dr = self._leg_dr[i]
+                anchor = fb_pos[i] + dr
+                dev = self.cmd_pos[i] - anchor
+                engaged = False
+                if dev > MAX_LEAD_REV_FW:
+                    dev = MAX_LEAD_REV_FW
+                    engaged = True
+                elif dev < -MAX_LEAD_REV_FW:
+                    dev = -MAX_LEAD_REV_FW
+                    engaged = True
+                self.cmd_pos[i] = anchor + dev
+                self.leg_anchor[i] = anchor
+                self.leg_clamped[i] = engaged
+                if engaged:
+                    self.leg_lead_clamp_ticks[i] += 1
+                    self.lead_clamp_ticks += 1
+                if self.cmd_vel[i] > LEAD_CLAMP_VELFF_LIMIT_RPS:
+                    self.cmd_vel[i] = LEAD_CLAMP_VELFF_LIMIT_RPS
+                elif self.cmd_vel[i] < -LEAD_CLAMP_VELFF_LIMIT_RPS:
+                    self.cmd_vel[i] = -LEAD_CLAMP_VELFF_LIMIT_RPS
 
         # ── Stroke clamp: backstop against extrapolation past physical limits ──
         for i in range(NUM_LEGS):

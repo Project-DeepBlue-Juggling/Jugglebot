@@ -221,3 +221,17 @@ def test_shutdown_stow_already_stowed_is_clean_noop():
                        for e in _logged_errors(node._logger))
     finally:
         _teardown(teensy, client, node)
+
+
+def test_shutdown_stow_skips_the_inner_wire_wait():
+    """on_shutdown already settled + waited for the wire disarm; the stow's
+    _run_deactivate gets wire_wait_s=0 so a stuck wire cannot add another 1 s
+    to the ~8 s teardown (owner, 2026-10-23 audit)."""
+    teensy, client, node = _node_with_stow()
+    try:
+        node._latest_heartbeat = _hb()
+        node._shutdown_stow()
+        _, kwargs = node._run_deactivate.call_args
+        assert kwargs.get('wire_wait_s') == 0.0
+    finally:
+        _teardown(teensy, client, node)

@@ -37,7 +37,7 @@ WHY THE STOCK GATE CANNOT REACH THE CAPTURE
      cap refusal).  ``--authority`` (default on) passes the live values: lateral
      20 mm, inward 35 mm.  The same gap is the cause of the stock gate's
      LIMIT_JERK (the unclamped 41-45 mm re-aim on the second catch); see the
-     plan residue note in plans/active/columns-empty-cup-two-feed.md.
+     plan residue note in plans/archived/columns-empty-cup-two-feed.md.
   Use ``--reload-bias-mm`` (a landing bias off the ANNOUNCED landing; compile
   still sees the announcement) to put a known lateral error on the ball.
 

@@ -18,10 +18,10 @@ files_changed:
 
 ## What changed
 
-- `ros_ws/gui/js/robot-frame.js` (owner, after the pm sitting): the move banner auto-hides after `ROBOT_FRAME_BANNER_MS` = 3000 ms, `x` closes it sooner, and the first `mocap/status` after a GUI reload only seeds the move count, so a reload does not replay an old move. The "sticky" wording in the plan, the rehearsal row 44 and the move-observability entry was reconciled. NOT flown.
+- `ros_ws/gui/js/robot-frame.js` (owner, after the pm sitting): the move banner auto-hides after `ROBOT_FRAME_BANNER_MS` = 3000 ms, `x` closes it sooner, and the first `mocap/status` after a GUI refresh only seeds the move count, so a `reload` does not replay an old move. The "sticky" wording in the plan, the rehearsal row 44 and the move-observability entry was reconciled. NOT flown.
 - Rehearsal rows 44-46 flown 2026-10-19 pm, PASSED per the owner ("working nicely"), no bag analysed.
 - `plans/active/bb-calibration-one-attempt.md` archived by `git mv` (no rename) with `status: completed`, an Archival note, § 6 residue and a final § 5. Owner closures recorded: acceptance 2 (ten consecutive sittings) closed on the evidence, the tally not formally kept past 4 of 10; rehearsal row 36 waived, the path pinned by `tests/ros/test_mocap_node_robot_frame.py`, `tests/ros/test_skill_node_robot_frame.py`, `tests/motion/test_skills_executor.py`.
-- 22 path-qualified references to the old plan path across 17 files re-pointed (logbook frontmatter and prose, three test docstrings, three probe docstrings, the readings ledger, a hardware runsheet); 0 remain. Test edits are docstring-only.
+- 22 path-qualified references to the old plan path across 17 files re-pointed (logbook frontmatter and prose, three test docstrings, three probe docstrings, the readings ledger, a hardware runbook); 0 remain. Test edits are docstring-only.
 - Seven calibration entries set to `resolved` (frontmatter and `logbook/INDEX.md` rows): phase0-characterise, phase1-gate-inversion, phase2-template-residual, power-cycle-ab, phase3-robot-frame, fit-yaw-only-hold, move-observability. The 2026-10-14 investigation entry is left as a record.
 
 ## Why

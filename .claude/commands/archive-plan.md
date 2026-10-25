@@ -113,13 +113,15 @@ each marker classified:
      worth recording (work finished earlier than the archival housekeeping)
 3. Add the Archival-note section to the plan body: what shipped, why it closed,
    and where any residue was re-homed.
-4. **Index bookkeeping, same commit** (`tests/sim/test_plans_index.py` pins
-   both directions):
-   - Remove the row from `plans/active/INDEX.md` (or `plans/parked/INDEX.md`)
-   - Add a row to `plans/archived/INDEX.md`: `| archived-date | [name.md](name.md) | status | title |`
-   - Cross-directory references inside an index must be **path-qualified**
-     (`plans/active/<other>.md`) — the guard treats any bare `*.md` name in an
-     index as a claim that the file lives in *that* directory
+4. **Board bookkeeping, same commit.** The three `plans/*/INDEX.md` and
+   `docs/project-map.md` are generated from plan frontmatter. Set the
+   frontmatter (step 2: `status`, `archived`, optional `completed`), then run
+   `python -m mapkit gen` and stage the regenerated `plans/*/INDEX.md` and
+   `docs/project-map.md`. `tests/sim/test_plans_index.py` (the currency test)
+   fails if you forget. Do not hand-edit an INDEX row.
+   - Prose that cross-references another plan must still be **path-qualified**
+     (`plans/active/<other>.md`) wherever a bare `*.md` name would claim the
+     file lives in the wrong directory.
 5. Sweep inbound references. `related_plan:` entries need **no change** — that
    is the point of the stable filename. What does need re-pointing is any
    *path*-qualified prose reference (`plans/active/<name>.md` →
@@ -143,11 +145,19 @@ each marker classified:
    - Leave *historical narrative* alone: a logbook sentence describing what the
      naming convention was at the time is a record, not a live path.
 
+### Step 4b: Gated offer for residue
+
+List the plan's residue rows (its residue section, deferred items, open
+follow-ups) and offer, at ONE gate (default yes, nothing silent), to file each
+as a Bug or Feature item with `links: [plans/archived/<plan>.md]`,
+`status: inbox`, `parent:` = the plan's `pathway:`. Filing follows the
+`/inbox` steps (write, commit `map: file <kind> <title>`, push).
+
 ### Step 5: Report
 
 Summarize what was done:
 - Plan archived to `plans/archived/<name>.md` (filename unchanged), `archived: <date>`
-- Rows moved: which index lost the row, which gained it
+- Boards regenerated (`python -m mapkit gen`): which INDEX lost the row, which gained it
 - N path-qualified cross-references re-pointed, and where the sweep was
   deliberately not applied
 - Firmware byte-identical result, if any generated artifact was touched
@@ -159,19 +169,19 @@ No slash command exists for this yet — a `/park-plan` counterpart is worth
 adding. Until it does, the manual flow is:
 
 1. `git mv plans/active/<name>.md plans/parked/<name>.md` — filename unchanged.
-2. Add the dated parked note to the plan itself:
-   `status: parked   # YYYY-MM-DD — <why, in one line>`
-   (or the equivalent in a `**Status:**` banner for pre-frontmatter plans).
-   A reader who opens the file directly must learn it is parked without having
-   to find the board.
-3. Move the row from `plans/active/INDEX.md` to `plans/parked/INDEX.md`, filling
-   the **What would unpark it** column with the concrete gate, prerequisite or
-   decision **derived from the plan's own text**. Do not invent a gate — if the
-   plan states none (it is parked on priority, not a blocker), say exactly that
-   in the row.
+2. Set the frontmatter (a reader who opens the file directly must learn it
+   is parked without finding the board; the board is generated from these):
+   `status: parked   # YYYY-MM-DD — <why, in one line>` AND the three fields
+   `parked: YYYY-MM-DD`, `parked_why:`, `unpark:`. Derive `unpark:` (the
+   concrete gate, prerequisite or decision) from the plan's own text; do not
+   invent a gate — if the plan states none (parked on priority), say exactly
+   that. For a pre-frontmatter plan a `**Status:**` banner may stand in.
+3. Run `python -m mapkit gen` and stage the regenerated `plans/*/INDEX.md` and
+   `docs/project-map.md`.
 4. Re-point path-qualified inbound references `plans/active/<name>.md` →
    `plans/parked/<name>.md`, with the same grep cautions as Step 4 above.
-5. Unparking is the same move in reverse.
+5. Unparking is the same move in reverse: remove the three fields, set
+   `status: active`, `git mv` back, then `python -m mapkit gen`.
 
 ## Important Notes
 

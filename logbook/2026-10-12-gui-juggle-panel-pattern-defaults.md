@@ -41,4 +41,4 @@ every row inside a swept box of `config/generated/admissible_box.yaml`. Hop at 1
 
 **Verification.** 2026-10-12, `pytest tests/ros/test_gui_juggle_defaults.py tests/ros/test_gui_replay_ui_hide.py -q
 -p no:cacheprovider`: 12 passed. Not exercised in a browser. The live GUI needs a `jugglebot-gui.service` restart
-and a hard reload. Gate: in the commit message.
+and a hard refresh. Gate: in the commit message.

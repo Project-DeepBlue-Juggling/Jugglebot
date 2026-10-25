@@ -80,7 +80,7 @@ __all__ = [
     "encode_hand_move_to_result", "decode_hand_move_to_result",
     "HAND_AXIS", "HAND_MOVE_ARRIVED", "HAND_MOVE_SUPERSEDED", "HAND_MOVE_TIMEOUT",
     "HAND_MOVE_ABORTED", "HAND_MOVE_OUTCOME_NAMES",
-    # WAVE_CMD (FW 31)
+    # WAVE_CMD (FW 33)
     "ArgWaveCmd", "encode_wave_cmd", "WAVE_CMD_FLAG_CLEAR_FAULTS",
     # method association
     "METHOD",
@@ -348,7 +348,7 @@ def decode_hand_move_to_result(blob: bytes) -> ResultHandMoveTo:
     return ResultHandMoveTo.unpack(blob)
 
 
-# ── WAVE_CMD (can-bridge FW 31, additive RpcMethod) ──────────────────────────
+# ── WAVE_CMD (can-bridge FW 33, additive RpcMethod) ──────────────────────────
 # One recording-intent frame for the Wave camera adapter on the cone-role bus
 # (ADR-0014). The 8 arg bytes go out VERBATIM as the 0x7E2 CAN payload, so this
 # encoder is byte-identical to jugglebot.can.wave_camera.encode_cmd (pinned by
@@ -867,12 +867,26 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # (0x44, payloadless, presence-gated like BB_RESET) sends CANCEL_CMD 0x7D9 on
 # CAN1. No wire change to any existing message; PROTOCOL_VERSION stays 10; an
 # FW 29 board answers BB_CANCEL with ERR_UNKNOWN_METHOD.
-# 30 -> 31 (2026-10-19): Wave camera adapter. One ADDITIVE RpcMethod WAVE_CMD
+# 30 -> 31 (2026-10-24): frame-age-aware leg lead clamp (plans/active/
+# leg-lead-clamp-age-aware.md P1). The leg clamp anchors to a dead-reckoned
+# encoder through an encoder-frame gap instead of pinning the command at the
+# stale reading + MAX_LEAD_REV (the 2026-10-24 single-leg ~10 Hz staircases);
+# two per-leg cumulative counters ride one ADDITIVE 1 Hz uplink LegClampDiag
+# (0x94). No wire change to any existing message; PROTOCOL_VERSION stays 10.
+# An FW 30 board is wire-compatible and simply never sends 0x94 (the
+# /link_status leg_clamp_diag row reads never-seen) — AND it still carries the
+# staircase amplifier, which is why the skew must be loud before a Sitting.
+# 31 -> 32 (2026-10-25): the lead clamp's dead-reckoned shift is slew-bounded at
+# vel_limit x tick (0.024 rev), so a command discontinuity inside a frame gap
+# ramps at vel_limit behind the clamp instead of passing unclamped
+# (leg-lead-clamp-age-aware.md P2). Behavioural only: no wire change,
+# PROTOCOL_VERSION stays 10.
+# 32 -> 33 (2026-10-19, renumbered from 31 at the 2026-10-25 merge with main): Wave camera adapter. One ADDITIVE RpcMethod WAVE_CMD
 # (0x62, ArgWaveCmd 8 B) sends the args verbatim as WaveCameraCanId::CMD 0x7E2 on
 # the cone-role bus (CAN3 peripheral); ERR_BUS_DOWN when no cone-bus partner has
 # been heard. No wire change to any existing message; PROTOCOL_VERSION stays 10;
-# an FW 30 board answers WAVE_CMD with ERR_UNKNOWN_METHOD.
-EXPECTED_BRIDGE_FW_VERSION = 31
+# an FW <= 32 board answers WAVE_CMD with ERR_UNKNOWN_METHOD.
+EXPECTED_BRIDGE_FW_VERSION = 33
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────
@@ -963,7 +977,7 @@ METHOD = {
     RpcMethod.BB_FW_DATA: ArgPlatformFwData,
     RpcMethod.BB_FW_VERIFY: ArgPlatformFwVerify,
     RpcMethod.HAND_MOVE_TO: ArgHandMoveTo,         # FW 26, deferred reply
-    RpcMethod.WAVE_CMD: ArgWaveCmd,                # FW 31, cone-bus intent frame
+    RpcMethod.WAVE_CMD: ArgWaveCmd,                # FW 33, cone-bus intent frame
     # BB_RELOAD/RESET/CALIBRATE_LOC/CANCEL are payloadless — no entry (matches NOP).
     # TILT_READ/STATE_READ are payloadless too (reply arrives as a PLATFORM_FRAME).
     # PLATFORM_FW_COMMIT is payloadless too — no entry (matches NOP).

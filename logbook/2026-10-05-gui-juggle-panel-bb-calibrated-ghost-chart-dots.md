@@ -47,8 +47,8 @@ subsystem:
    Jugglebot at ~700 mm and tumbles. It glides solid onto the calibrated pose over 1.25 s.
    `viewer.js` gained `onFrame(cb)` on its existing rAF loop.
 4. **Juggle panel** (`juggle-panel.js`, mounted under ACTIVE in the state-machine minimap; the
-   old one-row strip is removed). It has pattern, Throws, Apex, Sep. (off for self-toss),
-   read-only Dwell, and Reload (forced on for `columns_1ball_fed`). Start is hold-to-confirm and
+   old one-row strip is removed). It has pattern, Throws, Apex, Sep. (off for self-throw),
+   read-only Dwell, and "Reload" (forced on for `columns_1ball_fed`). Start is hold-to-confirm and
    gated on connected + ACTIVE + cooldown + valid fields; Stop is an immediate click gated on
    connection only. The panel also shows:
    - an animated SVG of the selected pattern (sites, apex, Ball 1/Ball 2, phantoms hollow, Ball

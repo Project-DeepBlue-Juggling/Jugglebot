@@ -23,6 +23,9 @@ prompt for a fresh Claude session to take on.
 - `[phase-number]` (optional): explicit phase to prompt for. If
   omitted, auto-detect the first **NOT STARTED** or **IN PROGRESS**
   row in the plan's summary table.
+- `--inline` (optional): emit the prompt as a fenced block in the
+  conversation instead of writing the single-use file (the
+  pre-2026-10-23 behaviour). Default is the file — see Step 4.
 
 ## Protocol
 
@@ -35,13 +38,19 @@ prompt for a fresh Claude session to take on.
    list available active plans and stop.
 2. Verify the plan has a phased structure. Try in order:
 
-   **Primary — Implementation Phase Summary table.** Search for a
+   **Primary — `steps:` frontmatter.** When the plan's frontmatter carries a
+   `steps:` list, parse it into `(phase_id, scope, status, date)` from each
+   entry's `id`, `title`, `status` (`not_started|in_progress|complete|retired`)
+   and `date`. The table and headings below are fallbacks for plans without
+   `steps:`. `{PREV_SHA}` parsing is unchanged.
+
+   **Fallback 1 — Implementation Phase Summary table.** Search for a
    markdown table whose header row includes `Phase` and `Status`
    (typically directly under an `## Implementation Phase Summary`
    heading). If present, parse rows into
    `(phase_id, scope, status, date)`.
 
-   **Fallback — direct phase headings.** If no summary table,
+   **Fallback 2 — direct phase headings.** If no summary table,
    search for headings matching the pattern
    `^## Phase <N>:` or `^### Phase <N>:`. For each:
    - `phase_id` = the integer after `Phase`
@@ -140,9 +149,35 @@ sentences in the rendered prompt.
 
 ### Step 4: Render the prompt
 
-Emit a single ```` ``` ````-fenced markdown block in the conversation
-containing the assembled prompt. Use the template in the
-`<prompt-template>` section below; substitute:
+**Default (owner, 2026-10-23): write the prompt to a single-use file,
+not into the conversation.** Path:
+`temp/prompts/next-phase-<plan-name>-p<N>.md` (`mkdir -p temp/prompts`;
+`temp/` is gitignored, so the file never dirties the tree). The file
+starts with this header, then a `---` rule, then the assembled prompt:
+
+> SINGLE-USE PROMPT FILE — rendered <date> by `/next-phase-prompt <plan> <N>`.
+>
+> Receiving session: your FIRST action after reading this file is to
+> delete it, so it cannot be replayed against a later baseline:
+>
+>     rm <absolute path of this file>
+>
+> Then carry out the prompt below exactly as written.
+>
+> Rendered facts: <the pre-prompt note's prior-phase facts, one paragraph>
+
+Why a file that deletes itself on first read: a ~300-line prompt pasted
+into the terminal rides every later call of the rendering session (the
+2026-09-07 token measurements), and a prompt file left lying around is
+exactly the "stale prior-phase facts" hazard the baseline gate exists
+to catch — the receiving session's `rm` is the expiry. In the
+conversation emit ONLY the pre-prompt note, the file's absolute path
+and the one-line paste for the fresh session (Step 5). With `--inline`,
+emit the prompt as a single ```` ``` ````-fenced markdown block instead
+and skip the file.
+
+Either way, use the template in the `<prompt-template>` section below;
+substitute:
 
 | Placeholder                | Source                                                          |
 |----------------------------|-----------------------------------------------------------------|
@@ -179,9 +214,9 @@ truthy / falsy respectively. When rendering:
   was a standalone bullet. Don't leave dangling punctuation,
   orphan list markers, or runs of blank lines.
 
-Pre-prompt note (above the code block): one short sentence stating
-which plan + phase the prompt targets, and the resolved
-prior-phase facts.
+Pre-prompt note (above the path line, or above the code block with
+`--inline`): one short sentence stating which plan + phase the prompt
+targets, and the resolved prior-phase facts.
 
 - With a prior phase (e.g., Phase 2 of an in-flight plan):
   > "Targeting Phase 2 of mpc-sadpath-coverage-tiers-1-3 (prior
@@ -196,7 +231,12 @@ prior-phase facts.
 
 ### Step 5: Closing note
 
-After the code block, emit one of:
+Default (file): give the absolute path and the paste line, then one
+of the two notes below with "Copy the block above into" replaced by
+"In a fresh Claude session (or after `/clear`), paste:
+`Read and carry out <absolute path>` — the file deletes itself on
+first read, so re-render if the session never starts." With
+`--inline`, emit one of the notes verbatim after the code block:
 
 - With a prior phase:
   > Copy the block above into a fresh Claude session (or `/clear`
@@ -232,7 +272,8 @@ After the code block, emit one of:
   substituted in.
 - **The command itself never invokes pytest, git push, or any
   external state-changing operation.** It is read-only against the
-  repo (reads the plan, git log, logbook).
+  repo (reads the plan, git log, logbook); its only write is the
+  single-use prompt file under gitignored `temp/prompts/`.
 
 ## Prompt template
 

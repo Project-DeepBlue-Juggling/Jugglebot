@@ -3,11 +3,11 @@
 - **Status**: Accepted
 - **Date**: 2026-10-19
 - **Deciders**: Harrison + Claude
-- **Related**: [ADR-0008](0008-time-sync-master-on-can-bridge.md), [ADR-0013](0013-three-can-buses.md), plan `wave-camera-can3-integration.md`, [Wave Camera: CAN adapter design](../../ros_ws/docs/wave_camera_can_adapter.md) (`ros_ws/docs/wave_camera_can_adapter.md`, the binding wire contract); ESP32 firmware in `ros_ws/src/jugglebot/WaveCamera_ESP_code/`
+- **Related**: [ADR-0008](0008-time-sync-master-on-can-bridge.md), [ADR-0013](0013-three-can-buses.md), plan `wave-camera-can3-integration.md`, [Wave Camera: CAN adapter design](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/ros_ws/docs/wave_camera_can_adapter.md) (`ros_ws/docs/wave_camera_can_adapter.md`, the binding wire contract); ESP32 firmware in `ros_ws/src/jugglebot/WaveCamera_ESP_code/`
 
 ## Context
 
-The robot needs to start and stop recording on a Freefly Wave high-speed camera from ROS 2, and to know each start as a robot wall-clock instant good to about 1 ms, so footage can be lined up with the bag. The camera has a 6-pin GPIO connector: GPI2 (pin 6) starts a recording while it is held low (LVL mode), and pin 4 carries a 30 Hz tick whose first edge after the GPI2 falling edge starts the clip (measured on the bench, [Wave Camera findings](../../ros_ws/docs/wave_camera_findings.md)). An ESP32 drives GPI2, stamps that tick, and talks CAN.
+The robot needs to start and stop recording on a Freefly Wave high-speed camera from ROS 2, and to know each start as a robot wall-clock instant good to about 1 ms, so footage can be lined up with the bag. The camera has a 6-pin GPIO connector: GPI2 (pin 6) starts a recording while it is held low (LVL mode), and pin 4 carries a 30 Hz tick whose first edge after the GPI2 falling edge starts the clip (measured on the bench, [Wave Camera findings](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/ros_ws/docs/wave_camera_findings.md)). An ESP32 drives GPI2, stamps that tick, and talks CAN.
 
 The forces:
 
@@ -22,7 +22,7 @@ The forces:
 2. **Recording is kept alive by a streamed intent, not a stateful command.** The node streams WAVE_CMD (`desired`, `cmd_seq`, `flags`, `session_id`) at **5 Hz whenever the adapter heartbeat is fresh**, `desired=0` included, so a lost stop is repaired within 200 ms. The adapter **auto-stops with GPI2 released after 3 s without an intent** (AUTO_STOP, reason INTENT_TIMEOUT) and releases GPI2 if the camera tick disappears (TICK_LOST). `cmd_seq` is bumped once per service call; each new seq produces exactly one REC_EVENT, which is the services' acknowledgement.
 3. **The start stamp is tick-quantised.** The adapter stamps the first camera tick after the GPI2 falling edge, cross-checked against the camera's "Created new clip." UART line (expected 15.5-16.3 ms after the tick); its clock is slaved to the 0x7DD beacon. A missing clip line still reports START, with reason CLIP_MISSING, and keeps GPI2 low (the service reports success with a warning).
 4. **Event time rides as 40 bits.** REC_EVENT bytes 0-4 carry the low 40 bits of the event's wall time in µs when the adapter is synced; the host rebuilds the high bits from its own clock within a ±6.4-day window (`reconstruct_event_time_us`, the 40-bit twin of the clapboard's 48-bit reconstruction). When the adapter is unsynced the field is the event's age at TX, and the host computes `ConeFrame.t_bridge_us - age` from the bridge's own RX stamp, flagged `time_synced=false`. The byte saved over 48 bits carries both sequence numbers.
-5. **One additive RPC, no new message type, no `PROTOCOL_VERSION` bump.** Bridge FW 31 adds `WAVE_CMD` (0x0062, `ArgWaveCmd`, 8 B) that sends its args verbatim as the 0x7E2 frame through `can_cone_tx`; its presence gate (`FAILED`, no cone-bus partner heard) maps to ERR_BUS_DOWN. The uplink already rides the verbatim CONE_FRAME relay. `PROTOCOL_VERSION` stays 10: no existing message changes, and an FW 30 board answers 0x62 with ERR_UNKNOWN_METHOD, loudly (the BB_CANCEL precedent, FW 30).
+5. **One additive RPC, no new message type, no `PROTOCOL_VERSION` bump.** Bridge FW 33 adds `WAVE_CMD` (0x0062, `ArgWaveCmd`, 8 B) that sends its args verbatim as the 0x7E2 frame through `can_cone_tx`; its presence gate (`FAILED`, no cone-bus partner heard) maps to ERR_BUS_DOWN. The uplink already rides the verbatim CONE_FRAME relay. `PROTOCOL_VERSION` stays 10: no existing message changes, and an FW 30 board answers 0x62 with ERR_UNKNOWN_METHOD, loudly (the BB_CANCEL precedent, FW 30).
 
 ## Consequences
 
@@ -39,7 +39,7 @@ The forces:
 - The catching cone and the camera cannot be on the robot at the same time without a second drop or a bus change.
 - Steady-state traffic on the cone-role bus rises to about 14 frames/s from the adapter plus 5 Hz of intents, which is negligible against 1 Mbit/s but no longer zero while the cone is absent.
 - Start-time accuracy is quantised to the camera tick; mapping the tick to a recorded frame number still needs the optical calibration (a clapboard flash), which is out of scope here.
-- A bridge reflash (FW 30 to 31) is needed before the services work; until then `BRIDGE_FW_CHECK` reports the skew and every WAVE_CMD returns ERR_UNKNOWN_METHOD.
+- A bridge reflash (FW 32 to 33) is needed before the services work; until then `BRIDGE_FW_CHECK` reports the skew and every WAVE_CMD returns ERR_UNKNOWN_METHOD.
 
 **Neutral**
 

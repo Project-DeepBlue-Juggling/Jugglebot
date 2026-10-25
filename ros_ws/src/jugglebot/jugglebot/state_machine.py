@@ -119,6 +119,14 @@ class Context:
         # Async operation result (set by orchestrator when a requested op completes)
         self.operation_pending = False
         self.operation_result = None         # None = not complete, True/False = result
+        # The resolved operation's service message (the bridge's reject reason on
+        # failure; None until a result lands). ActiveHandler classifies a failed
+        # deactivate by it (retryable refusal vs a genuine one).
+        self.operation_message = None
+        # Operator-facing notices raised by handlers (e.g. "deactivate refused --
+        # robot stays ACTIVE because ..."), appended via notify(). The
+        # orchestrator logs each once (one WARN call site) and clears the list.
+        self.operator_notices = []
 
         # User command queue (set by orchestrator from command topic, consumed by handler)
         self._command_queue = deque(maxlen=4)
@@ -167,6 +175,9 @@ class Context:
     def clear_requests(self):
         """Discard all pending requests."""
         self._request_queue.clear()
+
+    def notify(self, text):
+        self.operator_notices.append(text)
 
     def enqueue_command(self, cmd):
         """Add a command to the queue. Oldest commands are dropped if full."""
@@ -387,12 +398,12 @@ class IdleHandler(StateHandler):
         if ctx.operation_pending:
             return None
 
-        # A4 (ARMING_CONTRACT) — blank the control mode only AFTER the pending
-        # deactivate has resolved. ActiveHandler.on_exit deliberately leaves the
-        # streaming mode published so the 40 Hz emitter keeps feeding the (by
-        # then disarmed, A3) wire through the descent; blanking it at IDLE entry
-        # would stop the emitter while the bridge could still be armed for up to
-        # a service round-trip — the 250 ms SETPOINT_STALE race this ordering removes.
+        # A4 (ARMING_CONTRACT) — the streaming mode stays published through the
+        # descent because the machine is still ACTIVE until the deactivate is
+        # confirmed (ActiveHandler._step_deactivate), so the 40 Hz emitter keeps
+        # feeding the (disarmed, A3) wire to the end. A path that reaches IDLE
+        # with an operation still in flight (a reconcile-to-IDLE after a lost
+        # reply) is held above until it resolves; only then is the mode blanked.
         if ctx.control_mode != '':
             ctx.control_mode = ''
 
@@ -488,6 +499,31 @@ class LevellingHandler(StateHandler):
         ctx.clear_requests()
 
 
+# Replies on which a failed DEACTIVATE is RETRIED -- only those that mean the
+# firmware latched NOTHING: ERR_REJECTED (leg_deactivate.cpp deactivate_request:
+# the wire still armed -- the disarm-staging race of 2026-10-19/23 -- a
+# cold-start move or a deactivate already running, or a fault stow pending) and
+# the orchestrator's own 'not ready' (nothing was sent). ERR_TIMEOUT is NOT
+# here: a lost ack may mean the lower DID latch, so the bridge observes the legs
+# to a verdict instead of reporting a refusal (owner, 2026-10-23); a bare
+# ERR_TIMEOUT reaching this layer is therefore treated as genuine. Anything else
+# -- ERR_BUS_DOWN (guard latched / bus down), ERR_BAD_ARGS, a deactivate that
+# was ACCEPTED and then failed mid-descent ("deactivate FAILED -- axis ..."), no
+# reply at all -- is genuine: no blind re-dispatch of a move whose outcome is
+# uncertain.
+_DEACTIVATE_RETRYABLE_MARKERS = ('ERR_REJECTED', 'not ready')
+
+
+def deactivate_failure_is_retryable(message):
+    """True iff a failed deactivate's service message is a refusal that moved
+    nothing and may succeed on a later attempt (see the markers above)."""
+    if not message:
+        return False
+    if 'deactivate FAILED' in message:
+        return False   # accepted, then failed during the descent: not a refusal
+    return any(m in message for m in _DEACTIVATE_RETRYABLE_MARKERS)
+
+
 class ActiveHandler(StateHandler):
     """Robot activated — accepting pose commands via sub-mode.
 
@@ -506,10 +542,60 @@ class ActiveHandler(StateHandler):
     # not the bottleneck, the frame-wait is).
     ARM_MAX_ATTEMPTS = 10
 
+    # Confirmed ACTIVE -> IDLE (2026-10-23, owner rule: a genuine refusal keeps
+    # the machine ACTIVE, a transient one is retried, the reported state always
+    # reflects the robot). The machine leaves ACTIVE only when the bridge
+    # reports the deactivate DONE (legs stowed + IDLE). A refusal that latched
+    # nothing (deactivate_failure_is_retryable) is retried up to
+    # DEACTIVATE_MAX_ATTEMPTS, DEACTIVATE_RETRY_SPACING_S apart (> one 10 Hz J->T
+    # heartbeat, the disarm-staging race). A genuine failure, a spent budget or
+    # no reply by DEACTIVATE_REPLY_DEADLINE_S opens a RECONCILE window of
+    # DEACTIVATE_RECONCILE_S: the machine follows the robot to IDLE if the legs
+    # leave closed loop, else stays ACTIVE with the reason as an operator notice.
+    DEACTIVATE_MAX_ATTEMPTS = 3
+    DEACTIVATE_RETRY_SPACING_S = 1.0
+    DEACTIVATE_RECONCILE_S = 1.0
+    # The bridge's own budget for one deactivate is the DeactivateMonitor
+    # timeout (teensy_link.deactivate.DEFAULT_TIMEOUT_S = 20 s) + its 5 s hard
+    # deadline + up to 1 s wire-disarm wait; 30 s leaves ~4 s of margin so a
+    # slow-but-alive bridge is never called silent. (A ~15 s deadline would
+    # declare "no reply" while the bridge is still legitimately watching a
+    # stalled descent.) Pinned against the constant by a test.
+    DEACTIVATE_REPLY_DEADLINE_S = 30.0
+    # ACTIVE-wide reconciliation: legs out of closed loop for this many
+    # CONSECUTIVE 10 Hz ticks => the robot is not ACTIVE; follow it to IDLE.
+    # /robot_state arrives at 100 Hz, so 5 ticks = 500 ms = ~50 consecutive
+    # samples all saying "not CLOSED_LOOP" (each tick reads the latest one): a
+    # single short/garbled message or one-sample state glitch cannot trip it,
+    # while a real drop (legs IDLE) is followed within half a second. A leg
+    # with an ODrive ERROR never gets here -- ctx.errors forces FAULT first.
+    LEGS_OUT_TICKS = 5
+    _STREAMING_MODE_CMDS = ('standby', 'trajectory', 'spacemouse', 'gui')
+
     def __init__(self):
         self._activated = False
         self._armed = False
         self._arm_attempts = 0
+        self._reset_deactivate()
+        self._legs_out_ticks = 0
+        self._legs_seen_cl = False
+        self._last_reason = None
+
+    def _exit_disarm_only(self):
+        """Mark a legs-out exit to IDLE: on_exit requests the DISARM + Hand IDLE
+        only ('disarm_and_idle_hand'), never a leg DEACTIVATE — legs that fell
+        out of closed loop must not be re-energised and lowered a second time
+        (owner, 2026-10-23 second audit)."""
+        self._deactivated = True
+        self._exit_request = 'disarm_and_idle_hand'
+
+    def _reset_deactivate(self):
+        self._exit_request = None
+        self._deactivating = False
+        self._deact_phase = None        # 'waiting' | 'spacing' | 'reconcile'
+        self._deactivate_attempts = 0
+        self._deact_until = None
+        self._deactivated = False
 
     def _begin_arm_phase(self, ctx):
         """Enter the arm phase (A2), or skip it under manual arming."""
@@ -533,6 +619,9 @@ class ActiveHandler(StateHandler):
         # service). The operator then switches to TRAJECTORY / SPACEMOUSE / GUI
         # to accept the corresponding command source.
         ctx.active_mode = ActiveMode.STANDBY
+        self._reset_deactivate()
+        self._legs_out_ticks = 0
+        self._legs_seen_cl = False
 
         # FIX 2 (F1) — guard-clear resume. A GUARD-ONLY fault (Teensy guard latched
         # during ACTIVE with NO ODrive error) never disarmed the legs and never left
@@ -589,22 +678,165 @@ class ActiveHandler(StateHandler):
                 return None
             self._armed = True
 
+        if self._deactivating:
+            return self._step_deactivate(ctx)
+
+        # ACTIVE-wide reconciliation (armed, past the arm phase): the robot,
+        # not the last command, decides the state.
+        if self._legs_out(ctx):
+            ctx.notify(
+                f'legs out of closed loop for {self.LEGS_OUT_TICKS} consecutive '
+                f'ticks while ACTIVE -- the robot is not active; following it '
+                f'to IDLE')
+            self._exit_disarm_only()
+            return RobotState.IDLE
+
         cmd = ctx.consume_command()
         if cmd == 'deactivate':
-            return RobotState.IDLE
-        elif cmd in ('standby', 'trajectory', 'spacemouse', 'gui'):
+            # Stay ACTIVE until the robot confirms it (see DEACTIVATE_*). The
+            # streaming mode stays published through the descent (A4) because
+            # the machine is still ACTIVE; the bridge disarms in-process first (A3).
+            self._reset_deactivate()
+            self._deactivating = True
+            self._request_deactivate(ctx)
+            return None
+        elif cmd in self._STREAMING_MODE_CMDS:
+            # Owner policy 2026-10-23: after a refused deactivate the robot is
+            # ACTIVE but DISARMED. A streaming mode switch onto a disarmed wire
+            # is refused -- the operator re-arms explicitly (no auto re-arm).
+            # Auto-arm sessions only: a manual-arm session (auto_arm False)
+            # switches mode BEFORE its operator arm (runbook Sharp Edge #5).
+            if ctx.auto_arm and ctx.link_status_seen and not ctx.wire_armed:
+                ctx.notify(
+                    f"'{cmd}' refused: setpoint output is DISARMED (wire not "
+                    f"armed) -- re-arm via /set_setpoint_output first")
+                return None
             ctx.active_mode = ActiveMode(cmd.upper())
             ctx.control_mode = ctx.active_mode.value
         # Other commands silently discarded (already logged on receipt)
 
         return None
 
+    def _legs_out(self, ctx):
+        """True once the legs have been reported OUT of closed loop for
+        LEGS_OUT_TICKS consecutive ticks, AFTER having been seen closed-loop in
+        this ACTIVE visit (no evidence of the robot reporting = no claim)."""
+        if ctx.legs_closed_loop:
+            self._legs_seen_cl = True
+            self._legs_out_ticks = 0
+            return False
+        if not self._legs_seen_cl:
+            return False
+        self._legs_out_ticks += 1
+        return self._legs_out_ticks >= self.LEGS_OUT_TICKS
+
+    def _request_deactivate(self, ctx):
+        self._deactivate_attempts += 1
+        self._deact_phase = 'waiting'
+        self._deact_until = time.monotonic() + self.DEACTIVATE_REPLY_DEADLINE_S
+        ctx.operation_result = None
+        ctx.operation_message = None
+        ctx.request = 'deactivate'
+
+    def _filter_commands_while_deactivating(self, ctx):
+        """Discard ONLY streaming mode switches (one notice each) and absorb a
+        duplicate 'deactivate' (already being served); every other command is
+        left queued, in order, for the state that follows."""
+        keep = []
+        while True:
+            cmd = ctx.consume_command()
+            if cmd is None:
+                break
+            if cmd in self._STREAMING_MODE_CMDS:
+                ctx.notify(f"'{cmd}' discarded: a deactivate is in progress "
+                           f"(mode stays {ctx.active_mode.value})")
+            elif cmd != 'deactivate':
+                keep.append(cmd)
+        for cmd in keep:
+            ctx.enqueue_command(cmd)
+
+    def _step_deactivate(self, ctx):
+        """One tick of the confirmed deactivate. Returns IDLE or None."""
+        self._filter_commands_while_deactivating(ctx)
+        now = time.monotonic()
+        phase = self._deact_phase
+        if phase == 'spacing':
+            if now >= self._deact_until:
+                self._request_deactivate(ctx)
+            return None
+        if phase == 'reconcile':
+            legs_out = self._legs_out(ctx)
+            if legs_out or (now >= self._deact_until and self._legs_seen_cl
+                            and not ctx.legs_closed_loop):
+                self._reset_deactivate()
+                self._exit_disarm_only()
+                ctx.notify(
+                    f'deactivate reported failure ({self._last_reason}) but the '
+                    f'legs are no longer closed-loop -- following the robot '
+                    f'to IDLE')
+                return RobotState.IDLE
+            if now >= self._deact_until:
+                attempts = self._deactivate_attempts
+                self._reset_deactivate()
+                ctx.notify(
+                    f'deactivate REFUSED after {attempts} attempt(s): '
+                    f'{self._last_reason} -- robot stays ACTIVE (legs '
+                    f'closed-loop, setpoint output disarmed); resolve the cause, '
+                    f're-arm or request IDLE again')
+            return None
+        # phase == 'waiting'
+        if ctx.operation_pending or ctx.operation_result is None:
+            if now < self._deact_until:
+                return None
+            # No reply: stop treating the call as in flight, or a reconcile-to-
+            # IDLE would wedge IdleHandler behind operation_pending. A late reply
+            # cannot be misread as a LATER deactivate's answer: the orchestrator
+            # keeps one future, and the next dispatch replaces it (the old one
+            # is never read); a late reply while no deactivate is pending is
+            # ignored by ActiveHandler (it reads operation_result only in its
+            # arm / deactivate phases, and both clear it before dispatching).
+            ctx.operation_pending = False
+            return self._begin_reconcile(
+                ctx, f'no reply from the bridge within '
+                     f'{self.DEACTIVATE_REPLY_DEADLINE_S:.0f} s')
+        if ctx.operation_result is True:
+            self._reset_deactivate()
+            self._deactivated = True
+            return RobotState.IDLE
+        reason = ctx.operation_message or 'no reason given'
+        ctx.operation_result = None
+        if (deactivate_failure_is_retryable(reason)
+                and self._deactivate_attempts < self.DEACTIVATE_MAX_ATTEMPTS):
+            ctx.notify(
+                f'deactivate attempt {self._deactivate_attempts}/'
+                f'{self.DEACTIVATE_MAX_ATTEMPTS} refused ({reason}) -- robot '
+                f'still ACTIVE; retrying in {self.DEACTIVATE_RETRY_SPACING_S:.1f} s')
+            self._deact_phase = 'spacing'
+            self._deact_until = now + self.DEACTIVATE_RETRY_SPACING_S
+            return None
+        return self._begin_reconcile(ctx, reason)
+
+    def _begin_reconcile(self, ctx, reason):
+        """Genuine failure / spent budget / no reply: watch the robot for
+        DEACTIVATE_RECONCILE_S before deciding ACTIVE vs IDLE."""
+        self._last_reason = reason
+        self._deact_phase = 'reconcile'
+        self._deact_until = time.monotonic() + self.DEACTIVATE_RECONCILE_S
+        self._legs_out_ticks = 0
+        return None
+
     def on_exit(self, ctx):
-        # A3/A4 (ARMING_CONTRACT): request the deactivate but DO NOT blank the
-        # control mode — the bridge disarms in-process at the head of
-        # _run_deactivate (A3), and the streaming mode must stay published until
-        # that operation resolves so the armed wire is never starved by a mode
-        # blank (A4). IdleHandler blanks the mode after the operation completes.
+        # A3/A4 (ARMING_CONTRACT): on an exit that did NOT come through the
+        # confirmed deactivate (a handler-returned ACTIVE -> FAULT), request the
+        # deactivate but DO NOT blank the control mode — the bridge disarms
+        # in-process at the head of _run_deactivate (A3), and the streaming mode
+        # must stay published until that operation resolves so the armed wire is
+        # never starved by a mode blank (A4). After a confirmed deactivate the
+        # legs are already stowed: a second request would be redundant.
+        if self._deactivated:
+            if self._exit_request:
+                ctx.request = self._exit_request   # legs-out exit: disarm only
+            return
         ctx.request = 'deactivate'
 
 

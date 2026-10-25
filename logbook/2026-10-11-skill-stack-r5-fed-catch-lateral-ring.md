@@ -219,7 +219,7 @@ physical catch envelope is a hardware question, not an offline one — see Open 
 
 ## Open Questions
 
-- **Hardware check owed**: `tests/hardware/session_skills_r5_sitting7.md` — sitting 7's runsheet includes the
+- **Hardware check owed**: `tests/hardware/session_skills_r5_sitting7.md` — sitting 7's runbook includes the
   in-cup lateral skid check (the ~0.99 → ~1.29 m/s trade-off above) at contact, on the real hand/ball, which nothing
   offline can confirm.
 - The admissible box re-sweep (`tools/admissible_sweep.py`) is owed before this change ships to the committed box's

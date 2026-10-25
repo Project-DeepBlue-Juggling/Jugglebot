@@ -17,6 +17,11 @@ not just "mostly done" or "good enough".
    - Do the tests pass? (check test files exist and are not skipped)
    - Are there TODO/FIXME/HACK comments in the relevant code?
    - Were all acceptance criteria actually met, or just the easy ones?
+   - If the plan has a `steps:` frontmatter list, check it against the plan's
+     step headings: every id has exactly one heading and the reverse, and titles
+     match. Every step must be `complete` or `retired` before archival; a plan
+     with a `not_started` or `in_progress` step is NOT READY unless the scope
+     reduction is recorded in the plan.
 3. **Check for loose ends:**
    - Are there "future work" items that were actually part of the plan's scope?
    - Are there known issues in `sim/analysis/known_issues.yaml` that this plan was supposed to address?
@@ -70,6 +75,9 @@ Present your findings as:
 - [x] Phase 1: <description> — verified: <evidence>
 - [x] Phase 2: <description> — verified: <evidence>
 - [ ] Phase 3: <description> — INCOMPLETE: <what's missing>
+
+### Steps check
+<`steps:` vs headings (ids, titles) and each step's status; or "No `steps:` list".>
 
 ### Loose Ends
 <List any unfinished items, open questions, or deferred work>

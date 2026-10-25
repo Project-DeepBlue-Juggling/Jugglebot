@@ -62,7 +62,7 @@ hand encoder. Scripts are in that session's scratchpad: `bb_extract.py`, `bb_fli
     -1 m/s.
   - The early contact also moved the hit point about 20 mm toward BB, on top of the short landing.
   - Feeds whose first contact was <= 36 mm from the cup axis were caught; those >= 38 mm missed.
-  - The tilted reload catches (k0-k7) met the same -50 ms and were all caught. The level-pinned feed catch is the
+  - The tilted `reload` catches (k0-k7) met the same -50 ms and were all caught. The level-pinned feed catch is the
     one with little tolerance.
 - **Fixed in the announcement, not in BB's release.**
   - The feed catch is compiled from `landing_time`, so making the announcement predict the real arrival fixes the

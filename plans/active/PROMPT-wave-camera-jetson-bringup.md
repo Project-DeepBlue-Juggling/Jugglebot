@@ -1,3 +1,15 @@
+---
+title: "Wave Camera: Jetson bring-up prompt"
+status: active
+kind: reference
+owner: harrison
+created: 2026-10-25
+last_updated: 2026-10-25
+pathway: wave-camera-can3
+scope: >-
+  Session prompt for the Wave camera Jetson bring-up (Phase 4 of wave-camera-can3-integration.md): verify,
+  build, flash the can-bridge, launch, and walk the bus, time-sync, service, keepalive and GUI checks.
+---
 # Wave Camera: Jetson bring-up prompt
 
 You are working on the Jugglebot Jetson (Ubuntu 20.04, ROS2 Foxy, Python 3.8) in the repo checkout at ~/Desktop/Jugglebot (or the worktree I name below). Read CLAUDE.md and DOCUMENTATION_GUIDE.md first and follow them, including the test gate and commit rules. I commit; do not commit or push unless I say so.

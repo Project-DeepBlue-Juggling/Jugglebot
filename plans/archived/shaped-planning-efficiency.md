@@ -1,5 +1,5 @@
 ---
-title: Plan: Shaped-planning efficiency — batched dense gate + retiming-invariant duration search
+title: "Plan: Shaped-planning efficiency — batched dense gate + retiming-invariant duration search"
 status: completed
 archived: 2026-07-17
 ---

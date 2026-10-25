@@ -216,6 +216,7 @@ ENUMS = {
         ("CACHE_DIAG",     0x91, "1 Hz encoder-cache freshness census (per-axis age floor/peak) + CAN RX-ring occupancy (STREAM, T→J)"),
         ("RING_DIAG",      0x92, "1 Hz CAN RX-ring TRUE-occupancy census (true_depth vs reported _available = the leak) + jugglebot delivery lag + SDO RTT (STREAM, T→J)"),
         ("BB_YAW_ESTIMATE", 0x93, "Ball Butler yaw estimate @100Hz, paired 1:1 with BB_AXIS_ESTIMATES by t_bridge_us (STREAM, T→J)"),
+        ("LEG_CLAMP_DIAG",  0x94, "1 Hz per-leg lead-clamp census: clamp-engaged ticks + stale-anchor ticks, cumulative since boot (STREAM, T→J)"),
     ],
     "RpcMethod": [
         ("NOP",                0x0000, "No-op (link test)"),
@@ -328,8 +329,8 @@ ENUMS = {
         # HAND_MOVE_TO while one runs RETARGETS it and answers the first with
         # outcome SUPERSEDED. Not idempotent (host: retries forced to 0).
         ("HAND_MOVE_TO", 0x0061, "Hand-only TRAP_TRAJ move to a caller target (ACTIVATE's axis-6 ladder); deferred reply at arrival / timeout / supersede"),
-        # ADDITIVE (2026-10-19, can-bridge FW 31 — no PROTOCOL_VERSION bump: no
-        # existing message changes, and an FW <= 30 board answers the unknown id
+        # ADDITIVE (2026-10-19, can-bridge FW 33 — no PROTOCOL_VERSION bump: no
+        # existing message changes, and an FW <= 32 board answers the unknown id
         # through rpc.cpp's `default:` with ERR_UNKNOWN_METHOD, loudly). The Wave
         # camera adapter (an ESP32 on the cone-role bus, ADR-0014) records while
         # it keeps hearing this intent: the node streams it at 5 Hz whenever the
@@ -1559,6 +1560,51 @@ MESSAGES = [
         ],
     ),
     Message(
+        "LegClampDiag", "LEG_CLAMP_DIAG", "T2J", "STREAM",
+        summary=(
+            "PER-LEG LEAD-CLAMP CENSUS, 1 Hz (can-bridge FW 31, "
+            "plans/active/leg-lead-clamp-age-aware.md P1). Two cumulative-since-boot "
+            "u32 counters per leg, written by the 500 Hz interp ISR and read by task_telem "
+            "(the s_hand_lead_clamp_ticks / s_hand_stale_holds idiom: single writer, "
+            "naturally-aligned words, the consumer differences two reads, nothing is ever "
+            "read-then-cleared — a clear at the emit site would swallow ISR increments). "
+            "WHY IT EXISTS: on 2026-10-24 three single-leg ~10 Hz vibrations (legs 1 and 2, "
+            "two with the iq setpoint on the 15 A clamp) were the leg lead clamp pinning the "
+            "command at a STALE encoder reading + MAX_LEAD_REV through 76-108 ms encoder-frame "
+            "gaps, and the only wire witness was lead_clamp_mask on the 10 Hz heartbeat, which "
+            "under-sampled a 500 Hz verdict so badly the engagement had to be INFERRED from the "
+            "staircase. These counters make the 500 Hz truth readable at 1 Hz: lead_clamp_ticks "
+            "advancing over a window says the clamp engaged on that leg and for how many ticks; "
+            "stale_anchor_ticks advancing says that leg's encoder anchor was older than "
+            "LEG_ANCHOR_STALE_US (30 ms; healthy p95 <= 10 ms, a drop is 76-108 ms) — i.e. a "
+            "frame-drop episode happened on that leg whether or not the clamp engaged. "
+            "The P3 Sitting gate reads both: a stale window WITHOUT clamp engagement is the "
+            "age-aware anchor doing its job; a stale window WITH engagement is the residue. "
+            "GATED like the hand lane (FW 18): lead_clamp_ticks counts only ticks whose command "
+            "reached the wire (out_en && !coldstart), so an absolute read after an aborted stage "
+            "is still meaningful; stale_anchor_ticks is NOT gated (an anchor's age is a fact "
+            "about the bus, not about the output gate). "
+            "Additive — no existing frame changes, so NO PROTOCOL_VERSION bump (the LegCmd / "
+            "HandSensor / BridgeTxDiag / ClockDiag / CacheDiag / RingDiag precedent): an old "
+            "Jetson ignores the unknown msg_type and a new Jetson renders never-seen as unknown. "
+            "An FW <= 30 board never sends this frame, so its consumer surface must read EMPTY, "
+            "never error. INSTRUMENTATION ONLY: nothing in the firmware reads these counters."),
+        fields=[
+            Field("lead_clamp_ticks",   "u32", 6,
+                  "Per leg (0-5): 500 Hz ticks on which the leg lead clamp engaged AND the "
+                  "command reached the wire, CUMULATIVE SINCE BOOT. Difference two samples for a "
+                  "window count; 500 x window_seconds is the per-leg ceiling. u32 wraps after "
+                  "~99 days of continuous engagement; unsigned differencing is wrap-correct"),
+            Field("stale_anchor_ticks", "u32", 6,
+                  "Per leg (0-5): 500 Hz ticks on which the leg's encoder anchor age "
+                  "(now - pos_timestamp_us) exceeded LEG_ANCHOR_STALE_US (30 ms), CUMULATIVE "
+                  "SINCE BOOT and NOT gated on the output enable. A 100 ms frame gap adds ~35 "
+                  "(ticks 16..50 of the gap). An axis never seen (pos_timestamp_us == 0) is NOT "
+                  "counted: its anchor has no age to census (the CacheDiag seen_mask 'n/a' "
+                  "discipline), and a bench rig with absent legs must not spin six counters at 500 Hz"),
+        ],
+    ),
+    Message(
         "RpcRequest", "RPC_REQUEST", "J2T", "RPC",
         summary=(
             "Generic RPC envelope. `method` selects the operation; `args` is a "
@@ -1731,7 +1777,7 @@ RPC_ARGS = [
         Field("target_rev", "f32", 1, "the target this reply's request commanded (rev)"),
         Field("elapsed_ms", "u32", 1, "ms from the request's acceptance to the reply"),
     ]),
-    # WAVE_CMD (FW 31, additive). 8 B, sent verbatim as the WaveCameraCanId::CMD
+    # WAVE_CMD (FW 33, additive). 8 B, sent verbatim as the WaveCameraCanId::CMD
     # (0x7E2) frame on the cone bus. The firmware refuses desired > 1 or a
     # nonzero reserved byte with ERR_BAD_ARGS before it gates on the partner.
     RpcArg("ArgWaveCmd", "WAVE_CMD", [

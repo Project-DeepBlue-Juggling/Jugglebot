@@ -67,7 +67,7 @@ The owner wants a magazine → BB → JB → magazine loop, so that BB's feed th
   - The build goes rest → pre-phase (tilt, dip, hand to the stroke bottom) → piecewise-linear-acceleration throw (exactly C2 on 25 ms knots) → level rest with an empty cup.
   - Least aggressive: the hand takes the speed along the axis up to its cap, and heave covers only the remainder (0 for a hand-only throw).
   - The tilt is capped at 12°; beyond that the platform leans out.
-  - Refusals: `MAGAZINE_NOT_AT_REST`, `MAGAZINE_UNREACHABLE`, `MAGAZINE_TILT`, `MAGAZINE_WINDOW` (release earlier than ~1.11 s after install), `MAGAZINE_NEEDS_REST`, and every `validate_cycle` code at the LIVE session limits.
+  - Refusals: `MAGAZINE_NOT_AT_REST`, `MAGAZINE_UNREACHABLE`, `MAGAZINE_TILT`, `MAGAZINE_WINDOW` (release earlier than ~1.11 s after install), `MAGAZINE_NEEDS_REST`, and every `validate_cycle` code at the LIVE Sitting limits.
 - `magazine_target.py` (pure): the yaml loader (strict), the base ↔ world ↔ plan transforms, `quat_to_rotation`, and `fit_descending_crossing` (z quadratic, xy linear, ≥ 6 samples).
 - `mocap_node`: a latched `bb/base_frame_pose` (`PoseStamped`: C in world **mm**, quaternion of R_base→world, stamp = newest frame's ROS time), published at 1 Hz from the existing `BaseFrameMonitor`.
 - `InstallSegment.srv`: `KIND_MAGAZINE=3`, which reuses `site_mm`, `target_mm`, `flight_s`, `t_event_s` and `rest_site_mm`. trajectory_node decodes it to a `MagazineTerminal`, and skill_node's `_installer` encodes it.

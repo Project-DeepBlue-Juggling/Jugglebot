@@ -1,9 +1,9 @@
 ---
-title: "Wave camera adapter on CAN3: bridge FW 31 WAVE_CMD, the wave_camera decoder, camera/* topics and record_start/record_stop services - code landed, not flashed"
+title: "Wave camera adapter on CAN3: bridge FW 33 WAVE_CMD, the wave_camera decoder, camera/* topics and record_start/record_stop services - code landed, not flashed"
 type: feature
 date: 2026-10-19
 status: in-progress
-phase: "wave-camera-can3-integration - Phase 2 (bridge FW 31 + Jetson node)"
+phase: "wave-camera-can3-integration - Phase 2 (bridge FW 33 + Jetson node)"
 related_plan: wave-camera-can3-integration.md
 subsystem: can
 tags:
@@ -51,7 +51,7 @@ files_changed:
   - logbook/INDEX.md
 ---
 
-# Wave camera adapter on CAN3: bridge FW 31 and the Jetson node
+# Wave camera adapter on CAN3: bridge FW 33 and the Jetson node
 
 ## Motivation
 
@@ -68,7 +68,7 @@ firmware, node, messages and tests. The decision record is ADR-0014.
 - One additive RPC, `WAVE_CMD` 0x0062 (`ArgWaveCmd`, 8 B), sent verbatim as
   0x7E2 by `send_cone_frame()`; `can_cone_tx` FAILED (no partner) maps to
   ERR_BUS_DOWN; `desired > 1` or a nonzero reserved byte is ERR_BAD_ARGS.
-  Bridge FW 30 → 31, `PROTOCOL_VERSION` stays 10 (BB_CANCEL precedent).
+  Bridge FW 32 → 33 (FW 30 → 31 when written; renumbered at the 2026-10-25 merge with main, whose FW 31/32 are the leg lead clamp), `PROTOCOL_VERSION` stays 10 (BB_CANCEL precedent).
 - The node streams WAVE_CMD at 5 Hz while the heartbeat is fresh (desired 0 or
   1, `retries=0`, 0.2 s); `camera/record_start|stop` bump `cmd_seq`, send once
   and wait up to 2.5 s for the REC_EVENT echoing that seq. Start success = START

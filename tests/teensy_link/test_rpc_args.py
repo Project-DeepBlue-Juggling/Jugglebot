@@ -158,7 +158,7 @@ def test_state_write_exact_bytes():
 
 
 def test_wave_cmd_exact_bytes():
-    """WAVE_CMD (bridge FW 31): sent verbatim as the 0x7E2 CAN payload."""
+    """WAVE_CMD (bridge FW 33): sent verbatim as the 0x7E2 CAN payload."""
     blob = ra.encode_wave_cmd(desired=1, cmd_seq=7, flags=0, session_id=0x6543210F)
     assert blob == bytes([0x01, 0x07, 0x00, 0x00, 0x0F, 0x21, 0x43, 0x65])
     assert len(blob) == 8

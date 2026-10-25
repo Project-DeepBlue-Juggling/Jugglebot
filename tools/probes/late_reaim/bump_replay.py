@@ -1,4 +1,4 @@
-"""Offline prototype of the late catch re-aim BUMP (plans/active/late-catch-reaim-bump.md).
+"""Offline prototype of the late catch re-aim BUMP (plans/archived/late-catch-reaim-bump.md).
 
 For every (delta, time-to-landing) a live re-send carried on 2026-10-16
 (``parse_resends.py`` output), apply a platform-xy offset to the plan record a

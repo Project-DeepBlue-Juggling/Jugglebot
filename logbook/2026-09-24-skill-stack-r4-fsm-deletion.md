@@ -46,7 +46,7 @@ Plan `two-ball-skill-stack.md` § 4 R4 "Delete", owner decision D5 (2026-09-23):
 deleted BEFORE the first R4 sitting, so the sitting rehearses the tree that ships. The FSM had
 been refused at goal-accept since R1 (its hand prime rode the deleted stroke engine); nothing
 powered used it. Tag **`fsm-final` = 1e7f2d9**, the last commit with every FSM path wired
-including the GUI reload relay, pushed; recovery is `git checkout fsm-final`, the way the MPC
+including the GUI refresh relay, pushed; recovery is `git checkout fsm-final`, the way the MPC
 chain went under `mpc-final`.
 
 A read-only census (`census_fsm_deletion.md`, session scratchpad) traced IMPORTERS, not names,
@@ -110,7 +110,7 @@ headers naming what survives.
 * 2026-09-24, `./run_tests.sh` on the post-deletion tree → **PASS: 5378 passed, 8 skipped in 204.22 s; serial 3 passed** (the pre-deletion tree at `0d6a032`: 2026-09-24, `./run_tests.sh` → 6513 passed, 9 skipped in 235.58 s, serial 3 passed — minus the FSM tests, plus the ported ones). Phase closure, same day, `./run_tests.sh --full` → **PASS: 5416 passed, 8 skipped, 1 xfailed in 274.47 s; serial 6 passed in 18.67 s**.
 * Commits `b3afcf7` (cluster A), `79cbb71` (B), `8364808` (C) — `git log --grep "Logbook-Entry: 2026-09-24-skill-stack-r4-fsm-deletion"`.
 * Phase-end audit, 2026-09-24, `/audit a4b4489..HEAD` (the ten R4 commits): no blocking defect in the
-  control code; four findings — three narrative / test-metadata applied directly (the R4 runsheet
+  control code; four findings — three narrative / test-metadata applied directly (the R4 runbook
   described `skills/check`'s pre-`1d6d7f5` behaviour; this entry's 6513 lacked its triple; a dead
   `PlanCycle` conftest mock) and one latent wire-contract fragility fixed: the `InstallSegment`
   tilt fields' NaN sentinel was not the rosidl default (zeros), so a hand-built request would have
