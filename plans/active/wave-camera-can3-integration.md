@@ -67,7 +67,7 @@ IDs 0x7E2-0x7E7 (`WaveCameraCanId`), all DLC 8, little-endian. Event time is
 | 1 | Adapter firmware (CAN link, time slave, record FSM, heartbeat/INFO) | wave | firmware in `WaveCamera_ESP_code/`; bench-verified with simulated intent 2026-10-25, no bridge yet | native tests; bench rows 1 and 10 with a USB-CAN sniffer |
 | 2 | Bridge FW 33 + Jetson node, msgs, config, tests | JB | done: FW 33 flashed + verified on the Jetson 2026-10-25 | pytest; `pio run -e teensy41`; colcon + reflash on the Jetson |
 | 3 | GUI camera panel | JB | done: verified on the robot 2026-10-25 (owner) | node harness tests; bench row 8 |
-| 4 | Bench bring-up on the robot | both | partial 2026-10-25: rows 2, 5, 6 passed; row 4 in part (no clip-counter or tick-to-clip check); row 3 passed except track_err max 124 us (> 100); row 9 passed except spread 59.7 ms (about two ticks, measured from the client); row 7 pending | CAN adapter design s10 rows 2-7 and 9 |
+| 4 | Bench bring-up on the robot | both | partial 2026-10-25: rows 2, 5, 6 passed; row 4 in part (no clip-counter or tick-to-clip check); rows 3 and 9 accepted by the owner (track_err max 124 us; spread 59.7 ms from the client); row 7 passed | CAN adapter design s10 rows 2-7 and 9 |
 | 5 | Optical frame calibration | both | later | a clapboard flash maps the start tick to a recorded frame |
 
 ## Implementation Phases

@@ -490,3 +490,36 @@ def test_fault_names():
     assert wc.fault_names(0) == 'none'
     assert wc.fault_names(0x28) == 'INTENT_TIMEOUT_AUTOSTOP, SYNC_STEP'
     assert wc.fault_names(0x80) == 'BIT7'
+
+
+# ── AUTO_STOP resets desired ─────────────────────────────────
+
+def test_auto_stop_resets_desired_so_an_adapter_reboot_cannot_restart(bridge):
+    # Row 7, 2026-10-25: after a TICK_LOST auto-stop the node kept desired=1 and
+    # streamed it; a rebooted adapter would read that as a new session and START.
+    node = bridge
+    _feed(node, wc.HEARTBEAT_ID, _hb())
+    node._call_rpc = _RpcRecorder(node, reply=lambda seq: _event(wc.WaveEventKind.START, seq=seq))
+    assert node._svc_wave_record_start(_Req(), _Res()).success
+    assert node._wave_desired == 1
+    _feed(node, wc.REC_EVENT_ID, _event(wc.WaveEventKind.AUTO_STOP,
+                                         reason=wc.WaveReason.TICK_LOST, seq=1, tick=False))
+    assert node._wave_desired == 0 and node._wave_cmd_seq == 1     # no seq bump
+    stream = _RpcRecorder(node)
+    node._call_rpc = stream
+    node._wave_intent_tick()
+    assert stream.calls[0][:3] == (0, 1, 0)
+
+
+def test_a_stale_auto_stop_does_not_cancel_a_newer_start(bridge):
+    node = bridge
+    _feed(node, wc.HEARTBEAT_ID, _hb())
+    node._call_rpc = _RpcRecorder(node, reply=lambda seq: _event(wc.WaveEventKind.START, seq=seq))
+    assert node._svc_wave_record_start(_Req(), _Res()).success     # seq 1
+    node._call_rpc = _RpcRecorder(node, reply=lambda seq: _event(wc.WaveEventKind.STOP, seq=seq))
+    assert node._svc_wave_record_stop(_Req(), _Res()).success      # seq 2
+    node._call_rpc = _RpcRecorder(node, reply=lambda seq: _event(wc.WaveEventKind.START, seq=seq))
+    assert node._svc_wave_record_start(_Req(), _Res()).success     # seq 3
+    _feed(node, wc.REC_EVENT_ID, _event(wc.WaveEventKind.AUTO_STOP,
+                                         reason=wc.WaveReason.INTENT_TIMEOUT, seq=1))
+    assert node._wave_desired == 1

@@ -2652,6 +2652,15 @@ class TeensyBridgeNode(Node):
                     self._wave_event_index += 1
                     self._wave_recent_events.append((self._wave_event_index, wevt))
                     del self._wave_recent_events[:-32]
+                    # The adapter stopped by itself (TICK_LOST, INTENT_TIMEOUT):
+                    # drop desired to 0 so the stream stops asking to record.
+                    # Left at 1, an adapter reboot would read the next frame as
+                    # a new session and START from IDLE unasked. No seq bump: a
+                    # desired 1->0 edge in IDLE is a no-op at the adapter. Only
+                    # for the CURRENT seq, so a newer operator start stands.
+                    if (wevt.kind == wave_camera.WaveEventKind.AUTO_STOP
+                            and wevt.cmd_seq_echo == self._wave_cmd_seq):
+                        self._wave_desired = 0
                     self._wave_cv.notify_all()
             elif cf.can_id == wave_camera.INFO_ID:
                 page = wave_camera.WaveInfoPage.from_can_frame(data)
