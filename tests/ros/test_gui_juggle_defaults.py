@@ -93,7 +93,7 @@ def test_no_reload_flag_on_wire_and_cup_preview_exists():
     # the cup preview strings exist for all three states plus the fixed requirements
     for text in ("cup EMPTY: Ball Butler loads first", "cup SEATED: throw first",
                  "cup UNKNOWN: will be refused", "needs an empty cup",
-                 "needs an empty cup (ball A phantom)", "needs a ball in the cup"):
+                 "needs an empty cup (Ball 1 phantom)", "needs a ball in the cup"):
         assert text in JS, text
     # columns + EMPTY is accepted by the node since P3 (2026-10-17): the preview shows the two-feed start
     assert "TWO_FEED_LANDED = true" in JS  # P3 landed 2026-10-17: the node accepts columns on an EMPTY cup

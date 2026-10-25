@@ -116,21 +116,21 @@ export const JUGGLE_PATTERNS = [
     // B2: columns motion flown with one real ball (a phantom at the other
     // site) -- same apex_m/separation_mm fields as Columns
     // (SkillNode._run_columns_1ball).
-    { value: 'columns_1ball', label: 'Columns (1 ball)', kind: 'columns', sites: 2, phantom: 1,
+    { value: 'columns_1ball', label: 'Columns — Ball 1', kind: 'columns', sites: 2, phantom: 1,
       blurb: 'Columns motion with Ball 1 real; Ball 2 is a phantom (motion only).' },
-    // B2, R5 sitting 4: the OTHER half -- ball A phantom (Jugglebot's own
-    // strokes fly empty), ball B real and fed by Ball Butler.  Needs an EMPTY
+    // B2, R5 sitting 4: the OTHER half -- Ball 1 phantom (Jugglebot's own
+    // strokes fly empty), Ball 2 real and fed by Ball Butler.  Needs an EMPTY
     // cup at accept (SkillNode._run_columns(..., phantom_a=True)).
-    { value: 'columns_1ball_fed', label: 'Columns (1 ball, fed)', kind: 'columns', sites: 2,
+    { value: 'columns_1ball_fed', label: 'Columns — Ball 2 (fed)', kind: 'columns', sites: 2,
       phantom: 0, cupNeed: 'empty',
       blurb: 'Columns motion with Ball 1 a phantom; Ball 2 is real and fed by Ball Butler.' },
     // Two-ball-oval P1: ONE ball, fixed roles -- every throw from T (P1, near
     // Ball Butler), every catch at C (P2), carried between (SkillNode._run_one_ball).
-    { value: 'oval_1ball', label: 'Oval (1 ball)', kind: 'one', sites: 2, phantom: null,
+    { value: 'oval_1ball', label: 'Oval — Ball 1', kind: 'one', sites: 2, phantom: null,
       blurb: 'One ball thrown from the near site and caught at the far one, the ' +
              'hand carrying it back before the next throw.' },
     // Same oval, entered by a Ball Butler feed at T: needs an EMPTY cup.
-    { value: 'oval_1ball_fed', label: 'Oval (1 ball, fed)', kind: 'one', sites: 2, phantom: null,
+    { value: 'oval_1ball_fed', label: 'Oval — Ball 2 (fed)', kind: 'one', sites: 2, phantom: null,
       cupNeed: 'empty',
       blurb: 'The oval with Ball Butler feeding the first ball at the near site.' },
 ];
@@ -356,7 +356,7 @@ export function cupState() {
 }
 
 // Flipped true at P3 of plans/archived/columns-empty-cup-two-feed.md (2026-10-17): the skill node
-// accepts columns on an EMPTY cup (Ball Butler feeds A as a reload, then B). Kept as a kill switch.
+// accepts columns on an EMPTY cup (Ball Butler feeds Ball 1 as a reload, then Ball 2). Kept as a kill switch.
 const TWO_FEED_LANDED = true;
 
 /** Preview strings (the node's decision is the authority). */
@@ -365,7 +365,7 @@ export const CUP_PREVIEW = {
     seated: 'cup SEATED: throw first',
     unknown: 'cup UNKNOWN: will be refused',
     needsEmpty: 'needs an empty cup',
-    needsEmptyPhantom: 'needs an empty cup (ball A phantom)',
+    needsEmptyPhantom: 'needs an empty cup (Ball 1 phantom)',
     needsBall: 'needs a ball in the cup',
     columnsEmptyRefused: 'cup EMPTY: will be refused (two-feed chain not landed)',
 };
@@ -687,10 +687,10 @@ const clamp = (v, lo, hi) => Math.min(hi, Math.max(lo, v));
  * schedule.ball_label: id 0 = "Ball 1" (in Jugglebot's hand at rest), id 1
  * = "Ball 2" (fed, or waiting at the second site).
  *
- * Site layout is the NODE's (not a guess): columns put ball A at the site
- * that is NOT `columns_feed_site` and ball B at it — default 'P1', so Ball 1
- * at P2 and Ball 2 at P1, the deliberate crossover that keeps B's descent
- * off A's column (skill_node._run_columns, R5 sitting 2).  Hop starts at
+ * Site layout is the NODE's (not a guess): columns put Ball 1 at the site
+ * that is NOT `columns_feed_site` and Ball 2 at it — default 'P1', so Ball 1
+ * at P2 and Ball 2 at P1, the deliberate crossover that keeps Ball 2's descent
+ * off Ball 1's column (skill_node._run_columns, R5 sitting 2).  Hop starts at
  * P1 (columns_sites()[0]); self-toss uses the single site (site_x_mm,
  * default x = -50 mm).
  */
@@ -729,15 +729,15 @@ function buildModel(p) {
                 { id: 1, x: feedX, phantom: p.phantom === 1 },
             ];
             if (p.value === 'columns_1ball') {
-                // Cup EMPTY: the self-toss choreography for ball A ALONE
+                // Cup EMPTY: the self-toss choreography for Ball 1 ALONE
                 // (_run_columns_1ball); nothing is fed at the phantom's site.
                 if (reloadFirst(p, cup)) m.feeds.push({ x: aX, ball: 0 });
             } else if (p.value === 'columns_1ball_fed') {
-                m.feeds.push({ x: feedX, ball: 1 });            // feed B
+                m.feeds.push({ x: feedX, ball: 1 });            // feed Ball 2
             } else if (cup === 'seated') {
-                m.feeds.push({ x: feedX, ball: 1 });            // throw first, feed B
+                m.feeds.push({ x: feedX, ball: 1 });            // throw first, feed Ball 2
             } else if (cup === 'empty' && TWO_FEED_LANDED) {
-                m.feeds.push({ x: aX, ball: 0 }, { x: feedX, ball: 1 });  // feed A then B
+                m.feeds.push({ x: aX, ball: 0 }, { x: feedX, ball: 1 });  // feed Ball 1 then Ball 2
             }
         }
     }
