@@ -32,3 +32,14 @@ Four variants on the real `/now` route (fork branch `prototype/nnl-relayout`, `?
 - D, count matrix: "okay, but it'd be better to be able to see the specific items within each stage of each pathway."
 - "My favourite overall is B, but I think we should continue exploring ideas and refining our palette." Round 2 evolves from B, with a dedicated design-critic agent researching practice and reviewing each batch before the owner sees it.
 
+
+## Round 2 (2026-10-25)
+
+Two new variants built from the critic's research and passed by it before the owner saw them: G, plan tracks (one short line of stages per plan, one full-height inbox column) and E, metro plus list (B's single line split per plan, a readable list beside it). New palette: amber means only Next, ideas lilac, a neutral hover ring. F, a kind grid, was withheld on the critic's advice. Owner, verbatim:
+
+- G: "I really like this one. I think this is the best we've had yet."
+- E: "I like this one's display of Pathway bugs/issues the most."
+- B: "My least favourite of this set."
+- "Overall my favourite is G, but it'd be good to borrow the Pathway bugs/issues style from E; having these expanded out to a one-liner is very helpful to see what the bugs/issues actually are. Expanding the legent would also be nice, so that I can more readily scan through and know what the symbols mean"
+
+Round 3 builds H: G with each Pathway's bugs and features listed as one-liners in its own row (E's style) and an expanded legend.
