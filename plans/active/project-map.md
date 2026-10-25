@@ -15,8 +15,8 @@ steps:
   - {id: P3, title: Fork skeleton and thin server, kind: phase, status: complete, date: 2026-10-24}
   - {id: P4, title: The two pages, kind: phase, status: complete, date: 2026-10-24}
   - {id: P5, title: Pi deployment and publishing, kind: phase, status: complete, date: 2026-10-24}
-  - {id: P6, title: Host the app on the Jetson and retire the Pi, kind: phase, status: in_progress}
-  - {id: P7, title: Dictionary page, kind: phase, status: not_started}
+  - {id: P6, title: Host the app on the Jetson and retire the Pi, kind: phase, status: complete, date: 2026-10-25}
+  - {id: P7, title: Dictionary page, kind: phase, status: complete, date: 2026-10-25}
   - {id: P8, title: Map tab in the Jugglebot GUI, kind: phase, status: not_started}
   - {id: P9, title: mapkit item CLI and map-aware slash commands, kind: phase, status: not_started}
 related_logbook:
@@ -61,8 +61,8 @@ This plan implements the design settled by the resolved tickets of wayfinder map
 | P3 | Fork repo: strip, static auth, FastAPI server, contract suite, CI | fork CI green (`npm ci`, lint, typecheck, vitest, build, pytest, grep) | COMPLETE 2026-10-24: public repo, server half, frontend seeded and stripped, kind replaces stage, live contract check, CI green (run 40047027409) |
 | P4 | Front page, Now / Next / Later, drawer, hover, palette, modal | fork CI green; owner live-reaction round | COMPLETE 2026-10-24: both pages, drawer, modal, hover and palette built, audited and screenshot-checked in the fork; reaction round held (five fixes, one re-layout ticket), owner phone check passed |
 | P5 | Pi units, `deploy.sh`, watcher invalidate, debounced commit-and-push, generated docs pages live | fork CI green; Pi acceptance checks; Jugglebot `./run_tests.sh` | COMPLETE 2026-10-24: Pi live, every check passed (live update 0.87 / 0.67 / 0.72 s after the libyaml parser) |
-| P6 | Jetson user units (low priority, capped), own app + data clones under `~/map-live/`, `deploy-jetson.sh`, pull restarts the server when `mapkit/` changed; Pi retired | fork CI green; live health on the Jetson | IN PROGRESS |
-| P7 | Read-only Dictionary page in the app (search, clusters, Avoid words, per-term links) | fork CI green | NOT STARTED |
+| P6 | Jetson user units (low priority, capped), own app + data clones under `~/map-live/`, `deploy-jetson.sh`, pull restarts the server when `mapkit/` changed; Pi retired | fork CI green; live health on the Jetson | COMPLETE 2026-10-25: fork `711e413` + `cff465d` (CI green), Jetson health ok, idle 0.3 % of one core and 62 MB; only Nice 10 is enforced (cgroup v1 user units ignore the CPU and memory caps); owner disabled the Pi units |
+| P7 | Read-only Dictionary page in the app (search, clusters, Avoid words, per-term links) | fork CI green | COMPLETE 2026-10-25: fork `c9253e1` (CI green run 40165011825), live on the Jetson |
 | P8 | Robot / Map tab bar in `ros_ws/gui`, the Map tab frames the app lazily | owner check in the GUI | NOT STARTED |
 | P9 | `mapkit item set-status`, `show`, `items`; shared map-write recipe; commands read on start and close items (hybrid commit rule) | `./run_tests.sh`; `/audit --unstaged` | NOT STARTED |
 
