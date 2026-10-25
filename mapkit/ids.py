@@ -27,7 +27,7 @@ import subprocess
 import sys
 from typing import Dict, Iterable, List, Optional, Tuple
 
-from mapkit.items import Item, ItemError, load_items, write_item
+from mapkit.items import Item, ItemError, load_items, load_items_lenient, write_item
 
 PREFIX = "JB"
 DEFAULT_REF = "origin/main"
@@ -161,7 +161,52 @@ def _order_key(repo_root: str, item: Item, order: Dict[str, int]) -> Tuple[str, 
 
 # --- allocation and checks ------------------------------------------------
 def _load(repo_root: str) -> List[Item]:
+    """Strict: the first malformed Item raises (``ids --check`` is a gate)."""
     return load_items(os.path.join(repo_root, MAP_DIR))
+
+
+def load_lenient(repo_root: str) -> List[Item]:
+    """Every loadable Item; a file that fails to parse is skipped and named on
+    stderr, so one malformed Item never stops an ID write (its own ``id:`` line
+    still counts for allocation: :func:`file_ids`)."""
+    items, skipped = load_items_lenient(os.path.join(repo_root, MAP_DIR))
+    for path, msg in skipped:
+        print("mapkit: skipping unreadable Item %s (%s)" % (os.path.relpath(path, repo_root), msg),
+              file=sys.stderr)
+    return items
+
+
+_FM_ID = re.compile(r"^id:\s*(.*?)\s*$")
+
+
+def file_ids(repo_root: str) -> List[str]:
+    """The raw frontmatter ``id:`` value of every ``map/*.md``, parsed or not.
+
+    A text scan (first ``---`` block only), so a file the loader rejects still
+    reserves its number: a malformed Item's ID is never handed out again.
+    """
+    map_dir = os.path.join(repo_root, MAP_DIR)
+    out: List[str] = []
+    if not os.path.isdir(map_dir):
+        return out
+    for name in sorted(os.listdir(map_dir)):
+        p = os.path.join(map_dir, name)
+        if not (name.endswith(".md") and os.path.isfile(p)):
+            continue
+        try:
+            with open(p, encoding="utf-8", errors="replace") as fh:
+                if fh.readline().rstrip("\r\n") != "---":
+                    continue
+                for line in fh:
+                    if line.rstrip("\r\n") == "---":
+                        break
+                    m = _FM_ID.match(line)
+                    if m:
+                        out.append(m.group(1).strip("'\""))
+                        break
+        except OSError:
+            continue
+    return out
 
 
 def _max_number(values: Iterable[object]) -> int:
@@ -171,11 +216,11 @@ def _max_number(values: Iterable[object]) -> int:
 
 def allocate(repo_root: str, ref: str = DEFAULT_REF,
              items: Optional[List[Item]] = None) -> str:
-    """1 + max over the tree's IDs (frontmatter, via the loader), ``ref``'s and
-    :data:`DEFAULT_REF`'s (both read: a feature branch's upstream may lag or lead
+    """1 + max over the tree's IDs (every ``map/*.md`` frontmatter, loadable or not),
+    ``ref``'s and :data:`DEFAULT_REF`'s (both read: a feature branch's upstream may lag or lead
     ``origin/main``, and a higher max is never wrong)."""
-    items = _load(repo_root) if items is None else items
-    top = _max_number(i.meta.get("id") for i in items)
+    items = load_lenient(repo_root) if items is None else items
+    top = max(_max_number(i.meta.get("id") for i in items), _max_number(file_ids(repo_root)))
     for r in {ref, DEFAULT_REF}:
         top = max(top, _max_number(ref_ids(repo_root, r).values()))
     return format_id(top + 1)
@@ -262,7 +307,7 @@ def repair(repo_root: str, ref: str = DEFAULT_REF,
     whatever its stem or ``created`` says. A group with no own member is left
     for the gate.
     """
-    items = _load(repo_root)
+    items = load_lenient(repo_root)
     on_ref = ref_ids(repo_root, ref)
     own_set = set(own) if own is not None else None
     order = add_order(repo_root, ref)
@@ -284,7 +329,7 @@ def repair(repo_root: str, ref: str = DEFAULT_REF,
 
 def assign_missing(repo_root: str, ref: str = DEFAULT_REF) -> List[Tuple[str, str]]:
     """Give every ID-less Item the next ID, oldest first; returns ``(id, stem)``."""
-    items = _load(repo_root)
+    items = load_lenient(repo_root)
     order = add_order(repo_root, ref)
     todo = sorted(missing(items), key=lambda i: _order_key(repo_root, i, order))
     rows = []

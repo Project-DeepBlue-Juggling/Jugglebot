@@ -122,8 +122,7 @@ def test_plan_pathways_exist():
 
 def test_item_ids_unique():
     # Plan map-item-ids.md, P2: every PRESENT id is the canonical JB-<n> and no
-    # two Items share one. Presence is pinned separately once every writer
-    # allocates (P4); until then an ID-less Item is legal.
+    # two Items share one. Presence is test_every_item_has_an_id (P6).
     from mapkit import ids
 
     items = _items()
@@ -133,3 +132,14 @@ def test_item_ids_unique():
             % (k, ", ".join(i.filename for i in v))
             for k, v in sorted(ids.duplicates(items).items())]
     assert not bad, "\n".join(bad)
+
+
+def test_every_item_has_an_id():
+    # Plan map-item-ids.md, P6: every writer allocates (mapkit item new, the app's
+    # create, /inbox), so an ID-less Item means a hand-written file or a stale
+    # session. Fix: python -m mapkit ids --assign-missing, in its own map: commit.
+    from mapkit import ids
+
+    bad = [i.filename for i in ids.missing(_items())]
+    assert not bad, ("Items without an id (python -m mapkit ids --assign-missing): "
+                     + ", ".join(bad))

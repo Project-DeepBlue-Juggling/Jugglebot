@@ -16,9 +16,9 @@ steps:
   - {id: P1, title: mapkit ids module and checks, kind: phase, status: complete, date: 2026-10-26}
   - {id: P2, title: Backfill and the uniqueness test, kind: phase, status: complete, date: 2026-10-26}
   - {id: P3, title: 'mapkit resolution, creation, display and the commands', kind: phase, status: complete, date: 2026-10-26}
-  - {id: P4, title: 'App server: allocate, resolve, repair (fork repo)', kind: phase, status: not_started}
-  - {id: P5, title: 'App frontend: show and deep-link (fork repo)', kind: phase, status: not_started}
-  - {id: P6, title: Normative docs, kind: phase, status: not_started}
+  - {id: P4, title: 'App server: allocate, resolve, repair (fork repo)', kind: phase, status: complete, date: 2026-10-26}
+  - {id: P5, title: 'App frontend: show and deep-link (fork repo)', kind: phase, status: in_progress}
+  - {id: P6, title: Normative docs, kind: phase, status: in_progress}
 related_code:
   - mapkit/ids.py::allocate
   - mapkit/itemcli.py::find_item
@@ -26,6 +26,15 @@ related_code:
 ---
 
 # Map item IDs
+
+**Status, 2026-10-26.** P0-P3 complete. **P4 complete**: the live app (fork `74826ea`, deployed and running
+since 2026-10-26) contains it; a GET of the task list returned `short_id` on 62 of 62 Items that day, and its
+`create` allocates, so the presence test is safe to land. P4's Done-check "a phone-filed Item has an ID on
+`main`" is still unobserved. **P5 built, not deployed** (fork `6c10eb4`; needs `deploy-jetson.sh`; the
+drawer-body JB-link test is skipped in the full-app harness and wants a real-browser check). **P6 in
+progress**: the Jugglebot docs, the presence test `test_every_item_has_an_id` and the build-review fixes
+(`/inbox` checks before pushing; ID writes survive a malformed Item; a renumber amends the unpushed file
+commit) land in `ids-p6-jugglebot`; the fork `README.md`/`CLAUDE.md` and the GLOSSARY Idea remain.
 
 ## 1. Context
 

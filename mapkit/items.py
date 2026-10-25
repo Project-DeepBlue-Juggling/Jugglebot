@@ -175,6 +175,24 @@ def load_items(map_dir: str) -> List[Item]:
     return out
 
 
+def load_items_lenient(map_dir: str) -> "tuple":
+    """``(items, skipped)``: every loadable item, plus ``[(path, message)]`` for
+    the files that raised :class:`ItemError`. For writers (ID allocation,
+    repair) that must not die on one malformed sibling."""
+    if not os.path.isdir(map_dir):
+        return [], []
+    out: List[Item] = []
+    skipped = []
+    for name in sorted(os.listdir(map_dir)):
+        p = os.path.join(map_dir, name)
+        if name.endswith(".md") and os.path.isfile(p):
+            try:
+                out.append(load_item(p))
+            except ItemError as exc:
+                skipped.append((p, str(exc)))
+    return out, skipped
+
+
 def dump_item(meta: Dict[str, Any], body: str) -> str:
     """Item file text: frontmatter, one blank line, the body.
 

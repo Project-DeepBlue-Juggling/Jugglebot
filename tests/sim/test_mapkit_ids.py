@@ -267,3 +267,38 @@ def test_ref_ids_reads_only_the_frontmatter_key(tmp_path):
     _commit_push(work, "bodies")
     assert ids.ref_ids(str(work)) == {"bug-a": "JB-2"}
     assert ids.allocate(str(work)) == "JB-3"
+
+
+# --- build-review fix 4 (2026-10-26): one malformed Item never stops an ID write ----
+def _broken(root, name="bug-broken", sid="JB-9"):
+    path = root / "map" / (name + ".md")
+    path.write_text("---\nid: %s\nkind: bug\nstatus: bogus\n---\n\nbody\n" % sid)
+    return path
+
+
+def test_allocate_skips_a_malformed_file_but_counts_its_id(tmp_path, capsys):
+    work, _ = _repo(tmp_path)
+    _item(work, "bug", "ok", id="JB-2")
+    _broken(work)
+    assert ids.allocate(str(work)) == "JB-10"
+    assert "skipping unreadable Item map/bug-broken.md" in capsys.readouterr().err
+
+
+def test_repair_and_assign_missing_survive_a_malformed_sibling(tmp_path):
+    work, _ = _repo(tmp_path)
+    _item(work, "bug", "a", id="JB-1")
+    _item(work, "bug", "b", id="JB-1", created="2026-10-05")
+    _item(work, "bug", "c")  # no id
+    _broken(work, sid="JB-7")
+    rows = ids.repair(str(work))
+    assert [(r[0], r[2]) for r in rows] == [("JB-1", "bug-b")] and rows[0][1] == "JB-8"
+    assert ids.assign_missing(str(work)) == [("JB-9", "bug-c")]
+    assert "id: JB-7" in (work / "map" / "bug-broken.md").read_text()  # untouched
+
+
+def test_check_stays_strict_about_a_malformed_item(tmp_path):
+    work, _ = _repo(tmp_path)
+    _broken(work)
+    from mapkit.items import ItemError
+    with pytest.raises(ItemError):
+        ids.check(str(work))

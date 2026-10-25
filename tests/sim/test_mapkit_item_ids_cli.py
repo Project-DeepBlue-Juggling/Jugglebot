@@ -177,8 +177,9 @@ def test_item_new_repairs_when_the_remote_advances_between_check_and_push(tmp_pa
     assert state["pushes"] == 2  # the first push was rejected, the loop went round once
     assert it.short_id == "JB-6"
     subjects = _out(remote, "log", "--format=%s", "main").splitlines()
-    assert subjects[:3] == ["map: renumber JB-5 -> JB-6 Mine", "map: file bug JB-5 Mine",
-                            "map: file bug JB-5 T phone"]
+    # the renumber is folded into our unpushed file commit: no subject cites JB-5 for Mine
+    assert subjects[:2] == ["map: file bug JB-6 Mine", "map: file bug JB-5 T phone"]
+    assert "map: renumber" not in "\n".join(subjects)
     _git(work, "fetch")
     assert not ids.check(str(work))["duplicate"]
 
@@ -241,7 +242,7 @@ def test_repair_on_a_feature_upstream_renumbers_ours_whatever_the_stem_order(
     assert load_item(str(work / "map" / ("bug-%s.md" % theirs))).short_id == "JB-6"
     _git(work, "fetch")
     assert not ids.check(str(work), "origin/feat")["duplicate"]
-    assert _out(remote, "log", "-1", "--format=%s", "feat").strip() == "map: renumber JB-6 -> JB-7 " + mine
+    assert _out(remote, "log", "-1", "--format=%s", "feat").strip() == "map: file bug JB-7 " + mine
     from mapkit import gen_docs
     assert gen_docs.write_docs(str(work), check=True) == []  # docs regenerated before the push
 
@@ -273,3 +274,55 @@ def test_cli_new_reports_a_git_failure_without_a_traceback(tmp_path, capsys):
     _tree(tmp_path)  # not a git repo: the add fails
     assert main(["item", "new", "bug", "x", "--commit", "--no-push", "--repo", str(tmp_path)]) == 2
     assert "git add" in capsys.readouterr().err
+
+
+# --- build-review fixes (2026-10-26): amend-on-renumber, lenient allocation, waiting commit, item push ----
+def test_renumber_is_a_separate_commit_when_the_file_commit_is_not_head(tmp_path, monkeypatch):
+    work, remote = _repo(tmp_path)
+    itemcli.new_item(str(work), "bug", "Mine", commit=True, push=False)  # JB-5, local only
+    (work / "unrelated.txt").write_text("x\n")
+    _git(work, "add", ".")
+    _git(work, "commit", "-m", "later local commit")
+    _other_clone_files(tmp_path, remote, "phone", "JB-5")
+    it = itemcli.push_item(str(work), "bug-mine")
+    assert it.short_id == "JB-6"
+    subjects = _out(remote, "log", "--format=%s", "main").splitlines()
+    assert subjects[0] == "map: renumber JB-5 -> JB-6 Mine"  # HEAD was the unrelated commit
+    assert "later local commit" in subjects
+
+
+def test_item_push_after_no_push_runs_the_same_loop(tmp_path):
+    work, remote = _repo(tmp_path)
+    itemcli.new_item(str(work), "idea", "Check first", commit=True, push=False)
+    assert _out(remote, "log", "-1", "--format=%s", "main").strip() == "seed"
+    from mapkit.__main__ import main
+    assert main(["item", "push", "idea-check-first", "--repo", str(work)]) == 0
+    assert _out(remote, "log", "-1", "--format=%s", "main").strip() == "map: file idea JB-5 Check first"
+
+
+def test_failure_after_the_commit_says_a_local_commit_is_waiting(tmp_path, monkeypatch):
+    work, _ = _repo(tmp_path)
+    real = itemcli._git_out
+
+    def rejecting(repo_root, *args):
+        if args and args[0] == "push":
+            return subprocess.CompletedProcess(args, 1, "", "rejected")
+        return real(repo_root, *args)
+
+    monkeypatch.setattr(itemcli, "_git_out", rejecting)
+    with pytest.raises(itemcli.ItemCliError) as exc:
+        itemcli.new_item(str(work), "bug", "Stuck", commit=True)
+    msg = str(exc.value)
+    assert "local commit for bug-stuck is waiting" in msg
+    assert "item push bug-stuck" in msg and "git reset --hard HEAD~1" in msg
+
+
+def test_a_malformed_sibling_is_skipped_for_allocation_and_named_when_gen_refuses(tmp_path, capsys):
+    work, _ = _repo(tmp_path)
+    (work / "map" / "bug-broken.md").write_text("---\nid: JB-9\nkind: bug\nstatus: bogus\n---\n\nb\n")
+    before = sorted(p.name for p in (work / "map").iterdir())
+    with pytest.raises(itemcli.ItemCliError, match="bug-broken.md"):
+        itemcli.new_item(str(work), "bug", "Fine", commit=True)
+    assert sorted(p.name for p in (work / "map").iterdir()) == before  # nothing half-filed
+    assert "skipping unreadable Item map/bug-broken.md" in capsys.readouterr().err
+    assert ids.allocate(str(work)) == "JB-10"  # the broken file's JB-9 is never reused

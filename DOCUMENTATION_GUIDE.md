@@ -504,7 +504,7 @@ One-glance reference for what goes in the `---` YAML block of each artifact.
 | **plan (active)** | `title`, `created`, `status: active`, `pathway`, `branch`, `scope`, `last_updated`, `steps` | `owner`, `kind: reference`, `related_logbook`, `related_config`, `related_code` | `status`, step `status` |
 | **plan (parked)** | `title`, `created`, `status: parked   # YYYY-MM-DD — why`, `parked`, `parked_why`, `unpark`, plus the active-plan fields | same as active | `status` |
 | **plan (archived)** | `title`, `created`, `status`, `archived` | `completed`, else same as active | `completed` / `superseded` |
-| **map item** | `kind`, `title`, `status`, `created`; pathway adds `destination`, ticket adds `parent`, `type` | `filed_by`, `promoted_to`, `priority`, `links`, `blocked_by` (filename stems `<kind>-<slug>` or a plan's bare filename), `owners`, `rank` | `kind`, per-kind `status` (§ 2.10), ticket `type` |
+| **map item** | `id` (`JB-<n>`, first key), `kind`, `title`, `status`, `created`; pathway adds `destination`, ticket adds `parent`, `type` | `filed_by`, `promoted_to`, `priority`, `links`, `blocked_by` (filename stems `<kind>-<slug>` or a plan's bare filename), `owners`, `rank` | `kind`, per-kind `status` (§ 2.10), ticket `type` |
 | **slash command** | `description` | `disable-model-invocation` | — |
 | **agent** | `name`, `description` | — | — |
 

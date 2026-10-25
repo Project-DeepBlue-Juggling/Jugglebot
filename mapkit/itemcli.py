@@ -201,7 +201,7 @@ def new_item(repo_root: str, kind: str, title: str, parent: Optional[str] = None
         print("mapkit: warning: git pull --ff-only failed; continuing on the local tree",
               file=sys.stderr)
     map_dir = os.path.join(repo_root, MAP_DIR)
-    items = load_items(map_dir)
+    items = ids.load_lenient(repo_root)  # one malformed sibling must not block filing
     upstream = ids.upstream_ref(repo_root)  # the ref the push loop rebases onto
     meta: Dict[str, object] = {
         "id": ids.allocate(repo_root, upstream, items=items), "kind": kind, "title": title,
@@ -233,37 +233,88 @@ def new_item(repo_root: str, kind: str, title: str, parent: Optional[str] = None
     except ItemCliError:
         os.remove(path)  # an invalid file in map/ would break every later load_items
         raise
-    gen_docs.write_docs(repo_root)
+    try:
+        gen_docs.write_docs(repo_root)
+    except ItemError as exc:  # another Item in map/ is malformed: the page cannot be built
+        os.remove(path)
+        raise ItemCliError("cannot regenerate %s, so nothing was filed: %s" % (DOCS_PAGE, exc))
     if not commit:
         return item
     rel = os.path.relpath(path, repo_root)
     paths = [rel] + ([DOCS_PAGE] if os.path.isfile(os.path.join(repo_root, DOCS_PAGE)) else [])
     _git(repo_root, "add", "--", *paths)
     _git(repo_root, "commit", "-q", "-m", _subject("file " + kind, item), "--", *paths)
+    stem = "%s-%s" % (kind, slug)
     if not push:
         return item
-    stem = "%s-%s" % (kind, slug)
-    for _ in range(PUSH_ROUNDS):
-        _rebase_or_abort(repo_root, stem)
-        upstream = ids.upstream_ref(repo_root)
-        # a textual merge of two generated tables can differ from a fresh gen
-        gen_docs.write_docs(repo_root)
-        if DOCS_PAGE in paths and _git_out(repo_root, "diff", "--quiet", "--", DOCS_PAGE).returncode:
-            _git(repo_root, "commit", "-q", "--amend", "--no-edit", "--", DOCS_PAGE)
-        for old, new, _st in ids.repair(repo_root, upstream, own=[stem]):
-            item = _load(path)
+    return push_item(repo_root, stem)
+
+
+def _waiting_note(repo_root: str, stem: str) -> str:
+    """Appended to any failure after the Item's commit exists."""
+    head = _git_out(repo_root, "log", "-1", "--oneline").stdout.strip()
+    return ("\nA local commit for %s is waiting, NOT pushed (HEAD: %s). Push it with "
+            "python -m mapkit item push %s, or undo it with git reset --hard HEAD~1 "
+            "(only while it is still the top commit; check git log -1)." % (stem, head, stem))
+
+
+def _head_adds(repo_root: str, rel: str) -> bool:
+    """True when HEAD is the commit that adds ``rel`` (so amending it is safe)."""
+    out = _git_out(repo_root, "diff-tree", "--no-commit-id", "--name-status", "-r", "HEAD").stdout
+    return any(l.split("\t")[:1] == ["A"] and l.split("\t")[-1] == rel for l in out.splitlines())
+
+
+def push_item(repo_root: str, stem: str) -> Item:
+    """Land an Item's local commit: up to :data:`PUSH_ROUNDS` rounds of
+    ``pull --rebase --autostash`` -> regenerate the docs page -> repair this
+    Item's ID if a rebase brought in the same one -> push.
+
+    A renumber is folded into the Item's own unpushed commit (amended, subject
+    rewritten) when that commit is HEAD, so no commit subject on the pushed
+    branch cites a wrong ID; otherwise it is a separate ``map: renumber``
+    commit. A rejected push goes round again; git refuses non-fast-forward
+    pushes, so the check before the push that lands always saw the final
+    remote. Every failure names the waiting local commit.
+    """
+    path = os.path.join(repo_root, MAP_DIR, stem + ".md")
+    rel = os.path.relpath(path, repo_root)
+    paths = [rel] + ([DOCS_PAGE] if os.path.isfile(os.path.join(repo_root, DOCS_PAGE)) else [])
+    try:
+        for _ in range(PUSH_ROUNDS):
+            _rebase_or_abort(repo_root, stem)
+            upstream = ids.upstream_ref(repo_root)
+            # a textual merge of two generated tables can differ from a fresh gen
             gen_docs.write_docs(repo_root)
-            _git(repo_root, "add", "--", *paths)
-            _git(repo_root, "commit", "-q", "-m",
-                 "map: renumber %s -> %s %s" % (old, new, item.title), "--", *paths)
-            print("mapkit: %s collided after the rebase; renumbered %s -> %s" % (stem, old, new),
-                  file=sys.stderr)
-        if _git_out(repo_root, "push").returncode == 0:
-            return _load(path)
-    local = _git_out(repo_root, "log", "--oneline", "@{u}..HEAD").stdout.strip()
-    raise ItemCliError("push rejected %d times; local commits ahead:\n%s\n(the Item is %s; "
-                       "re-run the push by hand after python -m mapkit ids --check)"
-                       % (PUSH_ROUNDS, local, stem))
+            if DOCS_PAGE in paths and _git_out(repo_root, "diff", "--quiet", "--", DOCS_PAGE).returncode:
+                if _head_adds(repo_root, rel):
+                    _git(repo_root, "commit", "-q", "--amend", "--no-edit", "--", DOCS_PAGE)
+                else:
+                    _git(repo_root, "commit", "-q", "-m", "map: regenerate project-map page",
+                         "--", DOCS_PAGE)
+            for old, new, _st in ids.repair(repo_root, upstream, own=[stem]):
+                item = _load(path)
+                gen_docs.write_docs(repo_root)
+                _git(repo_root, "add", "--", *paths)
+                if _head_adds(repo_root, rel):
+                    _git(repo_root, "commit", "-q", "--amend", "-m",
+                         _subject("file " + item.kind, item), "--", *paths)
+                else:
+                    _git(repo_root, "commit", "-q", "-m",
+                         "map: renumber %s -> %s %s" % (old, new, item.title), "--", *paths)
+                print("mapkit: %s collided after the rebase; renumbered %s -> %s" % (stem, old, new),
+                      file=sys.stderr)
+            if _git_out(repo_root, "push").returncode == 0:
+                return _load(path)
+        local = _git_out(repo_root, "log", "--oneline", "@{u}..HEAD").stdout.strip()
+        raise ItemCliError("push rejected %d times; local commits ahead:\n%s\n(the Item is %s; "
+                           "re-run the push by hand after python -m mapkit ids --check)"
+                           % (PUSH_ROUNDS, local, stem))
+    except (ItemCliError, ItemError, ids.IdError, subprocess.CalledProcessError, OSError) as exc:
+        if isinstance(exc, subprocess.CalledProcessError):
+            msg = "git %s failed (exit %d)" % (" ".join(exc.cmd[1:3]), exc.returncode)
+        else:
+            msg = str(exc)
+        raise ItemCliError(msg + _waiting_note(repo_root, stem))
 
 
 def _rebase_or_abort(repo_root: str, stem: str) -> None:
@@ -435,6 +486,16 @@ def _run_new(args) -> int:
     return 0
 
 
+def _run_push(args) -> int:
+    try:
+        item = push_item(_repo(args), args.item[:-3] if args.item.endswith(".md") else args.item)
+    except (ItemCliError, ItemError, ids.IdError) as exc:
+        print("mapkit: %s" % exc, file=sys.stderr)
+        return 2
+    print("%s pushed %s" % (label(item), item.title))
+    return 0
+
+
 def _run_show(args) -> int:
     try:
         d = show(_repo(args), args.pathway)
@@ -509,6 +570,12 @@ def register(subparsers) -> None:
     p.add_argument("--no-push", action="store_true")
     common(p)
     p.set_defaults(func=_run_new)
+
+    p = isub.add_parser("push", help="push an Item's local commit (item new --commit --no-push) "
+                                     "through the bounded rebase / renumber / push loop")
+    p.add_argument("item", help="the Item's stem, e.g. idea-my-title")
+    common(p)
+    p.set_defaults(func=_run_push)
 
     p = subparsers.add_parser("show", help="a pathway: destination, plans and steps, open children")
     p.add_argument("pathway")

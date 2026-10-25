@@ -109,7 +109,7 @@ def test_render_sections_links_and_determinism(repo):
     assert heads == ["Alpha", "Gamma", "Beta", "Now / Next / Later", "Inbox", "Open tickets"]
     assert "1 of 3 stops done" in text
     assert "| Pathway | Now | Next | Later | Done |" in text
-    assert "| Kind | Title | Status | Priority | Pathway | Age |" in text
+    assert "| ID | Kind | Title | Status | Priority | Pathway | Age |" in text
     assert "filed 2026-10-20" in text
     assert "Stray \\| bug" in text
     assert "### Alpha" in text and "Ticket one" in text
@@ -137,3 +137,15 @@ def test_committed_pages_are_current(rel, render):
     with open(os.path.join(REPO, "docs", rel), encoding="utf-8") as fh:
         committed = fh.read()
     assert committed == render(REPO), "docs/%s is stale: run `python -m mapkit gen`" % rel
+
+
+def test_project_map_shows_ids_and_warns_on_a_duplicate(repo):
+    _item(repo, "idea", "spark2", title="Second spark", priority="low", parent="alpha", id="JB-5")
+    text = gen_docs.render_project_map(str(repo))
+    assert re.search(r"^\| JB-5 \| idea \| \[Second spark\]", text, re.MULTILINE)
+    assert re.search(r"^\| — \| idea \| \[A spark\]", text, re.MULTILINE)  # ID-less: a dash
+    assert "- idea: JB-5 [Second spark]" in text
+    assert "duplicate Item IDs" not in text
+    _item(repo, "bug", "twin", title="Twin", id="JB-5")
+    text = gen_docs.render_project_map(str(repo))
+    assert "> **Warning: duplicate Item IDs** — JB-5: bug-twin, idea-spark2" in text

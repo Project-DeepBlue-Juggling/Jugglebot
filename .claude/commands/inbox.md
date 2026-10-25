@@ -23,17 +23,27 @@ Minimum from the filer: kind, title, one line. If the line is missing, ask for i
 2. **`--from-issue <n>`**: import title, body and the issue URL (as a `--link`) via
    `~/bin/gh issue view <n> --json title,body,url`, then close the issue with a
    comment pointing at the item file. The issue number is never the Item's ID.
-3. **File it with the one creation command**, from the repo root with the project venv:
+3. **File it locally with the one creation command**, from the repo root with the project venv
+   (`git pull --ff-only` first: the app writes `map/` concurrently, and `--no-push` skips the CLI's own pull):
    `python -m mapkit item new <kind> "<title>" --body "<line>" [--parent <pathway>]
-   [--priority P] [--filed-by NAME] [--link L]... --commit`.
+   [--priority P] [--filed-by NAME] [--link L]... --commit --no-push`.
    It pulls `--ff-only`, picks the slug (kebab-case, <= 60 chars, `-2` if taken by
    any kind; the filename is the Item's identity and is never renamed), allocates the
-   next ID `JB-<n>`, writes the canonical form, regenerates `docs/project-map.md`,
+   next ID `JB-<n>`, writes the canonical form, regenerates `docs/project-map.md` and
    commits `map: file <kind> JB-<n> <title>` (no `Logbook-Entry` trailer: data, not
-   code) and pushes, renumbering its own Item if a rebase brought in the same ID.
-   It prints `JB-<n> <stem> filed (inbox) <title>`: quote that line in the reply.
-4. **Check** (the item is inside the Avoid-word scope):
+   code). Nothing is pushed yet. It prints `JB-<n> <stem> filed (inbox) <title>`.
+4. **Check BEFORE the push** (the item is inside the Avoid-word scope; a title with an
+   Avoid word that reaches `main` paints the gate RED):
    `pytest tests/sim/test_map_items.py tests/sim/test_glossary_avoid_words.py tests/sim/test_mapkit_docs.py -q`.
+   On a failure, fix the offending word in `map/<stem>.md` (frontmatter title or body; the
+   filename stays), run `python -m mapkit gen`, then
+   `git add map/<stem>.md docs/project-map.md && git commit --amend -m "map: file <kind> JB-<n> <fixed title>"`
+   and re-run the check. Never push on a red check.
+5. **Push** with the same bounded loop `item new` uses:
+   `python -m mapkit item push <stem>` (up to 3 rounds of `pull --rebase` -> duplicate-ID
+   check -> push; if a rebase brought in the same ID it renumbers its own Item by amending
+   its unpushed commit). Quote the `JB-<n> pushed` line in the reply. A failure says a local
+   commit is waiting and how to push or undo it.
 
 Shared recipe, commit rule and reads: `docs/agents/map-writes.md`.
 
