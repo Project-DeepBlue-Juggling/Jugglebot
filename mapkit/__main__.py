@@ -6,7 +6,7 @@ import os
 import sys
 from typing import List, Optional
 
-from mapkit import gen_docs, gen_glossary, gen_index, import_issues, tickets
+from mapkit import gen_docs, gen_glossary, gen_index, import_issues, itemcli, tickets
 
 
 def default_repo() -> str:
@@ -35,6 +35,7 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--check", action="store_true", help="write nothing; exit 1 if anything is stale")
     gen.set_defaults(func=_cmd_gen)
     tickets.register(sub)
+    itemcli.register(sub)
     import_issues.register(sub)
     return parser
 
