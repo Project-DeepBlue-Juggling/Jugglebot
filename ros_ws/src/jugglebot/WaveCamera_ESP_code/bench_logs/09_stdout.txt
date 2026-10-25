@@ -1,0 +1,70 @@
+2026-10-19T16:22:18.204 ets Jun  8 2016 00:22:57
+2026-10-19T16:22:18.204 
+2026-10-19T16:22:18.204 rst:0x1 (POWERON_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+2026-10-19T16:22:18.204 configsip: 0, SPIWP:0xee
+2026-10-19T16:22:18.204 clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+2026-10-19T16:22:18.204 mode:DIO, clock div:2
+2026-10-19T16:22:18.204 load:0x3fff0030,len:1184
+2026-10-19T16:22:18.204 load:0x40078000,len:13232
+2026-10-19T16:22:18.204 load:0x40080400,len:3028
+2026-10-19T16:22:18.204 entry 0x400805e4
+2026-10-19T16:22:18.356 17314 INFO wave-gpio-explorer boot: esp32 rev 1, 240 MHz, ring=2048 events, console 115200 baud
+2026-10-19T16:22:18.356 18152 INFO disarmed; rec mode not set; uart not bridged. Type help.
+2026-10-19T16:22:20.172 # >>> probe 3
+2026-10-19T16:22:20.273 1859787 INFO cmd: probe 3
+2026-10-19T16:22:20.273 1860019 PROBE start seconds=3
+2026-10-19T16:22:23.204 4860097 PROBE pin=25 wave=6 role=STATIC_HIGH level=1 edges=0 bursts=0 missed=0 min_low_us=-1 min_high_us=-1 period_n=0 period_mean_us=0.0 period_cv=0.0000 rate_hz=0.000
+2026-10-19T16:22:23.254 4860627 PROBE pin=26 wave=3 role=STATIC_HIGH level=1 edges=0 bursts=0 missed=0 min_low_us=-1 min_high_us=-1 period_n=0 period_mean_us=0.0 period_cv=0.0000 rate_hz=0.000 note="idle high, no traffic yet"
+2026-10-19T16:22:23.254 4860955 PROBE pin=27 wave=4 role=PULSE level=0 edges=180 bursts=90 missed=0 min_low_us=33323 min_high_us=7 period_n=89 period_mean_us=33334.3 period_cv=0.0000 rate_hz=29.999
+2026-10-19T16:22:23.254 4861637 PROBE pin=32 wave=5 role=STATIC_HIGH level=1 edges=0 bursts=0 missed=0 min_low_us=-1 min_high_us=-1 period_n=0 period_mean_us=0.0 period_cv=0.0000 rate_hz=0.000 note="idle high, no traffic yet"
+2026-10-19T16:22:23.254 4861843 PROBE done window_s=3.000 pulse_pin=27 uart_pin=-1
+2026-10-19T16:22:27.240 # >>> pulse
+2026-10-19T16:22:27.341 8927862 INFO cmd: pulse
+2026-10-19T16:22:27.341 8929191 PULSE pin=27 wave=4 edges=128 periods=63 period_mean_us=33334.3 period_stdev_us=1.08 period_min_us=33332 period_max_us=33337 jitter_pp_us=5 rate_hz=29.9992 polarity=positive width_mean_us=8.7 width_min_us=7 width_max_us=11 missed=0 last_leading_us=8924419
+2026-10-19T16:22:34.307 # >>> pulse
+2026-10-19T16:22:34.408 15994741 INFO cmd: pulse
+2026-10-19T16:22:34.408 15995972 PULSE pin=27 wave=4 edges=128 periods=63 period_mean_us=33334.3 period_stdev_us=1.80 period_min_us=33329 period_max_us=33341 jitter_pp_us=12 rate_hz=29.9992 polarity=positive width_mean_us=8.9 width_min_us=7 width_max_us=12 missed=0 last_leading_us=15991283
+2026-10-19T16:22:41.367 # >>> pulse
+2026-10-19T16:22:41.470 23055726 INFO cmd: pulse
+2026-10-19T16:22:41.470 23056957 PULSE pin=27 wave=4 edges=128 periods=63 period_mean_us=33334.3 period_stdev_us=26.63 period_min_us=33276 period_max_us=33393 jitter_pp_us=117 rate_hz=29.9992 polarity=positive width_mean_us=13.1 width_min_us=7 width_max_us=68 missed=0 last_leading_us=23024811
+2026-10-19T16:22:48.433 # >>> pulse
+2026-10-19T16:22:48.535 30121890 INFO cmd: pulse
+2026-10-19T16:22:48.535 30123130 PULSE pin=27 wave=4 edges=128 periods=63 period_mean_us=33334.3 period_stdev_us=0.99 period_min_us=33333 period_max_us=33337 jitter_pp_us=4 rate_hz=29.9992 polarity=positive width_mean_us=8.7 width_min_us=7 width_max_us=13 missed=0 last_leading_us=30091673
+2026-10-19T16:22:55.495 # >>> pulse
+2026-10-19T16:22:55.597 37183400 INFO cmd: pulse
+2026-10-19T16:22:55.597 37184636 PULSE pin=27 wave=4 edges=128 periods=63 period_mean_us=33334.2 period_stdev_us=0.92 period_min_us=33332 period_max_us=33336 jitter_pp_us=4 rate_hz=29.9992 polarity=positive width_mean_us=8.9 width_min_us=6 width_max_us=14 missed=0 last_leading_us=37158533
+2026-10-19T16:23:02.564 # >>> pulse
+2026-10-19T16:23:02.666 44253465 INFO cmd: pulse
+2026-10-19T16:23:02.666 44254700 PULSE pin=27 wave=4 edges=128 periods=63 period_mean_us=33334.3 period_stdev_us=1.10 period_min_us=33332 period_max_us=33337 jitter_pp_us=5 rate_hz=29.9991 polarity=positive width_mean_us=8.7 width_min_us=6 width_max_us=13 missed=0 last_leading_us=44225398
+2026-10-19T16:23:09.628 # >>> pulse
+2026-10-19T16:23:09.731 51317549 INFO cmd: pulse
+2026-10-19T16:23:09.731 51318788 PULSE pin=27 wave=4 edges=128 periods=63 period_mean_us=33334.2 period_stdev_us=1.33 period_min_us=33331 period_max_us=33337 jitter_pp_us=6 rate_hz=29.9992 polarity=positive width_mean_us=8.7 width_min_us=5 width_max_us=12 missed=0 last_leading_us=51292258
+2026-10-19T16:23:16.692 # >>> pulse
+2026-10-19T16:23:16.793 58381916 INFO cmd: pulse
+2026-10-19T16:23:16.793 58383122 PULSE pin=27 wave=4 edges=128 periods=63 period_mean_us=33334.2 period_stdev_us=1.09 period_min_us=33332 period_max_us=33337 jitter_pp_us=5 rate_hz=29.9992 polarity=positive width_mean_us=8.8 width_min_us=6 width_max_us=12 missed=0 last_leading_us=58359121
+2026-10-19T16:23:23.757 # >>> pulse
+2026-10-19T16:23:23.858 65447262 INFO cmd: pulse
+2026-10-19T16:23:23.858 65448482 PULSE pin=27 wave=4 edges=128 periods=63 period_mean_us=33334.3 period_stdev_us=1.02 period_min_us=33332 period_max_us=33337 jitter_pp_us=5 rate_hz=29.9992 polarity=positive width_mean_us=8.7 width_min_us=7 width_max_us=12 missed=0 last_leading_us=65425984
+2026-10-19T16:23:30.817 # >>> pulse
+2026-10-19T16:23:30.919 72507801 INFO cmd: pulse
+2026-10-19T16:23:30.919 72509007 PULSE pin=27 wave=4 edges=128 periods=61 period_mean_us=33334.2 period_stdev_us=0.98 period_min_us=33333 period_max_us=33337 jitter_pp_us=4 rate_hz=29.9992 polarity=positive width_mean_us=8.6 width_min_us=7 width_max_us=12 missed=1 last_leading_us=72492846
+2026-10-19T16:23:37.881 # >>> pulse
+2026-10-19T16:23:37.983 79572245 INFO cmd: pulse
+2026-10-19T16:23:37.983 79573488 PULSE pin=27 wave=4 edges=128 periods=63 period_mean_us=33334.3 period_stdev_us=10.83 period_min_us=33309 period_max_us=33358 jitter_pp_us=49 rate_hz=29.9992 polarity=positive width_mean_us=8.6 width_min_us=7 width_max_us=12 missed=0 last_leading_us=79559709
+2026-10-19T16:23:44.939 # >>> pulse
+2026-10-19T16:23:45.040 86630482 INFO cmd: pulse
+2026-10-19T16:23:45.040 86631731 PULSE pin=27 wave=4 edges=128 periods=63 period_mean_us=33334.3 period_stdev_us=1.19 period_min_us=33331 period_max_us=33337 jitter_pp_us=6 rate_hz=29.9992 polarity=positive width_mean_us=9.7 width_min_us=5 width_max_us=68 missed=0 last_leading_us=86626571
+2026-10-19T16:23:52.000 # >>> pulse
+2026-10-19T16:23:52.102 93691597 INFO cmd: pulse
+2026-10-19T16:23:52.102 93692832 PULSE pin=27 wave=4 edges=128 periods=63 period_mean_us=33334.3 period_stdev_us=0.98 period_min_us=33332 period_max_us=33336 jitter_pp_us=4 rate_hz=29.9992 polarity=positive width_mean_us=8.7 width_min_us=7 width_max_us=13 missed=0 last_leading_us=93660099
+2026-10-19T16:23:59.060 # >>> status
+2026-10-19T16:23:59.164 100752516 INFO cmd: status
+2026-10-19T16:23:59.164 100752748 INFO status uptime_s=100.753 armed=0 edges_stream=0 rec_mode=edge(default,unset) rec_state=unknown gpi2_held_low=0 gpi2_busy=0 lat=idle probe=idle qx_stream_hz=0
+2026-10-19T16:23:59.164 100753071 INFO status pin=25 wave=6 level=1 role=STATIC_HIGH use=gpi2_open_drain open_drain=1 out_signal=256 edges=0
+2026-10-19T16:23:59.164 100753225 INFO status pin=26 wave=3 level=1 role=STATIC_HIGH use=input open_drain=0 out_signal=256 edges=0
+2026-10-19T16:23:59.164 100753329 INFO status pin=27 wave=4 level=0 role=PULSE use=input open_drain=0 out_signal=256 edges=6043
+2026-10-19T16:23:59.164 100753434 INFO status pin=32 wave=5 level=1 role=STATIC_HIGH use=input open_drain=0 out_signal=256 edges=0
+2026-10-19T16:23:59.164 100753553 INFO status uart rx=-1 tx=-1 hex=0 rx_bytes=0 rx_edges_while_bridged=0 lines_edge_stamped=0 lines_read_stamped=0
+2026-10-19T16:23:59.164 100753681 INFO status ring capacity=2048 pending=0 high_water=2 overflows=0
+2026-10-19T16:23:59.164 100753768 INFO status console_dropped_lines=0
+2026-10-19T16:23:59.164 100753904 INFO status heap_free=293388 heap_min=287908 reset_reason=poweron

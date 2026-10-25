@@ -1,0 +1,60 @@
+2026-10-19T16:13:57.972 ets Jun  8 2016 00:22:57
+2026-10-19T16:13:57.972 
+2026-10-19T16:13:57.972 rst:0x1 (POWERON_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+2026-10-19T16:13:57.972 configsip: 0, SPIWP:0xee
+2026-10-19T16:13:57.972 clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+2026-10-19T16:13:57.972 mode:DIO, clock div:2
+2026-10-19T16:13:57.972 load:0x3fff0030,len:1184
+2026-10-19T16:13:57.972 load:0x40078000,len:13232
+2026-10-19T16:13:57.972 load:0x40080400,len:3028
+2026-10-19T16:13:57.972 entry 0x400805e4
+2026-10-19T16:13:58.124 17295 INFO wave-gpio-explorer boot: esp32 rev 1, 240 MHz, ring=2048 events, console 115200 baud
+2026-10-19T16:13:58.124 18132 INFO disarmed; rec mode not set; uart not bridged. Type help.
+2026-10-19T16:13:59.942 # >>> uart rx 26
+2026-10-19T16:14:00.044 1860998 INFO cmd: uart rx 26
+2026-10-19T16:14:00.044 1862191 INFO uart rx=26 tx=- (receive only)
+2026-10-19T16:14:05.040 # >>> uart tx 32
+2026-10-19T16:14:05.141 6958519 INFO cmd: uart tx 32
+2026-10-19T16:14:05.141 6959887 INFO uart rx=26 tx=32 tx_open_drain=1 tx_signal=198(U2TXD=198) tx_idle_level=1
+2026-10-19T16:14:10.132 # >>> rec mode edge
+2026-10-19T16:14:10.233 12051675 INFO cmd: rec mode edge
+2026-10-19T16:14:10.233 12051903 REC mode=edge (must match the camera's GPI setting)
+2026-10-19T16:14:15.228 # >>> rec assume idle
+2026-10-19T16:14:15.331 17148331 INFO cmd: rec assume idle
+2026-10-19T16:14:15.331 17148517 REC state=idle (assumed)
+2026-10-19T16:14:20.278 # >>> arm
+2026-10-19T16:14:20.330 22197215 INFO cmd: arm
+2026-10-19T16:14:20.330 22197375 INFO armed=1 (> and qx may transmit to the camera)
+2026-10-19T16:14:25.275 # >>> qx idle
+2026-10-19T16:14:25.377 27194468 INFO cmd: qx idle
+2026-10-19T16:14:25.377 27194663 QX tx idle 51 58 14 91 4E 62 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 BE
+2026-10-19T16:14:30.323 # >>> qx rec
+2026-10-19T16:14:30.426 32242584 INFO cmd: qx rec
+2026-10-19T16:14:30.426 32242844 QX tx rec press 1/6 51 58 14 91 4E 62 00 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 BC
+2026-10-19T16:14:30.426 32252813 QX tx rec press 2/6 51 58 14 91 4E 62 00 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 BC
+2026-10-19T16:14:30.426 32262812 QX tx rec press 3/6 51 58 14 91 4E 62 00 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 BC
+2026-10-19T16:14:30.426 32272823 QX tx rec release 4/6 51 58 14 91 4E 62 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 BE
+2026-10-19T16:14:30.426 32282820 QX tx rec release 5/6 51 58 14 91 4E 62 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 BE
+2026-10-19T16:14:30.426 32292839 QX tx rec release 6/6 51 58 14 91 4E 62 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 BE
+2026-10-19T16:14:35.369 # >>> qx rec
+2026-10-19T16:14:35.471 37289006 INFO cmd: qx rec
+2026-10-19T16:14:35.471 37289255 QX tx rec press 1/6 51 58 14 91 4E 62 00 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 BC
+2026-10-19T16:14:35.471 37299229 QX tx rec press 2/6 51 58 14 91 4E 62 00 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 BC
+2026-10-19T16:14:35.471 37309231 QX tx rec press 3/6 51 58 14 91 4E 62 00 02 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 BC
+2026-10-19T16:14:35.471 37319246 QX tx rec release 4/6 51 58 14 91 4E 62 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 BE
+2026-10-19T16:14:35.471 37329242 QX tx rec release 5/6 51 58 14 91 4E 62 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 BE
+2026-10-19T16:14:35.471 37339258 QX tx rec release 6/6 51 58 14 91 4E 62 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 BE
+2026-10-19T16:14:40.416 # >>> disarm
+2026-10-19T16:14:40.517 42335786 INFO cmd: disarm
+2026-10-19T16:14:40.517 42335935 INFO armed=0
+2026-10-19T16:14:45.462 # >>> status
+2026-10-19T16:14:45.563 47382344 INFO cmd: status
+2026-10-19T16:14:45.563 47382527 INFO status uptime_s=47.382 armed=0 edges_stream=0 rec_mode=edge rec_state=idle gpi2_held_low=0 gpi2_busy=0 lat=idle probe=idle qx_stream_hz=0
+2026-10-19T16:14:45.563 47383342 INFO status pin=25 wave=6 level=1 role=UNKNOWN use=gpi2_open_drain open_drain=1 out_signal=256 edges=0
+2026-10-19T16:14:45.563 47383500 INFO status pin=26 wave=3 level=1 role=UNKNOWN use=uart_rx_input open_drain=0 out_signal=256 edges=0
+2026-10-19T16:14:45.563 47383603 INFO status pin=27 wave=4 level=0 role=UNKNOWN use=input open_drain=0 out_signal=256 edges=2841
+2026-10-19T16:14:45.563 47383747 INFO status pin=32 wave=5 level=1 role=UNKNOWN use=uart_tx_open_drain open_drain=1 out_signal=198 edges=1000
+2026-10-19T16:14:45.563 47383880 INFO status uart rx=26 tx=32 hex=0 rx_bytes=0 rx_edges_while_bridged=0 lines_edge_stamped=0 lines_read_stamped=0
+2026-10-19T16:14:45.563 47384005 INFO status ring capacity=2048 pending=0 high_water=9 overflows=0
+2026-10-19T16:14:45.563 47384091 INFO status console_dropped_lines=0
+2026-10-19T16:14:45.563 47384230 INFO status heap_free=287716 heap_min=282236 reset_reason=poweron

@@ -1,0 +1,60 @@
+2026-10-19T16:01:40.558 etets Jun  8 2016 00:22:57
+2026-10-19T16:01:40.558 
+2026-10-19T16:01:40.558 rst:0x1 (POWERON_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+2026-10-19T16:01:40.558 configsip: 0, SPIWP:0xee
+2026-10-19T16:01:40.558 clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+2026-10-19T16:01:40.558 mode:DIO, clock div:2
+2026-10-19T16:01:40.558 load:0x3fff0030,len:1184
+2026-10-19T16:01:40.558 load:0x40078000,len:13232
+2026-10-19T16:01:40.558 load:0x40080400,len:3028
+2026-10-19T16:01:40.558 entry 0x400805e4
+2026-10-19T16:01:40.723 17293 INFO wave-gpio-explorer boot: esp32 rev 1, 240 MHz, ring=2048 events, console 115200 baud
+2026-10-19T16:01:40.723 18130 INFO disarmed; rec mode not set; uart not bridged. Type help.
+2026-10-19T16:01:42.503 # >>> status
+2026-10-19T16:01:42.610 1841814 INFO cmd: status
+2026-10-19T16:01:42.610 1842073 INFO status uptime_s=1.842 armed=0 edges_stream=0 rec_mode=edge(default,unset) rec_state=unknown gpi2_held_low=0 gpi2_busy=0 lat=idle probe=idle qx_stream_hz=0
+2026-10-19T16:01:42.610 1842896 INFO status pin=25 wave=6 level=1 role=UNKNOWN use=gpi2_open_drain open_drain=1 out_signal=256 edges=0
+2026-10-19T16:01:42.610 1843049 INFO status pin=26 wave=3 level=1 role=UNKNOWN use=input open_drain=0 out_signal=256 edges=0
+2026-10-19T16:01:42.610 1843196 INFO status pin=27 wave=4 level=0 role=UNKNOWN use=input open_drain=0 out_signal=256 edges=110
+2026-10-19T16:01:42.610 1843304 INFO status pin=32 wave=5 level=1 role=UNKNOWN use=input open_drain=0 out_signal=256 edges=0
+2026-10-19T16:01:42.610 1843421 INFO status uart rx=-1 tx=-1 hex=0 rx_bytes=0 rx_edges_while_bridged=0 lines_edge_stamped=0 lines_read_stamped=0
+2026-10-19T16:01:42.610 1843551 INFO status ring capacity=2048 pending=0 high_water=2 overflows=0
+2026-10-19T16:01:42.610 1843640 INFO status console_dropped_lines=0
+2026-10-19T16:01:42.610 1843770 INFO status heap_free=293388 heap_min=287908 reset_reason=poweron
+2026-10-19T16:01:43.573 # >>> probe 10
+2026-10-19T16:01:43.679 2911254 INFO cmd: probe 10
+2026-10-19T16:01:43.679 2911433 PROBE start seconds=10
+2026-10-19T16:02:21.371 eets Jun  8 2016 00:22:57
+2026-10-19T16:02:21.371 
+2026-10-19T16:02:21.371 rst:0x1 (POWERON_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+2026-10-19T16:02:21.371 configsip: 0, SPIWP:0xee
+2026-10-19T16:02:21.371 clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+2026-10-19T16:02:21.371 mode:DIO, clock div:2
+2026-10-19T16:02:21.371 load:0x3fff0030,len:1184
+2026-10-19T16:02:21.371 load:0x40078000,len:13232
+2026-10-19T16:02:21.371 load:0x40080400,len:3028
+2026-10-19T16:02:21.371 entry 0x400805e4
+2026-10-19T16:02:21.522 17319 INFO wave-gpio-explorer boot: esp32 rev 1, 240 MHz, ring=2048 events, console 115200 baud
+2026-10-19T16:02:21.522 18157 INFO disarmed; rec mode not set; uart not bridged. Type help.
+2026-10-19T16:02:23.338 # >>> probe 10
+2026-10-19T16:02:23.441 1858109 INFO cmd: probe 10
+2026-10-19T16:02:23.441 1858347 PROBE start seconds=10
+2026-10-19T16:02:33.386 11858420 PROBE pin=25 wave=6 role=STATIC_HIGH level=1 edges=0 bursts=0 missed=0 min_low_us=-1 min_high_us=-1 period_n=0 period_mean_us=0.0 period_cv=0.0000 rate_hz=0.000
+2026-10-19T16:02:33.386 11858942 PROBE pin=26 wave=3 role=STATIC_HIGH level=1 edges=0 bursts=0 missed=0 min_low_us=-1 min_high_us=-1 period_n=0 period_mean_us=0.0 period_cv=0.0000 rate_hz=0.000 note="idle high, no traffic yet"
+2026-10-19T16:02:33.437 11859278 PROBE pin=27 wave=4 role=PULSE level=0 edges=599 bursts=300 missed=1 min_low_us=33321 min_high_us=6 period_n=299 period_mean_us=33334.3 period_cv=0.0000 rate_hz=29.999
+2026-10-19T16:02:33.437 11859936 PROBE pin=32 wave=5 role=STATIC_HIGH level=1 edges=0 bursts=0 missed=0 min_low_us=-1 min_high_us=-1 period_n=0 period_mean_us=0.0 period_cv=0.0000 rate_hz=0.000 note="idle high, no traffic yet"
+2026-10-19T16:02:33.437 11860138 PROBE done window_s=10.000 pulse_pin=27 uart_pin=-1
+2026-10-19T16:02:34.395 # >>> pulse
+2026-10-19T16:02:34.496 12914311 INFO cmd: pulse
+2026-10-19T16:02:34.496 12915635 PULSE pin=27 wave=4 edges=128 periods=63 period_mean_us=33334.3 period_stdev_us=1.08 period_min_us=33332 period_max_us=33337 jitter_pp_us=5 rate_hz=29.9991 polarity=positive width_mean_us=8.7 width_min_us=7 width_max_us=10 missed=0 last_leading_us=12913338
+2026-10-19T16:02:45.448 # >>> status
+2026-10-19T16:02:45.551 23968595 INFO cmd: status
+2026-10-19T16:02:45.551 23968826 INFO status uptime_s=23.969 armed=0 edges_stream=0 rec_mode=edge(default,unset) rec_state=unknown gpi2_held_low=0 gpi2_busy=0 lat=idle probe=idle qx_stream_hz=0
+2026-10-19T16:02:45.551 23969143 INFO status pin=25 wave=6 level=1 role=STATIC_HIGH use=gpi2_open_drain open_drain=1 out_signal=256 edges=0
+2026-10-19T16:02:45.551 23969296 INFO status pin=26 wave=3 level=1 role=STATIC_HIGH use=input open_drain=0 out_signal=256 edges=0
+2026-10-19T16:02:45.551 23969399 INFO status pin=27 wave=4 level=0 role=PULSE use=input open_drain=0 out_signal=256 edges=1435
+2026-10-19T16:02:45.551 23969504 INFO status pin=32 wave=5 level=1 role=STATIC_HIGH use=input open_drain=0 out_signal=256 edges=0
+2026-10-19T16:02:45.551 23969622 INFO status uart rx=-1 tx=-1 hex=0 rx_bytes=0 rx_edges_while_bridged=0 lines_edge_stamped=0 lines_read_stamped=0
+2026-10-19T16:02:45.551 23969749 INFO status ring capacity=2048 pending=0 high_water=2 overflows=0
+2026-10-19T16:02:45.551 23969835 INFO status console_dropped_lines=0
+2026-10-19T16:02:45.551 23970039 INFO status heap_free=293388 heap_min=287908 reset_reason=poweron

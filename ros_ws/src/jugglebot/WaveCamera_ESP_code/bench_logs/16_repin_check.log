@@ -1,0 +1,80 @@
+2026-10-25T14:10:10.093 ets Jun  8 2016 00:22:57
+2026-10-25T14:10:10.093 
+2026-10-25T14:10:10.093 rst:0x1 (POWERON_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+2026-10-25T14:10:10.093 configsip: 0, SPIWP:0xee
+2026-10-25T14:10:10.093 clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+2026-10-25T14:10:10.093 mode:DIO, clock div:2
+2026-10-25T14:10:10.093 load:0x3fff0030,len:1184
+2026-10-25T14:10:10.093 load:0x40078000,len:13232
+2026-10-25T14:10:10.093 load:0x40080400,len:3028
+2026-10-25T14:10:10.093 entry 0x400805e4
+2026-10-25T14:10:10.245 17161 INFO wave-gpio-explorer boot: fw 1 wire 1, esp32 rev 1, 240 MHz, ring=2048 events, console 115200 baud
+2026-10-25T14:10:10.245 18041 REC mode=level (must match the camera's GPI setting)
+2026-10-25T14:10:10.297 19104 INFO uart rx=32 tx=- (receive only)
+2026-10-25T14:10:10.297 20106 INFO can up: 1000000 bit/s, TX=GPIO13 RX=GPIO34, heartbeat 10 Hz, info page every 250 ms
+2026-10-25T14:10:10.297 20447 INFO disarmed; rec mode level; uart rx bridged on 32; CAN owns gpi2. Type help.
+2026-10-25T14:10:10.297 21021 REC CAN state BOOT -> IDLE
+2026-10-25T14:10:11.309 1048591 UART t_first_byte_us=1047557 src=read t_eol_us=1048431 end=eol bytes=30 | \x00WAVE Hello! Bootloader entry.
+2026-10-25T14:10:11.309 1048850 UART t_first_byte_us=1048839 src=read t_eol_us=1048839 end=eol bytes=0 | 
+2026-10-25T14:10:11.611 1359013 UART t_first_byte_us=1158621 src=edge t_eol_us=- end=partial_timeout bytes=1 | \xFF
+2026-10-25T14:10:11.816 1582996 UART t_first_byte_us=1561747 src=edge t_eol_us=1582934 end=eol bytes=12 | \x00WAVE HELLO!
+2026-10-25T14:10:12.069 # >>> status
+2026-10-25T14:10:12.171 1860033 INFO cmd: status
+2026-10-25T14:10:12.171 1860338 INFO status uptime_s=1.860 armed=0 edges_stream=0 rec_mode=level rec_state=unknown gpi2_held_low=0 gpi2_busy=0 lat=idle probe=idle qx_stream_hz=0 tx_hold=0
+2026-10-25T14:10:12.171 1861144 INFO status pin=26 wave=6 level=1 role=UNKNOWN use=gpi2_open_drain open_drain=1 out_signal=256 edges=0
+2026-10-25T14:10:12.171 1861274 INFO status pin=32 wave=3 level=1 role=UNKNOWN use=uart_rx_input open_drain=0 out_signal=256 edges=282
+2026-10-25T14:10:12.171 1861435 INFO status pin=27 wave=4 level=0 role=UNKNOWN use=input open_drain=0 out_signal=256 edges=3
+2026-10-25T14:10:12.171 1861511 INFO status pin=- wave=5 use=not_wired (GPI1 dropped 2026-10-23; no uart tx pad)
+2026-10-25T14:10:12.171 1861591 INFO status uart rx=32 tx=-1 tx_wired=0 hex=0 rx_bytes=47 rx_edges_while_bridged=282 lines_edge_stamped=2 lines_read_stamped=1
+2026-10-25T14:10:12.171 1861709 INFO status ring capacity=2048 pending=0 high_water=6 overflows=0
+2026-10-25T14:10:12.171 1861929 INFO status can rec_state=IDLE owner=can bus=running rx=0 tx_ok=0 tx_failed=27 bus_off=0 synced=0 sync_age_ms=-1 offset_us=0
+2026-10-25T14:10:12.171 1862056 INFO status console_dropped_lines=0
+2026-10-25T14:10:12.171 1862203 INFO status heap_free=275068 heap_min=273700 reset_reason=poweron
+2026-10-25T14:10:13.081 2841790 UART t_first_byte_us=2830441 src=edge t_eol_us=2841678 end=eol bytes=16 | PCIe link is up.
+2026-10-25T14:10:13.081 2842752 UART t_first_byte_us=2842143 src=read t_eol_us=2842732 end=eol bytes=14 | Bus Number: 00
+2026-10-25T14:10:13.081 2843702 UART t_first_byte_us=2842967 src=read t_eol_us=2843691 end=eol bytes=17 | Device Number: 00
+2026-10-25T14:10:13.132 2844696 UART t_first_byte_us=2843896 src=read t_eol_us=2844680 end=eol bytes=19 | Function Number: 00
+2026-10-25T14:10:13.132 2845507 UART t_first_byte_us=2844879 src=read t_eol_us=2845491 end=eol bytes=15 | Port Number: 00
+2026-10-25T14:10:13.132 2852776 UART t_first_byte_us=2845696 src=read t_eol_us=2852707 end=eol bytes=61 | PCIe Local Config Space is   100147 at register CommandStatus
+2026-10-25T14:10:13.132 2855511 UART t_first_byte_us=2853027 src=read t_eol_us=2855488 end=eol bytes=61 | PCIe Local Config Space is    70100 at register Prim Sec. Bus
+2026-10-25T14:10:13.132 2862202 UART t_first_byte_us=2855701 src=read t_eol_us=2862135 end=eol bytes=31 | PCIe initialization successful.
+2026-10-25T14:10:13.183 2862924 UART t_first_byte_us=2862454 src=read t_eol_us=2862913 end=eol bytes=11 | xdma_pcie: 
+2026-10-25T14:10:13.183 2863110 UART t_first_byte_us=2863091 src=read t_eol_us=2863091 end=eol bytes=0 | 
+2026-10-25T14:10:13.183 2863790 UART t_first_byte_us=2863239 src=read t_eol_us=2863774 end=eol bytes=13 | PCIeBus is 00
+2026-10-25T14:10:13.183 2864532 UART t_first_byte_us=2863999 src=read t_eol_us=2864510 end=eol bytes=13 | PCIeDev is 00
+2026-10-25T14:10:13.183 2865309 UART t_first_byte_us=2864713 src=read t_eol_us=2865298 end=eol bytes=14 | PCIeFunc is 00
+2026-10-25T14:10:13.183 2866669 UART t_first_byte_us=2865496 src=read t_eol_us=2866653 end=eol bytes=29 | xdma_pcie: Vendor ID is 10EE 
+2026-10-25T14:10:13.234 2867573 UART t_first_byte_us=2866870 src=read t_eol_us=2867553 end=eol bytes=17 | Device ID is 9134
+2026-10-25T14:10:13.234 2873331 UART t_first_byte_us=2867759 src=read t_eol_us=2873265 end=eol bytes=27 | xdma_pcie: This is a Bridge
+2026-10-25T14:10:13.234 2876267 UART t_first_byte_us=2873559 src=read t_eol_us=2876243 end=eol bytes=67 | xdma_pcie: bus: 0, device: 0, function: 0: BAR 0 is not implemented
+2026-10-25T14:10:13.234 2884537 UART t_first_byte_us=2876486 src=read t_eol_us=2884463 end=eol bytes=67 | xdma_pcie: bus: 0, device: 0, function: 0: BAR 1 is not implemented
+2026-10-25T14:10:13.234 2885206 UART t_first_byte_us=2884763 src=read t_eol_us=2885191 end=eol bytes=11 | xdma_pcie: 
+2026-10-25T14:10:13.286 2885366 UART t_first_byte_us=2885347 src=read t_eol_us=2885347 end=eol bytes=0 | 
+2026-10-25T14:10:13.286 2886041 UART t_first_byte_us=2885522 src=read t_eol_us=2886026 end=eol bytes=13 | PCIeBus is 01
+2026-10-25T14:10:13.286 2886824 UART t_first_byte_us=2886241 src=read t_eol_us=2886804 end=eol bytes=13 | PCIeDev is 00
+2026-10-25T14:10:13.286 2887579 UART t_first_byte_us=2887007 src=read t_eol_us=2887563 end=eol bytes=14 | PCIeFunc is 00
+2026-10-25T14:10:13.286 2893729 UART t_first_byte_us=2887762 src=read t_eol_us=2893654 end=eol bytes=29 | xdma_pcie: Vendor ID is 144D 
+2026-10-25T14:10:13.286 2894669 UART t_first_byte_us=2893963 src=read t_eol_us=2894643 end=eol bytes=17 | Device ID is A808
+2026-10-25T14:10:13.336 2896159 UART t_first_byte_us=2894887 src=read t_eol_us=2896136 end=eol bytes=31 | xdma_pcie: This is an End Point
+2026-10-25T14:10:13.336 2897908 UART t_first_byte_us=2896348 src=read t_eol_us=2897891 end=eol bytes=37 | xdma_pcie: End Point has been enabled
+2026-10-25T14:10:13.336 2900214 UART t_first_byte_us=2898101 src=read t_eol_us=2900156 end=eol bytes=53 | NVMe initialization successful. PCIe link is Gen3 x4.
+2026-10-25T14:10:13.336 2901014 UART t_first_byte_us=2900394 src=read t_eol_us=2901002 end=eol bytes=21 | SSD mount successful.
+2026-10-25T14:10:23.157 # >>> probe 10
+2026-10-25T14:10:23.258 12948907 INFO cmd: probe 10
+2026-10-25T14:10:23.258 12949182 PROBE start seconds=10
+2026-10-25T14:10:33.176 22949269 PROBE pin=26 wave=6 role=STATIC_HIGH level=1 edges=0 bursts=0 missed=0 min_low_us=-1 min_high_us=-1 period_n=0 period_mean_us=0.0 period_cv=0.0000 rate_hz=0.000
+2026-10-25T14:10:33.227 22949665 PROBE pin=32 wave=3 role=STATIC_HIGH level=1 edges=0 bursts=0 missed=0 min_low_us=-1 min_high_us=-1 period_n=0 period_mean_us=0.0 period_cv=0.0000 rate_hz=0.000 note="idle high, no traffic yet"
+2026-10-25T14:10:33.227 22949923 PROBE pin=27 wave=4 role=PULSE level=0 edges=600 bursts=300 missed=0 min_low_us=33323 min_high_us=3 period_n=299 period_mean_us=33334.5 period_cv=0.0000 rate_hz=29.999
+2026-10-25T14:10:33.227 22950474 PROBE done window_s=10.000 pulse_pin=27 uart_pin=-1
+2026-10-25T14:10:34.244 # >>> pulse
+2026-10-25T14:10:34.347 24036150 INFO cmd: pulse
+2026-10-25T14:10:34.347 24037639 PULSE pin=27 wave=4 edges=128 periods=63 period_mean_us=33334.5 period_stdev_us=0.96 period_min_us=33332 period_max_us=33337 jitter_pp_us=5 rate_hz=29.9990 polarity=positive width_mean_us=8.8 width_min_us=6 width_max_us=12 missed=0 last_leading_us=24031505
+2026-10-25T14:10:45.288 # >>> can
+2026-10-25T14:10:45.340 35081142 INFO cmd: can
+2026-10-25T14:10:45.340 35081479 INFO can rec state=IDLE owner=can sim_intent=0 camera_on=1 uart_seen=0 gpi2_low=0 faults=0x00 elapsed_s=0.0 recordings=0 recording_seq=0 session_id=0
+2026-10-25T14:10:45.340 35081780 INFO can intent last_desired=0 last_seq=0 acted_seq=0 last_flags=0x00 age_ms=- fresh=0 rx=0 bad=0 events_sent=0 events_queue_full=0 fsm_events_dropped=0
+2026-10-25T14:10:45.340 35081921 INFO can tick period_ns=33334500 jitter_pp_us=5 missed_total=345 last_tick_to_clip_us=-1
+2026-10-25T14:10:45.390 35082046 INFO can bus driver_up=1 state=running tec=128 rec=0 rx=0 rx_fwd_dropped=0 rx_queue_full=0 tx_requests=492 tx_queue_full=0 tx_attempts=492 tx_ok=0 tx_failed=492 tx_bus_down=0 tx_retries=0 tx_timeouts=0 tx_aborts=0 arb_lost=0 bus_errors=492 err_passive=1 bus_off=0 recoveries=0 rx_pad=1
+2026-10-25T14:10:45.390 35082260 INFO can heartbeat queued=351 refused=0 info_queued=141 schedule_slips=0 events=0 log_dropped=0
+2026-10-25T14:10:45.390 35082435 INFO can sync anchored=0 synced=0 last_0x7dd_age_ms=never offset_us=0 spread_us=0 track_err_us=0 accepted=0 rejected=0 accepted_per_s=0 rejected_per_s=0 steps=0
+2026-10-25T14:10:45.390 35082577 INFO can heartbeat_now 01 01 00 00 00 FF 00 00

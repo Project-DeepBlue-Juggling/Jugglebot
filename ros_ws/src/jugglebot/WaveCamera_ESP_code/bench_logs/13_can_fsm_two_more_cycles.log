@@ -1,0 +1,44 @@
+2026-10-19T18:02:38.883 # >>> arm
+2026-10-19T18:02:38.934 59094133 INFO cmd: arm
+2026-10-19T18:02:38.934 59094365 INFO armed=1 (> and qx may transmit to the camera)
+2026-10-19T18:02:43.927 # >>> sim intent on
+2026-10-19T18:02:44.030 64139602 INFO cmd: sim intent on
+2026-10-19T18:02:44.030 64139831 INFO sim intent ON (BENCH ONLY): desired=1 seq=202 at 5 Hz, session_id=0
+2026-10-19T18:02:44.030 64140043 REC CAN state IDLE -> STARTING
+2026-10-19T18:02:44.030 64140210 REC drive=low t_cmd_us=64140181 mode=level
+2026-10-19T18:02:44.030 64140317 REC state=recording
+2026-10-19T18:02:44.030 64140507 REC edge=falling t_edge_us=64140203 t_cmd_us=64140181 cmd_to_edge_us=22
+2026-10-19T18:02:44.030 64188156 UART t_first_byte_us=64185566 src=edge t_eol_us=64188020 end=eol bytes=17 | Created new clip.
+2026-10-19T18:02:44.030 64188558 REC CAN event=START reason=NONE seq=202 recording_seq=2 t_local_us=64168861 wall_us=- synced=0 tick_stamped=1 tick_to_clip_us=16705 queued=1
+2026-10-19T18:02:44.030 64188775 REC CAN state STARTING -> RECORDING
+2026-10-19T18:02:49.023 # >>> sim intent off
+2026-10-19T18:02:49.126 69236190 INFO cmd: sim intent off
+2026-10-19T18:02:49.126 69236446 INFO sim intent OFF: no more local intents (AUTO_STOP after 3000 ms if recording)
+2026-10-19T18:02:51.950 72139932 REC CAN state RECORDING -> STOPPING
+2026-10-19T18:02:51.950 72140190 REC drive=release t_cmd_us=72140155 low_ms=7999.974 mode=level
+2026-10-19T18:02:51.950 72140736 REC state=idle
+2026-10-19T18:02:51.950 72141036 REC edge=rising t_edge_us=72140177 t_cmd_us=72140155 cmd_to_edge_us=22
+2026-10-19T18:02:52.001 72169164 REC CAN event=AUTO_STOP reason=INTENT_TIMEOUT seq=202 recording_seq=2 t_local_us=72169094 wall_us=- synced=0 tick_stamped=1 tick_to_clip_us=16705 queued=1
+2026-10-19T18:02:52.001 72169345 REC CAN state STOPPING -> IDLE
+2026-10-19T18:02:54.073 # >>> sim intent on
+2026-10-19T18:02:54.175 74286412 INFO cmd: sim intent on
+2026-10-19T18:02:54.175 74286672 INFO sim intent ON (BENCH ONLY): desired=1 seq=203 at 5 Hz, session_id=0
+2026-10-19T18:02:54.175 74286881 REC CAN state IDLE -> STARTING
+2026-10-19T18:02:54.175 74287039 REC drive=low t_cmd_us=74287014 mode=level
+2026-10-19T18:02:54.175 74287137 REC state=recording
+2026-10-19T18:02:54.175 74287303 REC edge=falling t_edge_us=74287033 t_cmd_us=74287014 cmd_to_edge_us=19
+2026-10-19T18:02:54.175 74348325 UART t_first_byte_us=74345682 src=edge t_eol_us=74348173 end=eol bytes=17 | Created new clip.
+2026-10-19T18:02:54.175 74348719 REC CAN event=START reason=NONE seq=203 recording_seq=3 t_local_us=74302489 wall_us=- synced=0 tick_stamped=1 tick_to_clip_us=43193 queued=1
+2026-10-19T18:02:54.175 74348932 REC CAN state STARTING -> RECORDING
+2026-10-19T18:02:59.127 # >>> sim intent off
+2026-10-19T18:02:59.229 79339925 INFO cmd: sim intent off
+2026-10-19T18:02:59.229 79340172 INFO sim intent OFF: no more local intents (AUTO_STOP after 3000 ms if recording)
+2026-10-19T18:03:02.102 82286753 REC CAN state RECORDING -> STOPPING
+2026-10-19T18:03:02.102 82287007 REC drive=release t_cmd_us=82286972 low_ms=7999.958 mode=level
+2026-10-19T18:03:02.102 82287550 REC state=idle
+2026-10-19T18:03:02.102 82287851 REC edge=rising t_edge_us=82286994 t_cmd_us=82286972 cmd_to_edge_us=22
+2026-10-19T18:03:02.154 82302815 REC CAN event=AUTO_STOP reason=INTENT_TIMEOUT seq=203 recording_seq=3 t_local_us=82302723 wall_us=- synced=0 tick_stamped=1 tick_to_clip_us=43193 queued=1
+2026-10-19T18:03:02.154 82302958 REC CAN state STOPPING -> IDLE
+2026-10-19T18:03:04.171 # >>> disarm
+2026-10-19T18:03:04.272 84383663 INFO cmd: disarm
+2026-10-19T18:03:04.272 84383944 INFO armed=0

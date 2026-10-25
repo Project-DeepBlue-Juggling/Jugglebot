@@ -1,0 +1,70 @@
+2026-10-19T17:54:47.132 ets Jun  8 2016 00:22:57
+2026-10-19T17:54:47.132 
+2026-10-19T17:54:47.132 rst:0x1 (POWERON_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+2026-10-19T17:54:47.132 configsip: 0, SPIWP:0xee
+2026-10-19T17:54:47.132 clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+2026-10-19T17:54:47.132 mode:DIO, clock div:2
+2026-10-19T17:54:47.132 load:0x3fff0030,len:1184
+2026-10-19T17:54:47.132 load:0x40078000,len:13232
+2026-10-19T17:54:47.132 load:0x40080400,len:3028
+2026-10-19T17:54:47.132 entry 0x400805e4
+2026-10-19T17:54:47.283 17134 INFO wave-gpio-explorer boot: fw 1 wire 1, esp32 rev 1, 240 MHz, ring=2048 events, console 115200 baud
+2026-10-19T17:54:47.333 18013 REC mode=level (must match the camera's GPI setting)
+2026-10-19T17:54:47.333 19097 INFO uart rx=26 tx=- (receive only)
+2026-10-19T17:54:47.333 20181 INFO can up: 1000000 bit/s, TX=GPIO13 RX=GPIO34, heartbeat 10 Hz, info page every 250 ms
+2026-10-19T17:54:47.333 20581 INFO disarmed; rec mode level; uart rx bridged on 26; CAN owns gpi2. Type help.
+2026-10-19T17:54:47.333 21004 REC CAN state BOOT -> IDLE
+2026-10-19T17:54:49.096 # >>> help
+2026-10-19T17:54:49.199 1846522 INFO cmd: help
+2026-10-19T17:54:49.199 1846829 INFO commands (30):
+2026-10-19T17:54:49.199 1846905 INFO   help                       list commands
+2026-10-19T17:54:49.199 1847028 INFO   status                     pin levels, roles, UART assignment, rec state, ring/overflow counters
+2026-10-19T17:54:49.199 1847106 INFO   probe [seconds]            edge stats on all pins for a window (default 5 s), then classify each pin
+2026-10-19T17:54:49.199 1847189 INFO   edges on|off               stream every edge event live (EDGE lines)
+2026-10-19T17:54:49.199 1847270 INFO   uart rx [26|27|32]         route UART2 RX to a camera pin (default: probe's UART pin, else 26)
+2026-10-19T17:54:49.199 1847359 INFO   uart tx [26|27|32]         route UART2 TX, open-drain (default 32); refused on PULSE/UART pins
+2026-10-19T17:54:49.199 1847442 INFO   uart hex on|off            also print raw received bytes (UARTHEX lines)
+2026-10-19T17:54:49.199 1847522 INFO   uart off                   detach UART2; all camera pins back to inputs
+2026-10-19T17:54:49.199 1847608 INFO   > <text>                   send text + CRLF to the camera (needs arm; blocked words refused)
+2026-10-19T17:54:49.199 1847693 INFO   >>                         send an empty line (CRLF) to the camera (needs arm)
+2026-10-19T17:54:49.199 1847836 INFO   pulse                      30 Hz pulse stats over the last edges (period, jitter, width, polarity)
+2026-10-19T17:54:49.249 1847923 INFO   can                        CAN status: rec state, bus state, rx/tx/error counters, 0x7DD age and offset stats, last intent
+2026-10-19T17:54:49.249 1848019 INFO   ctl console|can            hand GPI2 to the console (only from IDLE; rec/lat then work) or back to CAN
+2026-10-19T17:54:49.249 1848102 INFO   events on|off              print every CAN frame sent/received as hex (CAN lines; t_us = rx stamp / tx attempt)
+2026-10-19T17:54:49.249 1848201 INFO   sim intent on|off          BENCH ONLY: inject a local 5 Hz desired=1 intent (needs arm); off = intent stops
+2026-10-19T17:54:49.299 1848292 INFO   rec mode edge|level        declare the camera's GPI mode (level at boot); rec/lat need `ctl console` first
+2026-10-19T17:54:49.299 1848387 INFO   rec toggle                 edge mode: 20 ms low pulse on GPI2; >= 500 ms high enforced (stretched)
+2026-10-19T17:54:49.299 1848497 INFO   rec start|stop             level mode: hold GPI2 low / release; >= 500 ms per state (stretched)
+2026-10-19T17:54:49.299 1848576 INFO   rec assume idle|recording  resync the firmware's guess of the camera's record state
+2026-10-19T17:54:49.299 1848661 INFO   lat [n] [rec_s] [gap_s]    latency test: n runs GPI2 -> 'Created new clip.' (default 10, 2 s, 3 s)
+2026-10-19T17:54:49.299 1848752 INFO   lat abort                  stop a running latency test (rec state becomes unknown)
+2026-10-19T17:54:49.350 1848838 INFO   qx idle                    send one idle QX10001 packet (needs arm + uart tx)
+2026-10-19T17:54:49.350 1848915 INFO   qx rec                     record press: 3 packets rec=02 then 3 idle, 10 ms apart (needs arm)
+2026-10-19T17:54:49.350 1848994 INFO   qx sel [v]                 select press: 3 packets sel=v (default 01) then 3 idle (needs arm)
+2026-10-19T17:54:49.350 1849080 INFO   qx jog <n>                 jog: 3 packets jog=n (-128..127) then 3 idle (needs arm)
+2026-10-19T17:54:49.350 1849158 INFO   qx stream <hz>|off         continuous idle packets, max 100 Hz (needs arm)
+2026-10-19T17:54:49.400 1849235 INFO   qx raw <24 hex bytes>      send a packet; refused unless header is 51 58 14 91 4E 62 00 and checksum is right (needs arm)
+2026-10-19T17:54:49.400 1849319 INFO   tx hold low|release        bench: hold the uart tx pad low (open-drain break), auto-release 10 s (needs arm + uart tx)
+2026-10-19T17:54:49.400 1849418 INFO   arm                        enable transmitting to the camera (> and qx); disarmed at boot
+2026-10-19T17:54:49.400 1849500 INFO   disarm                     disable transmitting; stops any qx stream and sim intent
+2026-10-19T17:54:50.159 # >>> can
+2026-10-19T17:54:50.211 2908834 INFO cmd: can
+2026-10-19T17:54:50.211 2909166 INFO can rec state=IDLE owner=can sim_intent=0 camera_on=0 uart_seen=0 gpi2_low=0 faults=0x00 elapsed_s=0.0 recordings=0 recording_seq=0 session_id=0
+2026-10-19T17:54:50.211 2909704 INFO can intent last_desired=0 last_seq=0 acted_seq=0 last_flags=0x00 age_ms=- fresh=0 rx=0 bad=0 events_sent=0 events_queue_full=0 fsm_events_dropped=0
+2026-10-19T17:54:50.211 2909855 INFO can tick period_ns=0 jitter_pp_us=0 missed_total=0 last_tick_to_clip_us=-1
+2026-10-19T17:54:50.262 2910050 INFO can bus driver_up=1 state=running tec=0 rec=0 rx=0 rx_fwd_dropped=0 rx_queue_full=0 tx_requests=41 tx_queue_full=0 tx_attempts=41 tx_ok=0 tx_failed=41 tx_bus_down=0 tx_retries=0 arb_lost=0 bus_errors=0 err_passive=0 bus_off=0 recoveries=0
+2026-10-19T17:54:50.262 2910270 INFO can heartbeat queued=29 refused=0 info_queued=12 schedule_slips=0 events=0 log_dropped=0
+2026-10-19T17:54:50.262 2910430 INFO can sync anchored=0 synced=0 last_0x7dd_age_ms=never offset_us=0 spread_us=0 track_err_us=0 accepted=0 rejected=0 accepted_per_s=0 rejected_per_s=0 steps=0
+2026-10-19T17:54:50.262 2910595 INFO can heartbeat_now 01 00 00 00 00 FF 00 00
+2026-10-19T17:54:51.172 # >>> status
+2026-10-19T17:54:51.274 3922115 INFO cmd: status
+2026-10-19T17:54:51.274 3922449 INFO status uptime_s=3.922 armed=0 edges_stream=0 rec_mode=level rec_state=unknown gpi2_held_low=0 gpi2_busy=0 lat=idle probe=idle qx_stream_hz=0 tx_hold=0
+2026-10-19T17:54:51.274 3923170 INFO status pin=25 wave=6 level=1 role=UNKNOWN use=gpi2_open_drain open_drain=1 out_signal=256 edges=0
+2026-10-19T17:54:51.274 3923339 INFO status pin=26 wave=3 level=1 role=UNKNOWN use=uart_rx_input open_drain=0 out_signal=256 edges=0
+2026-10-19T17:54:51.274 3923434 INFO status pin=27 wave=4 level=1 role=UNKNOWN use=input open_drain=0 out_signal=256 edges=0
+2026-10-19T17:54:51.274 3923598 INFO status pin=32 wave=5 level=1 role=UNKNOWN use=input open_drain=0 out_signal=256 edges=0
+2026-10-19T17:54:51.274 3923721 INFO status uart rx=26 tx=-1 hex=0 rx_bytes=0 rx_edges_while_bridged=0 lines_edge_stamped=0 lines_read_stamped=0
+2026-10-19T17:54:51.274 3923841 INFO status ring capacity=2048 pending=0 high_water=0 overflows=0
+2026-10-19T17:54:51.274 3924017 INFO status can rec_state=IDLE owner=can bus=running rx=0 tx_ok=0 tx_failed=56 bus_off=0 synced=0 sync_age_ms=-1 offset_us=0
+2026-10-19T17:54:51.274 3924148 INFO status console_dropped_lines=0
+2026-10-19T17:54:51.274 3924302 INFO status heap_free=272504 heap_min=271136 reset_reason=poweron

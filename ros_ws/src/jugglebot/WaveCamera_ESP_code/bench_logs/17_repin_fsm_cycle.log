@@ -1,0 +1,62 @@
+2026-10-25T14:11:11.589 ets Jun  8 2016 00:22:57
+2026-10-25T14:11:11.589 
+2026-10-25T14:11:11.589 rst:0x1 (POWERON_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+2026-10-25T14:11:11.589 configsip: 0, SPIWP:0xee
+2026-10-25T14:11:11.589 clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+2026-10-25T14:11:11.589 mode:DIO, clock div:2
+2026-10-25T14:11:11.589 load:0x3fff0030,len:1184
+2026-10-25T14:11:11.589 load:0x40078000,len:13232
+2026-10-25T14:11:11.589 load:0x40080400,len:3028
+2026-10-25T14:11:11.589 entry 0x400805e4
+2026-10-25T14:11:11.741 17165 INFO wave-gpio-explorer boot: fw 1 wire 1, esp32 rev 1, 240 MHz, ring=2048 events, console 115200 baud
+2026-10-25T14:11:11.741 18044 REC mode=level (must match the camera's GPI setting)
+2026-10-25T14:11:11.793 19107 INFO uart rx=32 tx=- (receive only)
+2026-10-25T14:11:11.793 20109 INFO can up: 1000000 bit/s, TX=GPIO13 RX=GPIO34, heartbeat 10 Hz, info page every 250 ms
+2026-10-25T14:11:11.793 20450 INFO disarmed; rec mode level; uart rx bridged on 32; CAN owns gpi2. Type help.
+2026-10-25T14:11:11.793 21024 REC CAN state BOOT -> IDLE
+2026-10-25T14:11:26.563 # >>> can
+2026-10-25T14:11:26.615 14858797 INFO cmd: can
+2026-10-25T14:11:26.615 14859220 INFO can rec state=IDLE owner=can sim_intent=0 camera_on=1 uart_seen=0 gpi2_low=0 faults=0x00 elapsed_s=0.0 recordings=0 recording_seq=0 session_id=0
+2026-10-25T14:11:26.615 14859768 INFO can intent last_desired=0 last_seq=0 acted_seq=0 last_flags=0x00 age_ms=- fresh=0 rx=0 bad=0 events_sent=0 events_queue_full=0 fsm_events_dropped=0
+2026-10-25T14:11:26.615 14859898 INFO can tick period_ns=33334400 jitter_pp_us=5 missed_total=0 last_tick_to_clip_us=-1
+2026-10-25T14:11:26.666 14860056 INFO can bus driver_up=1 state=running tec=128 rec=0 rx=0 rx_fwd_dropped=0 rx_queue_full=0 tx_requests=209 tx_queue_full=0 tx_attempts=209 tx_ok=0 tx_failed=209 tx_bus_down=0 tx_retries=0 tx_timeouts=0 tx_aborts=0 arb_lost=0 bus_errors=209 err_passive=1 bus_off=0 recoveries=0 rx_pad=1
+2026-10-25T14:11:26.666 14860278 INFO can heartbeat queued=149 refused=0 info_queued=60 schedule_slips=0 events=0 log_dropped=0
+2026-10-25T14:11:26.666 14860445 INFO can sync anchored=0 synced=0 last_0x7dd_age_ms=never offset_us=0 spread_us=0 track_err_us=0 accepted=0 rejected=0 accepted_per_s=0 rejected_per_s=0 steps=0
+2026-10-25T14:11:26.666 14860590 INFO can heartbeat_now 01 01 00 00 00 FF 00 00
+2026-10-25T14:11:32.583 # >>> arm
+2026-10-25T14:11:32.634 20878919 INFO cmd: arm
+2026-10-25T14:11:32.634 20879241 INFO armed=1 (sim intent allowed; no tx pin wired, > and qx stay refused)
+2026-10-25T14:11:38.621 # >>> sim intent on
+2026-10-25T14:11:38.724 26919260 INFO cmd: sim intent on
+2026-10-25T14:11:38.724 26919528 INFO sim intent ON (BENCH ONLY): desired=1 seq=201 at 5 Hz, session_id=0
+2026-10-25T14:11:38.724 26919804 REC CAN state IDLE -> STARTING
+2026-10-25T14:11:38.724 26919979 REC drive=low t_cmd_us=26919942 mode=level
+2026-10-25T14:11:38.724 26920100 REC state=recording
+2026-10-25T14:11:38.724 26920234 REC edge=falling t_edge_us=26919972 t_cmd_us=26919942 cmd_to_edge_us=30
+2026-10-25T14:11:38.724 26958546 UART t_first_byte_us=26955943 src=edge t_eol_us=26958422 end=eol bytes=17 | Created new clip.
+2026-10-25T14:11:38.724 26958922 REC CAN event=START reason=NONE seq=201 recording_seq=1 t_local_us=26934607 wall_us=- synced=0 tick_stamped=1 tick_to_clip_us=21336 queued=1
+2026-10-25T14:11:38.724 26959102 REC CAN state STARTING -> RECORDING
+2026-10-25T14:11:44.689 # >>> sim intent off
+2026-10-25T14:11:44.790 32986670 INFO cmd: sim intent off
+2026-10-25T14:11:44.790 32986910 INFO sim intent OFF: no more local intents (AUTO_STOP after 3000 ms if recording)
+2026-10-25T14:11:47.665 35919589 REC CAN state RECORDING -> STOPPING
+2026-10-25T14:11:47.665 35919856 REC drive=release t_cmd_us=35919825 low_ms=8999.883 mode=level
+2026-10-25T14:11:47.665 35920490 REC state=idle
+2026-10-25T14:11:47.665 35920775 REC edge=rising t_edge_us=35919843 t_cmd_us=35919825 cmd_to_edge_us=18
+2026-10-25T14:11:47.665 35935005 REC CAN event=AUTO_STOP reason=INTENT_TIMEOUT seq=201 recording_seq=1 t_local_us=35934907 wall_us=- synced=0 tick_stamped=1 tick_to_clip_us=21336 queued=1
+2026-10-25T14:11:47.665 35935190 REC CAN state STOPPING -> IDLE
+2026-10-25T14:11:50.760 # >>> disarm
+2026-10-25T14:11:50.864 39057024 INFO cmd: disarm
+2026-10-25T14:11:50.864 39057285 INFO armed=0
+2026-10-25T14:11:56.834 # >>> status
+2026-10-25T14:11:56.937 45131502 INFO cmd: status
+2026-10-25T14:11:56.937 45131786 INFO status uptime_s=45.132 armed=0 edges_stream=0 rec_mode=level rec_state=idle gpi2_held_low=0 gpi2_busy=0 lat=idle probe=idle qx_stream_hz=0 tx_hold=0
+2026-10-25T14:11:56.937 45132295 INFO status pin=26 wave=6 level=1 role=UNKNOWN use=gpi2_open_drain open_drain=1 out_signal=256 edges=2
+2026-10-25T14:11:56.937 45132437 INFO status pin=32 wave=3 level=1 role=UNKNOWN use=uart_rx_input open_drain=0 out_signal=256 edges=116
+2026-10-25T14:11:56.937 45132518 INFO status pin=27 wave=4 level=0 role=UNKNOWN use=input open_drain=0 out_signal=256 edges=2706
+2026-10-25T14:11:56.937 45132599 INFO status pin=- wave=5 use=not_wired (GPI1 dropped 2026-10-23; no uart tx pad)
+2026-10-25T14:11:56.937 45132684 INFO status uart rx=32 tx=-1 tx_wired=0 hex=0 rx_bytes=19 rx_edges_while_bridged=116 lines_edge_stamped=1 lines_read_stamped=0
+2026-10-25T14:11:56.937 45132796 INFO status ring capacity=2048 pending=0 high_water=6 overflows=0
+2026-10-25T14:11:56.937 45133062 INFO status can rec_state=IDLE owner=can bus=running rx=0 tx_ok=0 tx_failed=639 bus_off=0 synced=0 sync_age_ms=-1 offset_us=0
+2026-10-25T14:11:56.937 45133190 INFO status console_dropped_lines=0
+2026-10-25T14:11:56.937 45133337 INFO status heap_free=275068 heap_min=273700 reset_reason=poweron

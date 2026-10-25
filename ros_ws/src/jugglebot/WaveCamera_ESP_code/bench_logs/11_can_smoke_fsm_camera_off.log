@@ -1,0 +1,101 @@
+2026-10-19T17:58:06.156 eets Jun  8 2016 00:22:57
+2026-10-19T17:58:06.156 
+2026-10-19T17:58:06.156 rst:0x1 (POWERON_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+2026-10-19T17:58:06.156 configsip: 0, SPIWP:0xee
+2026-10-19T17:58:06.156 clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+2026-10-19T17:58:06.156 mode:DIO, clock div:2
+2026-10-19T17:58:06.156 load:0x3fff0030,len:1184
+2026-10-19T17:58:06.156 load:0x40078000,len:13232
+2026-10-19T17:58:06.156 load:0x40080400,len:3028
+2026-10-19T17:58:06.156 entry 0x400805e4
+2026-10-19T17:58:06.307 17085 INFO wave-gpio-explorer boot: fw 1 wire 1, esp32 rev 1, 240 MHz, ring=2048 events, console 115200 baud
+2026-10-19T17:58:06.357 17976 REC mode=level (must match the camera's GPI setting)
+2026-10-19T17:58:06.357 19006 INFO uart rx=26 tx=- (receive only)
+2026-10-19T17:58:06.357 20050 INFO can up: 1000000 bit/s, TX=GPIO13 RX=GPIO34, heartbeat 10 Hz, info page every 250 ms
+2026-10-19T17:58:06.357 20489 INFO disarmed; rec mode level; uart rx bridged on 26; CAN owns gpi2. Type help.
+2026-10-19T17:58:06.357 20897 REC CAN state BOOT -> IDLE
+2026-10-19T17:58:08.119 # >>> rec start
+2026-10-19T17:58:08.220 1845523 INFO cmd: rec start
+2026-10-19T17:58:08.220 1845948 ERR can owns gpi2; use ctl console
+2026-10-19T17:58:09.179 # >>> lat 1
+2026-10-19T17:58:09.230 2904799 INFO cmd: lat 1
+2026-10-19T17:58:09.230 2905026 ERR can owns gpi2; use ctl console
+2026-10-19T17:58:10.187 # >>> sim intent on
+2026-10-19T17:58:10.288 3913982 INFO cmd: sim intent on
+2026-10-19T17:58:10.288 3914216 ERR sim intent refused: not armed (bench only; `arm` first)
+2026-10-19T17:58:11.247 # >>> arm
+2026-10-19T17:58:11.298 4973196 INFO cmd: arm
+2026-10-19T17:58:11.298 4973461 INFO armed=1 (> and qx may transmit to the camera)
+2026-10-19T17:58:12.260 # >>> events on
+2026-10-19T17:58:12.363 5987153 INFO cmd: events on
+2026-10-19T17:58:12.363 5987358 INFO can events=1
+2026-10-19T17:58:12.363 6020399 CAN tx_fail id=0x7E3 dlc=8 attempt=0 | 01 00 00 00 00 FF 00 00
+2026-10-19T17:58:12.413 6070407 CAN tx_fail id=0x7E5 dlc=8 attempt=0 | 00 01 00 01 06 00 00 00
+2026-10-19T17:58:12.463 6120405 CAN tx_fail id=0x7E3 dlc=8 attempt=0 | 01 00 00 00 00 FF 00 00
+2026-10-19T17:58:12.564 6220376 CAN tx_fail id=0x7E3 dlc=8 attempt=0 | 01 00 00 00 00 FF 00 00
+2026-10-19T17:58:12.665 6320375 CAN tx_fail id=0x7E3 dlc=8 attempt=0 | 01 00 00 00 00 FF 00 00
+2026-10-19T17:58:12.665 6340672 CAN tx_fail id=0x7E5 dlc=8 attempt=0 | 01 00 00 00 00 00 00 00
+2026-10-19T17:58:12.767 6420405 CAN tx_fail id=0x7E3 dlc=8 attempt=0 | 01 00 00 00 00 FF 00 00
+2026-10-19T17:58:12.867 6520376 CAN tx_fail id=0x7E3 dlc=8 attempt=0 | 01 00 00 00 00 FF 00 00
+2026-10-19T17:58:12.918 6570410 CAN tx_fail id=0x7E5 dlc=8 attempt=0 | 02 00 00 00 00 00 00 00
+2026-10-19T17:58:12.968 6620405 CAN tx_fail id=0x7E3 dlc=8 attempt=0 | 01 00 00 00 00 FF 00 00
+2026-10-19T17:58:13.070 6720376 CAN tx_fail id=0x7E3 dlc=8 attempt=0 | 01 00 00 00 00 FF 00 00
+2026-10-19T17:58:13.170 6820375 CAN tx_fail id=0x7E3 dlc=8 attempt=0 | 01 00 00 00 00 FF 00 00
+2026-10-19T17:58:13.170 6840671 CAN tx_fail id=0x7E5 dlc=8 attempt=0 | 03 00 00 5F 00 00 00 00
+2026-10-19T17:58:13.272 6920405 CAN tx_fail id=0x7E3 dlc=8 attempt=0 | 01 00 00 00 00 FF 00 00
+2026-10-19T17:58:13.323 7020376 CAN tx_fail id=0x7E3 dlc=8 attempt=0 | 01 00 00 00 00 FF 00 00
+2026-10-19T17:58:13.323 # >>> sim intent on
+2026-10-19T17:58:13.426 7050410 INFO cmd: sim intent on
+2026-10-19T17:58:13.426 7050594 INFO sim intent ON (BENCH ONLY): desired=1 seq=201 at 5 Hz, session_id=0
+2026-10-19T17:58:13.426 7050870 REC CAN event=REFUSED reason=CAMERA_OFF seq=201 recording_seq=0 t_local_us=7050711 wall_us=- synced=0 tick_stamped=0 tick_to_clip_us=-1 queued=1
+2026-10-19T17:58:13.426 7050852 CAN tx_fail id=0x7E4 dlc=8 attempt=0 | 85 00 00 00 00 84 C9 00
+2026-10-19T17:58:13.426 7071668 CAN tx_fail id=0x7E4 dlc=8 attempt=1 | DB 51 00 00 00 84 C9 00
+2026-10-19T17:58:13.426 7092672 CAN tx_fail id=0x7E5 dlc=8 attempt=0 | 00 01 00 01 07 00 00 00
+2026-10-19T17:58:13.426 7120410 CAN tx_fail id=0x7E3 dlc=8 attempt=0 | 01 18 00 00 00 FF 00 C9
+2026-10-19T17:58:13.527 7220383 CAN tx_fail id=0x7E3 dlc=8 attempt=0 | 01 18 00 00 00 FF 00 C9
+2026-10-19T17:58:13.629 7320390 CAN tx_fail id=0x7E3 dlc=8 attempt=0 | 01 18 00 00 00 FF 00 C9
+2026-10-19T17:58:13.680 7340674 CAN tx_fail id=0x7E5 dlc=8 attempt=0 | 01 00 00 00 00 00 00 00
+2026-10-19T17:58:13.731 7420399 CAN tx_fail id=0x7E3 dlc=8 attempt=0 | 01 18 00 00 00 FF 00 C9
+2026-10-19T17:58:13.833 7520391 CAN tx_fail id=0x7E3 dlc=8 attempt=0 | 01 18 00 00 00 FF 00 C9
+2026-10-19T17:58:13.883 7570402 CAN tx_fail id=0x7E5 dlc=8 attempt=0 | 02 00 00 00 00 00 00 00
+2026-10-19T17:58:13.935 7620383 CAN tx_fail id=0x7E3 dlc=8 attempt=0 | 01 18 00 00 00 FF 00 C9
+2026-10-19T17:58:14.036 7720391 CAN tx_fail id=0x7E3 dlc=8 attempt=0 | 01 18 00 00 00 FF 00 C9
+2026-10-19T17:58:14.137 7820390 CAN tx_fail id=0x7E3 dlc=8 attempt=0 | 01 18 00 00 00 FF 00 C9
+2026-10-19T17:58:14.187 7840672 CAN tx_fail id=0x7E5 dlc=8 attempt=0 | 03 00 00 6F 00 00 00 00
+2026-10-19T17:58:14.237 7920376 CAN tx_fail id=0x7E3 dlc=8 attempt=0 | 01 18 00 00 00 FF 00 C9
+2026-10-19T17:58:14.337 8020380 CAN tx_fail id=0x7E3 dlc=8 attempt=0 | 01 18 00 00 00 FF 00 C9
+2026-10-19T17:58:14.388 8070386 CAN tx_fail id=0x7E5 dlc=8 attempt=0 | 00 01 00 01 08 00 00 00
+2026-10-19T17:58:14.388 # >>> events off
+2026-10-19T17:58:14.491 8115176 INFO cmd: events off
+2026-10-19T17:58:14.491 8115348 INFO can events=0
+2026-10-19T17:58:15.450 # >>> can
+2026-10-19T17:58:15.501 9176400 INFO cmd: can
+2026-10-19T17:58:15.501 9176668 INFO can rec state=IDLE owner=can sim_intent=1 camera_on=0 uart_seen=0 gpi2_low=0 faults=0x00 elapsed_s=0.0 recordings=0 recording_seq=0 session_id=0
+2026-10-19T17:58:15.501 9177112 INFO can intent last_desired=1 last_seq=201 acted_seq=201 last_flags=0x00 age_ms=126 fresh=1 rx=0 bad=0 events_sent=1 events_queue_full=0 fsm_events_dropped=0
+2026-10-19T17:58:15.501 9177244 INFO can tick period_ns=0 jitter_pp_us=0 missed_total=0 last_tick_to_clip_us=-1
+2026-10-19T17:58:15.552 9177370 INFO can bus driver_up=1 state=running tec=0 rec=0 rx=0 rx_fwd_dropped=0 rx_queue_full=0 tx_requests=130 tx_queue_full=0 tx_attempts=131 tx_ok=0 tx_failed=131 tx_bus_down=0 tx_retries=1 tx_timeouts=131 tx_aborts=131 arb_lost=0 bus_errors=0 err_passive=0 bus_off=0 recoveries=0 rx_pad=0
+2026-10-19T17:58:15.552 9177633 INFO can heartbeat queued=92 refused=0 info_queued=37 schedule_slips=0 events=0 log_dropped=0
+2026-10-19T17:58:15.552 9177779 INFO can sync anchored=0 synced=0 last_0x7dd_age_ms=never offset_us=0 spread_us=0 track_err_us=0 accepted=0 rejected=0 accepted_per_s=0 rejected_per_s=0 steps=0
+2026-10-19T17:58:15.552 9177923 INFO can heartbeat_now 01 18 00 00 00 FF 00 C9
+2026-10-19T17:58:16.460 # >>> sim intent off
+2026-10-19T17:58:16.562 10187899 INFO cmd: sim intent off
+2026-10-19T17:58:16.562 10188155 INFO sim intent OFF: no more local intents (AUTO_STOP after 3000 ms if recording)
+2026-10-19T17:58:17.518 # >>> ctl console
+2026-10-19T17:58:17.620 11244972 INFO cmd: ctl console
+2026-10-19T17:58:17.620 11245210 INFO ctl: console owns gpi2; CAN intents are REFUSED CONSOLE_OWNS. `ctl can` hands back
+2026-10-19T17:58:18.578 # >>> rec mode level
+2026-10-19T17:58:18.679 12305233 INFO cmd: rec mode level
+2026-10-19T17:58:18.679 12305505 REC mode=level (must match the camera's GPI setting)
+2026-10-19T17:58:19.640 # >>> rec assume idle
+2026-10-19T17:58:19.741 13367753 INFO cmd: rec assume idle
+2026-10-19T17:58:19.741 13368022 REC state=idle (assumed)
+2026-10-19T17:58:20.696 # >>> ctl can
+2026-10-19T17:58:20.798 14423465 INFO cmd: ctl can
+2026-10-19T17:58:20.798 14423731 REC state=idle (assumed)
+2026-10-19T17:58:20.798 14423799 INFO ctl: CAN owns gpi2 (level mode)
+2026-10-19T17:58:21.760 # >>> rec start
+2026-10-19T17:58:21.861 15486987 INFO cmd: rec start
+2026-10-19T17:58:21.861 15487216 ERR can owns gpi2; use ctl console
+2026-10-19T17:58:22.821 # >>> disarm
+2026-10-19T17:58:22.923 16548318 INFO cmd: disarm
+2026-10-19T17:58:22.923 16548562 INFO armed=0

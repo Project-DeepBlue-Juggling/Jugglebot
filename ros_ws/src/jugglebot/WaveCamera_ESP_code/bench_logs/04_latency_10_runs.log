@@ -1,0 +1,153 @@
+2026-10-19T16:09:27.710 ets Jun  8 2016 00:22:57
+2026-10-19T16:09:27.710 
+2026-10-19T16:09:27.710 rst:0x1 (POWERON_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+2026-10-19T16:09:27.710 configsip: 0, SPIWP:0xee
+2026-10-19T16:09:27.710 clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+2026-10-19T16:09:27.710 mode:DIO, clock div:2
+2026-10-19T16:09:27.710 load:0x3fff0030,len:1184
+2026-10-19T16:09:27.710 load:0x40078000,len:13232
+2026-10-19T16:09:27.710 load:0x40080400,len:3028
+2026-10-19T16:09:27.710 entry 0x400805e4
+2026-10-19T16:09:27.862 17304 INFO wave-gpio-explorer boot: esp32 rev 1, 240 MHz, ring=2048 events, console 115200 baud
+2026-10-19T16:09:27.862 18141 INFO disarmed; rec mode not set; uart not bridged. Type help.
+2026-10-19T16:09:29.679 # >>> uart rx 26
+2026-10-19T16:09:29.781 1860319 INFO cmd: uart rx 26
+2026-10-19T16:09:29.781 1861510 INFO uart rx=26 tx=- (receive only)
+2026-10-19T16:09:33.765 # >>> probe 3
+2026-10-19T16:09:33.867 5946392 INFO cmd: probe 3
+2026-10-19T16:09:33.867 5946599 PROBE start seconds=3
+2026-10-19T16:09:36.795 8946671 PROBE pin=25 wave=6 role=STATIC_HIGH level=1 edges=0 bursts=0 missed=0 min_low_us=-1 min_high_us=-1 period_n=0 period_mean_us=0.0 period_cv=0.0000 rate_hz=0.000
+2026-10-19T16:09:36.845 8947192 PROBE pin=26 wave=3 role=STATIC_HIGH level=1 edges=0 bursts=0 missed=0 min_low_us=-1 min_high_us=-1 period_n=0 period_mean_us=0.0 period_cv=0.0000 rate_hz=0.000 note="idle high, no traffic yet"
+2026-10-19T16:09:36.845 8947522 PROBE pin=27 wave=4 role=PULSE level=0 edges=179 bursts=90 missed=1 min_low_us=33324 min_high_us=6 period_n=89 period_mean_us=33334.3 period_cv=0.0000 rate_hz=29.999
+2026-10-19T16:09:36.845 8948206 PROBE pin=32 wave=5 role=STATIC_HIGH level=1 edges=0 bursts=0 missed=0 min_low_us=-1 min_high_us=-1 period_n=0 period_mean_us=0.0 period_cv=0.0000 rate_hz=0.000 note="idle high, no traffic yet"
+2026-10-19T16:09:36.845 8948416 PROBE done window_s=3.000 pulse_pin=27 uart_pin=-1
+2026-10-19T16:09:37.804 # >>> rec mode edge
+2026-10-19T16:09:37.906 9985980 INFO cmd: rec mode edge
+2026-10-19T16:09:37.906 9986211 REC mode=edge (must match the camera's GPI setting)
+2026-10-19T16:09:41.886 # >>> rec assume idle
+2026-10-19T16:09:41.987 14067798 INFO cmd: rec assume idle
+2026-10-19T16:09:41.987 14067988 REC state=idle (assumed)
+2026-10-19T16:09:45.974 # >>> lat 10 2 3
+2026-10-19T16:09:46.077 18156315 INFO cmd: lat 10 2 3
+2026-10-19T16:09:46.077 18156701 LAT start runs=10 rec_s=2.000 gap_s=3.000 mode=edge uart_rx=26 pulse_pin=27 match="Created new clip."
+2026-10-19T16:09:46.077 18157076 REC drive=low t_cmd_us=18157039 mode=edge
+2026-10-19T16:09:46.077 18157297 REC edge=falling t_edge_us=18157065 t_cmd_us=18157039 cmd_to_edge_us=26
+2026-10-19T16:09:46.077 18177083 REC drive=release t_cmd_us=18177051 low_ms=20.012 mode=edge
+2026-10-19T16:09:46.077 18177286 REC state=recording
+2026-10-19T16:09:46.077 18177390 REC edge=rising t_edge_us=18177074 t_cmd_us=18177051 cmd_to_edge_us=23
+2026-10-19T16:09:46.077 18218100 UART t_first_byte_us=18215614 src=edge t_eol_us=18218000 end=eol bytes=17 | Created new clip.
+2026-10-19T16:09:46.077 18218363 LAT run=1 t_edge_rising_us=18177074 t_first_byte_us=18215614 t_eol_us=18218000 latency_first_us=38540 latency_eol_us=40926 phase_to_last_pulse_us=10303
+2026-10-19T16:09:48.044 20177115 REC drive=low t_cmd_us=20177106 mode=edge
+2026-10-19T16:09:48.044 20177278 REC edge=falling t_edge_us=20177113 t_cmd_us=20177106 cmd_to_edge_us=7
+2026-10-19T16:09:48.044 20197120 REC drive=release t_cmd_us=20197108 low_ms=20.002 mode=edge
+2026-10-19T16:09:48.044 20197365 REC state=idle
+2026-10-19T16:09:48.044 20197469 REC edge=rising t_edge_us=20197115 t_cmd_us=20197108 cmd_to_edge_us=7
+2026-10-19T16:09:51.070 23197139 REC drive=low t_cmd_us=23197130 mode=edge
+2026-10-19T16:09:51.070 23197297 REC edge=falling t_edge_us=23197137 t_cmd_us=23197130 cmd_to_edge_us=7
+2026-10-19T16:09:51.070 23217159 REC drive=release t_cmd_us=23217144 low_ms=20.014 mode=edge
+2026-10-19T16:09:51.070 23217358 REC state=recording
+2026-10-19T16:09:51.070 23217458 REC edge=rising t_edge_us=23217151 t_cmd_us=23217144 cmd_to_edge_us=7
+2026-10-19T16:09:51.120 23251519 UART t_first_byte_us=23249125 src=edge t_eol_us=23251478 end=eol bytes=17 | Created new clip.
+2026-10-19T16:09:51.120 23251715 LAT run=2 t_edge_rising_us=23217151 t_first_byte_us=23249125 t_eol_us=23251478 latency_first_us=31974 latency_eol_us=34327 phase_to_last_pulse_us=16903
+2026-10-19T16:09:53.086 25217184 REC drive=low t_cmd_us=25217175 mode=edge
+2026-10-19T16:09:53.086 25217348 REC edge=falling t_edge_us=25217182 t_cmd_us=25217175 cmd_to_edge_us=7
+2026-10-19T16:09:53.086 25237190 REC drive=release t_cmd_us=25237179 low_ms=20.004 mode=edge
+2026-10-19T16:09:53.086 25237423 REC state=idle
+2026-10-19T16:09:53.086 25237523 REC edge=rising t_edge_us=25237185 t_cmd_us=25237179 cmd_to_edge_us=6
+2026-10-19T16:09:56.109 28237231 REC drive=low t_cmd_us=28237223 mode=edge
+2026-10-19T16:09:56.109 28237381 REC edge=falling t_edge_us=28237229 t_cmd_us=28237223 cmd_to_edge_us=6
+2026-10-19T16:09:56.109 28257239 REC drive=release t_cmd_us=28257224 low_ms=20.001 mode=edge
+2026-10-19T16:09:56.109 28257417 REC state=recording
+2026-10-19T16:09:56.109 28257522 REC edge=rising t_edge_us=28257231 t_cmd_us=28257224 cmd_to_edge_us=7
+2026-10-19T16:09:56.160 28285142 UART t_first_byte_us=28282741 src=edge t_eol_us=28285098 end=eol bytes=17 | Created new clip.
+2026-10-19T16:09:56.160 28285346 LAT run=3 t_edge_rising_us=28257231 t_first_byte_us=28282741 t_eol_us=28285098 latency_first_us=25510 latency_eol_us=27867 phase_to_last_pulse_us=23506
+2026-10-19T16:09:58.125 30257261 REC drive=low t_cmd_us=30257253 mode=edge
+2026-10-19T16:09:58.125 30257419 REC edge=falling t_edge_us=30257259 t_cmd_us=30257253 cmd_to_edge_us=6
+2026-10-19T16:09:58.125 30277276 REC drive=release t_cmd_us=30277265 low_ms=20.012 mode=edge
+2026-10-19T16:09:58.125 30277505 REC state=idle
+2026-10-19T16:09:58.125 30277611 REC edge=rising t_edge_us=30277271 t_cmd_us=30277265 cmd_to_edge_us=6
+2026-10-19T16:10:01.148 33277301 REC drive=low t_cmd_us=33277293 mode=edge
+2026-10-19T16:10:01.148 33277452 REC edge=falling t_edge_us=33277300 t_cmd_us=33277293 cmd_to_edge_us=7
+2026-10-19T16:10:01.148 33297317 REC drive=release t_cmd_us=33297302 low_ms=20.009 mode=edge
+2026-10-19T16:10:01.148 33297496 REC state=recording
+2026-10-19T16:10:01.148 33297602 REC edge=rising t_edge_us=33297309 t_cmd_us=33297302 cmd_to_edge_us=7
+2026-10-19T16:10:01.148 33318659 UART t_first_byte_us=33316250 src=edge t_eol_us=33318619 end=eol bytes=17 | Created new clip.
+2026-10-19T16:10:01.198 33318852 LAT run=4 t_edge_rising_us=33297309 t_first_byte_us=33316250 t_eol_us=33318619 latency_first_us=18941 latency_eol_us=21310 phase_to_last_pulse_us=30106
+2026-10-19T16:10:03.165 35297346 REC drive=low t_cmd_us=35297338 mode=edge
+2026-10-19T16:10:03.165 35297504 REC edge=falling t_edge_us=35297345 t_cmd_us=35297338 cmd_to_edge_us=7
+2026-10-19T16:10:03.165 35317353 REC drive=release t_cmd_us=35317342 low_ms=20.004 mode=edge
+2026-10-19T16:10:03.165 35317575 REC state=idle
+2026-10-19T16:10:03.165 35317675 REC edge=rising t_edge_us=35317349 t_cmd_us=35317342 cmd_to_edge_us=7
+2026-10-19T16:10:06.146 38317379 REC drive=low t_cmd_us=38317370 mode=edge
+2026-10-19T16:10:06.197 38317529 REC edge=falling t_edge_us=38317377 t_cmd_us=38317370 cmd_to_edge_us=7
+2026-10-19T16:10:06.197 38337387 REC drive=release t_cmd_us=38337372 low_ms=20.002 mode=edge
+2026-10-19T16:10:06.197 38337586 REC state=recording
+2026-10-19T16:10:06.197 38337690 REC edge=rising t_edge_us=38337379 t_cmd_us=38337372 cmd_to_edge_us=7
+2026-10-19T16:10:06.248 38385569 UART t_first_byte_us=38383179 src=edge t_eol_us=38385525 end=eol bytes=17 | Created new clip.
+2026-10-19T16:10:06.248 38385765 LAT run=5 t_edge_rising_us=38337379 t_first_byte_us=38383179 t_eol_us=38385525 latency_first_us=45800 latency_eol_us=48146 phase_to_last_pulse_us=3366
+2026-10-19T16:10:08.162 40337408 REC drive=low t_cmd_us=40337399 mode=edge
+2026-10-19T16:10:08.212 40337566 REC edge=falling t_edge_us=40337406 t_cmd_us=40337399 cmd_to_edge_us=7
+2026-10-19T16:10:08.212 40357423 REC drive=release t_cmd_us=40357412 low_ms=20.013 mode=edge
+2026-10-19T16:10:08.212 40357632 REC state=idle
+2026-10-19T16:10:08.212 40357731 REC edge=rising t_edge_us=40357419 t_cmd_us=40357412 cmd_to_edge_us=7
+2026-10-19T16:10:11.189 43357456 REC drive=low t_cmd_us=43357447 mode=edge
+2026-10-19T16:10:11.189 43357607 REC edge=falling t_edge_us=43357454 t_cmd_us=43357447 cmd_to_edge_us=7
+2026-10-19T16:10:11.239 43377472 REC drive=release t_cmd_us=43377460 low_ms=20.013 mode=edge
+2026-10-19T16:10:11.239 43377654 REC state=recording
+2026-10-19T16:10:11.239 43377750 REC edge=rising t_edge_us=43377467 t_cmd_us=43377460 cmd_to_edge_us=7
+2026-10-19T16:10:11.290 43419126 UART t_first_byte_us=43416724 src=edge t_eol_us=43419085 end=eol bytes=17 | Created new clip.
+2026-10-19T16:10:11.290 43419327 LAT run=6 t_edge_rising_us=43377467 t_first_byte_us=43416724 t_eol_us=43419085 latency_first_us=39257 latency_eol_us=41618 phase_to_last_pulse_us=9978
+2026-10-19T16:10:13.206 45377497 REC drive=low t_cmd_us=45377488 mode=edge
+2026-10-19T16:10:13.256 45377661 REC edge=falling t_edge_us=45377495 t_cmd_us=45377488 cmd_to_edge_us=7
+2026-10-19T16:10:13.256 45397505 REC drive=release t_cmd_us=45397494 low_ms=20.006 mode=edge
+2026-10-19T16:10:13.256 45397731 REC state=idle
+2026-10-19T16:10:13.256 45397838 REC edge=rising t_edge_us=45397501 t_cmd_us=45397494 cmd_to_edge_us=7
+2026-10-19T16:10:16.228 48397525 REC drive=low t_cmd_us=48397516 mode=edge
+2026-10-19T16:10:16.278 48397675 REC edge=falling t_edge_us=48397523 t_cmd_us=48397516 cmd_to_edge_us=7
+2026-10-19T16:10:16.278 48417538 REC drive=release t_cmd_us=48417523 low_ms=20.007 mode=edge
+2026-10-19T16:10:16.278 48417720 REC state=recording
+2026-10-19T16:10:16.278 48417820 REC edge=rising t_edge_us=48417529 t_cmd_us=48417523 cmd_to_edge_us=6
+2026-10-19T16:10:16.329 48452749 UART t_first_byte_us=48450287 src=edge t_eol_us=48452705 end=eol bytes=17 | Created new clip.
+2026-10-19T16:10:16.329 48452946 LAT run=7 t_edge_rising_us=48417529 t_first_byte_us=48450287 t_eol_us=48452705 latency_first_us=32758 latency_eol_us=35176 phase_to_last_pulse_us=16564
+2026-10-19T16:10:18.245 50417573 REC drive=low t_cmd_us=50417564 mode=edge
+2026-10-19T16:10:18.296 50417731 REC edge=falling t_edge_us=50417571 t_cmd_us=50417564 cmd_to_edge_us=7
+2026-10-19T16:10:18.296 50437584 REC drive=release t_cmd_us=50437573 low_ms=20.009 mode=edge
+2026-10-19T16:10:18.296 50437799 REC state=idle
+2026-10-19T16:10:18.296 50437894 REC edge=rising t_edge_us=50437580 t_cmd_us=50437573 cmd_to_edge_us=7
+2026-10-19T16:10:21.274 53437610 REC drive=low t_cmd_us=53437602 mode=edge
+2026-10-19T16:10:21.274 53437760 REC edge=falling t_edge_us=53437608 t_cmd_us=53437602 cmd_to_edge_us=6
+2026-10-19T16:10:21.324 53457619 REC drive=release t_cmd_us=53457608 low_ms=20.006 mode=edge
+2026-10-19T16:10:21.324 53457817 REC state=recording
+2026-10-19T16:10:21.324 53457925 REC edge=rising t_edge_us=53457615 t_cmd_us=53457608 cmd_to_edge_us=7
+2026-10-19T16:10:21.324 53486236 UART t_first_byte_us=53483815 src=edge t_eol_us=53486187 end=eol bytes=17 | Created new clip.
+2026-10-19T16:10:21.375 53486432 LAT run=8 t_edge_rising_us=53457615 t_first_byte_us=53483815 t_eol_us=53486187 latency_first_us=26200 latency_eol_us=28572 phase_to_last_pulse_us=23172
+2026-10-19T16:10:23.294 55457656 REC drive=low t_cmd_us=55457647 mode=edge
+2026-10-19T16:10:23.294 55457814 REC edge=falling t_edge_us=55457654 t_cmd_us=55457647 cmd_to_edge_us=7
+2026-10-19T16:10:23.344 55477658 REC drive=release t_cmd_us=55477647 low_ms=20.000 mode=edge
+2026-10-19T16:10:23.344 55477874 REC state=idle
+2026-10-19T16:10:23.344 55477974 REC edge=rising t_edge_us=55477654 t_cmd_us=55477647 cmd_to_edge_us=7
+2026-10-19T16:10:26.323 58477691 REC drive=low t_cmd_us=58477683 mode=edge
+2026-10-19T16:10:26.323 58477841 REC edge=falling t_edge_us=58477689 t_cmd_us=58477683 cmd_to_edge_us=6
+2026-10-19T16:10:26.373 58497707 REC drive=release t_cmd_us=58497695 low_ms=20.012 mode=edge
+2026-10-19T16:10:26.373 58497905 REC state=recording
+2026-10-19T16:10:26.373 58498017 REC edge=rising t_edge_us=58497702 t_cmd_us=58497695 cmd_to_edge_us=7
+2026-10-19T16:10:26.373 58519963 UART t_first_byte_us=58517563 src=edge t_eol_us=58519919 end=eol bytes=17 | Created new clip.
+2026-10-19T16:10:26.373 58520156 LAT run=9 t_edge_rising_us=58497702 t_first_byte_us=58517563 t_eol_us=58519919 latency_first_us=19861 latency_eol_us=22217 phase_to_last_pulse_us=29784
+2026-10-19T16:10:28.339 60497744 REC drive=low t_cmd_us=60497736 mode=edge
+2026-10-19T16:10:28.339 60497902 REC edge=falling t_edge_us=60497742 t_cmd_us=60497736 cmd_to_edge_us=6
+2026-10-19T16:10:28.389 60517747 REC drive=release t_cmd_us=60517736 low_ms=20.000 mode=edge
+2026-10-19T16:10:28.389 60517963 REC state=idle
+2026-10-19T16:10:28.389 60518063 REC edge=rising t_edge_us=60517742 t_cmd_us=60517736 cmd_to_edge_us=6
+2026-10-19T16:10:31.365 63517780 REC drive=low t_cmd_us=63517771 mode=edge
+2026-10-19T16:10:31.365 63517930 REC edge=falling t_edge_us=63517778 t_cmd_us=63517771 cmd_to_edge_us=7
+2026-10-19T16:10:31.365 63537793 REC drive=release t_cmd_us=63537781 low_ms=20.010 mode=edge
+2026-10-19T16:10:31.365 63537979 REC state=recording
+2026-10-19T16:10:31.415 63538075 REC edge=rising t_edge_us=63537788 t_cmd_us=63537781 cmd_to_edge_us=7
+2026-10-19T16:10:31.415 63586774 UART t_first_byte_us=63584411 src=edge t_eol_us=63586734 end=eol bytes=17 | Created new clip.
+2026-10-19T16:10:31.465 63586969 LAT run=10 t_edge_rising_us=63537788 t_first_byte_us=63584411 t_eol_us=63586734 latency_first_us=46623 latency_eol_us=48946 phase_to_last_pulse_us=3058
+2026-10-19T16:10:33.382 65537825 REC drive=low t_cmd_us=65537817 mode=edge
+2026-10-19T16:10:33.382 65537983 REC edge=falling t_edge_us=65537823 t_cmd_us=65537817 cmd_to_edge_us=6
+2026-10-19T16:10:33.382 65557829 REC drive=release t_cmd_us=65557818 low_ms=20.001 mode=edge
+2026-10-19T16:10:33.434 65558035 REC state=idle
+2026-10-19T16:10:33.434 65558135 REC edge=rising t_edge_us=65557824 t_cmd_us=65557818 cmd_to_edge_us=6
+2026-10-19T16:10:36.412 68557897 LAT SUMMARY n=10 first_min_us=18941 first_mean_us=32546.4 first_max_us=46623 first_stdev_us=9949.6 eol_min_us=21310 eol_mean_us=34910.5 eol_max_us=48946 eol_stdev_us=9942.3
