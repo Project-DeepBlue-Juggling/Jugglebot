@@ -1,0 +1,99 @@
+/* ===================================================================
+   camera-panel.css — Wave camera record panel (js/camera-panel.js)
+   Bottom-left of the 3D scene, right of the collapsed #state-minimap,
+   on the same bottom line, above the command strip.
+   =================================================================== */
+
+#camera-panel {
+    position: absolute;
+    z-index: 11;                    /* the collapsed minimap's rung, above #command-overlay (z10) */
+    /* Same bottom as #state-minimap.collapsed; --command-strip-h is measured
+       off #command-overlay by state-minimap.js (it also tracks the replay dock). */
+    bottom: calc(var(--command-strip-h, 56px) + var(--gap) * 2);
+    left: calc(var(--gap) + 210px + var(--gap));   /* collapsed minimap is 210 px wide */
+    /* Stay clear of the replay trail-length overlay at the bottom right
+       (~330 px incl. its gap); the status text ellipsises first. */
+    max-width: min(360px, calc(100% - (var(--gap) + 210px + var(--gap)) - 340px));
+    display: flex;
+    align-items: center;
+    gap: var(--gap-sm);
+    padding: 6px 10px;
+    background: var(--bg-overlay);
+    backdrop-filter: blur(8px);
+    border: 1px solid var(--border-color);
+    border-radius: var(--border-radius);
+    font-size: var(--font-size-sm);
+    color: var(--text-primary);
+    /* NEVER transition left/bottom (the minimap snap rule, state-minimap.css). */
+    transition: opacity var(--transition-normal);
+}
+
+/* Expanded minimap: shift right exactly as #connection-status does. */
+#viewer-pane.minimap-expanded #camera-panel {
+    left: calc(var(--minimap-width) + var(--gap));
+    max-width: min(360px, calc(100% - (var(--minimap-width) + var(--gap)) - 340px));
+}
+
+#camera-panel .cmd-btn {
+    flex-shrink: 0;
+    min-width: 4.2em;
+    padding: 4px 10px;
+    font-weight: 600;
+    letter-spacing: 0.04em;
+}
+
+#camera-panel .cmd-btn.rec-active {
+    border-color: var(--accent-red);
+    color: #fff;
+    background: var(--accent-red);
+}
+
+#camera-panel .cmd-btn.rec-active:hover:not(:disabled) {
+    border-color: var(--accent-red);
+    background: var(--accent-red);
+    filter: brightness(1.1);
+}
+
+.camera-rec-dot {
+    flex-shrink: 0;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background: var(--text-muted);
+}
+
+.camera-rec-dot.recording {
+    background: var(--accent-red);
+    animation: pulse-fault 1s ease-in-out infinite;   /* keyframes from theme.css */
+}
+
+.camera-rec-elapsed {
+    flex-shrink: 0;
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    min-width: 3.2em;
+}
+
+.camera-rec-warn {
+    flex-shrink: 0;
+    color: var(--minimap-warn, var(--accent-amber));
+    cursor: help;
+}
+
+.camera-rec-warn[hidden] { display: none; }
+.camera-rec-warn.clearable { cursor: pointer; }
+
+.camera-rec-status {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--text-secondary);
+}
+
+/* Stale heartbeat: frozen readout, greyed. Blank (no heartbeat / ROS down): dim text. */
+#camera-panel.stale .camera-rec-elapsed,
+#camera-panel.stale .camera-rec-status,
+#camera-panel.blank .camera-rec-elapsed {
+    color: var(--text-muted);
+}

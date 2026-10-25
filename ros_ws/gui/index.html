@@ -26,6 +26,7 @@
     <link rel="stylesheet" href="css/panels.css">
     <link rel="stylesheet" href="css/charts.css">
     <link rel="stylesheet" href="css/state-minimap.css">
+    <link rel="stylesheet" href="css/camera-panel.css">
     <link rel="stylesheet" href="css/juggle-panel.css">
     <link rel="stylesheet" href="css/replay.css">
 
@@ -119,6 +120,15 @@
 
             <!-- Orchestrator state-machine minimap (content built by js/state-minimap.js) -->
             <div id="state-minimap" class="collapsed"></div>
+
+            <!-- Wave camera record panel (js/camera-panel.js; not the 3D camera presets) -->
+            <div id="camera-panel" class="blank">
+                <button class="cmd-btn camera-rec-btn" id="camera-rec-btn" disabled>REC</button>
+                <span class="camera-rec-dot" id="camera-rec-dot"></span>
+                <span class="camera-rec-elapsed" id="camera-rec-elapsed">--:--</span>
+                <span class="camera-rec-warn" id="camera-rec-warn" hidden>&#9888;</span>
+                <span class="camera-rec-status" id="camera-rec-status">ROS disconnected</span>
+            </div>
 
             <!-- Command buttons -->
             <!-- Replay (Phase 3): banners over the viewer; lobby + dock live INSIDE the overlay (js/replay/ui/) -->

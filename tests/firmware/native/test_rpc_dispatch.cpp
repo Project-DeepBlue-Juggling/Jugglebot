@@ -93,6 +93,16 @@ TxResult can_bb_tx(const ODrive::CanFrame& f, uint8_t cls) {
   g_bb_sent++; g_bb_last = f; g_bb_last_cls = cls;
   return g_bb_send_ok ? g_bb_result : TxResult::FAILED;
 }
+// Cone-role bus (WAVE_CMD, FW 33). g_cone_result models can_cone_tx's own
+// presence gate: FAILED = no cone-bus partner heard, nothing queued.
+static int      g_cone_sent = 0;
+static ODrive::CanFrame g_cone_last{};
+static uint8_t  g_cone_last_cls = 0xFF;
+static TxResult g_cone_result = TxResult::MAILBOX;
+TxResult can_cone_tx(const ODrive::CanFrame& f, uint8_t cls) {
+  if (g_cone_result != TxResult::FAILED) { g_cone_sent++; g_cone_last = f; g_cone_last_cls = cls; }
+  return g_cone_result;
+}
 
 // ── fault_machine.h ──
 void fault_notify_clear_errors()  { g_clear_calls++; }
@@ -199,7 +209,11 @@ static uint16_t call_noarg(uint16_t method) {
   return Rpc::dispatch(method, nullptr, 0, result, res_len);
 }
 
-static void reset_all() { fake_reset(); drv_reset(); Rpc::hand_torque_scale_reset(); }
+static void reset_all() {
+  fake_reset(); drv_reset(); Rpc::hand_torque_scale_reset();
+  g_cone_sent = 0; g_cone_last = ODrive::CanFrame{}; g_cone_last_cls = 0xFF;
+  g_cone_result = TxResult::MAILBOX;
+}
 
 using namespace JbUdp;
 using JbUdp::RpcArgs::ArgAxisState;
@@ -210,6 +224,7 @@ using JbUdp::RpcArgs::ArgAxisOnly;
 using JbUdp::RpcArgs::ArgAbsPosition;
 using JbUdp::RpcArgs::ArgSdoRead;
 using JbUdp::RpcArgs::ArgBbThrow;
+using JbUdp::RpcArgs::ArgWaveCmd;
 using JbUdp::RpcArgs::AXIS_ALL;
 
 // ── routing + arg-decode ──────────────────────────────────────────────────────
@@ -523,6 +538,39 @@ TEST_CASE("BB_CANCEL (FW 30): BB present → one payloadless CANCEL_CMD on CAN1;
   bb_state.heartbeat_seen = false;    // BB not present
   CHECK(call_noarg(RpcMethod::BB_CANCEL) == RpcStatus::ERR_BUS_DOWN);
   CHECK(g_bb_sent == 0);
+}
+
+TEST_CASE("WAVE_CMD (FW 33): args verbatim as one DLC-8 0x7E2 frame on the cone bus; gate/arg refusals") {
+  reset_all();
+  ArgWaveCmd a{}; a.desired = 1; a.cmd_seq = 0x2A; a.flags = 0x01; a.reserved = 0;
+  a.session_id = 0x6A1B2C3Du;
+  CHECK(call(RpcMethod::WAVE_CMD, a) == RpcStatus::OK);
+  REQUIRE(g_cone_sent == 1);
+  CHECK(g_cone_last.id == WaveCameraCanId::CMD);
+  CHECK(g_cone_last.id == 0x7E2u);
+  CHECK(g_cone_last.len == 8);
+  CHECK(g_cone_last_cls == TxCls::RPC);
+  const uint8_t want[8] = {0x01, 0x2A, 0x01, 0x00, 0x3D, 0x2C, 0x1B, 0x6A};
+  for (int i = 0; i < 8; ++i) CHECK(g_cone_last.buf[i] == want[i]);
+  CHECK(g_bb_sent == 0);                       // never touches CAN1
+
+  // DEFERRED reached the wire (queued, in order) -> OK.
+  reset_all(); g_cone_result = TxResult::DEFERRED;
+  CHECK(call(RpcMethod::WAVE_CMD, a) == RpcStatus::OK);
+
+  // No cone-bus partner: the presence gate refuses -> ERR_BUS_DOWN, nothing sent.
+  reset_all(); g_cone_result = TxResult::FAILED;
+  CHECK(call(RpcMethod::WAVE_CMD, a) == RpcStatus::ERR_BUS_DOWN);
+  CHECK(g_cone_sent == 0);
+
+  // Arg validation precedes the gate: desired > 1, reserved != 0, short args.
+  reset_all();
+  ArgWaveCmd bad = a; bad.desired = 2;
+  CHECK(call(RpcMethod::WAVE_CMD, bad) == RpcStatus::ERR_BAD_ARGS);
+  bad = a; bad.reserved = 1;
+  CHECK(call(RpcMethod::WAVE_CMD, bad) == RpcStatus::ERR_BAD_ARGS);
+  CHECK(call_noarg(RpcMethod::WAVE_CMD) == RpcStatus::ERR_BAD_ARGS);
+  CHECK(g_cone_sent == 0);
 }
 
 // ── Ball Butler firmware-over-CAN routing + gate sampling (FW 21) ─────────────

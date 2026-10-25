@@ -41,6 +41,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/CatchEvent.msg"
   "msg/CatchingConeHeartbeat.msg"
   "msg/CatchTimingResult.msg"
+  "msg/WaveCameraHeartbeat.msg"
+  "msg/WaveRecordEvent.msg"
   "msg/TrajectoryStatus.msg"
   "msg/TargetFeedback.msg"
 

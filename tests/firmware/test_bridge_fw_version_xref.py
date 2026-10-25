@@ -179,6 +179,16 @@ def test_the_bump_history_records_what_this_version_carries():
     assert 'MOTOR_FB_STALE' in m27.group(1), m27.group(1)
     assert 'NO WIRE CHANGE' in m27.group(1), m27.group(1)
     assert 'NO WIRE CHANGE' in m26.group(1) and 'ERR_UNKNOWN_METHOD' in m26.group(1), m26.group(1)
+    # FW 33 — the Wave camera adapter (FW 31 on its branch; renumbered at the
+    # 2026-10-25 merge with main, whose FW 31/32 are the leg lead clamp).  The substance: one additive RpcMethod
+    # that puts a frame on the CONE-ROLE bus (a new TX path there, presence-gated
+    # by can_cone_tx), and the bump is wire-compatible (an FW <= 32 board answers
+    # ERR_UNKNOWN_METHOD), so only BRIDGE_FW_CHECK says whether it is aboard.
+    m33 = re.search(r'^// 32→33:(.*)$', text, re.M)
+    assert m33 is not None, "FW 33 history line missing"
+    assert 'WAVE_CMD' in m33.group(1) and 'WaveCameraCanId::CMD' in m33.group(1), m33.group(1)
+    assert 'send_cone_frame' in m33.group(1) and 'ERR_BUS_DOWN' in m33.group(1), m33.group(1)
+    assert 'NO WIRE CHANGE' in m33.group(1) and 'ERR_UNKNOWN_METHOD' in m33.group(1), m33.group(1)
 
 
 def test_the_version_this_release_pins_is_actually_uplinked():

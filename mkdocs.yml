@@ -88,3 +88,4 @@ nav:
     - "ADR-0011: MAC-pinned nmcli": adr/0011-mac-pinned-nmcli.md
     - "ADR-0012: Hermite interpolator port": adr/0012-hermite-interpolator-port.md
     - "ADR-0013: Three CAN buses": adr/0013-three-can-buses.md
+    - "ADR-0014: Wave camera on CAN3": adr/0014-wave-camera-on-can3.md

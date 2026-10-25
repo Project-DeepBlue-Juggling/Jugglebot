@@ -1,0 +1,62 @@
+2026-10-19T16:08:26.470 ets Jun  8 2016 00:22:57
+2026-10-19T16:08:26.470 
+2026-10-19T16:08:26.470 rst:0x1 (POWERON_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+2026-10-19T16:08:26.470 configsip: 0, SPIWP:0xee
+2026-10-19T16:08:26.470 clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+2026-10-19T16:08:26.470 mode:DIO, clock div:2
+2026-10-19T16:08:26.470 load:0x3fff0030,len:1184
+2026-10-19T16:08:26.470 load:0x40078000,len:13232
+2026-10-19T16:08:26.470 load:0x40080400,len:3028
+2026-10-19T16:08:26.470 entry 0x400805e4
+2026-10-19T16:08:26.620 17314 INFO wave-gpio-explorer boot: esp32 rev 1, 240 MHz, ring=2048 events, console 115200 baud
+2026-10-19T16:08:26.620 18152 INFO disarmed; rec mode not set; uart not bridged. Type help.
+2026-10-19T16:08:28.433 # >>> uart rx 26
+2026-10-19T16:08:28.535 1855097 INFO cmd: uart rx 26
+2026-10-19T16:08:28.535 1856293 INFO uart rx=26 tx=- (receive only)
+2026-10-19T16:08:32.525 # >>> rec mode edge
+2026-10-19T16:08:32.626 5947712 INFO cmd: rec mode edge
+2026-10-19T16:08:32.626 5947939 REC mode=edge (must match the camera's GPI setting)
+2026-10-19T16:08:36.610 # >>> rec assume idle
+2026-10-19T16:08:36.711 10032962 INFO cmd: rec assume idle
+2026-10-19T16:08:36.711 10033148 REC state=idle (assumed)
+2026-10-19T16:08:40.692 # >>> rec toggle
+2026-10-19T16:08:40.794 14114866 INFO cmd: rec toggle
+2026-10-19T16:08:40.794 14115081 REC drive=low t_cmd_us=14115044 mode=edge
+2026-10-19T16:08:40.794 14115251 REC edge=falling t_edge_us=14115071 t_cmd_us=14115044 cmd_to_edge_us=27
+2026-10-19T16:08:40.794 14135081 REC drive=release t_cmd_us=14135053 low_ms=20.009 mode=edge
+2026-10-19T16:08:40.794 14135796 REC state=recording
+2026-10-19T16:08:40.794 14135919 REC edge=rising t_edge_us=14135072 t_cmd_us=14135053 cmd_to_edge_us=19
+2026-10-19T16:08:40.794 14159887 UART t_first_byte_us=14157418 src=edge t_eol_us=14159819 end=eol bytes=17 | Created new clip.
+2026-10-19T16:08:44.784 # >>> rec toggle
+2026-10-19T16:08:44.886 18206893 INFO cmd: rec toggle
+2026-10-19T16:08:44.886 18207064 REC drive=low t_cmd_us=18207056 mode=edge
+2026-10-19T16:08:44.886 18207194 REC edge=falling t_edge_us=18207062 t_cmd_us=18207056 cmd_to_edge_us=6
+2026-10-19T16:08:44.886 18227076 REC drive=release t_cmd_us=18227065 low_ms=20.009 mode=edge
+2026-10-19T16:08:44.886 18227290 REC state=idle
+2026-10-19T16:08:44.886 18227397 REC edge=rising t_edge_us=18227071 t_cmd_us=18227065 cmd_to_edge_us=6
+2026-10-19T16:08:48.823 # >>> rec toggle
+2026-10-19T16:08:48.925 22246336 INFO cmd: rec toggle
+2026-10-19T16:08:48.925 22246483 REC drive=low t_cmd_us=22246475 mode=edge
+2026-10-19T16:08:48.925 22246608 REC edge=falling t_edge_us=22246481 t_cmd_us=22246475 cmd_to_edge_us=6
+2026-10-19T16:08:48.925 22266486 REC drive=release t_cmd_us=22266478 low_ms=20.003 mode=edge
+2026-10-19T16:08:48.925 22266660 REC state=recording
+2026-10-19T16:08:48.925 22266775 REC edge=rising t_edge_us=22266481 t_cmd_us=22266478 cmd_to_edge_us=3
+2026-10-19T16:08:48.925 22293486 UART t_first_byte_us=22291114 src=edge t_eol_us=22293462 end=eol bytes=17 | Created new clip.
+2026-10-19T16:08:52.907 # >>> rec toggle
+2026-10-19T16:08:53.008 26330305 INFO cmd: rec toggle
+2026-10-19T16:08:53.008 26330472 REC drive=low t_cmd_us=26330463 mode=edge
+2026-10-19T16:08:53.008 26330604 REC edge=falling t_edge_us=26330470 t_cmd_us=26330463 cmd_to_edge_us=7
+2026-10-19T16:08:53.008 26350482 REC drive=release t_cmd_us=26350471 low_ms=20.008 mode=edge
+2026-10-19T16:08:53.008 26350700 REC state=idle
+2026-10-19T16:08:53.008 26350807 REC edge=rising t_edge_us=26350478 t_cmd_us=26350471 cmd_to_edge_us=7
+2026-10-19T16:08:56.988 # >>> status
+2026-10-19T16:08:57.090 30410577 INFO cmd: status
+2026-10-19T16:08:57.090 30410752 INFO status uptime_s=30.411 armed=0 edges_stream=0 rec_mode=edge rec_state=idle gpi2_held_low=0 gpi2_busy=0 lat=idle probe=idle qx_stream_hz=0
+2026-10-19T16:08:57.090 30411047 INFO status pin=25 wave=6 level=1 role=UNKNOWN use=gpi2_open_drain open_drain=1 out_signal=256 edges=8
+2026-10-19T16:08:57.090 30411205 INFO status pin=26 wave=3 level=1 role=UNKNOWN use=uart_rx_input open_drain=0 out_signal=256 edges=232
+2026-10-19T16:08:57.090 30411314 INFO status pin=27 wave=4 level=0 role=UNKNOWN use=input open_drain=0 out_signal=256 edges=1824
+2026-10-19T16:08:57.090 30411419 INFO status pin=32 wave=5 level=1 role=UNKNOWN use=input open_drain=0 out_signal=256 edges=0
+2026-10-19T16:08:57.090 30411533 INFO status uart rx=26 tx=-1 hex=0 rx_bytes=38 rx_edges_while_bridged=232 lines_edge_stamped=2 lines_read_stamped=0
+2026-10-19T16:08:57.090 30411665 INFO status ring capacity=2048 pending=0 high_water=4 overflows=0
+2026-10-19T16:08:57.090 30411754 INFO status console_dropped_lines=0
+2026-10-19T16:08:57.090 30411889 INFO status heap_free=287716 heap_min=282236 reset_reason=poweron

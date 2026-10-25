@@ -78,6 +78,9 @@ log/
 # Committed test fixtures decoded from bags (hand-jam event, 2026-10-04) are the
 # one CSV class that MUST ship: the test fails by name without them.
 !tests/motion/fixtures/*.csv
+# Wave Camera bench captures (tools/wave_console.py --out) are evidence cited by
+# ros_ws/docs/wave_camera_findings.md, so they ship despite the *.log rule above.
+!ros_ws/src/jugglebot/WaveCamera_ESP_code/bench_logs/*.log
 **/metadata.yaml
 *.qtm
 experimenting/Juggling Analysis Tool/data/5_ball_juggling_cut_balls_only.tsv

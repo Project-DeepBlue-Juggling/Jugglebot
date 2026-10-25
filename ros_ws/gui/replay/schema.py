@@ -107,6 +107,7 @@ SUBSCRIBED: Tuple[str, ...] = (
     "/bb/calibration_attempt",   # every sweep's outcome (keep-last-good, 2026-10-10); the result topic below carries only the calibration in force
     "/bb/calibration_result",
     "/bb/heartbeat",
+    "/camera/heartbeat",        # Wave camera adapter heartbeat: the record panel (2026-10-19)
     "/clock_diag",
     "/cone/heartbeat",
     "/cone/timing_result",

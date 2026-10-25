@@ -97,6 +97,7 @@ namespace RpcMethod {
   constexpr uint16_t BB_FW_COMMIT = 0x005Fu;  // Ball Butler FW-over-CAN: apply the staged image + reboot (relay → CAN1 0x7D6 op 0x04)
   constexpr uint16_t BB_FW_INFO = 0x0060u;  // Ball Butler FW-over-CAN: read the running FW_VERSION (relay → CAN1 0x7D6 op 0x05)
   constexpr uint16_t HAND_MOVE_TO = 0x0061u;  // Hand-only TRAP_TRAJ move to a caller target (ACTIVATE's axis-6 ladder); deferred reply at arrival / timeout / supersede
+  constexpr uint16_t WAVE_CMD = 0x0062u;  // Wave camera: send one WAVE_CMD intent frame on the cone bus
 }
 namespace RpcStatus {
   constexpr uint16_t OK = 0x0000u;  // Success
@@ -635,6 +636,15 @@ struct ResultHandMoveTo {
   uint32_t elapsed_ms;  // ms from the request's acceptance to the reply
 };
 static_assert(sizeof(ResultHandMoveTo) == 20, "ResultHandMoveTo size drift");
+// ArgWaveCmd (WAVE_CMD)
+struct ArgWaveCmd {
+  uint8_t desired;  // 1 = record, 0 = do not record
+  uint8_t cmd_seq;  // bumped by the node on every service call; repeats while streaming
+  uint8_t flags;  // bit0 CLEAR_FAULTS; other bits 0
+  uint8_t reserved;  // zero
+  uint32_t session_id;  // node start time (Unix s); a change resets the adapter's per-session count
+};
+static_assert(sizeof(ArgWaveCmd) == 8, "ArgWaveCmd size drift");
 // ArgBbThrow (BB_THROW)
 struct ArgBbThrow {
   float yaw_rad;  // Yaw angle in radians [-pi, pi)
@@ -689,6 +699,7 @@ constexpr uint16_t RESULT_BB_AXIS_VERSIONS_SIZE = 17u;
 constexpr uint16_t RESULT_HAND_TORQUE_SCALE_SIZE = 16u;
 constexpr uint16_t ARG_HAND_MOVE_TO_SIZE = 9u;
 constexpr uint16_t RESULT_HAND_MOVE_TO_SIZE = 20u;
+constexpr uint16_t ARG_WAVE_CMD_SIZE = 8u;
 constexpr uint16_t ARG_BB_THROW_SIZE = 20u;
 constexpr uint16_t RESULT_BB_THROW_SIZE = 4u;
 constexpr uint16_t ARG_ROBOT_STATE_SIZE = 10u;

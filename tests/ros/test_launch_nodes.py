@@ -119,6 +119,14 @@ RECORDED_TOPICS = [
     # bridge is flashed to FW 13, and a silent topic is exactly what this list's
     # add-never-trim rule is for.
     '/ring_diag',
+    # The Wave camera adapter (ADR-0014). /camera/record_event carries the
+    # wall-clock instant of each recording's start tick: the ONE number that
+    # aligns recorded footage with the rest of the bag, and it exists nowhere
+    # else after the session. /camera/heartbeat and /camera_diag carry the
+    # sync and fault context that says whether that instant can be trusted.
+    '/camera/heartbeat',
+    '/camera/record_event',
+    '/camera_diag',
 ]
 
 

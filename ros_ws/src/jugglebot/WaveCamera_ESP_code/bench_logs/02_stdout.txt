@@ -1,0 +1,29 @@
+2026-10-19T16:05:25.795 ets Jun  8 2016 00:22:57
+2026-10-19T16:05:25.795 
+2026-10-19T16:05:25.795 rst:0x1 (POWERON_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+2026-10-19T16:05:25.795 configsip: 0, SPIWP:0xee
+2026-10-19T16:05:25.795 clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+2026-10-19T16:05:25.795 mode:DIO, clock div:2
+2026-10-19T16:05:25.795 load:0x3fff0030,len:1184
+2026-10-19T16:05:25.795 load:0x40078000,len:13232
+2026-10-19T16:05:25.795 load:0x40080400,len:3028
+2026-10-19T16:05:25.795 entry 0x400805e4
+2026-10-19T16:05:25.947 17294 INFO wave-gpio-explorer boot: esp32 rev 1, 240 MHz, ring=2048 events, console 115200 baud
+2026-10-19T16:05:25.947 18132 INFO disarmed; rec mode not set; uart not bridged. Type help.
+2026-10-19T16:05:27.762 # >>> uart rx 26
+2026-10-19T16:05:27.865 1858516 INFO cmd: uart rx 26
+2026-10-19T16:05:27.865 1859718 INFO uart rx=26 tx=- (receive only)
+2026-10-19T16:05:28.320 # >>> uart hex on
+2026-10-19T16:05:28.421 2415976 INFO cmd: uart hex on
+2026-10-19T16:05:28.421 2416182 INFO uart hex=1
+2026-10-19T16:05:28.876 # >>> probe 90
+2026-10-19T16:05:28.978 2971552 INFO cmd: probe 90
+2026-10-19T16:05:28.978 2971727 PROBE start seconds=90
+2026-10-19T16:05:33.164 7203674 UART t_first_byte_us=7201164 src=edge t_eol_us=7203602 end=eol bytes=17 | Created new clip.
+2026-10-19T16:05:33.164 7203853 REC state=recording (camera reported a new clip)
+2026-10-19T16:05:33.164 7203995 UARTHEX t_first_us=7203083 n=19 43 72 65 61 74 65 64 20 6E 65 77 20 63 6C 69 70 2E 0D 0A
+2026-10-19T16:06:58.934 92971801 PROBE pin=25 wave=6 role=STATIC_HIGH level=1 edges=0 bursts=0 missed=0 min_low_us=-1 min_high_us=-1 period_n=0 period_mean_us=0.0 period_cv=0.0000 rate_hz=0.000
+2026-10-19T16:06:58.934 92972485 PROBE pin=26 wave=3 role=UART level=1 edges=116 bursts=1 missed=0 min_low_us=7 min_high_us=7 period_n=57 period_mean_us=28.2 period_cv=0.4690 rate_hz=35491.905 note="bursty, ~1 bit min width"
+2026-10-19T16:06:58.934 92973196 PROBE pin=27 wave=4 role=PULSE level=0 edges=5400 bursts=2700 missed=0 min_low_us=33265 min_high_us=4 period_n=2699 period_mean_us=33334.3 period_cv=0.0002 rate_hz=29.999
+2026-10-19T16:06:58.985 92973585 PROBE pin=32 wave=5 role=STATIC_HIGH level=1 edges=0 bursts=0 missed=0 min_low_us=-1 min_high_us=-1 period_n=0 period_mean_us=0.0 period_cv=0.0000 rate_hz=0.000 note="idle high, no traffic yet"
+2026-10-19T16:06:58.985 92973779 PROBE done window_s=90.000 pulse_pin=27 uart_pin=26

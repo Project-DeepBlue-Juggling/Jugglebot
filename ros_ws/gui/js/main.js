@@ -70,6 +70,7 @@ import { initCommandHistory } from './command-history.js';
 import { initCameraPresets } from './camera-presets.js';
 import { initTrailSettingsUi } from './trail-settings-ui.js';
 import { initTrails, getTrailFeed } from './trails-scene.js';
+import { initCameraPanel, cameraPanelOnHeartbeat, setCameraPanelDisconnected } from './camera-panel.js';
 
 // ---- Latest data stores ----
 let latestCommandedLegs = null;  // leg_setpoint_echo data (6 legs, motor revs)
@@ -133,6 +134,10 @@ function init() {
     // 3a. Init the state-machine minimap (needs the DOM + commands' publisher
     //     topic, nothing from the viewer).
     initStateMinimap();
+
+    // 3b. Init the Wave camera record panel (overlay right of the collapsed
+    //     minimap; DOM-only until camera/heartbeat arrives).
+    initCameraPanel();
 
     // 4. Init scene menu
     initSceneMenu();
@@ -326,6 +331,9 @@ export function blankDisconnectedState() {
     setBallButlerCalibration(null);
     setJogPanelVisible(false);
     setSpeedLimitsPanelVisible(false);
+    // Wave camera record panel: the heartbeat is gone with the graph, so
+    // blank it rather than freeze a recording readout.
+    setCameraPanelDisconnected();
 }
 
 /**
@@ -377,6 +385,9 @@ function subscribeAll() {
     // Catching cone heartbeat (10Hz) + timing results (per catch)
     ros.subscribe('cone/heartbeat', 'jugglebot_interfaces/msg/CatchingConeHeartbeat', onConeHeartbeat, 0);
     ros.subscribe('cone/timing_result', 'jugglebot_interfaces/msg/CatchTimingResult', onConeTimingResult, 0);
+
+    // Wave camera adapter heartbeat (10Hz, no throttle) - record panel
+    ros.subscribe('camera/heartbeat', 'jugglebot_interfaces/msg/WaveCameraHeartbeat', cameraPanelOnHeartbeat, 0);
 
     // Orchestrator state (on change)
     ros.subscribe('orchestrator_state', 'std_msgs/msg/String', onOrchestratorState, 0);
@@ -1181,7 +1192,7 @@ const GUI_SUBSCRIBED_TOPICS = new Set([
     'robot_frame', 'mocap/status',
     'leg_setpoint_echo', 'control_mode_topic', 'motion/diagnostics',
     'bb/calibration_result', 'bb/calibration_attempt', 'cone/heartbeat', 'cone/timing_result',
-    'skills/attempt',
+    'skills/attempt', 'camera/heartbeat',
 ]);
 
 /** Active spy subscriptions: Map<topicName, ROSLIB.Topic> */

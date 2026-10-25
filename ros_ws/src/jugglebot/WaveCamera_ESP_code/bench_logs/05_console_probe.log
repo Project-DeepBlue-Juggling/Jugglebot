@@ -1,0 +1,47 @@
+2026-10-19T16:12:52.563 ets Jun  8 2016 00:22:57
+2026-10-19T16:12:52.563 
+2026-10-19T16:12:52.563 rst:0x1 (POWERON_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+2026-10-19T16:12:52.563 configsip: 0, SPIWP:0xee
+2026-10-19T16:12:52.563 clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+2026-10-19T16:12:52.563 mode:DIO, clock div:2
+2026-10-19T16:12:52.563 load:0x3fff0030,len:1184
+2026-10-19T16:12:52.563 load:0x40078000,len:13232
+2026-10-19T16:12:52.563 load:0x40080400,len:3028
+2026-10-19T16:12:52.563 entry 0x400805e4
+2026-10-19T16:12:52.714 17298 INFO wave-gpio-explorer boot: esp32 rev 1, 240 MHz, ring=2048 events, console 115200 baud
+2026-10-19T16:12:52.714 18136 INFO disarmed; rec mode not set; uart not bridged. Type help.
+2026-10-19T16:12:54.531 # >>> uart rx 26
+2026-10-19T16:12:54.631 1860015 INFO cmd: uart rx 26
+2026-10-19T16:12:54.631 1861214 INFO uart rx=26 tx=- (receive only)
+2026-10-19T16:12:57.611 # >>> uart tx 32
+2026-10-19T16:12:57.714 4940972 INFO cmd: uart tx 32
+2026-10-19T16:12:57.714 4942346 INFO uart rx=26 tx=32 tx_open_drain=1 tx_signal=198(U2TXD=198) tx_idle_level=1
+2026-10-19T16:13:00.689 # >>> uart hex on
+2026-10-19T16:13:00.792 8018839 INFO cmd: uart hex on
+2026-10-19T16:13:00.792 8019037 INFO uart hex=1
+2026-10-19T16:13:03.770 # >>> arm
+2026-10-19T16:13:03.821 11098964 INFO cmd: arm
+2026-10-19T16:13:03.821 11099160 INFO armed=1 (> and qx may transmit to the camera)
+2026-10-19T16:13:06.800 # >>> >>
+2026-10-19T16:13:06.851 14128656 INFO cmd: >>
+2026-10-19T16:13:06.851 14128829 INFO tx "\r\n" (2 bytes)
+2026-10-19T16:13:09.829 # >>> > help
+2026-10-19T16:13:09.930 17158825 INFO cmd: > help
+2026-10-19T16:13:09.930 17158963 INFO tx "help\r\n" (6 bytes)
+2026-10-19T16:13:12.907 # >>> > ?
+2026-10-19T16:13:12.958 20236298 INFO cmd: > ?
+2026-10-19T16:13:12.958 20236423 INFO tx "?\r\n" (3 bytes)
+2026-10-19T16:13:15.935 # >>> disarm
+2026-10-19T16:13:16.036 23264505 INFO cmd: disarm
+2026-10-19T16:13:16.036 23264644 INFO armed=0
+2026-10-19T16:13:19.014 # >>> status
+2026-10-19T16:13:19.115 26343722 INFO cmd: status
+2026-10-19T16:13:19.115 26343913 INFO status uptime_s=26.344 armed=0 edges_stream=0 rec_mode=edge(default,unset) rec_state=unknown gpi2_held_low=0 gpi2_busy=0 lat=idle probe=idle qx_stream_hz=0
+2026-10-19T16:13:19.115 26344745 INFO status pin=25 wave=6 level=1 role=UNKNOWN use=gpi2_open_drain open_drain=1 out_signal=256 edges=0
+2026-10-19T16:13:19.115 26344891 INFO status pin=26 wave=3 level=1 role=UNKNOWN use=uart_rx_input open_drain=0 out_signal=256 edges=0
+2026-10-19T16:13:19.115 26344994 INFO status pin=27 wave=4 level=0 role=UNKNOWN use=input open_drain=0 out_signal=256 edges=1578
+2026-10-19T16:13:19.115 26345137 INFO status pin=32 wave=5 level=1 role=UNKNOWN use=uart_tx_open_drain open_drain=1 out_signal=198 edges=64
+2026-10-19T16:13:19.115 26345277 INFO status uart rx=26 tx=32 hex=1 rx_bytes=0 rx_edges_while_bridged=0 lines_edge_stamped=0 lines_read_stamped=0
+2026-10-19T16:13:19.115 26345406 INFO status ring capacity=2048 pending=2 high_water=7 overflows=0
+2026-10-19T16:13:19.115 26345496 INFO status console_dropped_lines=0
+2026-10-19T16:13:19.115 26345633 INFO status heap_free=287716 heap_min=282236 reset_reason=poweron

@@ -5,6 +5,7 @@ export const ALLOWLIST = Object.freeze([
   '/bb/calibration_attempt',
   '/bb/calibration_result',
   '/bb/heartbeat',
+  '/camera/heartbeat',
   '/clock_diag',
   '/cone/catch_event',
   '/cone/heartbeat',

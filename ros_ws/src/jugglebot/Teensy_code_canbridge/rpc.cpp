@@ -208,7 +208,7 @@ static uint16_t send_axis_frame(uint16_t method, uint8_t axis, const ODrive::Can
 
 // Ball Butler presence gate. CAN1 carries no other partner; with BB unpowered
 // or unplugged, an un-ACKed TX would climb the FlexCAN TEC and eventually drop
-// the bus to bus-off (same failure mode the cone-absent gate prevents on CAN2 —
+// the bus to bus-off (same failure mode the cone-absent gate prevents on the cone bus —
 // but for CAN1). bb_present() requires a fresh
 // heartbeat; the bridge-level bb/calibrate handler translates ERR_BUS_DOWN to a
 // silent-success for the homing flow (matching can_node._svc_bb_calibrate).
@@ -224,6 +224,21 @@ static uint16_t send_bb_frame(const ODrive::CanFrame& f) {
   if (!bb_present()) return JbUdp::RpcStatus::ERR_BUS_DOWN;
   return tx_reached_the_wire(can_bb_tx(f, TxCls::RPC))
              ? JbUdp::RpcStatus::OK : JbUdp::RpcStatus::ERR_TIMEOUT;
+}
+
+// Send a frame on the cone-role bus (the CAN3 peripheral, can_buses.cpp), used
+// by WAVE_CMD (FW 33). Unlike CAN1 there is no decoded partner state to consult
+// here: can_cone_tx's own partner_recent() presence gate is the gate, and its
+// FAILED (no cone-bus partner heard within BUS_PARTNER_STALENESS_US) is the ONLY
+// outcome in which no frame exists, so it maps to ERR_BUS_DOWN. MAILBOX and
+// DEFERRED both reached the wire (DEFERRED is queued, in order) and ack OK.
+static uint16_t send_cone_frame(const ODrive::CanFrame& f) {
+  switch (can_cone_tx(f, TxCls::RPC)) {
+    case TxResult::FAILED:   return JbUdp::RpcStatus::ERR_BUS_DOWN;
+    case TxResult::MAILBOX:
+    case TxResult::DEFERRED: return JbUdp::RpcStatus::OK;
+  }
+  return JbUdp::RpcStatus::ERR_REJECTED;   // unreachable: TxResult is exhaustive above
 }
 
 // Sample the BB firmware-update gate inputs (see platform_relay.h BbFwGate).
@@ -547,7 +562,7 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
 
     // ── Ball Butler (CAN1) — typed commands ──────────────────────────────
     // Each gated on BB presence to prevent the un-ACKed-TX bus-off failure
-    // mode (analogous to the CAN2 cone-absent gate). Bridge node
+    // mode (analogous to the cone-bus cone-absent gate). Bridge node
     // bb/calibrate translates ERR_BUS_DOWN to silent-success to preserve
     // can_node's homing semantics.
     case RpcMethod::BB_THROW: {
@@ -596,6 +611,25 @@ static uint16_t dispatch(uint16_t method, const uint8_t* args, uint16_t arg_len,
       // (CANCEL OK / CANCEL_TOO_LATE / CANCEL_NOTHING_PENDING) comes back on
       // CMD_RESULT. 0x7D9 loses arbitration to a THROW_CMD queued beside it.
       return send_bb_frame(BallButler::encode_cancel());
+
+    // ── Wave camera adapter (cone-role bus) — FW 33, ADDITIVE ─────────────
+    // An FW <= 32 board answers 0x62 with ERR_UNKNOWN_METHOD via the default
+    // below. The 8 arg bytes ARE the WaveCameraCanId::CMD (0x7E2) payload
+    // (desired, cmd_seq, flags, reserved, session_id u32 LE — ArgWaveCmd is
+    // packed little-endian, as is the CAN frame). Validated BEFORE gating (the
+    // BB_THROW ordering): desired must be 0/1 and reserved must be 0, so a host
+    // bug cannot put an undefined intent on the bus. Idempotent: a re-dispatch
+    // resends the same cmd_seq, which the adapter treats as a keepalive.
+    case RpcMethod::WAVE_CMD: {
+      RpcArgs::ArgWaveCmd a; if (!take(args, arg_len, a)) return RpcStatus::ERR_BAD_ARGS;
+      if (a.desired > 1u || a.reserved != 0u) return RpcStatus::ERR_BAD_ARGS;
+      static_assert(sizeof(RpcArgs::ArgWaveCmd) == 8, "WAVE_CMD frame is exactly DLC 8");
+      ODrive::CanFrame f;
+      f.id = WaveCameraCanId::CMD;
+      f.len = 8;
+      memcpy(f.buf, &a, sizeof(a));
+      return send_cone_frame(f);
+    }
 
     case RpcMethod::TIME_OF_DAY_QUERY:
       // The Teensy is the CLIENT for this method; it should never receive it as

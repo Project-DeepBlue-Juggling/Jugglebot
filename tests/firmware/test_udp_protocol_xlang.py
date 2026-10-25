@@ -524,7 +524,15 @@ def test_wire_layout_frozen(gen):
     # existing message changed, so PROTOCOL_VERSION stays 10; an old host ignores
     # 0x94. Previous digest:
     #   2d9d7b7b0183535b6b486f49dba457cf2c09785126846bc4b8b0345eed946f8a
-    _EXPECTED = "b8f8027feb744910a7d13cb9a464bdb7783945cf7a8f1f5ea9623c68676e288d"
+    # Re-pinned for the ADDITIVE WAVE_CMD RPC (2026-10-19, can-bridge FW 33 -
+    # FW 31 on its branch, renumbered at the 2026-10-25 merge with main): one new
+    # arg struct ArgWaveCmd (u8 desired + u8 cmd_seq + u8 flags + u8 reserved +
+    # u32 session_id, 8 B) behind one new RpcMethod 0x0062, on top of the
+    # LegClampDiag pin above. No existing message, arg or MsgType changed, so
+    # PROTOCOL_VERSION stays 10 and an FW <= 32 board answers 0x62 with
+    # ERR_UNKNOWN_METHOD. Previous digest (LegClampDiag only):
+    #   b8f8027feb744910a7d13cb9a464bdb7783945cf7a8f1f5ea9623c68676e288d
+    _EXPECTED = "2e17196c14b4b94fa7dd198609becd3a4ca30618d6fba7a92448eb0d56254cb3"
     assert digest == _EXPECTED, (
         "The UDP wire LAYOUT changed (a message/arg field layout, a framed MsgType "
         "value, or a framing constant). If INCOMPATIBLE, bump PROTOCOL_VERSION. Either "

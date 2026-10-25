@@ -1,0 +1,68 @@
+2026-10-19T16:21:06.051 ets Jun  8 2016 00:22:57
+2026-10-19T16:21:06.051 
+2026-10-19T16:21:06.051 rst:0x1 (POWERON_RESET),boot:0x13 (SPI_FAST_FLASH_BOOT)
+2026-10-19T16:21:06.051 configsip: 0, SPIWP:0xee
+2026-10-19T16:21:06.051 clk_drv:0x00,q_drv:0x00,d_drv:0x00,cs0_drv:0x00,hd_drv:0x00,wp_drv:0x00
+2026-10-19T16:21:06.051 mode:DIO, clock div:2
+2026-10-19T16:21:06.051 load:0x3fff0030,len:1184
+2026-10-19T16:21:06.051 load:0x40078000,len:13232
+2026-10-19T16:21:06.051 load:0x40080400,len:3028
+2026-10-19T16:21:06.051 entry 0x400805e4
+2026-10-19T16:21:06.203 17297 INFO wave-gpio-explorer boot: esp32 rev 1, 240 MHz, ring=2048 events, console 115200 baud
+2026-10-19T16:21:06.203 18134 INFO disarmed; rec mode not set; uart not bridged. Type help.
+2026-10-19T16:21:08.018 # >>> uart rx 26
+2026-10-19T16:21:08.120 1858143 INFO cmd: uart rx 26
+2026-10-19T16:21:08.120 1859343 INFO uart rx=26 tx=- (receive only)
+2026-10-19T16:21:12.059 # >>> probe 3
+2026-10-19T16:21:12.162 5898397 INFO cmd: probe 3
+2026-10-19T16:21:12.162 5898604 PROBE start seconds=3
+2026-10-19T16:21:15.089 8898688 PROBE pin=25 wave=6 role=STATIC_HIGH level=1 edges=0 bursts=0 missed=0 min_low_us=-1 min_high_us=-1 period_n=0 period_mean_us=0.0 period_cv=0.0000 rate_hz=0.000
+2026-10-19T16:21:15.140 8899208 PROBE pin=26 wave=3 role=STATIC_HIGH level=1 edges=0 bursts=0 missed=0 min_low_us=-1 min_high_us=-1 period_n=0 period_mean_us=0.0 period_cv=0.0000 rate_hz=0.000 note="idle high, no traffic yet"
+2026-10-19T16:21:15.140 8899542 PROBE pin=27 wave=4 role=PULSE level=0 edges=180 bursts=90 missed=0 min_low_us=33323 min_high_us=6 period_n=89 period_mean_us=33334.2 period_cv=0.0000 rate_hz=29.999
+2026-10-19T16:21:15.140 8900206 PROBE pin=32 wave=5 role=STATIC_HIGH level=1 edges=0 bursts=0 missed=0 min_low_us=-1 min_high_us=-1 period_n=0 period_mean_us=0.0 period_cv=0.0000 rate_hz=0.000 note="idle high, no traffic yet"
+2026-10-19T16:21:15.140 8900413 PROBE done window_s=3.000 pulse_pin=27 uart_pin=-1
+2026-10-19T16:21:16.147 # >>> rec mode level
+2026-10-19T16:21:16.248 9987653 INFO cmd: rec mode level
+2026-10-19T16:21:16.248 9987892 REC mode=level (must match the camera's GPI setting)
+2026-10-19T16:21:20.239 # >>> rec assume idle
+2026-10-19T16:21:20.341 14079869 INFO cmd: rec assume idle
+2026-10-19T16:21:20.341 14080055 REC state=idle (assumed)
+2026-10-19T16:21:24.325 # >>> lat 3 2 3
+2026-10-19T16:21:24.426 18165127 INFO cmd: lat 3 2 3
+2026-10-19T16:21:24.426 18165518 LAT start runs=3 rec_s=2.000 gap_s=3.000 mode=level uart_rx=26 pulse_pin=27 match="Created new clip."
+2026-10-19T16:21:24.426 18165904 REC drive=low t_cmd_us=18165867 mode=level
+2026-10-19T16:21:24.426 18166025 REC state=recording
+2026-10-19T16:21:24.426 18166173 REC edge=falling t_edge_us=18165893 t_cmd_us=18165867 cmd_to_edge_us=26
+2026-10-19T16:21:24.426 18196846 UART t_first_byte_us=18194360 src=edge t_eol_us=18196746 end=eol bytes=17 | Created new clip.
+2026-10-19T16:21:24.426 18197099 LAT run=1 t_edge_falling_us=18165893 t_first_byte_us=18194360 t_eol_us=18196746 latency_first_us=28467 latency_eol_us=30853 phase_to_last_pulse_us=21313
+2026-10-19T16:21:26.340 20165969 REC drive=release t_cmd_us=20165934 low_ms=2000.067 mode=level
+2026-10-19T16:21:26.340 20166251 REC state=idle
+2026-10-19T16:21:26.391 20166346 REC edge=rising t_edge_us=20165960 t_cmd_us=20165934 cmd_to_edge_us=26
+2026-10-19T16:21:28.405 # >>> status
+2026-10-19T16:21:28.507 22245466 INFO cmd: status
+2026-10-19T16:21:28.507 22245659 INFO status uptime_s=22.246 armed=0 edges_stream=0 rec_mode=level rec_state=idle gpi2_held_low=0 gpi2_busy=0 lat=running probe=idle qx_stream_hz=0
+2026-10-19T16:21:28.507 22245954 INFO status pin=25 wave=6 level=1 role=STATIC_HIGH use=gpi2_open_drain open_drain=1 out_signal=256 edges=2
+2026-10-19T16:21:28.507 22246097 INFO status pin=26 wave=3 level=1 role=STATIC_HIGH use=uart_rx_input open_drain=0 out_signal=256 edges=116
+2026-10-19T16:21:28.507 22246202 INFO status pin=27 wave=4 level=0 role=PULSE use=input open_drain=0 out_signal=256 edges=1334
+2026-10-19T16:21:28.507 22246315 INFO status pin=32 wave=5 level=1 role=STATIC_HIGH use=input open_drain=0 out_signal=256 edges=0
+2026-10-19T16:21:28.507 22246428 INFO status uart rx=26 tx=-1 hex=0 rx_bytes=19 rx_edges_while_bridged=116 lines_edge_stamped=1 lines_read_stamped=0
+2026-10-19T16:21:28.507 22246556 INFO status ring capacity=2048 pending=0 high_water=4 overflows=0
+2026-10-19T16:21:28.507 22246642 INFO status console_dropped_lines=0
+2026-10-19T16:21:28.507 22246785 INFO status heap_free=287716 heap_min=282236 reset_reason=poweron
+2026-10-19T16:21:29.364 23165989 REC drive=low t_cmd_us=23165981 mode=level
+2026-10-19T16:21:29.364 23166138 REC state=recording
+2026-10-19T16:21:29.364 23166239 REC edge=falling t_edge_us=23165987 t_cmd_us=23165981 cmd_to_edge_us=6
+2026-10-19T16:21:29.414 23197043 UART t_first_byte_us=23194579 src=edge t_eol_us=23196995 end=eol bytes=17 | Created new clip.
+2026-10-19T16:21:29.414 23197274 LAT run=2 t_edge_falling_us=23165987 t_first_byte_us=23194579 t_eol_us=23196995 latency_first_us=28592 latency_eol_us=31008 phase_to_last_pulse_us=21269
+2026-10-19T16:21:31.380 25166025 REC drive=release t_cmd_us=25166014 low_ms=2000.033 mode=level
+2026-10-19T16:21:31.380 25166324 REC state=idle
+2026-10-19T16:21:31.380 25166428 REC edge=rising t_edge_us=25166021 t_cmd_us=25166014 cmd_to_edge_us=7
+2026-10-19T16:21:34.360 28166043 REC drive=low t_cmd_us=28166035 mode=level
+2026-10-19T16:21:34.360 28166168 REC state=recording
+2026-10-19T16:21:34.360 28166265 REC edge=falling t_edge_us=28166041 t_cmd_us=28166035 cmd_to_edge_us=6
+2026-10-19T16:21:34.410 28197127 UART t_first_byte_us=28194735 src=edge t_eol_us=28197087 end=eol bytes=17 | Created new clip.
+2026-10-19T16:21:34.410 28197347 LAT run=3 t_edge_falling_us=28166041 t_first_byte_us=28194735 t_eol_us=28197087 latency_first_us=28694 latency_eol_us=31046 phase_to_last_pulse_us=21184
+2026-10-19T16:21:36.381 30166080 REC drive=release t_cmd_us=30166069 low_ms=2000.034 mode=level
+2026-10-19T16:21:36.381 30166329 REC state=idle
+2026-10-19T16:21:36.381 30166421 REC edge=rising t_edge_us=30166075 t_cmd_us=30166069 cmd_to_edge_us=6
+2026-10-19T16:21:39.361 33166160 LAT SUMMARY n=3 first_min_us=28467 first_mean_us=28584.3 first_max_us=28694 first_stdev_us=113.7 eol_min_us=30853 eol_mean_us=30969.0 eol_max_us=31046 eol_stdev_us=102.2

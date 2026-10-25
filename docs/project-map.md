@@ -93,15 +93,16 @@ Where each pathway of the Jugglebot project stands: its destination, how many st
 
 **Destination:** The Wave camera is visible over CAN3 and automated recording start/stop is working.
 
-**Progress:** 0 of 0 stops done
+**Progress:** 0 of 2 stops done
 
-**Next:** —
+**Next:** Wave Camera: Jetson bring-up prompt ([PROMPT-wave-camera-jetson-bringup.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/PROMPT-wave-camera-jetson-bringup.md))
 
 **Owners:** harrison
 
 **Remaining:**
 
-- —
+- Wave Camera: Jetson bring-up prompt ([PROMPT-wave-camera-jetson-bringup.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/PROMPT-wave-camera-jetson-bringup.md))
+- Wave camera adapter on CAN3 — ROS 2 record start/stop with a tick-stamped start instant ([wave-camera-can3-integration.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/wave-camera-can3-integration.md))
 
 **Attached inbox items:**
 
@@ -121,7 +122,7 @@ _Status: closed (complete)._
 | Two-ball oval | P3 Pose-level carry planner | P2 Bench validation | P3 Robot validation; P4 Working point and the dwell ladder; P5 Two-ball oval; bug Cup Banking saturates at its 12 deg clamp on small lateral offsets; bug 10 % jitter-margin class of LIMIT_* refusals | P1 Firmware - age-aware lead clamp and engagement counter; P1 The oval pattern dispatchable |
 | Ball Butler | — | BB calibration: advisory when a template marker is never matched in a sweep | bug bb/throw_outcome carries no throw identity; bug NOT_SETTLED retry is dead in the field; feature Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware | — |
 | Learner generalisation | — | Box sweep fidelity for same-site families (plan what the executor dispatches) | P1 Learner core; P2 The characterisation sitting; P3 Online admissibility and box retirement; P4 BeatEvent stream and the columns wrapper; P5 Close-out | — |
-| Wave camera on CAN3 | — | — | — | — |
+| Wave camera on CAN3 | — | Wave Camera: Jetson bring-up prompt | Wave camera adapter on CAN3 — ROS 2 record start/stop with a tick-stamped start instant | — |
 | Two-ball skill stack | — | — | — | closed |
 
 ## Inbox

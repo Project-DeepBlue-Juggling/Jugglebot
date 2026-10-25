@@ -142,6 +142,7 @@ from udp_protocol import (  # noqa: E402, F401
     ArgPlatformFwBegin,  # PLATFORM_FW_BEGIN — Platform firmware-over-CAN (2026-09-09)
     ArgPlatformFwData,  # PLATFORM_FW_DATA
     ArgPlatformFwVerify,  # PLATFORM_FW_VERIFY
+    ArgWaveCmd,  # WAVE_CMD — Wave camera intent frame (FW 33, additive)
     # Hand axis-6 allow-table
     HAND_AXIS6_PERMITTED,
     hand_axis6_permitted,

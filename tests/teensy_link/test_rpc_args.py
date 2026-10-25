@@ -157,6 +157,13 @@ def test_state_write_exact_bytes():
     assert a.pose_offset_tiltY == pytest.approx(-0.02, rel=1e-5)
 
 
+def test_wave_cmd_exact_bytes():
+    """WAVE_CMD (bridge FW 33): sent verbatim as the 0x7E2 CAN payload."""
+    blob = ra.encode_wave_cmd(desired=1, cmd_seq=7, flags=0, session_id=0x6543210F)
+    assert blob == bytes([0x01, 0x07, 0x00, 0x00, 0x0F, 0x21, 0x43, 0x65])
+    assert len(blob) == 8
+
+
 def test_bb_payloadless_commands_are_empty():
     # RELOAD/RESET/CALIBRATE_LOC ride a 0-byte args payload — matches NOP shape.
     # The Teensy ignores any trailing bytes on these methods anyway, but the
