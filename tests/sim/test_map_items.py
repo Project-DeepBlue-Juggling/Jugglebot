@@ -101,13 +101,13 @@ def test_config_matches_mapkit():
 
 
 def test_seed_pathways():
+    # The six seed Pathways still exist. Their status is live data (the app and
+    # `mapkit item set-status` move it), so only the closed one is pinned.
     by = {i.slug: i for i in _items() if i.kind == "pathway"}
-    expect = {"two-ball-oval": "active", "learner-generalisation": "active",
-              "wave-camera-can3": "active", "ball-butler": "active",
-              "project-map": "active", "two-ball-skill-stack": "complete"}
-    wrong = {s: (by[s].status if s in by else None) for s, st in expect.items()
-             if s not in by or by[s].status != st}
-    assert not wrong, wrong
+    seed = ("two-ball-oval", "learner-generalisation", "wave-camera-can3",
+            "ball-butler", "project-map", "two-ball-skill-stack")
+    assert not [s for s in seed if s not in by], sorted(by)
+    assert by["two-ball-skill-stack"].status == "complete"
 
 
 def test_plan_pathways_exist():

@@ -67,3 +67,13 @@ Verification:
 - 2026-10-25, gate `./run_tests.sh -q` (log `temp/logs/gate_gui_prefs_2026-10-25.log`): PASS (parallel 327 s, serial 23 s, total 350 s).
 - 2026-10-25: fork vitest 197 passed and 1 skipped; fork CI green (runs 40170580502 and 40170906406).
 - 2026-10-25, live round trip through the real message: a test page on :8092 framed the deployed map and posted the prefs. In light at 14 px, the Dictionary and Now / Next / Later rendered light; in dark at 11 px, the whole app scaled down.
+
+## Archival (2026-10-25)
+
+The plan moved to `plans/archived/project-map.md` (filename unchanged), and the owner marked the Pathway complete.
+
+Two tests changed with it:
+- `test_mapkit_steps.py::test_project_map_plan_mirrors` now reads the archived path.
+- `test_map_items.py::test_seed_pathways` no longer pins every seed Pathway's status, only that each still exists and that the closed skill stack is complete. Status is live data that the app and `mapkit item set-status` move, so pinning it failed the first time a Pathway closed.
+
+2026-10-25, gate `./run_tests.sh -q` (log `temp/logs/gate_archive_project_map_2026-10-25.log`): RESULT PASS (parallel 330 s, serial 23 s, total 353 s).

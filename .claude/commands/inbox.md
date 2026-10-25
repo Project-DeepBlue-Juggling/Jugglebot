@@ -40,7 +40,7 @@ Shared recipe, commit rule and reads: `docs/agents/map-writes.md`.
 
 State plainly in the reply: an unpushed item is invisible to the map; the push
 also carries any other unpushed local commits, which is the normal flow; and the
-item does not appear on the Pi until it reaches `main` (merge or ff as the
+item does not appear in the map app until it reaches `main` (merge or ff as the
 branch rule says).
 
 ## Stress cases

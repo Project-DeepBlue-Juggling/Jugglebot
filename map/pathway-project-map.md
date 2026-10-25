@@ -1,20 +1,21 @@
 ---
 kind: pathway
 title: Project map and shared dictionary
-status: active
+status: complete
 created: '2026-10-24'
-updated: '2026-10-24T13:05:00Z'
+updated: '2026-10-25T07:48:39Z'
 owners:
 - harrison
 priority: high
 blocked_by: []
 links:
 - https://github.com/Project-DeepBlue-Juggling/Jugglebot/issues/21
+- plans/archived/project-map.md
 destination: 'A locked design plus a phased implementation plan, handed to a fresh session, for: (1) a project map in git-tracked markdown (`map/` items + extended plan frontmatter) that shows every pathway, what remains in it and where it leads, with an inbox for features, bugs and ideas; (2) a viewer/editor app forked from the TaskTree frontend with a thin Python file-backed server; (3) `GLOSSARY.md`, the project''s shared dictionary, resurrected from the stranded `CONTEXT.md`, parseable, editable in the app, and reliably met by every Claude session via a term-name list in CLAUDE.md and an Avoid-word test. Done when nothing is left to decide before implementation starts and the plan is in `plans/active/`.'
 branch: project-map
 ---
 
-Wayfinder map #21 (github.com/Project-DeepBlue-Juggling/Jugglebot/issues/21), imported 2026-10-24; implementation plan `plans/active/project-map.md`.
+Wayfinder map #21 (github.com/Project-DeepBlue-Juggling/Jugglebot/issues/21), imported 2026-10-24; implementation plan `plans/archived/project-map.md` (archived 2026-10-25).
 
 ## Notes
 
@@ -114,3 +115,7 @@ Wayfinder map #21 (github.com/Project-DeepBlue-Juggling/Jugglebot/issues/21), im
   not on this route; worth its own short session.
 - Multi-user, auth, running the app on the Jetson, upstreaming anything to TaskTree.
 - Deleting the stray `grep.exe.stackdump` at the Jugglebot repo root (left by a research agent 2026-10-23).
+
+## Progress
+
+- 2026-10-25: Destination met and passed: the plan (plans/archived/project-map.md) shipped all ten phases; the map, the dictionary, the app on the Jetson, the GUI Map tab and the map-aware commands are live. Owner marked the Pathway complete.

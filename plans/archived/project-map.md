@@ -1,13 +1,15 @@
 ---
 title: "Project map and shared dictionary: implementation"
 created: 2026-10-24
-status: active
+status: completed
+archived: 2026-10-25
+completed: 2026-10-25
 owner: Harrison
 last_updated: 2026-10-25
 pathway: project-map
 branch: project-map
 scope: >-
-  Builds the project map in six phases. A pure-Python `mapkit/` package parses plans and `map/` items and generates the three plan INDEX files, the CLAUDE.md term block and the two mkdocs pages. The glossary is renamed `GLOSSARY.md` and extended. Claude-session wiring covers the slash commands, agents and normative docs. A new public repo `jugglebot-map`, seeded from TaskTree's frontend, serves two pages (Front page, Now / Next / Later) from the Raspberry Pi `jeeves`, with write-through to `map/` files and a debounced commit-and-push. Done when a phone edit on the LAN lands on `main` within 10 s.
+  Builds the project map in ten phases. A pure-Python `mapkit/` package parses plans and `map/` items and generates the three plan INDEX files, the CLAUDE.md term block and the two mkdocs pages. The glossary is renamed `GLOSSARY.md` and extended. Claude-session wiring covers the slash commands, agents and normative docs. A new public repo `jugglebot-map`, seeded from TaskTree's frontend, serves the Front page, Now / Next / Later and a read-only Dictionary, with write-through to `map/` files and a debounced commit-and-push. It ran on the Raspberry Pi `jeeves` until P6 moved it to the Jetson beside the GUI, where a Map tab frames it (P8). P9 made the slash commands map-aware through the `mapkit item` CLI. Done when a phone edit on the LAN lands on `main` within 10 s.
 steps:
   - {id: P0, title: mapkit package and generated plan boards, kind: phase, status: complete, date: 2026-10-24}
   - {id: P1, title: Glossary rename and term block, kind: phase, status: complete, date: 2026-10-24}
@@ -25,6 +27,7 @@ related_logbook:
   - 2026-10-24-project-map-p1-glossary-rename-term-block.md
   - 2026-10-24-project-map-p2-map-seed-session-wiring.md
   - 2026-10-24-project-map-p3-p5-fork-server-half.md
+  - 2026-10-24-project-map-p4-the-two-pages.md
   - 2026-10-25-project-map-p9a-item-cli.md
   - 2026-10-25-project-map-p8-p9b-gui-map-tab-and-map-aware-commands.md
 related_code:
@@ -65,7 +68,7 @@ This plan implements the design settled by the resolved tickets of wayfinder map
 | P5 | Pi units, `deploy.sh`, watcher invalidate, debounced commit-and-push, generated docs pages live | fork CI green; Pi acceptance checks; Jugglebot `./run_tests.sh` | COMPLETE 2026-10-24: Pi live, every check passed (live update 0.87 / 0.67 / 0.72 s after the libyaml parser) |
 | P6 | Jetson user units (low priority, capped), own app + data clones under `~/map-live/`, `deploy-jetson.sh`, pull restarts the server when `mapkit/` changed; Pi retired | fork CI green; live health on the Jetson | COMPLETE 2026-10-25: fork `711e413` + `cff465d` (CI green), Jetson health ok, idle 0.3 % of one core and 62 MB; only Nice 10 is enforced (cgroup v1 user units ignore the CPU and memory caps); owner disabled the Pi units |
 | P7 | Read-only Dictionary page in the app (search, clusters, Avoid words, per-term links) | fork CI green | COMPLETE 2026-10-25: fork `c9253e1` (CI green run 40165011825), live on the Jetson |
-| P8 | Robot / Map tab bar in `ros_ws/gui`, the Map tab frames the app lazily | owner check in the GUI | COMPLETE 2026-10-25: tab bar built, audited and screenshot-checked; the live GUI picks it up from `main` on refresh (owner check pending) |
+| P8 | Robot / Map tab bar in `ros_ws/gui`, the Map tab frames the app lazily | owner check in the GUI | COMPLETE 2026-10-25: tab bar built, audited and screenshot-checked; owner checked it in the live GUI 2026-10-25; Light / A- / A+ moved into the bar and carried into the Map (fork `13f1ad4`, `8620e6f`) |
 | P9 | `mapkit item set-status`, `show`, `items`; shared map-write recipe; commands read on start and close items (hybrid commit rule) | `./run_tests.sh`; `/audit --unstaged` | COMPLETE 2026-10-25: CLI `b72d8f07` (gate PASS 348 s); commands, agents and `docs/agents/map-writes.md` audited (no blocking finding, all fixes applied), gate PASS 349 s |
 
 Dependencies: P1 needs P0 (the term block generator). P2 needs P0 and P1. P3 needs P0 (the fork imports `mapkit`). P4 needs P3. P5 needs P2 and P4. P3 may start in parallel with P1/P2 in a second checkout.
@@ -219,4 +222,26 @@ A Robot / Map tab bar in `ros_ws/gui`; the Map tab frames the app from the same 
 - The wave-camera plan file is committed to `main` as soon as it exists, per the branch rule; until then the Wave pathway card has no plan.
 - One smoke e2e against a fixture in the fork is deferred (#31: "comes later").
 - Per-item SSE events instead of one `invalidate`, only if the refetch flickers.
-- The Windows SSH key to the Pi is not yet set up; P5 assumes the deploy is run from a machine that has one.
+- ~~The Windows SSH key to the Pi is not yet set up~~: moot, the Pi was retired 2026-10-25 (P6).
+
+## Archival note (2026-10-25)
+
+**Shipped:** all ten phases.
+- `mapkit` generates the plan boards, the term block and the docs pages.
+- `GLOSSARY.md` is the normative dictionary, enforced by the Avoid-word test.
+- `map/` items with `/inbox` and `/work-inbox`.
+- The public app `jugglebot-map` has the Front page, Now / Next / Later (plan-tracks layout from a three-round prototype), a read-only Dictionary and a redesigned Markdown drawer. It runs on the Jetson as the user unit `jugglebot-map`, commits from its own clone `~/map-live/Jugglebot`, and the Pi is retired.
+- The GUI has a Robot / Map tab bar carrying the theme and font size.
+- The `mapkit item set-status | show | items` CLI and map-aware slash commands follow the hybrid commit rule in `docs/agents/map-writes.md`.
+
+**Closed because:** every phase met its gate and the owner checked the app, the GUI tab and the phone view. The owner marked the Pathway complete the same day.
+
+**Residue (§ 4), deliberately unscheduled:**
+- the wave-camera plan file;
+- one fork smoke e2e test;
+- per-item SSE events, only if the refetch flickers;
+- the logbook backfill (`map/idea-logbook-open-entries-backfill.md`);
+- three Windows-box branches, owner-run;
+- the app sidebar not collapsing at phone width, offered and not filed;
+- a vestigial `skipif` in `tests/sim/test_mapkit_docs.py`.
+

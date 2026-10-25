@@ -163,8 +163,8 @@ def test_bad_step_vocab_reported(tmp_path):
 
 
 def test_project_map_plan_mirrors():
-    """plans/active/project-map.md carries steps: and passes the mirror rule."""
-    plan = load_plan(os.path.join(REPO_ROOT, "plans", "active", "project-map.md"))
+    """plans/archived/project-map.md carries steps: and passes the mirror rule."""
+    plan = load_plan(os.path.join(REPO_ROOT, "plans", "archived", "project-map.md"))
     assert plan.has_steps
     assert check_mirror(plan) == []
     assert check_step_vocab(plan) == []
