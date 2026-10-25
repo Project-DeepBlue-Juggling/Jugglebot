@@ -3,7 +3,7 @@ title: "Project map and shared dictionary: implementation"
 created: 2026-10-24
 status: active
 owner: Harrison
-last_updated: 2026-10-24
+last_updated: 2026-10-25
 pathway: project-map
 branch: project-map
 scope: >-
@@ -15,6 +15,10 @@ steps:
   - {id: P3, title: Fork skeleton and thin server, kind: phase, status: complete, date: 2026-10-24}
   - {id: P4, title: The two pages, kind: phase, status: complete, date: 2026-10-24}
   - {id: P5, title: Pi deployment and publishing, kind: phase, status: complete, date: 2026-10-24}
+  - {id: P6, title: Host the app on the Jetson and retire the Pi, kind: phase, status: in_progress}
+  - {id: P7, title: Dictionary page, kind: phase, status: not_started}
+  - {id: P8, title: Map tab in the Jugglebot GUI, kind: phase, status: not_started}
+  - {id: P9, title: mapkit item CLI and map-aware slash commands, kind: phase, status: not_started}
 related_logbook:
   - 2026-10-24-project-map-plan-written.md
   - 2026-10-24-project-map-p0-mapkit-generated-boards.md
@@ -57,6 +61,10 @@ This plan implements the design settled by the resolved tickets of wayfinder map
 | P3 | Fork repo: strip, static auth, FastAPI server, contract suite, CI | fork CI green (`npm ci`, lint, typecheck, vitest, build, pytest, grep) | COMPLETE 2026-10-24: public repo, server half, frontend seeded and stripped, kind replaces stage, live contract check, CI green (run 40047027409) |
 | P4 | Front page, Now / Next / Later, drawer, hover, palette, modal | fork CI green; owner live-reaction round | COMPLETE 2026-10-24: both pages, drawer, modal, hover and palette built, audited and screenshot-checked in the fork; reaction round held (five fixes, one re-layout ticket), owner phone check passed |
 | P5 | Pi units, `deploy.sh`, watcher invalidate, debounced commit-and-push, generated docs pages live | fork CI green; Pi acceptance checks; Jugglebot `./run_tests.sh` | COMPLETE 2026-10-24: Pi live, every check passed (live update 0.87 / 0.67 / 0.72 s after the libyaml parser) |
+| P6 | Jetson user units (low priority, capped), own app + data clones under `~/map-live/`, `deploy-jetson.sh`, pull restarts the server when `mapkit/` changed; Pi retired | fork CI green; live health on the Jetson | IN PROGRESS |
+| P7 | Read-only Dictionary page in the app (search, clusters, Avoid words, per-term links) | fork CI green | NOT STARTED |
+| P8 | Robot / Map tab bar in `ros_ws/gui`, the Map tab frames the app lazily | owner check in the GUI | NOT STARTED |
+| P9 | `mapkit item set-status`, `show`, `items`; shared map-write recipe; commands read on start and close items (hybrid commit rule) | `./run_tests.sh`; `/audit --unstaged` | NOT STARTED |
 
 Dependencies: P1 needs P0 (the term block generator). P2 needs P0 and P1. P3 needs P0 (the fork imports `mapkit`). P4 needs P3. P5 needs P2 and P4. P3 may start in parallel with P1/P2 in a second checkout.
 
@@ -175,6 +183,25 @@ Dependencies: P1 needs P0 (the term block generator). P2 needs P0 and P1. P3 nee
 - [x] All tests pass (Jugglebot gate above; fork CI on `3d86c4d`, 2026-10-24)
 
 **Implementation notes (2026-10-24, Pi live):** the owner ran the Pi prompt on `jeeves` the same day: `deploy.sh` installed the units, `/api/v1/health` answers `ok` with a null banner from the Jetson, and the acceptance checks 2 and 5 left their evidence on `main` (five `map-bot` commits `8603f214` .. `6f90b945`: title edit, conflict check, conflict resolved, title restored). The Pi's fork checkout predates the frontend, so `./deploy.sh` runs again after P4 is pushed (done: redeployed with the frontend at `11f2f09`, then `2c5fbb0`); the phone checks and the reboot check are reported by the owner. **Implementation notes (2026-10-24, server side):** `server/watcher.py` (watchdog on `map/`, the three `plans/` directories and `GLOSSARY.md`; one `invalidate` 300 ms after the last event; server writes coalesce into the same window), `server/gitwriter.py` (5 s after the last API edit: `git add -A -- map`, commit as `map-bot <map-bot@jugglebot.local>` with `map: <titles>` and no trailer, `pull --rebase --no-autostash origin main`, `push origin HEAD:refs/heads/main`; a failed rebase is aborted and the local commit kept; the banner on `/health` names the failure and clears on the next success; retry on the next edit; off `main` the writer stays off and writes answer 403; `GIT_TERMINAL_PROMPT=0`, 60 s per git call; one final flush at shutdown), `deploy/` (system units with `User=jeeves`, `OnCalendar=*:0/2` pull timer with `Persistent=true`) and `deploy.sh` (Node 22 from NodeSource if missing, `git pull --ff-only`, `npm ci && npm run build` when `frontend/` exists, venv + `pip install -e .`, install units, `enable --now`, restart). Eight tests with a temporary bare remote cover the debounce, the conflict, the push failure, the off-main refusal, `--no-git` and the watcher burst. **Owner-run (SSH to the Pi is classifier-denied for the session):** on `jeeves`, `git clone` Jugglebot to `~/Jugglebot` (main) and the fork to `~/jugglebot-map`, then `./deploy.sh`; the README's Pi runbook lists the five acceptance checks (stop the pull timer while forcing the conflict). Known overlap: while a map-bot commit is unpushed the timer's `pull --ff-only` fails until the push lands. The docs pages are already regenerated on `main`; the `CLAUDE.md` Project map paragraph carries the Pi URL as "once P5 lands".
+
+## 3b. Follow-ups (added 2026-10-25)
+Owner, 2026-10-25: host the map on the Jetson beside the GUI and retire the Pi (measured cost: about 0.3 % of one core and 58 MB idle on a 6-core Jetson; the unit runs at Nice 10 with a CPU cap so it can never compete with ROS); show the shared dictionary in the app read-only (the glossary changes only through the grilling and domain-modeling skills); one browser tab: a Map tab in the Jugglebot GUI; and the slash commands made map-aware. The owner chose:
+- start and progress notes go in their own `map:` commit, and closing an item goes in the fix's commit with its `Logbook-Entry` trailer, so a reverted fix reopens the item;
+- commands read the Pathway and its open bugs on start by default;
+- the mapkit CLI comes first and the commands call it.
+The map server writes only to its own Jugglebot clone, never to `~/Desktop/Jugglebot` (other sessions' uncommitted work and its own auto-pull).
+
+### P6 — Host the app on the Jetson and retire the Pi
+User units with Nice 10 and a CPU cap, an app clone and a data clone under `~/map-live/`, `deploy-jetson.sh`, and a pull unit that restarts the server when `mapkit/` changed (closes the stale-mapkit bug). The Pi's units are disabled by the owner.
+
+### P7 — Dictionary page
+A read-only page in the app rendering `GLOSSARY.md`: search, clusters, each term's Avoid words, a link per term.
+
+### P8 — Map tab in the Jugglebot GUI
+A Robot / Map tab bar in `ros_ws/gui`; the Map tab frames the app from the same host, loaded on first open, and the robot view stays connected.
+
+### P9 — mapkit item CLI and map-aware slash commands
+`python -m mapkit item set-status`, `show` and `items` with tests; one map-write recipe doc; the commands read the Pathway on start and close items under the hybrid commit rule (one sentence added to `DOCUMENTATION_GUIDE.md` § 2.10).
 
 ## 4. Residue
 
