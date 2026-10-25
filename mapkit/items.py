@@ -5,8 +5,11 @@ Identity is the filename; the slug is the filename without ``<kind>-`` and
 the filename prefix, a status outside its kind's set, a missing required
 field, and malformed typed fields. Non-markdown files are ignored. Dates
 (``created``) become ISO ``YYYY-MM-DD`` strings and ``updated`` an ISO
-timestamp string; files are never rewritten. ``item_uuid(slug)`` is
-``uuid5(ITEM_NAMESPACE, slug)``, stable across runs and machines.
+timestamp string; files are never rewritten. The short ``id:`` (``JB-<n>``,
+``mapkit/ids.py``) is deliberately NOT validated here: a malformed value must
+never hide an Item; the gate and ``mapkit ids --check`` report it.
+``item_uuid(slug)`` is ``uuid5(ITEM_NAMESPACE, slug)``, stable across runs and
+machines.
 """
 from __future__ import annotations
 
@@ -15,7 +18,7 @@ import os
 import re
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, FrozenSet, List, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 from mapkit.frontmatter import FrontmatterError, split_frontmatter
 from mapkit.plans import iso_date
@@ -71,6 +74,12 @@ class Item:
     @property
     def uuid(self) -> str:
         return item_uuid(self.slug)
+
+    @property
+    def short_id(self) -> Optional[str]:
+        """The canonical ``JB-<n>`` ID, or None when absent or malformed."""
+        from mapkit.ids import short_id  # local: ids imports this module
+        return short_id(self)
 
     @property
     def status(self) -> str:
@@ -175,7 +184,10 @@ def dump_item(meta: Dict[str, Any], body: str) -> str:
     """
     import yaml  # local: items.py stays importable without it for readers
 
-    block = yaml.safe_dump(dict(meta), sort_keys=False, allow_unicode=True,
+    meta = dict(meta)
+    if "id" in meta:  # the short ID is always the first key (grep '^id: JB-n$')
+        meta = dict([("id", meta.pop("id"))] + list(meta.items()))
+    block = yaml.safe_dump(meta, sort_keys=False, allow_unicode=True,
                            width=1000)
     return "---\n" + block + "---\n\n" + body.lstrip("\n")
 

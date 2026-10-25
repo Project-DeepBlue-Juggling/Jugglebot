@@ -118,3 +118,18 @@ def test_plan_pathways_exist():
                 and p.meta["pathway"] not in pathways:
             bad.append("%s: pathway %r" % (p.filename, p.meta["pathway"]))
     assert not bad, "\n".join(bad)
+
+
+def test_item_ids_unique():
+    # Plan map-item-ids.md, P2: every PRESENT id is the canonical JB-<n> and no
+    # two Items share one. Presence is pinned separately once every writer
+    # allocates (P4); until then an ID-less Item is legal.
+    from mapkit import ids
+
+    items = _items()
+    bad = ["%s: id %r is not JB-<n>" % (i.filename, i.meta.get("id"))
+           for i in ids.malformed(items)]
+    bad += ["%s shared by %s (python -m mapkit ids --repair)"
+            % (k, ", ".join(i.filename for i in v))
+            for k, v in sorted(ids.duplicates(items).items())]
+    assert not bad, "\n".join(bad)

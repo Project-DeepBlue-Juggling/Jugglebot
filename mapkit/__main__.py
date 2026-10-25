@@ -6,7 +6,7 @@ import os
 import sys
 from typing import List, Optional
 
-from mapkit import gen_docs, gen_glossary, gen_index, import_issues, itemcli, tickets
+from mapkit import gen_docs, gen_glossary, gen_index, ids, import_issues, itemcli, tickets
 
 
 def default_repo() -> str:
@@ -24,6 +24,13 @@ def _cmd_gen(args: argparse.Namespace) -> int:
     changed += gen_docs.write_docs(root, check=args.check)
     for path in changed:
         print(("would change " if args.check else "wrote ") + os.path.relpath(path, root))
+    try:
+        dups = ids.duplicates(ids.load_items(os.path.join(root, ids.MAP_DIR)))
+    except ids.ItemError:
+        dups = {}
+    for sid, group in sorted(dups.items()):
+        print("mapkit: warning: %s names %s (python -m mapkit ids --repair)"
+              % (sid, ", ".join(ids.stem(i) for i in group)), file=sys.stderr)
     return 1 if (args.check and changed) else 0
 
 
@@ -37,6 +44,7 @@ def build_parser() -> argparse.ArgumentParser:
     tickets.register(sub)
     itemcli.register(sub)
     import_issues.register(sub)
+    ids.register(sub)
     return parser
 
 
