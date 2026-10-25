@@ -2,15 +2,16 @@
 id: JB-56
 kind: feature
 title: 'Item provenance: the drawer lists the logbook entries and commits that touched an item'
-status: inbox
+status: complete
 created: '2026-10-25'
-updated: '2026-10-25T10:00:00Z'
+updated: '2026-10-25T23:31:22Z'
 owners:
 - harrison
 priority: high
 blocked_by: []
 links:
 - https://github.com/Project-DeepBlue-Juggling/jugglebot-map
+- logbook/2026-10-26-map-improvements-features-verified.md
 parent: map-improvements
 filed_by: claude
 ---
@@ -32,3 +33,7 @@ The server computes it from its own clone (`~/map-live/Jugglebot`) behind a new 
 - Opening a closed bug shows the commit that closed it and its logbook entry, one click from the text.
 - An item with no history says so instead of showing an empty section.
 - A server test pins the endpoint on a fixture repo with a trailer.
+
+## Progress
+
+- 2026-10-26: built and verified in a real browser on the Jetson (logbook/2026-10-26-map-improvements-features-verified.md)

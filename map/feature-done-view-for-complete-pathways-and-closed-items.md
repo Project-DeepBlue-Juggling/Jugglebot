@@ -2,15 +2,16 @@
 id: JB-55
 kind: feature
 title: 'A Done view: complete Pathways and closed items, with their dates'
-status: inbox
+status: complete
 created: '2026-10-25'
-updated: '2026-10-25T10:00:00Z'
+updated: '2026-10-25T23:31:22Z'
 owners:
 - harrison
 priority: medium
 blocked_by: []
 links:
 - https://github.com/Project-DeepBlue-Juggling/jugglebot-map
+- logbook/2026-10-26-map-improvements-features-verified.md
 parent: map-improvements
 filed_by: claude
 ---
@@ -31,3 +32,7 @@ A "Done" page in the sidebar:
 - Every complete Pathway and closed item can be reached in two clicks from the sidebar.
 - Dropped items appear only behind an explicit "show dropped" toggle.
 - A frontend test pins the date rule and the grouping.
+
+## Progress
+
+- 2026-10-26: built and verified in a real browser on the Jetson (logbook/2026-10-26-map-improvements-features-verified.md)

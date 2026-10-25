@@ -1,16 +1,17 @@
 ---
 id: JB-59
 kind: feature
-title: 'Search across items, plans and glossary terms'
-status: inbox
+title: Search across items, plans and glossary terms
+status: complete
 created: '2026-10-25'
-updated: '2026-10-25T10:00:00Z'
+updated: '2026-10-25T23:31:22Z'
 owners:
 - harrison
 priority: medium
 blocked_by: []
 links:
 - https://github.com/Project-DeepBlue-Juggling/jugglebot-map
+- logbook/2026-10-26-map-improvements-features-verified.md
 parent: map-improvements
 filed_by: claude
 ---
@@ -30,3 +31,7 @@ Client-side over data the app already loads, plus plan scopes and the glossary f
 - A query returns results within 100 ms on the current map size, measured on the Jetson.
 - Glossary `_Avoid_` words find their preferred term ("toss" finds Throw).
 - A frontend test pins grouping and ranking.
+
+## Progress
+
+- 2026-10-26: built and verified in a real browser on the Jetson (logbook/2026-10-26-map-improvements-features-verified.md)

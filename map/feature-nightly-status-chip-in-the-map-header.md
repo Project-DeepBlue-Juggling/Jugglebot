@@ -1,16 +1,17 @@
 ---
 id: JB-57
 kind: feature
-title: 'Nightly status chip in the map header'
-status: inbox
+title: Nightly status chip in the map header
+status: in_progress
 created: '2026-10-25'
-updated: '2026-10-25T10:00:00Z'
+updated: '2026-10-25T23:31:23Z'
 owners:
 - harrison
 priority: low
 blocked_by: []
 links:
 - https://github.com/Project-DeepBlue-Juggling/jugglebot-map
+- logbook/2026-10-26-map-improvements-features-verified.md
 parent: map-improvements
 filed_by: claude
 ---
@@ -28,3 +29,7 @@ A chip in the map header showing GREEN, RED, DEFERRED or STALE (date older than 
 - The chip matches the ticker's reading for each of the five cases, including a missing file (NEVER).
 - Reading the file never blocks a request: the server reads it on a timer and serves the cached value.
 - The owner confirms that showing it in the GUI does not reverse the "no GUI" choice, or the chip stays off by default.
+
+## Progress
+
+- 2026-10-26: built and deployed, ON; waits only for the owner's word that the chip does not reverse the no-GUI choice (logbook/2026-10-26-map-improvements-features-verified.md)

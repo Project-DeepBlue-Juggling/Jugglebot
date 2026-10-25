@@ -2,15 +2,16 @@
 id: JB-60
 kind: feature
 title: 'Stale items: flag items left in the inbox or in progress too long'
-status: in_progress
+status: complete
 created: '2026-10-25'
-updated: '2026-10-25T13:21:09Z'
+updated: '2026-10-25T23:31:23Z'
 owners:
 - harrison
 priority: medium
 blocked_by: []
 links:
 - https://github.com/Project-DeepBlue-Juggling/jugglebot-map
+- logbook/2026-10-26-map-improvements-features-verified.md
 parent: map-improvements
 filed_by: claude
 ---
@@ -33,3 +34,4 @@ An item can sit in `inbox` or `in_progress` indefinitely with nothing on the map
 ## Progress
 
 - 2026-10-26: 2026-10-25 - mapkit half: is_stale, items --stale, no-op writes (Jugglebot side); app badge pending (fork)
+- 2026-10-26: built and verified in a real browser on the Jetson (logbook/2026-10-26-map-improvements-features-verified.md)
