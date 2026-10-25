@@ -11,12 +11,12 @@ Browse, search, and manage engineering logbook entries in `logbook/`.
 - **No args** or **`--list`**: show the full index
 - **`--summary [N]`**: digest of entries from the last N days (default 7)
 - **`--timeline`**: chronological view with plan milestones
-- **`--search <query>`**: search entries by keyword (greps entry files)
+- **`--search <query>`**: search entries by keyword (greps entry files and `map/` items, whose `links:` point back at entries, so a hit shows "closes bug-x")
 - **`--file <path>`**: find entries that modified a specific file (searches `files_changed:` frontmatter)
 - **`--subsystem <name>`**: filter by subsystem tag (mpc, can, tracking, motion, sim, gui, etc.)
 - **`--status <status>`**: filter by status (open, in-progress, tuned, resolved)
 - **`--phase <phase>`**: filter by bringup phase
-- **`--new <title>`**: create a new manual entry (not tied to /investigate)
+- **`--new <title>`**: create a new manual entry (not tied to /investigate); `--item <slug>` is passed on to `/log`
 - **`<entry-name>`**: read and display a specific entry (filename with or without .md)
 
 ## Protocol

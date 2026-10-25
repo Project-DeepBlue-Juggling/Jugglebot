@@ -29,6 +29,7 @@
     <link rel="stylesheet" href="css/camera-panel.css">
     <link rel="stylesheet" href="css/juggle-panel.css">
     <link rel="stylesheet" href="css/replay.css">
+    <link rel="stylesheet" href="css/app-tabs.css">
 
     <!-- uPlot charting library (vendored locally, not ES module) -->
     <link rel="stylesheet" href="lib/uPlot.min.css">
@@ -48,6 +49,14 @@
     </script>
 </head>
 <body>
+    <!-- Robot | Map tab bar (js/app-tabs.js) -->
+    <div id="app-tabs" role="tablist" aria-label="Application view">
+        <button type="button" class="app-tab" id="tab-robot" role="tab" data-tab="robot"
+                aria-selected="true" aria-controls="app">Robot</button>
+        <button type="button" class="app-tab" id="tab-map" role="tab" data-tab="map"
+                aria-selected="false" aria-controls="map-pane">Map</button>
+    </div>
+    <div id="map-pane" role="tabpanel" aria-labelledby="tab-map" hidden></div>
     <div id="app">
         <!-- Left: topic monitor sidebar -->
         <div id="left-sidebar">
@@ -329,6 +338,7 @@
     </div>
 
     <!-- Entry point -->
+    <script type="module" src="js/app-tabs.js"></script>
     <script type="module" src="js/main.js"></script>
 </body>
 </html>

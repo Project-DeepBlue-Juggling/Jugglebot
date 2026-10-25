@@ -31,6 +31,10 @@ prompt for a fresh Claude session to take on.
 
 ### Step 1: Locate and parse the plan
 
+**Map read (silent, default):** run `python -m mapkit show <plan's pathway:>` and put the
+Destination plus one line per open bug on that Pathway (and any `blocked_by` ticket) into the
+rendered prompt's context block. This command writes no map files.
+
 1. Find the plan file in `plans/active/`. If not found there, check
    `plans/parked/` (report "plan is parked — see plans/parked/INDEX.md for
    what would unpark it") then `plans/archived/` — if archived, report "plan is already
@@ -503,6 +507,9 @@ Process gates, in order:
      NOT write a SHA-backfill follow-up commit — the commit's
      `Logbook-Entry:` trailer already carries the link, and
      `git log --grep "Logbook-Entry: <slug>"` is the reverse query.
+     If this phase closes a map item, run `python -m mapkit item set-status
+     <slug> complete --link logbook/<entry>.md` WITHOUT `--commit` and stage
+     the printed paths into this same commit (`docs/agents/map-writes.md`).
 
   9. If the plan update wasn't included in the commit above, do it
      as a separate commit (mirrors the prior-phase precedent):

@@ -19,6 +19,11 @@ Parse the user's description to identify:
 
 If the description is ambiguous, ask clarifying questions before proceeding.
 
+**Map read (silent, default):** resolve the pathway (`--pathway`, else ask; from `/work-inbox`,
+the item's `parent:`), run `python -m mapkit show <pathway>`, and cite its Destination and open
+items in the report's Context. If a `promoted` item triggered the report, set `promoted_to:`
+to the new plan's filename yourself (`docs/agents/map-writes.md`; own `map:` commit, no trailer).
+
 ### Phase 2: Deep Codebase Exploration
 
 Launch Explore agents (up to 3 in parallel) to thoroughly understand the current implementation:

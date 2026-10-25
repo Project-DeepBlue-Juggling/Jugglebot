@@ -15,10 +15,16 @@ logbook entry that captures the full arc: symptom, diagnosis, discussion, fix, o
 - **`--resume <entry>`**: resume an existing logbook entry (filename with or without .md)
 - **`--sessions csv1,csv2,...`**: investigate multiple related sessions together
 - **`--dry-run`**: diagnose and create logbook entry, but skip fix/implement/commit steps
+- **`--item <slug>`**: a `map/bug-*` item as starting evidence (body and `links:`); a `bug-*` link in a `--resume` entry counts. Recipe: `docs/agents/map-writes.md`.
 
 ## Protocol
 
 ### Step 1: Determine scope
+
+**Map read (silent, default):** one `python -m mapkit show <pathway>` for the entry's
+`related_plan` pathway (or the item's `parent:`); keep the Destination and open-bug lines
+in mind during Diagnose. With `--item`, run `set-status <slug> in_progress --owner <session>
+--commit` once the item is confirmed to be this investigation's subject.
 
 **If resuming an existing entry:**
 1. Read the entry file from `logbook/`
@@ -219,6 +225,8 @@ Follow the project's commit convention:
 1. Stage the relevant files (code changes + logbook entry + index updates)
 2. Propose a commit message with conventional prefix (fix:, feat:, refactor:, etc.)
 3. Include `Logbook-Entry: <entry-slug>` trailer on the code-change commit
+   (with `--item`: also run `set-status <slug> complete --link logbook/<entry>.md`
+   WITHOUT `--commit` and stage the printed paths into this same commit)
 4. Wait for user approval before executing
 
 ---

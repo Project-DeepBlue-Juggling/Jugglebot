@@ -153,6 +153,18 @@ as a Bug or Feature item with `links: [plans/archived/<plan>.md]`,
 `status: inbox`, `parent:` = the plan's `pathway:`. Filing follows the
 `/inbox` steps (write, commit `map: file <kind> <title>`, push).
 
+### Step 4c: Map items
+
+Read the plan's `pathway:` (`python -m mapkit show <pathway>`; silent). List open children
+that name this plan, and any ticket whose `blocked_by` is this plan (archival unblocks it:
+say so). Find items promoted to this plan with `grep -l "promoted_to: .*<plan filename>" map/*.md`
+(`rg` is not installed; `mapkit show` lists only open items). Do NOT change a `promoted`
+item's status; append a note with `set-status <slug> promoted --note "plan archived <date>"`
+(re-setting the same status is allowed without `--force`), without `--commit`, and stage the
+printed paths into the archive commit (a plan-board/`map` housekeeping change, no
+`Logbook-Entry` trailer, consistent with `DOCUMENTATION_GUIDE.md` § 2.10). If this is the Pathway's last plan, ASK whether the Pathway is `complete` (never
+auto-set). Recipe: `docs/agents/map-writes.md`.
+
 ### Step 5: Report
 
 Summarize what was done:

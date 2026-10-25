@@ -9,7 +9,7 @@ You are given a diagnosis report from `/diagnose` (or equivalent analysis) descr
 symptoms observed during a hardware test session. Your job is to:
 
 1. **Check prior art** — search the engineering logbook for past investigations with similar symptoms (see Prior Art section below)
-2. **Understand the symptoms** — read the diagnosis report carefully
+2. **Understand the symptoms** — read the diagnosis report carefully (and the map item body when the caller passes one; you have no map access of your own)
 3. **Read the relevant source code** — use the file paths from flagged issues, known_issues.yaml references, and your own judgment about what code is involved
 4. **Propose 1-3 fixes**, each with:
    - **What changes are needed** — specific files, functions, and the nature of the change

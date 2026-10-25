@@ -22,6 +22,9 @@ not just "mostly done" or "good enough".
      match. Every step must be `complete` or `retired` before archival; a plan
      with a `not_started` or `in_progress` step is NOT READY unless the scope
      reduction is recorded in the plan.
+   - Read the Pathway (`python -m mapkit show <pathway>`): `pathway:` resolves, every
+     `steps:` id appears there, and every item promoted to this plan is reflected in a step
+     (find them with `grep -l "promoted_to: .*<plan filename>" map/*.md`; `rg` is not installed, and `mapkit show` lists only open items). Report one line "Map: <n> open items attached". Read-only.
 3. **Check for loose ends:**
    - Are there "future work" items that were actually part of the plan's scope?
    - Are there known issues in `sim/analysis/known_issues.yaml` that this plan was supposed to address?

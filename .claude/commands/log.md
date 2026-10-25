@@ -15,6 +15,7 @@ optimizations. For hardware diagnosis workflows, use `/investigate` instead.
   - Example: `/log refactor Extract MPC orchestration from sim/ into controller/`
 - **`--from-commits <hash1,hash2,...>`**: create an entry from existing commits (retroactive logging)
 - **`--wip`**: mark as in-progress (default is to walk through the full flow)
+- **`--item <slug>`**: the `map/` item this change closes (else look for an open item whose `links:` name the touched files or plan). Recipe: `docs/agents/map-writes.md`.
 
 ## Protocol
 
@@ -91,6 +92,9 @@ If there are uncommitted changes to the logbook entry itself:
 - Stage and commit the logbook entry with the convention:
   `docs: logbook — <entry title>`
   Include trailer: `Logbook-Entry: <entry-slug>`
+  With an item: `set-status <slug> complete --link logbook/<entry>.md` WITHOUT
+  `--commit`, and stage the printed paths into the commit that carries the code
+  change and this trailer.
 
 ## Subsystem Path Map
 

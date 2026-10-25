@@ -1,0 +1,51 @@
+/* Robot | Map top tab bar (js/app-tabs.js).  The bar steals its height from
+   #app (calc below), so the robot layout never overflows the page.  The Map
+   pane is an overlay on top of #app, not a replacement: the robot view stays
+   mounted (ROS websocket, telemetry, replay keep running) underneath. */
+:root { --app-tabs-height: 32px; }
+
+#app-tabs {
+    display: flex;
+    align-items: stretch;
+    height: var(--app-tabs-height);
+    box-sizing: border-box;
+    padding: 0 var(--gap-sm);
+    background: var(--bg-secondary);
+    border-bottom: 1px solid var(--border-color);
+}
+#app-tabs .app-tab {
+    appearance: none;
+    background: none;
+    border: 0;
+    border-bottom: 2px solid transparent;
+    padding: 0 14px;
+    font: inherit;
+    font-size: 13px;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+#app-tabs .app-tab:hover { color: var(--text-primary); }
+#app-tabs .app-tab[aria-selected="true"] {
+    color: var(--text-primary);
+    border-bottom-color: var(--accent-blue);
+}
+#app-tabs .app-tab:focus-visible { outline: 2px solid var(--accent-blue); outline-offset: -2px; }
+
+body > #app { height: calc(100vh - var(--app-tabs-height)); }
+
+#map-pane {
+    position: fixed;
+    top: var(--app-tabs-height);
+    left: 0;
+    right: 0;
+    bottom: 0;
+    z-index: 1000;
+    background: var(--bg-primary);
+}
+#map-pane[hidden] { display: block; visibility: hidden; pointer-events: none; }
+#map-pane iframe { width: 100%; height: 100%; border: 0; display: block; }
+#map-pane .map-note {
+    padding: var(--gap);
+    color: var(--text-secondary);
+    font-size: 13px;
+}

@@ -17,7 +17,8 @@ With no slugs: list `backlog` items first, then `inbox`, by priority then age
 ## Protocol
 
 1. **Read before working**: the item file, every `links:` target, and the parent
-   pathway item (its Destination and body).
+   pathway item (its Destination and body; `python -m mapkit show <pathway>` also
+   gives the active plan's step table). `git pull --ff-only` first.
 2. **Classify** the item and pick the dispatch below. `--dry-run` prints the
    classification and plan of action only, and writes nothing.
 3. **Dispatch**:
@@ -33,13 +34,20 @@ With no slugs: list `backlog` items first, then `inbox`, by priority then age
 
 `promoted` / `promoted_to` apply to all three inbox kinds (bug, feature, idea).
 
-4. **Done** = status `complete` or `promoted`; run `python -m mapkit gen` (the item feeds `docs/project-map.md`) and stage `map/<file>` with `docs/project-map.md`, committed and pushed
-   (`map: <slug> complete` / `map: <slug> promoted`, no trailer), in the same
-   commit as the work's logbook entry when there is one.
+3b. **Start**: before dispatching, `python -m mapkit item set-status <slug> in_progress
+   --owner <session> --commit` (own `map:` commit, pushed). A "fix" row that names a
+   plan step ticks that step too.
+4. **Done** = status `complete` or `promoted`. `complete`: run
+   `python -m mapkit item set-status <slug> complete --link logbook/<entry>.md`
+   WITHOUT `--commit` and stage the printed paths into the fix's commit, which
+   carries `Logbook-Entry:`. `promoted`: `python -m mapkit item set-status <slug>
+   promoted` WITH `--commit` (its own `map: promoted <title>` commit, no trailer).
 5. **Partial** = `in_progress` plus a dated `## Progress` note (done / next /
    evidence), committed and pushed before the session ends; the next run
    resumes from it.
 
+Recipe and commit rule: `docs/agents/map-writes.md` (`complete` rides in the fix's
+commit with its `Logbook-Entry:` trailer; `promoted` is its own `map:` commit, no trailer).
 Claude moves items through every status transition without asking. Ask only
 when the classification is ambiguous or the action is a hardware Sitting.
 Bump `updated` on every write (use `mapkit.items.write_item`).

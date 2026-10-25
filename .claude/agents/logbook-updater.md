@@ -119,4 +119,7 @@ When the status you set is not `resolved`, end your final message with the open
 follow-ups you saw in the entry (open questions, follow-up sections, residue
 bullets): one line each, the text plus where in the entry it lives. The calling
 command (`/investigate`, `/log`) uses them to make the gated offer to file Bug
-or Feature items; you do not file anything yourself.
+or Feature items; you do not file anything yourself. If the caller names a triggering item slug, record it in
+the entry body; after the follow-ups list, end with a final line `item to close: <slug>`
+when a slug was given; never write `map/` files
+(`docs/agents/map-writes.md`).

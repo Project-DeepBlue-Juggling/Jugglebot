@@ -33,6 +33,7 @@ The user may provide arguments after `/diagnose`:
 - **No args** or **`--latest`**: analyse the most recent unanalysed log in `temp/logs/`
 - **`<csv_filename>`**: analyse a specific telemetry log (filename or full path)
 - **`--all-new`**: analyse all unanalysed logs
+- **`--item <slug>`**: a `map/bug-*` item whose signature to match (body and `links:`)
 - **`--compare <csv_a> <csv_b>`**: compare two sessions side-by-side (see Comparison Mode below)
 
 ## Protocol
@@ -88,6 +89,12 @@ If the analysis JSON contains an `html_report` key with a file path:
 3. Do NOT attempt to open the file automatically
 
 ### Step 4: Cross-reference against known issues
+
+Also read the map silently: `python -m mapkit items --kind bug --open` (with `--pathway`
+when the active plan has one) and match flags against those open bugs. A flag that
+reproduces one gets a `set-status <slug> in_progress --note "<bag path / time>" --commit`
+Progress line (recipe: `docs/agents/map-writes.md`). A new defect is offered to `/inbox`
+(default yes).
 
 Read `sim/analysis/known_issues.yaml`.  For each flag in the analysis output:
 - Check if the flag matches any known issue's signatures

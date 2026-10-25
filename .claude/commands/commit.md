@@ -106,6 +106,12 @@ For each commit in order:
    ```
 4. Confirm success before moving to the next commit
 
+### Map files
+
+If `map/` files are staged, run `python -m mapkit gen` and stage `docs/project-map.md` with
+them. `map/` + `docs/project-map.md` only: prefix `map:`, NO trailer. `map/` mixed into a code
+commit is a closing item (`docs/agents/map-writes.md`): keep it, with the trailer.
+
 ### Logbook-Entry trailer
 
 If the current conversation has an active logbook entry (created by `/investigate`,

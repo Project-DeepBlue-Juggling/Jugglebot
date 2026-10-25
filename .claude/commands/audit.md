@@ -43,6 +43,9 @@ Follow your full audit process: gather diff, read all changed files in full,
 evaluate each audit category, and produce the structured findings report.
 ```
 
+For a commit range, also list commits touching `map/` (`git log --format='%h %s' <range> -- map/`; items touched), and flag a logbook
+entry that claims to close a bug whose item is not `complete`. Read-only.
+
 When the agent returns, present the full audit report to the user.
 
 ### Review Gate 1

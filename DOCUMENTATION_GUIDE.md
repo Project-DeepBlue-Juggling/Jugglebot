@@ -478,6 +478,10 @@ complete | dropped | promoted`.
   file bug <title>`), carries **no** `Logbook-Entry:` trailer, and is pushed in
   the same response. Items are not code changes; a code change an item
   triggers gets its own logbook entry as usual.
+  One exception, the hybrid rule (owner, 2026-10-25): closing an item
+  (`complete`) rides in the SAME commit as the fix and its logbook entry, with
+  the `Logbook-Entry:` trailer; start and progress notes stay their own `map:`
+  commits (recipe: `docs/agents/map-writes.md`).
 - **Who moves items:** the owner and Claude both, on every transition
   (file, promote, claim, resolve, drop). There is no approval step.
 - **Generated outputs (never hand-edited):** `python -m mapkit gen` writes the

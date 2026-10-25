@@ -17,14 +17,16 @@ steps:
   - {id: P5, title: Pi deployment and publishing, kind: phase, status: complete, date: 2026-10-24}
   - {id: P6, title: Host the app on the Jetson and retire the Pi, kind: phase, status: complete, date: 2026-10-25}
   - {id: P7, title: Dictionary page, kind: phase, status: complete, date: 2026-10-25}
-  - {id: P8, title: Map tab in the Jugglebot GUI, kind: phase, status: not_started}
-  - {id: P9, title: mapkit item CLI and map-aware slash commands, kind: phase, status: not_started}
+  - {id: P8, title: Map tab in the Jugglebot GUI, kind: phase, status: complete, date: 2026-10-25}
+  - {id: P9, title: mapkit item CLI and map-aware slash commands, kind: phase, status: complete, date: 2026-10-25}
 related_logbook:
   - 2026-10-24-project-map-plan-written.md
   - 2026-10-24-project-map-p0-mapkit-generated-boards.md
   - 2026-10-24-project-map-p1-glossary-rename-term-block.md
   - 2026-10-24-project-map-p2-map-seed-session-wiring.md
   - 2026-10-24-project-map-p3-p5-fork-server-half.md
+  - 2026-10-25-project-map-p9a-item-cli.md
+  - 2026-10-25-project-map-p8-p9b-gui-map-tab-and-map-aware-commands.md
 related_code:
   - mapkit/::the parser, generators and subcommands package
 ---
@@ -63,8 +65,8 @@ This plan implements the design settled by the resolved tickets of wayfinder map
 | P5 | Pi units, `deploy.sh`, watcher invalidate, debounced commit-and-push, generated docs pages live | fork CI green; Pi acceptance checks; Jugglebot `./run_tests.sh` | COMPLETE 2026-10-24: Pi live, every check passed (live update 0.87 / 0.67 / 0.72 s after the libyaml parser) |
 | P6 | Jetson user units (low priority, capped), own app + data clones under `~/map-live/`, `deploy-jetson.sh`, pull restarts the server when `mapkit/` changed; Pi retired | fork CI green; live health on the Jetson | COMPLETE 2026-10-25: fork `711e413` + `cff465d` (CI green), Jetson health ok, idle 0.3 % of one core and 62 MB; only Nice 10 is enforced (cgroup v1 user units ignore the CPU and memory caps); owner disabled the Pi units |
 | P7 | Read-only Dictionary page in the app (search, clusters, Avoid words, per-term links) | fork CI green | COMPLETE 2026-10-25: fork `c9253e1` (CI green run 40165011825), live on the Jetson |
-| P8 | Robot / Map tab bar in `ros_ws/gui`, the Map tab frames the app lazily | owner check in the GUI | NOT STARTED |
-| P9 | `mapkit item set-status`, `show`, `items`; shared map-write recipe; commands read on start and close items (hybrid commit rule) | `./run_tests.sh`; `/audit --unstaged` | NOT STARTED |
+| P8 | Robot / Map tab bar in `ros_ws/gui`, the Map tab frames the app lazily | owner check in the GUI | COMPLETE 2026-10-25: tab bar built, audited and screenshot-checked; the live GUI picks it up from `main` on refresh (owner check pending) |
+| P9 | `mapkit item set-status`, `show`, `items`; shared map-write recipe; commands read on start and close items (hybrid commit rule) | `./run_tests.sh`; `/audit --unstaged` | COMPLETE 2026-10-25: CLI `b72d8f07` (gate PASS 348 s); commands, agents and `docs/agents/map-writes.md` audited (no blocking finding, all fixes applied), gate PASS 349 s |
 
 Dependencies: P1 needs P0 (the term block generator). P2 needs P0 and P1. P3 needs P0 (the fork imports `mapkit`). P4 needs P3. P5 needs P2 and P4. P3 may start in parallel with P1/P2 in a second checkout.
 

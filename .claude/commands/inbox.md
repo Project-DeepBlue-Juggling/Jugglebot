@@ -24,7 +24,8 @@ Minimum from the filer: kind, title, one line. If the line is missing, ask for i
 2. **`--from-issue <n>`**: import title, body and `links: [<issue URL>]` via
    `~/bin/gh issue view <n> --json title,body,url`, then close the issue with a
    comment pointing at the item file.
-3. **Slug** = kebab-case of the title (ASCII, <= 60 chars). The file is
+3. **Pull first** (`git pull --ff-only`: the app writes `map/` concurrently), then
+   **slug** = kebab-case of the title (ASCII, <= 60 chars). The file is
    `map/<kind>-<slug>.md`; if it exists, append `-2`. The filename is the item's
    identity and is never renamed.
 4. **Write** with `mapkit.items.write_item` (the canonical form), e.g. a
@@ -34,6 +35,8 @@ Minimum from the filer: kind, title, one line. If the line is missing, ask for i
    Then `python -m mapkit gen`: items do not change the plan INDEX boards, but they do feed `docs/project-map.md` (its Inbox table and the attached-items lists), and `tests/sim/test_mapkit_docs.py` fails on a stale page.
 6. **Commit and push**: `git add map/<file> docs/project-map.md && git commit -m "map: file <kind> <title>"`
    then `git push`. No `Logbook-Entry` trailer: this is data, not code.
+
+Shared recipe, commit rule and reads: `docs/agents/map-writes.md`.
 
 State plainly in the reply: an unpushed item is invisible to the map; the push
 also carries any other unpushed local commits, which is the normal flow; and the
