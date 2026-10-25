@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import datetime
 import os
+import re
 import uuid
 from dataclasses import dataclass
 from typing import Any, Dict, FrozenSet, List, Tuple
@@ -61,6 +62,7 @@ class Item:
     slug: str
     meta: Dict[str, Any]
     body: str
+    changed: bool = True  # set by set-status: False when the save was a no-op
 
     @property
     def filename(self) -> str:
@@ -178,7 +180,73 @@ def dump_item(meta: Dict[str, Any], body: str) -> str:
     return "---\n" + block + "---\n\n" + body.lstrip("\n")
 
 
-def write_item(path: str, meta: Dict[str, Any], body: str) -> None:
-    """Write an item file with :func:`dump_item`."""
+def write_item(path: str, meta: Dict[str, Any], body: str) -> bool:
+    """Write an item file with :func:`dump_item`; True if the file changed.
+
+    A no-op save is not written and does not bump ``updated``: when the
+    canonical text built with the file's OLD ``updated`` equals the file's
+    current content, nothing is touched (callers set ``updated`` to now
+    before calling; it is ignored in that case). Otherwise ``meta`` is
+    written as given.
+    """
+    try:
+        with open(path, encoding="utf-8", newline="") as fh:
+            current = fh.read()
+        raw, _ = split_frontmatter(current)
+    except (OSError, FrontmatterError):
+        current, raw = None, {}
+    if current is not None and "updated" in raw:
+        probe = dict(meta)
+        probe["updated"] = raw["updated"]
+        if dump_item(probe, body) == current:
+            return False
     with open(path, "w", encoding="utf-8", newline="\n") as fh:
         fh.write(dump_item(meta, body))
+    return True
+
+
+#: Days an item may sit in a status before it is flagged stale.
+#: The one place thresholds live on the Jugglebot side; the app keeps its own
+#: copy in its config and both are tested against the same fixture.
+STALE_DAYS: Dict[str, int] = {"inbox": 30, "backlog": 60, "in_progress": 14}
+
+_PROGRESS_DATE = re.compile(r"^\s*(?:[-*]\s+)?(\d{4}-\d{2}-\d{2})(?!\d)")
+
+
+def _progress_dates(body: str) -> List[datetime.date]:
+    out: List[datetime.date] = []
+    in_progress = False
+    for line in body.split("\n"):
+        if line.startswith("## "):
+            in_progress = line.strip() == "## Progress"
+            continue
+        if in_progress:
+            m = _PROGRESS_DATE.match(line)
+            if m:
+                try:
+                    out.append(datetime.date.fromisoformat(m.group(1)))
+                except ValueError:
+                    pass
+    return out
+
+
+def stale_clock(item: Item) -> datetime.date:
+    """Date the staleness clock started: the newest dated ``## Progress``
+    line, else ``created``.
+
+    ``updated`` is deliberately ignored: the app and every CLI write bump it,
+    so it measures the last save, not the last attention paid to the item.
+    """
+    dates = _progress_dates(item.body)
+    if dates:
+        return max(dates)
+    return datetime.date.fromisoformat(str(item.meta["created"])[:10])
+
+
+def is_stale(item: Item, today: datetime.date) -> bool:
+    """True when ``today - stale_clock`` is strictly greater than the
+    status's :data:`STALE_DAYS`; statuses not listed are never stale."""
+    limit = STALE_DAYS.get(item.status)
+    if limit is None:
+        return False
+    return (today - stale_clock(item)).days > limit

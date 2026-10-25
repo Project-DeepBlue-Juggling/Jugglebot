@@ -5,7 +5,7 @@ Every command that moves a `map/` item follows this page instead of copying step
 ## Reads (silent, short)
 
 - `python -m mapkit show <pathway>`: Destination, active plans with step table, open children by kind. Quote only the Destination and the open-bug lines into context.
-- `python -m mapkit items [--pathway X] [--kind K] [--open | --status S] [--json]`: one line per item.
+- `python -m mapkit items [--pathway X] [--kind K] [--open | --status S] [--stale] [--json]`: one line per item; `--stale` keeps only items left too long (clock = newest dated Progress line, else `created`; inbox 30 d, backlog 60 d, in_progress 14 d) and appends the age and clock date.
 - The pathway slug is the `pathway:` of the plan (or the item's `parent:`). No pathway found: skip the read, do not ask.
 
 ## Writes
@@ -24,5 +24,5 @@ Every command that moves a `map/` item follows this page instead of copying step
 
 - Subagents never write map files; the calling command does. They return "item to close: <slug>" in their final message.
 - Never hand-edit YAML; `set-status` and `mapkit.items.write_item` keep the canonical form.
-- Not idempotent: re-running appends another Progress line, so check the status first (`mapkit items` or the file) before writing. `--owner` takes the session's name on `in_progress`.
+- Re-setting the same status without `--note` is a no-op ("unchanged", nothing written or committed). With `--note` it is not idempotent: re-running appends another Progress line, so check the status first (`mapkit items` or the file) before writing. `--owner` takes the session's name on `in_progress`.
 - Filing new items stays in `/inbox` (`map: file <kind> <title>`, no trailer).

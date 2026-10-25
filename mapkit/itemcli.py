@@ -20,7 +20,8 @@ import sys
 from typing import Dict, List, Optional
 
 from mapkit import derive, gen_docs
-from mapkit.items import KINDS, STATUS_SETS, Item, ItemError, load_item, load_items, write_item
+from mapkit.items import (KINDS, STATUS_SETS, Item, ItemError, is_stale, load_item,
+                          load_items, stale_clock, write_item)
 from mapkit.plans import load_plans
 
 MAP_DIR = "map"
@@ -121,7 +122,9 @@ def set_status(repo_root: str, slug: str, status: str, note: Optional[str] = Non
     if note:
         body = _append_progress(body, "- %s: %s" % (_today(), " ".join(note.split())))
     item.body = body
-    write_item(item.path, item.meta, body)
+    item.changed = write_item(item.path, item.meta, body)
+    if not item.changed:
+        return item  # no-op: nothing written, regenerated or committed
     gen_docs.write_docs(repo_root)
     if commit:
         rel = os.path.relpath(item.path, repo_root)
@@ -150,7 +153,9 @@ def _row(i: Item) -> Dict[str, object]:
 
 
 def list_items(repo_root: str, pathway: Optional[str] = None, kind: Optional[str] = None,
-               status: Optional[str] = None, open_only: bool = False) -> List[Item]:
+               status: Optional[str] = None, open_only: bool = False,
+               stale: bool = False, today: Optional[datetime.date] = None) -> List[Item]:
+    today = today or datetime.date.today()
     out = []
     for i in load_items(os.path.join(repo_root, MAP_DIR)):
         if kind and i.kind != kind:
@@ -161,6 +166,8 @@ def list_items(repo_root: str, pathway: Optional[str] = None, kind: Optional[str
         if status and i.status != status:
             continue
         if open_only and i.status in _CLOSED:
+            continue
+        if stale and not is_stale(i, today):
             continue
         out.append(i)
     return out
@@ -220,6 +227,9 @@ def _run_set_status(args) -> int:
     except ItemCliError as exc:
         print("mapkit: %s" % exc, file=sys.stderr)
         return 2
+    if not getattr(item, "changed", True):
+        print("%s-%s unchanged (%s)" % (item.kind, item.slug, item.status))
+        return 0
     print("%s-%s -> %s" % (item.kind, item.slug, item.status))
     if not args.commit:
         print("stage: %s" % os.path.relpath(item.path, _repo(args)))
@@ -238,19 +248,30 @@ def _run_show(args) -> int:
 
 
 def _run_items(args) -> int:
+    stale = bool(getattr(args, "stale", False))
     try:
         rows = [_row(i) for i in list_items(_repo(args), args.pathway, args.kind,
-                                            args.status, args.open)]
+                                            args.status, args.open, stale)]
     except ItemError as exc:
         print("mapkit: %s" % exc, file=sys.stderr)
         return 2
+    if stale:
+        today = datetime.date.today()
+        for r, i in zip(rows, list_items(_repo(args), args.pathway, args.kind,
+                                         args.status, args.open, True)):
+            clock = stale_clock(i)
+            r["stale_days"] = (today - clock).days
+            r["stale_clock"] = clock.isoformat()
     if args.json:
         print(json.dumps(rows, indent=2))
     else:
         for r in rows:
-            print("%-8s %-50s %-12s %-6s %-30s %dd" % (
+            line = "%-8s %-50s %-12s %-6s %-30s %dd" % (
                 r["kind"], r["slug"], r["status"], r["priority"] or "-",
-                r["pathway"] or "-", r["age_days"]))
+                r["pathway"] or "-", r["age_days"])
+            if stale:
+                line += "  stale %dd since %s" % (r["stale_days"], r["stale_clock"])
+            print(line)
     return 0
 
 
@@ -287,6 +308,9 @@ def register(subparsers) -> None:
     g = p.add_mutually_exclusive_group()
     g.add_argument("--status")
     g.add_argument("--open", action="store_true")
+    p.add_argument("--stale", action="store_true",
+                   help="only stale items (clock = newest dated Progress line, else created; "
+                        "inbox 30 d, backlog 60 d, in_progress 14 d); adds age and clock date")
     p.add_argument("--json", action="store_true")
     common(p)
     p.set_defaults(func=_run_items)

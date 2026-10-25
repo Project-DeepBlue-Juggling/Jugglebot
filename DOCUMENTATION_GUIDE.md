@@ -467,7 +467,7 @@ Frontmatter fields (`mapkit/items.py` is the authority):
 | `idea`, `feature`, `bug` | — | Inbox kinds; optional `parent` (pathway slug; absent = unattached), `filed_by`, `promoted_to` (plan filename or pathway slug), `priority: low\|medium\|high` |
 | `ticket` | `parent`, `type` | `type: research\|prototype\|grilling\|task`; optional `blocked_by`, `owners`, `rank`; the answer is appended under `## Answer` |
 
-Any kind may carry `links:` (logbook entries, plans, other items), `owners:`, `priority:` and `blocked_by:`, whose targets are filename stems (`ticket-<slug>`, `<kind>-<slug>`) or a plan's bare filename; `updated:` is the ISO timestamp every write bumps (the app's conflict token).
+Any kind may carry `links:` (logbook entries, plans, other items), `owners:`, `priority:` and `blocked_by:`, whose targets are filename stems (`ticket-<slug>`, `<kind>-<slug>`) or a plan's bare filename; `updated:` is the ISO timestamp every write that changes the item bumps (the app's conflict token; a save that changes nothing is skipped). Staleness (`python -m mapkit items --stale`) is dated from the newest dated `## Progress` line, else `created`, never from `updated`.
 **Status sets:** pathway `active | complete | dropped`; ticket `open |
 complete | dropped`; idea, feature and bug `inbox | backlog | in_progress |
 complete | dropped | promoted`.

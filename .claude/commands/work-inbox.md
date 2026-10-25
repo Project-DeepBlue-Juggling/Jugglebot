@@ -19,6 +19,7 @@ With no slugs: list `backlog` items first, then `inbox`, by priority then age
 1. **Read before working**: the item file, every `links:` target, and the parent
    pathway item (its Destination and body; `python -m mapkit show <pathway>` also
    gives the active plan's step table). `git pull --ff-only` first.
+   Before classifying, run `python -m mapkit items --stale` and list the stale items in the dry-run / summary so the owner sees what was left behind.
 2. **Classify** the item and pick the dispatch below. `--dry-run` prints the
    classification and plan of action only, and writes nothing.
 3. **Dispatch**:
@@ -50,4 +51,4 @@ Recipe and commit rule: `docs/agents/map-writes.md` (`complete` rides in the fix
 commit with its `Logbook-Entry:` trailer; `promoted` is its own `map:` commit, no trailer).
 Claude moves items through every status transition without asking. Ask only
 when the classification is ambiguous or the action is a hardware Sitting.
-Bump `updated` on every write (use `mapkit.items.write_item`).
+`updated` is bumped by every write that changes the item (use `mapkit.items.write_item`).
