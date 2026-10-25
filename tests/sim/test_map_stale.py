@@ -27,12 +27,23 @@ ROWS = [
     (8, "inbox", "2026-09-01", ["2026-10-20"], "2026-09-02", False, 5),
     (9, "inbox", "2026-09-01", [], "2026-10-24", True, 54),
     (10, "inbox", "2026-09-25", [], "2026-09-25", False, 30),
+    # rows 11-14 pin the Progress parse rule (a str is the raw body after "## Problem")
+    # 11: no separator after the date -> not a Progress line, the clock stays on created
+    (11, "inbox", "2026-09-01", "\n## Progress\n\n2026-10-20 filed again\n", "2026-09-01", True, 54),
+    # 12: the heading matches case-insensitively
+    (12, "inbox", "2026-09-01", "\n## progress\n\n2026-10-20: note\n", "2026-09-01", False, 5),
+    # 13: every Progress section counts, the newest date sits in the second
+    (13, "inbox", "2026-08-01", "\n## Progress\n\n2026-09-01: a\n\n## Notes\n\nx\n\n## Progress\n\n2026-10-20: b\n", "2026-08-01", False, 5),
+    # 14: an impossible date (string-greater than the valid one) is skipped
+    (14, "inbox", "2026-01-01", "\n## Progress\n\n2026-01-15: y\n2026-02-30: x\n", "2026-01-01", True, 283),
 ]
 
 
 def _write(map_dir, row, status, created, progress, updated):
     body = "## Problem\n\nx\n"
-    if progress:
+    if isinstance(progress, str):
+        body += progress
+    elif progress:
         body += "\n## Progress\n\n" + "".join("%s - note\n" % d for d in progress)
     meta = {"kind": "bug", "title": "row %d" % row, "status": status,
             "created": created, "updated": updated + "T00:00:00Z"}

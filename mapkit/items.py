@@ -222,15 +222,22 @@ def write_item(path: str, meta: Dict[str, Any], body: str) -> bool:
 #: copy in its config and both are tested against the same fixture.
 STALE_DAYS: Dict[str, int] = {"inbox": 30, "backlog": 60, "in_progress": 14}
 
-_PROGRESS_DATE = re.compile(r"^\s*(?:[-*]\s+)?(\d{4}-\d{2}-\d{2})(?!\d)")
+#: The one Progress rule, mirrored line for line by the app's ``progressDates``
+#: (``frontend/src/lib/done.ts`` in the fork) and pinned by the shared
+#: fixture: a line counts when it opens with a date (optionally after a
+#: ``-``/``*`` bullet) followed by a separator (``:``, ``-``, en or em dash);
+#: every ``## Progress`` section counts, the heading matched case-insensitively;
+#: an impossible date (``2026-02-30``) is skipped.
+_PROGRESS_HEAD = re.compile(r"^##\s+progress\s*$", re.IGNORECASE)
+_PROGRESS_DATE = re.compile(r"^\s*(?:[-*]\s+)?(\d{4}-\d{2}-\d{2})\s*[:\-\u2013\u2014]")
 
 
 def _progress_dates(body: str) -> List[datetime.date]:
     out: List[datetime.date] = []
     in_progress = False
     for line in body.split("\n"):
-        if line.startswith("## "):
-            in_progress = line.strip() == "## Progress"
+        if re.match(r"##\s", line):
+            in_progress = _PROGRESS_HEAD.match(line) is not None
             continue
         if in_progress:
             m = _PROGRESS_DATE.match(line)

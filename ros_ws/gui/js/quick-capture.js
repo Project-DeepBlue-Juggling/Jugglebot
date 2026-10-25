@@ -11,6 +11,11 @@
  * button; every keydown inside the form stops propagation so no key reaches the Robot
  * tab's motion controls.  The draft (kind/title/note) is kept in localStorage under
  * DRAFT_KEY on every keystroke, restored on open, cleared on a successful filing.
+ * The same keyboard isolation covers the "+" button itself (Space on it must not reach the
+ * chart pause or the replay trackbar).  While a request is in flight Esc, Cancel and the "+"
+ * toggle leave the form open, so a late failure is visible; if the form is hidden anyway the
+ * error goes to the fading confirmation element.  A timeout after the POST was sent says so:
+ * the server has no idempotency key, so the Item may exist.
  */
 
 const MAP_PORT = 8765;
@@ -71,6 +76,9 @@ function closeForm() {
     btn.focus();
 }
 
+/** Close on the user's behalf: never while a request is in flight (the failure must stay visible). */
+function dismiss() { if (!busy) closeForm(); }
+
 function pad(n) { return String(n).padStart(2, '0'); }
 /** Local wall-clock ISO-8601 with UTC offset, e.g. 2026-10-25T18:05:19+11:00. */
 function localIso(d) {
@@ -116,6 +124,12 @@ function showToast(text) {
     toastTimer = setTimeout(() => toast.classList.remove('show'), 3000);
 }
 
+/** Show a filing error in the form; if the form is hidden, in the fading confirmation instead. */
+function showError(text) {
+    if (form.hidden) showToast(text);
+    else errEl.textContent = text;
+}
+
 async function file() {
     const title = titleEl.value.trim();
     if (!title || busy) {
@@ -125,12 +139,14 @@ async function file() {
     busy = true;
     fileBtn.disabled = true;
     errEl.textContent = '';
+    let posted = false; // true once the POST (the only request that creates an Item) is on the wire
     try {
         const pr = await api('/projects', { method: 'GET' });
-        if (!pr.ok) { errEl.textContent = await errorText(pr); return; }
+        if (!pr.ok) { showError(await errorText(pr)); return; }
         const projects = await pr.json();
         const pid = projects && projects[0] && projects[0].id;
-        if (!pid) { errEl.textContent = 'Map server has no project'; return; }
+        if (!pid) { showError('Map server has no project'); return; }
+        posted = true;
         const resp = await api(`/projects/${encodeURIComponent(pid)}/tasks`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-Dev-User': FILED_BY },
@@ -141,29 +157,36 @@ async function file() {
                 status: 'inbox',
             }),
         });
-        if (!resp.ok) { errEl.textContent = await errorText(resp); return; }
+        if (!resp.ok) { showError(await errorText(resp)); return; }
         clearDraft();
         titleEl.value = '';
         noteEl.value = '';
         closeForm();
         showToast(`Filed: ${title}`);
     } catch (e) {
-        errEl.textContent = 'Map server unreachable - text kept';
+        showError(posted && e && e.name === 'AbortError'
+            ? 'No answer from the map server - check the inbox before filing again'
+            : 'Map server unreachable - text kept');
     } finally {
         busy = false;
         fileBtn.disabled = false;
     }
 }
 
-btn.addEventListener('click', () => { if (form.hidden) openForm(); else closeForm(); });
-cancelBtn.addEventListener('click', closeForm);
+btn.addEventListener('click', () => { if (form.hidden) openForm(); else dismiss(); });
+cancelBtn.addEventListener('click', dismiss);
 form.addEventListener('submit', (e) => { e.preventDefault(); file(); });
 form.addEventListener('input', saveDraft);
 form.addEventListener('change', saveDraft);
 // Nothing typed in the form may reach the Robot tab's motion-control key handlers.
 form.addEventListener('keydown', (e) => {
     e.stopPropagation();
-    if (e.key === 'Escape') { e.preventDefault(); closeForm(); }
+    if (e.key === 'Escape') { e.preventDefault(); dismiss(); }
 });
 form.addEventListener('keyup', (e) => e.stopPropagation());
 form.addEventListener('keypress', (e) => e.stopPropagation());
+// The "+" button sits in the bar, outside the form: Space/Enter on it must not reach the
+// chart pause (telemetry-charts.js) or the replay trackbar handler either.
+for (const type of ['keydown', 'keyup', 'keypress']) {
+    btn.addEventListener(type, (e) => e.stopPropagation());
+}

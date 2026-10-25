@@ -55,3 +55,37 @@ def test_context_block_has_time():
 
 def test_popover_styled_under_the_bar():
     assert "#quick-capture-form" in CSS and "top: var(--app-tabs-height)" in CSS
+
+
+def test_plus_button_keys_never_reach_chart_pause_or_trackbar():
+    assert "for (const type of ['keydown', 'keyup', 'keypress'])" in JS
+    assert "btn.addEventListener(type, (e) => e.stopPropagation())" in JS
+
+
+def test_user_dismissals_are_ignored_while_a_request_is_in_flight():
+    # Esc, Cancel and the "+" toggle all go through dismiss(), which respects busy
+    assert "function dismiss() { if (!busy) closeForm(); }" in JS
+    assert "cancelBtn.addEventListener('click', dismiss)" in JS
+    assert "if (e.key === 'Escape') { e.preventDefault(); dismiss(); }" in JS
+    assert "else dismiss();" in JS
+    # closeForm() is called only by dismiss and by the success path (plus its definition)
+    assert JS.count("closeForm()") == 3
+    assert JS.index("clearDraft();\n        titleEl.value") < JS.index("closeForm();\n        showToast(`Filed")
+
+
+def test_error_goes_to_the_toast_when_the_form_is_hidden():
+    assert "if (form.hidden) showToast(text);" in JS
+    assert "else errEl.textContent = text;" in JS
+    # no filing path writes the error element directly any more
+    body = JS[JS.index("async function file()"):JS.index("btn.addEventListener('click'")]
+    # (the "Title is required" validation stays direct: the form is necessarily visible there)
+    assert "errEl.textContent = await" not in body
+    assert "errEl.textContent = 'Map server" not in body
+    assert body.count("showError(") == 4
+
+
+def test_post_timeout_warns_the_item_may_exist():
+    assert "No answer from the map server - check the inbox before filing again" in JS
+    # only after the POST was sent, and only for the abort
+    assert "posted && e && e.name === 'AbortError'" in JS
+    assert JS.index("posted = true;") < JS.index("api(`/projects/${encodeURIComponent(pid)}/tasks`")
