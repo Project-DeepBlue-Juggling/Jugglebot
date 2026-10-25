@@ -239,7 +239,15 @@ static inline float leg_clamp_anchor(uint8_t i, float raw_cmd, uint64_t now_mono
   }
   if (ts != 0u) {
     const uint64_t age_us = (now_mono > ts) ? (now_mono - ts) : 0u;
-    if (age_us <= MOTOR_FB_STALENESS_US) s_leg_dr[i] = raw_cmd - s_leg_cmd_ref[i];   // coast
+    if (age_us <= MOTOR_FB_STALENESS_US) {                                            // coast
+      // FW 32: the shift may grow by at most LEG_ANCHOR_SHIFT_SLEW_REV per tick (the
+      // drive's vel_limit rate). A legit stream (<= vel_limit) never meets the bound,
+      // so this is FW 31 exactly; a command DISCONTINUITY landing in a gap is ramped
+      // at vel_limit behind the clamp instead of passing unclamped until the next frame.
+      const float target = raw_cmd - s_leg_cmd_ref[i];
+      const float lo = s_leg_dr[i] - LEG_ANCHOR_SHIFT_SLEW_REV, hi = s_leg_dr[i] + LEG_ANCHOR_SHIFT_SLEW_REV;
+      s_leg_dr[i] = (target > hi) ? hi : ((target < lo) ? lo : target);
+    }
     // else: the shift keeps its value at the cap crossing — the band stops following
     if (age_us > LEG_ANCHOR_STALE_US) ++s_leg_stale_anchor_ticks[i];   // census, NOT gated on out_en
   }

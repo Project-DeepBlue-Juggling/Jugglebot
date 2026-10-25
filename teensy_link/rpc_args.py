@@ -853,7 +853,12 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # An FW 30 board is wire-compatible and simply never sends 0x94 (the
 # /link_status leg_clamp_diag row reads never-seen) — AND it still carries the
 # staircase amplifier, which is why the skew must be loud before a Sitting.
-EXPECTED_BRIDGE_FW_VERSION = 31
+# 31 -> 32 (2026-10-25): the lead clamp's dead-reckoned shift is slew-bounded at
+# vel_limit x tick (0.024 rev), so a command discontinuity inside a frame gap
+# ramps at vel_limit behind the clamp instead of passing unclamped
+# (leg-lead-clamp-age-aware.md P2). Behavioural only: no wire change,
+# PROTOCOL_VERSION stays 10.
+EXPECTED_BRIDGE_FW_VERSION = 32
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────
