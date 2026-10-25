@@ -75,6 +75,7 @@ They're grouped here by topic for skimming; the canonical order is numeric.
 - [ADR-0003](0003-teensy-4_1-over-4_0.md) — Teensy 4.1 (not 4.0) for the can-bridge role
 - [ADR-0004](0004-dual-can-buses.md) — Two CAN buses on the can-bridge Teensy *(Superseded by ADR-0013)*
 - [ADR-0013](0013-three-can-buses.md) — Three subsystem-isolated CAN buses on the can-bridge Teensy
+- [ADR-0014](0014-wave-camera-on-can3.md) — The Wave camera adapter is a cone-role device on CAN3, kept recording by a streamed intent
 - [ADR-0008](0008-time-sync-master-on-can-bridge.md) — Time-sync master moves from the Jetson to the can-bridge Teensy
 
 ### Jetson ↔ Teensy link
