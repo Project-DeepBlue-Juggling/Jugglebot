@@ -1,4 +1,5 @@
 ---
+id: JB-51
 kind: feature
 title: The item drawer renders Markdown and shows titles in full
 status: complete

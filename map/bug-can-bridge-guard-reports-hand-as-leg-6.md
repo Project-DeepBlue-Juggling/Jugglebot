@@ -1,4 +1,5 @@
 ---
+id: JB-1
 kind: bug
 title: can-bridge Guard reports the Hand as "leg 6"
 status: inbox

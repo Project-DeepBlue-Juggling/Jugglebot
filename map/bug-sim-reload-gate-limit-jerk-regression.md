@@ -1,4 +1,5 @@
 ---
+id: JB-27
 kind: bug
 title: Sim `--reload` gate LIMIT_JERK regression bisected to 08ec3fe6 (2026-09-30)
 status: inbox

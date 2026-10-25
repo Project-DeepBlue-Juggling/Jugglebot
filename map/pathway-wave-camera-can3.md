@@ -1,4 +1,5 @@
 ---
+id: JB-42
 kind: pathway
 title: Wave camera on CAN3
 status: complete

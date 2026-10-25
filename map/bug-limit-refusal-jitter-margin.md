@@ -1,4 +1,5 @@
 ---
+id: JB-24
 kind: bug
 title: 10 % jitter-margin class of LIMIT_* refusals
 status: inbox

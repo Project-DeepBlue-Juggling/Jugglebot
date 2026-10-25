@@ -1,4 +1,5 @@
 ---
+id: JB-34
 kind: idea
 title: Backfill the open logbook entries into map items
 status: inbox

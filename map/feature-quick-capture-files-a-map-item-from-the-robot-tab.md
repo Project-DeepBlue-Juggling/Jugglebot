@@ -1,4 +1,5 @@
 ---
+id: JB-58
 kind: feature
 title: 'Quick capture: file a bug or idea from the GUI''s Robot tab mid-sitting'
 status: in_progress

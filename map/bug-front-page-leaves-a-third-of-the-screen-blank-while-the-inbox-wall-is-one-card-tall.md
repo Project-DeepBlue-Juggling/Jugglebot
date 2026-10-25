@@ -1,4 +1,5 @@
 ---
+id: JB-43
 kind: bug
 title: 'Front page leaves a third of the screen blank while the inbox wall is one card tall'
 status: complete

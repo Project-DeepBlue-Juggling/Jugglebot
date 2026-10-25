@@ -1,4 +1,5 @@
 ---
+id: JB-12
 kind: ticket
 title: 'Prototype: the inbox page (Keep-style wall of Idea, Feature and Bug items)'
 type: prototype

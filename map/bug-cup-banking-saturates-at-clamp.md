@@ -1,4 +1,5 @@
 ---
+id: JB-22
 kind: bug
 title: Cup Banking saturates at its 12 deg clamp on small lateral offsets
 status: inbox

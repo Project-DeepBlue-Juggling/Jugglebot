@@ -1,4 +1,5 @@
 ---
+id: JB-57
 kind: feature
 title: 'Nightly status chip in the map header'
 status: inbox

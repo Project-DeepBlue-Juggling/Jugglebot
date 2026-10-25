@@ -1,4 +1,5 @@
 ---
+id: JB-60
 kind: feature
 title: 'Stale items: flag items left in the inbox or in progress too long'
 status: in_progress

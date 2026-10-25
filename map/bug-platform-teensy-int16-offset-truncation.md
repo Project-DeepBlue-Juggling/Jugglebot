@@ -1,4 +1,5 @@
 ---
+id: JB-26
 kind: bug
 title: Platform Teensy truncates the persisted levelling offset to int16 milliradians
 status: inbox

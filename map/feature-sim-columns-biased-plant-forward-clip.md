@@ -1,4 +1,5 @@
 ---
+id: JB-32
 kind: feature
 title: Sim columns run with a biased plant to exercise the forward-clip rule
 status: inbox

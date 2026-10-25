@@ -1,4 +1,5 @@
 ---
+id: JB-56
 kind: feature
 title: 'Item provenance: the drawer lists the logbook entries and commits that touched an item'
 status: inbox

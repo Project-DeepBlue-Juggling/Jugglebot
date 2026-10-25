@@ -1,4 +1,5 @@
 ---
+id: JB-2
 kind: feature
 title: 'Design change: the Hand should be Idle, not Parked Closed-loop, while Active'
 status: inbox

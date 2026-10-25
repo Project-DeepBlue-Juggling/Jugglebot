@@ -1,4 +1,5 @@
 ---
+id: JB-8
 kind: ticket
 title: Map item schema and the map/ directory layout
 type: grilling

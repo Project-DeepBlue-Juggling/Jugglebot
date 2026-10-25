@@ -1,4 +1,5 @@
 ---
+id: JB-21
 kind: bug
 title: bb/throw_outcome carries no throw identity
 status: inbox

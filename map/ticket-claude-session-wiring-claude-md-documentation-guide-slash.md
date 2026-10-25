@@ -1,4 +1,5 @@
 ---
+id: JB-4
 kind: ticket
 title: 'Claude-session wiring: CLAUDE.md, DOCUMENTATION_GUIDE, slash commands and agents that read or write the map'
 type: grilling

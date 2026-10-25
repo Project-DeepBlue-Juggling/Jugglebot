@@ -1,4 +1,5 @@
 ---
+id: JB-17
 kind: ticket
 title: 'The /work-inbox slash command: consuming inbox items (research, analysis, implementation) and what happens to an item when done'
 type: grilling

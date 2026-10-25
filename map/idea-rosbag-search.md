@@ -1,4 +1,5 @@
 ---
+id: JB-36
 kind: idea
 title: Rosbag search
 status: inbox

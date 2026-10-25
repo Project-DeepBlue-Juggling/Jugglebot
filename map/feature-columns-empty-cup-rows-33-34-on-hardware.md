@@ -1,4 +1,5 @@
 ---
+id: JB-28
 kind: feature
 title: Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware
 status: inbox

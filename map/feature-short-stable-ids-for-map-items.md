@@ -1,4 +1,5 @@
 ---
+id: JB-62
 kind: feature
 title: Short, stable IDs for map items
 status: promoted

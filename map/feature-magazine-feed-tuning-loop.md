@@ -1,4 +1,5 @@
 ---
+id: JB-29
 kind: feature
 title: Magazine feed-tuning loop (`magazine` + `reload` patterns, hand-only throw)
 status: inbox

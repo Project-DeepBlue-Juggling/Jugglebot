@@ -1,4 +1,5 @@
 ---
+id: JB-35
 kind: idea
 title: Personal best window
 status: inbox

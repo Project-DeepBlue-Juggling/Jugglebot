@@ -1,4 +1,5 @@
 ---
+id: JB-30
 kind: feature
 title: mocap _finalize_calibration in a worker process
 status: inbox

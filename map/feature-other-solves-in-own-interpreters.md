@@ -1,4 +1,5 @@
 ---
+id: JB-31
 kind: feature
 title: Move the other solves (skill_node 43 ms, go_home / go_to_pose / hold) into their own interpreters
 status: inbox

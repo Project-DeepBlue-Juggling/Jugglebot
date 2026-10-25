@@ -1,4 +1,5 @@
 ---
+id: JB-23
 kind: bug
 title: 'Emitter gap: one 47 ms window over sitting 8 against the 35 ms max target'
 status: inbox

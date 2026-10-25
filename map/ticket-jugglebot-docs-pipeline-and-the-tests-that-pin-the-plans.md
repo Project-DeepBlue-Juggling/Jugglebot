@@ -1,4 +1,5 @@
 ---
+id: JB-7
 kind: ticket
 title: Jugglebot docs pipeline and the tests that pin the plans board and logbook
 type: research

@@ -1,4 +1,5 @@
 ---
+id: JB-5
 kind: ticket
 title: GLOSSARY.md entry format, the CLAUDE.md term-name list, and the Avoid-word test
 type: grilling

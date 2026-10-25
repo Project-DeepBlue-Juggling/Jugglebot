@@ -1,4 +1,5 @@
 ---
+id: JB-33
 kind: idea
 title: Rename the columns/oval one-ball Patterns to the Ball 1 / Ball 2 terminology
 status: in_progress

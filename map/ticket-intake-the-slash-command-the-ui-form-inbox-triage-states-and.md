@@ -1,4 +1,5 @@
 ---
+id: JB-6
 kind: ticket
 title: 'Intake: the slash command, the UI form, inbox triage states, and the existing GitHub issues'
 type: grilling
