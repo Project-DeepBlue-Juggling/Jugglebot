@@ -254,3 +254,16 @@ def test_set_id_is_a_one_line_text_edit(tmp_path):
     ids.set_id(load_item(str(p)), "JB-6")  # renumber replaces, never duplicates
     assert p.read_bytes().decode() == "---\nid: JB-6\n" + text[4:]
     assert load_item(str(p)).short_id == "JB-6"
+
+
+def test_ref_ids_reads_only_the_frontmatter_key(tmp_path):
+    # A column-0 'id: JB-n' in a body (a fenced example) must not inflate allocate.
+    work, _ = _repo(tmp_path)
+    p = _item(work, "bug", "a", id="JB-2")
+    p.write_text(p.read_text() + "\n```yaml\nid: JB-900\n---\n```\n")
+    _item(work, "bug", "noid")
+    q = work / "map" / "bug-noid.md"
+    q.write_text(q.read_text() + "\nid: JB-800\n")
+    _commit_push(work, "bodies")
+    assert ids.ref_ids(str(work)) == {"bug-a": "JB-2"}
+    assert ids.allocate(str(work)) == "JB-3"

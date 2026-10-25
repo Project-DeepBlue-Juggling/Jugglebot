@@ -202,8 +202,9 @@ def new_item(repo_root: str, kind: str, title: str, parent: Optional[str] = None
               file=sys.stderr)
     map_dir = os.path.join(repo_root, MAP_DIR)
     items = load_items(map_dir)
+    upstream = ids.upstream_ref(repo_root)  # the ref the push loop rebases onto
     meta: Dict[str, object] = {
-        "id": ids.allocate(repo_root, items=items), "kind": kind, "title": title,
+        "id": ids.allocate(repo_root, upstream, items=items), "kind": kind, "title": title,
         "status": _DEFAULT_STATUS.get(kind, "inbox"), "created": _today(), "updated": _now(),
         "owners": [], "priority": priority, "blocked_by": [], "links": [],
     }
@@ -227,7 +228,11 @@ def new_item(repo_root: str, kind: str, title: str, parent: Optional[str] = None
     slug = _unique_slug(map_dir, slugify(title)[:60].strip("-") or kind)
     path = os.path.join(map_dir, "%s-%s.md" % (kind, slug))
     write_item(path, meta, (body.strip() + "\n") if body.strip() else "")
-    item = _load(path)  # validates required fields (a pathway without destination fails here)
+    try:
+        item = _load(path)  # validates required fields (a pathway without destination fails here)
+    except ItemCliError:
+        os.remove(path)  # an invalid file in map/ would break every later load_items
+        raise
     gen_docs.write_docs(repo_root)
     if not commit:
         return item
@@ -239,10 +244,13 @@ def new_item(repo_root: str, kind: str, title: str, parent: Optional[str] = None
         return item
     stem = "%s-%s" % (kind, slug)
     for _ in range(PUSH_ROUNDS):
-        r = _git_out(repo_root, "pull", "--rebase", "--autostash")
-        if r.returncode != 0:
-            raise ItemCliError("pull --rebase failed: %s" % r.stderr.strip()[-300:])
-        for old, new, _st in ids.repair(repo_root, own=[stem]):
+        _rebase_or_abort(repo_root, stem)
+        upstream = ids.upstream_ref(repo_root)
+        # a textual merge of two generated tables can differ from a fresh gen
+        gen_docs.write_docs(repo_root)
+        if DOCS_PAGE in paths and _git_out(repo_root, "diff", "--quiet", "--", DOCS_PAGE).returncode:
+            _git(repo_root, "commit", "-q", "--amend", "--no-edit", "--", DOCS_PAGE)
+        for old, new, _st in ids.repair(repo_root, upstream, own=[stem]):
             item = _load(path)
             gen_docs.write_docs(repo_root)
             _git(repo_root, "add", "--", *paths)
@@ -256,6 +264,33 @@ def new_item(repo_root: str, kind: str, title: str, parent: Optional[str] = None
     raise ItemCliError("push rejected %d times; local commits ahead:\n%s\n(the Item is %s; "
                        "re-run the push by hand after python -m mapkit ids --check)"
                        % (PUSH_ROUNDS, local, stem))
+
+
+def _rebase_or_abort(repo_root: str, stem: str) -> None:
+    """``pull --rebase --autostash``; on failure never leave the repo mid-rebase.
+
+    A conflict (two writers chose the same slug, say) is aborted, which
+    restores the local commit and re-applies any autostash; the error names
+    the unmerged paths, the local commit and a still-pending autostash.
+    """
+    r = _git_out(repo_root, "pull", "--rebase", "--autostash")
+    if r.returncode == 0:
+        return
+    unmerged = _git_out(repo_root, "diff", "--name-only", "--diff-filter=U").stdout.split()
+    mid = any(os.path.exists(os.path.join(  # --git-path is relative to repo_root
+        repo_root, _git_out(repo_root, "rev-parse", "--git-path", d).stdout.strip()))
+        for d in ("rebase-merge", "rebase-apply"))
+    if mid:
+        _git_out(repo_root, "rebase", "--abort")
+    head = _git_out(repo_root, "log", "-1", "--oneline").stdout.strip()
+    stash = [l for l in _git_out(repo_root, "stash", "list").stdout.splitlines() if "autostash" in l]
+    raise ItemCliError(
+        "pull --rebase failed%s; the rebase was aborted, nothing was pushed.\n"
+        "  unmerged: %s\n  local commit: %s\n  pending autostash: %s\n"
+        "Resolve by hand (for a slug clash: git mv the file to a new slug, amend, push), then "
+        "python -m mapkit ids --check. The Item is %s.\n  git: %s" % (
+            " (conflict)" if unmerged else "", ", ".join(unmerged) or "none", head,
+            "; ".join(stash) or "none", stem, r.stderr.strip()[-300:]))
 
 
 def _age_days(item: Item) -> int:
@@ -388,6 +423,10 @@ def _run_new(args) -> int:
                         commit=args.commit, push=not args.no_push)
     except (ItemCliError, ItemError, ids.IdError) as exc:
         print("mapkit: %s" % exc, file=sys.stderr)
+        return 2
+    except subprocess.CalledProcessError as exc:
+        print("mapkit: git %s failed (exit %d); the Item file is written, check git status"
+              % (" ".join(exc.cmd[1:3]), exc.returncode), file=sys.stderr)
         return 2
     print("%s filed (%s) %s" % (label(item), item.status, item.title))
     if not args.commit:

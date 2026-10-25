@@ -195,3 +195,81 @@ def test_item_new_gives_up_after_three_rejected_pushes(tmp_path, monkeypatch):
     monkeypatch.setattr(itemcli, "_git_out", rejecting)
     with pytest.raises(itemcli.ItemCliError, match="push rejected 3 times"):
         itemcli.new_item(str(work), "bug", "Stuck", commit=True)
+
+
+# --- audit fixes (2026-10-26): upstream-aware repair, rebase abort, validate before write ----
+def _push_from_other(tmp_path, remote, branch, slug, sid, tag):
+    other = tmp_path / ("other-%s-%s" % (tag, slug))
+    _git(tmp_path, "clone", "-b", branch, str(remote), str(other))
+    _git(other, "config", "user.name", "O")
+    _git(other, "config", "user.email", "o@e.x")
+    # same created date as ours, so only the own-set rule (not created) can pick the keeper
+    _write(other, "bug", slug, sid, created=itemcli._today())
+    _git(other, "add", ".")
+    _git(other, "commit", "-m", "map: file bug %s T %s" % (sid, slug))
+    _git(other, "push", "origin", "HEAD:%s" % branch)
+
+
+def _inject_before_first_pull(monkeypatch, action):
+    real = itemcli._git_out
+    state = {"done": False}
+
+    def racing(repo_root, *args):
+        if args[:2] == ("pull", "--rebase") and not state["done"]:
+            state["done"] = True
+            action()
+        return real(repo_root, *args)
+
+    monkeypatch.setattr(itemcli, "_git_out", racing)
+
+
+@pytest.mark.parametrize("mine,theirs", [("aardvark", "zulu"), ("zulu", "aardvark")])
+def test_repair_on_a_feature_upstream_renumbers_ours_whatever_the_stem_order(
+        tmp_path, monkeypatch, mine, theirs):
+    # The audit repro: the upstream is origin/feat (ahead of origin/main), so the
+    # Item the rebase brings in is no holder on origin/main; ours must still lose.
+    work, remote = _repo(tmp_path)
+    _git(work, "checkout", "-b", "feat")
+    _write(work, "bug", "on-feat", "JB-5")  # upstream ahead of main
+    _git(work, "add", ".")
+    _git(work, "commit", "-m", "feat item")
+    _git(work, "push", "-u", "origin", "feat")
+    _inject_before_first_pull(monkeypatch, lambda: _push_from_other(
+        tmp_path, remote, "feat", theirs, "JB-6", mine))
+    it = itemcli.new_item(str(work), "bug", mine, commit=True)
+    assert it.short_id == "JB-7"
+    assert load_item(str(work / "map" / ("bug-%s.md" % theirs))).short_id == "JB-6"
+    _git(work, "fetch")
+    assert not ids.check(str(work), "origin/feat")["duplicate"]
+    assert _out(remote, "log", "-1", "--format=%s", "feat").strip() == "map: renumber JB-6 -> JB-7 " + mine
+    from mapkit import gen_docs
+    assert gen_docs.write_docs(str(work), check=True) == []  # docs regenerated before the push
+
+
+def test_slug_clash_aborts_the_rebase_and_exits_cleanly(tmp_path, monkeypatch):
+    work, remote = _repo(tmp_path)
+    _inject_before_first_pull(monkeypatch, lambda: _push_from_other(
+        tmp_path, remote, "main", "same-title", "JB-5", "clash"))
+    with pytest.raises(itemcli.ItemCliError, match="rebase was aborted") as exc:
+        itemcli.new_item(str(work), "bug", "Same title", commit=True)
+    assert "map/bug-same-title.md" in str(exc.value)
+    status = _out(work, "status")
+    assert "rebase" not in status and "Unmerged" not in status
+    assert _out(work, "log", "-1", "--format=%s").strip() == "map: file bug JB-5 Same title"
+
+
+def test_invalid_new_item_leaves_no_file(tmp_path):
+    _tree(tmp_path)
+    before = sorted(p.name for p in (tmp_path / "map").iterdir())
+    with pytest.raises(itemcli.ItemCliError, match="destination"):
+        itemcli.new_item(str(tmp_path), "pathway", "No destination")
+    with pytest.raises(itemcli.ItemCliError, match="parent"):
+        itemcli.new_item(str(tmp_path), "ticket", "No parent")
+    assert sorted(p.name for p in (tmp_path / "map").iterdir()) == before
+
+
+def test_cli_new_reports_a_git_failure_without_a_traceback(tmp_path, capsys):
+    from mapkit.__main__ import main
+    _tree(tmp_path)  # not a git repo: the add fails
+    assert main(["item", "new", "bug", "x", "--commit", "--no-push", "--repo", str(tmp_path)]) == 2
+    assert "git add" in capsys.readouterr().err

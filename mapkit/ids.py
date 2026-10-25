@@ -83,21 +83,54 @@ def _git(repo_root: str, *args: str) -> subprocess.CompletedProcess:
     return subprocess.run(["git"] + list(args), cwd=repo_root, capture_output=True, text=True)
 
 
-def ref_ids(repo_root: str, ref: str = DEFAULT_REF) -> Dict[str, str]:
-    """``{stem: id value}`` for the Items on ``ref``; ``{}`` if the ref is absent."""
-    r = _git(repo_root, "grep", "-e", "^id: ", ref, "--", MAP_DIR + "/")
-    out: Dict[str, str] = {}
-    if r.returncode not in (0, 1):
+def upstream_ref(repo_root: str) -> str:
+    """The checked-out branch's upstream (``origin/feat``), else :data:`DEFAULT_REF`.
+
+    ``item new --commit`` rebases onto the upstream, so its allocation and its
+    repair must read the same ref the rebase brought in.
+    """
+    r = _git(repo_root, "rev-parse", "--abbrev-ref", "--symbolic-full-name", "@{u}")
+    name = r.stdout.strip()
+    return name if r.returncode == 0 and name else DEFAULT_REF
+
+
+def _ref_matches(repo_root: str, ref: str, pattern: str) -> Dict[str, List[Tuple[int, str]]]:
+    """``{file name: [(line number, text)]}`` for ``git grep -n`` hits in ``ref:map/``."""
+    r = _git(repo_root, "grep", "-n", "-e", pattern, ref, "--", MAP_DIR + "/")
+    out: Dict[str, List[Tuple[int, str]]] = {}
+    if r.returncode != 0:
         return out
     for line in r.stdout.splitlines():
-        # <ref>:map/<stem>.md:id: JB-3
+        # <ref>:map/<name>.md:<n>:<text>
         try:
             _, rest = line.split(":" + MAP_DIR + "/", 1)
-            name, value = rest.split(":id: ", 1)
+            name, num, text = rest.split(":", 2)
+            out.setdefault(name, []).append((int(num), text))
         except ValueError:
             continue
-        if name.endswith(".md") and "/" not in name:
-            out[name[:-3]] = value.strip().strip("'\"")
+    return out
+
+
+def ref_ids(repo_root: str, ref: str = DEFAULT_REF) -> Dict[str, str]:
+    """``{stem: id value}`` for the Items on ``ref``; ``{}`` if the ref is absent.
+
+    Only the frontmatter ``id:`` key counts: a column-0 ``id: JB-n`` in an
+    Item's body (a fenced example) lies after the closing ``---`` and is skipped.
+    """
+    hits = _ref_matches(repo_root, ref, "^id: ")
+    if not hits:
+        return {}
+    fences = _ref_matches(repo_root, ref, "^---$")
+    out: Dict[str, str] = {}
+    for name, rows in hits.items():
+        if not name.endswith(".md") or "/" in name:
+            continue
+        marks = sorted(n for n, _ in fences.get(name, []))
+        if len(marks) < 2 or marks[0] != 1:
+            continue  # no frontmatter block: not an Item the loader would read
+        inside = [t for n, t in rows if 1 < n < marks[1]]
+        if inside:
+            out[name[:-3]] = inside[0][len("id: "):].strip().strip("'\"")
     return out
 
 
@@ -138,9 +171,13 @@ def _max_number(values: Iterable[object]) -> int:
 
 def allocate(repo_root: str, ref: str = DEFAULT_REF,
              items: Optional[List[Item]] = None) -> str:
+    """1 + max over the tree's IDs (frontmatter, via the loader), ``ref``'s and
+    :data:`DEFAULT_REF`'s (both read: a feature branch's upstream may lag or lead
+    ``origin/main``, and a higher max is never wrong)."""
     items = _load(repo_root) if items is None else items
-    top = max(_max_number(i.meta.get("id") for i in items),
-              _max_number(ref_ids(repo_root, ref).values()))
+    top = _max_number(i.meta.get("id") for i in items)
+    for r in {ref, DEFAULT_REF}:
+        top = max(top, _max_number(ref_ids(repo_root, r).values()))
     return format_id(top + 1)
 
 
@@ -220,7 +257,10 @@ def repair(repo_root: str, ref: str = DEFAULT_REF,
     """Renumber each duplicate's losers; returns ``(old, new, stem)`` rows.
 
     ``own`` (stems) limits renumbering to those Items (a writer repairs only
-    its own unpushed files); a group with no own loser is left for the gate.
+    its own unpushed files). With ``own``, any group member outside it is the
+    keeper: a file the writer has not pushed can never be the older holder,
+    whatever its stem or ``created`` says. A group with no own member is left
+    for the gate.
     """
     items = _load(repo_root)
     on_ref = ref_ids(repo_root, ref)
@@ -228,8 +268,11 @@ def repair(repo_root: str, ref: str = DEFAULT_REF,
     order = add_order(repo_root, ref)
     rows = []
     for sid, group in sorted(duplicates(items).items()):
-        holders = [i for i in group if on_ref.get(stem(i)) == sid]
-        keeper = min(holders or group, key=lambda i: _order_key(repo_root, i, order))
+        if own_set is not None and not any(stem(i) in own_set for i in group):
+            continue
+        others = [i for i in group if own_set is not None and stem(i) not in own_set]
+        holders = [i for i in (others or group) if on_ref.get(stem(i)) == sid]
+        keeper = min(holders or others or group, key=lambda i: _order_key(repo_root, i, order))
         for loser in group:
             if loser is keeper or (own_set is not None and stem(loser) not in own_set):
                 continue
