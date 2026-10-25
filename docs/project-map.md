@@ -74,28 +74,15 @@ _Status: closed (complete)._
 
 - —
 
-## Wave camera on CAN3
-
-**Destination:** The Wave camera is visible over CAN3 and automated recording start/stop is working.
-
-**Progress:** 0 of 2 stops done
-
-**Next:** Wave Camera: Jetson bring-up prompt ([PROMPT-wave-camera-jetson-bringup.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/PROMPT-wave-camera-jetson-bringup.md))
-
-**Owners:** harrison
-
-**Remaining:**
-
-- Wave Camera: Jetson bring-up prompt ([PROMPT-wave-camera-jetson-bringup.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/PROMPT-wave-camera-jetson-bringup.md))
-- Wave camera adapter on CAN3 — ROS 2 record start/stop with a tick-stamped start instant ([wave-camera-can3-integration.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/wave-camera-can3-integration.md))
-
-**Attached inbox items:**
-
-- —
-
 ## Two-ball skill stack
 
 **Destination:** 30 consecutive Ball Butler-fed Catches in one Attempt (the R5 Rung gate), met 2026-10-13.
+
+_Status: closed (complete)._
+
+## Wave camera on CAN3
+
+**Destination:** The Wave camera is visible over CAN3 and automated recording start/stop is working.
 
 _Status: closed (complete)._
 
@@ -107,8 +94,8 @@ _Status: closed (complete)._
 | Project map and shared dictionary | — | — | — | closed |
 | Ball Butler | — | BB calibration: advisory when a template marker is never matched in a sweep | bug bb/throw_outcome carries no throw identity; bug NOT_SETTLED retry is dead in the field; feature Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware | — |
 | Learner generalisation | — | Box sweep fidelity for same-site families (plan what the executor dispatches) | P1 Learner core; P2 The characterisation sitting; P3 Online admissibility and box retirement; P4 BeatEvent stream and the columns wrapper; P5 Close-out | — |
-| Wave camera on CAN3 | — | Wave Camera: Jetson bring-up prompt | Wave camera adapter on CAN3 — ROS 2 record start/stop with a tick-stamped start instant | — |
 | Two-ball skill stack | — | — | — | closed |
+| Wave camera on CAN3 | — | — | — | closed |
 
 ## Inbox
 
@@ -133,3 +120,6 @@ _Status: closed (complete)._
 | idea | [Rosbag search](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-rosbag-search.md) | inbox | low | — | filed 2026-10-24 |
 | feature | [Sim columns run with a biased plant to exercise the forward-clip rule](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-sim-columns-biased-plant-forward-clip.md) | inbox | medium | — | filed 2026-10-24 |
 | bug | [Sim `--reload` gate LIMIT_JERK regression bisected to 08ec3fe6 (2026-09-30)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-sim-reload-gate-limit-jerk-regression.md) | inbox | medium | — | filed 2026-10-24 |
+| bug | [Wave camera: CLIP_MISSING on the first start after a camera power-cycle](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-wave-camera-clip-missing-on-first-start-after-a-camera-power-cycle.md) | inbox | low | Wave camera on CAN3 | filed 2026-10-25 |
+| feature | [Wave camera: optical frame calibration maps the START tick to a recorded frame](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-wave-camera-optical-frame-calibration.md) | inbox | low | Wave camera on CAN3 | filed 2026-10-25 |
+| feature | [Wave camera: a shared JSON wire-vector fixture for the adapter firmware and the node](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-wave-camera-shared-json-wire-vector-fixture.md) | inbox | low | Wave camera on CAN3 | filed 2026-10-25 |

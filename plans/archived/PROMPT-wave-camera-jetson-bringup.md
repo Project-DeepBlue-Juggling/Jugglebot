@@ -1,10 +1,11 @@
 ---
 title: "Wave Camera: Jetson bring-up prompt"
-status: active
+status: completed
 kind: reference
 owner: harrison
 created: 2026-10-25
 last_updated: 2026-10-25
+archived: 2026-10-25
 pathway: wave-camera-can3
 scope: >-
   Session prompt for the Wave camera Jetson bring-up (Phase 4 of wave-camera-can3-integration.md): verify,
@@ -22,7 +23,7 @@ All Jugglebot-side code is written and reviewed on branch `2026-10_wave-camera-c
 
 First fetch the branch: `git fetch && git branch -a | grep wave-camera` (you check it out in step 1).
 
-Read these from the branch before touching anything: ros_ws/docs/wave_camera_can_adapter.md (the binding wire and behaviour contract), docs/adr/0014-wave-camera-on-can3.md, plans/active/wave-camera-can3-integration.md, logbook/2026-10-19-wave-camera-can3-bridge-and-node.md, logbook/2026-10-19-gui-camera-record-panel.md, ros_ws/src/jugglebot/jugglebot/can/wave_camera.py. For background: ros_ws/docs/wave_camera_findings.md (measured camera behaviour), ros_ws/docs/wave_camera_gpio_explorer.md, and ros_ws/src/jugglebot/WaveCamera_ESP_code/README.md. Summary of the contract:
+Read these from the branch before touching anything: ros_ws/docs/wave_camera_can_adapter.md (the binding wire and behaviour contract), docs/adr/0014-wave-camera-on-can3.md, plans/archived/wave-camera-can3-integration.md, logbook/2026-10-19-wave-camera-can3-bridge-and-node.md, logbook/2026-10-19-gui-camera-record-panel.md, ros_ws/src/jugglebot/jugglebot/can/wave_camera.py. For background: ros_ws/docs/wave_camera_findings.md (measured camera behaviour), ros_ws/docs/wave_camera_gpio_explorer.md, and ros_ws/src/jugglebot/WaveCamera_ESP_code/README.md. Summary of the contract:
 
 - CAN frames, all DLC 8, little-endian, 11-bit IDs, block 0x7E2-0x7E7:
   - 0x7E2 WAVE_CMD, Jetson to ESP at 5 Hz while the ESP heartbeat is fresh: desired(u8, 1 record / 0 stop), cmd_seq(u8), flags(u8), reserved, session_id(u32, node start time). Sent through the new bridge RPC WAVE_CMD 0x0062 (bridge FW_VERSION 31).

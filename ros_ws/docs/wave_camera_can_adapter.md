@@ -6,7 +6,7 @@
 > firmware lives in [`ros_ws/src/jugglebot/WaveCamera_ESP_code/`](../src/jugglebot/WaveCamera_ESP_code/README.md)
 > (a standalone PlatformIO project, built and flashed from a PC, never from the
 > Jetson). Decision: [ADR-0014](../../docs/adr/0014-wave-camera-on-can3.md); plan:
-> [wave-camera-can3-integration.md](../../plans/active/wave-camera-can3-integration.md). Sibling docs:
+> [wave-camera-can3-integration.md](../../plans/archived/wave-camera-can3-integration.md). Sibling docs:
 > [GPIO explorer design](wave_camera_gpio_explorer.md),
 > [CAN adapter design](wave_camera_can_adapter.md),
 > [measured findings](wave_camera_findings.md).
@@ -426,7 +426,7 @@ CAN3 peripheral (can_buses.cpp:41).
 
 - Branch `2026-10_wave-camera-can3` cut from **origin/skill-stack**. The local `skill-stack` checkout is 2 commits behind origin (8dbfb554 vs 666b006b), so pull first. The owner commits.
 - `docs/adr/0014-wave-camera-on-cone-bus.md` in the Nygard format of 0013 (Status/Date/Deciders/Related, then Context, Decision, Consequences, Alternatives considered). Decision: the Wave ESP is a cone-role device with its own ID block, and liveness of recording intent is a 5 Hz stream with a 3 s ESP-side auto-stop. Alternatives: a stateful start/stop command, or a generic raw-frame RPC. Add it to docs/adr/index.md and the mkdocs.yml nav (lines 71-80). Landed as `docs/adr/0014-wave-camera-on-can3.md`.
-- `plans/active/wave-camera-can3.md` with frontmatter `title/created/status: active`, plus a row in plans/active/INDEX.md in the same commit (tests/sim/test_plans_index.py enforces this). Landed as `plans/active/wave-camera-can3-integration.md`.
+- `plans/active/wave-camera-can3.md` with frontmatter `title/created/status: active`, plus a row in plans/active/INDEX.md in the same commit (tests/sim/test_plans_index.py enforces this). Landed as `plans/active/wave-camera-can3-integration.md`; archived 2026-10-25 to `plans/archived/`.
 - Logbook entry `logbook/2026-10-DD-wave-camera-can3-integration.md`, `type: feature`, `subsystem: can`, `related_plan: wave-camera-can3.md`. Commits carry `Logbook-Entry: <slug>`. Landed as `logbook/2026-10-19-wave-camera-can3-bridge-and-node.md` (plus `2026-10-19-gui-camera-record-panel.md` and `2026-10-25-wave-camera-gpio-findings.md`).
 - Order: edit the YAML, run generate_config.py and generate_udp_protocol.py, stage the regenerated files, then `./run_tests.sh` (and `--full` before the hardware sitting).
 - On the Jetson: `colcon build --packages-select jugglebot_interfaces jugglebot`, bridge reflash `pio run -t upload` (Teensy_code_canbridge/BRINGUP.md Step 5), then a full relaunch of `ros2 launch jugglebot jugglebot_launch.py`, so that rosbridge loads the new message types.

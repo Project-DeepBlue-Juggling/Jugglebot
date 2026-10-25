@@ -6,7 +6,7 @@
 > firmware lives in [`ros_ws/src/jugglebot/WaveCamera_ESP_code/`](../src/jugglebot/WaveCamera_ESP_code/README.md)
 > (a standalone PlatformIO project, built and flashed from a PC, never from the
 > Jetson). Decision: [ADR-0014](../../docs/adr/0014-wave-camera-on-can3.md); plan:
-> [wave-camera-can3-integration.md](../../plans/active/wave-camera-can3-integration.md). Sibling docs:
+> [wave-camera-can3-integration.md](../../plans/archived/wave-camera-can3-integration.md). Sibling docs:
 > [GPIO explorer design](wave_camera_gpio_explorer.md),
 > [CAN adapter design](wave_camera_can_adapter.md),
 > [measured findings](wave_camera_findings.md).

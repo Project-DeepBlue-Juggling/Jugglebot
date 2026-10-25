@@ -1,9 +1,11 @@
 ---
 title: Wave camera adapter on CAN3 — ROS 2 record start/stop with a tick-stamped start instant
 created: 2026-10-19
-status: active
+status: completed
 owner: Harrison
 last_updated: 2026-10-25
+completed: 2026-10-25
+archived: 2026-10-25
 pathway: wave-camera-can3
 scope: >-
   One-button Wave camera recording from ROS 2: an ESP32 adapter on the cone-role bus (CAN3) drives the
@@ -64,11 +66,11 @@ IDs 0x7E2-0x7E7 (`WaveCameraCanId`), all DLC 8, little-endian. Event time is
 
 | # | Phase | Repo | Status | Gate |
 |---|-------|------|--------|------|
-| 1 | Adapter firmware (CAN link, time slave, record FSM, heartbeat/INFO) | wave | firmware in `WaveCamera_ESP_code/`; bench-verified with simulated intent 2026-10-25, no bridge yet | native tests; bench rows 1 and 10 with a USB-CAN sniffer |
+| 1 | Adapter firmware (CAN link, time slave, record FSM, heartbeat/INFO) | wave | done: firmware in `WaveCamera_ESP_code/`; rows 1 and 10 verified by the owner 2026-10-25 | native tests; bench rows 1 and 10 with a USB-CAN sniffer |
 | 2 | Bridge FW 33 + Jetson node, msgs, config, tests | JB | done: FW 33 flashed + verified on the Jetson 2026-10-25 | pytest; `pio run -e teensy41`; colcon + reflash on the Jetson |
 | 3 | GUI camera panel | JB | done: verified on the robot 2026-10-25 (owner) | node harness tests; bench row 8 |
-| 4 | Bench bring-up on the robot | both | partial 2026-10-25: rows 2, 5, 6 passed; row 4 in part (no clip-counter or tick-to-clip check); rows 3 and 9 accepted by the owner (track_err max 124 us; spread 59.7 ms from the client); row 7 passed | CAN adapter design s10 rows 2-7 and 9 |
-| 5 | Optical frame calibration | both | later | a clapboard flash maps the start tick to a recorded frame |
+| 4 | Bench bring-up on the robot | both | done 2026-10-25: rows 2, 5, 6, 7 and 8 passed; row 4 completed by the owner (clip counter and tick-to-clip); rows 3 and 9 accepted by the owner (track_err max 124 us; spread 59.7 ms from the client) | CAN adapter design s10 rows 2-7 and 9 |
+| 5 | Optical frame calibration | both | later: not in this plan's closure, filed as a map Feature | a clapboard flash maps the start tick to a recorded frame |
 
 ## Implementation Phases
 
@@ -89,12 +91,12 @@ Landed in the working tree on 2026-10-19 (logbook
   `WaveState`/`WaveEventKind`/`WaveReason` (Python).
 - `generate_udp_protocol.py` adds RpcMethod `WAVE_CMD` 0x0062 and `ArgWaveCmd`.
 - `rpc.cpp`: `case RpcMethod::WAVE_CMD` and `send_cone_frame()`;
-  `FW_VERSION` 31; `EXPECTED_BRIDGE_FW_VERSION` 31.
+  `FW_VERSION` 31; `EXPECTED_BRIDGE_FW_VERSION` 31 (both 33 since the 2026-10-25 merge, see Context).
 - `jugglebot/can/wave_camera.py`, `WaveCameraHeartbeat.msg`,
   `WaveRecordEvent.msg`, the bridge node's decoder branches, publishers,
   intent timer and Trigger services; launch rosbag list.
 
-Remaining for this phase, on the Jetson:
+Remaining for this phase at 2026-10-19, on the Jetson (all four done 2026-10-25, logbook § Jetson bring-up):
 
 1. `colcon build --packages-select jugglebot_interfaces jugglebot`.
 2. Reflash the bridge (`Teensy_code_canbridge/BRINGUP.md` Step 5) and confirm
@@ -148,3 +150,22 @@ for this plan's first closure.
 - The shared JSON wire-vector fixture the firmware and the node both consume (CAN adapter design s7, the
   clapboard precedent) is not written yet; the vectors live in
   `test_wave_camera.py` until it is.
+
+## Archival note (2026-10-25)
+
+Archived complete; the Pathway `wave-camera-can3` is marked complete with it, and
+the bring-up prompt `PROMPT-wave-camera-jetson-bringup.md` is archived alongside.
+Shipped: the ESP32 adapter firmware, bridge FW 33 with RPC `WAVE_CMD` 0x0062, the
+`camera/*` topics and `record_start` / `record_stop` / `clear_faults` services in
+`teensy_bridge_node`, and the GUI REC/STOP panel. On-robot rows 2, 5, 6, 7 and 8
+passed in the 2026-10-25 bring-up (logbook
+`2026-10-19-wave-camera-can3-bridge-and-node.md` § Jetson bring-up); the owner
+verified rows 1, 4 and 10 independently and accepted rows 3 (track_err max 124 us
+against < 100) and 9 (start spread 59.7 ms, measured from the client) as they are.
+The `2026-10_wave-camera-can3` branch has no commits beyond `main`.
+
+Residue, filed as map items under this Pathway: Phase 5 optical frame
+calibration (Feature); the shared JSON wire-vector fixture (Feature, the vectors
+live in `tests/ros/test_wave_camera.py` until then); the CLIP_MISSING reply on the
+first start after a camera power-cycle, read as a missed or late UART line on the
+adapter (Bug, for the bench PC).

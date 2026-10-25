@@ -2,7 +2,7 @@
 
 Part of the Wave Camera sub-project of Jugglebot (ADR
 [0014](../../../../docs/adr/0014-wave-camera-on-can3.md), plan
-[wave-camera-can3-integration](../../../../plans/active/wave-camera-can3-integration.md)).
+[wave-camera-can3-integration](../../../../plans/archived/wave-camera-can3-integration.md)).
 This folder is a standalone PlatformIO project; it is built and flashed from
 a PC over USB, never from the Jetson. Bench captures live in `bench_logs/`.
 
