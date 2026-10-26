@@ -22,6 +22,16 @@ def test_button_lives_in_the_bar_and_form_exists_once():
     assert 'js/quick-capture.js' in HTML
 
 
+def test_button_sits_left_right_of_the_map_tab_and_says_what_it_does():
+    """JB-65 (owner): the control lives on the left, just right of the Map tab, not in the prefs group."""
+    bar = HTML[HTML.index('id="app-tabs"'):HTML.index('id="map-pane"')]
+    btn = bar.index('id="quick-capture-btn"')
+    assert bar.index('id="tab-map"') < btn < bar.index('class="app-tabs-prefs"')
+    assert '>+<span class="qc-label"> File new change request</span></button>' in bar
+    assert 'white-space: nowrap' in CSS and '.qc-label { display: none; }' in CSS  # one line; "+" alone on a phone
+    assert 'getBoundingClientRect' in JS  # the popover is placed under the button
+
+
 def test_form_keys_never_reach_the_robot_tab():
     assert "form.addEventListener('keydown'" in JS
     assert "e.stopPropagation()" in JS

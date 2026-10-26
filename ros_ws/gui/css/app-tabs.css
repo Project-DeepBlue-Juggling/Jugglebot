@@ -61,13 +61,16 @@ body > #app { height: calc(100vh - var(--app-tabs-height)); }
     font-size: 13px;
 }
 
-/* Quick capture (js/quick-capture.js): "+" in the prefs group, popover form under the bar. */
+/* Quick capture (js/quick-capture.js): "+ File new change request" right of the Map tab, popover form under it. */
+#app-tabs .app-tabs-capture { display: flex; align-items: center; gap: 8px; margin-left: 8px; }
+#app-tabs #quick-capture-btn { white-space: nowrap; }
+@media (max-width: 600px) { #app-tabs .qc-label { display: none; } }   /* phone: just "+", the title says what it does */
 #app-tabs .qc-toast { font-size: 11px; color: var(--text-secondary); opacity: 0; transition: opacity 0.6s; }
 #app-tabs .qc-toast.show { opacity: 1; transition: none; }
 #quick-capture-form {
     position: fixed;
     top: var(--app-tabs-height);
-    right: var(--gap-sm);
+    left: var(--gap-sm);   /* openForm() moves it under the button */
     z-index: 1100;
     width: 280px;
     display: flex;

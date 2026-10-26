@@ -66,6 +66,9 @@ function restoreDraft() {
 function openForm() {
     restoreDraft();
     errEl.textContent = '';
+    // Drop the popover under the button, kept on-screen at narrow widths.
+    const left = Math.round(btn.getBoundingClientRect().left);
+    form.style.left = Math.max(4, Math.min(left, window.innerWidth - 284)) + 'px';
     form.hidden = false;
     btn.setAttribute('aria-expanded', 'true');
     titleEl.focus();

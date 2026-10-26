@@ -27,15 +27,13 @@ related_code:
 
 # Map item IDs
 
-**Status, 2026-10-26.** P0-P3 complete. **P4 complete except its phone-filed-Item check**: the live app (fork `74826ea`, deployed and running
-since 2026-10-26) contains it; a GET of the task list returned `short_id` on 62 of 62 Items that day, and its
-`create` allocates, so the presence test is safe to land. P4's Done-check "a phone-filed Item has an ID on
-`main`" is still unobserved. **P5 complete** (fork `0a4cd9a`, with the review fixes, deployed 2026-10-26: 62 of 62
-Items served with `short_id` and none unpushed after the restart; the drawer-body JB-link test is skipped in the
-full-app harness). **P6 in
-progress**: the Jugglebot docs, the presence test `test_every_item_has_an_id` and the build-review fixes
-(`/inbox` checks before pushing; ID writes survive a malformed Item; a renumber amends the unpushed file
-commit) land in logbook `map-item-ids-p6-jugglebot`; the fork `README.md`/`CLAUDE.md` and the GLOSSARY term (Idea JB-63) remain.
+**Status, 2026-10-26 (late).** P0-P5 complete. P4's Done-check is observed: JB-65 was filed by the owner from
+the live GUI's quick capture through the app's `create` at 23:41 and reached `main` as `022167af` with `id: JB-65`
+(the same app path a phone filing takes). P5 (fork `0a4cd9a`, deployed) serves `short_id` on every Item; the
+drawer-body JB-link test was un-skipped in fork `b576a6c`. **P6 in progress**: the Jugglebot docs, the presence
+test and the build-review and audit fixes landed (logbooks `map-item-ids-p6-jugglebot`, `ids-p6-audit-fixes`),
+and so did the fork's README and CLAUDE.md (`0a4cd9a`). Only the GLOSSARY term remains (Idea JB-63, through
+`grilling` + `domain-modeling`); then the plan archives.
 
 ## 1. Context
 

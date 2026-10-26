@@ -55,13 +55,15 @@
                 aria-selected="true" aria-controls="app">Robot</button>
         <button type="button" class="app-tab" id="tab-map" role="tab" data-tab="map"
                 aria-selected="false" aria-controls="map-pane">Map</button>
-        <!-- Theme + font size controls (ids used by theme.js / main.js); forwarded to the Map by app-tabs.js -->
-        <div class="app-tabs-prefs">
+        <!-- Quick capture (js/quick-capture.js): files a map item from either tab -->
+        <div class="app-tabs-capture">
             <button class="font-btn" id="quick-capture-btn" type="button" aria-haspopup="dialog"
                     aria-expanded="false" aria-controls="quick-capture-form"
-                    title="File a bug or idea in the map">+</button>
+                    title="File a bug or idea in the map">+<span class="qc-label"> File new change request</span></button>
             <span class="qc-toast" id="quick-capture-toast" role="status" aria-live="polite"></span>
-            <span class="app-tabs-gap"></span>
+        </div>
+        <!-- Theme + font size controls (ids used by theme.js / main.js); forwarded to the Map by app-tabs.js -->
+        <div class="app-tabs-prefs">
             <button class="font-btn" id="theme-toggle" title="Toggle light/dark theme">Light</button>
             <span class="app-tabs-gap"></span>
             <button class="font-btn" id="font-decrease" title="Decrease font size">A&#x2212;</button>
