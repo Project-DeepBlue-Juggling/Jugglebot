@@ -90,7 +90,6 @@ _Status: closed (complete)._
 
 **Attached inbox items:**
 
-- feature: JB-57 [Nightly status chip in the map header](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-nightly-status-chip-in-the-map-header.md) (in_progress)
 - feature: JB-58 [Quick capture: file a bug or idea from the GUI's Robot tab mid-sitting](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-quick-capture-files-a-map-item-from-the-robot-tab.md) (in_progress)
 - idea: JB-63 [GLOSSARY: add Item ID (JB-<n>) via grilling + domain-modeling](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-glossary-add-item-id-jb-n-via-grilling-domain-modeling.md) (inbox)
 
@@ -114,7 +113,7 @@ _Status: closed (complete)._
 | Project map and shared dictionary | — | — | — | closed |
 | Ball Butler | — | BB calibration: advisory when a template marker is never matched in a sweep | bug bb/throw_outcome carries no throw identity; bug NOT_SETTLED retry is dead in the field; feature Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware | — |
 | Learner generalisation | — | Box sweep fidelity for same-site families (plan what the executor dispatches) | P1 Learner core; P2 The characterisation sitting; P3 Online admissibility and box retirement; P4 BeatEvent stream and the columns wrapper; P5 Close-out | — |
-| Map improvements | P6 Normative docs | — | feature Nightly status chip in the map header; feature Quick capture: file a bug or idea from the GUI's Robot tab mid-sitting; idea GLOSSARY: add Item ID (JB-<n>) via grilling + domain-modeling | P0 Plan and its Feature; P1 mapkit ids module and checks; P2 Backfill and the uniqueness test; P3 mapkit resolution, creation, display and the commands; P4 App server: allocate, resolve, repair (fork repo); P5 App frontend: show and deep-link (fork repo) |
+| Map improvements | P6 Normative docs | — | feature Quick capture: file a bug or idea from the GUI's Robot tab mid-sitting; idea GLOSSARY: add Item ID (JB-<n>) via grilling + domain-modeling | P0 Plan and its Feature; P1 mapkit ids module and checks; P2 Backfill and the uniqueness test; P3 mapkit resolution, creation, display and the commands; P4 App server: allocate, resolve, repair (fork repo); P5 App frontend: show and deep-link (fork repo) |
 | Two-ball skill stack | — | — | — | closed |
 | Wave camera on CAN3 | — | — | — | closed |
 
@@ -125,7 +124,6 @@ _Status: closed (complete)._
 | JB-1 | bug | [can-bridge Guard reports the Hand as "leg 6"](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-can-bridge-guard-reports-hand-as-leg-6.md) | inbox | medium | — | filed 2026-09-21 |
 | JB-2 | feature | [Design change: the Hand should be Idle, not Parked Closed-loop, while Active](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-hand-idle-not-parked-closed-loop-while-active.md) | inbox | medium | — | filed 2026-09-21 |
 | JB-3 | feature | [Rename "session limits" to Sitting limits (glossary term)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-rename-session-limits-to-sitting-limits.md) | inbox | medium | — | filed 2026-09-21 |
-| JB-33 | idea | [Rename the columns/oval one-ball Patterns to the Ball 1 / Ball 2 terminology](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-ball1-ball2-pattern-rename.md) | in_progress | low | — | filed 2026-10-24 |
 | JB-21 | bug | [bb/throw_outcome carries no throw identity](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-bb-throw-outcome-carries-no-throw-identity.md) | inbox | medium | Ball Butler | filed 2026-10-24 |
 | JB-28 | feature | [Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-columns-empty-cup-rows-33-34-on-hardware.md) | inbox | medium | Ball Butler | filed 2026-10-24 |
 | JB-22 | bug | [Cup Banking saturates at its 12 deg clamp on small lateral offsets](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-cup-banking-saturates-at-clamp.md) | inbox | medium | Two-ball oval | filed 2026-10-24 |
@@ -141,7 +139,6 @@ _Status: closed (complete)._
 | JB-36 | idea | [Rosbag search](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-rosbag-search.md) | inbox | low | — | filed 2026-10-24 |
 | JB-32 | feature | [Sim columns run with a biased plant to exercise the forward-clip rule](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-sim-columns-biased-plant-forward-clip.md) | inbox | medium | — | filed 2026-10-24 |
 | JB-27 | bug | [Sim `--reload` gate LIMIT_JERK regression bisected to 08ec3fe6 (2026-09-30)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-sim-reload-gate-limit-jerk-regression.md) | inbox | medium | — | filed 2026-10-24 |
-| JB-57 | feature | [Nightly status chip in the map header](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-nightly-status-chip-in-the-map-header.md) | in_progress | low | Map improvements | filed 2026-10-25 |
 | JB-58 | feature | [Quick capture: file a bug or idea from the GUI's Robot tab mid-sitting](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-quick-capture-files-a-map-item-from-the-robot-tab.md) | in_progress | high | Map improvements | filed 2026-10-25 |
 | JB-52 | bug | [Wave camera: CLIP_MISSING on the first start after a camera power-cycle](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-wave-camera-clip-missing-on-first-start-after-a-camera-power-cycle.md) | inbox | low | Wave camera on CAN3 | filed 2026-10-25 |
 | JB-53 | feature | [Wave camera: optical frame calibration maps the START tick to a recorded frame](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-wave-camera-optical-frame-calibration.md) | inbox | low | Wave camera on CAN3 | filed 2026-10-25 |

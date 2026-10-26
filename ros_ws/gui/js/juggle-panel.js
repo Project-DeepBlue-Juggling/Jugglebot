@@ -130,7 +130,7 @@ export const JUGGLE_PATTERNS = [
       blurb: 'One ball thrown from the near site and caught at the far one, the ' +
              'hand carrying it back before the next throw.' },
     // Same oval, entered by a Ball Butler feed at T: needs an EMPTY cup.
-    { value: 'oval_1ball_fed', label: 'Oval — Ball 2 (fed)', kind: 'one', sites: 2, phantom: null,
+    { value: 'oval_1ball_fed', label: 'Oval — fed', kind: 'one', sites: 2, phantom: null,
       cupNeed: 'empty',
       blurb: 'The oval with Ball Butler feeding the first ball at the near site.' },
 ];

@@ -2,9 +2,9 @@
 id: JB-57
 kind: feature
 title: Nightly status chip in the map header
-status: in_progress
+status: complete
 created: '2026-10-25'
-updated: '2026-10-25T23:31:23Z'
+updated: '2026-10-26T02:15:37Z'
 owners:
 - harrison
 priority: low
@@ -12,6 +12,7 @@ blocked_by: []
 links:
 - https://github.com/Project-DeepBlue-Juggling/jugglebot-map
 - logbook/2026-10-26-map-improvements-features-verified.md
+- logbook/2026-10-26-owner-decisions-chip-oval-label-rename-scope.md
 parent: map-improvements
 filed_by: claude
 ---
@@ -33,3 +34,4 @@ A chip in the map header showing GREEN, RED, DEFERRED or STALE (date older than 
 ## Progress
 
 - 2026-10-26: built and deployed, ON; waits only for the owner's word that the chip does not reverse the no-GUI choice (logbook/2026-10-26-map-improvements-features-verified.md)
+- 2026-10-26: owner 2026-10-26: keep the chip on; it does not reverse the no-GUI choice (logbook/2026-10-26-owner-decisions-chip-oval-label-rename-scope.md)

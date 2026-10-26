@@ -243,7 +243,7 @@ Done when: `/audit --unstaged` run once, findings applied; `./run_tests.sh` gree
 
 Owner questions (the reviewer's four, verbatim, with the defaults taken while the owner was away):
 1. The prefix (`JB-` recommended), before P2. Changing it later means rewriting all 61 files and every
-   citation. **Default taken: `JB`.**
+   citation. **Default taken: `JB`; confirmed by the owner 2026-10-26.**
 2. Should write commands accept a bare number, or require `jb12` (recommended: require it)? **Default taken:
    bare numbers in read commands only; writes need the `jb` prefix (any case, hyphen optional) or a stem, and
    every write prints the resolved ID, stem and title.**
