@@ -93,4 +93,4 @@ def test_find_offenders_negative_case(tmp_path):
 
 def test_checked_list_seed():
     assert load_phrases() == ["leg 6", "can-hub", "session limits", "guard E-STOP",
-                              "runsheet", "toss", "reload"]
+                              "runsheet", "toss", "reload", "ticket number"]

@@ -3,7 +3,7 @@ title: "Map item IDs: a short, unique, stable ID on every Item"
 created: 2026-10-25
 status: active
 owner: harrison
-last_updated: 2026-10-26
+last_updated: 2026-10-27
 pathway: map-improvements
 branch: main
 scope: >-
@@ -18,7 +18,7 @@ steps:
   - {id: P3, title: 'mapkit resolution, creation, display and the commands', kind: phase, status: complete, date: 2026-10-26}
   - {id: P4, title: 'App server: allocate, resolve, repair (fork repo)', kind: phase, status: complete, date: 2026-10-26}
   - {id: P5, title: 'App frontend: show and deep-link (fork repo)', kind: phase, status: complete, date: 2026-10-26}
-  - {id: P6, title: Normative docs, kind: phase, status: in_progress}
+  - {id: P6, title: Normative docs, kind: phase, status: complete, date: 2026-10-27}
 related_code:
   - mapkit/ids.py::allocate
   - mapkit/itemcli.py::find_item
@@ -27,13 +27,12 @@ related_code:
 
 # Map item IDs
 
-**Status, 2026-10-26 (late).** P0-P5 complete. P4's Done-check is observed: JB-65 was filed by the owner from
-the live GUI's quick capture through the app's `create` at 23:41 and reached `main` as `022167af` with `id: JB-65`
-(the same app path a phone filing takes). P5 (fork `0a4cd9a`, deployed) serves `short_id` on every Item; the
-drawer-body JB-link test was un-skipped in fork `b576a6c`. **P6 in progress**: the Jugglebot docs, the presence
-test and the build-review and audit fixes landed (logbooks `map-item-ids-p6-jugglebot`, `ids-p6-audit-fixes`),
-and so did the fork's README and CLAUDE.md (`0a4cd9a`). Only the GLOSSARY term remains (Idea JB-63, through
-`grilling` + `domain-modeling`); then the plan archives.
+**Status, 2026-10-27.** P0-P6 complete; the plan is ready to archive. P4's Done-check is observed: JB-65 was
+filed by the owner from the live GUI's quick capture through the app's `create` at 23:41 on 2026-10-26 and
+reached `main` as `022167af` with `id: JB-65`. P5 (fork `0a4cd9a`, deployed) serves `short_id` on every Item.
+P6 closed with the GLOSSARY term **Item ID** (Idea JB-63, settled in a grilling round with the owner, logbook
+`2026-10-27-glossary-item-id-term`): `short ID` stays an allowed description, `ticket number` is on _Avoid_
+and enforced by the Avoid-word test, and `issue number` is on _Avoid_ only as a name for an Item ID.
 
 ## 1. Context
 

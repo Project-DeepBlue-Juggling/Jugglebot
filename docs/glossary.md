@@ -428,6 +428,12 @@ One file in `map/`: a Pathway, Idea, Feature, Bug or Ticket. Plans are not Items
 
 _Avoid: task, card_
 
+**Item ID**
+
+An Item's short name, `JB-<n>`: one sequence across every kind of Item, given when the Item is filed and never reused. It changes only before the Item is published, or to repair a duplicate. Plans, Steps and logbook entries have none.
+
+_Avoid: ticket number, issue number (for an Item ID; a GitHub Issue's own #n is a different thing)_
+
 **Inbox**
 
 The Items whose status is `inbox`: filed and not yet triaged. Triage means leaving the inbox, independently of whether the Item is attached to a Pathway.

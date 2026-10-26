@@ -2,13 +2,14 @@
 id: JB-63
 kind: idea
 title: 'GLOSSARY: add Item ID (JB-<n>) via grilling + domain-modeling'
-status: inbox
+status: complete
 created: '2026-10-26'
-updated: '2026-10-25T23:46:14Z'
+updated: '2026-10-26T23:08:21Z'
 owners: []
 priority: medium
 blocked_by: []
-links: []
+links:
+- logbook/2026-10-27-glossary-item-id-term.md
 parent: map-improvements
 filed_by: claude
 ---
@@ -18,3 +19,4 @@ Add the term Item ID (JB-<n>) to GLOSSARY.md. Avoid words to settle in the grill
 ## Progress
 
 - 2026-10-26: Body reworded so the Avoid-word scan stays green once the term lands in GLOSSARY.
+- 2026-10-27: Item ID term added to GLOSSARY.md (Project map group) after a grilling round with the owner; `ticket number` enforced by the Avoid-word test.
