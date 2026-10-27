@@ -92,6 +92,7 @@ _Status: closed (complete)._
 
 - bug: JB-67 [item_uuid(slug) collides across kinds that share a slug](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-item-uuid-slug-collides-across-kinds-that-share-a-slug.md) (inbox)
 - feature: JB-68 [Front page scrolls as one page](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-front-page-scrolls-as-one-page.md) (inbox)
+- feature: JB-69 [Map pages update without a manual refresh](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-map-pages-update-without-a-manual-refresh.md) (inbox)
 
 ## Two-ball skill stack
 
@@ -113,7 +114,7 @@ _Status: closed (complete)._
 | Project map and shared dictionary | — | — | — | closed |
 | Ball Butler | — | BB calibration: advisory when a template marker is never matched in a sweep | bug bb/throw_outcome carries no throw identity; bug NOT_SETTLED retry is dead in the field; feature Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware | — |
 | Learner generalisation | — | Box sweep fidelity for same-site families (plan what the executor dispatches) | P1 Learner core; P2 The characterisation sitting; P3 Online admissibility and box retirement; P4 BeatEvent stream and the columns wrapper; P5 Close-out | — |
-| Map improvements | — | — | bug item_uuid(slug) collides across kinds that share a slug; feature Front page scrolls as one page | P0 Plan and its Feature; P1 mapkit ids module and checks; P2 Backfill and the uniqueness test; P3 mapkit resolution, creation, display and the commands; P4 App server: allocate, resolve, repair (fork repo); P5 App frontend: show and deep-link (fork repo); P6 Normative docs |
+| Map improvements | — | — | bug item_uuid(slug) collides across kinds that share a slug; feature Front page scrolls as one page; feature Map pages update without a manual refresh | P0 Plan and its Feature; P1 mapkit ids module and checks; P2 Backfill and the uniqueness test; P3 mapkit resolution, creation, display and the commands; P4 App server: allocate, resolve, repair (fork repo); P5 App frontend: show and deep-link (fork repo); P6 Normative docs |
 | Two-ball skill stack | — | — | — | closed |
 | Wave camera on CAN3 | — | — | — | closed |
 
@@ -145,4 +146,5 @@ _Status: closed (complete)._
 | JB-64 | bug | [skill_node accept-check fixture test flakes under full-gate load](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-skill-node-accept-check-fixture-test-flakes-under-full-gate.md) | inbox | medium | — | filed 2026-10-26 |
 | JB-68 | feature | [Front page scrolls as one page](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-front-page-scrolls-as-one-page.md) | inbox | medium | Map improvements | filed 2026-10-27 |
 | JB-67 | bug | [item_uuid(slug) collides across kinds that share a slug](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-item-uuid-slug-collides-across-kinds-that-share-a-slug.md) | inbox | low | Map improvements | filed 2026-10-27 |
+| JB-69 | feature | [Map pages update without a manual refresh](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-map-pages-update-without-a-manual-refresh.md) | inbox | high | Map improvements | filed 2026-10-27 |
 | JB-66 | bug | [replay_overview older-version requeue test flakes under full-gate load](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-replay-overview-older-version-requeue-test-flakes-under-full.md) | inbox | medium | — | filed 2026-10-27 |
