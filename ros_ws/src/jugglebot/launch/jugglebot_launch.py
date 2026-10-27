@@ -365,9 +365,32 @@ def generate_launch_description():
         executable='mocap_node',
     )
 
+    # ── Scheduling priority: the box is oversubscribed, so the fair-share ──
+    #
+    # MEASURED 2026-10-28 (JB-76, logbook/2026-10-28-jb76-solve-tail-is-
+    # environment-starvation-instrumented.md): with this launch up the Jetson's
+    # six cores run at 4.3 cores busy idle and 5.5 cores busy while juggling,
+    # ~13 tasks runnable at any instant. The planner's solver worker then gets
+    # about 45 % of a core: every CATCH solve did ~65 ms of CPU and took 150 ms
+    # (p50) / 225 ms (p90) of wall time, 59 involuntary context switches each,
+    # and the 150 ms re-aim cliff refused most re-aims. Nothing outside the
+    # launch mattered (two Claude CLIs 3 %, the box <8 % busy before launch).
+    #
+    # The scheduler cannot be told the worker matters more (rtprio and nice
+    # limits are 0 for this user) but CAN be told these processes matter less:
+    # `nice -n 10` weighs ~1/9 of nice 0 under CFS, so under contention they
+    # yield to the time-critical chain (mocap -> tracker -> skill -> trajectory
+    # + worker -> teensy_bridge, and orchestrator_node, which dispatches the
+    # skills and handles the ENDs). They still get every idle cycle; only who
+    # waits changes. Costs: the GUI stutters during a solve burst and the bag
+    # may drop messages under contention. No root needed: raising niceness is
+    # always allowed.
+    _low_priority = 'nice -n 10'
+
     spacemouse_handler = Node(
         package='jugglebot',
         executable='spacemouse_handler',
+        prefix=_low_priority,
     )
 
     ball_tracker_node = Node(
@@ -430,6 +453,7 @@ def generate_launch_description():
         package='jugglebot',
         executable='ball_butler_node',
         parameters=[{'apply_aim_correction': apply_aim_correction}],
+        prefix=_low_priority,   # see _low_priority above
     )
 
     # trajectory_node is the sole owner of the :5557 leg funnel. It replaced the
@@ -566,6 +590,7 @@ def generate_launch_description():
         executable='rosbridge_websocket_lean',
         name='rosbridge_websocket',
         output='log',
+        prefix=_low_priority,   # see _low_priority above
         parameters=[{
             'port': 9090,
             'retry_startup_delay': 5.0,
@@ -602,6 +627,7 @@ def generate_launch_description():
 
     rosbag_record = ExecuteProcess(
         name='rosbag_record',
+        prefix=_low_priority,   # see _low_priority above
         cmd=[
             'ros2', 'bag', 'record',
             '/robot_state',

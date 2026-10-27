@@ -1,5 +1,5 @@
 ---
-title: "JB-76: the CATCH solve tail tracks box load, not a bigger problem; starvation is the leading hypothesis; per-solve CPU time and context switches now logged"
+title: "JB-76: the CATCH solve tail is the launch starving its own solver worker (65 ms of CPU takes 150 ms of wall on a 5.5-of-6-core box); instrumented, measured in one Sitting, low-priority prefixes as the first fix"
 type: investigation
 date: 2026-10-28
 status: in-progress
@@ -12,7 +12,10 @@ files_changed:
   - ros_ws/src/jugglebot/jugglebot/motion/skills/solver_worker.py
   - ros_ws/src/jugglebot/jugglebot/trajectory_node.py
   - tools/probes/profile_session.py
+  - tools/probes/solve_starvation_scan.py
   - tools/probes/README.md
+  - ros_ws/src/jugglebot/launch/jugglebot_launch.py
+  - tests/ros/test_launch_priority.py
   - tests/motion/test_solver_worker.py
   - tests/ros/test_install_segment.py
 subsystem:
@@ -23,7 +26,7 @@ tags:
   - jetson-load
 ---
 
-# JB-76: the solve tail tracks box load
+# JB-76: the solve tail is the launch starving its own solver
 
 ## What
 
@@ -99,14 +102,55 @@ The leading hypothesis is preemption and cache churn from the many processes tha
 - `tools/probes/profile_session.py` gains a 1 s `vmstat` recorder: run queue, context switches and swap in/out. It is recorded raw; `report.md` does not analyse it yet. The existing `pidstat` (with `-w` for each process's context switches) and `mpstat` recorders cover the rest. The whole recorder set (`pidstat`, `mpstat`, `tegrastats`, `vmstat`) costs about 2–3% of one core, almost all of it `pidstat`, in an 8 s smoke run.
 - For the next Sitting: `python tools/probes/profile_session.py start` before the launch, and `... stop` after it.
 
-## Next
+## The Sitting of 2026-10-28 09:49 (same day, second half of this entry)
 
-1. Fly one Sitting with the recorder running.
-2. Read `cpu` and `ivcsw` for the slow solves, and `pidstat` for the processes that wake most during those seconds.
-3. If the environment is confirmed, give the worker its own core: `sched_setaffinity` on the worker, and keep the other launch processes off that core (no root needed).
-4. Restart the Jetson only after that Sitting's data is in.
+Flown with the recorder running (`temp/probes/profile_20261028-094925/`, 482 s; launch log `~/.ros/log/2026-10-28-09-49-31-556395-jetson-3246295/launch.log`; bag under `~/Desktop/rosbags/2026-10-28_09-49*`). Nine goals; none ended SPLICE_TOO_LATE, 56 re-aims were refused on it. Read with the new `tools/probes/solve_starvation_scan.py` (output `temp/probes/solve-starvation-2026-10-28.txt`).
+
+**Starvation confirmed.** CPU time is the intrinsic cost; the rest is waiting for a core.
+
+| Solve | n | wall p50 / p90 | CPU p50 / p90 | wall/CPU p50 | ivcsw p50 |
+|---|---|---|---|---|---|
+| CATCH, accepted | 206 | 153 / 226 ms | 67 / 98 ms | 2.18 | 59 |
+| refused (30 SPLICE_TOO_LATE, 26 transit, 8 planner codes; a refusal line carries no kind, assumed CATCH) | 64 | 174 / 210 ms | 63 / 80 ms | 2.71 | 74 |
+| THROW | 8 | 63 / 90 ms | 40 / 48 ms | 1.66 | 36 |
+| REST | 19 | 54 / 100 ms | 41 / 49 ms | 1.41 | 35 |
+
+- 162 of 270 CATCH-class solves took over 150 ms of wall time; **zero** took over 150 ms of CPU. The 150 ms re-aim cliff sits below the median wall time.
+- 9 involuntary switches per 10 ms of CPU: the worker loses its core about once a millisecond.
+- The handoff CATCHes survived only because their 350 ms budget cleared the 297 ms worst case.
+
+**The load is the launch itself.** Before launch the box was 1–8 % busy (`vmstat.log`, the six rows before 09:49:31). Launch up and idle: 435 % of 600. During goals: **555 % of 600**, run queue p50 13 on 6 cores, 27 k context switches/s. Per process, mean % of one core over the Sitting (during goals / idle in brackets):
+
+| Process | mean % | note |
+|---|---|---|
+| `rosbridge_websocket_lean` | 86 (77 / 86) | one GUI client |
+| `ball_tracker_node` | 83 (129 / 36) | above one core while juggling: threads busy outside the GIL |
+| `teensy_bridge_node` | 79 (78 / 72) | |
+| `skill_node` | 73 (78 / 61) | |
+| `mocap_node` | 71 (66 / 68), peaks 238 (`report.md`) | |
+| `ball_butler_node` | 37 | |
+| `trajectory_node` | 30 | |
+| `ros2 bag record` | 19 | |
+| `orchestrator_node` | 18 | |
+| solver worker | 12 | 65 ms bursts, ~45 % of a core each |
+
+Not on the list: the two Claude CLIs (3 % together), VS Code, the map app. One Claude Code auto-update (`npm install`) ran 15 s at 81 % with no solve inside its window. Swap did not page (`si`/`so` 0). The mocap queue peaked at 9 of 150 with zero overflows (the launch log's 1 Hz `queue max` lines), so the overflow seen on 10-24 and 10-27 was a fellow victim of crowding on worse days, not the cause; with it absent the starvation was still 2.2×.
+
+**Why the budgets stopped fitting.** `SOLVE_BUDGET_KNOTS` was sized on 2026-09-18 from CATCH p50 76 / p95 113 ms. The intrinsic solve has not grown; the launch has (Ball Butler feed chain, GUI traffic, the tracker's matcher), past the point where fair-share scheduling still hands the worker a whole core.
+
+## Fix 1 (this commit): low priority for the processes that are not on the control chain
+
+`jugglebot_launch.py` adds `prefix='nice -n 10'` to `rosbridge_websocket`, `rosbag_record`, `spacemouse_handler` and `ball_butler_node`. Under CFS nice 10 weighs about 1/9 of nice 0, so under contention they yield to mocap → tracker → skill → trajectory + worker → teensy_bridge, and to `orchestrator_node` (owner: it dispatches the skills and handles the ENDs, so it stays at nice 0). They keep every idle cycle; only who waits changes. No root needed. Expected: CATCH wall time back near 80–100 ms. Costs: GUI stutter during solve bursts, and GUI-relayed commands (the Soft E-stop button included) reach ROS tens of ms later under contention; the bag may drop messages; `ball_butler_node`'s own scheduling latency grows, which the Feed tolerates because the BB release instant is an absolute time the BB itself holds (protocol 10), not a Jetson-timed send. Verified on this box by resolving every process's prefix from the real launch objects (exactly the four carry `nice -n 10`; `--print` does not show prefixes) and pinned by `tests/ros/test_launch_priority.py`, which also asserts that no control-chain node carries any prefix; the gate is the next Sitting's scan.
+
+## Next, in order (owner-agreed 2026-10-28)
+
+1. Fly a Sitting with the recorder, run the scan, compare wall/CPU against 2.18.
+2. Trim the load where the table points: the tracker's >100 % (test `OPENBLAS_NUM_THREADS=1` on it offline through `tracker_bag_replay.py`; the launch comment's reason for leaving it uncapped, "genuinely large-matrix work", does not match the code, which is 6×6 Kalman steps, norms and an (n, 2) `lstsq`), rosbridge's 86 % for one client (an Opus agent is surveying the options), then `py-spy` on `skill_node` and `teensy_bridge_node`.
+3. Core isolation for the worker only after step 2 frees headroom: today 5.1 cores of demand on the 5 remaining cores would squeeze the setpoint stream.
+4. The 150 ms unpinned re-aim cliff stays structurally thin and is a separate decision.
+5. A Jetson restart is not a fix: the load is the running launch.
 
 ## Verification
 
-- Scoped, 2026-10-28: `pytest -q tests/motion/test_solver_worker.py tests/ros/test_install_segment.py tests/motion/test_solver_worker_lateness.py` gave 93 passed before the test was narrowed to a BLAS-capped worker; afterwards `tests/motion/test_solver_worker.py` gave 16 passed.
-- The gate's triple is in the commit message.
+- Instrumentation commit, 2026-10-28: `pytest -q tests/motion/test_solver_worker.py tests/ros/test_install_segment.py tests/motion/test_solver_worker_lateness.py` gave 93 passed before the test was narrowed to a BLAS-capped worker; afterwards `tests/motion/test_solver_worker.py` gave 16 passed. Gate `./run_tests.sh`, 2026-10-28: 7369 passed / 4 skipped + serial 5 passed, PASS.
+- Fix 1 commit, 2026-10-28: `pytest -q tests/ros/test_launch_priority.py` 1 passed; `./run_tests.sh` 7370 passed / 4 skipped + serial 5 passed, PASS (`temp/logs/jb76-nice-gate.log`); the scan reproduces every table above from the saved Sitting data (`python tools/probes/solve_starvation_scan.py ~/.ros/log/2026-10-28-09-49-31-556395-jetson-3246295/launch.log temp/probes/profile_20261028-094925`).
