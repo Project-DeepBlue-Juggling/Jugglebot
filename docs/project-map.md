@@ -23,6 +23,7 @@ Where each pathway of the Jugglebot project stands: its destination, how many st
 
 - bug: JB-22 [Cup Banking saturates at its 12 deg clamp on small lateral offsets](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-cup-banking-saturates-at-clamp.md) (inbox)
 - bug: JB-24 [10 % jitter-margin class of LIMIT_* refusals](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-limit-refusal-jitter-margin.md) (inbox)
+- bug: JB-76 [SPLICE_TOO_LATE ends half the goals: CATCH solve tail now crosses the 250 ms deadline](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-splice-too-late-ends-half-the-goals-catch-solve-tail-now.md) (inbox)
 
 ## Project map and shared dictionary
 
@@ -107,7 +108,7 @@ _Status: closed (complete)._
 
 | Pathway | Now | Next | Later | Done |
 | --- | --- | --- | --- | --- |
-| Two-ball oval | P3 Pose-level carry planner | P3 Robot validation | P4 Working point and the dwell ladder; P5 Two-ball oval; bug Cup Banking saturates at its 12 deg clamp on small lateral offsets; bug 10 % jitter-margin class of LIMIT_* refusals | P1 Firmware - age-aware lead clamp and engagement counter; P2 Bench validation; P1 The oval pattern dispatchable |
+| Two-ball oval | P3 Pose-level carry planner | P3 Robot validation | P4 Working point and the dwell ladder; P5 Two-ball oval; bug Cup Banking saturates at its 12 deg clamp on small lateral offsets; bug 10 % jitter-margin class of LIMIT_* refusals; bug SPLICE_TOO_LATE ends half the goals: CATCH solve tail now crosses the 250 ms deadline | P1 Firmware - age-aware lead clamp and engagement counter; P2 Bench validation; P1 The oval pattern dispatchable |
 | Project map and shared dictionary | — | — | — | closed |
 | Ball Butler | — | BB calibration: advisory when a template marker is never matched in a sweep | bug bb/throw_outcome carries no throw identity; bug NOT_SETTLED retry is dead in the field; feature Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware | — |
 | Learner generalisation | — | Box sweep fidelity for same-site families (plan what the executor dispatches) | P1 Learner core; P2 The characterisation sitting; P3 Online admissibility and box retirement; P4 BeatEvent stream and the columns wrapper; P5 Close-out | — |
@@ -141,7 +142,10 @@ _Status: closed (complete)._
 | JB-53 | feature | [Wave camera: optical frame calibration maps the START tick to a recorded frame](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-wave-camera-optical-frame-calibration.md) | inbox | low | Wave camera on CAN3 | filed 2026-10-25 |
 | JB-54 | feature | [Wave camera: a shared JSON wire-vector fixture for the adapter firmware and the node](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-wave-camera-shared-json-wire-vector-fixture.md) | inbox | low | Wave camera on CAN3 | filed 2026-10-25 |
 | JB-64 | bug | [skill_node accept-check fixture test flakes under full-gate load](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-skill-node-accept-check-fixture-test-flakes-under-full-gate.md) | inbox | medium | — | filed 2026-10-26 |
+| JB-75 | bug | [can-bridge SETPOINT_STALE latches on an arm edge when the last setpoint is from an earlier stream](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-can-bridge-setpoint-stale-latches-on-an-arm-edge-when-the.md) | inbox | medium | — | filed 2026-10-27 |
 | JB-72 | bug | [HomingMonitor false-times-out a home shorter than one Diagnostic period](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-homingmonitor-false-times-out-a-home-shorter-than-one.md) | inbox | medium | — | filed 2026-10-27 |
 | JB-67 | bug | [item_uuid(slug) collides across kinds that share a slug](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-item-uuid-slug-collides-across-kinds-that-share-a-slug.md) | inbox | low | Map improvements | filed 2026-10-27 |
 | JB-73 | bug | [MOTOR_FB_STALE suppression leaves the ODrive holding its last vel_ff](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-motor-fb-stale-suppression-leaves-the-odrive-holding-its.md) | inbox | low | — | filed 2026-10-27 |
+| JB-74 | feature | [Move the Wave camera panel to be in the same banner as the 'Home', 'Level', 'Activate' etc. buttons. Move the buttons to be centred between the camera panel and the Trail panel](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-move-the-wave-camera-panel-to-be-in-the-same-banner-as-the-h.md) | inbox | medium | — | filed 2026-10-27 |
 | JB-66 | bug | [replay_overview older-version requeue test flakes under full-gate load](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-replay-overview-older-version-requeue-test-flakes-under-full.md) | inbox | medium | — | filed 2026-10-27 |
+| JB-76 | bug | [SPLICE_TOO_LATE ends half the goals: CATCH solve tail now crosses the 250 ms deadline](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-splice-too-late-ends-half-the-goals-catch-solve-tail-now.md) | inbox | high | Two-ball oval | filed 2026-10-27 |
