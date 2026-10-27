@@ -212,8 +212,10 @@ and whether this cup can carry a ball 150 mm in 0.30 s is what the plan finds ou
     headroom and the release-hold budget are P4 design items that may re-open 0.40 and 0.30.
   - *New prerequisite* — the single-leg ~10 Hz vibrations (three events on legs 1 and 2, both planners, two with the iq setpoint on the 15 A clamp: S1 leg 2, S2 leg 1) are the
     can-bridge LEAD CLAMP amplifying leg-bus encoder frame drops (`leg_interp.cpp`, no age extrapolation): archived plan
-    `leg-bus-frame-drops.md` Workstream A, re-opened as `plans/active/leg-lead-clamp-age-aware.md`, **a prerequisite of
+    `leg-bus-frame-drops.md` Workstream A, re-opened as `plans/archived/leg-lead-clamp-age-aware.md`, **a prerequisite of
     the next powered oval Sitting and of P4's `leg_curr_limit_a` 15 → 30.**
+    **MET 2026-10-27:** that plan's P3 Sitting flew FW 33 with zero staircase episodes and zero clamp ticks through real
+    frame drops (`logbook/2026-10-27-leg-lead-clamp-age-aware-p3-robot.md`); the plan is archived.
   - *P3-5 (0.45 under pose)* — refused by the box because no 0.45 pose cell had been swept (the runbook row assumed one);
     the cell is in the box from this re-sweep. The install log already names the planner per install
     (`install_segment … planner pose`); no observability change.
@@ -333,7 +335,7 @@ second-to-last catch at C is a standalone HELD catch and the last throw lands on
 | P2 | Banking leak fix (principle a) | ~~Rung 1 re-flown = the leak-fixed column~~ | RETIRED 2026-10-23 (row kept): the leak does not reproduce on today's planner, delta 0 at every accepted dwell 0.65-0.45, § 4 P2 | 2026-10-23 |
 | Rung 2 | No planner code (box cells at 0.55 / 0.50 swept 2026-10-23, see the logbook): one-ball oval at dwell 0.55 then 0.50 on the as-is `level` planner at today's limits, bundled with the sitting that flies the three owed unflown fixes first | Row-27 metrics per step against the 0.65 baseline (runbook `session_oval_rung1.md` § 7) sets P3's shaper target | FLOWN 2026-10-23, MET (owner GO): 0.50 38/38 with a 32-run, 0.55 4/4, 0.65 75/76; leg 2 peak 10.1 A accepted (15 A clamp) | `2026-10-23-oval-rung2-flown-dwell-050` |
 | P3 | Pose-level carry planner behind `level \| pose`, C-CUP-4 rows, knob re-tune, cycle budget, seam-dz ablation (design starts AFTER rung 2 flies) | Starts from the dwell-0.50 as-is baseline (38/38); rung 1 re-flown = the swept column → decision 24 gate; columns re-gated if the mode flips | CODE COMPLETE 2026-10-23; **A/B FLOWN 2026-10-24 (two Sittings): `pose` NO-GO at 0.50 as built (47/57; the logged skid was the drop cause), equal at 0.65; default stays `level`. Skid BOUND landed the same day (`I-PLAN-14`, 175 mm/s, pose cells re-swept + 0.45 cell); re-gate = the next Sitting (runbook § 9), AFTER the lead-clamp prerequisite plan** | 2026-10-24 |
-| P4 | Working point 600/8000/200k, acc ceiling 10000, 30 A (gated by `leg-lead-clamp-age-aware.md`), box re-sweep (oval + columns), one-ball cells at the FIRST PLANNABLE dwells (0.45 today; 0.40 / 0.30 only if the hand-acc and release-hold design items open them — amendment 52–58, 2026-10-24) | Ramp sitting (five columns canary, one-ball oval at the shortest admissible dwell) | NOT STARTED — premise amended 2026-10-24 | |
+| P4 | Working point 600/8000/200k, acc ceiling 10000, 30 A (gated by `leg-lead-clamp-age-aware.md`, MET 2026-10-27), box re-sweep (oval + columns), one-ball cells at the FIRST PLANNABLE dwells (0.45 today; 0.40 / 0.30 only if the hand-acc and release-hold design items open them — amendment 52–58, 2026-10-24) | Ramp sitting (five columns canary, one-ball oval at the shortest admissible dwell) | NOT STARTED — premise amended 2026-10-24 | |
 | P5 | Two-ball `oval(_fed)`: `compile_oval`, hop-shaped entry, Stop exit, clearance pre-flight | 30 consecutive BB-fed catches in one attempt at P4's gate dwell | NOT STARTED | |
 
 Each rung is the gate (P3's gate is rung 2's outcome): a phase does not start until the rung before it has flown and its
@@ -461,7 +463,7 @@ Where the idea lives now: a note inside P3 (below). Code never started; nothing 
   under `level`); throw quality identical. Three re-decisions (owner 2026-10-24, § 1.3 Amendments, P3 tail): the skid is
   a bound (`I-PLAN-14`, 175 mm/s, landed this day with the box re-swept and a 0.45 pose cell added — 26 cells), the
   single-leg vibrations seen in both Sittings (leg 1 twice, leg 2 once; the can-bridge lead clamp on stale encoder
-  frames, twice with the iq setpoint on the 15 A clamp, once mid-carry) are a PREREQUISITE plan `leg-lead-clamp-age-aware.md`, and P4/P5 aim at the
+  frames, twice with the iq setpoint on the 15 A clamp, once mid-carry) are a PREREQUISITE plan `leg-lead-clamp-age-aware.md` (MET 2026-10-27), and P4/P5 aim at the
   first plannable dwell. P3 stays `in_progress` until the re-gate Sitting (runbook § 9) is flown after the prerequisite.
 
 ### P4 — Working point and the dwell ladder — NOT STARTED (premise amended 2026-10-24)
@@ -473,8 +475,10 @@ Where the idea lives now: a note inside P3 (below). Code never started; nothing 
   (`hand_acc_rps2` 3900 is the refusal, not a leg knob), (b) the release-hold budget (0.100 + 0.050 s of a 0.30 s
   window). P4 presumes the `pose` planner passed its re-gate (runbook § 9); if it did not, the ladder ends at 0.45 on
   `level` and the plan's destination is re-examined.
-- **Prerequisite:** `plans/active/leg-lead-clamp-age-aware.md` (the frame-drop lead-clamp amplifier) is flown and
-  passed before the clamp raise below — a 15 A staircase on one leg today becomes a 30 A one.
+- **Prerequisite:** `leg-lead-clamp-age-aware.md` (the frame-drop lead-clamp amplifier) is flown and
+  passed before the clamp raise below — a 15 A staircase on one leg today becomes a 30 A one. **MET 2026-10-27** (plan
+  archived; `logbook/2026-10-27-leg-lead-clamp-age-aware-p3-robot.md`). JB-76 (`SPLICE_TOO_LATE` ending half the goals)
+  still stands in front of any 30-catch run.
 - First item: sweep the pose planner's one-ball cells at every dwell the probe clears at the new working point
   (0.50 / 0.45 today; 0.40 if item (a) lands first).
 - One commit: `leg_acc_ceiling_mmps2` 5000 → 10000; session defaults 350/5000/200000 →

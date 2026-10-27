@@ -38,7 +38,7 @@ files_changed:
   - tests/firmware/test_udp_protocol_xlang.py
   - tests/teensy_link/test_leg_clamp_diag_codec.py
   - tests/ros/test_teensy_bridge_node_leg_clamp_diag.py
-  - plans/active/leg-lead-clamp-age-aware.md
+  - plans/archived/leg-lead-clamp-age-aware.md
 subsystem:
   - can
   - motion
@@ -431,6 +431,6 @@ caught a hand edit.
 
 ## Related
 
-- Plan: `plans/active/leg-lead-clamp-age-aware.md`; design record
+- Plan: `plans/archived/leg-lead-clamp-age-aware.md`; design record
   `plans/archived/leg-bus-frame-drops.md` § 3; salvage `plans/archived/lead-clamp-content-freshness.md` §§ 2, 5, 6.
 - Evidence: `logbook/2026-10-24-two-ball-oval-p3-ab-sittings-skid-bound.md` § "The vibration events".

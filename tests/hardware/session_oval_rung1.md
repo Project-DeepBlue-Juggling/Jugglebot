@@ -246,7 +246,7 @@ at entry, not dropped from the cup). Wide throws and refused re-aims are equal a
 — S1: leg 1 @1792799742.4 (pose 0.65), leg 2 @1792799921.7 (pose 0.50, iq setpoint 14.99 A, ±19 mm); S2: leg 1 @1792802191.8 (LEVEL 0.50, mid-carry
 with the ball, iq setpoint 14.99 A). Commanded echo smooth in every case; the leg's encoder feedback had dropped to ~10 Hz (bridge: `heartbeat gap
 906 ms (0/91 encoder frames)`), and the bridge lead clamp (`leg_interp.cpp:1066-1072`, target = stale fb ± 7.07 mm, no age term) staircased the
-command. Not the planner, not pose-specific: `plans/active/leg-lead-clamp-age-aware.md`. **Solve time under load:** CATCH installs median 133 /
+command. Not the planner, not pose-specific: `plans/archived/leg-lead-clamp-age-aware.md`. **Solve time under load:** CATCH installs median 133 /
 207 ms (level 0.65 / 0.50) vs 168 / 156 / 236 ms (pose 0.65 / 0.50 S1 / 0.50 S2), both planners within reach of the 250 ms deadline at 0.50 on the
 loaded Jetson (idle: 42 vs 46 ms). P3-5 was refused by the box (no 0.45 pose cell existed). Decisions: § 9.
 
@@ -256,7 +256,7 @@ Decided 2026-10-24 (owner; logbook `2026-10-24-two-ball-oval-p3-ab-sittings-skid
 and read NO-GO for `pose` as built — the cup arrived at the catch moving inward (−507 mm/s median at 0.50) and dropped every ball
 that landed more than 15 mm inward. The skid is now a QP BOUND (`I-PLAN-14`, `pose_touchdown_skid_mmps` 175; planned 162 mm/s on
 every cell) and the box carries the re-swept pose cells at 0.65 / 0.55 / 0.50 / 0.45. **Prerequisite (owner 2026-10-24):**
-`plans/active/leg-lead-clamp-age-aware.md` has FLOWN its P3 (zero lead-clamp staircase episodes in one `level` 0.50 Sitting) —
+`plans/archived/leg-lead-clamp-age-aware.md` has FLOWN its P3 (zero lead-clamp staircase episodes in one `level` 0.50 Sitting) —
 both 2026-10-24 Sittings showed single-leg ~10 Hz vibrations from the bridge lead clamp on stale encoder frames, two with the iq setpoint on the 15 A
 clamp. Full launch restart after the colcon build. Dress-rehearse on the loaded Jetson first: `skills/check` at 0.50 under both
 modes, every refusal reported at once. Rows are numbered P3R-n.
@@ -274,3 +274,42 @@ modes, every refusal reported at once. Rows are numbered P3R-n.
 (`trajectory_op.planner_mode: pose`), re-sweeps every family under `pose`, re-runs the sim gate and books one columns check Sitting (plan § 4 P3
 gate). A NO-GO with the cup velocity inside the bound means the skid was not the whole story: read the per-miss landing offsets and the seat-bit
 timing before touching the planner again.
+
+## 10. Lead-clamp P3 Sitting — one `level` 0.50 oval Sitting with zero staircase episodes
+
+Plan `plans/archived/leg-lead-clamp-age-aware.md` § P3, the prerequisite of § 9 (P3R-2's `level` column IS this Sitting; § 9's `pose`
+column waits for this gate). The bridge is on FW 33 since the P2 bench close-out (2026-10-27): no flash, a receipt check only.
+**Gate:** zero staircase episodes in the bag. A frame-drop episode that costs only tracking accuracy is a PASS and is the point.
+Rows are numbered LC-n.
+
+| # | Step | Expect |
+|---|---|---|
+| LC-1 | **Owner, robot unpowered:** the bench 7th-leg harness OFF CAN2, the Jugglebot leg loom back ON CAN2 (never CAN3). Power-cycle the bridge Teensy (its per-axis `heartbeat_seen` is sticky per boot). | — |
+| LC-2 | Pre-sitting rows 1, 2, 4, 5 (the 0.50 `level` oval cell), 6, 6a of § 0. Row 7's full gate: `./run_tests.sh --full` 2026-10-27 PASS (7367 passed / 4 skipped + serial 8 passed, `temp/logs/lead-clamp-p2-full-gate-2.log`) counts if no `controller/`, `sim/` or `ros_ws/` edit lands before power-on. | As § 0. |
+| LC-3 | Launch (tee to `temp/logs/`), GUI up (hard refresh), bag recording; `level` first. Rows 10–16a of § 1, with `ros2 param get /skill_node planner_mode` → `level` and dwell **0.50**. | As § 1; `skills/check` names the 0.50 `level` oval cell. |
+| LC-4 | **Receipt:** `/link_status` `bridge_fw_version` and `leg_clamp_diag` (`ros2 topic echo --once /link_status` or the GUI link panel). | `33 (proto 10)`; `leg_clamp_diag` reads `clamp … \| stale …` (NOT `unknown (never seen)`); `BRIDGE_FW_CHECK: OK` in the launch log. Note the six `clamp` values at rest. |
+| LC-5 | `oval_1ball_fed` cold start, then `{pattern: oval_1ball, apex_m: 0.95, separation_mm: 150.0, num_cycles: 30}` (`num_cycles: 6` first if the hand is cold). | ≥ 30 catch+carry cycles in one launch (reference 32/32 on 2026-10-24, 38/38 at rung 2). |
+| LC-6 | Stop rules (§ 2 row 26 plus): **any single-leg ~10 Hz buzz by ear ends the Sitting** — it is this plan's failure; a leg on the 15 A clamp > 50 ms; FET > 60 °C; `lane_recovery=failed`; a `MOTOR_FB_STALE` that does not clear within a second. | Stop and report. |
+| LC-7 | Close-out rows 28–32 of § 4. Record the bag and launch.log paths. | |
+
+**Read-back (Claude):** `python tools/probes/lead_clamp_staircase_probe.py --scan <bag>_0.mcap`, once per mcap file of the bag.
+It prints the staircase episodes (≥ 3 frozen `/leg_cmd_executed` runs while the target moves > 0.5 rev/s, the 2026-10-24 signature,
+which it finds on that day's `11-34-29` bag) and the lead-clamp census differenced across the bag. **PASS** = zero episodes. Read the
+census beside it: `stale` ticks on a leg with `clamp` still 0 is a frame drop the age-aware anchor absorbed (the point); a `clamp` that
+climbs with `stale` is the clamp engaging on aged feedback and gets its window read against `/robot_state` before a verdict. A
+`MOTOR_FB_STALE` suppression shows untransmitted targets in `/leg_cmd_executed` (P2 logbook): read any episode inside one against
+`/link_status` before counting it. Then § 8's `oval_carry_bag_metrics.py` for row 27 as usual.
+
+### 10.1 Lead-clamp P3 results — FLOWN 2026-10-27, GATE MET
+
+One launch, 22:59. Bag `/home/jetson/Desktop/rosbags/2026-10-27_22-59-40/`; launch log
+`/home/jetson/.ros/log/2026-10-27-22-59-39-920154-jetson-2913798/launch.log`.
+
+- **LC-4 receipt.** `can-bridge v33`, census present.
+- **LC-1 was skipped.** The bridge was not power-cycled after P2 (uptime 5523 s; leg 0 still held the bench leg's census). The first arm after launch latched
+  `SETPOINT_STALE` 117 ms after the arm edge (JB-75), after a latch at node start that `clear_errors` had cleared; it was cleared and re-armed without recurrence.
+- **Goals.** Four accepted `oval_1ball` goals at dwell 0.50, among ten accepted in all; a fifth 0.50 goal, `oval_1ball_fed`, was refused `REJECTED_BALL_IN_HAND`. Five goals ended `SPLICE_TOO_LATE` (JB-76); the best was `oval_1ball` (reload) at 35/35.
+- **Gate.** `--scan`: **0 episodes**; clamp census delta `0 0 0 0 0 0`, stale `0 920 605 590 649 700`.
+- **Current.** Peak `iq_setpoint` 10 A.
+
+Entry: `logbook/2026-10-27-leg-lead-clamp-age-aware-p3-robot.md`.

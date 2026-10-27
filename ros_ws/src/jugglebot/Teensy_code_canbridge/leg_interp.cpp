@@ -189,7 +189,7 @@ static volatile uint8_t s_lead_clamp_mask = 0;
 static volatile uint8_t s_torque_clamp_mask = 0;
 
 // ── Leg lead clamp: frame-age-aware anchor (FW 31) ────────────────────────────
-// plans/active/leg-lead-clamp-age-aware.md P1 / logbook 2026-10-24-leg-lead-clamp-
+// plans/archived/leg-lead-clamp-age-aware.md P1 / logbook 2026-10-24-leg-lead-clamp-
 // age-aware-p1-firmware. The leg lead clamp used to anchor to axes[i].pos_rev with
 // no regard for the frame's age: through a leg-bus encoder-frame drop (76-108 ms
 // measured 2026-10-24, against a healthy 1-10 ms) it pinned the command at the

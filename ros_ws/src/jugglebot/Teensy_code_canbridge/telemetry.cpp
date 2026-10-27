@@ -412,7 +412,7 @@ void bridge_tx_diag_uplink_step() {
 }
 
 // ── FW 31 per-leg lead-clamp census — contract in telemetry.h ────────────────
-// The wire half of plans/active/leg-lead-clamp-age-aware.md P1: the 500 Hz clamp
+// The wire half of plans/archived/leg-lead-clamp-age-aware.md P1: the 500 Hz clamp
 // verdict was only ever visible as lead_clamp_mask on the 10 Hz heartbeat, which
 // under-sampled the 2026-10-24 staircases so badly that engagement had to be
 // INFERRED from the executed target. Cumulative u32s (the BridgeTxDiag census

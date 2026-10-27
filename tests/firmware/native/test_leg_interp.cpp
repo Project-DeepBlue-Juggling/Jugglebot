@@ -1858,7 +1858,7 @@ TEST_CASE("FW 22 hand torque FF: cover exhaustion → C2 stop → hold keeps tau
 }
 
 // ═══════════════════════════════════════════════════════════════════════════
-//  FW 31 — FRAME-AGE-AWARE LEG LEAD CLAMP (plans/active/leg-lead-clamp-age-aware.md P1)
+//  FW 31 — FRAME-AGE-AWARE LEG LEAD CLAMP (plans/archived/leg-lead-clamp-age-aware.md P1)
 //  The 2026-10-24 staircase: a leg-bus encoder-frame drop froze axes[i].pos_rev
 //  for 76-108 ms while the lead clamp kept anchoring to it, pinning the command at
 //  stale fb + MAX_LEAD_REV and jumping 11-12 mm per frame. The anchor is now

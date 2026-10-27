@@ -3,7 +3,7 @@
 distribution, and a replay of today's clamp against the age-aware options.
 
 Motivation: logbook/2026-10-24-leg-lead-clamp-age-aware-p1-firmware.md (plan
-plans/active/leg-lead-clamp-age-aware.md). The A/B oval sitting showed /leg_cmd_executed
+plans/archived/leg-lead-clamp-age-aware.md). The A/B oval sitting showed /leg_cmd_executed
 FROZEN for 10-20 ms then stepping ~10 mm while the target velocity was > 0.5 rev/s: the
 firmware clamp anchors to the last encoder frame (pos_rev), the encoder frames arrive
 irregularly (median ~10 ms, up to ~100 ms), and a moving leg travels more than 0.10 rev during such a gap.
@@ -17,6 +17,7 @@ Run (venv):
   python tools/probes/lead_clamp_staircase_probe.py --emit-fixture   # (re)write tools/probes/data/lead_clamp_staircase_2026-10-24.json
   python tools/probes/lead_clamp_staircase_probe.py --fixture-only   # twin replay of the committed fixture, no bags needed
   python tools/probes/lead_clamp_staircase_probe.py --emit-fixture-0815   # (re)write ..._2026-08-15.json (P2)
+  python tools/probes/lead_clamp_staircase_probe.py --scan <bag.mcap>     # P3 gate read-back of any Sitting bag
 
 P2 (2026-10-25) adds the archived leg-bus-frame-drops plan's 2026-08-15 episodes (FW 14,
 bag 2026-08-15_10-08-06, decoded straight from the mcap into temp/probes/lead_clamp_p2_0815/):
@@ -429,12 +430,64 @@ def fixture_report(fx=None):
     return out
 
 
+def _clamp_census(kv):
+    """'clamp a b c d e f | stale a b c d e f' (the /link_status leg_clamp_diag row) -> (clamp, stale) or None."""
+    v = kv.get('leg_clamp_diag', '')
+    if not v.startswith('clamp '):
+        return None
+    c, st = v[len('clamp '):].split(' | stale ')
+    return np.array([int(x) for x in c.split()]), np.array([int(x) for x in st.split()])
+
+
+def scan(mcap):
+    """P3 gate read-back: staircase episodes on /leg_cmd_executed + the bridge's lead-clamp census over the bag.
+
+    The census is cumulative since bridge boot, so it is DIFFERENCED first-to-last; a counter that went
+    backwards means the bridge rebooted mid-bag and the delta is reported per boot segment.
+    """
+    stem = os.path.splitext(os.path.basename(mcap))[0]
+    cache = f'{REPO}/temp/probes/lead_clamp_p3_scan/{stem}'
+    A = arrays(decode_bag(mcap, f'{cache}/bag.pkl'))
+    diag = load_diag(mcap, f'{cache}/diag.pkl')
+    eps = staircase_episodes(A)
+    print(f'bag {mcap}')
+    print(f'/leg_cmd_executed {len(A["lt"])} samples over {A["lt"][-1] - A["lt"][0]:.1f} s')
+    print(f'staircase episodes (>= 3 frozen runs while |target vel| > {VEL_MIN} rev/s): {len(eps)}')
+    for e in eps:
+        print(f'  leg {e["leg"]}  t0 {e["t0"]:.2f}  dur {e["dur"]:.2f} s  runs {e["n_runs"]}  '
+              f'step med {e["step_med_mm"]:.2f} / max {e["step_max_mm"]:.2f} mm')
+    rows = [(t, _clamp_census(kv)) for t, kv in diag['/link_status']]
+    rows = [(t, c) for t, c in rows if c is not None]
+    fws = sorted({kv.get('bridge_fw_version', '?') for _, kv in diag['/link_status']})
+    print(f'bridge_fw_version rows seen: {fws}')
+    if not rows:
+        print('lead-clamp census: NEVER SEEN on /link_status (bridge older than FW 31, or no bridge)')
+        return eps
+    seg0 = rows[0]
+    for (t_prev, c_prev), (t, c) in zip(rows, rows[1:]):
+        if np.any(c[0] < c_prev[0]) or np.any(c[1] < c_prev[1]):
+            _print_census(seg0, (t_prev, c_prev), 'segment before a bridge reboot')
+            seg0 = (t, c)
+    _print_census(seg0, rows[-1], 'census delta')
+    return eps
+
+
+def _print_census(a, b, label):
+    dc, ds = b[1][0] - a[1][0], b[1][1] - a[1][1]
+    print(f'{label} over {(b[0] - a[0]) * 1e-9:.1f} s (per leg 0..5): '
+          f'clamp {" ".join(map(str, dc))} | stale {" ".join(map(str, ds))}')
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('--emit-fixture', action='store_true', help='write tools/probes/data/lead_clamp_staircase_2026-10-24.json from the bag pickles')
     ap.add_argument('--emit-fixture-0815', action='store_true', help='write tools/probes/data/lead_clamp_staircase_2026-08-15.json from the 2026-08-15_10-08-06 mcap')
     ap.add_argument('--fixture-only', action='store_true', help='only replay the committed fixture through the twin')
+    ap.add_argument('--scan', metavar='MCAP', help='P3 gate read-back of a Sitting bag; nothing else runs')
     a = ap.parse_args()
+    if a.scan:
+        scan(a.scan)
+        return
     if a.emit_fixture:
         emit_fixture()
     if a.emit_fixture_0815:

@@ -23,7 +23,7 @@ files_changed:
   - config/ODrive config Files/odrive-pro-4.4.58-0.6.11-1_flat_endpoints.json
   - tests/firmware/native/test_leg_interp.cpp
   - tests/firmware/test_leg_clamp_age_aware_twin.py
-  - plans/active/leg-lead-clamp-age-aware.md
+  - plans/archived/leg-lead-clamp-age-aware.md
 subsystem:
   - can
   - motion
@@ -214,6 +214,6 @@ FW 32's slew bound, carried unchanged in FW 33, is on the board. No further firm
 
 ## Related
 
-- Plan: `plans/active/leg-lead-clamp-age-aware.md` § P2.
+- Plan: `plans/archived/leg-lead-clamp-age-aware.md` § P2.
 - P1: `logbook/2026-10-24-leg-lead-clamp-age-aware-p1-firmware.md` (form Z, the three-age walk, the replay oracle).
 - Evidence for the original episodes: `logbook/2026-10-24-two-ball-oval-p3-ab-sittings-skid-bound.md`; archived drops plan `plans/archived/leg-bus-frame-drops.md`.

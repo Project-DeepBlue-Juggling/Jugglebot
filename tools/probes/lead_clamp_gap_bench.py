@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Lead-clamp encoder-frame-gap bench A/B (plans/active/leg-lead-clamp-age-aware.md P2).
+"""Lead-clamp encoder-frame-gap bench A/B (plans/archived/leg-lead-clamp-age-aware.md P2).
 
 MOTIVATION
     The can-bridge leg lead clamp (Teensy_code_canbridge/leg_interp.cpp,

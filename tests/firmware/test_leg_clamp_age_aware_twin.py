@@ -1,6 +1,6 @@
 """The Python twin of the can-bridge's frame-age-aware LEG lead clamp (FW 31, slew-bounded at FW 32).
 
-Plan ``plans/active/leg-lead-clamp-age-aware.md``; design in
+Plan ``plans/archived/leg-lead-clamp-age-aware.md``; design in
 ``logbook/2026-10-24-leg-lead-clamp-age-aware-p1-firmware.md``.  The firmware clamp
 anchored to the last encoder frame (``pos_rev``); frames arrive irregularly (median
 ~10 ms, up to ~100 ms) and a moving leg travels more than the 0.10 rev band during such a gap, so the clamp

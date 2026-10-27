@@ -1,7 +1,9 @@
 ---
 title: Age-aware leg lead clamp — the frame-drop amplifier fix (prerequisite of the oval P4 clamp raise)
 created: 2026-10-24
-status: active
+status: completed
+archived: 2026-10-27
+completed: 2026-10-27
 owner: harrison
 last_updated: 2026-10-27
 pathway: two-ball-oval
@@ -15,7 +17,7 @@ scope: >-
 steps:
   - {id: P1, title: Firmware - age-aware lead clamp and engagement counter, kind: phase, status: complete, date: 2026-10-24}
   - {id: P2, title: Bench validation, kind: phase, status: complete, date: 2026-10-27}
-  - {id: P3, title: Robot validation, kind: phase, status: not_started}
+  - {id: P3, title: Robot validation, kind: phase, status: complete, date: 2026-10-27}
 related_plan:
   - two-ball-oval.md
   - leg-bus-frame-drops.md
@@ -23,6 +25,7 @@ related_logbook:
   - 2026-08-15-fw14-validated-arc-closed.md
   - 2026-10-24-leg-lead-clamp-age-aware-p1-firmware.md
   - 2026-10-25-leg-lead-clamp-age-aware-p2-bench.md
+  - 2026-10-27-leg-lead-clamp-age-aware-p3-robot.md
 related_config:
   - ros_ws/src/jugglebot/Teensy_code_canbridge/canbridge_config.h → MAX_LEAD_REV (0.10), MOTOR_FB_STALENESS_US (150000, the anchor's age cap), LEG_ANCHOR_STALE_US (30000, the stale census threshold, FW 31), LEG_ANCHOR_SHIFT_SLEW_REV (vel_limit x tick = 0.024, FW 32), FW_VERSION (33: FW 32 + the additive Wave camera RPC)
 related_code:
@@ -158,6 +161,16 @@ Today `lead_clamp_mask` rides the heartbeat at 10 Hz, which is what under-sample
   the bag; the new counters say how many ticks any leg's anchor was stale and whether the clamp engaged during
   each). A frame-drop episode that occurs but costs only tracking accuracy is a PASS and is the point.
 - Exit: gate met, logbook entry with the (date, command, result) triple; `two-ball-oval.md` P4 note updated.
+- **Outcome (2026-10-27): COMPLETE; gate met.** Logbook: `logbook/2026-10-27-leg-lead-clamp-age-aware-p3-robot.md`;
+  commits: `git log --grep "Logbook-Entry: 2026-10-27-leg-lead-clamp-age-aware-p3-robot"`. No flash (FW 33 receipt).
+  - **The Sitting.** One `level` launch, 22:59: four `oval_1ball` goals at dwell 0.50 among ten accepted. `lead_clamp_staircase_probe.py --scan` (new) found **0 staircase
+    episodes** in 505.6 s. The `leg_clamp_diag` delta was clamp `0 0 0 0 0 0`, stale `0 920 605 590 649 700`: real frame drops,
+    absorbed with no clamp engagement.
+  - **The fix in action.** Leg 2 crossed a 112 ms frame-age window at 3.7 rev/s. The FW 30 twin replays it as 251 clamp ticks
+    and 20 mm steps; FW 33 recorded none (max step 2.33 mm per 10 ms sample). Peak `iq_setpoint` was 10 A.
+  - **Filed, not fixed.** JB-75 (`SETPOINT_STALE` latch on an arm edge: the last-setpoint stamp survives arms; the bridge was not
+    power-cycled after P2) and JB-76 (`SPLICE_TOO_LATE` ended 5 of 10 goals; CATCH solve p90 276 ms against the 250 ms deadline).
+    Leg 0's stale census stayed flat through its own dropout episode. That is ambiguous, not a defect: read it after a power-cycle.
 
 ## 5. Gate
 
@@ -188,3 +201,34 @@ feedforward path (`vel_ff` is bounded by `VELFF_CAP`, unaffected) and the `MAX_D
   default stays motor_guard's. The archived plan cites `interp_isr` generally; at FW 31 the anchor derivation is
   `leg_clamp_anchor()` (~232), the leg clamp loop ~1136-1146, the slew re-clamp ~1463, the hand-lane extrapolation
   ~1265-1288. FW_VERSION is 33 (30 when the plan was filed; 31 at P1; 32 at P2's slew bound; 33 after the Wave camera merge; the archived evidence was gathered on 14).
+
+## Archival note (2026-10-27)
+
+**What shipped.**
+- **Firmware.**
+  - The can-bridge leg lead clamp anchors to a dead-reckoned encoder estimate through an encoder-frame gap (FW 31, form Z, capped at `MOTOR_FB_STALENESS_US`).
+  - The shift slews at `vel_limit` per tick (FW 32).
+  - A per-leg clamp and stale-anchor census goes out on the wire as `LegClampDiag` and is shown on `/link_status` `leg_clamp_diag`.
+  - All of it is carried byte-identical in FW 33, alongside the Wave camera RPC.
+- **Tooling.**
+  - The twin's `leg_clamp` modes.
+  - The replay fixtures.
+  - The bench gap driver `tools/probes/lead_clamp_gap_bench.py`.
+  - The bag read-back `tools/probes/lead_clamp_staircase_probe.py --scan`.
+
+**Why it closed.** All three phases met their exits:
+- the replays;
+- the bench A/B (FW 30 staircases, FW 33 smooth);
+- one `level` 0.50 oval Sitting with zero staircase episodes and zero clamp ticks through real frame drops.
+
+That removes this prerequisite from `plans/active/two-ball-oval.md` (runbook § 9 re-gate, P4's 30 A raise).
+
+**Residue, re-homed.**
+- Filed as map Bugs:
+  - JB-72: the `HomingMonitor` false timeout on a short home. P2's unexplained first-home 1.15 rev / `HOMING_OK` reading is most likely the same observer gap, and its log is empty.
+  - JB-73: the last `vel_ff` is held through `MOTOR_FB_STALE` suppression.
+  - JB-75: a `SETPOINT_STALE` latch on an arm edge.
+  - JB-76: `SPLICE_TOO_LATE` ends half the goals.
+- **Leg 0's stale census** stayed flat through its own dropout episode at P3. It is ambiguous rather than defective; read it after a bridge power-cycle (P3 entry).
+- **The bind-plus-gap exposure** (P1 tradeoff 3: a command discontinuity inside a gap) is an accepted trade, bounded since FW 32 by the slew. P3 shows zero engagement on the robot.
+- **Workstream B**, why the ODrives drop frames, stays in `plans/archived/leg-bus-frame-drops.md`.

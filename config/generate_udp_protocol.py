@@ -1563,7 +1563,7 @@ MESSAGES = [
         "LegClampDiag", "LEG_CLAMP_DIAG", "T2J", "STREAM",
         summary=(
             "PER-LEG LEAD-CLAMP CENSUS, 1 Hz (can-bridge FW 31, "
-            "plans/active/leg-lead-clamp-age-aware.md P1). Two cumulative-since-boot "
+            "plans/archived/leg-lead-clamp-age-aware.md P1). Two cumulative-since-boot "
             "u32 counters per leg, written by the 500 Hz interp ISR and read by task_telem "
             "(the s_hand_lead_clamp_ticks / s_hand_stale_holds idiom: single writer, "
             "naturally-aligned words, the consumer differences two reads, nothing is ever "

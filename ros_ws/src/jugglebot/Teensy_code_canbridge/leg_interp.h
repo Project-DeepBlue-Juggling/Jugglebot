@@ -89,7 +89,7 @@ uint8_t  interp_lead_clamp_mask();
 // ── FW 31 per-leg lead-clamp census (LegClampDiag 0x94, 1 Hz from task_telem) ───
 // CUMULATIVE SINCE BOOT, the same contract as the occupancy census above: the
 // consumer differences two reads, there is no reset entry point (a read-then-clear
-// at the emit site would swallow ISR increments). plans/active/leg-lead-clamp-age-
+// at the emit site would swallow ISR increments). plans/archived/leg-lead-clamp-age-
 // aware.md P1.
 //   interp_leg_lead_clamp_ticks(i)   — ticks on which leg i's lead clamp engaged AND
 //                                      the command reached the wire (out_en &&

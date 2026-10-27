@@ -27,7 +27,7 @@ files_changed:
   - tests/motion/test_skills_admissible.py
   - tests/hardware/session_oval_rung1.md
   - plans/active/two-ball-oval.md
-  - plans/active/leg-lead-clamp-age-aware.md
+  - plans/archived/leg-lead-clamp-age-aware.md
   - plans/active/INDEX.md
   - docs/project-map.md
 subsystem:
@@ -50,7 +50,7 @@ tags:
 - **NO-GO for `pose` as built at dwell 0.50.** Two Sittings on 2026-10-24 (bags `2026-10-24_10-44-21` and `2026-10-24_11-34-29`): `pose` caught 47/57 in Sitting 1 and 7/8 (plus a feed-site first-Throw miss and two solver-late or transit-margin self-ends) in Sitting 2, against `level`'s 32/32 at the same cell (rung 2 on 2026-10-23 flew `level` 38/38). The debounced seat bit broke on 9 of 77 `pose` carries.
 - **Cause: touch-down skid.** Under `pose` the cup is already moving inward, toward T, when the ball lands: median v_x -507 mm/s at 0.50, -174 mm/s at 0.65, +20 mm/s under `level`. Every miss was a ball landing more than 15 mm inward meeting the advancing rim (9 of 16 missed under `pose` 0.50; 0 of 7 under `level` 0.65). Throw quality was identical in every column (landing sd 16-19 / 13-15 mm).
 - **Decision 28b ("skid logged only") is withdrawn.** The skid is a bound: `I-PLAN-14`, `PoseConfig.touchdown_skid_mmps` = 175 mm/s (the 0.65 figure that caught 63/64), QP rows on the cup's lateral velocity at the catch time, `pose` mode only.
-- **Single-leg ~10 Hz vibrations** (leg 1 twice, leg 2 once, two with the iq setpoint on the 15 A clamp) are the can-bridge leg lead clamp amplifying leg-bus encoder frame drops (`leg_interp.cpp:1066-1072`), under both planners. Not the planner. Re-opened as the prerequisite plan `plans/active/leg-lead-clamp-age-aware.md`.
+- **Single-leg ~10 Hz vibrations** (leg 1 twice, leg 2 once, two with the iq setpoint on the 15 A clamp) are the can-bridge leg lead clamp amplifying leg-bus encoder frame drops (`leg_interp.cpp:1066-1072`), under both planners. Not the planner. Re-opened as the prerequisite plan `plans/archived/leg-lead-clamp-age-aware.md`.
 - **Owner decisions (2026-10-24, `AskUserQuestion`, recommended options taken):** (1) lead clamp is a prerequisite plan, flown before the next powered oval Sitting and before P4's leg-current raise; (2) `pose` is fixed with the skid bound and re-gated (runbook § 9); (3) P4/P5 aim at the first plannable dwell (0.45 today), not 0.30.
 - **Landed (code, not flown):** the knob, I-PLAN-14, the box re-swept (a 0.45 pose cell added, 26 cells), three new skid tests, the probe's missed-catch crash fixed and a touch-down cup-velocity column added. Default stays `level`.
 
@@ -149,7 +149,7 @@ Sitting 2 added one more event, under `level`: leg 1, 1792802191.80-192.84 (one 
 - Not attributable to `pose`: the mechanism engages whenever leg speed x feedback age exceeds 7 mm, which both planners do, and S2 produced it under `level`. `pose` goals filled ~85 % of the S1 goal time.
 - The runbook stop rule "leg on clamp > 50 ms" was not met by telemetry (one sample at 60 Hz), but that telemetry under-samples the ODrive.
 
-This is the lead-clamp amplifier of the archived plan `plans/archived/leg-bus-frame-drops.md` (Workstream A, archived unimplemented 2026-10-14). New: `plans/active/leg-lead-clamp-age-aware.md` (P1 firmware: age-aware anchor plus a per-leg engagement counter on the wire; P2 bench validation against these bag episodes; P3 one `level` 0.50 Sitting with zero staircase episodes). Why it is now a safety item: a 15 A setpoint and +-19 mm error on one leg in one Sitting, and P4's `leg_curr_limit_a` 15 -> 30 would make that a 30 A staircase.
+This is the lead-clamp amplifier of the archived plan `plans/archived/leg-bus-frame-drops.md` (Workstream A, archived unimplemented 2026-10-14). New: `plans/archived/leg-lead-clamp-age-aware.md` (P1 firmware: age-aware anchor plus a per-leg engagement counter on the wire; P2 bench validation against these bag episodes; P3 one `level` 0.50 Sitting with zero staircase episodes). Why it is now a safety item: a 15 A setpoint and +-19 mm error on one leg in one Sitting, and P4's `leg_curr_limit_a` 15 -> 30 would make that a 30 A staircase.
 
 ## Why `pose` missed (ranked)
 1. **Touch-down skid removes the inward capture margin. Strong.**
@@ -227,7 +227,7 @@ Offline skid-bound ladder (production path, 150 mm / 0.95 / 350-5000-200k-3900, 
 - **Release-hold budget at 0.35 / 0.30.** The 0.100 + 0.050 s release holds eat half the window and the QP is infeasible. Lives in: P4 premise probe; a P4 design item.
 
 ## Related
-- Plan: `plans/active/two-ball-oval.md` (§ 1.3 Amendments P3 tail; P3 A/B outcome; P4 premise), `plans/active/leg-lead-clamp-age-aware.md` (prerequisite), archived `plans/archived/leg-bus-frame-drops.md` (Workstream A origin).
+- Plan: `plans/active/two-ball-oval.md` (§ 1.3 Amendments P3 tail; P3 A/B outcome; P4 premise), `plans/archived/leg-lead-clamp-age-aware.md` (prerequisite), archived `plans/archived/leg-bus-frame-drops.md` (Workstream A origin).
 - Runbook: `tests/hardware/session_oval_rung1.md` § 8.1, § 9.
 - Entries: `2026-10-23-oval-rung2-flown-dwell-050.md` (the `level` 0.50 reference, 38/38), `2026-10-23-two-ball-oval-p3-pose-level-carry-planner.md` (the planner and the ladder this entry amends).
 - Invariants: `I-PLAN-13`, `I-PLAN-14` in `ros_ws/src/jugglebot/jugglebot/motion/skills/INVARIANTS.md`.
