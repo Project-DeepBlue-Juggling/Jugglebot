@@ -4,7 +4,7 @@ kind: bug
 title: 'SPLICE_TOO_LATE ends half the goals: CATCH solve tail now crosses the 250 ms deadline'
 status: in_progress
 created: '2026-10-27'
-updated: '2026-10-27T22:21:15Z'
+updated: '2026-10-27T23:22:29Z'
 owners: []
 priority: high
 blocked_by: []
@@ -34,3 +34,4 @@ Until now this residue lived only in plans/archived/skill-stack-dress-rehearsals
 ## Progress
 
 - 2026-10-28: 2026-10-28 deep dive: the CATCH solve is ~65 ms intrinsically (sim, worker replay and the first live CATCH of each goal all agree); it runs 2-5x slower only mid-juggle, tracking box load. Ruled out: the worker path, OpenBLAS spin, memory bandwidth, thermals, CPU frequency, uptime. Leading hypothesis: starvation by preemption churn, with the mocap queue overflow as a fellow victim. Worker replies now log cpu / ivcsw / vcsw after solve X ms. Next: fly one Sitting with tools/probes/profile_session.py running, then pin the worker to its own core if starvation is confirmed. Entry: logbook/2026-10-28-jb76-solve-tail-is-environment-starvation-instrumented.md
+- 2026-10-28: 2026-10-28 Sitting 09:49 with the recorder: starvation CONFIRMED. Every CATCH did ~65 ms of CPU and took 153 ms p50 / 226 ms p90 of wall with 59 involuntary context switches; 162 of 270 CATCH-class solves over 150 ms wall, zero over 150 ms CPU. Cause: the launch itself runs the box at 5.5 of 6 cores while juggling (rosbridge 86 %, ball_tracker 83 %, teensy_bridge 79 %, skill_node 73 %, mocap 71 %), run queue 13. Mocap queue had zero overflows this time, so the overflow is a fellow victim, not the cause; a Jetson restart is not a fix. Fix 1: nice -n 10 on rosbridge, bag record, spacemouse, ball_butler in the launch. Next: re-fly and scan with tools/probes/solve_starvation_scan.py, then trim tracker/rosbridge load, then worker core isolation.
