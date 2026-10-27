@@ -18,6 +18,7 @@ Captures (in temp/probes/profile_<timestamp>/):
                              power
     - pidstat.log            1 s per-process %CPU / mem-fault / IO / cswitch
     - mpstat.log             1 s per-core utilisation
+    - vmstat.log             1 s run queue / context switches / swap
     - pyspy_<name>.svg        flame graph per py-spy target name
     - candump.log            full CAN trace if --candump was passed
     - state.json             recorder PIDs / start time / preflight metadata
@@ -291,6 +292,14 @@ def _start_recorders(session: Path,
     else:
         print("profile_session: mpstat not installed - skipping per-core "
               "recording.", file=sys.stderr)
+
+    # vmstat - 1 s run queue (`r` = runnable tasks, the oversubscription
+    # number per-core % cannot show), context switches and swap in/out
+    # (JB-76: the solver worker's wall time vs its own CPU time).
+    if shutil.which("vmstat"):
+        vm_log = session / "vmstat.log"
+        v = _spawn(["vmstat", "-n", "-t", "1"], vm_log)
+        recs.append(Recorder("vmstat", v.pid, str(vm_log), v.args))
 
     # ps snapshots - dump the full process table every 5 s. Lets the
     # analyzer resolve generic `python` / `python3` pidstat entries to their

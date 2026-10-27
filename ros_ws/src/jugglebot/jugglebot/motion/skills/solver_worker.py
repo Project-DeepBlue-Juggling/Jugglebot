@@ -109,6 +109,17 @@ class SegmentSolveReply:
     #: allowance.  Informational: the node applies its own splice fence at its
     #: own clock.  ``inf`` for the in-process double (no transit).
     t_inst_s: float
+    #: JB-76 starvation probe, measured over the same ``t_rx`` .. solve-end
+    #: window as ``solve_s``: the worker's CPU seconds (``process_time``) and
+    #: its voluntary / involuntary context switches (``getrusage``). Both are
+    #: process-wide, so an un-capped BLAS pool's threads count too (the
+    #: launch caps it to 1 thread).
+    #: ``cpu_s`` near ``solve_s`` = the solve itself is slow; ``cpu_s`` well
+    #: under it with many involuntary switches = the box preempted it.
+    #: ``nan`` / ``-1`` when not measured (refusals, the in-process double).
+    cpu_s: float = math.nan
+    vcsw: int = -1
+    ivcsw: int = -1
 
 
 def _refusal(req_seq: int, code: str, message: str, solve_s: float = 0.0,
@@ -131,13 +142,15 @@ def _solve_now(req: SegmentSolveRequest, t_install_s) -> Tuple[Any, Any, Any]:
 
 
 def _reply_from(req: SegmentSolveRequest, out, solve_s: float,
-                t_inst_s: float) -> SegmentSolveReply:
+                t_inst_s: float, cpu_s: float = math.nan, vcsw: int = -1,
+                ivcsw: int = -1) -> SegmentSolveReply:
     new_record, res, seg = out
     return SegmentSolveReply(
         seq=req.seq, new_record=new_record, result=res,
         warm_start=None if seg is None else seg.warm_start,
         release_t_s=None if seg is None else seg.release_t_s,
-        solve_s=solve_s, t_inst_s=t_inst_s)
+        solve_s=solve_s, t_inst_s=t_inst_s, cpu_s=cpu_s, vcsw=vcsw,
+        ivcsw=ivcsw)
 
 
 # ---------------------------------------------------------------------------
@@ -184,6 +197,7 @@ def worker_main(fd: int) -> int:
         pass
     conn = Connection(fd)
     try:
+        import resource     # Unix-only; the worker only ever runs on Linux
         from jugglebot.motion.skills import executor as ex
         from jugglebot.motion import blas_threads
         blas = blas_threads.read_blas_threads()[0]
@@ -198,6 +212,8 @@ def worker_main(fd: int) -> int:
                 return 0
             req = msg[1]
             t_rx = time.perf_counter()
+            cpu0 = time.process_time()
+            ru0 = resource.getrusage(resource.RUSAGE_SELF)
             if t_rx > req.deadline_s:
                 rep = _refusal(req.seq, SKIPPED_LATE,
                                'deadline passed %.1f ms before the worker '
@@ -213,9 +229,13 @@ def worker_main(fd: int) -> int:
                 try:
                     out = _solve_now(req, t_install_s)
                     solve_s = time.perf_counter() - t_rx
+                    cpu_s = time.process_time() - cpu0
+                    ru1 = resource.getrusage(resource.RUSAGE_SELF)
                     t_inst = seen[-1] if seen else (
                         time.perf_counter() + REPLY_TRANSIT_ALLOW_S)
-                    rep = _reply_from(req, out, solve_s, t_inst)
+                    rep = _reply_from(req, out, solve_s, t_inst, cpu_s,
+                                      ru1.ru_nvcsw - ru0.ru_nvcsw,
+                                      ru1.ru_nivcsw - ru0.ru_nivcsw)
                 except Exception as exc:    # noqa: BLE001 - reply, don't die
                     import traceback
                     traceback.print_exc()

@@ -2369,3 +2369,13 @@ def test_an_unknown_planner_mode_is_refused_by_name_before_any_solve():
 def test_the_planner_mode_parameter_is_the_default_for_an_empty_request():
     node = _perf_node()
     assert node._segment_cfg.planner_mode == 'level'
+
+
+def test_the_solve_cpu_suffix_rides_inside_the_solve_phrase():
+    """JB-76: a worker reply's CPU time and context switches are logged as a
+    suffix after ``solve X ms`` (the phrase the launch-log greps key on); a
+    reply without them (refusal, in-process double) adds nothing."""
+    rep = SimpleNamespace(cpu_s=0.0652, ivcsw=12, vcsw=3)
+    assert tn._solve_cpu_suffix(rep) == ' (cpu 65.2 ms, ivcsw 12, vcsw 3)'
+    assert tn._solve_cpu_suffix(SimpleNamespace(cpu_s=math.nan)) == ''
+    assert tn._solve_cpu_suffix(SimpleNamespace()) == ''

@@ -148,6 +148,29 @@ def test_a_real_throw_then_catch_round_trips_identically_to_in_process(
     assert rep2.warm_start is not None
 
 
+def test_a_worker_reply_carries_its_own_cpu_time_and_context_switches(
+        limits, geom, sites):
+    """JB-76's starvation probe: ``cpu_s`` is the worker's CPU time over the
+    ``solve_s`` window, and the context-switch counts are real counts, not
+    the -1 sentinel. ``cpu_s`` is process-wide and exceeds ``solve_s`` when an
+    un-capped BLAS pool computes in parallel (measured: 143 ms CPU in a 29 ms
+    solve), so this worker is capped to 1 thread as the launch caps it. A
+    refusal the worker never solved carries the sentinels."""
+    env = dict(os.environ, OPENBLAS_NUM_THREADS='1', OMP_NUM_THREADS='1')
+    solver = sw.WorkerSegmentSolver(env=env)
+    try:
+        assert solver.wait_ready(20.0), solver.state
+        assert solver.ready_info[2] == 1
+        rep = solver.solve(_throw_req(1, _t0(), limits, geom, sites))
+    finally:
+        solver.close()
+    assert rep.result.accepted, rep.result.message
+    assert 0.0 < rep.cpu_s <= rep.solve_s + 0.005
+    assert rep.vcsw >= 0 and rep.ivcsw >= 0
+    late = sw._refusal(9, sw.SKIPPED_LATE, 'x')
+    assert math.isnan(late.cpu_s) and late.vcsw == -1 and late.ivcsw == -1
+
+
 # ---------------------------------------------------------------------------
 # (2) deadline semantics (worker side, driven in-thread over a socketpair)
 # ---------------------------------------------------------------------------

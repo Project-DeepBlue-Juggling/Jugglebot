@@ -410,6 +410,20 @@ def _ceil_to_grid(t: float, dt: float) -> float:
     return k * dt
 
 
+def _solve_cpu_suffix(reply) -> str:
+    """`` (cpu X ms, ivcsw N, vcsw M)`` from a worker reply, or ``''``.
+
+    JB-76's starvation probe: the worker's own CPU time and context switches
+    over the ``solve_s`` window. Rides inside the existing ``solve X ms`` log
+    text so log greps for that phrase keep matching."""
+    cpu_s = float(getattr(reply, 'cpu_s', math.nan))
+    if not math.isfinite(cpu_s):
+        return ''
+    return ' (cpu %.1f ms, ivcsw %d, vcsw %d)' % (
+        cpu_s * 1e3, int(getattr(reply, 'ivcsw', -1)),
+        int(getattr(reply, 'vcsw', -1)))
+
+
 def _wire_tilt(tilt_rad, is_set: bool) -> Optional[Tuple[float, float]]:
     """``InstallSegment.Request.{hold,receive,rest}_tilt_rad`` + its
     ``*_set`` flag (R4 reload, Unit U3; the flag added by the R4 phase-end
@@ -4448,7 +4462,8 @@ class TrajectoryNode(Node):
         solve_s = float(getattr(reply, 'solve_s', 0.0))
         parts = ['check=%s' % (check,),
                  ('solve n/a (no reply)' if check == 'node-wait'
-                  else 'solve %.1f ms' % (solve_s * 1e3,)),
+                  else 'solve %.1f ms%s' % (solve_s * 1e3,
+                                            _solve_cpu_suffix(reply))),
                  'plan %.1f ms' % ((now - t_wall) * 1e3,),
                  ('t_inst +%.1f ms' % ((t_inst - t_wall) * 1e3,)
                   if math.isfinite(t_inst) else 't_inst n/a'),
@@ -4946,6 +4961,7 @@ class TrajectoryNode(Node):
                                     new_record, result, t_wall,
                                     t_release_mono=t_release_mono,
                                     solve_s=float(reply.solve_s),
+                                    solve_cpu=_solve_cpu_suffix(reply),
                                     planner_mode=self._solved_planner_mode(
                                         kind, terminal, new_record, seg_cfg))
 
@@ -5174,7 +5190,7 @@ class TrajectoryNode(Node):
 
     def _accept_segment(self, response, kind, ball_id, record, result, t_wall,
                         t_release_mono: float = 0.0, solve_s: float = 0.0,
-                        planner_mode: str = ''):
+                        planner_mode: str = '', solve_cpu: str = ''):
         """Fill ``response`` from an INSTALLED segment. Mirrors ``_accept_cycle``."""
         response.accepted = True
         response.code = feas.OK
@@ -5193,9 +5209,9 @@ class TrajectoryNode(Node):
         self._cycle_plan_wall_ms = response.plan_wall_ms
         self.get_logger().debug(
             'install_segment %s %s: splice_k=%d, plan %.1f ms, event tau '
-            '%.3f s, solve %.1f ms, planner %s'
+            '%.3f s, solve %.1f ms%s, planner %s'
             % (kind, ball_label(ball_id), response.splice_k, response.plan_wall_ms,
-               float(result.event_t_s), solve_s * 1e3,
+               float(result.event_t_s), solve_s * 1e3, solve_cpu,
                response.planner_mode))
         return response
 
