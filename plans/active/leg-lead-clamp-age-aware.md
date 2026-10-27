@@ -3,7 +3,7 @@ title: Age-aware leg lead clamp — the frame-drop amplifier fix (prerequisite o
 created: 2026-10-24
 status: active
 owner: harrison
-last_updated: 2026-10-24
+last_updated: 2026-10-27
 pathway: two-ball-oval
 scope: >-
   Re-opens ONLY Workstream A of the archived leg-bus-frame-drops plan: the can-bridge leg lead clamp anchors
@@ -14,7 +14,7 @@ scope: >-
   P4's leg_curr_limit_a 15 -> 30.
 steps:
   - {id: P1, title: Firmware - age-aware lead clamp and engagement counter, kind: phase, status: complete, date: 2026-10-24}
-  - {id: P2, title: Bench validation, kind: phase, status: not_started}
+  - {id: P2, title: Bench validation, kind: phase, status: complete, date: 2026-10-27}
   - {id: P3, title: Robot validation, kind: phase, status: not_started}
 related_plan:
   - two-ball-oval.md
@@ -22,8 +22,9 @@ related_plan:
 related_logbook:
   - 2026-08-15-fw14-validated-arc-closed.md
   - 2026-10-24-leg-lead-clamp-age-aware-p1-firmware.md
+  - 2026-10-25-leg-lead-clamp-age-aware-p2-bench.md
 related_config:
-  - ros_ws/src/jugglebot/Teensy_code_canbridge/canbridge_config.h → MAX_LEAD_REV (0.10), MOTOR_FB_STALENESS_US (150000, the anchor's age cap), LEG_ANCHOR_STALE_US (30000, the stale census threshold, FW 31), FW_VERSION (31)
+  - ros_ws/src/jugglebot/Teensy_code_canbridge/canbridge_config.h → MAX_LEAD_REV (0.10), MOTOR_FB_STALENESS_US (150000, the anchor's age cap), LEG_ANCHOR_STALE_US (30000, the stale census threshold, FW 31), LEG_ANCHOR_SHIFT_SLEW_REV (vel_limit x tick = 0.024, FW 32), FW_VERSION (33: FW 32 + the additive Wave camera RPC)
 related_code:
   - ros_ws/src/jugglebot/Teensy_code_canbridge/leg_interp.cpp::leg_clamp_anchor (the single anchor derivation, ~232) and ::interp_isr (leg lead clamp ~1136-1146; recovery-slew re-clamp ~1463; hand lane fb_ex ~1265-1288)
   - ros_ws/src/jugglebot/Teensy_code_canbridge/telemetry.cpp::leg_clamp_diag_uplink_step (LegClampDiag 0x94 at 1 Hz)
@@ -142,6 +143,13 @@ Today `lead_clamp_mask` rides the heartbeat at 10 Hz, which is what under-sample
 - Injected frame gaps on the bench rig (hold-last-frame for 76-1000 ms mid-stream): commanded step size stays
   bounded by the setpoint stream's own velocity, not by `MAX_LEAD_REV`; `MOTOR_FB_STALE` still terminates a dead axis.
 - Exit: both replays and the injected-gap run pass; the property test (never wider than today at age 0) passes.
+- **Outcome (2026-10-27): COMPLETE; the board is on FW 33.** Commits: `git log --grep "Logbook-Entry: 2026-10-25-leg-lead-clamp-age-aware-p2-bench"`.
+  Logbook: `logbook/2026-10-25-leg-lead-clamp-age-aware-p2-bench.md`.
+  - **Firmware.** P1's open question became FW 32: the dead-reckoned shift grows by at most `LEG_ANCHOR_SHIFT_SLEW_REV` (vel_limit × tick = 0.024 rev) per tick. It is invisible to any stream at or below vel_limit and ramps an in-gap command discontinuity behind the clamp. The Wave camera merge carries it into FW 33 with `leg_interp.cpp` byte-identical.
+  - **Replay.** It covers S1A/S1B/S2 plus the surviving 2026-08-15 windows: ax1 (FW 30 10.64 mm = recorded; FW 31/32 3.35 mm) and ax4 (no-harm, identical). ax5 and ax2 had no gap. Clean ticks are bit-identical to FW 30 in all five windows.
+  - **Bench A/B (2026-10-27).** The 7th leg ran on CAN2 node 0 with ODrive SDO `encoder_msg_rate_ms` (endpoint 275), two runs per build, on the FW 30 and FW 33 images. In the 100 ms-rate gap, FW 30 staircases (8 transmitted ~10.7 mm steps) and FW 33 is smooth (0 clamp ticks of 350 stale). `MOTOR_FB_STALE` trips and clears in every dead gap, with nothing latched.
+  - **Filed, not fixed.** JB-72 (`HomingMonitor` false timeout on a short home) and JB-73 (the last vel_ff is held through suppression).
+  - **P3 cleared to start.** Its flash step is now a receipt check (expect `fw_version` 33) plus the oval Sitting.
 
 ### P3 — Robot validation
 - Flash per the project rule: launch DOWN, `pio run -e teensy41 -t upload` from the firmware directory; receipt =
@@ -179,4 +187,4 @@ feedforward path (`vel_ff` is bounded by `VELFF_CAP`, unaffected) and the `MAX_D
   `LEG_ANCHOR_STALE_S` 0.030 pinned against the header by `tests/firmware/test_leg_clamp_age_aware_twin.py`) and the
   default stays motor_guard's. The archived plan cites `interp_isr` generally; at FW 31 the anchor derivation is
   `leg_clamp_anchor()` (~232), the leg clamp loop ~1136-1146, the slew re-clamp ~1463, the hand-lane extrapolation
-  ~1265-1288. FW_VERSION is 31 (was 30 when the plan was filed; the archived evidence was gathered on 14).
+  ~1265-1288. FW_VERSION is 33 (30 when the plan was filed; 31 at P1; 32 at P2's slew bound; 33 after the Wave camera merge; the archived evidence was gathered on 14).

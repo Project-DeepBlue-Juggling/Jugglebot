@@ -6,15 +6,14 @@ Where each pathway of the Jugglebot project stands: its destination, how many st
 
 **Destination:** Two balls in one Hand on an oval, every Throw caught and carried back in the Cup, closed by 30 consecutive Ball Butler-fed Catches in one Attempt (P5 Rung gate).
 
-**Progress:** 2 of 7 stops done
+**Progress:** 3 of 7 stops done
 
-**Next:** P2 Bench validation ([leg-lead-clamp-age-aware.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/leg-lead-clamp-age-aware.md))
+**Next:** P3 Robot validation ([leg-lead-clamp-age-aware.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/leg-lead-clamp-age-aware.md))
 
 **Owners:** harrison
 
 **Remaining:**
 
-- P2 Bench validation ([leg-lead-clamp-age-aware.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/leg-lead-clamp-age-aware.md))
 - P3 Robot validation ([leg-lead-clamp-age-aware.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/leg-lead-clamp-age-aware.md))
 - P3 Pose-level carry planner ([two-ball-oval.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/two-ball-oval.md)) — in progress
 - P4 Working point and the dwell ladder ([two-ball-oval.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/two-ball-oval.md))
@@ -108,7 +107,7 @@ _Status: closed (complete)._
 
 | Pathway | Now | Next | Later | Done |
 | --- | --- | --- | --- | --- |
-| Two-ball oval | P3 Pose-level carry planner | P2 Bench validation | P3 Robot validation; P4 Working point and the dwell ladder; P5 Two-ball oval; bug Cup Banking saturates at its 12 deg clamp on small lateral offsets; bug 10 % jitter-margin class of LIMIT_* refusals | P1 Firmware - age-aware lead clamp and engagement counter; P1 The oval pattern dispatchable |
+| Two-ball oval | P3 Pose-level carry planner | P3 Robot validation | P4 Working point and the dwell ladder; P5 Two-ball oval; bug Cup Banking saturates at its 12 deg clamp on small lateral offsets; bug 10 % jitter-margin class of LIMIT_* refusals | P1 Firmware - age-aware lead clamp and engagement counter; P2 Bench validation; P1 The oval pattern dispatchable |
 | Project map and shared dictionary | — | — | — | closed |
 | Ball Butler | — | BB calibration: advisory when a template marker is never matched in a sweep | bug bb/throw_outcome carries no throw identity; bug NOT_SETTLED retry is dead in the field; feature Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware | — |
 | Learner generalisation | — | Box sweep fidelity for same-site families (plan what the executor dispatches) | P1 Learner core; P2 The characterisation sitting; P3 Online admissibility and box retirement; P4 BeatEvent stream and the columns wrapper; P5 Close-out | — |
