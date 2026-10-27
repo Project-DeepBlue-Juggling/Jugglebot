@@ -4,7 +4,7 @@ Every command that moves a `map/` item follows this page instead of copying step
 
 ## Naming an Item
 
-Every Item has a short ID `JB-<n>` (frontmatter `id:`, one global sequence; plan `plans/active/map-item-ids.md`). Every command below takes the ID (`JB-12`, `jb12`, `jb-12`, any case), the stem (`bug-x`) or the bare slug (`x`); resolution is stem, then slug, then ID. **Bare digits (`12`) are accepted by read commands only** (`items`, `show`): on a write they are an error, because GitHub issue numbers live alongside and a one-digit typo in one sequence lands on another real Item. Every write prints `JB-n <stem> ... <title>`; check it names the Item you meant. Stored references (`parent`, `blocked_by`, `links`) stay stems: an ID typed into `item new --parent` / `--link` is stored as the stem.
+Every Item has a short ID `JB-<n>` (frontmatter `id:`, one global sequence; plan `plans/archived/map-item-ids.md`). Every command below takes the ID (`JB-12`, `jb12`, `jb-12`, any case), the stem (`bug-x`) or the bare slug (`x`); resolution is stem, then slug, then ID. **Bare digits (`12`) are accepted by read commands only** (`items`, `show`): on a write they are an error, because GitHub issue numbers live alongside and a one-digit typo in one sequence lands on another real Item. Every write prints `JB-n <stem> ... <title>`; check it names the Item you meant. Stored references (`parent`, `blocked_by`, `links`) stay stems: an ID typed into `item new --parent` / `--link` is stored as the stem.
 
 ## Reads (silent, short)
 

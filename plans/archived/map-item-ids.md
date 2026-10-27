@@ -1,7 +1,9 @@
 ---
 title: "Map item IDs: a short, unique, stable ID on every Item"
 created: 2026-10-25
-status: active
+status: completed
+archived: 2026-10-27
+completed: 2026-10-27
 owner: harrison
 last_updated: 2026-10-27
 pathway: map-improvements
@@ -27,7 +29,7 @@ related_code:
 
 # Map item IDs
 
-**Status, 2026-10-27.** P0-P6 complete; the plan is ready to archive. P4's Done-check is observed: JB-65 was
+**Status, 2026-10-27.** P0-P6 complete; archived 2026-10-27. P4's Done-check is observed: JB-65 was
 filed by the owner from the live GUI's quick capture through the app's `create` at 23:41 on 2026-10-26 and
 reached `main` as `022167af` with `id: JB-65`. P5 (fork `0a4cd9a`, deployed) serves `short_id` on every Item.
 P6 closed with the GLOSSARY term **Item ID** (Idea JB-63, settled in a grilling round with the owner, logbook
@@ -247,3 +249,13 @@ Owner questions (the reviewer's four, verbatim, with the defaults taken while th
 3. Is an ID flipping on the phone within about 5 s of filing acceptable, with the unsent marker? Or should
    the app show no ID until pushed? **Default taken: show it muted with an "unsent" marker (P5).**
 4. Should app commit subjects carry the ID (recommended: no)? **Default taken: no.**
+
+## Archival note (2026-10-27)
+
+Shipped: every Item carries `id: JB-<n>` (one global sequence, allocated by `mapkit/ids.py`), the mapkit read
+and write commands and the app take it, the app shows and deep-links it, the gate pins uniqueness, and the
+GLOSSARY carries the term Item ID. Closed because all seven phases are complete (plan-reviewer verdict READY
+TO ARCHIVE, 2026-10-27; no residual xfail markers). Residue (§ 7): the `item_uuid(slug)` cross-kind collision
+is filed as a Bug under Map improvements; linkifying `JB-<n>` outside the drawer was not filed (owner asked
+what it would take first). The Feature that promoted this plan stays `promoted`; the Map improvements
+Pathway stays open (the owner is adding to it).

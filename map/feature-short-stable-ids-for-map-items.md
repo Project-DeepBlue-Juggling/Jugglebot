@@ -4,13 +4,13 @@ kind: feature
 title: Short, stable IDs for map items
 status: promoted
 created: '2026-10-25'
-updated: '2026-10-25T12:00:00Z'
+updated: '2026-10-27T09:16:56Z'
 owners:
 - harrison
 priority: medium
 blocked_by: []
 links:
-- plans/active/map-item-ids.md
+- plans/archived/map-item-ids.md
 parent: map-improvements
 filed_by: claude
 promoted_to: map-item-ids.md
@@ -27,3 +27,4 @@ Give every Item a short, unique, stable ID (`JB-<n>`, one global sequence) in it
 ## Progress
 
 - 2026-10-25: promoted to `plans/active/map-item-ids.md`.
+- 2026-10-27: plan archived 2026-10-27
