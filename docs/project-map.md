@@ -22,7 +22,7 @@ Where each pathway of the Jugglebot project stands: its destination, how many st
 
 - bug: JB-22 [Cup Banking saturates at its 12 deg clamp on small lateral offsets](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-cup-banking-saturates-at-clamp.md) (inbox)
 - bug: JB-24 [10 % jitter-margin class of LIMIT_* refusals](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-limit-refusal-jitter-margin.md) (inbox)
-- bug: JB-76 [SPLICE_TOO_LATE ends half the goals: CATCH solve tail now crosses the 250 ms deadline](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-splice-too-late-ends-half-the-goals-catch-solve-tail-now.md) (inbox)
+- bug: JB-76 [SPLICE_TOO_LATE ends half the goals: CATCH solve tail now crosses the 250 ms deadline](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-splice-too-late-ends-half-the-goals-catch-solve-tail-now.md) (in_progress)
 
 ## Project map and shared dictionary
 
@@ -147,4 +147,4 @@ _Status: closed (complete)._
 | JB-73 | bug | [MOTOR_FB_STALE suppression leaves the ODrive holding its last vel_ff](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-motor-fb-stale-suppression-leaves-the-odrive-holding-its.md) | inbox | low | — | filed 2026-10-27 |
 | JB-74 | feature | [Move the Wave camera panel to be in the same banner as the 'Home', 'Level', 'Activate' etc. buttons. Move the buttons to be centred between the camera panel and the Trail panel](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-move-the-wave-camera-panel-to-be-in-the-same-banner-as-the-h.md) | inbox | medium | — | filed 2026-10-27 |
 | JB-66 | bug | [replay_overview older-version requeue test flakes under full-gate load](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-replay-overview-older-version-requeue-test-flakes-under-full.md) | inbox | medium | — | filed 2026-10-27 |
-| JB-76 | bug | [SPLICE_TOO_LATE ends half the goals: CATCH solve tail now crosses the 250 ms deadline](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-splice-too-late-ends-half-the-goals-catch-solve-tail-now.md) | inbox | high | Two-ball oval | filed 2026-10-27 |
+| JB-76 | bug | [SPLICE_TOO_LATE ends half the goals: CATCH solve tail now crosses the 250 ms deadline](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-splice-too-late-ends-half-the-goals-catch-solve-tail-now.md) | in_progress | high | Two-ball oval | filed 2026-10-27 |

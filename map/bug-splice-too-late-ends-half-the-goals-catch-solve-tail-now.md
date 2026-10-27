@@ -2,15 +2,16 @@
 id: JB-76
 kind: bug
 title: 'SPLICE_TOO_LATE ends half the goals: CATCH solve tail now crosses the 250 ms deadline'
-status: inbox
+status: in_progress
 created: '2026-10-27'
-updated: '2026-10-27T12:25:16Z'
+updated: '2026-10-27T22:21:15Z'
 owners: []
 priority: high
 blocked_by: []
 links:
 - plans/archived/skill-stack-dress-rehearsals-and-residue.md
 - plans/archived/handoff-solve-chaining.md
+- logbook/2026-10-28-jb76-solve-tail-is-environment-starvation-instrumented.md
 parent: two-ball-oval
 filed_by: claude
 ---
@@ -29,3 +30,7 @@ The solve-time median is unchanged, but the tail now crosses the 250 ms handoff 
 The figures come from `grep -oE "solve [0-9.]+ ms"` over each launch.log and the skill_node ENDED lines. The 2026-10-27 launch log is /home/jetson/.ros/log/2026-10-27-22-59-39-920154-jetson-2913798/launch.log.
 
 Until now this residue lived only in plans/archived/skill-stack-dress-rehearsals-and-residue.md § 2 (the handoff lead was raised to 17 knots in handoff-solve-chaining.md). It blocks any 30-catch gate, including two-ball-oval § 9's P3 re-gate. First step: find what grew the tail since 2026-10-23, whether Jetson load (the bag ran 345 MB in 9 min, the Wave camera, the map app) or the planner. Look at solve-time against goal and segment type, and at the CPU and load profile during the slow solves.
+
+## Progress
+
+- 2026-10-28: 2026-10-28 deep dive: the CATCH solve is ~65 ms intrinsically (sim, worker replay and the first live CATCH of each goal all agree); it runs 2-5x slower only mid-juggle, tracking box load. Ruled out: the worker path, OpenBLAS spin, memory bandwidth, thermals, CPU frequency, uptime. Leading hypothesis: starvation by preemption churn, with the mocap queue overflow as a fellow victim. Worker replies now log cpu / ivcsw / vcsw after solve X ms. Next: fly one Sitting with tools/probes/profile_session.py running, then pin the worker to its own core if starvation is confirmed. Entry: logbook/2026-10-28-jb76-solve-tail-is-environment-starvation-instrumented.md
