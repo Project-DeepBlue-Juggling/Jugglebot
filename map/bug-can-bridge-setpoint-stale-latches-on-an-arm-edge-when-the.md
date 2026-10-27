@@ -20,6 +20,7 @@ Seen on 2026-10-27 during the lead-clamp P3 Sitting (bridge FW 33, not power-cyc
 - `setpoint output ARMED` at 1793102549.376, then `FAULT LATCHED: fault_state=SETPOINT_STALE` at .493.
 - The `/leg_setpoint_echo` samples start at .412.
 - Recovered with clear_errors, then re-armed at 563.2 without another latch.
+- An earlier latch was already reported at node start (1793102384.89, output disarmed) and was cleared by the orchestrator's clear_errors at 385.95. It was most likely left latched by the P2 bench harness on this un-power-cycled bridge (the check needs `mpc_active`); the source is not established.
 - Launch log: /home/jetson/.ros/log/2026-10-27-22-59-39-920154-jetson-2913798/launch.log. Bag: /home/jetson/Desktop/rosbags/2026-10-27_22-59-40.
 
 It fails safe: output is suppressed and the recovery is clean. The fault tick landing in the window is inferred from the timing, not observed directly. The mechanism predates FW 31 and has nothing to do with the lead clamp. Over the 9 earlier FW 30 arms with a 16 ms window, never seeing a latch is plausible by chance.

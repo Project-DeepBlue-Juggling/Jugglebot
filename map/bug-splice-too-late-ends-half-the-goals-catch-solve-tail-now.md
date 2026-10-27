@@ -15,7 +15,7 @@ parent: two-ball-oval
 filed_by: claude
 ---
 
-SPLICE_TOO_LATE now ends half the goals of a powered Sitting. The 2026-10-27 lead-clamp P3 Sitting (planner level, dwell 0.50 and 0.65, BB-fed oval and hop) had 10 goals, and 5 ended SPLICE_TOO_LATE at a CATCH. Simple hop (reload) goals were among them. There were two variants: "reply transit outran the wire deadline" and "solver did not answer by the wire deadline".
+SPLICE_TOO_LATE now ends half the goals of a powered Sitting. The 2026-10-27 lead-clamp P3 Sitting (planner level, dwell 0.50 and 0.65, BB-fed oval and hop) had 10 goals, and 5 ended SPLICE_TOO_LATE at a CATCH. Simple `hop (reload)` goals were among them. There were two variants: "reply transit outran the wire deadline" and "solver did not answer by the wire deadline".
 
 The solve-time median is unchanged, but the tail now crosses the 250 ms handoff deadline:
 
