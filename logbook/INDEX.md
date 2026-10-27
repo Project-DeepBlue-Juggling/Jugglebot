@@ -8,6 +8,7 @@ Rows may summarise the entry's commit message as well as the entry itself; the e
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-10-27 | resolved | map-improvements | **map-writes: prose names other Items by plain JB-n (the drawer links every known ID; bare, not in backticks, no ranges)** | [2026-10-27-map-writes-cite-items-by-id.md](2026-10-27-map-writes-cite-items-by-id.md) |
 | 2026-10-27 | resolved | map-improvements | **Map app: live updates survive a dropped stream (refetch on every reconnect, 30 s pull, a new build opens itself), the Front page scrolls as one, Pathway tiles show each plan and pack by height, new-item Kind and Priority pills (JB-68..71)** | [2026-10-27-map-live-updates-scroll-plan-stack-pills.md](2026-10-27-map-live-updates-scroll-plan-stack-pills.md) |
 | 2026-10-27 | resolved | map-improvements | **GLOSSARY gains Item ID (JB-<n>) in the Project map group after a grilling round (Avoid: ticket number, enforced; issue number for an Item ID); map-item-ids P6 complete, Idea JB-63 closed** | [2026-10-27-glossary-item-id-term.md](2026-10-27-glossary-item-id-term.md) |
 | 2026-10-26 | resolved | map-improvements | **Quick capture moves left, right of the Map tab, as '+ File new change request' ("+" alone under 600 px), popover under the button (owner's first live filing, JB-65); quick capture Feature closed on that filing** | [2026-10-26-quick-capture-button-moves-left.md](2026-10-26-quick-capture-button-moves-left.md) |
