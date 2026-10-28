@@ -386,9 +386,11 @@ def generate_launch_description():
     # may drop messages under contention. No root needed: raising niceness is
     # always allowed.
     #
-    # The solver worker may additionally run SCHED_FIFO 10 (trajectory_node
-    # parameter `solver_rt_priority`, 0 = off; JB-95), pinned to CPUs 1-5 and
-    # fail-open to CFS when the rtprio limit / cgroup RT budget is absent.
+    # The solver worker CAN run SCHED_FIFO 10 (trajectory_node parameter
+    # `solver_rt_priority`; JB-95), pinned to CPUs 1-5 and fail-open to CFS,
+    # but it is OFF (0) by default since 2026-10-28: it stalled the setpoint
+    # stream >70 ms and tripped the firmware STOP. Re-enable only with a CPU
+    # partition (see logbook/2026-10-28-jb95-solver-worker-sched-fifo.md).
     _low_priority = 'nice -n 10'
 
     spacemouse_handler = Node(

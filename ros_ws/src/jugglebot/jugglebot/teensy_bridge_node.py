@@ -1686,6 +1686,9 @@ class TeensyBridgeNode(Node):
         # this explicit clear a stale flags=1 could survive construction. The
         # defensive 0-write closes that — mpc_active=0 on every startup path.
         self._mpc_active = False
+        # JB-95 follow-up: firmware sched_stops baseline / WARN rate limit.
+        self._sched_stops_seen = None
+        self._sched_stops_warn_mono = 0.0
         self._client.start_heartbeat(hz=float(p.HEARTBEAT_HZ), flags=0)
         self._client.set_heartbeat_flags(0)
 
@@ -5890,6 +5893,26 @@ class TeensyBridgeNode(Node):
             return 'RECOVERING'
         return fault
 
+    def _warn_on_sched_stop(self, total: int, now=None) -> None:
+        """WARN (<= 1/s) when the firmware's ``sched_stops`` rises while armed.
+
+        A rise while streaming means the lane's cover (2 knots x 25 ms + 20 ms
+        grace = ~70 ms) expired: the Jetson-side setpoint stream stalled.
+        Advisory only; runs on the 10 Hz link_status timer, never the RX path.
+        """
+        prev = self._sched_stops_seen
+        self._sched_stops_seen = total
+        if prev is None or total <= prev or not self._mpc_active:
+            return
+        t = time.monotonic() if now is None else float(now)
+        if t - self._sched_stops_warn_mono < 1.0:
+            return
+        self._sched_stops_warn_mono = t
+        self.get_logger().warning(
+            'firmware scheduler STOP (+%d, total %d) while streaming: the '
+            'Jetson-side setpoint stream stalled past the ~70 ms cover'
+            % (total - prev, total))
+
     def _publish_link_status(self):
         """Publish link_status as a DiagnosticStatus.
 
@@ -5925,6 +5948,7 @@ class TeensyBridgeNode(Node):
                 hb_stale_mask = ((int(hb.flags) & _T2J_HB_STALE_MASK)
                                   >> _T2J_HB_STALE_SHIFT)
                 self._track_hb_stale_episodes(hb_stale_mask)
+                self._warn_on_sched_stop(int(hb.sched_stops))
 
             msg = DiagnosticStatus()
             msg.name = 'teensy/link'

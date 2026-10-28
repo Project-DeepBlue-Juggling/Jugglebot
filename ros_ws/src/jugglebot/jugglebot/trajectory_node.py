@@ -149,6 +149,13 @@ _MOVE_MODE = 'TRAJECTORY'
 #: (`_refresh_clock_offset`).
 _CLOCK_STEP_WARN_US = 100.0
 
+# Emitter wake-gap WARN threshold (ms).  The can-bridge firmware covers a lane
+# for 2 knots x 25 ms + 20 ms grace = 70 ms before it STOPs; a wake gap of
+# 70 - 25 (one knot) = 45 ms means the next knot is already late enough that a
+# further hiccup is fatal.  Evaluated on the diagnostics timer, never in the
+# emitter thread.
+EMIT_GAP_WARN_MS = 45.0
+
 # Service-level rejection codes (NOT feasibility-enum members — those describe a
 # *plan*; these describe the *node's acceptance state*). They live beside
 # _MOVE_MODE because, like WRONG_MODE, they are properties of the service surface,
@@ -1164,11 +1171,15 @@ class TrajectoryNode(Node):
         # test seam (any object with solve/poll_health/close).
         self._solve_seq = 0
         # JB-95: SCHED_FIFO priority the WORKER asks for (fail-open to CFS; the
-        # outcome rides the READY log line).  0 = kill switch, the worker never
-        # calls sched_setscheduler.  Only the solver worker is affected, never
-        # the emitter thread or teensy_bridge_node.
-        self.declare_parameter('solver_rt_priority',
-                               int(sk_solver.WORKER_RT_PRIORITY))
+        # outcome rides the READY log line).  0 = off = the worker never calls
+        # sched_setscheduler.  DEFAULT OFF since the 2026-10-28 22:26 Sitting:
+        # the FIFO worker stalled the setpoint stream >70 ms during CATCH
+        # solves -> firmware STOP -> hand MAX_DEVIATION E-stop (3 of 5 goals).
+        # Re-enable (sk_solver.WORKER_RT_PRIORITY) only with a CPU partition
+        # that keeps the worker off every core trajectory_node and
+        # teensy_bridge_node can run on; see
+        # logbook/2026-10-28-jb95-solver-worker-sched-fifo.md.
+        self.declare_parameter('solver_rt_priority', 0)
         self._solver_rt_priority = max(
             0, int(self.get_parameter('solver_rt_priority').value))
         self._segment_solver = (
@@ -5247,6 +5258,11 @@ class TrajectoryNode(Node):
             kind = plan.kind
 
         gap_ms = self._max_emit_gap_s * 1e3
+        if gap_ms > EMIT_GAP_WARN_MS:
+            self.get_logger().warning(
+                'emitter wake gap %.0f ms over the last window (firmware '
+                'STOPs the lane past ~70 ms); the stream is being stalled by '
+                'something on this box' % gap_ms)
         msg = TrajectoryStatus()
         msg.streaming = bool(streaming)
         msg.mode = self._current_mode

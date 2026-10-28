@@ -301,3 +301,25 @@ def test_both_rows_are_published_unconditionally_together():
             'sending one, the unconditional-block claim needs a new witness')
     finally:
         _teardown(teensy, client, node)
+
+
+def test_sched_stop_rise_while_armed_warns_once_per_second():
+    """JB-95: firmware sched_stops rising while armed -> one rate-limited WARN."""
+    from tests.ros._bridge_harness import _build_paired_node, _teardown
+    teensy, client, node = _build_paired_node(boot_state_read=False)
+    try:
+        lines = []
+        node.get_logger().warning = lambda m, *a, **k: lines.append(str(m))
+        node._mpc_active = True
+        node._warn_on_sched_stop(3, now=100.0)       # baseline, no warn
+        node._warn_on_sched_stop(3, now=100.1)       # unchanged
+        assert not lines
+        node._warn_on_sched_stop(4, now=101.0)
+        assert len(lines) == 1 and '(+1, total 4)' in lines[0]
+        node._warn_on_sched_stop(5, now=101.5)       # rate-limited
+        assert len(lines) == 1
+        node._mpc_active = False
+        node._warn_on_sched_stop(6, now=110.0)       # not armed
+        assert len(lines) == 1
+    finally:
+        _teardown(teensy, client, node)

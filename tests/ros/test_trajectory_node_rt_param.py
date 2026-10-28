@@ -37,23 +37,42 @@ def _capture_factory(monkeypatch):
     return seen
 
 
-def test_default_param_is_ten_and_reaches_the_factory(monkeypatch):
+def test_default_param_is_off_and_reaches_the_factory(monkeypatch):
+    # Off by default since the 2026-10-28 Sitting (FIFO worker stalled the
+    # setpoint stream past the firmware's 70 ms cover).
     seen = _capture_factory(monkeypatch)
     tn.TrajectoryNode(start_emitter=False)
-    assert seen['rt_priority'] == sw.WORKER_RT_PRIORITY == 10
+    assert seen['rt_priority'] == 0
+    assert sw.WORKER_RT_PRIORITY == 10   # the value to use WHEN enabled
 
 
-def test_param_zero_is_the_kill_switch_and_reaches_the_factory(monkeypatch):
+def test_explicit_ten_reaches_the_factory(monkeypatch):
     seen = _capture_factory(monkeypatch)
     orig = tn.TrajectoryNode.declare_parameter
 
     def declare(self, name, default_value=None, *a, **kw):
         if name == 'solver_rt_priority':
-            default_value = 0
+            default_value = 10
         return orig(self, name, default_value, *a, **kw)
     monkeypatch.setattr(tn.TrajectoryNode, 'declare_parameter', declare)
     tn.TrajectoryNode(start_emitter=False)
-    assert seen['rt_priority'] == 0
+    assert seen['rt_priority'] == 10
+
+
+def test_emit_gap_warn_fires_from_status_timer_once_per_window(monkeypatch):
+    _capture_factory(monkeypatch)
+    node = tn.TrajectoryNode(start_emitter=False)
+    lines = []
+    node.get_logger().warning = lambda m, *a, **k: lines.append(str(m))
+    assert tn.EMIT_GAP_WARN_MS == 45.0
+    node._max_emit_gap_s = 0.040
+    node._publish_status()
+    assert not lines
+    node._max_emit_gap_s = 0.090
+    node._publish_status()
+    assert len(lines) == 1 and 'emitter wake gap 90 ms' in lines[0]
+    node._publish_status()          # window reset -> no repeat
+    assert len(lines) == 1
 
 
 def test_ready_info_line_carries_sched_through_solver_log(monkeypatch):

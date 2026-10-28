@@ -2,9 +2,9 @@
 id: JB-95
 kind: feature
 title: 'Solver worker on SCHED_FIFO: take the CATCH solve out of the fair-share queue (wall ~= CPU at any box load)'
-status: in_progress
+status: backlog
 created: '2026-10-28'
-updated: '2026-10-28T10:52:09Z'
+updated: '2026-10-28T11:53:08Z'
 owners: []
 priority: high
 effort: m
@@ -24,3 +24,4 @@ Owner pick 2026-10-28 evening as the lever after JB-76. Today CATCH wall/CPU is 
 ## Progress
 
 - 2026-10-28: Design done (Opus, 2026-10-28 evening): kernel has CONFIG_RT_GROUP_SCHED and user.slice cpu.rt_runtime_us=0, so rtprio alone cannot give FIFO; recipe = limits.d rtprio 40 + root oneshot unit writing 950000 to the user.slice RT budget + reboot (owner accepted). Code: worker --rt-prio from a trajectory_node ROS param (default 10, 0 = off), FIFO 10 then affinity cores 1-5 (NIC IRQs on CPU0), fail-open to CFS with the reason in the READY tuple; one WARN when RT requested but CFS resulted. Not touched: emitter thread, teensy_bridge, nice prefixes.
+- 2026-10-28: Flown once (22:26 Sitting 2026-10-28): wall/CPU 1.01 as predicted, but the FIFO worker stalled the Jetson setpoint stream 60-96 ms per CATCH solve (10 of 10 stalls inside solve windows; GIL-coupled preemption inferred), past the firmware 70 ms STOP cover -> lane refused -> hand MAX_DEVIATION E-stop on 3 of 5 goals. Hand, bridge, thermal ruled out on telemetry. Owner: default OFF (solver_rt_priority 0; the 21:02 CFS state is the accepted result), emitter-gap (45 ms) and sched_stops WARNs added so a stall fails loudly. Back to backlog: pick up only if a future Sitting shows the solve tail biting again; the design then is a CPU partition (worker on cores trajectory_node and teensy_bridge_node never run on), dress-rehearsed on the loaded box before the robot is powered.
