@@ -2,9 +2,9 @@
 id: JB-84
 kind: bug
 title: Ball Butler over-CAN flash calls the retired Jugglebot-skills worktree
-status: inbox
+status: complete
 created: '2026-10-28'
-updated: '2026-10-28T07:26:45Z'
+updated: '2026-10-28T10:21:04Z'
 owners: []
 priority: medium
 effort: xs
@@ -27,3 +27,7 @@ The Ball Butler over-CAN flash hook and link check call `~/Desktop/Jugglebot-ski
 - F3, F4, yaw-homing and the aim refit stay rows of the archived residue plan (plans/archived/skill-stack-dress-rehearsals-and-residue.md section 2).
 
 Source entries: [logbook/2026-09-30-skill-stack-r5-sitting-1.md](logbook/2026-09-30-skill-stack-r5-sitting-1.md), [logbook/2026-10-13-skill-stack-r5-bb-throw-self-cancel-and-phantom-catch.md](logbook/2026-10-13-skill-stack-r5-bb-throw-self-cancel-and-phantom-catch.md)
+
+## Progress
+
+- 2026-10-28: Fixed in the BallButler repo 2026-10-28 (platformio.ini upload_command, bb_link_check.py, sitting script); next over-CAN flash is the live test
