@@ -1,5 +1,5 @@
 ---
-title: "JB-76: the CATCH solve tail is the launch starving its own solver worker (65 ms of CPU takes 150 ms of wall on a 5.5-of-6-core box); instrumented, measured in one Sitting, low-priority prefixes as the first fix"
+title: "JB-76: the CATCH solve tail is the launch starving its own solver worker (65 ms of CPU takes 150 ms of wall on a 5.5-of-6-core box); instrumented, measured in one Sitting, low-priority prefixes as the first fix; second Sitting: refusals 42 % -> 1.3 %, wall/CPU 2.18 -> 1.97, tracker next"
 type: investigation
 date: 2026-10-28
 status: in-progress
@@ -142,15 +142,38 @@ Not on the list: the two Claude CLIs (3 % together), VS Code, the map app. One C
 
 `jugglebot_launch.py` adds `prefix='nice -n 10'` to `rosbridge_websocket`, `rosbag_record`, `spacemouse_handler` and `ball_butler_node`. Under CFS nice 10 weighs about 1/9 of nice 0, so under contention they yield to mocap → tracker → skill → trajectory + worker → teensy_bridge, and to `orchestrator_node` (owner: it dispatches the skills and handles the ENDs, so it stays at nice 0). They keep every idle cycle; only who waits changes. No root needed. Expected: CATCH wall time back near 80–100 ms. Costs: GUI stutter during solve bursts, and GUI-relayed commands (the Soft E-stop button included) reach ROS tens of ms later under contention; the bag may drop messages; `ball_butler_node`'s own scheduling latency grows, which the Feed tolerates because the BB release instant is an absolute time the BB itself holds (protocol 10), not a Jetson-timed send. Verified on this box by resolving every process's prefix from the real launch objects (exactly the four carry `nice -n 10`; `--print` does not show prefixes) and pinned by `tests/ros/test_launch_priority.py`, which also asserts that no control-chain node carries any prefix; the gate is the next Sitting's scan.
 
-## Next, in order (owner-agreed 2026-10-28)
+## The Sitting of 2026-10-28 14:29: fix 1 and the GUI copies live
 
-1. Fly a Sitting with the recorder, run the scan, compare wall/CPU against 2.18.
-2. Trim the load where the table points: the tracker's >100 % (test `OPENBLAS_NUM_THREADS=1` on it offline through `tracker_bag_replay.py`; the launch comment's reason for leaving it uncapped, "genuinely large-matrix work", does not match the code, which is 6×6 Kalman steps, norms and an (n, 2) `lstsq`), rosbridge's 86 % for one client (an Opus agent is surveying the options), then `py-spy` on `skill_node` and `teensy_bridge_node`.
-3. Core isolation for the worker only after step 2 frees headroom: today 5.1 cores of demand on the 5 remaining cores would squeeze the setpoint stream.
+Flown with the recorder (`temp/probes/profile_20261028-142931/`, 317 s; launch log `~/.ros/log/2026-10-28-14-29-37-005424-jetson-3516886/launch.log`), the first Sitting with `nice -n 10` on the four non-control processes and the GUI on the 20 Hz `gui/` mocap copies (`2026-10-28-gui-mocap-copies-cut-rosbridge-load.md`). Columns only (five goals plus one 5-throw `columns_1ball_fed`), 79 counted throws, every one caught; two goals completed (5/5 and a 49/49 columns record), four ended `MISSED_CATCH` on a CATCH that produced no ball. The 09:49 Sitting mixed oval and columns, so the per-goal numbers are not comparable; the solve statistics are. Scan output `temp/probes/solve-starvation-2026-10-28-1429.txt`; the comparison was done by a Sonnet agent against both launch logs and both profile directories.
+
+| CATCH solves | 09:49 (before) | 14:29 (after) |
+|---|---|---|
+| wall p50 / p90 / max | 153 / 226 / 297 ms | 117 / 160 / 223 ms |
+| CPU p50 | 67 ms | 60 ms |
+| wall/CPU p50 / p90 | 2.18 / 2.81 | 1.97 / 2.41 |
+| ivcsw p50 | 59 | 47 |
+| over 150 ms wall (CATCH + refused) | 162 of 270 (60 %) | 23 of 176 (13 %) |
+| re-aims refused, per caught throw | 64 of 154 (42 %; 58 SPLICE_TOO_LATE) | 1 of 79 (1.3 %; one SPLICE_TOO_LATE at throw 48/50; the scan shows a second, LIMIT_ACC, worker refusal that reached no throw line) |
+| rosbridge, mean % of a core | 86 | 56 |
+| box during goals / idle, % of 600 | 555 / 435 | 537 / 423 |
+
+**The symptom is mostly gone; the cause is not.** The refusal rate fell thirty-fold because the wall tail moved under the ~150 ms re-aim cliff, but the worker is still descheduled for about half its wall time: the pass mark ("wall/CPU well under 2.18") was missed at 1.97. The box still runs at 537 of 600 % during goals with all six cores saturated for seconds at a time. The roughly 0.4 core released during goals by rosbridge (77 → 46 %) and `ball_butler_node` (36 → 25 %) shows up as only 18 points less box load (555 → 537): the nice-0 processes absorbed part of it (tracker +19, `skill_node` +6) and the rest went unused, while the worker's own share of the run queue barely moved. The largest of those is `ball_tracker_node`: 36 % idle, **148 % during goals**, which a single-threaded Python node cannot reach, so it is the uncapped OpenBLAS pool (the launch's `_planner_blas_env` covers only the three planner callers). `skill_node` went 61 → 68 % idle and 78 → 84 % during goals; `mocap_node` and `teensy_bridge_node` are unchanged. The nice-10 set now yields: `ball_butler_node` 36 → 25 % during goals, rosbridge 77 → 46 %.
+
+Two things this Sitting could not show. The nice values themselves: `profile_session.py`'s ps snapshot had no `ni` column (fixed in this commit; the only direct trace is the bag's recorded command line `nice -n 10 ros2 bag record ...`), so the four prefixes are verified by `tests/ros/test_launch_priority.py` and by the yielding pattern above, not by a read of the running processes. And a pattern-controlled comparison: columns CATCH solves may be lighter than oval ones, so a second scanned Sitting with an oval goal is needed before JB-76 closes. Secondary indicators were null: zero mocap overflows in either Sitting, no SETPOINT_STALE, no E-stop, no hand fault.
+
+**Working read-out for the operator.** Fix 1 plus the copies bought roughly 35 ms of CATCH wall p50 and removed the refusals at today's load; a heavier Sitting (oval, two balls, more GUI panels) will push the tail back over the cliff because the box is still over 5.3 cores busy. The next lever is the tracker's thread cap.
+
+## Next, in order (owner-agreed 2026-10-28, renumbered after the 14:29 Sitting)
+
+1. ~~Fly a Sitting with the recorder, run the scan, compare wall/CPU against 2.18.~~ Done 14:29: 1.97, improved but not met; see above.
+2. Trim the load where the table points: the tracker's 148 % during goals (test `OPENBLAS_NUM_THREADS=1` on it offline through `tracker_bag_replay.py`; the launch comment's reason for leaving it uncapped, "genuinely large-matrix work", does not match the code, which is 6×6 Kalman steps, norms and an (n, 2) `lstsq`), then `py-spy` on `skill_node` (84 % during goals) and `teensy_bridge_node` (77 %). rosbridge's share was the GUI copies (done, 86 → 56 %); the lean server's deserialise-after-throttle (option 4) stays optional.
+3. Core isolation for the worker only after step 2 frees headroom: today 5.3 cores of demand on the 5 remaining cores would squeeze the setpoint stream.
 4. The 150 ms unpinned re-aim cliff stays structurally thin and is a separate decision.
 5. A Jetson restart is not a fix: the load is the running launch.
+6. Close JB-76 only after a scanned Sitting that includes an oval goal reads wall/CPU well under 2 with zero re-aim refusals.
 
 ## Verification
 
 - Instrumentation commit, 2026-10-28: `pytest -q tests/motion/test_solver_worker.py tests/ros/test_install_segment.py tests/motion/test_solver_worker_lateness.py` gave 93 passed before the test was narrowed to a BLAS-capped worker; afterwards `tests/motion/test_solver_worker.py` gave 16 passed. Gate `./run_tests.sh`, 2026-10-28: 7369 passed / 4 skipped + serial 5 passed, PASS.
 - Fix 1 commit, 2026-10-28: `pytest -q tests/ros/test_launch_priority.py` 1 passed; `./run_tests.sh` 7370 passed / 4 skipped + serial 5 passed, PASS (`temp/logs/jb76-nice-gate.log`); the scan reproduces every table above from the saved Sitting data (`python tools/probes/solve_starvation_scan.py ~/.ros/log/2026-10-28-09-49-31-556395-jetson-3246295/launch.log temp/probes/profile_20261028-094925`).
+- 14:29 Sitting read-out, 2026-10-28: `python tools/probes/solve_starvation_scan.py ~/.ros/log/2026-10-28-14-29-37-005424-jetson-3516886/launch.log temp/probes/profile_20261028-142931` (output `temp/probes/solve-starvation-2026-10-28-1429.txt`) gives the right-hand column of the table; the goal/re-aim counts come from the launch log's per-throw lines (`grep -c "then refused" launch.log`: 64 vs 1; denominators are CAUGHT throw lines, 154 vs 79). `profile_session.py`'s snapshot parser was checked on the old-format 14:29 log (491 PIDs resolved, empty nice map) and on a synthetic new-format block (nice 10 / 0 / `-` read back).

@@ -303,13 +303,16 @@ def _start_recorders(session: Path,
 
     # ps snapshots - dump the full process table every 5 s. Lets the
     # analyzer resolve generic `python` / `python3` pidstat entries to their
-    # actual command lines (which process / which script). Captured on a
-    # loop because the ROS2 stack usually starts AFTER the profiler.
+    # actual command lines (which process / which script) and read each
+    # process's nice value (the launch's `nice -n 10` prefixes, 2026-10-28,
+    # were unverifiable from the 14:29 Sitting because the column was
+    # missing). Captured on a loop because the ROS2 stack usually starts
+    # AFTER the profiler.
     ps_log = session / "ps_snapshots.log"
     ps_proc = _spawn(
         ["sh", "-c",
          "while true; do printf '=== %s ===\\n' \"$(date +%s)\"; "
-         "ps -eo pid,pcpu,pmem,comm,args --sort=-pcpu --no-headers; "
+         "ps -eo pid,ni,pcpu,pmem,comm,args --sort=-pcpu --no-headers; "
          "sleep 5; done"],
         ps_log,
     )
@@ -829,29 +832,45 @@ def _parse_candump(path: Path) -> dict | None:
 def _parse_ps_snapshots(path: Path) -> dict[int, str]:
     """Map PID -> full command line from ps_snapshots.log.
 
-    The file is '=== <epoch> ===' delimited blocks of
-    `pid pcpu pmem comm args...` lines (ps --no-headers). Last sighting of
-    each PID wins, so a process that changed state mid-session resolves to
-    its latest command line.
+    The file is '=== <epoch> ===' delimited blocks of ps --no-headers lines,
+    `pid ni pcpu pmem comm args...` since 2026-10-28 and
+    `pid pcpu pmem comm args...` before. Last sighting of each PID wins, so
+    a process that changed state mid-session resolves to its latest command
+    line.
     """
+    return {pid: args for pid, (_ni, args) in _parse_ps_rows(path).items()}
+
+
+def _parse_ps_nice(path: Path) -> dict[int, str]:
+    """Map PID -> nice value ('0', '10', '-' for kernel threads) from
+    ps_snapshots.log; empty for a pre-2026-10-28 log without the column."""
+    return {pid: ni for pid, (ni, _args) in _parse_ps_rows(path).items()
+            if ni is not None}
+
+
+def _parse_ps_rows(path: Path) -> dict[int, tuple[str | None, str]]:
     if not path.exists():
         return {}
-    pid_args: dict[int, str] = {}
+    rows: dict[int, tuple[str | None, str]] = {}
     for line in path.read_text(errors="replace").splitlines():
         line = line.rstrip()
         if not line or line.startswith("==="):
             continue
-        # pid pcpu pmem comm args... - split into exactly 5 fields.
-        parts = line.split(None, 4)
+        parts = line.split(None, 5)
         if len(parts) < 4:
             continue
         try:
             pid = int(parts[0])
         except ValueError:
             continue
-        # args column is parts[4]; fall back to comm (parts[3]) if absent.
-        pid_args[pid] = parts[4] if len(parts) == 5 else parts[3]
-    return pid_args
+        # Old format: pid pcpu pmem comm args (pcpu carries a '.').
+        # New format: pid ni pcpu pmem comm args (ni is an int or '-').
+        if "." in parts[1]:
+            old = line.split(None, 4)
+            rows[pid] = (None, old[4] if len(old) == 5 else old[3])
+        else:
+            rows[pid] = (parts[1], parts[5] if len(parts) == 6 else parts[4])
+    return rows
 
 
 # ---------------------------------------------------------------------------
@@ -1253,16 +1272,18 @@ def _analyze(session: Path, print_summary: bool) -> int:
         # Resolve the top processes to their full command lines so generic
         # `python` / `python3` pidstat entries can be identified.
         ps_map = _parse_ps_snapshots(session / "ps_snapshots.log")
+        ni_map = _parse_ps_nice(session / "ps_snapshots.log")
         if ps_map:
             sections.append("\n### Process command lines (from ps)\n")
-            sections.append("| pid | command | full command line |\n"
-                            "|---:|---|---|\n")
+            sections.append("| pid | command | nice | full command line |\n"
+                            "|---:|---|---:|---|\n")
             for p in per_proc[:15]:
                 args = ps_map.get(p["pid"], "(not captured by ps)")
                 if len(args) > 130:
                     args = args[:127] + "..."
+                ni = ni_map.get(p["pid"], "?")
                 sections.append(
-                    f"| {p['pid']} | `{p['cmd']}` | `{args}` |\n"
+                    f"| {p['pid']} | `{p['cmd']}` | {ni} | `{args}` |\n"
                 )
         else:
             sections.append(
