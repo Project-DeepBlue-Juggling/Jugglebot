@@ -152,3 +152,12 @@ def test_pill_clicks_keep_the_form_isolated_and_the_dismiss_rules():
     # form, so a click on it is never an outside click
     assert "form.addEventListener('keydown'" in JS
     assert "!form.contains(target)" in JS
+def test_focus_moving_into_the_map_iframe_dismisses_the_open_form():
+    """JB-80 reopened: a click inside the Map <iframe> never reaches document's pointerdown;
+    window blur with the iframe as activeElement is the only signal, deferred one tick
+    (activeElement is stale while blur dispatches) and routed through the busy-guarded dismiss()."""
+    i = JS.index("window.addEventListener('blur'")
+    block = JS[i:JS.index("form.addEventListener('submit'")]
+    assert "setTimeout(" in block and "document.activeElement" in block
+    assert "tagName === 'IFRAME'" in block and "!form.hidden" in block
+    assert "dismiss()" in block and "file()" not in block

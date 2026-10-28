@@ -220,6 +220,15 @@ cancelBtn.addEventListener('click', dismiss);
 // dismiss(); the draft stays in localStorage, so reopening restores it).  Capture phase so a
 // handler that stops propagation elsewhere cannot hide the click.
 document.addEventListener('pointerdown', (e) => { if (isOutsideClick(e.target)) dismiss(); }, true);
+// The Map pane is an <iframe> (app-tabs.js): a pointer-down inside it never reaches this
+// document, but focus moving into it blurs the window with the iframe as activeElement.
+// Deferred one tick because activeElement is not yet updated while blur dispatches.
+window.addEventListener('blur', () => {
+    setTimeout(() => {
+        const a = document.activeElement;
+        if (!form.hidden && a && a.tagName === 'IFRAME') dismiss();
+    }, 0);
+});
 form.addEventListener('submit', (e) => { e.preventDefault(); file(); });
 form.addEventListener('input', saveDraft);
 form.addEventListener('change', saveDraft);
