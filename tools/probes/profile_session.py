@@ -312,7 +312,7 @@ def _start_recorders(session: Path,
     ps_proc = _spawn(
         ["sh", "-c",
          "while true; do printf '=== %s ===\\n' \"$(date +%s)\"; "
-         "ps -eo pid,ni,pcpu,pmem,comm,args --sort=-pcpu --no-headers; "
+         "ps -eo pid,ni,cls,rtprio,pcpu,pmem,comm,args --sort=-pcpu --no-headers; "
          "sleep 5; done"],
         ps_log,
     )
@@ -832,44 +832,73 @@ def _parse_candump(path: Path) -> dict | None:
 def _parse_ps_snapshots(path: Path) -> dict[int, str]:
     """Map PID -> full command line from ps_snapshots.log.
 
-    The file is '=== <epoch> ===' delimited blocks of ps --no-headers lines,
-    `pid ni pcpu pmem comm args...` since 2026-10-28 and
-    `pid pcpu pmem comm args...` before. Last sighting of each PID wins, so
-    a process that changed state mid-session resolves to its latest command
-    line.
+    The file is '=== <epoch> ===' delimited blocks of ps --no-headers lines in
+    one of three formats: `pid ni cls rtprio pcpu pmem comm args...` (since the
+    JB-95 recorder change, 2026-10-28 evening), `pid ni pcpu pmem comm args...`
+    (2026-10-28 daytime) and `pid pcpu pmem comm args...` before. Last
+    sighting of each PID wins, so a process that changed state mid-Sitting
+    resolves to its latest command line.
     """
     return {pid: args for pid, (_ni, args) in _parse_ps_rows(path).items()}
 
 
 def _parse_ps_nice(path: Path) -> dict[int, str]:
     """Map PID -> nice value ('0', '10', '-' for kernel threads) from
-    ps_snapshots.log; empty for a pre-2026-10-28 log without the column."""
+    ps_snapshots.log (either of the two newer formats); empty for a
+    pre-2026-10-28 log without the column."""
     return {pid: ni for pid, (ni, _args) in _parse_ps_rows(path).items()
             if ni is not None}
 
 
+_PS_CLASSES = {"TS", "FF", "RR", "B", "IDL", "ISO", "DLN", "#", "-"}
+
+
+def _parse_ps_sched(path: Path) -> dict[int, str]:
+    """Map PID -> scheduling class/priority ('FF/10', 'TS', 'RR/5') from
+    ps_snapshots.log; empty for a log without the cls,rtprio columns
+    (pre-JB-95 captures)."""
+    return {pid: sc for pid, (_ni, _args, sc) in _parse_ps_rows3(path).items()
+            if sc is not None}
+
+
 def _parse_ps_rows(path: Path) -> dict[int, tuple[str | None, str]]:
+    return {pid: (ni, args)
+            for pid, (ni, args, _sc) in _parse_ps_rows3(path).items()}
+
+
+def _parse_ps_rows3(path: Path) -> dict[int, tuple[str | None, str, str | None]]:
+    """pid -> (nice, args, sched). Three formats, told apart per line:
+    old   `pid pcpu pmem comm args`            (pcpu carries a '.')
+    two   `pid ni pcpu pmem comm args`         (2026-10-28)
+    three `pid ni cls rtprio pcpu pmem comm args` (JB-95: cls is TS/FF/RR/...,
+          rtprio an int or '-')."""
     if not path.exists():
         return {}
-    rows: dict[int, tuple[str | None, str]] = {}
+    rows: dict[int, tuple[str | None, str, str | None]] = {}
     for line in path.read_text(errors="replace").splitlines():
         line = line.rstrip()
         if not line or line.startswith("==="):
             continue
-        parts = line.split(None, 5)
+        parts = line.split(None, 7)
         if len(parts) < 4:
             continue
         try:
             pid = int(parts[0])
         except ValueError:
             continue
-        # Old format: pid pcpu pmem comm args (pcpu carries a '.').
-        # New format: pid ni pcpu pmem comm args (ni is an int or '-').
         if "." in parts[1]:
             old = line.split(None, 4)
-            rows[pid] = (None, old[4] if len(old) == 5 else old[3])
+            rows[pid] = (None, old[4] if len(old) == 5 else old[3], None)
+        elif (len(parts) >= 5 and parts[2] in _PS_CLASSES
+              and (parts[3] == "-" or parts[3].lstrip("-").isdigit())
+              and "." in parts[4]):
+            cls, rtp = parts[2], parts[3]
+            sched = cls if rtp == "-" else "%s/%s" % (cls, rtp)
+            rows[pid] = (parts[1], parts[7] if len(parts) == 8 else parts[6]
+                         if len(parts) == 7 else "", sched)
         else:
-            rows[pid] = (parts[1], parts[5] if len(parts) == 6 else parts[4])
+            two = line.split(None, 5)
+            rows[pid] = (two[1], two[5] if len(two) == 6 else two[4], None)
     return rows
 
 
@@ -1273,17 +1302,19 @@ def _analyze(session: Path, print_summary: bool) -> int:
         # `python` / `python3` pidstat entries can be identified.
         ps_map = _parse_ps_snapshots(session / "ps_snapshots.log")
         ni_map = _parse_ps_nice(session / "ps_snapshots.log")
+        sched_map = _parse_ps_sched(session / "ps_snapshots.log")
         if ps_map:
             sections.append("\n### Process command lines (from ps)\n")
-            sections.append("| pid | command | nice | full command line |\n"
-                            "|---:|---|---:|---|\n")
+            sections.append("| pid | command | nice | sched | full command line |\n"
+                            "|---:|---|---:|---|---|\n")
             for p in per_proc[:15]:
                 args = ps_map.get(p["pid"], "(not captured by ps)")
                 if len(args) > 130:
                     args = args[:127] + "..."
                 ni = ni_map.get(p["pid"], "?")
+                sc = sched_map.get(p["pid"], "?")
                 sections.append(
-                    f"| {p['pid']} | `{p['cmd']}` | {ni} | `{args}` |\n"
+                    f"| {p['pid']} | `{p['cmd']}` | {ni} | {sc} | `{args}` |\n"
                 )
         else:
             sections.append(

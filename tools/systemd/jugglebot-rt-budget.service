@@ -1,0 +1,35 @@
+# JB-95: give the user.slice cpu cgroup a real-time runtime budget.
+#
+# Why: this kernel (5.10-tegra) is built with CONFIG_RT_GROUP_SCHED=y. Every
+# launch process lives in the cpu cgroup /user.slice, whose cpu.rt_runtime_us is
+# 0 by default. In __sched_setscheduler() a task in a group with rt_runtime == 0
+# is refused SCHED_FIFO/RR with EPERM for ANY caller, root included, so the rtprio
+# rlimit (99-jugglebot-rt.conf) alone is not enough.
+#
+# Why 950000: it mirrors the global sched_rt_runtime_us (950000 of a 1000000 us
+# period) exactly; children may not sum above the parent, and the root is 950000.
+# NEVER set it lower "for safety": a throttled group does not run AT ALL until
+# the period refreshes, so a legitimate burst crossing a small budget would turn
+# a 70 ms solve into a stall of up to the rest of the period, worse than CFS.
+# The runaway net is the global kernel.sched_rt_runtime_us = 950000, which stays
+# as it is (never set -1): a FIFO task stuck in a loop is capped at 95 % of its
+# CPU and the parent's 2 s SOLVER_HANG_S SIGKILLs it.
+#
+# Runs as root at boot, before the user manager that starts tmux and the launch.
+# Wants=user.slice pulls the slice into the boot transaction so the cgroup
+# exists when the write runs (After= alone only orders); the mkdir is a no-op
+# when it does and creates the cpu cgroup when it does not.
+# Install: tools/systemd/README.md, section "Real-time budget for the solver worker".
+[Unit]
+Description=Jugglebot: RT bandwidth for user.slice (CONFIG_RT_GROUP_SCHED; JB-95)
+Wants=user.slice
+After=user.slice systemd-user-sessions.service
+Before=user@1000.service
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'mkdir -p /sys/fs/cgroup/cpu,cpuacct/user.slice && echo 950000 > /sys/fs/cgroup/cpu,cpuacct/user.slice/cpu.rt_runtime_us'
+RemainAfterExit=yes
+
+[Install]
+WantedBy=multi-user.target

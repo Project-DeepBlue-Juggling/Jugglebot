@@ -385,6 +385,10 @@ def generate_launch_description():
     # waits changes. Costs: the GUI stutters during a solve burst and the bag
     # may drop messages under contention. No root needed: raising niceness is
     # always allowed.
+    #
+    # The solver worker may additionally run SCHED_FIFO 10 (trajectory_node
+    # parameter `solver_rt_priority`, 0 = off; JB-95), pinned to CPUs 1-5 and
+    # fail-open to CFS when the rtprio limit / cgroup RT budget is absent.
     _low_priority = 'nice -n 10'
 
     spacemouse_handler = Node(

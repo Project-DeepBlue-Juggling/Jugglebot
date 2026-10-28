@@ -1163,12 +1163,21 @@ class TrajectoryNode(Node):
         # ("worker starting"), never solved in-process.  `segment_solver` is the
         # test seam (any object with solve/poll_health/close).
         self._solve_seq = 0
+        # JB-95: SCHED_FIFO priority the WORKER asks for (fail-open to CFS; the
+        # outcome rides the READY log line).  0 = kill switch, the worker never
+        # calls sched_setscheduler.  Only the solver worker is affected, never
+        # the emitter thread or teensy_bridge_node.
+        self.declare_parameter('solver_rt_priority',
+                               int(sk_solver.WORKER_RT_PRIORITY))
+        self._solver_rt_priority = max(
+            0, int(self.get_parameter('solver_rt_priority').value))
         self._segment_solver = (
             segment_solver if segment_solver is not None
             else _default_segment_solver_factory(
                 python=sys.executable, sys_path=list(sys.path), env=None,
                 log=self._solver_log,
-                expected_executor_file=sk_exec.__file__))
+                expected_executor_file=sk_exec.__file__,
+                rt_priority=self._solver_rt_priority))
 
         if start_emitter:
             self._start_emitter()
@@ -1199,8 +1208,10 @@ class TrajectoryNode(Node):
         """The segment solver's log sink.  ONE severity per call site (Foxy's
         rclpy raises ValueError if a call site's severity changes), hence three
         branches rather than ``getattr(logger, level)``.  READY (pid, executor
-        file, BLAS threads) arrives here at INFO from the solver; a BLAS count
-        other than 1 arrives at WARNING."""
+        file, BLAS threads, ``sched=FIFO/10 cpus=1-5`` or ``sched=CFS (<reason>)``)
+        arrives here at INFO from the solver; a BLAS count other than 1, or an
+        RT request (``solver_rt_priority`` > 0) that left the worker on CFS,
+        arrives at WARNING (once, from the solver's READY)."""
         if level == 'error':
             self.get_logger().error(msg)
         elif level == 'warning':

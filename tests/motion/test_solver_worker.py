@@ -415,3 +415,138 @@ def test_a_worker_that_never_reports_ready_is_failed_then_down(
         assert logs.count('error') == 1
     finally:
         s.close()
+
+
+# ---------------------------------------------------------------------------
+# JB-95: SCHED_FIFO for the worker (fail-open, worker-only)
+# ---------------------------------------------------------------------------
+# The rlimit-EPERM branch is real on this box (`ulimit -r 0` ->
+# PermissionError errno 1, probed 2026-10-28).  The cgroup branch (rtprio fine,
+# cpu.rt_runtime_us == 0 under CONFIG_RT_GROUP_SCHED) is INJECTION-ONLY: it
+# comes from kernel source and live cgroup values, not a probe.
+
+import errno  # noqa: E402
+
+
+class _Calls:
+    def __init__(self, sched_exc=None, aff_exc=None):
+        self.sched, self.aff = [], []
+        self._sched_exc, self._aff_exc = sched_exc, aff_exc
+
+    def setsched(self, pid, policy, param):
+        self.sched.append((pid, policy, param))
+        if self._sched_exc:
+            raise self._sched_exc
+
+    def setaff(self, pid, cpus):
+        self.aff.append((pid, set(cpus)))
+        if self._aff_exc:
+            raise self._aff_exc
+
+
+def _eperm():
+    return PermissionError(errno.EPERM, 'Operation not permitted')
+
+
+def _apply(c, prio=10, rlimit=(0, 0), files=None, getaff=lambda pid: {0, 1}):
+    files = files or {}
+
+    def read_text(path):
+        if path not in files:
+            raise FileNotFoundError(path)
+        return files[path]
+    return sw.apply_rt_policy(
+        prio, (1, 2, 3, 4, 5), setscheduler=c.setsched, setaffinity=c.setaff,
+        getaffinity=getaff, getrlimit=lambda: rlimit, read_text=read_text)
+
+
+def test_rt_policy_success_pins_the_exact_cpu_set():
+    c = _Calls()
+    info = _apply(c, rlimit=(40, 40))
+    assert info.policy == 'FIFO' and info.priority == 10
+    assert info.cpus == '1-5' and info.reason == 'ok'
+    assert len(c.sched) == 1 and c.sched[0][0] == 0
+    assert c.sched[0][1] & os.SCHED_FIFO
+    assert c.aff == [(0, {1, 2, 3, 4, 5})]
+
+
+def test_rt_eperm_from_rlimit_names_it_and_leaves_affinity_alone():
+    c = _Calls(sched_exc=_eperm())
+    info = _apply(c, rlimit=(0, 0))
+    assert info.policy == 'CFS' and info.priority == 0
+    assert 'RLIMIT_RTPRIO=0' in info.reason
+    assert c.aff == []
+
+
+def test_rt_eperm_from_cgroup_budget_names_the_cgroup():
+    c = _Calls(sched_exc=_eperm())
+    files = {'/proc/self/cgroup': '12:pids:/x\n7:cpu,cpuacct:/user.slice\n',
+             '/sys/fs/cgroup/cpu,cpuacct/user.slice/cpu.rt_runtime_us': '0\n'}
+    info = _apply(c, rlimit=(40, 40), files=files)
+    assert info.policy == 'CFS'
+    assert 'rt_runtime_us=0' in info.reason and '/user.slice' in info.reason
+    assert c.aff == []
+
+
+def test_rt_eperm_with_unreadable_cgroup_says_reason_unknown():
+    info = _apply(_Calls(sched_exc=_eperm()), rlimit=(40, 40))
+    assert info.policy == 'CFS' and 'EPERM (reason unknown)' in info.reason
+
+
+def test_rt_prio_zero_calls_nothing():
+    c = _Calls()
+    info = _apply(c, prio=0)
+    assert info.policy == 'CFS' and info.reason == 'disabled'
+    assert c.sched == [] and c.aff == []
+
+
+def test_rt_affinity_failure_drops_back_to_cfs_rather_than_fifo_anywhere():
+    """A FIFO worker with an unrestricted mask could land on CPU0, where both
+    NIC IRQs live: the one placement the pin exists to prevent. So when the
+    pin fails after FIFO succeeded, the policy goes back to SCHED_OTHER and
+    the result says CFS with the affinity error as the reason (audit finding,
+    2026-10-28). Unreachable on the 6-core Jetson; injection only."""
+    c = _Calls(aff_exc=OSError(errno.EINVAL, 'bad cpu'))
+    info = _apply(c, rlimit=(40, 40), getaff=lambda pid: {0, 1})
+    assert info.policy == 'CFS' and info.priority == 0
+    assert info.cpus == 'unchanged' and 'affinity failed' in info.reason
+    # FIFO was asked for, then SCHED_OTHER restored.
+    assert len(c.sched) == 2
+    assert c.sched[0][1] & os.SCHED_FIFO == os.SCHED_FIFO
+    assert c.sched[1][1] == os.SCHED_OTHER
+
+
+def test_default_worker_does_not_ask_for_rt_and_reports_cfs_disabled():
+    env = dict(os.environ, OPENBLAS_NUM_THREADS='1', OMP_NUM_THREADS='1')
+    solver = sw.WorkerSegmentSolver(env=env)
+    try:
+        assert solver._rt_priority == 0
+        assert solver.wait_ready(20.0), solver.state
+        info = solver.sched_info
+        assert info.policy == 'CFS' and info.reason == 'disabled'
+        assert solver.ready_info[2] == 1          # still the 3-tuple
+        assert os.sched_getscheduler(solver.pid) == os.SCHED_OTHER
+    finally:
+        solver.close()
+
+
+def test_rt_requested_worker_is_fifo_or_fails_open_with_a_reason(
+        limits, geom, sites):
+    """Environment-agnostic: passes before and after the owner's rtprio recipe."""
+    env = dict(os.environ, OPENBLAS_NUM_THREADS='1', OMP_NUM_THREADS='1')
+    solver = sw.WorkerSegmentSolver(env=env, rt_priority=10)
+    try:
+        assert solver.wait_ready(20.0), solver.state
+        info = solver.sched_info
+        if info.policy == 'FIFO':
+            assert info.priority == 10
+            pol = os.sched_getscheduler(solver.pid)
+            assert pol & ~getattr(os, 'SCHED_RESET_ON_FORK', 0) == os.SCHED_FIFO
+        else:
+            assert info.policy == 'CFS'
+            assert any(k in info.reason for k in ('EPERM', 'RLIMIT', 'rt_runtime'))
+            assert os.sched_getscheduler(solver.pid) == os.SCHED_OTHER
+        rep = solver.solve(_throw_req(1, _t0(), limits, geom, sites))
+        assert rep.result.accepted, rep.result.message     # fail-open: still solves
+    finally:
+        solver.close()

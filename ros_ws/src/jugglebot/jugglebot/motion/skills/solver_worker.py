@@ -38,6 +38,7 @@ from __future__ import annotations
 
 import argparse
 import dataclasses
+import errno
 import math
 import os
 import pickle
@@ -47,7 +48,7 @@ import sys
 import threading
 import time
 from multiprocessing.connection import Connection
-from typing import Any, Callable, List, Optional, Tuple
+from typing import Any, Callable, Iterable, List, NamedTuple, Optional, Tuple
 
 #: Refusal code: the worker is dead, starting, hung, on the wrong tree, or down
 #: after its restart was spent.  Not aim-dependent: the executor must not
@@ -67,6 +68,14 @@ SOLVER_REST_DEADLINE_S = 1.0
 SOLVER_HANG_S = 2.0
 #: A worker alive but silent this long after spawn never reaches READY.
 READY_TIMEOUT_S = 10.0
+
+#: Default SCHED_FIFO priority the node asks for (JB-95): below every kernel IRQ
+#: thread (FIFO 50) and migration (99).  0 = leave the worker on CFS.
+WORKER_RT_PRIORITY = 10
+#: CPUs the worker is pinned to once FIFO succeeded: CPU0 carries both NIC IRQs
+#: and a FIFO task there would starve ksoftirqd/0 (UDP RX for the can-bridge
+#: link and mocap).
+WORKER_RT_CPUS = (1, 2, 3, 4, 5)
 
 STARTING = 'STARTING'
 READY = 'READY'
@@ -186,11 +195,130 @@ class InProcessSegmentSolver:
 
 
 # ---------------------------------------------------------------------------
+# Real-time policy (JB-95)
+# ---------------------------------------------------------------------------
+
+class SchedInfo(NamedTuple):
+    """What the worker's scheduling class ended up as.  ``policy`` is ``'FIFO'``
+    or ``'CFS'``; ``cpus`` is a range string (``'1-5'``) or ``'unchanged'``;
+    ``reason`` is ``'ok'`` / ``'disabled'`` / why FIFO was refused."""
+
+    policy: str
+    priority: int
+    cpus: str
+    reason: str
+
+
+def _read_text(path: str) -> str:
+    with open(path) as f:
+        return f.read()
+
+
+def _fmt_cpus(cpus: Iterable[int]) -> str:
+    xs = sorted(set(int(c) for c in cpus))
+    out: List[str] = []
+    i = 0
+    while i < len(xs):
+        j = i
+        while j + 1 < len(xs) and xs[j + 1] == xs[j] + 1:
+            j += 1
+        out.append(str(xs[i]) if i == j else '%d-%d' % (xs[i], xs[j]))
+        i = j + 1
+    return ','.join(out)
+
+
+def _cgroup_rt_reason(read_text: Callable[[str], str]) -> str:
+    """Why EPERM when RLIMIT_RTPRIO is high enough: on a CONFIG_RT_GROUP_SCHED
+    kernel a task in a cpu cgroup with ``cpu.rt_runtime_us == 0`` cannot enter
+    an RT class (kernel source; the live cgroup value is 0 for /user.slice)."""
+    try:
+        for line in read_text('/proc/self/cgroup').splitlines():
+            _id, ctrls, path = line.split(':', 2)
+            if 'cpu' in ctrls.split(','):
+                fn = ('/sys/fs/cgroup/cpu,cpuacct%s/cpu.rt_runtime_us'
+                      % path.rstrip('/'))
+                val = int(read_text(fn).strip())
+                return 'EPERM: cpu cgroup %s rt_runtime_us=%d' % (path, val)
+    except (OSError, ValueError):
+        pass
+    return 'EPERM (reason unknown)'
+
+
+def apply_rt_policy(prio: int, cpus: Iterable[int] = WORKER_RT_CPUS, *,
+                    setscheduler: Optional[Callable] = None,
+                    setaffinity: Optional[Callable] = None,
+                    getaffinity: Optional[Callable] = None,
+                    getrlimit: Optional[Callable] = None,
+                    read_text: Callable[[str], str] = _read_text
+                    ) -> SchedInfo:
+    """Put the CALLING THREAD on SCHED_FIFO ``prio``, then pin it to ``cpus``.
+
+    INVARIANT (JB-95): fail-open and worker-only.  Any failure leaves the
+    process on CFS exactly as before, with the reason in the result; the
+    affinity is touched only AFTER FIFO succeeded, and if the pin then fails
+    the policy is dropped back to SCHED_OTHER: a FIFO worker with an
+    unrestricted mask could sit on CPU0, where both NIC IRQs land, which is
+    the one placement the pin exists to prevent.  Call it from the worker
+    PROCESS's ``_main`` only: ``sched_setscheduler(0, ...)`` acts on the calling
+    thread, so inside ``worker_main`` a pytest thread would be made FIFO.
+    The rlimit-EPERM branch is probed on the Jetson (``ulimit -r 0``); the
+    cgroup branch is injection-tested only.  ``prio <= 0`` calls nothing.
+    The ``os.sched_*`` defaults are resolved here, not in the signature, so
+    the module still imports on a box without them (the Windows sim box).
+    """
+    if prio <= 0:
+        return SchedInfo('CFS', 0, 'unchanged', 'disabled')
+    if setscheduler is None:
+        setscheduler = os.sched_setscheduler
+    if setaffinity is None:
+        setaffinity = os.sched_setaffinity
+    if getaffinity is None:
+        getaffinity = os.sched_getaffinity
+    if getrlimit is None:
+        import resource
+        getrlimit = lambda: resource.getrlimit(resource.RLIMIT_RTPRIO)  # noqa: E731
+    try:
+        setscheduler(0, os.SCHED_FIFO | getattr(os, 'SCHED_RESET_ON_FORK', 0),
+                     os.sched_param(prio))
+    except OSError as e:
+        if e.errno == errno.EPERM:
+            try:
+                soft = getrlimit()[0]
+            except Exception:       # noqa: BLE001
+                soft = None
+            if soft is not None and soft < prio:
+                why = 'EPERM: RLIMIT_RTPRIO=%d < %d' % (soft, prio)
+            else:
+                why = _cgroup_rt_reason(read_text)
+        else:
+            why = '%s: %s' % (errno.errorcode.get(e.errno, e.errno), e)
+        return SchedInfo('CFS', 0, 'unchanged', why)
+    want = set(int(c) for c in cpus)
+    try:
+        setaffinity(0, want)
+        return SchedInfo('FIFO', prio, _fmt_cpus(want), 'ok')
+    except OSError as e:
+        # Fail-open: back to CFS rather than FIFO-anywhere (dropping to
+        # SCHED_OTHER needs no privilege, so this cannot itself be refused
+        # for the reason the pin was).
+        try:
+            setscheduler(0, os.SCHED_OTHER, os.sched_param(0))
+        except OSError:
+            pass
+        return SchedInfo('CFS', 0, 'unchanged', 'affinity failed: %s' % e)
+
+
+# ---------------------------------------------------------------------------
 # The worker process
 # ---------------------------------------------------------------------------
 
-def worker_main(fd: int) -> int:
-    """Serve requests on socket ``fd`` until STOP or EOF; returns the exit code."""
+def worker_main(fd: int, sched: Optional[tuple] = None) -> int:
+    """Serve requests on socket ``fd`` until STOP or EOF; returns the exit code.
+
+    ``sched`` is the :class:`SchedInfo` ``_main`` obtained (reported in READY).
+    The policy is never applied here (see :func:`apply_rt_policy`)."""
+    if sched is None:
+        sched = tuple(SchedInfo('CFS', 0, 'unchanged', 'disabled'))
     try:
         signal.signal(signal.SIGINT, signal.SIG_IGN)   # Ctrl-C hits the group
     except ValueError:      # not the main thread (in-process test harness)
@@ -201,7 +329,8 @@ def worker_main(fd: int) -> int:
         from jugglebot.motion.skills import executor as ex
         from jugglebot.motion import blas_threads
         blas = blas_threads.read_blas_threads()[0]
-        conn.send_bytes(pickle.dumps(('READY', os.getpid(), ex.__file__, blas),
+        conn.send_bytes(pickle.dumps(('READY', os.getpid(), ex.__file__, blas,
+                                      tuple(sched)),
                                      protocol=pickle.HIGHEST_PROTOCOL))
         while True:
             try:
@@ -271,12 +400,15 @@ class WorkerSegmentSolver:
                  sys_path: Optional[List[str]] = None,
                  env: Optional[dict] = None,
                  log: Optional[Callable[[str, str], None]] = None,
-                 expected_executor_file: Optional[str] = None):
+                 expected_executor_file: Optional[str] = None,
+                 rt_priority: int = 0):
         from jugglebot.motion.skills import executor as ex
         self._python = python
         self._sys_path = list(sys.path if sys_path is None else sys_path)
         self._env_override = env
         self._log = log
+        self._rt_priority = int(rt_priority)
+        self._sched_info: Optional[SchedInfo] = None
         self._expected = os.path.realpath(
             ex.__file__ if expected_executor_file is None
             else expected_executor_file)
@@ -304,6 +436,11 @@ class WorkerSegmentSolver:
         """``(pid, executor.__file__, blas_threads)`` from the last READY."""
         return self._ready_info
 
+    @property
+    def sched_info(self) -> Optional[SchedInfo]:
+        """The worker's :class:`SchedInfo` from the last READY (None before)."""
+        return self._sched_info
+
     # -- logging ------------------------------------------------------------
     def _emit(self, level: str, msg: str) -> None:
         if self._log is not None:
@@ -322,6 +459,8 @@ class WorkerSegmentSolver:
                    else self._env_override)
         env['PYTHONPATH'] = os.pathsep.join(p for p in self._sys_path if p)
         argv = [self._python, '-m', _MODULE, '--fd', str(_WORKER_FD)]
+        if self._rt_priority > 0:
+            argv += ['--rt-prio', str(self._rt_priority)]
         try:
             pid = os.posix_spawn(
                 self._python, argv, env,
@@ -340,6 +479,7 @@ class WorkerSegmentSolver:
         self._state = STARTING
         self._inflight = {}
         self._ready_info = None
+        self._sched_info = None
 
     def _reap(self, kill: bool) -> None:
         pid = self._pid
@@ -422,8 +562,14 @@ class WorkerSegmentSolver:
         if not (isinstance(msg, tuple) and msg and msg[0] == 'READY'):
             self._fail('unexpected first message from worker')
             return
-        _tag, pid, exfile, blas = msg
+        _tag, pid, exfile, blas = msg[:4]
+        try:
+            sched = SchedInfo(*msg[4]) if len(msg) > 4 else SchedInfo(
+                'CFS', 0, 'unchanged', 'unreported')
+        except TypeError:
+            sched = SchedInfo('CFS', 0, 'unchanged', 'unreported')
         self._ready_info = (pid, exfile, blas)
+        self._sched_info = sched
         if os.path.realpath(exfile) != self._expected:
             self._reap(kill=True)
             self._state = DOWN
@@ -435,8 +581,16 @@ class WorkerSegmentSolver:
         if blas != 1:
             self._emit('warning', 'segment solver worker BLAS threads = %r '
                        '(expected 1)' % (blas,))
+        if sched.policy == 'FIFO':
+            sched_txt = 'FIFO/%d cpus=%s' % (sched.priority, sched.cpus)
+        else:
+            sched_txt = 'CFS (%s)' % sched.reason
         self._emit('info', 'segment solver worker READY pid=%d executor=%s '
-                   'blas_threads=%r' % (pid, exfile, blas))
+                   'blas_threads=%r sched=%s' % (pid, exfile, blas, sched_txt))
+        if self._rt_priority > 0 and sched.policy != 'FIFO':
+            self._emit('warning', 'segment solver worker stayed on CFS '
+                       '(requested FIFO %d): %s'
+                       % (self._rt_priority, sched.reason))
 
     # -- public ---------------------------------------------------------------
     def wait_ready(self, timeout_s: float = 10.0) -> bool:
@@ -595,12 +749,17 @@ def _main(argv: Optional[List[str]] = None) -> int:
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
     ap.add_argument('--fd', type=int, required=True,
                     help='inherited socket carrying the request stream')
+    ap.add_argument('--rt-prio', type=int, default=0,
+                    help='try SCHED_FIFO at this priority (fail-open; 0 = off)')
     args = ap.parse_args(argv)
+    # Applied HERE, before worker_main: sched_setscheduler(0) acts on the
+    # calling thread, so it must never run inside worker_main (pytest thread).
+    sched = apply_rt_policy(args.rt_prio)
     # Serve from the CANONICAL module, not ``__main__``: the reply dataclasses
     # pickle by module path, and the parent must be able to unpickle them
     # (found by the round-trip test: "Can't get attribute ... on __main__").
     from jugglebot.motion.skills import solver_worker as canonical
-    return canonical.worker_main(args.fd)
+    return canonical.worker_main(args.fd, sched=tuple(sched))
 
 
 if __name__ == '__main__':
