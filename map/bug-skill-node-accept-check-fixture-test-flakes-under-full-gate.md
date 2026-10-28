@@ -2,9 +2,9 @@
 id: JB-64
 kind: bug
 title: skill_node accept-check fixture test flakes under full-gate load
-status: inbox
+status: in_progress
 created: '2026-10-26'
-updated: '2026-10-25T23:54:10Z'
+updated: '2026-10-28T00:36:40Z'
 owners: []
 priority: medium
 blocked_by: []
@@ -23,3 +23,7 @@ Run alone (`pytest "tests/ros/test_skill_node.py::test_a_slow_test_run_cannot_ag
 ## Notes
 
 The test sleeps `_HAND_STATE_STALE_S + 0.1` and expects the clock injection (docstring: probe 2026-10-15) to keep the fixture's seated sample fresh at `_start_pattern`. Under parallel load something still ages it, so the injection does not cover every clock the accept path reads. This is the hardware-safety surface: do not demote it to `nightly` or widen the tolerance; find the clock that is not injected.
+
+## Progress
+
+- 2026-10-28: Unit E: reproduced 0/6 under 8 loaders; refusal is the frame check (perf_counter, 1.0 s window), not the hand clock
