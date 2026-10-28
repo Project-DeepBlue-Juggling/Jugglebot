@@ -237,27 +237,50 @@ def test_panel_click_checks_the_replay_fence_first():
     assert "'camera/record_start'" in src and "'camera/record_stop'" in src
 
 
-def test_index_links_css_and_mounts_markup_after_the_minimap():
+def test_index_mounts_the_panel_as_the_command_banners_left_end():
+    # JB-74 (2026-10-28): the panel is the FIRST child of #command-overlay, before the button group, so the
+    # buttons centre between it and the Trail control (appended last by trail-settings-ui.js).
     html = _src("index.html")
     assert re.search(r'<link rel="stylesheet" href="css/state-minimap\.css">\s*'
                      r'<link rel="stylesheet" href="css/camera-panel\.css">', html)
-    pane = html.index('<div id="viewer-pane">')
-    minimap = html.index('<div id="state-minimap"')
+    overlay = html.index('<div id="command-overlay">')
     panel = html.index('<div id="camera-panel"')
-    assert pane < minimap < panel < html.index('<div id="command-overlay">')
+    buttons = html.index('<div id="command-buttons">')
+    assert overlay < panel < buttons < html.index('<div id="replay-lobby"')
+    # nothing but comments/whitespace between the overlay's open tag and the panel: it is the first child
+    assert re.sub(r"<!--.*?-->", "", html[overlay + len('<div id="command-overlay">'):panel], flags=re.S).strip() == ""
     for el_id in ("camera-rec-btn", "camera-rec-dot", "camera-rec-elapsed", "camera-rec-warn", "camera-rec-status"):
         assert 'id="%s"' % el_id in html, el_id
     assert re.search(r'<button class="cmd-btn[^"]*" id="camera-rec-btn"', html)
+    # commands.js fills the group (the overlay is only its fallback for the node harness)
+    assert "document.getElementById('command-buttons') || document.getElementById('command-overlay')" in _src("js/commands.js")
 
 
-def test_css_sits_right_of_collapsed_minimap_and_shifts_when_expanded():
+def test_css_is_a_banner_flex_item_and_the_button_group_centres_by_auto_margins():
     css = _src("css/camera-panel.css")
     rule = re.search(r"#camera-panel \{(.*?)\}", css, re.S).group(1)
-    assert "bottom: calc(var(--command-strip-h, 56px) + var(--gap) * 2);" in rule
-    assert "left: calc(var(--gap) + 210px + var(--gap));" in rule
-    assert "background: var(--bg-overlay);" in rule and "backdrop-filter: blur(8px);" in rule
-    assert not re.search(r"transition:[^;]*\b(left|bottom)\b", rule)
-    shift = re.search(r"#viewer-pane\.minimap-expanded #camera-panel \{(.*?)\}", css, re.S).group(1)
-    assert "left: calc(var(--minimap-width) + var(--gap));" in shift
-    # the collapsed minimap width this offset assumes
-    assert "width: 210px;" in _src("css/state-minimap.css")
+    assert "position: absolute" not in rule and "bottom:" not in rule and "left:" not in rule
+    assert "flex: 0 1 auto;" in rule and "min-width: 0;" in rule   # shrinks (status ellipsis) rather than overrun the Trail control
+    assert "minimap-expanded #camera-panel" not in css               # it rides the banner's own minimap shift now
+    viewer = _src("css/viewer.css")
+    group = re.search(r"#command-buttons \{(.*?)\}", viewer, re.S).group(1)
+    assert "margin: 0 auto;" in group and "flex-wrap: wrap;" in group
+    bar = re.search(r"#command-overlay \{(.*?)\}", viewer, re.S).group(1)
+    assert "justify-content: space-between;" in bar               # a wrapped camera-only row stays at the left end
+    assert re.search(r"\.replay-lobby \{[^}]*margin: 0 auto;", _src("css/replay.css"))   # the lobby re-centres itself
+
+
+def test_panel_and_buttons_hide_in_replay_and_while_disconnected():
+    # The owner never runs the camera during review: the panel gives way to the replay dock with the buttons,
+    # on the lobby's overlay classes AND on the fence's own body.replay class. Disconnected (lobby) it hides too.
+    css = _src("css/replay.css")
+    rule = re.search(r"([^{}]*)\{ display: none; \}", css.split("#command-overlay.replay-lobby-on", 1)[1]).group(0)
+    rule = "#command-overlay.replay-lobby-on" + rule
+    for sel in ("#command-overlay.replay-lobby-on > #command-buttons", "#command-overlay.replay-active > #command-buttons",
+                "#command-overlay.replay-lobby-on > #camera-panel", "#command-overlay.replay-active > #camera-panel",
+                "body.replay #camera-panel"):
+        assert sel in rule, sel
+    assert "toggle('replay', active)" in _src("js/replay/fence.js")
+    lobby = _src("js/replay/ui/lobby.js")
+    assert "overlay.classList.toggle('replay-lobby-on', showLobby)" in lobby
+    assert "overlay.classList.toggle('replay-active', active)" in lobby

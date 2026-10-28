@@ -1,37 +1,24 @@
 /* ===================================================================
    camera-panel.css — Wave camera record panel (js/camera-panel.js)
-   Bottom-left of the 3D scene, right of the collapsed #state-minimap,
-   on the same bottom line, above the command strip.
+   The LEFT end of the command banner (#command-overlay, viewer.css): a
+   flex item before #command-buttons, which centres between it and the
+   Trail control at the right end. It follows the banner (minimap shift,
+   --command-strip-h) for free. Hidden with the command buttons in replay
+   and while disconnected: css/replay.css (JB-74, 2026-10-28).
    =================================================================== */
 
 #camera-panel {
-    position: absolute;
-    z-index: 11;                    /* the collapsed minimap's rung, above #command-overlay (z10) */
-    /* Same bottom as #state-minimap.collapsed; --command-strip-h is measured
-       off #command-overlay by state-minimap.js (it also tracks the replay dock). */
-    bottom: calc(var(--command-strip-h, 56px) + var(--gap) * 2);
-    left: calc(var(--gap) + 210px + var(--gap));   /* collapsed minimap is 210 px wide */
-    /* Stay clear of the replay trail-length overlay at the bottom right
-       (~330 px incl. its gap); the status text ellipsises first. */
-    max-width: min(360px, calc(100% - (var(--gap) + 210px + var(--gap)) - 340px));
+    flex: 0 1 auto;                 /* alone on a too-narrow row it shrinks: the status ellipsises */
+    min-width: 0;                   /* else its min-content (the whole status) holds it over the Trail control */
+    max-width: 320px;
     display: flex;
     align-items: center;
     gap: var(--gap-sm);
-    padding: 6px 10px;
-    background: var(--bg-overlay);
-    backdrop-filter: blur(8px);
+    padding: 2px 8px;               /* row height ~ a .cmd-btn, so the banner does not grow */
     border: 1px solid var(--border-color);
     border-radius: var(--border-radius);
     font-size: var(--font-size-sm);
     color: var(--text-primary);
-    /* NEVER transition left/bottom (the minimap snap rule, state-minimap.css). */
-    transition: opacity var(--transition-normal);
-}
-
-/* Expanded minimap: shift right exactly as #connection-status does. */
-#viewer-pane.minimap-expanded #camera-panel {
-    left: calc(var(--minimap-width) + var(--gap));
-    max-width: min(360px, calc(100% - (var(--minimap-width) + var(--gap)) - 340px));
 }
 
 #camera-panel .cmd-btn {

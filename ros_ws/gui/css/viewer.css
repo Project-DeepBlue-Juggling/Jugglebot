@@ -60,12 +60,29 @@
     right: 0;
     display: flex;
     align-items: center;
-    justify-content: center;
+    /* space-between, not center: a row holding only the camera panel (narrow, wrapped banner) keeps it at the left
+       end; the button group and the lobby centre themselves with auto margins (#command-buttons, .replay-lobby). */
+    justify-content: space-between;
     gap: var(--gap-sm);
     padding: var(--gap);
     background: var(--bg-overlay);
     backdrop-filter: blur(8px);
     z-index: 10;
+}
+
+/* The command buttons as ONE group (js/commands.js fills #command-buttons): auto margins on both sides split the
+   free space evenly, so the group centres between the camera panel (left end, css/camera-panel.css) and the Trail
+   control (right end, reserved by .trail-in-bar's padding). With the camera panel hidden (replay, disconnected) the
+   group is hidden too (css/replay.css). Narrow banner: the group drops to its own row, still centred, and wraps inside. */
+#command-buttons {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    justify-content: center;
+    gap: var(--gap-sm);
+    flex: 0 1 auto;
+    min-width: 0;
+    margin: 0 auto;
 }
 
 /* Command buttons */
@@ -386,9 +403,11 @@
     font-variant-numeric: tabular-nums;
 }
 
-/* The slider's width scales with the bar (30 %, 180..280 px) so a narrow pane keeps the live buttons on fewer rows
-   (fixed 280 px wrapped them to three rows at a 1200 px window). Padding and the box both resolve % against the bar. */
-#command-overlay { --trail-bar-w: clamp(180px, 30%, 280px); }
+/* The slider's width scales with the bar (25 %, 180..280 px) so a narrow pane keeps the live buttons on fewer rows
+   (fixed 280 px wrapped them to three rows at a 1200 px window). 25 % (was 30 %) since JB-74 put the camera panel
+   in the bar: camera + buttons then stay on ONE row down to a ~860 px viewer. Padding and the box both resolve %
+   against the bar. */
+#command-overlay { --trail-bar-w: clamp(180px, 25%, 280px); }
 #command-overlay.trail-in-bar { flex-wrap: wrap; padding-right: calc(var(--gap) + var(--trail-bar-w) + var(--gap-sm)); }
 .scene-trail-overlay.in-bar {
     right: var(--gap);

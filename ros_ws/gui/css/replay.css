@@ -3,10 +3,15 @@
 .replay-lobby[hidden], .replay-dock[hidden], .replay-banner[hidden], .replay-picker-bg[hidden],
 .replay-pk-msg[hidden] { display: none !important; }
 
-/* The disconnected / replay overlay: live buttons (direct children) give way to the lobby / dock. */
-#command-overlay.replay-lobby-on > .cmd-btn,
-#command-overlay.replay-active > .cmd-btn { display: none; }
-.replay-lobby { display: flex; align-items: center; gap: var(--gap-sm); }
+/* The disconnected / replay overlay: the live command buttons AND the Wave camera panel give way to the lobby / dock.
+   The camera panel never runs during review (owner, JB-74); body.replay is the fence's own class (replay/fence.js),
+   so the panel also hides on the fence edge itself. Disconnected it hides with the buttons: the lobby says so. */
+#command-overlay.replay-lobby-on > #command-buttons,
+#command-overlay.replay-active > #command-buttons,
+#command-overlay.replay-lobby-on > #camera-panel,
+#command-overlay.replay-active > #camera-panel,
+body.replay #camera-panel { display: none; }
+.replay-lobby { display: flex; align-items: center; gap: var(--gap-sm); margin: 0 auto; }  /* centred: the bar is space-between */
 .replay-dock { flex: 1 1 auto; min-width: 0; }
 
 .replay-btn {

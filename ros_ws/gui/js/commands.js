@@ -1,7 +1,9 @@
 /**
  * commands.js — Command button handlers.
  *
- * Creates command buttons in the overlay bar at the bottom of the 3D viewer.
+ * Creates command buttons in the overlay bar at the bottom of the 3D viewer, inside
+ * #command-buttons (index.html): one group so CSS can centre the buttons as a unit between
+ * the Wave camera panel (left end) and the Trail control (right end).
  * Publishes to orchestrator_command topic. Context-sensitive enable/disable.
  */
 
@@ -38,7 +40,7 @@ const COMMANDS = [
  * Initialise command overlay.
  */
 export function initCommands() {
-    const overlay = document.getElementById('command-overlay');
+    const overlay = document.getElementById('command-buttons') || document.getElementById('command-overlay');
     if (!overlay) return;
 
     cmdPublisher = ros.advertise('orchestrator_command', 'std_msgs/msg/String');

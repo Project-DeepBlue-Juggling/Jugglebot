@@ -4,7 +4,7 @@
  * createLobby({document, ros, mode, picker, toaster}) -> {update, dock, state}
  *
  * Visible when the rosbridge state is not 'connected' and replay is idle: the live command buttons
- * (direct children of #command-overlay) are hidden by CSS and the lobby ("Open recording…") sits in their place, (no "not connected" banner: the lobby alone says so). While replay is OPENING /
+ * (#command-buttons) and the Wave camera panel (#camera-panel) are hidden by CSS (css/replay.css) and the lobby ("Open recording…") sits in their place, (no "not connected" banner: the lobby alone says so). While replay is OPENING /
  * REPLAY the lobby hides and `#replay-dock` (a stable id; unit 2 fills it) owns the overlay region.
  * On 'connected' the live overlay returns. Also owns the header text (`REPLAY  <date>`) because the
  * live connection listener is suppressed while replay is active, and routes mode 'notice' to the toaster.

@@ -398,6 +398,8 @@ CAN3 peripheral (can_buses.cpp:41).
 
 ## 8. GUI changes (JB/ros_ws/gui/)
 
+> **Placement superseded 2026-10-28 (JB-74, `logbook/2026-10-28-camera-panel-in-command-banner.md`):** the panel is no longer absolutely positioned beside the minimap. It is the first child of `#command-overlay` (the left end of the command banner), the buttons sit in `#command-buttons` centred between it and the Trail control, and it hides with the buttons in replay and while disconnected (`css/replay.css`). The markup contents and the `camera-panel.js` contract below are unchanged.
+
 - `index.html`: `<div id="camera-panel"></div>` after `#state-minimap` (line 121), at the same z-order rung. Contents:
   - a `.cmd-btn` REC button that toggles between `REC` and `STOP`;
   - a dot (red pulsing while recording);
