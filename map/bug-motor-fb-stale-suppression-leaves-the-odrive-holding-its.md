@@ -1,7 +1,7 @@
 ---
 id: JB-73
 kind: bug
-title: MOTOR_FB_STALE suppression leaves the ODrive holding its last vel_ff
+title: Hand ODrive state can silently diverge from what the can-bridge commanded
 status: inbox
 created: '2026-10-27'
 updated: '2026-10-27T10:34:35Z'
@@ -22,3 +22,13 @@ This is bounded (the velocity error goes to 0, so the integrator does not wind) 
 Candidate fix: on the suppress edge, send one final setpoint with vel_ff = 0 at the clamped position. This needs a design look against the hand lane and the stow path, which share the gate.
 
 A related reporting quirk: LEG_CMD (`axes[].target_pos_rev`) is written on every tick even while suppressed, so it shows commands that never reached the ODrive. Bench analysers must mask them, as `tools/probes/lead_clamp_gap_bench.py` now does.
+
+## Further instances (JB-34 survey, 2026-10-28)
+
+The class widened: ODrive-side Hand state that drifts from what the can-bridge believes it commanded. The vel_ff hold above is the first instance; the logbook survey added three more.
+
+- A Hand in Closed-loop but in the wrong input mode swallows the stream silently, and no telemetry sees it.
+- The Guard measures the Hand's deviation against the raw plan, not the post-slew command (`leg_interp.cpp`).
+- RETARGET sends `Set_Traj_Vel_Limit` (0x011) and `Set_Input_Pos` (0x00C) in the same tick; 0x00C wins CAN arbitration, so the move can be planned at the old cruise speed. Never fixed; the 2026-10-05 entry routes around it with the jam anchor.
+
+Source entries: [logbook/2026-09-04-fw17-hand-sitting-unflashed-idle-axis.md](logbook/2026-09-04-fw17-hand-sitting-unflashed-idle-axis.md), [logbook/2026-09-14-skill-stack-r3-first-powered-sitting.md](logbook/2026-09-14-skill-stack-r3-first-powered-sitting.md), [logbook/2026-10-05-skill-stack-r5-sitting-5-launch-limits-and-jam-anchor.md](logbook/2026-10-05-skill-stack-r5-sitting-5-launch-limits-and-jam-anchor.md).

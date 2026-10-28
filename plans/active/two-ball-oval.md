@@ -231,6 +231,8 @@ keeps the columns residue (SPLICE_TOO_LATE, emit gap); the columns canary at P4 
 through; `bb-calibration-one-attempt.md` (archived 2026-10-19) owned the calibration sweep the runbook's row 6a
 reads.
 
+**Open question (JB-34 survey, 2026-10-28):** the offline replica reads a cup-seating-cone angle of 16.5-21.7 degrees at the knot after the Catch, while hardware read 31.6-41.7 degrees; the gap is unexplained (`logbook/2026-10-19-cup-seating-cone-refuses-columns-stroke-braking.md`). P4 already moved to `pose` mode partly because `level` stays CUP_SEATING_CONE-refused.
+
 ## 2. Architecture
 
 ### 2.1 Sites and circulation
