@@ -51,6 +51,23 @@ def poll(srv, rid, timeout=120.0):
     raise AssertionError("overview still 202 after %s s: %r" % (timeout, seen[-3:]))
 
 
+def drained(srv, timeout=120.0):
+    """Wait until the backend's drain thread has EXITED (``_thread`` back to None).
+
+    poll() returns at the first 200, and the pass os.replace()s its output before it exits, so the drain thread
+    is still alive then. A test that fakes ``_running``/``_running_ver``/``_thread`` after poll() must wait for
+    it: the dying thread clears all three under the lock, after which the test's GET starts a REAL drain thread
+    that pops the requeue it asserts on (JB-66, ``assert [] == [A]`` under gate load, 2026-10-19..27)."""
+    end = time.monotonic() + timeout
+    while time.monotonic() < end:
+        with srv.backend._lock:
+            t = srv.backend._thread
+        if t is None:
+            return
+        t.join(max(0.0, end - time.monotonic()))
+    raise AssertionError("overview drain thread still alive after %s s" % timeout)
+
+
 # ---- the pass vs the oracle ---------------------------------------------
 
 @pytest.fixture(scope="module")
@@ -249,6 +266,7 @@ def test_listing_reports_ready_when_the_cache_is_valid_while_the_pass_is_still_r
     # the listing must say "ready", not "computing" (load-flaked the 202->200 route test, 2026-10-11).
     _put_bag(srv.root, A)
     poll(srv, A)
+    drained(srv)   # else the exiting drain thread can clear the faked _running before the listing reads it
     with srv.backend._lock:
         srv.backend._running = A
     try:
@@ -264,6 +282,7 @@ def test_a_pass_still_exiting_for_an_older_version_neither_reports_computing_nor
     # new version instead of answering "computing" for the old one (load-flaked the route test, 2026-10-11).
     path = _put_bag(srv.root, A)
     poll(srv, A)
+    drained(srv)   # the first pass's real drain thread must not outlive the faked state below (JB-66)
     st = os.stat(path)
     old = (st.st_size, st.st_mtime_ns)
     os.utime(path, (st.st_atime, st.st_mtime - 1000))

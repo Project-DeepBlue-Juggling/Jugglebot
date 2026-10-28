@@ -2,9 +2,9 @@
 id: JB-66
 kind: bug
 title: replay_overview older-version requeue test flakes under full-gate load
-status: in_progress
+status: complete
 created: '2026-10-27'
-updated: '2026-10-28T00:36:42Z'
+updated: '2026-10-28T00:46:55Z'
 owners: []
 priority: medium
 blocked_by: []
@@ -19,3 +19,4 @@ Seen 2026-10-27 in ./run_tests.sh (parallel phase): tests/ros/test_replay_overvi
 ## Progress
 
 - 2026-10-28: Unit E: the earlier poll's real drain thread is still exiting and drains the requeue; reproducing
+- 2026-10-28: Fixture artefact: the test now waits for the first pass drain thread to exit before faking state; backend unchanged
