@@ -119,7 +119,6 @@ _Status: closed (complete)._
 
 | ID | Kind | Title | Status | Priority | Pathway | Age |
 | --- | --- | --- | --- | --- | --- | --- |
-| JB-1 | bug | [can-bridge Guard reports the Hand as "leg 6"](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-can-bridge-guard-reports-hand-as-leg-6.md) | inbox | medium | — | filed 2026-09-21 |
 | JB-2 | feature | [Design change: the Hand should be Idle, not Parked Closed-loop, while Active](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-hand-idle-not-parked-closed-loop-while-active.md) | inbox | medium | — | filed 2026-09-21 |
 | JB-3 | feature | [Rename "session limits" to Sitting limits (glossary term)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-rename-session-limits-to-sitting-limits.md) | inbox | medium | — | filed 2026-09-21 |
 | JB-21 | bug | [bb/throw_outcome carries no throw identity](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-bb-throw-outcome-carries-no-throw-identity.md) | inbox | medium | Ball Butler | filed 2026-10-24 |
@@ -148,5 +147,4 @@ _Status: closed (complete)._
 | JB-74 | feature | [Move the Wave camera panel to be in the same banner as the 'Home', 'Level', 'Activate' etc. buttons. Move the buttons to be centred between the camera panel and the Trail panel](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-move-the-wave-camera-panel-to-be-in-the-same-banner-as-the-h.md) | inbox | medium | — | filed 2026-10-27 |
 | JB-66 | bug | [replay_overview older-version requeue test flakes under full-gate load](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-replay-overview-older-version-requeue-test-flakes-under-full.md) | inbox | medium | — | filed 2026-10-27 |
 | JB-76 | bug | [SPLICE_TOO_LATE ends half the goals: CATCH solve tail now crosses the 250 ms deadline](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-splice-too-late-ends-half-the-goals-catch-solve-tail-now.md) | in_progress | high | Two-ball oval | filed 2026-10-27 |
-| JB-78 | bug | [Ctrl+Enter to "create" item, either from "+ New" or from "+ File new change request"](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-ctrl-enter-to-create-item-either-from-new-or-from-file-new-c.md) | inbox | low | — | filed 2026-10-28 |
-| JB-77 | feature | [Sort options for Inbox wall (sort by: type, age, severity)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-sort-options-for-inbox-wall-sort-by-type-age-severity.md) | inbox | medium | — | filed 2026-10-28 |
+| JB-79 | bug | [test_hand_step_violation_not_sent flakes under the full gate (assert 2 == 1)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-test-hand-step-violation-not-sent-flakes-under-the-full-gate.md) | inbox | medium | — | filed 2026-10-28 |
