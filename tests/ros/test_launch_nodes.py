@@ -196,6 +196,13 @@ def test_consumer_wired_node_is_launched(launch_src, launch_description_body,
 # the FSM, along with their Node(...) blocks in the launch file.
 PLANNER_NODES = ['trajectory_node', 'skill_node']
 
+#: Capped nodes = the planner callers plus, since 2026-10-28 (JB-76),
+#: ball_tracker_node: its linear algebra is 6x6 / (n, 2) / 3-vector scale and
+#: the uncapped pool cost 148 % of a core live for no latency benefit
+#: (measured offline, tracker_bag_replay.py on the 14:29 bag: 40-45 % CPU
+#: saved, per-frame p50/p95/p99 no slower, byte-identical output).
+CAPPED_NODES = PLANNER_NODES + ['ball_tracker_node']
+
 #: Both spellings, because numpy 1.24.4 on this Jetson links OpenBLAS
 #: (``libopenblas64_p-r0-cecebdce.3.21.so``, pthreads/armv8) but an OpenMP-
 #: threaded build of any transitive dependency reads the other one.
@@ -222,10 +229,10 @@ def _node_block(launch_src, executable):
     return hits[0]
 
 
-@pytest.mark.parametrize('executable', PLANNER_NODES)
+@pytest.mark.parametrize('executable', CAPPED_NODES)
 @pytest.mark.parametrize('var', BLAS_CAP_VARS)
 def test_planner_node_caps_its_blas_thread_pool(launch_src, executable, var):
-    """Each planner-calling node carries ``<var>=1`` in its ``additional_env``.
+    """Each capped node carries ``<var>=1`` in its ``additional_env``.
 
     Resolves the launch file's ``_planner_blas_env`` indirection: the node block
     must reference it (or spell the variable inline), and the dict it references
@@ -233,9 +240,10 @@ def test_planner_node_caps_its_blas_thread_pool(launch_src, executable, var):
     """
     block = _node_block(launch_src, executable)
     assert 'additional_env' in block, (
-        f'{executable} has no additional_env — it calls the unified planner, so '
-        f'an uncapped BLAS pool here can gap the 40 Hz emitter past the '
-        f'can-bridge 250 ms SETPOINT_STALE watchdog under box load.')
+        f'{executable} has no additional_env — a planner caller with an '
+        f'uncapped BLAS pool can gap the 40 Hz emitter past the can-bridge '
+        f'250 ms SETPOINT_STALE watchdog under box load, and the uncapped '
+        f'tracker burned 148 % of a core live (JB-76, 2026-10-28).')
 
     inline = re.search(rf"'{var}'\s*:\s*'1'", block)
     if inline:
@@ -258,18 +266,22 @@ def test_planner_node_caps_its_blas_thread_pool(launch_src, executable, var):
         f'logbook/2026-09-06-uh3-first-attempt-refusals-and-estop.md.')
 
 
-@pytest.mark.parametrize('executable', ['mocap_node', 'ball_tracker_node'])
+@pytest.mark.parametrize('executable', ['mocap_node'])
 def test_the_blas_cap_is_not_applied_launch_wide(launch_src, executable):
-    """The cap stops at the planner callers — this is a deliberate boundary.
+    """The cap stops at CAPPED_NODES — this is a deliberate boundary.
 
-    mocap_node and ball_tracker_node do LARGE-matrix work (where a real thread
-    pool earns its keep) and neither is on the setpoint stream's thread, so
-    capping them would be a pure loss. If a future change makes the cap global,
-    this test is where that decision gets re-argued rather than absorbed.
+    mocap_node is the one numpy node still uncapped: its visible linear algebra
+    is 3-vector and quaternion norms, but its calibration-solve worker thread
+    has not been surveyed or measured, so it was left alone when the tracker
+    was capped (2026-10-28). The 2026-09-06 reason ("LARGE-matrix work where a
+    real thread pool earns its keep") turned out false for the tracker, so do
+    not reuse it here without a measurement. If a future change caps mocap_node
+    or makes the cap global, this test is where that decision gets re-argued
+    rather than absorbed.
     """
     block = _node_block(launch_src, executable)
     for var in BLAS_CAP_VARS:
         assert var not in block, (
-            f'{executable} now carries {var} — the cap was scoped to the three '
-            f'planner-calling nodes on purpose (PLANNER_NODES above). If that '
-            f'is intended, update this test and say why in the launch file.')
+            f'{executable} now carries {var} — the cap was scoped to '
+            f'CAPPED_NODES on purpose. If that is intended, update this test '
+            f'and say why in the launch file.')

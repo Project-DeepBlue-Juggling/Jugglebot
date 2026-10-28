@@ -27,6 +27,7 @@ from rclpy.qos import DurabilityPolicy, QoSProfile, ReliabilityPolicy
 from builtin_interfaces.msg import Time
 
 import jugglebot.hardware_config as hw
+from jugglebot.motion import blas_threads
 from jugglebot.motion.skills import sites
 from jugglebot.tracking.matcher import BallTracker, parse_label_prefixes
 from jugglebot.tracking.ball import Ball
@@ -140,9 +141,17 @@ class BallTrackerNode(Node):
         self._mocap_fallback_announced = False  # logged the fall-back warning
         self._mocap_had_stamps = False  # currently/ever in the stamped regime
 
+        # The launch caps this node's OpenBLAS pool to one thread (2026-10-28,
+        # JB-76: the uncapped pool cost 148 % of a core live for 6x6 / (n, 2)
+        # work). The cap has to be set before numpy is imported, so all this
+        # can do is read back whether it landed and WARN if it did not.
+        self._blas_threads, self._blas_source = blas_threads.check_blas_threads(
+            self.get_logger(), 'ball_tracker_node')
+
         self.get_logger().info(
             f"Ball tracker up (landing plane z={self._landing_z:.0f} mm, "
-            f"detect_human_throws={detect_human_throws})")
+            f"detect_human_throws={detect_human_throws}, "
+            f"{blas_threads.format_blas_short(self._blas_threads)})")
         self.get_logger().debug(
             f"BallTrackerNode ready: landing_z={self._landing_z:.1f}mm, "
             f"dt={hw.TRACKING_MOCAP_DT_S*1000:.1f}ms, "

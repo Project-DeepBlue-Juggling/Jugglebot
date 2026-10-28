@@ -1,5 +1,5 @@
 ---
-title: "JB-76: the CATCH solve tail is the launch starving its own solver worker (65 ms of CPU takes 150 ms of wall on a 5.5-of-6-core box); instrumented, measured in one Sitting, low-priority prefixes as the first fix; second Sitting: refusals 42 % -> 1.3 %, wall/CPU 2.18 -> 1.97, tracker next"
+title: "JB-76: the CATCH solve tail is the launch starving its own solver worker (65 ms of CPU takes 150 ms of wall on a 5.5-of-6-core box); instrumented, measured in one Sitting, low-priority prefixes as the first fix; second Sitting: refusals 42 % -> 1.3 %, wall/CPU 2.18 -> 1.97; fix 2: the tracker's OpenBLAS pool capped (40-45 % of its CPU for nothing)"
 type: investigation
 date: 2026-10-28
 status: in-progress
@@ -18,6 +18,8 @@ files_changed:
   - tests/ros/test_launch_priority.py
   - tests/motion/test_solver_worker.py
   - tests/ros/test_install_segment.py
+  - ros_ws/src/jugglebot/jugglebot/ball_tracker_node.py
+  - tests/ros/test_launch_nodes.py
 subsystem:
   - motion
 tags:
@@ -163,10 +165,32 @@ Two things this Sitting could not show. The nice values themselves: `profile_ses
 
 **Working read-out for the operator.** Fix 1 plus the copies bought roughly 35 ms of CATCH wall p50 and removed the refusals at today's load; a heavier Sitting (oval, two balls, more GUI panels) will push the tail back over the cliff because the box is still over 5.3 cores busy. The next lever is the tracker's thread cap.
 
+## Fix 2 (this commit): the tracker's OpenBLAS pool capped to one thread
+
+The launch comment of 2026-09-06 left `ball_tracker_node` and `mocap_node` out of the BLAS cap because they do "genuinely large-matrix work where a real thread pool earns its keep". For the tracker that was never true: `tracking/kalman.py` runs 6×6 predict/update steps (`F @ P @ F.T`, a 3×3 `inv`), `tracking/flight_fit.py` one `lstsq` on an (n, 2) matrix per fit pass, and `tracking/matcher.py` 3-vector norms in Python loops; no scipy. Every one of those calls fanned out to OpenBLAS's six-worker pool, which is how a single-threaded Python node reached 148 % of a core while juggling.
+
+Measured offline by a Sonnet agent, box idle (load 0.37), replaying the 14:29 bag (88 666 frames, 297.8 s of bag) through the real tracker with `tools/probes/tracker_bag_replay.py`, three interleaved uncapped/capped pairs (two under the system Python 3.8 that runs the node, one under the venv; both numpy 1.24.4 on OpenBLAS 0.3.21 pthreads). Outputs under `temp/probes/tracker_blas_cap_2026-10-28/` (`report.md`, per-run `time.txt`, replay CSVs, `lat_sys_*`).
+
+| | uncapped | capped |
+|---|---|---|
+| OpenBLAS threads (`threadpoolctl`) | 6 | 1 |
+| whole-replay CPU, three pairs | 386.7 / 412.0 / 352.8 s | 232.4 / 225.2 / 211.9 s (−40 / −45 / −40 %) |
+| whole-replay wall | 225.9 / 244.4 / 209.0 s | 233.5 / 226.8 / 212.8 s (within spread) |
+| CPU / wall | 1.69–1.71 | 0.99–1.00 |
+| per-frame `process_frame`, in-flight, p50 / p95 / p99 / max | 1583 / 2149 / 2486 / 11465 µs | 1536 / 2065 / 2382 / 3302 µs |
+| per-frame, no ball in flight, p50 / p95 / p99 / max | 25 / 38 / 57 / 1661 µs | 24 / 34 / 49 / 1661 µs |
+| per-ball result CSV | md5 `030b9438…` | identical, all six runs |
+
+The sanity bag (2026-10-27 22:59, 150 468 frames) repeats it: in-flight p50 885 → 876 µs, max 3998 → 2125 µs, CPU/wall 1.55 → 1.00. The cap costs nothing measurable at any percentile, removes the pool's spin (CPU/wall 1.7 → 1.0), trims the worst single frame by 3×, and leaves the tracker's output byte-identical. Scaled to live rates the tracker drops from about 1.3–1.4 to 0.7–0.8 cores while a ball flies: roughly half a core returned to the box, where the solver worker waits. Under contention the benefit is inferred from the idle-box measurement, not measured; the next scanned Sitting measures it.
+
+Not applied to `mocap_node`: its visible linear algebra is 3-vector and quaternion norms, but it owns a `CalibrationSolveWorker` thread whose matrix sizes were not surveyed, so it stays uncapped and `tests/ros/test_launch_nodes.py` keeps that boundary explicit (the test's parameter list shrank from two nodes to one). One open question from the probe: an in-flight frame costs ~1.5 ms of single-thread CPU, a lot for 6×6 maths; not profiled here, and a candidate for the py-spy step.
+
+`jugglebot_launch.py`: `ball_tracker_node` gets `additional_env=dict(_planner_blas_env)` (its block moved below the dict), the comment rewritten with the measurement. `ball_tracker_node.py` reads the cap back at start-up through `blas_threads.check_blas_threads` and folds `BLAS 1 thread` into its "Ball tracker up" line, WARNing if the cap did not land. `tests/ros/test_launch_nodes.py`: `CAPPED_NODES` = planners + tracker, the not-launch-wide test keeps only `mocap_node`.
+
 ## Next, in order (owner-agreed 2026-10-28, renumbered after the 14:29 Sitting)
 
 1. ~~Fly a Sitting with the recorder, run the scan, compare wall/CPU against 2.18.~~ Done 14:29: 1.97, improved but not met; see above.
-2. Trim the load where the table points: the tracker's 148 % during goals (test `OPENBLAS_NUM_THREADS=1` on it offline through `tracker_bag_replay.py`; the launch comment's reason for leaving it uncapped, "genuinely large-matrix work", does not match the code, which is 6×6 Kalman steps, norms and an (n, 2) `lstsq`), then `py-spy` on `skill_node` (84 % during goals) and `teensy_bridge_node` (77 %). rosbridge's share was the GUI copies (done, 86 → 56 %); the lean server's deserialise-after-throttle (option 4) stays optional.
+2. Trim the load where the table points: ~~the tracker's 148 % during goals~~ done as fix 2 above (capped; measured offline, unverified live); then `py-spy` on `skill_node` (84 % during goals), `teensy_bridge_node` (77 %) and the tracker's 1.5 ms in-flight frame. rosbridge's share was the GUI copies (done, 86 → 56 %); the lean server's deserialise-after-throttle (option 4) stays optional.
 3. Core isolation for the worker only after step 2 frees headroom: today 5.3 cores of demand on the 5 remaining cores would squeeze the setpoint stream.
 4. The 150 ms unpinned re-aim cliff stays structurally thin and is a separate decision.
 5. A Jetson restart is not a fix: the load is the running launch.
@@ -176,4 +200,5 @@ Two things this Sitting could not show. The nice values themselves: `profile_ses
 
 - Instrumentation commit, 2026-10-28: `pytest -q tests/motion/test_solver_worker.py tests/ros/test_install_segment.py tests/motion/test_solver_worker_lateness.py` gave 93 passed before the test was narrowed to a BLAS-capped worker; afterwards `tests/motion/test_solver_worker.py` gave 16 passed. Gate `./run_tests.sh`, 2026-10-28: 7369 passed / 4 skipped + serial 5 passed, PASS.
 - Fix 1 commit, 2026-10-28: `pytest -q tests/ros/test_launch_priority.py` 1 passed; `./run_tests.sh` 7370 passed / 4 skipped + serial 5 passed, PASS (`temp/logs/jb76-nice-gate.log`); the scan reproduces every table above from the saved Sitting data (`python tools/probes/solve_starvation_scan.py ~/.ros/log/2026-10-28-09-49-31-556395-jetson-3246295/launch.log temp/probes/profile_20261028-094925`).
+- Fix 2 commit, 2026-10-28: offline measurement as tabled above (`temp/probes/tracker_blas_cap_2026-10-28/report.md`); `pytest -q tests/ros/test_launch_nodes.py tests/ros/test_launch_priority.py` 18 passed (the cap test now parametrised over `CAPPED_NODES`), the seven `tests/ros/test_ball_tracker_*.py` files 55 passed with the node's new `check_blas_threads` receipt; the `./run_tests.sh` triple is in the commit message.
 - 14:29 Sitting read-out, 2026-10-28: `python tools/probes/solve_starvation_scan.py ~/.ros/log/2026-10-28-14-29-37-005424-jetson-3516886/launch.log temp/probes/profile_20261028-142931` (output `temp/probes/solve-starvation-2026-10-28-1429.txt`) gives the right-hand column of the table; the goal/re-aim counts come from the launch log's per-throw lines (`grep -c "then refused" launch.log`: 64 vs 1; denominators are CAUGHT throw lines, 154 vs 79). `profile_session.py`'s snapshot parser was checked on the old-format 14:29 log (491 PIDs resolved, empty nice map) and on a synthetic new-format block (nice 10 / 0 / `-` read back).

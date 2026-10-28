@@ -393,11 +393,6 @@ def generate_launch_description():
         prefix=_low_priority,
     )
 
-    ball_tracker_node = Node(
-        package='jugglebot',
-        executable='ball_tracker_node',
-    )
-
     # ── The BLAS thread cap for the three nodes that CALL THE PLANNER ──────
     #
     # MEASURED 2026-09-06 (60+ reps, dose-response) — canonical record:
@@ -424,16 +419,35 @@ def generate_launch_description():
     # slow solves (1655.1 / 2021.2 / 2158.9 / 1461.5 / 1444.7 ms) sit in. Capped,
     # the solve is FLAT in box load.
     #
-    # NOT set launch-wide, deliberately: mocap_node and ball_tracker_node do
-    # genuinely large-matrix work where a real thread pool earns its keep, and
-    # neither is on the setpoint stream's thread. Only the three planner callers
-    # get the cap.
+    # Also on ball_tracker_node since 2026-10-28 (JB-76). The earlier reason for
+    # leaving it out — "genuinely large-matrix work where a real thread pool
+    # earns its keep" — did not match the code: the tracker's linear algebra is
+    # 6x6 Kalman steps, an (n, 2) lstsq and 3-vector norms, and the live node
+    # ran at 148 % of a core while juggling (36 % idle) because every one of
+    # those small calls fanned out to the six-worker pool. Measured offline on
+    # the 2026-10-28 14:29 bag (tools/probes/tracker_bag_replay.py, three
+    # interleaved pairs): capped saves 40-45 % of the tracker's CPU, per-frame
+    # latency is no slower at p50/p95/p99 and the worst single frame falls from
+    # 11.5 to 3.3 ms, with byte-identical per-ball output. See
+    # logbook/2026-10-28-jb76-solve-tail-is-environment-starvation-instrumented.md.
+    #
+    # NOT on mocap_node: untested there (its visible linalg is 3-vector and
+    # quaternion norms, but it owns a calibration-solve worker thread whose
+    # matrix sizes have not been surveyed). Left uncapped on purpose, and
+    # tests/ros/test_launch_nodes.py keeps that boundary explicit.
     #
     # It must be set BEFORE numpy is imported, so a launch file is the only
     # place it can go. Each node reads it back at start-up and WARNs if it did
     # not land (jugglebot.motion.blas_threads.check_blas_threads) — grep the
-    # launch terminal for `blas threads: 1`.
+    # launch terminal for `BLAS 1 thread`.
     _planner_blas_env = {'OPENBLAS_NUM_THREADS': '1', 'OMP_NUM_THREADS': '1'}
+
+    ball_tracker_node = Node(
+        package='jugglebot',
+        executable='ball_tracker_node',
+        # Capped 2026-10-28: see _planner_blas_env above (tracker paragraph).
+        additional_env=dict(_planner_blas_env),
+    )
 
     # Catch-timing correlation: matches each cone/catch_event against the nearest
     # predicted landing in throw_announcements and publishes cone/timing_result
