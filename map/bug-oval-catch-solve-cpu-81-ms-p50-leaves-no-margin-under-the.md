@@ -4,9 +4,10 @@ kind: bug
 title: Oval CATCH solve CPU (81 ms p50) leaves no margin under the 150 ms unpinned re-aim cliff
 status: inbox
 created: '2026-10-28'
-updated: '2026-10-28T10:22:55Z'
+updated: '2026-10-28T10:51:28Z'
 owners: []
 priority: medium
+effort: l
 area: skill-stack
 blocked_by: []
 links:
