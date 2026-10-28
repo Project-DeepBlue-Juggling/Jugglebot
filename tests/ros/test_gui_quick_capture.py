@@ -38,6 +38,17 @@ def test_form_keys_never_reach_the_robot_tab():
     assert "'Escape'" in JS
 
 
+def test_ctrl_or_cmd_enter_files_from_any_control():
+    # JB-78: the chord is handled in the form's own keydown (so it works from the kind
+    # radios and the buttons too), calls the busy-guarded file(), and stops the
+    # browser's implicit Enter-submit from filing a second time.
+    i = JS.index("form.addEventListener('keydown'")
+    handler = JS[i:JS.index('});', i)]
+    assert "e.key === 'Enter' && (e.ctrlKey || e.metaKey)" in handler
+    assert 'e.preventDefault(); file();' in handler
+    assert 'if (!title || busy)' in JS
+
+
 def test_focus_goes_to_title_and_returns_to_button():
     assert "titleEl.focus()" in JS and "btn.focus()" in JS
 

@@ -9,7 +9,7 @@
  *
  * Focus rules: opening moves focus into the title field, closing returns it to the "+"
  * button; every keydown inside the form stops propagation so no key reaches the Robot
- * tab's motion controls.  The draft (kind/title/note) is kept in localStorage under
+ * tab's motion controls.  Ctrl+Enter (Cmd+Enter) files from any control in the form.  The draft (kind/title/note) is kept in localStorage under
  * DRAFT_KEY on every keystroke, restored on open, cleared on a successful filing.
  * The same keyboard isolation covers the "+" button itself (Space on it must not reach the
  * chart pause or the replay trackbar).  While a request is in flight Esc, Cancel and the "+"
@@ -185,6 +185,10 @@ form.addEventListener('change', saveDraft);
 form.addEventListener('keydown', (e) => {
     e.stopPropagation();
     if (e.key === 'Escape') { e.preventDefault(); dismiss(); }
+    // Ctrl+Enter / Cmd+Enter files from any control, as in the map app's new-item form
+    // (JB-78). preventDefault stops a text field's own Enter-submit firing a second time;
+    // file() ignores a press while a request is in flight.
+    else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); file(); }
 });
 form.addEventListener('keyup', (e) => e.stopPropagation());
 form.addEventListener('keypress', (e) => e.stopPropagation());
