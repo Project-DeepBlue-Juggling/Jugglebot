@@ -7,6 +7,12 @@ created: '2026-10-28'
 updated: '2026-10-28T01:00:25Z'
 owners: []
 priority: medium
+effort: s
+hardware: none
+owner: none
+radius: local
+diagnosis: unknown
+area: tests-tooling
 blocked_by: []
 links:
 - tests/ros/test_teensy_bridge_node_setpoint.py

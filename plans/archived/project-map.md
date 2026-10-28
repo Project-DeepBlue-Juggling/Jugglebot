@@ -11,16 +11,16 @@ branch: project-map
 scope: >-
   Builds the project map in ten phases. A pure-Python `mapkit/` package parses plans and `map/` items and generates the three plan INDEX files, the CLAUDE.md term block and the two mkdocs pages. The glossary is renamed `GLOSSARY.md` and extended. Claude-session wiring covers the slash commands, agents and normative docs. A new public repo `jugglebot-map`, seeded from TaskTree's frontend, serves the Front page, Now / Next / Later and a read-only Dictionary, with write-through to `map/` files and a debounced commit-and-push. It ran on the Raspberry Pi `jeeves` until P6 moved it to the Jetson beside the GUI, where a Map tab frames it (P8). P9 made the slash commands map-aware through the `mapkit item` CLI. Done when a phone edit on the LAN lands on `main` within 10 s.
 steps:
-  - {id: P0, title: mapkit package and generated plan boards, kind: phase, status: complete, date: 2026-10-24}
-  - {id: P1, title: Glossary rename and term block, kind: phase, status: complete, date: 2026-10-24}
-  - {id: P2, title: map directory seed and session wiring, kind: phase, status: complete, date: 2026-10-24}
-  - {id: P3, title: Fork skeleton and thin server, kind: phase, status: complete, date: 2026-10-24}
-  - {id: P4, title: The two pages, kind: phase, status: complete, date: 2026-10-24}
-  - {id: P5, title: Pi deployment and publishing, kind: phase, status: complete, date: 2026-10-24}
-  - {id: P6, title: Host the app on the Jetson and retire the Pi, kind: phase, status: complete, date: 2026-10-25}
-  - {id: P7, title: Dictionary page, kind: phase, status: complete, date: 2026-10-25}
-  - {id: P8, title: Map tab in the Jugglebot GUI, kind: phase, status: complete, date: 2026-10-25}
-  - {id: P9, title: mapkit item CLI and map-aware slash commands, kind: phase, status: complete, date: 2026-10-25}
+  - {id: P0, title: mapkit package and generated plan boards, kind: phase, status: complete, date: 2026-10-24, effort: m, hardware: none}
+  - {id: P1, title: Glossary rename and term block, kind: phase, status: complete, date: 2026-10-24, effort: m, hardware: none}
+  - {id: P2, title: map directory seed and session wiring, kind: phase, status: complete, date: 2026-10-24, effort: s, hardware: none}
+  - {id: P3, title: Fork skeleton and thin server, kind: phase, status: complete, date: 2026-10-24, effort: m, hardware: none}
+  - {id: P4, title: The two pages, kind: phase, status: complete, date: 2026-10-24, effort: m, hardware: none}
+  - {id: P5, title: Pi deployment and publishing, kind: phase, status: complete, date: 2026-10-24, effort: s, hardware: none}
+  - {id: P6, title: Host the app on the Jetson and retire the Pi, kind: phase, status: complete, date: 2026-10-25, effort: s, hardware: none}
+  - {id: P7, title: Dictionary page, kind: phase, status: complete, date: 2026-10-25, effort: s, hardware: none}
+  - {id: P8, title: Map tab in the Jugglebot GUI, kind: phase, status: complete, date: 2026-10-25, effort: s, hardware: none}
+  - {id: P9, title: mapkit item CLI and map-aware slash commands, kind: phase, status: complete, date: 2026-10-25, effort: s, hardware: none}
 related_logbook:
   - 2026-10-24-project-map-plan-written.md
   - 2026-10-24-project-map-p0-mapkit-generated-boards.md

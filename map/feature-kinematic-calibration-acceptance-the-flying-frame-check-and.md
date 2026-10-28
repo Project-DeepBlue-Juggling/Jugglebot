@@ -7,6 +7,11 @@ created: '2026-10-28'
 updated: '2026-10-28T07:26:53Z'
 owners: []
 priority: medium
+effort: l
+hardware: robot
+owner: hands
+radius: subsystem
+area: tracking
 blocked_by: []
 links: []
 parent: learner-generalisation

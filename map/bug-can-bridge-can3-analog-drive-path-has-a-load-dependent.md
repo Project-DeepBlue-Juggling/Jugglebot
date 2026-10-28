@@ -7,6 +7,12 @@ created: '2026-10-28'
 updated: '2026-10-28T07:26:42Z'
 owners: []
 priority: low
+effort: m
+hardware: robot
+owner: hands
+radius: normative
+diagnosis: hypothesis
+area: can-bridge
 blocked_by: []
 links: []
 filed_by: claude

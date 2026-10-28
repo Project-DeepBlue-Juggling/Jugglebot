@@ -15,11 +15,11 @@ scope: >-
   hop-shaped fed entry, closed by 30 consecutive Ball Butler-fed catches in one attempt. "Not with this cup"
   at rung 1 is a valid end. Where we are lives in § 3 of the plan.
 steps:
-  - {id: P1, title: The oval pattern dispatchable, kind: phase, status: complete, date: 2026-10-18}
-  - {id: P2, title: Banking leak fix, kind: phase, status: retired, date: 2026-10-23}
-  - {id: P3, title: Pose-level carry planner, kind: phase, status: in_progress, date: 2026-10-23}
-  - {id: P4, title: Working point and the dwell ladder, kind: phase, status: not_started}
-  - {id: P5, title: Two-ball oval, kind: phase, status: not_started}
+  - {id: P1, title: The oval pattern dispatchable, kind: phase, status: complete, date: 2026-10-18, effort: m, hardware: none}
+  - {id: P2, title: Banking leak fix, kind: phase, status: retired, date: 2026-10-23, effort: s, hardware: none}
+  - {id: P3, title: Pose-level carry planner, kind: phase, status: in_progress, date: 2026-10-23, effort: m, hardware: robot}
+  - {id: P4, title: Working point and the dwell ladder, kind: phase, status: not_started, effort: m, hardware: robot}
+  - {id: P5, title: Two-ball oval, kind: phase, status: not_started, effort: l, hardware: robot}
 related_logbook:
   - 2026-10-17-two-ball-oval-plan-written.md
   - 2026-10-18-two-ball-oval-p1-oval-pattern-dispatchable.md

@@ -7,6 +7,12 @@ created: '2026-10-27'
 updated: '2026-10-27T10:34:35Z'
 owners: []
 priority: low
+effort: s
+hardware: bench-leg
+owner: decision
+radius: normative
+diagnosis: confirmed
+area: firmware
 blocked_by: []
 links:
 - ros_ws/src/jugglebot/Teensy_code_canbridge/leg_interp.cpp

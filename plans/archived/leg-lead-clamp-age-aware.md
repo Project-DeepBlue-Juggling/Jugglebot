@@ -15,9 +15,9 @@ scope: >-
   oval level 0.50 Sitting with zero staircase episodes. Prerequisite of the next powered oval Sitting and of
   P4's leg_curr_limit_a 15 -> 30.
 steps:
-  - {id: P1, title: Firmware - age-aware lead clamp and engagement counter, kind: phase, status: complete, date: 2026-10-24}
-  - {id: P2, title: Bench validation, kind: phase, status: complete, date: 2026-10-27}
-  - {id: P3, title: Robot validation, kind: phase, status: complete, date: 2026-10-27}
+  - {id: P1, title: Firmware - age-aware lead clamp and engagement counter, kind: phase, status: complete, date: 2026-10-24, effort: m, hardware: bench-leg}
+  - {id: P2, title: Bench validation, kind: phase, status: complete, date: 2026-10-27, effort: s, hardware: bench-leg}
+  - {id: P3, title: Robot validation, kind: phase, status: complete, date: 2026-10-27, effort: s, hardware: robot}
 related_plan:
   - two-ball-oval.md
   - leg-bus-frame-drops.md

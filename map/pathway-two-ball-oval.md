@@ -8,6 +8,11 @@ updated: '2026-10-24T13:05:00Z'
 owners:
 - harrison
 priority: high
+effort: xl
+hardware: robot
+owner: hands
+radius: cross-cutting
+area: skill-stack
 blocked_by: []
 links: []
 destination: Two balls in one Hand on an oval, every Throw caught and carried back in the Cup, closed by 30 consecutive Ball Butler-fed Catches in one Attempt (P5 Rung gate).

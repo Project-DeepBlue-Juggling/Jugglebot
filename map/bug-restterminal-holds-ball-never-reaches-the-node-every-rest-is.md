@@ -7,6 +7,12 @@ created: '2026-10-28'
 updated: '2026-10-28T07:26:57Z'
 owners: []
 priority: low
+effort: s
+hardware: none
+owner: none
+radius: subsystem
+diagnosis: confirmed
+area: skill-stack
 blocked_by: []
 links: []
 parent: two-ball-oval

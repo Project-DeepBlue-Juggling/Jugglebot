@@ -7,6 +7,12 @@ created: '2026-10-28'
 updated: '2026-10-28T07:26:45Z'
 owners: []
 priority: medium
+effort: xs
+hardware: bench-leg
+owner: hands
+radius: local
+diagnosis: confirmed
+area: ball-butler
 blocked_by: []
 links: []
 parent: ball-butler

@@ -7,6 +7,11 @@ created: '2026-10-25'
 updated: '2026-10-25T09:00:00Z'
 owners: []
 priority: low
+effort: s
+hardware: none
+owner: none
+radius: subsystem
+area: tracking
 blocked_by: []
 links:
 - plans/archived/wave-camera-can3-integration.md

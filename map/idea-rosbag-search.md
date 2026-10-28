@@ -7,6 +7,11 @@ created: '2026-10-24'
 updated: '2026-10-24T13:05:00Z'
 owners: []
 priority: low
+effort: m
+hardware: none
+owner: decision
+radius: subsystem
+area: tests-tooling
 blocked_by: []
 links: []
 filed_by: harrison

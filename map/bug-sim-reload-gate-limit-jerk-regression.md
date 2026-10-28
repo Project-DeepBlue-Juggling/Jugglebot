@@ -7,6 +7,12 @@ created: '2026-10-24'
 updated: '2026-10-24T13:05:00Z'
 owners: []
 priority: medium
+effort: s
+hardware: none
+owner: decision
+radius: subsystem
+diagnosis: hypothesis
+area: sim
 blocked_by: []
 links:
 - plans/archived/columns-empty-cup-two-feed.md

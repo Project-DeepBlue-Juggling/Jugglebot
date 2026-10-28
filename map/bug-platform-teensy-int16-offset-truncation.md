@@ -7,6 +7,12 @@ created: '2026-10-24'
 updated: '2026-10-24T13:05:00Z'
 owners: []
 priority: medium
+effort: s
+hardware: bench-leg
+owner: hands
+radius: normative
+diagnosis: confirmed
+area: platform-teensy
 blocked_by: []
 links:
 - plans/archived/levelling-frame-contract.md

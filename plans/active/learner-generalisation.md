@@ -12,11 +12,11 @@ scope: >-
   dwell or yaw can be commanded and changed mid-pattern. P1 learner core, P2 characterisation sitting, P3
   online admissibility, P4 event stream, P5 close-out.
 steps:
-  - {id: P1, title: Learner core, kind: phase, status: not_started}
-  - {id: P2, title: The characterisation sitting, kind: phase, status: not_started}
-  - {id: P3, title: Online admissibility and box retirement, kind: phase, status: not_started}
-  - {id: P4, title: BeatEvent stream and the columns wrapper, kind: phase, status: not_started}
-  - {id: P5, title: Close-out, kind: phase, status: not_started}
+  - {id: P1, title: Learner core, kind: phase, status: not_started, effort: m, hardware: none}
+  - {id: P2, title: The characterisation sitting, kind: phase, status: not_started, effort: m, hardware: robot}
+  - {id: P3, title: Online admissibility and box retirement, kind: phase, status: not_started, effort: m, hardware: none}
+  - {id: P4, title: BeatEvent stream and the columns wrapper, kind: phase, status: not_started, effort: m, hardware: none}
+  - {id: P5, title: Close-out, kind: phase, status: not_started, effort: s, hardware: none}
 related_logbook:
   - 2026-10-18-learner-generalisation-investigation.md
 related_config:

@@ -14,13 +14,13 @@ scope: >-
   gate, and backfilled in one map: commit. Read commands, write commands, the app API and the drawer deep link
   take the ID; the tile, drawer and mapkit listings show it. Stored cross-references stay stem-based. Items only.
 steps:
-  - {id: P0, title: Plan and its Feature, kind: phase, status: complete, date: 2026-10-25}
-  - {id: P1, title: mapkit ids module and checks, kind: phase, status: complete, date: 2026-10-26}
-  - {id: P2, title: Backfill and the uniqueness test, kind: phase, status: complete, date: 2026-10-26}
-  - {id: P3, title: 'mapkit resolution, creation, display and the commands', kind: phase, status: complete, date: 2026-10-26}
-  - {id: P4, title: 'App server: allocate, resolve, repair (fork repo)', kind: phase, status: complete, date: 2026-10-26}
-  - {id: P5, title: 'App frontend: show and deep-link (fork repo)', kind: phase, status: complete, date: 2026-10-26}
-  - {id: P6, title: Normative docs, kind: phase, status: complete, date: 2026-10-27}
+  - {id: P0, title: Plan and its Feature, kind: phase, status: complete, date: 2026-10-25, effort: xs, hardware: none}
+  - {id: P1, title: mapkit ids module and checks, kind: phase, status: complete, date: 2026-10-26, effort: s, hardware: none}
+  - {id: P2, title: Backfill and the uniqueness test, kind: phase, status: complete, date: 2026-10-26, effort: s, hardware: none}
+  - {id: P3, title: 'mapkit resolution, creation, display and the commands', kind: phase, status: complete, date: 2026-10-26, effort: s, hardware: none}
+  - {id: P4, title: 'App server: allocate, resolve, repair (fork repo)', kind: phase, status: complete, date: 2026-10-26, effort: s, hardware: none}
+  - {id: P5, title: 'App frontend: show and deep-link (fork repo)', kind: phase, status: complete, date: 2026-10-26, effort: s, hardware: none}
+  - {id: P6, title: Normative docs, kind: phase, status: complete, date: 2026-10-27, effort: s, hardware: none}
 related_code:
   - mapkit/ids.py::allocate
   - mapkit/itemcli.py::find_item

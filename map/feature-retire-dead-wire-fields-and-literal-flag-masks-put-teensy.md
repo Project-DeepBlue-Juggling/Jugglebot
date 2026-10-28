@@ -7,6 +7,11 @@ created: '2026-10-28'
 updated: '2026-10-28T07:27:03Z'
 owners: []
 priority: low
+effort: s
+hardware: none
+owner: none
+radius: cross-cutting
+area: can-bridge
 blocked_by: []
 links: []
 filed_by: claude

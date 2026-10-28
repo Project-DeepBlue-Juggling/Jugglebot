@@ -7,6 +7,12 @@ created: '2026-10-27'
 updated: '2026-10-28T07:46:26Z'
 owners: []
 priority: high
+effort: l
+hardware: robot
+owner: hands
+radius: cross-cutting
+diagnosis: confirmed
+area: skill-stack
 blocked_by: []
 links:
 - plans/archived/skill-stack-dress-rehearsals-and-residue.md

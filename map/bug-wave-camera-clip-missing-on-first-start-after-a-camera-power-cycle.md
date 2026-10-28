@@ -7,6 +7,12 @@ created: '2026-10-25'
 updated: '2026-10-25T09:00:00Z'
 owners: []
 priority: low
+effort: m
+hardware: robot
+owner: hands
+radius: subsystem
+diagnosis: unknown
+area: tracking
 blocked_by: []
 links:
 - logbook/2026-10-19-wave-camera-can3-bridge-and-node.md

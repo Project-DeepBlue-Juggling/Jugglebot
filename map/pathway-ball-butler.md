@@ -8,6 +8,11 @@ updated: '2026-10-24T13:05:00Z'
 owners:
 - harrison
 priority: medium
+effort: xl
+hardware: robot
+owner: hands
+radius: subsystem
+area: ball-butler
 blocked_by: []
 links: []
 destination: Ball Butler feeds reliably enough that no Sitting is lost to the feeder.

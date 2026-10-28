@@ -7,6 +7,11 @@ created: '2026-09-21'
 updated: '2026-10-24T13:05:00Z'
 owners: []
 priority: medium
+effort: m
+hardware: robot
+owner: decision
+radius: subsystem
+area: hand
 blocked_by: []
 links:
 - https://github.com/Project-DeepBlue-Juggling/Jugglebot/issues/19

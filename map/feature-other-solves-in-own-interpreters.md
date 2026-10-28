@@ -7,6 +7,11 @@ created: '2026-10-24'
 updated: '2026-10-24T13:05:00Z'
 owners: []
 priority: medium
+effort: m
+hardware: none
+owner: none
+radius: subsystem
+area: skill-stack
 blocked_by: []
 links:
 - plans/archived/skill-stack-dress-rehearsals-and-residue.md

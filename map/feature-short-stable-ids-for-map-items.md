@@ -8,6 +8,11 @@ updated: '2026-10-27T09:16:56Z'
 owners:
 - harrison
 priority: medium
+effort: m
+hardware: none
+owner: decision
+radius: cross-cutting
+area: map-app
 blocked_by: []
 links:
 - plans/archived/map-item-ids.md

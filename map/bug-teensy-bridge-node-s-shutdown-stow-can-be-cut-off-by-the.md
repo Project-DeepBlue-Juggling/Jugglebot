@@ -7,6 +7,12 @@ created: '2026-10-28'
 updated: '2026-10-28T07:26:31Z'
 owners: []
 priority: medium
+effort: s
+hardware: none
+owner: decision
+radius: subsystem
+diagnosis: confirmed
+area: can-bridge
 blocked_by: []
 links: []
 filed_by: claude

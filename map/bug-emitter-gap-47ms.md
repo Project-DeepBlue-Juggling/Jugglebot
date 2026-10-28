@@ -7,6 +7,12 @@ created: '2026-10-24'
 updated: '2026-10-24T13:05:00Z'
 owners: []
 priority: medium
+effort: m
+hardware: robot
+owner: hands
+radius: subsystem
+diagnosis: unknown
+area: skill-stack
 blocked_by: []
 links:
 - plans/archived/skill-stack-dress-rehearsals-and-residue.md

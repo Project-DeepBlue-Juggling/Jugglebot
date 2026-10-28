@@ -7,6 +7,12 @@ created: '2026-10-27'
 updated: '2026-10-28T02:10:50Z'
 owners: []
 priority: low
+effort: s
+hardware: none
+owner: none
+radius: local
+diagnosis: confirmed
+area: map-app
 blocked_by: []
 links:
 - plans/archived/map-item-ids.md
