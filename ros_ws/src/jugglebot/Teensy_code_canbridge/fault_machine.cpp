@@ -123,7 +123,26 @@ static volatile bool s_reboot_in_progress = false;   // suppression latch armed
 static uint64_t      s_reboot_deadline_us = 0;        // 64-bit; access via atomic_*_u64
 static bool          s_reboot_saw_stale   = false;    // legs went stale since arming
 
-void fault_set_mpc_active(bool a) { s_mpc_active = a; }
+// ── Arm-edge stamp (FW 34, JB-75) ────────────────────────────────────────────
+// micros64() at the most recent s_mpc_active false→true edge. The setpoint-
+// staleness check measures from max(last setpoint, this stamp), so the first
+// fault tick after an arm measures from the ARM and not from the last setpoint
+// of an EARLIER stream (s_last_setpoint_us survives across arms — interp_reset()
+// has no runtime caller). Pre-FW 34, on a bridge that had streamed before, a
+// 10 Hz tick landing in the 16-37 ms between the arm and the first new setpoint
+// saw that stream's age and latched SETPOINT_STALE (2026-10-27 P3 Sitting).
+// A SEPARATE stamp, not a write to s_last_setpoint_us: that field also means
+// "last ACCEPTED setpoint" to interp_on_setpoint's seq re-baseline, which must
+// still see a dead prior stream as dead (else a host seq restart is dropped as
+// stale and the arm trips anyway). Written by the net task (heartbeat handler)
+// BEFORE s_mpc_active, so the fault task never sees mpc_active true beside the
+// previous arm's stamp; 64-bit, so atomic_*_u64 on both sides.
+static volatile uint64_t s_arm_edge_us = 0;
+
+void fault_set_mpc_active(bool a) {
+  if (a && !s_mpc_active) atomic_write_u64(&s_arm_edge_us, micros64());
+  s_mpc_active = a;
+}
 
 // ── Cache predicates over the leg axes ────────────────────────────────────────
 static bool legs_all_closed_loop() {
@@ -435,8 +454,25 @@ static void evaluate_guard() {
   // Setpoint staleness (the hard link-fault trigger). The `MPC_` prefix this
   // constant carried until FW 18 was historical: the producer is the trajectory
   // node's 40 Hz Setpoint stream, and has been since the MPC chain was removed.
-  const uint64_t age = micros64() - interp_last_setpoint_us();   // interval: setpoint stamped mono
-  const bool ever_cmd = interp_last_setpoint_us() != 0;
+  // FW 34 (JB-75): the age runs from max(last setpoint, arm edge). A dead stream
+  // after an arm still trips SETPOINT_STALENESS_US after the ARM; a live stream
+  // that dies mid-Attempt still trips that long after its last frame. Both stamps
+  // are read BEFORE now: a setpoint or arm landing between the reads would
+  // otherwise sit after `now` and wrap the u64 age into a false trip.
+  const uint64_t last_sp = interp_last_setpoint_us();
+  const uint64_t arm_us  = atomic_read_u64(&s_arm_edge_us);
+  const uint64_t now_sp  = micros64();
+  const uint64_t ref_us  = (last_sp > arm_us) ? last_sp : arm_us;
+  const uint64_t age = now_sp - ref_us;   // interval: both stamps mono
+  const bool ever_cmd = last_sp != 0;
+  // A setpoint has been accepted since the current arm edge. Until one has, the
+  // interp's latched base is the PREVIOUS stream's last frame, so the output gate
+  // below stays shut rather than enabling onto it; the grace above makes that a
+  // hold, not a latch, for one staleness bound. A bridge that has NEVER accepted
+  // a setpoint has no previous base (the interp has not latched, so it transmits
+  // nothing until a frame lands) and keeps the pre-FW 34 gate: output opens with
+  // the guard and the first frame transmits on its own tick.
+  const bool sp_since_arm = !ever_cmd || last_sp >= arm_us;
   if (!estop && ever_cmd && s_mpc_active && age > SETPOINT_STALENESS_US) {
     estop = true; state = JbUdp::FaultState::SETPOINT_STALE;
   }
@@ -611,7 +647,8 @@ static void evaluate_guard() {
     allow = true;   // stow descent integrates its own position; not encoder-gated
   } else {
     allow = (s_guard_mode == JbUdp::GuardMode::ENABLED) && !s_fatal_can_error
-            && !s_fatal_error && !s_estop_latched && !fb_stale;
+            && !s_fatal_error && !s_estop_latched && !fb_stale
+            && sp_since_arm;   // FW 34: never drive the previous stream's base after an arm
   }
   interp_set_output_enabled(allow);
 }
@@ -634,6 +671,7 @@ void fault_machine_init() {
   s_hand_dev_over_prev = 0;
   s_reboot_in_progress = s_reboot_saw_stale = false;
   atomic_write_u64(&s_reboot_deadline_us, 0);
+  atomic_write_u64(&s_arm_edge_us, 0);   // FW 34: no arm edge yet (0 ⇒ the pre-FW 34 age)
   s_guard_mode = JbUdp::GuardMode::DISABLED;
   s_fault_state = JbUdp::FaultState::NONE;
   interp_set_output_enabled(false);

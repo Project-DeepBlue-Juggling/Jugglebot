@@ -220,7 +220,8 @@ struct DiagnosticPayload {
   uint8_t input_mode;  // ODrive input mode
   uint8_t flags;  // bit0: heartbeat_stale, bit1: heartbeat_seen (ever, this boot)
   uint8_t homing_result;  // HomingResult for this Jugglebot axis (0 none/1 running/2 ok/3 failed); 0 for non-leg axes
-  uint8_t pad[2];  // Alignment pad (zero)
+  uint8_t homing_epoch;  // Per-home epoch (u8, wraps): bumped on every ACCEPTED HOME of this axis, read with homing_result as one pair; a terminal result belongs to the HOME whose acceptance produced this epoch. 0 on an FW <= 33 board (the former pad byte) and for non-leg axes (can-bridge FW 34, JB-72)
+  uint8_t pad;  // Alignment pad (zero)
   uint32_t active_errors;  // ODrive active_errors bitmask
   uint32_t disarm_reason;  // ODrive disarm_reason bitmask
   float iq_setpoint;  // A

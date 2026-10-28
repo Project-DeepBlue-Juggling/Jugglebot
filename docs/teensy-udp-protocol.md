@@ -289,7 +289,8 @@ Payload **40 bytes**. Python struct fmt: `<BBBBBBBBIIffffff`.
 | `input_mode` | u8 | 1 | ODrive input mode |
 | `flags` | u8 | 1 | bit0: heartbeat_stale, bit1: heartbeat_seen (ever, this boot) |
 | `homing_result` | u8 | 1 | HomingResult for this Jugglebot axis (0 none/1 running/2 ok/3 failed); 0 for non-leg axes |
-| `pad` | u8 | 2 | Alignment pad (zero) |
+| `homing_epoch` | u8 | 1 | Per-home epoch (u8, wraps): bumped on every ACCEPTED HOME of this axis, read with homing_result as one pair; a terminal result belongs to the HOME whose acceptance produced this epoch. 0 on an FW <= 33 board (the former pad byte) and for non-leg axes (can-bridge FW 34, JB-72) |
+| `pad` | u8 | 1 | Alignment pad (zero) |
 | `active_errors` | u32 | 1 | ODrive active_errors bitmask |
 | `disarm_reason` | u32 | 1 | ODrive disarm_reason bitmask |
 | `iq_setpoint` | f32 | 1 | A |

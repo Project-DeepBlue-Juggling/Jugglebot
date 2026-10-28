@@ -66,5 +66,9 @@ void homing_step();
 
 bool    homing_active();             // a homing is pending or running
 uint8_t homing_result(uint8_t axis); // last HomingResult for an axis (legs 0..5 + hand 6)
+// FW 34 (JB-72): the (result, per-home epoch) pair, read together under one IRQ
+// guard. The epoch is bumped on every ACCEPTED HOME; the Diagnostic uplinks both.
+// An out-of-range axis reads (HOMING_NONE, 0). Either pointer may be null.
+void homing_status(uint8_t axis, uint8_t* result, uint8_t* epoch);
 
 }  // namespace CanBridge

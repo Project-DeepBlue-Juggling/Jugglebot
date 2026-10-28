@@ -1537,3 +1537,92 @@ TEST_CASE("FW 27: a stale hand does NOT suppress when the lane is idle or axis 6
     CHECK(interp_output_enabled());
   }
 }
+
+// ── FW 34 (JB-75): the setpoint age runs from the arm edge on a re-arm ──────────
+// s_last_setpoint_us survives across arms (interp_reset() has no runtime caller),
+// so pre-FW 34 a 10 Hz fault tick landing between a re-arm and the first new
+// setpoint saw the PREVIOUS stream's age and latched SETPOINT_STALE (2026-10-27
+// P3 Sitting: armed .376, latched .493, first new frame .412). Recipe as Gap 5:
+// only the setpoint clock is allowed to age; heartbeat / encoder / link are
+// re-stamped to now before every tick.
+static void jb75_keep_fresh() {
+  stamp_hb(0);
+  axes[0].pos_timestamp_us = fake_mono_us();
+  fake_set_udp_last_rx_us(fake_mono_us());
+}
+static void jb75_setpoint(uint16_t seq) {
+  JbUdp::SetpointPayload sp; memset(&sp, 0, sizeof(sp));
+  interp_on_setpoint(seq, reinterpret_cast<const uint8_t*>(&sp), sizeof(sp));
+  interp_isr();
+}
+// A bridge that streamed once (stream A), was disarmed and has sat idle well past
+// the staleness bound, then re-armed: returns with the arm edge at fake now.
+static void jb75_rearm_after_old_stream() {
+  reset_all();
+  fake_set_clock(10'000'000, 10'000'000);
+  axes[0].heartbeat_seen = true;
+  axes[0].pos_rev = 0.0f;
+  jb75_keep_fresh();
+  fault_set_mpc_active(true);
+  jb75_setpoint(10);
+  fault_step();
+  REQUIRE(fault_state() == JbUdp::FaultState::NONE);
+  REQUIRE(interp_output_enabled());
+  fault_set_mpc_active(false);
+  fake_advance(SETPOINT_STALENESS_US + 500'000);
+  jb75_keep_fresh();
+  fault_step();
+  REQUIRE(fault_guard_mode() == JbUdp::GuardMode::DISABLED);
+  REQUIRE_FALSE(interp_output_enabled());
+  fault_set_mpc_active(true);              // the re-arm edge
+}
+
+TEST_CASE("FW 34 (JB-75): a re-arm does not latch on the previous stream's age") {
+  SUBCASE("a fault tick before the first new setpoint holds output off, no latch") {
+    jb75_rearm_after_old_stream();
+    fake_advance(20'000);                  // inside the 16-37 ms window
+    jb75_keep_fresh();
+    fault_step();
+    CHECK(fault_state() == JbUdp::FaultState::NONE);        // pre-FW 34: SETPOINT_STALE
+    CHECK(fault_guard_mode() == JbUdp::GuardMode::ENABLED);
+    CHECK_FALSE(interp_output_enabled());  // the latched base is still stream A's
+
+    // The new stream's first frame (seq restarts low: the dead-stream re-baseline
+    // must still fire, which is why the arm does not stamp s_last_setpoint_us).
+    fake_advance(10'000);
+    jb75_keep_fresh();
+    jb75_setpoint(0);
+    fault_step();
+    CHECK(fault_state() == JbUdp::FaultState::NONE);
+    CHECK(interp_output_enabled());
+    CHECK(interp_last_setpoint_us() == fake_mono_us());     // seq 0 was ACCEPTED
+  }
+
+  SUBCASE("a dead stream after the arm still latches one staleness bound after the ARM") {
+    jb75_rearm_after_old_stream();
+    fake_advance(SETPOINT_STALENESS_US - 10'000);   // just inside the grace
+    jb75_keep_fresh();
+    fault_step();
+    CHECK(fault_state() == JbUdp::FaultState::NONE);
+    CHECK_FALSE(interp_output_enabled());
+    fake_advance(20'000);                            // 10 ms past the bound
+    jb75_keep_fresh();
+    fault_step();
+    CHECK(fault_state() == JbUdp::FaultState::SETPOINT_STALE);
+    CHECK(fault_guard_mode() == JbUdp::GuardMode::ESTOP);
+    CHECK_FALSE(interp_output_enabled());
+  }
+
+  SUBCASE("a live stream that dies mid-Attempt still trips from its last frame") {
+    jb75_rearm_after_old_stream();
+    fake_advance(10'000);
+    jb75_keep_fresh();
+    jb75_setpoint(0);
+    fault_step();
+    REQUIRE(interp_output_enabled());
+    fake_advance(SETPOINT_STALENESS_US + 1);
+    jb75_keep_fresh();
+    fault_step();
+    CHECK(fault_state() == JbUdp::FaultState::SETPOINT_STALE);
+  }
+}

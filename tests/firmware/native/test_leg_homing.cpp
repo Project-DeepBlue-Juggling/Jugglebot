@@ -377,3 +377,44 @@ TEST_CASE("a failed RESTORE fails the home rather than reporting OK") {
   CHECK(homing_result(HAND_AXIS) == HOMING_FAILED);
   CHECK_FALSE(homing_active());
 }
+
+// ── FW 34 (JB-72): per-home epoch ────────────────────────────────────────────
+// The host trusts a terminal HomingResult only under an epoch newer than the one
+// it saw before its HOME. That needs: a bump on every ACCEPTED request and none
+// on a refused one, RUNNING already set at accept (so no Diagnostic can pair the
+// new epoch with the previous home's OK), and per-axis counters.
+TEST_CASE("FW 34: an accepted HOME bumps that axis's epoch and reads RUNNING at accept") {
+  full_reset();
+  uint8_t r = 0xEE, e = 0xEE;
+  homing_status(0, &r, &e);
+  CHECK(r == HOMING_NONE);
+  CHECK(e == 0);
+  REQUIRE(homing_request(0) == JbUdp::RpcStatus::OK);
+  homing_status(0, &r, &e);
+  CHECK(r == HOMING_RUNNING);            // before any homing_step consumed the start
+  CHECK(e == 1);
+  CHECK(homing_request(0) == JbUdp::RpcStatus::ERR_REJECTED);   // busy: no bump
+  homing_status(0, &r, &e);
+  CHECK(e == 1);
+  homing_status(1, &r, &e);              // per-axis: an untouched axis stays at 0
+  CHECK(r == HOMING_NONE);
+  CHECK(e == 0);
+  homing_status(NUM_AXES, &r, &e);       // out of range reads (NONE, 0)
+  CHECK(r == HOMING_NONE);
+  CHECK(e == 0);
+  homing_status(0, nullptr, nullptr);    // null outputs are allowed
+}
+
+TEST_CASE("FW 34: a refused HOME (dead bus) leaves the epoch and the last result alone") {
+  full_reset();
+  REQUIRE(homing_request(0) == JbUdp::RpcStatus::OK);
+  homing_init();                          // a fresh boot: epoch back to 0
+  uint8_t r, e;
+  homing_status(0, &r, &e);
+  CHECK(e == 0);
+  axes[0].heartbeat_seen = false;         // absent axis: refused by the presence gate
+  CHECK(homing_request(0) == JbUdp::RpcStatus::ERR_REJECTED);
+  homing_status(0, &r, &e);
+  CHECK(r == HOMING_NONE);
+  CHECK(e == 0);
+}

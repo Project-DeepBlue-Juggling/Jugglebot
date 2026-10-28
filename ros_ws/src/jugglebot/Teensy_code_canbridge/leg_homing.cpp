@@ -85,7 +85,18 @@ static uint8_t  s_axis  = 0xFF;
 static float    s_iq_ema = 0.0f;
 static uint64_t s_t_start_us = 0;   // homing start (overall timeout clock)
 static uint64_t s_t_phase_us = 0;   // current sub-phase entry (settle clock)
-static uint8_t  s_result[NUM_AXES] = { HOMING_NONE };   // legs + hand
+static volatile uint8_t s_result[NUM_AXES] = { HOMING_NONE };   // legs + hand
+// ── Per-home epoch (FW 34, JB-72) ────────────────────────────────────────────
+// Bumped (u8, wraps) by homing_request() on every ACCEPTED HOME, in the same
+// IRQ-guarded section that sets s_result to RUNNING, and uplinked beside the
+// result in the Diagnostic. The host records the epoch it saw before the HOME and
+// trusts a terminal result only under a NEWER epoch, so a home that completes
+// between two Diagnostics is still attributed to this HOME, while a stale OK left
+// by an earlier home (old epoch) still cannot end the new one. Readers take the
+// (result, epoch) pair through homing_status(), which reads both under the same
+// guard: a torn read of a new epoch beside the previous home's OK would be
+// exactly the false success the epoch exists to rule out.
+static volatile uint8_t s_epoch[NUM_AXES] = { 0 };
 
 // ── Bus / fault gate (mirror rpc.cpp jugglebot_commands_allowed + the fatal
 //    conditions can_node checked: `fatal_error or fatal_can_error`). Never drive
@@ -123,7 +134,7 @@ void homing_init() {
   s_phase = Phase::IDLE;
   s_axis  = 0xFF;
   s_iq_ema = 0.0f;
-  for (uint8_t i = 0; i < NUM_AXES; ++i) s_result[i] = HOMING_NONE;
+  for (uint8_t i = 0; i < NUM_AXES; ++i) { s_result[i] = HOMING_NONE; s_epoch[i] = 0; }
 }
 
 uint16_t homing_request(uint8_t axis) {
@@ -147,9 +158,30 @@ uint16_t homing_request(uint8_t axis) {
   // consumes s_start_req at the top of homing_step.
   const uint32_t pm = __get_PRIMASK(); __disable_irq();
   const bool busy = (s_phase != Phase::IDLE) || s_start_req;
-  if (!busy) { s_start_axis = axis; s_start_req = true; }
+  if (!busy) {
+    s_start_axis = axis; s_start_req = true;
+    // FW 34 (JB-72): RUNNING at ACCEPT (not at the homing task's consume) and the
+    // epoch bump in the same guarded section, so no Diagnostic can carry the new
+    // epoch beside the previous home's terminal result. Not busy ⇒ the homing task
+    // is not touching s_result, so this write has no concurrent writer. A start
+    // that is never consumed stays RUNNING (the host's timeout backstop); one that
+    // aborts at its first homing_step ends FAILED under the new epoch.
+    s_result[axis] = HOMING_RUNNING;
+    s_epoch[axis]  = (uint8_t)(s_epoch[axis] + 1u);
+  }
   __set_PRIMASK(pm);
   return busy ? RpcStatus::ERR_REJECTED : RpcStatus::OK;
+}
+
+void homing_status(uint8_t axis, uint8_t* result, uint8_t* epoch) {
+  uint8_t r = HOMING_NONE, e = 0;
+  if (axis < NUM_AXES) {
+    const uint32_t pm = __get_PRIMASK(); __disable_irq();
+    r = s_result[axis]; e = s_epoch[axis];
+    __set_PRIMASK(pm);
+  }
+  if (result) *result = r;
+  if (epoch)  *epoch  = e;
 }
 
 bool homing_active() { return s_phase != Phase::IDLE || s_start_req; }

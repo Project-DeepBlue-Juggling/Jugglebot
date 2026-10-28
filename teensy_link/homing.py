@@ -33,8 +33,21 @@ frame, so the observer trusts the FIRMWARE OUTCOME directly:
 Why this replaced the old CLOSED_LOOP→IDLE state-cycle inference: the firmware IDLEs
 the leg on a silent abort too, so an abort was INDISTINGUISHABLE from success to the
 state cycle — a false success that left the leg's zero uncalibrated while the
-orchestrator proceeded. The uplinked result distinguishes the two. ``HOMING_RUNNING``
-gates the trust so a stale terminal result from a prior home cannot end the new one.
+orchestrator proceeded. The uplinked result distinguishes the two.
+
+Trust gate (which terminal result belongs to THIS home). A stale OK/FAILED left
+by a prior home must not end the new one. Two ways to earn trust:
+
+  * **epoch** (can-bridge FW 34, JB-72): the Diagnostic carries ``homing_epoch``,
+    bumped by the firmware on every ACCEPTED HOME in the same guarded write that
+    sets RUNNING. The monitor records the epoch of the last Diagnostic before it
+    asks for HOME and trusts a terminal result under a NEWER epoch (u8,
+    wrap-safe). This is what lets a home shorter than the gap between two
+    Diagnostics succeed: NONE/OK -> RUNNING -> OK with the RUNNING frame lost is
+    indistinguishable from a stale OK by result alone, but not by epoch.
+  * **saw_running** (the pre-FW 34 gate, kept): ``HOMING_RUNNING`` was observed
+    since the HOME. An FW <= 33 board sends epoch 0 for ever (the former pad
+    byte), so the epoch never reads newer and this is the only path there.
 
 ``home_ref_rev`` / ``pos_tol_rev`` are retained as accepted-but-ignored kwargs
 (API stability for existing callers); the firmware still applies
@@ -50,7 +63,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Dict, Iterable, List
+from typing import Dict, Iterable, List, Optional
 
 # ODrive axis states (ODRIVE_STATES in config/protocol_config.yaml). Fundamental,
 # stable ODrive values; duplicated here to keep this module free of the
@@ -69,6 +82,19 @@ HOMING_NONE = 0
 HOMING_RUNNING = 1
 HOMING_OK = 2
 HOMING_FAILED = 3
+
+
+def epoch_newer(epoch: int, baseline: int) -> bool:
+    """True iff the u8 ``epoch`` is strictly newer than ``baseline`` (wrap-safe).
+
+    The firmware bumps the per-axis homing epoch once per accepted HOME, so a
+    forward distance of 1..127 is a newer home and 0 is the same one. 128..255
+    reads as OLDER (a bridge reboot that reset the counter below the baseline):
+    the result is then untrusted and the timeout backstop fails the home, a
+    false failure and never a false success.
+    """
+    d = (int(epoch) - int(baseline)) & 0xFF
+    return 0 < d < 128
 
 # Default per-axis timeout BACKSTOP. MUST sit BELOW the firmware per-axis hard
 # timeout (Homing::MOTOR_TIMEOUT_S = 30 s). The observer trusts the
@@ -96,11 +122,15 @@ class AxisStatus:
         homing_result: firmware ``HomingResult`` (``DIAGNOSTIC.homing_result``;
             NONE/RUNNING/OK/FAILED). The authoritative outcome the
             observer now trusts instead of inferring from the state cycle.
+        homing_epoch: firmware per-home epoch (``DIAGNOSTIC.homing_epoch``,
+            u8, FW 34). ``None`` when the caller has no epoch to offer; then
+            only the ``saw_running`` gate can earn trust.
     """
     axis_state: int
     pos_rev: float
     active_errors: int = 0
     homing_result: int = HOMING_NONE
+    homing_epoch: Optional[int] = None
 
 
 class Phase(str, Enum):
@@ -128,6 +158,7 @@ class _Prog:
     phase: Phase = Phase.PENDING
     t_started: float = 0.0
     saw_running: bool = False   # observed firmware HOMING_RUNNING since HOME (the move started)
+    epoch_at_home: Optional[int] = None   # homing_epoch of the last status before HOME (None = unknown)
     reason: str = ""
 
 
@@ -195,6 +226,12 @@ class HomingMonitor:
                 pr.phase = Phase.ACTIVE
                 pr.t_started = now_s
                 pr.saw_running = False
+                # Baseline epoch = the last status BEFORE the HOME the caller sends
+                # on this return. Never taken later: a later status may already
+                # carry this home's bump. Unknown (no status yet, or a caller with
+                # no epoch) leaves only the saw_running gate.
+                st0 = status.get(axis)
+                pr.epoch_at_home = None if st0 is None else st0.homing_epoch
                 res.set_home.append(axis)
                 continue
 
@@ -218,7 +255,14 @@ class HomingMonitor:
                     pr.reason = f"active_errors 0x{st.active_errors:x} during homing"
                     continue
 
-                if pr.saw_running:
+                # FW 34 (JB-72): a terminal result under an epoch newer than the
+                # pre-HOME baseline belongs to THIS home even when its RUNNING
+                # frame was never seen (a home shorter than the gap between two
+                # Diagnostics, or that frame lost on the stream).
+                epoch_trusted = (pr.epoch_at_home is not None
+                                 and st.homing_epoch is not None
+                                 and epoch_newer(st.homing_epoch, pr.epoch_at_home))
+                if pr.saw_running or epoch_trusted:
                     if st.homing_result == HOMING_OK:
                         # Hardstop found + set_absolute_position ran. We deliberately do
                         # NOT assert the resulting telemetry position: the legs bottom

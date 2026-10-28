@@ -886,7 +886,11 @@ def platform_fw_window_end(window_start_frame: int, total_frames: int) -> int:
 # the cone-role bus (CAN3 peripheral); ERR_BUS_DOWN when no cone-bus partner has
 # been heard. No wire change to any existing message; PROTOCOL_VERSION stays 10;
 # an FW <= 32 board answers WAVE_CMD with ERR_UNKNOWN_METHOD.
-EXPECTED_BRIDGE_FW_VERSION = 33
+# 33 -> 34 (2026-10-28, JB-75 + JB-72): SETPOINT_STALE measures from the arm edge
+# when that is newer than the last setpoint, and output stays shut until a
+# setpoint lands after the arm; the Diagnostic pad[0] byte becomes homing_epoch
+# (bumped per accepted HOME). Same payload size, PROTOCOL_VERSION stays 10.
+EXPECTED_BRIDGE_FW_VERSION = 34
 
 
 # ── Ball Butler ─────────────────────────────────────────────────────────────

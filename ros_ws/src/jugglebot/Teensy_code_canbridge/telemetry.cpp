@@ -28,7 +28,7 @@ static constexpr uint32_t DIAG_FORCE_PERIOD_US = 1000000u;   // 1 Hz per-axis re
 // Last-published diagnostic snapshot, per axis, for change detection.
 struct DiagBaseline {
   uint32_t active_errors, disarm_reason;
-  uint8_t  axis_state, ctrl_mode, input_mode, flags, homing_result;
+  uint8_t  axis_state, ctrl_mode, input_mode, flags, homing_result, homing_epoch;
   float    iq_setpoint, temp_fet, temp_motor, bus_voltage;
   uint64_t last_sent_us;
   bool     ever_sent;
@@ -89,7 +89,10 @@ static void send_diag(uint8_t axis) {
   // bus_current rides along like iq_measured: no change-detect term of its own —
   // iq_setpoint (>0.5 A) is its load proxy, the 1 Hz forced refresh covers drift.
   d.bus_current   = a.bus_current;
-  d.homing_result = homing_result(axis);   // real firmware outcome, per axis
+  // Real firmware outcome + its per-home epoch (FW 34, JB-72), read as ONE pair:
+  // the host trusts a terminal result only under an epoch newer than the one it
+  // saw before its HOME, so the two must never come from different homes.
+  homing_status(axis, &d.homing_result, &d.homing_epoch);
   udp_send_stream(JbUdp::MsgType::DIAGNOSTIC, (const uint8_t*)&d, sizeof(d));
 
   DiagBaseline& b = s_base[axis];
@@ -99,6 +102,7 @@ static void send_diag(uint8_t axis) {
   b.temp_motor = a.temp_motor; b.bus_voltage = a.bus_voltage;
   b.flags = d.flags;
   b.homing_result = d.homing_result;   // track for the change-detect below
+  b.homing_epoch  = d.homing_epoch;
   b.last_sent_us = now;
   b.ever_sent = true;
 }
@@ -744,8 +748,11 @@ void telemetry_step() {
 #else
     constexpr bool due_bench = false;
 #endif
+    uint8_t h_res, h_epoch;
+    homing_status(i, &h_res, &h_epoch);
     if (diag_changed(axes[i], s_base[i]) ||
-        homing_result(i) != s_base[i].homing_result || due_forced || due_bench) {
+        h_res != s_base[i].homing_result || h_epoch != s_base[i].homing_epoch ||
+        due_forced || due_bench) {
       send_diag(i);
     }
   }

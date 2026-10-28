@@ -7215,7 +7215,8 @@ class TeensyBridgeNode(Node):
             axis_state=int(d.axis_state),
             pos_rev=float(telem.pos_rev[int(axis)]),
             active_errors=int(d.active_errors),
-            homing_result=int(d.homing_result))   # authoritative outcome from the HomingResult uplink
+            homing_result=int(d.homing_result),   # authoritative outcome from the HomingResult uplink
+            homing_epoch=int(d.homing_epoch))     # per-home epoch (FW 34, JB-72): attributes a fast home's result
 
     def _run_home(self, axes, *, poll_dt=0.05):
         """Home ``axes`` over the can-bridge link, one axis at a time.

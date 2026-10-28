@@ -305,7 +305,8 @@ class Diagnostic:
     input_mode: int = 0
     flags: int = 0
     homing_result: int = 0
-    pad: tuple = field(default_factory=lambda: (0,) * 2)
+    homing_epoch: int = 0
+    pad: int = 0
     active_errors: int = 0
     disarm_reason: int = 0
     iq_setpoint: float = 0.0
@@ -316,13 +317,13 @@ class Diagnostic:
     bus_current: float = 0.0
 
     def pack(self) -> bytes:
-        return _DIAGNOSTIC_STRUCT.pack(self.axis_id, self.axis_state, self.ctrl_mode, self.input_mode, self.flags, self.homing_result, *self.pad, self.active_errors, self.disarm_reason, self.iq_setpoint, self.iq_measured, self.temp_fet, self.temp_motor, self.bus_voltage, self.bus_current)
+        return _DIAGNOSTIC_STRUCT.pack(self.axis_id, self.axis_state, self.ctrl_mode, self.input_mode, self.flags, self.homing_result, self.homing_epoch, self.pad, self.active_errors, self.disarm_reason, self.iq_setpoint, self.iq_measured, self.temp_fet, self.temp_motor, self.bus_voltage, self.bus_current)
 
     @classmethod
     def unpack(cls, data: bytes) -> 'Diagnostic':
         vals = _DIAGNOSTIC_STRUCT.unpack(data[:40])
         it = iter(vals)
-        return cls(next(it), next(it), next(it), next(it), next(it), next(it), tuple(next(it) for _ in range(2)), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
+        return cls(next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it), next(it))
 
 # HeartbeatT2J: Teensy → Jetson liveness + link/bus health, ~10 Hz.
 HEARTBEAT_T2J_FMT = '<QBBBBIIBBBfffffffffBBfffBHHffffffIIIIII'

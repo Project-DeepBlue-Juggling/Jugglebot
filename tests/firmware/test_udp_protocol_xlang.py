@@ -532,7 +532,15 @@ def test_wire_layout_frozen(gen):
     # PROTOCOL_VERSION stays 10 and an FW <= 32 board answers 0x62 with
     # ERR_UNKNOWN_METHOD. Previous digest (LegClampDiag only):
     #   b8f8027feb744910a7d13cb9a464bdb7783945cf7a8f1f5ea9623c68676e288d
-    _EXPECTED = "2e17196c14b4b94fa7dd198609becd3a4ca30618d6fba7a92448eb0d56254cb3"
+    # Re-pinned for the ADDITIVE Diagnostic homing_epoch (2026-10-28, can-bridge
+    # FW 34, JB-72): pad[0] (u8, always zero) becomes homing_epoch, pad shrinks
+    # 2 -> 1. Same 40 B payload and offsets. An older host ignores the byte, and a
+    # newer host against an FW <= 33 board reads epoch 0 for ever, which never
+    # reads newer, so HomingMonitor falls back to its saw_running gate. Both
+    # mismatches degrade to the pre-FW 34 behaviour, so PROTOCOL_VERSION stays 10.
+    # Previous digest (WAVE_CMD):
+    #   2e17196c14b4b94fa7dd198609becd3a4ca30618d6fba7a92448eb0d56254cb3
+    _EXPECTED = "b90f835978415dcfcc4e49643db9c2041ef6fdc7a518ebcf87e65cd8e50dd877"
     assert digest == _EXPECTED, (
         "The UDP wire LAYOUT changed (a message/arg field layout, a framed MsgType "
         "value, or a framing constant). If INCOMPATIBLE, bump PROTOCOL_VERSION. Either "

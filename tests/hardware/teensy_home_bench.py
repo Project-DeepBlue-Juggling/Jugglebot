@@ -42,8 +42,16 @@ Usage:
 import sys
 import time
 import threading
+import functools
+from pathlib import Path
 
-sys.path.insert(0, "/home/jetson/Desktop/Jugglebot")
+# Flush every print: piped through tee, block-buffered stdout made the driver look
+# frozen for the whole 35 s observer window (2026-10-27, JB-72).
+print = functools.partial(print, flush=True)  # noqa: A001
+
+# The repo root THIS file lives in (was a hard-coded ~/Desktop/Jugglebot, which
+# ran the live checkout's teensy_link from any worktree).
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
 from teensy_link import (  # noqa: E402
     TeensyLinkClient, RpcClient, RpcServer, TimeOfDayServer, MsgType,
     Telemetry, Diagnostic, RpcMethod,
@@ -84,7 +92,12 @@ def axis_status(axis):
     return AxisStatus(
         axis_state=int(d.axis_state),
         pos_rev=float(telem.pos_rev[int(axis)]),
-        active_errors=int(d.active_errors))
+        active_errors=int(d.active_errors),
+        # The firmware outcome + per-home epoch. Before 2026-10-28 this driver
+        # omitted both, so homing_result read NONE for ever, saw_running never set
+        # and EVERY home false-timed-out here (the 2026-10-27 JB-72 symptom).
+        homing_result=int(d.homing_result),
+        homing_epoch=int(d.homing_epoch))
 
 
 def axis_pos(a):
@@ -131,7 +144,8 @@ try:
         for a in res.set_home:
             print(f"  HOME({a}): {rpc_home(rpc, a)}")
         if st is not None and st.axis_state != last_state:
-            print(f"  axis{AXIS} state -> {st.axis_state}  pos={axis_pos(AXIS):+.4f} "
+            print(f"  axis{AXIS} state -> {st.axis_state}  homing_result={st.homing_result} "
+                  f"epoch={st.homing_epoch}  pos={axis_pos(AXIS):+.4f} "
                   f"iq={_cache['diag'].get(AXIS).iq_measured:+.2f}A")
             last_state = st.axis_state
         if mon.done or now > hard_deadline:
