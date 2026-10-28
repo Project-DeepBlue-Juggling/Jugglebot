@@ -109,7 +109,7 @@ def test_render_sections_links_and_determinism(repo):
     assert heads == ["Alpha", "Gamma", "Beta", "Now / Next / Later", "Inbox", "Open tickets"]
     assert "1 of 3 stops done" in text
     assert "| Pathway | Now | Next | Later | Done |" in text
-    assert "| ID | Kind | Title | Status | Priority | Effort | HW | Owner | Radius | Area | Pathway | Age |" in text
+    assert "| ID | Kind | Title | Status | Priority | Effort | HW | Owner | Blast radius | Area | Pathway | Age |" in text
     assert "filed 2026-10-20" in text
     assert "Stray \\| bug" in text
     assert "### Alpha" in text and "Ticket one" in text

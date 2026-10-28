@@ -123,9 +123,9 @@ _Status: closed (complete)._
 
 ## Inbox
 
-Metrics: Effort xs/s/m/l/xl; HW none/bench-leg/robot; Owner none/decision/hands; Radius local/subsystem/cross-cutting/normative; Area = primary area (`DOCUMENTATION_GUIDE.md` 2.10); a dash is unrated.
+Metrics: Effort xs/s/m/l/xl; HW none/bench-leg/robot; Owner none/decision/hands; Blast radius local/subsystem/cross-cutting/normative; Area = primary area (`DOCUMENTATION_GUIDE.md` 2.10); a dash is unrated.
 
-| ID | Kind | Title | Status | Priority | Effort | HW | Owner | Radius | Area | Pathway | Age |
+| ID | Kind | Title | Status | Priority | Effort | HW | Owner | Blast radius | Area | Pathway | Age |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | JB-2 | feature | [Design change: the Hand should be Idle, not Parked Closed-loop, while Active](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-hand-idle-not-parked-closed-loop-while-active.md) | inbox | medium | m | robot | decision | subsystem | hand | — | filed 2026-09-21 |
 | JB-21 | bug | [bb/throw_outcome carries no throw identity](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-bb-throw-outcome-carries-no-throw-identity.md) | inbox | medium | s | none | none | subsystem | ball-butler | Ball Butler | filed 2026-10-24 |

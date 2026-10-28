@@ -115,7 +115,7 @@ def test_new_with_metrics_orders_keys_after_priority_and_page_has_columns(tmp_pa
     i = keys.index("priority")
     assert tuple(keys[i + 1:i + 7]) == METRIC_FIELDS
     page = (tmp_path / "docs" / "project-map.md").read_text()
-    assert "| Effort | HW | Owner | Radius | Area |" in page
+    assert "| Effort | HW | Owner | Blast radius | Area |" in page
     row = [ln for ln in page.splitlines() if "Metric bug" in ln][0]
     assert "| s | none | none | local | gui |" in row
 

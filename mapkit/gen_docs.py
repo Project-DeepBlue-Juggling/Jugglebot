@@ -139,9 +139,9 @@ def render_project_map(repo_root: str) -> str:
     # Inbox
     out += ["## Inbox", "",
             "Metrics: Effort xs/s/m/l/xl; HW none/bench-leg/robot; Owner none/decision/hands; "
-            "Radius local/subsystem/cross-cutting/normative; Area = primary area "
+            "Blast radius local/subsystem/cross-cutting/normative; Area = primary area "
             "(`DOCUMENTATION_GUIDE.md` 2.10); a dash is unrated.", "",
-            "| ID | Kind | Title | Status | Priority | Effort | HW | Owner | Radius | Area "
+            "| ID | Kind | Title | Status | Priority | Effort | HW | Owner | Blast radius | Area "
             "| Pathway | Age |",
             "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     inbox = sorted((i for i in items if i.kind in INBOX_KINDS

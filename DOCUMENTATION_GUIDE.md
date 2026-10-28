@@ -473,10 +473,10 @@ present**: a value outside its enum fails `tests/sim/test_map_items.py`; `diagno
 
 | Field | Values (rank order) | Meaning |
 |-------|---------------------|---------|
-| `effort` | `xs` `s` `m` `l` `xl` | xs one edit + scoped tests, no agent; s one agent unit (< ~80 calls), one gate; m a day (several units or one plan phase); l a multi-phase plan; xl a Pathway |
+| `effort` (shown in capitals: XS S M L XL) | `xs` `s` `m` `l` `xl` | xs one edit + scoped tests, no agent; s one agent unit (< ~80 calls), one gate; m a day (several units or one plan phase); l a multi-phase plan; xl a Pathway |
 | `hardware` | `none` `bench-leg` `robot` | none = tests/sim/docs only; bench-leg = the bench leg rig; robot = a powered Sitting (incl. Ball Butler, cameras) |
 | `owner` | `none` `decision` `hands` | none = Claude alone; decision = a call only the owner can make; hands = the owner operates something (Sitting, cables, flash, measuring) |
-| `radius` | `local` `subsystem` `cross-cutting` `normative` | one file; one subsystem; several subsystems or a rename sweep; a contract, wire format / PROTOCOL_VERSION, firmware or normative doc (audit + flash obligations regardless of effort) |
+| `radius` (shown as **Blast radius**) | `local` `subsystem` `cross-cutting` `normative` | one file; one subsystem; several subsystems or a rename sweep; a contract, wire format / PROTOCOL_VERSION, firmware or normative doc (audit + flash obligations regardless of effort) |
 | `diagnosis` | `unknown` `hypothesis` `confirmed` | **bugs only**: symptom only; candidate cause not yet shown; failure path traceable in writing |
 | `area` | `firmware` `can-bridge` `legs` `hand` `platform-teensy` `tracking` `ball-butler` `skill-stack` `learner` `gui` `map-app` `tests-tooling` `docs` `sim` | the ONE primary area (radius says whether it spills) |
 
