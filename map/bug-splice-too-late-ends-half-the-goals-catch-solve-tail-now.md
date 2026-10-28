@@ -4,7 +4,7 @@ kind: bug
 title: 'SPLICE_TOO_LATE ends half the goals: CATCH solve tail now crosses the 250 ms deadline'
 status: in_progress
 created: '2026-10-27'
-updated: '2026-10-28T07:27:32Z'
+updated: '2026-10-28T07:46:26Z'
 owners: []
 priority: high
 blocked_by: []
@@ -39,3 +39,4 @@ Until now this residue lived only in plans/archived/skill-stack-dress-rehearsals
 - 2026-10-28: 2026-10-28 later: fix 1 (nice -n 10 on rosbridge / bag record / spacemouse / ball_butler, commit 0b6ddad7) and load-trim option 1 (GUI takes mocap_node 20 Hz gui/ copies of the mocap stream, rosbridge 102 -> 53 % of a core on the refreshed rosbridge_cpu_probe replica, commit b2e70285) are on main and built. Both UNVERIFIED live: next Sitting runs with tools/probes/profile_session.py and is read with solve_starvation_scan.py; the pass mark is CATCH wall/CPU well under 2.18 and re-aims surviving. Then: tracker BLAS cap test via tracker_bag_replay, py-spy on skill_node + teensy_bridge, worker core isolation last.
 - 2026-10-28: Sitting 2026-10-28 14:29 (fix 1 nice + option 1 gui copies live, columns only, 79 throws): re-aim refusals 41 % -> 1.3 % (one SPLICE_TOO_LATE, throw 48/50), CATCH wall p50 153 -> 117 ms, p90 226 -> 160, over-150 ms 60 % -> 13 %, rosbridge 86 -> 56 % of a core, 49/49 columns record. Root cause NOT removed: wall/cpu 2.18 -> 1.97 (pass mark 'well under 2.18' missed), box still 537 of 600 % during goals, ball_tracker_node 148 % during goals with an uncapped BLAS pool is the main nice-0 consumer. Improved, not fixed; next = tracker OPENBLAS_NUM_THREADS=1 test offline, then py-spy skill_node/teensy_bridge, then worker core isolation. Nice values unverifiable (ps snapshot lacked the ni column; recorder fixed).
 - 2026-10-28: JB-34 survey follow-ups: mocap_node priority/pinning (it is a fellow victim of the starved box) and a revisit of TRACKING_MAX_FRAMES (logbook/2026-10-10-mocap-frame-queue.md, logbook/2026-09-14-rosbridge-cpu-leak-and-spin.md)
+- 2026-10-28: Fix 2 landed 67eb4212: ball_tracker_node capped to one OpenBLAS thread (offline on the 14:29 bag: -40..45 % tracker CPU, per-frame no slower, output byte-identical; the 2026-09-06 'large-matrix work' comment was false for it). mocap_node stays uncapped (untested). Live effect unverified: next scanned Sitting checks 'BLAS 1 thread' in the tracker up-line, tracker goal% well under 100, and CATCH wall/CPU. Then py-spy skill_node / teensy_bridge_node / the tracker's 1.5 ms in-flight frame; worker isolation last.
