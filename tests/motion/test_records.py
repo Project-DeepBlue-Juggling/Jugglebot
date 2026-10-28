@@ -194,3 +194,13 @@ def test_to_json_is_the_guis_view_in_file_order():
                              'catches': 8, 'end_code': 'MISSED_CATCH',
                              'category': 'drop', 'note': ''}
     assert j['patterns'][0]['record'] is None
+
+
+def test_seed_note_marks_reconstructed_and_fed_rows():
+    """Seeded rows keep their provenance in the Note column: a per-throw
+    reconstruction (pre-2026-09-29 logs, no summary line) is flagged as
+    approximate, a fed goal is named, anything else is a plain log row."""
+    from jugglebot.records import seed_note
+    assert 'approximate' in seed_note('~/.ros/log/x/launch.log [per-throw OUTCOME lines counted; no summary line]')
+    assert seed_note('~/.ros/log/x/launch.log [reload]') == 'seed: fed goal'
+    assert seed_note('~/.ros/log/x/launch.log') == 'seed: log'

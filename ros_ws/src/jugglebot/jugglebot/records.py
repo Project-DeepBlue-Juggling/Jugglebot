@@ -365,8 +365,22 @@ def read_attempts_csv(path: str) -> List[Attempt]:
             out.append(Attempt(row['when_local'].strip(),
                                row['pattern'].strip(),
                                int(row['throws']), int(row['catches']),
-                               row['end_code'].strip()))
+                               row['end_code'].strip(),
+                               seed_note(row['source'])))
     return out
+
+
+def seed_note(source: str) -> str:
+    """The Note a seeded row carries, from the CSV's ``source`` text. A row
+    reconstructed from per-throw lines (logs before 2026-09-29 have no Attempt
+    summary line, so the Attempt span and its tally are approximate) says so;
+    a fed goal says so; anything else is a plain log-seeded row."""
+    src = str(source or '')
+    if 'per-throw' in src:
+        return 'seed: reconstructed from per-throw lines, no summary line (approximate)'
+    if '[reload]' in src:
+        return 'seed: fed goal'
+    return 'seed: log'
 
 
 def to_json(model: Ledger) -> dict:

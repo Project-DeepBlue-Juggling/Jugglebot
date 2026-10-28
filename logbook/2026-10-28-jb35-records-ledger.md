@@ -69,3 +69,20 @@ server's stdlib allowlist (the server loads `records.py` by path). New tests:
 `tests/ros/test_gui_records_panel.py` (8, node harness), 4 in `test_skill_node.py`.
 Panel screenshot from the worktree GUI with a fake ledger:
 `temp/screenshots/jb35/records_panel_1600.png` (gitignored).
+
+## Seed (main session, 2026-10-28)
+
+A Sonnet agent mined every launch.log from 2026-09-13 to 2026-10-28 09:56 into
+`logbook/artifacts/2026-10-28-records-seed-attempts.csv` (588 Attempts, chronological; 406 from
+the skill node summary line that exists from 2026-09-29, 182 reconstructed from per-throw
+OUTCOME lines between pre-level markers for the earlier logs, so those are approximate and say
+so in their Note; 100 zero-throw refusals and the bare Feed moves dropped; the first Sitting of
+2026-09-09..12 left no attempt lines at all). `python -m jugglebot.records rebuild --attempts
+logbook/artifacts/2026-10-28-records-seed-attempts.csv --out docs/records.md` wrote the file:
+38 record rows. Records after the seed: columns 47/48 (2026-10-22, drop), oval_1ball 35/35
+(2026-10-27), oval_1ball_fed 35/35 (2026-10-28), self_toss 24/25 and hop 24/28 (reconstructed,
+2026-09-22 / 09-29), columns_1ball 10/10 (2026-10-04), columns_1ball_fed 4/5 (2026-10-13). The
+R5 gate night reads 31/32 here because the node tally excludes the feed catch and the Stop
+throw (the logbook says 32 consecutive). `seed_note()` carries the provenance into the Note
+column (test added). Verification: 2026-10-28, `pytest tests/motion/test_records.py -q`:
+**42 passed in 0.43 s**; full gate on the rebased tree in this commit message.

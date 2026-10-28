@@ -1,0 +1,589 @@
+when_local,pattern,throws,catches,end_code,source
+2026-09-13 23:00,self_toss,1,0,UNKNOWN,"~/.ros/log/2026-09-13-22-57-18-134095-jetson-990826/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-13 23:01,self_toss,1,0,UNKNOWN,"~/.ros/log/2026-09-13-22-57-18-134095-jetson-990826/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-13 23:01,self_toss,1,0,UNKNOWN,"~/.ros/log/2026-09-13-22-57-18-134095-jetson-990826/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-13 23:02,self_toss,1,0,UNKNOWN,"~/.ros/log/2026-09-13-22-57-18-134095-jetson-990826/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-13 23:02,self_toss,1,0,UNKNOWN,"~/.ros/log/2026-09-13-22-57-18-134095-jetson-990826/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-13 23:02,self_toss,3,0,UNKNOWN,"~/.ros/log/2026-09-13-22-57-18-134095-jetson-990826/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-15 18:57,self_toss,1,0,UNKNOWN,"~/.ros/log/2026-09-15-18-51-37-432272-jetson-1658676/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-15 18:57,self_toss,1,0,UNKNOWN,"~/.ros/log/2026-09-15-18-51-37-432272-jetson-1658676/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-15 18:57,self_toss,1,0,UNKNOWN,"~/.ros/log/2026-09-15-18-51-37-432272-jetson-1658676/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-15 19:01,self_toss,1,0,UNKNOWN,"~/.ros/log/2026-09-15-18-51-37-432272-jetson-1658676/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-15 19:02,self_toss,1,0,UNKNOWN,"~/.ros/log/2026-09-15-18-51-37-432272-jetson-1658676/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-15 19:03,self_toss,1,0,UNKNOWN,"~/.ros/log/2026-09-15-18-51-37-432272-jetson-1658676/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-15 19:04,self_toss,1,0,UNKNOWN,"~/.ros/log/2026-09-15-18-51-37-432272-jetson-1658676/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-15 19:04,self_toss,1,0,UNKNOWN,"~/.ros/log/2026-09-15-18-51-37-432272-jetson-1658676/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-15 19:09,self_toss,1,0,UNKNOWN,"~/.ros/log/2026-09-15-18-51-37-432272-jetson-1658676/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-15 19:10,self_toss,1,0,UNKNOWN,"~/.ros/log/2026-09-15-18-51-37-432272-jetson-1658676/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-15 19:10,self_toss,1,0,UNKNOWN,"~/.ros/log/2026-09-15-18-51-37-432272-jetson-1658676/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-15 19:11,self_toss,1,0,UNKNOWN,"~/.ros/log/2026-09-15-18-51-37-432272-jetson-1658676/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-15 19:11,self_toss,1,0,UNKNOWN,"~/.ros/log/2026-09-15-18-51-37-432272-jetson-1658676/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-16 14:18,self_toss,4,1,UNKNOWN,"~/.ros/log/2026-09-16-14-16-38-107212-jetson-2130856/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-16 14:18,self_toss,3,0,UNKNOWN,"~/.ros/log/2026-09-16-14-16-38-107212-jetson-2130856/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-16 16:24,self_toss,4,3,UNKNOWN,"~/.ros/log/2026-09-16-16-22-21-994004-jetson-2190594/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-16 16:24,self_toss,4,3,UNKNOWN,"~/.ros/log/2026-09-16-16-22-21-994004-jetson-2190594/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-16 16:25,self_toss,4,3,UNKNOWN,"~/.ros/log/2026-09-16-16-22-21-994004-jetson-2190594/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-16 16:26,self_toss,2,0,UNKNOWN,"~/.ros/log/2026-09-16-16-22-21-994004-jetson-2190594/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-16 16:27,self_toss,3,2,UNKNOWN,"~/.ros/log/2026-09-16-16-22-21-994004-jetson-2190594/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-16 16:27,self_toss,2,0,UNKNOWN,"~/.ros/log/2026-09-16-16-22-21-994004-jetson-2190594/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-16 16:28,self_toss,1,0,UNKNOWN,"~/.ros/log/2026-09-16-16-22-21-994004-jetson-2190594/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-16 16:28,self_toss,3,2,UNKNOWN,"~/.ros/log/2026-09-16-16-22-21-994004-jetson-2190594/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-16 16:29,self_toss,2,0,UNKNOWN,"~/.ros/log/2026-09-16-16-22-21-994004-jetson-2190594/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-16 16:29,self_toss,3,1,UNKNOWN,"~/.ros/log/2026-09-16-16-22-21-994004-jetson-2190594/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-16 16:30,self_toss,4,3,UNKNOWN,"~/.ros/log/2026-09-16-16-22-21-994004-jetson-2190594/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-16 16:31,self_toss,4,3,UNKNOWN,"~/.ros/log/2026-09-16-16-22-21-994004-jetson-2190594/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-16 16:32,self_toss,4,3,UNKNOWN,"~/.ros/log/2026-09-16-16-22-21-994004-jetson-2190594/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-16 16:32,self_toss,4,3,UNKNOWN,"~/.ros/log/2026-09-16-16-22-21-994004-jetson-2190594/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-16 16:33,self_toss,4,3,UNKNOWN,"~/.ros/log/2026-09-16-16-22-21-994004-jetson-2190594/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-16 16:33,self_toss,2,0,UNKNOWN,"~/.ros/log/2026-09-16-16-22-21-994004-jetson-2190594/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-16 16:34,self_toss,2,0,UNKNOWN,"~/.ros/log/2026-09-16-16-22-21-994004-jetson-2190594/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-17 18:47,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-17-18-45-10-337829-jetson-2437684/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-17 18:47,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-17-18-45-10-337829-jetson-2437684/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-17 18:48,self_toss,1,0,UNKNOWN,"~/.ros/log/2026-09-17-18-45-10-337829-jetson-2437684/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-17 18:48,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-17-18-45-10-337829-jetson-2437684/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-17 18:48,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-17-18-45-10-337829-jetson-2437684/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-17 18:48,self_toss,1,0,UNKNOWN,"~/.ros/log/2026-09-17-18-45-10-337829-jetson-2437684/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-17 18:48,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-17-18-45-10-337829-jetson-2437684/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-17 18:49,self_toss,1,0,UNKNOWN,"~/.ros/log/2026-09-17-18-45-10-337829-jetson-2437684/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-17 18:49,self_toss,1,0,UNKNOWN,"~/.ros/log/2026-09-17-18-45-10-337829-jetson-2437684/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-17 18:49,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-17-18-45-10-337829-jetson-2437684/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-17 18:49,self_toss,1,0,UNKNOWN,"~/.ros/log/2026-09-17-18-45-10-337829-jetson-2437684/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-17 18:49,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-17-18-45-10-337829-jetson-2437684/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-17 18:49,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-17-18-45-10-337829-jetson-2437684/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-17 18:49,self_toss,1,0,UNKNOWN,"~/.ros/log/2026-09-17-18-45-10-337829-jetson-2437684/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-17 18:49,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-17-18-45-10-337829-jetson-2437684/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-17 18:50,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-17-18-45-10-337829-jetson-2437684/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-17 18:51,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-17-18-50-45-832320-jetson-2441032/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-17 18:51,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-17-18-50-45-832320-jetson-2441032/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-17 18:51,self_toss,3,3,UNKNOWN,"~/.ros/log/2026-09-17-18-50-45-832320-jetson-2441032/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-17 18:53,self_toss,3,3,UNKNOWN,"~/.ros/log/2026-09-17-18-50-45-832320-jetson-2441032/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-17 18:53,self_toss,3,3,UNKNOWN,"~/.ros/log/2026-09-17-18-50-45-832320-jetson-2441032/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-17 18:53,self_toss,3,2,UNKNOWN,"~/.ros/log/2026-09-17-18-50-45-832320-jetson-2441032/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-17 18:53,self_toss,2,0,UNKNOWN,"~/.ros/log/2026-09-17-18-50-45-832320-jetson-2441032/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-17 18:54,self_toss,5,4,UNKNOWN,"~/.ros/log/2026-09-17-18-50-45-832320-jetson-2441032/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-17 23:50,self_toss,4,4,UNKNOWN,"~/.ros/log/2026-09-17-23-49-23-296722-jetson-2564210/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-17 23:50,self_toss,4,4,UNKNOWN,"~/.ros/log/2026-09-17-23-49-23-296722-jetson-2564210/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-17 23:50,self_toss,4,3,UNKNOWN,"~/.ros/log/2026-09-17-23-49-23-296722-jetson-2564210/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-17 23:50,self_toss,3,0,UNKNOWN,"~/.ros/log/2026-09-17-23-49-23-296722-jetson-2564210/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-17 23:50,self_toss,3,1,UNKNOWN,"~/.ros/log/2026-09-17-23-49-23-296722-jetson-2564210/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-17 23:51,self_toss,2,1,UNKNOWN,"~/.ros/log/2026-09-17-23-49-23-296722-jetson-2564210/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-17 23:51,self_toss,2,2,UNKNOWN,"~/.ros/log/2026-09-17-23-49-23-296722-jetson-2564210/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-17 23:51,self_toss,4,2,UNKNOWN,"~/.ros/log/2026-09-17-23-49-23-296722-jetson-2564210/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-18 13:27,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-18-13-25-15-136357-jetson-2698467/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-18 13:27,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-18-13-25-15-136357-jetson-2698467/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-18 13:27,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-18-13-25-15-136357-jetson-2698467/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-18 13:28,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-18-13-25-15-136357-jetson-2698467/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-18 13:28,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-18-13-25-15-136357-jetson-2698467/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-18 13:28,self_toss,2,2,UNKNOWN,"~/.ros/log/2026-09-18-13-25-15-136357-jetson-2698467/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-18 13:28,self_toss,2,0,UNKNOWN,"~/.ros/log/2026-09-18-13-25-15-136357-jetson-2698467/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-18 13:29,self_toss,3,1,UNKNOWN,"~/.ros/log/2026-09-18-13-25-15-136357-jetson-2698467/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-18 13:29,self_toss,5,5,UNKNOWN,"~/.ros/log/2026-09-18-13-25-15-136357-jetson-2698467/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-18 13:29,self_toss,5,4,UNKNOWN,"~/.ros/log/2026-09-18-13-25-15-136357-jetson-2698467/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-18 13:29,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-18-13-25-15-136357-jetson-2698467/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-18 13:29,self_toss,5,3,UNKNOWN,"~/.ros/log/2026-09-18-13-25-15-136357-jetson-2698467/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-18 13:30,self_toss,7,5,UNKNOWN,"~/.ros/log/2026-09-18-13-25-15-136357-jetson-2698467/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-18 13:30,self_toss,2,2,UNKNOWN,"~/.ros/log/2026-09-18-13-25-15-136357-jetson-2698467/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-18 13:30,self_toss,5,2,UNKNOWN,"~/.ros/log/2026-09-18-13-25-15-136357-jetson-2698467/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-18 13:31,self_toss,3,3,UNKNOWN,"~/.ros/log/2026-09-18-13-25-15-136357-jetson-2698467/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-18 13:31,self_toss,5,2,UNKNOWN,"~/.ros/log/2026-09-18-13-25-15-136357-jetson-2698467/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-18 13:31,self_toss,2,2,UNKNOWN,"~/.ros/log/2026-09-18-13-25-15-136357-jetson-2698467/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-18 13:31,self_toss,2,1,UNKNOWN,"~/.ros/log/2026-09-18-13-25-15-136357-jetson-2698467/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-18 13:32,self_toss,3,0,UNKNOWN,"~/.ros/log/2026-09-18-13-25-15-136357-jetson-2698467/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-18 15:32,self_toss,1,0,UNKNOWN,"~/.ros/log/2026-09-18-15-30-53-102459-jetson-2763289/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-18 15:34,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-18-15-30-53-102459-jetson-2763289/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-18 16:17,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-18-16-16-17-529119-jetson-2788947/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-18 16:17,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-18-16-16-17-529119-jetson-2788947/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-18 16:17,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-18-16-16-17-529119-jetson-2788947/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-18 16:17,self_toss,1,0,UNKNOWN,"~/.ros/log/2026-09-18-16-16-17-529119-jetson-2788947/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-18 16:17,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-18-16-16-17-529119-jetson-2788947/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-18 16:18,self_toss,5,1,UNKNOWN,"~/.ros/log/2026-09-18-16-16-17-529119-jetson-2788947/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-18 16:18,self_toss,10,5,UNKNOWN,"~/.ros/log/2026-09-18-16-16-17-529119-jetson-2788947/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-18 16:18,self_toss,20,8,UNKNOWN,"~/.ros/log/2026-09-18-16-16-17-529119-jetson-2788947/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-18 16:19,self_toss,20,8,UNKNOWN,"~/.ros/log/2026-09-18-16-16-17-529119-jetson-2788947/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-22 23:26,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-22-23-21-58-336944-jetson-3666898/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-22 23:27,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-22-23-21-58-336944-jetson-3666898/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-22 23:27,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-22-23-21-58-336944-jetson-3666898/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-22 23:28,self_toss,10,9,UNKNOWN,"~/.ros/log/2026-09-22-23-21-58-336944-jetson-3666898/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-22 23:29,self_toss,25,23,UNKNOWN,"~/.ros/log/2026-09-22-23-21-58-336944-jetson-3666898/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-22 23:30,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-22-23-21-58-336944-jetson-3666898/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-22 23:31,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-22-23-21-58-336944-jetson-3666898/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-22 23:31,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-22-23-21-58-336944-jetson-3666898/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-22 23:31,self_toss,10,10,UNKNOWN,"~/.ros/log/2026-09-22-23-21-58-336944-jetson-3666898/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-22 23:32,self_toss,25,24,UNKNOWN,"~/.ros/log/2026-09-22-23-21-58-336944-jetson-3666898/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-22 23:34,self_toss,6,5,UNKNOWN,"~/.ros/log/2026-09-22-23-21-58-336944-jetson-3666898/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-22 23:35,self_toss,2,0,UNKNOWN,"~/.ros/log/2026-09-22-23-21-58-336944-jetson-3666898/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-22 23:35,self_toss,10,9,UNKNOWN,"~/.ros/log/2026-09-22-23-21-58-336944-jetson-3666898/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-22 23:45,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-22-23-40-54-040283-jetson-3675639/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-23 13:48,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-23-13-46-55-847267-jetson-3865586/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-23 13:48,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-23-13-46-55-847267-jetson-3865586/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-23 13:48,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-23-13-46-55-847267-jetson-3865586/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-23 13:48,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-23-13-46-55-847267-jetson-3865586/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-23 13:48,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-23-13-46-55-847267-jetson-3865586/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-23 13:49,self_toss,10,7,UNKNOWN,"~/.ros/log/2026-09-23-13-46-55-847267-jetson-3865586/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-23 13:49,self_toss,4,1,UNKNOWN,"~/.ros/log/2026-09-23-13-46-55-847267-jetson-3865586/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-23 13:50,self_toss,7,4,UNKNOWN,"~/.ros/log/2026-09-23-13-46-55-847267-jetson-3865586/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-23 13:51,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-23-13-46-55-847267-jetson-3865586/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-23 13:51,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-23-13-46-55-847267-jetson-3865586/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-23 13:51,self_toss,10,8,UNKNOWN,"~/.ros/log/2026-09-23-13-46-55-847267-jetson-3865586/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-23 13:52,self_toss,25,23,UNKNOWN,"~/.ros/log/2026-09-23-13-46-55-847267-jetson-3865586/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-23 13:53,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-23-13-46-55-847267-jetson-3865586/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-23 13:53,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-23-13-46-55-847267-jetson-3865586/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-23 13:53,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-23-13-46-55-847267-jetson-3865586/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-23 13:53,self_toss,4,3,UNKNOWN,"~/.ros/log/2026-09-23-13-46-55-847267-jetson-3865586/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-23 13:55,self_toss,10,7,UNKNOWN,"~/.ros/log/2026-09-23-13-46-55-847267-jetson-3865586/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-23 13:55,self_toss,4,4,UNKNOWN,"~/.ros/log/2026-09-23-13-46-55-847267-jetson-3865586/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-23 13:55,self_toss,10,10,UNKNOWN,"~/.ros/log/2026-09-23-13-46-55-847267-jetson-3865586/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-27 22:44,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-27-22-37-25-882615-jetson-1162634/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-27 22:44,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-27-22-37-25-882615-jetson-1162634/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-27 22:44,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-27-22-37-25-882615-jetson-1162634/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-27 22:44,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-27-22-37-25-882615-jetson-1162634/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-27 22:45,self_toss,4,1,UNKNOWN,"~/.ros/log/2026-09-27-22-37-25-882615-jetson-1162634/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-27 22:48,self_toss,3,3,UNKNOWN,"~/.ros/log/2026-09-27-22-37-25-882615-jetson-1162634/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-27 22:48,self_toss,5,1,UNKNOWN,"~/.ros/log/2026-09-27-22-37-25-882615-jetson-1162634/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-27 22:49,self_toss,5,3,UNKNOWN,"~/.ros/log/2026-09-27-22-37-25-882615-jetson-1162634/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-27 22:50,hop,1,0,UNKNOWN,"~/.ros/log/2026-09-27-22-37-25-882615-jetson-1162634/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-27 22:50,hop,1,0,UNKNOWN,"~/.ros/log/2026-09-27-22-37-25-882615-jetson-1162634/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-27 22:50,hop,1,0,UNKNOWN,"~/.ros/log/2026-09-27-22-37-25-882615-jetson-1162634/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-28 21:44,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-28-21-41-09-858686-jetson-1498526/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-28 21:44,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-28-21-41-09-858686-jetson-1498526/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-28 21:45,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-28-21-41-09-858686-jetson-1498526/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-28 21:45,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-28-21-41-09-858686-jetson-1498526/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-28 21:45,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-28-21-41-09-858686-jetson-1498526/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-28 21:45,self_toss,1,1,UNKNOWN,"~/.ros/log/2026-09-28-21-41-09-858686-jetson-1498526/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-28 21:45,self_toss,3,3,UNKNOWN,"~/.ros/log/2026-09-28-21-41-09-858686-jetson-1498526/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-28 21:45,self_toss,6,3,UNKNOWN,"~/.ros/log/2026-09-28-21-41-09-858686-jetson-1498526/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-28 21:46,self_toss,5,5,UNKNOWN,"~/.ros/log/2026-09-28-21-41-09-858686-jetson-1498526/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-28 23:57,hop,1,0,UNKNOWN,"~/.ros/log/2026-09-28-23-55-19-721581-jetson-1567042/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-29 00:00,self_toss,4,3,UNKNOWN,"~/.ros/log/2026-09-28-23-55-19-721581-jetson-1567042/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-29 00:01,self_toss,5,5,UNKNOWN,"~/.ros/log/2026-09-28-23-55-19-721581-jetson-1567042/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-29 00:02,hop,1,1,UNKNOWN,"~/.ros/log/2026-09-28-23-55-19-721581-jetson-1567042/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-29 00:02,hop,1,0,UNKNOWN,"~/.ros/log/2026-09-28-23-55-19-721581-jetson-1567042/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-29 19:15,self_toss,4,4,UNKNOWN,"~/.ros/log/2026-09-29-19-11-48-925350-jetson-1826536/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-29 19:15,self_toss,5,5,UNKNOWN,"~/.ros/log/2026-09-29-19-11-48-925350-jetson-1826536/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-29 19:15,self_toss,5,5,UNKNOWN,"~/.ros/log/2026-09-29-19-11-48-925350-jetson-1826536/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-29 19:16,self_toss,10,10,UNKNOWN,"~/.ros/log/2026-09-29-19-11-48-925350-jetson-1826536/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-29 19:16,hop,1,1,UNKNOWN,"~/.ros/log/2026-09-29-19-11-48-925350-jetson-1826536/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-29 19:16,hop,1,1,UNKNOWN,"~/.ros/log/2026-09-29-19-11-48-925350-jetson-1826536/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-29 19:17,hop,1,1,UNKNOWN,"~/.ros/log/2026-09-29-19-11-48-925350-jetson-1826536/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-29 19:17,hop,2,0,UNKNOWN,"~/.ros/log/2026-09-29-19-11-48-925350-jetson-1826536/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-29 19:17,hop,2,2,UNKNOWN,"~/.ros/log/2026-09-29-19-11-48-925350-jetson-1826536/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-29 19:17,hop,2,2,UNKNOWN,"~/.ros/log/2026-09-29-19-11-48-925350-jetson-1826536/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-29 19:18,hop,2,2,UNKNOWN,"~/.ros/log/2026-09-29-19-11-48-925350-jetson-1826536/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-29 19:18,hop,2,2,UNKNOWN,"~/.ros/log/2026-09-29-19-11-48-925350-jetson-1826536/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-29 19:18,hop,2,2,UNKNOWN,"~/.ros/log/2026-09-29-19-11-48-925350-jetson-1826536/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-29 19:19,hop,2,0,UNKNOWN,"~/.ros/log/2026-09-29-19-11-48-925350-jetson-1826536/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-29 19:19,hop,2,2,UNKNOWN,"~/.ros/log/2026-09-29-19-11-48-925350-jetson-1826536/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-29 19:19,hop,5,5,UNKNOWN,"~/.ros/log/2026-09-29-19-11-48-925350-jetson-1826536/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-29 19:20,hop,6,6,UNKNOWN,"~/.ros/log/2026-09-29-19-11-48-925350-jetson-1826536/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-29 19:20,hop,6,3,UNKNOWN,"~/.ros/log/2026-09-29-19-11-48-925350-jetson-1826536/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-29 19:20,self_toss,4,4,UNKNOWN,"~/.ros/log/2026-09-29-19-11-48-925350-jetson-1826536/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-29 19:21,hop,10,10,UNKNOWN,"~/.ros/log/2026-09-29-19-11-48-925350-jetson-1826536/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-29 19:21,hop,28,24,UNKNOWN,"~/.ros/log/2026-09-29-19-11-48-925350-jetson-1826536/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-29 19:23,self_toss,4,4,UNKNOWN,"~/.ros/log/2026-09-29-19-11-48-925350-jetson-1826536/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-29 19:23,hop,8,4,UNKNOWN,"~/.ros/log/2026-09-29-19-11-48-925350-jetson-1826536/launch.log [per-throw OUTCOME lines counted; no summary line; no-row outcomes counted as thrown, not caught]"
+2026-09-29 23:33,hop,1,1,COMPLETED,~/.ros/log/2026-09-29-23-32-52-771400-jetson-1973991/launch.log
+2026-09-30 16:24,self_toss,1,1,COMPLETED,~/.ros/log/2026-09-30-16-20-04-988735-jetson-2494716/launch.log
+2026-09-30 16:25,self_toss,1,1,COMPLETED,~/.ros/log/2026-09-30-16-20-04-988735-jetson-2494716/launch.log
+2026-09-30 16:25,self_toss,1,1,COMPLETED,~/.ros/log/2026-09-30-16-20-04-988735-jetson-2494716/launch.log
+2026-09-30 16:25,self_toss,1,0,COMPLETED,~/.ros/log/2026-09-30-16-20-04-988735-jetson-2494716/launch.log
+2026-09-30 16:25,self_toss,4,4,COMPLETED,~/.ros/log/2026-09-30-16-20-04-988735-jetson-2494716/launch.log [reload]
+2026-09-30 16:26,hop,2,2,COMPLETED,~/.ros/log/2026-09-30-16-20-04-988735-jetson-2494716/launch.log
+2026-09-30 16:26,hop,6,6,COMPLETED,~/.ros/log/2026-09-30-16-20-04-988735-jetson-2494716/launch.log
+2026-09-30 16:28,self_toss,4,4,COMPLETED,~/.ros/log/2026-09-30-16-20-04-988735-jetson-2494716/launch.log [reload]
+2026-09-30 16:28,self_toss,4,4,COMPLETED,~/.ros/log/2026-09-30-16-20-04-988735-jetson-2494716/launch.log [reload]
+2026-09-30 16:29,self_toss,4,4,COMPLETED,~/.ros/log/2026-09-30-16-20-04-988735-jetson-2494716/launch.log [reload]
+2026-09-30 16:29,self_toss,3,0,ABORTED_NO_RELEASE,~/.ros/log/2026-09-30-16-20-04-988735-jetson-2494716/launch.log [reload]
+2026-09-30 16:30,self_toss,3,1,ABORTED_NO_RELEASE,~/.ros/log/2026-09-30-16-20-04-988735-jetson-2494716/launch.log [reload]
+2026-09-30 16:30,self_toss,4,4,COMPLETED,~/.ros/log/2026-09-30-16-20-04-988735-jetson-2494716/launch.log [reload]
+2026-09-30 16:30,self_toss,4,4,COMPLETED,~/.ros/log/2026-09-30-16-20-04-988735-jetson-2494716/launch.log [reload]
+2026-09-30 16:31,self_toss,4,3,COMPLETED,~/.ros/log/2026-09-30-16-20-04-988735-jetson-2494716/launch.log [reload]
+2026-09-30 16:33,hop,3,2,ABORTED_NO_RELEASE,~/.ros/log/2026-09-30-16-20-04-988735-jetson-2494716/launch.log [reload]
+2026-09-30 16:33,hop,3,2,ABORTED_NO_RELEASE,~/.ros/log/2026-09-30-16-20-04-988735-jetson-2494716/launch.log [reload]
+2026-09-30 16:33,hop,4,4,COMPLETED,~/.ros/log/2026-09-30-16-20-04-988735-jetson-2494716/launch.log [reload]
+2026-09-30 16:34,hop,4,4,COMPLETED,~/.ros/log/2026-09-30-16-20-04-988735-jetson-2494716/launch.log [reload]
+2026-10-02 12:46,hop,2,2,COMPLETED,~/.ros/log/2026-10-02-12-43-28-061299-jetson-3268694/launch.log
+2026-10-02 12:46,hop,2,2,COMPLETED,~/.ros/log/2026-10-02-12-43-28-061299-jetson-3268694/launch.log
+2026-10-02 12:47,hop,2,2,COMPLETED,~/.ros/log/2026-10-02-12-43-28-061299-jetson-3268694/launch.log
+2026-10-02 12:47,hop,2,1,COMPLETED,~/.ros/log/2026-10-02-12-43-28-061299-jetson-3268694/launch.log
+2026-10-02 12:48,hop,2,2,COMPLETED,~/.ros/log/2026-10-02-12-43-28-061299-jetson-3268694/launch.log
+2026-10-02 12:49,hop,2,2,COMPLETED,~/.ros/log/2026-10-02-12-43-28-061299-jetson-3268694/launch.log
+2026-10-02 12:49,self_toss,3,2,ABORTED_NO_RELEASE,~/.ros/log/2026-10-02-12-43-28-061299-jetson-3268694/launch.log [reload]
+2026-10-02 12:50,self_toss,4,4,COMPLETED,~/.ros/log/2026-10-02-12-43-28-061299-jetson-3268694/launch.log [reload]
+2026-10-02 12:50,self_toss,4,4,COMPLETED,~/.ros/log/2026-10-02-12-43-28-061299-jetson-3268694/launch.log [reload]
+2026-10-02 12:50,self_toss,4,4,COMPLETED,~/.ros/log/2026-10-02-12-43-28-061299-jetson-3268694/launch.log [reload]
+2026-10-02 12:51,self_toss,10,10,COMPLETED,~/.ros/log/2026-10-02-12-43-28-061299-jetson-3268694/launch.log
+2026-10-02 12:52,hop,3,2,ABORTED_NO_RELEASE,~/.ros/log/2026-10-02-12-43-28-061299-jetson-3268694/launch.log [reload]
+2026-10-02 12:52,hop,3,0,ABORTED_NO_RELEASE,~/.ros/log/2026-10-02-12-43-28-061299-jetson-3268694/launch.log [reload]
+2026-10-02 12:52,hop,3,0,ABORTED_NO_RELEASE,~/.ros/log/2026-10-02-12-43-28-061299-jetson-3268694/launch.log [reload]
+2026-10-02 12:53,hop,2,0,ABORTED_NO_RELEASE,~/.ros/log/2026-10-02-12-43-28-061299-jetson-3268694/launch.log [reload]
+2026-10-02 12:53,hop,3,2,ABORTED_NO_RELEASE,~/.ros/log/2026-10-02-12-43-28-061299-jetson-3268694/launch.log [reload]
+2026-10-02 12:53,hop,4,4,COMPLETED,~/.ros/log/2026-10-02-12-43-28-061299-jetson-3268694/launch.log
+2026-10-02 12:54,hop,4,4,COMPLETED,~/.ros/log/2026-10-02-12-43-28-061299-jetson-3268694/launch.log [reload]
+2026-10-02 12:57,columns,1,0,LIMIT_VEL,~/.ros/log/2026-10-02-12-43-28-061299-jetson-3268694/launch.log [reload]
+2026-10-02 12:57,columns,1,1,LIMIT_VEL,~/.ros/log/2026-10-02-12-43-28-061299-jetson-3268694/launch.log [reload]
+2026-10-02 12:58,columns,1,0,LIMIT_VEL,~/.ros/log/2026-10-02-12-43-28-061299-jetson-3268694/launch.log [reload]
+2026-10-02 12:58,columns,1,1,LIMIT_VEL,~/.ros/log/2026-10-02-12-43-28-061299-jetson-3268694/launch.log [reload]
+2026-10-02 12:59,columns,1,0,LIMIT_VEL,~/.ros/log/2026-10-02-12-43-28-061299-jetson-3268694/launch.log [reload]
+2026-10-02 13:01,columns,1,0,LIMIT_VEL,~/.ros/log/2026-10-02-12-43-28-061299-jetson-3268694/launch.log [reload]
+2026-10-02 13:27,hop,2,2,COMPLETED,~/.ros/log/2026-10-02-13-25-08-083559-jetson-3295083/launch.log
+2026-10-02 13:28,hop,2,2,COMPLETED,~/.ros/log/2026-10-02-13-25-08-083559-jetson-3295083/launch.log
+2026-10-02 13:28,hop,2,2,COMPLETED,~/.ros/log/2026-10-02-13-25-08-083559-jetson-3295083/launch.log
+2026-10-02 18:14,self_toss,4,4,COMPLETED,~/.ros/log/2026-10-02-18-11-14-380089-jetson-3450380/launch.log [reload]
+2026-10-02 18:15,self_toss,4,3,COMPLETED,~/.ros/log/2026-10-02-18-11-14-380089-jetson-3450380/launch.log [reload]
+2026-10-02 18:15,self_toss,4,4,COMPLETED,~/.ros/log/2026-10-02-18-11-14-380089-jetson-3450380/launch.log [reload]
+2026-10-02 18:16,self_toss,4,4,LIMIT_JERK,~/.ros/log/2026-10-02-18-11-14-380089-jetson-3450380/launch.log [reload]
+2026-10-02 18:19,columns,3,2,WINDOW_TOO_SHORT,~/.ros/log/2026-10-02-18-11-14-380089-jetson-3450380/launch.log [reload]
+2026-10-02 18:19,columns,3,0,WINDOW_TOO_SHORT,~/.ros/log/2026-10-02-18-11-14-380089-jetson-3450380/launch.log [reload]
+2026-10-02 18:19,columns,3,0,WINDOW_TOO_SHORT,~/.ros/log/2026-10-02-18-11-14-380089-jetson-3450380/launch.log [reload]
+2026-10-02 18:20,columns,3,2,WINDOW_TOO_SHORT,~/.ros/log/2026-10-02-18-11-14-380089-jetson-3450380/launch.log [reload]
+2026-10-02 18:20,columns,3,0,WINDOW_TOO_SHORT,~/.ros/log/2026-10-02-18-11-14-380089-jetson-3450380/launch.log [reload]
+2026-10-02 18:21,columns,3,3,WINDOW_TOO_SHORT,~/.ros/log/2026-10-02-18-11-14-380089-jetson-3450380/launch.log [reload]
+2026-10-02 18:21,columns,3,0,WINDOW_TOO_SHORT,~/.ros/log/2026-10-02-18-11-14-380089-jetson-3450380/launch.log [reload]
+2026-10-02 18:22,columns,2,1,WINDOW_TOO_SHORT,~/.ros/log/2026-10-02-18-11-14-380089-jetson-3450380/launch.log [reload]
+2026-10-02 18:22,columns,3,3,WINDOW_TOO_SHORT,~/.ros/log/2026-10-02-18-11-14-380089-jetson-3450380/launch.log [reload]
+2026-10-02 18:24,columns,3,2,WINDOW_TOO_SHORT,~/.ros/log/2026-10-02-18-11-14-380089-jetson-3450380/launch.log [reload]
+2026-10-02 18:24,columns,3,0,WINDOW_TOO_SHORT,~/.ros/log/2026-10-02-18-11-14-380089-jetson-3450380/launch.log [reload]
+2026-10-02 18:25,columns,3,0,WINDOW_TOO_SHORT,~/.ros/log/2026-10-02-18-11-14-380089-jetson-3450380/launch.log [reload]
+2026-10-02 18:25,columns,3,2,WINDOW_TOO_SHORT,~/.ros/log/2026-10-02-18-11-14-380089-jetson-3450380/launch.log [reload]
+2026-10-02 18:26,columns,3,0,WINDOW_TOO_SHORT,~/.ros/log/2026-10-02-18-11-14-380089-jetson-3450380/launch.log [reload]
+2026-10-02 18:27,self_toss,2,0,ABORTED_NO_RELEASE,~/.ros/log/2026-10-02-18-11-14-380089-jetson-3450380/launch.log [reload]
+2026-10-02 18:27,self_toss,5,5,COMPLETED,~/.ros/log/2026-10-02-18-11-14-380089-jetson-3450380/launch.log [reload]
+2026-10-02 18:29,self_toss,6,3,ABORTED_NO_RELEASE,~/.ros/log/2026-10-02-18-11-14-380089-jetson-3450380/launch.log
+2026-10-02 18:29,self_toss,3,0,ABORTED_NO_RELEASE,~/.ros/log/2026-10-02-18-11-14-380089-jetson-3450380/launch.log [reload]
+2026-10-02 18:30,self_toss,2,0,ABORTED_NO_RELEASE,~/.ros/log/2026-10-02-18-11-14-380089-jetson-3450380/launch.log [reload]
+2026-10-02 18:30,self_toss,8,5,ABORTED_NO_RELEASE,~/.ros/log/2026-10-02-18-11-14-380089-jetson-3450380/launch.log [reload]
+2026-10-02 18:31,self_toss,2,0,ABORTED_NO_RELEASE,~/.ros/log/2026-10-02-18-11-14-380089-jetson-3450380/launch.log [reload]
+2026-10-02 18:31,self_toss,2,0,ABORTED_NO_RELEASE,~/.ros/log/2026-10-02-18-11-14-380089-jetson-3450380/launch.log [reload]
+2026-10-02 18:31,self_toss,8,5,ABORTED_NO_RELEASE,~/.ros/log/2026-10-02-18-11-14-380089-jetson-3450380/launch.log
+2026-10-02 18:32,self_toss,10,9,COMPLETED,~/.ros/log/2026-10-02-18-11-14-380089-jetson-3450380/launch.log
+2026-10-02 18:32,self_toss,7,5,ABORTED_NO_RELEASE,~/.ros/log/2026-10-02-18-11-14-380089-jetson-3450380/launch.log
+2026-10-02 18:33,self_toss,9,7,ABORTED_NO_RELEASE,~/.ros/log/2026-10-02-18-11-14-380089-jetson-3450380/launch.log
+2026-10-02 18:33,columns,3,3,WINDOW_TOO_SHORT,~/.ros/log/2026-10-02-18-11-14-380089-jetson-3450380/launch.log [reload]
+2026-10-02 18:33,columns,3,0,WINDOW_TOO_SHORT,~/.ros/log/2026-10-02-18-11-14-380089-jetson-3450380/launch.log [reload]
+2026-10-02 18:48,self_toss,5,5,COMPLETED,~/.ros/log/2026-10-02-18-47-03-040686-jetson-3478897/launch.log
+2026-10-02 18:48,self_toss,5,5,COMPLETED,~/.ros/log/2026-10-02-18-47-03-040686-jetson-3478897/launch.log
+2026-10-02 18:48,self_toss,9,8,ABORTED_NO_RELEASE,~/.ros/log/2026-10-02-18-47-03-040686-jetson-3478897/launch.log
+2026-10-02 18:49,self_toss,7,4,ABORTED_NO_RELEASE,~/.ros/log/2026-10-02-18-47-03-040686-jetson-3478897/launch.log [reload]
+2026-10-02 18:49,self_toss,10,10,COMPLETED,~/.ros/log/2026-10-02-18-47-03-040686-jetson-3478897/launch.log [reload]
+2026-10-02 18:49,columns,3,2,WINDOW_TOO_SHORT,~/.ros/log/2026-10-02-18-47-03-040686-jetson-3478897/launch.log [reload]
+2026-10-02 18:50,columns,3,1,WINDOW_TOO_SHORT,~/.ros/log/2026-10-02-18-47-03-040686-jetson-3478897/launch.log [reload]
+2026-10-02 18:50,columns,3,2,WINDOW_TOO_SHORT,~/.ros/log/2026-10-02-18-47-03-040686-jetson-3478897/launch.log [reload]
+2026-10-02 18:50,columns,3,2,WINDOW_TOO_SHORT,~/.ros/log/2026-10-02-18-47-03-040686-jetson-3478897/launch.log [reload]
+2026-10-02 18:50,columns,3,0,WINDOW_TOO_SHORT,~/.ros/log/2026-10-02-18-47-03-040686-jetson-3478897/launch.log [reload]
+2026-10-02 18:51,hop,3,2,ABORTED_NO_RELEASE,~/.ros/log/2026-10-02-18-47-03-040686-jetson-3478897/launch.log [reload]
+2026-10-02 18:51,hop,3,2,ABORTED_NO_RELEASE,~/.ros/log/2026-10-02-18-47-03-040686-jetson-3478897/launch.log [reload]
+2026-10-02 18:51,hop,4,4,COMPLETED,~/.ros/log/2026-10-02-18-47-03-040686-jetson-3478897/launch.log [reload]
+2026-10-03 00:24,self_toss,5,4,COMPLETED,~/.ros/log/2026-10-03-00-22-24-625503-jetson-3613598/launch.log
+2026-10-03 00:25,self_toss,5,5,COMPLETED,~/.ros/log/2026-10-03-00-22-24-625503-jetson-3613598/launch.log
+2026-10-03 00:25,self_toss,5,4,COMPLETED,~/.ros/log/2026-10-03-00-22-24-625503-jetson-3613598/launch.log
+2026-10-03 00:26,self_toss,1,1,COMPLETED,~/.ros/log/2026-10-03-00-22-24-625503-jetson-3613598/launch.log
+2026-10-03 00:26,self_toss,1,1,COMPLETED,~/.ros/log/2026-10-03-00-22-24-625503-jetson-3613598/launch.log
+2026-10-03 00:26,self_toss,1,1,COMPLETED,~/.ros/log/2026-10-03-00-22-24-625503-jetson-3613598/launch.log
+2026-10-03 00:26,self_toss,1,1,COMPLETED,~/.ros/log/2026-10-03-00-22-24-625503-jetson-3613598/launch.log
+2026-10-03 00:28,hop,1,1,COMPLETED,~/.ros/log/2026-10-03-00-22-24-625503-jetson-3613598/launch.log
+2026-10-03 00:28,hop,2,2,COMPLETED,~/.ros/log/2026-10-03-00-22-24-625503-jetson-3613598/launch.log
+2026-10-03 00:28,hop,2,0,ABORTED_NO_RELEASE,~/.ros/log/2026-10-03-00-22-24-625503-jetson-3613598/launch.log [reload]
+2026-10-03 00:28,hop,4,4,COMPLETED,~/.ros/log/2026-10-03-00-22-24-625503-jetson-3613598/launch.log [reload]
+2026-10-03 00:29,hop,3,2,ABORTED_NO_RELEASE,~/.ros/log/2026-10-03-00-22-24-625503-jetson-3613598/launch.log
+2026-10-03 00:30,columns,3,2,WINDOW_TOO_SHORT,~/.ros/log/2026-10-03-00-22-24-625503-jetson-3613598/launch.log [reload]
+2026-10-03 00:30,columns,3,2,WINDOW_TOO_SHORT,~/.ros/log/2026-10-03-00-22-24-625503-jetson-3613598/launch.log [reload]
+2026-10-03 00:30,columns,3,0,WINDOW_TOO_SHORT,~/.ros/log/2026-10-03-00-22-24-625503-jetson-3613598/launch.log [reload]
+2026-10-03 00:31,columns,3,2,WINDOW_TOO_SHORT,~/.ros/log/2026-10-03-00-22-24-625503-jetson-3613598/launch.log [reload]
+2026-10-03 00:33,columns,3,2,WINDOW_TOO_SHORT,~/.ros/log/2026-10-03-00-22-24-625503-jetson-3613598/launch.log [reload]
+2026-10-04 19:40,self_toss,4,4,COMPLETED,~/.ros/log/2026-10-04-19-39-06-696745-jetson-3945116/launch.log [reload]
+2026-10-04 19:40,self_toss,4,3,COMPLETED,~/.ros/log/2026-10-04-19-39-06-696745-jetson-3945116/launch.log [reload]
+2026-10-04 19:40,self_toss,1,1,COMPLETED,~/.ros/log/2026-10-04-19-39-06-696745-jetson-3945116/launch.log
+2026-10-04 19:41,self_toss,1,1,COMPLETED,~/.ros/log/2026-10-04-19-39-06-696745-jetson-3945116/launch.log
+2026-10-04 19:41,self_toss,1,1,COMPLETED,~/.ros/log/2026-10-04-19-39-06-696745-jetson-3945116/launch.log
+2026-10-04 19:41,self_toss,1,1,COMPLETED,~/.ros/log/2026-10-04-19-39-06-696745-jetson-3945116/launch.log
+2026-10-04 19:41,self_toss,1,1,COMPLETED,~/.ros/log/2026-10-04-19-39-06-696745-jetson-3945116/launch.log
+2026-10-04 19:41,self_toss,1,1,COMPLETED,~/.ros/log/2026-10-04-19-39-06-696745-jetson-3945116/launch.log
+2026-10-04 19:41,self_toss,1,1,COMPLETED,~/.ros/log/2026-10-04-19-39-06-696745-jetson-3945116/launch.log
+2026-10-04 19:41,self_toss,1,1,COMPLETED,~/.ros/log/2026-10-04-19-39-06-696745-jetson-3945116/launch.log
+2026-10-04 19:41,self_toss,1,1,COMPLETED,~/.ros/log/2026-10-04-19-39-06-696745-jetson-3945116/launch.log
+2026-10-04 19:41,self_toss,1,1,COMPLETED,~/.ros/log/2026-10-04-19-39-06-696745-jetson-3945116/launch.log
+2026-10-04 19:42,self_toss,10,8,COMPLETED,~/.ros/log/2026-10-04-19-39-06-696745-jetson-3945116/launch.log
+2026-10-04 19:42,self_toss,4,4,COMPLETED,~/.ros/log/2026-10-04-19-39-06-696745-jetson-3945116/launch.log [reload]
+2026-10-04 19:53,self_toss,10,9,COMPLETED,~/.ros/log/2026-10-04-19-52-08-155768-jetson-3952806/launch.log
+2026-10-04 19:53,self_toss,10,10,COMPLETED,~/.ros/log/2026-10-04-19-52-08-155768-jetson-3952806/launch.log
+2026-10-04 19:53,columns_1ball,1,0,ABORTED_NO_RELEASE,~/.ros/log/2026-10-04-19-52-08-155768-jetson-3952806/launch.log
+2026-10-04 19:54,columns_1ball,3,3,COMPLETED,~/.ros/log/2026-10-04-19-52-08-155768-jetson-3952806/launch.log [reload]
+2026-10-04 19:54,columns_1ball,3,3,COMPLETED,~/.ros/log/2026-10-04-19-52-08-155768-jetson-3952806/launch.log
+2026-10-04 19:55,columns_1ball,6,5,LIMIT_JERK,~/.ros/log/2026-10-04-19-52-08-155768-jetson-3952806/launch.log
+2026-10-04 19:55,columns_1ball,10,9,COMPLETED,~/.ros/log/2026-10-04-19-52-08-155768-jetson-3952806/launch.log [reload]
+2026-10-04 19:56,columns_1ball,4,3,LIMIT_VEL,~/.ros/log/2026-10-04-19-52-08-155768-jetson-3952806/launch.log [reload]
+2026-10-04 19:56,columns_1ball,10,10,COMPLETED,~/.ros/log/2026-10-04-19-52-08-155768-jetson-3952806/launch.log [reload]
+2026-10-04 19:57,columns,4,3,ABORTED_NO_RELEASE,~/.ros/log/2026-10-04-19-52-08-155768-jetson-3952806/launch.log [reload]
+2026-10-04 19:57,columns,2,2,GUARD_LATCHED,~/.ros/log/2026-10-04-19-52-08-155768-jetson-3952806/launch.log [reload]
+2026-10-04 19:58,columns,4,1,ABORTED_NO_RELEASE,~/.ros/log/2026-10-04-19-52-08-155768-jetson-3952806/launch.log [reload]
+2026-10-04 20:00,columns,3,1,LIMIT_JERK,~/.ros/log/2026-10-04-19-52-08-155768-jetson-3952806/launch.log [reload]
+2026-10-04 20:01,columns,4,0,LIMIT_JERK,~/.ros/log/2026-10-04-19-52-08-155768-jetson-3952806/launch.log [reload]
+2026-10-04 20:01,columns,5,3,DROPPED_SURVIVOR_STOPPED,~/.ros/log/2026-10-04-19-52-08-155768-jetson-3952806/launch.log [reload]
+2026-10-04 20:01,columns,4,1,LIMIT_JERK,~/.ros/log/2026-10-04-19-52-08-155768-jetson-3952806/launch.log [reload]
+2026-10-04 20:02,columns,3,1,LIMIT_JERK,~/.ros/log/2026-10-04-19-52-08-155768-jetson-3952806/launch.log [reload]
+2026-10-04 20:03,columns,5,3,ABORTED_NO_RELEASE,~/.ros/log/2026-10-04-19-52-08-155768-jetson-3952806/launch.log [reload]
+2026-10-04 20:03,columns,4,1,LIMIT_JERK,~/.ros/log/2026-10-04-19-52-08-155768-jetson-3952806/launch.log [reload]
+2026-10-04 20:04,columns,3,3,DROPPED_SURVIVOR_STOPPED,~/.ros/log/2026-10-04-19-52-08-155768-jetson-3952806/launch.log [reload]
+2026-10-04 20:04,columns,5,4,ABORTED_NO_RELEASE,~/.ros/log/2026-10-04-19-52-08-155768-jetson-3952806/launch.log [reload]
+2026-10-04 20:05,columns,3,3,DROPPED_SURVIVOR_STOPPED,~/.ros/log/2026-10-04-19-52-08-155768-jetson-3952806/launch.log [reload]
+2026-10-04 20:05,columns,2,1,LIMIT_JERK,~/.ros/log/2026-10-04-19-52-08-155768-jetson-3952806/launch.log [reload]
+2026-10-04 20:06,columns,4,3,ABORTED_NO_RELEASE,~/.ros/log/2026-10-04-19-52-08-155768-jetson-3952806/launch.log [reload]
+2026-10-04 20:06,columns,4,1,LIMIT_ACC,~/.ros/log/2026-10-04-19-52-08-155768-jetson-3952806/launch.log [reload]
+2026-10-04 20:07,columns,2,2,ABORTED_NO_RELEASE,~/.ros/log/2026-10-04-19-52-08-155768-jetson-3952806/launch.log [reload]
+2026-10-04 20:08,columns,3,2,LIMIT_VEL,~/.ros/log/2026-10-04-19-52-08-155768-jetson-3952806/launch.log [reload]
+2026-10-04 20:08,columns,2,2,ABORTED_NO_RELEASE,~/.ros/log/2026-10-04-19-52-08-155768-jetson-3952806/launch.log [reload]
+2026-10-04 20:08,columns,3,2,LIMIT_ACC,~/.ros/log/2026-10-04-19-52-08-155768-jetson-3952806/launch.log [reload]
+2026-10-04 20:12,columns,4,3,ABORTED_NO_RELEASE,~/.ros/log/2026-10-04-20-10-26-379875-jetson-3962551/launch.log [reload]
+2026-10-04 20:12,columns,2,2,ABORTED_NO_RELEASE,~/.ros/log/2026-10-04-20-10-26-379875-jetson-3962551/launch.log [reload]
+2026-10-05 16:49,columns_1ball_fed,1,0,ABORTED_NO_RELEASE,~/.ros/log/2026-10-05-16-42-57-819222-jetson-137539/launch.log [reload]
+2026-10-05 16:49,columns_1ball_fed,1,0,ABORTED_NO_RELEASE,~/.ros/log/2026-10-05-16-42-57-819222-jetson-137539/launch.log [reload]
+2026-10-05 16:51,columns_1ball,2,1,COMPLETED,~/.ros/log/2026-10-05-16-42-57-819222-jetson-137539/launch.log [reload]
+2026-10-05 16:52,columns_1ball,3,3,COMPLETED,~/.ros/log/2026-10-05-16-42-57-819222-jetson-137539/launch.log [reload]
+2026-10-05 16:52,columns_1ball,5,5,COMPLETED,~/.ros/log/2026-10-05-16-42-57-819222-jetson-137539/launch.log [reload]
+2026-10-05 16:55,columns,1,0,LIMIT_ACC,~/.ros/log/2026-10-05-16-42-57-819222-jetson-137539/launch.log [reload]
+2026-10-06 20:24,columns_1ball,2,1,LIMIT_JERK,~/.ros/log/2026-10-06-20-19-40-338838-jetson-420583/launch.log [reload]
+2026-10-06 20:24,columns_1ball,3,2,COMPLETED,~/.ros/log/2026-10-06-20-19-40-338838-jetson-420583/launch.log [reload]
+2026-10-06 20:24,columns_1ball,2,0,LIMIT_VEL,~/.ros/log/2026-10-06-20-19-40-338838-jetson-420583/launch.log [reload]
+2026-10-06 20:26,columns_1ball,3,2,COMPLETED,~/.ros/log/2026-10-06-20-19-40-338838-jetson-420583/launch.log [reload]
+2026-10-11 11:29,self_toss,4,4,COMPLETED,~/.ros/log/2026-10-11-11-27-53-261232-jetson-2842522/launch.log [reload]
+2026-10-11 11:32,columns_1ball,3,3,COMPLETED,~/.ros/log/2026-10-11-11-27-53-261232-jetson-2842522/launch.log
+2026-10-11 15:16,self_toss,4,4,COMPLETED,~/.ros/log/2026-10-11-15-14-11-595711-jetson-3017477/launch.log [reload]
+2026-10-11 15:18,columns_1ball,3,3,COMPLETED,~/.ros/log/2026-10-11-15-14-11-595711-jetson-3017477/launch.log [reload]
+2026-10-11 15:19,columns_1ball,3,3,COMPLETED,~/.ros/log/2026-10-11-15-14-11-595711-jetson-3017477/launch.log [reload]
+2026-10-11 15:19,columns_1ball,3,3,COMPLETED,~/.ros/log/2026-10-11-15-14-11-595711-jetson-3017477/launch.log [reload]
+2026-10-11 15:20,columns_1ball_fed,2,1,COMPLETED,~/.ros/log/2026-10-11-15-14-11-595711-jetson-3017477/launch.log [reload]
+2026-10-11 15:20,columns_1ball_fed,2,1,COMPLETED,~/.ros/log/2026-10-11-15-14-11-595711-jetson-3017477/launch.log [reload]
+2026-10-11 15:20,columns_1ball_fed,2,1,COMPLETED,~/.ros/log/2026-10-11-15-14-11-595711-jetson-3017477/launch.log [reload]
+2026-10-11 15:21,columns_1ball_fed,2,1,COMPLETED,~/.ros/log/2026-10-11-15-14-11-595711-jetson-3017477/launch.log [reload]
+2026-10-11 15:21,columns,2,1,LIMIT_JERK,~/.ros/log/2026-10-11-15-14-11-595711-jetson-3017477/launch.log [reload]
+2026-10-11 15:22,columns,2,0,LIMIT_JERK,~/.ros/log/2026-10-11-15-14-11-595711-jetson-3017477/launch.log [reload]
+2026-10-11 15:22,columns,2,1,LIMIT_JERK,~/.ros/log/2026-10-11-15-14-11-595711-jetson-3017477/launch.log [reload]
+2026-10-11 15:22,columns,2,1,LIMIT_JERK,~/.ros/log/2026-10-11-15-14-11-595711-jetson-3017477/launch.log [reload]
+2026-10-11 22:16,self_toss,4,4,COMPLETED,~/.ros/log/2026-10-11-22-15-28-601295-jetson-3213327/launch.log
+2026-10-11 22:17,self_toss,10,10,COMPLETED,~/.ros/log/2026-10-11-22-15-28-601295-jetson-3213327/launch.log
+2026-10-11 22:18,columns_1ball,3,3,COMPLETED,~/.ros/log/2026-10-11-22-15-28-601295-jetson-3213327/launch.log
+2026-10-11 22:18,columns_1ball,3,3,LIMIT_VEL,~/.ros/log/2026-10-11-22-15-28-601295-jetson-3213327/launch.log
+2026-10-11 22:18,columns_1ball,5,5,COMPLETED,~/.ros/log/2026-10-11-22-15-28-601295-jetson-3213327/launch.log
+2026-10-11 22:19,columns_1ball_fed,3,2,COMPLETED,~/.ros/log/2026-10-11-22-15-28-601295-jetson-3213327/launch.log [reload]
+2026-10-11 22:20,columns_1ball_fed,3,2,COMPLETED,~/.ros/log/2026-10-11-22-15-28-601295-jetson-3213327/launch.log [reload]
+2026-10-11 22:20,columns_1ball_fed,3,2,COMPLETED,~/.ros/log/2026-10-11-22-15-28-601295-jetson-3213327/launch.log [reload]
+2026-10-11 22:21,columns,6,5,COMPLETED,~/.ros/log/2026-10-11-22-15-28-601295-jetson-3213327/launch.log [reload]
+2026-10-11 22:21,columns,9,8,LIMIT_JERK,~/.ros/log/2026-10-11-22-15-28-601295-jetson-3213327/launch.log [reload]
+2026-10-11 22:22,columns,7,6,LIMIT_ACC,~/.ros/log/2026-10-11-22-15-28-601295-jetson-3213327/launch.log [reload]
+2026-10-11 22:23,columns,9,8,ABORTED_NO_RELEASE,~/.ros/log/2026-10-11-22-15-28-601295-jetson-3213327/launch.log [reload]
+2026-10-11 22:23,columns,4,4,MISSED_CATCH,~/.ros/log/2026-10-11-22-15-28-601295-jetson-3213327/launch.log [reload]
+2026-10-11 22:24,columns,2,2,MISSED_CATCH,~/.ros/log/2026-10-11-22-15-28-601295-jetson-3213327/launch.log [reload]
+2026-10-11 22:26,columns,5,5,MISSED_CATCH,~/.ros/log/2026-10-11-22-15-28-601295-jetson-3213327/launch.log [reload]
+2026-10-11 22:26,columns,2,2,MISSED_CATCH,~/.ros/log/2026-10-11-22-15-28-601295-jetson-3213327/launch.log [reload]
+2026-10-11 22:27,columns,2,2,MISSED_CATCH,~/.ros/log/2026-10-11-22-15-28-601295-jetson-3213327/launch.log [reload]
+2026-10-11 22:27,columns,2,2,MISSED_CATCH,~/.ros/log/2026-10-11-22-15-28-601295-jetson-3213327/launch.log [reload]
+2026-10-11 22:28,hop,10,10,COMPLETED,~/.ros/log/2026-10-11-22-15-28-601295-jetson-3213327/launch.log [reload]
+2026-10-11 22:28,columns,3,2,MISSED_CATCH,~/.ros/log/2026-10-11-22-15-28-601295-jetson-3213327/launch.log [reload]
+2026-10-12 23:25,self_toss,4,4,COMPLETED,~/.ros/log/2026-10-12-23-24-01-939035-jetson-3607045/launch.log [reload]
+2026-10-12 23:25,hop,4,4,COMPLETED,~/.ros/log/2026-10-12-23-24-01-939035-jetson-3607045/launch.log [reload]
+2026-10-12 23:26,hop,1,1,MISSED_CATCH,~/.ros/log/2026-10-12-23-24-01-939035-jetson-3607045/launch.log [reload]
+2026-10-12 23:26,hop,4,4,COMPLETED,~/.ros/log/2026-10-12-23-24-01-939035-jetson-3607045/launch.log [reload]
+2026-10-12 23:26,hop,4,4,COMPLETED,~/.ros/log/2026-10-12-23-24-01-939035-jetson-3607045/launch.log [reload]
+2026-10-12 23:27,columns_1ball,2,2,COMPLETED,~/.ros/log/2026-10-12-23-24-01-939035-jetson-3607045/launch.log [reload]
+2026-10-12 23:27,columns_1ball,2,2,COMPLETED,~/.ros/log/2026-10-12-23-24-01-939035-jetson-3607045/launch.log [reload]
+2026-10-12 23:27,columns_1ball,2,2,COMPLETED,~/.ros/log/2026-10-12-23-24-01-939035-jetson-3607045/launch.log [reload]
+2026-10-12 23:28,columns_1ball_fed,1,0,ABORTED_NO_RELEASE,~/.ros/log/2026-10-12-23-24-01-939035-jetson-3607045/launch.log [reload]
+2026-10-12 23:29,columns_1ball_fed,2,1,COMPLETED,~/.ros/log/2026-10-12-23-24-01-939035-jetson-3607045/launch.log [reload]
+2026-10-12 23:29,columns_1ball_fed,1,0,ABORTED_NO_RELEASE,~/.ros/log/2026-10-12-23-24-01-939035-jetson-3607045/launch.log [reload]
+2026-10-13 00:19,self_toss,4,4,COMPLETED,~/.ros/log/2026-10-13-00-18-46-323618-jetson-3638285/launch.log [reload]
+2026-10-13 00:19,columns_1ball_fed,2,1,COMPLETED,~/.ros/log/2026-10-13-00-18-46-323618-jetson-3638285/launch.log [reload]
+2026-10-13 00:20,columns_1ball_fed,2,1,COMPLETED,~/.ros/log/2026-10-13-00-18-46-323618-jetson-3638285/launch.log [reload]
+2026-10-13 00:20,columns,4,3,COMPLETED,~/.ros/log/2026-10-13-00-18-46-323618-jetson-3638285/launch.log [reload]
+2026-10-13 00:20,columns,6,6,MISSED_CATCH,~/.ros/log/2026-10-13-00-18-46-323618-jetson-3638285/launch.log [reload]
+2026-10-13 00:21,columns,5,5,MISSED_CATCH,~/.ros/log/2026-10-13-00-18-46-323618-jetson-3638285/launch.log [reload]
+2026-10-13 00:21,columns,3,3,MISSED_CATCH,~/.ros/log/2026-10-13-00-18-46-323618-jetson-3638285/launch.log [reload]
+2026-10-13 00:21,columns,4,2,LIMIT_JERK,~/.ros/log/2026-10-13-00-18-46-323618-jetson-3638285/launch.log [reload]
+2026-10-13 00:21,columns,10,9,COMPLETED,~/.ros/log/2026-10-13-00-18-46-323618-jetson-3638285/launch.log [reload]
+2026-10-13 00:22,columns,5,5,MISSED_CATCH,~/.ros/log/2026-10-13-00-18-46-323618-jetson-3638285/launch.log [reload]
+2026-10-13 00:22,columns,11,11,MISSED_CATCH,~/.ros/log/2026-10-13-00-18-46-323618-jetson-3638285/launch.log [reload]
+2026-10-13 00:22,columns,2,2,HAND_LANE_REFUSED,~/.ros/log/2026-10-13-00-18-46-323618-jetson-3638285/launch.log [reload]
+2026-10-13 00:23,columns,2,2,MISSED_CATCH,~/.ros/log/2026-10-13-00-18-46-323618-jetson-3638285/launch.log [reload]
+2026-10-13 00:24,columns,7,7,MISSED_CATCH,~/.ros/log/2026-10-13-00-18-46-323618-jetson-3638285/launch.log [reload]
+2026-10-13 00:24,columns,15,15,MISSED_CATCH,~/.ros/log/2026-10-13-00-18-46-323618-jetson-3638285/launch.log [reload]
+2026-10-13 00:24,columns,3,3,MISSED_CATCH,~/.ros/log/2026-10-13-00-18-46-323618-jetson-3638285/launch.log [reload]
+2026-10-13 23:14,self_toss,4,4,COMPLETED,~/.ros/log/2026-10-13-23-12-50-197471-jetson-3905591/launch.log
+2026-10-13 23:15,hop,4,4,COMPLETED,~/.ros/log/2026-10-13-23-12-50-197471-jetson-3905591/launch.log
+2026-10-13 23:15,columns_1ball,2,2,COMPLETED,~/.ros/log/2026-10-13-23-12-50-197471-jetson-3905591/launch.log
+2026-10-13 23:15,columns_1ball,3,2,SPLICE_TOO_LATE,~/.ros/log/2026-10-13-23-12-50-197471-jetson-3905591/launch.log
+2026-10-13 23:15,columns_1ball,2,1,SPLICE_TOO_LATE,~/.ros/log/2026-10-13-23-12-50-197471-jetson-3905591/launch.log
+2026-10-13 23:16,columns_1ball,5,5,COMPLETED,~/.ros/log/2026-10-13-23-12-50-197471-jetson-3905591/launch.log [reload]
+2026-10-13 23:17,columns_1ball_fed,5,4,COMPLETED,~/.ros/log/2026-10-13-23-12-50-197471-jetson-3905591/launch.log [reload]
+2026-10-13 23:17,columns,6,5,SPLICE_TOO_LATE,~/.ros/log/2026-10-13-23-12-50-197471-jetson-3905591/launch.log [reload]
+2026-10-13 23:18,columns,6,4,LIMIT_ACC,~/.ros/log/2026-10-13-23-12-50-197471-jetson-3905591/launch.log [reload]
+2026-10-13 23:18,columns,10,9,COMPLETED,~/.ros/log/2026-10-13-23-12-50-197471-jetson-3905591/launch.log [reload]
+2026-10-13 23:19,columns,5,5,MISSED_CATCH,~/.ros/log/2026-10-13-23-12-50-197471-jetson-3905591/launch.log [reload]
+2026-10-13 23:19,columns,5,4,SPLICE_TOO_LATE,~/.ros/log/2026-10-13-23-12-50-197471-jetson-3905591/launch.log [reload]
+2026-10-13 23:19,columns,12,12,MISSED_CATCH,~/.ros/log/2026-10-13-23-12-50-197471-jetson-3905591/launch.log [reload]
+2026-10-13 23:20,columns,2,2,MISSED_CATCH,~/.ros/log/2026-10-13-23-12-50-197471-jetson-3905591/launch.log [reload]
+2026-10-13 23:20,columns,11,10,SPLICE_TOO_LATE,~/.ros/log/2026-10-13-23-12-50-197471-jetson-3905591/launch.log [reload]
+2026-10-13 23:20,columns,32,31,COMPLETED,~/.ros/log/2026-10-13-23-12-50-197471-jetson-3905591/launch.log [reload]
+2026-10-13 23:21,columns,10,10,ABORTED_MODE_CHANGED,~/.ros/log/2026-10-13-23-12-50-197471-jetson-3905591/launch.log [reload]
+2026-10-14 20:57,self_toss,10,10,COMPLETED,~/.ros/log/2026-10-14-20-54-20-258010-jetson-4122860/launch.log
+2026-10-14 20:57,hop,2,1,SPLICE_TOO_LATE,~/.ros/log/2026-10-14-20-54-20-258010-jetson-4122860/launch.log
+2026-10-14 20:57,hop,3,2,SPLICE_TOO_LATE,~/.ros/log/2026-10-14-20-54-20-258010-jetson-4122860/launch.log [reload]
+2026-10-14 20:58,hop,6,5,SPLICE_TOO_LATE,~/.ros/log/2026-10-14-20-54-20-258010-jetson-4122860/launch.log [reload]
+2026-10-14 21:00,columns_1ball_fed,5,4,COMPLETED,~/.ros/log/2026-10-14-20-54-20-258010-jetson-4122860/launch.log [reload]
+2026-10-14 21:01,columns,4,4,MISSED_CATCH,~/.ros/log/2026-10-14-20-54-20-258010-jetson-4122860/launch.log [reload]
+2026-10-14 21:01,columns,2,2,MISSED_CATCH,~/.ros/log/2026-10-14-20-54-20-258010-jetson-4122860/launch.log [reload]
+2026-10-14 21:01,columns,2,2,MISSED_CATCH,~/.ros/log/2026-10-14-20-54-20-258010-jetson-4122860/launch.log [reload]
+2026-10-14 21:02,columns,2,2,MISSED_CATCH,~/.ros/log/2026-10-14-20-54-20-258010-jetson-4122860/launch.log [reload]
+2026-10-14 21:02,columns,2,2,MISSED_CATCH,~/.ros/log/2026-10-14-20-54-20-258010-jetson-4122860/launch.log [reload]
+2026-10-14 21:02,columns_1ball,2,2,SPLICE_TOO_LATE,~/.ros/log/2026-10-14-20-54-20-258010-jetson-4122860/launch.log
+2026-10-14 21:02,columns_1ball,4,4,MISSED_CATCH,~/.ros/log/2026-10-14-20-54-20-258010-jetson-4122860/launch.log
+2026-10-14 21:03,columns_1ball,5,5,COMPLETED,~/.ros/log/2026-10-14-20-54-20-258010-jetson-4122860/launch.log [reload]
+2026-10-14 21:29,hop,4,4,MISSED_CATCH,~/.ros/log/2026-10-14-21-27-21-980308-jetson-4138247/launch.log
+2026-10-14 21:30,hop,10,10,COMPLETED,~/.ros/log/2026-10-14-21-27-21-980308-jetson-4138247/launch.log [reload]
+2026-10-14 21:30,columns,10,9,COMPLETED,~/.ros/log/2026-10-14-21-27-21-980308-jetson-4138247/launch.log [reload]
+2026-10-14 21:31,columns,7,7,MISSED_CATCH,~/.ros/log/2026-10-14-21-27-21-980308-jetson-4138247/launch.log [reload]
+2026-10-14 21:31,columns,9,9,MISSED_CATCH,~/.ros/log/2026-10-14-21-27-21-980308-jetson-4138247/launch.log [reload]
+2026-10-14 21:31,columns,5,5,MISSED_CATCH,~/.ros/log/2026-10-14-21-27-21-980308-jetson-4138247/launch.log [reload]
+2026-10-14 21:31,columns,2,2,MISSED_CATCH,~/.ros/log/2026-10-14-21-27-21-980308-jetson-4138247/launch.log [reload]
+2026-10-14 21:32,columns,5,4,MISSED_CATCH,~/.ros/log/2026-10-14-21-27-21-980308-jetson-4138247/launch.log [reload]
+2026-10-14 21:32,columns,4,2,LIMIT_ACC,~/.ros/log/2026-10-14-21-27-21-980308-jetson-4138247/launch.log [reload]
+2026-10-14 21:33,columns,6,5,LIMIT_JERK,~/.ros/log/2026-10-14-21-27-21-980308-jetson-4138247/launch.log [reload]
+2026-10-14 21:33,columns,6,6,MISSED_CATCH,~/.ros/log/2026-10-14-21-27-21-980308-jetson-4138247/launch.log [reload]
+2026-10-14 21:34,columns,3,1,SPLICE_TOO_LATE,~/.ros/log/2026-10-14-21-27-21-980308-jetson-4138247/launch.log [reload]
+2026-10-14 21:35,columns,4,4,MISSED_CATCH,~/.ros/log/2026-10-14-21-27-21-980308-jetson-4138247/launch.log [reload]
+2026-10-14 21:35,columns,6,4,SPLICE_TOO_LATE,~/.ros/log/2026-10-14-21-27-21-980308-jetson-4138247/launch.log [reload]
+2026-10-14 21:35,columns,8,7,SPLICE_TOO_LATE,~/.ros/log/2026-10-14-21-27-21-980308-jetson-4138247/launch.log [reload]
+2026-10-16 10:52,columns,3,3,MISSED_CATCH,~/.ros/log/2026-10-16-10-50-42-798495-jetson-1033523/launch.log [reload]
+2026-10-16 10:53,columns,8,8,MISSED_CATCH,~/.ros/log/2026-10-16-10-50-42-798495-jetson-1033523/launch.log [reload]
+2026-10-16 10:53,columns,1,1,MISSED_CATCH,~/.ros/log/2026-10-16-10-50-42-798495-jetson-1033523/launch.log [reload]
+2026-10-16 10:53,columns,2,2,MISSED_CATCH,~/.ros/log/2026-10-16-10-50-42-798495-jetson-1033523/launch.log [reload]
+2026-10-16 10:53,columns,4,3,ABORTED_NO_RELEASE,~/.ros/log/2026-10-16-10-50-42-798495-jetson-1033523/launch.log [reload]
+2026-10-16 10:54,columns,2,2,MISSED_CATCH,~/.ros/log/2026-10-16-10-50-42-798495-jetson-1033523/launch.log [reload]
+2026-10-16 10:55,columns,5,5,MISSED_CATCH,~/.ros/log/2026-10-16-10-50-42-798495-jetson-1033523/launch.log [reload]
+2026-10-16 10:55,columns,27,27,MISSED_CATCH,~/.ros/log/2026-10-16-10-50-42-798495-jetson-1033523/launch.log [reload]
+2026-10-16 10:56,columns,25,25,MISSED_CATCH,~/.ros/log/2026-10-16-10-50-42-798495-jetson-1033523/launch.log [reload]
+2026-10-16 10:56,columns,24,24,MISSED_CATCH,~/.ros/log/2026-10-16-10-50-42-798495-jetson-1033523/launch.log [reload]
+2026-10-16 10:57,columns,11,11,MISSED_CATCH,~/.ros/log/2026-10-16-10-50-42-798495-jetson-1033523/launch.log [reload]
+2026-10-16 10:57,columns,19,19,MISSED_CATCH,~/.ros/log/2026-10-16-10-50-42-798495-jetson-1033523/launch.log [reload]
+2026-10-16 10:57,columns,2,2,MISSED_CATCH,~/.ros/log/2026-10-16-10-50-42-798495-jetson-1033523/launch.log [reload]
+2026-10-16 10:58,columns,4,4,MISSED_CATCH,~/.ros/log/2026-10-16-10-50-42-798495-jetson-1033523/launch.log [reload]
+2026-10-16 16:11,hop,4,4,COMPLETED,~/.ros/log/2026-10-16-16-10-37-689586-jetson-1220502/launch.log
+2026-10-16 16:12,hop,4,4,COMPLETED,~/.ros/log/2026-10-16-16-10-37-689586-jetson-1220502/launch.log [reload]
+2026-10-16 16:12,columns_1ball_fed,2,1,COMPLETED,~/.ros/log/2026-10-16-16-10-37-689586-jetson-1220502/launch.log [reload]
+2026-10-16 16:24,columns_1ball_fed,2,0,LIMIT_ACC,~/.ros/log/2026-10-16-16-23-01-479044-jetson-1230939/launch.log [reload]
+2026-10-16 16:24,columns_1ball_fed,2,1,COMPLETED,~/.ros/log/2026-10-16-16-23-01-479044-jetson-1230939/launch.log [reload]
+2026-10-16 16:24,columns_1ball_fed,1,0,ABORTED_NO_RELEASE,~/.ros/log/2026-10-16-16-23-01-479044-jetson-1230939/launch.log [reload]
+2026-10-16 16:24,columns_1ball_fed,2,1,COMPLETED,~/.ros/log/2026-10-16-16-23-01-479044-jetson-1230939/launch.log [reload]
+2026-10-16 16:24,columns_1ball_fed,1,1,ABORTED_NO_RELEASE,~/.ros/log/2026-10-16-16-23-01-479044-jetson-1230939/launch.log [reload]
+2026-10-16 16:25,columns_1ball_fed,1,0,ABORTED_NO_RELEASE,~/.ros/log/2026-10-16-16-23-01-479044-jetson-1230939/launch.log [reload]
+2026-10-16 16:25,columns_1ball_fed,2,1,COMPLETED,~/.ros/log/2026-10-16-16-23-01-479044-jetson-1230939/launch.log [reload]
+2026-10-16 16:25,columns_1ball_fed,1,0,ABORTED_NO_RELEASE,~/.ros/log/2026-10-16-16-23-01-479044-jetson-1230939/launch.log [reload]
+2026-10-19 11:05,self_toss,4,4,COMPLETED,~/.ros/log/2026-10-19-11-04-03-078330-jetson-3068207/launch.log [reload]
+2026-10-19 11:06,hop,4,4,COMPLETED,~/.ros/log/2026-10-19-11-04-03-078330-jetson-3068207/launch.log
+2026-10-19 11:06,columns,4,3,COMPLETED,~/.ros/log/2026-10-19-11-04-03-078330-jetson-3068207/launch.log [reload]
+2026-10-19 14:26,hop,4,4,COMPLETED,~/.ros/log/2026-10-19-14-24-14-952486-jetson-3188843/launch.log
+2026-10-19 14:26,hop,4,4,COMPLETED,~/.ros/log/2026-10-19-14-24-14-952486-jetson-3188843/launch.log
+2026-10-19 15:26,columns,3,1,LIMIT_JERK,~/.ros/log/2026-10-19-15-23-58-088700-jetson-3231325/launch.log [reload]
+2026-10-19 15:27,columns,2,1,CUP_SEATING_CONE,~/.ros/log/2026-10-19-15-23-58-088700-jetson-3231325/launch.log [reload]
+2026-10-19 15:27,columns,2,1,CUP_SEATING_CONE,~/.ros/log/2026-10-19-15-23-58-088700-jetson-3231325/launch.log
+2026-10-19 15:27,columns,3,2,ABORTED_NO_RELEASE,~/.ros/log/2026-10-19-15-23-58-088700-jetson-3231325/launch.log
+2026-10-19 15:28,columns,3,2,ABORTED_NO_RELEASE,~/.ros/log/2026-10-19-15-23-58-088700-jetson-3231325/launch.log [reload]
+2026-10-19 15:28,columns,2,1,CUP_SEATING_CONE,~/.ros/log/2026-10-19-15-23-58-088700-jetson-3231325/launch.log [reload]
+2026-10-19 15:29,columns,2,1,CUP_SEATING_CONE,~/.ros/log/2026-10-19-15-23-58-088700-jetson-3231325/launch.log [reload]
+2026-10-19 17:49,columns,4,3,COMPLETED,~/.ros/log/2026-10-19-17-47-52-793166-jetson-3314007/launch.log [reload]
+2026-10-19 17:50,columns,8,7,LIMIT_JERK,~/.ros/log/2026-10-19-17-47-52-793166-jetson-3314007/launch.log [reload]
+2026-10-19 17:50,columns,6,5,LIMIT_JERK,~/.ros/log/2026-10-19-17-47-52-793166-jetson-3314007/launch.log
+2026-10-19 17:50,columns,3,2,LIMIT_JERK,~/.ros/log/2026-10-19-17-47-52-793166-jetson-3314007/launch.log
+2026-10-19 17:51,columns,2,1,LIMIT_JERK,~/.ros/log/2026-10-19-17-47-52-793166-jetson-3314007/launch.log
+2026-10-19 17:51,columns,3,1,LIMIT_JERK,~/.ros/log/2026-10-19-17-47-52-793166-jetson-3314007/launch.log
+2026-10-21 22:55,hop,4,4,COMPLETED,~/.ros/log/2026-10-21-22-53-41-347705-jetson-3884763/launch.log [reload]
+2026-10-21 22:55,hop,4,4,COMPLETED,~/.ros/log/2026-10-21-22-53-41-347705-jetson-3884763/launch.log [reload]
+2026-10-21 22:57,hop,4,4,COMPLETED,~/.ros/log/2026-10-21-22-53-41-347705-jetson-3884763/launch.log [reload]
+2026-10-21 22:57,columns,2,0,MISSED_CATCH,~/.ros/log/2026-10-21-22-53-41-347705-jetson-3884763/launch.log
+2026-10-21 22:59,columns,2,2,MISSED_CATCH,~/.ros/log/2026-10-21-22-53-41-347705-jetson-3884763/launch.log [reload]
+2026-10-21 22:59,columns,3,2,ABORTED_NO_RELEASE,~/.ros/log/2026-10-21-22-53-41-347705-jetson-3884763/launch.log
+2026-10-21 22:59,columns,10,9,COMPLETED,~/.ros/log/2026-10-21-22-53-41-347705-jetson-3884763/launch.log
+2026-10-21 23:00,columns,3,3,MISSED_CATCH,~/.ros/log/2026-10-21-22-53-41-347705-jetson-3884763/launch.log
+2026-10-21 23:00,columns,6,6,MISSED_CATCH,~/.ros/log/2026-10-21-22-53-41-347705-jetson-3884763/launch.log
+2026-10-21 23:00,columns,14,14,MISSED_CATCH,~/.ros/log/2026-10-21-22-53-41-347705-jetson-3884763/launch.log
+2026-10-21 23:01,columns,3,3,MISSED_CATCH,~/.ros/log/2026-10-21-22-53-41-347705-jetson-3884763/launch.log
+2026-10-22 19:51,hop,4,4,COMPLETED,~/.ros/log/2026-10-22-19-50-38-975040-jetson-50159/launch.log [reload]
+2026-10-22 19:52,hop,4,4,COMPLETED,~/.ros/log/2026-10-22-19-50-38-975040-jetson-50159/launch.log [reload]
+2026-10-22 19:52,hop,4,4,COMPLETED,~/.ros/log/2026-10-22-19-50-38-975040-jetson-50159/launch.log [reload]
+2026-10-22 19:53,columns_1ball,2,2,UNREACHABLE,~/.ros/log/2026-10-22-19-50-38-975040-jetson-50159/launch.log [reload]
+2026-10-22 19:53,columns_1ball_fed,2,1,COMPLETED,~/.ros/log/2026-10-22-19-50-38-975040-jetson-50159/launch.log [reload]
+2026-10-22 19:54,columns_1ball_fed,2,1,COMPLETED,~/.ros/log/2026-10-22-19-50-38-975040-jetson-50159/launch.log [reload]
+2026-10-22 19:55,columns_1ball_fed,1,0,LIMIT_ACC,~/.ros/log/2026-10-22-19-50-38-975040-jetson-50159/launch.log [reload]
+2026-10-22 19:56,columns_1ball_fed,1,0,LIMIT_ACC,~/.ros/log/2026-10-22-19-50-38-975040-jetson-50159/launch.log [reload]
+2026-10-22 19:56,columns_1ball_fed,2,1,COMPLETED,~/.ros/log/2026-10-22-19-50-38-975040-jetson-50159/launch.log [reload]
+2026-10-22 19:56,columns,2,1,ABORTED_NO_RELEASE,~/.ros/log/2026-10-22-19-50-38-975040-jetson-50159/launch.log
+2026-10-22 19:56,columns,3,2,LIMIT_VEL,~/.ros/log/2026-10-22-19-50-38-975040-jetson-50159/launch.log [reload]
+2026-10-22 19:57,columns,3,2,ABORTED_NO_RELEASE,~/.ros/log/2026-10-22-19-50-38-975040-jetson-50159/launch.log
+2026-10-22 19:57,columns,3,2,LIMIT_ACC,~/.ros/log/2026-10-22-19-50-38-975040-jetson-50159/launch.log
+2026-10-22 19:57,columns,2,0,LIMIT_ACC,~/.ros/log/2026-10-22-19-50-38-975040-jetson-50159/launch.log
+2026-10-22 19:58,columns,4,3,COMPLETED,~/.ros/log/2026-10-22-19-50-38-975040-jetson-50159/launch.log [reload]
+2026-10-22 19:59,columns,10,10,MISSED_CATCH,~/.ros/log/2026-10-22-19-50-38-975040-jetson-50159/launch.log
+2026-10-22 19:59,columns,11,10,WINDOW_TOO_SHORT,~/.ros/log/2026-10-22-19-50-38-975040-jetson-50159/launch.log
+2026-10-22 19:59,columns,9,8,MISSED_CATCH,~/.ros/log/2026-10-22-19-50-38-975040-jetson-50159/launch.log
+2026-10-22 20:00,columns,48,47,MISSED_CATCH,~/.ros/log/2026-10-22-19-50-38-975040-jetson-50159/launch.log [reload]
+2026-10-22 20:01,columns,2,0,LIMIT_JERK,~/.ros/log/2026-10-22-19-50-38-975040-jetson-50159/launch.log
+2026-10-22 20:01,columns,3,3,MISSED_CATCH,~/.ros/log/2026-10-22-19-50-38-975040-jetson-50159/launch.log
+2026-10-22 20:02,columns,2,1,LIMIT_JERK,~/.ros/log/2026-10-22-19-50-38-975040-jetson-50159/launch.log
+2026-10-22 20:02,columns,2,1,LIMIT_JERK,~/.ros/log/2026-10-22-19-50-38-975040-jetson-50159/launch.log
+2026-10-22 20:02,columns,2,1,LIMIT_JERK,~/.ros/log/2026-10-22-19-50-38-975040-jetson-50159/launch.log
+2026-10-22 20:02,columns,1,1,MISSED_CATCH,~/.ros/log/2026-10-22-19-50-38-975040-jetson-50159/launch.log
+2026-10-23 11:07,hop,10,10,COMPLETED,~/.ros/log/2026-10-23-11-06-46-742322-jetson-202560/launch.log [reload]
+2026-10-23 11:08,oval_1ball,4,4,COMPLETED,~/.ros/log/2026-10-23-11-06-46-742322-jetson-202560/launch.log
+2026-10-23 11:08,oval_1ball_fed,4,4,COMPLETED,~/.ros/log/2026-10-23-11-06-46-742322-jetson-202560/launch.log [reload]
+2026-10-23 11:09,oval_1ball,10,10,COMPLETED,~/.ros/log/2026-10-23-11-06-46-742322-jetson-202560/launch.log
+2026-10-23 15:55,oval_1ball,4,4,COMPLETED,~/.ros/log/2026-10-23-15-53-59-944623-jetson-372113/launch.log
+2026-10-23 15:55,columns_1ball,2,2,COMPLETED,~/.ros/log/2026-10-23-15-53-59-944623-jetson-372113/launch.log
+2026-10-23 15:55,columns_1ball_fed,2,2,COMPLETED,~/.ros/log/2026-10-23-15-53-59-944623-jetson-372113/launch.log [reload]
+2026-10-23 15:55,columns_1ball_fed,2,2,COMPLETED,~/.ros/log/2026-10-23-15-53-59-944623-jetson-372113/launch.log [reload]
+2026-10-23 15:56,columns,7,7,MISSED_CATCH,~/.ros/log/2026-10-23-15-53-59-944623-jetson-372113/launch.log
+2026-10-23 15:56,columns,3,3,MISSED_CATCH,~/.ros/log/2026-10-23-15-53-59-944623-jetson-372113/launch.log
+2026-10-23 15:56,columns,3,3,MISSED_CATCH,~/.ros/log/2026-10-23-15-53-59-944623-jetson-372113/launch.log
+2026-10-23 15:56,columns,29,29,MISSED_CATCH,~/.ros/log/2026-10-23-15-53-59-944623-jetson-372113/launch.log
+2026-10-23 17:32,oval_1ball_fed,2,1,MISSED_CATCH,~/.ros/log/2026-10-23-17-30-31-087871-jetson-428635/launch.log [reload]
+2026-10-23 17:32,oval_1ball_fed,6,6,COMPLETED,~/.ros/log/2026-10-23-17-30-31-087871-jetson-428635/launch.log [reload]
+2026-10-23 17:32,oval_1ball_fed,6,6,COMPLETED,~/.ros/log/2026-10-23-17-30-31-087871-jetson-428635/launch.log [reload]
+2026-10-23 17:33,oval_1ball_fed,6,6,COMPLETED,~/.ros/log/2026-10-23-17-30-31-087871-jetson-428635/launch.log [reload]
+2026-10-23 17:33,oval_1ball_fed,6,6,COMPLETED,~/.ros/log/2026-10-23-17-30-31-087871-jetson-428635/launch.log [reload]
+2026-10-23 17:34,oval_1ball_fed,6,6,COMPLETED,~/.ros/log/2026-10-23-17-30-31-087871-jetson-428635/launch.log [reload]
+2026-10-23 17:36,oval_1ball_fed,32,32,COMPLETED,~/.ros/log/2026-10-23-17-30-31-087871-jetson-428635/launch.log [reload]
+2026-10-23 17:36,columns_1ball_fed,2,2,COMPLETED,~/.ros/log/2026-10-23-17-30-31-087871-jetson-428635/launch.log [reload]
+2026-10-23 17:37,columns_1ball_fed,2,2,COMPLETED,~/.ros/log/2026-10-23-17-30-31-087871-jetson-428635/launch.log [reload]
+2026-10-23 17:37,oval_1ball_fed,4,4,COMPLETED,~/.ros/log/2026-10-23-17-30-31-087871-jetson-428635/launch.log [reload]
+2026-10-23 17:38,oval_1ball,6,6,COMPLETED,~/.ros/log/2026-10-23-17-30-31-087871-jetson-428635/launch.log
+2026-10-23 17:38,oval_1ball,6,6,COMPLETED,~/.ros/log/2026-10-23-17-30-31-087871-jetson-428635/launch.log
+2026-10-23 17:39,oval_1ball,6,6,COMPLETED,~/.ros/log/2026-10-23-17-30-31-087871-jetson-428635/launch.log
+2026-10-23 17:40,oval_1ball,32,32,COMPLETED,~/.ros/log/2026-10-23-17-30-31-087871-jetson-428635/launch.log
+2026-10-24 10:46,oval_1ball_fed,32,32,COMPLETED,~/.ros/log/2026-10-24-10-44-21-255138-jetson-913736/launch.log [reload]
+2026-10-24 10:47,oval_1ball_fed,6,6,COMPLETED,~/.ros/log/2026-10-24-10-44-21-255138-jetson-913736/launch.log [reload]
+2026-10-24 10:54,oval_1ball_fed,26,25,MISSED_CATCH,~/.ros/log/2026-10-24-10-44-21-255138-jetson-913736/launch.log [reload]
+2026-10-24 10:55,oval_1ball_fed,32,32,COMPLETED,~/.ros/log/2026-10-24-10-44-21-255138-jetson-913736/launch.log [reload]
+2026-10-24 10:57,oval_1ball_fed,1,1,MISSED_CATCH,~/.ros/log/2026-10-24-10-44-21-255138-jetson-913736/launch.log [reload]
+2026-10-24 10:57,oval_1ball_fed,5,5,MISSED_CATCH,~/.ros/log/2026-10-24-10-44-21-255138-jetson-913736/launch.log [reload]
+2026-10-24 10:58,oval_1ball_fed,4,4,MISSED_CATCH,~/.ros/log/2026-10-24-10-44-21-255138-jetson-913736/launch.log [reload]
+2026-10-24 10:58,oval_1ball_fed,4,4,MISSED_CATCH,~/.ros/log/2026-10-24-10-44-21-255138-jetson-913736/launch.log [reload]
+2026-10-24 10:58,oval_1ball_fed,3,3,MISSED_CATCH,~/.ros/log/2026-10-24-10-44-21-255138-jetson-913736/launch.log [reload]
+2026-10-24 10:59,oval_1ball_fed,1,1,MISSED_CATCH,~/.ros/log/2026-10-24-10-44-21-255138-jetson-913736/launch.log [reload]
+2026-10-24 10:59,oval_1ball_fed,9,9,MISSED_CATCH,~/.ros/log/2026-10-24-10-44-21-255138-jetson-913736/launch.log [reload]
+2026-10-24 11:00,oval_1ball_fed,20,20,MISSED_CATCH,~/.ros/log/2026-10-24-10-44-21-255138-jetson-913736/launch.log [reload]
+2026-10-24 11:36,oval_1ball_fed,32,32,COMPLETED,~/.ros/log/2026-10-24-11-34-29-354803-jetson-939205/launch.log [reload]
+2026-10-24 11:37,oval_1ball_fed,8,7,SPLICE_TOO_LATE,~/.ros/log/2026-10-24-11-34-29-354803-jetson-939205/launch.log [reload]
+2026-10-27 23:03,hop,3,2,SPLICE_TOO_LATE,~/.ros/log/2026-10-27-22-59-39-920154-jetson-2913798/launch.log [reload]
+2026-10-27 23:03,hop,4,4,COMPLETED,~/.ros/log/2026-10-27-22-59-39-920154-jetson-2913798/launch.log
+2026-10-27 23:03,oval_1ball,1,0,MISSED_CATCH,~/.ros/log/2026-10-27-22-59-39-920154-jetson-2913798/launch.log
+2026-10-27 23:04,oval_1ball_fed,4,4,COMPLETED,~/.ros/log/2026-10-27-22-59-39-920154-jetson-2913798/launch.log [reload]
+2026-10-27 23:05,oval_1ball,3,3,MISSED_CATCH,~/.ros/log/2026-10-27-22-59-39-920154-jetson-2913798/launch.log
+2026-10-27 23:06,oval_1ball,35,35,COMPLETED,~/.ros/log/2026-10-27-22-59-39-920154-jetson-2913798/launch.log [reload]
+2026-10-27 23:07,oval_1ball,18,17,SPLICE_TOO_LATE,~/.ros/log/2026-10-27-22-59-39-920154-jetson-2913798/launch.log
+2026-10-27 23:07,oval_1ball,7,6,SPLICE_TOO_LATE,~/.ros/log/2026-10-27-22-59-39-920154-jetson-2913798/launch.log [reload]
+2026-10-27 23:07,oval_1ball,9,8,SPLICE_TOO_LATE,~/.ros/log/2026-10-27-22-59-39-920154-jetson-2913798/launch.log [reload]
+2026-10-28 09:50,oval_1ball,1,1,MISSED_CATCH,~/.ros/log/2026-10-28-09-49-31-556395-jetson-3246295/launch.log [reload]
+2026-10-28 09:51,oval_1ball,35,35,COMPLETED,~/.ros/log/2026-10-28-09-49-31-556395-jetson-3246295/launch.log [reload]
+2026-10-28 09:51,columns,8,8,MISSED_CATCH,~/.ros/log/2026-10-28-09-49-31-556395-jetson-3246295/launch.log
+2026-10-28 09:52,columns,11,11,MISSED_CATCH,~/.ros/log/2026-10-28-09-49-31-556395-jetson-3246295/launch.log
+2026-10-28 09:52,columns,19,19,LANE_REFUSED,~/.ros/log/2026-10-28-09-49-31-556395-jetson-3246295/launch.log
+2026-10-28 09:53,columns,12,12,MISSED_CATCH,~/.ros/log/2026-10-28-09-49-31-556395-jetson-3246295/launch.log
+2026-10-28 09:54,columns,33,33,MISSED_CATCH,~/.ros/log/2026-10-28-09-49-31-556395-jetson-3246295/launch.log
+2026-10-28 09:56,oval_1ball_fed,35,35,COMPLETED,~/.ros/log/2026-10-28-09-49-31-556395-jetson-3246295/launch.log [reload]
