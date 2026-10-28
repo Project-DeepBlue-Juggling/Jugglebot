@@ -78,6 +78,20 @@
             <label><input type="radio" name="qc-kind" value="idea"> idea</label>
             <label><input type="radio" name="qc-kind" value="feature"> feature</label>
         </div>
+        <div class="qc-row qc-pills" role="radiogroup" aria-label="Effort (optional)">
+            <span class="qc-pill-label">effort</span>
+            <label><input type="radio" name="qc-effort" value="xs"><span>xs</span></label>
+            <label><input type="radio" name="qc-effort" value="s"><span>s</span></label>
+            <label><input type="radio" name="qc-effort" value="m"><span>m</span></label>
+            <label><input type="radio" name="qc-effort" value="l"><span>l</span></label>
+            <label><input type="radio" name="qc-effort" value="xl"><span>xl</span></label>
+        </div>
+        <div class="qc-row qc-pills" role="radiogroup" aria-label="Hardware (optional)">
+            <span class="qc-pill-label">hardware</span>
+            <label><input type="radio" name="qc-hardware" value="none"><span>none</span></label>
+            <label><input type="radio" name="qc-hardware" value="bench-leg"><span>bench-leg</span></label>
+            <label><input type="radio" name="qc-hardware" value="robot"><span>robot</span></label>
+        </div>
         <input type="text" id="qc-title" placeholder="Title (required)" autocomplete="off" maxlength="200">
         <input type="text" id="qc-note" placeholder="Note (optional)" autocomplete="off">
         <div class="qc-error" id="qc-error" role="alert"></div>

@@ -11,6 +11,8 @@
  * button; every keydown inside the form stops propagation so no key reaches the Robot
  * tab's motion controls.  Ctrl+Enter (Cmd+Enter) files from any control in the form.  The draft (kind/title/note) is kept in localStorage under
  * DRAFT_KEY on every keystroke, restored on open, cleared on a successful filing.
+ * Optional pill rows `effort` / `hardware` (none preselected; click a chosen pill again to
+ * clear it) are POSTed as `effort` / `hardware` only when chosen (item metrics, JB-88 spec).
  * A pointer-down outside the form and the "+" closes it like Esc (JB-80), draft kept.
  * The same keyboard isolation covers the "+" button itself (Space on it must not reach the
  * chart pause or the replay trackbar).  While a request is in flight Esc, Cancel and the "+"
@@ -44,11 +46,33 @@ let busy = false;
 let toastTimer = null;
 
 function kindEl() { return form.querySelector('input[name="qc-kind"]:checked'); }
+const PILL_GROUPS = ['effort', 'hardware'];
+function pillValue(group) {
+    const el = form.querySelector(`input[name="qc-${group}"]:checked`);
+    return el ? el.value : '';
+}
+function clearPills() {
+    for (const el of form.querySelectorAll('.qc-pills input')) el.checked = false;
+}
+// A radio cannot be unchecked by clicking it; pills are optional, so a second click clears.
+let pillWasChecked = false;
+form.addEventListener('pointerdown', (e) => {
+    pillWasChecked = !!(e.target.closest && e.target.closest('.qc-pills label') &&
+        e.target.closest('.qc-pills label').querySelector('input').checked);
+}, true);
+form.addEventListener('click', (e) => {
+    const lab = e.target.closest && e.target.closest('.qc-pills label');
+    if (!lab) return;
+    const inp = lab.querySelector('input');
+    if (pillWasChecked && inp.checked && e.detail > 0) { inp.checked = false; saveDraft(); }
+    pillWasChecked = false;
+});
 
 function saveDraft() {
     try {
         localStorage.setItem(DRAFT_KEY, JSON.stringify({
             kind: kindEl() ? kindEl().value : 'bug', title: titleEl.value, note: noteEl.value,
+            effort: pillValue('effort'), hardware: pillValue('hardware'),
         }));
     } catch (e) { /* storage blocked: the form still works */ }
 }
@@ -61,6 +85,11 @@ function restoreDraft() {
         noteEl.value = d.note || '';
         const r = form.querySelector(`input[name="qc-kind"][value="${d.kind}"]`);
         if (r) r.checked = true;
+        clearPills();
+        for (const g of PILL_GROUPS) {
+            const p = d[g] && form.querySelector(`input[name="qc-${g}"][value="${d[g]}"]`);
+            if (p) p.checked = true;
+        }
     } catch (e) { /* corrupt draft: ignore */ }
 }
 
@@ -156,20 +185,23 @@ async function file() {
         const pid = projects && projects[0] && projects[0].id;
         if (!pid) { showError('Map server has no project'); return; }
         posted = true;
+        const payload = {
+            kind: kindEl() ? kindEl().value : 'bug',
+            title,
+            description: buildBody(noteEl.value.trim()),
+            status: 'inbox',
+        };
+        for (const g of PILL_GROUPS) if (pillValue(g)) payload[g] = pillValue(g);
         const resp = await api(`/projects/${encodeURIComponent(pid)}/tasks`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-Dev-User': FILED_BY },
-            body: JSON.stringify({
-                kind: kindEl() ? kindEl().value : 'bug',
-                title,
-                description: buildBody(noteEl.value.trim()),
-                status: 'inbox',
-            }),
+            body: JSON.stringify(payload),
         });
         if (!resp.ok) { showError(await errorText(resp)); return; }
         clearDraft();
         titleEl.value = '';
         noteEl.value = '';
+        clearPills();
         closeForm();
         showToast(`Filed: ${title}`);
     } catch (e) {

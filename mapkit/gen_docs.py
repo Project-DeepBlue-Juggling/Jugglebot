@@ -138,19 +138,24 @@ def render_project_map(repo_root: str) -> str:
     out.append("")
     # Inbox
     out += ["## Inbox", "",
-            "| ID | Kind | Title | Status | Priority | Pathway | Age |",
-            "| --- | --- | --- | --- | --- | --- | --- |"]
+            "Metrics: Effort xs/s/m/l/xl; HW none/bench-leg/robot; Owner none/decision/hands; "
+            "Radius local/subsystem/cross-cutting/normative; Area = primary area "
+            "(`DOCUMENTATION_GUIDE.md` 2.10); a dash is unrated.", "",
+            "| ID | Kind | Title | Status | Priority | Effort | HW | Owner | Radius | Area "
+            "| Pathway | Age |",
+            "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |"]
     inbox = sorted((i for i in items if i.kind in INBOX_KINDS
                     and i.status in derive.OPEN_INBOX_STATUSES),
                    key=lambda i: (str(i.meta.get("created")), i.slug))
     titles = {p.slug: p.title for p in items if p.kind == "pathway"}
     for i in inbox:
         pw = i.meta.get("parent")
-        out.append("| %s | %s | %s | %s | %s | %s | filed %s |" % (
+        out.append("| %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | %s | filed %s |" % (
             _cell(i.short_id), i.kind, _cell(_item_link(i)), i.status, _cell(i.meta.get("priority")),
+            *[_cell(i.meta.get(f)) for f in ("effort", "hardware", "owner", "radius", "area")],
             _cell(titles.get(pw, pw)), i.meta.get("created")))
     if not inbox:
-        out.append("| %s | %s | %s | %s | %s | %s | %s |" % ((DASH,) * 7))
+        out.append("| " + " | ".join((DASH,) * 12) + " |")
     out.append("")
     # Open tickets
     blocks: List[str] = []

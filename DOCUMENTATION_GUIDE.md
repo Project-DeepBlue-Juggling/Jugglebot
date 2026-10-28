@@ -467,6 +467,25 @@ Frontmatter fields (`mapkit/items.py` is the authority):
 | `idea`, `feature`, `bug` | — | Inbox kinds; optional `parent` (pathway slug; absent = unattached), `filed_by`, `promoted_to` (plan filename or pathway slug), `priority: low\|medium\|high` |
 | `ticket` | `parent`, `type` | `type: research\|prototype\|grilling\|task`; optional `blocked_by`, `owners`, `rank`; the answer is appended under `## Answer` |
 
+**Metrics** (owner-approved 2026-10-28): six optional lowercase-enum fields, placed after `priority` in
+this order (`mapkit.items.METRIC_ENUMS` is the in-code copy). **Optional on a new item, validated when
+present**: a value outside its enum fails `tests/sim/test_map_items.py`; `diagnosis` on a non-bug fails it too.
+
+| Field | Values (rank order) | Meaning |
+|-------|---------------------|---------|
+| `effort` | `xs` `s` `m` `l` `xl` | xs one edit + scoped tests, no agent; s one agent unit (< ~80 calls), one gate; m a day (several units or one plan phase); l a multi-phase plan; xl a Pathway |
+| `hardware` | `none` `bench-leg` `robot` | none = tests/sim/docs only; bench-leg = the bench leg rig; robot = a powered Sitting (incl. Ball Butler, cameras) |
+| `owner` | `none` `decision` `hands` | none = Claude alone; decision = a call only the owner can make; hands = the owner operates something (Sitting, cables, flash, measuring) |
+| `radius` | `local` `subsystem` `cross-cutting` `normative` | one file; one subsystem; several subsystems or a rename sweep; a contract, wire format / PROTOCOL_VERSION, firmware or normative doc (audit + flash obligations regardless of effort) |
+| `diagnosis` | `unknown` `hypothesis` `confirmed` | **bugs only**: symptom only; candidate cause not yet shown; failure path traceable in writing |
+| `area` | `firmware` `can-bridge` `legs` `hand` `platform-teensy` `tracking` `ball-butler` `skill-stack` `learner` `gui` `map-app` `tests-tooling` `docs` `sim` | the ONE primary area (radius says whether it spills) |
+
+A plan step (`steps:` entry) may carry `effort` and `hardware` only (same enums), validated by the plan
+loader. Set them with `python -m mapkit item new ... --effort s --area gui` or
+`python -m mapkit item rate JB-n --effort s ...`. The **break-sized** query is `effort` <= `s` AND
+`hardware: none` AND `owner: none` (AND `diagnosis: confirmed` for a bug); "on the way past" is the same
+`area` as the current work with `effort` <= `s`.
+
 Every item carries `id: JB-<n>` as its first key: a short, stable name for prose, commits and the CLI, allocated by `mapkit/ids.py` at filing and changed only before publication (an unpushed Item is renumbered by amending its `map: file` commit) or by a `map: renumber` commit that repairs a published duplicate (`plans/archived/map-item-ids.md`). An Item is never deleted: one no longer wanted is set to `dropped`, so its ID is never reissued (allocation is one past the highest ID present). Any kind may carry `links:` (logbook entries, plans, other items), `owners:`, `priority:` and `blocked_by:`, whose targets are filename stems (`ticket-<slug>`, `<kind>-<slug>`) or a plan's bare filename; `updated:` is the ISO timestamp every write that changes the item bumps (the app's conflict token; a save that changes nothing is skipped). Staleness (`python -m mapkit items --stale`) is dated from the newest dated `## Progress` line, else `created`, never from `updated`.
 **Status sets:** pathway `active | complete | dropped`; ticket `open |
 complete | dropped`; idea, feature and bug `inbox | backlog | in_progress |
@@ -504,7 +523,7 @@ One-glance reference for what goes in the `---` YAML block of each artifact.
 | **plan (active)** | `title`, `created`, `status: active`, `pathway`, `branch`, `scope`, `last_updated`, `steps` | `owner`, `kind: reference`, `related_logbook`, `related_config`, `related_code` | `status`, step `status` |
 | **plan (parked)** | `title`, `created`, `status: parked   # YYYY-MM-DD — why`, `parked`, `parked_why`, `unpark`, plus the active-plan fields | same as active | `status` |
 | **plan (archived)** | `title`, `created`, `status`, `archived` | `completed`, else same as active | `completed` / `superseded` |
-| **map item** | `id` (`JB-<n>`, first key), `kind`, `title`, `status`, `created`; pathway adds `destination`, ticket adds `parent`, `type` | `filed_by`, `promoted_to`, `priority`, `links`, `blocked_by` (filename stems `<kind>-<slug>` or a plan's bare filename), `owners`, `rank` | `kind`, per-kind `status` (§ 2.10), ticket `type` |
+| **map item** | `id` (`JB-<n>`, first key), `kind`, `title`, `status`, `created`; pathway adds `destination`, ticket adds `parent`, `type` | `filed_by`, `promoted_to`, `priority`, the six metrics (§ 2.10), `links`, `blocked_by` (filename stems `<kind>-<slug>` or a plan's bare filename), `owners`, `rank` | `kind`, per-kind `status` (§ 2.10), ticket `type` |
 | **slash command** | `description` | `disable-model-invocation` | — |
 | **agent** | `name`, `description` | — | — |
 

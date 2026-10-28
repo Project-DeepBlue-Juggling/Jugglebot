@@ -122,3 +122,33 @@ def test_click_outside_the_open_form_dismisses_it_without_filing():
     fn = JS[JS.index("function isOutsideClick"):JS.index("function pad")]
     assert "!form.hidden" in fn and "!form.contains(target)" in fn and "!btn.contains(target)" in fn
     assert "function dismiss() { if (!busy) closeForm(); }" in JS
+
+
+def test_effort_and_hardware_pills_are_optional_unselected_and_posted_only_when_chosen():
+    """Item metrics (mapkit METRIC_ENUMS): the two a person knows at capture time."""
+    form = HTML[HTML.index('id="quick-capture-form"'):HTML.index('id="map-pane"')]
+    for v in ("xs", "s", "m", "l", "xl"):
+        assert f'name="qc-effort" value="{v}"' in form
+    for v in ("none", "bench-leg", "robot"):
+        assert f'name="qc-hardware" value="{v}"' in form
+    pills = form[form.index('qc-pills'):form.index('id="qc-title"')]
+    assert "checked" not in pills  # none preselected
+    # same enums as the schema (the unit's single source of truth)
+    from mapkit.items import METRIC_ENUMS
+    import re
+    assert tuple(re.findall(r'name="qc-effort" value="([^"]+)"', form)) == METRIC_ENUMS["effort"]
+    assert tuple(re.findall(r'name="qc-hardware" value="([^"]+)"', form)) == METRIC_ENUMS["hardware"]
+    # posted under the schema's own keys, and only when chosen
+    assert "const PILL_GROUPS = ['effort', 'hardware'];" in JS
+    assert "for (const g of PILL_GROUPS) if (pillValue(g)) payload[g] = pillValue(g);" in JS
+    # the draft carries them and a filing clears them
+    assert "effort: pillValue('effort'), hardware: pillValue('hardware')" in JS
+    assert "clearPills();\n        closeForm();\n        showToast(`Filed" in JS
+    assert ".qc-pills" in CSS
+
+
+def test_pill_clicks_keep_the_form_isolated_and_the_dismiss_rules():
+    # pill handlers live on the form, whose keydown still stops propagation; a pill is inside the
+    # form, so a click on it is never an outside click
+    assert "form.addEventListener('keydown'" in JS
+    assert "!form.contains(target)" in JS

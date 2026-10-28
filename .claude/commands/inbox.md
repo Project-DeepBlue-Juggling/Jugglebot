@@ -26,7 +26,10 @@ Minimum from the filer: kind, title, one line. If the line is missing, ask for i
 3. **File it locally with the one creation command**, from the repo root with the project venv
    (run `git pull --ff-only` first: the app writes `map/` concurrently, and `--commit --no-push` does not pull, so that preceding pull is the only one before the file commit):
    `python -m mapkit item new <kind> "<title>" --body "<line>" [--parent <pathway>]
-   [--priority P] [--filed-by NAME] [--link L]... --commit --no-push`.
+   [--priority P] [--effort E] [--hardware H] [--owner O] [--radius R] [--diagnosis D] [--area A]
+   [--filed-by NAME] [--link L]... --commit --no-push`. The six metric flags are optional (a
+   bug adds `--diagnosis`; no other kind may); pass only the ones you know from the report, never
+   a guess (enums: `DOCUMENTATION_GUIDE.md` § 2.10; `item rate JB-n` sets them later).
    It picks the slug (kebab-case, <= 60 chars, `-2` if taken by
    any kind; the filename is the Item's identity and is never renamed), allocates the
    next ID `JB-<n>`, writes the canonical form, regenerates `docs/project-map.md` and

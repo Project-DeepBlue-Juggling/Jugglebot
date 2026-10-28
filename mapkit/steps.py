@@ -253,6 +253,7 @@ def check_mirror(plan: "Plan") -> List[str]:
 
 def check_step_vocab(plan: "Plan") -> List[str]:
     """Offenders whose step ``kind``/``status`` fall outside the vocabulary."""
+    from mapkit.items import METRIC_ENUMS  # local: items -> plans -> steps
     msgs: List[str] = []
     for s in plan.steps:
         if s.status is not None and s.status not in STEP_STATUSES:
@@ -261,4 +262,9 @@ def check_step_vocab(plan: "Plan") -> List[str]:
         if s.kind is not None and s.kind not in STEP_KINDS:
             msgs.append("%s: step %s kind %r not in %s" % (
                 plan.filename, s.id, s.kind, STEP_KINDS))
+        for f in ("effort", "hardware"):
+            v = getattr(s, f)
+            if v is not None and v not in METRIC_ENUMS[f]:
+                msgs.append("%s: step %s %s %r not in %s" % (
+                    plan.filename, s.id, f, v, METRIC_ENUMS[f]))
     return msgs

@@ -47,6 +47,24 @@ REQUIRED_FIELDS: Dict[str, Tuple[str, ...]] = {
 
 PRIORITIES = ("low", "medium", "high")
 TICKET_TYPES = ("research", "prototype", "grilling", "task")
+
+#: Item metrics (owner-approved 2026-10-28): optional on a new Item, validated
+#: when present. Enum values are in rank order; the field order is the
+#: canonical frontmatter order (after ``priority``). ``diagnosis`` is bugs only.
+METRIC_ENUMS: Dict[str, Tuple[str, ...]] = {
+    "effort": ("xs", "s", "m", "l", "xl"),
+    "hardware": ("none", "bench-leg", "robot"),
+    "owner": ("none", "decision", "hands"),
+    "radius": ("local", "subsystem", "cross-cutting", "normative"),
+    "diagnosis": ("unknown", "hypothesis", "confirmed"),
+    "area": ("firmware", "can-bridge", "legs", "hand", "platform-teensy", "tracking",
+             "ball-butler", "skill-stack", "learner", "gui", "map-app", "tests-tooling",
+             "docs", "sim"),
+}
+METRIC_FIELDS: Tuple[str, ...] = tuple(METRIC_ENUMS)
+#: The two metrics a plan step may carry (same enums).
+STEP_METRIC_FIELDS: Tuple[str, ...] = ("effort", "hardware")
+
 LIST_FIELDS = ("owners", "blocked_by", "links")
 DEFAULT_BRANCH = "main"
 
@@ -147,6 +165,14 @@ def load_item(path: str) -> Item:
             errs.append("field %r must be a list" % f)
     if meta.get("priority") is not None and meta["priority"] not in PRIORITIES:
         errs.append("priority %r not in %s" % (meta["priority"], PRIORITIES))
+    for f in METRIC_FIELDS:
+        v = meta.get(f)
+        if v is None:
+            continue
+        if not isinstance(v, str) or v not in METRIC_ENUMS[f]:
+            errs.append("%s %r not in %s" % (f, v, METRIC_ENUMS[f]))
+    if kind != "bug" and meta.get("diagnosis") is not None:
+        errs.append("field 'diagnosis' is for bugs only (this is a %s)" % kind)
     if kind == "ticket":
         if meta.get("type") is not None and meta["type"] not in TICKET_TYPES:
             errs.append("ticket type %r not in %s" % (meta["type"], TICKET_TYPES))

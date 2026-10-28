@@ -37,6 +37,8 @@ class Step:
     kind: Optional[str] = None
     status: Optional[str] = None
     date: Optional[str] = None
+    effort: Optional[str] = None
+    hardware: Optional[str] = None
 
 
 @dataclass
@@ -106,7 +108,8 @@ def _parse_steps(raw: Any, where: str) -> List[Step]:
             raise PlanError("%s: steps[%d]: %s" % (where, i, exc)) from exc
         out.append(Step(id=str(s["id"]), norm_id=norm, title=str(s.get("title", "")),
                         kind=s.get("kind"), status=s.get("status"),
-                        date=s.get("date")))
+                        date=s.get("date"), effort=s.get("effort"),
+                        hardware=s.get("hardware")))
     return out
 
 

@@ -20,7 +20,7 @@ import sys
 from typing import Dict, List, Optional
 
 from mapkit import derive, gen_docs, ids
-from mapkit.items import (KINDS, STATUS_SETS, Item, ItemError, is_stale, load_item,
+from mapkit.items import (KINDS, METRIC_ENUMS, METRIC_FIELDS, STATUS_SETS, Item, ItemError, is_stale, load_item,
                           load_items, stale_clock, write_item)
 from mapkit.plans import load_plans
 
@@ -155,6 +155,65 @@ def set_status(repo_root: str, slug: str, status: str, note: Optional[str] = Non
     return item
 
 
+def _check_metrics(kind: str, metrics: Dict[str, Optional[str]]) -> Dict[str, str]:
+    """The given (non-None) metrics, validated against the enums and the bug-only rule."""
+    out: Dict[str, str] = {}
+    for f, v in metrics.items():
+        if v is None:
+            continue
+        if f not in METRIC_ENUMS:
+            raise ItemCliError("unknown metric %r (one of %s)" % (f, ", ".join(METRIC_FIELDS)))
+        if v not in METRIC_ENUMS[f]:
+            raise ItemCliError("%s %r not in %s" % (f, v, ", ".join(METRIC_ENUMS[f])))
+        if f == "diagnosis" and kind != "bug":
+            raise ItemCliError("diagnosis is for bugs only (this is a %s)" % kind)
+        out[f] = v
+    return out
+
+
+def _place_metrics(meta: Dict[str, object], metrics: Dict[str, str]) -> Dict[str, object]:
+    """``meta`` with ``metrics`` set, the six fields in canonical order right after ``priority``."""
+    rest = {k: v for k, v in meta.items() if k not in METRIC_FIELDS}
+    cur = {f: (metrics[f] if f in metrics else meta[f]) for f in METRIC_FIELDS
+           if f in metrics or meta.get(f) is not None}
+    out: Dict[str, object] = {}
+    placed = False
+    for k, v in rest.items():
+        out[k] = v
+        if k == "priority":
+            out.update(cur)
+            placed = True
+    if not placed:
+        out.update(cur)
+    return out
+
+
+def rate_item(repo_root: str, slug: str, metrics: Dict[str, Optional[str]],
+              commit: bool = False, push: bool = True) -> Item:
+    """Set item metrics (effort/hardware/owner/radius/diagnosis/area) on an existing Item."""
+    item = find_item(repo_root, slug)
+    given = _check_metrics(item.kind, metrics)
+    if not given:
+        raise ItemCliError("nothing to set: pass at least one of %s" % ", ".join(
+            "--" + f for f in METRIC_FIELDS))
+    meta = _place_metrics(item.meta, given)
+    meta["updated"] = _now()
+    item.meta = meta
+    item.changed = write_item(item.path, meta, item.body)
+    if not item.changed:
+        return item
+    gen_docs.write_docs(repo_root)
+    if commit:
+        rel = os.path.relpath(item.path, repo_root)
+        paths = [rel] + ([DOCS_PAGE] if os.path.isfile(os.path.join(repo_root, DOCS_PAGE)) else [])
+        _git(repo_root, "add", "--", *paths)
+        _git(repo_root, "commit", "-m", _subject("rate", item), "--", *paths)
+        if push:
+            _git(repo_root, "pull", "--rebase", "--autostash")
+            _git(repo_root, "push")
+    return item
+
+
 PUSH_ROUNDS = 3
 _DEFAULT_STATUS = {"pathway": "active", "ticket": "open"}  # inbox kinds: "inbox"
 
@@ -184,7 +243,8 @@ def new_item(repo_root: str, kind: str, title: str, parent: Optional[str] = None
              priority: str = "medium", filed_by: str = "claude", body: str = "",
              links: Optional[List[str]] = None, ticket_type: Optional[str] = None,
              destination: Optional[str] = None, commit: bool = False,
-             push: bool = True) -> Item:
+             push: bool = True, metrics: Optional[Dict[str, Optional[str]]] = None,
+             **metric_kw: Optional[str]) -> Item:
     """File one Item with the next ID: the one Claude-side creation path.
 
     With ``commit`` and ``push``: pull ``--ff-only``, write, gen, commit
@@ -197,6 +257,7 @@ def new_item(repo_root: str, kind: str, title: str, parent: Optional[str] = None
     from mapkit.import_issues import slugify  # local: keeps the CLI import light
     if kind not in KINDS:
         raise ItemCliError("kind %r not in %s" % (kind, ", ".join(KINDS)))
+    given_metrics = _check_metrics(kind, dict(metrics or {}, **metric_kw))  # before any pull or write
     if commit and push and _git(repo_root, "pull", "--ff-only", check=False) != 0:
         print("mapkit: warning: git pull --ff-only failed; continuing on the local tree",
               file=sys.stderr)
@@ -208,6 +269,7 @@ def new_item(repo_root: str, kind: str, title: str, parent: Optional[str] = None
         "status": _DEFAULT_STATUS.get(kind, "inbox"), "created": _today(), "updated": _now(),
         "owners": [], "priority": priority, "blocked_by": [], "links": [],
     }
+    meta = _place_metrics(meta, given_metrics)
     if parent:
         pw = next((i for i in items if i.kind == "pathway" and i.slug == parent), None)
         if pw is None:
@@ -470,6 +532,28 @@ def _run_set_status(args) -> int:
     return 0
 
 
+def _metrics_arg(args) -> Dict[str, Optional[str]]:
+    return {f: getattr(args, f, None) for f in METRIC_FIELDS}
+
+
+def _run_rate(args) -> int:
+    try:
+        item = rate_item(_repo(args), args.item, _metrics_arg(args),
+                         commit=args.commit, push=not args.no_push)
+    except (ItemCliError, ItemError, ids.IdError) as exc:
+        print("mapkit: %s" % exc, file=sys.stderr)
+        return 2
+    if not getattr(item, "changed", True):
+        print("%s unchanged %s" % (label(item), item.title))
+        return 0
+    print("%s rated %s" % (label(item), " ".join(
+        "%s=%s" % (f, item.meta[f]) for f in METRIC_FIELDS if item.meta.get(f) is not None)))
+    if not args.commit:
+        print("stage: %s" % os.path.relpath(item.path, _repo(args)))
+        print("stage: %s" % DOCS_PAGE)
+    return 0
+
+
 def _run_new(args) -> int:
     body = ""
     if args.body_file:
@@ -481,7 +565,7 @@ def _run_new(args) -> int:
         item = new_item(_repo(args), args.kind, args.title, parent=args.parent,
                         priority=args.priority, filed_by=args.filed_by, body=body,
                         links=args.link, ticket_type=args.type, destination=args.destination,
-                        commit=args.commit, push=not args.no_push)
+                        commit=args.commit, push=not args.no_push, metrics=_metrics_arg(args))
     except (ItemCliError, ItemError, ids.IdError) as exc:
         print("mapkit: %s" % exc, file=sys.stderr)
         return 2
@@ -548,6 +632,11 @@ def register(subparsers) -> None:
     def common(p):
         p.add_argument("--repo", default=".", help="repo root (default .)")
 
+    def metric_flags(p):
+        for f in METRIC_FIELDS:
+            p.add_argument("--" + f, choices=METRIC_ENUMS[f],
+                           help="metric %s (optional; validated)" % f)
+
     item = subparsers.add_parser("item", help="item operations")
     isub = item.add_subparsers(dest="item_command")
     p = isub.add_parser("set-status", help="move an item to a status (optionally commit)")
@@ -576,10 +665,20 @@ def register(subparsers) -> None:
     p.add_argument("--link", action="append", default=[], help="path, URL, stem or ID (stored as a stem)")
     p.add_argument("--type", choices=("research", "prototype", "grilling", "task"), help="ticket type")
     p.add_argument("--destination", help="pathway Destination (required for a pathway)")
+    metric_flags(p)
     p.add_argument("--commit", action="store_true")
     p.add_argument("--no-push", action="store_true")
     common(p)
     p.set_defaults(func=_run_new)
+
+    p = isub.add_parser("rate", help="set item metrics (effort, hardware, owner, radius, "
+                                     "diagnosis, area) on an existing Item")
+    p.add_argument("item", help="the Item (ID or stem)")
+    metric_flags(p)
+    p.add_argument("--commit", action="store_true")
+    p.add_argument("--no-push", action="store_true")
+    common(p)
+    p.set_defaults(func=_run_rate)
 
     p = isub.add_parser("push", help="push an Item's local commit (item new --commit --no-push) "
                                      "through the bounded rebase / renumber / push loop")

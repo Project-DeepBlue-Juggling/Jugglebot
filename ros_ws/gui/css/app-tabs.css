@@ -86,6 +86,20 @@ body > #app { height: calc(100vh - var(--app-tabs-height)); }
 }
 #quick-capture-form[hidden] { display: none; }
 #quick-capture-form .qc-row { display: flex; gap: 10px; align-items: center; }
+#quick-capture-form .qc-pills { gap: 4px; flex-wrap: wrap; }
+#quick-capture-form .qc-pill-label { width: 56px; color: var(--text-secondary); font-size: 11px; }
+#quick-capture-form .qc-pills label { cursor: pointer; }
+#quick-capture-form .qc-pills input { position: absolute; opacity: 0; pointer-events: none; }
+#quick-capture-form .qc-pills span:not(.qc-pill-label) {
+    display: inline-block;
+    padding: 1px 8px;
+    border: 1px solid var(--border-color);
+    border-radius: 10px;
+    font-size: 11px;
+    background: var(--bg-primary);
+}
+#quick-capture-form .qc-pills input:checked + span { background: var(--accent-blue, #4c8dff); color: #fff; border-color: transparent; }
+#quick-capture-form .qc-pills input:focus-visible + span { outline: 2px solid var(--accent-blue, #4c8dff); outline-offset: 1px; }
 #quick-capture-form input[type="text"] {
     background: var(--bg-primary);
     color: var(--text-primary);
