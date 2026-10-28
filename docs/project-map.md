@@ -46,6 +46,7 @@ _Status: closed (complete)._
 
 **Attached inbox items:**
 
+- bug: JB-84 [Ball Butler over-CAN flash calls the retired Jugglebot-skills worktree](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-ball-butler-over-can-flash-calls-the-retired-jugglebot.md) (inbox)
 - bug: JB-21 [bb/throw_outcome carries no throw identity](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-bb-throw-outcome-carries-no-throw-identity.md) (inbox)
 - bug: JB-25 [NOT_SETTLED retry is dead in the field](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-not-settled-retry-dead-in-the-field.md) (inbox)
 - feature: JB-28 [Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-columns-empty-cup-rows-33-34-on-hardware.md) (inbox)
@@ -109,7 +110,7 @@ _Status: closed (complete)._
 | --- | --- | --- | --- | --- |
 | Two-ball oval | P3 Pose-level carry planner | — | P4 Working point and the dwell ladder; P5 Two-ball oval; bug Cup Banking saturates at its 12 deg clamp on small lateral offsets; bug 10 % jitter-margin class of LIMIT_* refusals; bug SPLICE_TOO_LATE ends half the goals: CATCH solve tail now crosses the 250 ms deadline | P1 The oval pattern dispatchable; P1 Firmware - age-aware lead clamp and engagement counter; P2 Bench validation; P3 Robot validation |
 | Project map and shared dictionary | — | — | — | closed |
-| Ball Butler | — | BB calibration: advisory when a template marker is never matched in a sweep | bug bb/throw_outcome carries no throw identity; bug NOT_SETTLED retry is dead in the field; feature Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware | — |
+| Ball Butler | — | BB calibration: advisory when a template marker is never matched in a sweep | bug Ball Butler over-CAN flash calls the retired Jugglebot-skills worktree; bug bb/throw_outcome carries no throw identity; bug NOT_SETTLED retry is dead in the field; feature Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware | — |
 | Learner generalisation | — | Box sweep fidelity for same-site families (plan what the executor dispatches) | P1 Learner core; P2 The characterisation sitting; P3 Online admissibility and box retirement; P4 BeatEvent stream and the columns wrapper; P5 Close-out | — |
 | Map improvements | — | — | bug item_uuid(slug) collides across kinds that share a slug | P0 Plan and its Feature; P1 mapkit ids module and checks; P2 Backfill and the uniqueness test; P3 mapkit resolution, creation, display and the commands; P4 App server: allocate, resolve, repair (fork repo); P5 App frontend: show and deep-link (fork repo); P6 Normative docs |
 | Two-ball skill stack | — | — | — | closed |
@@ -140,6 +141,7 @@ _Status: closed (complete)._
 | JB-67 | bug | [item_uuid(slug) collides across kinds that share a slug](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-item-uuid-slug-collides-across-kinds-that-share-a-slug.md) | inbox | low | Map improvements | filed 2026-10-27 |
 | JB-73 | bug | [MOTOR_FB_STALE suppression leaves the ODrive holding its last vel_ff](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-motor-fb-stale-suppression-leaves-the-odrive-holding-its.md) | inbox | low | — | filed 2026-10-27 |
 | JB-76 | bug | [SPLICE_TOO_LATE ends half the goals: CATCH solve tail now crosses the 250 ms deadline](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-splice-too-late-ends-half-the-goals-catch-solve-tail-now.md) | in_progress | high | Two-ball oval | filed 2026-10-27 |
+| JB-84 | bug | [Ball Butler over-CAN flash calls the retired Jugglebot-skills worktree](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-ball-butler-over-can-flash-calls-the-retired-jugglebot.md) | inbox | medium | Ball Butler | filed 2026-10-28 |
 | JB-83 | bug | [can-bridge CAN3 analog drive path has a load-dependent hardware fault (the Jugglebot loom stays on CAN2)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-can-bridge-can3-analog-drive-path-has-a-load-dependent.md) | inbox | low | — | filed 2026-10-28 |
 | JB-82 | bug | [teensy_bridge_node's shutdown Stow can be cut off by the launch's 5 s SIGTERM; teensy_link has no single-owner interlock](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-teensy-bridge-node-s-shutdown-stow-can-be-cut-off-by-the.md) | inbox | medium | — | filed 2026-10-28 |
 | JB-79 | bug | [test_hand_step_violation_not_sent flakes under the full gate (assert 2 == 1)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-test-hand-step-violation-not-sent-flakes-under-the-full-gate.md) | inbox | medium | — | filed 2026-10-28 |
