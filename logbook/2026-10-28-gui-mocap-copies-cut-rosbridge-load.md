@@ -1,5 +1,5 @@
 ---
-title: "GUI takes 20 Hz gui/ copies of the mocap stream: rosbridge 102 % -> 53 % of a core on the replica (JB-76 load trim, option 1)"
+title: "GUI takes 20 Hz gui/ copies of the mocap stream: rosbridge 102 % -> 62 % of a core on the replica (JB-76 load trim, option 1)"
 type: optimization
 date: 2026-10-28
 status: resolved
@@ -49,7 +49,7 @@ Fix, owner-approved 2026-10-28 (option 1 of the surveyed nine):
 
 ## Discussion
 
-This reverses the 2026-09-14 rejection of source-decimated GUI copies. That rejection was about `teensy_bridge_node` copies of `robot_state` / `hand_telemetry`: the saving was about 4 points, the spin-thread fix already captured it, and the copies added work to the bridge node. None of those hold here: the copies come from `mocap_node`, the saving is 49 points measured, and the cause (300 Hz mocap since 2026-10-10) did not exist then. The one 09-14 requirement the change touches, "the monitor is always open and must keep watching", is met by reporting the QTM rate from `mocap/status` rather than by having rosbridge take 900 messages/s to observe it. Option 4 (deserialise only after the throttle, in the lean server) stays available for another ~9–28 points.
+This reverses the 2026-09-14 rejection of source-decimated GUI copies. That rejection was about `teensy_bridge_node` copies of `robot_state` / `hand_telemetry`: the saving was about 4 points, the spin-thread fix already captured it, and the copies added work to the bridge node. None of those hold here: the copies come from `mocap_node`, the saving is about 40 points measured, and the cause (300 Hz mocap since 2026-10-10) did not exist then. The one 09-14 requirement the change touches, "the monitor is always open and must keep watching", is met by reporting the QTM rate from `mocap/status` rather than by having rosbridge take 900 messages/s to observe it. Option 4 (deserialise only after the throttle, in the lean server) stays available for another ~9–28 points.
 
 ## Verification
 
@@ -58,10 +58,11 @@ This reverses the 2026-09-14 rejection of source-decimated GUI copies. That reje
   | client | server % of a core, 3 runs | mean |
   |---|---|---|
   | gui-old (pre-change set) | 102.7, 102.1, 101.1 | **102.0** |
-  | gui (today's set) | 52.9, 52.4, 54.0 | **53.1** |
+  | gui, first run (client throttle 50 on the copies: received 10 Hz) | 52.9, 52.4, 54.0 | 53.1 |
+  | **gui, as shipped (throttle 0: received 19.9 Hz)** | 62.3, 59.7, 62.9 | **61.6** |
   | none | 0.0, 0.1, 0.1 | 0.1 |
 
-  The old figure is pegged at one core, so the 49-point saving is a lower bound. Caveat found by the phase audit: this `gui` run still had throttle 50 on the copies, so its client received 10 Hz rather than the 20 Hz of today's main.js (throttle 0); the true `gui` figure is a few points higher. The probe now carries throttle 0 and the re-measurement is recorded below when the box is quiet. The census is smaller than the 29-topic replica of the survey (no rosout/camera/cone spies), so the absolute 53 is below that replica's 61; the delta is the claim.
+  The old figure is pegged at one core, so the ~40-point saving is a lower bound. The first `gui` run (found by the phase audit) still had throttle 50 on the copies and received 10 Hz; the as-shipped row was re-measured 2026-10-28 11:37–11:40 (`temp/probes/rosbridge_option1_remeasure_20261028-1137.log`) with the probe's `gui` client at throttle 0, three runs, load average 2.1–5.3 (a peer session's agents were active, so it may read a point or two high). The census is smaller than the 29-topic replica of the survey (no rosout/camera/cone spies), so the absolute 53 is below that replica's 61; the delta is the claim.
 - GUI, 2026-10-28: `python3 tools/probes/gui_dom_probe.py --scenario mocap` 3/3 PASS and `--scenario scenario1` 17/17 PASS against the live :8081 GUI with headless Chromium (`temp/logs/gui_dom_mocap.log`).
 - mocap, 2026-10-28: `pytest -q tests/ros/test_mocap*.py` 157 passed (6 new in `test_mocap_node_gui_copy.py`: every 15th frame, identical object, divisor honoured, no `bb/markers` copy, `qtm_frame_hz` 300.0 for 60 frames in 0.2 s and 0.0 on the first tick).
 - Replay/GUI tests, 2026-10-28: `pytest -q tests/ros/test_gui_replay_policy.py tests/ros/test_replay_allowlist.py` 7 passed; `tests/ros/test_choreography_map.py` 29 passed after `python tools/gen_choreography_map.py`.
@@ -71,4 +72,4 @@ This reverses the 2026-09-14 rejection of source-decimated GUI copies. That reje
 
 ## Outcome
 
-Expected live effect: rosbridge from ~86 % (demand ≥ 100 %) to ~55–60 % of a core, about 0.4 core returned to the box, on top of fix 1's `nice -n 10`. The next Sitting's `solve_starvation_scan.py` measures both together; JB-76 stays open until the CATCH wall/CPU ratio is read there.
+Expected live effect: rosbridge from ~86 % (demand ≥ 100 %) to ~60–65 % of a core, about 0.4 core returned to the box, on top of fix 1's `nice -n 10`. The next Sitting's `solve_starvation_scan.py` measures both together; JB-76 stays open until the CATCH wall/CPU ratio is read there.
