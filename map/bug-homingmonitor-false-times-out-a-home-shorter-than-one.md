@@ -2,9 +2,9 @@
 id: JB-72
 kind: bug
 title: HomingMonitor false-times-out a home shorter than one Diagnostic period
-status: inbox
+status: in_progress
 created: '2026-10-27'
-updated: '2026-10-27T10:26:13Z'
+updated: '2026-10-28T00:43:58Z'
 owners: []
 priority: medium
 blocked_by: []
@@ -20,3 +20,7 @@ Seen on the bench leg (axis 0, bridge FW 30) on 2026-10-27 during lead-clamp P2:
 teensy_bridge_node._run_home uses the same monitor (20 s backstop), so production /home would false-fail a leg that starts near its stop.
 
 Possible fix: let the monitor accept an OK it sees after the HOME RPC was accepted, checked against an RPC-time epoch (for example, a per-home counter in the Diagnostic) rather than requiring RUNNING to have been observed.
+
+## Progress
+
+- 2026-10-28: 2026-10-28: FW 34 per-home epoch + monitor epoch gate built and tested; the 10-27 bench false-timeout was teensy_home_bench.py dropping homing_result (fixed); NOT flashed, bench homes outstanding

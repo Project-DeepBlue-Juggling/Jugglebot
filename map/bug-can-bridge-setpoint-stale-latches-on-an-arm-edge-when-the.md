@@ -2,9 +2,9 @@
 id: JB-75
 kind: bug
 title: can-bridge SETPOINT_STALE latches on an arm edge when the last setpoint is from an earlier stream
-status: inbox
+status: in_progress
 created: '2026-10-27'
-updated: '2026-10-27T12:25:11Z'
+updated: '2026-10-28T00:43:56Z'
 owners: []
 priority: medium
 blocked_by: []
@@ -26,3 +26,7 @@ Seen on 2026-10-27 during the lead-clamp P3 Sitting (bridge FW 33, not power-cyc
 It fails safe: output is suppressed and the recovery is clean. The fault tick landing in the window is inferred from the timing, not observed directly. The mechanism predates FW 31 and has nothing to do with the lead clamp. Over the 9 earlier FW 30 arms with a 16 ms window, never seeing a latch is plausible by chance.
 
 Possible fix: stamp `s_last_setpoint_us` (or start a grace window of one staleness bound) on the `mpc_active` false -> true edge. A dead stream still trips 250 ms after the arm.
+
+## Progress
+
+- 2026-10-28: 2026-10-28: FW 34 fix built + natively tested (arm-edge stamp, output held until a post-arm setpoint); NOT flashed - dongle reached the robot's bridge, bench re-arm check outstanding
