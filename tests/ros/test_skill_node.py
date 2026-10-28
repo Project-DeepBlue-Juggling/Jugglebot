@@ -187,6 +187,9 @@ def _hand_at(node, rev=sn.REST_HAND_REV, ball_held=True):
 
 
 _HAND_CLOCK_FROZEN_S = 1.0e6
+#: `_node_with_client(frame=True)` freezes the node's frame clock here, the
+#: frame-check twin of `_HAND_CLOCK_FROZEN_S` (JB-64, 2026-10-28).
+_FRAME_CLOCK_FROZEN_S = 1.0e6
 
 
 def _robot_frame_msg(t=(0.0, 0.0, 0.0), quat_xyzw=(0.0, 0.0, 0.0, 1.0)):
@@ -242,6 +245,10 @@ def _node_with_client(response=None, ready=True, hand=True, frame=True,
     if hand:
         _hand_at(node)
     if frame:
+        # frozen frame clock: a loaded run cannot age the fixture's frame
+        # samples past `_FRAME_CHECK_WINDOW_S` (JB-64, 2026-10-28). A
+        # ``frame=False`` test keeps the real clock and stamps its own.
+        node._frame_clock = lambda: _FRAME_CLOCK_FROZEN_S
         _frame_ready(node)
     if robot_frame:
         node._on_robot_frame(_robot_frame_msg())
@@ -289,7 +296,7 @@ def _frame_ready(node, *, plat_x=0.0, plat_y=0.0, cmd_x=0.0, cmd_y=0.0,
         n_plat = sn._FRAME_CHECK_MIN_SAMPLES + 5
     if plat_z_world is None:
         plat_z_world = float(hw.GEOM_INITIAL_HEIGHT_MM)
-    now = time.perf_counter()
+    now = node._frame_clock()   # the check's own clock (frozen by the fixture)
     for _ in range(n_plat):
         node._platform_mocap_xyz.append((now, plat_x, plat_y, plat_z_world))
     for _ in range(n_cmd):
@@ -5994,12 +6001,20 @@ def test_a_slow_test_run_cannot_age_the_fixture_sample_past_the_accept_check():
     hand clock against `_HAND_STATE_STALE_S`; on a loaded box the real clock
     aged the fixture's seated sample stale before `_start_pattern`, refusing
     REJECTED_BALL_UNKNOWN. probe 2026-10-15: failed before the clock
-    injection, passes after."""
+    injection, passes after.
+
+    The frame check is the second sample family the fixture seeds (JB-64,
+    2026-10-28): its Platform/commanded buffers were stamped on the real
+    `time.perf_counter()` and judged against `_FRAME_CHECK_WINDOW_S` (1.0 s),
+    so this test's own 0.6 s sleep left 0.4 s of margin and a loaded gate
+    refused REJECTED_FRAME_OFFSET ('stale'). Reproduced 6/6 under eight
+    busy-loop loaders before `_frame_clock` was injected."""
     node, _client = _node_with_client()
-    time.sleep(sn._HAND_STATE_STALE_S + 0.1)
+    time.sleep(max(sn._HAND_STATE_STALE_S, sn._FRAME_CHECK_WINDOW_S) + 0.1)
     resp = node._start_pattern(_flown_columns_goal())
     assert ex.REJECTED_BALL_UNKNOWN not in resp.message
-    assert node._executor is not None
+    assert 'REJECTED_FRAME_OFFSET' not in resp.message
+    assert node._executor is not None, resp.message
 
 
 def test_accept_possession_stale_hand_telemetry_is_refused_ball_unknown():

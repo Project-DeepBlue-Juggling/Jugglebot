@@ -119,7 +119,7 @@ def test_identity_aim_point_and_frame_check_are_bit_identical():
     via_node = node._frame_check()
     pure = sn._frame_offset_check(
         [(t, x, y) for t, x, y, _z in node._platform_mocap_xyz],
-        tuple(node._commanded_xy_hist), time.perf_counter())
+        tuple(node._commanded_xy_hist), node._frame_clock())
     assert (via_node.dx_mm, via_node.dy_mm) == (pure.dx_mm, pure.dy_mm)
 
 

@@ -2,9 +2,9 @@
 id: JB-64
 kind: bug
 title: skill_node accept-check fixture test flakes under full-gate load
-status: in_progress
+status: complete
 created: '2026-10-26'
-updated: '2026-10-28T00:36:40Z'
+updated: '2026-10-28T00:46:54Z'
 owners: []
 priority: medium
 blocked_by: []
@@ -27,3 +27,4 @@ The test sleeps `_HAND_STATE_STALE_S + 0.1` and expects the clock injection (doc
 ## Progress
 
 - 2026-10-28: Unit E: reproduced 0/6 under 8 loaders; refusal is the frame check (perf_counter, 1.0 s window), not the hand clock
+- 2026-10-28: Frame check clock injected (SkillNode._frame_clock, frozen by the fixture); 0/6 to 6/6 under eight loaders

@@ -321,8 +321,8 @@ _SEAT_WINDOW_HIST_S = 2.0
 #: requirement on the Platform body (`_FRAME_CHECK_PLAT_SPREAD_MM`): a
 #: jittering or moving body is not a session-start number.
 #: The window the Platform buffer is judged over, and the commanded
-#: position's own at-rest window -- one clock (`time.perf_counter()`), one
-#: window, for both.
+#: position's own at-rest window -- one clock (`SkillNode._frame_clock`,
+#: `time.perf_counter()` in production), one window, for both.
 _FRAME_CHECK_WINDOW_S = 1.0
 #: Above this mean-offset norm the base alignment is wrong outright (the
 #: 2026-09-18 +30..-50 mm cases), not a lever arm, and no subtraction is
@@ -615,8 +615,9 @@ def _frame_offset_check(platform_samples, commanded_samples, now, *,
 
     ``platform_samples`` / ``commanded_samples``: iterables of
     ``(mono_s, x_mm, y_mm)``, any order, on the SAME monotonic clock as
-    ``now`` (`time.perf_counter()` in `SkillNode` — keeping them on one clock
-    is the caller's job, not this function's). No ROS, no node state:
+    ``now`` (`SkillNode._frame_clock`, `time.perf_counter()` in production
+    — keeping them on one clock is the caller's job, not this function's).
+    No ROS, no node state:
     `SkillNode._frame_check` is the only caller and owns the two buffers this
     reads.
 
@@ -830,6 +831,13 @@ class SkillNode(Node):
         # `commanded_position` on the 5 Hz status timer.
         self._platform_mocap_xyz = collections.deque(maxlen=400)
         self._commanded_xy_hist = collections.deque(maxlen=40)
+        # the ONLY clock the frame-check family reads (both buffers' stamps
+        # in `_on_mocap` / `_on_commanded_position`, and the check's ``now``
+        # in `_frame_check`) -- injectable, like `_hand_clock`, so a test
+        # fixture can freeze it: a loaded test run must not be able to age a
+        # fixture's frame samples past `_FRAME_CHECK_WINDOW_S` (load flake
+        # 2026-10-26, JB-64). Production: `time.perf_counter`, unchanged.
+        self._frame_clock = time.perf_counter
         # The measured mocap-to-schedule offset ``(dx_mm, dy_mm)`` the last
         # evaluable frame check produced (`_frame_check_error`), or ``None``
         # when none has been measured yet: `_on_balls` subtracts it from every
@@ -1741,7 +1749,7 @@ class SkillNode(Node):
             if body.name == 'Platform':
                 p = body.pose.pose.position
                 self._platform_mocap_xyz.append(
-                    (now, float(p.x), float(p.y),
+                    (self._frame_clock(), float(p.x), float(p.y),
                      float(p.z) + float(hw.GEOM_INITIAL_HEIGHT_MM)))
                 break
 
@@ -1763,7 +1771,7 @@ class SkillNode(Node):
         # Session-start frame check's own at-rest window (plan
         # `cup-contact-contract.md` § 1) — xy only, same buffer shape as
         # `_platform_mocap_xyz` (xy only: the command is robot-frame already).
-        self._commanded_xy_hist.append((now, p[0], p[1]))
+        self._commanded_xy_hist.append((self._frame_clock(), p[0], p[1]))
 
     def _live_commanded_position(self, now: float):
         """The live commanded platform (x, y, z) mm, or ``None`` when absent
@@ -4401,7 +4409,7 @@ class SkillNode(Node):
             platform = tuple((s_[0], s_[1], s_[2]) for s_ in samples)
         return _frame_offset_check(platform,
                                    tuple(self._commanded_xy_hist),
-                                   time.perf_counter())
+                                   self._frame_clock())
 
     def _attempt_running(self) -> bool:
         """True while an attempt holds the node -- the same three facts
