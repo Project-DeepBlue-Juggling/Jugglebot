@@ -11,6 +11,7 @@
  * button; every keydown inside the form stops propagation so no key reaches the Robot
  * tab's motion controls.  Ctrl+Enter (Cmd+Enter) files from any control in the form.  The draft (kind/title/note) is kept in localStorage under
  * DRAFT_KEY on every keystroke, restored on open, cleared on a successful filing.
+ * A pointer-down outside the form and the "+" closes it like Esc (JB-80), draft kept.
  * The same keyboard isolation covers the "+" button itself (Space on it must not reach the
  * chart pause or the replay trackbar).  While a request is in flight Esc, Cancel and the "+"
  * toggle leave the form open, so a late failure is visible; if the form is hidden anyway the
@@ -81,6 +82,11 @@ function closeForm() {
 
 /** Close on the user's behalf: never while a request is in flight (the failure must stay visible). */
 function dismiss() { if (!busy) closeForm(); }
+
+/** True when a pointer-down landed outside the open form and outside the "+" toggle (which handles its own click). */
+function isOutsideClick(target) {
+    return !form.hidden && !form.contains(target) && !btn.contains(target);
+}
 
 function pad(n) { return String(n).padStart(2, '0'); }
 /** Local wall-clock ISO-8601 with UTC offset, e.g. 2026-10-25T18:05:19+11:00. */
@@ -178,6 +184,10 @@ async function file() {
 
 btn.addEventListener('click', () => { if (form.hidden) openForm(); else dismiss(); });
 cancelBtn.addEventListener('click', dismiss);
+// JB-80: a click anywhere outside the open form closes it, like Esc/Cancel (busy-guarded by
+// dismiss(); the draft stays in localStorage, so reopening restores it).  Capture phase so a
+// handler that stops propagation elsewhere cannot hide the click.
+document.addEventListener('pointerdown', (e) => { if (isOutsideClick(e.target)) dismiss(); }, true);
 form.addEventListener('submit', (e) => { e.preventDefault(); file(); });
 form.addEventListener('input', saveDraft);
 form.addEventListener('change', saveDraft);

@@ -110,3 +110,15 @@ def test_post_timeout_warns_the_item_may_exist():
     # only after the POST was sent, and only for the abort
     assert "posted && e && e.name === 'AbortError'" in JS
     assert JS.index("posted = true;") < JS.index("api(`/projects/${encodeURIComponent(pid)}/tasks`")
+
+
+def test_click_outside_the_open_form_dismisses_it_without_filing():
+    """JB-80: pointerdown outside form and toggle -> the busy-guarded dismiss(); never file()."""
+    assert "document.addEventListener('pointerdown'" in JS
+    i = JS.index("document.addEventListener('pointerdown'")
+    line = JS[i:JS.index('\n', i)]
+    assert "isOutsideClick(e.target)" in line and "dismiss()" in line and "file()" not in line
+    assert line.rstrip().endswith("true);")  # capture phase
+    fn = JS[JS.index("function isOutsideClick"):JS.index("function pad")]
+    assert "!form.hidden" in fn and "!form.contains(target)" in fn and "!btn.contains(target)" in fn
+    assert "function dismiss() { if (!busy) closeForm(); }" in JS
