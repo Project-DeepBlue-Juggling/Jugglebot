@@ -1,8 +1,8 @@
 ---
-title: "JB-76: the CATCH solve tail is the launch starving its own solver worker (65 ms of CPU takes 150 ms of wall on a 5.5-of-6-core box); instrumented, measured in one Sitting, low-priority prefixes as the first fix; second Sitting: refusals 42 % -> 1.3 %, wall/CPU 2.18 -> 1.97; fix 2: the tracker's OpenBLAS pool capped (40-45 % of its CPU for nothing)"
+title: "JB-76: the CATCH solve tail is the launch starving its own solver worker (65 ms of CPU takes 150 ms of wall on a 5.5-of-6-core box); instrumented, measured in one Sitting, low-priority prefixes as the first fix; second Sitting: refusals 42 % -> 1.3 %, wall/CPU 2.18 -> 1.97; fix 2: the tracker's OpenBLAS pool capped; third Sitting: wall/CPU 1.27, CATCH wall p50 95 ms, oval 50/50 record; JB-76 CLOSED, residue filed"
 type: investigation
 date: 2026-10-28
-status: in-progress
+status: resolved
 phase: "JB-76 - SPLICE_TOO_LATE solve tail"
 related_plan:
   - two-ball-oval.md
@@ -187,18 +187,48 @@ Not applied to `mocap_node`: its visible linear algebra is 3-vector and quaterni
 
 `jugglebot_launch.py`: `ball_tracker_node` gets `additional_env=dict(_planner_blas_env)` (its block moved below the dict), the comment rewritten with the measurement. `ball_tracker_node.py` reads the cap back at start-up through `blas_threads.check_blas_threads` and folds `BLAS 1 thread` into its "Ball tracker up" line, WARNing if the cap did not land. `tests/ros/test_launch_nodes.py`: `CAPPED_NODES` = planners + tracker, the not-launch-wide test keeps only `mocap_node`.
 
-## Next, in order (owner-agreed 2026-10-28, renumbered after the 14:29 Sitting)
+## The Sitting of 2026-10-28 21:02: all three fixes live, py-spy on the nice-0 chain
 
-1. ~~Fly a Sitting with the recorder, run the scan, compare wall/CPU against 2.18.~~ Done 14:29: 1.97, improved but not met; see above.
-2. Trim the load where the table points: ~~the tracker's 148 % during goals~~ done as fix 2 above (capped; measured offline, unverified live); then `py-spy` on `skill_node` (84 % during goals), `teensy_bridge_node` (77 %) and the tracker's 1.5 ms in-flight frame. rosbridge's share was the GUI copies (done, 86 → 56 %); the lean server's deserialise-after-throttle (option 4) stays optional.
-3. Core isolation for the worker only after step 2 frees headroom: today 5.3 cores of demand on the 5 remaining cores would squeeze the setpoint stream.
-4. The 150 ms unpinned re-aim cliff stays structurally thin and is a separate decision.
-5. A Jetson restart is not a fix: the load is the running launch.
-6. Close JB-76 only after a scanned Sitting that includes an oval goal reads wall/CPU well under 2 with zero re-aim refusals.
+Recorder `temp/probes/profile_20261028-210241/` (439 s; launch log `~/.ros/log/2026-10-28-21-02-48-831501-jetson-3765883/launch.log`; scan `temp/probes/solve-starvation-2026-10-28-2102.txt`; flame graphs `pyspy_{ball_tracker_node,skill_node,mocap_node}.svg`, py-spy 100 Hz, ptrace_scope set to 0 for the Sitting). Six dispatches: two columns (dwell 0.27) and four `oval_1ball` (dwell 0.5), 188 throws caught, 4 missed. Two records: columns 57 of 59 and **oval 50/50 completed** (previous best 35/35). The tracker's up-line read `BLAS 1 thread`; the report's new nice column read 10 on rosbridge, ball_butler and the bag and 0 on every control-chain process. Comparison by a Sonnet agent against the two earlier Sittings (notes in the scratchpad; the numbers below are the scan's).
+
+| CATCH solves | 09:49 (none) | 14:29 (nice + copies) | 21:02 (+ tracker cap) |
+|---|---|---|---|
+| n | 206 | 174 | 397 (161 columns, 236 oval) |
+| wall p50 / p90 / max | 153 / 226 / 297 ms | 117 / 160 / 223 ms | 95 / 125 / 172 ms |
+| CPU p50 / p90 | 67 / 98 ms | 60 / 72 ms | 74 / 92 ms (columns 65, oval 81) |
+| wall/CPU p50 / p90 | 2.18 / 2.81 | 1.97 / 2.41 | **1.27 / 1.55** (oval alone 1.28 / 1.52) |
+| over 150 ms wall (CATCH + refused) | 162 of 270 | 23 of 176 | 4 of 418 |
+| SPLICE_TOO_LATE re-aim refusals | 58 of 154 throws | 1 of 79 | 3 of 188 (all oval, 109 oval throws) |
+| other refusals | 6 | 1 | 18 (15 LIMIT_JERK, 2 INFEASIBLE, 1 LIMIT_ACC; none cost a catch) |
+| ball_tracker, goals / idle | 129 / 36 % | 148 / 36 % | **66 / 33 %** |
+| skill_node, goals / idle | 78 / 61 % | 84 / 68 % | 67 / 56 % |
+| box during goals / idle (% of 600) | 555 / 435 | 537 / 423 | 518 / 394 raw; ≈ 479 / 364 net of the three py-spy samplers (≈ 39 / 30 %) |
+
+The CPU p50 rise to 74 ms is goal mix, not a regression: split by the goal in force at each solve, columns CATCHes cost 65 ms (60 at 14:29, a columns-only Sitting) and oval ones 81 ms (92 at 09:49, the same per-pattern split on that log: `oval_1ball` CATCH CPU p50 91.8 ms, `oval_1ball_fed` 94.8 ms). The tracker cap is the largest single saving, about 0.8 core during goals, and `skill_node` fell too (its 300 Hz subscriptions now compete with one fewer busy pool). The three residual SPLICE_TOO_LATE refusals were oval CATCHes at 136–148 ms wall on 83–88 ms of CPU (wall/CPU 1.6–1.7): CPU above the oval median against the ~150 ms unpinned re-aim cliff, with starvation now a minority of the gap. Three further non-terminal `BUMP-DECLINED SPLICE_TOO_LATE` lines were 12–16 mm landing nudges declined because the wire advanced two knots between dispatch and node (a short-plan wire race), and the 12 raw `SPLICE_TOO_LATE` grep hits are these six events logged twice each. No goal ended on it.
+
+**JB-76 closed (owner, 2026-10-28 evening).** The root cause, the launch starving its own solver worker, is removed: 2.18 → 1.27 with oval goals in the scan. The close criterion's second clause (zero SPLICE_TOO_LATE refusals) was missed by three events whose cause is now solve CPU against the budget, which is a different and smaller item, filed as the first residue bug below.
+
+**Flame graphs (py-spy, 100 Hz, 439 s; shares are of each node's samples, cores are estimates from pidstat × non-idle share).** Blocked threads (`thread.py:78` queue.get, `executors.py:593` wait set) are counted as idle.
+
+- `skill_node` (80 k samples, 27 % non-idle; pidstat 0.67 core during goals, so ≈ 0.5 core of it is the executor machinery below): about 79 % of the work is rclpy `MultiThreadedExecutor` machinery, not callbacks: the per-spin wait-set rebuild (`executors.py:493–661`, `handle.py:116–127`), task/future construction (`task.py:201/211`, `thread.py:160–195`) and `_take_subscription` (`executors.py:347`), driven by the 200–300 Hz `rigid_body_poses` and `balls` subscriptions (`skill_node.py:1334–1406`). Callback bodies are about 12 %: `_on_tick` 2.7 % (mostly `_wait_future`), `_on_balls` 1.4 %, logger `_find_caller` 0.2 %.
+- `mocap_node` (44 k samples, 82 % non-idle): the 100 Hz `_publish_mocap_data` timer is 54 %: the three full-rate publishes (`mocap_node.py:1113`, `:1170`, `:1185`) 24 % incl. C-level serialise (of which `bb/markers` is the 3.5 % below), `RigidBodyPose()` nested construction (`:1152`) 6.7 %, `_feed_robot_frame` + `settled()` per frame (`:1131`, `robot_frame.py:572/630`) 4 %, `bb/markers` built and published even when empty (`:1179–1185`) 3.5 %, `now().to_msg()` 2.2 %. QTM parse (`mocap_interface.py:224`, `qtm_rt/protocol.py:148`) 6.4 %; calibration solve thread 4.7 %. The 20 Hz GUI copies cost about 1 % (`:1115`, `:1172`): working as designed.
+- `ball_tracker_node` (31 k samples, 94 % non-idle): message take and Python object construction for every marker of every 300 Hz frame (`executors.py:347`, `_mocap_data_single.py:78–136`, `_point.py:74–79`) 27 %; `process_frame` 17 %, of which the per-frame landing refit (`matcher.py:1051` → `flight_fit.py:215`, `lstsq` at `:172`) is 10.6 %, the gate norm 2.4 %, Kalman 4.1 %; `_ball_to_msg` (`BallState()` + `now()`, `ball_tracker_node.py:284–285`) 12 %; publish at 300 Hz 8 %; per-marker `np.array` (`:262`) 1.9 %. That is where the 1.5 ms in-flight frame goes: about half of it (27 + 12 + 8 + 2 of 94 % non-idle) is message plumbing rather than maths, and the maths share that remains is dominated by the per-frame refit.
+
+**Also in this log, filed separately, none a solver symptom:** three goals ended `ABORTED_NO_RELEASE` ("throw N never left the hand", new tonight); a Teensy guard `MAX_DEVIATION` latch on the hand (dev +8.4 rev) during oval goal 4 → ACTIVE → FAULT → LANE_REFUSED, `recover_lane` reporting nothing latched, then a `WRONG_MODE` rejection of the re-dispatch from STANDBY; mocap `queue full` loss of 544 frames in two bursts between t+44 and t+85 s before the first dispatch (490 at 09:49, 373 at 14:29, zero overflow during goals); ten leg heartbeat-dropout episodes (497–1599 ms) and two `LATENCY MONITOR CLAMP_DUTY` warnings (0.27 vs 0.15) on a bridge at 6.7 h uptime. Zero SETPOINT_STALE, E-stop or NO_HEARTBEAT; CPU 59.6 °C max, clocks pinned.
+
+## What remains, and where it lives (2026-10-28 evening)
+
+1. ~~Fly a scanned Sitting~~ done three times today; JB-76 closed on the 21:02 read-out.
+2. ~~Tracker thread cap~~ fix 2, verified live (148 → 66 %).
+3. **Worker real-time priority** (owner's pick for the next lever): make CATCH wall ≈ CPU regardless of box load by taking the solver worker out of the fair-share queue (`SCHED_FIFO`, bounded at ~100 ms CPU per solve, fail-open to CFS when the rtprio limit is 0). Needs a one-time `sudo` edit of the rtprio limit. Filed as its own feature item.
+4. The nice-0 CPU trims from the flame graphs (skill_node executor ≈ 0.5 core, mocap_node publish/construction ≈ 0.28, tracker message plumbing ≈ 0.28), filed as one feature item with the file:line anchors above. `teensy_bridge_node` (79 % in every Sitting) and rosbridge (70 % during goals) were not sampled and are the next py-spy targets.
+5. The oval re-aim residue (CATCH CPU 81 ms vs the ~150 ms unpinned cliff; 3 refusals in 109 oval throws) filed as a bug; it is the reason the close criterion was missed by three events.
+6. A Jetson restart was never a fix: the load is the running launch.
 
 ## Verification
 
 - Instrumentation commit, 2026-10-28: `pytest -q tests/motion/test_solver_worker.py tests/ros/test_install_segment.py tests/motion/test_solver_worker_lateness.py` gave 93 passed before the test was narrowed to a BLAS-capped worker; afterwards `tests/motion/test_solver_worker.py` gave 16 passed. Gate `./run_tests.sh`, 2026-10-28: 7369 passed / 4 skipped + serial 5 passed, PASS.
 - Fix 1 commit, 2026-10-28: `pytest -q tests/ros/test_launch_priority.py` 1 passed; `./run_tests.sh` 7370 passed / 4 skipped + serial 5 passed, PASS (`temp/logs/jb76-nice-gate.log`); the scan reproduces every table above from the saved Sitting data (`python tools/probes/solve_starvation_scan.py ~/.ros/log/2026-10-28-09-49-31-556395-jetson-3246295/launch.log temp/probes/profile_20261028-094925`).
 - Fix 2 commit, 2026-10-28: offline measurement as tabled above (`temp/probes/tracker_blas_cap_2026-10-28/report.md`); `pytest -q tests/ros/test_launch_nodes.py tests/ros/test_launch_priority.py` 18 passed (the cap test now parametrised over `CAPPED_NODES`), the seven `tests/ros/test_ball_tracker_*.py` files 55 passed with the node's new `check_blas_threads` receipt; the `./run_tests.sh` triple is in the commit message.
+- 21:02 Sitting read-out, 2026-10-28: `python tools/probes/solve_starvation_scan.py ~/.ros/log/2026-10-28-21-02-48-831501-jetson-3765883/launch.log temp/probes/profile_20261028-210241` (output `temp/probes/solve-starvation-2026-10-28-2102.txt`) gives the right-hand column; goal and refusal counts from the launch log's `Juggle requested via` / `ENDED` / `done:` / `throw N/M` / `then refused` lines (20 refusals = 15 LIMIT_JERK + 3 SPLICE_TOO_LATE + 2 INFEASIBLE; the scan counts 21 because it also sees one worker LIMIT_ACC that reached no throw line, and its 3 `transit` rows are the same three RESEND-REFUSED SPLICE_TOO_LATE events); the per-pattern CPU split from the scan's parsed solves bucketed by the goal in force; flame-graph shares parsed from the SVGs' `<title>` sample counts. `grep "Ball tracker up" launch.log` ends `BLAS 1 thread`.
 - 14:29 Sitting read-out, 2026-10-28: `python tools/probes/solve_starvation_scan.py ~/.ros/log/2026-10-28-14-29-37-005424-jetson-3516886/launch.log temp/probes/profile_20261028-142931` (output `temp/probes/solve-starvation-2026-10-28-1429.txt`) gives the right-hand column of the table; the goal/re-aim counts come from the launch log's per-throw lines (`grep -c "then refused" launch.log`: 64 vs 1; denominators are CAUGHT throw lines, 154 vs 79). `profile_session.py`'s snapshot parser was checked on the old-format 14:29 log (491 PIDs resolved, empty nice map) and on a synthetic new-format block (nice 10 / 0 / `-` read back).

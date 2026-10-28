@@ -49,6 +49,7 @@ The most Catches in one continuous Attempt on the robot (never the sim), per Pat
 | 2026-10-23 11:09 | 10 | 10 | completed (COMPLETED) | seed: log |
 | 2026-10-23 17:40 | 32 | 32 | completed (COMPLETED) | seed: log |
 | 2026-10-27 23:06 | 35 | 35 | completed (COMPLETED) | seed: fed goal |
+| 2026-10-28 21:09 | 50 | 50 | completed (COMPLETED) |  |
 
 <!-- pattern: oval_1ball_fed balls: 1 -->
 ### Oval — fed
@@ -93,3 +94,4 @@ The most Catches in one continuous Attempt on the robot (never the sim), per Pat
 | 2026-10-13 23:20 | 32 | 31 | completed (COMPLETED) | seed: fed goal |
 | 2026-10-22 20:00 | 48 | 47 | drop (MISSED_CATCH) | seed: fed goal |
 | 2026-10-28 14:33 | 49 | 49 | completed (COMPLETED) |  |
+| 2026-10-28 21:04 | 59 | 57 | drop (ABORTED_NO_RELEASE) |  |
