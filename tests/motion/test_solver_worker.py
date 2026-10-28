@@ -513,7 +513,10 @@ def test_rt_affinity_failure_drops_back_to_cfs_rather_than_fifo_anywhere():
     # FIFO was asked for, then SCHED_OTHER restored.
     assert len(c.sched) == 2
     assert c.sched[0][1] & os.SCHED_FIFO == os.SCHED_FIFO
-    assert c.sched[1][1] == os.SCHED_OTHER
+    # SCHED_OTHER with RESET_ON_FORK kept: clearing the bit is refused EPERM
+    # to an unprivileged task, which would silently leave the worker FIFO.
+    reset = getattr(os, 'SCHED_RESET_ON_FORK', 0)
+    assert c.sched[1][1] == os.SCHED_OTHER | reset
 
 
 def test_default_worker_does_not_ask_for_rt_and_reports_cfs_disabled():

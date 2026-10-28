@@ -65,7 +65,10 @@ def try_fifo(prio):
             return False, "EPERM: cpu cgroup %s rt_runtime_us=%s" % (path, rt)
         return False, "%s: %s" % (errno.errorcode.get(e.errno, e.errno), e)
     try:
-        os.sched_setscheduler(0, os.SCHED_OTHER, os.sched_param(0))
+        # Keep RESET_ON_FORK: an unprivileged task cannot clear it, and a
+        # plain SCHED_OTHER is refused EPERM (Jetson, 2026-10-28).
+        os.sched_setscheduler(0, os.SCHED_OTHER | getattr(os, 'SCHED_RESET_ON_FORK', 0),
+                              os.sched_param(0))
     except OSError as e:
         print("warning: could not restore SCHED_OTHER: %s" % e)
     return True, "ok"

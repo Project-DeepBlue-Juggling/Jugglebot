@@ -298,11 +298,14 @@ def apply_rt_policy(prio: int, cpus: Iterable[int] = WORKER_RT_CPUS, *,
         setaffinity(0, want)
         return SchedInfo('FIFO', prio, _fmt_cpus(want), 'ok')
     except OSError as e:
-        # Fail-open: back to CFS rather than FIFO-anywhere (dropping to
-        # SCHED_OTHER needs no privilege, so this cannot itself be refused
-        # for the reason the pin was).
+        # Fail-open: back to CFS rather than FIFO-anywhere. The RESET_ON_FORK
+        # bit must be KEPT: an unprivileged task may not clear it, so a plain
+        # SCHED_OTHER here is refused EPERM (seen on the Jetson 2026-10-28,
+        # first run after the RT recipe) and would leave the worker FIFO on
+        # any core.
         try:
-            setscheduler(0, os.SCHED_OTHER, os.sched_param(0))
+            setscheduler(0, os.SCHED_OTHER | getattr(os, 'SCHED_RESET_ON_FORK', 0),
+                         os.sched_param(0))
         except OSError:
             pass
         return SchedInfo('CFS', 0, 'unchanged', 'affinity failed: %s' % e)
