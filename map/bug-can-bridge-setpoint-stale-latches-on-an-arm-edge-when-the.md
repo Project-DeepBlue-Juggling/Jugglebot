@@ -2,9 +2,9 @@
 id: JB-75
 kind: bug
 title: can-bridge SETPOINT_STALE latches on an arm edge when the last setpoint is from an earlier stream
-status: in_progress
+status: complete
 created: '2026-10-27'
-updated: '2026-10-28T02:01:54Z'
+updated: '2026-10-28T03:37:52Z'
 owners: []
 priority: medium
 blocked_by: []
@@ -31,3 +31,4 @@ Possible fix: stamp `s_last_setpoint_us` (or start a grace window of one stalene
 
 - 2026-10-28: 2026-10-28: FW 34 fix built + natively tested (arm-edge stamp, output held until a post-arm setpoint); NOT flashed - dongle reached the robot's bridge, bench re-arm check outstanding
 - 2026-10-28: 2026-10-28 12:50 AEDT: FW 34 flashed to the ROBOT bridge (launch down, receipt BridgeIdentity 34/10, axes 0-6 present). Still to verify at the next Sitting: arm, stream, disarm, wait > 250 ms, re-arm with no SETPOINT_STALE; a dead stream after an arm still latches at ~250 ms.
+- 2026-10-28: Verified on the robot 2026-10-28: four arms (three re-arms after disarm) with zero SETPOINT_STALE on FW 34; logbook 2026-10-28-jb75-jb72-arm-edge-stale-and-home-epoch
