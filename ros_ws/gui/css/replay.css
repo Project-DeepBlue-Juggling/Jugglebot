@@ -11,6 +11,7 @@
 #command-overlay.replay-lobby-on > #camera-panel,
 #command-overlay.replay-active > #camera-panel,
 body.replay #camera-panel { display: none; }
+body.replay #records-panel { display: none; }  /* JB-35: the live ledger, not the bag's */
 .replay-lobby { display: flex; align-items: center; gap: var(--gap-sm); margin: 0 auto; }  /* centred: the bar is space-between */
 .replay-dock { flex: 1 1 auto; min-width: 0; }
 

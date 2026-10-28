@@ -602,7 +602,7 @@ function onStopClick() {
  * (skill_node.py ATTEMPT_*):
  *   juggle_start   pattern n_throws reload apex_m(%.3f) separation_mm(%.1f)
  *   juggle_refused pattern; message = the refusal reason
- *   juggle_end     pattern outcome throws caught
+ *   juggle_end     pattern outcome throws caught record_beaten record_catches
  */
 export function jugglePanelOnSkillAttempt(msg) {
     if (!msg) return;

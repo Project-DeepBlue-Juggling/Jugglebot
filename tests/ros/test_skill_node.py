@@ -4217,7 +4217,64 @@ class TestJuggleAction:
         assert name == sn.ATTEMPT_END
         assert message == 'STOPPED'
         assert values == {'pattern': 'self_toss', 'outcome': 'STOPPED',
-                          'throws': '0', 'caught': '0'}
+                          'throws': '0', 'caught': '0',
+                          'record_beaten': '0', 'record_catches': ''}
+
+    def _ended_attempt(self, tmp_path, throws, caught, records_path=None,
+                       pattern='self_toss'):
+        """Accept a self-throw goal, stop it, run `_juggle_execute` with
+        `rp.summarise` reporting (throws, caught); returns the juggle_end
+        fields and the WARN lines. `records_path` None leaves the node
+        default ('')."""
+        node, _client = _node_with_client()
+        if records_path is not None:
+            node._params['records_path'] = str(records_path)
+        _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV)
+        _prelevel_ready(node)
+        with patch.object(sn, '_ADMISSIBLE_BOX_PATH', _good_box_path(tmp_path)):
+            assert (node._juggle_goal(_self_toss_goal())
+                   == sn.GoalResponse.ACCEPT)
+        node._stop_attempt()
+        node._on_tick()
+        gh = MagicMock(is_cancel_requested=False)
+        gh.request.pattern = pattern
+        warnings = []
+        node.get_logger().warning = warnings.append
+        with patch.object(sn.rp, 'summarise', return_value=(throws, caught)):
+            result = node._juggle_execute(gh)
+        assert (result.throws, result.caught) == (throws, caught)
+        return warnings, self._attempt_events(node)[-1][2]
+
+    def test_records_are_disabled_by_default(self, tmp_path):
+        """The mocked node never touches the committed docs/records.md."""
+        _node, values = self._ended_attempt(tmp_path, 6, 5)
+        assert (values['record_beaten'], values['record_catches']) == ('0', '')
+
+    def test_a_beaten_record_is_written_and_announced(self, tmp_path):
+        from jugglebot import records as rec
+        path = tmp_path / 'records.md'
+        _node, values = self._ended_attempt(tmp_path, 6, 5, records_path=path)
+        assert (values['record_beaten'], values['record_catches']) == ('1', '5')
+        [row] = rec.load(str(path)).table('self_toss').rows
+        assert (row.throws, row.catches, row.end_code) == (6, 5, 'STOPPED')
+        _node, values = self._ended_attempt(tmp_path, 9, 5, records_path=path)
+        assert (values['record_beaten'], values['record_catches']) == ('0', '5')
+
+    def test_a_feed_is_never_offered_to_the_records(self, tmp_path):
+        path = tmp_path / 'records.md'
+        _node, values = self._ended_attempt(tmp_path, 1, 1, records_path=path,
+                                            pattern='reload')
+        assert values['record_beaten'] == '0'
+        assert not path.exists()
+
+    def test_a_malformed_ledger_warns_and_is_left_alone(self, tmp_path):
+        path = tmp_path / 'records.md'
+        path.write_text('not a ledger\n')
+        warnings, values = self._ended_attempt(tmp_path, 6, 5,
+                                               records_path=path)
+        assert (values['record_beaten'], values['record_catches']) == ('0', '')
+        assert path.read_text() == 'not a ledger\n'
+        assert len(warnings) == 1 and warnings[0].startswith('records: ')
 
     def test_execute_publishes_feedback_and_honours_a_live_cancel(self, tmp_path):
         """Uses self_toss, not columns (R5): a SEATED-cup columns start

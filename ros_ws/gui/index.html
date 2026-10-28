@@ -27,6 +27,7 @@
     <link rel="stylesheet" href="css/charts.css">
     <link rel="stylesheet" href="css/state-minimap.css">
     <link rel="stylesheet" href="css/camera-panel.css">
+    <link rel="stylesheet" href="css/records-panel.css">
     <link rel="stylesheet" href="css/juggle-panel.css">
     <link rel="stylesheet" href="css/replay.css">
     <link rel="stylesheet" href="css/app-tabs.css">
@@ -145,6 +146,13 @@
                 <span class="status-dot disconnected" id="conn-dot"></span>
                 <span id="conn-text">Disconnected</span>
                 <span class="conn-quality" id="conn-quality" title="Time since last robot_state message"></span>
+            </div>
+
+            <!-- Jugglebot records (js/records-panel.js, JB-35): one line per Pattern, under the connection
+                 indicator; rows filtered from the View menu, hidden in replay (css/replay.css) -->
+            <div id="records-panel" hidden>
+                <div class="records-title">Records</div>
+                <div class="records-rows"></div>
             </div>
 
             <!-- Scene visibility menu -->

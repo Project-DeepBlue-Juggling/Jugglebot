@@ -2,18 +2,24 @@
 """Standalone HTTP server for the Jugglebot GUI.
 
 Serves static files from this directory on all interfaces and the
-``/api/replay/`` rosbag-replay routes (replay/api.py). Pure stdlib, no ROS2 -
+``/api/replay/`` rosbag-replay routes (replay/api.py), plus ``GET /api/records``
+(the records ledger, JB-35: ``to_json`` of the repo's ``docs/records.md``,
+parsed by ``ros_ws/src/jugglebot/jugglebot/records.py`` loaded BY PATH, so
+the ROS package is never imported). Pure stdlib, no ROS2 -
 start once and leave running. The browser reads recordings over HTTP Range; the
 overview pass runs in a niced subprocess under the venv interpreter
 (``--worker-python``); the server itself needs nothing.
 
 Usage:
     python3 gui_server.py [--port 8081] [--rosbags-dir DIR] [--overview-dir DIR]
+                          [--records-path FILE]
 """
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import http.server
+import json
 import os
 import sys
 
@@ -23,11 +29,40 @@ if _HERE not in sys.path:
 
 from replay.api import ReplayBackend  # noqa: E402
 
+RECORDS_ROUTE = "/api/records"
+_RECORDS_MODULE = os.path.join(_HERE, "..", "src", "jugglebot", "jugglebot", "records.py")
+
+
+def _load_records_module():
+    """``jugglebot/records.py`` by file path (stdlib only, no package import).
+    Registered in sys.modules before exec: dataclasses resolve their module."""
+    spec = importlib.util.spec_from_file_location("jugglebot_records", _RECORDS_MODULE)
+    module = importlib.util.module_from_spec(spec)
+    sys.modules[spec.name] = module
+    spec.loader.exec_module(module)
+    return module
+
+
+records = _load_records_module()
+
+
+def records_payload(path):
+    """(status, JSON body) for GET /api/records. A missing ledger is the
+    empty one (every heading, no record); a malformed one is a 500 with the
+    parse error, never a guess."""
+    try:
+        return 200, records.to_json(records.load(path))
+    except records.RecordsFormatError as exc:
+        return 500, {"error": "malformed records file: {}".format(exc)}
+    except OSError as exc:
+        return 500, {"error": "cannot read records file: {}".format(exc)}
+
 
 class CORSHandler(http.server.SimpleHTTPRequestHandler):
     """SimpleHTTPRequestHandler with CORS, correct MIME types and the replay API."""
 
     backend = None  # set per server in make_server
+    records_path = None  # set per server in make_server
     _replay_headers_sent = False
 
     def end_headers(self):
@@ -37,9 +72,21 @@ class CORSHandler(http.server.SimpleHTTPRequestHandler):
         super().end_headers()
 
     def do_GET(self):
+        if self.path.split("?", 1)[0] == RECORDS_ROUTE and self.records_path:
+            self._records()
+            return
         if self.backend is not None and self.backend.handle("GET", self.path, self):
             return
         super().do_GET()
+
+    def _records(self):
+        status, payload = records_payload(self.records_path)
+        body = json.dumps(payload).encode("utf-8")
+        self.send_response(status)
+        self.send_header("Content-Type", "application/json")
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()  # adds Cache-Control: no-cache + CORS
+        self.wfile.write(body)
 
     def do_HEAD(self):
         if self.backend is not None and self.backend.handle("HEAD", self.path, self):
@@ -73,6 +120,9 @@ def build_parser():
     parser.add_argument("--overview-dir",
                         default=os.path.join(_HERE, "..", "..", "temp", "replay_overview"))
     parser.add_argument("--worker-python", default="~/Desktop/PDJ_venv/venv/bin/python")
+    parser.add_argument("--records-path",
+                        default=os.path.join(_HERE, "..", "..", "docs", "records.md"),
+                        help="the records ledger served at " + RECORDS_ROUTE)
     return parser
 
 
@@ -90,6 +140,9 @@ def make_server(args):
         pass
 
     Handler.backend = backend
+    Handler.records_path = os.path.abspath(os.path.expanduser(
+        getattr(args, "records_path", None)
+        or build_parser().get_default("records_path")))
     handler = lambda *a, **kw: Handler(*a, directory=_HERE, **kw)  # noqa: E731
     server = ReusableHTTPServer((getattr(args, "host", "0.0.0.0"), args.port), handler)
     return server, backend
@@ -102,6 +155,7 @@ def main():
     print("  Directory: {}".format(_HERE))
     print("  Replay: rosbags={} overview={} worker_available={}".format(
         backend.rosbags_root, backend.overview_dir, backend.worker_available))
+    print("  Records: {}".format(os.path.abspath(os.path.expanduser(args.records_path))))
     print("  Press Ctrl+C to stop")
     try:
         server.serve_forever()

@@ -72,6 +72,7 @@ import { initCameraPresets } from './camera-presets.js';
 import { initTrailSettingsUi } from './trail-settings-ui.js';
 import { initTrails, getTrailFeed } from './trails-scene.js';
 import { initCameraPanel, cameraPanelOnHeartbeat, setCameraPanelDisconnected } from './camera-panel.js';
+import { initRecordsPanel, attachRecordsMenu } from './records-panel.js';
 
 // ---- Latest data stores ----
 let latestCommandedLegs = null;  // leg_setpoint_echo data (6 legs, motor revs)
@@ -139,6 +140,9 @@ function init() {
     // 3b. Init the Wave camera record panel (overlay right of the collapsed
     //     minimap; DOM-only until camera/heartbeat arrives).
     initCameraPanel();
+
+    // 3c. Init the records panel (JB-35; HTTP only, so it shows while disconnected too).
+    initRecordsPanel();
 
     // 4. Init scene menu
     initSceneMenu();
@@ -952,6 +956,7 @@ function initSceneMenu() {
         // Camera presets append below the scene-group toggles — run here
         // so they aren't wiped by the `dropdown.innerHTML = ''` above.
         initCameraPresets();
+        attachRecordsMenu(dropdown);   // "Records: <Pattern>" row toggles (JB-35)
     }, 100);
 }
 

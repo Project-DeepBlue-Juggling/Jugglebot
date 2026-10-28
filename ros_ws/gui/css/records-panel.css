@@ -1,0 +1,42 @@
+/* Records panel (js/records-panel.js, JB-35): top-left of the viewer, under
+   #connection-status and to the right of #state-minimap. The collapsed
+   minimap is 210 px wide at left: var(--gap) (css/state-minimap.css) and
+   grows UP from the command strip, so it can reach the top of the pane --
+   sit past its right edge, and past the expanded panel when it is open. */
+#records-panel {
+    position: absolute;
+    top: calc(var(--gap) + 40px);
+    left: calc(var(--gap) * 2 + 210px);
+    z-index: 10;
+    min-width: 190px;
+    max-width: 280px;
+    padding: 6px 10px;
+    background: var(--bg-overlay);
+    border-radius: var(--border-radius-sm);
+    font-size: var(--font-size-xs);
+    pointer-events: auto;
+}
+#records-panel[hidden] { display: none; }
+#viewer-pane.minimap-expanded #records-panel {
+    left: calc(var(--minimap-width) + var(--gap));
+}
+#records-panel .records-title {
+    color: var(--text-secondary);
+    font-weight: 600;
+    margin-bottom: 3px;
+}
+#records-panel .records-row {
+    display: grid;
+    grid-template-columns: 1fr auto auto;
+    gap: var(--gap-sm);
+    padding: 1px 3px;
+    border-radius: var(--border-radius-sm);
+    transition: background var(--transition-normal);
+}
+#records-panel .records-score { font-family: var(--font-mono); text-align: right; }
+#records-panel .records-date { font-family: var(--font-mono); color: var(--text-muted); min-width: 10ch; }
+#records-panel .records-row.empty { color: var(--text-muted); }
+#records-panel .records-row.beaten {
+    background: color-mix(in srgb, var(--accent-amber) 35%, transparent);
+    font-weight: 600;
+}

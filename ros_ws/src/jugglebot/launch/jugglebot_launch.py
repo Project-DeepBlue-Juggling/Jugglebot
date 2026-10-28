@@ -494,9 +494,21 @@ def generate_launch_description():
     # thread, the same class of planner-adjacent work every other node on this
     # cap does — so it gets the same cap. See _planner_blas_env above and the
     # 2026-09-06 UH-3 entry.
+    #
+    # records_path (JB-35): the records ledger `docs/records.md` in the repo
+    # that produced THIS install (`_repo_root`, the same walk teensy_bridge's
+    # PYTHONPATH uses below). skill_node offers every juggling Attempt's end to
+    # it (jugglebot/records.py) and rewrites it only when a record is beaten.
+    # A beaten record therefore DIRTIES the live checkout until the Sitting's
+    # close-out commits it (owner-accepted 2026-10-28; `jugglebot-pull` goes
+    # fetch-only while the tree is dirty). The node's own default '' disables
+    # the ledger, so only a real launch writes it.
     skill_node = Node(
         package='jugglebot',
         executable='skill_node',
+        parameters=[{
+            'records_path': os.path.join(_repo_root(), 'docs', 'records.md'),
+        }],
         additional_env=dict(_planner_blas_env),
     )
 

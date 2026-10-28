@@ -71,6 +71,7 @@ import jugglebot.hardware_config as hw
 import jugglebot.protocol_config as proto
 from jugglebot import ball_possession
 from jugglebot import mocap_status as mocap_st
+from jugglebot import records as rec
 from jugglebot.motion import blas_threads
 from jugglebot.motion import unified_cycle as uc
 from jugglebot.motion.skills import admissible as adm
@@ -181,7 +182,7 @@ _FEEDBACK_HZ = 5.0
 ATTEMPT_TOPIC = 'skills/attempt'
 ATTEMPT_START = 'juggle_start'      # pattern n_throws reload apex_m separation_mm
 ATTEMPT_REFUSED = 'juggle_refused'  # pattern; message = the refusal reason
-ATTEMPT_END = 'juggle_end'          # pattern outcome throws caught
+ATTEMPT_END = 'juggle_end'          # pattern outcome throws caught record_beaten record_catches
 
 #: `_stop_attempt`'s bound on waiting for `_tick_lock` (finding 12, R3 audit,
 #: 2026-09-13): a tick mid-`_dispatch` can itself be blocked inside
@@ -1062,6 +1063,11 @@ class SkillNode(Node):
         self.declare_parameter('planner_mode', uc.PLANNER_MODE_DEFAULT)
         self._planner_mode()
         self.declare_parameter('n_throws', _DEFAULT_N_THROWS)
+        # The records ledger (JB-35, `jugglebot/records.py`): the file each
+        # juggling Attempt's end is offered to. '' (the default) = disabled,
+        # so a bare node and the mocked-ROS tests never touch the committed
+        # `docs/records.md`; `jugglebot_launch.py` points it at the repo's.
+        self.declare_parameter('records_path', '')
         self.declare_parameter('site_x_mm', _DEFAULT_SITE_X_MM)
         self.declare_parameter('site_y_mm', _DEFAULT_SITE_Y_MM)
         self.declare_parameter('plant_id', _DEFAULT_PLANT_ID)
@@ -6138,6 +6144,35 @@ class SkillNode(Node):
         ``goal_handle.is_cancel_requested``."""
         return CancelResponse.ACCEPT
 
+    def _offer_record(self, pattern: str, throws, caught,
+                      end_code: str) -> Tuple[bool, str]:
+        """Offer a finished Attempt to the records ledger (JB-35,
+        `jugglebot/records.py`). Returns (beaten, the Pattern's record Catches
+        as a string, '' when not known). Disabled when `records_path` is ''
+        and for a Feed (`reload`/`magazine` are not juggling). Never raises:
+        it runs on the goal's own thread after the Result is built, a small
+        local-file write, and any failure (a malformed ledger is never
+        overwritten, `records.record_attempt`) is a WARN, not a goal fault."""
+        path = str(self.get_parameter('records_path').value or '')
+        if not path or pattern in rec.FEED_PATTERNS:
+            return False, ''
+        try:
+            beaten, best = rec.record_attempt(path, rec.Attempt(
+                when_local=time.strftime(rec.WHEN_FORMAT, time.localtime()),
+                pattern=pattern, throws=int(throws), catches=int(caught),
+                end_code=str(end_code)))
+        except Exception as exc:  # noqa: BLE001 -- never the goal's fault
+            self.get_logger().warning(
+                'records: %s not updated for %s (%d/%d %s): %s'
+                % (path, pattern, int(caught), int(throws), end_code, exc))
+            return False, ''
+        if beaten:
+            self.get_logger().info(
+                'records: NEW RECORD %s -- %d Catches in %d Throws (%s); '
+                '%s is now dirty until the Sitting close-out commit'
+                % (pattern, int(caught), int(throws), end_code, path))
+        return beaten, str(best)
+
     def _juggle_execute(self, goal_handle):
         """``execute_callback``: wait for the attempt `_juggle_goal` already
         started (through `_start_pattern`) to finish, publishing feedback at
@@ -6175,13 +6210,18 @@ class SkillNode(Node):
         # each throw's operator line.
         result.throws, result.caught = rp.summarise(self._goal_reports)
         result.per_throw = list(self._goal_outcome_lines)
+        pattern = str(goal_handle.request.pattern)
+        beaten, record_catches = self._offer_record(
+            pattern, result.throws, result.caught, outcome)
         self._publish_attempt_event(
             ATTEMPT_END, outcome,
             DiagnosticStatus.OK if outcome in ('COMPLETED', 'STOPPED')
             else DiagnosticStatus.WARN,
-            pattern=str(goal_handle.request.pattern),
+            pattern=pattern,
             outcome=outcome, throws=str(result.throws),
-            caught=str(result.caught))
+            caught=str(result.caught),
+            record_beaten='1' if beaten else '0',
+            record_catches=record_catches)
         if cancelled:
             goal_handle.canceled()
         elif result.success:

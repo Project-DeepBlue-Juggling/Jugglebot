@@ -35,6 +35,7 @@ import { emitEvent, EVENT_TYPES } from './event-store.js';
 import {
     JUGGLE_PATTERNS, buildJugglePanel, renderJugglePanel, jugglePanelOnSkillAttempt,
 } from './juggle-panel.js';
+import { recordsPanelOnSkillAttempt } from './records-panel.js';
 
 // ====================================================================
 // S1. Constants
@@ -1181,7 +1182,7 @@ function renderStatusLine() {
  *   juggle_start   pattern n_throws reload apex_m separation_mm (resolved:
  *                  the goal's own fields, else skill_node's params)
  *   juggle_refused pattern; message = the refusal reason
- *   juggle_end     pattern outcome throws caught
+ *   juggle_end     pattern outcome throws caught record_beaten record_catches
  */
 export function minimapOnSkillAttempt(msg) {
     if (!msg) return;
@@ -1214,6 +1215,7 @@ export function minimapOnSkillAttempt(msg) {
         });
     }
     jugglePanelOnSkillAttempt(msg);
+    recordsPanelOnSkillAttempt(msg);
 }
 
 function svgEl(tag, attrs, cls) {
