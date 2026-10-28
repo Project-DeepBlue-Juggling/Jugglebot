@@ -86,3 +86,12 @@ R5 gate night reads 31/32 here because the node tally excludes the feed catch an
 throw (the logbook says 32 consecutive). `seed_note()` carries the provenance into the Note
 column (test added). Verification: 2026-10-28, `pytest tests/motion/test_records.py -q`:
 **42 passed in 0.43 s**; full gate on the rebased tree in this commit message.
+
+## First live records (owner Sitting, 2026-10-28)
+
+The hook fired twice on the first Sitting with the ledger live
+(`~/.ros/log/2026-10-28-14-29-37-005424-jetson-3516886/launch.log` lines 706 and 2339):
+`records: NEW RECORD columns_1ball_fed -- 5 Catches in 5 Throws (COMPLETED)` at 14:31 and
+`records: NEW RECORD columns -- 49 Catches in 49 Throws (COMPLETED)` at 14:33 (beating the seeded
+47/48). Both rows landed in `docs/records.md` in the live checkout and are committed here; the
+GUI panel was restarted by the owner before the Sitting. JB-35 closes.
