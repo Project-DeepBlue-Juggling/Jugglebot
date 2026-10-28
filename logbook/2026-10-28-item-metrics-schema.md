@@ -13,6 +13,7 @@ files_changed:
   - docs/project-map.md
   - docs/agents/map-writes.md
   - DOCUMENTATION_GUIDE.md
+  - tests/sim/test_map_items_rated.py
   - .claude/commands/inbox.md
   - ros_ws/gui/js/quick-capture.js
   - ros_ws/gui/index.html
@@ -43,10 +44,13 @@ in-code table. Plan steps may carry `effort` / `hardware` (validated by `check_s
   legend line; `docs/glossary.md` is untouched.
 - Quick-capture form: two optional pill rows (effort, hardware), none preselected, a second
   click clears one; POSTed as `effort` / `hardware` only when chosen; kept in the draft.
-- No "every item rated" test was added: the backfill agents rate the existing items and the
-  main session decides whether to pin completeness afterwards.
+- The backfill (same batch) rated all 87 items and 30 plan steps; `tests/sim/test_map_items_rated.py`
+  pins that every item past triage stays rated (`inbox` items are exempt, per the
+  optional-on-new rule). The audit also caught that a second click on a chosen pill was
+  re-checked by the label's synthetic click; the handler now cancels that activation.
 
 ## Verification
 
-- 2026-10-28, `pytest tests/sim/test_mapkit_metrics.py tests/sim/test_mapkit_docs.py tests/ros/test_gui_quick_capture.py -q`: all pass.
-- Gate triple: see the commit report (`./run_tests.sh`, 2026-10-28).
+- 2026-10-28, `./run_tests.sh` (K1 worktree, before the backfill merge): PASS, parallel 7465 passed / 13 skipped (374 s, rc=0), serial 5 passed (rc=0).
+- 2026-10-28, `./run_tests.sh` (merge worktree, schema + backfill + JB-80 follow-up): PASS, parallel 7553 passed / 13 skipped (371 s, rc=0), serial 5 passed (rc=0).
+- The audit-fix commit's re-run is cited in that commit's message.

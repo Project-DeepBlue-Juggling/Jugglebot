@@ -64,7 +64,13 @@ form.addEventListener('click', (e) => {
     const lab = e.target.closest && e.target.closest('.qc-pills label');
     if (!lab) return;
     const inp = lab.querySelector('input');
-    if (pillWasChecked && inp.checked && e.detail > 0) { inp.checked = false; saveDraft(); }
+    if (pillWasChecked && inp.checked && e.detail > 0) {
+        inp.checked = false; saveDraft();
+        // A click on the label/span also fires a synthetic click on the input, which would
+        // re-check the radio; cancelling the label's activation suppresses it.  A click on
+        // the input itself must NOT be cancelled (that would restore its pre-click state).
+        if (e.target !== inp) e.preventDefault();
+    }
     pillWasChecked = false;
 });
 
