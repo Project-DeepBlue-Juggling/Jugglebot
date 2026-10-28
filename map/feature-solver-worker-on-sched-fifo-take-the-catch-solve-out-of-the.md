@@ -4,9 +4,13 @@ kind: feature
 title: 'Solver worker on SCHED_FIFO: take the CATCH solve out of the fair-share queue (wall ~= CPU at any box load)'
 status: in_progress
 created: '2026-10-28'
-updated: '2026-10-28T10:34:05Z'
+updated: '2026-10-28T10:52:09Z'
 owners: []
 priority: high
+effort: m
+hardware: robot
+owner: hands
+radius: cross-cutting
 area: skill-stack
 blocked_by: []
 links:
