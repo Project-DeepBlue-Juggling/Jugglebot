@@ -6,7 +6,7 @@ status: inbox
 created: '2026-10-28'
 updated: '2026-10-28T10:23:37Z'
 owners: []
-priority: null
+priority: medium
 effort: xs
 hardware: none
 blocked_by: []
