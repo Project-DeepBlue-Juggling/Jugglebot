@@ -2,9 +2,9 @@
 id: JB-1
 kind: bug
 title: can-bridge Guard reports the Hand as "leg 6"
-status: inbox
+status: complete
 created: '2026-09-21'
-updated: '2026-10-24T13:05:00Z'
+updated: '2026-10-28T00:59:45Z'
 owners: []
 priority: medium
 blocked_by: []
@@ -20,3 +20,7 @@ The can-bridge Guard's operator-facing messages still name the Hand "leg 6". At 
 ## Wanted
 
 Every operator-facing string for axis index 6 (firmware fault text, `teensy_bridge_node` log lines, GUI event log) says "hand", not "leg 6". Purely a naming change: no wire-format change and no PROTOCOL_VERSION bump. If the text originates in firmware it needs a flash, so bundle it with the next can-bridge firmware unit rather than flashing for this alone.
+
+## Progress
+
+- 2026-10-28: Residue closed 2026-10-28: CAN_BUS_DOWN edge ERROR and the GUI Clear Guard Latch tooltip name axis 6 hand (logbook 2026-10-28-jb1-hand-never-leg-6-residue)

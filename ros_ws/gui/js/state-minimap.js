@@ -1007,7 +1007,10 @@ function computeAction(s) {
             key: 'clear-guard', visible: true,
             label: inFault ? 'Recover' : 'Clear Guard Latch',
             title: 'Teensy guard latched (' + s.link.faultState +
-                (s.link.guardFaultLeg ? ', leg ' + s.link.guardFaultLeg : '') +
+                // guard_fault_leg is an AXIS id: 0..5 the legs, 6 the Hand (never "leg 6", JB-1).
+                (s.link.guardFaultLeg
+                    ? (s.link.guardFaultLeg === '6' ? ', hand' : ', leg ' + s.link.guardFaultLeg)
+                    : '') +
                 ') — bridge /clear_errors ' +
                 '(self-routes converge-first while armed; _svc_clear_errors, teensy_bridge_node.py:3316-3368)',
             plan: () => mkPlan(inFault ? 'Recover (guard latch)' : 'Clear guard latch', [

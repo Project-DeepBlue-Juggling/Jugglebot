@@ -5982,10 +5982,14 @@ class TeensyBridgeNode(Node):
                             # for this fault alone (can_fault_leg/_age_ms/_count) —
                             # NOT cleared by the self-clear, so it still names the
                             # culprit after the stow.
-                            leg_no = int(hb.can_fault_leg)
-                            leg_str = 'unknown' if leg_no == 0xFF else str(leg_no)
+                            # `can_fault_leg` is an AXIS id (6 = the Hand):
+                            # name it through _axis_label so the Hand is never
+                            # reported as "leg 6" (JB-1).
+                            axis_no = int(hb.can_fault_leg)
+                            axis_str = ('leg unknown' if axis_no == 0xFF
+                                        else _axis_label(axis_no))
                             self.get_logger().error(
-                                f'Teensy guard FAULT: CAN_BUS_DOWN — leg {leg_str} '
+                                f'Teensy guard FAULT: CAN_BUS_DOWN — {axis_str} '
                                 f'silent on the Jugglebot bus for '
                                 f'{int(hb.can_fault_age_ms)} ms (trip #'
                                 f'{int(hb.can_fault_count)} since boot): leg output '

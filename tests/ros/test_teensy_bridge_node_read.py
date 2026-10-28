@@ -535,6 +535,29 @@ def test_can_bus_down_edge_names_leg_age_and_count_no_clear_errors(bridge):
     assert 'FAULT LATCHED' not in edge[0]   # other-fault wording must not leak in
 
 
+def test_can_bus_down_edge_names_the_hand_not_leg_6(bridge):
+    """`can_fault_leg` is an AXIS id: 6 is the Hand. The edge ERROR must say
+    "hand", never "leg 6" (JB-1: two 2026-09-13 Hand latches were read as Leg
+    faults and sent the diagnosis to the wrong actuator)."""
+    from unittest.mock import MagicMock
+    teensy, node = bridge
+    node._logger = MagicMock()
+    hb = HeartbeatT2J(t_teensy_us=1, link_state=int(LinkState.UP),
+                      bus1_health=int(BusHealth.OK), bus2_health=int(BusHealth.OK),
+                      fault_state=int(FaultState.CAN_BUS_DOWN),
+                      flags=0, uptime_ms=1,
+                      can_fault_leg=6, can_fault_age_ms=1_500, can_fault_count=2)
+    teensy.send_to_jetson(int(MsgType.HEARTBEAT_T2J), hb.pack())
+    assert _wait_until(lambda: node._latest_heartbeat is not None
+                       and int(node._latest_heartbeat.fault_state)
+                       == int(FaultState.CAN_BUS_DOWN))
+    node._publish_link_status()
+    edge = [m for m in _messages(node._logger.error) if 'CAN_BUS_DOWN' in m]
+    assert len(edge) == 1, f"expected one edge ERROR, got {_messages(node._logger.error)}"
+    assert 'CAN_BUS_DOWN — hand silent' in edge[0]
+    assert 'leg 6' not in edge[0]
+
+
 def test_can_bus_down_clear_info_mentions_stow_no_clear_errors_language(bridge):
     """The 'fault cleared' INFO line, for CAN_BUS_DOWN specifically, must say
     the firmware stowed and that no CLEAR_ERRORS was needed — distinct from the
