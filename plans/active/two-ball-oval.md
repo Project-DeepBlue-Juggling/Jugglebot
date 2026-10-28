@@ -3,7 +3,7 @@ title: Two-ball oval — two balls in one hand, every throw carried back in the 
 created: 2026-10-17
 status: active
 owner: Harrison
-last_updated: 2026-10-24
+last_updated: 2026-10-28
 pathway: two-ball-oval
 scope: >-
   Two balls in one hand on an oval: every throw T to C, the ball carried back in the cup. Five phases, each
@@ -467,6 +467,10 @@ Where the idea lives now: a note inside P3 (below). Code never started; nothing 
   single-leg vibrations seen in both Sittings (leg 1 twice, leg 2 once; the can-bridge lead clamp on stale encoder
   frames, twice with the iq setpoint on the 15 A clamp, once mid-carry) are a PREREQUISITE plan `leg-lead-clamp-age-aware.md` (MET 2026-10-27), and P4/P5 aim at the
   first plannable dwell. P3 stays `in_progress` until the re-gate Sitting (runbook § 9) is flown after the prerequisite.
+- **2026-10-28:** re-gate still UNFLOWN; every Sitting 10-24..10-28 ran `level`. It flies the DEFAULT launch (CFS solver worker): `level` column then `pose` column in one launch (runbook § 9; `num_cycles: 50`, gate still ≥ 30 attempts; `ball_held` flicker with the ball thrown is logged, not a fail; `CLAMP_DUTY` warnings recorded, not a stop).
+  Prerequisites all met: lead-clamp plan 2026-10-27, JB-76 closed 2026-10-28. Three pinned readings: `level` 0.50 refs 35/35, 35/35, 50/50; leg-current refs 7.49 / 10.05 A unchanged; the 22:26 FIFO read CATCH wall/CPU 1.01.
+  History: the JB-95 SCHED_FIFO worker stalled the setpoint stream 60-96 ms per CATCH solve (GIL-coupled preemption, inferred; past the 70 ms firmware cover) and tripped the hand guard on 3 of 5 goals at 22:26, so it is off by default (`solver_rt_priority` 0, checked at P3R-1); JB-98 keeps only the unexplained 21:02 trip as a WATCH item.
+  Power-cycle the bridge first. Next = the re-gate Sitting.
 
 ### P4 — Working point and the dwell ladder — NOT STARTED (premise amended 2026-10-24)
 
