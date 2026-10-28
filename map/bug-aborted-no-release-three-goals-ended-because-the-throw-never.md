@@ -1,5 +1,5 @@
 ---
-id: JB-91
+id: JB-97
 kind: bug
 title: 'ABORTED_NO_RELEASE: three goals ended because the throw never left the hand (new 2026-10-28 21:02)'
 status: inbox

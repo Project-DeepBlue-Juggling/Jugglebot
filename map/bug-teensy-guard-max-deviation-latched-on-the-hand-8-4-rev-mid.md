@@ -1,5 +1,5 @@
 ---
-id: JB-92
+id: JB-98
 kind: bug
 title: Teensy guard MAX_DEVIATION latched on the hand (+8.4 rev) mid-oval; recover_lane found nothing, re-dispatch rejected WRONG_MODE
 status: inbox

@@ -1,5 +1,5 @@
 ---
-id: JB-93
+id: JB-99
 kind: bug
 title: mocap_node loses frames to queue full in bursts before the first dispatch (544 / 373 / 490 frames in the three 2026-10-28 Sittings)
 status: inbox

@@ -1,5 +1,5 @@
 ---
-id: JB-90
+id: JB-96
 kind: bug
 title: Oval CATCH solve CPU (81 ms p50) leaves no margin under the 150 ms unpinned re-aim cliff
 status: inbox
