@@ -8,6 +8,11 @@ blocked_by: []
 owners: []
 rank: 17
 priority: medium
+effort: s
+hardware: none
+owner: decision
+radius: local
+area: map-app
 status: complete
 links:
 - https://github.com/Project-DeepBlue-Juggling/jugglebot-map/commit/c21a8156a8f13e8ad70fed53512385977fd8389c

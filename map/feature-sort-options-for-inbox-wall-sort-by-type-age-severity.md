@@ -7,6 +7,11 @@ created: '2026-10-28'
 updated: '2026-10-28T00:59:45Z'
 owners: []
 priority: medium
+effort: s
+hardware: none
+owner: none
+radius: local
+area: map-app
 blocked_by: []
 links: []
 filed_by: harrison

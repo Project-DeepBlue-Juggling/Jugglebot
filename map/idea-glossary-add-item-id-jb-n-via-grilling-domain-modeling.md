@@ -7,6 +7,11 @@ created: '2026-10-26'
 updated: '2026-10-26T23:08:21Z'
 owners: []
 priority: medium
+effort: s
+hardware: none
+owner: decision
+radius: normative
+area: docs
 blocked_by: []
 links:
 - logbook/2026-10-27-glossary-item-id-term.md

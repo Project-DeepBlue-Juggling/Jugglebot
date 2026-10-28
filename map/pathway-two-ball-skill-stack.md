@@ -8,6 +8,11 @@ updated: '2026-10-24T13:05:00Z'
 owners:
 - harrison
 priority: medium
+effort: xl
+hardware: robot
+owner: hands
+radius: normative
+area: skill-stack
 blocked_by: []
 links: []
 destination: 30 consecutive Ball Butler-fed Catches in one Attempt (the R5 Rung gate), met 2026-10-13.

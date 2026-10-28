@@ -7,6 +7,12 @@ created: '2026-10-27'
 updated: '2026-10-28T03:37:51Z'
 owners: []
 priority: medium
+effort: s
+hardware: bench-leg
+owner: hands
+radius: normative
+diagnosis: confirmed
+area: firmware
 blocked_by: []
 links:
 - teensy_link/homing.py

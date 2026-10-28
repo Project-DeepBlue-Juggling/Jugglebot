@@ -7,6 +7,12 @@ created: '2026-10-28'
 updated: '2026-10-28T06:59:32Z'
 owners: []
 priority: medium
+effort: xs
+hardware: none
+owner: none
+radius: local
+diagnosis: confirmed
+area: gui
 blocked_by: []
 links: []
 filed_by: harrison

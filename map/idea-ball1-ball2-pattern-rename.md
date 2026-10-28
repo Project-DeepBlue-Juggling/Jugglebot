@@ -7,6 +7,11 @@ created: '2026-10-24'
 updated: '2026-10-26T02:15:37Z'
 owners: []
 priority: low
+effort: s
+hardware: none
+owner: decision
+radius: subsystem
+area: gui
 blocked_by: []
 links:
 - logbook/2026-10-26-owner-decisions-chip-oval-label-rename-scope.md

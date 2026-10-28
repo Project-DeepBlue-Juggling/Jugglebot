@@ -7,6 +7,12 @@ created: '2026-10-27'
 updated: '2026-10-28T03:37:52Z'
 owners: []
 priority: medium
+effort: s
+hardware: robot
+owner: hands
+radius: normative
+diagnosis: confirmed
+area: firmware
 blocked_by: []
 links:
 - ros_ws/src/jugglebot/Teensy_code_canbridge/fault_machine.cpp

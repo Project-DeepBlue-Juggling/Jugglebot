@@ -16,6 +16,11 @@ links:
 created: '2026-10-23'
 updated: '2026-10-23T14:37:58Z'
 priority: medium
+effort: s
+hardware: none
+owner: decision
+radius: local
+area: docs
 ---
 
 Part of #21

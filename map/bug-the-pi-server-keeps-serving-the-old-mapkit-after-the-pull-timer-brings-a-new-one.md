@@ -7,6 +7,12 @@ created: '2026-10-24'
 updated: '2026-10-25T05:29:54Z'
 owners: []
 priority: medium
+effort: s
+hardware: none
+owner: none
+radius: subsystem
+diagnosis: confirmed
+area: map-app
 blocked_by: []
 links:
 - logbook/2026-10-24-project-map-p3-p5-fork-server-half.md

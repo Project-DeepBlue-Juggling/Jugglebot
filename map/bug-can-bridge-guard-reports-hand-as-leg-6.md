@@ -7,6 +7,12 @@ created: '2026-09-21'
 updated: '2026-10-28T00:59:45Z'
 owners: []
 priority: medium
+effort: s
+hardware: none
+owner: none
+radius: subsystem
+diagnosis: confirmed
+area: can-bridge
 blocked_by: []
 links:
 - https://github.com/Project-DeepBlue-Juggling/Jugglebot/issues/18

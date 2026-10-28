@@ -8,6 +8,11 @@ updated: '2026-10-25T07:48:39Z'
 owners:
 - harrison
 priority: high
+effort: xl
+hardware: none
+owner: decision
+radius: normative
+area: docs
 blocked_by: []
 links:
 - https://github.com/Project-DeepBlue-Juggling/Jugglebot/issues/21

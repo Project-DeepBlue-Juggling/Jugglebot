@@ -7,6 +7,12 @@ created: '2026-10-24'
 updated: '2026-10-24T08:43:37Z'
 owners: []
 priority: high
+effort: s
+hardware: none
+owner: none
+radius: local
+diagnosis: confirmed
+area: map-app
 blocked_by: []
 links:
 - logbook/2026-10-24-project-map-p4-the-two-pages.md

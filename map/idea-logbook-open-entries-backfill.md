@@ -7,6 +7,11 @@ created: '2026-10-24'
 updated: '2026-10-28T07:40:03Z'
 owners: []
 priority: low
+effort: m
+hardware: none
+owner: decision
+radius: cross-cutting
+area: docs
 blocked_by: []
 links: []
 filed_by: claude

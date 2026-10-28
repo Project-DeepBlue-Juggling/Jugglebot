@@ -7,6 +7,12 @@ created: '2026-10-27'
 updated: '2026-10-28T00:46:55Z'
 owners: []
 priority: medium
+effort: s
+hardware: none
+owner: none
+radius: local
+diagnosis: confirmed
+area: tests-tooling
 blocked_by: []
 links:
 - bug-skill-node-accept-check-fixture-test-flakes-under-full-gate

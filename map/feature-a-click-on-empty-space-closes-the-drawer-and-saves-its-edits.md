@@ -7,6 +7,11 @@ created: '2026-10-25'
 updated: '2026-10-25T00:55:00Z'
 owners: []
 priority: medium
+effort: s
+hardware: none
+owner: none
+radius: local
+area: map-app
 blocked_by: []
 links:
 - https://github.com/Project-DeepBlue-Juggling/jugglebot-map/commit/c1e98d9

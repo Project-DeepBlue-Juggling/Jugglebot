@@ -7,6 +7,11 @@ created: '2026-09-21'
 updated: '2026-10-28T01:22:35Z'
 owners: []
 priority: medium
+effort: m
+hardware: none
+owner: none
+radius: cross-cutting
+area: docs
 blocked_by: []
 links:
 - https://github.com/Project-DeepBlue-Juggling/Jugglebot/issues/17

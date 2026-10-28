@@ -8,6 +8,11 @@ updated: '2026-10-25T08:16:22Z'
 owners:
 - harrison
 priority: medium
+effort: xl
+hardware: robot
+owner: hands
+radius: subsystem
+area: tracking
 blocked_by: []
 links:
 - plans/archived/wave-camera-can3-integration.md

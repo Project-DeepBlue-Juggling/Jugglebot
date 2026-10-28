@@ -7,6 +7,11 @@ created: '2026-10-27'
 updated: '2026-10-27T09:45:32Z'
 owners: []
 priority: high
+effort: s
+hardware: none
+owner: none
+radius: subsystem
+area: map-app
 blocked_by: []
 links:
 - logbook/2026-10-27-map-live-updates-scroll-plan-stack-pills.md

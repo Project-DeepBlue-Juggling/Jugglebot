@@ -8,6 +8,11 @@ updated: '2026-10-26T02:15:37Z'
 owners:
 - harrison
 priority: low
+effort: s
+hardware: none
+owner: none
+radius: subsystem
+area: map-app
 blocked_by: []
 links:
 - https://github.com/Project-DeepBlue-Juggling/jugglebot-map

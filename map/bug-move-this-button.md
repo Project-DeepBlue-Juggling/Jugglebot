@@ -8,6 +8,12 @@ updated: '2026-10-26T12:45:05Z'
 owners:
 - harrison
 priority: medium
+effort: xs
+hardware: none
+owner: none
+radius: local
+diagnosis: confirmed
+area: gui
 blocked_by: []
 links:
 - logbook/2026-10-26-quick-capture-button-moves-left.md

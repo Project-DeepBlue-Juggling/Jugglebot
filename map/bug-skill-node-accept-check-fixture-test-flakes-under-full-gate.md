@@ -7,6 +7,12 @@ created: '2026-10-26'
 updated: '2026-10-28T00:46:54Z'
 owners: []
 priority: medium
+effort: s
+hardware: none
+owner: none
+radius: local
+diagnosis: confirmed
+area: tests-tooling
 blocked_by: []
 links:
 - tests/ros/test_skill_node.py
