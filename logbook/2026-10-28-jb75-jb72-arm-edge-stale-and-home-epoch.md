@@ -82,3 +82,11 @@ As above. Also: the bench driver now passes `homing_result` + `homing_epoch`, pr
 - **Outstanding (hardware):** flash FW 34 on the bench bridge or the robot's bridge (owner's session, launch down), then:
   - re-run `python -u tests/hardware/teensy_home_bench.py` for one normal home and one from within ~1 rev of the stop, both `succeeded=[0]`;
   - for JB-75, arm, stream, disarm, wait > 250 ms, re-arm with no latch, and check that a dead stream after an arm still latches at ~250 ms.
+
+## Flash receipt (main session, 2026-10-28 12:50 AEDT)
+
+Flashed from the merged tree (main `3e7cc38a`) with the launch down: `pio run -e teensy41 -t upload`,
+SUCCESS in 51 s. Receipt: BridgeIdentity `(fw 34, protocol 10)`, Diagnostics for axes 0-6 present
+and fresh, homed state cleared by the reboot as usual (re-home at the next Sitting). The two
+on-robot checks above (fast home, arm-edge re-arm) are still outstanding and gate the close of
+JB-75 and JB-72.

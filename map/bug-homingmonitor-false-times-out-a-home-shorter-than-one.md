@@ -4,7 +4,7 @@ kind: bug
 title: HomingMonitor false-times-out a home shorter than one Diagnostic period
 status: in_progress
 created: '2026-10-27'
-updated: '2026-10-28T00:43:58Z'
+updated: '2026-10-28T02:01:54Z'
 owners: []
 priority: medium
 blocked_by: []
@@ -24,3 +24,4 @@ Possible fix: let the monitor accept an OK it sees after the HOME RPC was accept
 ## Progress
 
 - 2026-10-28: 2026-10-28: FW 34 per-home epoch + monitor epoch gate built and tested; the 10-27 bench false-timeout was teensy_home_bench.py dropping homing_result (fixed); NOT flashed, bench homes outstanding
+- 2026-10-28: 2026-10-28 12:50 AEDT: FW 34 flashed to the ROBOT bridge (receipt 34/10). Still to verify at the next Sitting: python -u tests/hardware/teensy_home_bench.py, one normal home and one near-stop (< 1 s) home, both succeeded=[0].
