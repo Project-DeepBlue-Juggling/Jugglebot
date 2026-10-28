@@ -1528,7 +1528,43 @@ SCENARIO_HARDWARE = [
 ]
 
 
-SCENARIOS = {"scenario1": SCENARIO1, "minimap": scenario_minimap,
+JS_MOCAP_ROWS = js_probe(
+    "(() => { const rows = {};"
+    " document.querySelectorAll('#topic-table-container tr[data-topic]').forEach(r => {"
+    "   rows[r.dataset.topic] = { hz: (r.querySelector('.col-rate') || {}).textContent,"
+    "     reported: !!r.querySelector('.topic-reported'), title: r.title }; });"
+    " return rows; })()")
+
+
+def check_mocap_rows(v):
+    """JB-76 option 1: mocap_data / rigid_body_poses rows show the REPORTED
+    qtm_frame_hz (299.8 -> '300'), labelled via mocap/status; the observed
+    gui/ copies are the real 20 Hz subscriptions (~20, not spied)."""
+    for t in ("mocap_data", "rigid_body_poses"):
+        r = v.get(t)
+        if not r or not r["reported"] or r["hz"].strip() != "300":
+            return False, _ev(v)
+    gm = v.get("gui/mocap_data")
+    try:
+        hz = float(gm["hz"])
+    except (TypeError, ValueError):
+        return False, _ev(v)
+    return (not gm["reported"] and 10 <= hz <= 25), _ev(v)
+
+
+SCENARIO_MOCAP = [
+    StageSpec("connect", "connect", [
+        Assertion("gui-connected", JS_CONN, _safe(check_connected), timeout=30.0),
+    ]),
+    StageSpec("mocap-gui-copies", "mocap-gui-copies", [
+        Assertion("monitor-shows-reported-rate-on-mocap-rows", JS_MOCAP_ROWS,
+                  _safe(check_mocap_rows), timeout=15.0),
+        Assertion("no-page-errors", None, check_no_page_errors, kind="page-errors"),
+    ]),
+]
+
+
+SCENARIOS = {"scenario1": SCENARIO1, "mocap": SCENARIO_MOCAP, "minimap": scenario_minimap,
              "cone": scenario_cone, "hardware": SCENARIO_HARDWARE}
 
 

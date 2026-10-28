@@ -117,7 +117,7 @@ def test_status_publishes_all_keys(node):
     kv = _kv(node.pub_mocap_status.published[0])
     assert set(kv) == {
         ms.KEY_QTM_RECEIVING, ms.KEY_BB_MARKERS_VISIBLE,
-        ms.KEY_MARKER3_VISIBLE, ms.KEY_ALIGNED, ms.KEY_QTM_SYNCED,
+        ms.KEY_MARKER3_VISIBLE, ms.KEY_ALIGNED, ms.KEY_QTM_SYNCED, "qtm_frame_hz",
         ms.KEY_ROBOT_FRAME_OK, ms.KEY_ROBOT_FRAME_RMS_MM, ms.KEY_ROBOT_FRAME_N_MATCHED,
         ms.KEY_ROBOT_FRAME_AGE_S, ms.KEY_ROBOT_FRAME_REASON,
         ms.KEY_ROBOT_FRAME_SETTLED, ms.KEY_ROBOT_FRAME_MOVE_COUNT,

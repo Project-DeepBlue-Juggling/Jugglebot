@@ -30,6 +30,13 @@ def _js_topics():
                 continue
             for m in _SUBSCRIBE_RE.finditer(line):
                 t = m.group(2)
+                # The GUI subscribes the 20 Hz `gui/` copies of the mocap
+                # topics (JB-76, 2026-10-28); the bag carries the originals
+                # and replay maps one onto the other (ros-bridge.js
+                # REPLAY_TOPIC_ALIASES), so the allowlist is keyed by the
+                # original name.
+                if t.startswith("gui/"):
+                    t = t[len("gui/"):]
                 t = t if t.startswith("/") else "/" + t
                 topics.setdefault(t, "%s:%d" % (js.name, lineno))
     return topics

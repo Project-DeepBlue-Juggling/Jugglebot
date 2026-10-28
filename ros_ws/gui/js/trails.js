@@ -6,7 +6,7 @@
  *
  *   const layer = createTrailLayer(parent, {capacity, maxTracks, getResolution, minDtSec});
  *   layer.setColorFn((key, tag) => 0xRRGGBB)   // colour chosen on acquire (and on setColorFn)
- *   layer.beginMessage(tag)                    // one per /mocap_data or /balls message
+ *   layer.beginMessage(tag)                    // one per gui/mocap_data or /balls message
  *   layer.push(tag, key, tSec, xMm, yMm, zMm)  // robot frame mm; key = label | number
  *   layer.endMessage(tag, tSec)                // tracks of `tag` absent from the message end at t
  *   layer.end(key, tSec)                       // explicit end

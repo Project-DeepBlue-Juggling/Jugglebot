@@ -1516,3 +1516,10 @@
     background: var(--bg-card-hover);
     box-shadow: inset 3px 0 0 var(--row-color), inset 0 0 0 1px var(--row-color);
 }
+
+.topic-reported {
+    margin-left: 4px;
+    font-size: 0.75em;
+    color: var(--text-muted);
+    font-style: italic;
+}

@@ -7,11 +7,15 @@ Characterises the two fixes in `rosbridge_websocket_lean.py` (a leaked
 service-client destroyed on the executor thread; a dedicated spin thread
 replacing stock rosbridge_server's 1 ms tornado timer) and the GUI's
 `compression: 'cbor-raw'` raw-subscription spies, against a synthetic
-publisher that mimics the live launch's topic census. Promotes four scratch
+publisher that mimics the live launch's topic census (refreshed 2026-10-28
+to the 300 Hz mocap trio + the 20 Hz gui/ copies, bag 2026-10-28_09-49-31;
+see `--client gui` vs `gui-old`). Promotes four scratch
 prototypes validated 2026-09-13 (`pub_load.py`, `ws_client.py`,
 `run_load_probe.sh`, `leak_client.py`) into one committed, self-contained
 tool. Motivating logbook entry:
-`logbook/2026-09-14-rosbridge-cpu-leak-and-spin.md`.
+`logbook/2026-09-14-rosbridge-cpu-leak-and-spin.md`; second motivating entry
+(JB-76, the census refresh):
+`logbook/2026-10-28-jb76-solve-tail-is-environment-starvation-instrumented.md`.
 
 CONTAINMENT (safety rails, enforced in code — same pattern as
 `gui_synthetic_stack.py`'s, adapted for a one-shot batch-scenario runner
@@ -30,26 +34,31 @@ living on domain 0):
     non-zero (mirrors `gui_synthetic_stack._containment_watchdog`, but a
     batch tool has no persistent state to degrade — it tears down outright).
   * Publishes ONLY synthetic telemetry topic names copied from the live
-    launch's idle census (robot_state, hand_telemetry, leg_cmd_executed,
-    bb/axis_estimates, orchestrator_state, control_mode_topic, link_status,
-    a handful of probe_diag* names, gui/robot_state, gui/hand_telemetry) —
-    never a command topic.
+    launch's census (mocap_data, rigid_body_poses, bb/markers, mocap/status,
+    gui/mocap_data, gui/rigid_body_poses, robot_state, hand_telemetry, balls,
+    leg_setpoint_echo, leg_cmd_executed, bb/axis_estimates,
+    orchestrator_state, control_mode_topic, link_status, a handful of
+    probe_diag* names) — never a command topic.
   * SIGINT/SIGTERM/atexit teardown kills every spawned process GROUP
     (SIGINT, then SIGKILL after an 8 s grace period).
 
 Self-contained: sources `/opt/ros/foxy/setup.bash`, then
-`Jugglebot-skills/ros_ws/install/setup.bash` (for `jugglebot_interfaces`),
+this checkout's `ros_ws/install/setup.bash` (for `jugglebot_interfaces`),
 then the project venv, via a one-time re-exec — so a bare
 `python3 tools/probes/rosbridge_cpu_probe.py ...` works even if the caller
 forgot to source anything. All children inherit that sourced environment.
 
 Subcommands:
-  load    --server {stock,lean} --client {none,gui,rawspy,nospy}
+  load    --server {stock,lean} --client {none,gui,gui-old,nospy}
           [--seconds 35] [--warm 8] [--port 9391] [--domain 87]
-      Synthetic publisher + the chosen rosbridge server + the chosen
-      websocket client. Reports mean server %CPU (after warm-up), publisher
-      %CPU, and the client's received Hz per topic (via `pidstat -u -p
-      <server_pid>,<publisher_pid> 1 N`).
+      Synthetic publishers (one process per PUB_GROUPS entry) + the chosen
+      rosbridge server + the chosen websocket client. Reports mean server
+      %CPU (after warm-up), publisher %CPU (summed), and the client's
+      received Hz per topic (via `pidstat -u -p <server>,<publishers> 1 N`).
+      Clients: gui = the GUI as of JB-76 option 1 (decodes the 20 Hz gui/
+      copies, no spy on the 300 Hz trio); gui-old = the pre-change GUI
+      (decodes the 300 Hz originals at 50 ms, spies /bb/markers); nospy =
+      gui minus the 100 Hz spies; none = server idle.
 
   leak    --server {stock,lean} [--calls 1200] [--port 9391] [--domain 87]
           [--idle-seconds 20]
@@ -108,21 +117,56 @@ _SOURCED_SENTINEL = '_ROSBRIDGE_CPU_PROBE_SOURCED'
 ALLOWED_NODES = {'rosbridge_cpu_probe', 'rosbridge_cpu_probe_pub',
                  'rosbridge_websocket', 'rosapi', 'rosapi_params'}
 
-# rosbridge subscribe sets mimicking the GUI (ros_ws/gui/js/main.js:297-347,
-# 1087), lifted from the validated ws_client.py prototype.
+# rosbridge subscribe sets mimicking the GUI (ros_ws/gui/js/main.js subscribeAll()
+# + runTopicDiscovery(), as of JB-76 option 1, 2026-10-28). Decoded
+# subscriptions are (topic, type, throttle_ms); spies are cbor-raw at 200 ms.
 _DIAG = 'diagnostic_msgs/msg/DiagnosticStatus'
+_MOCAP = 'jugglebot_interfaces/msg/MocapDataMulti'
+_RBP = 'jugglebot_interfaces/msg/RigidBodyPoses'
 FULL_LO = [('/orchestrator_state', 'std_msgs/msg/String', 0),
            ('/control_mode_topic', 'std_msgs/msg/String', 0),
            ('/link_status', _DIAG, 0),
+           ('/mocap/status', _DIAG, 0),
            ('/probe_diag10_a', _DIAG, 0),
            ('/probe_diag10_b', _DIAG, 0)]
 FULL_HI = [('/robot_state', 'jugglebot_interfaces/msg/RobotState', 50),
-           ('/hand_telemetry', 'jugglebot_interfaces/msg/HandTelemetryMessage', 100)]
-COPIES = [('/gui/robot_state', 'jugglebot_interfaces/msg/RobotState', 0),
-          ('/gui/hand_telemetry', 'jugglebot_interfaces/msg/HandTelemetryMessage', 0)]
+           ('/hand_telemetry', 'jugglebot_interfaces/msg/HandTelemetryMessage', 100),
+           ('/balls', 'jugglebot_interfaces/msg/BallStateArray', 20),
+           ('/leg_setpoint_echo', 'std_msgs/msg/Float64MultiArray', 50)]
+# The mocap pair the GUI decodes: the 20 Hz gui/ copies now (throttle 0: the
+# copy's own rate is the throttle, and a 50 ms throttle on a 50 ms-period
+# stream beat against its jitter and halved the received rate to 10 Hz on this
+# replica, 2026-10-28), the 300 Hz originals at 50 ms before JB-76 option 1
+# (rosbridge deserialises every incoming message BEFORE the throttle, so on
+# the originals the throttle saved nothing).
+GUI_MOCAP_NEW = [('/gui/mocap_data', _MOCAP, 0), ('/gui/rigid_body_poses', _RBP, 0)]
+GUI_MOCAP_OLD = [('/mocap_data', _MOCAP, 50), ('/rigid_body_poses', _RBP, 50)]
 SPY_HI = [('/leg_cmd_executed', 'sensor_msgs/msg/JointState'),
           ('/bb/axis_estimates', 'sensor_msgs/msg/JointState')]
 SPY_LO = [('/probe_diag5_a', _DIAG), ('/probe_diag5_b', _DIAG)]
+# Pre-change topic monitor also spied the 300 Hz /bb/markers (the GUI never
+# decoded it); main.js now excludes it via panels.js REPORTED_TOPICS.
+SPY_MOCAP_OLD = [('/bb/markers', _MOCAP)]
+
+# Today's census: bag ~/Desktop/rosbags/2026-10-28_09-49-31 (442 s Sitting;
+# per-topic stats in temp/probes/rosbridge_cpu_2026-10-28/bagstats.txt).
+# QTM frames go out at 300 Hz on three topics since 2026-10-10 (measured
+# 298.2 Hz); /bb/markers is unbagged, ASSUMED to follow every frame.
+MOCAP_HZ = 298.2
+# gui/ copies = every 15th frame (mocap_node `gui_copy_divisor`), 300 -> 20 Hz.
+GUI_COPY_HZ = 20.0
+QTM_FRAME_HZ_REPORTED = '299.8'   # mocap/status `qtm_frame_hz` value (5 Hz topic)
+# Message sizes to match (bag means): mocap_data 1193 B, rigid_body_poses 412 B.
+MOCAP_MARKER_LABELS = (['Base - %d' % i for i in range(1, 8)] +
+                       ['Platform - %d' % i for i in (1, 3, 4, 5)] +
+                       ['Catching Cone - 4', 'Catching Cone - 5'] +
+                       ['Ball Butler - %d' % i for i in (1, 2, 3, 4, 6, 7)] + [''] * 6)
+BB_MARKERS_N = 6   # /bb/markers carries the BB fiducials only
+
+# Publisher groups (one process each so the 300 Hz publishers do not share a
+# GIL): the three 300 Hz mocap topics, then 'h' (the ~100 Hz tier) and 'l'
+# (10 Hz and slower, plus the 20 Hz gui/ copies).
+PUB_GROUPS = ('m/mocap_data', 'm/rigid_body_poses', 'm/bb/markers', 'h', 'l')
 
 
 def log(msg: str) -> None:
@@ -145,7 +189,7 @@ def _maybe_reexec_with_ros_env() -> None:
         return
     setup_files = [
         '/opt/ros/foxy/setup.bash',
-        '/home/jetson/Desktop/Jugglebot-skills/ros_ws/install/setup.bash',
+        os.path.join(REPO_ROOT, 'ros_ws', 'install', 'setup.bash'),
         '/home/jetson/Desktop/PDJ_venv/venv/bin/activate',
     ]
     missing = [p for p in setup_files if not os.path.isfile(p)]
@@ -358,27 +402,50 @@ def count_spin_exceptions(log_path: str):
 # ---------------------------------------------------------------------------
 
 def _hidden_pub(argv):
-    """Synthetic publisher mimicking the idle launch's topic census (bag
-    2026-09-13_11-57-45): 4 topics at 100 Hz (robot_state, hand_telemetry,
-    leg_cmd_executed, bb/axis_estimates), ~6 at 10 Hz, 2 at 5 Hz, plus
-    GUI-rate copies gui/robot_state (20 Hz) and gui/hand_telemetry (10 Hz).
-    Ported from the validated pub_load.py prototype."""
-    dur = float(argv[0])
+    """Synthetic publisher for ONE group of PUB_GROUPS, mimicking today's
+    launch (bag 2026-10-28_09-49-31): the 300 Hz mocap trio (mocap_data
+    1193 B, rigid_body_poses 412 B, bb/markers), the ~100 Hz tier
+    (robot_state, hand_telemetry, leg_cmd_executed, bb/axis_estimates, balls,
+    leg_setpoint_echo), the 10/5 Hz diagnostics and mocap/status with a
+    qtm_frame_hz value, and the 20 Hz gui/mocap_data + gui/rigid_body_poses
+    copies. Deadline-scheduled loop (not rclpy timers: a timer cannot hold
+    300 Hz); the loop shape is the 2026-10-28 rb_census.py replica's."""
+    group, dur = argv[0], float(argv[1])
     import rclpy
     from rclpy.node import Node
     from sensor_msgs.msg import JointState
-    from std_msgs.msg import String
+    from std_msgs.msg import Float64MultiArray, String
     from diagnostic_msgs.msg import DiagnosticStatus, KeyValue
-    from jugglebot_interfaces.msg import RobotState, MotorStateSingle, HandTelemetryMessage
+    from geometry_msgs.msg import PoseStamped
+    from jugglebot_interfaces.msg import (
+        BallState, BallStateArray, HandTelemetryMessage, MocapDataMulti, MocapDataSingle,
+        MotorStateSingle, RigidBodyPose, RigidBodyPoses, RobotState)
 
     rclpy.init()
     n = Node('rosbridge_cpu_probe_pub')
 
-    def diag():
+    def diag(extra=()):
         d = DiagnosticStatus(name='probe', message='ok', hardware_id='x')
         d.values = [KeyValue(key='k%d' % i, value='%.3f' % (i * 1.1)) for i in range(8)]
+        d.values += [KeyValue(key=k, value=v) for k, v in extra]
         return d
 
+    markers = [MocapDataSingle(label=lb, residual=0.8) for lb in MOCAP_MARKER_LABELS]
+    for i, m in enumerate(markers):
+        m.position.x, m.position.y, m.position.z = 10.0 * i, -3.0 * i, 1.5 * i
+    mocap = MocapDataMulti(markers=markers, aligned=True)
+    bb_markers = MocapDataMulti(markers=markers[:BB_MARKERS_N], aligned=True)
+    rbp = RigidBodyPoses()
+    rbp.header.frame_id = 'world'
+    for name, frame in (('Base', 'world'), ('Platform', 'platform_start'),
+                        ('Catching_Cone', 'world'), ('Ball_Butler', 'world')):
+        ps = PoseStamped()
+        ps.header.frame_id = frame
+        ps.pose.orientation.w = 1.0
+        rbp.bodies.append(RigidBodyPose(name=name, pose=ps))
+    balls = BallStateArray(balls=[BallState(id=i, status=2, tracking=1, source='jugglebot',
+                                            destination='jugglebot', landing_from_fit=True)
+                                  for i in range(3)])   # ~533 B (bag mean 540)
     rs = RobotState()
     rs.motor_states = [MotorStateSingle(pos_estimate=1.0, vel_estimate=0.1, bus_voltage=24.0)
                        for _ in range(9)]
@@ -386,78 +453,97 @@ def _hidden_pub(argv):
     ht = HandTelemetryMessage(pos_cmd=1.0, pos_meas=1.0)
     lce = JointState(name=['leg%d' % i for i in range(6)], position=[0.1] * 6, velocity=[0.0] * 6)
     bba = JointState(name=['bb_pitch', 'bb_hand'], position=[0.1, 0.2], velocity=[0.0, 0.0])
-    dg = diag()
+    echo = Float64MultiArray(data=[0.1] * 6)
     st = String(data='IDLE')
+    dg = diag()
+    mstat = diag([('qtm_receiving', '1'), ('qtm_frame_hz', QTM_FRAME_HZ_REPORTED)])
 
-    p100 = [(n.create_publisher(RobotState, 'robot_state', 10), rs),
-            (n.create_publisher(HandTelemetryMessage, 'hand_telemetry', 10), ht),
-            (n.create_publisher(JointState, 'leg_cmd_executed', 10), lce),
-            (n.create_publisher(JointState, 'bb/axis_estimates', 10), bba)]
-    p10 = [(n.create_publisher(String, t, 10), st) for t in ('orchestrator_state', 'control_mode_topic')]
-    p10 += [(n.create_publisher(DiagnosticStatus, t, 10), dg)
-            for t in ('link_status', 'probe_diag10_a', 'probe_diag10_b')]
-    p5 = [(n.create_publisher(DiagnosticStatus, t, 10), dg) for t in ('probe_diag5_a', 'probe_diag5_b')]
-    g_rs = n.create_publisher(RobotState, 'gui/robot_state', 10)
-    g_ht = n.create_publisher(HandTelemetryMessage, 'gui/hand_telemetry', 10)
-
-    cnt = {'t100': 0}
-
-    def t100():
+    def stamp_state():
         stamp = n.get_clock().now().to_msg()
         rs.timestamp = stamp
         ht.timestamp = stamp
-        for p, m in p100:
-            p.publish(m)
-        cnt['t100'] += 1
-        if cnt['t100'] % 5 == 0:
-            g_rs.publish(rs)
-        if cnt['t100'] % 10 == 0:
-            g_ht.publish(ht)
 
-    n.create_timer(0.01, t100)
-    n.create_timer(0.1, lambda: [p.publish(m) for p, m in p10])
-    n.create_timer(0.2, lambda: [p.publish(m) for p, m in p5])
-
-    t0 = time.monotonic()
+    # (topic, type, msg, Hz, pre-publish hook)
+    census = {
+        'm/mocap_data': [('mocap_data', MocapDataMulti, mocap, MOCAP_HZ, None)],
+        'm/rigid_body_poses': [('rigid_body_poses', RigidBodyPoses, rbp, MOCAP_HZ, None)],
+        'm/bb/markers': [('bb/markers', MocapDataMulti, bb_markers, MOCAP_HZ, None)],
+        'h': [('robot_state', RobotState, rs, 88.9, stamp_state),
+              ('hand_telemetry', HandTelemetryMessage, ht, 96.5, None),
+              ('leg_cmd_executed', JointState, lce, 99.7, None),
+              ('bb/axis_estimates', JointState, bba, 99.7, None),
+              ('balls', BallStateArray, balls, 88.3, None),
+              ('leg_setpoint_echo', Float64MultiArray, echo, 37.7, None)],
+        'l': ([(t, String, st, 10.0, None) for t in ('orchestrator_state', 'control_mode_topic')] +
+              [(t, DiagnosticStatus, dg, 10.0, None)
+               for t in ('link_status', 'probe_diag10_a', 'probe_diag10_b')] +
+              [(t, DiagnosticStatus, dg, 5.0, None) for t in ('probe_diag5_a', 'probe_diag5_b')] +
+              [('mocap/status', DiagnosticStatus, mstat, 5.0, None),
+               ('gui/mocap_data', MocapDataMulti, mocap, GUI_COPY_HZ, None),
+               ('gui/rigid_body_poses', RigidBodyPoses, rbp, GUI_COPY_HZ, None)]),
+    }[group]
+    t0 = time.perf_counter()
+    plan = [[n.create_publisher(cls, t, 10), msg, 1.0 / hz, t0, 0, t, hook]
+            for t, cls, msg, hz, hook in census]
     end = t0 + dur
-    while time.monotonic() < end:
-        rclpy.spin_once(n, timeout_sec=0.1)
-    print('publisher: 100 Hz timer achieved %.1f Hz over %.0f s'
-          % (cnt['t100'] / (time.monotonic() - t0), dur))
+    try:
+        _pub_loop(plan, end)
+    except (KeyboardInterrupt, SystemExit):   # teardown() SIGINTs us once the scenario is over
+        pass
+    el = time.perf_counter() - t0
+    print('publisher %s achieved Hz over %.0f s: %s'
+          % (group, el, {p[5]: round(p[4] / el, 1) for p in plan}))
     n.destroy_node()
     rclpy.shutdown()
 
 
+def _pub_loop(plan, end):
+    while True:
+        now = time.perf_counter()
+        if now > end:
+            break
+        for p in plan:
+            if now >= p[3]:
+                if p[6]:
+                    p[6]()
+                p[0].publish(p[1])
+                p[4] += 1
+                p[3] += p[2]
+                if p[3] < now - 0.5:   # fell behind: resync, do not burst
+                    p[3] = now
+        dt = min(p[3] for p in plan) - time.perf_counter()
+        if dt > 0:
+            time.sleep(dt)
+
+
+def _client_subs(mode):
+    """(topic, type, throttle_ms, compression) tuples the GUI client sends.
+    gui = main.js now (JB-76 option 1: decodes the 20 Hz gui/ copies, no spy
+    on the 300 Hz trio); gui-old = the pre-change set (decodes the 300 Hz
+    originals at 50 ms and spies /bb/markers cbor-raw); nospy = gui without
+    the 100 Hz spies. Every spy is cbor-raw 200 ms (ros-bridge.js
+    subscribeSpy, the 2026-09-14 fix)."""
+    mocap = GUI_MOCAP_OLD if mode == 'gui-old' else GUI_MOCAP_NEW
+    spies = SPY_LO + ([] if mode == 'nospy' else SPY_HI) + (SPY_MOCAP_OLD if mode == 'gui-old' else [])
+    return ([(t, ty, thr, 'none') for t, ty, thr in FULL_HI + FULL_LO + mocap] +
+            [(t, ty, 200, 'cbor-raw') for t, ty in spies])
+
+
 def _hidden_client(argv):
-    """rosbridge client mimicking the GUI's subscription set. Modes: none,
-    gui (full subs + 200 ms cbor-raw spies), nospy (gui minus the 100 Hz
-    spies), rawspy (kept for symmetry; spies are always cbor-raw here,
-    matching the shipped GUI fix). Ported from the validated ws_client.py
-    prototype (its 'copies' mode is retained for the historical
-    source-decimation comparison but is not one of the --client choices)."""
+    """rosbridge client mimicking the GUI's subscription set (`_client_subs`).
+    Modes: none, gui, gui-old, nospy. Ported from the validated ws_client.py
+    prototype."""
     mode, port, dur = argv[0], int(argv[1]), float(argv[2])
     import asyncio
     from tornado.websocket import websocket_connect
 
     async def main_coro():
         ws = await websocket_connect('ws://localhost:%d' % port)
-
-        def sub(t, ty, thr, comp='none'):
-            ws.write_message(json.dumps({'op': 'subscribe', 'topic': t, 'type': ty,
-                                         'throttle_rate': thr, 'queue_length': 0,
-                                         'compression': comp}))
-
         if mode != 'none':
-            for t, ty, thr in (COPIES if mode == 'copies' else FULL_HI) + FULL_LO:
-                sub(t, ty, thr)
-            spies = SPY_LO + ([] if mode in ('nospy', 'copies') else SPY_HI)
-            for t, ty in spies:
-                # 'gui' reproduces the PRE-FIX baseline (JSON spies, as the
-                # GUI did before ros-bridge.js's subscribeSpy fix); 'rawspy'
-                # is the shipped fix (cbor-raw). Collapsing this distinction
-                # would make acceptance test B's gui-vs-rawspy comparison
-                # meaningless -- keep them distinct.
-                sub(t, ty, 200, 'cbor-raw' if mode == 'rawspy' else 'none')
+            for t, ty, thr, comp in _client_subs(mode):
+                ws.write_message(json.dumps({'op': 'subscribe', 'topic': t, 'type': ty,
+                                             'throttle_rate': thr, 'queue_length': 0,
+                                             'compression': comp}))
 
         counts = collections.Counter()
         end = time.monotonic() + dur
@@ -519,14 +605,10 @@ def _hidden_churnclient(argv):
     from tornado.websocket import websocket_connect
 
     def _sub_all(ws):
-        for t, ty, thr in FULL_HI + FULL_LO:
+        for t, ty, thr, comp in _client_subs('gui'):
             ws.write_message(json.dumps({'op': 'subscribe', 'topic': t, 'type': ty,
                                          'throttle_rate': thr, 'queue_length': 0,
-                                         'compression': 'none'}))
-        for t, ty in SPY_LO + SPY_HI:
-            ws.write_message(json.dumps({'op': 'subscribe', 'topic': t, 'type': ty,
-                                         'throttle_rate': 200, 'queue_length': 0,
-                                         'compression': 'cbor-raw'}))
+                                         'compression': comp}))
 
     async def one_cycle(i):
         try:
@@ -586,13 +668,20 @@ def _start_ctrl_and_watchdog(domain):
     return rclpy, ctrl, stop_wd
 
 
+def spawn_publishers(duration, out_dir):
+    """One publisher process per PUB_GROUPS entry; returns the Popen list."""
+    return [spawn('publisher_' + g.replace('/', '_'),
+                  [sys.executable, THIS_FILE, '_pub', g, str(duration)],
+                  out_path=os.path.join(out_dir, 'publisher_%s.log' % g.replace('/', '_')))
+            for g in PUB_GROUPS]
+
+
 def cmd_load(args):
     rclpy, ctrl, stop_wd = _start_ctrl_and_watchdog(args.domain)
     try:
         out_dir = make_out_dir('load_%s_%s' % (args.server, args.client))
         total = args.seconds + args.warm
-        pub_proc = spawn('publisher', [sys.executable, THIS_FILE, '_pub', str(total + 20)],
-                          out_path=os.path.join(out_dir, 'publisher.log'))
+        pub_procs = spawn_publishers(total + 20, out_dir)
         server_cmd, server_env, desc = server_command(args.server, args.port)
         log('server: %s' % desc)
         server_proc = spawn('server', server_cmd, env_extra=server_env,
@@ -603,11 +692,12 @@ def cmd_load(args):
         client_proc = spawn('client', [sys.executable, THIS_FILE, '_client', args.client,
                                        str(args.port), str(total)], out_path=client_log_path)
         pidstat_path = os.path.join(out_dir, 'pidstat.txt')
-        subprocess.run(['pidstat', '-u', '-p', '%d,%d' % (server_proc.pid, pub_proc.pid),
+        subprocess.run(['pidstat', '-u', '-p', ','.join(str(p.pid) for p in [server_proc] + pub_procs),
                         '1', str(int(total))], stdout=open(pidstat_path, 'w'))
         client_proc.wait(timeout=30)
         server_mean = parse_pidstat_mean(pidstat_path, server_proc.pid, warm=int(args.warm))
-        pub_mean = parse_pidstat_mean(pidstat_path, pub_proc.pid, warm=int(args.warm))
+        pub_mean = sum(parse_pidstat_mean(pidstat_path, p.pid, warm=int(args.warm))
+                       for p in pub_procs)  # summed over the publisher processes
         client_result = open(client_log_path).read().strip()
         print('load server=%s client=%s: server %%CPU=%.1f (after %ds warm-up), '
               'publisher %%CPU=%.1f' % (args.server, args.client, server_mean, int(args.warm), pub_mean))
@@ -667,8 +757,7 @@ def cmd_churn(args):
     try:
         out_dir = make_out_dir('churn_%s' % args.server)
         pub_total = args.cycles * (args.hold + 1.0) + args.steady_seconds + 30
-        pub_proc = spawn('publisher', [sys.executable, THIS_FILE, '_pub', str(pub_total)],
-                          out_path=os.path.join(out_dir, 'publisher.log'))
+        spawn_publishers(pub_total, out_dir)
         server_cmd, server_env, desc = server_command(args.server, args.port)
         log('server: %s' % desc)
         server_proc = spawn('server', server_cmd, env_extra=server_env,
@@ -735,7 +824,7 @@ def _build_parser():
 
     p_load = sub.add_parser('load')
     p_load.add_argument('--server', choices=['stock', 'lean'], required=True)
-    p_load.add_argument('--client', choices=['none', 'gui', 'rawspy', 'nospy'], required=True)
+    p_load.add_argument('--client', choices=['none', 'gui', 'gui-old', 'nospy'], required=True)
     p_load.add_argument('--seconds', type=float, default=35)
     p_load.add_argument('--warm', type=float, default=8)
     p_load.add_argument('--port', type=int, default=DEFAULT_PORT)
@@ -761,7 +850,7 @@ def _build_parser():
 
     p_cmp = sub.add_parser('compare')
     p_cmp.add_argument('--scenario', choices=['load', 'leak'], required=True)
-    p_cmp.add_argument('--client', choices=['none', 'gui', 'rawspy', 'nospy'], default='gui')
+    p_cmp.add_argument('--client', choices=['none', 'gui', 'gui-old', 'nospy'], default='gui')
     p_cmp.add_argument('--calls', type=int, default=1200)
     p_cmp.add_argument('--seconds', type=float, default=35)
     p_cmp.add_argument('--warm', type=float, default=8)

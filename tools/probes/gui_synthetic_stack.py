@@ -25,7 +25,10 @@ CONTAINMENT (safety rails, enforced in code):
   * PUBLISHES only GUI-consumed telemetry topics: ``orchestrator_state``,
     ``control_mode_topic``, ``robot_state``, ``link_status``, ``profile``,
     ``hand_telemetry``, ``leg_setpoint_echo``, ``cone/heartbeat``,
-    ``cone/timing_result`` (one-shot).  It NEVER publishes to a command
+    ``cone/timing_result`` (one-shot), plus the mocap-stream topics the GUI
+    consumes since JB-76 option 1 (2026-10-28): ``gui/mocap_data`` and
+    ``gui/rigid_body_poses`` (mocap_node's 20 Hz copies) and ``mocap/status``
+    (carries ``qtm_frame_hz``).  It NEVER publishes to a command
     topic the robot acts on.
   * SERVES ``set_setpoint_output`` / ``clear_errors`` / ``home`` /
     ``trajectory/go_home`` / ``trajectory/hold`` as RECORDERS that only
@@ -240,6 +243,15 @@ BASELINE_CFG = {
     "orchestrator_state": {"period": 0.5,  "enabled": False, "data": "IDLE"},
     "control_mode_topic": {"period": 0.5,  "enabled": False, "data": ""},
     "cone/heartbeat":     {"period": 0.1,  "enabled": False, "values": dict(CONE_HB_BASE)},
+    # Mocap-stream topics (JB-76 option 1): the GUI subscribes mocap_node's 20 Hz
+    # COPIES gui/mocap_data + gui/rigid_body_poses (never the 300 Hz originals) and
+    # reads the QTM frame rate off mocap/status `qtm_frame_hz`.
+    "gui/mocap_data":       {"period": 0.05, "enabled": False, "aligned": True,
+                             "markers": [[100.0, 50.0, 800.0], [-120.0, 80.0, 900.0]]},
+    "gui/rigid_body_poses": {"period": 0.05, "enabled": False,
+                             "bodies": ["Platform", "Base"]},
+    "mocap/status":         {"period": 0.2,  "enabled": False,
+                             "values": {"qtm_frame_hz": "299.8"}},
     # cone/timing_result is EVENT-shaped (one message per catch in
     # production) — driven exclusively via the 'pub_once' command, never a
     # continuous timer, so it carries no 'enabled' flag here.
@@ -256,6 +268,15 @@ STAGES = {
     # UNKNOWN) but no profile yet.
     "connect": {
         "link_status": {"enabled": True},
+    },
+    # Mocap copies at 20 Hz + mocap/status 5 Hz reporting qtm_frame_hz 299.8:
+    # markers render, the topic monitor must NOT spy mocap_data /
+    # rigid_body_poses and must show the reported rate on those rows.
+    "mocap-gui-copies": {
+        "link_status": {"enabled": True},
+        "gui/mocap_data": {"enabled": True},
+        "gui/rigid_body_poses": {"enabled": True},
+        "mocap/status": {"enabled": True},
     },
     # 1 Hz profile with DISTINCT slot values (keystone slot-mapping check).
     "can-slot-mapping": {
@@ -551,7 +572,9 @@ def make_node(rclpy):
     from jugglebot_interfaces.msg import (CatchingConeHeartbeat,
                                           CatchTimingResult,
                                           HandTelemetryMessage,
-                                          MotorStateSingle, RobotState)
+                                          MocapDataMulti, MocapDataSingle,
+                                          MotorStateSingle, RigidBodyPose,
+                                          RigidBodyPoses, RobotState)
     from std_msgs.msg import Float64MultiArray, String
     from std_srvs.srv import SetBool, Trigger
 
@@ -586,6 +609,9 @@ def make_node(rclpy):
                 "leg_setpoint_echo": self.create_publisher(Float64MultiArray, "leg_setpoint_echo", 10),
                 "cone/heartbeat": self.create_publisher(CatchingConeHeartbeat, "cone/heartbeat", 10),
                 "cone/timing_result": self.create_publisher(CatchTimingResult, "cone/timing_result", 10),
+                "gui/mocap_data": self.create_publisher(MocapDataMulti, "gui/mocap_data", 10),
+                "gui/rigid_body_poses": self.create_publisher(RigidBodyPoses, "gui/rigid_body_poses", 10),
+                "mocap/status": self.create_publisher(DiagnosticStatus, "mocap/status", 10),
             }
             self._msg = {
                 "robot_state": self._make_robot_state,
@@ -597,7 +623,11 @@ def make_node(rclpy):
                 "leg_setpoint_echo": self._make_leg_echo,
                 "cone/heartbeat": self._make_cone_heartbeat,
                 "cone/timing_result": self._make_cone_timing_result,
+                "gui/mocap_data": self._make_mocap_data,
+                "gui/rigid_body_poses": self._make_rigid_body_poses,
+                "mocap/status": self._make_diag("mocap/status", "mocap_status"),
             }
+            self._Mocap = (MocapDataMulti, MocapDataSingle, RigidBodyPose, RigidBodyPoses)
             self._ConeHeartbeat = CatchingConeHeartbeat
             self._ConeTimingResult = CatchTimingResult
             self._DiagnosticStatus = DiagnosticStatus
@@ -707,6 +737,31 @@ def make_node(rclpy):
                               for k, v in c["values"].items()]
                 return msg
             return build
+
+        def _make_mocap_data(self, c):
+            Multi, Single, _, _ = self._Mocap
+            msg = Multi()
+            msg.aligned = bool(c["aligned"])
+            msg.stamp = self.get_clock().now().to_msg()
+            for x, y, z in c["markers"]:
+                m = Single()
+                m.position.x, m.position.y, m.position.z = float(x), float(y), float(z)
+                m.residual = 0.5
+                m.label = ""
+                msg.markers.append(m)
+            return msg
+
+        def _make_rigid_body_poses(self, c):
+            _, _, Body, Poses = self._Mocap
+            msg = Poses()
+            msg.header.stamp = self.get_clock().now().to_msg()
+            for name in c["bodies"]:
+                b = Body()
+                b.name = str(name)
+                b.pose.header.stamp = msg.header.stamp
+                b.pose.pose.orientation.w = 1.0
+                msg.bodies.append(b)
+            return msg
 
         def _make_string(self, topic):
             def build(c):

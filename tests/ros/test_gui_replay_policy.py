@@ -73,7 +73,18 @@ def _main_throttles():
     body = re.search(r"function subscribeAll\(\) \{(.*?)\n\}", src, re.S).group(1)
     hits = re.findall(r"ros\.subscribe\('([^']+)',\s*'[^']+',\s*\w+,\s*(\d+)\)", body)
     assert hits, "no ros.subscribe(...) calls parsed from subscribeAll()"
-    return {"/" + name: int(ms) for name, ms in hits}
+    # `gui/` copies are keyed by the bag's original topic name, the way
+    # replay dispatches them (ros-bridge.js REPLAY_TOPIC_ALIASES).
+    return {"/" + (name[len("gui/"):] if name.startswith("gui/") else name): int(ms)
+            for name, ms in hits}
+
+
+#: Topics the live GUI takes as mocap_node's pre-decimated 20 Hz `gui/` copy
+#: (JB-76 option 1, 2026-10-28) -> the replay throttle that stands in for that
+#: copy when the bag's 300 Hz original is replayed. Live, the copy's own rate
+#: is the throttle and main.js MUST pass 0: a 50 ms throttle on a 50 ms-period
+#: stream beats against its jitter and halves the rate (10 Hz measured).
+GUI_COPY_REPLAY_MS = {"/mocap_data": 50, "/rigid_body_poses": 50}
 
 
 def test_policy_covers_exactly_the_converted_topics(policy):
@@ -89,6 +100,10 @@ def test_throttles_match_main_js(policy):
     live = _main_throttles()
     assert set(live) == set(schema.SUBSCRIBED)
     for topic, row in policy["table"].items():
+        if topic in GUI_COPY_REPLAY_MS:
+            assert live[topic] == 0, "%s: live throttle must be 0 on the gui/ copy" % topic
+            assert row["throttleMs"] == GUI_COPY_REPLAY_MS[topic], topic
+            continue
         assert row["throttleMs"] == live.get(topic, 0), topic
 
 

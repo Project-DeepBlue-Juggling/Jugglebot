@@ -238,7 +238,7 @@ export function updateFlags(robotState) {
     setFlagError('flag-undervoltage', robotState.has_undervoltage, 'Undervoltage', 'Voltage OK');
 }
 
-/** Last-known mocap connection state, from main.js's mocap_data watchdog.
+/** Last-known mocap connection state, from main.js's gui/mocap_data watchdog.
  *  Read by applyBBCalibrateGate() (F4/Q4) — the Calibrate button is useless
  *  without QTM marker data, so it follows this flag. */
 let mocapConnected = false;
@@ -679,7 +679,7 @@ export function updateBBPanel(hb) {
  * Apply the Calibrate button's enable rule (F4/Q4).
  *
  * THREE preconditions, checked in that order. BB must be CONNECTED at all —
- * the gate is re-run from the mocap_data watchdog, which keeps ticking after
+ * the gate is re-run from the gui/mocap_data watchdog, which keeps ticking after
  * Ball Butler goes away, so without an explicit connection flag the first
  * mocap frame after a BB disconnect re-enabled the button off a stale
  * lastBBState (see the bbConnected declaration). BB must be IDLE (state 1) —
@@ -1184,12 +1184,48 @@ export function registerTopic(topicName, topicType) {
 }
 
 /**
+ * Topics whose monitor rows are REPORTED by mocap_node, not observed by this GUI.
+ * The three 300 Hz mocap-stream topics are no longer spied (JB-76 option 1,
+ * 2026-10-28: rosbridge deserialises every message, so a 200 ms-throttled spy
+ * still cost the full ingest). One QTM stream feeds all three, so each row shows
+ * the `qtm_frame_hz` value of mocap/status. The two 100 Hz topics (robot_state,
+ * hand_telemetry) keep their spies — owner requirement, 2026-09-14.
+ */
+export const REPORTED_TOPICS = new Set(['mocap_data', 'rigid_body_poses', 'bb/markers']);
+/** mocap/status is 5 Hz; older than this means mocap_node stopped reporting. */
+const REPORTED_STALE_MS = 3000;
+/** @type {{hz: number, at: number} | null} */
+let reportedMocapRate = null;
+
+/**
+ * Record the QTM frame rate mocap_node reported in mocap/status (`qtm_frame_hz`).
+ * @param {number} hz
+ */
+export function setReportedMocapRate(hz) {
+    if (!Number.isFinite(hz)) return;
+    reportedMocapRate = { hz, at: clock.now() };
+    for (const name of REPORTED_TOPICS) {
+        if (!topicData.has(name)) topicData.set(name, { type: '', timestamps: [], lastTime: 0 });
+    }
+}
+
+/** Reported Hz if fresh, else null (stale or never reported). */
+function freshReportedHz(now) {
+    return reportedMocapRate && now - reportedMocapRate.at < REPORTED_STALE_MS ? reportedMocapRate.hz : null;
+}
+
+/**
  * Compute rate for a topic entry.
  * @param {object} entry
  * @param {number} windowSec
+ * @param {string} [name] topic name (reported topics read mocap/status instead)
  * @returns {number}
  */
-function topicRate(entry, windowSec) {
+function topicRate(entry, windowSec, name) {
+    if (name && REPORTED_TOPICS.has(name)) {
+        const hz = freshReportedHz(clock.now());
+        return hz === null ? 0 : hz;
+    }
     return windowSec > 0 ? entry.timestamps.length / windowSec : 0;
 }
 
@@ -1228,8 +1264,8 @@ export function updateTopicMonitor() {
 
     // Sort visible by rate descending, then alphabetically for ties
     visible.sort((a, b) => {
-        const rateA = topicRate(a[1], windowSec);
-        const rateB = topicRate(b[1], windowSec);
+        const rateA = topicRate(a[1], windowSec, a[0]);
+        const rateB = topicRate(b[1], windowSec, b[0]);
         if (rateB !== rateA) return rateB - rateA;
         return a[0].localeCompare(b[0]);
     });
@@ -1274,9 +1310,14 @@ export function updateTopicMonitor() {
  * Build a single topic table row.
  */
 function buildTopicRow(name, entry, windowSec, now, isHidden) {
-    // Last message time
+    const reported = REPORTED_TOPICS.has(name);
+    const reportedHz = reported ? freshReportedHz(now) : null;
+
+    // Last message time (reported rows: age of the mocap/status that carried the rate)
     let lastStr;
-    if (entry.lastTime === 0) {
+    if (reported) {
+        lastStr = reportedHz === null ? '--' : ((now - reportedMocapRate.at) / 1000).toFixed(1) + 's';
+    } else if (entry.lastTime === 0) {
         lastStr = '--';
     } else {
         const ago = (now - entry.lastTime) / 1000;
@@ -1287,8 +1328,8 @@ function buildTopicRow(name, entry, windowSec, now, isHidden) {
     }
 
     // Rate
-    const count = entry.timestamps.length;
-    const rate = topicRate(entry, windowSec);
+    const count = reported ? (reportedHz === null ? 0 : 1) : entry.timestamps.length;
+    const rate = topicRate(entry, windowSec, name);
     let rateStr;
     let rateClass;
     if (count === 0) {
@@ -1309,9 +1350,13 @@ function buildTopicRow(name, entry, windowSec, now, isHidden) {
     const action = isHidden ? 'unhide' : 'hide';
     const actionTitle = isHidden ? 'Click to unhide' : 'Click to hide';
     const rowClass = isHidden ? ' class="topic-row-hidden"' : '';
+    const reportedTitle = reported
+        ? ' — rate reported by mocap_node (mocap/status qtm_frame_hz), not observed by the GUI'
+        : '';
+    const reportedMark = reported ? ' <span class="topic-reported" data-reported="1">via mocap/status</span>' : '';
 
-    return `<tr${rowClass} data-topic="${name}" data-action="${action}" title="${actionTitle}: ${name} [${entry.type}]">
-        <td class="col-topic">${displayName}</td>
+    return `<tr${rowClass} data-topic="${name}" data-action="${action}" title="${actionTitle}: ${name} [${entry.type}]${reportedTitle}">
+        <td class="col-topic">${displayName}${reportedMark}</td>
         <td class="col-last">${lastStr}</td>
         <td class="col-rate ${rateClass}">${rateStr}</td>
     </tr>`;
@@ -1347,6 +1392,7 @@ function onTopicTableClick(e) {
  */
 export function clearTopicData() {
     topicData.clear();
+    reportedMocapRate = null;
 }
 
 // ---- Init all panels ----

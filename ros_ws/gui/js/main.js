@@ -27,6 +27,7 @@ import {
     updateBBCalibrationAttempt,
     updateTrackingError, updateMotionPanel,
     recordTopicMessage, registerTopic, updateTopicMonitor, clearTopicData,
+    setReportedMocapRate, REPORTED_TOPICS,
     setMocapConnected, setMocapAligned,
     updateConeHeartbeat, updateConeTimingResult, setCatchingConeDisconnected,
     resetBBCalibration, updateBallHeld,
@@ -373,7 +374,19 @@ export function restoreReplayLatches(saved) {
 // subscribeAll() as (topic, type, HANDLER-IDENTIFIER, throttle), so an arrow function here
 // would hide the topic from the throttle contract.
 function onRobotFrameMsg(m) { recordTopicMessage('robot_frame'); onRobotFrame(m); }
-function onMocapStatusMsg(m) { recordTopicMessage('mocap/status'); onMocapStatus(m); }
+function onMocapStatusMsg(m) {
+    recordTopicMessage('mocap/status');
+    reportMocapFrameHz(m);
+    onMocapStatus(m);
+}
+// mocap_node reports the QTM frame rate in mocap/status values (`qtm_frame_hz`); the
+// monitor rows for the unspied 300 Hz topics display it (panels.js REPORTED_TOPICS).
+function reportMocapFrameHz(msg) {
+    const vals = (msg && msg.values) || [];
+    for (let i = 0; i < vals.length; i++) {
+        if (vals[i].key === 'qtm_frame_hz') { setReportedMocapRate(parseFloat(vals[i].value)); return; }
+    }
+}
 
 function subscribeAll() {
     // Robot state (100Hz -> throttle to 20Hz = 50ms)
@@ -412,8 +425,15 @@ function subscribeAll() {
     // Hand telemetry (500Hz -> throttle to 10Hz = 100ms)
     ros.subscribe('hand_telemetry', 'jugglebot_interfaces/msg/HandTelemetryMessage', onHandTelemetry, 100);
 
-    // Mocap data — markers + connection/alignment status (200Hz -> throttle to 20Hz = 50ms)
-    ros.subscribe('mocap_data', 'jugglebot_interfaces/msg/MocapDataMulti', onMocapData, 50);
+    // Mocap data — markers + connection/alignment status. Subscribes mocap_node's 20 Hz
+    // COPY (every 15th frame; JB-76 option 1, 2026-10-28), NOT the 300 Hz /mocap_data:
+    // rosbridge deserialises every message before applying a client throttle, so the
+    // throttle saved nothing. Replay still feeds the bag's /mocap_data here via the
+    // alias in ros-bridge.js dispatchLocal(). Throttle 0: the copy's 20 Hz IS the
+    // throttle, and a 50 ms throttle on a 50 ms-period stream beats against its
+    // jitter and halves the rate (measured 10 Hz on the replica, 2026-10-28). The
+    // replay policy keeps /mocap_data at 50 ms for the bag's 300 Hz original.
+    ros.subscribe('gui/mocap_data', 'jugglebot_interfaces/msg/MocapDataMulti', onMocapData, 0);
 
     // Measured robot frame (latched PoseStamped, QTM world mm + yaw quaternion):
     // anchors the Stewart model in the world-fixed scene.
@@ -425,8 +445,10 @@ function subscribeAll() {
     // tracked, ~200Hz -> throttle to 50Hz = 20ms)
     ros.subscribe('balls', 'jugglebot_interfaces/msg/BallStateArray', onBalls, 20);
 
-    // Rigid body poses — for rendering coordinate axes (200Hz -> throttle to 20Hz = 50ms)
-    ros.subscribe('rigid_body_poses', 'jugglebot_interfaces/msg/RigidBodyPoses', onRigidBodyPoses, 50);
+    // Rigid body poses — for rendering coordinate axes: mocap_node's 20 Hz copy (see
+    // gui/mocap_data above); replay aliases the bag's /rigid_body_poses onto it.
+    // Throttle 0 for the same reason as gui/mocap_data.
+    ros.subscribe('gui/rigid_body_poses', 'jugglebot_interfaces/msg/RigidBodyPoses', onRigidBodyPoses, 0);
 
     // Commanded leg setpoints — accepted u0 echoed by teensy_bridge_node from
     // the :5557 funnel (trajectory_node is its sole binder since run_mpc.py
@@ -737,8 +759,8 @@ function onHandTelemetry(msg) {
 }
 
 function onMocapData(msg) {
-    recordTopicMessage('mocap_data');
-    // mocap_data arriving means QTM connection is live
+    recordTopicMessage('gui/mocap_data');
+    // gui/mocap_data arriving means QTM connection is live
     setMocapConnected(true);
     if (mocapConnTimeout) clock.clearTimeout(mocapConnTimeout);
     mocapConnTimeout = clock.setTimeout(() => {
@@ -789,7 +811,7 @@ function onBalls(msg) {
 }
 
 function onRigidBodyPoses(msg) {
-    recordTopicMessage('rigid_body_poses');
+    recordTopicMessage('gui/rigid_body_poses');
     const bodies = msg.bodies || [];
     updateRigidBodyAxes(bodies);
     updateCatchingCone(bodies);
@@ -1187,8 +1209,8 @@ function applyFontSize(size) {
 const GUI_SUBSCRIBED_TOPICS = new Set([
     'robot_state', 'bb/heartbeat', 'orchestrator_state',
     'profile', 'link_status', 'udp_diag', 'clock_diag', 'hand_telemetry',
-    'mocap_data', 'balls',
-    'rigid_body_poses',
+    'gui/mocap_data', 'balls',
+    'gui/rigid_body_poses',
     'robot_frame', 'mocap/status',
     'leg_setpoint_echo', 'control_mode_topic', 'motion/diagnostics',
     'bb/calibration_result', 'bb/calibration_attempt', 'cone/heartbeat', 'cone/timing_result',
@@ -1235,6 +1257,10 @@ function runTopicDiscovery() {
 
             // Skip topics we already have full subscriptions for
             if (GUI_SUBSCRIBED_TOPICS.has(name)) continue;
+
+            // The 300 Hz mocap-stream topics are never spied (JB-76 option 1): their rows
+            // show mocap_node's reported rate. Registered above for display only.
+            if (REPORTED_TOPICS.has(name)) continue;
 
             // Skip if we already have a spy subscription
             if (spySubscriptions.has(name)) continue;

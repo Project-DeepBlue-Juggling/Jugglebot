@@ -146,6 +146,18 @@
 - **subscribers:** `trajectory_node`
 - **type:** `std_msgs.msg.Float64MultiArray`
 
+### `gui/mocap_data`
+
+- **publishers:** `mocap_node`
+- **subscribers:** _none_
+- **type:** `jugglebot_interfaces.msg.MocapDataMulti`
+
+### `gui/rigid_body_poses`
+
+- **publishers:** `mocap_node`
+- **subscribers:** _none_
+- **type:** `jugglebot_interfaces.msg.RigidBodyPoses`
+
 ### `hand_telemetry`
 
 - **publishers:** `teensy_bridge_node`
@@ -604,6 +616,8 @@ broken wire cannot hide among them.
 - `cone/timing_result` — topic with no subscribers
 - `configure` — service with no clients
 - `deactivate` — service with no clients
+- `gui/mocap_data` — topic with no subscribers
+- `gui/rigid_body_poses` — topic with no subscribers
 - `hand_jam_dry_run` — service with no clients
 - `hand_move_to` — service with no clients
 - `home` — service with no clients

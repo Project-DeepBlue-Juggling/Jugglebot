@@ -25,6 +25,12 @@ let connectionState = 'disconnected';
 /** Callbacks for connection state changes: (state) => void */
 const stateListeners = [];
 
+/** Bag topic -> live subscription name (JB-76 option 1; the bag does NOT contain gui/ topics). */
+const REPLAY_TOPIC_ALIASES = Object.freeze({
+    'mocap_data': 'gui/mocap_data',
+    'rigid_body_poses': 'gui/rigid_body_poses',
+});
+
 /**
  * Registered subscriptions. Kept so we can re-subscribe on reconnect.
  * Each entry: { topicName, messageType, throttleRate, callback, rosTopic }
@@ -299,7 +305,10 @@ function createSubscription(entry) {
  * @returns {number} callbacks invoked
  */
 export function dispatchLocal(topicName, msg, opts) {
-    const name = topicName.charAt(0) === '/' ? topicName.slice(1) : topicName;
+    let name = topicName.charAt(0) === '/' ? topicName.slice(1) : topicName;
+    // The live GUI subscribes mocap_node's 20 Hz copies (gui/mocap_data, gui/rigid_body_poses);
+    // the bag records only the originals, so map them onto the same handlers.
+    if (REPLAY_TOPIC_ALIASES[name]) name = REPLAY_TOPIC_ALIASES[name];
     let n = 0;
     for (const entry of subscriptions) {
         const en = entry.topicName.charAt(0) === '/' ? entry.topicName.slice(1) : entry.topicName;

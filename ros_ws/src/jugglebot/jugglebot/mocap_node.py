@@ -5,13 +5,20 @@ queue, logbook 2026-10-10-mocap-frame-queue):
   mocap_data             (MocapDataMulti)   — all markers (labelled + unlabelled), per frame
   rigid_body_poses       (RigidBodyPoses)   — all rigid bodies, per frame that carries any
   bb/markers             (MocapDataMulti)   — BB fiducial markers, per frame (when QTM connected)
+  gui/mocap_data         (MocapDataMulti)   — every `gui_copy_divisor`-th frame (default 15 → 20 Hz) of
+  gui/rigid_body_poses   (RigidBodyPoses)     mocap_data / rigid_body_poses: the SAME message object,
+                         published right after the original. The GUI's rosbridge takes these instead of
+                         the 300 Hz originals (rosbridge deserialises every message before throttling;
+                         JB-76 load trim, temp/probes/rosbridge_cpu_2026-10-28/report.md).
+                         Not recorded.
   bb/calibration_result  (BallButlerCalibrationResult) — latched: the calibration IN
                          FORCE. Only a success replaces it; a failure lands here
                          only while this process has no success yet.
   bb/calibration_attempt (BallButlerCalibrationResult) — latched: the outcome of the
                          most recent sweep, success or failure (one short line)
   qtm_clock_offset_sec   (Float64)          — QTM↔ROS clock offset at 1 Hz
-  mocap/status           (DiagnosticStatus) — QTM reception + BB fiducial visibility at 5 Hz
+  mocap/status           (DiagnosticStatus) — QTM reception + BB fiducial visibility at 5 Hz;
+                         key `qtm_frame_hz` = measured QTM frame rate over the last status period
 
 Subscribes:
   bb/heartbeat           (BallButlerHeartbeat) — toggles marker publishing + calibration
@@ -83,6 +90,10 @@ except ImportError:  # pragma: no cover - outside a ROS install
 #: cycles before they refuse, slow enough to be free next to the per-frame marker
 #: path.
 MOCAP_STATUS_PERIOD_S = 0.2
+#: 300 Hz QTM / 15 = 20 Hz GUI copies (matches the GUI's former 50 ms throttle).
+GUI_COPY_DIVISOR_DEFAULT = 15
+#: mocap/status key: measured QTM frame rate over the last status period.
+KEY_QTM_FRAME_HZ = 'qtm_frame_hz'
 
 #: Period of the executor-thread timer that APPLIES finished calibration
 #: solves (state, files, publishes, log lines). The solve itself runs on the
@@ -366,6 +377,17 @@ class MocapNode(Node):
         self.pub_mocap = self.create_publisher(MocapDataMulti, 'mocap_data', 10)
         self.pub_bb_markers = self.create_publisher(MocapDataMulti, 'bb/markers', 10)
         self.pub_rigid_bodies = self.create_publisher(RigidBodyPoses, 'rigid_body_poses', 10)
+        # Decimated copies for the GUI (same message objects, see header).
+        self.pub_gui_mocap = self.create_publisher(MocapDataMulti, 'gui/mocap_data', 10)
+        self.pub_gui_rigid_bodies = self.create_publisher(
+            RigidBodyPoses, 'gui/rigid_body_poses', 10)
+        # Frame COUNTER (not a timer): the copy goes out on frames where
+        # count % divisor == 0. The same counter yields qtm_frame_hz.
+        self.declare_parameter('gui_copy_divisor', GUI_COPY_DIVISOR_DEFAULT)
+        self._gui_copy_divisor = max(1, int(self.get_parameter('gui_copy_divisor').value))
+        self._frame_count = 0
+        self._frame_count_prev = 0
+        self._frame_count_prev_mono: float | None = None
 
         # Latched QoS for calibration result (last value available to late subscribers)
         latched_qos = QoSProfile(depth=1, durability=DurabilityPolicy.TRANSIENT_LOCAL)
@@ -859,6 +881,13 @@ class MocapNode(Node):
             aligned = bool(self.mocap.is_aligned)
             rf = self._robot_frame_status_values()
             synced = bool(self.mocap.get_qtm_sync_status().get('synced', False))
+            # Frames counted by _publish_frame since the last status tick.
+            now = time.monotonic()
+            prev_mono = self._frame_count_prev_mono
+            frame_hz = 0.0
+            if prev_mono is not None and now > prev_mono:
+                frame_hz = (self._frame_count - self._frame_count_prev) / (now - prev_mono)
+            self._frame_count_prev, self._frame_count_prev_mono = self._frame_count, now
 
             msg = DiagnosticStatus()
             msg.name = 'mocap/qtm'
@@ -878,6 +907,9 @@ class MocapNode(Node):
                          value='1' if marker3 else '0'),
                 KeyValue(key=mocap_st.KEY_ALIGNED, value='1' if aligned else '0'),
                 KeyValue(key=mocap_st.KEY_QTM_SYNCED, value='1' if synced else '0'),
+                # The GUI shows this for the three 300 Hz topics it no longer
+                # subscribes (one QTM stream feeds them all).
+                KeyValue(key=KEY_QTM_FRAME_HZ, value=f'{frame_hz:.1f}'),
             ] + rf
             self.pub_mocap_status.publish(msg)
         except Exception as e:
@@ -1059,6 +1091,8 @@ class MocapNode(Node):
         rigid_body_poses and bb/markers, and into the base-frame feed and the
         calibration window."""
         frame_ros_ns = frame.stamp_ns
+        self._frame_count += 1
+        gui_copy_due = self._frame_count % self._gui_copy_divisor == 0
         labelled = frame.labelled
         unlabelled = frame.unlabelled
         make = _make_marker
@@ -1077,6 +1111,8 @@ class MocapNode(Node):
                 markers.append(make(x, y, z, residual))
 
             self.pub_mocap.publish(msg)
+            if gui_copy_due:
+                self.pub_gui_mocap.publish(msg)
         except Exception as e:
             self.get_logger().error(f'Error publishing markers: {e}',
                                     throttle_duration_sec=5.0)
@@ -1132,6 +1168,8 @@ class MocapNode(Node):
                     orientation.w = float(qw)
                     msg.bodies.append(body_msg)
                 self.pub_rigid_bodies.publish(msg)
+                if gui_copy_due:
+                    self.pub_gui_rigid_bodies.publish(msg)
         except Exception as e:
             self.get_logger().error(f'Error publishing body poses: {e}',
                                     throttle_duration_sec=5.0)
