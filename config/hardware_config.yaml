@@ -828,7 +828,7 @@ jugglebot_operational:
 # ============================================================
 # 6b. Jugglebot Trajectory Operational
 #    MVP Jetson-side trajectory generator (jugglebot.motion.trajectory).
-#    Leg-space limits are in mm-extension units. The session limit is the
+#    Leg-space limits are in mm-extension units. The sitting limit is the
 #    currently-commanded ceiling (ramped up across hardware sessions via
 #    trajectory/set_limits); the *_ceiling is the YAML-pinned absolute max a
 #    set_limits request is clamped to. Jerk is the binding actuator constraint.
@@ -870,7 +870,7 @@ trajectory_op:
   # Ceilings OPENED 280/4000/200000 → 5000/5000/200000 (2026-07-16, operator decision):
   # they are now ADMINISTRATIVE clamps, deliberately ABOVE both the drive-trackable
   # envelope (vel_limit 12 rev/s ≈ 846 mm/s; clamp-engaged catch-up tops out ~529 mm/s
-  # until the firmware VELFF cap is raised) and the bench-proven 3.4 m/s. Session limits
+  # until the firmware VELFF cap is raised) and the bench-proven 3.4 m/s. Sitting limits
   # above the trackable envelope WILL latch the MAX_DEVIATION guard mid-move — that is
   # the intended backstop. The safety chain is: deliberate session ramping (operator) →
   # per-move kinematic feasibility gate → lead/stroke clamps (physical) → MAX_DEVIATION
@@ -969,7 +969,7 @@ trajectory_op:
                                    # decay overshoots the seat by ~0.3 deg. Measured 2026-07-28 through
                                    # the production planner at the recorded reload geometry, the WHOLE
                                    # plan peaks at 23.8 mm/s vel, 142.0 mm/s2 acc, 3935 mm/s3 jerk
-                                   # against session limits 1000/5000/30000 = 2.4%/2.8%/13.1%. JERK is
+                                   # against sitting limits 1000/5000/30000 = 2.4%/2.8%/13.1%. JERK is
                                    # the binding one; note leg VELOCITY falls vs the 0.0 plan (29.0),
                                    # because a terminal rate lets the reach coast slower through its
                                    # middle. Do not expect "everything gets smaller".

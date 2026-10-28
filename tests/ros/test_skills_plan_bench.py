@@ -461,7 +461,7 @@ def test_the_attempt_loop_dispatches_the_whole_schedule_pre_position_first(
     from jugglebot.motion.trajectory.limits import TrajectoryLimits
     from jugglebot.motion import unified_cycle as uc
 
-    limits = TrajectoryLimits.from_config(spb.hw).with_session_limits(
+    limits = TrajectoryLimits.from_config(spb.hw).with_sitting_limits(
         leg_vel_mmps=spb.SESSION_LEG_VEL_MMPS,
         leg_acc_mmps2=spb.SESSION_LEG_ACC_MMPS2,
         leg_jerk_mmps3=spb.SESSION_LEG_JERK_MMPS3,
@@ -800,10 +800,10 @@ def test_self_toss_rehearsal_pre_positions_then_runs_the_schedule_clean(
         r3_catch_plane):
     """One attempt, virtual clock, no learner: the pre-position (R3-g finding
     — schedule.compile_one_ball's own FLOOR_LIFT_S refuses LIMIT_JERK at the
-    150 000 mm/s^3 R3 session limit, see SELF_TOSS_PRELIFT_S's docstring) plus
+    150 000 mm/s^3 R3 sitting limit, see SELF_TOSS_PRELIFT_S's docstring) plus
     the whole schedule install cleanly, exactly like the manual rehearsal run
     2026-09-13 (`--rehearse --pattern self-toss --arm A`, all gates PASS)."""
-    limits = TrajectoryLimits.from_config(spb.hw).with_session_limits(
+    limits = TrajectoryLimits.from_config(spb.hw).with_sitting_limits(
         leg_vel_mmps=spb.SESSION_LEG_VEL_MMPS, leg_acc_mmps2=spb.SESSION_LEG_ACC_MMPS2,
         leg_jerk_mmps3=spb.SELF_TOSS_LEG_JERK_MMPS3, hand_acc_rps2=spb.SESSION_HAND_ACC_RPS2)
     geom = StewartGeometry()
@@ -838,7 +838,7 @@ def test_self_toss_rehearsal_grows_memory_and_the_learner_changes_the_command(
     learner + memory into this rehearsal (R3-g brief). Matches the manual
     rehearsal 2026-09-13 (`--rehearse --pattern self-toss --arm A --attempts
     3`): rows 1-2 command the prior exactly, row 3 does not."""
-    limits = TrajectoryLimits.from_config(spb.hw).with_session_limits(
+    limits = TrajectoryLimits.from_config(spb.hw).with_sitting_limits(
         leg_vel_mmps=spb.SESSION_LEG_VEL_MMPS, leg_acc_mmps2=spb.SESSION_LEG_ACC_MMPS2,
         leg_jerk_mmps3=spb.SELF_TOSS_LEG_JERK_MMPS3, hand_acc_rps2=spb.SESSION_HAND_ACC_RPS2)
     geom = StewartGeometry()

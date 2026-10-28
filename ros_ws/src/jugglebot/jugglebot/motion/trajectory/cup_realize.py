@@ -119,7 +119,7 @@ TILT_RATE_LIMIT_DEFAULT_RAD_S = 3.0
 #: unbounded — WP3 measured the as-built schedule slewing at exactly the 3.0 rad/s
 #: cap while its knot-to-knot second difference reached **240 rad/s²**, which
 #: ``decompose`` turns into 104k–115k mm/s² of leg acceleration against a 5000
-#: mm/s² session limit.  Bounding the rate is therefore not the same as bounding
+#: mm/s² sitting limit.  Bounding the rate is therefore not the same as bounding
 #: the machine, and this constant closes the gap.
 #:
 #: **Derivation from the leg-acceleration budget** (all quantities in-tree):
@@ -1065,7 +1065,7 @@ def _smooth_slew(start: np.ndarray, end: np.ndarray, n: int, dt: float,
     (``checked=False``) — the rule a LAUNCH from a tilted seed already follows:
     the budget SHAPES the schedule (the slew spans every knot the window has
     after the touch-down, the longest and so the gentlest quintic it can be) and
-    ``feasibility.validate_cycle``, the measured legs at 100 % of the session
+    ``feasibility.validate_cycle``, the measured legs at 100 % of the sitting
     limits, REFUSES.  Why the two differ: the caps are a static-lever model —
     the cup at the TOP of the hand band (:data:`TILT_ACCEL_LEVER_MM`, 469 mm)
     with half the leg-acceleration limit reserved for translation — and on this
@@ -1421,7 +1421,7 @@ def tilt_schedule(cup_plan, receive_tilt, throw_tilt, cfg=None, *,
     rate-limited schedule can slew at exactly its cap and then STOP within one
     knot, and WP3 measured precisely that: 3.0 rad/s of tilt velocity arriving
     with **240 rad/s²** of tilt acceleration, which ``decompose`` turns into
-    104k–115k mm/s² of leg acceleration against a 5000 mm/s² session limit.  So
+    104k–115k mm/s² of leg acceleration against a 5000 mm/s² sitting limit.  So
     the banking schedule is additionally bounded in its second difference by
     ``cfg.tilt_accel_limit_rad_s2`` (default derived from the leg-acceleration
     budget — see :data:`TILT_ACCEL_LIMIT_DEFAULT_RAD_S2`), which makes it C1 in

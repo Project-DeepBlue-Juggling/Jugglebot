@@ -110,7 +110,7 @@ def _measure(body) -> np.ndarray:
 
 def test_the_worker_keeps_the_40hz_grid_while_the_in_process_solve_starves_it():
     geom = StewartGeometry()
-    limits = TrajectoryLimits.from_config(hw).with_session_limits(
+    limits = TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=300.0, leg_acc_mmps2=5000.0, leg_jerk_mmps3=200000.0,
         hand_acc_rps2=3500.0)
     sites = si.columns_sites(100.0)

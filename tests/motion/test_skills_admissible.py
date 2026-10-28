@@ -811,7 +811,7 @@ def _live_limits(**overrides):
     kwargs = dict(leg_vel_mmps=300.0, leg_acc_mmps2=5000.0, leg_jerk_mmps3=200000.0,
                  hand_acc_rps2=3500.0)
     kwargs.update(overrides)
-    return TrajectoryLimits.from_config(hw).with_session_limits(**kwargs)
+    return TrajectoryLimits.from_config(hw).with_sitting_limits(**kwargs)
 
 
 def test_check_limits_passes_when_the_box_matches_the_live_session():
@@ -847,7 +847,7 @@ def sweep_mod():
     return _load_sweep_module()
 
 
-#: The session limits ``tiny_sweep`` is pinned at (see its docstring).
+#: The sitting limits ``tiny_sweep`` is pinned at (see its docstring).
 #: RE-BASELINED 2026-10-18 (two-ball-oval checks re-base: cone 30 deg, floor
 #: 0.3 g; the cone is 45 deg judged from the stroke end since 2026-10-19 and
 #: this grid was not re-measured against it): the old 300/5000/150000 + 100 mm + apex 0.85 + dwell 0.30 grid reads

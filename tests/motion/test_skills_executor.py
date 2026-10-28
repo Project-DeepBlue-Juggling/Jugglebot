@@ -113,7 +113,7 @@ def geom():
 
 @pytest.fixture(scope='module')
 def limits():
-    return TrajectoryLimits.from_config(hw).with_session_limits(
+    return TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=300.0, leg_acc_mmps2=5000.0, leg_jerk_mmps3=200000.0,
         hand_acc_rps2=3500.0)
 
@@ -125,8 +125,8 @@ def sites():
 
 @pytest.fixture(scope='module')
 def limits_r5():
-    """The R5 operating point's session limits (see ``R5_APEX_M`` above)."""
-    return TrajectoryLimits.from_config(hw).with_session_limits(
+    """The R5 operating point's sitting limits (see ``R5_APEX_M`` above)."""
+    return TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=350.0, leg_acc_mmps2=5000.0, leg_jerk_mmps3=200000.0,
         hand_acc_rps2=3900.0)
 
@@ -519,13 +519,13 @@ def test_a_six_throw_columns_schedule_installs_end_to_end(limits_r5, geom):
     """The acceptance shape, offline: ``compile_columns`` -> ``SkillExecutor``
     -> ``install_segment``, a perfect analytic tracker, no plant.
 
-    Every install is accepted, every peak stays inside the session limits, and
+    Every install is accepted, every peak stays inside the sitting limits, and
     the machine ends at rest.  Moved to the R5 operating point 2026-10-05 (the
     R2 point's final rest-terminal CATCH refuses LIMIT_JERK once
     ``sites.CATCH_CUP_Z_MM`` moves 830 -> 930 mm): (date, command, result)
     2026-10-05, ``pytest tests/motion/test_skills_executor.py::test_a_six_throw_columns_schedule_installs_end_to_end -q``:
     8 installs, peaks 288 mm/s / 4194 mm/s² / 156387 mm/s³ / 3655 rev/s²
-    against 350 / 5000 / 200000 / 3900 (the R5 point's session limits).
+    against 350 / 5000 / 200000 / 3900 (the R5 point's sitting limits).
     ``plan_wall_s`` is not pinned here (load-dependent under xdist -- see the
     note below the install loop); an unloaded probe of this exact schedule
     measured a worst install at 183 ms.
@@ -608,7 +608,7 @@ def test_a_six_throw_columns_schedule_installs_end_to_end(limits_r5, geom):
 
 @pytest.fixture(scope='module')
 def limits_r3():
-    return TrajectoryLimits.from_config(hw).with_session_limits(
+    return TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=300.0, leg_acc_mmps2=5000.0, leg_jerk_mmps3=150000.0,
         hand_acc_rps2=3500.0)
 
@@ -5614,7 +5614,7 @@ _A1_ARRIVAL_MM_S = np.array([1279.0, 545.0, -3280.0])
 def a1_hop_fed_catch(limits_r5, sites_r5, geom):
     """The hop-entry feed CATCH for A1's arrival -- apex 0.90 m, dwell
     ``R5_DWELL_S``, separation ``R5_SEPARATION_MM``, the R5 catch-high
-    session limits (``limits_r5``) -- matching ``f_matrix.txt``'s FIX=1
+    sitting limits (``limits_r5``) -- matching ``f_matrix.txt``'s FIX=1
     VEL=1279,545,-3280 LAND=0,0 row (scratchpad, Brief H) exactly."""
     p1, p2 = sites_r5
     pattern = sc.Pattern(sites=(p1, p2), apex_m=0.90, dwell_s=R5_DWELL_S,

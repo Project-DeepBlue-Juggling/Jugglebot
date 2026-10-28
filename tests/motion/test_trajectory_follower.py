@@ -51,7 +51,7 @@ def geom():
 @pytest.fixture
 def limits():
     # The follower characterisation's working point (the pre-skill-stack
-    # 1000/5000/30000 session limits) pinned explicitly: since 2026-09-16 the
+    # 1000/5000/30000 sitting limits) pinned explicitly: since 2026-09-16 the
     # YAML launch defaults are the skill stack's 300/5000/150000, and these
     # tests characterise the follower's stop/chase behaviour, not the defaults.
     return TrajectoryLimits.from_config(hw, leg_vel_mmps=1000.0,
@@ -455,7 +455,7 @@ def test_follower_reset_reclears_deadband(geom, limits):
 def test_streaming_session_knots_bounded_and_pump_accepted(geom, limits):
     """Mirror the node's follow→install→emit loop over a seeded 100 Hz random-walk
     target stream. Assert: every emitted knot is accepted by a REAL SetpointPump;
-    the discrete u0 vel/acc/jerk stay within the session limits (C2 at every
+    the discrete u0 vel/acc/jerk stay within the sitting limits (C2 at every
     replan boundary — a torn seed would spike these); the per-knot step stays
     under the pump bound."""
     mm_to_rev = np.asarray(geom.mm_to_rev)
@@ -489,7 +489,7 @@ def test_streaming_session_knots_bounded_and_pump_accepted(geom, limits):
     acc = np.diff(vel, axis=0) / dt
     jerk = np.diff(acc, axis=0) / dt
     assert np.max(np.abs(np.diff(u0, axis=0))) < hw.JB_OP_MAX_POSITION_STEP_REV
-    # Discrete derivatives within the session limits (small margin for the
+    # Discrete derivatives within the sitting limits (small margin for the
     # first-difference discretisation at 25 ms).
     assert np.max(np.abs(vel)) <= limits.leg_vel_mmps * 1.10
     assert np.max(np.abs(acc)) <= limits.leg_acc_mmps2 * 1.15

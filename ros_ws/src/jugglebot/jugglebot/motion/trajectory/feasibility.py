@@ -603,7 +603,7 @@ def validate(plan, limits, geom, *, samples_per_segment: int = _VALIDATE_SAMPLES
 #     samples — the SAME endpoint bias validate() itself already accepts (see the
 #     _MIN_SAMPLES note) — and validate_follow inflates it by _FOLLOW_JERK_MARGIN so
 #     the follower gate is *strictly conservative* on jerk (never anti-conservative
-#     vs the session limit).
+#     vs the sitting limit).
 #
 # Decimation the task authorised: the per-sample condition-number SVD is checked at
 # only _FOLLOW_COND_SAMPLES points (defence-in-depth — the per-sample STROKE check
@@ -1107,7 +1107,7 @@ def _pose_to_rev(pose, geom, mm_to_rev) -> np.ndarray:
 #: can peak strictly inside a span, and the leg chain (``J·twist``) inherits that.
 #: Sizing (2026-08-30): the excursion a velocity extremum can hide is bounded by
 #: ``a²/(2·j)``; on the xy channel the cup QP's ``max_jerk_xy = 300 m/s³`` box puts
-#: that at ~42 mm/s for a 5 m/s² knot — 4 % of the 1000 mm/s session limit — so a
+#: that at ~42 mm/s for a 5 m/s² knot — 4 % of the 1000 mm/s sitting limit — so a
 #: modest mesh closes it, and 4 keeps a ~21-knot cycle at ~81 analytic samples,
 #: the cost of a single :func:`validate` segment. The HAND channel does NOT use
 #: this mesh: its span extrema are closed-form (see :func:`_hand_span_extrema`),

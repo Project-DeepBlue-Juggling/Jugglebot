@@ -41,7 +41,7 @@ This session validates the **software already merged** on branch
 `mvp-trajectory-bringup` (the `GoToPose.lean_gain` override, the realized-peak
 diagnostics, the `/diagnose` per-move summary, and `traj_ramp_battery.py`). It is
 a *per-step* protocol — repeat it once per limit bump across several short
-sessions; the code does not change between steps, only the YAML session limits do.
+sessions; the code does not change between steps, only the YAML sitting limits do.
 
 ---
 
@@ -56,7 +56,7 @@ sessions; the code does not change between steps, only the YAML session limits d
   moment the platform can move *faster/harder* than it has this whole bringup — a
   surprise is a stop-and-discuss, not a push-through.
 - E-STOP is always available. Any ABORT criterion ⇒ cut power / trigger the guard,
-  then **revert the YAML session limits to the last-good values** before retrying.
+  then **revert the YAML sitting limits to the last-good values** before retrying.
 - **Disarm before any control-mode change away from a streaming mode** (leaving a
   streaming mode while armed drops the stream → `SETPOINT_STALE` E-STOP within 250 ms).
 
@@ -68,7 +68,7 @@ sessions; the code does not change between steps, only the YAML session limits d
 - `run_mpc.py` is **NOT** running (the trajectory emitter is the sole :5557 binder).
 - Rosbag recording on (`ros2 launch … record:=true`) — `/trajectory/diagnostics`
   and `/trajectory/status` are in the record list; `/diagnose` reads them back.
-- **Know the last-good YAML session limits** (`config/hardware_config.yaml`
+- **Know the last-good YAML sitting limits** (`config/hardware_config.yaml`
   `trajectory_op:` `leg_*_limit_*`) so an ABORT reverts cleanly.
 
 ---
@@ -98,7 +98,7 @@ the ramp moves *within*.
 python3 tests/hardware/traj_ramp_battery.py --lean-gain 0.0
 ```
 
-The battery fires, at the current session limits: z 170→190→170, x ±20, y ±20,
+The battery fires, at the current sitting limits: z 170→190→170, x ±20, y ±20,
 tilt rx ±3°, then one deliberately-infeasible `duration_s: 0.05` request. It
 prints each move's `accepted / code / planned_duration_s / min_duration_s`.
 
@@ -131,7 +131,7 @@ prints each move's `accepted / code / planned_duration_s / min_duration_s`.
 ```
 
 Read the **Trajectory Moves** block (the Phase-4 per-move summary):
-- Realized leg peaks per move + **% of the session limit used** (headroom =
+- Realized leg peaks per move + **% of the sitting limit used** (headroom =
   100 − used). The raised limit should show the realized peak climbing toward it
   as the moves get more aggressive; keep comfortable headroom on the *other* two.
 - Cross-check tracking error (legs/tracking plots) and the hold-phase quiescence.
@@ -185,7 +185,7 @@ null result in the logbook.
 
 ## Exit criteria
 
-Session limits at or above the Phase-6-published catch requirements (expected
+Sitting limits at or above the Phase-6-published catch requirements (expected
 order: vel ~150–250 mm/s, acc ~1500–3000 mm/s²; Phase 6 provides the real
 numbers), each bump validated by a clean battery + `/diagnose` review and
 persisted to YAML with the numbers in the commit message. The lean A/B resolved

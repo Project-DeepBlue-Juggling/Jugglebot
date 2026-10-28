@@ -106,8 +106,8 @@ def geom():
 
 
 @pytest.fixture
-def session_limits():
-    """The SHIPPED session limits — what a launched trajectory_node enforces."""
+def sitting_limits():
+    """The SHIPPED sitting limits — what a launched trajectory_node enforces."""
     return TrajectoryLimits.from_config(hw)
 
 
@@ -184,7 +184,7 @@ def _clean_cycle():
       admissible flight time.  Lowering ``max_jerk_z`` instead does NOT help —
       3000 and below make the QP infeasible outright.
     * **level tilts.**  Any tilt schedule at all pushes leg acceleration past the
-      5000 mm/s² session limit (7943 at 0.5 rad/s with no banking; 104k–115k with
+      5000 mm/s² sitting limit (7943 at 0.5 rad/s with no banking; 104k–115k with
       banking at the 3.0 rad/s default), because a rate-limited tilt series
       finite-differenced into knot rates puts large rotational accelerations
       through the lever arm.  That is a real Phase-1 result for the WP4 sim
@@ -219,12 +219,12 @@ def _clean_cycle():
 # The reason this function exists at all
 # ═══════════════════════════════════════════════════════════════════════════
 
-def test_the_six_dof_gates_are_blind_to_a_cycle_plan(geom, session_limits):
+def test_the_six_dof_gates_are_blind_to_a_cycle_plan(geom, sitting_limits):
     """``validate`` / ``validate_follow`` pass an UNGATED cycle — characterisation.
 
     Both iterate ``plan.segments``; a ``CyclePlan`` has none, so both fall through
     to their single-pose degenerate branch and return ``OK``.  The driver here is
-    an 8-span x-sweep whose real leg acceleration is far past any session limit,
+    an 8-span x-sweep whose real leg acceleration is far past any sitting limit,
     plus a hand knot parked 1.1 rev past the physical end stop — a plan that must
     never be called feasible.
 
@@ -249,12 +249,12 @@ def test_the_six_dof_gates_are_blind_to_a_cycle_plan(geom, session_limits):
                     hand_vel_rps=np.zeros(n), dt=DT)
 
     assert cyc.segments == ()
-    assert feas.validate(cyc, session_limits, geom).ok is True
-    assert feas.validate_follow(cyc, session_limits, geom).ok is True
+    assert feas.validate(cyc, sitting_limits, geom).ok is True
+    assert feas.validate_follow(cyc, sitting_limits, geom).ok is True
     # ...and the leg jerk both of them report for a whole sweeping cycle is zero.
-    assert feas.validate(cyc, session_limits, geom).peak_leg_jerk_mmps3 == 0.0
+    assert feas.validate(cyc, sitting_limits, geom).peak_leg_jerk_mmps3 == 0.0
 
-    report = feas.validate_cycle(cyc, session_limits, geom)
+    report = feas.validate_cycle(cyc, sitting_limits, geom)
     assert report.ok is False
     assert report.code == feas.HAND_STROKE
 
@@ -798,8 +798,8 @@ def test_a_real_refusal_round_trips_too(geom, code, plan_args, limit_kw):
 # The clean end-to-end cycle
 # ═══════════════════════════════════════════════════════════════════════════
 
-def test_a_real_cycle_passes_clean_at_the_shipped_session_limits(geom,
-                                                                 session_limits):
+def test_a_real_cycle_passes_clean_at_the_shipped_sitting_limits(geom,
+                                                                 sitting_limits):
     """WP1 → WP2 → ``CyclePlan`` → the gate, with nothing opened up.
 
     The whole chain runs: ``plan_cup_cycle`` (QP) → ``tilt_schedule`` →
@@ -809,7 +809,7 @@ def test_a_real_cycle_passes_clean_at_the_shipped_session_limits(geom,
     particular cycle and what the peaks measure.
     """
     cup, realized, cyc = _clean_cycle()
-    report = feas.validate_cycle(cyc, session_limits, geom)
+    report = feas.validate_cycle(cyc, sitting_limits, geom)
     assert report.ok is True, report.reasons
     assert report.code == feas.OK
 
@@ -818,11 +818,11 @@ def test_a_real_cycle_passes_clean_at_the_shipped_session_limits(geom,
     assert not realized.slider_saturated.any()
     # Every peak is populated and inside its limit — a pass that measured nothing
     # would show zeros here, which is exactly the delegation trap's signature.
-    assert 0.0 < report.peak_hand_vel_rps <= session_limits.hand_vel_limit_rps
-    assert 0.0 < report.peak_hand_acc_rps2 <= session_limits.hand_acc_limit_rps2
-    assert 0.0 < report.peak_leg_vel_mmps <= session_limits.leg_vel_mmps
-    assert 0.0 < report.peak_leg_acc_mmps2 <= session_limits.leg_acc_mmps2
-    assert 0.0 < report.peak_leg_jerk_mmps3 <= session_limits.leg_jerk_mmps3
+    assert 0.0 < report.peak_hand_vel_rps <= sitting_limits.hand_vel_limit_rps
+    assert 0.0 < report.peak_hand_acc_rps2 <= sitting_limits.hand_acc_limit_rps2
+    assert 0.0 < report.peak_leg_vel_mmps <= sitting_limits.leg_vel_mmps
+    assert 0.0 < report.peak_leg_acc_mmps2 <= sitting_limits.leg_acc_mmps2
+    assert 0.0 < report.peak_leg_jerk_mmps3 <= sitting_limits.leg_jerk_mmps3
     assert (feas.HAND_STROKE_MIN_REV <= report.peak_hand_rev
             <= feas.HAND_STROKE_MAX_REV)
 
@@ -858,7 +858,7 @@ def test_the_clean_cycle_is_gated_on_every_channel_it_uses(geom):
 
 
 def test_the_default_cup_z_box_saturates_the_slider_and_is_refused(geom,
-                                                                   session_limits):
+                                                                   sitting_limits):
     """``cup_cycle``'s default z box is NOT the slider's reach — and it shows.
 
     ``CupCycleConfig``'s ``z_min_m`` / ``z_max_m`` default to 0.45 / 1.10 m, which
@@ -885,7 +885,7 @@ def test_the_default_cup_z_box_saturates_the_slider_and_is_refused(geom,
 
     assert realized.slider_saturated.sum() > 0
     report = feas.validate_cycle(CyclePlan.from_realized(realized),
-                                 session_limits, geom)
+                                 sitting_limits, geom)
     assert report.code == feas.HAND_STROKE
 
 
@@ -1103,7 +1103,7 @@ def test_a_chained_LAUNCH_STEADY_production_plan_passes_the_full_gate(geom):
     both above the -6864.2 mm/s^2 floor, the STEADY window sitting close to
     it (the QP's own binding case, per ``handoff_u3.md``'s measured table).
     """
-    limits = TrajectoryLimits.from_config(hw).with_session_limits(
+    limits = TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=_R3_LEG_VEL, leg_acc_mmps2=_R3_LEG_ACC,
         leg_jerk_mmps3=_R3_LEG_JERK, hand_acc_rps2=_R3_HAND_ACC)
     site = st.columns_sites(100.0)[0]
@@ -1606,9 +1606,9 @@ _OVAL_LIMITS = (350.0, 5000.0, 200e3, 3900.0)             # leg vel/acc/jerk, ha
 
 
 def _oval_limits(leg_vel=350.0, leg_acc=5000.0, leg_jerk=200e3, hand_acc=3900.0):
-    """The sizing sweep's unclamped session limits (``skills_sizing_sweep._limits``
+    """The sizing sweep's unclamped sitting limits (``skills_sizing_sweep._limits``
     with ``unclamped=True``): the YAML ceilings are bypassed, the C-HAND-2 pair is not."""
-    base = TrajectoryLimits.from_config(hw).with_session_limits(
+    base = TrajectoryLimits.from_config(hw).with_sitting_limits(
         hand_acc_rps2=float(hand_acc))
     return dataclasses.replace(base, leg_vel_mmps=float(leg_vel),
                                leg_acc_mmps2=float(leg_acc),
@@ -1862,7 +1862,7 @@ def _hop_entry_skill2_plan():
     from tests.motion import test_skills_executor as tse
     ex, sg, sc = tse.ex, tse.sg, tse.sc
     geom = StewartGeometry()
-    limits = TrajectoryLimits.from_config(hw).with_session_limits(
+    limits = TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=350.0, leg_acc_mmps2=5000.0, leg_jerk_mmps3=200000.0,
         hand_acc_rps2=3900.0)
     p1, p2 = tse.si.columns_sites(tse.R5_SEPARATION_MM)

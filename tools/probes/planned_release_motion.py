@@ -58,7 +58,7 @@ DT = float(hw.JB_TRAJ_KNOT_DT_S)
 HOLD_CHECK_KNOTS = int(uc.post_release_hold_knots())
 
 geom = StewartGeometry()
-# The launch's own session limits (leg 300 mm/s, 5000 mm/s^2, 150000 mm/s^3;
+# The launch's own sitting limits (leg 300 mm/s, 5000 mm/s^2, 150000 mm/s^3;
 # hand 3500 rev/s^2) — the operating point of the 2026-09-27 sitting.
 limits = aw._limits(300.0, 5000.0, 150000.0, 3500.0)
 

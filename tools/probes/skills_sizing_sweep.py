@@ -2,12 +2,12 @@
 """Skill-stack R2 sizing sweep — which columns schedules the REAL QP + gate accept.
 
 Plan ``plans/archived/two-ball-skill-stack.md`` § 4 R2 "Sizing probe": before any
-session limit or apex/separation threshold is written down, sweep
+sitting limit or apex/separation threshold is written down, sweep
 
     apex ∈ {1.0, 1.3, 1.5} m × separation ∈ {80, 100} mm × leg jerk ∈ {30k, 60k, 100k}
 
 (plus a leg-VELOCITY axis, because the first run of this probe showed a 100 mm
-transit in 0.27 s reads 299 mm/s against the sittings' 250 mm/s session limit —
+transit in 0.27 s reads 299 mm/s against the sittings' 250 mm/s sitting limit —
 jerk is not the only binding bound) and record, per cell, the DWELL band ``d``
 for which a self-consistent columns chain plans and passes ``validate_cycle``.
 
@@ -89,8 +89,8 @@ def _rest_state(xy, cup_z_mm, cfg):
 
 
 def _limits(vel, acc, jerk, *, unclamped=False, hand_acc=None):
-    """Session limits. ``unclamped`` is a PROBE-ONLY bypass of the YAML hard
-    ceilings (``with_session_limits`` clamps to them, as the live ``set_limits``
+    """Sitting limits. ``unclamped`` is a PROBE-ONLY bypass of the YAML hard
+    ceilings (``with_sitting_limits`` clamps to them, as the live ``set_limits``
     does): the frontier question "what would this pattern NEED" has to be able to
     quote a number above today's administrative ceiling, or the table cannot say
     whether a ramp decision (plan § 1.3 decision 4) would help at all."""
@@ -98,9 +98,9 @@ def _limits(vel, acc, jerk, *, unclamped=False, hand_acc=None):
     if hand_acc is not None:
         # The hand pair rides the same clamp-to-ceiling machinery (limits.py); the
         # C-HAND-2 ceiling (3900) is physical and is NOT bypassed even unclamped.
-        base = base.with_session_limits(hand_acc_rps2=float(hand_acc))
+        base = base.with_sitting_limits(hand_acc_rps2=float(hand_acc))
     if not unclamped:
-        return base.with_session_limits(
+        return base.with_sitting_limits(
             leg_vel_mmps=float(vel), leg_acc_mmps2=float(acc), leg_jerk_mmps3=float(jerk))
     import dataclasses as _dc
     return _dc.replace(base, leg_vel_mmps=float(vel), leg_acc_mmps2=float(acc),

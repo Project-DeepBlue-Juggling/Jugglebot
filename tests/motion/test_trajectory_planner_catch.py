@@ -71,9 +71,9 @@ def _geom():
 
 
 def _limits():
-    # Catch-capable session limits (above the Phase-1 defaults; the Phase-6 gate
+    # Catch-capable sitting limits (above the Phase-1 defaults; the Phase-6 gate
     # publishes the real required numbers). Kept under the YAML ceilings.
-    return TrajectoryLimits.from_config(hw).with_session_limits(
+    return TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=250.0, leg_acc_mmps2=3000.0, leg_jerk_mmps3=150000.0)
 
 
@@ -271,7 +271,7 @@ def test_too_tight_lead_rejected_too_fast(monkeypatch, seat_rate):
     """
     _set_seat_rate(monkeypatch, seat_rate)
     catch_pose = _tilted_catch_pose(reach_xy=(70.0, 0.0))
-    # A tight lead at low session limits forces a leg-limit failure.
+    # A tight lead at low sitting limits forces a leg-limit failure.
     tight = TrajectoryLimits.from_config(hw)   # the low Phase-1 defaults
     with pytest.raises(TrajectoryInfeasible) as ei:
         planner.build_catch(REST, catch_pose, 0.26, tight, _geom(),

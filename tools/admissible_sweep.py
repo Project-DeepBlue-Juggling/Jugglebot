@@ -23,7 +23,7 @@ cells are swept in separate invocations and merged into the one YAML.
 0.9 m operating point, mapped through ``schedule.flight_s`` to three flight
 times (~0.83 / 0.857 / 0.88 s) -- the SAME map ``tools/probes/
 skills_sizing_sweep.py`` uses, so the band's centre cell is the one the owner
-already validated at this leg/hand session limit; landing offsets per axis
+already validated at this leg/hand sitting limit; landing offsets per axis
 out to +-20 mm, densified around the origin 2026-09-21 (+-0.5/1/2/4/6/8/10/20
 mm) after the cup-contact contract's U4 re-sweep found the 2026-09-16 grid
 had never sampled the 0-10 mm band where the old banking defect was worst --
@@ -234,7 +234,7 @@ def _rest_state(cup_mm):
 
 
 def _limits(leg_vel, leg_acc, leg_jerk, hand_acc) -> TrajectoryLimits:
-    return TrajectoryLimits.from_config(hw).with_session_limits(
+    return TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=float(leg_vel), leg_acc_mmps2=float(leg_acc),
         leg_jerk_mmps3=float(leg_jerk), hand_acc_rps2=float(hand_acc))
 

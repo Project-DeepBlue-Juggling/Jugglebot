@@ -334,7 +334,7 @@ against a standardised input and a small set of well-known metrics.
 **Added 2026-07-10; rewritten 2026-07-11 into a two-stage bench-first methodology.**
 Levels 1–3 as written above all optimise **hold** behaviour (hold-phase stdev,
 single-pose quiescence). The 2026-07-10 ~6 Hz stutter proved a second, orthogonal
-regime that Level-1 does not cover: **fast-motion tracking under raised session
+regime that Level-1 does not cover: **fast-motion tracking under raised sitting
 limits**. The Level-1 tier (`40 / 0.20 / 0.32`) is quiet at hold but its velocity
 loop is too lightly damped to track an aggressive vertical stroke — the position
 loop rings at its own bandwidth (`pos_gain/(2π)` = 6.37 Hz), the ODrive current

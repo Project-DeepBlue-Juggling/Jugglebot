@@ -186,7 +186,7 @@ per-leg `iq_measured` through the 2 s ramp.
 ## S4 — Slow motion, one axis
 
 Command a **slow** z-only move (e.g. 170 → 190 → 170 mm over several seconds), well inside
-the session limits. Watch `iq_measured` peaks and listen.
+the sitting limits. Watch `iq_measured` peaks and listen.
 
 - **PASS**: motion is smooth; no new audible buzz vs S1; peak `iq` never approaches the
   10 A `current_soft_max`; no faults.

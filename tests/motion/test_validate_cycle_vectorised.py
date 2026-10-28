@@ -529,7 +529,7 @@ def geom():
 
 @pytest.fixture(scope='module')
 def limits():
-    return TrajectoryLimits.from_config(hw).with_session_limits(
+    return TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=250.0, leg_acc_mmps2=3000.0, leg_jerk_mmps3=150000.0)
 
 
@@ -711,7 +711,7 @@ def test_parity_on_every_early_return_path(refused, geom):
     string-for-string, so the reported ``t=%.3fs`` and the per-leg extension in
     the WORKSPACE text have to be the same sample, not merely the same code.
     """
-    lims = TrajectoryLimits.from_config(hw).with_session_limits(
+    lims = TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=250.0, leg_acc_mmps2=3000.0, leg_jerk_mmps3=150000.0)
     seen = set()
     for label, plan in refused:
@@ -739,7 +739,7 @@ def test_parity_when_the_peaks_are_reported_on_an_early_return(geom):
     hand[5] = 12.5                                 # past the end stop, mid-plan
     plan = CyclePlan(pose=pose, pose_vel=np.zeros((n, 6)), hand_rev=hand,
                      hand_vel_rps=np.zeros(n), dt=DT)
-    lims = TrajectoryLimits.from_config(hw).with_session_limits(
+    lims = TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=250.0, leg_acc_mmps2=3000.0, leg_jerk_mmps3=150000.0)
     vec, ref = _both(plan, lims, geom)
     assert ref.code == fz.HAND_STROKE
@@ -907,7 +907,7 @@ def test_parity_on_the_condition_refusal(geom):
     try:
         fz._WLIMITS_CACHE[key] = (geom, dataclasses.replace(
             wl, cond_hard=float(0.5 * (conds.min() + conds.max()))))
-        lims = TrajectoryLimits.from_config(hw).with_session_limits(
+        lims = TrajectoryLimits.from_config(hw).with_sitting_limits(
             leg_vel_mmps=1e6, leg_acc_mmps2=1e6, leg_jerk_mmps3=1e9)
         vec, ref = _both(plan, lims, geom)
         assert ref.code == fz.UNREACHABLE, (ref.code, ref.reasons)

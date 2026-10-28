@@ -4,7 +4,7 @@
 Measures per-skill PLAN TIME of ``trajectory/install_segment``, in the
 LAUNCHED ``trajectory_node`` on the loaded Jetson (launch up, bag recording,
 GUI up), over the real columns schedule at the operating point (apex 0.9 m,
-separation 100 mm, dwell 0.30 s, session limits 300/5000/200000, hand 3500).
+separation 100 mm, dwell 0.30 s, sitting limits 300/5000/200000, hand 3500).
 
 **THE ROBOT NEVER MOVES.** The launch runs with ``auto_arm:=false``; the
 operator ACTIVATEs (legs + hand energised, holding) and never arms, so every
@@ -65,7 +65,7 @@ PRECONDITIONS (live; refuse ALL at once, never stop at the first)
   P2  /robot_state fresh and is_homed.
   P3  wire DISARMED: /link_status mpc_active == '0' (and teensy_mpc_active ==
       '0' when present) — this gate must never move the robot.
-  P4  session limits read back off /trajectory/status == 300/5000/200000.
+  P4  sitting limits read back off /trajectory/status == 300/5000/200000.
   P5  no gravity correction loaded (the skill path has no pre-level yet).
   P6  no cycle plan active (the first install starts from the ACTIVATE hold).
   P7  trajectory/install_segment available (wait_for_service 3 s).
@@ -180,7 +180,7 @@ SELF_TOSS_AIM_ERR_MRAD = 8.5
 #: through ``install_segment`` unmodified), RESOLVED: ``schedule.
 #: compile_one_ball``'s own opening REST — ``FLOOR_LIFT_S``, from the
 #: ACTIVATE park (0, 0) to site P1's rest position (-50, 0) mm — refused
-#: ``LIMIT_JERK`` at the R3 session limit at its original 1.0 s value (peak
+#: ``LIMIT_JERK`` at the R3 sitting limit at its original 1.0 s value (peak
 #: 177 241 mm/s³ against 150 000; 205 051 mm/s³ at 1.2 s, a non-monotonic
 #: solver artifact; CLEAN at 1.5 s and above). The SAME move at columns' R2
 #: ceiling (200 000 mm/s³) is what the R2 gate's manual REST-pre already
@@ -487,7 +487,7 @@ def check_preconditions(snap: Snapshot, *, install_available: bool = True,
                           (snap.leg_acc, SESSION_LEG_ACC_MMPS2),
                           (snap.leg_jerk, SESSION_LEG_JERK_MMPS3)))
     out.append({
-        'id': 'P4', 'name': 'session limits == 300/5000/200000',
+        'id': 'P4', 'name': 'sitting limits == 300/5000/200000',
         'ok': bool(lim_ok),
         'detail': ('vel=%s acc=%s jerk=%s (want %.0f/%.0f/%.0f)'
                    % (snap.leg_vel, snap.leg_acc, snap.leg_jerk,
@@ -1000,7 +1000,7 @@ def rehearse_attempt(attempt: int, *, n_throws: int, jitter_mm: float,
     #
     #     SELF-TOSS: ``compile_one_ball`` also carries its own opening REST
     #     (``schedule.FLOOR_LIFT_S``, landed at 1.5 s — Finding A, RESOLVED:
-    #     the original 1.0 s refused ``LIMIT_JERK`` at the R3 session limit,
+    #     the original 1.0 s refused ``LIMIT_JERK`` at the R3 sitting limit,
     #     see the runsheet). Despite that, this bench ALSO manually
     #     pre-positions self-toss here, at :data:`SELF_TOSS_PRELIFT_S`
     #     (1.5 s) — so PLAINLY: this pre-position MASKS the real opening
@@ -1123,7 +1123,7 @@ def run_rehearse(args) -> int:
     print(_blas.format_blas_line(n_threads, source))
     self_toss = args.pattern == 'self-toss'
     leg_jerk = SELF_TOSS_LEG_JERK_MMPS3 if self_toss else SESSION_LEG_JERK_MMPS3
-    limits = TrajectoryLimits.from_config(hw).with_session_limits(
+    limits = TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=SESSION_LEG_VEL_MMPS, leg_acc_mmps2=SESSION_LEG_ACC_MMPS2,
         leg_jerk_mmps3=leg_jerk, hand_acc_rps2=SESSION_HAND_ACC_RPS2)
     geom = StewartGeometry()

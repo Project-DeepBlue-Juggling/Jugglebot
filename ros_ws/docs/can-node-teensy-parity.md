@@ -435,7 +435,7 @@ Columns: **Status** (→ shows an adversarial-verify revision) · **Sev** · **B
 
 ### Telemetry / state publish: robot_state, can_traffic, platform_target_reached
 
-> ⚠️ Adversarial-verify pass interrupted (session limit). High-severity rows independently re-confirmed by direct read on 2026-06-27; lower-severity rows are **map-only**.
+> ⚠️ Adversarial-verify pass interrupted (Claude Session usage limit). High-severity rows independently re-confirmed by direct read on 2026-06-27; lower-severity rows are **map-only**.
 
 | Capability | Status | Sev | Bridge / firmware equivalent | Key difference / what's missing | Validation |
 |---|---|---|---|---|---|
@@ -522,7 +522,7 @@ Columns: **Status** (→ shows an adversarial-verify revision) · **Sev** · **B
 
 ### Levelling/inclinometer + tilt + state persistence + time-sync
 
-> ⚠️ Adversarial-verify pass interrupted (session limit). High-severity rows independently re-confirmed by direct read on 2026-06-27; lower-severity rows are **map-only**.
+> ⚠️ Adversarial-verify pass interrupted (Claude Session usage limit). High-severity rows independently re-confirmed by direct read on 2026-06-27; lower-severity rows are **map-only**.
 
 | Capability | Status | Sev | Bridge / firmware equivalent | Key difference / what's missing | Validation |
 |---|---|---|---|---|---|

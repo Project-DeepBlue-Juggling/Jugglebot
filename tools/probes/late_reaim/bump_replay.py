@@ -4,7 +4,7 @@ For every (delta, time-to-landing) a live re-send carried on 2026-10-16
 (``parse_resends.py`` output), apply a platform-xy offset to the plan record a
 sim columns run had installed at that instant (``capture_records.py``) and run
 ``feasibility.validate_cycle`` on the bumped span ``[k_b-4, end]`` at the live
-session limits.  Prints to stdout only.  The hand arrays are never touched.
+sitting limits.  Prints to stdout only.  The hand arrays are never touched.
 
 Shapes (all zero, with zero velocity/acceleration, through ``k_b`` = re-send
 + ``--lead-knots``):

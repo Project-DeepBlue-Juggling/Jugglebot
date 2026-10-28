@@ -35,7 +35,7 @@ diagnosis between blocks, but every `ros2 action send_goal`, `ros2 service call`
 | 5 | (venv) `./run_tests.sh --full 2>&1 \| tee temp/logs/presitting_full_r5_sitting3_$(date +%Y%m%d).log` — launch DOWN | `RESULT: PASS`. Record pass count and wall time in a close-out note. |
 | 6 | QTM: `Catching Cone` rigid body DISABLED, Ball Butler reflectors MASKED, `Platform` rigid body tracked | Same standing preconditions as sittings 1-2. |
 
-**Session limits, read before bring-up.** Legs: the LAUNCH default (`config/hardware_config.yaml`
+**Sitting limits, read before bring-up.** Legs: the LAUNCH default (`config/hardware_config.yaml`
 `leg_jerk_limit_mmps3: 150000.0`) is BELOW what this box was swept at — `set_limits` still MUST
 run before `skills/check` and every dress-rehearsal call, exactly as sitting 2 did (its
 `launch.log` line 231: `"leg limits set: 300 mm/s, 5000 mm/s², 200000 mm/s³"`). Hand: the launch

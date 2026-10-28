@@ -25,8 +25,8 @@ sitting shape — this sheet borrows that shape for §§ 3.5–6.
 3. **Gate: none pre-registered for the hardware sitting.** D1 says the sim proves the fused BB
    start before hardware; this sitting gathers the numbers §7's verdict table names, not a
    pass/fail line. The one thing that DOES gate is the ramp block's stop rule (§ 2.5) — it
-   decides which session limits the rest of the sitting flies at.
-4. **Session limits this sitting: legs 300 / 5000 / 200 000 mm/s³ (owner decision 2026-09-30 —
+   decides which sitting limits the rest of the sitting flies at.
+4. **Sitting limits this sitting: legs 300 / 5000 / 200 000 mm/s³ (owner decision 2026-09-30 —
    the leg jerk ceiling in `hardware_config.yaml`, ramped up from R4's 150 000 launch default),
    hand 3500 rev/s²** (unchanged) — conditional on the ramp block (§ 2.5) not stopping it; a
    stop reverts the WHOLE sitting to 150 000 and the 150 000-stamped box. D1's own 1.0 m /
@@ -65,12 +65,12 @@ the comparison is same-day, same-geometry.
 **D1 (columns start)**, verbatim from `plans/archived/two-ball-skill-stack.md` § R5: *"Start =
 Ball-Butler-initiated from BB's CURRENT position, as a re-attitude programme inside R5: fuse the
 held-axis catch, the re-orientation and the throw into ONE QP window (and, if that is not
-enough, the post-release transit + tilt approach into it); ramp the session limits toward the
+enough, the post-release transit + tilt approach into it); ramp the sitting limits toward the
 ceilings with logged measurements; throw the first ball at 1.0 m (hand cap 3500 → 3900). The sim
 proves the start before hardware. Pre-registered criterion: if the fused start's measured floor
 exceeds ball 1's flight at every ceiling, the decision re-opens on BB's placement."* This sitting
 flies the INTERIM start D1 also names (a human lob resolved by the tracker, no BB round trip) —
-Block C (§ 6) — and the leg-jerk half of "ramp the session limits toward the ceilings" (§ 2.5);
+Block C (§ 6) — and the leg-jerk half of "ramp the sitting limits toward the ceilings" (§ 2.5);
 it does NOT fly the fused BB-current-position start itself, which stays analytical
 (brief_common's floor table) until its own sitting.
 
@@ -151,7 +151,7 @@ re-sweep or re-select as needed), and fly the REST of this sitting (Blocks A–C
 | 20 | `ros2 topic echo /link_status --once` | Baseline `lead_clamp_mask: 0`, `torque_clamp_mask: 0` before any throw. |
 | 21 | 3–5 × `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: self_toss, num_cycles: 1}"` | COMPLETED, `caught=1` each; record `seat=` and landing per throw. Watch `/link_status` between throws. |
 | 22 | `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: hop, apex_m: 0.9, separation_mm: 250.0, num_cycles: 5}"` (a SHORT chain, not R4's 10-catch gate — this block is measuring the ramp, not re-running R4's gate) | Watch every throw's `/link_status` for the two clamp masks; record consecutive catches, any `LIMIT_JERK` re-send count (R4's own watch item, § 9 below), and any guard latch. |
-| 23 | Apply the stop rule against everything observed in rows 21–22 | Record the verdict (ramp HELD at 200 000 / ramp REVERTED to 150 000) in § 11 before Block A — it decides the session limits value quoted in every later block's table row. |
+| 23 | Apply the stop rule against everything observed in rows 21–22 | Record the verdict (ramp HELD at 200 000 / ramp REVERTED to 150 000) in § 11 before Block A — it decides the sitting limits value quoted in every later block's table row. |
 
 ## 4. Block A — the 4° cup test
 
@@ -258,7 +258,7 @@ R3/R4 sheets have the full launch/precondition refusal table
 
 | Code | Physical fact |
 |---|---|
-| `LimitsMismatch` ("admissible box for site pair %r was swept with %s=%r but the live session limit is %r -- regenerate config/generated/admissible_box.yaml (tools/admissible_sweep.py)") | The box on disk was swept at a different leg vel/acc/jerk or hand-acc limit than the live session — the ramp block (§ 2.5) changed `leg_jerk_limit_mmps3` and the box wasn't re-swept to match, or `set_limits` ran after `skills/check` instead of before (§ 0 point 6). Fix: match the live limit to the box, or re-sweep. |
+| `LimitsMismatch` ("admissible box for site pair %r was swept with %s=%r but the live sitting limit is %r -- regenerate config/generated/admissible_box.yaml (tools/admissible_sweep.py)") | The box on disk was swept at a different leg vel/acc/jerk or hand-acc limit than the live session — the ramp block (§ 2.5) changed `leg_jerk_limit_mmps3` and the box wasn't re-swept to match, or `set_limits` ran after `skills/check` instead of before (§ 0 point 6). Fix: match the live limit to the box, or re-sweep. |
 | `ABORTED_NO_COLUMNS_FEED` | Columns' feed wait (§ 6) timed out — `COLUMNS_TRACKER_FEED_DEADLINE_S` (30.0 s, a policy ceiling not a hardware measurement, handoff_S2 flags it explicitly for owner confirmation) elapsed with no BB announcement and no tracker landing near P2 claimed. The platform is at rest holding ball A. |
 | `DROPPED_SURVIVOR_STOPPED` | D3: one ball was dropped (no release evidence within the deadline) while the OTHER ball was still in flight — the survivor's own catch is kept, its carried throw is stripped, and the attempt ends through a closing REST at the survivor's site once that catch finalises. ERROR severity, no memory row for the dropped ball. |
 | the D2 shadow-landing end line (empty `end_code`, `shadow_landing_stop=True`) | A clean columns finish with one ball still held: the last ball's landing is deliberately aimed at the platform's other, already-held ball (D2) — not a fault, the designed stop shape. Not resumable; clear the platform before the next attempt. |
@@ -318,7 +318,7 @@ analysis and the (date, command, result) triples for the fixes this sitting moti
 | `lead_clamp_mask` / `torque_clamp_mask` seen non-zero? | Not observed non-zero (no launch.log line reporting either mask set; not independently re-derived from the bag for this fill-in). |
 | Guard latch during the ramp block? | No — no `GUARD_LATCHED` in the launch log for the whole sitting. |
 | Verdict: HELD at 200 000 / REVERTED to 150 000 | **HELD at 200 000.** 4/4 self_toss dispatched (3 caught, 1 miss at apex 0.9063 m, a genuine drop — not a clamp/latch event); hop dispatched twice (8 throws total), all 8 caught. |
-| Session limits used for Blocks A–C | **300 / 5000 / 200 000 mm/s³, hand 3500 rev/s²** — the ramp held, so every later block flew at the ramped value, matching the box's `leg_jerk_mmps3: 200000.0` stamp. |
+| Sitting limits used for Blocks A–C | **300 / 5000 / 200 000 mm/s³, hand 3500 rev/s²** — the ramp held, so every later block flew at the ramped value, matching the box's `leg_jerk_mmps3: 200000.0` stamp. |
 
 ### Pre-power (§ 1) / bring-up (§ 2) / dress rehearsal (§ 3)
 

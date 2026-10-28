@@ -100,7 +100,7 @@ def rig():
     ``test_unified_cycle_budget.py`` sizes the planner against, kept here so the
     two files' numbers can be read side by side.
     """
-    limits = TrajectoryLimits.from_config(hw).with_session_limits(
+    limits = TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=250.0, leg_acc_mmps2=3000.0, leg_jerk_mmps3=150000.0)
     geom = StewartGeometry()
     launch_plan, launch_meta = uc.plan_launch(_goals(0.6), _rest_state(),

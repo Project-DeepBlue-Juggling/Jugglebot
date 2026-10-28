@@ -70,7 +70,7 @@ def geom():
 @pytest.fixture(scope='module')
 def limits():
     """The LIVE leg limits (600 / 8000 -> 5000 ceiling / 200 000)."""
-    return TrajectoryLimits.from_config(hw).with_session_limits(
+    return TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=600.0, leg_acc_mmps2=8000.0, leg_jerk_mmps3=200000.0)
 
 

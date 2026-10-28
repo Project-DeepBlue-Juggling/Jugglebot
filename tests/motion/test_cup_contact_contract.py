@@ -131,7 +131,7 @@ def geom():
 
 @pytest.fixture(scope='module')
 def limits():
-    return TrajectoryLimits.from_config(hw).with_session_limits(
+    return TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=LEG_VEL, leg_acc_mmps2=LEG_ACC, leg_jerk_mmps3=LEG_JERK,
         hand_acc_rps2=HAND_ACC)
 
@@ -341,7 +341,7 @@ def test_every_segment_carries_a_contact_window_within_the_dive_floor(
 def _generous_limits(dt=DT):
     """Leg ceilings effectively off, hand pair at the shipped default — same
     pattern as ``test_validate_cycle.py``'s ``_limits()``: constructed
-    directly (not via ``from_config``/``with_session_limits``) so no ceiling
+    directly (not via ``from_config``/``with_sitting_limits``) so no ceiling
     clamp applies."""
     return TrajectoryLimits(
         leg_vel_mmps=1e9, leg_acc_mmps2=1e9, leg_jerk_mmps3=1e9,

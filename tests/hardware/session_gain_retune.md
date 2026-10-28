@@ -184,7 +184,7 @@ the new gains apply at the next `_run_configure` (the `/orchestrator_command act
   `leg_pos_gains` / `leg_vel_gains` / `leg_vel_int_gains`, currently uniform
   **40.0 / 0.20 / 0.32**) so an ABORT reverts cleanly.
 - Session leg limits will be held **fixed at 156 / 660 / 10 500** for every point (this is a
-  gain sweep, not a limit ramp) — a relaunch reverts session limits to the YAML defaults, so
+  gain sweep, not a limit ramp) — a relaunch reverts sitting limits to the YAML defaults, so
   they are re-set each point via `set_limits`.
 
 ---
@@ -217,7 +217,7 @@ ambiguous. It is the original single-stage on-robot discriminate-then-damp proto
 as the fallback so the on-robot session is self-sufficient without the bench.
 
 Fixed test stroke every point: **z 170 → 250 → 170** (the up-stroke is the one that latched),
-at fixed session limits **vel 156 mm/s, acc 660 mm/s², jerk 10 500 mm/s³**, `duration_s: 0.0`
+at fixed sitting limits **vel 156 mm/s, acc 660 mm/s², jerk 10 500 mm/s³**, `duration_s: 0.0`
 (minimal feasible). Because the planner's minimal duration is **gain-independent** at fixed
 limits, the *commanded* stroke is byte-identical across all points — the clean basis for
 comparing the ring across gains.
@@ -299,7 +299,7 @@ ros2 topic pub -t 3 -r 2 /orchestrator_command std_msgs/msg/String "data: 'traje
 Confirm `/control_mode_topic` reads `TRAJECTORY` and verify a **bumpless hold** (probe, as in
 S1) before commanding motion. `live_deviation` on `/link_status` should sit near 0 at hold.
 
-### 3 — Set the fixed session limits
+### 3 — Set the fixed sitting limits
 
 ```bash
 ros2 service call /trajectory/set_limits jugglebot_interfaces/srv/SetTrajectoryLimits \
@@ -379,7 +379,7 @@ or any unexplained bus fault.
 2. Disarm (`set_setpoint_output false`) → `/orchestrator_command deactivate` (profiled stow).
 3. **Revert the gains** to the last-good triple (the baseline 40/0.20/0.32, or the last point
    that PASSed): edit YAML → `generate_config` → `colcon build` → `source` → relaunch. A
-   relaunch also reverts session limits to YAML — a clean full reset.
+   relaunch also reverts sitting limits to YAML — a clean full reset.
 
 ---
 

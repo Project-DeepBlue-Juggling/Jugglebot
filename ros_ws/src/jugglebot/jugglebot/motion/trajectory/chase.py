@@ -110,7 +110,7 @@ from jugglebot.motion.ik_solver import compute_jacobian, rotvec_to_rot_matrix
 from jugglebot.motion.trajectory.feasibility import STEP_BOUND_MARGIN
 
 # Fraction of each leg-space limit the chase plans against. NOT a new limit: the
-# gate still validates every plan at the FULL session limits — this is headroom
+# gate still validates every plan at the FULL sitting limits — this is headroom
 # so the frozen-J approximation error (and the gate's 1.05 jerk margin) land the
 # candidate inside the gate instead of a hair over it. See the module docstring
 # for the empirical sweep that pinned 0.85.

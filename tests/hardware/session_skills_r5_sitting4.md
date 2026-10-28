@@ -128,7 +128,7 @@ Any guard latch not explained by a `HAND_JAM` line ends the block. A `HAND_JAM_U
 sitting's motion until the ball is cleared by hand and `/recover` has run. `lead_clamp_mask` /
 `torque_clamp_mask` going non-zero at 350 mm/s: revert `set_limits` to 300 — but the box is swept
 at 350 only, so every pattern is then refused by `skills/check` (`admissible box ... swept with
-leg_vel_mmps=350.0 but the live session limit is 300.0`); that is the end of the sitting's patterns,
+leg_vel_mmps=350.0 but the live sitting limit is 300.0`); that is the end of the sitting's patterns,
 not a reason to re-sweep mid-sitting.
 
 ## 8. Close-out

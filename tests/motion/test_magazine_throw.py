@@ -45,8 +45,8 @@ def geom():
 
 @pytest.fixture(scope='module')
 def limits():
-    """Today's session limits: legs 350/5000/200000, hand 3900."""
-    return TrajectoryLimits.from_config(hw).with_session_limits(
+    """Today's sitting limits: legs 350/5000/200000, hand 3900."""
+    return TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=350.0, leg_acc_mmps2=5000.0, leg_jerk_mmps3=200000.0,
         hand_acc_rps2=3900.0)
 
@@ -218,9 +218,9 @@ def test_moving_seed_and_early_release_refuse(limits, geom):
 
 
 def test_gate_refusals_carry_their_own_code(limits, geom):
-    """A shape the hand can make but the legs cannot follow at the session
+    """A shape the hand can make but the legs cannot follow at the sitting
     limits is refused by ``validate_cycle``'s own code, never flown."""
-    tight = TrajectoryLimits.from_config(hw).with_session_limits(
+    tight = TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=60.0, leg_acc_mmps2=5000.0, leg_jerk_mmps3=200000.0,
         hand_acc_rps2=3900.0)
     with pytest.raises(uc.CycleInfeasible) as err:

@@ -207,7 +207,7 @@ def test_banking_tilt_acceleration_respects_the_cap(accel_scale):
     Rate limiting bounds tilt VELOCITY and leaves tilt ACCELERATION free: WP3
     measured the as-built schedule slewing at exactly its 3.0 rad/s cap while its
     second difference reached 240 rad/s², which ``decompose`` turned into
-    104k–115k mm/s² of leg acceleration against a 5000 mm/s² session limit.  So the
+    104k–115k mm/s² of leg acceleration against a 5000 mm/s² sitting limit.  So the
     property that matters is measured the way the machine feels it — as a second
     difference of the emitted series, not as a promise about the algorithm.
 

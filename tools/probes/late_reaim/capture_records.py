@@ -1,7 +1,7 @@
 """Capture the plan records a sim columns run installs, for the late-catch
 re-aim bump prototype (``bump_replay.py``).
 
-Runs ``sim/skills_gate.py``'s columns gate at the live session limits with
+Runs ``sim/skills_gate.py``'s columns gate at the live sitting limits with
 ``executor.install_segment`` wrapped, and pickles every install attempt as
 ``(t_now_s, kind, accepted, record_after, event_abs_s, limits, geom)``.
 Output: ``temp/probes/late_reaim/records_<seed>.pkl``.

@@ -53,7 +53,7 @@ time source, so a `t_abs_s` comparison here means exactly what it means in
 **Gate criterion (owner, 2026-09-12)**: 20 consecutive columns cycles (one
 `n_throws=20` schedule -- 1 pre-existing catch + 19 matching catches = 20
 scheduled catches) at apex 0.9 m, separation 100 mm, dwell 0.30 s, ZERO drops,
-on five fixed seeds (0..4), at session limits 300/5000/200000 (leg), hand
+on five fixed seeds (0..4), at sitting limits 300/5000/200000 (leg), hand
 3500 rev/s^2; the whole five-seed sweep under 5 minutes.
 
 Run headless (default); writes a JSON report under ``temp/reports/``.
@@ -146,9 +146,9 @@ from sim import stream_chain                                       # noqa: E402
 from sim.gate_common import ViewerClosed, attach_viewer             # noqa: E402
 
 # ---------------------------------------------------------------------------
-# Session limits -- read out of THIS SOURCE by regex
+# Sitting limits -- read out of THIS SOURCE by regex
 # (tests/ros/test_unified_cycle_bench.py::
-#  test_the_session_limits_match_the_gates_that_planned_them), so this triple
+#  test_the_sitting_limits_match_the_gates_that_planned_them), so this triple
 # is the ONE place the R2 operating point's leg limits live for that bench.
 # ---------------------------------------------------------------------------
 # 300 -> 350 on 2026-10-04 (R5 sitting 3): the roomier columns geometry (apex
@@ -1255,7 +1255,7 @@ class SkillsGate:
     def __init__(self, cfg: SkillsGateConfig = None):
         self.cfg = SkillsGateConfig() if cfg is None else cfg
         self.geom = StewartGeometry()
-        self.limits = TrajectoryLimits.from_config(hw).with_session_limits(
+        self.limits = TrajectoryLimits.from_config(hw).with_sitting_limits(
             leg_vel_mmps=self.cfg.leg_vel_mmps,
             leg_acc_mmps2=self.cfg.leg_acc_mmps2,
             leg_jerk_mmps3=self.cfg.leg_jerk_mmps3,
@@ -3208,7 +3208,7 @@ def run_reload_gate(cfg: SelfTossGateConfig = None,
     chain. PASS per seed = caught (kinematic capture) with zero pump
     rejects; the whole gate passes when every seed does. Reuses
     ``SelfTossGateConfig`` (the R3 self-toss operating point: apex 0.9 m,
-    dwell 0.30 s, session limits 300/5000/200000/3500) -- the reload's own
+    dwell 0.30 s, sitting limits 300/5000/200000/3500) -- the reload's own
     tail throws are kinematically ordinary self-toss throws at the SAME
     site (`compile_reload`'s own docstring), so this is the right box/limit
     point for them, not a third one."""

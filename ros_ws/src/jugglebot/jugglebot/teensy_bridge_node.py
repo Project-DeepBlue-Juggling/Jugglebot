@@ -1044,7 +1044,7 @@ _ARM_U0_HAND_TOL_REV = 0.625
 # MultiThreadedExecutor, so a bounded wait here (in a ReentrantCallbackGroup) is safe.
 _RECOVER_RESEED_TIMEOUT_S = 2.0
 # Window /recover WAITS for trajectory_node's PROFILED DESCENT to walk the streamed
-# u0 down onto the frozen encoder (u0 collapses over ~0.5-3 s at the session limits,
+# u0 down onto the frozen encoder (u0 collapses over ~0.5-3 s at the sitting limits,
 # each 40 Hz knot inside the pump gate — NOT the old instant one-frame reseed). Bounds
 # the wait so a descent that never converges (froze in place) refuses rather than
 # blocking the executor thread indefinitely.

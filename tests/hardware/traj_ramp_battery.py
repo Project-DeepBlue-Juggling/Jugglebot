@@ -10,11 +10,11 @@ already armed and in TRAJECTORY mode; otherwise every move is rejected loudly
 (``WRONG_MODE`` / ``STALE_STATE``) and nothing moves.
 
 Per the hardware protocol (``tests/hardware/session_phase4_ramp.md``): raise ONE
-session limit ~1.5× via ``--set-*``, run this battery, then ``/diagnose --latest``
+sitting limit ~1.5× via ``--set-*``, run this battery, then ``/diagnose --latest``
 to review realized leg peaks + jerk headroom, and only persist the bump to
 ``hardware_config.yaml`` on an operator PASS.
 
-Battery (all rest-to-rest, at the current session limits):
+Battery (all rest-to-rest, at the current sitting limits):
   z 170→220→170 ; x ±150 ; y ±150 ; tilt rx ±10° ; then one deliberately-infeasible
   ``duration_s = 0.05`` request that MUST come back ``TOO_FAST`` with a
   ``min_duration_s`` (the loud-rejection proof) and move nothing.
@@ -36,7 +36,7 @@ ABORT (operator) — recalibrated 2026-07-16: > 0.1 rev tracking at HOLDS only;
 during moves peak |live_deviation| must stay under ~0.6 rev AND collapse under
 0.1 rev at arrival (the guard latches at 1.0; any MAX_DEVIATION latch is an
 ABORT regardless of peak). Oscillation or an audible snap is an ABORT. Then
-revert the YAML session limits to the last-good values.
+revert the YAML sitting limits to the last-good values.
 """
 
 from __future__ import annotations

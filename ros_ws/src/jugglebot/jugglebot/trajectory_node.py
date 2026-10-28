@@ -313,7 +313,7 @@ _MAX_CYCLE_REPLANS = 2
 # ENTRY while the install lands at handler EXIT, so the head has to cover the whole
 # callback or the plan splices into a knot the emitter has already sent.
 #
-# MEASURED (2026-09-04, this Jetson, idle, session limits 250/3000/150000, 6
+# MEASURED (2026-09-04, this Jetson, idle, sitting limits 250/3000/150000, 6
 # consecutive `replan_tail` calls on the 1.4 s reference cycle): min 178 ms, median
 # 180 ms, max 188 ms. 0.30 s is that maximum plus ~60 %, which is the margin a loaded
 # executor needs; the plan's own guidance is the same number ("REPLAN lead >= 0.30 s
@@ -1237,7 +1237,7 @@ class TrajectoryNode(Node):
         **BUT THE COLD PENALTY MEASURED HERE IS ~5 ms, NOT SECONDS — so this is
         insurance, not the explanation.** Measured 2026-09-06 on this Jetson
         (``/tmp/probe_warmup.py``, a FRESH child process per measurement, 3 cold +
-        3 warm, session limits, the same 1.4 s SETTLE): first solve in a cold
+        3 warm, sitting limits, the same 1.4 s SETTLE): first solve in a cold
         process 185.4-191.0 ms against a 178.9-193.2 ms second solve in the same
         process, and 181.2-183.3 ms for the first solve behind this warm-up. The
         one-off cost this removes is a few ms because everything expensive —
@@ -2039,7 +2039,7 @@ class TrajectoryNode(Node):
         against the prior ACCEPTED frame), so the collapse never reached the Teensy
         and /recover could never converge. Instead we install a gate-validated
         PROFILED descent from the CURRENT COMMANDED state to the MEASURED pose (FK of
-        the live encoder), ending at rest, at the CURRENT session limits — the emitter
+        the live encoder), ending at rest, at the CURRENT sitting limits — the emitter
         plays it out and u0 converges onto the encoder over ~0.5-3 s, each knot inside
         the pump gate, then it terminally holds at measured.
 
@@ -3422,7 +3422,7 @@ class TrajectoryNode(Node):
         v = request.leg_vel_limit_mmps
         a = request.leg_acc_limit_mmps2
         j = request.leg_jerk_limit_mmps3
-        new_limits = self._limits.with_session_limits(
+        new_limits = self._limits.with_sitting_limits(
             leg_vel_mmps=v if v > 0.0 else None,
             leg_acc_mmps2=a if a > 0.0 else None,
             leg_jerk_mmps3=j if j > 0.0 else None)
@@ -4101,7 +4101,7 @@ class TrajectoryNode(Node):
         free-fall ``g`` as the EXACT start-of-window equality — a claim that is
         true only just after a release and false at every other instant of a live
         carry. MEASURED (2026-09-06, ``/tmp/probe_rep2d.py``, a second
-        ``KIND_SETTLE`` seeded 0.3005 s into a running one; banking on, session
+        ``KIND_SETTLE`` seeded 0.3005 s into a running one; banking on, sitting
         limits 250/3000/150000; hand +0.009749 rev at +0.259948 rev/s, platform
         7.1193 mm/s):
 
@@ -4192,7 +4192,7 @@ class TrajectoryNode(Node):
         #
         # THE BOUND IS A THOUSANDTH OF THE COMMANDED VELOCITY LIMIT, on each of
         # the three channels a window is planned from — and it is scaled off the
-        # LIVE session limits, so a session that lowers its ceiling tightens the
+        # LIVE sitting limits, so a session that lowers its ceiling tightens the
         # stopped-detector with it. `max_step_rev` is a PUMP SAFETY CEILING (the
         # largest per-knot |Δu0| the firmware will accept), not a stopped-
         # detector: read as a speed it is 841 mm/s here, above the 250 mm/s a
@@ -4249,7 +4249,7 @@ class TrajectoryNode(Node):
         # planner has to absorb: a REST is a SETTLE aimed at
         # `SETTLE_CUP_Z_MM`, so whatever rev the reconciled seed carries,
         # the window plans the hand from there to the settle clamp
-        # (0.3071 rev). MEASURED (2026-09-16, probe, R3 session limits
+        # (0.3071 rev). MEASURED (2026-09-16, probe, R3 sitting limits
         # 300/5000/200000 mm + hand 3500 rev/s^2, the schedule's own
         # 1.5 s `FLOOR_LIFT_S` opening REST to P1): CLEAN from every seed
         # in the stroke — 0.0001 rev at 0.31 rev/s peak, 0.5639 at 0.26,
@@ -4319,7 +4319,7 @@ class TrajectoryNode(Node):
         # rather than at 9806.
         #
         # It is not cosmetic. MEASURED (2026-09-05, probe, 60 mm lateral
-        # `KIND_SETTLE`, 1.4 s, banking on, session limits 250/3000/150000):
+        # `KIND_SETTLE`, 1.4 s, banking on, sitting limits 250/3000/150000):
         # with the `g` fallback the QP is handed free fall as a HARD boundary
         # condition, so knot 0 carries cup a_z = -9.806 m/s^2 — apparent gravity
         # in the cup EXACTLY ZERO for one 25 ms knot, i.e. the seated ball goes
@@ -5264,7 +5264,7 @@ class TrajectoryNode(Node):
         # gravity_correction_loaded=false names a loaded-but-dormant map.
         msg.tilt_map_loaded = bool(self._tilt_map_loaded)
         msg.tilt_map_version = str(self._tilt_map_version)
-        # LIVE session limits (frozen-dataclass reference; atomic swap in
+        # LIVE sitting limits (frozen-dataclass reference; atomic swap in
         # _svc_set_limits, so a lock-free read is a coherent triple). Consumers
         # (toss reach bound) must judge against what the feasibility gate will
         # actually enforce, not a module copy of the YAML default.
@@ -5340,7 +5340,7 @@ class TrajectoryNode(Node):
                      value=f'{self._run_peak_acc_mmps2:.1f}'),
             KeyValue(key='realized_peak_leg_jerk_mmps3',
                      value=f'{self._run_peak_jerk_mmps3:.0f}'),
-            # Current session limits, so /diagnose computes headroom without the YAML.
+            # Current sitting limits, so /diagnose computes headroom without the YAML.
             KeyValue(key='limit_leg_vel_mmps', value=f'{lim.leg_vel_mmps:.1f}'),
             KeyValue(key='limit_leg_acc_mmps2', value=f'{lim.leg_acc_mmps2:.1f}'),
             KeyValue(key='limit_leg_jerk_mmps3', value=f'{lim.leg_jerk_mmps3:.0f}'),

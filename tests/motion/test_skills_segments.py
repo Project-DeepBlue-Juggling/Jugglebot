@@ -54,7 +54,7 @@ def geom():
 
 @pytest.fixture(scope='module')
 def limits():
-    return TrajectoryLimits.from_config(hw).with_session_limits(
+    return TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=LEG_VEL, leg_acc_mmps2=LEG_ACC, leg_jerk_mmps3=LEG_JERK,
         hand_acc_rps2=HAND_ACC)
 
@@ -257,7 +257,7 @@ def test_launch_leg_jerk_scales_with_the_aim_offset(geom, cfg):
     got a 2-knot tilt blend and every nonzero aim cost ~125k mm/s³ whatever its
     size (MEASURED 2026-09-13 at 300/5000/150000: 10 mm 123 165, 20 mm 124 686),
     which collapsed the R3 single-site admissible box to a zero aim."""
-    limits = TrajectoryLimits.from_config(hw).with_session_limits(
+    limits = TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=LEG_VEL, leg_acc_mmps2=LEG_ACC, leg_jerk_mmps3=150000.0,
         hand_acc_rps2=HAND_ACC)
     site = np.array([-50.0, 0.0, 860.0])
@@ -420,7 +420,7 @@ def test_catch_terminal_carries_receive_tilt():
 # acceptance case for ``level_pinned_feed_report.md`` / ``probe_
 # level_pinned_feed.py`` (scratchpad, 2026-09-30), reusing ``probe_
 # bbfed_columns.py``'s S1/S2 construction exactly: apex 0.90 m, dwell 0.30 s,
-# separation 100 mm, session limits 300/5000/200000 mm-space, hand_acc 3500
+# separation 100 mm, sitting limits 300/5000/200000 mm-space, hand_acc 3500
 # rev/s^2, seeded from ball A's own THROW-from-rest release at P1.
 # ---------------------------------------------------------------------------
 
@@ -438,7 +438,7 @@ _BBFED_ARRIVAL_MM_S = np.array([1058.0, 475.0, -5507.0])
 
 @pytest.fixture(scope='module')
 def bbfed_limits():
-    return TrajectoryLimits.from_config(hw).with_session_limits(
+    return TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=_BBFED_LEG_VEL, leg_acc_mmps2=_BBFED_LEG_ACC,
         leg_jerk_mmps3=_BBFED_LEG_JERK, hand_acc_rps2=_BBFED_HAND_ACC)
 
@@ -568,7 +568,7 @@ def test_the_pre_tilt_rest_leaves_the_machine_at_the_receive_attitude(bb_chain):
 def test_the_held_attitude_catch_holds_it_and_puts_the_cup_on_the_ball(
         bb_chain, limits):
     """One attitude for the whole window, the cup on the landing point, and the
-    legs essentially still — 3.1 mm/s against the 300 mm/s session limit.
+    legs essentially still — 3.1 mm/s against the 300 mm/s sitting limit.
 
     That last number is the point of the unit. The same catch WITHOUT the held
     attitude asks the legs to cancel the stroke's own lateral projection
@@ -783,7 +783,7 @@ PRE_K = uc.pre_release_hold_knots()
 LAST_100MS_K = int(round(0.100 / DT))
 #: R4's launch limits (the runsheet's 300/5000/150000 + hand 3500) — tighter
 #: in jerk than this module's ``limits`` fixture, which predates them.
-R4_LIMITS = TrajectoryLimits.from_config(hw).with_session_limits(
+R4_LIMITS = TrajectoryLimits.from_config(hw).with_sitting_limits(
     leg_vel_mmps=300.0, leg_acc_mmps2=5000.0, leg_jerk_mmps3=150000.0,
     hand_acc_rps2=3500.0)
 

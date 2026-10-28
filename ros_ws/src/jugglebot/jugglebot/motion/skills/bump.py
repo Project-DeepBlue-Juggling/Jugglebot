@@ -36,7 +36,7 @@ install instant ``t_inst`` the wire may already hold every knot up to
   feed-forward is the analytic derivative of the same offset, so position and
   FF stay consistent and the interpolant is C1 across every knot by
   construction.  Its acceleration and jerk between knots are what
-  ``validate_cycle`` measures on the bumped slice; a peak over the session
+  ``validate_cycle`` measures on the bumped slice; a peak over the sitting
   limit (LIMIT_VEL first on the ramp-in, then ACC/JERK — every offline refusal
   was there) declines the bump and the old record keeps streaming untouched.
 * Every breakpoint of ``b`` is at least C2 (ramp-in end at ``t_c - pre_hold``:

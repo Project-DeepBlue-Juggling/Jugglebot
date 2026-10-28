@@ -10,7 +10,7 @@
 > path today:
 >
 > - **The offline admissible box** (`motion/skills/admissible.py`, swept by
->   `tools/admissible_sweep.py` at the LIVE session limits into
+>   `tools/admissible_sweep.py` at the LIVE sitting limits into
 >   `config/generated/admissible_box.yaml`) — replaces the closed-form quintic
 >   reach frontier this doc's § "requested displacement" section describes
 >   (was I-CATCH-3).
@@ -251,7 +251,7 @@ other way round. In particular:
 - **Do not raise `reach_envelope_mm` to permit a larger requested reach.** That is
   the coupling C-REACH-1 removed. The requested-reach gate is the closed-form
   bound in `toss_sequencer`, which follows the live `trajectory/set_limits`
-  session limits — so a longer flight or a limits ramp is the lever, and either
+  sitting limits — so a longer flight or a limits ramp is the lever, and either
   one is answerable from the refusal's own text. (Before 2026-08-29 this line
   said "raise `toss_max_displacement_mm` instead"; that key no longer exists.)
 - **Do not let a coordinator declare a centre it did not compute from its own

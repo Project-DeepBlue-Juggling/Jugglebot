@@ -96,7 +96,7 @@ Launch UP, ball in the cup. Two preconditions, in order, then ONE throw:
    see one small attitude move before the first cycle. That pre-level is what
    keeps the launch off the leg-jerk ceiling; without it a loaded correction
    inflates the launch jerk ~5× (2026-09-11).
-2. **Raise the session limits — do not skip this.** A launch needs ~65 k mm/s³
+2. **Raise the sitting limits — do not skip this.** A launch needs ~65 k mm/s³
    of leg jerk, over the 30 k default, so an un-raised session aborts every cycle
    `ABORTED_NO_RELEASE` or refuses `LIMIT_JERK`. Run UH-6 row 11:
    ```bash

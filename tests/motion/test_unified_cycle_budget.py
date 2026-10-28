@@ -190,7 +190,7 @@ def rig():
     gate's grows linearly with it, so the longest window is the binding case.  A
     0.9 s cycle would flatter the number by ~40 %.
     """
-    limits = TrajectoryLimits.from_config(hw).with_session_limits(
+    limits = TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=250.0, leg_acc_mmps2=3000.0, leg_jerk_mmps3=150000.0)
     geom = StewartGeometry()
     launch_plan, launch_meta = uc.plan_launch(_goals(0.6), _rest_state(),
@@ -291,7 +291,7 @@ def oval_rig():
     from jugglebot.motion.skills import sites as si
     from jugglebot.motion.trajectory import ballistics_bc as bal
 
-    limits = TrajectoryLimits.from_config(hw).with_session_limits(
+    limits = TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=350.0, leg_acc_mmps2=5000.0, leg_jerk_mmps3=200000.0,
         hand_acc_rps2=3900.0)
     geom = StewartGeometry()

@@ -4252,7 +4252,7 @@ class SkillNode(Node):
                 extra='(%s -> %s phantom)' % (a_site.name, phantom_site.name)))
 
     def _live_limits(self):
-        """The session limits `admissible.check_limits` judges the loaded box
+        """The sitting limits `admissible.check_limits` judges the loaded box
         against: LEG limits off the latest `trajectory/status`
         (`leg_*_limit_*`), falling back to the YAML module default on a field
         that reads 0.0 — the message's own documented "field absent" sentinel
@@ -4546,7 +4546,7 @@ class SkillNode(Node):
         `reload_coordinator_node._unified_prelevel`: the
         session-start schedule is planned from the seed the machine is
         ALREADY holding, and an un-prelevelled seed refuses ``LIMIT_JERK`` at
-        174 772 mm/s^3 against the 150 000 session limit (prelevelled: 19 773
+        174 772 mm/s^3 against the 150 000 sitting limit (prelevelled: 19 773
         — probe 2026-09-13). A pure attitude move: the live commanded xy/z is
         held exactly, only the attitude comes to gravity-level (the E3
         ingest, `trajectory_node`'s `GoToPose` handler, turns an IDENTITY
@@ -5842,7 +5842,7 @@ class SkillNode(Node):
         # -- the same session ceilings the swapped-in executor's segments
         # will actually be planned against.
         ll = self._live_limits()
-        check_limits = TrajectoryLimits.from_config(hw).with_session_limits(
+        check_limits = TrajectoryLimits.from_config(hw).with_sitting_limits(
             leg_vel_mmps=ll.leg_vel_mmps, leg_acc_mmps2=ll.leg_acc_mmps2,
             leg_jerk_mmps3=ll.leg_jerk_mmps3,
             hand_acc_rps2=ll.hand_acc_limit_rps2)

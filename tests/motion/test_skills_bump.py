@@ -5,7 +5,7 @@ Plan ``plans/archived/late-catch-reaim-bump.md``; design entry
 
 The record every test bumps is a REAL catch-with-throw installed here by
 ``executor.install_segment`` (a THROW from rest, then the CATCH carrying a
-throw spliced at the release, R5 session limits 350 / 5000 / 200 000, hand
+throw spliced at the release, R5 sitting limits 350 / 5000 / 200 000, hand
 3900) — not the probe's gitignored ``temp/probes/late_reaim/records_columns_0.pkl``,
 so the gate never depends on a regenerated artefact.  The numbers each test
 pins were confirmed by a probe on this exact construction (2026-10-16):
@@ -51,7 +51,7 @@ def geom():
 
 @pytest.fixture(scope='module')
 def limits():
-    return TrajectoryLimits.from_config(hw).with_session_limits(
+    return TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=350.0, leg_acc_mmps2=5000.0, leg_jerk_mmps3=200000.0,
         hand_acc_rps2=3900.0)
 

@@ -926,7 +926,7 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
     other ball. This is schedule-only: no new planner terminal — the last
     throw (or, once folded, the CATCH that carries it) plans exactly like any
     other throw, just aimed cross-site. Probed 2026-09-30 at the reference
-    operating point (apex 0.9 m, dwell 0.30 s, separation 100 mm, session
+    operating point (apex 0.9 m, dwell 0.30 s, separation 100 mm, sitting
     limits 300/5000/150000): the real ``segments.plan_segment`` ACCEPTS the
     cross-site catch-with-throw (peak leg jerk 149 210 mm/s³ against the
     150 000 cap — no headroom, but this is a single terminal event with
@@ -1244,7 +1244,7 @@ HOME_BAND_REV = 0.10
 #: and peak |a| ≈ ``_SHAPE_KA·Δ/T²`` for a rest-to-rest move of Δ rev over T s.
 #:
 #: MEASURED off the real QP, not assumed (probe 2026-09-18, venv interpreter,
-#: ``plan_segment(REST, ...)`` at the R3 session limits 300/5000/150000 mm +
+#: ``plan_segment(REST, ...)`` at the R3 sitting limits 300/5000/150000 mm +
 #: hand 3500 rev/s², hand seeds 0.0 / 0.56 / 2.0 / 5.0 / 9.62 / 9.9 rev homing
 #: to ``sites.REST_HAND_REV``): the realised factors are k_v = 1.50-1.53 and
 #: k_a = 5.68-5.95, flat across Δ and T.  ``_SHAPE_KV`` = 15/8 = 1.875 is the

@@ -216,7 +216,7 @@ _CUP_Z_INSET_M = 0.010
 #: But it is 10 mm BELOW this module's own cup box — the box is inset by
 #: :data:`_CUP_Z_INSET_M` at both ends — so a window asked to settle there is
 #: refused ``SETTLE_SITE`` before it plans (MEASURED 2026-09-04, the shipped
-#: chained LAUNCH+LANDING at session limits: *"settle site z 0.6796 m is outside
+#: chained LAUNCH+LANDING at sitting limits: *"settle site z 0.6796 m is outside
 #: the cup box [0.6896, 0.9846] m"*).
 #:
 #: So the settle is the parked height CLAMPED UP into the box: 689.6 mm =
@@ -1276,9 +1276,9 @@ def build_realize_config(limits, *, banking: bool = True,
     ``cup_realize.TILT_ACCEL_LIMIT_DEFAULT_RAD_S2`` is derived from the SHIPPED
     leg acceleration limit (``JB_TRAJ_LEG_ACC_LIMIT_MMPS2``, 5000 mm/s²) at import
     time, through the lever ``TILT_ACCEL_LEVER_MM``.  A unified sitting raises the
-    session limits at session start — that is the settled pattern, and the Phase-1
+    sitting limits at Sitting start — that is the settled pattern, and the Phase-1
     gate itself runs at leg-acc 3000 — so the shipped constant is the WRONG cap
-    twice over: at a lowered session limit the banking schedule is shaped for
+    twice over: at a lowered sitting limit the banking schedule is shaped for
     accelerations the session forbids and ``validate_cycle`` refuses cycles that
     a correctly-shaped schedule would have flown; at a raised one the schedule is
     needlessly smooth and gives away tilt authority the session paid for.  Neither
@@ -1297,7 +1297,7 @@ def build_realize_config(limits, *, banking: bool = True,
     vertical cup motion.  ``cup_realize.tilt_schedule`` re-derives it per call
     from the cup plan in hand (``cup_realize._tilt_jerk_lever_mm``), because the
     product-rule content the third difference picks up off a moving lever arm is
-    a property of the cycle, not of the geometry.  The session limit still
+    a property of the cycle, not of the geometry.  The sitting limit still
     enters exactly here, and exactly once.
     """
     accel_cap = (cr.TILT_ACCEL_BUDGET_FRACTION * float(limits.leg_acc_mmps2)
@@ -1662,7 +1662,7 @@ def plan_cycle(kind: str, goals: CycleGoals, state: CycleState,
 
     ``limits`` drives BOTH the gate and — through :func:`build_realize_config`
     when ``realize_cfg`` is not supplied — the banking schedule's acceleration
-    cap, so a session limit change reshapes the plan rather than only re-judging
+    cap, so a sitting limit change reshapes the plan rather than only re-judging
     it.
     """
     t_wall = time.perf_counter()
@@ -2081,7 +2081,7 @@ def _start_tilt_for(state: CycleState) -> Optional[np.ndarray]:
     accel-bounded smoother blends it toward the terminal pin and it comes out
     tilted even though the raw banking value at ``a_cup = 0`` is exactly level.
     On the UH-3 carry (``KIND_SETTLE``, banking on, 60 mm lateral, 1.4 s, settle
-    z ``SETTLE_CUP_Z_MM``, parked hand −0.038 rev, session limits
+    z ``SETTLE_CUP_Z_MM``, parked hand −0.038 rev, sitting limits
     250/3000/150000) that was **3.0727° on knot 0** against a LEVEL held pose —
     +3.5325 mm of centroid x through the 744.3 mm ``CUP_TILT_CENTER_Z_MM`` lever
     — and ``trajectory_node._install_continuity_ok`` refused the install

@@ -8,7 +8,7 @@ table: it must segment moves (by ``move_seq`` — a completed move stays
 ``plan_kind == 'move'`` for its whole terminal hold, so the ramp battery's
 back-to-back moves share one unbroken ``'move'`` run and only ``move_seq`` marks the
 per-move boundary), read the accumulated realized peak off the LAST sample of each
-window, and compute % used vs the session limits in force (realized AND the
+window, and compute % used vs the sitting limits in force (realized AND the
 gate-authoritative predicted).
 """
 

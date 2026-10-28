@@ -8,11 +8,11 @@ stays ``config/hardware_config.yaml``.
 
 Two tiers of limits, for the legs and (since the unified 7-DoF planner) for the
 hand:
-  * the **session limit** (``leg_vel/acc/jerk``, ``hand_vel/acc``) — the
+  * the **sitting limit** (``leg_vel/acc/jerk``, ``hand_vel/acc``) — the
     currently-commanded ceiling, ramped up across hardware sessions (Phase 4)
     via ``trajectory/set_limits``;
   * the **hard ceiling** (``*_ceiling``) — the YAML-pinned absolute maximum a
-    ``set_limits`` request is clamped to (a session limit can never exceed it).
+    ``set_limits`` request is clamped to (a sitting limit can never exceed it).
 
 The hand pair (``hand_vel_limit_rps`` / ``hand_vel_ceiling_rps`` and
 ``hand_acc_limit_rps2`` / ``hand_acc_ceiling_rps2``, owner-signed 2026-08-30 —
@@ -104,14 +104,14 @@ class TrajectoryLimits:
             max_timed_lead_s=float(hw.JB_TRAJ_MAX_TIMED_LEAD_S),
         )
 
-    def with_session_limits(self, *,
+    def with_sitting_limits(self, *,
                             leg_vel_mmps: float | None = None,
                             leg_acc_mmps2: float | None = None,
                             leg_jerk_mmps3: float | None = None,
                             hand_vel_rps: float | None = None,
                             hand_acc_rps2: float | None = None
                             ) -> 'TrajectoryLimits':
-        """Return a copy with new session limits, each clamped to its ceiling.
+        """Return a copy with new sitting limits, each clamped to its ceiling.
 
         This is the in-session ``trajectory/set_limits`` ramp: ``None`` keeps the
         current session value; any supplied value is clamped to the corresponding

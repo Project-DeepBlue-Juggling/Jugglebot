@@ -75,7 +75,7 @@ MOVES = {
 }
 GAINS = (0.3, 0.6, 1.0)
 
-# Session limit tiers (vel, acc, jerk). Shipped working point + a gentle and a
+# Sitting limit tiers (vel, acc, jerk). Shipped working point + a gentle and a
 # higher tier, so the binding constraint and the answer duration both vary.
 TIERS = {
     'shipped': (1000., 5000., 30000.),

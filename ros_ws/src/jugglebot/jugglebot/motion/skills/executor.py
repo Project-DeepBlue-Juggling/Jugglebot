@@ -852,7 +852,7 @@ def precondition_refusals(obs: Observations, *, launch: bool,
     reconciled against the MEASURED hand in
     ``trajectory_node._cycle_start_state``, and the schedule's opening REST
     (``schedule.FLOOR_LIFT_S``, 1.5 s) moves the hand from wherever it truly is
-    to the settle clamp.  MEASURED (2026-09-16, probe, session limits
+    to the settle clamp.  MEASURED (2026-09-16, probe, sitting limits
     300/5000/200000 mm + hand 3500 rev/s^2): that REST plans CLEAN from every
     hand seed in the stroke -- 0.0001 rev (0.31 rev/s peak) through 9.9 rev
     (9.76 rev/s), three orders under the 200 rev/s session ceiling -- so there

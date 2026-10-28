@@ -1108,7 +1108,7 @@ def summarise_trajectory_moves(traj_diag: List[Dict[str, Any]]) -> Dict[str, Any
 
     Segments the diagnostics samples into contiguous ``plan_kind == 'move'``
     windows (each an accepted go_to_pose during the ramp battery), and for each
-    reports the gate-PREDICTED and REALIZED leg peaks, the session limits in force,
+    reports the gate-PREDICTED and REALIZED leg peaks, the sitting limits in force,
     the jerk/vel/acc **headroom** (% of the limit used — the binding-constraint
     signal the ramp workflow raises limits by feel against), and the lean A/B arm
     (``lean_gain``). The realized peaks are running maxima reset per install, so the
@@ -1166,7 +1166,7 @@ def summarise_trajectory_moves(traj_diag: List[Dict[str, Any]]) -> Dict[str, Any
             'predicted': {'vel_mmps': pv, 'acc_mmps2': pa, 'jerk_mmps3': pj},
             'realized': {'vel_mmps': rv, 'acc_mmps2': ra, 'jerk_mmps3': rj},
             'limits': {'vel_mmps': lv, 'acc_mmps2': la, 'jerk_mmps3': lj},
-            # % of the session limit the REALIZED peak used (headroom = 100 − this).
+            # % of the sitting limit the REALIZED peak used (headroom = 100 − this).
             'used_pct': {'vel': pct(rv, lv), 'acc': pct(ra, la),
                          'jerk': pct(rj, lj)},
             # Gate-authoritative % from the fine-sampled PREDICTED peaks — prefer this

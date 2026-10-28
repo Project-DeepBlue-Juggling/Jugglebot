@@ -78,7 +78,7 @@ _OFFSET = (0.011663, 0.0)
 
 _ACTIVATE_REV = list(hw.JB_OP_ACTIVATE_POSITION_REVS)
 
-#: Session limits a unified sitting raises to at start (plan Phase 1, owner
+#: Sitting limits a unified sitting raises to at start (plan Phase 1, owner
 #: decision 1) — the ones `sim/cycle_gate.py` and `tests/motion/test_unified_cycle`
 #: run at.  Planning against the SHIPPED jerk would read LIMIT_JERK for a known
 #: structural reason and test that fact instead of this wiring.
@@ -141,7 +141,7 @@ def _robot_state(hand_rev=_REST_HAND_REV):
 
 
 def _node(offset=_OFFSET):
-    """A seeded TRAJECTORY-mode node at session limits, emitter NOT started."""
+    """A seeded TRAJECTORY-mode node at sitting limits, emitter NOT started."""
     node = TrajectoryNode(command_pub_factory=_CapturePub, start_emitter=False)
     node._on_robot_state(_robot_state())
     node._on_control_mode(String(data='TRAJECTORY'))

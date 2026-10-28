@@ -53,7 +53,7 @@ drop. `tx_q_hwm` is boot-monotone with no reset RPC.
   hand at its current position at 500 Hz and would fight any dispatched hand move
   (co-driving). `bench7 off` before any CLEAR_ERRORS / re-arm / homing sequence.
 - Platform motion during the battery arms is ordinary `traj_ramp_battery.py`
-  motion at whatever session limits the operator is comfortable with. Nothing
+  motion at whatever sitting limits the operator is comfortable with. Nothing
   here requires a new or larger move.
 - The CAN partners must be **alive** in every arm. A dark bus measures `tx_gated`,
   not `tx_deferred` — that is a different experiment and invalidates the arm.

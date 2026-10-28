@@ -60,9 +60,9 @@ DT = float(hw.JB_TRAJ_KNOT_DT_S)
 
 
 def _limits(vel, acc, jerk, hand_acc, *, unclamped=False):
-    base = TrajectoryLimits.from_config(hw).with_session_limits(hand_acc_rps2=float(hand_acc))
+    base = TrajectoryLimits.from_config(hw).with_sitting_limits(hand_acc_rps2=float(hand_acc))
     if not unclamped:
-        return base.with_session_limits(leg_vel_mmps=float(vel), leg_acc_mmps2=float(acc),
+        return base.with_sitting_limits(leg_vel_mmps=float(vel), leg_acc_mmps2=float(acc),
                                         leg_jerk_mmps3=float(jerk))
     import dataclasses as _dc
     return _dc.replace(base, leg_vel_mmps=float(vel), leg_acc_mmps2=float(acc),

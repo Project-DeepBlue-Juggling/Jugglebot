@@ -25,7 +25,7 @@ unaffected.
    what single-throw attempts avoid.
 3. Gate: land in-band within 5 throws from a cold memory, then 10 consecutive
    catches at the site.
-4. Session limits: legs 300 / 5000 / 150 000 mm/s³ (the most ever flown on
+4. Sitting limits: legs 300 / 5000 / 150 000 mm/s³ (the most ever flown on
    this machine — the single-site cycle's own jerk is zero, see § 1), hand
    3500 rev/s² (chained peak measured 3341).
 5. Perception preconditions are HARD: the QTM `Catching Cone` rigid body
@@ -42,7 +42,7 @@ unaffected.
 
 R2 never moved the platform; R3 does, with a learner writing a memory file
 that changes what the NEXT throw commands. **If your physical intuition
-disagrees with this framing — the site, the cold-start policy, the session
+disagrees with this framing — the site, the cold-start policy, the sitting
 limits, anything below — that is load-bearing signal, say so before we start.**
 Two places that are especially worth a sanity check from the person standing
 next to the robot: (a) the R2→R3 jerk ceiling actually DROPS (200 000 →
@@ -93,11 +93,11 @@ Every terminal: `source /opt/ros/foxy/setup.bash && source
 | 10 | QTM: disable the `Catching Cone` rigid body; mask the Ball Butler reflectors | **Hard precondition (plan § 2.7)** — 2026-09-06's bag showed the ball binding to the stale cone body on 5/7 throws, and a 2026-09-13 probe found only 10/27 historical self-tosses passed the observed predicate. Nothing downstream can catch a skipped step here. |
 | 10a | QTM: confirm a rigid body named `Platform` is defined and tracked (Tools → Rigid Bodies) | **Session-start frame-check precondition (plan `cup-contact-contract.md` § 1)** — `skill_node`'s frame check (§ 3, row 21a) can only evaluate the mocap-vs-commanded offset with this body present (since 2026-10-19 it also needs the robot frame: `mocap_node` logs `Robot frame OK: rms .. mm, 6-7 markers (a "dropped Base - n" suffix is the drop-worst working)` and `mocap/status` shows `robot_frame_ok=1`; QTM is NOT re-aligned to anything, the robot frame is fitted from the labelled `Base - 1..7` markers); without it the check logs "cannot evaluate", and at the launch default `learner_lateral_authority_mm=40` (since 2026-09-21) it refuses `REJECTED_FRAME_OFFSET` on every `jugglebot/juggle` self_toss/columns goal (2026-09-24: R4 renamed these from `skills/start_self_toss` / `skills/start_columns`, deleted) — this is no longer a corner case only reached under an explicit override. |
 
-### Finding A — the opening REST needs more than 1.0 s at this session limit (RESOLVED)
+### Finding A — the opening REST needs more than 1.0 s at this sitting limit (RESOLVED)
 
 `schedule.compile_one_ball`'s own opening REST (`schedule.FLOOR_LIFT_S`, the
 floor lift from the ACTIVATE park to site P1's rest position) **refuses
-`LIMIT_JERK` at the R3 session limit at its original 1.0 s value**, measured
+`LIMIT_JERK` at the R3 sitting limit at its original 1.0 s value**, measured
 through the real install chain, 2026-09-13 (`ex.install_segment`, park →
 `site.rest_site_mm()`, `leg_jerk_mmps3=150000`):
 
@@ -115,7 +115,7 @@ h1)** — the 1.5 s window measured ACCEPTED above, so the first-ever
 self_toss goal this session (`jugglebot/juggle`, 2026-09-24: renamed from
 the deleted `skills/start_self_toss`) is no longer expected to refuse
 on this segment. Nothing else about the move changed (still park → site P1
-rest at the R3 session limits): if it refuses anyway on the day, treat that
+rest at the R3 sitting limits): if it refuses anyway on the day, treat that
 as a NEW finding, not a repeat of this one.
 
 ### Finding B — a warm learner can push the launch THROW over the jerk ceiling (RESOLVED)
@@ -207,7 +207,7 @@ not a repeat of this one.
 | 16 | GUI: **Home**, then **Activate**. | Robot at the active pose, hand parked at 0 rev. |
 | 17 | `ros2 param set /skill_node site_x_mm -50.0`, `... site_y_mm 0.0`, `... apex_m 0.9`, `... dwell_s 0.30`, `... plant_id r3-$(date +%Y%m%d)` | A FRESH `plant_id` this session — `memory.memory_path`'s own contract: a fresh id starts a cold memory. Record the exact id used in § 7. |
 | 18 | `ros2 service call /trajectory/set_limits jugglebot_interfaces/srv/SetTrajectoryLimits "{leg_vel_limit_mmps: 300.0, leg_acc_limit_mmps2: 5000.0, leg_jerk_limit_mmps3: 150000.0}"` | `applied_*` echoes **300 / 5000 / 150000** — the launch default is 1000 / 5000 / 30000 (`hardware_config.py:174-176`), so this call is mandatory, not conditional on it already matching. |
-| 19 | `ros2 service call skills/check std_srvs/srv/Trigger` | **Every current refusal at once** (item 8): expect `ladder REFUSED: REJECTED_NOT_LEVELLED` before `level`/pre-level has run, plus `box OK` (limits match) once step 18's `set_limits` call has applied the session limits. If MORE than the expected rows refuse, fix each named one and re-run — never re-dispatch around a refusal by hand. |
+| 19 | `ros2 service call skills/check std_srvs/srv/Trigger` | **Every current refusal at once** (item 8): expect `ladder REFUSED: REJECTED_NOT_LEVELLED` before `level`/pre-level has run, plus `box OK` (limits match) once step 18's `set_limits` call has applied the sitting limits. If MORE than the expected rows refuse, fix each named one and re-run — never re-dispatch around a refusal by hand. |
 | 20 | Seat a ball in the hand. | The hand's possession sensor should read SEATED — `skills/check`'s ladder cannot see this directly (no `ball_evidence` row printed by `_svc_check` — only the launch-time `_dispatch` path checks it), so confirm visually and via `ros2 topic echo /hand_telemetry` (`ball_held_valid: true`, `ball_held_raw: true`) before the first self_toss goal (§ 3 note). |
 
 ## 3. The dress rehearsal (every refusal reported at once, robot NOT yet armed to throw)
@@ -271,7 +271,7 @@ this list, treat it as a NEW finding, not a known outcome.
 | `SPLICE_TOO_LATE` | The solve finished after the wire had already read past the intended splice knot — a slow solve would otherwise rewrite trajectory already being interpolated. |
 | `WINDOW_TOO_SHORT` | Fewer knots from the splice to the event than the gate needs to measure a jerk at all. |
 | `UNREACHABLE` | A malformed terminal (a `ValueError` building it) — a parameter/programming error, not a physical-limit refusal. |
-| `LIMIT_JERK` / `LIMIT_ACC` / `LIMIT_VEL` / `HAND_STROKE` / `HAND_ACC` (trajectory_node/planner) | The named leg or hand axis would exceed its session limit or physical travel band on this specific segment. |
+| `LIMIT_JERK` / `LIMIT_ACC` / `LIMIT_VEL` / `HAND_STROKE` / `HAND_ACC` (trajectory_node/planner) | The named leg or hand axis would exceed its sitting limit or physical travel band on this specific segment. |
 | `STALE_STATE` / `WRONG_MODE` (trajectory_node/planner) | `trajectory_node`'s own seed is stale, or the node isn't in the mode this install assumes. |
 
 ## 7. If something refuses

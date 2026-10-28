@@ -2,9 +2,9 @@
 id: JB-3
 kind: feature
 title: Rename "session limits" to Sitting limits (glossary term)
-status: in_progress
+status: complete
 created: '2026-09-21'
-updated: '2026-10-28T00:23:43Z'
+updated: '2026-10-28T01:22:35Z'
 owners: []
 priority: medium
 blocked_by: []
@@ -13,7 +13,7 @@ links:
 filed_by: harrison
 ---
 
-`CONTEXT.md` defines **Sitting** (a powered period at the robot) and reserves **Session** for a Claude Code conversation, so the live velocity / acceleration / jerk limits are **Sitting limits**. The code still says "session limits". The glossary is deliberately ahead of the code here.
+`CONTEXT.md` defines **Sitting** (a powered period at the robot) and reserves **Session** for a Claude Code conversation, so the live velocity / acceleration / jerk limits are **Sitting limits**. The glossary ran ahead of the code here until the 2026-10-28 rename (`with_sitting_limits`, "sitting limits" in prose); the title and the dated survey below keep the old phrase because it is what was renamed.
 
 ## Scope (surveyed 2026-09-21)
 
@@ -31,3 +31,4 @@ Roughly 235 hits on `mvp-trajectory-bringup` and more on `skill-stack`: the iden
 ## Progress
 
 - 2026-10-28: Unit A of the inbox-wall sweep: full rename plus admissible-box re-sweep
+- 2026-10-28: Renamed outside history, 250 grep lines to 9 deliberate; admissible box re-swept value-identical, gate_hash f8a9e188b2cf; logbook 2026-10-28-jb3-sitting-limits-rename

@@ -59,7 +59,7 @@ WHAT IT UNDERPINS
   flight-time guidance per rung comes from table A.
 
 It is committed rather than left in `/tmp` because the bench ladder re-runs it to
-re-derive the frontier whenever the session limits (`trajectory_limits.leg_*`)
+re-derive the frontier whenever the sitting limits (`trajectory_limits.leg_*`)
 move — the frontier is a function of them, and since the flat cap was deleted
 those limits are the ONLY lever that moves the pre-throw gate.
 
@@ -145,7 +145,7 @@ def _rest_state(pose6):
 
 def closed_form_limit_mm(flight_s: float) -> float:
     """`toss_sequencer.reach_displacement_limit_mm`, re-derived here from the
-    SAME session limits so a probe run and the FSM cannot disagree silently."""
+    SAME sitting limits so a probe run and the FSM cannot disagree silently."""
     t = float(flight_s)
     return min(LIMITS.leg_vel_mmps * t / 1.875,
                LIMITS.leg_acc_mmps2 * t * t / 5.7735,
@@ -181,7 +181,7 @@ def reach_verdict(a_xy, b_xy, flight_s):
 
     Uses the probe's own module-level survey constants (LIMITS/GEOM/Z_ACTIVE/
     SETTLE_S) directly, so a `--json` run stays a function of THIS file's
-    session limits (the frontier is a function of them, and the bench ladder
+    sitting limits (the frontier is a function of them, and the bench ladder
     re-runs this probe precisely to re-derive it when they move).
     """
     t = float(flight_s)
@@ -391,7 +391,7 @@ def main(argv=None) -> int:
         path = os.path.join(out_dir, f'displaced_reach_frontier_{stamp}.json')
         with open(path, 'w') as fh:
             json.dump({
-                'session_limits': {
+                'sitting_limits': {
                     'leg_vel_mmps': LIMITS.leg_vel_mmps,
                     'leg_acc_mmps2': LIMITS.leg_acc_mmps2,
                     'leg_jerk_mmps3': LIMITS.leg_jerk_mmps3},

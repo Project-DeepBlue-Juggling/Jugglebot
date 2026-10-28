@@ -120,7 +120,6 @@ _Status: closed (complete)._
 | ID | Kind | Title | Status | Priority | Pathway | Age |
 | --- | --- | --- | --- | --- | --- | --- |
 | JB-2 | feature | [Design change: the Hand should be Idle, not Parked Closed-loop, while Active](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-hand-idle-not-parked-closed-loop-while-active.md) | inbox | medium | — | filed 2026-09-21 |
-| JB-3 | feature | [Rename "session limits" to Sitting limits (glossary term)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-rename-session-limits-to-sitting-limits.md) | in_progress | medium | — | filed 2026-09-21 |
 | JB-21 | bug | [bb/throw_outcome carries no throw identity](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-bb-throw-outcome-carries-no-throw-identity.md) | inbox | medium | Ball Butler | filed 2026-10-24 |
 | JB-28 | feature | [Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-columns-empty-cup-rows-33-34-on-hardware.md) | inbox | medium | Ball Butler | filed 2026-10-24 |
 | JB-22 | bug | [Cup Banking saturates at its 12 deg clamp on small lateral offsets](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-cup-banking-saturates-at-clamp.md) | inbox | medium | Two-ball oval | filed 2026-10-24 |

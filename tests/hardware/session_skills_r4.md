@@ -28,7 +28,7 @@ cup-contact dive contract). Driver: `tests/hardware/skills_plan_bench.py`
 3. Gate (plan § R4): **10 consecutive catches alternating P1/P2** on
    hardware, and a BB reload → catch → throw → catch chain dispatched from
    the GUI with one button.
-4. Session limits unchanged from R2/R3: legs **300 / 5000 / 150 000 mm/s³**,
+4. Sitting limits unchanged from R2/R3: legs **300 / 5000 / 150 000 mm/s³**,
    hand **3500 rev/s²** (torque FF `K = 0.7`, launch default — nothing to set
    by hand, plan § 0).
 5. The FSM is **deleted outright** (tag `fsm-final`, U6): every coordinator,
@@ -48,7 +48,7 @@ R3 threw one ball at one site with a learner running. R4 adds a second site
 the same ball hops between, and — for the first time — lets an external
 thrower (Ball Butler) put a ball in the cup while the platform holds a tilt.
 **If your physical intuition disagrees with the framing below — the site
-separation, the receive tilt, the session limits, anything else — that is
+separation, the receive tilt, the sitting limits, anything else — that is
 load-bearing signal, say so before we start.**
 
 Three places especially worth a sanity check from the person standing next

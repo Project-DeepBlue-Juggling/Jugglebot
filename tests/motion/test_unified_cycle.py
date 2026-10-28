@@ -71,7 +71,7 @@ CATCH_MM = np.array([20.0, 0.0, 830.0])
 CATCH_V_MM_S = np.array([100.0, -50.0, -2500.0])
 REST_MM = np.array([0.0, 0.0, 750.0])
 
-#: Catch-capable session limits — the ones ``sim/cycle_gate.py`` runs at, and the
+#: Catch-capable sitting limits — the ones ``sim/cycle_gate.py`` runs at, and the
 #: ones a unified sitting raises to at session start (plan Phase 1, owner
 #: decision 1).  The SHIPPED leg jerk reads ``LIMIT_JERK`` on every gate cycle for
 #: a structural reason recorded there, so testing against it would test that
@@ -88,7 +88,7 @@ def geom():
 
 @pytest.fixture(scope='module')
 def limits():
-    return TrajectoryLimits.from_config(hw).with_session_limits(
+    return TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=SESSION_LEG_VEL, leg_acc_mmps2=SESSION_LEG_ACC,
         leg_jerk_mmps3=SESSION_LEG_JERK)
 
@@ -166,7 +166,7 @@ def test_cup_state_from_platform_is_the_exact_inverse_of_decompose(steady):
     """
     plan, meta = steady
     cfg = uc.build_realize_config(
-        TrajectoryLimits.from_config(hw).with_session_limits(
+        TrajectoryLimits.from_config(hw).with_sitting_limits(
             leg_acc_mmps2=SESSION_LEG_ACC))
     cup = meta.cup_plan
     worst = 0.0
@@ -278,7 +278,7 @@ def test_cup_velocity_from_platform_tracks_the_cup_plan(steady):
     """
     plan, meta = steady
     cfg = uc.build_realize_config(
-        TrajectoryLimits.from_config(hw).with_session_limits(
+        TrajectoryLimits.from_config(hw).with_sitting_limits(
             leg_acc_mmps2=SESSION_LEG_ACC))
     cup = meta.cup_plan
     worst = 0.0
@@ -422,7 +422,7 @@ def test_a_post_release_kind_from_a_rest_state_drops_the_detach_cone(limits,
     carry forbids the cup from accelerating sideways out of rest at all.
 
     MEASURED (2026-09-05, ``/tmp/probe_a2_detach.py``, the 60 mm lateral SETTLE
-    at ``SETTLE_CUP_Z_MM`` = 689.6 mm, 1.4 s, banking on, session limits
+    at ``SETTLE_CUP_Z_MM`` = 689.6 mm, 1.4 s, banking on, sitting limits
     250/3000/150000): cup ``acc_x`` at knots 0..3 came out
     ``[0, 0, 0, 0.2013]`` m/s² with the rows against ``[0, 0.1870, 0.1801,
     0.1732]`` without them — 50 ms of forbidden lateral acceleration at the head
@@ -709,7 +709,7 @@ def test_the_extend_gate_range_is_CONSTANT_over_a_six_window_chain(long_ring):
     thing that makes the time constant, and it is exact.
 
     MEASURED (2026-09-07, ``/tmp/probe_uh7_cost.py``, run twice with identical
-    output) on this chain at session limits: 58 knots gated on every one of the
+    output) on this chain at sitting limits: 58 knots gated on every one of the
     six extends while the joined plan went 81 → 137 → 193 → 249 → 305 → 361, and
     the extend wall time stayed **163.2 / 163.2 / 163.0 / 162.9 / 163.5 /
     164.3 ms**.  Gating the whole plan instead measured **219.7 → 1016.8 ms** over
@@ -735,7 +735,7 @@ _STENCIL_PROBE_KNOT = 40
 
 #: One injection per ``validate_cycle`` pass, sized (2026-09-07,
 #: ``/tmp/probe_uh7_f4.py``) to trip THAT pass on the reference LAUNCH + STEADY
-#: join at session limits: ``(label, channel, delta, column)``.
+#: join at sitting limits: ``(label, channel, delta, column)``.
 _STENCIL_INJECTIONS = [
     ('leg jerk', 'pose_vel', 10.0),
     ('leg vel/acc', 'pose', 3.0),
@@ -793,7 +793,7 @@ def test_the_extend_gate_range_covers_every_validate_cycle_stencil(ring, limits,
     this assertion is what would say so.
 
     MEASURED (2026-09-07, ``/tmp/probe_uh7_f4.py``) on the LAUNCH + STEADY join at
-    session limits, injecting at knot 40: **leg jerk reach 1** (LIMIT_JERK), leg
+    sitting limits, injecting at knot 40: **leg jerk reach 1** (LIMIT_JERK), leg
     vel/acc **0** (LIMIT_ACC), leg step **0** (LIMIT_VEL), hand vel/acc **0**
     (HAND_LIMIT_ACC), hand step/stroke **0** (HAND_STROKE).  The jerk pass is the
     one that needs the knot, and it needs it for a reason the others do not share:
@@ -1001,7 +1001,7 @@ def test_the_stencils_LAST_knot_is_what_catches_a_seam_jerk_step(ring, limits,
     PASSES, gating from ``k_seam − 1`` REFUSES ``LIMIT_JERK``.
 
     MEASURED (2026-09-07, ``/tmp/probe_uh7_f2f3.py``): a ``+10.0 mm/s`` bump to
-    ``pose_vel[k_seam][0]`` on the LAUNCH + STEADY join at session limits is the
+    ``pose_vel[k_seam][0]`` on the LAUNCH + STEADY join at sitting limits is the
     smallest of the sweep ``{0.5, 1, 2, 3, 4, 6, 10}`` that discriminates — every
     smaller value passes from both starts, and 10.0 refuses from ``k_seam − 1``
     while still passing from ``k_seam``.
@@ -1058,7 +1058,7 @@ def test_the_start_tilt_pin_is_what_closes_the_seam(launch, landing):
     assert float(np.max(np.abs(plan_a.pose[-1] - plan_b.pose[0]))) == 0.0
 
     cfg = uc.build_realize_config(
-        TrajectoryLimits.from_config(hw).with_session_limits(
+        TrajectoryLimits.from_config(hw).with_sitting_limits(
             leg_acc_mmps2=SESSION_LEG_ACC))
     unpinned = cr.tilt_schedule(meta_b.cup_plan, meta_b.receive_tilt,
                                 meta_b.throw_tilt, cfg)
@@ -1121,7 +1121,7 @@ def test_a_NEW_window_opens_at_the_tilt_the_MACHINE_holds(limits, geom,
 
     MEASURED (2026-09-06, ``/tmp/probe_knot0_tilt.py``, this same 60 mm lateral
     ``KIND_SETTLE`` at ``SETTLE_CUP_Z_MM`` = 689.6 mm, 1.4 s, banking on, parked
-    hand −0.038 rev, session limits 250/3000/150000): without the pin knot 0
+    hand −0.038 rev, sitting limits 250/3000/150000): without the pin knot 0
     came out at **3.0727°** for BOTH seeds — the schedule was answering the
     smoother, not the machine — putting the centroid at x = **+3.5325 mm**
     against a held 0.0. With it, knot 0 is the seed tilt to the last bit and the
@@ -1608,7 +1608,7 @@ def test_a_tightened_limit_applies_from_the_NEXT_window_not_retroactively(
     state = uc.release_state_from_meta(meta, joined)
 
     def _tight(jerk):
-        return TrajectoryLimits.from_config(hw).with_session_limits(
+        return TrajectoryLimits.from_config(hw).with_sitting_limits(
             leg_vel_mmps=SESSION_LEG_VEL, leg_acc_mmps2=SESSION_LEG_ACC,
             leg_jerk_mmps3=jerk)
 
@@ -2073,7 +2073,7 @@ def test_the_hand_step_gate_chain_agrees_end_to_end():
     * the firmware's ``MAX_DEVIATION_HAND_REV`` / ``MAX_LEAD_HAND_REV`` backstop.
 
     **Why the ordering must hold, and why the srv is deliberately NOT widened.**
-    ``hand_vel_limit_rps`` is a SESSION limit — ``TrajectoryLimits`` lets a
+    ``hand_vel_limit_rps`` is a SITTING limit — ``TrajectoryLimits`` lets a
     sitting raise it, and unified sittings do raise limits at session start.  The
     pump's gate is frozen at construction from the SHIPPED constant and never
     hears about that.  So a session that raised the hand velocity limit would
@@ -2110,11 +2110,11 @@ def test_the_hand_step_gate_chain_agrees_end_to_end():
 
 
 def test_build_realize_config_follows_the_live_leg_acc_limit():
-    """The tilt-accel cap is DERIVED from the session limit, not from the shipped one.
+    """The tilt-accel cap is DERIVED from the sitting limit, not from the shipped one.
 
     ``cup_realize``'s module constant is computed once, at import, from the
     shipped ``JB_TRAJ_LEG_ACC_LIMIT_MMPS2`` (5000 mm/s²).  A unified sitting
-    raises the session limits at session start, and the Phase-1 gate itself runs
+    raises the sitting limits at Sitting start, and the Phase-1 gate itself runs
     at 3000 — so leaving the schedule shaped for 5000 makes the smoother ask for
     tilt accelerations the session's own gate will then refuse.  Not a safety
     failure (``validate_cycle`` still gates), but a silent one.
@@ -2131,7 +2131,7 @@ def test_build_realize_config_follows_the_live_leg_acc_limit():
     for leg_acc, expect in ((2000.0, shipped * 0.4), (3000.0, shipped * 0.6),
                             (5000.0, cr.TILT_ACCEL_LIMIT_DEFAULT_RAD_S2)):
         cfg = uc.build_realize_config(
-            base.with_session_limits(leg_acc_mmps2=leg_acc))
+            base.with_sitting_limits(leg_acc_mmps2=leg_acc))
         assert cfg.tilt_accel_limit_rad_s2 == pytest.approx(expect, rel=1e-4)
     assert uc.build_realize_config(base, banking=False).banking_enabled is False
 
@@ -2154,19 +2154,19 @@ def test_build_realize_config_follows_the_live_leg_jerk_limit():
     session leg-jerk limit, whatever the lever is).
     """
     # All three stay under the YAML hard ceiling (JB_TRAJ_LEG_JERK_CEILING_MMPS3
-    # = 200000) so ``with_session_limits`` passes the requested value through
+    # = 200000) so ``with_sitting_limits`` passes the requested value through
     # unclamped — the point being the LEVER's linearity, not the ceiling clamp.
     base = TrajectoryLimits.from_config(hw)
     caps = {}
     for leg_jerk in (50000.0, 100000.0, 150000.0):
         cfg = uc.build_realize_config(
-            base.with_session_limits(leg_jerk_mmps3=leg_jerk))
+            base.with_sitting_limits(leg_jerk_mmps3=leg_jerk))
         caps[leg_jerk] = float(cfg.tilt_jerk_limit_rad_s3)
 
     # Direction: a higher session jerk limit raises the tilt-jerk cap.
     assert caps[50000.0] < caps[100000.0] < caps[150000.0]
 
-    # Proportionality: the cap is LINEAR in the session limit (whatever the
+    # Proportionality: the cap is LINEAR in the sitting limit (whatever the
     # lever), so the ratio between two caps equals the ratio of their inputs.
     assert caps[150000.0] / caps[100000.0] == pytest.approx(1.5, rel=1e-6)
     assert caps[100000.0] / caps[50000.0] == pytest.approx(2.0, rel=1e-6)
@@ -2998,7 +2998,7 @@ def test_receive_tilt_pins_the_touchdown_attitude_level(limits, geom):
 # ---------------------------------------------------------------------------
 #
 # THE RECIPE (scratchpad ``probe_fb_floors.py``, venv, 2026-09-30, on the
-# production rows): R5 session limits 300/5000/150k, hand 3500; column site P1
+# production rows): R5 sitting limits 300/5000/150k, hand 3500; column site P1
 # (catch (−50, 0, 830), release (−50, 0, 860) mm); the Ball Butler arrival at
 # P1 (1058, 475, −5507) mm/s, whose clamped receive tilt is (4.871°, −10.849°),
 # |11.892°|; the seed is the terminal of a 1.0 s tilted SETTLE (``rest_tilt``)
@@ -3021,7 +3021,7 @@ _F_ARRIVAL = np.array([1058.0, 475.0, -5507.0])
 
 @pytest.fixture(scope='module')
 def r5_limits():
-    return TrajectoryLimits.from_config(hw).with_session_limits(
+    return TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=300.0, leg_acc_mmps2=5000.0, leg_jerk_mmps3=150000.0,
         hand_acc_rps2=3500.0)
 
@@ -3080,7 +3080,7 @@ def test_a_held_attitude_STEADY_holds_through_the_touch_down_and_releases_level(
     assert rep.peak_hand_acc_rps2 <= r5_limits.hand_acc_limit_rps2
 
 
-def test_the_held_attitude_STEADY_dwell_floor_is_0p50_at_the_R5_session_limits(
+def test_the_held_attitude_STEADY_dwell_floor_is_0p50_at_the_R5_sitting_limits(
         r5_limits, geom, f_tilted_rest):
     """The threshold pin: (w 0.20, d 0.50) plans, d 0.45 refuses LIMIT_JERK.
 

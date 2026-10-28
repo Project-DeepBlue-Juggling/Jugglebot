@@ -34,7 +34,7 @@ sitting, `bb/start_accuracy_calibration` on `ball_butler_node`.
 3. **Gate: the 0 deg gate (§ 5) is pre-registered pass/fail; the BB-fed columns block (§ 6) is
    data-gathering**, same discipline as sitting 1 — a learning-curve log, not a pass/fail line,
    pending R5's own hardware gate (five consecutive cycles, then 30 catches, plan § R5 Gate).
-4. **Session limits: legs 300 / 5000 / 200 000 mm/s³, hand 3500 rev/s².** The leg-jerk ramp
+4. **Sitting limits: legs 300 / 5000 / 200 000 mm/s³, hand 3500 rev/s².** The leg-jerk ramp
    already HELD at 200 000 in sitting 1 (§ 2.5 of that sheet; 4/4 self_toss + 8/8 hop, no clamp,
    no latch) — **this sitting does not re-run the ramp block**, it starts directly at the ramped
    value. `set_limits` still MUST precede `skills/check` and every dress-rehearsal row (same

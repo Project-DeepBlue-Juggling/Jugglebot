@@ -7,7 +7,7 @@ frontier (the platform's transit between two sites) and ``REJECTED_DISPLACEMENT`
 :mod:`tools.admissible_sweep` runs the REAL QP + gate
 (``unified_cycle.plan_launch`` / ``plan_landing``, gated by
 ``feasibility.validate_cycle`` exactly as ``skills.segments.plan_segment``
-calls it) over a grid of commands at the session limits, offline, and records
+calls it) over a grid of commands at the sitting limits, offline, and records
 the box of ``u`` for which every grid point passed with margin. At runtime the
 node only has to :func:`clip` the learner's (or, at R2, the identity prior's)
 command into that box -- an O(1) bounds check, not a QP solve.
@@ -90,7 +90,7 @@ PLANNER_MODES = ('level', 'pose')
 #: adds the executor-family code constant REJECTED_SITE_OUTSIDE_WORKSPACE).
 SITE_OUTSIDE_WORKSPACE_REASON = 'site outside workspace'
 
-#: Every grid point in the box must clear the session limit by this fraction
+#: Every grid point in the box must clear the sitting limit by this fraction
 #: before it is admitted -- 10% headroom above the swept operating point for
 #: solver tolerance and the 80-sample-vs-dense-400 mesh-coarsening gap
 #: (I-PLAN-3) so a point the box calls "admissible" cannot be one the live
@@ -98,7 +98,7 @@ SITE_OUTSIDE_WORKSPACE_REASON = 'site outside workspace'
 MARGIN_FRAC = 0.9
 
 #: Required keys of the ``limits`` dict every box is stamped with -- the
-#: session limits it was swept under (plan § 2.6).  Hand VELOCITY is
+#: sitting limits it was swept under (plan § 2.6).  Hand VELOCITY is
 #: deliberately excluded: no swept segment here nears it (the hand's
 #: constraining axis at these apexes is acceleration, per
 #: ``tools/probes/skills_sizing_sweep.py``'s frontier runs).
@@ -160,7 +160,7 @@ class AdmissibleBox:
     release_site_xy_mm: Tuple[float, float]
     #: ``(x, y)`` mm, platform frame -- the TARGET site's ``cup_mm[:2]``.
     target_site_xy_mm: Tuple[float, float]
-    #: The session limits this box was swept under -- see ``_LIMIT_KEYS``.
+    #: The sitting limits this box was swept under -- see ``_LIMIT_KEYS``.
     limits: Dict[str, float]
     #: sha256 of the eight ``_GATED_FILES`` files' text, in order, [:12] --
     #: see :func:`gate_hash`.
@@ -606,7 +606,7 @@ def check_limits(boxes: List[AdmissibleBox], limits, *,
                     float(swept_val), live_val, rel_tol=1e-9, abs_tol=1e-9):
                 raise LimitsMismatch(
                     'admissible box for site pair %r was swept with %s=%r but '
-                    'the live session limit is %r -- regenerate '
+                    'the live sitting limit is %r -- regenerate '
                     'config/generated/admissible_box.yaml (tools/'
                     'admissible_sweep.py)' % (box.site_pair, key, swept_val,
                                               live_val))

@@ -67,7 +67,7 @@ def geom():
 
 def _limits(*, vel=1e9, acc=1e9, jerk=1e9, step=0.3, dt=0.025, min_dur=0.2):
     """A TrajectoryLimits with chosen ceilings (constructed directly to bypass the
-    session-limit clamping, so vel/acc/jerk can be made effectively off)."""
+    sitting-limit clamping, so vel/acc/jerk can be made effectively off)."""
     return TrajectoryLimits(
         leg_vel_mmps=vel, leg_acc_mmps2=acc, leg_jerk_mmps3=jerk,
         leg_vel_ceiling_mmps=1e12, leg_acc_ceiling_mmps2=1e12,
@@ -395,7 +395,7 @@ def test_shaped_dispatch_is_batched(geom):
 # sub-%). Only FD JERK is systematically monotone in mesh. This corpus asserts jerk
 # monotonicity only.
 
-# Realistic session limit tiers (the shipped working point + a tighter and a looser
+# Realistic sitting limit tiers (the shipped working point + a tighter and a looser
 # neighbour) so acceptance is a genuine, non-vacuous verdict.
 _CORPUS_TIERS = (
     _limits(vel=1000.0, acc=5000.0, jerk=30000.0),   # shipped working point (2026-07-17)

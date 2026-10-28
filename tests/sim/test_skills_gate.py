@@ -948,7 +948,7 @@ def test_the_one_ball_columns_phantom_produces_no_learner_rows_or_announcement()
 
     ``apex_m=0.95`` (the R5 point, not R2/R3's 0.9): since
     ``sites.CATCH_CUP_Z_MM`` moved 830 -> 930 mm (2026-10-05, catch-high) the
-    0.9 m apex ends this attempt LIMIT_VEL at the live session limits
+    0.9 m apex ends this attempt LIMIT_VEL at the live sitting limits
     (confirmed 2026-10-05 against this exact call: apex 0.9 -> 'LIMIT_VEL',
     apex 0.95 -> '', independent of ``separation_mm``) -- only a feasible
     attempt is needed here, this unit is about the phantom-ball bookkeeping,

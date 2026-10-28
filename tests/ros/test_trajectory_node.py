@@ -435,7 +435,7 @@ def test_standby_exit_mid_move_installs_profiled_stop():
 
 # ── set_limits (Phase 2) ──────────────────────────────────────
 
-def test_set_limits_updates_session_limits():
+def test_set_limits_updates_sitting_limits():
     node = _node()
     req = SetTrajectoryLimits.Request()
     req.leg_vel_limit_mmps = 150.0
@@ -518,7 +518,7 @@ def test_default_constructed_request_defers_to_shipped_lean_gain():
 
 
 def test_shipped_trajectory_defaults_are_the_r5_working_point():
-    """Tripwire: session limits (350, 5000, 200000) and lean_gain 0.6.
+    """Tripwire: sitting limits (350, 5000, 200000) and lean_gain 0.6.
     The R5 working point (2026-10-05) SUPERSEDES the R2/R3 point (300, 5000,
     150000; owner decision 2026-09-16, "300/5000/150000 are safe enough"),
     which itself superseded the S4 point (1000, 5000, 30000) of 2026-07-17.
@@ -609,7 +609,7 @@ def test_diagnostics_publishes_realized_peaks_limits_and_lean_gain():
                 'limit_leg_vel_mmps', 'limit_leg_acc_mmps2', 'limit_leg_jerk_mmps3',
                 'lean_gain', 'move_seq'):
         assert key in kv, f"missing diagnostics key {key}"
-    # Limits reflect the node's current session limits.
+    # Limits reflect the node's current sitting limits.
     assert float(kv['limit_leg_vel_mmps']) == pytest.approx(node._limits.leg_vel_mmps)
     # Realized vel peak is nonzero mid-move (the platform is translating).
     assert float(kv['realized_peak_leg_vel_mmps']) > 0.0
@@ -730,8 +730,8 @@ def test_status_publishes_typed_trajectory_status():
     assert published.plan_kind == 'hold'
 
 
-def test_status_carries_the_live_session_limits_and_follows_set_limits():
-    """trajectory/status publishes the LIVE session limits (2026-08-14), and a
+def test_status_carries_the_live_sitting_limits_and_follows_set_limits():
+    """trajectory/status publishes the LIVE sitting limits (2026-08-14), and a
     set_limits ramp is visible on the very next publish — this is the wire the
     toss sequencer's closed-form reach bound rides, so the pre-throw
     displacement verdict moves in lockstep with the feasibility gate instead of
@@ -1258,7 +1258,7 @@ def test_pending_stop_on_infeasible_stop_then_retry_converges():
     # inside the edge is FEASIBLE (the hotter jerk/acc halt within the margin), so
     # the infeasible-raise path under test never engages. The test exercises the
     # pending-stop RETRY mechanism, not the shipped limits.
-    node._limits = node._limits.with_session_limits(
+    node._limits = node._limits.with_sitting_limits(
         leg_vel_mmps=100.0, leg_acc_mmps2=400.0, leg_jerk_mmps3=8000.0)
     node._install(_boundary_plan(245.0))       # ~2 mm inside +x edge, moving outward
     # Drive the input-loss path (stale target): the stop is wanted but build raises.
@@ -2360,7 +2360,7 @@ def test_commanded_hand_state_from_the_active_plan_is_unaffected():
 # THE COST ITSELF DOES NOT SUPPORT THE HYPOTHESIS, and that is recorded here so
 # a future reader does not re-derive it: measured 2026-09-06 on this Jetson
 # (`/tmp/probe_warmup.py`, fresh child process per measurement, 3+3 runs,
-# session limits 250/3000/150000, the same 1.4 s SETTLE), the first solve in a
+# sitting limits 250/3000/150000, the same 1.4 s SETTLE), the first solve in a
 # COLD process took 182.9-184.7 ms against a 178.6-178.8 ms second solve — a
 # ~5 ms penalty, ~3 %. So the cold path costs ~5 ms and cannot be the 2 s; the
 # probe's own contention sweep (~2.2 s at 2-way CPU oversubscription) still can.

@@ -68,7 +68,7 @@ def _hand_rev_for_cup_z(cup_z_mm: float) -> float:
 
 _REST_HAND_REV = _hand_rev_for_cup_z(_REST_CUP_Z_MM)
 
-# Session limits a unified sitting raises to at start (plan Phase 1, owner
+# Sitting limits a unified sitting raises to at start (plan Phase 1, owner
 # decision 1) — the ones `sim/cycle_gate.py` and `tests/motion/test_unified_cycle`
 # both run at.
 _SESSION_VEL = 250.0
@@ -88,7 +88,7 @@ def _robot_state(hand_rev=_REST_HAND_REV, is_homed=True):
 
 
 def _cycle_node(**kw):
-    """A seeded, TRAJECTORY-mode node at session limits, emitter NOT started."""
+    """A seeded, TRAJECTORY-mode node at sitting limits, emitter NOT started."""
     from jugglebot_interfaces.srv import SetTrajectoryLimits
     node = tn.TrajectoryNode(start_emitter=False, **kw)
     node._on_robot_state(_robot_state())
@@ -2137,7 +2137,7 @@ def _bump_node_and_record(at):
     from jugglebot.motion.trajectory.limits import TrajectoryLimits
     from tests.motion import test_skills_bump as tb
     node = _perf_node()
-    node._limits = TrajectoryLimits.from_config(hw).with_session_limits(
+    node._limits = TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=350.0, leg_acc_mmps2=5000.0, leg_jerk_mmps3=200000.0,
         hand_acc_rps2=3900.0)
     p1, p2 = si.columns_sites(100.0)

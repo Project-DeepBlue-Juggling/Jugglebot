@@ -235,7 +235,7 @@ def _node_with_client(response=None, ready=True, hand=True, frame=True,
     node._hand_clock = lambda: _HAND_CLOCK_FROZEN_S
     client = _RecordingClient(response=response, ready=ready)
     node._install_cli = client
-    # The live session limits the box was swept at (`_status()`: 300/5000/
+    # The live sitting limits the box was swept at (`_status()`: 300/5000/
     # 200000 since the R5 ramp, 2026-09-30). A node that has heard no
     # `trajectory/status` falls back to the YAML launch default (150000) and
     # refuses every 200 k box by name -- exactly what the robot does until the
@@ -595,12 +595,12 @@ def test_self_toss_is_refused_with_no_status_received_yet():
     """The live-limits fallback (`_live_limits`) reads the YAML module
     defaults when `trajectory/status` has never arrived (its own documented
     "0.0 = field absent" sentinel) — which do not match the real box's swept
-    session limits, so the start refuses rather than silently gating against
+    sitting limits, so the start refuses rather than silently gating against
     the wrong machine."""
     node, _client = _node_with_client()
     resp = node._start_pattern(_self_toss_goal())
     assert resp.success is False
-    # Since 2026-09-16 the YAML launch defaults ARE the swept session limits
+    # Since 2026-09-16 the YAML launch defaults ARE the swept sitting limits
     # (300/5000/200000 since 2026-09-30, owner decision), so the box no longer refuses here;
     # the start is still refused, by the next rung of the ladder (no live
     # commanded position yet). Either refusal is the contract: no motion on

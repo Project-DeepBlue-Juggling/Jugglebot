@@ -153,7 +153,7 @@ The sequencing is **named and scheduled, not open-ended**:
    re-run of rows 13-15), the operator reviews this sitting's dev_max record
    against the 2.5 rev bound and runs **`hand7 arm` as a logged step**. From
    then on armed is the sitting default; boot returns to observe (safe), so
-   `hand7 arm` joins the session-start checklist exactly like session limits.
+   `hand7 arm` joins the session-start checklist exactly like sitting limits.
    **An observe-only guard left in place indefinitely is a guard that does not
    exist** — if sitting two happens without the arming step, that omission is
    itself a finding to log.

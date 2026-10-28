@@ -55,7 +55,7 @@ def geom():
 
 @pytest.fixture(scope='module')
 def limits():
-    return TrajectoryLimits.from_config(hw).with_session_limits(
+    return TrajectoryLimits.from_config(hw).with_sitting_limits(
         leg_vel_mmps=600.0, leg_acc_mmps2=8000.0,
         leg_jerk_mmps3=LIVE_JERK_MMPS3)
 

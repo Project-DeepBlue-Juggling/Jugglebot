@@ -362,7 +362,7 @@ auto-tracks whatever threshold the firmware trips at):
   13:34:07–13:34:43 at the Phase-1 default limits (100 mm/s, 400 mm/s², 8000 mm/s³),
   `lean_gain = 0.0`. Per-move realized leg peaks tracked the gate prediction closely
   (worst case across the 11: predicted vel 68.4 / acc 362.8 / jerk 6911 vs realized
-  68.3 / 362.8 / 5583 mm·s⁻¹˒⁻²˒⁻³). Headroom against the session limits: **vel 68 %,
+  68.3 / 362.8 / 5583 mm·s⁻¹˒⁻²˒⁻³). Headroom against the sitting limits: **vel 68 %,
   acc 91 %, jerk 70 % (realized)** — acceleration is the tightest of the three at these
   defaults. The infeasible request returned
   `TOO_FAST: requested duration 0.050s < minimal feasible 0.629s` and **installed no
@@ -473,8 +473,8 @@ auto-tracks whatever threshold the firmware trips at):
 - **Entry**: S2/S3 passed; armed + holding in **TRAJECTORY** mode — since the
   2026-07-15 arming contract that is just: launch → `activate` → `trajectory`
   (arming is automatic on ACTIVE entry; verify the "setpoint output ENABLED"
-  banner); rosbag recording on; **know the last-good YAML session limits** so an
-  ABORT reverts cleanly. Note: session limits are runtime state — **a relaunch always
+  banner); rosbag recording on; **know the last-good YAML sitting limits** so an
+  ABORT reverts cleanly. Note: sitting limits are runtime state — **a relaunch always
   reverts to the YAML values**. ⚠ Since 2026-07-17 the YAML values ARE the hot S4
   working point (1000, 5000, 30000) with `lean_gain 0.6` — a relaunch is no longer a
   "revert to gentle" escape hatch. For a cautious probe session, `set_limits` DOWN
@@ -795,7 +795,7 @@ Background: `plans/active/leg-gain-tuning-methodology.md` § "Fast-motion tier (
   prime + latch raise, aim+throw at the 809.08 cup plane, announcement→tilt-through-seat
   catch, confirmation, recenter; all abort paths exercised.
 - **Entry**: 7b passed; **TRAJECTORY** mode, armed and streaming a hold (the action owns
-  the latch — no CATCH mode); session limits ramped to the S4 targets (≥ 156 / 660 /
+  the latch — no CATCH mode); sitting limits ramped to the S4 targets (≥ 156 / 660 /
   10 331).
 - **Command**: `ros2 action send_goal /jugglebot/reload jugglebot_interfaces/action/Reload
   "{throw_delay_s: 3.0}" --feedback`; watch `CHECKING (dwells up to 10 s while BB

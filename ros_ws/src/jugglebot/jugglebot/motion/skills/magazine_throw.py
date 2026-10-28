@@ -487,7 +487,7 @@ def plan_magazine(seed: uc.CycleState, terminal: MagazineTerminal, cfg,
     ``cfg`` is the caller's ``segments.SegmentConfig`` (accepted so
     ``executor.install_segment`` calls this where it would call
     ``plan_segment``; the shape's own knobs are ``mcfg``).  The plan is gated
-    by ``feasibility.validate_cycle`` at ``limits`` — the LIVE session limits —
+    by ``feasibility.validate_cycle`` at ``limits`` — the LIVE sitting limits —
     and a refusal raises ``uc.CycleInfeasible(report.code, ...)`` unchanged.
 
     The meta's ``kind`` is :data:`MAGAZINE` (no production code branches on
@@ -497,7 +497,7 @@ def plan_magazine(seed: uc.CycleState, terminal: MagazineTerminal, cfg,
     """
     del cfg  # the QP's pre-release hold knobs do not apply to this shape
     if limits is None:
-        raise ValueError('plan_magazine needs the live session limits to gate '
+        raise ValueError('plan_magazine needs the live sitting limits to gate '
                          'against; none were passed')
     geom = StewartGeometry() if geom is None else geom
     t_wall = time.perf_counter()
