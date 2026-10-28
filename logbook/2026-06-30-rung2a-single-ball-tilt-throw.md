@@ -2,7 +2,7 @@
 title: Rung-2a single-ball tilt-aimed throw — tilt-aim is exact (lateral = slider·sin θ), open-loop landing ≤33 mm across the column + 50 mm ring; a directional separation/aim asymmetry caps the clean box at ~±70 mm
 type: feature
 date: 2026-06-30
-status: in-progress
+status: resolved
 phase: "Online-juggle tilt re-architecture — Phase 2 / Rung 2a (single-ball throw to arbitrary targets, open-loop accuracy)"
 related_plan: "bb-online-juggle-tilt-rearchitecture.md"
 files_changed:
@@ -251,3 +251,5 @@ tests/sim/test_juggle_tilt.py tests/sim/test_juggle_throw.py -q`, run 2026-06-30
 1543 baseline; no regressions, no new skips/xfails; only pre-existing warnings).
 
 Commit SHA: a907528 (this rung's feature commit).
+
+> Closed 2026-10-28: superseded by plans/archived/bb-online-juggle-tilt-rearchitecture.md (JB-34 survey).

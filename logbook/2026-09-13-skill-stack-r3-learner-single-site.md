@@ -2,7 +2,7 @@
 title: "Skill-stack R3 — a memory-based learner at one site: the sim gate MET, the catch-with-throw handoff traced through three withdrawn hypotheses to a release-snap install, and a columns regression a correct tracker anchor exposed"
 type: feature
 date: 2026-09-13
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack — R3"
 related_plan: two-ball-skill-stack.md
 files_changed:
@@ -537,3 +537,5 @@ All runs below are 2026-09-13 unless noted.
   the commit sequence (learner+memory; outcome; sim; preconditions; deletion;
   runsheet+docs) are also still pending, as is the `project_two_ball_skill_
   stack.md` memory pointer update.
+
+> Closed 2026-10-28: R3 done (plans/archived/two-ball-skill-stack.md); banking saturation tracked as JB-22 (JB-34 survey).

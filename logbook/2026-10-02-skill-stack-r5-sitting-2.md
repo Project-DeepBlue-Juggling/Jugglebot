@@ -2,7 +2,7 @@
 title: "R5 sitting 2 (2026-10-02): the 0 deg gate fails on timing not catch rate, Ball Butler's feed collides with Jugglebot's own throw because the sitting-1 receive_tilt fix never reached the wire, and the owner's site-swap fix for the collision costs 101% leg acceleration undisplaced"
 type: investigation
 date: 2026-10-02
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack — R5"
 related_plan: two-ball-skill-stack.md
 related_entries:
@@ -336,3 +336,5 @@ to `tests/hardware/session_skills_r5_sitting3.md`.
   still need it set deliberately per block, same as sitting 2.
 - The `self_toss` `reload` miss on throw 3/4 (+49/+48 mm) — a single instance, no pattern.
 - Leg heartbeat dropouts, same known load-gated class (`plans/active/leg-bus-frame-drops.md`).
+
+> Closed 2026-10-28: analysis done; the Feed LIMIT_JERK is tracked as JB-27, the holds_ball wire gap is filed as JB-86 (JB-34 survey).

@@ -2,7 +2,7 @@
 title: Ball Butler cutover from can_node to teensy_bridge_node — Phase A bench bringup
 type: feature
 date: 2026-06-08
-status: tuned
+status: resolved
 phase: teensy-can-offload
 related_plan: teensy-can-offload.md
 files_changed:
@@ -284,3 +284,5 @@ PID-list explicit kill is the only safe form.
   injection.
 - (phase 13 prep) Once phase C lands, `can_node` is mostly empty —
   schedule its deletion.
+
+> Closed 2026-10-28: residue filed as JB-87 (dead protocol cleanup) (JB-34 survey).

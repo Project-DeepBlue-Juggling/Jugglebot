@@ -2,7 +2,7 @@
 title: Motion-onset dead-time — cogging-torque-first investigation
 type: investigation
 date: 2026-04-20
-status: tuned
+status: resolved
 phase: post-per-leg-gains-deadband-session
 # Status `tuned`: the bench-validation work picked up in this entry continued
 # in the follow-on entry `2026-04-27-friction-feedforward-bench-validation.md`,
@@ -192,3 +192,5 @@ This investigation continued in [2026-04-27-friction-feedforward-bench-validatio
 4. Built `tests/hardware/friction_ff_demo.py` and validated friction torque-FF + stiction-boost + velocity-FF on the bench.
 5. Demolished the cogging hypothesis recorded here, re-routed to friction FF as the primary fix.
 6. Reached a state where motor_guard integration is the next step.
+
+> Closed 2026-10-28: closed by 2026-04-27-friction-feedforward-bench-validation (JB-34 survey).

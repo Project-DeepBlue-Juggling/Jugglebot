@@ -2,7 +2,7 @@
 title: "R4 sitting 1 under the calibrated geometry: a stale learner aimed every catch 20 mm off, the throw after a moving catch missed by 30–110 mm, the hop overshot 100 mm on a late release, and the reload never threw — four mechanisms from one bag, four fixes"
 type: investigation
 date: 2026-09-28
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack — R4"
 related_plan: two-ball-skill-stack.md
 sessions:
@@ -353,3 +353,5 @@ neighbours; the 75 ms production margin was not touched.
   (the R4 closure run of 2026-09-24 read 5416 passed, 8 skipped, 1 xfailed).
 * 2026-09-28 14:48, `./run_tests.sh --full` on the post-audit tree (`temp/logs/run_tests_r4b_full2_20260928_1447.log`)
   → **PASS: 5516 passed, 8 skipped, 1 xfailed in 277.30 s; serial 6 passed in 19.69 s** — the phase's closing gate.
+
+> Closed 2026-10-28: closed by 2026-09-29-skill-stack-r4-gate-met (JB-34 survey).

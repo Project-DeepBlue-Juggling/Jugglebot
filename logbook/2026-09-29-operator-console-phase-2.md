@@ -2,7 +2,7 @@
 title: "Operator console, phase 2: an attempt reads as one start line, one line per throw (with release and catch timing) and one end line; the detail is recorded at DEBUG"
 type: feature
 date: 2026-09-29
-status: in-progress
+status: resolved
 files_changed:
   - ros_ws/src/jugglebot/jugglebot/motion/skills/report.py
   - ros_ws/src/jugglebot/jugglebot/motion/skills/executor.py
@@ -119,3 +119,5 @@ a few per goal, in the record only.
   one-line-per-operator-action audit.
 - The R4 runbooks say to read OUTCOME fields live. The throw line carries the same numbers.
   R5 runbooks should name the throw line.
+
+> Closed 2026-10-28: closed by 2026-09-30-operator-console-phase-3 (JB-34 survey).

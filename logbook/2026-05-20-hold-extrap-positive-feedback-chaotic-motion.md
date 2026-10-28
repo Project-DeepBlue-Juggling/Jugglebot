@@ -2,7 +2,7 @@
 title: hold_extrap fallback positive-feedback oscillation drove platform into chaotic motion (peak 336.9 mm/s leg velocity, 2.41× soft limit)
 type: investigation
 date: 2026-05-20
-status: in-progress
+status: resolved
 phase: "hardware-safety / fallback redesign"
 related_plan: ""
 related_entries:
@@ -401,3 +401,5 @@ remains) gets handled in the same session as the hardware validation.*
   trade one failure mode for another? Probe replay against the existing
   hardware CSVs (especially `mpc_20260520_115857.csv` tick 71) should
   answer this before the fix lands on hardware.
+
+> Closed 2026-10-28: superseded: MPC chain removed 2026-09-01 (JB-34 survey).

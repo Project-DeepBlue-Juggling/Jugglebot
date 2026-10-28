@@ -2,7 +2,7 @@
 title: "GUI record panel for the Wave camera adapter: REC/STOP, a pulsing dot, interpolated mm:ss and a one-line status, beside the collapsed minimap"
 type: feature
 date: 2026-10-19
-status: in-progress
+status: resolved
 phase: "wave-camera-can3 - GUI (CAN adapter design s8)"
 related_plan: ""
 files_changed:
@@ -117,3 +117,5 @@ and blanks the panel in `blankDisconnectedState()`. `mm:ss` reuses
   `css/camera-panel.css` link and the `#camera-panel` markup, and both new files
   return 200.
 - Not yet done: a browser check against a live heartbeat (CAN adapter design s10 row 8).
+
+> Closed 2026-10-28: closed by 2026-10-19-wave-camera-can3-bridge-and-node (JB-34 survey).

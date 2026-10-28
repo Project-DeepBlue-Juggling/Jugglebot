@@ -2,7 +2,7 @@
 title: Rung-2b OPTION-1 re-plan — the two-point A↔B oscillation is the HONEST tilt test (tilt ENGAGED), and it STILL diverges; loop gain > 1 via the throw's chaotic sensitivity to the throw-ORIGIN pose — a GENUINE tilt-hypothesis BREAK on a non-degenerate geometry
 type: feature
 date: 2026-07-01
-status: in-progress
+status: resolved
 phase: "Online-juggle tilt re-architecture — Phase 3 / Rung 2b (throw-and-self-catch loop, MAKE-OR-BREAK gate, OPTION-1 re-plan)"
 related_plan: "bb-online-juggle-tilt-rearchitecture.md"
 files_changed:
@@ -281,3 +281,5 @@ showed slower is worse).
 
 Commit SHA: 6308689 (feat(sim): Rung-2b OPTION-1 re-plan — two-point A↔B
 oscillation, tilt engaged, still a BREAK).
+
+> Closed 2026-10-28: superseded by plans/archived/two-ball-skill-stack.md (JB-34 survey).

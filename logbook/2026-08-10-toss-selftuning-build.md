@@ -2,7 +2,7 @@
 title: Toss self-tuning loop — the build
 type: feature
 date: 2026-08-10
-status: in-progress
+status: resolved
 phase: "catch-robustness Phase 2 / toss-selftuning build"
 related_plan: toss-selftuning.md
 subsystem:
@@ -2317,3 +2317,5 @@ Carried to the operator, in the order they bite:
   sensor-cadence artefact, not a late release. The lead constant still does
   its job (it compensates the sensor channel's own lag); only the physical
   attribution is withdrawn. Same evidence trail.
+
+> Closed 2026-10-28: superseded by plans/archived/toss-selftuning.md (JB-34 survey).

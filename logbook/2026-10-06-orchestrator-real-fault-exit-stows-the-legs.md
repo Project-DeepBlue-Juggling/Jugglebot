@@ -2,7 +2,7 @@
 title: "The orchestrator's real-fault exit from ACTIVE now stows the legs (profiled DEACTIVATE) and holds FAULT until the stow completes, so IDLE is never claimed with the legs holding an active pose"
 type: investigation
 date: 2026-10-06
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack — R5"
 related_plan: two-ball-skill-stack.md
 related_entries:
@@ -57,3 +57,5 @@ The owner extended the stow to LEVELLING (2026-10-07). `level_activate` runs the
 - **Tests:** `TestFaultExitStowFromLevelling` (4) and `TestFaultExitStowFromLevellingThroughTick` (2) cover a forced fault mid-settle, a handler-returned NaN tilt, legs not closed-loop, and a guard latch in LEVELLING being a real fault. Reverting the predicate to ACTIVE-only fails five of them; the legs-not-closed-loop test is green either way.
 - 2026-10-07, `python -m pytest tests/ros/test_state_machine.py tests/ros/test_orchestrator_node.py tests/ros/test_orchestrator_conduit_contract.py tests/ros/test_orchestrator_conduit_integration.py -q -p no:cacheprovider`: **290 passed in 3.67 s**.
 - Full gate (`./run_tests.sh --full`, run 2026-10-07, log `temp/logs/gate_full_r5_levelling_stow_20261007.log`): **parallel 6131 passed, 9 skipped, 1 xfailed in 305.54 s; serial 6 passed in 20.02 s; RESULT PASS, exit 0.** The only edit after that run is this line; the logbook tests were re-run after it.
+
+> Closed 2026-10-28: fix landed; its open question struck through 2026-10-07; nothing open (JB-34 survey).

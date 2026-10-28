@@ -2,7 +2,7 @@
 title: Board+fw-qualified ODrive endpoint ids — the class fix for a silently-wrong hand endpoint
 type: refactor
 date: 2026-07-29
-status: in-progress
+status: resolved
 phase: "Hand ball-present sensor — Phase 2 (endpoint-id contract)"
 related_plan: "hand-ball-sensor.md"
 files_changed:
@@ -344,3 +344,5 @@ which first matters when Phase 4 code reads the new constant.
 - `logbook/2026-07-29-hand-sensor-ball-detect-config.md` — Phase 1, whose
   "Phase 2 must enumerate the BallButler drift" open question this entry
   discharges.
+
+> Closed 2026-10-28: stale: endpoint 726 confirmed in production; 461 read not wanted (JB-34 survey).

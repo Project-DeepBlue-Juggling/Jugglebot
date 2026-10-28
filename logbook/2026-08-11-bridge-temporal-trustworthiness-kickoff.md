@@ -2,7 +2,7 @@
 title: "Bridge temporal trustworthiness arc opened — the uptime latency drift finally gets an owner, and the clock plan gets sequenced behind it"
 type: refactor
 date: 2026-08-11
-status: in-progress
+status: resolved
 phase: "bridge-temporal-trustworthiness — plan kickoff (pre-P0)"
 related_plan: bridge-temporal-trustworthiness.md
 files_changed:
@@ -68,3 +68,5 @@ commit (multi-document narrative gate): 1 WARNING + 2 NOTEs, all three fixed
 in this change-set (stale `Last touched` cell; an unverifiable Python-version
 rider replaced with the measured claim; a quote pointer widened to the section
 that actually contains the quoted sentences).
+
+> Closed 2026-10-28: closed by plans/archived/bridge-temporal-trustworthiness.md (JB-34 survey).

@@ -2,7 +2,7 @@
 title: BB telemetry restored to the GUI charts — 9-axis robot_state + bus V/I on the Diagnostic wire (UDP protocol v4)
 type: feature
 date: 2026-07-24
-status: in-progress
+status: resolved
 phase: "MVP trajectory bringup — GUI observability"
 related_plan: ""
 files_changed:
@@ -207,3 +207,5 @@ their last values — a chart gap tells the truth; a flatline lies.
   CLOSED annotations added by this change).
 - GUI feed path: `ros_ws/gui/js/main.js` (`onRobotState` →
   `onTelemetryData`), `ros_ws/gui/js/telemetry-charts.js` stores 7/8.
+
+> Closed 2026-10-28: stale: BB telemetry path used every Sitting since; chart check never needed (owner call) (JB-34 survey).

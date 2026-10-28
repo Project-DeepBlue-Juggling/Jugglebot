@@ -2,7 +2,7 @@
 title: Pivot to online per-throw task-space planning (Kai-style) + cup-tracking band-limit characterisation; planner module built, integration next
 type: feature
 date: 2026-06-27
-status: in-progress
+status: resolved
 phase: "Sim2Real fidelity — concern 1: re-architecting to an online cup planner (replacing the offline optimiser); planner built + tested, integration WIP"
 related_plan: "bb-led-two-ball-juggle-demo.md"
 files_changed:
@@ -207,3 +207,5 @@ seeded that session has been removed (work is now logged).
   catches).
 - Band-limit numbers above from `tools/probes/juggle_cup_bandlimit.py`
   (run 2026-06-27).
+
+> Closed 2026-10-28: superseded by plans/archived/bb-online-juggle-tilt-rearchitecture.md (JB-34 survey).

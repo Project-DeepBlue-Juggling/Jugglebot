@@ -2,7 +2,7 @@
 title: The CAUGHT possession verdict was structurally always False — C-POSSESS-1 closes the class
 type: bugfix
 date: 2026-07-28
-status: tuned
+status: resolved
 phase: "Self-toss anomaly fixes — follow-on item B (caught-gate)"
 related_plan: "catch-robustness.md"
 files_changed:
@@ -359,3 +359,5 @@ is the one shape that can land half-applied from a cached build, so pre-flight
 - `_possession_logged` is mutated from the subscription and action threads without
   `_lock`. `set.add` is atomic under the GIL so the worst case is a duplicate log
   line; this is the pre-existing pattern and was not changed.
+
+> Closed 2026-10-28: superseded: FSM reload coordinator deleted (JB-34 survey).

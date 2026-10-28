@@ -2,7 +2,7 @@
 title: "Critical-point ILC arc opened — task-level iterative learning on the throw/catch events, in its own worktree"
 type: refactor
 date: 2026-08-11
-status: in-progress
+status: resolved
 phase: "critical-point-ilc — plan kickoff (pre-Phase-0)"
 related_plan: critical-point-ilc.md
 files_changed:
@@ -79,3 +79,5 @@ tests/sim/test_logbook_search.py -q`, 2026-08-11): recorded in the commit
 message. `/audit --unstaged` ran before the commit (multi-document narrative
 gate, four narrative files); findings and dispositions are recorded in the
 commit message.
+
+> Closed 2026-10-28: superseded by plans/archived/critical-point-ilc.md (JB-34 survey).

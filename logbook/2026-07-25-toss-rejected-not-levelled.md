@@ -2,7 +2,7 @@
 title: The toss refuses an un-levelled launch — by observing the node that applies the correction, not the Teensy flag that outlives it
 type: feature
 date: 2026-07-25
-status: in-progress
+status: resolved
 phase: "Self-toss anomaly fixes — levelling-frame-contract Phase 3"
 related_plan: "levelling-frame-contract.md"
 files_changed:
@@ -342,3 +342,5 @@ if the topic was never in the bag.
 - **`mpc_bridge_node`** holds a second copy of the correction with no
   observability. It is dropped from the launch and reaches `planner` zero times,
   so nothing gates on it; noted in the contract's observability row.
+
+> Closed 2026-10-28: superseded by plans/archived/levelling-frame-contract.md (JB-34 survey).

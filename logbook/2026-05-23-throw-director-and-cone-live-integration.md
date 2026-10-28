@@ -2,7 +2,7 @@
 title: Throw director node + trimmed cone-test launch for live BB→cone integration
 type: feature
 date: 2026-05-23
-status: tuned
+status: resolved
 phase: catching-cone-bringup
 related_plan: ""
 files_changed:
@@ -485,3 +485,5 @@ when the calibration session lands.
   flicker when QTM drops a body briefly; the static list is more stable
   and aligns with which targets the *system* actually knows how to
   throw at.  Worth revisiting if the target set grows past ~3.
+
+> Closed 2026-10-28: closed by plans/archived/bb-calibration-one-attempt.md (JB-34 survey).

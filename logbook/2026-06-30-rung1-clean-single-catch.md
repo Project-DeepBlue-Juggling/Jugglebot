@@ -2,7 +2,7 @@
 title: Rung-1 clean single catch — constant-decel seat kills the soft-contact bounce; frozen-early reach + ramped tilt; ~3.3 mm in-cup offset under §3 noise
 type: feature
 date: 2026-06-30
-status: in-progress
+status: resolved
 phase: "Online-juggle tilt re-architecture — Phase 1 / Rung 1 (clean single catch, BB-reload)"
 related_plan: "bb-online-juggle-tilt-rearchitecture.md"
 files_changed:
@@ -241,3 +241,5 @@ audit fix (deleting the two inert lead knobs) is behaviour-preserving — the
 
 Commit SHA: d3ae5b0 (feat(sim): Rung-1 clean single catch (BB-reload) under
 section-3 noise).
+
+> Closed 2026-10-28: superseded by plans/archived/bb-online-juggle-tilt-rearchitecture.md (JB-34 survey).

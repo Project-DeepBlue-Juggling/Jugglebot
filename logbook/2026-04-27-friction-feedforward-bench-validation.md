@@ -2,7 +2,7 @@
 title: Friction feedforward — bench characterisation, model fit, and FF validation
 type: investigation
 date: 2026-04-27
-status: tuned
+status: resolved
 phase: post-per-leg-gains-deadband-session
 related_plan: "2026-05-08 motion-onset-deadtime-investigation.md"
 related_issues:
@@ -298,3 +298,5 @@ Bench validation produced a complete, internally consistent friction characteris
 5. **Cogging compensation LUT** — the n=2 angular dependence in Test B v3 (forward R²=0.97 amp=33 mA; reverse R²=0.70 amp=37 mA) shows cogging is real but small. The 4 A pk-pk iq oscillation we see during cruise at v=5 rps suggests cogging-fight matters more than its small magnitude implies. An angle-indexed cogging LUT is the second-largest improvement available to us, but only after the friction FF lands. Phase 3 work.
 
 6. **What if the bench's load isn't representative of platform legs?** — the bench fit assumes the bench's static load (~0.17 A) represents what platform legs experience. On platform, gravity contribution depends on platform pose; the constant load offset will be replaced by a kinematics-derived per-leg gravity term. The Stribeck shape (τ_c, τ_s, ω_s, b) should generalise.
+
+> Closed 2026-10-28: superseded by plans/archived/friction-ff-motor-guard-integration.md (JB-34 survey).

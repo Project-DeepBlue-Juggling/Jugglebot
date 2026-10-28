@@ -2,7 +2,7 @@
 title: "The catch through-seat rate ships at zero — the trajectory builder manufactures no platform motion nobody asked for"
 type: feature
 date: 2026-07-26
-status: in-progress
+status: resolved
 phase: "Self-toss anomaly fixes — catch-reach-degenerate-overshoot Phase 3"
 related_plan: "catch-reach-degenerate-overshoot.md"
 files_changed:
@@ -197,3 +197,5 @@ C-CATCH-1 already in force to bound whatever value replaces it.
 - `ros_ws/docs/catch_arrival_contract.md` — C-CATCH-1
 - `logbook/2026-07-26-catch-reach-overshoot-fix.md` — Phase 2, which landed C-CATCH-1
 - `tests/hardware/session_anomaly_fixes.md` § Section ZSEAT — the bench score
+
+> Closed 2026-10-28: superseded by plans/archived/catch-reach-degenerate-overshoot.md (JB-34 survey).

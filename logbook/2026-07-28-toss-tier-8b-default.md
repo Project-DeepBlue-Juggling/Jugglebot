@@ -2,7 +2,7 @@
 title: Tier 8b becomes the shipped toss default — and the four operator documents the flip quietly falsified
 type: feature
 date: 2026-07-28
-status: in-progress
+status: resolved
 phase: "Self-toss anomaly fixes — toss_tier 8b default"
 related_plan: "catch-reach-degenerate-overshoot.md"
 files_changed:
@@ -391,3 +391,5 @@ operator**, in the order the runbook executes it:
   `REJECT_WIRE_MAP` hygiene.
 - `tests/hardware/session_anomaly_fixes.md` § SECTION TIER — the bench rows.
 - `tests/hardware/session_phase8_toss_hardware.md` § TIER — the T0–T4 tier decision.
+
+> Closed 2026-10-28: superseded: FSM toss stack deleted at tag fsm-final (JB-34 survey).

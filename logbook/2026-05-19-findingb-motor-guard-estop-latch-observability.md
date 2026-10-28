@@ -2,7 +2,7 @@
 title: Finding B — the 68 s motor_pos=None was a motor_guard GuardMode.ESTOP sticky latch, NOT a CAN dropout (shared root cause with Finding A)
 type: investigation
 date: 2026-05-19
-status: tuned
+status: resolved
 #
 # Status ladder (for investigation entries):
 #   open         — nothing done yet
@@ -629,3 +629,5 @@ the COMMIT gate.
 - Forensic decoders were throwaway `/tmp/probe_findingB_*.py`
   (candump + CDR), **not committed**, per CLAUDE.md empirical-probe
   discipline.
+
+> Closed 2026-10-28: superseded: motor_guard parked (JB-34 survey).

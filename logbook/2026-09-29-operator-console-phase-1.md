@@ -2,7 +2,7 @@
 title: "Operator console, phase 1: clock time, short node names and colour in the launch shell; third-party chatter off the screen"
 type: feature
 date: 2026-09-29
-status: in-progress
+status: resolved
 files_changed:
   - ros_ws/src/jugglebot/jugglebot/launch_console.py
   - ros_ws/src/jugglebot/launch/jugglebot_launch.py
@@ -89,3 +89,5 @@ tee'd files (`less -R` reads them). `tools/probes/selftoss_landing_decomposition
 - Phase 2: skill_node + trajectory_node (83 % of the lines). The Juggle action result counts
   throws/catches by substring-matching `OUTCOME` log lines (`skill_node.py` `_juggle_execute`), so
   outcomes must become data before their wording changes.
+
+> Closed 2026-10-28: closed by 2026-09-29-operator-console-phase-2 (JB-34 survey).

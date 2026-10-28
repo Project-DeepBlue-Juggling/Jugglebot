@@ -2,7 +2,7 @@
 title: Catching cone hardware bringup
 type: feature
 date: 2026-05-23
-status: in-progress
+status: resolved
 phase: catching-cone-bringup
 related_plan: ""   # planning artefact lives outside the repo (~/.claude/plans/i-d-like-to-improve-ticklish-cat.md)
 files_changed:
@@ -386,3 +386,5 @@ own.
   but not yet specified.
 - **Hardware design conventions doc.** Worth writing once there's a second
   instrumented peripheral to draw from.
+
+> Closed 2026-10-28: closed by 2026-05-23-throw-director-and-cone-live-integration (JB-34 survey).

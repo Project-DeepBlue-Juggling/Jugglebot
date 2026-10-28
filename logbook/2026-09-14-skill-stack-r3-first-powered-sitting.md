@@ -2,7 +2,7 @@
 title: "R3 first powered sitting — every throw was caught but announced NO_LANDING (the announcer, not the tracker, was starved), 'leg 6' was the hand, two MAX_DEVIATION latches with different causes, and a +25% release-speed overshoot the learner's box cannot reach"
 type: investigation
 date: 2026-09-14
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack — R3"
 related_plan: two-ball-skill-stack.md
 files_changed:
@@ -376,3 +376,5 @@ in-progress — the R3 hardware gate is still outstanding. Nothing in this
 sitting flew a clean run against the runsheet's pre-registered gates; a
 second powered sitting is needed once Filed items 1 and 3 have owner
 decisions (or are explicitly deferred past the next sitting).
+
+> Closed 2026-10-28: residue folded into the existing JB-73 (hand guard deviation basis) (JB-34 survey).

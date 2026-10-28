@@ -2,7 +2,7 @@
 title: The bridge firmware poller for the hand ball-present sensor — gpio_poll, its tri-state semantics, and the one version compare firmware is now allowed
 type: feature
 date: 2026-07-29
-status: in-progress
+status: resolved
 phase: "Hand ball-present sensor — Phase 3 (bridge firmware poller)"
 related_plan: "hand-ball-sensor.md"
 files_changed:
@@ -449,3 +449,5 @@ Phase 4 adds the uplink message.
 - BallButler `ball_butler_main/CanInterface.cpp` — the production poller shape
   mirrored here (its blocking `readGpioStates()` helper deliberately **not**
   ported).
+
+> Closed 2026-10-28: stale: sensor in production since 2026-08; possession sensor-only 2026-08-26; tuning in session_hand_ball_sensor.md (JB-34 survey).

@@ -2,7 +2,7 @@
 title: "R4 hardware gate MET: 25 consecutive alternating hop catches and three one-button Ball Butler reloads; the pre-release hold removed the hop overshoot; the reload's Juggle result raced its own schedule swap (fixed); the carried items that shape R5"
 type: investigation
 date: 2026-09-29
-status: tuned
+status: resolved
 phase: "two-ball-skill-stack — R4"
 related_plan: two-ball-skill-stack.md
 sessions:
@@ -336,3 +336,5 @@ Where the hand stops (the owner's "ideally at the top, ready for the next feed")
   - read the ODrives' CAN TX-drop statistic over SDO;
   - reconcile the WARN's encoder-frame count with `pos_estimate`, which kept updating at ~10 Hz
     in the one moving-leg episode.
+
+> Closed 2026-10-28: closed by plans/archived/two-ball-skill-stack.md (JB-34 survey).

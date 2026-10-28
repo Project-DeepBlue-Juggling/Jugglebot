@@ -2,7 +2,7 @@
 title: "Cone \"only syncs after a colcon build\" — zombie + build-correlation hypotheses both REFUTED by bag ground truth; a real (but latent, never-fired) UDP co-bind hazard found; morning failures now point at cone MCU restarts"
 type: investigation
 date: 2026-07-12
-status: resolved-with-open-items
+status: resolved
 phase: GUI + catching cone
 related_entries:
   - 2026-07-12-gui-cone-catch-correlation-regression
@@ -782,3 +782,5 @@ code, never off the incident, and they stand unchanged.
 <!-- The two hypotheses refuted in Diagnosis Steps 1-2 (zombies, build-correlation)
      belonged to the incoming operator report, not to a claim this entry published,
      so they are not retractions and are not listed here. -->
+
+> Closed 2026-10-28: residue filed as JB-82 (UDP link ownership) (JB-34 survey).

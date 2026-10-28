@@ -2,7 +2,7 @@
 title: Two-ball columns sessions 2026-10-14 - why attempts end short - catch misses are stale aims and wide throws (no late wrong re-aim), SPLICE_TOO_LATE is the solve-time tail against a fixed 200 ms handoff budget, the four short feeds hit the cup wall after a 25-34 mm landing error, and the feed catch never sees the real ball because the tracker confirms it on a static Ball Butler marker; two fixes landed
 type: investigation
 date: 2026-10-14
-status: tuned
+status: resolved
 phase: "two-ball-skill-stack — post-R6 reliability (columns sessions 2026-10-14)"
 related_plan: skill-stack-dress-rehearsals-and-residue.md
 related:
@@ -311,3 +311,5 @@ is the file's own wherever the box's home directory points.
   observation to watch, no rule proposed.
 - **Live-only no-fit** (U8 in progress): the next diagnostic is per-track fit sample / rejected
   counts (a `BallState.msg` field = an interfaces rebuild, or a DEBUG line in the node).
+
+> Closed 2026-10-28: analysis done; residue carried by plans/active/learner-generalisation.md and JB-24 (JB-34 survey).

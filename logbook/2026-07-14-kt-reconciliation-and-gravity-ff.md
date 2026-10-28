@@ -2,7 +2,7 @@
 title: The Kt mismatch is a stealth gain change — reconciled on the wire, and gravity feedforward re-applied (default OFF)
 type: investigation
 date: 2026-07-14
-status: in-progress
+status: resolved
 phase: "Leg feedforward — Kt reconciliation + gravity FF (bench validation PENDING)"
 related_plan: leg-gain-tuning-methodology.md
 files_changed:
@@ -418,3 +418,5 @@ instructions demand a free-hanging untouched mass and carry the bench-vs-platfor
 - `logbook/2026-05-08-friction-ff-platform-limit-cycle.md` — why a feedforward is not free.
 - `logbook/2026-04-27-friction-feedforward-bench-validation.md` — the source of the disputed 0.0624.
 - `tools/probes/bench_leg_plant_id.py` — carries the corrected `ω_v` derivation.
+
+> Closed 2026-10-28: closed by 2026-07-15-kt-first-measurement-and-tff-channel (JB-34 survey).

@@ -2,7 +2,7 @@
 title: MPC fallback-command sawtooth produces visible stutter on off-Active multi-axis moves
 type: investigation
 date: 2026-04-17
-status: in-progress
+status: resolved
 # --- Context (use what's relevant) ---
 phase: "STANDBY-mode multi-axis MPC (post-2.4, pre-4.x combined-axis work)"
 related_plan: "hardware-bringup.md"
@@ -147,3 +147,5 @@ Changed `MPCParams(max_cpu_time=0.022, max_iter=100)` to `MPCParams(max_cpu_time
 ## Outcome
 
 <!-- To be filled in during /investigate outcome step. -->
+
+> Closed 2026-10-28: superseded: MPC chain removed 2026-09-01 (JB-34 survey).

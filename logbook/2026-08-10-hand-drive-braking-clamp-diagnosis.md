@@ -2,7 +2,7 @@
 title: Post-throw dip recurs at 1.0 m — the hand drive under-delivers braking current, not a Phase 1–4 regression
 type: investigation
 date: 2026-08-10
-status: in-progress
+status: resolved
 phase: "catch-robustness Phase 0 (diagnosis)"
 related_plan: catch-robustness.md
 sessions:
@@ -471,3 +471,5 @@ Test gate for the documentation commit: `./run_tests.sh`, run 2026-08-10 —
    question for the hand's CAN read path.
 5. **Bridge-uptime dispatch lag** (+54–63 ms fresh → +118–133 ms at ~16 h) —
    unchanged in status, owned by `plans/parked/refactor-2026-07.md` Phase 7.
+
+> Closed 2026-10-28: closed by 2026-08-18-hand-torque-clamp-removed (JB-34 survey).

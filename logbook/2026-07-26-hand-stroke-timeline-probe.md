@@ -2,7 +2,7 @@
 title: Hand-stroke timeline probe — the post-throw dip measured, and the instrument taught to score a FIXED capture
 type: investigation
 date: 2026-07-26
-status: tuned
+status: resolved
 phase: "Self-toss anomaly fixes — hand-command-continuity Phase 0"
 related_plan: "hand-command-continuity.md"
 files_changed:
@@ -420,3 +420,5 @@ measured metal contact at **10.8 rev** on 2026-08-18
 here is **0.3 rev larger than the truth** — the worst case was 0.475 rev, not
 0.775. The `peak` measurements themselves are unchanged; only the reference
 moved. Left as written per the annotate-never-edit rule.
+
+> Closed 2026-10-28: superseded: Platform Teensy stroke engine retired at skill-stack R1 (JB-34 survey).

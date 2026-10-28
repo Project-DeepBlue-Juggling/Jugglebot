@@ -2,7 +2,7 @@
 title: "peak_leg_* predicted peaks: a report-less install now publishes 0.0 instead of the superseded plan's numbers"
 type: bugfix
 date: 2026-07-26
-status: in-progress
+status: resolved
 phase: "Self-toss anomaly fixes — catch-reach-degenerate-overshoot Phase 2 (separate deliverable)"
 related_plan: "catch-reach-degenerate-overshoot.md"
 files_changed:
@@ -109,3 +109,5 @@ Bench check: `tests/hardware/session_anomaly_fixes.md` § CHECK CCATCH-5. Requir
 - `tests/hardware/mvp_bench_runbook.md` open item 7 — the **realized**-peak half
   (per-install rather than rolling-window on the SpaceMouse / reactive-catch path)
   is untouched and still open.
+
+> Closed 2026-10-28: fix in force at trajectory_node.py:854 (planner.build_catch); FSM caller later deleted at fsm-final (JB-34 survey).

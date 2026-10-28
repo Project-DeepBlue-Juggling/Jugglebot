@@ -2,7 +2,7 @@
 title: "R5 sitting 6, second attempt (2026-10-06 evening): the hand is not slow, the catch is taken high by design — and the cup sensor's seat now lands around the re-release, where the caught verdict's window had closed; the SEATED evidence closes 0.12 s past the release (the miss rule's own bound) and reads the sample-complete history"
 type: investigation
 date: 2026-10-06
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack — R5"
 related_plan: two-ball-skill-stack.md
 related_entries:
@@ -316,3 +316,5 @@ re-arming) is untouched.
   identity band, so the catch kept the schedule) on every attempt tonight and was still caught
   each time; the calibration work is in another session's hands
   (`2026-10-06-bb-calibration-consensus-outcast.md`).
+
+> Closed 2026-10-28: closed by 2026-10-06-skill-stack-r5-catch-plane-830-and-leg-current-15a (JB-34 survey).

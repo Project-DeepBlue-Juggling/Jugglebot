@@ -2,7 +2,7 @@
 title: Catching-cone CAN2→UDP uplink (phase-10b) — cone data reaches the Jetson again
 type: feature
 date: 2026-06-10
-status: in-progress   # firmware compiled + 724 tests pass; bench verification pending
+status: resolved
 phase: teensy-can-offload phase-10b
 related_plan: "plans/archived/teensy-can-offload.md"
 files_changed:
@@ -125,3 +125,5 @@ the Ball Butler temporal-accuracy campaign (BallButler repo,
   reboot. `CatchingCone_code/platformio.ini` now documents the two-Teensy
   procedure and gained the Jetson-host build shims (size wrapper +
   upload_command).
+
+> Closed 2026-10-28: bench verified in its own Verification section; +40 s anomaly fixed by 2026-06-10-cone-micros64-false-wrap (JB-34 survey).

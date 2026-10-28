@@ -2,7 +2,7 @@
 title: The accept-time delay floor learns the sequence it is measured against, and the B1 positioning skip learns to read an orientation
 type: bugfix
 date: 2026-08-23
-status: resolved-with-open-items
+status: resolved
 files_changed:
   - ros_ws/src/jugglebot/jugglebot/toss_sequencer.py
   - ros_ws/src/jugglebot/jugglebot/toss_session.py
@@ -1107,3 +1107,5 @@ reconciling measurement is named and cheap: **the rev→mm gain, taken staticall
   this tree: **PUBLISHED LADDER: all rungs FLY** (7 rungs × {ILC off, ON} ×
   {chained, first}) — reproduced here precisely so the BLOCKING's "the probe
   cannot see it" claim is on the record beside the probe's own green.
+
+> Closed 2026-10-28: superseded: FSM toss stack deleted at tag fsm-final (JB-34 survey).

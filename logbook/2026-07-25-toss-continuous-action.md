@@ -2,7 +2,7 @@
 title: TossContinuous — repeated toss-catch cycles as a sequencer, not a capability
 type: feature
 date: 2026-07-25
-status: in-progress
+status: resolved
 phase: "Self-toss anomaly fixes — Phase F (TossContinuous, the programme finale)"
 related_plan: "single-ball-toss.md"
 files_changed:
@@ -411,3 +411,5 @@ rungs on `platform_fw_version = 2`.)
 5. **Three pre-existing ragged markdown table rows in `tools/probes/README.md`**
    (`levelling_tilt_bag_check.py`, `catch_reach_replay.py`, `traj_stream_probe.py`)
    — unescaped `|` inside cells, present at HEAD, outside this phase's scope.
+
+> Closed 2026-10-28: superseded by plans/archived/single-ball-toss.md (JB-34 survey).

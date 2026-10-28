@@ -2,7 +2,7 @@
 title: "Block B flown — the lateral learner works at 20 mm authority (40 dropped balls); a recovery park pressed the hand against its upper stop for up to 20 s while every bridge topic was dark — the blackout's cause found and fixed, the push mechanism unresolved and on watch"
 type: investigation
 date: 2026-09-23
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack — R3"
 related_plan: cup-contact-contract.md
 sessions:
@@ -194,3 +194,5 @@ distinction is why moving the park to its own thread would not have helped and o
 - Why the hand needs 4.6 A to hold near 0 rev after the event but 0.9 A at 9.96 rev before it.
 - The stale-encoder-burst latches (three now) remain the leg-bus frame-drops plan's; the hand's
   deviation budget is consumed in 22 ms of feedback age at 112 rev/s.
+
+> Closed 2026-10-28: lateral learner shipped; end-stop push never recurred in a month of Sittings, dropped as stale (JB-34 survey).

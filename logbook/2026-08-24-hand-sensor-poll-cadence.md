@@ -2,7 +2,7 @@
 title: The 71 ms hand-sensor poll cadence was an already-fixed bridge defect, not a property of the sensor path
 type: investigation
 date: 2026-08-24
-status: resolved-with-open-items
+status: resolved
 related_plan: toss-selftuning.md
 files_changed:
   - ros_ws/src/jugglebot/jugglebot/toss_record.py
@@ -490,3 +490,5 @@ Deliberately deferred, each with what would settle it:
   pinning exactly the two holes: a transient low stamp that the private rule
   reported as a **571 ms** poll, and a wall-anchor epoch change it reported as a
   **1.786e12 ms** one. `logbook/2026-08-24-cadence-crossrecording-closeout.md`.
+
+> Closed 2026-10-28: closed by 2026-08-24-cadence-crossrecording-closeout (JB-34 survey).

@@ -2,7 +2,7 @@
 title: "Skill-stack R1 — one hand master: the can-bridge streamed lane is the sole axis-6 writer; hand_source latch, hand_ops conduit, Platform stroke engine, SetHandTrajCmd and the hand_stroke.py timing twin deleted; PROTOCOL_VERSION 7, bridge FW 21, Platform FW 7 — committed UNFLASHED"
 type: refactor
 date: 2026-09-11
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack — R1 (software landed; flash sitting pending)"
 related_plan: two-ball-skill-stack.md
 files_changed:
@@ -194,3 +194,5 @@ a dedicated second-master sniff counter in `telemetry.cpp` (row 19 currently pro
 Platform banner instead); `ros_ws/docs/hand_throw_envelope.md`'s numeric tables are flagged
 stale pending R2's re-derivation; the `hand-geometry-correction` worktree is removed once
 the sitting closes R1.
+
+> Closed 2026-10-28: closed by plans/archived/two-ball-skill-stack.md (JB-34 survey).

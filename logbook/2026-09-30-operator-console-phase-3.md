@@ -2,7 +2,7 @@
 title: "Operator console, phase 3: every other node condensed to one line per event, every operator action gets one outcome line, the Ctrl-C tracebacks addressed, runsheets on tee -i"
 type: feature
 date: 2026-09-30
-status: in-progress
+status: resolved
 files_changed:
   - ros_ws/src/jugglebot/jugglebot/orchestrator_node.py
   - ros_ws/src/jugglebot/jugglebot/teensy_bridge_node.py
@@ -152,3 +152,5 @@ the whole clean shutdown (`2026-09-29-skill-node-log-severity-crash` § Notes).
   outcome line.
 - A Stop prints `attempt stopped` straight away, then the end line when the rest tail
   finishes. That is kept deliberately as the button's acknowledgement.
+
+> Closed 2026-10-28: closed by plans/archived/two-ball-skill-stack.md (JB-34 survey).

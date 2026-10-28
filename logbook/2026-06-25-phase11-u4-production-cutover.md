@@ -2,7 +2,7 @@
 title: Phase 11 U4 — production α→β setpoint switch + friction-FF drop + /teensy rename
 type: feature
 date: 2026-06-25
-status: complete
+status: resolved
 phase: "11"
 related_plan: teensy-can-offload.md
 files_changed:
@@ -243,3 +243,5 @@ rollback granularity — different concerns, no shared hunks.
   `/teensy/home`).
 - **Carried from U3 (open):** Finding A (the rare feedback freeze) root cause;
   Finding C's deferred deterministic pre-arm sole-authority guard.
+
+> Closed 2026-10-28: off-ladder status complete; superseded: motor_guard parked, no live wiring since 2026-08-01 (JB-34 survey).

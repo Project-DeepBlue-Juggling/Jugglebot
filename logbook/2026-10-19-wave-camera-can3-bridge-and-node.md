@@ -2,7 +2,7 @@
 title: "Wave camera adapter on CAN3: bridge FW 33 WAVE_CMD, the wave_camera decoder, camera/* topics and record_start/record_stop services - flashed and brought up on the Jetson 2026-10-25"
 type: feature
 date: 2026-10-19
-status: in-progress
+status: resolved
 phase: "wave-camera-can3-integration - Phase 2 (bridge FW 33 + Jetson node)"
 related_plan: wave-camera-can3-integration.md
 subsystem: can
@@ -163,3 +163,5 @@ Added in this bring-up (owner decision after step 10): fault clearing. The fault
 - GUI: the warning glyph is clickable (`canClearFaults`: ROS up, not fenced, not pending, fresh, adapter connected, faults non-zero; the camera need not be on), its tooltip ends "(click to clear faults)", and the result flashes on the status line.
 
 Verification: `pytest tests/ros/test_teensy_bridge_node_wave.py tests/ros/test_wave_camera.py` (2026-10-25): **71 passed**; `pytest tests/ros/test_gui_record_panel.py` (2026-10-25): **15 passed**; `pytest tests/ros/test_choreography_map.py` after `python tools/gen_choreography_map.py` (2026-10-25): **29 passed**. Hardware, after colcon build and relaunch (2026-10-25 15:31, persistent rclpy client): `camera/clear_faults` returned **success, 'faults cleared (were: INTENT_TIMEOUT_AUTOSTOP, SYNC_STEP)' in 0.188 s**, a second call 'no faults were latched' (0.196 s), and the heartbeat then read faults 0x00. The record_start clear is covered by the node tests only: exercising it on hardware writes a clip.
+
+> Closed 2026-10-28: bring-up done 2026-10-25 (pathway-wave-camera-can3 complete); residue JB-52, JB-53, JB-54 (JB-34 survey).

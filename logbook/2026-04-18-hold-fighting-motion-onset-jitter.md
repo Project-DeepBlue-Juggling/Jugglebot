@@ -2,7 +2,7 @@
 title: Hold fighting + motion-onset jitter — residual hardware jitter downstream of clean MPC
 type: investigation
 date: 2026-04-18
-status: in-progress
+status: resolved
 phase: post-walk-forward-fallback-multiaxis-session-2
 related_plan: "leg-gain-tuning-methodology.md"
 related_issues: []
@@ -523,3 +523,5 @@ entry on account of Failure A.
 - Does the 500 Hz `leg_lengths_topic` stream in the rosbag show a clean frequency
   spectrum at hold, or is there a dominant fighting frequency?
 - Would a single-leg bench test (platform weight off) show the same hold fighting?
+
+> Closed 2026-10-28: superseded by plans/archived/motion-onset-deadtime-investigation.md (JB-34 survey).

@@ -2,7 +2,7 @@
 title: Phase 11 bench cutover — present-axis scoping + synthetic β-knot interp driver (software prep)
 type: feature
 date: 2026-06-24
-status: in-progress
+status: resolved
 phase: "11"
 related_plan: teensy-can-offload.md
 files_changed:
@@ -689,3 +689,5 @@ bench driver's instant disarm (Ctrl-C / fault) gates firmware output off (≈ on
 was not separately characterised in U3-iv — that run measured the float32 residual +
 onset, not the gate latency — so the ~100–200 ms estimate stands; carry it to U5 for
 a direct measurement.)*
+
+> Closed 2026-10-28: superseded by plans/archived/teensy-can-offload.md (JB-34 survey).

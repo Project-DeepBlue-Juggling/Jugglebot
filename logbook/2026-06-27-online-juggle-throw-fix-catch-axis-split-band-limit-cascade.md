@@ -2,7 +2,7 @@
 title: Online juggle integration — throw-separation slam fix + catch axis-split (0→5 catches, beats the offline demo's 2) + the band-limit-cascade wall that blocks sustained 2-ball
 type: feature
 date: 2026-06-27
-status: in-progress
+status: resolved
 phase: "Sim2Real fidelity — concern 1: online runner integration (sim/juggle_online.py). Throw fixed, catch axis-split landed (0→5 catches), sustained 2-ball blocked by the throw-amplifies-catch-error cascade — characterised, fixes ruled out, path forward identified"
 related_plan: "bb-led-two-ball-juggle-demo.md"
 files_changed:
@@ -184,3 +184,5 @@ The actual fix must break the **position → velocity amplification** in the thr
 - Old-demo calibration: `test_full_sim_juggle_reaches_target_catches` is
   `xfail(strict=True)` at 2 catches (band-limit cascade); this online runner
   reaches 5 against the same wall.
+
+> Closed 2026-10-28: superseded by plans/archived/bb-online-juggle-tilt-rearchitecture.md (JB-34 survey).

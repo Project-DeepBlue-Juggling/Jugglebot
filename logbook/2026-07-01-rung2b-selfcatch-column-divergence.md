@@ -2,7 +2,7 @@
 title: Rung-2b single-ball self-catch — MAKE-OR-BREAK BREAK; the pure column diverges (loop gain > 1) for column-specific reasons, and the column is a degenerate case where tilt is inactive
 type: feature
 date: 2026-07-01
-status: in-progress
+status: resolved
 phase: "Online-juggle tilt re-architecture — Phase 3 / Rung 2b (throw-and-self-catch loop, MAKE-OR-BREAK gate)"
 related_plan: "bb-online-juggle-tilt-rearchitecture.md"
 files_changed:
@@ -244,3 +244,5 @@ inactive, so it does not test the tilt hypothesis. Recommend re-plan option 1 (a
 two-point single-ball oscillation where tilt engages) before proceeding to Rung 3.
 
 Commit SHA: f745f29 (this rung's feature commit).
+
+> Closed 2026-10-28: superseded by plans/archived/two-ball-skill-stack.md (JB-34 survey).

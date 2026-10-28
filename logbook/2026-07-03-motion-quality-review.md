@@ -2,7 +2,7 @@
 title: Motion-quality review — the single-ball toss/catch is NOT smooth; the Rung-2b MAKE catch seats the ball ~145 mm ABOVE catch_z on a ceiling-parked, upward-moving cup; root cause is the stitched harness vs the codebase's own whole-cycle planner; P0 motion metrics landed, P1 is entangled, P2 (re-unify on plan_cup_cycle) is the fix
 type: investigation
 date: 2026-07-03
-status: in-progress
+status: resolved
 phase: "Online-juggle tilt re-architecture — motion-quality course-correction (P0 landed; P2 re-unification pending)"
 related_plan: "bb-online-juggle-tilt-rearchitecture.md"
 files_changed:
@@ -151,3 +151,5 @@ sim-fidelity constraint at once, and the current cycle fails it by ~2×.
   `2026-07-02-fast-catch-fidelity.md`.
 - The whole-cycle planner: `controller/demo/juggle_planner.py::plan_cup_cycle`;
   the continuous-cycle reference runner: `sim/juggle_online.py::_plan_cycle`.
+
+> Closed 2026-10-28: superseded by plans/archived/bb-online-juggle-tilt-rearchitecture.md (JB-34 survey).

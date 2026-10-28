@@ -2,7 +2,7 @@
 title: "Two-ball skill stack arc opened — the plans board re-cut around the RAI juggling paper, eleven plans superseded, the workspace on its own branch"
 type: refactor
 date: 2026-09-09
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack — R0 kickoff (board + workspace; code deletion follows as its own commit)"
 related_plan: two-ball-skill-stack.md
 files_changed:
@@ -116,3 +116,5 @@ WARNING (the eleven archived rows had landed after the closing section instead o
 archival notes cited plan sections by the wrong number) and two NOTE items (sweep count 222 not 221; two
 beat-table cells carried rounding-chain drift) — all narrative, all applied before the second full gate.
 Next: the R0 dead-layer deletion (plan § 6) as its own commit and entry.
+
+> Closed 2026-10-28: closed by plans/archived/two-ball-skill-stack.md (JB-34 survey).

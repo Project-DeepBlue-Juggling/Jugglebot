@@ -2,7 +2,7 @@
 title: The additive HAND_SENSOR uplink — MsgType 0x8B, a 14-byte payload, and flags promoted to a generated enum
 type: feature
 date: 2026-07-29
-status: in-progress
+status: resolved
 phase: "Hand ball-present sensor — Phase 4 (additive uplink message)"
 related_plan: "hand-ball-sensor.md"
 files_changed:
@@ -287,3 +287,5 @@ independently, in either order**, because the message is additive: no
 - `logbook/2026-07-29-hand-sensor-ball-detect-config.md` — Phase 1, source of
   `JBBallDetect::CHECK_INTERVAL_MS` and `ENABLED`, both load-bearing here.
 - `logbook/2026-07-29-hand-sensor-fw-version-surfacing.md` — Phase 0.
+
+> Closed 2026-10-28: closed by plans/archived/hand-ball-sensor.md (JB-34 survey).

@@ -2,7 +2,7 @@
 title: "R4 sitting 2: the self-toss held, the hop THROW refused on the post-release hold's axis under a real level offset, and the reload met a Ball Butler node that answered nothing"
 type: investigation
 date: 2026-09-28
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack — R4"
 related_plan: two-ball-skill-stack.md
 sessions:
@@ -187,3 +187,5 @@ dump if it is not.
   audit's docstring edit → **PASS 5516 passed, 8 skipped in 216.37 s; serial 3 passed in 8.77 s.**
 * Audit (`/audit --unstaged`, one Sonnet reporter): no behaviour findings; two narrative notes
   applied (the test's fail-before figure names its seed; the left-IDLE sampling assumption).
+
+> Closed 2026-10-28: closed by 2026-09-29-skill-stack-r4-gate-met (JB-34 survey).

@@ -2,7 +2,7 @@
 title: "Hand C2 continuity + torque feedforward plumbing (PROTOCOL_VERSION 8 / can-bridge FW 22)"
 type: feature
 date: 2026-09-15
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack — R3"
 related_plan: two-ball-skill-stack.md
 files_changed:
@@ -358,3 +358,5 @@ gain choice.
 - BallButler's generated config copies are now stale (U2b's regeneration
   ran with `--no-external`); the next plain `generate_config.py` run
   delivers them. Normal generator behaviour, not a defect.
+
+> Closed 2026-10-28: K>0 gate removed (2026-09-15-hand-torque-ff-gate-removed); vel_ff-after-stale tracked as JB-73 (JB-34 survey).

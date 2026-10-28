@@ -2,7 +2,7 @@
 title: "Kinematic calibration capture tool: generated tilted sweep, production-gate dry-run, no-motion rehearsal, frame sanity check"
 type: feature
 date: 2026-09-23
-status: in-progress
+status: resolved
 phase: "kinematic-calibration — § 6 step 2"
 related_plan: kinematic-calibration.md
 files_changed:
@@ -148,3 +148,5 @@ separate change agreed with the owner; see the plan.
 - `pytest tests/sim/test_kincal_capture.py -q` (2026-09-27): **42 passed in 39.09 s**.
 - `python tests/hardware/kincal_capture.py --dry-run` (2026-09-27): **0 refusal(s)**,
   185 dwells, 18.7 min.
+
+> Closed 2026-10-28: closed by 2026-09-23-kinematic-calibration-design-and-fit-tool (JB-34 survey).

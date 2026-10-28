@@ -2,7 +2,7 @@
 title: "UH-7a steady-chain plumbing — the ring machinery was already written and inert, so the work was a shape change and a release hand-off; the beat stops being a choreography artefact and becomes the planner's own window"
 type: feature
 date: 2026-09-07
-status: in-progress
+status: resolved
 phase: "unified-7dof-planner — Phase 5 (UH-7a)"
 related_plan: unified-7dof-planner.md
 files_changed:
@@ -898,3 +898,5 @@ refusals recurred (`LIMIT_JERK 120151` on a hand-only lift; `HAND_STROKE −0.00
 t=0.006 s` — a rounding hair below the seed, a gate without tolerance at its own lower bound) — with the
 hand IDLE they were moot tonight, but they refused the 14:29 session's lift too and need their own probe.
 Also open: how the latch flipped while armed.
+
+> Closed 2026-10-28: superseded by plans/archived/unified-7dof-planner.md (JB-34 survey).

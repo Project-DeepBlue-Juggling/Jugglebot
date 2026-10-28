@@ -2,7 +2,7 @@
 title: "R4 software — the one-ball hop across two sites, the Ball Butler reload re-cut as a held-axis catch, and two seam defects the probes found on the way"
 type: feature
 date: 2026-09-23
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack — R4"
 related_plan: two-ball-skill-stack.md
 sessions:
@@ -206,3 +206,5 @@ summarised above; the probe recipes are repeated in the tests' docstrings.
 * Still to come in R4: `Juggle.action` + the GUI relay (U5), the FSM deletion under `fsm-final`
   (U6, census in hand), the hop sim gate at 20 cycles × 5 seeds, the determinism re-sweep,
   `./run_tests.sh --full`, the runbook and the plan's R4 row.
+
+> Closed 2026-10-28: closed by 2026-09-29-skill-stack-r4-gate-met (JB-34 survey).

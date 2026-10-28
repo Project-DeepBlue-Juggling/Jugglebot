@@ -2,7 +2,7 @@
 title: MPC-loop overhead spikes trigger fallback bursts — audible motor "fighting" on every move
 type: investigation
 date: 2026-04-18
-status: tuned
+status: resolved
 phase: "STANDBY-mode MPC (post-64742f2 fallback walk-forward) — tail-latency attribution"
 related_plan: "hardware-bringup.md"
 related_issues:
@@ -190,3 +190,5 @@ the current state on the very next tick, exposing the prior tick's stale
 prediction as a one-tick discontinuity. The Fix B `hold_extrap` arm
 addresses the post-cascade case, not the singleton case. Tracked
 separately under the walk-forward singleton-emission investigation.
+
+> Closed 2026-10-28: superseded: MPC chain removed 2026-09-01 (JB-34 survey).

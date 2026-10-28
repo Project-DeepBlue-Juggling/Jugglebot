@@ -2,7 +2,7 @@
 title: "R5 sitting 6 (2026-10-05 night): ten attempts, no throw — three refusals with one cause, a skill planned from wherever the machine happened to be; the no-reload columns_1ball now opens on a REST and a REST refused STALE_STATE is retried until its scheduled start"
 type: investigation
 date: 2026-10-06
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack — R5"
 related_plan: two-ball-skill-stack.md
 related_entries:
@@ -231,3 +231,5 @@ move.
   recommendation to the owner, 2026-10-06 morning). See Discussion: the grid snap leaves a real
   step of up to 0.87 rev at this speed, so the re-timed guard would still be marginal, and it
   relaxes a safety check. Replaced by the executor's bounded retry.
+
+> Closed 2026-10-28: residue filed as JB-86 (start-state rehearsal) (JB-34 survey).

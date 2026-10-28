@@ -2,7 +2,7 @@
 title: Velocity-matched catch (0.7) + contact-mechanics feasibility (Sim2Real fidelity)
 type: feature
 date: 2026-06-26
-status: in-progress
+status: resolved
 phase: "Sim2Real fidelity — concern 2 landed, concern 1 (contact) feasibility proven"
 related_plan: "bb-led-two-ball-juggle-demo.md"
 files_changed:
@@ -171,3 +171,5 @@ read the ball's exit z-velocity after separation.
 - `catch_vel_ratio` (0.7) and `catch_slider_vel_ratio` (0.6) duplicate values
   that live in 3 places (here, sim hand `CATCH_VEL_RATIO`, hardware_config);
   the single-source contract is owned by the hand-generator overhaul.
+
+> Closed 2026-10-28: superseded by plans/archived/bb-led-two-ball-juggle-demo.md (JB-34 survey).

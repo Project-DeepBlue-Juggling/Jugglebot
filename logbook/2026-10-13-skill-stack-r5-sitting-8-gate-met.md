@@ -2,7 +2,7 @@
 title: R5 sitting 8 - two-ball columns GATE MET, 32 consecutive catches (BB feed + 31 throws) in one attempt; every Ball Butler feed flew (14/14, no self-cancel); five solver-late SPLICE_TOO_LATE ends and the residue findings carried
 type: investigation
 date: 2026-10-13
-status: tuned
+status: resolved
 phase: "two-ball-skill-stack — R5 (two-ball columns)"
 related_plan: two-ball-skill-stack.md
 related:
@@ -138,3 +138,5 @@ Not extracted: per-feed landing offsets (the probe prints medians), worker/node 
 - Rehearsals not run (runbook rows 17a-20; owner, time): moved to `plans/active/skill-stack-dress-rehearsals-and-residue.md` and `tests/hardware/session_skill_stack_rehearsals.md`.
 - Residue rows (SPLICE_TOO_LATE self-ends, hop-entry accept not checking the cup, the 47 ms emitter gap, the throw-24 release step, the attempt-12 hand jam): rows in `plans/active/skill-stack-dress-rehearsals-and-residue.md` § 2.
 - R6 close-out proceeds tonight.
+
+> Closed 2026-10-28: R5 gate met; plans/archived/two-ball-skill-stack.md; 47 ms gap JB-23, SPLICE recurrence JB-76 (JB-34 survey).

@@ -2,7 +2,7 @@
 title: "Stop after a drop: a spliced REST before the next throw replaces the legacy hold, and only a converged fit counts as tracker release evidence"
 type: investigation
 date: 2026-09-29
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack — R4 carry (pre-R5)"
 related_plan: two-ball-skill-stack.md
 sessions:
@@ -177,3 +177,5 @@ the hand. The top only pays off once the `reload` also starts from the top, whic
   Watch for the WARN line.
 - Columns (R5) has two balls. A drop there leaves the other ball in flight, so "stop before the
   next throw" is not obviously the right policy. That is an R5 decision.
+
+> Closed 2026-10-28: closed by plans/archived/two-ball-skill-stack.md (JB-34 survey).

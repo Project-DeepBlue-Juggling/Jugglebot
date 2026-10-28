@@ -2,7 +2,7 @@
 title: The hand's post-release deceleration feedforward — stop flirting with the end stop
 type: bugfix
 date: 2026-07-29
-status: tuned
+status: resolved
 phase: "Self-toss anomaly fixes — Phase 7 (post-release decel)"
 related_plan: "hand-command-continuity.md"
 files_changed:
@@ -472,3 +472,5 @@ explanation this entry withdrew, and the two kind-2 defects
 (`buildCommand`'s 31.6× torque unit error, `buildSegment`'s residual velocity
 feedforward) which are pinned rather than fixed because no live host dispatches
 kind 2.
+
+> Closed 2026-10-28: superseded: Platform Teensy stroke engine retired at skill-stack R1 (JB-34 survey).

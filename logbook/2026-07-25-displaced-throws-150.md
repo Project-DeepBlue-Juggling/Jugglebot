@@ -2,7 +2,7 @@
 title: Self-toss anomaly fixes — Phase E (displaced throws to ±150 mm)
 type: feature
 date: 2026-07-25
-status: in-progress
+status: resolved
 phase: "Phase E"
 related_plan: "single-ball-toss.md"
 files_changed:
@@ -362,3 +362,5 @@ constant) and **no `jugglebot_interfaces` rebuild** (both new topics carry
 - Operator ladder: `tests/hardware/session_anomaly_fixes.md` § SECTION DISP
 - Sibling commit: the `sim/toss_gate.py` asymmetry-map seed bugfix —
   `logbook/2026-07-29-toss-gate-asymmetry-seed.md`
+
+> Closed 2026-10-28: superseded by plans/archived/single-ball-toss.md (JB-34 survey).

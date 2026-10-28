@@ -2,7 +2,7 @@
 title: The operator surfaces for the hand ball sensor — a tri-state GUI pill and the Phase 7 runbook
 type: feature
 date: 2026-07-29
-status: in-progress
+status: resolved
 phase: "Hand ball-present sensor — Phase 6 (GUI pill + session runbook)"
 related_plan: "hand-ball-sensor.md"
 files_changed:
@@ -561,3 +561,5 @@ sitting, by design: the operator runs robot-actuating commands from it.
   fw-version launch line is step 1's confirmation surface.
 - `tests/hardware/session_hand_ball_sensor.md` — the runbook itself.
 - `tests/hardware/session_phase7_reload.md` — the pattern it follows.
+
+> Closed 2026-10-28: stale: sensor in production since 2026-08; runbook tuning rows live in tests/hardware/session_hand_ball_sensor.md (JB-34 survey).

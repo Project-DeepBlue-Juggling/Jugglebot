@@ -2,7 +2,7 @@
 title: The seat rate becomes a config key, and the A/B that needs it gets an instrument
 type: feature
 date: 2026-07-25
-status: tuned
+status: resolved
 phase: "Self-toss anomaly fixes — Phase C (seat-experiment prep)"
 related_plan: "catch-reach-degenerate-overshoot.md"
 files_changed:
@@ -283,3 +283,5 @@ which the runbook states so "everything got smaller" is not a false expectation.
 - The 3.8 mm figure still appears in `logbook/2026-07-28-anomaly-fixes-validation-sitting.md`
   (three places) as that session's honest finding; a correction pointer was added at
   its primary claim site rather than rewriting another session's record.
+
+> Closed 2026-10-28: superseded by plans/archived/catch-reach-degenerate-overshoot.md (JB-34 survey).

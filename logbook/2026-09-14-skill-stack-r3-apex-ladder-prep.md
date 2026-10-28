@@ -2,7 +2,7 @@
 title: "Streamed hand lane sends zero torque feedforward where the retired Platform engine sent one — traced R3's +25% overspeed, prepped an apex ladder, and fixed two admissible-box contract defects along the way"
 type: investigation
 date: 2026-09-14
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack — R3"
 related_plan: two-ball-skill-stack.md
 files_changed:
@@ -390,3 +390,5 @@ applies to xy authority the ladder does not exercise.
 in-progress — the hardware ladder sitting is outstanding; this session
 prepared the runsheet, the re-swept boxes, and the feasibility probe but
 flew nothing.
+
+> Closed 2026-10-28: holds_ball wire gap filed as JB-86; the apex-edge tie-break and the CHAIN_CATCH margin ring dropped as R3-era with no recurrence since the R5 gate (JB-34 survey).

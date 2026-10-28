@@ -2,7 +2,7 @@
 title: The anomaly-fix run meets hardware — every levelling and hand row passes, and the one genuinely open question came back ABORT
 type: investigation
 date: 2026-07-28
-status: tuned
+status: resolved
 phase: "Self-toss anomaly fixes — hardware validation sitting (2026-07-27)"
 related_plan: "hand-command-continuity.md"
 sessions:
@@ -1151,3 +1151,5 @@ the 40 ms margin the arm gate budgets) which was the 2026-07-18 can-bridge-uptim
 lag reaching this gate — **CLOSED 2026-08-15**, transport fixed at can-bridge
 FW 14, end-to-end 10–20 ms
 (`plans/archived/bridge-temporal-trustworthiness.md`).
+
+> Closed 2026-10-28: Q1-Q3 answered (2026-08-18-hand-end-stop-corrected); Q4 int16 offset truncation tracked as JB-26 (JB-34 survey).

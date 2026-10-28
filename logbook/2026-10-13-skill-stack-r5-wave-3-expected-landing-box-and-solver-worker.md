@@ -2,7 +2,7 @@
 title: R5 wave 3 - the admissible box bounds the learner's EXPECTED landing, the segment solve moves into a worker process, the lane-latch rehearsal becomes a script, BB FW 9 flashed
 type: investigation
 date: 2026-10-13
-status: tuned
+status: resolved
 phase: "two-ball-skill-stack — R5 (two-ball columns)"
 related_plan: two-ball-skill-stack.md
 related:
@@ -154,3 +154,5 @@ All 2026-10-13; scoped runs by the units in the shared main tree:
 8. `BOX-FORWARD-CLIP-UNAVAILABLE` must never appear on the live path; skill_node logs executor lines at DEBUG, so the "WARN" is a text tag only.
 
 **Follow-up (2026-10-13 night).** Sitting 8 met the R5 gate (`2026-10-13-skill-stack-r5-sitting-8-gate-met.md`). Verification step 2 measured over 2741 windows: `max_emit_gap_ms` p99 29.94 ms (target < 30: MET overall, 32.5 inside the gate attempt) and max 47.04 ms (target < 35: NOT MET; L2 baseline 34.3 / 45.7). Solve/plan split recorded (solve p50 103.7 / p99 192.2 / max 357.1 ms); worker RSS never logged. The lane-latch rehearsal (rows 17a-20) is pending; the remaining items are rows in `plans/active/skill-stack-dress-rehearsals-and-residue.md` § 2.
+
+> Closed 2026-10-28: wave 3 flown; forward-clip sim run tracked as JB-32, other solves as JB-31 (JB-34 survey).

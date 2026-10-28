@@ -2,7 +2,7 @@
 title: "R5 sitting 3 (2026-10-02 evening): every fed columns start dies at the fourth skill because the tracker correlation hands one ball the other ball's flight, the throws are wide from the ball in the cup and a frozen learner intercept rather than a tilting platform, and 26 mm of column clearance cannot hold 30-85 mm of scatter"
 type: investigation
 date: 2026-10-04
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack — R5"
 related_plan: two-ball-skill-stack.md
 related_entries:
@@ -486,3 +486,4 @@ All runs 2026-10-04 unless stated. Console output by path under `temp/logs/`.
    (4 against the flashed 5): RED every night until that branch is bumped or the runner moves to
    this worktree.
 
+> Closed 2026-10-28: closed by plans/archived/two-ball-skill-stack.md (JB-34 survey).

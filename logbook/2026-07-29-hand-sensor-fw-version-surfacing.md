@@ -2,7 +2,7 @@
 title: Surface the ODrive firmware versions the hand-sensor endpoint id is pinned against
 type: feature
 date: 2026-07-29
-status: in-progress
+status: resolved
 phase: "Hand ball-present sensor — Phase 0 (fw-version surfacing)"
 related_plan: "hand-ball-sensor.md"
 files_changed:
@@ -223,3 +223,5 @@ gains a KeyValue *row*, not a field) and no firmware flash.
   once-per-Teensy-boot sweep whose cached replies this decodes.
 - `logbook/2026-07-28-anomaly-fixes-validation-sitting.md` — the sitting that
   approved the sensor plan.
+
+> Closed 2026-10-28: closed by plans/archived/hand-ball-sensor.md (JB-34 survey).

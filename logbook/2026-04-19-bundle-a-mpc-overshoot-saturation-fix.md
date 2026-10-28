@@ -2,7 +2,7 @@
 title: "Bundle A — ref-from-plant-state on move transitions (MPC overshoot-saturation fix)"
 type: feature
 date: 2026-04-19
-status: in-progress
+status: resolved
 phase: "hardware-bringup — Phase 4 (moderate motions)"
 related_plan: "hardware-bringup.md"
 related_issues:
@@ -135,3 +135,5 @@ The 2026-04-19 13:49–13:52 sessions will not, on their own, confirm or deny th
 - Bundle B1 (`HardwarePlant` `estop_requested` flag + persistent-stale-contents detection) remains open from the 2026-04-18 Move-5 entry. It is the safety half of the Move-5 decomposition and is independent of this fix.
 - Should `WaypointTargetSource` adopt the same change-detection-plus-cache structure as `ZmqTargetSource` for consistency, or is its current "emit fresh events on every `update()`" acceptable given that waypoint sources are driven by sim time rather than external IPC?
 - The twist clamp is applied uniformly at `MPCParams.max_leg_vel_mmps`. Should it instead be derived from the Jacobian-mapped linear-velocity envelope at the current pose, which would permit faster warm-up segments near the workspace centre where leg velocities are less kinematically restrictive?
+
+> Closed 2026-10-28: superseded: MPC chain removed 2026-09-01 (JB-34 survey).

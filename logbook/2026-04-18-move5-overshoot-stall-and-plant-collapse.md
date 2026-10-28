@@ -2,7 +2,7 @@
 title: "Move 5: MPC overshoot-recovery stall + plant-collapse misclassification"
 type: investigation
 date: 2026-04-18
-status: in-progress
+status: resolved
 # --- Context (use what's relevant) ---
 phase: "post-walk-forward-fallback-multiaxis-session"
 related_plan: ""
@@ -214,3 +214,5 @@ fix, only the detection-and-classification half.
 ---
 
 Note: the `log_index.json` verdict for `mpc_20260418_015112.csv` has been corrected from FAIL to NEEDS_ATTENTION in this same commit, with the extended diagnostic notes describing the two-event decomposition.
+
+> Closed 2026-10-28: superseded: MPC chain removed 2026-09-01 (JB-34 survey).

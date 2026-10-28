@@ -2,7 +2,7 @@
 title: "C-CATCH-1 — the catch through-seat aims at the ball, not at the levelling correction, and the planner may not manufacture motion nobody asked for"
 type: bugfix
 date: 2026-07-26
-status: in-progress
+status: resolved
 phase: "Self-toss anomaly fixes — catch-reach-degenerate-overshoot Phase 2"
 related_plan: "catch-reach-degenerate-overshoot.md"
 files_changed:
@@ -335,3 +335,5 @@ pre-fix behaviour exactly. No firmware flash, no config regeneration.
 3. **Pre-existing and untouched:** the other half of `mvp_bench_runbook.md` open
    item 7 — realized peaks on the SpaceMouse / reactive-catch path are per-install
    rather than rolling-window.
+
+> Closed 2026-10-28: superseded by plans/archived/catch-reach-degenerate-overshoot.md (JB-34 survey).

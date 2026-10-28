@@ -2,7 +2,7 @@
 title: Can-bridge (CAN Hub) hardware bringup
 type: feature
 date: 2026-06-06
-status: in-progress
+status: resolved
 phase: teensy-can-offload
 related_plan: plans/archived/HANDOFF-firmware-three-bus-WIP.md
 files_changed:
@@ -162,3 +162,5 @@ Keep bringup diagnostics RX-only and trust `sync` as the first discriminator.
   Teensy's reports.
 - Full-load RX-drain validation once the ODrives are armed into CLOSED_LOOP, behind a
   no-erroneous-command safety plan (audit of all CAN3 TX paths + the output gate).
+
+> Closed 2026-10-28: closed by 2026-07-05-canhub-marginal-can3-diagnosis (JB-34 survey).

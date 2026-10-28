@@ -2,7 +2,7 @@
 title: "R5 sitting 4 (2026-10-04 evening): the hand-jam detector was blind to a 1 Hz diagnostic, a missed feed never ended the pattern because the cup sensor confirmed the other ball's seat, the catches are on time but Ball Butler lands 41 mm off the cup, and the live refusals are landing-time jitter against a 10 % margin"
 type: investigation
 date: 2026-10-04
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack — R5"
 related_plan: two-ball-skill-stack.md
 related_entries:
@@ -483,3 +483,5 @@ Nine units (five analyses, then J1/J2/B1/B1b/B1c/B2/B3/B4), briefs and the saved
    reached it); runbook § 2 is the first honest test. Stripping Ball 1's already-dispatched
    throw after a missed feed (one fewer stroke over a loose ball) contradicts the 2026-09-29
    "first throw after a catch" rule and waits for the owner.
+
+> Closed 2026-10-28: analysis done; refusal-margin class tracked as JB-24, BB bias by plans/archived/bb-calibration-one-attempt.md (JB-34 survey).

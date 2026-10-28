@@ -2,7 +2,7 @@
 title: Config groundwork for the hand ball-present sensor — jugglebot_ball_detect and its flashed-pin drift test
 type: feature
 date: 2026-07-29
-status: in-progress
+status: resolved
 phase: "Hand ball-present sensor — Phase 1 (config groundwork)"
 related_plan: "hand-ball-sensor.md"
 files_changed:
@@ -238,3 +238,5 @@ That first matters at Phase 4.
   this drift test now guards.
 - `tests/motion/test_leg_torque_ff.py::test_yaml_kt_odrive_config_matches_the_flashed_odrive_json`
   — the flashed-mirror drift-test pattern this follows.
+
+> Closed 2026-10-28: closed by plans/archived/hand-ball-sensor.md (JB-34 survey).

@@ -2,7 +2,7 @@
 title: "R5 two-ball columns: the Ball Butler start does not fit one flight from BB's current perch (measured on the planner, the D1 criterion fired); the fused held-catch→re-level→throw window lands for the reload; the columns box cell was the wrong segment; the Stop is a cross-site last throw; the survivor is caught after a drop"
 type: investigation
 date: 2026-09-30
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack — R5"
 related_plan: two-ball-skill-stack.md
 related_entries:
@@ -420,3 +420,5 @@ re-attitude the numbers do not support, or on where BB can stand.
   slew joins is the candidate (F-b § 0).
 - The columns operating point: 0.90 m is MARGIN at 100 mm on the re-modelled cell; the sweep
   tables decide between 0.85 m and a margin decision.
+
+> Closed 2026-10-28: closed by plans/archived/two-ball-skill-stack.md (JB-34 survey).

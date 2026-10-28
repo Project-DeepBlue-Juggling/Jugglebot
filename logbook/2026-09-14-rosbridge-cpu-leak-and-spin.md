@@ -2,7 +2,7 @@
 title: rosbridge CPU leak (service-client) + 1 ms timer spin — lean launcher fix
 type: optimization
 date: 2026-09-14
-status: in-progress
+status: resolved
 files_changed:
   - ros_ws/src/jugglebot/jugglebot/rosbridge_websocket_lean.py
   - ros_ws/src/jugglebot/setup.py
@@ -327,3 +327,5 @@ stock 1.3.1) and a leaked-subscriptions-on-close defect in this same module
 are fixed in
 [2026-09-15-rosbridge-hung-call-and-close-teardown](2026-09-15-rosbridge-hung-call-and-close-teardown.md);
 the leak/spin fixes and measurements above are unaffected.
+
+> Closed 2026-10-28: launch CPU load owned by JB-76; rosbridge re-measured 2026-10-28-gui-mocap-copies-cut-rosbridge-load (JB-34 survey).

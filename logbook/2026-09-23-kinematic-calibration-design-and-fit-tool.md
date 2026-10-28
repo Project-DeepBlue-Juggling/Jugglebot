@@ -2,7 +2,7 @@
 title: "Kinematic calibration: the platform-pose error is model geometry, fixed by a parametric fit to a mocap sweep, not a pose servo. Design settled with the owner; fit tool proven on synthetic data"
 type: feature
 date: 2026-09-23
-status: in-progress
+status: resolved
 phase: "kinematic-calibration — § 6 step 5 (applied)"
 related_plan: kinematic-calibration.md
 files_changed:
@@ -357,3 +357,4 @@ tilts every commanded pose by ~0.8° until re-measured; expect it to shrink to t
 fit's ~0.2° attitude floor. Then the tilt-map recapture (§ 6 step 6, expected much
 smaller), then the flying frame check at every z (§ 6 step 7, the § 8 acceptance).
 
+> Closed 2026-10-28: residue filed as JB-85 (kincal acceptance / frame offset) (JB-34 survey).

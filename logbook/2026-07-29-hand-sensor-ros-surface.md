@@ -2,7 +2,7 @@
 title: The ROS surface for the hand ball sensor — a tri-state on /hand_telemetry and a two-hop validity gate
 type: feature
 date: 2026-07-29
-status: in-progress
+status: resolved
 phase: "Hand ball-present sensor — Phase 5 (ROS surface)"
 related_plan: "hand-ball-sensor.md"
 files_changed:
@@ -416,3 +416,5 @@ flash at Phase 7 step 1, in either order relative to this Jetson deploy, because
   `/link_status`.
 - `logbook/2026-07-29-hand-sensor-ball-detect-config.md` — Phase 1.
 - `logbook/2026-07-29-hand-sensor-fw-version-surfacing.md` — Phase 0.
+
+> Closed 2026-10-28: closed by plans/archived/catch-robustness.md (JB-34 survey).

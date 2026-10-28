@@ -2,7 +2,7 @@
 title: Throw-aim root cause is a platform BAND LIMIT (not angular tracking) + closed-loop catch (1→2 catches)
 type: investigation
 date: 2026-06-27
-status: in-progress
+status: resolved
 phase: "Sim2Real fidelity — concern 1 (contact) throw-aim: band-limit diagnosis; closed-loop catch WIP"
 related_plan: "bb-led-two-ball-juggle-demo.md"
 files_changed:
@@ -214,3 +214,5 @@ physics-driven**.
 - `probe_tilt.py` — bank/tilt tracking at the throw.
 - `probe_reach_debug.py`, `probe_catch1.py`, `probe_ball0.py` — closed-loop
   catch reach + ball-0 re-throw diagnostics.
+
+> Closed 2026-10-28: superseded by plans/archived/bb-online-juggle-tilt-rearchitecture.md (JB-34 survey).

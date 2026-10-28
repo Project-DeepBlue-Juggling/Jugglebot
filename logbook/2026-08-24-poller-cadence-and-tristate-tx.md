@@ -2,7 +2,7 @@
 title: The ball sensor reaches 50 Hz, and a queued CAN frame stops counting as a failure
 type: feature
 date: 2026-08-24
-status: in-progress
+status: resolved
 phase: "MVP trajectory bring-up"
 related_plan: ""
 sessions:
@@ -573,3 +573,5 @@ below can be confirmed from the source tree; every row needs the board.
   below the physical service time.
 * **Promoting the per-class census to the wire** — a new additive MsgType in
   `config/generate_udp_protocol.py`, deliberately not taken here (see Discussion).
+
+> Closed 2026-10-28: stale: TX deferral cause closed by FW 10 16-mailbox fix; residue bounded, self-healing (JB-34 survey).

@@ -2,7 +2,7 @@
 title: Contact-mechanics integration (concern 1) — contact carry + seat-based catch + emergent physics throw; throw-aim ω×r root cause found, angular-tracking gap remains
 type: feature
 date: 2026-06-26
-status: in-progress
+status: resolved
 phase: "Sim2Real fidelity — concern 1 (contact) infrastructure landed; throw-aim (ω×r + platform angular tracking) WIP"
 related_plan: "bb-led-two-ball-juggle-demo.md"
 files_changed:
@@ -196,3 +196,5 @@ worth modelling for catch/carry realism but were not the lever here.
 - Re-tune `THROW_SPEED_CALIB` and the seat thresholds against the closed pattern.
 - Consider modelling the low-CoM powder ball for catch/carry realism (separate
   from the aim fix).
+
+> Closed 2026-10-28: superseded by plans/archived/bb-led-two-ball-juggle-demo.md (JB-34 survey).

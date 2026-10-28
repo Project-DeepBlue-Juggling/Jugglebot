@@ -2,7 +2,7 @@
 title: Levelling-frame ingest enumeration — a sixth external path, a volatile correction, and a guard blind to what it was specified to catch
 type: investigation
 date: 2026-07-25
-status: in-progress
+status: resolved
 phase: "Self-toss anomaly fixes — levelling-frame-contract Phase 0"
 related_plan: "levelling-frame-contract.md"
 files_changed:
@@ -430,3 +430,5 @@ firmware.
   `plans/archived/catch-reach-degenerate-overshoot.md` studies. Its Phase 0 should
   re-verify its reproduction against a post-Phase-2 tree rather than assume the
   pre-fix `+2.32°` excursion still exists to measure.
+
+> Closed 2026-10-28: Phases 0-3 shipped (plans/archived/levelling-frame-contract.md); int16 offset residue tracked as JB-26 (JB-34 survey).

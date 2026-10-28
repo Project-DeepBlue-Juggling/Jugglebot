@@ -2,7 +2,7 @@
 title: CAN-loss fault-response safety inversion — blanket "ERROR ⇒ stow+IDLE" de-energises healthy holding actuators on reconnect
 type: investigation
 date: 2026-05-19
-status: tuned
+status: resolved
 #
 # Status ladder (for investigation entries):
 #   open         — nothing done yet
@@ -469,3 +469,5 @@ self-parks. Commit hashes: `d8bab95` (original fix) + `f551c97`
   `~/Desktop/rosbags/2026-05-19_20-05-46/2026-05-19_20-05-46_0.mcap`
   (forensic decoder throwaway `/tmp/probe_caninv_decode.py`, not
   committed).
+
+> Closed 2026-10-28: superseded: can_node deleted (JB-34 survey).

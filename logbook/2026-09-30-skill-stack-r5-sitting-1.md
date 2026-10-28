@@ -2,7 +2,7 @@
 title: "R5 sitting 1 (2026-09-30 evening): the 4 deg / 0 deg cup test and the fused reload flew, the YAW settle refusal traces to a sigma-delta dither on a 150 Hz finite-difference rate, the feed lands 52 ms LATE not early (a withdrawn claim), the lateral bias traces to BB's stale aim affine, and Block C (human lob) is retired for a BB-fed feed"
 type: investigation
 date: 2026-09-30
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack — R5"
 related_plan: two-ball-skill-stack.md
 related_entries:
@@ -430,3 +430,5 @@ frontmatter and index edits — see the session handoff.
 - **BB accuracy volley re-fit**: `throw_affine_correction.json` was fitted 2026-06-09 at a BB
   pose/yaw the 2026-09-27 coplanar-marker recalibration has since moved by 10.3°. Needs a fresh
   volley, scheduled for the next sitting, before the 0° `reload` gate (owner decision, above).
+
+> Closed 2026-10-28: residue filed as JB-84 (BB tooling residue) (JB-34 survey).

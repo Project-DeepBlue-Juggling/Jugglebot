@@ -2,7 +2,7 @@
 title: "Cup-contact contract first sitting — τ = 0.125 s holds (87/87 caught); the 8.5 mm frame offset is a lever arm the learner must subtract, not a limit to relax; both hand latches traced (stale encoder bursts, then a park the firmware always rejected)"
 type: investigation
 date: 2026-09-23
-status: tuned
+status: resolved
 phase: "two-ball-skill-stack — R3"
 related_plan: cup-contact-contract.md
 sessions:
@@ -277,3 +277,5 @@ open leg-bus-frame-drops plan; the recovery fix removes its consequence, not its
   the leg-bus frame-drops plan's; the guard's extrapolation cannot cover a stroke onset with
   a stale velocity, so instrumenting the drop (per-axis frame age at the trip, in the
   latch snapshot) remains the next observability step.
+
+> Closed 2026-10-28: residue filed as JB-85 (kincal acceptance / frame offset) (JB-34 survey).

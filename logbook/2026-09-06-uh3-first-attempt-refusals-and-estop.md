@@ -2,7 +2,7 @@
 title: "First UH-3 attempt — refused three deep on one physical fact, then E-STOPped by its own solve; four defects fixed, the rung still not flown"
 type: investigation
 date: 2026-09-06
-status: in-progress
+status: resolved
 phase: "unified-7dof-planner — Phase 5 (first UH-3 attempt)"
 related_plan: unified-7dof-planner.md
 files_changed:
@@ -861,3 +861,5 @@ arm that shows it.
    thing to confirm after the `colcon build`: `blas threads: 1` in the launch terminal for
    `trajectory_node`.
 9. Four `tests/ros/test_unified_cycle_integration.py` tests are wall-clock load-sensitive (the τ-overrun class); they pass when the suite runs alone, as the gate does. Follow-up: freeze every τ source in them. Do not widen tolerances.
+
+> Closed 2026-10-28: superseded by plans/archived/unified-7dof-planner.md (JB-34 survey).

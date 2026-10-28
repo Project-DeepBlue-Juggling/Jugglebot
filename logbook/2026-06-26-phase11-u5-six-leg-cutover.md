@@ -2,7 +2,7 @@
 title: Phase 11 U5 — powered six-leg β cold-start (home → configure → activate) + sitting fixes
 type: feature
 date: 2026-06-26
-status: in-progress
+status: resolved
 phase: "11"
 related_plan: teensy-can-offload.md
 files_changed:
@@ -335,3 +335,5 @@ definition-of-done). ([[project_mpc_replanner_direction]])
 - **Carried from U3/U4:** Finding A (rare feedback freeze) root cause; Finding C
   (deterministic pre-arm sole-authority guard); the `home`/`home_motors` action
   mismatch for orchestrator-driven homing.
+
+> Closed 2026-10-28: superseded by 2026-06-27-can-node-teensy-parity-audit (JB-34 survey).

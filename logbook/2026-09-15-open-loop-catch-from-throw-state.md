@@ -2,7 +2,7 @@
 title: "Open-loop catch from the throw state — the catch no longer depends on the tracker"
 type: feature
 date: 2026-09-15
-status: done
+status: resolved
 phase: "two-ball-skill-stack — R3"
 related_plan: two-ball-skill-stack.md
 files_changed:
@@ -242,3 +242,5 @@ the operator flies this at the next sitting per the updated runsheet.
   outcome (apex from `r`) is the obvious candidate source for a memory row.
 * `schedule_hand` has not been flown. The apex ladder's K=0 vs K=0.7 A/B is
   the natural place to also A/B `schedule` vs `schedule_hand`.
+
+> Closed 2026-10-28: off-ladder status done; closed by plans/archived/two-ball-skill-stack.md (JB-34 survey).

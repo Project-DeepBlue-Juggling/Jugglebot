@@ -2,7 +2,7 @@
 title: Platform-tilt (orientation) tracking characterisation — tilt is static-exact, ~1.66 mm/deg lever arm, generous band & leg headroom; viable for throw-aiming
 type: feature
 date: 2026-06-29
-status: in-progress
+status: resolved
 phase: "Online-juggle tilt re-architecture — Phase 0 (characterise tilt/orientation tracking before re-introducing tilt in the planner)"
 related_plan: "bb-online-juggle-tilt-rearchitecture.md"
 files_changed:
@@ -173,3 +173,5 @@ needs only small cup motion to aim, and even at the cycle rate it tracks ~unity.
 - `pytest tests/ -q` (run 2026-06-29): see the Phase 0 commit message for the
   (date, command, result) triple — Phase 0 adds only a new standalone probe +
   docs (no production code touched), so the suite is unaffected.
+
+> Closed 2026-10-28: superseded by plans/archived/bb-online-juggle-tilt-rearchitecture.md (JB-34 survey).

@@ -2,7 +2,7 @@
 title: "R4 sitting 3: the self-toss residual is release-side scatter, not the owner's well-positioned-platform premise; the hop overshoot is pre-release translation lag, not the post-release return sitting 1 blamed; the reload's catch-seed dead zone is fixed"
 type: investigation
 date: 2026-09-29
-status: in-progress
+status: resolved
 phase: "two-ball-skill-stack — R4"
 related_plan: two-ball-skill-stack.md
 sessions:
@@ -312,3 +312,5 @@ and no code change follows from it in this entry.
 - **The early tracker fit reads about 9 mm short in x**, which drives some of the 20 mm re-aims that
   chase real error but with a biased trigger. De-biasing the early fit, or gating re-aims on a later
   or converged fit, would halve the noise in each re-aim decision — not attempted here.
+
+> Closed 2026-10-28: residue filed as JB-85 (tracker early-fit bias) (JB-34 survey).

@@ -2,7 +2,7 @@
 title: MPC is compute-bound on the Jetson Orin Nano — 17-40% of solves exceed the 40 Hz CPU-time budget; system-profiling harness built
 type: investigation
 date: 2026-05-22
-status: in-progress
+status: resolved
 phase: "hardware diagnostics / compute-capacity assessment"
 related_plan: ""
 related_entries:
@@ -301,3 +301,5 @@ compute-upgrade decision, and any `can_node` efficiency work are pending.
 - **What changed between the smooth 2026-05-08 session (commit `38d7415`)
   and now** — a candidate `/investigate`, including the option of checking
   out `38d7415` and re-running the 7-move battery as an A/B.
+
+> Closed 2026-10-28: superseded: MPC chain removed 2026-09-01 (JB-34 survey).

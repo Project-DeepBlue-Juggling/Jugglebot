@@ -2,7 +2,7 @@
 title: "Catch-reach near-degenerate overshoot reproduced offline — the excursion is a specified arrival twist, and the amplification goes as 1/|tilt|"
 type: investigation
 date: 2026-07-25
-status: in-progress
+status: resolved
 phase: "Self-toss anomaly fixes — catch-reach-degenerate-overshoot Phases 0-1"
 related_plan: "catch-reach-degenerate-overshoot.md"
 files_changed:
@@ -471,3 +471,5 @@ on the producer side.
   only; the harness reports the commanded position span but does not score the
   swing-compensated translation to `(11.88, 2.87, 171.16)`. If Phase 2's fix
   changes the swing compensation, that half needs its own check.
+
+> Closed 2026-10-28: closed by 2026-07-26-catch-reach-overshoot-fix (JB-34 survey).

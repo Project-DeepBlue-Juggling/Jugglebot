@@ -2,7 +2,7 @@
 title: z=30 solve-failure root cause — motor_pos=None after CAN drop evades both telemetry watchdogs (Finding 3 resolved)
 type: investigation
 date: 2026-05-18
-status: tuned
+status: resolved
 #
 # Status ladder (for investigation entries):
 #   open         — nothing done yet
@@ -608,3 +608,5 @@ correctly.
   20:01 run; 2979 records, 99.0 s). Companion candump
   `temp/reports/th_t2a1_candump_20260518_200207.log` (gitignored
   runtime artefacts).
+
+> Closed 2026-10-28: superseded by 2026-05-19-findingb-motor-guard-estop-latch-observability (JB-34 survey).
