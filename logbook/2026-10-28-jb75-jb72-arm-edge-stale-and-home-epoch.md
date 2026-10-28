@@ -97,7 +97,7 @@ JB-75 and JB-72.
   five times (`temp/logs/fw34-home-1..5.log`). Runs 1-3 started away from the stop (+0.05,
   +1.62, +1.33 rev), runs 4 and 5 started within 0.04 rev of it (-0.065, -0.082 rev) straight
   after the previous run, the case FW 33 false-timed-out on. All five: `succeeded=[0] failed={}`;
-  `homing_epoch` advanced 1 -> 5 and the monitor ignored each run\x27s stale OK from the
+  `homing_epoch` advanced 1 -> 5 and the monitor ignored each run's stale OK from the
   previous epoch. Gotcha found on the way: the bridge had been booted with the whole robot on
   the loom, so re-cabling to the bench leg tripped the axis-silence watchdog (CAN_BUS_DOWN,
   sticky `heartbeat_seen` presence set) and HOME answered ERR_BUS_DOWN until the bridge was
