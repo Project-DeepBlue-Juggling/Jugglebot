@@ -2,9 +2,9 @@
 id: JB-3
 kind: feature
 title: Rename "session limits" to Sitting limits (glossary term)
-status: inbox
+status: in_progress
 created: '2026-09-21'
-updated: '2026-10-24T13:05:00Z'
+updated: '2026-10-28T00:23:43Z'
 owners: []
 priority: medium
 blocked_by: []
@@ -27,3 +27,7 @@ Roughly 235 hits on `mvp-trajectory-bringup` and more on `skill-stack`: the iden
 - Grep-counted rename per CLAUDE.md: list every reference, rename, verify the count of the old name is zero outside history.
 - Historical logbook entries and archived plans are not rewritten.
 - `./run_tests.sh --full` before the commit (the change is under `sim/` and the planner path).
+
+## Progress
+
+- 2026-10-28: Unit A of the inbox-wall sweep: full rename plus admissible-box re-sweep
