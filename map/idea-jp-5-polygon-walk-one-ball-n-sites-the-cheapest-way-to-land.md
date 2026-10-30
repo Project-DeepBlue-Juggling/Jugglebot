@@ -4,7 +4,7 @@ kind: idea
 title: 'JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites'
 status: inbox
 created: '2026-10-30'
-updated: '2026-10-30T09:07:30Z'
+updated: '2026-10-30T11:31:18Z'
 owners: []
 priority: medium
 effort: s
@@ -15,6 +15,7 @@ area: skill-stack
 blocked_by: []
 links: []
 filed_by: claude (jugglebot-f5, pattern exploration 2026-10-30)
+parent: pattern-progression-columns-to-centre-and-orbit
 ---
 
 One ball hopping around N Sites (triangle, square, hexagon) instead of two. Physics trivial at any step the hop already flies (250 mm, apex 0.9).

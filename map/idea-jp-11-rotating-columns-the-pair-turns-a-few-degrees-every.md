@@ -4,7 +4,7 @@ kind: idea
 title: 'JP-11 Rotating columns: the pair turns a few degrees every Beat'
 status: inbox
 created: '2026-10-30'
-updated: '2026-10-30T09:07:31Z'
+updated: '2026-10-30T11:31:18Z'
 owners: []
 priority: medium
 effort: l
@@ -15,6 +15,7 @@ area: skill-stack
 blocked_by: []
 links: []
 filed_by: claude (jugglebot-f5, pattern exploration 2026-10-30)
+parent: pattern-progression-columns-to-centre-and-orbit
 ---
 
 Columns whose Site pair rotates about +z continuously. Pose-only.

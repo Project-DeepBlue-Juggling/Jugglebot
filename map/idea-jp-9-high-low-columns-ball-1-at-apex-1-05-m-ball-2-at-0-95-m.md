@@ -4,7 +4,7 @@ kind: idea
 title: 'JP-9 High-low columns: Ball 1 at apex 1.05 m, Ball 2 at 0.95 m'
 status: inbox
 created: '2026-10-30'
-updated: '2026-10-30T09:07:30Z'
+updated: '2026-10-30T11:31:18Z'
 owners: []
 priority: medium
 effort: m
@@ -15,6 +15,7 @@ area: skill-stack
 blocked_by: []
 links: []
 filed_by: claude (jugglebot-f5, pattern exploration 2026-10-30)
+parent: pattern-progression-columns-to-centre-and-orbit
 ---
 
 Owner wants to see it (2026-10-30). Two-ball columns with unequal apexes.

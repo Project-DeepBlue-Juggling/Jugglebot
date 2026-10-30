@@ -4,7 +4,7 @@ kind: idea
 title: 'JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm'
 status: inbox
 created: '2026-10-30'
-updated: '2026-10-30T09:07:32Z'
+updated: '2026-10-30T11:31:18Z'
 owners: []
 priority: high
 effort: l
@@ -15,6 +15,7 @@ area: skill-stack
 blocked_by: []
 links: []
 filed_by: claude (jugglebot-f5, pattern exploration 2026-10-30)
+parent: pattern-progression-columns-to-centre-and-orbit
 ---
 
 Ball 1 goes straight up and down at the centre; Ball 2 is thrown from one point of a circle to the next (N steps per revolution) while the Cup alternates centre, ring, centre, ring. Every transit is the radius, so the pattern is columns with a moving second Site.
