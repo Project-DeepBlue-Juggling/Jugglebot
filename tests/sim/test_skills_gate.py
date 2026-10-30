@@ -1061,3 +1061,17 @@ def test_a_small_oval_run_under_the_pose_planner(tmp_path, monkeypatch):
     res = SkillsGate(cfg).run_self_toss_seed(0, policy='A')
     assert res['n_throws_collected'] == 3, (res['end_codes'], res['refusals'])
     assert res['drops'] == 0
+
+
+# ── Sitting prep: the gate's pre_release_hold_s switch ──────────────────────
+
+def test_the_gate_config_validates_pre_release_hold_and_threads_it_to_the_planner():
+    for bad in (-0.01, 0.26):
+        with pytest.raises(ValueError, match='pre_release_hold_s'):
+            SkillsGate(SelfTossGateConfig(pre_release_hold_s=bad))
+    assert SkillsGate(SelfTossGateConfig(pre_release_hold_s=0.0)
+                      ).seg_cfg.pre_release_hold_s == 0.0
+    assert SkillsGate(SelfTossGateConfig(pre_release_hold_s=0.05)
+                      ).seg_cfg.pre_release_hold_s == 0.05
+    assert (SkillsGate(SelfTossGateConfig()).seg_cfg.pre_release_hold_s
+            == SegmentConfig().pre_release_hold_s)

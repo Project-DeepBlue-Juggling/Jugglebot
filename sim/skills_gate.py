@@ -100,6 +100,7 @@ import sys
 import tempfile
 import time
 from types import SimpleNamespace
+from typing import Optional
 
 import numpy as np
 
@@ -944,6 +945,9 @@ class SelfTossGateConfig:
     #: twin of skill_node's live ``planner_mode`` parameter. Validated in
     #: :class:`SkillsGate`.
     planner_mode: str = uc.PLANNER_MODE_DEFAULT
+    #: ``SegmentConfig.pre_release_hold_s`` override in [0, 0.25] s (twin of
+    #: trajectory_node's ``pre_release_hold_s``); None = the production default.
+    pre_release_hold_s: Optional[float] = None
     noise: NoiseConfig = dataclasses.field(
         default_factory=lambda: NoiseConfig(bb_throw_noise_frac=0.0,
                                             tracking_noise_mm=0.5))
@@ -1265,7 +1269,15 @@ class SkillsGate:
         if self.cfg.planner_mode not in uc.PLANNER_MODES:
             raise ValueError('planner_mode must be one of %r, got %r'
                              % (uc.PLANNER_MODES, self.cfg.planner_mode))
-        self.seg_cfg = SegmentConfig(planner_mode=self.cfg.planner_mode)
+        _seg_kw = {}
+        _hold = getattr(self.cfg, 'pre_release_hold_s', None)
+        if _hold is not None:
+            if not 0.0 <= float(_hold) <= 0.25:
+                raise ValueError('pre_release_hold_s must be in [0, 0.25] s, '
+                                 'got %r' % (_hold,))
+            _seg_kw['pre_release_hold_s'] = float(_hold)
+        self.seg_cfg = SegmentConfig(planner_mode=self.cfg.planner_mode,
+                                     **_seg_kw)
         self.viewer = None
         self._plant = None
 
@@ -3177,6 +3189,9 @@ def run_learn(cfg: SelfTossGateConfig = None, seeds=(0, 1, 2, 3, 4),
         'apex_m': cfg.apex_m,
         'dwell_s': cfg.dwell_s,
         'planner_mode': cfg.planner_mode,
+        'pre_release_hold_s': float(SegmentConfig().pre_release_hold_s
+                                    if cfg.pre_release_hold_s is None
+                                    else cfg.pre_release_hold_s),
         'separation_mm': cfg.separation_mm,
         'feed_angle_deg': cfg.feed_angle_deg,
         'feed_speed_mmps': cfg.feed_speed_mmps,
@@ -3267,11 +3282,13 @@ def _print_reload_table(rep: dict) -> None:
 def _print_learn_table(rep: dict) -> None:
     print('[skills_gate_learn] pattern %s  policy %s  apex %.2f m  dwell '
           '%.2f s  separation %.0f mm  band %.0f mm xy / %.0f mm apex  '
-          'entry<=%d throws  window<=%d throws  planner %s'
+          'entry<=%d throws  window<=%d throws  planner %s  '
+          'pre_release_hold_s %.3f'
           % (rep.get('pattern', 'self_toss'), rep['policy'], rep['apex_m'],
              rep['dwell_s'], rep.get('separation_mm', float('nan')),
              rep['xy_band_mm'], rep['apex_band_mm'], rep['band_entry_throws'],
-             rep['target_throws'], rep.get('planner_mode', '?')))
+             rep['target_throws'], rep.get('planner_mode', '?'),
+             rep.get('pre_release_hold_s', float('nan'))))
     print('[skills_gate_learn] %-6s %-8s %-10s %-10s %-9s %-9s %-9s %-6s %-6s '
           '%-9s %-9s'
           % ('seed', 'verdict', 'band_xy', 'band_apex', 'mono_xy', 'mono_apex',
@@ -3347,6 +3364,9 @@ def main(argv=None) -> int:
                    help='the segment planner this run plans with and selects '
                         'admissible boxes under (level | pose); the box '
                         'file must carry cells swept under it')
+    p.add_argument('--pre-release-hold-s', type=float, default=None,
+                   help='--learn only: override SegmentConfig.pre_release_hold_s '
+                        '(s, in [0, 0.25]; default = the production value)')
     p.add_argument('--catch-aim-source', choices=ex.AIM_SOURCES,
                    default=ex.AIM_TRACKER,
                    help='where a CATCH is aimed from: tracker (the LIVE '
@@ -3506,6 +3526,8 @@ def main(argv=None) -> int:
                                   pattern=args.pattern,
                                   planner_mode=args.planner_mode,
                                   separation_mm=separation_mm)
+        if args.pre_release_hold_s is not None:
+            lcfg.pre_release_hold_s = float(args.pre_release_hold_s)
         if args.apex_m is not None:
             lcfg.apex_m = float(args.apex_m)
         if args.target_throws is not None:

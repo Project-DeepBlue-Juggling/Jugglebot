@@ -101,9 +101,11 @@ temp/*
 # Commit it at sitting close-out, not mid-sitting.
 !temp/learn/
 temp/learn/*
-!temp/learn/jugglebot/
-temp/learn/jugglebot/*
-!temp/learn/jugglebot/memory.csv
+# Every plant_id's memory.csv (one directory per plant_id / Sitting rung,
+# e.g. temp/learn/oval-h050/): the file itself is tracked, nothing else.
+!temp/learn/*/
+temp/learn/*/*
+!temp/learn/*/memory.csv
 
 # MuJoCo generated log (appears on GLFW/headless errors)
 MUJOCO_LOG.TXT

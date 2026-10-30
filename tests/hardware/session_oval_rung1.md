@@ -328,3 +328,34 @@ One launch, 22:59. Bag `/home/jetson/Desktop/rosbags/2026-10-27_22-59-40/`; laun
 - **Current.** Peak `iq_setpoint` 10 A.
 
 Entry: `logbook/2026-10-27-leg-lead-clamp-age-aware-p3-robot.md`.
+
+
+## 11. One-Sitting check: columns under pose, the pre-release-hold ladder, higher Apex (prepared 2026-10-30)
+
+Plan `plans/active/two-ball-oval.md` P4.0 (map JB-102); entry `logbook/2026-10-30-sitting-prep-columns-check-hold-ladder-and-apex-cells.md`. The pose planner is the default. Hold = `pre_release_hold_s`, set live with `ros2 param set /trajectory_node pre_release_hold_s <v>` between goals (REFUSED while a goal is active; applies from the NEXT install). Each rung uses its own `plant_id`, set live with `ros2 param set /skill_node plant_id <id>` between goals (read at every goal accept, so no relaunch; the new directory `temp/learn/<id>/` starts at the identity prior).
+
+**If your physical intuition disagrees with this framing, say so — it is load-bearing signal.** Operator runs every motion command; Claude never does.
+
+**Expected landing bias along the throw axis (mm, negative = short, toward the thrower; dy and apex <= 0.2 mm), oval 150 / 0.95 / dwell 0.45, model: hold x separation delay.** Read live against the table; apex 1.00 / 1.05 are within +-1.5 mm.
+
+| hold (s) | +0 ms | +10 ms | +20 ms | +40 ms |
+|---|---|---|---|---|
+| 0.100 | -6.6 | -4.4 | -2.8 | -1.1 |
+| 0.075 | -15.6 | -10.8 | -7.5 | -3.4 |
+| 0.050 | -44.5 | -31.5 | -22.3 | -11.0 |
+| 0.025 | -68.1 | -50.5 | -36.5 | -18.3 |
+| 0 | -125.2 | -102.5 | -81.3 | -46.8 |
+
+**Standing note: Dwell is the GUI Dwell field on each goal.** Check it reads 0.45 for 11-2..11-4, 0.50 for 11-5 (0.45 for the final 11-5 goal), and the columns default for 11-1, before every Start.
+
+| # | Step | Expect / pass |
+|---|---|---|
+| 11-0 | **Pre-steps.** Power-cycle the bridge Teensy (sticky presence set). `./run_tests.sh --full` green on the launched tree (rerun only if the tree changed since the commit run). `colcon build --packages-select jugglebot` done 2026-10-30 (node edit); confirm `ls -l` is newer than the commit. Launch with bag, tee to `temp/logs/`. **Dress rehearsal BEFORE arming:** validate-only of EVERY goal below against the live `/robot_state`, all refusals reported at once: columns 100 / 0.90; oval 150 / 0.95 / 0.45; oval 150 / 1.00 / 0.50; oval 150 / 1.05 / 0.50. Sim gate: 2026-10-30, `python sim/skills_gate.py --learn --target-throws 12` under the pose default, BLAS 1 thread (logs `temp/logs/sp_columns_gate.log`, `sp_hold_<H>_d<dwell>.log`, `sp_apex_1.00.log`, `sp_apex_1.05.log`): columns 100 / 0.90 seeds 0-4 PASS 5/5, 12 catches each, 0 bumps, no BOX-EXPECTED-LANDING, release error max 17.8 ms; oval 150 / 0.95 / 0.45 seeds 0-2 at `--pre-release-hold-s` 0.100 / 0.075 / 0.050 / 0.0 PASS 3/3 each, 0 bumps, release error max ~17 ms at every hold; apex 1.00 and 1.05 at dwell 0.50, hold 0.100, seeds 0-2 PASS 3/3 each, no BOX refusal; dwell 0.40 at hold 0.050 / 0.0 FAILS 3/3 (NO_ADMISSIBLE_COMMAND, no 0.40 box cell: not on this Sitting). Dwell is the GUI Dwell field on each goal, not a ros2 param (the node `dwell_s` param, default 0.27, is only the fallback when the goal sends 0; see row 12a): check it before every Start. | No refusal in any of the four. NOTE: the sim plant has no tracking delay, so the hold's effect is invisible in sim; only this Sitting measures it. |
+| 11-1 | Keep the default `plant_id` `jugglebot` (the warm memory the 10-28 49/49 record was set with); no param set needed. `columns_1ball_fed` cold start `num_cycles: 6`, then columns 100 mm / apex 0.90 / `num_cycles: 50`. | No `BOX-EXPECTED-LANDING` refusal from the narrower pose x window; >= 49/50 caught (the 10-28 record). |
+| 11-2 | `plant_id oval-h100`. `oval_1ball_fed` 6, then oval 150 / 0.95 / dwell 0.45 `num_cycles: 30` at hold 0.100. The in-launch control; re-flies the 0.45 pose column cut short on 10-30. | 30/30; first row of the table above. |
+| 11-3 | `ros2 param set /trajectory_node pre_release_hold_s 0.050`; `ros2 param get` shows 0.05; `grep "segment config: pre_release_hold_s" <launch.log>` shows ONE new line (a refusal shows `REFUSED pre_release_hold_s=`). `plant_id oval-h050`. Same goal, `num_cycles: 30`. The discriminating rung. | Record catches; read 11-4. |
+| 11-4 | `python -I tools/probes/hold_rung_bias.py --plant-id oval-h050 --baseline oval-h100` (>= 20 throws per rung). Branch: **no effect** (verdict line; relative delay >= ~40 ms) -> hold 0.0, `plant_id oval-h000`, x30. **Confirmed** and the hold-0 prediction at the delay implied by the 0.050 row <= 35 mm -> hold 0.0 x30. 35-55 mm -> hold 0.025, `oval-h025`, x30 first, then 0.0 only if >= 27/30 caught. > 55 mm -> hold 0.075, `oval-h075`, x30 as the fallback candidate and STOP the ladder (hold 0 needs the delay-aware planner change, logbook Discussion C2). **VERDICT inconclusive:** do NOT go to hold 0. Fly 20 more throws at `oval-h050` and re-run the probe; if still inconclusive, take the fallback (`oval-h075` x 30) and stop the ladder. Fallback adoption: the shortest hold with |bias delta| <= 20 mm, >= 30/30, sd <= baseline + 3 mm. | "Confirmed" = dx short by >= 10 mm AND beyond 2 SE of the rung difference (the probe prints inconclusive otherwise; with sd ~16 mm, n = 20, a -10..-12 mm shift is inconclusive) (the 0.050 row reads -11..-45) with |dy|, |dapex| < 10 mm. 0.075 predicts a null and is not discriminating. |
+| 11-5 | Set hold back to 0.100 (confirm the log line). `plant_id oval-a100`: oval 150 / apex 1.00 / dwell 0.50 x30; then `oval-a105`: apex 1.05 / 0.50 x30; if both >= 29/30 with no `HAND_LIMIT` lines, `oval-a100d45`: apex 1.00 / dwell 0.45 x30. | >= 29/30 caught, no `HAND_LIMIT_ACC`, Hand peak acc in the bag read-back < 3900 (predicted throw hand 3657 at 1.00, 3843 at 1.05; apex is hand-capped near 1.05). |
+| 11-6 | **Close-out.** Stop; bag and launch log by path. `python tools/probes/oval_carry_bag_metrics.py <mcap> --launch-log <log>` for the hold rungs. Commit `docs/records.md` and every `temp/learn/<plant_id>/memory.csv`: since 2026-10-30 `.gitignore` whitelists every `temp/learn/<plant_id>/memory.csv`, so stage them explicitly: `git add temp/learn/oval-* docs/records.md` (or whichever plant_ids were flown; the columns check uses the tracked `jugglebot` memory, add `temp/learn/jugglebot/memory.csv`). | Paths recorded; memories tracked. |
+
+Per-attempt watch: the row-22 grep of § 1. Hand thermal: ~250 throws in this ladder; pause between rungs if the Hand runs hot (the thermal note of § 4). Stop rules as § 2 row 26.

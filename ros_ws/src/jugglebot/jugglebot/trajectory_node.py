@@ -956,7 +956,7 @@ class TrajectoryNode(Node):
                              % (uc.PLANNER_MODES, _planner_mode))
         self._segment_cfg = sk_seg.SegmentConfig(
             pre_release_hold_s=_pre_hold_s, planner_mode=_planner_mode)
-        self.get_logger().debug(
+        self.get_logger().info(
             'segment config: pre_release_hold_s=%.3f s, post_release_hold_s='
             '%.3f s, planner_mode default=%s'
             % (self._segment_cfg.pre_release_hold_s,
@@ -1170,6 +1170,7 @@ class TrajectoryNode(Node):
         # ("worker starting"), never solved in-process.  `segment_solver` is the
         # test seam (any object with solve/poll_health/close).
         self._solve_seq = 0
+        self._solves_in_flight = 0   # install solves between request and reply
         # JB-95: SCHED_FIFO priority the WORKER asks for (fail-open to CFS; the
         # outcome rides the READY log line).  0 = off = the worker never calls
         # sched_setscheduler.  DEFAULT OFF since the 2026-10-28 22:26 Sitting:
@@ -4058,6 +4059,20 @@ class TrajectoryNode(Node):
         _pos, _vel, acc = cup.sample(tau)
         return np.asarray(acc, dtype=float) * 1000.0, ''
 
+    def _hold_change_blocker(self) -> str:
+        """'' when ``pre_release_hold_s`` may change, else the reason it may not:
+        an install solve is in flight, or a cycle plan is still playing (the
+        goal's segments are installed/streaming).  Between goals the last plan
+        has run out, so both are false."""
+        if self._solves_in_flight > 0:
+            return 'a segment solve is in flight'
+        with self._plan_lock:
+            plan, t0 = self._active_plan, self._plan_t0
+        if (isinstance(plan, CyclePlan) and t0 is not None
+                and plan.total_duration - (time.perf_counter() - t0) > 0.0):
+            return 'a goal is active (cycle plan still streaming)'
+        return ''
+
     def _on_set_parameters(self, params):
         """Validate + apply a live ``pre_release_hold_s`` (range [0, 0.25] s,
         the same fence as startup); an invalid value is REFUSED and the old
@@ -4086,11 +4101,25 @@ class TrajectoryNode(Node):
                     successful=False,
                     reason='pre_release_hold_s must be in [0, 0.25] s, got %r'
                            % (hold_s,))
+            if hold_s != self._segment_cfg.pre_release_hold_s:
+                blocker = self._hold_change_blocker()
+                if blocker:
+                    self.get_logger().warning(
+                        'REFUSED pre_release_hold_s=%.3f s: %s (set it '
+                        'between goals)' % (hold_s, blocker))
+                    return SetParametersResult(
+                        successful=False,
+                        reason='pre_release_hold_s cannot change while %s; '
+                               'set it between goals' % blocker)
             self._segment_cfg = dataclasses.replace(
                 self._segment_cfg, pre_release_hold_s=hold_s)
             self.get_logger().info(
-                'pre_release_hold_s set to %.3f s (applies from the next '
-                'install)' % hold_s)
+                'segment config: pre_release_hold_s=%.3f s, post_release_hold_s='
+                '%.3f s, planner_mode default=%s (live set; applies from the '
+                'next install)'
+                % (self._segment_cfg.pre_release_hold_s,
+                   self._segment_cfg.post_release_hold_s,
+                   self._segment_cfg.planner_mode))
         return SetParametersResult(successful=True)
 
     def _cycle_start_state(self, kind: str):
@@ -4849,13 +4878,20 @@ class TrajectoryNode(Node):
                         sk_exec.splice_cliff_s(record, splice_k_pre)
                         - sk_solver.REPLY_TRANSIT_ALLOW_S)
         self._solve_seq += 1
-        reply = self._segment_solver.solve(sk_solver.SegmentSolveRequest(
-            seq=self._solve_seq, record=record, seed_rest=seed_rest,
-            kind=kind, terminal=terminal, t_now_s=t_now_s,
-            lead_s=lead_s, cfg=seg_cfg,
-            limits=self._limits, geom=self._geom,
-            warm_start=self._segment_warm_start,
-            reserve_fresh_lead=True, deadline_s=deadline_s))
+        # Live-hold guard (`_on_set_parameters`): a solve in flight is "a goal
+        # active" for the pre_release_hold_s refusal. The cfg it planned with
+        # was captured above, so this only fences the NEXT parameter write.
+        self._solves_in_flight += 1
+        try:
+            reply = self._segment_solver.solve(sk_solver.SegmentSolveRequest(
+                seq=self._solve_seq, record=record, seed_rest=seed_rest,
+                kind=kind, terminal=terminal, t_now_s=t_now_s,
+                lead_s=lead_s, cfg=seg_cfg,
+                limits=self._limits, geom=self._geom,
+                warm_start=self._segment_warm_start,
+                reserve_fresh_lead=True, deadline_s=deadline_s))
+        finally:
+            self._solves_in_flight -= 1
         new_record, result = reply.new_record, reply.result
 
         if not result.accepted:

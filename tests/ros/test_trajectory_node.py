@@ -142,6 +142,75 @@ def test_the_pre_release_hold_can_be_set_live_between_attempts():
     assert node._segment_cfg.pre_release_hold_s == uc.PRE_RELEASE_HOLD_S
 
 
+def test_hold_set_live_keeps_planner_mode_and_logs_one_info_line():
+    """The ladder (0.100 -> 0.075 -> 0.050 -> 0) rebuilds ONLY the hold; the
+    launch log carries one INFO line in the startup 'segment config:' format."""
+    from tests.ros.conftest import _MockParameter
+    node = _node()
+    mode = node._segment_cfg.planner_mode
+    post = node._segment_cfg.post_release_hold_s
+    from unittest.mock import MagicMock
+    log = MagicMock()
+    node.get_logger = lambda: log
+    res = node.set_parameters([_MockParameter(0.075, name='pre_release_hold_s')])
+    assert res[0].successful
+    assert node._segment_cfg.pre_release_hold_s == 0.075
+    assert node._segment_cfg.planner_mode == mode
+    assert node._segment_cfg.post_release_hold_s == post
+    lines = [c[0][0] for c in log.info.call_args_list
+             if 'segment config: pre_release_hold_s=0.075' in c[0][0]]
+    assert len(lines) == 1
+
+
+def test_hold_set_live_refused_while_a_solve_is_in_flight():
+    from tests.ros.conftest import _MockParameter
+    node = _node()
+    before = node._segment_cfg.pre_release_hold_s
+    node._solves_in_flight = 1
+    res = node.set_parameters([_MockParameter(0.05, name='pre_release_hold_s')])
+    assert not res[0].successful
+    assert 'solve is in flight' in res[0].reason
+    assert node._segment_cfg.pre_release_hold_s == before
+    # Re-setting the value already in force is not a change.
+    assert node.set_parameters(
+        [_MockParameter(before, name='pre_release_hold_s')])[0].successful
+    node._solves_in_flight = 0
+    assert node.set_parameters(
+        [_MockParameter(0.05, name='pre_release_hold_s')])[0].successful
+    assert node._segment_cfg.pre_release_hold_s == 0.05
+
+
+def test_hold_set_live_refused_while_a_cycle_plan_is_streaming():
+    import time as _t
+    from types import SimpleNamespace
+    from jugglebot.trajectory_node import CyclePlan
+    from tests.ros.conftest import _MockParameter
+    node = _node()
+    before = node._segment_cfg.pre_release_hold_s
+    plan = CyclePlan.__new__(CyclePlan)
+    plan.total_duration = 5.0
+    node._active_plan = plan
+    node._plan_t0 = _t.perf_counter()
+    res = node.set_parameters([_MockParameter(0.0, name='pre_release_hold_s')])
+    assert not res[0].successful
+    assert 'goal is active' in res[0].reason
+    assert node._segment_cfg.pre_release_hold_s == before
+    node._plan_t0 = _t.perf_counter() - 10.0   # plan has run out: between goals
+    assert node.set_parameters(
+        [_MockParameter(0.0, name='pre_release_hold_s')])[0].successful
+    assert node._segment_cfg.pre_release_hold_s == 0.0
+
+
+def test_hold_set_live_out_of_range_and_non_number_refused():
+    from tests.ros.conftest import _MockParameter
+    node = _node()
+    before = node._segment_cfg.pre_release_hold_s
+    for bad in (-0.01, 0.26, 'x'):
+        res = node.set_parameters([_MockParameter(bad, name='pre_release_hold_s')])
+        assert not res[0].successful
+        assert node._segment_cfg.pre_release_hold_s == before
+
+
 # ── Seeding + mode gating ─────────────────────────────────────
 
 def test_mode_then_telemetry_seeds_hold_at_measured_pose():

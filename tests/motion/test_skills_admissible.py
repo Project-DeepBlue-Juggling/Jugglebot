@@ -518,8 +518,10 @@ def test_cone45_resweep_restores_every_non_oval_cell_to_the_pre_oval_snapshot():
         n_hop += b['pattern'] == 'hop'
         n_col += b['pattern'] == 'columns'
     assert (n_st, n_hop, n_col) == (5, 8, 6)
+    # Oval apex extension (2026-10-30): apex 1.00 / 1.05 cells are appended AFTER
+    # the 46 (see the apex-extension test); this snapshot test sees the 0.95 band only.
     ovals = [b for b in new['boxes'] if b['pattern'] == 'oval_1ball'
-             and b.get('planner_mode') == 'level']
+             and b.get('planner_mode') == 'level' and b['apex_band_m'][1] < 0.98]
     # two-ball-oval rung 2 (2026-10-23): cells at 0.55 / 0.50 appended after 0.65
     # planner-default flip (2026-10-30): the level 0.45 cell is swept too
     assert [o['dwell_s'] for o in ovals] == pytest.approx([0.65, 0.55, 0.50, 0.45])
@@ -530,7 +532,7 @@ def test_cone45_resweep_restores_every_non_oval_cell_to_the_pre_oval_snapshot():
     # P3 tail (2026-10-24): the 0.45 pose cell the A/B runbook assumed -> 26.
     # Planner-default flip (2026-10-30): every family re-swept under BOTH
     # planners (+ level 0.45) -> 23 level + 23 pose = 46.
-    assert len(new['boxes']) == 46
+    assert len(new['boxes']) == 46 + 8   # + the 2026-10-30 apex-extension cells
 
 
 _PRE_P3_SNAPSHOT = os.path.join(_REPO, 'tests', 'fixtures', 'admissible_box_pre_p3.yaml')
@@ -571,14 +573,17 @@ def test_p3_resweep_changed_only_the_stamp_and_added_the_pose_cells():
             return x.keys() == y.keys() and all(_same(x[k], y[k]) for k in x)
         return x == y
 
-    level = [dict(b) for b in new['boxes'] if b.get('planner_mode') == 'level']
-    pose = [b for b in new['boxes'] if b.get('planner_mode') == 'pose']
+    # Oval apex extension (2026-10-30): the 8 appended apex-1.00/1.05 cells are
+    # excluded here; test_oval_apex_extension_* pins them.
+    core = new['boxes'][:46]
+    level = [dict(b) for b in core if b.get('planner_mode') == 'level']
+    pose = [b for b in core if b.get('planner_mode') == 'pose']
     # Planner-default flip (2026-10-30, planner_mode level -> pose): the box was
     # re-swept with every family under BOTH planners and a level oval 0.45 cell
     # added -> 23 level + 23 pose = 46.  The 22 pre-flip level cells (the
     # pre-P3 snapshot's) stay value-identical, in order; the 23rd is the new
     # level oval 0.45.  Pose cells: the same 23, in the same family order.
-    assert len(level) == 23 and len(pose) == 23 and len(new['boxes']) == 46
+    assert len(level) == 23 and len(pose) == 23 and len(core) == 46
     assert [(b['pattern'], b['site_pair'], b['dwell_s']) for b in level] == \
            [(b['pattern'], b['site_pair'], b['dwell_s']) for b in pose]
     assert new['gate_hash'] == '81a2244c1297'
@@ -1492,3 +1497,27 @@ def test_the_committed_box_is_swept_at_the_launch_defaults_and_the_live_gate():
         assert box.limits['leg_jerk_mmps3'] == pytest.approx(hw.JB_TRAJ_LEG_JERK_LIMIT_MMPS3)
         assert box.limits['hand_acc_rps2'] == pytest.approx(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)
         assert box.gate_hash == ab.gate_hash()
+
+
+def test_oval_apex_extension_appends_eight_cells_after_the_46_and_leaves_them_untouched():
+    """Oval apex extension (2026-10-30, temp/sweeps/sweep_apex_ext.sh): oval cells
+    at apex 1.00 / 1.05 (bands 0.975-1.025 / 1.025-1.075, touching the 0.95 band at a
+    boundary point only) x dwell 0.50 / 0.45 x level / pose = 8 cells, APPENDED after
+    the 46-cell box (23 level + 23 pose), same gate_hash / limits / swept_at (merged
+    from rounds that cmp byte-identical).  54 cells in all: 27 level + 27 pose.
+    The 46 keep their order: the 8 are the tail."""
+    import yaml as _y
+    with open(_COMMITTED_BOX) as fh:
+        new = _y.safe_load(fh)
+    assert new['gate_hash'] == '81a2244c1297' and new['swept_at'] == '2026-10-30'
+    assert len(new['boxes']) == 54
+    assert sum(b['planner_mode'] == 'level' for b in new['boxes']) == 27
+    assert sum(b['planner_mode'] == 'pose' for b in new['boxes']) == 27
+    head, tail = new['boxes'][:46], new['boxes'][46:]
+    assert all(b['apex_band_m'][1] < 0.98 or b['pattern'] != 'oval_1ball' for b in head)
+    assert [(b['planner_mode'], b['dwell_s'], round(b['apex_band_m'][0], 3)) for b in tail] == [
+        (m, d, lo) for m in ('level', 'pose') for d in (0.50, 0.45) for lo in (0.975, 1.025)]
+    for b in tail:
+        assert b['pattern'] == 'oval_1ball' and b['site_pair'] == ['P1', 'P2']
+        assert b['release_site_xy_mm'] == [-75.0, 0.0] and b['target_site_xy_mm'] == [75.0, 0.0]
+        assert b['apex_m'][0] < b['apex_m'][1], 'an apex-extension cell must be non-empty'
