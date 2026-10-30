@@ -57,6 +57,7 @@ nav:
   - Project map: project-map.md
   - Glossary: glossary.md
   - Records: records.md
+  - Patterns: patterns.md
   - Motion Planner:
     - Overview: motion_planner/index.md
     - Architecture: motion_planner/architecture.md
