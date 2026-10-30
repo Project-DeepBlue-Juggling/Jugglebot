@@ -19,7 +19,7 @@ import subprocess
 import sys
 from typing import Dict, List, Optional
 
-from mapkit import derive, gen_docs, ids
+from mapkit import derive, gen_docs, ids, similar
 from mapkit.items import (KINDS, METRIC_ENUMS, METRIC_FIELDS, STATUS_SETS, Item, ItemError, is_stale, load_item,
                           load_items, stale_clock, write_item)
 from mapkit.plans import load_plans
@@ -244,8 +244,12 @@ def new_item(repo_root: str, kind: str, title: str, parent: Optional[str] = None
              links: Optional[List[str]] = None, ticket_type: Optional[str] = None,
              destination: Optional[str] = None, commit: bool = False,
              push: bool = True, metrics: Optional[Dict[str, Optional[str]]] = None,
-             **metric_kw: Optional[str]) -> Item:
+             allow_similar: bool = False, **metric_kw: Optional[str]) -> Item:
     """File one Item with the next ID: the one Claude-side creation path.
+
+    Refused before anything is written when the title duplicates an open Item,
+    or is near another Item (:mod:`mapkit.similar`) and ``allow_similar`` is
+    not set; the message lists the matches.
 
     With ``commit`` and ``push``: pull ``--ff-only``, write, gen, commit
     ``map: file <kind> JB-n <title>``, then up to :data:`PUSH_ROUNDS` rounds of
@@ -263,6 +267,13 @@ def new_item(repo_root: str, kind: str, title: str, parent: Optional[str] = None
               file=sys.stderr)
     map_dir = os.path.join(repo_root, MAP_DIR)
     items = ids.load_lenient(repo_root)  # one malformed sibling must not block filing
+    dup, near = similar.screen(items, title)
+    if dup is not None:
+        raise ItemCliError("duplicate of %s: not filed (an open Item has this title)"
+                           % dup.describe())
+    if near and not allow_similar:
+        raise ItemCliError("similar Items exist, not filed (check them; --allow-similar files anyway):\n  "
+                           + "\n  ".join(m.describe() for m in near))
     upstream = ids.upstream_ref(repo_root)  # the ref the push loop rebases onto
     meta: Dict[str, object] = {
         "id": ids.allocate(repo_root, upstream, items=items), "kind": kind, "title": title,
@@ -565,7 +576,8 @@ def _run_new(args) -> int:
         item = new_item(_repo(args), args.kind, args.title, parent=args.parent,
                         priority=args.priority, filed_by=args.filed_by, body=body,
                         links=args.link, ticket_type=args.type, destination=args.destination,
-                        commit=args.commit, push=not args.no_push, metrics=_metrics_arg(args))
+                        commit=args.commit, push=not args.no_push, metrics=_metrics_arg(args),
+                        allow_similar=args.allow_similar)
     except (ItemCliError, ItemError, ids.IdError) as exc:
         print("mapkit: %s" % exc, file=sys.stderr)
         return 2
@@ -666,6 +678,8 @@ def register(subparsers) -> None:
     p.add_argument("--type", choices=("research", "prototype", "grilling", "task"), help="ticket type")
     p.add_argument("--destination", help="pathway Destination (required for a pathway)")
     metric_flags(p)
+    p.add_argument("--allow-similar", action="store_true",
+                   help="file even though similar Items exist (an exact open duplicate is always refused)")
     p.add_argument("--commit", action="store_true")
     p.add_argument("--no-push", action="store_true")
     common(p)

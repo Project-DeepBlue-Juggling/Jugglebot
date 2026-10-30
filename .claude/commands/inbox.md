@@ -35,6 +35,11 @@ Minimum from the filer: kind, title, one line. If the line is missing, ask for i
    next ID `JB-<n>`, writes the canonical form, regenerates `docs/project-map.md` and
    commits `map: file <kind> JB-<n> <title>` (no `Logbook-Entry` trailer: data, not
    code). Nothing is pushed yet. It prints `JB-<n> <stem> filed (inbox) <title>`.
+   **Title screen** (`mapkit/similar.py`, the same rule the app's create enforces): it exits 2,
+   filing nothing, on `duplicate of JB-<n> ...` (an open Item already has this title; report
+   that Item, never re-file under a tweaked title) or on `similar Items exist ...` (near
+   titles, listed). On `similar`, show the owner the list and ask; add `--allow-similar` only
+   when they say it is a different thing.
 4. **Check BEFORE the push** (the item is inside the Avoid-word scope; a title with an
    Avoid word that reaches `main` paints the gate RED):
    `pytest tests/sim/test_map_items.py tests/sim/test_glossary_avoid_words.py tests/sim/test_mapkit_docs.py -q`.

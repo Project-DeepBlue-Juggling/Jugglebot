@@ -19,6 +19,10 @@
  * toggle leave the form open, so a late failure is visible; if the form is hidden anyway the
  * error goes to the fading confirmation element.  A timeout after the POST was sent says so:
  * the server has no idempotency key, so the Item may exist.
+ * Title screen (mapkit.similar, enforced by the map server's create): a 409 `duplicate`
+ * (an open Item already has this title - e.g. a retry after that timeout) names it and
+ * files nothing; a 409 `similar` lists the near Items and turns File into "File anyway",
+ * which resends the SAME title with `allow_similar`; editing the title re-screens.
  */
 
 const MAP_PORT = 8765;
@@ -44,6 +48,7 @@ const fileBtn = document.getElementById('qc-file');
 const cancelBtn = document.getElementById('qc-cancel');
 let busy = false;
 let toastTimer = null;
+let allowSimilarFor = null; // the title whose similar-Items list the user has seen
 
 function kindEl() { return form.querySelector('input[name="qc-kind"]:checked'); }
 const PILL_GROUPS = ['effort', 'hardware'];
@@ -109,6 +114,14 @@ function openForm() {
     btn.setAttribute('aria-expanded', 'true');
     titleEl.focus();
 }
+function resetSimilar() {
+    allowSimilarFor = null;
+    fileBtn.textContent = 'File';
+}
+function matchLabel(m) {
+    return `${m.short_id || m.stem} (${String(m.status).replace('_', ' ')}) ${m.title}`;
+}
+
 function closeForm() {
     form.hidden = true;
     btn.setAttribute('aria-expanded', 'false');
@@ -198,15 +211,37 @@ async function file() {
             status: 'inbox',
         };
         for (const g of PILL_GROUPS) if (pillValue(g)) payload[g] = pillValue(g);
+        if (allowSimilarFor === title) payload.allow_similar = true;
         const resp = await api(`/projects/${encodeURIComponent(pid)}/tasks`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json', 'X-Dev-User': FILED_BY },
             body: JSON.stringify(payload),
         });
+        if (resp.status === 409) {
+            const j = await resp.json().catch(() => null);
+            if (j && j.code === 'duplicate' && j.duplicate) {
+                clearDraft(); // the Item exists: nothing to keep for a later filing
+                showError(`Already filed as ${matchLabel(j.duplicate)} - not filed again`);
+                return;
+            }
+            if (j && j.code === 'similar' && Array.isArray(j.similar) && j.similar.length) {
+                // The list must be read in the form, never in the fading one-line toast,
+                // before "File anyway" is offered: reopen a form hidden mid-request.
+                if (form.hidden) openForm();
+                allowSimilarFor = title;
+                fileBtn.textContent = 'File anyway';
+                showError('Similar items exist - check them, then File anyway:\n' +
+                    j.similar.map((m) => '- ' + matchLabel(m)).join('\n'));
+                return;
+            }
+            showError((j && typeof j.detail === 'string') ? j.detail : 'Map server error 409');
+            return;
+        }
         if (!resp.ok) { showError(await errorText(resp)); return; }
         clearDraft();
         titleEl.value = '';
         noteEl.value = '';
+        resetSimilar();
         clearPills();
         closeForm();
         showToast(`Filed: ${title}`);
@@ -237,6 +272,7 @@ window.addEventListener('blur', () => {
 });
 form.addEventListener('submit', (e) => { e.preventDefault(); file(); });
 form.addEventListener('input', saveDraft);
+titleEl.addEventListener('input', () => { if (allowSimilarFor !== null) { resetSimilar(); errEl.textContent = ''; } });
 form.addEventListener('change', saveDraft);
 // Nothing typed in the form may reach the Robot tab's motion-control key handlers.
 form.addEventListener('keydown', (e) => {

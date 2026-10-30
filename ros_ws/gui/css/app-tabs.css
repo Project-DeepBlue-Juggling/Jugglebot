@@ -108,7 +108,7 @@ body > #app { height: calc(100vh - var(--app-tabs-height)); }
     padding: 4px 6px;
     font: inherit;
 }
-#quick-capture-form .qc-error { color: var(--accent-red, #e5534b); }
+#quick-capture-form .qc-error { color: var(--accent-red, #e5534b); white-space: pre-line; }
 #quick-capture-form .qc-error:empty { display: none; }
 #quick-capture-form button {
     background: var(--bg-primary);

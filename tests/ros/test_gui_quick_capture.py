@@ -102,7 +102,7 @@ def test_error_goes_to_the_toast_when_the_form_is_hidden():
     # (the "Title is required" validation stays direct: the form is necessarily visible there)
     assert "errEl.textContent = await" not in body
     assert "errEl.textContent = 'Map server" not in body
-    assert body.count("showError(") == 4
+    assert body.count("showError(") == 7  # + the three title-screen 409 paths
 
 
 def test_post_timeout_warns_the_item_may_exist():
@@ -161,3 +161,24 @@ def test_focus_moving_into_the_map_iframe_dismisses_the_open_form():
     assert "setTimeout(" in block and "document.activeElement" in block
     assert "tagName === 'IFRAME'" in block and "!form.hidden" in block
     assert "dismiss()" in block and "file()" not in block
+
+
+def test_title_screen_409s_are_handled_and_only_similar_can_be_overridden():
+    # mapkit.similar via the map server's create: a 409 `duplicate` names the open Item
+    # and files nothing (a retry after the timeout above lands here); a 409 `similar`
+    # lists the matches and arms "File anyway" for that exact title only.
+    assert "resp.status === 409" in JS
+    assert JS.index("resp.status === 409") < JS.index("if (!resp.ok)")
+    assert "j.code === 'duplicate'" in JS and "Already filed as ${matchLabel(j.duplicate)}" in JS
+    assert "j.code === 'similar'" in JS and "fileBtn.textContent = 'File anyway'" in JS
+    assert "if (allowSimilarFor === title) payload.allow_similar = true;" in JS
+    # allow_similar is never set from the duplicate branch
+    dup = JS[JS.index("j.code === 'duplicate'"):JS.index("j.code === 'similar'")]
+    assert "allowSimilarFor" not in dup
+    # the list is shown in the form (reopened if hidden), never only in the toast
+    sim = JS[JS.index("j.code === 'similar'"):JS.index("Map server error 409")]
+    assert sim.index("if (form.hidden) openForm();") < sim.index("allowSimilarFor = title;")
+    # editing the title re-screens
+    assert "titleEl.addEventListener('input'" in JS and "resetSimilar()" in JS
+    # the similar list is multi-line text in the error element
+    assert "white-space: pre-line" in CSS

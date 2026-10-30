@@ -143,3 +143,21 @@ def test_every_item_has_an_id():
     bad = [i.filename for i in ids.missing(_items())]
     assert not bad, ("Items without an id (python -m mapkit ids --assign-missing): "
                      + ", ".join(bad))
+
+
+def test_no_two_open_items_share_a_title():
+    # mapkit.similar: filing refuses an open duplicate (the app's create and
+    # `mapkit item new`); this catches the paths that skip it (a hand-written
+    # Item, a plain git push). Delete the later copy, or rename one.
+    from mapkit import similar
+
+    open_items = [i for i in _items() if i.status not in similar.CLOSED_STATUSES]
+    seen = {}
+    bad = []
+    for i in sorted(open_items, key=lambda i: i.filename):
+        key = similar.normalize(i.title)
+        if key in seen:
+            bad.append("%s and %s: same title %r" % (seen[key], i.filename, i.title))
+        else:
+            seen[key] = i.filename
+    assert not bad, "\n".join(bad)

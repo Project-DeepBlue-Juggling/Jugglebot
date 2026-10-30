@@ -148,7 +148,8 @@ def test_item_new_without_commit_allocates_and_normalises_refs(tmp_path, capsys)
     assert it.meta["filed_by"] == "claude"
     assert open(it.path).read().startswith("---\nid: JB-5\nkind: bug\n")
     # a same slug under another kind gets -2 (the app's uuid is slug-keyed)
-    assert itemcli.new_item(str(tmp_path), "idea", "Cone margin").slug == "cone-margin-2"
+    assert itemcli.new_item(str(tmp_path), "idea", "Cone margin",
+                            allow_similar=True).slug == "cone-margin-2"
     with pytest.raises(ids.IdError):
         itemcli.new_item(str(tmp_path), "bug", "x", parent="1")  # bare digits: not on a write
 
