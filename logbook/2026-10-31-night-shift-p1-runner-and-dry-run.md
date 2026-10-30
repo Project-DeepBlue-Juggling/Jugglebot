@@ -124,4 +124,14 @@ Other probes (2026-10-31, haiku, from a scratch directory, recipes in the test d
   `pytest -q tests/sim/test_night_shift_preflight.py` 5 passed;
   `pytest -q tests/sim/test_night_shift_runner.py` 25 passed in 56.51 s (19 at first, 6 added after the audit).
 - Full gate before the commit, 2026-10-31 (`./run_tests.sh --full`): run 2026-10-31 00:56-01:04 on the final tree with no other load: **parallel 7764 passed, 65 skipped in 482.66 s; serial 8 passed in 32.55 s; exit 0** (an earlier run at 00:37, under five concurrent agents, had 5 parallel failures that passed scoped and 2 serial wall-clock failures, all load).
-- T-I1 dry fire: run after this push (the clone is created from `origin/main`); result recorded in the follow-up docs commit of the same night.
+- T-I1 dry fire and the timer: NOT done by the implementing Session. After the push (01:07) the
+  harness's auto-mode classifier refused both actions, each once with a distinct reason:
+  running `tools/night_shift.sh --dry-run` (it spawns the unattended `claude -p`: "Create
+  Unsafe Agents") and `install` + `systemctl --user enable --now jugglebot-night-shift.timer`
+  ("Unauthorized Persistence"). Neither was retried or worked around; a denial is the permission
+  system's answer. The runner's guards and exit paths are covered by the 25 fake-`claude` tests
+  instead, and the owner arms the timer and fires the dry run with the two blocks in
+  `tools/systemd/README.md` § "Night Shift units" (the live checkout already carries the
+  runner at `aa247beb`). The first real run is therefore the first time `claude -p` is invoked
+  by the runner: its `last_run.json` is the T-I1 record and the `total_cost_usd` there is the
+  billing check against the Console.
