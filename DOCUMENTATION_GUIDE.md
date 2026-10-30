@@ -465,7 +465,7 @@ Frontmatter fields (`mapkit/items.py` is the authority):
 |------|------------------------------------------------------|-------|
 | `pathway` | `destination` | A goal; body = Notes / Decisions so far / Not yet specified / Out of scope. Its "Resolved tickets" list is computed from complete `ticket` children |
 | `idea`, `feature`, `bug` | — | Inbox kinds; optional `parent` (pathway slug; absent = unattached), `filed_by`, `promoted_to` (plan filename or pathway slug), `priority: low\|medium\|high` |
-| `ticket` | `parent`, `type` | `type: research\|prototype\|grilling\|task`; optional `blocked_by`, `owners`, `rank`; the answer is appended under `## Answer` |
+| `ticket` | `parent`, `type` | `type: research\|prototype\|grilling\|task\|question` (a `question` ticket's `parent` is the stem of the Item it blocks, not a pathway; it is answered under `## Answer` and completed by that save; an open one holds its parent at the Night Shift merge gate); optional `blocked_by`, `owners`, `rank`; the answer is appended under `## Answer` |
 
 **Metrics** (owner-approved 2026-10-28): six optional lowercase-enum fields, placed after `priority` in
 this order (`mapkit.items.METRIC_ENUMS` is the in-code copy). **Optional on a new item, validated when

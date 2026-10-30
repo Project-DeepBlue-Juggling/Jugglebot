@@ -14,7 +14,7 @@ scope: >-
   generated from the Items, with results typed in the map app and a wrap-up Session that merges.
 steps:
   - {id: P1, title: Runner skeleton and dry run, kind: phase, status: complete, completed: 2026-10-31, effort: m, hardware: none}
-  - {id: P2, title: "Work loop, merge gate, report and ticker", kind: phase, status: not_started, effort: m, hardware: none}
+  - {id: P2, title: "Work loop, merge gate, report and ticker", kind: phase, status: complete, completed: 2026-10-31, effort: m, hardware: none}
   - {id: P3, title: Night Shift page in the map app, kind: phase, status: not_started, effort: m, hardware: none}
   - {id: P4, title: Next Sitting Runbook, kind: phase, status: not_started, effort: m, hardware: none}
   - {id: P5, title: Sitting wrap-up command, kind: phase, status: not_started, effort: s, hardware: none}
@@ -22,6 +22,7 @@ steps:
 related_logbook:
   - 2026-10-30-night-shift-design-and-plan.md
   - 2026-10-31-night-shift-p1-runner-and-dry-run.md
+  - 2026-10-31-night-shift-p2-work-loop-gate-and-questions.md
 related_code:
   - tools/nightly_suite.sh (live-session guard, status line, ticker raise)
   - tools/nightly_ticker.sh
@@ -91,7 +92,8 @@ Sitting: checkout night-shift/sitting-<date> -> fly rows -> /sitting-wrapup Sess
 | `tools/lib/live_session.sh` | the live-Sitting guard shared by the nightly and Night Shift (P1) |
 | `tools/systemd/jugglebot-night-shift.{service,timer}` | user units; `OnCalendar=*-*-* 04:45`, `Persistent=false` (a missed night never fires at the next boot, which is when the robot is powered), `After=jugglebot-nightly.service`, `Nice=10`, `EnvironmentFile=-%h/.config/jugglebot/night-shift.env` (mode 600, holds `ANTHROPIC_API_KEY`) |
 | `.claude/commands/night-shift.md` | the orchestrator protocol (what `/work-inbox` is for one Item, for the whole board, unattended) |
-| `tools/night_shift_gate.py` | deterministic merge gate; input: branch, Item ID, gate log path, audit report path; output `MERGE` or `HOLD <reasons>`; exit 0/1 |
+| `tools/night_shift_gate.py` | deterministic merge gate; input: repo, base, branch, Item ID, gate log path, audit report path; output `MERGE` or `HOLD <reasons>`; exit 0/1 (P2) |
+| `mapkit/night_shift_report.py` | the report layout parser that pins `docs/night-shift/README.md` (P2) |
 | `tools/night_shift_candidate.sh` | stacks held hardware branches into `night-shift/sitting-<date>`; run by the owner or the preparing Session before a Sitting, never by Night Shift |
 | `docs/night-shift/<date>.md` | the report (committed) |
 | `mapkit/sitting.py`, `python -m mapkit runbook` | `## Sitting` section parser and `docs/runbook.md` generator (P4) |
@@ -113,7 +115,7 @@ The nightly suite and its status line; the ticker mechanism (Night Shift becomes
 | Phase | Scope | Status | Date | Risk | Validates |
 |-------|-------|--------|------|------|-----------|
 | P1 | Runner skeleton and dry run | COMPLETE | 2026-10-31 | low | timer fires, guards hold, billing confirmed, a report with no edits |
-| P2 | Work loop, merge gate, report and ticker | NOT STARTED | | medium | first real night: merges only through the gate |
+| P2 | Work loop, merge gate, report and ticker | COMPLETE | 2026-10-31 | medium | first real night: merges only through the gate |
 | P3 | Night Shift page in the map app | NOT STARTED | | low | reports render, a question is answered in two clicks |
 | P4 | Next Sitting Runbook | NOT STARTED | | medium | `## Sitting` rows generate one ordered page; results write back |
 | P5 | Sitting wrap-up command | NOT STARTED | | low | a Sitting ends with one prompt and no owner git |
@@ -135,6 +137,7 @@ The nightly suite and its status line; the ticker mechanism (Night Shift becomes
 - **Scope**: per Item, in candidate order (bugs confirmed first, then features, decisions, ideas; priority then age): read the Item and its links; re-rate with `mapkit item rate` on the branch when the filer's rating is wrong; one unit per Item as an `Agent` capped at about 80 calls, Sonnet unless the brief names why Opus (planner math, firmware, control behaviour); `./run_tests.sh --full` on the branch; `/audit` on the branch diff, its fixer applying narrative findings and leaving behaviour-affecting ones as HOLD reasons; `tools/night_shift_gate.py`; MERGE pushes `main` (ff when possible) and closes the Item in the same commit as the fix and its logbook entry; HOLD pushes the branch and leaves the Item `in_progress` with a Progress headline. Decision-gated Items: research, draft `## Options` into the body, file one question ticket, stop. Ideas: a `## Feasibility` note; an idea rated XS or S with hardware none may be built and goes through the same gate. Unrated Items are rated first. The ticker: the runner claims it (`nightly_ticker.sh check --who "night-shift <date>"`, real runs only, after waiting for today's nightly) and passes the line in the prompt; the protocol writes it into `## Nightly`; a night that fails after the claim re-raises it. Unanswered question tickets from earlier nights are listed again; answered ones re-open their Item for the next unit.
 - **Critical details**: Night Shift never edits `~/Desktop/Jugglebot`, never force-pushes, never rewrites `main` history; a merge that does not fast-forward is a merge commit with the Item in the subject. A Night Shift commit carries `Logbook-Entry:` like any other. Two runs never overlap (`flock` on `temp/reports/night-shift/run.lock`). Any failure after a push leaves the report naming the pushed refs.
 - **Dependencies**: P1.
+- **Outcome (2026-10-31, `logbook/2026-10-31-night-shift-p2-work-loop-gate-and-questions.md`)**: complete. Gate script with the six conditions each pinned failing alone (44 tests, every condition mutant killed), ticket `type: question` (parent = the Item's stem, `## Answer`, 17 tests), report parser (6 tests), protocol §§ 2 to 4, CLAUDE.md read rule, DOCUMENTATION_GUIDE § 2.10 and map-writes updated. Tests +67. Full gate before the commit: GREEN (2026-10-31 00:56-01:04, `./run_tests.sh --full` on the final tree: parallel 7764 passed, 65 skipped in 482.66 s; serial 8 passed in 32.55 s; exit 0)
 
 ### P3: Night Shift page in the map app
 

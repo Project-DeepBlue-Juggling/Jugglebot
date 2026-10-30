@@ -46,7 +46,7 @@ REQUIRED_FIELDS: Dict[str, Tuple[str, ...]] = {
 }
 
 PRIORITIES = ("low", "medium", "high")
-TICKET_TYPES = ("research", "prototype", "grilling", "task")
+TICKET_TYPES = ("research", "prototype", "grilling", "task", "question")
 
 #: Item metrics (owner-approved 2026-10-28): optional on a new Item, validated
 #: when present. Enum values are in rank order; the field order is the
@@ -106,6 +106,46 @@ class Item:
     @property
     def title(self) -> str:
         return self.meta["title"]
+
+
+def has_answer(body: str) -> bool:
+    """True when ``body`` has a ``## Answer`` section with at least one non-blank line.
+
+    Used by ``item set-status`` (warns on completing a question ticket without
+    one) and by the map app's answer box (refuses a second answer). The Night
+    Shift merge gate does NOT read it: a question releases its parent Item only
+    when its ``status`` is ``complete`` or ``dropped``, which the app's save sets
+    together with the answer; an answered-but-open question still holds.
+    """
+    in_answer = False
+    for line in body.splitlines():
+        if line.rstrip() == "## Answer":
+            in_answer = True
+        elif line.startswith("## "):
+            if in_answer:
+                return False
+        elif in_answer and line.strip():
+            return True
+    return False
+
+
+def question_tickets(items: List[Item], parent_item: str) -> List[Item]:
+    """The question tickets whose ``parent`` names ``parent_item`` (stem, slug or ``JB-n``), any status."""
+    names = set([parent_item.strip()])
+    for i in items:
+        if i.kind == "ticket":
+            continue
+        if parent_item.strip() in ("%s-%s" % (i.kind, i.slug), i.slug, i.short_id):
+            names.update(["%s-%s" % (i.kind, i.slug), i.slug])
+            if i.short_id:
+                names.add(i.short_id)
+    return [t for t in items
+            if t.kind == "ticket" and t.meta.get("type") == "question" and t.meta.get("parent") in names]
+
+
+def open_questions(items: List[Item], parent_item: str) -> List[Item]:
+    """The ``open`` ones among :func:`question_tickets`: each holds its parent at the Night Shift merge gate."""
+    return [t for t in question_tickets(items, parent_item) if t.status == "open"]
 
 
 def item_uuid(slug: str) -> str:

@@ -20,8 +20,8 @@ import sys
 from typing import Dict, List, Optional
 
 from mapkit import derive, gen_docs, ids, similar
-from mapkit.items import (KINDS, METRIC_ENUMS, METRIC_FIELDS, STATUS_SETS, Item, ItemError, is_stale, load_item,
-                          load_items, stale_clock, write_item)
+from mapkit.items import (KINDS, METRIC_ENUMS, METRIC_FIELDS, STATUS_SETS, Item, ItemError, is_stale, has_answer,
+                          load_item, load_items, stale_clock, write_item)
 from mapkit.plans import load_plans
 
 MAP_DIR = "map"
@@ -134,6 +134,11 @@ def set_status(repo_root: str, slug: str, status: str, note: Optional[str] = Non
             if l not in cur:
                 cur.append(l)
         item.meta["links"] = cur
+    if (status == "complete" and item.kind == "ticket" and item.meta.get("type") == "question"
+            and not has_answer(item.body)):
+        # the app writes body and status in one save, so order is unknown: warn, do not refuse
+        print("mapkit: warning: %s completed without an ## Answer" % (item.short_id or item.slug),
+              file=sys.stderr)
     item.meta["status"] = status
     item.meta["updated"] = _now()
     body = item.body
@@ -281,7 +286,16 @@ def new_item(repo_root: str, kind: str, title: str, parent: Optional[str] = None
         "owners": [], "priority": priority, "blocked_by": [], "links": [],
     }
     meta = _place_metrics(meta, given_metrics)
-    if parent:
+    if parent and kind == "ticket" and ticket_type == "question":
+        try:
+            blocked = ids.resolve(items, parent)
+        except ids.IdError:
+            raise ItemCliError("parent %r not found" % parent)
+        if blocked.kind in ("ticket", "pathway"):
+            raise ItemCliError("a question hangs off a bug, feature or idea (parent %r is a %s)"
+                               % (parent, blocked.kind))
+        meta["parent"] = ids.stem(blocked)
+    elif parent:
         pw = next((i for i in items if i.kind == "pathway" and i.slug == parent), None)
         if pw is None:
             pw = ids.resolve(items, parent)  # a write: ``jb`` ID or stem, never bare digits
@@ -675,7 +689,7 @@ def register(subparsers) -> None:
     p.add_argument("--body", help="body text (or --body-file)")
     p.add_argument("--body-file")
     p.add_argument("--link", action="append", default=[], help="path, URL, stem or ID (stored as a stem)")
-    p.add_argument("--type", choices=("research", "prototype", "grilling", "task"), help="ticket type")
+    p.add_argument("--type", choices=("research", "prototype", "grilling", "task", "question"), help="ticket type")
     p.add_argument("--destination", help="pathway Destination (required for a pathway)")
     metric_flags(p)
     p.add_argument("--allow-similar", action="store_true",

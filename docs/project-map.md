@@ -6,15 +6,14 @@ Where each pathway of the Jugglebot project stands: its destination, how many st
 
 **Destination:** Every morning main is green and carries the overnight work that needed no hands; everything else waits on a held branch, an answerable question in the app or a row of the Next Sitting Runbook, and the owner's share of a Sitting is the hardware steps only.
 
-**Progress:** 1 of 6 stops done
+**Progress:** 2 of 6 stops done
 
-**Next:** P2 Work loop, merge gate, report and ticker ([night-shift.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/night-shift.md))
+**Next:** P3 Night Shift page in the map app ([night-shift.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/night-shift.md))
 
 **Owners:** Harrison
 
 **Remaining:**
 
-- P2 Work loop, merge gate, report and ticker ([night-shift.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/night-shift.md))
 - P3 Night Shift page in the map app ([night-shift.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/night-shift.md))
 - P4 Next Sitting Runbook ([night-shift.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/night-shift.md))
 - P5 Sitting wrap-up command ([night-shift.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/night-shift.md))
@@ -166,7 +165,7 @@ _Status: closed (complete)._
 
 | Pathway | Now | Next | Later | Done |
 | --- | --- | --- | --- | --- |
-| Night Shift: unattended overnight work on the board, and the Next Sitting Runbook | — | P2 Work loop, merge gate, report and ticker | P3 Night Shift page in the map app; P4 Next Sitting Runbook; P5 Sitting wrap-up command; R6 First Runbook-driven Sitting | P1 Runner skeleton and dry run |
+| Night Shift: unattended overnight work on the board, and the Next Sitting Runbook | — | P3 Night Shift page in the map app | P4 Next Sitting Runbook; P5 Sitting wrap-up command; R6 First Runbook-driven Sitting | P1 Runner skeleton and dry run; P2 Work loop, merge gate, report and ticker |
 | Two-ball oval | — | P4 Working point and the dwell ladder | P5 Two-ball oval; bug ABORTED_NO_RELEASE: three goals ended because the throw never left the hand (new 2026-10-28 21:02); bug Cup Banking saturates at its 12 deg clamp on small lateral offsets; bug 10 % jitter-margin class of LIMIT_* refusals; bug mocap_node loses frames to queue full in bursts before the first dispatch (544 / 373 / 490 frames in the three 2026-10-28 Sittings); bug Oval CATCH solve CPU (81 ms p50) leaves no margin under the 150 ms unpinned re-aim cliff; bug RestTerminal.holds_ball never reaches the node: every REST is rebuilt as holding a ball; bug Teensy guard MAX_DEVIATION latched on the hand (+8.4 rev) mid-oval; recover_lane found nothing, re-dispatch rejected WRONG_MODE; feature Pre-release hold rung: release from a moving Platform (hold 0.100 → 0); feature Solver worker on SCHED_FIFO: take the CATCH solve out of the fair-share queue (wall ~= CPU at any box load); feature Trim the nice-0 chain CPU the flame graphs point at: skill_node executor (~0.5 core), mocap_node publish path (~0.28), tracker message plumbing (~0.28) | P1 The oval pattern dispatchable; P3 Pose-level carry planner; P1 Firmware - age-aware lead clamp and engagement counter; P2 Bench validation; P3 Robot validation |
 | Project map and shared dictionary | — | — | — | closed |
 | Ball Butler | — | BB calibration: advisory when a template marker is never matched in a sweep | bug bb/throw_outcome carries no throw identity; bug NOT_SETTLED retry is dead in the field; feature Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware | — |

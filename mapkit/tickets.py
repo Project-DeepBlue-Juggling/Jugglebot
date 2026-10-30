@@ -66,6 +66,8 @@ def frontier(repo_root: str, pathway: str) -> List[Item]:
     for it in items:
         if it.kind != "ticket" or it.status != "open":
             continue
+        if it.meta.get("type") == "question":
+            continue  # a question hangs off an Item, not a Pathway: never in a frontier
         if it.meta.get("parent") != pathway or it.meta.get("owners"):
             continue
         blocked = False

@@ -24,6 +24,16 @@ Every Item has a short ID `JB-<n>` (frontmatter `id:`, one global sequence; plan
 3. **Announce** a status change in one line (`JB-12 bug-x -> in_progress`). No approval step. The one exception is a **Pathway** going `complete`: always ask the owner.
 4. **Scoped tests** after a write: `pytest -q tests/sim/test_map_items.py tests/sim/test_glossary_avoid_words.py tests/sim/test_mapkit_docs.py` (item bodies are inside the Avoid-word scope).
 
+### Question tickets
+
+When an Item needs a decision only the owner can make, file a question ticket that blocks it, instead of guessing:
+
+`python -m mapkit item new ticket "<question>?" --type question --parent JB-n --body-file F --commit`
+
+- **Who files:** Night Shift (`.claude/commands/night-shift.md`), or any Session that hits an owner-only decision. `--parent` is the bug, feature or idea it blocks (ID, stem or slug; stored as the stem); a pathway or ticket parent is refused.
+- **How it is answered:** the owner types in the app's answer box, which appends `## Answer` to the body and completes the ticket in one save. By hand: add `## Answer` with the reply, then `python -m mapkit item set-status <id> complete`. Completing without an answer succeeds but warns on stderr.
+- **Gate:** while a question is `open`, the Night Shift merge gate holds its parent's branch; completing it releases the hold.
+
 ## Writing an Item body
 
 The owner reads Items in the app's drawer; a body that is one long paragraph is illegible there (owner, 2026-10-30, on JB-114). Write the body to be scanned:
@@ -35,6 +45,22 @@ The owner reads Items in the app's drawer; a body that is one long paragraph is 
 - A Progress note (`--note`) is flattened to one line: keep it to its headline. Detail goes in a body section placed just before `## Progress`, headed `## <topic> (YYYY-MM-DD)`, or in the logbook entry the note links; end the note with `(detail below)`.
 
 The caps are enforced for every committed Item by `tests/sim/test_map_items.py::test_item_bodies_are_readable` (rule and numbers: `mapkit.items.readability_violations`): a paragraph or list item at most 500 characters, a Progress line at most 400, and a `##` heading on any body over 1,200 characters (Progress excluded). Tables and fenced code are exempt. Fix a failure by restructuring, never by cutting facts.
+
+## The `## Sitting` section
+
+A hardware Item (`hardware: bench-leg | robot`) says what it needs from the next Sitting in a body section headed exactly `## Sitting`, placed before `## Progress`. A Session that files or progresses a hardware Item writes it. It is a bullet list with fixed keys (`- key: value`; `do:` may be one line or a nested `  - ` list):
+
+| key | value |
+| --- | --- |
+| `setup:` | one or more of `level`, `tilt`, `armed`, `bb-fed`, `bridge-cycled`, comma separated (required) |
+| `why:` | one sentence (required) |
+| `do:` | the hardware steps only, imperative (required) |
+| `pass:` | the criterion (required) |
+| `record:` | what to write down (required) |
+| `minutes:` | positive integer (required) |
+| `branch:` | a held Night Shift branch name (optional) |
+
+`python -m mapkit runbook` (and `gen`) turns every valid section into `docs/runbook.md`, the Next Sitting Runbook, ordered by priority weight (high 3, medium 2, low 1; double with a `branch:`) per minute and grouped by setup set. The generator never invents a `do:` step: an Item with a missing or malformed section is listed under "Needs a Sitting section" with the parse errors. Results typed in the app land on the Item as `## Sitting result (<date>)` (verdict pass or fail, notes). Parser and generator: `mapkit/sitting.py`; pinned by `tests/sim/test_sitting_sections.py`.
 
 ## Rules
 
