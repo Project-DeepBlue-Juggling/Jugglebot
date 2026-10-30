@@ -24,7 +24,15 @@ Part of #21
 
 ## Question
 
-Enumerate the live pathways as the owner sees them, each with a one-line destination, and assign every active and parked plan and every live branch to one. Known material: plans/active on main = two-ball-oval, learner-generalisation, box-sweep-same-site-fidelity, leg-gain-tuning-methodology (INDEX calls it "reference": a pathway, a reference doc, or neither?); the wave-camera plan on the uncommitted 2026-10_wave-camera-can3 checkout; the parked bb-calibration gate; the open residue sections (dress-rehearsals section 2, columns-empty-cup rows 33/34, the LIMIT_JERK sim regression); origin branches main and two-ball-oval.
+Enumerate the live pathways as the owner sees them, each with a one-line destination, and assign every active and parked plan and every live branch to one.
+
+Known material:
+
+- plans/active on main = two-ball-oval, learner-generalisation, box-sweep-same-site-fidelity, leg-gain-tuning-methodology (INDEX calls it "reference": a pathway, a reference doc, or neither?)
+- the wave-camera plan on the uncommitted 2026-10_wave-camera-can3 checkout
+- the parked bb-calibration gate
+- the open residue sections (dress-rehearsals section 2, columns-empty-cup rows 33/34, the LIMIT_JERK sim regression)
+- origin branches main and two-ball-oval
 
 Also ask which ideas the owner already carries that have no home today, to seed the inbox. The answer is the content the implementation session loads into map/ on day one.
 
@@ -61,7 +69,16 @@ Two-ball oval is its **own** pathway, not a continuation of the archived two-bal
 
 Residue has no destination, so there is no "skill-stack residue" pathway. On day one these become **inbox items** (Bug or Idea as fits), attached to the pathway whose Sitting would trigger them where one exists, unattached otherwise:
 
-- From `plans/archived/skill-stack-dress-rehearsals-and-residue.md` § 2, the nine rows tagged **(b)**: the 10 % jitter-margin class (`LIMIT_*` refusals) [Two-ball oval]; cup Banking saturating at its 12 deg clamp on small lateral offsets [Two-ball oval]; sim columns with a biased plant for the forward-clip rule; other solves in their own interpreters; NOT_SETTLED retry dead in the field [Ball Butler]; `bb/throw_outcome` carries no throw identity [Ball Butler]; mocap `_finalize_calibration` in a worker process; the emitter 47 ms gap; the magazine feed-tuning loop.
+- From `plans/archived/skill-stack-dress-rehearsals-and-residue.md` § 2, the nine rows tagged **(b)**:
+  - the 10 % jitter-margin class (`LIMIT_*` refusals) [Two-ball oval]
+  - cup Banking saturating at its 12 deg clamp on small lateral offsets [Two-ball oval]
+  - sim columns with a biased plant for the forward-clip rule
+  - other solves in their own interpreters
+  - NOT_SETTLED retry dead in the field [Ball Butler]
+  - `bb/throw_outcome` carries no throw identity [Ball Butler]
+  - mocap `_finalize_calibration` in a worker process
+  - the emitter 47 ms gap
+  - the magazine feed-tuning loop
 - Columns-empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, `ABORTED_BB_NOT_READY`), never exercised on hardware [Ball Butler].
 - The levelling contract's int16 offset-truncation defect (OPEN, no owner; read in its archived plan).
 - The LIMIT_JERK sim regression named in this ticket.

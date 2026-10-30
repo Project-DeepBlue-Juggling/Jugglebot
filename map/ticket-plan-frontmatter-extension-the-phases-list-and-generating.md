@@ -26,7 +26,19 @@ Part of #21
 
 ## Question
 
-Exactly how do plans join the map? Decide the pathway:, branch: and phases: fields (phase entry shape: id, title, status vocabulary, dated status, gate result?); the rule that phases: must mirror the phase headings and the test that pins it; whether "Open residue" sections become parseable; what each INDEX.md column is generated from and what test_plans_index.py becomes (assert generated output is current? retire the hand-edit assertions?); how "Last touched" is derived (git log vs frontmatter); the archive flow (/archive-plan) under generation; and whether archived plans are migrated or exempt (see fog). Confirm nothing here breaks the filename-never-changes rule or related_plan: resolution.
+Exactly how do plans join the map?
+
+Decide:
+
+- The `pathway:`, `branch:` and `phases:` fields (phase entry shape: id, title, status vocabulary, dated status, gate result?).
+- The rule that `phases:` must mirror the phase headings, and the test that pins it.
+- Whether "Open residue" sections become parseable.
+- What each INDEX.md column is generated from, and what `test_plans_index.py` becomes (assert generated output is current? retire the hand-edit assertions?).
+- How "Last touched" is derived (git log vs frontmatter).
+- The archive flow (`/archive-plan`) under generation.
+- Whether archived plans are migrated or exempt (see fog).
+
+Confirm nothing here breaks the filename-never-changes rule or `related_plan:` resolution.
 
 ## Answer
 

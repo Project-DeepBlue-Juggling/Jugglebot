@@ -17,4 +17,15 @@ links: []
 filed_by: claude (jugglebot-f5, pattern exploration 2026-10-30)
 ---
 
-Owner idea: hop and self-throw at once. Ball 1 in a column at the centre, Ball 2 thrown from one side over Ball 1 to the other. The arc crosses the column while Ball 1 sits in the Cup, but the pinch is Ball 2 descending past Ball 1 rising: clearance needs the half-span s with s (1 + d/T) / 2 >= 75 mm, so s >= 115 mm, while today's leg velocity caps the transit at s <= 115 mm. Zero window today; at the P4 working point (600/8000/200k) s = 125 plans. Same compiler as JP-14 (it is the N = 2 case with the ring collapsed to a diameter). Blocked on two-ball-oval P4.
+Owner idea: hop and self-throw at once. Ball 1 in a column at the centre, Ball 2 thrown from one side over Ball 1 to the other.
+
+## Clearance
+
+- The arc crosses the column while Ball 1 sits in the Cup, but the pinch is Ball 2 descending past Ball 1 rising.
+- Clearance needs the half-span s with s (1 + d/T) / 2 >= 75 mm, so s >= 115 mm, while today's leg velocity caps the transit at s <= 115 mm.
+- Zero window today; at the P4 working point (600/8000/200k) s = 125 plans.
+
+## Relations
+
+- Same compiler as JP-14 (it is the N = 2 case with the ring collapsed to a diameter).
+- Blocked on two-ball-oval P4.

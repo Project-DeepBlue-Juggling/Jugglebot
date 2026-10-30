@@ -20,7 +20,18 @@ links:
 filed_by: claude
 ---
 
-Seen 2026-10-27 in ./run_tests.sh (parallel phase): tests/ros/test_replay_overview.py::test_a_pass_still_exiting_for_an_older_version_neither_reports_computing_nor_blocks_the_requeue failed with assert [] == ['2026-10-01_10-00-00'] (the requeued Sitting never appeared). It passed 5/5 run alone and the whole file (11) passed; the next full gate passed. The change under test was docs-only. Likely a wall-clock wait in the test that is too short under four-worker load; same shape as the skill_node accept-check flake.
+## Failure
+
+Seen 2026-10-27 in `./run_tests.sh` (parallel phase): `tests/ros/test_replay_overview.py::test_a_pass_still_exiting_for_an_older_version_neither_reports_computing_nor_blocks_the_requeue` failed with `assert [] == ['2026-10-01_10-00-00']` (the requeued Sitting never appeared).
+
+## Evidence
+
+- It passed 5/5 run alone and the whole file (11) passed; the next full gate passed.
+- The change under test was docs-only.
+
+## Likely cause
+
+A wall-clock wait in the test that is too short under four-worker load; same shape as the skill_node accept-check flake.
 
 ## Progress
 

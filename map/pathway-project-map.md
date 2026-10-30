@@ -41,11 +41,13 @@ Wayfinder map #21 (github.com/Project-DeepBlue-Juggling/Jugglebot/issues/21), im
   and retired ("one checkout, one branch"). `plans/active/` on main holds 4 plans; the wave-camera plan
   lives uncommitted on the `2026-10_wave-camera-can3` checkout at E:/PDJ/Github/Jugglebot (14 behind main).
 - CORRECTION (ticket 02, 2026-10-23): `CONTEXT.md` (245 lines, `_Avoid_:` lines) IS on `main` (ported from
-  mvp-trajectory-bringup in commit 2814c4a0, softened 2026-10-23 in 84d40b27) and is NORMATIVE: CLAUDE.md:36 forbids
-  Avoid-words and routes changes through grilling + domain-modeling; DOCUMENTATION_GUIDE § 2.9 is its layer;
-  docs/agents/domain.md and the 13 ADRs link to it. The jargon survey ran on the wave-camera checkout (14 behind
-  main) and did not see it: its '30 terms reachable only on mvp' claim is void; its undefined-coinage and conflict
-  lists still stand and need re-checking against the live file.
+  mvp-trajectory-bringup in commit 2814c4a0, softened 2026-10-23 in 84d40b27) and is NORMATIVE:
+  - CLAUDE.md:36 forbids Avoid-words and routes changes through grilling + domain-modeling.
+  - DOCUMENTATION_GUIDE § 2.9 is its layer.
+  - docs/agents/domain.md and the 13 ADRs link to it.
+  - The jargon survey ran on the wave-camera checkout (14 behind
+    main) and did not see it: its '30 terms reachable only on mvp' claim is void; its undefined-coinage and conflict
+    lists still stand and need re-checking against the live file.
 - CORRECTION (same cause): the repo DOES have a configured tracker on main: docs/agents/issue-tracker.md (GitHub
   issues, with a Wayfinding operations section using sub-issues and native dependencies) and
   docs/agents/triage-labels.md. This map was charted locally before that was known; see fog.
@@ -69,11 +71,12 @@ Wayfinder map #21 (github.com/Project-DeepBlue-Juggling/Jugglebot/issues/21), im
 - Sessions meet the glossary via a bare term-name list in CLAUDE.md (< ~300 tokens) with the rule "read the
   entry before using or reading one of these words"; full entries on demand; an Avoid-word test on new
   logbook entries and plans is the backstop.
-- Rename the live normative `CONTEXT.md` to `GLOSSARY.md` (the name the installed domain-modeling skill v1.3.1
-  writes; the repo's docs/agents/domain.md still says CONTEXT.md, so a skill-driven session would create a second
-  file beside it), restructured to fixed per-term fields; grill the undefined coinages and conflicts. Decided on
-  the stale 'stranded file' premise: ticket 07 RE-CONFIRMS the rename against its real ripple (CLAUDE.md:36/126/216,
-  DOCUMENTATION_GUIDE § 2.9, docs/agents/domain.md, 13 ADR links, logbook pointers). _Re-confirmed by #28 with a CONTEXT.md stub for history._
+- Rename the live normative `CONTEXT.md` to `GLOSSARY.md`, restructured to fixed per-term fields; grill the undefined coinages and conflicts.
+  - Why rename: `GLOSSARY.md` is the name the installed domain-modeling skill v1.3.1
+    writes; the repo's docs/agents/domain.md still says CONTEXT.md, so a skill-driven session would create a second
+    file beside it.
+  - Decided on the stale 'stranded file' premise: ticket 07 RE-CONFIRMS the rename against its real ripple (CLAUDE.md:36/126/216,
+    DOCUMENTATION_GUIDE § 2.9, docs/agents/domain.md, 13 ADR links, logbook pointers). _Re-confirmed by #28 with a CONTEXT.md stub for history._
 - Intake from both a slash command and the app UI, writing the same record; items land in an inbox and are
   attached to a pathway at triage.
 - Fork TaskTree, do not upstream: it is a starting point and will diverge.

@@ -27,7 +27,11 @@ Part of #21
 
 CORRECTION (2026-10-23): the file is on main (245 lines) and was softened on three claims in commit 84d40b27. Re-run the undefined/conflict lists from research/jugglebot-jargon-survey.md against the LIVE file before grilling; expect the list to shrink.
 
-With the format from 07 fixed, grill the owner term by term on: (a) the ~9 terms defined nowhere: hop / hop-entry catch, braking knot (catch_k+1), lane / lane-latch, oval, "wave" of work, capture-move, robot frame fit, UH-n, plus any the jargon survey flags as undefined (research/jugglebot-jargon-survey.md, 67 rows); (b) the ~12 multiply-used terms: gate (suite gate / rung gate / feasibility gate), session vs sitting, "reload" vs feed, "toss" vs throw, "runsheet" vs runbook, armed, and the rest of the table's conflict flags; (c) the R0-R6 gate names and what each meant.
+With the format from 07 fixed, grill the owner term by term on three groups.
+
+- **(a)** the ~9 terms defined nowhere: hop / hop-entry catch, braking knot (catch_k+1), lane / lane-latch, oval, "wave" of work, capture-move, robot frame fit, UH-n, plus any the jargon survey flags as undefined (`research/jugglebot-jargon-survey.md`, 67 rows).
+- **(b)** the ~12 multiply-used terms: gate (suite gate / rung gate / feasibility gate), session vs sitting, "reload" vs feed, "toss" vs throw, "runsheet" vs runbook, armed, and the rest of the table's conflict flags.
+- **(c)** the R0-R6 gate names and what each meant.
 
 Output: the completed GLOSSARY.md content, written inline as terms resolve (domain-modeling), ready to land on main with the implementation. The two stale pointers (logbook 2026-09-30-gui-view-menu-triad-toggles.md:25 and 2026-10-04-skill-stack-r5-sitting-4.md:417) are fixed by the plan, not here.
 
@@ -35,7 +39,13 @@ Output: the completed GLOSSARY.md content, written inline as terms resolve (doma
 
 ## Answer (grilling, owner, 2026-10-23, one round off an agent-built worksheet)
 
-Method: a Sonnet agent re-checked the jargon survey's 25 flagged rows against the live `CONTEXT.md` (`research/glossary-coinages-worksheet.md`): 11 groups were already defined (Sitting vs Session and Sitting limits; Rung / Phase / the three gates; Armed; Cup vs Cone; Active / Stow / Homing; Guard vs motor_guard; Soft E-stop vs E-stop button; Feed; Throw; Runbook; Banking / Level / Tilt map) and 14 remained, each drafted from two or three usage excerpts. The owner confirmed 12 (fresh-origin on 2026-10-24), rewrote one (Wave) and struck one (UH-n). Entries are in the skill's format (#28) for the `GLOSSARY.md` landing in #35; the cluster heading each belongs under is given in brackets. The nine map-vocabulary entries from #25 land in the same commit.
+Method: a Sonnet agent re-checked the jargon survey's 25 flagged rows against the live `CONTEXT.md` (`research/glossary-coinages-worksheet.md`).
+
+- 11 groups were already defined: Sitting vs Session and Sitting limits; Rung / Phase / the three gates; Armed; Cup vs Cone; Active / Stow / Homing; Guard vs motor_guard; Soft E-stop vs E-stop button; Feed; Throw; Runbook; Banking / Level / Tilt map.
+- 14 remained, each drafted from two or three usage excerpts.
+- The owner confirmed 12 (fresh-origin on 2026-10-24), rewrote one (Wave) and struck one (UH-n).
+
+Entries are in the skill's format (#28) for the `GLOSSARY.md` landing in #35; the cluster heading each belongs under is given in brackets. The nine map-vocabulary entries from #25 land in the same commit.
 
 ### Entries
 

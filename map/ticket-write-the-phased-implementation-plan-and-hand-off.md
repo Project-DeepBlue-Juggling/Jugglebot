@@ -32,7 +32,21 @@ Part of #21
 
 ## Question
 
-Everything is decided; produce the deliverable. Run /implementation-report to write plans/active/project-map-and-shared-dictionary.md (filename never changes): phases in dependency order (shared parser package and tests; GLOSSARY.md landing with the CLAUDE.md term list and the Avoid test; map/ seeded from ticket 05 plus plan-frontmatter migration and generated INDEXes; the fork repo and thin server; the mkdocs view; slash-command and doc wiring; the tracker doc), each with checkable acceptance criteria, the (date, command, result) verification convention, and risk lines. Add the INDEX row and the logbook entry for the charting work, and run the gate before commit. The owner reviews the plan; a fresh session then implements phase 1 via /next-phase-prompt.
+Everything is decided; produce the deliverable. Run /implementation-report to write `plans/active/project-map-and-shared-dictionary.md` (filename never changes).
+
+**Phases, in dependency order:**
+
+1. Shared parser package and tests.
+2. `GLOSSARY.md` landing with the CLAUDE.md term list and the Avoid test.
+3. `map/` seeded from ticket 05, plus plan-frontmatter migration and generated INDEXes.
+4. The fork repo and thin server.
+5. The mkdocs view.
+6. Slash-command and doc wiring.
+7. The tracker doc.
+
+Each phase gets checkable acceptance criteria, the (date, command, result) verification convention, and risk lines.
+
+Add the INDEX row and the logbook entry for the charting work, and run the gate before commit. The owner reviews the plan; a fresh session then implements phase 1 via /next-phase-prompt.
 
 ## Answer
 

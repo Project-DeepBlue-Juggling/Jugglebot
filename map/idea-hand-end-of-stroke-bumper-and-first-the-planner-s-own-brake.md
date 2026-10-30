@@ -86,6 +86,30 @@ A soft-entry spring plus damper:
 
 The top hard stop is 10.701 rev (`hardware_config.yaml` line 524, re-measured 2026-09-06), while the `end_stop_margin_rev` comment still says 10.8.
 
+## R0 result: the brake shape (2026-10-30)
+
+R0 done 2026-10-30 (Opus, scratchpad bumper/r0_brake_shape.md, probes r0/p1-p14 reproduce the logged peaks within 6 rev/s2).
+
+**Cause of the brake shape:** the planner pins the cup acceleration to g at the release knot (cup_cycle.py about l.1639) and keeps acceleration continuous on the 25 ms grid, so the brake ramps for a knot and lasts only about 2.4 knots.
+
+- kappa is 1.66-1.68 (Apex measured from release); the objective adds 5-9 percent, not Dwell, holds, settle tail, planner mode or time budget.
+- The launch has the same flaw (kappa 1.85, infeasible from Apex about 1.35 at release 860).
+- An acceleration step at release gives kappa 1.00 (1.11 with a seed alone) but is refused by HAND_LIMIT_C2 today, so it needs a named, bounded contract exception at release knots: owner decision.
+
+### Reach
+
+- The max_acc_z box gives Apex 1.10-1.12 inside today's contracts.
+- A brake-side step alone gives about 1.16 (the launch then binds).
+- Steps on both sides at release 860 reach the ceiling Apex (1.42 from release) at about 40 A launch / 37 A brake, so NO bumper and no raised release are needed for the ceiling.
+- The bumper is demoted to a safety stop.
+
+### Not done
+
+- The launch-side step in the real planner (LP estimate only).
+- A two-ball fold at Apex 1.4.
+- The firmware feedforward at a frame boundary.
+- The bag check, filed as its own bug.
+
 ## Progress
 
-- 2026-10-30: R0 done 2026-10-30 (Opus, scratchpad bumper/r0_brake_shape.md, probes r0/p1-p14 reproduce the logged peaks within 6 rev/s2). Cause of the brake shape: the planner pins the cup acceleration to g at the release knot (cup_cycle.py about l.1639) and keeps acceleration continuous on the 25 ms grid, so the brake ramps for a knot and lasts only about 2.4 knots; kappa is 1.66-1.68 (Apex measured from release), the objective adds 5-9 percent, not Dwell, holds, settle tail, planner mode or time budget. The launch has the same flaw (kappa 1.85, infeasible from Apex about 1.35 at release 860). An acceleration step at release gives kappa 1.00 (1.11 with a seed alone) but is refused by HAND_LIMIT_C2 today, so it needs a named, bounded contract exception at release knots: owner decision. Reach: the max_acc_z box gives Apex 1.10-1.12 inside today's contracts; a brake-side step alone about 1.16 (the launch then binds); steps on both sides at release 860 reach the ceiling Apex (1.42 from release) at about 40 A launch / 37 A brake, so NO bumper and no raised release are needed for the ceiling. The bumper is demoted to a safety stop. Not done: the launch-side step in the real planner (LP estimate only), a two-ball fold at Apex 1.4, the firmware feedforward at a frame boundary, and the bag check filed as its own bug.
+- 2026-10-30: R0 done 2026-10-30 (Opus, scratchpad bumper/r0_brake_shape.md, probes r0/p1-p14 reproduce the logged peaks within 6 rev/s2). (detail below)

@@ -25,28 +25,61 @@ Part of #21
 
 ## Question
 
-What does each item kind show on the canvas? Stock TaskTree draws every node as the same small card (title, avatar, status stripe). Seeing the #24 prototype, the owner asked for per-kind rendering: a **plan** as a rich card like a pop-out editor (title, description, phase-completion summary such as "P1 ✔ P2 retired P3-P5 open", branch), a **pathway** carrying its Destination, while **bug / idea / feature** items stay brief (title plus a one-line description).
+What does each item kind show on the canvas? Stock TaskTree draws every node as the same small card (title, avatar, status stripe).
 
-Grill the design: which fields per kind, does a rich card expand in place or open the detail panel, how a plan's phase summary is derived (from the `phases:` frontmatter list of #23) and whether the List view's rows differ by kind too. The answer is a per-kind field table that #35's implementation plan can build from.
+Seeing the #24 prototype, the owner asked for per-kind rendering:
+- A **plan** as a rich card like a pop-out editor (title, description, phase-completion summary such as "P1 ✔ P2 retired P3-P5 open", branch).
+- A **pathway** carrying its Destination.
+- **bug / idea / feature** items stay brief (title plus a one-line description).
+
+Grill the design:
+- Which fields per kind.
+- Does a rich card expand in place or open the detail panel.
+- How a plan's phase summary is derived (from the `phases:` frontmatter list of #23).
+- Whether the List view's rows differ by kind too.
+
+The answer is a per-kind field table that #35's implementation plan can build from.
 
 Context: #24 answer (keep / stub / drop list), #26 (the five pathways and their plans), #22 (the Task shape the canvas node receives).
 
 
 ## Re-scoped by #31 (owner, 2026-10-23)
 
-The canvas is gone: the fork ships two pages only, **Front page** (one tile per Pathway: Destination, progress bar from phase statuses, computed Next, owners, attached inbox items; Keep-style inbox wall below) and **Now / Next / Later** (Pathway swimlanes against a commitment horizon, inbox rail split into Ideas / Bugs / Features). Editing is the shared detail drawer. The question is now: what does each kind (pathway, plan, phase, idea, feature, bug) show in a Front page tile, in a Now/Next/Later card, in the inbox wall and rail, and in the drawer; and what does hover-highlight (an item lit up in every place it appears) look like per kind. Starting material: the formats prototype on branch `prototype/24-thin-server`, `.scratch/project-map/prototype/formats/index.html` (`?variant=c` and `?variant=d`), its `HANDOFF.md`, and the #31 answer. Owner rules carried in: minimal scrolling, dark mode default.
+The canvas is gone: the fork ships two pages only.
+- **Front page:** one tile per Pathway (Destination, progress bar from phase statuses, computed Next, owners, attached inbox items); Keep-style inbox wall below.
+- **Now / Next / Later:** Pathway swimlanes against a commitment horizon, inbox rail split into Ideas / Bugs / Features.
+
+Editing is the shared detail drawer.
+
+The question is now:
+- What does each kind (pathway, plan, phase, idea, feature, bug) show in a Front page tile, in a Now/Next/Later card, in the inbox wall and rail, and in the drawer.
+- What does hover-highlight (an item lit up in every place it appears) look like per kind.
+
+Starting material: the formats prototype on branch `prototype/24-thin-server`, `.scratch/project-map/prototype/formats/index.html` (`?variant=c` and `?variant=d`), its `HANDOFF.md`, and the #31 answer. Owner rules carried in: minimal scrolling, dark mode default.
 
 ## Answer
 
 ## Answer (grilling, owner, 2026-10-23, one round)
 
-Per-kind field table for the two pages fixed by #31 (Front page, Now / Next / Later), the shared drawer and hover-highlight. Starting material was the formats prototype (branch `prototype/24-thin-server`, `.scratch/project-map/prototype/formats/index.html`, `?variant=c|d`); every rule below is the prototype's unless marked **new**. #35 builds from this table.
+Per-kind field table for the two pages fixed by #31 (Front page, Now / Next / Later), the shared drawer and hover-highlight.
+
+Starting material was the formats prototype (branch `prototype/24-thin-server`, `.scratch/project-map/prototype/formats/index.html`, `?variant=c|d`); every rule below is the prototype's unless marked **new**. #35 builds from this table.
 
 ### Page rules
 
-- **Front page:** equal pathway tiles in a grid, **no lead tile, fixed tile height** (**new**), so five or six pathways fit one screen at 1500×900. The what-remains list inside a tile is capped at four rows plus "+n more" (**new**); the rest is in the drawer. The inbox wall below is a **fixed-height band that scrolls internally; the page itself does not scroll** (**new**). The wall shows every inbox-kind item, attached or not, with a pathway pin.
-- **Now / Next / Later:** pathway swimlanes × Now (in progress, QA, blocked) / Next (computed) / Later (queued, parked, waiting on a blocker, attached inbox items) / Done; inbox rail on the right split into Ideas, Bugs, Features, **unattached items only**.
-- **Computed, never stored:** pathway order (priority, status, title); progress units (a plan's phases, else the plan; dropped excluded); Next (first unfinished phase of the first plan with no open blocker; if every open plan waits on a blocker, that blocker).
+- **Front page:** equal pathway tiles in a grid, **no lead tile, fixed tile height** (**new**), so five or six pathways fit one screen at 1500×900.
+  - The what-remains list inside a tile is capped at four rows plus "+n more" (**new**); the rest is in the drawer.
+  - The inbox wall below is a **fixed-height band that scrolls internally; the page itself does not scroll** (**new**).
+  - The wall shows every inbox-kind item, attached or not, with a pathway pin.
+- **Now / Next / Later:** pathway swimlanes × these columns, with an inbox rail on the right split into Ideas, Bugs, Features, **unattached items only**.
+  - Now: in progress, QA, blocked.
+  - Next: computed.
+  - Later: queued, parked, waiting on a blocker, attached inbox items.
+  - Done.
+- **Computed, never stored:**
+  - Pathway order (priority, status, title).
+  - Progress units (a plan's phases, else the plan; dropped excluded).
+  - Next (first unfinished phase of the first plan with no open blocker; if every open plan waits on a blocker, that blocker).
 
 ### Per-kind table
 
@@ -61,11 +94,16 @@ Bugs carry nothing a feature does not; the kind hue, the description line, the a
 
 ### Hover-highlight
 
-- Every rendered element carries the item id. Hovering any of them **glows every other element with that id** (tile, lane header, card, segment, token, pin, dep tag) and outlines the item's **open blockers in red**. No dimming of the rest.
+- Every rendered element carries the item id.
+- Hovering any of them **glows every other element with that id** (tile, lane header, card, segment, token, pin, dep tag).
+- It also outlines the item's **open blockers in red**.
+- No dimming of the rest.
 
 ### Palette
 
-- Dark default, light via the existing toggle. Kind hues: **bug = rose, feature = sky, idea = amber**, muted for dark. One hue per pathway from a fixed cycling set, used by its tile edge, lane edge, pins and segments.
+- Dark default, light via the existing toggle.
+- Kind hues: **bug = rose, feature = sky, idea = amber**, muted for dark.
+- One hue per pathway from a fixed cycling set, used by its tile edge, lane edge, pins and segments.
 
 ### Sharpened
 

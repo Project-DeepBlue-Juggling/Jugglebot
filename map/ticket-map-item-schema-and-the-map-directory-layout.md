@@ -24,7 +24,17 @@ Part of #21
 
 ## Question
 
-What is the frontmatter schema for map items (Pathway, Feature, Bug, Idea, decision ticket) and how is map/ laid out? Decide: the field set per type (title, type, status, pathway, blocked_by, created, owner, branch, destination for pathways, promoted_to for ideas, tags, related_plan, related_logbook); the status vocabulary and which statuses are terminal; whether blocking is a blocked_by list on the item (matching TaskTree's dependency DAG); the filename rule (filename never changes; slug vs numbered); one directory with the type in frontmatter vs a directory per type; where the inbox lives (a status, not a directory?); how a pathway references its plans (plan frontmatter points up via pathway:, so pathway files carry no list).
+What is the frontmatter schema for map items (Pathway, Feature, Bug, Idea, decision ticket) and how is map/ laid out?
+
+Decide:
+
+- The field set per type (title, type, status, pathway, blocked_by, created, owner, branch, destination for pathways, promoted_to for ideas, tags, related_plan, related_logbook).
+- The status vocabulary and which statuses are terminal.
+- Whether blocking is a blocked_by list on the item (matching TaskTree's dependency DAG).
+- The filename rule (filename never changes; slug vs numbered).
+- One directory with the type in frontmatter vs a directory per type.
+- Where the inbox lives (a status, not a directory?).
+- How a pathway references its plans (plan frontmatter points up via pathway:, so pathway files carry no list).
 
 Use domain-modeling: write each resolved term (Pathway, Idea, Inbox, Item, Destination) into GLOSSARY.md as it crystallises. Stress-test with: an idea promoted to a pathway; a bug filed on the robot that belongs to no pathway; a pathway completed while one of its plans is parked.
 

@@ -17,4 +17,12 @@ links: []
 filed_by: claude (jugglebot-f5, pattern exploration 2026-10-30)
 ---
 
-One ball hopping around N Sites (triangle, square, hexagon) instead of two. Physics trivial at any step the hop already flies (250 mm, apex 0.9). Why file it: it is the smallest change that makes a Skill's Site differ Beat by Beat, which every moving two-ball Pattern (JP-10 to JP-14) needs; the admissible box keys on exact Site xy stamps and the learner memory on release xy (30 mm support), so this walk exercises both with no two-ball risk. Software: a compile_one_ball over a Site list plus an admissible-box cell per edge, or the pattern-relative key proposed under JP-10.
+One ball hopping around N Sites (triangle, square, hexagon) instead of two. Physics trivial at any step the hop already flies (250 mm, apex 0.9).
+
+## Why file it
+
+It is the smallest change that makes a Skill's Site differ Beat by Beat, which every moving two-ball Pattern (JP-10 to JP-14) needs; the admissible box keys on exact Site xy stamps and the learner memory on release xy (30 mm support), so this walk exercises both with no two-ball risk.
+
+## Software
+
+A compile_one_ball over a Site list plus an admissible-box cell per edge, or the pattern-relative key proposed under JP-10.

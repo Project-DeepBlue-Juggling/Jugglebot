@@ -21,7 +21,15 @@ parent: project-map
 filed_by: harrison
 ---
 
-Owner reaction round, 2026-10-24: on the owner's screen the Front page shows about a third of the page blank below the tiles while the Inbox wall band is barely taller than one card. Cause: the page is laid out to a fixed 860 px budget (tiles 276 px, wall 168 px) tuned to a 900 px viewport instead of filling the viewport; a taller window leaves the rest empty. Fix: the tile grid keeps its fixed height and the wall takes the remaining height (`flex-1 min-h-0`), so on any screen the wall is as tall as the window allows; keep the no-document-scroll rule.
+Owner reaction round, 2026-10-24: on the owner's screen the Front page shows about a third of the page blank below the tiles while the Inbox wall band is barely taller than one card.
+
+## Cause
+
+The page is laid out to a fixed 860 px budget (tiles 276 px, wall 168 px) tuned to a 900 px viewport instead of filling the viewport; a taller window leaves the rest empty.
+
+## Fix
+
+The tile grid keeps its fixed height and the wall takes the remaining height (`flex-1 min-h-0`), so on any screen the wall is as tall as the window allows; keep the no-document-scroll rule.
 
 ## Progress
 

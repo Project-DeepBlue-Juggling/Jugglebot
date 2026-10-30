@@ -28,7 +28,16 @@ Part of #21
 
 CORRECTION (2026-10-23): docs/agents/issue-tracker.md (GitHub issues, with a Wayfinding operations section) and docs/agents/triage-labels.md already exist on main. This ticket rewrites those two files for the new system rather than creating them.
 
-How do future wayfinder efforts live on the map? Write the "Wayfinding operations" section the wayfinder skill expects, for this tracker: map = a Pathway item (or a dedicated type?) carrying the Destination / Notes / Decisions / Fog body; child tickets = items with a wayfinder:<type> tag; blocking = blocked_by; claim = an assignee or status field; frontier = a query; resolve = answer section + status + decision pointer. Decide where the setup-matt-pocock-skills tracker doc lives in Jugglebot so /setup-matt-pocock-skills finds it, and the triage-label mapping. Include migrating THIS map out of the gitignored .scratch/ once the system exists.
+How do future wayfinder efforts live on the map? Write the "Wayfinding operations" section the wayfinder skill expects, for this tracker:
+
+- map = a Pathway item (or a dedicated type?) carrying the Destination / Notes / Decisions / Fog body
+- child tickets = items with a wayfinder:<type> tag
+- blocking = blocked_by
+- claim = an assignee or status field
+- frontier = a query
+- resolve = answer section + status + decision pointer
+
+Decide where the setup-matt-pocock-skills tracker doc lives in Jugglebot so /setup-matt-pocock-skills finds it, and the triage-label mapping. Include migrating THIS map out of the gitignored .scratch/ once the system exists.
 
 ## Answer
 
@@ -39,8 +48,28 @@ How do future wayfinder efforts live on the map? Write the "Wayfinding operation
 ### The model
 
 - **A wayfinder map is a Pathway item.** Its `destination` is the map's Destination; its body holds the Notes, Decisions so far, Not yet specified and Out of scope sections. "Resolved tickets" is **computed** from its complete ticket children (title, gist from the first line of the ticket's answer, link), never hand-maintained.
-- **A ticket is a new item kind, `ticket`** (adds to #25's four): `kind: ticket`, `type: research | prototype | grilling | task`, `parent: <pathway slug>`, `blocked_by:` (ticket or item slugs), `owners:` (non-empty = claimed), `rank:` (map order), `status: open | complete | dropped`, `links:`; body = the question, and the answer appended under `## Answer` at resolution. Tickets do not use the inbox status set; they are never untriaged.
-- **Operations** (replace the "Wayfinding operations" section of `docs/agents/issue-tracker.md`; #33 writes the text, the `/wayfinder` skill reads it): create map = write `map/pathway-<slug>.md`; child ticket = write `map/ticket-<slug>.md` with `parent`; blocking = `blocked_by`; **frontier** = open tickets under the pathway with no open blocker and no owner, lowest `rank` first; **claim** = add yourself to `owners` and commit-and-push the file (the #30 commit rule, message `map: claim <slug>`); **resolve** = append `## Answer`, set `complete`, commit-and-push; sharpened tickets = new ticket files with `blocked_by`. `mapkit` exposes `frontier`, `claim`, `resolve` as subcommands so the skill does not reimplement them.
+- **A ticket is a new item kind, `ticket`** (adds to #25's four). Its fields:
+  - `kind: ticket`
+  - `type: research | prototype | grilling | task`
+  - `parent: <pathway slug>`
+  - `blocked_by:` (ticket or item slugs)
+  - `owners:` (non-empty = claimed)
+  - `rank:` (map order)
+  - `status: open | complete | dropped`
+  - `links:`
+  - body = the question, and the answer appended under `## Answer` at resolution
+
+  Tickets do not use the inbox status set; they are never untriaged.
+- **Operations** (replace the "Wayfinding operations" section of `docs/agents/issue-tracker.md`; #33 writes the text, the `/wayfinder` skill reads it):
+  - create map = write `map/pathway-<slug>.md`
+  - child ticket = write `map/ticket-<slug>.md` with `parent`
+  - blocking = `blocked_by`
+  - **frontier** = open tickets under the pathway with no open blocker and no owner, lowest `rank` first
+  - **claim** = add yourself to `owners` and commit-and-push the file (the #30 commit rule, message `map: claim <slug>`)
+  - **resolve** = append `## Answer`, set `complete`, commit-and-push
+  - sharpened tickets = new ticket files with `blocked_by`
+
+  `mapkit` exposes `frontier`, `claim`, `resolve` as subcommands so the skill does not reimplement them.
 - **In the app**: tickets render as inbox-style cards (#38's design, type label instead of kind hue) in their pathway's Now (claimed) / Later (open) / Done columns; the Front page tile shows "n tickets open" beside the progress bar. The drawer edits them like inbox items.
 
 ### Migration

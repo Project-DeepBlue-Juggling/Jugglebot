@@ -17,4 +17,22 @@ links: []
 filed_by: claude (jugglebot-f5, pattern exploration 2026-10-30)
 ---
 
-Owner wants to see it (2026-10-30). Two-ball columns with unequal apexes. The 0.045 s flight difference is absorbed by the Dwells (the low ball holds longer) and shortens one of the two empty transits; the offline probe planned 1.05 over 0.95 at today's limits under pose. Binding constraint: hand acceleration at the high ball (3843 of 3900 rev/s2 at 1.05). Software: Pattern carries one apex_m for both Sites and the box keys on one apex band, so the compiler needs a per-Site apex and the admissible box a two-band cell; the learner's apex outcome is already per throw. Visually subtle: the two apexes differ by 100 mm.
+Owner wants to see it (2026-10-30). Two-ball columns with unequal apexes.
+
+## Timing
+
+- The 0.045 s flight difference is absorbed by the Dwells (the low ball holds longer) and shortens one of the two empty transits.
+- The offline probe planned 1.05 over 0.95 at today's limits under pose.
+
+## Binding constraint
+
+Hand acceleration at the high ball (3843 of 3900 rev/s2 at 1.05).
+
+## Software
+
+- Pattern carries one apex_m for both Sites and the box keys on one apex band, so the compiler needs a per-Site apex and the admissible box a two-band cell.
+- The learner's apex outcome is already per throw.
+
+## Appearance
+
+Visually subtle: the two apexes differ by 100 mm.

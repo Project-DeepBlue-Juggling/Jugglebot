@@ -23,7 +23,15 @@ parent: two-ball-oval
 filed_by: claude
 ---
 
-SPLICE_TOO_LATE now ends half the goals of a powered Sitting. The 2026-10-27 lead-clamp P3 Sitting (planner level, dwell 0.50 and 0.65, BB-fed oval and hop) had 10 goals, and 5 ended SPLICE_TOO_LATE at a CATCH. Simple `hop (reload)` goals were among them. There were two variants: "reply transit outran the wire deadline" and "solver did not answer by the wire deadline".
+SPLICE_TOO_LATE now ends half the goals of a powered Sitting.
+
+## Symptom
+
+- The 2026-10-27 lead-clamp P3 Sitting (planner level, dwell 0.50 and 0.65, BB-fed oval and hop) had 10 goals, and 5 ended SPLICE_TOO_LATE at a CATCH.
+- Simple `hop (reload)` goals were among them.
+- There were two variants: "reply transit outran the wire deadline" and "solver did not answer by the wire deadline".
+
+## Evidence
 
 The solve-time median is unchanged, but the tail now crosses the 250 ms handoff deadline:
 
@@ -36,14 +44,59 @@ The solve-time median is unchanged, but the tail now crosses the 250 ms handoff 
 
 The figures come from `grep -oE "solve [0-9.]+ ms"` over each launch.log and the skill_node ENDED lines. The 2026-10-27 launch log is /home/jetson/.ros/log/2026-10-27-22-59-39-920154-jetson-2913798/launch.log.
 
-Until now this residue lived only in plans/archived/skill-stack-dress-rehearsals-and-residue.md § 2 (the handoff lead was raised to 17 knots in handoff-solve-chaining.md). It blocks any 30-catch gate, including two-ball-oval § 9's P3 re-gate. First step: find what grew the tail since 2026-10-23, whether Jetson load (the bag ran 345 MB in 9 min, the Wave camera, the map app) or the planner. Look at solve-time against goal and segment type, and at the CPU and load profile during the slow solves.
+## Why it matters
+
+- Until now this residue lived only in plans/archived/skill-stack-dress-rehearsals-and-residue.md § 2 (the handoff lead was raised to 17 knots in handoff-solve-chaining.md).
+- It blocks any 30-catch gate, including two-ball-oval § 9's P3 re-gate.
+
+## First step
+
+Find what grew the tail since 2026-10-23, whether Jetson load (the bag ran 345 MB in 9 min, the Wave camera, the map app) or the planner. Look at solve-time against goal and segment type, and at the CPU and load profile during the slow solves.
+
+## Deep dive: CATCH solve is about 65 ms intrinsically (2026-10-28)
+
+- Ruled out: the worker path, OpenBLAS spin, memory bandwidth, thermals, CPU frequency, uptime.
+- Leading hypothesis: starvation by preemption churn, with the mocap queue overflow as a fellow victim.
+- Worker replies now log cpu / ivcsw / vcsw after solve X ms.
+- Next: fly one Sitting with tools/probes/profile_session.py running, then pin the worker to its own core if starvation is confirmed.
+- Entry: logbook/2026-10-28-jb76-solve-tail-is-environment-starvation-instrumented.md
+
+## Sitting 09:49 with the recorder: starvation confirmed (2026-10-28)
+
+- Every CATCH did ~65 ms of CPU and took 153 ms p50 / 226 ms p90 of wall with 59 involuntary context switches; 162 of 270 CATCH-class solves over 150 ms wall, zero over 150 ms CPU.
+- Cause: the launch itself runs the box at 5.5 of 6 cores while juggling (rosbridge 86 %, ball_tracker 83 %, teensy_bridge 79 %, skill_node 73 %, mocap 71 %), run queue 13.
+- Mocap queue had zero overflows this time, so the overflow is a fellow victim, not the cause; a Jetson restart is not a fix.
+- Fix 1: nice -n 10 on rosbridge, bag record, spacemouse, ball_butler in the launch.
+- Next: re-fly and scan with tools/probes/solve_starvation_scan.py, then trim tracker/rosbridge load, then worker core isolation.
+
+## Fix 1 and load-trim option 1 landed (2026-10-28)
+
+- Both UNVERIFIED live: next Sitting runs with tools/probes/profile_session.py and is read with solve_starvation_scan.py; the pass mark is CATCH wall/CPU well under 2.18 and re-aims surviving.
+- Then: tracker BLAS cap test via tracker_bag_replay, py-spy on skill_node + teensy_bridge, worker core isolation last.
+
+## Sitting 14:29 outcome (2026-10-28)
+
+- Root cause NOT removed: wall/cpu 2.18 -> 1.97 (pass mark 'well under 2.18' missed), box still 537 of 600 % during goals, ball_tracker_node 148 % during goals with an uncapped BLAS pool is the main nice-0 consumer.
+- Improved, not fixed; next = tracker OPENBLAS_NUM_THREADS=1 test offline, then py-spy skill_node/teensy_bridge, then worker core isolation.
+- Nice values unverifiable (ps snapshot lacked the ni column; recorder fixed).
+
+## Fix 2 detail (2026-10-28)
+
+- mocap_node stays uncapped (untested).
+- Live effect unverified: next scanned Sitting checks 'BLAS 1 thread' in the tracker up-line, tracker goal% well under 100, and CATCH wall/CPU.
+- Then py-spy skill_node / teensy_bridge_node / the tracker's 1.5 ms in-flight frame; worker isolation last.
+
+## Close-out on the 21:02 Sitting (2026-10-28)
+
+- The 3 residual oval SPLICE_TOO_LATE refusals are solve CPU vs the 150 ms cliff, not starvation.
+- Filed as their own bug with the other residue (ABORTED_NO_RELEASE, hand MAX_DEVIATION, mocap queue-full, nice-0 trims, worker SCHED_FIFO).
 
 ## Progress
 
-- 2026-10-28: 2026-10-28 deep dive: the CATCH solve is ~65 ms intrinsically (sim, worker replay and the first live CATCH of each goal all agree); it runs 2-5x slower only mid-juggle, tracking box load. Ruled out: the worker path, OpenBLAS spin, memory bandwidth, thermals, CPU frequency, uptime. Leading hypothesis: starvation by preemption churn, with the mocap queue overflow as a fellow victim. Worker replies now log cpu / ivcsw / vcsw after solve X ms. Next: fly one Sitting with tools/probes/profile_session.py running, then pin the worker to its own core if starvation is confirmed. Entry: logbook/2026-10-28-jb76-solve-tail-is-environment-starvation-instrumented.md
-- 2026-10-28: 2026-10-28 Sitting 09:49 with the recorder: starvation CONFIRMED. Every CATCH did ~65 ms of CPU and took 153 ms p50 / 226 ms p90 of wall with 59 involuntary context switches; 162 of 270 CATCH-class solves over 150 ms wall, zero over 150 ms CPU. Cause: the launch itself runs the box at 5.5 of 6 cores while juggling (rosbridge 86 %, ball_tracker 83 %, teensy_bridge 79 %, skill_node 73 %, mocap 71 %), run queue 13. Mocap queue had zero overflows this time, so the overflow is a fellow victim, not the cause; a Jetson restart is not a fix. Fix 1: nice -n 10 on rosbridge, bag record, spacemouse, ball_butler in the launch. Next: re-fly and scan with tools/probes/solve_starvation_scan.py, then trim tracker/rosbridge load, then worker core isolation.
-- 2026-10-28: 2026-10-28 later: fix 1 (nice -n 10 on rosbridge / bag record / spacemouse / ball_butler, commit 0b6ddad7) and load-trim option 1 (GUI takes mocap_node 20 Hz gui/ copies of the mocap stream, rosbridge 102 -> 53 % of a core on the refreshed rosbridge_cpu_probe replica, commit b2e70285) are on main and built. Both UNVERIFIED live: next Sitting runs with tools/probes/profile_session.py and is read with solve_starvation_scan.py; the pass mark is CATCH wall/CPU well under 2.18 and re-aims surviving. Then: tracker BLAS cap test via tracker_bag_replay, py-spy on skill_node + teensy_bridge, worker core isolation last.
-- 2026-10-28: Sitting 2026-10-28 14:29 (fix 1 nice + option 1 gui copies live, columns only, 79 throws): re-aim refusals 41 % -> 1.3 % (one SPLICE_TOO_LATE, throw 48/50), CATCH wall p50 153 -> 117 ms, p90 226 -> 160, over-150 ms 60 % -> 13 %, rosbridge 86 -> 56 % of a core, 49/49 columns record. Root cause NOT removed: wall/cpu 2.18 -> 1.97 (pass mark 'well under 2.18' missed), box still 537 of 600 % during goals, ball_tracker_node 148 % during goals with an uncapped BLAS pool is the main nice-0 consumer. Improved, not fixed; next = tracker OPENBLAS_NUM_THREADS=1 test offline, then py-spy skill_node/teensy_bridge, then worker core isolation. Nice values unverifiable (ps snapshot lacked the ni column; recorder fixed).
+- 2026-10-28: 2026-10-28 deep dive: the CATCH solve is ~65 ms intrinsically (sim, worker replay and the first live CATCH of each goal all agree); it runs 2-5x slower only mid-juggle, tracking box load. (detail below)
+- 2026-10-28: 2026-10-28 Sitting 09:49 with the recorder: starvation CONFIRMED. (detail below)
+- 2026-10-28: 2026-10-28 later: fix 1 (nice -n 10 on rosbridge / bag record / spacemouse / ball_butler, commit 0b6ddad7) and load-trim option 1 (GUI takes mocap_node 20 Hz gui/ copies of the mocap stream, rosbridge 102 -> 53 % of a core on the refreshed rosbridge_cpu_probe replica, commit b2e70285) are on main and built. (detail below)
+- 2026-10-28: Sitting 2026-10-28 14:29 (fix 1 nice + option 1 gui copies live, columns only, 79 throws): re-aim refusals 41 % -> 1.3 % (one SPLICE_TOO_LATE, throw 48/50), CATCH wall p50 153 -> 117 ms, p90 226 -> 160, over-150 ms 60 % -> 13 %, rosbridge 86 -> 56 % of a core, 49/49 columns record. (detail below)
 - 2026-10-28: JB-34 survey follow-ups: mocap_node priority/pinning (it is a fellow victim of the starved box) and a revisit of TRACKING_MAX_FRAMES (logbook/2026-10-10-mocap-frame-queue.md, logbook/2026-09-14-rosbridge-cpu-leak-and-spin.md)
-- 2026-10-28: Fix 2 landed 67eb4212: ball_tracker_node capped to one OpenBLAS thread (offline on the 14:29 bag: -40..45 % tracker CPU, per-frame no slower, output byte-identical; the 2026-09-06 'large-matrix work' comment was false for it). mocap_node stays uncapped (untested). Live effect unverified: next scanned Sitting checks 'BLAS 1 thread' in the tracker up-line, tracker goal% well under 100, and CATCH wall/CPU. Then py-spy skill_node / teensy_bridge_node / the tracker's 1.5 ms in-flight frame; worker isolation last.
-- 2026-10-28: Closed on the 21:02 Sitting 2026-10-28: CATCH wall/CPU 2.18 -> 1.27 with oval goals in the scan, wall p50 153 -> 95 ms, tracker 148 -> 66 % in goals, oval 50/50 record. The 3 residual oval SPLICE_TOO_LATE refusals are solve CPU vs the 150 ms cliff, not starvation; filed as their own bug with the other residue (ABORTED_NO_RELEASE, hand MAX_DEVIATION, mocap queue-full, nice-0 trims, worker SCHED_FIFO).
+- 2026-10-28: Fix 2 landed 67eb4212: ball_tracker_node capped to one OpenBLAS thread (offline on the 14:29 bag: -40..45 % tracker CPU, per-frame no slower, output byte-identical; the 2026-09-06 'large-matrix work' comment was false for it). (detail below)
+- 2026-10-28: Closed on the 21:02 Sitting 2026-10-28: CATCH wall/CPU 2.18 -> 1.27 with oval goals in the scan, wall p50 153 -> 95 ms, tracker 148 -> 66 % in goals, oval 50/50 record. (detail below)

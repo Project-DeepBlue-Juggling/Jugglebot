@@ -22,7 +22,15 @@ parent: project-map
 filed_by: claude
 ---
 
-The jugglebot-map server imports the checkout's `mapkit` once at startup. The Pi's two-minute pull timer fast-forwards `~/Jugglebot`, so a `mapkit/` change on `main` (the libyaml speed-up of 2026-10-24 is the first) reaches the disk but is not served until someone runs `sudo systemctl restart jugglebot-map`; a change to the item schema would silently diverge. Fix in the fork's `deploy/jugglebot-map-pull.service`: after the pull, restart the server when `git diff --quiet ORIG_HEAD HEAD -- mapkit` says the parser changed (an `ExecStartPost` script), with a README line.
+The jugglebot-map server imports the checkout's `mapkit` once at startup.
+
+## Problem
+
+The Pi's two-minute pull timer fast-forwards `~/Jugglebot`, so a `mapkit/` change on `main` (the libyaml speed-up of 2026-10-24 is the first) reaches the disk but is not served until someone runs `sudo systemctl restart jugglebot-map`. A change to the item schema would silently diverge.
+
+## Fix
+
+In the fork's `deploy/jugglebot-map-pull.service`: after the pull, restart the server when `git diff --quiet ORIG_HEAD HEAD -- mapkit` says the parser changed (an `ExecStartPost` script), with a README line.
 
 ## Progress
 

@@ -25,7 +25,15 @@ Part of #21
 
 ## Question
 
-The charted intake command only WRITES inbox items. The owner (#26, 2026-10-23) also wants a slash command (working name /work-inbox) that loads one or more inbox items and performs the research, analysis or implementation they call for, asking clarifying questions as it goes. Decide: how items are selected (by id, by pathway, by type); which existing skills it dispatches to (research, grilling, implementation-report, investigate); what it does with an item when done (close, promote to a plan under a pathway, promote to a pathway, log); how it records partial progress; and the item fields it needs that #30 must provide.
+The charted intake command only WRITES inbox items. The owner (#26, 2026-10-23) also wants a slash command (working name /work-inbox) that loads one or more inbox items and performs the research, analysis or implementation they call for, asking clarifying questions as it goes.
+
+Decide:
+
+- How items are selected (by id, by pathway, by type).
+- Which existing skills it dispatches to (research, grilling, implementation-report, investigate).
+- What it does with an item when done (close, promote to a plan under a pathway, promote to a pathway, log).
+- How it records partial progress.
+- The item fields it needs that #30 must provide.
 
 Blocked by: #30
 

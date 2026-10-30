@@ -25,7 +25,15 @@ Part of #21
 
 ## Question
 
-Given the prototype verdict (03), decide the fork's concrete shape: repo name under Project-DeepBlue-Juggling (proposal: jugglebot-map); a GitHub fork of TaskTree (keeps history) or a fresh repo seeded from frontend/; runtime (docker compose with two services, bare uvicorn plus a vite build, or a single container); the strip list (BOM, catalogue, calendar, units, Entra, Teams, notifications, multi-user roles, audit log?) and the stub list from 03; the directory watcher and its debounce rule; the config file in Jugglebot that points the app at the checkout and names the map/, plans/ and GLOSSARY.md paths; how the app loads the shared Python parser package from the checkout (PYTHONPATH vs editable install); and which tests the fork repo carries.
+Given the prototype verdict (03), decide the fork's concrete shape:
+- Repo name under Project-DeepBlue-Juggling (proposal: jugglebot-map).
+- A GitHub fork of TaskTree (keeps history) or a fresh repo seeded from frontend/.
+- Runtime (docker compose with two services, bare uvicorn plus a vite build, or a single container).
+- The strip list (BOM, catalogue, calendar, units, Entra, Teams, notifications, multi-user roles, audit log?) and the stub list from 03.
+- The directory watcher and its debounce rule.
+- The config file in Jugglebot that points the app at the checkout and names the map/, plans/ and GLOSSARY.md paths.
+- How the app loads the shared Python parser package from the checkout (PYTHONPATH vs editable install).
+- Which tests the fork repo carries.
 
 ## Answer
 

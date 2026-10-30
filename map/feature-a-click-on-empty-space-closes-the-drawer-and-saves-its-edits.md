@@ -21,6 +21,13 @@ filed_by: harrison
 
 Owner, 2026-10-25, during the Now / Next / Later prototype round: "clicking off the edit panel into empty space should close it, saving any changes that have been made."
 
+## Fix (2026-10-25)
+
+- Every close (button, Esc, click-away) and every switch to another item saves unsaved edits first.
+- A failed or conflicting save keeps the drawer open.
+- Four vitest cases cover click-away, the close button, controls not dismissing, and the conflict.
+- Live on the Pi after its next `deploy.sh`.
+
 ## Progress
 
-2026-10-25: fixed in the fork, commit `c1e98d9`. A pointer-down on empty space outside the drawer closes it; every close (button, Esc, click-away) and every switch to another item saves unsaved edits first, and a failed or conflicting save keeps the drawer open. Four vitest cases cover click-away, the close button, controls not dismissing, and the conflict. Live on the Pi after its next `deploy.sh`.
+2026-10-25: fixed in the fork, commit `c1e98d9`. A pointer-down on empty space outside the drawer closes it (detail below).

@@ -19,13 +19,26 @@ links:
 filed_by: claude
 ---
 
-HomingMonitor (teensy_link/homing.py) only trusts a terminal HomingResult after it has seen HOMING_RUNNING in a Diagnostic, but the Diagnostic arrives at about 1 Hz per axis. A home shorter than one Diagnostic period (a leg already near its hardstop) goes NONE -> OK between two samples, so the observer reports "timed out (saw_running=False)" while the firmware reports HOMING_OK and the reference IS set.
+## Problem
 
-Seen on the bench leg (axis 0, bridge FW 30) on 2026-10-27 during lead-clamp P2: a 1.25 rev move to the stop at 1.5 rev/s took about 0.8 s, and the result was succeeded=[] with failed={0: 'timed out after 35.0s (saw_running=False)'}, final pos -0.1005 rev and Diagnostic homing_result=2. Log: temp/logs/lead-clamp-p2-home-2.log. The bench driver tests/hardware/teensy_home_bench.py also looks frozen for 35 s when piped through tee, because stdout is block-buffered (run it with python -u).
+HomingMonitor (`teensy_link/homing.py`) only trusts a terminal HomingResult after it has seen HOMING_RUNNING in a Diagnostic, but the Diagnostic arrives at about 1 Hz per axis. A home shorter than one Diagnostic period (a leg already near its hardstop) goes NONE -> OK between two samples, so the observer reports "timed out (saw_running=False)" while the firmware reports HOMING_OK and the reference IS set.
 
-teensy_bridge_node._run_home uses the same monitor (20 s backstop), so production /home would false-fail a leg that starts near its stop.
+## Seen on the bench leg
 
-Possible fix: let the monitor accept an OK it sees after the HOME RPC was accepted, checked against an RPC-time epoch (for example, a per-home counter in the Diagnostic) rather than requiring RUNNING to have been observed.
+Axis 0, bridge FW 30, 2026-10-27, during lead-clamp P2:
+
+- A 1.25 rev move to the stop at 1.5 rev/s took about 0.8 s.
+- The result was succeeded=[] with failed={0: 'timed out after 35.0s (saw_running=False)'}, final pos -0.1005 rev and Diagnostic homing_result=2.
+- Log: `temp/logs/lead-clamp-p2-home-2.log`.
+- The bench driver `tests/hardware/teensy_home_bench.py` also looks frozen for 35 s when piped through tee, because stdout is block-buffered (run it with `python -u`).
+
+## Production impact
+
+`teensy_bridge_node._run_home` uses the same monitor (20 s backstop), so production /home would false-fail a leg that starts near its stop.
+
+## Possible fix
+
+Let the monitor accept an OK it sees after the HOME RPC was accepted, checked against an RPC-time epoch (for example, a per-home counter in the Diagnostic) rather than requiring RUNNING to have been observed.
 
 ## Progress
 

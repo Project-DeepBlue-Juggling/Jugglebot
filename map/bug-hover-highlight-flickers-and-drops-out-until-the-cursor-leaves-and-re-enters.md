@@ -21,7 +21,17 @@ parent: project-map
 filed_by: harrison
 ---
 
-Owner reaction round, 2026-10-24: hovering most panels is glitchy - the glow flashes and often disappears completely until the cursor moves off and back onto the panel. Likely cause: `features/hover/` uses `mouseover`/`mouseout` with `stopPropagation`, so moving between a card's child elements fires `mouseout` on the card and clears the hovered id. Fix: use `mouseenter`/`mouseleave` (which do not bubble) per `Openable`, or `pointerenter`/`pointerleave`, and never clear on a child transition; a vitest that moves the pointer from a card onto its dep tag keeps the card's twins glowing.
+Owner reaction round, 2026-10-24: hovering most panels is glitchy - the glow flashes and often disappears completely until the cursor moves off and back onto the panel.
+
+## Likely cause
+
+`features/hover/` uses `mouseover`/`mouseout` with `stopPropagation`, so moving between a card's child elements fires `mouseout` on the card and clears the hovered id.
+
+## Fix
+
+- Use `mouseenter`/`mouseleave` (which do not bubble) per `Openable`, or `pointerenter`/`pointerleave`.
+- Never clear on a child transition.
+- A vitest that moves the pointer from a card onto its dep tag keeps the card's twins glowing.
 
 ## Progress
 

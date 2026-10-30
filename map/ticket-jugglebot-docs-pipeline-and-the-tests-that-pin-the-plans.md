@@ -24,7 +24,25 @@ Part of #21
 
 ## Question
 
-What exactly would the generated INDEX files, the generated mkdocs map page and the new parser package have to satisfy? Read tests/sim/test_plans_index.py, tests/sim/test_logbook_front_matter.py, tests/sim/test_logbook_search.py and sim/analysis/logbook_search.py (the existing frontmatter parser: reusable?), mkdocs.yml, .github/workflows/docs.yml, docs/index.md, DOCUMENTATION_GUIDE.md's layer list, run_tests.sh and the marker definitions in pyproject.toml. Also read the frontmatter of every file in plans/active, plans/parked and five archived plans to list every field in use and every phase-heading style.
+What exactly would the generated INDEX files, the generated mkdocs map page and the new parser package have to satisfy?
+
+**Read:**
+
+
+- `tests/sim/test_plans_index.py`, `tests/sim/test_logbook_front_matter.py`, `tests/sim/test_logbook_search.py`
+- `sim/analysis/logbook_search.py` (the existing frontmatter parser: reusable?)
+- `mkdocs.yml`, `.github/workflows/docs.yml`, `docs/index.md`
+- DOCUMENTATION_GUIDE.md's layer list, `run_tests.sh` and the marker definitions in `pyproject.toml`
+- Also read the frontmatter of every file in `plans/active`, `plans/parked` and five archived plans, to list every field in use and every phase-heading style.
+
+**Output:**
+
+- (a) Each existing assertion in one line, and whether a generator-based board keeps, changes or retires it.
+- (b) How a generated page enters the mkdocs nav and the Pages build.
+- (c) The exact set of frontmatter fields and phase-heading variants the parser must accept.
+- (d) Whether `logbook_search.py`'s parser can seed the shared package.
+
+Findings to `research/jugglebot-docs-pipeline.md`.
 
 Output: (a) each existing assertion in one line and whether a generator-based board keeps, changes or retires it; (b) how a generated page enters the mkdocs nav and the Pages build; (c) the exact set of frontmatter fields and phase-heading variants the parser must accept; (d) whether logbook_search.py's parser can seed the shared package. Findings to research/jugglebot-docs-pipeline.md.
 
