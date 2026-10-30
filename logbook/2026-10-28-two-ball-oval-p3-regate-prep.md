@@ -2,7 +2,7 @@
 title: "Two-ball oval P3 re-gate prep: the re-gate flies the default (CFS solver worker) launch, `level` then `pose`; JB-95 FIFO stalled the setpoint stream and is off by default"
 type: process
 date: 2026-10-28
-status: in-progress
+status: complete
 phase: "two-ball-oval P3 - re-gate Sitting"
 related_plan:
   - two-ball-oval.md
@@ -38,3 +38,5 @@ Why: the 10-24..10-28 Sittings all ran `level`, so the re-gate flies the configu
 ## Verification
 
 - **Verification:** `./run_tests.sh --full`, run 2026-10-28 ~22:50 on the final tree (`temp/logs/p3-regate-prep-full.log`): **parallel 7549 passed / 41 skipped in 336.62 s + serial 8 passed in 30.21 s, PASS** (exit 0). Skip count up from 4 on 2026-10-27; reasons recorded below once read.
+
+Closed 2026-10-30: the re-gate was flown, GO; see `2026-10-30-two-ball-oval-p3-regate-go-and-dwell-headroom.md`.

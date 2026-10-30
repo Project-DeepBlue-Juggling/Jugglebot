@@ -2331,16 +2331,16 @@ def _fresh_catch_throw(node, at, mode):
     return node._svc_install_segment(req, InstallSegment.Response())
 
 
-def test_a_pose_request_plans_the_catch_throw_with_the_pose_planner():
+def test_a_level_request_overrides_the_pose_default_per_install():
     solver = _FakeSolver()
     node = _solver_node(solver)
     with _frozen_perf() as at:
-        resp = _fresh_catch_throw(node, at, 'pose')
+        resp = _fresh_catch_throw(node, at, 'level')
     assert resp.accepted is True, resp.message
-    assert resp.planner_mode == 'pose'
-    assert solver.requests[0].cfg.planner_mode == 'pose'
+    assert resp.planner_mode == 'level'
+    assert solver.requests[0].cfg.planner_mode == 'level'
     # per-install only: the node's own default is untouched
-    assert node._segment_cfg.planner_mode == 'level'
+    assert node._segment_cfg.planner_mode == 'pose'
 
 
 def test_an_empty_planner_mode_uses_the_nodes_default():
@@ -2349,7 +2349,7 @@ def test_an_empty_planner_mode_uses_the_nodes_default():
     with _frozen_perf() as at:
         resp = _fresh_catch_throw(node, at, '')
     assert resp.accepted is True, resp.message
-    assert resp.planner_mode == 'level'
+    assert resp.planner_mode == 'pose'
     assert solver.requests[0].cfg is node._segment_cfg
 
 
@@ -2368,7 +2368,7 @@ def test_an_unknown_planner_mode_is_refused_by_name_before_any_solve():
 
 def test_the_planner_mode_parameter_is_the_default_for_an_empty_request():
     node = _perf_node()
-    assert node._segment_cfg.planner_mode == 'level'
+    assert node._segment_cfg.planner_mode == 'pose'
 
 
 def test_the_solve_cpu_suffix_rides_inside_the_solve_phrase():

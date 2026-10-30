@@ -1034,7 +1034,7 @@ def test_the_gate_config_validates_planner_mode_and_threads_it_to_the_planner():
         SkillsGate(SelfTossGateConfig(planner_mode='banana'))
     gate = SkillsGate(SelfTossGateConfig(planner_mode='pose'))
     assert gate.seg_cfg.planner_mode == 'pose'
-    assert SkillsGate(SelfTossGateConfig()).seg_cfg.planner_mode == 'level'
+    assert SkillsGate(SelfTossGateConfig()).seg_cfg.planner_mode == 'pose'
 
 
 def test_a_small_oval_run_under_the_pose_planner(tmp_path, monkeypatch):

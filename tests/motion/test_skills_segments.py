@@ -962,6 +962,12 @@ def test_a_catch_inside_the_pre_release_hold_is_refused_in_plain_language(
     refused as ``UNVERIFIED: QP solution failed verification (equality residual
     5.943e+01 ...)`` — infeasible either way, but not in words an operator can
     act on.
+
+    Pinned ``planner_mode='level'`` (2026-10-30, default flipped to ``pose``):
+    the message above is the level program's hold-rows check.  The pose
+    planner refuses the same terminal earlier, also in words
+    (``POSE_WINDOW: no knots left for the receive -> throw sweep``), asserted
+    as the twin below.
     """
     term = dataclasses.replace(
         catch_terminal,
@@ -969,6 +975,12 @@ def test_a_catch_inside_the_pre_release_hold_is_refused_in_plain_language(
             t_release_s=catch_terminal.t_land_s + 0.05,
             site_mm=THROW_SITE_MM, target_mm=CATCH_SITE_MM, flight_s=T_F))
     with pytest.raises(uc.CycleInfeasible) as ei:
-        sg.plan_segment(sg.CATCH, catch_seed, term, sg.SegmentConfig(),
-                        limits, geom)
+        sg.plan_segment(sg.CATCH, catch_seed, term,
+                        sg.SegmentConfig(planner_mode='level'), limits, geom)
     assert 'catch comes too close to the next throw' in ei.value.outcome()
+    with pytest.raises(uc.CycleInfeasible) as ei:
+        sg.plan_segment(sg.CATCH, catch_seed, term,
+                        sg.SegmentConfig(planner_mode='pose'), limits, geom)
+    out = ei.value.outcome()
+    assert 'UNVERIFIED' not in out, out
+    assert 'POSE_WINDOW' in out and 'no knots left' in out, out

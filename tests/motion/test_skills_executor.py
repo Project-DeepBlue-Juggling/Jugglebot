@@ -1554,7 +1554,7 @@ def _box(xy=((-0.05, 0.05), (-0.05, 0.05)), apex=(0.3, 1.5), empty=False,
         limits={'leg_vel_mmps': 1.0, 'leg_acc_mmps2': 1.0,
                'leg_jerk_mmps3': 1.0, 'hand_acc_rps2': 1.0},
         gate_hash='0123456789ab', swept_at='2026-09-13',
-        dwell_s=0.30, planner_mode='level')   # the dwell every schedule in this file compiles at
+        dwell_s=0.30, planner_mode='pose')   # the dwell every schedule in this file compiles at
 
 
 def _schedule_with_then_throw(sites):
@@ -4881,7 +4881,7 @@ def test_a_tracker_fit_far_off_the_announced_landing_time_is_ignored_for_a_reloa
 # ---------------------------------------------------------------------------
 
 def _carried_chain(sites_t, landing_offset_mm, limits, geom,
-                   authority_m=0.020, n_throws=2, t0=10.0):
+                   authority_m=0.020, n_throws=2, t0=10.0, cfg=None):
     """Install a ``compile_one_ball`` schedule through the REAL chain with
     every tracker landing offset from its site by ``landing_offset_mm``;
     return ``(schedule, executor, records)``.
@@ -4927,7 +4927,8 @@ def _carried_chain(sites_t, landing_offset_mm, limits, geom,
         rec = state['record']
         seed = (_rest_state(sites_t[0].rest_site_mm()) if rec is None else None)
         new_rec, res, _seg = ex.install_segment(
-            rec, seed, kind, terminal, t_now_s, limits=limits, geom=geom)
+            rec, seed, kind, terminal, t_now_s, cfg=cfg, limits=limits,
+            geom=geom)
         assert res.accepted, '%s %s: %s' % (kind, res.code, res.message)
         state['record'] = new_rec
         records.append(new_rec)
@@ -5116,15 +5117,30 @@ def test_a_hop_catch_releases_from_the_caught_position_too(limits_r5, geom):
     once ``sites.CATCH_CUP_Z_MM`` moves 830 -> 930 mm -- a higher catch plane
     needs more hand deceleration on arrival. This test only needs the install
     to succeed to check the release-position invariant, so it moves to the
-    R5 hand cap (3900) rather than loosen anything."""
+    R5 hand cap (3900) rather than loosen anything.
+
+    Pinned ``planner_mode='level'`` at +15 mm, plus a ``pose`` (the default
+    since 2026-10-30) twin at +10 mm: +15 mm at dwell 0.30 sits ON this
+    window's feasibility edge for BOTH planners (probe 2026-10-30: level OK at
+    15, both refuse INFEASIBLE at 16 and 20; pose OK at 0-14 and -15, and at
+    +15 ends ``UNVERIFIED`` with equality residual 8.0e-03), and it is outside
+    the swept hop box (x +-1 mm at apex 0.9, dwell 0.27), so the executor's
+    clip never dispatches it live.  The invariant is planner-agnostic."""
     p1, p2 = si.columns_sites(250.0)
-    sched, execu, records, landings = _carried_chain(
-        (p1, p2), (15.0, 0.0, 0.0), limits_r5, geom)
+    for dx, mode in ((15.0, 'level'), (10.0, 'pose')):
+        sched, execu, records, landings = _carried_chain(
+            (p1, p2), (dx, 0.0, 0.0), limits_r5, geom,
+            cfg=sg.SegmentConfig(planner_mode=mode))
+        _assert_hop_release_from_caught(sched, execu, records, landings, p2,
+                                        125.0 + dx)
+
+
+def _assert_hop_release_from_caught(sched, execu, records, landings, p2, x_mm):
     idx = _carried_catch_idx(sched)
     assert sched.skills[idx].site.name == 'P2'
     assert sched.skills[idx].then_throw.target.name == 'P1'
     landing_xy = np.asarray(landings[idx].pos_mm, dtype=float)[:2]
-    assert np.allclose(landing_xy, [140.0, 0.0])
+    assert np.allclose(landing_xy, [x_mm, 0.0])
     rec, _k_land, k_rel = _release_view(sched, records, idx)
     assert np.allclose(_cup_xy(rec, k_rel), landing_xy, atol=0.05)
     assert np.allclose(execu._carried_release_mm[idx],

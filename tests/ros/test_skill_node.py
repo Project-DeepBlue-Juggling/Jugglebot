@@ -578,7 +578,7 @@ def test_self_toss_is_refused_on_a_dwell_mismatch(tmp_path):
                # set_limits has no hand field) — 3900 since 2026-10-02.
                'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
         gate_hash=adm.gate_hash(), swept_at='2026-09-13',
-        dwell_s=0.20, planner_mode='level')                            # != the node's default 0.30
+        dwell_s=0.20, planner_mode='pose')                            # != the node's default 0.30
     adm.dump(str(box_path), [box])
     node, _client = _node_with_client()
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH', str(box_path)):
@@ -892,7 +892,7 @@ def test_self_toss_refuses_an_uncovered_apex_before_any_motion(tmp_path):
         limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': 5000.0,
                'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
         gate_hash=adm.gate_hash(), swept_at='2026-09-13',
-        dwell_s=sn._DEFAULT_DWELL_S, planner_mode='level')
+        dwell_s=sn._DEFAULT_DWELL_S, planner_mode='pose')
     adm.dump(str(box_path), [box])
     node, _client = _node_with_client()
     node._on_traj_status(_status())
@@ -1566,7 +1566,7 @@ def test_check_reports_box_refused_when_the_apex_param_is_uncovered(tmp_path):
         limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': 5000.0,
                'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
         gate_hash=adm.gate_hash(), swept_at='2026-09-13',
-        dwell_s=sn._DEFAULT_DWELL_S, planner_mode='level')
+        dwell_s=sn._DEFAULT_DWELL_S, planner_mode='pose')
     adm.dump(str(box_path), [box])
     node, _client = _node_with_client()
     node._on_traj_status(_status())
@@ -2915,7 +2915,7 @@ def _good_box_path(tmp_path, *, apex_band_m=(0.85, 0.95), hop=False,
         limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': 5000.0,
                'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
         gate_hash=adm.gate_hash(), swept_at='2026-09-13',
-        dwell_s=sn._DEFAULT_DWELL_S, planner_mode='level')
+        dwell_s=sn._DEFAULT_DWELL_S, planner_mode='pose')
     boxes = [box]
     if hop:
         # The 250 mm hop's two boxes as the 2026-09-23 sweep produced them
@@ -2930,7 +2930,7 @@ def _good_box_path(tmp_path, *, apex_band_m=(0.85, 0.95), hop=False,
                 limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': 5000.0,
                        'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
                 gate_hash=adm.gate_hash(), swept_at='2026-09-13',
-                dwell_s=sn._DEFAULT_DWELL_S, planner_mode='level'))
+                dwell_s=sn._DEFAULT_DWELL_S, planner_mode='pose'))
     if columns:
         # R5 (owner decision D1, 2026-09-30): `compile_columns` folds each
         # ball into its own SAME-site chain, so it needs (P1,P1)/(P2,P2) --
@@ -2944,7 +2944,7 @@ def _good_box_path(tmp_path, *, apex_band_m=(0.85, 0.95), hop=False,
                 limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': 5000.0,
                        'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
                 gate_hash=adm.gate_hash(), swept_at='2026-09-13',
-                dwell_s=sn._DEFAULT_DWELL_S, planner_mode='level'))
+                dwell_s=sn._DEFAULT_DWELL_S, planner_mode='pose'))
     if oval:
         # The one-ball oval (plan two-ball-oval): ONE box, T -> C at
         # separation 150 mm (columns_sites(150) = P1 (-75, 0), P2 (+75, 0)),
@@ -2962,7 +2962,7 @@ def _good_box_path(tmp_path, *, apex_band_m=(0.85, 0.95), hop=False,
             gate_hash=adm.gate_hash(), swept_at='2026-09-13',
             dwell_s=sn._DEFAULT_DWELL_S if oval_dwell_s is None
             else oval_dwell_s,
-            planner_mode='level'))
+            planner_mode='pose'))
     adm.dump(str(box_path), boxes)
     return str(box_path)
 
@@ -4343,7 +4343,7 @@ class TestJuggleAction:
                 limits={'leg_vel_mmps': _SESSION_LEG_VEL_MMPS, 'leg_acc_mmps2': 5000.0,
                        'leg_jerk_mmps3': 200000.0, 'hand_acc_rps2': float(hw.JB_TRAJ_HAND_ACC_LIMIT_RPS2)},
                 gate_hash=adm.gate_hash(), swept_at='2026-09-13',
-                dwell_s=sn._DEFAULT_DWELL_S, planner_mode='level')
+                dwell_s=sn._DEFAULT_DWELL_S, planner_mode='pose')
             for pair, rel, tgt in [(('P1', 'P2'), (-50.0, 0.0), (50.0, 0.0)),
                                    (('P2', 'P1'), (50.0, 0.0), (-50.0, 0.0))]]
         adm.dump(str(box_path), boxes)
@@ -7114,7 +7114,7 @@ def test_every_install_request_carries_the_default_planner_mode():
     node, client = _node_with_client(response=_response())
     for kind, terminal in _p3_terminals():
         node._installer(kind, terminal, 100.0, ball_id=0)
-    assert [r.planner_mode for r in client.calls] == ['level'] * 3
+    assert [r.planner_mode for r in client.calls] == ['pose'] * 3
 
 
 def test_every_install_request_carries_the_planner_mode_parameter():
@@ -7140,19 +7140,19 @@ def test_planner_mode_cannot_change_while_a_goal_is_active(tmp_path):
         assert node._start_pattern(
             _columns_goal(separation_mm=100.0)).success is True
     assert node._executor is not None
-    result = node.set_parameters([_MockParameter('pose', name='planner_mode')])[0]
+    result = node.set_parameters([_MockParameter('level', name='planner_mode')])[0]
     assert result.successful is False
     assert 'goal is active' in result.reason
-    assert node._planner_mode() == 'level'
+    assert node._planner_mode() == 'pose'
     assert any('REFUSED planner_mode' in c[0][0] for c in log.warning.call_args_list)
     # Re-setting the value already in force is not a change.
     assert node.set_parameters(
-        [_MockParameter('level', name='planner_mode')])[0].successful is True
+        [_MockParameter('pose', name='planner_mode')])[0].successful is True
     # Between attempts the switch applies.
     node._executor = None
     node._reload_ctx = None
     assert node.set_parameters(
-        [_MockParameter('pose', name='planner_mode')])[0].successful is True
+        [_MockParameter('level', name='planner_mode')])[0].successful is True
     # ...and a typo is refused by name whatever the state.
     assert node.set_parameters(
         [_MockParameter('banana', name='planner_mode')])[0].successful is False

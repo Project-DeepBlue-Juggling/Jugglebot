@@ -1752,12 +1752,15 @@ def _oval_carry_segment(dwell_s):
     that carries to a throw RELEASED AT P1 (``site_mm=thr1``: catch at one
     site, release at the other = the oval carry C(+75) -> T(-75) in ``dwell_s``).
     Returns ``(plan, limits)``; raises ``CycleInfeasible`` when refused.
-    Origin: scratchpad diag32 (report_diag32.md)."""
+    Origin: scratchpad diag32 (report_diag32.md).  Pinned ``planner_mode='level'``
+    (2026-10-30, default flipped to pose): every number below is a LEVEL-program
+    reading (the pose carry passes dwell 0.50 with stroke end 40, and refuses 0.40
+    on HAND_LIMIT_ACC instead)."""
     from jugglebot.motion.skills import segments as sg
     p1, p2 = st.columns_sites(150.0)
     limits = _oval_limits()
     geom = StewartGeometry()
-    cfg = sg.SegmentConfig()
+    cfg = sg.SegmentConfig(planner_mode='level')
     rcfg = cr.RealizeConfig()
     flight = 2.0 * np.sqrt(2.0 * 0.95 / 9.806)
     rest_mm = np.array([*np.asarray(p1.cup_mm, float)[:2], 750.0])
@@ -1858,7 +1861,9 @@ def _hop_entry_skill2_plan():
     ``a1_hop_fed_catch`` (R5 point: 125 mm, apex 0.90, dwell 0.27,
     350/5000/200000 + hand 3900), carried one skill further.  Offline it reads
     20.2 deg at touch-down + 1 (the hardware read 31.6-41.7 deg there); its
-    catch_k is 11 and its stroke ends at knot 19.  ``(plan, limits, geom)``."""
+    catch_k is 11 and its stroke ends at knot 19.  ``(plan, limits, geom)``.
+    Pinned ``planner_mode='level'`` (2026-10-30, default flipped to pose): the
+    pinned stroke-end/braking numbers are the LEVEL plan's (pose ends at 15)."""
     from tests.motion import test_skills_executor as tse
     ex, sg, sc = tse.ex, tse.sg, tse.sc
     geom = StewartGeometry()
@@ -1879,7 +1884,7 @@ def _hop_entry_skill2_plan():
     tt = ex._terminal_on_segment_clock(
         sg.THROW, dry._throw_terminal(ti, sk[ti]),
         float(sk[ti].t_abs_s) - float(sk[ti].window_s))
-    seg1 = sg.plan_segment(sg.THROW, seed, tt, sg.SegmentConfig(), limits, geom)
+    seg1 = sg.plan_segment(sg.THROW, seed, tt, sg.SegmentConfig(planner_mode='level'), limits, geom)
     lp = sk[fi].landing_prior
     t1 = float(sk[fi].t_abs_s) - float(sk[fi].window_s)
     ct = ex._terminal_on_segment_clock(
@@ -1887,7 +1892,7 @@ def _hop_entry_skill2_plan():
             pos_mm=lp.pos_mm, vel_mm_s=lp.vel_mm_s, t_land_abs_s=lp.t_land_abs_s)),
         t1)
     seg_feed = sg.plan_segment(sg.CATCH, seg1.release_state, ct,
-                               sg.SegmentConfig(), limits, geom)
+                               sg.SegmentConfig(planner_mode='level'), limits, geom)
     ci = fi + 1
     assert sk[ci].kind == sg.CATCH and sk[ci].site.name == p1.name
     land = dry._predicted_landing(ci, sk[ci])
@@ -1897,7 +1902,7 @@ def _hop_entry_skill2_plan():
             pos_mm=pos, vel_mm_s=land.vel_mm_s, t_land_abs_s=land.t_land_abs_s)),
         t1 + float(seg_feed.release_t_s))
     seg2 = sg.plan_segment(sg.CATCH, seg_feed.release_state, ct2,
-                           sg.SegmentConfig(), limits, geom)
+                           sg.SegmentConfig(planner_mode='level'), limits, geom)
     return seg2.plan, limits, geom
 
 

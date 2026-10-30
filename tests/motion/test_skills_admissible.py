@@ -502,9 +502,12 @@ def test_cone45_resweep_restores_every_non_oval_cell_to_the_pre_oval_snapshot():
     # P3 (2026-10-23): every cell gained the ``planner_mode`` stamp; the
     # pre-oval snapshot predates it, so the stamp is dropped before the
     # value comparison (and every level cell must carry 'level').
+    # Planner-default flip (2026-10-30): every non-oval family is now swept under
+    # BOTH planners; the pre-oval snapshot is a LEVEL-program box, so only the
+    # level-stamped non-oval cells are compared to it (the pose twins are
+    # pinned against their level twins in the P3 resweep test below).
     new_other = [dict(b) for b in new['boxes']
-                 if b['pattern'] != 'oval_1ball' or b.get('planner_mode') == 'pose']
-    new_other = [b for b in new_other if b['pattern'] != 'oval_1ball']
+                 if b['pattern'] != 'oval_1ball' and b.get('planner_mode') == 'level']
     for b in new_other:
         assert b.pop('planner_mode', None) == 'level'
     assert len(old['boxes']) == len(new_other)
@@ -518,13 +521,16 @@ def test_cone45_resweep_restores_every_non_oval_cell_to_the_pre_oval_snapshot():
     ovals = [b for b in new['boxes'] if b['pattern'] == 'oval_1ball'
              and b.get('planner_mode') == 'level']
     # two-ball-oval rung 2 (2026-10-23): cells at 0.55 / 0.50 appended after 0.65
-    assert [o['dwell_s'] for o in ovals] == pytest.approx([0.65, 0.55, 0.50])
+    # planner-default flip (2026-10-30): the level 0.45 cell is swept too
+    assert [o['dwell_s'] for o in ovals] == pytest.approx([0.65, 0.55, 0.50, 0.45])
     for o in ovals:
         assert o['release_site_xy_mm'] == [-75.0, 0.0]
         assert o['target_site_xy_mm'] == [75.0, 0.0]
     # P3: the same three cells again under the pose planner -> 25 cells;
     # P3 tail (2026-10-24): the 0.45 pose cell the A/B runbook assumed -> 26.
-    assert len(new['boxes']) == 26
+    # Planner-default flip (2026-10-30): every family re-swept under BOTH
+    # planners (+ level 0.45) -> 23 level + 23 pose = 46.
+    assert len(new['boxes']) == 46
 
 
 _PRE_P3_SNAPSHOT = os.path.join(_REPO, 'tests', 'fixtures', 'admissible_box_pre_p3.yaml')
@@ -567,20 +573,34 @@ def test_p3_resweep_changed_only_the_stamp_and_added_the_pose_cells():
 
     level = [dict(b) for b in new['boxes'] if b.get('planner_mode') == 'level']
     pose = [b for b in new['boxes'] if b.get('planner_mode') == 'pose']
-    assert len(level) == 22 and len(pose) == 4 and len(new['boxes']) == 26
+    # Planner-default flip (2026-10-30, planner_mode level -> pose): the box was
+    # re-swept with every family under BOTH planners and a level oval 0.45 cell
+    # added -> 23 level + 23 pose = 46.  The 22 pre-flip level cells (the
+    # pre-P3 snapshot's) stay value-identical, in order; the 23rd is the new
+    # level oval 0.45.  Pose cells: the same 23, in the same family order.
+    assert len(level) == 23 and len(pose) == 23 and len(new['boxes']) == 46
+    assert [(b['pattern'], b['site_pair'], b['dwell_s']) for b in level] == \
+           [(b['pattern'], b['site_pair'], b['dwell_s']) for b in pose]
+    assert new['gate_hash'] == '81a2244c1297'
+    assert new['swept_at'] == '2026-10-30'
     for b in level:
         b.pop('planner_mode')
     old_boxes = [dict(b) for b in old['boxes']]
     for b in old_boxes:
         b.pop('planner_mode', None)                      # the snapshot is unstamped
+    assert len(old_boxes) == 22
     for a, b in zip(old_boxes, level):
         assert _same(a, b), 'level cell moved under P3: %r -> %r' % (a, b)
-    assert [p['dwell_s'] for p in pose] == pytest.approx([0.65, 0.55, 0.50, 0.45])
-    for p in pose:
-        assert p['pattern'] == 'oval_1ball'
+    assert level[22]['pattern'] == 'oval_1ball' and level[22]['dwell_s'] == 0.45
+    pose_ovals = [p for p in pose if p['pattern'] == 'oval_1ball']
+    assert [p['dwell_s'] for p in pose_ovals] == pytest.approx([0.65, 0.55, 0.50, 0.45])
+    for p in pose_ovals:
         assert p['release_site_xy_mm'] == [-75.0, 0.0]
         assert p['target_site_xy_mm'] == [75.0, 0.0]
         assert not math.isnan(p['apex_m'][0]), 'the pose cell must be non-empty'
+    # no pose cell is empty where its level twin is not
+    for l, p in zip(level, pose):
+        assert math.isnan(p['apex_m'][0]) <= math.isnan(l['apex_m'][0]), (l, p)
     # The live loader resolves both planners' cells at one dwell by the stamp.
     boxes = ab.load(_COMMITTED_BOX)
     for mode in ('level', 'pose'):

@@ -1,5 +1,5 @@
-swept_at: '2026-10-28'
-gate_hash: f8a9e188b2cf
+swept_at: '2026-10-30'
+gate_hash: 81a2244c1297
 limits:
   leg_vel_mmps: 350.0
   leg_acc_mmps2: 5000.0
@@ -512,6 +512,466 @@ boxes:
   - 0.0
   dwell_s: 0.5
   planner_mode: level
+- pattern: oval_1ball
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 0.9249999999999999
+  - 0.975
+  landing_xy_m:
+  - - -0.02
+    - 0.01
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.6080000000000001
+  - 1.047375
+  release_site_xy_mm:
+  - -75.0
+  - 0.0
+  target_site_xy_mm:
+  - 75.0
+  - 0.0
+  dwell_s: 0.45
+  planner_mode: level
+- pattern: self_toss
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 0.45
+  - 0.55
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.32
+  - 0.6050000000000001
+  release_site_xy_mm:
+  - -50.0
+  - 0.0
+  target_site_xy_mm:
+  - -50.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: self_toss
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 0.5499999999999999
+  - 0.65
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.04
+    - 0.04
+  apex_m:
+  - 0.384
+  - 0.7260000000000001
+  release_site_xy_mm:
+  - -50.0
+  - 0.0
+  target_site_xy_mm:
+  - -50.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: self_toss
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 0.6499999999999999
+  - 0.75
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.448
+  - 0.847
+  release_site_xy_mm:
+  - -50.0
+  - 0.0
+  target_site_xy_mm:
+  - -50.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: self_toss
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 0.75
+  - 0.8500000000000001
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.5120000000000002
+  - 0.9680000000000003
+  release_site_xy_mm:
+  - -50.0
+  - 0.0
+  target_site_xy_mm:
+  - -50.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: self_toss
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 0.85
+  - 0.9500000000000001
+  landing_xy_m:
+  - - -0.03
+    - 0.03
+  - - -0.03
+    - 0.03
+  apex_m:
+  - 0.576
+  - 0.9922499999999999
+  release_site_xy_mm:
+  - -50.0
+  - 0.0
+  target_site_xy_mm:
+  - -50.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: hop
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 0.775
+  - 0.8250000000000001
+  landing_xy_m:
+  - - -0.004
+    - 0.004
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.6480000000000001
+  - 0.9680000000000003
+  release_site_xy_mm:
+  - -125.0
+  - 0.0
+  target_site_xy_mm:
+  - 125.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: hop
+  site_pair:
+  - P2
+  - P1
+  apex_band_m:
+  - 0.775
+  - 0.8250000000000001
+  landing_xy_m:
+  - - -0.004
+    - 0.004
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.6480000000000001
+  - 0.9680000000000003
+  release_site_xy_mm:
+  - 125.0
+  - 0.0
+  target_site_xy_mm:
+  - -125.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: hop
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 0.825
+  - 0.875
+  landing_xy_m:
+  - - -0.008
+    - 0.008
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.6884999999999998
+  - 1.0285
+  release_site_xy_mm:
+  - -125.0
+  - 0.0
+  target_site_xy_mm:
+  - 125.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: hop
+  site_pair:
+  - P2
+  - P1
+  apex_band_m:
+  - 0.825
+  - 0.875
+  landing_xy_m:
+  - - -0.008
+    - 0.008
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.6884999999999998
+  - 1.0285
+  release_site_xy_mm:
+  - 125.0
+  - 0.0
+  target_site_xy_mm:
+  - -125.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: hop
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 0.875
+  - 0.925
+  landing_xy_m:
+  - - -0.001
+    - 0.001
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.65025
+  - 1.0890000000000002
+  release_site_xy_mm:
+  - -125.0
+  - 0.0
+  target_site_xy_mm:
+  - 125.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: hop
+  site_pair:
+  - P2
+  - P1
+  apex_band_m:
+  - 0.875
+  - 0.925
+  landing_xy_m:
+  - - -0.001
+    - 0.001
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.65025
+  - 1.0890000000000002
+  release_site_xy_mm:
+  - 125.0
+  - 0.0
+  target_site_xy_mm:
+  - -125.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: hop
+  site_pair:
+  - P1
+  - P2
+  apex_band_m:
+  - 0.9249999999999999
+  - 0.975
+  landing_xy_m:
+  - - -0.006
+    - 0.006
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.686375
+  - 1.047375
+  release_site_xy_mm:
+  - -125.0
+  - 0.0
+  target_site_xy_mm:
+  - 125.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: hop
+  site_pair:
+  - P2
+  - P1
+  apex_band_m:
+  - 0.9249999999999999
+  - 0.975
+  landing_xy_m:
+  - - -0.006
+    - 0.006
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.686375
+  - 1.047375
+  release_site_xy_mm:
+  - 125.0
+  - 0.0
+  target_site_xy_mm:
+  - -125.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 0.825
+  - 0.875
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - 62.5
+  - 0.0
+  target_site_xy_mm:
+  - 62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 0.825
+  - 0.875
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - -62.5
+  - 0.0
+  target_site_xy_mm:
+  - -62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 0.875
+  - 0.925
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - 62.5
+  - 0.0
+  target_site_xy_mm:
+  - 62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 0.875
+  - 0.925
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - -62.5
+  - 0.0
+  target_site_xy_mm:
+  - -62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 0.9249999999999999
+  - 0.975
+  landing_xy_m:
+  - - -0.001
+    - 0.002
+  - - -0.02
+    - 0.01
+  apex_m:
+  - 0.6080000000000001
+  - 1.047375
+  release_site_xy_mm:
+  - 62.5
+  - 0.0
+  target_site_xy_mm:
+  - 62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 0.9249999999999999
+  - 0.975
+  landing_xy_m:
+  - - -0.002
+    - 0.001
+  - - -0.02
+    - 0.008
+  apex_m:
+  - 0.6080000000000001
+  - 1.047375
+  release_site_xy_mm:
+  - -62.5
+  - 0.0
+  target_site_xy_mm:
+  - -62.5
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
 - pattern: oval_1ball
   site_pair:
   - P1

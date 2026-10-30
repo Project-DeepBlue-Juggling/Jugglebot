@@ -3,7 +3,7 @@ title: Two-ball oval — two balls in one hand, every throw carried back in the 
 created: 2026-10-17
 status: active
 owner: Harrison
-last_updated: 2026-10-28
+last_updated: 2026-10-30
 pathway: two-ball-oval
 scope: >-
   Two balls in one hand on an oval: every throw T to C, the ball carried back in the cup. Five phases, each
@@ -17,7 +17,7 @@ scope: >-
 steps:
   - {id: P1, title: The oval pattern dispatchable, kind: phase, status: complete, date: 2026-10-18, effort: m, hardware: none}
   - {id: P2, title: Banking leak fix, kind: phase, status: retired, date: 2026-10-23, effort: s, hardware: none}
-  - {id: P3, title: Pose-level carry planner, kind: phase, status: in_progress, date: 2026-10-23, effort: m, hardware: robot}
+  - {id: P3, title: Pose-level carry planner, kind: phase, status: complete, date: 2026-10-30, effort: m, hardware: robot}
   - {id: P4, title: Working point and the dwell ladder, kind: phase, status: not_started, effort: m, hardware: robot}
   - {id: P5, title: Two-ball oval, kind: phase, status: not_started, effort: l, hardware: robot}
 related_logbook:
@@ -113,7 +113,7 @@ and whether this cup can carry a ball 150 mm in 0.30 s is what the plan finds ou
   / `CUP_SEATING_FLOOR`; `INVARIANTS.md` entry.
 - **Planner (23, 24, 32, 36, 58):** the oval pattern is P1 because nothing live dispatches a
   fixed-role oval; the pose-level carry planner is the steady formulation for EVERY pattern
-  behind a `level | pose` mode, default `level` until decision 24's hardware gate; named knobs
+  behind a `level | pose` mode, default `level` until decision 24's hardware gate (flipped to `pose` 2026-10-30); named knobs
   h_pre 2 / h_catch_pre 2 / h_catch_post 1 / w 10 with one Phase-3 re-tune (the catch holds may
   go to zero); the seam-dz lever is a P3 ablation that ships only with the release-state
   composition; a null result closes decision 33.
@@ -280,7 +280,7 @@ with its 0.100 s pre-release hold, reading 17.8°; 18.68° is the hold-less numb
 
 Variables: cup xyz jerk + platform z jerk (the free centroid z band); tilt PRESCRIBED (§ 2.3);
 objective: cup jerk + leg jerk through one fixed Jacobian, weight `w`; C-CUP-4 rows. It becomes
-the steady formulation of `cup_cycle` for every pattern behind a named mode, default `level`
+the steady formulation of `cup_cycle` for every pattern behind a named mode, default `level` (flipped to `pose` 2026-10-30)
 until decision 24's gate passes, then flipped with columns re-gated (box re-sweep + sim gate +
 one columns check sitting). **Amended 2026-10-23 (P3, measured):** the z band ships at 0 — the
 block is not assembled (`pose_z_band_mm`, knob kept for a hardware A/B); with it on, the band
@@ -336,7 +336,7 @@ second-to-last catch at C is a standalone HELD catch and the last throw lands on
 | P1 | The oval pattern dispatchable: `oval_1ball(_fed)`, fixed roles, cross-site fold, executor threading, codes, box cell at dwell 0.65, C-CUP-4 check, GUI, sim label, tests | **Rung 1** (`session_oval_rung1.md`): 150 / 0.65 / 0.95 at today's limits, as-is banking — go/no-go on the carry (the 30-consecutive gate WAIVED by owner 2026-10-23: longest oval attempt 10/10; 28/28 caught = 18/18 oval, plus 10/10 hop control; the 30-run bar lives at P5) | COMPLETE | 2026-10-18; rung 1 FLOWN 2026-10-23: 28/28 caught (18/18 oval, plus 10/10 hop control), owner: "Oval 1 ball patterns are working really nicely. I think we're ready to advance on this." |
 | P2 | Banking leak fix (principle a) | ~~Rung 1 re-flown = the leak-fixed column~~ | RETIRED 2026-10-23 (row kept): the leak does not reproduce on today's planner, delta 0 at every accepted dwell 0.65-0.45, § 4 P2 | 2026-10-23 |
 | Rung 2 | No planner code (box cells at 0.55 / 0.50 swept 2026-10-23, see the logbook): one-ball oval at dwell 0.55 then 0.50 on the as-is `level` planner at today's limits, bundled with the sitting that flies the three owed unflown fixes first | Row-27 metrics per step against the 0.65 baseline (runbook `session_oval_rung1.md` § 7) sets P3's shaper target | FLOWN 2026-10-23, MET (owner GO): 0.50 38/38 with a 32-run, 0.55 4/4, 0.65 75/76; leg 2 peak 10.1 A accepted (15 A clamp) | `2026-10-23-oval-rung2-flown-dwell-050` |
-| P3 | Pose-level carry planner behind `level \| pose`, C-CUP-4 rows, knob re-tune, cycle budget, seam-dz ablation (design starts AFTER rung 2 flies) | Starts from the dwell-0.50 as-is baseline (38/38); rung 1 re-flown = the swept column → decision 24 gate; columns re-gated if the mode flips | CODE COMPLETE 2026-10-23; **A/B FLOWN 2026-10-24 (two Sittings): `pose` NO-GO at 0.50 as built (47/57; the logged skid was the drop cause), equal at 0.65; default stays `level`. Skid BOUND landed the same day (`I-PLAN-14`, 175 mm/s, pose cells re-swept + 0.45 cell); re-gate = the next Sitting (runbook § 9), AFTER the lead-clamp prerequisite plan** | 2026-10-24 |
+| P3 | Pose-level carry planner behind `level \| pose`, C-CUP-4 rows, knob re-tune, cycle budget, seam-dz ablation (design starts AFTER rung 2 flies) | Starts from the dwell-0.50 as-is baseline (38/38); rung 1 re-flown = the swept column → decision 24 gate; columns re-gated if the mode flips | CODE COMPLETE 2026-10-23; **A/B FLOWN 2026-10-24 (two Sittings): `pose` NO-GO at 0.50 as built (47/57; the logged skid was the drop cause), equal at 0.65; default stays `level` (flipped to `pose` 2026-10-30). Skid BOUND landed the same day (`I-PLAN-14`, 175 mm/s, pose cells re-swept + 0.45 cell); re-gate = the next Sitting (runbook § 9), AFTER the lead-clamp prerequisite plan** | 2026-10-24 |
 | P4 | Working point 600/8000/200k, acc ceiling 10000, 30 A (gated by `leg-lead-clamp-age-aware.md`, MET 2026-10-27), box re-sweep (oval + columns), one-ball cells at the FIRST PLANNABLE dwells (0.45 today; 0.40 / 0.30 only if the hand-acc and release-hold design items open them — amendment 52–58, 2026-10-24) | Ramp sitting (five columns canary, one-ball oval at the shortest admissible dwell) | NOT STARTED — premise amended 2026-10-24 | |
 | P5 | Two-ball `oval(_fed)`: `compile_oval`, hop-shaped entry, Stop exit, clearance pre-flight | 30 consecutive BB-fed catches in one attempt at P4's gate dwell | NOT STARTED | |
 
@@ -408,12 +408,12 @@ from a dispatched cell. It does not reproduce:
   0.27 dwell), so "feed the sweep as the request" was never safe ungated.
 Where the idea lives now: a note inside P3 (below). Code never started; nothing to revert.
 
-### P3 — Pose-level carry planner — LANDED 2026-10-23; A/B FLOWN 2026-10-24 (NO-GO as built), skid bound landed, re-gate = runbook § 9
+### P3 — Pose-level carry planner — COMPLETE 2026-10-30 (GO)
 
 - **Sequencing (owner 2026-10-23):** rung 2 flew (MET, owner GO): the as-is `level` baseline for P3 is dwell 0.50 (38/38 caught, leg 2 peak 10.1 A of 15, `ball_held` unbroken 36/36). P3's shaper target = the cone refusal at dwell 0.40
   (49.1° > 45°); the physical thing to watch is the raw seat-bit dropout rise (`ball_held_raw` dropouts in 56 % of carries at 0.65 to 69 % at 0.50) as the dwell shortens. P3 design starts now. The retired P2 idea (feed the receive-to-throw sweep as the banking request on carried folds only) is a
   candidate sub-item here, to be gated to carried folds and measured against the hop cells before it is adopted.
-- `cup_cycle`: the `level | pose` mode (default `level`); the free centroid z block, analytic
+- `cup_cycle`: the `level | pose` mode (default `level`, flipped to `pose` 2026-10-30); the free centroid z block, analytic
   dz in `decompose`, the prescribed tilt series with its two holds, the leg-jerk objective,
   C-CUP-4 rows after the C-CUP-2 block. Solve time was ~2× today's offline: measure the cycle
   budget (`tests/motion/test_unified_cycle_budget.py`, `test_solver_worker_lateness.py`) and
@@ -449,7 +449,7 @@ Where the idea lives now: a note inside P3 (below). Code never started; nothing 
   nothing; `select` refuses a mismatch by name) and carries the three oval cells under BOTH planners: re-swept 2026-10-24 (`temp/sweeps/sweep_P3.sh`, nine families, two rounds byte-identical, BLAS one thread; gate_hash e3eb288fc787, 25 cells, every one of the 22 level cells value-identical to HEAD's box — pinned by `test_p3_resweep_changed_only_the_stamp_and_added_the_pose_cells`). One live
   switch — skill_node's `planner_mode` parameter, carried on every `InstallSegment` request (trajectory_node plans with
   it; its own `SegmentConfig` default serves a request carrying none). Cycle budget: idle Jetson 2026-10-24, the 61-knot oval cell (dwell 0.65), 30 solves: pose plan_cycle total min 50.4 ms / core 43.0 ms against level's 48.4 / 40.4 (the pose solve is 37 vs 25 ms but skips the 10 ms banking schedule), both inside the 50 ms core budget; `test_unified_cycle_budget.py::test_pose_mode_steady_fits_the_same_budget` keeps it there. Gate: `./run_tests.sh --full`, run 2026-10-24 02:40 on the final tree: **parallel 7140 passed / 4 skipped in 328.54 s + serial 8 passed in 29.54 s, PASS** (baseline before the phase 7098 / 7).
-  **The default stays `level`; the hardware gate is the A/B sitting in `tests/hardware/session_oval_rung1.md` § 8** (as-is
+  **The default was `level` until the 2026-10-30 re-gate (GO); it is `pose` since. The hardware gate was the A/B sitting in `tests/hardware/session_oval_rung1.md` § 8** (as-is
   column vs the swept column at dwell 0.50, 30 attempts each, leg current not higher; a GO flips the default with every
   family re-swept under `pose` + the sim gate + one columns check sitting). ~~P4 is cleared to start after that sitting's
   outcome is logged; its first item (sweep the pose planner's one-ball cells at 0.40 / 0.30) is unchanged.~~ (struck
@@ -471,8 +471,9 @@ Where the idea lives now: a note inside P3 (below). Code never started; nothing 
   Prerequisites all met: lead-clamp plan 2026-10-27, JB-76 closed 2026-10-28. Three pinned readings: `level` 0.50 refs 35/35, 35/35, 50/50; leg-current refs 7.49 / 10.05 A unchanged; the 22:26 FIFO read CATCH wall/CPU 1.01.
   History: the JB-95 SCHED_FIFO worker stalled the setpoint stream 60-96 ms per CATCH solve (GIL-coupled preemption, inferred; past the 70 ms firmware cover) and tripped the hand guard on 3 of 5 goals at 22:26, so it is off by default (`solver_rt_priority` 0, checked at P3R-1); JB-98 keeps only the unexplained 21:02 trip as a WATCH item.
   Power-cycle the bridge first. Next = the re-gate Sitting.
+- **2026-10-30 re-gate FLOWN, GO (owner; runbook § 9.1, bag `2026-10-30_16-17-11`, entry `logbook/2026-10-30-two-ball-oval-p3-regate-go-and-dwell-headroom.md`):** one CFS launch, `level` 0.50 50/50 then `pose` 0.50 50/50 (+6/6). Against the same-launch `level` column `pose` had legs 1/2 peak 6.59 / 9.45 A vs 7.38 / 9.96 A, `ball_held` unbroken 55/55, touch-down v_x median -73 mm/s (bound 175, 0 carries over; 10-24 read -507), same landing scatter (sd 14-16 mm). `pose` 0.45 caught 40/40, then the goal ended at throw 41 on one 80 ms emitter gap (firmware STOP, hand `MAX_DEVIATION`: the JB-98 reframe, not the planner). Owner: the default flips to `pose`, every family re-swept under `pose`, sim gate, one columns check Sitting (flip, re-sweep and sim gate landed 2026-10-30; the columns check Sitting remains); P3R-4's leg-current reference is the same-launch `level` column; a pre-release-hold rung (P4.0) is scheduled ahead of the P4 working-point commit; the next CPU lever is JB-94.
 
-### P4 — Working point and the dwell ladder — NOT STARTED (premise amended 2026-10-24)
+### P4 — Working point and the dwell ladder — NOT STARTED (premise amended 2026-10-24, 2026-10-30)
 
 - **Premise amended 2026-10-24 (§ 1.3 Amendments, P3 tail):** neither planner reaches dwell 0.30 at 150 mm at this
   working point — `level` is cone-refused at 0.40 at ANY leg limit, `pose` (with the skid bound) clears 0.45, is
@@ -481,11 +482,29 @@ Where the idea lives now: a note inside P3 (below). Code never started; nothing 
   (`hand_acc_rps2` 3900 is the refusal, not a leg knob), (b) the release-hold budget (0.100 + 0.050 s of a 0.30 s
   window). P4 presumes the `pose` planner passed its re-gate (runbook § 9); if it did not, the ladder ends at 0.45 on
   `level` and the plan's destination is re-examined.
+- **Headroom finding (offline, 2026-10-30; scratch probe, to be promoted to `tools/probes/` before P4):** the dwell limit
+  under `pose` is the 0.100 s PRE-RELEASE HOLD, not the legs. At 0.40 the refusal is `HAND_LIMIT_ACC` 4308 vs 3900, flat
+  across apex, and it vanishes when the hold shrinks (hold 0.050: 0.40 admissible at today's limits, hand -10 %, leg
+  velocity -12 %; hold 0.025: 0.35). The working point 600/8000/200k yields IDENTICAL pose plans (limits only gate), so it is
+  margin, not reach. Apex is capped at about 1.05 m by hand acceleration (3489 / 3657 / 3843 / 3902 rev/s² at 0.95 / 1.00 /
+  1.05 / 1.06). Two balls in one hand: T_f = dwell + 2τ. A hand estimate put τ_min at about 0.30 s (0.050 post-hold + 0.075 capture + 0.175 transit at 150 mm), giving minimum apex 1.48 m at dwell 0.50, 1.35 at 0.45, 1.23 at 0.40, 1.11 at 0.35, 0.99 at 0.30. The two admissible cells are planner solves, not table entries: the two-ball fold at the P4 working point (600/8000/200k), pre-release hold 0, post-release hold 0.050, τ = (T_flight − dwell)/2. Apex 1.00 / dwell 0.35 solves at τ = 0.277 s (throw hand 3925; needs the hand limit raised from 3900 to the measured authority 3925.5) and apex 1.05 / dwell 0.30 at τ = 0.313 s (hand 3843; fits under the configured 3900). The planner accepting τ = 0.277 makes the hand estimate's 0.175 transit term about 25 ms conservative: at that τ the table's 1.11 m becomes 1.00 m. With the hand limit hypothetically 6000, 1.1 / 0.30 and 1.2 / 0.30–0.40 also solve (throw hand 4119 / 4629, beyond the measured authority), so apex is hand-capped, not planner-capped. Caveat: the two-ball fold was the probe's own construction (no production
+  two-ball compiler exists), and it contradicts § 1.2's 10-17 note "0.30 plans at apex 1.0 under P4", which predates the skid
+  bound and C-CUP-4; that result is reproduced on today's code first (offline item below). The destination is unchanged
+  (owner, 2026-10-30).
 - **Prerequisite:** `leg-lead-clamp-age-aware.md` (the frame-drop lead-clamp amplifier) is flown and
   passed before the clamp raise below — a 15 A staircase on one leg today becomes a 30 A one. **MET 2026-10-27** (plan
   archived; `logbook/2026-10-27-leg-lead-clamp-age-aware-p3-robot.md`). JB-76 (`SPLICE_TOO_LATE` ending half the goals)
   still stands in front of any 30-catch run.
-- First item: sweep the pose planner's one-ball cells at every dwell the probe clears at the new working point
+- **P4.0 pre-release hold rung (new first item; owner 2026-10-30, map JB-102):** the ideal result is NO hold, the Platform
+  moving continuously through the pattern. Design: release from a moving Platform, composing the Platform's velocity into
+  the release state / aim and accounting for the 45 + 30 ms tracking delay with measured, not commanded, state (the hold
+  exists because of the R4 finding: the Platform still moving +70..+100 mm/s at separation added overshoot). Ladder
+  0.100 → 0.075 → 0.050 → 0 at dwell 0.45. Gate: landing scatter not worse than the 0.100 baseline (sd 14-16 mm) and
+  catch rate ≥ 30/30 at each rung. Lands ahead of the working-point commit.
+- **Offline item:** reproduce the 10-17 "0.30 at apex 1.0 under P4" result on today's code (skid bound, C-CUP-4,
+  `pose`) and promote the headroom probe (`tools/probes/oval_dwell_sweep.py` plus the scratch cells script) to
+  `tools/probes/`, before the working-point commit.
+- First item after P4.0 (the working-point commit follows it): sweep the pose planner's one-ball cells at every dwell the probe clears at the new working point
   (0.50 / 0.45 today; 0.40 if item (a) lands first).
 - One commit: `leg_acc_ceiling_mmps2` 5000 → 10000; session defaults 350/5000/200000 →
   600/8000/200000; `leg_curr_limit_a` 15 → 30 with `config/ODrive config Files/` updated;
@@ -553,7 +572,7 @@ Where the idea lives now: a note inside P3 (below). Code never started; nothing 
   either mode is `tools/probes/oval_dwell_sweep.py --mode asis --planner-mode {level,pose}`. The window-jerk floor the pose
   arm reads at 0.65–0.50 (44,329 mm/s³) is the SETTLE tail's (leg 5, 150 ms after release), identical in both modes —
   the carry's own jerk is below it. Watch item for the A/B: the raw seat-bit dropout rate (skid is the first suspect).
-- **Rollback**: `level` is the default mode until the gate; P1 is additive on the one-ball
+- **Rollback**: `level` is the default mode until the gate (flipped to `pose` 2026-10-30); P1 is additive on the one-ball
   path (`roles='alternate'` is today's hop); P4's working point reverts by one YAML commit + box
   re-sweep.
 - **Files**: see `related_code` above; new files are `tests/hardware/session_oval_rung1.md`

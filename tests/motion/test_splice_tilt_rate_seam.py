@@ -81,6 +81,20 @@ def limits():
 @pytest.fixture(scope='module')
 def hop(geom, limits):
     """The hop chain as the executor installs it: (executor, catches, snaps)."""
+    return _hop_chain(geom, limits)
+
+
+#: The ``level`` program pinned explicitly (default flipped to ``pose`` 2026-10-30).
+LEVEL_CFG = sg.SegmentConfig(planner_mode='level')
+
+
+@pytest.fixture(scope='module')
+def hop_level(geom, limits):
+    """The same chain pinned to the ``level`` planner (see the regression guard)."""
+    return _hop_chain(geom, limits, LEVEL_CFG)
+
+
+def _hop_chain(geom, limits, cfg_seg=None):
     sites = si.columns_sites(SEPARATION_MM)
     sched = sc.compile_one_ball(sc.OneBallPattern(
         sites=sites, apex_m=APEX_M, dwell_s=DWELL_S, n_throws=5), T0_ABS)
@@ -97,7 +111,7 @@ def hop(geom, limits):
         rec = state['record']
         new, res, _ = ex.install_segment(
             rec, seed0 if rec is None else None, kind, terminal, t_now_s,
-            limits=limits, geom=geom, reserve_fresh_lead=True,
+            cfg=cfg_seg, limits=limits, geom=geom, reserve_fresh_lead=True,
             t_install_s=t_now_s)
         if res.accepted:
             state['record'] = new
@@ -129,7 +143,7 @@ def _catch_terminal(snaps, t_land):
             and abs(float(getattr(s[3], 't_land_s', -1.0)) - t_land) < 1e-6][0]
 
 
-def _splice(hop, limits, geom, case):
+def _splice(hop, limits, geom, case, cfg_seg=None):
     """Install ``case`` = (kind, catch index, offset) and return
     ``(head_record, new_record, result, segment, k_s)``."""
     execu, catches, snaps = hop
@@ -145,7 +159,7 @@ def _splice(hop, limits, geom, case):
         term = _catch_terminal(snaps, t_land)          # the UNCHANGED aim
         k = sg.CATCH
     rec = _record_at(snaps, t_now)
-    new, res, seg = ex.install_segment(rec, None, k, term, t_now,
+    new, res, seg = ex.install_segment(rec, None, k, term, t_now, cfg=cfg_seg,
                                        limits=limits, geom=geom,
                                        t_install_s=t_now)
     k_s = None
@@ -197,10 +211,17 @@ def test_the_segment_opens_at_the_heads_tilt_rate(hop, limits, geom, case):
 
 
 @pytest.mark.parametrize('case', [STOP_RESTS[0], REAIM])
-def test_without_the_rate_pin_the_seam_refuses_limit_jerk(hop, limits, geom,
+def test_without_the_rate_pin_the_seam_refuses_limit_jerk(hop_level, limits, geom,
                                                           case, monkeypatch):
     """The regression guard: the pre-I-PLAN-11 schedule (value pin only) is
-    refused on the same driver, at the k_s+1 knot, by the measured margin."""
+    refused on the same driver, at the k_s+1 knot, by the measured margin.
+
+    Pinned to the ``level`` planner (2026-10-30, default flipped to ``pose``):
+    the guard disables ``cup_realize.tilt_schedule``'s rate pin, and a ``pose``
+    CATCH-with-throw window never consults ``tilt_schedule`` (its tilt series is
+    the QP's prescribed ``pose_spec.tilt_fn``), so under pose the re-aim case is
+    accepted and the stop REST (off a pose head) peaks at 394k instead.  The pose
+    seam itself is defended by the positive tests above, which run the default."""
     orig = cr.tilt_schedule
 
     def value_pin_only(*a, **kw):
@@ -208,7 +229,7 @@ def test_without_the_rate_pin_the_seam_refuses_limit_jerk(hop, limits, geom,
         return orig(*a, **kw)
 
     monkeypatch.setattr(cr, 'tilt_schedule', value_pin_only)
-    _rec, _new, res, _seg, _k = _splice(hop, limits, geom, case)
+    _rec, _new, res, _seg, _k = _splice(hop_level, limits, geom, case, LEVEL_CFG)
     assert not res.accepted
     assert res.code == fz.LIMIT_JERK, res.message
     assert 't=0.075 s' in res.message, res.message

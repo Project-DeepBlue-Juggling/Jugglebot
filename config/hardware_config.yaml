@@ -1024,8 +1024,8 @@ trajectory_op:
   # of the composed pose through one fixed Jacobian, and C-CUP-4 is a set of
   # QP rows (cone + floor below) instead of only a post-solve check. Every
   # other window kind (LAUNCH / LANDING / SETTLE / held-axis STEADY) is the
-  # level program in both modes. THE DEFAULT STAYS `level` until decision 24's
-  # hardware gate (plans/active/two-ball-oval.md P3): the admissible box is
+  # level program in both modes. THE DEFAULT IS `pose` since 2026-10-30 (decision
+  # 24's hardware gate passed, plans/active/two-ball-oval.md P3 GO): the admissible box is
   # stamped with the mode it was swept under and `admissible.select` refuses a
   # mismatch by name, so flipping this constant means re-sweeping every
   # family. The LIVE switch is skill_node's `planner_mode` parameter, carried
@@ -1033,8 +1033,8 @@ trajectory_op:
   # start from. Measured 2026-10-23 (oval cell 150 mm / apex 0.95 / dwell
   # 0.50, today's limits): level 111.5k leg jerk, 32.1 deg seating residual;
   # pose 44.3k, 18.6 deg (49.8k with the 2/1 receive holds the owner retired).
-  # Read by unified_cycle.PLANNER_MODE_DEFAULT.
-  planner_mode: level
+  # Read by unified_cycle.PLANNER_MODE_DEFAULT. Flipped level -> pose 2026-10-30 (P3 hardware gate passed, owner GO; box re-swept under both).
+  planner_mode: pose
   pose_leg_jerk_weight: 10.0       # w {-}: weight of the leg-jerk term (sum_k |J0 pose'''_k|^2,
                                    # (mm/s^3)^2, scaled 1e-6/n) against the cup-acceleration
                                    # objective. 10 saturates (ticket 11); 1 raises the carry's leg
