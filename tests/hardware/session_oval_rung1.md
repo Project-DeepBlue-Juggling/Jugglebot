@@ -342,8 +342,8 @@ This Sitting answers three things: do the Columns still catch under the `pose` p
 - Validate-only EVERY goal below against the live `/robot_state` (goals 1-4 and 7); fix all refusals before arming. Sim gate (2026-10-30, `python sim/skills_gate.py --learn --target-throws 12`): all of them PASS in sim, which has no tracking delay, so only this Sitting measures the hold.
 
 **Goals** (GUI Pattern, then Sep. / Apex / Dwell / Throws; hold stays 0.100 unless a step sets it)
-1. `Columns - Ball 2 (fed)` (the ONE-ball fed cold start), Sep. 100, Apex 0.90, Throws 6.
-2. `Columns` (the TWO-ball pattern), Sep. 100, Apex 0.90, Throws 50. Expect >= 49/50 caught and no BOX-EXPECTED-LANDING refusal.
+1. `Columns - Ball 2 (fed)` (the ONE-ball fed cold start), Sep. 125, Apex 0.95, Throws 6 (the values every flown Columns goal has used; the box has no Columns cell at any other separation).
+2. `Columns` (the TWO-ball pattern), Sep. 125, Apex 0.95, Throws 50. Expect >= 49/50 caught and no BOX-EXPECTED-LANDING refusal.
 3. `Oval - fed`, Sep. 150, Apex 0.95, Dwell 0.45, Throws 6.
 4. `Oval - Ball 1`, Sep. 150, Apex 0.95, Dwell 0.45, Throws 30. This is the control at hold 0.100. Expect 30/30.
 5. Terminal: `ros2 param get /trajectory_node pre_release_hold_s` should read 0.1; then `ros2 param set /trajectory_node pre_release_hold_s 0.050` (it is refused while a goal is active). Then `Oval - Ball 1`, Sep. 150, Apex 0.95, Dwell 0.45, Throws 30.
