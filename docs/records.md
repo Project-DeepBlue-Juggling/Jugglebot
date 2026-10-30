@@ -95,3 +95,13 @@ The most Catches in one continuous Attempt on the robot (never the sim), per Pat
 | 2026-10-22 20:00 | 48 | 47 | drop (MISSED_CATCH) | seed: fed goal |
 | 2026-10-28 14:33 | 49 | 49 | completed (COMPLETED) |  |
 | 2026-10-28 21:04 | 59 | 57 | drop (ABORTED_NO_RELEASE) |  |
+
+<!-- pattern: columns_highlow balls: 2 -->
+### Columns — high-low
+
+_No record yet._
+
+<!-- pattern: columns_turned balls: 2 -->
+### Columns — turned
+
+_No record yet._

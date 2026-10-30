@@ -7958,3 +7958,63 @@ def test_a_catch_time_offset_run_writes_no_learner_row(sites, offset_s):
         assert 'no learner row: catch_time_offset in force' in outcome
         assert not x.reports[0].row
         assert 'catch_time_offset in force' in x.reports[0].no_row_reason
+
+
+# ── High-low Columns (JP-9): the box is selected by the THROWN ball's Dwell ──
+
+def _highlow_cells(p_hi, p_lo, timing, apex_hi=1.05, apex_lo=0.95):
+    out = []
+    for site, apex, dwell in ((p_hi, apex_hi, timing.dwells[0]),
+                              (p_lo, apex_lo, timing.dwells[1])):
+        xy = (float(site.cup_mm[0]), float(site.cup_mm[1]))
+        out.append(dataclasses.replace(
+            _box(site_pair=(site.name, site.name),
+                 apex_band_m=(apex - 0.025, apex + 0.025),
+                 pattern=sc.COLUMNS_HIGHLOW, release_xy_mm=xy,
+                 target_xy_mm=xy), dwell_s=dwell))
+    return out
+
+
+def test_high_low_selects_each_balls_cell_by_its_own_dwell():
+    """Ball A (1.05, at P2) is stamped with the commanded Dwell, ball B (0.95,
+    at P1) with its longer one. `_box_dwell_s` reads the skill's ball, so every
+    THROW command finds its ball's cell; a box carrying only the commanded
+    Dwell for the low ball (today's single `schedule.dwell_s` key) is refused
+    -- which is the select defect a scalar dwell would have had."""
+    p1, p2 = si.columns_sites(125.0)
+    pat = sc.Pattern(sites=(p2, p1), apex_m=1.05, apex_m_ball_b=0.95,
+                     dwell_s=0.27, n_throws=6)
+    sch = sc.compile_columns(pat, t0_abs_s=T0_ABS)
+    timing = sc.columns_ball_timing(1.05, 0.95, 0.27)
+    boxes = _highlow_cells(p2, p1, timing)
+    x = ex.SkillExecutor(sch, _FakeInstaller(), learner=_FakeLearner(),
+                         boxes=boxes)
+    seen = set()
+    for idx, sk in enumerate(sch.skills):
+        tt = sk.then_throw
+        if tt is None or tt.shadow_landing:
+            continue
+        assert x._box_dwell_s(idx) == timing.dwells[sk.ball_id]
+        _dy, u_apex = x._command_u(idx, sk.site, tt.target, tt.y_d)
+        assert u_apex == pytest.approx(tt.y_d[1])
+        seen.add(sk.ball_id)
+    assert seen == {0, 1}
+    # The low ball's cell stamped at the COMMANDED dwell: no cell for ball B.
+    wrong = [boxes[0], dataclasses.replace(boxes[1], dwell_s=0.27)]
+    x2 = ex.SkillExecutor(sch, _FakeInstaller(), learner=_FakeLearner(),
+                          boxes=wrong)
+    low = next(i for i, s in enumerate(sch.skills)
+               if s.ball_id == 1 and s.then_throw is not None
+               and not s.then_throw.shadow_landing)
+    with pytest.raises(ex._NoAdmissibleCommand, match='dwell'):
+        x2._command_u(low, sch.skills[low].site, sch.skills[low].then_throw.target,
+                      sch.skills[low].then_throw.y_d)
+
+
+def test_equal_apex_box_dwell_is_the_schedule_dwell():
+    p1, p2 = si.columns_sites(125.0)
+    sch = sc.compile_columns(sc.Pattern(sites=(p2, p1), apex_m=0.95,
+                                        dwell_s=0.27, n_throws=4),
+                             t0_abs_s=T0_ABS)
+    x = ex.SkillExecutor(sch, _FakeInstaller())
+    assert {x._box_dwell_s(i) for i in range(len(sch.skills))} == {sch.dwell_s}

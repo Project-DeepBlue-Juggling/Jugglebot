@@ -79,6 +79,8 @@ PATTERNS: Tuple[Tuple[str, str, int], ...] = (
     ('columns_1ball', 'Columns — Ball 1', 1),
     ('columns_1ball_fed', 'Columns — Ball 2 (fed)', 1),
     ('columns', 'Columns', 2),
+    ('columns_turned', 'Columns — turned', 2),
+    ('columns_highlow', 'Columns — high-low', 2),
 )
 #: Goals that are Feeds, never records.
 FEED_PATTERNS = frozenset(('reload', 'magazine'))

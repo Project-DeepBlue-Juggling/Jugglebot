@@ -2020,3 +2020,117 @@ def test_parity_rule_phantom_n1_unchanged(cols):
     sched = sc.compile_columns(_pattern(cols, n_throws=1, phantom_balls=(1,)),
                                t0_abs_s=10.0)
     assert _stop_skills(sched) == []
+
+
+# ── High-low Columns (JP-9, map JB-107): per-ball Apex ─────────────────────
+
+def _hl_pattern(apex_a, apex_b, dwell=0.27, n=8, **kw):
+    p1, p2 = st.columns_sites(125.0)
+    return sc.Pattern(sites=(p2, p1), apex_m=apex_a, apex_m_ball_b=apex_b,
+                      dwell_s=dwell, n_throws=n, **kw)
+
+
+def _identical(a, b):
+    """Exact (bit) equality through dataclasses, tuples and numpy arrays."""
+    if dataclasses.is_dataclass(a) and not isinstance(a, type):
+        return type(a) is type(b) and all(
+            _identical(getattr(a, f.name), getattr(b, f.name))
+            for f in dataclasses.fields(a))
+    if isinstance(a, np.ndarray) or isinstance(b, np.ndarray):
+        return np.array_equal(np.asarray(a), np.asarray(b))
+    if isinstance(a, (tuple, list)):
+        return (type(a) is type(b) and len(a) == len(b)
+                and all(_identical(x, y) for x, y in zip(a, b)))
+    return a == b and type(a) is type(b)
+
+
+@pytest.mark.parametrize('n', [1, 2, 5, 8])
+@pytest.mark.parametrize('feed', [False, True])
+def test_equal_apexes_compile_todays_schedule_bit_for_bit(n, feed):
+    """apex_m_ball_b None, or equal to apex_m, is today's schedule exactly:
+    every Skill (times, windows, y_d, folds, leads), the scalars and the
+    'columns' label (so the same admissible cells are selected)."""
+    kw = {}
+    if feed:
+        kw = dict(feed=sc.LandingPrior(pos_mm=np.array([62.5, 0.0, 830.0]),
+                                       vel_mm_s=np.array([0.0, 0.0, -4000.0]),
+                                       t_land_abs_s=12.3), hop_entry=True)
+    else:
+        kw = dict(t0_abs_s=10.0)
+    base = sc.compile_columns(_hl_pattern(0.95, None, n=n), **kw)
+    same = sc.compile_columns(_hl_pattern(0.95, 0.95, n=n), **kw)
+    assert _identical(same, base)
+    assert base.pattern == 'columns'
+    assert base.dwell_by_ball == () and base.flight_by_ball == ()
+    assert base.dwell_for(0) == base.dwell_for(1) == 0.27
+    assert base.flight_for(1) == base.flight_s
+    for a, b in zip(base.skills, same.skills):
+        assert a.t_abs_s == b.t_abs_s and a.window_s == b.window_s
+        assert a.lead_s == b.lead_s
+
+
+def test_columns_ball_timing_is_the_owner_framing():
+    t = sc.columns_ball_timing(1.05, 0.95, 0.27)
+    t_hi, t_lo = sc.flight_s(1.05), sc.flight_s(0.95)
+    assert t.flights == (t_hi, t_lo) and t.high_flight == t_hi
+    assert t.beat == sc.beat_s(t_hi, 0.27)
+    assert t.dwells[0] == 0.27
+    assert t.dwells[1] == pytest.approx(0.27 + (t_hi - t_lo), abs=1e-12)
+    assert t.transits[0] == sc.transit_s(t_hi, 0.27)
+    assert t.transits[1] == pytest.approx(t.transits[0] - (t_hi - t_lo),
+                                          abs=1e-12)
+    # about 45 ms shorter at 1.05 / 0.95
+    assert 0.040 < t.transits[0] - t.transits[1] < 0.050
+    # one Beat: each ball's flight + its Dwell is two Beats
+    for b in (0, 1):
+        assert t.flights[b] + t.dwells[b] == pytest.approx(2 * t.beat,
+                                                           abs=1e-12)
+    eq = sc.columns_ball_timing(0.9, 0.9, 0.27)
+    assert eq.equal and eq.dwells == (0.27, 0.27)
+    assert eq.transits == (sc.transit_s(sc.flight_s(0.9), 0.27),) * 2
+
+
+@pytest.mark.parametrize('apexes', [(1.05, 0.95), (0.95, 1.05), (1.00, 0.90)])
+def test_high_low_compiles_per_ball_flights_dwells_and_one_beat(apexes):
+    a, b = apexes
+    s = sc.compile_columns(_hl_pattern(a, b), t0_abs_s=10.0)
+    timing = sc.columns_ball_timing(a, b, 0.27)
+    assert s.pattern == sc.COLUMNS_HIGHLOW
+    assert s.beat_s == timing.beat
+    assert s.flight_s == max(timing.flights)       # the HIGH ball's
+    assert s.dwell_s == 0.27                         # the commanded Dwell
+    assert s.dwell_by_ball == timing.dwells
+    assert s.flight_by_ball == timing.flights
+    apex = (a, b)
+    releases = {0: [], 1: []}
+    for sk in s.skills:
+        if sk.kind == sc.THROW:
+            assert sk.y_d[1] == apex[sk.ball_id]
+            releases[sk.ball_id].append(sk.t_abs_s)
+        if sk.kind == sc.CATCH and sk.landing_prior is None:
+            assert sk.window_s == pytest.approx(timing.transits[sk.ball_id],
+                                                abs=1e-9)
+        if sk.then_throw is not None:
+            tt = sk.then_throw
+            assert tt.y_d[1] == apex[sk.ball_id]
+            releases[sk.ball_id].append(tt.t_release_abs_s)
+            # the carried throw leaves one of THIS ball's Dwells after its catch
+            assert tt.t_release_abs_s - sk.t_abs_s == pytest.approx(
+                timing.dwells[sk.ball_id], abs=1e-9)
+    # every catch still splices on the previous release (the handoff lead)
+    assert sum(1 for sk in s.skills if sk.lead_s == sc.HANDOFF_LEAD_S) >= 6
+    # every throw is one Beat after the previous one, whichever ball
+    ts = sorted(releases[0] + releases[1])
+    assert np.allclose(np.diff(ts), timing.beat, atol=1e-9)
+    # nothing left unfolded: launch THROW + catches + REST, as plain Columns
+    assert len(s.skills) == 8 + 2
+
+
+def test_high_low_refuses_a_low_ball_with_no_transit_by_name():
+    with pytest.raises(ValueError, match='high-low Columns: Ball 2'):
+        sc.compile_columns(_hl_pattern(1.05, 0.35), t0_abs_s=10.0)
+
+
+def test_pattern_refuses_a_non_positive_ball_b_apex():
+    with pytest.raises(ValueError, match='apex_m_ball_b'):
+        _hl_pattern(0.95, 0.0)

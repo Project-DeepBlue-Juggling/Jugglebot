@@ -2364,6 +2364,16 @@ class SkillExecutor:
 
     # ── the R3 command: learner + admissible box, computed once per throw ──
 
+    def _box_dwell_s(self, idx: int) -> float:
+        """The ``dwell_s`` the admissible box is selected by for skill
+        ``idx``: the Dwell of the BALL that skill throws
+        (``Schedule.dwell_for``). That is ``schedule.dwell_s`` for every
+        schedule whose balls share one Apex -- bit-identical to the select
+        before JP-9 -- and the LOW ball's longer Dwell in a high-low Columns,
+        whose cells are stamped with it (the high ball's are stamped with the
+        commanded Dwell)."""
+        return self.schedule.dwell_for(self.schedule.skills[idx].ball_id)
+
     def _command_u(self, idx: int, site, target, y_d,
                    seat_offset_m=None,
                    shadow_landing: bool = False,
@@ -2504,7 +2514,7 @@ class SkillExecutor:
                              (site.name, target.name), apex,
                              release_site_xy_mm=site.cup_mm[:2],
                              target_site_xy_mm=target.cup_mm[:2],
-                             dwell_s=self.schedule.dwell_s,
+                             dwell_s=self._box_dwell_s(idx),
                              planner_mode=self.planner_mode)
             if self.learner is not None and box is None:
                 reason = adm.describe_miss(
@@ -2512,7 +2522,7 @@ class SkillExecutor:
                     (site.name, target.name), apex,
                     release_site_xy_mm=site.cup_mm[:2],
                     target_site_xy_mm=target.cup_mm[:2],
-                    dwell_s=self.schedule.dwell_s,
+                    dwell_s=self._box_dwell_s(idx),
                              planner_mode=self.planner_mode)
                 raise _NoAdmissibleCommand(
                     'no admissible box covers pattern %r site pair %r: %s — '
@@ -2741,7 +2751,7 @@ class SkillExecutor:
                              (site.name, site.name), apex,
                              release_site_xy_mm=site.cup_mm[:2],
                              target_site_xy_mm=site.cup_mm[:2],
-                             dwell_s=self.schedule.dwell_s,
+                             dwell_s=self._box_dwell_s(idx),
                              planner_mode=self.planner_mode)
             if box is not None and not box.empty:
                 alo, ahi = box.apex_m
@@ -3256,8 +3266,9 @@ class SkillExecutor:
         ball that was never really thrown) would otherwise end the attempt
         ``NO_LANDING`` on a track that can never arrive. It gets the ONE
         landing a phantom can ever have: a plain self-toss at this site,
-        synthesised from the pattern's own flight time (every throw in a
-        columns schedule shares one apex -- ``self.schedule.flight_s``) --
+        synthesised from the pattern's own flight time for THAT ball
+        (``self.schedule.flight_for(ball_id)`` -- ``flight_s`` unless the two
+        balls fly to different Apexes, JP-9) --
         the identical ``ballistics_bc`` closed form below, just with no
         ``prev`` to read ``site``/``y_d``/``release_idx`` off, because this
         ball was never really released.
@@ -3269,7 +3280,7 @@ class SkillExecutor:
         prev = _previous_release(self.schedule, idx, skill.ball_id)
         if prev is None:
             if self.schedule.is_phantom(skill.ball_id):
-                flight_s = float(self.schedule.flight_s)
+                flight_s = self.schedule.flight_for(skill.ball_id)
                 pos_mm = skill.site.catch_site_mm()
                 launch_vel = ballistics_bc.launch_velocity(
                     skill.site.throw_site_mm(), pos_mm, flight_s)

@@ -9,6 +9,7 @@ CATCH is aimed at :data:`CATCH_CUP_Z_MM`, and a REST settles at
 from __future__ import annotations
 
 import dataclasses
+import math
 from typing import Tuple
 
 import numpy as np
@@ -138,7 +139,8 @@ class Site:
         return np.array([self.cup_mm[0], self.cup_mm[1], float(rest_z_mm)])
 
 
-def columns_sites(separation_mm: float) -> Tuple[Site, Site]:
+def columns_sites(separation_mm: float,
+                  angle_deg: float = 0.0) -> Tuple[Site, Site]:
     """The two columns-pattern sites, ``separation_mm`` apart, straddling x=0.
 
     Plan § 1.2 / § 2.4: a columns pattern is two SELF-tosses run out of
@@ -165,10 +167,31 @@ def columns_sites(separation_mm: float) -> Tuple[Site, Site]:
     Ball Butler, which feeds it) and ``sites[1]`` = ``P2`` as the CATCH site C:
     every throw leaves T for C and every catch is at C, the loaded cup carrying
     the ball C -> T inside the dwell.
+
+    ``angle_deg`` (default 0.0, JP-10): rotate the pair about the origin; the
+    Sites are then named ``P1@<angle>`` / ``P2@<angle>`` (see the body).
     """
     if not float(separation_mm) > 0.0:
         raise ValueError('separation_mm must be > 0, got %r' % (separation_mm,))
     half = float(separation_mm) / 2.0
     z = CATCH_CUP_Z_MM
-    return (Site('P1', np.array([-half, 0.0, z])),
-            Site('P2', np.array([half, 0.0, z])))
+    angle = float(angle_deg)
+    if not math.isfinite(angle):
+        raise ValueError('angle_deg must be finite, got %r' % (angle_deg,))
+    if angle == 0.0:
+        # Bit-identical to the pre-angle pair (no -0.0 from -half * sin 0).
+        return (Site('P1', np.array([-half, 0.0, z])),
+                Site('P2', np.array([half, 0.0, z])))
+    # TURNED pair (JP-10, ``columns_turned``): the same pair rotated by
+    # ``angle_deg`` about the Platform origin (+z), P1 at (-half cos, -half
+    # sin), P2 at (+half cos, +half sin) -- 90 deg puts P1 at -y, P2 at +y.
+    # The Sites carry DISTINCT names ('P1@45'): the admissible box is keyed
+    # on the site-pair NAMES (``admissible._refuse_overlapping_apex_bands``
+    # ignores the xy stamps), so a turned cell sharing 'P1' would collide
+    # with the straight cell in one YAML. ``select`` also compares the xy
+    # stamps, but only the name makes the collision impossible in the file.
+    rad = math.radians(angle)
+    c, s = math.cos(rad), math.sin(rad)
+    tag = '@%g' % (angle,)
+    return (Site('P1' + tag, np.array([-half * c, -half * s, z])),
+            Site('P2' + tag, np.array([half * c, half * s, z])))

@@ -120,17 +120,15 @@ _Status: closed (complete)._
 
 **Destination:** JP-14 Centre and orbit flown on the robot: 30 consecutive Catches in one Attempt at radius 100 mm with 8 Sites per lap, under pose.
 
-**Progress:** 1 of 10 stops done
+**Progress:** 3 of 10 stops done
 
-**Next:** P2 Turned Columns on the compiled path ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
+**Next:** P3 JP-10 turned Columns ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
 
 **Owners:** Harrison
 
 **Remaining:**
 
-- P2 Turned Columns on the compiled path ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
 - P3 JP-10 turned Columns ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
-- P4 Per-Site Apex ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
 - P5 JP-9 high-low Columns ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
 - P6 Per-Beat Sites dependency owned by JB-38 ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
 - P7 JP-5 polygon walk ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
@@ -168,7 +166,7 @@ _Status: closed (complete)._
 | Ball Butler | — | BB calibration: advisory when a template marker is never matched in a sweep | bug bb/throw_outcome carries no throw identity; bug NOT_SETTLED retry is dead in the field; feature Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware | — |
 | Learner generalisation | — | Box sweep fidelity for same-site families (plan what the executor dispatches) | P1 Learner core; P2 The characterisation sitting; P3 Online admissibility and box retirement; P4 BeatEvent stream and the columns wrapper; P5 Close-out; feature Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z | — |
 | Map improvements | — | — | bug item_uuid(slug) collides across kinds that share a slug; bug Map app allocates JB ids from its own clone and collides with mapkit when both file within minutes | P0 Plan and its Feature; P1 mapkit ids module and checks; P2 Backfill and the uniqueness test; P3 mapkit resolution, creation, display and the commands; P4 App server: allocate, resolve, repair (fork repo); P5 App frontend: show and deep-link (fork repo); P6 Normative docs |
-| Pattern progression: Columns to Centre and orbit | — | P2 Turned Columns on the compiled path | P3 JP-10 turned Columns; P4 Per-Site Apex; P5 JP-9 high-low Columns; P6 Per-Beat Sites dependency owned by JB-38; P7 JP-5 polygon walk; P8 JP-11 rotating Columns; P9 Centre and orbit compile; P10 JP-14 Centre and orbit; idea JP-10 Turned columns: the columns pair at fixed angles about +z, under pose; idea JP-11 Rotating columns: the pair turns a few degrees every Beat; idea JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm; idea JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites; idea JP-9 High-low columns: Ball 1 at apex 1.05 m, Ball 2 at 0.95 m | P1 Launch current check |
+| Pattern progression: Columns to Centre and orbit | — | P3 JP-10 turned Columns | P5 JP-9 high-low Columns; P6 Per-Beat Sites dependency owned by JB-38; P7 JP-5 polygon walk; P8 JP-11 rotating Columns; P9 Centre and orbit compile; P10 JP-14 Centre and orbit; idea JP-10 Turned columns: the columns pair at fixed angles about +z, under pose; idea JP-11 Rotating columns: the pair turns a few degrees every Beat; idea JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm; idea JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites; idea JP-9 High-low columns: Ball 1 at apex 1.05 m, Ball 2 at 0.95 m | P1 Launch current check; P2 Turned Columns on the compiled path; P4 Per-Site Apex |
 | Two-ball skill stack | — | — | — | closed |
 | Wave camera on CAN3 | — | — | — | closed |
 

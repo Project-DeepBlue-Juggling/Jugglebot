@@ -532,7 +532,10 @@ def test_cone45_resweep_restores_every_non_oval_cell_to_the_pre_oval_snapshot():
     # P3 tail (2026-10-24): the 0.45 pose cell the A/B runbook assumed -> 26.
     # Planner-default flip (2026-10-30): every family re-swept under BOTH
     # planners (+ level 0.45) -> 23 level + 23 pose = 46.
-    assert len(new['boxes']) == 46 + 8   # + the 2026-10-30 apex-extension cells
+    # + the 2026-10-30 apex-extension cells; + the 2026-10-31 Pattern-progression
+    # P2/P4 cells (12 turned Columns + 8 high-low Columns, all pose; pinned in
+    # test_pattern_progression_cells_are_the_tail_after_the_54).
+    assert len(new['boxes']) == 46 + 8 + 12 + 8
 
 
 _PRE_P3_SNAPSHOT = os.path.join(_REPO, 'tests', 'fixtures', 'admissible_box_pre_p3.yaml')
@@ -586,8 +589,10 @@ def test_p3_resweep_changed_only_the_stamp_and_added_the_pose_cells():
     assert len(level) == 23 and len(pose) == 23 and len(core) == 46
     assert [(b['pattern'], b['site_pair'], b['dwell_s']) for b in level] == \
            [(b['pattern'], b['site_pair'], b['dwell_s']) for b in pose]
-    assert new['gate_hash'] == '81a2244c1297'
-    assert new['swept_at'] == '2026-10-30'
+    # Pattern progression P2 (2026-10-31): sites.py (gated) gained the turned pair,
+    # so the whole box was re-swept; the 54 cells stayed value-identical.
+    assert new['gate_hash'] == 'c6c4d7adccf9'
+    assert new['swept_at'] == '2026-10-31'
     for b in level:
         b.pop('planner_mode')
     old_boxes = [dict(b) for b in old['boxes']]
@@ -1509,11 +1514,12 @@ def test_oval_apex_extension_appends_eight_cells_after_the_46_and_leaves_them_un
     import yaml as _y
     with open(_COMMITTED_BOX) as fh:
         new = _y.safe_load(fh)
-    assert new['gate_hash'] == '81a2244c1297' and new['swept_at'] == '2026-10-30'
-    assert len(new['boxes']) == 54
+    # Re-swept 2026-10-31 (Pattern progression P2, sites.py gated): same values.
+    assert new['gate_hash'] == 'c6c4d7adccf9' and new['swept_at'] == '2026-10-31'
+    assert len(new['boxes']) == 54 + 20          # + the P2/P4 Columns cells (pose)
     assert sum(b['planner_mode'] == 'level' for b in new['boxes']) == 27
-    assert sum(b['planner_mode'] == 'pose' for b in new['boxes']) == 27
-    head, tail = new['boxes'][:46], new['boxes'][46:]
+    assert sum(b['planner_mode'] == 'pose' for b in new['boxes']) == 27 + 20
+    head, tail = new['boxes'][:46], new['boxes'][46:54]
     assert all(b['apex_band_m'][1] < 0.98 or b['pattern'] != 'oval_1ball' for b in head)
     assert [(b['planner_mode'], b['dwell_s'], round(b['apex_band_m'][0], 3)) for b in tail] == [
         (m, d, lo) for m in ('level', 'pose') for d in (0.50, 0.45) for lo in (0.975, 1.025)]
@@ -1521,3 +1527,117 @@ def test_oval_apex_extension_appends_eight_cells_after_the_46_and_leaves_them_un
         assert b['pattern'] == 'oval_1ball' and b['site_pair'] == ['P1', 'P2']
         assert b['release_site_xy_mm'] == [-75.0, 0.0] and b['target_site_xy_mm'] == [75.0, 0.0]
         assert b['apex_m'][0] < b['apex_m'][1], 'an apex-extension cell must be non-empty'
+
+
+def test_pattern_progression_cells_are_the_tail_after_the_54():
+    """Pattern progression P2 + P4 (2026-10-31, plan pattern-progression.md):
+    the 54 committed cells keep their order and values; appended after them, all
+    ``pose``: 12 turned Columns cells (JP-10, label ``columns``, Sites ``P1@45`` /
+    ``P2@45`` then ``P1@90`` / ``P2@90``, bands 0.825 / 0.875 / 0.925, dwell 0.27,
+    separation 125) then 8 high-low Columns cells (JP-9, label
+    ``columns_highlow``: pairs 1.05/0.95 then 1.00/0.90 at separation 100; four
+    cells each, both Site assignments, the low cell stamped with the low ball's
+    longer Dwell).  The same pairs were swept at separation 125 and every cell
+    came out EMPTY (the low ball's transit falls under the floor); those cells
+    are NOT in the file, because they share Site names, dwell stamps and bands
+    with the 100 mm cells and the loader's uniqueness key ignores xy -- a goal
+    at 125 is refused by a box miss (logbook
+    2026-10-31-pattern-progression-p4-high-low-columns.md).  The viability
+    finding is pinned here so a re-sweep that changes it is seen: at 100 mm
+    1.00/0.90 is admissible at both Sites and 1.05/0.95 only for the high ball;
+    turned 45 deg admits only the 0.925 band, 90 deg the 0.875 and 0.925 bands."""
+    import math
+    import yaml as _y
+    with open(_COMMITTED_BOX) as fh:
+        new = _y.safe_load(fh)
+    tail = new['boxes'][54:]
+    assert len(tail) == 20 and all(b['planner_mode'] == 'pose' for b in tail)
+    turned, highlow = tail[:12], tail[12:]
+    assert all(b['pattern'] == 'columns' and b['dwell_s'] == 0.27 for b in turned)
+    names = [b['site_pair'][0] for b in turned]
+    assert names[:6] == ['P2@45', 'P1@45'] * 3 and names[6:] == ['P2@90', 'P1@90'] * 3
+    for b in turned:
+        assert b['site_pair'][0] == b['site_pair'][1]
+        assert b['release_site_xy_mm'] == b['target_site_xy_mm']
+        assert math.isclose(math.hypot(*b['release_site_xy_mm']), 62.5, abs_tol=1e-6)
+    empty = lambda b: math.isnan(b['apex_m'][0])
+    assert [not empty(b) for b in turned[:6]] == [False, False, False, False, True, True]
+    assert [not empty(b) for b in turned[6:]] == [False, False, True, True, True, True]
+    assert all(b['pattern'] == 'columns_highlow' for b in highlow)
+    seps = [round(abs(b['release_site_xy_mm'][0]) * 2, 3) for b in highlow]
+    assert seps == [100.0] * 8
+    # per pair: low@P2, high@P1, low@P1, high@P2 (the sweep's own order)
+    for k in range(0, 8, 4):
+        four = highlow[k:k + 4]
+        assert [b['dwell_s'] == 0.27 for b in four] == [False, True, False, True]
+        assert four[0]['dwell_s'] == four[2]['dwell_s'] > 0.27
+    assert [round(b['apex_band_m'][0], 3) for b in highlow] == \
+           [0.925, 1.025, 0.925, 1.025, 0.875, 0.975, 0.875, 0.975]
+    assert [not empty(b) for b in highlow[:4]] == [False, True, False, True]   # 1.05/0.95
+    assert all(not empty(b) for b in highlow[4:]), '1.00/0.90 admissible at both Sites'
+
+
+# ── High-low Columns cells (JP-9, map JB-107) ──────────────────────────────
+
+def test_columns_highlow_is_its_own_box_pattern():
+    """A plain Columns select never sees a high-low cell, even at the same
+    Site, band and Dwell: each high-low cell is seeded by the OTHER ball's
+    release at a different Apex."""
+    from jugglebot.motion.skills import schedule as sc
+    assert sc.COLUMNS_HIGHLOW in ab.PATTERNS
+    p1, _p2 = st.columns_sites(125.0)
+    xy = (float(p1.cup_mm[0]), float(p1.cup_mm[1]))
+    cell = ab.AdmissibleBox(
+        site_pair=('P1', 'P1'), apex_band_m=(1.025, 1.075),
+        landing_xy_m=((-0.01, 0.01), (-0.01, 0.01)), apex_m=(1.0, 1.1),
+        pattern=sc.COLUMNS_HIGHLOW, release_site_xy_mm=xy,
+        target_site_xy_mm=xy, limits=dict(_LIMITS_DICT), gate_hash=_GATE_HASH,
+        swept_at='2026-10-30', dwell_s=0.27, planner_mode='pose')
+    kw = dict(release_site_xy_mm=xy, target_site_xy_mm=xy, dwell_s=0.27,
+              planner_mode='pose')
+    assert ab.select([cell], 'columns', ('P1', 'P1'), 1.05, **kw) is None
+    assert ab.select([cell], sc.COLUMNS_HIGHLOW, ('P1', 'P1'), 1.05,
+                     **kw) is cell
+
+
+@pytest.mark.parametrize('pair', [(1.05, 0.95), (1.00, 0.90)])
+def test_highlow_sweep_stamps_both_assignments_without_collision(pair):
+    """Sweep plumbing on a one-point grid (identity command only): four cells
+    -- the high and the low cell at EACH Site, so either fed layout is
+    covered -- stamped with the high-low label, each ball's band and Dwell
+    (the low one from `columns_ball_timing`, so it equals the executor's
+    select key), pose, and none overlapping each other or the committed box's
+    OTHER cells (the committed high-low cells are this same sweep's output at
+    separation 100, so they share every key with the cells built here and are
+    excluded; test_pattern_progression_cells_are_the_tail_after_the_54 pins
+    them). The admitted sets themselves are the sweep's to measure, not this
+    test's."""
+    from jugglebot.motion.skills import schedule as sc
+    sw = _load_sweep_module()
+    hi, lo = pair
+    boxes, rows = sw.highlow_sweep(
+        hi, lo, flight_frac=(0.0,), halfwidth_m=0.025, offsets_mm=(0.0,),
+        dwell_s=0.27, separation_mm=125.0, leg_vel=350.0, leg_acc=5000.0,
+        leg_jerk=200000.0, hand_acc=3900.0, planner_mode='pose',
+        log=lambda r: None)
+    timing = sc.columns_ball_timing(hi, lo, 0.27)
+    got = sorted((b.site_pair[0], round(b.apex_band_m[0], 6),
+                  round(b.apex_band_m[1], 6), b.dwell_s) for b in boxes)
+    want = sorted((s, round(a - 0.025, 6), round(a + 0.025, 6), d)
+                  for s in ('P1', 'P2')
+                  for a, d in ((hi, 0.27), (lo, timing.dwells[1])))
+    assert got == want
+    assert all(b.pattern == sc.COLUMNS_HIGHLOW and b.planner_mode == 'pose'
+               and b.site_pair[0] == b.site_pair[1] for b in boxes)
+    assert {r['role'] for r in rows} == {'high', 'low'}
+    committed = [b for b in ab.load(_COMMITTED_BOX)
+                 if b.pattern != sc.COLUMNS_HIGHLOW]
+    ab._refuse_overlapping_apex_bands(committed + boxes, AssertionError)
+
+
+def test_apex_pair_cli_is_columns_only_and_high_first():
+    sw = _load_sweep_module()
+    for argv in (['--site-pairs', 'hop', '--apex-pair', '1.05', '0.95'],
+                 ['--site-pairs', 'columns', '--apex-pair', '0.95', '1.05']):
+        with pytest.raises(SystemExit):
+            sw.main(argv + ['--out', os.devnull])

@@ -1,5 +1,5 @@
-swept_at: '2026-10-30'
-gate_hash: 81a2244c1297
+swept_at: '2026-10-31'
+gate_hash: c6c4d7adccf9
 limits:
   leg_vel_mmps: 350.0
   leg_acc_mmps2: 5000.0
@@ -1247,4 +1247,464 @@ boxes:
   - 75.0
   - 0.0
   dwell_s: 0.45
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P2@45
+  - P2@45
+  apex_band_m:
+  - 0.825
+  - 0.875
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - 44.19417382415922
+  - 44.194173824159215
+  target_site_xy_mm:
+  - 44.19417382415922
+  - 44.194173824159215
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P1@45
+  - P1@45
+  apex_band_m:
+  - 0.825
+  - 0.875
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - -44.19417382415922
+  - -44.194173824159215
+  target_site_xy_mm:
+  - -44.19417382415922
+  - -44.194173824159215
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P2@45
+  - P2@45
+  apex_band_m:
+  - 0.875
+  - 0.925
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - 44.19417382415922
+  - 44.194173824159215
+  target_site_xy_mm:
+  - 44.19417382415922
+  - 44.194173824159215
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P1@45
+  - P1@45
+  apex_band_m:
+  - 0.875
+  - 0.925
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - -44.19417382415922
+  - -44.194173824159215
+  target_site_xy_mm:
+  - -44.19417382415922
+  - -44.194173824159215
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P2@45
+  - P2@45
+  apex_band_m:
+  - 0.9249999999999999
+  - 0.975
+  landing_xy_m:
+  - - -0.01
+    - 0.0
+  - - -0.002
+    - 0.004
+  apex_m:
+  - 0.6080000000000001
+  - 1.047375
+  release_site_xy_mm:
+  - 44.19417382415922
+  - 44.194173824159215
+  target_site_xy_mm:
+  - 44.19417382415922
+  - 44.194173824159215
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P1@45
+  - P1@45
+  apex_band_m:
+  - 0.9249999999999999
+  - 0.975
+  landing_xy_m:
+  - - 0.0
+    - 0.006
+  - - -0.006
+    - 0.0
+  apex_m:
+  - 0.6080000000000001
+  - 1.047375
+  release_site_xy_mm:
+  - -44.19417382415922
+  - -44.194173824159215
+  target_site_xy_mm:
+  - -44.19417382415922
+  - -44.194173824159215
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P2@90
+  - P2@90
+  apex_band_m:
+  - 0.825
+  - 0.875
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - 3.827021247335479e-15
+  - 62.5
+  target_site_xy_mm:
+  - 3.827021247335479e-15
+  - 62.5
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P1@90
+  - P1@90
+  apex_band_m:
+  - 0.825
+  - 0.875
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - -3.827021247335479e-15
+  - -62.5
+  target_site_xy_mm:
+  - -3.827021247335479e-15
+  - -62.5
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P2@90
+  - P2@90
+  apex_band_m:
+  - 0.875
+  - 0.925
+  landing_xy_m:
+  - - -0.004
+    - 0.002
+  - - -0.002
+    - 0.002
+  apex_m:
+  - 0.576
+  - 0.9922499999999999
+  release_site_xy_mm:
+  - 3.827021247335479e-15
+  - 62.5
+  target_site_xy_mm:
+  - 3.827021247335479e-15
+  - 62.5
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P1@90
+  - P1@90
+  apex_band_m:
+  - 0.875
+  - 0.925
+  landing_xy_m:
+  - - -0.002
+    - 0.002
+  - - -0.002
+    - 0.004
+  apex_m:
+  - 0.576
+  - 0.9922499999999999
+  release_site_xy_mm:
+  - -3.827021247335479e-15
+  - -62.5
+  target_site_xy_mm:
+  - -3.827021247335479e-15
+  - -62.5
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P2@90
+  - P2@90
+  apex_band_m:
+  - 0.9249999999999999
+  - 0.975
+  landing_xy_m:
+  - - -0.01
+    - 0.008
+  - - -0.004
+    - 0.004
+  apex_m:
+  - 0.6080000000000001
+  - 1.047375
+  release_site_xy_mm:
+  - 3.827021247335479e-15
+  - 62.5
+  target_site_xy_mm:
+  - 3.827021247335479e-15
+  - 62.5
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns
+  site_pair:
+  - P1@90
+  - P1@90
+  apex_band_m:
+  - 0.9249999999999999
+  - 0.975
+  landing_xy_m:
+  - - -0.008
+    - 0.01
+  - - -0.002
+    - 0.006
+  apex_m:
+  - 0.6080000000000001
+  - 1.047375
+  release_site_xy_mm:
+  - -3.827021247335479e-15
+  - -62.5
+  target_site_xy_mm:
+  - -3.827021247335479e-15
+  - -62.5
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns_highlow
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 0.9249999999999999
+  - 0.975
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - 50.0
+  - 0.0
+  target_site_xy_mm:
+  - 50.0
+  - 0.0
+  dwell_s: 0.3151757007397771
+  planner_mode: pose
+- pattern: columns_highlow
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 1.0250000000000001
+  - 1.075
+  landing_xy_m:
+  - - 0.0
+    - 0.01
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.672
+  - 1.05
+  release_site_xy_mm:
+  - -50.0
+  - 0.0
+  target_site_xy_mm:
+  - -50.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns_highlow
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 0.9249999999999999
+  - 0.975
+  landing_xy_m:
+  - - .nan
+    - .nan
+  - - .nan
+    - .nan
+  apex_m:
+  - .nan
+  - .nan
+  release_site_xy_mm:
+  - -50.0
+  - 0.0
+  target_site_xy_mm:
+  - -50.0
+  - 0.0
+  dwell_s: 0.3151757007397771
+  planner_mode: pose
+- pattern: columns_highlow
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 1.0250000000000001
+  - 1.075
+  landing_xy_m:
+  - - -0.01
+    - 0.0
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.672
+  - 1.05
+  release_site_xy_mm:
+  - 50.0
+  - 0.0
+  target_site_xy_mm:
+  - 50.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns_highlow
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 0.875
+  - 0.925
+  landing_xy_m:
+  - - -0.02
+    - 0.006
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.576
+  - 0.9922499999999999
+  release_site_xy_mm:
+  - 50.0
+  - 0.0
+  target_site_xy_mm:
+  - 50.0
+  - 0.0
+  dwell_s: 0.31635085889508385
+  planner_mode: pose
+- pattern: columns_highlow
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 0.975
+  - 1.025
+  landing_xy_m:
+  - - -0.01
+    - 0.006
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.64
+  - 0.9999999999999999
+  release_site_xy_mm:
+  - -50.0
+  - 0.0
+  target_site_xy_mm:
+  - -50.0
+  - 0.0
+  dwell_s: 0.27
+  planner_mode: pose
+- pattern: columns_highlow
+  site_pair:
+  - P1
+  - P1
+  apex_band_m:
+  - 0.875
+  - 0.925
+  landing_xy_m:
+  - - -0.006
+    - 0.02
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.576
+  - 0.9922499999999999
+  release_site_xy_mm:
+  - -50.0
+  - 0.0
+  target_site_xy_mm:
+  - -50.0
+  - 0.0
+  dwell_s: 0.31635085889508385
+  planner_mode: pose
+- pattern: columns_highlow
+  site_pair:
+  - P2
+  - P2
+  apex_band_m:
+  - 0.975
+  - 1.025
+  landing_xy_m:
+  - - -0.006
+    - 0.01
+  - - -0.02
+    - 0.02
+  apex_m:
+  - 0.64
+  - 0.9999999999999999
+  release_site_xy_mm:
+  - 50.0
+  - 0.0
+  target_site_xy_mm:
+  - 50.0
+  - 0.0
+  dwell_s: 0.27
   planner_mode: pose

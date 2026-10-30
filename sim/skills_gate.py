@@ -223,10 +223,10 @@ def _columns_final_removal(sched: 'sk.Schedule'):
 
     * ``t_land_final_s`` — the wall-clock instant the shadow-landed ball
       reaches the catch plane: the carried release instant plus the
-      schedule's OWN flight time (``sched.flight_s`` — the same number
-      every throw in this schedule uses, since a columns throw's duration is
-      the symmetric-height ballistic time and does not depend on which site
-      it is aimed at, only on the pattern's apex).
+      flight time of THAT ball (``sched.flight_for(ball_id)`` — the
+      schedule's own ``flight_s`` unless the two balls fly to different
+      Apexes, JP-9; a columns throw's duration is the symmetric-height
+      ballistic time and does not depend on which site it is aimed at).
     * ``ball_final`` — which MuJoCo ball index this is (the shadow throw's
       own ``ball_id``).
     * ``target_xy_mm`` — the xy (mm) it is aimed at: the OTHER site's
@@ -241,7 +241,8 @@ def _columns_final_removal(sched: 'sk.Schedule'):
     for skill in sched.skills:
         tt = skill.then_throw
         if tt is not None and tt.shadow_landing:
-            t_land_final_s = float(tt.t_release_abs_s) + float(sched.flight_s)
+            t_land_final_s = (float(tt.t_release_abs_s)
+                              + sched.flight_for(skill.ball_id))
             target_xy_mm = np.asarray(tt.target.catch_site_mm(),
                                       dtype=float)[:2].copy()
             return t_land_final_s, int(skill.ball_id), target_xy_mm
@@ -255,7 +256,13 @@ def _columns_final_removal(sched: 'sk.Schedule'):
 @dataclasses.dataclass
 class SkillsGateConfig:
     apex_m: float = 0.9
+    #: Ball B's (Ball 2's) own Apex, m -- JP-9 high-low Columns
+    #: (``schedule.Pattern.apex_m_ball_b``, ``--apex-ball2``). ``None`` = the
+    #: same as :attr:`apex_m` (plain Columns, unchanged).
+    apex_m_ball2: Optional[float] = None
     separation_mm: float = 100.0
+    #: JP-10: rotate the columns Site pair by this many degrees (0 = straight).
+    angle_deg: float = 0.0
     dwell_s: float = 0.27
     n_throws: int = 20
     seeds: tuple = (0, 1, 2, 3, 4)
@@ -927,6 +934,12 @@ class SelfTossGateConfig:
     #: ``_SELF_TOSS_SEPARATION_MM`` (100 mm); a hop run sets this to
     #: ``_HOP_SEPARATION_MM`` (250 mm) to match the swept 'hop' boxes.
     separation_mm: float = _SELF_TOSS_SEPARATION_MM
+    #: JP-10 (``columns_turned``): rotate the columns Site pair about the
+    #: origin by this many degrees (``sites.columns_sites(.., angle_deg)``;
+    #: the Sites are then named ``P1@<angle>``/``P2@<angle>``, so the box
+    #: swept with ``admissible_sweep --angle-deg`` is the one selected).
+    #: 0.0 = the straight pair, bit-identical to before.
+    angle_deg: float = 0.0
     leg_vel_mmps: float = _SESSION_LEG_VEL_MMPS
     leg_acc_mmps2: float = _SESSION_LEG_ACC_MMPS2
     leg_jerk_mmps3: float = _SESSION_LEG_JERK_MMPS3
@@ -1085,13 +1098,13 @@ def _sites_for(cfg: 'SelfTossGateConfig') -> tuple:
     """``cfg.pattern``'s site tuple -- ``('self_toss',)`` slices out just P1
     (the R3 single-site operating point, unchanged); ``'hop'`` (R4) keeps
     both P1 and P2, so ``schedule.OneBallPattern`` alternates release/target
-    between them.  Both slice the SAME ``sites.columns_sites(cfg.separation_mm)``
+    between them.  Both slice the SAME ``sites.columns_sites(cfg.separation_mm, cfg.angle_deg)``
     pair -- a hop's P1/P2 are the columns sites at the hop's own (wider)
     separation, not a second site definition (mirrors
     ``schedule.py``'s own ``columns_sites`` reuse for ``compile_columns``).
     Raises on any other ``pattern`` -- there is no site tuple to fall back to
     (plan § 0: no fallback modes)."""
-    s0, s1 = sites.columns_sites(cfg.separation_mm)
+    s0, s1 = sites.columns_sites(cfg.separation_mm, cfg.angle_deg)
     if cfg.pattern in ('hop', 'oval_1ball'):
         # 'oval_1ball' (plan two-ball-oval): the same two columns sites, but
         # fixed roles -- sites[0] is T (every throw), sites[1] is C (every
@@ -1314,7 +1327,7 @@ class SkillsGate:
         plant = self.plant
         geom = self.geom
         noise = JuggleNoise(cfg.noise, seed=seed)
-        site0, site1 = sites.columns_sites(cfg.separation_mm)
+        site0, site1 = sites.columns_sites(cfg.separation_mm, cfg.angle_deg)
 
         # 1. Settle the machine at rest at site 0 (ball A's home).
         rest0 = self._rest_state(site0)
@@ -1337,10 +1350,14 @@ class SkillsGate:
         # premise (``schedule.compile_columns``'s docstring) is exactly this
         # spawn -- no fast-forward needed, and the ball's TRUE physics landing
         # (MuJoCo gravity, deterministic) lands at spawn+t_f = t0+tau exactly.
-        t_f = sk.flight_s(cfg.apex_m)
-        beta = sk.beat_s(t_f, cfg.dwell_s)
-        tau = sk.transit_s(t_f, cfg.dwell_s)
-        v0_mm_s = math.sqrt(2.0 * bal.GRAVITY_MMS2 * cfg.apex_m * 1000.0)
+        # High-low (JP-9, ``cfg.apex_m_ball2``): ball B is spawned at ITS
+        # Apex; ``t0 = spawn + beta`` still holds (ball B lands at spawn +
+        # t_B = t0 + tau_B, ``schedule.columns_ball_timing``). With
+        # ``apex_m_ball2`` None every number below is the plain-Columns one.
+        apex_b = cfg.apex_m if cfg.apex_m_ball2 is None else cfg.apex_m_ball2
+        timing = sk.columns_ball_timing(cfg.apex_m, apex_b, cfg.dwell_s)
+        beta = timing.beat
+        v0_mm_s = math.sqrt(2.0 * bal.GRAVITY_MMS2 * apex_b * 1000.0)
         pos1 = site1.catch_site_mm()
         pos1n, vel1n = noise.perturb_throw(
             pos1, np.array([0.0, 0.0, v0_mm_s]), np.zeros(3))
@@ -1349,7 +1366,8 @@ class SkillsGate:
         t0_abs_s = t_spawn + beta
 
         pattern = sk.Pattern(sites=(site0, site1), apex_m=cfg.apex_m,
-                             dwell_s=cfg.dwell_s, n_throws=cfg.n_throws)
+                             dwell_s=cfg.dwell_s, n_throws=cfg.n_throws,
+                             apex_m_ball_b=cfg.apex_m_ball2)
         sched = sk.compile_columns(pattern, t0_abs_s)
         scheduled_catches = sum(1 for s in sched.skills if s.kind == CATCH)
         # The Stop (D2, E1'): the last throw is aimed at the OTHER site and
@@ -1363,8 +1381,9 @@ class SkillsGate:
         if shadow is not None:
             t_land_final, ball_final, final_target_xy_mm = shadow
         else:
-            t_land_final = t0_abs_s + (cfg.n_throws - 1) * beta + t_f
             ball_final = (cfg.n_throws - 1) % 2
+            t_land_final = (t0_abs_s + (cfg.n_throws - 1) * beta
+                            + timing.flights[ball_final])
             final_target_xy_mm = None
 
         # 3. Per-ball tracking / hold-bookkeeping state.
@@ -2021,7 +2040,7 @@ class SkillsGate:
         cfg: SelfTossGateConfig = self.cfg
         plant = self.plant
         geom = self.geom
-        site0, site1 = sites.columns_sites(cfg.separation_mm)
+        site0, site1 = sites.columns_sites(cfg.separation_mm, cfg.angle_deg)
         # R5 sitting 2 (2026-10-02): a FEED trial swaps which site holds A
         # and which is fed (mirrors `SkillNode._run_columns`'s own swap,
         # class docstring above); the vertical run keeps site 0 = A,
@@ -2607,7 +2626,7 @@ class SkillsGate:
         cfg: SelfTossGateConfig = self.cfg
         plant = self.plant
         geom = self.geom
-        site0, site1 = sites.columns_sites(cfg.separation_mm)
+        site0, site1 = sites.columns_sites(cfg.separation_mm, cfg.angle_deg)
         # Unswapped: A at site 0, B (phantom) at site 1 -- see the method
         # docstring (no feed exists to collide with, unlike the FEED
         # trial's own swap).
@@ -3349,12 +3368,20 @@ def main(argv=None) -> int:
                    help='headless (the default; accepted for symmetry)')
     p.add_argument('--viewer-speed', type=float, default=1.0)
     p.add_argument('--report', default=None)
+    p.add_argument('--angle-deg', type=float, default=0.0,
+                   help='JP-10: turn the columns Site pair by this angle '
+                        '(deg) about the origin; needs a box swept with '
+                        'admissible_sweep --angle-deg (pose planner)')
     p.add_argument('--separation-mm', type=float, default=None,
                    help='site separation (default: the operating point -- '
                         '100 mm columns/self_toss, 250 mm --learn --pattern hop)')
     p.add_argument('--apex-m', type=float, default=None,
                    help='pattern apex height, m above the catch plane '
                         '(default: the operating point, 0.9 m)')
+    p.add_argument('--apex-ball2', type=float, default=None,
+                   help='high-low Columns (JP-9): Ball 2\'s own Apex, m; '
+                        'Ball 1 flies --apex-m. Default columns run only '
+                        '(not --learn/--reload/--one-ball*/--feed-*)')
     p.add_argument('--target-throws', type=int, default=None,
                    help='--learn only: throws to collect per seed (default: '
                         'the operating point, 25; R5 columns\' own gate '
@@ -3478,6 +3505,11 @@ def main(argv=None) -> int:
                         'mutually exclusive with --one-ball')
     args = p.parse_args(argv)
 
+    if args.apex_ball2 is not None and (
+            args.reload or args.learn or args.one_ball or args.one_ball_fed
+            or args.feed_angle_deg is not None):
+        p.error('--apex-ball2 runs the default two-ball columns gate only')
+
     if args.reload:
         rcfg = SelfTossGateConfig(report_path=args.report,
                                   catch_aim_source=args.catch_aim_source,
@@ -3526,6 +3558,13 @@ def main(argv=None) -> int:
                                   pattern=args.pattern,
                                   planner_mode=args.planner_mode,
                                   separation_mm=separation_mm)
+        if args.angle_deg:
+            if args.pattern != 'columns':
+                p.error('--angle-deg only applies to --pattern columns')
+            if args.planner_mode != 'pose':
+                p.error('--angle-deg needs --planner-mode pose (the level '
+                         'planner is direction-sensitive; JP-10)')
+            lcfg.angle_deg = float(args.angle_deg)
         if args.pre_release_hold_s is not None:
             lcfg.pre_release_hold_s = float(args.pre_release_hold_s)
         if args.apex_m is not None:
@@ -3572,8 +3611,15 @@ def main(argv=None) -> int:
         cfg.n_throws = args.n_throws
     if args.separation_mm is not None:
         cfg.separation_mm = float(args.separation_mm)
+    if args.angle_deg:
+        if args.planner_mode != 'pose':
+            p.error('--angle-deg needs --planner-mode pose (the level '
+                     'planner is direction-sensitive; JP-10)')
+        cfg.angle_deg = float(args.angle_deg)
     if args.apex_m is not None:
         cfg.apex_m = float(args.apex_m)
+    if args.apex_ball2 is not None:
+        cfg.apex_m_ball2 = float(args.apex_ball2)
 
     rep = run_gate(cfg, viewer_speed=(args.viewer_speed if args.viewer
                                       else None))

@@ -36,7 +36,10 @@ def test_patterns_are_exactly_the_skill_nodes_minus_the_feed():
 def test_tables_are_ordered_by_balls_then_pattern():
     order = [(t.balls, t.pattern) for t in rec.empty().ordered()]
     assert order == sorted(order)
-    assert order[-1] == (2, 'columns')
+    # Two-ball Patterns last (columns and its variants, e.g. columns_highlow).
+    assert (2, 'columns') in order and order[-1][0] == 2
+    assert (2, 'columns_highlow') in order
+    assert (2, 'columns_turned') in order
     text = rec.render(rec.empty())
     assert text.index('## 1 ball') < text.index('## 2 balls')
     assert '<!-- pattern: columns balls: 2 -->' in text
@@ -188,7 +191,7 @@ def test_to_json_is_the_guis_view_in_file_order():
     model = rec.rebuild([_a('2026-10-21 10:00', 'columns', 8, throws=10, code='MISSED_CATCH')])
     j = rec.to_json(model)
     assert [p['pattern'] for p in j['patterns']] == [t.pattern for t in model.ordered()]
-    col = j['patterns'][-1]
+    col = next(p for p in j['patterns'] if p['pattern'] == 'columns')
     assert col['balls'] == 2 and col['history'] == 1
     assert col['record'] == {'when_local': '2026-10-21 10:00', 'throws': 10,
                              'catches': 8, 'end_code': 'MISSED_CATCH',

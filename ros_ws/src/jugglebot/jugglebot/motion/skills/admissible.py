@@ -73,7 +73,14 @@ __all__ = [
 #: The FED variants ('oval_1ball_fed', 'columns_1ball_fed') own no label: the
 #: caller passes the sibling's box label to :func:`select` (skill_node does so
 #: today for 'columns_1ball_fed' -> 'columns'), so there is one path.
-PATTERNS = ('self_toss', 'hop', 'columns', 'oval_1ball', 'oval')
+#: 'columns_highlow' (JP-9, map JB-107) is Columns whose two balls fly to
+#: different Apexes (``schedule.compile_columns`` with ``apex_m_ball_b``): its
+#: OWN label, not 'columns', because each of its cells is seeded by the OTHER
+#: ball's release at a different Apex and the low ball's cell transits shorter
+#: and dwells longer -- a plain Columns at one of those Apexes must never
+#: select it (nor collide with a plain cell swept at the same band and Dwell).
+PATTERNS = ('self_toss', 'hop', 'columns', 'oval_1ball', 'oval',
+            'columns_highlow')
 
 #: The segment planners a box may be swept under (two-ball-oval P3): 'level'
 #: (cup held level) or 'pose' (pose-level planner). Kept here as a literal

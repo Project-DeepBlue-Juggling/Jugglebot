@@ -553,8 +553,19 @@ def test_the_committed_box_is_swept_at_the_node_default_dwell():
     for box in oval:
         assert any(box.dwell_s == pytest.approx(d) for d in (0.65, 0.55, 0.50, 0.45)), (
             box.site_pair, box.pattern, box.dwell_s)
+    # High-low Columns (JP-9, 2026-10-31) is the second exception by design:
+    # the high ball's cells carry the default dwell, the low ball's cells its
+    # LONGER dwell (``schedule.columns_ball_timing``), and the goal's box check
+    # looks each ball's cell up at that ball's own dwell -- so the default
+    # launch is still not refused.  Every low cell must sit above the default.
+    highlow = [box for box in boxes if box.pattern == 'columns_highlow']
+    assert highlow, 'the committed box has no high-low Columns cell'
+    assert any(box.dwell_s == pytest.approx(sn._DEFAULT_DWELL_S) for box in highlow)
+    for box in highlow:
+        assert box.dwell_s >= sn._DEFAULT_DWELL_S - 1e-9, (
+            box.site_pair, box.pattern, box.dwell_s)
     for box in boxes:
-        if box.pattern in ('oval_1ball', 'oval'):
+        if box.pattern in ('oval_1ball', 'oval', 'columns_highlow'):
             continue
         assert box.dwell_s == pytest.approx(sn._DEFAULT_DWELL_S), (
             box.site_pair, box.pattern, box.dwell_s)
@@ -4966,7 +4977,7 @@ def test_columns_1ball_reload_false_opens_on_a_rest_from_the_activate_park(
 #: tests/ros/test_skill_node_magazine.py).
 _ACCEPTED_CUP_CELLS = [
     (pattern, ev) for pattern, row in sn._CUP_RULE.items()
-    if pattern != 'magazine'
+    if pattern not in ('magazine', 'columns_turned')   # turned: its own box
     for ev, decision in row.items()
     if decision in (sn.RELOAD_FIRST, sn.THROW_FIRST)]
 
@@ -4994,18 +5005,30 @@ def test_every_pattern_entry_opens_on_a_rest(tmp_path, pattern, evidence):
     # the fixture's hop boxes are the 250 mm sweep's; the others sit at 100 mm
     separation_mm = (250.0 if pattern == 'hop'
                      else 150.0 if pattern.startswith('oval_1ball') else 100.0)
-    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
-                      _good_box_path(tmp_path, hop=True, columns=True,
-                                     oval=True)), \
+    box_path = _good_box_path(tmp_path, hop=True, columns=True, oval=True)
+    goal_kw = {}
+    if pattern == 'columns_highlow':
+        # JP-9: Ball 2's Apex is the node parameter; its cells are its own.
+        node._params['apex_m_ball2'] = 0.85
+        goal_kw = dict(apex_m=0.9)
+        sub = tmp_path / 'highlow'
+        sub.mkdir()
+        box_path = _highlow_box_path(sub, 0.9, 0.85)
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH', box_path), \
          patch.object(sn, '_REPO_ROOT', str(tmp_path)):
-        resp = node._start_pattern(_goal(pattern, separation_mm=separation_mm))
+        resp = node._start_pattern(_goal(pattern, separation_mm=separation_mm,
+                                         **goal_kw))
     assert resp.success is True, resp.message
     first = node._executor.schedule.skills[0]
     assert first.kind == 'REST', (
         '%s with a %s cup puts a %s on the machine first' % (pattern, evidence,
                                                              first.kind))
+    # 'columns_turned' is `_run_columns` on a rotated pair (same REST-first
+    # tail as 'columns'); the fixture box has no P1@<angle> cells, so its
+    # box coverage is the sweep's job (tests/motion/test_turned_columns_box.py).
     covered = {'self_toss', 'hop', 'columns', 'columns_1ball',
-               'columns_1ball_fed', 'oval_1ball', 'oval_1ball_fed', 'reload'}
+               'columns_1ball_fed', 'columns_turned', 'columns_highlow',
+               'oval_1ball', 'oval_1ball_fed', 'reload'}
     # 'magazine' has no schedule (one MAGAZINE segment from rest; its own
     # tests are tests/ros/test_skill_node_magazine.py).
     assert set(sn.SkillNode._PATTERNS) - {'magazine'} == covered
@@ -7201,3 +7224,161 @@ def test_a_pose_box_passes_the_box_select_under_the_pose_planner(tmp_path):
     # in this fixture) -- but NOT by the box select.
     assert 'no admissible box covers' not in resp.message
     assert 'planner_mode' not in resp.message
+
+
+# ── columns_turned (JP-10, 2026-10-30) ─────────────────────────────────────
+
+def _turned_goal(**overrides):
+    return _goal('columns_turned', separation_mm=125.0, apex_m=0.9, **overrides)
+
+
+def test_columns_turned_is_a_goal_pattern_and_not_a_feed():
+    assert 'columns_turned' in sn.SkillNode._PATTERNS
+
+
+def test_columns_turned_is_refused_under_the_level_planner():
+    node, _client = _node_with_client(response=_response())
+    node._params['planner_mode'] = 'level'
+    node._params['columns_angle_deg'] = 45.0
+    resp = node._start_pattern(_turned_goal())
+    assert resp.success is False
+    assert 'pose-planner only' in resp.message
+    assert node._executor is None
+
+
+def test_columns_turned_at_angle_zero_is_refused_as_plain_columns():
+    node, _client = _node_with_client(response=_response())
+    node._params['planner_mode'] = 'pose'
+    node._params['columns_angle_deg'] = 0.0
+    resp = node._start_pattern(_turned_goal())
+    assert resp.success is False
+    assert 'plain Columns' in resp.message and "'columns' goal" in resp.message
+    assert node._executor is None
+
+
+def test_columns_angle_cannot_change_while_a_goal_is_active():
+    node, _client = _node_with_client(response=_response())
+    node._params['columns_angle_deg'] = 45.0
+    node._executor = object()          # `_attempt_running` reads this
+    res = node.set_parameters(
+        [_MockParameter(90.0, name='columns_angle_deg')])[0]
+    assert res.successful is False and 'goal is active' in res.reason
+    # same value re-set is a no-op and allowed; between attempts it applies
+    assert node.set_parameters(
+        [_MockParameter(45.0, name='columns_angle_deg')])[0].successful is True
+    node._executor = None
+    node._reload_ctx = None
+    assert node.set_parameters(
+        [_MockParameter(90.0, name='columns_angle_deg')])[0].successful is True
+
+
+def test_columns_turned_feed_site_is_the_one_nearest_ball_butler():
+    from jugglebot.robot_frame import RobotFrame
+    node, _client = _node_with_client(response=_response())
+    sites = sn.columns_sites(125.0, 90.0)       # P1 at -y, P2 at +y
+    node._robot_frame = RobotFrame.IDENTITY
+    node._bb_base_pose = (np.array([0.0, -1500.0, 0.0]), None, 0.0)
+    assert node._columns_turned_feed_index(sites) == 0
+    node._bb_base_pose = (np.array([0.0, 1500.0, 0.0]), None, 0.0)
+    assert node._columns_turned_feed_index(sites) == 1
+    node._bb_base_pose = (np.array([1500.0, 0.0, 0.0]), None, 0.0)   # tie
+    assert node._columns_turned_feed_index(sites) == 0
+    node._bb_base_pose = None
+    assert node._columns_turned_feed_index(sites) is None
+
+
+# ── columns_highlow (JP-9, map JB-107): Ball 2's own Apex ──────────────────
+
+def _highlow_box_path(tmp_path, apex_a, apex_b, dwell_s=sn._DEFAULT_DWELL_S,
+                      separation_mm=100.0):
+    """`_good_box_path(columns=True)` plus the four high-low cells (both Site
+    assignments) at the goal's Apexes, each stamped with its ball's Dwell."""
+    from jugglebot.motion.skills import schedule as sc_
+    from jugglebot.motion.skills import sites as st_
+    path = _good_box_path(tmp_path, columns=True)
+    boxes = adm.load(path)
+    proto = boxes[0]
+    timing = sc_.columns_ball_timing(max(apex_a, apex_b), min(apex_a, apex_b),
+                                     dwell_s)
+    for site in st_.columns_sites(separation_mm):
+        xy = (float(site.cup_mm[0]), float(site.cup_mm[1]))
+        for apex, dwell in ((max(apex_a, apex_b), timing.dwells[0]),
+                            (min(apex_a, apex_b), timing.dwells[1])):
+            boxes.append(dataclasses.replace(
+                proto, site_pair=(site.name, site.name),
+                apex_band_m=(apex - 0.025, apex + 0.025),
+                apex_m=(apex - 0.1, apex + 0.1),
+                pattern=sc_.COLUMNS_HIGHLOW, release_site_xy_mm=xy,
+                target_site_xy_mm=xy, dwell_s=dwell, planner_mode='pose'))
+    adm.dump(path, boxes)
+    return path
+
+
+def test_columns_highlow_refuses_unset_equal_and_level_all_at_once(tmp_path):
+    node, _client = _node_with_client(response=_response())
+    node._params['planner_mode'] = 'level'
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
+                      _highlow_box_path(tmp_path, 1.0, 0.9)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        r = node._start_pattern(_goal('columns_highlow', apex_m=1.0,
+                                      separation_mm=100.0))
+        assert r.success is False
+        assert 'apex_m_ball2 is unset' in r.message
+        assert "planner_mode is 'level'" in r.message
+        node._params['planner_mode'] = 'pose'
+        node._params['apex_m_ball2'] = 1.0
+        r = node._start_pattern(_goal('columns_highlow', apex_m=1.0,
+                                      separation_mm=100.0))
+        assert r.success is False and 'plain columns' in r.message
+    assert node._executor is None
+
+
+def test_columns_highlow_accepts_with_its_cells_and_names_the_missing_ones(
+        tmp_path):
+    node, _client = _node_with_client(response=_response())
+    node._params['plant_id'] = 'test_highlow_accept_' + str(id(node))
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
+             seated=True)
+    _reload_ready(node)
+    node._params['apex_m_ball2'] = 0.9
+    # Plain-columns cells only: refused by name, per ball, before any motion.
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
+                      _good_box_path(tmp_path, columns=True)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        r = node._start_pattern(_goal('columns_highlow', apex_m=1.0,
+                                      separation_mm=100.0))
+    assert r.success is False
+    assert 'columns_highlow Ball 1 refused' in r.message
+    assert 'columns_highlow Ball 2 refused' in r.message
+    sub = tmp_path / 'hl'
+    sub.mkdir()
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
+                      _highlow_box_path(sub, 1.0, 0.9)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        r = node._start_pattern(_goal('columns_highlow', apex_m=1.0,
+                                      separation_mm=100.0))
+    assert r.success is True, r.message
+    assert r.attempt['apex_m_ball2'] == 0.9
+    pat = node._reload_ctx.columns_pattern
+    assert pat.apex_m == 1.0 and pat.apex_m_ball_b == 0.9
+    # apex_m_ball2 is frozen while the goal runs; re-setting it is a no-op.
+    res = node.set_parameters([_MockParameter(0.95, name='apex_m_ball2')])[0]
+    assert res.successful is False and 'goal is active' in res.reason
+    assert node.set_parameters(
+        [_MockParameter(0.9, name='apex_m_ball2')])[0].successful is True
+
+
+def test_plain_columns_ignores_apex_m_ball2(tmp_path):
+    node, _client = _node_with_client(response=_response())
+    node._params['plant_id'] = 'test_plain_columns_apex2_' + str(id(node))
+    _freshen(node, pos_meas=sn.REST_HAND_REV, pos_cmd=sn.REST_HAND_REV,
+             seated=True)
+    _reload_ready(node)
+    node._params['apex_m_ball2'] = 0.8
+    with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
+                      _good_box_path(tmp_path, columns=True)), \
+         patch.object(sn, '_REPO_ROOT', str(tmp_path)):
+        r = node._start_pattern(_columns_goal(separation_mm=100.0))
+    assert r.success is True, r.message
+    assert 'apex_m_ball2' not in r.attempt
+    assert node._reload_ctx.columns_pattern.apex_m_ball_b is None

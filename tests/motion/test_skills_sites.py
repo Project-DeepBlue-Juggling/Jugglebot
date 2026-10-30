@@ -86,3 +86,45 @@ def test_catch_z_is_back_at_830_2026_10_06():
     top of its stroke is kept by the stroke itself, not by the plane). See
     :data:`CATCH_CUP_Z_MM`'s docstring for both probe tables."""
     assert st.CATCH_CUP_Z_MM == 830.0
+
+
+# ── JP-10 turned Columns: columns_sites(separation, angle_deg) ─────────────
+
+def test_columns_sites_angle_zero_is_bit_identical_to_the_straight_pair():
+    base = st.columns_sites(125.0)
+    zero = st.columns_sites(125.0, 0.0)
+    for a, b in zip(base, zero):
+        assert a.name == b.name
+        assert a.cup_mm.tobytes() == b.cup_mm.tobytes()   # incl. no -0.0
+    assert [s.name for s in zero] == ['P1', 'P2']
+
+
+def test_columns_sites_ninety_degrees_swaps_the_axes():
+    p1, p2 = st.columns_sites(125.0, 90.0)
+    np.testing.assert_allclose(p1.cup_mm, [0.0, -62.5, st.CATCH_CUP_Z_MM],
+                               atol=1e-9)
+    np.testing.assert_allclose(p2.cup_mm, [0.0, 62.5, st.CATCH_CUP_Z_MM],
+                               atol=1e-9)
+
+
+def test_columns_sites_forty_five_degrees_keeps_the_separation_and_centre():
+    p1, p2 = st.columns_sites(125.0, 45.0)
+    assert np.linalg.norm(p2.cup_mm[:2] - p1.cup_mm[:2]) == pytest.approx(125.0)
+    np.testing.assert_allclose(p1.cup_mm[:2] + p2.cup_mm[:2], [0.0, 0.0],
+                               atol=1e-9)
+    assert p2.cup_mm[0] > 0.0 and p2.cup_mm[1] > 0.0
+
+
+def test_a_turned_pair_carries_distinct_site_names():
+    """The box is keyed on site-pair NAMES: a turned Site named 'P1' would
+    collide with the straight cell in one YAML."""
+    names = {s.name for s in st.columns_sites(125.0)}
+    for ang in (45.0, 90.0):
+        turned = {s.name for s in st.columns_sites(125.0, ang)}
+        assert turned == {'P1@%g' % ang, 'P2@%g' % ang}
+        assert not (turned & names)
+
+
+def test_columns_sites_rejects_a_non_finite_angle():
+    with pytest.raises(ValueError, match='angle_deg'):
+        st.columns_sites(125.0, float('nan'))

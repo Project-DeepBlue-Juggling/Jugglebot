@@ -393,7 +393,9 @@ def _columns_catch_throw_cell(site, release_seed, takeoff_vel_mm_s,
                               flight_s: float, dwell_s: float,
                               offset_mm: Tuple[float, float],
                               limits: TrajectoryLimits, geom, cfg,
-                              pattern_flight_s: Optional[float] = None):
+                              pattern_flight_s: Optional[float] = None,
+                              transit_s_: Optional[float] = None,
+                              incoming_takeoff_vel_mm_s=None):
     """The columns pattern's own CATCH-with-``then_throw`` (R5, D4,
     2026-09-30) -- the segment ``schedule.compile_columns`` /
     ``_fold_catch_throw_pairs`` actually dispatches for every catch after the
@@ -432,15 +434,26 @@ def _columns_catch_throw_cell(site, release_seed, takeoff_vel_mm_s,
     and, on ``Segment.release_state``, the seed the NEXT leg of the chain
     plans from.
 
+    **High-low Columns (JP-9, :func:`highlow_sweep`).** ``transit_s_`` and
+    ``incoming_takeoff_vel_mm_s`` (both default ``None`` = the plain-Columns
+    cell above, bit for bit) separate what equal Apexes let one number stand
+    for: the transit is THIS ball's (``schedule.columns_ball_timing``, shorter
+    for the low ball), ``dwell_s`` is this ball's own Dwell, and the incoming
+    ball is THIS Site's ball (its own self-throw at ``pattern_flight_s``), not
+    the seed's -- the seed is the OTHER ball's release at the other Site.
+
     Returns ``(ok, code, next_release_seed, next_takeoff_vel_mm_s)`` -- the
     last two ``None`` on a refusal.
     """
     Tp = float(pattern_flight_s) if pattern_flight_s is not None else float(flight_s)
-    tau = sc.transit_s(Tp, dwell_s)
+    tau = (sc.transit_s(Tp, dwell_s) if transit_s_ is None
+           else float(transit_s_))
     t_release = tau + float(dwell_s)
     landing_mm = site.catch_site_mm() + np.array(
         [float(offset_mm[0]), float(offset_mm[1]), 0.0])
-    v_arrival = bal.arrival_velocity(takeoff_vel_mm_s, Tp)
+    v_arrival = bal.arrival_velocity(
+        takeoff_vel_mm_s if incoming_takeoff_vel_mm_s is None
+        else incoming_takeoff_vel_mm_s, Tp)
     then_throw = sg.ThrowAfterCatch(t_release_s=t_release, site_mm=site.throw_site_mm(),
                                     target_mm=landing_mm, flight_s=float(flight_s))
     terminal = sg.CatchTerminal(landing_mm=landing_mm, landing_vel_mm_s=v_arrival,
@@ -673,7 +686,8 @@ def sweep(*, planner_mode: str = uc.PLANNER_MODE_DEFAULT,
           apexes_m: Sequence[float] = APEXES_M,
           flights_s: Optional[Sequence[float]] = None,
           offsets_mm: Sequence[float] = OFFSETS_MM, dwell_s: float = DWELL_S,
-          separation_mm: float = SEPARATION_MM, leg_vel: float = LEG_VEL_MMPS,
+          separation_mm: float = SEPARATION_MM, angle_deg: float = 0.0,
+          leg_vel: float = LEG_VEL_MMPS,
           leg_acc: float = LEG_ACC_MMPS2, leg_jerk: float = LEG_JERK_MMPS3,
           hand_acc: float = HAND_ACC_RPS2, center_apex_m: Optional[float] = None,
           center_flight_s: Optional[float] = None,
@@ -761,7 +775,7 @@ def sweep(*, planner_mode: str = uc.PLANNER_MODE_DEFAULT,
     if pre_release_hold_s is not None:
         cfg = dataclasses.replace(cfg, pre_release_hold_s=float(pre_release_hold_s))
     if site_pairs is None:
-        site0, site1 = st.columns_sites(separation_mm)
+        site0, site1 = st.columns_sites(separation_mm, angle_deg)
         site_pairs = [(site0, site1), (site1, site0)]
     if flights_s is not None:
         flights = [float(t) for t in flights_s]
@@ -924,6 +938,144 @@ def sweep(*, planner_mode: str = uc.PLANNER_MODE_DEFAULT,
             release_site_xy_mm=box_xy, target_site_xy_mm=box_xy,
             limits=limits_dict, gate_hash=ghash, swept_at=swept_at,
             dwell_s=float(dwell_s), planner_mode=planner_mode))
+    return boxes, rows
+
+
+def highlow_sweep(apex_high_m: float, apex_low_m: float, *,
+                  flight_frac: Sequence[float], halfwidth_m: float,
+                  offsets_mm: Sequence[float], dwell_s: float,
+                  separation_mm: float, leg_vel: float, leg_acc: float,
+                  leg_jerk: float, hand_acc: float,
+                  launch_s: float = SINGLE_SITE_LAUNCH_S,
+                  planner_mode: str = uc.PLANNER_MODE_DEFAULT,
+                  swept_at: Optional[str] = None,
+                  site_pairs: Optional[List[Tuple['st.Site', 'st.Site']]] = None,
+                  log=print) -> Tuple[List['ab.AdmissibleBox'], List[Dict]]:
+    """High-low Columns cells (JP-9, map JB-107; ``schedule.COLUMNS_HIGHLOW``).
+
+    One ``(apex_high_m, apex_low_m)`` pair, ``dwell_s`` = the commanded Dwell
+    (the HIGH ball's). The Apex rides with the ball and either Site may fly
+    high (a fed start puts Ball 2 at the feed Site, ``columns_feed_site``), so
+    BOTH assignments are swept: ``site_pairs`` = ``(high Site, low Site)``
+    entries, default ``[(P1, P2), (P2, P1)]`` of ``columns_sites``. Each
+    assignment yields two same-Site cells, keyed ``(X, X)`` like Columns:
+
+    * the LOW Site's cell: seeded by the HIGH ball's release at the other Site
+      (a launch from rest there at ``t_high``), transits ``tau_low``, catches
+      the low ball (its own identity launch at ``t_low``), dwells ``d_low`` and
+      releases at the commanded flight; stamped ``dwell_s = d_low``, band
+      ``apex_low +/- halfwidth``;
+    * the HIGH Site's cell, the mirror: seed at ``t_low``, ``tau_high``,
+      ``d`` (the commanded Dwell), stamp ``d``, band ``apex_high +/-
+      halfwidth``.
+
+    Timing comes from ``schedule.columns_ball_timing`` -- the function
+    ``compile_columns`` uses -- so the low cell's ``dwell_s`` stamp equals the
+    executor's ``Schedule.dwell_for`` select key exactly. The gates per grid
+    point are :func:`sweep`'s cross-site three: the launch THROW from rest at
+    this Site under the command, the catch-with-throw above, and the reverse
+    leg (the OTHER ball's catch-with-throw back at the other Site, at ITS
+    timing and pattern flight). The commanded-flight ladder is
+    ``t_here * (1 + f)`` for ``f`` in ``flight_frac``, as
+    :func:`_single_apex_boxes`.
+    """
+    apex_high_m, apex_low_m = float(apex_high_m), float(apex_low_m)
+    if not apex_high_m > apex_low_m:
+        raise ValueError('highlow_sweep needs apex_high_m > apex_low_m, got '
+                         '%r / %r' % (apex_high_m, apex_low_m))
+    geom = StewartGeometry()
+    limits = _limits(leg_vel, leg_acc, leg_jerk, hand_acc)
+    cfg = sg.SegmentConfig(planner_mode=planner_mode)
+    # ball id 0 = high, 1 = low: only the per-ball numbers are read here.
+    timing = sc.columns_ball_timing(apex_high_m, apex_low_m, dwell_s)
+    apex_of = (apex_high_m, apex_low_m)
+    if site_pairs is None:
+        p1, p2 = st.columns_sites(separation_mm)
+        site_pairs = [(p1, p2), (p2, p1)]
+    ghash = ab.gate_hash()
+    swept_at = swept_at or _dt.date.today().isoformat()
+    limits_dict = dict(leg_vel_mmps=float(leg_vel), leg_acc_mmps2=float(leg_acc),
+                       leg_jerk_mmps3=float(leg_jerk), hand_acc_rps2=float(hand_acc))
+    h = float(halfwidth_m)
+    knot = float(hw.JB_TRAJ_KNOT_DT_S)
+    boxes: List[ab.AdmissibleBox] = []
+    rows: List[Dict] = []
+    for high_site, low_site in site_pairs:
+        for here, other, b, o in ((low_site, high_site, 1, 0),
+                                  (high_site, low_site, 0, 1)):
+            t_here, t_other = timing.flights[b], timing.flights[o]
+            tau, d_here = timing.transits[b], timing.dwells[b]
+            tau_o, d_o = timing.transits[o], timing.dwells[o]
+            # Each ball's incoming takeoff is its OWN identity launch at its
+            # own Site, as the planner realises it -- the same convention the
+            # plain Columns cell uses (its seed's takeoff stands for the
+            # incoming ball, which equal Apexes make the same throw).
+            iok, _ic, _is, incoming = _throw_cell(
+                here, here, t_here, launch_s, limits, geom, cfg)
+            iok_o, _ic_o, _is_o, incoming_o = _throw_cell(
+                other, other, t_other, launch_s, limits, geom, cfg)
+            flights = [t_here * (1.0 + float(f)) for f in flight_frac]
+            tag = dict(site_pair=(here.name, here.name),
+                       role='high' if b == 0 else 'low')
+            ok, code, seed, takeoff = _throw_cell(
+                other, other, t_other, launch_s, limits, geom, cfg)
+            if ok and not (iok and iok_o):
+                ok, code = False, 'INCOMING_LAUNCH'
+            if ok and not min(tau, tau_o) > 2.0 * knot:
+                ok, code = False, 'NO_TRANSIT'
+            rows.append(dict(tag, offset_mm=None, ok=ok,
+                             code='SEED:%s' % code))
+            log(rows[-1])
+            pass_grid = {}
+            for T in flights:
+                for dx in offsets_mm:
+                    for dy in offsets_mm:
+                        if not ok:
+                            pass_grid[(T, dx, dy)] = False
+                            continue
+                        lok, lcode, _s, _t = _throw_cell(
+                            here, here, T, launch_s, limits, geom, cfg,
+                            offset_mm=(dx, dy))
+                        cok, ccode, nseed, ntake = _columns_catch_throw_cell(
+                            here, seed, takeoff, T, d_here, (dx, dy), limits,
+                            geom, cfg, pattern_flight_s=t_here,
+                            transit_s_=tau, incoming_takeoff_vel_mm_s=incoming)
+                        if cok:
+                            fok, fcode, _s2, _t2 = _columns_catch_throw_cell(
+                                other, nseed, ntake, t_other, d_o, (dx, dy),
+                                limits, geom, cfg, pattern_flight_s=t_other,
+                                transit_s_=tau_o,
+                                incoming_takeoff_vel_mm_s=incoming_o)
+                            if not fok:
+                                cok, ccode = False, 'CHAIN_CATCH:%s' % fcode
+                        if not lok:
+                            cok, ccode = False, 'LAUNCH:%s' % lcode
+                        pass_grid[(T, dx, dy)] = cok
+                        rows.append(dict(tag, flight_s=round(T, 4),
+                                         offset_mm=(dx, dy), ok=cok,
+                                         code=ccode))
+                        log(rows[-1])
+            flight_band, rect = _flight_band_and_rect(flights, offsets_mm,
+                                                      pass_grid, t_here)
+            if rect is None:
+                landing_xy = ((float('nan'), float('nan')),
+                              (float('nan'), float('nan')))
+                apex_bounds = (float('nan'), float('nan'))
+            else:
+                xlo, xhi, ylo, yhi = rect
+                landing_xy = ((xlo / 1000.0, xhi / 1000.0),
+                              (ylo / 1000.0, yhi / 1000.0))
+                apex_bounds = (sc.apex_m(flight_band[0]),
+                               sc.apex_m(flight_band[1]))
+            xy = (float(here.cup_mm[0]), float(here.cup_mm[1]))
+            boxes.append(ab.AdmissibleBox(
+                site_pair=(here.name, here.name),
+                apex_band_m=(apex_of[b] - h, apex_of[b] + h),
+                landing_xy_m=landing_xy, apex_m=apex_bounds,
+                pattern=sc.COLUMNS_HIGHLOW, release_site_xy_mm=xy,
+                target_site_xy_mm=xy, limits=limits_dict, gate_hash=ghash,
+                swept_at=swept_at, dwell_s=float(d_here),
+                planner_mode=planner_mode))
     return boxes, rows
 
 
@@ -1295,6 +1447,7 @@ def _single_apex_boxes(apexes_m: Sequence[float], *, flight_frac: Sequence[float
                        halfwidth_m: float, offsets_mm: Sequence[float],
                        dwell_s: float, separation_mm: float, leg_vel: float,
                        leg_acc: float, leg_jerk: float, hand_acc: float,
+                       angle_deg: float = 0.0,
                        pattern: str = 'self_toss', site: Optional['st.Site'] = None,
                        planner_mode: str = uc.PLANNER_MODE_DEFAULT,
                        swept_at: Optional[str] = None,
@@ -1358,7 +1511,7 @@ def _single_apex_boxes(apexes_m: Sequence[float], *, flight_frac: Sequence[float
                 separation_mm=separation_mm, leg_vel=leg_vel, leg_acc=leg_acc,
                 leg_jerk=leg_jerk, hand_acc=hand_acc, center_flight_s=centre,
                 site_pairs=None, pattern_flight_s=centre, planner_mode=planner_mode, swept_at=swept_at,
-                log=log)
+                angle_deg=angle_deg, log=log)
         elif pattern == 'hop':
             hop_apexes = [sc.apex_m(t) for t in flights]
             a_boxes, a_rows = hop_sweep(
@@ -1428,6 +1581,15 @@ def main(argv=None) -> int:
                          'SAME --leg-*/--hand-acc')
     ap.add_argument('--apex', type=float, nargs='+', default=list(APEXES_M),
                     help='columns apex grid (m), mapped through sc.flight_s')
+    ap.add_argument('--apex-pair', type=float, nargs=2, default=None,
+                    metavar=('HIGH', 'LOW'),
+                    help='--site-pairs columns only: sweep HIGH-LOW Columns '
+                         'cells (JP-9, pattern columns_highlow) instead of '
+                         'plain Columns -- both Site assignments, four cells, '
+                         'band +/- --single-apex-halfwidth around each '
+                         "ball's Apex, the low cells stamped with the low "
+                         "ball's longer Dwell (highlow_sweep). --dwell-s is "
+                         "the commanded (high ball's) Dwell")
     ap.add_argument('--hop-apex', type=float, nargs='+', default=list(HOP_APEXES_M),
                     help='R5 hop apex grid (m), independent of --apex -- gains '
                          'a 0.80 m row the columns grid does not carry (D4, '
@@ -1473,6 +1635,13 @@ def main(argv=None) -> int:
                          '--site-pairs oval (the rung-1 cell)'
                          % (DWELL_S, OVAL_DWELL_S))
     ap.add_argument('--separation-mm', type=float, default=SEPARATION_MM)
+    ap.add_argument('--angle-deg', type=float, default=0.0,
+                    help='--site-pairs columns only (JP-10 columns_turned): '
+                         'rotate the Site pair about the Platform origin; the '
+                         'Sites are then named P1@<angle>/P2@<angle> so the '
+                         'cells merge beside the straight ones. Pose planner '
+                         'only (refused with --planner-mode level). Default 0 '
+                         '= the straight pair, bit-identical to before')
     ap.add_argument('--hop-separation-mm', type=float, default=HOP_SEPARATION_MM,
                     help='R4 hop-pair separation (mm); independent of '
                          '--separation-mm, which stays the columns cell\'s')
@@ -1495,16 +1664,39 @@ def main(argv=None) -> int:
                          'and pose cells coexist in one YAML (default %(default)s)')
     ap.add_argument('--hand-acc', type=float, default=HAND_ACC_RPS2)
     args = ap.parse_args(argv)
+    if args.angle_deg != 0.0:
+        if args.site_pairs != 'columns':
+            ap.error('--angle-deg applies to --site-pairs columns only')
+        if args.planner_mode != 'pose':
+            ap.error('--angle-deg needs --planner-mode pose (the level '
+                     'planner is direction-sensitive)')
     if args.dwell_s is None:
         args.dwell_s = OVAL_DWELL_S if args.site_pairs == 'oval' else DWELL_S
     if args.single_apex is not None:
         _refuse_overlapping_single_apex_bands(
             args.single_apex, args.single_apex_halfwidth, ap)
+    if args.apex_pair is not None:
+        if args.site_pairs != 'columns':
+            ap.error('--apex-pair applies to --site-pairs columns only')
+        if args.single_apex is not None:
+            ap.error('--apex-pair and --single-apex are mutually exclusive')
+        if not args.apex_pair[0] > args.apex_pair[1]:
+            ap.error('--apex-pair is HIGH LOW, got %r' % (args.apex_pair,))
     log = (lambda r: None) if args.quiet else print
 
     t_start = time.perf_counter()
     boxes: List['ab.AdmissibleBox'] = []
-    if args.site_pairs in ('columns', 'all'):
+    if args.apex_pair is not None:
+        cboxes, _rows = highlow_sweep(
+            args.apex_pair[0], args.apex_pair[1],
+            flight_frac=args.single_flight_frac,
+            halfwidth_m=args.single_apex_halfwidth,
+            offsets_mm=args.offsets_mm, dwell_s=args.dwell_s,
+            separation_mm=args.separation_mm, leg_vel=args.leg_vel,
+            leg_acc=args.leg_acc, leg_jerk=args.leg_jerk,
+            hand_acc=args.hand_acc, planner_mode=args.planner_mode, log=log)
+        boxes.extend(cboxes)
+    elif args.site_pairs in ('columns', 'all'):
         if args.single_apex is not None:
             cboxes, _rows = _single_apex_boxes(
                 args.single_apex, flight_frac=args.single_flight_frac,
@@ -1512,11 +1704,13 @@ def main(argv=None) -> int:
                 offsets_mm=args.offsets_mm, dwell_s=args.dwell_s,
                 separation_mm=args.separation_mm, leg_vel=args.leg_vel,
                 leg_acc=args.leg_acc, leg_jerk=args.leg_jerk,
-                hand_acc=args.hand_acc, pattern='columns', planner_mode=args.planner_mode, log=log)
+                hand_acc=args.hand_acc, pattern='columns', planner_mode=args.planner_mode,
+                angle_deg=args.angle_deg, log=log)
         else:
             cboxes, _rows = sweep(
                 apexes_m=args.apex, offsets_mm=args.offsets_mm, dwell_s=args.dwell_s,
-                separation_mm=args.separation_mm, leg_vel=args.leg_vel,
+                separation_mm=args.separation_mm, angle_deg=args.angle_deg,
+                leg_vel=args.leg_vel,
                 leg_acc=args.leg_acc, leg_jerk=args.leg_jerk, hand_acc=args.hand_acc,
                 planner_mode=args.planner_mode, log=log)
         boxes.extend(cboxes)

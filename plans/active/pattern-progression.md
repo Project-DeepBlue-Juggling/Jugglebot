@@ -3,7 +3,7 @@ title: Pattern progression - Columns to Centre and orbit
 created: 2026-10-30
 status: active
 owner: Harrison
-last_updated: 2026-10-30
+last_updated: 2026-10-31
 pathway: pattern-progression-columns-to-centre-and-orbit
 branch: main
 scope: >-
@@ -13,9 +13,9 @@ scope: >-
   turned Columns, per-Site Apex, the JB-38 dependency, and the Centre and orbit compile.
 steps:
   - {id: P1, title: Launch current check, kind: phase, status: complete, effort: xs, hardware: none}
-  - {id: P2, title: Turned Columns on the compiled path, kind: phase, status: not_started, effort: s, hardware: none}
+  - {id: P2, title: Turned Columns on the compiled path, kind: phase, status: complete, effort: s, hardware: none}
   - {id: P3, title: JP-10 turned Columns, kind: rung, status: not_started, effort: s, hardware: robot}
-  - {id: P4, title: Per-Site Apex, kind: phase, status: not_started, effort: m, hardware: none}
+  - {id: P4, title: Per-Site Apex, kind: phase, status: complete, effort: m, hardware: none}
   - {id: P5, title: JP-9 high-low Columns, kind: rung, status: not_started, effort: s, hardware: robot}
   - {id: P6, title: Per-Beat Sites dependency owned by JB-38, kind: phase, status: not_started, effort: m, hardware: none}
   - {id: P7, title: JP-5 polygon walk, kind: rung, status: not_started, effort: s, hardware: robot}
@@ -25,6 +25,8 @@ steps:
 related_logbook:
   - 2026-10-30-pattern-progression-plan.md
   - 2026-10-30-jb115-launch-current-bag-check.md
+  - 2026-10-31-pattern-progression-p2-turned-columns.md
+  - 2026-10-31-pattern-progression-p4-high-low-columns.md
 related_code:
   - ros_ws/src/jugglebot/jugglebot/motion/skills/schedule.py::compile_columns
   - ros_ws/src/jugglebot/jugglebot/motion/skills/admissible.py
@@ -51,9 +53,9 @@ Branch `main`. The schedulable form of Pathway item JB-116 (its body carries the
 
 **Owner decisions pending, each with when it is needed:**
 
-- D-a, before P2 writes code: reaffirm or reopen JB-38 D4/D5 for these Patterns. It decides whether P2 builds plain Admissible box cells or a Pattern-relative key. Default if unanswered: D4/D5 stand, plain cells.
-- D-b, before P2: the machine labels for the new Patterns (turned, high-low, polygon, rotating, Centre and orbit) and the JP-10 angles (proposed 45 and 90 deg).
-- D-c, before P4: which JP-9 pair flies first. P1 could not decide it from the bags (they never flew above release-relative Apex 0.935; the 50 A crossing is no lower than release-relative 0.99, about 1.02 above the Catch plane). Options: fly 1.05/0.95 with a hand-current stop rule and a faster iq capture (hand `iq_setpoint` on `/hand_telemetry`, or a 250 Hz Diagnostic on axis 6), or fly 1.00/0.90 first.
+- D-a, DECIDED 2026-10-30 (owner): JB-38 D4/D5 stand; P2 built plain Admissible box cells.
+- D-b, DECIDED 2026-10-30 (owner) for the first two: labels `columns_turned` (JP-10) and `columns_highlow` (JP-9), JP-10 angles 45 and 90 deg. Still open for the polygon, rotating and Centre-and-orbit labels (before P7).
+- D-c, ANSWERED BY THE SWEEP 2026-10-31 (owner asked for both pairs): at separation 125 every high-low cell is empty (the low ball's transit falls under the ~0.30 s floor); at separation 100 the 1.00/0.90 pair is admissible at both Sites and 1.05/0.95 only for the high ball. So P5 flies 1.00/0.90 at separation 100; 1.05/0.95 waits for the Hand thread (JB-114). The faster current capture (hand `iq_setpoint` on `/hand_telemetry`) is still wanted before any 1.05 launch.
 - D-d, at JB-38's P2: whether the JP-10 rows stand in for its rotated-pair flight.
 
 The release-step exception to `HAND_LIMIT_C2` is on the Hand thread (JB-114), not decided here.
@@ -65,10 +67,10 @@ The release-step exception to `HAND_LIMIT_C2` is on the Hand thread (JB-114), no
 | Step | Status | Gate | Blocked on |
 |------|--------|------|------------|
 | P1 Launch current check | complete 2026-10-30 | bag check: no clipping below release-relative Apex 0.935; the 1.0 to 1.05 regime was never flown | D-c now open |
-| P2 Turned Columns on the compiled path | not started | suite, box twice identical, skills gate | D-a, D-b |
-| P3 JP-10 turned Columns | not started | 20 Catches at 45 and 90 deg | P2 |
-| P4 Per-Site Apex | not started | suite, box sweep, skills gate | D-c |
-| P5 JP-9 high-low Columns | not started | 20 Catches, Apex gap, hand iq | P4 |
+| P2 Turned Columns on the compiled path | complete 2026-10-31 | 12 pose cells swept twice identical; 45 deg admits the 0.925 band, 90 deg 0.875 and 0.925 | - |
+| P3 JP-10 turned Columns | not started | 20 Catches at 45 and 90 deg | a Sitting; runbook section; the records label exists |
+| P4 Per-Site Apex | complete 2026-10-31 | 16 pose cells swept twice identical (8 at separation 100 in the box); 1.00/0.90 admissible at 100 only | - |
+| P5 JP-9 high-low Columns | not started | 20 Catches, Apex gap, hand iq | a Sitting at separation 100, pair 1.00/0.90; GUI entry for the goal |
 | P6 JB-38 dependency | not started | owned by JB-38 | JB-38 P1, P3, P4 |
 | P7 JP-5 polygon walk | not started | 24 Catches, no first-visit miss | P6 |
 | P8 JP-11 rotating Columns | not started | one full turn at 10 deg per Beat | P7 |
@@ -88,8 +90,8 @@ The release-step exception to `HAND_LIMIT_C2` is on the Hand thread (JB-114), no
 ### P2: Turned Columns on the compiled path
 
 - Adds: a rotation parameter on the Columns Site pair, two Admissible box cells (45 and 90 deg), a new machine label.
-- Gate (Phase check): (date, `./run_tests.sh --full` plus the box re-swept twice bit-identical plus `sim/skills_gate.py` on the new label, result) - to be filled. BLAS one thread; no gated-file edit from sweep start to commit.
-- Depends on: D-a, D-b. Items consumed: JB-108.
+- Done 2026-10-31 (logbook `2026-10-31-pattern-progression-p2-turned-columns.md`): rotation on `columns_sites`, goal `columns_turned` with the `columns_angle_deg` parameter, label in records, sweep and sim-gate flags; the whole box re-swept twice byte-identical (sites.py is gated), 12 turned cells appended. Finding: 45 deg admits only the 0.925 band, 90 deg the 0.875 and 0.925 bands, so P3 flies at Apex 0.95 (45 deg) and 0.90 or 0.95 (90 deg).
+- Depends on: D-a, D-b (both decided). Items consumed: JB-108.
 
 ### P3: JP-10 turned Columns
 
@@ -100,13 +102,14 @@ The release-step exception to `HAND_LIMIT_C2` is on the Hand thread (JB-114), no
 ### P4: Per-Site Apex
 
 - Adds: one Apex per Site in the Columns compile and a two-band box cell, new label.
-- Gate (Phase check): (date, `./run_tests.sh --full` plus the box sweep plus `sim/skills_gate.py`, result) - to be filled.
-- Depends on: D-c. P1 found no clipping up to release-relative Apex 0.935 and could not see the 1.0 to 1.05 regime; the cells are swept at the pair D-c names.
+- Done 2026-10-31 (logbook `2026-10-31-pattern-progression-p4-high-low-columns.md`): `Pattern.apex_m_ball_b`, `columns_ball_timing`, per-ball dwell in the executor's box select, goal `columns_highlow` with the `apex_m_ball2` parameter, box label `columns_highlow`, `--apex-pair` sweep; 16 cells swept for both pairs at separations 125 and 100 (the 8 at 100 are in the box; the 125 set is all empty and recorded in the logbook). Finding: nothing fits at 125; at 100 the 1.00/0.90 pair fits at both Sites, 1.05/0.95 only the high ball. Equal Apexes are bit-identical to before (672 configurations).
+- Depends on: D-c (answered by the sweep).
 - Items consumed: JB-107. Owner decision: D-c.
 
 ### P5: JP-9 high-low Columns
 
 - Adds: two Apexes in one Pattern.
+- Flies at separation 100 with the 1.00/0.90 pair (the only admissible pair today); the goal has no GUI entry yet, so it is sent with `ros2 action` after `ros2 param set /skill_node apex_m_ball2 0.90`.
 - Rung gate: 20 consecutive Catches in one Attempt; Tracker mean Apex difference within 20 mm of the commanded difference; hand iq under 45 A at every launch. Stop rule: any hand `iq_setpoint` sample at 50.0 A ends the Attempt (needs the faster iq capture named under D-c, or the Sitting flies the lower pair).
 - Depends on: P4. Items consumed: JB-107. Plus the three standing Rung preconditions.
 

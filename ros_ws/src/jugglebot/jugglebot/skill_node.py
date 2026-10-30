@@ -85,10 +85,12 @@ from jugglebot.motion.skills.executor import (InstallResult, Landing,
                                               precondition_refusals)
 from jugglebot.motion.skills.hand_launch import HandLaunchMonitor
 from jugglebot.motion.skills.memory import Memory, memory_path
-from jugglebot.motion.skills.schedule import (FRESH_THROW_LEAD_S, LEAD_S,
+from jugglebot.motion.skills.schedule import (COLUMNS_HIGHLOW,
+                                              FRESH_THROW_LEAD_S, LEAD_S,
                                               LandingPrior, OneBallPattern,
                                               Pattern, PRETILT_S,
                                               ball_label,
+                                              columns_ball_timing,
                                               compile_columns,
                                               compile_one_ball,
                                               compile_reload,
@@ -547,6 +549,10 @@ _CUP_RULE = {
     # EMPTY: the two-feed chain (P3) -- BB feeds A as a catch-only reload,
     # then B (`_run_columns`, `_maybe_advance_chain`).
     'columns': {_E: RELOAD_FIRST, _S: THROW_FIRST},
+    # JP-10: the same two-feed entry as `columns` on the turned Site pair.
+    'columns_turned': {_E: RELOAD_FIRST, _S: THROW_FIRST},
+    # High-low Columns (JP-9): Columns' own entry, both cup states.
+    'columns_highlow': {_E: RELOAD_FIRST, _S: THROW_FIRST},
     # A is phantom, B is BB-fed: needs an EMPTY cup.
     'columns_1ball_fed': {_E: RELOAD_FIRST, _S: ex.REJECTED_BALL_IN_HAND},
     # The one-ball oval (plan two-ball-oval § 2.8): the entry is the ordinary
@@ -1054,7 +1060,17 @@ class SkillNode(Node):
 
         self.declare_parameter('apex_m', _DEFAULT_APEX_M)
         self.declare_parameter('separation_mm', _DEFAULT_SEPARATION_MM)
+        # JP-10 (`columns_turned`): the Site pair's angle about the Platform
+        # origin, degrees. Read ONLY by the `columns_turned` goal (every other
+        # pattern builds the straight pair); refused live while a goal is
+        # active (`_on_set_parameters`), like `planner_mode`.
+        self.declare_parameter('columns_angle_deg', 0.0)
         self.declare_parameter('dwell_s', _DEFAULT_DWELL_S)
+        # Ball 2's own Apex (m) for the `columns_highlow` goal ONLY (JP-9, map
+        # JB-107; the Juggle goal has no second Apex field). 0.0 = unset, which
+        # that goal refuses by name; every other goal ignores it. Refused while
+        # a goal is active (`_on_set_parameters`), like `planner_mode`.
+        self.declare_parameter('apex_m_ball2', 0.0)
         # The segment planner this session runs ('level' | 'pose', two-ball-oval
         # P3): selects the admissible box (boxes are stamped with the planner
         # they were swept under) and rides on the executor. Settable live
@@ -1639,6 +1655,23 @@ class SkillNode(Node):
                 "'P1'" % (value,))
             return 'P1'
         return value
+
+    def _columns_turned_feed_index(self, sites) -> Optional[int]:
+        """Index into a turned pair of the Site NEAREST Ball Butler (its
+        Base marker C, ``bb/base_frame_pose``, carried world -> robot frame
+        with the live ``robot_frame``); a tie (within 1 mm) picks ``0`` (P1).
+        ``None`` when either input is missing -- the caller refuses. The
+        Platform-offset correction (a few mm) is below the tie band's
+        purpose here: only the ORDER of the two distances matters."""
+        base = self._bb_base_pose
+        frame = self._robot_frame
+        if base is None or frame is None:
+            return None
+        bb = np.asarray(frame.to_robot(np.asarray(base[0], dtype=float)),
+                        dtype=float)
+        d = [float(np.hypot(float(st.cup_mm[0]) - bb[0],
+                            float(st.cup_mm[1]) - bb[1])) for st in sites]
+        return 1 if d[1] < d[0] - 1.0 else 0
 
     def _columns_feed_aim_toward_a_mm(self) -> float:
         """`columns_feed_aim_toward_a_mm`, clamped to ``[0, 40]`` with a
@@ -3528,6 +3561,37 @@ class SkillNode(Node):
                         reason='a goal is active -- set planner_mode between '
                                'attempts')
                 continue
+            if param.name == 'columns_angle_deg':
+                if (self._attempt_running()
+                        and float(param.value)
+                        != float(self.get_parameter('columns_angle_deg').value)):
+                    self.get_logger().warning(
+                        'REFUSED columns_angle_deg=%r: a goal is active '
+                        '(param NOT applied) -- set it between attempts'
+                        % (param.value,))
+                    return SetParametersResult(
+                        successful=False,
+                        reason='a goal is active -- set columns_angle_deg '
+                               'between attempts')
+                if not math.isfinite(float(param.value)):
+                    return SetParametersResult(
+                        successful=False,
+                        reason='columns_angle_deg must be finite')
+            if param.name == 'apex_m_ball2':
+                # Between attempts only: the high-low schedule is compiled at
+                # accept, so a mid-goal change would not apply anyway -- refuse
+                # it rather than let the operator believe it did.
+                if (self._attempt_running()
+                        and float(param.value)
+                        != float(self.get_parameter('apex_m_ball2').value)):
+                    self.get_logger().warning(
+                        'REFUSED apex_m_ball2=%r: a goal is active (param NOT '
+                        'applied) -- set it between attempts' % (param.value,))
+                    return SetParametersResult(
+                        successful=False,
+                        reason='a goal is active -- set apex_m_ball2 between '
+                               'attempts')
+                continue
             if param.name != _DEBUG_FORCE_CATCH_REFUSAL_PARAM:
                 continue
             want = bool(param.value)
@@ -3729,9 +3793,15 @@ class SkillNode(Node):
     #: (``_run_one_ball``); the fed variant is the same attempt that accepts
     #: only an EMPTY cup (its reload-first opening is the ordinary
     #: ``_start_reload`` -- no entry-specific code).
+    #: ``columns_turned`` (JP-10): Columns on the Site pair rotated by the
+    #: ``columns_angle_deg`` parameter (pose planner only; box label
+    #: ``columns``, Sites named ``P1@<angle>`` / ``P2@<angle>``).
+    #: ``columns_highlow`` (JP-9, map JB-107) is two-ball Columns with Ball 2
+    #: thrown to its own Apex (node parameter ``apex_m_ball2``); its schedule
+    #: and box label is ``schedule.COLUMNS_HIGHLOW``.
     _PATTERNS = ('self_toss', 'hop', 'columns', 'columns_1ball',
-                'columns_1ball_fed', 'oval_1ball', 'oval_1ball_fed',
-                'magazine', 'reload')
+                'columns_1ball_fed', 'columns_turned', 'columns_highlow',
+                'oval_1ball', 'oval_1ball_fed', 'magazine', 'reload')
 
     def _start_pattern(self, goal) -> SimpleNamespace:
         """The Juggle goal's shared no-motion refusal ladder + schedule
@@ -3780,6 +3850,26 @@ class SkillNode(Node):
         dwell_s = (float(goal.dwell_s) or float(self.get_parameter('dwell_s').value))
         n_throws = (int(goal.num_cycles)
                    or int(self.get_parameter('n_throws').value))
+        turned_angle_deg = 0.0
+        if pattern == 'columns_turned':
+            # No-motion refusals by name, before anything is built. The level
+            # planner is direction-sensitive (owner, 2026-10-30): every
+            # turned cell is swept under `pose` only.
+            if self._planner_mode() != 'pose':
+                return SimpleNamespace(
+                    success=False,
+                    message=('refused: columns_turned is pose-planner only '
+                             "(planner_mode=%r) -- set planner_mode to "
+                             "'pose' between attempts"
+                             % (self._planner_mode(),)))
+            turned_angle_deg = float(self.get_parameter('columns_angle_deg').value)
+            if not math.isfinite(turned_angle_deg) or turned_angle_deg == 0.0:
+                return SimpleNamespace(
+                    success=False,
+                    message=('refused: columns_turned needs a non-zero '
+                             'columns_angle_deg (got %r) -- angle 0 is plain '
+                             "Columns, use the 'columns' goal"
+                             % (turned_angle_deg,)))
 
         # Fresh bookkeeping for THIS goal (U5): the executor's OUTCOME lines
         # accumulate here across the whole attempt (`_on_tick`), for the
@@ -3805,9 +3895,21 @@ class SkillNode(Node):
         # and every InstallSegment request carry it, every install log line
         # names the mode solved, and `skills/check` prints it.
 
+        apex_m_ball2 = None
         if pattern == 'columns':
             result = self._run_columns(apex_m, separation_mm, dwell_s,
                                        n_throws, reload_a=reload)
+        elif pattern == 'columns_turned':
+            result = self._run_columns(apex_m, separation_mm, dwell_s,
+                                       n_throws, reload_a=reload,
+                                       angle_deg=turned_angle_deg)
+        elif pattern == 'columns_highlow':
+            apex_m_ball2 = float(self.get_parameter('apex_m_ball2').value)
+            result = self._highlow_refusal(apex_m, apex_m_ball2)
+            if result is None:
+                result = self._run_columns(apex_m, separation_mm, dwell_s,
+                                           n_throws, reload_a=reload,
+                                           apex_m_ball2=apex_m_ball2)
         elif pattern == 'columns_1ball_fed':
             # `reload` is True here by construction (the cup rule: EMPTY ->
             # RELOAD_FIRST, SEATED refused), so ball A is phantom and ball B
@@ -3833,7 +3935,12 @@ class SkillNode(Node):
         # `self`: goal callbacks run on a reentrant group.
         result.attempt = dict(pattern=pattern, n_throws=n_throws,
                               reload=reload, apex_m=apex_m,
-                              separation_mm=separation_mm, dwell_s=dwell_s)
+                              separation_mm=separation_mm, dwell_s=dwell_s,
+                              angle_deg=(turned_angle_deg
+                                         if pattern == 'columns_turned'
+                                         else None))
+        if apex_m_ball2 is not None:
+            result.attempt['apex_m_ball2'] = apex_m_ball2
         if result.success and pattern != 'magazine':
             # The attempt is installed now -- from here `_maybe_signal_goal_
             # done` may end the goal (see `_goal_armed`'s `__init__` comment).
@@ -3841,10 +3948,35 @@ class SkillNode(Node):
                 self._goal_armed = True
         return result
 
+    def _highlow_refusal(self, apex_m: float,
+                         apex_m_ball2: float) -> Optional[SimpleNamespace]:
+        """The ``columns_highlow`` goal's own no-motion refusals (JP-9), or
+        ``None``: Ball 2's Apex unset (``apex_m_ball2`` 0) or equal to Ball
+        1's (that is plain ``columns``), and the ``level`` planner (high-low
+        cells are swept under ``pose`` only; the level planner is
+        direction-sensitive -- owner, 2026-10-30)."""
+        problems = []
+        if not apex_m_ball2 > 0.0:
+            problems.append('apex_m_ball2 is unset (0) -- `ros2 param set '
+                            '/skill_node apex_m_ball2 <m>` before the goal')
+        elif abs(apex_m_ball2 - apex_m) < 1e-9:
+            problems.append('apex_m_ball2 %.3f m equals the goal Apex -- that '
+                            'is plain columns' % (apex_m_ball2,))
+        if self._planner_mode() != 'pose':
+            problems.append('planner_mode is %r -- columns_highlow is swept '
+                            'and flown under pose only' % (self._planner_mode(),))
+        if not problems:
+            return None
+        msg = 'columns_highlow refused: %s' % ('; '.join(problems),)
+        self.get_logger().debug(msg)
+        return SimpleNamespace(success=False, message=msg)
+
     def _run_columns(self, apex_m: float, separation_mm: float,
                      dwell_s: float, n_throws: int,
                      reload_a: bool = False,
-                     phantom_a: bool = False) -> SimpleNamespace:
+                     phantom_a: bool = False,
+                     angle_deg: float = 0.0,
+                     apex_m_ball2: Optional[float] = None) -> SimpleNamespace:
         """The ``columns`` branch of :meth:`_start_pattern` — R5's
         feed-triggered two-phase start (owner decision D1, 2026-09-30),
         replacing the R2-R4 body that refused outright (`_hand_home_error`,
@@ -3925,6 +4057,15 @@ class SkillNode(Node):
         the measured reason). The 'transit' entry (pre-R5 self-toss) was
         retired 2026-10-14 after the hop entry met the R5 gate at sitting 8;
         `columns_entry` no longer exists.
+
+        ``apex_m_ball2`` (``columns_highlow``, JP-9; default ``None`` = plain
+        Columns): Ball 2's (ball B, the FED ball) own Apex. The Apex rides
+        with the BALL: ball A (``apex_m``) cycles at ``a_site`` and ball B
+        (``apex_m_ball2``) at the FEED Site, so which physical Site flies high
+        follows ``columns_feed_site`` (default 'P1' = feed: Ball 2's Apex at
+        P1, Ball 1's at P2). The box check is per Site, each at its own
+        ball's Apex and Dwell (``schedule.columns_ball_timing``), against the
+        ``columns_highlow`` cells, which are swept for BOTH assignments.
         """
         if _ADMISSIBLE_BOX_PATH is None:
             msg = ('cannot find the repo root from %r -- the admissible box '
@@ -3932,12 +4073,27 @@ class SkillNode(Node):
             self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
         plant_id = str(self.get_parameter('plant_id').value)
-        sites = columns_sites(separation_mm)
+        sites = columns_sites(separation_mm, angle_deg)
         # R5 sitting 2 (2026-10-02): `columns_feed_site` picks which of the
         # two named sites ball B is fed at; the other holds ball A (see the
-        # docstring above). `columns_sites` always returns `(P1, P2)`, so
-        # this is a plain pick, never a guess from xy.
-        if self._columns_feed_site_name() == sites[0].name:
+        # docstring above). `columns_sites` always returns `(P1, P2)` (a
+        # turned pair: `P1@<angle>`, `P2@<angle>`), so this is a plain pick
+        # by index, never a guess from xy.
+        if angle_deg != 0.0:
+            # JP-10: the fed Site is GEOMETRIC for a turned pair -- the one
+            # nearest Ball Butler (tie -> P1), so the incoming ball's descent
+            # never crosses the held ball's column. `columns_feed_site`
+            # (a straight-pair choice) is not read.
+            feed_idx = self._columns_turned_feed_index(sites)
+            if feed_idx is None:
+                msg = ('columns_turned refused: Ball Butler\'s position is '
+                       'unknown (no bb/base_frame_pose or robot_frame this '
+                       'launch), so the fed Site cannot be chosen by '
+                       'geometry')
+                self.get_logger().debug(msg)
+                return SimpleNamespace(success=False, message=msg)
+            feed_site, a_site = sites[feed_idx], sites[1 - feed_idx]
+        elif self._columns_feed_site_name() == 'P1':
             feed_site, a_site = sites[0], sites[1]
         else:
             feed_site, a_site = sites[1], sites[0]
@@ -3957,7 +4113,8 @@ class SkillNode(Node):
         try:
             pattern = Pattern(sites=(a_site, feed_site), apex_m=apex_m,
                              dwell_s=dwell_s, n_throws=n_throws,
-                             phantom_balls=((0,) if phantom_a else ()))
+                             phantom_balls=((0,) if phantom_a else ()),
+                             apex_m_ball_b=apex_m_ball2)
         except ValueError as exc:
             msg = 'columns pattern refused: %s' % (exc,)
             self.get_logger().debug(msg)
@@ -3971,10 +4128,23 @@ class SkillNode(Node):
             self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
 
-        msg = self._box_coverage_refusal(
-            boxes, 'columns',
-            [((site.name, site.name), site.cup_mm[:2], site.cup_mm[:2],
-              (site,)) for site in sites], apex_m, dwell_s, what='columns')
+        if apex_m_ball2 is None:
+            msg = self._box_coverage_refusal(
+                boxes, 'columns',
+                [((site.name, site.name), site.cup_mm[:2], site.cup_mm[:2],
+                  (site,)) for site in sites], apex_m, dwell_s, what='columns')
+        else:
+            # High-low: each Site's cell at ITS ball's Apex and Dwell.
+            timing = columns_ball_timing(apex_m, apex_m_ball2, dwell_s)
+            msg = '; '.join(m for m in (
+                self._box_coverage_refusal(
+                    boxes, COLUMNS_HIGHLOW,
+                    [((site.name, site.name), site.cup_mm[:2],
+                      site.cup_mm[:2], (site,))],
+                    apex_b, timing.dwells[b],
+                    what='columns_highlow %s' % (ball_label(b),))
+                for b, site, apex_b in ((0, a_site, apex_m),
+                                        (1, feed_site, apex_m_ball2))) if m)
         if msg:
             self.get_logger().debug(msg)
             return SimpleNamespace(success=False, message=msg)
@@ -6116,6 +6286,10 @@ class SkillNode(Node):
                 pattern=str(getattr(goal_request, 'pattern', '')))
             return GoalResponse.REJECT
         attempt = result.attempt
+        # `apex_m_ball2` is an extra trailing key on a columns_highlow start
+        # only; every other goal's event is unchanged.
+        extra = ({'apex_m_ball2': '%.3f' % attempt['apex_m_ball2']}
+                 if 'apex_m_ball2' in attempt else {})
         self._publish_attempt_event(
             ATTEMPT_START, 'accepted', DiagnosticStatus.OK,
             pattern=attempt['pattern'],
@@ -6123,7 +6297,9 @@ class SkillNode(Node):
             reload='1' if attempt['reload'] else '0',
             apex_m='%.3f' % attempt['apex_m'],
             separation_mm='%.1f' % attempt['separation_mm'],
-            dwell_s='%.3f' % attempt['dwell_s'])
+            dwell_s='%.3f' % attempt['dwell_s'],
+            **dict(extra, **({'angle_deg': '%g' % attempt['angle_deg']}
+                            if attempt.get('angle_deg') is not None else {})))
         start = getattr(result, 'start_line', '')
         if start:
             self.get_logger().debug('jugglebot/juggle ACCEPTED: %s'
@@ -6131,9 +6307,15 @@ class SkillNode(Node):
             # dwell / separation the schedule was compiled with (goal field,
             # dwell falling back to the node parameter) — the hold-rung probe
             # reads them instead of inferring from goal order.
+            # A trailing field only (the parsers search, never anchor the
+            # end): Ball 2's Apex of a columns_highlow goal.
             self.get_logger().info(
-                '%s · dwell %.2f s · sep %g mm'
-                % (start, attempt['dwell_s'], attempt['separation_mm']))
+                '%s · dwell %.2f s · sep %g mm%s'
+                % (start, attempt['dwell_s'], attempt['separation_mm'],
+                   (' · angle %g deg' % attempt['angle_deg'])
+                   if attempt.get('angle_deg') is not None else '')
+                   + (' · apex2 %.2f m' % attempt['apex_m_ball2']
+                      if 'apex_m_ball2' in attempt else ''))
         else:
             self.get_logger().info('jugglebot/juggle ACCEPTED: %s'
                                    % (result.message,))

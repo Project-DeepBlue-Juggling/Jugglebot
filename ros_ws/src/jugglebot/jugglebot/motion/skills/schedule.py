@@ -296,6 +296,72 @@ def transit_s(flight_s_: float, dwell_s: float) -> float:
     return (float(flight_s_) - float(dwell_s)) / 2.0
 
 
+#: The ``Schedule.pattern`` label (and admissible-box pattern) of a Columns
+#: whose two balls fly to DIFFERENT Apexes (JP-9, goal ``columns_highlow``).
+COLUMNS_HIGHLOW = 'columns_highlow'
+
+
+@dataclasses.dataclass(frozen=True)
+class ColumnsTiming:
+    """Columns' event arithmetic, per schedule ball id (``(ball A, ball B)``).
+
+    See :func:`columns_ball_timing`. ``flights``/``dwells``/``transits`` are
+    2-tuples indexed by ball id; ``beat`` is the one Beat both share;
+    ``high_flight`` is the longer flight (the Schedule's ``flight_s``).
+    """
+
+    beat: float
+    flights: Tuple[float, float]
+    dwells: Tuple[float, float]
+    transits: Tuple[float, float]
+    high_flight: float
+
+    @property
+    def equal(self) -> bool:
+        """True when both balls share one flight (every Columns before JP-9)."""
+        return self.flights[0] == self.flights[1]
+
+
+def columns_ball_timing(apex_a_m: float, apex_b_m: float,
+                        dwell_s: float) -> ColumnsTiming:
+    """Two balls, one Hand, one Beat (JP-9 high-low Columns, owner-confirmed
+    framing 2026-10-30; map JB-107).
+
+    Ball ``i`` (Apex ``h_i``) flies ``t_i = flight_s(h_i)``. A steady Pattern
+    throws every Beat ``beta`` and alternates the balls, so each ball is
+    thrown every ``2 beta`` and ``2 beta = t_i + d_i``: the Dwells differ, the
+    Beat does not. The HIGH ball keeps the commanded Dwell ``d``; so
+    ``beta = (t_high + d) / 2`` (:func:`beat_s`), the low ball dwells
+    ``d_low = d + (t_high - t_low)``, and the empty transit before catching
+    ball ``i`` is ``tau_i = t_i - beta``: ``tau_high = (t_high - d) / 2``
+    (:func:`transit_s`, today's identity) and ``tau_low = tau_high -
+    (t_high - t_low)`` -- SHORTER (about 45 ms at 1.05/0.95).
+
+    Equal Apexes are today's arithmetic EXACTLY (no float re-association):
+    both balls take the high branch, ``d`` and ``transit_s(t_f, d)``
+    unchanged, which is what keeps an equal-Apex schedule bit-identical.
+    The sweep (``tools/admissible_sweep.py``) reads this same function, so a
+    low ball's ``dwell_s`` stamp and the executor's select agree to the bit.
+    """
+    t = (flight_s(apex_a_m), flight_s(apex_b_m))
+    t_hi = max(t)
+    d = float(dwell_s)
+    beta = beat_s(t_hi, d)
+    tau_hi = transit_s(t_hi, d)
+    dwells = []
+    transits = []
+    for t_i in t:
+        dt = t_hi - t_i
+        if dt == 0.0:
+            dwells.append(d)
+            transits.append(transit_s(t_i, d))
+        else:
+            dwells.append(d + dt)
+            transits.append(tau_hi - dt)
+    return ColumnsTiming(beat=beta, flights=t, dwells=tuple(dwells),
+                         transits=tuple(transits), high_flight=t_hi)
+
+
 def ball_label(ball_id: int) -> str:
     """Operator-facing name for a schedule ball id (owner convention,
     2026-10-04). Code prose keeps ``'ball A'``/``'ball B'`` and schedule ids
@@ -628,12 +694,31 @@ class Pattern:
     #: / ``_register_catch`` / ``_tracked_landing`` / ``_dispatch`` /
     #: ``_survivor_catch`` — see :meth:`Schedule.is_phantom`.
     phantom_balls: Tuple[int, ...] = ()
+    #: Ball B's (schedule id 1, operator "Ball 2") own Apex (m) -- JP-9, the
+    #: high-low Columns (``columns_highlow``, map JB-107). ``None`` (every
+    #: pattern before it) means "the same as :attr:`apex_m`", and so does a
+    #: value EQUAL to it: :func:`compile_columns` then builds today's schedule
+    #: bit for bit. :attr:`apex_m` stays ball A's (id 0, "Ball 1"). Per id,
+    #: like :attr:`phantom_balls`: the Apex rides with the BALL, never the
+    #: Site, so in a fed start (ball A at ``sites[0]``, ball B fed at
+    #: ``sites[1]``) ball B's Apex is flown at the FEED Site.
+    #: :func:`columns_ball_timing` is the arithmetic.
+    apex_m_ball_b: Optional[float] = None
 
     def __post_init__(self):
         bad = tuple(b for b in self.phantom_balls if int(b) not in (0, 1))
         if bad:
             raise ValueError('phantom_balls may only name schedule ball ids '
                              '0 or 1, got %r' % (self.phantom_balls,))
+        if self.apex_m_ball_b is not None and not float(self.apex_m_ball_b) > 0.0:
+            raise ValueError('apex_m_ball_b must be > 0 m (or None = apex_m), '
+                             'got %r' % (self.apex_m_ball_b,))
+
+    def apex_for(self, ball_id: int) -> float:
+        """The Apex (m) schedule ball ``ball_id`` is thrown to."""
+        if int(ball_id) == 1 and self.apex_m_ball_b is not None:
+            return float(self.apex_m_ball_b)
+        return float(self.apex_m)
 
 
 @dataclasses.dataclass(frozen=True)
@@ -648,7 +733,8 @@ class Schedule:
     dwell_s: float
     t0_abs_s: float
     #: Which compiler built this schedule — ``'columns'``
-    #: (:func:`compile_columns`), ``'self_toss'``, ``'hop'`` or ``'oval_1ball'``
+    #: (:func:`compile_columns`; :data:`COLUMNS_HIGHLOW` when its two balls
+    #: fly to different Apexes, JP-9), ``'self_toss'``, ``'hop'`` or ``'oval_1ball'``
     #: (the fixed-role one-ball oval, ``OneBallPattern.roles='fixed'``)
     #: (:func:`compile_one_ball`, one or two sites — R4, owner decision D1
     #: 2026-09-23).  ``compile_reload`` (R4, owner decision D4 2026-09-23)
@@ -677,6 +763,33 @@ class Schedule:
     #: phantom except B2's ``columns_1ball`` and R5 sitting 4's
     #: ``columns_1ball_fed``.
     phantom_balls: Tuple[int, ...] = ()
+    #: Per-ball timing of a high-low Columns (JP-9, :func:`columns_ball_timing`),
+    #: indexed by schedule ball id: ``(ball A, ball B)``. ``()`` (EVERY schedule
+    #: whose balls share one Apex -- all of them before JP-9) means the scalars
+    #: above hold for both balls; read them through :meth:`dwell_for` /
+    #: :meth:`flight_for`, never by indexing. When set, the SCALARS keep one
+    #: meaning, the HIGH ball's: :attr:`flight_s` = the longer flight,
+    #: :attr:`dwell_s` = the commanded Dwell (which the high ball keeps),
+    #: :attr:`transit_s` = ``transit_s(flight_s, dwell_s)`` (the high ball's),
+    #: :attr:`beat_s` = the one Beat both balls share.
+    dwell_by_ball: Tuple[float, ...] = ()
+    flight_by_ball: Tuple[float, ...] = ()
+
+    def dwell_for(self, ball_id: int) -> float:
+        """The Dwell (s) schedule ball ``ball_id`` spends in the Cup between
+        its Catch and its next Throw: the admissible box's ``dwell_s`` stamp
+        for that ball's cells. :attr:`dwell_s` unless this is a high-low
+        Columns, where the LOW ball dwells longer (:func:`columns_ball_timing`)."""
+        if self.dwell_by_ball:
+            return float(self.dwell_by_ball[int(ball_id)])
+        return float(self.dwell_s)
+
+    def flight_for(self, ball_id: int) -> float:
+        """The flight time (s) of schedule ball ``ball_id``'s nominal Throw
+        (:attr:`flight_s` unless this is a high-low Columns)."""
+        if self.flight_by_ball:
+            return float(self.flight_by_ball[int(ball_id)])
+        return float(self.flight_s)
 
     def due(self, t_abs_s: float) -> Tuple[Skill, ...]:
         """Skills whose dispatch instant has passed by ``t_abs_s``."""
@@ -738,7 +851,7 @@ def _check_window(name: str, window_s: float) -> None:
                float(hw.JB_TRAJ_KNOT_DT_S)))
 
 
-def _fold_catch_throw_pairs(skills, dwell_s: float, fixed_roles: bool = False):
+def _fold_catch_throw_pairs(skills, dwell_s, fixed_roles: bool = False):
     """Fold every same-site (CATCH, THROW) pair of ONE ball into one CATCH.
 
     ``fixed_roles`` (the one-ball oval, ``OneBallPattern.roles='fixed'``)
@@ -754,7 +867,15 @@ def _fold_catch_throw_pairs(skills, dwell_s: float, fixed_roles: bool = False):
     reason).  The first throw, which comes from rest and has no catch before it,
     stays a THROW skill; the chronologically last catch has no throw after it
     and stays a standalone CATCH.
+
+    ``dwell_s`` is one float for every ball, or a per-ball-id sequence
+    (high-low Columns, :func:`columns_ball_timing`: the low ball dwells
+    longer, so its CATCH pairs with the THROW one LONGER dwell later).
     """
+    if isinstance(dwell_s, (tuple, list)):
+        dwell_of = tuple(float(d) for d in dwell_s)
+    else:
+        dwell_of = None
     out = []
     folded = set()
     for i, sk in enumerate(skills):
@@ -768,7 +889,9 @@ def _fold_catch_throw_pairs(skills, dwell_s: float, fixed_roles: bool = False):
             other = skills[j]
             if (other.kind == THROW and other.ball_id == sk.ball_id
                     and (fixed_roles or other.site is sk.site)
-                    and abs(other.t_abs_s - (sk.t_abs_s + dwell_s)) <= 1e-9):
+                    and abs(other.t_abs_s - (sk.t_abs_s + (
+                        dwell_s if dwell_of is None
+                        else dwell_of[int(sk.ball_id)]))) <= 1e-9):
                 pair = (j, other)
                 break
         if pair is None:
@@ -1005,6 +1128,21 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
     self-toss) was retired as a ``skill_node`` choice 2026-10-14 after the hop entry met the R5 gate at
     sitting 8; ``columns_entry`` no longer exists.
 
+    **High-low Columns (JP-9, ``pattern.apex_m_ball_b`` set and different
+    from ``apex_m``; owner-confirmed framing 2026-10-30).** Ball A flies to
+    ``apex_m``, ball B to ``apex_m_ball_b`` (each Skill's ``y_d``); the Beat
+    comes from the HIGH ball, which keeps the commanded Dwell; the LOW ball
+    dwells longer and its transit is shorter (:func:`columns_ball_timing`).
+    Every per-ball window above reads that ball's own value -- the initial
+    CATCH (ball B's transit), each CATCH (its ball's transit, landing one of
+    ITS flights after the throw), each carried THROW (its ball's Dwell) -- so
+    every CATCH still splices on the previous release (``base = t_land -
+    tau_i = t_throw + beta``). A low ball whose transit would be ``<= 0`` is
+    refused by name. The Schedule is labelled :data:`COLUMNS_HIGHLOW` (its
+    own admissible-box cells) and carries ``dwell_by_ball`` /
+    ``flight_by_ball``; its scalars are the HIGH ball's. Equal Apexes compile
+    today's schedule bit for bit, label ``'columns'`` included.
+
     **Every same-site (CATCH, THROW) pair of one ball is emitted as ONE CATCH
     skill carrying ``then_throw``** (:func:`_fold_catch_throw_pairs`), so the
     schedule holds ``1 + (n_throws − 1) + 1 + 1 = n_throws + 2`` skills: the
@@ -1035,16 +1173,33 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
         raise ValueError(
             "hop_entry=True requires feed (a free-t0_abs_s schedule has no "
             "real feed ball to park THROW 0 for)")
-    t_f = flight_s(pattern.apex_m)
-    beta = beat_s(t_f, pattern.dwell_s)
+    # Per-ball timing (JP-9 high-low, `columns_ball_timing`): with equal
+    # Apexes (`apex_m_ball_b` None or == apex_m) every per-ball value below is
+    # today's scalar EXACTLY, so the schedule is bit-identical.
+    timing = columns_ball_timing(pattern.apex_for(0), pattern.apex_for(1),
+                                 pattern.dwell_s)
+    t_f = timing.high_flight
+    beta = timing.beat
     tau = transit_s(t_f, pattern.dwell_s)
-    if feed is not None:
-        t0_abs_s = float(feed.t_land_abs_s) - tau
+    flight_of = timing.flights
+    dwell_of = timing.dwells
+    tau_of = timing.transits
     if not tau > 0.0:
         raise ValueError(
             'dwell %.4f s >= flight %.4f s leaves no transit — the ball would '
             'have to land before the other hand finishes its dwell'
             % (pattern.dwell_s, t_f))
+    for b in (0, 1):
+        if not tau_of[b] > 0.0:
+            raise ValueError(
+                'high-low Columns: %s (Apex %.3f m, flight %.4f s) has no '
+                'transit -- its flight is %.4f s shorter than the high '
+                "ball's, which eats the high ball's whole %.4f s transit "
+                '(Dwell %.4f s); raise its Apex or shorten the Dwell'
+                % (ball_label(b), pattern.apex_for(b), flight_of[b],
+                   t_f - flight_of[b], tau, pattern.dwell_s))
+    if feed is not None:
+        t0_abs_s = float(feed.t_land_abs_s) - tau_of[1]
     n = int(pattern.n_throws)
     if n < 1:
         raise ValueError('n_throws must be >= 1, got %r' % (pattern.n_throws,))
@@ -1070,7 +1225,7 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
     t0_rel = 0.0
 
     skills = []
-    _check_window('initial CATCH', tau)
+    _check_window('initial CATCH', tau_of[1])
     # `feed.t_land_abs_s` is already the ORIGINAL absolute instant (the
     # same "not the relative one `_shifted` would double-shift" note as
     # `compile_reload`'s own CATCH), so it rides through unshifted —
@@ -1084,7 +1239,7 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
     # arrival to pin against (its own self-toss/hop landing is already
     # vertical or near it) and keeps the auto-banked default, `None`.
     skills.append(Skill(kind=CATCH, ball_id=1, site=site1,
-                        t_abs_s=t0_rel + tau, window_s=tau,
+                        t_abs_s=t0_rel + tau_of[1], window_s=tau_of[1],
                         landing_prior=feed,
                         receive_tilt=((0.0, 0.0) if feed is not None else None)))
 
@@ -1094,14 +1249,15 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
         # it, so the dwell is the span from that catch's touch-down to its
         # release inside ONE window — still a span the gate must be able to
         # measure a jerk across.
-        _check_window('dwell (touch-down to the throw the catch carries)',
-                      pattern.dwell_s)
+        for b in sorted(set(dwell_of)):
+            _check_window('dwell (touch-down to the throw the catch carries)',
+                          b)
 
     for i in range(n):
         ball_i = i % 2
         site_i = sites2[ball_i]
         t_throw = t0_rel + i * beta
-        window = pattern.launch_s if i == 0 else pattern.dwell_s
+        window = pattern.launch_s if i == 0 else dwell_of[ball_i]
         # The Stop (D2, 2026-09-30, R5 rescope — E1', see the docstring): the
         # LAST throw targets the OTHER site — the one the second-to-last ball
         # is caught and held at (`sites2[n % 2]`, always the other of the two
@@ -1122,20 +1278,23 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
         release_site_i = sites2[1] if is_hop_throw else site_i
         throw_sk = Skill(kind=THROW, ball_id=ball_i, site=release_site_i,
                          t_abs_s=t_throw, window_s=window,
-                         y_d=(np.zeros(2), pattern.apex_m), target=target_i,
+                         y_d=(np.zeros(2), pattern.apex_for(ball_i)),
+                         target=target_i,
                          shadow_landing=is_stop_throw, entry_hop=is_hop_throw)
         skills.append(throw_sk)
         if i <= n - 2:
-            _check_window('CATCH %d' % i, tau)
+            _check_window('CATCH %d' % i, tau_of[ball_i])
             # `site=target_i`, not `site_i`: the catch must sit where the
             # ball actually LANDS. Identical to `site_i` for every throw
             # except the hop entry's THROW 0, where the two differ by
             # construction (release at the feed site, landing at its own).
             skills.append(Skill(kind=CATCH, ball_id=ball_i, site=target_i,
-                                t_abs_s=t_throw + t_f, window_s=tau))
+                                t_abs_s=t_throw + flight_of[ball_i],
+                                window_s=tau_of[ball_i]))
 
     skills.sort(key=lambda s: s.t_abs_s)
-    skills = _fold_catch_throw_pairs(skills, float(pattern.dwell_s))
+    skills = _fold_catch_throw_pairs(
+        skills, float(pattern.dwell_s) if timing.equal else dwell_of)
 
     catches = [s for s in skills if s.kind == CATCH]
     last_catch = max(catches, key=lambda s: s.t_abs_s)
@@ -1169,10 +1328,20 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
 
     t0 = float(t0_abs_s)
     skills = [_shifted(s, t0) for s in skills]
+    if timing.equal:
+        return Schedule(skills=tuple(skills), flight_s=t_f, beat_s=beta,
+                        transit_s=tau, dwell_s=float(pattern.dwell_s),
+                        t0_abs_s=t0, pattern='columns',
+                        phantom_balls=pattern.phantom_balls)
+    # High-low (JP-9): its own box label, so a plain Columns at one of these
+    # Apexes can never select a cell swept for the other ball's seed and
+    # timing (`admissible.PATTERNS`); per-ball timing rides on the Schedule.
     return Schedule(skills=tuple(skills), flight_s=t_f, beat_s=beta,
                     transit_s=tau, dwell_s=float(pattern.dwell_s),
-                    t0_abs_s=t0, pattern='columns',
-                    phantom_balls=pattern.phantom_balls)
+                    t0_abs_s=t0, pattern=COLUMNS_HIGHLOW,
+                    phantom_balls=pattern.phantom_balls,
+                    dwell_by_ball=tuple(dwell_of),
+                    flight_by_ball=tuple(flight_of))
 
 
 #: Duration (s) of the OPENING REST that lifts the hand from the ACTIVATE park
