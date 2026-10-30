@@ -102,15 +102,23 @@ _Status: closed (complete)._
 
 **Destination:** JP-14 Centre and orbit flown on the robot: 30 consecutive Catches in one Attempt at radius 100 mm with 8 Sites per lap, under pose.
 
-**Progress:** 0 of 0 stops done
+**Progress:** 1 of 10 stops done
 
-**Next:** —
+**Next:** P2 Turned Columns on the compiled path ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
 
-**Owners:** —
+**Owners:** Harrison
 
 **Remaining:**
 
-- —
+- P2 Turned Columns on the compiled path ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
+- P3 JP-10 turned Columns ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
+- P4 Per-Site Apex ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
+- P5 JP-9 high-low Columns ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
+- P6 Per-Beat Sites dependency owned by JB-38 ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
+- P7 JP-5 polygon walk ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
+- P8 JP-11 rotating Columns ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
+- P9 Centre and orbit compile ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
+- P10 JP-14 Centre and orbit ([pattern-progression.md](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/plans/active/pattern-progression.md))
 
 **Attached inbox items:**
 
@@ -141,7 +149,7 @@ _Status: closed (complete)._
 | Ball Butler | — | BB calibration: advisory when a template marker is never matched in a sweep | bug bb/throw_outcome carries no throw identity; bug NOT_SETTLED retry is dead in the field; feature Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware | — |
 | Learner generalisation | — | Box sweep fidelity for same-site families (plan what the executor dispatches) | P1 Learner core; P2 The characterisation sitting; P3 Online admissibility and box retirement; P4 BeatEvent stream and the columns wrapper; P5 Close-out; feature Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z | — |
 | Map improvements | — | — | bug item_uuid(slug) collides across kinds that share a slug; bug Map app allocates JB ids from its own clone and collides with mapkit when both file within minutes | P0 Plan and its Feature; P1 mapkit ids module and checks; P2 Backfill and the uniqueness test; P3 mapkit resolution, creation, display and the commands; P4 App server: allocate, resolve, repair (fork repo); P5 App frontend: show and deep-link (fork repo); P6 Normative docs |
-| Pattern progression: Columns to Centre and orbit | — | — | idea JP-10 Turned columns: the columns pair at fixed angles about +z, under pose; idea JP-11 Rotating columns: the pair turns a few degrees every Beat; idea JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm; idea JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites; idea JP-9 High-low columns: Ball 1 at apex 1.05 m, Ball 2 at 0.95 m | — |
+| Pattern progression: Columns to Centre and orbit | — | P2 Turned Columns on the compiled path | P3 JP-10 turned Columns; P4 Per-Site Apex; P5 JP-9 high-low Columns; P6 Per-Beat Sites dependency owned by JB-38; P7 JP-5 polygon walk; P8 JP-11 rotating Columns; P9 Centre and orbit compile; P10 JP-14 Centre and orbit; idea JP-10 Turned columns: the columns pair at fixed angles about +z, under pose; idea JP-11 Rotating columns: the pair turns a few degrees every Beat; idea JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm; idea JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites; idea JP-9 High-low columns: Ball 1 at apex 1.05 m, Ball 2 at 0.95 m | P1 Launch current check |
 | Two-ball skill stack | — | — | — | closed |
 | Wave camera on CAN3 | — | — | — | closed |
 
@@ -189,6 +197,7 @@ Metrics: Effort xs/s/m/l/xl; HW none/bench-leg/robot; Owner none/decision/hands;
 | JB-79 | bug | [test_hand_step_violation_not_sent flakes under the full gate (assert 2 == 1)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-test-hand-step-violation-not-sent-flakes-under-the-full-gate.md) | inbox | medium | s | none | none | local | tests-tooling | — | filed 2026-10-28 |
 | JB-93 | idea | [The records should be sorted by number of balls, from least- to most-difficult, with sub-headings and small dividers between them.](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-the-records-should-be-sorted-by-number-of-balls-from-least-t.md) | inbox | medium | xs | none | — | — | — | — | filed 2026-10-28 |
 | JB-94 | feature | [Trim the nice-0 chain CPU the flame graphs point at: skill_node executor (~0.5 core), mocap_node publish path (~0.28), tracker message plumbing (~0.28)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-trim-the-nice-0-chain-cpu-the-flame-graphs-point-at-skill.md) | inbox | medium | — | — | — | — | skill-stack | Two-ball oval | filed 2026-10-28 |
+| JB-117 | bug | [Hand brake and hold currents sit far below the throw envelope's model (brake -14 to -20 A measured vs 35 to 40 A predicted; hold 1.5 vs 2.6 A): Kt, moving mass or friction is mis-modelled](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-hand-brake-and-hold-currents-sit-far-below-the-throw.md) | inbox | medium | s | bench-leg | hands | subsystem | hand | — | filed 2026-10-30 |
 | JB-114 | idea | [Hand end-of-stroke bumper, and first the planner's own brake shape: let the ceiling, not the Hand, cap the Apex](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-hand-end-of-stroke-bumper-and-first-the-planner-s-own-brake.md) | inbox | medium | l | robot | decision | cross-cutting | hand | — | filed 2026-10-30 |
 | JB-108 | idea | [JP-10 Turned columns: the columns pair at fixed angles about +z, under pose](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-10-turned-columns-the-columns-pair-at-fixed-angles-about.md) | inbox | medium | s | robot | hands | subsystem | skill-stack | Pattern progression: Columns to Centre and orbit | filed 2026-10-30 |
 | JB-109 | idea | [JP-11 Rotating columns: the pair turns a few degrees every Beat](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-11-rotating-columns-the-pair-turns-a-few-degrees-every.md) | inbox | medium | l | robot | hands | cross-cutting | skill-stack | Pattern progression: Columns to Centre and orbit | filed 2026-10-30 |
@@ -198,7 +207,7 @@ Metrics: Effort xs/s/m/l/xl; HW none/bench-leg/robot; Owner none/decision/hands;
 | JB-113 | idea | [JP-17 Three-ball cascade with the owner as the second Hand, Platform held tilted toward them](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-17-three-ball-cascade-with-the-owner-as-the-second-hand.md) | inbox | medium | xl | robot | decision | cross-cutting | skill-stack | — | filed 2026-10-30 |
 | JB-106 | idea | [JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-5-polygon-walk-one-ball-n-sites-the-cheapest-way-to-land.md) | inbox | medium | s | robot | hands | subsystem | skill-stack | Pattern progression: Columns to Centre and orbit | filed 2026-10-30 |
 | JB-107 | idea | [JP-9 High-low columns: Ball 1 at apex 1.05 m, Ball 2 at 0.95 m](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/idea-jp-9-high-low-columns-ball-1-at-apex-1-05-m-ball-2-at-0-95-m.md) | inbox | medium | m | robot | hands | subsystem | skill-stack | Pattern progression: Columns to Centre and orbit | filed 2026-10-30 |
-| JB-115 | bug | [Launch THROW with the ball aboard may demand more than the 50 A hand current limit from Apex about 0.99 (envelope arithmetic, unverified): check hand current in a columns bag](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-launch-throw-with-the-ball-aboard-may-demand-more-than-the.md) | inbox | medium | xs | none | hands | subsystem | hand | — | filed 2026-10-30 |
+| JB-115 | bug | [Launch THROW with the ball aboard may demand more than the 50 A hand current limit from Apex about 0.99 (envelope arithmetic, unverified): check hand current in a columns bag](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-launch-throw-with-the-ball-aboard-may-demand-more-than-the.md) | backlog | medium | xs | none | hands | subsystem | hand | — | filed 2026-10-30 |
 | JB-104 | bug | [Pose planner reports UNVERIFIED instead of a named INFEASIBLE at the feasibility edge](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-pose-planner-reports-unverified-instead-of-a-named.md) | inbox | low | s | none | none | local | skill-stack | — | filed 2026-10-30 |
 | JB-102 | feature | [Pre-release hold rung: release from a moving Platform (hold 0.100 → 0)](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-pre-release-hold-rung-release-from-a-moving-platform-hold-0.md) | inbox | high | m | robot | hands | — | — | Two-ball oval | filed 2026-10-30 |
 | JB-101 | bug | [Some GUI chart zoom levels result in only a single tick mark being visible. There should always be at least two, to give scale](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-some-gui-chart-zoom-levels-result-in-only-a-single-tick-mark.md) | inbox | medium | s | none | — | — | — | — | filed 2026-10-30 |
