@@ -1,5 +1,5 @@
 ---
-id: JB-118
+id: JB-119
 kind: pathway
 title: 'Night Shift: unattended overnight work on the board, and the Next Sitting Runbook'
 status: active
@@ -40,8 +40,8 @@ The Next Sitting Runbook is the second half: one page listing every hardware che
 
 ## Plan
 
-One plan under this Pathway, in five steps: runner skeleton and dry run; work loop, merge gate, report and ticker; report tab with answerable tickets; `## Sitting` sections, Runbook generator and tab; Sitting wrap-up skill. The glossary gains Night Shift and Next Sitting Runbook entries in the first step.
+One plan under this Pathway, `plans/active/night-shift.md`, in six steps: P1 runner skeleton and dry run; P2 work loop, merge gate, report and ticker; P3 Night Shift page with answerable tickets; P4 `## Sitting` sections, Runbook generator and page; P5 Sitting wrap-up command; R6 the first Runbook-driven Sitting. The glossary gains Night Shift and Next Sitting Runbook entries in P1.
 
 ## Open questions
 
-- Confirm in the first step that Claude Code with an API key bills the Console credits, and what the headless turn and budget flags are on this version.
+- Confirm in P1 that Claude Code with an API key bills the Console credits. The headless flags (`--max-budget-usd`, `--model`, `--effort`, `--output-format json`, `--dangerously-skip-permissions`) were checked on the installed 2.1.314.
