@@ -17,13 +17,14 @@ steps:
   - {id: P2, title: "Work loop, merge gate, report and ticker", kind: phase, status: complete, completed: 2026-10-31, effort: m, hardware: none}
   - {id: P3, title: Night Shift page in the map app, kind: phase, status: not_started, effort: m, hardware: none}
   - {id: P4, title: Next Sitting Runbook, kind: phase, status: complete, completed: 2026-10-31, effort: m, hardware: none}
-  - {id: P5, title: Sitting wrap-up command, kind: phase, status: not_started, effort: s, hardware: none}
+  - {id: P5, title: Sitting wrap-up command, kind: phase, status: complete, completed: 2026-10-31, effort: s, hardware: none}
   - {id: R6, title: First Runbook-driven Sitting, kind: rung, status: not_started, effort: s, hardware: robot}
 related_logbook:
   - 2026-10-30-night-shift-design-and-plan.md
   - 2026-10-31-night-shift-p1-runner-and-dry-run.md
   - 2026-10-31-night-shift-p2-work-loop-gate-and-questions.md
   - 2026-10-31-night-shift-p4-sitting-sections-and-runbook.md
+  - 2026-10-31-night-shift-p5-sitting-wrapup.md
 related_code:
   - tools/nightly_suite.sh (live-session guard, status line, ticker raise)
   - tools/nightly_ticker.sh
@@ -119,7 +120,7 @@ The nightly suite and its status line; the ticker mechanism (Night Shift becomes
 | P2 | Work loop, merge gate, report and ticker | COMPLETE | 2026-10-31 | medium | first real night: merges only through the gate |
 | P3 | Night Shift page in the map app | NOT STARTED | | low | reports render, a question is answered in two clicks |
 | P4 | Next Sitting Runbook | COMPLETE | 2026-10-31 | medium | `## Sitting` rows generate one ordered page; results write back |
-| P5 | Sitting wrap-up command | NOT STARTED | | low | a Sitting ends with one prompt and no owner git |
+| P5 | Sitting wrap-up command | COMPLETE | 2026-10-31 | low | a Sitting ends with one prompt and no owner git |
 | R6 | First Runbook-driven Sitting | NOT STARTED | | medium | a held branch is flown, passed and merged by the wrap-up |
 
 ## 4. Implementation Phases
@@ -160,6 +161,7 @@ The nightly suite and its status line; the ticker mechanism (Night Shift becomes
 - **Scope**: the morning or post-Sitting Session runs `/sitting-wrapup`: reads every `## Sitting result` newer than the last wrap-up, merges the candidate branch's passed Items into `main` (per-Item merge so a failed Item's branch stays held), returns the live checkout to `main`, rebuilds if `ros_ws` changed, commits `docs/records.md`, files follow-up Items from the notes, writes the logbook entry, regenerates the Runbook. Night Shift's protocol gains one step: list unaddressed `## Sitting result` sections in the report.
 - **Critical details**: the wrap-up runs in `~/Desktop/Jugglebot` under the single-writer rule, so it checks for a peer Session first. Never a force-push; a failed merge leaves the branch held with the conflict named.
 - **Dependencies**: P4.
+- **Outcome (2026-10-31, `logbook/2026-10-31-night-shift-p5-sitting-wrapup.md`)**: complete. `.claude/commands/sitting-wrapup.md` and `tests/sim/test_sitting_wrapup_protocol.py` (22 tests pinning every close-out promise and the Runbook's pointer); the Night Shift protocol lists unaddressed Sitting results. Full gate before the commit: GREEN (2026-10-31 00:56-01:04, `./run_tests.sh --full` on the final tree: parallel 7764 passed, 65 skipped in 482.66 s; serial 8 passed in 32.55 s; exit 0)
 
 ### R6: First Runbook-driven Sitting
 
