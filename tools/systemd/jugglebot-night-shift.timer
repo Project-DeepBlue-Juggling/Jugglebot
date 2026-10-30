@@ -1,0 +1,16 @@
+[Unit]
+Description=Run Jugglebot Night Shift at 04:45
+Documentation=file:///home/jetson/Desktop/Jugglebot/tools/night_shift.sh
+
+[Timer]
+OnCalendar=*-*-* 04:45:00
+# The OPPOSITE of the nightly's choice, deliberately. A night the Jetson was off
+# is the case where the next boot is the owner powering up for a Sitting; a
+# missed Night Shift firing then would put an unattended claude -p beside a
+# powered robot. A skipped night costs nothing (the board waits for tomorrow).
+Persistent=false
+RandomizedDelaySec=120
+Unit=jugglebot-night-shift.service
+
+[Install]
+WantedBy=timers.target

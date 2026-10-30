@@ -1,0 +1,33 @@
+[Unit]
+Description=Jugglebot Night Shift (unattended claude -p on the board, own clone)
+Documentation=file:///home/jetson/Desktop/Jugglebot/tools/night_shift.sh
+# Start after the 04:00 nightly so its status line is final when the ticker is
+# claimed. The runner's own guards (hold file, live-session wait, run lock) do
+# the rest.
+After=jugglebot-nightly.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/night-shift
+ExecStartPre=/bin/mkdir -p %h/night-shift
+# The script runs from the live checkout's path because on the first night the
+# clone (~/night-shift/Jugglebot) does not exist yet; the runner creates it.
+# It never writes there: no git, and only the ticker claim under temp/reports/
+# nightly/ (see the script header for the single-writer rule).
+ExecStart=/home/jetson/Desktop/Jugglebot/tools/night_shift.sh
+# ANTHROPIC_API_KEY=... (mode 600). The leading `-` is deliberate: without it
+# systemd refuses to start the unit when the file is missing, the runner never
+# runs, and there is no last_run.json to say why. With it the runner starts and
+# records NO_API_KEY.
+EnvironmentFile=-%h/.config/jugglebot/night-shift.env
+# The runner's claude timeout is 4 h (NIGHT_SHIFT_TIMEOUT_S), after up to 2 h of
+# live-session wait. If both run long, this 5 h cap wins: systemd's SIGTERM takes
+# the whole cgroup (claude and its agents included) and the runner records
+# INTERNAL_ERROR "terminated by signal" in last_run.json.
+TimeoutStartSec=5h
+# This Jetson also runs the robot. Nice it so a morning Sitting is not starved.
+Nice=10
+IOSchedulingClass=idle
+
+[Install]
+WantedBy=default.target

@@ -44,6 +44,50 @@ here, re-run the install block above, and say so in the logbook entry.
 
 Armed 2026-08-01 (`logbook/2026-08-01-nightly-tier-and-mpc-dormancy.md`).
 
+## Night Shift units (`jugglebot-night-shift.{service,timer}`)
+
+User units that run [`tools/night_shift.sh`](../night_shift.sh) at 04:45, after
+the nightly: an unattended `claude -p` on the board in its own clone
+`~/night-shift/Jugglebot` (`plans/active/night-shift.md`). The timer is
+`Persistent=false` on purpose: a missed night must not fire at the next boot,
+which is when the owner powers the robot.
+
+```bash
+install -Dm644 tools/systemd/jugglebot-night-shift.service \
+  ~/.config/systemd/user/jugglebot-night-shift.service
+install -Dm644 tools/systemd/jugglebot-night-shift.timer \
+  ~/.config/systemd/user/jugglebot-night-shift.timer
+systemctl --user daemon-reload
+systemctl --user enable --now jugglebot-night-shift.timer
+```
+
+The API key lives in an env file the unit reads. The unit names it as
+`EnvironmentFile=-...`: the `-` lets the unit start when the file is missing,
+so the runner records `NO_API_KEY` in `last_run.json` instead of systemd
+refusing the start and leaving no trace there.
+
+```bash
+install -Dm600 /dev/null ~/.config/jugglebot/night-shift.env
+echo 'ANTHROPIC_API_KEY=...' > ~/.config/jugglebot/night-shift.env   # one line, mode 600
+```
+
+Verify with a dry fire (reads the board, writes `dry-<date>.md`, changes
+nothing, pushes nothing, does not claim the nightly ticker):
+
+```bash
+systemctl --user list-timers jugglebot-night-shift.timer --all
+systemctl --user set-environment NIGHT_SHIFT_DRY_RUN=1
+systemctl --user start jugglebot-night-shift.service
+systemctl --user unset-environment NIGHT_SHIFT_DRY_RUN
+cat ~/night-shift/Jugglebot/temp/reports/night-shift/last_run.json   # status DRY_OK
+```
+
+**Hold**: `touch ~/Desktop/Jugglebot/temp/night-shift.hold` stops every run
+with `HELD` (the file's first line, if any, is the recorded reason); remove it
+to resume.
+
+**Rollback**: `systemctl --user disable --now jugglebot-night-shift.timer`.
+
 ## System unit: `jugglebot-gui.service` (GUI server + replay API)
 
 Unlike the nightly units above, this is a **system** unit

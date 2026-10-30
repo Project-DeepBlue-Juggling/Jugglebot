@@ -3,7 +3,7 @@ title: Night Shift - unattended overnight work on the board, and the Next Sittin
 created: 2026-10-30
 status: active
 owner: Harrison
-last_updated: 2026-10-30
+last_updated: 2026-10-31
 pathway: night-shift
 branch: main
 scope: >-
@@ -13,7 +13,7 @@ scope: >-
   the Next Sitting Runbook, one ordered page of every hardware check waiting across all Pathways,
   generated from the Items, with results typed in the map app and a wrap-up Session that merges.
 steps:
-  - {id: P1, title: Runner skeleton and dry run, kind: phase, status: not_started, effort: m, hardware: none}
+  - {id: P1, title: Runner skeleton and dry run, kind: phase, status: complete, completed: 2026-10-31, effort: m, hardware: none}
   - {id: P2, title: "Work loop, merge gate, report and ticker", kind: phase, status: not_started, effort: m, hardware: none}
   - {id: P3, title: Night Shift page in the map app, kind: phase, status: not_started, effort: m, hardware: none}
   - {id: P4, title: Next Sitting Runbook, kind: phase, status: not_started, effort: m, hardware: none}
@@ -21,6 +21,7 @@ steps:
   - {id: R6, title: First Runbook-driven Sitting, kind: rung, status: not_started, effort: s, hardware: robot}
 related_logbook:
   - 2026-10-30-night-shift-design-and-plan.md
+  - 2026-10-31-night-shift-p1-runner-and-dry-run.md
 related_code:
   - tools/nightly_suite.sh (live-session guard, status line, ticker raise)
   - tools/nightly_ticker.sh
@@ -62,11 +63,12 @@ map app (:8765, own clone ~/map-live/Jugglebot, pulls every 30 s): board, drawer
    clone ~/night-shift/Jugglebot (own clone, main, ff from origin)      |
    guards: live_session() from nightly_suite.sh; temp/night-shift.hold; |
            suite flock via run_tests.sh                                  |
-   preflight: python -m mapkit items --open --json -> candidates.json;  |
+   preflight: tools/night_shift_preflight.py -> candidates.json;         |
            exit 0 with "nothing new" if the set equals last night's      |
-   claude -p "/night-shift <date>" --model <fable> --max-budget-usd N    |
-       --dangerously-skip-permissions --output-format json              |
-       orchestrator: claims ticker <--------------------------------------+
+   claude -p "/night-shift <date> ..." --model fable --max-budget-usd N   |
+       --permission-mode acceptEdits --permission-prompts none          |
+       --output-format json  (deny list installed in the clone)         |
+       runner claims the ticker (real runs) and hands the line over <------+
                      per Item: branch night-shift/<date>-JB-n, re-rate, one unit
                      (Sonnet default, Opus when the brief says why), ./run_tests.sh --full,
                      /audit, python tools/night_shift_gate.py -> MERGE | HOLD
@@ -83,21 +85,24 @@ Sitting: checkout night-shift/sitting-<date> -> fly rows -> /sitting-wrapup Sess
 
 | Artefact | Form |
 |---|---|
-| `tools/night_shift.sh` | runner: guards, preflight, `claude -p`, exit summary to `temp/reports/night-shift/last_run.json` |
-| `tools/systemd/jugglebot-night-shift.{service,timer}` | user units; `OnCalendar=*-*-* 04:45`, `After=jugglebot-nightly.service`, `Nice=10`, `EnvironmentFile=%h/.config/jugglebot/night-shift.env` (mode 600, holds `ANTHROPIC_API_KEY`) |
+| `tools/night_shift.sh` | runner: guards, preflight, `claude -p`, exit summary to `temp/reports/night-shift/last_run.json` (in the clone) |
+| `tools/night_shift_preflight.py` | the candidate record and the "nothing new" exit (P1) |
+| `tools/night_shift_settings.json` | the clone's permission settings, installed over `.claude/settings.local.json` every run (P1) |
+| `tools/lib/live_session.sh` | the live-Sitting guard shared by the nightly and Night Shift (P1) |
+| `tools/systemd/jugglebot-night-shift.{service,timer}` | user units; `OnCalendar=*-*-* 04:45`, `Persistent=false` (a missed night never fires at the next boot, which is when the robot is powered), `After=jugglebot-nightly.service`, `Nice=10`, `EnvironmentFile=-%h/.config/jugglebot/night-shift.env` (mode 600, holds `ANTHROPIC_API_KEY`) |
 | `.claude/commands/night-shift.md` | the orchestrator protocol (what `/work-inbox` is for one Item, for the whole board, unattended) |
 | `tools/night_shift_gate.py` | deterministic merge gate; input: branch, Item ID, gate log path, audit report path; output `MERGE` or `HOLD <reasons>`; exit 0/1 |
-| `tools/night_shift_candidate.sh` | stacks held hardware branches into `night-shift/sitting-<date>` |
+| `tools/night_shift_candidate.sh` | stacks held hardware branches into `night-shift/sitting-<date>`; run by the owner or the preparing Session before a Sitting, never by Night Shift |
 | `docs/night-shift/<date>.md` | the report (committed) |
 | `mapkit/sitting.py`, `python -m mapkit runbook` | `## Sitting` section parser and `docs/runbook.md` generator (P4) |
 | `.claude/commands/sitting-wrapup.md` | the morning Session's command (P5) |
 | ticket `type: question` | new enum value; answered under `## Answer` |
 
-Report layout (`docs/night-shift/<date>.md`), sections in this order: `# Night Shift <date>`; `## Nightly` (the ticker line and, on RED, the failures from `latest.md`); `## Merged to main` (JB-n, title, commit); `## Held` (JB-n, branch, reason, what unblocks it); `## Questions for the Operator` (ticket JB-m, one line each, answered in the app); `## Unfinished` (branch, Progress headline); `## Skipped` (JB-n, one-line reason); `## Cost` (USD, duration, units run). Every `JB-n` is bare so the app's drawer links it.
+Report layout (`docs/night-shift/<date>.md`), eight sections in this order: `# Night Shift <date>`; `## Nightly` (the ticker line and, on RED, the failures from `latest.md`); `## Merged to main` (JB-n, title, commit); `## Held` (JB-n, branch, reason, what unblocks it); `## Questions for the Operator` (ticket JB-m, one line each, answered in the app); `## Unfinished` (branch, Progress headline); `## Skipped` (JB-n, one-line reason); `## Unaddressed Sitting results` (P5); `## Cost` (duration, units run; the USD figure is in the runner's `last_run.json`). Every `JB-n` is bare so the app's drawer links it.
 
 Candidate record (`candidates.json`, written by the preflight, read by the orchestrator and diffed against last night's): `{"date": "2026-10-31", "items": [{"id": "JB-21", "stem": "bug-...", "status": "inbox", "updated": "...", "effort": "s", "hardware": "none", "owner": "none", "radius": "subsystem", "diagnosis": "confirmed"}]}`. "Nothing new" means the same `id` set with the same `updated` stamps and no open question ticket answered since the last run.
 
-Merge gate rule (code, not judgment): MERGE requires all of (a) the full suite gate exit 0 on the branch, logged; (b) an audit report with no behaviour-affecting finding left open; (c) the orchestrator's re-rating `hardware: none`; (d) `radius` not `normative`; (e) no open `question` ticket whose `parent` is the Item; (f) the branch touches none of `Teensy_code_canbridge/`, `config/*.yaml`, `GLOSSARY.md`, `CLAUDE.md`, `DOCUMENTATION_GUIDE.md`. Anything else is HOLD with every failing reason listed.
+Merge gate rule (code, not judgment): MERGE requires all of (a) the full suite gate exit 0 on the branch, logged with the tip it ran on; (b) an audit report for that tip with no behaviour-affecting finding left open; (c) the Item rated `hardware: none` on the branch, and not lowered relative to `main` by the branch itself; (d) `radius` rated and not `normative`, likewise not lowered; (e) no open `question` ticket whose `parent` is the Item; (f) the branch touches none of `Teensy_code_canbridge/`, `config/**/*.yaml`, `GLOSSARY.md`, `CLAUDE.md`, `DOCUMENTATION_GUIDE.md`, nor the safety layer itself (`tools/night_shift*`, `tools/lib/`, `tools/systemd/`, `tools/nightly_*`, `.claude/`, `mapkit/`, `run_tests.sh`, `pyproject.toml`, the gate's and guard's tests). Anything else is HOLD with every failing reason listed. The orchestrator runs `origin/main`'s copy of the gate, never the branch's. `/sitting-wrapup` re-runs the gate with `--waive c` before merging a branch the owner passed at a Sitting (audit finding, 2026-10-31).
 
 ### What stays the same
 
@@ -107,7 +112,7 @@ The nightly suite and its status line; the ticker mechanism (Night Shift becomes
 
 | Phase | Scope | Status | Date | Risk | Validates |
 |-------|-------|--------|------|------|-----------|
-| P1 | Runner skeleton and dry run | NOT STARTED | | low | timer fires, guards hold, billing confirmed, a report with no edits |
+| P1 | Runner skeleton and dry run | COMPLETE | 2026-10-31 | low | timer fires, guards hold, billing confirmed, a report with no edits |
 | P2 | Work loop, merge gate, report and ticker | NOT STARTED | | medium | first real night: merges only through the gate |
 | P3 | Night Shift page in the map app | NOT STARTED | | low | reports render, a question is answered in two clicks |
 | P4 | Next Sitting Runbook | NOT STARTED | | medium | `## Sitting` rows generate one ordered page; results write back |
@@ -120,13 +125,14 @@ The nightly suite and its status line; the ticker mechanism (Night Shift becomes
 
 - **Files**: `tools/night_shift.sh`, `tools/systemd/jugglebot-night-shift.service`, `tools/systemd/jugglebot-night-shift.timer`, `tools/systemd/README.md` (install block, env file), `.claude/commands/night-shift.md` (dry-run protocol only), `GLOSSARY.md` (Night Shift, Next Sitting Runbook, via the domain-modeling skill without a grilling round, owner 2026-10-30), `tests/sim/test_night_shift_runner.py`.
 - **Scope**: the clone at `~/night-shift/Jugglebot` (created by the runner if absent, `git pull --ff-only` each run, never a branch switch); the live-session guard factored out of `nightly_suite.sh` into `tools/lib/live_session.sh` and sourced by both (the regex and the DEFER semantics unchanged); the hold file `~/Desktop/Jugglebot/temp/night-shift.hold` (present means exit 0 with `HELD`); the preflight and `candidates.json`; `--dry-run` which runs `claude -p` with the protocol's dry-run mode: read, classify, write the report to `temp/reports/night-shift/dry-<date>.md`, change nothing, push nothing.
-- **Critical details**: the robot is never powered overnight but the bridge is, so the clone's `.claude/settings.local.json` denies `Bash(pio run*)`, `Bash(ros2 launch*)`, `Bash(python tests/hardware/*)` and `Bash(*teensy_link_bridge*)`; P1 verifies those deny rules hold under `--dangerously-skip-permissions`, else the runner uses `--permission-mode acceptEdits` plus an allowlist and the protocol says so. Billing: the first dry run's `total_cost_usd` in the JSON result is checked against the Console usage page. Memory: the clone has its own memory directory (keyed by path); the protocol tells the orchestrator to rely on CLAUDE.md and the Items, not on memory. Budget fuse: `NIGHT_SHIFT_MAX_USD` default 90, passed as `--max-budget-usd`; not an Item cap.
+- **Critical details**: the robot is never powered overnight but the bridge is, so the clone's `.claude/settings.local.json` (installed from `tools/night_shift_settings.json` on every run) denies every flash, launch, hardware-script, probe, service and live-checkout path. **Outcome (2026-10-31): the bypass-flag probe could not be run (the implementing session's harness refused to spawn a bypass-permissions `claude -p`), so the runner uses the plan's fallback, `--permission-mode acceptEdits --permission-prompts none` with an allow-all list, and the deny-over-allow precedence was proven by probe (the denied call is refused and itemised in the JSON's `permission_denials`); `--dangerously-skip-permissions` is not used anywhere.** Billing: the first dry run's `total_cost_usd` in the JSON result is checked against the Console usage page. Memory: the clone has its own memory directory (keyed by path); the protocol tells the orchestrator to rely on CLAUDE.md and the Items, not on memory. Budget fuse: `NIGHT_SHIFT_MAX_USD` default 90, passed as `--max-budget-usd`; not an Item cap.
 - **Dependencies**: none.
+- **Outcome (2026-10-31, `logbook/2026-10-31-night-shift-p1-runner-and-dry-run.md`)**: complete. Runner, units, README block, protocol (written whole), preflight, settings template, shared guard, glossary entries. Permission model: the acceptEdits fallback, proven by probe (see Critical details). Tests +33 (`test_night_shift_runner.py` 19, `test_live_session_guard.py` 9, `test_night_shift_preflight.py` 5). Inaugural baseline at `e640a863` (2026-10-31 ~00:05, `./run_tests.sh`): parallel 7582 passed, 65 skipped in 834 s; the serial phase's two wall-clock budget tests failed under the load of three concurrent agents and were re-run quiet before the commit (see the entry). Full gate before the commit: `./run_tests.sh --full`, run 2026-10-31 00:56-01:04 on the final tree with no other load: **parallel 7764 passed, 65 skipped in 482.66 s; serial 8 passed in 32.55 s; exit 0** (an earlier run at 00:37, under five concurrent agents, had 5 parallel failures that passed scoped and 2 serial wall-clock failures, all load). Dry fire (T-I1): after the push, see the follow-up docs commit.
 
 ### P2: Work loop, merge gate, report and ticker
 
 - **Files**: `.claude/commands/night-shift.md` (full protocol), `tools/night_shift_gate.py`, `tests/sim/test_night_shift_gate.py`, `mapkit/items.py` and `DOCUMENTATION_GUIDE.md` § 2.10 (ticket `type: question`), `docs/agents/map-writes.md` (question tickets, `## Answer`), `CLAUDE.md` (session-start rule: Night Shift is the usual ticker claimant; the morning Session reads `docs/night-shift/<date>.md` on LOWERED by night-shift), `docs/night-shift/README.md` (report layout).
-- **Scope**: per Item, in candidate order (bugs confirmed first, then features, decisions, ideas; priority then age): read the Item and its links; re-rate with `mapkit item rate` on the branch when the filer's rating is wrong; one unit per Item as an `Agent` capped at about 80 calls, Sonnet unless the brief names why Opus (planner math, firmware, control behaviour); `./run_tests.sh --full` on the branch; `/audit` on the branch diff, its fixer applying narrative findings and leaving behaviour-affecting ones as HOLD reasons; `tools/night_shift_gate.py`; MERGE pushes `main` (ff when possible) and closes the Item in the same commit as the fix and its logbook entry; HOLD pushes the branch and leaves the Item `in_progress` with a Progress headline. Decision-gated Items: research, draft `## Options` into the body, file one question ticket, stop. Ideas: a `## Feasibility` note; an idea rated XS or S with hardware none may be built and goes through the same gate. Unrated Items are rated first. The ticker: `nightly_ticker.sh check --who "night-shift <date>"` at start, the line into `## Nightly`. Unanswered question tickets from earlier nights are listed again; answered ones re-open their Item for the next unit.
+- **Scope**: per Item, in candidate order (bugs confirmed first, then features, decisions, ideas; priority then age): read the Item and its links; re-rate with `mapkit item rate` on the branch when the filer's rating is wrong; one unit per Item as an `Agent` capped at about 80 calls, Sonnet unless the brief names why Opus (planner math, firmware, control behaviour); `./run_tests.sh --full` on the branch; `/audit` on the branch diff, its fixer applying narrative findings and leaving behaviour-affecting ones as HOLD reasons; `tools/night_shift_gate.py`; MERGE pushes `main` (ff when possible) and closes the Item in the same commit as the fix and its logbook entry; HOLD pushes the branch and leaves the Item `in_progress` with a Progress headline. Decision-gated Items: research, draft `## Options` into the body, file one question ticket, stop. Ideas: a `## Feasibility` note; an idea rated XS or S with hardware none may be built and goes through the same gate. Unrated Items are rated first. The ticker: the runner claims it (`nightly_ticker.sh check --who "night-shift <date>"`, real runs only, after waiting for today's nightly) and passes the line in the prompt; the protocol writes it into `## Nightly`; a night that fails after the claim re-raises it. Unanswered question tickets from earlier nights are listed again; answered ones re-open their Item for the next unit.
 - **Critical details**: Night Shift never edits `~/Desktop/Jugglebot`, never force-pushes, never rewrites `main` history; a merge that does not fast-forward is a merge commit with the Item in the subject. A Night Shift commit carries `Logbook-Entry:` like any other. Two runs never overlap (`flock` on `temp/reports/night-shift/run.lock`). Any failure after a push leaves the report naming the pushed refs.
 - **Dependencies**: P1.
 
@@ -164,12 +170,12 @@ Unit (offline):
 - T-U4 ticket `type: question` validated; `## Answer` detection; a `question` ticket on a non-existent parent is refused.
 - T-U5 `## Sitting` parser: every key, missing `do:` -> listed under needs-a-section, bad `minutes` -> refused; ordering and setup grouping on a fixture of six Items; `docs/runbook.md` currency.
 - T-U6 `night_shift_candidate.sh` on temporary git repositories: clean stack, one conflicting branch reported and skipped, no change to `main`.
-- T-U7 report layout: a report fixture parses into the seven sections; bare `JB-n` in every row.
+- T-U7 report layout: a report fixture parses into the eight sections; bare `JB-n` in every row.
 - T-U8 (app) routes return the report list, a report, the open questions; a PATCH answer appends `## Answer` once and sets the ticket complete.
 
 Integration (this Jetson, no robot):
 - T-I1 `systemctl --user start jugglebot-night-shift.service` with `NIGHT_SHIFT_DRY_RUN=1`: a dry report appears under `temp/reports/night-shift/`, nothing pushed, `total_cost_usd` logged.
-- T-I2 deny rules under `--dangerously-skip-permissions`: a probe prompt that tries `pio run` is refused (else the fallback permission mode is adopted and documented).
+- T-I2 deny rules under the runner's permission mode: a probe prompt that tries a denied command is refused and itemised in `permission_denials` (done 2026-10-31 for `acceptEdits` + allow-all, the mode the runner uses; the bypass-flag variant could not be probed and is not used).
 - T-I3 the first real night: every merged commit's branch has a gate log and audit report; `git log origin/main` shows only gate-passed merges; the map app shows the report and its questions within one minute of the push.
 - T-I4 timer ordering: Night Shift waits on the suite flock while the nightly runs; neither paints the other's status.
 

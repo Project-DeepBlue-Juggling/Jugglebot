@@ -408,6 +408,18 @@ The written, step-by-step procedure an operator follows at a Sitting.
 
 _Avoid: runsheet, script_
 
+**Night Shift**
+
+The unattended Claude Code run on the Jetson after the nightly suite, in its own clone, that works every open Item it can finish alone, merges only through the merge gate, holds the rest on `night-shift/<date>-JB-n` branches and commits one report. Never a Sitting and never a Session: nobody is present.
+
+_Avoid: nightly (that is the 04:00 test suite), cron job, bot_
+
+**Next Sitting Runbook**
+
+The one ordered page, `docs/runbook.md`, generated from the `## Sitting` sections of every hardware Item and the held Night Shift branches, that lists every hardware check waiting across all Pathways, grouped by setup state; results are typed per row in the map app.
+
+_Avoid: runsheet, sitting list, hardware backlog_
+
 ### Project map
 
 **Pathway**

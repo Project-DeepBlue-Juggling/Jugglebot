@@ -61,39 +61,17 @@ LOG="$REPORTS/$DATE.log"
 # JB_NIGHTLY_IGNORE_SESSION=1 skips the guard (deliberate hand-run during a
 # sitting). JB_NIGHTLY_DEFER_BUDGET_S caps the wait; the default 2 h leaves
 # comfortable headroom under the unit's TimeoutStartSec=4h.
-LIVE_SESSION_RE='(ros2 launch jugglebot|jugglebot_launch\.py|teensy_bridge_node|trajectory_node|orchestrator_node)'
 DEFER_BUDGET_S="${JB_NIGHTLY_DEFER_BUDGET_S:-7200}"
 DEFER_POLL_S="${JB_NIGHTLY_DEFER_POLL_S:-120}"
 
-live_session() {
-  # `pgrep -f` matches full command lines, so anything whose ARGV contains one of
-  # these names matches — including our own process group when this script is
-  # pasted into a `bash -c` (the pattern is then literally in the command line;
-  # harmless in production, where the process is the script PATH). Drop our own
-  # process group, PID and parent so the guard can never trip on itself.
-  local mypgid p pg
-  mypgid="$(ps -o pgid= -p $$ 2>/dev/null | tr -d ' ')"
-  for p in $(pgrep -f "$LIVE_SESSION_RE" 2>/dev/null); do
-    [[ "$p" == "$$" || "$p" == "$PPID" ]] && continue
-    pg="$(ps -o pgid= -p "$p" 2>/dev/null | tr -d ' ')"
-    # Empty pgid = the process exited between pgrep and ps (typically one of our
-    # own transient subshells). Gone is not live — only defer for a process we
-    # can positively confirm is still there.
-    [[ -z "$pg" ]] && continue
-    [[ -n "$mypgid" && "$pg" == "$mypgid" ]] && continue
-    return 0
-  done
-  return 1
-}
+# The regex, the guard function and the wait loop live in the shared library so
+# tools/night_shift.sh uses the identical guard.
+# shellcheck disable=SC1091
+source "$REPO_ROOT/tools/lib/live_session.sh"
 
-if [[ "${JB_NIGHTLY_IGNORE_SESSION:-0}" != "1" ]] && live_session; then
-  echo "nightly_suite: live robot session detected — waiting (budget ${DEFER_BUDGET_S}s)" >&2
-  waited=0
-  while live_session && (( waited < DEFER_BUDGET_S )); do
-    sleep "$DEFER_POLL_S"
-    waited=$((waited + DEFER_POLL_S))
-  done
-  if live_session; then
+if [[ "${JB_NIGHTLY_IGNORE_SESSION:-0}" != "1" ]]; then
+  if ! wait_for_live_session_to_clear "$DEFER_BUDGET_S" "$DEFER_POLL_S" nightly_suite; then
+    waited="$LIVE_SESSION_WAITED_S"
     mkdir -p "$REPORTS"
     echo "DEFERRED live robot session held the box for ${waited}s; suite NOT run" \
       "$(date -Iseconds)" >"$REPORTS/status"
@@ -101,7 +79,6 @@ if [[ "${JB_NIGHTLY_IGNORE_SESSION:-0}" != "1" ]] && live_session; then
     echo "nightly_suite: still live after ${waited}s — deferred to the next run" >&2
     exit 0
   fi
-  echo "nightly_suite: session cleared after ${waited}s — proceeding" >&2
 fi
 
 mkdir -p "$JUNIT_DIR"
