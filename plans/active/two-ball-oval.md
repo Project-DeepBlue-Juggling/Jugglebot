@@ -502,8 +502,8 @@ Where the idea lives now: a note inside P3 (below). Code never started; nothing 
   0.100 → 0.075 → 0.050 → 0 at dwell 0.45. Gate: landing scatter not worse than the 0.100 baseline (sd 14-16 mm) and
   catch rate ≥ 30/30 at each rung. Lands ahead of the working-point commit.
   **Mean-bias criterion (added 2026-10-30, C6):** scatter + catch rate cannot see a pure mean shift the learner and catch
-  absorb, so each rung (own `plant_id`, ≥ 20 throws) is also read on the plant residual (y − u) along the throw axis
-  (`tools/probes/hold_rung_bias.py`). Delay effect confirmed = 0.050 lands ≥ 10 mm short of 0.100 and beyond 2 SE of the rung difference, with |dy|, |dapex| < 10 mm (inconclusive → 20 more throws at 0.050, else fall back to 0.075 and stop).
+  absorb, so each rung (one shared memory; ≥ 20 throws) is also read on the plant residual (y − u) along the throw axis
+  (`tools/probes/hold_rung_bias.py --latest`, which attributes goals and holds from the launch log and prints the next hold). Delay effect confirmed = 0.050 lands ≥ 10 mm short of 0.100 and beyond 2 SE of the rung difference, with |dy|, |dapex| < 10 mm (inconclusive → 20 more throws at 0.050, else fall back to 0.075 and stop).
   Branch: predicted hold-0 bias ≤ 35 mm fly 0; 35–55 warm up at 0.025 first; > 55 do not fly 0 (needs delay-aware
   composition). Fallback = the shortest hold with |Δ| ≤ 20 mm, ≥ 30/30, sd ≤ baseline + 3 mm. The Sitting plan is Runbook § 11.
 - **2026-10-30 evening:** 10-17 "0.30 at apex 1.0" reproduces ONLY at hold 0 (C1); the hold protects tracking delay, not an un-composed velocity (C2); hold 0 predicted −81..−103 mm short at 0.45 → the two-ball destination needs delay-aware composition = new P4 design item (gated, after the Sitting's δ_eff). Box now carries oval cells at apex 1.00 / 1.05 (54 cells, gate_hash unchanged; entry `logbook/2026-10-30-sitting-prep-columns-check-hold-ladder-and-apex-cells.md`).

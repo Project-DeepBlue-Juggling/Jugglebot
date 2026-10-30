@@ -6128,7 +6128,12 @@ class SkillNode(Node):
         if start:
             self.get_logger().debug('jugglebot/juggle ACCEPTED: %s'
                                     % (result.message,))
-            self.get_logger().info(start)
+            # dwell / separation the schedule was compiled with (goal field,
+            # dwell falling back to the node parameter) — the hold-rung probe
+            # reads them instead of inferring from goal order.
+            self.get_logger().info(
+                '%s · dwell %.2f s · sep %g mm'
+                % (start, attempt['dwell_s'], attempt['separation_mm']))
         else:
             self.get_logger().info('jugglebot/juggle ACCEPTED: %s'
                                    % (result.message,))

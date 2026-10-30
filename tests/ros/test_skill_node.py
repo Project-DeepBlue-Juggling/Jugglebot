@@ -4454,6 +4454,11 @@ class TestOperatorLines:
             assert (node._juggle_goal(_columns_goal(separation_mm=100.0))
                    == sn.GoalResponse.ACCEPT)
         assert len(info) == 1 and info[0].startswith('columns started: '), info
+        # the goal's effective dwell and separation ride the line (the
+        # hold-rung probe parses them rather than inferring from goal order)
+        # (the goal carries no dwell, so the node parameter is the fallback)
+        assert info[0].endswith(' · dwell %.2f s · sep 100 mm'
+                                % sn._DEFAULT_DWELL_S), info
 
     def test_a_refused_goal_is_one_error_line(self):
         node, _client = _node_with_client(frame=False)
