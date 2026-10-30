@@ -2,10 +2,11 @@
 id: JB-108
 kind: idea
 title: 'JP-10 Turned columns: the columns pair at fixed angles about +z, under pose'
-status: inbox
+status: in_progress
 created: '2026-10-30'
-updated: '2026-10-30T11:31:18Z'
-owners: []
+updated: '2026-10-30T14:26:58Z'
+owners:
+- jugglebot-f5
 priority: medium
 effort: s
 hardware: robot
@@ -34,3 +35,7 @@ It proves the rotational symmetry on hardware that lets the admissible box key o
 - Site pairs at the new angles (or a rotation parameter on `compile_columns`).
 - An admissible-box cell per angle.
 - A learner key that rotates into the pair frame.
+
+## Progress
+
+- 2026-10-31: P2 of plan pattern-progression.md done offline: goal columns_turned, parameter columns_angle_deg, 12 pose box cells at 45 and 90 deg (45 deg admits only Apex 0.925-0.975, 90 deg 0.875-0.975). Next: the JP-10 Rung (P3) at a Sitting. Logbook 2026-10-31-pattern-progression-p2-turned-columns.md.

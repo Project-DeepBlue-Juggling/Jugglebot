@@ -4,7 +4,7 @@ kind: pathway
 title: 'Pattern progression: Columns to Centre and orbit'
 status: active
 created: '2026-10-30'
-updated: '2026-10-30T11:31:18Z'
+updated: '2026-10-30T14:26:58Z'
 owners: []
 priority: medium
 effort: xl
@@ -69,3 +69,7 @@ Every Rung below needs its runbook section dress-rehearsed on the loaded Jetson 
 ## Not on this Pathway
 
 JP-13 (JB-110): it moves the Catch plane with the Platform, and the glossary defines the Catch plane as fixed, so it needs a glossary change first; promote after the Destination. JP-15 (JB-112), JP-12 and JP-16: need JB-40's P4 working point. JP-17 (JB-113): separate Pathway. JP-18: not yet probed offline. The bumper (JB-114): a safety stop on the Hand thread.
+
+## Progress
+
+- 2026-10-31: P1, P2 and P4 of plans/active/pattern-progression.md complete (bag check; turned Columns; high-low Columns, both swept into the box). P3 and P5 are the next Rungs and need a Sitting; P6 waits on JB-38.
