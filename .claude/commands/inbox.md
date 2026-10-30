@@ -19,7 +19,10 @@ Minimum from the filer: kind, title, one line. If the line is missing, ask for i
 1. **Fields.** `kind` as given; `priority` default `medium`; `--link` values as given
    (an ID such as `JB-12` is stored as its stem); parent = `--pathway` (slug or `jb` ID);
    `filed_by` = `harrison` when the owner typed the command, else the session's
-   name (e.g. `claude`). The one-line description is the body.
+   name (e.g. `claude`). The one-line description is the body. Anything longer
+   than a few sentences is written as a structured body (sections, bullets,
+   tables) and passed with `--body-file`: `docs/agents/map-writes.md` § "Writing
+   an Item body"; the step-4 check enforces its caps.
 2. **`--from-issue <n>`**: import title, body and the issue URL (as a `--link`) via
    `~/bin/gh issue view <n> --json title,body,url`. Do NOT close the issue yet: it is
    closed in step 6, only after the push has landed. The issue number is never the Item's ID.

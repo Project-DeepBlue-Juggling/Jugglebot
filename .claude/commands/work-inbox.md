@@ -48,7 +48,10 @@ With no Items named: list `backlog` items first, then `inbox`, by priority then 
    promoted` WITH `--commit` (its own `map: promoted <title>` commit, no trailer).
 5. **Partial** = `in_progress` plus a dated `## Progress` note (done / next /
    evidence), committed and pushed before the session ends; the next run
-   resumes from it.
+   resumes from it. Keep the note to its headline (400 characters at most);
+   detail goes in a dated body section, per `docs/agents/map-writes.md`
+   § "Writing an Item body". Write-backs (`## Findings`, `## Decision`) follow
+   the same section.
 
 Recipe and commit rule: `docs/agents/map-writes.md` (`complete` rides in the fix's
 commit with its `Logbook-Entry:` trailer; `promoted` is its own `map:` commit, no trailer).

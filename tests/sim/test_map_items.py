@@ -161,3 +161,15 @@ def test_no_two_open_items_share_a_title():
         else:
             seen[key] = i.filename
     assert not bad, "\n".join(bad)
+
+
+def test_item_bodies_are_readable():
+    # mapkit.items.readability_violations: no paragraph or list item over
+    # BLOCK_CAP characters, no Progress line over PROGRESS_CAP, a ## heading on
+    # any body over HEADINGLESS_CAP. Fix by restructuring (sections, bullets,
+    # tables; docs/agents/map-writes.md), never by cutting facts.
+    from mapkit.items import readability_violations
+
+    bad = ["%s: %s" % (i.filename, v)
+           for i in _items() for v in readability_violations(i.body)]
+    assert not bad, "\n".join(bad)

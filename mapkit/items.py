@@ -293,6 +293,65 @@ def _progress_dates(body: str) -> List[datetime.date]:
     return out
 
 
+#: The readability rule for an Item body (owner, 2026-10-30, after JB-114 was
+#: filed as one 3,500-character paragraph): every paragraph and every list
+#: item (with its continuation lines) at most BLOCK_CAP characters, every
+#: ``## Progress`` line at most PROGRESS_CAP, and a body over HEADINGLESS_CAP
+#: (Progress excluded) carries at least one ``##`` heading. Tables and fenced
+#: code (``` or ~~~) are exempt. Pinned for every committed Item by
+#: ``tests/sim/test_map_items.py::test_item_bodies_are_readable``; the writing
+#: guidance is ``docs/agents/map-writes.md``.
+BLOCK_CAP = 500
+PROGRESS_CAP = 400
+HEADINGLESS_CAP = 1200
+_HEADING = re.compile(r"^#{1,6}\s")
+_SECTION = re.compile(r"^#{1,2}\s")
+_H2 = re.compile(r"^##\s")
+_LIST_ITEM = re.compile(r"^\s*(?:[-*+]|\d+[.)])\s+")
+
+
+def readability_violations(body: str) -> List[str]:
+    """Every breach of the readability rule in ``body``, one string each."""
+    out: List[str] = []
+    blocks: List[List[str]] = []
+    cur: Optional[List[str]] = None
+    in_fence = in_progress = has_heading = False
+    main_len = 0
+    for line in body.split("\n"):
+        s = line.strip()
+        if s.startswith(("```", "~~~")):
+            in_fence, cur = not in_fence, None
+            continue
+        if in_fence:
+            continue
+        if _HEADING.match(s):
+            cur = None
+            # only an H1/H2 opens or closes Progress, as in _progress_dates
+            if _SECTION.match(s):
+                in_progress = _PROGRESS_HEAD.match(s) is not None
+            has_heading = has_heading or (not in_progress and _H2.match(s) is not None)
+            continue
+        if in_progress:
+            if len(s) > PROGRESS_CAP:
+                out.append("Progress line of %d chars (cap %d): %.60s..." % (len(s), PROGRESS_CAP, s))
+            continue
+        main_len += len(line) + 1
+        if not s or s.startswith("|"):
+            cur = None
+        elif cur is None or _LIST_ITEM.match(line):
+            cur = [s]
+            blocks.append(cur)
+        else:
+            cur.append(s)
+    for b in blocks:
+        text = " ".join(b)
+        if len(text) > BLOCK_CAP:
+            out.append("block of %d chars (cap %d): %.60s..." % (len(text), BLOCK_CAP, text))
+    if main_len > HEADINGLESS_CAP and not has_heading:
+        out.append("body of %d chars with no ## heading (cap %d)" % (main_len, HEADINGLESS_CAP))
+    return out
+
+
 def stale_clock(item: Item) -> datetime.date:
     """Date the staleness clock started: the newest dated ``## Progress``
     line, else ``created``.

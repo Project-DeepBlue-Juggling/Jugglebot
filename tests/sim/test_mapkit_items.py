@@ -113,3 +113,34 @@ def test_constants_cover_every_kind():
 def test_missing_map_dir_is_empty(tmp_path):
     """A map directory that does not exist yields no items."""
     assert load_items(str(tmp_path / "map")) == []
+
+
+def test_readability_rule_clauses():
+    from mapkit.items import (BLOCK_CAP, HEADINGLESS_CAP, PROGRESS_CAP,
+                              readability_violations)
+
+    word = "x" * 9 + " "  # 10 chars
+    long_para = word * (BLOCK_CAP // 10 + 1)
+    assert readability_violations("Short.\n\n- a\n- b\n") == []
+    # a paragraph wrapped over several lines is still one block
+    assert readability_violations("\n".join([word * 20] * 3))
+    # a list item's continuation lines count with it; separate items do not add up
+    assert readability_violations("- " + word * 30 + "\n  " + word * 30 + "\n")
+    assert readability_violations("- " + word * 30 + "\n- " + word * 30 + "\n") == []
+    # tables and fenced code are exempt
+    assert readability_violations("| " + long_para + " |\n") == []
+    assert readability_violations("```\n" + long_para + "\n```\n") == []
+    assert readability_violations("~~~\n" + long_para + "\n~~~\n") == []
+    # Progress lines have their own cap and do not count toward the body
+    prog = "## Progress\n\n- 2026-10-30: " + "y" * PROGRESS_CAP + "\n"
+    assert any("Progress line" in v for v in readability_violations(prog))
+    assert readability_violations("## Progress\n\n- 2026-10-30: " + word * 30 + "\n") == []
+    # a sub-heading stays inside Progress (as for _progress_dates)
+    assert any("Progress line" in v for v in readability_violations(
+        "## Progress\n\n### Sitting\n\n- 2026-10-30: " + "y" * (PROGRESS_CAP + 50) + "\n"))
+    # a long body needs a ## heading
+    paras = "\n\n".join([word * 40] * (HEADINGLESS_CAP // 400 + 1))
+    assert any("no ## heading" in v for v in readability_violations(paras))
+    assert readability_violations("Intro.\n\n## Detail\n\n" + paras) == []
+    # only ## counts as the heading; ### alone does not
+    assert any("no ## heading" in v for v in readability_violations("Intro.\n\n### Detail\n\n" + paras))

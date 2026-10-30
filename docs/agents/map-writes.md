@@ -24,6 +24,18 @@ Every Item has a short ID `JB-<n>` (frontmatter `id:`, one global sequence; plan
 3. **Announce** a status change in one line (`JB-12 bug-x -> in_progress`). No approval step. The one exception is a **Pathway** going `complete`: always ask the owner.
 4. **Scoped tests** after a write: `pytest -q tests/sim/test_map_items.py tests/sim/test_glossary_avoid_words.py tests/sim/test_mapkit_docs.py` (item bodies are inside the Avoid-word scope).
 
+## Writing an Item body
+
+The owner reads Items in the app's drawer; a body that is one long paragraph is illegible there (owner, 2026-10-30, on JB-114). Write the body to be scanned:
+
+- A short opening paragraph (the context or the ask), then `## ` sections named for what they hold (`## Wanted`, `## Findings`, `## Risks`, `## Decision`, `## Open questions`).
+- Bullets for separate points, a numbered list where order matters, a table where the text pairs several values (readings, parameters, options). Bold only the one claim a section turns on.
+- Backticks for code identifiers, config keys, paths and commands, never for a `JB-n` ID (see below).
+- A structured body goes in through `item new --body-file F`, not `--body`, which is for one line.
+- A Progress note (`--note`) is flattened to one line: keep it to its headline. Detail goes in a body section placed just before `## Progress`, headed `## <topic> (YYYY-MM-DD)`, or in the logbook entry the note links; end the note with `(detail below)`.
+
+The caps are enforced for every committed Item by `tests/sim/test_map_items.py::test_item_bodies_are_readable` (rule and numbers: `mapkit.items.readability_violations`): a paragraph or list item at most 500 characters, a Progress line at most 400, and a `##` heading on any body over 1,200 characters (Progress excluded). Tables and fenced code are exempt. Fix a failure by restructuring, never by cutting facts.
+
 ## Rules
 
 - Subagents never write map files; the calling command does. They return "item to close: <slug>" in their final message.
