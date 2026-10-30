@@ -34,6 +34,14 @@ def _cmd_gen(args: argparse.Namespace) -> int:
     return 1 if (args.check and changed) else 0
 
 
+def _cmd_runbook(args: argparse.Namespace) -> int:
+    root = os.path.abspath(args.repo or default_repo())
+    changed = gen_docs.write_docs(root, check=args.check, only=("runbook.md",))
+    for path in changed:
+        print(("would change " if args.check else "wrote ") + os.path.relpath(path, root))
+    return 1 if (args.check and changed) else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="mapkit")
     sub = parser.add_subparsers(dest="command")
@@ -41,6 +49,10 @@ def build_parser() -> argparse.ArgumentParser:
     gen.add_argument("--repo", default=None, help="repo root (default: $JUGGLEBOT_REPO or parent of mapkit/)")
     gen.add_argument("--check", action="store_true", help="write nothing; exit 1 if anything is stale")
     gen.set_defaults(func=_cmd_gen)
+    rb = sub.add_parser("runbook", help="regenerate docs/runbook.md (the Next Sitting Runbook) only")
+    rb.add_argument("--repo", default=None, help="repo root (default: $JUGGLEBOT_REPO or parent of mapkit/)")
+    rb.add_argument("--check", action="store_true", help="write nothing; exit 1 if stale")
+    rb.set_defaults(func=_cmd_runbook)
     tickets.register(sub)
     itemcli.register(sub)
     import_issues.register(sub)

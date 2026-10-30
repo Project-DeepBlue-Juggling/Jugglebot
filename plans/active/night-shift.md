@@ -16,13 +16,14 @@ steps:
   - {id: P1, title: Runner skeleton and dry run, kind: phase, status: complete, completed: 2026-10-31, effort: m, hardware: none}
   - {id: P2, title: "Work loop, merge gate, report and ticker", kind: phase, status: complete, completed: 2026-10-31, effort: m, hardware: none}
   - {id: P3, title: Night Shift page in the map app, kind: phase, status: not_started, effort: m, hardware: none}
-  - {id: P4, title: Next Sitting Runbook, kind: phase, status: not_started, effort: m, hardware: none}
+  - {id: P4, title: Next Sitting Runbook, kind: phase, status: complete, completed: 2026-10-31, effort: m, hardware: none}
   - {id: P5, title: Sitting wrap-up command, kind: phase, status: not_started, effort: s, hardware: none}
   - {id: R6, title: First Runbook-driven Sitting, kind: rung, status: not_started, effort: s, hardware: robot}
 related_logbook:
   - 2026-10-30-night-shift-design-and-plan.md
   - 2026-10-31-night-shift-p1-runner-and-dry-run.md
   - 2026-10-31-night-shift-p2-work-loop-gate-and-questions.md
+  - 2026-10-31-night-shift-p4-sitting-sections-and-runbook.md
 related_code:
   - tools/nightly_suite.sh (live-session guard, status line, ticker raise)
   - tools/nightly_ticker.sh
@@ -117,7 +118,7 @@ The nightly suite and its status line; the ticker mechanism (Night Shift becomes
 | P1 | Runner skeleton and dry run | COMPLETE | 2026-10-31 | low | timer fires, guards hold, billing confirmed, a report with no edits |
 | P2 | Work loop, merge gate, report and ticker | COMPLETE | 2026-10-31 | medium | first real night: merges only through the gate |
 | P3 | Night Shift page in the map app | NOT STARTED | | low | reports render, a question is answered in two clicks |
-| P4 | Next Sitting Runbook | NOT STARTED | | medium | `## Sitting` rows generate one ordered page; results write back |
+| P4 | Next Sitting Runbook | COMPLETE | 2026-10-31 | medium | `## Sitting` rows generate one ordered page; results write back |
 | P5 | Sitting wrap-up command | NOT STARTED | | low | a Sitting ends with one prompt and no owner git |
 | R6 | First Runbook-driven Sitting | NOT STARTED | | medium | a held branch is flown, passed and merged by the wrap-up |
 
@@ -151,6 +152,7 @@ The nightly suite and its status line; the ticker mechanism (Night Shift becomes
 - **Scope**: `## Sitting` on an Item body is a bullet list with fixed keys: `setup:` one of `level`, `tilt`, `armed`, `bb-fed`, `bridge-cycled` (several allowed, comma separated); `why:`; `do:` (hardware steps only, imperative); `pass:`; `record:`; `minutes:` integer; optional `branch:` a held branch. The generator orders rows by `priority weight (high 3, medium 2, low 1) x (2 if branch else 1) / minutes` and groups them into blocks sharing a `setup:` set so transitions are minimised, and writes `docs/runbook.md` with a header (date, candidate branch, setup block 0 from the standing facts: bridge power-cycle, `hand_source` latch), the rows as the sketch in JB-119's body, a `## Questions a Sitting can answer` block from open question tickets whose parent has hardware robot, and a `## Close-out` block ending in the draft wrap-up prompt. `night_shift_candidate.sh` merges every held branch whose Item has a `## Sitting` section into `night-shift/sitting-<date>` and reports conflicts as HOLD rows. The app page renders the rows with a pass or fail toggle and a notes box per row; save appends `## Sitting result (<date>)` with the verdict and notes to the Item. Pathway chips filter the same list.
 - **Critical details**: the generator never invents a `do:` step; a hardware Item without a `## Sitting` section appears in a `## Needs a Sitting section` list, not as a row. `docs/runbook.md` is generated and never hand-edited (the currency test fails otherwise). `tests/hardware/*.md` Runbooks are linked from rows, never duplicated.
 - **Dependencies**: P2 (held branches), P3 (page scaffolding).
+- **Outcome (2026-10-31, `logbook/2026-10-31-night-shift-p4-sitting-sections-and-runbook.md`)**: complete. `mapkit/sitting.py` (parser, scoring, blocks, `render_runbook`, `append_sitting_result`), `python -m mapkit runbook` and `gen` writing `docs/runbook.md` (currency-tested), `tools/night_shift_candidate.sh` on temporary repos, CLAUDE.md and map-writes rules. Tests +19 (`test_sitting_sections.py` 14, `test_night_shift_candidate.py` 5). On the real board all 23 open hardware Items are listed as needing a section.  Full gate before the commit: GREEN (2026-10-31 00:56-01:04, `./run_tests.sh --full` on the final tree: parallel 7764 passed, 65 skipped in 482.66 s; serial 8 passed in 32.55 s; exit 0)
 
 ### P5: Sitting wrap-up command
 

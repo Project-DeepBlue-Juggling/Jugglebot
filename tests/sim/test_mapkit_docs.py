@@ -122,7 +122,7 @@ def test_render_sections_links_and_determinism(repo):
 
 def test_write_docs_roundtrip_and_noop(repo, tmp_path_factory):
     (repo / "docs").mkdir()
-    assert len(gen_docs.write_docs(str(repo))) == 2
+    assert len(gen_docs.write_docs(str(repo))) == 3  # project-map, glossary, runbook
     assert gen_docs.write_docs(str(repo), check=True) == []
     empty = tmp_path_factory.mktemp("nomap")
     assert gen_docs.write_docs(str(empty)) == []

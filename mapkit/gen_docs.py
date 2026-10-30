@@ -17,6 +17,7 @@ from mapkit import derive, ids
 from mapkit.gen_glossary import load_glossary
 from mapkit.items import INBOX_KINDS, Item, load_items
 from mapkit.plans import Plan, load_plans
+from mapkit.sitting import render_runbook
 
 REPO_URL = "https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/"
 DASH = "—"
@@ -192,13 +193,16 @@ def render_glossary_page(repo_root: str) -> str:
     return "\n".join(out).rstrip("\n") + "\n"
 
 
-def write_docs(repo_root: str, check: bool = False) -> List[str]:
+def write_docs(repo_root: str, check: bool = False, only: Optional[tuple] = None) -> List[str]:
     """Rewrite stale pages; return the paths that changed (or would, with ``check``)."""
     if not os.path.isdir(os.path.join(repo_root, "map")):
         return []
     changed: List[str] = []
     for rel, text in (("project-map.md", render_project_map(repo_root)),
-                      ("glossary.md", render_glossary_page(repo_root))):
+                      ("glossary.md", render_glossary_page(repo_root)),
+                      ("runbook.md", render_runbook(repo_root))):
+        if only is not None and rel not in only:
+            continue
         path = os.path.join(repo_root, "docs", rel)
         old = None
         if os.path.exists(path):
