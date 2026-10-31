@@ -48,4 +48,16 @@ commit:
 
 **Verification.** 2026-10-31, `pytest tests/sim/test_night_shift_runner.py
 tests/sim/test_night_shift_report.py tests/sim/test_sitting_wrapup_protocol.py -q`:
-59 passed (runner 25 -> 29). Full gate: see the commit message.
+59 passed (runner 25 -> 29). Full gate 2026-10-31 11:37, `./run_tests.sh`: parallel 7816 passed,
+63 skipped in 403.31 s; serial 5 passed in 19.68 s; exit 0.
+
+**T-I1 dry fire, 2026-10-31 11:39:58 to 11:43:24** (`systemctl --user set-environment
+NIGHT_SHIFT_DRY_RUN=1 && systemctl --user start jugglebot-night-shift.service`): `DRY_OK`,
+clone created from origin, `total_cost_usd` 1.645028, 16 turns, 0 subagents, 54 candidates
+classified in `dry-2026-10-31.md`, `cost_recorded: file`, clone clean on `main` at b67a539d,
+ticker untouched. One `permission_denials` entry: a read-only `grep` whose pattern contained
+the string `map-live` was refused by the `*map-live*` deny rule, so the clone's deny list is
+live under systemd (and over-broad for grep patterns; accepted). The dry report's own
+headline: three map Items (JB-100, JB-67, JB-91) can never merge because their fix is in
+`mapkit/` or outside this repo, and 17 units at ~80 calls plus a full-tier gate each will
+not fit one night, so the `--deadline` rule, not the budget, ends the loop around rank 10.
