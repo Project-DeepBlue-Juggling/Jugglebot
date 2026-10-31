@@ -12,12 +12,33 @@ linked from rows, never duplicated.
 - Latch `hand_source` before arming (it resets to LEGACY on every bridge reboot).
 - Check out the candidate branch in the live checkout only if a row below names a `branch:`.
 
+## Block 1: level, armed, bb-fed  (2 rows, 32 min)
+
+### JB-107 JP-9 High-low columns: Ball 1 at apex 1.05 m, Ball 2 at 0.95 m  (12 min, medium, pattern-progression-columns-to-centre-and-orbit)
+- why: P5 of plan pattern-progression.md: two Apexes in one Pattern (JP-9). The only admissible pair today is 1.00 over 0.90 at separation 100; 1.05 over 0.95 waits for the Hand thread JB-114.
+- do:
+  - Rehearse before arming: cup empty, Ball Butler unpowered, `ros2 param set /skill_node apex_m_ball2 0.90`, send the goal below once. The accept message may name only the cup and Ball Butler refusals (no box, planner or apex2 refusal) and nothing moves.
+  - No GUI entry yet: `ros2 param set /skill_node apex_m_ball2 0.90` (refused while a goal runs), then `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: columns_highlow, apex_m: 1.00, separation_mm: 100.0, dwell_s: 0.27, num_cycles: 20}" --feedback`.
+  - Watch the hand current at every launch; cancel the goal if any hand iq sample reaches 50.0 A.
+  - Afterwards `ros2 param set /skill_node apex_m_ball2 0.0`.
+- pass: 20 consecutive Catches in one Attempt; Tracker mean Apex difference between the two balls within 20 mm of the commanded 100 mm; hand iq under 45 A at every launch.
+- record: caught of thrown, each ball's mean Tracker Apex, peak hand iq per launch, the bag path; commit docs/records.md.
+
+### JB-108 JP-10 Turned columns: the columns pair at fixed angles about +z, under pose  (20 min, medium, pattern-progression-columns-to-centre-and-orbit)
+- why: P3 of plan pattern-progression.md: two-ball Columns off the x axis under the pose planner, one plant_id per angle, which answers JB-38 P2(b) (does the lateral bias rotate with the pair).
+- do:
+  - Rehearse before arming: cup empty, Ball Butler unpowered, `ros2 param set /skill_node columns_angle_deg 45`, send the goal below once. The accept message may name only the cup and Ball Butler refusals (no box, planner or angle refusal) and nothing moves. Repeat at 90.
+  - Fly a straight `Columns` control first if this Sitting has not flown one (GUI Columns, Sep. 125, Apex 0.95, Dwell 0.27, Throws 20).
+  - `ros2 param set /skill_node columns_angle_deg 45` (refused while a goal runs), then `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: columns_turned, apex_m: 0.95, separation_mm: 125.0, dwell_s: 0.27, num_cycles: 20}" --feedback`. Only the 0.925 to 0.975 Apex band is admissible at 45 deg.
+  - `ros2 param set /skill_node columns_angle_deg 90`, then the same goal at Apex 0.95 (0.90 is also admissible at 90 deg).
+  - Afterwards `ros2 param set /skill_node columns_angle_deg 0`.
+- pass: 20 consecutive Catches in one Attempt at each angle; landing scatter within 3 mm of the straight control; no HAND_LIMIT line.
+- record: caught of thrown per angle, each angle's plant_id, landing scatter against the control, the bag path; commit docs/records.md.
+
 ## Needs a Sitting section
 
 - JB-102 Pre-release hold rung: release from a moving Platform (hold 0.100 → 0): no ## Sitting section
 - JB-106 JP-5 Polygon walk: one ball, N Sites, the cheapest way to land per-Beat Sites: no ## Sitting section
-- JB-107 JP-9 High-low columns: Ball 1 at apex 1.05 m, Ball 2 at 0.95 m: no ## Sitting section
-- JB-108 JP-10 Turned columns: the columns pair at fixed angles about +z, under pose: no ## Sitting section
 - JB-109 JP-11 Rotating columns: the pair turns a few degrees every Beat: no ## Sitting section
 - JB-110 JP-13 Rising and sinking columns: the whole Pattern rides the Platform in z: no ## Sitting section
 - JB-111 JP-14 Centre and orbit: Ball 1 in a column, Ball 2 on a circle of radius 100 mm: no ## Sitting section
