@@ -6,7 +6,7 @@
  * rewrites when a record is beaten).  Fetched on init and again on every
  * skills/attempt juggle_end (state-minimap.js minimapOnSkillAttempt forwards
  * it here); a juggle_end with record_beaten '1' flashes that Pattern's row.
- * The View menu (#scene-menu-dropdown) gets one "Records: <Pattern>" checkbox
+ * The View menu (#scene-menu-dropdown) gets one "<Pattern>" checkbox under a "Records" heading
  * per Pattern, remembered in localStorage.  Hidden in replay (css/replay.css
  * body.replay), and a replayed juggle_end is ignored (isReplayFenced).
  */

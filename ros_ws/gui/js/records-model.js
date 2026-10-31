@@ -45,7 +45,7 @@ export function menuEntries(json, hidden) {
     const off = hidden || new Set();
     const pats = (json && Array.isArray(json.patterns)) ? json.patterns : [];
     return pats.filter(p => p && typeof p.pattern === 'string')
-        .map(p => ({ pattern: p.pattern, label: 'Records: ' + String(p.label || p.pattern),
+        .map(p => ({ pattern: p.pattern, label: String(p.label || p.pattern),
                      checked: !off.has(p.pattern) }));
 }
 

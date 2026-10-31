@@ -72,9 +72,9 @@ def test_hidden_patterns_drop_out_and_garbage_renders_nothing(out):
 
 def test_view_menu_entries_and_storage(out):
     assert out["menu"] == [
-        {"pattern": "hop", "label": "Records: Hop", "checked": True},
-        {"pattern": "self_toss", "label": "Records: Self-throw", "checked": True},
-        {"pattern": "columns", "label": "Records: Columns", "checked": False},
+        {"pattern": "hop", "label": "Hop", "checked": True},
+        {"pattern": "self_toss", "label": "Self-throw", "checked": True},
+        {"pattern": "columns", "label": "Columns", "checked": False},
     ]
     assert json.loads(out["stored"]) == ["columns", "self_toss"]
     assert sorted(out["reloaded"]) == ["columns", "self_toss"]
