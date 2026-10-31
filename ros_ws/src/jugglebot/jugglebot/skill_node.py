@@ -2056,6 +2056,17 @@ class SkillNode(Node):
         the stale retry a no-op, same as it already does for the first
         fire.
 
+        JB-21 (2026-11-01, throw identity): the String may END with
+        `` release_wall_s=<epoch>`` (`throw_identity.tag_message`, the
+        goal's absolute release instant). While a reload throw is in
+        flight, a verdict whose suffix lies outside the window this attempt
+        recorded at `_fire_reload_throw` (`_bb_throw_release_window`,
+        `throw_identity.release_window`) reports a DIFFERENT throw: it is
+        logged and dropped before any of the paths below run (no end, no
+        retry, `_bb_pending_release_mono` kept). A verdict without a suffix,
+        or arriving with no window recorded, takes the paths below exactly
+        as before.
+
         ``THROW_ABORTED_BY_HOST`` (2026-10-13, phantom-catch guard): BB
         dropped the throw on a host cancel. It is ignored ONLY when no
         attempt waiting on that ball is still live (`_bb_throw_awaited_live`
