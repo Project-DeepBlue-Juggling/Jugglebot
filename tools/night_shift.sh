@@ -63,7 +63,7 @@
 # Manual use (safe; a dry run changes nothing and pushes nothing):
 #   tools/night_shift.sh --dry-run
 # Env knobs (defaults): NIGHT_SHIFT_CLONE, NIGHT_SHIFT_LIVE_REPO, NIGHT_SHIFT_ORIGIN,
-# NIGHT_SHIFT_REPORTS, NIGHT_SHIFT_DRY_RUN (0), NIGHT_SHIFT_MAX_USD (90),
+# NIGHT_SHIFT_REPORTS, NIGHT_SHIFT_DRY_RUN (0), NIGHT_SHIFT_MAX_USD (unset = no fuse),
 # NIGHT_SHIFT_MODEL (fable), NIGHT_SHIFT_TIMEOUT_S (14400), NIGHT_SHIFT_DEADLINE
 # (08:00), NIGHT_SHIFT_DEFER_BUDGET_S (7200), NIGHT_SHIFT_DEFER_POLL_S (120),
 # NIGHT_SHIFT_WAIT_NIGHTLY_S (3600), NIGHT_SHIFT_WAIT_NIGHTLY_POLL_S (60),
@@ -85,7 +85,7 @@ CLONE="${NIGHT_SHIFT_CLONE:-$HOME/night-shift/Jugglebot}"
 LIVE="${NIGHT_SHIFT_LIVE_REPO:-$HOME/Desktop/Jugglebot}"
 REPORTS="${NIGHT_SHIFT_REPORTS:-$CLONE/temp/reports/night-shift}"
 DRY_RUN="${NIGHT_SHIFT_DRY_RUN:-0}"
-MAX_USD="${NIGHT_SHIFT_MAX_USD:-90}"
+MAX_USD="${NIGHT_SHIFT_MAX_USD:-}"   # empty or 0 = no --max-budget-usd (owner, 2026-10-31)
 MODEL="${NIGHT_SHIFT_MODEL:-fable}"
 TIMEOUT_S="${NIGHT_SHIFT_TIMEOUT_S:-14400}"
 DEADLINE="${NIGHT_SHIFT_DEADLINE:-08:00}"
@@ -115,12 +115,41 @@ DRY=""
 # Summary fields: unset means "not reached" and becomes null in last_run.json.
 unset NS_COST NS_TURNS NS_DENIALS NS_SPAWNED NS_CLAUDE_EXIT NS_HEAD_BEFORE \
   NS_HEAD_AFTER NS_BRANCH_AFTER NS_UNPUSHED NS_REPORT NS_CANDIDATES \
-  NS_NIGHTLY_LINE NS_PREFLIGHT NS_RESULT NS_MAIN_COMMITS NS_TICKER_RERAISED
+  NS_NIGHTLY_LINE NS_PREFLIGHT NS_RESULT NS_MAIN_COMMITS NS_TICKER_RERAISED NS_COST_RECORDED
 STATUS_WRITTEN=0
 TICKER_CLAIMED=0
 
 # ── Exit paths ────────────────────────────────────────────────────────────────
 one_line() { tr '\n\r\t' '   ' <<<"$1" | sed 's/  */ /g; s/ *$//'; }
+
+# The orchestrator cannot see its own total_cost_usd (the JSON result arrives
+# after it exits), so the runner writes the figure into the night's report:
+# one line at the end of `## Cost` (the last section). A dry run's report is a
+# plain file; a real run's is on main, so the line is its own docs commit,
+# pushed, and dropped again if main moved meanwhile (nothing may be left on the
+# clone's main unpushed). NS_COST_RECORDED says what happened.
+cost_line() { printf 'total API cost: USD %s (runner, total_cost_usd)\n' "$NS_COST"; }
+record_cost_dry() {
+  [[ -n "${NS_COST:-}" && -s "$NS_REPORT" ]] || { export NS_COST_RECORDED=no-report; return 0; }
+  cost_line >>"$NS_REPORT" && export NS_COST_RECORDED=file || export NS_COST_RECORDED=write-failed
+}
+record_cost_main() {
+  if [[ -z "${NS_COST:-}" ]]; then export NS_COST_RECORDED=no-cost; return 0; fi
+  if [[ ! -s "$NS_REPORT" ]]; then export NS_COST_RECORDED=no-report; return 0; fi
+  local rel="docs/night-shift/$DATE.md"
+  if cost_line >>"$NS_REPORT" \
+     && git -C "$CLONE" add -- "$rel" \
+     && git -C "$CLONE" commit -q -m "docs(night-shift): total API cost $DATE" \
+          -m "Logbook-Entry: $DATE-night-shift" -- "$rel" \
+     && git -C "$CLONE" push -q origin HEAD:main 2>>"$REPORTS/$DATE.cost.err"; then
+    export NS_COST_RECORDED=pushed
+  else
+    export NS_COST_RECORDED=rejected
+    git -C "$CLONE" fetch -q origin 2>/dev/null
+    git -C "$CLONE" reset -q --hard origin/main 2>/dev/null
+  fi
+  export_posthoc_git
+}
 
 write_status() {   # write_status STATUS DETAIL -> last_run.json + history.log
   local status="$1" detail; detail="$(one_line "$2")"
@@ -170,6 +199,7 @@ out = {
     "main_commits": (None if e("NS_MAIN_COMMITS") is None
                      else [c for c in e("NS_MAIN_COMMITS").splitlines() if c]),
     "ticker_reraised": e("NS_TICKER_RERAISED") == "1",
+    "cost_recorded": e("NS_COST_RECORDED"),
 }
 tmp = sys.argv[1] + ".tmp"
 with open(tmp, "w") as fh:
@@ -425,8 +455,12 @@ cd "$CLONE" || finish INTERNAL_ERROR "cannot cd $CLONE"
 # background and waited on so on_signal can pass a signal on (a foreground
 # child would delay our trap until it exited by itself).
 claude_start=$SECONDS
+# The budget fuse is opt-in: the owner wants the first nights unlimited and
+# will set NIGHT_SHIFT_MAX_USD once the cost line in the reports shows a norm.
+budget_args=()
+if [[ -n "$MAX_USD" && "$MAX_USD" != 0 ]]; then budget_args=(--max-budget-usd "$MAX_USD"); fi
 timeout --kill-after=120 "$TIMEOUT_S" "$CLAUDE_BIN" -p "$PROMPT" \
-  --model "$MODEL" --max-budget-usd "$MAX_USD" \
+  --model "$MODEL" "${budget_args[@]}" \
   --permission-mode acceptEdits --permission-prompts none \
   --output-format json </dev/null >"$CLAUDE_JSON" 2>"$CLAUDE_ERR" 8>&- &
 CHILD_PID=$!
@@ -496,6 +530,7 @@ if [[ -n "$DRY" ]]; then
     finish DRY_CHANGED "main $NS_HEAD_BEFORE -> $NS_HEAD_AFTER, branch=$NS_BRANCH_AFTER; $dry_porcelain"
   fi
   [[ -s "$NS_REPORT" ]] || finish DRY_NO_REPORT "no $NS_REPORT"
+  record_cost_dry
   finish DRY_OK "report $NS_REPORT, cost ${NS_COST:-?} USD"
 fi
 
@@ -511,4 +546,5 @@ fi
 # rather than keep the pre-run candidates. A snapshot: its exit code is moot.
 (cd "$CLONE" && "$PYTHON" "$CLONE/tools/night_shift_preflight.py" --repo "$CLONE" \
   --out "$REPORTS/candidates-last.json") >/dev/null 2>>"$REPORTS/preflight.err"
-finish OK "cost ${NS_COST:-?} USD, turns ${NS_TURNS:-?}, main ${NS_HEAD_BEFORE:0:8} -> ${NS_HEAD_AFTER:0:8}"
+record_cost_main
+finish OK "cost ${NS_COST:-?} USD (${NS_COST_RECORDED:-?}), turns ${NS_TURNS:-?}, main ${NS_HEAD_BEFORE:0:8} -> ${NS_HEAD_AFTER:0:8}"

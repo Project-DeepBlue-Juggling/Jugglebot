@@ -8,7 +8,10 @@ After=jugglebot-nightly.service
 
 [Service]
 Type=oneshot
-WorkingDirectory=%h/night-shift
+# %h, not %h/night-shift: WorkingDirectory is entered before ExecStartPre runs, so
+# a directory the pre-step creates cannot be it (first dry fire 2026-10-31 failed
+# at step CHDIR, status=200). The runner uses absolute paths and cds itself.
+WorkingDirectory=%h
 ExecStartPre=/bin/mkdir -p %h/night-shift
 # The script runs from the live checkout's path because on the first night the
 # clone (~/night-shift/Jugglebot) does not exist yet; the runner creates it.

@@ -4,8 +4,12 @@ One file per night, `docs/night-shift/<date>.md`, written by the Night Shift orc
 (`.claude/commands/night-shift.md`) in its clone and committed to `main` as
 `docs(night-shift): report <date>`. The morning Session reads it when the nightly ticker
 says `LOWERED ... by night-shift <date>`; the map app renders it on its Night Shift page.
-The runner's own record (`last_run.json`, cost, status word) lives in the clone's
-`temp/reports/night-shift/`, not here.
+The runner's own record (`last_run.json`, status word) lives in the clone's
+`temp/reports/night-shift/`, not here. The last line of `## Cost` is the runner's, not the
+orchestrator's: `total_cost_usd` only exists once the orchestrator has exited, so
+`tools/night_shift.sh` appends it and pushes it as its own `docs(night-shift): total API
+cost <date>` commit (dropped, never rebased, if `main` moved meanwhile; `cost_recorded` in
+`last_run.json` says which). A dry run's report gets the same line as a plain file write.
 
 ## Layout
 
@@ -37,7 +41,8 @@ JB-n | <one-line reason>
 JB-n | <date of the result> | <verdict>      (P5; "none recorded" until then)
 
 ## Cost
-units: <n> (<models>); items touched: <n>; wall clock: <start> to <end>; USD: see last_run.json
+units: <n> (<models>); items touched: <n>; wall clock: <start> to <end>
+total API cost: USD <n> (runner, total_cost_usd)
 ```
 
 A dry run writes the same layout to the clone's `temp/reports/night-shift/dry-<date>.md`

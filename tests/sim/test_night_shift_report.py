@@ -32,7 +32,8 @@ JB-16 | needs hardware
 none recorded
 
 ## Cost
-units: 3 (sonnet); items touched: 4; wall clock: 04:45 to 06:10; USD: see last_run.json
+units: 3 (sonnet); items touched: 4; wall clock: 04:45 to 06:10
+total API cost: USD 12.34 (runner, total_cost_usd)
 """
 
 
@@ -47,7 +48,9 @@ def test_valid_report_parses_and_has_no_errors():
     assert tuple(parsed) == SECTIONS
     assert parsed["Merged to main"] == ["JB-12 | Fix the thing | abc1234"]
     assert parsed["Unaddressed Sitting results"] == ["none recorded"]
-    assert len(parsed["Cost"]) == 1
+    # the orchestrator's line plus the runner's appended total API cost
+    assert len(parsed["Cost"]) == 2
+    assert parsed["Cost"][-1].startswith("total API cost: USD ")
 
 
 def test_missing_section():

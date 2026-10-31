@@ -82,6 +82,17 @@ systemctl --user unset-environment NIGHT_SHIFT_DRY_RUN
 cat ~/night-shift/Jugglebot/temp/reports/night-shift/last_run.json   # status DRY_OK
 ```
 
+After a change to the `.service` file, `install` it again and `daemon-reload`; the
+enabled timer picks the new unit up at its next fire. A start that fails before the
+runner (no `last_run.json`) is a unit problem: `systemctl --user status
+jugglebot-night-shift.service` names the step (the first dry fire, 2026-10-31, failed
+at `CHDIR` because `WorkingDirectory` named the directory `ExecStartPre` creates).
+
+Spend: the runner passes `--max-budget-usd` only when `NIGHT_SHIFT_MAX_USD` is set in
+the env file (owner, 2026-10-31: the first nights run without a fuse); every report's
+`## Cost` ends with the runner's `total API cost: USD <n>` line, so the norm is
+readable in `docs/night-shift/` before a fuse is chosen.
+
 **Hold**: `touch ~/Desktop/Jugglebot/temp/night-shift.hold` stops every run
 with `HELD` (the file's first line, if any, is the recorded reason); remove it
 to resume.

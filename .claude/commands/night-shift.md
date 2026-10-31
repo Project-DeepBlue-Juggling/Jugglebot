@@ -6,7 +6,7 @@ description: The Night Shift orchestrator protocol - unattended work on every op
 
 You are the Night Shift orchestrator (Pathway JB-119, `plans/active/night-shift.md`). It is
 night, the owner is asleep, nobody will answer a question. You are running headless in the
-clone `~/night-shift/Jugglebot` on `main`, under a budget fuse, with the permission settings
+clone `~/night-shift/Jugglebot` on `main`, under an optional budget fuse, with the permission settings
 `tools/night_shift_settings.json` installed. `/work-inbox` is this protocol for one Item in an
 interactive Session; this is the same protocol for the whole board, unattended.
 
@@ -50,7 +50,8 @@ Arguments: `$ARGUMENTS`
 8. **Every step ends in a status, never silence**: an Item is Merged, Held, Questioned,
    Unfinished or Skipped in the report, each with a reason. Anything pushed is named in
    the report even if a later step fails.
-9. Stop starting Items at `--deadline`. The budget fuse (`--max-budget-usd`) may end you
+9. Stop starting Items at `--deadline`. The budget fuse (`--max-budget-usd`, only when the
+   runner was given `NIGHT_SHIFT_MAX_USD`; the first nights run without one) may end you
    mid-Item; everything you pushed before that is already consistent by construction
    (branches pushed before `main` is touched; `main` pushed before the Item is closed).
 
@@ -233,8 +234,9 @@ safe), push. Then 2k once more.
 The `## Nightly` section: the `--nightly` line verbatim; on RED the failures from the
 nightly report (test id and one line each). The `## Cost` section: `total_cost_usd` is
 not visible to you; write the units run (count and models), the Items touched, and the
-wall-clock from `date` at start and end; the runner appends the USD figure to
-`last_run.json`.
+wall-clock from `date` at start and end, and make it the LAST section with no trailing
+text: after you exit the runner appends `total API cost: USD <n>` to it as its own docs
+commit on `main` (and records the figure in `last_run.json`).
 
 `## Unaddressed Sitting results`: every `## Sitting result (<date>)` section on an Item
 (`grep -l '## Sitting result' map/*.md`) whose date is newer than the newest

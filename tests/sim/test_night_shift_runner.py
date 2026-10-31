@@ -48,6 +48,12 @@ if [[ "$prompt" == *--dry-run* && "${FAKE_CLAUDE_NO_REPORT:-0}" != 1 ]]; then
   echo "# dry run" >"$reports/dry-$date.md"
 fi
 [[ "${FAKE_CLAUDE_COMMIT_MAIN:-0}" == 1 ]] && git -C "$PWD" commit -q --allow-empty -m x
+if [[ "${FAKE_CLAUDE_REPORT:-0}" == 1 && "$prompt" != *--dry-run* ]]; then
+  [[ "$prompt" =~ ^/night-shift\ ([0-9-]+) ]] && date="${BASH_REMATCH[1]}"
+  mkdir -p docs/night-shift
+  printf '# Night Shift %s\n\n## Nightly\nGREEN\n\n## Cost\nunits: 0\n' "$date" >"docs/night-shift/$date.md"
+  git add docs/night-shift && git commit -q -m "docs(night-shift): report $date" && git push -q origin main
+fi
 if [[ -n "${FAKE_CLAUDE_CLOSE_ITEM:-}" ]]; then
   sed -i 's/^status: inbox$/status: complete/' "map/$FAKE_CLAUDE_CLOSE_ITEM.md"
   git commit -q -am "close $FAKE_CLAUDE_CLOSE_ITEM" && git push -q origin main
@@ -245,9 +251,12 @@ def test_first_run_then_nothing_new_then_change(ns):
     assert argv[0] == "-p" and argv[1].startswith("/night-shift %s --candidates" % date)
     joined = " ".join(argv)
     for flag in ("--permission-mode acceptEdits", "--permission-prompts none",
-                 "--max-budget-usd 90", "--model fable", "--output-format json"):
+                 "--model fable", "--output-format json"):
         assert flag in joined
     assert "--dangerously-skip-permissions" not in joined
+    # No budget fuse unless NIGHT_SHIFT_MAX_USD is set (owner, 2026-10-31).
+    assert "--max-budget-usd" not in joined
+    assert last["cost_recorded"] == "no-report"
     assert "--dry-run" not in argv[1]
     assert Path(pwd).resolve() == ns.clone.resolve()
     installed = ns.clone / ".claude" / "settings.local.json"
@@ -412,6 +421,8 @@ def test_dry_run(ns):
     assert not (ns.reports / "candidates-last.json").exists()
     assert last["report"] == str(ns.reports / ("dry-%s.md" % date))
     assert last["dry_run"] is True
+    assert last["cost_recorded"] == "file"
+    assert "total API cost: USD 0.42" in Path(last["report"]).read_text().splitlines()[-1]
 
     # A dry run always exercises claude, even when nothing is new.
     r = ns.run(NIGHT_SHIFT_DRY_RUN=1, FAKE_CLAUDE_NO_REPORT=1)
@@ -517,3 +528,63 @@ def test_todays_nightly_is_not_waited_for(ns):
 def test_service_tolerates_a_missing_env_file():
     unit = (REPO / "tools" / "systemd" / "jugglebot-night-shift.service").read_text()
     assert "EnvironmentFile=-%h/.config/jugglebot/night-shift.env" in unit
+
+
+def test_budget_fuse_is_opt_in(ns):
+    r = ns.run(NIGHT_SHIFT_MAX_USD=90)
+    _check(r, "OK", 0)
+    argv, _ = ns.calls()[0]
+    i = argv.index("--max-budget-usd")
+    assert argv[i + 1] == "90"
+    r = ns.run(NIGHT_SHIFT_MAX_USD=0, NIGHT_SHIFT_DRY_RUN=1)
+    _check(r, "DRY_OK", 0)
+    assert "--max-budget-usd" not in ns.calls()[1][0]
+
+
+def test_cost_line_is_pushed_into_the_report(ns):
+    """The orchestrator cannot see total_cost_usd; the runner appends it to the
+    night's report as its own docs commit on main, and the clone stays clean."""
+    r = ns.run(FAKE_CLAUDE_REPORT=1)
+    _check(r, "OK", 0)
+    last = ns.last()
+    date = last["date"]
+    assert last["cost_recorded"] == "pushed"
+    assert last["head_after"] == _git("rev-parse", "main", cwd=ns.origin, env=ns.env)
+    report = _git("show", "main:docs/night-shift/%s.md" % date, cwd=ns.origin, env=ns.env)
+    lines = report.splitlines()
+    assert lines[-1] == "total API cost: USD 0.42 (runner, total_cost_usd)"
+    assert lines.index("## Cost") < len(lines) - 1
+    subject = _git("log", "-1", "--format=%s%n%b", "main", cwd=ns.origin, env=ns.env)
+    assert subject.startswith("docs(night-shift): total API cost %s" % date)
+    assert "Logbook-Entry: %s-night-shift" % date in subject
+    assert _git("status", "--porcelain", cwd=ns.clone, env=ns.env) == ""
+    assert _git("rev-parse", "--abbrev-ref", "HEAD", cwd=ns.clone, env=ns.env) == "main"
+
+
+def test_cost_line_rejected_push_leaves_main_clean(ns):
+    """If main moved between the orchestrator's push and the cost commit, the cost
+    commit is dropped (never rebased, never forced) and the run is still OK."""
+    hook = ns.origin / "hooks" / "pre-receive"
+    hook.write_text("#!/bin/sh\nwhile read o n r; do git cat-file -p \"$n\" | "
+                    "grep -q '^docs(night-shift): total API cost' && exit 1; done; exit 0\n")
+    hook.chmod(0o755)
+    r = ns.run(FAKE_CLAUDE_REPORT=1)
+    _check(r, "OK", 0)
+    last = ns.last()
+    assert last["cost_recorded"] == "rejected"
+    origin_main = _git("rev-parse", "main", cwd=ns.origin, env=ns.env)
+    assert _git("rev-parse", "HEAD", cwd=ns.clone, env=ns.env) == origin_main
+    assert _git("status", "--porcelain", cwd=ns.clone, env=ns.env) == ""
+    report = _git("show", "main:docs/night-shift/%s.md" % last["date"], cwd=ns.origin, env=ns.env)
+    assert "total API cost" not in report
+    # tomorrow's run must not find CLONE_DIRTY
+    r = ns.run(NIGHT_SHIFT_DRY_RUN=1)
+    _check(r, "DRY_OK", 0)
+
+
+def test_service_working_directory_exists_before_the_pre_step():
+    """WorkingDirectory is entered before ExecStartPre, so the directory the
+    pre-step creates cannot be it (first dry fire 2026-10-31: status=200/CHDIR)."""
+    unit = (REPO / "tools" / "systemd" / "jugglebot-night-shift.service").read_text()
+    assert "WorkingDirectory=%h\n" in unit
+    assert "WorkingDirectory=%h/night-shift" not in unit
