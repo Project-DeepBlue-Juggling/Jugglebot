@@ -2,15 +2,20 @@
 id: JB-89
 kind: bug
 title: 'GUI: Persistent ''View'' setting selections'
-status: inbox
+status: complete
 created: '2026-10-28'
-updated: '2026-10-28T10:21:40Z'
+updated: '2026-10-31T19:57:17Z'
 owners: []
 priority: medium
 effort: s
 hardware: none
+owner: none
+radius: local
+diagnosis: confirmed
+area: gui
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-01-jb89-view-menu-toggles-persist.md
 filed_by: harrison
 ---
 

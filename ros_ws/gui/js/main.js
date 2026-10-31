@@ -73,6 +73,7 @@ import { initTrailSettingsUi } from './trail-settings-ui.js';
 import { initTrails, getTrailFeed } from './trails-scene.js';
 import { initCameraPanel, cameraPanelOnHeartbeat, setCameraPanelDisconnected } from './camera-panel.js';
 import { initRecordsPanel, attachRecordsMenu } from './records-panel.js';
+import { loadViewToggles, saveViewToggles, toggleState } from './view-toggles.js';
 
 // ---- Latest data stores ----
 let latestCommandedLegs = null;  // leg_setpoint_echo data (6 legs, motor revs)
@@ -932,15 +933,21 @@ function initSceneMenu() {
     // Populate after a short delay to let groups register
     setTimeout(() => {
         dropdown.innerHTML = '';
+        let viewStore = null;
+        try { viewStore = window.localStorage; } catch (_e) { /* blocked site data */ }
+        const viewSaved = loadViewToggles(viewStore);   // JB-89: View toggles survive a refresh
         for (const [name, obj] of Object.entries(sceneGroups)) {
             const label = document.createElement('label');
             label.className = 'scene-toggle';
 
             const checkbox = document.createElement('input');
             checkbox.type = 'checkbox';
+            obj.visible = toggleState(viewSaved, name, obj.visible);
             checkbox.checked = obj.visible;
             checkbox.addEventListener('change', () => {
                 obj.visible = checkbox.checked;
+                viewSaved[name] = checkbox.checked;
+                saveViewToggles(viewStore, viewSaved);
             });
 
             label.appendChild(checkbox);
