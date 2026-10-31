@@ -4,9 +4,14 @@ kind: ticket
 title: 'UNVERIFIED at the feasibility edge: keep the reason and name the worst row, add a tightened second pass, reclassify as INFEASIBLE, or leave it?'
 status: open
 created: '2026-11-01'
-updated: '2026-10-31T18:57:46Z'
+updated: '2026-10-31T19:09:41Z'
 owners: []
 priority: low
+effort: xs
+hardware: none
+owner: decision
+radius: local
+area: skill-stack
 blocked_by: []
 links: []
 parent: bug-pose-planner-reports-unverified-instead-of-a-named

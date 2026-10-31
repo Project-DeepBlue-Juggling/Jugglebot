@@ -4,16 +4,21 @@ kind: ticket
 title: 'NOT_SETTLED retry: delete the dead branch, retry after the announcement swap, fix Ball Butler''s yaw-settle gate, or leave it fail-closed?'
 status: open
 created: '2026-11-01'
-updated: '2026-10-31T18:57:43Z'
+updated: '2026-10-31T19:09:40Z'
 owners: []
 priority: low
+effort: xs
+hardware: none
+owner: decision
+radius: local
+area: ball-butler
 blocked_by: []
 links: []
 parent: bug-not-settled-retry-dead-in-the-field
 type: question
 ---
 
-JB-25: the once-per-attempt `THROW_ABORTED_NOT_SETTLED` retry in `skill_node._on_bb_throw_outcome` never fires in the field, because the announcement swap retires the reload ctx before Ball Butler's terminal verdict arrives; the verdict then fails closed as `REJECTED_BB(THROW_ABORTED_NOT_SETTLED)` (bb-self-cancel finding F1, 2026-10-13). A real retry is design work, and the Item is low priority with no verdict race observed since.
+JB-25: the once-per-attempt `THROW_ABORTED_NOT_SETTLED` retry in `skill_node._on_bb_throw_outcome` never fires in the field, because the announcement swap retires the `reload` ctx before Ball Butler's terminal verdict arrives; the verdict then fails closed as `REJECTED_BB(THROW_ABORTED_NOT_SETTLED)` (bb-self-cancel finding F1, 2026-10-13). A real retry is design work, and the Item is low priority with no verdict race observed since.
 
 Night Shift 2026-11-01 drafted the options below into the Item's `## Options (2026-11-01)` section and needs the owner to pick the direction before any code.
 

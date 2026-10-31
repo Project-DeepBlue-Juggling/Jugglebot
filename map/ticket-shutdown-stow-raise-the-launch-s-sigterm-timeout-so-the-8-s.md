@@ -4,9 +4,14 @@ kind: ticket
 title: 'Shutdown Stow: raise the launch''s sigterm_timeout so the 8 s Stow completes, or trust the firmware deferred-stow and keep only the UDP single-owner interlock?'
 status: open
 created: '2026-11-01'
-updated: '2026-10-31T18:57:26Z'
+updated: '2026-10-31T19:09:39Z'
 owners: []
 priority: medium
+effort: xs
+hardware: none
+owner: decision
+radius: local
+area: can-bridge
 blocked_by: []
 links: []
 parent: bug-teensy-bridge-node-s-shutdown-stow-can-be-cut-off-by-the

@@ -1,12 +1,17 @@
 ---
 id: JB-128
 kind: ticket
-title: 'Sim --reload LIMIT_JERK regression: fix the sim gate''s lateral authorities first, bisect the planner, both in order, or retire the scenario?'
+title: 'Sim `--reload` LIMIT_JERK regression: fix the sim gate''s lateral authorities first, bisect the planner, both in order, or retire the scenario?'
 status: open
 created: '2026-11-01'
-updated: '2026-10-31T18:57:54Z'
+updated: '2026-10-31T19:09:42Z'
 owners: []
 priority: medium
+effort: xs
+hardware: none
+owner: decision
+radius: local
+area: sim
 blocked_by: []
 links: []
 parent: bug-sim-reload-gate-limit-jerk-regression

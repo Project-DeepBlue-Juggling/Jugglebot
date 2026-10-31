@@ -4,9 +4,14 @@ kind: ticket
 title: 'LIMIT_* jitter margin: widen the time rows'' margin, absorb jitter in the re-send, raise a Sitting limit, or tally the class at hold 0 first?'
 status: open
 created: '2026-11-01'
-updated: '2026-10-31T18:57:50Z'
+updated: '2026-10-31T19:09:41Z'
 owners: []
 priority: medium
+effort: xs
+hardware: none
+owner: decision
+radius: local
+area: skill-stack
 blocked_by: []
 links: []
 parent: bug-limit-refusal-jitter-margin

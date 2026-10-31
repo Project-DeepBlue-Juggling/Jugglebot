@@ -4,9 +4,14 @@ kind: ticket
 title: Suppress-edge flush with vel_ff 0 on every lane, legs only, report only, or folded into the next can-bridge firmware revision?
 status: open
 created: '2026-11-01'
-updated: '2026-10-31T18:57:39Z'
+updated: '2026-10-31T19:09:40Z'
 owners: []
 priority: low
+effort: xs
+hardware: none
+owner: decision
+radius: local
+area: firmware
 blocked_by: []
 links: []
 parent: bug-motor-fb-stale-suppression-leaves-the-odrive-holding-its
