@@ -4,16 +4,22 @@ type: feature
 date: 2026-11-01
 status: complete
 phase: night-shift
+related_plan:
+  - night-shift.md
 files_changed:
   - ros_ws/gui/js/records-model.js
   - ros_ws/gui/js/records-panel.js
   - ros_ws/gui/css/records-panel.css
   - tests/ros/js/records_panel_harness.js
   - tests/ros/test_gui_records_panel.py
+  - logbook/INDEX.md
+  - map/idea-the-records-should-be-sorted-by-number-of-balls-from-least-t.md
+  - docs/project-map.md
 subsystem:
   - gui
 tags:
   - ux
+  - night-shift
 ---
 
 # GUI: the records overlay groups Patterns by ball count (JB-93)
@@ -37,5 +43,5 @@ Display only; no ledger, `docs/records.md` or control-path change.
 ## Verification
 
 - 2026-11-01, `pytest tests/ros/test_gui_records_panel.py tests/ros/test_gui_record_panel.py -q -p no:randomly`: 27 passed in 0.55 s. New tests pin order (ledger order c2,a1,t3,b2,d1 becomes 1,2,3 with ties in ledger order), titles, and the empty-group rule.
-- 2026-11-01, harness run against `git show HEAD:ros_ws/gui/js/records-model.js`: `SyntaxError ... does not provide an export named 'recordSections'`, so the new tests fail without the change.
+- 2026-11-01, harness run against the pre-change model (`git show origin/main:ros_ws/gui/js/records-model.js`, the tree before this commit): `SyntaxError ... does not provide an export named 'recordSections'`, so the harness file fails to import and every harness-backed test in the file fails, the new ones included. The panel's DOM wiring (heading placement, the flash lookup in `buildRow`) is covered only by the source-text checks; no browser pass.
 - Not run: the live GUI render (no browser pass).
