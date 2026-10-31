@@ -7,7 +7,9 @@
 """
 from __future__ import annotations
 
+import glob
 import json
+import os
 import shutil
 import subprocess
 from pathlib import Path
@@ -17,7 +19,21 @@ import pytest
 REPO = Path(__file__).resolve().parents[2]
 JS = REPO / "ros_ws" / "gui" / "js"
 HARNESS = REPO / "tests" / "ros" / "js" / "view_toggles_harness.js"
-NODE = shutil.which("node") or shutil.which("nodejs")
+def _find_node():
+    """Same discovery as tests/ros/test_gui_records_panel.py: PATH first, then
+    the nvm tree and the usual prefixes, so a box with node only under ~/.nvm
+    runs the harness instead of skipping it (audit 2026-11-01)."""
+    found = shutil.which("node") or shutil.which("nodejs")
+    if found:
+        return found
+    for pat in (os.path.expanduser("~/.nvm/versions/node/*/bin/node"), "/usr/local/bin/node", "/usr/bin/node"):
+        hits = sorted(glob.glob(pat))
+        if hits:
+            return hits[-1]
+    return None
+
+
+NODE = _find_node()
 
 
 @pytest.fixture(scope="module")

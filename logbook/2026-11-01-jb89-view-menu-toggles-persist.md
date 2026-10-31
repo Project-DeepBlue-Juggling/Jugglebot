@@ -25,7 +25,7 @@ tags:
 
 ## Summary
 
-Owner bug (2026-10-28): hiding the Jugglebot model in the View menu did not survive a
+Owner bug (2026-10-28): hiding the `Jugglebot` group (the robot model) in the View menu did not survive a
 GUI refresh. Every generic scene-group toggle (`sceneGroups` in `main.js`
 `initSceneMenu`) reset to the scene's default on refresh. The records rows and camera
 slots already persisted; these did not.
@@ -34,7 +34,7 @@ slots already persisted; these did not.
   `jugglebot-view-toggles`, JSON `{groupName: bool}`. `loadViewToggles` returns `{}` for an
   absent key, garbage JSON, a non-object, or throwing storage, and drops non-boolean
   values; `saveViewToggles` swallows a blocked storage; `toggleState` returns the saved
-  choice, else the scene's own default (so a group first registered later keeps its default).
+  choice, else the scene's own default (so a group never toggled keeps its default; the stale-snapshot case across two tabs, where a save rewrites the whole map from the state read at build, is left open by the audit).
 - `main.js`: when the menu is built, the saved state is applied to each group (`obj.visible`)
   before the checkbox is set, and every change writes the whole map. The records section
   and camera slots are untouched.
