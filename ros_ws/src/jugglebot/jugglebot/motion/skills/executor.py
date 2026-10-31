@@ -233,9 +233,16 @@ def _aim_dependent_refusal(code) -> bool:
     state, a missing ball, a latched lane). The learned-prior fallback
     (unit A2, 2026-10-13) re-dispatches at ``y_d`` only for the former: a
     second solve after a timing or state refusal is one more refusal, later
-    (audit 2026-10-13)."""
+    (audit 2026-10-13).
+
+    ``code`` is the validate gate's BARE check code (``install_segment``
+    returns ``exc.code``), so the Hand's limits arrive as ``HAND_LIMIT_ACC`` /
+    ``HAND_LIMIT_VEL`` and need their own prefix: without it the 2026-10-31
+    goal-4 Ball 2 CATCH (learned prior, ``HAND_LIMIT_ACC`` 4112.5 > 3900)
+    ended with no fallback (JB-120, 2026-11-01)."""
     c = str(code or '')
-    return c.startswith('LIMIT_') or 'INFEASIBLE' in c
+    return (c.startswith('LIMIT_') or c.startswith('HAND_LIMIT_')
+            or 'INFEASIBLE' in c)
 
 # ── Outcome capture (R3, plan § 2.5 step 6 / § 2.7) ─────────────────────────
 #

@@ -6984,6 +6984,32 @@ def test_a_non_aim_refusal_of_the_learned_prior_does_not_fall_back(sites):
     assert not ex._aim_dependent_refusal("")
 
 
+def test_a_hand_limit_refusal_of_the_learned_prior_falls_back_to_y_d(sites):
+    """(e) JB-120 (2026-11-01): the installer reports the validate gate's BARE
+    check code (``install_segment``: ``InstallResult(False, exc.code, ...)``),
+    and a Hand limit is ``HAND_LIMIT_ACC`` / ``HAND_LIMIT_VEL`` -- no
+    ``LIMIT_`` prefix, no ``INFEASIBLE`` -- so the 2026-10-31 goal-4 Ball 2
+    CATCH (``source=schedule:learned``, refused ``HAND_LIMIT_ACC`` 4112.5 >
+    3900) ended without the y_d fallback this unit exists for. A Hand limit is
+    a limit the aim can cause (the classifier's own docstring): it falls back
+    exactly like (a)."""
+    p1, _p2 = sites
+    _sch, inst, x, lines = _fallback_run(
+        sites, [_ok(), _refusal('HAND_LIMIT_ACC'), _ok()],
+        catch_aim_source=ex.AIM_SCHEDULE)
+    catches = [c for c in inst.calls if c[0] == sg.CATCH]
+    assert len(catches) == 2
+    assert np.allclose(catches[1][1].landing_mm[:2], p1.catch_site_mm()[:2])
+    assert sum('CATCH-AIM-FALLBACK' in ln and 'HAND_LIMIT_ACC' in ln
+               for ln in lines) == 1
+    assert not x.attempt_ended
+    assert ex._aim_dependent_refusal("HAND_LIMIT_ACC")
+    assert ex._aim_dependent_refusal("HAND_LIMIT_VEL")
+    # Timing / state fences stay excluded, whatever their prefix.
+    assert not ex._aim_dependent_refusal("SOLVER_UNAVAILABLE")
+    assert not ex._aim_dependent_refusal("STALE_STATE")
+
+
 # ---------------------------------------------------------------------------
 # Wave 3 unit H (owner rule, 2026-10-13): the admissible box bounds the
 # learner's EXPECTED landing laterally, not its lateral command. A learner
