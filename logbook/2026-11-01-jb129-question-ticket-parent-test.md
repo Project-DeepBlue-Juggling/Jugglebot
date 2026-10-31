@@ -8,6 +8,7 @@ related_plan:
   - night-shift.md
 files_changed:
   - tests/sim/test_map_items.py
+  - tests/sim/test_glossary_avoid_words.py
   - logbook/INDEX.md
   - map/bug-test-references-resolve-refuses-a-question-ticket-s-bug.md
   - docs/project-map.md
@@ -23,6 +24,8 @@ tags:
 **What.** `tests/sim/test_map_items.py::test_references_resolve` required every Item's `parent` to be a pathway slug. The question-ticket design (Night Shift P2, 2026-10-31) hangs a `type: question` ticket off the bug, feature or idea it blocks, stored as the stem, and `mapkit/itemcli.py` refuses a pathway or ticket parent for that type. The dry run never filed a ticket, so the first six question tickets (JB-123 to JB-128, filed 2026-11-01 05:57) were the first to meet the test on `main`, which went red on it until this fix merged through the gate.
 
 **Fix.** The test now branches on the Item: a ticket with `type: question` must name a bug, feature or idea stem (and still fails on an unresolved or wrong-kind parent); every other parent must be a pathway slug. `mapkit/` is untouched (the CLI already enforces the rule at filing; the gate freezes that path anyway).
+
+**Second rule, same event.** `tests/sim/test_glossary_avoid_words.py` scanned frontmatter like body text, so the ticket JB-128 failed on its own `parent:` line, `bug-sim-reload-gate-limit-jerk-regression`, the bug's stem (a filename-like identifier the test already exempts when it carries a `/` or an extension). Frontmatter reference lines (`parent:`, `promoted_to:`, a bare `- <stem>` under `blocked_by:` / `links:`) are now exempt inside the frontmatter block only; body text is scanned as before, and a stem in body prose still fails (the backticked `--reload` and `reload` ctx in JB-125 / JB-128 were fixed as text, on `main`).
 
 **Why its own branch.** Night Shift invariant 3 allows only report, logbook and `map:` commits straight on `main`, so the one-test fix went through the merge gate as its own Item instead of riding the `map:` commit that split the tickets' intro paragraphs.
 

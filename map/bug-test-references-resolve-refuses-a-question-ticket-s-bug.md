@@ -29,3 +29,7 @@ filed_by: night-shift
 ## Fix
 
 The test change landed as logbook/2026-11-01-jb129-question-ticket-parent-test.md; nothing in `mapkit/` changed (the CLI already enforces the rule at filing).
+
+## Second rule (2026-11-01)
+
+The same six tickets also tripped `tests/sim/test_glossary_avoid_words.py` on a `parent:` line holding a stem with an Avoid-word in it (`bug-sim-reload-gate-limit-jerk-regression`). Frontmatter reference lines are now exempt, body text is not.

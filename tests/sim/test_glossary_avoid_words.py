@@ -24,6 +24,12 @@ _INLINE_CODE = re.compile(r"`[^`]*`")
 _QUOTED = re.compile(r'"[^"]*"')
 # A token with a slash, or ending in a file extension, is a path or identifier.
 _PATHLIKE = re.compile(r"\S*/\S*|\S+\.(?:md|py|yaml|yml|json|action|msg|srv|ino|h|cpp|js|csv|log|txt|sh)\b")
+# A frontmatter REFERENCE is an identifier like a filename: `parent:` /
+# `promoted_to:` hold an Item stem or pathway slug, and a bare `- <stem>` list
+# item under `blocked_by:` / `links:` holds a stem (`mapkit` stores stems, never
+# titles). A question ticket whose parent is `bug-sim-reload-...` must not fail
+# for the bug's own stem (JB-129, 2026-11-01). Body text is never exempted.
+_FRONT_REF = re.compile(r"^(?:(?:parent|promoted_to):\s*\S+|- [A-Za-z0-9._-]+)\s*$")
 
 
 def load_phrases(path: str = CHECKED) -> List[str]:
@@ -53,13 +59,21 @@ def find_offenders(paths: List[str], phrases: List[str], root: str = "") -> List
     for path in paths:
         shown = os.path.relpath(path, root) if root else path
         fenced = False
+        front = None  # None before the opening ---, True inside, False after
         with open(path, encoding="utf-8") as fh:
             for n, raw in enumerate(fh, 1):
                 line = raw.rstrip("\n")
+                if line.strip() == "---" and front is not False:
+                    front = True if front is None and n == 1 else False
+                    continue
+                if front is None:
+                    front = False
                 if line.lstrip().startswith("```"):
                     fenced = not fenced
                     continue
                 if fenced or line.rstrip().endswith(OK_TAG):
+                    continue
+                if front and _FRONT_REF.match(line):
                     continue
                 bare = _PATHLIKE.sub(" ", _QUOTED.sub("", _INLINE_CODE.sub("", line)))
                 for phrase, pat in pats:
