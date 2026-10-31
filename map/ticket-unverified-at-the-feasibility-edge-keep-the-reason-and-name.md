@@ -13,7 +13,11 @@ parent: bug-pose-planner-reports-unverified-instead-of-a-named
 type: question
 ---
 
-JB-104 asks that the pose planner report a named INFEASIBLE with the binding row instead of `REJECTED_CYCLE_INFEASIBLE(UNVERIFIED: QP solution failed verification ...)` at the feasibility edge (hop CATCH carrying its throw at +15 mm x, outside the swept box; the gate held). Night Shift 2026-11-01 read the refusal path: `cup_cycle._verify` refuses on an equality residual above the bar and its docstring says a genuinely infeasible request and a numerically degenerate one are DELIBERATELY not distinguished there (2026-08-30, Phase 0: both mean no trustworthy plan; which refusal path fires is BLAS-dependent and no caller may branch on it). Renaming the verdict reverses that decision, so it is the owner's call, not a unit's. Options drafted into the Item's `## Options (2026-11-01)` section.
+JB-104 asks that the pose planner report a named INFEASIBLE with the binding row instead of `REJECTED_CYCLE_INFEASIBLE(UNVERIFIED: QP solution failed verification ...)` at the feasibility edge (hop CATCH carrying its throw at +15 mm x, outside the swept box; the gate held).
+
+Night Shift 2026-11-01 read the refusal path: `cup_cycle._verify` refuses on an equality residual above the bar and its docstring says a genuinely infeasible request and a numerically degenerate one are DELIBERATELY not distinguished there (2026-08-30, Phase 0: both mean no trustworthy plan; which refusal path fires is BLAS-dependent and no caller may branch on it). Renaming the verdict reverses that decision, so it is the owner's call, not a unit's.
+
+Options drafted into the Item's `## Options (2026-11-01)` section.
 
 ## Options
 

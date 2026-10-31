@@ -13,7 +13,9 @@ parent: bug-motor-fb-stale-suppression-leaves-the-odrive-holding-its
 type: question
 ---
 
-JB-73 is a can-bridge firmware class: during a MOTOR_FB_STALE suppression the bridge stops transmitting setpoints and the ODrive holds its last setpoint INCLUDING its vel_ff, so the leg settles up to about 6 mm past the last transmitted command (bench leg, 2026-10-27); three related ways the Hand's ODrive state can diverge from what the bridge believes were folded in by the 2026-10-28 survey. The body's candidate fix (one final setpoint with vel_ff = 0 at the suppress edge) needs a design look against the hand lane and the stow path, which share the gate. Night Shift 2026-11-01 drafted the options below into the Item's `## Options (2026-11-01)` section; the firmware is a gate-forbidden path and `pio` is denied at night, so nothing can be built or flashed unattended.
+JB-73 is a can-bridge firmware class: during a MOTOR_FB_STALE suppression the bridge stops transmitting setpoints and the ODrive holds its last setpoint INCLUDING its vel_ff, so the leg settles up to about 6 mm past the last transmitted command (bench leg, 2026-10-27); three related ways the Hand's ODrive state can diverge from what the bridge believes were folded in by the 2026-10-28 survey.
+
+The body's candidate fix (one final setpoint with vel_ff = 0 at the suppress edge) needs a design look against the hand lane and the stow path, which share the gate. Night Shift 2026-11-01 drafted the options below into the Item's `## Options (2026-11-01)` section; the firmware is a gate-forbidden path and `pio` is denied at night, so nothing can be built or flashed unattended.
 
 ## Options
 
