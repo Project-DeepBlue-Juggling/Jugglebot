@@ -4,9 +4,13 @@ type: bugfix
 date: 2026-11-01
 status: complete
 phase: "night-shift"
+related_plan:
+  - night-shift.md
 files_changed:
   - tests/ros/test_teensy_bridge_node_setpoint.py
   - logbook/INDEX.md
+  - map/bug-test-hand-step-violation-not-sent-flakes-under-the-full-gate.md
+  - docs/project-map.md
 subsystem:
   - tests
   - teensy_link
