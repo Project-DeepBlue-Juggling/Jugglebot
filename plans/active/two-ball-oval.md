@@ -495,18 +495,12 @@ Where the idea lives now: a note inside P3 (below). Code never started; nothing 
   passed before the clamp raise below — a 15 A staircase on one leg today becomes a 30 A one. **MET 2026-10-27** (plan
   archived; `logbook/2026-10-27-leg-lead-clamp-age-aware-p3-robot.md`). JB-76 (`SPLICE_TOO_LATE` ending half the goals)
   still stands in front of any 30-catch run.
-- **P4.0 pre-release hold rung (new first item; owner 2026-10-30, map JB-102):** the ideal result is NO hold, the Platform
-  moving continuously through the pattern. Design: release from a moving Platform, composing the Platform's velocity into
-  the release state / aim and accounting for the 45 + 30 ms tracking delay with measured, not commanded, state (the hold
-  exists because of the R4 finding: the Platform still moving +70..+100 mm/s at separation added overshoot). Ladder
-  0.100 → 0.075 → 0.050 → 0 at dwell 0.45. Gate: landing scatter not worse than the 0.100 baseline (sd 14-16 mm) and
-  catch rate ≥ 30/30 at each rung. Lands ahead of the working-point commit.
-  **Mean-bias criterion (added 2026-10-30, C6):** scatter + catch rate cannot see a pure mean shift the learner and catch
-  absorb, so each rung (one shared memory; ≥ 20 throws) is also read on the plant residual (y − u) along the throw axis
-  (`tools/probes/hold_rung_bias.py --latest`, which attributes goals and holds from the launch log and prints the next hold). Delay effect confirmed = 0.050 lands ≥ 10 mm short of 0.100 and beyond 2 SE of the rung difference, with |dy|, |dapex| < 10 mm (inconclusive → 20 more throws at 0.050, else fall back to 0.075 and stop).
-  Branch: predicted hold-0 bias ≤ 35 mm fly 0; 35–55 warm up at 0.025 first; > 55 do not fly 0 (needs delay-aware
-  composition). Fallback = the shortest hold with |Δ| ≤ 20 mm, ≥ 30/30, sd ≤ baseline + 3 mm. The Sitting plan is Runbook § 11.
-- **2026-10-30 evening:** 10-17 "0.30 at apex 1.0" reproduces ONLY at hold 0 (C1); the hold protects tracking delay, not an un-composed velocity (C2); hold 0 predicted −81..−103 mm short at 0.45 → the two-ball destination needs delay-aware composition = new P4 design item (gated, after the Sitting's δ_eff). Box now carries oval cells at apex 1.00 / 1.05 (54 cells, gate_hash unchanged; entry `logbook/2026-10-30-sitting-prep-columns-check-hold-ladder-and-apex-cells.md`).
+- **P4.0 pre-release hold rung (owner 2026-10-30, map JB-102) - FLOWN 2026-10-31, model WITHDRAWN, hold default 0.** Runbook § 11, bag `2026-10-31_13-14-00`, entry `logbook/2026-10-31-hold-ladder-sitting-the-hold-model-was-wrong.md` (the 10-30 prep entry stays the prep record).
+  - **Result:** the prep model predicted that a shorter hold lands the ball SHORT (Platform tracking delay 45 + 30 ms). It lands LONG, monotone in the hold, nothing dropped: against the 0.100 control (+9.9 mm short) hold 0.075 is 17.3 mm long, 0.050 is 39.5 mm long, and hold 0 a further 28.4 mm long of 0.050 at the 1.05/0.50 cell. Hold 0 flew 30/30 with the tightest spread of the Sitting (9.8 mm), leg acceleration down 44 percent.
+  - **Withdrawn model:** the Platform tracks the executed command within about 15 ms (not 75), ball separation is +21..+33 ms after the announced release in every rung (independent of the hold), and the composition sign is right. The landing is set by a roughly 6 Hz underdamped Platform ring excited by the carry deceleration; the hold only moves the ring phase at release. About half the 0.050 rung's shift is unexplained; apex is under-delivered by +72..+95 mm at every hold (plant residual, hold-independent).
+  - **Decision (owner 2026-10-31):** `pre_release_hold_s` default 0.000; the learner absorbs the roughly 30 mm long bias.
+  - **JB-102 reframed:** do NOT build delay-aware composition as specified (it would predict short and add forward velocity). Remaining design options: identify the 6 Hz mode and compose through it; soften (jerk-limit) the carry deceleration; end the deceleration an integer number of ring periods before release. Damping the mode in the leg loop reopens the frozen gain hunt and is the owner's call.
+  - **Two-ball destination:** the door cells at hold 0 need the Platform ring modelled or excited less; the prep table's delay-aware release rows no longer apply.
 - **Offline item:** reproduce the 10-17 "0.30 at apex 1.0 under P4" result on today's code (skid bound, C-CUP-4,
   `pose`) and promote the headroom probe (`tools/probes/oval_dwell_sweep.py` plus the scratch cells script) to
   `tools/probes/`, before the working-point commit.

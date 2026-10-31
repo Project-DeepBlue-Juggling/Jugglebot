@@ -38,6 +38,8 @@ Unmarked and parallel-safe: pure planner code, no filesystem, no ports.
 
 from __future__ import annotations
 
+import re
+
 import numpy as np
 import pytest
 
@@ -442,7 +444,11 @@ def test_a_reload_pretilt_rest_spliced_mid_bridge_is_accepted(limits, geom,
 def test_without_the_rest_slew_rate_the_reload_seam_refuses_limit_jerk(
         limits, geom, cross_mm, monkeypatch):
     """The regression guard: the pre-2026-10-23 rest_slew (value pin only) is
-    refused on the same driver at the live failure's knot, t=0.025."""
+    refused on the same driver at the live failure's knot, t=0.025.
+
+    The binding leg is not pinned: it was leg 0 on both crossings until the
+    2026-10-31 cup geometry change (prime 10.45, floor 0.0614 rev) moved the
+    120 mm crossing's peak to leg 3; the guard is the refusal at the seam knot."""
     orig = cr.tilt_schedule
 
     def value_pin_only(*a, **kw):
@@ -454,7 +460,7 @@ def test_without_the_rest_slew_rate_the_reload_seam_refuses_limit_jerk(
     _h, _n, res, _s, _k = _reload_pretilt_splice(limits, geom, cross_mm)
     assert not res.accepted
     assert res.code == fz.LIMIT_JERK, res.message
-    assert 'leg 0 at t=0.025 s' in res.message, res.message
+    assert re.search(r'leg \d at t=0\.025 s', res.message), res.message
     peak = float(res.message.split('peak leg jerk ')[1].split()[0])
     assert peak > 200000.0
 

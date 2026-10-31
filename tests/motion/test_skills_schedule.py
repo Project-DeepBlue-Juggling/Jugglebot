@@ -1385,7 +1385,8 @@ def test_compile_one_ball_hop_is_the_same_at_any_wall_clock_magnitude(t0, cols):
 
 
 # ---------------------------------------------------------------------------
-# The opening REST's period HOMES THE HAND (2026-09-18)
+# The opening REST's period RETURNS THE HAND TO REST (2026-09-18; the
+# 2.5 rev/s park-rate velocity cap retired 2026-10-31)
 # ---------------------------------------------------------------------------
 
 def test_floor_lift_s_is_the_floor_when_the_hand_is_already_home():
@@ -1393,30 +1394,55 @@ def test_floor_lift_s_is_the_floor_when_the_hand_is_already_home():
     ``sites.REST_HAND_REV``, so nothing changes."""
     assert sc.floor_lift_s(st.REST_HAND_REV) == pytest.approx(sc.FLOOR_LIFT_S)
     # ... and so does anything inside the band the columns path refuses on.
-    assert sc.floor_lift_s(st.REST_HAND_REV + sc.HOME_BAND_REV) == (
+    assert sc.floor_lift_s(st.REST_HAND_REV + sc.REST_BAND_REV) == (
         pytest.approx(sc.FLOOR_LIFT_S))
 
 
-def test_floor_lift_s_velocity_branch_binds_on_the_2026_09_18_hand():
-    """9.6227 rev — the hand the sitting's three MAX_DEVIATION latches started
-    from. Δ = 9.3156 rev at 2.5 rev/s through the quintic shape factor is
-    6.99 s, and the acceleration branch asks only 3.34 s, so velocity binds."""
-    period = sc.floor_lift_s(9.6227)
-    assert period == pytest.approx(1.875 * 9.3156 / 2.5, rel=1e-3)
-    peak_v, peak_a = sc.home_hand_bounds(9.6227, period)
-    assert peak_v == pytest.approx(sc.HOME_HAND_VEL_LIMIT_RPS, rel=1e-6)
-    assert peak_a < sc.HOME_HAND_ACC_LIMIT_RPS2
+def test_floor_lift_s_returns_an_8_56_rev_hand_in_3_20_s_not_6_42():
+    """The 2026-10-31 goal 13 hand: a ``LANE_REFUSED`` end left it at
+    +8.6174 rev, Δ = 8.556 rev from the 0.0614 rev rest. The retired 2.5 rev/s
+    park-rate cap would size that return at 1.875·8.556/2.5 = 6.42 s (the REST
+    over 6.5 s whose re-splice solve ran 323 ms against a 158 ms budget and
+    ended the attempt ``SPLICE_TOO_LATE``). With the velocity cap at an
+    ordinary 15 rev/s, the ACCELERATION bound — the one the firmware's resume
+    rule actually imposes — sizes it: √(6·8.556/5) = 3.20 s."""
+    delta = 8.556
+    period = sc.floor_lift_s(st.REST_HAND_REV + delta)
+    assert period == pytest.approx(3.2042, abs=1e-3)
+    assert period < 0.51 * (1.875 * delta / 2.5)   # under half the old 6.42 s
+    peak_v, peak_a = sc.rest_return_bounds(st.REST_HAND_REV + delta, period)
+    assert peak_a == pytest.approx(sc.REST_RETURN_HAND_ACC_LIMIT_RPS2,
+                                   rel=1e-6)
+    assert peak_v < sc.REST_RETURN_HAND_VEL_LIMIT_RPS
 
 
 def test_floor_lift_s_acceleration_branch_binds_just_past_the_floor():
-    """Between Δ = 1.875 rev (where the acceleration branch passes the 1.5 s
-    floor) and Δ = 2.133 rev (where velocity takes over) the ACCELERATION bound
-    is what sizes the window — the branch a velocity-only rule would miss."""
+    """From Δ = 1.875 rev (where the acceleration branch passes the 1.5 s
+    floor) the ACCELERATION bound is what sizes the window."""
     period = sc.floor_lift_s(st.REST_HAND_REV + 2.0)
     assert period > sc.FLOOR_LIFT_S
-    peak_v, peak_a = sc.home_hand_bounds(st.REST_HAND_REV + 2.0, period)
-    assert peak_a == pytest.approx(sc.HOME_HAND_ACC_LIMIT_RPS2, rel=1e-6)
-    assert peak_v < sc.HOME_HAND_VEL_LIMIT_RPS
+    peak_v, peak_a = sc.rest_return_bounds(st.REST_HAND_REV + 2.0, period)
+    assert peak_a == pytest.approx(sc.REST_RETURN_HAND_ACC_LIMIT_RPS2,
+                                   rel=1e-6)
+    assert peak_v < sc.REST_RETURN_HAND_VEL_LIMIT_RPS
+
+
+def test_the_return_to_rest_is_acceleration_bound_across_the_whole_stroke():
+    """Velocity takes over from acceleration only at Δ = 1.2·(15/1.875)² =
+    76.8 rev, seven strokes long, so over every displacement the firmware's
+    stroke clip allows (10.501 rev) the 15 rev/s cap is a ceiling for a
+    future raise of the acceleration bound, never the binding one — and the
+    planned displacement at the firmware's worst-case handover instant stays
+    inside the resume budget (half of ``SCHED_RESUME_TOL_POS_HAND_REV``)."""
+    for delta in np.linspace(0.0, 10.501, 43):
+        rev = st.REST_HAND_REV + float(delta)
+        period = sc.floor_lift_s(rev)
+        peak_v, peak_a = sc.rest_return_bounds(rev, period)
+        assert peak_v < sc.REST_RETURN_HAND_VEL_LIMIT_RPS
+        assert peak_a <= sc.REST_RETURN_HAND_ACC_LIMIT_RPS2 * (1 + 1e-9)
+        assert sc.rest_return_onset_rev(rev, period) <= (
+            sc.REST_RETURN_ONSET_BUDGET_REV)
+    assert sc.REST_RETURN_ONSET_BUDGET_REV == pytest.approx(0.5 * 0.05)
 
 
 def test_floor_lift_s_is_symmetric_about_home():
@@ -1449,7 +1475,8 @@ def test_the_sized_opening_rest_carries_the_whole_schedule_with_it(site):
 
 
 def test_a_pattern_cannot_ask_for_less_than_the_measured_floor_lift(site):
-    """The opening REST both lifts the cup onto the site and homes the hand:
+    """The opening REST both lifts the cup onto the site and returns the hand
+    to rest:
     ``FLOOR_LIFT_S`` is the measured minimum for the lift ALONE (1.0 s and
     1.2 s refuse LIMIT_JERK — see its docstring), so a shorter one is refused
     rather than quietly accepted."""

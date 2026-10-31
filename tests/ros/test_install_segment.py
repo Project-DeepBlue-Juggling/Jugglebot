@@ -1253,28 +1253,33 @@ def test_the_opening_rest_carries_a_far_hand_home_inside_the_floor_lift():
     """THE REPLACEMENT FOR THE REFUSAL, end to end: the schedule's opening
     REST (`schedule.FLOOR_LIFT_S`, 1.5 s) installs from a hand 8 rev off the
     park — the 2026-09-13 L2 magnitude — and settles it at the SETTLE clamp.
+    RE-PINNED 2026-10-31 (floor 0.307 -> 0.06 rev, REST return sized by
+    ``floor_lift_s`` instead of the fixed 1.5 s): the settle rev is the BOX
+    FLOOR now (0.0614 rev = 2 mm above the zero), and the period is the sized
+    acceleration-bound one (3.09 s for this 8.0 rev hand: sqrt(6 x 7.94 / 5)).
 
     8.0 rev used to be the clearest `REJECTED_HAND_NOT_PARKED`; it is now a
-    1.5 s carry. The terminal is `SETTLE_CUP_Z_MM`'s rev (0.3071), NOT 0.0:
-    the QP's cup box is inset 10 mm above the homed zero, so a window asked
-    to settle at the literal park is refused `SETTLE_SITE` — see
-    `unified_cycle.SETTLE_CUP_Z_MM`'s own note. 0.3071 rev is inside the
-    0.5 rev park band with 39 % to spare.
+    1.5 s carry. The terminal is `SETTLE_CUP_Z_MM`'s rev (0.0614 since 2026-10-31, was 0.3071), NOT 0.0:
+    the QP's cup box floor is inset (2 mm since 2026-10-31, 10 mm before) above
+    the band floor, so a window asked to settle at the literal park is refused
+    `SETTLE_SITE` — see `unified_cycle.SETTLE_CUP_Z_MM`'s own note. 0.0614 rev
+    is inside the 0.5 rev park band with 88 % to spare.
     """
     from jugglebot.motion.skills import schedule as sch
     node = _reconcile_node(commanded_hand_rev=8.7610, measured_hand_rev=8.0)
     with _frozen_perf() as at:
         resp = node._svc_install_segment(
-            _rest_req(at + sch.FLOOR_LIFT_S, rest_z=uc.SETTLE_CUP_Z_MM),
+            _rest_req(at + sch.floor_lift_s(8.0), rest_z=uc.SETTLE_CUP_Z_MM),
             InstallSegment.Response())
     assert resp.accepted is True, resp.message
     plan = node._active_plan
     assert float(plan.hand_rev[0]) == pytest.approx(8.0, abs=1e-6)
     settle_rev = float(plan.hand_rev[-1])
-    assert settle_rev == pytest.approx(0.3071, abs=2e-3)
+    assert settle_rev == pytest.approx(0.0614, abs=2e-3)
     assert abs(settle_rev) <= float(hw.HOMING_HAND_PARK_BAND_REV)
-    # And it is a GENTLE carry, not a lunge: the whole 7.7 rev inside 1.5 s
-    # peaks three orders under the 200 rev/s session ceiling.
+    # And it is a GENTLE carry, not a lunge: the whole ~8 rev inside the sized
+    # window peaks an order under the 200 rev/s session ceiling (the return's
+    # own cap is REST_RETURN_HAND_VEL_LIMIT_RPS = 15).
     assert float(np.max(np.abs(plan.hand_vel_rps))) < 12.0
 
 
@@ -1536,7 +1541,11 @@ def test_TI1_seven_channel_frames_reach_the_wire_and_the_flags_fall():
         # throw, and it moves in the direction the throw strokes.
         hand_lane = [sp.u0[6] for sp in cycle_frames]
         assert max(hand_lane) - min(hand_lane) > 0.5
-        assert hand_lane[-1] > hand_lane[0]
+        # (2026-10-31: was ``hand_lane[-1] > hand_lane[0]``.  The floor fell
+        # 0.307 -> 0.06 rev, so the THROW winds down to 0.061 rev before the
+        # stroke and the 24-knot window ends in the post-release braking at
+        # 1.86 rev, under the 2.04 rev seed; the stroke's direction is its peak.)
+        assert max(hand_lane) > hand_lane[0] + 1.0
 
         # ── The falling edge ──
         n_before = len(teensy.received(int(MsgType.SETPOINT)))

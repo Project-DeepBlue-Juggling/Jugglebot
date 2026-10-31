@@ -138,7 +138,7 @@ ODRIVE_LEG_MOTOR_ENC_CPR = 8192
 # ============================================================================
 
 JB_OP_DEFAULT_ACTIVE_Z_MM = 170.0
-JB_OP_HAND_CATCH_PRIME_REV = 9.9594
+JB_OP_HAND_CATCH_PRIME_REV = 10.45
 JB_OP_HAND_ACTIVATE_POSITION_REV = 0.0
 JB_OP_HAND_RETRACT_REV = 0.0
 JB_OP_CATCH_VEL_SCALE_DEFAULT = 0.9
@@ -516,6 +516,10 @@ LEG_STROKE_MIN_REV = [0.070411415, 0.070399535, 0.07079697, 0.07040887, 0.070444
 LEG_STROKE_MAX_REV = [3.872627825, 3.871974425, 3.89383335, 3.87248785, 3.8744431, 3.88754795]
 # Measured hand rev/m — jugglebot_geometry.hand_mm_per_rev, inverted.
 HAND_REV_PER_M = 30.705929314950716
+# Planner slider travel (mm, sim 20 mm-inset frame) = stroke_margin_m*1000 +
+# (hand_motor_hard_stop_revs - hand_clip_margin_rev) * hand_mm_per_rev: the firmware
+# clip's reach. Distinct from GEOM_HAND_STROKE_MM (GUI render geometry).
+HAND_PLANNER_TRAVEL_MM = 361.986067
 # jugglebot_homing.hand_abs_pos_rev - hand_settle_band_rev.
 HAND_HOMED_REST_FLOOR_REV = -0.2
 HAND_THROW_POS_M = 0.187044

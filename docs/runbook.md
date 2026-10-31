@@ -10,9 +10,27 @@ linked from rows, never duplicated.
 
 - Power-cycle the can-bridge after any re-cabling (sticky presence set trips CAN_BUS_DOWN).
 - Latch `hand_source` before arming (it resets to LEGACY on every bridge reboot).
+- Run `colcon build --packages-select jugglebot` and re-source before the Sitting (the install tree is stale until then).
+- BallButler: `config/generate_config.py` rewrote `BallButler/ball_butler_main/{hardware_config,protocol_config}.h` (prime 10.45 plus earlier-lagging pose/protocol constants); review and commit that in the BallButler repo. No reflash is implied (nothing reads `HAND_CATCH_PRIME_REV`).
 - Check out the candidate branch in the live checkout only if a row below names a `branch:`.
 
-## Block 1: level, armed, bb-fed  (2 rows, 32 min)
+## Block 1: armed, bb-fed  (2 rows, 35 min)
+
+### JB-120 Admissible-box gate passes a cell whose solve exceeds HAND_LIMIT_ACC by ~5%  (15 min, high, two-ball-oval)
+- why: confirm the Columns Ball 2 catch no longer ends on HAND_LIMIT_ACC after the box edge or fallback change.
+- do:
+  - Fly Columns, Sep. 125, Apex 0.95, Throws 50, twice.
+- pass: no END HAND_LIMIT_ACC and no refused first install in either 50.
+- record: per-catch peak Hand acceleration from the install lines and the learner y for Ball 2.
+
+### JB-121 Two-ball Columns hop-start throw lands 25-56 mm inboard, past the 35 mm catch authority  (20 min, high, two-ball-oval)
+- why: read the hop-start landing bias at the new default hold 0.
+- do:
+  - Fly Columns, Sep. 125, Apex 0.95, Throws 12, five starts from a cold hand.
+- pass: five of five starts past the first two catches, with no AIM-LATERAL-CLAMPED inward of 35 mm.
+- record: the HOP aim clamp line and the landing x error of each hop throw.
+
+## Block 2: level, armed, bb-fed  (2 rows, 32 min)
 
 ### JB-107 JP-9 High-low columns: Ball 1 at apex 1.05 m, Ball 2 at 0.95 m  (12 min, medium, pattern-progression-columns-to-centre-and-orbit)
 - why: P5 of plan pattern-progression.md: two Apexes in one Pattern (JP-9). The only admissible pair today is 1.00 over 0.90 at separation 100; 1.05 over 0.95 waits for the Hand thread JB-114.

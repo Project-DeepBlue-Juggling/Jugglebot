@@ -548,10 +548,11 @@ def test_the_committed_box_is_swept_at_the_node_default_dwell():
     oval = [box for box in boxes if box.pattern in ('oval_1ball', 'oval')]
     assert oval, 'the committed box has no oval cell'
     # rung 2 (2026-10-23) swept the oval at 0.55 / 0.50 as well as 0.65;
-    # P3 tail (2026-10-24) added the 0.45 cell under the pose planner.
+    # P3 tail (2026-10-24) added the 0.45 cell under the pose planner;
+    # 0.40 / 0.35 added 2026-10-31 (re-swept 2026-10-31: hold 0, hand prime 10.45, floor 0.06).
     assert any(box.dwell_s == pytest.approx(0.65) for box in oval)
     for box in oval:
-        assert any(box.dwell_s == pytest.approx(d) for d in (0.65, 0.55, 0.50, 0.45)), (
+        assert any(box.dwell_s == pytest.approx(d) for d in (0.65, 0.55, 0.50, 0.45, 0.40, 0.35)), (
             box.site_pair, box.pattern, box.dwell_s)
     # High-low Columns (JP-9, 2026-10-31) is the second exception by design:
     # the high ball's cells carry the default dwell, the low ball's cells its
@@ -2330,7 +2331,8 @@ def test_a_refused_memory_row_is_logged_and_never_raises():
 
 
 # ═════════════════════════════════════════════════════════════════════════════
-# The opening REST homes the hand (2026-09-18 evening)
+# The opening REST returns the hand to rest (2026-09-18 evening; the 2.5 rev/s
+# park-rate velocity cap retired 2026-10-31)
 # ═════════════════════════════════════════════════════════════════════════════
 # THE DEFECT, twice over. (1) bag `2026-09-18_13-25-15`, three MAX_DEVIATION
 # latches: an attempt ended `ABORTED_NO_RELEASE` with the hand at 9.63 rev — the
@@ -2342,23 +2344,26 @@ def test_a_refused_memory_row_is_logged_and_never_raises():
 # every attempt after the first, because the band was measured against the
 # ACTIVATE park (0.0 rev) while a schedule's REST correctly leaves the hand at
 # `sites.REST_HAND_REV` (0.3071 rev). ONE home, and the REST's PERIOD is sized
-# to the displacement (`schedule.floor_lift_s`).
+# to the displacement (`schedule.floor_lift_s`). 2026-10-31: a LANE_REFUSED
+# end left the hand 8.31 rev from rest; the retired 2.5 rev/s cap sized that
+# return at 6.23 s and its re-splice ended the attempt SPLICE_TOO_LATE.
 
-def test_the_opening_rest_is_sized_to_home_a_displaced_hand():
-    """The 2026-09-18 hand itself: 9.6227 rev accepts, and the schedule's own
-    first window is the sized period, not the 1.5 s floor."""
+def test_the_opening_rest_is_sized_to_return_a_displaced_hand_to_rest():
+    """The 2026-10-31 goal 13 hand (8.3103 rev from rest) accepts, and the
+    schedule's own first window is the acceleration-sized 3.16 s, neither the
+    1.5 s floor nor the 6.23 s the 2.5 rev/s park-rate cap asked."""
     node, _client = _node_with_client()
     node._on_traj_status(_status())
     _prelevel_ready(node)
-    _hand_at(node, rev=9.6227)
+    _hand_at(node, rev=sn.REST_HAND_REV + 8.3103)
     node._params['plant_id'] = 'test_opening_rest_sized'
 
     resp = node._start_pattern(_self_toss_goal())
     assert resp.success is True, resp.message
     rest0 = node._executor.schedule.skills[0]
     assert rest0.kind == sn.REST
-    want = sn.floor_lift_s(9.6227)
-    assert want == pytest.approx(6.9867, abs=1e-3)
+    want = sn.floor_lift_s(sn.REST_HAND_REV + 8.3103)
+    assert want == pytest.approx(3.1579, abs=1e-3)
     assert rest0.window_s == pytest.approx(want)
     # ... and the whole schedule follows it: THROW 0 releases `launch_s` after
     # the sized REST, not after the floor.
@@ -2382,8 +2387,8 @@ def test_a_hand_already_at_home_gets_the_default_opening_rest():
 
 
 def test_the_activate_park_is_not_a_special_case():
-    """A hand at the bridge's ACTIVATE park (0.0 rev) is simply 0.307 rev from
-    home: accepted, sized, and NOT refused — the regression the one-day-old
+    """A hand at the bridge's ACTIVATE park (0.0 rev) is simply a short
+    distance from rest: accepted, sized, and NOT refused — the regression the one-day-old
     park-band precondition produced in reverse."""
     node, _client = _node_with_client()
     node._on_traj_status(_status())
@@ -2397,7 +2402,7 @@ def test_the_activate_park_is_not_a_special_case():
         sc.FLOOR_LIFT_S)
 
 
-def test_the_homing_rest_is_refused_when_the_hand_position_is_unread():
+def test_the_opening_rest_is_refused_when_the_hand_position_is_unread():
     """The ONE refusal left, and it is pre-motion: a window sized from a stale
     encoder is the same defect as a seed reconciled against one."""
     node, _client = _node_with_client()
@@ -2422,27 +2427,32 @@ def test_the_sized_rest_is_logged_with_its_own_peaks():
     node, _client = _node_with_client()
     node._on_traj_status(_status())
     _prelevel_ready(node)
-    _hand_at(node, rev=9.6227)
+    _hand_at(node, rev=sn.REST_HAND_REV + 8.3103)
     node._params['plant_id'] = 'test_opening_rest_log'
     lines = []
     node.get_logger().debug = lambda m: lines.append(m)   # detail: DEBUG since console phase 2
 
     node._start_pattern(_self_toss_goal())
-    homing = [ln for ln in lines if 'opening REST homes the hand' in ln]
-    assert len(homing) == 1, lines
-    assert '+9.6227' in homing[0] and '+0.3071' in homing[0]
-    assert '6.99 s' in homing[0]
+    rest = [ln for ln in lines
+            if 'opening REST returns the Hand to rest' in ln]
+    assert len(rest) == 1, lines
+    assert ('%+.4f' % (sn.REST_HAND_REV + 8.3103,)) in rest[0]
+    assert ('%+.4f' % (sn.REST_HAND_REV,)) in rest[0]
+    assert '3.16 s' in rest[0]
+    # Nobody calls it homing again (owner, 2026-10-31).
+    assert not any('homes the hand' in ln for ln in lines), lines
 
 
-def test_columns_homes_a_displaced_hand_via_the_opening_rest_bridge(tmp_path):
+def test_columns_returns_a_displaced_hand_to_rest_via_the_opening_rest_bridge(
+        tmp_path):
     """R5 (owner decision D1, 2026-09-30): columns' first skill is now the
     opening REST BRIDGE (`compile_reload_wait(..., holds_ball=True)`,
     `_run_columns`'s own two-phase start) — the SAME `_opening_rest_period`
     sizing self_toss/hop already use, not the pre-R5 pre-motion refusal
     (`_hand_home_error`, deleted, "columns has no opening REST"). Mirrors
-    `test_the_opening_rest_is_sized_to_home_a_displaced_hand`."""
+    `test_the_opening_rest_is_sized_to_return_a_displaced_hand_to_rest`."""
     node, _client = _node_with_client()
-    _hand_at(node, rev=9.6227)
+    _hand_at(node, rev=sn.REST_HAND_REV + 8.3103)
     node._params['plant_id'] = 'test_columns_opening_rest_sized'
 
     with patch.object(sn, '_ADMISSIBLE_BOX_PATH',
@@ -2452,8 +2462,8 @@ def test_columns_homes_a_displaced_hand_via_the_opening_rest_bridge(tmp_path):
     assert resp.success is True, resp.message
     rest0 = node._executor.schedule.skills[0]
     assert rest0.kind == sn.REST
-    want = sn.floor_lift_s(9.6227)
-    assert want == pytest.approx(6.9867, abs=1e-3)
+    want = sn.floor_lift_s(sn.REST_HAND_REV + 8.3103)
+    assert want == pytest.approx(3.1579, abs=1e-3)
     assert rest0.window_s == pytest.approx(want)
 
 

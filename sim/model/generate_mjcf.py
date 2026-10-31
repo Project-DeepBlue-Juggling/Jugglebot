@@ -121,9 +121,17 @@ def generate_mjcf(config, mesh_dir=None):
     # ---- Extract geometry values (convert mm → m) ----
     initial_height_m = geom['initial_height_mm'] / 1000.0
     leg_stroke_m = geom['leg_stroke_mm'] / 1000.0
-    # PHYSICAL travel (0.34475 m since 2026-08-18), NOT
-    # teensy_trajectory.hand_stroke_m (0.355) -- different numbers on purpose.
-    hand_stroke_m = geom['hand_stroke_mm'] / 1000.0
+    # The hand joint's range/ctrlrange is the PLANNER's reach (2026-10-31): the sim's
+    # slider frame has rev 0 at slider 20 mm (stroke_margin_m), and the firmware
+    # clip reaches (hand_motor_hard_stop_revs - hand_clip_margin_rev) rev, so the
+    # model must travel stroke_margin + that x hand_mm_per_rev (361.99 mm) or a
+    # plan topping out at 10.14 rev is silently clipped.  Same formula as
+    # generate_config.py's HAND_PLANNER_TRAVEL_MM.  NOT jugglebot_geometry.
+    # hand_stroke_mm (344.75, GUI render) and NOT teensy_trajectory.hand_stroke_m.
+    hand_stroke_m = (
+        config['teensy_trajectory']['stroke_margin_m']
+        + (geom['hand_motor_hard_stop_revs'] - geom['hand_clip_margin_rev'])
+        * geom['hand_mm_per_rev'] / 1000.0)
     hand_radius_m = geom['hand_radius_mm'] / 1000.0   # ~0.035 m
 
     # Hand dynamics
@@ -327,7 +335,7 @@ def generate_mjcf(config, mesh_dir=None):
     # ---- Hand body (child of platform) ----
     # Hand is a 1-DOF prismatic actuator on the platform's local Z axis.
     # Bottom of travel at Z = hand_axis_bottom_offset_mm in the platform frame,
-    # top of travel at that plus hand_stroke_mm -- both read from config above,
+    # top of travel at that plus the planner travel above -- both read from config above,
     # so this comment does not need a number in it to go stale.
     hand_body = ET.SubElement(platform, 'body', name='hand',
                                pos=f'0 0 {hand_bottom_z_m:.6f}')

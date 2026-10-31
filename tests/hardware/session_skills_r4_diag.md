@@ -30,7 +30,7 @@ Run `session_skills_r4.md` §§ 1–3 unchanged (colcon build, `--full`, gate-ha
 | # | Step | Expect |
 |---|---|---|
 | 0.1 | § 1 row 3: the live gate hash and the box's | Both `ad36fa53aab2`. The box was re-swept 2026-09-29 for the pre-release hold. It has **no columns boxes** (known, recorded); hop and self_toss are present. |
-| 0.2 | Launch as usual: `pre_release_hold_s` defaults to **0.100** | `trajectory_node` logs `segment config: pre_release_hold_s=0.100 s, post_release_hold_s=0.050 s`. |
+| 0.2 | Launch as usual: `pre_release_hold_s` defaulted to **0.100** (the default is **0.000** since 2026-10-31: `ros2 param set /trajectory_node pre_release_hold_s 0.1` first to fly this sheet as written) | `trajectory_node` logs `segment config: pre_release_hold_s=0.100 s, post_release_hold_s=0.050 s` (0.000 s at the current default). |
 | 0.3 | § 2 row 10 with a FRESH `plant_id r4diag-$(date +%Y%m%d)` | Cold learner memory (owner Q3). |
 | 0.4 | `ros2 param set /skill_node learner_lateral_authority_mm 0.0` | Lateral learning frozen for the whole sitting; apex learning stays on (owner Q2). |
 | 0.5 | `ros2 param set /skill_node catch_resend_max 0` ; `ros2 param set /skill_node catch_aim_source schedule` | Every catch aims open-loop at the schedule landing, with no in-flight re-aim: the destination's own criterion. Expect some drops in Block B. That is the measurement, not a failure. |
@@ -47,11 +47,11 @@ should remove it. Owner's alternative: orientation, or post-throw motion bleedin
 
 | # | Step | Expect / deciding number |
 |---|---|---|
-| A1 | `ros2 param get /trajectory_node pre_release_hold_s` | `0.1`. |
+| A1 | `ros2 param get /trajectory_node pre_release_hold_s` | `0.1` (it reads 0.0 at the 2026-10-31 default: set 0.1 first). |
 | A2 | 5 × `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: hop, apex_m: 0.9, separation_mm: 250.0, num_cycles: 1}"`. Reset the ball to P1 between throws. | (live) OUTCOME landing x. **Hold works: mean within ±25 mm of 0** (before: +88/+110). (offline) mocap platform vx 10 ms after release ≤ 20 mm/s (before: +84..+103). |
 | A3 | `ros2 param set /trajectory_node pre_release_hold_s 0.0` | `Set parameter successful`; the node logs `pre_release_hold_s set to 0.000 s`. |
 | A4 | 5 × the same hop | (live) The control: should reproduce **+85..+110 mm**. If it does not, the overshoot has moved; note it and stop. |
-| A5 | `ros2 param set /trajectory_node pre_release_hold_s 0.1` | Back to the default for the rest of the sitting. |
+| A5 | `ros2 param set /trajectory_node pre_release_hold_s 0.1` | Back to 0.1 (the default when this sheet was written; the default is 0.000 since 2026-10-31) for the rest of the sitting. |
 
 How to read it:
 

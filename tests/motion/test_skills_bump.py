@@ -147,7 +147,7 @@ def test_the_carried_throw_is_retargeted_so_the_landing_offset_is_zero(
     bd = res.plan.pose_vel[:, 0:2] - record.plan.pose_vel[:, 0:2]
     # Realised release offset = the closed form, and NOT delta.
     assert np.allclose(b[k_rel], res.release_offset_xy_mm, atol=1e-9)
-    assert res.release_offset_xy_mm[0] == pytest.approx(16.2696, abs=1e-3)
+    assert res.release_offset_xy_mm[0] == pytest.approx(17.0802, abs=1e-3)  # 16.2696 until 2026-10-31: pre-release hold default 0.100 -> 0.000 (hold-pinned-0.1 restores it)
     assert np.allclose(bd[k_rel], res.launch_bias_xy_mm_s, atol=1e-9)
     land = res.release_offset_xy_mm + res.launch_bias_xy_mm_s * float(rm.flight_s)
     assert np.allclose(land, 0.0, atol=1e-6)
@@ -529,7 +529,8 @@ def test_a_splice_at_a_bumped_release_keeps_the_bump_velocity_at_the_seam(
 
     Recipe (probed 2026-10-19, ``repro_unit1_fixed.py``): control (no bump) is
     accepted, V[K] -0.43 mm/s.  Bumped by delta (12|20|36, 0) -> v_b 11.39 /
-    18.98 / 34.17 mm/s: ALL ACCEPTED, and the seam velocity (the spliced plan's
+    18.98 / 34.17 mm/s (11.96 / 19.93 / 35.87 since 2026-10-31: all x1.050, the
+    hold-0 default retargets a 5 % larger release offset): ALL ACCEPTED, and the seam velocity (the spliced plan's
     ``pose_vel[K]``, re-derived from the joined cup track) is within 2.5 mm/s
     of the bumped plan's ``pose_vel[K + 1]`` -- the healthy re-derivation
     baseline is ~1.9 mm/s (the FD of a coherent cup track against the stored
@@ -543,8 +544,8 @@ def test_a_splice_at_a_bumped_release_keeps_the_bump_velocity_at_the_seam(
     k_ctl, _new, res0 = _splice_catch_at_the_bumped_release(record, sites, limits, geom)
     assert res0.accepted, res0.message
 
-    for delta, v_b_expect in (((12.0, 0.0), 11.39), ((20.0, 0.0), 18.98),
-                              ((36.0, 0.0), 34.17)):
+    for delta, v_b_expect in (((12.0, 0.0), 11.96), ((20.0, 0.0), 19.93),
+                              ((36.0, 0.0), 35.87)):
         r = _bump(record, limits, geom, 0.45, delta)
         assert r.accepted, r.message
         assert float(np.hypot(*r.launch_bias_xy_mm_s)) == pytest.approx(v_b_expect, abs=0.01)

@@ -68,7 +68,10 @@ Z_ACTIVE_MM = 170.0          # platform centroid height for the juggle pattern
 # for 10.25 mm the plant will silently refuse to execute.  Do NOT substitute
 # `teensy_trajectory.hand_stroke_m` (0.355) here — that is the THROW-PROFILE
 # basis feeding x2/x3/x5, deliberately a different number since 2026-08-18.
-SLIDER_STROKE_MM = float(_hw.GEOM_HAND_STROKE_MM)
+# 2026-10-31: now the planner's reach HAND_PLANNER_TRAVEL_MM (361.99 mm, = the MJCF
+# joint range and the realiser clamp); GEOM_HAND_STROKE_MM (344.75) is GUI render
+# geometry and capped the band at 9.972 rev.
+SLIDER_STROKE_MM = float(_hw.HAND_PLANNER_TRAVEL_MM)
 
 # ---- Tilt geometry (from Rung 0 characterisation) ---------------------------
 # Usable tilt ceiling — leg headroom is fine to >24 deg, but tilt tracking and

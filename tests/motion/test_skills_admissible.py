@@ -511,9 +511,14 @@ def test_cone45_resweep_restores_every_non_oval_cell_to_the_pre_oval_snapshot():
     for b in new_other:
         assert b.pop('planner_mode', None) == 'level'
     assert len(old['boxes']) == len(new_other)
+    # (re-swept 2026-10-31: hold 0, hand prime 10.45, floor 0.06): the gated inputs changed
+    # DELIBERATELY (hold default 0.100 -> 0, Hand reach), so the cells are NO LONGER
+    # value-identical to the pre-oval snapshot; only the family structure is pinned
+    # (same 19 cells, same order/patterns).
     n_st = n_hop = n_col = 0
     for a, b in zip(old['boxes'], new_other):
-        assert _same(a, b), 'box values moved: %r -> %r' % (a, b)
+        assert (a['pattern'], a['site_pair'], a['dwell_s']) == \
+               (b['pattern'], b['site_pair'], b['dwell_s']), (a, b)
         n_st += b['pattern'] == 'self_toss'
         n_hop += b['pattern'] == 'hop'
         n_col += b['pattern'] == 'columns'
@@ -524,7 +529,8 @@ def test_cone45_resweep_restores_every_non_oval_cell_to_the_pre_oval_snapshot():
              and b.get('planner_mode') == 'level' and b['apex_band_m'][1] < 0.98]
     # two-ball-oval rung 2 (2026-10-23): cells at 0.55 / 0.50 appended after 0.65
     # planner-default flip (2026-10-30): the level 0.45 cell is swept too
-    assert [o['dwell_s'] for o in ovals] == pytest.approx([0.65, 0.55, 0.50, 0.45])
+    # + the 0.40 / 0.35 cells ((re-swept 2026-10-31: hold 0, hand prime 10.45, floor 0.06))
+    assert [o['dwell_s'] for o in ovals] == pytest.approx([0.65, 0.55, 0.50, 0.45, 0.40, 0.35])
     for o in ovals:
         assert o['release_site_xy_mm'] == [-75.0, 0.0]
         assert o['target_site_xy_mm'] == [75.0, 0.0]
@@ -534,8 +540,10 @@ def test_cone45_resweep_restores_every_non_oval_cell_to_the_pre_oval_snapshot():
     # planners (+ level 0.45) -> 23 level + 23 pose = 46.
     # + the 2026-10-30 apex-extension cells; + the 2026-10-31 Pattern-progression
     # P2/P4 cells (12 turned Columns + 8 high-low Columns, all pose; pinned in
-    # test_pattern_progression_cells_are_the_tail_after_the_54).
-    assert len(new['boxes']) == 46 + 8 + 12 + 8
+    # test_pattern_progression_cells_are_the_tail_after_the_62).
+    # (re-swept 2026-10-31: hold 0, hand prime 10.45, floor 0.06): + oval 0.40 / 0.35 x 2 modes
+    # (50 core), + 12 apex-extension (1.00 / 1.05 / 1.10) = 62, + 12 turned + 8 high-low.
+    assert len(new['boxes']) == 50 + 12 + 12 + 8
 
 
 _PRE_P3_SNAPSHOT = os.path.join(_REPO, 'tests', 'fixtures', 'admissible_box_pre_p3.yaml')
@@ -566,6 +574,8 @@ def test_p3_resweep_changed_only_the_stamp_and_added_the_pose_cells():
         new = _y.safe_load(fh)
     assert new['limits'] == old['limits']
     assert new['gate_hash'] != old['gate_hash']          # the gated files changed
+    # (re-swept 2026-10-31: hold 0, hand prime 10.45, floor 0.06): the 19 non-oval level cells are no longer value-identical to the snapshot
+    # (the gated inputs changed deliberately); this test now pins structure only.
 
     def _same(x, y):
         if isinstance(x, float) and isinstance(y, float):
@@ -578,7 +588,7 @@ def test_p3_resweep_changed_only_the_stamp_and_added_the_pose_cells():
 
     # Oval apex extension (2026-10-30): the 8 appended apex-1.00/1.05 cells are
     # excluded here; test_oval_apex_extension_* pins them.
-    core = new['boxes'][:46]
+    core = new['boxes'][:50]          # 25 level + 25 pose (oval 0.40 / 0.35 added 2026-10-31)
     level = [dict(b) for b in core if b.get('planner_mode') == 'level']
     pose = [b for b in core if b.get('planner_mode') == 'pose']
     # Planner-default flip (2026-10-30, planner_mode level -> pose): the box was
@@ -586,12 +596,13 @@ def test_p3_resweep_changed_only_the_stamp_and_added_the_pose_cells():
     # added -> 23 level + 23 pose = 46.  The 22 pre-flip level cells (the
     # pre-P3 snapshot's) stay value-identical, in order; the 23rd is the new
     # level oval 0.45.  Pose cells: the same 23, in the same family order.
-    assert len(level) == 23 and len(pose) == 23 and len(core) == 46
+    assert len(level) == 25 and len(pose) == 25 and len(core) == 50
     assert [(b['pattern'], b['site_pair'], b['dwell_s']) for b in level] == \
            [(b['pattern'], b['site_pair'], b['dwell_s']) for b in pose]
     # Pattern progression P2 (2026-10-31): sites.py (gated) gained the turned pair,
-    # so the whole box was re-swept; the 54 cells stayed value-identical.
-    assert new['gate_hash'] == 'c6c4d7adccf9'
+    # so the whole box was re-swept; the 54 cells stayed value-identical then.
+    # (Re-swept again 2026-10-31 with hold 0 / hand prime 10.45 / floor 0.06: values moved.)
+    assert new['gate_hash'] == '961808ee2d20'
     assert new['swept_at'] == '2026-10-31'
     for b in level:
         b.pop('planner_mode')
@@ -600,16 +611,23 @@ def test_p3_resweep_changed_only_the_stamp_and_added_the_pose_cells():
         b.pop('planner_mode', None)                      # the snapshot is unstamped
     assert len(old_boxes) == 22
     for a, b in zip(old_boxes, level):
-        assert _same(a, b), 'level cell moved under P3: %r -> %r' % (a, b)
-    assert level[22]['pattern'] == 'oval_1ball' and level[22]['dwell_s'] == 0.45
+        assert (a['pattern'], a['site_pair'], a['dwell_s']) == \
+               (b['pattern'], b['site_pair'], b['dwell_s']), (a, b)
+    assert [b['dwell_s'] for b in level[22:]] == pytest.approx([0.45, 0.40, 0.35])
     pose_ovals = [p for p in pose if p['pattern'] == 'oval_1ball']
-    assert [p['dwell_s'] for p in pose_ovals] == pytest.approx([0.65, 0.55, 0.50, 0.45])
+    assert [p['dwell_s'] for p in pose_ovals] == pytest.approx([0.65, 0.55, 0.50, 0.45, 0.40, 0.35])
     for p in pose_ovals:
         assert p['release_site_xy_mm'] == [-75.0, 0.0]
         assert p['target_site_xy_mm'] == [75.0, 0.0]
         assert not math.isnan(p['apex_m'][0]), 'the pose cell must be non-empty'
     # no pose cell is empty where its level twin is not
+    # (re-swept 2026-10-31: hold 0, hand prime 10.45, floor 0.06) the straight
+    # Columns 0.90 band is now admissible under LEVEL only (the pose twin stays
+    # empty, as it was); everything else keeps the rule.
     for l, p in zip(level, pose):
+        if l['pattern'] == 'columns' and l['apex_band_m'][0] == 0.875:
+            assert math.isnan(p['apex_m'][0]) and not math.isnan(l['apex_m'][0]), (l, p)
+            continue
         assert math.isnan(p['apex_m'][0]) <= math.isnan(l['apex_m'][0]), (l, p)
     # The live loader resolves both planners' cells at one dwell by the stamp.
     boxes = ab.load(_COMMITTED_BOX)
@@ -1077,7 +1095,10 @@ def test_oval_cell_records_the_carry_seating_not_the_standalone_catch(sweep_mod)
     ok, code, reports = _oval_rung1_cell(sweep_mod, 0.65)
     assert ok, code
     m = sweep_mod._cell_metrics(reports)
-    assert m['seating_deg'] is not None and m['seating_deg'] >= 10.0, m
+    # (re-swept 2026-10-31: hold 0, hand prime 10.45, floor 0.06): the carry seating at the rung-1 cell
+    # read 8.054 deg (was 17.8 deg at hold 0.100); it still exceeds the ~2 deg
+    # standalone catch at C, which is what this test discriminates.
+    assert m['seating_deg'] is not None and m['seating_deg'] >= 5.0, m
     assert m['seating_az_g'] is not None and m['closing_ratio'] is not None
 
 
@@ -1408,8 +1429,11 @@ def test_single_apex_columns_ladder_admits_a_commanded_apex_below_the_pattern(
     for box in boxes:
         assert not box.empty
         alo, ahi = box.apex_m
+        # (re-swept 2026-10-31: hold 0, hand prime 10.45, floor 0.06): the f=+0.05/+0.10 rungs no
+        # longer refuse HAND_LIMIT_ACC (raised hand prime), so the band tops out
+        # at the +0.10 rung, 0.90 * 1.05**2 = 0.99225 m (was 0.90 m).
         assert alo == pytest.approx(0.576)
-        assert ahi == pytest.approx(0.90)
+        assert ahi == pytest.approx(0.99225)
         assert alo < 0.90, (
             '%r admits no commanded apex below the pattern -- the R5 defect '
             'regressed: a ladder rung is shortening the schedule timing '
@@ -1504,34 +1528,43 @@ def test_the_committed_box_is_swept_at_the_launch_defaults_and_the_live_gate():
         assert box.gate_hash == ab.gate_hash()
 
 
-def test_oval_apex_extension_appends_eight_cells_after_the_46_and_leaves_them_untouched():
+def test_oval_apex_extension_is_the_12_cell_tail_after_the_50_core_cells():
     """Oval apex extension (2026-10-30, temp/sweeps/sweep_apex_ext.sh): oval cells
     at apex 1.00 / 1.05 (bands 0.975-1.025 / 1.025-1.075, touching the 0.95 band at a
-    boundary point only) x dwell 0.50 / 0.45 x level / pose = 8 cells, APPENDED after
-    the 46-cell box (23 level + 23 pose), same gate_hash / limits / swept_at (merged
-    from rounds that cmp byte-identical).  54 cells in all: 27 level + 27 pose.
-    The 46 keep their order: the 8 are the tail."""
+    boundary point only) x dwell 0.50 / 0.45 x level / pose, APPENDED after the core
+    box, same gate_hash / limits / swept_at (merged from rounds that cmp
+    byte-identical).  The box is 82 cells in all since the 2026-10-31 re-sweep:
+    50 core (25 level + 25 pose; oval 0.40 added in both modes, 0.35 in pose) +
+    12 apex-extension (apex 1.10 added: bands 0.975 / 1.025 / 1.075) + 20 Columns
+    (12 turned + 8 high-low).  The core keeps its order: the 12 are the tail of
+    the first 62.  (The function name was 'eight_cells_after_the_46' until then.)"""
     import yaml as _y
     with open(_COMMITTED_BOX) as fh:
         new = _y.safe_load(fh)
     # Re-swept 2026-10-31 (Pattern progression P2, sites.py gated): same values.
-    assert new['gate_hash'] == 'c6c4d7adccf9' and new['swept_at'] == '2026-10-31'
-    assert len(new['boxes']) == 54 + 20          # + the P2/P4 Columns cells (pose)
-    assert sum(b['planner_mode'] == 'level' for b in new['boxes']) == 27
-    assert sum(b['planner_mode'] == 'pose' for b in new['boxes']) == 27 + 20
-    head, tail = new['boxes'][:46], new['boxes'][46:54]
+    # (re-swept 2026-10-31: hold 0, hand prime 10.45, floor 0.06): the core is now 50 cells (oval 0.40 / 0.35
+    # added) and the tail 12 (apex 1.10 added: bands 0.975 / 1.025 / 1.075); 62 cells
+    # before the 20 P2/P4 Columns cells.  The function name keeps its history.
+    assert new['gate_hash'] == '961808ee2d20' and new['swept_at'] == '2026-10-31'
+    assert len(new['boxes']) == 62 + 20          # + the P2/P4 Columns cells (pose)
+    assert sum(b['planner_mode'] == 'level' for b in new['boxes']) == 31
+    assert sum(b['planner_mode'] == 'pose' for b in new['boxes']) == 31 + 20
+    head, tail = new['boxes'][:50], new['boxes'][50:62]
     assert all(b['apex_band_m'][1] < 0.98 or b['pattern'] != 'oval_1ball' for b in head)
     assert [(b['planner_mode'], b['dwell_s'], round(b['apex_band_m'][0], 3)) for b in tail] == [
-        (m, d, lo) for m in ('level', 'pose') for d in (0.50, 0.45) for lo in (0.975, 1.025)]
+        (m, d, lo) for m in ('level', 'pose') for d in (0.50, 0.45)
+        for lo in (0.975, 1.025, 1.075)]
     for b in tail:
         assert b['pattern'] == 'oval_1ball' and b['site_pair'] == ['P1', 'P2']
         assert b['release_site_xy_mm'] == [-75.0, 0.0] and b['target_site_xy_mm'] == [75.0, 0.0]
         assert b['apex_m'][0] < b['apex_m'][1], 'an apex-extension cell must be non-empty'
 
 
-def test_pattern_progression_cells_are_the_tail_after_the_54():
+def test_pattern_progression_cells_are_the_tail_after_the_62():
     """Pattern progression P2 + P4 (2026-10-31, plan pattern-progression.md):
-    the 54 committed cells keep their order and values; appended after them, all
+    the 62 committed cells (50 core + 12 apex-extension; values moved in the
+    2026-10-31 re-sweep with hold 0, hand prime 10.45, bottom inset 2 mm) keep their
+    order; appended after them, all
     ``pose``: 12 turned Columns cells (JP-10, label ``columns``, Sites ``P1@45`` /
     ``P2@45`` then ``P1@90`` / ``P2@90``, bands 0.825 / 0.875 / 0.925, dwell 0.27,
     separation 125) then 8 high-low Columns cells (JP-9, label
@@ -1550,7 +1583,7 @@ def test_pattern_progression_cells_are_the_tail_after_the_54():
     import yaml as _y
     with open(_COMMITTED_BOX) as fh:
         new = _y.safe_load(fh)
-    tail = new['boxes'][54:]
+    tail = new['boxes'][62:]    # (re-swept 2026-10-31: hold 0, hand prime 10.45, floor 0.06)
     assert len(tail) == 20 and all(b['planner_mode'] == 'pose' for b in tail)
     turned, highlow = tail[:12], tail[12:]
     assert all(b['pattern'] == 'columns' and b['dwell_s'] == 0.27 for b in turned)
@@ -1573,7 +1606,9 @@ def test_pattern_progression_cells_are_the_tail_after_the_54():
         assert four[0]['dwell_s'] == four[2]['dwell_s'] > 0.27
     assert [round(b['apex_band_m'][0], 3) for b in highlow] == \
            [0.925, 1.025, 0.925, 1.025, 0.875, 0.975, 0.875, 0.975]
-    assert [not empty(b) for b in highlow[:4]] == [False, True, False, True]   # 1.05/0.95
+    # re-swept 2026-10-31 (hold 0, hand prime 10.45, floor 0.06): the 1.05/0.95 LOW cells
+    # (dwell 0.3152) are non-empty now -- the raised Hand reach admits the low ball's transit.
+    assert [not empty(b) for b in highlow[:4]] == [True, True, True, True]     # 1.05/0.95
     assert all(not empty(b) for b in highlow[4:]), '1.00/0.90 admissible at both Sites'
 
 
@@ -1609,7 +1644,7 @@ def test_highlow_sweep_stamps_both_assignments_without_collision(pair):
     select key), pose, and none overlapping each other or the committed box's
     OTHER cells (the committed high-low cells are this same sweep's output at
     separation 100, so they share every key with the cells built here and are
-    excluded; test_pattern_progression_cells_are_the_tail_after_the_54 pins
+    excluded; test_pattern_progression_cells_are_the_tail_after_the_62 pins
     them). The admitted sets themselves are the sweep's to measure, not this
     test's."""
     from jugglebot.motion.skills import schedule as sc

@@ -6298,16 +6298,22 @@ def test_no_reload_columns_1ball_installs_from_the_activate_park(
             <= limits_r5.hand_acc_limit_rps2)
 
 
-def test_throw_0_planned_straight_from_the_activate_park_is_refused(
+def test_throw_0_planned_straight_from_the_activate_park_is_now_accepted_so_the_rest_only_levels_and_lifts(
         limits_r5, geom, sites_r5):
-    """Why the REST is not optional: the THROW the old no-reload compile
-    planned first, seeded from the park itself, has no solution — the cup
-    starts 10 mm under the floor, must regain it within one knot, and the
-    ball-stays-seated bound then forbids the braking that needs. Reproduced
-    2026-10-06 (``scratchpad/probe_s6_throw0.py --hand 0.0``): refused at
-    0.0 and 0.10 rev, installs from 0.18 rev up.
+    """The opening REST is no longer needed because the THROW from the park is
+    infeasible: since 2026-10-31 the box floor is the park + 2 mm, so the THROW
+    planned first, seeded from the park itself, installs.  The REST is kept for
+    levelling a tilted hold and placing the cup at the site (I-PLAN-8), and this
+    test asserts the acceptance so a floor change that revives the refusal is
+    seen.
 
-    Only the refusal is asserted, not its code: which path an infeasible QP
+    History: before 2026-10-31 the cup started 10 mm under the floor, had to
+    regain it within one knot, and the ball-stays-seated bound then forbade the
+    braking that needs; that THROW had no solution.  Reproduced 2026-10-06
+    (``scratchpad/probe_s6_throw0.py --hand 0.0``): refused at 0.0 and 0.10 rev,
+    installed from 0.18 rev up.
+
+    Only acceptance is asserted, not a refusal code: which path an infeasible QP
     refuses through depends on the BLAS (``cup_cycle._verify``'s docstring)."""
     a_site, sched = _columns_1ball_no_reload(
         sites_r5, float(hw.JB_OP_HAND_ACTIVATE_POSITION_REV))
@@ -6319,7 +6325,9 @@ def test_throw_0_planned_straight_from_the_activate_park_is_refused(
                          flight_s=sched.flight_s, t_release_s=throw0.t_abs_s),
         throw0.dispatch_s(), limits=limits_r5, geom=geom,
         reserve_fresh_lead=True)
-    assert not res.accepted and seg is None
+    # 2026-10-31: accepted (floor 0.06 rev above the park, was 0.307).  The opening
+    # REST stays in the schedule regardless: it also levels a tilted hold.
+    assert res.accepted and seg is not None
 
 
 def test_no_reload_columns_1ball_installs_from_a_tilted_receive_hold(
@@ -8018,3 +8026,77 @@ def test_equal_apex_box_dwell_is_the_schedule_dwell():
                              t0_abs_s=T0_ABS)
     x = ex.SkillExecutor(sch, _FakeInstaller())
     assert {x._box_dwell_s(i) for i in range(len(sch.skills))} == {sch.dwell_s}
+
+
+# ---------------------------------------------------------------------------
+# REST re-splice budget scales with the window (2026-10-31, goal 13)
+# ---------------------------------------------------------------------------
+
+@pytest.mark.parametrize('window_s, solve_measured_s', [
+    (1.5, 0.080), (3.2, 0.370), (6.5, 1.360)])
+def test_the_rest_solve_budget_covers_the_measured_solve_at_three_windows(
+        window_s, solve_measured_s):
+    """Pins ``rest_solve_budget_s`` on the three offline probe points
+    (``probe_rest_solve_time.py``: 1.5 s -> 80 ms, 3.2 s -> 290-370 ms, 6.5 s
+    -> 1360 ms): the budget exceeds each measured solve, and a short REST keeps
+    the standard 150 ms budget (no change to normal splices)."""
+    b = ex.rest_solve_budget_s(window_s)
+    assert b >= solve_measured_s
+    if window_s <= 1.5:
+        assert b == pytest.approx(ex.LEAD_S - ex.WIRE_READ_KNOTS * DT)
+    else:
+        assert b == pytest.approx(1.25 * 0.080 * (window_s / 1.5) ** 2)
+    assert (ex.rest_solve_budget_s(3.2), ex.rest_solve_budget_s(6.5)) == (
+        pytest.approx(0.4551, abs=1e-3), pytest.approx(1.8778, abs=1e-3))
+
+
+def test_the_splice_lead_is_unchanged_for_throw_catch_and_short_rests(sites):
+    p1, p2 = sites
+    t = 100.0
+    assert ex.splice_lead_s(sg.CATCH, _catch_terminal(p2, t + 5.0), t,
+                            ex.LEAD_S) == ex.LEAD_S
+    short = sg.RestTerminal(rest_site_mm=p1.rest_site_mm(), t_rest_s=t + 1.75)
+    assert ex.splice_lead_s(sg.REST, short, t, ex.LEAD_S) == ex.LEAD_S
+
+
+@pytest.mark.parametrize('window_s', [1.5, 3.2, 6.5])
+def test_a_rest_splice_lead_clears_the_modelled_solve_plus_the_wire_read(
+        sites, window_s):
+    p1, _p2 = sites
+    t = 100.0
+    term = sg.RestTerminal(rest_site_mm=p1.rest_site_mm(),
+                           t_rest_s=t + ex.LEAD_S + window_s)
+    lead = ex.splice_lead_s(sg.REST, term, t, ex.LEAD_S)
+    assert lead >= ex.rest_solve_budget_s(window_s) + ex.WIRE_READ_KNOTS * DT \
+        - 1e-9
+    assert lead >= ex.LEAD_S
+    assert lead / DT == pytest.approx(round(lead / DT))      # whole knots
+
+
+def test_goal_13_rest_resplice_with_a_323_ms_solve_is_no_longer_too_late(
+        limits, geom, sites):
+    """Goal 13 (2026-10-31 482.385): a 6.5 s REST re-spliced on the throw
+    announcement, solve 323 ms, wire at knot 49 (1.170 s of plan emitted,
+    dispatch 0.847 s into the plan).  The fixed 158 ms budget put k_s at 40 <=
+    k_wire 49: SPLICE_TOO_LATE.  The window-scaled lead puts k_s past the wire."""
+    p1, _p2 = sites
+    t0 = 1000.0
+    record, res, _ = ex.install_segment(
+        None, _rest_state(p1.rest_site_mm()), sg.REST,
+        sg.RestTerminal(rest_site_mm=p1.rest_site_mm(), t_rest_s=t0 + 6.5),
+        t0, limits=limits, geom=geom)
+    assert res.accepted, res.message
+    t_now = record.t0_s + 0.847
+    t_inst = record.t0_s + 1.170
+    term = sg.RestTerminal(rest_site_mm=p1.rest_site_mm(),
+                           t_rest_s=record.t0_s + 6.5)
+    k_wire = int(np.floor((t_inst - record.t0_s) / DT)) + ex.WIRE_READ_KNOTS
+    old_ks = int(np.ceil((t_now - record.t0_s + ex.LEAD_S) / DT - 1e-9))
+    assert old_ks <= k_wire                       # the old rule: refused
+    k_s, _post = ex.splice_knot_for(record, sg.REST, term, t_now, ex.LEAD_S)
+    assert k_s > k_wire + 10
+    new, res2, _seg = ex.install_segment(
+        record, None, sg.REST, term, t_now, limits=limits, geom=geom,
+        t_install_s=t_inst)
+    assert res2.code != ex.SPLICE_TOO_LATE, res2.message
+    assert res2.splice_k == k_s or not res2.accepted

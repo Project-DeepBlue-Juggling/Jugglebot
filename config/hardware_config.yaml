@@ -383,8 +383,16 @@ jugglebot_geometry:
   # ⚠ DELIBERATELY NOT PROPAGATED TO `teensy_trajectory.hand_stroke_m` (0.355).
   # Read that key's comment before touching either. The two are now DIFFERENT
   # NUMBERS ON PURPOSE and the old "Matches geometry hand_stroke_mm" claim is
-  # retired. Consumers of THIS key are the GUI render and the MuJoCo model's hand
-  # joint range/ctrlrange (sim/model/generate_mjcf.py) — geometry, not control.
+  # retired. The consumer of THIS key is the GUI render — geometry, not control.
+  # (The MuJoCo model's hand joint range/ctrlrange follows HAND_PLANNER_TRAVEL_MM
+  # below, not this key.)
+  #
+  # NOT the planner's travel (2026-10-31). This 344.75 stays the 10.8-rev-anchor
+  # render geometry; the planner/realiser clamp is the DERIVED
+  # HAND_PLANNER_TRAVEL_MM = stroke_margin 20 mm + (hand_motor_hard_stop_revs 10.701
+  # - hand_clip_margin_rev 0.2) x hand_mm_per_rev 32.567 = 361.99 mm (generate_config.py,
+  # emitted to hardware_config.py), because cup_realize's slider frame has rev 0 at slider
+  # 20 mm, so 344.75 clamped it at 9.972 rev, 0.53 rev under the firmware clip.
   hand_stroke_mm: 344.75
   hand_radius_mm: 35.0               # Radius of hand {mm}. Approximate.
   hand_axis_bottom_offset_mm: -129.0  # Hand axis bottom position relative to platform centroid {mm} (CAD measurement)
@@ -757,10 +765,26 @@ jugglebot_operational:
   # computed by generate_config.py from the active pose IK at [0, 0, default_active_z_mm, 0, 0, 0].
   # This ensures the gentle-move target matches the control loop's active pose exactly.
   default_active_z_mm: 170.0             # Default platform Z during active catching {mm}
-  hand_catch_prime_rev: 9.9594           # Hand position for catch priming (top of stroke) {rev} —
+  hand_catch_prime_rev: 10.45            # Hand position for catch priming (top of stroke) {rev} —
                                          # the top of the unified path's operating slider band
                                          # (feasibility.HAND_STROKE_MAX_REV, cup_cycle, cup_realize,
-                                         # unified_cycle). Shipped 9.858 until 2026-07-26 — 0.101 rev
+                                         # unified_cycle). 9.9594 -> 10.45 on 2026-10-31 (owner,
+                                         # after the 2026-10-31 Sitting: the post-release
+                                         # deceleration rode the box top; +16 mm of top runway
+                                         # is ~-8 % hand peak acc at apex 1.05). 10.45 sits 0.051
+                                         # rev under the firmware clip (10.501 =
+                                         # hand_motor_hard_stop_revs - hand_clip_margin_rev),
+                                         # which is kept; the planner's box top is this minus the
+                                         # 10 mm unified_cycle._CUP_Z_TOP_INSET_M = 10.14 rev,
+                                         # ~0.36 rev of room for a firmware stream-stop overshoot.
+                                         # The BOTTOM box margin: the owner asked for 0 on
+                                         # 2026-10-31 (the end-stop is homed at -0.1 rev, so pos 0
+                                         # is still off the stop and the hand approaches the bottom
+                                         # slowly); shipped as 2 mm (unified_cycle.
+                                         # _CUP_Z_BOTTOM_INSET_M, box floor 0.0614 rev) because the
+                                         # validate floor has no tolerance: 0 sat exactly on it and
+                                         # the planner refused HAND_STROKE -0.001..-0.002 rev.
+                                         # Shipped 9.858 until 2026-07-26 — 0.101 rev
                                          # = 3.2 mm below the throw-profile's x3, a hand-maintained
                                          # duplicate that had already drifted.
                                          #

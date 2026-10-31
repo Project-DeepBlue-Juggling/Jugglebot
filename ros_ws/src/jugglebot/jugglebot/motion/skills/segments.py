@@ -239,7 +239,7 @@ class SegmentConfig:
     #: :data:`~jugglebot.motion.unified_cycle.PRE_RELEASE_HOLD_S` for the R4
     #: measurement (the hop's +x overshoot was the platform still moving at
     #: +70..+100 mm/s when the ball left).  ``0`` turns it off, bit for bit
-    #: (``trajectory_node`` parameter ``pre_release_hold_s``, for the A/B).
+    #: (``trajectory_node`` parameter ``pre_release_hold_s``; default 0 since 2026-10-31).
     pre_release_hold_s: float = uc.PRE_RELEASE_HOLD_S
     #: Which formulation solves the folded STEADY window (a CATCH carrying its
     #: throw): ``unified_cycle.PLANNER_LEVEL`` (the shipped planner) or

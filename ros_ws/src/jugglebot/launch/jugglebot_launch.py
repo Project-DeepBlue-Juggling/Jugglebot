@@ -284,13 +284,15 @@ def generate_launch_description():
     )
 
     # Pre-release platform hold (R4, 2026-09-29): seconds before every release
-    # that the platform stops translating. 0 turns it off for an A/B sitting.
+    # that the platform stops translating. Default 0 since 2026-10-31 (no hold);
+    # 0.1 re-flies the hold for an A/B sitting.
     pre_release_hold_s = LaunchConfiguration('pre_release_hold_s')
     pre_release_hold_s_arg = DeclareLaunchArgument(
         'pre_release_hold_s',
-        default_value='0.100',   # unified_cycle.PRE_RELEASE_HOLD_S
+        default_value='0.000',   # unified_cycle.PRE_RELEASE_HOLD_S
         description='trajectory_node: seconds before each release the platform '
-                    'holds still (cup rides the launch line). 0 = off (A/B).',
+                    'holds still (cup rides the launch line). 0.000 = default since '
+                    '2026-10-31; set 0.1 to re-fly the hold.',
     )
 
     # can_node DELETED (SocketCAN decommission, 2026-07-06; see

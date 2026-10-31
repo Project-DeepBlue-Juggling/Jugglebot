@@ -97,11 +97,11 @@ def test_starts_not_streaming_not_seeded():
 
 def test_the_pre_release_hold_is_a_parameter_defaulting_to_the_planner_constant():
     """``pre_release_hold_s`` (R4, 2026-09-29) reaches the SegmentConfig every
-    install_segment plans with; the sitting's A/B arm is ``:=0``."""
+    install_segment plans with; default 0 since 2026-10-31 (the A/B arm is ``:=0.1``)."""
     from jugglebot.motion import unified_cycle as uc
     node = _node()
     assert node._params['pre_release_hold_s'] == uc.PRE_RELEASE_HOLD_S
-    assert node._segment_cfg.pre_release_hold_s == uc.PRE_RELEASE_HOLD_S
+    assert node._segment_cfg.pre_release_hold_s == uc.PRE_RELEASE_HOLD_S == 0.0
 
 
 def test_the_pre_release_hold_override_to_int_zero_turns_it_off(monkeypatch):
@@ -191,14 +191,14 @@ def test_hold_set_live_refused_while_a_cycle_plan_is_streaming():
     plan.total_duration = 5.0
     node._active_plan = plan
     node._plan_t0 = _t.perf_counter()
-    res = node.set_parameters([_MockParameter(0.0, name='pre_release_hold_s')])
+    res = node.set_parameters([_MockParameter(0.1, name='pre_release_hold_s')])
     assert not res[0].successful
     assert 'goal is active' in res[0].reason
     assert node._segment_cfg.pre_release_hold_s == before
     node._plan_t0 = _t.perf_counter() - 10.0   # plan has run out: between goals
     assert node.set_parameters(
-        [_MockParameter(0.0, name='pre_release_hold_s')])[0].successful
-    assert node._segment_cfg.pre_release_hold_s == 0.0
+        [_MockParameter(0.1, name='pre_release_hold_s')])[0].successful
+    assert node._segment_cfg.pre_release_hold_s == 0.1
 
 
 def test_hold_set_live_out_of_range_and_non_number_refused():

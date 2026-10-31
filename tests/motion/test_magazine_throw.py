@@ -177,7 +177,7 @@ def test_unreachable_target_refuses_with_the_speed_and_least_speed_flight(limits
                          sg.SegmentConfig(), limits, geom)
     assert err.value.code == mt.MAGAZINE_UNREACHABLE
     text = err.value.reasons[0]
-    assert 'hand cap is 5.2' in text and 'least-speed flight' in text
+    assert 'hand cap is 5.3' in text and 'least-speed flight' in text
     assert err.value.outcome().startswith(uc.OUTCOME_CODE + '(' + mt.MAGAZINE_UNREACHABLE)
 
 

@@ -172,18 +172,22 @@ REST_FLOOR_BELOW_HAND_ZERO_M = abs(HAND_HOMED_REST_FLOOR_REV) / HAND_REV_PER_M
 #: is the deepest and highest a HEALTHY machine can legitimately be resting
 #: outside the box, at either end, and nothing more:
 #:
-#: * **Below.** The box is inset 10 mm above the bottom of the slider's
-#:   operating band (``unified_cycle._CUP_Z_INSET_M``), and a hand that has just
-#:   retracted settles anywhere down to the firmware's settled-at-retract lower
-#:   edge — :data:`REST_FLOOR_BELOW_HAND_ZERO_M` above, **6.326 mm** of cup
-#:   travel, read from the one canonical constant rather than restated here.
-#:   Deepest legitimate seed: **16.33 mm** under the floor. The one the bench
-#:   actually flies is −0.038 rev ⇒ 11.20 mm under.
+#: * **Below.** The box floor is the band floor plus
+#:   ``unified_cycle._CUP_Z_BOTTOM_INSET_M`` (2 mm since 2026-10-31, was 10 mm),
+#:   and a hand that has just retracted settles anywhere down to the firmware's
+#:   settled-at-retract lower edge — :data:`REST_FLOOR_BELOW_HAND_ZERO_M` above,
+#:   **6.513 mm** of cup travel, read from the one canonical constant rather than
+#:   restated here.  Deepest legitimate seed: **8.51 mm** under the floor (6.513
+#:   + 2).  The one the bench actually flies is −0.038 rev ⇒ 3.24 mm under.
+#:   (The pre-2026-10-31 figures were 16.33 mm and 11.20 mm under, with the 10 mm
+#:   inset.)
 #: * **Above.** The same 10 mm inset at the top, and the highest the operating
-#:   band goes is the catch prime (``JB_OP_HAND_CATCH_PRIME_REV``, 9.9594 rev),
-#:   which is exactly the band's top — so **10.00 mm** over the ceiling.
+#:   band goes is the catch prime (``JB_OP_HAND_CATCH_PRIME_REV``, 10.45 rev since
+#:   2026-10-31; ``_CUP_Z_TOP_INSET_M``), which is exactly the band's top — so
+#:   **10.00 mm** over the ceiling.
 #:
-#: 20 mm covers the worse of the two with 3.67 mm to spare, and is small enough
+#: 20 mm covers the worse of the two (the top, 10.00 mm) with 10 mm to spare — the
+#: margin was 3.67 mm before the bottom inset shrank — and is small enough
 #: that a seed further out is a genuinely wrong boundary condition (a stale
 #: state, a bad forward map, a hand outside its operating band) rather than a
 #: machine at rest — which is what the refusal says.

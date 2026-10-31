@@ -291,29 +291,36 @@ def test_terminal_validation_rejects_bad_shapes_and_non_positive_times():
 
 
 # ---------------------------------------------------------------------------
-# The opening REST homes the hand inside the firmware's own envelope
-# (2026-09-18; `schedule.floor_lift_s`, `sites.REST_HAND_REV`)
+# The opening REST returns the hand to rest inside the firmware's resume
+# envelope (2026-09-18; velocity cap retired 2026-10-31; `schedule.floor_lift_s`,
+# `sites.REST_HAND_REV`)
 # ---------------------------------------------------------------------------
 
-@pytest.mark.parametrize('seed_rev', [0.0, 2.3071, 9.6227])
-def test_the_opening_rest_homes_the_hand_inside_the_firmware_envelope(
-        seed_rev, limits, geom, cfg):
-    """SAMPLE THE PLANNED HAND LANE and assert its peaks — the test the
-    sizing's shape factors (`schedule._SHAPE_KV` / `_SHAPE_KA`) are pinned by.
+@pytest.mark.parametrize('delta_rev', [None, 2.0, 8.3103, 9.3156])
+def test_the_opening_rest_returns_the_hand_inside_the_firmware_resume_envelope(
+        delta_rev, limits, geom, cfg):
+    """SAMPLE THE PLANNED HAND LANE and assert the firmware's own resume
+    criterion plus the two peaks — the test the sizing's shape factors
+    (`schedule._SHAPE_KV` / `_SHAPE_KA` / `_ONSET_KP`) are pinned by.
 
-    A homing REST sized by ``schedule.floor_lift_s`` must keep the hand lane
-    inside BOTH firmware numbers for the resume-and-follow regime:
-    ``JB_OP_GENTLE_MOVE_VEL_LIMIT_RPS`` (2.5 rev/s, the profiled park's own
-    rate) and ``RECOVER_SLEW_ACCEL_RPS2`` (5 rev/s², the slew onset ramp). The
-    three seeds cover the three branches of the ``max``: 0.0 rev (the ACTIVATE
-    park, Δ = 0.307 ⇒ the 1.5 s floor), 2.3071 rev (Δ = 2.0 ⇒ the ACCELERATION
-    bound binds, 1.549 s) and 9.6227 rev (the 2026-09-18 sitting's own hand,
-    Δ = 9.316 ⇒ the VELOCITY bound binds, 6.987 s).
+    The resume rule (``leg_interp.cpp`` ``sched_apply``, unchanged at bridge
+    FW 34): out of a hold, the first promoted hand frame must sit within
+    ``SCHED_RESUME_TOL_POS_HAND_REV`` = 0.05 rev of the held state. The
+    first frame lands up to ``schedule.REST_RETURN_ONSET_S`` (0.1 s) after
+    the origin, so the planned displacement there must stay inside
+    ``REST_RETURN_ONSET_BUDGET_REV`` (half the tolerance). The four
+    cases cover the floor (``None``: the ACTIVATE park, 0.0 rev absolute,
+    1.5 s), the acceleration branch just past the floor (2.0 rev), the
+    2026-10-31 goal 13 hand (8.3103 rev, 3.158 s; 6.23 s under the retired
+    2.5 rev/s cap) and the 2026-09-18 hand (9.3156 rev).
 
-    Derivatives by finite difference on the 40 Hz knot grid, which is what the
-    can-bridge itself interpolates — so this measures the lane the firmware
-    will see, not a continuous-time ideal.
+    Displacements are relative to ``REST_HAND_REV`` so the cases hold
+    wherever the rest position sits. Derivatives by finite difference on the
+    40 Hz knot grid, which is what the can-bridge itself interpolates — so
+    this measures the lane the firmware will see, not a continuous-time
+    ideal.
     """
+    seed_rev = 0.0 if delta_rev is None else sc.REST_HAND_REV + delta_rev
     period = sc.floor_lift_s(seed_rev)
     seed = uc.CycleState.at_rest(
         np.array([0.0, 0.0, cr.RealizeConfig().active_z_mm, 0.0, 0.0, 0.0]),
@@ -325,19 +332,28 @@ def test_the_opening_rest_homes_the_hand_inside_the_firmware_envelope(
 
     hand = np.asarray(seg.plan.hand_rev, dtype=float)
     dt = float(seg.plan.dt)
+    t = np.arange(hand.size) * dt
     vel = np.gradient(hand, dt)
     acc = np.gradient(vel, dt)
-    assert np.max(np.abs(vel)) <= sc.HOME_HAND_VEL_LIMIT_RPS
-    assert np.max(np.abs(acc)) <= sc.HOME_HAND_ACC_LIMIT_RPS2
-    # ... and it actually ARRIVES home, at rest.
+    # The resume criterion itself: displacement at the worst-case handover.
+    onset = abs(float(np.interp(sc.REST_RETURN_ONSET_S, t, hand)) - hand[0])
+    assert onset <= sc.REST_RETURN_ONSET_BUDGET_REV
+    assert onset <= sc.rest_return_onset_rev(seed_rev, period) + 1e-9
+    assert np.max(np.abs(vel)) <= sc.REST_RETURN_HAND_VEL_LIMIT_RPS
+    assert np.max(np.abs(acc)) <= sc.REST_RETURN_HAND_ACC_LIMIT_RPS2
+    # ... and it actually ARRIVES at rest.
     assert hand[-1] == pytest.approx(sc.REST_HAND_REV, abs=1e-3)
     # At rest at the terminal knot — the PLAN's own velocity channel, not the
     # one-sided edge difference `np.gradient` leaves at the last sample.
     assert float(seg.plan.hand_vel_rps[-1]) == pytest.approx(0.0, abs=1e-3)
-    # The bounds the node LOGS are honest upper bounds on what was planned.
-    bound_v, bound_a = sc.home_hand_bounds(seed_rev, period)
-    assert np.max(np.abs(vel)) <= bound_v + 1e-9
-    assert np.max(np.abs(acc)) <= bound_a + 1e-9
+    # The bounds the node LOGS are honest upper bounds on what was planned —
+    # where the hand's displacement sizes the window. At the 1.5 s floor the
+    # window is the Platform lift's, and the QP's small hand motion during
+    # that lift (~0.05 rev/s measured, 2026-10-31) is not a function of Δ.
+    if period > sc.FLOOR_LIFT_S:
+        bound_v, bound_a = sc.rest_return_bounds(seed_rev, period)
+        assert np.max(np.abs(vel)) <= bound_v + 1e-9
+        assert np.max(np.abs(acc)) <= bound_a + 1e-9
 
 
 # ---------------------------------------------------------------------------
@@ -775,10 +791,10 @@ def test_the_hold_is_off_and_bit_identical_off_a_seed_that_followed_no_release(
 # The PRE-release platform hold (SegmentConfig.pre_release_hold_s, 2026-09-29)
 # ---------------------------------------------------------------------------
 
-#: Knots the pre-release hold covers, read from the production constant.
-PRE_K = uc.pre_release_hold_knots()
+#: Knots the pre-release hold covers at an EXPLICIT 0.1 s (the production default is 0 since 2026-10-31, so the hold code stays tested only when asked for).
+PRE_K = uc.pre_release_hold_knots(0.1)
 #: The last 100 ms before a release, in knots — FIXED, not read from the
-#: constant, so forcing the constant to 0 makes the tests below fail rather
+#: constant, so forcing the hold to 0 makes the tests below fail rather
 #: than check an empty range.
 LAST_100MS_K = int(round(0.100 / DT))
 #: R4's launch limits (the runsheet's 300/5000/150000 + hand 3500) — tighter
@@ -838,7 +854,7 @@ def test_a_hop_throw_holds_the_platform_still_for_the_last_100_ms(apex_m, geom):
     FAIL-BEFORE (2026-09-29, ``PRE_RELEASE_HOLD_S`` forced to 0.0): the
     carrier assertion fails at 98.8 / 99.5 / 99.1 mm/s (0.85 / 0.9 / 0.95 m).
     """
-    seg = _hop_throw(apex_m, sg.SegmentConfig(), geom)
+    seg = _hop_throw(apex_m, sg.SegmentConfig(pre_release_hold_s=0.1), geom)
     k_rel = int(round(float(seg.event_t_s) / DT))
     worst = max(_carrier_xy_mm_s(seg.plan, k)
                 for k in range(k_rel - LAST_100MS_K, k_rel + 1))
@@ -850,8 +866,13 @@ def test_a_hop_throw_holds_the_platform_still_for_the_last_100_ms(apex_m, geom):
     # ...and the swing it replaces, so the test cannot pass vacuously.
     off = _hop_throw(apex_m, sg.SegmentConfig(pre_release_hold_s=0.0), geom)
     vx = np.asarray(off.plan.pose_vel)[:, 0]
-    assert 85.0 <= vx[k_rel - 3] <= 115.0      # −75 ms
-    assert 85.0 <= vx[k_rel - 2] <= 115.0      # −50 ms
+    # Lower bound 85 -> 80 (2026-10-31, a VACUITY GUARD, not a physical limit):
+    # the hold-off swing at -50 ms fell 91.6 -> 84.35 mm/s (0.85 m; 86.5 / 88.3 at
+    # 0.9 / 0.95) when the Hand box floor dropped 0.307 -> 0.06 rev (Hand stroke
+    # unit; the hold arm is explicit, so it is not the default flip).  Smaller
+    # swing, the benign direction, still 30x the hold-on carrier bound of 2.5.
+    assert 80.0 <= vx[k_rel - 3] <= 115.0      # −75 ms
+    assert 80.0 <= vx[k_rel - 2] <= 115.0      # −50 ms
 
 
 @pytest.mark.parametrize('apex_m', [0.85, 0.9, 0.95])
@@ -860,7 +881,7 @@ def test_a_held_hop_throw_is_inside_the_r4_limits(apex_m, geom):
     reversal becomes a −45 mm/s backswing): 0.9 m leg jerk 129k → 107k,
     acc 1735 → 1489 mm/s² (2026-09-29). plan_segment raises on any breach;
     the asserts pin the margin."""
-    held = _hop_throw(apex_m, sg.SegmentConfig(), geom).meta.report
+    held = _hop_throw(apex_m, sg.SegmentConfig(pre_release_hold_s=0.1), geom).meta.report
     off = _hop_throw(apex_m, sg.SegmentConfig(pre_release_hold_s=0.0),
                      geom).meta.report
     assert held.peak_leg_vel_mmps <= 300.0
@@ -877,7 +898,7 @@ def test_a_held_self_toss_and_its_catch_and_throw_are_inside_the_r4_limits(
     touch-down 0.30 s before the release, well before the hold) both plan at
     R4's limits with the hold on, and the legs do not move for the THROW."""
     tf = _flight_s(0.9)
-    cfg = sg.SegmentConfig()
+    cfg = sg.SegmentConfig(pre_release_hold_s=0.1)
     throw = sg.plan_segment(
         sg.THROW, _rest_state(REST_MM),
         sg.ThrowTerminal(site_mm=THROW_SITE_MM, target_mm=THROW_SITE_MM,
@@ -900,6 +921,18 @@ def test_a_held_self_toss_and_its_catch_and_throw_are_inside_the_r4_limits(
         assert rep.peak_hand_acc_rps2 <= 3500.0
     assert throw.meta.report.peak_leg_vel_mmps < 1.0
     assert ct.meta.releases[-1].pre_hold_knots == PRE_K
+
+
+def test_the_production_default_has_no_pre_release_hold_and_plans_with_zero_hold_rows(geom):
+    """2026-10-31: the default hold is 0 (hold_sign analysis: the Platform
+    tracks within ~15 ms; the bias is a 6 Hz ring the hold only re-phases).
+    N = 0 must plan with ZERO hold knots (no off-by-one in cup_cycle's
+    ``range(n - N, n)`` rows): ``pre_hold_knots == 0`` on the release mark."""
+    assert uc.PRE_RELEASE_HOLD_S == 0.0
+    assert sg.SegmentConfig().pre_release_hold_s == 0.0
+    assert uc.pre_release_hold_knots() == 0
+    seg = _hop_throw(0.9, sg.SegmentConfig(), geom)
+    assert seg.meta.releases[0].pre_hold_knots == 0
 
 
 def test_the_pre_release_hold_at_zero_is_bit_identical_to_no_hold(geom, cfg):
@@ -937,7 +970,7 @@ def test_a_splice_inside_the_pre_release_hold_is_refused_and_keeps_the_plan(
     FAIL-BEFORE (2026-09-29, constant forced to 0.0): the splice at k_rel−4 is
     not refused by the guard and reaches the seam check (CHAIN_DISCONTINUITY).
     """
-    seg = _hop_throw(0.9, sg.SegmentConfig(), geom)
+    seg = _hop_throw(0.9, sg.SegmentConfig(pre_release_hold_s=0.1), geom)
     k_rel = int(round(float(seg.event_t_s) / DT))
     n = int(seg.plan.n_knots)
     for k_s in range(k_rel - LAST_100MS_K, k_rel):
@@ -976,11 +1009,15 @@ def test_a_catch_inside_the_pre_release_hold_is_refused_in_plain_language(
             site_mm=THROW_SITE_MM, target_mm=CATCH_SITE_MM, flight_s=T_F))
     with pytest.raises(uc.CycleInfeasible) as ei:
         sg.plan_segment(sg.CATCH, catch_seed, term,
-                        sg.SegmentConfig(planner_mode='level'), limits, geom)
+                        sg.SegmentConfig(planner_mode='level',
+                                         pre_release_hold_s=0.1),
+                        limits, geom)
     assert 'catch comes too close to the next throw' in ei.value.outcome()
     with pytest.raises(uc.CycleInfeasible) as ei:
         sg.plan_segment(sg.CATCH, catch_seed, term,
-                        sg.SegmentConfig(planner_mode='pose'), limits, geom)
+                        sg.SegmentConfig(planner_mode='pose',
+                                         pre_release_hold_s=0.1),
+                        limits, geom)
     out = ei.value.outcome()
     assert 'UNVERIFIED' not in out, out
     assert 'POSE_WINDOW' in out and 'no knots left' in out, out

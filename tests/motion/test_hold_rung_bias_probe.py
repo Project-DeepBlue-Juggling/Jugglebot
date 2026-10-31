@@ -178,6 +178,23 @@ def test_ladder_done_adopts_shortest_passing(probe, tmp_path, capsys):
     assert out.strip().splitlines()[-1].startswith('NEXT: ladder done - adopt hold 0.075')
 
 
+def test_ladder_done_refuses_a_long_rung_and_names_direction(probe, tmp_path, capsys):
+    # 0.050 lands 39.5 mm LONG (Delta < 0): |Delta| > 20, so it must NOT be adopted
+    # (the signed rule adopted it on 2026-10-31); 0.075 lands 10 mm SHORT, adopted,
+    # and the verdict names the direction.
+    g = [_goal(T0 + 10, 30, 30), _goal(T0 + 200, 30, 30), _goal(T0 + 400, 30, 30)]
+    lines = [_hold(T0 + 1, 0.100), g[0][0], g[0][1], _hold(T0 + 150, 0.050), g[1][0],
+             g[1][1], _hold(T0 + 350, 0.075), g[2][0], g[2][1]]
+    rows = (_rows(10, 30, 3.0, seed=1) + _rows(200, 30, -36.5, seed=2)
+            + _rows(400, 30, 10.0, seed=3))
+    log, mem = _write(tmp_path, lines, rows)
+    out = _run(probe, tmp_path, capsys, log, mem)
+    last = out.strip().splitlines()[-1]
+    assert last.startswith('NEXT: ladder done - adopt hold 0.075')
+    assert 'SHORT' in last
+    assert probe.adopt.__doc__ and 'LONG' in probe.adopt.__doc__
+
+
 def test_json_and_clean_errors(probe, tmp_path, capsys):
     log, mem = _scenario(tmp_path, 28.0)
     js = tmp_path / 'sub' / 'out.json'

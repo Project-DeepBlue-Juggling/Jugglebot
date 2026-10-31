@@ -1372,100 +1372,147 @@ def compile_columns(pattern: Pattern, t0_abs_s: Optional[float] = None,
 #: that is where the previous schedule's own REST left it.
 FLOOR_LIFT_S = 1.5
 
-#: Peak hand VELOCITY (rev/s) the opening REST's homing move is sized to.
-#: ``JB_OP_GENTLE_MOVE_VEL_LIMIT_RPS`` — the rate the firmware's own profiled
-#: park (ACTIVATE's TRAP_TRAJ on axis 6) brings the hand home at, so a homing
-#: REST is never faster than the op the machine already trusts for this exact
-#: move.  It is NOT the streaming lane's own ceiling (``JB_TRAJ_HAND_VEL_
-#: LIMIT_RPS``, 200 rev/s): a healthy armed lane does follow at full C2 speed
-#: (90 rev/s in a throw), but a homing move starts from a lane the firmware may
-#: be HOLDING, and the slow regimes it can meet there are the ones below.
-HOME_HAND_VEL_LIMIT_RPS = float(hw.JB_OP_GENTLE_MOVE_VEL_LIMIT_RPS)
+#: Peak hand VELOCITY (rev/s) the opening REST's return of the Hand to rest is
+#: sized to.  An ORDINARY smooth move, not a park: 15 rev/s is ~490 mm/s of
+#: carriage (``hand_mm_per_rev`` 32.567), a sixth of a Throw stroke's ~90
+#: rev/s and 1/13 of the streamed lane's ceiling (``JB_TRAJ_HAND_VEL_LIMIT_
+#: RPS``, 200 rev/s), so the velocity-compensated deviation guard
+#: (``MAX_DEVIATION_HAND_REV`` 2.5 rev) and the lead clamp (2.0 rev) never see
+#: it.  It does not bind today — :data:`REST_RETURN_HAND_ACC_LIMIT_RPS2` holds
+#: a full-stroke return under 6 rev/s — it caps a future raise of that bound.
+#: Until 2026-10-31 this was the firmware's 2.5 rev/s gentle park rate
+#: (``JB_OP_GENTLE_MOVE_VEL_LIMIT_RPS``), a "never faster than the park"
+#: convention with no failure mode behind it, which made an 8.3 rev return a
+#: 6.23 s REST and, through the solve cost of that window, the 2026-10-31
+#: ``SPLICE_TOO_LATE`` end (goal 13).
+REST_RETURN_HAND_VEL_LIMIT_RPS = 15.0
 
-#: Peak hand ACCELERATION (rev/s²) the same move is sized to — the firmware's
-#: own recovery-slew onset ramp ``RECOVER_SLEW_ACCEL_RPS2``
-#: (``canbridge_config.h:387``, 5.0 rev/s²; restated, not imported, because
-#: ``motion/`` cannot read firmware headers).
+#: Peak hand ACCELERATION (rev/s²) the same move is sized to.  This is the one
+#: bound with a firmware failure mode behind it, and the bridge firmware still
+#: has that failure mode at FW 34 (checked 2026-10-31: the JB-75 arm-edge
+#: grace and post-arm output hold act only on an output-enable / arm edge,
+#: where the hand group is CLEARED and no continuity test runs at all; the
+#: opening REST of an attempt that follows an END on a still-armed wire meets
+#: the hand group in ``SCHED_HOLD`` instead).
 #:
-#: WHY AN ACCELERATION BOUND AT ALL, given the lane follows at 90 rev/s.  After
-#: a hand-less hold — which EVERY attempt's end installs — the firmware hand
-#: group sits in ``SCHED_HOLD`` at its last knot and promotes a resumed lane
-#: only if the frame at the handover instant is within
-#: ``SCHED_RESUME_TOL_POS_HAND_REV`` = 0.05 rev of the held state
-#: (``leg_interp.cpp:497-520``, ``canbridge_config.h:426``); otherwise it
-#: LATCHES the hold and the guard then measures the REFUSED command against the
-#: encoder (``leg_interp.cpp:1226-1228``) until MAX_DEVIATION E-STOPS the
-#: machine — the 2026-09-18 latch 1.  The first frame reaches the wire ~60-100
-#: ms after the plan's origin (solve + one tick), so the lane must not have
-#: moved 0.05 rev by then: ½·a·(0.1 s)² ≤ 0.05 rev ⇒ a ≤ 10 rev/s², and the
-#: firmware's own 5 rev/s² ramp is the conservative half of that.
-HOME_HAND_ACC_LIMIT_RPS2 = 5.0
+#: THE RESUME RULE (``leg_interp.cpp`` ``sched_apply``): out of STOP/HOLD with
+#: the output enabled, the first promoted hand frame must match the held state
+#: at the handover instant within ``SCHED_RESUME_TOL_POS_HAND_REV`` = 0.05
+#: rev (and 8 rev/s, 1000 rev/s²), else the group LATCHES the hold and the
+#: deviation guard measures the refused command against the encoder until
+#: MAX_DEVIATION E-STOPS the machine (2026-09-18 latch 1, INVARIANTS
+#: C-HAND-4).  The handover instant is up to :data:`REST_RETURN_ONSET_S`
+#: after the plan's origin, and the plan's displacement there is bounded by
+#: the measured onset factor: ``p(δ) <= _ONSET_KP·a_peak·δ²``.  So
+#: ``5.0 rev/s²`` gives ``0.45·5·0.1² = 0.0225 rev`` — inside
+#: :data:`REST_RETURN_ONSET_BUDGET_REV` (half the firmware's 0.05 rev; the
+#: other half is the seed-versus-held offset, 0.013 rev measured on
+#: 2026-10-31).  The QP's acceleration reaches its plateau within ~50 ms of
+#: the origin (probe 2026-10-31), so a whole-window acceleration bound IS
+#: the onset bound: the period sizing has no way to make only the first
+#: 100 ms gentle.  Pinned by ``tests/motion/test_skills_segments.py::
+#: test_the_opening_rest_returns_the_hand_inside_the_firmware_resume_envelope``
+#: (samples the planned lane and asserts the displacement at the onset
+#: instant directly).  Do NOT raise it while ``REST_RETURN_ONSET_S`` is 0.1 s.
+REST_RETURN_HAND_ACC_LIMIT_RPS2 = 5.0
 
-#: Hand displacement (rev) inside which the homing move is no move at all:
+#: Worst-case delay (s) from the opening REST's origin to the firmware's
+#: handover instant.  A fresh REST's origin is its dispatch instant (it is
+#: REBASED to ``t_inst + WIRE_READ_KNOTS·dt`` only when the solve outran
+#: that 75 ms margin), so its first frame reaches the wire one solve (<= 75
+#: ms un-rebased) plus one 25 ms tick after the origin: <= 0.1 s.
+REST_RETURN_ONSET_S = 0.100
+
+#: The plan-displacement budget (rev) at :data:`REST_RETURN_ONSET_S`: half of
+#: ``SCHED_RESUME_TOL_POS_HAND_REV`` (0.05 rev, ``canbridge_config.h``,
+#: restated, not imported, because ``motion/`` cannot read firmware headers).
+REST_RETURN_ONSET_BUDGET_REV = 0.025
+
+#: Hand displacement (rev) inside which the return is no move at all:
 #: :func:`floor_lift_s` already collapses to :data:`FLOOR_LIFT_S` well
 #: outside it, so this constant exists for the ONE caller that has no opening
 #: REST to grow (``compile_columns``, R4) and must refuse instead.  0.10 rev is
 #: the bridge's own already-parked no-op band (``teensy_bridge_node.
 #: _HAND_PARK_BAND_REV``) — 3.3 mm of carriage at ``hand_mm_per_rev`` 32.567.
-HOME_BAND_REV = 0.10
+REST_BAND_REV = 0.10
 
 #: The SETTLE window's hand-lane SHAPE factors: peak |v| ≈ ``_SHAPE_KV·Δ/T``
 #: and peak |a| ≈ ``_SHAPE_KA·Δ/T²`` for a rest-to-rest move of Δ rev over T s.
 #:
 #: MEASURED off the real QP, not assumed (probe 2026-09-18, venv interpreter,
 #: ``plan_segment(REST, ...)`` at the R3 sitting limits 300/5000/150000 mm +
-#: hand 3500 rev/s², hand seeds 0.0 / 0.56 / 2.0 / 5.0 / 9.62 / 9.9 rev homing
-#: to ``sites.REST_HAND_REV``): the realised factors are k_v = 1.50-1.53 and
-#: k_a = 5.68-5.95, flat across Δ and T.  ``_SHAPE_KV`` = 15/8 = 1.875 is the
-#: quintic rest-to-rest bound and so sizes CONSERVATIVELY (23 % slower than the
-#: QP needs); ``_SHAPE_KA`` = 6.0 is the measured maximum rounded up, because
-#: the quintic 10/√3 = 5.774 sits BELOW what the QP actually produces and would
-#: have sized the acceleration-bound branch 3 % hot.
+#: hand 3500 rev/s², hand seeds 0.0 / 0.56 / 2.0 / 5.0 / 9.62 / 9.9 rev
+#: returning to ``sites.REST_HAND_REV``): the realised factors are k_v =
+#: 1.50-1.53 and k_a = 5.68-5.95, flat across Δ and T (re-measured 2026-10-31,
+#: Δ 2-10 rev, T 0.8-6.5 s: k_v 1.52-1.55, k_a 5.50-5.76).  ``_SHAPE_KV`` =
+#: 15/8 = 1.875 is the quintic rest-to-rest bound and so sizes CONSERVATIVELY
+#: (23 % slower than the QP needs); ``_SHAPE_KA`` = 6.0 is the measured maximum
+#: rounded up, because the quintic 10/√3 = 5.774 sits BELOW what the QP
+#: actually produces and would have sized the acceleration-bound branch 3 % hot.
 #:
 #: Pinned by ``tests/motion/test_skills_segments.py::
-#: test_the_opening_rest_homes_the_hand_inside_the_firmware_envelope``, which
-#: samples the planned hand lane and asserts the peaks against the two limits
-#: above — so a solver change that made the shape sharper fails a test rather
-#: than an E-STOP.
+#: test_the_opening_rest_returns_the_hand_inside_the_firmware_resume_envelope``,
+#: which samples the planned hand lane and asserts the peaks against the two
+#: limits above — so a solver change that made the shape sharper fails a test
+#: rather than an E-STOP.
 _SHAPE_KV = 15.0 / 8.0
 _SHAPE_KA = 6.0
+
+#: The ONSET factor: the planned hand lane's displacement ``δ`` s after the
+#: origin is at most ``_ONSET_KP·a_peak·δ²``.  Measured 2026-10-31 (probe
+#: ``plan_segment(REST, ...)``, Δ 2-10 rev, T 0.8-6.5 s, δ = 0.1 s): 0.40-0.41
+#: — the QP's acceleration ramps to its plateau within ~2 knots, so the onset
+#: is a little under the constant-acceleration ½.  0.45 is the measured
+#: maximum rounded up, used only by :func:`rest_return_onset_rev`.
+_ONSET_KP = 0.45
 
 
 def floor_lift_s(hand_rev_now: float,
                  default_s: float = FLOOR_LIFT_S) -> float:
-    """The opening REST's period (s) that homes the hand from ``hand_rev_now``
-    to :data:`~jugglebot.motion.skills.sites.REST_HAND_REV` inside the
-    firmware's resume-and-follow envelope.
+    """The opening REST's period (s) that returns the Hand from
+    ``hand_rev_now`` to :data:`~jugglebot.motion.skills.sites.REST_HAND_REV`
+    inside the firmware's resume envelope.
 
     ``max`` of three floors: the default lift (:data:`FLOOR_LIFT_S`,
-    which is what a hand already at home gets), the velocity bound
-    (:data:`HOME_HAND_VEL_LIMIT_RPS`) and the acceleration bound
-    (:data:`HOME_HAND_ACC_LIMIT_RPS2`), through the measured shape factors
-    above.  Worked example, the 2026-09-18 sitting's own hand: Δ = 9.6227 −
-    0.3071 = 9.3156 rev ⇒ 1.875·9.3156/2.5 = 6.99 s (velocity-bound; the
-    acceleration branch asks only 3.34 s) ⇒ a 7.0 s opening REST, whose
-    realised peaks are 2.01 rev/s and 1.14 rev/s² (probe, same day).
+    which is what a hand already at rest gets), the velocity bound
+    (:data:`REST_RETURN_HAND_VEL_LIMIT_RPS`) and the acceleration bound
+    (:data:`REST_RETURN_HAND_ACC_LIMIT_RPS2`), through the measured shape
+    factors above.  Worked example, the 2026-10-31 goal 13 hand (left at
+    +8.6174 rev by a ``LANE_REFUSED`` end): Δ = 8.5560 rev from a 0.0614 rev
+    rest ⇒ the acceleration branch, √(6·8.5560/5) = 3.20 s (the velocity
+    branch asks 1.04 s); the pre-2026-10-31 2.5 rev/s velocity branch asked
+    6.23 s for the same hand.
 
     PURE: no clock, no ROS, no state — the node passes the measured hand
-    position in and gets the period out (``SelfTossPattern.floor_lift_s``).
+    position in and gets the period out (``OneBallPattern.floor_lift_s``).
     """
     delta = abs(float(hand_rev_now) - float(REST_HAND_REV))
     return max(float(default_s),
-               _SHAPE_KV * delta / HOME_HAND_VEL_LIMIT_RPS,
-               math.sqrt(_SHAPE_KA * delta / HOME_HAND_ACC_LIMIT_RPS2))
+               _SHAPE_KV * delta / REST_RETURN_HAND_VEL_LIMIT_RPS,
+               math.sqrt(_SHAPE_KA * delta / REST_RETURN_HAND_ACC_LIMIT_RPS2))
 
 
-def home_hand_bounds(hand_rev_now: float, t_rest_s: float):
-    """``(peak |v| rev/s, peak |a| rev/s²)`` the homing move of
-    :func:`floor_lift_s` is BOUNDED by over ``t_rest_s`` — the shape factors
-    read forwards, for the node's one INFO line.  Bounds, not predictions: the
-    QP's realised peaks come in ~20 % under the velocity one (see
-    :data:`_SHAPE_KV`)."""
+def rest_return_bounds(hand_rev_now: float, t_rest_s: float):
+    """``(peak |v| rev/s, peak |a| rev/s²)`` the return of the Hand to rest
+    sized by :func:`floor_lift_s` is BOUNDED by over ``t_rest_s`` — the shape
+    factors read forwards, for the node's one log line.  Bounds, not
+    predictions: the QP's realised peaks come in ~20 % under the velocity one
+    (see :data:`_SHAPE_KV`)."""
     delta = abs(float(hand_rev_now) - float(REST_HAND_REV))
     t = float(t_rest_s)
     if not t > 0.0:
         raise ValueError('t_rest_s must be > 0, got %r' % (t_rest_s,))
     return (_SHAPE_KV * delta / t, _SHAPE_KA * delta / (t * t))
+
+
+def rest_return_onset_rev(hand_rev_now: float, t_rest_s: float) -> float:
+    """Upper bound (rev) on the planned hand displacement at the firmware's
+    worst-case handover instant (:data:`REST_RETURN_ONSET_S` after the
+    origin) — what ``sched_apply``'s resume test compares, less the
+    seed-versus-held offset.  ``<= REST_RETURN_ONSET_BUDGET_REV`` for every
+    period :func:`floor_lift_s` returns."""
+    _, peak_a = rest_return_bounds(hand_rev_now, t_rest_s)
+    return _ONSET_KP * peak_a * REST_RETURN_ONSET_S ** 2
 
 
 @dataclasses.dataclass(frozen=True)
@@ -1493,10 +1540,10 @@ class OneBallPattern:
     launch_s: float = 0.4
     #: The SETTLE tail every THROW/CATCH segment carries.
     rest_tail_s: float = sg.REST_TAIL_S
-    #: The OPENING REST's period (s) — the window that HOMES the hand from
-    #: wherever it actually is to :data:`~jugglebot.motion.skills.sites.
-    #: REST_HAND_REV`.  The node sizes it from the measured hand through
-    #: :func:`floor_lift_s`; the default is the already-home case
+    #: The OPENING REST's period (s) — the window that returns the hand to
+    #: rest from wherever it actually is to :data:`~jugglebot.motion.skills.
+    #: sites.REST_HAND_REV`.  The node sizes it from the measured hand through
+    #: :func:`floor_lift_s`; the default is the already-at-rest case
     #: (:data:`FLOOR_LIFT_S`), which is also what every offline test and the
     #: sim gate get.
     floor_lift_s: float = FLOOR_LIFT_S
@@ -1523,7 +1570,7 @@ class OneBallPattern:
         if not float(self.floor_lift_s) >= FLOOR_LIFT_S:
             raise ValueError(
                 'floor_lift_s %r is below the %.3f s floor — the opening REST '
-                'both lifts the cup onto the site and homes the hand, and '
+                'both lifts the cup onto the site and returns the hand to rest, and '
                 'FLOOR_LIFT_S is the measured minimum for the lift alone'
                 % (self.floor_lift_s, FLOOR_LIFT_S))
 
@@ -1544,12 +1591,13 @@ def compile_one_ball(pattern: OneBallPattern, t0_abs_s: float) -> Schedule:
     difference).
 
     One ball, ``pattern.sites`` cycled: an OPENING REST
-    (``pattern.floor_lift_s``) lifts the cup onto ``sites[0]`` AND HOMES THE
-    HAND from wherever it actually is to
+    (``pattern.floor_lift_s``) lifts the cup onto ``sites[0]`` AND RETURNS
+    THE HAND TO REST from wherever it actually is to
     :data:`~jugglebot.motion.skills.sites.REST_HAND_REV` — one window, one
-    home, sized by :func:`floor_lift_s` so the hand lane stays inside the
-    firmware's resume-and-follow envelope (:data:`HOME_HAND_VEL_LIMIT_RPS` /
-    :data:`HOME_HAND_ACC_LIMIT_RPS2`).  Then THROW 0 is a fresh origin from
+    rest position, sized by :func:`floor_lift_s` so the hand lane stays
+    inside the firmware's resume envelope
+    (:data:`REST_RETURN_HAND_VEL_LIMIT_RPS` /
+    :data:`REST_RETURN_HAND_ACC_LIMIT_RPS2`).  Then THROW 0 is a fresh origin from
     that rest (``launch_s`` window), then every later throw is CARRIED by the
     catch one dwell before it (:func:`_fold_catch_throw_pairs` — the same
     measured reason :class:`ThenThrow` gives for columns: solved apart, the
@@ -1626,7 +1674,8 @@ def compile_one_ball(pattern: OneBallPattern, t0_abs_s: float) -> Schedule:
     t0_rel = 0.0
 
     lift_s = float(pattern.floor_lift_s)
-    _check_window('the opening REST (the floor lift + the hand homing)', lift_s)
+    _check_window('the opening REST (the floor lift + the hand return to rest)',
+                  lift_s)
     skills = [Skill(kind=REST, ball_id=0, site=pattern.sites[0],
                     t_abs_s=t0_rel + lift_s, window_s=lift_s)]
 
@@ -1770,7 +1819,7 @@ def compile_reload_wait(site: Site, floor_lift_s: float,
     receive tilt :func:`compile_reload` needs is not known until BB's
     ``ThrowAnnouncement`` supplies the arrival velocity. ONE REST: bit-
     identical Skill construction to :func:`compile_one_ball`'s own opening
-    REST (homes the hand from wherever it is to
+    REST (returns the hand to rest from wherever it is to
     :data:`~jugglebot.motion.skills.sites.REST_HAND_REV`, lifts the cup onto
     ``site``), except ``holds_ball`` defaults ``False`` — unlike the
     self-toss opening REST (which assumes an operator has already placed a
@@ -1778,7 +1827,7 @@ def compile_reload_wait(site: Site, floor_lift_s: float,
 
     ``SkillNode._run_one_ball`` (a Juggle goal whose cup is EMPTY) installs this
     schedule, then calls ``bb/reload`` + ``bb/throw_at_target``; the hand
-    is already homing while that round trip is in flight. On the
+    is already returning to rest while that round trip is in flight. On the
     announcement, ``SkillNode._on_announcement`` compiles the real
     :func:`compile_reload` schedule and SWAPS the executor — by which point
     the hand is already at rest, so that schedule's own combined home+tilt
@@ -1794,8 +1843,8 @@ def compile_reload_wait(site: Site, floor_lift_s: float,
     """
     t0_rel = 0.0
     period = float(floor_lift_s)
-    _check_window('the reload bridge REST (hand homing while BB is asked to '
-                 'reload)', period)
+    _check_window('the reload bridge REST (hand return to rest while BB is '
+                 'asked to reload)', period)
     skills = [Skill(kind=REST, ball_id=0, site=site,
                     t_abs_s=t0_rel + period, window_s=period,
                     holds_ball=bool(holds_ball))]
@@ -1823,9 +1872,9 @@ def compile_reload(landing_mm, landing_vel_mm_s, t_land_abs_s: float,
     receive_hold_tilt`).
 
     **PRE-TILT REST** (level -> the receive attitude, over
-    ``max(pattern.floor_lift_s, PRETILT_S)`` — ONE REST that both homes the
-    hand and reaches the tilt, U2's "SIMPLICITY" contract: no scenario in
-    U2's probe needed a separate homing REST ahead of it, and a second REST
+    ``max(pattern.floor_lift_s, PRETILT_S)`` — ONE REST that both returns the
+    hand to rest and reaches the tilt, U2's "SIMPLICITY" contract: no
+    scenario in U2's probe needed a separate return REST ahead of it, and a second REST
     is a second fresh-origin gate for no measured benefit) at
     ``segments.hold_axis_site(landing_mm, tilt, sites.REST_CUP_Z_MM)`` — ON
     the held axis line through the announced landing, not under
@@ -2125,9 +2174,10 @@ def compile_rest_columns(columns_pattern: Pattern, aim_site: Site,
                          lift_s: float, t0_abs_s: float) -> Schedule:
     """``columns_1ball`` with a SEATED cup (``SkillNode._run_columns_1ball``):
     an OPENING REST, then the columns schedule. Ball A is already seated in
-    the cup (an operator placed it); the REST homes the hand, levels the
-    platform and carries the cup onto ball A's site, so THROW 0 is planned
-    from the one start state every gate certifies — level, homed, at the
+    the cup (an operator placed it); the REST returns the hand to rest,
+    levels the platform and carries the cup onto ball A's site, so THROW 0
+    is planned from the one start state every gate certifies — level, Hand
+    at rest, at the
     site — instead of from wherever the machine happens to be.
 
     **Why it exists (R5 sitting 6, 2026-10-05, 9 attempts, 0 throws).** Until
@@ -2140,7 +2190,7 @@ def compile_rest_columns(columns_pattern: Pattern, aim_site: Site,
     receive pose a failed reload catch leaves behind (~12 deg), which refuses
     ``LIMIT_JERK`` at 255 k against 200 k (2 attempts). Every other pattern
     entry already opened on a REST (:func:`compile_one_ball`,
-    :func:`compile_reload_wait`); this one logged the hand-homing move and
+    :func:`compile_reload_wait`); this one logged the hand's return-to-rest move and
     never scheduled it.
 
     The REST is :func:`compile_reload_wait`'s own skill with

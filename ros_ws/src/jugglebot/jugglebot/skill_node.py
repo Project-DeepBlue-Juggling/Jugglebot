@@ -98,7 +98,7 @@ from jugglebot.motion.skills.schedule import (COLUMNS_HIGHLOW,
                                               compile_reload_wait,
                                               compile_rest_columns,
                                               flight_s, floor_lift_s,
-                                              home_hand_bounds,
+                                              rest_return_bounds,
                                               schedule_has_shadow_landing,
                                               transit_s)
 from jugglebot.motion.skills import magazine_target as mt
@@ -4508,39 +4508,39 @@ class SkillNode(Node):
         raise AssertionError('unmapped cup decision %r' % (code,))
 
     def _opening_rest_period(self):
-        """``(period_s, why_not)`` for the opening REST that HOMES THE HAND —
-        the schedule's first window, sized to the hand's measured displacement
-        from `sites.REST_HAND_REV`.
+        """``(period_s, why_not)`` for the opening REST that RETURNS THE HAND
+        TO REST — the schedule's first window, sized to the hand's measured
+        displacement from `sites.REST_HAND_REV`.
 
-        THE ONE HOME (owner instruction, 2026-09-18: *"if the hand isn't where
-        it needs to be at the start, it should smooth-move down to the start
-        position before beginning the cycle"*). Every REST in a schedule leaves
-        the hand at ``REST_HAND_REV`` (0.3071 rev, the cup at
+        NOT HOMING (owner, 2026-10-31): the ODrive keeps its homed position
+        across a `LANE_REFUSED` end, so a hand left mid-stroke (8.6174 rev on
+        2026-10-31) needs an ordinary smooth move, not a re-home. THE ONE
+        REST POSITION (owner instruction, 2026-09-18: *"if the hand isn't
+        where it needs to be at the start, it should smooth-move down to the
+        start position before beginning the cycle"*): every REST in a
+        schedule leaves the hand at ``REST_HAND_REV`` (the cup at
         ``uc.SETTLE_CUP_Z_MM``), so that is the one position a schedule starts
         from and the one reference this sizes against. The bridge's ACTIVATE
-        park (0.0 rev) stays what `/recover` parks to; a hand sitting there is
-        simply 0.307 rev from home and gets a homing REST like any other
-        displacement, with no special case. The predecessor of this method
-        (`_park_hand`, one day old) measured the start against the PARK and so
-        REFUSED every attempt after the first — the hand was exactly where the
-        previous schedule's REST had correctly left it.
+        park (0.0 rev) stays what `/recover` parks to; a hand sitting
+        anywhere else simply gets a longer opening REST, with no special case.
 
         WHY A SIZED WINDOW AND NOT A FASTER MOVE. On a healthy ARMED lane the
-        hand follows the stream at full C2 speed (90 rev/s through a throw), so
-        the ceiling here is not about following — it is about RESUMING. After a
+        hand follows the stream at full C2 speed (90 rev/s through a Throw), so
+        the bound here is not about following — it is about RESUMING. After a
         hand-less hold (every attempt END installs one) the firmware hand group
         holds its last knot and promotes a resumed lane only if the frame at
         the handover instant is within ``SCHED_RESUME_TOL_POS_HAND_REV`` =
-        0.05 rev of the held state; the first frame reaches the wire ~60-100 ms
-        after the plan's origin, so a lane that has moved further than that by
-        then is REFUSED and the guard then measures the refused command against
-        the encoder until MAX_DEVIATION E-STOPS the machine (2026-09-18, three
-        times in one sitting). `schedule.floor_lift_s` bounds the move by the
-        firmware's own two numbers for exactly this regime —
-        ``JB_OP_GENTLE_MOVE_VEL_LIMIT_RPS`` (2.5 rev/s, the profiled park's
-        rate) and ``RECOVER_SLEW_ACCEL_RPS2`` (5 rev/s², the slew ramp) — which
-        leaves the deviation two orders inside ``MAX_DEVIATION_HAND_REV``
-        (2.5 rev) and the lead clamp (2.0 rev) the whole way.
+        0.05 rev of the held state (unchanged at bridge FW 34); the first frame
+        reaches the wire up to ~100 ms after the plan's origin, so a lane that
+        has moved further than that by then is REFUSED and the guard then
+        measures the refused command against the encoder until MAX_DEVIATION
+        E-STOPS the machine (2026-09-18, three times in one Sitting).
+        `schedule.floor_lift_s` therefore bounds the move's ACCELERATION
+        (``REST_RETURN_HAND_ACC_LIMIT_RPS2``, 5 rev/s², which keeps the
+        planned lane within 0.0225 rev at 100 ms) and caps its velocity at an
+        ordinary 15 rev/s (``REST_RETURN_HAND_VEL_LIMIT_RPS``); an 8.56 rev
+        return (8.6174 rev hand to the 0.0614 rev rest) is ~3.2 s (6.42 s
+        under the retired 2.5 rev/s park-rate cap).
 
         Refuses on ONE fact only, and pre-motion: an unknown or stale hand
         position. A window sized from a stale encoder is the same defect as the
@@ -4550,14 +4550,14 @@ class SkillNode(Node):
         rev = self._live_hand_rev()
         if rev is None:
             return (0.0, 'hand_telemetry is stale or absent (no sample in '
-                         '%.1f s) — the opening REST cannot be sized to home '
-                         'a hand position nobody has read'
+                         '%.1f s) — the opening REST cannot be sized to '
+                         'return to rest a hand position nobody has read'
                          % (_HAND_STATE_STALE_S,))
         period = floor_lift_s(rev)
-        peak_v, peak_a = home_hand_bounds(rev, period)
+        peak_v, peak_a = rest_return_bounds(rev, period)
         self.get_logger().debug(
-            'opening REST homes the hand: %+.4f → %+.4f rev over %.2f s '
-            '(peak <= %.2f rev/s, %.2f rev/s²)'
+            'opening REST returns the Hand to rest: %+.4f → %+.4f rev over '
+            '%.2f s (peak <= %.2f rev/s, %.2f rev/s²)'
             % (rev, REST_HAND_REV, period, peak_v, peak_a))
         return (period, '')
 

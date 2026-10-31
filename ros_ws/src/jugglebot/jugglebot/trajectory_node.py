@@ -933,8 +933,8 @@ class TrajectoryNode(Node):
         # the skills defaults, mirroring `_limits`/`_geom` — a fresh copy per
         # call would be a second source for the same constant.
         # ONE knob is a parameter: the pre-release platform hold (R4, 2026-09-29;
-        # unified_cycle.PRE_RELEASE_HOLD_S), so a sitting can A/B it with
-        # `pre_release_hold_s:=0` (off, bit-identical to the plan before it).
+        # unified_cycle.PRE_RELEASE_HOLD_S), so a sitting can A/B it (default 0 since 2026-10-31) with
+        # `pre_release_hold_s:=0.1` (on).
         # float() because a launch override of `0` arrives as an int.
         self.declare_parameter('pre_release_hold_s',
                                float(sk_seg.SegmentConfig().pre_release_hold_s))

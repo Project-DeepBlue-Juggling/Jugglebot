@@ -81,7 +81,7 @@ def _oval(limits, geom):
     is the level program in both modes)."""
     site_t, site_c = si.columns_sites(SEP_MM)
     T = sc.flight_s(APEX_M)
-    cfg = sg.SegmentConfig()
+    cfg = sg.SegmentConfig(pre_release_hold_s=0.1)
     seed = _rest_state(site_t.rest_site_mm())
     throw = sg.plan_segment(sg.THROW, seed, sg.ThrowTerminal(
         site_mm=site_t.throw_site_mm(), target_mm=site_c.throw_site_mm(),
@@ -104,7 +104,7 @@ def _folded_goals(dwell, mode, site_t, site_c, T, throw, cfg, pose_cfg=None):
 
 def _folded(dwell, mode, limits, geom, pose_cfg=None):
     site_t, site_c, T, throw = _oval(limits, geom)
-    cfg = sg.SegmentConfig(planner_mode=mode)
+    cfg = sg.SegmentConfig(planner_mode=mode, pre_release_hold_s=0.1)
     goals = _folded_goals(dwell, mode, site_t, site_c, T, throw, cfg, pose_cfg)
     return uc.plan_steady(goals, throw.release_state, limits, geom)
 
@@ -113,7 +113,7 @@ def _folded_segment(dwell, mode, limits, geom):
     """The SAME window through ``segments.plan_segment`` (CATCH + then_throw),
     the path the executor and the sweep tool take."""
     site_t, site_c, T, throw = _oval(limits, geom)
-    cfg = sg.SegmentConfig(planner_mode=mode)
+    cfg = sg.SegmentConfig(planner_mode=mode, pre_release_hold_s=0.1)
     v_arr = bal.arrival_velocity(throw.takeoff_vel_mm_s, T)
     then = sg.ThrowAfterCatch(t_release_s=T + dwell, site_mm=site_t.throw_site_mm(),
                               target_mm=site_c.throw_site_mm(), flight_s=T)
@@ -156,10 +156,14 @@ def test_pose_rung2_baseline_cell_reads_the_measured_values(limits, geom):
     _, lvl = _folded(0.50, uc.PLANNER_LEVEL, limits, geom)
     _, pose = _folded(0.50, uc.PLANNER_POSE, limits, geom)
     assert lvl.report.peak_leg_jerk_mmps3 == pytest.approx(111510, rel=0.01)
-    assert lvl.report.max_cup_seating_deg == pytest.approx(32.1, abs=0.3)
+    assert lvl.report.max_cup_seating_deg == pytest.approx(34.71, abs=0.3)
     # 2026-10-24 touch-down skid bound 175 mm/s: 44,329 -> 53,341 at 0.50.
-    assert pose.report.peak_leg_jerk_mmps3 == pytest.approx(53341, rel=0.01)
+    assert pose.report.peak_leg_jerk_mmps3 == pytest.approx(54073, rel=0.01)
     assert pose.report.max_cup_seating_deg == pytest.approx(18.6, abs=0.3)
+    # RE-PINNED 2026-10-31 (hold pinned 0.1 here): level seating 32.1 -> 34.71 deg
+    # and pose jerk 53,341 -> 54,073 from the Hand box floor 0.307 -> 0.06 rev
+    # (level jerk 111,510 unchanged); the 34.71 is the same number the hold-0.1
+    # rung-1 carry reads in test_validate_cycle, so the cause is shared.
 
 
 def test_pose_through_plan_segment_matches_plan_steady(limits, geom):
@@ -276,7 +280,7 @@ def test_pose_seam_refuses_an_off_height_seed_with_the_band_at_zero(limits, geom
     """A seed whose platform sits off the pinned height cannot be re-planned
     with z pinned without a step: refused ``POSE_SEAM`` by name, not slid."""
     site_t, site_c, T, throw = _oval(limits, geom)
-    cfg = sg.SegmentConfig(planner_mode=uc.PLANNER_POSE)
+    cfg = sg.SegmentConfig(planner_mode=uc.PLANNER_POSE, pre_release_hold_s=0.1)
     goals = _folded_goals(0.50, uc.PLANNER_POSE, site_t, site_c, T, throw, cfg)
     seed = throw.release_state
     off = np.asarray(seed.pose, dtype=float).copy()
@@ -312,7 +316,7 @@ def test_pose_mode_leaves_launch_and_settle_as_the_level_program(limits, geom):
     seed = _rest_state(site_t.rest_site_mm())
     base = uc.CycleGoals(period_s=LAUNCH_S, throw_site_mm=site_t.throw_site_mm(),
                          throw_target_mm=site_c.throw_site_mm(), flight_s=T,
-                         pre_release_hold_knots=sg._pre_hold_knots(sg.SegmentConfig()))
+                         pre_release_hold_knots=sg._pre_hold_knots(sg.SegmentConfig(pre_release_hold_s=0.1)))
     lvl_plan, lvl = uc.plan_launch(base, seed, limits, geom)
     pose_plan, pose = uc.plan_launch(
         dataclasses.replace(base, planner_mode=uc.PLANNER_POSE), seed, limits, geom)
@@ -332,7 +336,7 @@ def test_pose_mode_leaves_launch_and_settle_as_the_level_program(limits, geom):
 
 def test_pose_spec_is_none_for_a_held_axis_steady_and_for_a_landing(limits, geom):
     site_t, site_c, T, throw = _oval(limits, geom)
-    cfg = sg.SegmentConfig(planner_mode=uc.PLANNER_POSE)
+    cfg = sg.SegmentConfig(planner_mode=uc.PLANNER_POSE, pre_release_hold_s=0.1)
     goals = _folded_goals(0.50, uc.PLANNER_POSE, site_t, site_c, T, throw, cfg)
     rcfg = uc.build_realize_config(limits)
     cup_cfg = uc.build_cup_config()

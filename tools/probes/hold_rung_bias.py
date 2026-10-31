@@ -37,6 +37,10 @@ no effect = |Delta| < 10 mm with n >= 20 both and |d dy|, |d dapex| < 10 mm;
 else inconclusive.  Hold-0 go/no-go interpolates the confirmed Delta on the
 model's 0.050 row (delay 0/10/20/40 ms) and reads the hold-0 row at that delay.
 
+NOTE 2026-10-31: the production default hold became 0.000 (owner decision after
+the first ladder Sitting; the hold only re-phases a ~6 Hz Platform ring), so
+"control = hold 0.100" means a diagnostic setting you must make explicitly.
+
 Pure stdlib, deterministic.  Run with ``python -I``.
 """
 import argparse
@@ -222,6 +226,9 @@ def compare(ctl, rung):
         out['verdict'] = 'confirmed'
     elif abs(delta) < 10:
         out['verdict'] = 'no effect'
+    elif delta <= -10 and abs(delta) > 2 * se:
+        # Overshoot LONG: the pre-registered (short-side) model does not apply.
+        out['verdict'] = 'reversed (long)'
     return out
 
 
@@ -255,13 +262,15 @@ def hkey(h):
 
 
 def adopt(ctl, rungs):
-    """Shortest hold with Delta <= 20 mm, all caught of >= 30, sd <= control sd + 3."""
+    """Shortest hold with |Delta| <= 20 mm (either direction), all caught of >= 30,
+    sd <= control sd + 3.  A signed test adopted a rung that landed 39.5 mm LONG
+    (2026-10-31): Delta < 0 is long, and long is as wrong as short."""
     best = None
     for h, p in rungs.items():
         if p['n'] < 30 or p['caught'] < p['total'] or p['total'] < 30:
             continue
         c = compare(ctl, p)
-        if c['delta'] is None or c['delta'] > 20 or p['dx'][2] > ctl['dx'][2] + 3:
+        if c['delta'] is None or abs(c['delta']) > 20 or p['dx'][2] > ctl['dx'][2] + 3:
             continue
         if best is None or h < best:
             best = h
@@ -271,10 +280,15 @@ def adopt(ctl, rungs):
 def done_line(ctl, rungs):
     h = adopt(ctl, rungs)
     if h is None:
-        return ('NEXT: ladder done - no shorter hold qualified; keep hold 0.100, set '
-                'pre_release_hold_s 0.100 and continue with the Apex goals')
-    return ('NEXT: ladder done - adopt hold %s; set pre_release_hold_s 0.100 and '
-            'continue with the Apex goals' % ('%.3f' % h if h else '0.0'))
+        return ('NEXT: ladder done - no shorter hold qualified; keep hold 0.100 for this '
+                'diagnostic (the production default is 0.000 since 2026-10-31; the hold is '
+                'a diagnostic now): set pre_release_hold_s 0.100 and continue with the '
+                'Apex goals, or leave the default 0.000')
+    d = compare(ctl, rungs[h])['delta']
+    return ('NEXT: ladder done - adopt hold %s (Delta %+.1f mm, %s); set '
+            'pre_release_hold_s 0.100 (the production default is 0.000 since 2026-10-31; '
+            'the hold is a diagnostic) and continue with the Apex goals'
+            % ('%.3f' % h if h else '0.0', d, 'SHORT' if d > 0 else 'LONG'))
 
 
 def decide(goals):
@@ -287,7 +301,7 @@ def decide(goals):
         rungs[h] = pooled([g for g in rung_g if hkey(g['hold']) == h])
     cmp_ = {h: compare(ctl, p) for h, p in rungs.items()} if ctl else {}
     if ctl is None or ctl['n'] < MIN_N:
-        return ctl, rungs, cmp_, ('NEXT: no control yet - at hold 0.100 run %s x 30 ; '
+        return ctl, rungs, cmp_, ('NEXT: no control yet - set pre_release_hold_s 0.100 (the diagnostic control; the default is 0.000 since 2026-10-31), then run %s x 30 ; '
                                   'then re-run this script' % OVAL)
     r50 = rungs.get(0.050)
     if r50 is None or r50['n'] < MIN_N:
@@ -306,6 +320,8 @@ def decide(goals):
             target = 0.025
         else:
             target, stop = 0.075, True
+    elif c50['verdict'] == 'reversed (long)':
+        target, stop = 0.075, True
     else:
         if r50['n'] < 40:
             return ctl, rungs, cmp_, ('NEXT: inconclusive - ' + 'fly 20 more at 0.050 : '

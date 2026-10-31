@@ -191,16 +191,28 @@ _CUP_Z_BOTTOM_M = (cr.CUP_Z_BASE_MM + cr.SLIDER_REV_ZERO_MM) / 1000.0
 _CUP_Z_TOP_M = (_CUP_Z_BOTTOM_M
                 + float(hw.JB_OP_HAND_CATCH_PRIME_REV) / HAND_REV_PER_M)
 
-#: Inset (m) applied to both ends of that band to get the cup QP's position box.
-#: The box is on the cup opening, but the slider is what has to reach it, and a
-#: TILTED cup sits lower than a level one by ``arm·(1 − cos θ)`` — at the 12°
-#: ceiling and the 250 mm top-of-band lever that is 5.5 mm.  10 mm covers it with
-#: room for the solve's own residual, and keeps the box strictly inside the band
-#: so a knot on the box boundary is still realisable rather than exactly at the
-#: stroke clamp.  Lands at 0.6896 / 0.9846 m, reproducing ``sim/cycle_gate.py``'s
-#: hand-set 0.690 / 0.985 to within 0.4 mm at both ends; that gate keeps its own
-#: literals so its Phase-1 numbers stay reproducible.
-_CUP_Z_INSET_M = 0.010
+#: Insets (m) applied to the two ends of that band to get the cup QP's position
+#: box.  The box is on the cup opening, but the slider is what has to reach it.
+#:
+#: TOP, 10 mm: a TILTED cup sits lower than a level one by ``arm·(1 − cos θ)`` —
+#: at the 12° ceiling and the 250 mm top-of-band lever that is 5.5 mm — so
+#: reaching the box top under tilt needs MORE slider; 10 mm covers it with room
+#: for the solve's own residual and keeps a knot off the stroke clamp.
+#:
+#: BOTTOM, 2 mm (owner, 2026-10-31, asked for 0; was 10 mm; shipped as 2 mm because
+#: the validate floor has no tolerance, so a box floor of exactly the band floor
+#: sat ON it and the planner refused HAND_STROKE -0.001..-0.002 rev at 0, 0.5 and
+#: 1 mm): tilt helps at the bottom, so only the residual remained, and the
+#: firmware homes the end-stop at -0.1 rev, so rev 0 (the band floor and the
+#: streamed lane's clip floor) is still off the stop and the hand approaches the
+#: bottom slowly.  The box floor is the band floor plus 2 mm (0.0614 rev); the
+#: box is [0.0614, prime - 10 mm] rev.
+#:
+#: With prime 10.45 rev the box is cup z [0.6855, 1.0138] m = 0.0614 .. 10.143
+#: rev (band [0.6835, 1.0238] m; the hand-set ``sim/cycle_gate.py`` 0.690 / 0.985
+#: keep their own literals).
+_CUP_Z_TOP_INSET_M = 0.010
+_CUP_Z_BOTTOM_INSET_M = 0.002
 
 #: Cup-opening world z (mm) a cycle SETTLES at — the rest site every LANDING and
 #: SETTLE window is aimed at, and therefore the hand position a session hands back
@@ -208,16 +220,16 @@ _CUP_Z_INSET_M = 0.010
 #:
 #: WHY IT IS A CLAMP AND NOT "THE PARKED HEIGHT".  The obvious rest is the hand's
 #: own park, ``HAND_RETRACT_REV`` = 0.0 rev, i.e. cup z = ``CUP_Z_BASE_MM +
-#: SLIDER_REV_ZERO_MM`` = 679.6 mm.  That is what ``toss_sequencer``'s
+#: SLIDER_REV_ZERO_MM`` = 683.5 mm (679.6 mm before the 2026-10-31 stroke change).  That is what ``toss_sequencer``'s
 #: ``HAND_NOT_PARKED`` gate measures against (``|pos| <= hw.HOMING_HAND_PARK_BAND_REV``,
 #: 0.5 rev) and what the pre-R1 ``hand_source`` settle band was centred on
 #: (retired at R1 along with the latch; kept as the historical constraint this
 #: constant was tuned against).
-#: But it is 10 mm BELOW this module's own cup box — the box is inset by
-#: :data:`_CUP_Z_INSET_M` at both ends — so a window asked to settle there is
-#: refused ``SETTLE_SITE`` before it plans (MEASURED 2026-09-04, the shipped
-#: chained LAUNCH+LANDING at sitting limits: *"settle site z 0.6796 m is outside
-#: the cup box [0.6896, 0.9846] m"*).
+#: But it was BELOW this module's own cup box (the box floor is inset above the
+#: band floor), so a window asked to settle there was refused ``SETTLE_SITE``
+#: before it planned (MEASURED 2026-09-04, the shipped chained LAUNCH+LANDING at
+#: sitting limits: *"settle site z 0.6796 m is outside the cup box [0.6896,
+#: 0.9846] m"*; historical figures, the stroke and inset have both moved since).
 #:
 #: So the settle is the parked height CLAMPED UP into the box: 689.6 mm =
 #: **0.3162 rev**, which is inside ``HOMING_HAND_PARK_BAND_REV`` with 37 % of the band to
@@ -225,6 +237,9 @@ _CUP_Z_INSET_M = 0.010
 #: at 689.60 / 690.0 / 692.0 / 695.0 mm — all ACCEPT), so a session's cycle N+1
 #: starts where cycle N stopped.  Written as ``max`` rather than as the box floor
 #: so it collapses to the true park the moment the box reaches it.
+#: 2026-10-31: the box floor is now 2 mm above the band floor, so the settle is
+#: 685.5 mm = 0.0614 rev (``REST_HAND_REV``), 2 mm above the park / ACTIVATE
+#: position (683.5 mm); the 689.6 mm / 0.3162 rev above is history.
 #:
 #: NOT inside the pre-R1 firmware's ±0.10 rev ``hand_source`` settle band (that
 #: would need 682.8 mm, further out of the box still).  Nothing depended on it
@@ -233,7 +248,7 @@ _CUP_Z_INSET_M = 0.010
 #: and its latch are deleted at R1; this note is historical.
 SETTLE_CUP_Z_MM = max(
     (cr.CUP_Z_BASE_MM + cr.SLIDER_REV_ZERO_MM),
-    (_CUP_Z_BOTTOM_M + _CUP_Z_INSET_M) * 1000.0)
+    (_CUP_Z_BOTTOM_M + _CUP_Z_BOTTOM_INSET_M) * 1000.0)
 
 #: Gravity as this module's mm-native vector — ``ballistics_bc``'s, so the
 #: announcement's ballistics and the QP's release equality cannot drift apart
@@ -279,32 +294,23 @@ _G_MM_S2 = ballistics_bc.G_VEC_MMS2
 #: inside the held block for the same reason it refuses one inside a detach cone.
 POST_RELEASE_HOLD_S = 0.050
 
-#: How long (s) BEFORE a release the platform stops translating — the cup rides
-#: the stroke along the launch line only, ``vel_xy == kappa·vel_z`` with
+#: Pre-release hold (s): for the last this-many seconds before a release the
+#: planner pins the platform's lateral velocity so the cup rides the stroke
+#: along the launch line only, ``vel_xy == kappa*vel_z`` with
 #: ``kappa = v_takeoff_xy / v_takeoff_z``.  ``CycleGoals.pre_release_hold_knots``
-#: in seconds, and the default of ``segments.SegmentConfig.pre_release_hold_s``
-#: (the ``trajectory_node`` parameter ``pre_release_hold_s``; ``0`` turns it off).
-#:
-#: **Why (R4 sitting 1/2, 2026-09-27/28, issue 02 of .scratch/r4-throw-precision):**
-#: the QP ramps the cup's LATERAL velocity smoothly up to ``v_takeoff_xy`` over
-#: the last ~100 ms, independent of the stroke, and ``cup_realize.decompose``
-#: puts the difference on the platform — the hop's planned centroid vx was
-#: +106 / +95 / +34 mm/s at −75 / −50 / −25 ms and 0 at the knot.  The plant
-#: tracks that with 45 ms of delay plus a 30 ms lag, so at the instant the ball
-#: actually separates (+10..+20 ms) the real platform is still moving at
-#: +70..+100 mm/s, which the ball carries as overshoot.  With the hold the
-#: planned platform is ≤ 1 mm/s from −100 ms on, and it stays ≤ 1 mm/s at +15 ms
-#: under that delay model (probe ``probe_prehold.py``, 2026-09-29).
-#:
-#: **0.100 s = 4 knots ≥ 45 ms delay + 30 ms lag + 20 ms separation.**  N = 2..5
-#: were all accepted on the 0.85/0.9/0.95 m hops and the 0.9 m self-toss, and
-#: the hop's leg peaks FELL (jerk 129k → 107k, acc 1735 → 1488 at 0.9 m): the
-#: QP replaces the −97/+106 mm/s reversal with a gentle −45 mm/s backswing at
-#: −250 ms.  N = 5 raised that backswing for no gain.  The tilt is NOT pinned:
-#: a naive tilt pin refused LIMIT_ACC 15-23k mm/s², and the residual tilt rate
-#: (3.59 → 4.01° over the last 100 ms) is already absorbed by the centroid so
-#: the CUP carrier velocity is ~0.
-PRE_RELEASE_HOLD_S = 0.100
+#: carries it in knots; ``segments.SegmentConfig.pre_release_hold_s`` and the
+#: ``trajectory_node`` parameter of the same name carry it in seconds.
+#: Origin: R4 sitting 1/2, 2026-09-27/28 (issue 02 of .scratch/r4-throw-precision),
+#: where the plant was modelled as 45 ms delay + 30 ms lag, so the platform would
+#: still be moving at the instant the ball separates and the ball would carry it.
+#: **That rationale was replaced 2026-10-31** (`hold_sign` analysis of the second
+#: Sitting launch): the Platform tracks the executed command within ~15 ms, and
+#: the landing bias is a ~6 Hz Platform ring excited by the carry deceleration;
+#: the hold only moves that ring's phase at release.  At 1.05/0.50 (30/30 each):
+#: hold 0.100 -> +10 mm short, 0.050 -> -30 long, 0.000 -> -46 long; hold 0 also
+#: cut leg acceleration 44 %.  Default 0 since 2026-10-31; the hold stays
+#: live-settable (``ros2 param set /trajectory_node pre_release_hold_s``) as a diagnostic.
+PRE_RELEASE_HOLD_S = 0.000
 
 _HAND_REST_EPS_RPS = 0.1
 
@@ -1328,16 +1334,16 @@ def build_cup_config(**overrides) -> cc.CupCycleConfig:
     different numbers on purpose.  ``catch_runway_z_floor_m`` is defined by
     ``cup_cycle`` as "cup z with the slider at the BOTTOM of its stroke" — the
     height below which there is no slider left to decelerate into — and that is
-    :data:`_CUP_Z_BOTTOM_M` (0.6796 m), the realisation of
+    :data:`_CUP_Z_BOTTOM_M` (0.6835 m), the realisation of
     ``feasibility.HAND_STROKE_MIN_REV`` (0.0 rev), which is the same floor
     ``validate_cycle``'s runway pass measures against.  The POSITION box floor is
-    one :data:`_CUP_Z_INSET_M` above it, because a knot is kept off the clamp;
+    one :data:`_CUP_Z_BOTTOM_INSET_M` (2 mm since 2026-10-31) above it;
     feeding that inset number as the runway floor made the analytic gate believe
-    10 mm less runway existed than the gate downstream of it allows, i.e. two
+    the inset's worth less runway existed than the gate downstream of it allows, i.e. two
     layers disagreeing about the same physical stop.  Corrected 2026-09-04.
     """
-    kwargs = dict(z_min_m=_CUP_Z_BOTTOM_M + _CUP_Z_INSET_M,
-                  z_max_m=_CUP_Z_TOP_M - _CUP_Z_INSET_M,
+    kwargs = dict(z_min_m=_CUP_Z_BOTTOM_M + _CUP_Z_BOTTOM_INSET_M,
+                  z_max_m=_CUP_Z_TOP_M - _CUP_Z_TOP_INSET_M,
                   catch_runway_z_floor_m=_CUP_Z_BOTTOM_M,
                   catch_runway_enabled=True)
     kwargs.update(overrides)

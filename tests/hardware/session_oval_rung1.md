@@ -341,17 +341,33 @@ This Sitting answers three things: do the Columns still catch under the `pose` p
 - Launch with the bag, tee to `temp/logs/`.
 - Validate-only EVERY goal below against the live `/robot_state` (goals 1-4 and 7); fix all refusals before arming. Sim gate (2026-10-30, `python sim/skills_gate.py --learn --target-throws 12`): all of them PASS in sim, which has no tracking delay, so only this Sitting measures the hold.
 
-**Goals** (GUI Pattern, then Sep. / Apex / Dwell / Throws; hold stays 0.100 unless a step sets it)
+**Goals** (GUI Pattern, then Sep. / Apex / Dwell / Throws; hold stays 0.100 unless a step sets it; **the default is 0.000 since 2026-10-31 (owner decision after this Sitting, § 11.1), so to re-fly this list `ros2 param set /trajectory_node pre_release_hold_s 0.1` first**)
 1. `Columns - Ball 2 (fed)` (the ONE-ball fed cold start), Sep. 125, Apex 0.95, Throws 6 (the values every flown Columns goal has used; the box has no Columns cell at any other separation).
 2. `Columns` (the TWO-ball pattern), Sep. 125, Apex 0.95, Throws 50. Expect >= 49/50 caught and no BOX-EXPECTED-LANDING refusal.
 3. `Oval - fed`, Sep. 150, Apex 0.95, Dwell 0.45, Throws 6.
-4. `Oval - Ball 1`, Sep. 150, Apex 0.95, Dwell 0.45, Throws 30. This is the control at hold 0.100. Expect 30/30.
-5. Terminal: `ros2 param get /trajectory_node pre_release_hold_s` should read 0.1; then `ros2 param set /trajectory_node pre_release_hold_s 0.050` (it is refused while a goal is active). Then `Oval - Ball 1`, Sep. 150, Apex 0.95, Dwell 0.45, Throws 30.
+4. `Oval - Ball 1`, Sep. 150, Apex 0.95, Dwell 0.45, Throws 30. This is the control at hold 0.100 (the pre-2026-10-31 default; set it explicitly now). Expect 30/30.
+5. Terminal: `ros2 param get /trajectory_node pre_release_hold_s` should read 0.1 (0.0 at the current default: set it first); then `ros2 param set /trajectory_node pre_release_hold_s 0.050` (it is refused while a goal is active). Then `Oval - Ball 1`, Sep. 150, Apex 0.95, Dwell 0.45, Throws 30.
 6. Terminal: `python -I tools/probes/hold_rung_bias.py --latest`. Do what its `NEXT:` line says (it names the hold to set, the goal to fly, and to re-run it). At most three rounds; stop when it says `ladder done`.
-7. Terminal: `ros2 param set /trajectory_node pre_release_hold_s 0.100`. Then `Oval - Ball 1`, Sep. 150, Apex 1.00, Dwell 0.50, Throws 30; then Apex 1.05, Dwell 0.50, Throws 30; then Apex 1.00, Dwell 0.45, Throws 30 only if both passed (>= 29/30, no HAND_LIMIT line; Hand peak acc in the bag read-back < 3900).
+7. Terminal: `ros2 param set /trajectory_node pre_release_hold_s 0.100` (a diagnostic setting now, not the default). Then `Oval - Ball 1`, Sep. 150, Apex 1.00, Dwell 0.50, Throws 30; then Apex 1.05, Dwell 0.50, Throws 30; then Apex 1.00, Dwell 0.45, Throws 30 only if both passed (>= 29/30, no HAND_LIMIT line; Hand peak acc in the bag read-back < 3900).
 
 **After**
 - Stop. Commit `docs/records.md` and `temp/learn/jugglebot/memory.csv` (tracked).
 - Put the launch dir and bag path in the logbook entry.
 - Run the probe once more for the record: `python -I tools/probes/hold_rung_bias.py --latest --json temp/probes/hold_ladder_<date>.json`.
 - Per-attempt watch: the row-22 grep of § 1. Hand thermal: ~250 throws in this ladder; pause between goals if the Hand runs hot (§ 4 thermal note). Stop rules as § 2 row 26.
+
+### 11.1 Results - FLOWN 2026-10-31 13:14 (launch `2026-10-31-13-14-00-526910-jetson-1123157`, bag `2026-10-31_13-14-00`)
+
+The ladder is done: it answered the hold question and the model behind it was wrong. Entry `logbook/2026-10-31-hold-ladder-sitting-the-hold-model-was-wrong.md`.
+
+1. `Columns - Ball 2 (fed)`, Sep. 125: no result as such; goals 1 and 3 (two-ball hop starts) ended MISSED_CATCH 0/0, the hop throw landing 25-56 mm inboard past the 35 mm catch authority (JB-121).
+2. `Columns`, Sep. 125, 50 throws: NOT MET. Goal 2 ended MISSED_CATCH at 4/4 (Ball 1 at the +62 site); goal 4 ended HAND_LIMIT_ACC 4112.5 > 3900 at 12/13 while the box said "inside" (JB-120).
+3. `Oval - fed`: goal 5 ended MISSED_CATCH at 2/2 (ball never seen after release); goal 6 done 6/6.
+4. `Oval - Ball 1`, hold 0.100 control: 30/30, dx +9.9 mm short, sd 14.1 mm.
+5. Hold 0.050, two goals: 30/30 each, 30.9 and 28.2 mm LONG (opposite sign to the prediction).
+6. Probe rounds: rung 0.075 flown, goal 10 ended LANE_REFUSED (JB-98) at 6/6, goal 11 done 30/30, 6.7 mm long; probe verdict 0.050 Delta -39.5 mm (REVERSED, long); its "adopt 0.050" line was a signed-test bug, fixed.
+7. Apex: 1.00/0.50 hold 0.100 goal 12 ended LANE_REFUSED at 18/18, goal 13 ended SPLICE_TOO_LATE (JB-122), goal 14 done 30/30; 1.05/0.50 at hold 0.050 30/30 (17.8 mm long) and at hold 0 30/30 (46.2 mm long, sd 10.0 mm, the tightest). The dwell 0.45 Apex goal was not flown.
+
+Owner decisions: `pre_release_hold_s` default 0.000; Hand stroke top +16 mm and bottom box margin 0 (asked for 0, shipped as 2 mm: the validate floor has no tolerance, so 0 sat exactly on it and the planner refused HAND_STROKE -0.001..-0.002 rev; box floor 0.0614 rev, cup z 0.6855 m); the opening-REST Hand return is a smooth move.
+
+Pre-Sitting for the next flight: `colcon build --packages-select jugglebot` and re-source (the install tree is stale until then). `config/generate_config.py` also rewrote `BallButler/ball_butler_main/{hardware_config,protocol_config}.h` (prime 10.45 plus earlier-lagging pose/protocol constants); that needs review and a commit in the BallButler repo, and implies no reflash (nothing reads `HAND_CATCH_PRIME_REV`).

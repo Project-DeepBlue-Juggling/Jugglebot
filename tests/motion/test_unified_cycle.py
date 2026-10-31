@@ -254,7 +254,7 @@ def test_the_level_slider_map_agrees_with_decompose_and_round_trips():
         cfg.cup_z_base_mm + cfg.slider_rev_zero_mm, cfg) == pytest.approx(0.0)
     assert uc.SETTLE_CUP_Z_MM >= cfg.cup_z_base_mm + cfg.slider_rev_zero_mm
     assert uc.SETTLE_CUP_Z_MM == pytest.approx(
-        (uc._CUP_Z_BOTTOM_M + uc._CUP_Z_INSET_M) * 1000.0)
+        (uc._CUP_Z_BOTTOM_M + uc._CUP_Z_BOTTOM_INSET_M) * 1000.0)
 
 
 def test_cup_velocity_from_platform_tracks_the_cup_plan(steady):
@@ -2187,8 +2187,8 @@ def test_build_cup_config_boxes_the_slider_reachable_band():
     stroke" — the height below which there is no slider left to decelerate into
     — which is the realisation of ``feasibility.HAND_STROKE_MIN_REV`` (0.0 rev),
     i.e. **0.6796 m**, and it is the same floor ``validate_cycle``'s runway pass
-    measures against.  The box floor sits one ``_CUP_Z_INSET_M`` above it so a
-    knot is never planned onto the stroke clamp.  Feeding the box floor to the
+    measures against.  The box floor sat one 10 mm inset above it until 2026-10-31
+    (owner: bottom inset now 0, ``_CUP_Z_BOTTOM_INSET_M``; the top keeps 10 mm).  Feeding the box floor to the
     runway gate (as this did until 2026-09-04) made the analytic gate believe
     10 mm less runway existed than the gate downstream of it allows — two layers
     disagreeing about where the same physical stop is.
@@ -2197,16 +2197,17 @@ def test_build_cup_config_boxes_the_slider_reachable_band():
     # 0.690 / 0.6796 until the 2026-09-27 kinematic calibration moved the cup base
     # (cup_realize.CUP_Z_BASE_MM 659.6 -> 663.5, the STOW height 574.3 -> 578.2):
     # the whole band rides on the platform centroid, so both numbers are +3.9 mm.
-    assert cfg.z_min_m == pytest.approx(0.6935, abs=0.001)
+    # 2026-10-31: bottom inset 10 -> 2 mm (0 mm refuses HAND_STROKE -0.001 rev: the floor has no tolerance).
+    assert cfg.z_min_m == pytest.approx(0.6855, abs=0.0005)   # 2 mm bottom inset
     # 0.985 at the pre-R1 gain; at the measured gain the catch-prime knot
     # (9.9594 rev) sits 324.3 mm above hand zero, not 315.0, so the box top
     # rises with it: the band is the operating stroke in TRUE millimetres.
     assert cfg.z_max_m == pytest.approx(
         0.6835 + float(hw.JB_OP_HAND_CATCH_PRIME_REV) / float(hw.HAND_REV_PER_M)
-        - 0.010, abs=1e-4)
+        - uc._CUP_Z_TOP_INSET_M, abs=1e-4)
     assert cfg.catch_runway_z_floor_m == pytest.approx(uc._CUP_Z_BOTTOM_M)
     assert cfg.catch_runway_z_floor_m == pytest.approx(
-        cfg.z_min_m - uc._CUP_Z_INSET_M)
+        cfg.z_min_m - uc._CUP_Z_BOTTOM_INSET_M)
     # The runway floor IS the realisation of feasibility's stroke floor.
     assert cfg.catch_runway_z_floor_m * 1000.0 == pytest.approx(
         cr.CUP_Z_BASE_MM + cr.SLIDER_REV_ZERO_MM
@@ -3280,3 +3281,14 @@ def test_splice_at_refuses_a_knot_inside_the_platform_hold_not_only_the_cone(
         uc.splice_at(head_plan, head_meta, k_s, seg_plan, seg_meta, limits,   # seam check
                      geom)
     assert excinfo.value.code == uc.REPLAN_WINDOW
+
+
+def test_rest_site_keeps_a_margin_above_the_stroke_floor():
+    """2026-10-31: with the bottom inset at 0 about half of the REST probe plans
+    were refused HAND_STROKE -0.000 (solver residual under a floor with no
+    margin; ``validate`` allows no tolerance).  The box floor, hence
+    ``SETTLE_CUP_Z_MM`` and ``sites.REST_HAND_REV``, keeps >= 0.015 rev
+    (0.5 mm; the shipped 2 mm inset gives ~0.06) above rev 0."""
+    from jugglebot.motion.skills import sites
+    assert uc._CUP_Z_BOTTOM_INSET_M >= 0.0005
+    assert sites.REST_HAND_REV >= 0.015

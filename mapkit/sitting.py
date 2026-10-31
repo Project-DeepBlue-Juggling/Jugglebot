@@ -195,6 +195,8 @@ def render_runbook(repo_root: str) -> str:
         "## Setup 0: before power", "",
         "- Power-cycle the can-bridge after any re-cabling (sticky presence set trips CAN_BUS_DOWN).",
         "- Latch `hand_source` before arming (it resets to LEGACY on every bridge reboot).",
+        "- Run `colcon build --packages-select jugglebot` and re-source before the Sitting (the install tree is stale until then).",
+        "- BallButler: `config/generate_config.py` rewrote `BallButler/ball_butler_main/{hardware_config,protocol_config}.h` (prime 10.45 plus earlier-lagging pose/protocol constants); review and commit that in the BallButler repo. No reflash is implied (nothing reads `HAND_CATCH_PRIME_REV`).",
         "- Check out the candidate branch in the live checkout only if a row below names a `branch:`.", ""]
     for n, block in enumerate(data["blocks"], 1):
         setup = ", ".join(block[0].spec.setup) or "no setup"

@@ -1468,6 +1468,49 @@ def _snap_to_release(meta: uc.CycleMeta, k_s: int,
     return k_s, False
 
 
+#: REST re-splice solve-time model (2026-10-31, goal 13 ``SPLICE_TOO_LATE``).
+#: A REST's solve time grows ~T^2 with its window T (offline, single thread on
+#: the Jetson, ``probe_rest_solve_time.py``: 1.5 s -> 80 ms, 3.2 s -> 290-370
+#: ms, 6.5 s -> 1360 ms; live goal 13: 6.5 s -> 323-470 ms).  The fixed
+#: ``SOLVE_BUDGET_KNOTS`` budget (150 ms) covers a REST only up to ~1.8 s.
+REST_SOLVE_REF_WINDOW_S = 1.5
+REST_SOLVE_REF_S = 0.080
+#: Margin over the fitted curve (the 3.2 s point is 0.364 s on the curve vs
+#: 0.37 measured, so the margin is what covers it).
+REST_SOLVE_MARGIN = 1.25
+
+
+def rest_solve_budget_s(window_s: float) -> float:
+    """Solve budget (s) a REST splice of ``window_s`` reserves: the larger of
+    the standard ``SOLVE_BUDGET_KNOTS`` budget and ``REST_SOLVE_MARGIN`` times
+    the quadratic fit ``REST_SOLVE_REF_S * (T / REST_SOLVE_REF_WINDOW_S)^2``."""
+    base = (LEAD_S - WIRE_READ_KNOTS * float(hw.JB_TRAJ_KNOT_DT_S))
+    fit = (REST_SOLVE_MARGIN * REST_SOLVE_REF_S
+           * (float(window_s) / REST_SOLVE_REF_WINDOW_S) ** 2)
+    return max(base, fit)
+
+
+def splice_lead_s(kind: str, terminal, t_now_s: float, lead_s: float) -> float:
+    """The lead a SPLICE of ``kind`` reserves.  ``lead_s`` for THROW/CATCH
+    (their event is absolute, a longer lead eats the window the gate certified
+    and the handoff lead is already tuned, ``handoff-solve-chaining``).  For a
+    REST (no event before its end) the lead grows with the window so the solve
+    always fits: ``rest_solve_budget_s(window) + WIRE_READ_KNOTS*dt`` rounded
+    up to whole knots, never below ``lead_s`` and never more than half the
+    time to the REST's end."""
+    if kind != REST:
+        return float(lead_s)
+    dt = float(hw.JB_TRAJ_KNOT_DT_S)
+    t_end = _event_abs_s(kind, terminal)
+    window = t_end - (float(t_now_s) + float(lead_s))
+    if window <= 0.0:
+        return float(lead_s)
+    want = rest_solve_budget_s(window) + WIRE_READ_KNOTS * dt
+    want = math.ceil(want / dt - 1e-9) * dt
+    cap = 0.5 * (t_end - float(t_now_s))
+    return max(float(lead_s), min(want, cap))
+
+
 def splice_knot_for(record: PlanRecord, kind: str, terminal,
                     t_now_s: float, lead_s: float) -> Tuple[int, bool]:
     """``(k_s, seeded_post_release)`` — the splice knot :func:`install_segment`
@@ -1483,6 +1526,7 @@ def splice_knot_for(record: PlanRecord, kind: str, terminal,
     """
     dt = float(record.plan.dt)
     t0 = float(record.t0_s)
+    lead_s = splice_lead_s(kind, terminal, t_now_s, lead_s)
     k_s = uc.splice_knot(record.meta, float(t_now_s) - t0, lead_s)
     event_k = int(math.floor((_event_abs_s(kind, terminal) - t0) / dt))
     return _snap_to_release(record.meta, k_s, dt, event_k)

@@ -77,18 +77,18 @@ CUP_Z_BASE_MM = float(tilt_geometry.CUP_TILT_CENTER_Z_MM) - 84.7
 #: so a change to ``GRAVITY_MPS2`` ripples here instead of drifting.
 GRAVITY_VEC_MPS2 = np.array([0.0, 0.0, -float(hw.GRAVITY_MPS2)])
 
-#: Slider position (mm, measured from the bottom of the ``GEOM_HAND_STROKE_MM``
+#: Slider position (mm, measured from the bottom of the ``HAND_PLANNER_TRAVEL_MM``
 #: travel) that corresponds to **0 motor rev** in the firmware's homed frame.
 #:
 #: ⚠ This is the 20 mm frame divergence documented at
-#: ``sim/plant/mujoco_plant.py:130-152`` and owned by
+#: ``sim/plant/mujoco_plant.py`` (``_hand_prime_mm``) and owned by
 #: ``plans/archived/hand-trajectory-generator-overhaul.md``: the firmware homes
 #: downward and measures its stroke from the physical bottom (x3 = 315 mm), while
 #: the sim insets its stroke by ``TEENSY_TRAJ_STROKE_MARGIN_M`` (20 mm) inside the
-#: 344.75 mm travel.  The sim's own plant already resolves the two exactly this
+#: 361.99 mm planner travel (344.75 mm before 2026-10-31).  The sim's own plant already resolves the two exactly this
 #: way — ``_hand_prime_mm = 20 mm + HAND_STROKE_TOP_REV/gain`` — so the same
 #: relation is used here, which is what makes slider 335 mm land on
-#: ``JB_OP_HAND_CATCH_PRIME_REV`` (9.9594 rev) instead of somewhere arbitrary.
+#: ``JB_OP_HAND_CATCH_PRIME_REV`` (10.45 rev since 2026-10-31) instead of somewhere arbitrary.
 #: The unified planner's whole cup-height model (:data:`CUP_Z_BASE_MM`) is in the
 #: sim's mm frame, so the offset cannot be dropped without moving the cup.
 SLIDER_REV_ZERO_MM = float(hw.TEENSY_TRAJ_STROKE_MARGIN_M) * 1000.0
@@ -129,18 +129,19 @@ TILT_RATE_LIMIT_DEFAULT_RAD_S = 3.0
 #:      centroid is offset by ``arm · cup_axis_xy`` with ``arm = cup_z −
 #:      744.3``.  Over the slider-reachable cup band (cup z ≈ 679.6…994.6 mm at
 #:      the pinned centroid — see :data:`CUP_Z_BASE_MM` and
-#:      ``GEOM_HAND_STROKE_MM``) the largest lever is ``994.6 − 744.3 =
-#:      250.3 mm``.
+#:      ``HAND_PLANNER_TRAVEL_MM``; band top 1023.8 mm at prime 10.45, box top
+#:      1013.8 mm) the largest lever is now ``1023.8 − 744.3 = 279.5 mm`` to the
+#:      band top (the code uses the band top); it was 250.3 mm.
 #:   2. A leg attachment also sees the platform's own angular acceleration
 #:      through its radius, ``GEOM_PLAT_RADIUS_MM = 219.075 mm``.
 #:   3. The two add, so a tilt acceleration ``α`` costs at most
-#:      ``L · α`` of leg acceleration with ``L = 250.3 + 219.075 = 469.4 mm``.
+#:      ``L · α`` of leg acceleration with ``L = 279.5 + 219.075 = 498.6 mm``.
 #:   4. The cup's own translation needs the rest of the budget, so the tilt term
 #:      is allowed **half** of ``JB_TRAJ_LEG_ACC_LIMIT_MMPS2`` (a 2× reserve; the
 #:      measured level-platform baseline on the WP3 demo cycle is 394 mm/s², ~8 %,
 #:      leaving the factor comfortable rather than tight).
 #:
-#: ``α_max = 0.5 · 5000 / 469.4 = 5.33 rad/s²`` — and the WP4 sweep confirms the
+#: ``α_max = 0.5 · 5000 / 498.6 = 5.01 rad/s²`` (5.33 with the pre-2026-10-31 469.4 mm lever; the code constant :data:`TILT_ACCEL_LEVER_MM` is authoritative) — and the WP4 sweep confirms the
 #: derivation lands where the machine actually is: a banking schedule held near
 #: 5–7 rad/s² validates, one at 10 rad/s² does not.  Config-derived, not a
 #: literal, so a change to the leg limit or the platform radius ripples here.
@@ -341,8 +342,10 @@ class RealizeConfig:
     #: DEFINED at a knot; below it the schedule carries the last valid attitude.
     #: See :data:`BANKING_SEATING_MIN_G` — that constant is the one definition.
     banking_seating_min_g: float = BANKING_SEATING_MIN_G
-    #: Usable slider travel (mm).
-    slider_stroke_mm: float = float(hw.GEOM_HAND_STROKE_MM)
+    #: Usable slider travel (mm), in the frame where rev 0 = ``slider_rev_zero_mm``:
+    #: the firmware clip's reach (HAND_PLANNER_TRAVEL_MM, 362 mm), NOT the 344.75 mm
+    #: GUI/MuJoCo render geometry, which clamped the band at 9.972 rev (2026-10-31).
+    slider_stroke_mm: float = float(hw.HAND_PLANNER_TRAVEL_MM)
     #: Cup world z (mm) at zero slider, platform at ``active_z_mm``.
     cup_z_base_mm: float = CUP_Z_BASE_MM
     #: Slider mm that maps to 0 motor rev (see :data:`SLIDER_REV_ZERO_MM`).

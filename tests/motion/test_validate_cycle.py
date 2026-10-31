@@ -29,8 +29,8 @@ make each one fire exactly one gate:
 ===================  =========================================================
 code                 recipe (dt = 0.025 s, pose held at NEUTRAL throughout)
 ===================  =========================================================
-``HAND_STROKE``      3 knots at rest, hand ``[5.0, 10.2, 5.0]`` rev — the middle
-                     knot is past the 9.9594 rev operating top.  ``-0.5`` instead
+``HAND_STROKE``      3 knots at rest, hand ``[5.0, 10.7, 5.0]`` rev — the middle
+                     knot is past the 10.45 rev operating top (was 9.9594 until 2026-10-31; the 10.2 recipes became 10.7).  ``-0.5`` instead
                      of ``10.2`` goes below the homed zero.  At rest everywhere,
                      so no vel/acc/step gate can fire.  ⚠ To reach the END-STOP
                      branch the FIRST sample must already be past 10.8 rev
@@ -41,7 +41,7 @@ code                 recipe (dt = 0.025 s, pose held at NEUTRAL throughout)
                      written out here.
 ``HAND_LIMIT_VEL``   2 knots, hand ``[1.0, 7.5]`` rev with BOTH knot velocities
                      260 rev/s — a constant-velocity span, so the acceleration is
-                     identically zero and the stroke stays inside ``[0, 9.9594]``.
+                     identically zero and the stroke stays inside ``[0, 10.45]``.
                      Only the 200 rev/s cap can fire.
 ``HAND_LIMIT_ACC``   3 knots, hand ``[1.0, 2.0, 3.0]`` rev with velocities
                      ``[0, 100, 0]`` rev/s.  Measured peak 6400 rev/s² against
@@ -264,17 +264,17 @@ def test_the_six_dof_gates_are_blind_to_a_cycle_plan(geom, sitting_limits):
 # ═══════════════════════════════════════════════════════════════════════════
 
 def test_hand_stroke_refuses_above_the_operating_top(geom):
-    """Recipe: 3 knots at rest, hand ``[5.0, 10.2, 5.0]`` rev."""
+    """Recipe: 3 knots at rest, hand ``[5.0, 10.7, 5.0]`` rev."""
     report = feas.validate_cycle(
-        _held([5.0, 10.2, 5.0], [0.0, 0.0, 0.0]), _limits(), geom)
+        _held([5.0, 10.7, 5.0], [0.0, 0.0, 0.0]), _limits(), geom)
     assert report.code == feas.HAND_STROKE
     assert report.ok is False
-    assert report.peak_hand_rev == pytest.approx(10.2)
+    assert report.peak_hand_rev == pytest.approx(10.7)
     detail = report.reasons[0]
     # The bound_msg / range_msg discipline: the offending value, the band, and
     # the units, all inside the one string that reaches the operator.
-    assert '10.200 rev' in detail
-    assert '[0.000, 9.959]' in detail
+    assert '10.700 rev' in detail
+    assert '[0.000, 10.450]' in detail
     # Inside the operating band it is NOT past the end stop, so the refusal must
     # not shout about one.
     assert 'END STOP' not in detail
@@ -306,17 +306,17 @@ def test_hand_stroke_refuses_below_the_homed_zero(geom):
 def test_hand_stroke_sees_an_excursion_hidden_BETWEEN_knots(geom):
     """Both knots inside the band, the cubic between them outside it.
 
-    Knots at 9.0 rev with equal and opposite 190 rev/s velocities bulge the
-    Hermite to 10.19 rev even though NEITHER knot leaves the band and neither knot
+    Knots at 9.5 rev with equal and opposite 190 rev/s velocities bulge the
+    Hermite to 10.69 rev even though NEITHER knot leaves the band and neither knot
     velocity reaches the 200 rev/s cap.  A per-knot check alone would pass it.
     """
-    plan = _held([9.0, 9.0], [190.0, -190.0])
+    plan = _held([9.5, 9.5], [190.0, -190.0])
     # Neither knot is out of band, and neither is over the velocity cap...
     assert plan.hand_rev.max() < feas.HAND_STROKE_MAX_REV
     assert np.abs(plan.hand_vel_rps).max() < float(hw.JB_TRAJ_HAND_VEL_LIMIT_RPS)
     report = feas.validate_cycle(plan, _limits(), geom)
     assert report.code == feas.HAND_STROKE
-    assert report.peak_hand_rev == pytest.approx(10.1875)
+    assert report.peak_hand_rev == pytest.approx(10.6875)
 
 
 # ═══════════════════════════════════════════════════════════════════════════
@@ -450,7 +450,7 @@ def test_a_seed_at_or_below_the_homed_zero_gets_the_dive_tolerance(seed, geom):
     and the cubic's own interior curvature — the SAME 2.5e-06 rev the tolerance
     was measured to admit — put knot 0's span an infinitesimal distance under
     it: refused ``HAND_STROKE``, "hand position -0.000 rev outside
-    [0.000, 9.959]".  A seed of 0.0001 passed and one of -0.002 passed; only the
+    [0.000, 10.450]".  A seed of 0.0001 passed and one of -0.002 passed; only the
     value the machine actually parks at did not.
     """
     plan = _held([seed, seed, seed], [0.0, 0.0, 0.0])
@@ -771,7 +771,7 @@ def test_every_new_code_round_trips_through_base_outcome(code):
 
 
 @pytest.mark.parametrize('code,plan_args,limit_kw', [
-    (feas.HAND_STROKE, ([5.0, 10.2, 5.0], [0.0, 0.0, 0.0]), {}),
+    (feas.HAND_STROKE, ([5.0, 10.7, 5.0], [0.0, 0.0, 0.0]), {}),
     (feas.HAND_LIMIT_VEL, ([1.0, 1.0 + 260.0 * DT], [260.0, 260.0]), {}),
     (feas.HAND_LIMIT_ACC, ([1.0, 2.0, 3.0], [0.0, 100.0, 0.0]), {}),
     # C2FF spec (2026-09-14): the SAME (rev, rev_s) triple
@@ -1716,15 +1716,19 @@ def test_rung1_holdless_raw_chain_reads_the_pinned_values(geom):
     ``pre_release_hold``): the production segment path reads 32.1 deg - refused
     at the 30 deg cone until 2026-10-19, passing at 45 deg since
     (``test_rung1_through_the_production_segment_path_passes_the_45_deg_cone``).
-    The 18.68 deg is a post-stroke reading, unchanged by the stroke-end rule."""
+    The 18.68 deg is a post-stroke reading, unchanged by the stroke-end rule.
+    RE-PINNED 2026-10-31: 18.68 deg / 0.837 g / 0.533 / ~9 mm/s -> 20.16 deg /
+    0.760 g / 0.568 / ~14 mm/s.  Cause: the Hand box floor 0.307 -> 0.06 rev
+    (``_CUP_Z_BOTTOM_INSET_M`` 0.010 -> 0.002 m; scratch override of that one
+    input restores 18.39 deg / 0.844 g, the last ~0.3 deg being the raised top)."""
     plan, _meta = _rung1_window()
     assert plan.catch_k == 35
     rep = _validate_oval(plan, geom)
     assert rep.code == 'OK', (rep.code, rep.reasons)
-    assert rep.max_cup_seating_deg == pytest.approx(18.68, abs=0.05)
-    assert rep.min_cup_seating_az_g == pytest.approx(0.837, abs=0.002)
-    assert rep.catch_closing_ratio == pytest.approx(0.533, abs=0.005)
-    assert rep.catch_skid_mmps == pytest.approx(9.3, abs=1.5)
+    assert rep.max_cup_seating_deg == pytest.approx(20.16, abs=0.05)
+    assert rep.min_cup_seating_az_g == pytest.approx(0.760, abs=0.002)
+    assert rep.catch_closing_ratio == pytest.approx(0.568, abs=0.005)
+    assert rep.catch_skid_mmps == pytest.approx(14.0, abs=1.5)
 
 
 @pytest.mark.parametrize('name, deg', [('fx_sep175', 21.44), ('fx_dwell040', 24.41)])
@@ -1743,10 +1747,12 @@ def test_the_p3_target_fixtures_pass_the_rebased_cone(geom, name, deg):
     assert rep.min_cup_seating_az_g > 0.5
 
 
-def _oval_carry_segment(dwell_s):
+def _oval_carry_segment(dwell_s, hold_s=0.100):
     """The rung-1 oval carry through the PRODUCTION segment path (the same
     ``segments._plan_catch_throw`` terminal the executor dispatches, default
-    ``SegmentConfig()`` = 0.100 s pre-release hold).  Recipe: sites
+    ``SegmentConfig`` with the pre-release hold pinned to ``hold_s`` = 0.100 s,
+    the hold-ON arm the readings below were measured on; the production default
+    became 0.000 on 2026-10-31).  Recipe: sites
     ``columns_sites(150)``, apex 0.95, limits 350/5000/200000 + hand 3900; a
     LAUNCH P1 -> P2, then the CATCH at P2 (z 830, ballistic arrival, t = flight)
     that carries to a throw RELEASED AT P1 (``site_mm=thr1``: catch at one
@@ -1760,7 +1766,7 @@ def _oval_carry_segment(dwell_s):
     p1, p2 = st.columns_sites(150.0)
     limits = _oval_limits()
     geom = StewartGeometry()
-    cfg = sg.SegmentConfig(planner_mode='level')
+    cfg = sg.SegmentConfig(planner_mode='level', pre_release_hold_s=hold_s)
     rcfg = cr.RealizeConfig()
     flight = 2.0 * np.sqrt(2.0 * 0.95 / 9.806)
     rest_mm = np.array([*np.asarray(p1.cup_mm, float)[:2], 750.0])
@@ -1819,16 +1825,20 @@ def test_rung1_through_the_production_segment_path_passes_the_45_deg_cone(
     23.56 deg at worst (touch-down + 1).  Measured 2026-10-19 through the spy.
     (The whole segment still fails at these limits - LIMIT_VEL on the SETTLE
     tail, 447.8 > 350 mm/s - which is not C-CUP-4's business; pinned only as
-    "not a seating code".)"""
+    "not a seating code".)
+    RE-PINNED 2026-10-31 (hold pinned explicitly to 0.100 via ``_oval_carry_segment``):
+    32.1 -> 34.71 deg, 0.82 -> 0.742 g, braking 23.56 -> 21.13 deg.  Cause: the
+    Hand box floor 0.307 -> 0.06 rev / raised top (the hold-0 production default
+    reads the hold-less 20.17 deg, see ``test_the_production_default_carry_reads_the_holdless_seating``)."""
     windows, out = _gated_windows(lambda: _oval_carry_segment(0.50), monkeypatch)
     rep = feas.validate_cycle(windows[0], _oval_limits(), geom)
     assert rep.code == 'OK', (rep.code, rep.reasons)
     assert windows[0].catch_k == 35
     assert rep.cup_stroke_end_k == (42,)
-    assert rep.max_cup_seating_deg == pytest.approx(32.1, abs=0.1)
+    assert rep.max_cup_seating_deg == pytest.approx(34.71, abs=0.1)
     assert 30.0 < rep.max_cup_seating_deg < feas.CUP_SEATING_CONE_DEG
-    assert rep.min_cup_seating_az_g == pytest.approx(0.82, abs=0.01)
-    assert rep.max_cup_braking_deg == pytest.approx(23.56, abs=0.1)
+    assert rep.min_cup_seating_az_g == pytest.approx(0.742, abs=0.01)
+    assert rep.max_cup_braking_deg == pytest.approx(21.13, abs=0.1)
     if isinstance(out, _uc.CycleInfeasible):
         assert out.code not in (feas.CUP_SEATING_CONE, feas.CUP_SEATING_FLOOR), out
 
@@ -1838,17 +1848,32 @@ def test_a_faster_rung1_carry_is_refused_after_the_stroke_ends():
     0.40 (the carry squeezed into 0.275 s) reads 49.1 deg at knot 45, three knots
     after the stroke ends (knot 42) - refused at planning with CUP_SEATING_CONE
     and NOTHING else (floor 0.73 g; the exempt braking knots read 35.5 deg).
-    Measured 2026-10-19."""
+    Measured 2026-10-19.  RE-PINNED 2026-10-31: 49.1 -> 51.98 deg, braking 35.45 ->
+    32.73 deg (floor 0.307 -> 0.06 rev).  The hold is pinned to 0.100: at the new
+    production default 0.000 this window is refused LIMIT_VEL first (leg 2, 448 mm/s
+    at t=0.156 s), so the cone code needs the hold-on arm to be exercised."""
     with pytest.raises(_uc.CycleInfeasible) as ei:
         _oval_carry_segment(0.40)
     e = ei.value
     assert e.code == feas.CUP_SEATING_CONE, (e.code, str(e))
     rep = e.report
-    assert rep.max_cup_seating_deg == pytest.approx(49.1, abs=0.1)
+    assert rep.max_cup_seating_deg == pytest.approx(51.98, abs=0.1)
     assert rep.cup_stroke_end_k == (42,)
-    assert rep.max_cup_braking_deg == pytest.approx(35.45, abs=0.1)
+    assert rep.max_cup_braking_deg == pytest.approx(32.73, abs=0.1)
     assert len(rep.reasons) == 1, rep.reasons
     assert 'knot 45' in rep.reasons[0] and 'stroke ends (knot 42)' in rep.reasons[0]
+
+
+def test_the_production_default_carry_reads_the_holdless_seating(monkeypatch, geom):
+    """Production default hold is 0.000 (2026-10-31): the rung-1 carry (dwell 0.50)
+    through the segment path reads the hold-less 20.17 deg (= the raw chain's
+    20.16), well inside the 30 deg fall-back cone."""
+    windows, _out = _gated_windows(
+        lambda: _oval_carry_segment(0.50, hold_s=0.0), monkeypatch)
+    rep = feas.validate_cycle(windows[0], _oval_limits(), geom)
+    assert rep.code == 'OK', (rep.code, rep.reasons)
+    assert rep.max_cup_seating_deg == pytest.approx(20.17, abs=0.1)
+    assert rep.max_cup_seating_deg < 30.0
 
 
 @functools.lru_cache(maxsize=1)
@@ -1955,23 +1980,25 @@ def test_a_braking_knot_outside_the_cone_passes_a_post_stroke_one_refuses(geom):
       ``max_cup_braking_deg``, the judged max is unchanged (0.23 deg);
     * spike 15 mm at knot 19 (= the stroke end): a JUDGED knot reads 52.74 deg -
       refused CUP_SEATING_CONE, the reason naming knot 19 and the stroke end.
-    Numbers measured 2026-10-19 (asserted below)."""
+    Numbers measured 2026-10-19 (asserted below).  RE-PINNED 2026-10-31 (hold 0.100
+    -> 0.000 default + floor 0.06 rev): braking 20.16 -> 15.32, spike 62.46 ->
+    62.15, judged 52.74 -> 50.76 deg (still > 45)."""
     plan, _limits, _geom = _hop_entry_skill2_plan()
     loose = _oval_limits(1e5, 1e8, 1e10, 1e7)
     base = feas.validate_cycle(plan, loose, geom)
     assert base.code == 'OK' and base.cup_stroke_end_k == (19,)
-    assert base.max_cup_braking_deg == pytest.approx(20.16, abs=0.1)
+    assert base.max_cup_braking_deg == pytest.approx(15.32, abs=0.1)
 
     braking = feas.validate_cycle(_with_pose_x_spike(plan, 12, 10.0), loose, geom)
     assert braking.code == 'OK', (braking.code, braking.reasons)
     assert braking.max_cup_braking_deg > feas.CUP_SEATING_CONE_DEG
-    assert braking.max_cup_braking_deg == pytest.approx(62.46, abs=0.1)
+    assert braking.max_cup_braking_deg == pytest.approx(62.15, abs=0.1)
     assert braking.max_cup_seating_deg == pytest.approx(base.max_cup_seating_deg,
                                                         abs=1e-9)
 
     judged = feas.validate_cycle(_with_pose_x_spike(plan, 19, 15.0), loose, geom)
     assert judged.code == feas.CUP_SEATING_CONE, (judged.code, judged.reasons)
-    assert judged.max_cup_seating_deg == pytest.approx(52.74, abs=0.1)
+    assert judged.max_cup_seating_deg == pytest.approx(50.76, abs=0.1)
     assert any('at knot 19 >' in r and 'stroke ends (knot 19)' in r
                for r in judged.reasons), judged.reasons
 
@@ -1981,7 +2008,8 @@ def test_a_window_that_is_all_braking_is_not_judged(geom):
     class window cut at knot 15, stroke end 19) has no carry to judge: the
     seating check returns nothing to refuse and the report's judged readings
     are ``None``; the braking knots' worst reading (20.16 deg) is still on
-    record.  Hand-built from the real plan (contact range edited only)."""
+    record (15.32 deg since 2026-10-31, was 20.16: hold 0.1 -> 0 default + floor
+    0.06 rev).  Hand-built from the real plan (contact range edited only)."""
     plan, _limits, _geom = _hop_entry_skill2_plan()
     (k0, _k1), = plan.contact_knots
     cut = CyclePlan(plan.pose, plan.pose_vel, plan.hand_rev, plan.hand_vel_rps,
@@ -1993,7 +2021,7 @@ def test_a_window_that_is_all_braking_is_not_judged(geom):
     assert (deg, cone, floor) == (None, None, None)
     assert azg is not None and azg > feas.CUP_SEATING_FLOOR_G
     assert det['stroke_end_k'] == (19,)
-    assert det['braking_deg'] == pytest.approx(20.16, abs=0.1)
+    assert det['braking_deg'] == pytest.approx(15.32, abs=0.1)
     rep = feas.validate_cycle(cut, _oval_limits(1e5, 1e8, 1e10, 1e7), geom)
     assert rep.max_cup_seating_deg is None
     assert rep.min_cup_seating_az_g == pytest.approx(azg)
@@ -2080,7 +2108,7 @@ def test_cup_seating_floor_reason_is_appended_beside_contact_acc(geom):
     """C-CUP-4 floor (a_z+g >= 0.30 g, re-based 2026-10-18) vs C-CUP-2's
     CUP_CONTACT_ACC.  Recipe: the rung-1 window with a 10 mm cosine bump on pose
     z over 6 knots centred on knot 44 (analytic derivative added to pose_vel),
-    loose leg/hand limits: the centred C-CUP-4 reading is 0.227 g (< 0.30) and
+    loose leg/hand limits: the centred C-CUP-4 reading is 0.254 g (< 0.30; was 0.227 until the 2026-10-31 floor 0.06 rev re-pin) and
     CUP_CONTACT_ACC fires FIRST (code).  A fixture where the seating floor is the
     ONLY refusal does not exist on the z channel (scan over 2..20 knots x 4..30
     mm: every perturbation that reads < 0.30 g centred also trips the one-sided
@@ -2103,17 +2131,18 @@ def test_cup_seating_floor_reason_is_appended_beside_contact_acc(geom):
     loose = _oval_limits(1e5, 1e8, 1e10, 1e7)
     rep = _validate_oval(bumped, geom, loose)
     assert rep.code == feas.CUP_CONTACT_ACC, (rep.code, rep.reasons)
-    assert rep.min_cup_seating_az_g == pytest.approx(0.227, abs=0.01)
+    assert rep.min_cup_seating_az_g == pytest.approx(0.254, abs=0.01)
     assert any('C-CUP-4' in r and 'a_z+g' in r for r in rep.reasons), rep.reasons
     _deg, _azg, cone_r, floor_r = feas._cup_seating_check(bumped)
     assert floor_r is not None and 'floor 0.30 g' in floor_r and cone_r is None
 
 
 def test_the_unbumped_rung1_window_is_clear_of_the_floor(geom):
-    """Counterpart: the unperturbed window reads 0.837 g, far above 0.30 g."""
+    """Counterpart: the unperturbed window reads 0.760 g, far above 0.30 g (was 0.837 until the
+    2026-10-31 floor 0.307 -> 0.06 rev)."""
     plan, _ = _rung1_window()
     _deg, azg, _c, floor_r = feas._cup_seating_check(plan)
-    assert floor_r is None and azg == pytest.approx(0.837, abs=0.002)
+    assert floor_r is None and azg == pytest.approx(0.760, abs=0.002)
 
 
 def test_a_held_axis_catch_is_exempt_from_the_closing_speed_by_name(geom):

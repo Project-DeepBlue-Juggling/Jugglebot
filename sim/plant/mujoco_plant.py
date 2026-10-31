@@ -121,18 +121,17 @@ class MuJoCoPlant(PlantInterface):
 
         # Hand stroke (mm) and prime position (mm) — both DERIVED, never literals.
         #
-        # ``_hand_stroke_mm`` is PHYSICAL TRAVEL, and it is the clip bound in
-        # ``command_hand``.  It read a hardcoded 355.0 until 2026-08-21, which
-        # let the simulated hand be commanded 10.25 mm further than the real one
-        # can go — the geometry key moved to 344.75 mm on 2026-08-18 when the
-        # operator measured the sensorised hand and the deliberate split landed:
-        # ``jugglebot_geometry.hand_stroke_mm`` (344.75) is physical travel,
-        # ``teensy_trajectory.hand_stroke_m`` (0.355) is the THROW-PROFILE basis
-        # that feeds x2/x3/x5.  They are different numbers on purpose; do not
-        # re-merge them.  (``sim/model/jugglebot.xml`` carried a stale 0.355 m
-        # joint range until 2026-08-21, when the MJCF generator was reconciled
-        # with the model and regenerated; the two now agree at 344.75 mm, and
-        # ``tests/sim/test_mjcf_drift.py`` keeps them agreeing.)
+        # ``_hand_stroke_mm`` is the PLANNER'S REACH, ``HAND_PLANNER_TRAVEL_MM``
+        # (361.99 mm since 2026-10-31), and it is the clip bound in
+        # ``command_hand`` and the MJCF joint range.  It read a hardcoded 355.0
+        # until 2026-08-21, which let the simulated hand be commanded further
+        # than the real one can go; it then followed ``jugglebot_geometry.
+        # hand_stroke_mm`` (344.75, now GUI render geometry only) until
+        # 2026-10-31, when that clipped a 10.14-rev plan.  Distinct from
+        # ``teensy_trajectory.hand_stroke_m`` (0.355), the THROW-PROFILE basis
+        # that feeds x2/x3/x5; they are different numbers on purpose.
+        # ``tests/sim/test_mjcf_drift.py`` keeps the model's joint range and this
+        # clip agreeing.
         #
         # ``_hand_prime_mm`` is the top of the sim's stroke = where
         # the retired sim catch trajectory's first sample (the sim hand package, removed 2026-10-14),
@@ -151,7 +150,9 @@ class MuJoCoPlant(PlantInterface):
         # sim's catch height.
         if self._has_hand:
             linear_gain_rev_per_m = float(hw.HAND_REV_PER_M)
-            self._hand_stroke_mm = float(hw.GEOM_HAND_STROKE_MM)
+            # 2026-10-31: the planner's reach (361.99 mm), matching the MJCF joint range;
+            # GEOM_HAND_STROKE_MM (344.75) is GUI render geometry and clipped a 10.14-rev plan.
+            self._hand_stroke_mm = float(hw.HAND_PLANNER_TRAVEL_MM)
             self._hand_prime_mm = float(
                 hw.TEENSY_TRAJ_STROKE_MARGIN_M * 1000.0
                 + hw.HAND_STROKE_TOP_REV / linear_gain_rev_per_m * 1000.0

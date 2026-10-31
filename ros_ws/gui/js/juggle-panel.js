@@ -231,9 +231,11 @@ export const PATTERN_POINTS = {
     columns_1ball_fed: { box: 'columns',   apex_m: 0.95, separation_mm: 125, dwell_s: 0.27 },
     oval_1ball:        { box: 'oval_1ball', apex_m: 0.95, separation_mm: 150, dwell_s: 0.65 },
     oval_1ball_fed:    { box: 'oval_1ball', apex_m: 0.95, separation_mm: 150, dwell_s: 0.65 },
-    // Swept 2026-10-31 (gate_hash c6c4d7adccf9): turned cells at 125 mm, bands
+    // Swept 2026-10-31 (see config/generated/admissible_box.yaml gate_hash; the
+    // box was re-swept the same day, 82 cells): turned cells at 125 mm, bands
     // 0.925-0.975 at 45 deg and 0.875-0.975 at 90 deg; high-low cells only at
-    // 100 mm, the 1.00 / 0.90 pair admissible at both sites.
+    // 100 mm, the 1.00 / 0.90 pair admissible at both sites; the 1.05 / 0.95
+    // pair's LOW cells are admissible since the re-sweep (they were empty).
     columns_turned:    { box: 'columns',   apex_m: 0.95, separation_mm: 125, dwell_s: 0.27, columns_angle_deg: 45 },
     columns_highlow:   { box: 'columns_highlow', apex_m: 1.0, separation_mm: 100, dwell_s: 0.27, apex_m_ball2: 0.9 },
 };

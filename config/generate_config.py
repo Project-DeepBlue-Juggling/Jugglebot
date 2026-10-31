@@ -680,6 +680,15 @@ def compute_derived(cfg: dict) -> dict:
     tt = cfg["teensy_trajectory"]
     derived["HAND_REV_PER_M"] = 1000.0 / geom["hand_mm_per_rev"]
 
+    # The planner's slider travel (mm) in the sim's 20 mm-inset frame: where the
+    # firmware's setpoint clip [0, hard_stop - clip_margin] rev lands, i.e.
+    # stroke_margin + (hard_stop - clip_margin) * mm_per_rev. DERIVED so it cannot
+    # drift from the clip; NOT jugglebot_geometry.hand_stroke_mm (GUI/MuJoCo render).
+    derived["HAND_PLANNER_TRAVEL_MM"] = round(
+        float(tt["stroke_margin_m"]) * 1000.0
+        + (float(geom["hand_motor_hard_stop_revs"]) - float(geom["hand_clip_margin_rev"]))
+        * float(geom["hand_mm_per_rev"]), 6)
+
     # The hand's settle band below the homed reference (rev) — formerly
     # triplicated (canbridge_config.h, hand_stroke.py, validate_cycle); now
     # the single source is jugglebot_homing.hand_settle_band_rev. R1, 2026-09-11.
@@ -806,6 +815,10 @@ def generate_hw_python(cfg: dict) -> str:
     lines.append(f"LEG_STROKE_MAX_REV = {derived['LEG_STROKE_MAX_REV']}")
     lines.append("# Measured hand rev/m — jugglebot_geometry.hand_mm_per_rev, inverted.")
     lines.append(f"HAND_REV_PER_M = {derived['HAND_REV_PER_M']!r}")
+    lines.append("# Planner slider travel (mm, sim 20 mm-inset frame) = stroke_margin_m*1000 +")
+    lines.append("# (hand_motor_hard_stop_revs - hand_clip_margin_rev) * hand_mm_per_rev: the firmware")
+    lines.append("# clip's reach. Distinct from GEOM_HAND_STROKE_MM (GUI render geometry).")
+    lines.append(f"HAND_PLANNER_TRAVEL_MM = {derived['HAND_PLANNER_TRAVEL_MM']!r}")
     lines.append("# jugglebot_homing.hand_abs_pos_rev - hand_settle_band_rev.")
     lines.append(f"HAND_HOMED_REST_FLOOR_REV = {derived['HAND_HOMED_REST_FLOOR_REV']!r}")
     lines.append(f"HAND_THROW_POS_M = {derived['HAND_THROW_POS_M']}")

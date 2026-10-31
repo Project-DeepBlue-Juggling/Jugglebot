@@ -2,7 +2,7 @@
 title: "Sitting prep: columns-under-pose check, the pre-release-hold ladder (hold 0.100 -> 0 predicted to need delay-aware composition), and oval cells at apex 1.00/1.05"
 type: investigation
 date: 2026-10-30
-status: in-progress
+status: complete
 phase: "two-ball-oval P4.0 - pre-release hold rung, Sitting prep"
 related_plan:
   - two-ball-oval.md
@@ -64,7 +64,9 @@ Prep for one hardware Sitting (runbook `tests/hardware/session_oval_rung1.md` §
 
 ## Outcome / Next
 
-Fly runbook § 11 (rows 11-0..11-6). The delay-aware composition is a P4 design item (gated on the Sitting's delta_eff), not part of this Sitting. Status stays in-progress until the Sitting results are filled.
+Fly runbook § 11 (rows 11-0..11-6). The delay-aware composition is a P4 design item (gated on the Sitting's delta_eff), not part of this Sitting.
+
+**Flown 2026-10-31.** This entry stays the prep record. The Sitting flew (launch `~/.ros/log/2026-10-31-13-14-00-526910-jetson-1123157`, bag `~/Desktop/rosbags/2026-10-31_13-14-00`) and **the hold model in C2-C4 above was wrong**: a shorter hold landed the ball LONG, not short, and hold 0 flew 30/30. Results, the withdrawn hypothesis and the owner decisions are in `2026-10-31-hold-ladder-sitting-the-hold-model-was-wrong.md`. Do not build the delay-aware composition described in C2.
 
 ## Verification
 

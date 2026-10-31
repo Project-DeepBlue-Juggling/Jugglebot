@@ -4,7 +4,7 @@ kind: bug
 title: Teensy guard MAX_DEVIATION latched on the hand (+8.4 rev) mid-oval; recover_lane found nothing, re-dispatch rejected WRONG_MODE
 status: inbox
 created: '2026-10-28'
-updated: '2026-10-30T06:12:19Z'
+updated: '2026-10-31T04:52:14Z'
 owners: []
 priority: high
 area: can-bridge
@@ -51,3 +51,4 @@ Two questions:
 
 - 2026-10-28: 22:26 Sitting 2026-10-28: three more hand MAX_DEVIATION trips, all explained by JB-95 (detail in the section above)
 - 2026-10-30: 2026-10-30 reframe (P3 re-gate Sitting 16:17, bag 2026-10-30_16-17-11): the O5 pose 0.45 goal ended at throw 41 by ONE 80 ms emitter wake gap (detail in the section above)
+- 2026-10-31: 2026-10-31: two more LANE_REFUSED ends (goals 10 and 12, firmware STOP +2): solves 107-138 ms with about 100 involuntary context switches, emitter wake gap 48 ms, goal 10 also a 1198 ms leg-1 heartbeat gap; 17 firmware STOPs this launch against 7 on 10-30
