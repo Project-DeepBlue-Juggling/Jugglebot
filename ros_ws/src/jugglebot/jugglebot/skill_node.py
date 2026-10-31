@@ -72,6 +72,7 @@ import jugglebot.protocol_config as proto
 from jugglebot import ball_possession
 from jugglebot import mocap_status as mocap_st
 from jugglebot import records as rec
+from jugglebot import throw_identity as ti
 from jugglebot.motion import blas_threads
 from jugglebot.motion import unified_cycle as uc
 from jugglebot.motion.skills import admissible as adm
@@ -1007,6 +1008,13 @@ class SkillNode(Node):
         # once no ctx is armed: the bridge REST retires mid-wait). Guarded
         # by `_reload_lock`.
         self._bb_throw_dispatched = False
+        # JB-21: wall-clock window the release of the throw THIS attempt
+        # asked Ball Butler for must fall in (`throw_identity.release_window`),
+        # set by `_fire_reload_throw` just before its round trip and cleared
+        # wherever `_bb_throw_dispatched` is. `_on_bb_throw_outcome` ignores a
+        # verdict whose `release_wall_s` suffix lies outside it. Guarded by
+        # `_reload_lock`.
+        self._bb_throw_release_window = None
         # Ball Butler's own latest heartbeat (C1) — cached here, never
         # blocking: `_maybe_fire_reload_throw` reads it every tick, and
         # `_check_reload_timeout`'s `ABORTED_BB_NOT_READY` names whatever it
@@ -2068,6 +2076,17 @@ class SkillNode(Node):
             ctx = self._reload_ctx
             reloading = ((ctx is not None and ctx.phase == 'await_announcement')
                          or self._reload_throw_inflight)
+            # JB-21: a verdict that carries the identity of a DIFFERENT throw
+            # (a late verdict from the previous attempt) is logged and
+            # dropped -- never ends this attempt, never retries, never
+            # clears the pending-release record. No suffix = today's path.
+            if reloading and not ti.verdict_matches(
+                    getattr(msg, 'data', ''), self._bb_throw_release_window):
+                self.get_logger().info(
+                    'bb/throw_outcome ignored: it reports a different throw '
+                    'than this attempt asked for (%s)'
+                    % (str(getattr(msg, 'data', '')),))
+                return
             # Phantom-catch guard (2026-10-13 22:29 launch): BY_HOST is
             # ignored ONLY as the echo of an end that already happened (our
             # own `_maybe_cancel_bb_throw` on an end path -- every end path
@@ -2922,6 +2941,7 @@ class SkillNode(Node):
                 self._reload_ctx = None
                 self._reload_throw_inflight = False
                 self._bb_throw_dispatched = False
+                self._bb_throw_release_window = None
         finally:
             if got_lock:
                 self._tick_lock.release()
@@ -3311,6 +3331,11 @@ class SkillNode(Node):
             # This attempt has now asked Ball Butler for a throw: the
             # phantom-catch guard may attribute a BY_HOST verdict to it.
             self._bb_throw_dispatched = True
+            # JB-21: the identity the verdict must carry; `now` is wall time
+            # (the ROS clock), the same clock `ball_butler_node` stamps
+            # `goal.release_wall_s` on, and `delay_s` is exactly what `req`
+            # asks it for. Re-set by the NOT_SETTLED re-fire.
+            self._bb_throw_release_window = ti.release_window(now, delay_s)
 
         throw_resp = self._wait_future(self._bb_throw_cli.call_async(req))
         # Record the pending release BEFORE any end path below can run: an
@@ -3476,6 +3501,7 @@ class SkillNode(Node):
                         # announced executor has yet to swap in.
                         if self._reload_ctx is None:
                             self._bb_throw_dispatched = False
+                            self._bb_throw_release_window = None
         finally:
             self._tick_lock.release()
         if stop_code is not None:
@@ -5555,6 +5581,7 @@ class SkillNode(Node):
         def _arm_ctx():
             self._reload_throw_inflight = False
             self._bb_throw_dispatched = False
+            self._bb_throw_release_window = None
             self._reload_ctx = new_ctx
         if chain_ctx is None:
             with self._reload_lock:

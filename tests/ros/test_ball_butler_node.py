@@ -808,3 +808,57 @@ class TestCancelThrow:
         res = calibrated_node._svc_throw_at_target(req, BallButlerThrow.Response())
         assert res.success is True
         assert calibrated_node._throw_goals_unacked == before + 1
+
+
+class TestThrowOutcomeIdentity:
+    """JB-21: the relayed verdict ends with the throw's release instant."""
+
+    def _relay(self, node, release_wall_s, message):
+        from types import SimpleNamespace
+        published = []
+        node.throw_outcome_pub.publish = published.append
+        fut = _done_future(SimpleNamespace(
+            result=SimpleNamespace(success=False, message=message)))
+        node._on_throw_result(fut, 'jb', release_wall_s)
+        return [m.data for m in published]
+
+    def test_verdict_carries_the_release_suffix_and_keeps_its_prefix(self, node):
+        base = 'THROW_REJECTED_BAD_STATE (axis=n/a, detail1=0)'
+        (data,) = self._relay(node, 1234.5, base)
+        assert data == base + ' release_wall_s=1234.500000'
+
+    def test_a_goal_without_a_release_is_relayed_unchanged(self, node):
+        base = 'OK (axis=n/a, detail1=0)'
+        assert self._relay(node, 0.0, base) == [base]
+
+    def test_the_goal_release_is_handed_to_the_result_relay(
+            self, calibrated_node):
+        """The dispatch path must carry `goal.release_wall_s` through the
+        goal-response callback into `_on_throw_result`."""
+        calibrated_node._on_rigid_bodies(_rigid_bodies({
+            'Catching_Cone': (1200.0, 400.0, 0.0),
+        }))
+        goals = []
+        orig = calibrated_node._throw_action.send_goal_async
+
+        def _spy(goal):
+            goals.append(goal)
+            return orig(goal)
+        calibrated_node._throw_action.send_goal_async = _spy
+        req = BallButlerThrow.Request()
+        req.target_name = 'Catching_Cone'
+        assert calibrated_node._svc_throw_at_target(
+            req, BallButlerThrow.Response()).success is True
+        release = goals[0].release_wall_s
+        assert release > 0.0
+
+        relayed = []
+        calibrated_node._on_throw_result = (
+            lambda fut, tid, rel=0.0: relayed.append(rel))
+
+        class _H(_GoalHandle):
+            def get_result_async(self):
+                return _done_future(None)
+        calibrated_node._on_throw_goal_response(
+            _done_future(_H(True)), 'jb', True, release)
+        assert relayed == [release]

@@ -7392,3 +7392,59 @@ def test_plain_columns_ignores_apex_m_ball2(tmp_path):
     assert r.success is True, r.message
     assert 'apex_m_ball2' not in r.attempt
     assert node._reload_ctx.columns_pattern.apex_m_ball_b is None
+
+
+# ═════════════════════════════════════════════════════════════════════════════
+# JB-21: bb/throw_outcome carries the throw's identity (release_wall_s suffix)
+# ═════════════════════════════════════════════════════════════════════════════
+
+def _tagged(token, release_wall_s):
+    return String(data='%s (axis=n/a, detail1=0) release_wall_s=%.6f'
+                  % (token, release_wall_s))
+
+
+def test_jb21_fire_records_the_release_window_it_asked_for(tmp_path):
+    node, _client = _node_with_client(response=_response())
+    resp = _start_reload(node, tmp_path)
+    assert resp.success is True, resp.message
+    lo, hi = node._bb_throw_release_window
+    assert hi - lo == pytest.approx(1.0)
+
+
+def test_jb21_a_late_verdict_for_the_previous_throw_is_ignored(tmp_path):
+    """Walk: fire (window recorded) -> a LATE rejection of attempt N (release
+    seconds before this window) arrives while N+1 awaits its announcement ->
+    ignored, the live attempt untouched. N+1's own verdict (inside the
+    window) then ends it exactly as before."""
+    node, _client = _node_with_client(response=_response())
+    resp = _start_reload(node, tmp_path)
+    assert resp.success is True, resp.message
+    lo, _hi = node._bb_throw_release_window
+    node._on_bb_throw_outcome(_tagged('THROW_REJECTED_BAD_STATE', lo - 6.0))
+    assert node._reload_ctx is not None
+    assert node._reload_ctx.phase == 'await_announcement'
+    assert node._goal_end_code == ''
+    node._on_bb_throw_outcome(_tagged('THROW_REJECTED_BAD_STATE', lo + 0.3))
+    assert node._reload_ctx is None
+    assert node._executor.end_code == 'REJECTED_BB(THROW_REJECTED_BAD_STATE)'
+
+
+def test_jb21_a_late_not_settled_does_not_spend_the_retry(tmp_path):
+    node, _client = _node_with_client(response=_response())
+    resp = _start_reload(node, tmp_path)
+    assert resp.success is True, resp.message
+    lo, _hi = node._bb_throw_release_window
+    node._on_bb_throw_outcome(_tagged('THROW_ABORTED_NOT_SETTLED', lo - 6.0))
+    assert node._reload_ctx.not_settled_retried is False
+    assert node._reload_ctx.phase == 'await_announcement'
+
+
+def test_jb21_an_unsuffixed_verdict_behaves_as_before(tmp_path):
+    node, _client = _node_with_client(response=_response())
+    resp = _start_reload(node, tmp_path)
+    assert resp.success is True, resp.message
+    assert node._bb_throw_release_window is not None
+    node._on_bb_throw_outcome(
+        String(data='THROW_REJECTED_BAD_STATE (axis=n/a, detail1=0)'))
+    assert node._reload_ctx is None
+    assert node._executor.end_code == 'REJECTED_BB(THROW_REJECTED_BAD_STATE)'
