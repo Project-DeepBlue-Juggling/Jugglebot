@@ -1,13 +1,13 @@
 /**
  * camera-presets.js — Scene menu camera shortcuts.
  *
- * Four built-in viewpoints (Top / Front / Side / Iso) plus three user
- * save-slots.  Slots persist across reload via localStorage — "saved" is
+ * Five built-in viewpoints (Default / Top / Front / Side / Iso), three user
+ * save-slots, and a "Copy view" readout of the current camera.  Slots persist across reload via localStorage — "saved" is
  * the whole point of the feature, so the general "only theme persists"
  * rule gets a narrow exception here.
  */
 
-import { getCameraState, setCameraState } from './viewer.js';
+import { getCameraState, setCameraState, DEFAULT_CAMERA } from './viewer.js';
 import { INITIAL_HEIGHT_MM } from './geometry-config.js';
 
 const SLOT_STORAGE_KEY = 'jugglebot-camera-slots';
@@ -19,11 +19,35 @@ const MM_TO_M = 0.001;
 function builtinPresets() {
     const midY = INITIAL_HEIGHT_MM * 0.5 * MM_TO_M;
     return {
+        default: DEFAULT_CAMERA,
         top:   { position: { x: 0,     y: 2.5,  z: 0.001 }, target: { x: 0, y: midY, z: 0 } },
         front: { position: { x: 0,     y: midY, z: 2.2   }, target: { x: 0, y: midY, z: 0 } },
         side:  { position: { x: 2.2,   y: midY, z: 0     }, target: { x: 0, y: midY, z: 0 } },
         iso:   { position: { x: 1.2,   y: 1.0,  z: 1.2   }, target: { x: 0, y: midY, z: 0 } },
     };
+}
+
+/** The current view as a paste-ready `DEFAULT_CAMERA` literal (mm precision). */
+function formatCameraState(s) {
+    const r = (v) => Number(v.toFixed(3));
+    const xyz = (o) => `{ x: ${r(o.x)}, y: ${r(o.y)}, z: ${r(o.z)} }`;
+    return `position: ${xyz(s.position)}, target: ${xyz(s.target)}`;
+}
+
+/** Hand the current view to the operator (JB-88).  The GUI is served over
+ *  plain http from the Jetson's LAN address, which is not a secure context,
+ *  so navigator.clipboard is usually absent — fall back to a prompt whose
+ *  text is pre-selected for Ctrl+C.  Always logged to the console too. */
+function copyCurrentView() {
+    const s = getCameraState();
+    if (!s) return;
+    const text = formatCameraState(s);
+    console.info('[camera] current view:', text);
+    if (window.isSecureContext && navigator.clipboard) {
+        navigator.clipboard.writeText(text).catch(() => window.prompt('Current camera view:', text));
+    } else {
+        window.prompt('Current camera view (Ctrl+C to copy):', text);
+    }
 }
 
 function loadSlots() {
@@ -77,6 +101,19 @@ export function initCameraPresets() {
         presetRow.appendChild(btn);
     }
     section.appendChild(presetRow);
+
+    const copyRow = document.createElement('div');
+    copyRow.className = 'scene-preset-row';
+    const copyBtn = document.createElement('button');
+    copyBtn.className = 'scene-preset';
+    copyBtn.textContent = 'Copy view';
+    copyBtn.title = 'Show the current camera position/target as text (to set a new default view)';
+    copyBtn.addEventListener('click', (ev) => {
+        ev.stopPropagation();
+        copyCurrentView();
+    });
+    copyRow.appendChild(copyBtn);
+    section.appendChild(copyRow);
 
     const hdrSave = document.createElement('div');
     hdrSave.className = 'scene-menu-heading scene-menu-heading-sub';

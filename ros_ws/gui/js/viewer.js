@@ -7,7 +7,6 @@
 
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
-import { INITIAL_HEIGHT_MM } from './geometry-config.js';
 import { updateRobotMaterials } from './robot-meshes.js';
 
 /** @type {THREE.Scene} */
@@ -76,6 +75,18 @@ export function robotToThreeScaled(x, y, z) {
 }
 
 /**
+ * The startup camera view (Three.js scene coords, metres).  The single
+ * source for initViewer() and the Scene menu's "Default" button.  To change
+ * it: frame the view in the GUI, Scene menu → Camera → "Copy view", and paste
+ * the printed object here (JB-88).
+ */
+export const DEFAULT_CAMERA = Object.freeze({
+    // Owner-framed 2026-10-31 (JB-88).
+    position: Object.freeze({ x: -0.341, y: 1.584, z: -2.589 }),
+    target:   Object.freeze({ x: -0.231, y: 0.763, z: 0.37 }),
+});
+
+/**
  * Snapshot the camera state — used by the Save Preset feature.
  * Returns plain-object coords so it round-trips cleanly through JSON.
  */
@@ -113,10 +124,9 @@ export function initViewer(container) {
     // Camera
     const aspect = container.clientWidth / container.clientHeight;
     camera = new THREE.PerspectiveCamera(50, aspect, 0.01, 50);
-    // Position camera ~1.5m away, looking at platform mid-height
-    const midHeight = INITIAL_HEIGHT_MM * 0.5 * SCALE;
-    camera.position.set(1.2, 1.0, 1.2);
-    camera.lookAt(0, midHeight, 0);
+    const { position: p0, target: t0 } = DEFAULT_CAMERA;
+    camera.position.set(p0.x, p0.y, p0.z);
+    camera.lookAt(t0.x, t0.y, t0.z);
 
     // Renderer
     renderer = new THREE.WebGLRenderer({ antialias: true });
@@ -126,7 +136,7 @@ export function initViewer(container) {
 
     // OrbitControls
     controls = new OrbitControls(camera, renderer.domElement);
-    controls.target.set(0, midHeight, 0);
+    controls.target.set(t0.x, t0.y, t0.z);
     controls.enableDamping = true;
     controls.dampingFactor = 0.1;
     controls.update();
