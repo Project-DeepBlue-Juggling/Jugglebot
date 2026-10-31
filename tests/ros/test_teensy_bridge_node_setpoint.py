@@ -176,8 +176,10 @@ def test_step_violation_not_sent():
     teensy, client, node = _node()
     try:
         node._mpc_active = True          # enable the send path directly
+        node._sp_pump._clock = lambda: 100.0   # frozen: no load-widened budget (JB-79)
         node._process_setpoint(_cmd([0.0] * 6))        # baseline
-        time.sleep(0.02)
+        assert _wait_until(
+            lambda: len(teensy.received(int(MsgType.SETPOINT))) == 1)
         n_before = len(teensy.received(int(MsgType.SETPOINT)))
         node._process_setpoint(_cmd([0.0, 0.0, 0.0, 0.9, 0.0, 0.0]))  # 0.9 > 0.3
         time.sleep(0.05)
@@ -213,12 +215,18 @@ def test_hand_step_violation_not_sent():
     teensy, client, node = _node()
     try:
         node._mpc_active = True
+        # Frozen pump clock: the per-step gate is a velocity bound over the
+        # wall time since the last accepted frame (200 rev/s hand), so a real
+        # clock lets a >25 ms stall under xdist load widen the budget past
+        # the 5.1 rev jump and ACCEPT it (JB-79). dt=0 floors to one knot.
+        node._sp_pump._clock = lambda: 100.0
         hand = {'hand_rev': 1.0, 'hand_vel_rps': 0.0,
                 'hand_next_rev': 1.0, 'hand_next2_rev': 1.0}
         base = _cmd([0.0] * 6, cmd_next=[0.0] * 6, cmd_next2=[0.0] * 6)
         base.update(hand)
         node._process_setpoint(base)                   # hand baseline
-        time.sleep(0.02)
+        assert _wait_until(
+            lambda: len(teensy.received(int(MsgType.SETPOINT))) == 1)
         n_before = len(teensy.received(int(MsgType.SETPOINT)))
         jump = _cmd([0.0] * 6, cmd_next=[0.0] * 6, cmd_next2=[0.0] * 6)
         jump.update(dict(hand,

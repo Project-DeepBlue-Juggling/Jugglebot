@@ -2,9 +2,9 @@
 id: JB-79
 kind: bug
 title: test_hand_step_violation_not_sent flakes under the full gate (assert 2 == 1)
-status: inbox
+status: complete
 created: '2026-10-28'
-updated: '2026-10-28T01:00:25Z'
+updated: '2026-10-31T19:25:41Z'
 owners: []
 priority: medium
 effort: s
@@ -16,6 +16,7 @@ area: tests-tooling
 blocked_by: []
 links:
 - tests/ros/test_teensy_bridge_node_setpoint.py
+- logbook/2026-11-01-jb79-hand-step-violation-flake.md
 filed_by: claude
 ---
 
