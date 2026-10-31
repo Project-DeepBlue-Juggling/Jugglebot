@@ -12,7 +12,7 @@
  */
 import { isReplayFenced } from './replay/fence.js';
 import {
-    recordRows, menuEntries, loadHidden, saveHidden, attemptEnd, RECORD_FLASH_MS,
+    recordRows, recordSections, menuEntries, loadHidden, saveHidden, attemptEnd, RECORD_FLASH_MS,
 } from './records-model.js';
 
 let data = null;
@@ -34,21 +34,29 @@ function render() {
     if (!list) return;
     list.textContent = '';
     const now = performance.now();  // wall-clock: UI flash timer; replayed juggle_ends are ignored
-    for (const r of rows) {
-        const row = document.createElement('div');
-        row.className = 'records-row' + (r.empty ? ' empty' : '')
-            + (flash && flash.pattern === r.pattern && now < flash.until ? ' beaten' : '');
-        row.title = r.title;
-        for (const [cls, text] of [['records-label', r.label], ['records-score', r.score],
-                                   ['records-date', r.date]]) {
-            const s = document.createElement('span');
-            s.className = cls;
-            s.textContent = text;
-            row.appendChild(s);
-        }
-        list.appendChild(row);
+    for (const sec of recordSections(rows)) {
+        const head = document.createElement('div');
+        head.className = 'records-group';
+        head.textContent = sec.title;
+        list.appendChild(head);
+        for (const r of sec.rows) list.appendChild(buildRow(r, now));
     }
     renderMenu();
+}
+
+function buildRow(r, now) {
+    const row = document.createElement('div');
+    row.className = 'records-row' + (r.empty ? ' empty' : '')
+        + (flash && flash.pattern === r.pattern && now < flash.until ? ' beaten' : '');
+    row.title = r.title;
+    for (const [cls, text] of [['records-label', r.label], ['records-score', r.score],
+                               ['records-date', r.date]]) {
+        const sp = document.createElement('span');
+        sp.className = cls;
+        sp.textContent = text;
+        row.appendChild(sp);
+    }
+    return row;
 }
 
 function renderMenu() {

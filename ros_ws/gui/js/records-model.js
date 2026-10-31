@@ -40,6 +40,23 @@ export function recordRows(json, hidden) {
     return rows;
 }
 
+/**
+ * Rows grouped by ball count, fewest first (JB-93): [{ balls, title, rows }].
+ * Ties keep ledger order; a ball count with no visible row yields no section.
+ */
+export function recordSections(rows) {
+    const by = new Map();
+    for (const r of rows || []) {
+        if (!by.has(r.balls)) by.set(r.balls, []);
+        by.get(r.balls).push(r);
+    }
+    return [...by.keys()].sort((a, b) => a - b).map(balls => ({
+        balls,
+        title: balls + (balls === 1 ? ' ball' : ' balls'),
+        rows: by.get(balls),
+    }));
+}
+
 /** The View-menu entries: every Pattern in the ledger, checked = shown. */
 export function menuEntries(json, hidden) {
     const off = hidden || new Set();

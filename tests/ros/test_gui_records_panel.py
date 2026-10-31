@@ -65,6 +65,20 @@ def test_one_row_per_pattern_in_ledger_order(out):
     assert (col["score"], col["balls"]) == ("32/33", 2)
 
 
+def test_sections_group_by_ball_count_ascending_with_titles(out):
+    # JB-93: ledger order is c2,a1,t3,b2,d1; sections come fewest balls first, ties keep ledger order.
+    assert out["sections"] == [
+        {"balls": 1, "title": "1 ball", "rows": ["a1", "d1"]},
+        {"balls": 2, "title": "2 balls", "rows": ["c2", "b2"]},
+        {"balls": 3, "title": "3 balls", "rows": ["t3"]},
+    ]
+
+
+def test_group_with_no_visible_rows_yields_no_section(out):
+    assert [g["balls"] for g in out["sectionsHidden"]] == [1, 2]
+    assert out["sectionsNone"] == [[], []]
+
+
 def test_hidden_patterns_drop_out_and_garbage_renders_nothing(out):
     assert out["filtered"] == ["self_toss"]
     assert out["garbage"] == [[], [], []]
@@ -118,3 +132,10 @@ def test_panel_fetches_the_route_and_respects_the_replay_fence():
     assert "fetch('/api/records'" in panel
     assert "isReplayFenced()" in panel
     assert "body.replay #records-panel { display: none; }" in (GUI / "css" / "replay.css").read_text()
+
+
+def test_panel_renders_a_heading_per_section_and_the_css_styles_it():
+    panel = (JS / "records-panel.js").read_text()
+    assert "recordSections(rows)" in panel and "records-group" in panel
+    assert "' beaten'" in panel  # the per-row flash survives the grouping
+    assert ".records-group" in (GUI / "css" / "records-panel.css").read_text()

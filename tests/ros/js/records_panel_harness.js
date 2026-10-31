@@ -2,7 +2,7 @@
 // under node. Sandbox (tests/ros/test_gui_records_panel.py builds it): records-model.js copied verbatim,
 // this file, package.json {"type":"module"}. Prints one JSON object the test asserts on.
 import {
-    recordRows, menuEntries, loadHidden, saveHidden, attemptEnd, RECORDS_HIDDEN_KEY,
+    recordRows, recordSections, menuEntries, loadHidden, saveHidden, attemptEnd, RECORDS_HIDDEN_KEY,
 } from './records-model.js';
 
 const json = {
@@ -18,6 +18,16 @@ const json = {
     ],
 };
 
+// Ledger order deliberately NOT ball-ascending, a 3-ball group that is fully hidden.
+const mixed = { patterns: [
+    { pattern: 'c2', label: 'C2', balls: 2, history: 0, record: null },
+    { pattern: 'a1', label: 'A1', balls: 1, history: 0, record: null },
+    { pattern: 't3', label: 'T3', balls: 3, history: 0, record: null },
+    { pattern: 'b2', label: 'B2', balls: 2, history: 0, record: null },
+    { pattern: 'd1', label: 'D1', balls: 1, history: 0, record: null },
+] };
+const sec = (j, h) => recordSections(recordRows(j, h)).map(g => ({ balls: g.balls, title: g.title, rows: g.rows.map(r => r.pattern) }));
+
 class Store {
     constructor(init) { this.m = new Map(Object.entries(init || {})); }
     getItem(k) { return this.m.has(k) ? this.m.get(k) : null; }
@@ -30,6 +40,9 @@ saveHidden(s, new Set(['self_toss', 'columns']));
 const kv = (name, values) => ({ name, values: Object.entries(values).map(([key, value]) => ({ key, value })) });
 
 console.log(JSON.stringify({
+    sections: sec(mixed, new Set()),
+    sectionsHidden: sec(mixed, new Set(['t3'])),
+    sectionsNone: [recordSections(null), recordSections([])],
     all: recordRows(json, new Set()),
     filtered: recordRows(json, new Set(['hop', 'columns'])).map(r => r.pattern),
     garbage: [recordRows(null, null), recordRows({ patterns: 'x' }), recordRows({ patterns: [null, { pattern: 7 }] })],
