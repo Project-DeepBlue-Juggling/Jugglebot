@@ -4,7 +4,7 @@ kind: idea
 title: 'JP-9 High-low columns: Ball 1 at apex 1.05 m, Ball 2 at 0.95 m'
 status: in_progress
 created: '2026-10-30'
-updated: '2026-10-31T00:44:54Z'
+updated: '2026-10-31T10:56:16Z'
 owners:
 - jugglebot-f5
 priority: medium
@@ -42,7 +42,7 @@ Visually subtle: the two apexes differ by 100 mm.
 ## Sitting
 
 - setup: level, armed, bb-fed
-- why: P5 of plan pattern-progression.md: two Apexes in one Pattern (JP-9). The only admissible pair today is 1.00 over 0.90 at separation 100; 1.05 over 0.95 waits for the Hand thread JB-114.
+- why: P5 of plan pattern-progression.md: two Apexes in one Pattern (JP-9). The Rung flies 1.00 over 0.90 at separation 100; since the 2026-10-31 re-sweep (Hand prime 10.45, box gate_hash 961808ee2d20) 1.05 over 0.95 is admissible at both Sites too, but a 1.05 launch waits for the faster hand current capture (plan D-c).
 - do:
   - Rehearse before arming: cup empty, Ball Butler unpowered, `ros2 param set /skill_node apex_m_ball2 0.90`, send the goal below once. The accept message may name only the cup and Ball Butler refusals (no box, planner or apex2 refusal) and nothing moves.
   - GUI: Juggle panel `Columns — high-low`, Apex 1.00, Apex 2 0.90, Sep. 100, Dwell 0.27, Throws 20 (Start writes apex_m_ball2 to the node first). Terminal fallback: `ros2 param set /skill_node apex_m_ball2 0.90` (refused while a goal runs), then `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: columns_highlow, apex_m: 1.00, separation_mm: 100.0, dwell_s: 0.27, num_cycles: 20}" --feedback`.

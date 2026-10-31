@@ -55,7 +55,7 @@ Branch `main`. The schedulable form of Pathway item JB-116 (its body carries the
 
 - D-a, DECIDED 2026-10-30 (owner): JB-38 D4/D5 stand; P2 built plain Admissible box cells.
 - D-b, DECIDED 2026-10-30 (owner) for the first two: labels `columns_turned` (JP-10) and `columns_highlow` (JP-9), JP-10 angles 45 and 90 deg. Still open for the polygon, rotating and Centre-and-orbit labels (before P7).
-- D-c, ANSWERED BY THE SWEEP 2026-10-31 (owner asked for both pairs): at separation 125 every high-low cell is empty (the low ball's transit falls under the ~0.30 s floor); at separation 100 the 1.00/0.90 pair is admissible at both Sites and 1.05/0.95 only for the high ball. So P5 flies 1.00/0.90 at separation 100; 1.05/0.95 waits for the Hand thread (JB-114). The faster current capture (hand `iq_setpoint` on `/hand_telemetry`) is still wanted before any 1.05 launch.
+- D-c, ANSWERED BY THE SWEEP 2026-10-31 (owner asked for both pairs): at separation 125 every high-low cell is empty (the low ball's transit falls under the ~0.30 s floor); at separation 100 the 1.00/0.90 pair is admissible at both Sites and 1.05/0.95 only for the high ball. So P5 flies 1.00/0.90 at separation 100. Update 2026-10-31 evening: jugglebot-cd's re-sweep after the Sitting (Hand prime 10.45, floor 0.0614 rev, box 82 cells, gate_hash 961808ee2d20) makes all eight high-low cells admissible, 1.05/0.95 included; that pair now waits only on the faster current capture below, not on JB-114. The faster current capture (hand `iq_setpoint` on `/hand_telemetry`) is still wanted before any 1.05 launch.
 - D-d, at JB-38's P2: whether the JP-10 rows stand in for its rotated-pair flight.
 
 The release-step exception to `HAND_LIMIT_C2` is on the Hand thread (JB-114), not decided here.
@@ -109,7 +109,7 @@ The release-step exception to `HAND_LIMIT_C2` is on the Hand thread (JB-114), no
 ### P5: JP-9 high-low Columns
 
 - Adds: two Apexes in one Pattern.
-- Flies at separation 100 with the 1.00/0.90 pair (the only admissible pair today); the GUI Juggle panel's `Columns — high-low` entry (2026-10-31) writes `apex_m_ball2` to the node before each Start; the terminal path (`ros2 param set /skill_node apex_m_ball2 0.90`, then `ros2 action send_goal`) stays as the fallback.
+- Flies at separation 100 with the 1.00/0.90 pair (1.05/0.95 is admissible since the 2026-10-31 re-sweep but waits for the faster current capture); the GUI Juggle panel's `Columns — high-low` entry (2026-10-31) writes `apex_m_ball2` to the node before each Start; the terminal path (`ros2 param set /skill_node apex_m_ball2 0.90`, then `ros2 action send_goal`) stays as the fallback.
 - Rung gate: 20 consecutive Catches in one Attempt; Tracker mean Apex difference within 20 mm of the commanded difference; hand iq under 45 A at every launch. Stop rule: any hand `iq_setpoint` sample at 50.0 A ends the Attempt (needs the faster iq capture named under D-c, or the Sitting flies the lower pair).
 - Depends on: P4. Items consumed: JB-107. Plus the three standing Rung preconditions.
 
