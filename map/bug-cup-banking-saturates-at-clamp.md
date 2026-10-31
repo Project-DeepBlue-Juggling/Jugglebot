@@ -2,9 +2,9 @@
 id: JB-22
 kind: bug
 title: Cup Banking saturates at its 12 deg clamp on small lateral offsets
-status: inbox
+status: complete
 created: '2026-10-24'
-updated: '2026-10-24T13:05:00Z'
+updated: '2026-10-31T18:46:27Z'
 owners: []
 priority: medium
 effort: s
@@ -17,6 +17,7 @@ blocked_by: []
 links:
 - plans/archived/skill-stack-dress-rehearsals-and-residue.md
 - logbook/2026-09-16-banking-saturates-on-small-lateral-offsets.md
+- logbook/2026-11-01-jb22-banking-saturation-closed-by-cup-contact-contract.md
 parent: two-ball-oval
 filed_by: claude
 ---

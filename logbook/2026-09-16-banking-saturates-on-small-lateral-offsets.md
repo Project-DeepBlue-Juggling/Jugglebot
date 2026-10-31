@@ -2,7 +2,7 @@
 title: "Cup banking saturates to its 12° clamp on ANY nonzero lateral offset during the pre-catch dive — the 0.9 m 'wobble' and LIMIT_JERK root cause (carried)"
 type: investigation
 date: 2026-09-16
-status: open
+status: resolved
 phase: "two-ball-skill-stack — R3 (carried to the planner)"
 related_plan: two-ball-skill-stack.md
 files_changed:
@@ -64,3 +64,5 @@ above are copied from it). (2026-09-16, `pytest tests/motion/test_skills_executo
 the guard's two tests pass with the files' existing suites — counts in the commit's full-gate triple.
 
 (2026-09-16, `./run_tests.sh --full`, log `temp/logs/ladder_close_full3_20260916.log`, the final tree of this phase — ladder close-out, new launch defaults, per-release correlation, lateral-authority guard, audit follow-ups): **PASS — parallel 6233 passed, 9 skipped, 2 xfailed in 297.12 s; serial 6 passed in 18.98 s.**
+
+> Closed 2026-11-01: fix plan steps 1 and 2 landed 2026-09-20 as the cup-contact contract C-CUP-1 (2026-09-20-cup-contact-contract-implemented.md), pinned by test_cup_realize.py; JB-22 closed by 2026-11-01-jb22-banking-saturation-closed-by-cup-contact-contract.md (Night Shift).
