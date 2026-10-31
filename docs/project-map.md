@@ -72,7 +72,7 @@ _Status: closed (complete)._
 
 **Attached inbox items:**
 
-- bug: JB-21 [bb/throw_outcome carries no throw identity](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-bb-throw-outcome-carries-no-throw-identity.md) (inbox)
+- bug: JB-21 [bb/throw_outcome carries no throw identity](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-bb-throw-outcome-carries-no-throw-identity.md) (in_progress)
 - bug: JB-25 [NOT_SETTLED retry is dead in the field](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-not-settled-retry-dead-in-the-field.md) (inbox)
 - feature: JB-28 [Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-columns-empty-cup-rows-33-34-on-hardware.md) (inbox)
 
@@ -179,7 +179,7 @@ Metrics: Effort xs/s/m/l/xl; HW none/bench-leg/robot; Owner none/decision/hands;
 | ID | Kind | Title | Status | Priority | Effort | HW | Owner | Blast radius | Area | Pathway | Age |
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | JB-2 | feature | [Design change: the Hand should be Idle, not Parked Closed-loop, while Active](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-hand-idle-not-parked-closed-loop-while-active.md) | inbox | medium | m | robot | decision | subsystem | hand | — | filed 2026-09-21 |
-| JB-21 | bug | [bb/throw_outcome carries no throw identity](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-bb-throw-outcome-carries-no-throw-identity.md) | inbox | medium | s | none | none | subsystem | ball-butler | Ball Butler | filed 2026-10-24 |
+| JB-21 | bug | [bb/throw_outcome carries no throw identity](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-bb-throw-outcome-carries-no-throw-identity.md) | in_progress | medium | s | none | none | subsystem | ball-butler | Ball Butler | filed 2026-10-24 |
 | JB-28 | feature | [Exercise columns empty-cup rehearsal rows 33 (Stop between feeds) and 34 (gate timeout, ABORTED_BB_NOT_READY) on hardware](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/feature-columns-empty-cup-rows-33-34-on-hardware.md) | inbox | medium | m | robot | hands | subsystem | skill-stack | Ball Butler | filed 2026-10-24 |
 | JB-22 | bug | [Cup Banking saturates at its 12 deg clamp on small lateral offsets](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-cup-banking-saturates-at-clamp.md) | inbox | medium | s | none | none | subsystem | skill-stack | Two-ball oval | filed 2026-10-24 |
 | JB-23 | bug | [Emitter gap: one 47 ms window over sitting 8 against the 35 ms max target](https://github.com/Project-DeepBlue-Juggling/Jugglebot/blob/main/map/bug-emitter-gap-47ms.md) | inbox | medium | m | robot | hands | subsystem | skill-stack | — | filed 2026-10-24 |
