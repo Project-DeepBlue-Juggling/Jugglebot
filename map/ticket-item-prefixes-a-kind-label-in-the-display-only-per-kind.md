@@ -18,7 +18,9 @@ parent: feature-update-item-naming-convention-based-on-type-eg-pathways-can
 type: question
 ---
 
-JB-118 asks for per-kind Item prefixes (PWAY-n for Pathways, PLAN-n for plans, and so on) because everything sharing the JB- prefix reads as confusing. The ID scheme is the owner's call: the allocator and the resolver live in `mapkit/` (a path the Night Shift gate freezes), the app accepts JB-n everywhere, and `plans/archived/map-item-ids.md` fixed one global sequence on purpose. Night Shift 2026-11-01 drafted the options into the Item's `## Options (2026-11-01)` section; a unit follows the answer in the owner's Session.
+JB-118 asks for per-kind Item prefixes (PWAY-n for Pathways, PLAN-n for plans, and so on) because everything sharing the JB- prefix reads as confusing. The ID scheme is the owner's call: the allocator and the resolver live in `mapkit/` (a path the Night Shift gate freezes), the app accepts JB-n everywhere, and `plans/archived/map-item-ids.md` fixed one global sequence on purpose.
+
+Night Shift 2026-11-01 drafted the options into the Item's `## Options (2026-11-01)` section; a unit follows the answer in the owner's Session.
 
 ## Options
 
