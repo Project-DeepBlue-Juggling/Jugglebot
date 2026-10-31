@@ -6985,7 +6985,7 @@ def test_a_non_aim_refusal_of_the_learned_prior_does_not_fall_back(sites):
 
 
 def test_a_hand_limit_refusal_of_the_learned_prior_falls_back_to_y_d(sites):
-    """(e) JB-120 (2026-11-01): the installer reports the validate gate's BARE
+    """(e) of unit A2, JB-120 (2026-11-01): the installer reports the validate gate's BARE
     check code (``install_segment``: ``InstallResult(False, exc.code, ...)``),
     and a Hand limit is ``HAND_LIMIT_ACC`` / ``HAND_LIMIT_VEL`` -- no
     ``LIMIT_`` prefix, no ``INFEASIBLE`` -- so the 2026-10-31 goal-4 Ball 2
