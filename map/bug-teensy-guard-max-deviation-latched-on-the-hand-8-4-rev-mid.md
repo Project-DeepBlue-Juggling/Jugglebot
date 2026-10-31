@@ -4,9 +4,14 @@ kind: bug
 title: Teensy guard MAX_DEVIATION latched on the hand (+8.4 rev) mid-oval; recover_lane found nothing, re-dispatch rejected WRONG_MODE
 status: inbox
 created: '2026-10-28'
-updated: '2026-10-31T04:52:14Z'
+updated: '2026-10-31T18:56:12Z'
 owners: []
 priority: high
+effort: m
+hardware: robot
+owner: hands
+radius: normative
+diagnosis: hypothesis
 area: can-bridge
 blocked_by: []
 links:

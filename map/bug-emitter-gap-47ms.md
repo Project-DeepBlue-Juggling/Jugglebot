@@ -20,3 +20,13 @@ filed_by: claude
 ---
 
 Over sitting 8 the emitter showed p50 25.9 / p99 29.9 / max 47.0 ms on `/trajectory/status`: the p99 < 30 ms target is met, the max < 35 ms target is not. The solve is no longer in the emitter's interpreter; find what still holds it for 20 ms (GC, logging, the `/trajectory/status` publish). Trigger: a latched lane or a missed knot traced to a gap.
+
+## Sitting
+
+- setup: armed
+- why: the 47 ms emitter window has only one sample (sitting 8); a fresh read at today's launch says whether the max is still over the 35 ms target.
+- do:
+  - Fly one 50-throw goal of any Pattern and read the emitter p50 / p99 / max from `/trajectory/status` in the launch log.
+- pass: emitter max below 35 ms over the goal.
+- record: the emitter p50, p99 and max lines, and the goal flown.
+- minutes: 10

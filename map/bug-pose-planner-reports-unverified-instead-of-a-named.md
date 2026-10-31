@@ -4,12 +4,12 @@ kind: bug
 title: Pose planner reports UNVERIFIED instead of a named INFEASIBLE at the feasibility edge
 status: inbox
 created: '2026-10-30'
-updated: '2026-10-30T08:52:13Z'
+updated: '2026-10-31T18:56:11Z'
 owners: []
 priority: low
 effort: s
 hardware: none
-owner: none
+owner: decision
 radius: local
 diagnosis: confirmed
 area: skill-stack
@@ -43,3 +43,14 @@ The gate held (plan refused, not returned) and the geometry is OUTSIDE the swept
 ## Fix shape
 
 When the active-set solve exits unverified on a near-degenerate problem, re-classify as INFEASIBLE naming the tightest constraint, or run a tightened second pass before reporting.
+
+## Options (2026-11-01)
+
+1. Keep `UNVERIFIED` as the reason but append the worst-violated row's name and residual to the message (one line in `_verify`; no caller branches on the reason, tests asserting the reason unchanged). Operator readability without touching the classification.
+2. Tightened second pass: on an unverified exit re-solve with a stricter tolerance / more iterations and report `INFEASIBLE` naming the tightest constraint only if the second pass also fails; `UNVERIFIED` otherwise. Costs one more solve on a refusal (25-200 ms), on the refusal path only.
+3. Reclassify outright: `UNVERIFIED` becomes `INFEASIBLE` with the binding row (the Item's wording). Reverses the 2026-08-30 non-distinction; every test pinning `reason == 'UNVERIFIED'` moves.
+4. Leave it: the gate held, the geometry is outside the box, and the name is a cosmetic residue.
+
+Recommendation: 1 (the operator gets the row name; the contract and its tests stand), 2 only if the owner wants the degenerate class measured.
+
+A question ticket carries this to the owner; the answer under its `## Answer` re-opens this Item.

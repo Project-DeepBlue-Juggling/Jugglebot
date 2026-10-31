@@ -38,3 +38,14 @@ The class widened: ODrive-side Hand state that drifts from what the can-bridge b
 - RETARGET sends `Set_Traj_Vel_Limit` (0x011) and `Set_Input_Pos` (0x00C) in the same tick; 0x00C wins CAN arbitration, so the move can be planned at the old cruise speed. Never fixed; the 2026-10-05 entry routes around it with the jam anchor.
 
 Source entries: [logbook/2026-09-04-fw17-hand-sitting-unflashed-idle-axis.md](logbook/2026-09-04-fw17-hand-sitting-unflashed-idle-axis.md), [logbook/2026-09-14-skill-stack-r3-first-powered-sitting.md](logbook/2026-09-14-skill-stack-r3-first-powered-sitting.md), [logbook/2026-10-05-skill-stack-r5-sitting-5-launch-limits-and-jam-anchor.md](logbook/2026-10-05-skill-stack-r5-sitting-5-launch-limits-and-jam-anchor.md).
+
+## Options (2026-11-01)
+
+1. Suppress-edge flush: on the suppress edge send one final setpoint at the clamped position with vel_ff = 0, for every lane the gate covers (legs, hand, stow). One edge, one frame; needs the design look the body names.
+2. Legs only: the flush on the leg lanes, hand and stow untouched until each is looked at. Smaller, leaves the Hand instance open.
+3. Report only: leave the hold as it is (bounded, no wind-up, re-baselined on recovery) and fix the LEG_CMD reporting quirk so bench analysers see which commands reached the ODrive. No behaviour change.
+4. Fold into the next can-bridge firmware revision with the other three instances (input-mode check, Guard against the post-slew command, RETARGET's 0x011 / 0x00C arbitration order) as one firmware unit with a bench-leg Sitting.
+
+Recommendation: 1 if the owner wants the suppressed state to be a true hold, flown first on the bench leg with the gap driver (`encoder_msg_rate_ms=0`) and the pass criterion "leg within 0.01 rev of the last transmitted command after suppression"; otherwise 3 now and 4 when the firmware is next touched.
+
+A question ticket carries this to the owner; the answer under its `## Answer` re-opens this Item.

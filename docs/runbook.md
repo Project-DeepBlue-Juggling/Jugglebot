@@ -31,7 +31,16 @@ linked from rows, never duplicated.
 - pass: five of five starts past the first two catches, with no AIM-LATERAL-CLAMPED inward of 35 mm.
 - record: the HOP aim clamp line and the landing x error of each hop throw.
 
-## Block 2: level, armed, bb-fed  (2 rows, 32 min)
+## Block 2: armed  (1 rows, 10 min)
+
+### JB-23 Emitter gap: one 47 ms window over sitting 8 against the 35 ms max target  (10 min, medium, unattached)
+- why: the 47 ms emitter window has only one sample (sitting 8); a fresh read at today's launch says whether the max is still over the 35 ms target.
+- do:
+  - Fly one 50-throw goal of any Pattern and read the emitter p50 / p99 / max from `/trajectory/status` in the launch log.
+- pass: emitter max below 35 ms over the goal.
+- record: the emitter p50, p99 and max lines, and the goal flown.
+
+## Block 3: level, armed, bb-fed  (2 rows, 32 min)
 
 ### JB-107 JP-9 High-low columns: Ball 1 at apex 1.05 m, Ball 2 at 0.95 m  (12 min, medium, pattern-progression-columns-to-centre-and-orbit)
 - why: P5 of plan pattern-progression.md: two Apexes in one Pattern (JP-9). The Rung flies 1.00 over 0.90 at separation 100; since the 2026-10-31 re-sweep (Hand prime 10.45, box gate_hash 961808ee2d20) 1.05 over 0.95 is admissible at both Sites too, but a 1.05 launch waits for the faster hand current capture (plan D-c).
@@ -66,7 +75,6 @@ linked from rows, never duplicated.
 - JB-114 Hand end-of-stroke bumper, and first the planner's own brake shape: let the ceiling, not the Hand, cap the Apex: no ## Sitting section
 - JB-117 Hand brake and hold currents sit far below the throw envelope's model (brake -14 to -20 A measured vs 35 to 40 A predicted; hold 1.5 vs 2.6 A): Kt, moving mass or friction is mis-modelled: no ## Sitting section
 - JB-2 Design change: the Hand should be Idle, not Parked Closed-loop, while Active: no ## Sitting section
-- JB-23 Emitter gap: one 47 ms window over sitting 8 against the 35 ms max target: no ## Sitting section
 - JB-24 10 % jitter-margin class of LIMIT_* refusals: no ## Sitting section
 - JB-25 NOT_SETTLED retry is dead in the field: no ## Sitting section
 - JB-26 Platform Teensy truncates the persisted levelling offset to int16 milliradians: no ## Sitting section
@@ -78,6 +86,8 @@ linked from rows, never duplicated.
 - JB-83 can-bridge CAN3 analog drive path has a load-dependent hardware fault (the Jugglebot loom stays on CAN2): no ## Sitting section
 - JB-85 Kinematic calibration acceptance: the flying frame check, and a Fit that assumes gravity along -z: no ## Sitting section
 - JB-95 Solver worker on SCHED_FIFO: take the CATCH solve out of the fair-share queue (wall ~= CPU at any box load): no ## Sitting section
+- JB-97 ABORTED_NO_RELEASE: three goals ended because the throw never left the hand (new 2026-10-28 21:02): no ## Sitting section
+- JB-98 Teensy guard MAX_DEVIATION latched on the hand (+8.4 rev) mid-oval; recover_lane found nothing, re-dispatch rejected WRONG_MODE: no ## Sitting section
 
 ## Questions a Sitting can answer
 

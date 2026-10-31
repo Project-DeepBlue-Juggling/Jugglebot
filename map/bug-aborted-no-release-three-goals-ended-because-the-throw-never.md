@@ -4,9 +4,14 @@ kind: bug
 title: 'ABORTED_NO_RELEASE: three goals ended because the throw never left the hand (new 2026-10-28 21:02)'
 status: inbox
 created: '2026-10-28'
-updated: '2026-10-28T10:22:56Z'
+updated: '2026-10-31T18:56:12Z'
 owners: []
 priority: high
+effort: m
+hardware: robot
+owner: hands
+radius: subsystem
+diagnosis: unknown
 area: hand
 blocked_by: []
 links:
