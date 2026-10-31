@@ -56,6 +56,7 @@ from jugglebot_interfaces.srv import BallButlerAim, BallButlerThrow
 from jugglebot_interfaces.action import BallButlerThrowCmd
 
 import jugglebot.hardware_config as hw
+from jugglebot import throw_identity
 from jugglebot.can.throw_ballistics import (
     ThrowSolution,
     global_to_bb_local,
@@ -599,8 +600,9 @@ class BallButlerNode(Node):
         if throw:
             self._throw_goals_unacked += 1
         send_future.add_done_callback(
-            lambda fut, tid=target_id, counted=throw:
-                self._on_throw_goal_response(fut, tid, counted))
+            lambda fut, tid=target_id, counted=throw,
+            rel=float(goal.release_wall_s):
+                self._on_throw_goal_response(fut, tid, counted, rel))
 
         if throw:
             self._publish_throw_announcement(
@@ -630,7 +632,8 @@ class BallButlerNode(Node):
     # ── bb/throw result chain (async, non-blocking — logs the firmware outcome) ──
 
     def _on_throw_goal_response(self, future, target_id: str,
-                                counted: bool = False):
+                                counted: bool = False,
+                                release_wall_s: float = 0.0):
         """Goal accepted/rejected by the bridge action server; chain to the result.
 
         ``counted`` (a real throw, not an aim): this response closes the
@@ -654,7 +657,8 @@ class BallButlerNode(Node):
                 '(a throw is already outstanding?)')
             return
         goal_handle.get_result_async().add_done_callback(
-            lambda fut, tid=target_id: self._on_throw_result(fut, tid))
+            lambda fut, tid=target_id, rel=release_wall_s:
+                self._on_throw_result(fut, tid, rel))
         if fire_deferred_cancel:
             self._send_bb_cancel('deferred until the bridge accepted the throw')
 
@@ -709,13 +713,20 @@ class BallButlerNode(Node):
         else:
             self.get_logger().error(f'Throw cancel FAILED: {res.message}')
 
-    def _on_throw_result(self, future, target_id: str):
+    def _on_throw_result(self, future, target_id: str,
+                         release_wall_s: float = 0.0):
         """Firmware terminal outcome (relayed CMD_RESULT) — log it AND relay it.
 
         The relay carries ``result.message``, whose LEADING TOKEN is the
         ``BallButlerCommandOutcome`` member name (``_bb_outcome_text`` builds it
         as ``NAME (axis=..., detail1=...)``), so a consumer compares against a
-        named firmware code rather than pattern-matching a sentence."""
+        named firmware code rather than pattern-matching a sentence.
+
+        JB-21: the String ends with `` release_wall_s=<%.6f>`` (the goal's
+        absolute release instant, `throw_identity.tag_message`) so a consumer
+        can tell WHICH throw the verdict reports; the leading token and the
+        text up to it are untouched, and a goal with no release (0) is
+        relayed unsuffixed."""
         try:
             result = future.result().result
         except Exception as e:  # noqa: BLE001
@@ -723,7 +734,8 @@ class BallButlerNode(Node):
             return
         tgt = target_id or 'point'
         try:
-            self.throw_outcome_pub.publish(String(data=str(result.message)))
+            self.throw_outcome_pub.publish(String(
+                data=throw_identity.tag_message(result.message, release_wall_s)))
         except Exception as e:  # noqa: BLE001
             # Telemetry only — never let the relay break the result chain.
             self.get_logger().warn(f'bb/throw_outcome publish failed: {e}')
