@@ -38,7 +38,9 @@ The admissible-box gate reports a Columns Ball 2 catch as `inside box` while the
 
 ## Night Shift replay (2026-11-01)
 
-Offline replay through the production `plan_segment` (flown tree `48bf4fcb^` and HEAD, hold 0.100 and 0, the sweep's seed and a live-like seed, catch aim 0 and -20 mm y, throw u up to (-16.6, -20) mm): **no case reaches 3900 rev/s^2**; the highest is 91 percent, the live 4112.5 is 14 points above it. The lateral inputs move the peak by at most 0.5 points, the seed by 12. Fix candidate 1 (shrink the y edge) is withdrawn. The input left is the live seed (Ball 1's installed plan at k_s 293 after its re-aim and bump), which is not logged.
+Offline replay through the production `plan_segment` (flown tree `48bf4fcb^` and HEAD, hold 0.100 and 0, the sweep's seed and a live-like seed, catch aim 0 and -20 mm y, throw u up to (-16.6, -20) mm): **no case reaches 3900 rev/s^2**; the highest is 91 percent, the live 4112.5 is 14 points above it.
+
+The lateral inputs move the peak by at most 0.7 points, the seed by 12. Fix candidate 1 (shrink the y edge) is withdrawn. The input left is the live seed (Ball 1's installed plan at k_s 293 after its re-aim and bump), which is not logged.
 
 - Fixed on the branch: every goal-4 catch dispatched `source=schedule:learned`, so the unit-A2 fallback to y_d should have run and did not, because `install_segment` returns the bare check code `HAND_LIMIT_ACC` and the classifier only knew `LIMIT_*` / `INFEASIBLE`. The branch adds the `HAND_LIMIT_` prefix (one more solve, only on a refusal). The replay says y_d alone is unlikely to rescue this cell.
 - Two sweep gaps, real but not shown causal: `_within_margin` applies the 0.9 margin to the legs only (the Hand is certified at 100 percent; this cell sits at 90 in the sweep's shape), and the box bounds the expected landing while the sweep certified command = landing (the live u x = -16.6 mm is outside the box x [-2, +1] and the sweep's shape refuses LIMIT_VEL there).
