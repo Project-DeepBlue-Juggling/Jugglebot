@@ -12,6 +12,8 @@ files_changed:
   - tests/ros/test_ball_butler_node.py
   - tests/ros/test_skill_node.py
   - logbook/INDEX.md
+  - map/bug-bb-throw-outcome-carries-no-throw-identity.md
+  - docs/project-map.md
 subsystem:
   - ball-butler
   - skill-stack
@@ -27,7 +29,7 @@ bb-self-cancel finding F2: the `bb/throw_outcome` String did not say which Throw
 
 The identity the consumer can know is the release it asked for: `_fire_reload_throw` records `release_window(now_wall, delay_s)` = [now+delay-0.25, now+delay+0.75] s before its blocking `bb/throw_at_target` call (both nodes use the ROS clock, CLOCK_REALTIME; the producer stamps `release_wall_s` = its `now + delay - 44 ms` somewhere inside that call). The window is cleared wherever `_bb_throw_dispatched` is. A verdict with a suffix outside the window is logged at info and dropped before any state is touched (no end, no retry, `_bb_pending_release_mono` kept). No suffix, or no recorded window: today's path exactly.
 
-## Walk-through (one reload)
+## Walk-through (one Feed)
 
 Attempt N fires: window W_N around T_N, BB publishes the announcement, the throw releases, `OK` verdict arrives (ignored as always). Attempt N+1 starts and fires at ~T_N + several s: window W_N+1 replaces W_N. A late `THROW_REJECTED_BAD_STATE release_wall_s=T_N` from N reaches `await_announcement` of N+1: T_N is seconds before W_N+1, so it is ignored and N+1 continues to its announcement; before the fix it ended N+1 as `REJECTED_BB(...)`. N+1's own verdict carries ~T_N+1 inside W_N+1 and ends the attempt as before. The same late message cannot consume N+1's NOT_SETTLED retry.
 
