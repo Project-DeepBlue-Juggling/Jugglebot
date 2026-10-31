@@ -362,12 +362,26 @@ def test_c_branch_removes_hardware(repo):
 
 
 @pytest.mark.parametrize("old,new", [("none", "decision"), ("decision", "none"), ("hands", None)])
-def test_c_branch_changes_owner(repo, old, new):
+def test_g_branch_changes_owner(repo, old, new):
     set_base(repo, owner=old)
     res = _rerate(repo, owner=new)
-    assert_hold(res, "c")
-    assert res.reasons == ["[c] rating changed on branch: owner base=%s branch=%s"
+    assert_hold(res, "g")
+    assert res.checked["c"] is True   # the owner check is not part of (c)
+    assert res.reasons == ["[g] rating changed on branch: owner base=%s branch=%s"
                            % (old, new or "unrated")]
+
+
+def test_waive_c_does_not_rescue_g(repo):
+    """A Sitting pass clears the hardware condition only: a branch that also moved
+    the Item's owner (decision -> none) stays HOLD under --waive c (owner, 2026-10-31)."""
+    set_base(repo, hardware="robot", owner="decision")
+    res = _rerate(repo, hardware="none", owner="none")
+    assert res.verdict == "HOLD" and letters(res) == ["c", "g"], res.reasons
+    res = run(repo, waive=("c",))
+    assert res.verdict == "HOLD" and res.waived == ["c"]
+    assert res.checked["c"] is False and res.checked["g"] is False
+    assert [r for r in res.reasons if r.startswith("[g]")] == [
+        "[g] rating changed on branch: owner base=decision branch=none"]
 
 
 def test_d_branch_lowers_radius(repo):
@@ -509,7 +523,8 @@ def test_json_shape(repo):
     assert set(doc) == {"verdict", "item", "branch", "tip", "reasons", "checked", "waived"}
     assert doc["waived"] == []
     assert doc["verdict"] == "HOLD" and doc["tip"] == tip(repo) and doc["item"] == "JB-7"
-    assert doc["checked"] == {"a": False, "b": True, "c": True, "d": True, "e": True, "f": True}
+    assert doc["checked"] == {"a": False, "b": True, "c": True, "d": True, "e": True, "f": True,
+                              "g": True}
     assert cli.returncode == 1
 
 

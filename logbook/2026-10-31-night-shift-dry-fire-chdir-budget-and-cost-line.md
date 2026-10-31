@@ -1,5 +1,5 @@
 ---
-title: "Night Shift: dry fire failed at systemd CHDIR (WorkingDirectory fixed), budget fuse made opt-in, the runner writes the total API cost into the report"
+title: "Night Shift: dry fire failed at systemd CHDIR (WorkingDirectory fixed), budget fuse made opt-in, the runner writes the total API cost into the report, the gate's owner check becomes condition (g)"
 type: bugfix
 date: 2026-10-31
 status: complete
@@ -17,6 +17,9 @@ files_changed:
   - plans/active/night-shift.md
   - tests/sim/test_night_shift_runner.py
   - tests/sim/test_night_shift_report.py
+  - tools/night_shift_gate.py
+  - tests/sim/test_night_shift_gate.py
+  - .claude/commands/sitting-wrapup.md
 ---
 
 # Night Shift: dry fire CHDIR fix, opt-in budget fuse, cost line in the report
@@ -45,6 +48,15 @@ commit:
   `test_cost_line_rejected_push_leaves_main_clean`). A dry run gets the same line as a plain
   write to `dry-<date>.md`. The map app renders the report body, so the line shows on the
   Night Shift page without a map-app change.
+
+**Owner decision, later the same morning: the owner check is its own gate letter.** Condition
+(c) used to check three things: `hardware: none`, no lowered `hardware` rating, and no change
+to a rated `owner`. `/sitting-wrapup` waives (c) after a hardware pass, so a branch that both
+needed hardware and moved `owner: decision` to `none` would have merged on the strength of a
+Sitting. The owner check is now condition (g), `WAIVABLE` stays `("c",)`, and
+`test_waive_c_does_not_rescue_g` pins the exact case: hardware robot -> none plus owner
+decision -> none, `--waive c`, still HOLD with the `[g]` reason. The owner also confirmed the
+`mapkit/` and `.claude/` freeze stays for the first nights. Gate tests 77 -> 78.
 
 **Verification.** 2026-10-31, `pytest tests/sim/test_night_shift_runner.py
 tests/sim/test_night_shift_report.py tests/sim/test_sitting_wrapup_protocol.py -q`:

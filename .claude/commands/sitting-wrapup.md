@@ -47,7 +47,8 @@ so held software work is never dropped):
        --audit ~/night-shift/Jugglebot/temp/reports/night-shift/audit-JB-n.md --waive c
    ```
    Anything but `MERGE (c waived)` (a red or missing gate log, open audit findings, a
-   normative radius, an open question, a forbidden path) keeps the branch held with the
+   normative radius, an open question, a forbidden path, a changed `owner` rating: condition
+   (g), which no waiver clears) keeps the branch held with the
    reasons in the summary; the Sitting result stays on the Item.
 2. ```
    git fetch -q origin

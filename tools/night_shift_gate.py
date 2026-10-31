@@ -19,7 +19,9 @@ with its condition letter in brackets (exit 1). ``--json`` prints
 
 ``--waive c`` is for ``/sitting-wrapup``: it re-runs the gate on a branch the
 owner passed at a Sitting, with the night's gate log and audit (tip unchanged),
-so a hardware pass overrides the hardware condition (c) and nothing else. (c)
+so a hardware pass overrides the hardware condition (c) and nothing else: in
+particular not (g), the owner check, which is its own letter so that no Sitting
+pass can clear an Item that a branch made to look workable (owner, 2026-10-31). (c)
 is still evaluated and reported in ``checked`` and the reasons, but a failing
 (c) does not block; the text verdict reads ``MERGE (c waived)``. Any other
 letter is a usage error (HOLD). A ``gate error`` is never waived.
@@ -31,15 +33,14 @@ one file under ``map/`` ON THE BRANCH carries that ``id:`` and loads as an Item;
 exactly one file under ``map/`` at the BASE carries it too (a branch cannot
 create the Item it merges).
 
-The six conditions, ALL evaluated so a HOLD lists every failing reason:
+The seven conditions, ALL evaluated so a HOLD lists every failing reason:
   (a) suite gate: the gate log's ``HEAD=<sha>`` line(s) equal the branch tip,
       any ``BRANCH=<name>`` line names the branch, and its LAST ``EXIT=<n>``
       line is ``EXIT=0``;
   (b) audit: the report's ``Audited HEAD: <sha>`` equals the branch tip and
       ``Behaviour-affecting findings open: <n>`` is present with n == 0;
   (c) hardware: the Item on the branch is rated ``hardware: none``, and the
-      branch did not lower a ``hardware`` rating the base had nor change a
-      rated ``owner``;
+      branch did not lower a ``hardware`` rating the base had;
   (d) radius: the Item on the branch is rated, not ``normative``, and the
       branch did not lower a ``radius`` rating the base had. A rating absent
       at the base may first appear on the branch (the orchestrator rating an
@@ -49,7 +50,10 @@ The six conditions, ALL evaluated so a HOLD lists every failing reason:
       not complete or dropped and whose ``parent`` names the Item (stem, slug
       or ID); a map file that cannot be parsed is a HOLD too;
   (f) paths: ``git diff -z --no-renames --name-only base...branch`` touches
-      nothing in :data:`FORBIDDEN_PATHS`.
+      nothing in :data:`FORBIDDEN_PATHS`;
+  (g) owner: the branch did not change a rated ``owner`` the base had (away
+      from ``none``, or down to ``none``, the way a decision-gated Item would
+      be made to look workable). Never waivable.
 
 Input formats (written by ``.claude/commands/night-shift.md`` §§ 2e, 2f):
   gate log:      ``HEAD=<sha>`` / ``BRANCH=<name>`` lines first, the suite
@@ -120,7 +124,7 @@ FORBIDDEN_PATHS: Tuple[str, ...] = (
 #: Letters ``--waive`` accepts: only the hardware condition, which a Sitting pass overrides.
 WAIVABLE: Tuple[str, ...] = ("c",)
 
-CONDITIONS: Tuple[str, ...] = ("a", "b", "c", "d", "e", "f")
+CONDITIONS: Tuple[str, ...] = ("a", "b", "c", "d", "e", "f", "g")
 MAP_DIR = "map"
 MIN_SHA_PREFIX = 7
 _QUESTION_CLOSED = ("complete", "dropped")
@@ -360,12 +364,17 @@ def _check_c(it: Item, base_meta: Dict[str, object]) -> List[str]:
     elif hw != "none":
         out.append("[c] hardware: %s (expected none)" % hw)
     out.extend(_lowered("c", "hardware", base_meta, it))
+    return out
+
+
+def _check_g(it: Item, base_meta: Dict[str, object]) -> List[str]:
+    """Its own letter, not part of (c), so `--waive c` can never clear it."""
     old_owner, new_owner = base_meta.get("owner"), it.meta.get("owner")
     if old_owner is not None and new_owner != old_owner:
         # Any change of a rated owner: away from none, or down to none (the way
         # a decision-gated Item would be made to look workable).
-        out.append(_changed("c", "owner", old_owner, new_owner))
-    return out
+        return [_changed("g", "owner", old_owner, new_owner)]
+    return []
 
 
 def _check_d(it: Item, base_meta: Dict[str, object]) -> List[str]:
@@ -460,6 +469,7 @@ def evaluate(repo: str, base: str, branch: str, item: str,
         "d": lambda: _check_d(it, base_meta),
         "e": lambda: _check_e(it, n, files),
         "f": lambda: _check_f(repo, base_sha, tip),
+        "g": lambda: _check_g(it, base_meta),
     }
     errored = False
     for letter in CONDITIONS:
