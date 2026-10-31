@@ -956,7 +956,7 @@ function initSceneMenu() {
         // Camera presets append below the scene-group toggles — run here
         // so they aren't wiped by the `dropdown.innerHTML = ''` above.
         initCameraPresets();
-        attachRecordsMenu(dropdown);   // "Records: <Pattern>" row toggles (JB-35)
+        attachRecordsMenu(dropdown);   // "<Pattern>" row toggles under the "Records" heading (JB-35, JB-92)
     }, 100);
 }
 
