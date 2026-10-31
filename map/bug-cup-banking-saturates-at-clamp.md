@@ -23,3 +23,5 @@ filed_by: claude
 ---
 
 Cup Banking saturates to its 12 degree clamp on any lateral offset in the pre-catch dive. The logbook entry is open and carries a fix plan awaiting the owner's scheduling; that fix plan is the spec. Trigger: `LIMIT_JERK` on small re-aims returns as a dominant refusal.
+
+Closed 2026-11-01 (Night Shift): the fix plan landed 2026-09-20 as C-CUP-1 / C-CUP-3 of the cup-contact contract; see logbook/2026-11-01-jb22-banking-saturation-closed-by-cup-contact-contract.md.
