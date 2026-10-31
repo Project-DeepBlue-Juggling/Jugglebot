@@ -13,7 +13,7 @@
   Every control is also a URL parameter, for headless screenshots:
     ?conn=1&active=1&compact=0&theme=dark&font=14&width=420
     &defaults=ok|fail|slow&relay=ok|old|reject|refuse|timeout
-    &cup=held|empty|unknown&pattern=columns&apex=0.8&sep=&n=6
+    &cup=held|empty|unknown&pattern=columns&apex=0.8&sep=&n=6&param=ok|refuse|timeout
     &scene=running|ended|aborted|refused|dispatch|invalid
 -->
 <head>
@@ -100,6 +100,9 @@
       feed <select id="d-feed"><option>P1</option><option>P2</option></select>
       <button id="b-refetch">Reconnect (refetch)</button>
     </fieldset>
+    <fieldset><legend>skill_node set_parameters (Columns — turned / high-low)</legend>
+      <select id="s-param"><option value="ok">accept</option><option value="refuse">refuse (goal running)</option><option value="timeout">never answer</option></select>
+    </fieldset>
     <fieldset><legend>Relay (juggle_request)</legend>
       <select id="s-relay">
         <option value="ok">ok (new relay)</option><option value="old">old relay (drops fields)</option>
@@ -167,9 +170,13 @@ function resolved(data, honourFields) {
         if (k === 'separation_mm') r.separation_mm = parseFloat(v).toFixed(1);
         if (k === 'num_cycles') r.n_throws = parseInt(v, 10);
     }
+    // The param-backed goals echo the parameter they flew (ATTEMPT_START extra keys).
+    if (parts[0] === 'columns_turned' && lastParams.columns_angle_deg != null) r.angle_deg = String(lastParams.columns_angle_deg);
+    if (parts[0] === 'columns_highlow' && lastParams.apex_m_ball2 != null) r.apex_m_ball2 = lastParams.apex_m_ball2.toFixed(3);
     return r;
 }
 let lastResolved = null;
+let lastParams = {};   // what the fake skill_node holds (set_parameters writes)
 
 setJugglePanelTransport({
     callService(name, type, req) {
@@ -180,6 +187,15 @@ setJugglePanelTransport({
             if (mode === 'slow') return new Promise(() => {});
             const d = nodeDefaults();
             return new Promise((res) => setTimeout(() => res({ values: req.names.map((n) => pv(n, d[n])) }), 120));
+        }
+        if (name === '/skill_node/set_parameters') {
+            const mode = $('s-param').value;
+            const prm = (req.parameters || [])[0] || {};
+            log('call ' + name + ' ' + prm.name + ' = ' + (prm.value || {}).double_value + ' → ' + mode);
+            if (mode === 'timeout') return new Promise(() => {});
+            if (mode === 'refuse') return Promise.resolve({ results: [{ successful: false, reason: 'columns_angle_deg: refused while a goal is active' }] });
+            lastParams[prm.name] = Number((prm.value || {}).double_value);
+            return new Promise((res) => setTimeout(() => res({ results: [{ successful: true, reason: '' }] }), 80));
         }
         if (name === 'jugglebot/juggle_request') {
             const relay = $('s-relay').value;
@@ -275,6 +291,7 @@ $('i-refused').onclick = () => attempt('juggle_refused', { pattern: $('juggle-pa
 // ---- URL-driven setup + scenes (for headless screenshots) ----
 if (q.get('defaults')) $('s-defaults').value = q.get('defaults');
 if (q.get('relay')) $('s-relay').value = q.get('relay');
+if (q.get('param')) $('s-param').value = q.get('param');
 if (q.get('feed')) $('d-feed').value = q.get('feed');
 if (q.get('width')) document.documentElement.style.setProperty('--minimap-width', q.get('width') + 'px');
 

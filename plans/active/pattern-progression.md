@@ -70,7 +70,7 @@ The release-step exception to `HAND_LIMIT_C2` is on the Hand thread (JB-114), no
 | P2 Turned Columns on the compiled path | complete 2026-10-31 | 12 pose cells swept twice identical; 45 deg admits the 0.925 band, 90 deg 0.875 and 0.925 | - |
 | P3 JP-10 turned Columns | not started | 20 Catches at 45 and 90 deg | a Sitting; runbook section; the records label exists |
 | P4 Per-Site Apex | complete 2026-10-31 | 16 pose cells swept twice identical (8 at separation 100 in the box); 1.00/0.90 admissible at 100 only | - |
-| P5 JP-9 high-low Columns | not started | 20 Catches, Apex gap, hand iq | a Sitting at separation 100, pair 1.00/0.90; GUI entry for the goal |
+| P5 JP-9 high-low Columns | not started | 20 Catches, Apex gap, hand iq | a Sitting at separation 100, pair 1.00/0.90 (GUI entry landed 2026-10-31) |
 | P6 JB-38 dependency | not started | owned by JB-38 | JB-38 P1, P3, P4 |
 | P7 JP-5 polygon walk | not started | 24 Catches, no first-visit miss | P6 |
 | P8 JP-11 rotating Columns | not started | one full turn at 10 deg per Beat | P7 |
@@ -109,7 +109,7 @@ The release-step exception to `HAND_LIMIT_C2` is on the Hand thread (JB-114), no
 ### P5: JP-9 high-low Columns
 
 - Adds: two Apexes in one Pattern.
-- Flies at separation 100 with the 1.00/0.90 pair (the only admissible pair today); the goal has no GUI entry yet, so it is sent with `ros2 action` after `ros2 param set /skill_node apex_m_ball2 0.90`.
+- Flies at separation 100 with the 1.00/0.90 pair (the only admissible pair today); the GUI Juggle panel's `Columns — high-low` entry (2026-10-31) writes `apex_m_ball2` to the node before each Start; the terminal path (`ros2 param set /skill_node apex_m_ball2 0.90`, then `ros2 action send_goal`) stays as the fallback.
 - Rung gate: 20 consecutive Catches in one Attempt; Tracker mean Apex difference within 20 mm of the commanded difference; hand iq under 45 A at every launch. Stop rule: any hand `iq_setpoint` sample at 50.0 A ends the Attempt (needs the faster iq capture named under D-c, or the Sitting flies the lower pair).
 - Depends on: P4. Items consumed: JB-107. Plus the three standing Rung preconditions.
 

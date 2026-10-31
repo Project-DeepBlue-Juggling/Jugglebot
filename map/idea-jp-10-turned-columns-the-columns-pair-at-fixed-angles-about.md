@@ -4,7 +4,7 @@ kind: idea
 title: 'JP-10 Turned columns: the columns pair at fixed angles about +z, under pose'
 status: in_progress
 created: '2026-10-30'
-updated: '2026-10-31T00:29:27Z'
+updated: '2026-10-31T00:44:54Z'
 owners:
 - jugglebot-f5
 priority: medium
@@ -43,8 +43,8 @@ It proves the rotational symmetry on hardware that lets the admissible box key o
 - do:
   - Rehearse before arming: cup empty, Ball Butler unpowered, `ros2 param set /skill_node columns_angle_deg 45`, send the goal below once. The accept message may name only the cup and Ball Butler refusals (no box, planner or angle refusal) and nothing moves. Repeat at 90.
   - Fly a straight `Columns` control first if this Sitting has not flown one (GUI Columns, Sep. 125, Apex 0.95, Dwell 0.27, Throws 20).
-  - `ros2 param set /skill_node columns_angle_deg 45` (refused while a goal runs), then `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: columns_turned, apex_m: 0.95, separation_mm: 125.0, dwell_s: 0.27, num_cycles: 20}" --feedback`. Only the 0.925 to 0.975 Apex band is admissible at 45 deg.
-  - `ros2 param set /skill_node columns_angle_deg 90`, then the same goal at Apex 0.95 (0.90 is also admissible at 90 deg).
+  - GUI: Juggle panel `Columns — turned`, Angle 45, Apex 0.95, Sep. 125, Dwell 0.27, Throws 20 (Start writes columns_angle_deg to the node first). Terminal fallback: `ros2 param set /skill_node columns_angle_deg 45` (refused while a goal runs), then `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: columns_turned, apex_m: 0.95, separation_mm: 125.0, dwell_s: 0.27, num_cycles: 20}" --feedback`. Only the 0.925 to 0.975 Apex band is admissible at 45 deg.
+  - Angle 90 (or `ros2 param set /skill_node columns_angle_deg 90`), then the same goal at Apex 0.95 (0.90 is also admissible at 90 deg).
   - Afterwards `ros2 param set /skill_node columns_angle_deg 0`.
 - pass: 20 consecutive Catches in one Attempt at each angle; landing scatter within 3 mm of the straight control; no HAND_LIMIT line.
 - record: caught of thrown per angle, each angle's plant_id, landing scatter against the control, the bag path; commit docs/records.md.

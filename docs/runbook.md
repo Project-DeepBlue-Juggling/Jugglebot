@@ -18,7 +18,7 @@ linked from rows, never duplicated.
 - why: P5 of plan pattern-progression.md: two Apexes in one Pattern (JP-9). The only admissible pair today is 1.00 over 0.90 at separation 100; 1.05 over 0.95 waits for the Hand thread JB-114.
 - do:
   - Rehearse before arming: cup empty, Ball Butler unpowered, `ros2 param set /skill_node apex_m_ball2 0.90`, send the goal below once. The accept message may name only the cup and Ball Butler refusals (no box, planner or apex2 refusal) and nothing moves.
-  - No GUI entry yet: `ros2 param set /skill_node apex_m_ball2 0.90` (refused while a goal runs), then `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: columns_highlow, apex_m: 1.00, separation_mm: 100.0, dwell_s: 0.27, num_cycles: 20}" --feedback`.
+  - GUI: Juggle panel `Columns — high-low`, Apex 1.00, Apex 2 0.90, Sep. 100, Dwell 0.27, Throws 20 (Start writes apex_m_ball2 to the node first). Terminal fallback: `ros2 param set /skill_node apex_m_ball2 0.90` (refused while a goal runs), then `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: columns_highlow, apex_m: 1.00, separation_mm: 100.0, dwell_s: 0.27, num_cycles: 20}" --feedback`.
   - Watch the hand current at every launch; cancel the goal if any hand iq sample reaches 50.0 A.
   - Afterwards `ros2 param set /skill_node apex_m_ball2 0.0`.
 - pass: 20 consecutive Catches in one Attempt; Tracker mean Apex difference between the two balls within 20 mm of the commanded 100 mm; hand iq under 45 A at every launch.
@@ -29,8 +29,8 @@ linked from rows, never duplicated.
 - do:
   - Rehearse before arming: cup empty, Ball Butler unpowered, `ros2 param set /skill_node columns_angle_deg 45`, send the goal below once. The accept message may name only the cup and Ball Butler refusals (no box, planner or angle refusal) and nothing moves. Repeat at 90.
   - Fly a straight `Columns` control first if this Sitting has not flown one (GUI Columns, Sep. 125, Apex 0.95, Dwell 0.27, Throws 20).
-  - `ros2 param set /skill_node columns_angle_deg 45` (refused while a goal runs), then `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: columns_turned, apex_m: 0.95, separation_mm: 125.0, dwell_s: 0.27, num_cycles: 20}" --feedback`. Only the 0.925 to 0.975 Apex band is admissible at 45 deg.
-  - `ros2 param set /skill_node columns_angle_deg 90`, then the same goal at Apex 0.95 (0.90 is also admissible at 90 deg).
+  - GUI: Juggle panel `Columns — turned`, Angle 45, Apex 0.95, Sep. 125, Dwell 0.27, Throws 20 (Start writes columns_angle_deg to the node first). Terminal fallback: `ros2 param set /skill_node columns_angle_deg 45` (refused while a goal runs), then `ros2 action send_goal /jugglebot/juggle jugglebot_interfaces/action/Juggle "{pattern: columns_turned, apex_m: 0.95, separation_mm: 125.0, dwell_s: 0.27, num_cycles: 20}" --feedback`. Only the 0.925 to 0.975 Apex band is admissible at 45 deg.
+  - Angle 90 (or `ros2 param set /skill_node columns_angle_deg 90`), then the same goal at Apex 0.95 (0.90 is also admissible at 90 deg).
   - Afterwards `ros2 param set /skill_node columns_angle_deg 0`.
 - pass: 20 consecutive Catches in one Attempt at each angle; landing scatter within 3 mm of the straight control; no HAND_LIMIT line.
 - record: caught of thrown per angle, each angle's plant_id, landing scatter against the control, the bag path; commit docs/records.md.

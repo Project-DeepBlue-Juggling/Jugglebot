@@ -45,6 +45,16 @@
  * dwell per pattern (columns/hop/self_toss 0.27, oval 0.65), a different dwell
  * is refused, so PATTERN_POINTS pre-fills it per pattern (editable) and the
  * request carries `dwell_s=`; blank = skill_node's dwell_s parameter.
+ *
+ * Two goals ride on a NODE PARAMETER, not a goal field (pattern-progression
+ * P2/P4, 2026-10-31): `columns_turned` reads `columns_angle_deg` and
+ * `columns_highlow` reads `apex_m_ball2` (both refused while a goal runs).
+ * Their panel field (Angle / Apex 2) is REQUIRED, never blank: Start first
+ * writes the typed value through /skill_node/set_parameters and dispatches
+ * the request only on a successful write, so a stale parameter from an
+ * earlier goal can never fly under a blank field.  The value is never on the
+ * request string (the relay would refuse the token); the juggle_start event
+ * echoes it (`angle_deg` / `apex_m_ball2`) for the stale-relay cross-check.
  */
 
 import * as clock from './clock.js';
@@ -86,6 +96,10 @@ const SETSTRING = 'jugglebot_interfaces/srv/SetString';
 const TRIGGER = 'std_srvs/srv/Trigger';
 const PARAM_SERVICE = '/skill_node/get_parameters';
 const PARAM_SERVICE_TYPE = 'rcl_interfaces/srv/GetParameters';
+/** Written (one double) right before a parameter-backed goal's dispatch. */
+const SET_PARAM_SERVICE = '/skill_node/set_parameters';
+const SET_PARAM_SERVICE_TYPE = 'rcl_interfaces/srv/SetParameters';
+const PARAMETER_DOUBLE = 3;   // rcl_interfaces/msg/ParameterType
 /** columns_feed_site is display-only: it decides which site each columns
  *  ball flies at (skill_node._run_columns / _run_columns_1ball). */
 const PARAM_NAMES = ['apex_m', 'separation_mm', 'dwell_s', 'n_throws', 'columns_feed_site'];
@@ -133,6 +147,19 @@ export const JUGGLE_PATTERNS = [
     { value: 'oval_1ball_fed', label: 'Oval — fed', kind: 'one', sites: 2, phantom: null,
       cupNeed: 'empty',
       blurb: 'The oval with Ball Butler feeding the first ball at the near site.' },
+    // Pattern-progression P2 (JP-10): the Columns pair turned about +z by the
+    // node parameter `columns_angle_deg` (pose planner only; angle 0 refused).
+    // `param` names the REQUIRED field written to skill_node before dispatch.
+    { value: 'columns_turned', label: 'Columns — turned', kind: 'columns', sites: 2, phantom: null,
+      param: 'columns_angle_deg',
+      blurb: 'Two-ball Columns with the site pair turned about the Platform +z by the '
+             + 'Angle field (45 or 90 deg are swept); the fed site is the one nearest Ball Butler.' },
+    // Pattern-progression P4 (JP-9): Ball 1 at Apex, Ball 2 at `apex_m_ball2`;
+    // the Beat follows the high ball and the low ball dwells longer.
+    { value: 'columns_highlow', label: 'Columns — high-low', kind: 'columns', sites: 2, phantom: null,
+      param: 'apex_m_ball2',
+      blurb: 'Two-ball Columns with Ball 1 at Apex and Ball 2 at Apex 2 (1.00 over 0.90 at '
+             + '100 mm is the swept pair); the diagram timing follows the higher ball.' },
 ];
 
 /**
@@ -163,8 +190,26 @@ const FIELDS = {
             + 'per pattern (PATTERN_POINTS); a different dwell is refused. Blank = skill_node\'s dwell_s.',
         tooBig: 'dwell is in SECONDS',
     },
+    // Parameter-backed fields (one pattern each; hidden otherwise, REQUIRED there).
+    columns_angle_deg: {
+        label: 'Angle', unit: '°', integer: false, max: 359, param: 'columns_angle_deg',
+        tip: 'columns_angle_deg — the Columns pair turned about +z, degrees, written to '
+            + 'skill_node before Start. Required; the box is swept at 45 and 90.',
+        tooBig: 'angle is in DEGREES (under 360)',
+    },
+    apex_m_ball2: {
+        label: 'Apex 2', unit: 'm', integer: false, max: 3, param: 'apex_m_ball2',
+        tip: 'apex_m_ball2 — Ball 2\'s apex, metres, written to skill_node before Start. '
+            + 'Required and different from Apex; 1.00 over 0.90 at 100 mm is the swept pair.',
+        tooBig: 'apex is in METRES',
+    },
 };
-const FIELD_KEYS = ['num_cycles', 'apex_m', 'separation_mm', 'dwell_s'];
+/** Goal fields travel on the request string; param fields are written to the node. */
+const GOAL_FIELD_KEYS = ['num_cycles', 'apex_m', 'separation_mm', 'dwell_s'];
+const PARAM_FIELD_KEYS = ['columns_angle_deg', 'apex_m_ball2'];
+const FIELD_KEYS = GOAL_FIELD_KEYS.concat(PARAM_FIELD_KEYS);
+/** The pre-filled keys a pattern switch resets (`PATTERN_POINTS` values). */
+const POINT_KEYS = ['apex_m', 'separation_mm', 'dwell_s'].concat(PARAM_FIELD_KEYS);
 
 /**
  * Per-pattern operating point the apex / separation fields are PRE-FILLED
@@ -186,12 +231,18 @@ export const PATTERN_POINTS = {
     columns_1ball_fed: { box: 'columns',   apex_m: 0.95, separation_mm: 125, dwell_s: 0.27 },
     oval_1ball:        { box: 'oval_1ball', apex_m: 0.95, separation_mm: 150, dwell_s: 0.65 },
     oval_1ball_fed:    { box: 'oval_1ball', apex_m: 0.95, separation_mm: 150, dwell_s: 0.65 },
+    // Swept 2026-10-31 (gate_hash c6c4d7adccf9): turned cells at 125 mm, bands
+    // 0.925-0.975 at 45 deg and 0.875-0.975 at 90 deg; high-low cells only at
+    // 100 mm, the 1.00 / 0.90 pair admissible at both sites.
+    columns_turned:    { box: 'columns',   apex_m: 0.95, separation_mm: 125, dwell_s: 0.27, columns_angle_deg: 45 },
+    columns_highlow:   { box: 'columns_highlow', apex_m: 1.0, separation_mm: 100, dwell_s: 0.27, apex_m_ball2: 0.9 },
 };
 
-/** Overwrite apex/separation/dwell with pattern `value`'s certified point. */
+/** Overwrite apex/separation/dwell (and the param field) with pattern
+ *  `value`'s certified point. */
 function applyPatternPoint(value) {
     const pt = PATTERN_POINTS[value];
-    for (const k of ['apex_m', 'separation_mm', 'dwell_s']) {
+    for (const k of POINT_KEYS) {
         const v = pt ? pt[k] : null;
         const raw = v == null ? '' : String(v);
         fields[k] = { raw, value: v == null ? null : v, error: null };
@@ -336,6 +387,7 @@ function parseField(key, raw) {
 /** Does `key` apply to the selected pattern?  Separation is meaningless for
  *  a one-site pattern (skill_node ignores it), so it is never sent there. */
 function fieldApplies(key, p) {
+    if (PARAM_FIELD_KEYS.includes(key)) return p.param === key;
     return !(key === 'separation_mm' && p.sites === 1);
 }
 
@@ -396,11 +448,17 @@ function firstFieldError(p) {
     for (const k of FIELD_KEYS) {
         if (fieldApplies(k, p) && fields[k].error) return fields[k].error;
     }
+    // A blank param field would fly whatever the node holds from an earlier
+    // goal — never "node default" here.
+    if (p.param && fields[p.param].value == null) {
+        return FIELDS[p.param].label + ': required for ' + p.label;
+    }
     return null;
 }
 
 function buildRequestData(p) {
-    // No `reload` token: the skill node decides from the cup sensor.
+    // No `reload` token: the skill node decides from the cup sensor.  Param
+    // fields (GOAL_FIELD_KEYS excluded) never appear: the relay refuses them.
     const parts = [p.value];
     const typed = typedOverrides(p);
     if (typed.apex_m != null) parts.push('apex_m=' + wireNum(typed.apex_m, false));
@@ -509,9 +567,39 @@ function onStartConfirm() {
     // Re-check at CONFIRM time (holdToConfirm re-checks .disabled, but the
     // gate inputs may have moved since the last render).
     if (startGateReason(p)) return;
-    dispatchJuggle(buildRequestData(p), {
-        pattern: p.value, typed: typedOverrides(p), t: Date.now(), // wall-clock: command path
-    });
+    const data = buildRequestData(p);
+    const cc = { pattern: p.value, typed: typedOverrides(p), t: Date.now() }; // wall-clock: command path
+    if (!p.param) { dispatchJuggle(data, cc); return; }
+    setParamThenDispatch(p, data, cc);
+}
+
+/**
+ * Parameter-backed goal: write the REQUIRED field to skill_node first and
+ * dispatch only on a successful write (the node refuses the write while a
+ * goal runs; a refused or unanswered write dispatches NOTHING, so the goal
+ * can never fly an earlier value).  Same latch and cooldown as a dispatch.
+ */
+function setParamThenDispatch(p, data, cc) {
+    const value = fields[p.param].value;
+    busy = true;
+    warn = null;
+    setTransient('Setting ' + p.param + ' = ' + wireNum(value, false) + '…', '');
+    ros.withTimeout(transport.callService(SET_PARAM_SERVICE, SET_PARAM_SERVICE_TYPE, {
+        parameters: [{ name: p.param, value: { type: PARAMETER_DOUBLE, double_value: value } }],
+    }), T_SVC_PARAMS, 'skill_node set_parameters')
+        .then((res) => {
+            const r = res && res.results && res.results[0];
+            if (!r || !r.successful) throw new Error((r && r.reason) || 'parameter not set');
+            dispatchJuggle(data, cc);   // its own latch, ack and cooldown
+        })
+        .catch((err) => {
+            setTransient(p.param + ' not set: ' + (err && err.message ? err.message : err)
+                + ' — nothing dispatched', 'err');
+            clearTimeout(cooldownTimer);
+            cooldownTimer = setTimeout(() => { busy = false; sync(); }, JUGGLE_COOLDOWN_MS);
+            armTransientClear();
+            sync();
+        });
 }
 
 /** Request string of the "Throw to magazine" button — exactly this token, no
@@ -619,6 +707,7 @@ export function jugglePanelOnSkillAttempt(msg) {
         running = {
             pattern: f.pattern, n: f.n_throws, reload: f.reload === '1',
             apex: f.apex_m, sep: f.separation_mm, t0: now,
+            angle: f.angle_deg, apex2: f.apex_m_ball2,   // the two param-backed goals only
         };
         checkResolved(f, now);
     } else if (msg.name === 'juggle_refused') {
@@ -656,6 +745,15 @@ function checkResolved(f, now) {
     }
     if (t.num_cycles != null && parseInt(f.n_throws, 10) !== t.num_cycles) {
         misses.push(f.n_throws + ' throws (asked ' + t.num_cycles + ')');
+    }
+    // The param-backed goals echo the parameter they flew (skill_node ATTEMPT_START).
+    if (t.columns_angle_deg != null && f.angle_deg != null
+        && !(Math.abs(parseFloat(f.angle_deg) - t.columns_angle_deg) <= 0.01)) {
+        misses.push('angle ' + f.angle_deg + ' deg (asked ' + wireNum(t.columns_angle_deg) + ')');
+    }
+    if (t.apex_m_ball2 != null && f.apex_m_ball2 != null
+        && !(Math.abs(parseFloat(f.apex_m_ball2) - t.apex_m_ball2) <= 6e-4)) {
+        misses.push('apex 2 ' + f.apex_m_ball2 + ' m (asked ' + wireNum(t.apex_m_ball2) + ')');
     }
     if (misses.length) {
         warn = '⚠ Node flew ' + misses.join(', ') + ' — relay out of date? colcon build + relaunch';
@@ -705,9 +803,16 @@ function buildModel(p) {
     const hs = HALF_SEP_PX * clamp(sep / 250, 0.55, 1.2);
     const P1 = CX - hs, P2 = CX + hs;
     const apexPx = APEX_PX_MAX * clamp(apex, 0.35, 1.2) / 1.2;
+    // High-low: Ball 2 flies its own (typed) apex; the schedule's Beat follows
+    // the higher ball, so the timing below uses the larger of the two.
+    const apex2 = p.param === 'apex_m_ball2' && fields.apex_m_ball2.value != null
+        ? fields.apex_m_ball2.value : apex;
+    const angle = p.param === 'columns_angle_deg' ? fields.columns_angle_deg.value : null;
     const m = {
-        p, apex, dwell, sep, apexKnown, dwellKnown, sepKnown, cup,
-        tf: flightS(apex), apexPx, apexY: RIM_Y - BALL_R - apexPx,
+        p, apex, dwell, sep, apexKnown, dwellKnown, sepKnown, cup, apex2, angle,
+        tf: flightS(Math.max(apex, apex2)), apexPx, apexY: RIM_Y - BALL_R - apexPx,
+        ballApex: [apex, apex2],
+        ballApexPx: [apexPx, APEX_PX_MAX * clamp(apex2, 0.35, 1.2) / 1.2],
         sites: [], balls: [], feeds: [],
     };
     if (p.sites === 1) {
@@ -716,7 +821,9 @@ function buildModel(p) {
         m.balls = [{ id: 0, x, phantom: false }];
         if (reloadFirst(p, cup)) m.feeds.push({ x, ball: 0 });
     } else {
-        m.sites = [{ x: P1, name: 'P1' }, { x: P2, name: 'P2' }];
+        // Turned Columns: the node names the rotated sites P1@<angle> / P2@<angle>.
+        const suffix = angle != null ? '@' + wireNum(angle, false) : '';
+        m.sites = [{ x: P1, name: 'P1' + suffix }, { x: P2, name: 'P2' + suffix }];
         if (p.kind === 'one') {
             m.balls = [{ id: 0, x: P1, phantom: false }];   // hop starts at P1
             if (reloadFirst(p, cup)) m.feeds.push({ x: P1, ball: 0 });
@@ -748,6 +855,7 @@ const isOval = (p) => p.value === 'oval_1ball' || p.value === 'oval_1ball_fed';
 
 function diagramKeyOf(p) {
     return [p.value, cupState(), effective('apex_m'), effective('separation_mm'), effective('dwell_s'),
+         fields.columns_angle_deg.value, fields.apex_m_ball2.value,
          defaults ? defaults.columns_feed_site : ''].join('|');
 }
 
@@ -819,7 +927,8 @@ function rebuildDiagram(p) {
         }
     } else {
         for (const ball of m.balls) {
-            svgEl('line', { x1: ball.x, y1: top, x2: ball.x, y2: ay },
+            const by = RIM_Y - BALL_R - m.ballApexPx[ball.id];   // each ball its own apex
+            svgEl('line', { x1: ball.x, y1: top, x2: ball.x, y2: by },
                 'jp-path b' + (ball.id + 1) + (ball.phantom ? ' phantom' : ''), g);
         }
     }
@@ -951,7 +1060,10 @@ function drawFrame(s) {
         for (let i = 0; i < 2; i++) {
             const w = ((s - i * beta) % T + T) % T;
             const bx = m.balls[i].x;
-            if (w < tf) placeBall(i, bx, flightZ(w, tf, m.apexPx), false, 0);
+            // Each ball on its own flight (equal unless high-low): the lower
+            // ball lands early and sits in the cup through its longer dwell.
+            const tfi = flightS(m.ballApex[i]);
+            if (w < tfi) placeBall(i, bx, flightZ(w, tfi, m.ballApexPx[i]), false, 0);
             else placeBall(i, bx, 0, true, dip);
         }
     }
@@ -1021,7 +1133,7 @@ function buildField(key) {
     const spec = FIELDS[key];
     const label = el('label', 'jp-flabel', spec.label);
     const input = el('input', 'jp-input');
-    input.id = 'juggle-' + key.replace('_', '-');
+    input.id = 'juggle-' + key.replace(/_/g, '-');   // every underscore: juggle-apex-m-ball2
     label.htmlFor = input.id;
     input.type = 'text';
     input.inputMode = spec.integer ? 'numeric' : 'decimal';
@@ -1237,6 +1349,8 @@ function attemptView() {
         const secs = Math.max(0, Math.floor((clock.now() - running.t0) / 1000));
         const text = 'Running · ' + label + ' · ' + running.n + ' throws · apex ' + running.apex
             + ' m' + (patternOf(running.pattern).sites === 2 ? ' · ' + running.sep + ' mm' : '')
+            + (running.angle != null ? ' · angle ' + running.angle + ' deg' : '')
+            + (running.apex2 != null ? ' · apex 2 ' + running.apex2 + ' m' : '')
             + (running.reload ? ' · reload' : '') + ' · ' + secs + ' s';
         return { text, cls: 'run', tip: 'resolved request from skills/attempt juggle_start' };
     }
@@ -1284,9 +1398,15 @@ function sync() {
         const spec = FIELDS[k];
         const applies = fieldApplies(k, p);
         setDisabled(f.input, !applies);
+        // Param fields exist for one pattern each: hidden elsewhere (the
+        // grid of the other patterns is untouched), REQUIRED where shown.
+        if (PARAM_FIELD_KEYS.includes(k)) {
+            setHidden(f.label, !applies); setHidden(f.input, !applies); setHidden(f.unit, !applies);
+        }
         const dv = defaults ? defaults[spec.param] : null;
         let ph;
         if (!applies) ph = 'n/a';
+        else if (PARAM_FIELD_KEYS.includes(k)) ph = 'required';
         else if (dv != null) ph = spec.integer ? String(dv) : (k === 'apex_m' || k === 'dwell_s' ? fmt2(dv) : String(Math.round(dv)));
         else if (defaultsState === 'loading') ph = '…';
         else ph = 'node';   // "node default", in the width a 5em field has
@@ -1303,7 +1423,7 @@ function sync() {
     const pt = PATTERN_POINTS[p.value] || {};
     const anyTyped = FIELD_KEYS.some((k) => {
         const raw = fields[k].raw.trim();
-        if (k === 'apex_m' || k === 'separation_mm' || k === 'dwell_s') {
+        if (POINT_KEYS.includes(k)) {
             return raw !== (pt[k] == null ? '' : String(pt[k]));
         }
         return raw !== '';
@@ -1327,6 +1447,8 @@ function sync() {
     if (typed.num_cycles != null) sumParts.push(typed.num_cycles + ' throws');
     if (typed.apex_m != null) sumParts.push('apex ' + wireNum(typed.apex_m) + ' m');
     if (typed.separation_mm != null) sumParts.push(wireNum(typed.separation_mm) + ' mm');
+    if (typed.columns_angle_deg != null) sumParts.push('angle ' + wireNum(typed.columns_angle_deg) + ' deg');
+    if (typed.apex_m_ball2 != null) sumParts.push('apex 2 ' + wireNum(typed.apex_m_ball2) + ' m');
     setText(dom.summary, sumParts.length ? 'Overrides: ' + sumParts.join(' · ') : '');
     setHidden(dom.summary, sumParts.length === 0);
 
@@ -1340,7 +1462,9 @@ function sync() {
     const reason = startGateReason(p);
     const data = buildRequestData(p);
     setDisabled(dom.start, !!reason);
-    setTitle(dom.start, reason || ('hold to confirm — starts platform/hand motion\nsends: ' + data));
+    setTitle(dom.start, reason || ('hold to confirm — starts platform/hand motion\n'
+        + (p.param ? 'sets ' + p.param + ' = ' + wireNum(fields[p.param].value, false) + ', then ' : '')
+        + 'sends: ' + data));
     // Stop is gated on connection alone — it must stay reachable even while
     // Start's own cooldown is latched (that cooldown is about NOT double-
     // dispatching a start, never about blocking a stop).
