@@ -22,6 +22,7 @@ linked from rows, never duplicated.
   - Fly Columns, Sep. 125, Apex 0.95, Throws 50, twice.
 - pass: no END HAND_LIMIT_ACC and no refused first install in either 50.
 - record: per-catch peak Hand acceleration from the install lines and the learner y for Ball 2.
+- branch: `night-shift/2026-11-01-JB-120`
 
 ### JB-121 Two-ball Columns hop-start throw lands 25-56 mm inboard, past the 35 mm catch authority  (20 min, high, two-ball-oval)
 - why: read the hop-start landing bias at the new default hold 0.
