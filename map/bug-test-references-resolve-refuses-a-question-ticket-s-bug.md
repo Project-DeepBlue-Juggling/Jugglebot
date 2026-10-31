@@ -2,9 +2,9 @@
 id: JB-129
 kind: bug
 title: 'test_references_resolve refuses a question ticket''s bug parent: main red after the first six question tickets'
-status: inbox
+status: complete
 created: '2026-11-01'
-updated: '2026-10-31T18:59:50Z'
+updated: '2026-10-31T19:00:27Z'
 owners: []
 priority: medium
 effort: xs
@@ -14,7 +14,8 @@ radius: local
 diagnosis: confirmed
 area: tests-tooling
 blocked_by: []
-links: []
+links:
+- logbook/2026-11-01-jb129-question-ticket-parent-test.md
 filed_by: night-shift
 ---
 

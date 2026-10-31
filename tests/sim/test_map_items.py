@@ -60,9 +60,20 @@ def test_references_resolve():
     pathways = {i.slug for i in items if i.kind == "pathway"}
     plans = {p.filename for p in load_plans(REPO)}
     bad = []
+    # A question ticket hangs off the bug, feature or idea it blocks (stored as
+    # the stem; `mapkit/itemcli.py` refuses a pathway or ticket parent there,
+    # Night Shift P2 2026-10-31); every other parent is a pathway slug.
+    question_parents = {i.filename[:-3] for i in items
+                        if i.kind in ("bug", "feature", "idea")}
     for it in items:
         parent = it.meta.get("parent")
-        if parent and parent not in pathways:
+        if not parent:
+            continue
+        if it.kind == "ticket" and str(it.meta.get("type", "")).strip().lower() == "question":
+            if parent not in question_parents:
+                bad.append("%s: question parent %r is not a bug, feature or idea stem"
+                           % (it.filename, parent))
+        elif parent not in pathways:
             bad.append("%s: parent %r is not a pathway" % (it.filename, parent))
         for t in it.meta.get("blocked_by") or []:
             if t not in stems and t not in plans:
