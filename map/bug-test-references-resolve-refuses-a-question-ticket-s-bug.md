@@ -28,4 +28,4 @@ filed_by: night-shift
 
 ## Fix
 
-A branch of the Night Shift carries the test change; nothing in `mapkit/` changes (the CLI already enforces the rule at filing).
+The test change landed as logbook/2026-11-01-jb129-question-ticket-parent-test.md; nothing in `mapkit/` changed (the CLI already enforces the rule at filing).

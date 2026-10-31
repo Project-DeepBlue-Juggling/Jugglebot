@@ -20,7 +20,7 @@ tags:
 
 # JB-129: the ticket-parent rule in test_references_resolve
 
-**What.** `tests/sim/test_map_items.py::test_references_resolve` required every Item's `parent` to be a pathway slug. The question-ticket design (Night Shift P2, 2026-10-31) hangs a `type: question` ticket off the bug, feature or idea it blocks, stored as the stem, and `mapkit/itemcli.py` refuses a pathway or ticket parent for that type. The dry run never filed a ticket, so the first six question tickets (JB-123 to JB-128, filed 2026-11-01 05:57) were the first to meet the test on `main`, which went red on it for about twenty minutes.
+**What.** `tests/sim/test_map_items.py::test_references_resolve` required every Item's `parent` to be a pathway slug. The question-ticket design (Night Shift P2, 2026-10-31) hangs a `type: question` ticket off the bug, feature or idea it blocks, stored as the stem, and `mapkit/itemcli.py` refuses a pathway or ticket parent for that type. The dry run never filed a ticket, so the first six question tickets (JB-123 to JB-128, filed 2026-11-01 05:57) were the first to meet the test on `main`, which went red on it until this fix merged through the gate.
 
 **Fix.** The test now branches on the Item: a ticket with `type: question` must name a bug, feature or idea stem (and still fails on an unresolved or wrong-kind parent); every other parent must be a pathway slug. `mapkit/` is untouched (the CLI already enforces the rule at filing; the gate freezes that path anyway).
 
