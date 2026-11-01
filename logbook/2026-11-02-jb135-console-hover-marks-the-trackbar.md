@@ -17,6 +17,8 @@ files_changed:
   - tests/ros/test_gui_replay_ui_trackbar.py
   - tests/ros/js/replay_ui_trackbar_harness.js
   - logbook/INDEX.md
+  - map/feature-hovering-on-a-console-message-in-a-recording-replay-should-i.md
+  - docs/project-map.md
 ---
 
 # JB-135: CONSOLE hover marks the trackbar
@@ -35,4 +37,8 @@ Nothing is persisted or published to ROS; leaving replay clears the marker once.
 **Verification.** (2026-11-02,
 `python -m pytest -q -p no:cacheprovider tests/ros/test_gui_console.py tests/ros/test_gui_traffic_reset.py tests/ros/test_gui_replay_ui_trackbar.py tests/ros/test_gui_replay_mode.py tests/ros/test_gui_trails_wiring.py tests/ros/test_gui_replay_chart.py tests/ros/test_gui_replay_rename_live.py`,
 **77 passed in 9.63 s**). With the `ros_ws` changes stashed, the new tests fail (both node harnesses
-abort on the missing `hoverTime` / `hover marker` support: 27 errors, 2 passed). The full gate is the orchestrator's.
+abort on the missing `hoverTime` / `hover marker` support: 27 errors, 2 passed). The docs and map
+paths this commit touches (this entry, `logbook/INDEX.md`, the Item closed, the regenerated
+`docs/project-map.md`) are read by (2026-11-02,
+`python -m pytest -q -p no:cacheprovider tests/sim/test_logbook_front_matter.py tests/sim/test_docs_links.py tests/sim/test_mapkit_docs.py tests/sim/test_map_items.py`,
+**36 passed in 1.77 s**). The full gate is the orchestrator's (Night Shift 2026-11-02).

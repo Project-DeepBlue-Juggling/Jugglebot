@@ -1,5 +1,6 @@
 /* Replay UI (Phase 3): lobby, picker, banners, toasts, dock. Visual spec: test_replay_mock.html. */
-:root { --replay-playhead: var(--accent-cyan); --replay-hover-marker: var(--accent-amber); }  /* trackbar playhead AND the chart playhead lines */
+:root { --replay-playhead: var(--accent-cyan); }  /* trackbar playhead AND the chart playhead lines */
+:root { --replay-hover-marker: var(--accent-amber); }  /* trackbar hover marker (JB-135) */
 .replay-lobby[hidden], .replay-dock[hidden], .replay-banner[hidden], .replay-picker-bg[hidden],
 .replay-pk-msg[hidden] { display: none !important; }
 
