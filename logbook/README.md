@@ -248,9 +248,9 @@ failures you would most expect it to**:
   alphabetically-first entry (a 2026-03-30 file) — so a malformed new entry is
   dropped, not flagged.
 
-This is the worked example behind CLAUDE.md's rule that a "docs-only, so no
-tests needed" exemption must name the tests that read the path you changed *and*
-trace what they assert. Trace the coverage; never infer it from a passing count.
+This is the worked example behind CLAUDE.md's tier-3 test rule ("named tests only"
+for documentation): name the tests that read the path you changed *and* trace what
+they assert. Trace the coverage; never infer it from a passing count.
 (Hardening `logbook_search` to warn-on-skip and validate front matter is a
 tracked item in `plans/archived/refactor-2026-07.md` Phase 6.)
 
