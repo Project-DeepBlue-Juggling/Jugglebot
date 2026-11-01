@@ -2,16 +2,16 @@
 id: JB-27
 kind: bug
 title: Sim `--reload` gate LIMIT_JERK regression bisected to 08ec3fe6 (2026-09-30)
-status: inbox
+status: complete
 created: '2026-10-24'
-updated: '2026-10-24T13:05:00Z'
+updated: '2026-11-01T02:54:09Z'
 owners: []
 priority: medium
-effort: s
+effort: xs
 hardware: none
 owner: decision
-radius: subsystem
-diagnosis: hypothesis
+radius: local
+diagnosis: confirmed
 area: sim
 blocked_by: []
 links:
@@ -31,3 +31,7 @@ The sim `--reload` gate was good at 8364808c (5/5 makes, dwell 0.30 s); after 08
 Recommendation: 3. Option 1 is cheap and offline; its result decides whether 2 is needed.
 
 A question ticket carries this to the owner; the answer under its `## Answer` re-opens this Item.
+
+## Progress
+
+- 2026-11-01: JB-128 option 3, step 1: sim `--reload` gate now runs the launch's lateral authorities; 2 makes per seed; LIMIT_JERK ends no longer reproduce on main; no planner bisect needed

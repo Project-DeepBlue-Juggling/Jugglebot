@@ -733,6 +733,32 @@ def _make_bumper(ictx: _InstallCtx, limits, geom):
     return bumper
 
 
+#: The launch's lateral authorities, in mm, as ``skill_node`` declares them
+#: (``learner_lateral_authority_mm`` / ``catch_outward_authority_mm`` /
+#: ``catch_inward_authority_mm``; ``jugglebot_launch.py`` passes none of them,
+#: so these declared defaults ARE what the robot runs). Literals because
+#: ``skill_node`` imports rclpy; ``tests/sim/test_skills_gate.py`` parses
+#: ``skill_node.py`` and fails if these drift. JB-27 (2026-11-01): the
+#: ``--reload`` gate left them unset, so the second catch's 41-45 mm tracker
+#: re-aim went through UNCLAMPED where the robot clips it to the 20 mm learner
+#: authority; with them set the gate makes 2 per seed again (1 before; the
+#: ``LIMIT_JERK`` ends JB-27 saw after 08ec3fe6 no longer reproduce on main).
+LAUNCH_LATERAL_AUTHORITY_MM = {
+    'learner_lateral_authority_mm': 20.0,
+    'catch_outward_authority_mm': 10.0,
+    'catch_inward_authority_mm': 35.0,
+}
+
+
+def _launch_authority_kwargs() -> dict:
+    """``SkillExecutor`` kwargs carrying the launch's lateral authorities."""
+    a = LAUNCH_LATERAL_AUTHORITY_MM
+    return dict(
+        lateral_authority_m=a['learner_lateral_authority_mm'] / 1000.0,
+        catch_outward_authority_m=a['catch_outward_authority_mm'] / 1000.0,
+        catch_inward_authority_m=a['catch_inward_authority_mm'] / 1000.0)
+
+
 def _bump_kwargs(sched, ictx: _InstallCtx, limits, geom) -> dict:
     """``SkillExecutor`` kwargs for the bump: the switch keyed on the
     schedule's own label (``'columns'`` for both columns compilers — the robot
@@ -3067,6 +3093,7 @@ class SkillsGate:
         executor = ex.SkillExecutor(
             sched, installer, tracker=tracker,
             **_bump_kwargs(sched, ictx, self.limits, geom),
+            **_launch_authority_kwargs(),
             catch_aim_source=self.cfg.catch_aim_source,
             observer=observer, observations=observations,
             dispatch_lookahead_s=_DISPATCH_LOOKAHEAD_S)

@@ -1075,3 +1075,32 @@ def test_the_gate_config_validates_pre_release_hold_and_threads_it_to_the_planne
                       ).seg_cfg.pre_release_hold_s == 0.05
     assert (SkillsGate(SelfTossGateConfig()).seg_cfg.pre_release_hold_s
             == SegmentConfig().pre_release_hold_s)
+
+
+def test_gate_lateral_authorities_match_the_launch():
+    """JB-27/JB-128: the sim gate's lateral authorities are the ones the robot
+    runs. ``jugglebot_launch.py`` passes none, so ``skill_node``'s
+    ``declare_parameter`` defaults are the launch values; parse them (rclpy
+    cannot be imported here) and require the gate's table to equal them."""
+    import ast
+    import pathlib
+    src = pathlib.Path(sg.__file__).resolve().parents[1].joinpath(
+        'ros_ws', 'src', 'jugglebot', 'jugglebot', 'skill_node.py')
+    found = {}
+    for node in ast.walk(ast.parse(src.read_text())):
+        if (isinstance(node, ast.Call)
+                and isinstance(node.func, ast.Attribute)
+                and node.func.attr == 'declare_parameter'
+                and len(node.args) >= 2
+                and isinstance(node.args[0], ast.Constant)
+                and node.args[0].value in sg.LAUNCH_LATERAL_AUTHORITY_MM):
+            found[node.args[0].value] = ast.literal_eval(node.args[1])
+    assert found == sg.LAUNCH_LATERAL_AUTHORITY_MM
+    launch = src.parent.parent / 'launch' / 'jugglebot_launch.py'
+    for name in sg.LAUNCH_LATERAL_AUTHORITY_MM:
+        assert name not in launch.read_text(), (
+            '%s is now set in the launch; read it from there' % name)
+    kw = sg._launch_authority_kwargs()
+    assert kw == dict(lateral_authority_m=0.020,
+                      catch_outward_authority_m=0.010,
+                      catch_inward_authority_m=0.035)
