@@ -2,9 +2,9 @@
 id: JB-118
 kind: feature
 title: Update item naming convention based on type (eg. Pathways can be "PWAY-<N>" and Plans can be "PLAN-<N>" etc.
-status: inbox
+status: complete
 created: '2026-10-30'
-updated: '2026-10-31T19:53:49Z'
+updated: '2026-11-01T01:04:55Z'
 owners: []
 priority: medium
 effort: m
@@ -31,3 +31,7 @@ Filed from the Robot tab at 2026-10-30T23:35:51+11:00.
 Recommendation: 1 now (zero migration, answers the confusion in the app), 4 if plans need addressing by number.
 
 A question ticket carries this to the owner; the answer under its `## Answer` re-opens this Item.
+
+## Progress
+
+- 2026-11-01: Answered by JB-131 (display only, one JB-n sequence kept); shipped in the map app (fork cc2f3d4, deployed 2026-11-01): a kind pill beside every Item ID, JB-n in reports links to the drawer.
