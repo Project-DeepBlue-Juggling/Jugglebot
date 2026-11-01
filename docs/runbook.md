@@ -110,7 +110,7 @@ Rigs: Robot 3 blocks (77 min) · Bench leg 1 block (30 min)
 
 ## Questions a Sitting can answer
 
-- none
+- JB-140 Hand while Active: Idle with an arm rung per Attempt, Idle on a timeout only, an operator toggle, or keep the Closed-loop Park and close JB-2? (parent JB-2)
 
 ## Close-out
 
