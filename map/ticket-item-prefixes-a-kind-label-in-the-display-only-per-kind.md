@@ -2,9 +2,9 @@
 id: JB-131
 kind: ticket
 title: 'Item prefixes: a kind label in the display only, per-kind prefixes with one or per-kind counters, or a PLAN-n prefix for plans alone?'
-status: open
+status: complete
 created: '2026-11-01'
-updated: '2026-10-31T19:54:22Z'
+updated: '2026-11-01T00:21:22Z'
 owners: []
 priority: medium
 effort: xs
@@ -35,3 +35,7 @@ Recommendation: 1 now (zero migration, answers the confusion in the app), 4 if p
 
 - 1: a map-app unit (display only) plus a small `mapkit items` print change in the owner's Session.
 - 2, 3 or 4: a migration plan with its own tests, scheduled by the owner; not Night Shift work.
+
+## Answer
+
+Good thinking! I'm happy with a 'kind' coloured pill being displayed alongside the Item ID, as long as it's visible everywhere the ID is - at least on the Map (if this is impractical, raise this concern and we can discuss our options)
