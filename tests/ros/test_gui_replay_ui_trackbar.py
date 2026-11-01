@@ -144,6 +144,18 @@ def test_zoom_keys_about_playhead_and_reset(out):
     assert out["zoom_out"] is None and out["esc"] is None and out["dbl"] is None
 
 
+def test_hover_marker_follows_mode_marker_events_and_zoom(out):
+    m = out["hovermark"]
+    assert m["subscribed"] is True
+    assert m["initial"]["hidden"] is True                       # no marker until a view names a time
+    assert m["set"] == {"hidden": False, "left": "25.00%"}
+    assert m["cleared"]["hidden"] is True
+    assert m["full_range_late"] == {"hidden": False, "left": "90.00%"}
+    assert m["zoomed_out_of_range"]["hidden"] is True           # off the zoomed bar: not drawn
+    assert m["zoomed_in_range"] == {"hidden": False, "left": "10.00%"}   # (30-25)/50
+    assert m["garbage"]["hidden"] is True                       # a non-number clears
+
+
 def test_overview_drag_select_zooms_and_click_seeks(out):
     assert out["drag_select"] == {"v0": 20, "v1": 40}
     assert out["drag_select_ticks"] == ["skill attempt (hop) @ " + out["drag_select_ticks"][0].split("@ ")[1]]

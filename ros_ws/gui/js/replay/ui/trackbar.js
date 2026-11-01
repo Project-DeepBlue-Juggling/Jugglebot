@@ -77,12 +77,13 @@ export function createTrackbar(deps) {
     let unsubSrc = null;                          // source.onChange -> re-read a partial timeline at once (no 200-frame wait)
     let frameNo = 0, tlRetryAt = 0;               // frame-count backoff for /overview retries (no wall clock)
     let drawnKey = '';
-    const cache = { head: '', play: '', el: '', speed: '', mode: '', zoom: '', date: '', pbtn: '', name: '' };
+    const cache = { mark: '', head: '', play: '', el: '', speed: '', mode: '', zoom: '', date: '', pbtn: '', name: '' };
     let editingName = false, renaming = false;
     let dragging = null;                          // {kind:'bar', rest, rested, t} | {kind:'ov', fa}
     let pendingScrub = null;                      // latest bar-drag time, flushed once per frame (latest wins)
     let lastFull = { t0: 0, t1: 0 };
-    let unsubMode = null;
+    let unsubMode = null, unsubMarker = null;
+    let markT = null;                             // hover marker time (JB-135), set by mode 'marker' events; null = none
 
     const engine = () => (mode.engine ? mode.engine() : null);
 
@@ -284,9 +285,10 @@ export function createTrackbar(deps) {
             pbtn: bPlay,
             nameView, nameEdit, nameInput, nameSave, name: nameLabel,
             head: h(doc, 'div', { cls: 'rp-playhead' }),
+            mark: h(doc, 'div', { cls: 'rp-hovermark', hidden: true }),
             sel: h(doc, 'div', { cls: 'rp-sel', hidden: true }),
         };
-        els.bar = h(doc, 'div', { cls: 'rp-bar', id: 'rp-bar', on: { mousedown: onBarDown } }, [els.head]);
+        els.bar = h(doc, 'div', { cls: 'rp-bar', id: 'rp-bar', on: { mousedown: onBarDown } }, [els.mark, els.head]);
         els.ovStrip = h(doc, 'div', { cls: 'rp-ov-strip' });
         els.ov = h(doc, 'div', { cls: 'rp-ov', id: 'rp-ov', on: { mousedown: onOvDown, dblclick: resetZoom } }, [els.ovStrip, els.sel]);
         // The pill + its preset menu; the menu opens above the pill on hover (CSS, .rp-speed-wrap:hover).
@@ -354,6 +356,13 @@ export function createTrackbar(deps) {
         const v = curView(full);
         const px = pctS(frac(s.playhead, v.v0, v.v1));
         if (px !== cache.head) { cache.head = px; els.head.style.left = px; }
+        // hover marker: shown only while a time is set and inside the visible zoom range
+        const mf = markT !== null && markT >= v.v0 && markT <= v.v1 ? pctS(frac(markT, v.v0, v.v1)) : '';
+        if (mf !== cache.mark) {
+            cache.mark = mf;
+            els.mark.hidden = mf === '';
+            if (mf !== '') els.mark.style.left = mf;
+        }
         const clock = fmtClock(s.playhead);
         if (clock !== cache.play) { cache.play = clock; els.play.textContent = clock; }
         const elapsed = fmtMMSS(s.playhead - r.t0) + ' / ' + (r.t1 > r.t0 ? fmtMMSS(r.t1 - r.t0) : '?');
@@ -406,6 +415,7 @@ export function createTrackbar(deps) {
         isMounted = true;
         timeline = null; drawnKey = ''; view = null; tlToken++; frameNo = 0; tlRetryAt = 0;
         for (const k of Object.keys(cache)) cache[k] = '';
+        els.mark.hidden = true;
         if (editingName && !renaming) showNameEdit(false);
         doc.addEventListener('keydown', onKeyCapture, true);
         doc.addEventListener('mousemove', onMove);
@@ -420,7 +430,7 @@ export function createTrackbar(deps) {
         isMounted = false;
         tlToken++;
         if (unsubSrc) { unsubSrc(); unsubSrc = null; }
-        dragging = null; pendingScrub = null;
+        dragging = null; pendingScrub = null; markT = null;
         doc.removeEventListener('keydown', onKeyCapture, true);
         doc.removeEventListener('mousemove', onMove);
         doc.removeEventListener('mouseup', onUp);
@@ -431,12 +441,13 @@ export function createTrackbar(deps) {
     function sync() { if (mode.isActive()) mount(); else unmount(); }
 
     unsubMode = mode.on('state', sync);
+    unsubMarker = mode.on('marker', (t) => { markT = Number.isFinite(t) ? t : null; });
     sync();
 
     return {
         mount, unmount, frame, handleKey, sync, copyLink, rename, editName: showNameEdit,
         mounted: () => isMounted,
         getView: () => view,
-        dispose() { unmount(); if (unsubMode) unsubMode(); },
+        dispose() { unmount(); if (unsubMode) unsubMode(); if (unsubMarker) unsubMarker(); },
     };
 }

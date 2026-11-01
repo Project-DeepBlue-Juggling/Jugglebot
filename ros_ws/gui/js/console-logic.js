@@ -138,6 +138,14 @@ export function lineHtml(line, idx, query, cur) {
         `<span class="console-msg">${highlightHtml(line.msg, query)}</span></div>`;
 }
 
+/** Hover target -> the time (trackbar clock) of the console row it is in, or null (not a row, or a non-finite data-t). */
+export function hoverTime(target) {
+    const row = target && typeof target.closest === 'function' ? target.closest('.console-line') : null;
+    if (!row || !row.dataset) return null;
+    const t = parseFloat(row.dataset.t);
+    return Number.isFinite(t) ? t : null;
+}
+
 /** Persisted chip state: object LEVELS key -> bool; unknown/garbled storage => all on. */
 export function parseEnabled(raw) {
     const all = {};

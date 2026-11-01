@@ -1,5 +1,6 @@
 /* Replay UI (Phase 3): lobby, picker, banners, toasts, dock. Visual spec: test_replay_mock.html. */
 :root { --replay-playhead: var(--accent-cyan); }  /* trackbar playhead AND the chart playhead lines */
+:root { --replay-hover-marker: var(--accent-amber); }  /* trackbar hover marker (JB-135) */
 .replay-lobby[hidden], .replay-dock[hidden], .replay-banner[hidden], .replay-picker-bg[hidden],
 .replay-pk-msg[hidden] { display: none !important; }
 
@@ -139,6 +140,8 @@ body.replay #records-panel { display: none; }  /* JB-35: the live ledger, not th
 .rp-bar { position: relative; height: 14px; background: var(--bg-primary); border: 1px solid var(--border-color);
     border-radius: 3px; cursor: pointer; }
 .rp-playhead { position: absolute; top: -3px; bottom: -3px; width: 2px; margin-left: -1px; background: var(--replay-playhead); }
+.rp-hovermark { position: absolute; top: -3px; bottom: -3px; width: 0; margin-left: -1px; border-left: 2px dashed var(--replay-hover-marker); pointer-events: none; }
+.rp-hovermark[hidden] { display: none !important; }
 .rp-ov { position: relative; height: 12px; margin-top: 3px; cursor: crosshair; background: var(--bg-primary);
     border-radius: 2px; overflow: hidden; }
 .rp-ov-strip { position: absolute; inset: 0; }

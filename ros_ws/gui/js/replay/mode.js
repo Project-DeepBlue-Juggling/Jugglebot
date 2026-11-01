@@ -36,7 +36,7 @@ const DEFAULT_SPAN = 30;
 /** @param {object} deps */
 export function createReplayMode(deps) {
     const D = deps;
-    const listeners = { state: new Set(), notice: new Set(), buffered: new Set() };
+    const listeners = { state: new Set(), notice: new Set(), buffered: new Set(), marker: new Set() };
     let phase = 'idle';           // idle | opening | replay
     let kind = null;
     let source = null;
@@ -318,5 +318,8 @@ export function createReplayMode(deps) {
         store: () => store,
         digester: () => digester,
         on(evt, cb) { listeners[evt].add(cb); return () => listeners[evt].delete(cb); },
+        /** Hover marker (JB-135): a view (the CONSOLE list) names a log time; the trackbar draws a thin line there.
+         *  t = epoch seconds on the trackbar's clock, or null to clear. Transient: nothing is stored or persisted. */
+        setMarker(t) { emit('marker', Number.isFinite(t) ? t : null); },
     };
 }

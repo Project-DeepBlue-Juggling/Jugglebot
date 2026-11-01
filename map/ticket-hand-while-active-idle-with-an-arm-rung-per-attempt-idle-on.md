@@ -2,9 +2,9 @@
 id: JB-140
 kind: ticket
 title: 'Hand while Active: Idle with an arm rung per Attempt, Idle on a timeout only, an operator toggle, or keep the Closed-loop Park and close JB-2?'
-status: open
+status: complete
 created: '2026-11-02'
-updated: '2026-11-01T17:56:02Z'
+updated: '2026-11-01T22:25:46Z'
 owners: []
 priority: medium
 effort: xs
@@ -36,3 +36,7 @@ Recommendation: 2, planned in `plans/` with the arm rung as its first phase (the
 - 1: the Item closes as won't-change; the glossary's Active entry says the Hand is Parked Closed-loop.
 - 2 or 3: a plan under `plans/active/` (owner's Session, safety-bearing, hardware robot) with the arm rung as phase 1 and a robot Sitting section on this Item.
 - 4: a GUI unit plus the same refusal in `skill_node`, hardware robot for the first flight.
+
+## Answer
+
+Option 2, with 1 as the fallback. Current behaviour isn't necessarily a problem, but I'd like it to be changed to IDLE by default, with the hand only being in CLOSED_LOOP when actually being used. Note that this will probably require the hand to move before entering CLOSED_LOOP, to ensure it starts in the correct position

@@ -4,7 +4,7 @@ kind: feature
 title: Sim columns run with a biased plant to exercise the forward-clip rule
 status: in_progress
 created: '2026-10-24'
-updated: '2026-11-01T18:20:27Z'
+updated: '2026-11-02T10:00:00Z'
 owners:
 - night-shift
 priority: medium
@@ -22,7 +22,16 @@ filed_by: claude
 
 Run the sim columns pattern against a deliberately biased plant so the forward-clip rule is exercised. Not built (wave-3 open 2). Trigger: a change to the clip rule.
 
+## Hold (2026-11-02)
+
+Branch `night-shift/2026-11-02-JB-32`: `SelfTossGateConfig.plant_landing_bias_mm`, the `_plant_landing_bias_release` hook, `executor_lines` on the learner-run result and `--learn --plant-bias-xy`, built on the `self_toss` and hop learner runs (the columns gate builds its executor with `boxes=None`, so the columns slice is a second unit). The gate held it on three audit findings, each a few lines:
+
+- the pre-clip helper's regex matches only `on the box edge` lines while the test also accepts UNMET lines;
+- the biased-versus-unbiased comparison is not tied to a skill index, so it can pass vacuously or flake on another seed;
+- `--plant-bias-xy` is accepted silently for columns runs where the field is never read.
+
 ## Progress
 
 - 2026-11-02: Night Shift 2026-11-02: plant_landing_bias_mm knob, release hook and executor_lines landed on the `self_toss` and hop learner runs, where the forward clip is live; the columns gate builds its executor with boxes=None, so wiring the swept columns boxes into run_columns_attempt is the remaining slice (detail in the logbook entry)
+- 2026-11-02: Night Shift 2026-11-02: held on night-shift/2026-11-02-JB-32: (b) three audit findings open on the unit's own tests and CLI; gate green (7928 passed); unblocked by your call on those fixes and a re-gate (detail below)
 - 2026-11-02: owner approved the three audit fixes (edge lines only, same-skill comparison, CLI refuses the bias where nothing reads it); applied, re-gated, merged; the columns slice remains
