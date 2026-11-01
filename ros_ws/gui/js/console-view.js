@@ -15,12 +15,15 @@
  *        second MCAP reader) — into a bag-lifetime line list.  Click a line, or prev/next,
  *        calls engine.seek(t); the line nearest at-or-before the playhead is highlighted.
  *
+ * Hovering a replay line publishes its time through mode.setMarker(t) (null on leave); the trackbar
+ * subscribes to the mode's 'marker' event, so this file never touches the trackbar's DOM.
+ *
  * Pure logic (filter, search, hit selection, escaping, ring cap): console-logic.js.
  */
 import * as clock from './clock.js';
 import {
     LEVELS, RING_CAP, normalizeLine, pushCapped, filterIndices, levelCounts,
-    currentHit, prevHit, nextHit, lineHtml, parseEnabled,
+    currentHit, prevHit, nextHit, lineHtml, parseEnabled, hoverTime,
 } from './console-logic.js';
 
 const FILTER_KEY = 'jugglebot-console-levels';
@@ -89,6 +92,9 @@ export function initConsoleView() {
         const row = ev.target && ev.target.closest ? ev.target.closest('.console-line') : null;
         if (row) seekTo(parseFloat(row.dataset.t));
     });
+    // Replay only: hovering a row marks its time on the trackbar (mode.setMarker -> the trackbar's thin line).
+    list.addEventListener('mouseover', (ev) => setMarker(ev.target));
+    list.addEventListener('mouseout', (ev) => setMarker(ev.relatedTarget));   // onto another row: that row's time; off the rows: clears
     $('console-prev').addEventListener('click', () => step(prevHit));
     $('console-next').addEventListener('click', () => step(nextHit));
 }
@@ -172,6 +178,11 @@ function seekTo(t) {
     if (e && Number.isFinite(t)) e.seek(t);
 }
 
+function setMarker(target) {
+    const m = replayCtl && replayCtl.mode;
+    if (replayLines && m && m.setMarker) m.setMarker(hoverTime(target));
+}
+
 function step(pick) {
     if (!replayLines) return;
     const hits = filterIndices(replayLines, enabled, query);
@@ -195,6 +206,7 @@ function onPlayhead() {
 function detach() {
     if (replayCtl) {
         replayCtl.token++;
+        if (replayCtl.mode && replayCtl.mode.setMarker) replayCtl.mode.setMarker(null);
         if (replayCtl.unsubPlayhead) replayCtl.unsubPlayhead();
         replayCtl = null;
     }
@@ -233,7 +245,7 @@ export function attachConsoleReplay(mode) {
         if (inReplay && !replayCtl) {
             const engine = mode.engine(), source = mode.source();
             if (!engine || !source) return;
-            const ctl = { engine, token: 1, unsubPlayhead: null };
+            const ctl = { mode, engine, token: 1, unsubPlayhead: null };
             replayCtl = ctl;
             replayLines = [];
             follow = false;

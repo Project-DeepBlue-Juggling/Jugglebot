@@ -85,6 +85,22 @@ def test_replay_hit_selection(r):
     assert h['none'] == [-1, -1, -1]
 
 
+def test_hover_time_pure(r):
+    h = r['hover']
+    assert h['row'] == 12.5
+    assert h['nan'] is None and h['missing'] is None        # non-finite data-t -> no marker
+    assert h['nonrow'] is None and h['nul'] is None and h['nofn'] is None
+
+
+def test_hover_publishes_only_in_replay(r):
+    h = r['hover']
+    assert {'mouseover', 'mouseout'} <= set(h['registered'])
+    assert h['live'] == []                                    # live mode has no trackbar: nothing published
+    assert h['replay'] == [7, None, 9]                        # row, leave, row-to-row
+    assert h['after_exit']['calls'] == [7, None, 9, None]     # detach clears once
+    assert h['after_exit']['extra'] == 0                      # and later hovers publish nothing
+
+
 def test_replay_carries_rosout():
     allow = open(os.path.join(_GUI_JS, 'replay', 'allowlist.js'), encoding='utf-8').read()
     pol = open(os.path.join(_GUI_JS, 'replay', 'policy.js'), encoding='utf-8').read()

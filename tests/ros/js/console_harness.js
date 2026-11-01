@@ -7,7 +7,7 @@ function mk(id) {
         id, innerHTML: '', textContent: '', title: '', value: '', style: { setProperty() {} }, dataset: {},
         clientWidth: 400, clientHeight: 200, scrollTop: 0, scrollHeight: 0, append() {}, replaceChildren() {},
         classList: { add: (c) => cls.add(c), remove: (c) => cls.delete(c), toggle: (c, on) => (on ? cls.add(c) : cls.delete(c)), contains: (c) => cls.has(c) },
-        addEventListener() {}, setAttribute() {}, appendChild() {}, remove() {},
+        _l: {}, addEventListener(t, fn) { this._l[t] = fn; }, setAttribute() {}, appendChild() {}, remove() {},
         querySelectorAll: () => [], querySelector: () => null,
     };
     return e;
@@ -81,5 +81,33 @@ out.hit = {
     next_mid: L.nextHit(rl, hits, 3.4), next_on: L.nextHit(rl, hits, 3), next_end: L.nextHit(rl, hits, 5),
     none: [L.currentHit(rl, [], 3), L.prevHit(rl, [], 3), L.nextHit(rl, [], 3)],
 };
+// ---- JB-135: hover marker ----
+const row = (t) => ({ closest: (sel) => (sel === '.console-line' ? { dataset: { t } } : null) });
+out.hover = {
+    row: L.hoverTime(row('12.5')), nan: L.hoverTime(row('abc')), missing: L.hoverTime(row(undefined)),
+    nonrow: L.hoverTime({ closest: () => null }), nul: L.hoverTime(null), nofn: L.hoverTime({}),
+};
+const markCalls = [];
+let modeCb = null;
+const fakeMode = {
+    on: (evt, cb) => { if (evt === 'state') modeCb = cb; return () => {}; },
+    engine: () => ({ on: () => () => {}, state: () => ({ playhead: 0 }), seek() {} }),
+    source: () => ({ range: () => ({ t0: 0, t1: 0 }), chunkIndex: () => 0, load: async () => null }),
+    setMarker: (t) => markCalls.push(t),
+};
+cv.attachConsoleReplay(fakeMode);
+const listEl = els.get('console-list');
+out.hover.registered = Object.keys(listEl._l).sort();
+listEl._l.mouseover({ target: row('7') });                       // live: nothing published
+out.hover.live = markCalls.slice();
+modeCb({ mode: 'REPLAY' });
+listEl._l.mouseover({ target: row('7') });
+listEl._l.mouseout({ relatedTarget: null });
+listEl._l.mouseout({ relatedTarget: row('9') });                 // onto another row: that row's time
+out.hover.replay = markCalls.slice();
+modeCb({ mode: 'LIVE' });                                        // leaving replay clears once
+const n = markCalls.length;
+listEl._l.mouseover({ target: row('7') });
+out.hover.after_exit = { calls: markCalls.slice(), extra: markCalls.length - n };
 console.log(JSON.stringify(out));
 process.exit(0);

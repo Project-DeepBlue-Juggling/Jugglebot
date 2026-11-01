@@ -49,6 +49,7 @@ const eng = {
 };
 let engine = null;
 let active = false;
+let markCb = null;
 const lis = [];
 let timelineObj = {
     bands: [{ topic: '/orchestrator_state', segments: [[T0, T0 + 20, 'IDLE'], [T0 + 20, T0 + 60, 'ACTIVE'], [T0 + 60, T0 + 100, 'FAULT']] }],
@@ -59,7 +60,7 @@ let srcState = 'complete';
 const source = { range: () => state.range, status: () => ({ state: srcState }), timeline: () => Promise.resolve(timelineObj) };
 const mode = {
     isActive: () => active, engine: () => engine, source: () => source,
-    on(evt, cb) { lis.push(cb); return () => {}; },
+    on(evt, cb) { if (evt === 'marker') { markCb = cb; return () => {}; } lis.push(cb); return () => {}; },
     exitReplay: rec('exitReplay'),
 };
 const emitMode = () => lis.forEach((f) => f({}));
@@ -234,6 +235,22 @@ out.math = {
     out.overview_onchange = { bands_before: before, bands_after: tb3dock.find((e) => e.className === 'rp-band').length, subscribed: cb3 !== null };
     tb3.dispose();
     out.overview_onchange.unsubscribed = unsubs;
+}
+
+// ---- JB-135: hover marker (mode 'marker' event) ----
+{
+    const mk = () => dock.find((e) => e.className === 'rp-hovermark')[0];
+    const st = () => ({ hidden: mk().hidden, left: mk().style.left });
+    state.playhead = T0 + 50; state.mode = 'paused';
+    tb.frame();
+    const m = { subscribed: markCb !== null, initial: st() };
+    markCb(T0 + 25); tb.frame(); m.set = st();
+    markCb(null); tb.frame(); m.cleared = st();
+    markCb(T0 + 90); tb.frame(); m.full_range_late = st();
+    emitDoc('keydown', keyEv('+')); tb.frame(); m.zoomed_out_of_range = st();   // view 25..75: 90 is off the bar
+    markCb(T0 + 30); tb.frame(); m.zoomed_in_range = st();
+    emitDoc('keydown', keyEv('Escape')); markCb({}); tb.frame(); m.garbage = st();
+    out.hovermark = m;
 }
 
 // ---- unmount ----
