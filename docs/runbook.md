@@ -91,7 +91,7 @@ linked from rows, never duplicated.
 
 ## Questions a Sitting can answer
 
-- JB-124 Suppress-edge flush with vel_ff 0 on every lane, legs only, report only, or folded into the next can-bridge firmware revision? (parent JB-73)
+- none
 
 ## Close-out
 
