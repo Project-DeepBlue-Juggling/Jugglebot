@@ -4,9 +4,13 @@ kind: bug
 title: Ball 2 learner command pinned at the (-20,-20) mm clamp corner in 37 of 40 straight Columns rows (BOX-EXPECTED-LANDING-UNMET u=(-20,-20))
 status: inbox
 created: '2026-11-01'
-updated: '2026-11-01T12:19:19Z'
+updated: '2026-11-01T17:51:40Z'
 owners: []
 priority: medium
+effort: s
+hardware: none
+owner: none
+radius: subsystem
 diagnosis: confirmed
 area: learner
 blocked_by: []

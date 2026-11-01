@@ -4,10 +4,13 @@ kind: bug
 title: 'Hand ODrive feedback starvation: 701 ms heartbeat dropout left the encoder 100 ms stale, the 2.0 rev lead clamp pinned the throw to stale+2.0, guard MAX_DEVIATION +3.707 fired correctly (turned-90 at 16/16)'
 status: inbox
 created: '2026-11-01'
-updated: '2026-11-01T12:19:17Z'
+updated: '2026-11-01T17:51:39Z'
 owners: []
 priority: high
+effort: m
 hardware: robot
+owner: hands
+radius: normative
 diagnosis: hypothesis
 area: can-bridge
 blocked_by: []

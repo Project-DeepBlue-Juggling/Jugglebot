@@ -4,9 +4,13 @@ kind: bug
 title: mocap_node loses frames to queue full in bursts before the first dispatch (544 / 373 / 490 frames in the three 2026-10-28 Sittings)
 status: inbox
 created: '2026-10-28'
-updated: '2026-10-28T10:22:57Z'
+updated: '2026-11-01T17:51:41Z'
 owners: []
 priority: low
+effort: m
+hardware: robot
+owner: hands
+radius: subsystem
 area: tracking
 blocked_by: []
 links:

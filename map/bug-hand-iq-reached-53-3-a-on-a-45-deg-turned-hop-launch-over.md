@@ -4,10 +4,13 @@ kind: bug
 title: Hand iq reached 53.3 A on a 45 deg turned hop launch, over the 50 A watch the high-low row names
 status: inbox
 created: '2026-11-01'
-updated: '2026-11-01T12:19:18Z'
+updated: '2026-11-01T17:51:40Z'
 owners: []
 priority: medium
+effort: s
 hardware: robot
+owner: hands
+radius: subsystem
 diagnosis: confirmed
 area: hand
 blocked_by: []
