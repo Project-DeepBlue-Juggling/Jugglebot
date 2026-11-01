@@ -27,6 +27,7 @@ ITEM_ROW_SECTIONS = ("Merged to main", "Held", "Questions for the Operator", "Sk
                      "Unaddressed Sitting results")
 _TITLE = re.compile(r"^# Night Shift \d{4}-\d{2}-\d{2}$")
 _BARE_ID = re.compile(r"^JB-\d+$")
+RESPOND_IN = "Respond in"
 _RULE_CELL = re.compile(r"^:?-{3,}:?$")
 
 
@@ -56,6 +57,25 @@ def item_rows(rows: List[str]) -> List[str]:
             continue  # the header row
         out.append(row)
     return out
+
+
+def _respond_in_errors(rows: List[str]) -> List[str]:
+    """A Held table with a ``Respond in`` header (reports from 2026-11-02) must fill that cell on
+    every row with a bare ``JB-m`` (the question ticket) or ``none`` (a hold only a Sitting
+    unblocks). A Held table without the column is older history and passes."""
+    for i, row in enumerate(rows):
+        if i + 1 < len(rows) and is_table_rule(rows[i + 1]) and RESPOND_IN in cells(row):
+            col = cells(row).index(RESPOND_IN)
+            break
+    else:
+        return []
+    errs: List[str] = []
+    for r in item_rows(rows):
+        cs = cells(r)
+        cell = cs[col] if col < len(cs) else ""
+        if cell != "none" and not _BARE_ID.match(cell):
+            errs.append("'## Held' row's Respond in must be a bare JB-m or 'none': %r" % r)
+    return errs
 
 
 def _headings(text: str) -> List[str]:
@@ -97,4 +117,5 @@ def report_errors(text: str) -> List[str]:
             first_tok = first.split()[0] if first.split() else ""
             if not _BARE_ID.match(first_tok):
                 errs.append("'## %s' row must start with a bare JB-n: %r" % (s, row))
+    errs.extend(_respond_in_errors(parsed.get("Held", [])))
     return errs

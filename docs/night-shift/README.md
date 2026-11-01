@@ -36,9 +36,9 @@ Item section (a hint goes in a header cell). One **Summary.** line between the t
 | JB-n | <the Item's title> | <one or two sentences: what landed> | <fix sha> (fix), <audit sha> (audit) |
 
 ## Held
-| Item | What it is | Branch | Why the gate held it | What unblocks it |
-|---|---|---|---|---|
-| JB-n | <title> | night-shift/<date>-JB-n | (<letter>) <reason>. ... | <the owner's call, the Sitting, the re-gate> |
+| Item | What it is | Branch | Why the gate held it | What unblocks it | Respond in |
+|---|---|---|---|---|---|
+| JB-n | <title> | night-shift/<date>-JB-n | (<letter>) <reason>. ... | <the owner's call, the Sitting, the re-gate> | <JB-m, or none> |
 
 ## Questions for the Operator
 | Ticket | Question (answer in the app under its `## Answer`) | Blocks | Note |
@@ -63,9 +63,16 @@ wall clock: <start> to <end>
 total API cost: USD <n> (runner, total_cost_usd)
 ```
 
-The map app adds a **Your answer** column to the `## Questions for the Operator` table when it
-serves the report, read live from each ticket's `## Answer` (JB-132); the committed file never
-carries that column, so the orchestrator does not write one.
+`Respond in` is how the owner answers a Held row: a bare `JB-m` naming the question ticket
+the night filed for it (every Held row waiting on the owner's call has one, also listed under
+`## Questions for the Operator`), or `none` for a hold that only a Sitting unblocks. The next
+night resumes the branch from the answer (`.claude/commands/night-shift.md` 2l).
+
+The map app adds a **Your answer** column to the `## Questions for the Operator` table and, from
+the `Respond in` cell, to the `## Held` table when it serves the report, read live from each
+ticket's `## Answer` (JB-132); the committed file never carries that column, so the
+orchestrator does not write one. Reports from before 2026-11-02 have no `Respond in` column
+and are served and checked as they were.
 
 A dry run writes the same layout to the clone's `temp/reports/night-shift/dry-<date>.md`
 with one classification line per candidate and commits nothing.
@@ -74,5 +81,6 @@ with one classification line per candidate and commits nothing.
 
 `tests/sim/test_night_shift_report.py` (T-U7): a report fixture parses into the eight
 sections; every Item row's first cell is a bare `JB-n` (table header and rule rows are
-skipped; the older bare `JB-n | ...` lines still pass); every committed report under
-`docs/night-shift/` passes the checker.
+skipped; the older bare `JB-n | ...` lines still pass); a Held table that has a `Respond in` column
+must fill it with a bare `JB-m` or `none` (older Held tables without the column still pass);
+every committed report under `docs/night-shift/` passes the checker.

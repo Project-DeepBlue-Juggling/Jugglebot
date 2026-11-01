@@ -21,9 +21,10 @@ GREEN 1200 passed 2026-10-31
 | JB-12 | Fix the thing | The thing is fixed. | abc1234 |
 
 ## Held
-| Item | What it is | Branch | Why the gate held it | What unblocks it |
-|---|---|---|---|---|
-| JB-13 | Wobble | night/jb-13 | (a) gate refused: tests | answer JB-14 |
+| Item | What it is | Branch | Why the gate held it | What unblocks it | Respond in |
+|---|---|---|---|---|---|
+| JB-13 | Wobble | night/jb-13 | (a) gate refused: tests | answer JB-14 | JB-14 |
+| JB-17 | Bench thing | night/jb-17 | (b) hardware | a Sitting | none |
 
 ## Questions for the Operator
 | Ticket | Question (answer in the app under its `## Answer`) | Blocks | Note |
@@ -114,3 +115,20 @@ def test_readme_layout_block_matches_sections():
     block = re.search(r"```\n(# Night Shift.*?)\n```", text, re.S).group(1)
     heads = [l[3:].strip() for l in block.splitlines() if l.startswith("## ")]
     assert tuple(heads) == SECTIONS
+
+
+def test_held_respond_in_must_be_a_bare_id_or_none():
+    for bad in ("`JB-14`", "[JB-14]", "JB-14x", "", "later", "JB-14 and JB-15"):
+        errs = report_errors(_swap(VALID, "answer JB-14 | JB-14 |", "answer JB-14 | %s |" % bad))
+        assert len(errs) == 1 and "Respond in" in errs[0], (bad, errs)
+    # a short row (cell missing) is refused too
+    errs = report_errors(_swap(VALID, "| answer JB-14 | JB-14 |", "| answer JB-14 |"))
+    assert len(errs) == 1 and "Respond in" in errs[0]
+
+
+def test_held_table_without_respond_in_still_passes_as_history():
+    old = _swap(VALID, " | Respond in |", " |")
+    old = _swap(old, "|---|---|---|---|---|---|", "|---|---|---|---|---|")
+    old = _swap(old, "| answer JB-14 | JB-14 |", "| answer JB-14 |")
+    old = _swap(old, "| a Sitting | none |", "| a Sitting |")
+    assert report_errors(old) == []
