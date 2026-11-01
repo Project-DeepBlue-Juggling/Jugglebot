@@ -14,34 +14,52 @@ cost <date>` commit (dropped, never rebased, if `main` moved meanwhile; `cost_re
 ## Layout
 
 Eight sections, this order, every heading present even when empty (`none`). Every Item is
-named by its bare ID `JB-n` (no backticks, no link) so the app's drawer links it.
+named by its bare ID `JB-n` (no backticks, no link) so the app's drawer links it. The Item
+sections are GFM tables (the owner reads the report in the app and on GitHub, 2026-11-01):
+one row per Item, the Item's own words in a "what it is" column, the night's result in
+plain sentences, commits as bare short SHAs. A table's header row and its `|---|` rule are
+layout, not Item rows; an empty section is the single word `none`; no prose lines inside an
+Item section (a hint goes in a header cell). One **Summary.** line between the title and
+`## Nightly` is optional and belongs to no section.
 
 ```
 # Night Shift <date>
+
+**Summary.** <merged n, held n, questions n, skipped n; nightly verdict; wall clock; USD>
 
 ## Nightly
 <the ticker line verbatim>; on RED, one line per failure from the nightly report.
 
 ## Merged to main
-JB-n | <title> | <sha>
+| Item | What it was | What changed | Commits |
+|---|---|---|---|
+| JB-n | <the Item's title> | <one or two sentences: what landed> | <fix sha> (fix), <audit sha> (audit) |
 
 ## Held
-JB-n | <branch> | <reasons, from the gate> | <what unblocks it>
+| Item | What it is | Branch | Why the gate held it | What unblocks it |
+|---|---|---|---|---|
+| JB-n | <title> | night-shift/<date>-JB-n | (<letter>) <reason>. ... | <the owner's call, the Sitting, the re-gate> |
 
 ## Questions for the Operator
-JB-m | <the question> (parent JB-n) -- answer in the app under ## Answer
+| Ticket | Question (answer in the app under its `## Answer`) | Blocks | Note |
+|---|---|---|---|
+| JB-m | <the question> | JB-n | <re-rating or context, or empty> |
 
 ## Unfinished
-<branch> | <Progress headline>
+<branch> | <Progress headline>        (or `none`)
 
 ## Skipped
-JB-n | <one-line reason>
+| Item | What it is | Why skipped |
+|---|---|---|
+| JB-n | <title> | <one sentence> |        (grouped by reason: Sittings first, then owner decisions, then out of reach, then not reached)
 
 ## Unaddressed Sitting results
-JB-n | <date of the result> | <verdict>      (P5; "none recorded" until then)
+| Item | Result date | Verdict |            (P5; `none recorded` until then)
 
 ## Cost
-units: <n> (<models>); items touched: <n>; wall clock: <start> to <end>
+units: <n> (<models, which Items>)
+items touched: <n>
+wall clock: <start> to <end>
 total API cost: USD <n> (runner, total_cost_usd)
 ```
 
@@ -51,4 +69,6 @@ with one classification line per candidate and commits nothing.
 ## Pinned by
 
 `tests/sim/test_night_shift_report.py` (T-U7): a report fixture parses into the eight
-sections; every row's first token is a bare `JB-n`.
+sections; every Item row's first cell is a bare `JB-n` (table header and rule rows are
+skipped; the older bare `JB-n | ...` lines still pass); every committed report under
+`docs/night-shift/` passes the checker.

@@ -200,7 +200,7 @@ re-opens the parent.
    night-shift/<date>-JB-n`, and the Item is Held with reason `main moved during merge;
    re-gate needed` (status `in_progress`, 2j step 2). Never rebase the branch onto the
    moved `main` and merge untested.
-4. Report row under `## Merged to main`: `JB-n | <title> | <merge or fix sha>`.
+4. Report row under `## Merged to main`: `| JB-n | <title> | <what changed, a sentence or two> | <fix sha> (fix), <audit sha> (audit) |`.
 
 ### 2j. HOLD
 
@@ -213,7 +213,7 @@ re-opens the parent.
    line in that section in the same write (edit the body with `mapkit.items.load_item` /
    `write_item` in a `python -` snippet before the `set-status`), so the Next Sitting
    Runbook row carries the branch and `/sitting-wrapup` knows what to merge on a pass.
-3. Report row under `## Held`: `JB-n | night-shift/<date>-JB-n | <reasons> | <what unblocks it>`.
+3. Report row under `## Held`: `| JB-n | <title> | night-shift/<date>-JB-n | (<letter>) <reason>. ... | <what unblocks it> |`.
 
 ### 2k. After every Item
 
@@ -224,7 +224,8 @@ If not, fix it now (push what is yours, revert what is not) and say so in the re
 
 After the last Item (or at the deadline, or when a unit returns and the budget is nearly
 spent): write `docs/night-shift/<date>.md` in the layout of `docs/night-shift/README.md`
-(the eight sections in order, every `JB-n` bare), and `logbook/<date>-night-shift.md`
+(the eight sections in order, the Item sections as GFM tables with a header row, every
+`JB-n` bare, a one-line **Summary.** under the title), and `logbook/<date>-night-shift.md`
 (short form: the counts, the nightly line, the cost, a link to the report) with its
 `logbook/INDEX.md` row. Commit on `main` as `docs(night-shift): report <date>` with the
 trailers (`Logbook-Entry: <date>-night-shift`), `git pull -q --rebase` ONLY if the push is
@@ -234,14 +235,14 @@ safe), push. Then 2k once more.
 The `## Nightly` section: the `--nightly` line verbatim; on RED the failures from the
 nightly report (test id and one line each). The `## Cost` section: `total_cost_usd` is
 not visible to you; write the units run (count and models), the Items touched, and the
-wall-clock from `date` at start and end, and make it the LAST section with no trailing
-text: after you exit the runner appends `total API cost: USD <n>` to it as its own docs
+wall-clock from `date` at start and end, one `key: value` line each, and make it the LAST
+section with no trailing text: after you exit the runner appends `total API cost: USD <n>` to it as its own docs
 commit on `main` (and records the figure in `last_run.json`).
 
 `## Unaddressed Sitting results`: every `## Sitting result (<date>)` section on an Item
 (`grep -l '## Sitting result' map/*.md`) whose date is newer than the newest
-`logbook/*-sitting-wrapup.md` entry, one row `JB-n | <date> | <verdict>`; none -> `none
-recorded`. The owner closes them with `/sitting-wrapup <date>`; you never merge a Sitting's
+`logbook/*-sitting-wrapup.md` entry, one table row `| JB-n | <date> | <verdict> |`; none ->
+`none recorded`. The owner closes them with `/sitting-wrapup <date>`; you never merge a Sitting's
 branches yourself (the gate's hardware condition is exactly what a Sitting result overrides,
 and only the owner's Session does that).
 

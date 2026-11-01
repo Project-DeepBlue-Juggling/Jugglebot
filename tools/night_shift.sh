@@ -128,7 +128,7 @@ one_line() { tr '\n\r\t' '   ' <<<"$1" | sed 's/  */ /g; s/ *$//'; }
 # plain file; a real run's is on main, so the line is its own docs commit,
 # pushed, and dropped again if main moved meanwhile (nothing may be left on the
 # clone's main unpushed). NS_COST_RECORDED says what happened.
-cost_line() { printf 'total API cost: USD %s (runner, total_cost_usd)\n' "$NS_COST"; }
+cost_line() { printf 'total API cost: USD %.2f (runner, total_cost_usd)\n' "$NS_COST"; }
 record_cost_dry() {
   [[ -n "${NS_COST:-}" && -s "$NS_REPORT" ]] || { export NS_COST_RECORDED=no-report; return 0; }
   cost_line >>"$NS_REPORT" && export NS_COST_RECORDED=file || export NS_COST_RECORDED=write-failed

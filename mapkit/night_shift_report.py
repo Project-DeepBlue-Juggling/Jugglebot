@@ -1,9 +1,11 @@
 """Night Shift report layout: the eight sections and a checker (T-U7).
 
 The report is ``docs/night-shift/<date>.md`` (layout in
-``docs/night-shift/README.md``). The map app renders it and links each Item by
-its bare ``JB-n``, so a row that names an Item any other way is an error here.
-Pure functions, stdlib only.
+``docs/night-shift/README.md``). The map app renders it (GFM, tables included)
+and links each Item by its bare ``JB-n``, so a row that names an Item any other
+way is an error here. Item sections are GFM tables since 2026-11-01 (owner:
+readability); a table's header row and its ``|---|`` rule are layout, not rows,
+and the older bare ``JB-n | ...`` lines still pass. Pure functions, stdlib only.
 """
 from __future__ import annotations
 
@@ -25,6 +27,35 @@ ITEM_ROW_SECTIONS = ("Merged to main", "Held", "Questions for the Operator", "Sk
                      "Unaddressed Sitting results")
 _TITLE = re.compile(r"^# Night Shift \d{4}-\d{2}-\d{2}$")
 _BARE_ID = re.compile(r"^JB-\d+$")
+_RULE_CELL = re.compile(r"^:?-{3,}:?$")
+
+
+def cells(row: str) -> List[str]:
+    """A row's cells: a GFM table row loses its outer pipes; a bare pipe line splits the same way."""
+    s = row.strip()
+    if s.startswith("|"):
+        s = s[1:]
+    if s.endswith("|"):
+        s = s[:-1]
+    return [c.strip() for c in s.split("|")]
+
+
+def is_table_rule(row: str) -> bool:
+    cs = cells(row)
+    return bool(cs) and all(_RULE_CELL.match(c) for c in cs)
+
+
+def item_rows(rows: List[str]) -> List[str]:
+    """The rows of an Item section that must name an Item: drops a table's rule row and the
+    header row immediately before it. Everything else is a row to check."""
+    out: List[str] = []
+    for i, row in enumerate(rows):
+        if is_table_rule(row):
+            continue
+        if i + 1 < len(rows) and is_table_rule(rows[i + 1]):
+            continue  # the header row
+        out.append(row)
+    return out
 
 
 def _headings(text: str) -> List[str]:
@@ -59,10 +90,11 @@ def report_errors(text: str) -> List[str]:
         errs.append("sections out of order: found %s, want %s" % (present, list(SECTIONS)))
     parsed = parse_report(text)
     for s in ITEM_ROW_SECTIONS:
-        for row in parsed.get(s, []):
-            if row == "none" or row.startswith("none "):
+        for row in item_rows(parsed.get(s, [])):
+            first = cells(row)[0]
+            if first == "none" or first.startswith("none "):
                 continue
-            first_tok = row.split("|")[0].split()[0] if row.split("|")[0].split() else ""
+            first_tok = first.split()[0] if first.split() else ""
             if not _BARE_ID.match(first_tok):
                 errs.append("'## %s' row must start with a bare JB-n: %r" % (s, row))
     return errs
