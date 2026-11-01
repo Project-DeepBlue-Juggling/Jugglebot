@@ -19,6 +19,7 @@ via ``python sim/skills_gate.py``.
 from __future__ import annotations
 
 import math
+import re
 
 import numpy as np
 import pytest
@@ -459,6 +460,82 @@ def test_a_small_hop_learner_run_catches_every_throw_with_zero_drops():
     assert res['makes'] == 5
     assert all(t['caught'] for t in res['throws'])
     assert res['plan_wall_ms']['n'] > 0
+
+
+# ── JB-32: a biased plant exercises the forward-clip rule end to end ───────
+#
+# `executor._forward_clip_xy` clips the learner's EXPECTED landing, so it only
+# does anything once the fit has real support AND a box is wired. The columns
+# runs pass `boxes=None` (no clip); the self-toss / hop learner runs wire both,
+# so `plant_landing_bias_mm` is read there. PROBED 2026-11-02 (seed 0, 5
+# throws): the hop's narrow x box (+-2 mm) already clips at bias (0, 0)
+# because of the measured +11 % launch-speed bias, so "no clip at zero bias"
+# holds on the WIDE self-toss box only; on the hop the knob is pinned by the
+# pre-clip expected landing growing with the bias.
+
+_EDGE = re.compile(r'puts y_hat \(([+-][\d.]+), ([+-][\d.]+)\) -> ')
+
+
+def _box_lines(res):
+    return [ln for ln in res['executor_lines'] if 'BOX-EXPECTED-LANDING' in ln]
+
+
+def _clip_lines(res):
+    return [ln for ln in _box_lines(res)
+            if 'on the box edge' in ln or 'BOX-EXPECTED-LANDING-UNMET' in ln]
+
+
+def _first_preclip_x_mm(res):
+    return float(_EDGE.search(_clip_lines(res)[0]).group(1))
+
+
+def _biased_hop_run(bias):
+    cfg = SelfTossGateConfig(pattern='hop', separation_mm=250.0,
+                             target_throws=5, band_entry_throws=5,
+                             max_attempts=15, plant_landing_bias_mm=bias)
+    return SkillsGate(cfg).run_self_toss_seed(0, policy='A')
+
+
+def test_plant_landing_bias_release_adds_the_lateral_speed_for_the_bias():
+    """vz = 4000 mm/s commanded, bias (+30, 0): flight 2 vz / g at the
+    ACTUAL (measured-biased) vz, so +30 * g / (2 vz) mm/s in x on top of it; (0, 0) adds nothing; a
+    non-rising release adds nothing."""
+    v = np.array([0.0, 0.0, 4000.0])
+    base = sg._measured_release_bias(v)
+    out = sg._plant_landing_bias_release((30.0, 0.0))(v)
+    assert out[0] - base[0] == pytest.approx(30.0 * 9810.0 / (2.0 * base[2]))
+    # (36.8 mm/s would be the figure at the UNBIASED vz = 4000; the hook
+    # runs after the +11 % speed bias, so the ball's real vz is ~4440.)
+    assert out[0] - base[0] == pytest.approx(33.1, abs=0.1)
+    assert out[1] == pytest.approx(base[1]) and out[2] == pytest.approx(base[2])
+    np.testing.assert_allclose(sg._plant_landing_bias_release((0.0, 0.0))(v),
+                               base)
+    down = np.array([0.0, 0.0, -500.0])
+    np.testing.assert_allclose(
+        sg._plant_landing_bias_release((30.0, 30.0))(down),
+        sg._measured_release_bias(down))
+
+
+def test_a_biased_plant_fires_the_forward_clip_in_a_small_hop_run():
+    """+30 mm x plant bias: the fit's expected landing leaves the hop box,
+    the clip fires (`on the box edge` / `UNMET`), the run completes, and its
+    pre-clip expected landing is further out than at zero bias."""
+    biased = _biased_hop_run((30.0, 0.0))
+    assert biased['n_throws_collected'] == 5
+    assert _clip_lines(biased)
+    base = _biased_hop_run((0.0, 0.0))
+    assert _first_preclip_x_mm(biased) > _first_preclip_x_mm(base) + 1.0
+
+
+def test_an_unbiased_wide_box_self_toss_run_never_needs_the_forward_clip():
+    """Bias (0, 0) on the wide self-toss box: every expected landing is
+    inside, so no edge / UNMET line (the "inside" lines do appear: the fit
+    has support, the rule ran)."""
+    cfg = SelfTossGateConfig(target_throws=5, band_entry_throws=5,
+                             max_attempts=15)
+    res = SkillsGate(cfg).run_self_toss_seed(0, policy='A')
+    assert _box_lines(res)
+    assert not _clip_lines(res)
 
 
 def test_a_small_hop_learner_run_commands_below_the_old_apex_floor():

@@ -8,6 +8,7 @@ Rows may summarise the entry's commit message as well as the entry itself; the e
 
 | Date | Status | Phase | Title | Entry |
 |------|--------|-------|-------|-------|
+| 2026-11-02 | complete | sim | **JB-32: the sim gate's learner runs take a biased plant (`plant_landing_bias_mm`, `--plant-bias-xy`), so the executor's forward clip fires end to end; executor lines now reach the gate result** | [2026-11-02-jb32-sim-columns-biased-plant-forward-clip.md](2026-11-02-jb32-sim-columns-biased-plant-forward-clip.md) |
 | 2026-11-01 | in-progress | pattern progression | **Sitting 2026-11-01 debrief: 23 goals (straight Columns, first high-low and turned Attempts); JB-120 (bump-seeded successor), JB-121 (HAND_STROKE mid-span dip), JB-98 (bridge-node starvation) and the turned-90 latch (Hand feedback starvation) reframed** | [2026-11-01-sitting-debrief.md](2026-11-01-sitting-debrief.md) |
 | 2026-11-01 | complete | project map | **`/sitting-wrapup` becomes `/sitting-debrief`: an analysis phase (inventory, parallel verdict and diagnosis units, crosswalk, write-backs) runs before the unchanged paperwork** | [2026-11-01-sitting-debrief-command.md](2026-11-01-sitting-debrief-command.md) |
 | 2026-11-01 | complete | gui | **GUI CONSOLE fills the topics panel's own box, so CAN TRAFFIC stays put across ROS / UDP / CONSOLE; the map app's Needs a Sitting section is an invisible table (rig, kind, ID, title, reason aligned)** | [2026-11-01-console-fills-panel-and-needs-table.md](2026-11-01-console-fills-panel-and-needs-table.md) |

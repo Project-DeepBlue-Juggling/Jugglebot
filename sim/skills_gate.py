@@ -871,6 +871,29 @@ def _measured_release_bias(vel_mm_s: np.ndarray) -> np.ndarray:
     return v
 
 
+_GRAVITY_MMS2 = 9810.0
+
+
+def _plant_landing_bias_release(bias_mm):
+    """``release_bias`` hook: :func:`_measured_release_bias` composed with a
+    LATERAL velocity that moves the landing ``bias_mm`` = (x, y) away from
+    the aimed one (JB-32). A ball released at height with vertical speed
+    ``vz`` lands at the same height after ``2 vz / g``, so the lateral
+    velocity to add is ``bias * g / (2 vz)``; ``vz <= 0`` adds nothing. With
+    ``(0, 0)`` this IS :func:`_measured_release_bias`. Pure."""
+    bx, by = float(bias_mm[0]), float(bias_mm[1])
+
+    def _release(vel_mm_s):
+        v = _measured_release_bias(vel_mm_s)
+        vz = float(v[2])
+        if vz > 0.0 and (bx != 0.0 or by != 0.0):
+            k = _GRAVITY_MMS2 / (2.0 * vz)
+            v[0] += bx * k
+            v[1] += by * k
+        return v
+    return _release
+
+
 class _MemoryLearner:
     """Adapts ``memory.Memory`` to the ``learner`` duck-type ``SkillExecutor``
     wants (``command(x, y_d) -> u``, no ``cfg`` argument) by binding one
@@ -1062,6 +1085,15 @@ class SelfTossGateConfig:
     #: `run_columns_attempt`'s own paragraph on this field for the exact
     #: split). Ignored outside a FEED trial.
     feed_bb_bias_mm: Tuple[float, float] = (0.0, 0.0)
+    #: JB-32: the PLANT's own lateral landing bias (x, y) mm -- every release
+    #: lands this far from its aimed landing (applied through the
+    #: ``release_bias`` hook, :func:`_plant_landing_bias_release`). Distinct
+    #: from `feed_bb_bias_mm` / `reload_bias_mm` (Ball Butler / announcement
+    #: biases). Gives the learner's fit a consistent lateral error to gain
+    #: support on, so the executor's forward clip (`_forward_clip_xy`) fires
+    #: end to end. Read by the self-toss/hop learner runs (the only ones
+    #: with a learner AND boxes); the columns runs pass `boxes=None`.
+    plant_landing_bias_mm: Tuple[float, float] = (0.0, 0.0)
     #: 2026-10-19 (capture-move Unit 3): ``--reload`` only. The ball is
     #: PHYSICALLY spawned to land this (x, y) mm away from the synthetic
     #: ANNOUNCED landing ``compile_reload`` is compiled from (the real
@@ -1490,10 +1522,15 @@ class SkillsGate:
     def _stream_chain(self, *, plant, geom, rcfg, noise, executor, ictx,
                       ball_state, t_end, release_bias=None,
                       final_removal=None, final_target_xy_mm=None,
-                      stop_check=None, pending_spawn=None, identity=None):
+                      stop_check=None, pending_spawn=None, identity=None,
+                      lines_out=None):
         """The emitter/pump/wire/mirror/executor.tick loop (module
         docstring) -- run by every caller against a live ``PlanRecord``
         (``ictx``) and the executor dispatching one ``Schedule``.
+
+        ``lines_out`` (list or ``None``): every log line ``executor.tick``
+        returns is appended (JB-32: the gate's only view of the executor's
+        ``BOX-EXPECTED-LANDING`` notes).
 
         ``identity`` (:class:`_IdentityTracker` or ``None``): when given,
         ``identity.tick(t, ball_state)`` runs every sim tick BEFORE
@@ -1599,7 +1636,9 @@ class SkillsGate:
             # schedule's own ``LEAD_KNOTS`` already had to spend once on the
             # wire's lookahead -- a real node's dispatch loop is not tied to
             # the 40 Hz emitter cadence either.
-            executor.tick(t)
+            tick_lines = executor.tick(t)
+            if lines_out is not None and tick_lines:
+                lines_out.extend(tick_lines)
 
             if t >= next_frame_t - 1e-9:
                 record = ictx.record
@@ -1756,7 +1795,8 @@ class SkillsGate:
     def run_self_toss_attempt(self, *, pattern_sites, n_throws: int,
                               memory: mem.Memory, learner_cfg: lr.LearnerConfig,
                               boxes: list, noise: JuggleNoise,
-                              throws_out: list, reports_out: list = None
+                              throws_out: list, reports_out: list = None,
+                              lines_out: list = None
                               ) -> Tuple[str, dict, '_InstallCtx']:
         """One self-toss (``pattern_sites`` = ``(P1,)``) or hop
         (``pattern_sites`` = ``(P1, P2)``, R4) attempt, cold from the
@@ -1834,8 +1874,10 @@ class SkillsGate:
         loop = self._stream_chain(
             plant=plant, geom=geom, rcfg=self.rcfg, noise=noise,
             executor=executor, ictx=ictx, ball_state=ball_state, t_end=t_end,
-            release_bias=_measured_release_bias,
-            stop_check=lambda: executor.done, identity=identity)
+            release_bias=_plant_landing_bias_release(
+                cfg.plant_landing_bias_mm),
+            stop_check=lambda: executor.done, identity=identity,
+            lines_out=lines_out)
         if reports_out is not None:
             reports_out.extend(executor.reports)
         return str(executor.end_code), loop, ictx
@@ -1870,6 +1912,7 @@ class SkillsGate:
 
         throws: list = []
         reports: list = []
+        executor_lines: list = []
         attempts = 0
         refusals = 0
         drops_total = 0
@@ -1889,7 +1932,8 @@ class SkillsGate:
             end_code, loop, ictx = self.run_self_toss_attempt(
                 pattern_sites=pattern_sites, n_throws=n_throws, memory=memory,
                 learner_cfg=cfg.learner_cfg, boxes=boxes, noise=noise,
-                throws_out=throws, reports_out=reports)
+                throws_out=throws, reports_out=reports,
+                lines_out=executor_lines)
             end_codes.append(end_code)
             if end_code:
                 refusals += 1
@@ -1942,7 +1986,7 @@ class SkillsGate:
             throws_to_band_apex=throws_to_band_apex,
             entered_band=entered_band,
             monotone_xy=monotone_xy, monotone_apex=monotone_apex,
-            association=assoc,
+            association=assoc, executor_lines=executor_lines,
             passed=bool(entered_band and bool(monotone_xy)
                        and bool(monotone_apex) and assoc['ok']),
             wall_s=time.time() - t_wall0)
@@ -3495,6 +3539,14 @@ def main(argv=None) -> int:
                         'columns_feed_bb_bias_mm cancels (default [0.0, '
                         '0.0]: no behaviour change; measured 2026-10-04: '
                         '[29.0, 25.0])')
+    p.add_argument('--plant-bias-xy', nargs=2, type=float, default=None,
+                   metavar=('X', 'Y'),
+                   help='--learn (self-toss/hop) only (JB-32): '
+                        'SelfTossGateConfig.plant_landing_bias_mm -- every '
+                        'release LANDS this (x, y) mm from its aimed '
+                        'landing, so the learner fit gains support and the '
+                        'executor forward clip (BOX-EXPECTED-LANDING) fires '
+                        '(default 0 0: no behaviour change)')
     p.add_argument('--correlator', choices=('fixed', 'head'), default=None,
                    help='--learn only: which tracker-correlation rule '
                         '_IdentityTracker applies. \'fixed\' (the default): '
@@ -3609,6 +3661,9 @@ def main(argv=None) -> int:
         if args.bb_bias_mm is not None:
             lcfg.feed_bb_bias_mm = (float(args.bb_bias_mm[0]),
                                     float(args.bb_bias_mm[1]))
+        if args.plant_bias_xy is not None:
+            lcfg.plant_landing_bias_mm = (float(args.plant_bias_xy[0]),
+                                          float(args.plant_bias_xy[1]))
         if args.correlator is not None:
             lcfg.correlator = str(args.correlator)
         if args.dwell_s is not None:
